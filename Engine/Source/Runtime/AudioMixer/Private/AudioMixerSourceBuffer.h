@@ -49,6 +49,7 @@ namespace Audio
 	struct FMixerSourceBufferInitArgs
 	{
 		FDeviceId AudioDeviceID = 0;
+		uint64 AudioComponentID = 0;
 		uint32 InstanceID = 0;
 		int32 SampleRate = 0;
 		int32 AudioMixerNumOutputFrames = 0;
@@ -103,6 +104,16 @@ namespace Audio
 		// Returns true if the async task is done
 		bool IsAsyncTaskDone() const;
 
+		// Returns some diagnostic state
+		struct FDiagnosticState
+		{
+			FName WaveName;
+			float RunTimeInSecs=0.f;
+			bool bInFlight=false;
+			bool bProcedural=false;
+		};
+		void GetDiagnosticState(FDiagnosticState& OutState);
+
 		// Ensures the async task finishes
 		void EnsureAsyncTaskFinishes();
 
@@ -113,6 +124,9 @@ namespace Audio
 
 		// Returns whether or not generator is finished (returns false if generator is invalid)
 		bool IsGeneratorFinished() const;
+#if ENABLE_AUDIO_DEBUG
+		double GetCPUCoreUtilization() const;
+#endif // ENABLE_AUDIO_DEBUG
 
 	private:
 		FMixerSourceBuffer(FMixerSourceBufferInitArgs& InArgs, TArray<FAudioParameter>&& InDefaultParams);
@@ -142,6 +156,14 @@ namespace Audio
 		int32 NumPrecacheFrames;
 		Audio::FDeviceId AuioDeviceID;
 		TArray<uint8> CachedRealtimeFirstBuffer;
+		FName WaveName;
+		uint64 AsyncTaskStartTimeInCycles=0;
+
+#if ENABLE_AUDIO_DEBUG
+		int32 SampleRate = 0;
+		std::atomic<double> CPUCoreUtilization = 0.0;
+		void UpdateCPUCoreUtilization(double InCPUTime, double InAudioTime);
+#endif // ENABLE_AUDIO_DEBUG
 
 		mutable FCriticalSection SoundWaveCritSec;
 		mutable FCriticalSection DecodeTaskCritSec;

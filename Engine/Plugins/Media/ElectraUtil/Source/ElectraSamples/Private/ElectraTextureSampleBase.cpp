@@ -19,11 +19,39 @@ void IElectraTextureSampleBase::Initialize(FVideoDecoderOutput* InVideoDecoderOu
 	{
 		bFullRange = (PinnedColorimetry->GetMPEGDefinition()->VideoFullRangeFlag != 0);
 	}
+	
+	EPixelFormat PixFmt = VideoDecoderOutput->GetFormat();
+	uint8 NumBits = 8;
+	if (!IsDXTCBlockCompressedTextureFormat(PixFmt))
+	{
+		if (PixFmt == PF_NV12)
+		{
+			NumBits = 8;
+		}
+		else if (PixFmt == PF_A2B10G10R10)
+		{
+			NumBits = 10;
+		}
+		else if (PixFmt == PF_P010)
+		{
+			NumBits = 16;
+		}
+		else
+		{
+			NumBits = (8 * GPixelFormats[PixFmt].BlockBytes) / GPixelFormats[PixFmt].NumComponents;
+		}
+	}
 
 	// Prepare YUV -> RGB matrix containing all necessary offsets and scales to produce RGB straight from sample data
 	const FMatrix* Mtx = bFullRange ? &MediaShaders::YuvToRgbRec709Unscaled : &MediaShaders::YuvToRgbRec709Scaled;
-	FVector Off = (VideoDecoderOutput->GetFormat() == PF_NV12) ? (bFullRange ? MediaShaders::YUVOffsetNoScale8bits : MediaShaders::YUVOffset8bits)
-														       : (bFullRange ? MediaShaders::YUVOffsetNoScale16bits : MediaShaders::YUVOffset16bits);
+	FVector Off;
+	switch (NumBits)
+	{
+		case 8:		Off = bFullRange ? MediaShaders::YUVOffsetNoScale8bits  : MediaShaders::YUVOffset8bits; break;
+		case 10:	Off = bFullRange ? MediaShaders::YUVOffsetNoScale10bits : MediaShaders::YUVOffset10bits; break;
+		case 32:	Off = bFullRange ? MediaShaders::YUVOffsetNoScaleFloat  : MediaShaders::YUVOffsetFloat; break;
+		default:	Off = bFullRange ? MediaShaders::YUVOffsetNoScale16bits : MediaShaders::YUVOffset16bits; break;
+	}
 	// Correctional scale for input data
 	// (data should be placed in the upper 10-bits of the 16-bit texture channels, but some platforms do not do this)
 	float DataScale = GetSampleDataScale(false);
@@ -189,6 +217,45 @@ FVector2f IElectraTextureSampleBase::GetWhitePoint() const
 	}
 	// If no HDR info is present, we assume sRGB
 	return FVector2f(UE::Color::GetWhitePoint(UE::Color::EWhitePoint::CIE1931_D65));
+}
+
+FVector2f IElectraTextureSampleBase::GetDisplayPrimaryRed() const
+{
+	if (auto PinnedHDRInfo = HDRInfo.Pin())
+	{
+		if (auto ColorVolume = PinnedHDRInfo->GetMasteringDisplayColourVolume())
+		{
+			return FVector2f(ColorVolume->display_primaries_x[0], ColorVolume->display_primaries_y[0]);
+		}
+	}
+	// If no HDR info is present, we assume sRGB
+	return FVector2f(0.64, 0.33);
+}
+
+FVector2f IElectraTextureSampleBase::GetDisplayPrimaryGreen() const
+{
+	if (auto PinnedHDRInfo = HDRInfo.Pin())
+	{
+		if (auto ColorVolume = PinnedHDRInfo->GetMasteringDisplayColourVolume())
+		{
+			return FVector2f(ColorVolume->display_primaries_x[1], ColorVolume->display_primaries_y[1]);
+		}
+	}
+	// If no HDR info is present, we assume sRGB
+	return FVector2f(0.30, 0.60);
+}
+
+FVector2f IElectraTextureSampleBase::GetDisplayPrimaryBlue() const
+{
+	if (auto PinnedHDRInfo = HDRInfo.Pin())
+	{
+		if (auto ColorVolume = PinnedHDRInfo->GetMasteringDisplayColourVolume())
+		{
+			return FVector2f(ColorVolume->display_primaries_x[2], ColorVolume->display_primaries_y[2]);
+		}
+	}
+	// If no HDR info is present, we assume sRGB
+	return FVector2f(0.15, 0.06);
 }
 
 UE::Color::EEncoding IElectraTextureSampleBase::GetEncodingType() const

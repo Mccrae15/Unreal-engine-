@@ -18,6 +18,8 @@
 #include "GeometryCollection/GeometryCollectionComponent.h"
 #include "GeometryCollection/Facades/CollectionRemoveOnBreakFacade.h"
 
+#include "FractureEditorModeToolkit.h"
+
 #include "SGeometryCollectionOutliner.generated.h"
 
 class FGeometryCollection;
@@ -35,16 +37,6 @@ enum class EOutlinerItemNameEnum : uint8
 {
 	BoneName = 0					UMETA(DisplayName = "Bone Name"),
 	BoneIndex = 1					UMETA(DisplayName = "Bone Index"),
-};
-
-UENUM(BlueprintType)
-enum class EOutlinerColumnMode : uint8
-{
-	State = 0				UMETA(DisplayName = "State"),
-	Damage = 1				UMETA(DisplayName = "Damage"),
-	Removal = 2				UMETA(DisplayName = "Removal"),
-	Collision = 3			UMETA(DisplayName = "Collision"),
-	Size = 4				UMETA(DisplayName = "Size"),
 };
 
 /** Settings for Outliner configuration. **/
@@ -117,6 +109,7 @@ public:
 	FRemoveOnBreakData GetRemoveOnBreakData(int32 Index) const;
 	bool HasSourceCollision(int32 Index) const;
 	bool IsSourceCollisionUsed(int32 Index) const;
+	int32 GetConvexCount(int32 Index) const;
 
 private:
 	FManagedArrayCollection&			DataCollection;
@@ -135,6 +128,7 @@ private:
 	TManagedArrayAccessor<int32>		SimulationTypeAttribute;
 	TManagedArrayAccessor<bool>			HasSourceCollisionAttribute;
 	TManagedArrayAccessor<bool>			SourceCollisionUsedAttribute;
+	TManagedArrayAccessor<int32>		ConvexCountAttribute;
 };
 
 class FGeometryCollectionTreeItemComponent : public FGeometryCollectionTreeItem
@@ -213,6 +207,7 @@ public:
 	TSharedRef<SWidget> MakePostBreakTimeColumnWidget() const;
 	TSharedRef<SWidget> MakeRemovalTimeColumnWidget() const;
 	TSharedRef<SWidget> MakeImportedCollisionsColumnWidget() const;
+	TSharedRef<SWidget> MakeConvexCountColumnWidget() const;
 	TSharedRef<SWidget> MakeEmptyColumnWidget() const;
 	virtual void GetChildren(FGeometryCollectionTreeItemList& OutChildren) override;
 	virtual int32 GetBoneIndex() const override { return BoneIndex; }
@@ -254,6 +249,7 @@ namespace SGeometryCollectionOutlinerColumnID
 	const FName PostBreakTime("PostBreakTime");
 	const FName RemovalTime("RemovalTime");
 	// Collision Column Mode
+	const FName ConvexCount("Convex Count");
 	const FName ImportedCollisions("ImportedCollisions");
 }
 

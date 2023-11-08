@@ -1,5 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using System;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -29,7 +30,17 @@ namespace EpicGames.Core
 			using (HttpResponseMessage response = await client.GetAsync(url, cancellationToken))
 			{
 				response.EnsureSuccessStatusCode();
-				return await ParseJsonContent<TResponse>(response);
+				return await ParseJsonContent<TResponse>(response, cancellationToken);
+			}
+		}
+
+		/// <inheritdoc cref="GetAsync{TResponse}(HttpClient, String, CancellationToken)"/>
+		public static async Task<TResponse> GetAsync<TResponse>(this HttpClient client, Uri url, CancellationToken cancellationToken)
+		{
+			using (HttpResponseMessage response = await client.GetAsync(url, cancellationToken))
+			{
+				response.EnsureSuccessStatusCode();
+				return await ParseJsonContent<TResponse>(response, cancellationToken);
 			}
 		}
 
@@ -43,6 +54,13 @@ namespace EpicGames.Core
 		/// <param name="cancellationToken">Cancels the request</param>
 		/// <returns>Response message</returns>
 		public static async Task<HttpResponseMessage> PostAsync<TRequest>(this HttpClient client, string url, TRequest request, CancellationToken cancellationToken)
+		{
+			using HttpContent content = ToJsonContent(request);
+			return await client.PostAsync(url, content, cancellationToken);
+		}
+
+		/// <inheritdoc cref="PostAsync{TRequest}(HttpClient, String, TRequest, CancellationToken)"/>
+		public static async Task<HttpResponseMessage> PostAsync<TRequest>(this HttpClient client, Uri url, TRequest request, CancellationToken cancellationToken)
 		{
 			using HttpContent content = ToJsonContent(request);
 			return await client.PostAsync(url, content, cancellationToken);
@@ -63,7 +81,17 @@ namespace EpicGames.Core
 			using (HttpResponseMessage response = await PostAsync(client, url, request, cancellationToken))
 			{
 				response.EnsureSuccessStatusCode();
-				return await ParseJsonContent<TResponse>(response);
+				return await ParseJsonContent<TResponse>(response, cancellationToken);
+			}
+		}
+
+		/// <inheritdoc cref="PostAsync{TRequest}(HttpClient, String, TRequest, CancellationToken)"/>
+		public static async Task<TResponse> PostAsync<TResponse, TRequest>(this HttpClient client, Uri url, TRequest request, CancellationToken cancellationToken)
+		{
+			using (HttpResponseMessage response = await PostAsync(client, url, request, cancellationToken))
+			{
+				response.EnsureSuccessStatusCode();
+				return await ParseJsonContent<TResponse>(response, cancellationToken);
 			}
 		}
 
@@ -73,12 +101,19 @@ namespace EpicGames.Core
 		/// <typeparam name="TRequest">The object type to post</typeparam>
 		/// <param name="client">The http client instance</param>
 		/// <param name="url">The url to post to</param>
-		/// <param name="obj">The object to post</param>
+		/// <param name="request">The object to post</param>
 		/// <param name="cancellationToken">Cancels the request</param>
 		/// <returns>Response message</returns>
-		public static async Task<HttpResponseMessage> PutAsync<TRequest>(this HttpClient client, string url, TRequest obj, CancellationToken cancellationToken)
+		public static async Task<HttpResponseMessage> PutAsync<TRequest>(this HttpClient client, string url, TRequest request, CancellationToken cancellationToken)
 		{
-			using HttpContent content = ToJsonContent(obj);
+			using HttpContent content = ToJsonContent(request);
+			return await client.PutAsync(url, content, cancellationToken);
+		}
+
+		/// <inheritdoc cref="PutAsync{TRequest}(HttpClient, String, TRequest, CancellationToken)"/>
+		public static async Task<HttpResponseMessage> PutAsync<TRequest>(this HttpClient client, Uri url, TRequest request, CancellationToken cancellationToken)
+		{
+			using HttpContent content = ToJsonContent(request);
 			return await client.PutAsync(url, content, cancellationToken);
 		}
 
@@ -97,7 +132,17 @@ namespace EpicGames.Core
 			using (HttpResponseMessage response = await PutAsync(client, url, request, cancellationToken))
 			{
 				response.EnsureSuccessStatusCode();
-				return await ParseJsonContent<TResponse>(response);
+				return await ParseJsonContent<TResponse>(response, cancellationToken);
+			}
+		}
+
+		/// <inheritdoc cref="PutAsync{TRequest}(HttpClient, String, TRequest, CancellationToken)"/>
+		public static async Task<TResponse> PutAsync<TResponse, TRequest>(this HttpClient client, Uri url, TRequest request, CancellationToken cancellationToken)
+		{
+			using (HttpResponseMessage response = await PutAsync(client, url, request, cancellationToken))
+			{
+				response.EnsureSuccessStatusCode();
+				return await ParseJsonContent<TResponse>(response, cancellationToken);
 			}
 		}
 
@@ -117,10 +162,11 @@ namespace EpicGames.Core
 		/// </summary>
 		/// <typeparam name="T">Type of the object to parse</typeparam>
 		/// <param name="message">The message received</param>
+		/// <param name="cancellationToken">Cancellation token for the operation</param>
 		/// <returns>Parsed object instance</returns>
-		private static async Task<T> ParseJsonContent<T>(HttpResponseMessage message)
+		private static async Task<T> ParseJsonContent<T>(HttpResponseMessage message, CancellationToken cancellationToken)
 		{
-			byte[] bytes = await message.Content.ReadAsByteArrayAsync();
+			byte[] bytes = await message.Content.ReadAsByteArrayAsync(cancellationToken);
 			return JsonSerializer.Deserialize<T>(bytes, new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
 		}
 	}

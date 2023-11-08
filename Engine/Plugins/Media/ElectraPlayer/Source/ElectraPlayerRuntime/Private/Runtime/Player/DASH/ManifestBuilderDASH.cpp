@@ -27,7 +27,7 @@
 #include "Utilities/Utilities.h"
 #include "Utilities/TimeUtilities.h"
 #include "Utilities/ISO639-Map.h"
-#include "Utilities/UtilsMPEGAudio.h"
+#include "Utils/MPEG/ElectraUtilsMPEGAudio.h"
 
 #include "Player/DRM/DRMManager.h"
 
@@ -58,6 +58,8 @@ namespace
 {
 	const TCHAR* const Custom_EpicStaticStart = TEXT("EpicStaticStart");
 	const TCHAR* const Custom_EpicDynamicStart = TEXT("EpicDynamicStart");
+	const TCHAR* const Custom_EpicUTCUrl = TEXT("EpicUTCUrl");
+	const TCHAR* const Custom_EpicUTCNow = TEXT("EpicUTCNow");
 
 	const TCHAR* const XLinkActuateOnLoad = TEXT("onLoad");
 	const TCHAR* const XLinkActuateOnRequest = TEXT("onRequest");
@@ -82,6 +84,9 @@ namespace
 		TEXT("urn:dvb:dash:profile:dvb-dash:isoff-ext-live:2014"),
 		// Low latency Live
 		TEXT("http://www.dashif.org/guidelines/low-latency-live-v5"),
+		// WebM profiles
+		TEXT("urn:webm:dash:profile:webm-on-demand:2012"),
+		TEXT("urn:mpeg:dash:profile:webm-on-demand:2012"),
 	};
 
 	const TCHAR* const ScanTypeInterlace = TEXT("interlace");
@@ -924,6 +929,25 @@ FErrorDetail FManifestDASHInternal::PrepareRemoteElementLoadRequest(TArray<TWeak
 }
 
 
+void FManifestDASHInternal::InjectEpicTimingSources()
+{
+	const TArray<TSharedPtrTS<FDashMPD_DescriptorType>>& UTCTimings = MPDRoot->GetUTCTimings();
+
+	for(int32 i=0,iMax=URLFragmentComponents.Num(); i<iMax; ++i)
+	{
+		if (URLFragmentComponents[i].Name.Equals(Custom_EpicUTCUrl))
+		{
+			MPDRoot->AddUTCTimingElement(FString(), DASH::Schemes::TimingSources::Scheme_urn_mpeg_dash_utc_httpxsdate2014, FString(), URLFragmentComponents[i].Value);
+			bDidInjectUTCTimingElements = true;
+		}
+		else if (URLFragmentComponents[i].Name.Equals(Custom_EpicUTCNow))
+		{
+			MPDRoot->AddUTCTimingElement(FString(), DASH::Schemes::TimingSources::Scheme_urn_mpeg_dash_utc_direct2014, FString(), URLFragmentComponents[i].Value);
+			bDidInjectUTCTimingElements = true;
+		}
+	}
+}
+
 void FManifestDASHInternal::TransformIntoEpicEvent()
 {
 	// For this to work the presentation must be 'static'
@@ -1523,6 +1547,7 @@ void FManifestDASHInternal::PreparePeriodAdaptationSets(TSharedPtrTS<FPeriod> Pe
 						MPDCodecs.Emplace(TEXT("stpp"));
 					}
 					Representation->bIsSideloadedSubtitle = true;
+					Representation->StreamContainerType = FRepresentation::EStreamContainerType::ISO14496_12;
 				}
 				else if (MimeType.Equals(SubtitleMimeType_SideloadedVTT))
 				{
@@ -1531,6 +1556,7 @@ void FManifestDASHInternal::PreparePeriodAdaptationSets(TSharedPtrTS<FPeriod> Pe
 						MPDCodecs.Emplace(TEXT("wvtt"));
 					}
 					Representation->bIsSideloadedSubtitle = true;
+					Representation->StreamContainerType = FRepresentation::EStreamContainerType::ISO14496_12;
 				}
 
 				// Check for thumbnails
@@ -1553,6 +1579,16 @@ void FManifestDASHInternal::PreparePeriodAdaptationSets(TSharedPtrTS<FPeriod> Pe
 
 				Representation->ID = MPDRepresentation->GetID();
 				Representation->Bitrate = MPDRepresentation->GetBandwidth();
+				Representation->StreamMimeType = MimeType;
+				if (MimeType.Contains(TEXT("mp4"), ESearchCase::IgnoreCase))
+				{
+					Representation->StreamContainerType = FRepresentation::EStreamContainerType::ISO14496_12;
+				}
+				else if (MimeType.Contains(TEXT("webm"), ESearchCase::IgnoreCase) || MimeType.Contains(TEXT("matroska"), ESearchCase::IgnoreCase))
+				{
+					Representation->StreamContainerType = FRepresentation::EStreamContainerType::Matroska;
+				}
+
 				Representation->CodecInfo.SetBitrate(Representation->Bitrate);
 
 				// Propagate the language code from the AdaptationSet into the codec info
@@ -1635,7 +1671,7 @@ void FManifestDASHInternal::PreparePeriodAdaptationSets(TSharedPtrTS<FPeriod> Pe
 							uint32 v = 0;
 							LexFromString(v, *AudioChannelConfigurations[nACC]->GetValue());
 							Representation->CodecInfo.SetChannelConfiguration(v);
-							Representation->CodecInfo.SetNumberOfChannels(MPEG::AACUtils::GetNumberOfChannelsFromChannelConfiguration(v));
+							Representation->CodecInfo.SetNumberOfChannels(ElectraDecodersUtil::MPEG::AACUtils::GetNumberOfChannelsFromChannelConfiguration(v));
 							break;
 						}
 						else if (AudioChannelConfigurations[nACC]->GetSchemeIdUri().Equals(AudioChannelConfigurationDolby))	// "tag:dolby.com,2014:dash:audio_channel_configuration:2011"
@@ -2406,6 +2442,10 @@ bool FManifestDASHInternal::IsStaticType() const
 	return GetPresentationType() == FManifestDASHInternal::EPresentationType::Static;
 }
 
+bool FManifestDASHInternal::HasInjectedTimingSources() const
+{
+	return bDidInjectUTCTimingElements;
+}
 
 FTimeValue FManifestDASHInternal::GetMinimumUpdatePeriod() const
 {

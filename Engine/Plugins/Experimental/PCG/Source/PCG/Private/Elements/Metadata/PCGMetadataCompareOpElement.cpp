@@ -2,6 +2,7 @@
 
 #include "Elements/Metadata/PCGMetadataCompareOpElement.h"
 
+#include "Elements/Metadata/PCGMetadataElementCommon.h"
 #include "Metadata/PCGMetadataAttributeTpl.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PCGMetadataCompareOpElement)
@@ -98,7 +99,7 @@ bool UPCGMetadataCompareSettings::IsSupportedInputType(uint16 TypeId, uint32 Inp
 	}
 }
 
-FPCGAttributePropertySelector UPCGMetadataCompareSettings::GetInputSource(uint32 Index) const
+FPCGAttributePropertyInputSelector UPCGMetadataCompareSettings::GetInputSource(uint32 Index) const
 {
 	switch (Index)
 	{
@@ -107,7 +108,7 @@ FPCGAttributePropertySelector UPCGMetadataCompareSettings::GetInputSource(uint32
 	case 1:
 		return InputSource2;
 	default:
-		return FPCGAttributePropertySelector();
+		return FPCGAttributePropertyInputSelector();
 	}
 }
 
@@ -138,7 +139,23 @@ FText UPCGMetadataCompareSettings::GetDefaultNodeTitle() const
 {
 	return NSLOCTEXT("PCGMetadataCompareSettings", "NodeTitle", "Attribute Compare Op");
 }
+
+TArray<FPCGPreConfiguredSettingsInfo> UPCGMetadataCompareSettings::GetPreconfiguredInfo() const
+{
+	return PCGMetadataElementCommon::FillPreconfiguredSettingsInfoFromEnum<EPCGMedadataCompareOperation>();
+}
 #endif // WITH_EDITOR
+
+void UPCGMetadataCompareSettings::ApplyPreconfiguredSettings(const FPCGPreConfiguredSettingsInfo& PreconfiguredInfo)
+{
+	if (const UEnum* EnumPtr = StaticEnum<EPCGMedadataCompareOperation>())
+	{
+		if (EnumPtr->IsValidEnumValue(PreconfiguredInfo.PreconfiguredIndex))
+		{
+			Operation = EPCGMedadataCompareOperation(PreconfiguredInfo.PreconfiguredIndex);
+		}
+	}
+}
 
 FPCGElementPtr UPCGMetadataCompareSettings::CreateElement() const
 {

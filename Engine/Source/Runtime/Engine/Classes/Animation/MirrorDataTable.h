@@ -108,12 +108,7 @@ public:
 	ENGINE_API virtual void PostLoad() override;
 
 #if WITH_EDITOR
-
-	ENGINE_API virtual void PreEditChange(FProperty* PropertyThatWillChange) override;
-
 	ENGINE_API virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
-
-
 #endif // WITH_EDITOR
 
 	/**
@@ -181,6 +176,27 @@ public:
 	 */
 	ENGINE_API FName FindReplace(FName InName) const;
 
+	/**
+	 * Finds the "best matching" mirrored bone across the specified axis. Priority is given to bones with the mirrored name,
+	 * falling back to spatial proximity if no mirrored bone is found using the naming rules.
+	 *
+	 * When falling back to proximity, bones within the SearchThreshold distance are considered coincident and a fuzzy string
+	 * comparison is used to find the most likely bone that matches the input bone.
+	 *
+	 * NOTE: The naming scheme assumes a mirror axis of X (Left/Right). Naming rules for other axes are not supported.
+	 *
+	 * @param	InBoneName		The input bone for which you want to find the mirrored equivalent
+	 * @param	InRefSkeleton	The reference skeleton used to find bone names and their spatial relationships (in ref pose)
+	 * @param	InMirrorAxis	The axis to cross when searching for a mirrored bone
+	 * @param	SearchThreshold	The distance in Unreal units to consider when trying to "tie-break" coincident bones
+	 * @return					The "best match" mirrored bone
+	 */
+	ENGINE_API static FName FindBestMirroredBone(
+		const FName InBoneName,
+		const FReferenceSkeleton& InRefSkeleton,
+		EAxis::Type InMirrorAxis,
+		const float SearchThreshold = 2.0f);
+
 public:
 
 	UPROPERTY(EditAnywhere, Category = CreateTable)
@@ -194,13 +210,16 @@ public:
 
 	// Index of the mirror bone for a given bone index in the reference skeleton, or INDEX_NONE if the bone is not mirrored
 	TCustomBoneIndexArray<FSkeletonPoseBoneIndex, FSkeletonPoseBoneIndex> BoneToMirrorBoneIndex;
-
-	// Array with entries the source UIDs of curves that should be mirrored. 
+	
+	UE_DEPRECATED(5.3, "UID-based mirroring has been remove, please use CurveToMirrorCurveMap.")
 	TArray<SmartName::UID_Type> CurveMirrorSourceUIDArray;
-
-	// Array with the target UIDs of curves that should be mirrored. 
+	
+	UE_DEPRECATED(5.3, "UID-based mirroring has been remove, please use CurveToMirrorCurveMap.")
 	TArray<SmartName::UID_Type> CurveMirrorTargetUIDArray;
 
+	// Map from animation curve to mirrored animation curve
+	TMap<FName, FName> CurveToMirrorCurveMap;
+	
 	// Map from animation notify to mirrored animation notify
 	TMap<FName, FName> AnimNotifyToMirrorAnimNotifyMap;
 	

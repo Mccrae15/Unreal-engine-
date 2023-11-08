@@ -7,6 +7,7 @@
 #pragma once
 
 #include "Concepts/GetTypeHashable.h"
+#include "Concepts/StaticStructProvider.h"
 #include "Containers/Array.h"
 #include "Containers/EnumAsByte.h"
 #include "Containers/Map.h"
@@ -14,6 +15,8 @@
 #include "Containers/StringFwd.h"
 #include "Containers/UnrealString.h"
 #include "CoreTypes.h"
+#include "Async/Mutex.h"
+#include "Async/UniqueLock.h"
 #include "HAL/CriticalSection.h"
 #include "HAL/PlatformCrt.h"
 #include "HAL/UnrealMemory.h"
@@ -68,6 +71,7 @@
 #include "UObject/TopLevelAssetPath.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/UnrealNames.h"
+#include "UObject/ObjectPtr.h"
 
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "Misc/PackageAccessTracking.h"
@@ -105,9 +109,25 @@ struct FPropertyTag;
 struct FRandomStream;
 struct FUObjectSerializeContext;
 template <typename FuncType> class TFunctionRef;
+enum class EPropertyObjectReferenceType : uint32;
 
 COREUOBJECT_API DECLARE_LOG_CATEGORY_EXTERN(LogClass, Log, All);
 COREUOBJECT_API DECLARE_LOG_CATEGORY_EXTERN(LogScriptSerialization, Log, All);
+
+#ifndef USE_UE_LOCK_FOR_UCLASS_FUNCTION_HANDLING
+	#define USE_UE_LOCK_FOR_UCLASS_FUNCTION_HANDLING 0
+#endif
+
+#if USE_UE_LOCK_FOR_UCLASS_FUNCTION_HANDLING
+	typedef UE::TUniqueLock<UE::FMutex> FUClassFuncScopeReadLock;
+	typedef UE::TUniqueLock<UE::FMutex> FUClassFuncScopeWriteLock;
+	typedef UE::FMutex FUClassFuncLock;
+#else
+	typedef FReadScopeLock FUClassFuncScopeReadLock;
+	typedef FWriteScopeLock FUClassFuncScopeWriteLock;
+	typedef FRWLock FUClassFuncLock;
+#endif
+
 
 /*-----------------------------------------------------------------------------
 	FRepRecord.
@@ -132,9 +152,9 @@ struct FRepRecord
 //
 // Base class of reflection data objects.
 //
-class COREUOBJECT_API UField : public UObject
+class UField : public UObject
 {
-	DECLARE_CASTED_CLASS_INTRINSIC(UField, UObject, CLASS_Abstract, TEXT("/Script/CoreUObject"), CASTCLASS_UField)
+	DECLARE_CASTED_CLASS_INTRINSIC_WITH_API(UField, UObject, CLASS_Abstract, TEXT("/Script/CoreUObject"), CASTCLASS_UField, COREUOBJECT_API)
 
 	typedef UField BaseFieldClass;
 	typedef UClass FieldTypeClass;
@@ -146,27 +166,27 @@ class COREUOBJECT_API UField : public UObject
 	UField(EStaticConstructor, EObjectFlags InFlags);
 
 	// UObject interface.
-	virtual void Serialize( FArchive& Ar ) override;
-	virtual void PostLoad() override;
-	virtual bool NeedsLoadForClient() const override;
-	virtual bool NeedsLoadForServer() const override;
+	COREUOBJECT_API virtual void Serialize( FArchive& Ar ) override;
+	COREUOBJECT_API virtual void PostLoad() override;
+	COREUOBJECT_API virtual bool NeedsLoadForClient() const override;
+	COREUOBJECT_API virtual bool NeedsLoadForServer() const override;
 
 	// UField interface.
-	virtual void AddCppProperty(FProperty* Property);
-	virtual void Bind();
+	COREUOBJECT_API virtual void AddCppProperty(FProperty* Property);
+	COREUOBJECT_API virtual void Bind();
 
 	/** Goes up the outer chain to look for a UClass */
-	UClass* GetOwnerClass() const;
+	COREUOBJECT_API UClass* GetOwnerClass() const;
 
 	/** Goes up the outer chain to look for a UStruct */
-	UStruct* GetOwnerStruct() const;
+	COREUOBJECT_API UStruct* GetOwnerStruct() const;
 
 	/** 
 	 * Returns a human readable string that was assigned to this field at creation. 
 	 * By default this is the same as GetName() but it can be overridden if that is an internal-only name.
 	 * This name is consistent in editor/cooked builds, is not localized, and is useful for data import/export.
 	 */
-	FString GetAuthoredName() const;
+	COREUOBJECT_API FString GetAuthoredName() const;
 
 #if WITH_EDITORONLY_DATA
 	/**
@@ -174,7 +194,7 @@ class COREUOBJECT_API UField : public UObject
 	 *
 	 * @return The display name for this object.
 	 */
-	FText GetDisplayNameText() const;
+	COREUOBJECT_API FText GetDisplayNameText() const;
 
 	/**
 	 * Finds the localized tooltip or native tooltip as a fallback.
@@ -183,7 +203,7 @@ class COREUOBJECT_API UField : public UObject
 	 *
 	 * @return The tooltip for this object.
 	 */
-	FText GetToolTipText(bool bShortTooltip = false) const;
+	COREUOBJECT_API FText GetToolTipText(bool bShortTooltip = false) const;
 
 	/** 
 	 * Formats a source comment into the form we want to show in the editor, is used by GetToolTipText and anything else that will get a native tooltip 
@@ -191,7 +211,7 @@ class COREUOBJECT_API UField : public UObject
 	 * @param ToolTipString			String parsed out of C++ headers that is modified in place
 	 * @param bRemoveExtraSections	If true, cut off the comment on first line separator or 2 empty lines in a row
 	 */
-	static void FormatNativeToolTip(FString& ToolTipString, bool bRemoveExtraSections = true);
+	static COREUOBJECT_API void FormatNativeToolTip(FString& ToolTipString, bool bRemoveExtraSections = true);
 
 	/**
 	 * Determines if the property has any metadata associated with the key
@@ -208,8 +228,8 @@ class COREUOBJECT_API UField : public UObject
 	 * @param Key The key to lookup in the metadata
 	 * @return The value associated with the key if exists, null otherwise
 	 */
-	const FString* FindMetaData(const TCHAR* Key) const;
-	const FString* FindMetaData(const FName& Key) const;
+	COREUOBJECT_API const FString* FindMetaData(const TCHAR* Key) const;
+	COREUOBJECT_API const FString* FindMetaData(const FName& Key) const;
 
 	/**
 	 * Find the metadata value associated with the key
@@ -217,8 +237,8 @@ class COREUOBJECT_API UField : public UObject
 	 * @param Key The key to lookup in the metadata
 	 * @return The value associated with the key
 	 */
-	const FString& GetMetaData(const TCHAR* Key) const;
-	const FString& GetMetaData(const FName& Key) const;
+	COREUOBJECT_API const FString& GetMetaData(const TCHAR* Key) const;
+	COREUOBJECT_API const FString& GetMetaData(const FName& Key) const;
 
 	/**
 	 * Find the metadata value associated with the key and localization namespace and key
@@ -228,8 +248,8 @@ class COREUOBJECT_API UField : public UObject
 	 * @param LocalizationKey			Key to lookup in the localization manager
 	 * @return							Localized metadata if available, defaults to whatever is provided via GetMetaData
 	 */
-	FText GetMetaDataText(const TCHAR* MetaDataKey, const FString LocalizationNamespace = FString(), const FString LocalizationKey = FString()) const;
-	FText GetMetaDataText(const FName& MetaDataKey, const FString LocalizationNamespace = FString(), const FString LocalizationKey = FString()) const;
+	COREUOBJECT_API FText GetMetaDataText(const TCHAR* MetaDataKey, const FString LocalizationNamespace = FString(), const FString LocalizationKey = FString()) const;
+	COREUOBJECT_API FText GetMetaDataText(const FName& MetaDataKey, const FString LocalizationNamespace = FString(), const FString LocalizationKey = FString()) const;
 
 	/**
 	 * Sets the metadata value associated with the key
@@ -237,8 +257,8 @@ class COREUOBJECT_API UField : public UObject
 	 * @param Key The key to lookup in the metadata
 	 * @return The value associated with the key
 	 */
-	void SetMetaData(const TCHAR* Key, const TCHAR* InValue);
-	void SetMetaData(const FName& Key, const TCHAR* InValue);
+	COREUOBJECT_API void SetMetaData(const TCHAR* Key, const TCHAR* InValue);
+	COREUOBJECT_API void SetMetaData(const FName& Key, const TCHAR* InValue);
 
 	/**
 	 * Find the metadata value associated with the key
@@ -303,26 +323,26 @@ class COREUOBJECT_API UField : public UObject
 	 * @param Key The key to lookup in the metadata
 	 * @return the class value stored in the metadata.
 	 */
-	UClass* GetClassMetaData(const TCHAR* Key) const;
-	UClass* GetClassMetaData(const FName& Key) const;
+	COREUOBJECT_API UClass* GetClassMetaData(const TCHAR* Key) const;
+	COREUOBJECT_API UClass* GetClassMetaData(const FName& Key) const;
 
 	/** Clear any metadata associated with the key */
-	void RemoveMetaData(const TCHAR* Key);
-	void RemoveMetaData(const FName& Key);
+	COREUOBJECT_API void RemoveMetaData(const TCHAR* Key);
+	COREUOBJECT_API void RemoveMetaData(const FName& Key);
 #endif // WITH_EDITORONLY_DATA
 
-	bool HasAnyCastFlags(const uint64 InCastFlags) const;
-	bool HasAllCastFlags(const uint64 InCastFlags) const;
+	COREUOBJECT_API bool HasAnyCastFlags(const uint64 InCastFlags) const;
+	COREUOBJECT_API bool HasAllCastFlags(const uint64 InCastFlags) const;
 
 #if WITH_EDITORONLY_DATA
 	/**
 	 * Gets the FField object associated with this Field
 	 */
-	virtual FField* GetAssociatedFField();
+	COREUOBJECT_API virtual FField* GetAssociatedFField();
 	/**
 	 * Sets the FField object associated with this Field
 	 */
-	virtual void SetAssociatedFField(FField* InField);
+	COREUOBJECT_API virtual void SetAssociatedFField(FField* InField);
 #endif // WITH_EDITORONLY_DATA
 };
 
@@ -360,22 +380,22 @@ private:
 /**
  * Base class for all UObject types that contain fields.
  */
-class COREUOBJECT_API UStruct : public UField
+class UStruct : public UField
 #if USTRUCT_FAST_ISCHILDOF_IMPL == USTRUCT_ISCHILDOF_STRUCTARRAY
 	, private FStructBaseChain
 #endif
 {
-	DECLARE_CASTED_CLASS_INTRINSIC(UStruct, UField, CLASS_MatchedSerializers, TEXT("/Script/CoreUObject"), CASTCLASS_UStruct)
+	DECLARE_CASTED_CLASS_INTRINSIC_WITH_API(UStruct, UField, CLASS_MatchedSerializers, TEXT("/Script/CoreUObject"), CASTCLASS_UStruct, COREUOBJECT_API)
 
 	// Variables.
 protected:
 	friend struct Z_Construct_UClass_UStruct_Statics;
 private:
 	/** Struct this inherits from, may be null */
-	UStruct* SuperStruct;
+	ObjectPtr_Private::TNonAccessTrackedObjectPtr<UStruct> SuperStruct;
 public:
 	/** Pointer to start of linked list of child fields */
-	UField* Children;
+	TObjectPtr<UField> Children;
 	
 	/** Pointer to start of linked list of child fields */
 	FField* ChildProperties;
@@ -398,7 +418,7 @@ public:
 	FProperty* PostConstructLink;
 
 	/** Array of object references embedded in script code and referenced by FProperties. Mirrored for easy access by realtime garbage collection code */
-	TArray<UObject*> ScriptAndPropertyObjectReferences;
+	TArray<TObjectPtr<UObject>> ScriptAndPropertyObjectReferences;
 
 	typedef TArray<TPair<TFieldPath<FField>, int32>> FUnresolvedScriptPropertiesArray;
 	/** Contains a list of script properties that couldn't be resolved at load time */
@@ -406,7 +426,7 @@ public:
 
 #if WITH_EDITORONLY_DATA
 	/** List of wrapper UObjects for FProperties */
-	TArray<UPropertyWrapper*> PropertyWrappers;
+	TArray<TObjectPtr<UPropertyWrapper>> PropertyWrappers;
 	/** Unique id incremented each time this class properties get destroyed */
 	int32 FieldPathSerialNumber;
 #endif
@@ -418,7 +438,7 @@ public:
 	mutable const struct FUnversionedStructSchema* UnversionedEditorSchema = nullptr;
 
 	/** Get the Schema Hash for this struct - the hash of its property names and types. */
-	const FBlake3Hash& GetSchemaHash(bool bSkipEditorOnly) const;
+	COREUOBJECT_API const FBlake3Hash& GetSchemaHash(bool bSkipEditorOnly) const;
 
 protected:
 	/** True if this struct has Asset Registry searchable properties */
@@ -427,31 +447,31 @@ protected:
 
 public:
 	// Constructors.
-	UStruct( EStaticConstructor, int32 InSize, int32 InAlignment, EObjectFlags InFlags );
-	explicit UStruct(UStruct* InSuperStruct, SIZE_T ParamsSize = 0, SIZE_T Alignment = 0);
-	explicit UStruct(const FObjectInitializer& ObjectInitializer, UStruct* InSuperStruct, SIZE_T ParamsSize = 0, SIZE_T Alignment = 0 );
-	virtual ~UStruct();
+	COREUOBJECT_API UStruct( EStaticConstructor, int32 InSize, int32 InAlignment, EObjectFlags InFlags );
+	COREUOBJECT_API explicit UStruct(UStruct* InSuperStruct, SIZE_T ParamsSize = 0, SIZE_T Alignment = 0);
+	COREUOBJECT_API explicit UStruct(const FObjectInitializer& ObjectInitializer, UStruct* InSuperStruct, SIZE_T ParamsSize = 0, SIZE_T Alignment = 0 );
+	COREUOBJECT_API virtual ~UStruct();
 
 	// UObject interface.
-	virtual void Serialize(FArchive& Ar) override;
-	virtual void Serialize(FStructuredArchive::FRecord Record) override;
-	virtual void PostLoad() override;
-	virtual void FinishDestroy() override;
-	virtual void RegisterDependencies() override;
-	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
-	virtual void GetPreloadDependencies(TArray<UObject*>& OutDeps) override;
-	virtual void TagSubobjects(EObjectFlags NewFlags) override;
+	COREUOBJECT_API virtual void Serialize(FArchive& Ar) override;
+	COREUOBJECT_API virtual void Serialize(FStructuredArchive::FRecord Record) override;
+	COREUOBJECT_API virtual void PostLoad() override;
+	COREUOBJECT_API virtual void FinishDestroy() override;
+	COREUOBJECT_API virtual void RegisterDependencies() override;
+	static COREUOBJECT_API void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
+	COREUOBJECT_API virtual void GetPreloadDependencies(TArray<UObject*>& OutDeps) override;
+	COREUOBJECT_API virtual void TagSubobjects(EObjectFlags NewFlags) override;
 
 	// UField interface.
-	virtual void AddCppProperty(FProperty* Property) override;
+	COREUOBJECT_API virtual void AddCppProperty(FProperty* Property) override;
 
 	/**
 	 * Returns struct path name as a package + struct FName pair
 	 */
-	FTopLevelAssetPath GetStructPathName() const;
+	COREUOBJECT_API FTopLevelAssetPath GetStructPathName() const;
 
 	/** Searches property link chain for a property with the specified name */
-	FProperty* FindPropertyByName(FName InName) const;
+	COREUOBJECT_API FProperty* FindPropertyByName(FName InName) const;
 
 	/**
 	 * Creates new copies of components
@@ -462,16 +482,16 @@ public:
 	 * @param	Owner						the object that contains the component currently located at Data
 	 * @param	InstanceGraph				contains the mappings of instanced objects and components to their templates
 	 */
-	void InstanceSubobjectTemplates( void* Data, void const* DefaultData, UStruct* DefaultStruct, UObject* Owner, FObjectInstancingGraph* InstanceGraph );
+	COREUOBJECT_API void InstanceSubobjectTemplates( void* Data, void const* DefaultData, UStruct* DefaultStruct, UObject* Owner, FObjectInstancingGraph* InstanceGraph );
 
 	/** Returns the structure used for inheritance, may be changed by child types */
 	virtual UStruct* GetInheritanceSuper() const {return GetSuperStruct();}
 
 	/** Static wrapper for Link, using a dummy archive */
-	void StaticLink(bool bRelinkExistingProperties = false);
+	COREUOBJECT_API void StaticLink(bool bRelinkExistingProperties = false);
 
 	/** Creates the field/property links and gets structure ready for use at runtime */
-	virtual void Link(FArchive& Ar, bool bRelinkExistingProperties);
+	COREUOBJECT_API virtual void Link(FArchive& Ar, bool bRelinkExistingProperties);
 
 	/**
 	 * Serializes struct properties, does not handle defaults.  See SerializeBinEx for handling defaults.
@@ -500,7 +520,7 @@ public:
 	 *       types with deprecated properties, unless the ArWantBinarySerialization flag is set on the
 	 *       archive to force serialization to occur always.
 	 */
-	virtual void SerializeBin(FStructuredArchive::FSlot Slot, void* Data) const;
+	COREUOBJECT_API virtual void SerializeBin(FStructuredArchive::FSlot Slot, void* Data) const;
 
 	/**
 	 * Serializes the class properties that reside in Data if they differ from the corresponding values in DefaultData
@@ -515,7 +535,7 @@ public:
 	 *       types with deprecated properties, unless the ArWantBinarySerialization flag is set on the
 	 *       archive to force serialization to occur always.
 	 */
-	void SerializeBinEx( FStructuredArchive::FSlot Slot, void* Data, void const* DefaultData, UStruct* DefaultStruct ) const;
+	COREUOBJECT_API void SerializeBinEx( FStructuredArchive::FSlot Slot, void* Data, void const* DefaultData, UStruct* DefaultStruct ) const;
 
 	/** Serializes list of properties, using property tags to handle mismatches */
 	virtual void SerializeTaggedProperties(FArchive& Ar, uint8* Data, UStruct* DefaultsStruct, uint8* Defaults, const UObject* BreakRecursionIfFullyLoad = nullptr) const final 
@@ -524,13 +544,13 @@ public:
 	}
 
 	/** Serializes list of properties, using property tags to handle mismatches */
-	virtual void SerializeTaggedProperties(FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, uint8* Defaults, const UObject* BreakRecursionIfFullyLoad = nullptr) const;
+	COREUOBJECT_API virtual void SerializeTaggedProperties(FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, uint8* Defaults, const UObject* BreakRecursionIfFullyLoad = nullptr) const;
 
 	/**
 	 * Preloads all fields that belong to this struct
 	 * @param Ar Archive used for loading this struct
 	 */
-	virtual void PreloadChildren(FArchive& Ar);
+	COREUOBJECT_API virtual void PreloadChildren(FArchive& Ar);
 
 	/**
 	 * Initialize a struct over uninitialized memory. This may be done by calling the native constructor or individually initializing properties
@@ -539,7 +559,7 @@ public:
 	 * @param	ArrayDim	Number of elements in the array
 	 * @param	Stride		Stride of the array, If this default (0), then we will pull the size from the struct
 	 */
-	virtual void InitializeStruct(void* Dest, int32 ArrayDim = 1) const;
+	COREUOBJECT_API virtual void InitializeStruct(void* Dest, int32 ArrayDim = 1) const;
 	
 	/**
 	 * Destroy a struct in memory. This may be done by calling the native destructor or individually destroying properties
@@ -548,13 +568,13 @@ public:
 	 * @param	ArrayDim	Number of elements in the array
 	 * @param	Stride		Stride of the array. If this default (0), then we will pull the size from the struct
 	 */
-	virtual void DestroyStruct(void* Dest, int32 ArrayDim = 1) const;
+	COREUOBJECT_API virtual void DestroyStruct(void* Dest, int32 ArrayDim = 1) const;
 
 	/** Look up a property by an alternate name if it was not found in the first search, this is overridden for user structs */
 	virtual FProperty* CustomFindProperty(const FName InName) const { return nullptr; };
 
 	/** Serialize an expression to an archive. Returns expression token */
-	virtual EExprToken SerializeExpr(int32& iCode, FArchive& Ar);
+	COREUOBJECT_API virtual EExprToken SerializeExpr(int32& iCode, FArchive& Ar);
 
 	/**
 	 * Returns the struct/ class prefix used for the C++ declaration of this struct/ class.
@@ -596,7 +616,7 @@ public:
 
 	/** Returns true if this struct either is SomeBase, or is a child of SomeBase. This will not crash on null structs */
 #if USTRUCT_FAST_ISCHILDOF_COMPARE_WITH_OUTERWALK || USTRUCT_FAST_ISCHILDOF_IMPL == USTRUCT_ISCHILDOF_OUTERWALK
-	bool IsChildOf( const UStruct* SomeBase ) const;
+	COREUOBJECT_API bool IsChildOf( const UStruct* SomeBase ) const;
 #else
 	bool IsChildOf(const UStruct* SomeBase) const
 	{
@@ -614,16 +634,13 @@ public:
 	 * Sets the super struct pointer and updates hash information as necessary.
 	 * Note that this is not sufficient to actually reparent a struct, it simply sets a pointer.
 	 */
-	virtual void SetSuperStruct(UStruct* NewSuperStruct);
-
-	UE_DEPRECATED(4.23, "Replace with GetAuthoredNameForField or UField::GetAuthoredName")
-	virtual FString PropertyNameToDisplayName(FName InName) const;
+	COREUOBJECT_API virtual void SetSuperStruct(UStruct* NewSuperStruct);
 
 	/** Returns a human readable string for a given field, overridden for user defined structs */
-	virtual FString GetAuthoredNameForField(const UField* Field) const;
+	COREUOBJECT_API virtual FString GetAuthoredNameForField(const UField* Field) const;
 
 	/** Returns a human readable string for a given field, overridden for user defined structs */
-	virtual FString GetAuthoredNameForField(const FField* Field) const;
+	COREUOBJECT_API virtual FString GetAuthoredNameForField(const FField* Field) const;
 
 	/** If true, this class has been cleaned and sanitized (trashed) and should not be used */
 	virtual bool IsStructTrashed() const
@@ -632,14 +649,14 @@ public:
 	}
 
 	/** Destroys all properties owned by this struct */
-	void DestroyChildPropertiesAndResetPropertyLinks();
+	COREUOBJECT_API void DestroyChildPropertiesAndResetPropertyLinks();
 
 #if WITH_EDITORONLY_DATA
 	/** Try and find boolean metadata with the given key. If not found on this class, work up hierarchy looking for it. */
-	bool GetBoolMetaDataHierarchical(const FName& Key) const;
+	COREUOBJECT_API bool GetBoolMetaDataHierarchical(const FName& Key) const;
 
 	/** Try and find string metadata with the given key. If not found on this class, work up hierarchy looking for it. */
-	bool GetStringMetaDataHierarchical(const FName& Key, FString* OutValue = nullptr) const;
+	COREUOBJECT_API bool GetStringMetaDataHierarchical(const FName& Key, FString* OutValue = nullptr) const;
 
 	/**
 	 * Determines if the struct or any of its super structs has any metadata associated with the provided key
@@ -647,7 +664,7 @@ public:
 	 * @param Key The key to lookup in the metadata
 	 * @return pointer to the UStruct that has associated metadata, nullptr if Key is not associated with any UStruct in the hierarchy
 	 */
-	const UStruct* HasMetaDataHierarchical(const FName& Key) const;
+	COREUOBJECT_API const UStruct* HasMetaDataHierarchical(const FName& Key) const;
 
 	/* Returns true if this struct has Asset Registry searchable properties */
 	FORCEINLINE bool HasAssetRegistrySearchableProperties() const
@@ -680,20 +697,20 @@ public:
 	 * Collects UObjects referenced by bytecode
 	 * @param OutReferencedObjects buffer to store the referenced objects in (not cleared by this function)
 	 */
-	void CollectBytecodeReferencedObjects(TArray<UObject*>& OutReferencedObjects);
+	COREUOBJECT_API void CollectBytecodeReferencedObjects(TArray<UObject*>& OutReferencedObjects);
 	/**
 	 * Collects UObjects referenced by properties
 	 * @param OutReferencedObjects buffer to store the referenced objects in (not cleared by this function)
 	 */
-	void CollectPropertyReferencedObjects(TArray<UObject*>& OutReferencedObjects);
+	COREUOBJECT_API void CollectPropertyReferencedObjects(TArray<UObject*>& OutReferencedObjects);
 	/**
 	 * Collects UObjects referenced by bytecode and properties for faster GC access
 	 */
-	void CollectBytecodeAndPropertyReferencedObjects();
+	COREUOBJECT_API void CollectBytecodeAndPropertyReferencedObjects();
 	/**
 	 * Collects UObjects referenced by bytecode and properties for this class and its child fields and their children...
 	 */
-	void CollectBytecodeAndPropertyReferencedObjectsRecursively();
+	COREUOBJECT_API void CollectBytecodeAndPropertyReferencedObjectsRecursively();
 
 protected:
 
@@ -707,14 +724,14 @@ protected:
 	virtual bool ArePropertyGuidsAvailable() const { return false; }
 
 	/** Serializes properties of this struct */
-	void SerializeProperties(FArchive& Ar);
+	COREUOBJECT_API void SerializeProperties(FArchive& Ar);
 
 #if WITH_EDITORONLY_DATA
-	void ConvertUFieldsToFFields();
+	COREUOBJECT_API void ConvertUFieldsToFFields();
 #endif // WITH_EDITORONLY_DATA
 
 	/** Serializes list of properties to a te, using property tags to handle mismatches */
-	void LoadTaggedPropertiesFromText(FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, uint8* Defaults, const UObject* BreakRecursionIfFullyLoad) const;
+	COREUOBJECT_API void LoadTaggedPropertiesFromText(FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, uint8* Defaults, const UObject* BreakRecursionIfFullyLoad) const;
 
 private:
 #if USTRUCT_FAST_ISCHILDOF_IMPL == USTRUCT_ISCHILDOF_STRUCTARRAY
@@ -727,7 +744,7 @@ private:
 	friend class FBlueprintCompileReinstancer;
 #endif
 
-	void SerializeVersionedTaggedProperties(FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, uint8* Defaults, const UObject* BreakRecursionIfFullyLoad) const;
+	COREUOBJECT_API void SerializeVersionedTaggedProperties(FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, uint8* Defaults, const UObject* BreakRecursionIfFullyLoad) const;
 };
 
 /**
@@ -843,8 +860,11 @@ struct TStructOpsTypeTraitsBase2
 		WithNetSharedSerialization     = false,                         // struct has a NetSerialize function that does not require the package map to serialize its state.
 		WithGetPreloadDependencies     = false,                         // struct has a GetPreloadDependencies function to return all objects that will be Preload()ed when the struct is serialized at load time.
 		WithPureVirtual                = false,                         // struct has PURE_VIRTUAL functions and cannot be constructed when CHECK_PUREVIRTUALS is true
+		WithFindInnerPropertyInstance  = false,							// struct has a FindInnerPropertyInstance function that can provide an FProperty and data pointer when given a property FName
 		WithCanEditChange			   = false,							// struct has an editor-only CanEditChange function that can conditionally make child properties read-only in the details panel (same idea as UObject::CanEditChange)
 	};
+
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::Conservative; // struct's Serialize method(s) may serialize object references of these types - default Conservative means unknown and object reference collector archives should serialize this struct 
 };
 
 template<class CPPSTRUCT>
@@ -878,12 +898,13 @@ class UScriptStruct : public UStruct
 {
 public:
 	/** Interface to template to manage dynamic access to C++ struct construction and destruction **/
-	struct COREUOBJECT_API ICppStructOps
+	struct ICppStructOps
 	{
 		/** Filled by implementation classes to report their capabilities */
 		struct FCapabilities
 		{
 			EPropertyFlags ComputedPropertyFlags;
+			EPropertyObjectReferenceType HasSerializerObjectReferences;
 			bool HasNoopConstructor : 1;
 			bool HasZeroConstructor : 1;
 			bool HasDestructor : 1;
@@ -906,6 +927,7 @@ public:
 			bool HasStructuredSerializeFromMismatchedTag : 1;
 			bool HasGetTypeHash : 1;
 			bool IsAbstract : 1;
+			bool HasFindInnerPropertyInstance : 1;
 #if WITH_EDITOR
 			bool HasCanEditChange : 1;
 #endif
@@ -1083,10 +1105,21 @@ public:
 		 */
 		virtual bool ImportTextItem(const TCHAR*& Buffer, void* Data, int32 PortFlags, class UObject* OwnerObject, FOutputDevice* ErrorText) = 0;
 
+		bool HasFindInnerPropertyInstance() const
+		{
+			return GetCapabilities().HasFindInnerPropertyInstance;
+		}
+		virtual bool FindInnerPropertyInstance(FName PropertyName, const void* Data, const FProperty*& OutProp, const void*& OutData) const = 0;
+
 		/** return true if this struct has custom GC code **/
 		bool HasAddStructReferencedObjects() const
 		{
 			return GetCapabilities().HasAddStructReferencedObjects;
+		}
+		/** returns true if the native serialize functions may serialize object references of the given type **/
+		bool HasSerializerObjectReferences(EPropertyObjectReferenceType Type) const
+		{
+			return EnumHasAnyFlags(GetCapabilities().HasSerializerObjectReferences, Type);
 		}
 		/** 
 		 * return a pointer to a function that can add referenced objects
@@ -1167,7 +1200,8 @@ public:
 				(TIsPODType<CPPSTRUCT>::Value ? CPF_IsPlainOldData : CPF_None)
 				| (TIsTriviallyDestructible<CPPSTRUCT>::Value ? CPF_NoDestructor : CPF_None)
 				| (TIsZeroConstructType<CPPSTRUCT>::Value ? CPF_ZeroConstructor : CPF_None)
-				| (TModels<CGetTypeHashable, CPPSTRUCT>::Value ? CPF_HasGetValueTypeHash : CPF_None),
+				| (TModels_V<CGetTypeHashable, CPPSTRUCT> ? CPF_HasGetValueTypeHash : CPF_None),
+				TTraits::WithSerializerObjectReferences,
 				TTraits::WithNoInitConstructor,
 				TTraits::WithZeroConstructor,
 				!(TTraits::WithNoDestructor || TIsPODType<CPPSTRUCT>::Value),
@@ -1188,8 +1222,9 @@ public:
 				TTraits::WithAddStructReferencedObjects,
 				TTraits::WithSerializeFromMismatchedTag,
 				TTraits::WithStructuredSerializeFromMismatchedTag,
-				TModels<CGetTypeHashable, CPPSTRUCT>::Value,
+				TModels_V<CGetTypeHashable, CPPSTRUCT>,
 				TIsAbstract<CPPSTRUCT>::Value,
+				TTraits::WithFindInnerPropertyInstance,
 #if WITH_EDITOR
 				TTraits::WithCanEditChange,
 #endif
@@ -1396,6 +1431,20 @@ public:
 				return false;
 			}
 		}
+		
+		virtual bool FindInnerPropertyInstance(FName PropertyName, const void* Data, const FProperty*& OutProp, const void*& OutData) const override
+		{
+			check(TTraits::WithFindInnerPropertyInstance); // don't call this if we have indicated it is not necessary
+			if constexpr (TStructOpsTypeTraits<CPPSTRUCT>::WithFindInnerPropertyInstance)
+            {
+            	return ((CPPSTRUCT*)Data)->FindInnerPropertyInstance(PropertyName, OutProp, OutData);
+            }
+            else
+            {
+            	return false;
+            }
+		}
+
 		virtual TPointerToAddStructReferencedObjects AddStructReferencedObjects() override
 		{
 			check(TTraits::WithAddStructReferencedObjects); // don't call this if we have indicated it is not necessary
@@ -1448,7 +1497,7 @@ public:
 		{
 			ensure(HasGetTypeHash());
 
-			if constexpr (TModels<CGetTypeHashable, CPPSTRUCT>::Value)
+			if constexpr (TModels_V<CGetTypeHashable, CPPSTRUCT>)
 			{
 				return GetTypeHashHelper(*(const CPPSTRUCT*)Src);
 			}
@@ -1535,14 +1584,16 @@ public:
 	static COREUOBJECT_API void DeferCppStructOps(FTopLevelAssetPath Target, ICppStructOps* InCppStructOps);
 
 	template<class CPPSTRUCT>
-	static typename TEnableIf<!DISABLE_ABSTRACT_CONSTRUCT>::Type DeferCppStructOps(FTopLevelAssetPath Target)
+	static void DeferCppStructOps(FTopLevelAssetPath Target)
 	{
-		DeferCppStructOps(Target, new UScriptStruct::TCppStructOps<CPPSTRUCT>);
-	}
-	template<class CPPSTRUCT>
-	static typename TEnableIf<DISABLE_ABSTRACT_CONSTRUCT>::Type DeferCppStructOps(FTopLevelAssetPath Target)
-	{
-		DeferCppStructOps(Target, nullptr);
+		if constexpr (DISABLE_ABSTRACT_CONSTRUCT)
+		{
+			DeferCppStructOps(Target, nullptr);
+		}
+		else
+		{
+			DeferCppStructOps(Target, new UScriptStruct::TCppStructOps<CPPSTRUCT>);
+		}
 	}
 
 	/** Look for the CppStructOps and hook it up **/
@@ -1706,6 +1757,17 @@ public:
 	 * @param InStructData		The memory location to initialize
 	 */
 	virtual COREUOBJECT_API void InitializeDefaultValue(uint8* InStructData) const;
+	
+	/**
+	 * Provide an FProperty and data pointer when given an FName of a property that this object owns indirectly (ie FInstancedStruct)
+	 * @param PropertyName	Name of the property to retrieve
+	 * @param Data			Pointer to struct to retrieve property from
+	 * @param OutProp		Filled with the found property
+	 * @param OutData		Filled with a pointer to the data containing the property.
+	 *						Not offset to property instance yet - Call ContainerPtrToValuePtr before use.
+	 * @return				whether the property instance was found
+	 */
+	virtual COREUOBJECT_API bool FindInnerPropertyInstance(FName PropertyName, const void* Data, const FProperty*& OutProp, const void*& OutData) const;
 };
 
 /*-----------------------------------------------------------------------------
@@ -1715,9 +1777,9 @@ public:
 //
 // Reflection data for a replicated or Kismet callable function.
 //
-class COREUOBJECT_API UFunction : public UStruct
+class UFunction : public UStruct
 {
-	DECLARE_CASTED_CLASS_INTRINSIC(UFunction, UStruct, 0, TEXT("/Script/CoreUObject"), CASTCLASS_UFunction)
+	DECLARE_CASTED_CLASS_INTRINSIC_WITH_API(UFunction, UStruct, 0, TEXT("/Script/CoreUObject"), CASTCLASS_UFunction, COREUOBJECT_API)
 	DECLARE_WITHIN(UClass)
 public:
 	// Persistent variables.
@@ -1786,31 +1848,31 @@ public:
 	 * @param Stack  - The parameter stack for the function call.
 	 * @param Result - The result of the function.
 	 */
-	void Invoke(UObject* Obj, FFrame& Stack, RESULT_DECL);
+	COREUOBJECT_API void Invoke(UObject* Obj, FFrame& Stack, RESULT_DECL);
 
 	// Constructors.
-	explicit UFunction(const FObjectInitializer& ObjectInitializer, UFunction* InSuperFunction, EFunctionFlags InFunctionFlags = FUNC_None, SIZE_T ParamsSize = 0 );
-	explicit UFunction(UFunction* InSuperFunction, EFunctionFlags InFunctionFlags = FUNC_None, SIZE_T ParamsSize = 0);
+	COREUOBJECT_API explicit UFunction(const FObjectInitializer& ObjectInitializer, UFunction* InSuperFunction, EFunctionFlags InFunctionFlags = FUNC_None, SIZE_T ParamsSize = 0 );
+	COREUOBJECT_API explicit UFunction(UFunction* InSuperFunction, EFunctionFlags InFunctionFlags = FUNC_None, SIZE_T ParamsSize = 0);
 
 	/** Initializes transient members like return value offset */
-	void InitializeDerivedMembers();
+	COREUOBJECT_API void InitializeDerivedMembers();
 
 	// UObject interface.
-	virtual void Serialize( FArchive& Ar ) override;
-	virtual void PostLoad() override;
+	COREUOBJECT_API virtual void Serialize( FArchive& Ar ) override;
+	COREUOBJECT_API virtual void PostLoad() override;
 
 	// UField interface.
-	virtual void Bind() override;
+	COREUOBJECT_API virtual void Bind() override;
 
 	// UStruct interface.
 	virtual UStruct* GetInheritanceSuper() const override { return nullptr;}
-	virtual void Link(FArchive& Ar, bool bRelinkExistingProperties) override;
+	COREUOBJECT_API virtual void Link(FArchive& Ar, bool bRelinkExistingProperties) override;
 
 	/** Returns parent function if there is one, or null */
-	UFunction* GetSuperFunction() const;
+	COREUOBJECT_API UFunction* GetSuperFunction() const;
 
 	/** Returns the return value property if there is one, or null */
-	FProperty* GetReturnProperty() const;
+	COREUOBJECT_API FProperty* GetReturnProperty() const;
 
 	/** Returns the owning UClass* without branching */
 	FORCEINLINE UClass* GetOuterUClassUnchecked() const
@@ -1864,7 +1926,7 @@ public:
 	 *
 	 * @return	true if function signatures are compatible.
 	 */
-	bool IsSignatureCompatibleWith(const UFunction* OtherFunction) const;
+	COREUOBJECT_API bool IsSignatureCompatibleWith(const UFunction* OtherFunction) const;
 
 	/**
 	 * Determines if two functions have an identical signature (note: currently doesn't allow
@@ -1876,33 +1938,33 @@ public:
 	 *
 	 * @return	true if function signatures are compatible.
 	 */
-	bool IsSignatureCompatibleWith(const UFunction* OtherFunction, uint64 IgnoreFlags) const;
+	COREUOBJECT_API bool IsSignatureCompatibleWith(const UFunction* OtherFunction, uint64 IgnoreFlags) const;
 };
 
 //
 // Function definition used by dynamic delegate declarations
 //
-class COREUOBJECT_API UDelegateFunction : public UFunction
+class UDelegateFunction : public UFunction
 {
-	DECLARE_CASTED_CLASS_INTRINSIC(UDelegateFunction, UFunction, 0, TEXT("/Script/CoreUObject"), CASTCLASS_UDelegateFunction)
+	DECLARE_CASTED_CLASS_INTRINSIC_WITH_API(UDelegateFunction, UFunction, 0, TEXT("/Script/CoreUObject"), CASTCLASS_UDelegateFunction, COREUOBJECT_API)
 	DECLARE_WITHIN(UObject)
 public:
-	explicit UDelegateFunction(const FObjectInitializer& ObjectInitializer, UFunction* InSuperFunction, EFunctionFlags InFunctionFlags = FUNC_None, SIZE_T ParamsSize = 0);
-	explicit UDelegateFunction(UFunction* InSuperFunction, EFunctionFlags InFunctionFlags = FUNC_None, SIZE_T ParamsSize = 0);
+	COREUOBJECT_API explicit UDelegateFunction(const FObjectInitializer& ObjectInitializer, UFunction* InSuperFunction, EFunctionFlags InFunctionFlags = FUNC_None, SIZE_T ParamsSize = 0);
+	COREUOBJECT_API explicit UDelegateFunction(UFunction* InSuperFunction, EFunctionFlags InFunctionFlags = FUNC_None, SIZE_T ParamsSize = 0);
 };
 
 //
 // Function definition used by sparse dynamic delegate declarations
 //
-class COREUOBJECT_API USparseDelegateFunction : public UDelegateFunction
+class USparseDelegateFunction : public UDelegateFunction
 {
-	DECLARE_CASTED_CLASS_INTRINSIC(USparseDelegateFunction, UDelegateFunction, 0, TEXT("/Script/CoreUObject"), CASTCLASS_USparseDelegateFunction)
+	DECLARE_CASTED_CLASS_INTRINSIC_WITH_API(USparseDelegateFunction, UDelegateFunction, 0, TEXT("/Script/CoreUObject"), CASTCLASS_USparseDelegateFunction, COREUOBJECT_API)
 	DECLARE_WITHIN(UObject)
 public:
-	explicit USparseDelegateFunction(const FObjectInitializer& ObjectInitializer, UFunction* InSuperFunction, EFunctionFlags InFunctionFlags = FUNC_None, SIZE_T ParamsSize = 0);
-	explicit USparseDelegateFunction(UFunction* InSuperFunction, EFunctionFlags InFunctionFlags = FUNC_None, SIZE_T ParamsSize = 0);
+	COREUOBJECT_API explicit USparseDelegateFunction(const FObjectInitializer& ObjectInitializer, UFunction* InSuperFunction, EFunctionFlags InFunctionFlags = FUNC_None, SIZE_T ParamsSize = 0);
+	COREUOBJECT_API explicit USparseDelegateFunction(UFunction* InSuperFunction, EFunctionFlags InFunctionFlags = FUNC_None, SIZE_T ParamsSize = 0);
 
-	virtual void Serialize(FArchive& Ar) override;
+	COREUOBJECT_API virtual void Serialize(FArchive& Ar) override;
 
 	FName OwningClassName;
 	FName DelegateName;
@@ -1996,6 +2058,9 @@ public:
 
 	/** Returns the short name matching the enum Value, returns empty string if invalid */
 	COREUOBJECT_API FString GetNameStringByValue(int64 InValue) const;
+
+	/** If the enumeration is declared as UENUM(Flags), returns a string of the form A | B | C representing set bits A, B, and C. If it is not a bitfield, the result is the same as calling GetNameStringByValue*/
+	COREUOBJECT_API FString GetValueOrBitfieldAsString(int64 InValue) const;
 
 	/** Looks for a name with a given value and returns true and writes the name to Out if one was found */
 	COREUOBJECT_API bool FindNameStringByValue(FString& Out, int64 InValue) const;
@@ -2259,6 +2324,25 @@ public:
 		out_StringValue = GetValueAsString( EnumPath, EnumeratorValue );
 	}
 
+	template <typename T>
+	FORCEINLINE static FString GetValueOrBitfieldAsString(const TCHAR* EnumPath, const T EnumeratorValue)
+	{
+		// For the C++ enum.
+		static_assert(TIsEnum<T>::Value, "Should only call this with enum types");
+		return GetValueOrBitfieldAsString_Internal(EnumPath, (int64)EnumeratorValue);
+	}
+
+	template <typename T>
+	FORCEINLINE static FString GetValueOrBitfieldAsString(const TCHAR* EnumPath, const TEnumAsByte<T> EnumeratorValue)
+	{
+		return GetValueOrBitfieldAsString_Internal(EnumPath, (int64)EnumeratorValue.GetValue());
+	}
+
+	template< class T >
+	FORCEINLINE static void GetValueOrBitfieldAsString(const TCHAR* EnumPath, const T EnumeratorValue, FString& out_StringValue)
+	{
+		out_StringValue = GetValueOrBitfieldAsString( EnumPath, EnumeratorValue );
+	}
 	/**
 	 * @param EnumPath         Full enum path.
 	 * @param EnumeratorValue  Enumerator Value.
@@ -2337,6 +2421,64 @@ public:
 		out_StringValue = GetValueAsString(EnumeratorValue );
 	}
 
+	/**
+	 * @param EnumeratorValue  Enumerator Value.
+	 *
+	 * @return a string representing the combination of set bits in the bitfield or, if not a bitfield/flags enumeration, the string associated with the enumerator for the specified enum value for the enum specified by the template type.
+	 */
+	template<
+		typename EnumType
+		UE_REQUIRES(TIsEnum<EnumType>::Value)
+	>
+	FORCEINLINE static FString GetValueOrBitfieldAsString(const EnumType EnumeratorValue)
+	{
+		// For the C++ enum.
+		static_assert(TIsEnum<EnumType>::Value, "Should only call this with enum types");
+		UEnum* EnumClass = StaticEnum<EnumType>();
+		check(EnumClass != nullptr);
+		return EnumClass->GetValueOrBitfieldAsString((int64)EnumeratorValue);
+	}
+
+	// TEnumAsByte produces a warning if you use it with EnumClass, so this UE_REQUIRES keeps this overload
+	// from being matched in that case
+	template<
+		typename EnumType
+		UE_REQUIRES(!TIsEnumClass<EnumType>::Value)
+	>
+	FORCEINLINE static FString GetValueOrBitfieldAsString(const TEnumAsByte<EnumType> EnumeratorValue)
+	{
+		return GetValueOrBitfieldAsString(EnumeratorValue.GetValue());
+	}
+
+	template<
+		typename EnumType,
+		typename IntegralType
+		UE_REQUIRES(TIsEnum<EnumType>::Value && std::is_integral_v<IntegralType>)
+	>
+	FORCEINLINE static FString GetValueOrBitfieldAsString(const IntegralType EnumeratorValue)
+	{
+		// For the C++ enum.
+		static_assert(TIsEnum<EnumType>::Value, "Should only call this with enum types");
+		UEnum* EnumClass = StaticEnum<EnumType>();
+		check(EnumClass != nullptr);
+		return EnumClass->GetValueOrBitfieldAsString((int64)EnumeratorValue);
+	}
+
+	template<typename EnumType>
+	FORCEINLINE static void GetValueOrBitfieldAsString(const EnumType EnumeratorValue, FString& out_StringValue)
+	{
+		out_StringValue = GetValueOrBitfieldAsString(EnumeratorValue);
+	}
+
+	template<
+		typename EnumType,
+		typename IntegralType
+		UE_REQUIRES(TIsEnum<EnumType>::Value && std::is_integral_v<IntegralType>)
+	>
+	FORCEINLINE static void GetValueOrBitfieldAsString(const IntegralType EnumeratorValue, FString& out_StringValue)
+	{
+		out_StringValue = GetValueOrBitfieldAsString<EnumType>(EnumeratorValue);
+	}
 
 	/**
 	 * @param EnumeratorValue  Enumerator Value.
@@ -2418,6 +2560,13 @@ private:
 		UEnum* EnumClass = FindObject<UEnum>( nullptr, EnumPath );
 		UE_CLOG( !EnumClass, LogClass, Fatal, TEXT("Couldn't find enum '%s'"), EnumPath );
 		return EnumClass->GetNameStringByValue(EnumeratorValue);
+	}
+
+	FORCEINLINE static FString GetValueOrBitfieldAsString_Internal(const TCHAR* EnumPath, const int64 EnumeratorValue)
+	{
+		UEnum* EnumClass = FindObject<UEnum>(nullptr, EnumPath);
+		UE_CLOG(!EnumClass, LogClass, Fatal, TEXT("Couldn't find enum '%s'"), EnumPath);
+		return EnumClass->GetValueOrBitfieldAsString(EnumeratorValue);
 	}
 
 	FORCEINLINE static FText GetDisplayValueAsText_Internal( const TCHAR* EnumPath, const int64 EnumeratorValue )
@@ -2507,10 +2656,10 @@ private:
 
 
 /** information about an interface a class implements */
-struct COREUOBJECT_API FImplementedInterface
+struct FImplementedInterface
 {
 	/** the interface class */
-	UClass* Class;
+	TObjectPtr<UClass> Class;
 	/** the pointer offset of the interface's vtable */
 	int32 PointerOffset;
 	/** whether or not this interface has been implemented via K2 */
@@ -2574,9 +2723,9 @@ enum class EGetSparseClassDataMethod : uint8
 /**
  * An object class.
  */
-class COREUOBJECT_API UClass : public UStruct
+class UClass : public UStruct
 {
-	DECLARE_CASTED_CLASS_INTRINSIC_NO_CTOR(UClass, UStruct, 0, TEXT("/Script/CoreUObject"), CASTCLASS_UClass, NO_API)
+	DECLARE_CASTED_CLASS_INTRINSIC_NO_CTOR(UClass, UStruct, 0, TEXT("/Script/CoreUObject"), CASTCLASS_UClass, COREUOBJECT_API)
 	DECLARE_WITHIN_UPACKAGE()
 
 public:
@@ -2610,17 +2759,17 @@ public:
 	EClassCastFlags ClassCastFlags;
 
 	/** The required type for the outer of instances of this class */
-	UClass* ClassWithin;
+	TObjectPtr<UClass> ClassWithin;
 
 #if WITH_EDITORONLY_DATA
 	/** This is the blueprint that caused the generation of this class, or null if it is a native compiled-in class */
-	UObject* ClassGeneratedBy;
+	TObjectPtr<UObject> ClassGeneratedBy;
 
 	/** Linked list of properties to be destroyed when this class is destroyed that couldn't be destroyed in PurgeClass **/
 	FField* PropertiesPendingDestruction;
 
 	/** Destroys properties that couldn't be destroyed in PurgeClass */
-	void DestroyPropertiesPendingDestruction();
+	COREUOBJECT_API void DestroyPropertiesPendingDestruction();
 #endif
 
 #if WITH_EDITOR
@@ -2643,16 +2792,16 @@ public:
 
 #if WITH_EDITOR
 	// Editor only properties
-	void GetHideFunctions(TArray<FString>& OutHideFunctions) const;
-	bool IsFunctionHidden(const TCHAR* InFunction) const;
-	void GetAutoExpandCategories(TArray<FString>& OutAutoExpandCategories) const;
-	bool IsAutoExpandCategory(const TCHAR* InCategory) const;
-	void GetPrioritizeCategories(TArray<FString>& OutPrioritizedCategories) const;
-	bool IsPrioritizeCategory(const TCHAR* InCategory) const;
-	void GetAutoCollapseCategories(TArray<FString>& OutAutoCollapseCategories) const;
-	bool IsAutoCollapseCategory(const TCHAR* InCategory) const;
-	void GetClassGroupNames(TArray<FString>& OutClassGroupNames) const;
-	bool IsClassGroupName(const TCHAR* InGroupName) const;
+	COREUOBJECT_API void GetHideFunctions(TArray<FString>& OutHideFunctions) const;
+	COREUOBJECT_API bool IsFunctionHidden(const TCHAR* InFunction) const;
+	COREUOBJECT_API void GetAutoExpandCategories(TArray<FString>& OutAutoExpandCategories) const;
+	COREUOBJECT_API bool IsAutoExpandCategory(const TCHAR* InCategory) const;
+	COREUOBJECT_API void GetPrioritizeCategories(TArray<FString>& OutPrioritizedCategories) const;
+	COREUOBJECT_API bool IsPrioritizeCategory(const TCHAR* InCategory) const;
+	COREUOBJECT_API void GetAutoCollapseCategories(TArray<FString>& OutAutoCollapseCategories) const;
+	COREUOBJECT_API bool IsAutoCollapseCategory(const TCHAR* InCategory) const;
+	COREUOBJECT_API void GetClassGroupNames(TArray<FString>& OutClassGroupNames) const;
+	COREUOBJECT_API bool IsClassGroupName(const TCHAR* InGroupName) const;
 #endif
 	/**
 	 * Calls AddReferencedObjects static method on the specified object.
@@ -2693,21 +2842,21 @@ public:
 #endif
 
 	/** The class default object; used for delta serialization and object initialization */
-	UObject* ClassDefaultObject;
+	TObjectPtr<UObject> ClassDefaultObject;
 
 protected:
 	/** This is where we store the data that is only changed per class instead of per instance */
 	void* SparseClassData;
 
 	/** The struct used to store sparse class data. */
-	UScriptStruct* SparseClassDataStruct;
+	TObjectPtr<UScriptStruct> SparseClassDataStruct;
 
 public:
 	/**
 	 * Returns a pointer to the sidecar data structure, based on the EGetSparseClassDataMethod.
 	 * @note It is only safe to mutate this data when using "CreateIfNull", as others may return archetype/default data; consider GetOrCreateSparseClassData for this use-case.
 	 */
-	const void* GetSparseClassData(const EGetSparseClassDataMethod GetMethod);
+	COREUOBJECT_API const void* GetSparseClassData(const EGetSparseClassDataMethod GetMethod);
 
 	/**
 	 * Returns a pointer to the sidecar data structure. This function will create an instance of the data structure if one has been specified and it has not yet been created.
@@ -2717,31 +2866,31 @@ public:
 	/**
 	 * Returns a pointer to the type of the sidecar data structure if one is specified.
 	 */
-	UScriptStruct* GetSparseClassDataStruct() const;
+	COREUOBJECT_API UScriptStruct* GetSparseClassDataStruct() const;
 
-	void SetSparseClassDataStruct(UScriptStruct* InSparseClassDataStruct);
+	COREUOBJECT_API void SetSparseClassDataStruct(UScriptStruct* InSparseClassDataStruct);
 
 	/** 
 	 * Clears the sparse class data struct for this and all child classes that directly reference it as a super-struct 
 	 * This will rename the current sparse class data struct aside into the transient package
 	 */
-	void ClearSparseClassDataStruct(bool bInRecomplingOnLoad);
+	COREUOBJECT_API void ClearSparseClassDataStruct(bool bInRecomplingOnLoad);
 
 	/** Assemble reference token streams for all classes if they haven't had it assembled already */
-	static void AssembleReferenceTokenStreams();
+	static COREUOBJECT_API void AssembleReferenceTokenStreams();
 
 #if WITH_EDITOR
 	void GenerateFunctionList(TArray<FName>& OutArray) const 
 	{ 
-		FReadScopeLock ScopeLock(FuncMapLock);
+		FUClassFuncScopeReadLock ScopeLock(FuncMapLock);
 		FuncMap.GenerateKeyArray(OutArray); 
 	}
 #endif // WITH_EDITOR
 
 protected:
-	void* CreateSparseClassData();
+	COREUOBJECT_API void* CreateSparseClassData();
 
-	void CleanupSparseClassData();
+	COREUOBJECT_API void CleanupSparseClassData();
 
 private:
 #if WITH_EDITOR
@@ -2750,16 +2899,16 @@ private:
 #endif
 
 	/** Map of all functions by name contained in this class */
-	TMap<FName, UFunction*> FuncMap;
+	TMap<FName, TObjectPtr<UFunction>> FuncMap;
 
 	/** Scope lock to avoid the FuncMap being read and written to simultaneously on multiple threads. */
-	mutable FRWLock FuncMapLock;
+	mutable FUClassFuncLock FuncMapLock;
 
-	/** A cache of all functions by name that exist in a parent (superclass or interface) context */
-	mutable TMap<FName, UFunction*> SuperFuncMap;
+	/** A cache of all functions by name that exist in this class or a parent (superclass or interface) context */
+	mutable TMap<FName, UFunction*> AllFunctionsCache;
 
 	/** Scope lock to avoid the SuperFuncMap being read and written to simultaneously on multiple threads. */
-	mutable FRWLock SuperFuncMapLock;
+	mutable FUClassFuncLock AllFunctionsCacheLock;
 
 public:
 	/**
@@ -2768,17 +2917,17 @@ public:
 	 */
 	TArray<FImplementedInterface> Interfaces;
 
-	/** Reference token stream used by realtime garbage collector, finalized in AssembleReferenceTokenStream */
-	UE::GC::FTokenStreamOwner ReferenceTokens;
+	/** GC schema, finalized in AssembleReferenceTokenStream */
+	UE::GC::FSchemaOwner ReferenceSchema;
 
 	/** This class's native functions. */
 	TArray<FNativeFunctionLookup> NativeFunctionLookupTable;
 
 public:
 	// Constructors
-	UClass(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
-	explicit UClass(const FObjectInitializer& ObjectInitializer, UClass* InSuperClass);
-	UClass( EStaticConstructor, FName InName, uint32 InSize, uint32 InAlignment, EClassFlags InClassFlags, EClassCastFlags InClassCastFlags,
+	COREUOBJECT_API UClass(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+	COREUOBJECT_API explicit UClass(const FObjectInitializer& ObjectInitializer, UClass* InSuperClass);
+	COREUOBJECT_API UClass( EStaticConstructor, FName InName, uint32 InSize, uint32 InAlignment, EClassFlags InClassFlags, EClassCastFlags InClassCastFlags,
 		const TCHAR* InClassConfigName, EObjectFlags InFlags, ClassConstructorType InClassConstructor,
 		ClassVTableHelperCtorCallerType InClassVTableHelperCtorCaller,
 		FUObjectCppClassStaticFunctions&& InCppClassStaticFunctions);
@@ -2794,7 +2943,7 @@ public:
 	 * @param	TClass_Super_StaticClass		Static class of the super class
 	 * @param	TClass_WithinClass_StaticClass	Static class of the WithinClass
 	 */
-	bool HotReloadPrivateStaticClass(
+	COREUOBJECT_API bool HotReloadPrivateStaticClass(
 		uint32			InSize,
 		EClassFlags		InClassFlags,
 		EClassCastFlags	InClassCastFlags,
@@ -2816,7 +2965,7 @@ public:
 	*											because dispatch is shared, so the C++ remap table does not work in this case, and this should be false
 	* @return	true if the function was found and replaced, false if it was not
 	*/
-	bool ReplaceNativeFunction(FName InName, FNativeFuncPtr InPointer, bool bAddToFunctionRemapTable);
+	COREUOBJECT_API bool ReplaceNativeFunction(FName InName, FNativeFuncPtr InPointer, bool bAddToFunctionRemapTable);
 #endif
 
 	/**
@@ -2824,7 +2973,7 @@ public:
 	 *
 	 * @return The version of this class that references should be stored to
 	 */
-	virtual UClass* GetAuthoritativeClass();
+	COREUOBJECT_API virtual UClass* GetAuthoritativeClass();
 	const UClass* GetAuthoritativeClass() const { return const_cast<UClass*>(this)->GetAuthoritativeClass(); }
 
 	/**
@@ -2832,7 +2981,7 @@ public:
 	 * @param	InName							name of the function
 	 * @param	InPointer						pointer to the function
 	 */
-	void AddNativeFunction(const ANSICHAR* InName, FNativeFuncPtr InPointer);
+	COREUOBJECT_API void AddNativeFunction(const ANSICHAR* InName, FNativeFuncPtr InPointer);
 
 	/**
 	 * Add a native function to the internal native function table, but with a unicode name. Used when generating code from blueprints, 
@@ -2840,59 +2989,73 @@ public:
 	 * @param	InName							name of the function
 	 * @param	InPointer						pointer to the function
 	 */
-	void AddNativeFunction(const WIDECHAR* InName, FNativeFuncPtr InPointer);
+	COREUOBJECT_API void AddNativeFunction(const WIDECHAR* InName, FNativeFuncPtr InPointer);
 
 	/** Add a function to the function map */
 	void AddFunctionToFunctionMap(UFunction* Function, FName FuncName)
 	{
-		FWriteScopeLock ScopeLock(FuncMapLock);
-		FuncMap.Add(FuncName, Function);
+		{
+			FUClassFuncScopeWriteLock ScopeLock(FuncMapLock);
+			FuncMap.Add(FuncName, Function);
+		}
+		{
+			// Remove from the function cache if it exists
+			FUClassFuncScopeWriteLock ScopeLock(AllFunctionsCacheLock);
+			AllFunctionsCache.Remove(FuncName);
+		}
 	}
 
-	void CreateLinkAndAddChildFunctionsToMap(const FClassFunctionLinkInfo* Functions, uint32 NumFunctions);
+	COREUOBJECT_API void CreateLinkAndAddChildFunctionsToMap(const FClassFunctionLinkInfo* Functions, uint32 NumFunctions);
 
 	/** Remove a function from the function map */
 	void RemoveFunctionFromFunctionMap(UFunction* Function)
 	{
-		FWriteScopeLock ScopeLock(FuncMapLock);
-		FuncMap.Remove(Function->GetFName());
+		{
+			FUClassFuncScopeWriteLock ScopeLock(FuncMapLock);
+			FuncMap.Remove(Function->GetFName());
+		}
+		{
+			// Remove from the function cache if it exists
+			FUClassFuncScopeWriteLock ScopeLock(AllFunctionsCacheLock);
+			AllFunctionsCache.Remove(Function->GetFName());
+		}
 	}
 
 	/** Clears the function name caches, in case things have changed */
-	void ClearFunctionMapsCaches();
+	COREUOBJECT_API void ClearFunctionMapsCaches();
 
 	/** Looks for a given function name */
-	UFunction* FindFunctionByName(FName InName, EIncludeSuperFlag::Type IncludeSuper = EIncludeSuperFlag::IncludeSuper) const;
+	COREUOBJECT_API UFunction* FindFunctionByName(FName InName, EIncludeSuperFlag::Type IncludeSuper = EIncludeSuperFlag::IncludeSuper) const;
 
 	// UObject interface.
-	virtual void Serialize(FArchive& Ar) override;
-	virtual void PostLoad() override;
-	virtual void FinishDestroy() override;
-	virtual void DeferredRegister(UClass *UClassStaticClass,const TCHAR* PackageName,const TCHAR* InName) override;
-	virtual bool Rename(const TCHAR* NewName = nullptr, UObject* NewOuter = nullptr, ERenameFlags Flags = REN_None) override;
-	virtual void TagSubobjects(EObjectFlags NewFlags) override;
-	virtual void PostInitProperties() override;
-	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
-	virtual FRestoreForUObjectOverwrite* GetRestoreForUObjectOverwrite() override;
-	virtual FString GetDesc() override;
-	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
+	COREUOBJECT_API virtual void Serialize(FArchive& Ar) override;
+	COREUOBJECT_API virtual void PostLoad() override;
+	COREUOBJECT_API virtual void FinishDestroy() override;
+	COREUOBJECT_API virtual void DeferredRegister(UClass *UClassStaticClass,const TCHAR* PackageName,const TCHAR* InName) override;
+	COREUOBJECT_API virtual bool Rename(const TCHAR* NewName = nullptr, UObject* NewOuter = nullptr, ERenameFlags Flags = REN_None) override;
+	COREUOBJECT_API virtual void TagSubobjects(EObjectFlags NewFlags) override;
+	COREUOBJECT_API virtual void PostInitProperties() override;
+	static COREUOBJECT_API void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
+	COREUOBJECT_API virtual FRestoreForUObjectOverwrite* GetRestoreForUObjectOverwrite() override;
+	COREUOBJECT_API virtual FString GetDesc() override;
+	COREUOBJECT_API virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
 #if WITH_EDITOR
-	virtual void PostLoadAssetRegistryTags(const FAssetData& InAssetData, TArray<FAssetRegistryTag>& OutTagsAndValuesToUpdate) const;
+	COREUOBJECT_API virtual void PostLoadAssetRegistryTags(const FAssetData& InAssetData, TArray<FAssetRegistryTag>& OutTagsAndValuesToUpdate) const;
 #endif // WITH_EDITOR
 	virtual bool IsAsset() const override { return false; }	
 	virtual bool IsNameStableForNetworking() const override { return true; } // For now, assume all classes have stable net names
-	virtual void GetPreloadDependencies(TArray<UObject*>& OutDeps) override;
+	COREUOBJECT_API virtual void GetPreloadDependencies(TArray<UObject*>& OutDeps) override;
 	// End of UObject interface.
 
 	// UField interface.
-	virtual void Bind() override;
-	virtual const TCHAR* GetPrefixCPP() const override;
+	COREUOBJECT_API virtual void Bind() override;
+	COREUOBJECT_API virtual const TCHAR* GetPrefixCPP() const override;
 	// End of UField interface.
 
 	// UStruct interface.
-	virtual void Link(FArchive& Ar, bool bRelinkExistingProperties) override;
-	virtual void SetSuperStruct(UStruct* NewSuperStruct) override;
-	virtual bool IsStructTrashed() const override;
+	COREUOBJECT_API virtual void Link(FArchive& Ar, bool bRelinkExistingProperties) override;
+	COREUOBJECT_API virtual void SetSuperStruct(UStruct* NewSuperStruct) override;
+	COREUOBJECT_API virtual bool IsStructTrashed() const override;
 	// End of UStruct interface.
 
 	/**
@@ -2911,7 +3074,7 @@ public:
 	 * @param InShortNameOrPathName Class name
 	 * @return Pointer to a type object if successful, nullptr otherwise
 	 */
-	static UField* TryFindTypeSlow(UClass* TypeClass, const FString& InPathNameOrShortName, EFindFirstObjectOptions InOptions = EFindFirstObjectOptions::None);
+	static COREUOBJECT_API UField* TryFindTypeSlow(UClass* TypeClass, const FString& InPathNameOrShortName, EFindFirstObjectOptions InOptions = EFindFirstObjectOptions::None);
 
 	/**
 	 * Utility function that tries to find a type (class/struct/enum) given a path name or a short name however it will throw a warning (with a callstack) if it's the latter.
@@ -2935,7 +3098,7 @@ public:
 	 * @param InShortNameOrPathName Class name
 	 * @return Pointer to a type object if successful, nullptr otherwise
 	 */
-	static UField* TryFindTypeSlowSafe(UClass* TypeClass, const FString& InPathNameOrShortName, EFindFirstObjectOptions InOptions = EFindFirstObjectOptions::None);
+	static COREUOBJECT_API UField* TryFindTypeSlowSafe(UClass* TypeClass, const FString& InPathNameOrShortName, EFindFirstObjectOptions InOptions = EFindFirstObjectOptions::None);
 
 	/**
 	 * Utility function that tries to find a type (class/struct/enum) given a path name or a short name however it will throw a warning (with a callstack) if it's the latter.
@@ -2960,7 +3123,7 @@ public:
 	 * @param AmbiguousClassMessage Additional message to log when class name is ambiguous (e.g. current operation) 
 	 * @return Class path name if successful. Empty FTopLevelAssetPath otherwise.
 	 */
-	static FTopLevelAssetPath TryConvertShortTypeNameToPathName(UClass* TypeClass, const FString& InShortTypeName, ELogVerbosity::Type AmbiguousMessageVerbosity = ELogVerbosity::NoLogging, const TCHAR* AmbiguousClassMessage = nullptr);
+	static COREUOBJECT_API FTopLevelAssetPath TryConvertShortTypeNameToPathName(UClass* TypeClass, const FString& InShortTypeName, ELogVerbosity::Type AmbiguousMessageVerbosity = ELogVerbosity::NoLogging, const TCHAR* AmbiguousClassMessage = nullptr);
 
 	/**
 	 * Tries to convert short class name to class path name. This will only work if the class exists in memory
@@ -2976,20 +3139,25 @@ public:
 	}
 
 	/**
-	 * Tries to fix an export path containing short class name. Will not modify the input InOutExportPathToFix if a fixup
-	 * was not necessary or unsuccessful
+	 * Tries to fix an export path containing short class name. Will not modify the input InOutExportPathToFix if a
+	 * fixup was not necessary. Optionally modifies it if a fixup is necessary but unsuccessful.
 	 * @param InOutExportPathToFix Export path (Class'/Path/To.Object')
 	 * @param AmbiguousMessageVerbosity Verbosity with which to log a message if class name is ambiguous
 	 * @param AmbiguousClassMessage Additional message to log when class name is ambiguous (e.g. current operation)
-	 * @return True if the short path was successfully fixed. False if the provided export path did not contain short class name or the short path could not be fixed.
+	 * @param bClearOnError If the fixup is necessary but unsuccessful, if bClearOnError, clear the value and return
+	 *        true, otherwise leave the value unchanged and return false.
+	 * @return True if the short path was successfully fixed. False if the provided export path did not contain short
+	 *         class name or the short path could not be fixed.
 	 */
-	static bool TryFixShortClassNameExportPath(FString& InOutExportPathToFix, ELogVerbosity::Type AmbiguousMessageVerbosity = ELogVerbosity::NoLogging, const TCHAR* AmbiguousClassMessage = nullptr);
+	static COREUOBJECT_API bool TryFixShortClassNameExportPath(FString& InOutExportPathToFix,
+		ELogVerbosity::Type AmbiguousMessageVerbosity = ELogVerbosity::NoLogging,
+		const TCHAR* AmbiguousClassMessage = nullptr, bool bClearOnError = false);
 
 	/**
 	 * Returns the ObjectName portion of a ClassPath name: "/Path/To.Object" is converted to "Object". 
 	 * Returns the full string if it is already a ShortTypeName.
 	 */
-	static FString ConvertPathNameToShortTypeName(FStringView InClassPathOrShortTypeName);
+	static COREUOBJECT_API FString ConvertPathNameToShortTypeName(FStringView InClassPathOrShortTypeName);
 
 	/**
 	 * Takes a FullName (from e.g. AssetData.GetFullName or UObject.GetFullName) in either ShortTypeFullName or PathFullName form
@@ -2997,13 +3165,13 @@ public:
 	 * PathFullName: "/ClassPath/ClassPackage.ClassObjectName /PackagePath/PackageShortName.ObjectName:SubObjectName"
 	 * Converts it to ShortTypeFullName if not already in that format and returns it
 	 */
-	static FString ConvertFullNameToShortTypeFullName(FStringView InFullName);
+	static COREUOBJECT_API FString ConvertFullNameToShortTypeFullName(FStringView InFullName);
 
 	/**
 	 * Returns whether the given stringview is in ShortTypeName form: No directory separators "/" or object separators ".", SUBOBJECT_DELIMITER
 	 * Returns true for empty string.
 	 */
-	static bool IsShortTypeName(FStringView ClassPathOrShortTypeName);
+	static COREUOBJECT_API bool IsShortTypeName(FStringView ClassPathOrShortTypeName);
 
 #if WITH_EDITOR
 	/** Provides access to C++ type info. */
@@ -3030,7 +3198,7 @@ public:
 	 *
 	 * @return	name of the class specific ini file
 	 */
-	const FString GetConfigName() const;
+	COREUOBJECT_API const FString GetConfigName() const;
 
 	/** Returns parent class, the parent of a Class is always another class */
 	UClass* GetSuperClass() const
@@ -3039,7 +3207,7 @@ public:
 	}
 
 	/** Feedback context for default property import **/
-	static class FFeedbackContext& GetDefaultPropertiesFeedbackContext();
+	static COREUOBJECT_API class FFeedbackContext& GetDefaultPropertiesFeedbackContext();
 
 	/** Returns amount of memory used by default object */
 	int32 GetDefaultsCount()
@@ -3098,7 +3266,7 @@ public:
 	 * Get the name of the CDO for the this class
 	 * @return The name of the CDO
 	 */
-	FName GetDefaultObjectName() const;
+	COREUOBJECT_API FName GetDefaultObjectName() const;
 
 	/** Returns memory used to store temporary data on an instance, used by blueprints */
 	virtual uint8* GetPersistentUberGraphFrame(UObject* Obj, UFunction* FuncToCheck) const
@@ -3129,7 +3297,7 @@ public:
 	}
 
 	/** Searches for the default instanced object (often a component) by name **/
-	UObject* GetDefaultSubobjectByName(FName ToFind);
+	COREUOBJECT_API UObject* GetDefaultSubobjectByName(FName ToFind);
 
 	/** Adds a new default instance map item **/
 	void AddDefaultSubobject(UObject* NewSubobject, const UClass* BaseClass)
@@ -3145,7 +3313,7 @@ public:
 	 *
 	 * @param OutDefaultSubobjects An array to be filled with default subobjects.
 	 */
-	void GetDefaultObjectSubobjects(TArray<UObject*>& OutDefaultSubobjects);
+	COREUOBJECT_API void GetDefaultObjectSubobjects(TArray<UObject*>& OutDefaultSubobjects);
 
 	/**
 	 * Used to safely check whether the passed in flag is set.
@@ -3198,7 +3366,7 @@ public:
 		return (ClassCastFlags&FlagsToCheck) == FlagsToCheck;
 	}
 
-	FString GetDescription() const;
+	COREUOBJECT_API FString GetDescription() const;
 
 	/**
 	 * Assembles the token stream for realtime garbage collection by combining the per class only
@@ -3206,20 +3374,20 @@ public:
 	 * work is avoided by using an object flag.
 	 * @param bForce Assemble the stream even if it has been already assembled (deletes the old one)
 	 */
-	void AssembleReferenceTokenStream(bool bForce = false);
+	COREUOBJECT_API void AssembleReferenceTokenStream(bool bForce = false);
 
 	/** 
 	 * This will return whether or not this class implements the passed in class / interface 
 	 *
 	 * @param SomeClass - the interface to check and see if this class implements it
 	 */
-	bool ImplementsInterface(const class UClass* SomeInterface) const;
+	COREUOBJECT_API bool ImplementsInterface(const class UClass* SomeInterface) const;
 
 	/** serializes the passed in object as this class's default object using the given archive slot
 	 * @param Object the object to serialize as default
 	 * @param Slot the structured archive slot to serialize from
 	 */
-	virtual void SerializeDefaultObject(UObject* Object, FStructuredArchive::FSlot Slot);
+	COREUOBJECT_API virtual void SerializeDefaultObject(UObject* Object, FStructuredArchive::FSlot Slot);
 
 	/** serializes the passed in object as this class's default object using the given archive
 	 * @param Object the object to serialize as default
@@ -3233,7 +3401,7 @@ public:
 	/** serializes the associated sparse class data for the passed in object using the given archive slot. This should only be called if the class has an associated sparse data structure.
 	 * @param Slot the structured archive slot to serialize from
 	 */
-	void SerializeSparseClassData(FStructuredArchive::FSlot Slot);
+	COREUOBJECT_API void SerializeSparseClassData(FStructuredArchive::FSlot Slot);
 
 	/** Wraps the PostLoad() call for the class default object.
 	 * @param Object the default object to call PostLoad() on
@@ -3246,7 +3414,7 @@ public:
 	 *
 	 * In editor, properties are not freed until DestroyPropertiesPendingDestruction is called.
 	 */
-	virtual void PurgeClass(bool bRecompilingOnLoad);
+	COREUOBJECT_API virtual void PurgeClass(bool bRecompilingOnLoad);
 
 	/**
 	 * Finds the common base class that parents the two classes passed in.
@@ -3255,7 +3423,7 @@ public:
 	 * @param InClassB		the second class to find the common base for
 	 * @return				the common base class or NULL
 	 */
-	static UClass* FindCommonBase(UClass* InClassA, UClass* InClassB);
+	static COREUOBJECT_API UClass* FindCommonBase(UClass* InClassA, UClass* InClassB);
 
 	/**
 	 * Finds the common base class that parents the array of classes passed in.
@@ -3263,7 +3431,7 @@ public:
 	 * @param InClasses		the array of classes to find the common base for
 	 * @return				the common base class or NULL
 	 */
-	static UClass* FindCommonBase(const TArray<UClass*>& InClasses);
+	static COREUOBJECT_API UClass* FindCommonBase(const TArray<UClass*>& InClasses);
 
 	/**
 	 * Determines if the specified function has been implemented in a Blueprint
@@ -3271,32 +3439,29 @@ public:
 	 * @param InFunctionName	The name of the function to test
 	 * @return					True if the specified function exists and is implemented in a blueprint generated class
 	 */
-	virtual bool IsFunctionImplementedInScript(FName InFunctionName) const;
-
-	UE_DEPRECATED(4.23, "IsFunctionImplementedInBlueprint is deprecated, call IsFunctionImplementedInScript instead")
-	bool IsFunctionImplementedInBlueprint(FName InFunctionName) const { return IsFunctionImplementedInScript(InFunctionName); }
+	COREUOBJECT_API virtual bool IsFunctionImplementedInScript(FName InFunctionName) const;
 
 	/**
 	 * Checks if the property exists on this class or a parent class.
 	 * @param InProperty	The property to check if it is contained in this or a parent class.
 	 * @return				True if the property exists on this or a parent class.
 	 */
-	virtual bool HasProperty(FProperty* InProperty) const;
+	COREUOBJECT_API virtual bool HasProperty(FProperty* InProperty) const;
 
 	/** Finds the object that is used as the parent object when serializing properties, overridden for blueprints */
 	virtual UObject* FindArchetype(const UClass* ArchetypeClass, const FName ArchetypeName) const { return nullptr; }
 
 	/** Returns archetype object for CDO */
-	virtual UObject* GetArchetypeForCDO() const;
+	COREUOBJECT_API virtual UObject* GetArchetypeForCDO() const;
 
 	/** Returns archetype for sparse class data */
-	const void* GetArchetypeForSparseClassData() const;
+	COREUOBJECT_API const void* GetArchetypeForSparseClassData() const;
 
 	/** Returns the struct used by the sparse class data archetype */
-	UScriptStruct* GetSparseClassDataArchetypeStruct() const;
+	COREUOBJECT_API UScriptStruct* GetSparseClassDataArchetypeStruct() const;
 
 	/** Returns whether the sparse class data on this instance overrides that of its archetype (in type or value) */
-	bool OverridesSparseClassDataArchetype() const;
+	COREUOBJECT_API bool OverridesSparseClassDataArchetype() const;
 
 	/**
 	* Returns all objects that should be preloaded before the class default object is serialized at load time. Only used by the EDL.
@@ -3313,12 +3478,12 @@ public:
 	 * to force lazy initialization next time the data is needed.
 	 * Also happens after blueprint compiliation.
 	 */
-	void SetUpRuntimeReplicationData();
+	COREUOBJECT_API void SetUpRuntimeReplicationData();
 
 	/**
 	 * Helper function for determining if the given class is compatible with structured archive serialization
 	 */
-	static bool IsSafeToSerializeToStructuredArchives(UClass* InClass);
+	static COREUOBJECT_API bool IsSafeToSerializeToStructuredArchives(UClass* InClass);
 
 private:
 	/** 
@@ -3361,15 +3526,15 @@ private:
 	/**
 	 * Tests if all properties tagged with Replicate were registered in GetLifetimeReplicatedProps
 	 */
-	void ValidateRuntimeReplicationData();
-	void AssembleReferenceTokenStreamInternal(bool bForce = false);
-	void InternalCreateDefaultObjectWrapper() const;
+	COREUOBJECT_API void ValidateRuntimeReplicationData();
+	COREUOBJECT_API void AssembleReferenceTokenStreamInternal(bool bForce = false);
+	COREUOBJECT_API void InternalCreateDefaultObjectWrapper() const;
 protected:
 	/**
 	 * Get the default object from the class, creating it if missing, if requested or under a few other circumstances
 	 * @return		the CDO for this class
 	 **/
-	virtual UObject* CreateDefaultObject();
+	COREUOBJECT_API virtual UObject* CreateDefaultObject();
 };
 
 // @todo: BP2CPP_remove
@@ -3504,7 +3669,20 @@ enum class EInstancePropertyValueFlags
 
 ENUM_CLASS_FLAGS(EInstancePropertyValueFlags)
 
-struct COREUOBJECT_API FObjectInstancingGraph
+enum class EObjectInstancingGraphOptions
+{
+	None = 0x00,
+
+	// if set, start with component instancing disabled
+	DisableInstancing = 0x01,
+
+	// if set, instance only subobject template values
+	InstanceTemplatesOnly = 0x02,
+};
+
+ENUM_CLASS_FLAGS(EObjectInstancingGraphOptions)
+
+struct FObjectInstancingGraph
 {
 public:
 
@@ -3512,14 +3690,21 @@ public:
 	 * Default Constructor 
 	 * @param bDisableInstancing - if true, start with component instancing disabled
 	**/
-	FObjectInstancingGraph(bool bDisableInstancing = false);
+	COREUOBJECT_API explicit FObjectInstancingGraph(bool bDisableInstancing = false);
+
+	/**
+	 * Constructor with options
+	 * @param InOptions Additional options to modify the behavior of this graph
+	**/
+	COREUOBJECT_API explicit FObjectInstancingGraph(EObjectInstancingGraphOptions InOptions);
 
 	/**
 	 * Standard constructor
 	 *
 	 * @param	DestinationSubobjectRoot	the top-level object that is being created
+	 * @param	InOptions					Additional options to modify the behavior of this graph
 	 */
-	FObjectInstancingGraph( class UObject* DestinationSubobjectRoot );
+	COREUOBJECT_API explicit FObjectInstancingGraph( class UObject* DestinationSubobjectRoot, EObjectInstancingGraphOptions InOptions = EObjectInstancingGraphOptions::None);
 
 	/**
 	 * Returns whether this instancing graph has a valid destination root.
@@ -3543,14 +3728,14 @@ public:
 	 * @param	DestinationSubobjectRoot	the top-level object that is being created
 	 * @param	InSourceRoot	Archetype of DestinationSubobjectRoot
 	 */
-	void SetDestinationRoot( class UObject* DestinationSubobjectRoot, class UObject* InSourceRoot = nullptr );
+	COREUOBJECT_API void SetDestinationRoot( class UObject* DestinationSubobjectRoot, class UObject* InSourceRoot = nullptr );
 
 	/**
 	 * Finds the destination object instance corresponding to the specified source object.
 	 *
 	 * @param	SourceObject			the object to find the corresponding instance for
 	 */
-	class UObject* GetDestinationObject(class UObject* SourceObject);
+	COREUOBJECT_API class UObject* GetDestinationObject(class UObject* SourceObject);
 
 	/**
 	 * Returns the component that has SourceComponent as its archetype, instancing the component as necessary.
@@ -3595,14 +3780,14 @@ public:
 	 *
 	 * @return	As with GetInstancedSubobject, above, but also deals with archetype creation and a few other special cases
 	 */
-	class UObject* InstancePropertyValue( class UObject* SourceComponent, class UObject* CurrentValue, class UObject* CurrentObject, EInstancePropertyValueFlags Flags = EInstancePropertyValueFlags::None );
+	COREUOBJECT_API class UObject* InstancePropertyValue( class UObject* SourceComponent, class UObject* CurrentValue, class UObject* CurrentObject, EInstancePropertyValueFlags Flags = EInstancePropertyValueFlags::None );
 
 	/**
 	 * Adds a partially built object instance to the map(s) of source objects to their instances.
 	 * @param	ObjectInstance  Object that was just allocated, but has not been constructed yet
 	 * @param	InArchetype     Archetype of ObjectInstance
 	 */
-	void AddNewObject(class UObject* ObjectInstance, class UObject* InArchetype = nullptr);
+	COREUOBJECT_API void AddNewObject(class UObject* ObjectInstance, class UObject* InArchetype = nullptr);
 
 	/**
 	 * Adds an object instance to the map of source objects to their instances.  If there is already a mapping for this object, it will be replaced
@@ -3611,7 +3796,7 @@ public:
 	 * @param	ObjectInstance  the object that should be added as the corresopnding instance for ObjectSource
 	 * @param	InArchetype     Archetype of ObjectInstance
 	 */
-	void AddNewInstance(class UObject* ObjectInstance, class UObject* InArchetype = nullptr);
+	COREUOBJECT_API void AddNewInstance(class UObject* ObjectInstance, class UObject* InArchetype = nullptr);
 
 	/**
 	 * Retrieves a list of objects that have the specified Outer
@@ -3619,7 +3804,7 @@ public:
 	 * @param	SearchOuter		the object to retrieve object instances for
 	 * @param	out_Components	receives the list of objects contained by SearchOuter
 	 */
-	void RetrieveObjectInstances( class UObject* SearchOuter, TArray<class UObject*>& out_Objects );
+	COREUOBJECT_API void RetrieveObjectInstances( class UObject* SearchOuter, TArray<class UObject*>& out_Objects );
 
 	/**
 	 * Allows looping over instances that were created during this instancing.
@@ -3641,7 +3826,14 @@ public:
 	 */
 	void EnableSubobjectInstancing( bool bEnabled )
 	{
-		bEnableSubobjectInstancing = bEnabled;
+		if (bEnabled)
+		{
+			InstancingOptions &= ~EObjectInstancingGraphOptions::DisableInstancing;
+		}
+		else
+		{
+			InstancingOptions |= EObjectInstancingGraphOptions::DisableInstancing;
+		}
 	}
 
 	/**
@@ -3649,7 +3841,7 @@ public:
 	 */
 	bool IsSubobjectInstancingEnabled() const
 	{
-		return bEnableSubobjectInstancing;
+		return !(InstancingOptions & EObjectInstancingGraphOptions::DisableInstancing);
 	}
 
 	/**
@@ -3714,7 +3906,7 @@ private:
 	 *			if SourceComponent is not contained by SourceRoot, return INVALID_OBJECT, indicating that the that has SourceComponent as its ObjectArchetype, or NULL if SourceComponent is not contained within
 	 *			SourceRoot.
 	 */
-	class UObject* GetInstancedSubobject( class UObject* SourceSubobject, class UObject* CurrentValue, class UObject* CurrentObject, EInstancePropertyValueFlags Flags );
+	COREUOBJECT_API class UObject* GetInstancedSubobject( class UObject* SourceSubobject, class UObject* CurrentValue, class UObject* CurrentObject, EInstancePropertyValueFlags Flags );
 
 	/**
 	 * The root of the object tree that is the source used for instancing components;
@@ -3735,15 +3927,13 @@ private:
 	 */
 	class		UObject*						DestinationRoot;
 
+	/** Subobject instancing options */
+	EObjectInstancingGraphOptions				InstancingOptions;
+
 	/**
 	 * Indicates whether we are currently instancing components for an archetype.  true if we are creating or updating an archetype.
 	 */
 	bool										bCreatingArchetype;
-
-	/**
-	 * If false, components will not be instanced.
-	 */
-	bool										bEnableSubobjectInstancing;
 
 	/**
 	 * true when loading object data from disk.
@@ -3857,7 +4047,8 @@ struct FTestUninitializedScriptStructMembersTest
 	odd types.
 -----------------------------------------------------------------------------*/
 
-template< class T > struct TBaseStructure
+template <typename T, bool bHasStaticStruct = TModels_V<CStaticStructProvider, T>>
+struct TBaseStructureBase
 {
 	static UScriptStruct* Get()
 	{
@@ -3865,194 +4056,204 @@ template< class T > struct TBaseStructure
 	}
 };
 
+template <typename T>
+struct TBaseStructureBase<T, false>
+{
+};
+
+template <typename T>
+struct TBaseStructure : TBaseStructureBase<T>
+{
+};
+
 template<> struct TBaseStructure<FIntPoint> 
 {
-	COREUOBJECT_API static UScriptStruct* Get(); 
+	static COREUOBJECT_API UScriptStruct* Get(); 
 };
 
 template<> struct TBaseStructure<FIntVector> 
 { 
-	COREUOBJECT_API static UScriptStruct* Get(); 
+	static COREUOBJECT_API UScriptStruct* Get(); 
 };
 
 template<> struct TBaseStructure<FIntVector4>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 template<> struct TBaseStructure<FLinearColor>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 template<> struct TBaseStructure<FColor>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 template<> struct TBaseStructure<FRandomStream>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 template<> struct TBaseStructure<FGuid>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 template<> struct TBaseStructure<FFallbackStruct>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 template<> struct TBaseStructure<FInterpCurvePointFloat>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 template<> struct TBaseStructure<FInterpCurvePointVector2D>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 template<> struct TBaseStructure<FInterpCurvePointVector>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 template<> struct TBaseStructure<FInterpCurvePointQuat>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 template<> struct TBaseStructure<FInterpCurvePointTwoVectors>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 template<> struct TBaseStructure<FInterpCurvePointLinearColor>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 template<> struct TBaseStructure<FFloatRangeBound>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 template<> struct TBaseStructure<FFloatRange>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 template<> struct TBaseStructure<FDoubleRangeBound>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 template<> struct TBaseStructure<FDoubleRange>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 template<> struct TBaseStructure<FInt32RangeBound>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 template<> struct TBaseStructure<FInt32Range>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 template<> struct TBaseStructure<FFloatInterval>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 template<> struct TBaseStructure<FDoubleInterval>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 template<> struct TBaseStructure<FInt32Interval>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 struct FFrameNumber;
 
 template<> struct TBaseStructure<FFrameNumber>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 struct FFrameTime;
 
 template<> struct TBaseStructure<FFrameTime>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 struct FSoftObjectPath;
 
 template<> struct TBaseStructure<FSoftObjectPath>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 struct FSoftClassPath;
 
 template<> struct TBaseStructure<FSoftClassPath>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 struct FPrimaryAssetType;
 
 template<> struct TBaseStructure<FPrimaryAssetType>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 struct FPrimaryAssetId;
 
 template<> struct TBaseStructure<FPrimaryAssetId>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 struct FDateTime;
 
 template<> struct TBaseStructure<FDateTime>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 struct FPolyglotTextData;
 
 template<> struct TBaseStructure<FPolyglotTextData>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 struct FAssetBundleData;
 
 template<> struct TBaseStructure<FAssetBundleData>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 template<> struct TBaseStructure<FTestUninitializedScriptStructMembersTest>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 struct FTopLevelAssetPath;
 
 template<> struct TBaseStructure<FTopLevelAssetPath>
 {
-	COREUOBJECT_API static UScriptStruct* Get();
+	static COREUOBJECT_API UScriptStruct* Get();
 };
 
 // TBaseStructure for explicit core variant types only. e.g. FVector3d returns "Vector3d" struct. 
@@ -4062,9 +4263,9 @@ template< class T > struct TVariantStructure
 };
 
 #define UE_DECLARE_CORE_VARIANT_TYPE(VARIANT, CORE)														\
-template<> struct TBaseStructure<F##CORE> { COREUOBJECT_API static UScriptStruct* Get(); };				\
-template<> struct TVariantStructure<F##VARIANT##f> { COREUOBJECT_API static UScriptStruct* Get(); };	\
-template<> struct TVariantStructure<F##VARIANT##d> { COREUOBJECT_API static UScriptStruct* Get(); };
+template<> struct TBaseStructure<::F##CORE> { COREUOBJECT_API static UScriptStruct* Get(); };			\
+template<> struct TVariantStructure<::F##VARIANT##f> { COREUOBJECT_API static UScriptStruct* Get(); };	\
+template<> struct TVariantStructure<::F##VARIANT##d> { COREUOBJECT_API static UScriptStruct* Get(); };
 
 UE_DECLARE_CORE_VARIANT_TYPE(Vector2,	Vector2D);
 UE_DECLARE_CORE_VARIANT_TYPE(Vector3,	Vector);

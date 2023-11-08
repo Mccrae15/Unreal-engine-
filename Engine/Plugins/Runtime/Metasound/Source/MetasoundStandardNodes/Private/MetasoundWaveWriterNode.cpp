@@ -226,11 +226,11 @@ namespace Metasound
 		// Theoretical limit of .WAV files.
 		static_assert(NumInputChannels > 0 && NumInputChannels <= 65535, "Num Channels > 0 and <= 65535");
 
-		TWaveWriterOperator(const FOperatorSettings& InSettings, TArray<FAudioBufferReadRef>&& InAudioBuffers, FBoolReadRef&& InEnabled, const TSharedPtr<FNumberedFileCache, ESPMode::ThreadSafe>& InNumberedFileCache, const FString& InFilenamePrefix)
+		TWaveWriterOperator(const FOperatorSettings& InSettings, TArray<FAudioBufferReadRef>&& InAudioBuffers, FBoolReadRef&& InEnabled, const TSharedPtr<FNumberedFileCache, ESPMode::ThreadSafe>& InNumberedFileCache, FStringReadRef&& InFilenamePrefix)
 			: AudioInputs{ MoveTemp(InAudioBuffers) }
 			, Enabled{ MoveTemp(InEnabled) }
 			, NumberedFileCacheSP{ InNumberedFileCache }
-			, FileNamePrefix{ InFilenamePrefix }
+			, FileNamePrefix{ MoveTemp(InFilenamePrefix) }
 			, SampleRate{ InSettings.GetSampleRate() }
 		{
 			check(AudioInputs.Num() == NumInputChannels);
@@ -247,19 +247,37 @@ namespace Metasound
 			}
 		}
 
-		FDataReferenceCollection GetInputs() const override
+
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
 		{
-			FDataReferenceCollection InputPins;
 			for (int32 i = 0; i < NumInputChannels; ++i)
 			{
-				InputPins.AddDataReadReference(GetAudioInputName(i), AudioInputs[i]);
+				InOutVertexData.BindReadVertex(GetAudioInputName(i), AudioInputs[i]);
 			}
-			return InputPins;
+
+			using namespace WaveWriterVertexNames;
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InEnabledPin), Enabled);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InFilenamePrefixPin), FileNamePrefix);
 		}
-		FDataReferenceCollection GetOutputs() const override
+
+		virtual void BindOutputs(FOutputVertexInterfaceData&) override
 		{
-			FDataReferenceCollection OutputDataReferences;
-			return OutputDataReferences;
+		}
+
+		virtual FDataReferenceCollection GetInputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
+		}
+	
+		virtual FDataReferenceCollection GetOutputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		static const FVertexInterface& DeclareVertexInterface()
@@ -306,7 +324,7 @@ namespace Metasound
 			{
 				// For backwards compatibility with previous (mono) WaveWriters keep the node name the same.
 				FName OperatorName = TEXT("WaveWriter");
-				FText NodeDisplayName = METASOUND_LOCTEXT("Metasound_WaveWriterNodeMonoDisplayName", "Wave Writer (Mono)");
+				FText NodeDisplayName = METASOUND_LOCTEXT("Metasound_WaveWriterNodeMonoDisplayName", "Wave Writer (1-channel, Mono)");
 				const FText NodeDescription = METASOUND_LOCTEXT("Metasound_WaveWriterNodeMonoDescription", "Write a mono audio signal to disk");
 				FVertexInterface NodeInterface = DeclareVertexInterface();
 
@@ -317,7 +335,7 @@ namespace Metasound
 			auto CreateNodeClassMetadataStereo = []() -> FNodeClassMetadata
 			{
 				FName OperatorName = TEXT("Wave Writer (Stereo)");
-				FText NodeDisplayName = METASOUND_LOCTEXT("Metasound_WaveWriterNodeStereoDisplayName", "Wave Writer (Stereo)");
+				FText NodeDisplayName = METASOUND_LOCTEXT("Metasound_WaveWriterNodeStereoDisplayName", "Wave Writer (2-channel, Stereo)");
 				const FText NodeDescription = METASOUND_LOCTEXT("Metasound_WaveWriterNodeStereoDescription", "Write a stereo audio signal to disk");
 				FVertexInterface NodeInterface = DeclareVertexInterface();
 
@@ -368,6 +386,14 @@ namespace Metasound
 				{
 					Writer->Write(MakeArrayView(AudioInputs[0]->GetData(), AudioInputs[0]->Num()));
 				}
+			}
+		}
+
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			if (bIsEnabled)
+			{
+				Disable();
 			}
 		}
 
@@ -476,7 +502,7 @@ namespace Metasound
 		FBoolReadRef Enabled;
 		TUniquePtr<FWaveWriter> Writer;
 		TSharedPtr<FNumberedFileCache, ESPMode::ThreadSafe> NumberedFileCacheSP;
-		FString FileNamePrefix;
+		FStringReadRef FileNamePrefix;
 		float SampleRate = 0.f;
 		bool bIsEnabled = false;
 	};
@@ -490,8 +516,6 @@ namespace Metasound
 		const FDataReferenceCollection& InputCol = InParams.InputDataReferences;
 		const FOperatorSettings& Settings = InParams.OperatorSettings;
 		const FInputVertexInterface& InputInterface = DeclareVertexInterface().GetInputInterface();
-
-		FStringReadRef FilenamePrefix = InputCol.GetDataReadReferenceOrConstructWithVertexDefault<FString>(InputInterface, METASOUND_GET_PARAM_NAME(InFilenamePrefixPin), Settings);
 
 		int32 NumConnectedAudioPins = 0;
 		TArray<FAudioBufferReadRef> InputBuffers;
@@ -510,7 +534,7 @@ namespace Metasound
 				MoveTemp(InputBuffers),
 				InputCol.GetDataReadReferenceOrConstructWithVertexDefault<bool>(InputInterface, METASOUND_GET_PARAM_NAME(InEnabledPin), Settings),
 				GetNameCache(),
-				*FilenamePrefix
+				InputCol.GetDataReadReferenceOrConstructWithVertexDefault<FString>(InputInterface, METASOUND_GET_PARAM_NAME(InFilenamePrefixPin), Settings)
 			);
 		}
 

@@ -113,6 +113,7 @@ namespace OculusXRInput
 		static const FKey OculusTouch_Left_Stylus_Force;
 		static const FKey OculusTouch_Left_IndexTrigger_Curl;
 		static const FKey OculusTouch_Left_IndexTrigger_Slide;
+		static const FKey OculusTouch_Left_IndexTrigger_Force;
 
 		static const FKey OculusTouch_Right_Thumbstick;
 		static const FKey OculusTouch_Right_Trigger;
@@ -125,6 +126,7 @@ namespace OculusXRInput
 		static const FKey OculusTouch_Right_Stylus_Force;
 		static const FKey OculusTouch_Right_IndexTrigger_Curl;
 		static const FKey OculusTouch_Right_IndexTrigger_Slide;
+		static const FKey OculusTouch_Right_IndexTrigger_Force;
 
 		static const FKey OculusRemote_DPad_Up;
 		static const FKey OculusRemote_DPad_Down;
@@ -333,6 +335,8 @@ namespace OculusXRInput
 		/** Index trigger Slide**/
 		float IndexTriggerSlide;
 
+		/** Second stage Index trigger force **/
+		float IndexTriggerForce;
 
 		/** Whether or not we're playing a haptic effect.  If true, force feedback calls will be early-outed in favor of the haptic effect */
 		bool bPlayingHapticEffect;
@@ -376,7 +380,7 @@ namespace OculusXRInput
 			Buttons[(int32)EOculusTouchControllerButton::Thumbstick_Left].Key = (Hand == EControllerHand::Left) ? EKeys::OculusTouch_Left_Thumbstick_Left.GetFName() : EKeys::OculusTouch_Right_Thumbstick_Left.GetFName();
 			Buttons[(int32)EOculusTouchControllerButton::Thumbstick_Right].Key = (Hand == EControllerHand::Left) ? EKeys::OculusTouch_Left_Thumbstick_Right.GetFName() : EKeys::OculusTouch_Right_Thumbstick_Right.GetFName();
 
-			Buttons[(int32)EOculusTouchControllerButton::Menu].Key = (Hand == EControllerHand::Left) ? EKeys::OculusTouch_Left_Menu_Click.GetFName() : EKeys::OculusTouch_Right_System_Click.GetFName();
+			Buttons[(int32)EOculusTouchControllerButton::Menu].Key = (Hand == EControllerHand::Left) ? EKeys::OculusTouch_Left_Menu_Click.GetFName() : FName("OculusTouch_Right_System_Click");
 
 			Buttons[(int32)EOculusTouchControllerButton::Thumbstick_Touch].Key = (Hand == EControllerHand::Left) ? EKeys::OculusTouch_Left_Thumbstick_Touch.GetFName() : EKeys::OculusTouch_Right_Thumbstick_Touch.GetFName();
 			Buttons[(int32)EOculusTouchControllerButton::Trigger_Touch].Key = (Hand == EControllerHand::Left) ? EKeys::OculusTouch_Left_Trigger_Touch.GetFName() : EKeys::OculusTouch_Right_Trigger_Touch.GetFName();

@@ -157,7 +157,7 @@ namespace Metasound
 					TInputDataVertex<FTime>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputLookaheadTime), 0.01f),
 					TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputKnee), 10.0f),
 					TInputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputSidechain)),
-					TInputDataVertex<FEnumEnvelopePeakMode>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputEnvelopeMode)),
+					TInputDataVertex<FEnumEnvelopePeakMode>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputEnvelopeMode), (int32)EEnvelopePeakMode::Peak),
 					TInputDataVertex<bool>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputIsAnalog), true),
 					TInputDataVertex<bool>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputIsUpwards), false),
 					TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputWetDryMix), 1.0f)
@@ -171,39 +171,46 @@ namespace Metasound
 			return Interface;
 		}
 
-		virtual FDataReferenceCollection GetInputs() const override
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
 		{
 			using namespace CompressorVertexNames;
 
-			FDataReferenceCollection InputDataReferences;
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputAudio), AudioInput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputRatio), RatioInput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputThreshold), ThresholdDbInput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputAttackTime), AttackTimeInput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputReleaseTime), ReleaseTimeInput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputLookaheadTime), LookaheadTimeInput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputKnee), KneeInput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputSidechain), SidechainInput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputEnvelopeMode), EnvelopeModeInput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputIsUpwards), bIsUpwardsInput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputIsAnalog), bIsAnalogInput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputWetDryMix), WetDryMixInput);
+		}
 
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputAudio), AudioInput);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputRatio), RatioInput);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputThreshold), ThresholdDbInput);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputAttackTime), AttackTimeInput);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputReleaseTime), ReleaseTimeInput);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputLookaheadTime), LookaheadTimeInput);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputKnee), KneeInput);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputSidechain), SidechainInput);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputEnvelopeMode), EnvelopeModeInput);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputIsUpwards), bIsUpwardsInput);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputIsAnalog), bIsAnalogInput);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputWetDryMix), WetDryMixInput);
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+		{
+			using namespace CompressorVertexNames;
 
-			return InputDataReferences;
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputAudio), AudioOutput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputEnvelope), EnvelopeOutput);
+		}
 
+		virtual FDataReferenceCollection GetInputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		virtual FDataReferenceCollection GetOutputs() const override
 		{
-			using namespace CompressorVertexNames;
-
-			FDataReferenceCollection OutputDataReferences;
-
-			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputAudio), AudioOutput);
-			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputEnvelope), EnvelopeOutput);
-
-			return OutputDataReferences;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		static TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors)
@@ -220,7 +227,7 @@ namespace Metasound
 			FTimeReadRef LookaheadTimeIn = Inputs.GetDataReadReferenceOrConstructWithVertexDefault<FTime>(InputInterface, METASOUND_GET_PARAM_NAME(InputLookaheadTime), InParams.OperatorSettings);
 			FFloatReadRef KneeIn = Inputs.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, METASOUND_GET_PARAM_NAME(InputKnee), InParams.OperatorSettings);
 			FAudioBufferReadRef SidechainIn = Inputs.GetDataReadReferenceOrConstruct<FAudioBuffer>(METASOUND_GET_PARAM_NAME(InputSidechain), InParams.OperatorSettings);
-			FEnvelopePeakModeReadRef EnvelopeModeIn = Inputs.GetDataReadReferenceOrConstruct<FEnumEnvelopePeakMode>(METASOUND_GET_PARAM_NAME(InputEnvelopeMode));
+			FEnvelopePeakModeReadRef EnvelopeModeIn = Inputs.GetDataReadReferenceOrConstructWithVertexDefault<FEnumEnvelopePeakMode>(InputInterface, METASOUND_GET_PARAM_NAME(InputEnvelopeMode), InParams.OperatorSettings);
 			FBoolReadRef bIsAnalogIn = Inputs.GetDataReadReferenceOrConstructWithVertexDefault<bool>(InputInterface, METASOUND_GET_PARAM_NAME(InputIsAnalog), InParams.OperatorSettings);
 			FBoolReadRef bIsUpwardsIn = Inputs.GetDataReadReferenceOrConstructWithVertexDefault<bool>(InputInterface, METASOUND_GET_PARAM_NAME(InputIsUpwards), InParams.OperatorSettings);
 			FFloatReadRef WetDryMixIn = Inputs.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, METASOUND_GET_PARAM_NAME(InputWetDryMix), InParams.OperatorSettings);
@@ -228,6 +235,53 @@ namespace Metasound
 			bool bIsSidechainConnected = Inputs.ContainsDataReadReference<FAudioBuffer>(METASOUND_GET_PARAM_NAME(InputSidechain));
 
 			return MakeUnique<FCompressorOperator>(InParams.OperatorSettings, AudioIn, RatioIn, ThresholdDbIn, AttackTimeIn, ReleaseTimeIn, LookaheadTimeIn, KneeIn, bIsSidechainConnected, SidechainIn, EnvelopeModeIn, bIsAnalogIn, bIsUpwardsIn, WetDryMixIn);
+		}
+
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			// Flush audio buffers
+			AudioOutput->Zero();
+			EnvelopeOutput->Zero();
+			InputDelay.Reset();
+			DelayedInputSignal.Zero();
+
+			// Cache dynamics timing
+			PrevAttackTime = FMath::Max(FTime::ToMilliseconds(*AttackTimeInput), 0.0);
+			PrevReleaseTime = FMath::Max(FTime::ToMilliseconds(*ReleaseTimeInput), 0.0);
+			PrevLookaheadTime = FMath::Max(FTime::ToMilliseconds(*LookaheadTimeInput), 0.0);
+
+			// Initialize compressor
+			Compressor.Init(InParams.OperatorSettings.GetSampleRate(), 1);
+			Compressor.SetKeyNumChannels(1);
+			Compressor.SetRatio(FMath::Max(*RatioInput, 1.0f));
+			Compressor.SetThreshold(*ThresholdDbInput);
+			Compressor.SetAttackTime(PrevAttackTime);
+			Compressor.SetReleaseTime(PrevReleaseTime);
+			Compressor.SetLookaheadMsec(PrevLookaheadTime);
+			Compressor.SetKneeBandwidth(*KneeInput);
+
+			if (*bIsUpwardsInput)
+			{
+				Compressor.SetProcessingMode(Audio::EDynamicsProcessingMode::UpwardsCompressor);
+			}
+			else
+			{
+				Compressor.SetProcessingMode(Audio::EDynamicsProcessingMode::Compressor);
+			}
+
+			switch (*EnvelopeModeInput)
+			{
+			default:
+			case EEnvelopePeakMode::MeanSquared:
+				Compressor.SetPeakMode(Audio::EPeakMode::MeanSquared);
+				break;
+			case EEnvelopePeakMode::RootMeanSquared:
+				Compressor.SetPeakMode(Audio::EPeakMode::RootMeanSquared);
+				break;
+			case EEnvelopePeakMode::Peak:
+				Compressor.SetPeakMode(Audio::EPeakMode::Peak);
+				break;
+			}
 		}
 
 		void Execute()

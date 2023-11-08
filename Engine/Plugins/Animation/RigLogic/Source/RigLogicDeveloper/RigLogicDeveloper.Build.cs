@@ -9,17 +9,9 @@ namespace UnrealBuildTool.Rules
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
-					"AnimGraphRuntime",
-					"AnimationCore",
 					"Core",
 					"CoreUObject",
 					"Engine",
-					"PropertyPath",
-					"Slate",
-					"SlateCore",
-					"InputCore",
-					"TimeManagement",
-					"EditorWidgets",
 					"MessageLog",
 					"RigLogicModule"
 				}
@@ -37,12 +29,8 @@ namespace UnrealBuildTool.Rules
 				PrivateDependencyModuleNames.AddRange(
 					new string[]
 					{
-						"EditorFramework",
-						"UnrealEd",
 						"AnimGraph",
 						"BlueprintGraph",
-						"PropertyEditor",
-						"GraphEditor",
 					}
 				);
 

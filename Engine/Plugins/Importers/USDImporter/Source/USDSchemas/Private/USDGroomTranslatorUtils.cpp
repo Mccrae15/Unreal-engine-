@@ -15,6 +15,7 @@
 
 #include "UnrealUSDWrapper.h"
 #include "USDAssetCache.h"
+#include "USDClassesModule.h"
 #include "USDGeomXformableTranslator.h"
 #include "USDInfoCache.h"
 #include "USDIntegrationUtils.h"
@@ -46,9 +47,9 @@ namespace UE::UsdGroomTranslatorUtils::Private
 		}
 
 		EGroomBindingMeshType GroomBindingType = EGroomBindingMeshType::SkeletalMesh;
-		UGroomAsset* Groom = nullptr;
-		UObject* SourceMesh = nullptr;
-		UObject* TargetMesh = nullptr;
+		TObjectPtr<UGroomAsset> Groom = nullptr;
+		TObjectPtr<UObject> SourceMesh = nullptr;
+		TObjectPtr<UObject> TargetMesh = nullptr;
 		int32 NumInterpolationPoints = 100;
 		int32 MatchingSection = 0;
 	};
@@ -98,25 +99,33 @@ namespace UE::UsdGroomTranslatorUtils::Private
 			return nullptr;
 		}
 
-		const FName BindingAssetName = MakeUniqueObjectName(GetTransientPackage(), UGroomBindingAsset::StaticClass(), *FPaths::GetBaseFilename(GroomBindingPath));
-		UGroomBindingAsset* GroomBinding = NewObject<UGroomBindingAsset>(GetTransientPackage(), BindingAssetName, ObjectFlags | RF_Public);
+		const FName BindingAssetName = MakeUniqueObjectName(
+			GetTransientPackage(),
+			UGroomBindingAsset::StaticClass(),
+			*IUsdClassesModule::SanitizeObjectName(FPaths::GetBaseFilename(GroomBindingPath))
+		);
+		UGroomBindingAsset* GroomBinding = NewObject<UGroomBindingAsset>(
+			GetTransientPackage(),
+			BindingAssetName,
+			ObjectFlags | RF_Public | RF_Transient
+		);
 		if (GroomBinding)
 		{
-			GroomBinding->GroomBindingType = Settings.GroomBindingType;
-			GroomBinding->Groom = Settings.Groom;
-			if (GroomBinding->GroomBindingType == EGroomBindingMeshType::SkeletalMesh)
+			GroomBinding->SetGroomBindingType(Settings.GroomBindingType);
+			GroomBinding->SetGroom(Settings.Groom);
+			if (GroomBinding->GetGroomBindingType() == EGroomBindingMeshType::SkeletalMesh)
 			{
-				GroomBinding->SourceSkeletalMesh = Cast<USkeletalMesh>(Settings.SourceMesh);
-				GroomBinding->TargetSkeletalMesh = Cast<USkeletalMesh>(Settings.TargetMesh);
+				GroomBinding->SetSourceSkeletalMesh(Cast<USkeletalMesh>(Settings.SourceMesh));
+				GroomBinding->SetTargetSkeletalMesh(Cast<USkeletalMesh>(Settings.TargetMesh));
 			}
 			else
 			{
-				GroomBinding->SourceGeometryCache = Cast<UGeometryCache>(Settings.SourceMesh);
-				GroomBinding->TargetGeometryCache = Cast<UGeometryCache>(Settings.TargetMesh);
+				GroomBinding->SetSourceGeometryCache(Cast<UGeometryCache>(Settings.SourceMesh));
+				GroomBinding->SetTargetGeometryCache(Cast<UGeometryCache>(Settings.TargetMesh));
 			}
-			GroomBinding->HairGroupBulkDatas.Reserve(Settings.Groom->HairGroupsData.Num());
-			GroomBinding->NumInterpolationPoints = Settings.NumInterpolationPoints;
-			GroomBinding->MatchingSection = Settings.MatchingSection;
+			GroomBinding->GetHairGroupsPlatformData().Reserve(Settings.Groom->GetHairGroupsPlatformData().Num());
+			GroomBinding->SetNumInterpolationPoints(Settings.NumInterpolationPoints);
+			GroomBinding->SetMatchingSection(Settings.MatchingSection);
 
 			GroomBinding->Build();
 		}
@@ -160,17 +169,16 @@ namespace UE::UsdGroomTranslatorUtils::Private
 			if (Targets.size() > 0)
 			{
 				const pxr::SdfPath& TargetPrimPath = Targets[0];
-				UObject* Mesh = InfoCache.GetSingleAssetForPrim(UE::FSdfPath{TargetPrimPath});
 
 				// Validate that the target prim and associated asset are of the expected type for the binding
 				pxr::UsdPrim TargetPrim = Prim.GetPrimAtPath(TargetPrimPath);
 				if (BindingType == EGroomBindingMeshType::SkeletalMesh && pxr::UsdSkelRoot(TargetPrim))
 				{
-					return Cast<USkeletalMesh>(Mesh);
+					return InfoCache.GetSingleAssetForPrim<USkeletalMesh>(UE::FSdfPath{TargetPrimPath});
 				}
 				else if (BindingType == EGroomBindingMeshType::GeometryCache && pxr::UsdGeomMesh(TargetPrim))
 				{
-					return Cast<UGeometryCache>(Mesh);
+					return InfoCache.GetSingleAssetForPrim<UGeometryCache>(UE::FSdfPath{TargetPrimPath});
 				}
 			}
 		}
@@ -211,13 +219,11 @@ namespace UsdGroomTranslatorUtils
 
 		// Determine the type of binding needed based on the prim mesh type
 		const FString PrimPath(UsdToUnreal::ConvertPath(Prim.GetPath()));
-		UObject* PrimAsset = InfoCache.GetSingleAssetForPrim(UE::FSdfPath{*PrimPath});
-
 		EGroomBindingMeshType GroomBindingType = EGroomBindingMeshType::SkeletalMesh;
-		UObject* TargetMesh = Cast<USkeletalMesh>(PrimAsset);
+		UObject* TargetMesh = InfoCache.GetSingleAssetForPrim<USkeletalMesh>(UE::FSdfPath{*PrimPath});
 		if (!TargetMesh)
 		{
-			TargetMesh = Cast<UGeometryCache>(PrimAsset);
+			TargetMesh = InfoCache.GetSingleAssetForPrim<UGeometryCache>(UE::FSdfPath{*PrimPath});
 			if (!TargetMesh)
 			{
 				return;

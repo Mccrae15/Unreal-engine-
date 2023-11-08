@@ -206,6 +206,7 @@ const TSharedRef<SWidget> FSceneOutlinerPinnedColumn::ConstructRowWidget(FSceneO
 		.VAlign(VAlign_Center)
 		[
 			SNew(SPinnedWidget, WeakSceneOutliner, TreeItem, SharedThis(this), &Row)
+			.ToolTip(IDocumentation::Get()->CreateToolTip(LOCTEXT("SceneOutlinerPinnedWidgetTooltip", "Toggles whether this object is pinned (always loaded) in the editor."), nullptr, "Shared/MenuEntries/SceneOutliner_ActorBrowsingMode", "PinTooltip"))
 		];
 	}
 	return SNullWidget::NullWidget;

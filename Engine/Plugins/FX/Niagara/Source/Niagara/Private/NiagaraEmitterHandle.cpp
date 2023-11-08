@@ -17,8 +17,8 @@ FNiagaraEmitterHandle::FNiagaraEmitterHandle()
 	, Source_DEPRECATED(nullptr)
 	, LastMergedSource_DEPRECATED(nullptr)
 	, bIsolated(false)
-#endif
 	, Instance_DEPRECATED(nullptr)
+#endif
 {
 }
 
@@ -190,11 +190,13 @@ bool FNiagaraEmitterHandle::NeedsRecompile() const
 
 void FNiagaraEmitterHandle::ConditionalPostLoad(int32 NiagaraCustomVersion)
 {
+#if WITH_EDITORONLY_DATA
 	if (Instance_DEPRECATED != nullptr)
 	{
 		VersionedInstance.Emitter = Instance_DEPRECATED;
 		VersionedInstance.Version = Instance_DEPRECATED->IsVersioningEnabled() ? Instance_DEPRECATED->GetExposedVersion().VersionGuid : FGuid(); 
 	}
+#endif
 
 	if (UNiagaraEmitter* InstanceEmitter = VersionedInstance.Emitter)
 	{
@@ -225,6 +227,15 @@ void FNiagaraEmitterHandle::ConditionalPostLoad(int32 NiagaraCustomVersion)
 			{
 				// If the name isn't a valid object name, set the name again so that it will be properly sanitized.
 				SetName(Name, *OwningSystem);
+			}
+		}
+
+		if (bIsEnabled == false)
+		{
+			FVersionedNiagaraEmitterData* EmitterData = VersionedInstance.GetEmitterData();
+			if (EmitterData != nullptr)
+			{
+				EmitterData->InvalidateCompileResults();
 			}
 		}
 	}

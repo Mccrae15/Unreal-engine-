@@ -88,14 +88,15 @@ public:
 
 	static_assert((uint8)(EReplicatedObjectState::Count) <= 32, "EReplicatedObjectState must fit in 5 bits. See FReplicationInfo::State and FReplicationRecord::FRecordInfo::ReplicatedObjectState members.");
 
-	const TCHAR* LexToString(const EReplicatedObjectState State);
+	static const TCHAR* LexToString(const EReplicatedObjectState State);
 
 	enum EFlushFlags : uint32
 	{
 		FlushFlags_None				= 0U,
 		FlushFlags_FlushState		= 1U << 0U,											// Make sure that all current state data is acknowledged before we stop replicating the object
 		FlushFlags_FlushReliable	= FlushFlags_FlushState << 1U,						// Make sure that all enqueued Reliable RPCs are delivered before we stop replicating the object
-		FlushFlags_All				= FlushFlags_FlushState | FlushFlags_FlushReliable,
+		FlushFlags_FlushTornOffSubObjects	= FlushFlags_FlushReliable << 1U,					// Make sure that we flush TearOff and replicated destroy properly
+		FlushFlags_All				= FlushFlags_FlushState | FlushFlags_FlushReliable | FlushFlags_FlushTornOffSubObjects,
 		FlushFlags_Default			= FlushFlags_FlushReliable,
 	};
 
@@ -126,8 +127,7 @@ public:
 				uint64 IsDeltaCompressionEnabled : 1;					// Set to 1 if deltacompression is enabled for this object
 				uint64 LastAckedBaselineIndex : 2;						// Last acknowledged baseline index which we can use for deltacompresion
 				uint64 PendingBaselineIndex : 2;						// Baseline index pending acknowledgment from client
-				uint64 FlushFlags : 2;									// Flags indicating what we are waiting for when flushing
-				uint64 Padding : 27;
+				uint64 FlushFlags : 3;									// Flags indicating what we are waiting for when flushing
 			};
 		};
 
@@ -219,8 +219,8 @@ private:
 		// The index into the scheduled objects array to attempt to replicate next.
 		uint32 CurrentIndex;
 
-		// The number of replicated objects that were serialized with delta compression.
-		uint32 DeltaCompressedObjectCount;
+		// Written batch count, which excludes objects pending destroy and subobjects
+		uint32 WrittenBatchCount;
 
 		// How many objects that were attempted to be replicated but which ultimately didn't fit in the packet.
 		uint32 FailedToWriteSmallObjectCount;
@@ -248,12 +248,24 @@ private:
 		uint32 bHasDirtySubObjects : 1;
 		uint32 bSentTearOff : 1;
 		uint32 bSentDestroySubObject : 1;
+		uint32 bSentBatchData : 1;
+	};
+
+	enum class EBatchInfoType : uint32
+	{
+		Object,
+		HugeObject,
+		OOBAttachment,
+		Internal,
+		// Currently unused as destruction infos don't create a BatchInfo.
+		DestructionInfo,
 	};
 
 	struct FBatchInfo
 	{
 		TArray<FBatchObjectInfo, TInlineAllocator<16>> ObjectInfos;
 		uint32 ParentInternalIndex;
+		EBatchInfoType Type;
 	};
 
 	struct FObjectRecord
@@ -265,6 +277,7 @@ private:
 	struct FBatchRecord
 	{
 		TArray<FObjectRecord, TInlineAllocator<16>> ObjectReplicationRecords;
+		uint32 BatchCount = 0U;
 	};
 
 	struct FBitStreamInfo
@@ -283,11 +296,13 @@ private:
 	struct FHugeObjectContext
 	{
 		FHugeObjectContext();
+		~FHugeObjectContext();
 
 		EHugeObjectSendStatus SendStatus;
 		uint32 InternalIndex;
 		FBatchRecord BatchRecord;
 		FNetExportContext::FBatchExports BatchExports;
+		FNetTraceCollector* TraceCollector;
 		const FNetDebugName* DebugName;
 		// Cycle counter for when the huge object context went from idle to sending.
 		uint64 StartSendingTime;
@@ -338,7 +353,7 @@ private:
 private:
 
 	uint32 GetDefaultFlushFlags() const;
-	uint32 GetFlushStatus(uint32 InternalIndex, const FReplicationInfo& Info, uint32 InFlushFlags = EFlushFlags::FlushFlags_Default) const;
+	uint32 GetFlushStatus(uint32 InternalIndex, const FReplicationInfo& Info, uint32 FlushFlagsToTest = EFlushFlags::FlushFlags_Default) const;
 	void SetPendingDestroyOrSubObjectPendingDestroyState(uint32 Index, FReplicationInfo& Info);
 
 	bool IsObjectIndexForOOBAttachment(uint32 InternalIndex) const { return InternalIndex == ObjectIndexForOOBAttachment; }
@@ -359,7 +374,7 @@ private:
 	void SetState(uint32 InternalIndex, EReplicatedObjectState NewState);
 
 	// Write index part of handle
-	void WriteNetRefHandleId(FNetBitStreamWriter& Writer, FNetRefHandle RefHandle);
+	void WriteNetRefHandleId(FNetSerializationContext& Context, FNetRefHandle RefHandle);
 		
 	// Create new ObjectRecord
 	// Note: be aware that it will allocate a copy of the ChangeMask that needs to be handled if the record is not Committed
@@ -379,6 +394,9 @@ private:
 
 	// Write all objects pending destroy (or as many as we fit in the current packet)
 	uint32 WriteObjectsPendingDestroy(FNetSerializationContext& Context);
+
+	// Write object and SubObjects
+	EWriteObjectStatus WriteObjectAndSubObjects(FNetSerializationContext& Context, uint32 InternalIndex, uint32 WriteObjectFlags, FBatchInfo& OutBatchInfo);
 
 	// Write objects recursive
 	EWriteObjectStatus WriteObjectInBatch(FNetSerializationContext& Context, uint32 InternalIndex, uint32 WriteObjectFlags, FBatchInfo& OutBatchInfo);
@@ -418,7 +436,7 @@ private:
 	// Setup replication info to be able to send attachments to objects not in scope
 	void SetupReplicationInfoForAttachmentsToObjectsNotInScope();
 
-	void ApplyFilterToChangeMask(uint32 ParentInternalIndex, uint32 InternalIndex, FReplicationInfo& Info, const FReplicationProtocol* Protocol, const uint8* InternalStateBuffer);
+	void ApplyFilterToChangeMask(uint32 ParentInternalIndex, uint32 InternalIndex, FReplicationInfo& Info, const FReplicationProtocol* Protocol, const uint8* InternalStateBuffer, bool bIsInitialState);
 
 	// Patchup changemask to include any in-flight changes. Returns true if in-flight changes were added.
 	bool PatchupObjectChangeMaskWithInflightChanges(uint32 InternalIndex, FReplicationInfo& Info);
@@ -446,7 +464,7 @@ private:
 
 	bool HasDataToSend(const FWriteContext& Context) const;
 
-	bool CollectAndWriteExports(FNetSerializationContext& Context, uint8* RESTRICT InternalBuffer, const FReplicationProtocol* Protocol) const;
+	void CollectAndAppendExports(FNetSerializationContext& Context, uint8* RESTRICT InternalBuffer, const FReplicationProtocol* Protocol) const;
 
 	bool IsWriteObjectSuccess(EWriteObjectStatus Status) const;
 
@@ -454,6 +472,8 @@ private:
 
 	void DiscardAllRecords();
 	void StopAllReplication();
+
+	void MarkObjectDirty(FInternalNetRefIndex InternalIndex, const char* Caller);
 
 private:
 	// Replication parameters

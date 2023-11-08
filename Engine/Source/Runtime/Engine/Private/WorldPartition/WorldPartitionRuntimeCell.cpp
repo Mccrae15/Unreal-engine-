@@ -5,11 +5,12 @@
 #include "Engine/Level.h"
 #include "Misc/HierarchicalLogArchive.h"
 #include "WorldPartition/WorldPartitionDebugHelper.h"
-#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
+#include "WorldPartition/DataLayer/DataLayerManager.h"
 #include "WorldPartition/DataLayer/DataLayersID.h"
 #include "WorldPartition/ContentBundle/ContentBundleDescriptor.h"
 #include "WorldPartition/DataLayer/WorldDataLayers.h"
 #include "WorldPartition/WorldPartitionStreamingSource.h"
+#include "WorldPartition/WorldPartitionRuntimeHash.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(WorldPartitionRuntimeCell)
 
@@ -21,8 +22,24 @@ UWorldPartitionRuntimeCell::UWorldPartitionRuntimeCell(const FObjectInitializer&
 	, DebugStreamingPriority(-1.f)
 #endif
 	, RuntimeCellData(nullptr)
+{}
+
+UWorld* UWorldPartitionRuntimeCell::GetOwningWorld() const
 {
-	check(HasAnyFlags(RF_ClassDefaultObject) || GetOuter()->Implements<UWorldPartitionRuntimeCellOwner>());
+	if (URuntimeHashExternalStreamingObjectBase* StreamingObjectOuter = GetTypedOuter<URuntimeHashExternalStreamingObjectBase>())
+	{
+		return StreamingObjectOuter->GetOwningWorld();
+	}
+	return UObject::GetTypedOuter<UWorldPartition>()->GetWorld();
+}
+
+UWorld* UWorldPartitionRuntimeCell::GetOuterWorld() const
+{
+	if (URuntimeHashExternalStreamingObjectBase* StreamingObjectOuter = GetTypedOuter<URuntimeHashExternalStreamingObjectBase>())
+	{
+		return StreamingObjectOuter->GetOuterWorld();
+	}
+	return UObject::GetTypedOuter<UWorld>();
 }
 
 #if WITH_EDITOR
@@ -39,8 +56,14 @@ void UWorldPartitionRuntimeCell::PostDuplicate(bool bDuplicateForPIE)
 		{
 			if (ensure(Actor))
 			{
-				// Don't use AActor::Rename here since the actor is not par of the world, it's only a duplication template.	
+				const FName FolderPath = Actor->GetFolderPath();
+				
+				// Don't use AActor::Rename here since the actor is not part of the world, it's only a duplication template.	
 				Actor->UObject::Rename(nullptr, UnsavedActorsContainer);
+				
+				// Mimic what AActor::Rename does under the hood to convert ActorFolders when changing the outer
+				const bool bBroadcastChange = false;
+				FSetActorFolderPath SetFolderPath(Actor, FolderPath, bBroadcastChange);
 			}
 		}
 	}
@@ -62,76 +85,13 @@ void UWorldPartitionRuntimeCell::SetDataLayers(const TArray<const UDataLayerInst
 		DataLayers.Add(DataLayerInstance->GetDataLayerFName());
 	}
 	DataLayers.Sort([](const FName& A, const FName& B) { return A.ToString() < B.ToString(); });
-	UpdateDebugName();
 }
 
-void UWorldPartitionRuntimeCell::SetDebugInfo(int64 InCoordX, int64 InCoordY, int64 InCoordZ, FName InGridName)
-{
-	DebugInfo.CoordX = InCoordX;
-	DebugInfo.CoordY = InCoordY;
-	DebugInfo.CoordZ = InCoordZ;
-	DebugInfo.GridName = InGridName;
-	UpdateDebugName();
-}
-
-void UWorldPartitionRuntimeCell::UpdateDebugName()
-{
-	TStringBuilder<512> Builder;
-	Builder += DebugInfo.GridName.ToString();
-	Builder += TEXT("_");
-	Builder += FString::Printf(TEXT("L%d_X%d_Y%d"), DebugInfo.CoordZ, DebugInfo.CoordX, DebugInfo.CoordY);
-	int32 DataLayerCount = DataLayers.Num();
-
-	if (DataLayerCount > 0)
-	{
-		if (const UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(GetCellOwner()->GetOuterWorld()))
-		{
-			TArray<const UDataLayerInstance*> DataLayerObjects;
-			Builder += TEXT(" DL[");
-			for (int i = 0; i < DataLayerCount; ++i)
-			{
-				const UDataLayerInstance* DataLayer = DataLayerSubsystem->GetDataLayerInstance(DataLayers[i]);
-				DataLayerObjects.Add(DataLayer);
-				Builder += DataLayer->GetDataLayerShortName();
-				Builder += TEXT(",");
-			}
-			Builder += FString::Printf(TEXT("ID:%X]"), FDataLayersID(DataLayerObjects).GetHash());
-		}
-	}
-
-	if (ContentBundleID.IsValid())
-	{
-		Builder += FString::Printf(TEXT(" CB[%s]"), *UContentBundleDescriptor::GetContentBundleCompactString(ContentBundleID));
-	}
-
-	DebugInfo.Name = Builder.ToString();
-}
-
-void UWorldPartitionRuntimeCell::DumpStateLog(FHierarchicalLogArchive& Ar)
+void UWorldPartitionRuntimeCell::DumpStateLog(FHierarchicalLogArchive& Ar) const
 {
 	Ar.Printf(TEXT("Actor Count: %d"), GetActorCount());
 }
 #endif
-
-bool UWorldPartitionRuntimeCell::ShouldResetStreamingSourceInfo() const
-{
-	return RuntimeCellData->ShouldResetStreamingSourceInfo();
-}
-
-void UWorldPartitionRuntimeCell::ResetStreamingSourceInfo() const
-{
-	RuntimeCellData->ResetStreamingSourceInfo();
-}
-
-void UWorldPartitionRuntimeCell::AppendStreamingSourceInfo(const FWorldPartitionStreamingSource& Source, const FSphericalSector& SourceShape) const
-{
-	RuntimeCellData->AppendStreamingSourceInfo(Source, SourceShape);
-}
-
-void UWorldPartitionRuntimeCell::MergeStreamingSourceInfo() const
-{
-	RuntimeCellData->MergeStreamingSourceInfo();
-}
 
 int32 UWorldPartitionRuntimeCell::SortCompare(const UWorldPartitionRuntimeCell* Other, bool bCanUseSortingCache) const
 {
@@ -143,11 +103,10 @@ int32 UWorldPartitionRuntimeCell::SortCompare(const UWorldPartitionRuntimeCell* 
 
 bool UWorldPartitionRuntimeCell::IsDebugShown() const
 {
-	return FWorldPartitionDebugHelper::IsDebugRuntimeHashGridShown(GetGridName()) &&
-		   FWorldPartitionDebugHelper::IsDebugStreamingStatusShown(GetStreamingStatus()) &&
+	return FWorldPartitionDebugHelper::IsDebugStreamingStatusShown(GetStreamingStatus()) &&
 	       FWorldPartitionDebugHelper::AreDebugDataLayersShown(DataLayers) &&
-		   FWorldPartitionDebugHelper::IsDebugCellNameShown(DebugInfo.Name) &&
-		   (FWorldPartitionDebugHelper::CanDrawContentBundles() || !ContentBundleID.IsValid());
+		   (FWorldPartitionDebugHelper::CanDrawContentBundles() || !ContentBundleID.IsValid()) &&
+			RuntimeCellData->IsDebugShown();
 }
 
 FLinearColor UWorldPartitionRuntimeCell::GetDebugStreamingPriorityColor() const
@@ -161,42 +120,33 @@ FLinearColor UWorldPartitionRuntimeCell::GetDebugStreamingPriorityColor() const
 	return FLinearColor::Transparent;
 }
 
+UDataLayerManager* UWorldPartitionRuntimeCell::GetDataLayerManager() const
+{
+	return GetOuterWorld()->GetWorldPartition()->GetDataLayerManager();
+}
+
+bool UWorldPartitionRuntimeCell::HasAnyDataLayerInEffectiveRuntimeState(EDataLayerRuntimeState InState) const
+{
+	const UDataLayerManager* DataLayerManager = HasDataLayers() ? GetDataLayerManager() : nullptr;
+	return DataLayerManager ? DataLayerManager->IsAnyDataLayerInEffectiveRuntimeState(GetDataLayers(), InState) : false;
+}
+
 TArray<const UDataLayerInstance*> UWorldPartitionRuntimeCell::GetDataLayerInstances() const
 {
-	if (const UDataLayerSubsystem* DataLayerSubsystem = GetWorld()->GetSubsystem<UDataLayerSubsystem>())
-	{
-		return DataLayerSubsystem->GetDataLayerInstances(GetDataLayers());
-	}
-
-	return TArray<const UDataLayerInstance*>();
+	const UDataLayerManager* DataLayerManager = HasDataLayers() ? GetDataLayerManager() : nullptr;
+	return DataLayerManager ? DataLayerManager->GetDataLayerInstances(GetDataLayers()) : TArray<const UDataLayerInstance*>();
 }
 
 bool UWorldPartitionRuntimeCell::ContainsDataLayer(const UDataLayerAsset* DataLayerAsset) const
 {
-	if (const UDataLayerSubsystem* DataLayerSubsystem = GetWorld()->GetSubsystem<UDataLayerSubsystem>())
-	{
-		if (const UDataLayerInstance* DataLayerInstance = DataLayerSubsystem->GetDataLayerInstance(DataLayerAsset))
-		{
-			return ContainsDataLayer(DataLayerInstance);
-		}
-	}
-
-	return false;
+	const UDataLayerManager* DataLayerManager = HasDataLayers() ? GetDataLayerManager() : nullptr;
+	const UDataLayerInstance* DataLayerInstance = DataLayerManager ? DataLayerManager->GetDataLayerInstance(DataLayerAsset) : nullptr;
+	return DataLayerInstance ? ContainsDataLayer(DataLayerInstance) : false;
 }
 
 bool UWorldPartitionRuntimeCell::ContainsDataLayer(const UDataLayerInstance* DataLayerInstance) const
 {
 	return GetDataLayers().Contains(DataLayerInstance->GetDataLayerFName());
-}
-
-const FBox& UWorldPartitionRuntimeCell::GetContentBounds() const
-{
-	return RuntimeCellData->GetContentBounds();
-}
-
-FBox UWorldPartitionRuntimeCell::GetCellBounds() const
-{
-	return RuntimeCellData->GetCellBounds();
 }
 
 FName UWorldPartitionRuntimeCell::GetLevelPackageName() const
@@ -206,4 +156,9 @@ FName UWorldPartitionRuntimeCell::GetLevelPackageName() const
 #else
 	return NAME_None;
 #endif
+}
+
+FString UWorldPartitionRuntimeCell::GetDebugName() const
+{
+	return RuntimeCellData->GetDebugName();
 }

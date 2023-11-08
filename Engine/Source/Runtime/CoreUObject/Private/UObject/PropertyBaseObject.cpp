@@ -3,13 +3,17 @@
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "Templates/Casts.h"
+#include "UObject/Package.h"
 #include "UObject/UnrealType.h"
 #include "UObject/UnrealTypePrivate.h"
 #include "UObject/UObjectHash.h"
 #include "Blueprint/BlueprintSupport.h"
+#include "UObject/CoreNet.h"
 #include "UObject/PropertyHelper.h"
 #include "UObject/LinkerPlaceholderClass.h"
 #include "UObject/LinkerPlaceholderExportObject.h"
+#include "UObject/LinkerLoadImportBehavior.h"
+#include "UObject/UObjectThreadContext.h"
 #include "Misc/StringBuilder.h"
 
 /*-----------------------------------------------------------------------------
@@ -223,13 +227,14 @@ FString FObjectPropertyBase::GetExportPath(const TObjectPtr<const UObject>& Obje
 	// Take the path name relative to the stopping point outermost ptr.
 	// This is so that cases like a component referencing a component in another actor work correctly when pasted
 	FString PathName = StopOuter ? Object->GetPathName(StopOuter) : Object.GetPathName();
+	const FTopLevelAssetPath ClassPathName = Object.GetClass()->GetClassPathName();
+	FString ExportPath = GetExportPath(ClassPathName, *PathName);
 	// Object names that contain invalid characters and paths that contain spaces must be put into quotes to be handled correctly
 	if (PortFlags & PPF_Delimited)
 	{
-		PathName = FString::Printf(TEXT("\"%s\""), *PathName.ReplaceQuotesWithEscapedQuotes());
+		ExportPath = FString::Printf(TEXT("\"%s\""), *ExportPath.ReplaceQuotesWithEscapedQuotes());
 	}
-	const FTopLevelAssetPath ClassPathName = Object.GetClass()->GetClassPathName();
-	return GetExportPath(ClassPathName, *PathName);
+	return ExportPath;
 }
 
 void FObjectPropertyBase::ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const
@@ -294,7 +299,7 @@ void FObjectPropertyBase::ExportText_Internal( FString& ValueStr, const void* Pr
  *
  * @return	true if the text is successfully resolved into a valid object reference of the correct type, false otherwise.
  */
-bool FObjectPropertyBase::ParseObjectPropertyValue(const FProperty* Property, UObject* OwnerObject, UClass* RequiredMetaClass, uint32 PortFlags, const TCHAR*& Buffer, UObject*& out_ResolvedValue, FUObjectSerializeContext* InSerializeContext /*= nullptr*/, bool bAllowAnyPackage /*= true*/)
+bool FObjectPropertyBase::ParseObjectPropertyValue(const FProperty* Property, UObject* OwnerObject, UClass* RequiredMetaClass, uint32 PortFlags, const TCHAR*& Buffer, TObjectPtr<UObject>& out_ResolvedValue, FUObjectSerializeContext* InSerializeContext /*= nullptr*/, bool bAllowAnyPackage /*= true*/)
 {
 	check(Property);
 	if (!RequiredMetaClass)
@@ -349,7 +354,7 @@ bool FObjectPropertyBase::ParseObjectPropertyValue(const FProperty* Property, UO
 			out_ResolvedValue = FObjectPropertyBase::FindImportedObject(Property, OwnerObject, ObjectClass, RequiredMetaClass, Temp.ToString(), PortFlags, InSerializeContext, bAllowAnyPackage);
 		}
 
-		if ( out_ResolvedValue != nullptr && !out_ResolvedValue->GetClass()->IsChildOf(RequiredMetaClass) )
+		if ( out_ResolvedValue != nullptr && !out_ResolvedValue.GetClass()->IsChildOf(RequiredMetaClass) )
 		{
 			if (bWarnOnnullptr )
 			{
@@ -377,7 +382,7 @@ bool FObjectPropertyBase::ParseObjectPropertyValue(const FProperty* Property, UO
 const TCHAR* FObjectPropertyBase::ImportText_Internal( const TCHAR* InBuffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* Parent, int32 PortFlags, FOutputDevice* ErrorText ) const
 {
 	const TCHAR* Buffer = InBuffer;
-	UObject* Result = nullptr;
+	TObjectPtr<UObject> Result = nullptr;
 	FLinkerLoad* Linker = GetLinker();
 
 	bool bOk = ParseObjectPropertyValue(this, Parent, PropertyClass, PortFlags, Buffer, Result, Linker ? Linker->GetSerializeContext() : nullptr);
@@ -408,18 +413,18 @@ const TCHAR* FObjectPropertyBase::ImportText_Internal( const TCHAR* InBuffer, vo
 
 	if (PropertyPointerType == EPropertyPointerType::Container && HasSetter())
 	{
-		SetObjectPropertyValue_InContainer(ContainerOrPropertyPtr, Result);
+		SetObjectPropertyValue_InContainer(ContainerOrPropertyPtr, Result); //TODO change this to not resolve TObjectPtr's
 	}
 	else
 	{
-		SetObjectPropertyValue(PointerToValuePtr(ContainerOrPropertyPtr, PropertyPointerType), Result);
+		SetObjectPtrPropertyValue(PointerToValuePtr(ContainerOrPropertyPtr, PropertyPointerType), Result);
 	}
 	return Buffer;
 }
 
-UObject* FObjectPropertyBase::FindImportedObject( const FProperty* Property, UObject* OwnerObject, UClass* ObjectClass, UClass* RequiredMetaClass, const TCHAR* Text, uint32 PortFlags/*=0*/, FUObjectSerializeContext* InSerializeContext /*= nullptr*/, bool bAllowAnyPackage /*= true*/)
+TObjectPtr<UObject> FObjectPropertyBase::FindImportedObject( const FProperty* Property, UObject* OwnerObject, UClass* ObjectClass, UClass* RequiredMetaClass, const TCHAR* Text, uint32 PortFlags/*=0*/, FUObjectSerializeContext* InSerializeContext /*= nullptr*/, bool bAllowAnyPackage /*= true*/)
 {
-	UObject*	Result = nullptr;
+	TObjectPtr<UObject>	Result = nullptr;
 	check( ObjectClass->IsChildOf(RequiredMetaClass) );
 
 	bool AttemptNonQualifiedSearch = (PortFlags & PPF_AttemptNonQualifiedSearch) != 0; 
@@ -520,6 +525,14 @@ UObject* FObjectPropertyBase::FindImportedObject( const FProperty* Property, UOb
 		// If we still can't find it, try to load it. (Only try to load fully qualified names)
 		if(!Result && Dot && !GIsSavingPackage)
 		{
+#if UE_WITH_OBJECT_HANDLE_LATE_RESOLVE 
+			FSoftObjectPath Path(Text);
+			if (UE::LinkerLoad::TryLazyLoad(*RequiredMetaClass, Path, Result))
+			{
+				return Result;
+			}
+#endif
+
 #if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
 			FLinkerLoad* Linker = (OwnerObject != nullptr) ? OwnerObject->GetClass()->GetLinker() : nullptr;
 			if (Linker == nullptr)
@@ -550,7 +563,7 @@ UObject* FObjectPropertyBase::FindImportedObject( const FProperty* Property, UOb
 	}
 
 	// if we found an object, and we have a parent, make sure we are in the same package or share an outer if the found object is private, unless it's a cross level property
-	if (Result && !Result->HasAnyFlags(RF_Public) && OwnerObject 
+	if (Result && !Result->HasAnyFlags(RF_Public) && OwnerObject && !OwnerObject->HasAnyFlags(RF_Transient)
 		&& Result->GetOutermostObject() != OwnerObject->GetOutermostObject()
 		&& Result->GetPackage() != OwnerObject->GetPackage())
 	{
@@ -575,6 +588,11 @@ TObjectPtr<UObject> FObjectPropertyBase::GetObjectPtrPropertyValue(const void* P
 {
 	checkf(false, TEXT("%s is missing implementation of GetObjectPtrPropertyValue"), *GetFullName());
 	return TObjectPtr<UObject>();
+}
+
+void FObjectPropertyBase::SetObjectPtrPropertyValue(void* PropertyValueAddress, TObjectPtr<UObject> Ptr) const
+{
+	SetObjectPropertyValue(PropertyValueAddress, Ptr.Get());
 }
 
 UObject* FObjectPropertyBase::GetObjectPropertyValue(const void* PropertyValueAddress) const
@@ -609,7 +627,55 @@ bool FObjectPropertyBase::AllowObjectTypeReinterpretationTo(const FObjectPropert
 	return false;
 }
 
-void FObjectPropertyBase::CheckValidObject(void* ValueAddress, UObject* OldValue) const
+UObject* FObjectPropertyBase::ConstructDefaultObjectValueIfNecessary(UObject* ExistingValue) const
+{
+	UObject* NewDefaultObjectValue = nullptr;
+
+	FUObjectSerializeContext* SerializeContext = FUObjectThreadContext::Get().GetSerializeContext();
+	UObject* Outer = SerializeContext ? SerializeContext->SerializedObject : nullptr;
+	if (!Outer)
+	{
+		Outer = GetTransientPackage();
+	}
+
+	if (ExistingValue)
+	{
+		UClass* ExistingValueClass = ExistingValue->GetClass();
+		// Sanity check to make sure the existing value class matches the property class
+		if (ExistingValueClass && (ExistingValueClass->IsChildOf(PropertyClass) || ExistingValueClass->GetAuthoritativeClass()->IsChildOf(PropertyClass)))
+		{
+			if (ExistingValue->IsTemplate())
+			{
+				// Existing value is a template so we can construct a new value with it as the archetype
+				// We probably got here because an object value failed to load (missing import class) and the property is left with a template of default subobject
+				NewDefaultObjectValue = NewObject<UObject>(Outer, ExistingValue->GetClass(), ExistingValue->GetFName(), RF_NoFlags, ExistingValue);
+			}
+			else
+			{
+				// Existing value is not a template so we can use it directly
+				// Similar to the above condition but the property was not referencing an instanced value in which case it's ok to leave the CDO default here
+				NewDefaultObjectValue = ExistingValue;
+			}
+		}
+	}
+
+	if (!NewDefaultObjectValue && !PropertyClass->HasAnyClassFlags(CLASS_Abstract))
+	{
+		// Existing value did not exist or it could not be used as a template
+		// Existing value may be null in case we were serializing an array of UObjects that failed to load (missing import class). Since the array is first pre-allocated with null values
+		// it will not have any existing objects to instantiate
+		NewDefaultObjectValue = NewObject<UObject>(Outer, PropertyClass);
+	}
+
+	// Final sanity check. We still may end up with a null object if the property class is abstract and the previous object value was missing or was not compatible
+	UE_CLOG(!NewDefaultObjectValue, LogProperty, Fatal, TEXT("Failed to create default object value for property %s. Previous value: %s"), 
+		*GetFullName(), 
+		ExistingValue ? *ExistingValue->GetFullName() : TEXT("None"));
+
+	return NewDefaultObjectValue;
+}
+
+void FObjectPropertyBase::CheckValidObject(void* ValueAddress, TObjectPtr<UObject> OldValue) const
 {
 	const TObjectPtr<UObject> Object = GetObjectPtrPropertyValue(ValueAddress);
 	if (!Object)
@@ -652,6 +718,11 @@ void FObjectPropertyBase::CheckValidObject(void* ValueAddress, UObject* OldValue
 		bool bIsReplacingClassRefs = PropertyClass && PropertyClass->HasAnyClassFlags(CLASS_NewerVersionExists) != ObjectClass->HasAnyClassFlags(CLASS_NewerVersionExists);
 		if (!bIsReplacingClassRefs && !IsDeferringValueLoad())
 		{
+			if (UPackage* ObjectPackage = Object->GetPackage())
+			{
+				ObjectPackage->SetDirtyFlag(true);
+			}
+
 			if (!HasAnyPropertyFlags(CPF_NonNullable))
 			{
 				UE_LOG(LogProperty, Warning,
@@ -665,16 +736,19 @@ void FObjectPropertyBase::CheckValidObject(void* ValueAddress, UObject* OldValue
 			}
 			else
 			{
-				checkf(OldValue, TEXT("CheckValidObject(\"%s\") trying to assign null object value to non-nullable property \"%s\""), *Object.GetFullName(), *GetFullName());
+				Object->Rename(nullptr, GetTransientPackage(), REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors);
+				UObject* DefaultValue = ConstructDefaultObjectValueIfNecessary(OldValue);
+
 				UE_LOG(LogProperty, Warning,
-					TEXT("Serialized %s for a property of %s. Reference will be reverted back to %s.\n    Property = %s\n    Item = %s"),
+					TEXT("Serialized %s for a non-nullable property of %s. Reference will be defaulted to %s.\n    Property = %s\n    Item = %s"),
 					*ObjectClass->GetFullName(),
 					*PropertyClass->GetFullName(),
-					OldValue ? *OldValue->GetFullName() : TEXT("None"),
+					DefaultValue ? *DefaultValue->GetFullName() : TEXT("None"),
 					*GetFullName(),
 					*Object.GetFullName()
 				);
-				SetObjectPropertyValue(ValueAddress, OldValue);
+
+				SetObjectPropertyValue(ValueAddress, DefaultValue);
 			}
 		}
 	}
@@ -684,31 +758,4 @@ bool FObjectPropertyBase::SameType(const FProperty* Other) const
 {
 	return (Super::SameType(Other) || (Other && Other->IsA<FObjectPropertyBase>() && ((FObjectPropertyBase*)Other)->AllowObjectTypeReinterpretationTo(this))) && 
 			 (PropertyClass == ((FObjectPropertyBase*)Other)->PropertyClass);
-}
-
-void FObjectPropertyBase::CopySingleValueToScriptVM( void* Dest, void const* Src ) const
-{
-	*(UObject**)Dest = GetObjectPropertyValue(Src);
-}
-
-void FObjectPropertyBase::CopyCompleteValueToScriptVM( void* Dest, void const* Src ) const
-{
-	for (int32 Index = 0; Index < ArrayDim; Index++)
-	{
-		((UObject**)Dest)[Index] = GetObjectPropertyValue(((uint8*)Src) + Index * ElementSize);
-	}
-}
-
-void FObjectPropertyBase::CopySingleValueFromScriptVM( void* Dest, void const* Src ) const
-{
-	SetObjectPropertyValue(Dest, *(UObject**)Src);
-}
-
-void FObjectPropertyBase::CopyCompleteValueFromScriptVM( void* Dest, void const* Src ) const
-{
-	checkSlow(ElementSize == sizeof(UObject*)); // the idea that script pointers are the same size as weak pointers is maybe required, maybe not
-	for (int32 Index = 0; Index < ArrayDim; Index++)
-	{
-		SetObjectPropertyValue(((uint8*)Dest) + Index * ElementSize, ((UObject**)Src)[Index]);
-	}
 }

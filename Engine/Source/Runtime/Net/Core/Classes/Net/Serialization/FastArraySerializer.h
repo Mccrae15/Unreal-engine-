@@ -17,6 +17,7 @@
 #include "Containers/ArrayView.h"
 #include "Net/Core/Misc/GuidReferences.h"
 #include "Net/Core/PushModel/PushModel.h"
+#include "Net/Core/NetCoreModule.h"
 #include "HAL/IConsoleManager.h"
 #include "Templates/EnableIf.h"
 #include "FastArraySerializer.generated.h"
@@ -30,8 +31,6 @@ NETCORE_API DECLARE_LOG_CATEGORY_EXTERN(LogNetFastTArray, Warning, All);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("NetSerializeFast Array"), STAT_NetSerializeFastArray, STATGROUP_ServerCPU, NETCORE_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("NetSerializeFast Array BuildMap"), STAT_NetSerializeFastArray_BuildMap, STATGROUP_ServerCPU, NETCORE_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("NetSerializeFast Array Delta Struct"), STAT_NetSerializeFastArray_DeltaStruct, STATGROUP_ServerCPU, NETCORE_API);
-
-extern NETCORE_API TAutoConsoleVariable<int32> CVarNetEnableDetailedScopeCounters;
 
 /**
  *	===================== Fast TArray Replication ===================== 
@@ -227,7 +226,7 @@ private:
 	// Helper to always return a Type even if GetFastArrayItemTypePtr is not defined
 	static constexpr auto FastArrayTypePtr = []
 	{
-		if constexpr (TModels<CGetFastArrayItemTypeFuncable, FastArrayType>::Value)
+		if constexpr (TModels_V<CGetFastArrayItemTypeFuncable, FastArrayType>)
 		{
 			return FastArrayType::GetFastArrayItemTypePtr();
 		}
@@ -279,7 +278,6 @@ public:
 
 	int32 ArrayReplicationKey;
 };
-
 
 /** Base struct for items using Fast TArray Replication */
 USTRUCT()
@@ -436,7 +434,7 @@ struct FFastArraySerializer
 	// Property index of this array in the owning object's replication layout
 	int32 RepIndex;
 #endif // WITH_PUSH_MODEL
-	
+
 	/** This must be called if you add or change an item in the array */
 	void MarkItemDirty(FFastArraySerializerItem & Item)
 	{
@@ -675,7 +673,7 @@ private:
 		 */
 		void BuildChangedAndDeletedBuffersFromDefault(
 			TMap<int32, int32>& NewIDToKeyMap,
-			TArray<FFastArraySerializer_FastArrayDeltaSerialize_FIdxIDPair, TInlineAllocator<8>>& ChangedElements);
+			TArray<FFastArraySerializer_FastArrayDeltaSerialize_FIdxIDPair, TInlineAllocator<8>>& ChangedElements) const;
 
 		/** Writes out a FFastArraySerializerHeader */
 		void WriteDeltaHeader(FFastArraySerializerHeader& Header) const;
@@ -697,7 +695,7 @@ private:
 	
 		/** Conditionally invoke PostReplicatedReceive method depending on if is defined or not */
 		template<typename FastArrayType = SerializerType>
-		inline typename TEnableIf<TModels<CPostReplicatedReceiveFuncable, FastArrayType, const FFastArraySerializer::FPostReplicatedReceiveParameters>::Value, void>::Type CallPostReplicatedReceiveOrNot(int32 OldArraySize)
+		inline typename TEnableIf<TModels_V<CPostReplicatedReceiveFuncable, FastArrayType, const FFastArraySerializer::FPostReplicatedReceiveParameters>, void>::Type CallPostReplicatedReceiveOrNot(int32 OldArraySize)
 		{
 			FFastArraySerializer::FPostReplicatedReceiveParameters PostReceivedParameters;
 			PostReceivedParameters.OldArraySize = OldArraySize;
@@ -706,7 +704,7 @@ private:
 		}
 
 		template<typename FastArrayType = SerializerType>
-		inline typename TEnableIf<!TModels<CPostReplicatedReceiveFuncable, FastArrayType, const FFastArraySerializer::FPostReplicatedReceiveParameters>::Value, void>::Type CallPostReplicatedReceiveOrNot(int32) {}
+		inline typename TEnableIf<!TModels_V<CPostReplicatedReceiveFuncable, FastArrayType, const FFastArraySerializer::FPostReplicatedReceiveParameters>, void>::Type CallPostReplicatedReceiveOrNot(int32) {}
 
 		// Validate that deduced FastArrayItemType is valid and that it is the same as the specified one		
 		static_assert(std::is_same_v<typename TFastArrayTypeHelper<SerializerType>::FastArrayItemType, Type>, "Auto deduced FastArrayItemType is invalid or differs from the specified type. Make sure that the FastArraySerializer has a single replicated array property.");
@@ -855,17 +853,12 @@ bool FFastArraySerializer::TFastArraySerializeHelper<Type, SerializerType>::Cond
 template<typename Type, typename SerializerType>
 void FFastArraySerializer::TFastArraySerializeHelper<Type, SerializerType>::BuildChangedAndDeletedBuffersFromDefault(
 	TMap<int32, int32>& NewIDToKeyMap,
-	TArray<FFastArraySerializer_FastArrayDeltaSerialize_FIdxIDPair, TInlineAllocator<8>>& ChangedElements)
+	TArray<FFastArraySerializer_FastArrayDeltaSerialize_FIdxIDPair, TInlineAllocator<8>>& ChangedElements) const
 {
 	const int32 NumConsideredItems = CalcNumItemsForConsideration();
 
 	// Verify assumptions, we never expect the default state to have replicated and thus IDCounter and ArrayReplicationKey should be at the defaults
 	check(Parms.bIsInitializingBaseFromDefault);
-	check(ArraySerializer.IDCounter == 0 && ArraySerializer.ArrayReplicationKey == 0);
-
-	// We fake assignment of ID to avoid modifying the default state
-	int32 FakeIDCounter = ArraySerializer.IDCounter;
-	const int32 FakeReplicationKey = 0;
 
 	//-----------------------------------------------------------------
 	// When initializing from default we assume that all items are new
@@ -881,15 +874,18 @@ void FFastArraySerializer::TFastArraySerializeHelper<Type, SerializerType>::Buil
 			continue;
 		}
 
-		// Item should not have been touched before
-		check(Item.ReplicationID == INDEX_NONE && Item.ReplicationKey == INDEX_NONE);
+		// When initializing from the CDO or archetype we do not allow the state to be modified as this will potentially lead to mismatch in ID assignment
+		if (Item.ReplicationID == INDEX_NONE)
+		{
+			UE_LOG(LogNetFastTArray, Log, TEXT("    FastArraySerializer::BuildChangedAndDeletedBuffersFromDefault Item with uninitialized ReplicationID detected in. Struct: %s, ItemIndex: %i"), *Parms.DebugName, i);
+			continue;
+		}
 
-		const int32 FakeID = FakeIDCounter + i;
+		NewIDToKeyMap.Add(Item.ReplicationID, Item.ReplicationKey);
 
-		NewIDToKeyMap.Add(FakeID, FakeReplicationKey);
-
-		UE_LOG(LogNetFastTArray, Log, TEXT("       New! Element ID: %d. %s"), FakeID, *Item.GetDebugString());
-		ChangedElements.Add(FFastArraySerializer_FastArrayDeltaSerialize_FIdxIDPair(i, FakeID));
+		UE_LOG(LogNetFastTArray, Log, TEXT("       New! Element ID: %d. %s"), Item.ReplicationID, *Item.GetDebugString());
+		// New
+		ChangedElements.Add(FFastArraySerializer_FastArrayDeltaSerialize_FIdxIDPair(i, Item.ReplicationID));
 	}
 }
 
@@ -920,10 +916,14 @@ void FFastArraySerializer::TFastArraySerializeHelper<Type, SerializerType>::Buil
 			// On clients, this will skip items that were added predictively.
 			continue;
 		}
+
+		// The item really should have a valid ReplicationID but in the case of loading from a save game, or initializing from a default state/archetype with existing data
+		// items may not have been marked dirty individually. Its ok to just assign them one here.
 		if (Item.ReplicationID == INDEX_NONE)
 		{
 			ArraySerializer.MarkItemDirty(Item);
 		}
+
 		NewIDToKeyMap.Add(Item.ReplicationID, Item.ReplicationKey);
 
 		const int32* OldValuePtr = OldIDToKeyMap ? OldIDToKeyMap->Find(Item.ReplicationID) : NULL;
@@ -948,8 +948,6 @@ void FFastArraySerializer::TFastArraySerializeHelper<Type, SerializerType>::Buil
 		{
 			UE_LOG(LogNetFastTArray, Log, TEXT("       New! Element ID: %d. %s"), Item.ReplicationID, *Item.GetDebugString());
 
-			// The item really should have a valid ReplicationID but in the case of loading from a save game,
-			// items may not have been marked dirty individually. Its ok to just assign them one here.
 			// New
 			ChangedElements.Add(FFastArraySerializer_FastArrayDeltaSerialize_FIdxIDPair(i, Item.ReplicationID));
 			++DeleteCount; // We added something new, so our initial DeleteCount value must be incremented.
@@ -1191,7 +1189,7 @@ bool FFastArraySerializer::FastArrayDeltaSerialize(TArray<Type> &Items, FNetDelt
 		return FastArrayDeltaSerialize_DeltaSerializeStructs(Items, Parms, ArraySerializer);
 	}
 
-	CONDITIONAL_SCOPE_CYCLE_COUNTER(STAT_NetSerializeFastArray, CVarNetEnableDetailedScopeCounters.GetValueOnAnyThread() > 0);
+	CONDITIONAL_SCOPE_CYCLE_COUNTER(STAT_NetSerializeFastArray, GUseDetailedScopeCounters);
 	class UScriptStruct* InnerStruct = Type::StaticStruct();
 
 	UE_LOG(LogNetFastTArray, Log, TEXT("FastArrayDeltaSerialize for %s. %s. %s"), *InnerStruct->GetName(), *InnerStruct->GetOwnerStruct()->GetName(), Parms.Reader ? TEXT("Reading") : TEXT("Writing"));
@@ -1401,7 +1399,7 @@ bool FFastArraySerializer::FastArrayDeltaSerialize(TArray<Type> &Items, FNetDelt
 
 		check(Parms.NewState);
 		*Parms.NewState = MakeShareable( NewState );
-		TMap<int32, int32> & NewMap = NewState->IDToCLMap;
+		TMap<int32, int32>& NewMap = NewState->IDToCLMap;
 		NewState->ArrayReplicationKey = ArraySerializer.ArrayReplicationKey;
 
 		FFastArraySerializerHeader Header{
@@ -1420,14 +1418,14 @@ bool FFastArraySerializer::FastArrayDeltaSerialize(TArray<Type> &Items, FNetDelt
 		else
 		{
 			Helper.BuildChangedAndDeletedBuffers(NewMap, OldMap, ChangedElements, Header.DeletedIndices);
+
+			// The array replication key may have changed while adding new elements (in the call to BuildChangedAndDeletedBuffers above)
+			NewState->ArrayReplicationKey = ArraySerializer.ArrayReplicationKey;
 		}
-		
+
 		// Note: we used to early return false here if nothing had changed, but we still need to send
 		// a bunch with the array key / base key, so that clients can look for implicit deletes.
-
-		// The array replication key may have changed while adding new elements (in the call to MarkItemDirty above)
-		NewState->ArrayReplicationKey = ArraySerializer.ArrayReplicationKey;
-
+		
 		//----------------------
 		// Write it out.
 		//----------------------
@@ -1487,7 +1485,7 @@ bool FFastArraySerializer::FastArrayDeltaSerialize(TArray<Type> &Items, FNetDelt
 			{
 				UE_LOG(LogNetFastTArray, Log, TEXT("   New. ID: %d. New Element!"), ElementID);
 
-				ThisElement = new (Items)Type();
+				ThisElement = &Items.AddDefaulted_GetRef();
 				ThisElement->ReplicationID = ElementID;
 
 				ElementIndex = Items.Num()-1;
@@ -1641,7 +1639,7 @@ bool FFastArraySerializer::FastArrayDeltaSerialize_DeltaSerializeStructs(TArray<
 		}
 	};
 
-	CONDITIONAL_SCOPE_CYCLE_COUNTER(STAT_NetSerializeFastArray_DeltaStruct, CVarNetEnableDetailedScopeCounters.GetValueOnAnyThread() > 0);
+	CONDITIONAL_SCOPE_CYCLE_COUNTER(STAT_NetSerializeFastArray_DeltaStruct, GUseDetailedScopeCounters);
 
 	class UScriptStruct* InnerStruct = Type::StaticStruct();
 
@@ -1754,13 +1752,13 @@ bool FFastArraySerializer::FastArrayDeltaSerialize_DeltaSerializeStructs(TArray<
 		else
 		{
 			Helper.BuildChangedAndDeletedBuffers(NewItemMap, OldItemMap, ChangedElements, Header.DeletedIndices);
+
+			// The array replication key may have changed while adding new elemnts (in the call to MarkItemDirty above)
+			NewState->ArrayReplicationKey = ArraySerializer.ArrayReplicationKey;
 		}
 
 		// Note: we used to early return false here if nothing had changed, but we still need to send
 		// a bunch with the array key / base key, so that clients can look for implicit deletes.
-
-		// The array replication key may have changed while adding new elemnts (in the call to MarkItemDirty above)
-		NewState->ArrayReplicationKey = ArraySerializer.ArrayReplicationKey;
 
 		//----------------------
 		// Write it out.

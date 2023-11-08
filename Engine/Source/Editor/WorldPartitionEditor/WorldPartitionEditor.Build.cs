@@ -40,14 +40,12 @@ public class WorldPartitionEditor : ModuleRules
 		(
 			new string[]
 			{
-				"SceneOutliner",
 				"WorkspaceMenuStructure",
 			}
 		);
 
 		PrivateIncludePaths.AddRange(
 			new string[] {
-				System.IO.Path.Combine(GetModuleDirectory("Renderer"), "Private"),
 			}
 		);
 	}

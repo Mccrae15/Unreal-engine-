@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "../Common.ush"
-#include "HairStrandsMeshProjectionCommon.ush"
+#include "HairStrandsBindingCommon.ush"
 
 #if SHADER_FOLLICLE_MASK
 
@@ -15,9 +15,7 @@ uint KernelSizeInPixels;
 #define UV_ROOT 1
 
 #if PERMUTATION_UV_TYPE == UV_MESH
-Buffer<float4> UniqueTrianglePosition0Buffer;
-Buffer<float4> UniqueTrianglePosition1Buffer;
-Buffer<float4> UniqueTrianglePosition2Buffer;
+Buffer<float4> UniqueTrianglePositionBuffer;
 Buffer<uint>   RootToUniqueTriangleIndexBuffer;
 Buffer<uint>   RootBarycentricBuffer; 
 #endif 
@@ -50,10 +48,10 @@ void MainVS(
 	}
 
 	if (UniqueTriangleIndex > MaxUniqueTriangleIndex) return;
-	const FHairMeshTriangleWithUVs Tri = GetTriangleWithUVsTransformation(UniqueTriangleIndex, UniqueTrianglePosition0Buffer, UniqueTrianglePosition1Buffer, UniqueTrianglePosition2Buffer);
+	const FHairMeshTriangleWithUVs Tri = GetTriangleWithUVsTransformation(UniqueTriangleIndex, UniqueTrianglePositionBuffer);
 
 	const uint EncodedBarycentric = RootBarycentricBuffer[RootIndex];
-	const float3 Barycentric = DecodeBarycentrics(EncodedBarycentric);
+	const float3 Barycentric = UnpackBarycentrics(EncodedBarycentric);
 	float2 RootUV = Barycentric.x * Tri.UV0 + Barycentric.y * Tri.UV1 + Barycentric.z * Tri.UV2;
 #endif
 

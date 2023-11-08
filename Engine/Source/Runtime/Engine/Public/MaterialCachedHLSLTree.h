@@ -12,6 +12,7 @@
 class UMaterial;
 class UMaterialExpression;
 class UMaterialExpressionCustomOutput;
+class UMaterialParameterCollection;
 struct FMaterialLayersFunctions;
 
 struct FMaterialConnectionKey
@@ -62,6 +63,8 @@ public:
 	const UE::Shader::FStructType* GetVTPageTableResultType() const { return VTPageTableResultType; }
 	const UE::Shader::FValue& GetMaterialAttributesDefaultValue() const { return MaterialAttributesDefaultValue; }
 
+	const TArray<UMaterialParameterCollection*>& GetParameterCollections() const { return ParameterCollections; }
+
 	const TMap<FMaterialConnectionKey, const UE::HLSLTree::FExpression*>& GetConnections() const { return ConnectionMap; }
 
 	ENGINE_API void SetRequestedFields(EShaderFrequency ShaderFrequency, UE::HLSLTree::FRequestedType& OutRequestedType) const;
@@ -80,6 +83,7 @@ private:
 	UE::HLSLTree::FScope* ResultScope = nullptr;
 
 	TArray<UMaterialExpressionCustomOutput*> MaterialCustomOutputs;
+	TArray<UMaterialParameterCollection*> ParameterCollections;
 	TMap<FMaterialConnectionKey, const UE::HLSLTree::FExpression*> ConnectionMap;
 	const UE::Shader::FStructType* MaterialAttributesType = nullptr;
 	const UE::Shader::FStructType* VTPageTableResultType = nullptr;

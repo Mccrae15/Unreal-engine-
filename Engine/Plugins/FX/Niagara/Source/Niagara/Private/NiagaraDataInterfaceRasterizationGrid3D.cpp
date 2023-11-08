@@ -1,13 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "NiagaraDataInterfaceRasterizationGrid3D.h"
-#include "NiagaraShader.h"
-#include "ShaderParameterUtils.h"
+#include "NiagaraCompileHashVisitor.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraShaderParametersBuilder.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraRenderer.h"
-#include "NiagaraShaderParticleID.h"
 #include "DataDrivenShaderPlatformInfo.h"
+#include "RenderGraphUtils.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceRasterizationGrid3D)
 
@@ -1125,6 +1124,9 @@ void FNiagaraDataInterfaceProxyRasterizationGrid3D::PreStage(const FNDIGpuComput
 
 	RasterizationGrid3DRWInstanceData& InstanceData = SystemInstancesToProxyData.FindChecked(Context.GetSystemInstanceID());
 
+	FRDGBuilder& GraphBuilder = Context.GetGraphBuilder();
+	FRHICommandListBase& RHICmdList = GraphBuilder.RHICmdList;
+
 	const uint32 NumTotalCells = InstanceData.NumCells.X * InstanceData.NumCells.Y * InstanceData.NumCells.Z * InstanceData.TotalNumAttributes;
 
 	// Resize was requested
@@ -1165,12 +1167,11 @@ void FNiagaraDataInterfaceProxyRasterizationGrid3D::PreStage(const FNDIGpuComput
 			);
 		}
 		PerAttributeData[InstanceData.TotalNumAttributes * 2] = FVector4f(65535, 65535, 65535, 65535);
-		InstanceData.PerAttributeData.Initialize(TEXT("Grid3D::PerAttributeData"), sizeof(FVector4f), PerAttributeData.Num(), EPixelFormat::PF_A32B32G32R32F, BUF_Static, &PerAttributeData);
+		InstanceData.PerAttributeData.Initialize(RHICmdList, TEXT("Grid3D::PerAttributeData"), sizeof(FVector4f), PerAttributeData.Num(), EPixelFormat::PF_A32B32G32R32F, BUF_Static, &PerAttributeData);
 	}
 
 	if (Context.IsOutputStage() && NumTotalCells > 0 && InstanceData.ClearBeforeNonIterationStage)
 	{
-		FRDGBuilder& GraphBuilder = Context.GetGraphBuilder();
 		const FUintVector4 ResetValue(InstanceData.ResetValue, InstanceData.ResetValue, InstanceData.ResetValue, InstanceData.ResetValue);
 		AddClearUAVPass(GraphBuilder, InstanceData.RasterizationTexture.GetOrCreateUAV(GraphBuilder), ResetValue);
 	}
@@ -1188,13 +1189,12 @@ void FNiagaraDataInterfaceProxyRasterizationGrid3D::PostSimulate(const FNDIGpuCo
 	}
 }
 
-FIntVector FNiagaraDataInterfaceProxyRasterizationGrid3D::GetElementCount(FNiagaraSystemInstanceID SystemInstanceID) const
+void FNiagaraDataInterfaceProxyRasterizationGrid3D::GetDispatchArgs(const FNDIGpuComputeDispatchArgsGenContext& Context)
 {
-	if ( const RasterizationGrid3DRWInstanceData* TargetData = SystemInstancesToProxyData.Find(SystemInstanceID) )
+	if ( const RasterizationGrid3DRWInstanceData* TargetData = SystemInstancesToProxyData.Find(Context.GetSystemInstanceID()) )
 	{
-		return TargetData->NumCells;
+		Context.SetDirect(TargetData->NumCells);
 	}
-	return FIntVector::ZeroValue;
 }
 
 bool UNiagaraDataInterfaceRasterizationGrid3D::CopyToInternal(UNiagaraDataInterface* Destination) const

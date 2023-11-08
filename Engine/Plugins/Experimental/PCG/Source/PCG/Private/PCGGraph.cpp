@@ -3,21 +3,28 @@
 #include "PCGGraph.h"
 
 #include "PCGComponent.h"
+#include "PCGEdge.h"
 #include "PCGInputOutputSettings.h"
 #include "PCGModule.h"
 #include "PCGNode.h"
 #include "PCGPin.h"
 #include "PCGSubsystem.h"
 #include "PCGSubgraph.h"
+#include "Elements/PCGHiGenGridSize.h"
 #include "Elements/PCGUserParameterGet.h"
 
-#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGGraph)
-
 #if WITH_EDITOR
+#include "CoreGlobals.h"
 #include "Editor.h"
+#include "Dialogs/Dialogs.h"
+#include "EdGraph/EdGraphPin.h"
 #else
 #include "UObject/Package.h"
 #endif
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGGraph)
+
+#define LOCTEXT_NAMESPACE "PCGGraph"
 
 namespace PCGGraphUtils
 {
@@ -61,9 +68,28 @@ namespace PCGGraphUtils
 		}
 
 		const uint8* SourceValueAddress = InSourceInstance.GetValue().GetMemory() + InSourcePropertyDesc->CachedProperty->GetOffset_ForInternal();
-		uint8* TargetValueAddress = InTargetInstance.GetMutableValue().GetMutableMemory() + InTargetPropertyDesc->CachedProperty->GetOffset_ForInternal();
+		uint8* TargetValueAddress = InTargetInstance.GetMutableValue().GetMemory() + InTargetPropertyDesc->CachedProperty->GetOffset_ForInternal();
 
 		InSourcePropertyDesc->CachedProperty->CopyCompleteValue(TargetValueAddress, SourceValueAddress);
+	}
+
+	EPCGChangeType NotifyTouchedNodes(const TSet<UPCGNode*>& InTouchedNodes)
+	{
+		EPCGChangeType ChangeType = EPCGChangeType::None;
+
+		for (UPCGNode* TouchedNode : InTouchedNodes)
+		{
+			if (TouchedNode)
+			{
+				ChangeType |= TouchedNode->PropagateDynamicPinTypes();
+
+#if WITH_EDITOR
+				TouchedNode->OnNodeChangedDelegate.Broadcast(TouchedNode, EPCGChangeType::Node);
+#endif
+			}
+		}
+
+		return ChangeType;
 	}
 }
 
@@ -202,6 +228,10 @@ UPCGGraph::UPCGGraph(const FObjectInitializer& ObjectInitializer)
 	// but not when using a blueprint construct script.
 	//InputNode->ConnectTo(OutputNode);
 	//OutputNode->ConnectFrom(InputNode);
+
+	// Force the user parameters to have an empty property bag. It is necessary to catch the first
+	// add property into the undo/redo history.
+	UserParameters.MigrateToNewBagStruct(UPropertyBag::GetOrCreateFromDescs({}));
 }
 
 void UPCGGraph::PostLoad()
@@ -239,6 +269,13 @@ void UPCGGraph::PostLoad()
 	for (UObject* ExtraNode : ExtraEditorNodes)
 	{
 		ExtraNode->ConditionalPostLoad();
+	}
+
+	// Create a copy to iterate through the nodes while more might be added
+	TArray<UPCGNode*> NodesCopy(Nodes);
+	for (UPCGNode* Node : NodesCopy)
+	{
+		Node->ApplyStructuralDeprecation();
 	}
 
 	// Finally, apply deprecation that changes edges/rebinds
@@ -309,6 +346,12 @@ void UPCGGraph::BeginDestroy()
 	Super::BeginDestroy();
 }
 
+uint32 UPCGGraph::GetDefaultGridSize() const
+{
+	ensure(IsHierarchicalGenerationEnabled());
+	return PCGHiGenGrid::IsValidGrid(HiGenGridSize) ? PCGHiGenGrid::GridToGridSize(HiGenGridSize) : PCGHiGenGrid::UnboundedGridSize();
+}
+
 UPCGNode* UPCGGraph::AddNodeOfType(TSubclassOf<class UPCGSettings> InSettingsClass, UPCGSettings*& OutDefaultNodeSettings)
 {
 	UPCGSettings* Settings = NewObject<UPCGSettings>(GetTransientPackage(), InSettingsClass, NAME_None, RF_Transactional);
@@ -322,7 +365,7 @@ UPCGNode* UPCGGraph::AddNodeOfType(TSubclassOf<class UPCGSettings> InSettingsCla
 
 	if (Node)
 	{
-		Settings->Rename(nullptr, Node);
+		Settings->Rename(nullptr, Node, REN_ForceNoResetLoaders | REN_DontCreateRedirectors);
 	}
 
 	OutDefaultNodeSettings = Settings;
@@ -348,14 +391,15 @@ UPCGNode* UPCGGraph::AddNode(UPCGSettingsInterface* InSettingsInterface)
 		Node->SetSettingsInterface(InSettingsInterface);
 
 		// Reparent node to this graph
-		Node->Rename(nullptr, this);
+		Node->Rename(nullptr, this, REN_ForceNoResetLoaders | REN_DontCreateRedirectors);
 
 #if WITH_EDITOR
 		const FName DefaultNodeName = InSettingsInterface->GetSettings()->GetDefaultNodeName();
 		if (DefaultNodeName != NAME_None)
 		{
-			FName NodeName = MakeUniqueObjectName(this, UPCGNode::StaticClass(), DefaultNodeName);
-			Node->Rename(*NodeName.ToString());
+			const FName NodeName = MakeUniqueObjectName(this, UPCGNode::StaticClass(), DefaultNodeName);
+			// Flags added because default flags favor tick/interactive, not load-time renaming.
+			Node->Rename(*NodeName.ToString(), nullptr, REN_ForceNoResetLoaders | REN_DontCreateRedirectors);
 		}
 #endif
 
@@ -455,22 +499,23 @@ bool UPCGGraph::AddLabeledEdge(UPCGNode* From, const FName& FromPinLabel, UPCGNo
 		return false;
 	}
 
+	TSet<UPCGNode*> TouchedNodes;
+
 	// Create edge
-	FromPin->AddEdgeTo(ToPin);
+	FromPin->AddEdgeTo(ToPin, &TouchedNodes);
 
 	bool bToPinBrokeOtherEdges = false;
 	
 	// Add an edge to a pin that doesn't allow multiple connections requires to do some cleanup
 	if (!ToPin->AllowMultipleConnections())
 	{
-		bToPinBrokeOtherEdges = ToPin->BreakAllIncompatibleEdges();
+		bToPinBrokeOtherEdges = ToPin->BreakAllIncompatibleEdges(&TouchedNodes);
 	}
 	
-	From->UpdateDynamicPins();
-	To->UpdateDynamicPins();
+	const EPCGChangeType ChangeType = PCGGraphUtils::NotifyTouchedNodes(TouchedNodes);
 
 #if WITH_EDITOR
-	NotifyGraphChanged(EPCGChangeType::Structural);
+	NotifyGraphChanged(ChangeType | EPCGChangeType::Structural);
 #endif
 
 	return bToPinBrokeOtherEdges;
@@ -519,16 +564,23 @@ void UPCGGraph::RemoveNode(UPCGNode* InNode)
 	check(InNode);
 
 	Modify();
+	
+	TSet<UPCGNode*> TouchedNodes;
 
 	for (UPCGPin* InputPin : InNode->InputPins)
 	{
-		InputPin->BreakAllEdges();
+		InputPin->BreakAllEdges(&TouchedNodes);
 	}
 
 	for (UPCGPin* OutputPin : InNode->OutputPins)
 	{
-		OutputPin->BreakAllEdges();
+		OutputPin->BreakAllEdges(&TouchedNodes);
 	}
+
+	// We're about to remove InNode, so don't bother triggering updates
+	TouchedNodes.Remove(InNode);
+
+	PCGGraphUtils::NotifyTouchedNodes(TouchedNodes);
 
 	Nodes.Remove(InNode);
 	OnNodeRemoved(InNode);
@@ -545,19 +597,22 @@ bool UPCGGraph::RemoveEdge(UPCGNode* From, const FName& FromLabel, UPCGNode* To,
 	UPCGPin* OutPin = From->GetOutputPin(FromLabel);
 	UPCGPin* InPin = To->GetInputPin(ToLabel);
 
-	const bool bChanged = OutPin && OutPin->BreakEdgeTo(InPin);
-
-	if (bChanged)
+	TSet<UPCGNode*> TouchedNodes;
+	if (OutPin)
 	{
-		From->UpdateDynamicPins();
-		To->UpdateDynamicPins();
+		OutPin->BreakEdgeTo(InPin, &TouchedNodes);
+	}
 
+	const EPCGChangeType ChangeType = PCGGraphUtils::NotifyTouchedNodes(TouchedNodes);
+
+	if (TouchedNodes.Num() > 0)
+	{
 #if WITH_EDITOR
-		NotifyGraphChanged(EPCGChangeType::Structural);
+		NotifyGraphChanged(ChangeType | EPCGChangeType::Structural);
 #endif
 	}
 
-	return bChanged;
+	return TouchedNodes.Num() > 0;
 }
 
 void UPCGGraph::ForEachNode(const TFunction<void(UPCGNode*)>& Action)
@@ -571,87 +626,49 @@ void UPCGGraph::ForEachNode(const TFunction<void(UPCGNode*)>& Action)
 	}
 }
 
-bool UPCGGraph::RemoveAllInboundEdges(UPCGNode* InNode)
-{
-	check(InNode);
-	bool bChanged = false;
-
-	for (UPCGPin* InputPin : InNode->InputPins)
-	{
-		bChanged |= InputPin->BreakAllEdges();
-	}
-
-#if WITH_EDITOR
-	if (bChanged)
-	{
-		InNode->UpdateDynamicPins();
-		NotifyGraphChanged(EPCGChangeType::Structural);
-	}
-#endif
-
-	return bChanged;
-}
-
-bool UPCGGraph::RemoveAllOutboundEdges(UPCGNode* InNode)
-{
-	check(InNode);
-	bool bChanged = false;
-	for (UPCGPin* OutputPin : InNode->OutputPins)
-	{
-		bChanged |= OutputPin->BreakAllEdges();
-	}
-
-#if WITH_EDITOR
-	if (bChanged)
-	{
-		InNode->UpdateDynamicPins();
-		NotifyGraphChanged(EPCGChangeType::Structural);
-	}
-#endif
-
-	return bChanged;
-}
-
 bool UPCGGraph::RemoveInboundEdges(UPCGNode* InNode, const FName& InboundLabel)
 {
 	check(InNode);
-	bool bChanged = false;
+	TSet<UPCGNode*> TouchedNodes;
 
 	if (UPCGPin* InputPin = InNode->GetInputPin(InboundLabel))
 	{
-		bChanged = InputPin->BreakAllEdges();
+		InputPin->BreakAllEdges(&TouchedNodes);
 	}
 
+	const EPCGChangeType ChangeType = PCGGraphUtils::NotifyTouchedNodes(TouchedNodes);
+
 #if WITH_EDITOR
-	if (bChanged)
+	if (TouchedNodes.Num() > 0)
 	{
-		InNode->UpdateDynamicPins();
-		NotifyGraphChanged(EPCGChangeType::Structural);
+		NotifyGraphChanged(ChangeType | EPCGChangeType::Structural);
 	}
 #endif
 
-	return bChanged;
+	return TouchedNodes.Num() > 0;
 }
 
 bool UPCGGraph::RemoveOutboundEdges(UPCGNode* InNode, const FName& OutboundLabel)
 {
 	check(InNode);
-	bool bChanged = false;
+	// Make a list of downstream nodes which may need pin updates when the edges change
+	TSet<UPCGNode*> TouchedNodes;
 
 	if (UPCGPin* OutputPin = InNode->GetOutputPin(OutboundLabel))
 	{
-		bChanged = OutputPin->BreakAllEdges();
+		OutputPin->BreakAllEdges(&TouchedNodes);
 	}
 
+	const EPCGChangeType ChangeType = PCGGraphUtils::NotifyTouchedNodes(TouchedNodes);
+
 #if WITH_EDITOR
-	if (bChanged)
+	if (TouchedNodes.Num() > 0)
 	{
-		InNode->UpdateDynamicPins();
-		NotifyGraphChanged(EPCGChangeType::Structural);
+		NotifyGraphChanged(ChangeType | EPCGChangeType::Structural);
 	}
 #endif
 
-	return bChanged;
+	return TouchedNodes.Num() > 0;
 }
 
 #if WITH_EDITOR
@@ -682,6 +699,54 @@ void UPCGGraph::PostNodeUndo(UPCGNode* InPCGNode)
 	}
 }
 #endif
+
+void UPCGGraph::GetGridSizes(PCGHiGenGrid::FSizeArray& OutGridSizes, bool& bOutHasUnbounded) const
+{
+	bOutHasUnbounded = HiGenGridSize == EPCGHiGenGrid::Unbounded;
+
+	const uint32 GraphDefaultGridSize = GetDefaultGridSize();
+	if (!IsHierarchicalGenerationEnabled())
+	{
+		if (PCGHiGenGrid::IsValidGridSize(GetDefaultGridSize()))
+		{
+			OutGridSizes.Add(GraphDefaultGridSize);
+		}
+		return;
+	}
+
+	bool bHasUninitialized = false;
+	for (const UPCGNode* Node : Nodes)
+	{
+		const uint32 GridSize = GetNodeGenerationGridSize(Node, GraphDefaultGridSize);
+		if (PCGHiGenGrid::IsValidGridSize(GridSize))
+		{
+			if (!OutGridSizes.Contains(GridSize))
+			{
+				OutGridSizes.Add(GridSize);
+			}
+		}
+		else if (GridSize == PCGHiGenGrid::UnboundedGridSize())
+		{
+			bOutHasUnbounded = true;
+		}
+		else if (GridSize == PCGHiGenGrid::UninitializedGridSize())
+		{
+			// Outside nodes will not have a concrete grid set
+			bHasUninitialized = true;
+		}
+	}
+
+	if (bHasUninitialized)
+	{
+		// Nodes outside grid ranges will execute at graph default
+		OutGridSizes.Add(GraphDefaultGridSize);
+	}
+
+	// Descending
+	OutGridSizes.Sort([](const uint32& A, const uint32& B) { return A > B; });
+
+	return;
+}
 
 #if WITH_EDITOR
 void UPCGGraph::DisableNotificationsForEditor()
@@ -727,16 +792,21 @@ void UPCGGraph::SetExtraEditorNodes(const TArray<TObjectPtr<const UObject>>& InN
 	}
 }
 
-FPCGTagToSettingsMap UPCGGraph::GetTrackedTagsToSettings() const
+void UPCGGraph::RemoveExtraEditorNode(const UObject* InNode)
 {
-	FPCGTagToSettingsMap TagsToSettings;
+	ExtraEditorNodes.Remove(const_cast<UObject*>(InNode));
+}
+
+FPCGActorSelectionKeyToSettingsMap UPCGGraph::GetTrackedActorKeysToSettings() const
+{
+	FPCGActorSelectionKeyToSettingsMap TagsToSettings;
 	TArray<TObjectPtr<const UPCGGraph>> VisitedGraphs;
 
-	GetTrackedTagsToSettings(TagsToSettings, VisitedGraphs);
+	GetTrackedActorKeysToSettings(TagsToSettings, VisitedGraphs);
 	return TagsToSettings;
 }
 
-void UPCGGraph::GetTrackedTagsToSettings(FPCGTagToSettingsMap& OutTagsToSettings, TArray<TObjectPtr<const UPCGGraph>>& OutVisitedGraphs) const
+void UPCGGraph::GetTrackedActorKeysToSettings(FPCGActorSelectionKeyToSettingsMap& OutTagsToSettings, TArray<TObjectPtr<const UPCGGraph>>& OutVisitedGraphs) const
 {
 	if (OutVisitedGraphs.Contains(this))
 	{
@@ -749,7 +819,7 @@ void UPCGGraph::GetTrackedTagsToSettings(FPCGTagToSettingsMap& OutTagsToSettings
 	{
 		if (Node && Node->GetSettings())
 		{
-			Node->GetSettings()->GetTrackedActorTags(OutTagsToSettings, OutVisitedGraphs);
+			Node->GetSettings()->GetTrackedActorKeys(OutTagsToSettings, OutVisitedGraphs);
 		}
 	}
 }
@@ -789,6 +859,13 @@ void UPCGGraph::NotifyGraphChanged(EPCGChangeType ChangeType)
 		}
 	}
 
+	// Graph settings, nodes, graph structure can all change the higen grid sizes.
+	if (ChangeType != EPCGChangeType::Cosmetic)
+	{
+		FWriteScopeLock ScopedWriteLock(NodeToGridSizeLock);
+		NodeToGridSize.Reset();
+	}
+
 	OnGraphChangedDelegate.Broadcast(this, ChangeType);
 
 	bIsNotifying = false;
@@ -810,7 +887,19 @@ void UPCGGraph::NotifyGraphParametersChanged(EPCGGraphParameterEvent InChangeTyp
 
 void UPCGGraph::OnNodeChanged(UPCGNode* InNode, EPCGChangeType ChangeType)
 {
-	if((ChangeType & ~EPCGChangeType::Cosmetic) != EPCGChangeType::None)
+	if (!!(ChangeType & EPCGChangeType::Structural) && Cast<UPCGHiGenGridSizeSettings>(InNode->GetSettings()))
+	{
+		// Update node to grid size map for grid size changes.
+		{
+			FWriteScopeLock ScopedWriteLock(NodeToGridSizeLock);
+			NodeToGridSize.Reset();
+		}
+
+		// Broadcast so that grid size visualization can be updated editor-side.
+		OnGraphGridSizesChangedDelegate.Broadcast(this);
+	}
+
+	if ((ChangeType & ~EPCGChangeType::Cosmetic) != EPCGChangeType::None)
 	{
 		NotifyGraphChanged(ChangeType);
 	}
@@ -829,17 +918,6 @@ void UPCGGraph::PreEditChange(FProperty* InProperty)
 	{
 		// We need to keep track of the number of properties, to detect if a property was added/removed/modified
 		NumberOfUserParametersPreEdit = UserParameters.GetNumPropertiesInBag();
-	}
-	else if (InProperty->GetOwnerStruct() == UserParameters.GetPropertyBagStruct())
-	{
-		// This is a bit unconventional, but we have to store the property name that has changed, because how Pre/Post Edit change is called.
-		// First PreEdit change is called twice. Once for the property changed (the one we want to track), and the second time on our UserParameters struct.
-		// Then PostEdit change is also called twice. But at the time of the first call (on the property we want to track), the value is not yet changed in memory of
-		// our UserParameters struct, it is still the old value. We need to wait the second call, PostEdit on our UserParameters struct, to have the memory updated with the new
-		// value. But then, we lost the name of our property.
-		// That's why we store the name here, and will use it in Post to know which property changed its value.
-		// TODO: It might be something that would need to change in StructUtils.
-		UserParameterModifiedName = InProperty->GetFName();
 	}
 }
 
@@ -879,11 +957,15 @@ void UPCGGraph::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEve
 
 		OnGraphParametersChanged(ChangeType, NAME_None);
 	}
-	else if (UserParameterModifiedName != NAME_None && MemberPropertyName == GET_MEMBER_NAME_CHECKED(UPCGGraph, UserParameters))
+	else if (PropertyChangedEvent.MemberProperty && PropertyChangedEvent.MemberProperty->GetOwnerStruct() == UserParameters.GetPropertyBagStruct())
 	{
-		// cf. PreEditChnage comment to understand why we need UserParameterModifiedName
-		OnGraphParametersChanged(EPCGGraphParameterEvent::ValueModifiedLocally, UserParameterModifiedName);
-		UserParameterModifiedName = NAME_None;
+		OnGraphParametersChanged(EPCGGraphParameterEvent::ValueModifiedLocally, MemberPropertyName);
+	}
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UPCGGraph, HiGenGridSize)
+		|| PropertyName == GET_MEMBER_NAME_CHECKED(UPCGGraph, bUseHierarchicalGeneration))
+	{
+		// The higen settings change the structure of the graph (presence or absence of links between grid levels).
+		NotifyGraphChanged(EPCGChangeType::Structural);
 	}
 
 	NumberOfUserParametersPreEdit = 0;
@@ -949,7 +1031,138 @@ void UPCGGraph::OnGraphParametersChanged(EPCGGraphParameterEvent InChangeType, F
 	NotifyGraphParametersChanged(InChangeType, InChangedPropertyName);
 }
 
+bool UPCGGraph::UserParametersIsPinTypeAccepted(FEdGraphPinType InPinType)
+{
+	// Text and interface not supported
+	if (InPinType.PinCategory == TEXT("text") || InPinType.PinCategory == TEXT("interface"))
+	{
+		return false;
+	}
+	else if (InPinType.PinCategory == TEXT("struct"))
+	{
+		// Structs other than Vector/Transform/Rotator not supported
+		return InPinType.PinSubCategoryObject == TBaseStructure<FVector>::Get() 
+			|| InPinType.PinSubCategoryObject == TBaseStructure<FTransform>::Get()
+			|| InPinType.PinSubCategoryObject == TBaseStructure<FRotator>::Get();
+	}
+	else
+	{
+		return true;
+	}
+}
+
+bool UPCGGraph::UserParametersCanRemoveProperty(FGuid InPropertyID, FName InPropertyName)
+{
+	// Check if the property has some getters in the graph
+	for (const UPCGNode* Node : Nodes)
+	{
+		if (!Node)
+		{
+			continue;
+		}
+
+		if (const UPCGUserParameterGetSettings* Settings = Cast<UPCGUserParameterGetSettings>(Node->GetSettings()))
+		{
+			if (Settings->PropertyGuid == InPropertyID)
+			{
+				// We found a getter. Ask the user if he is OK with that
+				FText RemoveCheckMessage = FText::Format(LOCTEXT("UserParametersRemoveCheck", "Property {0} is in use in the graph. Are you sure you want to remove it?"), FText::FromName(InPropertyName));
+				FSuppressableWarningDialog::FSetupInfo Info(RemoveCheckMessage, LOCTEXT("UserParametersRemoveCheck_Message", "Remove property"), "UserParametersRemove");
+				Info.ConfirmText = FCoreTexts::Get().Yes;
+				Info.CancelText = FCoreTexts::Get().No;
+				FSuppressableWarningDialog AddLevelWarning(Info);
+				if (AddLevelWarning.ShowModal() == FSuppressableWarningDialog::Cancel)
+				{
+					return false;
+				}
+			}
+		}
+	}
+
+	return true;
+}
+
 #endif // WITH_EDITOR
+
+uint32 UPCGGraph::GetNodeGenerationGridSize(const UPCGNode* InNode, uint32 InDefaultGridSize) const
+{
+	{
+		FReadScopeLock ScopedReadLock(NodeToGridSizeLock);
+		if (const uint32* CachedGridSize = NodeToGridSize.Find(InNode))
+		{
+			return *CachedGridSize;
+		}
+	}
+
+	{
+		FWriteScopeLock ScopedWriteLock(NodeToGridSizeLock);
+		return CalculateNodeGridSizeRecursive_Unsafe(InNode, InDefaultGridSize);
+	}
+}
+
+uint32 UPCGGraph::CalculateNodeGridSizeRecursive_Unsafe(const UPCGNode* InNode, uint32 InDefaultGridSize) const
+{
+	if (const uint32* CachedGridSize = NodeToGridSize.Find(InNode))
+	{
+		return *CachedGridSize;
+	}
+
+	uint32 GridSize = PCGHiGenGrid::UninitializedGridSize();
+
+	const UPCGHiGenGridSizeSettings* GridSizeSettings = Cast<UPCGHiGenGridSizeSettings>(InNode->GetSettings());
+	if (GridSizeSettings && GridSizeSettings->bEnabled)
+	{
+		GridSize = GridSizeSettings->GetGridSize();
+	}
+	else
+	{
+		// Grid size for a node is the minimum of the grid sizes of connected upstream nodes.
+		uint32 MinGenerationSize = std::numeric_limits<uint32>::max();
+		for (const UPCGPin* Pin : InNode->GetInputPins())
+		{
+			if (Pin)
+			{
+				for (const UPCGEdge* Edge : Pin->Edges)
+				{
+					const UPCGPin* OtherPin = Edge ? Edge->InputPin : nullptr;
+					if (OtherPin && OtherPin->Node.Get())
+					{
+						const uint32 InputGridSize = CalculateNodeGridSizeRecursive_Unsafe(OtherPin->Node, InDefaultGridSize);
+						if (PCGHiGenGrid::IsValidGridSize(InputGridSize))
+						{
+							MinGenerationSize = FMath::Min(MinGenerationSize, InputGridSize);
+						}
+					}
+				}
+			}
+		}
+
+		GridSize = (MinGenerationSize == std::numeric_limits<uint32>::max()) ? InDefaultGridSize : MinGenerationSize;
+	}
+
+	if (GridSize != PCGHiGenGrid::UninitializedGridSize())
+	{
+		NodeToGridSize.Add(InNode, GridSize);
+	}
+
+	return GridSize;
+}
+
+void UPCGGraph::AddUserParameters(const TArray<FPropertyBagPropertyDesc>& InDescs, const UPCGGraph* InOptionalOriginalGraph)
+{
+	UserParameters.AddProperties(InDescs);
+	if (InOptionalOriginalGraph)
+	{
+		if (const FInstancedPropertyBag* OriginalPropertyBag = InOptionalOriginalGraph->GetUserParametersStruct())
+		{
+			UserParameters.CopyMatchingValuesByID(*OriginalPropertyBag);
+		}
+	}
+
+#if WITH_EDITOR
+	OnGraphParametersChanged(EPCGGraphParameterEvent::MultiplePropertiesAdded, NAME_None);
+#endif // WITH_EDITOR
+}
 
 /****************************
 * UPCGGraphInstance
@@ -967,25 +1180,35 @@ void UPCGGraphInstance::PostLoad()
 	RefreshParameters(EPCGGraphParameterEvent::GraphPostLoad);
 
 #if WITH_EDITOR
-	if (Graph)
-	{
-		Graph->OnGraphChangedDelegate.AddUObject(this, &UPCGGraphInstance::OnGraphChanged);
-		Graph->OnGraphParametersChangedDelegate.AddUObject(this, &UPCGGraphInstance::OnGraphParametersChanged);
-	}
+	SetupCallbacks();
 #endif // WITH_EDITOR
 }
 
 void UPCGGraphInstance::BeginDestroy()
 {
 #if WITH_EDITOR
-	if (Graph)
-	{
-		Graph->OnGraphChangedDelegate.RemoveAll(this);
-		Graph->OnGraphParametersChangedDelegate.RemoveAll(this);
-	}
+	TeardownCallbacks();
 #endif // WITH_EDITOR
 
 	Super::BeginDestroy();
+}
+
+void UPCGGraphInstance::PostDuplicate(bool bDuplicateForPIE)
+{
+	Super::PostDuplicate(bDuplicateForPIE);
+
+#if WITH_EDITOR
+	SetupCallbacks();
+#endif // WITH_EDITOR
+}
+
+void UPCGGraphInstance::PostEditImport()
+{
+	Super::PostEditImport();
+
+#if WITH_EDITOR
+	SetupCallbacks();
+#endif // WITH_EDITOR
 }
 
 #if WITH_EDITOR
@@ -998,14 +1221,9 @@ void UPCGGraphInstance::PreEditChange(FProperty* InProperty)
 		return;
 	}
 
-	if (InProperty->GetOwnerStruct() == ParametersOverrides.Parameters.GetPropertyBagStruct())
+	if (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UPCGGraphInstance, Graph) && Graph)
 	{
-		UserParameterModifiedName = InProperty->GetFName();
-	}
-	else if (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UPCGGraphInstance, Graph) && Graph)
-	{
-		Graph->OnGraphChangedDelegate.RemoveAll(this);
-		Graph->OnGraphParametersChangedDelegate.RemoveAll(this);
+		TeardownCallbacks();
 	}
 }
 
@@ -1020,15 +1238,13 @@ void UPCGGraphInstance::PostEditChangeProperty(FPropertyChangedEvent& PropertyCh
 
 	if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UPCGGraphInstance, Graph) && Graph)
 	{
-		Graph->OnGraphChangedDelegate.AddUObject(this, &UPCGGraphInstance::OnGraphChanged);
-		Graph->OnGraphParametersChangedDelegate.AddUObject(this, &UPCGGraphInstance::OnGraphParametersChanged);
+		SetupCallbacks();
 
 		RefreshParameters(EPCGGraphParameterEvent::GraphChanged);
 	}
-	else if (UserParameterModifiedName != NAME_None && PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UPCGGraphInstance, ParametersOverrides))
+	else if (PropertyChangedEvent.MemberProperty && PropertyChangedEvent.MemberProperty->GetOwnerStruct() == ParametersOverrides.Parameters.GetPropertyBagStruct())
 	{
-		OnGraphParametersChanged(this, EPCGGraphParameterEvent::ValueModifiedLocally, UserParameterModifiedName);
-		UserParameterModifiedName = NAME_None;
+		OnGraphParametersChanged(this, EPCGGraphParameterEvent::ValueModifiedLocally, PropertyChangedEvent.GetMemberPropertyName());
 	}
 }
 
@@ -1036,11 +1252,7 @@ void UPCGGraphInstance::PreEditUndo()
 {
 	Super::PreEditUndo();
 
-	if (Graph)
-	{
-		Graph->OnGraphChangedDelegate.RemoveAll(this);
-		Graph->OnGraphParametersChangedDelegate.RemoveAll(this);
-	}
+	TeardownCallbacks();
 
 	UndoRedoGraphCache = Graph;
 }
@@ -1049,11 +1261,10 @@ void UPCGGraphInstance::PostEditUndo()
 {
 	Super::PostEditUndo();
 
-	if (Graph)
-	{
-		Graph->OnGraphChangedDelegate.AddUObject(this, &UPCGGraphInstance::OnGraphChanged);
-		Graph->OnGraphParametersChangedDelegate.AddUObject(this, &UPCGGraphInstance::OnGraphParametersChanged);
-	}
+	SetupCallbacks();
+
+	// Since we don't know what happened, we need to notify any changes
+	NotifyGraphParametersChanged(EPCGGraphParameterEvent::GraphChanged, NAME_None);
 }
 
 void UPCGGraphInstance::OnGraphChanged(UPCGGraphInterface* InGraph, EPCGChangeType ChangeType)
@@ -1061,6 +1272,14 @@ void UPCGGraphInstance::OnGraphChanged(UPCGGraphInterface* InGraph, EPCGChangeTy
 	if (InGraph == Graph)
 	{
 		OnGraphChangedDelegate.Broadcast(this, ChangeType);
+	}
+}
+
+void UPCGGraphInstance::OnGraphGridSizesChanged(UPCGGraphInterface* InGraph)
+{
+	if (InGraph == Graph)
+	{
+		OnGraphGridSizesChangedDelegate.Broadcast(this);
 	}
 }
 
@@ -1089,18 +1308,17 @@ void UPCGGraphInstance::TeardownCallbacks()
 	if (Graph)
 	{
 		Graph->OnGraphChangedDelegate.RemoveAll(this);
+		Graph->OnGraphGridSizesChangedDelegate.RemoveAll(this);
 		Graph->OnGraphParametersChangedDelegate.RemoveAll(this);
 	}
 }
 
-void UPCGGraphInstance::FixCallbacks()
+void UPCGGraphInstance::SetupCallbacks()
 {
-	// Start from a clean state.
-	TeardownCallbacks();
-
-	if (Graph)
+	if (Graph && !Graph->OnGraphChangedDelegate.IsBoundToObject(this))
 	{
 		Graph->OnGraphChangedDelegate.AddUObject(this, &UPCGGraphInstance::OnGraphChanged);
+		Graph->OnGraphGridSizesChangedDelegate.AddUObject(this, &UPCGGraphInstance::OnGraphGridSizesChanged);
 		Graph->OnGraphParametersChangedDelegate.AddUObject(this, &UPCGGraphInstance::OnGraphParametersChanged);
 	}
 }
@@ -1121,21 +1339,13 @@ void UPCGGraphInstance::SetGraph(UPCGGraphInterface* InGraph)
 	}
 
 #if WITH_EDITOR
-	if (Graph)
-	{
-		Graph->OnGraphChangedDelegate.RemoveAll(this);
-		Graph->OnGraphParametersChangedDelegate.RemoveAll(this);
-	}
+	TeardownCallbacks();
 #endif // WITH_EDITOR
 
 	Graph = InGraph;
 
 #if WITH_EDITOR
-	if (Graph)
-	{
-		Graph->OnGraphChangedDelegate.AddUObject(this, &UPCGGraphInstance::OnGraphChanged);
-		Graph->OnGraphParametersChangedDelegate.AddUObject(this, &UPCGGraphInstance::OnGraphParametersChanged);
-	}
+	SetupCallbacks();
 #endif // WITH_EDITOR
 
 #if WITH_EDITOR
@@ -1230,7 +1440,6 @@ void UPCGGraphInstance::UpdatePropertyOverride(const FProperty* InProperty, bool
 #if WITH_EDITOR
 		// If it is true, it means that the value has changed, so propagate the changes, in Editor
 		NotifyGraphParametersChanged(EPCGGraphParameterEvent::ValueModifiedLocally, InProperty->GetFName());
-		OnGraphChangedDelegate.Broadcast(this, EPCGChangeType::Settings);
 #endif // WITH_EDITOR
 	}
 }
@@ -1267,7 +1476,6 @@ void UPCGGraphInstance::ResetPropertyToDefault(const FProperty* InProperty)
 
 #if WITH_EDITOR
 	NotifyGraphParametersChanged(EPCGGraphParameterEvent::ValueModifiedLocally, InProperty->GetFName());
-	OnGraphChangedDelegate.Broadcast(this, EPCGChangeType::Settings);
 #endif // WITH_EDITOR
 }
 
@@ -1362,7 +1570,10 @@ bool FPCGOverrideInstancedPropertyBag::RefreshParameters(const FInstancedPropert
 		}
 		break;
 	}
-	case EPCGGraphParameterEvent::GraphPostLoad:
+	// Do the same thing in case of post load and multiple properties added.
+	// We have 2 enums to avoid puzzling someone that wonders why we would call GraphPostLoad when we add multiple properties.
+	case EPCGGraphParameterEvent::GraphPostLoad: // fall-through
+	case EPCGGraphParameterEvent::MultiplePropertiesAdded:
 	{
 		// Check if the property struct mismatch. If so, do the migration
 		if (Parameters.GetPropertyBagStruct() != ParentUserParameters->GetPropertyBagStruct())
@@ -1508,3 +1719,5 @@ void FPCGOverrideInstancedPropertyBag::MigrateToNewBagInstance(const FInstancedP
 		}
 	}
 }
+
+#undef LOCTEXT_NAMESPACE

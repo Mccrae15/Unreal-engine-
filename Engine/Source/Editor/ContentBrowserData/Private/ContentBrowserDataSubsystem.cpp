@@ -106,6 +106,8 @@ void UContentBrowserDataSubsystem::Initialize(FSubsystemCollectionBase& Collecti
 	FEditorDelegates::BeginPIE.AddUObject(this, &UContentBrowserDataSubsystem::OnBeginPIE);
 	FEditorDelegates::EndPIE.AddUObject(this, &UContentBrowserDataSubsystem::OnEndPIE);
 
+	FPackageName::OnContentPathMounted().AddUObject(this, &UContentBrowserDataSubsystem::OnContentPathMounted);
+
 	// Tick during normal operation
 	TickHandle = FTSTicker::GetCoreTicker().AddTicker(TEXT("ContentBrowserData"), 0.1f, [this](const float InDeltaTime)
 	{
@@ -128,6 +130,8 @@ void UContentBrowserDataSubsystem::Deinitialize()
 
 	FEditorDelegates::BeginPIE.RemoveAll(this);
 	FEditorDelegates::EndPIE.RemoveAll(this);
+
+	FPackageName::OnContentPathMounted().RemoveAll(this);
 
 	ActiveDataSources.Reset();
 	AvailableDataSources.Reset();
@@ -533,7 +537,7 @@ bool UContentBrowserDataSubsystem::PrioritizeSearchPath(const FName InPath)
 	return bDidPrioritize;
 }
 
-bool UContentBrowserDataSubsystem::IsFolderVisibleIfHidingEmpty(const FName InPath) const
+bool UContentBrowserDataSubsystem::IsFolderVisible(const FName InPath, const EContentBrowserIsFolderVisibleFlags InFlags) const
 {
 	bool bIsVisible = false;
 	bool bIsKnownPath = false;
@@ -543,10 +547,15 @@ bool UContentBrowserDataSubsystem::IsFolderVisibleIfHidingEmpty(const FName InPa
 		if (DataSource->IsVirtualPathUnderMountRoot(InPath))
 		{
 			bIsKnownPath = true;
-			bIsVisible |= DataSource->IsFolderVisibleIfHidingEmpty(InPath);
+			bIsVisible |= DataSource->IsFolderVisible(InPath, InFlags);
 		}
 	}
 	return bIsVisible || !bIsKnownPath;
+}
+
+bool UContentBrowserDataSubsystem::IsFolderVisibleIfHidingEmpty(const FName InPath) const
+{
+	return IsFolderVisible(InPath, EContentBrowserIsFolderVisibleFlags::Default | EContentBrowserIsFolderVisibleFlags::HideEmptyFolders);
 }
 
 bool UContentBrowserDataSubsystem::CanCreateFolder(const FName InPath, FText* OutErrorMsg) const
@@ -633,6 +642,51 @@ void UContentBrowserDataSubsystem::SetVirtualPathTreeNeedsRebuild()
 	}
 }
 
+
+void UContentBrowserDataSubsystem::FContentBrowserFilterCacheApi::InitializeCacheIDOwner(UContentBrowserDataSubsystem& Subsystem, FContentBrowserDataFilterCacheIDOwner& IDOwner)
+{
+	Subsystem.InitializeCacheIDOwner(IDOwner);
+}
+
+void UContentBrowserDataSubsystem::FContentBrowserFilterCacheApi::RemoveUnusedCachedData(const UContentBrowserDataSubsystem& Subsystem, const FContentBrowserDataFilterCacheIDOwner& IDOwner, TArrayView<const FName> InVirtualPathsInUse, const FContentBrowserDataFilter& DataFilter)
+{
+	Subsystem.RemoveUnusedCachedFilterData(IDOwner, InVirtualPathsInUse, DataFilter);
+}
+
+void UContentBrowserDataSubsystem::FContentBrowserFilterCacheApi::ClearCachedData(const UContentBrowserDataSubsystem& Subsystem, const FContentBrowserDataFilterCacheIDOwner& IDOwner)
+{
+	Subsystem.ClearCachedFilterData(IDOwner);
+}
+
+
+void UContentBrowserDataSubsystem::InitializeCacheIDOwner(FContentBrowserDataFilterCacheIDOwner& IDOwner)
+{
+	++LastCacheIDForFilter;
+	if (LastCacheIDForFilter == INDEX_NONE)
+	{
+		++LastCacheIDForFilter;
+	}
+
+	IDOwner.ID = LastCacheIDForFilter;
+	IDOwner.DataSource = this;
+}
+
+void UContentBrowserDataSubsystem::RemoveUnusedCachedFilterData(const FContentBrowserDataFilterCacheIDOwner& IDOwner, TArrayView<const FName> InVirtualPathsInUse, const FContentBrowserDataFilter& DataFilter) const 
+{
+	for (const TPair<FName, UContentBrowserDataSource*>& DataSource : AvailableDataSources)
+	{
+		DataSource.Value->RemoveUnusedCachedFilterData(IDOwner, InVirtualPathsInUse, DataFilter);
+	}
+}
+
+void UContentBrowserDataSubsystem::ClearCachedFilterData(const FContentBrowserDataFilterCacheIDOwner& IDOwner) const
+{
+	for (const TPair<FName, UContentBrowserDataSource*>& DataSource : AvailableDataSources)
+	{
+		DataSource.Value->ClearCachedFilterData(IDOwner);
+	}
+}
+
 void UContentBrowserDataSubsystem::HandleDataSourceRegistered(const FName& Type, IModularFeature* Feature)
 {
 	if (Type == UContentBrowserDataSource::GetModularFeatureTypeName())
@@ -681,6 +735,13 @@ void UContentBrowserDataSubsystem::Tick(const float InDeltaTime)
 		return;
 	}
 
+	if (bContentMountedThisFrame)
+	{
+		// Content just added, defer tick for a frame or we risk slowing down content load
+		bContentMountedThisFrame = false;
+		return;
+	}
+
 	for (const auto& AvailableDataSourcePair : AvailableDataSources)
 	{
 		AvailableDataSourcePair.Value->Tick(InDeltaTime);
@@ -696,6 +757,8 @@ void UContentBrowserDataSubsystem::Tick(const float InDeltaTime)
 
 	if (PendingUpdates.Num() > 0)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(UContentBrowserDataSubsystem::BroadCastItemDataUpdate);
+
 		TArray<FContentBrowserItemDataUpdate> LocalPendingUpdates = MoveTemp(PendingUpdates);
 		PendingUpdates.Empty();
 		ItemDataUpdatedDelegate.Broadcast(MakeArrayView(LocalPendingUpdates));
@@ -727,6 +790,11 @@ void UContentBrowserDataSubsystem::Tick(const float InDeltaTime)
 			ItemDataDiscoveryCompleteDelegate.Broadcast();
 		}
 	}
+}
+
+void UContentBrowserDataSubsystem::OnContentPathMounted(const FString& AssetPath, const FString& ContentPath)
+{
+	bContentMountedThisFrame = true;
 }
 
 void UContentBrowserDataSubsystem::QueueItemDataUpdate(FContentBrowserItemDataUpdate&& InUpdate)

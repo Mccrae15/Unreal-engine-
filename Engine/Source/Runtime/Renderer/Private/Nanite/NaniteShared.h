@@ -33,7 +33,6 @@ struct FPackedView
 
 	FMatrix44f	TranslatedWorldToView;
 	FMatrix44f	TranslatedWorldToClip;
-	FMatrix44f	TranslatedWorldToSubpixelClip;
 	FMatrix44f	ViewToClip;
 	FMatrix44f	ClipToRelativeWorld;
 
@@ -75,12 +74,59 @@ struct FPackedView
 	 * Note: depends on the global 'GNaniteMaxPixelsPerEdge'.
 	 */
 	void UpdateLODScales(const float NaniteMaxPixelsPerEdge, const float MinPixelsPerEdgeHW);
+};
 
+class FPackedViewArray
+{
+public:
+	using ArrayType = TArray<FPackedView, SceneRenderingAllocator>;
+	using TaskLambdaType = TFunction<void(ArrayType&)>;
 
-	/**
-	 * Helper to compute the derived subpixel transform.
-	 */
-	static FMatrix44f CalcTranslatedWorldToSubpixelClip(const FMatrix44f& TranslatedWorldToClip, const FIntRect& ViewRect);
+	/** Creates a packed view array for a single element. */
+	static FPackedViewArray* Create(FRDGBuilder& GraphBuilder, const FPackedView& View);
+
+	/** Creates a packed view array for an existing array. */
+	static FPackedViewArray* Create(FRDGBuilder& GraphBuilder, uint32 NumPrimaryViews, uint32 MaxNumMips, ArrayType&& Views);
+
+	/** Creates a packed view array by launching an RDG setup task. */
+	static FPackedViewArray* CreateWithSetupTask(FRDGBuilder& GraphBuilder, uint32 NumPrimaryViews, uint32 MaxNumMips, TaskLambdaType&& TaskLambda, UE::Tasks::FPipe* Pipe = nullptr, bool bExecuteInTask = true);
+
+	/** Returns the view array, and will sync the setup task if one exists. */
+	const ArrayType& GetViews() const
+	{
+		SetupTask.Wait();
+		check(Views.Num() == NumViews);
+		return Views;
+	}
+
+	// Number of total primary views (i.e. not including mip views).
+	const uint32 NumPrimaryViews;
+
+	// Number of total views including mip views.
+	const uint32 NumViews;
+
+	// Maximum number of mips across all views.
+	const uint32 MaxNumMips;
+
+	UE::Tasks::FTask GetSetupTask() const
+	{
+		return SetupTask;
+	}
+
+private:
+	FPackedViewArray(uint32 InNumPrimaryViews, uint32 InMaxNumMips)
+		: NumPrimaryViews(InNumPrimaryViews)
+		, NumViews(InNumPrimaryViews * InMaxNumMips)
+		, MaxNumMips(InMaxNumMips)
+	{}
+
+	// Packed views containing all expanded mips.
+	ArrayType Views;
+
+	// The task that is generating the Views data array, if any.
+	mutable UE::Tasks::FTask SetupTask;
+
+	RDG_FRIEND_ALLOCATOR_FRIEND(FPackedViewArray);
 };
 
 struct FPackedViewParams
@@ -126,6 +172,9 @@ FPackedView CreatePackedViewFromViewInfo(
 	const FIntRect* InHZBTestViewRect = nullptr
 );
 
+/** Whether to draw multiple FSceneView in one Nanite pass (as opposed to view by view). */
+bool ShouldDrawSceneViewsInOneNanitePass(const FViewInfo& View);
+
 struct FVisualizeResult
 {
 	FRDGTextureRef ModeOutput;
@@ -138,9 +187,10 @@ struct FVisualizeResult
 struct FBinningData
 {
 	uint32 BinCount = 0;
+	uint32 FixedFunctionBin = 0;
 
 	FRDGBufferRef DataBuffer = nullptr;
-	FRDGBufferRef HeaderBuffer = nullptr;
+	FRDGBufferRef MetaBuffer = nullptr;
 	FRDGBufferRef IndirectArgs = nullptr;
 };
 
@@ -172,23 +222,29 @@ public:
 	int32 PickingBufferNumPending = 0;
 	TArray<FRHIGPUBufferReadback*> PickingBuffers;
 
+	TRefCountPtr<FRDGPooledBuffer>	SplitWorkQueueBuffer;
+	TRefCountPtr<FRDGPooledBuffer>	OccludedPatchesBuffer;
+
+	FNodesAndClusterBatchesBuffer	MainAndPostNodesAndClusterBatchesBuffer;
+
 public:
-	virtual void InitRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 	virtual void ReleaseRHI() override;
 
-	void	Update(FRDGBuilder& GraphBuilder); // Called once per frame before any Nanite rendering has occurred.
+	void Update(FRDGBuilder& GraphBuilder); // Called once per frame before any Nanite rendering has occurred.
 
 	static uint32 GetMaxCandidateClusters();
 	static uint32 GetMaxClusterBatches();
 	static uint32 GetMaxVisibleClusters();
 	static uint32 GetMaxNodes();
+	static uint32 GetMaxCandidatePatches();
+	static uint32 GetMaxVisiblePatches();
 
 	inline PassBuffers& GetMainPassBuffers() { return MainPassBuffers; }
 	inline PassBuffers& GetPostPassBuffers() { return PostPassBuffers; }
 
-	FNodesAndClusterBatchesBuffer& GetMainAndPostNodesAndClusterBatchesBuffer() { return MainAndPostNodesAndClusterBatchesBuffer; };
-
 	TRefCountPtr<FRDGPooledBuffer>& GetStatsBufferRef() { return StatsBuffer; }
+	TRefCountPtr<FRDGPooledBuffer>& GetShadingBinMetaBufferRef() { return ShadingBinMetaBuffer; }
 
 #if !UE_BUILD_SHIPPING
 	FFeedbackManager* GetFeedbackManager() { return FeedbackManager; }
@@ -197,10 +253,11 @@ private:
 	PassBuffers MainPassBuffers;
 	PassBuffers PostPassBuffers;
 
-	FNodesAndClusterBatchesBuffer MainAndPostNodesAndClusterBatchesBuffer;
-
 	// Used for statistics
 	TRefCountPtr<FRDGPooledBuffer> StatsBuffer;
+
+	// Used for visualizations
+	TRefCountPtr<FRDGPooledBuffer> ShadingBinMetaBuffer;
 
 #if !UE_BUILD_SHIPPING
 	FFeedbackManager* FeedbackManager = nullptr;
@@ -225,13 +282,16 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FNaniteUniformParameters, )
 	SHADER_PARAMETER_RDG_BUFFER_SRV(ByteAddressBuffer,		HierarchyBuffer)
 	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint>, MaterialTileRemap)
 	SHADER_PARAMETER_SRV           (ByteAddressBuffer,		MaterialDepthTable)
-	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<uint2>,			MaterialResolve)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<uint>,			ShadingMask)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<UlongType>,		VisBuffer64)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<UlongType>,		DbgBuffer64)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<uint>,			DbgBuffer32)
-	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<uint>,			ShadingRate)
 
 	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint>, RayTracingDataBuffer)
+
+	// TODO: Use FNaniteShadingBinMeta but need to cleanly expose the type to the generated UB header somehow
+	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint4>, ShadingBinMeta)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint>,  ShadingBinData)
 
 	// Multi view
 	SHADER_PARAMETER(uint32,												MultiViewEnabled)
@@ -275,9 +335,12 @@ public:
 		
 		OutEnvironment.SetDefine(TEXT("VF_SUPPORTS_PRIMITIVE_SCENE_DATA"), 1);
 
+		OutEnvironment.SetDefine(TEXT("NANITE_TESSELLATION"), NaniteTessellationSupported() ? 1 : 0);
+
 		// Force shader model 6.0+
 		OutEnvironment.CompilerFlags.Add(CFLAG_ForceDXC);
 		OutEnvironment.CompilerFlags.Add(CFLAG_HLSL2021);
+		OutEnvironment.CompilerFlags.Add(CFLAG_WarningsAsErrors);
 	}
 };
 
@@ -292,12 +355,12 @@ public:
 
 	static bool IsVertexProgrammable(const FMaterialShaderParameters& MaterialParameters)
 	{
-		return MaterialParameters.bHasVertexPositionOffsetConnected;
+		return MaterialParameters.bHasVertexPositionOffsetConnected || MaterialParameters.bHasDisplacementConnected;
 	}
 
 	static bool IsVertexProgrammable(uint32 MaterialBitFlags)
 	{
-		return (MaterialBitFlags & NANITE_MATERIAL_FLAG_WORLD_POSITION_OFFSET) != 0u;
+		return (MaterialBitFlags & NANITE_MATERIAL_VERTEX_PROGRAMMABLE_FLAGS);
 	}
 
 	static bool IsPixelProgrammable(const FMaterialShaderParameters& MaterialParameters)
@@ -330,13 +393,13 @@ public:
 	}
 
 
-	static bool ShouldCompilePixelPermutation(const FMaterialShaderPermutationParameters& Parameters, bool bProgrammableRaster)
+	static bool ShouldCompilePixelPermutation(const FMaterialShaderPermutationParameters& Parameters)
 	{
 		// Always compile default material as the fast opaque "fixed function" raster path
 		bool bValidMaterial = Parameters.MaterialParameters.bIsDefaultMaterial;
 
-		// Compile this pixel shader if it requires programmable raster and it's enabled
-		if (bProgrammableRaster && Parameters.MaterialParameters.bIsUsedWithNanite && FNaniteMaterialShader::IsPixelProgrammable(Parameters.MaterialParameters))
+		// Compile this pixel shader if it requires programmable raster
+		if (Parameters.MaterialParameters.bIsUsedWithNanite && FNaniteMaterialShader::IsPixelProgrammable(Parameters.MaterialParameters))
 		{
 			bValidMaterial = true;
 		}
@@ -347,13 +410,13 @@ public:
 			bValidMaterial;
 	}
 	
-	static bool ShouldCompileVertexPermutation(const FMaterialShaderPermutationParameters& Parameters, bool bProgrammableRaster)
+	static bool ShouldCompileVertexPermutation(const FMaterialShaderPermutationParameters& Parameters)
 	{
 		// Always compile default material as the fast opaque "fixed function" raster path
 		bool bValidMaterial = Parameters.MaterialParameters.bIsDefaultMaterial;
 
-		// Compile this vertex shader if it requires programmable raster and it's enabled
-		if (bProgrammableRaster && Parameters.MaterialParameters.bIsUsedWithNanite && FNaniteMaterialShader::IsVertexProgrammable(Parameters.MaterialParameters))
+		// Compile this vertex shader if it requires programmable raster
+		if (Parameters.MaterialParameters.bIsUsedWithNanite && FNaniteMaterialShader::IsVertexProgrammable(Parameters.MaterialParameters))
 		{
 			bValidMaterial = true;
 		}
@@ -364,13 +427,13 @@ public:
 			bValidMaterial;
 	}
 	
-	static bool ShouldCompileComputePermutation(const FMaterialShaderPermutationParameters& Parameters, bool bProgrammableRaster)
+	static bool ShouldCompileComputePermutation(const FMaterialShaderPermutationParameters& Parameters)
 	{
 		// Always compile default material as the fast opaque "fixed function" raster path
 		bool bValidMaterial = Parameters.MaterialParameters.bIsDefaultMaterial;
 
-		// Compile this compute shader if it requires programmable raster and it's enabled
-		if (bProgrammableRaster && Parameters.MaterialParameters.bIsUsedWithNanite && (IsVertexProgrammable(Parameters.MaterialParameters) || IsPixelProgrammable(Parameters.MaterialParameters)))
+		// Compile this compute shader if it requires programmable raster
+		if (Parameters.MaterialParameters.bIsUsedWithNanite && (IsVertexProgrammable(Parameters.MaterialParameters) || IsPixelProgrammable(Parameters.MaterialParameters)))
 		{
 			bValidMaterial = true;
 		}
@@ -391,21 +454,28 @@ public:
 		OutEnvironment.SetDefine(TEXT("VF_SUPPORTS_PRIMITIVE_SCENE_DATA"), 1);
 		OutEnvironment.SetDefine(TEXT("NANITE_MATERIAL_SHADER"), 1);
 
-		// Get data from GPUSceneParameters rather than View.
-		OutEnvironment.SetDefine(TEXT("USE_GLOBAL_GPU_SCENE_DATA"), 1);
-
 		OutEnvironment.SetDefine(TEXT("IS_NANITE_RASTER_PASS"), 1);
 		OutEnvironment.SetDefine(TEXT("IS_NANITE_PASS"), 1);
 
 		OutEnvironment.SetDefine(TEXT("NANITE_USE_UNIFORM_BUFFER"), 0);
 		OutEnvironment.SetDefine(TEXT("NANITE_USE_VIEW_UNIFORM_BUFFER"), 0);
 
+		OutEnvironment.SetDefine(TEXT("NANITE_TESSELLATION"), (Parameters.MaterialParameters.bHasDisplacementConnected && NaniteTessellationSupported()) ? 1 : 0);
+
 		// Force definitions of GetObjectWorldPosition(), etc..
 		OutEnvironment.SetDefine(TEXT("HAS_PRIMITIVE_UNIFORM_BUFFER"), 1);
+
+		OutEnvironment.SetDefine(TEXT("ALWAYS_EVALUATE_WORLD_POSITION_OFFSET"),
+			Parameters.MaterialParameters.bAlwaysEvaluateWorldPositionOffset ? 1 : 0);
 	}
 };
 
 class FMaterialRenderProxy;
+
+class FHWRasterizePS;
+class FHWRasterizeVS;
+class FHWRasterizeMS;
+class FMicropolyRasterizeCS;
 
 struct FNaniteRasterPipeline
 {
@@ -414,8 +484,9 @@ struct FNaniteRasterPipeline
 	bool bPerPixelEval = false;
 	bool bForceDisableWPO = false;
 	bool bWPODisableDistance = false;
+	bool bSplineMesh = false;
 
-	static FNaniteRasterPipeline GetFixedFunctionPipeline(bool bIsTwoSided);
+	static FNaniteRasterPipeline GetFixedFunctionPipeline(bool bIsTwoSided, bool bSplineMesh);
 
 	inline uint32 GetPipelineHash() const
 	{
@@ -440,6 +511,7 @@ struct FNaniteRasterPipeline
 		HashKey.MaterialFlags  = 0;
 		HashKey.MaterialFlags |= bIsTwoSided ? 0x1u : 0x0u;
 		HashKey.MaterialFlags |= bForceDisableWPO ? 0x2u : 0x0u;
+		HashKey.MaterialFlags |= bSplineMesh ? 0x4u : 0x0u;
 		HashKey.MaterialHash   = FHashKey::PointerHash(RasterMaterial);
 		return uint32(CityHash64((char*)&HashKey, sizeof(FHashKey)));
 	}
@@ -458,7 +530,7 @@ struct FNaniteRasterPipeline
 			else
 			{
 				// The secondary bin can be a non-programmable, fixed-function bin
-				OutSecondary = GetFixedFunctionPipeline(bIsTwoSided);
+				OutSecondary = GetFixedFunctionPipeline(bIsTwoSided, bSplineMesh);
 			}
 			return true;
 		}
@@ -493,8 +565,73 @@ struct FNaniteRasterBin
 	}
 };
 
+struct FNaniteRasterMaterialCacheKey
+{
+	union
+	{
+		struct
+		{
+			uint16 FeatureLevel				: 6;
+			uint16 bForceDisableWPO			: 1;
+			uint16 bUseMeshShader			: 1;
+			uint16 bUsePrimitiveShader		: 1;
+			uint16 bUseDisplacement			: 1;
+			uint16 bVisualizeActive			: 1;
+			uint16 bHasVirtualShadowMap		: 1;
+			uint16 bIsDepthOnly				: 1;
+			uint16 bIsTwoSided				: 1;
+			uint16 bPatches					: 1;
+			uint16 bSplineMesh				: 1;
+		};
+
+		uint16 Packed = 0;
+	};
+
+	bool operator < (FNaniteRasterMaterialCacheKey Other) const
+	{
+		return Packed < Other.Packed;
+	}
+
+	bool operator == (FNaniteRasterMaterialCacheKey Other) const
+	{
+		return Packed == Other.Packed;
+	}
+
+	bool operator != (FNaniteRasterMaterialCacheKey Other) const
+	{
+		return Packed != Other.Packed;
+	}
+};
+
+static_assert(sizeof(FNaniteRasterMaterialCacheKey) == sizeof(uint16));
+
+inline uint32 GetTypeHash(const FNaniteRasterMaterialCacheKey& Key)
+{
+	return Key.Packed;
+}
+
+struct FNaniteRasterMaterialCache
+{
+	const FMaterial* VertexMaterial = nullptr;
+	const FMaterial* PixelMaterial = nullptr;
+	const FMaterial* ComputeMaterial = nullptr;
+	const FMaterialRenderProxy* VertexMaterialProxy = nullptr;
+	const FMaterialRenderProxy* PixelMaterialProxy = nullptr;
+	const FMaterialRenderProxy* ComputeMaterialProxy = nullptr;
+
+	TShaderRef<FHWRasterizePS> RasterPixelShader;
+	TShaderRef<FHWRasterizeVS> RasterVertexShader;
+	TShaderRef<FHWRasterizeMS> RasterMeshShader;
+	TShaderRef<FMicropolyRasterizeCS> RasterComputeShader;
+
+	TOptional<uint32> MaterialBitFlags;
+	bool bFinalized = false;
+};
+
 struct FNaniteRasterEntry
 {
+	mutable TMap<FNaniteRasterMaterialCacheKey, FNaniteRasterMaterialCache> CacheMap;
+
 	FNaniteRasterPipeline RasterPipeline{};
 	uint32 ReferenceCount = 0;
 	uint16 BinIndex = 0xFFFFu;
@@ -712,20 +849,6 @@ class FNaniteVisibilityResults
 public:
 	FNaniteVisibilityResults() = default;
 
-	FNaniteVisibilityResults(const FNaniteVisibilityResults& Other)
-	: RasterBinVisibility(Other.RasterBinVisibility)
-	, ShadingDrawVisibility(Other.ShadingDrawVisibility)
-	, VisibleCustomDepthPrimitives(Other.VisibleCustomDepthPrimitives)
-	, BinIndexTranslator(Other.BinIndexTranslator)
-	, TotalRasterBins(Other.TotalRasterBins)
-	, TotalShadingDraws(Other.TotalShadingDraws)
-	, VisibleRasterBins(Other.VisibleRasterBins)
-	, VisibleShadingDraws(Other.VisibleShadingDraws)
-	, bRasterTestValid(Other.bRasterTestValid)
-	, bShadingTestValid(Other.bShadingTestValid)
-	{
-	}
-
 	bool IsRasterBinVisible(uint16 BinIndex) const;
 	bool IsShadingDrawVisible(uint32 DrawId) const;
 
@@ -792,8 +915,8 @@ public:
 		uint16 Secondary = 0xFFFFu;
 	};
 
-	typedef TArray<FPrimitiveBins, TInlineAllocator<1>> PrimitiveBinsType;
-	typedef TArray<uint32, TInlineAllocator<1>> PrimitiveDrawType;
+	using PrimitiveBinsType = TArray<FPrimitiveBins, TInlineAllocator<1>>;
+	using PrimitiveDrawType = TArray<uint32, TInlineAllocator<1>>;
 
 	struct FPrimitiveReferences
 	{
@@ -803,15 +926,16 @@ public:
 		bool bWritesCustomDepthStencil = false;
 	};
 
-	typedef TMap<const FPrimitiveSceneInfo*, FPrimitiveReferences> PrimitiveMapType;
+	using PrimitiveMapType = Experimental::TRobinHoodHashMap<const FPrimitiveSceneInfo*, FPrimitiveReferences>;
 
 public:
 	FNaniteVisibility();
 
-	void BeginVisibilityFrame(const FNaniteRasterBinIndexTranslator InTranslator);
+	void BeginVisibilityFrame();
 	void FinishVisibilityFrame();
 
 	FNaniteVisibilityQuery* BeginVisibilityQuery(
+		FScene& Scene,
 		const TConstArrayView<FConvexVolume>& ViewList,
 		const class FNaniteRasterPipelines* RasterPipelines,
 		const class FNaniteMaterialCommands* MaterialCommands = nullptr
@@ -819,18 +943,18 @@ public:
 
 	void FinishVisibilityQuery(FNaniteVisibilityQuery* Query, FNaniteVisibilityResults& OutResults);
 
-	PrimitiveBinsType& GetRasterBinReferences(const FPrimitiveSceneInfo* SceneInfo);
-	PrimitiveDrawType& GetShadingDrawReferences(const FPrimitiveSceneInfo* SceneInfo);
+	PrimitiveBinsType* GetRasterBinReferences(const FPrimitiveSceneInfo* SceneInfo);
+	PrimitiveDrawType* GetShadingDrawReferences(const FPrimitiveSceneInfo* SceneInfo);
 	void RemoveReferences(const FPrimitiveSceneInfo* SceneInfo);
 
 private:
-	FPrimitiveReferences& FindOrAddPrimitiveReferences(const FPrimitiveSceneInfo* SceneInfo);
+	FPrimitiveReferences* FindOrAddPrimitiveReferences(const FPrimitiveSceneInfo* SceneInfo);
 	void WaitForTasks();
 
 	// Translator should remain valid between Begin/FinishVisibilityFrame. That is, no adding or removing raster bins
 	FNaniteRasterBinIndexTranslator BinIndexTranslator;
 	TArray<FNaniteVisibilityQuery*, TInlineAllocator<32>> VisibilityQueries;
-	FGraphEventArray ActiveEvents;
+	TArray<UE::Tasks::FTask, SceneRenderingAllocator> ActiveEvents;
 	PrimitiveMapType PrimitiveReferences;
 	uint8 bCalledBegin : 1;
 };
@@ -838,13 +962,13 @@ private:
 class FNaniteScopedVisibilityFrame
 {
 public:
-	FNaniteScopedVisibilityFrame(const bool bInEnabled, FNaniteVisibility& InVisibility, const FNaniteRasterBinIndexTranslator InTranslator)
+	FNaniteScopedVisibilityFrame(const bool bInEnabled, FNaniteVisibility& InVisibility)
 	: Visibility(InVisibility)
 	, bEnabled(bInEnabled)
 	{
 		if (bEnabled)
 		{
-			Visibility.BeginVisibilityFrame(InTranslator);
+			Visibility.BeginVisibilityFrame();
 		}
 	}
 

@@ -62,6 +62,7 @@ class FMobileFogPS : public FGlobalShader
 	class FSupportFogSecondTerm						: SHADER_PERMUTATION_BOOL("PERMUTATION_SUPPORT_FOG_SECOND_TERM");
 	class FSupportFogDirectionalLightInScattering	: SHADER_PERMUTATION_BOOL("PERMUTATION_SUPPORT_FOG_DIRECTIONAL_LIGHT_INSCATTERING");
 	class FSupportAerialPerspective					: SHADER_PERMUTATION_BOOL("PERMUTATION_SUPPORT_AERIAL_PERSPECTIVE");
+	class FSupportVolumetricFog						: SHADER_PERMUTATION_BOOL("PERMUTATION_SUPPORT_VOLUMETRIC_FOG");
 	
 	using FPermutationDomain = TShaderPermutationDomain< 
 		FSupportHeightFog, 
@@ -69,7 +70,8 @@ class FMobileFogPS : public FGlobalShader
 		FSupportFogInScatteringTexture, 
 		FSupportFogSecondTerm,
 		FSupportFogDirectionalLightInScattering,
-		FSupportAerialPerspective 
+		FSupportAerialPerspective,
+		FSupportVolumetricFog
 	>;
 
 	static FPermutationDomain RemapPermutation(FPermutationDomain PermutationVector)
@@ -103,7 +105,8 @@ class FMobileFogPS : public FGlobalShader
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		OutEnvironment.SetDefine(TEXT("IS_MOBILE_DEPTHREAD_SUBPASS"), 1u);
+		const bool bMobileForceDepthRead = MobileUsesFullDepthPrepass(Parameters.Platform);
+		OutEnvironment.SetDefine(TEXT("IS_MOBILE_DEPTHREAD_SUBPASS"), bMobileForceDepthRead ? 0u : 1u);
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
@@ -114,7 +117,7 @@ class FMobileFogPS : public FGlobalShader
 
 IMPLEMENT_SHADER_TYPE(, FMobileFogPS, TEXT("/Engine/Private/MobileFog.usf"), TEXT("MobileFogPS"), SF_Pixel);
 
-void FMobileSceneRenderer::RenderFog(FRHICommandListImmediate& RHICmdList, const FViewInfo& View)
+void FMobileSceneRenderer::RenderFog(FRHICommandList& RHICmdList, const FViewInfo& View)
 {	
 	static const auto* CVarDisableVertexFog = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.DisableVertexFog"));
 	if (CVarDisableVertexFog && CVarDisableVertexFog->GetValueOnRenderThread() == 0)
@@ -179,6 +182,7 @@ void FMobileSceneRenderer::RenderFog(FRHICommandListImmediate& RHICmdList, const
 	PsPermutationVector.Set<FMobileFogPS::FSupportFogSecondTerm>(bUseFogSecondTerm);
 	PsPermutationVector.Set<FMobileFogPS::FSupportAerialPerspective>(bUseAerialPerspective);
 	PsPermutationVector.Set<FMobileFogPS::FSupportFogDirectionalLightInScattering>(bUseFogDirectionalInscatering);
+	PsPermutationVector.Set<FMobileFogPS::FSupportVolumetricFog>(ShouldRenderVolumetricFog());
 	
 	TShaderMapRef<FMobileFogPS> PixelShader(View.ShaderMap, PsPermutationVector);
 		

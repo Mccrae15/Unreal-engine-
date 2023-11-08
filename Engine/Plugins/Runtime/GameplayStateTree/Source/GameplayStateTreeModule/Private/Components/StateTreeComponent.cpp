@@ -164,6 +164,13 @@ void UStateTreeComponent::BeginPlay()
 	}
 }
 
+void UStateTreeComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	StopLogic(UEnum::GetValueAsString(EndPlayReason));
+
+	Super::EndPlay(EndPlayReason);
+}
+
 void UStateTreeComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
@@ -182,6 +189,7 @@ void UStateTreeComponent::TickComponent(float DeltaTime, enum ELevelTick TickTyp
 	FStateTreeExecutionContext Context(*GetOwner(), *StateTreeRef.GetStateTree(), InstanceData);
 	if (SetContextRequirements(Context))
 	{
+		Context.SetParameters(StateTreeRef.GetParameters());
 		const EStateTreeRunStatus PreviousRunStatus = Context.GetStateTreeRunStatus();
 		const EStateTreeRunStatus CurrentRunStatus = Context.Tick(DeltaTime);
 
@@ -260,6 +268,7 @@ void UStateTreeComponent::StopLogic(const FString& Reason)
 	FStateTreeExecutionContext Context(*GetOwner(), *StateTreeRef.GetStateTree(), InstanceData);
 	if (SetContextRequirements(Context))
 	{
+		Context.SetParameters(StateTreeRef.GetParameters());
 		const EStateTreeRunStatus PreviousRunStatus = Context.GetStateTreeRunStatus();
 		const EStateTreeRunStatus CurrentRunStatus = Context.Stop();
 		bIsRunning = false;
@@ -273,6 +282,7 @@ void UStateTreeComponent::StopLogic(const FString& Reason)
 
 void UStateTreeComponent::Cleanup()
 {
+	StopLogic(TEXT("Cleanup"));
 }
 
 void UStateTreeComponent::PauseLogic(const FString& Reason)

@@ -304,15 +304,18 @@ public:
 
 public:
 
+	/** Toggle between the Legacy Modeling Mode Palette and the new UI (requires exiting and re-entering the Mode) */
+	UPROPERTY(config, EditAnywhere, Category = "Modeling Mode|UI Customization")
+	bool bUseLegacyModelingPalette = false;
 
 	/** Add the names of Modeling Mode Tool Palette Sections to have them appear at the top of the Tool Palette, in the order listed below. */
 	UPROPERTY(config, EditAnywhere, Category = "Modeling Mode|UI Customization")
 	TArray<FString> ToolSectionOrder;
 
 	/** Tool Names listed in the array below will appear in a Favorites section at the top of the Modeling Mode Tool Palette */
-	UPROPERTY(config, EditAnywhere, Category = "Modeling Mode|UI Customization")
+	UE_DEPRECATED(5.3, "Modeling Mode favorites are now set through FEditablePalette or the Mode UI itself")
 	TArray<FString> ToolFavorites;
-
+	
 	/** Custom Section Header Colors for listed Sections in the Modeling Mode Tool Palette */
 	UPROPERTY(config, EditAnywhere, Category = "Modeling Mode|UI Customization")
 	TArray<FModelingModeCustomSectionColor> SectionColors;
@@ -336,6 +339,17 @@ public:
 	TArray<FModelingModeAssetCollectionSet> BrushAlphaSets;
 
 
+	/**
+	 * If true, the category labels will be shown on the toolbar buttons, else they will be hidden
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Modeling Mode|UI Customization")
+	bool bShowCategoryButtonLabels = true;
+	
+	/**
+	 * If true, Tool buttons will always be shown when in a Tool. By default they will be hidden.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Modeling Mode|UI Customization")
+	bool bAlwaysShowToolButtons = false;
 
 public:
 
@@ -355,10 +369,10 @@ public:
 	int32 LastMeshSelectionTopologyMode = 0;
 
 	UPROPERTY()
-	bool bLastMeshSelectionVolumeToggle = false;
+	bool bLastMeshSelectionVolumeToggle = true;
 
 	UPROPERTY()
-	bool bLastMeshSelectionStaticMeshToggle = false;
+	bool bLastMeshSelectionStaticMeshToggle = true;
 
 
 };

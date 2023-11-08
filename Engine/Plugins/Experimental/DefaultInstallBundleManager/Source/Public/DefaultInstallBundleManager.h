@@ -605,6 +605,9 @@ protected:
 public:
 	virtual bool HasBundleSource(EInstallBundleSourceType SourceType) const override;
 
+	virtual const TSharedPtr<IInstallBundleSource> GetBundleSource(EInstallBundleSourceType SourceType) const override;
+
+
 	virtual FDelegateHandle PushInitErrorCallback(FInstallBundleManagerInitErrorHandler Callback) override;
 	virtual void PopInitErrorCallback() override;
 	virtual void PopInitErrorCallback(FDelegateHandle Handle) override;
@@ -612,7 +615,7 @@ public:
 
 	virtual EInstallBundleManagerInitState GetInitState() const override;
 
-	virtual TValueOrError<FInstallBundleRequestInfo, EInstallBundleResult> RequestUpdateContent(TArrayView<const FName> InBundleNames, EInstallBundleRequestFlags Flags, ELogVerbosity::Type LogVerbosityOverride = ELogVerbosity::NoLogging) override;
+	virtual TValueOrError<FInstallBundleRequestInfo, EInstallBundleResult> RequestUpdateContent(TArrayView<const FName> InBundleNames, EInstallBundleRequestFlags Flags, ELogVerbosity::Type LogVerbosityOverride = ELogVerbosity::NoLogging, InstallBundleUtil::FContentRequestSharedContextPtr RequestSharedContext = nullptr) override;
 
 	virtual FDelegateHandle GetContentState(TArrayView<const FName> InBundleNames, EInstallBundleGetContentStateFlags Flags, bool bAddDependencies, FInstallBundleGetContentStateDelegate Callback, FName RequestTag = TEXT("None")) override;
 
@@ -746,7 +749,6 @@ protected:
 	TSharedRef<InstallBundleManagerUtil::FPersistentStatContainer> PersistentStats;
 
 	TArray<TUniquePtr<InstallBundleUtil::FInstallBundleTask>> AsyncMountTasks;
-
 	
 	bool bIsCheckingForPatch = false;
 	bool bDelayCheckingForContentPatch = false;

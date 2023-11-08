@@ -6,6 +6,8 @@
 
 namespace Audio
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 	static const FCodecDetails Details =
 	{
 		TEXT("BackCompat"),
@@ -51,7 +53,7 @@ namespace Audio
 
 	Audio::IDecoder::FDecodeReturn FBackCompat::Decode(bool bLoop)
 	{
-		uint32 NumFramesRemaining = Reqs.NumSampleFramesWanted;
+		int32 NumFramesRemaining = Reqs.NumSampleFramesWanted;
 		FBackCompatInput& BackCompatSrc = static_cast<FBackCompatInput&>(*Src);
 		ICompressedAudioInfo* Info = BackCompatSrc.GetInfo();
 
@@ -105,7 +107,7 @@ namespace Audio
 			);
 
 			FrameOffset += NumFramesStreamed;
-			NumFramesRemaining -= NumFramesStreamed;
+			NumFramesRemaining -= FMath::Min(NumFramesStreamed, NumFramesRemaining);
 		}
 
 		if (!bFinished)
@@ -122,4 +124,5 @@ namespace Audio
 		}
 	}
 
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }

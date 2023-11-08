@@ -2,7 +2,7 @@
 
 #include "AjaMediaSource.h"
 
-#include "Aja.h"
+#include "Aja/Aja.h"
 #include "AjaDeviceProvider.h"
 #include "AjaMediaPrivate.h"
 #include "MediaIOCorePlayerBase.h"
@@ -16,7 +16,6 @@ UAjaMediaSource::UAjaMediaSource()
 	, MaxNumAudioFrameBuffer(8)
 	, bCaptureVideo(true)
 	, ColorFormat(EAjaMediaSourceColorFormat::YUV2_8bit)
-	, bIsSRGBInput(false)
 	, MaxNumVideoFrameBuffer(8)
 	, bLogDropFrame(true)
 	, bEncodeTimecodeInTexel(false)
@@ -60,11 +59,6 @@ bool UAjaMediaSource::GetMediaOption(const FName& Key, bool DefaultValue) const
 	{
 		return bEncodeTimecodeInTexel;
 	}
-	if (Key == AjaMediaOption::SRGBInput)
-	{
-		return bIsSRGBInput;
-	}
-
 
 	return Super::GetMediaOption(Key, DefaultValue);
 }
@@ -165,7 +159,6 @@ bool UAjaMediaSource::HasMediaOption(const FName& Key) const
 		(Key == AjaMediaOption::MaxAudioFrameBuffer) ||
 		(Key == AjaMediaOption::AjaVideoFormat) ||
 		(Key == AjaMediaOption::ColorFormat) ||
-		(Key == AjaMediaOption::SRGBInput) ||
 		(Key == AjaMediaOption::MaxVideoFrameBuffer) ||
 		(Key == AjaMediaOption::LogDropFrame) ||
 		(Key == AjaMediaOption::EncodeTimecodeInTexel)
@@ -267,6 +260,29 @@ bool UAjaMediaSource::Validate() const
 		}
 	}
 
+	if (EvaluationType == EMediaIOSampleEvaluationType::Timecode && (!bUseTimeSynchronization || AutoDetectableTimecodeFormat == EMediaIOAutoDetectableTimecodeFormat::None))
+	{
+		UE_LOG(LogAjaMedia, Warning, TEXT("The MediaSource '%s' uses 'Timecode' evaluation type which requires time synchronization and timecode enabled."), *GetName());
+		return false;
+	}
+
+	if (bFramelock && (!bRenderJIT || !bUseTimeSynchronization || AutoDetectableTimecodeFormat == EMediaIOAutoDetectableTimecodeFormat::None))
+	{
+		UE_LOG(LogAjaMedia, Warning, TEXT("The MediaSource '%s' uses 'Framelock' which requires JIT rendering, time synchronization and timecode enabled."), *GetName());
+		return false;
+	}
+
+	if (!bRenderJIT && EvaluationType == EMediaIOSampleEvaluationType::Latest)
+	{
+		UE_LOG(LogAjaMedia, Warning, TEXT("The MediaSource '%s' uses 'Latest' evaluation type which requires JIT rendering."), *GetName());
+		return false;
+	}
+
+	if (bFramelock)
+	{
+		UE_LOG(LogAjaMedia, Warning, TEXT("The MediaSource '%s' uses 'Framelock' which has not been implemented yet. This option will be ignored."), *GetName());
+	}
+
 	return true;
 }
 
@@ -299,6 +315,23 @@ void UAjaMediaSource::PostEditChangeChainProperty(struct FPropertyChangedChainEv
 		{
 			bUseTimeSynchronization = false;
 			bEncodeTimecodeInTexel = false;
+			EvaluationType = EMediaIOSampleEvaluationType::PlatformTime;
+			bFramelock = false;
+		}
+	}
+
+	if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UCaptureCardMediaSource, EvaluationType))
+	{
+		// 'Timecode' evaluation is not allowed if no timecode set
+		if (AutoDetectableTimecodeFormat == EMediaIOAutoDetectableTimecodeFormat::None || !bUseTimeSynchronization)
+		{
+			EvaluationType = (EvaluationType == EMediaIOSampleEvaluationType::Timecode ? EMediaIOSampleEvaluationType::PlatformTime : EvaluationType);
+		}
+
+		// 'Latest' evaluation is available in JITR only
+		if (!bRenderJIT)
+		{
+			EvaluationType = (EvaluationType == EMediaIOSampleEvaluationType::Latest ? EMediaIOSampleEvaluationType::PlatformTime : EvaluationType);
 		}
 	}
 

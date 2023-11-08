@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "AnimatedRange.h"
 #include "Layout/Visibility.h"
 #include "Input/Reply.h"
 #include "Widgets/SWidget.h"
@@ -19,6 +20,7 @@
 #include "Widgets/Input/SSpinBox.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Sequencer.h"
+#include "SequencerWidgetsDelegates.h"
 
 class FActorDragDropOp;
 class FFolderDragDropOp;
@@ -38,17 +40,16 @@ class SSequencerGroupManager;
 class SSequencerTreeFilterStatusBar;
 struct FPaintPlaybackRangeArgs;
 struct FSequencerCustomizationInfo;
-struct FSequencerSelectionCurveFilter;
 
 namespace UE
 {
 namespace Sequencer
 {
 
-	class IOutlinerSelectionHandler;
 	class SOutlinerView;
 	class STrackAreaView;
 	class FVirtualTrackArea;
+	struct FSequencerSelectionCurveFilter;
 
 } // namespace Sequencer
 } // namespace UE
@@ -235,6 +236,12 @@ public:
 		/** Called when all marked frames should be deleted */
 		SLATE_EVENT( FSimpleDelegate, OnDeleteAllMarkedFrames)
 
+		/** Whether marked frames are locked */
+		SLATE_ATTRIBUTE( bool, AreMarkedFramesLocked )
+
+		/** Called when the user toggles the marked frames lock */
+		SLATE_EVENT( FSimpleDelegate, OnToggleMarkedFramesLocked )
+
 		/** Called when the user changes the clamp range */
 		SLATE_EVENT( FOnTimeRangeChanged, OnClampRangeChanged )
 
@@ -280,9 +287,6 @@ public:
 		/** Extender to use for the toolbar. */
 		SLATE_ARGUMENT( TSharedPtr<FExtender>, ToolbarExtender )
 
-		/** Selection handler to pass to outliner view */
-		SLATE_ATTRIBUTE( TSharedPtr<UE::Sequencer::IOutlinerSelectionHandler>, SelectionHandler )
-
 		/** Whether to display the playback range spin box in time range slider */
 		SLATE_ARGUMENT( bool, ShowPlaybackRangeInTimeSlider )
 
@@ -326,9 +330,6 @@ public:
 
 	/** Called when the save button is clicked */
 	void OnSaveMovieSceneClicked();
-
-	/** Called when the save-as button is clicked */
-	void OnSaveMovieSceneAsClicked();
 
 	/** Called when the curve editor is shown or hidden */
 	void OnCurveEditorVisibilityChanged(bool bShouldBeVisible);
@@ -646,7 +647,7 @@ public:
 	void RequestRenameNode(const FString& Path) { NodePathToRename = Path; }
 
 	/** Applies dynamic sequencer customizations to this editor. */
-	void ApplySequencerCustomizations(const TArray<FSequencerCustomizationInfo>& Customizations);
+	void ApplySequencerCustomizations(const TArrayView<const FSequencerCustomizationInfo> Customizations);
 
 private:
 	/** Applies a single customization. */
@@ -673,7 +674,7 @@ private:
 	TSharedPtr<UE::Sequencer::STrackAreaView> PinnedTrackArea;
 
 	/** Curve editor filter that shows only the selected nodes */
-	TSharedPtr<FSequencerSelectionCurveFilter> SequencerSelectionCurveEditorFilter;
+	TSharedPtr<UE::Sequencer::FSequencerSelectionCurveFilter> SequencerSelectionCurveEditorFilter;
 
 	/** The breadcrumb trail widget for this sequencer */
 	TSharedPtr<SBreadcrumbTrail<FSequencerBreadcrumb>> BreadcrumbTrail;

@@ -13,6 +13,7 @@
 #include "NiagaraEditorModule.h"
 #include "NiagaraEditorUtilities.h"
 #include "NiagaraGraph.h"
+#include "NiagaraHlslTranslator.h"
 #include "NiagaraNodeFunctionCall.h"
 #include "NiagaraNodeInput.h"
 #include "NiagaraNodeOutput.h"
@@ -235,7 +236,7 @@ void FindObjectNamesRecursive(UNiagaraGraph* InGraph, ENiagaraScriptUsage Usage,
 				{
 					UNiagaraDataInterface* DataInterface = InputNode->GetDataInterface();
 					bool bIsParameterMapDataInterface = false;
-					FName DIName = FHlslNiagaraTranslator::GetDataInterfaceName(InputNode->Input.GetName(), EmitterUniqueName, bIsParameterMapDataInterface);
+					FName DIName = FNiagaraHlslTranslator::GetDataInterfaceName(InputNode->Input.GetName(), EmitterUniqueName, bIsParameterMapDataInterface);
 					if (Result.Contains(DIName) && Result[DIName] != DataInterface)
 					{
 						UE_LOG(LogNiagaraEditor, Verbose, TEXT("Duplicate data interface name %s in graph %s. One of the data interfaces will override the other when resolving the name."), *DIName.ToString(), *InGraph->GetPathName());
@@ -433,7 +434,7 @@ void UNiagaraScriptSource::FixupRenamedParameters(UNiagaraNodeFunctionCall* Func
 	}
 }
 
-void UNiagaraScriptSource::InitializeNewParameters(UNiagaraNodeFunctionCall* FunctionCallNode, TConstArrayView<FNiagaraVariable> ModuleInputVariables, FNiagaraParameterStore& RapidIterationParameters, const FVersionedNiagaraEmitter& VersionedEmitter, ENiagaraScriptUsage ScriptUsage, TSet<FName>& ValidRapidIterationParameterNames) const
+void UNiagaraScriptSource::InitializeNewParameters(UNiagaraNodeFunctionCall* FunctionCallNode, TConstArrayView<FNiagaraVariable> ModuleInputVariables, FNiagaraParameterStore& RapidIterationParameters, const FVersionedNiagaraEmitter& VersionedEmitter, ENiagaraScriptUsage ScriptUsage, TSet<FNiagaraVariableBase>& ValidRapidIterationParameters) const
 {
 	const FString UniqueEmitterName = VersionedEmitter.Emitter ? VersionedEmitter.Emitter->GetUniqueEmitterName() : FString();
 	UNiagaraGraph* Graph = FunctionCallNode->GetCalledGraph();
@@ -466,7 +467,7 @@ void UNiagaraScriptSource::InitializeNewParameters(UNiagaraNodeFunctionCall* Fun
 		{
 			FNiagaraParameterHandle AliasedFunctionInputHandle = FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(ModuleInputVariable.GetName(), FunctionNodeName);
 			FNiagaraVariable RapidIterationParameter = FNiagaraStackGraphUtilities::CreateRapidIterationParameter(UniqueEmitterName, ScriptUsage, AliasedFunctionInputHandle.GetParameterHandleString(), ModuleInputVariable.GetType());
-			ValidRapidIterationParameterNames.Add(RapidIterationParameter.GetName());
+			ValidRapidIterationParameters.Add(RapidIterationParameter);
 			int32 ParameterIndex = RapidIterationParameters.IndexOf(RapidIterationParameter);
 
 			// Only set a value for the parameter if it's not already set.
@@ -531,7 +532,7 @@ void UNiagaraScriptSource::CleanUpOldAndInitializeNewRapidIterationParameters(co
 	TArray<FNiagaraVariable> OldRapidIterationVariables;
 	RapidIterationParameters.GetParameters(OldRapidIterationVariables);
 
-	TSet<FName> ValidRapidIterationParameterNames;
+	TSet<FNiagaraVariableBase> ValidRapidIterationParameters;
 	for (UNiagaraNodeOutput* OutputNode : OutputNodes)
 	{
 		if (OutputNode != nullptr)
@@ -560,7 +561,7 @@ void UNiagaraScriptSource::CleanUpOldAndInitializeNewRapidIterationParameters(co
 				if (!ModuleInputVariables.IsEmpty())
 				{
 					FixupRenamedParameters(FunctionCallNode, ModuleInputVariables, RapidIterationParameters, OldRapidIterationVariables, Emitter, ScriptUsage);
-					InitializeNewParameters(FunctionCallNode, ModuleInputVariables, RapidIterationParameters, Emitter, OutputNode->GetUsage(), ValidRapidIterationParameterNames);
+					InitializeNewParameters(FunctionCallNode, ModuleInputVariables, RapidIterationParameters, Emitter, OutputNode->GetUsage(), ValidRapidIterationParameters);
 				}
 			}
 		}
@@ -571,7 +572,7 @@ void UNiagaraScriptSource::CleanUpOldAndInitializeNewRapidIterationParameters(co
 	RapidIterationParameters.GetParameters(CurrentRapidIterationVariables);
 	for (const FNiagaraVariable& CurrentRapidIterationVariable : CurrentRapidIterationVariables)
 	{
-		if (ValidRapidIterationParameterNames.Contains(CurrentRapidIterationVariable.GetName()) == false)
+		if (ValidRapidIterationParameters.Contains(CurrentRapidIterationVariable) == false)
 		{
 			RapidIterationParameters.RemoveParameter(CurrentRapidIterationVariable);
 		}

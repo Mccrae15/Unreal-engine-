@@ -11,12 +11,12 @@ namespace UnrealBuildTool.Rules
 			ShortName = "MuT";
 
 			DefaultBuildSettings = BuildSettingsVersion.V2;
+			IWYUSupport = IWYUSupport.KeepAsIsForNow;
 			//bUseUnity = false;
 
 			// 
 			bUseRTTI = true;
 			bEnableExceptions = true;
-			//bUseUnity = false;
 
 			PrivateIncludePaths.AddRange(new string[] {
 				System.IO.Path.Combine(GetModuleDirectory("MutableRuntime"), "Private"),
@@ -26,7 +26,8 @@ namespace UnrealBuildTool.Rules
                 new string[] {
 					"MutableRuntime", 
 					"Core",
-                }
+					"GeometryCore",
+				}
             );
 		}
 	}

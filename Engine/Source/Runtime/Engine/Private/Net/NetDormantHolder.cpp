@@ -148,11 +148,6 @@ void FDormantReplicatorHolder::CleanupStaleObjects(FNetworkObjectList& NetworkOb
 			}
 		}
 
-		if (ActorSetIt->DormantReplicators.IsEmpty())
-		{
-			ActorSetIt.RemoveCurrent();
-		}
-
 #if UE_REPLICATED_OBJECT_REFCOUNTING
 		if (CleanedUpObjects.Num() > 0)
 		{
@@ -160,6 +155,11 @@ void FDormantReplicatorHolder::CleanupStaleObjects(FNetworkObjectList& NetworkOb
 			CleanedUpObjects.Reset();
 		}
 #endif
+
+		if (ActorSetIt->DormantReplicators.IsEmpty())
+		{
+			ActorSetIt.RemoveCurrent();
+		}
 	}
 }
 
@@ -197,7 +197,28 @@ void FDormantReplicatorHolder::CountBytes(FArchive& Ar) const
 	{
 		ActorReplicators.CountBytes(Ar);
 	}
+
+	FlushedObjectMap.CountBytes(Ar);
+
+	for (auto FlushedIt = FlushedObjectMap.CreateConstIterator(); FlushedIt; ++FlushedIt)
+	{
+		FlushedIt.Value().CountBytes(Ar);
+	}
 }
 
+UE::Net::FDormantObjectMap* FDormantReplicatorHolder::FindFlushedObjectsForActor(AActor* Actor)
+{
+	return FlushedObjectMap.Find(Actor);
+}
+
+UE::Net::FDormantObjectMap& FDormantReplicatorHolder::FindOrAddFlushedObjectsForActor(AActor* Actor)
+{
+	return FlushedObjectMap.FindOrAdd(Actor);
+}
+
+void FDormantReplicatorHolder::ClearFlushedObjectsForActor(AActor* Actor)
+{
+	FlushedObjectMap.Remove(Actor);
+}
 
 } //end namespace UE::Net::Private

@@ -2,15 +2,16 @@
 
 #include "MetasoundFacade.h"
 
+#include "DSP/VolumeFader.h"
 #include "Internationalization/Text.h"
 #include "MetasoundExecutableOperator.h"
 #include "MetasoundNodeRegistrationMacro.h"
 #include "MetasoundParamHelper.h"
 #include "MetasoundPrimitives.h"
+#include "MetasoundStandardNodesCategories.h"
 #include "MetasoundStandardNodesNames.h"
 #include "MetasoundTrigger.h"
 #include "MetasoundTime.h"
-#include "DSP/VolumeFader.h"
 
 #define LOCTEXT_NAMESPACE "MetasoundStandardNodes_InterpNode"
 
@@ -44,10 +45,13 @@ namespace Metasound
 		static const FVertexInterface& GetVertexInterface();
 		static TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors);
 
-		FInterpToOperator(const FOperatorSettings& InSettings, const FFloatReadRef& InTargetValue, const FTimeReadRef& InInterpTime);
+		FInterpToOperator(const FCreateOperatorParams& InSettings, const FFloatReadRef& InTargetValue, const FTimeReadRef& InInterpTime);
 
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override;
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override;
 		virtual FDataReferenceCollection GetInputs() const override;
 		virtual FDataReferenceCollection GetOutputs() const override;
+		void Reset(const IOperator::FResetParams& InParams);
 		void Execute();
 
 	private:
@@ -70,40 +74,57 @@ namespace Metasound
 		float PreviousTargetValue = 0.0f;
 	};
 
-	FInterpToOperator::FInterpToOperator(const FOperatorSettings& InSettings, const FFloatReadRef& InTargetValue, const FTimeReadRef& InInterpTime)
+	FInterpToOperator::FInterpToOperator(const FCreateOperatorParams& InParams, const FFloatReadRef& InTargetValue, const FTimeReadRef& InInterpTime)
 		: TargetValue(InTargetValue)
 		, InterpTime(InInterpTime)
 		, ValueOutput(FFloatWriteRef::CreateNew(*TargetValue))
 	{
+		Reset(InParams);
+	}
+
+	void FInterpToOperator::BindInputs(FInputVertexInterfaceData& InOutVertexData)
+	{
+		using namespace InterpToVertexNames;
+
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InParamTarget), TargetValue);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InParamInterpTime), InterpTime);
+	}
+
+	void FInterpToOperator::BindOutputs(FOutputVertexInterfaceData& InOutVertexData)
+	{
+		using namespace InterpToVertexNames;
+
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutParamValue), ValueOutput);
+	}
+
+	FDataReferenceCollection FInterpToOperator::GetInputs() const
+	{
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
+	}
+
+	FDataReferenceCollection FInterpToOperator::GetOutputs() const
+	{
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
+	}
+
+	void FInterpToOperator::Reset(const IOperator::FResetParams& InParams)
+	{
 		// Set the fade to start at the value specified in the current value
 		VolumeFader.SetVolume(*TargetValue);
 
-		float BlockRate = InSettings.GetActualBlockRate();
+		float BlockRate = InParams.OperatorSettings.GetActualBlockRate();
 		BlockTimeDelta = 1.0f / BlockRate;
 
 		PreviousTargetValue = *TargetValue;
 
 		*ValueOutput = *TargetValue;
-	}
 
-	FDataReferenceCollection FInterpToOperator::GetInputs() const
-	{
-		using namespace InterpToVertexNames;
-
-		FDataReferenceCollection InputDataReferences;
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InParamTarget), FFloatReadRef(TargetValue));
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InParamInterpTime), FTimeReadRef(InterpTime));
-
-		return InputDataReferences;
-	}
-
-	FDataReferenceCollection FInterpToOperator::GetOutputs() const
-	{
-		using namespace InterpToVertexNames;
-
-		FDataReferenceCollection OutputDataReferences;
-		OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutParamValue), FFloatReadRef(ValueOutput));
-		return OutputDataReferences;
 	}
 
 	void FInterpToOperator::Execute()
@@ -156,6 +177,7 @@ namespace Metasound
 			Info.Description = METASOUND_LOCTEXT("Metasound_InterpNodeDescription", "Interpolates between the current value and a target value over the specified time.");
 			Info.Author = PluginAuthor;
 			Info.PromptIfMissing = PluginNodeMissingPrompt;
+			Info.CategoryHierarchy = { NodeCategories::Math };
 			Info.DefaultInterface = GetVertexInterface();
 			Info.Keywords.Add(METASOUND_LOCTEXT("LerpKeyword", "Lerp"));
 
@@ -184,7 +206,7 @@ namespace Metasound
 		FFloatReadRef TargetValue = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, METASOUND_GET_PARAM_NAME(InParamTarget), InParams.OperatorSettings);
 		FTimeReadRef InterpTime = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<FTime>(InputInterface, METASOUND_GET_PARAM_NAME(InParamInterpTime), InParams.OperatorSettings);
 
-		return MakeUnique<FInterpToOperator>(InParams.OperatorSettings, TargetValue, InterpTime);
+		return MakeUnique<FInterpToOperator>(InParams, TargetValue, InterpTime);
 	}
 
 

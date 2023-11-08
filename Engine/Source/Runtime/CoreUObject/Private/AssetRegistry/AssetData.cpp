@@ -28,6 +28,53 @@ UE_IMPLEMENT_STRUCT("/Script/CoreUObject", AssetData);
 const FGuid FAssetRegistryVersion::GUID(0x717F9EE7, 0xE9B0493A, 0x88B39132, 0x1B388107);
 FCustomVersionRegistration GRegisterAssetRegistryVersion(FAssetRegistryVersion::GUID, FAssetRegistryVersion::LatestVersion, TEXT("AssetRegistry"));
 
+void FAssetIdentifier::WriteCompactBinary(FCbWriter& Writer) const
+{
+	Writer.BeginArray();
+	FName PrimaryAssetTypeName = (FName)PrimaryAssetType;
+	Writer << PrimaryAssetTypeName;
+	Writer << PackageName;
+	if (!ObjectName.IsNone())
+	{
+		Writer << ObjectName;
+	}
+	Writer.EndArray();
+}
+
+bool LoadFromCompactBinary(FCbFieldView Field, FAssetIdentifier& Identifier)
+{
+	FCbArrayView ArrayView = Field.AsArrayView();
+	if (ArrayView.Num() < 2)
+	{
+		Identifier = FAssetIdentifier();
+		return false;
+	}
+	FCbFieldViewIterator Iter = ArrayView.CreateViewIterator();
+	FName PrimaryAssetTypeName;
+	if (LoadFromCompactBinary(Iter++, PrimaryAssetTypeName))
+	{
+		Identifier.PrimaryAssetType = PrimaryAssetTypeName;
+	}
+	else
+	{
+		Identifier = FAssetIdentifier();
+		return false;
+	}
+	if (!LoadFromCompactBinary(Iter++, Identifier.PackageName))
+	{
+		return false;
+	}
+	if (ArrayView.Num() >= 3)
+	{
+		if (!LoadFromCompactBinary(Iter++, Identifier.ObjectName))
+		{
+			Identifier = FAssetIdentifier();
+			return false;
+		}
+	}
+	return true;
+}
+
 namespace UE::AssetRegistry::Private
 {
 	FAssetPathParts SplitIntoOuterPathAndAssetName(FStringView InObjectPath)
@@ -485,9 +532,24 @@ void FAssetData::SetTagsAndAssetBundles(FAssetDataTagMap&& Tags)
 {
 	using namespace UE::AssetData::Private;
 
-	for (TPair<FName, FString>& Tag : Tags)
+	for (FAssetDataTagMap::TIterator Iter(Tags); Iter; ++Iter)
 	{
-		check(!Tag.Key.IsNone() && !Tag.Value.IsEmpty());
+		if (Iter->Key.IsNone())
+		{
+			ensureMsgf(!Iter->Key.IsNone(),
+				TEXT("FAssetData::SetTagsAndAssetBundles called on %s with empty key name. Empty key names are invalid. The Tag will be removed."),
+				*this->GetFullName());
+			Iter.RemoveCurrent();
+			continue;
+		}
+		if (Iter->Value.IsEmpty())
+		{
+			ensureMsgf(!Iter->Value.IsEmpty(),
+				TEXT("FAssetData::SetTagsAndAssetBundles called on %s with empty value for tag %s. Empty values are invalid. The Tag will be removed."),
+				*this->GetFullName(), *Iter->Key.ToString());
+			Iter.RemoveCurrent();
+			continue;
+		}
 	}
 
 	FString AssetBundles;
@@ -675,8 +737,7 @@ bool FAssetData::TryNetworkRead(FCbFieldView Field, bool bReadPackageName, FName
 	{
 		if (bHasAssetName)
 		{
-			WriteToString<256> PackageNameStr(InPackageName);
-			PackagePath = FName(FPathViews::GetPath(PackageNameStr.ToView()));
+			PackagePath = FName(FPathViews::GetPath(WriteToString<256>(InPackageName)));
 		}
 		else
 		{
@@ -700,7 +761,7 @@ bool FAssetData::TryNetworkRead(FCbFieldView Field, bool bReadPackageName, FName
 	if (!TagsField.HasError()) // Ok if it does not exist
 	{
 		FAssetDataTagMap Tags;
-		Tags.Reserve(TagsArray.Num());
+		Tags.Reserve(IntCastChecked<int32>(TagsArray.Num()));
 		for (FCbFieldView TagField : TagsArray)
 		{
 			FName TagName;
@@ -739,6 +800,12 @@ void FAssetData::SerializeForCacheWithTagsAndBundles(FArchive& Ar, void (*Serial
 void FAssetData::SerializeForCacheOldVersionWithTagsAndBundles(FArchive& Ar, FAssetRegistryVersion::Type Version, void (*SerializeTagsAndBundles)(FArchive&, FAssetData&, FAssetRegistryVersion::Type Version))
 {
 	SerializeForCacheInternal(Ar, Version, SerializeTagsAndBundles);
+}
+
+bool FAssetData::IsRedirectorClassName(FTopLevelAssetPath ClassPathName)
+{
+	static const FTopLevelAssetPath ObjectRedirectorClassPathName = UObjectRedirector::StaticClass()->GetClassPathName();
+	return ClassPathName == ObjectRedirectorClassPathName;
 }
 
 FTopLevelAssetPath FAssetData::TryConvertShortClassNameToPathName(FName InClassName, ELogVerbosity::Type FailureMessageVerbosity /*= ELogVerbosity::Warning*/)

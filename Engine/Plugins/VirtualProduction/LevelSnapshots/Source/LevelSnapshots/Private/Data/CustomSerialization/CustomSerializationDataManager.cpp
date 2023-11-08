@@ -3,16 +3,17 @@
 #include "CustomSerializationDataManager.h"
 
 #include "CustomObjectSerializationWrapper.h"
+#include "CustomSerialization/LoadCustomObjectProxyArchive.h"
+#include "CustomSerialization/SaveCustomObjectProxyArchive.h"
+#include "Data/Util/ObjectDependencyUtil.h"
 #include "LevelSnapshotsLog.h"
 #include "SnapshotCustomVersion.h"
 #include "TakeWorldObjectSnapshotArchive.h"
-#include "CustomSerialization/LoadCustomObjectProxyArchive.h"
-#include "CustomSerialization/SaveCustomObjectProxyArchive.h"
+#include "Util/ClassDataUtil.h"
 
 #include "Serialization/MemoryWriter.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/ObjectAndNameAsStringProxyArchive.h"
-#include "Util/WorldData/SnapshotObjectUtil.h"
 
 namespace UE::LevelSnapshots::Private::Internal
 {
@@ -260,6 +261,7 @@ int32 UE::LevelSnapshots::Private::FCustomSerializationDataWriter::AddSubobjectS
 
 	FCustomSubbjectSerializationData SubobjectData;
 	SubobjectData.ObjectPathIndex = AddObjectDependency(WorldData_ReadWrite, Subobject, false);
+	SubobjectData.ClassIndex = AddClassArchetype(WorldData_ReadWrite, Subobject);
 	const int32 SubobjectIndex = SerializationData->Subobjects.Emplace(
 		MoveTemp(SubobjectData) // Not profiled
 		);

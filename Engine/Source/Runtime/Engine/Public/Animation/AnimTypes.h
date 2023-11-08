@@ -426,7 +426,7 @@ public:
 	/** Returns true is this AnimNotify is a BranchingPoint */
 	ENGINE_API bool IsBranchingPoint() const;
 
-	/** Returns true if this is blueprint derived notifies **/
+	/** Returns true if this is blueprint or native class-based notify (i.e. not a named notify) */
 	bool IsBlueprintNotify() const
 	{
 		return Notify != nullptr || NotifyStateClass != nullptr;
@@ -519,9 +519,9 @@ struct FAnimSyncMarker
 #endif
 
 	/** This can be used with the Sort() function on a TArray of FAnimSyncMarker to sort the notifies array by time, earliest first. */
-	ENGINE_API bool operator <(const FAnimSyncMarker& Other) const { return Time < Other.Time; }
+	bool operator <(const FAnimSyncMarker& Other) const { return Time < Other.Time; }
 
-	ENGINE_API bool operator ==(const FAnimSyncMarker& Other) const
+	bool operator ==(const FAnimSyncMarker& Other) const
 	{
 		return MarkerName == Other.MarkerName &&
 #if WITH_EDITORONLY_DATA
@@ -539,6 +539,7 @@ template<> struct TStructOpsTypeTraits<FAnimSyncMarker> : public TStructOpsTypeT
 	{ 
 		WithSerializer = true
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 #endif
 
@@ -713,7 +714,7 @@ enum class EAnimInterpolationType : uint8
 	// ID type, should be used to access SmartNames as fundamental type may change.
 	typedef uint16 UID_Type;
 	// Max UID used for overflow checking
-	static const UID_Type MaxUID = MAX_uint16;
+	inline constexpr UID_Type MaxUID = MAX_uint16;
 }
 /**
  * Animation Key extraction helper as we have a lot of code that messes up the key length
@@ -824,7 +825,7 @@ namespace EComponentType
 
 // @note We have a plan to support skeletal hierarchy. When that happens, we'd like to keep skeleton indexing.
 USTRUCT()
-struct ENGINE_API FTrackToSkeletonMap
+struct FTrackToSkeletonMap
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -855,7 +856,7 @@ struct ENGINE_API FTrackToSkeletonMap
 * reduced to 1 key that is constant over the entire sequence.
 */
 USTRUCT(BlueprintType)
-struct ENGINE_API FRawAnimSequenceTrack
+struct FRawAnimSequenceTrack
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -933,10 +934,11 @@ struct ENGINE_API FRawAnimSequenceTrack
 template<> struct TStructOpsTypeTraits<FRawAnimSequenceTrack> : public TStructOpsTypeTraitsBase2<FRawAnimSequenceTrack>
 {
 	enum { WithSerializer = true };
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 
-UCLASS()
-class ENGINE_API URawAnimSequenceTrackExtensions : public UBlueprintFunctionLibrary
+UCLASS(MinimalAPI)
+class URawAnimSequenceTrackExtensions : public UBlueprintFunctionLibrary
 {
 	GENERATED_BODY()
 public:

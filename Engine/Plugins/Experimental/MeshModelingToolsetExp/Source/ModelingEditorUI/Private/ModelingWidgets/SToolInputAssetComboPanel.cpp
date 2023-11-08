@@ -30,6 +30,7 @@ void SToolInputAssetComboPanel::Construct(const FArguments& InArgs)
 	this->Property = InArgs._Property;
 	this->CollectionSets = InArgs._CollectionSets;
 	this->OnSelectionChanged = InArgs._OnSelectionChanged;
+	RecentAssetsProvider = InArgs._RecentAssetsProvider;
 
 	// validate arguments
 	if ( InArgs._AssetClassType == nullptr )
@@ -56,9 +57,6 @@ void SToolInputAssetComboPanel::Construct(const FArguments& InArgs)
 		[
 			AssetThumbnail->MakeThumbnailWidget(ThumbnailConfig)
 		];
-
-	RecentAssetsProvider = InArgs._RecentAssetsProvider;
-
 
 	ComboButton = SNew(SComboButton)
 		.ToolTipText(UseTooltipText)
@@ -118,7 +116,11 @@ void SToolInputAssetComboPanel::Construct(const FArguments& InArgs)
 		];
 
 
-	ComboButton->SetOnGetMenuContent(FOnGetContent::CreateLambda([this]() 
+	EThumbnailLabel::Type TileThumbnailLabel = InArgs._AssetThumbnailLabel;
+	bool bForceShowEngineContent = InArgs._bForceShowEngineContent;
+	bool bForceShowPluginContent = InArgs._bForceShowPluginContent;
+
+	ComboButton->SetOnGetMenuContent(FOnGetContent::CreateLambda([this, TileThumbnailLabel,bForceShowEngineContent, bForceShowPluginContent]()
 	{
 		// Configure filter for asset picker
 		FAssetPickerConfig Config;
@@ -131,8 +133,10 @@ void SToolInputAssetComboPanel::Construct(const FArguments& InArgs)
 		Config.bFocusSearchBoxWhenOpened = true;
 		Config.bAllowNullSelection = true;
 		Config.bAllowDragging = false;
-		Config.ThumbnailLabel = EThumbnailLabel::Type::NoLabel;
+		Config.ThumbnailLabel = TileThumbnailLabel;
 		Config.OnAssetSelected = FOnAssetSelected::CreateSP(this, &SToolInputAssetComboPanel::NewAssetSelected);
+		Config.bForceShowEngineContent = bForceShowEngineContent;
+		Config.bForceShowPluginContent = bForceShowPluginContent;
 
 		// build asset picker UI
 		TSharedRef<SToolInputAssetPicker> AssetPickerWidget = SNew( SToolInputAssetPicker )
@@ -214,15 +218,12 @@ void SToolInputAssetComboPanel::Construct(const FArguments& InArgs)
 
 
 	// set initial thumbnail
-	if (Property.IsValid())
-	{
-		FAssetData AssetData;
-		if (Property->GetValue(AssetData) == FPropertyAccess::Result::Success)
-		{
-			AssetThumbnail->SetAsset(AssetData);
-		}
-	}
+	RefreshThumbnailFromProperty();
 
+	if (InArgs._InitiallySelectedAsset.IsValid())
+	{
+		NewAssetSelected(InArgs._InitiallySelectedAsset);
+	}
 
 	ChildSlot
 		[
@@ -232,6 +233,17 @@ void SToolInputAssetComboPanel::Construct(const FArguments& InArgs)
 }
 
 
+void SToolInputAssetComboPanel::RefreshThumbnailFromProperty()
+{
+	if (Property.IsValid())
+	{
+		FAssetData AssetData;
+		if (Property->GetValue(AssetData) == FPropertyAccess::Result::Success)
+		{
+			AssetThumbnail->SetAsset(AssetData);
+		}
+	}
+}
 
 
 TSharedRef<SWidget> SToolInputAssetComboPanel::MakeCollectionSetsButtonPanel(TSharedRef<SToolInputAssetPicker> AssetPickerView)

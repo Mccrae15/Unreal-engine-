@@ -6,7 +6,6 @@
 #include "DMXPixelMappingMainStreamObjectVersion.h"
 #include "DMXPixelMappingRuntimeUtils.h"
 #include "DMXPixelMappingTypes.h"
-#include "IDMXPixelMappingRenderer.h"
 #include "ColorSpace/DMXPixelMappingColorSpace_RGBCMY.h"
 #include "Components/DMXPixelMappingFixtureGroupComponent.h"
 #include "Components/DMXPixelMappingRendererComponent.h"
@@ -87,11 +86,28 @@ void UDMXPixelMappingFixtureGroupItemComponent::Serialize(FArchive& Ar)
 		}
 	}
 #endif
+
+	InvalidatePixelMapRenderer();
+}
+
+void UDMXPixelMappingFixtureGroupItemComponent::PostInitProperties()
+{
+	Super::PostInitProperties();
+	if (IsTemplate())
+	{
+		return;
+	}
+
+	UpdateRenderElement();
 }
 
 void UDMXPixelMappingFixtureGroupItemComponent::PostLoad()
 {
 	Super::PostLoad();
+	if(IsTemplate())
+	{
+		return;
+	}
 
 	// Add valid modulators to modulator classes, remove invalid modulators
 	for (int32 IndexModulator = 0; Modulators.IsValidIndex(IndexModulator); )
@@ -126,6 +142,10 @@ void UDMXPixelMappingFixtureGroupItemComponent::PostLoad()
 void UDMXPixelMappingFixtureGroupItemComponent::BeginDestroy() 
 {
 	Super::BeginDestroy();
+	if (IsTemplate())
+	{
+		return;
+	}
 
 #if WITH_EDITOR
 	// Set the transient Color Space Class property to the initial value
@@ -134,6 +154,8 @@ void UDMXPixelMappingFixtureGroupItemComponent::BeginDestroy()
 		ColorSpace->GetOnPostEditChangedProperty().RemoveAll(this);
 	}
 #endif // WITH_EDITOR
+
+	PixelMapRenderElement.Reset();
 }
 
 #if WITH_EDITOR
@@ -176,6 +198,8 @@ void UDMXPixelMappingFixtureGroupItemComponent::PostEditChangeProperty(FProperty
 		}
 	}
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	InvalidatePixelMapRenderer();
 }
 #endif // WITH_EDITOR
 
@@ -185,18 +209,21 @@ void UDMXPixelMappingFixtureGroupItemComponent::PostEditChangeChainProperty(FPro
 	Super::PostEditChangeChainProperty(PropertyChangedChainEvent);
 	
 	// For consistency with Matrix, handling modulator class changes in runtime utils
-	FDMXPixelMappingRuntimeUtils::HandleModulatorPropertyChange(this, PropertyChangedChainEvent, ModulatorClasses, Modulators);
+	FDMXPixelMappingRuntimeUtils::HandleModulatorPropertyChange(this, PropertyChangedChainEvent, ModulatorClasses, MutableView(Modulators));
 }
 #endif // WITH_EDITOR
 
-FString UDMXPixelMappingFixtureGroupItemComponent::GetUserFriendlyName() const
+FString UDMXPixelMappingFixtureGroupItemComponent::GetUserName() const
 {
-	if (UDMXEntityFixturePatch* Patch = FixturePatchRef.GetFixturePatch())
+	const UDMXEntityFixturePatch* Patch = FixturePatchRef.GetFixturePatch();
+	if (Patch && UserName.IsEmpty())
 	{
 		return Patch->GetDisplayName();
 	}
-
-	return FString(TEXT("Fixture Group Item: No Fixture Patch"));
+	else
+	{
+		return UserName;
+	}
 }
 
 const FName& UDMXPixelMappingFixtureGroupItemComponent::GetNamePrefix()
@@ -260,6 +287,11 @@ void UDMXPixelMappingFixtureGroupItemComponent::SendDMX()
 {
 	SCOPE_CYCLE_COUNTER(STAT_DMXPixelMaping_FixtureGroupItem);
 
+	if (!PixelMapRenderElement.IsValid())
+	{
+		return;
+	}
+
 	UDMXEntityFixturePatch* FixturePatch = FixturePatchRef.GetFixturePatch();
 	if (!FixturePatch)
 	{
@@ -272,25 +304,12 @@ void UDMXPixelMappingFixtureGroupItemComponent::SendDMX()
 		return;
 	}
 
-	UDMXPixelMappingRendererComponent* RendererComponent = GetRendererComponent();
-	if (!RendererComponent)
-	{
-		return;
-	}
-
 	if (!ColorSpace)
 	{
 		return;
 	}
 
-	// Get the color data from the rendered component
-	FLinearColor PixelColor;
-	if (!RendererComponent->GetDownsampleBufferPixel(DownsamplePixelIndex, PixelColor))
-	{
-		return;
-	}
-
-	ColorSpace->SetRGBA(PixelColor);
+	ColorSpace->SetRGBA(PixelMapRenderElement->GetColor());
 	TMap<FDMXAttributeName, float> AttributeToValueMap = ColorSpace->GetAttributeNameToValueMap();
 
 	for (UDMXModulator* Modulator : Modulators)
@@ -314,15 +333,18 @@ void UDMXPixelMappingFixtureGroupItemComponent::SendDMX()
 
 void UDMXPixelMappingFixtureGroupItemComponent::QueueDownsample()
 {
+	// DEPRECATED 5.3
+
 	// Queue pixels into the downsample rendering
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	UDMXPixelMappingRendererComponent* RendererComponent = GetRendererComponent();
 
 	if (!ensure(RendererComponent))
 	{
 		return;
 	}
-
-	UTexture* InputTexture = RendererComponent->GetRendererInputTexture();
+	
+	UTexture* InputTexture = RendererComponent->GetRenderedInputTexture();
 	if (!ensure(InputTexture))
 	{
 		return;
@@ -330,7 +352,7 @@ void UDMXPixelMappingFixtureGroupItemComponent::QueueDownsample()
 
 	// Store pixel position
 	DownsamplePixelIndex = RendererComponent->GetDownsamplePixelNum();
-	
+
 	const uint32 TextureSizeX = InputTexture->GetResource()->GetSizeX();
 	const uint32 TextureSizeY = InputTexture->GetResource()->GetSizeY();
 	check(TextureSizeX > 0 && TextureSizeY > 0);
@@ -351,6 +373,7 @@ void UDMXPixelMappingFixtureGroupItemComponent::QueueDownsample()
 	};
 
 	RendererComponent->AddPixelToDownsampleSet(MoveTemp(DownsamplePixelParams));
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void UDMXPixelMappingFixtureGroupItemComponent::SetPosition(const FVector2D& NewPosition)
@@ -365,6 +388,8 @@ void UDMXPixelMappingFixtureGroupItemComponent::SetPosition(const FVector2D& New
 	}
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #endif
+
+	UpdateRenderElement();
 }
 
 void UDMXPixelMappingFixtureGroupItemComponent::SetSize(const FVector2D& NewSize)
@@ -379,6 +404,8 @@ void UDMXPixelMappingFixtureGroupItemComponent::SetSize(const FVector2D& NewSize
 	}
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #endif
+
+	UpdateRenderElement();
 }
 
 bool UDMXPixelMappingFixtureGroupItemComponent::IsOverParent() const
@@ -406,15 +433,19 @@ bool UDMXPixelMappingFixtureGroupItemComponent::IsOverParent() const
 	return false;
 }
 
+TSharedRef<UE::DMXPixelMapping::Rendering::FPixelMapRenderElement> UDMXPixelMappingFixtureGroupItemComponent::GetOrCreatePixelMapRenderElement()
+{
+	UpdateRenderElement();
+	return PixelMapRenderElement.ToSharedRef();
+}
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 void UDMXPixelMappingFixtureGroupItemComponent::RenderWithInputAndSendDMX()
 {
-	if (UDMXPixelMappingRendererComponent* RendererComponent = GetRendererComponent())
-	{
-		RendererComponent->RendererInputTexture();
-	}
-
+	// DEPRECATED 5.3
 	RenderAndSendDMX();
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 bool UDMXPixelMappingFixtureGroupItemComponent::CanBeMovedTo(const UDMXPixelMappingBaseComponent* Component) const
 {
@@ -427,6 +458,29 @@ bool UDMXPixelMappingFixtureGroupItemComponent::CanBeMovedTo(const UDMXPixelMapp
 	}
 
 	return false;
+}
+
+void UDMXPixelMappingFixtureGroupItemComponent::UpdateRenderElement()
+{
+	using namespace UE::DMXPixelMapping::Rendering;
+
+	const UDMXPixelMappingRendererComponent* RendererComponent = GetRendererComponent();
+	const UTexture* InputTexture = RendererComponent ? RendererComponent->GetRenderedInputTexture() : nullptr;
+	const double InputTextureWidth = InputTexture ? InputTexture->GetSurfaceWidth() : 1.0;
+	const double InputTextureHeight = InputTexture ? InputTexture->GetSurfaceHeight() : 1.0;
+
+	FPixelMapRenderElementParameters Parameters;
+	Parameters.UV = FVector2D(GetPosition().X / InputTextureWidth, GetPosition().Y / InputTextureHeight);
+	Parameters.UVSize = FVector2D(GetSize().X / InputTextureWidth, GetSize().Y / InputTextureHeight);
+	Parameters.UVCellSize = Parameters.UVSize / 2.f;
+	Parameters.CellBlendingQuality = CellBlendingQuality;
+	Parameters.bStaticCalculateUV = true;
+
+	if (!PixelMapRenderElement.IsValid())
+	{
+		PixelMapRenderElement = MakeShared<FPixelMapRenderElement>(Parameters);
+	}
+	PixelMapRenderElement->SetParameters(Parameters);
 }
 
 #if WITH_EDITOR

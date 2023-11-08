@@ -34,7 +34,7 @@ FMaterialUId BuildMaterialUId(const FCADMaterial& Material)
 	uint32 MaterialUId = 0;
 	if (!Material.MaterialName.IsEmpty())
 	{
-		MaterialUId = GetTypeHash(*Material.MaterialName); // we add material name because it could be used by the end user so two material with same parameters but different name are different.
+		MaterialUId = FCrc::Strihash_DEPRECATED(*Material.MaterialName); // we add material name because it could be used by the end user so two material with same parameters but different name are different.
 	}
 
 	MaterialUId = HashCombine(MaterialUId, GetTypeHash(Material.Diffuse));
@@ -46,9 +46,19 @@ FMaterialUId BuildMaterialUId(const FCADMaterial& Material)
 
 	if (!Material.TextureName.IsEmpty())
 	{
-		MaterialUId = HashCombine(MaterialUId, GetTypeHash(*Material.TextureName));
+		MaterialUId = HashCombine(MaterialUId, FCrc::Strihash_DEPRECATED(*Material.TextureName));
 	}
 	return FMath::Abs((int32)MaterialUId);
+}
+
+FArchive& operator<<(FArchive& Ar, FArchiveGraphicProperties& Object)
+{
+	Ar << Object.ColorUId;
+	Ar << Object.MaterialUId;
+	Ar << Object.bIsRemoved;
+	Ar << Object.bShow;
+	Ar << Object.Inheritance;
+	return Ar;
 }
 
 FArchive& operator<<(FArchive& Ar, FCADMaterial& Material)
@@ -194,8 +204,8 @@ uint32 GetTypeHash(const FFileDescriptor& FileDescriptor)
 	using ::GetTypeHash;
 	FFileStatData FileStatData = IFileManager::Get().GetStatData(*FileDescriptor.SourceFilePath);
 
-	uint32 DescriptorHash = GetTypeHash(*FileDescriptor.Name);
-	DescriptorHash = HashCombine(DescriptorHash, GetTypeHash(*FileDescriptor.Configuration));
+	uint32 DescriptorHash = FCrc::Strihash_DEPRECATED(*FileDescriptor.Name);
+	DescriptorHash = HashCombine(DescriptorHash, FCrc::Strihash_DEPRECATED(*FileDescriptor.Configuration));
 	DescriptorHash = HashCombine(DescriptorHash, GetTypeHash(FileStatData.FileSize));
 	DescriptorHash = HashCombine(DescriptorHash, GetTypeHash(FileStatData.ModificationTime));
 
@@ -214,6 +224,11 @@ void FFileDescriptor::SetFileFormat(const FString& Extension)
 		Format = ECADFormat::CATIA;
 		bCanReferenceOtherFiles = true;
 	}
+	else if (Extension == TEXT("catshape"))
+	{
+		Format = ECADFormat::CATIA;
+		bCanReferenceOtherFiles = false;
+	}
 	else if (Extension == TEXT("cgr"))
 	{
 		Format = ECADFormat::CATIA_CGR;
@@ -224,7 +239,8 @@ void FFileDescriptor::SetFileFormat(const FString& Extension)
 		Format = ECADFormat::IGES;
 		bCanReferenceOtherFiles = false;
 	}
-	else if (Extension == TEXT("step") || Extension == TEXT("stp"))
+	else if (Extension == TEXT("step") || Extension == TEXT("stp")
+		|| Extension == TEXT("stpz") || Extension == TEXT("stpx") || Extension == TEXT("stpxz"))
 	{
 		Format = ECADFormat::STEP;
 		bCanReferenceOtherFiles = true;
@@ -236,13 +252,15 @@ void FFileDescriptor::SetFileFormat(const FString& Extension)
 	}
 	else if (Extension == TEXT("iam"))
 	{
+		// Importer.m_sLoadData.m_sIncremental not supported
 		Format = ECADFormat::INVENTOR;
-		bCanReferenceOtherFiles = true;
+		bCanReferenceOtherFiles = false;
 	}
 	else if (Extension == TEXT("jt"))
 	{
+		// Importer.m_sLoadData.m_sIncremental not supported
 		Format = ECADFormat::JT;
-		bCanReferenceOtherFiles = true;
+		bCanReferenceOtherFiles = false;
 	}
 	else if (Extension == TEXT("model"))
 	{
@@ -263,7 +281,7 @@ void FFileDescriptor::SetFileFormat(const FString& Extension)
 	else if (Extension == TEXT("asm.*")
 		|| Extension == TEXT("creo") || Extension == TEXT("creo.*")
 		|| Extension == TEXT("neu") || Extension == TEXT("neu.*")
-		|| Extension == TEXT("xpr"))
+		|| Extension == TEXT("xas"))
 	{
 		Format = ECADFormat::CREO;
 		bCanReferenceOtherFiles = true;
@@ -288,13 +306,15 @@ void FFileDescriptor::SetFileFormat(const FString& Extension)
 		Format = ECADFormat::SOLIDWORKS;
 		bCanReferenceOtherFiles = true;
 	}
-	else if (Extension == TEXT("x_t") || Extension == TEXT("x_b"))
+	else if (Extension == TEXT("x_t") || Extension == TEXT("x_b")
+		|| Extension == TEXT("xmt") || Extension == TEXT("xmt_txt"))
 	{
 		Format = ECADFormat::PARASOLID;
 		bCanReferenceOtherFiles = true;
 	}
 	else if (Extension == TEXT("3dxml") || Extension == TEXT("3drep"))
 	{
+		// Importer.m_sLoadData.m_sIncremental not supported
 		Format = ECADFormat::CATIA_3DXML;
 		bCanReferenceOtherFiles = false;
 	}
@@ -308,15 +328,15 @@ void FFileDescriptor::SetFileFormat(const FString& Extension)
 		Format = ECADFormat::SOLID_EDGE;
 		bCanReferenceOtherFiles = true;
 	}
-	else if (Extension == TEXT("dwg"))
+	else if (Extension == TEXT("dwg") || Extension == TEXT("dxf"))
 	{
 		Format = ECADFormat::AUTOCAD;
 		bCanReferenceOtherFiles = true;
 	}
-	else if (Extension == TEXT("ifc"))
+	else if (Extension == TEXT("ifc") || Extension == TEXT("ifczip"))
 	{
 		Format = ECADFormat::IFC;
-		bCanReferenceOtherFiles = false;
+		bCanReferenceOtherFiles = true;
 	}
 	else if (Extension == TEXT("dgn"))
 	{

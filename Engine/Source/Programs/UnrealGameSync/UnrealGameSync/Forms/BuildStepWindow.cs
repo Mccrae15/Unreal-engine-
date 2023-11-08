@@ -3,24 +3,22 @@
 using EpicGames.Core;
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
 using System.Drawing;
 using System.IO;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace UnrealGameSync
 {
 	partial class BuildStepWindow : Form
 	{
-		BuildStep _step;
-		List<string> _targetNames;
-		DirectoryReference _baseDirectory;
-		IReadOnlyDictionary<string, string> _variables;
+		readonly BuildStep _step;
+		readonly List<string> _targetNames;
+		readonly DirectoryReference _baseDirectory;
+		readonly IReadOnlyDictionary<string, string> _variables;
+#pragma warning disable CA2213 // warning CA2213: 'BuildStepWindow' contains field '_variablesWindow' that is of IDisposable type 'VariablesWindow?', but it is never disposed. Change the Dispose method on 'BuildStepWindow' to call Close or Dispose on this field.
 		VariablesWindow? _variablesWindow;
+#pragma warning restore CA2213
 
 		public BuildStepWindow(BuildStep inTask, List<string> inTargetNames, DirectoryReference inBaseDirectory, IReadOnlyDictionary<string, string> inVariables)
 		{
@@ -30,14 +28,15 @@ namespace UnrealGameSync
 			_variables = inVariables;
 
 			InitializeComponent();
+			Font = new System.Drawing.Font("Segoe UI", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
 
-			this.MaximumSize = new System.Drawing.Size(32768, Height);
-			this.MinimumSize = new System.Drawing.Size(Width, Height);
+			MaximumSize = new System.Drawing.Size(32768, Height);
+			MinimumSize = new System.Drawing.Size(Width, Height);
 		}
 
 		private void BuildTaskWindow_Load(object sender, EventArgs e)
 		{
-			string defaultTargetName = _targetNames.FirstOrDefault(x => !x.EndsWith("Editor") && !x.EndsWith("Client") && !x.EndsWith("Server")) ?? ((_targetNames.Count > 0)? _targetNames[0] : "");
+			string defaultTargetName = _targetNames.FirstOrDefault(x => !x.EndsWith("Editor", StringComparison.OrdinalIgnoreCase) && !x.EndsWith("Client", StringComparison.OrdinalIgnoreCase) && !x.EndsWith("Server", StringComparison.OrdinalIgnoreCase)) ?? ((_targetNames.Count > 0)? _targetNames[0] : "");
 			CompileTargetComboBox.Items.AddRange(_targetNames.ToArray());
 			CompileTargetComboBox.Text = String.IsNullOrEmpty(_step.Target)? defaultTargetName : _step.Target;
 			StatusPanelLinkTextBox.Text = _step.StatusPanelLink;
@@ -122,12 +121,14 @@ namespace UnrealGameSync
 			_step.StatusText = StatusTextTextBox.Text;
 			_step.StatusPanelLink = StatusPanelLinkTextBox.Text;
 
-			if (!int.TryParse(DurationTextBox.Text, out _step.EstimatedDuration))
+			int estimatedDuration;
+			if (!Int32.TryParse(DurationTextBox.Text, out estimatedDuration))
 			{
-				_step.EstimatedDuration = 1;
+				estimatedDuration = 1;
 			}
+			_step.EstimatedDuration = estimatedDuration;
 
-			if(CompileRadioButton.Checked)
+			if (CompileRadioButton.Checked)
 			{
 				_step.Type = BuildStepType.Compile;
 				_step.Target = CompileTargetComboBox.Text;
@@ -171,7 +172,7 @@ namespace UnrealGameSync
 
 		private void CookFileNameButton_Click(object sender, EventArgs e)
 		{
-			OpenFileDialog dialog = new OpenFileDialog();
+			using OpenFileDialog dialog = new OpenFileDialog();
 			dialog.Filter = "Cook/Launch Profiles (*.ulp2)|*.ulp2";
 			dialog.FileName = AddBaseDirectory(CookFileNameTextBox.Text);
 			if(dialog.ShowDialog() == DialogResult.OK)
@@ -182,7 +183,7 @@ namespace UnrealGameSync
 
 		private void OtherFileNameButton_Click(object sender, EventArgs e)
 		{
-			OpenFileDialog dialog = new OpenFileDialog();
+			using OpenFileDialog dialog = new OpenFileDialog();
 			dialog.Filter = "Executable Files (*.exe,*.bat)|*.exe;*.bat|All files (*.*)|*.*";
 			dialog.FileName = AddBaseDirectory(OtherFileNameTextBox.Text);
 			if(dialog.ShowDialog() == DialogResult.OK)
@@ -193,7 +194,7 @@ namespace UnrealGameSync
 
 		private void OtherWorkingDirButton_Click(object sender, EventArgs e)
 		{
-			FolderBrowserDialog dialog = new FolderBrowserDialog();
+			using FolderBrowserDialog dialog = new FolderBrowserDialog();
 			dialog.SelectedPath = OtherWorkingDirTextBox.Text;
 			if (dialog.ShowDialog() == DialogResult.OK)
 			{
@@ -203,7 +204,7 @@ namespace UnrealGameSync
 
 		private string AddBaseDirectory(string fileName)
 		{
-			if(fileName.Contains("$("))
+			if(fileName.Contains("$(", StringComparison.Ordinal))
 			{
 				return "";
 			}
@@ -230,7 +231,7 @@ namespace UnrealGameSync
 			}
 		}
 
-		private void OnClosedVariablesWindow(object sender, EventArgs e)
+		private void OnClosedVariablesWindow(object? sender, EventArgs e)
 		{
 			_variablesWindow = null;
 		}
@@ -238,23 +239,20 @@ namespace UnrealGameSync
 		private void InsertVariable(string name)
 		{
 			IContainerControl container = this;
-			if(container != null)
+			for(;;)
 			{
-				for(;;)
+				IContainerControl? nextContainer = container.ActiveControl as IContainerControl;
+				if(nextContainer == null)
 				{
-					IContainerControl? nextContainer = container.ActiveControl as IContainerControl;
-					if(nextContainer == null)
-					{
-						break;
-					}
-					container = nextContainer;
+					break;
 				}
+				container = nextContainer;
+			}
 
-				TextBox? focusTextBox = container.ActiveControl as TextBox;
-				if(focusTextBox != null)
-				{
-					focusTextBox.SelectedText = name;
-				}
+			TextBox? focusTextBox = container.ActiveControl as TextBox;
+			if(focusTextBox != null)
+			{
+				focusTextBox.SelectedText = name;
 			}
 		}
 
@@ -268,6 +266,9 @@ namespace UnrealGameSync
 				_variablesWindow.Size = new Size(_variablesWindow.Size.Width, Size.Height);
 				_variablesWindow.FormClosed += OnClosedVariablesWindow;
 				_variablesWindow.Show(this);
+
+				components ??= new System.ComponentModel.Container();
+				components.Add(_variablesWindow);
 			}
 			else
 			{

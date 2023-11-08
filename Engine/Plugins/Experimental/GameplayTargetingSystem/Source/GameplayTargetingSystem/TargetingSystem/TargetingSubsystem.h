@@ -1,13 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Containers/SortedMap.h"
 #include "CoreMinimal.h"
 #include "DrawDebugHelpers.h"
-#include "GameplayTargetingSystem/Tasks/TargetingTask.h"
-#include "GameplayTargetingSystem/Types/TargetingSystemTypes.h"
 #include "Misc/CoreMisc.h"
 #include "Subsystems/GameInstanceSubsystem.h"
+#include "Tasks/TargetingTask.h"
 #include "Tickable.h"
+#include "Types/TargetingSystemTypes.h"
 
 #include "TargetingSubsystem.generated.h"
 
@@ -18,6 +19,7 @@ class UCanvas;
 class UTargetingPreset;
 class UTargetingTask;
 class UWorld;
+struct FCollisionQueryTaskData;
 
 
 #if ENABLE_DRAW_DEBUG
@@ -96,7 +98,7 @@ private:
 	// End USubsystem
 
 	/** FSelfRegisteringExec implementation */
-	virtual bool Exec(UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& Ar) override;
+	virtual bool Exec_Runtime(UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& Ar) override;
 	/** ~FSelfRegisteringExec implementation */
 
 	// FTickableGameObject interface
@@ -123,28 +125,28 @@ public:
 
 	/** The handle released delegate that fires right before a handle is release so all data stores can clean up their state */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnTargetingRequestHandleReleased, FTargetingRequestHandle)
-	static FOnTargetingRequestHandleReleased ReleaseHandleDelegate;
+	TARGETINGSYSTEM_API static FOnTargetingRequestHandleReleased ReleaseHandleDelegate;
 
 	/** Target Handle Generation Methods */
 
 	/** Targeting Request Methods */
 public:
 	/** Method to execute an immediate targeting request with a given targeting handle. */
-	TARGETINGSYSTEM_API void ExecuteTargetingRequestWithHandle(FTargetingRequestHandle TargetingHandle, FTargetingRequestDelegate CompletionDelegate) const;
+	TARGETINGSYSTEM_API void ExecuteTargetingRequestWithHandle(FTargetingRequestHandle TargetingHandle, FTargetingRequestDelegate CompletionDelegate = FTargetingRequestDelegate(), FTargetingRequestDynamicDelegate CompletionDynamicDelegate = FTargetingRequestDynamicDelegate());
 
 	/** Method to execute an immediate targeting request based on a gameplay targeting preset.*/
-	UFUNCTION(BlueprintCallable, BlueprintPure = false, Category = "Gameplay Targeting | Instant Request")
-	void ExecuteTargetingRequest(const UTargetingPreset* TargetingPreset, const FTargetingSourceContext& InSourceContext, FTargetingRequestDynamicDelegate CompletionDynamicDelegate) const;
+	UFUNCTION(BlueprintCallable, BlueprintPure = false, Category = "Targeting System | Instant Request")
+	void ExecuteTargetingRequest(const UTargetingPreset* TargetingPreset, const FTargetingSourceContext& InSourceContext, FTargetingRequestDynamicDelegate CompletionDynamicDelegate);
 
 	/** Method to queue an async targeting request with a given targeting handle. */
-	TARGETINGSYSTEM_API void StartAsyncTargetingRequestWithHandle(FTargetingRequestHandle TargetingHandle, FTargetingRequestDelegate CompletionDelegate);
+	TARGETINGSYSTEM_API void StartAsyncTargetingRequestWithHandle(FTargetingRequestHandle TargetingHandle, FTargetingRequestDelegate CompletionDelegate = FTargetingRequestDelegate(), FTargetingRequestDynamicDelegate CompletionDynamicDelegate = FTargetingRequestDynamicDelegate());
 
 	/** Method to remove an async targeting request with a given targeting handle */
-	UFUNCTION(BlueprintCallable, Category = "Gameplay Targeting | Async Request")
+	UFUNCTION(BlueprintCallable, Category = "Targeting System | Async Request")
 	TARGETINGSYSTEM_API void RemoveAsyncTargetingRequestWithHandle(FTargetingRequestHandle& TargetingHandle);
 
 	/** Method to queue an async targeting request based on a gameplay targeting preset. */
-	UFUNCTION(BlueprintCallable, Category = "Gameplay Targeting | Async Request")
+	UFUNCTION(BlueprintCallable, Category = "Targeting System | Async Request")
 	FTargetingRequestHandle StartAsyncTargetingRequest(const UTargetingPreset* TargetingPreset, const FTargetingSourceContext& InSourceContext, FTargetingRequestDynamicDelegate CompletionDynamicDelegate);
 
 private:
@@ -160,12 +162,21 @@ private:
 	/** Method to find the currect executing task for the given handle */
 	UTargetingTask* FindCurrentExecutingTask(FTargetingRequestHandle Handle) const;
 
+	/** Called when we set bTickingAsyncRequests to false, at this point it's safe to perform any queued operations on the Async Requests Array */
+	void OnFinishedTickingAsyncRequests();
+
 	/** The set of target requests queued up for async processing */
 	UPROPERTY(Transient)
 	TArray<FTargetingRequestHandle> AsyncTargetingRequests;
 
 	/** Flag indicating the targeting system is currently in its tick processing targeting tasks for async request */
 	bool bTickingAsycnRequests = false;
+
+	/** While we're processing targeting requests, we add any incoming requests to this array to prevent memory stomps */
+	TSortedMap<FTargetingRequestHandle, FTargetingRequestData> PendingTargetingRequests;
+
+	/** (Version for Async Requests) While we're processing targeting requests, we add any incoming requests to this array to prevent memory stomps */
+	TSortedMap<FTargetingRequestHandle, FTargetingRequestData> PendingAsyncTargetingRequests;
 
 	/** ~Targeting Request Methods */
 
@@ -182,6 +193,10 @@ public:
 	/** Helper method to get the set of hit results for a given targeting handle */
 	UFUNCTION(BlueprintCallable, Category = "Targeting System | Targeting Results")
 	TARGETINGSYSTEM_API void GetTargetingResults(FTargetingRequestHandle TargetingHandle, TArray<FHitResult>& OutTargets) const;
+
+	/** Function that lets you set a data store from a certain Targeting Handle to add some Collision Query Param Overrides  */
+	UFUNCTION(BlueprintCallable, Category = "Targeting System | Data Stores")
+	static void OverrideCollisionQueryTaskData(FTargetingRequestHandle TargetingHandle, const FCollisionQueryTaskData& CollisionQueryDataOverride);
 
 	/** ~Blueprint Helper Methods */
 

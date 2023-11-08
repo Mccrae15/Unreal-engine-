@@ -16,10 +16,8 @@
 #include "MuT/NodeImageColourMapPrivate.h"
 #include "MuT/NodeImageConditionalPrivate.h"
 #include "MuT/NodeImageConstantPrivate.h"
-#include "MuT/NodeImageDifferencePrivate.h"
 #include "MuT/NodeImageFormatPrivate.h"
 #include "MuT/NodeImageGradientPrivate.h"
-#include "MuT/NodeImageInterpolate3Private.h"
 #include "MuT/NodeImageInterpolatePrivate.h"
 #include "MuT/NodeImageInvertPrivate.h"
 #include "MuT/NodeImageLayerColourPrivate.h"
@@ -32,7 +30,6 @@
 #include "MuT/NodeImageProjectPrivate.h"
 #include "MuT/NodeImageResizePrivate.h"
 #include "MuT/NodeImageSaturatePrivate.h"
-#include "MuT/NodeImageSelectColourPrivate.h"
 #include "MuT/NodeImageSwitchPrivate.h"
 #include "MuT/NodeImageSwizzlePrivate.h"
 #include "MuT/NodeImageTablePrivate.h"
@@ -99,6 +96,14 @@ namespace mu
     }
 
 
+	//---------------------------------------------------------------------------------------------
+	Ptr<ASTOp> ImageDescGenerator::Visit( const NodeImageReference::Private& node )
+	{
+		m_desc = MUTABLE_MISSING_IMAGE_DESC;
+		return 0;
+	}
+
+
     //---------------------------------------------------------------------------------------------
     Ptr<ASTOp> ImageDescGenerator::Visit( const NodeImageParameter::Private& )
     {
@@ -127,6 +132,12 @@ namespace mu
         std::size_t i = 0;
         while ( !pImage && i<node.m_pTable->GetPrivate()->m_rows.Num() )
         {
+			if (node.m_pTable->GetPrivate()->m_rows[i].m_values[colIndex].m_pProxyImage->Get()->IsReference())
+			{
+				// Image References do not need an image desc
+				break;
+			}
+
             pImage = node.m_pTable->GetPrivate()->m_rows[i].m_values[ colIndex ].m_pProxyImage->Get();
             ++i;
         }
@@ -244,30 +255,6 @@ namespace mu
     }
 
 
-    //---------------------------------------------------------------------------------------------
-    Ptr<ASTOp> ImageDescGenerator::Visit( const NodeImageInterpolate3::Private& node )
-    {
-        m_desc = MUTABLE_MISSING_IMAGE_DESC;
-
-        if ( node.m_pTarget0 )
-        {
-            Generate( *node.m_pTarget0->GetBasePrivate() );
-        }
-        else if ( node.m_pTarget1 )
-        {
-            Generate( *node.m_pTarget1->GetBasePrivate() );
-        }
-        else if ( node.m_pTarget2 )
-        {
-            Generate( *node.m_pTarget2->GetBasePrivate() );
-        }
-
-        m_desc.m_format = EImageFormat::IF_RGB_UBYTE;
-
-        return 0;
-    }
-
-
 	//---------------------------------------------------------------------------------------------
     Ptr<ASTOp> ImageDescGenerator::Visit(const NodeImageSwizzle::Private& node)
 	{
@@ -303,7 +290,7 @@ namespace mu
         // Necessary since dxt1 reports 4 channels just in case
         if (m_desc.m_format!=node.m_format)
         {
-            if (GetImageFormatData(m_desc.m_format).m_channels>3
+            if (GetImageFormatData(m_desc.m_format).Channels >3
                     &&
                     node.m_formatIfAlpha!= EImageFormat::IF_NONE
                     )
@@ -321,27 +308,6 @@ namespace mu
 
 
     //---------------------------------------------------------------------------------------------
-    Ptr<ASTOp> ImageDescGenerator::Visit( const NodeImageDifference::Private& node )
-    {
-        m_desc = MUTABLE_MISSING_IMAGE_DESC;
-
-        // The first image size has higher priority
-        if ( NodeImage* pA = node.m_pA.get() )
-        {
-            Generate( *pA->GetBasePrivate() );
-        }
-        else if ( NodeImage* pB = node.m_pB.get() )
-        {
-            Generate( *pB->GetBasePrivate() );
-        }
-
-        m_desc.m_format = EImageFormat::IF_L_UBYTE;
-
-        return 0;
-    }
-
-
-    //---------------------------------------------------------------------------------------------
     Ptr<ASTOp> ImageDescGenerator::Visit( const NodeImageBinarise::Private& node )
     {
         m_desc = MUTABLE_MISSING_IMAGE_DESC;
@@ -349,22 +315,6 @@ namespace mu
         if ( NodeImage* pA = node.m_pBase.get() )
         {
             Generate( *pA->GetBasePrivate() );
-        }
-
-        m_desc.m_format = EImageFormat::IF_L_UBYTE;
-
-        return 0;
-    }
-
-
-    //---------------------------------------------------------------------------------------------
-    Ptr<ASTOp> ImageDescGenerator::Visit( const NodeImageSelectColour::Private& node )
-    {
-        m_desc = MUTABLE_MISSING_IMAGE_DESC;
-
-        if ( NodeImage* pBase = node.m_pSource.get() )
-        {
-            Generate( *pBase->GetBasePrivate() );
         }
 
         m_desc.m_format = EImageFormat::IF_L_UBYTE;

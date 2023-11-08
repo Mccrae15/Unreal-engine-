@@ -10,6 +10,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using EpicGames.Core;
+using System.Diagnostics;
 
 namespace Gauntlet
 {
@@ -52,13 +53,9 @@ namespace Gauntlet
 		{
 			get
 			{
-				if (bHaveSavedArtifacts == false)
+				if (HasExited)
 				{
-					if (HasExited)
-					{
-						SaveArtifacts();
-						bHaveSavedArtifacts = true;
-					}
+					SaveArtifacts();
 				}
 				
 				return Path.Combine(AndroidDevice.LocalCachePath, "Saved");
@@ -105,6 +102,11 @@ namespace Gauntlet
 			}
 
 			if ((DateTime.UtcNow - ActivityCheckTime) < ActivityCheckDelta)
+			{
+				return false;
+			}
+
+			if(AndroidDevice.Disposed)
 			{
 				return false;
 			}
@@ -205,7 +207,7 @@ namespace Gauntlet
 
 		public void Kill()
 		{
-			if (!HasExited)
+			if (!HasExited && !AndroidDevice.Disposed)
 			{
 				WasKilled = true;
 				Install.AndroidDevice.KillRunningProcess(Install.AndroidPackageName);
@@ -215,6 +217,8 @@ namespace Gauntlet
 
 		protected void SaveArtifacts()
 		{
+			if (bHaveSavedArtifacts)
+				return;
 
 			// copy remote artifacts to local
 			if (Directory.Exists(Install.AndroidDevice.LocalCachePath))
@@ -279,6 +283,8 @@ namespace Gauntlet
 			File.WriteAllText(Path.Combine(LocalSaved, LogcatFilename), LogcatResult.Output);
 
 			Install.AndroidDevice.PostRunCleanup();
+
+			bHaveSavedArtifacts = true;
 		}
 	}
 
@@ -573,7 +579,7 @@ namespace Gauntlet
 				finally
 				{
 					disposedValue = true;
-					AdbCredentialCache.RemoveInstance();					
+					AdbCredentialCache.RemoveInstance();
 				}
 
 			}
@@ -908,11 +914,21 @@ namespace Gauntlet
 			RunAdbDeviceCommand(string.Format("shell rm -r {0}", DeviceExternalStorageSavedPath));
 			RunAdbDeviceCommand(string.Format("shell rm -r {0}", DeviceExternalFilesSavedPath));
 
-			bool SkipDeploy = Globals.Params.ParseParam("SkipDeploy");
+			if (Globals.Params.ParseParam("fullclean"))
+			{
+				Log.Info("Fully cleaning console before install...");
+				RunAdbDeviceCommand(string.Format("shell rm -r {0}/UnrealGame/*", StorageLocation));
+				RunAdbDeviceCommand(string.Format("shell rm -r {0}/Android/data/{1}/*", StorageLocation, Build.AndroidPackageName));
+				RunAdbDeviceCommand(string.Format("shell rm -r {0}/Android/obb/{1}/*", StorageLocation, Build.AndroidPackageName));
+				RunAdbDeviceCommand(string.Format("shell rm -r {0}/Download/*", StorageLocation));
+			}
+
+				bool SkipDeploy = Globals.Params.ParseParam("SkipDeploy");
 
 			if (SkipDeploy == false)
 			{
-				if (Globals.Params.ParseParam("cleandevice"))
+				if (Globals.Params.ParseParam("cleandevice")
+					|| Globals.Params.ParseParam("fullclean"))
 				{
 					Log.Info("Cleaning previous builds due to presence of -cleandevice");
 
@@ -930,6 +946,7 @@ namespace Gauntlet
 
 				// remote dir on the device, create it if it doesn't exist
 				RunAdbDeviceCommand(string.Format("shell mkdir -p {0}/", DeviceExternalStorageSavedPath));
+				RunAdbDeviceCommand(string.Format("shell mkdir -p {0}/", DeviceExternalFilesSavedPath));
 
 				// path to the APK to install.
 				string ApkPath = Build.SourceApkPath;
@@ -1385,6 +1402,17 @@ namespace Gauntlet
 				{
 					Reset();
 					KillAdbServer();
+					// Kill ADB server, just as a safety measure to ensure it closes
+					IEnumerable<Process> ADBProcesses = Process.GetProcesses().Where(p => p.ProcessName.Equals("adb"));
+					if (ADBProcesses.Count() > 0)
+					{
+						Log.Info("Terminating {0} ADB Process(es)", ADBProcesses.Count());
+						foreach (Process ADBProcess in ADBProcesses)
+						{
+							Log.Info("Killing ADB process {0}", ADBProcess.Id);
+							ADBProcess.Kill();
+						}
+					}
 				}
 			}
 		}

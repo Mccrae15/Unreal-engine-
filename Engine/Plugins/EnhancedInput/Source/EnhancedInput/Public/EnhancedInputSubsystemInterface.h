@@ -21,6 +21,8 @@ class UInputModifier;
 class UInputTrigger;
 class UPlayerMappableInputConfig;
 class UWorldSubsystem;
+class UEnhancedInputUserSettings;
+class UEnhancedPlayerMappableKeyProfile;
 
 // Subsystem interface
 UINTERFACE(MinimalAPI, meta=(CannotImplementInterfaceInBlueprint))
@@ -49,6 +51,7 @@ struct FModifyContextOptions
 	FModifyContextOptions()
 		: bIgnoreAllPressedKeysUntilRelease(true)
 		, bForceImmediately(false)
+		, bNotifyUserSettings(false)
 	{}
 
 	// If true then any keys that are pressed during the rebuild of control mappings will be ignored until they are released.
@@ -58,6 +61,11 @@ struct FModifyContextOptions
 	// The mapping changes will be applied synchronously, rather than at the end of the frame, making them available to the input system on the same frame.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input")
 	uint8 bForceImmediately : 1;
+	
+	// If true, then this Mapping Context will be registered or unregistered with the Enhanced Input User Settings on this subsystem,
+	// if they exist.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input")
+	uint8 bNotifyUserSettings : 1;
 };
 
 // Includes native functionality shared between all subsystems
@@ -71,6 +79,31 @@ public:
 
 	virtual UEnhancedPlayerInput* GetPlayerInput() const = 0;
 
+	UFUNCTION(BlueprintCallable, Category="Enhanced Input|User Settings", meta=(DisplayName="Get Enhanced Input User Settings"))
+	virtual UEnhancedInputUserSettings* GetUserSettings() const;
+
+protected:
+	
+	/**
+	 * Create a new user settings object if it is enabled in the EI developer settings.
+	 *
+	 * Not every enhanced input subsystem needs user settings, so this is an optional feature.
+	 */
+	virtual void InitalizeUserSettings();
+	
+	/** Binds to any delegates of interest on the UEnhancedInputUserSettings if they are enabled in the developer settings. */
+	virtual void BindUserSettingDelegates();
+	
+	/** Callback for when any Enhanced Input user settings have been changed (a new key mapping for example) */
+	UFUNCTION()
+	virtual void OnUserSettingsChanged(UEnhancedInputUserSettings* Settings);
+
+	/** A callback for when the user has applied a new mappable key profile. */
+	UFUNCTION()
+	virtual void OnUserKeyProfileChanged(const UEnhancedPlayerMappableKeyProfile* InNewProfile);
+
+public:
+	
 	/**
 	 * Input simulation via injection. Runs modifiers and triggers delegates as if the input had come through the underlying input system as FKeys.
 	 * Applies action modifiers and triggers on top.
@@ -95,6 +128,68 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Input", meta=(AutoCreateRefTerm="Modifiers,Triggers"))
 	virtual void InjectInputVectorForAction(const UInputAction* Action, FVector Value, const TArray<UInputModifier*>& Modifiers, const TArray<UInputTrigger*>& Triggers);
 
+	/**
+	 * Input simulation via injection. Runs modifiers and triggers delegates as if the input had come through the underlying input system as FKeys.
+	 * Applies action modifiers and triggers on top.
+	 *
+	 * @param MappingName		The name of the player mapping that can be used for look up an associated UInputAction object.
+	 * @param RawValue			The value to set the action to
+	 * @param Modifiers			The modifiers to apply to the injected input.
+	 * @param Triggers			The triggers to apply to the injected input.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Input", meta=(AutoCreateRefTerm="Modifiers,Triggers"))
+	virtual void InjectInputForPlayerMapping(const FName MappingName, FInputActionValue RawValue, const TArray<UInputModifier*>& Modifiers, const TArray<UInputTrigger*>& Triggers);
+	
+	/**
+	 * Input simulation via injection. Runs modifiers and triggers delegates as if the input had come through the underlying input system as FKeys.
+	 * Applies action modifiers and triggers on top.
+	 *
+	 * @param MappingName		The name of the player mapping that can be used for look up an associated UInputAction object.
+	 * @param Value				The value to set the action to (the type will be controlled by the Action)
+	 * @param Modifiers			The modifiers to apply to the injected input.
+	 * @param Triggers			The triggers to apply to the injected input.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Input", meta=(AutoCreateRefTerm="Modifiers,Triggers"))
+	virtual void InjectInputVectorForPlayerMapping(const FName MappingName, FVector Value, const TArray<UInputModifier*>& Modifiers, const TArray<UInputTrigger*>& Triggers);
+
+	/**
+	 * Starts simulation of input via injection. This injects the given input every tick until it is stopped with StopContinuousInputInjectionForAction.
+	 *
+	 * @param Action		The Input Action to set inject input for
+	 * @param RawValue		The value to set the action to (the type will be controlled by the Action)
+	 * @param Modifiers		The modifiers to apply to the injected input.
+	 * @param Triggers		The triggers to apply to the injected input.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Input", meta=(AutoCreateRefTerm="Modifiers,Triggers"))
+	virtual void StartContinuousInputInjectionForAction(const UInputAction* Action, FInputActionValue RawValue, const TArray<UInputModifier*>& Modifiers, const TArray<UInputTrigger*>& Triggers);
+
+	/**
+	 * Starts simulation of input via injection. This injects the given input every tick until it is stopped with StopContinuousInputInjectionForAction.
+	 *
+	 * @param MappingName		The name of the player mapping that can be used for look up an associated UInputAction object.
+	 * @param RawValue			The value to set the action to (the type will be controlled by the Action)
+	 * @param Modifiers			The modifiers to apply to the injected input.
+	 * @param Triggers			The triggers to apply to the injected input.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Input", meta=(AutoCreateRefTerm="Modifiers,Triggers"))
+	virtual void StartContinuousInputInjectionForPlayerMapping(const FName MappingName, FInputActionValue RawValue, const TArray<UInputModifier*>& Modifiers, const TArray<UInputTrigger*>& Triggers);
+
+	/**
+	 * Stops continuous input injection for the given action.
+	 *
+	 * @param Action		The action to stop injecting input for
+	 */
+	UFUNCTION(BlueprintCallable, Category="Input")
+	virtual void StopContinuousInputInjectionForAction(const UInputAction* Action);
+
+	/**
+	 * Stops continuous input injection for the given player mapping name.
+	 *
+	 * @param MappingName		The name of the player mapping that can be used for look up an associated UInputAction object.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Input")
+	virtual void StopContinuousInputInjectionForPlayerMapping(const FName MappingName);
+	
 	/**
 	 * Remove all applied mapping contexts.
 	 */
@@ -191,13 +286,18 @@ public:
 	UE_DEPRECATED(5.2, "AddPlayerMappedKey has been deprecated, please use AddPlayerMappedKeyInSlot instead.")
 	virtual int32 AddPlayerMappedKey(const FName MappingName, const FKey NewKey, const FModifyContextOptions& Options = FModifyContextOptions());
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	/**
 	 * Emplace or replace any currently applied key in KeySlot for mapping of MappingName.
 	 * Requests a rebuild of the player mappings.
 	 *
 	 * @return The number of mappings that have been replaced
 	 */
-	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Input|PlayerMappable", meta = (DisplayName = "Add Player Mapped Key In Slot", AutoCreateRefTerm = "KeySlot, Options"))
+	UE_DEPRECATED(5.3, "K2_AddPlayerMappedKeyInSlot has been deprecated, please use UEnhancedInputUserSettings instead.")
+	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Input|PlayerMappable", meta = (
+		DeprecatedFunction,
+		DeprecationMessage="AddPlayerMappedKeyInSlot has been deprecated, please use UEnhancedInputUserSettings instead.",
+		DisplayName = "Add Player Mapped Key In Slot", AutoCreateRefTerm = "KeySlot, Options"))
 	virtual int32 K2_AddPlayerMappedKeyInSlot(const FName MappingName, const FKey NewKey, const FPlayerMappableKeySlot& KeySlot = FPlayerMappableKeySlot(), const FModifyContextOptions& Options = FModifyContextOptions());
 
 	/**
@@ -206,6 +306,7 @@ public:
 	 *
 	 * @return The number of mappings that have been replaced
 	 */
+	UE_DEPRECATED(5.3, "AddPlayerMappedKeyInSlot has been deprecated, please use UEnhancedInputUserSettings instead.")
 	virtual int32 AddPlayerMappedKeyInSlot(const FName MappingName, const FKey NewKey, const FPlayerMappableKeySlot& KeySlot = FPlayerMappableKeySlot::FirstKeySlot, const FModifyContextOptions& Options = FModifyContextOptions());
 
 	/**
@@ -223,7 +324,9 @@ public:
 	 *
 	 * @return The number of mappings that have been removed
 	 */
-	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Input|PlayerMappable", meta = (DisplayName="Remove Player Mapped Key In Slot", AutoCreateRefTerm = "KeySlot, Options"))
+	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Input|PlayerMappable", meta = (DeprecatedFunction,
+		DeprecationMessage="K2_RemovePlayerMappedKeyInSlot has been deprecated, please use UEnhancedInputUserSettings instead.",
+		DisplayName="Remove Player Mapped Key In Slot", AutoCreateRefTerm = "KeySlot, Options"))
 	virtual int32 K2_RemovePlayerMappedKeyInSlot(const FName MappingName, const FPlayerMappableKeySlot& KeySlot = FPlayerMappableKeySlot(), const FModifyContextOptions& Options = FModifyContextOptions());
 
 	/**
@@ -232,6 +335,7 @@ public:
 	 *
 	 * @return The number of mappings that have been removed
 	 */
+	UE_DEPRECATED(5.3, "RemovePlayerMappedKeyInSlot has been deprecated, please use UEnhancedInputUserSettings instead.")
 	virtual int32 RemovePlayerMappedKeyInSlot(const FName MappingName, const FPlayerMappableKeySlot& KeySlot = FPlayerMappableKeySlot::FirstKeySlot, const FModifyContextOptions& Options = FModifyContextOptions());
 
 	/**
@@ -240,7 +344,10 @@ public:
 	 *
 	 * @return The number of mappings that have been removed
 	 */
-	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Input|PlayerMappable", meta = (AutoCreateRefTerm = "KeySlot, Options"))
+	UE_DEPRECATED(5.3, "RemovePlayerMappedKeyInSlot has been deprecated, please use UEnhancedInputUserSettings instead.")
+	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Input|PlayerMappable", meta = (DeprecatedFunction,
+		DeprecationMessage="RemoveAllPlayerMappedKeysForMapping has been deprecated, please use UEnhancedInputUserSettings instead.",
+		AutoCreateRefTerm = "KeySlot, Options"))
 	virtual int32 RemoveAllPlayerMappedKeysForMapping(const FName MappingName, const FModifyContextOptions& Options = FModifyContextOptions());
 
 	/**
@@ -258,7 +365,11 @@ public:
 	 *
 	 * @param MappingName	The FName of the mapped key that would have been set with the AddPlayerMappedKey function.
 	 */
-	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Input|PlayerMappable", meta = (DisplayName="Get Player Mapped Key In Slot",AutoCreateRefTerm = "KeySlot"))
+	UE_DEPRECATED(5.3, "RemovePlayerMappedKeyInSlot has been deprecated, please use UEnhancedInputUserSettings instead.")
+	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Input|PlayerMappable", meta = (
+		DeprecatedFunction,
+		DeprecationMessage="K2_GetPlayerMappedKeyInSlot has been deprecated, please use UEnhancedInputUserSettings instead.",
+		DisplayName="Get Player Mapped Key In Slot",AutoCreateRefTerm = "KeySlot"))
 	virtual FKey K2_GetPlayerMappedKeyInSlot(const FName MappingName, const FPlayerMappableKeySlot& KeySlot = FPlayerMappableKeySlot()) const;
 
 	/**
@@ -267,6 +378,7 @@ public:
 	 *
 	 * @param MappingName	The FName of the mapped key that would have been set with the AddPlayerMappedKey function.
 	 */
+	UE_DEPRECATED(5.3, "RemovePlayerMappedKeyInSlot has been deprecated, please use UEnhancedInputUserSettings instead.")
 	virtual FKey GetPlayerMappedKeyInSlot(const FName MappingName, const FPlayerMappableKeySlot& KeySlot = FPlayerMappableKeySlot::FirstKeySlot) const;
 
 	/**
@@ -275,7 +387,8 @@ public:
 	 *
 	 * @param MappingName	The FName of the mapped key that would have been set with the AddPlayerMappedKey function.
 	 */
-	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Input|PlayerMappable")
+	UE_DEPRECATED(5.3, "GetAllPlayerMappedKeys has been deprecated, please use UEnhancedInputUserSettings instead.")
+	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Input|PlayerMappable", meta=(DeprecatedFunction, DeprecationMessage="GetAllPlayerMappedKeys has been deprecated, please use UEnhancedInputUserSettings instead."))
 	virtual TArray<FKey> GetAllPlayerMappedKeys(const FName MappingName) const;
 	
 	/**
@@ -283,17 +396,22 @@ public:
 	 * Requests a rebuild of the player mappings. 
 	 *
 	 */
-	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Input|PlayerMappable", meta=(AutoCreateRefTerm = "Options"))
+	UE_DEPRECATED(5.3, "RemoveAllPlayerMappedKeys has been deprecated, please use UEnhancedInputUserSettings instead.")
+	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Input|PlayerMappable", meta=(AutoCreateRefTerm = "Options", DeprecatedFunction, DeprecationMessage="RemoveAllPlayerMappedKeys has been deprecated, please use UEnhancedInputUserSettings instead."))
 	virtual void RemoveAllPlayerMappedKeys(const FModifyContextOptions& Options = FModifyContextOptions());
 	
 	/** Adds all the input mapping contexts inside of this mappable config. */
-	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Input|PlayerMappable", meta=(AutoCreateRefTerm = "Options"))
+	UE_DEPRECATED(5.3, "RemoveAllPlayerMappedKeys has been deprecated, please use UEnhancedInputUserSettings instead.")
+	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Input|PlayerMappable", meta=(AutoCreateRefTerm = "Options", DeprecatedFunction, DeprecationMessage="AddPlayerMappableConfig has been deprecated, please use UEnhancedInputUserSettings instead."))
 	virtual void AddPlayerMappableConfig(const UPlayerMappableInputConfig* Config, const FModifyContextOptions& Options = FModifyContextOptions());
 
 	/** Removes all the input mapping contexts inside of this mappable config. */
-	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Input|PlayerMappable", meta=(AutoCreateRefTerm = "Options"))
+	UE_DEPRECATED(5.3, "RemoveAllPlayerMappedKeys has been deprecated, please use UEnhancedInputUserSettings instead.")
+	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Input|PlayerMappable", meta=(AutoCreateRefTerm = "Options", DeprecatedFunction, DeprecationMessage="RemovePlayerMappableConfig has been deprecated, please use UEnhancedInputUserSettings instead."))
 	virtual void RemovePlayerMappableConfig(const UPlayerMappableInputConfig* Config, const FModifyContextOptions& Options = FModifyContextOptions());
-
+	
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	
 protected:
 
 	/**
@@ -348,8 +466,8 @@ private:
 	TMap<TWeakObjectPtr<const UInputAction>, FInputActionValue> ForcedActions;
 	TMap<FKey, FInputActionValue> ForcedKeys;
 
-	/** A map of any player mapped keys to the keys that they should redirect to instead */
-	TMap<FName, TMap<FPlayerMappableKeySlot, FKey>> PlayerMappedSettings;
+	/** A map of inputs that should be injected every frame. This inputs will be injected when ForcedInput is ticked. */
+	TMap<TObjectPtr<const UInputAction>, FInjectedInput> ContinuouslyInjectedInputs;
 
 	/**
 	 * A map of input actions with a Chorded trigger, mapped to the action they are dependent on.
@@ -384,6 +502,9 @@ private:
 	// Debug visualization for enhanced input local player subsystem
 	virtual void ShowDebugInfo(UCanvas* Canvas);
 	
+	// Gather any UInputModifiers on the given Player Input and Instance data that need to be visualized for debugging
+	static void GetAllRelevantInputModifiersForDebug(const UEnhancedPlayerInput* PlayerInput, const FInputActionInstance* InstanceData, OUT TArray<UInputModifier*>& OutModifiers);
+
 	void ShowDebugActionModifiers(UCanvas* Canvas, const UInputAction* Action);
 	static void PurgeDebugVisualizations();
 };

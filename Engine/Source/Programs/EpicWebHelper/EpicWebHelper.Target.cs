@@ -14,6 +14,9 @@ public class EpicWebHelperTarget : TargetRules
 		LinkType = TargetLinkType.Monolithic;
 		LaunchModuleName = "EpicWebHelper";
 
+		DefaultBuildSettings = BuildSettingsVersion.Latest;
+		IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
+
 		// Change the undecorated exe name to be the shipping one on windows
 		UndecoratedConfiguration = UnrealTargetConfiguration.Shipping;
 
@@ -38,9 +41,6 @@ public class EpicWebHelperTarget : TargetRules
 		bCompileAgainstEngine = false;
 		bCompileAgainstCoreUObject = false;
 		bBuildWithEditorOnlyData = true;
-
-		// Never use malloc profiling in CEFSubProcess.
-		bUseMallocProfiler = false;
 
 		// Force all shader formats to be built and included.
 		//bForceBuildShaderFormats = true;

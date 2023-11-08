@@ -25,24 +25,21 @@ namespace Metasound
 	{
 	public:
 		// ctor
-		TAudioMixerNodeOperator(const FOperatorSettings& InSettings, const TArray<FAudioBufferReadRef>&& InInputBuffers, const TArray<FFloatReadRef>&& InGainValues)
+		TAudioMixerNodeOperator(const FCreateOperatorParams& InParams, const TArray<FAudioBufferReadRef>&& InInputBuffers, const TArray<FFloatReadRef>&& InGainValues)
 			: Gains(InGainValues)
 			, Inputs (InInputBuffers)
-			, Settings(InSettings)
 		{
 			// create write refs
 			for (uint32 i = 0; i < NumChannels; ++i)
 			{
-				Outputs.Add(FAudioBufferWriteRef::CreateNew(InSettings));
+				Outputs.Add(FAudioBufferWriteRef::CreateNew(InParams.OperatorSettings));
 			}
 
 			// init previous gains to current values
 			PrevGains.Reset();
 			PrevGains.AddUninitialized(NumInputs);
-			for (uint32 i = 0; i < NumInputs; ++i)
-			{
-				PrevGains[i] = *Gains[i];
-			}
+
+			Reset(InParams);
 		}
 
 		// dtor
@@ -167,35 +164,54 @@ namespace Metasound
 				InputGains.Add(InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, GetGainInputName(i), InParams.OperatorSettings));
 			}
 
-			return MakeUnique<TAudioMixerNodeOperator<NumInputs, NumChannels>>(InParams.OperatorSettings, MoveTemp(InputBuffers), MoveTemp(InputGains));
+			return MakeUnique<TAudioMixerNodeOperator<NumInputs, NumChannels>>(InParams, MoveTemp(InputBuffers), MoveTemp(InputGains));
 		}
 
-		virtual FDataReferenceCollection GetInputs() const override
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
 		{
-			FDataReferenceCollection InputPins;
 			for (uint32 i = 0; i < NumInputs; ++i)
 			{
 				for (uint32 Chan = 0; Chan < NumChannels; ++Chan)
 				{
-					InputPins.AddDataReadReference(GetAudioInputName(i, Chan), Inputs[i * NumChannels + Chan]);
+					InOutVertexData.BindReadVertex(GetAudioInputName(i, Chan), Inputs[i * NumChannels + Chan]);
 				}
 
-				InputPins.AddDataReadReference(GetGainInputName(i), Gains[i]);
+				InOutVertexData.BindReadVertex(GetGainInputName(i), Gains[i]);
 			}
+		}
 
-			return InputPins;
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+		{
+			for (uint32 i = 0; i < NumChannels; ++i)
+			{
+				InOutVertexData.BindReadVertex(GetAudioOutputName(i), Outputs[i]);
+			}
+		}
+
+		virtual FDataReferenceCollection GetInputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		virtual FDataReferenceCollection GetOutputs() const override
 		{
-			FDataReferenceCollection OutputPins;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
+		}
 
-			for (uint32 i = 0; i < NumChannels; ++i)
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			for (uint32 i = 0; i < NumInputs; ++i)
 			{
-				OutputPins.AddDataReadReference(GetAudioOutputName(i), Outputs[i]);
+				PrevGains[i] = *Gains[i];
 			}
 
-			return OutputPins;
+			Execute();
 		}
 
 		void Execute()
@@ -203,7 +219,7 @@ namespace Metasound
 			// zero the outputs
 			for (uint32 i = 0; i < NumChannels; ++i)
 			{
-				FMemory::Memzero(Outputs[i]->GetData(), sizeof(float) * Outputs[i]->Num());
+				Outputs[i]->Zero();
 			}
 
 			// for each input
@@ -216,11 +232,7 @@ namespace Metasound
 				for (uint32 ChanIndex = 0; ChanIndex < NumChannels; ++ChanIndex)
 				{
 					// Outputs[Chan] += Gains[i] * Inputs[i][Chan]
-					TArrayView<const float> InputView(Inputs[InputIndex * NumChannels + ChanIndex]->GetData(), Settings.GetNumFramesPerBlock());
-					TArrayView<float> OutputView(Outputs[ChanIndex]->GetData(), Settings.GetNumFramesPerBlock());
-
-					Audio::ArrayMixIn(InputView, OutputView, PrevGain, NextGain);
-
+					Audio::ArrayMixIn(*Inputs[InputIndex * NumChannels + ChanIndex], *Outputs[ChanIndex], PrevGain, NextGain);
 				}
 
 				PrevGains[InputIndex] = NextGain;
@@ -234,8 +246,6 @@ namespace Metasound
 		TArray<FAudioBufferWriteRef> Outputs;
 
 		TArray<float> PrevGains;
-
-		FOperatorSettings Settings;
 
 		static FNodeClassMetadata CreateNodeClassMetadata(const FName& InOperatorName, const FText& InDisplayName, const FText& InDescription, const FVertexInterface& InDefaultInterface)
 		{
@@ -355,7 +365,6 @@ namespace Metasound
 #pragma endregion
 	}; // class TAudioMixerNodeOperator
 #pragma endregion
-
 
 
 #pragma region Node Definition

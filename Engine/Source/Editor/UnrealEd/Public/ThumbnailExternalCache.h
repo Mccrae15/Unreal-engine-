@@ -9,7 +9,7 @@
 
 class IPlugin;
 
-struct UNREALED_API FThumbnailExternalCacheSettings
+struct FThumbnailExternalCacheSettings
 {
 	/** Recompress any lossless thumbnails */
 	bool bRecompressLossless = false;
@@ -28,6 +28,9 @@ public:
 	/** Get thumbnail external cache */
 	UNREALED_API static FThumbnailExternalCache& Get();
 
+	/** Gets the name of the editor thumbnail cache file */
+	UNREALED_API static const FString& GetCachedEditorThumbnailsFilename();
+
 	/** Load thumbnails for the given object names from external cache */
 	UNREALED_API bool LoadThumbnailsFromExternalCache(const TSet<FName>& InObjectFullNames, FThumbnailMap& InOutThumbnails);
 
@@ -36,9 +39,6 @@ public:
 
 	/** Sort asset data list if determinism needed */
 	UNREALED_API static void SortAssetDatas(TArray<FAssetData>& InOutAssetDatas);
-
-	/** Try to load thumbnail for a given asset data */
-	static FObjectThumbnail LoadThumbnailFromPackage(const FAssetData& AssetData);
 
 	enum class EThumbnailExternalCacheHeaderFlags : uint64
 	{
@@ -98,6 +98,8 @@ private:
 	bool LoadCacheFileIndex(const FString& Filename);
 
 	bool LoadCacheFileIndex(FArchive& Ar, const TSharedPtr<FThumbnailCacheFile>& CacheFile);
+
+private:
 
 	TMap<FString, TSharedPtr<FThumbnailCacheFile>> CacheFiles;
 

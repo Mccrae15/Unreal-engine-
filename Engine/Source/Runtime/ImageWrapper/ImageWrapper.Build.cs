@@ -13,6 +13,13 @@ public class ImageWrapper : ModuleRules
 			}
 		);
 
+		// include only, no link :
+		// for TextureDefines.h :
+		PrivateIncludePathModuleNames.AddRange(new string[]
+		{
+			"Engine",
+		});
+
 		PublicDefinitions.Add("WITH_UNREALPNG=1");
 		PublicDefinitions.Add("WITH_UNREALJPEG=1");
 
@@ -37,7 +44,7 @@ public class ImageWrapper : ModuleRules
 		// Note that currently this module is included at runtime, so consider the increase in exe size before
 		// enabling for any of the console/phone platforms!
 
-		if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows)
+		if ((Target.Platform.IsInGroup(UnrealPlatformGroup.Windows) && Target.WindowsPlatform.Architecture != UnrealArch.Arm64)
 			|| Target.Platform == UnrealTargetPlatform.Mac
 			|| Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{

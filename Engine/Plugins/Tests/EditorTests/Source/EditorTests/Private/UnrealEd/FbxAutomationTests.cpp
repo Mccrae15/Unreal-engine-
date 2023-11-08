@@ -96,12 +96,7 @@ public:
 			}
 
 			const FString& CurveName = ExpectedResult.ExpectedPresetsDataString[0];
-			const FFloatCurve* FloatCurve = nullptr;
-			FSmartName OutSmartName;
-			if (AnimSequence->GetSkeleton()->GetSmartNameByName(USkeleton::AnimCurveMappingName, *CurveName, OutSmartName))
-			{
-				FloatCurve = static_cast<const FFloatCurve*>(AnimSequence->GetCurveData().GetCurveData(OutSmartName.UID, ERawCurveTrackTypes::RCT_Float));
-			}
+			const FFloatCurve* FloatCurve = static_cast<const FFloatCurve*>(AnimSequence->GetCurveData().GetCurveData(FName(*CurveName), ERawCurveTrackTypes::RCT_Float));
 			if (FloatCurve == nullptr)
 			{
 				ExecutionInfo.AddError(FString::Printf(TEXT("%s no custom curve named %s was imported"),
@@ -419,11 +414,13 @@ bool FFbxImportAssetsAutomationTest::RunTest(const FString& Parameters)
 					ImportData->ImportContentType = TestPlan->ImportUI->SkeletalMeshImportData->ImportContentType;
 					ImportData->bImportMeshesInBoneHierarchy = TestPlan->ImportUI->SkeletalMeshImportData->bImportMeshesInBoneHierarchy;
 					ImportData->bImportMorphTargets = TestPlan->ImportUI->SkeletalMeshImportData->bImportMorphTargets;
+					ImportData->bImportVertexAttributes = TestPlan->ImportUI->SkeletalMeshImportData->bImportVertexAttributes;
 					ImportData->ThresholdPosition = TestPlan->ImportUI->SkeletalMeshImportData->ThresholdPosition;
 					ImportData->ThresholdTangentNormal = TestPlan->ImportUI->SkeletalMeshImportData->ThresholdTangentNormal;
 					ImportData->MorphThresholdPosition = TestPlan->ImportUI->SkeletalMeshImportData->MorphThresholdPosition;
 					ImportData->ThresholdUV = TestPlan->ImportUI->SkeletalMeshImportData->ThresholdUV;
 					ImportData->bPreserveSmoothingGroups = TestPlan->ImportUI->SkeletalMeshImportData->bPreserveSmoothingGroups;
+					ImportData->bKeepSectionsSeparate = TestPlan->ImportUI->SkeletalMeshImportData->bKeepSectionsSeparate;
 					ImportData->bUpdateSkeletonReferencePose = TestPlan->ImportUI->SkeletalMeshImportData->bUpdateSkeletonReferencePose;
 					ImportData->bUseT0AsRefPose = TestPlan->ImportUI->SkeletalMeshImportData->bUseT0AsRefPose;
 					//Copy UFbxMeshImportData
@@ -515,11 +512,13 @@ bool FFbxImportAssetsAutomationTest::RunTest(const FString& Parameters)
 					ImportData->ImportContentType = TestPlan->ImportUI->SkeletalMeshImportData->ImportContentType;
 					ImportData->bImportMeshesInBoneHierarchy = TestPlan->ImportUI->SkeletalMeshImportData->bImportMeshesInBoneHierarchy;
 					ImportData->bImportMorphTargets = TestPlan->ImportUI->SkeletalMeshImportData->bImportMorphTargets;
+					ImportData->bImportVertexAttributes = TestPlan->ImportUI->SkeletalMeshImportData->bImportVertexAttributes;
 					ImportData->ThresholdPosition = TestPlan->ImportUI->SkeletalMeshImportData->ThresholdPosition;
 					ImportData->ThresholdTangentNormal = TestPlan->ImportUI->SkeletalMeshImportData->ThresholdTangentNormal;
 					ImportData->ThresholdUV = TestPlan->ImportUI->SkeletalMeshImportData->ThresholdUV;
 					ImportData->MorphThresholdPosition = TestPlan->ImportUI->SkeletalMeshImportData->MorphThresholdPosition;
 					ImportData->bPreserveSmoothingGroups = TestPlan->ImportUI->SkeletalMeshImportData->bPreserveSmoothingGroups;
+					ImportData->bKeepSectionsSeparate = TestPlan->ImportUI->SkeletalMeshImportData->bKeepSectionsSeparate;
 					ImportData->bUpdateSkeletonReferencePose = TestPlan->ImportUI->SkeletalMeshImportData->bUpdateSkeletonReferencePose;
 					ImportData->bUseT0AsRefPose = TestPlan->ImportUI->SkeletalMeshImportData->bUseT0AsRefPose;
 					//Copy UFbxMeshImportData

@@ -29,6 +29,7 @@ private:
 	static void ViewChangelists_Clicked();
 	static bool CheckOutModifiedFiles_CanExecute();
 	static void CheckOutModifiedFiles_Clicked();
+	static bool RevertAllModifiedFiles_CanExecute();
 	static void RevertAllModifiedFiles_Clicked();
 
 public:
@@ -81,6 +82,7 @@ private:
 
 	/** Sync button */
 	static bool IsAtLatestRevision();
+	static bool CanSourceControlSync();
 	static EVisibility GetSourceControlSyncStatusVisibility();
 	static FText GetSourceControlSyncStatusText();
 	static FText GetSourceControlSyncStatusTooltipText();
@@ -89,6 +91,8 @@ private:
 
 	/** Check-in button */
 	static int GetNumLocalChanges();
+	static void SaveUnsavedFiles();
+	static bool CanSourceControlCheckIn();
 	static EVisibility GetSourceControlCheckInStatusVisibility();
 	static FText GetSourceControlCheckInStatusText();
 	static FText GetSourceControlCheckInStatusTooltipText();

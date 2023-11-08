@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "CoreTypes.h"
+#include "HAL/Platform.h"
 #include "Templates/RefCounting.h"
 
 namespace UE::Net
@@ -71,14 +71,10 @@ public:
 	*/
 	IRISCORE_API void GetPropertyValue(uint32 Index, void* DstValue) const;
 
-	/** Need array editors?, to edit arrays with statemasks */
-	/** PropertyNetArrayEditor EditPropertyAsArray(uint32 Index); */
-	/** const PropertyArrayReader GetPropertyAsArray(uint32 Index) */
-
 	/** Is the property at the given index dirty, for properties with multiple bits in the statemask this will return true if any of those bits are set */
 	IRISCORE_API bool IsDirty(uint32 Index) const;
 
-	/** Explicitly mark the the property at the given Index as dirty, for properties with multiple bits in the statemask this will mark all bits dirty */
+	/** Explicitly mark the property at the given Index as dirty, for properties with multiple bits in the statemask this will mark all bits dirty */
 	IRISCORE_API void MarkDirty(uint32 Index);
 
 	/** $IRIS TODO: Move Poll/Push/CallRepNotifies out of PropertyReplicationState as loose functions */
@@ -91,6 +87,11 @@ public:
 	 * Do we carry around the base pointer or should we recalculate the offsets when we build the descriptor
 	*/
 	IRISCORE_API bool PollPropertyReplicationState(const void* RESTRICT SrcData);
+
+	/**
+	 * Poll src data from properties which we want to store in order to determine if we need to call RepNotifies
+	*/
+	IRISCORE_API bool PollPropertyReplicationStateForRepNotifies(const void* RESTRICT SrcData);
 
 	/** Push received state data to properties in DstData buffer, Note: DstData is a UClass/UStruct containing properties
 		Compare and update representation in DstStateBuffer and update ChangeMask 
@@ -131,8 +132,22 @@ public:
 	const FReplicationStateDescriptor* GetReplicationStateDescriptor() const { return ReplicationStateDescriptor; }
 	uint8* GetStateBuffer() const { return StateBuffer; }
 
+protected:
+	/** Explicitly mark an array at the given Index as dirty. It will not mark element changemask bits as dirty. */
+	IRISCORE_API void MarkArrayDirty(uint32 Index);
+
 public:
 	// These methods are for internal use only.
+
+	enum : unsigned
+	{
+		// How many bits to use to track dirtiness for individual elements.
+		TArrayElementChangeMaskBits = 63U,
+		// The changemask bit into the TArray changemask info that indicates the TArray is dirty.
+		TArrayPropertyChangeMaskBitIndex = 0U,
+		// At which offset in the TArray changemask element dirtiness begins.
+		TArrayElementChangeMaskBitOffset = 1U,
+	};
 
 	// Polls source data for a single property. If the property has changed it will be marked as dirty.
 	void PollProperty(const void* SrcData, uint32 Index);

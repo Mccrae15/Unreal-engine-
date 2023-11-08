@@ -2,6 +2,7 @@
 
 #include "BoneControllers/AnimNode_ResetRoot.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "Animation/AnimStats.h"
 #include "AnimationRuntime.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_ResetRoot)
@@ -29,6 +30,8 @@ void FAnimNode_ResetRoot::GatherDebugData(FNodeDebugData& DebugData)
 void FAnimNode_ResetRoot::EvaluateSkeletalControl_AnyThread(FComponentSpacePoseContext& Output, TArray<FBoneTransform>& OutBoneTransforms)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(EvaluateSkeletalControl_AnyThread)
+	ANIM_MT_SCOPE_CYCLE_COUNTER_VERBOSE(ResetRoot, !IsInGameThread());
+
 	const FBoneContainer& BoneContainer = Output.Pose.GetPose().GetBoneContainer();
 	FCSPose<FCompactPose>& CSPose = Output.Pose;
 

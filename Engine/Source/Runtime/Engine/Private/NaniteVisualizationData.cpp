@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NaniteVisualizationData.h"
+#include "NaniteDefinitions.h"
 #include "GameFramework/PlayerController.h"
 #if WITH_EDITORONLY_DATA
 #include "LevelEditorViewport.h"
@@ -38,7 +39,7 @@ void FNaniteVisualizationData::Initialize()
 		AddVisualizationMode(TEXT("MaterialID"), LOCTEXT("MaterialID", "Material ID"), FModeType::Standard, NANITE_VISUALIZE_MATERIAL_DEPTH, true);
 		AddVisualizationMode(TEXT("LightmapUV"), LOCTEXT("LightmapUV", "Lightmap UV"), FModeType::Standard, NANITE_VISUALIZE_LIGHTMAP_UVS, true);
 		AddVisualizationMode(TEXT("EvaluateWPO"), LOCTEXT("EvaluateWPO", "Evaluate WPO"), FModeType::Standard, NANITE_VISUALIZE_EVALUATE_WORLD_POSITION_OFFSET, true);
-
+		
 		AddVisualizationMode(TEXT("Picking"), LOCTEXT("Picking", "Picking"), FModeType::Advanced, NANITE_VISUALIZE_PICKING, true);
 		AddVisualizationMode(TEXT("Groups"), LOCTEXT("Groups", "Groups"), FModeType::Advanced, NANITE_VISUALIZE_GROUPS, true);
 		AddVisualizationMode(TEXT("Pages"), LOCTEXT("Pages", "Pages"), FModeType::Advanced, NANITE_VISUALIZE_PAGES, true);
@@ -62,6 +63,7 @@ void FNaniteVisualizationData::Initialize()
 		AddVisualizationMode(TEXT("LightmapDataIndex"), LOCTEXT("LightmapDataIndex", "Lightmap Data Index"), FModeType::Advanced, NANITE_VISUALIZE_LIGHTMAP_DATA_INDEX, true);
 		AddVisualizationMode(TEXT("PositionBits"), LOCTEXT("PositionBits", "Position Bits"), FModeType::Advanced, NANITE_VISUALIZE_POSITION_BITS, true);
 		AddVisualizationMode(TEXT("VSMStatic"), LOCTEXT("VSMStatic", "Virtual Shadow Map Static"), FModeType::Advanced, NANITE_VISUALIZE_VSM_STATIC_CACHING, true);
+		AddVisualizationMode(TEXT("ShadingWriteMask"), LOCTEXT("ShadingWriteMask", "Shading Write Mask"), FModeType::Advanced, NANITE_VISUALIZE_SHADING_WRITE_MASK, true);
 
 		ConfigureConsoleCommand();
 
@@ -138,12 +140,12 @@ bool FNaniteVisualizationData::IsActive() const
 	{
 		return false;
 	}
-
-	if (GetActiveModeID() == NANITE_VISUALIZE_OVERVIEW && GetOverviewModeBitMask() == 0x0)
+	
+	if (GetActiveModeID() == NANITE_VISUALIZE_OVERVIEW && bOverviewListEmpty)
 	{
 		return false;
 	}
-
+	
 	return true;
 }
 
@@ -168,7 +170,7 @@ bool FNaniteVisualizationData::Update(const FName& InViewMode)
 				SetCurrentOverviewModeList(OverviewModeList);
 				CurrentOverviewModeNames.Reset();
 				CurrentOverviewModeIDs.Reset();
-				CurrentOverviewModeBitMask = 0x0;
+				bOverviewListEmpty = true;
 
 				// Extract each mode name from the comma separated string
 				while (OverviewModeList.Len())
@@ -200,7 +202,7 @@ bool FNaniteVisualizationData::Update(const FName& InViewMode)
 						else
 						{
 							CurrentOverviewModeIDs.Emplace(ModeID);
-							CurrentOverviewModeBitMask |= ModeID;
+							bOverviewListEmpty = false;
 						}
 
 						CurrentOverviewModeNames.Emplace(ModeName);

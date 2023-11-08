@@ -182,6 +182,16 @@ private:
 
 	void SetRenderRateScale(double InNewRate);
 
+	bool IsVideoOnly() const
+	{
+		return AudioWorkVars.NumQualities == 0;
+	}
+
+	bool IsAudioOnly() const
+	{
+		return VideoWorkVars.NumQualities == 0;
+	}
+
 	IABRInfoInterface* Info;
 	FCriticalSection Lock;
 	EMediaFormatType FormatType;
@@ -433,9 +443,10 @@ void FABROnDemandPlus::ReportDownloadEnd(const Metrics::FSegmentDownloadStats& S
 
 			// Calculate download bandwidth
 			int64 Bandwidth = -1;
-			if (SegmentDownloadStats.NumBytesDownloaded && SegmentDownloadStats.TimeToDownload > 0.0)
+			if (SegmentDownloadStats.NumBytesDownloaded)
 			{
-				const double DlBandwidth = SegmentDownloadStats.NumBytesDownloaded * 8 / (SegmentDownloadStats.TimeToDownload - SegmentDownloadStats.TimeToFirstByte);
+				double ttdl = SegmentDownloadStats.TimeToDownload - SegmentDownloadStats.TimeToFirstByte;
+				const double DlBandwidth = SegmentDownloadStats.NumBytesDownloaded * 8 / (ttdl > 0.0 ? ttdl : 0.1);
 				if (DlBandwidth > 0.0)
 				{
 					Bandwidth = (int64) Utils::Min(DlBandwidth, Utils::Max(WorkVars->HighestQualityStreamBitrate * ClampBandwidthToMaxStreamBitrateScaleFactor, ClampBandwidthToMaxNonStreamBitrate));
@@ -488,7 +499,7 @@ void FABROnDemandPlus::ReportDownloadEnd(const Metrics::FSegmentDownloadStats& S
 		}
 
 		// Adjust any forced bitrate duration.
-		if (SegmentDownloadStats.StreamType == EStreamType::Video && ForcedInitialBandwidthUntilSecondsBuffered > 0.0)
+		if (ForcedInitialBandwidthUntilSecondsBuffered > 0.0 && (SegmentDownloadStats.StreamType == EStreamType::Video || IsAudioOnly()))
 		{
 			ForcedInitialBandwidthUntilSecondsBuffered -= SegmentDownloadStats.DurationDownloaded;
 		}
@@ -705,8 +716,8 @@ IAdaptiveStreamSelector::ESegmentAction FABROnDemandPlus::EvaluateForError(TArra
 						// Did we abort that stream in ReportDownloadProgress() ?
 						if (!Stats.bWasAborted)
 						{
-							// Take a video stream offline for a brief moment unless it is the worst one. Audio is usually the only one with no alternative to switch to, so don't do that!
-							if (Stats.StreamType == EStreamType::Video)
+							// Take a stream offline for a brief moment unless it is the worst one.
+							if (Stats.StreamType == EStreamType::Video || IsAudioOnly())
 							{
 								if (CurrentStreamInfo->QualityIndex != 0)
 								{
@@ -774,27 +785,46 @@ IAdaptiveStreamSelector::ESegmentAction FABROnDemandPlus::EvaluateForQuality(TAr
 		set limits, like maximum bitrate and resolution.
 		The calling ABR will further reduce this list by removing streams that are not healthy.
 	*/
-	if (StreamType != EStreamType::Video)
-	{
-		InOutCandidates = Info->GetStreamInformations(StreamType);
-		return IAdaptiveStreamSelector::ESegmentAction::FetchNext;
-	}
-
 	if (InOutCandidates.Num())
 	{
-		TArray<TSharedPtrTS<FABRStreamInformation>> PossibleRepresentations;
-		PossibleRepresentations.Add(InOutCandidates[0]);
-		const int32 MaxAllowedBandwidth = Info->GetBandwidthCeiling();
-		const FStreamCodecInformation::FResolution MaxAllowedResolution = Info->GetMaxStreamResolution();
-		for(int32 nStr=1; nStr<InOutCandidates.Num(); ++nStr)
+		if (StreamType == EStreamType::Video)
 		{
-			// Check if bitrate and resolution are acceptable
-			if (InOutCandidates[nStr]->Bitrate <= MaxAllowedBandwidth && !InOutCandidates[nStr]->Resolution.ExceedsLimit(MaxAllowedResolution))
+			TArray<TSharedPtrTS<FABRStreamInformation>> PossibleRepresentations;
+			PossibleRepresentations.Add(InOutCandidates[0]);
+			const int32 MaxAllowedBandwidth = Info->GetBandwidthCeiling();
+			const FStreamCodecInformation::FResolution MaxAllowedResolution = Info->GetMaxStreamResolution();
+			for(int32 nStr=1; nStr<InOutCandidates.Num(); ++nStr)
 			{
-				PossibleRepresentations.Add(InOutCandidates[nStr]);
+				// Check if bitrate and resolution are acceptable
+				if (InOutCandidates[nStr]->Bitrate <= MaxAllowedBandwidth && !InOutCandidates[nStr]->Resolution.ExceedsLimit(MaxAllowedResolution))
+				{
+					PossibleRepresentations.Add(InOutCandidates[nStr]);
+				}
+			}
+			Swap(InOutCandidates, PossibleRepresentations);
+		}
+		else if (StreamType == EStreamType::Audio)
+		{
+			if (IsAudioOnly())
+			{
+				TArray<TSharedPtrTS<FABRStreamInformation>> PossibleRepresentations;
+				PossibleRepresentations.Add(InOutCandidates[0]);
+				const int32 MaxAllowedBandwidth = Info->GetBandwidthCeiling();
+				for(int32 nStr=1; nStr<InOutCandidates.Num(); ++nStr)
+				{
+					// Check if bitrate is acceptable
+					if (InOutCandidates[nStr]->Bitrate <= MaxAllowedBandwidth)
+					{
+						PossibleRepresentations.Add(InOutCandidates[nStr]);
+					}
+				}
+				Swap(InOutCandidates, PossibleRepresentations);
+			}
+			else
+			{
+				InOutCandidates = Info->GetStreamInformations(StreamType);
 			}
 		}
-		Swap(InOutCandidates, PossibleRepresentations);
 	}
 	return IAdaptiveStreamSelector::ESegmentAction::FetchNext;
 }
@@ -812,7 +842,7 @@ IAdaptiveStreamSelector::ESegmentAction FABROnDemandPlus::PerformSelection(const
 		const double AvailableDuration = GetPlayablePlayerDuration(bEOS, StreamType);
 		const double DownloadLatency = WorkVars ? WorkVars->AverageLatency.GetWeightedMax(DefaultNetworkLatency) : DefaultNetworkLatency;
 
-		if (WorkVars && StreamType == EStreamType::Video)
+		if (WorkVars && (StreamType == EStreamType::Video || IsAudioOnly()))
 		{
 			FScopeLock lock(&WorkVars->Lock);
 
@@ -905,7 +935,7 @@ IAdaptiveStreamSelector::ESegmentAction FABROnDemandPlus::PerformSelection(const
 				WorkVars->BitrateDownloading = Candidate->Bitrate;
 			}
 
-			CurrentPlayPeriod->SelectStream(Candidate->AdaptationSetUniqueID, Candidate->RepresentationUniqueID);
+			CurrentPlayPeriod->SelectStream(Candidate->AdaptationSetUniqueID, Candidate->RepresentationUniqueID, NewQualityIndex, Info->GetStreamInformations(StreamType).Num()-1);
 			if (bRetryIfPossible)
 			{
 				return IAdaptiveStreamSelector::ESegmentAction::Retry;
@@ -1000,12 +1030,15 @@ IAdaptiveStreamSelector::EHandlingAction FABROnDemandPlus::PeriodicHandle()
 
 void FABROnDemandPlus::SetRenderRateScale(double InNewRate)
 {
-	FTimeRange pr = Info->ABRGetSupportedRenderRateScale();
-	if (pr.IsValid())
+	if (!IsAudioOnly())
 	{
-		double MinAllowed = pr.Start.GetAsSeconds(1.0);
-		double MaxAllowed = pr.End.GetAsSeconds(1.0);
-		Info->ABRSetRenderRateScale(Utils::Min(Utils::Max(MinAllowed, InNewRate), MaxAllowed));
+		FTimeRange pr = Info->ABRGetSupportedRenderRateScale();
+		if (pr.IsValid())
+		{
+			double MinAllowed = pr.Start.GetAsSeconds(1.0);
+			double MaxAllowed = pr.End.GetAsSeconds(1.0);
+			Info->ABRSetRenderRateScale(Utils::Min(Utils::Max(MinAllowed, InNewRate), MaxAllowed));
+		}
 	}
 }
 

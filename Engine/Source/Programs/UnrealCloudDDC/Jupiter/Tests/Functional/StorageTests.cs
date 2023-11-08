@@ -1,14 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Net.Mime;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using Amazon.S3;
@@ -26,13 +30,13 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 using Serilog;
 using Serilog.Core;
 using ContentHash = Jupiter.Implementation.ContentHash;
 using IBlobStore = Jupiter.Implementation.IBlobStore;
 using EpicGames.AspNet;
+using EpicGames.Horde.Storage.Backends;
+using Jupiter.Tests.Functional;
 
 namespace Jupiter.FunctionalTests.Storage
 {
@@ -51,31 +55,38 @@ namespace Jupiter.FunctionalTests.Storage
 
         protected override async Task Seed(IServiceProvider provider)
         {
-            string S3BucketName = $"tests-{TestNamespaceName}";
+            string s3BucketName = $"tests-{TestNamespaceName}";
 
             _s3 = provider.GetService<IAmazonS3>();
             Assert.IsNotNull(_s3);
-            if (await _s3!.DoesS3BucketExistAsync(S3BucketName))
+            if (await _s3!.DoesS3BucketExistAsync(s3BucketName))
             {
                 // if we have failed to run the cleanup for some reason we run it now
                 await Teardown(provider);
             }
 
-            await _s3.PutBucketAsync(S3BucketName);
-            await _s3.PutObjectAsync(new PutObjectRequest { BucketName = S3BucketName, Key = SmallFileHash.AsS3Key(), ContentBody = SmallFileContents });
-            await _s3.PutObjectAsync(new PutObjectRequest { BucketName = S3BucketName, Key = AnotherFileHash.AsS3Key(), ContentBody = AnotherFileContents });
-            await _s3.PutObjectAsync(new PutObjectRequest { BucketName = S3BucketName, Key = DeleteFileHash.AsS3Key(), ContentBody = DeletableFileContents });
-            await _s3.PutObjectAsync(new PutObjectRequest {BucketName = S3BucketName, Key = OldBlobFileHash.AsS3Key(), ContentBody = OldFileContents});
+            await _s3.PutBucketAsync(s3BucketName);
+            await _s3.PutObjectAsync(new PutObjectRequest { BucketName = s3BucketName, Key = SmallFileHash.AsS3Key(), ContentBody = SmallFileContents });
+            await _s3.PutObjectAsync(new PutObjectRequest { BucketName = s3BucketName, Key = AnotherFileHash.AsS3Key(), ContentBody = AnotherFileContents });
+            await _s3.PutObjectAsync(new PutObjectRequest { BucketName = s3BucketName, Key = DeleteFileHash.AsS3Key(), ContentBody = DeletableFileContents });
+            await _s3.PutObjectAsync(new PutObjectRequest {BucketName = s3BucketName, Key = OldBlobFileHash.AsS3Key(), ContentBody = OldFileContents});
+        }
+
+        [TestMethod]
+        public async Task GetBlobRedirect()
+        {
+            HttpResponseMessage result = await HttpClient!.GetAsync(new Uri($"api/v1/s/{TestRedirectNamespaceName}/{SmallFileHash}", UriKind.Relative));
+            Assert.AreEqual(HttpStatusCode.Redirect, result.StatusCode);
         }
 
         protected override async Task Teardown(IServiceProvider provider)
         {
-            string S3BucketName = $"tests-{TestNamespaceName}";
-            ListObjectsResponse response = await _s3!.ListObjectsAsync(S3BucketName);
+            string s3BucketName = $"tests-{TestNamespaceName}";
+            ListObjectsResponse response = await _s3!.ListObjectsAsync(s3BucketName);
             List<KeyVersion> objectKeys = response.S3Objects.Select(o => new KeyVersion { Key = o.Key }).ToList();
-            await _s3.DeleteObjectsAsync(new DeleteObjectsRequest { BucketName = S3BucketName, Objects = objectKeys });
+            await _s3.DeleteObjectsAsync(new DeleteObjectsRequest { BucketName = s3BucketName, Objects = objectKeys });
 
-            await _s3.DeleteBucketAsync(S3BucketName);
+            await _s3.DeleteBucketAsync(s3BucketName);
         }
     }
 
@@ -83,6 +94,7 @@ namespace Jupiter.FunctionalTests.Storage
     public class AzureStorageTests : StorageTests
     {
         private AzureSettings? _settings;
+        private string? _connectionString;
 
         protected override IEnumerable<KeyValuePair<string, string>> GetSettings()
         {
@@ -93,8 +105,8 @@ namespace Jupiter.FunctionalTests.Storage
         {
             _settings = provider.GetService<IOptionsMonitor<AzureSettings>>()!.CurrentValue;
 
-            string connectionString = AzureBlobStore.GetConnectionString(_settings, provider);
-            BlobContainerClient container = new BlobContainerClient(connectionString, TestNamespaceName.ToString());
+            _connectionString = _settings.ConnectionString;
+            BlobContainerClient container = new BlobContainerClient(_connectionString, DefaultContainerName);
 
             if (await container.ExistsAsync())
             {
@@ -124,10 +136,18 @@ namespace Jupiter.FunctionalTests.Storage
             await oldBlob.UploadAsync(oldBlobContentsSteam);
         }
 
+        private const string DefaultContainerName = "jupiter";
+
+        [TestMethod]
+        public async Task GetBlobRedirect()
+        {
+            HttpResponseMessage result = await HttpClient!.GetAsync(new Uri($"api/v1/s/{TestRedirectNamespaceName}/{SmallFileHash}", UriKind.Relative));
+            Assert.AreEqual(HttpStatusCode.Redirect, result.StatusCode);
+        }
+
         protected override async Task Teardown(IServiceProvider provider)
         {
-            string connectionString = AzureBlobStore.GetConnectionString( _settings!, provider);
-            BlobContainerClient container = new BlobContainerClient(connectionString, TestNamespaceName.ToString());
+            BlobContainerClient container = new BlobContainerClient(_connectionString, DefaultContainerName);
 
             await container.DeleteAsync();
         }
@@ -138,7 +158,7 @@ namespace Jupiter.FunctionalTests.Storage
     public class FileSystemStoreTests : StorageTests
     {
         private readonly string _localTestDir;
-        private readonly NamespaceId FooNamespace = new NamespaceId("foo");
+        private readonly NamespaceId _fooNamespace = new NamespaceId("foo");
 
         public FileSystemStoreTests()
         {
@@ -221,7 +241,7 @@ namespace Jupiter.FunctionalTests.Storage
             List<NamespaceId> namespaces = await fsStore.ListNamespaces().ToListAsync();
             Assert.AreEqual(1, namespaces.Count);
             
-            await fsStore.PutObject(FooNamespace, Encoding.ASCII.GetBytes(SmallFileContents), SmallFileHash);
+            await fsStore.PutObject(_fooNamespace, Encoding.ASCII.GetBytes(SmallFileContents), SmallFileHash);
             
             namespaces = await fsStore.ListNamespaces().ToListAsync();
             Assert.AreEqual(2, namespaces.Count);
@@ -242,7 +262,7 @@ namespace Jupiter.FunctionalTests.Storage
             using CancellationTokenSource cts = new CancellationTokenSource();
             Assert.IsTrue(await fsStore.CleanupInternal(cts.Token, batchSize: 2) == 0); // No garbage to collect, should return false
             
-            FileInfo[] fooFiles = CreateFilesInNamespace(FooNamespace, 10);
+            FileInfo[] fooFiles = CreateFilesInNamespace(_fooNamespace, 10);
 
             Assert.AreEqual(10 * 100, await fsStore.CalculateDiskSpaceUsed());
 
@@ -266,15 +286,15 @@ namespace Jupiter.FunctionalTests.Storage
         [TestMethod]
         public void GetLeastRecentlyAccessedObjects()
         {
-            FileInfo[] fooFiles = CreateFilesInNamespace(FooNamespace, 10);
+            FileInfo[] fooFiles = CreateFilesInNamespace(_fooNamespace, 10);
             CreateFilesInNamespace(new NamespaceId("bar"), 10);
 
             FileSystemStore? fsStore = Server!.Services.GetService<FileSystemStore>();
             Assert.IsNotNull(fsStore);
 
-            Assert.AreEqual(10, (fsStore.GetLeastRecentlyAccessedObjects(FooNamespace)).ToArray().Length);
+            Assert.AreEqual(10, (fsStore.GetLeastRecentlyAccessedObjects(_fooNamespace)).ToArray().Length);
 
-            FileInfo[] results = fsStore.GetLeastRecentlyAccessedObjects(FooNamespace, 3).ToArray();
+            FileInfo[] results = fsStore.GetLeastRecentlyAccessedObjects(_fooNamespace, 3).ToArray();
             Assert.AreEqual(3, results.Length);
             Assert.AreEqual(fooFiles[7].LastAccessTime, results[2].LastAccessTime);
             Assert.AreEqual(fooFiles[8].LastAccessTime, results[1].LastAccessTime);
@@ -286,10 +306,10 @@ namespace Jupiter.FunctionalTests.Storage
         {
             FileSystemStore? fsStore = Server!.Services.GetService<FileSystemStore>();
             Assert.IsNotNull(fsStore);
-            await fsStore.PutObject(FooNamespace, Encoding.ASCII.GetBytes(SmallFileContents), SmallFileHash);
-            await fsStore.PutObject(FooNamespace, Encoding.ASCII.GetBytes(AnotherFileContents), AnotherFileHash);
+            await fsStore.PutObject(_fooNamespace, Encoding.ASCII.GetBytes(SmallFileContents), SmallFileHash);
+            await fsStore.PutObject(_fooNamespace, Encoding.ASCII.GetBytes(AnotherFileContents), AnotherFileHash);
             
-            Assert.AreEqual(SmallFileContents.Length + AnotherFileContents.Length, await fsStore.CalculateDiskSpaceUsed(FooNamespace));
+            Assert.AreEqual(SmallFileContents.Length + AnotherFileContents.Length, await fsStore.CalculateDiskSpaceUsed(_fooNamespace));
         }
         
         private FileInfo[] CreateFilesInNamespace(NamespaceId ns, int numFiles)
@@ -315,6 +335,8 @@ namespace Jupiter.FunctionalTests.Storage
     {
         protected TestServer? Server { get; set; }
         protected NamespaceId TestNamespaceName { get; } = new NamespaceId("testbucket");
+        protected NamespaceId TestBundleNamespaceName { get; } = new NamespaceId("test-namespace-bundle");
+        protected NamespaceId TestRedirectNamespaceName { get; } = new NamespaceId("test-namespace-redirect");
 
         private HttpClient? _httpClient;
 
@@ -327,6 +349,8 @@ namespace Jupiter.FunctionalTests.Storage
         protected BlobIdentifier AnotherFileHash { get; } = BlobIdentifier.FromBlob(Encoding.ASCII.GetBytes(AnotherFileContents));
         protected BlobIdentifier DeleteFileHash { get; } = BlobIdentifier.FromBlob(Encoding.ASCII.GetBytes(DeletableFileContents));
         protected BlobIdentifier OldBlobFileHash { get; } = BlobIdentifier.FromBlob(Encoding.ASCII.GetBytes(OldFileContents));
+
+        protected HttpClient? HttpClient => _httpClient;
 
         [TestInitialize]
         public async Task Setup()
@@ -404,7 +428,8 @@ namespace Jupiter.FunctionalTests.Storage
             HttpResponseMessage result = await _httpClient!.PutAsync(new Uri($"api/v1/s/{TestNamespaceName}/{contentHash}", UriKind.Relative), requestContent);
 
             result.EnsureSuccessStatusCode();
-            InsertResponse content = await result.Content.ReadAsAsync<InsertResponse>();
+            InsertResponse? content = await result.Content.ReadFromJsonAsync<InsertResponse>();
+            Assert.IsNotNull(content);
             Assert.AreEqual(contentHash, content.Identifier);
         }
 
@@ -419,8 +444,51 @@ namespace Jupiter.FunctionalTests.Storage
             HttpResponseMessage result = await _httpClient!.PostAsync(new Uri($"api/v1/s/{TestNamespaceName}", UriKind.Relative), requestContent);
 
             result.EnsureSuccessStatusCode();
-            InsertResponse content = await result.Content.ReadAsAsync<InsertResponse>();
+            InsertResponse? content = await result.Content.ReadFromJsonAsync<InsertResponse>();
+            Assert.IsNotNull(content);
             Assert.AreEqual(contentHash, content.Identifier);
+        }
+
+        [TestMethod]
+        public async Task PostBundle()
+        {
+            Bundle bundle = await CreateBundle("test string");
+            byte[] payload = bundle.AsSequence().ToArray();
+            using ByteArrayContent requestContent = new ByteArrayContent(payload);
+            requestContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+            requestContent.Headers.ContentLength = payload.Length;
+            BlobIdentifier id = BlobIdentifier.FromBlobLocator(new BlobLocator("locator"));
+            HttpResponseMessage result = await _httpClient!.PutAsync(new Uri($"api/v1/blobs/{TestBundleNamespaceName}/{id}", UriKind.Relative), requestContent);
+
+            result.EnsureSuccessStatusCode();
+            InsertResponse? content = await result.Content.ReadFromJsonAsync<InsertResponse>();
+            Assert.IsNotNull(content);
+            Assert.AreEqual(id, content.Identifier);
+        }
+
+        [TestMethod]
+        public async Task PostBundleToCASNamespace()
+        {
+            Bundle bundle = await CreateBundle("test string");
+            byte[] payload = bundle.AsSequence().ToArray();
+            using ByteArrayContent requestContent = new ByteArrayContent(payload);
+            requestContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+            requestContent.Headers.ContentLength = payload.Length;
+            BlobIdentifier id = BlobIdentifier.FromBlobLocator(new BlobLocator("locator"));
+            HttpResponseMessage result = await _httpClient!.PutAsync(new Uri($"api/v1/blobs/{TestNamespaceName}/{id}", UriKind.Relative), requestContent);
+
+            Assert.AreEqual(HttpStatusCode.InternalServerError, result.StatusCode);
+        }
+
+        private static async Task<Bundle> CreateBundle(string contents)
+        {
+            MemoryStorageClient store = new MemoryStorageClient();
+            await using IStorageWriter writer = store.CreateWriter(options: new BundleOptions { CompressionFormat = BundleCompressionFormat.None });
+
+            TextNode node = new TextNode(contents);
+            BlobHandle handle = await writer.FlushAsync(node, CancellationToken.None);
+
+            return await store.ReadBundleAsync(handle.GetLocator().Blob);
         }
 
         [TestMethod]
@@ -469,7 +537,7 @@ namespace Jupiter.FunctionalTests.Storage
                 HttpResponseMessage resultNew = await _httpClient!.SendAsync(message);
                 Assert.AreEqual(HttpStatusCode.NotFound, resultNew.StatusCode);
                 string content = await resultNew.Content.ReadAsStringAsync();
-                ValidationProblemDetails result = JsonConvert.DeserializeObject<ValidationProblemDetails>(content)!;
+                ValidationProblemDetails result = JsonSerializer.Deserialize<ValidationProblemDetails>(content)!;
                 Assert.AreEqual($"Blob {newContent} not found", result.Title);
             }
         }
@@ -501,12 +569,14 @@ namespace Jupiter.FunctionalTests.Storage
             HttpResponseMessage response = await _httpClient.PostAsJsonAsync("api/v1/s", ops);
             response.EnsureSuccessStatusCode();
             string content = await response.Content.ReadAsStringAsync();
-            object result = JsonConvert.DeserializeObject(content)!;
-            JArray? array = result as JArray;
+            JsonNode? nodes = JsonNode.Parse(content)!;
+            Assert.IsNotNull(nodes);
+
+            JsonArray array = nodes.AsArray();
             Assert.IsNotNull(array);
             Assert.AreEqual(2, array!.Count);
-            Assert.IsNull(array[0].Value<string>());
-            BlobIdentifier id = new BlobIdentifier(array[1].Value<string>()!);
+            Assert.IsNull(array[0]);
+            BlobIdentifier id = new BlobIdentifier(array[1]!.AsValue().ToString()!);
             Assert.AreEqual(newContent, id);
         }
 
@@ -536,15 +606,14 @@ namespace Jupiter.FunctionalTests.Storage
             HttpResponseMessage response = await _httpClient.PostAsJsonAsync("api/v1/s", ops);
             response.EnsureSuccessStatusCode();
             string content = await response.Content.ReadAsStringAsync();
-            object result = JsonConvert.DeserializeObject(content)!;
-            Assert.IsTrue(result != null);
-            JArray? array = result as JArray;
+            JsonNode? nodes = JsonNode.Parse(content)!;
+            JsonArray array = nodes.AsArray();
             Assert.IsNotNull(array);
             Assert.AreEqual(2, array!.Count);
-            string base64Content = array[0].Value<string>()!;
+            string base64Content = array[0]!.AsValue().ToString()!;
             string convertedContent = Encoding.ASCII.GetString(Convert.FromBase64String(base64Content));
             Assert.AreEqual(SmallFileContents, convertedContent);
-            BlobIdentifier identifier = new BlobIdentifier(array[1].Value<string>()!);
+            BlobIdentifier identifier = new BlobIdentifier(array[1]!.AsValue().ToString()!);
             Assert.AreEqual(DeleteFileHash, identifier);
         }
 
@@ -578,7 +647,7 @@ namespace Jupiter.FunctionalTests.Storage
             Assert.AreEqual(HttpStatusCode.BadRequest, response.StatusCode);
 
             string content = await response.Content.ReadAsStringAsync();
-            SerializableError? result = JsonConvert.DeserializeObject<SerializableError>(content);
+            SerializableError? result = JsonSerializer.Deserialize<SerializableError>(content);
             Assert.IsNotNull(result);
 
             Assert.AreEqual(2, result.Keys.Count);
@@ -604,7 +673,7 @@ namespace Jupiter.FunctionalTests.Storage
             Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
 
             string content = await response.Content.ReadAsStringAsync();
-            string[]? result = JsonConvert.DeserializeObject<string[]>(content);
+            string[]? result = JsonSerializer.Deserialize<string[]>(content);
             Assert.IsNotNull(result);
 
             Assert.AreEqual(1, result.Length);
@@ -621,7 +690,7 @@ namespace Jupiter.FunctionalTests.Storage
             Assert.AreEqual("application/json", response.Content.Headers.ContentType!.MediaType);
 
             string s = await response.Content.ReadAsStringAsync();
-            HeadMultipleResponse? result = JsonConvert.DeserializeObject<HeadMultipleResponse>(s);
+            HeadMultipleResponse? result = JsonSerializer.Deserialize<HeadMultipleResponse>(s, JsonTestUtils.DefaultJsonSerializerSettings);
 
             Assert.IsNotNull(result);
             Assert.AreEqual(1, result.Needs.Length);
@@ -647,7 +716,7 @@ namespace Jupiter.FunctionalTests.Storage
             Assert.AreEqual("application/json", response.Content.Headers.ContentType!.MediaType);
 
             string s = await response.Content.ReadAsStringAsync();
-            HeadMultipleResponse? result = JsonConvert.DeserializeObject<HeadMultipleResponse>(s);
+            HeadMultipleResponse? result = JsonSerializer.Deserialize<HeadMultipleResponse>(s, JsonTestUtils.DefaultJsonSerializerSettings);
 
             Assert.IsNotNull(result);
             Assert.AreEqual(1, result.Needs.Length);
@@ -659,7 +728,7 @@ namespace Jupiter.FunctionalTests.Storage
         {
             BlobIdentifier newContent = BlobIdentifier.FromBlob(Encoding.ASCII.GetBytes("this content has never been submitted"));
             using HttpRequestMessage request = new(HttpMethod.Post, new Uri($"api/v1/s/{TestNamespaceName}/exist", UriKind.Relative));
-            string jsonBody = JsonConvert.SerializeObject(new BlobIdentifier[] { SmallFileHash, newContent });
+            string jsonBody = JsonSerializer.Serialize(new BlobIdentifier[] { SmallFileHash, newContent });
             request.Content = new StringContent(jsonBody, Encoding.UTF8, MediaTypeNames.Application.Json);
 
             HttpResponseMessage response = await _httpClient!.SendAsync(request);
@@ -667,7 +736,7 @@ namespace Jupiter.FunctionalTests.Storage
             Assert.AreEqual("application/json", response.Content.Headers.ContentType!.MediaType);
 
             string s = await response.Content.ReadAsStringAsync();
-            HeadMultipleResponse? result = JsonConvert.DeserializeObject<HeadMultipleResponse>(s);
+            HeadMultipleResponse? result = JsonSerializer.Deserialize<HeadMultipleResponse>(s, JsonTestUtils.DefaultJsonSerializerSettings);
 
             Assert.IsNotNull(result);
             Assert.AreEqual(1, result.Needs.Length);
@@ -705,7 +774,8 @@ namespace Jupiter.FunctionalTests.Storage
             BlobIdentifier contentHash = BlobIdentifier.FromBlob(payload);
             HttpResponseMessage putResponse = await _httpClient!.PutAsync(new Uri($"api/v1/s/{TestNamespaceName}/{contentHash}", UriKind.Relative), requestContent);
             putResponse.EnsureSuccessStatusCode();
-            InsertResponse response = await putResponse.Content.ReadAsAsync<InsertResponse>();
+            InsertResponse? response = await putResponse.Content.ReadFromJsonAsync<InsertResponse>();
+            Assert.IsNotNull(response);
             Assert.AreEqual(contentHash, response.Identifier);
 
             HttpResponseMessage getResponse = await _httpClient.GetAsync(new Uri($"api/v1/s/{TestNamespaceName}/{contentHash}", UriKind.Relative));
@@ -765,7 +835,8 @@ namespace Jupiter.FunctionalTests.Storage
                     HttpResponseMessage result = await _httpClient!.PutAsync(new Uri($"api/v1/blobs/{TestNamespaceName}/{blobIdentifier}", UriKind.Relative), content);
                     result.EnsureSuccessStatusCode();
 
-                    InsertResponse response = await result.Content.ReadAsAsync<InsertResponse>();
+                    InsertResponse? response = await result.Content.ReadFromJsonAsync<InsertResponse>();
+                    Assert.IsNotNull(response);
                     Assert.AreEqual(blobIdentifier, response.Identifier);
                 }
                 
@@ -808,5 +879,23 @@ namespace Jupiter.FunctionalTests.Storage
     public class InsertResponse
     {
         public BlobIdentifier? Identifier { get; set; }
+    }
+
+    [NodeType("{F63606D4-5DBB-4061-A655-6F444F65229E}")]
+    class TextNode : Node
+    {
+        public string Text { get; }
+
+        public TextNode(string text) => Text = text;
+
+        public TextNode(NodeReader reader)
+        {
+            Text = reader.ReadString();
+        }
+
+        public override void Serialize(NodeWriter writer)
+        {
+            writer.WriteString(Text);
+        }
     }
 }

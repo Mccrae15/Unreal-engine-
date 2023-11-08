@@ -13,6 +13,7 @@
 #include "Physics/PhysicsDataCollection.h"
 #include "PropertySets/PolygroupLayersProperties.h"
 #include "Polygroups/PolygroupSet.h"
+#include "TransformSequence.h"
 #include "ModelingOperators.h"
 #include "MeshOpPreviewHelpers.h"
 #include "SetCollisionGeometryTool.generated.h"
@@ -50,7 +51,11 @@ enum class ESetCollisionGeometryInputMode
 UENUM()
 enum class ECollisionGeometryType
 {
-	KeepExisting = 0,
+	//~ TODO: We should add a way to remove this option in single-input mode
+	// Copy the existing collision geometry shapes from the inputs to the target. With a single-selection,
+	// always does the same thing as Empty with Append To Existing set to true.
+	CopyFromInputs = 0,
+
 	AlignedBoxes = 1,
 	OrientedBoxes = 2,
 	MinimalSpheres = 3,
@@ -60,7 +65,10 @@ enum class ECollisionGeometryType
 	LevelSets = 7,
 	MinVolume = 10,
 
-	None = 11
+	// Do not produce new collision for inputs. If Append To Existing is false, this gives a way
+	// to empty the simple collision on the target. If Append To Existing is true, the existing collision
+	// is kept and can be passed through the optional filters in the tool, like removing enclosed shapes.
+	Empty = 11,
 };
 
 
@@ -86,10 +94,14 @@ public:
 	ECollisionGeometryType GeometryType = ECollisionGeometryType::AlignedBoxes;
 
 	UPROPERTY(EditAnywhere, Category = Options)
-	ESetCollisionGeometryInputMode InputMode = ESetCollisionGeometryInputMode::PerInputObject;
+	bool bAppendToExisting = false;
 
-	UPROPERTY(EditAnywhere, Category = Options)
+	UPROPERTY(EditAnywhere, Category = Options, meta = (EditCondition = "bUsingMultipleInputs", EditConditionHides, HideEditConditionToggle))
 	bool bUseWorldSpace = false;
+
+	UPROPERTY(EditAnywhere, Category = Options, meta = (
+		EditCondition = "GeometryType != ECollisionGeometryType::Empty && GeometryType != ECollisionGeometryType::CopyFromInputs"))
+	ESetCollisionGeometryInputMode InputMode = ESetCollisionGeometryInputMode::PerInputObject;
 
 	UPROPERTY(EditAnywhere, Category = Options)
 	bool bRemoveContained = true;
@@ -158,10 +170,11 @@ public:
 	int32 LevelSetResolution = 10;
 
 	UPROPERTY(EditAnywhere, Category = OutputOptions)
-	bool bAppendToExisting = false;
-
-	UPROPERTY(EditAnywhere, Category = OutputOptions)
 	ECollisionGeometryMode SetCollisionType = ECollisionGeometryMode::SimpleAndComplex;
+
+	// Set by the tool to tell the settings object whether the tool is using multiple inputs.
+	UPROPERTY()
+	bool bUsingMultipleInputs = false;
 };
 
 
@@ -186,7 +199,7 @@ public:
 	virtual bool CanAccept() const override
 	{
 		// allow accept when we're showing the current, valid result
-		return Super::CanAccept() && bInputMeshesValid && Compute && Compute->HaveValidResult() && !bVisualizationDirty;
+		return Super::CanAccept() && bInputMeshesValid && Compute && Compute->HaveValidResult() && !VizSettings->bVisualizationDirty;
 	}
 
 	// Begin IGenericDataOperatorFactory interface
@@ -205,10 +218,7 @@ protected:
 	TObjectPtr<UCollisionGeometryVisualizationProperties> VizSettings = nullptr;
 
 	UPROPERTY()
-	TObjectPtr<UPhysicsObjectToolPropertySet> CollisionProps;
-
-	UPROPERTY()
-	TObjectPtr<UMaterialInterface> LineMaterial = nullptr;
+	TObjectPtr<UPhysicsObjectToolPropertySet> CollisionProps = nullptr;
 
 	//
 	// Background compute
@@ -217,7 +227,7 @@ protected:
 
 protected:
 	UPROPERTY()
-	TObjectPtr<UPreviewGeometry> PreviewGeom;
+	TObjectPtr<UPreviewGeometry> PreviewGeom = nullptr;
 
 	TArray<int32> SourceObjectIndices;
 	bool bSourcesHidden = false;
@@ -273,12 +283,11 @@ protected:
 	void UpdateActiveGroupLayer();
 
 	FTransform OrigTargetTransform;
+	UE::Geometry::FTransformSequence3d TargetInverseTransform;
 	FVector TargetScale3D;
 
 	TSharedPtr<FPhysicsDataCollection, ESPMode::ThreadSafe> InitialCollision;
 	TSharedPtr<FPhysicsDataCollection, ESPMode::ThreadSafe> GeneratedCollision;
-
-
-	bool bVisualizationDirty = false;
-	void UpdateVisualization();
+	TSharedPtr<TArray<FPhysicsDataCollection>, ESPMode::ThreadSafe> OtherInputsCollision;
+	TSharedPtr<TArray<FTransform3d>, ESPMode::ThreadSafe> OtherInputsTransforms;
 };

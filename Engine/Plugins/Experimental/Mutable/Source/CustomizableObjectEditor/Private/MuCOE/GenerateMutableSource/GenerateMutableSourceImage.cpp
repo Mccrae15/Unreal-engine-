@@ -13,6 +13,7 @@
 #include "MuCOE/Nodes/CustomizableObjectNodeMesh.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTable.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTexture.h"
+#include "MuCOE/Nodes/CustomizableObjectNodePassThroughTexture.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureBinarise.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureColourMap.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureFromChannels.h"
@@ -23,6 +24,7 @@
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureParameter.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureProject.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureSwitch.h"
+#include "MuCOE/Nodes/CustomizableObjectNodePassThroughTextureSwitch.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureToChannels.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureTransform.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureSaturate.h"
@@ -46,6 +48,7 @@
 #include "MuT/NodeImageTable.h"
 #include "MuT/NodeImageTransform.h"
 #include "MuT/NodeImageVariation.h"
+#include "MuT/NodeImageReference.h"
 #include "MuT/NodeScalarConstant.h"
 
 #define LOCTEXT_NAMESPACE "CustomizableObjectEditor"
@@ -99,7 +102,7 @@ mu::ImagePtr ConvertTextureUnrealToMutable(UTexture2D* Texture, const UCustomiza
 }
 
 
-mu::NodeImagePtr ResizeToMaxTextureSize(float MaxTextureSize, const UTexture2D* BaseTexture, mu::NodeImageConstantPtr ImageNode)
+mu::Ptr<mu::NodeImage> ResizeToMaxTextureSize(float MaxTextureSize, const UTexture2D* BaseTexture, mu::Ptr<mu::NodeImageConstant> ImageNode)
 {
 	// To scale when above MaxTextureSize if defined
 	if (MaxTextureSize > 0 && BaseTexture
@@ -121,7 +124,7 @@ mu::NodeImagePtr ResizeToMaxTextureSize(float MaxTextureSize, const UTexture2D* 
 }
 
 
-mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGraphGenerationContext& GenerationContext, float MaxTextureSize, mu::NodeRangePtr NodeRange)
+mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGraphGenerationContext& GenerationContext, float MaxTextureSize)
 {
 	check(Pin)
 	RETURN_ON_CYCLE(*Pin, GenerationContext)
@@ -137,6 +140,8 @@ mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGrap
 	{
 		return static_cast<mu::NodeImage*>(Generated->Node.get());
 	}
+
+	bool bDoNotAddToGeneratedCache = false;
 
 	mu::NodeImagePtr Result;
 	
@@ -175,14 +180,8 @@ mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGrap
 
 		GenerationContext.AddParameterNameUnique(Node, TypedNodeParam->ParameterName);
 
-		TextureNode->SetName(TCHAR_TO_ANSI(*TypedNodeParam->ParameterName));
-		TextureNode->SetUid(TCHAR_TO_ANSI(*GenerationContext.GetNodeIdUnique(Node).ToString()));
-		
-		if (NodeRange)
-		{
-			TextureNode->SetRangeCount(1);
-			TextureNode->SetRange(0, NodeRange);
-		}
+		TextureNode->SetName(StringCast<ANSICHAR>(*TypedNodeParam->ParameterName).Get());
+		TextureNode->SetUid(StringCast<ANSICHAR>(*GenerationContext.GetNodeIdUnique(Node).ToString()).Get());
 
 		// TODO: Set a default value for the texture parameter?
 		//ColorNode->SetDefaultValue(TypedNodeParam->DefaultValue.R, TypedNodeParam->DefaultValue.G, TypedNodeParam->DefaultValue.B);
@@ -311,7 +310,7 @@ mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGrap
 					GenerationContext.Compiler->CompilerLog(LOCTEXT("ModulateWithoutMask", "Texture layer effect uses Modulate without a mask. It will replace everything below it!"), Node);
 				}
 				
-				if (OtherPin->PinType.PinCategory == Helper_GetPinCategory(Schema->PC_Image))
+				if (OtherPin->PinType.PinCategory == Schema->PC_Image)
 				{
 					mu::NodeImagePtr BlendNode = GenerateMutableSourceImage(OtherPin, GenerationContext, MaxTextureSize);
 
@@ -323,7 +322,7 @@ mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGrap
 					Result = LayerNode;
 				}
 
-				else if (OtherPin->PinType.PinCategory == Helper_GetPinCategory(Schema->PC_Color))
+				else if (OtherPin->PinType.PinCategory == Schema->PC_Color)
 				{
 					mu::NodeColourPtr ColorNode = GenerateMutableSourceColor(OtherPin, GenerationContext);
 
@@ -434,7 +433,7 @@ mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGrap
 			const UEdGraphPin* VariationPin = TypedNodeImageVar->VariationPin(VariationIndex);
 			if (!VariationPin) continue;
 
-			TextureNode->SetVariationTag(VariationIndex, TCHAR_TO_ANSI(*TypedNodeImageVar->Variations[VariationIndex].Tag));
+			TextureNode->SetVariationTag(VariationIndex, StringCast<ANSICHAR>(*TypedNodeImageVar->Variations[VariationIndex].Tag).Get());
 			if (const UEdGraphPin* ConnectedPin = FollowInputPin(*VariationPin))
 			{
 				mu::NodeImagePtr ChildNode = GenerateMutableSourceImage(ConnectedPin, GenerationContext, MaxTextureSize);
@@ -562,7 +561,7 @@ mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGrap
 
 	else if (const UCustomizableObjectNodeTextureProject* TypedNodeProject = Cast<UCustomizableObjectNodeTextureProject>(Node))
 	{
-		mu::NodeImageProjectPtr ImageNode = new mu::NodeImageProject();
+		mu::Ptr<mu::NodeImageProject> ImageNode = new mu::NodeImageProject();
 		Result = ImageNode;
 
 		if (!FollowInputPin(*TypedNodeProject->MeshPin()))
@@ -593,7 +592,33 @@ mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGrap
 
 		ImageNode->SetImageSize(TextureSize);
 
+		ImageNode->SetEnableSeamCorrection(TypedNodeProject->bEnableTextureSeamCorrection);
 		ImageNode->SetAngleFadeChannels(TypedNodeProject->bEnableAngleFadeOutForRGB, TypedNodeProject->bEnableAngleFadeOutForAlpha);
+		ImageNode->SetSamplingMethod(Invoke(
+			[](ETextureProjectSamplingMethod Method) -> mu::ESamplingMethod 
+			{
+				switch(Method)
+				{
+				case ETextureProjectSamplingMethod::Point:    return mu::ESamplingMethod::Point;
+				case ETextureProjectSamplingMethod::BiLinear: return mu::ESamplingMethod::BiLinear;
+				default: { check(false); return mu::ESamplingMethod::Point; }
+				}
+			}, 
+			TypedNodeProject->SamplingMethod)
+		);
+
+		ImageNode->SetMinFilterMethod(Invoke(
+			[](ETextureProjectMinFilterMethod Method) -> mu::EMinFilterMethod 
+			{
+				switch(Method)
+				{
+				case ETextureProjectMinFilterMethod::None:               return mu::EMinFilterMethod::None;
+				case ETextureProjectMinFilterMethod::TotalAreaHeuristic: return mu::EMinFilterMethod::TotalAreaHeuristic;
+				default: { check(false); return mu::EMinFilterMethod::None; }
+				}
+			}, 
+			TypedNodeProject->MinFilterMethod)
+		);
 
 		if (const UEdGraphPin* ConnectedPin = FollowInputPin(*TypedNodeProject->AngleFadeStartPin()))
 		{
@@ -624,7 +649,7 @@ mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGrap
 		if (const UEdGraphPin* ConnectedPin = FollowInputPin(*TypedNodeProject->MeshPin()))
 		{
 			FMutableGraphMeshGenerationData DummyMeshData;
-			mu::NodeMeshPtr MeshNode = GenerateMutableSourceMesh(ConnectedPin, GenerationContext, DummyMeshData);
+			mu::NodeMeshPtr MeshNode = GenerateMutableSourceMesh(ConnectedPin, GenerationContext, DummyMeshData, false, false);
 			ImageNode->SetMesh(MeshNode);
 		}
 
@@ -767,6 +792,17 @@ mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGrap
 			mu::NodeScalarPtr RotationNode = GenerateMutableSourceFloat(RotationPin, GenerationContext);
 			TransformNode->SetRotation( RotationNode ); 
 		}
+
+		TransformNode->SetAddressMode(Invoke([&]() 
+		{
+			switch (TypedNodeTransform->AddressMode)
+			{
+			case ETextureTransformAddressMode::Wrap:		 return mu::EAddressMode::Wrap;
+			case ETextureTransformAddressMode::ClampToEdge:  return mu::EAddressMode::ClampToEdge;
+			case ETextureTransformAddressMode::ClampToBlack: return mu::EAddressMode::ClampToBlack;
+			default: { check(false); return mu::EAddressMode::None; }
+			}
+		}));
 	}
 
 	else if (const UCustomizableObjectNodeTextureSaturate* TypedNodeSaturate = Cast<UCustomizableObjectNodeTextureSaturate>(Node))
@@ -786,9 +822,105 @@ mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGrap
 			SaturateNode->SetFactor(FactorNode); 
 		}
 	}
-	
+
+	else if (const UCustomizableObjectNodePassThroughTexture* TypedNodePassThroughTex = Cast<UCustomizableObjectNodePassThroughTexture>(Node))
+	{
+		UTexture2D* BaseTexture = TypedNodePassThroughTex->Texture;
+		if (BaseTexture)
+		{
+			uint32* FoundIndex = GenerationContext.PassThroughTextureToIndexMap.Find(BaseTexture);
+			uint32 NewId;
+
+			if (!FoundIndex)
+			{
+				NewId = GenerationContext.PassThroughTextureToIndexMap.Num();
+				GenerationContext.PassThroughTextureToIndexMap.Add(BaseTexture, NewId);
+			}
+			else
+			{
+				NewId = *FoundIndex;
+			}
+
+			mu::Ptr<mu::NodeImageReference> ImageNode = new mu::NodeImageReference;
+			ImageNode->SetImageReference(NewId);
+
+			Result = ImageNode;
+		}
+		else
+		{
+			GenerationContext.Compiler->CompilerLog(LOCTEXT("MissingImagePassThrough", "Missing image in pass-through texture node."), Node);
+		}
+	}
+
+	else if (const UCustomizableObjectNodePassThroughTextureSwitch* TypedNodePassThroughTextureSwitch = Cast<UCustomizableObjectNodePassThroughTextureSwitch>(Node))
+	{
+		Result = [&]()
+		{
+			const UEdGraphPin* SwitchParameter = TypedNodePassThroughTextureSwitch->SwitchParameter();
+
+			// Check Switch Parameter arity preconditions.
+			if (const UEdGraphPin* ConnectedPin = FollowInputPin(*SwitchParameter))
+			{
+				mu::NodeScalarPtr SwitchParam = GenerateMutableSourceFloat(ConnectedPin, GenerationContext);
+				// Switch Param not generated
+				if (!SwitchParam)
+				{
+					const FText Message = LOCTEXT("FailedToGenerateSwitchParam", "Could not generate switch enum parameter. Please refesh the switch node and connect an enum.");
+					GenerationContext.Compiler->CompilerLog(Message, Node);
+
+					return Result;
+				}
+
+				if (SwitchParam->GetType() != mu::NodeScalarEnumParameter::GetStaticType())
+				{
+					const FText Message = LOCTEXT("WrongSwitchParamType", "Switch parameter of incorrect type.");
+					GenerationContext.Compiler->CompilerLog(Message, Node);
+
+					return Result;
+				}
+
+				const int32 NumSwitchOptions = TypedNodePassThroughTextureSwitch->GetNumElements();
+
+				mu::NodeScalarEnumParameter* EnumParameter = static_cast<mu::NodeScalarEnumParameter*>(SwitchParam.get());
+				if (NumSwitchOptions != EnumParameter->GetValueCount())
+				{
+					const FText Message = LOCTEXT("MismatchedSwitch", "Switch enum and switch node have different number of options. Please refresh the switch node to make sure the outcomes are labeled properly.");
+					GenerationContext.Compiler->CompilerLog(Message, Node);
+				}
+
+				// TODO: Implement Mutable core pass-through switch nodes
+				mu::Ptr<mu::NodeImageSwitch> SwitchNode = new mu::NodeImageSwitch;
+				SwitchNode->SetParameter(SwitchParam);
+				SwitchNode->SetOptionCount(NumSwitchOptions);
+
+				for (int32 SelectorIndex = 0; SelectorIndex < NumSwitchOptions; ++SelectorIndex)
+				{
+					if (const UEdGraphPin* TexturePin = FollowInputPin(*TypedNodePassThroughTextureSwitch->GetElementPin(SelectorIndex)))
+					{
+						mu::Ptr<mu::NodeImage> PassThroughImage = GenerateMutableSourceImage(TexturePin, GenerationContext, MaxTextureSize);
+						SwitchNode->SetOption(SelectorIndex, PassThroughImage);
+					}
+					else
+					{
+						const FText Message = LOCTEXT("MissingPassThroughTexture", "Unable to generate pass-through texture switch node. Required connection not found.");
+						GenerationContext.Compiler->CompilerLog(Message, Node);
+						return Result;
+					}
+				}
+
+				Result = SwitchNode;
+				return Result;
+			}
+			else
+			{
+				GenerationContext.Compiler->CompilerLog(LOCTEXT("NoEnumParamInSwitch", "Switch nodes must have an enum switch parameter. Please connect an enum and refesh the switch node."), Node);
+				return Result;
+			}
+		}(); // invoke lambda.
+	}
+
 	// If the node is a plain colour node, generate an image out of it
-	else if (Pin->PinType.PinCategory == Helper_GetPinCategory(Schema->PC_Color))
+	else if (Pin->PinType.PinCategory == Schema->PC_Color)
 	{
 		mu::NodeColourPtr ColorNode = GenerateMutableSourceColor(Pin, GenerationContext);
 
@@ -803,7 +935,6 @@ mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGrap
 		if (Pin->PinType.PinCategory == Schema->PC_Color)
 		{
 			mu::NodeColourPtr ColorNode = GenerateMutableSourceColor(Pin, GenerationContext);
-			
 			mu::NodeImagePlainColourPtr ImageNode = new mu::NodeImagePlainColour;
 
 			ImageNode->SetSize(16, 16);
@@ -811,49 +942,91 @@ mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGrap
 
 			Result = ImageNode;
 		}
-
 		else
 		{
-			mu::NodeImageTablePtr ImageTableNode = new mu::NodeImageTable();
-			Result = ImageTableNode;
+			//This node will add a checker texture in case of error
+			mu::NodeImageConstantPtr EmptyNode = new mu::NodeImageConstant();
+			Result = EmptyNode;
 
-			mu::TablePtr Table = nullptr;
+			bool bSuccess = true;
+
+			if (Pin->PinType.PinCategory == Schema->PC_MaterialAsset)
+			{
+				// Material pins have to skip the cache of nodes or they will return always the same column node
+				bDoNotAddToGeneratedCache = true;
+			}
 
 			if (TypedNodeTable->Table)
 			{
 				FString ColumnName = Pin->PinFriendlyName.ToString();
+				FProperty* Property = TypedNodeTable->Table->FindTableProperty(FName(*ColumnName));
 
-				if (Pin->PinType.PinCategory == Schema->PC_MaterialAsset)
+				if (!Property)
 				{
-					ColumnName = GenerationContext.CurrentMaterialTableParameterId;
-				}
-
-				// Generating a new data table if not exists
-				Table = GenerateMutableSourceTable(TypedNodeTable->Table->GetName(), Pin, GenerationContext);
-
-				// Generating a new Texture column if not exists
-				if (Table && Table->FindColumn(TCHAR_TO_ANSI(*ColumnName)) == INDEX_NONE)
-				{
-					GenerateTableColumn(TypedNodeTable, Pin, Table, ColumnName, GenerationContext.CurrentLOD, GenerationContext);
-				}
-				
-				ImageTableNode->SetTable(Table);
-				ImageTableNode->SetColumn(TCHAR_TO_ANSI(*ColumnName));
-				ImageTableNode->SetParameterName(TCHAR_TO_ANSI(*TypedNodeTable->ParameterName));
-
-				GenerationContext.AddParameterNameUnique(Node, TypedNodeTable->ParameterName);
-				
-				if (Table->FindColumn(TCHAR_TO_ANSI(*ColumnName)) == INDEX_NONE)
-				{
-					FString Msg = FString::Printf(TEXT("Couldn't find pin column with name %s"), *ColumnName);
+					FString Msg = FString::Printf(TEXT("Couldn't find the column [%s] in the data table's struct."), *ColumnName);
 					GenerationContext.Compiler->CompilerLog(FText::FromString(Msg), Node);
+
+					bSuccess = false;
+				}
+
+				if (bSuccess && Pin->PinType.PinCategory != Schema->PC_MaterialAsset && !TypedNodeTable->GetColumnDefaultAssetByType<UTexture2D>(Pin) && !TypedNodeTable->GetColumnDefaultAssetByType<UTexture2DArray>(Pin))
+				{
+					FString Msg = FString::Printf(TEXT("Couldn't find a default value in the data table's struct for the column [%s]. The default value is null or not a supported Texture"), *ColumnName);
+					GenerationContext.Compiler->CompilerLog(FText::FromString(Msg), Node);
+					
+					bSuccess = false;
+				}
+
+				if (bSuccess)
+				{
+					// Generating a new data table if not exists
+					mu::TablePtr Table = nullptr;
+					Table = GenerateMutableSourceTable(TypedNodeTable->Table->GetName(), Pin, GenerationContext);
+
+					if (Table)
+					{
+						mu::NodeImageTablePtr ImageTableNode = new mu::NodeImageTable();
+
+						if (Pin->PinType.PinCategory == Schema->PC_MaterialAsset)
+						{
+							// Material parameters use the Data Table Column Name + Parameter id as mutable column Name to aboid duplicated names (i.e. two MI columns with the same parents but different values).
+							ColumnName = Property->GetDisplayNameText().ToString() + GenerationContext.CurrentMaterialTableParameterId;
+						}
+
+						// Generating a new Texture column if not exists
+						if (Table->FindColumn(StringCast<ANSICHAR>(*ColumnName).Get()) == INDEX_NONE)
+						{
+							int32 Dummy = -1; // TODO MTBL-1512
+							bool Dummy2 = false;
+							bSuccess = GenerateTableColumn(TypedNodeTable, Pin, Table, ColumnName, Property, Dummy, Dummy, GenerationContext.CurrentLOD, Dummy, Dummy2, GenerationContext);
+
+							if (!bSuccess)
+							{
+								FString Msg = FString::Printf(TEXT("Failed to generate the mutable table column [%s]"), *ColumnName);
+								GenerationContext.Compiler->CompilerLog(FText::FromString(Msg), Node);
+							}
+						}
+
+						if (bSuccess)
+						{
+							Result = ImageTableNode;
+
+							ImageTableNode->SetTable(Table);
+							ImageTableNode->SetColumn(StringCast<ANSICHAR>(*ColumnName).Get());
+							ImageTableNode->SetParameterName(StringCast<ANSICHAR>(*TypedNodeTable->ParameterName).Get());
+
+							GenerationContext.AddParameterNameUnique(Node, TypedNodeTable->ParameterName);
+						}
+					}
+					else
+					{
+						FString Msg = FString::Printf(TEXT("Couldn't generate a mutable table."));
+						GenerationContext.Compiler->CompilerLog(FText::FromString(Msg), Node);
+					}
 				}
 			}
 			else
 			{
-				Table = new mu::Table();
-				ImageTableNode->SetTable(Table);
-
 				GenerationContext.Compiler->CompilerLog(LOCTEXT("ImageTableError", "Couldn't find the data table of the node."), Node);
 			}
 		}
@@ -864,8 +1037,11 @@ mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGrap
 		GenerationContext.Compiler->CompilerLog(LOCTEXT("UnimplementedNode", "Node type not implemented yet."), Node);
 	}
 
-	GenerationContext.Generated.Add(Key, FGeneratedData(Node, Result));
-	GenerationContext.GeneratedNodes.Add(Node);
+	if (!bDoNotAddToGeneratedCache)
+	{
+		GenerationContext.Generated.Add(Key, FGeneratedData(Node, Result));
+		GenerationContext.GeneratedNodes.Add(Node);
+	}
 
 	if (Result)
 	{
@@ -874,6 +1050,7 @@ mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGrap
 
 	return Result;
 }
+
 
 #undef LOCTEXT_NAMESPACE
 

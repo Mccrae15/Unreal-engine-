@@ -6,6 +6,7 @@
 #include "AudioDecompress.h"
 #include "AudioDerivedData.h"
 #include "AudioDevice.h"
+#include "Engine/Engine.h"
 #include "Misc/Paths.h"
 #include "Serialization/MemoryWriter.h"
 #include "Sound/SoundSourceBus.h"
@@ -27,6 +28,8 @@
 #include "Misc/OutputDeviceArchiveWrapper.h"
 #include "Async/Async.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
+#include "Algo/BinarySearch.h"
+#include "Templates/UnrealTemplate.h"
 
 #if WITH_EDITOR
 #endif // WITH_EDITOR
@@ -150,7 +153,8 @@ void FSoundWaveData::InitializeDataFromSoundWave(USoundWave& InWave)
 	}
 	
 	SoundWaveKeyCached = FObjectKey(&InWave);
-	CuePoints = InWave.CuePoints;
+	CuePoints = InWave.GetCuePoints();
+	LoopRegions = InWave.GetLoopRegions();
 	SampleRate = InWave.GetSampleRateForCurrentPlatform();
 	Duration = InWave.Duration;
 	NumChannels = InWave.NumChannels;
@@ -170,15 +174,23 @@ void FSoundWaveData::InitializeDataFromSoundWave(USoundWave& InWave)
 #endif //WITH_EDITOR
 }
 
+void FSoundWaveData::OverrideRuntimeFormat(const FName& InRuntimeFormat)
+{
+	RuntimeFormat = InRuntimeFormat;
+}
+
 FName FSoundWaveData::FindRuntimeFormat(const USoundWave& InWave) const
 {		
 #if WITH_EDITOR	
 	// If this is an editor build, we can ask ITargetPlatform.
-	if (ITargetPlatformManagerModule* TPM = GetTargetPlatformManager())
+	if (!InWave.IsLoadedFromCookedData())
 	{
-		if (ITargetPlatform* RunningTarget = TPM->GetRunningTargetPlatform())
+		if (ITargetPlatformManagerModule* TPM = GetTargetPlatformManager())
 		{
-			return RunningTarget->GetWaveFormat(&InWave);
+			if (ITargetPlatform* RunningTarget = TPM->GetRunningTargetPlatform())
+			{
+				return RunningTarget->GetWaveFormat(&InWave);
+			}
 		}
 	}
 #endif //WITH_EDITOR
@@ -327,6 +339,27 @@ bool FSoundWaveData::HasCompressedData(FName Format, ITargetPlatform* TargetPlat
 	}
 }
 
+void FSoundWaveData::SetError(const TCHAR* InErrorMsg)
+{
+	UE_CLOG(!bHasError, LogAudio, Warning, TEXT("Flagging SoundWave '%s' to have errors, preventing playback. ErrorMsg='%s'"), 
+		*GetPackageName().ToString(),
+		InErrorMsg ? InErrorMsg : TEXT("")
+	);
+	bHasError = true;
+}
+
+bool FSoundWaveData::HasError() const
+{
+	return bHasError;
+}
+
+bool FSoundWaveData::ResetError()
+{
+	bool bHadError = bHasError;
+	bHasError = false;
+	return bHadError;
+}
+
 FByteBulkData* FSoundWaveData::GetCompressedData(FName Format, const FPlatformAudioCookOverrides* CompressionOverrides)
 {
 	if (IsTemplate() || IsRunningDedicatedServer())
@@ -401,8 +434,46 @@ const TArrayView<uint8> FSoundWaveData::GetZerothChunkDataView() const
 	return TArrayView<uint8>(View.GetData(), static_cast<int32>(View.Num()));
 }
 
+bool FSoundWaveData::HasChunkSeekTable(int32 InChunkIndex) const
+{
+	const TIndirectArray<FStreamedAudioChunk>& Chunks = RunningPlatformData.Chunks;
+	if (Chunks.IsValidIndex(InChunkIndex))
+	{
+		return Chunks[InChunkIndex].SeekOffsetInAudioFrames != INDEX_NONE;
+	}
+	return false;
+}
+
+int32 FSoundWaveData::FindChunkIndexForSeeking(uint32 InTimeInAudioFrames) const
+{	
+	const TIndirectArray<FStreamedAudioChunk>& Chunks = RunningPlatformData.Chunks;
+	int32 NumChunks = Chunks.Num();
+
+	// Find most in range chunk.
+	int32 InRangeChunk = INDEX_NONE;
+	for (int32 i=0; i < NumChunks; ++i)
+	{
+		// Ignore chunks without tables. (should only be chunk0).
+		if (Chunks[i].SeekOffsetInAudioFrames == INDEX_NONE)
+		{
+			continue;
+		}
+
+		// If its out of bound, use the last valid one.
+		if (Chunks[i].SeekOffsetInAudioFrames > InTimeInAudioFrames)
+		{
+			return InRangeChunk;
+		}
+
+		// In bounds and valid... 
+		InRangeChunk = i;
+	}
+	return InRangeChunk;
+}
+
 bool FSoundWaveData::LoadZerothChunk()
 {
+#if WITH_EDITOR
 	TRACE_CPUPROFILER_EVENT_SCOPE(FSoundWaveData::LoadZerothChunk);
 
 	LLM_SCOPE(ELLMTag::AudioSoundWaves);
@@ -417,7 +488,6 @@ bool FSoundWaveData::LoadZerothChunk()
 
 		if (ZerothChunkData.GetView().Num() == 0)
 		{
-#if WITH_EDITOR
 			if (!bLoadedFromCookedData)
 			{
 				// In editor, we wait until the zeroth chunk is required to force finish compilation
@@ -448,7 +518,6 @@ bool FSoundWaveData::LoadZerothChunk()
 				}
 			}
 			else
-#endif // WITH_EDITOR
 			{
 				// The zeroth chunk is cooked out to RunningPlatformData, so retrieve it.
 				if (ensureMsgf(GetNumChunks() > 0, TEXT("SoundWave '%s' is cooked but contains no chunks."), *GetFName().ToString()))
@@ -472,6 +541,7 @@ bool FSoundWaveData::LoadZerothChunk()
 			}
 		}
 	}
+#endif
 
 	return true;
 }
@@ -602,8 +672,21 @@ void FStreamedAudioChunk::Serialize(FArchive& Ar, UObject* Owner, int32 ChunkInd
 		bShouldInlineAudioChunk = Overrides->bInlineStreamedAudioChunks;
 	}
 
-	bool bCooked = Ar.IsCooking();
-	Ar << bCooked;
+	enum 
+	{
+		IsCooked			 = 1 << 0,
+		HasSeekOffset		 = 1 << 1
+	};
+	
+	// Bit-pack flags into a single uint32, instead of a bool.
+	uint32 Flags = 0;
+	if (Ar.IsSaving())
+	{
+		Flags |= Ar.IsCooking() ? IsCooked : 0;
+		Flags |= SeekOffsetInAudioFrames != INDEX_NONE ? HasSeekOffset : 0;
+	}
+
+	Ar << Flags;
 
 	// ChunkIndex 0 is always inline payload, all other chunks are streamed.
 	if (Ar.IsSaving())
@@ -623,13 +706,38 @@ void FStreamedAudioChunk::Serialize(FArchive& Ar, UObject* Owner, int32 ChunkInd
 	Ar << DataSize;
 	Ar << AudioDataSize;
 
+	if (Ar.IsLoading() )
+	{	
+		// Sanity check these look sane. 
+		// And ensure reset in the case they are bad.
+		if (!ensure(DataSize > 0))
+		{
+			DataSize = 0;
+		}
+		if (!ensure(AudioDataSize > 0))
+		{
+			AudioDataSize = 0;
+		}
+		if (!ensure(AudioDataSize <= DataSize))
+		{
+			AudioDataSize = DataSize;
+		}
+	}
+
+	// To save bloat, only Serialize the seek offset if this chunk uses it. 
+	// Otherwise this defaults to INDEX_NONE
+	if (Flags & HasSeekOffset)
+	{
+		Ar << SeekOffsetInAudioFrames;
+	}
+
 #if WITH_EDITORONLY_DATA
-	if (!bCooked)
+	if (!(Flags & IsCooked))
 	{
 		Ar << DerivedDataKey;
 	}
 
-	if (Ar.IsLoading() && bCooked)
+	if (Ar.IsLoading() && (Flags & IsCooked))
 	{
 		bLoadedFromCookedPackage = true;
 	}
@@ -638,6 +746,11 @@ void FStreamedAudioChunk::Serialize(FArchive& Ar, UObject* Owner, int32 ChunkInd
 
 bool FStreamedAudioChunk::GetCopy(void** OutChunkData)
 {
+	if (AudioDataSize <= 0 || DataSize <= 0)
+	{
+		return false;
+	}
+	
 	if (!CachedDataPtr)
 	{
 		if (AudioDataSize != DataSize)
@@ -692,10 +805,9 @@ uint32 FStreamedAudioChunk::StoreInDerivedDataCache(const FString& InDerivedData
 USoundWave::USoundWave(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-
 	Volume = 1.0;
 	Pitch = 1.0;
-	CompressionQuality = 40;
+	CompressionQuality = -1; // Note: This is set in PostInitProperties, as its unsafe to GetDefault<UAudioSettings> here.
 	SubtitlePriority = DEFAULT_SUBTITLE_PRIORITY;
 	ResourceState = ESoundWaveResourceState::NeedsFree;
 	RawPCMDataSize = 0;
@@ -900,7 +1012,6 @@ void USoundWave::Serialize( FArchive& Ar )
 	FByteBulkData TempOldBulkData;
 	bool bBulkDataConverted = false;
 
-	bLoadedFromCookedData = Ar.IsLoading() && bCooked;
 	if (bVirtualizeWhenSilent_DEPRECATED)
 	{
 		bVirtualizeWhenSilent_DEPRECATED = 0;
@@ -909,6 +1020,9 @@ void USoundWave::Serialize( FArchive& Ar )
 
 	if (Ar.IsLoading())
 	{
+		// Modify bLoadedFromCookedData state only when loading from archive
+		bLoadedFromCookedData = bCooked;
+
 		ModulationSettings.VersionModulators();
 	}
 
@@ -1126,6 +1240,32 @@ void USoundWave::SetSoundAssetCompressionType(ESoundAssetCompressionType InSound
 #endif // #if WITH_EDITOR
 }
 
+TArray<FSoundWaveCuePoint> USoundWave::GetCuePoints() const
+{
+	TArray<FSoundWaveCuePoint> OutCuePoints;
+	for (const FSoundWaveCuePoint& CuePoint : CuePoints)
+	{
+		if (!CuePoint.bIsLoopRegion)
+		{
+			OutCuePoints.Add(CuePoint);
+		}
+	}
+	return OutCuePoints;
+}
+
+TArray<FSoundWaveCuePoint> USoundWave::GetLoopRegions() const
+{
+	TArray<FSoundWaveCuePoint> OutLoopRegions;
+	for (const FSoundWaveCuePoint& CuePoint : CuePoints)
+	{
+		if (CuePoint.bIsLoopRegion)
+		{
+			OutLoopRegions.Add(CuePoint);
+		}
+	}
+	return OutLoopRegions;
+}
+
 FName USoundWave::GetRuntimeFormat() const
 {
 	return SoundWaveDataPtr->GetRuntimeFormat();
@@ -1144,6 +1284,11 @@ bool USoundWave::SupportsSubtitles() const
 void USoundWave::PostInitProperties()
 {
 	Super::PostInitProperties();
+
+	// Safe to query the AudioSettings here, instead of the Constructor
+	// These defaults are then overwritten by the UPROPERTY serialization if there's non default property values.
+	CompressionQuality = GetDefault<UAudioSettings>()->GetDefaultCompressionQuality();
+	SoundAssetCompressionType = Audio::ToSoundAssetCompressionType(GetDefault<UAudioSettings>()->DefaultAudioCompressionType);
 
 	if(!IsTemplate())
 	{
@@ -1563,10 +1708,10 @@ void USoundWave::InvalidateCompressedData(bool bFreeResources, bool bRebuildStre
 	check(SoundWaveDataPtr);
 
 	CompressedDataGuid = FGuid::NewGuid();
+
 	SoundWaveDataPtr->DiscardZerothChunkData();
 	SoundWaveDataPtr->CompressedFormatData.FlushData();
-	SoundWaveDataPtr->ResourceSize = 0;
-	SoundWaveDataPtr->ResourceData.Empty();
+	RemoveAudioResource();
 
 	if (bFreeResources)
 	{
@@ -2451,11 +2596,8 @@ void USoundWave::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEv
 	static const FName InitialChunkSizeFName = GET_MEMBER_NAME_CHECKED(USoundWave, InitialChunkSize);
 	static const FName TransformationsFName = GET_MEMBER_NAME_CHECKED(USoundWave, Transformations);
 
-	// force proxy flags to be up to date
-	SoundWaveDataPtr->bIsSeekable = IsSeekable();
-	SoundWaveDataPtr->SoundAssetCompressionType = SoundAssetCompressionType;
-	SoundWaveDataPtr->bIsStreaming = IsStreaming(nullptr);
-	SoundWaveDataPtr->bShouldUseStreamCaching = ShouldUseStreamCaching();
+	// force proxy state to be up to date
+	SoundWaveDataPtr->InitializeDataFromSoundWave(*this);
 
 	if (FProperty* PropertyThatChanged = PropertyChangedEvent.Property)
 	{
@@ -2798,7 +2940,9 @@ void USoundWave::Parse(FAudioDevice* AudioDevice, const UPTRINT NodeWaveInstance
 	WaveInstance->bApplyRadioFilter = ActiveSound.bApplyRadioFilter;
 	WaveInstance->StartTime = ParseParams.StartTime;
 	WaveInstance->UserIndex = ActiveSound.UserIndex;
-	WaveInstance->OmniRadius = ParseParams.OmniRadius;
+	WaveInstance->NonSpatializedRadiusStart = ParseParams.NonSpatializedRadiusStart;
+	WaveInstance->NonSpatializedRadiusEnd = ParseParams.NonSpatializedRadiusEnd;
+	WaveInstance->NonSpatializedRadiusMode = ParseParams.NonSpatializedRadiusMode;
 	WaveInstance->StereoSpread = ParseParams.StereoSpread;
 	WaveInstance->AttenuationDistance = ParseParams.AttenuationDistance;
 	WaveInstance->ListenerToSoundDistance = ParseParams.ListenerToSoundDistance;
@@ -3269,7 +3413,6 @@ FSoundWaveProxyPtr USoundWave::CreateSoundWaveProxy()
 #endif // #if WITH_EDITORONLY_DATA
 
 	check(SoundWaveDataPtr);
-	SoundWaveDataPtr->InitializeDataFromSoundWave(*this);
 
 	return MakeShared<FSoundWaveProxy, ESPMode::ThreadSafe>(this);
 }
@@ -3411,14 +3554,13 @@ float USoundWave::GetSampleRateForCompressionOverrides(const FPlatformAudioCookO
 	const float* SampleRatePtr = CompressionOverrides->PlatformSampleRates.Find(SampleRateQuality);
 	if (SampleRatePtr && *SampleRatePtr > 0.0f)
 	{
-		if (GIsEditor)
+		// If in editor (but not cooking), then read from current platform 
+		// otherwise, use the given cook override sample rate 
+		if (!IsRunningCookCommandlet() && GIsEditor)
 		{
 			return GetSampleRateForCurrentPlatform();
 		}
-		else
-		{
-			return FMath::Min(*SampleRatePtr, static_cast<float>(SampleRate));
-		}
+		return FMath::Min(*SampleRatePtr, static_cast<float>(SampleRate));
 	}
 	else
 	{
@@ -3872,6 +4014,9 @@ void USoundWave::UpdateAsset(bool bMarkDirty)
 
 	InvalidateCompressedData();
 	UpdatePlatformData();
+	
+	// Reset any error state we've encountered.
+	ResetError();
 
 	if(bMarkDirty)
 	{
@@ -3910,7 +4055,7 @@ const FWaveTransformUObjectConfiguration& USoundWave::UpdateTransformations()
 
 	if (TotalSamples == 0)
 	{
-		UE_LOG(LogAudio, Warning, TEXT("Found %d total samples when updating transformations on soundwave %s"), TotalSamples, *GetNameSafe(this));
+		UE_LOG(LogAudio, Warning, TEXT("Found %d total samples when updating transformations on soundwave %s"), size_t(TotalSamples), *GetNameSafe(this));
 		UE_LOG(LogAudio, Warning, TEXT("Consider reimporting the asset, transformations might not work correctly"));
 		return TransformationChainConfig;
 	}
@@ -4159,13 +4304,13 @@ int32 FSoundWaveProxy::GetNumFrames() const
 	return SoundWaveDataPtr->GetNumFrames();
 }
 
-uint32 FSoundWaveProxy::GetNumChunks()
+uint32 FSoundWaveProxy::GetNumChunks() const
 {
 	check(SoundWaveDataPtr);
 	return SoundWaveDataPtr->GetNumChunks();
 }
 
-const uint32 FSoundWaveProxy::GetNumChannels() const
+uint32 FSoundWaveProxy::GetNumChannels() const
 {
 	check(SoundWaveDataPtr);
 	return SoundWaveDataPtr->GetNumChannels();
@@ -4181,6 +4326,12 @@ const TArray<FSoundWaveCuePoint>& FSoundWaveProxy::GetCuePoints() const
 {
 	check(SoundWaveDataPtr);
 	return SoundWaveDataPtr->GetCuePoints();
+}
+
+const TArray<FSoundWaveCuePoint>& FSoundWaveProxy::GetLoopRegions() const
+{
+	check(SoundWaveDataPtr);
+	return SoundWaveDataPtr->GetLoopRegions();
 }
 
 FSoundWaveData::MaxChunkSizeResults FSoundWaveProxy::GetMaxChunkSizeResults() const
@@ -4292,4 +4443,22 @@ TArrayView<const uint8> FSoundWaveProxy::GetZerothChunk(const FSoundWaveProxyPtr
 	}
 
 	return {};
+}
+
+void USoundWave::SetError(const TCHAR* InErrorMsg)
+{
+	check(SoundWaveDataPtr);
+	SoundWaveDataPtr->SetError(InErrorMsg);
+}
+
+void USoundWave::ResetError()
+{
+	check(SoundWaveDataPtr);
+	SoundWaveDataPtr->ResetError();
+}
+
+bool USoundWave::HasError() const
+{
+	check(SoundWaveDataPtr);
+	return SoundWaveDataPtr->HasError();
 }

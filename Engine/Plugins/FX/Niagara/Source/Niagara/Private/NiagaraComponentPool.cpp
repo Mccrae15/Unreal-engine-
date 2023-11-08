@@ -4,6 +4,7 @@
 #include "HAL/IConsoleManager.h"
 #include "Engine/World.h"
 #include "GameFramework/WorldSettings.h"
+#include "NiagaraSystem.h"
 #include "SceneInterface.h"
 
 #include "NiagaraComponent.h"
@@ -279,6 +280,11 @@ void UNiagaraComponentPool::PrimePool(UNiagaraSystem* Template, UWorld* World)
 		return;
 	}
 
+	if (!Template->bFullyLoaded)
+	{
+		return;
+	}
+
 	const uint32 PrimeCount = FMath::Min(Template->PoolPrimeSize, Template->MaxPoolSize);
 	if (PrimeCount == 0)
 	{
@@ -345,6 +351,9 @@ void UNiagaraComponentPool::PrimePool(UNiagaraSystem* Template, UWorld* World)
 			for (auto& Comp : NewComps)
 			{
 				Comp = Pool.Acquire(World, Template, ENCPoolMethod::ManualRelease, true);//Force the pool to create a new system.
+#if ENABLE_NC_POOL_DEBUGGING
+				InUseComponents_Manual.Add(Comp);
+#endif
 				Comp->InitializeSystem();
 	
 				if(GNiagaraKeepPooledComponentsRegistered)

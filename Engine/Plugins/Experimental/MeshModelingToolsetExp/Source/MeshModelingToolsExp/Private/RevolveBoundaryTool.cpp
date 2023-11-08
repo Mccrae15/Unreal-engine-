@@ -16,6 +16,7 @@
 #include "ModelingToolTargetUtil.h"
 #include "ToolSceneQueriesUtil.h"
 #include "ToolSetupUtil.h"
+#include "ToolTargetManager.h"
 
 #include "TargetInterfaces/PrimitiveComponentBackedTarget.h"
 
@@ -31,7 +32,13 @@ USingleSelectionMeshEditingTool* URevolveBoundaryToolBuilder::CreateNewTool(cons
 {
 	return NewObject<URevolveBoundaryTool>(SceneState.ToolManager);
 }
-
+bool URevolveBoundaryToolBuilder::CanBuildTool(const FToolBuilderState& SceneState) const
+{
+	// We're disallowing volumes here because volumes won't have open boundaries intrinsically.
+	return USingleSelectionMeshEditingToolBuilder::CanBuildTool(SceneState) &&
+		SceneState.TargetManager->CountSelectedAndTargetableWithPredicate(SceneState, GetTargetRequirements(),
+			[](UActorComponent& Component) { return !ToolBuilderUtil::IsVolume(Component); }) >= 1;
+}
 
 // Operator factory
 
@@ -105,13 +112,7 @@ void URevolveBoundaryTool::Setup()
 
 
 	FTransform LocalToWorld = UE::ToolTarget::GetLocalToWorldTransform(Target);
-	// Assume an axis that is > 1000 meters away is typically not desired, and can be snapped closer
-	// This works around bad behavior if the tool is started at LWC
-	constexpr double AxisVeryFarThreshold = 100 * 1000;
-	if (FVector::DistSquared(Settings->AxisOrigin, LocalToWorld.GetTranslation()) > AxisVeryFarThreshold * AxisVeryFarThreshold)
-	{
-		Settings->AxisOrigin = LocalToWorld.GetTranslation();
-	}
+	Settings->AxisOrigin = LocalToWorld.GetTranslation();
 
 	UpdateRevolutionAxis();
 

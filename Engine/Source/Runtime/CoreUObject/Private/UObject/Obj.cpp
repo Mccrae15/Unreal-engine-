@@ -46,6 +46,7 @@
 #include "Serialization/BulkData.h"
 #include "UObject/LinkerLoad.h"
 #include "Misc/RedirectCollector.h"
+#include "Misc/PlayInEditorLoadingScope.h"
 #include "UObject/GCScopeLock.h"
 #include "ProfilingDebugging/CookStats.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
@@ -96,7 +97,39 @@ static UPackage*			GObjTransientPkg								= NULL;
 #endif
 
 #if WITH_EDITOR
+	struct FPropagatedEditChangeAnnotation
+	{
+		/**
+		 * If set, archetype edits will not mark an instance dirty unless it results
+		 * in the instance realigning with the archetype after the change (that will
+		 * then result in future archetype changes being propagated to the instance).
+		 */
+		uint8 bDeferredMarkAsDirty : 1;
+		/**
+		 * If set, this instance will be affected by an archetype change (i.e. it
+		 * matched the archetype prior to propagating the change).
+		 */
+		uint8 bIdenticalToArchetype : 1;
+		/**
+		 * If set, the package containing this instance was already marked as dirty
+		 * prior to propagating the change.
+		 */
+		uint8 bWasPackageDirtyOnEdit : 1;
+
+		FPropagatedEditChangeAnnotation()
+		: bDeferredMarkAsDirty(false)
+		, bIdenticalToArchetype(false)
+		, bWasPackageDirtyOnEdit(false)
+		{}
+
+		FORCEINLINE bool IsDefault() const
+		{
+			return !bDeferredMarkAsDirty;
+		}
+	};
+	static FUObjectAnnotationSparse<FPropagatedEditChangeAnnotation, true> PropagatedEditChangeAnnotation;
 	UObject::FAssetRegistryTag::FOnGetObjectAssetRegistryTags UObject::FAssetRegistryTag::OnGetExtraObjectTags;
+	UObject::FAssetRegistryTag::FOnGetExtendedAssetRegistryTagsForSave UObject::FAssetRegistryTag::OnGetExtendedAssetRegistryTagsForSave;
 #endif // WITH_EDITOR
 
 UObject::UObject( EStaticConstructor, EObjectFlags InFlags )
@@ -313,7 +346,7 @@ bool UObject::Rename( const TCHAR* InName, UObject* NewOuter, ERenameFlags Flags
 			}
 		}
 #if UE_WITH_OBJECT_HANDLE_LATE_RESOLVE
-		UE::CoreUObject::Private::UpdateRenamedObject(*this, NewName, NewOuter);
+		UE::CoreUObject::Private::UpdateRenamedObject(this, NewName, NewOuter);
 #endif
 		LowLevelRename(NewName, NewOuter);
 	}
@@ -364,7 +397,29 @@ void UObject::PostLoad()
 #if WITH_EDITOR
 void UObject::PreEditChange(FProperty* PropertyAboutToChange)
 {
-	Modify(!GIsTransacting && !(PropertyAboutToChange && PropertyAboutToChange->HasAnyPropertyFlags(CPF_SkipSerialization)));
+	bool bShouldMarkAsDirty = true;
+
+	if (GIsTransacting)
+	{
+		// Don't mark the outer package as dirty during an undo/redo operation.
+		bShouldMarkAsDirty = false;
+	}
+	else if (PropertyAboutToChange && PropertyAboutToChange->HasAnyPropertyFlags(CPF_SkipSerialization))
+	{
+		// Don't mark the outer package as dirty if we're about to change a non-serializable property.
+		bShouldMarkAsDirty = false;
+	}
+	else
+	{
+		FPropagatedEditChangeAnnotation Annotation = PropagatedEditChangeAnnotation.GetAnnotation(this);
+		if (Annotation.bDeferredMarkAsDirty)
+		{
+			// Don't mark the outer package as dirty if annotated to be deferred (e.g. during propagation).
+			bShouldMarkAsDirty = false;
+		}
+	}
+
+	Modify(bShouldMarkAsDirty);
 }
 
 
@@ -517,10 +572,57 @@ void UObject::PropagatePreEditChange( TArray<UObject*>& AffectedObjects, FEditPr
 		}
 	}
 
+	check(PropertyAboutToChange.GetActiveMemberNode() != nullptr);
+	const FProperty* ChangedProperty = PropertyAboutToChange.GetActiveMemberNode()->GetValue();
+	FPropagatedEditChangeAnnotation Annotation = PropagatedEditChangeAnnotation.GetAnnotation(this);
+
+	// Determine if the changed property belongs to the archetype's class type (or a parent class).
+	// Note: IsChildOf() returns false for a NULL owner class (i.e. non-class struct type changes).
+	const bool bIsArchetypePropertyChange = GetClass()->IsChildOf(ChangedProperty->GetOwnerClass());
+
 	for ( int32 i = 0; i < Instances.Num(); i++ )
 	{
 		UObject* Obj = Instances[i];
 
+		// To defer marking instances as dirty, check to see if the instance
+		// matches the value stored in its archetype, and flag it if so. We'll
+		// use this later to determine if we need to mark the package as dirty,
+		// rather than always marking all affected archetype instances as dirty.
+		if (Annotation.bDeferredMarkAsDirty)
+		{
+			// Start with the assumption that the instance matches the archetype. In
+			// that case, we won't need to dirty the package after applying the change.
+			Annotation.bIdenticalToArchetype = true;
+
+			// If the property that was changed is not a member of the archetype's class
+			// type, then it means we're propagating a change event to instances without
+			// having also propagated the value change. Thus, there's nothing to compare
+			// in this case since we're not inferring dirty state from a property value.
+			if (bIsArchetypePropertyChange)
+			{
+				// Note that some elements may match and thus will propagate, but we may
+				// need to dirty the package later even if only one element differs here.
+				for (int32 ArrayIdx = 0; ArrayIdx < ChangedProperty->ArrayDim; ++ArrayIdx)
+				{
+					if (!ChangedProperty->Identical_InContainer(this, Obj, ArrayIdx, PPF_DeepComparison))
+					{
+						Annotation.bIdenticalToArchetype = false;
+						break;
+					}
+				}
+			}
+
+			// Determine if the package is already marked as dirty.
+			Annotation.bWasPackageDirtyOnEdit = Obj->GetPackage()->IsDirty();
+
+			// Temporarily annotate the instance for change propagation.
+			PropagatedEditChangeAnnotation.AddAnnotation(Obj, Annotation);
+		}
+
+		// Note: This test is not the same as the flag above - change propagation can
+		// be filtered via the event (e.g. container properties via the Property Editor).
+		// For most cases (i.e. non-container), all archetype instances will pass here,
+		// regardless of whether or not they differ from the default prior to the change.
 		if ( PropertyAboutToChange.IsArchetypeInstanceAffected(Obj) )
 		{
 			// this object must now be included in any undo/redo operations
@@ -556,11 +658,51 @@ void UObject::PropagatePostEditChange( TArray<UObject*>& AffectedObjects, FPrope
 	}
 
 	check(PropertyChangedEvent.PropertyChain.GetActiveMemberNode() != nullptr);
+	const FProperty* ChangedProperty = PropertyChangedEvent.PropertyChain.GetActiveMemberNode()->GetValue();
 
+	TSet<UPackage*> PackagesMarkedAsDirty;
 	for ( int32 i = 0; i < Instances.Num(); i++ )
 	{
 		UObject* Obj = Instances[i];
 
+		UPackage* Package = Obj->GetPackage();
+		check(Package);
+
+		// Deferred marking instances as dirty - if our previous value did not
+		// match the instance but now the current value does, we need to mark
+		// the package dirty to indicate to the user that it needs to be saved.
+		FPropagatedEditChangeAnnotation Annotation = PropagatedEditChangeAnnotation.GetAndRemoveAnnotation(Obj);
+		if (Annotation.bDeferredMarkAsDirty && !Annotation.bWasPackageDirtyOnEdit && !PackagesMarkedAsDirty.Contains(Package))
+		{
+			// Clear the dirty flag if the previous value matched the archetype and if
+			// the package was not already marked as dirty prior to change propagation.
+			const bool bIsPackageDirty = Package->IsDirty();
+			if (bIsPackageDirty && Annotation.bIdenticalToArchetype)
+			{
+				Package->SetDirtyFlag(false);
+			}
+			else if (!bIsPackageDirty && !Annotation.bIdenticalToArchetype)
+			{
+				// If any index matches, that element will no longer be delta-serialized,
+				// so we need to dirty the package. If the property has multiple entries
+				// and we arrived here, that means at least one element differed from its
+				// previous value in the source, but that may not be the one that changed.
+				for (int32 ArrayIdx = 0; ArrayIdx < ChangedProperty->ArrayDim; ++ArrayIdx)
+				{
+					if (ChangedProperty->Identical_InContainer(this, Obj, ArrayIdx, PPF_DeepComparison))
+					{
+						// Using this API so that we don't unnecessarily mark certain packages (e.g. transient).
+						Obj->MarkPackageDirty();
+						PackagesMarkedAsDirty.Add(Package);
+						break;
+					}
+				}
+			}
+		}
+
+		// Note: This is not the same as the flag above - change propagation can be
+		// filtered via the event (e.g. container properties via the Property Editor),
+		// but for most cases (i.e. non-container), all archetype instances pass here.
 		if ( PropertyChangedEvent.HasArchetypeInstanceChanged(Obj) )
 		{
 			// notify the object that all changes are complete
@@ -570,6 +712,13 @@ void UObject::PropagatePostEditChange( TArray<UObject*>& AffectedObjects, FPrope
 			Obj->PropagatePostEditChange(AffectedObjects, PropertyChangedEvent);
 		}
 	}
+}
+
+void UObject::SetEditChangePropagationFlags(EEditChangePropagationFlags InFlags)
+{
+	FPropagatedEditChangeAnnotation Annotation;
+	Annotation.bDeferredMarkAsDirty = !!(InFlags & EEditChangePropagationFlags::OnlyMarkRealignedInstancesAsDirty);
+	PropagatedEditChangeAnnotation.AddAnnotation(this, MoveTemp(Annotation));
 }
 
 void UObject::PreEditUndo()
@@ -868,10 +1017,10 @@ FString UObject::GetDetailedInfo() const
 
 #if WITH_ENGINE
 
-#if DO_CHECK
+#if DO_CHECK || WITH_EDITOR
 // Used to check to see if a derived class actually implemented GetWorld() or not
 thread_local bool bGetWorldOverridden = false;
-#endif
+#endif // #if DO_CHECK || WITH_EDITOR
 
 class UWorld* UObject::GetWorld() const
 {
@@ -880,7 +1029,7 @@ class UWorld* UObject::GetWorld() const
 		return Outer->GetWorld();
 	}
 
-#if DO_CHECK
+#if DO_CHECK || WITH_EDITOR
 	bGetWorldOverridden = false;
 #endif
 	return nullptr;
@@ -927,18 +1076,17 @@ class UWorld* UObject::GetWorldChecked(bool& bSupported) const
 	return World;
 }
 
+#if WITH_EDITOR
+
 bool UObject::ImplementsGetWorld() const
 {
-#if DO_CHECK
 	bGetWorldOverridden = true;
 	GetWorld();
 	return bGetWorldOverridden;
-#else
-	return true;
-#endif	
 }
 
-#endif
+#endif // #if WITH_EDITOR
+#endif // #if WITH_ENGINE
 
 #define PROFILE_ConditionalBeginDestroy (0)
 
@@ -1115,7 +1263,7 @@ void UObject::ConditionalPostLoad()
 				UE_SCOPED_COOK_STAT(Package->GetFName(), EPackageEventStatType::LoadPackage);
 				LLM_SCOPED_TAG_WITH_OBJECT_IN_SET(Package, ELLMTagSet::Assets);
 				LLM_SCOPED_TAG_WITH_OBJECT_IN_SET(GetClass(), ELLMTagSet::AssetClasses);
-				UE_TRACE_METADATA_SCOPE_ASSET(Package, GetClass());
+				UE_TRACE_METADATA_SCOPE_ASSET(this, GetClass());
 				TRACE_LOADTIME_POSTLOAD_OBJECT_SCOPE(this);
 				
 				PostLoad();
@@ -1260,7 +1408,12 @@ void UObject::PreSave(FObjectPreSaveContext SaveContext)
 #if WITH_EDITOR
 bool UObject::CanModify() const
 {
-	return (!HasAnyFlags(RF_NeedInitialization) && !IsGarbageCollecting() && !GExitPurge && !IsUnreachable());
+	return
+		!HasAnyFlags(RF_NeedInitialization) && !IsGarbageCollecting() && !GExitPurge && !IsUnreachable() &&
+		// Prevent modification while loading
+		!HasAnyInternalFlags(EInternalObjectFlags::Async | EInternalObjectFlags::AsyncLoading) &&
+		// Only the game-thread should be allowed to touch the transaction buffer at all
+		IsInGameThread();
 }
 
 bool UObject::Modify( bool bAlwaysMarkDirty/*=true*/ )
@@ -1269,32 +1422,33 @@ bool UObject::Modify( bool bAlwaysMarkDirty/*=true*/ )
 
 	if (CanModify())
 	{
-		// Only the game-thread should be allowed to touch the transaction buffer at all
-		if (!HasAnyInternalFlags(EInternalObjectFlags::Async | EInternalObjectFlags::AsyncLoading) && IsInGameThread())
+		// Do not consider script packages, as they should never end up in the
+		// transaction buffer and we don't want to mark them dirty here either.
+		// We do want to consider PIE objects however
+		if (GetOutermost()->HasAnyPackageFlags(PKG_ContainsScript | PKG_CompiledIn) == false || GetClass()->HasAnyClassFlags(CLASS_DefaultConfig | CLASS_Config))
 		{
-			// Do not consider script packages, as they should never end up in the
-			// transaction buffer and we don't want to mark them dirty here either.
-			// We do want to consider PIE objects however
-			if (GetOutermost()->HasAnyPackageFlags(PKG_ContainsScript | PKG_CompiledIn) == false || GetClass()->HasAnyClassFlags(CLASS_DefaultConfig | CLASS_Config))
+			// Attempt to mark the package dirty and save a copy of the object to the transaction
+			// buffer. The save will fail if there isn't a valid transactor, the object isn't
+			// transactional, etc.
+			bSavedToTransactionBuffer = SaveToTransactionBuffer(this, bAlwaysMarkDirty);
+
+			// If we failed to save to the transaction buffer, but the user requested the package
+			// marked dirty anyway, do so
+			if (!bSavedToTransactionBuffer && bAlwaysMarkDirty)
 			{
-				// Attempt to mark the package dirty and save a copy of the object to the transaction
-				// buffer. The save will fail if there isn't a valid transactor, the object isn't
-				// transactional, etc.
-				bSavedToTransactionBuffer = SaveToTransactionBuffer(this, bAlwaysMarkDirty);
-
-				// If we failed to save to the transaction buffer, but the user requested the package
-				// marked dirty anyway, do so
-				if (!bSavedToTransactionBuffer && bAlwaysMarkDirty)
-				{
-					MarkPackageDirty();
-				}
+				MarkPackageDirty();
 			}
-
-			FCoreUObjectDelegates::BroadcastOnObjectModified(this);
 		}
+
+		FCoreUObjectDelegates::BroadcastOnObjectModified(this);
 	}
 
 	return bSavedToTransactionBuffer;
+}
+
+bool UObject::IsCapturingAsRootObjectForTransaction() const
+{
+	return false;
 }
 #endif
 
@@ -1353,7 +1507,9 @@ void UObject::Serialize(FStructuredArchive::FRecord Record)
 	bool bReportSoftObjectPathRedirects = false;
 
 	{
-		TGuardValue<bool*> GuardValue(
+		// TOptionalGuardValue will not overwrite the value if it remains the same.
+		// This is important for TSAN as we only want warnings if this unprotected value is changing.
+		TOptionalGuardValue<bool*> GuardValue(
 			GReportSoftObjectPathRedirects,
 			  GReportSoftObjectPathRedirects
 			? GReportSoftObjectPathRedirects
@@ -1456,28 +1612,6 @@ void UObject::Serialize(FStructuredArchive::FRecord Record)
 		if (ObjClass != UClass::StaticClass())
 		{
 			SerializeScriptProperties(Record.EnterField(TEXT("Properties")));
-		}
-
-		// Keep track of pending kill
-		if (UnderlyingArchive.IsTransacting())
-		{
-			bool WasKill = !IsValidChecked(this);
-			if (UnderlyingArchive.IsLoading())
-			{
-				Record << SA_VALUE(TEXT("WasKill"), WasKill);
-				if (WasKill)
-				{
-					MarkAsGarbage();
-				}
-				else
-				{
-					ClearGarbage();
-				}
-			}
-			else if (UnderlyingArchive.IsSaving())
-			{
-				Record << SA_VALUE(TEXT("WasKill"), WasKill);
-			}
 		}
 
 		// Keep track of transient
@@ -2007,6 +2141,7 @@ const FName FPrimaryAssetId::PrimaryAssetNameTag(TEXT("PrimaryAssetName"));
 void UObject::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 {
 	using namespace UE::Object::Private;
+	UE::Core::Private::FPlayInEditorLoadingScope Scope(INDEX_NONE);
 
 	// Add primary asset info if valid
 	FPrimaryAssetId PrimaryAssetId = GetPrimaryAssetId();
@@ -2052,6 +2187,9 @@ void UObject::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 #if WITH_EDITOR
 void UObject::GetExtendedAssetRegistryTagsForSave(const ITargetPlatform* TargetPlatform, TArray<FAssetRegistryTag>& OutTags) const
 {
+	// Notify external sources that we need tags for save.
+	FAssetRegistryTag::OnGetExtendedAssetRegistryTagsForSave.Broadcast(this, TargetPlatform, OutTags);
+
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	GetExternalActorExtendedAssetRegistryTags(OutTags);
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
@@ -2225,8 +2363,8 @@ bool UObject::IsAsset() const
 		// Don't count objects embedded in other objects (e.g. font textures, sequences, material expressions)
 		if ( UPackage* LocalOuterPackage = dynamic_cast<UPackage*>(GetOuter()) )
 		{
-			// Also exclude any objects found in the transient package, or in a package that is transient.
-			return LocalOuterPackage != GetTransientPackage() && !LocalOuterPackage->HasAnyFlags(RF_Transient);
+			// Also exclude any objects found in the transient package, in a package that is transient or in a play in editor package.
+			return LocalOuterPackage != GetTransientPackage() && !LocalOuterPackage->HasAnyFlags(RF_Transient) && !LocalOuterPackage->HasAnyPackageFlags(PKG_PlayInEditor);
 		}
 	}
 
@@ -2307,20 +2445,46 @@ void UObject::ReloadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilenam
 #if !UE_BUILD_SHIPPING
 void CheckMissingSection(const FString& SectionName, const FString& IniFilename)
 {
-	static TSet<FString> MissingSections;
-	FConfigSection* Sec = GConfig->GetSectionPrivate(*SectionName, false, true, *IniFilename);
-	if (!Sec && MissingSections.Contains(SectionName) == false)
+	// Apply lock striping to reduce contention.
+	constexpr int32 MISSINGSECTIONS_BUCKETS = 31; /* prime number for best distribution using modulo */
+
+	struct FMissingSections
 	{
-		FString ShortSectionName = FPackageName::GetShortName(SectionName);
-		if (ShortSectionName != SectionName)
+		FRWLock Lock;
+		TSet<FString> Sections;
+	};
+	static FMissingSections MissingSections[MISSINGSECTIONS_BUCKETS];
+
+	FConfigSection* Sec = GConfig->GetSectionPrivate(*SectionName, false, true, *IniFilename);
+
+	if (Sec == nullptr)
+	{
+		const uint32 SectionNameHash = GetTypeHash(SectionName);
+		FMissingSections& Bucket = MissingSections[SectionNameHash % MISSINGSECTIONS_BUCKETS];
+
 		{
-			Sec = GConfig->GetSectionPrivate(*ShortSectionName, false, true, *IniFilename);
-			if (Sec != NULL)
+			FReadScopeLock ScopeLock(Bucket.Lock);
+			if (Bucket.Sections.ContainsByHash(SectionNameHash, SectionName))
 			{
-				UE_LOG(LogObj, Fatal, TEXT("Short class section names (%s) are not supported, please use long name: %s"), *ShortSectionName, *SectionName);
+				return;
 			}
 		}
-		MissingSections.Add(SectionName);		
+
+		FWriteScopeLock ScopeLock(Bucket.Lock);
+
+		if (Bucket.Sections.ContainsByHash(SectionNameHash, SectionName) == false)
+		{
+			FString ShortSectionName = FPackageName::GetShortName(SectionName);
+			if (ShortSectionName != SectionName)
+			{
+				Sec = GConfig->GetSectionPrivate(*ShortSectionName, false, true, *IniFilename);
+				if (Sec != nullptr)
+				{
+					UE_LOG(LogObj, Fatal, TEXT("Short class section names (%s) are not supported, please use long name: %s"), *ShortSectionName, *SectionName);
+				}
+			}
+			Bucket.Sections.AddByHash(SectionNameHash, SectionName);
+		}
 	}
 }
 #endif
@@ -2330,7 +2494,7 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 	SCOPE_CYCLE_COUNTER(STAT_LoadConfig);
 
 	// OriginalClass is the class that LoadConfig() was originally called on
-	static UClass* OriginalClass = NULL;
+	static thread_local UClass* OriginalClass = nullptr;
 
 	if( !ConfigClass )
 	{
@@ -3359,7 +3523,7 @@ void UObject::RetrieveReferencers( TArray<FReferencerInformation>* OutInternalRe
 				{
 					// manually allocate just one element - much slower but avoids slack which improves success rate on consoles
 					OutInternalReferencers->Reserve(OutInternalReferencers->Num() + 1);
-					new(*OutInternalReferencers) FReferencerInformation(Object, Count, Referencers);
+					OutInternalReferencers->Emplace(Object, Count, Referencers);
 				}
 			}
 			else
@@ -3368,7 +3532,7 @@ void UObject::RetrieveReferencers( TArray<FReferencerInformation>* OutInternalRe
 				{
 					// manually allocate just one element - much slower but avoids slack which improves success rate on consoles
 					OutExternalReferencers->Reserve(OutExternalReferencers->Num() + 1);
-					new(*OutExternalReferencers) FReferencerInformation(Object, Count, Referencers);
+					OutExternalReferencers->Emplace(Object, Count, Referencers);
 				}
 			}
 		}
@@ -3751,13 +3915,13 @@ bool StaticExec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 				{
 					if (AsteriskPos != INDEX_NONE && (QuestionPos == INDEX_NONE || QuestionPos > AsteriskPos))
 					{
-						new(WildcardPieces) FListPropsWildcardPiece(PropWildcard.Left(AsteriskPos), true);
+						WildcardPieces.Emplace(PropWildcard.Left(AsteriskPos), true);
 						PropWildcard.RightInline(PropWildcard.Len() - AsteriskPos - 1, false);
 						bFound = true;
 					}
 					else if (QuestionPos != INDEX_NONE)
 					{
-						new(WildcardPieces) FListPropsWildcardPiece(PropWildcard.Left(QuestionPos), false);
+						WildcardPieces.Emplace(PropWildcard.Left(QuestionPos), false);
 						PropWildcard.RightInline(PropWildcard.Len() - QuestionPos - 1, false);
 						bFound = true;
 					}
@@ -3766,7 +3930,7 @@ bool StaticExec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 			bool bEndedInConstant = (PropWildcard.Len() > 0);
 			if (bEndedInConstant)
 			{
-				new(WildcardPieces) FListPropsWildcardPiece(PropWildcard, false);
+				WildcardPieces.Emplace(PropWildcard, false);
 			}
 
 			// search for matches
@@ -4367,6 +4531,14 @@ bool StaticExec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 					{
 						SearchModeFlags |= EReferenceChainSearchMode::FullChain;
 					}
+					else if (FCString::Stricmp(*Tok, TEXT("minimal")) == 0)
+					{
+						SearchModeFlags |= EReferenceChainSearchMode::Minimal;
+					}
+					else if (FCString::Stricmp(*Tok, TEXT("gconly")) == 0)
+					{
+						SearchModeFlags |= EReferenceChainSearchMode::GCOnly;
+					}
 #if ENABLE_GC_HISTORY
 					else if (FParse::Value(Str, TEXT("history="), HistoryLevel))
 					{
@@ -4817,7 +4989,7 @@ void InitUObject()
 	FModuleManager::Get().IsPackageLoadedCallback().BindStatic(Local::IsPackageLoaded);
 	
 	FCoreDelegates::NewFileAddedDelegate.AddStatic(FLinkerLoad::OnNewFileAdded);
-	FCoreDelegates::OnPakFileMounted2.AddStatic(FLinkerLoad::OnPakFileMounted);
+	FCoreDelegates::GetOnPakFileMounted2().AddStatic(FLinkerLoad::OnPakFileMounted);
 
 	// Object initialization.
 	StaticUObjectInit();
@@ -4834,13 +5006,16 @@ void StaticUObjectInit()
 	GObjTransientPkg = NewObject<UPackage>(nullptr, TEXT("/Engine/Transient"), RF_Transient);
 	GObjTransientPkg->AddToRoot();
 
-	if( FParse::Param( FCommandLine::Get(), TEXT("VERIFYGC") ) )
+	if (IConsoleVariable* CVarVerifyGCAssumptions = IConsoleManager::Get().FindConsoleVariable(TEXT("gc.VerifyAssumptions")))
 	{
-		GShouldVerifyGCAssumptions = true;
-	}
-	if( FParse::Param( FCommandLine::Get(), TEXT("NOVERIFYGC") ) )
-	{
-		GShouldVerifyGCAssumptions = false;
+		if( FParse::Param( FCommandLine::Get(), TEXT("VERIFYGC") ) )
+		{
+			CVarVerifyGCAssumptions->Set(true, ECVF_SetByCommandline);
+		}
+		if( FParse::Param( FCommandLine::Get(), TEXT("NOVERIFYGC") ) )
+		{
+			CVarVerifyGCAssumptions->Set(false, ECVF_SetByCommandline);
+		}
 	}
 
 	UE_LOG(LogInit, Log, TEXT("Object subsystem initialized") );
@@ -5062,8 +5237,18 @@ EDataValidationResult UObject::IsDataValid(TArray<FText>& ValidationErrors)
 
 EDataValidationResult UObject::IsDataValid(FDataValidationContext& Context)
 {
+	// Call the const version
+	return const_cast<const UObject*>(this)->IsDataValid(Context);
+}
+
+EDataValidationResult UObject::IsDataValid(FDataValidationContext& Context) const
+{
 	TArray<FText> ValidationErrors;
-	const EDataValidationResult Result = IsDataValid(ValidationErrors);
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	// Call the old deprecated TArray<FText> version
+	const EDataValidationResult Result = const_cast<UObject*>(this)->IsDataValid(ValidationErrors);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	for (const FText& Text : ValidationErrors)
 	{

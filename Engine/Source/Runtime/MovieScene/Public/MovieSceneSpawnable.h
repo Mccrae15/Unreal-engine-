@@ -5,6 +5,8 @@
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "Misc/Guid.h"
+#include "MovieSceneDynamicBinding.h"
+
 #include "MovieSceneSpawnable.generated.h"
 
 struct FMovieSceneSequenceID;
@@ -36,7 +38,6 @@ struct FMovieSceneSpawnable
 	FMovieSceneSpawnable()
 		: bContinuouslyRespawn(false)
 		, bNetAddressableName(false)
-		, bEvaluateTracksWhenNotSpawned(false)
 		, ObjectTemplate(nullptr)
 		, Ownership(ESpawnOwnership::InnerSequence)
 #if WITH_EDITORONLY_DATA
@@ -49,7 +50,6 @@ struct FMovieSceneSpawnable
 	FMovieSceneSpawnable(const FString& InitName, UObject& InObjectTemplate)
 		: bContinuouslyRespawn(false)
 		, bNetAddressableName(false)
-		, bEvaluateTracksWhenNotSpawned(false)
 		, Guid(FGuid::NewGuid())
 		, Name(InitName)
 		, ObjectTemplate(&InObjectTemplate)
@@ -249,9 +249,9 @@ public:
 	UPROPERTY(EditAnywhere, Category=Actor)
 	bool bNetAddressableName;
 
-	/** When enabled, any tracks on this object binding or its children will still be evaluated even when the object is not spawned. */
-	UPROPERTY(EditAnywhere, Category=Actor)
-	bool bEvaluateTracksWhenNotSpawned;
+	/** Optional user-defined spawning information */
+	UPROPERTY(EditAnywhere, Category="Sequencer")
+	FMovieSceneDynamicBinding DynamicBinding;
 
 private:
 

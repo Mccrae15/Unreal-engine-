@@ -16,20 +16,20 @@ class ANIMGRAPH_API UAnimGraphNode_PoseDriver : public UAnimGraphNode_PoseHandle
 {
 	GENERATED_UCLASS_BODY()
 
-		UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Settings)
-		FAnimNode_PoseDriver Node;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Settings)
+	FAnimNode_PoseDriver Node;
 
 	/** Length of axis in world units used for debug drawing */
 	UPROPERTY(EditAnywhere, Category = Debugging, meta = (DefaultValue = "20.0", UIMin = "1.0", UIMax = "100.0"))
-		float AxisLength;
+	float AxisLength;
 
 	/** Number of subdivisions / lines used when debug drawing a cone */
 	UPROPERTY(EditAnywhere, Category = Debugging, meta = (DefaultValue = "32", UIMin = "6", UIMax = "128"))
-		int32 ConeSubdivision;
+	int32 ConeSubdivision;
 
 	/** If checked the cones will be drawn in 3d for debugging */
 	UPROPERTY(EditAnywhere, Category = Debugging, meta = (DefaultValue = "True"))
-		bool bDrawDebugCones;
+	bool bDrawDebugCones;
 
 	/** Used to indicate selected target to edit mode drawing */
 	int32 SelectedTargetIndex;
@@ -85,17 +85,6 @@ public:
 	UFUNCTION(BlueprintPure, Category=PoseDriver)
 	EPoseDriverOutput& GetPoseDriverOutput();
 	
-	/**  */
-	UFUNCTION(BlueprintCallable, Category=PoseDriver)
-	void SetOnlyDriveSelectedBones(bool bOnlyDriveSelectedBones);
-
-	/**  */
-	UFUNCTION(BlueprintPure, Category=PoseDriver)
-	bool GetOnlyDriveSelectedBones();
-
-
-	
-
 	/** Automatically modify TargetScale for each PoseTarget, based on distance to nearest neighbor */
 	void AutoSetTargetScales(float& OutMaxDistance);
 

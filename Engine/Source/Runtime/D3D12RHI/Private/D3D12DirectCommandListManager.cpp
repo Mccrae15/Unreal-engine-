@@ -3,8 +3,6 @@
 #include "D3D12RHIPrivate.h"
 #include "Windows.h"
 
-extern bool D3D12RHI_ShouldCreateWithD3DDebug();
-
 TLockFreePointerListUnordered<void, PLATFORM_CACHE_LINE_SIZE> FD3D12SyncPoint::MemoryPool;
 
 FD3D12GPUFence::FD3D12GPUFence(FName InName)
@@ -104,6 +102,32 @@ void FD3D12DynamicRHI::RHIUnlockStagingBuffer(FRHIStagingBuffer* StagingBufferRH
 	FD3D12StagingBuffer* StagingBuffer = FD3D12DynamicRHI::ResourceCast(StagingBufferRHI);
 	check(StagingBuffer);
 	StagingBuffer->Unlock();
+}
+
+FD3D12StagingBuffer::~FD3D12StagingBuffer()
+{
+	ResourceLocation.Clear();
+}
+
+void* FD3D12StagingBuffer::Lock(uint32 Offset, uint32 NumBytes)
+{
+	check(!bIsLocked);
+	bIsLocked = true;
+	if (ResourceLocation.IsValid())
+	{
+		// readback resource are kept mapped after creation
+		return reinterpret_cast<uint8*>(ResourceLocation.GetMappedBaseAddress()) + Offset;
+	}
+	else
+	{
+		return nullptr;
+	}
+}
+
+void FD3D12StagingBuffer::Unlock()
+{
+	check(bIsLocked);
+	bIsLocked = false;
 }
 
 // =============================================================================

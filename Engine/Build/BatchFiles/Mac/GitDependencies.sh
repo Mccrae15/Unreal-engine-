@@ -10,11 +10,13 @@ fi
 
 cd "$(dirname "$SCRIPT_PATH")" && SCRIPT_PATH="`pwd`/$(basename "$SCRIPT_PATH")"
 
-"$(dirname "$SCRIPT_PATH")/SetupDotnet.sh"
-
 cd ../../../..
 
-./Engine/Binaries/DotNET/GitDependencies/osx-x64/GitDependencies "$@"
+# Select the preferred architecture for the current system
+ARCH=x64
+[ $(uname -m) == "arm64" ] && ARCH=arm64 
+
+./Engine/Binaries/DotNET/GitDependencies/osx-$ARCH/GitDependencies "$@"
 
 pushd "$(dirname "$SCRIPT_PATH")" > /dev/null
 sh FixDependencyFiles.sh

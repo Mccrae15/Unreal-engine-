@@ -75,7 +75,7 @@ namespace Chaos
 	 */
 	struct FAllBreakingData : public FTimeResource
 	{
-		FAllBreakingData() : AllBreakingsArray(FBreakingDataArray()) {}
+		FAllBreakingData() : AllBreakingsArray(FBreakingDataArray()), bHasGlobalEvent(false) {}
 
 		void Reset()
 		{
@@ -83,6 +83,7 @@ namespace Chaos
 		}
 
 		FBreakingDataArray AllBreakingsArray;
+		bool bHasGlobalEvent;
 	};
 
 	struct FBreakingEventData
@@ -157,7 +158,7 @@ namespace Chaos
 	*/
 	struct FAllCrumblingData : public FTimeResource
 	{
-		FAllCrumblingData() : AllCrumblingsArray(FCrumblingDataArray()) {}
+		FAllCrumblingData() : AllCrumblingsArray(FCrumblingDataArray()), bHasGlobalEvent(false) {}
 
 		void Reset()
 		{
@@ -165,6 +166,7 @@ namespace Chaos
 		}
 
 		FCrumblingDataArray AllCrumblingsArray;
+		bool bHasGlobalEvent;
 	};
 
 	struct FCrumblingEventData
@@ -197,4 +199,80 @@ namespace Chaos
 		FAllCrumblingData CrumblingData;
 		FIndicesByPhysicsProxy PhysicsProxyToCrumblingIndices;
 	};
+
+	template<typename PayloadType>
+	bool IsEventDataEmpty(const PayloadType* Buffer)
+	{
+		if (!Buffer)
+		{
+			return false;
+		}
+
+		if constexpr (std::is_same_v<PayloadType, FCollisionEventData>)
+		{
+			return Buffer->CollisionData.AllCollisionsArray.IsEmpty();
+		}
+		else if constexpr (std::is_same_v<PayloadType, FBreakingEventData>)
+		{
+			return Buffer->BreakingData.AllBreakingsArray.IsEmpty();
+		}
+		else if constexpr (std::is_same_v<PayloadType, FTrailingEventData>)
+		{
+			return Buffer->TrailingData.AllTrailingsArray.IsEmpty();
+		}
+		else if constexpr (std::is_same_v<PayloadType, FRemovalEventData>)
+		{
+			return Buffer->RemovalData.AllRemovalArray.IsEmpty();
+		}
+		else if constexpr (std::is_same_v<PayloadType, FSleepingEventData>)
+		{
+			return Buffer->SleepingData.IsEmpty();
+		}
+		else if constexpr (std::is_same_v<PayloadType, FCrumblingEventData>)
+		{
+			return Buffer->CrumblingData.AllCrumblingsArray.IsEmpty();
+		}
+		else
+		{
+			return false;
+		}
+	}
+	
+	template<typename PayloadType>
+	const TMap<IPhysicsProxyBase*, TArray<int32>>* GetProxyToIndexMap(const PayloadType* Buffer)
+	{
+		if (!Buffer)
+		{
+			return nullptr;
+		}
+
+		if constexpr (std::is_same_v<PayloadType, FCollisionEventData>)
+		{
+			return &Buffer->PhysicsProxyToCollisionIndices.PhysicsProxyToIndicesMap;
+		}
+		else if constexpr (std::is_same_v<PayloadType, FBreakingEventData>)
+		{
+			return &Buffer->PhysicsProxyToBreakingIndices.PhysicsProxyToIndicesMap;
+		}
+		else if constexpr (std::is_same_v<PayloadType, FTrailingEventData>)
+		{
+			return nullptr; //&Buffer->PhysicsProxyToTrailingIndices.PhysicsProxyToIndicesMap;
+		}
+		else if constexpr (std::is_same_v<PayloadType, FRemovalEventData>)
+		{
+			return &Buffer->PhysicsProxyToRemovalIndices.PhysicsProxyToIndicesMap;
+		}
+		else if constexpr (std::is_same_v<PayloadType, FSleepingEventData>)
+		{
+			return nullptr;
+		}
+		else if constexpr (std::is_same_v<PayloadType, FCrumblingEventData>)
+		{
+			return &Buffer->PhysicsProxyToCrumblingIndices.PhysicsProxyToIndicesMap;
+		}
+		else
+		{
+			return nullptr;
+		}
+	}
 }

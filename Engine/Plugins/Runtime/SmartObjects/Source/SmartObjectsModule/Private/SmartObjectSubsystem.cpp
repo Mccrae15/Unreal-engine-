@@ -3,12 +3,18 @@
 #include "SmartObjectSubsystem.h"
 #include "Math/ColorList.h"
 #include "SmartObjectComponent.h"
+#include "SmartObjectUserComponent.h"
+#include "SmartObjectTypes.h"
 #include "EngineUtils.h"
-#include "MassCommandBuffer.h"
-#include "MassEntitySubsystem.h"
 #include "SmartObjectHashGrid.h"
+#include "WorldConditionContext.h"
 #include "VisualLogger/VisualLogger.h"
 #include "Engine/LevelStreaming.h"
+#include "NavigationSystem.h"
+#include "AI/Navigation/NavigationTypes.h"
+#include "Annotations/SmartObjectSlotEntranceAnnotation.h"
+#include "Annotations/SmartObjectAnnotation_SlotUserCollision.h"
+#include "Misc/EnumerateRange.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SmartObjectSubsystem)
 
@@ -27,7 +33,6 @@
 #if WITH_EDITORONLY_DATA
 #include "SmartObjectCollection.h"
 #endif // WITH_EDITORONLY_DATA
-
 
 namespace UE::SmartObject
 {
@@ -70,6 +75,7 @@ namespace UE::SmartObject
 		);
 	} // UE::SmartObject::Debug
 #endif // WITH_SMARTOBJECT_DEBUG
+
 } // UE::SmartObject
 
 //----------------------------------------------------------------------//
@@ -78,7 +84,6 @@ namespace UE::SmartObject
 USmartObjectSubsystem::USmartObjectSubsystem()
 	: SmartObjectContainer(this)
 {
-	
 }
 
 void USmartObjectSubsystem::OnWorldComponentsUpdated(UWorld& World)
@@ -91,7 +96,7 @@ void USmartObjectSubsystem::OnWorldComponentsUpdated(UWorld& World)
 	UE_CVLOG_UELOG(!SpacePartitionClassName.IsValid(), this, LogSmartObject, Error, TEXT("A valid space partition class name is required."));
 	if (SpacePartitionClassName.IsValid())
 	{
-		SpacePartitionClass = LoadClass<USmartObjectSpacePartition>(this, *SpacePartitionClassName.ToString());
+		SpacePartitionClass = LoadClass<USmartObjectSpacePartition>(nullptr, *SpacePartitionClassName.ToString());
 		UE_CVLOG_UELOG(*SpacePartitionClass == nullptr, this, LogSmartObject, Error, TEXT("Unable to load class %s"), *SpacePartitionClassName.ToString());
 	}
 
@@ -135,33 +140,43 @@ USmartObjectSubsystem* USmartObjectSubsystem::GetCurrent(const UWorld* World)
 	return UWorld::GetSubsystem<USmartObjectSubsystem>(World);
 }
 
-FSmartObjectRuntime* USmartObjectSubsystem::AddComponentToSimulation(USmartObjectComponent& SmartObjectComponent, const FSmartObjectCollectionEntry& NewEntry, const bool bCommitChanges)
+FSmartObjectRuntime* USmartObjectSubsystem::AddComponentToSimulation(
+	USmartObjectComponent& SmartObjectComponent,
+	const FSmartObjectCollectionEntry& NewEntry
+	)
 {
 	checkf(SmartObjectComponent.GetDefinition() != nullptr, TEXT("Shouldn't reach this point with an invalid definition asset"));
-	return AddCollectionEntryToSimulation(NewEntry, *SmartObjectComponent.GetDefinition(), &SmartObjectComponent, bCommitChanges);
+
+	FSmartObjectRuntime* SmartObjectRuntime = AddCollectionEntryToSimulation(NewEntry, *SmartObjectComponent.GetDefinition(), &SmartObjectComponent);
+	if (SmartObjectRuntime != nullptr)
+	{
+		BindComponentToSimulationInternal(SmartObjectComponent, *SmartObjectRuntime);
+	}
+	return SmartObjectRuntime;
 }
 
 void USmartObjectSubsystem::BindComponentToSimulation(USmartObjectComponent& SmartObjectComponent)
 {
 	ensureMsgf(SmartObjectComponent.GetRegisteredHandle().IsValid(), TEXT("%s expects input SmartObjectComponent to be already registered."), ANSI_TO_TCHAR(__FUNCTION__));
 
+	// Notify the component to bind to its runtime counterpart
 	FSmartObjectRuntime* SmartObjectRuntime = RuntimeSmartObjects.Find(SmartObjectComponent.GetRegisteredHandle());
 	if (ensureMsgf(SmartObjectRuntime != nullptr, TEXT("Binding a component should only be used when an associated runtime instance exists.")))
 	{
-		// It is possible that the component is already linked to the runtime instance when the collection entry was initially added.
-		// No need to set and log in this case
-		if (!SmartObjectRuntime->OwnerComponent.IsValid())			
-		{
-			SmartObjectRuntime->OwnerComponent = &SmartObjectComponent;
-			UE_VLOG_UELOG(this, LogSmartObject, Verbose, TEXT("SmartObjectComponent %s bound to simulation."), *GetFullNameSafe(&SmartObjectComponent));			
-		}
-		else
-		{
-			ensureMsgf(SmartObjectRuntime->OwnerComponent == &SmartObjectComponent,
-			TEXT("Different OwnerComponent (was %s) when binding SmartObjectComponent %s. This might indicate multiple objects using the same handle."),
-				*GetFullNameSafe(SmartObjectRuntime->OwnerComponent.Get()), *GetFullNameSafe(&SmartObjectComponent));
-		}
+		BindComponentToSimulationInternal(SmartObjectComponent, *SmartObjectRuntime);
 	}
+}
+
+void USmartObjectSubsystem::BindComponentToSimulationInternal(USmartObjectComponent& SmartObjectComponent, FSmartObjectRuntime& SmartObjectRuntime)
+{
+	// It is possible that the component is already linked to the runtime instance when the collection entry was initially added.
+	ensureMsgf(!SmartObjectRuntime.OwnerComponent.IsValid() || SmartObjectRuntime.OwnerComponent == &SmartObjectComponent,
+		TEXT("Different OwnerComponent (was %s) when binding SmartObjectComponent %s. This might indicate multiple objects using the same handle."),
+			*GetFullNameSafe(SmartObjectRuntime.OwnerComponent.Get()), *GetFullNameSafe(&SmartObjectComponent));
+
+	SmartObjectRuntime.OwnerComponent = &SmartObjectComponent;
+	SmartObjectComponent.OnRuntimeInstanceBound(SmartObjectRuntime);
+	UE_VLOG_UELOG(this, LogSmartObject, Verbose, TEXT("SmartObjectComponent %s bound to simulation."), *GetFullNameSafe(&SmartObjectComponent));
 }
 
 void USmartObjectSubsystem::UnbindComponentFromSimulation(USmartObjectComponent& SmartObjectComponent)
@@ -179,11 +194,15 @@ void USmartObjectSubsystem::UnbindComponentFromSimulation(USmartObjectComponent&
 
 void USmartObjectSubsystem::UnbindComponentFromSimulationInternal(USmartObjectComponent& SmartObjectComponent, FSmartObjectRuntime& SmartObjectRuntime)
 {
-	SmartObjectComponent.InvalidateRegisteredHandle();
+	SmartObjectComponent.OnRuntimeInstanceUnbound(SmartObjectRuntime);
 	SmartObjectRuntime.OwnerComponent = nullptr;
 }
 
-FSmartObjectRuntime* USmartObjectSubsystem::AddCollectionEntryToSimulation(const FSmartObjectCollectionEntry& Entry, const USmartObjectDefinition& Definition, USmartObjectComponent* OwnerComponent, const bool bCommitChanges)
+FSmartObjectRuntime* USmartObjectSubsystem::AddCollectionEntryToSimulation(
+	const FSmartObjectCollectionEntry& Entry,
+	const USmartObjectDefinition& Definition,
+	USmartObjectComponent* OwnerComponent
+	)
 {
 	const FSmartObjectHandle Handle = Entry.GetHandle();
 	const FTransform& Transform = Entry.GetTransform();
@@ -198,11 +217,6 @@ FSmartObjectRuntime* USmartObjectSubsystem::AddCollectionEntryToSimulation(const
 	// @todo temporarily commenting out the ensure while the proper fix is being developed.
 	//if (!ensureMsgf(RuntimeSmartObjects.Find(Handle) == nullptr, TEXT("Handle '%s' already registered in runtime simulation"), *LexToString(Handle)))
 	if (RuntimeSmartObjects.Find(Handle) != nullptr)
-	{
-		return nullptr;
-	}
-
-	if (!ensureMsgf(EntityManager, TEXT("Entity subsystem required to add a smartobject to the simulation")))
 	{
 		return nullptr;
 	}
@@ -236,54 +250,38 @@ FSmartObjectRuntime* USmartObjectSubsystem::AddCollectionEntryToSimulation(const
 	int32 SlotIndex = 0;
 	const USmartObjectWorldConditionSchema* DefaultWorldConditionSchema = GetDefault<USmartObjectWorldConditionSchema>();
 
+	Runtime.Slots.Reserve(Definition.GetSlots().Num());
+	
 	for (const FSmartObjectSlotDefinition& SlotDefinition : Definition.GetSlots())
 	{
-		// Build our shared fragment
-		FMassArchetypeSharedFragmentValues SharedFragmentValues;
-		
-		const uint32 Hash = HashCombine(Definition.GetUniqueID(), SlotIndex);
-		FConstSharedStruct& SharedFragment = EntityManager->GetOrCreateSharedFragmentByHash<FSmartObjectSlotDefinitionFragment>(Hash, Definition, SlotDefinition);
-		
-		SharedFragmentValues.AddConstSharedFragment(SharedFragment);
+		FSmartObjectRuntimeSlot& Slot = Runtime.Slots.AddDefaulted_GetRef();
 
-		FSmartObjectSlotTransform TransformFragment;
-		TOptional<FTransform> OptionalTransform = Definition.GetSlotTransform(Transform, FSmartObjectSlotIndex(SlotIndex));
-		TransformFragment.SetTransform(OptionalTransform.Get(Transform));
-
-		const FMassEntityHandle EntityHandle = EntityManager->ReserveEntity();
-		EntityManager->Defer().PushCommand<FMassCommandBuildEntityWithSharedFragments>(EntityHandle, MoveTemp(SharedFragmentValues), TransformFragment);
-
-		FSmartObjectSlotHandle SlotHandle(EntityHandle);
-		
-		FSmartObjectRuntimeSlot& Slot = RuntimeSlots.Add(SlotHandle, FSmartObjectRuntimeSlot(Handle, SlotIndex));
 		// Setup initial state from slot definition and current object state
+		Slot.Offset = SlotDefinition.Offset;
+		Slot.Rotation = SlotDefinition.Rotation;
 		Slot.bSlotEnabled = SlotDefinition.bEnabled;
-		Slot.bObjectEnabled = Runtime.IsEnabled();
 		Slot.Tags = SlotDefinition.RuntimeTags;
+		Slot.bObjectEnabled = Runtime.IsEnabled();
 
 		// Always initialize state (handles empty conditions)
 		Slot.PreconditionState.Initialize(*this, SlotDefinition.SelectionPreconditions);
 
+		FSmartObjectSlotHandle SlotHandle(Handle, SlotIndex);
+		
 		// Activate slot Preconditions if any
-		ensureMsgf(ConditionContextData.SetContextData(DefaultWorldConditionSchema->GetSlotHandleRef(), &SlotHandle), TEXT("Expecting USmartObjectWorldConditionSchema::SlotHandleRef to be valid."));
+		ensureMsgf(ConditionContextData.SetContextData(DefaultWorldConditionSchema->GetSlotHandleRef(), &SlotHandle),
+			TEXT("Expecting USmartObjectWorldConditionSchema::SlotHandleRef to be valid."));
 
 		const FWorldConditionContext SlotContext(Slot.PreconditionState, ConditionContextData);
 		if (!SlotContext.Activate())
 		{
-			UE_VLOG_UELOG(this, LogSmartObject, Error, TEXT("Failed to activate Preconditions on SmartObject '%s' slot '%s'."), *LexToString(Handle), *LexToString(SlotHandle));
+			UE_VLOG_UELOG(this, LogSmartObject, Error,
+				TEXT("Failed to activate Preconditions on SmartObject '%s' slot '%s'."), *LexToString(Handle), *LexToString(SlotHandle));
 		}
 		
-		Runtime.SlotHandles[SlotIndex] = SlotHandle;
 		SlotIndex++;
 	}
 	
-	if (bCommitChanges)
-	{
-		// This is the temporary way to force our commands to be processed until MassEntitySubsystem
-		// offers a threadsafe solution to push and flush commands in our own execution context.
-		EntityManager->FlushCommands();
-	}
-
 	// Transfer spatial information to the runtime instance
 	Runtime.SetTransform(Transform);
 
@@ -294,7 +292,7 @@ FSmartObjectRuntime* USmartObjectSubsystem::AddCollectionEntryToSimulation(const
 	return &Runtime;
 }
 
-bool USmartObjectSubsystem::RemoveRuntimeInstanceFromSimulation(const FSmartObjectHandle Handle)
+bool USmartObjectSubsystem::RemoveRuntimeInstanceFromSimulation(const FSmartObjectHandle Handle, USmartObjectComponent* SmartObjectComponent)
 {
 	UE_VLOG_UELOG(this, LogSmartObject, Verbose, TEXT("Removing SmartObject '%s' from runtime simulation."), *LexToString(Handle));
 
@@ -312,12 +310,12 @@ bool USmartObjectSubsystem::RemoveRuntimeInstanceFromSimulation(const FSmartObje
 		return false;
 	}
 
-	if (!ensureMsgf(EntityManager, TEXT("Entity subsystem required to remove a smartobject from the simulation")))
+	if (SmartObjectComponent != nullptr)
 	{
-		return false;
+		UnbindComponentFromSimulationInternal(*SmartObjectComponent, *SmartObjectRuntime);
 	}
 
-	DestroyRuntimeInstanceInternal(Handle, *SmartObjectRuntime, *EntityManager.Get());
+	DestroyRuntimeInstanceInternal(Handle, *SmartObjectRuntime);
 
 	// Remove object runtime data
 	RuntimeSmartObjects.Remove(Handle);
@@ -325,10 +323,13 @@ bool USmartObjectSubsystem::RemoveRuntimeInstanceFromSimulation(const FSmartObje
 	return true;
 }
 
-void USmartObjectSubsystem::DestroyRuntimeInstanceInternal(const FSmartObjectHandle Handle, FSmartObjectRuntime& SmartObjectRuntime, FMassEntityManager& EntityManagerRef)
+void USmartObjectSubsystem::DestroyRuntimeInstanceInternal(
+	const FSmartObjectHandle Handle,
+	FSmartObjectRuntime& SmartObjectRuntime
+	)
 {
 	// Abort everything before removing since abort flow may require access to runtime data
-	AbortAll(SmartObjectRuntime);
+	AbortAll(Handle, SmartObjectRuntime);
 
 	// Remove from space partition
 	checkfSlow(SpacePartition != nullptr, TEXT("Space partition is expected to be valid since we use the plugins default in OnWorldComponentsUpdated."));
@@ -337,38 +338,31 @@ void USmartObjectSubsystem::DestroyRuntimeInstanceInternal(const FSmartObjectHan
 	FWorldConditionContextData ConditionContextData(*SmartObjectRuntime.GetDefinition().GetWorldConditionSchema());
 	SetupConditionContextCommonData(ConditionContextData, SmartObjectRuntime);
 
-	// Deactivate object Preconditions
+	// Deactivate object and slot Preconditions
 	const FWorldConditionContext ObjectContext(SmartObjectRuntime.PreconditionState, ConditionContextData);
 	ObjectContext.Deactivate();
 
-	// Destroy entities associated to slots
 	const USmartObjectWorldConditionSchema* DefaultWorldConditionSchema = GetDefault<USmartObjectWorldConditionSchema>();
-	TArray<FMassEntityHandle> EntitiesToDestroy;
-	EntitiesToDestroy.Reserve(SmartObjectRuntime.SlotHandles.Num());
-	for (const FSmartObjectSlotHandle SlotHandle : SmartObjectRuntime.SlotHandles)
+	for (TConstEnumerateRef<FSmartObjectRuntimeSlot> RuntimeSlot : EnumerateRange(SmartObjectRuntime.Slots))
 	{
-		ensureMsgf(ConditionContextData.SetContextData(DefaultWorldConditionSchema->GetSlotHandleRef(), &SlotHandle), TEXT("Expecting USmartObjectWorldConditionSchema::SlotHandleRef to be valid."));
+		const FSmartObjectSlotHandle SlotHandle(Handle, RuntimeSlot.GetIndex());
+		ensureMsgf(ConditionContextData.SetContextData(DefaultWorldConditionSchema->GetSlotHandleRef(), &SlotHandle),
+			TEXT("Expecting USmartObjectWorldConditionSchema::SlotHandleRef to be valid."));
 
 		// Deactivate slot Preconditions (if successfully initialized)
-		const FSmartObjectRuntimeSlot& RuntimeSlot = RuntimeSlots.FindChecked(SlotHandle);
-		const FWorldConditionContext SlotContext(RuntimeSlot.PreconditionState, ConditionContextData);
+		const FWorldConditionContext SlotContext(RuntimeSlot->PreconditionState, ConditionContextData);
 		SlotContext.Deactivate();
-		
-		RuntimeSlots.Remove(SlotHandle);
-		EntitiesToDestroy.Add(SlotHandle);
 	}
-
-	EntityManagerRef.Defer().DestroyEntities(EntitiesToDestroy);
 }
 
 bool USmartObjectSubsystem::RemoveCollectionEntryFromSimulation(const FSmartObjectCollectionEntry& Entry)
 {
-	return RemoveRuntimeInstanceFromSimulation(Entry.GetHandle());
+	return RemoveRuntimeInstanceFromSimulation(Entry.GetHandle(), /*SmartObjectComponent*/nullptr);
 }
 
 void USmartObjectSubsystem::RemoveComponentFromSimulation(USmartObjectComponent& SmartObjectComponent)
 {
-	if (RemoveRuntimeInstanceFromSimulation(SmartObjectComponent.GetRegisteredHandle()))
+	if (RemoveRuntimeInstanceFromSimulation(SmartObjectComponent.GetRegisteredHandle(), &SmartObjectComponent))
 	{
 		UE_VLOG_UELOG(this, LogSmartObject, Verbose, TEXT("%s call succeeded for %s")
 			, ANSI_TO_TCHAR(__FUNCTION__)
@@ -382,58 +376,75 @@ void USmartObjectSubsystem::RemoveComponentFromSimulation(USmartObjectComponent&
 	}
 }
 
-void USmartObjectSubsystem::AbortAll(const FSmartObjectRuntime& SmartObjectRuntime)
+void USmartObjectSubsystem::AbortAll(const FSmartObjectHandle Handle, FSmartObjectRuntime& SmartObjectRuntime) const
 {
-	for (const FSmartObjectSlotHandle SlotHandle : SmartObjectRuntime.SlotHandles)
+	for (TEnumerateRef<FSmartObjectRuntimeSlot> RuntimeSlot : EnumerateRange(SmartObjectRuntime.Slots))
 	{
-		FSmartObjectRuntimeSlot& Slot = RuntimeSlots.FindChecked(SlotHandle);
-		switch (Slot.State)
+		const FSmartObjectSlotHandle SlotHandle(Handle, RuntimeSlot.GetIndex());
+
+		switch (RuntimeSlot->State)
 		{
 		case ESmartObjectSlotState::Claimed:
 		case ESmartObjectSlotState::Occupied:
 			{
-				const FSmartObjectClaimHandle ClaimHandle(SmartObjectRuntime.GetRegisteredHandle(), SlotHandle, Slot.User);
-				if (Slot.Release(ClaimHandle, /* bAborted */true))
+				const FSmartObjectClaimHandle ClaimHandle(SmartObjectRuntime.GetRegisteredHandle(), SlotHandle, RuntimeSlot->User);
+
+				// Keep user data to be used as payload in the notification event
+				// since it will be released by the following call to Slot.Release 
+				const FInstancedStruct Payload(MoveTemp(RuntimeSlot->UserData));
+				if (RuntimeSlot->Release(ClaimHandle, /* bAborted */true))
 				{
-					OnSlotChanged(SmartObjectRuntime, Slot, SlotHandle, ESmartObjectChangeReason::OnReleased);
+					OnSlotChanged(SmartObjectRuntime, *RuntimeSlot, SlotHandle, ESmartObjectChangeReason::OnReleased, Payload);
+
+					UE_VLOG_UELOG(this, LogSmartObject, Verbose, TEXT("Slot %s released by an abort"), *LexToString(ClaimHandle.SlotHandle));
+					UE_VLOG_LOCATION(this, LogSmartObject, Display, GetSlotLocation(ClaimHandle.SlotHandle).GetValue(), /*Radius*/50.f, FColor::Red, TEXT("Released by abort"));
 				}
 				break;
 			}
 		case ESmartObjectSlotState::Free: // falling through on purpose
 		default:
-			UE_CVLOG_UELOG(Slot.User.IsValid(), this, LogSmartObject, Warning,
+			UE_CVLOG_UELOG(RuntimeSlot->User.IsValid(), this, LogSmartObject, Warning,
 				TEXT("Smart object %s used by %s while the slot it's assigned to is not marked Claimed nor Occupied"),
 				*LexToString(SmartObjectRuntime.GetDefinition()),
-				*LexToString(Slot.User));
+				*LexToString(RuntimeSlot->User));
 			break;
 		}
-		Slot.State = ESmartObjectSlotState::Free;
+		RuntimeSlot->State = ESmartObjectSlotState::Free;
 	}
 }
 
 bool USmartObjectSubsystem::RegisterSmartObject(USmartObjectComponent& SmartObjectComponent)
 {
-	if (SmartObjectComponent.GetDefinition() == nullptr)
+	const USmartObjectDefinition* Definition = SmartObjectComponent.GetDefinition();
+	if (Definition == nullptr)
 	{
-		UE_VLOG_UELOG(this, LogSmartObject, Warning, TEXT("Attempting to register %s while its DefinitionAsset is not set. Bailing out."),
+		UE_VLOG_UELOG(this, LogSmartObject, Log, TEXT("Attempting to register %s while its DefinitionAsset is not set. Bailing out."),
 			*GetFullNameSafe(&SmartObjectComponent));
 		return false;
 	}
 
-	TOptional<bool> bIsValid = SmartObjectComponent.GetDefinition()->IsValid();
+	TOptional<bool> bIsValid = Definition->IsValid();
 	if (bIsValid.IsSet() == false)
 	{
 		UE_VLOG_UELOG(this, LogSmartObject, Log, TEXT("Attempting to register %s while its DefinitionAsset has not been Validated. Validating now."),
 			*GetFullNameSafe(&SmartObjectComponent));
-		bIsValid = SmartObjectComponent.GetDefinition()->Validate();
+		bIsValid = Definition->Validate();
 	}
 	
 	if (bIsValid.GetValue() == false)
 	{
-		UE_VLOG_UELOG(this, LogSmartObject, Warning, TEXT("Attempting to register %s while its DefinitionAsset fails validation test. Bailing out."
+		UE_VLOG_UELOG(this, LogSmartObject, Log, TEXT("Attempting to register %s while its DefinitionAsset fails validation test. Bailing out."
 													" Resave asset %s to see the errors and fix the problem."),
 			*GetFullNameSafe(&SmartObjectComponent),
-			*GetFullNameSafe(SmartObjectComponent.GetDefinition()));
+			*GetFullNameSafe(Definition));
+		return false;
+	}
+
+	if (Definition->GetSlots().IsEmpty())
+	{
+		UE_VLOG_UELOG(this, LogSmartObject, Log, TEXT("Attempting to register %s while its DefinitionAsset doesn't contain any slots. Bailing out."),
+			*GetFullNameSafe(&SmartObjectComponent),
+			*GetFullNameSafe(Definition));
 		return false;
 	}
 
@@ -467,17 +478,15 @@ bool USmartObjectSubsystem::RegisterSmartObjectInternal(USmartObjectComponent& S
 			bool bAlreadyInCollection = false;
 			if (const FSmartObjectCollectionEntry* Entry = SmartObjectContainer.AddSmartObject(SmartObjectComponent, bAlreadyInCollection))
 			{
-				SmartObjectComponent.SetRegisteredHandle(Entry->GetHandle(), bAlreadyInCollection ? ESmartObjectRegistrationType::WithCollection : ESmartObjectRegistrationType::Dynamic);
-
 				if (bAlreadyInCollection)
 				{
+					SmartObjectComponent.SetRegisteredHandle(Entry->GetHandle(), ESmartObjectRegistrationType::WithCollection);
 					BindComponentToSimulation(SmartObjectComponent);
 				}
 				else
 				{
+					SmartObjectComponent.SetRegisteredHandle(Entry->GetHandle(), ESmartObjectRegistrationType::Dynamic);
 					AddComponentToSimulation(SmartObjectComponent, *Entry);
-					// This is a new entry added after runtime initialization, mark it as a runtime entry (lifetime is tied to the component)
-					RuntimeCreatedEntries.Add(SmartObjectComponent.GetRegisteredHandle());
 #if WITH_EDITOR
 					OnMainCollectionDirtied.Broadcast();
 #endif
@@ -488,10 +497,19 @@ bool USmartObjectSubsystem::RegisterSmartObjectInternal(USmartObjectComponent& S
 		ensureMsgf(RegisteredSOComponents.Find(&SmartObjectComponent) == INDEX_NONE
 			, TEXT("Adding %s to RegisteredSOColleciton, but it has already been added. Missing unregister call?"), *SmartObjectComponent.GetFullName());
 		RegisteredSOComponents.Add(&SmartObjectComponent);
+
+#if UE_ENABLE_DEBUG_DRAWING
+		// Refresh debug draw
+		if (RenderingActor != nullptr)
+		{
+			RenderingActor->MarkComponentsRenderStateDirty();
+		}
+#endif // UE_ENABLE_DEBUG_DRAWING
 	}
 	else
 	{
-		UE_VLOG_UELOG(this, LogSmartObject, VeryVerbose, TEXT("%s not added to collection since InitializeRuntime has not been called yet. Storing SOComponent instance for registration during InitializeRuntime call.")
+		UE_VLOG_UELOG(this, LogSmartObject, VeryVerbose,
+			TEXT("%s not added to collection since InitializeRuntime has not been called yet. Storing SOComponent instance for registration during InitializeRuntime call.")
 			, *GetNameSafe(SmartObjectComponent.GetOwner()));
 		PendingSmartObjectRegistration.Add(&SmartObjectComponent);
 	}
@@ -506,7 +524,7 @@ bool USmartObjectSubsystem::RemoveSmartObject(USmartObjectComponent& SmartObject
 		return UnregisterSmartObjectInternal(SmartObjectComponent, /*bDestroyRuntimeState=*/true);
 	}
 
-	UE_VLOG_UELOG(this, LogSmartObject, Log, TEXT("Failed to remove %s since it doesn't seem registered"),
+	UE_VLOG_UELOG(this, LogSmartObject, Log, TEXT("Failed to remove %s since it doesn't seem registered or has already been unregistered."),
 		*GetFullNameSafe(SmartObjectComponent.GetOwner()),
 		*GetFullNameSafe(SmartObjectComponent.GetDefinition()));
 
@@ -517,10 +535,11 @@ bool USmartObjectSubsystem::UnregisterSmartObject(USmartObjectComponent& SmartOb
 {
 	if (RegisteredSOComponents.Contains(&SmartObjectComponent))
 	{
-		return UnregisterSmartObjectInternal(SmartObjectComponent, /*bDestroyRuntimeState=*/SmartObjectComponent.GetRegistrationType() == ESmartObjectRegistrationType::Dynamic);
+		return UnregisterSmartObjectInternal(SmartObjectComponent,
+			/*bDestroyRuntimeState=*/SmartObjectComponent.GetRegistrationType() == ESmartObjectRegistrationType::Dynamic);
 	}
 
-	UE_VLOG_UELOG(this, LogSmartObject, Log, TEXT("Failed to unregister %s. Already unregistered"),
+	UE_VLOG_UELOG(this, LogSmartObject, Log, TEXT("Failed to unregister %s since it doesn't seem registered or has already been unregistered."),
 		*GetFullNameSafe(SmartObjectComponent.GetOwner()),
 		*GetFullNameSafe(SmartObjectComponent.GetDefinition()));
 
@@ -537,21 +556,19 @@ bool USmartObjectSubsystem::UnregisterSmartObjectInternal(USmartObjectComponent&
 	{
 		ensure(SmartObjectComponent.GetRegisteredHandle().IsValid());
 
-		if (SmartObjectComponent.GetRegistrationType() == ESmartObjectRegistrationType::Dynamic)
+		if (SmartObjectComponent.IsBoundToSimulation())
 		{
-			RuntimeCreatedEntries.Remove(SmartObjectComponent.GetRegisteredHandle());
-		}
-
-		if (bDestroyRuntimeState)
-		{
-			RemoveComponentFromSimulation(SmartObjectComponent);
-			SmartObjectContainer.RemoveSmartObject(SmartObjectComponent);
-		}
-		// otherwise we keep all the runtime entries in place - those will be removed along with the collection that has added them 
-		else
-		{
-			// Unbind the component from its associated runtime instance
-			UnbindComponentFromSimulation(SmartObjectComponent);
+			if (bDestroyRuntimeState)
+			{
+				RemoveComponentFromSimulation(SmartObjectComponent);
+				SmartObjectContainer.RemoveSmartObject(SmartObjectComponent);
+			}
+			// otherwise we keep all the runtime entries in place - those will be removed along with the collection that has added them 
+			else
+			{
+				// Unbind the component from its associated runtime instance
+				UnbindComponentFromSimulation(SmartObjectComponent);
+			}
 		}
 
 		RegisteredSOComponents.Remove(&SmartObjectComponent);
@@ -661,37 +678,81 @@ bool USmartObjectSubsystem::SetEnabled(const FSmartObjectHandle Handle, const bo
 	{
 		FSmartObjectEventData Data;
 		Data.SmartObjectHandle = SmartObjectRuntime->GetRegisteredHandle();
-		Data.Reason = bEnabled ? ESmartObjectChangeReason::OnEnabled : ESmartObjectChangeReason::OnDisabled;
+		Data.Reason = bEnabled ? ESmartObjectChangeReason::OnObjectEnabled : ESmartObjectChangeReason::OnObjectDisabled;
 		SmartObjectRuntime->OnEvent.Broadcast(Data);
 	}
 	
 	// Propagate object enable state to slots and notify if needed.
-	for (const FSmartObjectSlotHandle SlotHandle : SmartObjectRuntime->SlotHandles)
+	for (TEnumerateRef<FSmartObjectRuntimeSlot> RuntimeSlot : EnumerateRange(SmartObjectRuntime->Slots))
 	{
-		FSmartObjectRuntimeSlot& Slot = RuntimeSlots.FindChecked(SlotHandle);
+		const FSmartObjectSlotHandle SlotHandle(Handle, RuntimeSlot.GetIndex());
 		
 		// Using 'IsEnabled' to combine slot enable and smart object enable
-		const bool bSlotPreviousValue = Slot.IsEnabled();
+		const bool bSlotPreviousValue = RuntimeSlot->IsEnabled();
 
 		// Always set object enabled state even if combined result might not be affected
-		Slot.bObjectEnabled = bEnabled;
+		RuntimeSlot->bObjectEnabled = bEnabled;
 
 		// Using new combined value to detect changes
-		if (Slot.IsEnabled() != bSlotPreviousValue)
+		if (RuntimeSlot->IsEnabled() != bSlotPreviousValue)
 		{
-			OnSlotChanged(*SmartObjectRuntime, Slot, SlotHandle, Slot.IsEnabled() ? ESmartObjectChangeReason::OnEnabled : ESmartObjectChangeReason::OnDisabled);
+			OnSlotChanged(*SmartObjectRuntime, *RuntimeSlot, SlotHandle, RuntimeSlot->IsEnabled() ? ESmartObjectChangeReason::OnSlotEnabled : ESmartObjectChangeReason::OnSlotDisabled, RuntimeSlot->UserData);
 		}
 	}
 
 	return true;
 }
 
-void USmartObjectSubsystem::SetupConditionContextCommonData(FWorldConditionContextData& ConditionContextData, const FSmartObjectRuntime& SmartObjectRuntime) const
+bool USmartObjectSubsystem::IsEnabled(const FSmartObjectHandle Handle) const
+{
+	const FSmartObjectRuntime* SmartObjectRuntime = GetRuntimeInstance(Handle);
+	UE_CVLOG_UELOG(SmartObjectRuntime == nullptr, this, LogSmartObject, Log,
+		TEXT("Failed to get the SmartObject enable state for %s. No associated runtime instance found."), *LexToString(Handle));
+	
+	return SmartObjectRuntime && SmartObjectRuntime->bEnabled;
+}
+
+void USmartObjectSubsystem::SetupConditionContextCommonData(FWorldConditionContextData& ContextData, const FSmartObjectRuntime& SmartObjectRuntime) const
 {
 	const USmartObjectWorldConditionSchema* DefaultSchema = GetDefault<USmartObjectWorldConditionSchema>();		
-	ensureMsgf(ConditionContextData.SetContextData(DefaultSchema->GetSmartObjectActorRef(), SmartObjectRuntime.GetOwnerActor()), TEXT("Expecting USmartObjectWorldConditionSchema::GetSmartObjectActorRef to be valid."));
-	ensureMsgf(ConditionContextData.SetContextData(DefaultSchema->GetSmartObjectHandleRef(), &SmartObjectRuntime.RegisteredHandle), TEXT("Expecting USmartObjectWorldConditionSchema::SmartObjectHandleRef to be valid."));
-	ensureMsgf(ConditionContextData.SetContextData(DefaultSchema->GetSubsystemRef(), this), TEXT("Expecting USmartObjectWorldConditionSchema::SubsystemRef to be valid."));
+	ensureMsgf(ContextData.SetContextData(DefaultSchema->GetSmartObjectActorRef(), SmartObjectRuntime.GetOwnerActor()),
+		TEXT("Expecting USmartObjectWorldConditionSchema::GetSmartObjectActorRef to be valid."));
+	ensureMsgf(ContextData.SetContextData(DefaultSchema->GetSmartObjectHandleRef(), &SmartObjectRuntime.RegisteredHandle),
+		TEXT("Expecting USmartObjectWorldConditionSchema::SmartObjectHandleRef to be valid."));
+	ensureMsgf(ContextData.SetContextData(DefaultSchema->GetSubsystemRef(), this),
+		TEXT("Expecting USmartObjectWorldConditionSchema::SubsystemRef to be valid."));
+}
+
+void USmartObjectSubsystem::BindPropertiesFromStruct(FWorldConditionContextData& ContextData, const FConstStructView& UserData) const
+{
+	const UWorldConditionSchema* Schema = ContextData.GetSchema();
+	check(Schema);
+
+	// @todo SO: could create a cache of layouts since user data types shouldn't vary much
+	// @todo SO: consider moving this into FWorldConditionContextData
+
+	for (TFieldIterator<FProperty> It(UserData.GetScriptStruct(), EFieldIterationFlags::None); It; ++It)
+	{
+		const FProperty* Property = *It;
+		if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+		{
+			const FWorldConditionContextDataRef Ref = Schema->GetContextDataRefByName(Property->GetFName(), StructProperty->Struct);
+			if (Ref.IsValid())
+			{
+				const FConstStructView StructView(StructProperty->Struct, UserData.GetMemory() + Property->GetOffset_ForInternal());
+				ContextData.SetContextData(Ref, StructView);
+			}
+		}
+		else if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
+		{
+			const FWorldConditionContextDataRef Ref = Schema->GetContextDataRefByName(Property->GetFName(), ObjectProperty->PropertyClass);
+			if (Ref.IsValid())
+			{
+				const UObject* Object = ObjectProperty->GetObjectPropertyValue(UserData.GetMemory() + Property->GetOffset_ForInternal());
+				ContextData.SetContextData(Ref, Object);
+			}
+		}
+	}
 }
 
 bool USmartObjectSubsystem::EvaluateObjectConditions(const FWorldConditionContextData& ConditionContextData, const FSmartObjectRuntime& SmartObjectRuntime) const
@@ -707,14 +768,19 @@ bool USmartObjectSubsystem::EvaluateObjectConditions(const FWorldConditionContex
 	return true;
 }
 
-bool USmartObjectSubsystem::EvaluateSlotConditions(FWorldConditionContextData& ConditionContextData, const FSmartObjectSlotHandle& SlotHandle, const FSmartObjectRuntimeSlot& Slot) const
+bool USmartObjectSubsystem::EvaluateSlotConditions(
+	FWorldConditionContextData& ConditionContextData,
+	const FSmartObjectRuntime& SmartObjectRuntime,
+	const FSmartObjectSlotHandle SlotHandle
+	) const
 {
 	// Add slot data to the context
 	const USmartObjectWorldConditionSchema* DefaultSchema = GetDefault<USmartObjectWorldConditionSchema>();
-	ensureMsgf(ConditionContextData.SetContextData(DefaultSchema->GetSlotHandleRef(), &SlotHandle), TEXT("Expecting USmartObjectWorldConditionSchema::SlotHandleRef to be valid."));
+	ensureMsgf(ConditionContextData.SetContextData(DefaultSchema->GetSlotHandleRef(), &SlotHandle),
+		TEXT("Expecting USmartObjectWorldConditionSchema::SlotHandleRef to be valid."));
 
 	// Evaluate slot conditions. Note that unsuccessfully initialized conditions is supported (i.e. error during activation)
-	const FWorldConditionContext Context(Slot.PreconditionState, ConditionContextData);
+	const FWorldConditionContext Context(SmartObjectRuntime.Slots[SlotHandle.GetSlotIndex()].PreconditionState, ConditionContextData);
 	if (!Context.IsTrue())
 	{
 		UE_VLOG_UELOG(this, LogSmartObject, Verbose, TEXT("Preconditions for slot %s failed."), *LexToString(SlotHandle));
@@ -733,25 +799,26 @@ FSmartObjectClaimHandle USmartObjectSubsystem::Claim(const FSmartObjectHandle Ha
 	}
 
 	TArray<FSmartObjectSlotHandle> SlotHandles;
-	FindSlots(*SmartObjectRuntime, Filter, SlotHandles);
+	FindSlots(Handle, *SmartObjectRuntime, Filter, SlotHandles, {});
 	if (SlotHandles.IsEmpty())
 	{
 		return FSmartObjectClaimHandle::InvalidHandle;
 	}
 
-	return Claim(Handle, SlotHandles.Top());
+	return MarkSlotAsClaimed(SlotHandles.Top(), {});
 }
 
-FSmartObjectClaimHandle USmartObjectSubsystem::Claim(const FSmartObjectHandle Handle, const FSmartObjectSlotHandle SlotHandle)
+FSmartObjectClaimHandle USmartObjectSubsystem::MarkSlotAsClaimed(const FSmartObjectSlotHandle SlotHandle, const FConstStructView UserData)
 {
-	if (!Handle.IsValid())
+	if (!SlotHandle.IsValid())
 	{
-		UE_VLOG_UELOG(this, LogSmartObject, Log, TEXT("Claiming using an unset smart object handle. Returning invalid FSmartObjectClaimHandle."));
+		UE_VLOG_UELOG(this, LogSmartObject, Log, TEXT("Claiming using an unset smart object slot handle. Returning invalid FSmartObjectClaimHandle."));
 		return FSmartObjectClaimHandle::InvalidHandle;
 	}
 
-	FSmartObjectRuntimeSlot* Slot = GetMutableSlotVerbose(SlotHandle, ANSI_TO_TCHAR(__FUNCTION__));
-	if (Slot == nullptr)
+	FSmartObjectRuntime* SmartObjectRuntime = nullptr;
+	FSmartObjectRuntimeSlot* Slot = nullptr;
+	if (!GetValidatedMutableRuntimeAndSlot(SlotHandle, SmartObjectRuntime, Slot, ANSI_TO_TCHAR(__FUNCTION__)))
 	{
 		return FSmartObjectClaimHandle::InvalidHandle;
 	}
@@ -759,40 +826,40 @@ FSmartObjectClaimHandle USmartObjectSubsystem::Claim(const FSmartObjectHandle Ha
 	// Fast test to see if slot can be claimed (Parent smart object is enabled AND slot is free and enabled) 
 	if (!Slot->CanBeClaimed())
 	{
-		UE_VLOG_UELOG(this, LogSmartObject, Log, TEXT("Can't claim slot handle %s since it is, or its owning smart object %s, disabled."), *LexToString(SlotHandle), *LexToString(Handle));
-		return FSmartObjectClaimHandle::InvalidHandle;
-	}
-
-	const FSmartObjectRuntime* SmartObjectRuntime = RuntimeSmartObjects.Find(Slot->GetOwnerRuntimeObject());
-	if (SmartObjectRuntime == nullptr)
-	{
-		UE_VLOG_UELOG(this, LogSmartObject, Error, TEXT("Can't claim slot handle %s since its owning smart object instance can't be found."), *LexToString(SlotHandle));
+		UE_VLOG_UELOG(this, LogSmartObject, Log,
+			TEXT("Can't claim slot handle %s since it is, or its owning smart object %s, disabled or not free."), *LexToString(SlotHandle), *LexToString(SlotHandle.GetSmartObjectHandle()));
 		return FSmartObjectClaimHandle::InvalidHandle;
 	}
 
 	const FSmartObjectUserHandle User(NextFreeUserID++);
 	const bool bClaimed = Slot->Claim(User);
 
-	const FSmartObjectClaimHandle ClaimHandle(Handle, SlotHandle, User);
+	const FSmartObjectClaimHandle ClaimHandle(SlotHandle.GetSmartObjectHandle(), SlotHandle, User);
 	UE_VLOG_UELOG(this, LogSmartObject, Verbose, TEXT("Claim %s for handle %s. Slot State is '%s'"),
 		bClaimed ? TEXT("SUCCEEDED") : TEXT("FAILED"),
 		*LexToString(ClaimHandle),
-	*UEnum::GetValueAsString(Slot->GetState()));
+		*UEnum::GetValueAsString(Slot->GetState()));
 	UE_CVLOG_LOCATION(bClaimed, this, LogSmartObject, Display, GetSlotLocation(ClaimHandle).GetValue(), 50.f, FColor::Yellow, TEXT("Claim"));
 
 	if (bClaimed)
 	{
-		OnSlotChanged(*SmartObjectRuntime, *Slot, SlotHandle, ESmartObjectChangeReason::OnClaimed);
+		Slot->UserData = UserData;
+		OnSlotChanged(*SmartObjectRuntime, *Slot, SlotHandle, ESmartObjectChangeReason::OnClaimed, Slot->UserData);
 		return ClaimHandle;
 	}
 
 	return FSmartObjectClaimHandle::InvalidHandle;
 }
 
-bool USmartObjectSubsystem::CanBeClaimed(FSmartObjectSlotHandle SlotHandle) const
+bool USmartObjectSubsystem::CanBeClaimed(const FSmartObjectSlotHandle SlotHandle) const
 {
-	const FSmartObjectRuntimeSlot* Slot = GetSlotVerbose(SlotHandle, ANSI_TO_TCHAR(__FUNCTION__));
-	return Slot != nullptr && Slot->CanBeClaimed();
+	const FSmartObjectRuntime* SmartObjectRuntime = nullptr;
+	const FSmartObjectRuntimeSlot* Slot = nullptr;
+	if (GetValidatedRuntimeAndSlot(SlotHandle, SmartObjectRuntime, Slot, ANSI_TO_TCHAR(__FUNCTION__)))
+	{
+		return Slot->CanBeClaimed();
+	}
+	return false;
 }
 
 bool USmartObjectSubsystem::IsSmartObjectValid(const FSmartObjectHandle SmartObjectHandle) const
@@ -809,59 +876,51 @@ bool USmartObjectSubsystem::IsSlotValidVerbose(const FSmartObjectSlotHandle Slot
 {
 	UE_CVLOG_UELOG(!SlotHandle.IsValid(), this, LogSmartObject, Log,
 		TEXT("%s failed. SlotHandle is not set."), LogContext);
-	UE_CVLOG_UELOG(SlotHandle.IsValid() && RuntimeSlots.Find(SlotHandle) == nullptr, this, LogSmartObject, Log,
-		TEXT("%s failed using handle '%s'. Slot is no longer part of the simulation."), LogContext, *LexToString(SlotHandle));
-
 	return IsSmartObjectSlotValid(SlotHandle);
 }
 
-FSmartObjectRuntimeSlot* USmartObjectSubsystem::GetMutableSlotVerbose(const FSmartObjectSlotHandle SlotHandle, const TCHAR* LogContext)
-{
-	UE_CVLOG_UELOG(!SlotHandle.IsValid(), this, LogSmartObject, Log,
-		TEXT("%s failed. SlotHandle is not set."), LogContext);
-	UE_CVLOG_UELOG(SlotHandle.IsValid() && RuntimeSlots.Find(SlotHandle) == nullptr, this, LogSmartObject, Log,
-		TEXT("%s failed using handle '%s'. Slot is no longer part of the simulation."), LogContext, *LexToString(SlotHandle));
-
-	return SlotHandle.IsValid() ? RuntimeSlots.Find(SlotHandle) : nullptr;
-}
-
-const FSmartObjectRuntimeSlot* USmartObjectSubsystem::GetSlotVerbose(const FSmartObjectSlotHandle SlotHandle, const TCHAR* LogContext) const
-{
-	UE_CVLOG_UELOG(!SlotHandle.IsValid(), this, LogSmartObject, Log,
-		TEXT("%s failed. SlotHandle is not set."), LogContext);
-	UE_CVLOG_UELOG(SlotHandle.IsValid() && RuntimeSlots.Find(SlotHandle) == nullptr, this, LogSmartObject, Log,
-		TEXT("%s failed using handle '%s'. Slot is no longer part of the simulation."), LogContext, *LexToString(SlotHandle));
-
-	return SlotHandle.IsValid() ? RuntimeSlots.Find(SlotHandle) : nullptr;
-}
-
-const USmartObjectBehaviorDefinition* USmartObjectSubsystem::GetBehaviorDefinition(const FSmartObjectClaimHandle& ClaimHandle, const TSubclassOf<USmartObjectBehaviorDefinition>& DefinitionClass)
+const USmartObjectBehaviorDefinition* USmartObjectSubsystem::GetBehaviorDefinition(
+	const FSmartObjectClaimHandle& ClaimHandle,
+	TSubclassOf<USmartObjectBehaviorDefinition> DefinitionClass
+	)
 {
 	const FSmartObjectRuntime* SmartObjectRuntime = GetValidatedRuntime(ClaimHandle.SmartObjectHandle, ANSI_TO_TCHAR(__FUNCTION__));
 	return SmartObjectRuntime != nullptr ? GetBehaviorDefinition(*SmartObjectRuntime, ClaimHandle.SlotHandle, DefinitionClass) : nullptr;
 }
 
-const USmartObjectBehaviorDefinition* USmartObjectSubsystem::GetBehaviorDefinitionByRequestResult(const FSmartObjectRequestResult& RequestResult, const TSubclassOf<USmartObjectBehaviorDefinition>& DefinitionClass)
+const USmartObjectBehaviorDefinition* USmartObjectSubsystem::GetBehaviorDefinitionByRequestResult(
+	const FSmartObjectRequestResult& RequestResult,
+	TSubclassOf<USmartObjectBehaviorDefinition> DefinitionClass
+	)
 {
 	const FSmartObjectRuntime* SmartObjectRuntime = GetValidatedRuntime(RequestResult.SmartObjectHandle, ANSI_TO_TCHAR(__FUNCTION__));
 	return SmartObjectRuntime != nullptr ? GetBehaviorDefinition(*SmartObjectRuntime, RequestResult.SlotHandle, DefinitionClass) : nullptr;
 }
 
-const USmartObjectBehaviorDefinition* USmartObjectSubsystem::GetBehaviorDefinition(const FSmartObjectRuntime& SmartObjectRuntime, const FSmartObjectSlotHandle SlotHandle, const TSubclassOf<USmartObjectBehaviorDefinition>& DefinitionClass)
+const USmartObjectBehaviorDefinition* USmartObjectSubsystem::GetBehaviorDefinition(
+	const FSmartObjectRuntime& SmartObjectRuntime,
+	const FSmartObjectSlotHandle SlotHandle,
+	TSubclassOf<USmartObjectBehaviorDefinition> DefinitionClass
+	)
 {
 	const USmartObjectDefinition& Definition = SmartObjectRuntime.GetDefinition();
-
-	const FSmartObjectSlotIndex SlotIndex(SmartObjectRuntime.SlotHandles.IndexOfByKey(SlotHandle));
-	return Definition.GetBehaviorDefinition(SlotIndex, DefinitionClass);
+	return Definition.GetBehaviorDefinition(SlotHandle.GetSlotIndex(), DefinitionClass);
 }
 
-const USmartObjectBehaviorDefinition* USmartObjectSubsystem::Use(const FSmartObjectClaimHandle& ClaimHandle, const TSubclassOf<USmartObjectBehaviorDefinition>& DefinitionClass)
+const USmartObjectBehaviorDefinition* USmartObjectSubsystem::MarkSlotAsOccupied(
+	const FSmartObjectClaimHandle& ClaimHandle,
+	TSubclassOf<USmartObjectBehaviorDefinition> DefinitionClass
+	)
 {
-	const FSmartObjectRuntime* SmartObjectRuntime = GetValidatedRuntime(ClaimHandle.SmartObjectHandle, ANSI_TO_TCHAR(__FUNCTION__));
-	return SmartObjectRuntime != nullptr ? Use(*SmartObjectRuntime, ClaimHandle, DefinitionClass) : nullptr;
+	FSmartObjectRuntime* SmartObjectRuntime = GetValidatedMutableRuntime(ClaimHandle.SmartObjectHandle, ANSI_TO_TCHAR(__FUNCTION__));
+	return SmartObjectRuntime != nullptr ? MarkSlotAsOccupied(*SmartObjectRuntime, ClaimHandle, DefinitionClass) : nullptr;
 }
 
-const USmartObjectBehaviorDefinition* USmartObjectSubsystem::Use(const FSmartObjectRuntime& SmartObjectRuntime, const FSmartObjectClaimHandle& ClaimHandle, const TSubclassOf<USmartObjectBehaviorDefinition>& DefinitionClass)
+const USmartObjectBehaviorDefinition* USmartObjectSubsystem::MarkSlotAsOccupied(
+	FSmartObjectRuntime& SmartObjectRuntime,
+	const FSmartObjectClaimHandle& ClaimHandle,
+	const TSubclassOf<USmartObjectBehaviorDefinition> DefinitionClass
+	)
 {
 	checkf(ClaimHandle.IsValid(), TEXT("This is an internal method that should only be called with an assigned claim handle"));
 
@@ -881,39 +940,40 @@ const USmartObjectBehaviorDefinition* USmartObjectSubsystem::Use(const FSmartObj
 	}
 
 	UE_VLOG_UELOG(this, LogSmartObject, Verbose, TEXT("Start using handle %s"), *LexToString(ClaimHandle));
-	UE_VLOG_LOCATION(this, LogSmartObject, Display, SmartObjectRuntime.GetTransform().GetLocation(), 50.f, FColor::Green, TEXT("Use"));
+	UE_VLOG_LOCATION(this, LogSmartObject, Display, GetSlotLocation(ClaimHandle).GetValue(), 50.f, FColor::Green, TEXT("Use"));
 
-	FSmartObjectRuntimeSlot& Slot = RuntimeSlots.FindChecked(ClaimHandle.SlotHandle);
+	FSmartObjectRuntimeSlot& Slot = SmartObjectRuntime.Slots[ClaimHandle.SlotHandle.GetSlotIndex()];
 
 	if (ensureMsgf(Slot.GetState() == ESmartObjectSlotState::Claimed, TEXT("Should have been claimed first: %s"), *LexToString(ClaimHandle)) &&
 		ensureMsgf(Slot.User == ClaimHandle.UserHandle, TEXT("Attempt to use slot %s from handle %s but already assigned to %s"),
 			*LexToString(Slot), *LexToString(ClaimHandle), *LexToString(Slot.User)))
 	{
 		Slot.State = ESmartObjectSlotState::Occupied;
+		OnSlotChanged(SmartObjectRuntime, Slot, ClaimHandle.SlotHandle, ESmartObjectChangeReason::OnOccupied, Slot.UserData);
 		return BehaviorDefinition;
 	}
 
 	return nullptr;
 }
 
-bool USmartObjectSubsystem::Release(const FSmartObjectClaimHandle& ClaimHandle)
+bool USmartObjectSubsystem::MarkSlotAsFree(const FSmartObjectClaimHandle& ClaimHandle)
 {
-	FSmartObjectRuntimeSlot* Slot = GetMutableSlotVerbose(ClaimHandle.SlotHandle, ANSI_TO_TCHAR(__FUNCTION__));
-	if (!Slot)
+	FSmartObjectRuntime* SmartObjectRuntime = nullptr;
+	FSmartObjectRuntimeSlot* Slot = nullptr;
+	if (!GetValidatedMutableRuntimeAndSlot(ClaimHandle.SlotHandle, SmartObjectRuntime, Slot, ANSI_TO_TCHAR(__FUNCTION__)))
 	{
 		return false;
 	}
 
+	// Keep user data to be used as payload in the notification event
+	// since it will be released by the following call to Slot.Release 
+	const FInstancedStruct Payload(MoveTemp(Slot->UserData));
 	const bool bSuccess = Slot->Release(ClaimHandle, /*bAborted*/ false);
-	UE_CVLOG_UELOG(bSuccess, this, LogSmartObject, Verbose, TEXT("Released using handle %s"), *LexToString(ClaimHandle));
-	UE_CVLOG_LOCATION(bSuccess, this, LogSmartObject, Display, GetSlotLocation(ClaimHandle).GetValue(), 50.f, FColor::Red, TEXT("Release"));
-
 	if (bSuccess)
 	{
-		if (const FSmartObjectRuntime* SmartObjectRuntime = RuntimeSmartObjects.Find(Slot->GetOwnerRuntimeObject()))
-		{
-			OnSlotChanged(*SmartObjectRuntime, *Slot, ClaimHandle.SlotHandle, ESmartObjectChangeReason::OnReleased);
-		}
+		UE_VLOG_UELOG(this, LogSmartObject, Verbose, TEXT("Released using handle %s"), *LexToString(ClaimHandle));
+		UE_VLOG_LOCATION(this, LogSmartObject, Display, GetSlotLocation(ClaimHandle).GetValue(), 50.f, FColor::White, TEXT("Released"));
+		OnSlotChanged(*SmartObjectRuntime, *Slot, ClaimHandle.SlotHandle, ESmartObjectChangeReason::OnReleased, Payload);
 	}
 
 	return bSuccess;
@@ -921,8 +981,13 @@ bool USmartObjectSubsystem::Release(const FSmartObjectClaimHandle& ClaimHandle)
 
 ESmartObjectSlotState USmartObjectSubsystem::GetSlotState(const FSmartObjectSlotHandle SlotHandle) const
 {
-	const FSmartObjectRuntimeSlot* Slot = RuntimeSlots.Find(SlotHandle);
-	return Slot != nullptr ? Slot->GetState() : ESmartObjectSlotState::Invalid;
+	const FSmartObjectRuntime* SmartObjectRuntime = nullptr;
+	const FSmartObjectRuntimeSlot* Slot = nullptr;
+	if (GetValidatedRuntimeAndSlot(SlotHandle, SmartObjectRuntime, Slot, ANSI_TO_TCHAR(__FUNCTION__)))
+	{
+		return Slot->GetState();
+	}
+	return ESmartObjectSlotState::Invalid;
 }
 
 bool USmartObjectSubsystem::GetSlotLocation(const FSmartObjectClaimHandle& ClaimHandle, FVector& OutSlotLocation) const
@@ -934,8 +999,13 @@ bool USmartObjectSubsystem::GetSlotLocation(const FSmartObjectClaimHandle& Claim
 
 TOptional<FVector> USmartObjectSubsystem::GetSlotLocation(const FSmartObjectSlotHandle SlotHandle) const
 {
-	TOptional<FTransform> Transform = GetSlotTransform(SlotHandle);
-	return (Transform.IsSet() ? Transform.GetValue().GetLocation() : TOptional<FVector>());
+	const FSmartObjectRuntime* SmartObjectRuntime = nullptr;
+	const FSmartObjectRuntimeSlot* Slot = nullptr;
+	if (GetValidatedRuntimeAndSlot(SlotHandle, SmartObjectRuntime, Slot, ANSI_TO_TCHAR(__FUNCTION__)))
+	{
+		return SmartObjectRuntime->Transform.TransformPosition(FVector(Slot->Offset));
+	}
+	return {};
 }
 
 bool USmartObjectSubsystem::GetSlotTransform(const FSmartObjectClaimHandle& ClaimHandle, FTransform& OutSlotTransform) const
@@ -954,27 +1024,68 @@ bool USmartObjectSubsystem::GetSlotTransformFromRequestResult(const FSmartObject
 
 TOptional<FTransform> USmartObjectSubsystem::GetSlotTransform(const FSmartObjectSlotHandle SlotHandle) const
 {
-	TOptional<FTransform> Transform;
-
-	if (const FSmartObjectRuntimeSlot* Slot = GetSlotVerbose(SlotHandle, ANSI_TO_TCHAR(__FUNCTION__)))
+	const FSmartObjectRuntime* SmartObjectRuntime = nullptr;
+	const FSmartObjectRuntimeSlot* Slot = nullptr;
+	if (GetValidatedRuntimeAndSlot(SlotHandle, SmartObjectRuntime, Slot, ANSI_TO_TCHAR(__FUNCTION__)))
 	{
-		if (ensureMsgf(EntityManager, TEXT("Entity subsystem required to retrieve slot transform")))
-		{
-			const FSmartObjectSlotView View(*EntityManager.Get(), SlotHandle, Slot);
-			const FSmartObjectSlotTransform& SlotTransform = View.GetStateData<FSmartObjectSlotTransform>();
-			Transform = SlotTransform.GetTransform();
-		}
+		return Slot->GetSlotWorldTransform(SmartObjectRuntime->Transform);
 	}
-
-	return Transform;
+	return {};
 }
 
-const FTransform& USmartObjectSubsystem::GetSlotTransformChecked(const FSmartObjectSlotHandle SlotHandle) const
+FTransform USmartObjectSubsystem::GetSlotTransformChecked(const FSmartObjectSlotHandle SlotHandle) const
 {
-	check(EntityManager);
-	const FSmartObjectSlotView View(*EntityManager.Get(), SlotHandle, nullptr);
-	const FSmartObjectSlotTransform& SlotTransform = View.GetStateData<FSmartObjectSlotTransform>();
-	return SlotTransform.GetTransform();
+	const FSmartObjectRuntime* SmartObjectRuntime = nullptr;
+	const FSmartObjectRuntimeSlot* Slot = nullptr;
+	check(GetValidatedRuntimeAndSlot(SlotHandle, SmartObjectRuntime, Slot, ANSI_TO_TCHAR(__FUNCTION__)));
+	return Slot->GetSlotLocalTransform() * SmartObjectRuntime->Transform;
+}
+
+bool USmartObjectSubsystem::GetValidatedMutableRuntimeAndSlot(const FSmartObjectSlotHandle SlotHandle, FSmartObjectRuntime*& OutSmartObjectRuntime, FSmartObjectRuntimeSlot*& OutSlot, const TCHAR* Context)
+{
+	const FSmartObjectRuntime* ConstSmartObjectRuntime = nullptr;
+	const FSmartObjectRuntimeSlot* ConstSlot = nullptr;
+
+	if (GetValidatedRuntimeAndSlot(SlotHandle, ConstSmartObjectRuntime, ConstSlot, Context))
+	{
+		OutSmartObjectRuntime = const_cast<FSmartObjectRuntime*>(ConstSmartObjectRuntime);
+		OutSlot = const_cast<FSmartObjectRuntimeSlot*>(ConstSlot);
+		return true;
+	}
+
+	OutSmartObjectRuntime = nullptr;
+	OutSlot = nullptr;
+	return false;
+}
+
+bool USmartObjectSubsystem::GetValidatedRuntimeAndSlot(const FSmartObjectSlotHandle SlotHandle, const FSmartObjectRuntime*& OutSmartObjectRuntime, const FSmartObjectRuntimeSlot*& OutSlot, const TCHAR* Context) const
+{
+	if (SlotHandle.IsValid())
+	{
+		if (const FSmartObjectRuntime* SmartObjectRuntime = RuntimeSmartObjects.Find(SlotHandle.GetSmartObjectHandle()))
+		{
+			if (SmartObjectRuntime->Slots.IsValidIndex(SlotHandle.GetSlotIndex()))
+			{
+				OutSmartObjectRuntime = SmartObjectRuntime;
+				OutSlot = SmartObjectRuntime != nullptr ? &SmartObjectRuntime->Slots[SlotHandle.GetSlotIndex()] : nullptr;	
+				return true;
+			}
+
+			UE_VLOG_UELOG(this, LogSmartObject, Log, TEXT("%s Invalid slot index %d (%d slots)."), Context, SlotHandle.GetSlotIndex(), SmartObjectRuntime->Slots.Num());
+		}
+		else
+		{
+			UE_VLOG_UELOG(this, LogSmartObject, Log, TEXT("%s failed using handle '%s'. SmartObject is no longer part of the simulation."), Context, *LexToString(SlotHandle));
+		}
+	}
+	else
+	{
+		UE_VLOG_UELOG(this, LogSmartObject, Log, TEXT("%s failed. Handle is not set."), Context);
+	}
+
+	OutSmartObjectRuntime = nullptr;
+	OutSlot = nullptr;
+	return false;
 }
 
 FSmartObjectRuntime* USmartObjectSubsystem::GetValidatedMutableRuntime(const FSmartObjectHandle Handle, const TCHAR* Context) const
@@ -1028,7 +1139,9 @@ const FGameplayTagContainer& USmartObjectSubsystem::GetSlotTags(const FSmartObje
 {
 	static const FGameplayTagContainer EmptyTags;
 
-	if (const FSmartObjectRuntimeSlot* Slot = GetSlotVerbose(SlotHandle, ANSI_TO_TCHAR(__FUNCTION__)))
+	const FSmartObjectRuntime* SmartObjectRuntime = nullptr;
+	const FSmartObjectRuntimeSlot* Slot = nullptr;
+	if (GetValidatedRuntimeAndSlot(SlotHandle, SmartObjectRuntime, Slot, ANSI_TO_TCHAR(__FUNCTION__)))
 	{
 		return Slot->Tags;
 	}
@@ -1043,16 +1156,15 @@ void USmartObjectSubsystem::AddTagToSlot(const FSmartObjectSlotHandle SlotHandle
 	{
 		return;
 	}
-	
-	if (FSmartObjectRuntimeSlot* Slot = GetMutableSlotVerbose(SlotHandle, ANSI_TO_TCHAR(__FUNCTION__)))
+
+	FSmartObjectRuntime* SmartObjectRuntime = nullptr;
+	FSmartObjectRuntimeSlot* Slot = nullptr;
+	if (GetValidatedMutableRuntimeAndSlot(SlotHandle, SmartObjectRuntime, Slot, ANSI_TO_TCHAR(__FUNCTION__)))
 	{
 		if (!Slot->Tags.HasTag(Tag))
 		{
 			Slot->Tags.AddTagFast(Tag);
-			if (const FSmartObjectRuntime* SmartObjectRuntime = RuntimeSmartObjects.Find(Slot->GetOwnerRuntimeObject()))
- 			{
-				OnSlotChanged(*SmartObjectRuntime, *Slot, SlotHandle, ESmartObjectChangeReason::OnTagAdded, Tag);
-			}
+			OnSlotChanged(*SmartObjectRuntime, *Slot, SlotHandle, ESmartObjectChangeReason::OnTagAdded, Slot->GetUserData(), Tag);
 		}
 	}
 }
@@ -1064,14 +1176,13 @@ bool USmartObjectSubsystem::RemoveTagFromSlot(const FSmartObjectSlotHandle SlotH
 		return false;
 	}
 	
-	if (FSmartObjectRuntimeSlot* Slot = GetMutableSlotVerbose(SlotHandle, ANSI_TO_TCHAR(__FUNCTION__)))
+	FSmartObjectRuntime* SmartObjectRuntime = nullptr;
+	FSmartObjectRuntimeSlot* Slot = nullptr;
+	if (GetValidatedMutableRuntimeAndSlot(SlotHandle, SmartObjectRuntime, Slot, ANSI_TO_TCHAR(__FUNCTION__)))
 	{
 		if (Slot->Tags.RemoveTag(Tag))
 		{
-			if (const FSmartObjectRuntime* SmartObjectRuntime = RuntimeSmartObjects.Find(Slot->GetOwnerRuntimeObject()))
-			{
-				OnSlotChanged(*SmartObjectRuntime, *Slot, SlotHandle, ESmartObjectChangeReason::OnTagRemoved, Tag);
-			}
+			OnSlotChanged(*SmartObjectRuntime, *Slot, SlotHandle, ESmartObjectChangeReason::OnTagRemoved, Slot->GetUserData(), Tag);
 			return true;
 		}
 	}
@@ -1081,8 +1192,10 @@ bool USmartObjectSubsystem::RemoveTagFromSlot(const FSmartObjectSlotHandle SlotH
 bool USmartObjectSubsystem::SetSlotEnabled(const FSmartObjectSlotHandle SlotHandle, const bool bEnabled)
 {
 	bool bPreviousValue = false;
-	
-	if (FSmartObjectRuntimeSlot* Slot = GetMutableSlotVerbose(SlotHandle, ANSI_TO_TCHAR(__FUNCTION__)))
+
+	FSmartObjectRuntime* SmartObjectRuntime = nullptr;
+	FSmartObjectRuntimeSlot* Slot = nullptr;
+	if (GetValidatedMutableRuntimeAndSlot(SlotHandle, SmartObjectRuntime, Slot, ANSI_TO_TCHAR(__FUNCTION__)))
 	{
 		// Using 'IsEnabled' that combines both slot and smart object enabled state
 		bPreviousValue = Slot->IsEnabled();
@@ -1093,10 +1206,8 @@ bool USmartObjectSubsystem::SetSlotEnabled(const FSmartObjectSlotHandle SlotHand
 		// Using new combined value to detect changes
 		if (Slot->IsEnabled() != bPreviousValue)
 		{
-			if (const FSmartObjectRuntime* SmartObjectRuntime = RuntimeSmartObjects.Find(Slot->GetOwnerRuntimeObject()))
-			{
-				OnSlotChanged(*SmartObjectRuntime, *Slot, SlotHandle, Slot->IsEnabled() ? ESmartObjectChangeReason::OnEnabled : ESmartObjectChangeReason::OnDisabled);
-			}
+			OnSlotChanged(*SmartObjectRuntime, *Slot, SlotHandle,
+				Slot->IsEnabled() ? ESmartObjectChangeReason::OnSlotEnabled : ESmartObjectChangeReason::OnSlotDisabled, Slot->UserData);
 		}
 	}
 
@@ -1105,18 +1216,20 @@ bool USmartObjectSubsystem::SetSlotEnabled(const FSmartObjectSlotHandle SlotHand
 
 bool USmartObjectSubsystem::SendSlotEvent(const FSmartObjectSlotHandle SlotHandle, const FGameplayTag EventTag, const FConstStructView Payload)
 {
-	if (const FSmartObjectRuntimeSlot* Slot = GetMutableSlotVerbose(SlotHandle, ANSI_TO_TCHAR(__FUNCTION__)))
+	FSmartObjectRuntime* SmartObjectRuntime = nullptr;
+	FSmartObjectRuntimeSlot* Slot = nullptr;
+	if (GetValidatedMutableRuntimeAndSlot(SlotHandle, SmartObjectRuntime, Slot, ANSI_TO_TCHAR(__FUNCTION__)))
 	{
-		if (Slot->GetEventDelegate().IsBound()
-			&& RuntimeSmartObjects.Contains(Slot->GetOwnerRuntimeObject()))
+		// Runtime slot lifetime is bound to the runtime smart object so it should always be available.
+		if (SmartObjectRuntime->GetEventDelegate().IsBound())
 		{
 			FSmartObjectEventData Data;
-			Data.SmartObjectHandle = Slot->GetOwnerRuntimeObject();
+			Data.SmartObjectHandle = SlotHandle.GetSmartObjectHandle();
 			Data.SlotHandle = SlotHandle;
 			Data.Reason = ESmartObjectChangeReason::OnEvent;
 			Data.Tag = EventTag;
 			Data.EventPayload = Payload;
-			Slot->GetEventDelegate().Broadcast(Data);
+			SmartObjectRuntime->GetEventDelegate().Broadcast(Data);
 			return true;
 		}
 	}
@@ -1149,30 +1262,32 @@ void USmartObjectSubsystem::RemoveTagFromInstance(FSmartObjectRuntime& SmartObje
 	}
 }
 
-void USmartObjectSubsystem::OnSlotChanged(const FSmartObjectRuntime& SmartObjectRuntime, const FSmartObjectRuntimeSlot& Slot,
-												const FSmartObjectSlotHandle SlotHandle, const ESmartObjectChangeReason Reason, const FGameplayTag ChangedTag) const
+void USmartObjectSubsystem::OnSlotChanged(
+	const FSmartObjectRuntime& SmartObjectRuntime,
+	const FSmartObjectRuntimeSlot& Slot,
+	const FSmartObjectSlotHandle SlotHandle,
+	const ESmartObjectChangeReason Reason,
+	const FConstStructView Payload,		
+	const FGameplayTag ChangedTag
+	)
 {
-	if (Slot.GetEventDelegate().IsBound())
+	if (SmartObjectRuntime.GetEventDelegate().IsBound())
 	{
 		FSmartObjectEventData Data;
-		Data.SmartObjectHandle = Slot.GetOwnerRuntimeObject();
+		Data.SmartObjectHandle = SlotHandle.GetSmartObjectHandle();
 		Data.SlotHandle = SlotHandle;
 		Data.Reason = Reason;
 		Data.Tag = ChangedTag;
-		Slot.GetEventDelegate().Broadcast(Data);
+		Data.EventPayload = Payload;
+		SmartObjectRuntime.GetEventDelegate().Broadcast(Data);
 	}
-
-}
-
-FSmartObjectRuntimeSlot* USmartObjectSubsystem::GetMutableSlot(const FSmartObjectClaimHandle& ClaimHandle)
-{
-	return RuntimeSlots.Find(ClaimHandle.SlotHandle);
 }
 
 void USmartObjectSubsystem::RegisterSlotInvalidationCallback(const FSmartObjectClaimHandle& ClaimHandle, const FOnSlotInvalidated& Callback)
 {
-	FSmartObjectRuntimeSlot* Slot = GetMutableSlot(ClaimHandle);
-	if (Slot != nullptr)
+	FSmartObjectRuntime* SmartObjectRuntime = nullptr;
+	FSmartObjectRuntimeSlot* Slot = nullptr;
+	if (GetValidatedMutableRuntimeAndSlot(ClaimHandle.SlotHandle, SmartObjectRuntime, Slot, ANSI_TO_TCHAR(__FUNCTION__)))
 	{
 		Slot->OnSlotInvalidatedDelegate = Callback;
 	}
@@ -1180,8 +1295,9 @@ void USmartObjectSubsystem::RegisterSlotInvalidationCallback(const FSmartObjectC
 
 void USmartObjectSubsystem::UnregisterSlotInvalidationCallback(const FSmartObjectClaimHandle& ClaimHandle)
 {
-	FSmartObjectRuntimeSlot* Slot = GetMutableSlot(ClaimHandle);
-	if (Slot != nullptr)
+	FSmartObjectRuntime* SmartObjectRuntime = nullptr;
+	FSmartObjectRuntimeSlot* Slot = nullptr;
+	if (GetValidatedMutableRuntimeAndSlot(ClaimHandle.SlotHandle, SmartObjectRuntime, Slot, ANSI_TO_TCHAR(__FUNCTION__)))
 	{
 		Slot->OnSlotInvalidatedDelegate.Unbind();
 	}
@@ -1189,9 +1305,11 @@ void USmartObjectSubsystem::UnregisterSlotInvalidationCallback(const FSmartObjec
 
 FOnSmartObjectEvent* USmartObjectSubsystem::GetSlotEventDelegate(const FSmartObjectSlotHandle SlotHandle)
 {
-	if (FSmartObjectRuntimeSlot* Slot = GetMutableSlotVerbose(SlotHandle, ANSI_TO_TCHAR(__FUNCTION__)))
+	FSmartObjectRuntime* SmartObjectRuntime = nullptr;
+	FSmartObjectRuntimeSlot* Slot = nullptr;
+	if (GetValidatedMutableRuntimeAndSlot(SlotHandle, SmartObjectRuntime, Slot, ANSI_TO_TCHAR(__FUNCTION__)))
 	{
-		return &Slot->GetMutableEventDelegate();
+		return &SmartObjectRuntime->GetMutableEventDelegate();
 	}
 	return nullptr;
 }
@@ -1215,46 +1333,49 @@ void USmartObjectSubsystem::DebugDraw(FDebugRenderSceneProxy* DebugProxy) const
 }
 #endif // UE_ENABLE_DEBUG_DRAWING
 
-void USmartObjectSubsystem::AddSlotDataDeferred(const FSmartObjectClaimHandle& ClaimHandle, const FConstStructView InData) const
+void USmartObjectSubsystem::AddSlotData(const FSmartObjectClaimHandle& ClaimHandle, const FConstStructView InData)
 {
-	if (IsSlotValidVerbose(ClaimHandle.SlotHandle, ANSI_TO_TCHAR(__FUNCTION__)))
+	FSmartObjectRuntime* SmartObjectRuntime = nullptr;
+	FSmartObjectRuntimeSlot* Slot = nullptr;
+	if (!GetValidatedMutableRuntimeAndSlot(ClaimHandle.SlotHandle, SmartObjectRuntime, Slot, ANSI_TO_TCHAR(__FUNCTION__)))
 	{
-		if (ensureMsgf(EntityManager, TEXT("Entity subsystem required to add slot data")) &&
-			ensureMsgf(InData.GetScriptStruct()->IsChildOf(FSmartObjectSlotStateData::StaticStruct()),
-				TEXT("Given struct doesn't represent a valid runtime data type. Make sure to inherit from FSmartObjectSlotState or one of its child-types.")))
-		{
-			EntityManager->Defer().PushCommand<FMassDeferredAddCommand>(
-			[EntityHandle = FMassEntityHandle(ClaimHandle.SlotHandle), DataView = InData](FMassEntityManager& System)
-			{
-				FInstancedStruct Struct(DataView);
-				System.AddFragmentInstanceListToEntity(EntityHandle, MakeArrayView(&Struct, 1));
-			});
+		return;
+	}
 
-			// @todo: This is temporary solution to make the added data immediately accessible.
-			ensureMsgf(!EntityManager->IsProcessing(), TEXT("EntityManager is processing, which prevents immediate data change."));
-			EntityManager->FlushCommands();
+	// If we have a data of same type, override, else add.
+	bool bFound = false;
+	for (FStructView Data : Slot->StateData)
+	{
+		if (Data.GetScriptStruct() == InData.GetScriptStruct())
+		{
+			Data.GetScriptStruct()->CopyScriptStruct(Data.GetMemory(), InData.GetMemory());
+			bFound = true;
+			break;;
 		}
+	}
+
+	if (!bFound)
+	{
+		Slot->StateData.Append({ InData });
 	}
 }
 
 FSmartObjectSlotView USmartObjectSubsystem::GetSlotView(const FSmartObjectSlotHandle SlotHandle) const
 {
-	if (const FSmartObjectRuntimeSlot* Slot = GetSlotVerbose(SlotHandle, ANSI_TO_TCHAR(__FUNCTION__)))
+	const FSmartObjectRuntime* SmartObjectRuntime = nullptr;
+	const FSmartObjectRuntimeSlot* Slot = nullptr;
+	if (GetValidatedRuntimeAndSlot(SlotHandle, SmartObjectRuntime, Slot, ANSI_TO_TCHAR(__FUNCTION__)))
 	{
-		if (ensureMsgf(EntityManager, TEXT("Entity subsystem required to create slot view")))
-		{
-			return FSmartObjectSlotView(*EntityManager.Get(), SlotHandle, Slot);
-		}
+		return FSmartObjectSlotView(SlotHandle, *const_cast<FSmartObjectRuntime*>(SmartObjectRuntime), *const_cast<FSmartObjectRuntimeSlot*>(Slot));
 	}
-
-	return FSmartObjectSlotView();
+	return {};
 }
 
-void USmartObjectSubsystem::FindSlots(const FSmartObjectHandle Handle, const FSmartObjectRequestFilter& Filter, TArray<FSmartObjectSlotHandle>& OutSlots) const
+void USmartObjectSubsystem::FindSlots(const FSmartObjectHandle Handle, const FSmartObjectRequestFilter& Filter, TArray<FSmartObjectSlotHandle>& OutSlots, const FConstStructView UserData) const
 {
 	if (const FSmartObjectRuntime* SmartObjectRuntime = GetValidatedRuntime(Handle, ANSI_TO_TCHAR(__FUNCTION__)))
 	{
-		FindSlots(*SmartObjectRuntime, Filter, OutSlots);
+		FindSlots(Handle, *SmartObjectRuntime, Filter, OutSlots, UserData);
 	}
 }
 
@@ -1265,11 +1386,485 @@ void USmartObjectSubsystem::GetAllSlots(const FSmartObjectHandle Handle, TArray<
 	OutSlots.Reset();
 	if (const FSmartObjectRuntime* SmartObjectRuntime = GetValidatedRuntime(Handle, ANSI_TO_TCHAR(__FUNCTION__)))
 	{
-		OutSlots = SmartObjectRuntime->SlotHandles;
+		OutSlots.Reserve(SmartObjectRuntime->Slots.Num());
+		for (int32 Index = 0; Index < SmartObjectRuntime->Slots.Num(); Index++)
+		{
+			OutSlots.Add(FSmartObjectSlotHandle(Handle, Index));
+		}
 	}
 }
 
-void USmartObjectSubsystem::FindSlots(const FSmartObjectRuntime& SmartObjectRuntime, const FSmartObjectRequestFilter& Filter, TArray<FSmartObjectSlotHandle>& OutResults) const
+bool USmartObjectSubsystem::EvaluateConditionsForFiltering(
+	const FSmartObjectRuntime& SmartObjectRuntime,
+	const FSmartObjectSlotHandle SlotHandle,
+	FWorldConditionContextData& ContextData,
+	const FConstStructView UserData,
+	TPair<const FSmartObjectRuntime*, bool>& LastEvaluatedRuntime
+	) const
+{
+	// Evaluate preconditions on the parent object only once if all slots have the same one (usual case)  
+	if (&SmartObjectRuntime != LastEvaluatedRuntime.Key)
+	{
+		LastEvaluatedRuntime.Key = &SmartObjectRuntime;
+			
+		// Set context schema and bind user data only if not set or changed 
+		const UWorldConditionSchema* PrevSchema = ContextData.GetSchema();
+		if (PrevSchema == nullptr || PrevSchema != SmartObjectRuntime.GetDefinition().GetWorldConditionSchema())
+		{
+			ContextData.SetSchema(*SmartObjectRuntime.GetDefinition().GetWorldConditionSchema());
+
+			// Setup some context data using user data
+			BindPropertiesFromStruct(ContextData, UserData);	
+		}
+
+		// Setup system related data (object runtime, slot, subsystem, etc.)
+		SetupConditionContextCommonData(ContextData, SmartObjectRuntime);
+
+		// Evaluate object conditions.
+		LastEvaluatedRuntime.Value = EvaluateObjectConditions(ContextData, SmartObjectRuntime);
+	}
+
+	// Evaluate slot conditions only if parent runtime passed its own selection conditions
+	return LastEvaluatedRuntime.Value ? EvaluateSlotConditions(ContextData, SmartObjectRuntime, SlotHandle) : false;
+}
+
+TArray<FSmartObjectSlotHandle> USmartObjectSubsystem::FilterSlotsBySelectionConditions(
+	const TConstArrayView<FSmartObjectSlotHandle>& SlotsToFilter,
+	const FConstStructView UserData
+	) const
+{
+	TArray<FSmartObjectSlotHandle> Result;
+	Result.Reserve(SlotsToFilter.Num());
+
+	FWorldConditionContextData ContextData;	
+	TPair<const FSmartObjectRuntime*, bool> LastEvaluatedSmartObjectRuntime = {nullptr, false};
+
+	const FSmartObjectRuntime* CurrentRuntime = nullptr;
+	FSmartObjectHandle CurrentRuntimeHandle = {};
+	
+	bool bSlotIsValid = false;
+	for (const FSmartObjectSlotHandle SlotHandle : SlotsToFilter)
+	{
+		if (!CurrentRuntime || CurrentRuntimeHandle != SlotHandle.GetSmartObjectHandle())
+		{
+			CurrentRuntime = GetValidatedRuntime(SlotHandle.GetSmartObjectHandle(), ANSI_TO_TCHAR(__FUNCTION__));
+			CurrentRuntimeHandle = SlotHandle.GetSmartObjectHandle();
+		}
+		if (!CurrentRuntime || !CurrentRuntime->Slots.IsValidIndex(SlotHandle.GetSlotIndex()))
+		{
+			bSlotIsValid = false;
+		}
+		UE_CVLOG_UELOG(bSlotIsValid == false, this, LogSmartObject, Log,
+			TEXT("%hs failed using handle '%s'. Slot is no longer part of the simulation. Consider calling IsSmartObjectSlotValid to avoid this message."),
+			__FUNCTION__, *LexToString(SlotHandle));
+
+		if (bSlotIsValid && EvaluateConditionsForFiltering(*CurrentRuntime, SlotHandle, ContextData, UserData, LastEvaluatedSmartObjectRuntime))
+		{
+			Result.Add(SlotHandle);
+		}
+	}
+
+	Result.Shrink();
+	return MoveTemp(Result);
+}
+
+TArray<FSmartObjectRequestResult> USmartObjectSubsystem::FilterResultsBySelectionConditions(
+	const TConstArrayView<FSmartObjectRequestResult>& ResultsToFilter,
+	const FConstStructView UserData
+	) const
+{
+	TArray<FSmartObjectRequestResult> Result;
+	Result.Reserve(ResultsToFilter.Num());
+
+	FWorldConditionContextData ContextData;	
+	TPair<const FSmartObjectRuntime*, bool> LastEvaluatedSmartObjectRuntime = {nullptr, false};
+
+	const FSmartObjectRuntime* CurrentRuntime = nullptr;
+	FSmartObjectHandle CurrentRuntimeHandle = {};
+
+	bool bSlotIsValid = false;
+	for (const FSmartObjectRequestResult RequestResult : ResultsToFilter)
+	{
+		if (!CurrentRuntime || CurrentRuntimeHandle != RequestResult.SlotHandle.GetSmartObjectHandle())
+		{
+			CurrentRuntime = GetValidatedRuntime(RequestResult.SlotHandle.GetSmartObjectHandle(), ANSI_TO_TCHAR(__FUNCTION__));
+			CurrentRuntimeHandle = RequestResult.SlotHandle.GetSmartObjectHandle();
+		}
+		if (!CurrentRuntime || !CurrentRuntime->Slots.IsValidIndex(RequestResult.SlotHandle.GetSlotIndex()))
+		{
+			bSlotIsValid = false;
+		}
+
+		UE_CVLOG_UELOG(bSlotIsValid == false, this, LogSmartObject, Log,
+			TEXT("%hs failed using handle '%s'. Slot is no longer part of the simulation. Consider calling IsSmartObjectSlotValid to avoid this message."),
+			__FUNCTION__, *LexToString(RequestResult.SlotHandle));
+
+		if (bSlotIsValid && EvaluateConditionsForFiltering(*CurrentRuntime, RequestResult.SlotHandle, ContextData, UserData, LastEvaluatedSmartObjectRuntime))
+		{
+			Result.Add(RequestResult);
+		}
+	}
+
+	Result.Shrink();
+	return MoveTemp(Result);
+}
+
+bool USmartObjectSubsystem::EvaluateSelectionConditions(const FSmartObjectSlotHandle SlotHandle, const FConstStructView UserData) const
+{
+	FWorldConditionContextData ContextData;
+	TPair<const FSmartObjectRuntime*, bool> LastEvaluatedSmartObjectRuntime = {nullptr, false};
+
+	const FSmartObjectRuntime* SmartObjectRuntime = nullptr;
+	const FSmartObjectRuntimeSlot* Slot = nullptr;
+	if (GetValidatedRuntimeAndSlot(SlotHandle, SmartObjectRuntime, Slot, ANSI_TO_TCHAR(__FUNCTION__)))
+	{
+		return EvaluateConditionsForFiltering(*SmartObjectRuntime, SlotHandle, ContextData, UserData, LastEvaluatedSmartObjectRuntime);
+	}
+
+	return false;
+}
+
+bool USmartObjectSubsystem::FindEntranceLocationForSlot(const FSmartObjectSlotHandle SlotHandle, const FSmartObjectSlotEntranceLocationRequest& Request, FSmartObjectSlotEntranceLocationResult& Result) const
+{
+	return FindEntranceLocationInternal(SlotHandle, FSmartObjectSlotEntranceHandle(), Request, Result);
+}
+
+bool USmartObjectSubsystem::UpdateEntranceLocation(const FSmartObjectSlotEntranceHandle EntranceHandle, const FSmartObjectSlotEntranceLocationRequest& Request, FSmartObjectSlotEntranceLocationResult& Result) const
+{
+	return FindEntranceLocationInternal(EntranceHandle.GetSlotHandle(), EntranceHandle, Request, Result);
+}
+
+bool USmartObjectSubsystem::FindEntranceLocationInternal(
+	const FSmartObjectSlotHandle SlotHandle,
+	const FSmartObjectSlotEntranceHandle SlotEntranceHandle,
+	const FSmartObjectSlotEntranceLocationRequest& Request,
+	FSmartObjectSlotEntranceLocationResult& Result
+	) const
+{
+	Result = {};
+
+	const FSmartObjectRuntime* SmartObjectRuntime = nullptr;
+	const FSmartObjectRuntimeSlot* Slot = nullptr;
+	if (!GetValidatedRuntimeAndSlot(SlotHandle, SmartObjectRuntime, Slot, ANSI_TO_TCHAR(__FUNCTION__)))
+	{
+		return false;
+	}
+
+	UWorld* World = GetWorld();
+
+	TSubclassOf<USmartObjectSlotValidationFilter> ValidationFilterClass = Request.ValidationFilter;
+	const ANavigationData* NavigationData = Request.NavigationData;
+	
+	if (Request.UserActor)
+	{
+		// If user actor is present, try to query some data automatically from interfaces and components. 
+		if (!ValidationFilterClass.Get())
+		{
+			if (const USmartObjectUserComponent* UserComponent = Request.UserActor->GetComponentByClass<USmartObjectUserComponent>())
+			{
+				ValidationFilterClass = UserComponent->GetValidationFilter();
+			}
+		}
+
+		if (!NavigationData)
+		{
+			NavigationData = UE::SmartObject::Annotations::GetNavDataForActor(*World, Request.UserActor);
+		}
+	}
+
+	if (!ValidationFilterClass.Get())
+	{
+		// @todo: restore this as an error.
+		UE_VLOG_UELOG(this, LogSmartObject, Warning,
+			TEXT("%hs: Slot %s, Invalid validation filter for user actor %s."),
+			__FUNCTION__, *LexToString(SlotHandle), *GetNameSafe(Request.UserActor));
+		// return false;
+	}
+	
+	const USmartObjectSlotValidationFilter* ValidationFilter = ValidationFilterClass.Get() ? ValidationFilterClass.GetDefaultObject() : GetDefault<USmartObjectSlotValidationFilter>();
+	check(ValidationFilter);
+	const FSmartObjectSlotValidationParams& ValidationParams = ValidationFilter->GetValidationParams(Request.LocationType);
+
+	FSmartObjectUserCapsuleParams UserCapsule;
+	const bool bRequireValidUserCapsule = Request.bCheckSlotLocationOverlap || Request.bCheckEntranceLocationOverlap;
+	if (bRequireValidUserCapsule)
+	{
+		if (Request.UserCapsule.IsSet())
+		{
+			UserCapsule = ValidationParams.GetUserCapsule(Request.UserCapsule.GetValue());
+		}
+		else
+		{
+			if (Request.UserActor)
+			{
+				if (!ValidationParams.GetUserCapsuleForActor(*Request.UserActor, UserCapsule))
+				{
+					UE_VLOG_UELOG(this, LogSmartObject, Error,
+						TEXT("%hs: Slot %s, Could not resolve user capsule size. Failed to access navigation parameters for user actor %s."),
+						__FUNCTION__, *LexToString(SlotHandle), *GetNameSafe(Request.UserActor));
+					return false;
+				}
+			}
+			else
+			{
+				UE_VLOG_UELOG(this, LogSmartObject, Error,
+					TEXT("%hs: Slot %s, Could not resolve user capsule size. Request's UserCapsule is expected to be set when user actor is not specified."),
+					__FUNCTION__, *LexToString(SlotHandle));
+				return false;
+			}
+		}
+	}
+
+	// Navdata must be valid when checking testing for navigable. 
+	if (Request.bProjectNavigationLocation && !NavigationData)
+	{
+		UE_VLOG_UELOG(this, LogSmartObject, Error,
+			TEXT("%hs: Slot %s, ProjectNavigationLocation is requested, expecting valid navigation data, NavigationData is not set."),
+			__FUNCTION__, *LexToString(SlotHandle));
+		return false;
+	}
+
+	FSharedConstNavQueryFilter NavigationFilter;
+	if (NavigationData)
+	{
+		if (ValidationParams.GetNavigationFilter().Get())
+		{
+			NavigationFilter = UNavigationQueryFilter::GetQueryFilter(*NavigationData, Request.UserActor, ValidationParams.GetNavigationFilter());
+			if (!NavigationFilter.IsValid())
+			{
+				UE_VLOG_UELOG(this, LogSmartObject, Error,
+					TEXT("%hs: Slot %s, Navigation filter was specified was failed to resolve it."),
+					__FUNCTION__, *LexToString(SlotHandle));
+				return false;
+			}
+		}
+	}
+
+	struct FSlotEntryCandidate
+	{
+		FVector Location;
+		FRotator Rotation;
+		NavNodeRef NodeRef;
+		FVector::FReal DistanceSqr = 0.0;
+		const FSmartObjectSlotEntranceAnnotation* EntranceAnnotation = nullptr;
+		ESmartObjectEntrancePriority SelectionPriority = ESmartObjectEntrancePriority::Normal;
+		bool bTraceGroundLocation = false;
+		bool bCheckTransitionTrajectory = false;
+		FSmartObjectSlotEntranceHandle Handle;
+	};
+
+	const FSmartObjectAnnotation_SlotUserCollision* SlotUserCollisionAnnotation = nullptr; // @todo: currently assumes only one.
+
+	TArray<FSlotEntryCandidate, TInlineAllocator<8>> Candidates;
+	const FTransform& SlotTransform = Slot->GetSlotWorldTransform(SmartObjectRuntime->Transform);
+
+	const bool bIncludeEntries = Request.LocationType == ESmartObjectSlotNavigationLocationType::Entry;
+	const bool bIncludeExits = Request.LocationType == ESmartObjectSlotNavigationLocationType::Exit;
+
+	const FSmartObjectSlotDefinition& SlotDefinition = SmartObjectRuntime->GetDefinition().GetSlot(SlotHandle.GetSlotIndex());
+	
+	for (TConstEnumerateRef<const FInstancedStruct> Data : EnumerateRange(SlotDefinition.Data))
+	{
+		if (const FSmartObjectSlotEntranceAnnotation* EntranceAnnotation = Data->GetPtr<FSmartObjectSlotEntranceAnnotation>())
+		{
+			// If specific entry location was requested and this is not the one, skip it.
+			if (SlotEntranceHandle.Type == FSmartObjectSlotEntranceHandle::EType::Entrance
+				&& SlotEntranceHandle.Index != Data.GetIndex())
+			{
+				continue;
+			}
+			
+			if ((EntranceAnnotation->bIsEntry == bIncludeEntries
+					|| EntranceAnnotation->bIsExit == bIncludeExits)
+				&& EntranceAnnotation->HasTransform())
+			{
+				const FTransform EntryTransform = EntranceAnnotation->GetAnnotationWorldTransform(SlotTransform);
+				FSlotEntryCandidate& Candidate = Candidates.AddDefaulted_GetRef();
+				Candidate.Location = EntryTransform.GetLocation();
+				Candidate.Rotation = EntryTransform.GetRotation().Rotator();
+				Candidate.EntranceAnnotation = EntranceAnnotation;
+				Candidate.bTraceGroundLocation = EntranceAnnotation->bTraceGroundLocation;
+				Candidate.bCheckTransitionTrajectory = EntranceAnnotation->bCheckTransitionTrajectory;
+				Candidate.SelectionPriority = EntranceAnnotation->SelectionPriority;
+				Candidate.Handle = FSmartObjectSlotEntranceHandle(SlotHandle, FSmartObjectSlotEntranceHandle::EType::Entrance, Data.GetIndex());
+			}
+		}
+		else if (const FSmartObjectAnnotation_SlotUserCollision* UserCollisionAnnotation = Data->GetPtr<FSmartObjectAnnotation_SlotUserCollision>())
+		{
+			SlotUserCollisionAnnotation = UserCollisionAnnotation;
+		}
+	}
+
+	if ((Candidates.IsEmpty() && Request.bUseSlotLocationAsFallback)
+		|| SlotEntranceHandle.Type == FSmartObjectSlotEntranceHandle::EType::Slot)
+	{
+		FSlotEntryCandidate& Candidate = Candidates.AddDefaulted_GetRef();
+		Candidate.Location = SlotTransform.GetLocation();
+		Candidate.Rotation = SlotTransform.GetRotation().Rotator();
+		Candidate.Handle = FSmartObjectSlotEntranceHandle(SlotHandle, FSmartObjectSlotEntranceHandle::EType::Slot);
+	}
+
+	if (Candidates.IsEmpty())
+	{
+		return false;
+	}
+
+	// Sort candidates so that the best candidate is first.
+	if (Candidates.Num() > 1)
+	{
+		if (Request.SelectMethod == FSmartObjectSlotEntrySelectionMethod::NearestToSearchLocation)
+		{
+			for (FSlotEntryCandidate& Candidate : Candidates)
+			{
+				Candidate.DistanceSqr = FVector::DistSquared(Request.SearchLocation, Candidate.Location);
+			}
+			
+			Candidates.Sort([](const FSlotEntryCandidate& A, const FSlotEntryCandidate& B)
+			{
+				if (A.SelectionPriority == B.SelectionPriority)
+				{
+					return A.DistanceSqr < B.DistanceSqr;
+				}
+				return A.SelectionPriority > B.SelectionPriority;
+			});
+		}
+		else
+		{
+			// Use stable sort to keep initial order.
+			Candidates.StableSort([](const FSlotEntryCandidate& A, const FSlotEntryCandidate& B)
+			{
+				return A.SelectionPriority > B.SelectionPriority;
+			});
+		}
+	}
+
+	check(Candidates.Num() > 0);
+
+	const FSmartObjectTraceParams& GroundTraceParameters = ValidationParams.GetGroundTraceParameters();
+	const FSmartObjectTraceParams& TransitionTraceParameters = ValidationParams.GetTransitionTraceParameters();
+	const FVector SearchExtents = FVector(ValidationParams.GetSearchExtents());
+
+	FCollisionQueryParams GroundTraceQueryParams(SCENE_QUERY_STAT(SmartObjectTrace), GroundTraceParameters.bTraceComplex);
+	FCollisionQueryParams TransitionTraceQueryParams(SCENE_QUERY_STAT(SmartObjectTrace), TransitionTraceParameters.bTraceComplex);
+
+	GroundTraceQueryParams.bIgnoreTouches = true;
+	TransitionTraceQueryParams.bIgnoreTouches = true;
+	
+	if (const AActor* SmartObjectActor = SmartObjectRuntime->GetOwnerActor())
+	{
+		GroundTraceQueryParams.AddIgnoredActor(SmartObjectActor);
+		TransitionTraceQueryParams.AddIgnoredActor(SmartObjectActor);
+	}
+	if (Request.UserActor)
+	{
+		GroundTraceQueryParams.AddIgnoredActor(Request.UserActor);
+		TransitionTraceQueryParams.AddIgnoredActor(Request.UserActor);
+	}
+
+	// If the slot location should be free of collisions, check it now since it's shared for all entries.
+	if (Request.bCheckSlotLocationOverlap
+		&& SlotUserCollisionAnnotation)
+	{
+		TArray<FSmartObjectAnnotationCollider> Colliders;
+		SlotUserCollisionAnnotation->GetColliders(UserCapsule, SlotTransform, Colliders);
+
+		if (UE::SmartObject::Annotations::TestCollidersOverlap(*World, Colliders, TransitionTraceParameters, TransitionTraceQueryParams))
+		{
+			return false;
+		}
+	}
+	
+	bool bHasResult = false;
+
+	// Candidates are now in order of preference. Test each for hard requirements and pick the first that passes all checks. 
+	for (FSlotEntryCandidate& Candidate : Candidates)
+	{
+		const FBox SearchBounds(Candidate.Location - SearchExtents, Candidate.Location + SearchExtents);
+
+		// Check and adjust the location on navigable space.
+		if (Request.bProjectNavigationLocation)
+		{
+			FNavLocation NavLocation;
+			if (!UE::SmartObject::Annotations::ProjectNavigationLocation(*NavigationData, Candidate.Location, SearchBounds, NavigationFilter, Request.UserActor, NavLocation))
+			{
+				// If no navigable area found, skip the candidate.
+				continue;
+			}
+			Candidate.Location = NavLocation.Location;
+			Candidate.NodeRef = NavLocation.NodeRef;
+		}
+
+		// Check that the entry location is free of collisions if requested.
+		if (Request.bCheckEntranceLocationOverlap)
+		{
+			const FSmartObjectAnnotationCollider Collider = UserCapsule.GetAsCollider(Candidate.Location, Candidate.Rotation.Quaternion());
+			if (UE::SmartObject::Annotations::TestCollidersOverlap(*World, { Collider }, TransitionTraceParameters, TransitionTraceQueryParams))
+			{
+				// If the colliders overlap, skip the candidate.
+				continue;
+			}
+		}
+
+		// Check and adjust the location on ground.
+		if (Request.bTraceGroundLocation
+			&& Candidate.bTraceGroundLocation)
+		{
+			FVector GroundLocation;
+			if (!UE::SmartObject::Annotations::TraceGroundLocation(*World, Candidate.Location, SearchBounds, GroundTraceParameters, GroundTraceQueryParams, GroundLocation))
+			{
+				// If not ground location found, skip the candidate.
+				continue;
+			}
+
+			Candidate.Location = GroundLocation;
+		}
+
+		// Check that there's no collision during transition to slot location.
+ 		if (Request.bCheckTransitionTrajectory
+ 			&& Candidate.bCheckTransitionTrajectory
+			&& Candidate.EntranceAnnotation)
+		{
+ 			// @todo: we're currently _not_ using the adjusted location (Candidate.Location), consider if we should.
+			TArray<FSmartObjectAnnotationCollider> Colliders;
+			Candidate.EntranceAnnotation->GetTrajectoryColliders(SlotTransform, Colliders);
+
+ 			if (UE::SmartObject::Annotations::TestCollidersOverlap(*World, Colliders, TransitionTraceParameters, TransitionTraceQueryParams))
+ 			{
+	 			// If the colliders overlap, skip the candidate.
+ 				continue;
+ 			}
+		}
+
+		// Passed all validation, use it as the result.
+
+		Result.Location = Candidate.Location;
+		Result.Rotation = Candidate.Rotation;
+		Result.NodeRef = INVALID_NAVNODEREF;
+		if (Candidate.EntranceAnnotation)
+		{
+			Result.Tags = Candidate.EntranceAnnotation->Tags;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			Result.Tag = Result.Tags.First();
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		}
+
+		if (Request.LocationType == ESmartObjectSlotNavigationLocationType::Exit)
+		{
+			// Reverse direction for exits.
+			Result.Rotation = Result.Rotation.Add(0.0, 180.0, 0.0).Clamp();
+		}
+
+		Result.EntranceHandle = Candidate.Handle;
+		
+		bHasResult = true;
+		
+		break;
+	}
+
+	return bHasResult;
+}
+
+void USmartObjectSubsystem::FindSlots(const FSmartObjectHandle Handle, const FSmartObjectRuntime& SmartObjectRuntime, const FSmartObjectRequestFilter& Filter, TArray<FSmartObjectSlotHandle>& OutResults, const FConstStructView UserData) const
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE_STR("SmartObject_FilterSlots");
 
@@ -1282,7 +1877,7 @@ void USmartObjectSubsystem::FindSlots(const FSmartObjectRuntime& SmartObjectRunt
 	const USmartObjectDefinition& Definition = SmartObjectRuntime.GetDefinition();
 	const int32 NumSlots = Definition.GetSlots().Num();
 	checkf(NumSlots > 0, TEXT("Definition should contain slot definitions at this point"));
-	checkf(SmartObjectRuntime.SlotHandles.Num() == NumSlots, TEXT("Number of runtime slot handles should match number of slot definitions"));
+	checkf(SmartObjectRuntime.Slots.Num() == NumSlots, TEXT("Number of runtime slot handles should match number of slot definitions"));
 
 	// Applying caller's predicate
 	if (Filter.Predicate && !Filter.Predicate(SmartObjectRuntime.GetRegisteredHandle()))
@@ -1290,36 +1885,22 @@ void USmartObjectSubsystem::FindSlots(const FSmartObjectRuntime& SmartObjectRunt
 		return;
 	}
 
-	// If the Smart Object does not support the provided world condition schema, bail out.
-	if (Filter.ConditionContextData.IsValid())
-	{
-		if (!Filter.ConditionContextData.IsSchemaChildOf(Definition.GetWorldConditionSchema()))
-		{
-			return;
-		}
-	}
-	
 	// Apply definition level filtering (Tags and BehaviorDefinition)
 	// This could be improved to cache results between a single query against multiple instances of the same definition
 	TArray<int32> ValidSlotIndices;
 	FindMatchingSlotDefinitionIndices(Definition, Filter, ValidSlotIndices);
 
-	FWorldConditionContextData ConditionContextData = Filter.ConditionContextData;
-	if (!ConditionContextData.IsValid())
-	{
-		ConditionContextData.SetSchema(*Definition.GetWorldConditionSchema());
-	}
+	FWorldConditionContextData ConditionContextData;
+	ConditionContextData.SetSchema(*Definition.GetWorldConditionSchema());
 
 	// Setup default data
 	SetupConditionContextCommonData(ConditionContextData, SmartObjectRuntime);
-	
+
 	// Setup additional data related to requester
-	const USmartObjectWorldConditionSchema* DefaultSchema = GetDefault<USmartObjectWorldConditionSchema>();
-	ensureMsgf(ConditionContextData.SetContextData(DefaultSchema->GetUserActorRef(), Filter.UserActor.Get()), TEXT("Expecting USmartObjectWorldConditionSchema::UserActorRef to be valid."));
-	ensureMsgf(ConditionContextData.SetContextData(DefaultSchema->GetUserTagsRef(), &Filter.UserTags), TEXT("Expecting USmartObjectWorldConditionSchema::UserTagsRef to be valid."));
+	BindPropertiesFromStruct(ConditionContextData, UserData);
 
 	// Check object conditions.
-	if (!EvaluateObjectConditions(ConditionContextData, SmartObjectRuntime))
+	if (Filter.bShouldEvaluateConditions && !EvaluateObjectConditions(ConditionContextData, SmartObjectRuntime))
 	{
 		return;
 	}
@@ -1327,16 +1908,15 @@ void USmartObjectSubsystem::FindSlots(const FSmartObjectRuntime& SmartObjectRunt
 	// Build list of available slot indices (filter out occupied or reserved slots or disabled slots)
 	for (const int32 SlotIndex : ValidSlotIndices)
 	{
-		const FSmartObjectRuntimeSlot& RuntimeSlot = RuntimeSlots.FindChecked(SmartObjectRuntime.SlotHandles[SlotIndex]); 
+		const FSmartObjectRuntimeSlot& RuntimeSlot = SmartObjectRuntime.GetSlot(SlotIndex);
 		if (!RuntimeSlot.CanBeClaimed())
 		{
 			continue;
 		}
-
-		const FSmartObjectSlotHandle SlotHandle = SmartObjectRuntime.SlotHandles[SlotIndex];
+		const FSmartObjectSlotHandle SlotHandle(Handle, SlotIndex);
 		
 		// Check slot conditions.
-		if (!EvaluateSlotConditions(ConditionContextData, SlotHandle, RuntimeSlot))
+		if (Filter.bShouldEvaluateConditions && !EvaluateSlotConditions(ConditionContextData, SmartObjectRuntime, SlotHandle))
 		{
 			continue;
 		}
@@ -1371,7 +1951,7 @@ void USmartObjectSubsystem::FindMatchingSlotDefinitionIndices(const USmartObject
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		// (Deprecated property handling) Filter out mismatching behavior type (if specified)
 		if (Filter.BehaviorDefinitionClass != nullptr
-			&& Definition.GetBehaviorDefinition(FSmartObjectSlotIndex(i), Filter.BehaviorDefinitionClass) == nullptr)
+			&& Definition.GetBehaviorDefinition(i, Filter.BehaviorDefinitionClass) == nullptr)
 		{
 			continue;
 		}
@@ -1383,7 +1963,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			bool bMatchesAny = false;
 			for (const TSubclassOf<USmartObjectBehaviorDefinition>& BehaviorDefinitionClass : Filter.BehaviorDefinitionClasses)
 			{
-				if (Definition.GetBehaviorDefinition(FSmartObjectSlotIndex(i), BehaviorDefinitionClass) != nullptr)
+				if (Definition.GetBehaviorDefinition(i, BehaviorDefinitionClass) != nullptr)
 				{
 					bMatchesAny = true;
 					break;
@@ -1423,15 +2003,15 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 }
 
-FSmartObjectRequestResult USmartObjectSubsystem::FindSmartObject(const FSmartObjectRequest& Request) const
+FSmartObjectRequestResult USmartObjectSubsystem::FindSmartObject(const FSmartObjectRequest& Request, const FConstStructView UserData) const
 {
 	TArray<FSmartObjectRequestResult> Results;
-	FindSmartObjects(Request, Results);
+	FindSmartObjects(Request, Results, UserData);
 
 	return Results.Num() ? Results.Top() : FSmartObjectRequestResult();
 }
 
-bool USmartObjectSubsystem::FindSmartObjects(const FSmartObjectRequest& Request, TArray<FSmartObjectRequestResult>& OutResults) const
+bool USmartObjectSubsystem::FindSmartObjects(const FSmartObjectRequest& Request, TArray<FSmartObjectRequestResult>& OutResults, const FConstStructView UserData) const
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE_STR("SmartObject_FindAllResults");
 
@@ -1460,7 +2040,7 @@ bool USmartObjectSubsystem::FindSmartObjects(const FSmartObjectRequest& Request,
 		}
 
 		TArray<FSmartObjectSlotHandle> SlotHandles;
-		FindSlots(*SmartObjectRuntime, Filter, SlotHandles);
+		FindSlots(SmartObjectHandle, *SmartObjectRuntime, Filter, SlotHandles, UserData);
 		OutResults.Reserve(OutResults.Num() + SlotHandles.Num());
 		for (FSmartObjectSlotHandle SlotHandle: SlotHandles)
 		{
@@ -1479,7 +2059,8 @@ void USmartObjectSubsystem::RegisterCollectionInstances()
 		if (IsValid(Collection) && Collection->IsRegistered() == false)
 		{
 			const ESmartObjectCollectionRegistrationResult Result = RegisterCollection(*Collection);
-			UE_VLOG_UELOG(Collection, LogSmartObject, Log, TEXT("Collection '%s' registration from USmartObjectSubsystem initialization - %s"), *Collection->GetFullName(), *UEnum::GetValueAsString(Result));
+			UE_VLOG_UELOG(Collection, LogSmartObject, Log,
+				TEXT("Collection '%s' registration from USmartObjectSubsystem initialization - %s"), *Collection->GetFullName(), *UEnum::GetValueAsString(Result));
 		}
 	}
 }
@@ -1508,7 +2089,7 @@ ESmartObjectCollectionRegistrationResult USmartObjectSubsystem::RegisterCollecti
 
 	// We want to add the new collection to the "simulation" only if the Runtime part of the subsystem has been initialized.
 	// SmartObjectContainer is added to simulation in one go in InitializeRuntime.
-	if (bRuntimeInitialized && EntityManager)
+	if (bRuntimeInitialized)
 	{
 		AddContainerToSimulation(InCollection.GetSmartObjectContainer());
 	}
@@ -1530,21 +2111,18 @@ void USmartObjectSubsystem::UnregisterCollection(ASmartObjectPersistentCollectio
 	{
 		SmartObjectContainer.Remove(InCollection.GetSmartObjectContainer());
 
-		if (ensure(EntityManager))
+		for (const FSmartObjectCollectionEntry& Entry : InCollection.GetSmartObjectContainer().GetEntries())
 		{
-			for (const FSmartObjectCollectionEntry& Entry : InCollection.GetSmartObjectContainer().GetEntries())
+			FSmartObjectRuntime SORuntime;
+			// even though we did add this entry to RuntimeSmartObjects at some point it could have been removed 
+			// when the smart object in question got disabled or removed
+			if (RuntimeSmartObjects.RemoveAndCopyValue(Entry.GetHandle(), SORuntime))
 			{
-				FSmartObjectRuntime SORuntime;
-				// even though we did add this entry to RuntimeSmartObjects at some point it could have been removed 
-				// when the smart object in question got disabled or removed
-				if (RuntimeSmartObjects.RemoveAndCopyValue(Entry.GetHandle(), SORuntime))
+				if (USmartObjectComponent* SOComponent = Entry.GetComponent())
 				{
-					if (USmartObjectComponent* SOComponent = Entry.GetComponent())
-					{
-						UnbindComponentFromSimulationInternal(*SOComponent, SORuntime);
-					}
-					DestroyRuntimeInstanceInternal(Entry.GetHandle(), SORuntime, *EntityManager.Get());
+					UnbindComponentFromSimulationInternal(*SOComponent, SORuntime);
 				}
+				DestroyRuntimeInstanceInternal(Entry.GetHandle(), SORuntime);
 			}
 		}
 		
@@ -1552,7 +2130,8 @@ void USmartObjectSubsystem::UnregisterCollection(ASmartObjectPersistentCollectio
 	}
 	else
 	{
-		UE_VLOG_UELOG(&InCollection, LogSmartObject, Verbose, TEXT("Ignoring unregistration of collection '%s' since this is not one of the previously registered collections."), *InCollection.GetFullName());
+		UE_VLOG_UELOG(&InCollection, LogSmartObject, Verbose,
+			TEXT("Ignoring unregistration of collection '%s' since this is not one of the previously registered collections."), *InCollection.GetFullName());
 		return;
 	}
 }
@@ -1580,17 +2159,14 @@ void USmartObjectSubsystem::AddContainerToSimulation(const FSmartObjectContainer
 		{
 			// When component is available we add it to the simulation along with its collection entry to create the runtime instance and bound them together.
 			Component->SetRegisteredHandle(Entry.GetHandle(), ESmartObjectRegistrationType::WithCollection);
-			AddComponentToSimulation(*Component, Entry, /*bCommitChanges=*/false);
+			AddComponentToSimulation(*Component, Entry);
 		}
 		else
 		{
 			// Otherwise we create the runtime instance based on the information from the collection and component will be bound later (e.g. on load)
-			AddCollectionEntryToSimulation(Entry, *Definition, nullptr, /*bCommitChanges=*/false);
+			AddCollectionEntryToSimulation(Entry, *Definition, nullptr);
 		}
 	}
-
-	check(EntityManager);
-	EntityManager->FlushCommands();
 }
 
 USmartObjectComponent* USmartObjectSubsystem::GetSmartObjectComponent(const FSmartObjectClaimHandle& ClaimHandle) const
@@ -1605,23 +2181,6 @@ USmartObjectComponent* USmartObjectSubsystem::GetSmartObjectComponentByRequestRe
 
 void USmartObjectSubsystem::InitializeRuntime()
 {
-	const UWorld& World = GetWorldRef();
-	UMassEntitySubsystem* EntitySubsystem = World.GetSubsystem<UMassEntitySubsystem>();
-
-	if (!ensureMsgf(EntitySubsystem != nullptr, TEXT("Entity subsystem required to use SmartObjects")))
-	{
-		return;
-	}
-	
-	InitializeRuntime(EntitySubsystem->GetMutableEntityManager().AsShared());
-}
-
-void USmartObjectSubsystem::InitializeRuntime(const TSharedPtr<FMassEntityManager>& InEntityManager)
-{
-	check(InEntityManager);
-
-	EntityManager = InEntityManager;
-
 	if (UE::SmartObject::bDisableRuntime)
 	{
 		UE_VLOG_UELOG(this, LogSmartObject, Verbose, TEXT("Runtime explicitly disabled by CVar. Initialization skipped in %s."), ANSI_TO_TCHAR(__FUNCTION__));
@@ -1641,22 +2200,18 @@ void USmartObjectSubsystem::InitializeRuntime(const TSharedPtr<FMassEntityManage
 	
 	AddContainerToSimulation(SmartObjectContainer);
 
-	UE_CVLOG_UELOG(PendingSmartObjectRegistration.Num() > 0, this, LogSmartObject, VeryVerbose, TEXT("SmartObjectSubsystem: Handling %d pending registrations during runtime initialization."), PendingSmartObjectRegistration.Num());	
+	UE_CVLOG_UELOG(PendingSmartObjectRegistration.Num() > 0, this, LogSmartObject, VeryVerbose,
+		TEXT("SmartObjectSubsystem: Handling %d pending registrations during runtime initialization."), PendingSmartObjectRegistration.Num());	
 
 	for (TObjectPtr<USmartObjectComponent>& SOComponent : PendingSmartObjectRegistration)
 	{
-		// ensure the SOComponent is still valid - things could have happened to it between adding to PendingSmartObjectRegistration and it beind processed here
+		// ensure the SOComponent is still valid - things could have happened to it between adding to PendingSmartObjectRegistration and it being processed here
 		if (SOComponent && IsValid(SOComponent))
 		{
 			RegisterSmartObject(*SOComponent);
 		}
 	}
 	PendingSmartObjectRegistration.Empty();
-
-	// Flush all entity subsystem commands pushed while adding collection entries to the simulation
-	// This is the temporary way to force our commands to be processed until MassEntitySubsystem
-	// offers a threadsafe solution to push and flush commands in our own execution context.
-	EntityManager->FlushCommands();
 
 #if UE_ENABLE_DEBUG_DRAWING
 	// Refresh debug draw
@@ -1673,28 +2228,20 @@ void USmartObjectSubsystem::CleanupRuntime()
 	for (USmartObjectComponent* Component : RegisteredSOComponents)
 	{
 		// Make sure component was registered to simulation (e.g. Valid associated definition)
-		if (Component != nullptr && Component->GetRegisteredHandle().IsValid())
+		if (Component != nullptr && Component->IsBoundToSimulation())
 		{
 			RemoveComponentFromSimulation(*Component);
 		}
 	}
 
 	// Cleanup all remaining entries (e.g. associated to unloaded SmartObjectComponents)
-	if (EntityManager)
+	for (auto It(RuntimeSmartObjects.CreateIterator()); It; ++It)
 	{
-		for (auto It(RuntimeSmartObjects.CreateIterator()); It; ++It)
-		{
-			DestroyRuntimeInstanceInternal(It.Key(), It.Value(), *EntityManager);
-		}
-
-		// Flush all entity subsystem commands pushed while stopping the simulation
-		// This is the temporary way to force our commands to be processed until MassEntitySubsystem
-		// offers a threadsafe solution to push and flush commands in our own execution context.
-		EntityManager->FlushCommands();
+		DestroyRuntimeInstanceInternal(It.Key(), It.Value());
 	}
+	
 	RuntimeSmartObjects.Reset();
 
-	RuntimeCreatedEntries.Reset();
 	bRuntimeInitialized = false;
 
 	RegisteredCollections.Reset();
@@ -1718,7 +2265,6 @@ void USmartObjectSubsystem::OnWorldBeginPlay(UWorld& World)
 void USmartObjectSubsystem::Deinitialize()
 {
 	CleanupRuntime();
-	EntityManager.Reset();
 
 	Super::Deinitialize();
 }
@@ -1764,7 +2310,7 @@ FBox USmartObjectSubsystem::ComputeBounds(const UWorld& World) const
 	return Bounds;
 }
 
-void USmartObjectSubsystem::PopulateCollection(ASmartObjectPersistentCollection& InCollection)
+void USmartObjectSubsystem::PopulateCollection(ASmartObjectPersistentCollection& InCollection) const
 {
 	TArray<USmartObjectComponent*> RelevantComponents;
 	if (GetRegisteredSmartObjectsCompatibleWithCollection(InCollection, RelevantComponents) > 0)
@@ -1773,7 +2319,10 @@ void USmartObjectSubsystem::PopulateCollection(ASmartObjectPersistentCollection&
 	}
 }
 
-int32 USmartObjectSubsystem::GetRegisteredSmartObjectsCompatibleWithCollection(ASmartObjectPersistentCollection& InCollection, TArray<USmartObjectComponent*>& OutRelevantComponents) const
+int32 USmartObjectSubsystem::GetRegisteredSmartObjectsCompatibleWithCollection(
+	const ASmartObjectPersistentCollection& InCollection,
+	TArray<USmartObjectComponent*>& OutRelevantComponents
+	) const
 {
 	const int32 InitialCount = OutRelevantComponents.Num();
 
@@ -1863,6 +2412,7 @@ void USmartObjectSubsystem::IterativelyBuildCollections()
 		return;
 	}
 
+	TArray<USmartObjectComponent*> ComponentsToRestore = RegisteredSOComponents;
 	TArray<USmartObjectComponent*> RelevantComponents;
 	for (TWeakObjectPtr<ASmartObjectPersistentCollection>& WeakCollection : RegisteredCollections)
 	{
@@ -1874,11 +2424,9 @@ void USmartObjectSubsystem::IterativelyBuildCollections()
 			{
 				Collection->AppendToCollection(RelevantComponents);
 
-				// A component can belong to only a single collection. We remove objects added to the collection so that 
-				// they do get added to another collection. Also, the subsequent GetRegisteredSmartObjectsCompatibleWithCollection
-				// calls get less data to consider.
-				// Note: This function is to be run as part of a WorldBuilding commandlet and as such doesn't require 
-				// proper SmartObject unregistration.
+				// A component can belong to only a single collection.
+				// We remove objects added to the collection so that they do not get added to another collection.
+				// Also, the subsequent GetRegisteredSmartObjectsCompatibleWithCollection calls get less data to consider.
 				for (USmartObjectComponent* SOComponent : RelevantComponents)
 				{
 					RegisteredSOComponents.RemoveSingleSwap(SOComponent);
@@ -1886,6 +2434,9 @@ void USmartObjectSubsystem::IterativelyBuildCollections()
 			}
 		}
 	}
+
+	// Restore registered components so they can be unregistered properly by the normal streaming flow (i.e. not reporting any warnings/errors)
+	RegisteredSOComponents = MoveTemp(ComponentsToRestore);
 }
 #endif // WITH_EDITOR
 

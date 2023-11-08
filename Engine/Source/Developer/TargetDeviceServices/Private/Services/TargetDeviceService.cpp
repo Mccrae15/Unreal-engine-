@@ -4,6 +4,7 @@
 
 #include "HAL/PlatformProcess.h"
 #include "HAL/FileManager.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "IMessageBus.h"
 #include "Interfaces/ITargetDevice.h"
 #include "Interfaces/ITargetPlatform.h"
@@ -15,6 +16,8 @@
 #include "Serialization/Archive.h"
 
 #include "TargetDeviceServiceMessages.h"
+
+LLM_DECLARE_TAG(TargetDeviceProxyManager);
 
 
 /* Local helpers
@@ -406,6 +409,8 @@ void FTargetDeviceService::HandlePingMessage(const FTargetDeviceServicePing& InM
 		return;
 	}
 
+	LLM_SCOPE_BYTAG(TargetDeviceProxyManager);
+
 	ITargetDevicePtr DefaultDevice = GetDevice(); // Default Device is needed here!
 
 	if (DefaultDevice.IsValid())
@@ -420,9 +425,11 @@ void FTargetDeviceService::HandlePingMessage(const FTargetDeviceServicePing& InM
 		Message->HostName = FPlatformProcess::ComputerName();
 		Message->HostUser = FPlatformProcess::UserName(false);
 		Message->Connected = DefaultDevice->IsConnected();
+		Message->ConnectionType = (DefaultDevice->GetDeviceConnectionType() == ETargetDeviceConnectionTypes::Wifi) ? "Network" : "USB";
 		Message->Authorized = DefaultDevice->IsAuthorized();
 		Message->Make = TEXT("@todo");
-		Message->Model = TEXT("@todo");
+		Message->Model = DefaultDevice->GetModelId();
+		Message->OSVersion = DefaultDevice->GetOSVersion();
 		DefaultDevice->GetUserCredentials(Message->DeviceUser, Message->DeviceUserPassword);
 		Message->Shared = Shared;
 		Message->SupportsMultiLaunch = DefaultDevice->SupportsFeature(ETargetDeviceFeatures::MultiLaunch);

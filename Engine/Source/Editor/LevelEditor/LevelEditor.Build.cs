@@ -19,10 +19,7 @@ public class LevelEditor : ModuleRules
 				"MainFrame",
                 "PlacementMode",
 				"SlateReflector",
-                "AppFramework",
                 "PortalServices",
-                "Persona",
-				"DataLayerEditor",
 				"MergeActors",
 				"Layers",
 				"WorldBrowser",
@@ -33,11 +30,11 @@ public class LevelEditor : ModuleRules
 
 		PublicIncludePathModuleNames.AddRange(
 			new string[] {
+				"CommonMenuExtensions",
 				"Settings",
-				"HeadMountedDisplay",
+				"ToolWidgets",
 				"UnrealEd",
 				"VREditor",
-				"CommonMenuExtensions"
 			}
 		);
 
@@ -59,22 +56,17 @@ public class LevelEditor : ModuleRules
 				"StatsViewer",
 				"EditorFramework",
 				"UnrealEd", 
-				"DeveloperSettings",
-				"RenderCore",
 				"DeviceProfileServices",
 				"ContentBrowser",
 				"SceneOutliner",
 				"ActorPickerMode",
 				"RHI",
 				"Projects",
-				"TargetPlatform",
 				"TypedElementFramework",
 				"TypedElementRuntime",
 				"EngineSettings",
 				"PropertyEditor",
-				"Kismet",
 				"KismetWidgets",
-				"Sequencer",
 				"Foliage",
 				"HierarchicalLODOutliner",
 				"HierarchicalLODUtilities",
@@ -94,9 +86,10 @@ public class LevelEditor : ModuleRules
 				"DerivedDataEditor",
 				"EditorWidgets",
 				"ToolWidgets",
-				"VirtualizationEditor",
 				"UnsavedAssetsTracker",
-				"UncontrolledChangelists"
+				"UncontrolledChangelists",
+				"RenderCore",
+				"DeveloperSettings"
 			}
 		);
 

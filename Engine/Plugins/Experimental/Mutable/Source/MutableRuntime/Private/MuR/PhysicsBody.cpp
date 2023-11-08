@@ -15,6 +15,7 @@ namespace mu
 	}
 
 
+	//-------------------------------------------------------------------------------------------------
 	mu::Ptr<PhysicsBody> PhysicsBody::StaticUnserialise(InputArchive& arch)
 	{
 		mu::Ptr<PhysicsBody> pResult = new PhysicsBody();
@@ -22,24 +23,243 @@ namespace mu
 		return pResult;
 	}
 
+
+	//-------------------------------------------------------------------------------------------------
+	void FBodyShape::Serialise(OutputArchive& arch) const
+	{
+		const uint32 ver = 0;
+		arch << ver;
+
+		arch << Name;
+		arch << Flags;
+	}
+
+
+	//-------------------------------------------------------------------------------------------------
+	void FBodyShape::Unserialise(InputArchive& arch)
+	{
+		uint32 ver;
+		arch >> ver;
+		check(ver == 0);
+
+		arch >> Name;
+		arch >> Flags;
+	}
+
+
+	//-------------------------------------------------------------------------------------------------
+	void FSphereBody::Serialise(OutputArchive& arch) const
+	{
+		FBodyShape::Serialise(arch);
+
+		const uint32 ver = 0;
+		arch << ver;
+
+		arch << Position;
+		arch << Radius;
+	}
+
+
+	//-------------------------------------------------------------------------------------------------
+	void FSphereBody::Unserialise(InputArchive& arch)
+	{
+		FBodyShape::Unserialise(arch);
+
+		uint32 ver;
+		arch >> ver;
+		check(ver == 0);
+
+		arch >> Position;
+		arch >> Radius;
+	}
+
+
+	//-------------------------------------------------------------------------------------------------
+	void FBoxBody::Serialise(OutputArchive& arch) const
+	{
+		FBodyShape::Serialise( arch );
+
+		const uint32 ver = 0;
+		arch << ver;
+
+		arch << Position;
+		arch << Orientation;
+		arch << Size;
+	}
+
+
+	//-------------------------------------------------------------------------------------------------
+	void FBoxBody::Unserialise(InputArchive& arch)
+	{
+		FBodyShape::Unserialise( arch );
+
+		uint32 ver;
+		arch >> ver;
+		check(ver == 0);
+
+		arch >> Position;
+		arch >> Orientation;
+		arch >> Size;
+	}
+
+	
+	//-------------------------------------------------------------------------------------------------
+	void FSphylBody::Serialise(OutputArchive& arch) const
+	{
+		FBodyShape::Serialise( arch );
+
+		const uint32 ver = 0;
+		arch << ver;
+
+		arch << Position;
+		arch << Orientation;
+		arch << Radius;
+		arch << Length;
+	}
+
+
+	//-------------------------------------------------------------------------------------------------
+	void FSphylBody::Unserialise(InputArchive& arch)
+	{
+		FBodyShape::Unserialise( arch );
+
+		uint32 ver;
+		arch >> ver;
+		check(ver == 0);
+
+		arch >> Position;
+		arch >> Orientation;
+		arch >> Radius;
+		arch >> Length;
+	}
+
+
+	//-------------------------------------------------------------------------------------------------
+	void FTaperedCapsuleBody::Serialise(OutputArchive& arch) const
+	{
+		FBodyShape::Serialise( arch );
+
+		const uint32 ver = 0;
+		arch << ver;
+
+		arch << Position;
+		arch << Orientation;
+		arch << Radius0;
+		arch << Radius1;
+		arch << Length;
+	}
+
+
+	//-------------------------------------------------------------------------------------------------
+	void FTaperedCapsuleBody::Unserialise(InputArchive& arch)
+	{
+		FBodyShape::Unserialise( arch );
+			
+		uint32 ver;
+		arch >> ver;
+		check(ver == 0);
+
+		arch >> Position;
+		arch >> Orientation;
+		arch >> Radius0;
+		arch >> Radius1;
+		arch >> Length;
+	}
+
+
+	//-------------------------------------------------------------------------------------------------
+	void FConvexBody::Serialise(OutputArchive& arch) const
+	{
+		FBodyShape::Serialise( arch );
+	
+		uint32 ver = 0;
+		arch << ver;
+
+		arch << Vertices;
+		arch << Indices;
+		arch << Transform;
+	}
+
+
+	//-------------------------------------------------------------------------------------------------
+	void FConvexBody::Unserialise(InputArchive& arch)
+	{
+		FBodyShape::Unserialise( arch );
+
+		uint32 ver;
+		arch >> ver;
+		check(ver == 0);
+
+		arch >> Vertices;
+		arch >> Indices;
+		arch >> Transform;
+	}
+
+
+	//-------------------------------------------------------------------------------------------------
+	void FPhysicsBodyAggregate::Serialise(OutputArchive& arch) const
+	{
+		uint32 ver = 0;
+		arch << ver;
+		
+		arch << Spheres;
+		arch << Boxes;
+		arch << Convex;
+		arch << Sphyls;
+		arch << TaperedCapsules;
+	}
+
+
+	//-------------------------------------------------------------------------------------------------
+	void FPhysicsBodyAggregate::Unserialise(InputArchive& arch)
+	{
+		uint32 ver;
+		arch >> ver;
+		check(ver == 0);
+		
+		arch >> Spheres;
+		arch >> Boxes;
+		arch >> Convex;
+		arch >> Sphyls;
+		arch >> TaperedCapsules;
+	}
+
+
 	//-------------------------------------------------------------------------------------------------
 	mu::Ptr<PhysicsBody> PhysicsBody::Clone() const
 	{
 		mu::Ptr<PhysicsBody> pResult = new PhysicsBody();
 
+		pResult->CustomId = CustomId;
+
 		pResult->Bodies = Bodies;
-		pResult->Bones = Bones;
-		pResult->CustomIds = CustomIds;
+		pResult->BoneIds = BoneIds;
+		pResult->BodiesCustomIds = BodiesCustomIds;
+
+		pResult->bBodiesModified = bBodiesModified;
+
 
 		return pResult;
+	}
+
+	//-------------------------------------------------------------------------------------------------
+	void PhysicsBody::SetCustomId(int32 InCustomId)
+	{
+		CustomId = InCustomId;
+	}
+
+	//-------------------------------------------------------------------------------------------------
+	int32 PhysicsBody::GetCustomId() const
+	{
+		return CustomId;
 	}
 
 	//-------------------------------------------------------------------------------------------------
 	void PhysicsBody::SetBodyCount(int32 Count)
 	{
 		Bodies.SetNum(Count);
-		Bones.SetNum(Count);
-		CustomIds.Init(-1, Count);
+		BoneIds.SetNum(Count);
+		BodiesCustomIds.Init(-1, Count);
 	}
 
 	//-------------------------------------------------------------------------------------------------
@@ -49,35 +269,33 @@ namespace mu
 	}
 
 	//-------------------------------------------------------------------------------------------------
-	const char* PhysicsBody::GetBodyBoneName(int32 B) const
+	uint16 PhysicsBody::GetBodyBoneId(int32 B) const
 	{
-		check(B >= 0 && B < Bones.Num());
-
-		return Bones[B].c_str();
+		check(BoneIds.IsValidIndex(B));
+		return BoneIds[B];
 	}
 
 	//-------------------------------------------------------------------------------------------------
-	void PhysicsBody::SetBodyBoneName(int32 B, const char* BoneName)
+	void PhysicsBody::SetBodyBoneId(int32 B, const uint16 BoneId)
 	{
-		check(B >= 0 && B < Bones.Num());
-
-		Bones[B] = BoneName;
+		check(BoneIds.IsValidIndex(B));
+		BoneIds[B] = BoneId;
 	}
 
 	//-------------------------------------------------------------------------------------------------
 	int32 PhysicsBody::GetBodyCustomId(int32 B) const
 	{
-		check(B >= 0 && B < CustomIds.Num());
+		check(B >= 0 && B < BodiesCustomIds.Num());
 
-		return CustomIds[B];
+		return BodiesCustomIds[B];
 	}
 
 	//-------------------------------------------------------------------------------------------------
-	void PhysicsBody::SetBodyCustomId(int32 B, int32 CustomId)
+	void PhysicsBody::SetBodyCustomId(int32 B, int32 BodyCustomId)
 	{
-		check(B >= 0 && B < CustomIds.Num());
+		check(B >= 0 && B < BodiesCustomIds.Num());
 
-		CustomIds[B] = CustomId;
+		BodiesCustomIds[B] = BodyCustomId;
 	}
 
 	//-------------------------------------------------------------------------------------------------
@@ -487,4 +705,58 @@ namespace mu
 		return Bodies[B].TaperedCapsules[I].Name.c_str();
 	}
 
+
+	//-------------------------------------------------------------------------------------------------
+	void PhysicsBody::Serialise(OutputArchive& arch) const
+	{
+		uint32 ver = 3;
+		arch << ver;
+        	
+		arch << CustomId;
+		arch << Bodies;
+		arch << BoneIds;
+		arch << BodiesCustomIds;
+		arch << bBodiesModified;
+	}
+
+
+	//-------------------------------------------------------------------------------------------------
+	void PhysicsBody::Unserialise(InputArchive& arch)
+	{
+		uint32 ver;
+		arch >> ver;
+		check(ver <= 3);
+        	
+		if (ver >= 2)
+		{
+			arch >> CustomId;
+		}
+        	
+		arch >> Bodies;
+
+		if (ver >= 3)
+		{
+			arch >> BoneIds;
+		}
+		else
+		{
+			TArray<string> BoneNames;
+			arch >> BoneNames;
+
+			const int32 NumBoneNames = BoneNames.Num();
+			TArray<string> UniqueBoneNames;
+			UniqueBoneNames.Reserve(NumBoneNames);
+			BoneIds.Reserve(NumBoneNames);
+			for (int32 BoneIndex = 0; BoneIndex < NumBoneNames; ++BoneIndex)
+			{
+				BoneIds.Add((uint16)UniqueBoneNames.AddUnique(BoneNames[BoneIndex]));
+			}
+		}
+		arch >> BodiesCustomIds;
+
+		if (ver >= 1)
+		{
+			arch >> bBodiesModified;
+		}
+	}
 }

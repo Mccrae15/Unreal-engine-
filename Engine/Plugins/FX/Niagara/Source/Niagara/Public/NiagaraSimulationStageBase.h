@@ -7,6 +7,7 @@
 #include "NiagaraCommon.h"
 #include "NiagaraTypes.h"
 #include "NiagaraConstants.h"
+#include "NiagaraParameterBinding.h"
 #include "NiagaraSimulationStageCompileData.h"
 #include "NiagaraSimulationStageBase.generated.h"
 
@@ -15,13 +16,13 @@ class UNiagaraScript;
 /**
 * A base class for niagara simulation stages.  This class should be derived to add stage specific information.
 */
-UCLASS(abstract)
-class NIAGARA_API UNiagaraSimulationStageBase : public UNiagaraMergeable
+UCLASS(abstract, MinimalAPI)
+class UNiagaraSimulationStageBase : public UNiagaraMergeable
 {
 	GENERATED_BODY()
 
 public:
-	static const FName ParticleSpawnUpdateName;
+	static NIAGARA_API const FName ParticleSpawnUpdateName;
 
 	UNiagaraSimulationStageBase()
 	{
@@ -37,25 +38,26 @@ public:
 	UPROPERTY()
 	uint32 bEnabled : 1;
 
-	virtual bool AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const;
 #if WITH_EDITORONLY_DATA
-	virtual bool FillCompilationData(TArray<FNiagaraSimulationStageCompilationData>& CompilationSimStageData) const PURE_VIRTUAL(UNiagaraSimulationStageBase::FillCompileSimStageData, return false;);
+	NIAGARA_API virtual bool AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const;
+
+	NIAGARA_API virtual bool FillCompilationData(TArray<FNiagaraSimulationStageCompilationData>& CompilationSimStageData) const PURE_VIRTUAL(UNiagaraSimulationStageBase::FillCompileSimStageData, return false;);
 	/** Return the FName to use in place of the default for the location in the stack context. If this would be the default, return NAME_None.*/
 	virtual FName GetStackContextReplacementName() const { return NAME_None; }
-	void SetEnabled(bool bEnabled);
-	void RequestRecompile();
-	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+	NIAGARA_API void SetEnabled(bool bEnabled);
+	NIAGARA_API void RequestRecompile();
+	NIAGARA_API virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 
 	UPROPERTY()
 	FGuid OuterEmitterVersion;
 	
-	FVersionedNiagaraEmitterData* GetEmitterData() const;
-	FVersionedNiagaraEmitter GetOuterEmitter() const;
+	NIAGARA_API FVersionedNiagaraEmitterData* GetEmitterData() const;
+	NIAGARA_API FVersionedNiagaraEmitter GetOuterEmitter() const;
 #endif
 };
 
-UCLASS(meta = (DisplayName = "Generic Simulation Stage"))
-class NIAGARA_API UNiagaraSimulationStageGeneric : public UNiagaraSimulationStageBase
+UCLASS(meta = (DisplayName = "Generic Simulation Stage"), MinimalAPI)
+class UNiagaraSimulationStageGeneric : public UNiagaraSimulationStageBase
 {
 	GENERATED_BODY()
 
@@ -74,15 +76,10 @@ public:
 	/**
 	Number of times (or iterations) the simulation stage will execute in a row.
 	For example, setting this to 10 will mean this simulation stage runs 10 times in a row before the next stage.
-	*/
-	UPROPERTY(EditAnywhere, Category = "Simulation Stage", meta = (NoSpinbox = "true", ClampMin = 1, DisplayName = "Num Iterations"))
-	int32 Iterations = 1;
-
-	/**
-	Optional integer binding allowing scripts to control the number of iterations.
+	Can also be bound to a attribute so the simulation can dynamically decide
 	*/
 	UPROPERTY(EditAnywhere, Category = "Simulation Stage")
-	FNiagaraVariableAttributeBinding NumIterationsBinding;
+	FNiagaraParameterBindingWithValue NumIterations;
 
 	/**
 	Controls when the simulation stage should execute, only valid for data interface iteration stages
@@ -128,8 +125,17 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Simulation Stage")
 	uint32 bOverrideGpuDispatchNumThreads : 1;
 
+	/** Parameter binding / constant value for Num Threads X */
 	UPROPERTY(EditAnywhere, Category = "Simulation Stage")
-	FIntVector OverrideGpuDispatchNumThreads = FIntVector(64, 1, 1);
+	FNiagaraParameterBindingWithValue OverrideGpuDispatchNumThreadsX;
+
+	/** Parameter binding / constant value for Num Threads Y */
+	UPROPERTY(EditAnywhere, Category = "Simulation Stage", meta = (EditCondition = "DirectDispatchType == ENiagaraGpuDispatchType::TwoD || DirectDispatchType == ENiagaraGpuDispatchType::ThreeD"))
+	FNiagaraParameterBindingWithValue OverrideGpuDispatchNumThreadsY;
+
+	/** Parameter binding / constant value for Num Threads Z */
+	UPROPERTY(EditAnywhere, Category = "Simulation Stage", meta = (EditCondition = "DirectDispatchType == ENiagaraGpuDispatchType::ThreeD"))
+	FNiagaraParameterBindingWithValue OverrideGpuDispatchNumThreadsZ;
 
 	/** Dimensions to use for dispatch. */
 	UPROPERTY(EditAnywhere, Category = "Simulation Stage")
@@ -145,7 +151,7 @@ public:
 	set an int to the triangle count in an emitter script and bind that as the element count.
 	*/
 	UPROPERTY(EditAnywhere, Category = "Simulation Stage", meta = (DisplayName = "ElementCount X"))
-	FNiagaraVariableAttributeBinding ElementCountXBinding;
+	FNiagaraParameterBindingWithValue ElementCountX;
 
 	/**
 	Integer binding to override the number of elements the stage will execute along Y.
@@ -153,7 +159,7 @@ public:
 	in an emitter script and bind that as the element count.
 	*/
 	UPROPERTY(EditAnywhere, Category = "Simulation Stage", meta = (DisplayName = "ElementCount Y", EditCondition = "DirectDispatchType == ENiagaraGpuDispatchType::TwoD || DirectDispatchType == ENiagaraGpuDispatchType::ThreeD"))
-	FNiagaraVariableAttributeBinding ElementCountYBinding;
+	FNiagaraParameterBindingWithValue ElementCountY;
 
 	/**
 	Integer binding to override the number of elements the stage will execute along Z.
@@ -161,12 +167,21 @@ public:
 	in an emitter script and bind that as the element count.
 	*/
 	UPROPERTY(EditAnywhere, Category = "Simulation Stage", meta = (DisplayName = "ElementCount Z", EditCondition = "DirectDispatchType == ENiagaraGpuDispatchType::ThreeD"))
-	FNiagaraVariableAttributeBinding ElementCountZBinding;
+	FNiagaraParameterBindingWithValue ElementCountZ;
 
 #if WITH_EDITORONLY_DATA
 	// Deprecated Properties
 	UPROPERTY()
 	FNiagaraVariableAttributeBinding ElementCountBinding_DEPRECATED;
+
+	UPROPERTY()
+	FNiagaraVariableAttributeBinding ElementCountXBinding_DEPRECATED;
+
+	UPROPERTY()
+	FNiagaraVariableAttributeBinding ElementCountYBinding_DEPRECATED;
+
+	UPROPERTY()
+	FNiagaraVariableAttributeBinding ElementCountZBinding_DEPRECATED;
 
 	UPROPERTY()
 	uint32 bSpawnOnly_DEPRECATED : 1;
@@ -176,19 +191,31 @@ public:
 
 	UPROPERTY()
 	ENiagaraGpuDispatchType OverrideGpuDispatchType_DEPRECATED = ENiagaraGpuDispatchType::OneD;
+
+	UPROPERTY()
+	int32 Iterations_DEPRECATED = 1;
+
+	UPROPERTY()
+	FNiagaraVariableAttributeBinding NumIterationsBinding_DEPRECATED;
+
+	UPROPERTY()
+	FIntVector OverrideGpuDispatchNumThreads_DEPRECATED = FIntVector(64, 1, 1);
 #endif
 	//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-	virtual void PostInitProperties() override;
-	virtual void PostLoad() override;
-	virtual bool AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const override;
+	NIAGARA_API virtual void PostInitProperties() override;
+	NIAGARA_API virtual void PostLoad() override;
 #if WITH_EDITORONLY_DATA
-	virtual bool FillCompilationData(TArray<FNiagaraSimulationStageCompilationData>& CompilationSimStageData) const override;
+	NIAGARA_API virtual bool AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const override;
+	NIAGARA_API virtual bool FillCompilationData(TArray<FNiagaraSimulationStageCompilationData>& CompilationSimStageData) const override;
+	NIAGARA_API virtual void RenameEmitter(const FName& InOldName, const UNiagaraEmitter* InRenamedEmitter);
+	NIAGARA_API virtual void RenameVariable(const FNiagaraVariableBase& OldVariable, const FNiagaraVariableBase& NewVariable, const FVersionedNiagaraEmitter& InEmitter);
+	NIAGARA_API virtual void RemoveVariable(const FNiagaraVariableBase& OldVariable, const FVersionedNiagaraEmitter& InEmitter);
 #endif
 #if WITH_EDITOR
-	virtual FName GetStackContextReplacementName() const override; 
+	NIAGARA_API virtual FName GetStackContextReplacementName() const override; 
 
-	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+	NIAGARA_API virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 };

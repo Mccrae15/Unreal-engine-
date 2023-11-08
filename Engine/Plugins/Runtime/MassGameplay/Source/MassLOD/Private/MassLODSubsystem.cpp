@@ -6,6 +6,12 @@
 #include "WorldPartition/WorldPartitionStreamingSource.h"
 #include "Engine/World.h"
 #include "MassSimulationSubsystem.h"
+#if WITH_EDITOR
+#include "CoreGlobals.h" // GIsEditor
+#include "Editor.h" // GEditor
+#include "LevelEditorViewport.h"
+#include "Editor/EditorEngine.h"
+#endif // WITH_EDITOR
 
 namespace UE
 {
@@ -26,14 +32,19 @@ void UMassLODSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	Collection.InitializeDependency(UMassSimulationSubsystem::StaticClass());
 
 	Super::Initialize(Collection);
-	SynchronizeViewers();
 	
 	if (UWorld* World = GetWorld())
 	{
 		UMassSimulationSubsystem* SimSystem = World->GetSubsystem<UMassSimulationSubsystem>();
 		check(SimSystem);
 		SimSystem->GetOnProcessingPhaseStarted(EMassProcessingPhase::PrePhysics).AddUObject(this, &UMassLODSubsystem::OnPrePhysicsPhaseStarted);
+#if WITH_EDITOR
+		bIgnorePlayerControllersDueToSimulation = (GEditor && GEditor->IsSimulateInEditorInProgress());
+		bUseEditorLevelViewports = bIgnorePlayerControllersDueToSimulation || (GIsEditor && World->WorldType == EWorldType::Editor);
+#endif // WITH_EDITOR
 	}
+
+	SynchronizeViewers();
 }
 
 void UMassLODSubsystem::OnPrePhysicsPhaseStarted(float DeltaTime)
@@ -136,7 +147,11 @@ void UMassLODSubsystem::SynchronizeViewers()
 			continue;
 		}
 
-		if (ViewerInfo.PlayerController != nullptr)
+		if (ViewerInfo.PlayerController != nullptr
+#if WITH_EDITOR
+			&& bIgnorePlayerControllersDueToSimulation == false
+#endif // WITH_EDITOR
+			)
 		{
 			LocalViewerMap.Add(GetTypeHash(ViewerInfo.PlayerController->GetFName()), ViewerInfo.Handle);
 		}
@@ -144,6 +159,16 @@ void UMassLODSubsystem::SynchronizeViewers()
 		{
 			LocalViewerMap.Add(GetTypeHash(ViewerInfo.StreamingSourceName), ViewerInfo.Handle);
 		}
+#if WITH_EDITOR
+		else if (bUseEditorLevelViewports && ViewerInfo.EditorViewportClientIndex != INDEX_NONE
+			&& GEditor && GEditor->GetLevelViewportClients().IsValidIndex(ViewerInfo.EditorViewportClientIndex)
+			&& GEditor->GetLevelViewportClients()[ViewerInfo.EditorViewportClientIndex])
+		{
+			
+			const int32 HashValue = GetTypeHash(GEditor->GetLevelViewportClients()[ViewerInfo.EditorViewportClientIndex]);
+			LocalViewerMap.Add(HashValue, ViewerInfo.Handle);
+		}
+#endif // WITH_EDITOR
 		else
 		{
 			// Safe to remove while iterating as it is a sparse array with a free list
@@ -164,7 +189,7 @@ void UMassLODSubsystem::SynchronizeViewers()
 			if (LocalViewerMap.Remove(GetTypeHash(PlayerController->GetFName())) == 0)
 			{
 				// If not add it to the list
-				AddViewer(PlayerController);
+				AddPlayerViewer(*PlayerController);
 			}
 		}
 
@@ -173,10 +198,29 @@ void UMassLODSubsystem::SynchronizeViewers()
 		{
 			if (LocalViewerMap.Remove(GetTypeHash(StreamingSource.Name)) == 0)
 			{
-				AddViewer(nullptr, StreamingSource.Name);
+				AddStreamingSourceViewer(StreamingSource.Name);
 			}
 		}
 	}
+#if WITH_EDITOR
+	if (bUseEditorLevelViewports)
+	{
+		CA_ASSUME(GEditor);
+		for (int32 ClientIndex = 0; ClientIndex < GEditor->GetLevelViewportClients().Num(); ++ClientIndex)
+		{
+			const FLevelEditorViewportClient* LevelVC = GEditor->GetLevelViewportClients()[ClientIndex];
+			if (LevelVC && LevelVC->IsPerspective())
+			{
+				const int32 HashValue = GetTypeHash(LevelVC);
+				if (LocalViewerMap.Remove(HashValue) == 0)
+				{
+					AddEditorViewer(HashValue, ClientIndex);
+				}
+			}
+		}
+	}
+	
+#endif // WITH_EDITOR
 
 	// Anything left in the map need to be removed from the list
 	for (TMap<uint32, FMassViewerHandle>::TIterator Itr = LocalViewerMap.CreateIterator(); Itr; ++Itr)
@@ -222,6 +266,18 @@ void UMassLODSubsystem::SynchronizeViewers()
 				//ViewerInfo.AspectRatio = MinViewInfo.AspectRatio;
 			}
 		}
+#if WITH_EDITOR
+		else if (bUseEditorLevelViewports && ViewerInfo.EditorViewportClientIndex != INDEX_NONE)
+		{
+			CA_ASSUME(GEditor);
+			const FLevelEditorViewportClient* LevelVC = GEditor->GetLevelViewportClients()[ViewerInfo.EditorViewportClientIndex];
+			checkSlow(LevelVC);
+			ViewerInfo.bEnabled = LevelVC && LevelVC->IsPerspective();
+			ViewerInfo.Location = LevelVC->GetViewLocation();
+			ViewerInfo.Rotation = LevelVC->GetViewRotation();
+			
+		}
+#endif // WITH_EDITOR
 		else
 		{
 			checkf(!ViewerInfo.StreamingSourceName.IsNone(), TEXT("Expecting to have a streamingsourcename if the playercontroller is null"));
@@ -239,37 +295,75 @@ void UMassLODSubsystem::SynchronizeViewers()
 
 void UMassLODSubsystem::AddViewer(APlayerController* PlayerController, FName StreamingSourceName /* = NAME_None*/)
 {
-	const int32 HashValue = PlayerController ? GetTypeHash(PlayerController->GetFName()) : GetTypeHash(StreamingSourceName);
+	if (PlayerController)
+	{
+		AddPlayerViewer(*PlayerController);
+	}
+	else
+	{
+		AddStreamingSourceViewer(StreamingSourceName);
+	}
+}
+
+void UMassLODSubsystem::AddPlayerViewer(APlayerController& PlayerController)
+{
+#if WITH_EDITOR
+	if (bIgnorePlayerControllersDueToSimulation)
+	{
+		return;
+	}
+#endif // WITH_EDITOR
+
+	const int32 HashValue = GetTypeHash(PlayerController.GetFName());
 
 	FMassViewerHandle& ViewerHandle = ViewerMap.FindOrAdd(HashValue, FMassViewerHandle());
 	if (ViewerHandle.IsValid())
 	{
 		// We are only interested to set the player controller if it was not already set.
-		if (PlayerController)
+		const int32 ViewerHandleIdx = GetValidViewerIdx(ViewerHandle);
+		check(ViewerHandleIdx != INDEX_NONE);
+
+		FViewerInfo& ViewerInfo = Viewers[ViewerHandleIdx];
+		check(ViewerInfo.PlayerController == nullptr);
+		ViewerInfo.PlayerController = &PlayerController;
+	}
+	else
+	{
+		// Add new viewer
+#if UE_ALLOW_DEBUG_REPLICATION_DUPLICATE_VIEWERS_PER_CONTROLLER
+		//for debugging / profiling purposes create DebugNumberViwersPerController
+		//in this case ViewerMap will only contain a hash to the most recent viewer handle created.
+		for (int Idx = 0; Idx < UE::MassLOD::DebugNumberViewersPerController; ++Idx)
+#endif //UE_ALLOW_DEBUG_REPLICATION_DUPLICATE_VIEWERS_PER_CONTROLLER
 		{
-			const int32 ViewerHandleIdx = GetValidViewerIdx(ViewerHandle);
-			check(ViewerHandleIdx != INDEX_NONE);
+			const bool bAddNew = ViewerFreeIndices.Num() == 0;
+			const int NewIdx = bAddNew ? Viewers.Num() : ViewerFreeIndices.Pop();
+			FViewerInfo& NewViewerInfo = bAddNew ? Viewers.AddDefaulted_GetRef() : Viewers[NewIdx];
+			NewViewerInfo.PlayerController = &PlayerController;
+			NewViewerInfo.Handle.Index = NewIdx;
+			NewViewerInfo.Handle.SerialNumber = GetNextViewerSerialNumber();
+			NewViewerInfo.HashValue = HashValue;
 
-			FViewerInfo& ViewerInfo = Viewers[ViewerHandleIdx];
-			check(ViewerInfo.PlayerController == nullptr);
-			ViewerInfo.PlayerController = PlayerController;
-			PlayerController->OnEndPlay.AddUniqueDynamic(this, &UMassLODSubsystem::OnPlayerControllerEndPlay);
+			ViewerHandle = NewViewerInfo.Handle;
+
+			OnViewerAddedDelegate.Broadcast(NewViewerInfo);
 		}
-
-		return;
 	}
 
-	// Add new viewer
-#if UE_ALLOW_DEBUG_REPLICATION_DUPLICATE_VIEWERS_PER_CONTROLLER
-	//for debugging / profiling purposes create DebugNumberViwersPerController
-	//in this case ViewerMap will only contain a hash to the most recent viewer handle created.
-	for (int Idx = 0; Idx < UE::MassLOD::DebugNumberViewersPerController; ++Idx)
-#endif //UE_ALLOW_DEBUG_REPLICATION_DUPLICATE_VIEWERS_PER_CONTROLLER
+	PlayerController.OnEndPlay.AddUniqueDynamic(this, &UMassLODSubsystem::OnPlayerControllerEndPlay);
+}
+
+void UMassLODSubsystem::AddStreamingSourceViewer(const FName StreamingSourceName)
+{
+	const int32 HashValue = GetTypeHash(StreamingSourceName);
+
+	FMassViewerHandle& ViewerHandle = ViewerMap.FindOrAdd(HashValue, FMassViewerHandle());
+	// only add new viewer if it hasn't been added yet
+	if (ViewerHandle.IsValid() == false)
 	{
 		const bool bAddNew = ViewerFreeIndices.Num() == 0;
 		const int NewIdx = bAddNew ? Viewers.Num() : ViewerFreeIndices.Pop();
 		FViewerInfo& NewViewerInfo = bAddNew ? Viewers.AddDefaulted_GetRef() : Viewers[NewIdx];
-		NewViewerInfo.PlayerController = PlayerController;
 		NewViewerInfo.StreamingSourceName = StreamingSourceName;
 		NewViewerInfo.Handle.Index = NewIdx;
 		NewViewerInfo.Handle.SerialNumber = GetNextViewerSerialNumber();
@@ -277,14 +371,32 @@ void UMassLODSubsystem::AddViewer(APlayerController* PlayerController, FName Str
 
 		ViewerHandle = NewViewerInfo.Handle;
 
-		OnViewerAddedDelegate.Broadcast(NewViewerInfo.Handle, NewViewerInfo.PlayerController, NewViewerInfo.StreamingSourceName);
-	}
-
-	if(PlayerController)
-	{
-		PlayerController->OnEndPlay.AddUniqueDynamic(this, &UMassLODSubsystem::OnPlayerControllerEndPlay);
+		OnViewerAddedDelegate.Broadcast(NewViewerInfo);
 	}
 }
+
+#if WITH_EDITOR
+void UMassLODSubsystem::AddEditorViewer(const int32 HashValue, const int32 ClientIndex)
+{
+	FMassViewerHandle& ViewerHandle = ViewerMap.FindOrAdd(HashValue, FMassViewerHandle());
+	// only add new viewer if it hasn't been added yet
+	if (ViewerHandle.IsValid() == false)
+	{
+		const bool bAddNew = ViewerFreeIndices.Num() == 0;
+		const int NewIdx = bAddNew ? Viewers.Num() : ViewerFreeIndices.Pop();
+		FViewerInfo& NewViewerInfo = bAddNew ? Viewers.AddDefaulted_GetRef() : Viewers[NewIdx];
+
+		NewViewerInfo.EditorViewportClientIndex = ClientIndex;
+		NewViewerInfo.Handle.Index = NewIdx;
+		NewViewerInfo.Handle.SerialNumber = GetNextViewerSerialNumber();
+		NewViewerInfo.HashValue = HashValue;
+
+		ViewerHandle = NewViewerInfo.Handle;
+
+		OnViewerAddedDelegate.Broadcast(NewViewerInfo);
+	}
+}
+#endif // WITH_EDITOR
 
 void UMassLODSubsystem::RemoveViewer(const FMassViewerHandle& ViewerHandle)
 {
@@ -317,7 +429,7 @@ void UMassLODSubsystem::RemoveViewerInternal(const FMassViewerHandle& ViewerHand
 	check(ViewerIdx != INDEX_NONE);
 	FViewerInfo& ViewerInfo = Viewers[ViewerIdx];
 
-	OnViewerRemovedDelegate.Broadcast(ViewerInfo.Handle, ViewerInfo.PlayerController, ViewerInfo.StreamingSourceName);
+	OnViewerRemovedDelegate.Broadcast(ViewerInfo);
 
 	if (ViewerInfo.PlayerController)
 	{
@@ -347,10 +459,17 @@ void FViewerInfo::Reset()
 {
 	Handle.Invalidate();
 	PlayerController = nullptr;
+#if WITH_EDITOR
+	EditorViewportClientIndex = INDEX_NONE;
+#endif // WITH_EDITOR
 	HashValue = 0;
 }
 
 bool FViewerInfo::IsLocal() const
 {
-	return (PlayerController && PlayerController->IsLocalController()) || !StreamingSourceName.IsNone();
+	return (PlayerController && PlayerController->IsLocalController()) || !StreamingSourceName.IsNone()
+#if WITH_EDITOR
+		|| EditorViewportClientIndex != INDEX_NONE
+#endif // WITH_EDITOR
+		;
 }

@@ -5,9 +5,12 @@
 #include "MVVM/ViewModels/SectionModel.h"
 #include "MVVM/ViewModels/SequenceModel.h"
 #include "MVVM/ViewModels/TrackAreaViewModel.h"
+#include "MVVM/ViewModels/SequencerEditorViewModel.h"
 #include "MVVM/Views/STrackAreaView.h"
+#include "MVVM/Selection/Selection.h"
 
 #include "IKeyArea.h"
+#include "MovieScene.h"
 #include "Sequencer.h"
 #include "SequencerHotspots.h"
 #include "ISequencerEditTool.h"
@@ -56,8 +59,8 @@ struct FSequencerKeyRendererInterface : IKeyRendererInterface
 	{
 		TSharedPtr<FKeyHotspot> KeyHotspot = HotspotCast<FKeyHotspot>(Hotspot);
 
-		SelectedKeys     = &Sequencer->GetSelection().GetRawSelectedKeys();
-		SelectionPreview = &Sequencer->GetSelectionPreview().GetRawDefinedKeyStates();
+		SelectedKeys     = &Sequencer->GetViewModel()->GetSelection()->KeySelection.GetSelected();
+		SelectionPreview = &Sequencer->GetSelectionPreview().GetDefinedKeyStates();
 		HoveredKeys      = KeyHotspot ? &KeyHotspot->RawKeys : nullptr;
 	}
 
@@ -125,7 +128,7 @@ FChannelViewKeyCachedState::FChannelViewKeyCachedState(TRange<FFrameTime> InVisi
 	ValidPlayRangeMax = UE::MovieScene::DiscreteExclusiveUpper(ValidKeyRange);
 	VisibleRange = InVisibleRange;
 	KeySizePx = FVector2D(12, 12);
-	SelectionSerial = Sequencer->GetSelection().GetSerialNumber();
+	SelectionSerial = Sequencer->GetViewModel()->GetSelection()->GetSerialNumber();
 	SelectionPreviewHash = Sequencer->GetSelectionPreview().GetSelectionHash();
 	bShowCurve = Channel && Channel->GetKeyArea()->ShouldShowCurve();
 	bShowKeyBars = Sequencer->GetSequencerSettings()->GetShowKeyBars();
@@ -250,10 +253,15 @@ FReply SChannelView::OnMouseButtonDown(const FGeometry& MyGeometry, const FPoint
 		if (NewKeys.Num())
 		{
 			TSharedPtr<FSequencer> Sequencer = LegacyGetSequencer();
-			Sequencer->GetSelection().EmptySelectedKeys();
+			FKeySelection& KeySelection = Sequencer->GetViewModel()->GetSelection()->KeySelection;
+
+			KeySelection.Empty();
 			for (const FSequencerSelectedKey& NewKey : NewKeys)
 			{
-				Sequencer->GetSelection().AddToSelection(NewKey);
+				if (TSharedPtr<FChannelModel> Channel = NewKey.WeakChannel.Pin())
+				{
+					KeySelection.Select(Channel, NewKey.KeyHandle);
+				}
 			}
 
 			// Pass the event to the tool to copy the hovered key and move it
@@ -375,11 +383,16 @@ FReply SChannelView::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointer
 		{
 			Sequencer->SnapToFrame();
 
-			for (const FSequencerSelectedKey& SelectedKey : Sequencer->GetSelection().GetSelectedKeys())
+			FSequencerSelection& Selection = *Sequencer->GetViewModel()->GetSelection();
+			for (FKeyHandle Key : Selection.KeySelection)
 			{
-				const FFrameNumber CurrentTime = SelectedKey.WeakChannel.Pin()->GetKeyArea()->GetKeyTime(SelectedKey.KeyHandle);
-				Sequencer->SetLocalTime(CurrentTime, ESnapTimeMode::STM_Interval);
-				break;
+				TSharedPtr<FChannelModel> Channel = Selection.KeySelection.GetModelForKey(Key);
+				if (Channel)
+				{
+					const FFrameNumber CurrentTime = Channel->GetKeyArea()->GetKeyTime(Key);
+					Sequencer->SetLocalTime(CurrentTime, ESnapTimeMode::STM_Interval);
+					break;
+				}
 			}
 		}
 		GEditor->EndTransaction();
@@ -489,9 +502,12 @@ int32 SChannelView::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeo
 		LayerId = Channel->CustomPaint(ChannelPaintArgs, LayerId);
 	}
 
+	TSharedPtr<ISequencerSection> SectionInterface = Section->GetSectionInterface();
+
 	FSequencerKeyRendererInterface KeyRenderInterface(Sequencer.Get(), TrackArea->GetHotspot());
 	FChannelViewKeyCachedState NewCachedState(VisibleRange, TrackArea->GetHotspot(), Model, Sequencer.Get());
 	NewCachedState.bIsChannelHovered = IsHovered();
+	NewCachedState.KeySizePx = SectionInterface->GetKeySize();
 
 	FKeyBatchParameters Params(RelativeTimeToPixel);
 	Params.CacheState = KeyRendererCache.IsSet() ? NewCachedState.CompareTo(KeyRendererCache.GetValue()) : EViewDependentCacheFlags::All;
@@ -556,7 +572,7 @@ int32 SChannelView::DrawLane(const FPaintArgs& Args, const FGeometry& AllottedGe
 
 	FLinearColor HighlightColor;
 	bool bDrawHighlight = false;
-	if (Sequencer->GetSelection().NodeHasSelectedKeysOrSections(OutlinerItem.AsModel()))
+	if (Sequencer->GetSelection().NodeHasSelectedKeysOrSections(OutlinerItem))
 	{
 		bDrawHighlight = true;
 		HighlightColor = FLinearColor(1.0f, 1.0f, 1.0f, 0.15f);
@@ -588,7 +604,7 @@ int32 SChannelView::DrawLane(const FPaintArgs& Args, const FGeometry& AllottedGe
 
 	// --------------------------------------------
 	// Draw outliner selection tint
-	if (Selection.IsSelected(OutlinerItem.AsModel()))
+	if (Selection.Outliner.IsSelected(OutlinerItem))
 	{
 		static const FName SelectionColorName("SelectionColor");
 		static const FName SelectedTrackTintBrushName("Sequencer.Section.SelectedTrackTint");
@@ -711,8 +727,6 @@ void SChannelView::CreateKeysUnderMouse(const FVector2D& MousePosition, const FG
 	{
 		TSharedPtr<FTrackModel>             TrackModel             = Section->FindAncestorOfType<FTrackModel>();
 		TSharedPtr<IObjectBindingExtension> ObjectBindingExtension = Section->FindAncestorOfType<IObjectBindingExtension>();
-
-		FGuid ObjectBinding = ObjectBindingExtension ? ObjectBindingExtension->GetObjectGuid() : FGuid();
 
 		FVector2D LocalSpaceMousePosition = AllottedGeometry.AbsoluteToLocal(MousePosition);
 		const FFrameTime CurrentTime = RelativeTimeToPixel.PixelToFrame(LocalSpaceMousePosition.X);

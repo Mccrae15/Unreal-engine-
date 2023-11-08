@@ -26,8 +26,7 @@ using FUniqueNetIdEOSPlusRef = TSharedRef<const class FUniqueNetIdEOSPlus>;
  * Unique net id wrapper for a EOS plus another account id. The underlying string is a combination
  * of both account ids concatenated
  */
-class FUniqueNetIdEOSPlus :
-	public FUniqueNetIdString
+class FUniqueNetIdEOSPlus : public FUniqueNetId
 {
 public:
 	template<typename... TArgs>
@@ -37,9 +36,12 @@ public:
 	}
 
 // FUniqueNetId interface
+	virtual FName GetType() const override;
 	virtual const uint8* GetBytes() const override;
 	virtual int32 GetSize() const override;
 	virtual bool IsValid() const override;
+	virtual FString ToString() const override;
+	virtual FString ToDebugString() const override;
 // ~FUniqueNetId interface
 
 	FUniqueNetIdPtr GetBaseNetId() const
@@ -55,7 +57,7 @@ public:
 	/** global static instance of invalid (zero) id */
 	static const FUniqueNetIdEOSPlusRef& EmptyId()
 	{
-		static const FUniqueNetIdEOSPlusRef EmptyId(Create());
+		static const FUniqueNetIdEOSPlusRef EmptyId(Create(nullptr, nullptr));
 		return EmptyId;
 	}
 
@@ -65,12 +67,6 @@ PACKAGE_SCOPE:
 	TArray<uint8> RawBytes;
 
 private:
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	FUniqueNetIdEOSPlus()
-	{
-	}
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
 	explicit FUniqueNetIdEOSPlus(FUniqueNetIdPtr InBaseUniqueNetId, FUniqueNetIdPtr InEOSUniqueNetId);
 };
 

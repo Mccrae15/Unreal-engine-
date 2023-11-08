@@ -9,8 +9,8 @@
 #include "Rigs/RigHierarchy.h"
 #include "ControlRig.h"
 #include "ControlRigBlueprint.h"
-#include "Editor/DetailsViewWrapperObject.h"
-#include "Graph/SControlRigGraphPinNameListValueWidget.h"
+#include "Editor/ControlRigWrapperObject.h"
+#include "Widgets/SRigVMGraphPinNameListValueWidget.h"
 #include "Editor/SControlRigGizmoNameList.h"
 #include "Styling/SlateTypes.h"
 #include "IPropertyUtilities.h"
@@ -219,7 +219,7 @@ public:
 			return GetElement<T>();
 		}
 
-		TWeakObjectPtr<UDetailsViewWrapperObject> WrapperObject;
+		TWeakObjectPtr<URigVMDetailsViewWrapperObject> WrapperObject;
 		FRigElementHandle Element;
 		FRigElementHandle DefaultElement;
 	};
@@ -250,6 +250,7 @@ protected:
 
 	TArray<FPerElementInfo> PerElementInfos;
 	FDelegateHandle MetadataHandle;
+	TArray<FControlRigInteractionScope*> InteractionScopes;
 	
 	TSharedPtr<SButton> SelectParentElementButton;
 };
@@ -360,6 +361,7 @@ public:
 
 	FText GetDisplayName() const;
 	void SetDisplayName(const FText& InNewText, ETextCommit::Type InCommitType);
+	FText GetDisplayNameForElement(const FRigElementKey& InKey) const;
 	void SetDisplayNameForElement(const FText& InNewText, ETextCommit::Type InCommitType, const FRigElementKey& InKeyToRename);
 	bool OnVerifyDisplayNameChanged(const FText& InText, FText& OutErrorMessage, const FRigElementKey& InKeyToRename);
 

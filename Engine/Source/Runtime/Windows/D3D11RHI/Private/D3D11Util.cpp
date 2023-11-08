@@ -8,6 +8,7 @@
 #include "EngineModule.h"
 #include "RendererInterface.h"
 #include "ProfilingDebugging/ScopedDebugInfo.h"
+#include "HAL/ExceptionHandling.h"
 
 #define D3DERR(x) case x: ErrorCodeText = TEXT(#x); break;
 #define LOCTEXT_NAMESPACE "Developer.MessageLog"
@@ -60,50 +61,6 @@ FString GetD3D11ErrorString(HRESULT ErrorCode, ID3D11Device* Device)
 
 #undef D3DERR
 
-const TCHAR* GetD3D11TextureFormatString(DXGI_FORMAT TextureFormat)
-{
-	static const TCHAR* EmptyString = TEXT("");
-	const TCHAR* TextureFormatText = EmptyString;
-#define D3DFORMATCASE(x) case x: TextureFormatText = TEXT(#x); break;
-	switch(TextureFormat)
-	{
-		D3DFORMATCASE(DXGI_FORMAT_R8G8B8A8_UNORM)
-		D3DFORMATCASE(DXGI_FORMAT_B8G8R8A8_UNORM)
-		D3DFORMATCASE(DXGI_FORMAT_B8G8R8X8_UNORM)
-		D3DFORMATCASE(DXGI_FORMAT_BC1_UNORM)
-		D3DFORMATCASE(DXGI_FORMAT_BC2_UNORM)
-		D3DFORMATCASE(DXGI_FORMAT_BC3_UNORM)
-		D3DFORMATCASE(DXGI_FORMAT_BC4_UNORM)
-		D3DFORMATCASE(DXGI_FORMAT_R16G16B16A16_FLOAT)
-		D3DFORMATCASE(DXGI_FORMAT_R32G32B32A32_FLOAT)
-		D3DFORMATCASE(DXGI_FORMAT_UNKNOWN)
-		D3DFORMATCASE(DXGI_FORMAT_R8_UNORM)
-		D3DFORMATCASE(DXGI_FORMAT_D32_FLOAT_S8X24_UINT)
-		D3DFORMATCASE(DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS)
-		D3DFORMATCASE(DXGI_FORMAT_R32G8X24_TYPELESS)
-		D3DFORMATCASE(DXGI_FORMAT_D24_UNORM_S8_UINT)
-		D3DFORMATCASE(DXGI_FORMAT_R24_UNORM_X8_TYPELESS)
-		D3DFORMATCASE(DXGI_FORMAT_R32_FLOAT)
-		D3DFORMATCASE(DXGI_FORMAT_R16G16_UINT)
-		D3DFORMATCASE(DXGI_FORMAT_R16G16_UNORM)
-		D3DFORMATCASE(DXGI_FORMAT_R16G16_SNORM)
-		D3DFORMATCASE(DXGI_FORMAT_R16G16_FLOAT)
-		D3DFORMATCASE(DXGI_FORMAT_R32G32_FLOAT)
-		D3DFORMATCASE(DXGI_FORMAT_R10G10B10A2_UNORM)
-		D3DFORMATCASE(DXGI_FORMAT_R16G16B16A16_UINT)
-		D3DFORMATCASE(DXGI_FORMAT_R8G8_SNORM)
-		D3DFORMATCASE(DXGI_FORMAT_BC5_UNORM)
-		D3DFORMATCASE(DXGI_FORMAT_R1_UNORM)
-		D3DFORMATCASE(DXGI_FORMAT_R8G8B8A8_TYPELESS)
-		D3DFORMATCASE(DXGI_FORMAT_B8G8R8A8_TYPELESS)
-		D3DFORMATCASE(DXGI_FORMAT_BC7_UNORM)
-		D3DFORMATCASE(DXGI_FORMAT_BC6H_UF16)
-		default: TextureFormatText = EmptyString;
-	}
-#undef D3DFORMATCASE
-	return TextureFormatText;
-}
-
 static FString GetD3D11TextureFlagString(uint32 TextureFlags)
 {
 	FString TextureFormatText = TEXT("");
@@ -142,14 +99,29 @@ static void TerminateOnDeviceRemoved(HRESULT D3DResult, ID3D11Device* Direct3DDe
 	if (D3DResult == DXGI_ERROR_DEVICE_REMOVED)
 	{
 #if NV_AFTERMATH
-		uint32 Result = 0xffffffff;
+		GFSDK_Aftermath_Result Result{};
 		uint32 bDeviceActive = 0;
 		if (GDX11NVAfterMathEnabled)
 		{
+			// Wait until the Aftermath crash dump has been handled.
+			GFSDK_Aftermath_CrashDump_Status AftermathStatus{};
+			GFSDK_Aftermath_GetCrashDumpStatus(&AftermathStatus);
+			if (AftermathStatus != GFSDK_Aftermath_CrashDump_Status_Unknown && AftermathStatus != GFSDK_Aftermath_CrashDump_Status_NotStarted)
+			{
+				const float StartTime = FPlatformTime::Seconds();
+				const float EndTime = StartTime + GDX11NVAfterMathDumpWaitTime;
+				while (AftermathStatus != GFSDK_Aftermath_CrashDump_Status_CollectingDataFailed
+					&& AftermathStatus != GFSDK_Aftermath_CrashDump_Status_Finished
+					&& FPlatformTime::Seconds() < EndTime)
+				{
+					FPlatformProcess::Sleep(0.01f);
+					GFSDK_Aftermath_GetCrashDumpStatus(&AftermathStatus);
+				}
+			}
+
 			GFSDK_Aftermath_Device_Status Status;
-			auto Res = GFSDK_Aftermath_GetDeviceStatus(&Status);
-			Result = uint32(Res);
-			if (Res == GFSDK_Aftermath_Result_Success)
+			Result = GFSDK_Aftermath_GetDeviceStatus(&Status);
+			if (Result == GFSDK_Aftermath_Result_Success)
 			{
 				bDeviceActive = Status == GFSDK_Aftermath_Device_Status_Active ? 1 : 0;
 			}
@@ -158,6 +130,9 @@ static void TerminateOnDeviceRemoved(HRESULT D3DResult, ID3D11Device* Direct3DDe
 #else
 		UE_LOG(LogD3D11RHI, Log, TEXT("[Aftermath] NV_AFTERMATH is not set"));
 #endif
+
+		// Report the GPU crash which will raise the exception
+		ReportGPUCrash(TEXT("GPU Crash dump Triggered"), nullptr);
 
 		GIsGPUCrashed = true;		
 		if (Direct3DDevice)
@@ -187,7 +162,7 @@ static void TerminateOnDeviceRemoved(HRESULT D3DResult, ID3D11Device* Direct3DDe
 		// Workaround for the fact that in non-monolithic builds the exe gets into a weird state and exception handling fails. 
 		// @todo investigate why non-monolithic builds fail to capture the exception when graphics driver crashes.
 #if !IS_MONOLITHIC
-		FPlatformMisc::RequestExit(true);
+		FPlatformMisc::RequestExit(true, TEXT("TerminateOnDeviceRemoved"));
 #endif
 	}
 }
@@ -233,7 +208,7 @@ static void TerminateOnOutOfMemory(HRESULT D3DResult, bool bCreatingTextures)
 		}
 		else
 		{
-			FPlatformMisc::RequestExit(true);
+			FPlatformMisc::RequestExit(true, TEXT("TerminateOnOutOfMemory"));
 		}
 	}
 }
@@ -276,12 +251,12 @@ void VerifyD3D11ShaderResult(FRHIShader* Shader, HRESULT D3DResult, const ANSICH
 
 void VerifyD3D11CreateTextureResult(HRESULT D3DResult, int32 UEFormat,const ANSICHAR* Code,const ANSICHAR* Filename,uint32 Line,uint32 SizeX,uint32 SizeY,uint32 SizeZ,uint8 D3DFormat,uint32 NumMips,uint32 Flags,
 	D3D11_USAGE Usage, uint32 CPUAccessFlags, uint32 MiscFlags, uint32 SampleCount, uint32 SampleQuality,
-	const void* SubResPtr, uint32 SubResPitch, uint32 SubResSlicePitch, ID3D11Device* Device)
+	const void* SubResPtr, uint32 SubResPitch, uint32 SubResSlicePitch, ID3D11Device* Device, const TCHAR* DebugName)
 {
 	check(FAILED(D3DResult));
 
 	const FString ErrorString = GetD3D11ErrorString(D3DResult, 0);
-	const TCHAR* D3DFormatString = GetD3D11TextureFormatString((DXGI_FORMAT)D3DFormat);
+	const TCHAR* D3DFormatString = UE::DXGIUtilities::GetFormatString((DXGI_FORMAT)D3DFormat);
 
 	FString DebugInfoString;
 
@@ -291,7 +266,7 @@ void VerifyD3D11CreateTextureResult(HRESULT D3DResult, int32 UEFormat,const ANSI
 	}
 
 	UE_LOG(LogD3D11RHI, Error,
-		TEXT("%s failed with error %s\n at %s:%u\n Size=%ix%ix%i PF=%d D3DFormat=%s(0x%08X), NumMips=%i, Flags=%s, Usage:0x%x, CPUFlags:0x%x, MiscFlags:0x%x, SampleCount:0x%x, SampleQuality:0x%x, SubresPtr:0x%p, SubresPitch:%i, SubresSlicePitch:%i, DebugInfo: %s"),
+		TEXT("%s failed with error %s\n at %s:%u\n Size=%ix%ix%i PF=%d D3DFormat=%s(0x%08X), NumMips=%i, Flags=%s, Usage:0x%x, CPUFlags:0x%x, MiscFlags:0x%x, SampleCount:0x%x, SampleQuality:0x%x, SubresPtr:0x%p, SubresPitch:%i, SubresSlicePitch:%i, Name:'%s', DebugInfo: %s"),
 		ANSI_TO_TCHAR(Code),
 		*ErrorString,
 		ANSI_TO_TCHAR(Filename),
@@ -312,6 +287,7 @@ void VerifyD3D11CreateTextureResult(HRESULT D3DResult, int32 UEFormat,const ANSI
 		SubResPtr,
 		SubResPitch,
 		SubResSlicePitch,
+		DebugName ? DebugName : TEXT(""),
 		*DebugInfoString);
 
 	TerminateOnDeviceRemoved(D3DResult, Device);
@@ -353,8 +329,8 @@ void VerifyD3D11ResizeViewportResult(
 	check(FAILED(D3DResult));
 
 	const FString ErrorString = GetD3D11ErrorString(D3DResult, 0);
-	const TCHAR* OldStateFormat = GetD3D11TextureFormatString(OldState.Format);
-	const TCHAR* NewStateFormat = GetD3D11TextureFormatString(NewState.Format);
+	const TCHAR* OldStateFormat = UE::DXGIUtilities::GetFormatString(OldState.Format);
+	const TCHAR* NewStateFormat = UE::DXGIUtilities::GetFormatString(NewState.Format);
 
 	UE_LOG(LogD3D11RHI, Error,
 		TEXT("%s failed with error %s\n at %s:%u\n (Size=%ix%i Fullscreen=%d Format=%s(0x%08X)) -> (Size=%ix%i Fullscreen=%d Format=%s(0x%08X))"),
@@ -406,7 +382,7 @@ void VerifyD3D11CreateViewResult(HRESULT D3DResult, const ANSICHAR* Code, const 
 	FormatSupport2.InFormat = Desc.Format;
 	Device->CheckFeatureSupport(D3D11_FEATURE_FORMAT_SUPPORT2, &FormatSupport2, sizeof(FormatSupport2));
 
-	const TCHAR* ViewFormat = GetD3D11TextureFormatString(Desc.Format);
+	const TCHAR* ViewFormat = UE::DXGIUtilities::GetFormatString(Desc.Format);
 
 	const FString& ErrorString = GetD3D11ErrorString(D3DResult, Device);
 

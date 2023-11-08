@@ -479,13 +479,13 @@ void FAndroidTargetSettingsCustomization::BuildLaunchImageSection(IDetailLayoutB
 		const FString TargetImagePath = GameAndroidPath / Info.IconPath;
 
 		// BEGIN META SECTION - Meta Quest Android device support
-		TAttribute<EVisibility> LaunchImageSettingsVisibility(
+		TAttribute<EVisibility> LaunchImageVisibility(
 			TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateStatic(LaunchImageSettingsVisibility, Info.IconName, PackageForMetaQuestProperty))
 		);
 		// END META SECTION - Meta Quest Android device support
 
 		LaunchImageCategory.AddCustomRow(Info.IconName)
-			.Visibility(LaunchImageSettingsVisibility)
+			.Visibility(LaunchImageVisibility)
 			.NameContent()
 			[
 				SNew(SHorizontalBox)

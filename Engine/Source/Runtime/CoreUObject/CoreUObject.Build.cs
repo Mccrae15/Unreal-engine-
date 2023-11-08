@@ -23,8 +23,7 @@ public class CoreUObject : ModuleRules
 		PrivateDependencyModuleNames.Add("Projects");
         PrivateDependencyModuleNames.Add("Json");
 
-		//@TODO: UE-127233
-		// UnsafeTypeCastWarningLevel = WarningLevel.Error;
+		UnsafeTypeCastWarningLevel = WarningLevel.Error;
 
 		if (Target.bBuildWithEditorOnlyData)
 		{
@@ -32,5 +31,7 @@ public class CoreUObject : ModuleRules
 		}
 
 		PrivateDefinitions.Add("UE_DEFINE_LEGACY_MATH_CONSTANT_MACRO_NAMES=0");
+
+		bAllowAutoRTFMInstrumentation = true;
 	}
 }

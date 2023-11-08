@@ -7,6 +7,7 @@
 #include "UObject/ObjectMacros.h"
 #include "LandscapeProxy.h"
 #include "LandscapeBlueprintBrushBase.h"
+#include "LandscapeEditTypes.h"
 #include "Delegates/DelegateCombinations.h"
 
 #include "Landscape.generated.h"
@@ -24,11 +25,6 @@ struct FUpdateLayersContentContext;
 struct FEditLayersHeightmapMergeParams;
 struct FEditLayersWeightmapMergeParams;
 
-namespace ELandscapeToolTargetType
-{
-	enum Type : int8;
-};
-
 namespace EditLayersHeightmapLocalMerge_RenderThread
 {
 	struct FMergeInfo;
@@ -44,7 +40,7 @@ extern LANDSCAPE_API TAutoConsoleVariable<int32> CVarLandscapeSplineFalloffModul
 #endif
 
 UENUM()
-enum ELandscapeSetupErrors : int
+enum UE_DEPRECATED(5.3, "ELandscapeSetupErrors is now unused and deprecated") ELandscapeSetupErrors : int
 {
 	LSE_None,
 	/** No Landscape Info available. */
@@ -131,9 +127,13 @@ struct FLandscapeLayerBrush
 
 #if WITH_EDITOR
 	UTextureRenderTarget2D* Render(bool InIsHeightmap, const FIntRect& InLandscapeSize, UTextureRenderTarget2D* InLandscapeRenderTarget, const FName& InWeightmapLayerName = NAME_None);
+	
+	UTextureRenderTarget2D* RenderLayer(const FIntRect& InLandscapeSize, const FLandscapeBrushParameters& InParameters);
+
 	LANDSCAPE_API ALandscapeBlueprintBrushBase* GetBrush() const;
-	bool IsAffectingHeightmap() const;
-	bool IsAffectingWeightmapLayer(const FName& InWeightmapLayerName) const;
+	bool AffectsHeightmap() const;
+	bool AffectsWeightmapLayer(const FName& InWeightmapLayerName) const;
+	bool AffectsVisibilityLayer() const;
 	void SetOwner(ALandscape* InOwner);
 #endif
 
@@ -175,8 +175,6 @@ struct FLandscapeLayer
 		, WeightmapAlpha(1.0f)
 		, BlendMode(LSBM_AdditiveBlend)
 	{}
-
-	FLandscapeLayer(const FLandscapeLayer& OtherLayer) = default;
 
 	UPROPERTY(meta = (IgnoreForMemberInitializationTest))
 	FGuid Guid;
@@ -237,11 +235,6 @@ public:
 	LANDSCAPE_API static void SplitHeightmap(ULandscapeComponent* Comp, ALandscapeProxy* TargetProxy = nullptr, class FMaterialUpdateContext* InOutUpdateContext = nullptr, TArray<class FComponentRecreateRenderStateContext>* InOutRecreateRenderStateContext = nullptr, bool InReregisterComponent = true);
 	
 	//~ Begin UObject Interface.
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
-	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
-	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 	virtual void PreEditChange(FProperty* PropertyThatWillChange) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditMove(bool bFinished) override;
@@ -267,18 +260,20 @@ public:
 	LANDSCAPE_API bool IsUpToDate() const;
 	LANDSCAPE_API void TickLayers(float DeltaTime);
 
+	LANDSCAPE_API void SetLODGroupKey(uint32 InLODGroupKey);
+	LANDSCAPE_API uint32 GetLODGroupKey();
+
 	UFUNCTION(BlueprintCallable, Category = "Landscape|Runtime")
 	LANDSCAPE_API void RenderHeightmap(const FTransform& InWorldTransform, const FBox2D& InExtents, UTextureRenderTarget2D* OutRenderTarget);
 
 	bool IsValidRenderTargetFormatHeightmap(EPixelFormat InRenderTargetFormat, bool& bOutCompressHeight);
 
 #if WITH_EDITOR
-	LANDSCAPE_API virtual bool IsNaniteEnabled() const override;
 	/** Computes & returns bounds containing all landscape proxies (if any) or this landscape's bounds otherwise. Note that in non-WP worlds this will call GetLoadedBounds(). */
 	LANDSCAPE_API FBox GetCompleteBounds() const;
-	LANDSCAPE_API void RegisterLandscapeEdMode(ILandscapeEdModeInterface* InLandscapeEdMode) { LandscapeEdMode = InLandscapeEdMode; }
-	LANDSCAPE_API void UnregisterLandscapeEdMode() { LandscapeEdMode = nullptr; }
-	LANDSCAPE_API bool HasLandscapeEdMode() const { return LandscapeEdMode != nullptr; }
+	void RegisterLandscapeEdMode(ILandscapeEdModeInterface* InLandscapeEdMode) { LandscapeEdMode = InLandscapeEdMode; }
+	void UnregisterLandscapeEdMode() { LandscapeEdMode = nullptr; }
+	bool HasLandscapeEdMode() const { return LandscapeEdMode != nullptr; }
 	LANDSCAPE_API virtual bool HasLayersContent() const override;
 	LANDSCAPE_API virtual void UpdateCachedHasLayersContent(bool bInCheckComponentDataIntegrity) override;
 	LANDSCAPE_API void RequestSplineLayerUpdate();
@@ -360,6 +355,8 @@ public:
 	LANDSCAPE_API bool GetUseGeneratedLandscapeSplineMeshesActors() const;
 	LANDSCAPE_API bool PrepareTextureResources(bool bInWaitForStreaming);
 
+	bool GetVisibilityLayerAllocationIndex() const { return 0; }
+
 protected:
 	FName GenerateUniqueLayerName(FName InName = NAME_None) const;
 
@@ -370,7 +367,7 @@ private:
 	void UpdateLayersContent(bool bInWaitForStreaming = false, bool bInSkipMonitorLandscapeEdModeChanges = false, bool bIntermediateRender = false, bool bFlushRender = false);
 	void MonitorShaderCompilation();
 	void MonitorLandscapeEdModeChanges();
-	
+
 	int32 RegenerateLayersHeightmaps(const FUpdateLayersContentContext& InUpdateLayersContentContext);
 	int32 PerformLayersHeightmapsLocalMerge(const FUpdateLayersContentContext& InUpdateLayersContentContext, const FEditLayersHeightmapMergeParams& InMergeParams);
 	int32 PerformLayersHeightmapsGlobalMerge(const FUpdateLayersContentContext& InUpdateLayersContentContext, const FEditLayersHeightmapMergeParams& InMergeParams);
@@ -381,6 +378,7 @@ private:
 	int32 PerformLayersWeightmapsGlobalMerge(FUpdateLayersContentContext& InUpdateLayersContentContext, const FEditLayersWeightmapMergeParams& InMergeParams);
 	void ResolveLayersWeightmapTexture(const FTextureToComponentHelper& MapHelper, const TSet<UTexture2D*>& WeightmapsToResolve, bool bIntermediateRender, bool bFlushRender, TArray<FLandscapeEditLayerComponentReadbackResult>& InOutComponentReadbackResults);
 
+	bool HasTextureDataChanged(TArrayView<const FColor> InOldData, TArrayView<const FColor> InNewData, bool bInIsWeightmap, uint64 InPreviousHash, uint64& OutNewHash) const;
 	bool ResolveLayersTexture(FTextureToComponentHelper const& MapHelper, FLandscapeEditLayerReadback* InCPUReadBack, UTexture2D* InOutputTexture, bool bIntermediateRender,	bool bFlushRender,
 		TArray<FLandscapeEditLayerComponentReadbackResult>& InOutComponentReadbackResults, bool bIsWeightmap);
 
@@ -437,25 +435,20 @@ private:
 	void PrintLayersDebugWeightData(const FString& InContext, const TArray<FColor>& InWeightmapData, const FIntPoint& InDataSize, uint8 InMipRender) const;
 
 	void UpdateWeightDirtyData(ULandscapeComponent* InLandscapeComponent, UTexture2D const* InWeightmap, FColor const* InOldData, FColor const* InNewData, uint8 InChannel);
-	void OnDirtyWeightmap(FTextureToComponentHelper const& MapHelper, UTexture2D const* InWeightmap, FColor const* InOldData, FColor const* InNewData);
+	void OnDirtyWeightmap(FTextureToComponentHelper const& MapHelper, UTexture2D const* InWeightmap, FColor const* InOldData, FColor const* InNewData, int32 InMipLevel);
 	void UpdateHeightDirtyData(ULandscapeComponent* InLandscapeComponent, UTexture2D const* InHeightmap, FColor const* InOldData, FColor const* InNewData);
-	void OnDirtyHeightmap(FTextureToComponentHelper const& MapHelper, UTexture2D const* InWeightmap, FColor const* InOldData, FColor const* InNewData);
+	void OnDirtyHeightmap(FTextureToComponentHelper const& MapHelper, UTexture2D const* InWeightmap, FColor const* InOldData, FColor const* InNewData, int32 InMipLevel);
 
 	static bool IsTextureReady(UTexture2D* InTexture, bool bInWaitForStreaming);
 	static bool IsMaterialResourceCompiled(FMaterialResource* InMaterialResource, bool bInWaitForCompilation);
 #endif // WITH_EDITOR
 
+private:
+	void MarkAllLandscapeRenderStateDirty();
+
 public:
 
 #if WITH_EDITORONLY_DATA
-	/** Use Nanite to render landscape as a mesh on supported platforms. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Nanite)
-	bool bEnableNanite = false;
-
-	/** LOD level of the landscape when generating the Nanite mesh. Mostly there for debug reasons, since Nanite is meant to allow high density meshes, we want to use 0 most of the times. */
-	UPROPERTY(EditAnywhere, Category = Nanite, AdvancedDisplay, meta = (EditCondition = "bEnableNanite"))
-	int32 NaniteLODIndex = 0;
-
 	/** Landscape actor has authority on default streaming behavior for new actors : LandscapeStreamingProxies & LandscapeSplineActors */
 	UPROPERTY(EditAnywhere, Category = WorldPartition)
 	bool bAreNewLandscapeActorsSpatiallyLoaded = true;
@@ -525,7 +518,7 @@ private:
 		int32 ViewMode;
 		FGuid SelectedLayer;
 		TWeakObjectPtr<ULandscapeLayerInfoObject> SelectedLayerInfoObject;
-		ELandscapeToolTargetType::Type ToolTarget;
+		ELandscapeToolTargetType ToolTarget;
 	};
 
 	FLandscapeEdModeInfo LandscapeEdModeInfo;
@@ -555,7 +548,6 @@ private:
 	TSharedPtr<FLandscapeNotification> WaitingForTexturesNotification;
 	TSharedPtr<FLandscapeNotification> WaitingForBrushesNotification;
 	TSharedPtr<FLandscapeNotification> InvalidShadingModelNotification;
-	TSharedPtr<FLandscapeNotification> TextureBakingNotification;
 	TSharedPtr<FLandscapeNotification> GrassRenderingNotification;
 
 	// Represent all the resolved paint layer, from all layers blended together (size of the landscape x material layer count)
@@ -573,11 +565,11 @@ private:
 };
 
 #if WITH_EDITOR
-class LANDSCAPE_API FScopedSetLandscapeEditingLayer
+class FScopedSetLandscapeEditingLayer
 {
 public:
-	FScopedSetLandscapeEditingLayer(ALandscape* InLandscape, const FGuid& InLayerGUID, TFunction<void()> InCompletionCallback = TFunction<void()>());
-	~FScopedSetLandscapeEditingLayer();
+	LANDSCAPE_API FScopedSetLandscapeEditingLayer(ALandscape* InLandscape, const FGuid& InLayerGUID, TFunction<void()> InCompletionCallback = TFunction<void()>());
+	LANDSCAPE_API ~FScopedSetLandscapeEditingLayer();
 
 private:
 	TWeakObjectPtr<ALandscape> Landscape;

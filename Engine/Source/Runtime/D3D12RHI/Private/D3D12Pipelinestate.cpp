@@ -15,7 +15,39 @@ static TAutoConsoleVariable<float> CVarPSOStallWarningThresholdInMs(
 	TEXT("Value is in milliseconds. (100 is the default)\n"),
 	ECVF_ReadOnly);
 
+int32 GPSOPrecacheKeepLowLevel = 0;
+static FAutoConsoleVariableRef CVarPSOPrecacheKeepLowLevel(
+	TEXT("D3D12.PSOPrecache.KeepLowLevel"),
+	GPSOPrecacheKeepLowLevel,
+	TEXT("Keep in memory the d3d12 PSO blob for precached PSOs. Consumes more memory but reduces stalls.\n"),
+	ECVF_ReadOnly
+);
+
 /// @cond DOXYGEN_WARNINGS
+
+static void TranslateRenderTargetFormats(
+	const FGraphicsPipelineStateInitializer& PsoInit,
+	D3D12_RT_FORMAT_ARRAY& RTFormatArray,
+	DXGI_FORMAT& DSVFormat)
+{
+	RTFormatArray.NumRenderTargets = PsoInit.ComputeNumValidRenderTargets();
+
+	for (uint32 RTIdx = 0; RTIdx < PsoInit.RenderTargetsEnabled; ++RTIdx)
+	{
+		checkSlow(PsoInit.RenderTargetFormats[RTIdx] == PF_Unknown || GPixelFormats[PsoInit.RenderTargetFormats[RTIdx]].Supported);
+
+		DXGI_FORMAT PlatformFormat = (DXGI_FORMAT)GPixelFormats[PsoInit.RenderTargetFormats[RTIdx]].PlatformFormat;
+		ETextureCreateFlags Flags = PsoInit.RenderTargetFlags[RTIdx];
+
+		RTFormatArray.RTFormats[RTIdx] = UE::DXGIUtilities::FindShaderResourceFormat(UE::DXGIUtilities::GetPlatformTextureResourceFormat(PlatformFormat, Flags), EnumHasAnyFlags(Flags, ETextureCreateFlags::SRGB));
+	}
+
+	checkSlow(PsoInit.DepthStencilTargetFormat == PF_Unknown || GPixelFormats[PsoInit.DepthStencilTargetFormat].Supported);
+
+	DXGI_FORMAT PlatformFormat = (DXGI_FORMAT)GPixelFormats[PsoInit.DepthStencilTargetFormat].PlatformFormat;
+
+	DSVFormat = UE::DXGIUtilities::FindDepthStencilFormat(UE::DXGIUtilities::GetPlatformTextureResourceFormat(PlatformFormat, PsoInit.DepthStencilTargetFlag));
+}
 
 static FD3D12LowLevelGraphicsPipelineStateDesc GetLowLevelGraphicsPipelineStateDesc(const FGraphicsPipelineStateInitializer& Initializer, const FD3D12RootSignature* RootSignature)
 {
@@ -377,7 +409,7 @@ FD3D12GraphicsPipelineState::~FD3D12GraphicsPipelineState()
 		check(RefCount > 0);
         // precache PSO are here to avoid hitches at runtime when we want to create one that is actually used. We don't need to keep them
 		// around as this can add up to a lot of system memory
-		if (PipelineStateInitializer.bPSOPrecache && RefCount == 1) 
+		if (PipelineStateInitializer.bPSOPrecache && RefCount == 1 && GPSOPrecacheKeepLowLevel == 0)
 		{
 			FD3D12DynamicRHI* D3D12RHI = FD3D12DynamicRHI::GetD3DRHI();
 			FD3D12PipelineStateCache& PSOCache = D3D12RHI->GetAdapter().GetPSOCache();

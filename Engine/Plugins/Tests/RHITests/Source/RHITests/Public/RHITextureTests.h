@@ -25,7 +25,7 @@ public:
 			// Test clear whole resource to zero
 			for (uint32 Mip = 0; Mip < TextureRHI->GetNumMips(); ++Mip)
 			{
-				FUnorderedAccessViewRHIRef MipUAV = RHICreateUnorderedAccessView(TextureRHI, Mip);
+				FUnorderedAccessViewRHIRef MipUAV = RHICmdList.CreateUnorderedAccessView(TextureRHI, Mip);
 
 				ValueType ZerosValue;
 				FMemory::Memset(&ZerosValue, 0, sizeof(ZerosValue));
@@ -77,7 +77,7 @@ public:
 			// Clear the selected mip index to the provided value
 			
 			RHICmdList.Transition(FRHITransitionInfo(TextureRHI, ERHIAccess::CopySrc, ERHIAccess::UAVCompute));
-			FUnorderedAccessViewRHIRef SpecificMipUAV = RHICreateUnorderedAccessView(TextureRHI, MipIndex);
+			FUnorderedAccessViewRHIRef SpecificMipUAV = RHICmdList.CreateUnorderedAccessView(TextureRHI, MipIndex);
 			(RHICmdList.*ClearPtr)(SpecificMipUAV, ClearValue);
 
 			RHICmdList.Transition(FRHITransitionInfo(TextureRHI, ERHIAccess::UAVCompute, ERHIAccess::CopySrc));
@@ -262,14 +262,14 @@ public:
 			if (Texture && SRVFormat != PF_Unknown)
 			{
 				FRHITextureSRVCreateInfo ViewInfo(0, 1, SRVFormat);
-				FShaderResourceViewRHIRef SRV = RHICreateShaderResourceView(Texture, ViewInfo);
+				FShaderResourceViewRHIRef SRV = RHICmdList.CreateShaderResourceView(Texture, ViewInfo);
 				bResult = (SRV != nullptr);
 			}
 
 			// TODO
 			if (Texture && UAVFormat != PF_Unknown)
 			{
-				//RHICreateUnorderedAccessView(Texture, 0, UAVFormat);
+				//RHICmdList.CreateUnorderedAccessView(Texture, 0, UAVFormat);
 			}
 		}
 		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
@@ -716,6 +716,12 @@ public:
 			case PF_R32G32B32_UINT:
 			case PF_R32G32B32_SINT:
 			case PF_R9G9B9EXP5:
+			case PF_ASTC_4x4_NORM_RG:
+			case PF_ASTC_6x6_NORM_RG:
+			case PF_ASTC_8x8_NORM_RG:
+			case PF_ASTC_10x10_NORM_RG:
+			case PF_ASTC_12x12_NORM_RG:
+			case PF_P010:
 				break;
 
 			case PF_G8:

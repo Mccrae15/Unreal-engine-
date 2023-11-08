@@ -84,6 +84,7 @@ if (botname === '__TEST__') {
 			['additionalSlackChannelForBlockages', 'additionalSlackChannel', null],
 			['postMessagesToAdditionalChannelOnly', 'postOnlyToAdditionalChannel', null],
 			['lastGoodCLPath', 'lastGoodCLPath', null],
+			['waitingForCISLink', 'waitingForCISLink', null],
 			['disallowSkip', 'disallowSkip', null],
 			['incognitoMode', 'incognitoMode', null],
 			['excludeAuthors', 'excludeAuthors', 'override'],
@@ -234,6 +235,7 @@ if (botname === '__TEST__') {
 			notify: (options.notify || []).concat(this.config.globalNotify),
 			forceFlowTo: [], // will compute
 			defaultFlow: options.defaultFlow || [],
+			macros: options.macros,
 			blockAssetTargets: new Set<string>(),
 			enabled: !options.disabled,
 			allowDeadend: !options.disallowDeadend,
@@ -321,7 +323,7 @@ if (botname === '__TEST__') {
 // temporarily. Probably worth rewriting entirely, given current knowledge.
 
 		// automatically alias streamName if specified
-		if (options.streamName && !this.config.noStreamAliases) {
+		if (options.streamName && !options.streamSubpath && !this.config.noStreamAliases) {
 			this.alias(name, options.streamName)
 		}
 

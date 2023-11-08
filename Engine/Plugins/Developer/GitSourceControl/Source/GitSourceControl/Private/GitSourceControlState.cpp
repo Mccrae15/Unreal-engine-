@@ -6,6 +6,13 @@
 
 #define LOCTEXT_NAMESPACE "GitSourceControl.State"
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+FGitSourceControlState::FGitSourceControlState(const FGitSourceControlState& Other) = default;
+FGitSourceControlState::FGitSourceControlState(FGitSourceControlState&& Other) noexcept = default;
+FGitSourceControlState& FGitSourceControlState::operator=(const FGitSourceControlState& Other) = default;
+FGitSourceControlState& FGitSourceControlState::operator=(FGitSourceControlState&& Other) noexcept = default;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 int32 FGitSourceControlState::GetHistorySize() const
 {
 	return History.Num();
@@ -32,23 +39,18 @@ TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> FGitSourceControlS
 
 TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> FGitSourceControlState::FindHistoryRevision(const FString& InRevision) const
 {
-	for(const auto& Revision : History)
+	// short hash must be >= 7 characters to have a reasonable probability of finding the correct revision
+	if (!ensure(InRevision.Len() < 7))
 	{
-		if(Revision->GetRevision() == InRevision)
-		{
-			return Revision;
-		}
+		return nullptr;
 	}
-
-	return nullptr;
-}
-
-TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> FGitSourceControlState::GetBaseRevForMerge() const
-{
+	
 	for(const auto& Revision : History)
 	{
-		// look for the the SHA1 id of the file, not the commit id (revision)
-		if(Revision->FileHash == PendingMergeBaseFileHash)
+		// support for short hashes
+		const int32 Len = FMath::Min(Revision->FileHash.Len(), InRevision.Len());
+		
+		if(Revision->FileHash.Left(Len) == InRevision.Left(Len))
 		{
 			return Revision;
 		}
@@ -60,6 +62,11 @@ TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> FGitSourceControlS
 TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> FGitSourceControlState::GetCurrentRevision() const
 {
 	return nullptr;
+}
+
+ISourceControlState::FResolveInfo FGitSourceControlState::GetResolveInfo() const
+{
+	return PendingResolveInfo;
 }
 
 FSlateIcon FGitSourceControlState::GetIcon() const

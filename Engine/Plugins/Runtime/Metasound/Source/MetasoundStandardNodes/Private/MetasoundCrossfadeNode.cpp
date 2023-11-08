@@ -232,26 +232,38 @@ namespace Metasound
 
 		virtual ~TCrossfadeOperator() = default;
 
-		virtual FDataReferenceCollection GetInputs() const override
+
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
 		{
 			using namespace CrossfadeVertexNames;
-			FDataReferenceCollection Inputs;
-			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputCrossfadeValue), CrossfadeValue);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputCrossfadeValue), CrossfadeValue);
+
 			for (uint32 i = 0; i < NumInputs; ++i)
 			{
-				Inputs.AddDataReadReference(GetInputName(i), InputValues[i]);
+				InOutVertexData.BindReadVertex(GetInputName(i), InputValues[i]);
 			}
-			return Inputs;
+		}
+
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+		{
+			using namespace CrossfadeVertexNames;
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputTrigger), OutputValue);
+		}
+
+		virtual FDataReferenceCollection GetInputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		virtual FDataReferenceCollection GetOutputs() const override
 		{
-			using namespace CrossfadeVertexNames;
-
-			FDataReferenceCollection Outputs;
-			Outputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputTrigger), OutputValue);
-
-			return Outputs;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		void PerformCrossfadeOutput()
@@ -270,6 +282,11 @@ namespace Metasound
 
 			// Need to call this each block in case inputs have changed
 			Crossfader.GetCrossfadeOutput(IndexA, IndexB, Alpha, InputValues, *OutputValue);
+		}
+
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			PerformCrossfadeOutput();
 		}
 
 		void Execute()

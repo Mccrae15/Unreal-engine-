@@ -22,19 +22,54 @@ using Grpc.Core;
 using Horde.Agent.Parser;
 using Horde.Agent.Services;
 using Horde.Agent.Utility;
+using Horde.Common;
+using Horde.Common.Rpc;
 using Horde.Storage.Utility;
 using HordeCommon;
 using HordeCommon.Rpc;
+using HordeCommon.Rpc.Messages;
 using HordeCommon.Rpc.Tasks;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using OpenTracing;
 using OpenTracing.Util;
 
 namespace Horde.Agent.Execution
 {
-	abstract class JobExecutor
+	interface IJobExecutor
+	{
+		Task InitializeAsync(ILogger logger, CancellationToken cancellationToken);
+		Task<JobStepOutcome> RunAsync(BeginStepResponse step, ILogger logger, CancellationToken cancellationToken);
+		Task FinalizeAsync(ILogger logger, CancellationToken cancellationToken);
+	}
+
+	class JobExecutorOptions
+	{
+		public ISession Session { get; }
+		public IServerStorageFactory StorageFactory { get; }
+		public string JobId { get; }
+		public string BatchId { get; }
+		public BeginBatchResponse Batch { get; }
+		public NamespaceId NamespaceId { get; }
+		public string StoragePrefix { get; }
+		public string Token { get; }
+		public JobOptions JobOptions { get; }
+
+		public JobExecutorOptions(ISession session, IServerStorageFactory storageFactory, string jobId, string batchId, BeginBatchResponse batch, NamespaceId namespaceId, string storagePrefix, string token, JobOptions jobOptions)
+		{
+			Session = session;
+			StorageFactory = storageFactory;
+			JobId = jobId;
+			BatchId = batchId;
+			Batch = batch;
+			NamespaceId = namespaceId;
+			StoragePrefix = storagePrefix;
+			Token = token;
+			JobOptions = jobOptions;
+		}
+	}
+
+	abstract class JobExecutor : IJobExecutor
 	{
 		protected class ExportedNode
 		{
@@ -90,6 +125,8 @@ namespace Horde.Agent.Execution
 		class TraceEvent
 		{
 			public string Name { get; set; } = "Unknown";
+			public string? SpanId { get; set; }
+			public string? ParentId { get; set; }
 			public string? Service { get; set; }
 			public string? Resource { get; set; }
 			public DateTimeOffset StartTime { get; set; }
@@ -108,12 +145,20 @@ namespace Horde.Agent.Execution
 		class TraceSpan
 		{
 			public string? Name { get; set; }
+			public string? SpanId { get; set; }
+			public string? ParentId { get; set; }
 			public string? Service { get; set; }
 			public string? Resource { get; set; }
 			public long Start { get; set; }
 			public long Finish { get; set; }
 			public Dictionary<string, string>? Properties { get; set; }
 			public List<TraceSpan>? Children { get; set; }
+
+			public void AddChild(TraceSpan child)
+			{
+				Children ??= new List<TraceSpan>();
+				Children.Add(child);
+			}
 		}
 
 		class TestDataItem
@@ -145,70 +190,60 @@ namespace Horde.Agent.Execution
 		protected string? _scriptFileName;
 		protected bool _preprocessScript;
 
-		protected string _jobId;
-		protected string _batchId;
-		protected string _agentTypeName;
-
-		protected IHttpClientFactory _httpClientFactory;
-		
 		/// <summary>
 		/// Logger for the local agent process (as opposed to job logger)
 		/// </summary>
-		readonly protected ILogger _logger;
+		protected readonly ILogger _logger;
 
-		protected GetJobResponse _job;
-		protected GetStreamResponse _stream;
-		protected GetAgentTypeResponse _agentType;
+		protected readonly string _jobId;
+		protected readonly string _batchId;
+		protected readonly BeginBatchResponse _batch;
 
 		protected List<string> _additionalArguments = new List<string>();
 
 		protected bool _compileAutomationTool = true;
 
 		protected readonly ISession _session;
+		protected readonly IServerStorageFactory _storageFactory;
+		private readonly NamespaceId _namespaceId;
+		private readonly string _storagePrefix;
+		private readonly string _token;
+		protected readonly JobOptions _jobOptions;
+
 		protected IRpcConnection RpcConnection => _session.RpcConnection;
 		protected Dictionary<string, string> _remapAgentTypes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
 		protected Dictionary<string, string> _envVars = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-		public bool UseNewLogger { get; private set; }
+		private XgeMetadataExtractor? _xgeMetadataExtractor;
 
-		public JobExecutor(ISession session, string jobId, string batchId, string agentTypeName, IHttpClientFactory httpClientFactory, ILogger logger)
+		public JobExecutor(JobExecutorOptions options, ILogger logger)
 		{
-			_session = session;
+			_session = options.Session;
+			_storageFactory = options.StorageFactory;
 
-			_jobId = jobId;
-			_batchId = batchId;
-			_agentTypeName = agentTypeName;
+			_jobId = options.JobId;
+			_batchId = options.BatchId;
+			_batch = options.Batch;
 
-			_httpClientFactory = httpClientFactory;
+			_namespaceId = options.NamespaceId;
+			_storagePrefix = options.StoragePrefix;
+			_token = options.Token;
+			_jobOptions = options.JobOptions;
+
+			_envVars["UE_HORDE_URL"] = options.Session.ServerUrl.ToString();
+			_envVars["UE_HORDE_TOKEN"] = options.Token;
+
 			_logger = logger;
-
-			_job = null!;
-			_stream = null!;
-			_agentType = null!;
 		}
 
-		public virtual async Task InitializeAsync(ILogger logger, CancellationToken cancellationToken)
+		public virtual Task InitializeAsync(ILogger logger, CancellationToken cancellationToken)
 		{
-			// Get the job settings
-			_job = await RpcConnection.InvokeAsync((HordeRpc.HordeRpcClient x) => x.GetJobAsync(new GetJobRequest(_jobId), null, null, cancellationToken), cancellationToken);
-
-			// Get the stream settings
-			_stream = await RpcConnection.InvokeAsync((HordeRpc.HordeRpcClient x) => x.GetStreamAsync(new GetStreamRequest(_job.StreamId), null, null, cancellationToken), cancellationToken);
-
-			// Get the agent type to determine how to configure this machine
-			_agentType = _stream.AgentTypes.FirstOrDefault(x => x.Key == _agentTypeName).Value;
-			if (_agentType == null)
-			{
-				_agentType = new GetAgentTypeResponse();
-			}
-
-			foreach (KeyValuePair<string, string> envVar in _agentType.Environment)
+			// Setup the agent type
+			foreach (KeyValuePair<string, string> envVar in _batch.Environment)
 			{
 				_envVars[envVar.Key] = envVar.Value;
 			}
-
-			logger.LogInformation("Configured as agent type {AgentType}", _agentTypeName);
 
 			// Figure out if we're running as an admin
 			if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
@@ -224,7 +259,7 @@ namespace Horde.Agent.Execution
 			}
 
 			// Get the BuildGraph arguments
-			foreach (string argument in _job.Arguments)
+			foreach (string argument in _batch.Arguments)
 			{
 				const string RemapAgentTypesPrefix = "-RemapAgentTypes=";
 				if (argument.StartsWith(RemapAgentTypesPrefix, StringComparison.OrdinalIgnoreCase))
@@ -246,10 +281,6 @@ namespace Horde.Agent.Execution
 				{
 					_preprocessScript = true;
 				}
-				else if (argument.Equals("-UseNewLogger", StringComparison.OrdinalIgnoreCase))
-				{
-					UseNewLogger = true;
-				}
 				else if (argument.StartsWith(TargetArgumentPrefix, StringComparison.OrdinalIgnoreCase))
 				{
 					_targets.Add(argument.Substring(TargetArgumentPrefix.Length));
@@ -259,10 +290,25 @@ namespace Horde.Agent.Execution
 					_additionalArguments.Add(argument);
 				}
 			}
-			if (_job.PreflightChange != 0)
+			if (_batch.PreflightChange != 0)
 			{
-				_additionalArguments.Add($"-set:PreflightChange={_job.PreflightChange}");
+				_additionalArguments.Add($"-set:PreflightChange={_batch.PreflightChange}");
 			}
+
+			if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+			{
+				DirectoryReference? xgeDir = XgeMetadataExtractor.FindXgeDir();
+				if (xgeDir != null)
+				{
+					_xgeMetadataExtractor = new XgeMetadataExtractor(xgeDir);
+				}
+				else
+				{
+					_logger.LogInformation("Unable to locate XGE directory. Not installed?");
+				}
+			}
+
+			return Task.CompletedTask;
 		}
 
 		public static bool IsUserAdministrator()
@@ -312,7 +358,7 @@ namespace Horde.Agent.Execution
 			}
 		}
 
-		public virtual Task FinalizeAsync(ILogger logger, CancellationToken cancellationToken)
+		public virtual Task FinalizeAsync(ILogger jobLogger, CancellationToken cancellationToken)
 		{
 			return Task.CompletedTask;
 		}
@@ -401,7 +447,7 @@ namespace Horde.Agent.Execution
 
 		protected abstract Task<bool> ExecuteAsync(BeginStepResponse step, ILogger logger, CancellationToken cancellationToken);
 
-		protected virtual async Task<bool> SetupAsync(BeginStepResponse step, DirectoryReference workspaceDir, DirectoryReference? sharedStorageDir, ILogger logger, CancellationToken cancellationToken)
+		protected virtual async Task<bool> SetupAsync(BeginStepResponse step, DirectoryReference workspaceDir, DirectoryReference? sharedStorageDir, bool? useP4, ILogger logger, CancellationToken cancellationToken)
 		{
 			FileReference definitionFile = FileReference.Combine(workspaceDir, "Engine", "Saved", "Horde", "Exported.json");
 
@@ -434,7 +480,7 @@ namespace Horde.Agent.Execution
 				arguments.Append($" CopyUAT -WithLauncher -TargetDir=\"{buildDir}\"");
 			}
 
-			int result = await ExecuteAutomationToolAsync(step, workspaceDir, arguments.ToString(), null, logger, cancellationToken);
+			int result = await ExecuteAutomationToolAsync(step, workspaceDir, sharedStorageDir, arguments.ToString(), useP4, logger, cancellationToken);
 			if (result != 0)
 			{
 				return false;
@@ -465,7 +511,7 @@ namespace Horde.Agent.Execution
 						thisAgentTypeName = validAgentTypeName;
 					}
 
-					if (_stream!.AgentTypes.ContainsKey(thisAgentTypeName))
+					if (_batch.ValidAgentTypes.Contains(thisAgentTypeName))
 					{
 						agentTypeName = thisAgentTypeName;
 						break;
@@ -575,17 +621,17 @@ namespace Horde.Agent.Execution
 					}
 				}
 
-				if (exportedBadge.Change == _job.Change || exportedBadge.Change == 0)
+				if (exportedBadge.Change == _batch.Change || exportedBadge.Change == 0)
 				{
 					createLabel.Change = LabelChange.Current;
 				}
-				else if (exportedBadge.Change == _job.CodeChange)
+				else if (exportedBadge.Change == _batch.CodeChange)
 				{
 					createLabel.Change = LabelChange.Code;
 				}
 				else
 				{
-					logger.LogWarning("Badge is set to display for changelist {Change}. This is neither the current changelist ({CurrentChange}) or the current code changelist ({CurrentCodeChange}).", exportedBadge.Change, _job.Change, _job.CodeChange);
+					logger.LogWarning("Badge is set to display for changelist {Change}. This is neither the current changelist ({CurrentChange}) or the current code changelist ({CurrentCodeChange}).", exportedBadge.Change, _batch.Change, _batch.CodeChange);
 				}
 
 				if (exportedBadge.Dependencies != null)
@@ -603,7 +649,7 @@ namespace Horde.Agent.Execution
 			}
 			
 
-			await RpcConnection.InvokeAsync((HordeRpc.HordeRpcClient x) => x.UpdateGraphAsync(updateGraph, null, null, cancellationToken), cancellationToken);
+			await RpcConnection.InvokeAsync((JobRpc.JobRpcClient x) => x.UpdateGraphAsync(updateGraph, null, null, cancellationToken), cancellationToken);
 
 			HashSet<string> validTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 			validTargets.Add("Setup Build");
@@ -619,6 +665,27 @@ namespace Horde.Agent.Execution
 
 			return true;
 		}
+		
+		private async Task UploadXgeMonitorFilesAsync(BeginStepResponse step, ILogger logger, CancellationToken cancellationToken)
+		{
+			if (_xgeMetadataExtractor != null && _jobOptions.CollectIbMonFilesAsArtifacts is true)
+			{
+				using IScope scope = GlobalTracer.Instance.BuildSpan("XgeMonitorFilesUpload").StartActive();
+				List<FileReference> ibMonFiles = _xgeMetadataExtractor.GetLocalIbMonFilePaths();
+
+				scope.Span.SetTag("NumIbMonFiles", ibMonFiles.Count);
+				ParallelOptions options = new () { MaxDegreeOfParallelism = 5, CancellationToken = cancellationToken };
+				await Parallel.ForEachAsync(ibMonFiles, options, async (file, innerCt) =>
+				{
+					string artifactName = "Xge/" + file.GetFileName()
+						.Replace("{", "", StringComparison.Ordinal)
+						.Replace("}", "", StringComparison.Ordinal);
+					
+					await ArtifactUploader.UploadAsync(RpcConnection, _jobId, _batchId, step.StepId,
+						artifactName, file, logger, innerCt);
+				});
+			}
+		}
 
 		private static void GetRecursiveDependencies(string name, Dictionary<string, ExportedNode> nameToNode, HashSet<string> dependencies)
 		{
@@ -632,7 +699,7 @@ namespace Horde.Agent.Execution
 			}
 		}
 
-		protected async Task<bool> ExecuteAsync(BeginStepResponse step, DirectoryReference workspaceDir, DirectoryReference? sharedStorageDir, ILogger logger, CancellationToken cancellationToken)
+		protected async Task<bool> ExecuteAsync(BeginStepResponse step, DirectoryReference workspaceDir, DirectoryReference? sharedStorageDir, bool? useP4, ILogger logger, CancellationToken cancellationToken)
 		{
 			StringBuilder arguments = new StringBuilder("BuildGraph");
 			if (_preprocessScript)
@@ -652,22 +719,24 @@ namespace Horde.Agent.Execution
 			arguments.AppendArgument("-SingleNode=", step.Name);
 //			Arguments.AppendArgument("-TokenSignature=", JobId.ToString());
 
-			bool manageSharedStorage = false;
 			foreach (string additionalArgument in _additionalArguments)
 			{
-				if (additionalArgument.Equals("-ManageSharedStorage", StringComparison.OrdinalIgnoreCase))
-				{
-					manageSharedStorage = true;
-				}
-				else if (!_preprocessScript || !additionalArgument.StartsWith("-set:", StringComparison.OrdinalIgnoreCase))
+				if (!_preprocessScript || !additionalArgument.StartsWith("-set:", StringComparison.OrdinalIgnoreCase))
 				{
 					arguments.AppendArgument(additionalArgument);
 				}
 			}
 
-			if (manageSharedStorage && sharedStorageDir != null)
+			if (_jobOptions.CollectIbMonFilesAsArtifacts is true)
 			{
-				return await ExecuteWithTempStorageAsync(step, workspaceDir, sharedStorageDir, arguments.ToString(), logger, cancellationToken);
+				_xgeMetadataExtractor?.ClearLocalIbMonFiles();	
+			}
+			
+			if (_jobOptions.UseNewTempStorage ?? false)
+			{
+				bool result = await ExecuteWithTempStorageAsync(step, workspaceDir, arguments.ToString(), useP4, logger, cancellationToken);
+				await UploadXgeMonitorFilesAsync(step, logger, cancellationToken);
+				return result;
 			}
 			else
 			{
@@ -675,57 +744,55 @@ namespace Horde.Agent.Execution
 				{
 					arguments.AppendArgument("-SharedStorageDir=", sharedStorageDir.FullName);
 				}
-				return await ExecuteAutomationToolAsync(step, workspaceDir, arguments.ToString(), null, logger, cancellationToken) == 0;
+				
+				bool result = await ExecuteAutomationToolAsync(step, workspaceDir, sharedStorageDir, arguments.ToString(), useP4, logger, cancellationToken) == 0;
+				await UploadXgeMonitorFilesAsync(step, logger, cancellationToken);
+				return result;
 			}
 		}
 
-		private async Task<bool> ExecuteWithTempStorageAsync(BeginStepResponse step, DirectoryReference workspaceDir, DirectoryReference sharedStorageDir, string arguments, ILogger logger, CancellationToken cancellationToken)
+		protected async Task CreateArtifactsAsync(string stepId, JobArtifactType type, DirectoryReference baseDir, IEnumerable<(string, FileReference)> files, ILogger logger, CancellationToken cancellationToken)
+		{
+			if (_jobOptions.UseNewTempStorage ?? false)
+			{
+				await CreateArtifactAsync(stepId, type, baseDir, files.Select(x => x.Item2), logger, cancellationToken);
+			}
+			else
+			{
+				await ArtifactUploader.UploadAsync(RpcConnection, _jobId, _batchId, stepId, files, logger, CancellationToken.None);
+			}
+		}
+
+		protected async Task CreateArtifactAsync(string stepId, JobArtifactType type, DirectoryReference baseDir, IEnumerable<FileReference> files, ILogger logger, CancellationToken cancellationToken)
+		{
+			try
+			{
+				using IRpcClientRef<JobRpc.JobRpcClient> jobRpc = await RpcConnection.GetClientRefAsync<JobRpc.JobRpcClient>(cancellationToken);
+
+				CreateJobArtifactResponse artifact = await jobRpc.Client.CreateArtifactAsync(new CreateJobArtifactRequest { JobId = _jobId, StepId = stepId, Type = type }, cancellationToken: cancellationToken);
+				_logger.LogInformation("Created artifact {ArtifactId} with ref {RefName} in ns {Namespace}", artifact.Id, artifact.RefName, artifact.NamespaceId);
+
+				IStorageClient storage = _storageFactory.CreateStorageClient(_session, new NamespaceId(artifact.NamespaceId), artifact.Token);
+				await using IStorageWriter writer = storage.CreateWriter(new RefName(artifact.RefName));
+
+				DirectoryNode dir = new DirectoryNode();
+				await dir.AddFilesAsync(baseDir, files, new ChunkingOptions(), writer, new CopyStatsLogger(logger), cancellationToken);
+
+				await storage.WriteNodeAsync(new RefName(artifact.RefName), dir, cancellationToken: cancellationToken);
+			}
+			catch (Exception ex)
+			{
+				_logger.LogInformation(ex, "Error creating artifact '{Type}'", type);
+			}
+		}
+
+		private async Task<bool> ExecuteWithTempStorageAsync(BeginStepResponse step, DirectoryReference workspaceDir, string arguments, bool? useP4, ILogger logger, CancellationToken cancellationToken)
 		{
 			DirectoryReference manifestDir = DirectoryReference.Combine(workspaceDir, "Engine", "Saved", "BuildGraph");
 
-			// Create the storage client
 			using MemoryCache cache = new MemoryCache(new MemoryCacheOptions { });
-
-			using HttpClient httpClient = _httpClientFactory.CreateClient(HttpStorageClient.HttpClientName);
-			httpClient.BaseAddress = new Uri($"{_session.ServerUrl}/api/v1/storage/default");
-			httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _session.Token);
-
-			using HttpClient redirectHttpClient = _httpClientFactory.CreateClient(HttpStorageClient.HttpClientName);
-
-			HttpStorageClient storage = new HttpStorageClient(CreateHttpClient, CreateHttpRedirectClient, logger);
-			//			FileStorageClient storage = new FileStorageClient(DirectoryReference.Combine(sharedStorageDir, "bundles"), cache, logger);
-			TreeReader reader = new TreeReader(storage, cache, logger);
-			logger.LogInformation("Using Horde-managed shared storage via {SharedStorageDir}", sharedStorageDir);
-
-			ILogger nextLogger = logger;
-			for(; ;)
-			{
-				if (nextLogger is JsonRpcLogger)
-				{
-					break;
-				}
-				else if (nextLogger is PerforceLogger perforceLogger)
-				{
-					nextLogger = perforceLogger.Inner;
-				}
-				else if (nextLogger is ForwardingLogger forwardingLogger)
-				{
-					nextLogger = forwardingLogger.Loggers[0];
-				}
-				else if (nextLogger is DefaultLoggerIndentHandler indentLogger)
-				{
-					nextLogger = indentLogger.Inner;
-				}
-				else
-				{
-					throw new Exception($"Unknown logger type: {nextLogger.GetType().Name}");
-				}
-			}
-
-			JsonRpcLogger rpcLogger = (JsonRpcLogger)nextLogger;
-			await using JsonRpcAndStorageLogSink sink = new JsonRpcAndStorageLogSink(RpcConnection, rpcLogger._logId, rpcLogger._sink, storage, logger);
-			await using JsonRpcLogger newRpcLogger = new JsonRpcLogger(sink, rpcLogger._logId, rpcLogger._warnings, rpcLogger._inner);
-			logger = newRpcLogger;
+			IStorageClient storage = _storageFactory.CreateStorageClient(_session, _namespaceId, _token);
+			BundleReader reader = new BundleReader(storage, cache, _logger);
 
 			// Create the mapping of tag names to file sets
 			Dictionary<string, HashSet<FileReference>> tagNameToFileSet = new Dictionary<string, HashSet<FileReference>>();
@@ -744,7 +811,7 @@ namespace Horde.Agent.Execution
 				string nodeName = input.Substring(0, slashIdx);
 				string tagName = input.Substring(slashIdx + 1);
 
-				TempStorageTagManifest fileList = await TempStorage.RetrieveTagAsync(reader, RefPrefix, nodeName, tagName, manifestDir, logger, cancellationToken);
+				TempStorageTagManifest fileList = await TempStorage.RetrieveTagAsync(storage, _storagePrefix, nodeName, tagName, manifestDir, logger, cancellationToken);
 				tagNameToFileSet[tagName] = fileList.ToFileSet(workspaceDir);
 				inputStorageBlocks.UnionWith(fileList.Blocks);
 			}
@@ -757,7 +824,7 @@ namespace Horde.Agent.Execution
 				scope.Span.SetTag("blocks", inputStorageBlocks.Count);
 				foreach (TempStorageBlockRef inputStorageBlock in inputStorageBlocks)
 				{
-					TempStorageBlockManifest manifest = await TempStorage.RetrieveBlockAsync(reader, RefPrefix, inputStorageBlock.NodeName, inputStorageBlock.OutputName, workspaceDir, manifestDir, logger, cancellationToken);
+					TempStorageBlockManifest manifest = await TempStorage.RetrieveBlockAsync(storage, _storagePrefix, inputStorageBlock.NodeName, inputStorageBlock.OutputName, workspaceDir, manifestDir, logger, cancellationToken);
 					inputManifests[inputStorageBlock] = manifest;
 				}
 				scope.Span.SetTag("size", inputManifests.Sum(x => x.Value.GetTotalSize()));
@@ -781,7 +848,7 @@ namespace Horde.Agent.Execution
 			}
 
 			// Run UAT
-			if (await ExecuteAutomationToolAsync(step, workspaceDir, arguments, storage, logger, cancellationToken) != 0)
+			if (await ExecuteAutomationToolAsync(step, workspaceDir, null, arguments, useP4, logger, cancellationToken) != 0)
 			{
 				return false;
 			}
@@ -833,7 +900,7 @@ namespace Horde.Agent.Execution
 
 			// Find a block name for all new outputs
 			Dictionary<FileReference, string> fileToBlockName = new Dictionary<FileReference, string>();
-			for(int idx = 0; idx < step.OutputNames.Count; idx++)
+			for (int idx = 0; idx < step.OutputNames.Count; idx++)
 			{
 				string tagName = step.OutputNames[idx];
 
@@ -885,12 +952,11 @@ namespace Horde.Agent.Execution
 			using (GlobalTracer.Instance.BuildSpan("TempStorage").WithTag("resource", "Write").StartActive())
 			{
 				Stopwatch timer = Stopwatch.StartNew();
-				RefName refName = TempStorage.GetRefNameForNode(RefPrefix, step.Name);
+				RefName refName = TempStorage.GetRefNameForNode(_storagePrefix, step.Name);
 
-				TreeOptions treeOptions = new TreeOptions();
-				using TreeWriter treeWriter = new TreeWriter(storage, treeOptions, refName.Text);
+				await using IStorageWriter treeWriter = storage.CreateWriter(refName);
 
-				TempStorageNode outputNode = new TempStorageNode();
+				DirectoryNode outputNode = new DirectoryNode();
 
 				// Create all the output blocks
 				foreach (KeyValuePair<string, HashSet<FileReference>> pair in outputStorageBlockToFiles)
@@ -902,7 +968,7 @@ namespace Horde.Agent.Execution
 					}
 					if (pair.Value.Any(x => referencedOutputFiles.Contains(x)))
 					{
-						outputNode.Blocks[pair.Key] = await TempStorage.ArchiveBlockAsync(treeWriter, pair.Key, workspaceDir, pair.Value.ToArray(), logger, cancellationToken);
+						outputNode.AddDirectory(await TempStorage.ArchiveBlockAsync(manifestDir, step.Name, pair.Key, workspaceDir, pair.Value.ToArray(), treeWriter, logger, cancellationToken));
 					}
 				}
 
@@ -921,59 +987,70 @@ namespace Horde.Agent.Execution
 						}
 					}
 
-					outputNode.Tags[outputName] = await TempStorage.ArchiveTagAsync(treeWriter, outputName, workspaceDir, files, storageBlocks.ToArray(), logger, cancellationToken);
+					outputNode.AddFile(await TempStorage.ArchiveTagAsync(manifestDir, step.Name, outputName, workspaceDir, files, storageBlocks.ToArray(), treeWriter, logger, cancellationToken));
 				}
 
 				// Write the final node
-				await treeWriter.WriteAsync(refName, outputNode, new RefOptions { Lifetime = TimeSpan.FromDays(3.0) }, cancellationToken);
+				await storage.WriteNodeAsync(refName, outputNode, refOptions: new RefOptions(), cancellationToken: cancellationToken);
 				logger.LogInformation("Upload took {Time:n1}s", timer.Elapsed.TotalSeconds);
+
+				// Create the artifact
+				using IRpcClientRef<JobRpc.JobRpcClient> jobRpc = await RpcConnection.GetClientRefAsync<JobRpc.JobRpcClient>(cancellationToken);
+
+				CreateJobArtifactRequest artifactRequest = new CreateJobArtifactRequest();
+				artifactRequest.JobId = _jobId;
+				artifactRequest.StepId = step.StepId;
+				artifactRequest.Type = JobArtifactType.Output;
+				artifactRequest.NamespaceId = _namespaceId.ToString();
+				artifactRequest.RefName = refName.ToString();
+
+				CreateJobArtifactResponse artifact = await jobRpc.Client.CreateArtifactAsync(artifactRequest, cancellationToken: cancellationToken);
+				logger.LogInformation("Created output artifact {ArtifactId} with ref {RefName} in namespace {Namespace}", artifact.Id, artifact.RefName, artifact.NamespaceId);
 			}
 
 			return true;
 		}
 
-		HttpClient CreateHttpClient()
-		{
-			HttpClient httpClient = _httpClientFactory.CreateClient(HttpStorageClient.HttpClientName);
-			httpClient.BaseAddress = new Uri($"{_session.ServerUrl}/api/v1/storage/default");
-			httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _session.Token);
-			return httpClient;
-		}
-
-		HttpClient CreateHttpRedirectClient()
-		{
-			return _httpClientFactory.CreateClient(HttpStorageClient.HttpClientName);
-		}
-
-		protected async Task<int> ExecuteAutomationToolAsync(BeginStepResponse step, DirectoryReference workspaceDir, string arguments, IStorageClient? store, ILogger logger, CancellationToken cancellationToken)
+		protected async Task<int> ExecuteAutomationToolAsync(BeginStepResponse step, DirectoryReference workspaceDir, DirectoryReference? sharedStorageDir, string? arguments, bool? useP4, ILogger logger, CancellationToken cancellationToken)
 		{
 			int result;
-			using (IScope scope = GlobalTracer.Instance.BuildSpan("BuildGraph").StartActive())
+			using IScope scope = GlobalTracer.Instance.BuildSpan("BuildGraph").StartActive();
+			
+			if (!_compileAutomationTool)
 			{
-				if (!_compileAutomationTool)
-				{
-					arguments += " -NoCompile";
-				}
-
-				if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-				{
-					result = await ExecuteCommandAsync(step, workspaceDir, Environment.GetEnvironmentVariable("COMSPEC") ?? "cmd.exe", $"/C \"\"{workspaceDir}\\Engine\\Build\\BatchFiles\\RunUAT.bat\" {arguments}\"", store, logger, cancellationToken);
-				}
-				else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-				{
-					result = await ExecuteCommandAsync(step, workspaceDir, "/bin/bash", $"\"{workspaceDir}/Engine/Build/BatchFiles/RunUAT.sh\" {arguments}", store, logger, cancellationToken);
-				}
-				else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-				{
-					result = await ExecuteCommandAsync(step, workspaceDir, "/bin/sh", $"\"{workspaceDir}/Engine/Build/BatchFiles/RunUAT.sh\" {arguments}", store, logger, cancellationToken);
-				}
-				else
-				{
-					throw new Exception("Unsupported platform");
-				}
-
-				_compileAutomationTool = false;
+				arguments += " -NoCompile";
 			}
+			
+			if (useP4 is false)
+			{
+				arguments += " -NoP4";
+			}
+
+			if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+			{
+				result = await ExecuteCommandAsync(step, workspaceDir, sharedStorageDir, Environment.GetEnvironmentVariable("COMSPEC") ?? "cmd.exe", $"/C \"\"{workspaceDir}\\Engine\\Build\\BatchFiles\\RunUAT.bat\" {arguments}\"", logger, cancellationToken);
+			}
+			else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+			{
+				string args = $"\"{workspaceDir}/Engine/Build/BatchFiles/RunUAT.sh\" {arguments}";
+				
+				if (_jobOptions.UseWine is true)
+				{
+					args = $"\"{workspaceDir}/Engine/Build/BatchFiles/RunWineUAT.sh\" {arguments}";
+				}
+				
+				result = await ExecuteCommandAsync(step, workspaceDir, sharedStorageDir, "/bin/bash", args, logger, cancellationToken);
+			}
+			else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+			{
+				result = await ExecuteCommandAsync(step, workspaceDir, sharedStorageDir, "/bin/sh", $"\"{workspaceDir}/Engine/Build/BatchFiles/RunUAT.sh\" {arguments}", logger, cancellationToken);
+			}
+			else
+			{
+				throw new Exception("Unsupported platform");
+			}
+
+			_compileAutomationTool = false;
 			return result;
 		}
 
@@ -1033,11 +1110,44 @@ namespace Horde.Agent.Execution
 			}
 		}
 
+		static FileReference GetLeaseCleanupScript(DirectoryReference workspaceDir)
+		{
+			if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+			{
+				return FileReference.Combine(workspaceDir, "CleanupLease.bat");
+			}
+			else
+			{
+				return FileReference.Combine(workspaceDir, "CleanupLease.sh");
+			}
+		}
+
 		internal IReadOnlyDictionary<string, string> GetEnvVars()
 		{
 			return new Dictionary<string, string>(_envVars);
 		}
-		
+
+		protected static async Task ExecuteLeaseCleanupScriptAsync(DirectoryReference workspaceDir, ILogger logger)
+		{
+			using (LogParser parser = new LogParser(logger, new List<string>()))
+			{
+				FileReference leaseCleanupScript = GetLeaseCleanupScript(workspaceDir);
+				await ExecuteCleanupScriptAsync(leaseCleanupScript, parser, logger);
+			}
+		}
+
+		protected async Task TerminateProcessesAsync(TerminateCondition condition, ILogger logger)
+		{
+			try
+			{
+				await _session.TerminateProcessesAsync(condition, logger, CancellationToken.None);
+			}
+			catch (Exception ex)
+			{
+				logger.LogWarning(ex, "Exception while terminating processes: {Message}", ex.Message);
+			}
+		}
+
 		static async Task ExecuteCleanupScriptAsync(FileReference cleanupScript, LogParser filter, ILogger logger)
 		{
 			if (FileReference.Exists(cleanupScript))
@@ -1076,60 +1186,137 @@ namespace Horde.Agent.Execution
 		static async Task<int> ExecuteProcessAsync(string fileName, string arguments, IReadOnlyDictionary<string, string>? newEnvironment, LogParser filter, ILogger logger, CancellationToken cancellationToken)
 		{
 			logger.LogInformation("Executing {File} {Arguments}", fileName.QuoteArgument(), arguments);
-			using (ManagedProcessGroup processGroup = new ManagedProcessGroup())
+
+			using (CancellationTokenSource cancellationSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
 			{
-				using (ManagedProcess process = new ManagedProcess(processGroup, fileName, arguments, null, newEnvironment, null, ProcessPriorityClass.Normal))
+				using (ManagedProcessGroup processGroup = new ManagedProcessGroup())
 				{
-					await process.CopyToAsync((buffer, offset, length) => filter.WriteData(buffer.AsMemory(offset, length)), 4096, cancellationToken);
-					process.WaitForExit();
-					return process.ExitCode;
+					using (ManagedProcess process = new ManagedProcess(processGroup, fileName, arguments, null, newEnvironment, null, ProcessPriorityClass.Normal))
+					{
+						bool hasExited = false;
+						try
+						{
+							async Task WaitForExitOrCancelAsync()
+							{
+								await process.WaitForExitAsync(cancellationToken);
+								hasExited = true;
+								cancellationSource.CancelAfter(TimeSpan.FromSeconds(60.0));
+							}
+
+							Task cancelTask = WaitForExitOrCancelAsync();
+							await process.CopyToAsync((buffer, offset, length) => filter.WriteData(buffer.AsMemory(offset, length)), 4096, cancellationSource.Token);
+							await cancelTask;
+						}
+						catch (OperationCanceledException) when (hasExited)
+						{
+							logger.LogWarning("Process exited without closing output pipes; they may have been inherited by a child process that is still running.");
+						}
+						return process.ExitCode;
+					}
 				}
-			}
-		}
-
-		private class InterceptingLogger : ILogger
-		{
-			private readonly ILogger _logger;
-			private readonly int[] _includeEventIds;
-			private readonly Action<LogLevel, EventId, object?, Exception?> _callback = null!;
-
-			public InterceptingLogger(ILogger logger, int[] includeEventIds, Action<LogLevel, EventId, object?, Exception?> callback)
-			{
-				_logger = logger;
-				_includeEventIds = includeEventIds;
-				_callback = callback;
-			}
-
-			public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-			{
-				if (_includeEventIds.Any(id => id == eventId.Id))
-				{
-					_callback(logLevel, eventId, state, exception);	
-				}
-
-				_logger.Log(logLevel, eventId, state, exception, formatter);
-			}
-
-			public bool IsEnabled(LogLevel logLevel)
-			{
-				return _logger.IsEnabled(logLevel);
-			}
-
-			public IDisposable BeginScope<TState>(TState state)
-			{
-				return _logger.BeginScope(state);
 			}
 		}
 		
-		string RefPrefix => $"{_job.StreamId}/{_job.Change}-{_jobId}";
-
-		async Task<int> ExecuteCommandAsync(BeginStepResponse step, DirectoryReference workspaceDir, string fileName, string arguments, IStorageClient? store, ILogger jobLogger, CancellationToken cancellationToken)
+		/// <summary>
+		/// Execute a process inside a Linux container
+		/// </summary>
+		/// <param name="arguments">Arguments</param>
+		/// <param name="mountDirs">Directories to mount inside the container for read/write</param>
+		/// <param name="newEnvironment">Environment variables</param>
+		/// <param name="filter">Log parser</param>
+		/// <param name="logger">Logger</param>
+		/// <param name="cancellationToken">Cancellation token for the call</param>
+		/// <returns></returns>
+		/// <exception cref="Exception"></exception>
+		async Task<int> ExecuteProcessInContainerAsync(string arguments, List<DirectoryReference> mountDirs, IReadOnlyDictionary<string, string>? newEnvironment, LogParser filter, ILogger logger, CancellationToken cancellationToken)
 		{
+			if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+			{
+				throw new Exception("Only Linux is supported for executing a process inside a container");
+			}
+
+			if (String.IsNullOrEmpty(_jobOptions.Container.ImageUrl))
+			{
+				throw new Exception("Image URL is null or empty");
+			}
+
+			// Default to "docker" executable and assume it's available on the path
+			string executable = _jobOptions.Container.ContainerEngineExecutable ?? "docker";
+
+			uint linuxUid = LinuxInterop.getuid();
+			uint linuxGid = LinuxInterop.getgid();
+			
+			List<string> containerArgs = new()
+				{
+					"run",
+					"--tty", // Allocate a pseudo-TTY
+					$"--name horde-job-{_jobId}-{_batchId}", // Better name for debugging purposes
+					"--rm", // Ensure container is removed after run
+					$"--user {linuxUid}:{linuxGid}" // Run container as current user (important for mounted dirs)
+				};
+
+			foreach (DirectoryReference mountDir in mountDirs)
+			{
+				containerArgs.Add($"--volume {mountDir.FullName}:{mountDir.FullName}:rw");
+			}
+
+			if (newEnvironment != null)
+			{
+				string envFilePath = Path.GetTempFileName();
+				StringBuilder sb = new();
+				foreach ((string key, string value) in newEnvironment)
+				{
+					sb.AppendLine($"{key}={value}");
+				}
+				await File.WriteAllTextAsync(envFilePath, sb.ToString(), cancellationToken);
+				containerArgs.Add("--env-file=" + envFilePath);
+			}
+
+			if (!String.IsNullOrEmpty(_jobOptions.Container.ExtraArguments))
+			{
+				containerArgs.Add(_jobOptions.Container.ExtraArguments);
+			}
+			
+			containerArgs.Add(_jobOptions.Container.ImageUrl);
+			string containerArgStr = String.Join(' ', containerArgs);
+			arguments = containerArgStr + " " + arguments;
+			
+			logger.LogInformation("Executing {File} {Arguments} in container", executable.QuoteArgument(), arguments);
+			
+			// Skip forwarding of env vars as they are explicitly set above as arguments to container run
+			return await ExecuteProcessAsync(executable, arguments, new Dictionary<string, string>(), filter, logger, cancellationToken);
+		}
+
+		private static List<DirectoryReference> GetContainerMountDirs(DirectoryReference workspaceDir, DirectoryReference? sharedStorageDir, IReadOnlyDictionary<string, string> envVars)
+		{
+			List<DirectoryReference> dirs = new();
+			dirs.Add(workspaceDir);
+			if (sharedStorageDir != null)
+			{
+				dirs.Add(sharedStorageDir);
+			}
+			if (envVars.TryGetValue("UE_SDKS_ROOT", out string? autoSdkDirPath))
+			{
+				dirs.Add(new DirectoryReference(autoSdkDirPath));
+			}
+			return dirs;
+		}
+
+		async Task<int> ExecuteCommandAsync(BeginStepResponse step, DirectoryReference workspaceDir, DirectoryReference? sharedStorageDir, string fileName, string arguments, ILogger jobLogger, CancellationToken cancellationToken)
+		{
+			// Method for expanding environment variable properties related to this step
+			Dictionary<string, string> properties = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+			properties.Add("RootDir", workspaceDir.FullName);
+
 			// Combine all the supplied environment variables together
-			Dictionary<string, string> newEnvVars = new Dictionary<string, string>(_envVars, StringComparer.Ordinal);
+			Dictionary<string, string> newEnvVars = new Dictionary<string, string>(StringComparer.Ordinal);
+			foreach (KeyValuePair<string, string> envVar in _envVars)
+			{
+				newEnvVars[envVar.Key] = StringUtils.ExpandProperties(envVar.Value, properties);
+			}
 			foreach (KeyValuePair<string, string> envVar in step.EnvVars)
 			{
-				newEnvVars[envVar.Key] = envVar.Value;
+				newEnvVars[envVar.Key] = StringUtils.ExpandProperties(envVar.Value, properties);
 			}
 			foreach (KeyValuePair<string, string> envVar in step.Credentials)
 			{
@@ -1161,6 +1348,13 @@ namespace Horde.Agent.Execution
 			// Pass the location of the cleanup script to the job
 			FileReference cleanupScript = GetCleanupScript(workspaceDir);
 			newEnvVars["UE_HORDE_CLEANUP"] = cleanupScript.FullName;
+
+			// Pass the location of the cleanup script to the job
+			FileReference leaseCleanupScript = GetLeaseCleanupScript(workspaceDir);
+			newEnvVars["UE_HORDE_LEASE_CLEANUP"] = leaseCleanupScript.FullName;
+
+			// Set up the shared working dir
+			newEnvVars["UE_HORDE_SHARED_DIR"] = DirectoryReference.Combine(_session.WorkingDir, "Saved").FullName;
 
 			// Disable the S3DDC. This is technically a Fortnite-specific setting, but affects a large number of branches and is hard to retrofit. 
 			// Setting here for now, since it's likely to be temporary.
@@ -1200,34 +1394,21 @@ namespace Horde.Agent.Execution
 
 			List<string> ignorePatterns = await ReadIgnorePatternsAsync(workspaceDir, jobLogger);
 
-			InterceptingLogger interceptedJobLogger = new (jobLogger, new [] { KnownLogEvents.Systemic_Xge_TaskMetadata.Id }, (level, id, state, exception) =>
-			{
-				if (state is JsonLogEvent jsonLogEvent)
-				{
-					try
-					{
-						LogEvent logEvent = LogEvent.Read(jsonLogEvent.Data.Span);
-						if (logEvent.TryGetProperty("agent", out string? agentName))
-						{
-							string taskName = logEvent.GetProperty<string>("name");
-							int duration = logEvent.GetProperty<int>("duration");
-							_logger.LogInformation("Executed XGE task {XgeTaskName} on agent {XgeAgent} for {Duration} ms", taskName, agentName, duration);	
-						}
-					}
-					catch (Exception e)
-					{
-						_logger.LogWarning(e, "Failed to log XGE task execution");
-					}
-				}
-			});
-
 			int exitCode;
-			using (LogParser filter = new LogParser(interceptedJobLogger, ignorePatterns))
+			using (LogParser filter = new LogParser(jobLogger, ignorePatterns))
 			{
 				await ExecuteCleanupScriptAsync(cleanupScript, filter, jobLogger);
 				try
 				{
-					exitCode = await ExecuteProcessAsync(fileName, arguments, newEnvVars, filter, jobLogger, cancellationToken);
+					if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) && _jobOptions?.Container?.Enabled is true)
+					{
+						List<DirectoryReference> mountDirs = GetContainerMountDirs(workspaceDir, sharedStorageDir, newEnvVars);
+						exitCode = await ExecuteProcessInContainerAsync(arguments, mountDirs, newEnvVars, filter, jobLogger, cancellationToken);
+					}
+					else
+					{
+						exitCode = await ExecuteProcessAsync(fileName, arguments, newEnvVars, filter, jobLogger, cancellationToken);	
+					}
 				}
 				finally
 				{
@@ -1238,105 +1419,33 @@ namespace Horde.Agent.Execution
 
 			if (DirectoryReference.Exists(telemetryDir))
 			{
-				List<TraceEventList> telemetryList = new List<TraceEventList>();
-				foreach (FileReference telemetryFile in DirectoryReference.EnumerateFiles(telemetryDir, "*.json"))
+				List<(string, FileReference)> telemetryFiles = new List<(string, FileReference)>();
+				try
 				{
-					jobLogger.LogInformation("Reading telemetry from {File}", telemetryFile);
-					byte[] data = await FileReference.ReadAllBytesAsync(telemetryFile, cancellationToken);
+					await CreateTelemetryFilesAsync(step.Name, telemetryDir, telemetryFiles, jobLogger, cancellationToken);
+				}
+				catch (Exception ex)
+				{
+					jobLogger.LogInformation(ex, "Unable to parse/upload telemetry files: {Message}", ex.Message);
+				}
 
-					TraceEventList telemetry = JsonSerializer.Deserialize<TraceEventList>(data.AsSpan())!;
-					if (telemetry.Spans.Count > 0)
-					{
-						string defaultServiceName = telemetryFile.GetFileNameWithoutAnyExtensions();
-						foreach (TraceEvent span in telemetry.Spans)
-						{
-							span.Service ??= defaultServiceName;
-						}
-						telemetryList.Add(telemetry);
-					}
+				await CreateArtifactsAsync(step.StepId, JobArtifactType.Trace, workspaceDir, telemetryFiles, jobLogger, cancellationToken);
 
-					await ArtifactUploader.UploadAsync(RpcConnection, _jobId, _batchId, step.StepId, $"Telemetry/{telemetryFile.GetFileName()}", telemetryFile, jobLogger, CancellationToken.None);
+				foreach ((_, FileReference telemetryFile) in telemetryFiles)
+				{
 					FileUtils.ForceDeleteFile(telemetryFile);
 				}
-
-				List<TraceEvent> telemetrySpans = new List<TraceEvent>();
-				foreach (TraceEventList telemetry in telemetryList.OrderBy(x => x.Spans.First().StartTime).ThenBy(x => x.Spans.Last().FinishTime))
-				{
-					foreach (TraceEvent span in telemetry.Spans)
-					{
-						if (span.FinishTime - span.StartTime > TimeSpan.FromMilliseconds(1.0))
-						{
-							span.Index = telemetrySpans.Count;
-							telemetrySpans.Add(span);
-						}
-					}
-				}
-
-				if (telemetrySpans.Count > 0)
-				{
-					TraceSpan rootSpan = new TraceSpan();
-					rootSpan.Name = step.Name;
-
-					Stack<TraceSpan> stack = new Stack<TraceSpan>();
-					stack.Push(rootSpan);
-
-					foreach (TraceEvent traceEvent in telemetrySpans.OrderBy(x => x.StartTime).ThenByDescending(x => x.FinishTime).ThenBy(x => x.Index))
-					{
-						TraceSpan newSpan = new TraceSpan();
-						newSpan.Name = traceEvent.Name;
-						newSpan.Service = traceEvent.Service;
-						newSpan.Resource = traceEvent.Resource;
-						newSpan.Start = traceEvent.StartTime.UtcTicks;
-						newSpan.Finish = traceEvent.FinishTime.UtcTicks;
-						if (traceEvent.Metadata != null && traceEvent.Metadata.Count > 0)
-						{
-							newSpan.Properties = traceEvent.Metadata;
-						}
-
-						TraceSpan stackTop = stack.Peek();
-						while (stack.Count > 1 && newSpan.Start >= stackTop.Finish)
-						{
-							stack.Pop();
-							stackTop = stack.Peek();
-						}
-
-						if (stack.Count > 1 && newSpan.Finish > stackTop.Finish)
-						{
-							jobLogger.LogInformation("Trace event name='{Name}', service'{Service}', resource='{Resource}' has invalid finish time ({SpanFinish} < {StackFinish})", newSpan.Name, newSpan.Service, newSpan.Resource, newSpan.Finish, stackTop.Finish);
-							newSpan.Finish = stackTop.Finish;
-						}
-
-						if (stackTop.Children == null)
-						{
-							stackTop.Children = new List<TraceSpan>();
-						}
-
-						stackTop.Children.Add(newSpan);
-						stack.Push(newSpan);
-					}
-
-					rootSpan.Start = rootSpan.Children!.First().Start;
-					rootSpan.Finish = rootSpan.Children!.Last().Finish;
-
-					FileReference traceFile = FileReference.Combine(telemetryDir, "Trace.json");
-					using (FileStream stream = FileReference.Open(traceFile, FileMode.Create))
-					{
-						JsonSerializerOptions options = new JsonSerializerOptions { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
-						await JsonSerializer.SerializeAsync(stream, rootSpan, options, cancellationToken);
-					}
-					await ArtifactUploader.UploadAsync(RpcConnection, _jobId, _batchId, step.StepId, "Trace.json", traceFile, jobLogger, CancellationToken.None);
-
-					CreateTracingData(GlobalTracer.Instance.ActiveSpan, rootSpan);
-				}
 			}
-					
+
 			if (DirectoryReference.Exists(testDataDir))
 			{
+				List<(string, FileReference)> testDataFiles = new List<(string, FileReference)>();
+
 				Dictionary<string, object> combinedTestData = new Dictionary<string, object>();
 				foreach (FileReference testDataFile in DirectoryReference.EnumerateFiles(testDataDir, "*.json", SearchOption.AllDirectories))
 				{
 					jobLogger.LogInformation("Reading test data {TestDataFile}", testDataFile);
-					await ArtifactUploader.UploadAsync(RpcConnection, _jobId, _batchId, step.StepId, $"TestData/{testDataFile.MakeRelativeTo(testDataDir)}", testDataFile, jobLogger, CancellationToken.None);
+					testDataFiles.Add(($"TestData/{testDataFile.MakeRelativeTo(testDataDir)}", testDataFile));
 
 					TestData testData;
 					using (FileStream stream = FileReference.Open(testDataFile, FileMode.Open))
@@ -1361,28 +1470,21 @@ namespace Horde.Agent.Execution
 
 				jobLogger.LogInformation("Found {NumResults} test results", combinedTestData.Count);
 				await UploadTestDataAsync(step.StepId, combinedTestData);
+
+				await CreateArtifactsAsync(step.StepId, JobArtifactType.TestData, workspaceDir, testDataFiles, jobLogger, cancellationToken);
 			}
-					
-			if (store != null)
+
+			if (DirectoryReference.Exists(logDir))
 			{
-				RefName refName = new RefName(RefName.Sanitize($"{RefPrefix}/artifacts"));
-
-				TreeOptions treeOptions = new TreeOptions();
-				using TreeWriter treeWriter = new TreeWriter(store, treeOptions, refName.Text);
-
-				DirectoryNode directoryNode = new DirectoryNode(DirectoryFlags.None);
-
-				ChunkingOptions options = new ChunkingOptions();
-				await directoryNode.CopyFromDirectoryAsync(logDir.ToDirectoryInfo(), options, treeWriter, cancellationToken);
-
-				await treeWriter.WriteAsync(refName, directoryNode, cancellationToken: cancellationToken);
-			}
-			else
-			{
-				if (DirectoryReference.Exists(logDir))
+				List<FileReference> artifactFiles = DirectoryReference.EnumerateFiles(logDir, "*", SearchOption.AllDirectories).ToList();
+				if (_jobOptions.UseNewTempStorage ?? false)
+				{
+					await CreateArtifactAsync(step.StepId, JobArtifactType.Saved, workspaceDir, artifactFiles, jobLogger, cancellationToken);
+				}
+				else
 				{
 					Dictionary<FileReference, string> artifactFileToId = new Dictionary<FileReference, string>();
-					foreach (FileReference artifactFile in DirectoryReference.EnumerateFiles(logDir, "*", SearchOption.AllDirectories))
+					foreach (FileReference artifactFile in artifactFiles)
 					{
 						string artifactName = artifactFile.MakeRelativeTo(logDir);
 
@@ -1408,6 +1510,125 @@ namespace Horde.Agent.Execution
 			}
 
 			return exitCode;
+		}
+
+		async Task CreateTelemetryFilesAsync(string stepName, DirectoryReference telemetryDir, List<(string, FileReference)> telemetryFiles, ILogger jobLogger, CancellationToken cancellationToken)
+		{
+			List<TraceEventList> telemetryList = new List<TraceEventList>();
+			foreach (FileReference telemetryFile in DirectoryReference.EnumerateFiles(telemetryDir, "*.json"))
+			{
+				jobLogger.LogInformation("Reading telemetry from {File}", telemetryFile);
+				byte[] data = await FileReference.ReadAllBytesAsync(telemetryFile, cancellationToken);
+
+				TraceEventList telemetry = JsonSerializer.Deserialize<TraceEventList>(data.AsSpan())!;
+				if (telemetry.Spans.Count > 0)
+				{
+					string defaultServiceName = telemetryFile.GetFileNameWithoutAnyExtensions();
+					foreach (TraceEvent span in telemetry.Spans)
+					{
+						span.Service ??= defaultServiceName;
+					}
+					telemetryList.Add(telemetry);
+				}
+
+				telemetryFiles.Add(($"Telemetry/{telemetryFile.GetFileName()}", telemetryFile));
+			}
+
+			List<TraceEvent> telemetrySpans = new List<TraceEvent>();
+			foreach (TraceEventList telemetryEventList in telemetryList.OrderBy(x => x.Spans.First().StartTime).ThenBy(x => x.Spans.Last().FinishTime))
+			{
+				foreach (TraceEvent span in telemetryEventList.Spans)
+				{
+					if (span.FinishTime - span.StartTime > TimeSpan.FromMilliseconds(1.0))
+					{
+						span.Index = telemetrySpans.Count;
+						telemetrySpans.Add(span);
+					}
+				}
+			}
+
+			FileReference? traceFile = null;
+			if (telemetrySpans.Count > 0)
+			{
+				TraceSpan rootSpan = new TraceSpan();
+				rootSpan.Name = stepName;
+
+				Stack<TraceSpan> stack = new Stack<TraceSpan>();
+				stack.Push(rootSpan);
+
+				List<TraceSpan> spansWithExplicitParent = new List<TraceSpan>();
+				Dictionary<string, TraceSpan> spans = new Dictionary<string, TraceSpan>(StringComparer.OrdinalIgnoreCase);
+
+				foreach (TraceEvent traceEvent in telemetrySpans.OrderBy(x => x.StartTime).ThenByDescending(x => x.FinishTime).ThenBy(x => x.Index))
+				{
+					TraceSpan newSpan = new TraceSpan();
+					newSpan.Name = traceEvent.Name;
+					newSpan.SpanId = traceEvent.SpanId;
+					newSpan.ParentId = traceEvent.ParentId;
+					newSpan.Service = traceEvent.Service;
+					newSpan.Resource = traceEvent.Resource;
+					newSpan.Start = traceEvent.StartTime.UtcTicks;
+					newSpan.Finish = traceEvent.FinishTime.UtcTicks;
+					if (traceEvent.Metadata != null && traceEvent.Metadata.Count > 0)
+					{
+						newSpan.Properties = traceEvent.Metadata;
+					}
+
+					if (!String.IsNullOrEmpty(newSpan.SpanId))
+					{
+						spans.Add(newSpan.SpanId, newSpan);
+					}
+
+					TraceSpan stackTop = stack.Peek();
+					while (stack.Count > 1 && newSpan.Start >= stackTop.Finish)
+					{
+						stack.Pop();
+						stackTop = stack.Peek();
+					}
+
+					if (String.IsNullOrEmpty(newSpan.ParentId))
+					{
+						if (stack.Count > 1 && newSpan.Finish > stackTop.Finish)
+						{
+							jobLogger.LogInformation("Trace event name='{Name}', service'{Service}', resource='{Resource}' has invalid finish time ({SpanFinish} < {StackFinish})", newSpan.Name, newSpan.Service, newSpan.Resource, newSpan.Finish, stackTop.Finish);
+							newSpan.Finish = stackTop.Finish;
+						}
+
+						stackTop.AddChild(newSpan);
+					}
+					else
+					{
+						spansWithExplicitParent.Add(newSpan);
+					}
+
+					stack.Push(newSpan);
+				}
+
+				foreach (TraceSpan span in spansWithExplicitParent)
+				{
+					if (span.ParentId != null && spans.TryGetValue(span.ParentId, out TraceSpan? parentSpan))
+					{
+						parentSpan.AddChild(span);
+					}
+					else
+					{
+						_logger.LogInformation("Parent {ParentId} of span {SpanId} was not found.", span.ParentId, span.SpanId);
+					}
+				}
+
+				rootSpan.Start = rootSpan.Children!.First().Start;
+				rootSpan.Finish = rootSpan.Children!.Last().Finish;
+
+				traceFile = FileReference.Combine(telemetryDir, "Trace.json");
+				using (FileStream stream = FileReference.Open(traceFile, FileMode.Create))
+				{
+					JsonSerializerOptions options = new JsonSerializerOptions { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
+					await JsonSerializer.SerializeAsync(stream, rootSpan, options, cancellationToken);
+				}
+				telemetryFiles.Add(("Trace.json", traceFile));
+
+				CreateTracingData(GlobalTracer.Instance.ActiveSpan, rootSpan);
+			}
 		}
 
 		private async Task CreateReportAsync(string stepId, FileReference reportFile, Dictionary<FileReference, string> artifactFileToId, ILogger logger)
@@ -1447,7 +1668,7 @@ namespace Horde.Agent.Execution
 			request.Placement = report.Placement;
 			request.Name = report.Name;
 			request.ArtifactId = artifactId;
-			await RpcConnection.InvokeAsync((HordeRpc.HordeRpcClient x) => x.CreateReportAsync(request), CancellationToken.None);
+			await RpcConnection.InvokeAsync((JobRpc.JobRpcClient x) => x.CreateReportAsync(request), CancellationToken.None);
 		}
 
 		private ISpan CreateTracingData(ISpan parent, TraceSpan span)
@@ -1482,11 +1703,11 @@ namespace Horde.Agent.Execution
 		{
 			if (testData.Any())
 			{
-				await RpcConnection.InvokeAsync((HordeRpc.HordeRpcClient x) => UploadTestDataAsync(x, jobStepId, testData), CancellationToken.None);
+				await RpcConnection.InvokeAsync((JobRpc.JobRpcClient x) => UploadTestDataAsync(x, jobStepId, testData), CancellationToken.None);
 			}
 		}
 
-		async Task<bool> UploadTestDataAsync(HordeRpc.HordeRpcClient rpcClient, string jobStepId, IEnumerable<KeyValuePair<string, object>> pairs)
+		async Task<bool> UploadTestDataAsync(JobRpc.JobRpcClient rpcClient, string jobStepId, IEnumerable<KeyValuePair<string, object>> pairs)
 		{
 			using (AsyncClientStreamingCall<UploadTestDataRequest, UploadTestDataResponse> call = rpcClient.UploadTestData())
 			{
@@ -1511,10 +1732,10 @@ namespace Horde.Agent.Execution
 		}
 	}
 
-	abstract class JobExecutorFactory
+	interface IJobExecutorFactory
 	{
-		public abstract string Name { get; }
+		string Name { get; }
 
-		public abstract JobExecutor CreateExecutor(ISession session, ExecuteJobTask executeJobTask, BeginBatchResponse beginBatchResponse);
+		IJobExecutor CreateExecutor(AgentWorkspace workspaceInfo, AgentWorkspace? autoSdkWorkspaceInfo, JobExecutorOptions options);
 	}
 }

@@ -13,7 +13,7 @@ class FFleshCacheAdapter;
 
 namespace Chaos::Softs
 {
-	struct CHAOS_API FDeformableSolverProperties
+	struct FDeformableSolverProperties
 	{
 		FDeformableSolverProperties(
 			int32 InNumSolverSubSteps = 2,
@@ -33,7 +33,11 @@ namespace Chaos::Softs
 			FSolverReal InDamping = (FSolverReal)0,
 			bool InbEnableGravity = true, 
 			bool InbEnableCorotatedConstraints = true, 
-			bool InbEnablePositionTargets = true)
+			bool InbEnablePositionTargets = true, 
+			bool InbUseGaussSeidelConstraints = false, 
+			bool InbUseSOR = true,
+			FSolverReal InOmegaSOR = (FSolverReal)1.6, 
+			bool InbUseGSNeohookean = false)
 			: NumSolverSubSteps(InNumSolverSubSteps)
 			, NumSolverIterations(InNumSolverIterations)
 			, FixTimeStep(InFixTimeStep)
@@ -52,27 +56,10 @@ namespace Chaos::Softs
 			, bEnableGravity(InbEnableGravity)
 			, bEnableCorotatedConstraints(InbEnableCorotatedConstraints)
 			, bEnablePositionTargets(InbEnablePositionTargets)
-		{}
-
-		FDeformableSolverProperties(const FDeformableSolverProperties& InProp)
-			: NumSolverSubSteps(InProp.NumSolverSubSteps)
-			, NumSolverIterations(InProp.NumSolverIterations)
-			, FixTimeStep(InProp.FixTimeStep)
-			, TimeStepSize(InProp.TimeStepSize)
-			, CacheToFile(InProp.CacheToFile)
-			, bEnableKinematics(InProp.bEnableKinematics)
-			, bUseFloor(InProp.bUseFloor)
-			, bDoSelfCollision(InProp.bDoSelfCollision)
-			, bUseGridBasedConstraints(InProp.bUseGridBasedConstraints)
-			, GridDx(InProp.GridDx)
-			, bDoQuasistatics(InProp.bDoQuasistatics)
-			, EMesh(InProp.EMesh)
-			, bDoBlended(InProp.bDoBlended)
-			, BlendedZeta(InProp.BlendedZeta)
-			, Damping(InProp.Damping)
-			, bEnableGravity(InProp.bEnableGravity)
-			, bEnableCorotatedConstraints(InProp.bEnableCorotatedConstraints)
-			, bEnablePositionTargets(InProp.bEnablePositionTargets)
+			, bUseGaussSeidelConstraints(InbUseGaussSeidelConstraints)
+			, bUseSOR(InbUseSOR)
+			, OmegaSOR(InOmegaSOR)
+			, bUseGSNeohookean(InbUseGSNeohookean)
 		{}
 
 		int32 NumSolverSubSteps = 5;
@@ -93,6 +80,10 @@ namespace Chaos::Softs
 		bool bEnableGravity = true;
 		bool bEnableCorotatedConstraints = true;
 		bool bEnablePositionTargets = true;
+		bool bUseGaussSeidelConstraints = false;
+		bool bUseSOR = true;
+		FSolverReal OmegaSOR = (FSolverReal)1.6;
+		bool bUseGSNeohookean = false;
 	};
 
 
@@ -100,7 +91,7 @@ namespace Chaos::Softs
 	typedef TSharedPtr<const FThreadingProxy::FBuffer> FDataMapValue; // Buffer Pointer
 	typedef TMap<FThreadingProxy::FKey, FDataMapValue > FDeformableDataMap; // <const UObject*,FBufferSharedPtr>
 
-	struct CHAOS_API FDeformablePackage {
+	struct FDeformablePackage {
 		FDeformablePackage()
 		{}
 
@@ -114,7 +105,7 @@ namespace Chaos::Softs
 	};
 
 	/* Accessor for the Game Thread*/
-	class CHAOS_API FGameThreadAccessor
+	class FGameThreadAccessor
 	{
 	public:
 //		friend class UDeformableSolverComponent;
@@ -127,7 +118,7 @@ namespace Chaos::Softs
 
 
 	/* Accessor for the Physics Thread*/
-	class CHAOS_API FPhysicsThreadAccessor
+	class FPhysicsThreadAccessor
 	{
 	public:
 //		friend class UDeformableSolverComponent;
@@ -139,7 +130,7 @@ namespace Chaos::Softs
 	};
 
 
-	struct CHAOS_API FDeformableDebugParams
+	struct FDeformableDebugParams
 	{				
 		bool bDoDrawTetrahedralParticles = false;
 		bool bDoDrawKinematicParticles = false;
@@ -158,7 +149,7 @@ namespace Chaos::Softs
 		}
 	};
 
-	struct CHAOS_API FDeformableXPBDCorotatedParams
+	struct FDeformableXPBDCorotatedParams
 	{
 		int32 XPBDCorotatedBatchSize = 5;
 		int32 XPBDCorotatedBatchThreshold = 5;

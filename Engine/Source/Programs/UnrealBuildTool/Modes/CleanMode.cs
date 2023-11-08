@@ -2,16 +2,14 @@
 
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 using EpicGames.Core;
+using Microsoft.Extensions.Logging;
 using OpenTracing;
 using OpenTracing.Util;
 using UnrealBuildBase;
-using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -40,7 +38,7 @@ namespace UnrealBuildTool
 		/// <param name="Arguments">Command-line arguments</param>
 		/// <returns>One of the values of ECompilationResult</returns>
 		/// <param name="Logger"></param>
-		public override int Execute(CommandLineArguments Arguments, ILogger Logger)
+		public override Task<int> ExecuteAsync(CommandLineArguments Arguments, ILogger Logger)
 		{
 			Arguments.ApplyTo(this);
 
@@ -50,11 +48,11 @@ namespace UnrealBuildTool
 			Arguments.ApplyTo(BuildConfiguration);
 
 			// Parse all the targets being built
-			List<TargetDescriptor> TargetDescriptors = TargetDescriptor.ParseCommandLine(Arguments, BuildConfiguration.bUsePrecompiled, bSkipRulesCompile, BuildConfiguration.bForceRulesCompile, Logger);
+			List<TargetDescriptor> TargetDescriptors = TargetDescriptor.ParseCommandLine(Arguments, BuildConfiguration, Logger);
 
 			Clean(TargetDescriptors, BuildConfiguration, Logger);
 
-			return 0;
+			return Task.FromResult(0);
 		}
 
 		public void Clean(List<TargetDescriptor> TargetDescriptors, BuildConfiguration BuildConfiguration, ILogger Logger)
@@ -90,10 +88,13 @@ namespace UnrealBuildTool
 					TargetDescriptor TargetDescriptor = TargetDescriptors[Idx];
 
 					// Create the rules assembly
-					RulesAssembly RulesAssembly = RulesCompiler.CreateTargetRulesAssembly(TargetDescriptor.ProjectFile, TargetDescriptor.Name, bSkipRulesCompile, BuildConfiguration.bForceRulesCompile, BuildConfiguration.bUsePrecompiled, TargetDescriptor.ForeignPlugin, Logger);
+					RulesAssembly RulesAssembly = RulesCompiler.CreateTargetRulesAssembly(TargetDescriptor.ProjectFile, TargetDescriptor.Name, bSkipRulesCompile, BuildConfiguration.bForceRulesCompile, BuildConfiguration.bUsePrecompiled, TargetDescriptor.ForeignPlugin, TargetDescriptor.bBuildPluginAsLocal, Logger);
 
 					// Create the rules object
 					ReadOnlyTargetRules Target = new ReadOnlyTargetRules(RulesAssembly.CreateTargetRules(TargetDescriptor.Name, TargetDescriptor.Platform, TargetDescriptor.Configuration, TargetDescriptor.Architectures, TargetDescriptor.ProjectFile, TargetDescriptor.AdditionalArguments, Logger));
+
+					// Get the intermediate environment for this target
+					UnrealIntermediateEnvironment IntermediateEnvironment = TargetDescriptor.IntermediateEnvironment != UnrealIntermediateEnvironment.Default ? TargetDescriptor.IntermediateEnvironment : Target.IntermediateEnvironment;
 
 					if (!bSkipPreBuildTargets && Target.PreBuildTargets.Count > 0)
 					{
@@ -143,7 +144,7 @@ namespace UnrealBuildTool
 					}
 
 					// Add all the makefiles and caches to be deleted
-					FilesToDelete.Add(TargetMakefile.GetLocation(Target.ProjectFile, Target.Name, Target.Platform, Target.Architectures, Target.Configuration));
+					FilesToDelete.Add(TargetMakefile.GetLocation(Target.ProjectFile, Target.Name, Target.Platform, Target.Architectures, Target.Configuration, IntermediateEnvironment));
 					FilesToDelete.UnionWith(SourceFileMetadataCache.GetFilesToClean(Target.ProjectFile));
 
 					// Add all the intermediate folders to be deleted
@@ -151,13 +152,16 @@ namespace UnrealBuildTool
 					{
 						foreach (string NamePrefix in NamePrefixes)
 						{
-							DirectoryReference GeneratedCodeDir = DirectoryReference.Combine(BaseDir, UEBuildTarget.GetPlatformIntermediateFolder(Target.Platform, Target.Architectures, false), NamePrefix, "Inc");
+							string NamePrefixWithEnv = UEBuildTarget.GetTargetIntermediateFolderName(NamePrefix, IntermediateEnvironment);
+							// This is actually wrong.. the generated code is not in this dir.. if changing "Target.Architectures" parameter to null it will delete the right files.
+							// However, this also means that it will cause a rebuild for both unity, nonunity and iwyu targets since they share this folder.
+							DirectoryReference GeneratedCodeDir = DirectoryReference.Combine(BaseDir, UEBuildTarget.GetPlatformIntermediateFolder(Target.Platform, Target.Architectures, false), NamePrefixWithEnv, "Inc");
 							if (DirectoryReference.Exists(GeneratedCodeDir))
 							{
 								DirectoriesToDelete.Add(GeneratedCodeDir);
 							}
 
-							DirectoryReference IntermediateDir = DirectoryReference.Combine(BaseDir, UEBuildTarget.GetPlatformIntermediateFolder(Target.Platform, Target.Architectures, false), NamePrefix, Target.Configuration.ToString());
+							DirectoryReference IntermediateDir = DirectoryReference.Combine(BaseDir, UEBuildTarget.GetPlatformIntermediateFolder(Target.Platform, Target.Architectures, false), NamePrefixWithEnv, Target.Configuration.ToString());
 							if (DirectoryReference.Exists(IntermediateDir))
 							{
 								DirectoriesToDelete.Add(IntermediateDir);
@@ -228,7 +232,7 @@ namespace UnrealBuildTool
 				});
 			}
 
-			var DeleteDirectories = Task.Run(() =>
+			Task DeleteDirectories = Task.Run(() =>
 			{
 				using ScopedTimer Timer = new ScopedTimer($"Delete {DirectoriesToDelete.Count} directories", Logger);
 				Parallel.ForEach(DirectoriesToDelete, DirectoryToDelete =>
@@ -251,7 +255,7 @@ namespace UnrealBuildTool
 				});
 			});
 
-			var DeleteFiles = Task.Run(() =>
+			Task DeleteFiles = Task.Run(() =>
 			{
 				using ScopedTimer Timer = new ScopedTimer($"Delete {FilesToDelete.Count} files", Logger);
 				Parallel.ForEach(FilesToDelete, FileToDelete =>

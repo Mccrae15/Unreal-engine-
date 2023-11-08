@@ -11,6 +11,7 @@
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "Online/CoreOnline.h"
+#include "Serialization/ArchiveCountMem.h"
 #include "Serialization/LargeMemoryReader.h"
 #include "Misc/ConfigCacheIni.h"
 #include "HAL/IPlatformFileManagedStorageWrapper.h"
@@ -60,6 +61,10 @@ namespace UE::Net::LocalFileReplay
 
 	TAutoConsoleVariable<int32> CVarReplayRecordingMinSpace(TEXT("localReplay.ReplayRecordingMinSpace"), 20 * (1024 * 1024), TEXT("Minimum space needed to start recording a replay."));
 	TAutoConsoleVariable<float> CVarMinLoadNextChunkDelaySeconds(TEXT("localReplay.MinLoadNextChunkDelaySeconds"), 3.0f, TEXT("Minimum time to wait between conditional chunk loads."));
+
+	constexpr int32 MaxEncryptionKeySizeBytes = 4096;
+
+	TAutoConsoleVariable<int32> CVarMaxFriendlySerializeBytes(TEXT("localReplay.MaxFriendlySerializeBytes"), 64 * 1024, TEXT("Maximum allowed serialized bytes when reading friendly name from file header."));
 };
 
 const uint32 FLocalFileNetworkReplayStreamer::FileMagic = 0x1CA2E27F;
@@ -68,6 +73,8 @@ const uint32 FLocalFileNetworkReplayStreamer::MaxFriendlyNameLen = 256;
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 const uint32 FLocalFileNetworkReplayStreamer::LatestVersion = FLocalFileReplayCustomVersion::LatestVersion;
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+FOnLocalFileReplayFinishedWriting FLocalFileNetworkReplayStreamer::OnReplayFinishedWriting;
 
 const FGuid FLocalFileReplayCustomVersion::Guid =  FGuid(0x95A4f03E, 0x7E0B49E4, 0xBA43D356, 0x94FF87D9);
 FCustomVersionRegistration GRegisterLocalFileReplayCustomVersion(FLocalFileReplayCustomVersion::Guid, FLocalFileReplayCustomVersion::LatestVersion, TEXT("LocalFileReplay"));
@@ -90,41 +97,83 @@ FLocalFileReplayCustomVersion::Type FLocalFileNetworkReplayStreamer::FLocalFileS
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
+void FLocalFileEventInfo::CountBytes(FArchive& Ar) const
+{
+	Id.CountBytes(Ar);
+	Group.CountBytes(Ar);
+	Metadata.CountBytes(Ar);
+}
+
+void FLocalFileReplayInfo::CountBytes(FArchive& Ar) const
+{
+	FriendlyName.CountBytes(Ar);
+	EncryptionKey.CountBytes(Ar);
+	
+	Chunks.CountBytes(Ar);
+	DataChunks.CountBytes(Ar);
+
+	Checkpoints.CountBytes(Ar);
+	for (const FLocalFileEventInfo& Info : Checkpoints)
+	{
+		Info.CountBytes(Ar);
+	}
+
+	Events.CountBytes(Ar);
+	for (const FLocalFileEventInfo& Info : Events)
+	{
+		Info.CountBytes(Ar);
+	}
+}
+
 void FLocalFileStreamFArchive::Serialize(void* V, int64 Length) 
 {
 	if (IsLoading())
 	{
-		if ((Length < 0) || (Pos + Length) > Buffer.Num())
+		if ((Length < 0) || (ArchivePos + Length) > Buffer.Num())
 		{
-			UE_LOG(LogLocalFileReplay, Error, TEXT("FLocalFileStreamFArchive::Serialize: Attempted to serialize past end of archive: Position = %i, Size=%i, Requested = %lli"), Pos, Buffer.Num(), Length);
+			UE_LOG(LogLocalFileReplay, Error, TEXT("FLocalFileStreamFArchive::Serialize: Attempted to serialize past end of archive: Position = %i, Size=%i, Requested = %lli"), ArchivePos, Buffer.Num(), Length);
 			SetError();
 			return;
 		}
 
-		FMemory::Memcpy(V, Buffer.GetData() + Pos, Length);
+		FMemory::Memcpy(V, Buffer.GetData() + ArchivePos, Length);
 
-		Pos += Length;
+		ArchivePos += Length;
 	}
 	else
 	{
-		check(Pos <= Buffer.Num());
+		check(ArchivePos <= Buffer.Num());
 
-		const int32 SpaceNeeded = Length - (Buffer.Num() - Pos);
-
+		const int32 SpaceNeeded = IntCastChecked<int32>(Length - (Buffer.Num() - ArchivePos));
 		if (SpaceNeeded > 0)
 		{
 			Buffer.AddUninitialized(SpaceNeeded);
 		}
 
-		FMemory::Memcpy(Buffer.GetData() + Pos, V, Length);
+		FMemory::Memcpy(Buffer.GetData() + ArchivePos, V, Length);
 
-		Pos += Length;
+		ArchivePos += Length;
 	}
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	Pos = static_cast<int32>(ArchivePos);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
-int64 FLocalFileStreamFArchive::Tell() 
+int64 FLocalFileStreamFArchive::Tell() const
 {
-	return Pos;
+	return ArchivePos;
+}
+
+int64 FLocalFileStreamFArchive::Tell()
+{
+	return ArchivePos;
+}
+
+
+int64 FLocalFileStreamFArchive::TotalSize() const
+{
+	return Buffer.Num();
 }
 
 int64 FLocalFileStreamFArchive::TotalSize()
@@ -136,12 +185,12 @@ void FLocalFileStreamFArchive::Seek(int64 InPos)
 {
 	check(InPos <= Buffer.Num());
 
-	Pos = InPos;
+	ArchivePos = InPos;
 }
 
 bool FLocalFileStreamFArchive::AtEnd() 
 {
-	return Pos >= Buffer.Num() && bAtEndOfReplay;
+	return ArchivePos >= Buffer.Num() && bAtEndOfReplay;
 }
 
 FLocalFileNetworkReplayStreamer::FLocalFileNetworkReplayStreamer() 
@@ -264,7 +313,16 @@ bool FLocalFileNetworkReplayStreamer::ReadReplayInfo(FArchive& Archive, FLocalFi
 			Archive << Info.Changelist;
 
 			FString FriendlyName;
-			Archive << FriendlyName;
+			{
+				TGuardValue<int64> MaxSerialize(Archive.ArMaxSerializeSize, UE::Net::LocalFileReplay::CVarMaxFriendlySerializeBytes.GetValueOnAnyThread());
+				Archive << FriendlyName;
+			}
+
+			if (Archive.IsError())
+			{
+				UE_LOG(LogLocalFileReplay, Error, TEXT("ReadReplayInfo: Failed to serialize replay friendly name."));
+				return false;
+			}
 
 			SerializationInfo.FileFriendlyName = FriendlyName;
 
@@ -277,7 +335,7 @@ bool FLocalFileNetworkReplayStreamer::ReadReplayInfo(FArchive& Archive, FLocalFi
 			{
 				// Note, don't touch the FriendlyName if this is an older replay.
 				// Users can adjust the name as necessary using GetMaxFriendlyNameSize.
-				UE_LOG(LogLocalFileReplay, Warning, TEXT("FLocalFileNetworkReplayStreamer::ReadReplayInfoInternal - Loading an old replay, friendly name length **must not** be changed."));
+				UE_LOG(LogLocalFileReplay, Warning, TEXT("ReadReplayInfo - Loading an old replay, friendly name length **must not** be changed."));
 			}
 
 			uint32 IsLive;
@@ -305,7 +363,23 @@ bool FLocalFileNetworkReplayStreamer::ReadReplayInfo(FArchive& Archive, FLocalFi
 
 				Info.bEncrypted = (Encrypted != 0);
 
-				Archive << Info.EncryptionKey;
+				const int64 KeyPos = Archive.Tell();
+
+				int32 KeySize;
+				Archive << KeySize;
+
+				if (KeySize >= 0 && KeySize <= UE::Net::LocalFileReplay::MaxEncryptionKeySizeBytes)
+				{
+					Archive.Seek(KeyPos);
+
+					Archive << Info.EncryptionKey;
+				}
+				else
+				{
+					UE_LOG(LogLocalFileReplay, Error, TEXT("ReadReplayInfo: Serialized an invalid encryption key size: %d"), KeySize);
+					Archive.SetError();
+					return false;
+				}
 			}
 
 			if (!Info.bIsLive && Info.bEncrypted && (Info.EncryptionKey.Num() == 0))
@@ -544,6 +618,12 @@ bool FLocalFileNetworkReplayStreamer::ReadReplayInfo(FArchive& Archive, FLocalFi
 
 		Info.bIsValid = EnumHasAnyFlags(Flags, EReadReplayInfoFlags::SkipHeaderChunkTest) || Info.Chunks.IsValidIndex(Info.HeaderChunkIndex);
 
+		FArchiveCountMem CountMemAr(nullptr);
+		Info.CountBytes(CountMemAr);
+		const int64 InfoSize = sizeof(FLocalFileReplayInfo) + CountMemAr.GetNum();
+
+		UE_LOG(LogLocalFileReplay, Verbose, TEXT("ReadReplayInfo: IsValid: %s MemSize: %lld bytes"), *LexToString(Info.bIsValid), InfoSize);
+
 		return Info.bIsValid && !Archive.IsError();
 	}
 
@@ -765,7 +845,7 @@ void FLocalFileNetworkReplayStreamer::StartStreaming(const FStartStreamingParame
 				else
 				{
 					// Load metadata if it exists
-					ReadReplayInfo(CurrentStreamName, RequestData.ReplayInfo);
+					ReadReplayInfo(CurrentStreamName, TaskReplayInfo);
 				}
 			},
 			[this, Delegate](TLocalFileRequestCommonData<FStartStreamingResult>& RequestData)
@@ -776,7 +856,7 @@ void FLocalFileNetworkReplayStreamer::StartStreaming(const FStartStreamingParame
 				}
 				else
 				{
-					CurrentReplayInfo = RequestData.ReplayInfo;
+					UpdateCurrentReplayInfo(TaskReplayInfo, EUpdateReplayInfoFlags::FullUpdate);
 
 					if (!CurrentReplayInfo.bIsValid)
 					{
@@ -842,6 +922,7 @@ void FLocalFileNetworkReplayStreamer::StartStreaming(const FStartStreamingParame
 				if ((FinalDemoName.IsEmpty() || !FullDemoFilename.EndsWith(FNetworkReplayStreaming::GetReplayFileExtension())))
 				{
 					UE_LOG(LogLocalFileReplay, Warning, TEXT("FLocalFileNetworkReplayStreamer::StartStreaming. Invalid replay file name for recording: %s"), *FullDemoFilename);
+					RequestData.AsyncError = ELocalFileReplayResult::InvalidName;
 					return;
 				}
 
@@ -859,20 +940,31 @@ void FLocalFileNetworkReplayStreamer::StartStreaming(const FStartStreamingParame
 				// Delete any existing demo with this name
 				IFileManager::Get().Delete(*FullDemoFilename);
 
-				RequestData.ReplayInfo.NetworkVersion = Params.ReplayVersion.NetworkVersion;
-				RequestData.ReplayInfo.Changelist = Params.ReplayVersion.Changelist;
-				RequestData.ReplayInfo.FriendlyName = Params.FriendlyName;
-				RequestData.ReplayInfo.bIsLive = true;
-				RequestData.ReplayInfo.Timestamp = FDateTime::Now();
-				RequestData.ReplayInfo.EncryptionKey = EncryptionKey;
+				TaskReplayInfo.NetworkVersion = Params.ReplayVersion.NetworkVersion;
+				TaskReplayInfo.Changelist = Params.ReplayVersion.Changelist;
+				TaskReplayInfo.FriendlyName = Params.FriendlyName;
+				TaskReplayInfo.bIsLive = true;
+				TaskReplayInfo.Timestamp = FDateTime::Now();
+				TaskReplayInfo.EncryptionKey = EncryptionKey;
 
-				WriteReplayInfo(CurrentStreamName, RequestData.ReplayInfo);
+				TaskReplayInfo.bIsValid = WriteReplayInfo(CurrentStreamName, TaskReplayInfo);
 
-				RequestData.DelegateResult.Result = EStreamingOperationResult::Success;
+				if (!TaskReplayInfo.bIsValid)
+				{
+					UE_LOG(LogLocalFileReplay, Warning, TEXT("StartStreaming was unable to write to the replay file: %s"), *FullDemoFilename);
+					RequestData.AsyncError = ELocalFileReplayResult::FileWriter;
+				}
+				else
+				{
+					RequestData.DelegateResult.Result = EStreamingOperationResult::Success;
+				}
 			},
 			[this, Delegate](TLocalFileRequestCommonData<FStartStreamingResult>& RequestData)
 			{
-				CurrentReplayInfo = RequestData.ReplayInfo;
+				if (RequestData.AsyncError == ELocalFileReplayResult::Success)
+				{
+					UpdateCurrentReplayInfo(TaskReplayInfo, EUpdateReplayInfoFlags::FullUpdate);
+				}
 
 				Delegate.ExecuteIfBound(RequestData.DelegateResult);
 			});
@@ -936,22 +1028,19 @@ void FLocalFileNetworkReplayStreamer::StopStreaming()
 
 		FlushStream(TotalLengthInMS);
 
-		AddGenericRequestToQueue<FLocalFileReplayInfo>(EQueuedLocalFileRequestType::StopRecording,
-			[this, TotalLengthInMS](FLocalFileReplayInfo& ReplayInfo)
-			{
-				if (ReadReplayInfo(CurrentStreamName, ReplayInfo))
+		AddGenericRequestToQueue<ELocalFileReplayResult>(EQueuedLocalFileRequestType::StopRecording,
+			[this, TotalLengthInMS](ELocalFileReplayResult& ReplayResult)
 				{
 					// Set the final values of these header properties
-					ReplayInfo.bIsLive = false;
-					ReplayInfo.LengthInMS = TotalLengthInMS;
-					ReplayInfo.EncryptionKey = CurrentReplayInfo.EncryptionKey;
+				TaskReplayInfo.bIsLive = false;
+				TaskReplayInfo.LengthInMS = TotalLengthInMS;
+				TaskReplayInfo.EncryptionKey = CurrentReplayInfo.EncryptionKey;
 
-					WriteReplayInfo(CurrentStreamName, ReplayInfo);
-				}
+				WriteReplayInfo(CurrentStreamName, TaskReplayInfo);
 			},
-			[this](FLocalFileReplayInfo& ReplayInfo)
+			[this](ELocalFileReplayResult& ReplayResult)
 			{
-				CurrentReplayInfo = ReplayInfo;
+				UpdateCurrentReplayInfo(TaskReplayInfo, EUpdateReplayInfoFlags::FullUpdate);
 			});
 	}
 
@@ -969,8 +1058,14 @@ void FLocalFileNetworkReplayStreamer::StopStreaming()
 			StreamAr.Reset();
 			StreamDataOffset = 0;
 			StreamChunkIndex = 0;
-			CurrentStreamName.Empty();
 			StreamerState = EReplayStreamerState::Idle;
+
+			FString StreamName = MoveTemp(CurrentStreamName);
+			const FString FullFileName = GetDemoFullFilename(StreamName);
+
+			CurrentStreamName.Empty();
+
+			OnReplayFinishedWriting.Broadcast(StreamName, FullFileName);
 		});
 }
 
@@ -1012,7 +1107,7 @@ bool FLocalFileNetworkReplayStreamer::IsDataAvailable() const
 	}
 
 	// If we are loading, and we have more data
-	if (StreamAr.IsLoading() && StreamAr.Pos < StreamAr.Buffer.Num() && CurrentReplayInfo.DataChunks.Num() > 0)
+	if (StreamAr.IsLoading() && StreamAr.Tell() < StreamAr.TotalSize() && CurrentReplayInfo.DataChunks.Num() > 0)
 	{
 		return true;
 	}
@@ -1162,8 +1257,8 @@ void FLocalFileNetworkReplayStreamer::AddOrUpdateEvent(const FString& Name, cons
 
 	UE_LOG(LogLocalFileReplay, Verbose, TEXT("FLocalFileNetworkReplayStreamer::AddOrUpdateEvent. Size: %i"), Data.Num());
 
-	AddGenericRequestToQueue<FLocalFileReplayInfo>(EQueuedLocalFileRequestType::UpdatingEvent,
-		[this, Name, Group, TimeInMS, Meta, Data, EncryptionKey=CurrentReplayInfo.EncryptionKey](FLocalFileReplayInfo& ReplayInfo)
+	AddGenericRequestToQueue<ELocalFileReplayResult>(EQueuedLocalFileRequestType::UpdatingEvent,
+		[this, Name, Group, TimeInMS, Meta, Data](ELocalFileReplayResult& ReplayResult)
 		{
 			SCOPE_CYCLE_COUNTER(STAT_LocalReplay_FlushEvent);
 
@@ -1178,115 +1273,154 @@ void FLocalFileNetworkReplayStreamer::AddOrUpdateEvent(const FString& Name, cons
 			// prefix with stream name to be consistent with http streamer
 			EventName = CurrentStreamName + TEXT("_") + EventName;
 
-			if (ReadReplayInfo(CurrentStreamName, ReplayInfo, EReadReplayInfoFlags::SkipHeaderChunkTest))
+			TSharedPtr<FArchive> LocalFileAr = CreateLocalFileWriter(GetDemoFullFilename(CurrentStreamName));
+			if (LocalFileAr.IsValid())
 			{
-				TSharedPtr<FArchive> LocalFileAr = CreateLocalFileWriter(GetDemoFullFilename(CurrentStreamName));
-				if (LocalFileAr.IsValid())
+				int32 EventIndex = INDEX_NONE;
+
+				// see if this event already exists
+				for (int32 i=0; i < TaskReplayInfo.Events.Num(); ++i)
 				{
-					int32 EventIndex = INDEX_NONE;
-
-					// see if this event already exists
-					for (int32 i=0; i < ReplayInfo.Events.Num(); ++i)
+					if (TaskReplayInfo.Events[i].Id == EventName)
 					{
-						if (ReplayInfo.Events[i].Id == EventName)
-						{
-							EventIndex = i;
-							break;
-						}
+						EventIndex = i;
+						break;
 					}
+				}
 
-					TArray<uint8> EncryptedData;
+				TArray<uint8> EncryptedData;
 
-					if (AllowEncryptedWrite())
+				if (AllowEncryptedWrite())
+				{
+					SCOPE_CYCLE_COUNTER(STAT_LocalReplay_EncryptTime);
+
+					if (!EncryptBuffer(Data, EncryptedData, TaskReplayInfo.EncryptionKey))
 					{
-						SCOPE_CYCLE_COUNTER(STAT_LocalReplay_EncryptTime);
+						UE_LOG(LogLocalFileReplay, Warning, TEXT("FLocalFileNetworkReplayStreamer::AddOrUpdateEvent - EncryptBuffer failed"));
+						ReplayResult = ELocalFileReplayResult::EncryptBuffer;
+						return;
+					}
+				}
+				else
+				{
+					EncryptedData = Data;
+				}
 
-						if (!EncryptBuffer(Data, EncryptedData, EncryptionKey))
-						{
-							UE_LOG(LogLocalFileReplay, Warning, TEXT("FLocalFileNetworkReplayStreamer::AddOrUpdateEvent - EncryptBuffer failed"));
-							ReplayInfo.bIsValid = false;
-							return;
-						}
+				// serialize event to temporary location
+				FArrayWriter Writer;
+
+				ELocalFileChunkType ChunkType = ELocalFileChunkType::Event;
+				Writer << ChunkType;
+
+				const int64 SavedPos = Writer.Tell();
+
+				int32 PlaceholderSize = 0;
+				Writer << PlaceholderSize;
+
+				const int64 MetadataPos = Writer.Tell();
+
+				FString TempId = EventName;
+				Writer << TempId;
+
+				FString GroupValue = Group;
+				Writer << GroupValue;
+
+				FString MetaValue = Meta;
+				Writer << MetaValue;
+
+				uint32 Time1 = TimeInMS;
+				Writer << Time1;
+
+				uint32 Time2 = TimeInMS;
+				Writer << Time2;
+
+				int32 EventSize = EncryptedData.Num();
+				Writer << EventSize;
+
+				const int64 InternalDataOffset = Writer.Tell();
+
+				Writer.Serialize((void*)EncryptedData.GetData(), EncryptedData.Num());
+
+				int32 ChunkSize = IntCastChecked<int32>(Writer.Tell() - MetadataPos);
+
+				bool bNewChunk = true;
+
+				if (EventIndex == INDEX_NONE)
+				{
+					// append new event chunk
+					LocalFileAr->Seek(LocalFileAr->TotalSize());
+				}
+				else 
+				{
+					if (ChunkSize > TaskReplayInfo.Chunks[TaskReplayInfo.Events[EventIndex].ChunkIndex].SizeInBytes)
+					{
+						LocalFileAr->Seek(TaskReplayInfo.Chunks[TaskReplayInfo.Events[EventIndex].ChunkIndex].TypeOffset);
+
+						// clear chunk type so it will be skipped later
+						ChunkType = ELocalFileChunkType::Unknown;
+						*LocalFileAr << ChunkType;
+
+						TaskReplayInfo.Chunks[TaskReplayInfo.Events[EventIndex].ChunkIndex].ChunkType = ELocalFileChunkType::Unknown;
+
+						LocalFileAr->Seek(LocalFileAr->TotalSize());
 					}
 					else
 					{
-						EncryptedData = Data;
+						bNewChunk = false;
+
+						// reuse existing chunk
+						LocalFileAr->Seek(TaskReplayInfo.Chunks[TaskReplayInfo.Events[EventIndex].ChunkIndex].TypeOffset);
+
+						// maintain the original chunk size to avoid corrupting the file
+						ChunkSize = TaskReplayInfo.Chunks[TaskReplayInfo.Events[EventIndex].ChunkIndex].SizeInBytes;
 					}
-
-					// serialize event to temporary location
-					FArrayWriter Writer;
-
-					ELocalFileChunkType ChunkType = ELocalFileChunkType::Event;
-					Writer << ChunkType;
-
-					int64 SavedPos = Writer.Tell();
-
-					int32 PlaceholderSize = 0;
-					Writer << PlaceholderSize;
-
-					int64 MetadataPos = Writer.Tell();
-
-					FString TempName = EventName;
-					Writer << TempName;
-
-					FString Value = Group;
-					Writer << Value;
-
-					Value = Meta;
-					Writer << Value;
-
-					uint32 Time1 = TimeInMS;
-					Writer << Time1;
-
-					uint32 Time2 = TimeInMS;
-					Writer << Time2;
-
-					int32 EventSize = EncryptedData.Num();
-					Writer << EventSize;
-
-					Writer.Serialize((void*)EncryptedData.GetData(), EncryptedData.Num());
-
-					int32 ChunkSize = Writer.Tell() - MetadataPos;
-
-					Writer.Seek(SavedPos);
-					Writer << ChunkSize;
-
-					if (EventIndex == INDEX_NONE)
-					{
-						// append new event chunk
-						LocalFileAr->Seek(LocalFileAr->TotalSize());
-					}
-					else 
-					{
-						if (ChunkSize > ReplayInfo.Chunks[ReplayInfo.Events[EventIndex].ChunkIndex].SizeInBytes)
-						{
-							LocalFileAr->Seek(ReplayInfo.Chunks[ReplayInfo.Events[EventIndex].ChunkIndex].TypeOffset);
-
-							// clear chunk type so it will be skipped later
-							ChunkType = ELocalFileChunkType::Unknown;
-							*LocalFileAr << ChunkType;
-
-							LocalFileAr->Seek(LocalFileAr->TotalSize());
-						}
-						else
-						{
-							LocalFileAr->Seek(ReplayInfo.Chunks[ReplayInfo.Events[EventIndex].ChunkIndex].TypeOffset);
-						}
-					}
-
-					LocalFileAr->Serialize(Writer.GetData(), Writer.TotalSize());
-
-					LocalFileAr = nullptr;
 				}
 
-				ReadReplayInfo(CurrentStreamName, ReplayInfo);
+				Writer.Seek(SavedPos);
+				Writer << ChunkSize;
+
+				const int64 TypeOffset = LocalFileAr->Tell();
+
+				if (bNewChunk)
+				{
+					FLocalFileChunkInfo& ChunkInfo = TaskReplayInfo.Chunks.AddDefaulted_GetRef();
+					ChunkInfo.ChunkType = ChunkType;
+					ChunkInfo.TypeOffset = TypeOffset;
+					ChunkInfo.DataOffset = TypeOffset + MetadataPos;
+					ChunkInfo.SizeInBytes = ChunkSize;
+
+					FLocalFileEventInfo& NewEventInfo = TaskReplayInfo.Events.AddDefaulted_GetRef();
+					NewEventInfo.ChunkIndex = TaskReplayInfo.Chunks.Num() - 1;
+					NewEventInfo.Id = MoveTemp(TempId);
+
+					EventIndex = TaskReplayInfo.Events.Num() - 1;
+				}
+
+				FLocalFileEventInfo& EventInfo = TaskReplayInfo.Events[EventIndex];
+				EventInfo.Group = MoveTemp(GroupValue);
+				EventInfo.Metadata = MoveTemp(MetaValue);
+				EventInfo.Time1 = Time1;
+				EventInfo.Time2 = Time2;
+				EventInfo.SizeInBytes = EventSize;
+				EventInfo.EventDataOffset = TypeOffset + InternalDataOffset;
+
+				LocalFileAr->Serialize(Writer.GetData(), Writer.TotalSize());
+				LocalFileAr = nullptr;
+			}
+			else
+			{
+				ReplayResult = ELocalFileReplayResult::FileWriter;
 			}
 		},
-		[this](FLocalFileReplayInfo& ReplayInfo)
+		[this](ELocalFileReplayResult& ReplayResult)
 		{
-			if (ReplayInfo.bIsValid)
+			if (ReplayResult == ELocalFileReplayResult::Success)
 			{
-				UpdateCurrentReplayInfo(ReplayInfo);
+				UpdateCurrentReplayInfo(TaskReplayInfo, EUpdateReplayInfoFlags::None);
+			}
+			else
+			{
+				SetLastError(ReplayResult);
 			}
 		});
 }
@@ -1742,7 +1876,7 @@ void FLocalFileNetworkReplayStreamer::FlushStream(const uint32 TimeInMS)
 		return;
 	}
 
-	if (StreamAr.Buffer.Num() == 0)
+	if (StreamAr.TotalSize() == 0)
 	{
 		// Nothing to flush
 		return;
@@ -1755,11 +1889,13 @@ void FLocalFileNetworkReplayStreamer::FlushStream(const uint32 TimeInMS)
 
 	StreamTimeRange.Min = StreamTimeRange.Max;
 
-	// Save any newly streamed data to disk
-	UE_LOG(LogLocalFileReplay, Verbose, TEXT("FLocalFileNetworkReplayStreamer::FlushStream. StreamChunkIndex: %i, Size: %i"), StreamChunkIndex, StreamAr.Buffer.Num());
+	const int32 TotalLengthInMS = CurrentReplayInfo.LengthInMS;
 
-	AddGenericRequestToQueue<FLocalFileReplayInfo>(EQueuedLocalFileRequestType::WritingStream,
-		[this, StreamChunkStartMS, StreamChunkEndMS, StreamData = MoveTemp(StreamAr.Buffer), EncryptionKey = CurrentReplayInfo.EncryptionKey](FLocalFileReplayInfo& ReplayInfo) mutable
+	// Save any newly streamed data to disk
+	UE_LOG(LogLocalFileReplay, Verbose, TEXT("FLocalFileNetworkReplayStreamer::FlushStream. StreamChunkIndex: %i, Size: %" INT64_FMT), StreamChunkIndex, StreamAr.TotalSize());
+
+	AddGenericRequestToQueue<ELocalFileReplayResult>(EQueuedLocalFileRequestType::WritingStream,
+		[this, StreamChunkStartMS, StreamChunkEndMS, TotalLengthInMS, StreamData = MoveTemp(StreamAr.Buffer)](ELocalFileReplayResult& ReplayResult) mutable
 		{
 			SCOPE_CYCLE_COUNTER(STAT_LocalReplay_FlushStream);
 
@@ -1779,7 +1915,7 @@ void FLocalFileNetworkReplayStreamer::FlushStream(const uint32 TimeInMS)
 					if (!CompressBuffer(StreamData, CompressedData))
 					{
 						UE_LOG(LogLocalFileReplay, Warning, TEXT("FLocalFileNetworkReplayStreamer::FlushStream - CompressBuffer failed"));
-						ReplayInfo.bIsValid = false;
+						ReplayResult = ELocalFileReplayResult::CompressBuffer;
 						return;
 					}
 				}
@@ -1794,10 +1930,10 @@ void FLocalFileNetworkReplayStreamer::FlushStream(const uint32 TimeInMS)
 				{
 					SCOPE_CYCLE_COUNTER(STAT_LocalReplay_EncryptTime);
 
-					if (!EncryptBuffer(CompressedData, EncryptedData, EncryptionKey))
+					if (!EncryptBuffer(CompressedData, EncryptedData, TaskReplayInfo.EncryptionKey))
 					{
 						UE_LOG(LogLocalFileReplay, Warning, TEXT("FLocalFileNetworkReplayStreamer::FlushStream - EncryptBuffer failed"));
-						ReplayInfo.bIsValid = false;
+						ReplayResult = ELocalFileReplayResult::EncryptBuffer;
 						return;
 					}
 				}
@@ -1809,15 +1945,17 @@ void FLocalFileNetworkReplayStreamer::FlushStream(const uint32 TimeInMS)
 				// flush chunk to disk
 				if (EncryptedData.Num() > 0)
 				{
+					const int64 TypeOffset = LocalFileAr->Tell();
+
 					ELocalFileChunkType ChunkType = ELocalFileChunkType::ReplayData;
 					*LocalFileAr << ChunkType;
 
-					int64 SavedPos = LocalFileAr->Tell();
+					const int64 SavedPos = LocalFileAr->Tell();
 
 					int32 PlaceholderSize = 0;
 					*LocalFileAr << PlaceholderSize;
 
-					int64 MetadataPos = LocalFileAr->Tell();
+					const int64 MetadataPos = LocalFileAr->Tell();
 
 					uint32 Time1 = StreamChunkStartMS;
 					*LocalFileAr << Time1;
@@ -1830,29 +1968,54 @@ void FLocalFileNetworkReplayStreamer::FlushStream(const uint32 TimeInMS)
 
 					*LocalFileAr << SizeInMemory;
 
+					const int64 ReplayDataOffset = LocalFileAr->Tell();
+
 					LocalFileAr->Serialize((void*)EncryptedData.GetData(), EncryptedData.Num());
 
-					int32 ChunkSize = LocalFileAr->Tell() - MetadataPos;
+					int32 ChunkSize = IntCastChecked<int32>(LocalFileAr->Tell() - MetadataPos);
 
 					LocalFileAr->Seek(SavedPos);
 					*LocalFileAr << ChunkSize;
+
+					FLocalFileChunkInfo& ChunkInfo = TaskReplayInfo.Chunks.AddDefaulted_GetRef();
+					ChunkInfo.ChunkType = ChunkType;
+					ChunkInfo.TypeOffset = TypeOffset;
+					ChunkInfo.DataOffset = MetadataPos;
+					ChunkInfo.SizeInBytes = ChunkSize;
+
+					FLocalFileReplayDataInfo& DataInfo = TaskReplayInfo.DataChunks.AddDefaulted_GetRef();
+					DataInfo.ChunkIndex = TaskReplayInfo.Chunks.Num() - 1;
+					DataInfo.Time1 = Time1;
+					DataInfo.Time2 = Time2;
+					DataInfo.SizeInBytes = SizeOnDisk;
+					DataInfo.MemorySizeInBytes = SizeInMemory;
+					DataInfo.ReplayDataOffset = ReplayDataOffset;
+					DataInfo.StreamOffset = TaskReplayInfo.TotalDataSizeInBytes;
+					
+					TaskReplayInfo.TotalDataSizeInBytes += DataInfo.MemorySizeInBytes;
 				}
 
 				LocalFileAr = nullptr;
-			}
 
-			ReadReplayInfo(CurrentStreamName, ReplayInfo);
-		},
-		[this](FLocalFileReplayInfo& ReplayInfo)
-		{
-			if (ReplayInfo.bIsValid)
-			{
-				UpdateCurrentReplayInfo(ReplayInfo);
+				TaskReplayInfo.LengthInMS = TotalLengthInMS;
+
+				WriteReplayInfo(CurrentStreamName, TaskReplayInfo);
 			}
 			else
 			{
-				UE_LOG(LogLocalFileReplay, Error, TEXT("FLocalFileNetworkReplayStreamer::FlushStream failed with invalid replay info."));
-				SetLastError(ELocalFileReplayResult::InvalidReplayInfo);
+				ReplayResult = ELocalFileReplayResult::FileWriter;
+			}
+		},
+		[this](ELocalFileReplayResult& ReplayResult)
+		{
+			if (ReplayResult == ELocalFileReplayResult::Success)
+			{
+				UpdateCurrentReplayInfo(TaskReplayInfo, EUpdateReplayInfoFlags::None);
+			}
+			else
+			{
+				UE_LOG(LogLocalFileReplay, Error, TEXT("FLocalFileNetworkReplayStreamer::FlushStream failed."));
+				SetLastError(ReplayResult);
 			}
 		});
 
@@ -1868,7 +2031,7 @@ void FLocalFileNetworkReplayStreamer::FlushStream(const uint32 TimeInMS)
 
 void FLocalFileNetworkReplayStreamer::FlushCheckpoint(const uint32 TimeInMS)
 {
-	if (CheckpointAr.Buffer.Num() == 0)
+	if (CheckpointAr.TotalSize() == 0)
 	{
 		UE_LOG( LogLocalFileReplay, Warning, TEXT( "FLocalFileNetworkReplayStreamer::FlushCheckpoint. Checkpoint is empty." ) );
 		return;
@@ -1883,134 +2046,152 @@ void FLocalFileNetworkReplayStreamer::FlushCheckpoint(const uint32 TimeInMS)
 
 void FLocalFileNetworkReplayStreamer::FlushCheckpointInternal(const uint32 TimeInMS)
 {
-	if (StreamerState != EReplayStreamerState::Recording || CheckpointAr.Buffer.Num() == 0)
+	if (StreamerState != EReplayStreamerState::Recording || CheckpointAr.TotalSize() == 0)
 	{
 		// If there is no active session, or we are not recording, we don't need to flush
 		CheckpointAr.Buffer.Empty();
-		CheckpointAr.Pos = 0;
+		CheckpointAr.Seek(0);
 		return;
 	}
 
 	const int32 TotalLengthInMS = CurrentReplayInfo.LengthInMS;
 	const uint32 CheckpointTimeInMS = StreamTimeRange.Max;
 
-	AddGenericRequestToQueue<FLocalFileReplayInfo>(EQueuedLocalFileRequestType::WritingCheckpoint, 
-		[this, CheckpointTimeInMS, TotalLengthInMS, CheckpointData=MoveTemp(CheckpointAr.Buffer), EncryptionKey=CurrentReplayInfo.EncryptionKey](FLocalFileReplayInfo& ReplayInfo) mutable
+	AddGenericRequestToQueue<ELocalFileReplayResult>(EQueuedLocalFileRequestType::WritingCheckpoint, 
+		[this, CheckpointTimeInMS, TotalLengthInMS, CheckpointData=MoveTemp(CheckpointAr.Buffer)](ELocalFileReplayResult& ReplayResult) mutable
 		{
 			SCOPE_CYCLE_COUNTER(STAT_LocalReplay_FlushCheckpoint);
 
-			if (ReadReplayInfo(CurrentStreamName, ReplayInfo))
+			const int32 DataChunkIndex = TaskReplayInfo.DataChunks.Num();
+			const int32 CheckpointIndex = TaskReplayInfo.Checkpoints.Num();
+
+			TSharedPtr<FArchive> LocalFileAr = CreateLocalFileWriter(GetDemoFullFilename(CurrentStreamName));
+			if (LocalFileAr.IsValid())
 			{
-				int32 DataChunkIndex = ReplayInfo.DataChunks.Num();
-				int32 CheckpointIndex = ReplayInfo.Checkpoints.Num();
+				LocalFileAr->Seek(LocalFileAr->TotalSize());
 
-				TSharedPtr<FArchive> LocalFileAr = CreateLocalFileWriter(GetDemoFullFilename(CurrentStreamName));
-				if (LocalFileAr.IsValid())
+				TArray<uint8> CompressedData;
+
+				if (SupportsCompression())
 				{
-					LocalFileAr->Seek(LocalFileAr->TotalSize());
+					SCOPE_CYCLE_COUNTER(STAT_LocalReplay_CompressTime);
 
-					TArray<uint8> CompressedData;
-
-					if (SupportsCompression())
+					if (!CompressBuffer(CheckpointData, CompressedData))
 					{
-						SCOPE_CYCLE_COUNTER(STAT_LocalReplay_CompressTime);
-
-						if (!CompressBuffer(CheckpointData, CompressedData))
-						{
-							UE_LOG(LogLocalFileReplay, Warning, TEXT("FLocalFileNetworkReplayStreamer::FlushStream - CompressBuffer failed"));
-							ReplayInfo.bIsValid = false;
-							return;
-						}
+						UE_LOG(LogLocalFileReplay, Warning, TEXT("FLocalFileNetworkReplayStreamer::FlushStream - CompressBuffer failed"));
+						ReplayResult = ELocalFileReplayResult::CompressBuffer;
+						return;
 					}
-					else
-					{
-						CompressedData = MoveTemp(CheckpointData);
-					}
-
-					TArray<uint8> EncryptedData;
-
-					if (AllowEncryptedWrite())
-					{
-						SCOPE_CYCLE_COUNTER(STAT_LocalReplay_EncryptTime);
-
-						if (!EncryptBuffer(CompressedData, EncryptedData, EncryptionKey))
-						{
-							UE_LOG(LogLocalFileReplay, Warning, TEXT("FLocalFileNetworkReplayStreamer::FlushStream - EncryptBuffer failed"));
-							ReplayInfo.bIsValid = false;
-							return;
-						}
-					}
-					else
-					{
-						EncryptedData = MoveTemp(CompressedData);
-					}
-
-					// flush checkpoint
-					if (EncryptedData.Num() > 0)
-					{
-						ELocalFileChunkType ChunkType = ELocalFileChunkType::Checkpoint;
-						*LocalFileAr << ChunkType;
-
-						int64 SavedPos = LocalFileAr->Tell();
-
-						int32 PlaceholderSize = 0;
-						*LocalFileAr << PlaceholderSize;
-
-						int64 MetadataPos = LocalFileAr->Tell();
-
-						FString Id = FString::Printf(TEXT("checkpoint%ld"), CheckpointIndex);
-						*LocalFileAr << Id;
-
-						FString Group = TEXT("checkpoint");
-						*LocalFileAr << Group;
-
-						FString Metadata = FString::Printf(TEXT("%ld"), DataChunkIndex);
-						*LocalFileAr << Metadata;
-
-						uint32 Time1 = CheckpointTimeInMS;
-						*LocalFileAr << Time1;
-
-						uint32 Time2 = CheckpointTimeInMS;
-						*LocalFileAr << Time2;
-
-						int32 CheckpointSize = EncryptedData.Num();
-						*LocalFileAr << CheckpointSize;
-
-						LocalFileAr->Serialize((void*)EncryptedData.GetData(), EncryptedData.Num());
-
-						int32 ChunkSize = LocalFileAr->Tell() - MetadataPos;
-
-						LocalFileAr->Seek(SavedPos);
-						*LocalFileAr << ChunkSize;
-					}
-
-					LocalFileAr = nullptr;
+				}
+				else
+				{
+					CompressedData = MoveTemp(CheckpointData);
 				}
 
-				if (ReadReplayInfo(CurrentStreamName, ReplayInfo))
-				{
-					ReplayInfo.LengthInMS = TotalLengthInMS;
-					ReplayInfo.EncryptionKey = EncryptionKey;
+				TArray<uint8> EncryptedData;
 
-					WriteReplayInfo(CurrentStreamName, ReplayInfo);
+				if (AllowEncryptedWrite())
+				{
+					SCOPE_CYCLE_COUNTER(STAT_LocalReplay_EncryptTime);
+
+					if (!EncryptBuffer(CompressedData, EncryptedData, TaskReplayInfo.EncryptionKey))
+					{
+						UE_LOG(LogLocalFileReplay, Warning, TEXT("FLocalFileNetworkReplayStreamer::FlushStream - EncryptBuffer failed"));
+						ReplayResult = ELocalFileReplayResult::EncryptBuffer;
+						return;
+					}
 				}
-			}
-		},
-		[this](FLocalFileReplayInfo& ReplayInfo)
-		{
-			if (ReplayInfo.bIsValid)
-			{
-				UpdateCurrentReplayInfo(ReplayInfo);
+				else
+				{
+					EncryptedData = MoveTemp(CompressedData);
+				}
+
+				// flush checkpoint
+				if (EncryptedData.Num() > 0)
+				{
+					const int64 TypeOffset = LocalFileAr->Tell();
+
+					ELocalFileChunkType ChunkType = ELocalFileChunkType::Checkpoint;
+					*LocalFileAr << ChunkType;
+
+					const int64 SavedPos = LocalFileAr->Tell();
+
+					int32 PlaceholderSize = 0;
+					*LocalFileAr << PlaceholderSize;
+
+					const int64 MetadataPos = LocalFileAr->Tell();
+
+					FString Id = FString::Printf(TEXT("checkpoint%ld"), CheckpointIndex);
+					*LocalFileAr << Id;
+
+					FString Group = TEXT("checkpoint");
+					*LocalFileAr << Group;
+
+					FString Metadata = FString::Printf(TEXT("%ld"), DataChunkIndex);
+					*LocalFileAr << Metadata;
+
+					uint32 Time1 = CheckpointTimeInMS;
+					*LocalFileAr << Time1;
+
+					uint32 Time2 = CheckpointTimeInMS;
+					*LocalFileAr << Time2;
+
+					int32 CheckpointSize = EncryptedData.Num();
+					*LocalFileAr << CheckpointSize;
+
+					const int64 EventDataOffset = LocalFileAr->Tell();
+
+					LocalFileAr->Serialize((void*)EncryptedData.GetData(), EncryptedData.Num());
+
+					int32 ChunkSize = IntCastChecked<int32>(LocalFileAr->Tell() - MetadataPos);
+
+					LocalFileAr->Seek(SavedPos);
+					*LocalFileAr << ChunkSize;
+
+					FLocalFileChunkInfo& ChunkInfo = TaskReplayInfo.Chunks.AddDefaulted_GetRef();
+					ChunkInfo.ChunkType = ChunkType;
+					ChunkInfo.TypeOffset = TypeOffset;
+					ChunkInfo.DataOffset = MetadataPos;
+					ChunkInfo.SizeInBytes = ChunkSize;
+
+					FLocalFileEventInfo& CheckpointInfo = TaskReplayInfo.Checkpoints.AddDefaulted_GetRef();
+					CheckpointInfo.ChunkIndex = TaskReplayInfo.Chunks.Num() - 1;
+					CheckpointInfo.Id = MoveTemp(Id);
+					CheckpointInfo.Group = MoveTemp(Group);
+					CheckpointInfo.Metadata = MoveTemp(Metadata);
+					CheckpointInfo.Time1 = Time1;
+					CheckpointInfo.Time2 = Time2;
+					CheckpointInfo.SizeInBytes = CheckpointSize;
+					CheckpointInfo.EventDataOffset = EventDataOffset;
+				}
+
+				LocalFileAr = nullptr;
 			}
 			else
 			{
-				UE_LOG(LogLocalFileReplay, Error, TEXT("FLocalFileNetworkReplayStreamer::FlushCheckpointInternal failed with invalid replay info."));
-				SetLastError(ELocalFileReplayResult::InvalidReplayInfo);
+				ReplayResult = ELocalFileReplayResult::FileWriter;
+				return;
+			}
+
+			TaskReplayInfo.LengthInMS = TotalLengthInMS;
+
+			WriteReplayInfo(CurrentStreamName, TaskReplayInfo);
+		},
+		[this](ELocalFileReplayResult& ReplayResult)
+		{
+			if (ReplayResult == ELocalFileReplayResult::Success)
+			{
+				UpdateCurrentReplayInfo(TaskReplayInfo, EUpdateReplayInfoFlags::None);
+			}
+			else
+			{
+				UE_LOG(LogLocalFileReplay, Error, TEXT("FLocalFileNetworkReplayStreamer::FlushCheckpointInternal failed."));
+				SetLastError(ReplayResult);
 			}
 		});
 
 	CheckpointAr.Buffer.Reset();
-	CheckpointAr.Pos = 0;	
+	CheckpointAr.Seek(0);
 }
 
 void FLocalFileNetworkReplayStreamer::GotoCheckpointIndex(const int32 CheckpointIndex, const FGotoCallback& Delegate, EReplayCheckpointType CheckpointType)
@@ -2035,7 +2216,7 @@ void FLocalFileNetworkReplayStreamer::GotoCheckpointIndex(const int32 Checkpoint
 				// Make sure to reset the checkpoint archive (this is how we signify that the engine should start from the beginning of the stream (we don't need a checkpoint for that))
 				CheckpointAr.Reset();
 
-				if (!IsDataAvailableForTimeRange(0, LastGotoTimeInMS))
+				if (!IsDataAvailableForTimeRange(0, IntCastChecked<uint32>(LastGotoTimeInMS)))
 				{
 					// Completely reset our stream (we're going to start loading from the start of the checkpoint)
 					StreamAr.Buffer.Reset();
@@ -2050,10 +2231,10 @@ void FLocalFileNetworkReplayStreamer::GotoCheckpointIndex(const int32 Checkpoint
 
 					LastChunkTime = 0;		// Force the next chunk to start loading immediately in case LastGotoTimeInMS is 0 (which would effectively disable high priority mode immediately)
 
-					SetHighPriorityTimeRange(0, LastGotoTimeInMS);
+					SetHighPriorityTimeRange(0, IntCastChecked<uint32>(LastGotoTimeInMS));
 				}
 
-				StreamAr.Pos = 0;
+				StreamAr.Seek(0);
 				StreamAr.bAtEndOfReplay	= false;
 
 				FGotoResult Result;
@@ -2097,8 +2278,6 @@ void FLocalFileNetworkReplayStreamer::GotoCheckpointIndex(const int32 Checkpoint
 			TSharedPtr<FArchive> LocalFileAr = CreateLocalFileReader(FullDemoFilename);
 			if (LocalFileAr.IsValid())
 			{
-				if (ReadReplayInfo(*LocalFileAr, RequestData.ReplayInfo, EReadReplayInfoFlags::None))
-				{
 					TArray<uint8> CheckpointData;
 
 					// read all the checkpoints
@@ -2114,23 +2293,23 @@ void FLocalFileNetworkReplayStreamer::GotoCheckpointIndex(const int32 Checkpoint
 						}
 						else
 						{
-							LocalFileAr->Seek(RequestData.ReplayInfo.Checkpoints[i].EventDataOffset);
+							LocalFileAr->Seek(TaskReplayInfo.Checkpoints[i].EventDataOffset);
 
 							CheckpointData.Reset();
-							CheckpointData.AddUninitialized(RequestData.ReplayInfo.Checkpoints[i].SizeInBytes);
+							CheckpointData.AddUninitialized(TaskReplayInfo.Checkpoints[i].SizeInBytes);
 
 							LocalFileAr->Serialize(CheckpointData.GetData(), CheckpointData.Num());
 
 							TArray<uint8> PlaintextData;
 
 							// Get the checkpoint data
-							if (RequestData.ReplayInfo.bEncrypted)
+							if (TaskReplayInfo.bEncrypted)
 							{
 								if (SupportsEncryption())
 								{
 									SCOPE_CYCLE_COUNTER(STAT_LocalReplay_DecryptTime);
 
-									if (!DecryptBuffer(CheckpointData, PlaintextData, RequestData.ReplayInfo.EncryptionKey))
+									if (!DecryptBuffer(CheckpointData, PlaintextData, TaskReplayInfo.EncryptionKey))
 									{
 										UE_LOG(LogLocalFileReplay, Error, TEXT("FLocalFileNetworkReplayStreamer::GotoCheckpointIndexDelta. DecryptBuffer FAILED."));
 										RequestData.DataBuffer.Empty();
@@ -2151,7 +2330,7 @@ void FLocalFileNetworkReplayStreamer::GotoCheckpointIndex(const int32 Checkpoint
 
 							TArray<uint8> UncompressedData;
 
-							if (RequestData.ReplayInfo.bCompressed)
+							if (TaskReplayInfo.bCompressed)
 							{
 								if (SupportsCompression())
 								{
@@ -2185,7 +2364,6 @@ void FLocalFileNetworkReplayStreamer::GotoCheckpointIndex(const int32 Checkpoint
 							DeltaCheckpointCache.Add(i, MakeShareable(new FCachedFileRequest(UncompressedData, 0)));
 						}
 					}
-				}
 
 				LocalFileAr = nullptr;
 			}
@@ -2208,9 +2386,9 @@ void FLocalFileNetworkReplayStreamer::GotoCheckpointIndex(const int32 Checkpoint
 			}
 
 			CheckpointAr.Buffer = MoveTemp(RequestData.DataBuffer);
-			CheckpointAr.Pos = 0;
+			CheckpointAr.Seek(0);
 
-			const bool bIsDataAvailableForTimeRange = IsDataAvailableForTimeRange(CurrentReplayInfo.Checkpoints[CheckpointIndex].Time1, LastGotoTimeInMS);
+			const bool bIsDataAvailableForTimeRange = IsDataAvailableForTimeRange(CurrentReplayInfo.Checkpoints[CheckpointIndex].Time1, IntCastChecked<uint32>(LastGotoTimeInMS));
 
 			const int32 DataChunkIndex = FCString::Atoi(*CurrentReplayInfo.Checkpoints[CheckpointIndex].Metadata);
 			
@@ -2237,8 +2415,8 @@ void FLocalFileNetworkReplayStreamer::GotoCheckpointIndex(const int32 Checkpoint
 				else
 				{
 					// set stream position back to the correct location
-					StreamAr.Pos = CurrentReplayInfo.DataChunks[DataChunkIndex].StreamOffset - StreamDataOffset;
-					check(StreamAr.Pos >= 0 && StreamAr.Pos <= StreamAr.Buffer.Num());
+					StreamAr.Seek(CurrentReplayInfo.DataChunks[DataChunkIndex].StreamOffset - StreamDataOffset);
+					check(StreamAr.Tell() >= 0 && StreamAr.Tell() <= StreamAr.TotalSize());
 					StreamAr.bAtEndOfReplay = false;
 				}
 			}
@@ -2262,7 +2440,7 @@ void FLocalFileNetworkReplayStreamer::GotoCheckpointIndex(const int32 Checkpoint
 			if (LastGotoTimeInMS >= 0)
 			{
 				// If we are fine scrubbing, make sure to wait on the part of the stream that is needed to do this in one frame
-				SetHighPriorityTimeRange(CurrentReplayInfo.Checkpoints[CheckpointIndex].Time1, LastGotoTimeInMS);
+				SetHighPriorityTimeRange(CurrentReplayInfo.Checkpoints[CheckpointIndex].Time1, IntCastChecked<uint32>(LastGotoTimeInMS));
 
 				// Subtract off starting time so we pass in the leftover to the engine to fast forward through for the fine scrubbing part
 				LastGotoTimeInMS -= CurrentReplayInfo.Checkpoints[CheckpointIndex].Time1;
@@ -2302,17 +2480,15 @@ void FLocalFileNetworkReplayStreamer::GotoCheckpointIndex(const int32 Checkpoint
 			TSharedPtr<FArchive> LocalFileAr = CreateLocalFileReader(FullDemoFilename);
 			if (LocalFileAr.IsValid())
 			{
-				if (ReadReplayInfo(*LocalFileAr, RequestData.ReplayInfo, EReadReplayInfoFlags::None))
-				{
-					LocalFileAr->Seek(RequestData.ReplayInfo.Checkpoints[CheckpointIndex].EventDataOffset);
+				LocalFileAr->Seek(TaskReplayInfo.Checkpoints[CheckpointIndex].EventDataOffset);
 
-					RequestData.DataBuffer.AddUninitialized(RequestData.ReplayInfo.Checkpoints[CheckpointIndex].SizeInBytes);
+				RequestData.DataBuffer.AddUninitialized(TaskReplayInfo.Checkpoints[CheckpointIndex].SizeInBytes);
 
 					LocalFileAr->Serialize(RequestData.DataBuffer.GetData(), RequestData.DataBuffer.Num());
 
 					// Get the checkpoint data
 					
-					if (RequestData.ReplayInfo.bEncrypted)
+				if (TaskReplayInfo.bEncrypted)
 					{
 						if (SupportsEncryption())
 						{
@@ -2320,7 +2496,7 @@ void FLocalFileNetworkReplayStreamer::GotoCheckpointIndex(const int32 Checkpoint
 
 							TArray<uint8> DecryptedData;
 
-							if (!DecryptBuffer(RequestData.DataBuffer, DecryptedData, RequestData.ReplayInfo.EncryptionKey))
+						if (!DecryptBuffer(RequestData.DataBuffer, DecryptedData, TaskReplayInfo.EncryptionKey))
 							{
 								UE_LOG(LogLocalFileReplay, Error, TEXT("FLocalFileNetworkReplayStreamer::GotoCheckpointIndex. DecryptBuffer FAILED."));
 								RequestData.DataBuffer.Empty();
@@ -2337,7 +2513,7 @@ void FLocalFileNetworkReplayStreamer::GotoCheckpointIndex(const int32 Checkpoint
 						}
 					}
 
-					if (RequestData.ReplayInfo.bCompressed)
+				if (TaskReplayInfo.bCompressed)
 					{
 						if (SupportsCompression())
 						{
@@ -2361,7 +2537,6 @@ void FLocalFileNetworkReplayStreamer::GotoCheckpointIndex(const int32 Checkpoint
 							return;
 						}
 					}
-				}
 
 				LocalFileAr = nullptr;
 			}
@@ -2386,14 +2561,14 @@ void FLocalFileNetworkReplayStreamer::GotoCheckpointIndex(const int32 Checkpoint
 			AddRequestToCache(CurrentReplayInfo.Checkpoints[CheckpointIndex].ChunkIndex, RequestData.DataBuffer);
 
 			CheckpointAr.Buffer = MoveTemp(RequestData.DataBuffer);
-			CheckpointAr.Pos = 0;
+			CheckpointAr.Seek(0);
 
 			const FLocalFileEventInfo& Checkpoint = CurrentReplayInfo.Checkpoints[CheckpointIndex];
 			const int32 DataChunkIndex = FCString::Atoi(*Checkpoint.Metadata);
 
 			if (CurrentReplayInfo.DataChunks.IsValidIndex(DataChunkIndex))
 			{
-				bool bIsDataAvailableForTimeRange = IsDataAvailableForTimeRange(Checkpoint.Time1, LastGotoTimeInMS);
+				bool bIsDataAvailableForTimeRange = IsDataAvailableForTimeRange(Checkpoint.Time1, IntCastChecked<uint32>(LastGotoTimeInMS));
 
 				if (!bIsDataAvailableForTimeRange)
 				{
@@ -2416,8 +2591,8 @@ void FLocalFileNetworkReplayStreamer::GotoCheckpointIndex(const int32 Checkpoint
 				else
 				{
 					// set stream position back to the correct location
-					StreamAr.Pos = CurrentReplayInfo.DataChunks[DataChunkIndex].StreamOffset - StreamDataOffset;
-					check(StreamAr.Pos >= 0 && StreamAr.Pos <= StreamAr.Buffer.Num());
+					StreamAr.Seek(CurrentReplayInfo.DataChunks[DataChunkIndex].StreamOffset - StreamDataOffset);
+					check(StreamAr.Tell() >= 0 && StreamAr.Tell() <= StreamAr.TotalSize());
 					StreamAr.bAtEndOfReplay = false;
 				}
 			}
@@ -2433,7 +2608,7 @@ void FLocalFileNetworkReplayStreamer::GotoCheckpointIndex(const int32 Checkpoint
 			if (LastGotoTimeInMS >= 0)
 			{
 				// If we are fine scrubbing, make sure to wait on the part of the stream that is needed to do this in one frame
-				SetHighPriorityTimeRange(Checkpoint.Time1, LastGotoTimeInMS);
+				SetHighPriorityTimeRange(Checkpoint.Time1, IntCastChecked<uint32>(LastGotoTimeInMS));
 
 				// Subtract off starting time so we pass in the leftover to the engine to fast forward through for the fine scrubbing part
 				LastGotoTimeInMS -= Checkpoint.Time1;
@@ -2620,7 +2795,7 @@ const TArray<uint8>& FLocalFileNetworkReplayStreamer::GetCachedFileContents(cons
 		FArchive* Ar = IFileManager::Get().CreateFileReader(*Filename, FILEREAD_AllowWrite);
 		if (Ar)
 		{
-			Data.AddUninitialized(Ar->TotalSize());
+			Data.AddUninitialized(IntCastChecked<int32>(Ar->TotalSize()));
 			Ar->Serialize(Data.GetData(), Data.Num());
 			delete Ar;
 		}
@@ -2953,7 +3128,7 @@ void FLocalFileNetworkReplayStreamer::DownloadHeader(const FDownloadHeaderCallba
 			[this, Delegate](TLocalFileRequestCommonData<FDownloadHeaderResult>& RequestData)
 			{
 				HeaderAr.Buffer = MoveTemp(RequestData.DataBuffer);
-				HeaderAr.Pos = 0;
+				HeaderAr.Seek(0);
 
 				Delegate.ExecuteIfBound(RequestData.DelegateResult);
 			});
@@ -2975,7 +3150,7 @@ void FLocalFileNetworkReplayStreamer::WriteHeader()
 		return;
 	}
 
-	if (HeaderAr.Buffer.Num() == 0)
+	if (HeaderAr.TotalSize() == 0)
 	{
 		// Header wasn't serialized
 		UE_LOG(LogLocalFileReplay, Warning, TEXT("FLocalFileNetworkReplayStreamer::WriteHeader. No header to upload"));
@@ -2988,26 +3163,22 @@ void FLocalFileNetworkReplayStreamer::WriteHeader()
 		return;
 	}
 
-	int32 HeaderChunkIndex = CurrentReplayInfo.HeaderChunkIndex;
-	int64 HeaderTypeOffset = (HeaderChunkIndex != INDEX_NONE) ? CurrentReplayInfo.Chunks[HeaderChunkIndex].TypeOffset : 0;
-	int32 HeaderSize = (HeaderChunkIndex != INDEX_NONE) ? CurrentReplayInfo.Chunks[HeaderChunkIndex].SizeInBytes : 0;
-
-	AddGenericRequestToQueue<FLocalFileReplayInfo>(EQueuedLocalFileRequestType::WritingHeader, 
-		[this, HeaderChunkIndex, HeaderTypeOffset, HeaderSize, HeaderData=MoveTemp(HeaderAr.Buffer)](FLocalFileReplayInfo& ReplayInfo)
+	AddGenericRequestToQueue<ELocalFileReplayResult>(EQueuedLocalFileRequestType::WritingHeader,
+		[this, HeaderData=MoveTemp(HeaderAr.Buffer)](ELocalFileReplayResult& ReplayResult)
 		{
 			SCOPE_CYCLE_COUNTER(STAT_LocalReplay_FlushHeader);
 
 			TSharedPtr<FArchive> LocalFileAr = CreateLocalFileWriter(GetDemoFullFilename(CurrentStreamName));
 			if (LocalFileAr.IsValid())
 			{
-				if (HeaderChunkIndex == INDEX_NONE)
+				if (TaskReplayInfo.HeaderChunkIndex == INDEX_NONE)
 				{
 					// not expecting an existing header on disk, so check for it having been written by another process/client
 					FLocalFileReplayInfo TestInfo;
 					if (ReadReplayInfo(CurrentStreamName, TestInfo))
 					{
 						UE_LOG(LogLocalFileReplay, Error, TEXT("FLocalFileNetworkReplayStreamer::WriteHeader - Current file already has unexpected header"));
-						ReplayInfo.bIsValid = false;
+						ReplayResult = ELocalFileReplayResult::InvalidReplayInfo;
 						return;
 					}
 
@@ -3016,21 +3187,26 @@ void FLocalFileNetworkReplayStreamer::WriteHeader()
 				}
 				else 
 				{
-					if (HeaderData.Num() > HeaderSize)
-					{
-						LocalFileAr->Seek(HeaderTypeOffset);
+					const int32 HeaderSize = TaskReplayInfo.Chunks[TaskReplayInfo.HeaderChunkIndex].SizeInBytes;
 
+					LocalFileAr->Seek(TaskReplayInfo.Chunks[TaskReplayInfo.HeaderChunkIndex].TypeOffset);
+
+					// reuse existing chunk if the size hasn't changed, otherwise, add a new one
+					//@todo: add header data size, so we can differentiate and put a smaller header into the existing chunk space
+					if (HeaderData.Num() != HeaderSize)
+					{
 						// clear chunk type so it will be skipped later
 						ELocalFileChunkType ChunkType = ELocalFileChunkType::Unknown;
 						*LocalFileAr << ChunkType;
 
 						LocalFileAr->Seek(LocalFileAr->TotalSize());
-					}
-					else
-					{
-						LocalFileAr->Seek(HeaderTypeOffset);
+
+						TaskReplayInfo.Chunks[TaskReplayInfo.HeaderChunkIndex].ChunkType = ChunkType;
+						TaskReplayInfo.HeaderChunkIndex = INDEX_NONE;
 					}
 				}
+
+				const int32 TypeOffset = IntCastChecked<int32>(LocalFileAr->Tell());
 
 				ELocalFileChunkType ChunkType = ELocalFileChunkType::Header;
 				*LocalFileAr << ChunkType;
@@ -3038,23 +3214,37 @@ void FLocalFileNetworkReplayStreamer::WriteHeader()
 				int32 ChunkSize = HeaderData.Num();
 				*LocalFileAr << ChunkSize;
 
+				const int32 DataOffset = IntCastChecked<int32>(LocalFileAr->Tell());
+
 				LocalFileAr->Serialize((void*)HeaderData.GetData(), HeaderData.Num());
-
 				LocalFileAr = nullptr;
-			}
 
-			ReadReplayInfo(CurrentStreamName, ReplayInfo);
-		},
-		[this](FLocalFileReplayInfo& ReplayInfo)
-		{
-			if (ReplayInfo.bIsValid)
-			{
-				UpdateCurrentReplayInfo(ReplayInfo);
+				if (TaskReplayInfo.HeaderChunkIndex == INDEX_NONE)
+				{
+					FLocalFileChunkInfo& ChunkInfo = TaskReplayInfo.Chunks.AddDefaulted_GetRef();
+					ChunkInfo.ChunkType = ChunkType;
+					ChunkInfo.TypeOffset = TypeOffset;
+					ChunkInfo.DataOffset = DataOffset;
+					ChunkInfo.SizeInBytes = ChunkSize;
+
+					TaskReplayInfo.HeaderChunkIndex = TaskReplayInfo.Chunks.Num() - 1;
+				}
 			}
 			else
 			{
-				UE_LOG(LogLocalFileReplay, Error, TEXT("FLocalFileNetworkReplayStreamer::WriteHeader failed with invalid replay info."));
-				SetLastError(ELocalFileReplayResult::InvalidReplayInfo);
+				ReplayResult = ELocalFileReplayResult::FileWriter;
+			}
+		},
+		[this](ELocalFileReplayResult& ReplayResult)
+		{
+			if (ReplayResult == ELocalFileReplayResult::Success)
+			{
+				UpdateCurrentReplayInfo(TaskReplayInfo, EUpdateReplayInfoFlags::None);
+			}
+			else
+			{
+				UE_LOG(LogLocalFileReplay, Error, TEXT("FLocalFileNetworkReplayStreamer::WriteHeader failed."));
+				SetLastError(ReplayResult);
 			}
 		});
 
@@ -3164,10 +3354,10 @@ void FLocalFileNetworkReplayStreamer::ConditionallyLoadNextChunk()
 			return;		
 		}
 
-		if ((StreamTimeRange.Max > StreamTimeRange.Min) && (StreamAr.Buffer.Num() > 0))
+		if ((StreamTimeRange.Max > StreamTimeRange.Min) && (StreamAr.TotalSize() > 0))
 		{
 			// Make a guess on how far we're in
-			const float PercentIn		= StreamAr.Buffer.Num() > 0 ? (float)StreamAr.Pos / (float)StreamAr.Buffer.Num() : 0.0f;
+			const float PercentIn		= StreamAr.TotalSize() > 0 ? (float)StreamAr.Tell() / (float)StreamAr.TotalSize() : 0.0f;
 			const float TotalStreamTimeSeconds = (float)(StreamTimeRange.Size()) / 1000.0f;
 			const float CurrentTime		= TotalStreamTimeSeconds * PercentIn;
 			const float TimeLeft		= TotalStreamTimeSeconds - CurrentTime;
@@ -3194,9 +3384,7 @@ void FLocalFileNetworkReplayStreamer::ConditionallyLoadNextChunk()
 			SCOPE_CYCLE_COUNTER(STAT_LocalReplay_ReadStream);
 			LLM_SCOPE(ELLMTag::Replays);
 
-			if (ReadReplayInfo(CurrentStreamName, RequestData.ReplayInfo))
-			{
-				check(RequestData.ReplayInfo.DataChunks.IsValidIndex(RequestedStreamChunkIndex));
+			check(TaskReplayInfo.DataChunks.IsValidIndex(RequestedStreamChunkIndex));
 
 				RequestData.DataBuffer.Empty();
 			
@@ -3205,20 +3393,20 @@ void FLocalFileNetworkReplayStreamer::ConditionallyLoadNextChunk()
 				TSharedPtr<FArchive> LocalFileAr = CreateLocalFileReader(FullDemoFilename);
 				if (LocalFileAr.IsValid())
 				{
-					LocalFileAr->Seek(RequestData.ReplayInfo.DataChunks[RequestedStreamChunkIndex].ReplayDataOffset);
+				LocalFileAr->Seek(TaskReplayInfo.DataChunks[RequestedStreamChunkIndex].ReplayDataOffset);
 
-					RequestData.DataBuffer.AddUninitialized(RequestData.ReplayInfo.DataChunks[RequestedStreamChunkIndex].SizeInBytes);
+				RequestData.DataBuffer.AddUninitialized(TaskReplayInfo.DataChunks[RequestedStreamChunkIndex].SizeInBytes);
 
 					LocalFileAr->Serialize(RequestData.DataBuffer.GetData(), RequestData.DataBuffer.Num());
 
-					if (RequestData.ReplayInfo.bEncrypted)
+				if (TaskReplayInfo.bEncrypted)
 					{
 						if (SupportsEncryption())
 						{
 							SCOPE_CYCLE_COUNTER(STAT_LocalReplay_DecryptTime);
 
 							TArray<uint8> DecryptedData;
-							if (DecryptBuffer(RequestData.DataBuffer, DecryptedData, RequestData.ReplayInfo.EncryptionKey))
+						if (DecryptBuffer(RequestData.DataBuffer, DecryptedData, TaskReplayInfo.EncryptionKey))
 							{
 								RequestData.DataBuffer = MoveTemp(DecryptedData);
 							}
@@ -3239,7 +3427,7 @@ void FLocalFileNetworkReplayStreamer::ConditionallyLoadNextChunk()
 						}
 					}
 
-					if (RequestData.ReplayInfo.bCompressed)
+				if (TaskReplayInfo.bCompressed)
 					{
 						if (SupportsCompression())
 						{
@@ -3269,7 +3457,6 @@ void FLocalFileNetworkReplayStreamer::ConditionallyLoadNextChunk()
 
 					LocalFileAr = nullptr;
 				}
-			}
 		},
 		[this, RequestedStreamChunkIndex](TLocalFileRequestCommonData<FStreamingResultBase>& RequestData)
 		{
@@ -3294,7 +3481,7 @@ void FLocalFileNetworkReplayStreamer::ConditionallyLoadNextChunk()
 
 			if (RequestData.DataBuffer.Num() > 0)
 			{
-				if (StreamAr.Buffer.Num() == 0)
+				if (StreamAr.TotalSize() == 0)
 				{
 					StreamTimeRange.Min = CurrentReplayInfo.DataChunks[RequestedStreamChunkIndex].Time1;
 				}
@@ -3305,21 +3492,21 @@ void FLocalFileNetworkReplayStreamer::ConditionallyLoadNextChunk()
 				check(StreamTimeRange.IsValid());
 
 				// make space before appending
-				int32 MaxBufferedChunks = UE::Net::LocalFileReplay::CVarMaxBufferedStreamChunks.GetValueOnAnyThread();
+				const int32 MaxBufferedChunks = UE::Net::LocalFileReplay::CVarMaxBufferedStreamChunks.GetValueOnAnyThread();
 				if (MaxBufferedChunks > 0)
 				{
-					int32 MinChunkIndex = FMath::Max(0, (RequestedStreamChunkIndex + 1) - MaxBufferedChunks);
+					const int32 MinChunkIndex = FMath::Max(0, (RequestedStreamChunkIndex + 1) - MaxBufferedChunks);
 					if (MinChunkIndex > 0)
 					{
-						int32 TrimBytes = CurrentReplayInfo.DataChunks[MinChunkIndex].StreamOffset - StreamDataOffset;
+						const int32 TrimBytes = IntCastChecked<int32>(CurrentReplayInfo.DataChunks[MinChunkIndex].StreamOffset - StreamDataOffset);
 						if (TrimBytes > 0)
 						{
 							// can't remove chunks if we're actively seeking within that data
-							if (StreamAr.Pos >= TrimBytes)
+							if (StreamAr.Tell() >= TrimBytes)
 							{
 								// don't realloc, we're about to append anyway
 								StreamAr.Buffer.RemoveAt(0, TrimBytes, false);
-								StreamAr.Pos -= TrimBytes;
+								StreamAr.Seek(StreamAr.Tell() - TrimBytes);
 
 								StreamTimeRange.Min = CurrentReplayInfo.DataChunks[MinChunkIndex].Time1;
 								StreamDataOffset += TrimBytes;
@@ -3359,19 +3546,19 @@ void FLocalFileNetworkReplayStreamer::ConditionallyRefreshReplayInfo()
 
 		if (FPlatformTime::Seconds() - LastRefreshTime > REFRESH_REPLAYINFO_IN_SECONDS)
 		{
-			int64 LastDataSize = CurrentReplayInfo.TotalDataSizeInBytes;
+			const int64 LastDataSize = CurrentReplayInfo.TotalDataSizeInBytes;
 			const FString FullDemoFilename = GetDemoFullFilename(CurrentStreamName);
 
-			AddGenericRequestToQueue<FLocalFileReplayInfo>(EQueuedLocalFileRequestType::RefreshingLiveStream, 
-				[this](FLocalFileReplayInfo& ReplayInfo)
+			AddGenericRequestToQueue<ELocalFileReplayResult>(EQueuedLocalFileRequestType::RefreshingLiveStream, 
+				[this](ELocalFileReplayResult& ReplayResult)
 				{
-					ReadReplayInfo(CurrentStreamName, ReplayInfo);
+					ReadReplayInfo(CurrentStreamName, TaskReplayInfo);
 				},
-				[this, LastDataSize](FLocalFileReplayInfo& ReplayInfo)
+				[this, LastDataSize](ELocalFileReplayResult& ReplayResult)
 				{
-					if (ReplayInfo.bIsValid && (ReplayInfo.TotalDataSizeInBytes != LastDataSize))
+					if (TaskReplayInfo.bIsValid && (TaskReplayInfo.TotalDataSizeInBytes != LastDataSize))
 					{
-						CurrentReplayInfo = ReplayInfo;
+						UpdateCurrentReplayInfo(TaskReplayInfo, EUpdateReplayInfoFlags::FullUpdate);
 					}
 				});
 
@@ -3505,7 +3692,7 @@ bool FLocalFileNetworkReplayStreamer::IsCheckpointTypeSupported(EReplayCheckpoin
 	return bSupported;
 }
 
-void FLocalFileNetworkReplayStreamer::UpdateCurrentReplayInfo(FLocalFileReplayInfo& ReplayInfo)
+void FLocalFileNetworkReplayStreamer::UpdateCurrentReplayInfo(FLocalFileReplayInfo& ReplayInfo, EUpdateReplayInfoFlags UpdateFlags)
 {
 	if (ensure(ReplayInfo.bIsValid))
 	{
@@ -3515,8 +3702,11 @@ void FLocalFileNetworkReplayStreamer::UpdateCurrentReplayInfo(FLocalFileReplayIn
 
 		CurrentReplayInfo = ReplayInfo;
 		
-		CurrentReplayInfo.LengthInMS = TotalLengthInMS;
-		CurrentReplayInfo.EncryptionKey = MoveTemp(CurrentKey);
+		if (!EnumHasAnyFlags(UpdateFlags, EUpdateReplayInfoFlags::FullUpdate))
+		{
+			CurrentReplayInfo.LengthInMS = TotalLengthInMS;
+			CurrentReplayInfo.EncryptionKey = MoveTemp(CurrentKey);
+		}
 	}
 }
 
@@ -3617,7 +3807,9 @@ void FLocalFileNetworkReplayStreamingFactory::Flush()
 				break;
 			}
 
-			Tick(AppTime - LastTime);
+			const float DeltaTime = FloatCastChecked<float>(AppTime - LastTime, UE::LWC::DefaultFloatPrecision);
+			Tick(DeltaTime);
+
 			LastTime = AppTime;
 
 			if (HasAnyPendingRequests())

@@ -83,18 +83,18 @@ bool FPCGCreateSplineElement::ExecuteInternal(FPCGContext* Context) const
 			continue;
 		}
 
+		AActor* TargetActor = Settings->TargetActor.Get() ? Settings->TargetActor.Get() : Context->GetTargetActor(nullptr);
+		if (!TargetActor)
+		{
+			PCGE_LOG(Error, GraphAndLog, LOCTEXT("InvalidTargetActor", "Invalid target actor. Ensure TargetActor member is initialized when creating SpatialData."));
+			continue;
+		}
+
 		const UPCGPointData* PointData = SpatialData->ToPointData(Context);
 
 		if (!PointData)
 		{
 			PCGE_LOG(Error, GraphAndLog, LOCTEXT("UnableToGetPointData", "Unable to get point data from input"));
-			continue;
-		}
-
-		AActor* TargetActor = PointData->TargetActor.Get();
-		if (!TargetActor)
-		{
-			PCGE_LOG(Error, GraphAndLog, LOCTEXT("InvalidTargetActor", "Invalid target actor"));
 			continue;
 		}
 
@@ -139,7 +139,6 @@ bool FPCGCreateSplineElement::ExecuteInternal(FPCGContext* Context) const
 		else if(Settings->Mode == EPCGCreateSplineMode::CreateNewActor)
 		{
 			FActorSpawnParameters SpawnParams;
-			SpawnParams.Owner = TargetActor;
 			if (PCGHelpers::IsRuntimeOrPIE())
 			{
 				SpawnParams.ObjectFlags |= RF_Transient;
@@ -161,8 +160,7 @@ bool FPCGCreateSplineElement::ExecuteInternal(FPCGContext* Context) const
 
 			SplineActor->Tags = TargetActor->Tags;
 			SplineActor->Tags.AddUnique(PCGHelpers::DefaultPCGActorTag);
-			SplineActor->AttachToActor(TargetActor, FAttachmentTransformRules::KeepWorldTransform);
-
+			PCGHelpers::AttachToParent(SplineActor, TargetActor, Settings->AttachOptions);
 			SplineData->TargetActor = SplineActor;
 
 			ManagedActors->GeneratedActors.Add(SplineActor);
@@ -174,7 +172,16 @@ bool FPCGCreateSplineElement::ExecuteInternal(FPCGContext* Context) const
 		SplinePoints.Reserve(Points.Num());
 
 		const FTransform SplineActorTransform = SplineActor->GetTransform();
-		ESplinePointType::Type PointType = (Settings->bLinear ? ESplinePointType::Linear : ESplinePointType::Curve);
+		
+		ESplinePointType::Type PointType = ESplinePointType::Curve;
+		if (Settings->bLinear)
+		{
+			PointType = ESplinePointType::Linear;
+		}
+		else if (Settings->bApplyCustomTangents)
+		{
+			PointType = ESplinePointType::CurveCustomTangent;
+		}
 
 		for(int32 PointIndex = 0; PointIndex < Points.Num(); ++PointIndex)
 		{
@@ -191,7 +198,7 @@ bool FPCGCreateSplineElement::ExecuteInternal(FPCGContext* Context) const
 				PointType);
 		}
 
-		SplineData->Initialize(SplinePoints, Settings->bClosedLoop, TargetActor, FTransform(SplineActorTransform.GetLocation()));
+		SplineData->Initialize(SplinePoints, Settings->bClosedLoop, FTransform(SplineActorTransform.GetLocation()));
 
 		USplineComponent* SplineComponent = nullptr;
 

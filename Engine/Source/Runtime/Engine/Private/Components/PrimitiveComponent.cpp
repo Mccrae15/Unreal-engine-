@@ -5,6 +5,11 @@
 =============================================================================*/
 
 #include "Components/PrimitiveComponent.h"
+
+#include "Chaos/ChaosEngineInterface.h"
+#include "Chaos/PhysicsObjectCollisionInterface.h"
+#include "ChaosInterfaceWrapperCore.h"
+#include "Collision/CollisionConversions.h"
 #include "Engine/Level.h"
 #include "Engine/Texture.h"
 #include "GameFramework/DamageType.h"
@@ -30,6 +35,7 @@
 #include "Misc/MapErrors.h"
 #include "CollisionDebugDrawingPublic.h"
 #include "GameFramework/CheatManager.h"
+#include "PhysicsEngine/PhysicsObjectExternalInterface.h"
 #include "RenderingThread.h"
 #include "Streaming/TextureStreamingHelpers.h"
 #include "PrimitiveSceneProxy.h"
@@ -38,6 +44,7 @@
 #include "UObject/UE5PrivateFrostyStreamObjectVersion.h"
 #include "UObject/ObjectSaveContext.h"
 #include "Engine/DamageEvents.h"
+#include "MeshUVChannelInfo.h"
 
 #if WITH_EDITOR
 #include "Engine/LODActor.h"
@@ -294,6 +301,7 @@ UPrimitiveComponent::UPrimitiveComponent(const FObjectInitializer& ObjectInitial
 	bAffectDynamicIndirectLighting = true;
 	bAffectDistanceFieldLighting = true;
 	bCastStaticShadow = true;
+	ShadowCacheInvalidationBehavior = EShadowCacheInvalidationBehavior::Auto;
 	bCastVolumetricTranslucentShadow = false;
 	bCastContactShadow = true;
 	IndirectLightingCacheQuality = ILCQ_Point;
@@ -355,6 +363,7 @@ UPrimitiveComponent::UPrimitiveComponent(const FObjectInitializer& ObjectInitial
 	bHandledByStreamingManagerAsDynamic = false;
 	bIgnoreStreamingManagerUpdate = false;
 	bAttachedToCoarseMeshStreamingManager = false;
+	bBulkReregister = false;
 	LastCheckedAllCollideableDescendantsTime = 0.f;
 
 	bPSOPrecacheCalled = false;
@@ -366,14 +375,16 @@ UPrimitiveComponent::UPrimitiveComponent(const FObjectInitializer& ObjectInitial
 	bReceiveMobileCSMShadows = true;
 
 #if WITH_EDITOR
-	bIgnoreBoundsForEditorFocus = false;
 	bAlwaysAllowTranslucentSelect = false;
+
+	SelectionOutlineColorIndex = 0;
 #endif
 
 #if WITH_EDITORONLY_DATA
 	HitProxyPriority = HPP_World;
 #endif // WITH_EDITORONLY_DATA
 
+	bIgnoreBoundsForEditorFocus = false;
 	bVisibleInSceneCaptureOnly = false;
 	bHiddenInSceneCapture = false;
 }
@@ -544,7 +555,7 @@ void UPrimitiveComponent::GetUsedTextures(TArray<UTexture*>& OutTextures, EMater
 			auto World = GetWorld();
 
 			UsedTextures.Reset();
-			UsedMaterials[MatIndex]->GetUsedTextures(UsedTextures, QualityLevel, false, World ? World->FeatureLevel.GetValue() : GMaxRHIFeatureLevel, false);
+			UsedMaterials[MatIndex]->GetUsedTextures(UsedTextures, QualityLevel, false, World ? World->GetFeatureLevel() : GMaxRHIFeatureLevel, false);
 
 			for( int32 TextureIndex=0; TextureIndex<UsedTextures.Num(); TextureIndex++ )
 			{
@@ -937,29 +948,40 @@ void UPrimitiveComponent::OnDestroyPhysicsState()
 }
 
 #if UE_ENABLE_DEBUG_DRAWING
+static void AppendDebugMassData(UPrimitiveComponent* Component, TArray<FPrimitiveSceneProxy::FDebugMassData>& DebugMassData)
+{
+	if (!Component->IsWelded() && Component->Mobility != EComponentMobility::Static)
+	{
+		if (FBodyInstance* BI = Component->GetBodyInstance())
+		{
+			if (BI->IsValidBodyInstance())
+			{
+				DebugMassData.AddDefaulted();
+				FPrimitiveSceneProxy::FDebugMassData& RootMassData = DebugMassData.Last();
+				const FTransform MassToWorld = BI->GetMassSpaceToWorldSpace();
+
+				RootMassData.LocalCenterOfMass = Component->GetComponentTransform().InverseTransformPosition(MassToWorld.GetLocation());
+				RootMassData.LocalTensorOrientation = MassToWorld.GetRotation() * Component->GetComponentTransform().GetRotation().Inverse();
+				RootMassData.MassSpaceInertiaTensor = BI->GetBodyInertiaTensor();
+				RootMassData.BoneIndex = INDEX_NONE;
+			}
+		}
+	}
+}
+
 void UPrimitiveComponent::SendRenderDebugPhysics(FPrimitiveSceneProxy* OverrideSceneProxy)
 {
+	// For bulk reregistering, this is handled in the FStaticMeshComponentBulkReregisterContext constructor / destructor
+	if (bBulkReregister)
+	{
+		return;
+	}
+
 	FPrimitiveSceneProxy* UseSceneProxy = OverrideSceneProxy ? OverrideSceneProxy : SceneProxy;
 	if (UseSceneProxy)
 	{
 		TArray<FPrimitiveSceneProxy::FDebugMassData> DebugMassData;
-		if (!IsWelded() && Mobility != EComponentMobility::Static)
-		{
-			if (FBodyInstance* BI = GetBodyInstance())
-			{
-				if (BI->IsValidBodyInstance())
-				{
-					DebugMassData.AddDefaulted();
-					FPrimitiveSceneProxy::FDebugMassData& RootMassData = DebugMassData[0];
-					const FTransform MassToWorld = BI->GetMassSpaceToWorldSpace();
-
-					RootMassData.LocalCenterOfMass = GetComponentTransform().InverseTransformPosition(MassToWorld.GetLocation());
-					RootMassData.LocalTensorOrientation = MassToWorld.GetRotation() * GetComponentTransform().GetRotation().Inverse();
-					RootMassData.MassSpaceInertiaTensor = BI->GetBodyInertiaTensor();
-					RootMassData.BoneIndex = INDEX_NONE;
-				}
-			}
-		}
+		AppendDebugMassData(this, DebugMassData);
 
 		FPrimitiveSceneProxy* PassedSceneProxy = UseSceneProxy;
 		TArray<FPrimitiveSceneProxy::FDebugMassData> UseDebugMassData = DebugMassData;
@@ -970,7 +992,54 @@ void UPrimitiveComponent::SendRenderDebugPhysics(FPrimitiveSceneProxy* OverrideS
 			});
 	}
 }
-#endif
+
+void UPrimitiveComponent::BatchSendRenderDebugPhysics(TArrayView<UPrimitiveComponent*> InPrimitives)
+{
+	TArray<FPrimitiveSceneProxy*> SceneProxies;
+	TArray<uint32> DebugMassCounts;
+	TArray<FPrimitiveSceneProxy::FDebugMassData> DebugMassData;
+
+	SceneProxies.Reserve(InPrimitives.Num());
+	DebugMassCounts.Reserve(InPrimitives.Num());
+	DebugMassData.Reserve(InPrimitives.Num());
+
+	for (int32 PrimitiveIndex = 0; PrimitiveIndex < InPrimitives.Num(); PrimitiveIndex++)
+	{
+		if (InPrimitives[PrimitiveIndex]->SceneProxy)
+		{
+			SceneProxies.Add(InPrimitives[PrimitiveIndex]->SceneProxy);
+
+			uint32 NumDebugMassDataBefore = DebugMassData.Num();
+			AppendDebugMassData(InPrimitives[PrimitiveIndex], DebugMassData);
+			DebugMassCounts.Add(DebugMassData.Num() - NumDebugMassDataBefore);
+		}
+	}
+
+	if (SceneProxies.Num())
+	{
+		ENQUEUE_RENDER_COMMAND(PrimitiveComponent_BatchSendRenderDebugPhysics)(
+			[SceneProxies = MoveTemp(SceneProxies), DebugMassCounts = MoveTemp(DebugMassCounts), DebugMassData = MoveTemp(DebugMassData)](FRHICommandList& RHICmdList)
+		{
+			TArray<FPrimitiveSceneProxy::FDebugMassData> SingleDebugMassData;
+			uint32 DebugMassOffset = 0;
+
+			for (int32 ProxyIndex = 0; ProxyIndex < SceneProxies.Num(); ProxyIndex++)
+			{
+				uint32 DebugMassCount = DebugMassCounts[ProxyIndex];
+				SingleDebugMassData.SetNumUninitialized(DebugMassCount);
+				for (uint32 DebugMassIndex = 0; DebugMassIndex < DebugMassCount; DebugMassIndex++)
+				{
+					SingleDebugMassData[DebugMassIndex] = DebugMassData[DebugMassOffset + DebugMassIndex];
+				}
+
+				SceneProxies[ProxyIndex]->SetDebugMassData(SingleDebugMassData);
+
+				DebugMassOffset += DebugMassCount;
+			}
+		});
+	}
+}
+#endif  // UE_ENABLE_DEBUG_DRAWING
 
 FMatrix UPrimitiveComponent::GetRenderMatrix() const
 {
@@ -1425,18 +1494,8 @@ void UPrimitiveComponent::PreSave(FObjectPreSaveContext ObjectSaveContext)
 		{
 			if (Texture && Texture->IsCandidateForTextureStreamingOnPlatformDuringCook(ObjectSaveContext.GetTargetPlatform()))
 			{
-				// furthermore refine based on what actually happened with that texture in *this* cook session
-				//	if that texture was serialized out before us
-				// can be false if texture IsCandidate but did not actually make streaming textures
-				// if texture has not serialized yet and set DidSerializeStreamingMipsForPlatform, we must assume it would be true
-				
-				const FString PlatformName = ObjectSaveContext.GetTargetPlatform()->PlatformName();
-				const bool * pBoolDidStream = Texture->DidSerializeStreamingMipsForPlatform.Find(PlatformName);
-				if ( pBoolDidStream == nullptr || *pBoolDidStream == true )
-				{
-					bHasStreamableTextures = true;
-					break;
-				}
+				bHasStreamableTextures = true;
+				break;
 			}
 		}
 
@@ -1825,7 +1884,26 @@ void UPrimitiveComponent::SetIsBeingMovedByEditor(bool bIsBeingMoved)
 		SceneProxy->SetIsBeingMovedByEditor_GameThread(bIsBeingMoved);
 	}
 }
+
+void UPrimitiveComponent::SetSelectionOutlineColorIndex(uint8 InSelectionOutlineColorIndex)
+{
+	SelectionOutlineColorIndex = InSelectionOutlineColorIndex;
+	
+	if (SceneProxy)
+	{
+		SceneProxy->SetSelectionOutlineColorIndex_GameThread(InSelectionOutlineColorIndex);
+	}
+}
+
 #endif// WITH_EDITOR
+
+void UPrimitiveComponent::ResetSceneVelocity()
+{
+	if (SceneProxy)
+	{
+		SceneProxy->ResetSceneVelocity_GameThread();
+	}
+}
 
 void UPrimitiveComponent::PushHoveredToProxy(const bool bInHovered)
 {
@@ -2793,22 +2871,20 @@ void UPrimitiveComponent::DispatchBlockingHit(AActor& Owner, FHitResult const& B
 
 void UPrimitiveComponent::DispatchWakeEvents(ESleepEvent WakeEvent, FName BoneName)
 {
-	FBodyInstance* RootBI = GetBodyInstance(BoneName, false);
-	if(RootBI)
+	if (ShouldDispatchWakeEvents(BoneName))
 	{
-		if(RootBI->bGenerateWakeEvents)
+		if (WakeEvent == ESleepEvent::SET_Wakeup)
 		{
-			if (WakeEvent == ESleepEvent::SET_Wakeup)
-			{
-				OnComponentWake.Broadcast(this, BoneName);
-			}else
-			{
-				OnComponentSleep.Broadcast(this, BoneName);
-			}
+			OnComponentWake.Broadcast(this, BoneName);
+		}
+		else
+		{
+			OnComponentSleep.Broadcast(this, BoneName);
 		}
 	}
 	
 	//now update children that are welded
+	FBodyInstance* RootBI = GetBodyInstance(BoneName, false);
 	for(USceneComponent* SceneComp : GetAttachChildren())
 	{
 		if(UPrimitiveComponent* PrimComp = Cast<UPrimitiveComponent>(SceneComp))
@@ -2822,6 +2898,16 @@ void UPrimitiveComponent::DispatchWakeEvents(ESleepEvent WakeEvent, FName BoneNa
 			}
 		}
 	}
+}
+
+bool UPrimitiveComponent::ShouldDispatchWakeEvents(FName BoneName) const
+{
+	FBodyInstance* RootBI = GetBodyInstance(BoneName, false);
+	if (RootBI)
+	{
+		return RootBI->bGenerateWakeEvents;
+	}
+	return false;
 }
 
 void UPrimitiveComponent::GetNavigationData(FNavigationRelevantData& OutData) const
@@ -2865,7 +2951,41 @@ extern float DebugLineLifetime;
 
 bool UPrimitiveComponent::LineTraceComponent(struct FHitResult& OutHit, const FVector Start, const FVector End, const struct FCollisionQueryParams& Params)
 {
-	bool bHaveHit = BodyInstance.LineTrace(OutHit, Start, End, Params.bTraceComplex, Params.bReturnPhysicalMaterial); 
+	return LineTraceComponent(OutHit, Start, End, DefaultCollisionChannel, Params, FCollisionResponseParams::DefaultResponseParam, FCollisionObjectQueryParams::DefaultObjectQueryParam);
+}
+
+bool UPrimitiveComponent::LineTraceComponent(FHitResult& OutHit, const FVector Start, const FVector End, ECollisionChannel TraceChannel, const struct FCollisionQueryParams& Params, const struct FCollisionResponseParams& ResponseParams, const struct FCollisionObjectQueryParams& ObjectParams)
+{
+	bool bHaveHit = false;
+
+	if (FBodyInstance* ThisBodyInstance = GetBodyInstance())
+	{
+		bHaveHit = ThisBodyInstance->LineTrace(OutHit, Start, End, Params.bTraceComplex, Params.bReturnPhysicalMaterial);
+	}
+	else
+	{
+		TArray<Chaos::FPhysicsObjectHandle> Objects = GetAllPhysicsObjects();
+		FLockedReadPhysicsObjectExternalInterface Interface = FPhysicsObjectExternalInterface::LockRead(Objects);
+		Objects = Objects.FilterByPredicate(
+			[&Interface](Chaos::FPhysicsObjectHandle Handle)
+			{
+				return !Interface->AreAllDisabled({ &Handle, 1 });
+			}
+		);
+
+		Chaos::FPhysicsObjectCollisionInterface_External CollisionInterface{ Interface.GetInterface() };
+		ChaosInterface::FRaycastHit BestHit;
+		if (CollisionInterface.LineTrace(Objects, Start, End, Params.bTraceComplex, BestHit))
+		{
+			bHaveHit = true;
+
+			FCollisionFilterData QueryFilter;
+			QueryFilter.Word1 = 0xFFFFF;
+			ChaosInterface::SetFlags(BestHit, EHitFlags::Distance | EHitFlags::Normal | EHitFlags::Position);
+
+			ConvertQueryImpactHit(GetWorld(), BestHit, OutHit, (End - Start).Size(), QueryFilter, Start, End, nullptr, FTransform{ Start }, true, Params.bReturnPhysicalMaterial);
+		}
+	}
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	if (GetWorld()->DebugDrawSceneQueries(Params.TraceTag))
@@ -2884,7 +3004,56 @@ bool UPrimitiveComponent::LineTraceComponent(struct FHitResult& OutHit, const FV
 
 bool UPrimitiveComponent::SweepComponent(struct FHitResult& OutHit, const FVector Start, const FVector End, const FQuat& ShapeWorldRotation, const FCollisionShape &CollisionShape, bool bTraceComplex)
 {
-	return BodyInstance.Sweep(OutHit, Start, End, ShapeWorldRotation, CollisionShape, bTraceComplex);
+	if (FBodyInstance* ThisBodyInstance = GetBodyInstance())
+	{
+		return ThisBodyInstance->Sweep(OutHit, Start, End, ShapeWorldRotation, CollisionShape, bTraceComplex);
+	}
+
+	FCollisionQueryParams Params = FCollisionQueryParams::DefaultQueryParam;
+	Params.bTraceComplex = bTraceComplex;
+
+	if (CollisionShape.IsNearlyZero())
+	{
+		return LineTraceComponent(OutHit, Start, End, Params);
+	}
+
+	FPhysicsShapeAdapter_Chaos ShapeAdapter(ShapeWorldRotation, CollisionShape);
+	return SweepComponent(OutHit, Start, End, ShapeWorldRotation, ShapeAdapter.GetGeometry(), DefaultCollisionChannel, Params, FCollisionResponseParams::DefaultResponseParam, FCollisionObjectQueryParams::DefaultObjectQueryParam);
+}
+
+bool UPrimitiveComponent::SweepComponent(FHitResult& OutHit, const FVector Start, const FVector End, const FQuat& ShapeWorldRotation, const FPhysicsGeometry& Geometry, ECollisionChannel TraceChannel, const struct FCollisionQueryParams& Params, const struct FCollisionResponseParams& ResponseParams, const struct FCollisionObjectQueryParams& ObjectParams)
+{
+	TArray<Chaos::FPhysicsObjectHandle> Objects = GetAllPhysicsObjects();
+	FLockedReadPhysicsObjectExternalInterface Interface = FPhysicsObjectExternalInterface::LockRead(Objects);
+	Objects = Objects.FilterByPredicate(
+		[&Interface](Chaos::FPhysicsObjectHandle Handle)
+		{
+			return !Interface->AreAllDisabled({ &Handle, 1 });
+		}
+	);
+
+	Chaos::FPhysicsObjectCollisionInterface_External CollisionInterface{ Interface.GetInterface() };
+	ChaosInterface::FSweepHit BestHit;
+
+	Chaos::FSweepParameters SweepParams;
+	SweepParams.bSweepComplex = Params.bTraceComplex;
+
+	// TODO: Expose this even further via parameters in the primitive component.
+	// For now, having this be always true guarantees us identical behavior to tracing via the Chaos SQ
+	// since TSQTraits::GetHitFlags() will always have the MTD flag on.
+	SweepParams.bComputeMTD = true;
+	if (CollisionInterface.ShapeSweep(Objects, Geometry, FTransform{ ShapeWorldRotation, Start }, End, SweepParams, BestHit))
+	{
+		FCollisionFilterData QueryFilter;
+		QueryFilter.Word1 = 0xFFFFF;
+		ChaosInterface::SetFlags(BestHit, EHitFlags::Distance | EHitFlags::Normal | EHitFlags::Position | EHitFlags::FaceIndex);
+
+		bool bHasHit = false;
+		ConvertTraceResults<ChaosInterface::FSweepHit>(bHasHit, GetWorld(), 1, &BestHit, (End - Start).Size(), QueryFilter, OutHit, Start, End, &Geometry, FTransform{ ShapeWorldRotation, Start }, 0.f, Params.bReturnFaceIndex, Params.bReturnPhysicalMaterial);
+		return bHasHit;
+	}
+
+	return false;
 }
 
 bool UPrimitiveComponent::ComponentOverlapComponentImpl(class UPrimitiveComponent* PrimComp, const FVector Pos, const FQuat& Quat, const struct FCollisionQueryParams& Params)
@@ -2911,21 +3080,137 @@ bool UPrimitiveComponent::ComponentOverlapComponentImpl(class UPrimitiveComponen
 		}
 	}
 
-	if(FBodyInstance* BI = PrimComp->GetBodyInstance())
+	FBodyInstance* BI = PrimComp->GetBodyInstance();
+	FBodyInstance* ThisBodyInstance = GetBodyInstance();
+	if(BI && ThisBodyInstance)
 	{
-		if (FBodyInstance* ThisBodyInstance = GetBodyInstance())
+		return BI->OverlapTestForBody(Pos, Quat, ThisBodyInstance);
+	}
+
+	TArray<Chaos::FPhysicsObjectHandle> InObjects = PrimComp->GetAllPhysicsObjects();
+	TArray<Chaos::FPhysicsObjectHandle> ThisObjects = GetAllPhysicsObjects();
+
+	FLockedReadPhysicsObjectExternalInterface Interface = FPhysicsObjectExternalInterface::LockRead(InObjects);
+	InObjects = InObjects.FilterByPredicate(
+		[&Interface](Chaos::FPhysicsObjectHandle Handle)
 		{
-			return BI->OverlapTestForBody(Pos, Quat, ThisBodyInstance);
+			return !Interface->AreAllDisabled({ &Handle, 1 });
+		}
+	);
+
+	ThisObjects = ThisObjects.FilterByPredicate(
+		[&Interface](Chaos::FPhysicsObjectHandle Handle)
+		{
+			return !Interface->AreAllDisabled({ &Handle, 1 });
+		}
+	);
+
+	Chaos::FPhysicsObjectCollisionInterface_External CollisionInterface{ Interface.GetInterface() };
+	for (Chaos::FPhysicsObjectHandle InObject : InObjects)
+	{
+		for (Chaos::FPhysicsObjectHandle ThisObject : ThisObjects)
+		{
+			if (CollisionInterface.PhysicsObjectOverlap(InObject, FTransform::Identity, ThisObject, FTransform::Identity, Params.bTraceComplex))
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+bool UPrimitiveComponent::ComponentOverlapComponentWithResultImpl(const class UPrimitiveComponent* const PrimComp, const FVector& Pos, const FQuat& Rot, const FCollisionQueryParams& Params, TArray<FOverlapResult>& OutOverlap) const
+{
+	const FTransform InTransform{ Rot, Pos };
+	TArray<Chaos::FPhysicsObjectHandle> InObjects = PrimComp->GetAllPhysicsObjects();
+	TArray<Chaos::FPhysicsObjectHandle> ThisObjects = GetAllPhysicsObjects();
+
+	FLockedReadPhysicsObjectExternalInterface Interface = FPhysicsObjectExternalInterface::LockRead(InObjects);
+	InObjects = InObjects.FilterByPredicate(
+		[&Interface](Chaos::FPhysicsObjectHandle Handle)
+		{
+			return !Interface->AreAllDisabled({ &Handle, 1 });
+		}
+	);
+
+	ThisObjects = ThisObjects.FilterByPredicate(
+		[&Interface](Chaos::FPhysicsObjectHandle Handle)
+		{
+			return !Interface->AreAllDisabled({ &Handle, 1 });
+		}
+	);
+
+	Chaos::FPhysicsObjectCollisionInterface_External CollisionInterface{ Interface.GetInterface() };
+	for (Chaos::FPhysicsObjectHandle InObject : InObjects)
+	{
+		for (Chaos::FPhysicsObjectHandle ThisObject : ThisObjects)
+		{
+			TArray<ChaosInterface::FOverlapHit> OverlapHits;
+			if (CollisionInterface.PhysicsObjectOverlap(ThisObject, FTransform::Identity, InObject, InTransform, Params.bTraceComplex, OverlapHits))
+			{
+				TArray<FOverlapResult> Overlaps;
+
+				FCollisionFilterData QueryFilter;
+				QueryFilter.Word1 = 0xFFFFF;
+				ConvertOverlapResults(OverlapHits.Num(), OverlapHits.GetData(), QueryFilter, Overlaps);
+
+				if (!Overlaps.IsEmpty())
+				{
+					OutOverlap = Overlaps;
+					return true;
+				}
+			}
+		}
+	}
+	return false;
+}
+
+bool UPrimitiveComponent::OverlapComponent(const FVector& Pos, const FQuat& Rot, const struct FCollisionShape& CollisionShape) const
+{
+	if (FBodyInstance* ThisBodyInstance = GetBodyInstance())
+	{
+		return ThisBodyInstance->OverlapTest(Pos, Rot, CollisionShape);
+	}
+
+	TArray<FOverlapResult> NopResult;
+	return OverlapComponentWithResult(Pos, Rot, CollisionShape, NopResult);
+}
+
+bool UPrimitiveComponent::OverlapComponentWithResult(const FVector& Pos, const FQuat& Rot, const FCollisionShape& CollisionShape, TArray<FOverlapResult>& OutOverlap) const
+{
+	FPhysicsShapeAdapter_Chaos ShapeAdapter(Rot, CollisionShape);
+	return OverlapComponentWithResult(Pos, Rot, ShapeAdapter.GetGeometry(), DefaultCollisionChannel, FCollisionQueryParams::DefaultQueryParam, FCollisionResponseParams::DefaultResponseParam, FCollisionObjectQueryParams::DefaultObjectQueryParam, OutOverlap);
+}
+
+bool UPrimitiveComponent::OverlapComponentWithResult(const FVector& Pos, const FQuat& Rot, const FPhysicsGeometry& Geometry, ECollisionChannel TraceChannel, const struct FCollisionQueryParams& Params, const struct FCollisionResponseParams& ResponseParams, const struct FCollisionObjectQueryParams& ObjectParams, TArray<FOverlapResult>& OutOverlap) const
+{
+	TArray<Chaos::FPhysicsObjectHandle> Objects = GetAllPhysicsObjects();
+	FLockedReadPhysicsObjectExternalInterface Interface = FPhysicsObjectExternalInterface::LockRead(Objects);
+	Objects = Objects.FilterByPredicate(
+		[&Interface](Chaos::FPhysicsObjectHandle Handle)
+		{
+			return !Interface->AreAllDisabled({ &Handle, 1 });
+		}
+	);
+
+	Chaos::FPhysicsObjectCollisionInterface_External CollisionInterface{ Interface.GetInterface() };
+	TArray<ChaosInterface::FOverlapHit> OverlapHits;
+	if (CollisionInterface.ShapeOverlap(Objects, Geometry, FTransform{ Rot, Pos }, OverlapHits))
+	{
+		TArray<FOverlapResult> Overlaps;
+
+		FCollisionFilterData QueryFilter;
+		QueryFilter.Word1 = 0xFFFFF;
+		ConvertOverlapResults(OverlapHits.Num(), OverlapHits.GetData(), QueryFilter, Overlaps);
+
+		if (!Overlaps.IsEmpty())
+		{
+			OutOverlap = Overlaps;
+			return true;
 		}
 	}
 
 	return false;
-}
-
-
-bool UPrimitiveComponent::OverlapComponent(const FVector& Pos, const FQuat& Rot, const struct FCollisionShape& CollisionShape) const
-{
-	return BodyInstance.OverlapTest(Pos, Rot, CollisionShape);
 }
 
 bool UPrimitiveComponent::ComputePenetration(FMTDResult& OutMTD, const FCollisionShape & CollisionShape, const FVector& Pos, const FQuat& Rot)
@@ -4256,8 +4541,9 @@ void UPrimitiveComponent::PrecachePSOs()
 
 void UPrimitiveComponent::RequestRecreateRenderStateWhenPSOPrecacheFinished(const FGraphEventArray& PSOPrecacheCompileEvents)
 {
-	// Mark the render state dirty when all PSOs are compiled so the proxy gets recreated
-	if (ProxyCreationWhenPSOReady() && !PSOPrecacheCompileEvents.IsEmpty())
+	// If the proxy creation strategy relies on knowing when the precached PSO has been compiled,
+	// schedule a task to mark the render state dirty when all PSOs are compiled so the proxy gets recreated.
+	if (GetPSOPrecacheProxyCreationStrategy() != EPSOPrecacheProxyCreationStrategy::AlwaysCreate && !PSOPrecacheCompileEvents.IsEmpty())
 	{
 		PSOPrecacheCompileEvent = TGraphTask<FMarkRenderStateDirtyTask>::CreateTask(&PSOPrecacheCompileEvents).ConstructAndDispatchWhenReady(this);
 	}
@@ -4265,7 +4551,17 @@ void UPrimitiveComponent::RequestRecreateRenderStateWhenPSOPrecacheFinished(cons
 	bPSOPrecacheCalled = true;
 }
 
-bool UPrimitiveComponent::IsPSOPrecaching()
+bool UPrimitiveComponent::IsPSOPrecaching() const
+{
+	return PSOPrecacheCompileEvent && !PSOPrecacheCompileEvent->IsComplete();
+}
+
+bool UPrimitiveComponent::ShouldRenderProxyFallbackToDefaultMaterial() const
+{
+	return IsPSOPrecaching() && GetPSOPrecacheProxyCreationStrategy() == EPSOPrecacheProxyCreationStrategy::UseDefaultMaterialUntilPSOPrecached;
+}
+
+bool UPrimitiveComponent::CheckPSOPrecachingAndBoostPriority()
 {
 	ensure(!IsComponentPSOPrecachingEnabled() || bPSOPrecacheCalled);
 
@@ -4282,7 +4578,7 @@ bool UPrimitiveComponent::IsPSOPrecaching()
 		PSOPrecacheCompileEvent = nullptr;
 	}
 
-	return PSOPrecacheCompileEvent != nullptr;
+	return IsPSOPrecaching();
 }
 
 #if WITH_EDITOR

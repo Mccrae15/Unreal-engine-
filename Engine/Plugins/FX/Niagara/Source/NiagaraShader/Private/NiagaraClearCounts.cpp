@@ -2,14 +2,11 @@
 
 #include "NiagaraClearCounts.h"
 
+#include "GlobalShader.h"
 #include "RHI.h"
-#include "ScreenRendering.h"
-#include "CommonRenderResources.h"
-#include "Modules/ModuleManager.h"
-
+#include "RHIUtilities.h"
 #include "RenderGraphBuilder.h"
 #include "RenderGraphUtils.h"
-#include "ScreenPass.h"
 
 //////////////////////////////////////////////////////////////////////////
 
@@ -159,12 +156,12 @@ void NiagaraClearCounts::ClearCountsInt(FRHICommandList& RHICmdList, FRHIUnorder
 	check(IndexAndValueArray.Num() > 0);
 
 	FReadBuffer IndexAndValueBuffer;
-	IndexAndValueBuffer.Initialize(TEXT("NiagaraClearCounts"), sizeof(int32), IndexAndValueArray.Num() * 2, PF_R32_SINT);
+	IndexAndValueBuffer.Initialize(RHICmdList, TEXT("NiagaraClearCounts"), sizeof(int32), IndexAndValueArray.Num() * 2, PF_R32_SINT);
 	{
 		const uint32 BufferSize = IndexAndValueArray.Num() * sizeof(int32) * 2;
-		void* GPUMemory = RHILockBuffer(IndexAndValueBuffer.Buffer, 0, BufferSize, RLM_WriteOnly);
+		void* GPUMemory = RHICmdList.LockBuffer(IndexAndValueBuffer.Buffer, 0, BufferSize, RLM_WriteOnly);
 		FMemory::Memcpy(GPUMemory, IndexAndValueArray.GetData(), BufferSize);
-		RHIUnlockBuffer(IndexAndValueBuffer.Buffer);
+		RHICmdList.UnlockBuffer(IndexAndValueBuffer.Buffer);
 	}
 
 	FNiagaraClearCountsIntCS_Legacy::FParameters ShaderParameters;
@@ -190,12 +187,12 @@ void NiagaraClearCounts::ClearCountsUInt(FRHICommandList& RHICmdList, FRHIUnorde
 	check(IndexAndValueArray.Num() > 0);
 
 	FReadBuffer IndexAndValueBuffer;
-	IndexAndValueBuffer.Initialize(TEXT("NiagaraClearCounts"), sizeof(int32), IndexAndValueArray.Num() * 2, PF_R32_UINT);
+	IndexAndValueBuffer.Initialize(RHICmdList, TEXT("NiagaraClearCounts"), sizeof(int32), IndexAndValueArray.Num() * 2, PF_R32_UINT);
 	{
 		const uint32 BufferSize = IndexAndValueArray.Num() * sizeof(int32) * 2;
-		void* GPUMemory = RHILockBuffer(IndexAndValueBuffer.Buffer, 0, BufferSize, RLM_WriteOnly);
+		void* GPUMemory = RHICmdList.LockBuffer(IndexAndValueBuffer.Buffer, 0, BufferSize, RLM_WriteOnly);
 		FMemory::Memcpy(GPUMemory, IndexAndValueArray.GetData(), BufferSize);
-		RHIUnlockBuffer(IndexAndValueBuffer.Buffer);
+		RHICmdList.UnlockBuffer(IndexAndValueBuffer.Buffer);
 	}
 
 	FNiagaraClearCountsUIntCS_Legacy::FParameters ShaderParameters;

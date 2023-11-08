@@ -140,7 +140,7 @@ void FMediaFoundationMovieStreamer::ConvertSample()
 			TShaderMapRef<FBMPConvertPS> ConvertShader(ShaderMap);
 			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = ConvertShader.GetPixelShader();
 			SetGraphicsPipelineState(CommandList, GraphicsPSOInit, 0);
-			ConvertShader->SetParameters(CommandList, InputTarget, OutputDim, bSampleIsOutputSrgb && !SrgbOutput);
+			SetShaderParametersLegacyPS(CommandList, ConvertShader, InputTarget, OutputDim, bSampleIsOutputSrgb && !SrgbOutput);
 		}
 		break;
 
@@ -149,7 +149,7 @@ void FMediaFoundationMovieStreamer::ConvertSample()
 			TShaderMapRef<FYUY2ConvertPS> ConvertShader(ShaderMap);
 			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = ConvertShader.GetPixelShader();
 			SetGraphicsPipelineState(CommandList, GraphicsPSOInit, 0);
-			ConvertShader->SetParameters(CommandList, InputTarget, OutputDim, MediaShaders::YuvToRgbRec709Scaled, MediaShaders::YUVOffset8bits, bSampleIsOutputSrgb);
+			SetShaderParametersLegacyPS(CommandList, ConvertShader, InputTarget, OutputDim, MediaShaders::YuvToRgbRec709Scaled, MediaShaders::YUVOffset8bits, bSampleIsOutputSrgb);
 		}
 		break;
 
@@ -175,7 +175,7 @@ bool FMediaFoundationMovieStreamer::Tick(float DeltaTime)
 
 	if (CurrentTexture && !CurrentTexture->IsInitialized())
 	{
-		CurrentTexture->InitResource();
+		CurrentTexture->InitResource(FRHICommandListImmediate::Get());
 	}
 
 	if (CurrentTexture && SampleGrabberCallback->GetIsSampleReadyToUpdate())
@@ -290,7 +290,7 @@ bool FMediaFoundationMovieStreamer::OpenNextMovie()
 			ENQUEUE_RENDER_COMMAND(InitMovieTexture)(
 				[TextureRHIRef](FRHICommandListImmediate& RHICmdList)
 				{
-					TextureRHIRef->InitResource();
+					TextureRHIRef->InitResource(RHICmdList);
 				});
 		}
 

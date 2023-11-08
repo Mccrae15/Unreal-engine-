@@ -7,12 +7,12 @@
 #include "AjaMediaOutput.h"
 #include "AjaMediaOutputModule.h"
 #include "GPUTextureTransferModule.h"
-#include "Misc/CoreDelegates.h"
 #include "Engine/Engine.h"
 #include "HAL/Event.h"
 #include "HAL/IConsoleManager.h"
 #include "IAjaMediaOutputModule.h"
 #include "IAjaMediaModule.h"
+#include "MediaIOCoreDefinitions.h"
 #include "MediaIOCoreFileWriter.h"
 #include "MediaIOCoreSubsystem.h"
 #include "Misc/ScopeLock.h"
@@ -97,6 +97,16 @@ namespace AjaMediaCaptureDevice
 
 namespace AjaMediaCaptureUtils
 {
+	AJA::FAjaHDROptions MakeAjaHDRMetadata(const FAjaMediaHDROptions& HDROptions)
+	{
+		AJA::FAjaHDROptions HDRMetadata;
+		
+		HDRMetadata.Gamut = (AJA::EAjaHDRMetadataGamut) HDROptions.Gamut;
+		HDRMetadata.EOTF = (AJA::EAjaHDRMetadataEOTF) HDROptions.EOTF;
+
+		return HDRMetadata;
+	}
+	
 	AJA::ETransportType ConvertTransportType(const EMediaIOTransportType TransportType, const EMediaIOQuadLinkTransportType QuadTransportType)
 	{
 		switch (TransportType)
@@ -425,6 +435,25 @@ bool UAjaMediaCapture::HasFinishedProcessing() const
 	return Super::HasFinishedProcessing() || !OutputChannel;
 }
 
+const FMatrix& UAjaMediaCapture::GetRGBToYUVConversionMatrix() const
+{
+	if (const UAjaMediaOutput* AjaOutput = Cast<UAjaMediaOutput>(MediaOutput))
+	{
+		switch(AjaOutput->HDROptions.Gamut)
+		{
+		case EAjaHDRMetadataGamut::Rec709:
+			return MediaShaders::RgbToYuvRec709Scaled;
+		case EAjaHDRMetadataGamut::Rec2020:
+			return MediaShaders::RgbToYuvRec2020Scaled;
+		default:
+			checkNoEntry();
+			return MediaShaders::RgbToYuvRec709Scaled;
+		}
+	}
+	
+	return Super::GetRGBToYUVConversionMatrix();
+}
+
 bool UAjaMediaCapture::InitAJA(UAjaMediaOutput* InAjaMediaOutput)
 {
 	check(InAjaMediaOutput);
@@ -484,6 +513,8 @@ bool UAjaMediaCapture::InitAJA(UAjaMediaOutput* InAjaMediaOutput)
 	ChannelOptions.bUseGPUDMA = ShouldCaptureRHIResource();
 	ChannelOptions.bDirectlyWriteAudio = InAjaMediaOutput->bOutputAudioOnAudioThread;
 
+	ChannelOptions.HDROptions = AjaMediaCaptureUtils::MakeAjaHDRMetadata(InAjaMediaOutput->HDROptions);
+	
 	bOutputAudio = InAjaMediaOutput->bOutputAudio;
 	bDirectlyWriteAudio = InAjaMediaOutput->bOutputAudioOnAudioThread;
 	
@@ -519,7 +550,7 @@ bool UAjaMediaCapture::InitAJA(UAjaMediaOutput* InAjaMediaOutput)
 		bool bLockToVsync = CVar->GetValueOnGameThread() != 0;
 		if (bLockToVsync)
 		{
-			UE_LOG(LogAjaMediaOutput, Warning, TEXT("The Engine use VSync and '%s' wants to wait for the sync event. This may break the \"gen-lock\"."));
+			UE_LOG(LogAjaMediaOutput, Warning, TEXT("The Engine use VSync and something wants to wait for the sync event. This may break the \"gen-lock\"."));
 		}
 
 		const bool bIsManualReset = false;
@@ -614,6 +645,12 @@ void UAjaMediaCapture::UnlockDMATexture_RenderThread(FTextureRHIRef InTexture)
 		TRACE_CPUPROFILER_EVENT_SCOPE(UAjaMediaCapture::OnFrameCaptured_RenderingThread::UnlockDMATexture);
 		TextureTransfer->UnlockTexture(InTexture->GetTexture2D());
 	}
+}
+
+bool UAjaMediaCapture::SupportsAnyThreadCapture() const
+{
+	// AnyThread is not supported with GPUDirect since calling dvpMapBufferEnd on a different thread will crash.
+	return !ShouldCaptureRHIResource();
 }
 
 void UAjaMediaCapture::OnFrameCaptured_AnyThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, const FMediaCaptureResourceData& InResourceData)

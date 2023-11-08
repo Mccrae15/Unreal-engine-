@@ -63,6 +63,20 @@ UE::Net::FNetRefHandle UReplicatedTestObjectBridge::BeginReplication(UReplicated
 	return Handle;
 }
 
+UE::Net::FNetRefHandle UReplicatedTestObjectBridge::BeginReplication(UReplicatedTestObject* Instance, const UObjectReplicationBridge::FCreateNetRefHandleParams& Params)
+{
+	// Create NetRefHandle for the registered fragments
+	FNetRefHandle Handle = Super::BeginReplication(Instance, Params);
+
+	// This is optional but typically we want to cache at least the NetRefHandle in the game instance to avoid doing map lookups to find it
+	if (Handle.IsValid())
+	{
+		Instance->NetRefHandle = Handle;
+	}
+
+	return Handle;
+}
+
 UE::Net::FNetRefHandle UReplicatedTestObjectBridge::BeginReplication(FNetRefHandle OwnerHandle, UReplicatedTestObject* Instance, FNetRefHandle InsertRelativeToSubObjectHandle, ESubObjectInsertionOrder InsertionOrder)
 {
 	// Create NetRefHandle for the registered fragments
@@ -204,21 +218,14 @@ bool UReplicatedTestObjectBridge::IsAllowedToDestroyInstance(const UObject* Inst
 	return true;
 }
 
-void UReplicatedTestObjectBridge::SetPollFramePeriod(UReplicatedTestObject* Instance, uint8 FramePeriod)
+void UReplicatedTestObjectBridge::SetExternalWorldLocationUpdateFunctor(TFunction<void(FNetRefHandle NetHandle, const UObject* ReplicatedObject, FVector& OutLocation, float& OutCullDistance)> LocUpdateFunctor)
 {
-	using namespace UE::Net;
-	using namespace UE::Net::Private;
+	SetInstanceGetWorldObjectInfoFunction(LocUpdateFunctor);
+}
 
-	if (Instance == nullptr)
-	{
-		return;
-	}
-	const FNetRefHandleManager* LocalNetRefHandleManager = &GetReplicationSystem()->GetReplicationSystemInternal()->GetNetRefHandleManager();
-	const uint32 InternalObjectIndex = LocalNetRefHandleManager->GetInternalIndex(Instance->NetRefHandle);
-	if (InternalObjectIndex != FNetRefHandleManager::InvalidInternalIndex)
-	{
-		UObjectReplicationBridge::SetPollFramePeriod(InternalObjectIndex, FramePeriod);
-	}
+void UReplicatedTestObjectBridge::SetExternalPreUpdateFunctor(TFunction<void(FNetRefHandle, UObject*, const UReplicationBridge*)> PreUpdateFunctor)
+{
+	SetInstancePreUpdateFunction(PreUpdateFunctor);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -301,15 +308,23 @@ void FTestReplicatedIrisComponent::ApplyReplicationState(const FFakeGeneratedRep
 }
 
 //////////////////////////////////////////////////////////////////////////
-// Implementation for UTestReplicationSystem_TestClass
+// Implementation for UTestReplicatedIrisObject
 //////////////////////////////////////////////////////////////////////////
-void UTestReplicatedIrisObject::GetLifetimeReplicatedProps( TArray< class FLifetimeProperty > & OutLifetimeProps ) const
-{
-}
-
 UTestReplicatedIrisObject::UTestReplicatedIrisObject()
 : UReplicatedTestObject()
 {
+}
+
+void UTestReplicatedIrisObject::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	FDoRepLifetimeParams Params;
+	Params.bIsPushBased = false;
+
+	Params.Condition = COND_None;
+	DOREPLIFETIME_WITH_PARAMS_FAST(ThisClass, IntA, Params);
+	DOREPLIFETIME_WITH_PARAMS_FAST(ThisClass, IntB, Params);
+	DOREPLIFETIME_WITH_PARAMS_FAST(ThisClass, IntC, Params);
+	DOREPLIFETIME_WITH_PARAMS_FAST(ThisClass, StructD, Params);
 }
 
 void UTestReplicatedIrisObject::AddComponents(const UTestReplicatedIrisObject::FComponents& InComponents)
@@ -370,8 +385,6 @@ void UTestReplicatedIrisObject::RegisterReplicationFragments(UE::Net::FFragmentR
 {
 	using namespace UE::Net;
 
-	Super::RegisterReplicationFragments(Context, RegistrationFlags);
-
 	// Base object owns the fragment in this case
 	{
 		this->ReplicationFragments.Reset();
@@ -414,11 +427,16 @@ void UTestReplicatedIrisObject::RegisterReplicationFragments(UE::Net::FFragmentR
 }
 
 //////////////////////////////////////////////////////////////////////////
-// Implementation for UTestReplicationSystem_TestClass
+// Implementation for UTestReplicatedIrisObjectWithObjectReference
 //////////////////////////////////////////////////////////////////////////
 
 void UTestReplicatedIrisObjectWithObjectReference::GetLifetimeReplicatedProps( TArray< class FLifetimeProperty > & OutLifetimeProps ) const
 {
+	DOREPLIFETIME(ThisClass, IntA);
+	DOREPLIFETIME(ThisClass, IntB);
+	DOREPLIFETIME(ThisClass, IntC);
+	DOREPLIFETIME(ThisClass, RawObjectPtrRef);
+	DOREPLIFETIME(ThisClass, WeakObjectPtrObjectRef);
 }
 
 UTestReplicatedIrisObjectWithObjectReference::UTestReplicatedIrisObjectWithObjectReference()
@@ -428,8 +446,6 @@ UTestReplicatedIrisObjectWithObjectReference::UTestReplicatedIrisObjectWithObjec
 
 void UTestReplicatedIrisObjectWithObjectReference::RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext& Context, UE::Net::EFragmentRegistrationFlags RegistrationFlags)
 {
-	Super::RegisterReplicationFragments(Context, RegistrationFlags);
-
 	// Base object owns the fragment in this case
 	{
 		this->ReplicationFragments.Reset();
@@ -439,11 +455,22 @@ void UTestReplicatedIrisObjectWithObjectReference::RegisterReplicationFragments(
 
 uint32 UReplicatedSubObjectOrderObject::RepOrderCounter = 0U;
 
+//////////////////////////////////////////////////////////////////////////
+// Implementation for UTestReplicatedIrisObjectWithNoReplicatedMembers
+//////////////////////////////////////////////////////////////////////////
 UTestReplicatedIrisObjectWithNoReplicatedMembers::UTestReplicatedIrisObjectWithNoReplicatedMembers()
 : UReplicatedTestObject()
 {
 }
 
+void UTestReplicatedIrisObjectWithNoReplicatedMembers::RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext& Fragments, UE::Net::EFragmentRegistrationFlags RegistrationFlags)
+{
+	Fragments.SetIsFragmentlessNetObject(true);
+}
+
+//////////////////////////////////////////////////////////////////////////
+// Implementation for UReplicatedSubObjectOrderObject
+//////////////////////////////////////////////////////////////////////////
 void UReplicatedSubObjectOrderObject::GetLifetimeReplicatedProps(TArray< class FLifetimeProperty >& OutLifetimeProps) const
 {
 	DOREPLIFETIME(UReplicatedSubObjectOrderObject, IntA);
@@ -457,6 +484,23 @@ UReplicatedSubObjectOrderObject::UReplicatedSubObjectOrderObject()
 
 void UReplicatedSubObjectOrderObject::RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext& Context, UE::Net::EFragmentRegistrationFlags RegistrationFlags)
 {
+	// Base object owns the fragment in this case
+	{
+		this->ReplicationFragments.Reset();
+		UE::Net::FReplicationFragmentUtil::CreateAndRegisterFragmentsForObject(this, Context, RegistrationFlags, &this->ReplicationFragments);
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////
+// Implementation for UTestReplicatedIrisObjectWithDynamicCondition
+//////////////////////////////////////////////////////////////////////////
+UTestReplicatedIrisObjectWithDynamicCondition::UTestReplicatedIrisObjectWithDynamicCondition()
+: UReplicatedTestObject()
+{
+}
+
+void UTestReplicatedIrisObjectWithDynamicCondition::RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext& Context, UE::Net::EFragmentRegistrationFlags RegistrationFlags)
+{
 	Super::RegisterReplicationFragments(Context, RegistrationFlags);
 
 	// Base object owns the fragment in this case
@@ -464,6 +508,25 @@ void UReplicatedSubObjectOrderObject::RegisterReplicationFragments(UE::Net::FFra
 		this->ReplicationFragments.Reset();
 		UE::Net::FReplicationFragmentUtil::CreateAndRegisterFragmentsForObject(this, Context, RegistrationFlags, &this->ReplicationFragments);
 	}
+}
+
+void UTestReplicatedIrisObjectWithDynamicCondition::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	FDoRepLifetimeParams Params;
+	Params.bIsPushBased = false;
+
+	Params.Condition = COND_Dynamic;
+	DOREPLIFETIME_WITH_PARAMS_FAST(ThisClass, DynamicConditionInt, Params);
+}
+
+void UTestReplicatedIrisObjectWithDynamicCondition::SetDynamicCondition(ELifetimeCondition Condition)
+{
+	DOREPDYNAMICCONDITION_SETCONDITION_FAST(ThisClass, DynamicConditionInt, Condition);
+}
+
+void UTestReplicatedIrisObjectWithDynamicCondition::SetDynamicConditionCustomCondition(bool bActive)
+{
+	DOREPCUSTOMCONDITION_SETACTIVE_FAST(ThisClass, DynamicConditionInt, bActive);	
 }
 
 //////////////////////////////////////////////////////////////////////////

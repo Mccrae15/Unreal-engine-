@@ -3,16 +3,13 @@
 /*=============================================================================
 NiagaraDataInterfaceHairStrands.ush 
 =============================================================================*/
+#include "/Engine/Private/HairStrands/HairStrandsBindingCommon.ush"
 
 RWBuffer<uint4>		{ParameterName}_DeformedPositionBuffer;
 Buffer<uint4>		{ParameterName}_RestPositionBuffer;
 Buffer<uint>		{ParameterName}_CurvesOffsetsBuffer;
-Buffer<float4>		{ParameterName}_RestTrianglePositionABuffer;
-Buffer<float4>		{ParameterName}_RestTrianglePositionBBuffer;
-Buffer<float4>		{ParameterName}_RestTrianglePositionCBuffer;
-Buffer<float4>		{ParameterName}_DeformedTrianglePositionABuffer;
-Buffer<float4>		{ParameterName}_DeformedTrianglePositionBBuffer;
-Buffer<float4>		{ParameterName}_DeformedTrianglePositionCBuffer;
+Buffer<float4>		{ParameterName}_RestTrianglePositionBuffer;
+Buffer<float4>		{ParameterName}_DeformedTrianglePositionBuffer;
 Buffer<uint>		{ParameterName}_RootBarycentricCoordinatesBuffer;
 Buffer<uint>		{ParameterName}_RootToUniqueTriangleIndexBuffer;
 float4x4			{ParameterName}_WorldTransform;
@@ -116,20 +113,9 @@ void BuildBoundingBox_{ParameterName}(in float3 NodePosition, out bool FunctionS
  * Utilities regarding strands curve
  * -----------------------------------------------------------------
  */
-struct FHairCurve
-{
-	uint PointIndex;
-	uint PointCount;
-};
-
 FHairCurve UnpackCurve_{ParameterName}(in uint InCurveIndex)
 {
-	const uint In = {ParameterName}_CurvesOffsetsBuffer[InCurveIndex];
-
-	FHairCurve Out = (FHairCurve)0;
-	Out.PointIndex = In & 0xFFFFFF;
-	Out.PointCount = In>>24;
-	return Out;
+	return UnpackHairCurve({ParameterName}_CurvesOffsetsBuffer[InCurveIndex]);
 }
 
 /* -----------------------------------------------------------------
@@ -158,13 +144,13 @@ float ComputeStrandLength_{ParameterName}(in int StrandIndex)
 		int PointOffset = Curve.PointIndex;
 		const int EdgeCount = Curve.PointCount-1;
 
-		float3 PointNext = f16tof32({ParameterName}_RestPositionBuffer[PointOffset++].xyz);
+		float3 PointNext = UnpackHairControlPointPosition({ParameterName}_RestPositionBuffer[PointOffset++]);
 		float3 PointPrev = PointNext;
 
 		for (int EdgeIndex = 0; EdgeIndex < EdgeCount; ++EdgeIndex)
 		{
 			PointPrev = PointNext;
-			PointNext = f16tof32({ParameterName}_RestPositionBuffer[PointOffset++].xyz);
+			PointNext = UnpackHairControlPointPosition({ParameterName}_RestPositionBuffer[PointOffset++]);
 			StrandLength += length(PointNext-PointPrev);
 		}
 	}
@@ -225,19 +211,19 @@ void SetNodePosition_{ParameterName}(in bool RootNode, const float NodePoint, co
 		const int FirstNext = PointPrev+1;
 
 		const float FirstAlpha = FirstPoint - (float)FirstPrev;
-		const float3 FirstPosition =  f16tof32({ParameterName}_RestPositionBuffer[PointOffset+FirstPrev].xyz) * (1.0-FirstAlpha) + 
-						   f16tof32({ParameterName}_RestPositionBuffer[PointOffset+FirstNext].xyz) * FirstAlpha;
-		const float3 DiffPosition = FirstPosition - f16tof32({ParameterName}_RestPositionBuffer[PointOffset].xyz);
+		const float3 FirstPosition =  UnpackHairControlPointPosition({ParameterName}_RestPositionBuffer[PointOffset+FirstPrev]) * (1.0-FirstAlpha) + 
+						 			  UnpackHairControlPointPosition({ParameterName}_RestPositionBuffer[PointOffset+FirstNext]) * FirstAlpha;
+		const float3 DiffPosition = FirstPosition - UnpackHairControlPointPosition({ParameterName}_RestPositionBuffer[PointOffset]);
 		const float3 EdgeDirection =  normalize(DiffPosition);
 
 		const float EdgeLength = ComputeStrandLength_{ParameterName}(StrandIndex) * CoordScale;
-		OutNodePosition = 	f16tof32({ParameterName}_RestPositionBuffer[PointOffset+PointPrev].xyz) - EdgeLength * normalize(EdgeDirection);					 
+		OutNodePosition = 	UnpackHairControlPointPosition({ParameterName}_RestPositionBuffer[PointOffset+PointPrev]) - EdgeLength * normalize(EdgeDirection);					 
 	}
 	else
 	{
 		const float NodeAlpha = NodePoint - (float)PointPrev;
-		OutNodePosition =  f16tof32({ParameterName}_RestPositionBuffer[PointOffset+PointPrev].xyz) * (1.0-NodeAlpha) + 
-						   f16tof32({ParameterName}_RestPositionBuffer[PointOffset+PointNext].xyz) * NodeAlpha;
+		OutNodePosition =  UnpackHairControlPointPosition({ParameterName}_RestPositionBuffer[PointOffset+PointPrev]) * (1.0-NodeAlpha) + 
+						   UnpackHairControlPointPosition({ParameterName}_RestPositionBuffer[PointOffset+PointNext]) * NodeAlpha;
 	}
 	OutNodePosition = mul(float4( OutNodePosition+{ParameterName}_RestPositionOffset, 1.0), {ParameterName}_WorldTransform).xyz;
 }
@@ -609,9 +595,9 @@ void ComputeProjectionTriangle_{ParameterName}(in float2 ProjectionUV, in float3
 void BuildDeformedTriangle_{ParameterName}(in float2 ProjectionUV, in int TriangleIndex, out float3 OutTrianglePosition, out float4 OutTriangleRotation)
 {
 	ComputeProjectionTriangle_{ParameterName}(ProjectionUV, 
-		{ParameterName}_DeformedTrianglePositionABuffer[TriangleIndex].xyz,
-		{ParameterName}_DeformedTrianglePositionBBuffer[TriangleIndex].xyz,
-		{ParameterName}_DeformedTrianglePositionCBuffer[TriangleIndex].xyz,
+		{ParameterName}_DeformedTrianglePositionBuffer[TriangleIndex * 3 + 0].xyz,
+		{ParameterName}_DeformedTrianglePositionBuffer[TriangleIndex * 3 + 1].xyz,
+		{ParameterName}_DeformedTrianglePositionBuffer[TriangleIndex * 3 + 2].xyz,
 	    {ParameterName}_DeformedRootOffset, OutTrianglePosition, OutTriangleRotation);
 }
 
@@ -619,9 +605,9 @@ void BuildDeformedTriangle_{ParameterName}(in float2 ProjectionUV, in int Triang
 void BuildRestTriangle_{ParameterName}(in float2 ProjectionUV, in int TriangleIndex, out float3 OutTrianglePosition, out float4 OutTriangleRotation)
 {
 	ComputeProjectionTriangle_{ParameterName}(ProjectionUV, 
-		{ParameterName}_RestTrianglePositionABuffer[TriangleIndex].xyz,
-		{ParameterName}_RestTrianglePositionBBuffer[TriangleIndex].xyz,
-		{ParameterName}_RestTrianglePositionCBuffer[TriangleIndex].xyz,
+		{ParameterName}_RestTrianglePositionBuffer[TriangleIndex * 3 + 0].xyz,
+		{ParameterName}_RestTrianglePositionBuffer[TriangleIndex * 3 + 1].xyz,
+		{ParameterName}_RestTrianglePositionBuffer[TriangleIndex * 3 + 2].xyz,
 	    {ParameterName}_RestRootOffset, OutTrianglePosition, OutTriangleRotation);
 }
 
@@ -655,7 +641,7 @@ void UpdateTriangleDisplace_{ParameterName}(in int StrandIndex, in float3 NodePo
 {
 	if( {ParameterName}_InterpolationMode >= 1)
 	{
-		const float2 ProjectionUV = ExtractBarycentrics({ParameterName}_RootBarycentricCoordinatesBuffer[StrandIndex]);
+		const float2 ProjectionUV = UnpackBarycentrics({ParameterName}_RootBarycentricCoordinatesBuffer[StrandIndex]).xy;
 		const uint TriangleIndex = {ParameterName}_RootToUniqueTriangleIndexBuffer[StrandIndex];
 
 		BuildRestTriangle_{ParameterName}(ProjectionUV, TriangleIndex, RestTrianglePosition, RestTriangleOrientation);
@@ -680,6 +666,7 @@ void UpdateDeformedPositions_{ParameterName}(in float3 LocalDisplace, in int Pos
 {
 	if( {ParameterName}_InterpolationMode >= 1)
 	{
+		// TODO: convert this code back to use UnpackHairControlPointPosition & PackHairControlPointPosition
 		const float3 LocalTrianglePosition = TriangleLocalPosition_{ParameterName}(RestTrianglePosition, RestTriangleOrientation, 
 			f16tof32({ParameterName}_RestPositionBuffer[PositionIndex].xyz) + {ParameterName}_RestPositionOffset) + LocalDisplace;
 			
@@ -689,6 +676,7 @@ void UpdateDeformedPositions_{ParameterName}(in float3 LocalDisplace, in int Pos
 	}
 	else
 	{
+		// TODO: convert this code back to use UnpackHairControlPointPosition & PackHairControlPointPosition
 		const float3 LocalComponentPosition = f16tof32({ParameterName}_RestPositionBuffer[PositionIndex].xyz) + LocalDisplace + {ParameterName}_RestPositionOffset - {ParameterName}_DeformedPositionOffset[0].xyz;
 		{ParameterName}_DeformedPositionBuffer[PositionIndex] = uint4(f32tof16(LocalComponentPosition), {ParameterName}_RestPositionBuffer[PositionIndex].w);	
 	}
@@ -737,7 +725,8 @@ void UpdatePointPosition_{ParameterName}(in float3 NodePosition, in float3 RestP
 // Get the point position
 void GetPointPosition_{ParameterName}(in int PointIndex, out float3 OutPointPosition)
 {
-	OutPointPosition = mul(float4(f16tof32({ParameterName}_DeformedPositionBuffer[PointIndex].xyz) + {ParameterName}_DeformedPositionOffset[0].xyz, 1.0), {ParameterName}_WorldTransform).xyz;
+	const float3 Position = UnpackHairControlPointPosition({ParameterName}_DeformedPositionBuffer[PointIndex], {ParameterName}_DeformedPositionOffset[0].xyz);
+	OutPointPosition = mul(float4(Position, 1.0), {ParameterName}_WorldTransform).xyz;
 }
 
 /* -----------------------------------------------------------------
@@ -854,22 +843,14 @@ void GetLocalVector_{ParameterName}(in float3 WorldVector, in bool IsPosition, o
  * Attached the root to the skinned cache
  * -----------------------------------------------------------------
  */
-// Duplicate from #include "HairStrands/HairStrandsMeshProjectionCommon.ush" ApplyRBF()
+
 float3 ApplyRBF_{ParameterName}(in float3 RestControlPoint)
 {
-	float3 ControlPoint = RestControlPoint;
-	// Apply rbf interpolation from the samples set
-	for (int i = 0; i < {ParameterName}_SampleCount; ++i)
-	{
-		const float3 PositionDelta = RestControlPoint - {ParameterName}_RestSamplePositionsBuffer[i].xyz;
-		const float FunctionValue = sqrt(dot(PositionDelta, PositionDelta) + 1);
-		ControlPoint += FunctionValue * {ParameterName}_MeshSampleWeightsBuffer[i].xyz;
-	}
-	ControlPoint += {ParameterName}_MeshSampleWeightsBuffer[{ParameterName}_SampleCount].xyz;
-	ControlPoint += {ParameterName}_MeshSampleWeightsBuffer[{ParameterName}_SampleCount + 1].xyz * RestControlPoint.x;
-	ControlPoint += {ParameterName}_MeshSampleWeightsBuffer[{ParameterName}_SampleCount + 2].xyz * RestControlPoint.y;
-	ControlPoint += {ParameterName}_MeshSampleWeightsBuffer[{ParameterName}_SampleCount + 3].xyz * RestControlPoint.z;
-	return ControlPoint;
+	return ApplyRBF(
+		RestControlPoint, 
+		{ParameterName}_SampleCount, 
+		{ParameterName}_RestSamplePositionsBuffer,
+		{ParameterName}_MeshSampleWeightsBuffer);
 }
 
  // Compute the global position
@@ -902,7 +883,7 @@ void ComputeLocalState_{ParameterName}(in float3 RestPosition, in float4 RestOri
 	if( {ParameterName}_InterpolationMode >= 1)
 	{
 		const int StrandIndex = ExecIndex() / {ParameterName}_StrandSize;
-		const float2 ProjectionUV = ExtractBarycentrics({ParameterName}_RootBarycentricCoordinatesBuffer[StrandIndex]);
+		const float2 ProjectionUV = UnpackBarycentrics({ParameterName}_RootBarycentricCoordinatesBuffer[StrandIndex]).xy;
 		const uint TriangleIndex = {ParameterName}_RootToUniqueTriangleIndexBuffer[StrandIndex];
 
 		float3 RestTrianglePosition = float3(0, 0, 0);
@@ -923,7 +904,7 @@ void AttachNodeState_{ParameterName}(in float3 LocalPosition, in float4 LocalOri
 	if( {ParameterName}_InterpolationMode >= 1)
 	{
 		const int StrandIndex = ExecIndex() / {ParameterName}_StrandSize;
-		const float2 ProjectionUV = ExtractBarycentrics({ParameterName}_RootBarycentricCoordinatesBuffer[StrandIndex]);
+		const float2 ProjectionUV = UnpackBarycentrics({ParameterName}_RootBarycentricCoordinatesBuffer[StrandIndex]).xy;
 		const uint TriangleIndex = {ParameterName}_RootToUniqueTriangleIndexBuffer[StrandIndex];
 
 		float3 DeformedTrianglePosition = float3(0, 0, 0);

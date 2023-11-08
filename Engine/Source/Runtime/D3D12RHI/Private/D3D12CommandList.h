@@ -5,16 +5,33 @@ D3D12CommandList.h: Implementation of D3D12 Command List functions
 =============================================================================*/
 #pragma once
 
-#include "CoreMinimal.h"
+#include "D3D12RHICommon.h"
+#include "RHICommandList.h"
+#include "D3D12NvidiaExtensions.h"
+#include "D3D12Resources.h"
+#include "D3D12Submission.h"
+#include "D3D12Util.h"
 
 #if !defined(D3D12_PLATFORM_SUPPORTS_ASSERTRESOURCESTATES)
 	#define D3D12_PLATFORM_SUPPORTS_ASSERTRESOURCESTATES 1
 #endif
 
-class FD3D12Device;
 class FD3D12ContextCommon;
-class FD3D12Queue;
+class FD3D12Device;
+class FD3D12DynamicRHI;
 class FD3D12QueryAllocator;
+class FD3D12Queue;
+class FD3D12ResourceBarrierBatcher;
+
+struct FD3D12ResidencyHandle;
+
+enum class ED3D12QueueType;
+
+namespace D3DX12Residency
+{
+	class ResidencySet;
+}
+typedef D3DX12Residency::ResidencySet FD3D12ResidencySet;
 
 //
 // Wraps a D3D command list allocator object.
@@ -59,10 +76,10 @@ private:
 	FD3D12CommandList(FD3D12CommandList const&) = delete;
 	FD3D12CommandList(FD3D12CommandList&&) = delete;
 
-	FD3D12CommandList(FD3D12CommandAllocator* CommandAllocator, FD3D12QueryAllocator* TimestampAllocator);
+	FD3D12CommandList(FD3D12CommandAllocator* CommandAllocator, FD3D12QueryAllocator* TimestampAllocator, FD3D12QueryAllocator* PipelineStatsAllocator);
 
-	void WriteBeginTimestamp();
-	void WriteEndTimestamp();
+	void BeginLocalQueries();
+	void EndLocalQueries();
 
 public:
 	~FD3D12CommandList();
@@ -70,7 +87,7 @@ public:
 	void BeginQuery(FD3D12QueryLocation const& Location);
 	void EndQuery  (FD3D12QueryLocation const& Location);
 
-	void Reset(FD3D12CommandAllocator* CommandAllocator, FD3D12QueryAllocator* TimestampAllocator);
+	void Reset(FD3D12CommandAllocator* CommandAllocator, FD3D12QueryAllocator* TimestampAllocator, FD3D12QueryAllocator* PipelineStatsAllocator);
 	void Close();
 
 	bool IsOpen  () const { return !State.IsClosed; }
@@ -112,6 +129,15 @@ private:
 #endif
 #if D3D12_MAX_COMMANDLIST_INTERFACE >= 6
 		TRefCountPtr<ID3D12GraphicsCommandList6> GraphicsCommandList6;
+#endif
+#if D3D12_MAX_COMMANDLIST_INTERFACE >= 7
+		TRefCountPtr<ID3D12GraphicsCommandList7> GraphicsCommandList7;
+#endif
+#if D3D12_MAX_COMMANDLIST_INTERFACE >= 8
+		TRefCountPtr<ID3D12GraphicsCommandList8> GraphicsCommandList8;
+#endif
+#if D3D12_MAX_COMMANDLIST_INTERFACE >= 9
+		TRefCountPtr<ID3D12GraphicsCommandList9> GraphicsCommandList9;
 #endif
 #if D3D12_PLATFORM_SUPPORTS_ASSERTRESOURCESTATES
 		TRefCountPtr<ID3D12DebugCommandList>     DebugCommandList;
@@ -188,6 +214,15 @@ public:
 #if D3D12_MAX_COMMANDLIST_INTERFACE >= 6
 	auto GraphicsCommandList6 () { return BuildRValuePtr(&FInterfaces::GraphicsCommandList6); }
 #endif
+#if D3D12_MAX_COMMANDLIST_INTERFACE >= 7
+	auto GraphicsCommandList7 () { return BuildRValuePtr(&FInterfaces::GraphicsCommandList7); }
+#endif
+#if D3D12_MAX_COMMANDLIST_INTERFACE >= 8
+	auto GraphicsCommandList8 () { return BuildRValuePtr(&FInterfaces::GraphicsCommandList8); }
+#endif
+#if D3D12_MAX_COMMANDLIST_INTERFACE >= 9
+	auto GraphicsCommandList9 () { return BuildRValuePtr(&FInterfaces::GraphicsCommandList9); }
+#endif
 #if D3D12_PLATFORM_SUPPORTS_ASSERTRESOURCESTATES
 	auto DebugCommandList     () { return BuildRValuePtr(&FInterfaces::DebugCommandList    ); }
 #endif
@@ -206,7 +241,7 @@ private:
 	{
 		static int64 NextCommandListID;
 
-		FState(FD3D12CommandAllocator* CommandAllocator, FD3D12QueryAllocator* TimestampAllocator);
+		FState(FD3D12CommandAllocator* CommandAllocator, FD3D12QueryAllocator* TimestampAllocator, FD3D12QueryAllocator* PipelineStatsAllocator);
 
 		// The allocator currently assigned to this command list.
 		FD3D12CommandAllocator* CommandAllocator;
@@ -230,14 +265,17 @@ private:
 		FD3D12QueryLocation BeginTimestamp;
 		FD3D12QueryLocation EndTimestamp;
 
+		FD3D12QueryLocation PipelineStats;
+
 		TArray<FD3D12QueryLocation> TimestampQueries;
 		TArray<FD3D12QueryLocation> OcclusionQueries;
+		TArray<FD3D12QueryLocation> PipelineStatsQueries;
 
 		uint32 NumCommands = 0;
 
 		bool IsClosed = false;
-		bool bBeginTimestampWritten = false;
-		bool bEndTimestampWritten = false;
+		bool bLocalQueriesBegun = false;
+		bool bLocalQueriesEnded = false;
 
 	} State;
 };

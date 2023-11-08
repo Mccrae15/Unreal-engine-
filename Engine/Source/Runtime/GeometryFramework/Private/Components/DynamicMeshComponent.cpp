@@ -18,6 +18,8 @@
 #include "Changes/MeshChange.h"
 #include "DynamicMesh/MeshTransforms.h"
 
+#include "UObject/UE5ReleaseStreamObjectVersion.h"
+
 // default proxy for this component
 #include "Components/DynamicMeshSceneProxy.h"
 
@@ -80,10 +82,25 @@ UDynamicMeshComponent::UDynamicMeshComponent(const FObjectInitializer& ObjectIni
 	ResetProxy();
 }
 
+void UDynamicMeshComponent::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+	Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
+}
 
 void UDynamicMeshComponent::PostLoad()
 {
 	Super::PostLoad();
+
+	const int32 UE5ReleaseStreamObjectVersion = GetLinkerCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
+	if (UE5ReleaseStreamObjectVersion < FUE5ReleaseStreamObjectVersion::DynamicMeshComponentsDefaultUseExternalTangents)
+	{
+		// Set the old default value
+		if (TangentsType == EDynamicMeshComponentTangentsMode::Default)
+		{
+			TangentsType = EDynamicMeshComponentTangentsMode::NoTangents;
+		}
+	}
 
 	// The intention here is that MeshObject is never nullptr, however we cannot guarantee this as a subclass
 	// may have set it to null, and/or some type of serialization issue has caused it to fail to save/load.
@@ -115,7 +132,11 @@ void UDynamicMeshComponent::PostEditChangeProperty(FPropertyChangedEvent& Proper
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
 	const FName PropName = PropertyChangedEvent.GetPropertyName();
-	if ( (PropName == GET_MEMBER_NAME_CHECKED(UDynamicMeshComponent, bEnableComplexCollision)) ||
+	if (PropName == GET_MEMBER_NAME_CHECKED(UDynamicMeshComponent, TangentsType))
+	{
+		InvalidateAutoCalculatedTangents();
+	}
+	else if ( (PropName == GET_MEMBER_NAME_CHECKED(UDynamicMeshComponent, bEnableComplexCollision)) ||
 		(PropName == GET_MEMBER_NAME_CHECKED(UDynamicMeshComponent, CollisionType)) ||
 		(PropName == GET_MEMBER_NAME_CHECKED(UDynamicMeshComponent, bDeferCollisionUpdates))  )
 	{
@@ -278,7 +299,7 @@ void UDynamicMeshComponent::InvalidateAutoCalculatedTangents()
 
 const UE::Geometry::FMeshTangentsf* UDynamicMeshComponent::GetAutoCalculatedTangents() 
 { 
-	if (TangentsType == EDynamicMeshComponentTangentsMode::AutoCalculated && GetDynamicMesh()->GetMeshRef().HasAttributes())
+	if (GetTangentsType() == EDynamicMeshComponentTangentsMode::AutoCalculated && GetDynamicMesh()->GetMeshRef().HasAttributes())
 	{
 		UpdateAutoCalculatedTangents();
 		return (bAutoCalculatedTangentsValid) ? &AutoCalculatedTangents : nullptr;
@@ -288,7 +309,7 @@ const UE::Geometry::FMeshTangentsf* UDynamicMeshComponent::GetAutoCalculatedTang
 
 void UDynamicMeshComponent::UpdateAutoCalculatedTangents()
 {
-	if (TangentsType == EDynamicMeshComponentTangentsMode::AutoCalculated && bAutoCalculatedTangentsValid == false)
+	if (GetTangentsType() == EDynamicMeshComponentTangentsMode::AutoCalculated && bAutoCalculatedTangentsValid == false)
 	{
 		GetDynamicMesh()->ProcessMesh([&](const FDynamicMesh3& Mesh)
 		{
@@ -359,6 +380,11 @@ void UDynamicMeshComponent::NotifyMeshUpdated()
 	ResetProxy();
 }
 
+void UDynamicMeshComponent::NotifyMeshModified()
+{
+	NotifyMeshUpdated();
+}
+
 
 void UDynamicMeshComponent::FastNotifyColorsUpdated()
 {
@@ -382,6 +408,17 @@ void UDynamicMeshComponent::FastNotifyColorsUpdated()
 		{
 			Proxy->bUsePerTriangleColor = false;
 			Proxy->PerTriangleColorFunc = nullptr;
+		}
+
+		if (HasVertexColorRemappingFunction() && Proxy->bApplyVertexColorRemapping == false)
+		{
+			Proxy->bApplyVertexColorRemapping = true;
+			Proxy->VertexColorRemappingFunc = [this](FVector4f& Color) { RemapVertexColor(Color); };
+		}
+		else if (!HasVertexColorRemappingFunction() && Proxy->bApplyVertexColorRemapping == true)
+		{
+			Proxy->bApplyVertexColorRemapping = false;
+			Proxy->VertexColorRemappingFunc = nullptr;
 		}
 
 		Proxy->FastUpdateVertices(false, false, true, false);
@@ -504,10 +541,37 @@ void UDynamicMeshComponent::FastNotifyVertexAttributesUpdated(EMeshRenderAttribu
 	}
 }
 
-
 void UDynamicMeshComponent::FastNotifyUVsUpdated()
 {
 	FastNotifyVertexAttributesUpdated(EMeshRenderAttributeFlags::VertexUVs);
+}
+
+
+void UDynamicMeshComponent::NotifyMeshVertexAttributesModified( bool bPositions, bool bNormals, bool bUVs, bool bColors )
+{
+	EMeshRenderAttributeFlags Flags = EMeshRenderAttributeFlags::None;
+	if (bPositions)
+	{
+		Flags |= EMeshRenderAttributeFlags::Positions;
+	}
+	if (bNormals)
+	{
+		Flags |= EMeshRenderAttributeFlags::VertexNormals;
+	}
+	if (bUVs)
+	{
+		Flags |= EMeshRenderAttributeFlags::VertexUVs;
+	}
+	if (bColors)
+	{
+		Flags |= EMeshRenderAttributeFlags::VertexColors;
+	}
+
+	if (Flags == EMeshRenderAttributeFlags::None)
+	{
+		return;
+	}
+	FastNotifyVertexAttributesUpdated(Flags);
 }
 
 
@@ -865,6 +929,12 @@ FPrimitiveSceneProxy* UDynamicMeshComponent::CreateSceneProxy()
 			NewProxy->PerTriangleColorFunc = [this](const FDynamicMesh3* MeshIn, int TriangleID) { return GetGroupColor(MeshIn, TriangleID); };
 		}
 
+		if (HasVertexColorRemappingFunction())
+		{
+			NewProxy->bApplyVertexColorRemapping = true;
+			NewProxy->VertexColorRemappingFunc = [this](FVector4f& Color) { RemapVertexColor(Color); };
+		}
+
 		if (SecondaryTriFilterFunc)
 		{
 			NewProxy->bUseSecondaryTriBuffers = true;
@@ -939,6 +1009,54 @@ bool UDynamicMeshComponent::HasTriangleColorFunction()
 	return !!TriangleColorFunc;
 }
 
+
+
+void UDynamicMeshComponent::SetVertexColorRemappingFunction(
+	TUniqueFunction<void(FVector4f&)> ColorMapFuncIn,
+	EDynamicMeshComponentRenderUpdateMode UpdateMode)
+{
+	VertexColorMappingFunc = MoveTemp(ColorMapFuncIn);
+
+	if (UpdateMode == EDynamicMeshComponentRenderUpdateMode::FastUpdate)
+	{
+		FastNotifyColorsUpdated();
+	}
+	else if (UpdateMode == EDynamicMeshComponentRenderUpdateMode::FullUpdate)
+	{
+		NotifyMeshUpdated();
+	}
+}
+
+void UDynamicMeshComponent::ClearVertexColorRemappingFunction(EDynamicMeshComponentRenderUpdateMode UpdateMode)
+{
+	if (VertexColorMappingFunc)
+	{
+		VertexColorMappingFunc = nullptr;
+
+		if (UpdateMode == EDynamicMeshComponentRenderUpdateMode::FastUpdate)
+		{
+			FastNotifyColorsUpdated();
+		}
+		else if (UpdateMode == EDynamicMeshComponentRenderUpdateMode::FullUpdate)
+		{
+			NotifyMeshUpdated();
+		}
+	}
+}
+
+bool UDynamicMeshComponent::HasVertexColorRemappingFunction()
+{
+	return !!VertexColorMappingFunc;
+}
+
+
+void UDynamicMeshComponent::RemapVertexColor(FVector4f& VertexColorInOut)
+{
+	if (VertexColorMappingFunc)
+	{
+		VertexColorMappingFunc(VertexColorInOut);
+	}
+}
 
 
 
@@ -1083,7 +1201,9 @@ void UDynamicMeshComponent::SetDynamicMesh(UDynamicMesh* NewMesh)
 		MeshObject->OnMeshChanged().Remove(MeshObjectChangedHandle);
 	}
 
-	NewMesh->Rename( nullptr, this );		// set Outer of NewMesh to be this Component
+	// set Outer of NewMesh to be this Component, ie transfer ownership. This is done via "renaming", which is
+	// a bit odd, so the flags prevent some standard "renaming" behaviors from happening
+	NewMesh->Rename( nullptr, this, REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
 	MeshObject = NewMesh;
 	MeshObjectChangedHandle = MeshObject->OnMeshChanged().AddUObject(this, &UDynamicMeshComponent::OnMeshObjectChanged);
 

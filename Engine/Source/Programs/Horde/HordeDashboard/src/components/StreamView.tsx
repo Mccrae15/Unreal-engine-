@@ -3,7 +3,7 @@
 import { DefaultButton, IContextualMenuProps, mergeStyleSets, Pivot, PivotItem, PrimaryButton, Stack, Text, TextField } from '@fluentui/react';
 import { observer } from 'mobx-react-lite';
 import React, { useEffect, useState } from 'react';
-import { Navigate, useNavigate, useLocation, useParams } from 'react-router-dom';
+import { Navigate, useNavigate, useLocation, useParams, Link } from 'react-router-dom';
 import { useBackend } from '../backend';
 import dashboard from '../backend/Dashboard';
 import { JobFilterSimple } from '../base/utilities/filter';
@@ -18,6 +18,7 @@ import { JobViewIncremental } from './JobViewIncremental';
 import { NewBuild } from './NewBuild';
 import { StreamSummary } from './StreamSummary';
 import { TopNav } from './TopNav';
+import { JobsTabData } from '../backend/Api';
 
 export const SummaryPage: React.FC = () => {
 
@@ -89,8 +90,9 @@ const StreamViewInner: React.FC = observer(() => {
    }
 
    let queryTab = query.get("tab") ?? undefined;
+   const currentTab = stream.tabs.find(t => t.title === queryTab) as JobsTabData | undefined;
 
-   if (!queryTab || (queryTab.toLowerCase() !== "summary" && queryTab.toLowerCase() !== "all" && !stream.tabs.find(t => t.title === queryTab))) {
+   if (!queryTab || (queryTab.toLowerCase() !== "summary" && queryTab.toLowerCase() !== "all" && !currentTab)) {
 
       if (!!stream.tabs.find(t => t.title.toLowerCase() === "incremental")) {
          return <Navigate to={`/stream/${streamId}?tab=Incremental`} replace={true} />
@@ -129,13 +131,11 @@ const StreamViewInner: React.FC = observer(() => {
    const crumbTitle = `Horde: //${stream.project?.name}/${stream.name}`;
 
    const pivotItems = stream.tabs.map(tab => {
-      return <PivotItem headerText={tab.title} itemKey={tab.title} key={tab.title} headerButtonProps={{ href: `/stream/${streamId}?tab=${encodeURIComponent(tab.title)}` }} />;
+      return <PivotItem headerText={tab.title} itemKey={tab.title} key={tab.title} onRenderItemLink={() => <Link to={`/stream/${streamId}?tab=${encodeURIComponent(tab.title)}`} style={{color: modeColors.text}}>{tab.title}</Link>} />;
    });
 
-   pivotItems.unshift(<PivotItem headerText="All" itemKey="all" key="pivot_item_all" headerButtonProps={{ href: `/stream/${streamId}?tab=all` }} />)
-
-   pivotItems.unshift(<PivotItem headerText="Summary" itemKey="summary" key="pivot_item_summary" headerButtonProps={{ href: `/stream/${streamId}?tab=summary` }} />)
-
+   pivotItems.unshift(<PivotItem headerText="All" itemKey="all" key="pivot_item_all" onRenderItemLink={() => <Link to={`/stream/${streamId}?tab=all`} style={{color: modeColors.text}}>All</Link>}/>)
+   pivotItems.unshift(<PivotItem headerText="Summary" itemKey="summary" key="pivot_item_summary" onRenderItemLink={() => <Link to={`/stream/${streamId}?tab=summary`} style={{color: modeColors.text}}>Summary</Link>}/>)
 
    let findJobsItems: IContextualMenuProps = { items: [] };
 
@@ -191,7 +191,10 @@ const StreamViewInner: React.FC = observer(() => {
    const isSwarmTab = queryTab?.toLowerCase() === "swarm" || queryTab?.toLowerCase() === "presubmit";
    let isIncrementalTab = queryTab?.toLowerCase() === "incremental";
 
-   // @todo: We should have a way of defining a tab's views, these are transitioning anyway, so, ok
+   if (!isIncrementalTab && currentTab) {
+      isIncrementalTab = currentTab.showNames === false; /*|| currentTab.templates?.length === 1;*/
+   }
+
    if (!isIncrementalTab && queryTab) {
       const tabName = queryTab.toLowerCase();
       isIncrementalTab = tabName === "primary inc" || tabName === "secondary" || tabName.indexOf("incremental") !== -1;
@@ -212,6 +215,7 @@ const StreamViewInner: React.FC = observer(() => {
 
    const windowWidth = windowSize.width;
 
+
    return (
       <Stack className={hordeClasses.horde}>
          <TopNav />
@@ -228,12 +232,13 @@ const StreamViewInner: React.FC = observer(() => {
          }} />
          {findJobsShown && <JobSearchSimpleModal onClose={() => { setFindJobsShown(false) }} streamId={stream.id} />}
          <Stack horizontal>
-            <div key={`windowsize_streamview_${windowSize.width}_${windowSize.height}`} style={{ width: vw / 2 - 900, flexShrink: 0, backgroundColor: modeColors.background }} />
+            <div key={`windowsize_streamview_${windowSize.width}_${windowSize.height}`} style={{ width: (vw / 2 - (1440 / 2)) - 12, flexShrink: 0, backgroundColor: modeColors.background }} />
             <Stack tokens={{ childrenGap: 0 }} styles={{ root: { backgroundColor: modeColors.background, width: "100%" } }}>
-               <Stack style={{ width: 1800, paddingTop: 12, marginLeft: 4 }}>
+               <Stack style={{ width: 1440, paddingTop: 12, marginLeft: 4 }}>
                   <Stack style={{ maxWidth: windowWidth - 12 }} horizontal verticalAlign='center' verticalFill={true}>
-                     <Stack style={{ paddingLeft: 4, paddingTop: 2 }}>
+                     <Stack style={{ paddingLeft: 4, paddingTop: 2, width: 1180 }}>
                         <Pivot className={hordeClasses.pivot}
+                           overflowBehavior='menu'
                            selectedKey={queryTab}
                            linkSize="normal"
                            linkFormat="links"

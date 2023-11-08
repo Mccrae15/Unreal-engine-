@@ -79,13 +79,17 @@ FString FPCGContext::GetComponentName() const
 
 AActor* FPCGContext::GetTargetActor(const UPCGSpatialData* InSpatialData) const
 {
-	if (SourceComponent.IsValid() && SourceComponent->GetOwner())
+	if (InSpatialData && InSpatialData->TargetActor.Get())
+	{
+		return InSpatialData->TargetActor.Get();
+	}
+	else if (SourceComponent.IsValid() && SourceComponent->GetOwner())
 	{
 		return SourceComponent->GetOwner();
 	}
 	else
 	{
-		return InSpatialData ? InSpatialData->TargetActor.Get() : nullptr;
+		return nullptr;
 	}
 }
 
@@ -126,8 +130,13 @@ void FPCGContext::InitializeSettings()
 
 			if (bHasParamConnected)
 			{
-				SettingsWithOverride = Cast<UPCGSettings>(StaticDuplicateObject(NodeSettings, GetTransientPackage(), NAME_None, RF_Transient));
+				SettingsWithOverride = Cast<UPCGSettings>(StaticDuplicateObject(NodeSettings, GetTransientPackage()));
+				SettingsWithOverride->SetFlags(RF_Transient);
 				SettingsWithOverride->AddToRoot();
+
+				// Force seed copy to prevent issue due to delta serialization vs. Seed being initialized in the constructor only for new nodes
+				SettingsWithOverride->Seed = NodeSettings->Seed;
+				SettingsWithOverride->OriginalSettings = NodeSettings;
 			}
 		}
 	}
@@ -147,7 +156,11 @@ void FPCGContext::OverrideSettings()
 
 	for (const FPCGSettingsOverridableParam& Param : OriginalSettings->OverridableParams())
 	{
-		check(!Param.Properties.IsEmpty());
+		if (!ensure(!Param.Properties.IsEmpty()))
+		{
+			PCGE_LOG_C(Error, GraphAndLog, this, FText::Format(LOCTEXT("ParamPropertyIsEmpty", "Override pin '{0}' has no property set, we can't override it."), FText::FromName(Param.Label)));
+			continue;
+		}
 
 		// Verification that container is valid and we have the right class.
 		void* Container = nullptr;
@@ -185,19 +198,33 @@ void FPCGContext::OverrideSettings()
 			continue;
 		}
 
-		FName AttributeName = NAME_None;
-		TUniquePtr<const IPCGAttributeAccessor> AttributeAccessor = PCGAttributeAccessorHelpers::CreateConstAccessorForOverrideParam(InputData, Param, &AttributeName);
+		PCGAttributeAccessorHelpers::AccessorParamResult AccessorResult{};
+		TUniquePtr<const IPCGAttributeAccessor> AttributeAccessor = PCGAttributeAccessorHelpers::CreateConstAccessorForOverrideParamWithResult(InputData, Param, &AccessorResult);
+
+		const FName AttributeName = AccessorResult.AttributeName;
 
 		// Attribute doesn't exist
 		if (!AttributeAccessor)
 		{
+			// Throw a warning if the pin was connected, but accessor failed
+			if (AccessorResult.bPinConnected)
+			{
+				PCGE_LOG_C(Warning, GraphAndLog, this, FText::Format(LOCTEXT("AttributeNotFoundOnConnectedPin", "Override pin '{0}' is connected, but attribute '{1}' was not found."), FText::FromName(Param.Label), FText::FromName(AttributeName)));
+			}
+
 			continue;
+		}
+
+		// If aliases were used, throw a warning to ask the user to update its graph
+		if (AccessorResult.bUsedAliases)
+		{
+			PCGE_LOG_C(Warning, GraphAndLog, this, FText::Format(LOCTEXT("OverrideWithAlias", "Attribute '{0}' was not found, but one of its deprecated aliases ('{1}') was. Please update the name to the new value."), FText::FromName(AttributeName), FText::FromName(AccessorResult.AliasUsed)));
 		}
 
 		TUniquePtr<IPCGAttributeAccessor> PropertyAccessor = PCGAttributeAccessorHelpers::CreatePropertyAccessor(Param.Properties.Last());
 		check(PropertyAccessor.IsValid());
 
-		PCGMetadataAttribute::CallbackWithRightType(PropertyAccessor->GetUnderlyingType(), [this, &AttributeAccessor, &PropertyAccessor, &Param, &AttributeName, Container](auto Dummy) -> bool
+		const bool bParamOverridden = PCGMetadataAttribute::CallbackWithRightType(PropertyAccessor->GetUnderlyingType(), [this, &AttributeAccessor, &PropertyAccessor, &Param, &AttributeName, Container](auto Dummy) -> bool
 		{
 			using PropertyType = decltype(Dummy);
 
@@ -223,12 +250,32 @@ void FPCGContext::OverrideSettings()
 
 			return true;
 		});
+
+		if (bParamOverridden)
+		{
+			OverriddenParams.Add(&Param);
+		}
 	}
+}
+
+bool FPCGContext::IsValueOverriden(const FName PropertyName)
+{
+	const FPCGSettingsOverridableParam** OverriddenParam = OverriddenParams.FindByPredicate([PropertyName](const FPCGSettingsOverridableParam* ParamToCheck)
+	{
+		return ParamToCheck && !ParamToCheck->PropertiesNames.IsEmpty() && ParamToCheck->PropertiesNames[0] == PropertyName;
+	});
+
+	return OverriddenParam != nullptr;
 }
 
 #if WITH_EDITOR
 void FPCGContext::LogVisual(ELogVerbosity::Type InVerbosity, const FText& InMessage) const
 {
+	if (!SourceComponent.IsValid())
+	{
+		return;
+	}
+
 	if (UPCGSubsystem* Subsystem = UPCGSubsystem::GetInstance(SourceComponent->GetWorld()))
 	{
 		Subsystem->GetNodeVisualLogsMutable().Log(Node, SourceComponent, InVerbosity, InMessage);
@@ -237,6 +284,11 @@ void FPCGContext::LogVisual(ELogVerbosity::Type InVerbosity, const FText& InMess
 
 bool FPCGContext::HasVisualLogs() const
 {
+	if (!SourceComponent.IsValid())
+	{
+		return false;
+	}
+
 	if (UPCGSubsystem* Subsystem = UPCGSubsystem::GetInstance(SourceComponent->GetWorld()))
 	{
 		return Subsystem->GetNodeVisualLogs().HasLogs(Node, SourceComponent.Get());

@@ -16,6 +16,7 @@ namespace UE::Interchange::Private
 		virtual ~FPayloadContextBase() {}
 		virtual FString GetPayloadType() const { return FString(); }
 		virtual bool FetchPayloadToFile(FFbxParser& Parser, const FString& PayloadFilepath) { return false; }
+		virtual bool FetchMeshPayloadToFile(FFbxParser& Parser, const FTransform& MeshGlobalTransform, const FString& PayloadFilepath) { return false; }
 		virtual bool FetchAnimationBakeTransformPayloadToFile(FFbxParser& Parser, const double BakeFrequency, const double RangeStartTime, const double RangeEndTime, const FString& PayloadFilepath) { return false; }
 	};
 
@@ -37,7 +38,7 @@ namespace UE::Interchange::Private
 		/**
 			* Return the name of an FbxObject, return empty string if the object is null.
 			*/
-		FString GetFbxObjectName(const FbxObject* Object) const;
+		FString GetFbxObjectName(const FbxObject* Object, bool bIsJoint = false) const;
 
 		/**
 			* Return a string with the name of all the parent in the hierarchy separate by a dot( . ) from the fbx root node to the specified node.

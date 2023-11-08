@@ -93,7 +93,7 @@ public:
 		[
 			SNew(SBorder)
 			.BorderImage(FAppStyle::GetBrush("Menu.Background"))
-			.Padding(10)
+			.Padding(10.f)
 			.OnMouseButtonDown(this, &SContentBrowserPopup::OnBorderClicked)
 			.BorderBackgroundColor(this, &SContentBrowserPopup::GetBorderBackgroundColor)
 			[
@@ -102,7 +102,7 @@ public:
 				+SHorizontalBox::Slot()
 				.AutoWidth()
 				.VAlign(VAlign_Center)
-				.Padding(0, 0, 4, 0)
+				.Padding(0.f, 0.f, 4.f, 0.f)
 				[
 					SNew(SImage) .Image( FAppStyle::GetBrush("ContentBrowser.PopupMessageIcon") )
 				]
@@ -198,12 +198,12 @@ public:
 		[
 			SNew(SBorder)
 			. BorderImage(FAppStyle::GetBrush("Menu.Background"))
-			. Padding(10)
+			. Padding(10.f)
 			[
 				SNew(SVerticalBox)
 				+SVerticalBox::Slot()
 				.AutoHeight()
-				.Padding(0, 0, 0, 5)
+				.Padding(0.f, 0.f, 0.f, 5.f)
 				.HAlign(HAlign_Center)
 				[
 					SNew(STextBlock)
@@ -215,7 +215,7 @@ public:
 				.HAlign(HAlign_Center)
 				[
 					SNew(SUniformGridPanel)
-					.SlotPadding(3)
+					.SlotPadding(3.f)
 					+ SUniformGridPanel::Slot(0, 0)
 					.HAlign(HAlign_Fill)
 					[
@@ -699,14 +699,60 @@ bool ContentBrowserUtils::CanRenameFromPathView(TWeakPtr<SPathView> PathView, FT
 	return false;
 }
 
-bool ContentBrowserUtils::IsFavoriteFolder(const FString& FolderPath)
+FName ContentBrowserUtils::GetInvariantPath(const FContentBrowserItemPath& ItemPath)
 {
-	return FContentBrowserSingleton::Get().FavoriteFolderPaths.Contains(ConvertVirtualPathToInvariantPathString(FolderPath));
+	if (!ItemPath.HasInternalPath())
+	{
+		FName InvariantPath;
+		const EContentBrowserPathType AssetPathType = IContentBrowserDataModule::Get().GetSubsystem()->TryConvertVirtualPath(ItemPath.GetVirtualPathName(), InvariantPath);
+		if (AssetPathType == EContentBrowserPathType::Virtual)
+		{
+			return InvariantPath;
+		}
+		else
+		{
+			return NAME_None;
+		}
+	}
+
+	return ItemPath.GetInternalPathName();
 }
 
-void ContentBrowserUtils::AddFavoriteFolder(const FString& FolderPath)
+EContentBrowserIsFolderVisibleFlags ContentBrowserUtils::GetIsFolderVisibleFlags(const bool bDisplayEmpty)
 {
-	const FString InvariantFolder = ConvertVirtualPathToInvariantPathString(FolderPath);
+	return EContentBrowserIsFolderVisibleFlags::Default | (bDisplayEmpty ? EContentBrowserIsFolderVisibleFlags::None : EContentBrowserIsFolderVisibleFlags::HideEmptyFolders);
+}
+
+bool ContentBrowserUtils::IsFavoriteFolder(const FString& FolderPath)
+{
+	return IsFavoriteFolder(FContentBrowserItemPath(FolderPath, EContentBrowserPathType::Virtual));
+}
+
+bool ContentBrowserUtils::IsFavoriteFolder(const FContentBrowserItemPath& FolderPath)
+{
+	const FName InvariantPath = ContentBrowserUtils::GetInvariantPath(FolderPath);
+	if (!InvariantPath.IsNone())
+	{
+		return FContentBrowserSingleton::Get().FavoriteFolderPaths.Contains(InvariantPath.ToString());
+	}
+
+	return false;
+}
+
+void ContentBrowserUtils::AddFavoriteFolder(const FString& FolderPath, bool bFlushConfig /*= true*/)
+{
+	AddFavoriteFolder(FContentBrowserItemPath(FolderPath, EContentBrowserPathType::Virtual));
+}
+
+void ContentBrowserUtils::AddFavoriteFolder(const FContentBrowserItemPath& FolderPath)
+{
+	const FName InvariantPath = ContentBrowserUtils::GetInvariantPath(FolderPath);
+	if (InvariantPath.IsNone())
+	{
+		return;
+	}
+
+	const FString InvariantFolder = InvariantPath.ToString();
 
 	FContentBrowserSingleton::Get().FavoriteFolderPaths.AddUnique(InvariantFolder);
 
@@ -719,15 +765,16 @@ void ContentBrowserUtils::AddFavoriteFolder(const FString& FolderPath)
 
 	FContentBrowserSingleton::Get().BroadcastFavoritesChanged();
 }
-	
-void ContentBrowserUtils::AddFavoriteFolder(const FString& FolderPath, bool bFlushConfig)
-{
-	AddFavoriteFolder(FolderPath);
-}
 
-void ContentBrowserUtils::RemoveFavoriteFolder(const FString& FolderPath)
+void ContentBrowserUtils::RemoveFavoriteFolder(const FContentBrowserItemPath& FolderPath)
 {
-	const FString InvariantFolder = ConvertVirtualPathToInvariantPathString(FolderPath);
+	const FName InvariantPath = ContentBrowserUtils::GetInvariantPath(FolderPath);
+	if (InvariantPath.IsNone())
+	{
+		return;
+	}
+
+	FString InvariantFolder = InvariantPath.ToString();
 
 	FContentBrowserSingleton::Get().FavoriteFolderPaths.Remove(InvariantFolder);
 
@@ -743,7 +790,7 @@ void ContentBrowserUtils::RemoveFavoriteFolder(const FString& FolderPath)
 
 void ContentBrowserUtils::RemoveFavoriteFolder(const FString& FolderPath, bool bFlushConfig)
 {
-	RemoveFavoriteFolder(FolderPath);
+	RemoveFavoriteFolder(FContentBrowserItemPath(FolderPath, EContentBrowserPathType::Virtual));
 }
 
 const TArray<FString>& ContentBrowserUtils::GetFavoriteFolders()

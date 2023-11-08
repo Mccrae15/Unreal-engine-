@@ -35,12 +35,13 @@ class PARTY_API USocialManager : public UObject, public FExec
 	GENERATED_BODY()
 
 	friend class FPartyPlatformSessionManager;
-	friend UPartyMember;
 	friend USocialUser;
 
 public:
 	// FExec
+#if UE_ALLOW_EXEC_COMMANDS
 	virtual bool Exec(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Out) override;
+#endif
 
 	static bool IsSocialSubsystemEnabled(ESocialSubsystem SubsystemType);
 	static FName GetSocialOssName(ESocialSubsystem SubsystemType);
@@ -58,6 +59,8 @@ public:
 	virtual void ShutdownSocialManager();
 
 	USocialToolkit& GetSocialToolkit(const ULocalPlayer& LocalPlayer) const;
+	USocialToolkit* GetSocialToolkit(int32 LocalPlayerNum) const;
+	USocialToolkit* GetSocialToolkit(FUniqueNetIdRepl LocalUserId) const;
 	USocialToolkit* GetFirstLocalUserToolkit() const;
 	FUniqueNetIdRepl GetFirstLocalUserId(ESocialSubsystem SubsystemType) const;
 	bool IsLocalUser(const FUniqueNetIdRepl& LocalUserId, ESocialSubsystem SubsystemType) const;
@@ -119,9 +122,6 @@ protected:
 	DECLARE_DELEGATE_OneParam(FOnJoinPartyAttemptComplete, const FJoinPartyResult&);
 	void JoinParty(const USocialUser& UserToJoin, const FOnlinePartyTypeId& PartyTypeId, const FOnJoinPartyAttemptComplete& OnJoinPartyComplete, const FName& JoinMethod);
 
-	USocialToolkit* GetSocialToolkit(int32 LocalPlayerNum) const;
-	USocialToolkit* GetSocialToolkit(FUniqueNetIdRepl LocalUserId) const;
-
 protected:
 	struct PARTY_API FRejoinableParty : public TSharedFromThis<FRejoinableParty>
 	{
@@ -132,13 +132,11 @@ protected:
 		FName OriginalJoinMethod;
 	};
 
+public:
 	struct PARTY_API FJoinPartyAttempt
 	{
 		FJoinPartyAttempt(TSharedRef<const FRejoinableParty> InRejoinInfo);
 		FJoinPartyAttempt(const USocialUser* InTargetUser, const FOnlinePartyTypeId& InPartyTypeId, const FName& InJoinMethod, const FOnJoinPartyAttemptComplete& InOnJoinComplete);
-
-		UE_DEPRECATED(5.1, "This constructor is deprecated, use (USocialUser*, FOnlinePartyTypeId, FName, FOnJoinPartyAttemptComplete) instead.")
-		FJoinPartyAttempt(const USocialUser* InTargetUser, const FOnlinePartyTypeId& InPartyTypeId, const FOnJoinPartyAttemptComplete& InOnJoinComplete);
 
 		FString ToDebugString() const;
 
@@ -146,10 +144,9 @@ protected:
 		FOnlinePartyTypeId PartyTypeId;
 		FName JoinMethod = PartyJoinMethod::Unspecified;
 		FUniqueNetIdRepl TargetUserPlatformId;
-		FSessionId PlatformSessionId;
 
 		TSharedPtr<const FRejoinableParty> RejoinInfo;
-		TSharedPtr<const IOnlinePartyJoinInfo> JoinInfo;
+		IOnlinePartyJoinInfoConstPtr JoinInfo;
 
 		FOnJoinPartyAttemptComplete OnJoinComplete;
 
@@ -161,7 +158,10 @@ protected:
 		static const FName Step_WaitForPersistentPartyCreation;
 
 		FSocialActionTimeTracker ActionTimeTracker;
+
+		TMap<FString, FString> AnalyticsContext;
 	};
+protected:
 
 	virtual void RegisterSocialInteractions();
 
@@ -218,6 +218,8 @@ protected:
 	// Set during shutdown, used to early-out of lingering OnlineSubsystem callbacks that are pending
 	bool bShutdownPending = false;
 
+	TMap<FOnlinePartyTypeId, FJoinPartyAttempt> JoinAttemptsByTypeId;
+
 private:
 	UGameInstance& GetGameInstance() const;
 	USocialToolkit& CreateSocialToolkit(ULocalPlayer& OwningLocalPlayer, int32 LocalPlayerIndex);
@@ -264,7 +266,6 @@ protected: // overridable handlers
 private:
 	static TArray<ESocialSubsystem> DefaultSubsystems;
 	static TArray<FSocialInteractionHandle> RegisteredInteractions;
-	static TMap<TWeakObjectPtr<UGameInstance>, TWeakObjectPtr<USocialManager>> AllManagersByGameInstance;
 
 	UPROPERTY()
 	TArray<TObjectPtr<USocialToolkit>> SocialToolkits;
@@ -282,9 +283,8 @@ private:
 
 	TSharedPtr<FPartyPlatformSessionManager> PartySessionManager;
 
-	TMap<FOnlinePartyTypeId, USocialParty*> JoinedPartiesByTypeId;
-	TMap<FOnlinePartyTypeId, USocialParty*> LeavingPartiesByTypeId;
-	TMap<FOnlinePartyTypeId, FJoinPartyAttempt> JoinAttemptsByTypeId;
+	TMap<FOnlinePartyTypeId, TObjectPtr<USocialParty>> JoinedPartiesByTypeId;
+	TMap<FOnlinePartyTypeId, TObjectPtr<USocialParty>> LeavingPartiesByTypeId;
 
 	FDelegateHandle OnFillJoinRequestInfoHandle;
 

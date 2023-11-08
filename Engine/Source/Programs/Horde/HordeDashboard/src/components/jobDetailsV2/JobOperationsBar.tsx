@@ -4,7 +4,7 @@ import { CommandBar, CommandBarButton, ICommandBarItemProps, IContextualMenuItem
 import { observer } from 'mobx-react-lite';
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { JobState, StepData } from '../../backend/Api';
+import { ArtifactContextType, JobState, JobStepOutcome, JobStepState, StepData } from '../../backend/Api';
 import dashboard from '../../backend/Dashboard';
 import { hordeClasses } from '../../styles/Styles';
 import { EditJobModal } from '../EditJobModal';
@@ -14,7 +14,9 @@ import { NotificationDropdown } from '../NotificationDropdown';
 import { PauseStepModal } from '../StepPauseModal';
 import { AbortJobModal } from './AbortJobModal';
 import { JobDetailsV2 } from './JobDetailsViewCommon';
-import { StepRetryModal, StepRetryType } from './StepRetryModal';
+import { RetryStepsModal, StepRetryModal, StepRetryType } from './StepRetryModal';
+import { JobArtifactsModal } from '../artifacts/ArtifactsModal';
+import { getSiteConfig } from '../../backend/Config';
 
 enum ParameterState {
    Hidden,
@@ -28,6 +30,8 @@ export const JobOperations: React.FC<{ jobDetails: JobDetailsV2 }> = observer(({
    const navigate = useNavigate();
    const [abortShown, setAbortShown] = useState(false);
    const [editShown, setEditShown] = useState(false);
+   const [retryStepsShown, setRetryStepsShown] = useState(false);
+
    const [parametersState, setParametersState] = useState(query.get("newbuild") ? ParameterState.Clone : ParameterState.Hidden);
 
    const stepId = query.get("step") ? query.get("step")! : undefined;
@@ -46,6 +50,23 @@ export const JobOperations: React.FC<{ jobDetails: JobDetailsV2 }> = observer(({
 
    const abortDisabled = jobData.state === JobState.Complete;
    const runAgainDisabled = false; /*jobDetails.jobdata?.state !== JobState.Complete*/
+
+   const failedSteps = jobDetails.getSteps().filter(s => {
+
+      if (!s.finishTime || (s.state !== JobStepState.Aborted && s.outcome !== JobStepOutcome.Failure)) {
+         return false;
+      }
+
+      const retries = jobDetails.getStepRetries(s.id);
+      const retryNumber = jobDetails.getStepRetryNumber(s.id);
+      if (retries.length && retryNumber < (retries.length - 1) ) {
+         return false;
+      }
+
+      return true;
+      
+   });
+   const retryFailedStepsDisabled = !failedSteps.length;
 
    const pinned = dashboard.jobPinned(jobId);
 
@@ -72,9 +93,20 @@ export const JobOperations: React.FC<{ jobDetails: JobDetailsV2 }> = observer(({
       onClick: () => { setEditShown(true); }
    });
 
+   //if (getSiteConfig().environment !== "production") {
+
+      opsList.push({
+         key: 'jobops_runfailedsteps',
+         text: "Retry Steps",
+         disabled: retryFailedStepsDisabled,
+         iconProps: { iconName: "Repeat" },
+         onClick: () => { setRetryStepsShown(true); }
+      });
+   //}
+
    opsList.push({
       key: 'jobops_abort',
-      text: "Abort",
+      text: "Cancel Job",
       disabled: abortDisabled,
       iconProps: { iconName: "Delete" },
       onClick: () => { setAbortShown(true); }
@@ -117,6 +149,7 @@ export const JobOperations: React.FC<{ jobDetails: JobDetailsV2 }> = observer(({
    }
 
    return <Stack>
+      {retryStepsShown && <RetryStepsModal stepIds={failedSteps.map(s => s.id)} jobDetails={jobDetails} onClose={() => { setRetryStepsShown(false); }} />}
       <AbortJobModal jobDetails={jobDetails} show={abortShown} onClose={() => { setAbortShown(false); }} />
       <EditJobModal jobData={jobDetails.jobData} show={editShown} onClose={() => { setEditShown(false); }} />
       <NewBuild streamId={jobDetails.stream!.id} jobDetails={jobDetails} readOnly={parametersState === ParameterState.Parameters}
@@ -141,6 +174,10 @@ export const JobOperations: React.FC<{ jobDetails: JobDetailsV2 }> = observer(({
             </Stack>
             </Link>}
 
+            {!!stepId && <Stack styles={{ root: { paddingTop: 4 } }}>
+               <StepArtifactsOperations jobDetails={jobDetails} stepId={stepId} />
+            </Stack>}
+
             <Stack className={hordeClasses.commandBarSmall} styles={{ root: { paddingTop: 4 } }}>
                {notifications}
             </Stack>
@@ -160,10 +197,95 @@ export const JobOperations: React.FC<{ jobDetails: JobDetailsV2 }> = observer(({
                   <CommandBarButton disabled={viewLogDisabled} className={hordeClasses.commandBarSmall} styles={{ root: { padding: "10px 8px 10px 8px" } }} iconProps={{ iconName: "AlignLeft" }} text="View Log" />
                </Stack>
             </Link>}
+
          </Stack>
       </Stack>
 
    </Stack>
+
+});
+
+const StepArtifactsOperations: React.FC<{ jobDetails: JobDetailsV2, stepId: string }> = observer(({ jobDetails, stepId }) => {
+
+   const [artifactsShown, setArtifactsShown] = useState<ArtifactContextType | undefined>(undefined);
+
+   const jobData = jobDetails.jobData;
+
+   if (!jobData?.useArtifactsV2) {
+      return null;
+   }
+
+   // subscribe
+   if (dashboard.updated) { }
+   if (jobDetails.updated) { }
+
+   const stepArtifacts = jobDetails.stepArtifacts.get(stepId ?? "");
+
+   const step = jobDetails.stepById(stepId)
+   if (!step) {
+      return null;
+   }
+
+   const atypes = new Map<ArtifactContextType, number>();
+
+   stepArtifacts?.forEach(a => {
+      let c = atypes.get(a.type) ?? 0;
+      c++;
+      atypes.set(a.type, c);
+   });
+
+   const opsList: IContextualMenuItem[] = [];
+
+   opsList.push({
+      key: 'stepops_artifacts_step',
+      text: "Step Artifacts",
+      iconProps: { iconName: "Folder" },
+      disabled: !atypes.get("step-saved"),
+      onClick: () => { setArtifactsShown("step-saved") }
+   });
+
+   opsList.push({
+      key: 'stepops_artifacts_output',
+      text: "Output Artifacts",
+      iconProps: { iconName: "MenuOpen" },
+      disabled: !atypes.get("step-output"),
+      onClick: () => { setArtifactsShown("step-output") }
+   });
+
+   opsList.push({
+      key: 'stepops_artifacts_trace',
+      text: "Trace Artifacts",
+      iconProps: { iconName: "SearchTemplate" },
+      disabled: !atypes.get("step-trace"),
+      onClick: () => { setArtifactsShown("step-trace") }
+   });
+
+   const opsItems: ICommandBarItemProps[] = [
+      {
+         key: 'stepops_artifacts',
+         text: "Artifacts",
+         iconProps: { iconName: "CloudDownload" },
+         disabled: !stepArtifacts?.length,
+         subMenuProps: {
+            items: opsList
+         }
+      }
+   ];
+
+   return <Stack>
+      {!!artifactsShown && <JobArtifactsModal stepId={step.id} jobId={jobDetails.jobId!} contextType={artifactsShown} artifacts={stepArtifacts} onClose={() => { setArtifactsShown(undefined); }} />}
+      <Stack horizontal styles={{ root: { paddingLeft: 0 } }}>
+         <Stack grow />
+         <Stack horizontal>
+            <Stack className={hordeClasses.commandBarSmall} style={{ paddingRight: 0 }}>
+               <CommandBar
+                  items={opsItems}
+                  onReduceData={() => undefined} />
+            </Stack>
+         </Stack>
+      </Stack>
+   </Stack>
+
 
 });
 
@@ -206,7 +328,7 @@ const StepOperations: React.FC<{ jobDetails: JobDetailsV2, stepId: string }> = o
 
    opsList.push({
       key: 'stepops_abort',
-      text: "Abort",
+      text: "Cancel Step",
       iconProps: { iconName: "Cross" },
       disabled: !!step.finishTime,
       onClick: () => { setShown({ abortShown: true }); }

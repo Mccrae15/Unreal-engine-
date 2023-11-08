@@ -473,7 +473,7 @@ private:
 	void OnConvexDecomposition();
 
 	//~ Begin FAssetEditorToolkit Interface.
-	virtual bool OnRequestClose() override;
+	virtual bool OnRequestClose(EAssetEditorCloseReason InCloseReason) override;
 	//~ End FAssetEditorToolkit Interface.
 
 	//~ Begin FEditorUndoClient Interface
@@ -527,7 +527,7 @@ private:
 	TWeakPtr<class FStaticMeshDetails> StaticMeshDetails;
 
 	/** The currently viewed Static Mesh. */
-	UStaticMesh* StaticMesh;
+	TObjectPtr<UStaticMesh> StaticMesh;
 
 	/** The number of triangles associated with the static mesh LOD. */
 	TArray<int32> NumTriangles;

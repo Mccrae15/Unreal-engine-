@@ -8,11 +8,15 @@
 #pragma once
 
 // Change this to force recompilation of all strata dependent shaders (use https://www.random.org/cgi-bin/randbyte?nbytes=4&format=h)
-#define STRATA_SHADER_VERSION 0x084bf26a2 
+#define STRATA_SHADER_VERSION 0x56F06029 
 
+// BSDF offsets are packed into 32bits, each entry using STRATA_BSDF_OFFSET_BIT_COUNT bits
+#define STRATA_MAX_BSDF_COUNT_FOR_BDSFOFFSET	8u
+#define STRATA_BSDF_OFFSET_BIT_COUNT			4u
+#define STRATA_BSDF_OFFSET_BIT_MASK				0xF
 
-
-#define STRATA_MAX_BSDF_COUNT				15
+// We can only ever use STRATA_MAX_BSDF_COUNT_FOR_BDSFOFFSET BSDFs for Lumen, so we use that as a global BSDF count limit today.
+#define STRATA_MAX_BSDF_COUNT				STRATA_MAX_BSDF_COUNT_FOR_BDSFOFFSET
 #define STRATA_MAX_OPERATOR_COUNT			15
 
 // It this is changed, STATE_BIT_COUNT_SHAREDLOCALBASESID and HEADER_BIT_COUNT_SHAREDLOCALBASES_COUNT also needs to be updated
@@ -20,6 +24,9 @@
 
 #define STRATA_PACKED_SHAREDLOCALBASIS_STRIDE_BYTES	4
 
+// As of today, a fully simplified material is a slab with all features allowed. It can thus be complex if anisotropy is enabled and in this case eats up to 32bytes.
+// STRATA_TODO: fully simplified should remove all features but fuzz maybe. 
+#define STRATA_FULLY_SIMPLIFIED_NUM_UINTS	(32/4)
 
 #define STRATA_BSDF_TYPE_SLAB				0
 #define STRATA_BSDF_TYPE_VOLUMETRICFOGCLOUD	1
@@ -54,12 +61,13 @@
 #define STRATA_TILE_TYPE_SIMPLE						0
 #define STRATA_TILE_TYPE_SINGLE						1
 #define STRATA_TILE_TYPE_COMPLEX					2
-#define STRATA_TILE_TYPE_ROUGH_REFRACT				3
-#define STRATA_TILE_TYPE_ROUGH_REFRACT_SSS_WITHOUT	4
-#define STRATA_TILE_TYPE_DECAL_SIMPLE				5
-#define STRATA_TILE_TYPE_DECAL_SINGLE				6
-#define STRATA_TILE_TYPE_DECAL_COMPLEX				7
-#define STRATA_TILE_TYPE_COUNT						8
+#define STRATA_TILE_TYPE_COMPLEX_SPECIAL			3
+#define STRATA_TILE_TYPE_ROUGH_REFRACT				4
+#define STRATA_TILE_TYPE_ROUGH_REFRACT_SSS_WITHOUT	5
+#define STRATA_TILE_TYPE_DECAL_SIMPLE				6
+#define STRATA_TILE_TYPE_DECAL_SINGLE				7
+#define STRATA_TILE_TYPE_DECAL_COMPLEX				8
+#define STRATA_TILE_TYPE_COUNT						9
 
 // sizeof(FRHIDrawIndirectParameters) = 4 uints = 16 bytes
 #define GetStrataTileTypeDrawIndirectArgOffset_Byte(x)  (x * 16)

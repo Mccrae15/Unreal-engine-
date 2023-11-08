@@ -2,26 +2,26 @@
 
 #include "Sequencer/NiagaraCacheTrackEditor.h"
 
-#include "CoreMinimal.h"
 #include "AssetToolsModule.h"
-#include "LevelSequence.h"
-#include "NiagaraComponent.h"
-#include "NiagaraSimCache.h"
-#include "NiagaraSystem.h"
-#include "SequencerSectionPainter.h"
-#include "TimeToPixel.h"
-#include "CacheTrackRecorder/Public/Recorder/CacheTrackRecorder.h"
+#include "CoreMinimal.h"
+#include "Editor.h"
 #include "Fonts/FontMeasure.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "LevelSequence.h"
 #include "Niagara/NiagaraSimCachingEditorStyle.h"
 #include "Niagara/Sequencer/MovieSceneNiagaraCacheSection.h"
 #include "Niagara/Sequencer/MovieSceneNiagaraCacheTrack.h"
-#include "Editor.h"
 #include "MovieScene/MovieSceneNiagaraSystemSpawnSection.h"
 #include "MovieScene/MovieSceneNiagaraSystemTrack.h"
-#include "Subsystems/AssetEditorSubsystem.h"
+#include "NiagaraComponent.h"
+#include "NiagaraSimCache.h"
+#include "NiagaraSystem.h"
+#include "Recorder/CacheTrackRecorder.h"
+#include "SequencerSectionPainter.h"
 #include "Styling/SlateIconFinder.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "TimeToPixel.h"
 #include "UObject/Package.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
@@ -346,6 +346,18 @@ void FNiagaraCacheTrackEditor::BuildTrackContextMenu(FMenuBuilder& MenuBuilder, 
 							return false;
 						}
 					)
+				)
+			);
+
+			MenuBuilder.AddMenuEntry(
+				LOCTEXT("RecordCache", "Record cache"),
+				LOCTEXT("RecordCacheToolTip", "Refresh the data in the selected cache tracks by playing the sequence and recording the Niagara system."),
+				FSlateIcon(),
+				FUIAction(
+					FExecuteAction::CreateLambda([this]()
+					{
+						UCacheTrackRecorder::RecordSelectedTracks(GetSequencer());
+					})
 				)
 			);
 		}

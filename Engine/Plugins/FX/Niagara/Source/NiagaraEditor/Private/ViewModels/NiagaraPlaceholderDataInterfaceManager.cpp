@@ -80,8 +80,7 @@ void FNiagaraPlaceholderDataInterfaceManager::AddReferencedObjects(FReferenceCol
 {
 	for (FPlaceholderDataInterfaceInfo& PlaceholderDataInterfaceInfo : PlaceholderDataInterfaceInfos)
 	{
-		UNiagaraDataInterface* PlaceholderDataInterface = PlaceholderDataInterfaceInfo.PlaceholderDataInterface.Get();
-		Collector.AddReferencedObject(PlaceholderDataInterface);
+		Collector.AddReferencedObject(PlaceholderDataInterfaceInfo.PlaceholderDataInterface);
 	}
 }
 
@@ -127,7 +126,7 @@ void FNiagaraPlaceholderDataInterfaceManager::PlaceholderDataInterfaceChanged(TW
 			FGuid ParameterVariableGuid = ParameterMetaData.IsSet() ? ParameterMetaData->GetVariableGuid() : FGuid();
 			UEdGraphPin& OverridePin = FNiagaraStackGraphUtilities::GetOrCreateStackFunctionInputOverridePin(
 				*PlaceholderDataInterfaceInfo->OwningFunctionCall.Get(), AliasedInputParameterHandle,
-				FNiagaraTypeDefinition(PlaceholderDataInterface->GetClass()), ParameterVariableGuid);
+				FNiagaraTypeDefinition(PlaceholderDataInterface->GetClass()), ParameterVariableGuid, FGuid());
 
 			if (OverridePin.LinkedTo.Num() == 1)
 			{
@@ -146,7 +145,7 @@ void FNiagaraPlaceholderDataInterfaceManager::PlaceholderDataInterfaceChanged(TW
 				{
 					FNiagaraStackGraphUtilities::RemoveNodesForStackFunctionInputOverridePin(OverridePin);
 				}
-				FNiagaraStackGraphUtilities::SetDataValueObjectForFunctionInput(OverridePin, PlaceholderDataInterface->GetClass(), AliasedInputParameterHandle.GetParameterHandleString().ToString(), OverrideDataInterface);
+				FNiagaraStackGraphUtilities::SetDataInterfaceValueForFunctionInput(OverridePin, PlaceholderDataInterface->GetClass(), AliasedInputParameterHandle.GetParameterHandleString().ToString(), OverrideDataInterface);
 				FNiagaraStackGraphUtilities::RelayoutGraph(*PlaceholderDataInterfaceInfo->OwningFunctionCall->GetNiagaraGraph());
 			}
 

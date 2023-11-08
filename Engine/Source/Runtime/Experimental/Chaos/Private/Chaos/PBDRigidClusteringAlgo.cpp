@@ -7,6 +7,7 @@
 #include "Chaos/Utilities.h"
 #include "Chaos/PBDRigidClusteringCollisionParticleAlgo.h"
 #include "Chaos/PBDRigidsEvolutionGBF.h"
+#include "Chaos/MassProperties.h"
 
 namespace Chaos
 {
@@ -38,179 +39,72 @@ namespace Chaos
 	DECLARE_CYCLE_STAT(TEXT("TPBDRigidClustering<>::UpdateClusterMassProperties()"), STAT_UpdateClusterMassProperties, STATGROUP_Chaos);
 	void UpdateClusterMassProperties(
 		FPBDRigidClusteredParticleHandle* Parent,
-		TSet<FPBDRigidParticleHandle*>& Children,
-		FMatrix33& ParentInertia,
-		const FRigidTransform3* ForceMassOrientation)
+		const TSet<FPBDRigidParticleHandle*>& Children)
 	{
 		SCOPE_CYCLE_COUNTER(STAT_UpdateClusterMassProperties);
-		check(Children.Num());
 
-		Parent->SetX(FVec3(0));
-		Parent->SetR(FRotation3(FQuat::MakeFromEuler(FVec3(0))));
-		Parent->SetV(FVec3(0));
-		Parent->SetW(FVec3(0));
-		Parent->SetM(0);
-		Parent->SetI(TVec3<FRealSingle>(0)); // Diagonal should be updated from ParentInertia by caller
-		ParentInertia = FMatrix33(0);
+		// NOTE: Default initializer will have zero mass
+		FMassProperties ParentMass;
 
-		bool bHasChild = false;
-		bool bHasProxyChild = false;
-		for (FPBDRigidParticleHandle* OriginalChild : Children)
+		// Combine mass properties of all children in parent's space
+		if (Children.Num() > 0)
 		{
-			FPBDRigidParticleHandle* Child;
-			FVec3 ChildPosition;
-			FRotation3 ChildRotation;
-
-			Child = OriginalChild;
-			ChildPosition = Child->X();
-			ChildRotation = Child->R();
-
-			const FReal ChildMass = Child->M();
-			const FMatrix33 ChildWorldSpaceI = Chaos::Utilities::ComputeWorldSpaceInertia(ChildRotation, Child->I());
-			if (ChildWorldSpaceI.ContainsNaN())
+			const FRigidTransform3 ParentTM = Parent->GetTransformXR();
+			TArray<FMassProperties> ChildMasses;
+			ChildMasses.Reserve(Children.Num());
+			for (const FPBDRigidParticleHandle* Child : Children)
 			{
-				continue;
+				// Get the child's transform relative to the parent
+				const FRigidTransform3 ChildTM = Child->GetTransformXR();
+				const FRigidTransform3 ChildToParentTM = ChildTM.GetRelativeTransform(ParentTM);
+				const FRigidTransform3 ChildCoM(Child->CenterOfMass(), Child->RotationOfMass());
+				const FRigidTransform3 ChildCoMInParentSpace = ChildCoM * ChildToParentTM;
+
+				// Get the child's mass properties
+				FMassProperties ChildMass;
+				ChildMass.Mass = Child->M();
+				ChildMass.InertiaTensor = FMatrix33(Child->I());
+				ChildMass.CenterOfMass = ChildCoMInParentSpace.GetTranslation();
+				ChildMass.RotationOfMass = ChildCoMInParentSpace.GetRotation();
+				ChildMasses.Add(ChildMass);
 			}
-			bHasProxyChild = true;
-			bHasChild = true;
-			bHasProxyChild = true;
 
-			ParentInertia += ChildWorldSpaceI;
-			Parent->M() += ChildMass;
-			Parent->X() += ChildPosition * ChildMass;
-			Parent->V() += OriginalChild->V() * ChildMass; // Use orig child for vel because we don't sim the proxy
-			Parent->W() += OriginalChild->W() * ChildMass;
-		}
-		if (!ensure(bHasProxyChild))
-		{
-			for (FPBDRigidParticleHandle* OriginalChild : Children)
-			{
-				FPBDRigidParticleHandle* Child = OriginalChild;
-				const FVec3& ChildPosition = Child->X();
-				const FRotation3& ChildRotation = Child->R();
-				const FReal ChildMass = Child->M();
-
-				const FMatrix33 ChildWorldSpaceI = Chaos::Utilities::ComputeWorldSpaceInertia(ChildRotation, Child->I());
-				if (ChildWorldSpaceI.ContainsNaN())
-				{
-					continue;
-				}
-				bHasChild = true;
-				ParentInertia += ChildWorldSpaceI;
-				Parent->M() += ChildMass;
-				Parent->X() += ChildPosition * ChildMass;
-				Parent->V() += OriginalChild->V() * ChildMass; // Use orig child for vel because we don't sim the proxy
-				Parent->W() += OriginalChild->W() * ChildMass;
-			}
-		}
-		for (int32 i = 0; i < 3; i++)
-		{
-			const FVec3& InertiaTensor = Parent->I();
-			if (InertiaTensor[i] < UE_SMALL_NUMBER)
-			{
-				Parent->SetI(TVec3<FRealSingle>(1.f, 1.f, 1.f));
-				break;
-			}
+			ParentMass = Chaos::Combine(ChildMasses);
 		}
 
-		if (!ensure(bHasChild) || !ensure(Parent->M() > UE_SMALL_NUMBER))
-		{
-			Parent->M() = 1.0;
-			Parent->X() = FVec3(0);
-			Parent->V() = FVec3(0);
-			Parent->PreV() = Parent->V();
-			Parent->InvM() = 1;
-			Parent->P() = Parent->X();
-			Parent->W() = FVec3(0);
-			Parent->PreW() = Parent->W();
-			Parent->R() = FRotation3(FMatrix::Identity);
-			Parent->Q() = Parent->R();
-			Parent->I() = TVec3<FRealSingle>(1);
-			Parent->InvI() = TVec3<FRealSingle>(1);
-			ParentInertia = FMatrix33(1,1,1);
-			return;
-		}
-
-		check(Parent->M() > UE_SMALL_NUMBER);
-
-		Parent->X() /= Parent->M();
-		Parent->V() /= Parent->M();
-		Parent->PreV() = Parent->V();
-		Parent->InvM() = static_cast<FReal>(1.0) / Parent->M();
-		if (ForceMassOrientation)
-		{
-			Parent->X() = ForceMassOrientation->GetLocation();
-		}
-		Parent->P() = Parent->X();
-		for (FPBDRigidParticleHandle* OriginalChild : Children)
-		{
-			FPBDRigidParticleHandle* Child;
-			FVec3 ChildPosition;
-
-			Child = OriginalChild;
-			ChildPosition = Child->X();
-
-			FVec3 ParentToChild = ChildPosition - Parent->X();
-
-			const FReal ChildMass = Child->M();
-			// taking v from original child since we are not actually simulating the proxy child
-			Parent->W() +=
-				FVec3::CrossProduct(ParentToChild,
-					OriginalChild->V() * ChildMass);
-			{
-				const FReal& p0 = ParentToChild[0];
-				const FReal& p1 = ParentToChild[1];
-				const FReal& p2 = ParentToChild[2];
-				const FReal& m = ChildMass;
-				// TODO: We are computing inertia twice. Need to decide if we prefer this to loop above.
-				ParentInertia += FMatrix33(
-						m * (p1 * p1 + p2 * p2), -m * p1 * p0, -m * p2 * p0,
-						m * (p2 * p2 + p0 * p0), -m * p2 * p1, m * (p1 * p1 + p0 * p0));
-			}
-		}
-
-		if (ForceMassOrientation)
-		{
-			ParentInertia = ForceMassOrientation->GetRotation().ToMatrix() * ParentInertia * ForceMassOrientation->GetRotation().ToMatrix().GetTransposed();
-		}
-
-		if (ParentInertia.ContainsNaN())
-		{
-			ParentInertia = FMatrix33(1,1,1);
-		}
-		else
-		{
-			for (int32 i = 0; i < 3; i++)
-			{
-				if (ParentInertia.GetColumn(i)[i] < UE_SMALL_NUMBER)
-				{
-					ParentInertia = FMatrix33(1,1,1);
-					break;
-				}
-			}
-		}
-		Parent->W() /= Parent->M();
-		Parent->PreW() = Parent->W();
-		if (ForceMassOrientation)
-		{
-			Parent->R() = ForceMassOrientation->GetRotation();
-		}
-
-		if (Parent->R().ContainsNaN())
-		{
-			ParentInertia = FMatrix33(1,1,1);
-			Parent->R() = TRotation<FReal, 3>(FMatrix::Identity);
-		}
-
-		Parent->Q() = Parent->R();
-		
-		// TODO: This should be computed from rotated tensor by caller.
-		// Initializing to keep current behaviour until fixed.
-		Parent->I() = ParentInertia.GetDiagonal(); 
-		Parent->InvI() = TVec3<FRealSingle>(1.f / Parent->I()[0], 1.f / Parent->I()[1], 1.f / Parent->I()[2]);
+		// Set properties of particle based on combined mass properties
+		// NOTE: The combine method will have diagonalized the inertia.
+		const FVec3 Inertia = ParentMass.InertiaTensor.GetDiagonal();
+		Parent->SetCenterOfMass(ParentMass.CenterOfMass);
+		Parent->SetRotationOfMass(ParentMass.RotationOfMass);
+		Parent->M() = ParentMass.Mass;
+		Parent->InvM()
+			= FMath::IsNearlyZero(ParentMass.Mass)
+			? 0.f
+			: 1.f / ParentMass.Mass;
+		Parent->I() = Inertia;
+		Parent->InvI()
+			= (FMath::IsNearlyZero(Inertia[0]) || FMath::IsNearlyZero(Inertia[1]) || FMath::IsNearlyZero(Inertia[2]))
+			? FVec3::ZeroVector
+			: FReal(1) / Inertia;
 	}
 
+	void MoveClusterToMassOffset(FPBDRigidClusteredParticleHandle* Cluster, const EMassOffsetType MassOffsetTypes)
+	{
+		if (MassOffsetTypes | EMassOffsetType::EPosition)
+		{
+			Cluster->SetX(Cluster->XCom());
+			Cluster->SetP(Cluster->X());
+			Cluster->SetCenterOfMass(FVec3::ZeroVector);
+		}
 
+		if (MassOffsetTypes | EMassOffsetType::ERotation)
+		{
+			Cluster->SetR(Cluster->RCom());
+			Cluster->SetQ(Cluster->R());
+			Cluster->SetRotationOfMass(FQuat::Identity);
+		}
+	}
 
 	DECLARE_CYCLE_STAT(TEXT("TPBDRigidClustering<>::UpdateKinematicProperties()"), STAT_UpdateKinematicProperties, STATGROUP_Chaos);
 	void 
@@ -310,10 +204,6 @@ namespace Chaos
 		Objects.Reserve(Children.Num());
 		Objects2.Reserve(Children.Num());
 
-		//we should never update existing geometry since this is used by SQ threads.
-		ensure(!Parent->Geometry());
-		ensure(!Parent->DynamicGeometry());
-
 		const FRigidTransform3 ClusterWorldTM(Parent->X(), Parent->R());
 
 		TArray<FVec3> OriginalPoints;
@@ -338,8 +228,18 @@ namespace Chaos
 
 			for (FPBDRigidParticleHandle* Child : Children)
 			{
-				const FRigidTransform3 ChildWorldTM(Child->X(), Child->R());
-				FRigidTransform3 Frame = ChildWorldTM.GetRelativeTransform(ClusterWorldTM);
+				FRigidTransform3 Frame = FRigidTransform3::Identity;
+
+				if (FPBDRigidClusteredParticleHandle* ClusterChild = Child->CastToClustered(); ClusterChild && ClusterChild->IsChildToParentLocked())
+				{
+					Frame = ClusterChild->ChildToParent();
+				}
+				else
+				{
+					const FRigidTransform3 ChildWorldTM(Child->X(), Child->R());
+					Frame = ChildWorldTM.GetRelativeTransform(ClusterWorldTM);
+				}
+
 				FPBDRigidParticleHandle* UsedGeomChild = Child;
 				if (Child->Geometry())
 				{
@@ -408,7 +308,17 @@ namespace Chaos
 			};
 			//ensureMsgf(false, TEXT("Checking usage with proxy"));
 			//@coverage {production}
-			Parent->SetSharedGeometry(TSharedPtr<FImplicitObject, ESPMode::ThreadSafe>(DeepCopyImplicit(ProxyGeometry).Release()));
+
+			Chaos::EImplicitObjectType GeometryType = ProxyGeometry->GetType();
+			// Don't copy if it is not a level set and scale is one
+			if (GeometryType != Chaos::ImplicitObjectType::LevelSet && Scale.Equals(FVector::OneVector))
+			{
+				Parent->SetSharedGeometry(TSharedPtr<FImplicitObject, ESPMode::ThreadSafe>(ProxyGeometry));
+			}
+			else
+			{
+				Parent->SetSharedGeometry(TSharedPtr<FImplicitObject, ESPMode::ThreadSafe>(DeepCopyImplicit(ProxyGeometry).Release()));
+			}
 		}
 		else if (Objects.Num() == 0)
 		{
@@ -513,9 +423,17 @@ namespace Chaos
 			Parent->SetLocalBounds(Implicit->BoundingBox());
 			const Chaos::FRigidTransform3 Xf(Parent->X(), Parent->R());
 			Parent->UpdateWorldSpaceState(Xf, FVec3(0));
-		}
 
-		
+			if (const FImplicitObjectUnion* ImplicitUnion = Implicit->GetObject<FImplicitObjectUnion>())
+			{
+				const_cast<FImplicitObjectUnion*>(ImplicitUnion)->SetAllowBVH(true);
+			}
+			else if (const FImplicitObjectUnion* ImplicitUnionClustered = Implicit->GetObject<FImplicitObjectUnionClustered>())
+			{
+				const_cast<FImplicitObjectUnion*>(ImplicitUnionClustered)->SetAllowBVH(true);
+			}
+		}
+	
 		// Update filter data on new shapes
 		const FRigidClustering::FRigidHandleArray& ChildrenArray = ChildrenMap[Parent];
 		UpdateClusterFilterDataFromChildren(Parent, ChildrenArray);

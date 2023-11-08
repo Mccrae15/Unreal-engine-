@@ -61,23 +61,23 @@ int32 AddToAsyncTaskCounter(int32 Addend)
 namespace UE::DerivedData
 {
 
-ILegacyCacheStore* CreateCacheStoreAsync(ILegacyCacheStore* InnerBackend, ECacheStoreFlags InnerFlags, IMemoryCacheStore* MemoryCache);
-ILegacyCacheStore* CreateCacheStoreHierarchy(ICacheStoreOwner*& OutOwner, IMemoryCacheStore* MemoryCache);
+ILegacyCacheStore* CreateCacheStoreAsync(ILegacyCacheStore* InnerBackend, IMemoryCacheStore* MemoryCache, bool bDeleteInnerCache);
+ILegacyCacheStore* CreateCacheStoreHierarchy(ICacheStoreOwner*& OutOwner, TFunctionRef<void (IMemoryCacheStore*&)> MemoryCacheCreator);
 ILegacyCacheStore* CreateCacheStoreThrottle(ILegacyCacheStore* InnerCache, uint32 LatencyMS, uint32 MaxBytesPerSecond);
 ILegacyCacheStore* CreateCacheStoreVerify(ILegacyCacheStore* InnerCache, bool bPutOnError);
-ILegacyCacheStore* CreateFileSystemCacheStore(const TCHAR* CacheDirectory, const TCHAR* Params, const TCHAR* AccessLogFileName, ECacheStoreFlags& OutFlags);
-TTuple<ILegacyCacheStore*, ECacheStoreFlags> CreateHttpCacheStore(const TCHAR* NodeName, const TCHAR* Config);
-IMemoryCacheStore* CreateMemoryCacheStore(const TCHAR* Name, int64 MaxCacheSize, bool bCanBeDisabled);
-IPakFileCacheStore* CreatePakFileCacheStore(const TCHAR* Filename, bool bWriting, bool bCompressed);
-ILegacyCacheStore* CreateS3CacheStore(const TCHAR* RootManifestPath, const TCHAR* BaseUrl, const TCHAR* Region, const TCHAR* CanaryObjectKey, const TCHAR* CachePath);
-TTuple<ILegacyCacheStore*, ECacheStoreFlags> CreateZenCacheStore(const TCHAR* NodeName, const TCHAR* Config);
+ILegacyCacheStore* CreateFileSystemCacheStore(const TCHAR* Name, const TCHAR* Config, ICacheStoreOwner& Owner, FString& OutPath);
+ILegacyCacheStore* CreateHttpCacheStore(const TCHAR* Name, const TCHAR* Config, ICacheStoreOwner* Owner);
+void CreateMemoryCacheStore(IMemoryCacheStore*& OutCache, const TCHAR* Name, const TCHAR* Config, ICacheStoreOwner* Owner);
+IPakFileCacheStore* CreatePakFileCacheStore(const TCHAR* Name, const TCHAR* Filename, bool bWriting, bool bCompressed, ICacheStoreOwner* Owner);
+ILegacyCacheStore* CreateS3CacheStore(const TCHAR* Name, const TCHAR* Config, ICacheStoreOwner& Owner);
+ILegacyCacheStore* CreateZenCacheStore(const TCHAR* Name, const TCHAR* Config, ICacheStoreOwner* Owner);
 ILegacyCacheStore* TryCreateCacheStoreReplay(ILegacyCacheStore* InnerCache);
 
 /**
  * This class is used to create a singleton that represents the derived data cache hierarchy and all of the wrappers necessary
  * ideally this would be data driven and the backends would be plugins...
  */
-class FDerivedDataBackendGraph final : public FDerivedDataBackend
+class FDerivedDataBackendGraph final : public FDerivedDataBackend, ICacheStoreOwner
 {
 public:
 	using FParsedNode = TPair<ILegacyCacheStore*, ECacheStoreFlags>;
@@ -91,8 +91,6 @@ public:
 		, MemoryCache(nullptr)
 		, BootCache(nullptr)
 		, WritePakCache(nullptr)
-		, AsyncNode(nullptr)
-		, VerifyNode(nullptr)
 		, Hierarchy(nullptr)
 		, bUsingSharedDDC(false)
 		, bIsShuttingDown(false)
@@ -120,7 +118,7 @@ public:
 		RootCache = nullptr;
 		FParsedNodeMap ParsedNodes;
 
-		FParsedNode RootNode(nullptr, ECacheStoreFlags::None);
+		ILegacyCacheStore* RootNode = nullptr;
 
 		// Create the graph using ini settings. The string "default" forwards creation to use the default graph.
 
@@ -148,23 +146,37 @@ public:
 
 			if (!GraphName.IsEmpty() && GraphName != TEXT("Default"))
 			{
-				RootNode = ParseNode(RootName, GEngineIni, *GraphName, ParsedNodes);
-				if (!RootNode.Key)
+				RootNode = CreateCacheStoreHierarchy(Hierarchy, [this](IMemoryCacheStore*& OutCache) { GetMemoryCache(OutCache); });
+
+				if (!ParseNode(RootName, GEngineIni, *GraphName, ParsedNodes))
 				{
 					// Destroy any cache stores that have been created.
+					delete RootNode;
+					RootNode = nullptr;
 					ParsedNodes.Empty();
-					DestroyCreatedBackends();
+					MemoryCache = nullptr;
+					BootCache = nullptr;
+					WritePakCache = nullptr;
+					Hierarchy = nullptr;
+					ReadPakCache.Empty();
+					Directories.Empty();
+					bAsyncFound = false;
+					bBootFound = false;
+					bHierarchyFound = false;
+					bVerifyFound = false;
+					bVerifyFix = false;
 					UE_LOG(LogDerivedDataCache, Warning,
 						TEXT("Unable to create cache graph '%s'. Reverting to the default graph."), *GraphName);
 				}
 			}
 
-			if (!RootNode.Key)
+			if (!Hierarchy)
 			{
 				// Try to use the default graph.
 				GraphName = FApp::IsEngineInstalled() ? TEXT("InstalledDerivedDataBackendGraph") : TEXT("DerivedDataBackendGraph");
-				RootNode = ParseNode(RootName, GEngineIni, *GraphName, ParsedNodes);
-				if (!RootNode.Key)
+				RootNode = CreateCacheStoreHierarchy(Hierarchy, [this](IMemoryCacheStore*& OutCache) { GetMemoryCache(OutCache); });
+
+				if (!ParseNode(RootName, GEngineIni, *GraphName, ParsedNodes))
 				{
 					FString Entry;
 					if (!GConfig->DoesSectionExist(*GraphName, GEngineIni))
@@ -189,44 +201,23 @@ public:
 			}
 		}
 
-		// Hierarchy must exist in the graph.
-		if (!Hierarchy)
-		{
-			ILegacyCacheStore* HierarchyStore = CreateCacheStoreHierarchy(Hierarchy, GetMemoryCache());
-			if (RootNode.Key)
-			{
-				Hierarchy->Add(RootNode.Key, RootNode.Value);
-			}
-			CreatedNodes.AddUnique(HierarchyStore);
-			RootNode.Key = HierarchyStore;
-		}
-
 		// Async must exist in the graph.
-		if (!AsyncNode)
-		{
-			AsyncNode = CreateCacheStoreAsync(RootNode.Key, RootNode.Value, GetMemoryCache());
-			CreatedNodes.AddUnique(AsyncNode);
-			RootNode.Key = AsyncNode;
-		}
+		RootNode = CreateCacheStoreAsync(RootNode, MemoryCache, /*bDeleteInnerCache*/ true);
 
-		// Create a Verify node when using -DDC-Verify[=Type1[@Rate2][+Type2[@Rate2]...]].
-		if (!VerifyNode)
+		// Create a Verify node when using -DDC-Verify[=Type1[@Rate2][+Type2[@Rate2]...]] or the graph has a verify node.
+		if (FString VerifyArg;
+			FParse::Value(FCommandLine::Get(), TEXT("-DDC-Verify="), VerifyArg) ||
+			FParse::Param(FCommandLine::Get(), TEXT("DDC-Verify")) ||
+			bVerifyFound)
 		{
-			FString VerifyArg;
-			if (FParse::Value(FCommandLine::Get(), TEXT("-DDC-Verify="), VerifyArg) ||
-				FParse::Param(FCommandLine::Get(), TEXT("DDC-Verify")))
-			{
-				VerifyNode = CreateCacheStoreVerify(RootNode.Key, /*bPutOnError*/ false);
-				CreatedNodes.AddUnique(VerifyNode);
-				RootNode.Key = VerifyNode;
-			}
+			IFileManager::Get().DeleteDirectory(*(FPaths::ProjectSavedDir() / TEXT("VerifyDDC/")), /*bRequireExists*/ false, /*bTree*/ true);
+			RootNode = CreateCacheStoreVerify(RootNode, /*bPutOnError*/ bVerifyFix);
 		}
 
 		// Create a Replay node when requested on the command line.
-		if (ILegacyCacheStore* ReplayNode = TryCreateCacheStoreReplay(RootNode.Key))
+		if (ILegacyCacheStore* ReplayNode = TryCreateCacheStoreReplay(RootNode))
 		{
-			CreatedNodes.AddUnique(ReplayNode);
-			RootNode.Key = ReplayNode;
+			RootNode = ReplayNode;
 		}
 
 		if (MaxKeyLength == 0)
@@ -234,7 +225,7 @@ public:
 			MaxKeyLength = MAX_BACKEND_KEY_LENGTH;
 		}
 
-		RootCache = RootNode.Key;
+		RootCache = RootNode;
 	}
 
 	/**
@@ -256,15 +247,15 @@ public:
 	 * @param InParsedNodes Map of parsed nodes and their names to be able to find already parsed nodes
 	 * @return Derived data backend interface instance created from ini settings
 	 */
-	FParsedNode ParseNode(const FString& NodeName, const FString& IniFilename, const TCHAR* IniSection, FParsedNodeMap& InParsedNodes)
+	bool ParseNode(const FString& NodeName, const FString& IniFilename, const TCHAR* IniSection, FParsedNodeMap& InParsedNodes)
 	{
 		if (const FParsedNode* ParsedNode = InParsedNodes.Find(NodeName))
 		{
 			UE_LOG(LogDerivedDataCache, Warning, TEXT("Node %s was referenced more than once in the graph. Nodes may not be shared."), *NodeName);
-			return *ParsedNode;
+			return false;
 		}
 
-		FParsedNode ParsedNode(nullptr, ECacheStoreFlags::None);
+		ICacheStoreOwner* NodeOwner = this;
 		FString Entry;
 		if (GConfig->GetString(IniSection, *NodeName, Entry, IniFilename))
 		{
@@ -272,134 +263,73 @@ public:
 			Entry.RemoveFromStart(TEXT("("));
 			Entry.RemoveFromEnd(TEXT(")"));
 
+			TGuardValue NodeNameGuard(ActiveNodeName, NodeName);
+			TGuardValue NodeConfigGuard(ActiveNodeConfig, Entry);
+
 			FString	NodeType;
 			if (FParse::Value(*Entry, TEXT("Type="), NodeType))
 			{
 				if (NodeType == TEXT("FileSystem"))
 				{
-					ParsedNode = ParseDataCache(*NodeName, *Entry);
+					return ParseDataCache(*NodeName, *Entry);
 				}
 				else if (NodeType == TEXT("Boot"))
 				{
-					UE_LOG(LogDerivedDataCache, Display, TEXT("Boot nodes are deprecated. Please remove the Boot node from the cache graph."));
-					if (BootCache == nullptr)
-					{
-						BootCache = ParseBootCache(*NodeName, *Entry);
-						ParsedNode = MakeTuple(BootCache, ECacheStoreFlags::Local | ECacheStoreFlags::Query | ECacheStoreFlags::Store);
-					}
-					else
-					{
-						UE_LOG(LogDerivedDataCache, Warning, TEXT("Unable to create %s Boot cache because only one Boot node is supported."), *NodeName);
-					}
+					return ParseBootCache(*NodeName, *Entry);
 				}
 				else if (NodeType == TEXT("Memory"))
 				{
-					ParsedNode = MakeTuple(ParseMemoryCache(*NodeName, *Entry), ECacheStoreFlags::Local | ECacheStoreFlags::Query | ECacheStoreFlags::Store);
+					return ParseMemoryCache(*NodeName, *Entry);
 				}
 				else if (NodeType == TEXT("Hierarchical"))
 				{
-					ParsedNode = ParseHierarchyNode(*NodeName, *Entry, IniFilename, IniSection, InParsedNodes);
+					return ParseHierarchyNode(*NodeName, *Entry, IniFilename, IniSection, InParsedNodes);
 				}
 				else if (NodeType == TEXT("KeyLength"))
 				{
-					if (MaxKeyLength == 0)
-					{
-						ParsedNode = ParseKeyLength(*NodeName, *Entry, IniFilename, IniSection, InParsedNodes);
-					}
-					else
-					{
-						UE_LOG(LogDerivedDataCache, Warning, TEXT("Unable to create %s KeyLength node because only one KeyLength node is supported."), *NodeName);
-					}
+					return ParseKeyLength(*NodeName, *Entry, IniFilename, IniSection, InParsedNodes);
 				}
 				else if (NodeType == TEXT("AsyncPut"))
 				{
-					if (AsyncNode == nullptr)
-					{
-						ParsedNode = ParseAsyncNode(*NodeName, *Entry, IniFilename, IniSection, InParsedNodes);
-						AsyncNode = ParsedNode.Key;
-					}
-					else
-					{
-						UE_LOG(LogDerivedDataCache, Warning, TEXT("Unable to create %s AsyncPut because only one AsyncPut node is supported."), *NodeName);
-					}
+					return ParseAsyncNode(*NodeName, *Entry, IniFilename, IniSection, InParsedNodes);
 				}
 				else if (NodeType == TEXT("Verify"))
 				{
-					if (VerifyNode == nullptr)
-					{
-						ParsedNode = ParseVerify(*NodeName, *Entry, IniFilename, IniSection, InParsedNodes);
-						VerifyNode = ParsedNode.Key;
-					}
-					else
-					{
-						UE_LOG(LogDerivedDataCache, Warning, TEXT("Unable to create %s Verify because only one Verify node is supported."), *NodeName);
-					}
+					return ParseVerify(*NodeName, *Entry, IniFilename, IniSection, InParsedNodes);
 				}
 				else if (NodeType == TEXT("ReadPak"))
 				{
-					ParsedNode = MakeTuple(ParsePak(*NodeName, *Entry, /*bWriting*/ false), ECacheStoreFlags::Local | ECacheStoreFlags::Query | ECacheStoreFlags::StopStore);
+					return ParsePak(*NodeName, *Entry, /*bWriting*/ false);
 				}
 				else if (NodeType == TEXT("WritePak"))
 				{
-					ParsedNode = MakeTuple(ParsePak(*NodeName, *Entry, /*bWriting*/ true), ECacheStoreFlags::Local | ECacheStoreFlags::Store);
+					return ParsePak(*NodeName, *Entry, /*bWriting*/ true);
 				}
 				else if (NodeType == TEXT("S3"))
 				{
-					ParsedNode = MakeTuple(ParseS3Cache(*NodeName, *Entry), ECacheStoreFlags::Local | ECacheStoreFlags::Query | ECacheStoreFlags::StopStore);
+					if (CreateS3CacheStore(*NodeName, *Entry, *this))
+					{
+						return true;
+					}
 				}
 				else if (NodeType == TEXT("Cloud") || NodeType == TEXT("Http"))
 				{
-					ParsedNode = CreateHttpCacheStore(*NodeName, *Entry);
+					if (CreateHttpCacheStore(*NodeName, *Entry, this))
+					{
+						return true;
+					}
 				}
 				else if (NodeType == TEXT("Zen"))
 				{
-					ParsedNode = CreateZenCacheStore(*NodeName, *Entry);
-				}
-				
-				if (ParsedNode.Key)
-				{
-					// Add a throttling layer if parameters are found
-					uint32 LatencyMS = 0;
-					FParse::Value(*Entry, TEXT("LatencyMS="), LatencyMS);
-
-					uint32 MaxBytesPerSecond = 0;
-					FParse::Value(*Entry, TEXT("MaxBytesPerSecond="), MaxBytesPerSecond);
-
-					if (LatencyMS != 0 || MaxBytesPerSecond != 0)
+					if (CreateZenCacheStore(*NodeName, *Entry, this))
 					{
-						CreatedNodes.AddUnique(ParsedNode.Key);
-						ParsedNode = MakeTuple(CreateCacheStoreThrottle(ParsedNode.Key, LatencyMS, MaxBytesPerSecond), ParsedNode.Value);
+						return true;
 					}
 				}
 			}
 		}
 
-		if (ParsedNode.Key)
-		{
-			// Store this node so that we don't require any order of adding nodes
-			InParsedNodes.Add(NodeName, ParsedNode);
-			// Keep references to all created nodes.
-			CreatedNodes.AddUnique(ParsedNode.Key);
-
-			// Parse any debug options for this node. E.g. -DDC-<Name>-MissRate
-			FBackendDebugOptions DebugOptions;
-			if (FBackendDebugOptions::ParseFromTokens(DebugOptions, *NodeName, FCommandLine::Get()))
-			{
-				if (!ParsedNode.Key->LegacyDebugOptions(DebugOptions))
-				{
-					UE_LOG(LogDerivedDataCache, Warning, TEXT("%s: Node is ignoring one or more -DDC-%s-<Option> debug options."), *NodeName, *NodeName);
-				}
-			}
-			else if (bHasDefaultDebugOptions)
-			{
-				if (!ParsedNode.Key->LegacyDebugOptions(DefaultDebugOptions))
-				{
-					UE_LOG(LogDerivedDataCache, Warning, TEXT("%s: Node is ignoring one or more -DDC-All-<Option> debug options."), *NodeName);
-				}
-			}
-		}
-
-		return ParsedNode;
+		return false;
 	}
 
 	/**
@@ -410,45 +340,49 @@ public:
 	 * @param bWriting true to create pak interface for writing
 	 * @return Pak file data backend interface instance or nullptr if unsuccessful
 	 */
-	ILegacyCacheStore* ParsePak( const TCHAR* NodeName, const TCHAR* Entry, const bool bWriting )
+	bool ParsePak(const TCHAR* NodeName, const TCHAR* Entry, const bool bWriting)
 	{
 		ILegacyCacheStore* PakNode = nullptr;
 		FString PakFilename;
 		FParse::Value( Entry, TEXT("Filename="), PakFilename );
 		bool bCompressed = GetParsedBool(Entry, TEXT("Compressed="));
 
-		if( !PakFilename.Len() )
+		if (PakFilename.IsEmpty())
 		{
-			UE_LOG( LogDerivedDataCache, Log, TEXT("FDerivedDataBackendGraph: %s pak cache Filename not found in *engine.ini, will not use a pak cache."), NodeName );
+			UE_LOG(LogDerivedDataCache, Log, TEXT("FDerivedDataBackendGraph: %s pak cache Filename not found in *engine.ini, will not use a pak cache."), NodeName);
+			return false;
+		}
+
+		if (bWriting)
+		{
+			if (WritePakCache)
+			{
+				UE_LOG(LogDerivedDataCache, Warning, TEXT("Unable to create %s pak cache because only one pak cache write node is supported."), *NodeName);
+				return false;
+			}
+
+			FGuid Temp = FGuid::NewGuid();
+			ReadPakFilename = PakFilename;
+			WritePakFilename = PakFilename + TEXT(".") + Temp.ToString();
+			WritePakCache = CreatePakFileCacheStore(NodeName, *WritePakFilename, /*bWriting*/ true, bCompressed, this);
+			PakNode = WritePakCache;
+			return true;
 		}
 		else
 		{
-			// now add the pak read cache (if any) to the front of the cache hierarchy
-			if ( bWriting )
+			bool bReadPak = FPlatformFileManager::Get().GetPlatformFile().FileExists(*PakFilename);
+			if (!bReadPak)
 			{
-				FGuid Temp = FGuid::NewGuid();
-				ReadPakFilename = PakFilename;
-				WritePakFilename = PakFilename + TEXT(".") + Temp.ToString();
-				WritePakCache = CreatePakFileCacheStore(*WritePakFilename, /*bWriting*/ true, bCompressed);
-				PakNode = WritePakCache;
+				UE_LOG(LogDerivedDataCache, Log, TEXT("FDerivedDataBackendGraph: %s pak cache file %s not found, will not use a pak cache."), NodeName, *PakFilename);
+				return false;
 			}
-			else
-			{
-				bool bReadPak = FPlatformFileManager::Get().GetPlatformFile().FileExists( *PakFilename );
-				if( bReadPak )
-				{
-					IPakFileCacheStore* ReadPak = CreatePakFileCacheStore(*PakFilename, /*bWriting*/ false, bCompressed);
-					ReadPakFilename = PakFilename;
-					PakNode = ReadPak;
-					ReadPakCache.Add(ReadPak);
-				}
-				else
-				{
-					UE_LOG( LogDerivedDataCache, Log, TEXT("FDerivedDataBackendGraph: %s pak cache file %s not found, will not use a pak cache."), NodeName, *PakFilename );
-				}
-			}
+
+			IPakFileCacheStore* ReadPak = CreatePakFileCacheStore(NodeName, *PakFilename, /*bWriting*/ false, bCompressed, this);
+			ReadPakFilename = PakFilename;
+			PakNode = ReadPak;
+			ReadPakCache.Add(ReadPak);
+			return true;
 		}
-		return PakNode;
 	}
 
 	/**
@@ -461,28 +395,25 @@ public:
 	 * @param InParsedNodes map of nodes and their names which have already been parsed
 	 * @return Verify wrapper backend interface instance or nullptr if unsuccessful
 	 */
-	FParsedNode ParseVerify(const TCHAR* NodeName, const TCHAR* Entry, const FString& IniFilename, const TCHAR* IniSection, FParsedNodeMap& InParsedNodes)
+	bool ParseVerify(const TCHAR* NodeName, const TCHAR* Entry, const FString& IniFilename, const TCHAR* IniSection, FParsedNodeMap& InParsedNodes)
 	{
-		FParsedNode InnerNode(nullptr, ECacheStoreFlags::None);
+		if (bVerifyFound)
+		{
+			UE_LOG(LogDerivedDataCache, Warning, TEXT("Unable to create %s Verify because only one Verify node is supported."), *NodeName);
+			return false;
+		}
+
+		bVerifyFound = true;
+		bVerifyFix = GetParsedBool(Entry, TEXT("Fix="));
+
 		FString InnerName;
-		if (FParse::Value(Entry, TEXT("Inner="), InnerName))
+		if (FParse::Value(Entry, TEXT("Inner="), InnerName) && ParseNode(InnerName, IniFilename, IniSection, InParsedNodes))
 		{
-			InnerNode = ParseNode(InnerName, IniFilename, IniSection, InParsedNodes);
+			return true;
 		}
 
-		if (InnerNode.Key)
-		{
-			IFileManager::Get().DeleteDirectory(*(FPaths::ProjectSavedDir() / TEXT("VerifyDDC/")), /*bRequireExists*/ false, /*bTree*/ true);
-
-			const bool bFix = GetParsedBool(Entry, TEXT("Fix="));
-			InnerNode = MakeTuple(CreateCacheStoreVerify(InnerNode.Key, bFix), InnerNode.Value);
-		}
-		else
-		{
-			UE_LOG(LogDerivedDataCache, Warning, TEXT("Unable to find inner node %s for Verify node %s. Verify node will not be created."), *InnerName, NodeName);
-		}
-
-		return InnerNode;
+		UE_LOG(LogDerivedDataCache, Warning, TEXT("Unable to find inner node %s for Verify node %s. Verify node will not be created."), *InnerName, NodeName);
+		return false;
 	}
 
 	/**
@@ -495,34 +426,23 @@ public:
 	 * @param InParsedNodes map of nodes and their names which have already been parsed
 	 * @return AsyncPut wrapper backend interface instance or nullptr if unsuccessful
 	 */
-	FParsedNode ParseAsyncNode(const TCHAR* NodeName, const TCHAR* Entry, const FString& IniFilename, const TCHAR* IniSection, FParsedNodeMap& InParsedNodes)
+	bool ParseAsyncNode(const TCHAR* NodeName, const TCHAR* Entry, const FString& IniFilename, const TCHAR* IniSection, FParsedNodeMap& InParsedNodes)
 	{
-		FParsedNode InnerNode(nullptr, ECacheStoreFlags::None);
+		if (bAsyncFound)
+		{
+			UE_LOG(LogDerivedDataCache, Warning, TEXT("Unable to create %s AsyncPut because only one AsyncPut node is supported."), *NodeName);
+			return false;
+		}
+
+		bAsyncFound = true;
 		FString InnerName;
-		if (FParse::Value(Entry, TEXT("Inner="), InnerName))
+		if (FParse::Value(Entry, TEXT("Inner="), InnerName) && ParseNode(InnerName, IniFilename, IniSection, InParsedNodes))
 		{
-			InnerNode = ParseNode(InnerName, IniFilename, IniSection, InParsedNodes);
+			return true;
 		}
 
-		if (InnerNode.Key)
-		{
-			if (!Hierarchy)
-			{
-				ILegacyCacheStore* HierarchyStore = CreateCacheStoreHierarchy(Hierarchy, GetMemoryCache());
-				Hierarchy->Add(InnerNode.Key, InnerNode.Value);
-				CreatedNodes.AddUnique(HierarchyStore);
-				InnerNode.Key = HierarchyStore;
-			}
-
-			ILegacyCacheStore* AsyncStore = CreateCacheStoreAsync(InnerNode.Key, InnerNode.Value, GetMemoryCache());
-			InnerNode = MakeTuple(AsyncStore, InnerNode.Value);
-		}
-		else
-		{
-			UE_LOG(LogDerivedDataCache, Warning, TEXT("Unable to find inner node %s for AsyncPut node %s. AsyncPut node will not be created."), *InnerName, NodeName);
-		}
-
-		return InnerNode;
+		UE_LOG(LogDerivedDataCache, Warning, TEXT("Unable to find inner node %s for AsyncPut node %s. AsyncPut node will not be created."), *InnerName, NodeName);
+		return false;
 	}
 
 	/**
@@ -535,33 +455,25 @@ public:
 	 * @param InParsedNodes map of nodes and their names which have already been parsed
 	 * @return KeyLength wrapper backend interface instance or nullptr if unsuccessful
 	 */
-	FParsedNode ParseKeyLength(const TCHAR* NodeName, const TCHAR* Entry, const FString& IniFilename, const TCHAR* IniSection, FParsedNodeMap& InParsedNodes)
+	bool ParseKeyLength(const TCHAR* NodeName, const TCHAR* Entry, const FString& IniFilename, const TCHAR* IniSection, FParsedNodeMap& InParsedNodes)
 	{
 		if (MaxKeyLength)
 		{
 			UE_LOG(LogDerivedDataCache, Warning, TEXT("Node %s is disabled because there may be only one key length node."), NodeName);
-			return MakeTuple(nullptr, ECacheStoreFlags::None);
+			return false;
 		}
 
-		FParsedNode InnerNode(nullptr, ECacheStoreFlags::None);
 		FString InnerName;
-		if (FParse::Value(Entry, TEXT("Inner="), InnerName))
-		{
-			InnerNode = ParseNode(InnerName, IniFilename, IniSection, InParsedNodes);
-		}
-
-		if (InnerNode.Key)
+		if (FParse::Value(Entry, TEXT("Inner="), InnerName) && ParseNode(InnerName, IniFilename, IniSection, InParsedNodes))
 		{
 			int32 KeyLength = MAX_BACKEND_KEY_LENGTH;
 			FParse::Value(Entry, TEXT("Length="), KeyLength);
 			MaxKeyLength = FMath::Clamp(KeyLength, 0, MAX_BACKEND_KEY_LENGTH);
-		}
-		else
-		{
-			UE_LOG(LogDerivedDataCache, Warning, TEXT("Unable to find inner node %s for KeyLength node %s. KeyLength node will not be created."), *InnerName, NodeName);
+			return true;
 		}
 
-		return InnerNode;
+		UE_LOG(LogDerivedDataCache, Warning, TEXT("Unable to find inner node %s for KeyLength node %s. KeyLength node will not be created."), *InnerName, NodeName);
+		return false;
 	}
 
 	/**
@@ -574,19 +486,26 @@ public:
 	 * @param InParsedNodes map of nodes and their names which have already been parsed
 	 * @return Hierarchical backend interface instance or nullptr if unsuccessful
 	 */
-	FParsedNode ParseHierarchyNode(const TCHAR* NodeName, const TCHAR* Entry, const FString& IniFilename, const TCHAR* IniSection, FParsedNodeMap& InParsedNodes)
+	bool ParseHierarchyNode(const TCHAR* NodeName, const TCHAR* Entry, const FString& IniFilename, const TCHAR* IniSection, FParsedNodeMap& InParsedNodes)
 	{
+		if (bHierarchyFound)
+		{
+			UE_LOG(LogDerivedDataCache, Warning, TEXT("Node %s is disabled because there may be only one hierarchy node. "
+				"Confirm there is only one hierarchy in the cache graph and that it is inside of any async node."), NodeName);
+			return false;
+		}
+
 		const TCHAR* InnerMatch = TEXT("Inner=");
 		const int32 InnerMatchLength = FCString::Strlen(InnerMatch);
 
-		TArray<FParsedNode> InnerNodes;
+		bHierarchyFound = true;
+		bool bParsed = false;
 		FString InnerName;
 		while (FParse::Value(Entry, InnerMatch, InnerName))
 		{
-			FParsedNode InnerNode = ParseNode(InnerName, IniFilename, IniSection, InParsedNodes);
-			if (InnerNode.Key)
+			if (ParseNode(InnerName, IniFilename, IniSection, InParsedNodes))
 			{
-				InnerNodes.Add(InnerNode);
+				bParsed = true;
 			}
 			else
 			{
@@ -598,27 +517,13 @@ public:
 			Entry += InnerMatchLength;
 		}
 
-		if (InnerNodes.IsEmpty())
+		if (!bParsed)
 		{
 			UE_LOG(LogDerivedDataCache, Warning, TEXT("Hierarchical cache %s has no inner backends and will not be created."), NodeName);
-			return MakeTuple(nullptr, ECacheStoreFlags::None);
+			return false;
 		}
 
-		if (Hierarchy)
-		{
-			UE_LOG(LogDerivedDataCache, Warning, TEXT("Node %s is disabled because there may be only one hierarchy node. "
-				"Confirm there is only one hierarchy in the cache graph and that it is inside of any async node."), NodeName);
-			return MakeTuple(nullptr, ECacheStoreFlags::None);
-		}
-
-		ILegacyCacheStore* HierarchyStore = CreateCacheStoreHierarchy(Hierarchy, GetMemoryCache());
-		ECacheStoreFlags Flags = ECacheStoreFlags::None;
-		for (const FParsedNode& Node : InnerNodes)
-		{
-			Hierarchy->Add(Node.Key, Node.Value);
-			Flags |= Node.Value;
-		}
-		return MakeTuple(HierarchyStore, Flags & ~ECacheStoreFlags::StopStore);
+		return true;
 	}
 
 	/**
@@ -628,209 +533,16 @@ public:
 	 * @param Entry Node definition.
 	 * @return Filesystem data cache backend interface instance or nullptr if unsuccessful
 	 */
-	FParsedNode ParseDataCache( const TCHAR* NodeName, const TCHAR* Entry )
+	bool ParseDataCache(const TCHAR* NodeName, const TCHAR* Config)
 	{
-		FParsedNode DataCache(nullptr, ECacheStoreFlags::None);
-
-		// Parse Path by default, it may be overwritten by EnvPathOverride
 		FString Path;
-		FParse::Value( Entry, TEXT("Path="), Path );
-
-		// Check the EnvPathOverride environment variable to allow persistent overriding of data cache path, eg for offsite workers.
-		FString EnvPathOverride;
-		if( FParse::Value( Entry, TEXT("EnvPathOverride="), EnvPathOverride ) )
+		if (ILegacyCacheStore* Store = CreateFileSystemCacheStore(NodeName, Config, *this, Path))
 		{
-			FString FilesystemCachePathEnv = FPlatformMisc::GetEnvironmentVariable( *EnvPathOverride );
-			if( FilesystemCachePathEnv.Len() > 0 )
-			{
-				Path = FilesystemCachePathEnv;
-				UE_LOG( LogDerivedDataCache, Log, TEXT("Found environment variable %s=%s"), *EnvPathOverride, *Path );
-			}
+			bUsingSharedDDC |= NodeName == TEXTVIEW("Shared");
+			Directories.AddUnique(Path);
+			return true;
 		}
-
-		if (!EnvPathOverride.IsEmpty())
-		{
-			FString DDCPath;
-			if (FPlatformMisc::GetStoredValue(TEXT("Epic Games"), TEXT("GlobalDataCachePath"), *EnvPathOverride, DDCPath))
-			{
-				if (DDCPath.Len() > 0)
-				{
-					Path = DDCPath;
-					UE_LOG( LogDerivedDataCache, Log, TEXT("Found registry key GlobalDataCachePath %s=%s"), *EnvPathOverride, *Path );
-				}
-			}
-		}
-
-		// Check the CommandLineOverride argument to allow redirecting in build scripts
-		FString CommandLineOverride;
-		if( FParse::Value( Entry, TEXT("CommandLineOverride="), CommandLineOverride ) )
-		{
-			FString Value;
-			if (FParse::Value(FCommandLine::Get(), *(CommandLineOverride + TEXT("=")), Value))
-			{
-				Path = Value;
-				UE_LOG(LogDerivedDataCache, Log, TEXT("Found command line override %s=%s"), *CommandLineOverride, *Path);
-			}
-		}
-
-		// Paths starting with a '?' are looked up from config
-		if (Path.StartsWith(TEXT("?")) && !GConfig->GetString(TEXT("DerivedDataCacheSettings"), *Path + 1, Path, GEngineIni))
-		{
-			Path.Empty();
-		}
-
-		// Allow the user to override it from the editor
-		FString EditorOverrideSetting;
-		if(FParse::Value(Entry, TEXT("EditorOverrideSetting="), EditorOverrideSetting))
-		{
-			FString Setting = GConfig->GetStr(TEXT("/Script/UnrealEd.EditorSettings"), *EditorOverrideSetting, GEditorSettingsIni);
-			if(Setting.Len() > 0)
-			{
-				FString SettingPath;
-				if(FParse::Value(*Setting, TEXT("Path="), SettingPath))
-				{
-					SettingPath.TrimQuotesInline();
-					SettingPath.ReplaceEscapedCharWithCharInline();
-					if(SettingPath.Len() > 0)
-					{
-						Path = SettingPath;
-					}
-				}
-			}
-		}
-
-		if( !Path.Len() )
-		{
-			UE_LOG( LogDerivedDataCache, Log, TEXT("%s data cache path not found in *engine.ini, will not use an %s cache."), NodeName, NodeName );
-		}
-		else if( Path == TEXT("None") )
-		{
-			UE_LOG( LogDerivedDataCache, Log, TEXT("Disabling %s data cache - path set to 'None'."), NodeName );
-		}
-		else
-		{
-			// Try to set up the shared drive, allow user to correct any issues that may exist.
-			bool RetryOnFailure = false;
-			do
-			{
-				RetryOnFailure = false;
-
-				// Don't create the file system if shared data cache directory is not mounted
-				bool bShared = FCString::Stricmp(NodeName, TEXT("Shared")) == 0;
-				
-				// parameters we read here from the ini file
-				FString WriteAccessLog;
-				bool bPromptIfMissing = false;
-
-				FParse::Value(Entry, TEXT("WriteAccessLog="), WriteAccessLog);
-				FParse::Bool(Entry, TEXT("PromptIfMissing="), bPromptIfMissing);
-
-				ILegacyCacheStore* InnerFileSystem = nullptr;
-				ECacheStoreFlags Flags;
-				if (!bShared || IFileManager::Get().DirectoryExists(*Path))
-				{
-					InnerFileSystem = CreateFileSystemCacheStore(*Path, Entry, *WriteAccessLog, Flags);
-				}
-
-				if (InnerFileSystem)
-				{
-					bUsingSharedDDC |= bShared;
-					DataCache = MakeTuple(InnerFileSystem, Flags);
-					UE_LOG(LogDerivedDataCache, Log, TEXT("Using %s data cache path %s: %s"), NodeName, *Path,
-						EnumHasAnyFlags(Flags, ECacheStoreFlags::Store) ? TEXT("Writable") :
-						EnumHasAnyFlags(Flags, ECacheStoreFlags::Query) ? TEXT("ReadOnly") : TEXT("DeleteOnly"));
-					Directories.AddUnique(Path);
-				}
-				else
-				{
-					FString Message = FString::Printf(TEXT("%s data cache path (%s) is unavailable so cache will be disabled."), NodeName, *Path);
-					
-					UE_LOG(LogDerivedDataCache, Warning, TEXT("%s"), *Message);
-
-					// Give the user a chance to retry incase they need to connect a network drive or something.
-					if (bPromptIfMissing && !FApp::IsUnattended() && !IS_PROGRAM)
-					{
-						Message += FString::Printf(TEXT("\n\nRetry connection to %s?"), *Path);
-						EAppReturnType::Type MessageReturn = FPlatformMisc::MessageBoxExt(EAppMsgType::YesNo, *Message, TEXT("Could not access DDC"));
-						RetryOnFailure = MessageReturn == EAppReturnType::Yes;
-					}
-				}
-			} while (RetryOnFailure);
-		}
-
-		return DataCache;
-	}
-
-	/**
-	 * Creates an S3 data cache interface.
-	 */
-	ILegacyCacheStore* ParseS3Cache(const TCHAR* NodeName, const TCHAR* Entry)
-	{
-		FString ManifestPath;
-		if (!FParse::Value(Entry, TEXT("Manifest="), ManifestPath))
-		{
-			UE_LOG(LogDerivedDataCache, Error, TEXT("Node %s does not specify 'Manifest'."), NodeName);
-			return nullptr;
-		}
-
-		FString BaseUrl;
-		if (!FParse::Value(Entry, TEXT("BaseUrl="), BaseUrl))
-		{
-			UE_LOG(LogDerivedDataCache, Error, TEXT("Node %s does not specify 'BaseUrl'."), NodeName);
-			return nullptr;
-		}
-
-		FString CanaryObjectKey;
-		FParse::Value(Entry, TEXT("Canary="), CanaryObjectKey);
-
-		FString Region;
-		if (!FParse::Value(Entry, TEXT("Region="), Region))
-		{
-			UE_LOG(LogDerivedDataCache, Error, TEXT("Node %s does not specify 'Region'."), NodeName);
-			return nullptr;
-		}
-
-		// Check the EnvPathOverride environment variable to allow persistent overriding of data cache path, eg for offsite workers.
-		FString EnvPathOverride;
-		FString CachePath = FPaths::ProjectSavedDir() / TEXT("S3DDC");
-		if (FParse::Value(Entry, TEXT("EnvPathOverride="), EnvPathOverride))
-		{
-			FString FilesystemCachePathEnv = FPlatformMisc::GetEnvironmentVariable(*EnvPathOverride);
-			if (FilesystemCachePathEnv.Len() > 0)
-			{
-				if (FilesystemCachePathEnv == TEXT("None"))
-				{
-					UE_LOG(LogDerivedDataCache, Log, TEXT("Node %s disabled due to %s=None"), NodeName, *EnvPathOverride);
-					return nullptr;
-				}
-				else
-				{
-					CachePath = FilesystemCachePathEnv;
-					UE_LOG(LogDerivedDataCache, Log, TEXT("Found environment variable %s=%s"), *EnvPathOverride, *CachePath);
-				}
-			}
-
-			if (!EnvPathOverride.IsEmpty())
-			{
-				FString DDCPath;
-				if (FPlatformMisc::GetStoredValue(TEXT("Epic Games"), TEXT("GlobalDataCachePath"), *EnvPathOverride, DDCPath))
-				{
-					if ( DDCPath.Len() > 0 )
-					{
-						CachePath = DDCPath;			
-						UE_LOG( LogDerivedDataCache, Log, TEXT("Found registry key GlobalDataCachePath %s=%s"), *EnvPathOverride, *CachePath );
-					}
-				}
-			}
-		}
-
-		if (ILegacyCacheStore* Backend = CreateS3CacheStore(*ManifestPath, *BaseUrl, *Region, *CanaryObjectKey, *CachePath))
-		{
-			return Backend;
-		}
-
-		UE_LOG(LogDerivedDataCache, Log, TEXT("S3 backend is not supported on the current platform."));
-		return nullptr;
+		return false;
 	}
 
 	/**
@@ -841,26 +553,23 @@ public:
 	 * @param OutFilename filename specified for the cache
 	 * @return Boot data cache backend interface instance or nullptr if unsuccessful
 	 */
-	IMemoryCacheStore* ParseBootCache(const TCHAR* NodeName, const TCHAR* Entry)
+	bool ParseBootCache(const TCHAR* NodeName, const TCHAR* Entry)
 	{
-		IMemoryCacheStore* Cache = nullptr;
+		UE_LOG(LogDerivedDataCache, Display, TEXT("Boot nodes are deprecated. Please remove the Boot node from the cache graph."));
+		if (bBootFound)
+		{
+			UE_LOG(LogDerivedDataCache, Warning, TEXT("Unable to create %s Boot cache because only one Boot node is supported."), *NodeName);
+			return false;
+		}
 
+		bBootFound = true;
+
+	#if WITH_EDITOR
 		// Only allow boot cache with the editor. We don't want other tools and utilities (eg. SCW) writing to the same file.
-#if WITH_EDITOR
-		FString Filename;
-		int64 MaxCacheSize = -1; // in MB
-		const int64 MaxSupportedCacheSize = 2048; // 2GB
+		CreateMemoryCacheStore(BootCache, TEXT("Boot"), Entry, this);
+	#endif
 
-		FParse::Value(Entry, TEXT("MaxCacheSize="), MaxCacheSize);
-
-		// make sure MaxCacheSize does not exceed 2GB
-		MaxCacheSize = FMath::Min(MaxCacheSize, MaxSupportedCacheSize);
-
-		UE_LOG(LogDerivedDataCache, Display, TEXT("%s: Max Cache Size: %d MB"), NodeName, MaxCacheSize);
-		Cache = CreateMemoryCacheStore(TEXT("Boot"), MaxCacheSize * 1024 * 1024, /*bCanBeDisabled*/ true);
-#endif
-
-		return Cache;
+		return !!BootCache;
 	}
 
 	/**
@@ -870,34 +579,39 @@ public:
 	 * @param Entry Node definition.
 	 * @return Memory data cache backend interface instance or nullptr if unsuccessful
 	 */
-	IMemoryCacheStore* ParseMemoryCache( const TCHAR* NodeName, const TCHAR* Entry )
+	bool ParseMemoryCache(const TCHAR* NodeName, const TCHAR* Entry)
 	{
 		FString Filename;
 		FParse::Value(Entry, TEXT("Filename="), Filename);
-		IMemoryCacheStore* Cache = CreateMemoryCacheStore(NodeName, /*MaxCacheSize*/ -1, /*bCanBeDisabled*/ false);
-		if (Cache && Filename.Len())
+		IMemoryCacheStore* Cache;
+		CreateMemoryCacheStore(Cache, NodeName, TEXT(""), this);
+		check(Cache);
+		if (Filename.Len())
 		{
 			UE_LOG(LogDerivedDataCache, Display, TEXT("Memory nodes that load from a file are deprecated. Please remove the filename from the cache configuration."));
 		}
-		return Cache;
+		return true;
 	}
 
-	IMemoryCacheStore* GetMemoryCache()
+	void GetMemoryCache(IMemoryCacheStore*& OutCache)
 	{
-		if (!MemoryCache)
+		if (MemoryCache)
 		{
-			MemoryCache = CreateMemoryCacheStore(TEXT("Memory"), 0, /*bCanBeDisabled*/ false);
-			CreatedNodes.Add(MemoryCache);
+			OutCache = MemoryCache;
 		}
-		return MemoryCache;
+		else
+		{
+			// This is unconditionally added to the hierarchy and will be deleted by the hierarchy.
+			CreateMemoryCacheStore(OutCache, TEXT("Memory"), TEXT("-ReadOnly -NoStats"), this);
+			MemoryCache = OutCache;
+		}
 	}
 
 	virtual ~FDerivedDataBackendGraph()
 	{
 		check(StaticGraph == this);
 		Replays.Empty();
-		RootCache = nullptr;
-		DestroyCreatedBackends();
+		delete RootCache;
 		StaticGraph = nullptr;
 	}
 
@@ -952,7 +666,7 @@ public:
 				for(const FString& MergePakName : MergePakList)
 				{
 					TUniquePtr<IPakFileCacheStore> ReadPak(
-						CreatePakFileCacheStore(*FPaths::Combine(*FPaths::GetPath(WritePakFilename), *MergePakName), /*bWriting*/ false, /*bCompressed*/ false));
+						CreatePakFileCacheStore(TEXT("Merge"), *FPaths::Combine(*FPaths::GetPath(WritePakFilename), *MergePakName), /*bWriting*/ false, /*bCompressed*/ false, /*Owner*/ nullptr));
 					WritePakCache->MergeCache(ReadPak.Get());
 				}
 			}
@@ -1041,12 +755,9 @@ public:
 		// Assumptions: there's at least one read-only pak backend in the hierarchy
 		// and its parent is a hierarchical backend.
 		IPakFileCacheStore* ReadPak = nullptr;
-		if (Hierarchy && FPlatformFileManager::Get().GetPlatformFile().FileExists(PakFilename))
+		if (FPlatformFileManager::Get().GetPlatformFile().FileExists(PakFilename))
 		{
-			ReadPak = CreatePakFileCacheStore(PakFilename, /*bWriting*/ false, /*bCompressed*/ false);
-
-			Hierarchy->Add(ReadPak, ECacheStoreFlags::Local | ECacheStoreFlags::Query | ECacheStoreFlags::StopStore);
-			CreatedNodes.AddUnique(ReadPak);
+			ReadPak = CreatePakFileCacheStore(TEXT("Mount"), PakFilename, /*bWriting*/ false, /*bCompressed*/ false, this);
 			ReadPakCache.Add(ReadPak);
 		}
 		else
@@ -1069,9 +780,7 @@ public:
 				// Wait until all async requests are complete.
 				WaitForQuiescence(false);
 
-				Hierarchy->RemoveNotSafe(ReadPak);
 				ReadPakCache.RemoveAt(PakIndex);
-				CreatedNodes.Remove(ReadPak);
 				ReadPak->Close();
 				delete ReadPak;
 				return true;
@@ -1090,16 +799,99 @@ public:
 		return Stats;
 	}
 
-private:
-
-	/** Delete all created backends in the reversed order they were created. */
-	void DestroyCreatedBackends()
+	virtual void GatherResourceStats(TArray<FDerivedDataCacheResourceStat>& DDCResourceStats) const override
 	{
-		for (int32 BackendIndex = CreatedNodes.Num() - 1; BackendIndex >= 0; --BackendIndex)
+		if (Hierarchy)
 		{
-			delete CreatedNodes[BackendIndex];
+			Hierarchy->LegacyResourceStats(DDCResourceStats);
 		}
-		CreatedNodes.Empty();
+	}
+
+private:
+	void Add(ILegacyCacheStore* CacheStore, ECacheStoreFlags Flags) final
+	{
+		check(Hierarchy);
+
+		// Parse any debug options for this node. E.g. -DDC-<Name>-MissRate
+		FBackendDebugOptions DebugOptions;
+		if (FBackendDebugOptions::ParseFromTokens(DebugOptions, *ActiveNodeName, FCommandLine::Get()))
+		{
+			if (!CacheStore->LegacyDebugOptions(DebugOptions))
+			{
+				UE_LOG(LogDerivedDataCache, Warning, TEXT("%s: Node is ignoring one or more -DDC-%s-<Option> debug options."), *ActiveNodeName, *ActiveNodeName);
+			}
+		}
+		else if (bHasDefaultDebugOptions)
+		{
+			if (!CacheStore->LegacyDebugOptions(DefaultDebugOptions))
+			{
+				UE_LOG(LogDerivedDataCache, Warning, TEXT("%s: Node is ignoring one or more -DDC-All-<Option> debug options."), *ActiveNodeName);
+			}
+		}
+
+		// Add a throttling layer if parameters are found
+		{
+			uint32 LatencyMS = 0;
+			FParse::Value(*ActiveNodeConfig, TEXT("LatencyMS="), LatencyMS);
+
+			uint32 MaxBytesPerSecond = 0;
+			FParse::Value(*ActiveNodeConfig, TEXT("MaxBytesPerSecond="), MaxBytesPerSecond);
+
+			if (LatencyMS != 0 || MaxBytesPerSecond != 0)
+			{
+				ILegacyCacheStore* ThrottleNode = CreateCacheStoreThrottle(CacheStore, LatencyMS, MaxBytesPerSecond);
+				ThrottleNodes.Add(CacheStore, ThrottleNode);
+				CacheStore = ThrottleNode;
+			}
+		}
+
+		Hierarchy->Add(CacheStore, Flags);
+	}
+
+	void SetFlags(ILegacyCacheStore* CacheStore, ECacheStoreFlags Flags) final
+	{
+		check(Hierarchy);
+		if (ILegacyCacheStore* ThrottleNode = ThrottleNodes.FindRef(CacheStore))
+		{
+			Hierarchy->SetFlags(ThrottleNode, Flags);
+		}
+		else
+		{
+			Hierarchy->SetFlags(CacheStore, Flags);
+		}
+	}
+
+	void RemoveNotSafe(ILegacyCacheStore* CacheStore) final
+	{
+		check(Hierarchy);
+		if (ILegacyCacheStore* ThrottleNode = ThrottleNodes.FindRef(CacheStore))
+		{
+			Hierarchy->RemoveNotSafe(ThrottleNode);
+			ThrottleNodes.Remove(CacheStore);
+			delete ThrottleNode;
+		}
+		else
+		{
+			Hierarchy->RemoveNotSafe(CacheStore);
+		}
+	}
+
+	ICacheStoreStats* CreateStats(ILegacyCacheStore* CacheStore, ECacheStoreFlags Flags, FStringView Type, FStringView Name, FStringView Path) final
+	{
+		check(Hierarchy);
+		return Hierarchy->CreateStats(CacheStore, Flags, Type, Name, Path);
+	}
+
+	void DestroyStats(ICacheStoreStats* Stats) final
+	{
+		check(Hierarchy);
+		Hierarchy->DestroyStats(Stats);
+	}
+
+	void LegacyResourceStats(TArray<FDerivedDataCacheResourceStat>& OutStats) const final
+	{
+		check(Hierarchy);
+		Hierarchy->LegacyResourceStats(OutStats);
 	}
 
 	/** MountPak console command handler. */
@@ -1217,15 +1009,12 @@ private:
 	/** Root of the graph */
 	ILegacyCacheStore*					RootCache;
 
-	/** References to all created backed interfaces */
-	TArray< ILegacyCacheStore* > CreatedNodes;
+	TMap<ILegacyCacheStore*, ILegacyCacheStore*> ThrottleNodes;
 
 	/** Instances of backend interfaces which exist in only one copy */
 	IMemoryCacheStore* MemoryCache;
-	IMemoryCacheStore*	BootCache;
+	IMemoryCacheStore* BootCache;
 	IPakFileCacheStore* WritePakCache;
-	ILegacyCacheStore*	AsyncNode;
-	ILegacyCacheStore*	VerifyNode;
 	ICacheStoreOwner* Hierarchy;
 	/** Support for multiple read only pak files. */
 	TArray<IPakFileCacheStore*> ReadPakCache;
@@ -1252,6 +1041,15 @@ private:
 
 	FAutoConsoleCommand LoadReplayCommand;
 	TArray<FCacheReplayReader> Replays;
+
+	FString ActiveNodeName;
+	FString ActiveNodeConfig;
+
+	bool bAsyncFound = false;
+	bool bBootFound = false;
+	bool bHierarchyFound = false;
+	bool bVerifyFound = false;
+	bool bVerifyFix = false;
 };
 
 } // UE::DerivedData
@@ -1285,7 +1083,6 @@ struct Private::FBackendDebugMissState
 };
 
 FBackendDebugOptions::FBackendDebugOptions()
-	: SpeedClass(EBackendSpeedClass::Unknown)
 {
 	SimulateMissState.Get() = MakePimpl<Private::FBackendDebugMissState>();
 }
@@ -1304,15 +1101,6 @@ bool FBackendDebugOptions::ParseFromTokens(FBackendDebugOptions& OutOptions, con
 	}
 
 	const int32 PrefixLen = Prefix.Len();
-
-	// Look for -DDC-Local-Speed=, -DDC-Shared-Speed=, etc.
-	Prefix.Append(TEXTVIEW("Speed="));
-	FString SpeedClass;
-	if (FParse::Value(InInputTokens, *Prefix, SpeedClass))
-	{
-		LexFromString(OutOptions.SpeedClass, *SpeedClass);
-	}
-	Prefix.RemoveAt(PrefixLen, Prefix.Len() - PrefixLen);
 
 	// Look for -DDC-Local-MissRate=, -DDC-Shared-MissRate=, etc.
 	float MissRate = 0.0f;

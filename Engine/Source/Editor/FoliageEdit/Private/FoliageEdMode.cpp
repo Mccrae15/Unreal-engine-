@@ -367,7 +367,7 @@ void FEdModeFoliage::BindCommands()
 		Commands.SetPaint,
 		FExecuteAction::CreateRaw(this, &FEdModeFoliage::OnSetPaint),
 		FCanExecuteAction(),
-		FIsActionChecked::CreateLambda([=]
+		FIsActionChecked::CreateLambda([this]
 	{
 		return UISettings.GetPaintToolSelected() && !UISettings.GetIsInSingleInstantiationMode();
 	}));
@@ -376,7 +376,7 @@ void FEdModeFoliage::BindCommands()
 		Commands.SetReapplySettings,
 		FExecuteAction::CreateRaw(this, &FEdModeFoliage::OnSetReapplySettings),
 		FCanExecuteAction(),
-		FIsActionChecked::CreateLambda([=]
+		FIsActionChecked::CreateLambda([this]
 	{
 		return UISettings.GetReapplyToolSelected() && !UISettings.GetIsInSingleInstantiationMode();
 	}));
@@ -385,7 +385,7 @@ void FEdModeFoliage::BindCommands()
 		Commands.SetSelect,
 		FExecuteAction::CreateRaw(this, &FEdModeFoliage::OnSetSelectInstance),
 		FCanExecuteAction(),
-		FIsActionChecked::CreateLambda([=]
+		FIsActionChecked::CreateLambda([this]
 	{
 		return UISettings.GetSelectToolSelected();
 	}));
@@ -394,7 +394,7 @@ void FEdModeFoliage::BindCommands()
 		Commands.SetLassoSelect,
 		FExecuteAction::CreateRaw(this, &FEdModeFoliage::OnSetLasso),
 		FCanExecuteAction(),
-		FIsActionChecked::CreateLambda([=]
+		FIsActionChecked::CreateLambda([this]
 	{
 		return UISettings.GetLassoSelectToolSelected();
 	}));
@@ -403,7 +403,7 @@ void FEdModeFoliage::BindCommands()
 		Commands.SetPaintBucket,
 		FExecuteAction::CreateRaw(this, &FEdModeFoliage::OnSetPaintFill),
 		FCanExecuteAction(),
-		FIsActionChecked::CreateLambda([=]
+		FIsActionChecked::CreateLambda([this]
 	{
 		return UISettings.GetPaintBucketToolSelected();
 	}));
@@ -513,7 +513,8 @@ void FEdModeFoliage::Exit()
 	{
 		EndTracking();
 	}
-	check(!GEditor->IsTransactionActive());
+
+	ensureMsgf(!GEditor->IsTransactionActive(), TEXT("Transaction Active when exiting foliage edit mode: '%s'"), *GEditor->GetTransactionName().ToString());
 
 	FToolkitManager::Get().CloseToolkit(Toolkit.ToSharedRef());
 	Toolkit.Reset();
@@ -1063,6 +1064,8 @@ static bool CheckForOverlappingSphere(UWorld* InWorld, const UFoliageType* Setti
 
 static bool CheckLocationForPotentialInstance(UWorld* InWorld, const UFoliageType* Settings, const bool bSingleInstanceMode, const FVector& Location, const FVector& Normal, TArray<FVector>& PotentialInstanceLocations, FFoliageInstanceHash& PotentialInstanceHash)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(CheckLocationForPotentialInstance);
+
 	if (CheckLocationForPotentialInstance_ThreadSafe(Settings, Location, Normal) == false)
 	{
 		return false;
@@ -1080,14 +1083,10 @@ static bool CheckLocationForPotentialInstance(UWorld* InWorld, const UFoliageTyp
 		}
 
 		// Check with other potential instances we're about to add.
-		const float RadiusSquared = FMath::Square(SettingsRadius);
-		auto TempInstances = PotentialInstanceHash.GetInstancesOverlappingBox(FBox::BuildAABB(Location, FVector(SettingsRadius)));
-		for (int32 Idx : TempInstances)
+		TArrayView<const FVector> InstanceLocationsView = PotentialInstanceLocations;
+		if (PotentialInstanceHash.IsAnyInstanceInSphere([InstanceLocationsView](int32 Index) -> FVector { return InstanceLocationsView[Index]; }, Location, SettingsRadius))
 		{
-			if ((PotentialInstanceLocations[Idx] - Location).SizeSquared() < RadiusSquared)
-			{
-				return false;
-			}
+			return false;
 		}
 	}
 
@@ -3181,6 +3180,12 @@ void FEdModeFoliage::PopulateFoliageMeshList()
 				continue;
 			}
 
+			//@todo_ow: have a better filter for cooked assets. For now: filter all of them out.
+			if (MeshPair.Key && MeshPair.Key->GetPackage()->HasAnyPackageFlags(PKG_Cooked))
+			{
+				continue;
+			}
+
 			int32 ElementIdx = FoliageMeshList.IndexOfByPredicate([&](const FFoliageMeshUIInfoPtr& Item)
 			{
 				return Item->Settings == MeshPair.Key;
@@ -3788,6 +3793,13 @@ bool FEdModeFoliage::HandleClick(FEditorViewportClient* InViewportClient, HHitPr
 
 	if (UISettings.GetSelectToolSelected())
 	{
+		// If we are moving we can't change the selection. HandleClick can be called in some cases where the input delta is very small.
+		// The condition in FEdModeFoliage::InputDelta where we test that drag is nearly zero should prevent this.
+		if (bMoving)
+		{
+			return true;
+		}
+
 		if (HitProxy && HitProxy->IsA(HInstancedStaticMeshInstance::StaticGetType()))
 		{
 			HInstancedStaticMeshInstance* SMIProxy = ((HInstancedStaticMeshInstance*)HitProxy);
@@ -3903,14 +3915,19 @@ bool FEdModeFoliage::InputDelta(FEditorViewportClient* InViewportClient, FViewpo
 {
 	if (InViewportClient->GetCurrentWidgetAxis() != EAxisList::None && (UISettings.GetSelectToolSelected() || UISettings.GetLassoSelectToolSelected()))
 	{
-		const bool bDuplicateInstances = (bCanAltDrag && IsAltDown(InViewport) && (InViewportClient->GetCurrentWidgetAxis() & EAxisList::XYZ));
+		// It is possible to receive a zero delta from FEditorViewportClient::UpdateMouseDelta which can have a non zero DragDelta which gets converted to zero drag/rot/scale
+		// In which case we want to avoid starting a move in case we then receive a HandleClick in the same frame
+		if (!InDrag.IsNearlyZero() || !InRot.IsNearlyZero() || !InScale.IsNearlyZero())
+		{
+			const bool bDuplicateInstances = (bCanAltDrag && IsAltDown(InViewport) && (InViewportClient->GetCurrentWidgetAxis() & EAxisList::XYZ));
 
-		TransformSelectedInstances(GetWorld(), InDrag, InRot, InScale, bDuplicateInstances);
+			TransformSelectedInstances(GetWorld(), InDrag, InRot, InScale, bDuplicateInstances);
 
-		// Only allow alt-drag on first InputDelta
-		bCanAltDrag = false;
+			// Only allow alt-drag on first InputDelta
+			bCanAltDrag = false;
 
-		return true;
+			return true;
+		}
 	}
 
 	return FEdMode::InputDelta(InViewportClient, InViewport, InDrag, InRot, InScale);

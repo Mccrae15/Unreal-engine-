@@ -318,11 +318,6 @@ typedef TClearReplacementCS<EClearReplacementResourceType::Texture2D,        FCl
 typedef TClearReplacementCS<EClearReplacementResourceType::Texture2DArray,   FClearReplacementBase_Sint4_Bounds>  FClearReplacementCS_Texture2DArray_Sint4_Bounds;
 
 /**
- * Force creation of the above clear replacement shaders. This is sometimes useful if multi-threaded creation (i.e. on demand) isn't supported.
- */
-void RENDERCORE_API CreateClearReplacementShaders();
-
-/**
  * Helper functions for running the clear replacement shader for specific resource types, values types and number of channels.
  * Can be used from inside RHIs via FRHICommandList_RecursiveHazardous. ResourceBindCallback is provided to allow the RHI to override
  * how the UAV resource is bound to the underlying platform context..
@@ -336,9 +331,13 @@ inline void ClearUAVShader_T(FRHIComputeCommandList& RHICmdList, FRHIUnorderedAc
 	FRHIComputeShader* ShaderRHI = ComputeShader.GetComputeShader();
 	SetComputePipelineState(RHICmdList, ShaderRHI);
 
-	SetShaderValue(RHICmdList, ShaderRHI, ComputeShader->GetClearValueParam(), ClearValues);
-	SetShaderValue(RHICmdList, ShaderRHI, ComputeShader->GetMinBoundsParam(), FUintVector4(0, 0, 0, 0));
-	SetShaderValue(RHICmdList, ShaderRHI, ComputeShader->GetMaxBoundsParam(), FUintVector4(SizeX, SizeY, SizeZ, 0));
+	FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+
+	SetShaderValue(BatchedParameters, ComputeShader->GetClearValueParam(), ClearValues);
+	SetShaderValue(BatchedParameters, ComputeShader->GetMinBoundsParam(), FUintVector4(0, 0, 0, 0));
+	SetShaderValue(BatchedParameters, ComputeShader->GetMaxBoundsParam(), FUintVector4(SizeX, SizeY, SizeZ, 0));
+
+	RHICmdList.SetBatchedShaderParameters(ShaderRHI, BatchedParameters);
 
 	if (bBarriers)
 	{
@@ -365,12 +364,41 @@ inline void ClearUAVShader_T(FRHIComputeCommandList& RHICmdList, FRHIUnorderedAc
 template <EClearReplacementResourceType ResourceType, EClearReplacementValueType ValueType, uint32 NumChannels, bool bBarriers>
 inline void ClearUAVShader_T(FRHIComputeCommandList& RHICmdList, FRHIUnorderedAccessView* UAV, uint32 SizeX, uint32 SizeY, uint32 SizeZ, const typename TClearReplacementTypeSelector<ValueType>::Type(&ClearValues)[NumChannels])
 {
-	ClearUAVShader_T<ResourceType, ValueType, NumChannels, bBarriers>(RHICmdList, UAV, SizeX, SizeY, SizeZ, ClearValues, 
-		[&RHICmdList, UAV](FRHIComputeShader* ShaderRHI, const FShaderResourceParameter& Param, bool bSet)
-		{
-			SetUAVParameter(RHICmdList, ShaderRHI, Param, bSet ? UAV : nullptr);
-		}
+	typedef TClearReplacementCS<ResourceType, TClearReplacementBase<ValueType, NumChannels, false, true>> FClearShader;
+
+	TShaderMapRef<FClearShader> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+	FRHIComputeShader* ShaderRHI = ComputeShader.GetComputeShader();
+	SetComputePipelineState(RHICmdList, ShaderRHI);
+
+	FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+
+	SetShaderValue(BatchedParameters, ComputeShader->GetClearValueParam(), ClearValues);
+	SetShaderValue(BatchedParameters, ComputeShader->GetMinBoundsParam(), FUintVector4(0, 0, 0, 0));
+	SetShaderValue(BatchedParameters, ComputeShader->GetMaxBoundsParam(), FUintVector4(SizeX, SizeY, SizeZ, 0));
+
+	if (bBarriers)
+	{
+		RHICmdList.Transition(FRHITransitionInfo(UAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	}
+
+	SetUAVParameter(BatchedParameters, ComputeShader->GetClearResourceParam(), UAV);
+
+	RHICmdList.SetBatchedShaderParameters(ShaderRHI, BatchedParameters);
+
+	RHICmdList.DispatchComputeShader(
+		FMath::DivideAndRoundUp(SizeX, ComputeShader->ThreadGroupSizeX),
+		FMath::DivideAndRoundUp(SizeY, ComputeShader->ThreadGroupSizeY),
+		FMath::DivideAndRoundUp(SizeZ, ComputeShader->ThreadGroupSizeZ)
 	);
+
+	FRHIBatchedShaderUnbinds& BatchedUnbinds = RHICmdList.GetScratchShaderUnbinds();
+	UnsetUAVParameter(BatchedUnbinds, ComputeShader->GetClearResourceParam());
+	RHICmdList.SetBatchedShaderUnbinds(ShaderRHI, BatchedUnbinds);
+
+	if (bBarriers)
+	{
+		RHICmdList.Transition(FRHITransitionInfo(UAV, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
+	}
 }
 
 // Helper version of ClearUAVShader_T for determining float vs uint32 at runtime. Uses the above default implementation.

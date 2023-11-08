@@ -7,11 +7,25 @@
 #include "Misc/Paths.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
+#include "ModelingComponentsSettings.h"
 #include "DynamicMesh/NonManifoldMappingSupport.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ModelingObjectsCreationAPI)
 
+// if set to 1, then we do not default-initialize our new mesh object parameters based on the Modeling Components Settings (the Modeling Tools' Project Settings)
+static TAutoConsoleVariable<bool> CVarConstructMeshObjectsWithoutModelingComponentSettings(
+	TEXT("modeling.CreateMesh.IgnoreProjectSettings"),
+	false,
+	TEXT("If enabled, do not use the preferences set in Modeling Tools' Project Settings when constructing new mesh objects"));
 
+FCreateMeshObjectParams::FCreateMeshObjectParams(bool bConstructWithDefaultModelingComponentSettings)
+{
+	if (bConstructWithDefaultModelingComponentSettings && 
+		!CVarConstructMeshObjectsWithoutModelingComponentSettings.GetValueOnGameThread())
+	{
+		UModelingComponentsSettings::ApplyDefaultsToCreateMeshObjectParams(*this);
+	}
+}
 
 void FCreateMeshObjectParams::SetMesh(FMeshDescription&& MeshDescriptionIn)
 {
@@ -88,6 +102,55 @@ FCreateTextureObjectResult UE::Modeling::CreateTextureObject(UInteractiveToolMan
 	}
 	return FCreateTextureObjectResult{ ECreateModelingObjectResult::Failed_NoAPIFound };
 }
+
+
+
+
+
+FCreateMaterialObjectResult UE::Modeling::CreateMaterialObject(UInteractiveToolManager* ToolManager, FCreateMaterialObjectParams&& CreateMaterialParams)
+{
+	if (ensure(ToolManager))
+	{
+		UModelingObjectsCreationAPI* UseAPI = ToolManager->GetContextObjectStore()->FindContext<UModelingObjectsCreationAPI>();
+		if (UseAPI)
+		{
+			if (UseAPI->HasMoveVariants())
+			{
+				return UseAPI->CreateMaterialObject(MoveTemp(CreateMaterialParams));
+			}
+			else
+			{
+				return UseAPI->CreateMaterialObject(CreateMaterialParams);
+			}
+		}
+	}
+	return FCreateMaterialObjectResult{ ECreateModelingObjectResult::Failed_NoAPIFound };
+}
+
+
+
+
+
+FCreateActorResult UE::Modeling::CreateNewActor(UInteractiveToolManager* ToolManager, FCreateActorParams&& CreateActorParams)
+{
+	if (ensure(ToolManager))
+	{
+		UModelingObjectsCreationAPI* UseAPI = ToolManager->GetContextObjectStore()->FindContext<UModelingObjectsCreationAPI>();
+		if (UseAPI)
+		{
+			if (UseAPI->HasMoveVariants())
+			{
+				return UseAPI->CreateNewActor(MoveTemp(CreateActorParams));
+			}
+			else
+			{
+				return UseAPI->CreateNewActor(CreateActorParams);
+			}
+		}
+	}
+	return FCreateActorResult{ ECreateModelingObjectResult::Failed_NoAPIFound };
+}
+
 
 
 

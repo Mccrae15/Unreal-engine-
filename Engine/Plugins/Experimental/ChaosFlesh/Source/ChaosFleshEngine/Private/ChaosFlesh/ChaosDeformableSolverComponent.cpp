@@ -213,6 +213,10 @@ void UDeformableSolverComponent::Reset()
 			, SolverForces.bEnableGravity
 			, SolverConstraints.CorotatedConstraints.bEnableCorotatedConstraint
 			, SolverConstraints.bEnablePositionTargets
+			, SolverConstraints.GaussSeidelConstraints.bUseGaussSeidelConstraints
+			, SolverConstraints.GaussSeidelConstraints.bUseSOR
+			, SolverConstraints.GaussSeidelConstraints.OmegaSOR
+			, SolverConstraints.GaussSeidelConstraints.bUseGSNeohookean
 		}));
 
 		for (TObjectPtr<UDeformablePhysicsComponent>& DeformableComponent : ConnectedObjects.DeformableComponents)
@@ -309,7 +313,7 @@ void UDeformableSolverComponent::UpdateFromSimulation(float DeltaTime)
 					{
 						if (const FDataMapValue* Buffer = Output->ObjectMap.Find(DeformableComponent))
 						{
-							DeformableComponent->UpdateFromSimualtion(Buffer);
+							DeformableComponent->UpdateFromSimulation(Buffer);
 						}
 					}
 				}

@@ -6,12 +6,6 @@ public class TranslationEditor : ModuleRules
 {
 	public TranslationEditor(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"Editor/PropertyEditor/Private",
-			}
-		);
-
 		PublicIncludePathModuleNames.Add("LevelEditor");
 		PublicIncludePathModuleNames.Add("WorkspaceMenuStructure");
         
@@ -20,15 +14,11 @@ public class TranslationEditor : ModuleRules
         PrivateIncludePathModuleNames.AddRange(
 			new string[] {
 				"DesktopPlatform",
-                "MessageLog",
 			}
 		);
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
-				"Core",
-				"CoreUObject",
-				"Engine",
 				"EngineSettings",
                 "InputCore",
 				"Json",
@@ -41,7 +31,6 @@ public class TranslationEditor : ModuleRules
 				"SourceControl",
                 "MessageLog",
                 "Documentation",
-                "Localization",
 				"LocalizationCommandletExecution",
 				"LocalizationService",
 			}

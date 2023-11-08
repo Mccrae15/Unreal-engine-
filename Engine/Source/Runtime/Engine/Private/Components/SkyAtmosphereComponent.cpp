@@ -274,12 +274,6 @@ void USkyAtmosphereComponent::PostEditChangeProperty(FPropertyChangedEvent& Prop
 
 #endif // WITH_EDITOR
 
-void USkyAtmosphereComponent::PostInterpChange(FProperty* PropertyThatChanged)
-{
-	Super::PostInterpChange(PropertyThatChanged);
-	MarkRenderStateDirty();
-}
-
 void USkyAtmosphereComponent::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);
@@ -368,6 +362,9 @@ void USkyAtmosphereComponent::SetPositionToMatchDeprecatedAtmosphericFog()
 		MarkRenderStateDirty();\
 	}\
 }\
+
+SKY_DECLARE_BLUEPRINT_SETFUNCTION(float, BottomRadius);
+SKY_DECLARE_BLUEPRINT_SETFUNCTION(const FColor&, GroundAlbedo);
 
 SKY_DECLARE_BLUEPRINT_SETFUNCTION(float, AtmosphereHeight);
 SKY_DECLARE_BLUEPRINT_SETFUNCTION(float, MultiScatteringFactor);

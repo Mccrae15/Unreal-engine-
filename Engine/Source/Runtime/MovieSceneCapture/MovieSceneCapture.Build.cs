@@ -12,13 +12,6 @@ public class MovieSceneCapture : ModuleRules
 			DynamicallyLoadedModuleNames.Add("ImageWrapper");
 		}
 
-		PublicDependencyModuleNames.AddRange(
-			new string[] {
-				"LevelSequence",
-				"TimeManagement",
-			}
-		);
-
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
                 "AssetRegistry",
@@ -26,12 +19,9 @@ public class MovieSceneCapture : ModuleRules
                 "Core",
 				"CoreUObject",
 				"Engine",
-				"InputCore",
 				"ImageWriteQueue",
 				"Json",
 				"JsonUtilities",
-				"MovieScene",
-                "MovieSceneTracks",
                 "RenderCore",
 				"RHI",
 				"Slate",

@@ -7,8 +7,8 @@
 
 class FChaosScene;
 
-class PHYSICSCORE_API PhysicsObjectPhysicsCoreInterface
+class PhysicsObjectPhysicsCoreInterface
 {
 public:
-	static FChaosScene* GetScene(TArrayView<Chaos::FPhysicsObjectHandle> InObjects);
+	static PHYSICSCORE_API FChaosScene* GetScene(TArrayView<const Chaos::FConstPhysicsObjectHandle> InObjects);
 };

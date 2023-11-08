@@ -11,11 +11,13 @@
 class FWaterZoneActorDesc : public FWorldPartitionActorDesc
 {
 public:
+	FWaterZoneActorDesc();
 	virtual void Init(const AActor* InActor) override;
 	virtual bool Equals(const FWorldPartitionActorDesc* Other) const override;
 
 	int32 GetOverlapPriority() const { return OverlapPriority; }
 protected:
+	virtual uint32 GetSizeOf() const override { return sizeof(FWaterZoneActorDesc); }
 	virtual void Serialize(FArchive& Ar) override;
 
 	int32 OverlapPriority;

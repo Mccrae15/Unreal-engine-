@@ -25,6 +25,7 @@ class UWidgetAnimation;
 class UWidgetBlueprint;
 class FPaletteViewModel;
 class FLibraryViewModel;
+namespace UE::UMG::Editor { class FPreviewMode; }
 
 struct FNamedSlotSelection
 {
@@ -73,7 +74,7 @@ public:
 	//~ End FBlueprintEditor interface
 	
 	//~ Begin FAssetEditorToolkit Interface
-	virtual bool OnRequestClose() override;
+	virtual bool OnRequestClose(EAssetEditorCloseReason InCloseReason) override;
 	// End of FAssetEditorToolkit 
 
 	//~ Begin FGCObjectInterface interface
@@ -257,6 +258,9 @@ public:
 
 	void CreateEditorModeManager() override;
 
+	/** Get the relative info for the Debug mode. */
+	TSharedPtr<UE::UMG::Editor::FPreviewMode> GetPreviewMode() const { return PreviewMode; }
+
 public:
 	/** Fires whenever a new widget is being hovered over */
 	FOnHoveredWidgetSet OnHoveredWidgetSet;
@@ -395,6 +399,9 @@ private:
 	/** Replace current widget bindings on a track with new widget bindings */
 	void ReplaceTrackWithWidgets(const TArray<FWidgetReference> Widgets, FGuid ObjectId);
 
+	/** Dynamic binding */
+	void AddDynamicPossessionMenu(FMenuBuilder& MenuBuilder, FGuid ObjectId);
+
 	/** Add an animation track for the supplied slot to the current animation. */
 	void AddSlotTrack( UPanelSlot* Slot );
 
@@ -528,6 +535,8 @@ private:
 
 	/** ViewModel used by the Library View */
 	TSharedPtr<FLibraryViewModel> LibraryViewModel;
+
+	TSharedPtr<UE::UMG::Editor::FPreviewMode> PreviewMode;
 
 	/** When true the sequencer selection is being updated from changes to the external selection. */
 	bool bUpdatingSequencerSelection;

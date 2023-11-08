@@ -19,22 +19,22 @@ struct FNiagaraDynamicDataMesh;
 /**
 * NiagaraRendererSprites renders an FNiagaraEmitterInstance as sprite particles
 */
-class NIAGARA_API FNiagaraRendererMeshes : public FNiagaraRenderer
+class FNiagaraRendererMeshes : public FNiagaraRenderer
 {
 public:
-	FNiagaraRendererMeshes(ERHIFeatureLevel::Type FeatureLevel, const UNiagaraRendererProperties *InProps, const FNiagaraEmitterInstance* Emitter);
-	virtual ~FNiagaraRendererMeshes() override;
+	NIAGARA_API FNiagaraRendererMeshes(ERHIFeatureLevel::Type FeatureLevel, const UNiagaraRendererProperties *InProps, const FNiagaraEmitterInstance* Emitter);
+	NIAGARA_API virtual ~FNiagaraRendererMeshes() override;
 
 	//FNiagaraRenderer Interface
-	virtual void Initialize(const UNiagaraRendererProperties* InProps, const FNiagaraEmitterInstance* Emitter, const FNiagaraSystemInstanceController& InController) override;
-	virtual void ReleaseRenderThreadResources() override;
+	NIAGARA_API virtual void Initialize(const UNiagaraRendererProperties* InProps, const FNiagaraEmitterInstance* Emitter, const FNiagaraSystemInstanceController& InController) override;
+	NIAGARA_API virtual void ReleaseRenderThreadResources() override;
 
-	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector, const FNiagaraSceneProxy* SceneProxy) const override;
-	virtual FNiagaraDynamicDataBase* GenerateDynamicData(const FNiagaraSceneProxy* Proxy, const UNiagaraRendererProperties* InProperties, const FNiagaraEmitterInstance* Emitter) const override;
-	virtual int32 GetDynamicDataSize()const override;
-	virtual bool IsMaterialValid(const UMaterialInterface* Mat)const override;
+	NIAGARA_API virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector, const FNiagaraSceneProxy* SceneProxy) const override;
+	NIAGARA_API virtual FNiagaraDynamicDataBase* GenerateDynamicData(const FNiagaraSceneProxy* Proxy, const UNiagaraRendererProperties* InProperties, const FNiagaraEmitterInstance* Emitter) const override;
+	NIAGARA_API virtual int32 GetDynamicDataSize()const override;
+	NIAGARA_API virtual bool IsMaterialValid(const UMaterialInterface* Mat)const override;
 #if RHI_RAYTRACING
-	virtual void GetDynamicRayTracingInstances(FRayTracingMaterialGatheringContext& Context, TArray<FRayTracingInstance>& OutRayTracingInstances, const FNiagaraSceneProxy* Proxy) final override;
+	NIAGARA_API virtual void GetDynamicRayTracingInstances(FRayTracingMaterialGatheringContext& Context, TArray<FRayTracingInstance>& OutRayTracingInstances, const FNiagaraSceneProxy* Proxy) final override;
 #endif
 	//FNiagaraRenderer Interface END
 
@@ -74,6 +74,9 @@ protected:
 
 		FVector							WorldSpacePivotOffset = FVector::ZeroVector;
 		FSphere							CullingSphere = FSphere(EForceInit::ForceInit);
+
+		int32							ResolutionMaxAxis = 0;
+		FVector3f						WorldSpaceSize = FVector3f::ZeroVector;
 	};
 
 	struct FMeshData
@@ -116,15 +119,15 @@ protected:
 		virtual ~FGPUSceneUpdateResource() {}
 	};
 
-	void PrepareParticleMeshRenderData(FParticleMeshRenderData& ParticleMeshRenderData, const FSceneViewFamily& ViewFamily, FMeshElementCollector& Collector, FNiagaraDynamicDataBase* InDynamicData, const FNiagaraSceneProxy* SceneProxy, bool bRayTracing, ENiagaraGpuComputeTickStage::Type GpuReadyTickStage) const;
-	void PrepareParticleRenderBuffers(FParticleMeshRenderData& ParticleMeshRenderData, FGlobalDynamicReadBuffer& DynamicReadBuffer) const;
-	void InitializeSortInfo(const FParticleMeshRenderData& ParticleMeshRenderData, const FNiagaraSceneProxy& SceneProxy, const FSceneView& View, int32 ViewIndex, bool bIsInstancedStereo, FNiagaraGPUSortInfo& OutSortInfo) const;
-	void PreparePerMeshData(FParticleMeshRenderData& ParticleMeshRenderData, const FNiagaraMeshVertexFactory& VertexFactory, const FNiagaraSceneProxy& SceneProxy, const FMeshData& MeshData) const;
-	uint32 PerformSortAndCull(FParticleMeshRenderData& ParticleMeshRenderData, FGlobalDynamicReadBuffer& ReadBuffer, FNiagaraGPUSortInfo& SortInfo, class FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface, int32 MeshIndex) const;
-	FNiagaraMeshCommonParameters CreateCommonShaderParams(const FParticleMeshRenderData& ParticleMeshRenderData, const FSceneView& View, const FMeshData& MeshData, const FNiagaraSceneProxy& SceneProxy) const;
-	FNiagaraMeshUniformBufferRef CreateVFUniformBuffer(const FParticleMeshRenderData& ParticleMeshRenderData, const FNiagaraMeshCommonParameters& CommonParams) const;
+	NIAGARA_API void PrepareParticleMeshRenderData(FParticleMeshRenderData& ParticleMeshRenderData, const FSceneViewFamily& ViewFamily, FMeshElementCollector& Collector, FNiagaraDynamicDataBase* InDynamicData, const FNiagaraSceneProxy* SceneProxy, bool bRayTracing, ENiagaraGpuComputeTickStage::Type GpuReadyTickStage) const;
+	NIAGARA_API void PrepareParticleRenderBuffers(FRHICommandListBase& RHICmdList, FParticleMeshRenderData& ParticleMeshRenderData, FGlobalDynamicReadBuffer& DynamicReadBuffer) const;
+	NIAGARA_API void InitializeSortInfo(const FParticleMeshRenderData& ParticleMeshRenderData, const FNiagaraSceneProxy& SceneProxy, const FSceneView& View, int32 ViewIndex, bool bIsInstancedStereo, FNiagaraGPUSortInfo& OutSortInfo) const;
+	NIAGARA_API void PreparePerMeshData(FParticleMeshRenderData& ParticleMeshRenderData, const FNiagaraMeshVertexFactory& VertexFactory, const FNiagaraSceneProxy& SceneProxy, const FMeshData& MeshData) const;
+	NIAGARA_API uint32 PerformSortAndCull(FRHICommandListBase& RHICmdList, FParticleMeshRenderData& ParticleMeshRenderData, FGlobalDynamicReadBuffer& ReadBuffer, FNiagaraGPUSortInfo& SortInfo, class FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface, int32 MeshIndex) const;
+	NIAGARA_API FNiagaraMeshCommonParameters CreateCommonShaderParams(const FParticleMeshRenderData& ParticleMeshRenderData, const FSceneView& View, const FMeshData& MeshData, const FNiagaraSceneProxy& SceneProxy) const;
+	NIAGARA_API FNiagaraMeshUniformBufferRef CreateVFUniformBuffer(const FParticleMeshRenderData& ParticleMeshRenderData, const FNiagaraMeshCommonParameters& CommonParams) const;
 
-	void SetupElementForGPUScene(
+	NIAGARA_API void SetupElementForGPUScene(
 		const FParticleMeshRenderData& ParticleMeshRenderData,
 		const FNiagaraMeshCommonParameters& CommonParameters,
 		const FNiagaraSceneProxy& SceneProxy,
@@ -135,7 +138,8 @@ protected:
 		FMeshBatchElement& OutMeshBatchElement
 	) const;
 
-	void CreateMeshBatchForSection(
+	NIAGARA_API void CreateMeshBatchForSection(
+		FRHICommandListBase& RHICmdList,
 		const FParticleMeshRenderData& ParticleMeshRenderData,
 		const FNiagaraMeshCommonParameters& CommonParams,
 		FMeshBatch& MeshBatch,
@@ -168,9 +172,12 @@ private:
 	uint32 bEnableCulling : 1;
 	uint32 bEnableFrustumCulling : 1;
 	uint32 bAccurateMotionVectors : 1;
+	uint32 bIsHeterogeneousVolume : 1;
 
 	uint32 bSubImageBlend : 1;
 	FVector2f SubImageSize = FVector2f::ZeroVector;
+
+	FVector3f MeshBoundsScale = FVector3f::OneVector;
 
 	FVector3f LockedAxis = FVector3f::ZeroVector;
 	ENiagaraMeshLockedAxisSpace LockedAxisSpace;
@@ -183,6 +190,9 @@ private:
 	int32 EmitterRendererVisTagOffset = INDEX_NONE;
 	int32 EmitterMeshIndexOffset = INDEX_NONE;
 	uint32 MaterialParamValidMask = 0;
+
+	int32 ResolutionMaxAxisOffset = INDEX_NONE;
+	int32 WorldSpaceSizeOffset = INDEX_NONE;
 
 	int32 VFBoundOffsetsInParamStore[ENiagaraMeshVFLayout::Type::Num_Max];
 	uint32 bSetAnyBoundVars : 1;

@@ -220,6 +220,43 @@ enum class EFunctionalTestLogHandling : uint8
 	OutputIgnored
 };
 
+
+class FConsoleVariableBPSetter
+{
+	friend class FAutomationFunctionalTestEnvSetup;
+
+public:
+	FConsoleVariableBPSetter(FString InConsoleVariableName);
+
+	void Set(const FString& Value);
+	FString Get();
+	void Restore();
+
+private:
+	bool bModified;
+	FString ConsoleVariableName;
+
+	FString OriginalValue;
+};
+
+class FAutomationFunctionalTestEnvSetup
+{
+public:
+	FAutomationFunctionalTestEnvSetup() = default;
+	~FAutomationFunctionalTestEnvSetup();
+
+	void SetVariable(const FString& VariableName, const FString& Value);
+
+	FString GetVariable(const FString& VariableName);
+
+	/** Restore the old settings. */
+	void Restore();
+
+private:
+	TArray<FConsoleVariableBPSetter> Variables;
+};
+
+
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FFunctionalTestEventSignature);
 DECLARE_DELEGATE_OneParam(FFunctionalTestDoneSignature, class AFunctionalTest*);
 
@@ -235,11 +272,11 @@ public:
 	FString TestLabel;
 
 	/**
-	 * The author is the group or person responsible for the test.  Generally you should use a group name
-	 * like 'Editor Team' or 'Rendering Team'.  When a test fails it may not be obvious who should investigate
+	 * The owner is the group or person responsible for the test. Generally you should use a group name
+	 * like 'Editor' or 'Rendering'. When a test fails it may not be obvious who should investigate
 	 * so this provides a associate responsible groups with tests.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Functional Testing", meta = (MultiLine = "true"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Functional Testing", meta = (MultiLine = "true", DisplayName = "Owner"))
 	FString Author;
 
 	/**
@@ -590,6 +627,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Reporting")
 	virtual void AddError(const FString& Message);
 
+	UFUNCTION(BlueprintCallable, Category = "Reporting")
+	virtual void AddInfo(const FString& Message);
+
 //protected:
 	/** TODO: break this out into a library */
 	void LogStep(ELogVerbosity::Type Verbosity, const FString& Message);
@@ -634,6 +674,22 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Functional Testing")
 	FName GetCurrentRerunReason() const;
 
+	/** Sets the CVar from the given input. Variable gets reset after the test. */
+	UFUNCTION(BlueprintCallable, Category = "Functional Testing")
+	void SetConsoleVariable(const FString& Name, const FString& InValue);
+
+	/** Sets the CVar from the given input. Variable gets reset after the test. */
+	UFUNCTION(BlueprintCallable, Category = "Functional Testing")
+	void SetConsoleVariableFromInteger(const FString& Name, const int32 InValue);
+
+	/** Sets the CVar from the given input. Variable gets reset after the test. */
+	UFUNCTION(BlueprintCallable, Category = "Functional Testing")
+	void SetConsoleVariableFromFloat(const FString& Name, const float InValue);
+
+	/** Sets the CVar from the given input. Variable gets reset after the test. */
+	UFUNCTION(BlueprintCallable, Category = "Functional Testing")
+	void SetConsoleVariableFromBoolean(const FString& Name, const bool InValue);
+
 	UFUNCTION(BlueprintImplementableEvent, Category = "Functional Testing")
 	FString OnAdditionalTestFinishedMessageRequest(EFunctionalTestResult TestResult) const;
 	
@@ -665,7 +721,8 @@ public:
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 #if WITH_EDITOR
-	virtual bool CanChangeIsSpatiallyLoadedFlag() const { return false; }
+	virtual bool CanChangeIsSpatiallyLoadedFlag() const override { return false; }
+	virtual bool IsDataLayerTypeSupported(TSubclassOf<UDataLayerInstance> DataLayerType) const override { return false; }
 #endif
 	// AActor interface end
 
@@ -740,6 +797,7 @@ public:
 
 private:
 	bool bIsReady;
+	FAutomationFunctionalTestEnvSetup EnvSetup;
 
 public:
 	/** Returns SpriteComponent subobject **/

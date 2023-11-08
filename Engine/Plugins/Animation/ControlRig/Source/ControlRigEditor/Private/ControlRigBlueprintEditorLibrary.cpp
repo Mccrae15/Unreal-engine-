@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ControlRigBlueprintEditorLibrary.h"
+#include "Editor/SRigHierarchy.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigBlueprintEditorLibrary)
 
@@ -66,7 +67,7 @@ void UControlRigBlueprintEditorLibrary::RequestControlRigInit(UControlRigBluepri
 	{
 		return;
 	}
-	InRigBlueprint->RequestControlRigInit();
+	InRigBlueprint->RequestRigVMInit();
 }
 
 URigVMGraph* UControlRigBlueprintEditorLibrary::GetModel(UControlRigBlueprint* InRigBlueprint)
@@ -94,7 +95,8 @@ TArray<UControlRigBlueprint*> UControlRigBlueprintEditorLibrary::GetCurrentlyOpe
 
 TArray<UStruct*> UControlRigBlueprintEditorLibrary::GetAvailableRigUnits()
 {
-	return UControlRigBlueprint::GetAvailableRigUnits();
+	UControlRigBlueprint* CDO = CastChecked<UControlRigBlueprint>(UControlRigBlueprint::StaticClass()->GetDefaultObject());
+	return CDO->GetAvailableRigVMStructs();
 }
 
 URigHierarchy* UControlRigBlueprintEditorLibrary::GetHierarchy(UControlRigBlueprint* InRigBlueprint)
@@ -113,5 +115,11 @@ URigHierarchyController* UControlRigBlueprintEditorLibrary::GetHierarchyControll
 		return nullptr;
 	}
 	return InRigBlueprint->GetHierarchyController();
+}
+
+void UControlRigBlueprintEditorLibrary::SetupAllEditorMenus()
+{
+	SRigHierarchy::CreateContextMenu();
+	SRigHierarchy::CreateDragDropMenu();
 }
 

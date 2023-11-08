@@ -132,22 +132,33 @@ namespace mu
 		//! Get the number of blocks in the layout
 		int GetBlockCount();
 
+		/** */
+		Ptr<const Layout> GetLayout() const;
+
 		//! Set a block of the layout.
 		//! minx and miny refer to the lowest left corner of the block.
         void SetBlock( int index, int minx, int miny, int sizex, int sizey );
 
-		//! Get a block of the layout.
-		//! minx and miny refer to the lowest left corner of the block.
-		void GetBlock(int index, int* minx, int* miny, int* sizex, int* sizey);
-
-		//! Set priority of a block.
-		void SetBlockPriority(int index, int priority);
+		//! Set reduction block options like priority or if the block has to be reduced symmetrically.
+		void SetBlockOptions(int index, int priority, bool bUseSymmetry);
 
 		//! Set the texture layout packing strategy 
 		void SetLayoutPackingStrategy(EPackStrategy strategy);
 
 		//! Generate the blocks of a layout using the UV of the meshes
 		static NodeLayoutBlocksPtr GenerateLayoutBlocks(const MeshPtr pMesh, int layoutIndex, int gridSizeX, int gridSizeY);
+
+		//! Set at which LOD the unassigned vertices warnings will star to be ignored
+		void SetIgnoreWarningsLOD(int32 LOD);
+
+		//! Get the LOD where the unassigned vertices warnings starts to be ignored
+		int32 GetIgnoreWarningsLOD();
+
+		//! Set the block reduction method a the Fixed_Layout strategy
+		void SetBlockReductionMethod(EReductionMethod strategy);
+
+		//! Returns the block reduction method
+		EReductionMethod GetBlockReductionMethod();
 
 
 		//-----------------------------------------------------------------------------------------

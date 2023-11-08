@@ -8,7 +8,7 @@
 // Insights
 #include "Insights/Common/Stopwatch.h"
 #include "Insights/MemoryProfiler/ViewModels/MemAllocTable.h"
-#include "Insights/Table/Widgets/STableTreeView.h"
+#include "Insights/Table/Widgets/SSessionTableTreeView.h"
 
 namespace Insights
 {
@@ -61,13 +61,21 @@ public:
 	 */
 	virtual void RebuildTree(bool bResync);
 
-	void SetQueryParams(TSharedPtr<FMemoryRuleSpec> InRule, double TimeA = 0.0, double TimeB = 0.0, double TimeC = 0.0, double TimeD = 0.0)
+	struct FQueryParams
 	{
-		Rule = InRule;
-		TimeMarkers[0] = TimeA;
-		TimeMarkers[1] = TimeB;
-		TimeMarkers[2] = TimeC;
-		TimeMarkers[3] = TimeD;
+		TSharedPtr<FMemoryRuleSpec> Rule;
+		double TimeMarkers[4] = { 0.0, 0.0, 0.0, 0.0 };
+		bool bIncludeHeapAllocs = false;
+	};
+
+	void SetQueryParams(const FQueryParams& InQueryParams)
+	{
+		Rule = InQueryParams.Rule;
+		TimeMarkers[0] = InQueryParams.TimeMarkers[0];
+		TimeMarkers[1] = InQueryParams.TimeMarkers[1];
+		TimeMarkers[2] = InQueryParams.TimeMarkers[2];
+		TimeMarkers[3] = InQueryParams.TimeMarkers[3];
+		bIncludeHeapAllocs = InQueryParams.bIncludeHeapAllocs;
 		OnQueryInvalidated();
 	}
 
@@ -96,7 +104,7 @@ protected:
 	FText GetSelectedCallstackFrameFileName() const;
 	void OpenSourceFileInIDE(const TCHAR* File, uint32 Line) const;
 	void ExportMemorySnapshot() const;
-	bool IsExportMemorySnaphotAvailable() const;
+	bool IsExportMemorySnapshotAvailable() const;
 
 private:
 	void OnQueryInvalidated();
@@ -107,12 +115,17 @@ private:
 
 	FText GetSymbolResolutionStatus() const;
 	FText GetSymbolResolutionTooltip() const;
+	
+	void UpdateQueryInfo();
 	FText GetQueryInfo() const;
 	FText GetQueryInfoTooltip() const;
+	FText GetFooterLeftText() const;
+	FText GetFooterCenterText() const;
 
-	void UpdateQueryInfo();
-	bool virtual ApplyCustomAdvancedFilters(const FTableTreeNodePtr& NodePtr) override;
-	virtual void AddCustomAdvancedFilters() override;
+	virtual void TreeView_OnSelectionChanged(Insights::FTableTreeNodePtr SelectedItem, ESelectInfo::Type SelectInfo) override;
+
+	virtual void UpdateFilterContext(const FFilterConfigurator& InFilterConfigurator, const FTableTreeNode& InNode) const override;
+	virtual void InitFilterConfigurator(FFilterConfigurator& InOutFilterConfigurator) override;
 
 	TSharedRef<SWidget> ConstructFunctionToggleButton();
 	void CallstackGroupingByFunction_OnCheckStateChanged(ECheckBoxState NewRadioState);
@@ -122,14 +135,16 @@ private:
 	void PopulateLLMTagSuggestionList(const FString& Text, TArray<FString>& OutSuggestions);
 
 private:
-	const static int FullCallStackIndex;
-	const static int LLMFilterIndex;
+	const static int32 FullCallStackIndex;
+	const static int32 LLMFilterIndex;
 	int32 TabIndex = -1;
 	TSharedPtr<FMemoryRuleSpec> Rule = nullptr;
 	double TimeMarkers[4];
+	bool bIncludeHeapAllocs = false;
 	TraceServices::IAllocationsProvider::FQueryHandle Query = 0;
 	FText QueryInfo;
 	FText QueryInfoTooltip;
+	FText SelectionStatsText;
 	FStopwatch QueryStopwatch;
 	bool bHasPendingQueryReset = false;
 	bool bIsCallstackGroupingByFunction = true;

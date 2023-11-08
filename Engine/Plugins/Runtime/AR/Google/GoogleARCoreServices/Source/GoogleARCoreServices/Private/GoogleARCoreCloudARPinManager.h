@@ -20,7 +20,7 @@ public:
 	virtual bool SetCloudARPinMode(EARPinCloudMode NewMode) = 0;
 
 	// Start a background task to host a CloudARPin.
-	virtual UCloudARPin* CreateAndHostCloudARPin(UARPin* PinToHost, EARPinCloudTaskResult& OutTaskResult);
+	virtual UCloudARPin* CreateAndHostCloudARPin(UARPin* PinToHost, int32 LifetimeInDays, EARPinCloudTaskResult& OutTaskResult);
 
 	// Start a background task to create a new CloudARPin and resolve it from the CloudID.
 	virtual UCloudARPin* ResolveAndCreateCloudARPin(FString CloudID, EARPinCloudTaskResult& OutTaskResult);
@@ -30,7 +30,7 @@ public:
 	// Return all the CloudARPin in the current session.
 	TArray<UCloudARPin*> GetAllCloudARPin()
 	{
-		return AllCloudARPins;
+		return ObjectPtrDecay(AllCloudARPins);
 	}
 
 	// Tick the CloudARPinManager.
@@ -52,10 +52,15 @@ protected:
 
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override
 	{
-		for (UCloudARPin* ARPin : AllCloudARPins)
+		for (auto& ARPin : AllCloudARPins)
 		{
 			Collector.AddReferencedObject(ARPin);
 		}
+	}
+
+	virtual FString GetReferencerName() const override
+	{
+		return "GoogleARCoreCloudARPinManager";
 	}
 
 	virtual void OnAlignmentTransformUpdated(const FTransform& NewAlignmentTransform)
@@ -68,9 +73,14 @@ protected:
 
 	// protected properties:
 	TSharedRef<FARSupportInterface, ESPMode::ThreadSafe> ARSystem;
-	TArray<UCloudARPin*> AllCloudARPins;
-	
+	TArray<TObjectPtr<UCloudARPin>> AllCloudARPins;
+#if !ARCORE_USE_OLD_CLOUD_ANCHOR_ASYNC
+	TArray<TObjectPtr<UCloudARPin>> PendingCloudARPins; // CloudARPins that have an async action pending.
+#endif
 #if	ARCORE_SERVICE_SUPPORTED_PLATFORM
+#if !ARCORE_USE_OLD_CLOUD_ANCHOR_ASYNC
+	virtual void UpdateCloudARPin(UCloudARPin* CloudARPin, ArSession* SessionHandle);
+#endif
 	virtual ArSession* GetSessionHandle() = 0;
 
 	virtual ArFrame* GetARFrameHandle() = 0;
@@ -78,4 +88,3 @@ protected:
 	TMap<ArAnchor*, UCloudARPin*> HandleToCloudPinMap;
 #endif
 };
-

@@ -13,6 +13,7 @@
 #include "Styling/AppStyle.h"
 #include "EditorModeManager.h"
 #include "EditorModes.h"
+#include "LandscapeEditTypes.h"
 #include "LandscapeEditorCommands.h"
 #include "LandscapeEditorObject.h"
 #include "IDetailsView.h"
@@ -30,8 +31,8 @@ void SLandscapeAssetThumbnail::Construct(const FArguments& InArgs, UObject* Asse
 	ChildSlot
 	[
 		SNew(SBox)
-		.WidthOverride(ThumbnailSize.X)
-		.HeightOverride(ThumbnailSize.Y)
+		.WidthOverride(static_cast<float>(ThumbnailSize.X))
+		.HeightOverride(static_cast<float>(ThumbnailSize.Y))
 		[
 			AssetThumbnail->MakeThumbnailWidget()
 		]
@@ -217,7 +218,10 @@ void FLandscapeToolKit::BuildToolPalette(FName PaletteName, class FToolBarBuilde
 		ToolBarBuilder.AddToolBarButton(Commands.ErosionTool);
 		ToolBarBuilder.AddToolBarButton(Commands.HydroErosionTool);
 		ToolBarBuilder.AddToolBarButton(Commands.NoiseTool);
-		ToolBarBuilder.AddToolBarButton(Commands.RetopologizeTool);
+		if (!Settings->InRestrictiveMode())
+		{
+			ToolBarBuilder.AddToolBarButton(Commands.RetopologizeTool);
+		}
 		ToolBarBuilder.AddToolBarButton(Commands.VisibilityTool);
 
 		if (Settings->AreBlueprintToolsAllowed())
@@ -618,17 +622,17 @@ bool FLandscapeToolKit::GetIsPropertyVisibleFromProperty(const FProperty& Proper
 			TArray<FString> ShowForTargetTypes;
 			Property.GetMetaData("ShowForTargetTypes").ParseIntoArray(ShowForTargetTypes, TEXT(","), true);
 
-			const ELandscapeToolTargetType::Type CurrentTargetType = LandscapeEdMode->CurrentToolTarget.TargetType;
+			const ELandscapeToolTargetType CurrentTargetType = LandscapeEdMode->CurrentToolTarget.TargetType;
 			// ELandscapeToolTargetType::Invalid means "weightmap with no valid paint layer" so we still want to display that property if it has been marked to be displayed in Weightmap target type, to be consistent 
 			//  with other paint brush properties (that don't use ShowForTargetTypes), which are still displayed in that case, even if they are ineffective :
 			if ((CurrentTargetType == ELandscapeToolTargetType::Invalid) 
-				&& (ShowForTargetTypes.FindByKey(TargetTypeNames[ELandscapeToolTargetType::Weightmap]) != nullptr))
+				&& (ShowForTargetTypes.FindByKey(TargetTypeNames[static_cast<uint8>(ELandscapeToolTargetType::Weightmap)]) != nullptr))
 			{ 
 				return true;
 			}
 			// Otherwise, hide it, if ShowForTargetTypes was used on this property but doesn't correspond to the current target type :
 			else if ((CurrentTargetType == ELandscapeToolTargetType::Invalid)
-				|| (ShowForTargetTypes.FindByKey(TargetTypeNames[CurrentTargetType]) == nullptr))
+				|| (ShowForTargetTypes.FindByKey(TargetTypeNames[static_cast<uint8>(CurrentTargetType)]) == nullptr))
 			{
 				return false;
 			}

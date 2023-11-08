@@ -17,9 +17,9 @@ struct FResolveRect;
 
 struct FDummyResolveParameter {};
 
-class RENDERCORE_API FResolveDepthPS : public FGlobalShader
+class FResolveDepthPS : public FGlobalShader
 {
-	DECLARE_GLOBAL_SHADER(FResolveDepthPS);
+	DECLARE_EXPORTED_GLOBAL_SHADER(FResolveDepthPS, RENDERCORE_API);
 public:
 	typedef FDummyResolveParameter FParameter;
 		
@@ -27,15 +27,19 @@ public:
 	FResolveDepthPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer);
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
-	void SetParameters(FRHICommandList& RHICmdList, FParameter);
+
+	RENDERCORE_API void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, FParameter);
+	UE_DEPRECATED(5.3, "SetParameters with FRHIBatchedShaderParameters should be used.")
+	RENDERCORE_API void SetParameters(FRHICommandList& RHICmdList, FParameter);
 
 	LAYOUT_FIELD(FShaderResourceParameter, UnresolvedSurface);
 };
 
-class RENDERCORE_API FResolveDepth2XPS : public FResolveDepthPS
+class FResolveDepth2XPS : public FResolveDepthPS
 {
-	DECLARE_GLOBAL_SHADER(FResolveDepth2XPS);
+	DECLARE_EXPORTED_GLOBAL_SHADER(FResolveDepth2XPS, RENDERCORE_API);
 public:
+
 	typedef FDummyResolveParameter FParameter;
 
 	FResolveDepth2XPS();
@@ -44,9 +48,9 @@ public:
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
 };
 
-class RENDERCORE_API FResolveDepth4XPS : public FResolveDepthPS
+class FResolveDepth4XPS : public FResolveDepthPS
 {
-	DECLARE_GLOBAL_SHADER(FResolveDepth4XPS);
+	DECLARE_EXPORTED_GLOBAL_SHADER(FResolveDepth4XPS, RENDERCORE_API);
 public:
 	typedef FDummyResolveParameter FParameter;
 
@@ -56,9 +60,9 @@ public:
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
 };
 
-class RENDERCORE_API FResolveDepth8XPS : public FResolveDepthPS
+class FResolveDepth8XPS : public FResolveDepthPS
 {
-	DECLARE_GLOBAL_SHADER(FResolveDepth8XPS);
+	DECLARE_EXPORTED_GLOBAL_SHADER(FResolveDepth8XPS, RENDERCORE_API);
 public:
 	typedef FDummyResolveParameter FParameter;
 
@@ -69,9 +73,9 @@ public:
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
 };
 
-class RENDERCORE_API FResolveDepthArrayPS : public FResolveDepthPS
+class FResolveDepthArrayPS : public FResolveDepthPS
 {
-	DECLARE_GLOBAL_SHADER(FResolveDepthArrayPS);
+	DECLARE_EXPORTED_GLOBAL_SHADER(FResolveDepthArrayPS, RENDERCORE_API);
 public:
 	typedef FDummyResolveParameter FParameter;
 
@@ -82,9 +86,9 @@ public:
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
 };
 
-class RENDERCORE_API FResolveDepthArray2XPS : public FResolveDepthArrayPS
+class FResolveDepthArray2XPS : public FResolveDepthArrayPS
 {
-	DECLARE_GLOBAL_SHADER(FResolveDepthArray2XPS);
+	DECLARE_EXPORTED_GLOBAL_SHADER(FResolveDepthArray2XPS, RENDERCORE_API);
 public:
 	typedef FDummyResolveParameter FParameter;
 
@@ -95,9 +99,9 @@ public:
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
 };
 
-class RENDERCORE_API FResolveDepthArray4XPS : public FResolveDepthArrayPS
+class FResolveDepthArray4XPS : public FResolveDepthArrayPS
 {
-	DECLARE_GLOBAL_SHADER(FResolveDepthArray4XPS);
+	DECLARE_EXPORTED_GLOBAL_SHADER(FResolveDepthArray4XPS, RENDERCORE_API);
 public:
 	typedef FDummyResolveParameter FParameter;
 
@@ -108,23 +112,23 @@ public:
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
 };
 
-class RENDERCORE_API FResolveDepthArray8XPS : public FResolveDepthArrayPS
+class FResolveDepthArray8XPS : public FResolveDepthArrayPS
 {
-	DECLARE_GLOBAL_SHADER(FResolveDepthArray8XPS);
+	DECLARE_EXPORTED_GLOBAL_SHADER(FResolveDepthArray8XPS, RENDERCORE_API);
 public:
 	typedef FDummyResolveParameter FParameter;
 
 	FResolveDepthArray8XPS();
 	FResolveDepthArray8XPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer);
 
-	static bool ShouldCache(EShaderPlatform Platform);
+	RENDERCORE_API static bool ShouldCache(EShaderPlatform Platform);
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters);
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
 };
 
-class RENDERCORE_API FResolveSingleSamplePS : public FGlobalShader
+class FResolveSingleSamplePS : public FGlobalShader
 {
-	DECLARE_GLOBAL_SHADER(FResolveSingleSamplePS);
+	DECLARE_EXPORTED_GLOBAL_SHADER(FResolveSingleSamplePS, RENDERCORE_API);
 public:
 	typedef uint32 FParameter;
 
@@ -132,7 +136,10 @@ public:
 	FResolveSingleSamplePS(const ShaderMetaType::CompiledShaderInitializerType& Initializer);
 	
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters);
-	void SetParameters(FRHICommandList& RHICmdList, uint32 SingleSampleIndexValue);
+
+	RENDERCORE_API void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, uint32 SingleSampleIndexValue);
+	UE_DEPRECATED(5.3, "SetParameters with FRHIBatchedShaderParameters should be used.")
+	RENDERCORE_API void SetParameters(FRHICommandList& RHICmdList, uint32 SingleSampleIndexValue);
 	
 	LAYOUT_FIELD(FShaderResourceParameter, UnresolvedSurface);
 	LAYOUT_FIELD(FShaderParameter, SingleSampleIndex);
@@ -141,29 +148,30 @@ public:
 /**
  * A vertex shader for rendering a textured screen element.
  */
-class RENDERCORE_API FResolveVS : public FGlobalShader
+class FResolveVS : public FGlobalShader
 {
-	DECLARE_GLOBAL_SHADER(FResolveVS);
+	DECLARE_EXPORTED_GLOBAL_SHADER(FResolveVS, RENDERCORE_API);
 public:
 	FResolveVS();
 	FResolveVS(const ShaderMetaType::CompiledShaderInitializerType& Initializer);
 	
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters);
-	void SetParameters(FRHICommandList& RHICmdList, const FResolveRect& SrcBounds, const FResolveRect& DstBounds, uint32 DstSurfaceWidth, uint32 DstSurfaceHeight);
+
+	RENDERCORE_API void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FResolveRect& SrcBounds, const FResolveRect& DstBounds, uint32 DstSurfaceWidth, uint32 DstSurfaceHeight);
+	UE_DEPRECATED(5.3, "SetParameters with FRHIBatchedShaderParameters should be used.")
+	RENDERCORE_API void SetParameters(FRHICommandList& RHICmdList, const FResolveRect& SrcBounds, const FResolveRect& DstBounds, uint32 DstSurfaceWidth, uint32 DstSurfaceHeight);
 
 	LAYOUT_FIELD(FShaderParameter, PositionMinMax);
 	LAYOUT_FIELD(FShaderParameter, UVMinMax);
 };
 
-class RENDERCORE_API FResolveArrayVS : public FResolveVS
+class FResolveArrayVS : public FResolveVS
 {
-	DECLARE_GLOBAL_SHADER(FResolveArrayVS);
+	DECLARE_EXPORTED_GLOBAL_SHADER(FResolveArrayVS, RENDERCORE_API);
 public:
 	FResolveArrayVS();
 	FResolveArrayVS(const ShaderMetaType::CompiledShaderInitializerType& Initializer);
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters);
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
-
-	void SetParameters(FRHICommandList& RHICmdList, const FResolveRect& SrcBounds, const FResolveRect& DstBounds, uint32 DstSurfaceWidth, uint32 DstSurfaceHeight);
 };

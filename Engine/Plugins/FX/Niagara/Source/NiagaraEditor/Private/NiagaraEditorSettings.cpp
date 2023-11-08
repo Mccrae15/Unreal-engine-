@@ -307,70 +307,84 @@ void UNiagaraEditorSettings::BuildCachedPlaybackSpeeds() const
 
 bool UNiagaraEditorSettings::IsShowGridInViewport() const
 {
-	return bShowGridInViewport;
+	return ViewportSettings.bShowGridInViewport;
 }
 
 void UNiagaraEditorSettings::SetShowGridInViewport(bool bInShowGridInViewport)
 {
-	if (this->bShowGridInViewport != bInShowGridInViewport)
+	if (this->ViewportSettings.bShowGridInViewport != bInShowGridInViewport)
 	{
-		this->bShowGridInViewport = bInShowGridInViewport;
+		this->ViewportSettings.bShowGridInViewport = bInShowGridInViewport;
 		SaveConfig();
 	}
 }
 
 bool UNiagaraEditorSettings::IsShowInstructionsCount() const
 {
-	return bShowInstructionsCount;
+	return ViewportSettings.bShowInstructionsCount;
 }
 
 void UNiagaraEditorSettings::SetShowInstructionsCount(bool bInShowInstructionsCount)
 {
-	if (this->bShowInstructionsCount != bInShowInstructionsCount)
+	if (this->ViewportSettings.bShowInstructionsCount != bInShowInstructionsCount)
 	{
-		this->bShowInstructionsCount = bInShowInstructionsCount;
+		this->ViewportSettings.bShowInstructionsCount = bInShowInstructionsCount;
 		SaveConfig();
 	}
 }
 
 bool UNiagaraEditorSettings::IsShowParticleCountsInViewport() const
 {
-	return bShowParticleCountsInViewport;
+	return ViewportSettings.bShowParticleCountsInViewport;
 }
 
 void UNiagaraEditorSettings::SetShowParticleCountsInViewport(bool bInShowParticleCountsInViewport)
 {
-	if (this->bShowParticleCountsInViewport != bInShowParticleCountsInViewport)
+	if (this->ViewportSettings.bShowParticleCountsInViewport != bInShowParticleCountsInViewport)
 	{
-		this->bShowParticleCountsInViewport = bInShowParticleCountsInViewport;
+		this->ViewportSettings.bShowParticleCountsInViewport = bInShowParticleCountsInViewport;
 		SaveConfig();
 	}
 }
 
 bool UNiagaraEditorSettings::IsShowEmitterExecutionOrder() const
 {
-	return bShowEmitterExecutionOrder;
+	return ViewportSettings.bShowEmitterExecutionOrder;
 }
 
 void UNiagaraEditorSettings::SetShowEmitterExecutionOrder(bool bInShowEmitterExecutionOrder)
 {
-	if (this->bShowEmitterExecutionOrder != bInShowEmitterExecutionOrder)
+	if (this->ViewportSettings.bShowEmitterExecutionOrder != bInShowEmitterExecutionOrder)
 	{
-		this->bShowEmitterExecutionOrder = bInShowEmitterExecutionOrder;
+		this->ViewportSettings.bShowEmitterExecutionOrder = bInShowEmitterExecutionOrder;
 		SaveConfig();		
 	}
 }
 
 bool UNiagaraEditorSettings::IsShowGpuTickInformation() const
 {
-	return bShowGpuTickInformation;
+	return ViewportSettings.bShowGpuTickInformation;
 }
 
 void UNiagaraEditorSettings::SetShowGpuTickInformation(bool bInShowGpuTickInformation)
 {
-	if (bShowGpuTickInformation != bInShowGpuTickInformation)
+	if (ViewportSettings.bShowGpuTickInformation != bInShowGpuTickInformation)
 	{
-		bShowGpuTickInformation = bInShowGpuTickInformation;
+		ViewportSettings.bShowGpuTickInformation = bInShowGpuTickInformation;
+		SaveConfig();
+	}
+}
+
+bool UNiagaraEditorSettings::IsShowMemoryInfo() const
+{
+	return ViewportSettings.bShowMemoryInfo;
+}
+
+void UNiagaraEditorSettings::SetShowMemoryInfo(bool bInShowInfo)
+{
+	if (ViewportSettings.bShowMemoryInfo != bInShowInfo)
+	{
+		ViewportSettings.bShowMemoryInfo = bInShowInfo;
 		SaveConfig();
 	}
 }
@@ -650,6 +664,12 @@ void UNiagaraEditorSettings::PostEditChangeProperty(FPropertyChangedEvent& Prope
 	}
 }
 
+void UNiagaraEditorSettings::SetViewportSharedSettings(const FNiagaraViewportSharedSettings& InViewportSharedSettings)
+{
+	ViewportSettings = InViewportSharedSettings;
+	SaveConfig();
+}
+
 UNiagaraEditorSettings::FOnNiagaraEditorSettingsChanged& UNiagaraEditorSettings::OnSettingsChanged()
 {
 	return GetMutableDefault<UNiagaraEditorSettings>()->SettingsChangedDelegate;
@@ -663,6 +683,11 @@ void UNiagaraEditorSettings::SetOnIsClassAllowed(const FOnIsClassAllowed& InOnIs
 void UNiagaraEditorSettings::SetOnIsClassPathAllowed(const FOnIsClassPathAllowed& InOnIsClassPathAllowed)
 {
 	OnIsClassPathAllowedDelegate = InOnIsClassPathAllowed;
+}
+
+void UNiagaraEditorSettings::SetOnShouldFilterAssetByClassUsage(const FOnShouldFilterAssetByClassUsage& InOnShouldFilterAssetByClassUsage)
+{
+	OnShouldFilterAssetByClassUsage = InOnShouldFilterAssetByClassUsage;
 }
 
 bool UNiagaraEditorSettings::IsAllowedClass(const UClass* InClass) const
@@ -719,41 +744,93 @@ UObject::FAssetRegistryTag UNiagaraEditorSettings::CreateClassUsageAssetRegistry
 	return UObject::FAssetRegistryTag(ClassUsageListTagName, ClassUsageList, FAssetRegistryTag::TT_Hidden);
 }
 
+bool UNiagaraEditorSettings::IsAllowedAssetObjectByClassUsageInternal(const UObject& AssetObject, TSet<const UObject*>& CheckedAssetObjects) const
+{
+	CheckedAssetObjects.Add(&AssetObject);
+
+	TArray<UObject*> ObjectsInPackage;
+	GetObjectsWithPackage(AssetObject.GetOutermost(), ObjectsInPackage);
+	for (UObject* ObjectInPackage : ObjectsInPackage)
+	{
+		if (ShouldTrackClassUsage(ObjectInPackage->GetClass()) && IsAllowedClass(ObjectInPackage->GetClass()) == false)
+		{
+			if (GbLogFoundButNotAllowedAssets)
+			{
+				UE_LOG(LogNiagaraEditor, Log, TEXT("Asset %s is not allowed due to object %s with class %s which is not allowed in this editor context."),
+					*AssetObject.GetPathName(), *ObjectInPackage->GetPathName(), *ObjectInPackage->GetClass()->GetClassPathName().ToString());
+			}
+			return false;
+		}
+
+		const UNiagaraNode* NiagaraNode = Cast<UNiagaraNode>(ObjectInPackage);
+		if (NiagaraNode != nullptr &&
+			NiagaraNode->GetReferencedAsset() != nullptr &&
+			OnShouldFilterAssetByClassUsage.Execute(FTopLevelAssetPath(NiagaraNode->GetReferencedAsset()->GetPathName())) &&
+			CheckedAssetObjects.Contains(NiagaraNode->GetReferencedAsset()) == false)
+		{
+			if (IsAllowedAssetObjectByClassUsageInternal(*NiagaraNode->GetReferencedAsset(), CheckedAssetObjects) == false)
+			{
+				UE_LOG(LogNiagaraEditor, Log, TEXT("Asset %s is not allowed due to referenced asset %s which is not allowed in this editor context."),
+					*AssetObject.GetPathName(), *NiagaraNode->GetReferencedAsset()->GetPathName());
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+bool UNiagaraEditorSettings::IsAllowedObjectByClassUsageInternal(const UObject& InObject, TSet<const UObject*>& CheckedObjects) const
+{
+	CheckedObjects.Add(&InObject);
+
+	TArray<UObject*> ObjectsWithOuter;
+	GetObjectsWithOuter(&InObject, ObjectsWithOuter, true);
+	
+	for (const UObject* ObjectInPackage : ObjectsWithOuter)
+	{
+		if (ShouldTrackClassUsage(ObjectInPackage->GetClass()) && IsAllowedClass(ObjectInPackage->GetClass()) == false)
+		{
+			if (GbLogFoundButNotAllowedAssets)
+			{
+				UE_LOG(LogNiagaraEditor, Log, TEXT("Asset %s is not allowed due to object %s with class %s which is not allowed in this editor context."),
+					*InObject.GetPackage()->GetPathName(), *ObjectInPackage->GetPathName(), *ObjectInPackage->GetClass()->GetClassPathName().ToString());
+			}
+			return false;
+		}
+
+		const UNiagaraNode* NiagaraNode = Cast<UNiagaraNode>(ObjectInPackage);
+		if (NiagaraNode != nullptr &&
+			NiagaraNode->GetReferencedAsset() != nullptr &&
+			OnShouldFilterAssetByClassUsage.Execute(FTopLevelAssetPath(NiagaraNode->GetReferencedAsset()->GetPathName())) &&
+			CheckedObjects.Contains(NiagaraNode->GetReferencedAsset()) == false)
+		{
+			if (IsAllowedAssetObjectByClassUsageInternal(*NiagaraNode->GetReferencedAsset(), CheckedObjects) == false)
+			{
+				UE_LOG(LogNiagaraEditor, Log, TEXT("Asset %s is not allowed due to referenced asset %s which is not allowed in this editor context."),
+					*InObject.GetPackage()->GetPathName(), *NiagaraNode->GetReferencedAsset()->GetPathName());
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
 bool UNiagaraEditorSettings::IsAllowedAssetByClassUsage(const FAssetData& InAssetData) const
 {
-	if (OnIsClassAllowedDelegate.IsBound() == false)
+	if (OnShouldFilterAssetByClassUsage.IsBound() == false ||
+		OnIsClassAllowedDelegate.IsBound() == false ||
+		OnShouldFilterAssetByClassUsage.Execute(FTopLevelAssetPath(InAssetData.GetObjectPathString())) == false)
 	{
 		return true;
 	}
 
-	const UObject* AssetObject = nullptr;
 	bool bClassDataFound = false;
 	bool bInvalidClassFound = false;
-	if (InAssetData.IsAssetLoaded())
+	if (InAssetData.IsAssetLoaded() && InAssetData.GetAsset() != nullptr)
 	{
-		AssetObject = InAssetData.GetAsset();
-		if (AssetObject != nullptr)
-		{
-			bClassDataFound = true;
-			TArray<UObject*> ObjectsInPackage;
-			GetObjectsWithPackage(AssetObject->GetOutermost(), ObjectsInPackage);
-			for (UObject* ObjectInPackage : ObjectsInPackage)
-			{
-				if (ShouldTrackClassUsage(ObjectInPackage->GetClass()) && IsAllowedClass(ObjectInPackage->GetClass()) == false)
-				{
-					bInvalidClassFound = true;
-					if (GbLogFoundButNotAllowedAssets)
-					{
-						UE_LOG(LogNiagaraEditor, Log, TEXT("Asset %s is not allowed due to object %s with class %s which is not allowed in this editor context."),
-							*InAssetData.GetFullName(), *ObjectInPackage->GetPathName(), *ObjectInPackage->GetClass()->GetClassPathName().ToString());
-					}
-					else
-					{
-						break;
-					}
-				}
-			}
-		}
+		TSet<const UObject*> CheckedAssetObjects;
+		bClassDataFound = true;
+		bInvalidClassFound = IsAllowedAssetObjectByClassUsageInternal(*InAssetData.GetAsset(), CheckedAssetObjects) == false;
 	}
 	else
 	{
@@ -791,8 +868,30 @@ bool UNiagaraEditorSettings::IsAllowedAssetByClassUsage(const FAssetData& InAsse
 			}
 		}
 	}
-
 	return bClassDataFound && bInvalidClassFound == false;
+}
+
+bool UNiagaraEditorSettings::IsAllowedAssetObjectByClassUsage(const UObject& InAssetObject) const
+{
+	TSet<const UObject*> CheckedAssetObjects;
+	if (OnIsClassAllowedDelegate.IsBound() && InAssetObject.IsAsset() == false)
+	{
+		return IsAllowedObjectByClassUsageInternal(InAssetObject, CheckedAssetObjects);
+	}
+	
+	if (OnShouldFilterAssetByClassUsage.IsBound() == false ||
+		OnIsClassAllowedDelegate.IsBound() == false ||
+		OnShouldFilterAssetByClassUsage.Execute(FTopLevelAssetPath(InAssetObject.GetPathName())) == false)
+	{
+		return true;
+	}
+
+	return IsAllowedAssetObjectByClassUsageInternal(InAssetObject, CheckedAssetObjects);
+}
+
+bool UNiagaraEditorSettings::GetUpdateStackValuesOnCommitOnly() const
+{
+	return bUpdateStackValuesOnCommitOnly;
 }
 
 #undef LOCTEXT_NAMESPACE

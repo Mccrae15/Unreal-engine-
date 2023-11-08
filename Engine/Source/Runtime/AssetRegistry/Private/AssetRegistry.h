@@ -44,28 +44,19 @@ public:
 	virtual bool EnumerateAssets(const FARCompiledFilter& Filter, TFunctionRef<bool(const FAssetData&)> Callback, bool bSkipARFilteredAssets = true) const override;
 	UE_DEPRECATED(5.1, "Asset path FNames have been deprecated, use FSoftObjectPath instead.")
 	virtual FAssetData GetAssetByObjectPath( const FName ObjectPath, bool bIncludeOnlyOnDiskAssets = false ) const override;
-	virtual FAssetData GetAssetByObjectPath(const FSoftObjectPath& ObjectPath, bool bIncludeOnlyOnDiskAssets = false) const override;
+	virtual FAssetData GetAssetByObjectPath(const FSoftObjectPath& ObjectPath, bool bIncludeOnlyOnDiskAssets = false, bool bSkipARFilteredAssets = true) const override;
 	virtual UE::AssetRegistry::EExists TryGetAssetByObjectPath(const FSoftObjectPath& ObjectPath, FAssetData& OutAssetData) const override;
 	virtual UE::AssetRegistry::EExists TryGetAssetPackageData(const FName PackageName, FAssetPackageData& OutAssetPackageData) const override;
 	virtual bool GetAllAssets(TArray<FAssetData>& OutAssetData, bool bIncludeOnlyOnDiskAssets = false) const override;
 	virtual bool EnumerateAllAssets(TFunctionRef<bool(const FAssetData&)> Callback, bool bIncludeOnlyOnDiskAssets = false) const override;
 	virtual void GetPackagesByName(FStringView PackageName, TArray<FName>& OutPackageNames) const override;
 	virtual FName GetFirstPackageByName(FStringView PackageName) const override;
-	UE_DEPRECATED(4.26, "Use GetDependencies that takes a UE::AssetRegistry::EDependencyCategory instead")
-	virtual bool GetDependencies(const FAssetIdentifier& AssetIdentifier, TArray<FAssetIdentifier>& OutDependencies, EAssetRegistryDependencyType::Type InDependencyType) const override;
 	virtual bool GetDependencies(const FAssetIdentifier& AssetIdentifier, TArray<FAssetIdentifier>& OutDependencies, UE::AssetRegistry::EDependencyCategory Category = UE::AssetRegistry::EDependencyCategory::All, const UE::AssetRegistry::FDependencyQuery& Flags = UE::AssetRegistry::FDependencyQuery()) const override;
 	virtual bool GetDependencies(const FAssetIdentifier& AssetIdentifier, TArray<FAssetDependency>& OutDependencies, UE::AssetRegistry::EDependencyCategory Category = UE::AssetRegistry::EDependencyCategory::All, const UE::AssetRegistry::FDependencyQuery& Flags = UE::AssetRegistry::FDependencyQuery()) const override;
-	UE_DEPRECATED(4.26, "Use GetDependencies that takes a UE::AssetRegistry::EDependencyCategory instead")
-	virtual bool GetDependencies(FName PackageName, TArray<FName>& OutDependencies, EAssetRegistryDependencyType::Type InDependencyType) const override;
 	virtual bool GetDependencies(FName PackageName, TArray<FName>& OutDependencies, UE::AssetRegistry::EDependencyCategory Category = UE::AssetRegistry::EDependencyCategory::Package, const UE::AssetRegistry::FDependencyQuery& Flags = UE::AssetRegistry::FDependencyQuery()) const override;
-	UE_DEPRECATED(4.26, "Use GetReferencers that takes a UE::AssetRegistry::EDependencyCategory instead")
-	virtual bool GetReferencers(const FAssetIdentifier& AssetIdentifier, TArray<FAssetIdentifier>& OutReferencers, EAssetRegistryDependencyType::Type InReferenceType) const override;
 	virtual bool GetReferencers(const FAssetIdentifier& AssetIdentifier, TArray<FAssetIdentifier>& OutReferencers, UE::AssetRegistry::EDependencyCategory Category = UE::AssetRegistry::EDependencyCategory::All, const UE::AssetRegistry::FDependencyQuery& Flags = UE::AssetRegistry::FDependencyQuery()) const override;
 	virtual bool GetReferencers(const FAssetIdentifier& AssetIdentifier, TArray<FAssetDependency>& OutReferencers, UE::AssetRegistry::EDependencyCategory Category = UE::AssetRegistry::EDependencyCategory::All, const UE::AssetRegistry::FDependencyQuery& Flags = UE::AssetRegistry::FDependencyQuery()) const override;
-	UE_DEPRECATED(4.26, "Use GetReferencers that takes a UE::AssetRegistry::EDependencyCategory instead")
-	virtual bool GetReferencers(FName PackageName, TArray<FName>& OutReferencers, EAssetRegistryDependencyType::Type InReferenceType) const override;
 	virtual bool GetReferencers(FName PackageName, TArray<FName>& OutReferencers, UE::AssetRegistry::EDependencyCategory Category = UE::AssetRegistry::EDependencyCategory::Package, const UE::AssetRegistry::FDependencyQuery& Flags = UE::AssetRegistry::FDependencyQuery()) const override;
-	virtual const FAssetPackageData* GetAssetPackageData(FName PackageName) const override;
 	virtual TOptional<FAssetPackageData> GetAssetPackageDataCopy(FName PackageName) const override;
 	virtual void EnumerateAllPackages(TFunctionRef<void(FName PackageName, const FAssetPackageData& PackageData)> Callback) const override;
 	virtual bool DoesPackageExistOnDisk(FName PackageName, FString* OutCorrectCasePackageName = nullptr, FString* OutExtension = nullptr) const override;
@@ -90,7 +81,6 @@ public:
 	virtual void UseFilterToExcludeAssets(TArray<FAssetData>& AssetDataList, const FARCompiledFilter& CompiledFilter) const override;
 	virtual bool IsAssetIncludedByFilter(const FAssetData& AssetData, const FARCompiledFilter& Filter) const override;
 	virtual bool IsAssetExcludedByFilter(const FAssetData& AssetData, const FARCompiledFilter& Filter) const override;
-	virtual void ExpandRecursiveFilter(const FARFilter& InFilter, FARFilter& ExpandedFilter) const override;
 	virtual void CompileFilter(const FARFilter& InFilter, FARCompiledFilter& OutCompiledFilter) const override;
 	virtual void SetTemporaryCachingMode(bool bEnable) override;
 	virtual void SetTemporaryCachingModeInvalidated() override;
@@ -99,6 +89,7 @@ public:
 	virtual float GetAssetAvailabilityProgress(const FAssetData& AssetData, EAssetAvailabilityProgressReportingType::Type ReportType) const override;
 	virtual bool GetAssetAvailabilityProgressTypeSupported(EAssetAvailabilityProgressReportingType::Type ReportType) const override;
 	virtual void PrioritizeAssetInstall(const FAssetData& AssetData) const override;
+	virtual bool HasVerseFiles(FName PackagePath, bool bRecursive = false) const override;
 	virtual bool GetVerseFilesByPath(FName PackagePath, TArray<FName>& OutFilePaths, bool bRecursive = false) const override;
 	virtual bool AddPath(const FString& PathToAdd) override;
 	virtual bool RemovePath(const FString& PathToRemove) override;
@@ -110,6 +101,7 @@ public:
 	virtual void WaitForCompletion() override;
 	virtual void ClearGathererCache() override;
 	virtual void WaitForPackage(const FString& PackageName) override;
+	virtual void ScanSynchronous(const TArray<FString>& InPaths, const TArray<FString>& InFilePaths, UE::AssetRegistry::EScanFlags InScanFlags = UE::AssetRegistry::EScanFlags::None) override;
 	virtual void ScanPathsSynchronous(const TArray<FString>& InPaths, bool bForceRescan = false, bool bIgnoreDenyListScanFilters = false) override;
 	virtual void ScanFilesSynchronous(const TArray<FString>& InFilePaths, bool bForceRescan = false) override;
 	virtual void PrioritizeSearchPath(const FString& PathToPrioritize) override;
@@ -119,7 +111,9 @@ public:
 	virtual SIZE_T GetAllocatedSize(bool bLogDetailed = false) const override;
 	virtual void LoadPackageRegistryData(FArchive& Ar, FLoadPackageRegistryData& InOutData) const override;
 	virtual void LoadPackageRegistryData(const FString& PackageFilename, FLoadPackageRegistryData& InOutData) const override;
-	virtual void InitializeTemporaryAssetRegistryState(FAssetRegistryState& OutState, const FAssetRegistrySerializationOptions& Options, bool bRefreshExisting = false) const override;
+	virtual void InitializeTemporaryAssetRegistryState(FAssetRegistryState& OutState, const FAssetRegistrySerializationOptions& Options,
+		bool bRefreshExisting = false, const TSet<FName>& RequiredPackages = TSet<FName>(),
+		const TSet<FName>& RemovePackages = TSet<FName>()) const override;
 #if ASSET_REGISTRY_STATE_DUMPING_ENABLED
 	virtual void DumpState(const TArray<FString>& Arguments, TArray<FString>& OutPages, int32 LinesPerPage = 1) const override;
 #endif
@@ -129,6 +123,9 @@ public:
 	virtual const TSet<FName>& GetCachedEmptyPackages() const override;
 	virtual bool ContainsTag(FName TagName) const override;
 	virtual void InitializeSerializationOptions(FAssetRegistrySerializationOptions& Options, const FString& PlatformIniName = FString(), UE::AssetRegistry::ESerializationTarget Target = UE::AssetRegistry::ESerializationTarget::ForGame) const override;
+
+	DECLARE_DERIVED_EVENT( UAssetRegistryImpl, IAssetRegistry::FFilesBlockedEvent, FFilesBlockedEvent);
+	virtual FFilesBlockedEvent& OnFilesBlocked() override;
 
 	DECLARE_DERIVED_EVENT( UAssetRegistryImpl, IAssetRegistry::FPathAddedEvent, FPathAddedEvent);
 	virtual FPathAddedEvent& OnPathAdded() override;
@@ -151,7 +148,7 @@ public:
 
 	DECLARE_DERIVED_EVENT( UAssetRegistryImpl, IAssetRegistry::FAssetRemovedEvent, FAssetRemovedEvent);
 	virtual FAssetRemovedEvent& OnAssetRemoved() override;
-
+	
 	DECLARE_DERIVED_EVENT( UAssetRegistryImpl, IAssetRegistry::FAssetRenamedEvent, FAssetRenamedEvent);
 	virtual FAssetRenamedEvent& OnAssetRenamed() override;
 
@@ -159,11 +156,24 @@ public:
 	virtual FAssetUpdatedEvent& OnAssetUpdated() override;
 	virtual FAssetUpdatedEvent& OnAssetUpdatedOnDisk() override;
 
+	// Batch events
+	DECLARE_DERIVED_EVENT( UAssetRegistryImpl, IAssetRegistry::FAssetsEvent, FAssetsEvent);
+	virtual FAssetsEvent& OnAssetsAdded() override;
+	virtual FAssetsEvent& OnAssetsRemoved() override;
+	virtual FAssetsEvent& OnAssetsUpdated() override;
+	virtual FAssetsEvent& OnAssetsUpdatedOnDisk() override;
+	
 	DECLARE_DERIVED_EVENT( UAssetRegistryImpl, IAssetRegistry::FInMemoryAssetCreatedEvent, FInMemoryAssetCreatedEvent );
 	virtual FInMemoryAssetCreatedEvent& OnInMemoryAssetCreated() override;
 
 	DECLARE_DERIVED_EVENT( UAssetRegistryImpl, IAssetRegistry::FInMemoryAssetDeletedEvent, FInMemoryAssetDeletedEvent );
 	virtual FInMemoryAssetDeletedEvent& OnInMemoryAssetDeleted() override;
+
+	DECLARE_DERIVED_EVENT( UAssetRegistryImpl, IAssetRegistry::FVerseAddedEvent, FVerseAddedEvent);
+	virtual FVerseAddedEvent& OnVerseAdded() override;
+
+	DECLARE_DERIVED_EVENT( UAssetRegistryImpl, IAssetRegistry::FVerseRemovedEvent, FVerseRemovedEvent);
+	virtual FVerseRemovedEvent& OnVerseRemoved() override;
 
 	DECLARE_DERIVED_EVENT( UAssetRegistryImpl, IAssetRegistry::FFilesLoadedEvent, FFilesLoadedEvent );
 	virtual FFilesLoadedEvent& OnFilesLoaded() override;
@@ -189,6 +199,7 @@ protected:
 
 private:
 	void OnEnginePreExit();
+	void OnAllModuleLoadingPhasesComplete();
 #if WITH_EDITOR
 	void OnFEngineLoopInitCompleteSearchAllAssets();
 	/** Called when new gatherer is registered. Requires subsequent call to RebuildAssetDependencyGathererMapIfNeeded */
@@ -233,7 +244,7 @@ private:
 
 	/** Shared helper for Scan*Synchronous function */
 	void ScanPathsSynchronousInternal(const TArray<FString>& InDirs, const TArray<FString>& InFiles,
-		bool bInForceRescan, bool bInIgnoreDenyListScanFilters);
+		UE::AssetRegistry::EScanFlags InScanFlags);
 
 #if WITH_EDITOR
 	/** Create FAssetData from any loaded UObject assets and store the updated AssetData in the state */
@@ -282,6 +293,9 @@ private:
 	bool bAddMetaDataTagsToOnGetExtraObjectTags = true;
 #endif
 
+	/** The delegate to execute when one or more files have been blocked from the registry */
+	FFilesBlockedEvent FilesBlockedEvent;
+
 	/** The delegate to execute when an asset path is added to the registry */
 	FPathAddedEvent PathAddedEvent;
 
@@ -290,7 +304,7 @@ private:
 
 	/** The delegate to execute when an asset is added to the registry */
 	FAssetAddedEvent AssetAddedEvent;
-
+	
 	/** The delegate to execute when an asset is removed from the registry */
 	FAssetRemovedEvent AssetRemovedEvent;
 
@@ -303,11 +317,21 @@ private:
 	/** The delegate to execute when an asset is updated on disk and has been reloaded in assetregistry */
 	FAssetUpdatedEvent AssetUpdatedOnDiskEvent;
 
+	/** The delegates to execute when assets are added/removed/updated in the registry, indexed by FEventContext::EEvent or returned with public accessors */
+	static constexpr SIZE_T NumBatchedEvents = static_cast<SIZE_T>(UE::AssetRegistry::Impl::FEventContext::EEvent::MAX);
+	FAssetsEvent BatchedAssetEvents[NumBatchedEvents];
+
 	/** The delegate to execute when an in-memory asset was just created */
 	FInMemoryAssetCreatedEvent InMemoryAssetCreatedEvent;
 
 	/** The delegate to execute when an in-memory asset was just deleted */
 	FInMemoryAssetDeletedEvent InMemoryAssetDeletedEvent;
+
+	/** The delegate to execute when a Verse file is added to the registry */
+	FVerseAddedEvent VerseAddedEvent;
+
+	/** The delegate to execute when a Verse file is removed from the registry */
+	FVerseRemovedEvent VerseRemovedEvent;
 
 	/** The delegate to execute when finished loading files */
 	FFilesLoadedEvent FileLoadedEvent;

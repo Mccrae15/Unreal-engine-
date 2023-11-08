@@ -31,7 +31,7 @@ USparseVolumeTextureViewerComponent::USparseVolumeTextureViewerComponent(const F
 	, SparseVolumeTexturePreview(nullptr)
 	, bAnimate(false)
 	, AnimationFrame(0.0f)
-	, ComponentToVisualize(0)
+	, PreviewAttribute(ESVTPA_AttributesA_R)
 	, SparseVolumeTextureViewerSceneProxy(nullptr)
 {
 	PrimaryComponentTick.bCanEverTick = true;
@@ -55,7 +55,7 @@ void USparseVolumeTextureViewerComponent::PostEditChangeProperty(FPropertyChange
 
 	if (!bAnimate && SparseVolumeTexturePreview)
 	{
-		FrameIndex = int32(AnimationFrame * float(SparseVolumeTexturePreview->GetFrameCount()));
+		FrameIndex = int32(AnimationFrame * float(SparseVolumeTexturePreview->GetNumFrames()));
 	}
 	MarkRenderStateDirty();
 
@@ -63,12 +63,6 @@ void USparseVolumeTextureViewerComponent::PostEditChangeProperty(FPropertyChange
 }
 
 #endif // WITH_EDITOR
-
-void USparseVolumeTextureViewerComponent::PostInterpChange(FProperty* PropertyThatChanged)
-{
-	// This is called when property is modified by InterpPropertyTracks
-	Super::PostInterpChange(PropertyThatChanged);
-}
 
 void USparseVolumeTextureViewerComponent::Serialize(FArchive& Ar)
 {
@@ -86,10 +80,9 @@ FBoxSphereBounds USparseVolumeTextureViewerComponent::CalcBounds(const FTransfor
 		// Then the other dimensions are scaled relatively.
 		// All this account for the size of volume with page table (they add padding).
 		// TODO can we recover world size from OpenVDB meta data in meter?
-		const FBox VolumeBounds = SparseVolumeTexturePreview->GetVolumeBounds();
-		const FVector Extent = VolumeBounds.GetExtent();
-		const double MaxDim = FMath::Max(FMath::Max(Extent.X, Extent.Y), Extent.Z);
-		NormalizedBound.BoxExtent = Extent / MaxDim * SVTViewerDefaultVolumeExtent;
+		const FVector VolumeResolution = FVector(SparseVolumeTexturePreview->GetVolumeResolution());
+		const double MaxDim = FMath::Max(FMath::Max(VolumeResolution.X, VolumeResolution.Y), VolumeResolution.Z);
+		NormalizedBound.BoxExtent = VolumeResolution / MaxDim * SVTViewerDefaultVolumeExtent;
 	}
 	else
 	{
@@ -155,18 +148,12 @@ void USparseVolumeTextureViewerComponent::SendRenderTransformCommand()
 	if (SparseVolumeTextureViewerSceneProxy)
 	{
 		FVector VolumeExtent = FVector(SVTViewerDefaultVolumeExtent);
-		// In order to keep the contents of an animated SVT sequence stable in world space, we need to account for the fact that
-		// different frames of the sequence have different AABBs.
-		FVector UVScale = FVector::One();
-		FVector UVBias = FVector::Zero();
-		
-		if (SparseVolumeTexturePreview)
+		FVector VolumeResolution = FVector(SVTViewerDefaultVolumeExtent * 2.0);
+		if (SparseVolumeTextureFrame)
 		{
-			const FVector VolumeBoundsExtent = SparseVolumeTexturePreview->GetVolumeBounds().GetExtent();
-			const double MaxBoundsDim = FMath::Max(FMath::Max(VolumeBoundsExtent.X, VolumeBoundsExtent.Y), VolumeBoundsExtent.Z);
-			VolumeExtent = VolumeBoundsExtent / MaxBoundsDim * SVTViewerDefaultVolumeExtent;
-
-			SparseVolumeTexturePreview->GetFrameUVScaleBias(FrameIndex, &UVScale, &UVBias);
+			VolumeResolution = FVector(SparseVolumeTextureFrame->GetVolumeResolution());
+			const double MaxBoundsDim = FMath::Max(FMath::Max(VolumeResolution.X, VolumeResolution.Y), VolumeResolution.Z);
+			VolumeExtent = VolumeResolution / MaxBoundsDim * SVTViewerDefaultVolumeExtent;
 		}
 
 		const FTransform ToWorldTransform = GetComponentTransform();
@@ -179,37 +166,53 @@ void USparseVolumeTextureViewerComponent::SendRenderTransformCommand()
 		const FRotationMatrix WorldToLocalRotation = FRotationMatrix(FRotator(ToWorldTransform.GetRotation().Inverse()));
 		const FMatrix44f ToLocalMatNoScale = FMatrix44f(WorldToLocalRotation);
 		const FMatrix44f ToLocalMat = FMatrix44f(
-			FTranslationMatrix(-ToWorldTransform.GetTranslation()) * WorldToLocalRotation * FScaleMatrix((VolumeExtent * MaxScaling).Reciprocal())
-			* FScaleMatrix(0.5) * FTranslationMatrix(FVector(0.5))
-			* FScaleMatrix(UVScale) * FTranslationMatrix(UVBias)
-			* FScaleMatrix(2.0) * FTranslationMatrix(FVector(-1.0)));
+			FTranslationMatrix(-ToWorldTransform.GetTranslation()) 
+			* WorldToLocalRotation 
+			* FScaleMatrix((VolumeExtent * MaxScaling).Reciprocal()));
 
-		const uint32 CompToVisualize = (uint32)ComponentToVisualize;
+		const FVector3f VolumeRes3f = FVector3f(VolumeResolution.X, VolumeResolution.Y, VolumeResolution.Z);
+
 
 		FSparseVolumeTextureViewerSceneProxy* SVTViewerSceneProxy = SparseVolumeTextureViewerSceneProxy;
 		ENQUEUE_RENDER_COMMAND(FUpdateSparseVolumeTextureViewerProxyTransformCommand)(
-			[SVTViewerSceneProxy, ToLocalMat, ToLocalMatNoScale, CompToVisualize](FRHICommandList& RHICmdList)
+			[SVTViewerSceneProxy, ToLocalMat, ToLocalMatNoScale, CompIdx = (uint32)PreviewAttribute, Ext = Extinction, Mip = MipLevel, VolumeRes3f]
+		(FRHICommandList& RHICmdList)
 			{
 				SVTViewerSceneProxy->WorldToLocal = ToLocalMat;
 				SVTViewerSceneProxy->WorldToLocalNoScale = ToLocalMatNoScale;
-				SVTViewerSceneProxy->ComponentToVisualize = CompToVisualize;
+				SVTViewerSceneProxy->VolumeResolution = VolumeRes3f;
+				SVTViewerSceneProxy->MipLevel = Mip;
+				SVTViewerSceneProxy->ComponentToVisualize = CompIdx;
+				SVTViewerSceneProxy->Extinction = Ext;
 			});
 	}
 }
 
 void USparseVolumeTextureViewerComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
-	if (bAnimate)
+	if (SparseVolumeTexturePreview)
 	{
-		const int32 NumFrames = SparseVolumeTexturePreview->GetFrameCount();
-		const float AnimationDuration = NumFrames / FrameRate;
-		FrameIndex = int32((AnimationTime / (AnimationDuration + SMALL_NUMBER)) * float(SparseVolumeTexturePreview->GetFrameCount()));
-		AnimationTime = FMath::Fmod(AnimationTime + DeltaTime, (AnimationDuration + SMALL_NUMBER));
+		const int32 NumFrames = SparseVolumeTexturePreview->GetNumFrames();
+		float FrameIndexF = 0.0f;
+		if (bAnimate)
+		{
+			const float AnimationDuration = (NumFrames / (FrameRate + UE_SMALL_NUMBER)) + UE_SMALL_NUMBER;
+			AnimationTime = FMath::Fmod(AnimationTime + AnimationDuration + (bReversePlayback ? -DeltaTime : DeltaTime), AnimationDuration);
+			FrameIndexF = AnimationTime * FrameRate;
+		}
+		else
+		{
+			FrameIndexF = AnimationFrame * float(NumFrames);
+		}
+		FrameIndexF = FMath::Clamp(FrameIndexF, 0, static_cast<float>(NumFrames - 1));
+		FrameIndex = FrameIndexF;
+		SparseVolumeTextureFrame = USparseVolumeTextureFrame::GetFrameAndIssueStreamingRequest(SparseVolumeTexturePreview, FrameIndexF, MipLevel, bBlockingStreamingRequests);
 	}
-	else if(SparseVolumeTexturePreview)
+	else
 	{
-		FrameIndex = int32(AnimationFrame * float(SparseVolumeTexturePreview->GetFrameCount()));
+		SparseVolumeTextureFrame = nullptr;
 	}
+
 	MarkRenderStateDirty();
 }
 

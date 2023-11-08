@@ -36,9 +36,9 @@ namespace IncludeTool
 			"/engine/plugins/editor/pluginbrowser/templates/",
 			"/engine/source/runtime/engine/classes/intrinsic/",
 			"/engine/source/thirdparty/llvm/",
-			"/engine/source/thirdparty/mcpp/mcpp-2.7.2/test-c/",
 			"/engine/source/programs/unrealswarm/private/",
 			"/engine/plugins/runtime/packethandlers/compressioncomponents/oodle/source/thirdparty/notforlicensees/oodle/213/win/examples/",
+			"/engine/plugins/developer/riderlink/",
 		};
 
 		/// <summary>
@@ -221,6 +221,11 @@ namespace IncludeTool
 			{
 				return true;
 			}
+			// Ignore Rider's RiderLink code.
+			if (NormalizedPath.Contains("/riderlink/source/riderlink/") || NormalizedPath.Contains("/riderlink/source/rd/"))
+			{
+				return true;
+			}
 			return false;
 		}
 
@@ -251,6 +256,7 @@ namespace IncludeTool
 			{ "/portal/source/layers/", "/engine/source/editor/unrealed/" },
 			{ "/portal/source/layers/", "/engine/source/runtime/online/icmp/" },
 			{ "/engine/source/programs/unreallightmass/", "/engine/source/runtime/engine/" },
+
 		};
 
 		/// <summary>
@@ -431,9 +437,12 @@ namespace IncludeTool
 			"/Engine/Source/Runtime/Core/Public/Internationalization/StringTableCoreFwd.h", // Typedef isn't a forward declaration
 			"/Engine/Source/Runtime/Experimental/Chaos/Public/Chaos/GeometryParticlesfwd.h", // invalid forward declaration - 'namespace Chaos'
 			"/Engine/Source/Runtime/Experimental/Chaos/Public/Chaos/ImplicitFwd.h", // invalid forward declaration - 'namespace Chaos'
+			"/Engine/Source/Runtime/Experimental/Chaos/Public/Chaos/Island/IslandManagerFwd.h", // invalid forward declaration - 'namespace Chaos'
 			"/Engine/Source/Runtime/Experimental/Chaos/Public/Chaos/ParticleHandleFwd.h", // invalid forward declaration - 'namespace Chaos'
 			"/Engine/Source/Runtime/Experimental/Chaos/Public/Chaos/PBDRigidsEvolutionFwd.h", // invalid forward declaration - 'namespace Chaos'
 			"/Engine/Source/Runtime/Experimental/Chaos/Public/Chaos/PBDSoftsEvolutionFwd.h", // invalid forward declaration - 'namespace Chaos'
+			"/Engine/Source/Runtime/Experimental/Chaos/Public/Chaos/ShapeInstanceFwd.h", // invalid forward declaration - 'namespace Chaos'
+			"/Engine/Source/Runtime/Experimental/Chaos/Public/Chaos/SpatialAccelerationFwd.h", // invalid forward declaration - 'namespace Chaos'
 			"/Engine/Source/Runtime/Experimental/Chaos/Public/PhysicsProxy/JointConstraintProxyFwd.h", // invalid forward declaration - 'namespace Chaos'
 			"/Engine/Source/Runtime/Experimental/Chaos/Public/PhysicsProxy/SingleParticlePhysicsProxyFwd.h", // invalid forward declaration - 'namespace Chaos'
 			"/Engine/Source/Runtime/Interchange/Engine/Public/InterchangeEngineFwd.h", // invalid forward declaration - 'namespace UE'
@@ -448,6 +457,9 @@ namespace IncludeTool
 			"/Engine/Source/Runtime/Core/Public/Templates/SharedPointerFwd.h", // Has an enum as well
 			"/Engine/Source/Runtime/Core/Public/Templates/SharedPointerFwd.h", // Has an enum as well
 			"/Engine/Source/Runtime/Core/Public/Misc/OptionalFwd.h", // Has special struct
+			"/Engine/Source/Runtime/CoreUObject/Public/UObject/ScriptDelegateFwd.h", // error: invalid forward declaration - 'typedef TScriptDelegate<FWeakObjectPtr> FScriptDelegate;'
+			"/Engine/Source/Runtime/CoreUObject/Public/UObject/WeakObjectPtrFwd.h", // error: invalid forward declaration - 'template<> struct TIsPODType<FWeakObjectPtr> { enum { Value = true }; };'
+			"/Engine/Source/Runtime/Core/Public/UObject/WeakObjectPtrTemplatesFwd.h", // error: invalid forward declaration - 'template<class T> struct TIsPODType<TWeakObjectPtr<T> > { enum { Value = true }; };'
 		};
 
 		/// <summary>
@@ -592,11 +604,11 @@ namespace IncludeTool
 				return true;
 			}
 			// Start of RigLogic exclusions
-			if (Markup.Type == PreprocessorMarkupType.Define && (Markup.Tokens[0].Text == "RLAPI" || Markup.Tokens[0].Text == "DNAAPI" || Markup.Tokens[0].Text == "TRIOAPI" || Markup.Tokens[0].Text == "SCAPI" || Markup.Tokens[0].Text == "PMAAPI" || Markup.Tokens[0].Text == "RAFAPI" || Markup.Tokens[0].Text == "GSAPI"))
+			if (Markup.Type == PreprocessorMarkupType.Define && (Markup.Tokens[0].Text == "RLAPI" || Markup.Tokens[0].Text == "DNAAPI" || Markup.Tokens[0].Text == "TRIOAPI" || Markup.Tokens[0].Text == "SCAPI" || Markup.Tokens[0].Text == "PMAAPI" || Markup.Tokens[0].Text == "RAFAPI" || Markup.Tokens[0].Text == "GSAPI" || Markup.Tokens[0].Text == "DNACAPI"))
 			{
 				return true;
 			}
-			if (Markup.Type == PreprocessorMarkupType.Elif && Markup.Tokens.Count == 4 && (Markup.Tokens[2].Text == "RL_SHARED" || Markup.Tokens[2].Text == "GS_SHARED"))
+			if (Markup.Type == PreprocessorMarkupType.Elif && Markup.Tokens.Count == 4 && (Markup.Tokens[2].Text == "RL_SHARED" || Markup.Tokens[2].Text == "GS_SHARED" || Markup.Tokens[2].Text == "DNAC_SHARED"))
 			{
 				return true;
 			}
@@ -644,6 +656,7 @@ namespace IncludeTool
 			"/Engine/Plugins/Runtime/GeometryProcessing/Source/GeometryAlgorithms/Private/ThirdParty/xatlas/xatlas.h",
 
 			"/Engine/Restricted/",
+			"/Engine/Shaders/Shared/RayTracingBuiltInResources.h",
 		};
 
 		/// <summary>
@@ -670,5 +683,24 @@ namespace IncludeTool
             }
             return true;
         }
+
+
+		static readonly string[] PathsToIgnoreConflictingSymbols = new string[] {
+			"/Engine/Source/Runtime/Core/Public/Async/TaskGraphInterfaces.h",
+			"/Engine/Source/Runtime/Core/Public/Async/TaskGraphFwd.h",
+			"/Engine/Source/Runtime/Core/Public/Delegates/DelegateAccessHandler.h",
+			"/Engine/Plugins/Runtime/RigVM/Source/RigVM/Public/RigVMCore/RigVMTypeIndex.h",
+		};
+
+		/// <summary>
+		/// Returns true if the file given should be included in report about conflicting symbols.
+		/// </summary>
+		/// <param name="Location">The file reference to check for inclusion</param>
+		/// <returns>True to report conclicts for this file</returns>
+		public static bool ReportConflictingSymbolsForFile(FileReference Location)
+		{
+			string LocationString = Location.ToString().Replace("\\", "/");
+			return !PathsToIgnoreConflictingSymbols.Any(x => LocationString.Contains(x));
+		}
 	}
 }

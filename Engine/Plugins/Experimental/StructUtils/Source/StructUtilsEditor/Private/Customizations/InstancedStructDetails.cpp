@@ -4,6 +4,7 @@
 #include "DetailWidgetRow.h"
 #include "DetailLayoutBuilder.h"
 #include "IDetailChildrenBuilder.h"
+#include "IPropertyUtilities.h"
 #include "UObject/Package.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SComboButton.h"
@@ -15,8 +16,151 @@
 #include "Engine/UserDefinedStruct.h"
 #include "InstancedStruct.h"
 #include "Widgets/Layout/SBox.h"
+#include "IStructureDataProvider.h"
+#include "GameFramework/Actor.h"
+#include "Misc/ConfigCacheIni.h"
+#include "StructUtilsDelegates.h"
 
 #define LOCTEXT_NAMESPACE "StructUtilsEditor"
+
+////////////////////////////////////
+
+class FInstancedStructProvider : public IStructureDataProvider
+{
+public:
+	FInstancedStructProvider() = default;
+	
+	explicit FInstancedStructProvider(const TSharedPtr<IPropertyHandle>& InStructProperty)
+		: StructProperty(InStructProperty)
+	{
+	}
+	
+	virtual ~FInstancedStructProvider() override {}
+
+	void Reset()
+	{
+		StructProperty = nullptr;
+	}
+	
+	virtual bool IsValid() const override
+	{
+		bool bHasValidData = false;
+		EnumerateInstances([&bHasValidData](const UScriptStruct* ScriptStruct, uint8* Memory, UPackage* Package)
+		{
+			if (ScriptStruct && Memory)
+			{
+				bHasValidData = true;
+				return false; // Stop
+			}
+			return true; // Continue
+		});
+
+		return bHasValidData;
+	}
+	
+	virtual const UStruct* GetBaseStructure() const override
+	{
+		// Taken from UClass::FindCommonBase
+		auto FindCommonBaseStruct = [](const UScriptStruct* StructA, const UScriptStruct* StructB)
+		{
+			const UScriptStruct* CommonBaseStruct = StructA;
+			while (CommonBaseStruct && StructB && !StructB->IsChildOf(CommonBaseStruct))
+			{
+				CommonBaseStruct = Cast<UScriptStruct>(CommonBaseStruct->GetSuperStruct());
+			}
+			return CommonBaseStruct;
+		};
+
+		const UScriptStruct* CommonStruct = nullptr;
+		EnumerateInstances([&CommonStruct, &FindCommonBaseStruct](const UScriptStruct* ScriptStruct, uint8* Memory, UPackage* Package)
+		{
+			if (ScriptStruct)
+			{
+				CommonStruct = FindCommonBaseStruct(ScriptStruct, CommonStruct);
+			}
+			return true; // Continue
+		});
+
+		return CommonStruct;
+	}
+
+	virtual void GetInstances(TArray<TSharedPtr<FStructOnScope>>& OutInstances) const override
+	{
+		// The returned instances need to be compatible with base structure.
+		// This function returns empty instances in case they are not compatible, with the idea that we have as many instances as we have outer objects.
+		const UScriptStruct* CommonStruct = Cast<UScriptStruct>(GetBaseStructure());
+		EnumerateInstances([&OutInstances, CommonStruct](const UScriptStruct* ScriptStruct, uint8* Memory, UPackage* Package)
+		{
+			TSharedPtr<FStructOnScope> Result;
+			
+			if (CommonStruct && ScriptStruct && ScriptStruct->IsChildOf(CommonStruct))
+			{
+				Result = MakeShared<FStructOnScope>(ScriptStruct, Memory);
+				Result->SetPackage(Package);
+			}
+
+			OutInstances.Add(Result);
+
+			return true; // Continue
+		});
+	}
+
+	virtual bool IsPropertyIndirection() const override
+	{
+		return true;
+	}
+
+	virtual uint8* GetValueBaseAddress(uint8* ParentValueAddress, const UStruct* ExpectedType) const override
+	{
+		if (!ParentValueAddress)
+		{
+			return nullptr;
+		}
+
+		FInstancedStruct& InstancedStruct = *reinterpret_cast<FInstancedStruct*>(ParentValueAddress);
+		if (ExpectedType && InstancedStruct.GetScriptStruct() && InstancedStruct.GetScriptStruct()->IsChildOf(ExpectedType))
+		{
+			return InstancedStruct.GetMutableMemory();
+		}
+
+		return nullptr;
+	}
+	
+protected:
+
+	void EnumerateInstances(TFunctionRef<bool(const UScriptStruct* ScriptStruct, uint8* Memory, UPackage* Package)> InFunc) const
+	{
+		if (!StructProperty.IsValid())
+		{
+			return;
+		}
+		
+		TArray<UPackage*> Packages;
+		StructProperty->GetOuterPackages(Packages);
+
+		StructProperty->EnumerateRawData([&InFunc, &Packages](void* RawData, const int32 DataIndex, const int32 /*NumDatas*/)
+		{
+			const UScriptStruct* ScriptStruct = nullptr;
+			uint8* Memory = nullptr;
+			UPackage* Package = nullptr;
+			if (FInstancedStruct* InstancedStruct = static_cast<FInstancedStruct*>(RawData))
+			{
+				ScriptStruct = InstancedStruct->GetScriptStruct();
+				Memory = InstancedStruct->GetMutableMemory();
+				if (ensureMsgf(Packages.IsValidIndex(DataIndex), TEXT("Expecting packges and raw data to match.")))
+				{
+					Package = Packages[DataIndex];
+				}
+			}
+
+			return InFunc(ScriptStruct, Memory, Package);
+		});
+	}
+	
+	TSharedPtr<IPropertyHandle> StructProperty;
+};
+
+////////////////////////////////////
 
 class FInstancedStructFilter : public IStructViewerFilter
 {
@@ -58,70 +202,46 @@ public:
 	}
 };
 
+////////////////////////////////////
+
 namespace UE::StructUtils::Private
 {
 
-const UScriptStruct* GetCommonScriptStruct(TSharedPtr<IPropertyHandle> StructProperty)
+FPropertyAccess::Result GetCommonScriptStruct(TSharedPtr<IPropertyHandle> StructProperty, const UScriptStruct*& OutCommonStruct)
 {
-	const UScriptStruct* CommonStructType = nullptr;
-
-	StructProperty->EnumerateConstRawData([&CommonStructType](const void* RawData, const int32 /*DataIndex*/, const int32 /*NumDatas*/)
+	bool bHasResult = false;
+	bool bHasMultipleValues = false;
+	
+	StructProperty->EnumerateConstRawData([&OutCommonStruct, &bHasResult, &bHasMultipleValues](const void* RawData, const int32 /*DataIndex*/, const int32 /*NumDatas*/)
 	{
-		if (RawData)
+		if (const FInstancedStruct* InstancedStruct = static_cast<const FInstancedStruct*>(RawData))
 		{
-			const FInstancedStruct* InstancedStruct = static_cast<const FInstancedStruct*>(RawData);
+			const UScriptStruct* Struct = InstancedStruct->GetScriptStruct();
 
-			const UScriptStruct* StructTypePtr = InstancedStruct->GetScriptStruct();
-			if (CommonStructType && CommonStructType != StructTypePtr)
+			if (!bHasResult)
 			{
-				// Multiple struct types on the sources - show nothing set
-				CommonStructType = nullptr;
-				return false;
+				OutCommonStruct = Struct;
 			}
-			CommonStructType = StructTypePtr;
+			else if (OutCommonStruct != Struct)
+			{
+				bHasMultipleValues = true;
+			}
+
+			bHasResult = true;
 		}
 
 		return true;
 	});
 
-	return CommonStructType;
-}
-
-void SetInstancedStructProperty(TSharedPtr<IPropertyHandle> StructProperty, const FInstancedStruct& InstancedStructToSet, const bool bAllowStructMismatch)
-{
-	// Note: We use the ExportText/SetPerObjectValues flow here (rather then CopyScriptStruct) 
-	// so that PropagatePropertyChange is called for the underlying FInstancedStruct property
-	TArray<FString> NewInstancedStructValues;
-	StructProperty->EnumerateRawData([bAllowStructMismatch, &InstancedStructToSet, &NewInstancedStructValues](const void* RawData, const int32 /*DataIndex*/, const int32 /*NumDatas*/)
+	if (bHasMultipleValues)
 	{
-		if (RawData)
-		{
-			const FInstancedStruct* InstancedStruct = static_cast<const FInstancedStruct*>(RawData);
-
-			// Only copy the data if this source is still using the expected struct type or we allow a mismatch
-			const UScriptStruct* StructTypePtr = InstancedStruct->GetScriptStruct();
-			if (bAllowStructMismatch || StructTypePtr == InstancedStructToSet.GetScriptStruct())
-			{
-				FString& NewInstancedStructValue = NewInstancedStructValues.AddDefaulted_GetRef();
-				FInstancedStruct::StaticStruct()->ExportText(NewInstancedStructValue, &InstancedStructToSet, &InstancedStructToSet, nullptr, PPF_None, nullptr);
-			}
-			else
-			{
-				FString& NewInstancedStructValue = NewInstancedStructValues.AddDefaulted_GetRef();
-				FInstancedStruct::StaticStruct()->ExportText(NewInstancedStructValue, InstancedStruct, InstancedStruct, nullptr, PPF_None, nullptr);
-			}
-		}
-		else
-		{
-			NewInstancedStructValues.AddDefaulted();
-		}
-		return true;
-	});
-
-	StructProperty->SetPerObjectValues(NewInstancedStructValues);
+		return FPropertyAccess::MultipleValues;
+	}
+	
+	return bHasResult ? FPropertyAccess::Success : FPropertyAccess::Fail;
 }
 
-}
+} // UE::StructUtils::Private
 
 ////////////////////////////////////
 
@@ -136,114 +256,19 @@ FInstancedStructDataDetails::FInstancedStructDataDetails(TSharedPtr<IPropertyHan
 	StructProperty = InStructProperty;
 }
 
-void FInstancedStructDataDetails::OnStructValuePreChange()
+FInstancedStructDataDetails::~FInstancedStructDataDetails()
 {
-	PreChangeOuterObjectNames.Reset();
-
-	// Forward the change event to the real struct handle
-	if (StructProperty && StructProperty->IsValidHandle())
-	{
-		StructProperty->NotifyPreChange();
-
-		// Store the outer objects for the Actor Component special case (see FInstancedStructDataDetails::OnStructValuePostChange).
-		TArray<UObject*> OuterObjects;
-		StructProperty->GetOuterObjects(OuterObjects);
-		
-		for (UObject* Outer : OuterObjects)
-		{
-			if (Outer != nullptr)
-			{
-				PreChangeOuterObjectNames.Add(Outer->GetPathName());
-			}
-		}
-	}
+	UE::StructUtils::Delegates::OnUserDefinedStructReinstanced.Remove(UserDefinedStructReinstancedHandle);
 }
 
-void FInstancedStructDataDetails::OnStructValuePostChange()
+void FInstancedStructDataDetails::OnUserDefinedStructReinstancedHandle(const UUserDefinedStruct& Struct)
 {
-	// Forward the change event to the real struct handle
-	if (StructProperty && StructProperty->IsValidHandle())
+	if (StructProvider.IsValid())
 	{
-		TGuardValue<bool> HandlingStructValuePostChangeGuard(bIsHandlingStructValuePostChange, true);
-
-		// When an InstancedStruct is on an Actor Component, the details customization gets rebuild between
-		// the OnStructValuePreChange() and OnStructValuePostChange() calls due to AActor::RerunConstructionScripts().
-		// When the new details panel is build, it will clear the outer objects of the StructProperty property handle, and then setting the value will fail.
-		// To overcome that, we restore the outer objects based on the objects stored in OnStructValuePreChange().
-		if (StructProperty->GetNumOuterObjects() == 0 && PreChangeOuterObjectNames.Num() > 0)
-		{
-			TArray<UObject*> OuterObjects;
-			for (const FString& ObjectPathName : PreChangeOuterObjectNames)
-			{
-				UObject* OuterObject = FindObject<UObject>(nullptr, *ObjectPathName);
-				if (OuterObject)
-				{
-					OuterObjects.Add(OuterObject);
-				}
-			}
-			
-			StructProperty->ReplaceOuterObjects(OuterObjects);
-		}
-		
-		// Copy the modified struct data back to the source instances
-		{
-			FInstancedStruct TmpInstancedStruct;
-			if (StructInstanceData)
-			{
-				TmpInstancedStruct.InitializeAs(Cast<UScriptStruct>(StructInstanceData->GetStruct()), StructInstanceData->GetStructMemory());
-			}
-			UE::StructUtils::Private::SetInstancedStructProperty(StructProperty, TmpInstancedStruct, /*bAllowStructMismatch*/false);
-		}
-
-		StructProperty->NotifyPostChange(EPropertyChangeType::ValueSet);
-		StructProperty->NotifyFinishedChangingProperties();
+		// Reset the struct provider immediately, some update functions might get called with the old struct.
+		StructProvider->Reset();
 	}
-}
-
-void FInstancedStructDataDetails::OnStructHandlePostChange()
-{
-	if (!bIsHandlingStructValuePostChange)
-	{
-		// External change; force a sync next Tick
-		LastSyncEditableInstanceFromSourceSeconds = 0.0;
-	}
-}
-
-void FInstancedStructDataDetails::SyncEditableInstanceFromSource(bool* OutStructMismatch)
-{
-	if (OutStructMismatch)
-	{
-		*OutStructMismatch = false;
-	}
-
-	if (StructProperty && StructProperty->IsValidHandle())
-	{
-		const UScriptStruct* ExpectedStructType = StructInstanceData ? Cast<UScriptStruct>(StructInstanceData->GetStruct()) : nullptr;
-		StructProperty->EnumerateConstRawData([this, ExpectedStructType, OutStructMismatch](const void* RawData, const int32 /*DataIndex*/, const int32 NumDatas)
-		{
-			if (RawData && NumDatas == 1)
-			{
-				const FInstancedStruct* InstancedStruct = static_cast<const FInstancedStruct*>(RawData);
-
-				// Only copy the data if this source is still using the expected struct type
-				const UScriptStruct* StructTypePtr = InstancedStruct->GetScriptStruct();
-				if (StructTypePtr == ExpectedStructType)
-				{
-					if (StructTypePtr)
-					{
-						StructTypePtr->CopyScriptStruct(StructInstanceData->GetStructMemory(), InstancedStruct->GetMemory());
-					}
-				}
-				else if (OutStructMismatch)
-				{
-					*OutStructMismatch = true;
-				}
-			}
-			return false;
-		});
-	}
-
-	LastSyncEditableInstanceFromSourceSeconds = FPlatformTime::Seconds();
+	OnRegenerateChildren.ExecuteIfBound();
 }
 
 void FInstancedStructDataDetails::SetOnRebuildChildren(FSimpleDelegate InOnRegenerateChildren)
@@ -251,66 +276,72 @@ void FInstancedStructDataDetails::SetOnRebuildChildren(FSimpleDelegate InOnRegen
 	OnRegenerateChildren = InOnRegenerateChildren;
 }
 
+TArray<TWeakObjectPtr<const UStruct>> FInstancedStructDataDetails::GetInstanceTypes() const
+{
+	TArray<TWeakObjectPtr<const UStruct>> Result;
+	
+	StructProperty->EnumerateConstRawData([&Result](const void* RawData, const int32 /*DataIndex*/, const int32 /*NumDatas*/)
+	{
+		TWeakObjectPtr<const UStruct>& Type = Result.AddDefaulted_GetRef();
+		if (const FInstancedStruct* InstancedStruct = static_cast<const FInstancedStruct*>(RawData))
+		{
+			Result.Add(InstancedStruct->GetScriptStruct());
+		}
+		else
+		{
+			Result.Add(nullptr);
+		}
+		return true;
+	});
+
+	return Result;
+}
+
+void FInstancedStructDataDetails::OnStructHandlePostChange()
+{
+	if (StructProvider.IsValid())
+	{
+		TArray<TWeakObjectPtr<const UStruct>> InstanceTypes = GetInstanceTypes();
+		if (InstanceTypes != CachedInstanceTypes)
+		{
+			OnRegenerateChildren.ExecuteIfBound();
+		}
+	}
+}
+
 void FInstancedStructDataDetails::GenerateHeaderRowContent(FDetailWidgetRow& NodeRow)
 {
 	StructProperty->SetOnPropertyValueChanged(FSimpleDelegate::CreateSP(this, &FInstancedStructDataDetails::OnStructHandlePostChange));
+	if (!UserDefinedStructReinstancedHandle.IsValid())
+	{
+		UserDefinedStructReinstancedHandle = UE::StructUtils::Delegates::OnUserDefinedStructReinstanced.AddSP(this, &FInstancedStructDataDetails::OnUserDefinedStructReinstancedHandle);
+	}
 }
 
 void FInstancedStructDataDetails::GenerateChildContent(IDetailChildrenBuilder& ChildBuilder)
 {
-	// Create a struct instance to edit, for the common struct type of the sources being edited
-	StructInstanceData.Reset();
-	if (const UScriptStruct* CommonStructType = UE::StructUtils::Private::GetCommonScriptStruct(StructProperty))
-	{
-		StructInstanceData = MakeShared<FStructOnScope>(CommonStructType);
-
-		// Make sure the struct also has a valid package set, so that properties that rely on this (like FText) work correctly
-		{
-			TArray<UPackage*> OuterPackages;
-			StructProperty->GetOuterPackages(OuterPackages);
-			if (OuterPackages.Num() > 0)
-			{
-				StructInstanceData->SetPackage(OuterPackages[0]);
-			}
-		}
-
-		bool bStructMismatch = false;
-		SyncEditableInstanceFromSource(&bStructMismatch);
-	}
-
 	// Add the rows for the struct
-	if (StructInstanceData)
+	TSharedRef<FInstancedStructProvider> NewStructProvider = MakeShared<FInstancedStructProvider>(StructProperty);
+	
+	TArray<TSharedPtr<IPropertyHandle>> ChildProperties = StructProperty->AddChildStructure(NewStructProvider);
+	for (TSharedPtr<IPropertyHandle> ChildHandle : ChildProperties)
 	{
-		FSimpleDelegate OnStructValuePreChangeDelegate = FSimpleDelegate::CreateSP(this, &FInstancedStructDataDetails::OnStructValuePreChange);
-		FSimpleDelegate OnStructValuePostChangeDelegate = FSimpleDelegate::CreateSP(this, &FInstancedStructDataDetails::OnStructValuePostChange);
-
-		TArray<TSharedPtr<IPropertyHandle>> ChildProperties = StructProperty->AddChildStructure(StructInstanceData.ToSharedRef());
-		for (TSharedPtr<IPropertyHandle> ChildHandle : ChildProperties)
-		{
-			ChildHandle->SetOnPropertyValuePreChange(OnStructValuePreChangeDelegate);
-			ChildHandle->SetOnChildPropertyValuePreChange(OnStructValuePreChangeDelegate);
-			ChildHandle->SetOnPropertyValueChanged(OnStructValuePostChangeDelegate);
-			ChildHandle->SetOnChildPropertyValueChanged(OnStructValuePostChangeDelegate);
-
-			IDetailPropertyRow& Row = ChildBuilder.AddProperty(ChildHandle.ToSharedRef());
-			OnChildRowAdded(Row);
-		}
+		IDetailPropertyRow& Row = ChildBuilder.AddProperty(ChildHandle.ToSharedRef());
+		OnChildRowAdded(Row);
 	}
+
+	StructProvider = NewStructProvider;
+
+	CachedInstanceTypes = GetInstanceTypes();
 }
 
 void FInstancedStructDataDetails::Tick(float DeltaTime)
 {
-	if (LastSyncEditableInstanceFromSourceSeconds + 0.1 < FPlatformTime::Seconds())
+	// If the instance types change (e.g. due to selecting new struct type), we'll need to update the layout.
+	TArray<TWeakObjectPtr<const UStruct>> InstanceTypes = GetInstanceTypes();
+	if (InstanceTypes != CachedInstanceTypes)
 	{
-		bool bStructMismatch = false;
-		SyncEditableInstanceFromSource(&bStructMismatch);
-
-		if (bStructMismatch)
-		{
-			// If the editable struct no longer has the same struct type as the underlying source, 
-			// then we need to refresh to update the child property rows for the new type
-			OnRegenerateChildren.ExecuteIfBound();
-		}
+		OnRegenerateChildren.ExecuteIfBound();
 	}
 }
 
@@ -340,20 +371,30 @@ TSharedRef<IPropertyTypeCustomization> FInstancedStructDetails::MakeInstance()
 	return MakeShared<FInstancedStructDetails>();
 }
 
+FInstancedStructDetails::~FInstancedStructDetails()
+{
+	if (OnObjectsReinstancedHandle.IsValid())
+	{
+		FCoreUObjectDelegates::OnObjectsReinstanced.Remove(OnObjectsReinstancedHandle);
+	}
+}
+
 void FInstancedStructDetails::CustomizeHeader(TSharedRef<class IPropertyHandle> StructPropertyHandle, class FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& StructCustomizationUtils)
 {
 	static const FName NAME_BaseStruct = "BaseStruct";
 	static const FName NAME_StructTypeConst = "StructTypeConst";
 
+	PropUtils = StructCustomizationUtils.GetPropertyUtilities();
 	StructProperty = StructPropertyHandle;
+	PropUtils = StructCustomizationUtils.GetPropertyUtilities();
 
-	const FProperty* MetaDataProperty = StructProperty->GetMetaDataProperty();
-
-	const bool bEnableStructSelection = !MetaDataProperty->HasMetaData(NAME_StructTypeConst);
+	OnObjectsReinstancedHandle = FCoreUObjectDelegates::OnObjectsReinstanced.AddSP(this, &FInstancedStructDetails::OnObjectsReinstanced);
+	
+	const bool bEnableStructSelection = !StructProperty->HasMetaData(NAME_StructTypeConst);
 
 	BaseScriptStruct = nullptr;
 	{
-		const FString& BaseStructName = MetaDataProperty->GetMetaData(NAME_BaseStruct);
+		const FString& BaseStructName = StructProperty->GetMetaData(NAME_BaseStruct);
 		if (!BaseStructName.IsEmpty())
 		{
 			BaseScriptStruct = UClass::TryFindTypeSlow<UScriptStruct>(BaseStructName);
@@ -393,11 +434,20 @@ void FInstancedStructDetails::CustomizeHeader(TSharedRef<class IPropertyHandle> 
 				[
 					SNew(STextBlock)
 					.Text(this, &FInstancedStructDetails::GetDisplayValueString)
-					.ToolTipText(this, &FInstancedStructDetails::GetDisplayValueString)
+					.ToolTipText(this, &FInstancedStructDetails::GetTooltipText)
 					.Font(IDetailLayoutBuilder::GetDetailFont())
 				]
 			]
 		];
+}
+
+void FInstancedStructDetails::OnObjectsReinstanced(const FReplacementObjectMap& ObjectMap)
+{
+	// Force update the details when BP is compiled, since we may cached hold references to the old object or class.
+	if (!ObjectMap.IsEmpty() && PropUtils.IsValid())
+	{
+		PropUtils->RequestRefresh();
+	}
 }
 
 void FInstancedStructDetails::CustomizeChildren(TSharedRef<class IPropertyHandle> StructPropertyHandle, class IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils)
@@ -408,17 +458,47 @@ void FInstancedStructDetails::CustomizeChildren(TSharedRef<class IPropertyHandle
 
 FText FInstancedStructDetails::GetDisplayValueString() const
 {
-	const UScriptStruct* ScriptStruct = UE::StructUtils::Private::GetCommonScriptStruct(StructProperty);
-	if (ScriptStruct)
+	const UScriptStruct* CommonStruct = nullptr;
+	const FPropertyAccess::Result Result = UE::StructUtils::Private::GetCommonScriptStruct(StructProperty, CommonStruct);
+	
+	if (Result == FPropertyAccess::Success)
 	{
-		return ScriptStruct->GetDisplayNameText();
+		if (CommonStruct)
+		{
+			return CommonStruct->GetDisplayNameText();
+		}
+		return LOCTEXT("NullScriptStruct", "None");
 	}
-	return LOCTEXT("NullScriptStruct", "None");
+	if (Result == FPropertyAccess::MultipleValues)
+	{
+		return LOCTEXT("MultipleValues", "Multiple Values");
+	}
+	
+	return FText::GetEmpty();
+}
+
+FText FInstancedStructDetails::GetTooltipText() const
+{
+	const UScriptStruct* CommonStruct = nullptr;
+	const FPropertyAccess::Result Result = UE::StructUtils::Private::GetCommonScriptStruct(StructProperty, CommonStruct);
+	
+	if (CommonStruct && Result == FPropertyAccess::Success)
+	{
+		return CommonStruct->GetToolTipText();
+	}
+	
+	return GetDisplayValueString();
 }
 
 const FSlateBrush* FInstancedStructDetails::GetDisplayValueIcon() const
 {
-	return FSlateIconFinder::FindIconBrushForClass(UScriptStruct::StaticClass());
+	const UScriptStruct* CommonStruct = nullptr;
+	if (UE::StructUtils::Private::GetCommonScriptStruct(StructProperty, CommonStruct) == FPropertyAccess::Success)
+	{
+		return FSlateIconFinder::FindIconBrushForClass(UScriptStruct::StaticClass());
+	}
+	
+	return nullptr;
 }
 
 TSharedRef<SWidget> FInstancedStructDetails::GenerateStructPicker()
@@ -427,16 +507,14 @@ TSharedRef<SWidget> FInstancedStructDetails::GenerateStructPicker()
 	static const FName NAME_HideViewOptions = "HideViewOptions";
 	static const FName NAME_ShowTreeView = "ShowTreeView";
 
-	const FProperty* MetaDataProperty = StructProperty->GetMetaDataProperty();
-
-	const bool bExcludeBaseStruct = MetaDataProperty->HasMetaData(NAME_ExcludeBaseStruct);
-	const bool bAllowNone = !(MetaDataProperty->PropertyFlags & CPF_NoClear);
-	const bool bHideViewOptions = MetaDataProperty->HasMetaData(NAME_HideViewOptions);
-	const bool bShowTreeView = MetaDataProperty->HasMetaData(NAME_ShowTreeView);
+	const bool bExcludeBaseStruct = StructProperty->HasMetaData(NAME_ExcludeBaseStruct);
+	const bool bAllowNone = !(StructProperty->GetMetaDataProperty()->PropertyFlags & CPF_NoClear);
+	const bool bHideViewOptions = StructProperty->HasMetaData(NAME_HideViewOptions);
+	const bool bShowTreeView = StructProperty->HasMetaData(NAME_ShowTreeView);
 
 	TSharedRef<FInstancedStructFilter> StructFilter = MakeShared<FInstancedStructFilter>();
 	StructFilter->BaseStruct = BaseScriptStruct;
-	StructFilter->bAllowUserDefinedStructs = false;
+	StructFilter->bAllowUserDefinedStructs = BaseScriptStruct == nullptr; // Only allow user defined structs when BaseStruct is not set.
 	StructFilter->bAllowBaseStruct = !bExcludeBaseStruct;
 
 	FStructViewerInitializationOptions Options;
@@ -446,7 +524,7 @@ TSharedRef<SWidget> FInstancedStructDetails::GenerateStructPicker()
 	Options.DisplayMode = bShowTreeView ? EStructViewerDisplayMode::TreeView : EStructViewerDisplayMode::ListView;
 	Options.bAllowViewOptions = !bHideViewOptions;
 
-	FOnStructPicked OnPicked(FOnStructPicked::CreateRaw(this, &FInstancedStructDetails::OnStructPicked));
+	FOnStructPicked OnPicked(FOnStructPicked::CreateSP(this, &FInstancedStructDetails::OnStructPicked));
 
 	return SNew(SBox)
 		.WidthOverride(280)
@@ -469,15 +547,23 @@ void FInstancedStructDetails::OnStructPicked(const UScriptStruct* InStruct)
 
 		StructProperty->NotifyPreChange();
 
-		// Copy the modified struct data back to the source instances
+		StructProperty->EnumerateRawData([InStruct](void* RawData, const int32 /*DataIndex*/, const int32 /*NumDatas*/)
 		{
-			FInstancedStruct TmpInstancedStruct;
-			TmpInstancedStruct.InitializeAs(InStruct);
-			UE::StructUtils::Private::SetInstancedStructProperty(StructProperty, TmpInstancedStruct, /*bAllowStructMismatch*/true);
-		}
+			if (FInstancedStruct* InstancedStruct = static_cast<FInstancedStruct*>(RawData))
+			{
+				InstancedStruct->InitializeAs(InStruct);
+			}
+			return true;
+		});
 
 		StructProperty->NotifyPostChange(EPropertyChangeType::ValueSet);
 		StructProperty->NotifyFinishedChangingProperties();
+
+		// Property tree will be invalid after changing the struct type, force update.
+		if (PropUtils.IsValid())
+		{
+			PropUtils->ForceRefresh();
+		}
 	}
 
 	ComboButton->SetIsOpen(false);

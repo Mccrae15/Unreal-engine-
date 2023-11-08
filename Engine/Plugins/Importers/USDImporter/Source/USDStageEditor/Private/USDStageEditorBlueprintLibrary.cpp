@@ -22,6 +22,12 @@ bool UUsdStageEditorBlueprintLibrary::CloseStageEditor()
 	return StageEditorModule.CloseStageEditor();
 }
 
+bool UUsdStageEditorBlueprintLibrary::IsStageEditorOpened()
+{
+	IUsdStageEditorModule& StageEditorModule = FModuleManager::GetModuleChecked< IUsdStageEditorModule >( "USDStageEditor" );
+	return StageEditorModule.IsStageEditorOpened();
+}
+
 AUsdStageActor* UUsdStageEditorBlueprintLibrary::GetAttachedStageActor()
 {
 	IUsdStageEditorModule& StageEditorModule = FModuleManager::GetModuleChecked< IUsdStageEditorModule >( "USDStageEditor" );
@@ -117,6 +123,18 @@ void UUsdStageEditorBlueprintLibrary::SetSelectedPropertyNames( const TArray<FSt
 {
 	IUsdStageEditorModule& StageEditorModule = FModuleManager::GetModuleChecked< IUsdStageEditorModule >( "USDStageEditor" );
 	StageEditorModule.SetSelectedPropertyNames( NewSelection );
+}
+
+TArray<FString> UUsdStageEditorBlueprintLibrary::GetSelectedPropertyMetadataNames()
+{
+	IUsdStageEditorModule& StageEditorModule = FModuleManager::GetModuleChecked< IUsdStageEditorModule >("USDStageEditor");
+	return StageEditorModule.GetSelectedPropertyMetadataNames();
+}
+
+void UUsdStageEditorBlueprintLibrary::SetSelectedPropertyMetadataNames(const TArray<FString>& NewSelection)
+{
+	IUsdStageEditorModule& StageEditorModule = FModuleManager::GetModuleChecked< IUsdStageEditorModule >("USDStageEditor");
+	StageEditorModule.SetSelectedPropertyMetadataNames(NewSelection);
 }
 
 void UUsdStageEditorBlueprintLibrary::FileNew()

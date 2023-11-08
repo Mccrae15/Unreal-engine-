@@ -3,11 +3,14 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using EpicGames.Core;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Serilog;
 using Serilog.Core;
+using Log = Serilog.Log;
 
 namespace Jupiter
 {
@@ -53,8 +56,27 @@ namespace Jupiter
 
             try
             {
+                JupiterSettings settings = new JupiterSettings();
+                Configuration.GetSection("Jupiter").Bind(settings);
+                string socketsRoot = settings.DomainSocketsRoot;
+
+                if (settings.UseDomainSockets)
+                {
+                    File.Delete(Path.Combine(socketsRoot, "jupiter-http.sock"));
+                    File.Delete(Path.Combine(socketsRoot, "jupiter-http2.sock"));
+                }
+
                 Log.Information("Creating ASPNET Host");
-                CreateHostBuilder(args).Build().Run();
+                IHost host = CreateHostBuilder(args).Build();
+                host.Start();
+
+                if (settings.ChmodDomainSockets)
+                {
+                    FileUtils.SetFileMode_Linux(Path.Combine(socketsRoot, "jupiter-http.sock"), 766);
+                    FileUtils.SetFileMode_Linux(Path.Combine(socketsRoot, "jupiter-http2.sock"), 766);
+                }
+
+                host.WaitForShutdown();
                 return 0;
             }
             catch (Exception ex)
@@ -89,6 +111,23 @@ namespace Jupiter
                     webBuilder.ConfigureKestrel(options =>
                     {
                         options.AddServerHeader = false;
+
+                        JupiterSettings settings = new JupiterSettings();
+                        Configuration.GetSection("Jupiter").Bind(settings);
+                        string socketsRoot = settings.DomainSocketsRoot;
+
+                        if (settings.UseDomainSockets)
+                        {
+                            Log.Logger.Information("Using unix domain sockets at {SocketsRoot}", socketsRoot);
+                            options.ListenUnixSocket(Path.Combine(socketsRoot, "jupiter-http.sock"), listenOptions =>
+                            {
+                                listenOptions.Protocols = HttpProtocols.Http1AndHttp2;
+                            });
+                            options.ListenUnixSocket(Path.Combine(socketsRoot, "jupiter-http2.sock"), listenOptions =>
+                            {
+                                listenOptions.Protocols = HttpProtocols.Http2;
+                            });
+                        }
                     });
                 });
         }

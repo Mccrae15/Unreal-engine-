@@ -114,10 +114,20 @@ public:
 	TSharedRef<TraceServices::IAnalysisService> GetAnalysisService() const { return AnalysisService; }
 	TSharedRef<TraceServices::IModuleService> GetModuleService() const { return ModuleService; }
 
-	void SetStoreDir(const FString& InStoreDir) { StoreDir = InStoreDir; }
-	const FString& GetStoreDir() const { return StoreDir; }
+	FString GetStoreDir();
 
 	bool ConnectToStore(const TCHAR* Host, uint32 Port=0);
+
+	/**
+	 * Attempt to reconnect to the store if the connection was severed, without recreating the store client.
+	 * @return True on success, false on failure
+	 */
+	bool ReconnectToStore() const;
+
+	const FString& GetLastStoreHost() const { return LastStoreHost; }
+
+	const bool CanChangeStoreSettings() const { return bCanChangeStoreSettings; }
+	
 	UE::Trace::FStoreClient* GetStoreClient() const { return StoreClient.Get(); }
 	FCriticalSection& GetStoreClientCriticalSection() const { return StoreClientCriticalSection; }
 
@@ -318,10 +328,6 @@ public:
 
 	void ScheduleCommand(const FString& InCmd);
 
-	void AddInProgressAsyncOp(FGraphEventRef Event, const FString& Name);
-	void RemoveInProgressAsyncOp(FGraphEventRef Event);
-	void WaitOnInProgressAsyncOps();
-
 	////////////////////////////////////////////////////////////////////////////////////////////////////
 	// SessionChangedEvent
 
@@ -380,6 +386,9 @@ private:
 	/** Resets (closes) current session instance. */
 	void ResetSession(bool bNotify = true);
 
+	/** Extract messages from the session */
+	void PollAnalysisInfo();
+
 	void OnSessionChanged();
 	void OnSessionAnalysisCompleted();
 
@@ -401,6 +410,9 @@ private:
 	/** The name of the Unreal Insights log listing. */
 	FName LogListingName;
 
+	/** Name used for Analysis log in Message Log. */
+	FName AnalysisLogListingName;
+
 	/** The delegate to be invoked when this manager ticks. */
 	FTickerDelegate OnTick;
 
@@ -409,9 +421,6 @@ private:
 
 	TSharedRef<TraceServices::IAnalysisService> AnalysisService;
 	TSharedRef<TraceServices::IModuleService> ModuleService;
-
-	/** The location of the trace files managed by the trace store. */
-	FString StoreDir;
 
 	/** The client used to connect to the trace store. It is not thread safe! */
 	TUniquePtr<UE::Trace::FStoreClient> StoreClient;
@@ -479,4 +488,8 @@ private:
 
 	/** A shared pointer to the global instance of the main manager. */
 	static TSharedPtr<FInsightsManager> Instance;
+
+	FString LastStoreHost;
+	uint32 LastStorePort = 0;
+	bool bCanChangeStoreSettings = false;
 };

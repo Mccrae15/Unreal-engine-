@@ -32,6 +32,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Optional.h"
 #include "Misc/PackageName.h"
+#include "Misc/PackagePath.h"
 #include "Misc/PathViews.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeLock.h"
@@ -45,6 +46,7 @@
 #include "Serialization/CompactBinaryWriter.h"
 #include "Serialization/LargeMemoryWriter.h"
 #include "Serialization/MemoryWriter.h"
+#include "String/Find.h"
 #include "Tasks/Task.h"
 #include "Templates/RefCounting.h"
 #include "Templates/UnrealTemplate.h"
@@ -53,16 +55,17 @@
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 
+LLM_DEFINE_TAG(Cooker_PackageStoreManifest);
+
 FLooseCookedPackageWriter::FLooseCookedPackageWriter(const FString& InOutputPath,
 	const FString& InMetadataDirectoryPath, const ITargetPlatform* InTargetPlatform, FAsyncIODelete& InAsyncIODelete,
-	UE::Cook::FPackageDatas& InPackageDatas, const TArray<TSharedRef<IPlugin>>& InPluginsToRemap)
+	const TArray<TSharedRef<IPlugin>>& InPluginsToRemap, FBeginCacheCallback&& InBeginCacheCallback)
 	: OutputPath(InOutputPath)
 	, MetadataDirectoryPath(InMetadataDirectoryPath)
 	, TargetPlatform(*InTargetPlatform)
-	, PackageDatas(InPackageDatas)
-	, PackageStoreManifest(InOutputPath)
 	, PluginsToRemap(InPluginsToRemap)
 	, AsyncIODelete(InAsyncIODelete)
+	, BeginCacheCallback(MoveTemp(InBeginCacheCallback))
 {
 }
 
@@ -73,7 +76,12 @@ FLooseCookedPackageWriter::~FLooseCookedPackageWriter()
 void FLooseCookedPackageWriter::BeginPackage(const FBeginPackageInfo& Info)
 {
 	Super::BeginPackage(Info);
-	PackageStoreManifest.BeginPackage(Info.PackageName);
+	LLM_SCOPE_BYTAG(Cooker_PackageStoreManifest);
+	FScopeLock Lock(&OplogLock);
+	FOplogPackageInfo& PackageInfo = Oplog.FindOrAdd(Info.PackageName);
+	PackageInfo.PackageName = Info.PackageName;
+	PackageInfo.PackageDataChunks.Reset();
+	PackageInfo.BulkDataChunks.Reset();
 }
 
 void FLooseCookedPackageWriter::CommitPackageInternal(FPackageWriterRecords::FPackage&& BaseRecord,
@@ -108,7 +116,7 @@ void FLooseCookedPackageWriter::AsyncSave(FRecord& Record, const FCommitPackageI
 	AsyncSaveOutputFiles(Record, Context);
 }
 
-void FLooseCookedPackageWriter::CompleteExportsArchiveForDiff(const FPackageInfo& Info, FLargeMemoryWriter& ExportsArchive)
+void FLooseCookedPackageWriter::CompleteExportsArchiveForDiff(FPackageInfo& Info, FLargeMemoryWriter& ExportsArchive)
 {
 	FPackageWriterRecords::FPackage& BaseRecord = Records.FindRecordChecked(Info.PackageName);
 	FRecord& Record = static_cast<FRecord&>(BaseRecord);
@@ -487,20 +495,35 @@ void FLooseCookedPackageWriter::FWriteFileData::HashAndWrite(FMD5& AccumulatedHa
 
 void FLooseCookedPackageWriter::UpdateManifest(FRecord& Record)
 {
+	LLM_SCOPE_BYTAG(Cooker_PackageStoreManifest);
+	FScopeLock Lock(&OplogLock);
 	for (const FPackageWriterRecords::FWritePackage& Package : Record.Packages)
 	{
-		PackageStoreManifest.AddPackageData(Package.Info.PackageName, Package.Info.LooseFilePath, Package.Info.ChunkId);
+		FOplogPackageInfo* PackageInfo = Oplog.Find(Package.Info.PackageName);
+		check(PackageInfo);
+		FOplogChunkInfo& ChunkInfo = PackageInfo->PackageDataChunks.AddDefaulted_GetRef();
+		ChunkInfo.ChunkId = Package.Info.ChunkId;
+		FStringView RelativePathView;
+		FPathViews::TryMakeChildPathRelativeTo(Package.Info.LooseFilePath, OutputPath, RelativePathView);
+		ChunkInfo.RelativeFileName = RelativePathView;
+
 	}
 	for (const FPackageWriterRecords::FBulkData& BulkData : Record.BulkDatas)
 	{
-		PackageStoreManifest.AddBulkData(BulkData.Info.PackageName, BulkData.Info.LooseFilePath, BulkData.Info.ChunkId);
+		FOplogPackageInfo* PackageInfo = Oplog.Find(BulkData.Info.PackageName);
+		check(PackageInfo);
+		FOplogChunkInfo& ChunkInfo = PackageInfo->BulkDataChunks.AddDefaulted_GetRef();
+		ChunkInfo.ChunkId = BulkData.Info.ChunkId;
+		FStringView RelativePathView;
+		FPathViews::TryMakeChildPathRelativeTo(BulkData.Info.LooseFilePath, OutputPath, RelativePathView);
+		ChunkInfo.RelativeFileName = RelativePathView;
 	}
 }
 
 bool FLooseCookedPackageWriter::GetPreviousCookedBytes(const FPackageInfo& Info, FPreviousCookedBytesData& OutData)
 {
-	FArchiveStackTrace::FPackageData ExistingPackageData;
-	FArchiveStackTrace::LoadPackageIntoMemory(*Info.LooseFilePath, ExistingPackageData, OutData.Data);
+	UE::ArchiveStackTrace::FPackageData ExistingPackageData;
+	UE::ArchiveStackTrace::LoadPackageIntoMemory(*Info.LooseFilePath, ExistingPackageData, OutData.Data);
 	OutData.Size = ExistingPackageData.Size;
 	OutData.HeaderSize = ExistingPackageData.HeaderSize;
 	OutData.StartOffset = ExistingPackageData.StartOffset;
@@ -532,15 +555,102 @@ void FLooseCookedPackageWriter::Initialize(const FCookInfo& Info)
 	}
 }
 
+EPackageWriterResult FLooseCookedPackageWriter::BeginCacheForCookedPlatformData(
+	FBeginCacheForCookedPlatformDataInfo& Info)
+{
+	return BeginCacheCallback(Info);
+}
+
+void FLooseCookedPackageWriter::WriteOplogEntry(FCbWriter& Writer, const FOplogPackageInfo& PackageInfo)
+{
+	Writer.BeginObject();
+
+	Writer.BeginObject("packagestoreentry");
+	Writer << "packagename" << PackageInfo.PackageName;
+	Writer.EndObject();
+
+	Writer.BeginArray("packagedata");
+	for (const FOplogChunkInfo& ChunkInfo : PackageInfo.PackageDataChunks)
+	{
+		Writer.BeginObject();
+		Writer << "id" << ChunkInfo.ChunkId;
+		Writer << "filename" << ChunkInfo.RelativeFileName;
+		Writer.EndObject();
+	}
+	Writer.EndArray();
+
+	Writer.BeginArray("bulkdata");
+	for (const FOplogChunkInfo& ChunkInfo : PackageInfo.BulkDataChunks)
+	{
+		Writer.BeginObject();
+		Writer << "id" << ChunkInfo.ChunkId;
+		Writer << "filename" << ChunkInfo.RelativeFileName;
+		Writer.EndObject();
+	}
+	Writer.EndArray();
+
+	Writer.EndObject();
+}
+
+bool FLooseCookedPackageWriter::ReadOplogEntry(FOplogPackageInfo& PackageInfo, const FCbFieldView& Field)
+{
+	FCbObjectView PackageStoreEntryObjectView = Field["packagestoreentry"].AsObjectView();
+	if (!PackageStoreEntryObjectView)
+	{
+		return false;
+	}
+	PackageInfo.PackageName = FName(PackageStoreEntryObjectView["packagename"].AsString());
+
+	FCbArrayView PackageDataView = Field["packagedata"].AsArrayView();
+	PackageInfo.PackageDataChunks.Reset();
+	PackageInfo.PackageDataChunks.Reserve(PackageDataView.Num());
+	for (const FCbFieldView& ChunkEntry : PackageDataView)
+	{
+		FOplogChunkInfo& ChunkInfo = PackageInfo.PackageDataChunks.AddDefaulted_GetRef();
+		ChunkInfo.ChunkId.Set(ChunkEntry["id"].AsObjectId().GetView());
+		ChunkInfo.RelativeFileName = FString(ChunkEntry["filename"].AsString());
+	}
+
+	FCbArrayView BulkDataView = Field["bulkdata"].AsArrayView();
+	PackageInfo.BulkDataChunks.Reset();
+	PackageInfo.BulkDataChunks.Reserve(BulkDataView.Num());
+	for (const FCbFieldView& ChunkEntry : BulkDataView)
+	{
+		FOplogChunkInfo& ChunkInfo = PackageInfo.BulkDataChunks.AddDefaulted_GetRef();
+		ChunkInfo.ChunkId.Set(ChunkEntry["id"].AsObjectId().GetView());
+		ChunkInfo.RelativeFileName = FString(ChunkEntry["filename"].AsString());
+	}
+
+	return true;
+}
+
 void FLooseCookedPackageWriter::BeginCook(const FCookInfo& Info)
 {
 	if (!Info.bWorkerOnSharedSandbox)
 	{
-		PackageStoreManifest.Load(*(MetadataDirectoryPath / TEXT("packagestore.manifest")));
+		TRACE_CPUPROFILER_EVENT_SCOPE(LoadPackageStoreManifest);
+		FString PackageStoreManifestFilePath = FPaths::Combine(MetadataDirectoryPath, TEXT("packagestore.manifest"));
+		TUniquePtr<FArchive> Ar(IFileManager::Get().CreateFileReader(*PackageStoreManifestFilePath));
+		if (Ar)
+		{
+			FCbField ManifestField = LoadCompactBinary(*Ar);
+			FCbField OplogField = ManifestField["oplog"];
+			if (OplogField)
+			{
+				FCbArray EntriesArray = OplogField["entries"].AsArray();
+				FScopeLock Lock(&OplogLock);
+				Oplog.Reserve(EntriesArray.Num());
+				for (const FCbField& EntryField : EntriesArray)
+				{
+					FOplogPackageInfo PackageInfo;
+					ReadOplogEntry(PackageInfo, EntryField);
+					Oplog.Add(PackageInfo.PackageName, MoveTemp(PackageInfo));
+				}
+			}
+		}
 	}
 	else
 	{
-		PackageStoreManifest.SetTrackPackageData(true);
 		bProvidePerPackageResults = true;
 	}
 	AllPackageHashes.Empty();
@@ -550,7 +660,41 @@ void FLooseCookedPackageWriter::EndCook(const FCookInfo& Info)
 {
 	if (!Info.bWorkerOnSharedSandbox)
 	{
-		PackageStoreManifest.Save(*(MetadataDirectoryPath / TEXT("packagestore.manifest")));
+		TRACE_CPUPROFILER_EVENT_SCOPE(SavePackageStoreManifest);
+		FScopeLock Lock(&OplogLock);
+		// Sort packages for determinism
+		TArray<const FOplogPackageInfo*> SortedPackages;
+		SortedPackages.Reserve(Oplog.Num());
+		for (const auto& KV : Oplog)
+		{
+			SortedPackages.Add(&KV.Value);
+		}
+		Algo::Sort(SortedPackages, [](const FOplogPackageInfo* A, const FOplogPackageInfo* B)
+			{
+				return A->PackageName.LexicalLess(B->PackageName);
+			});
+		FCbWriter ManifestWriter;
+		ManifestWriter.BeginObject();
+		ManifestWriter.BeginObject("oplog");
+		ManifestWriter.BeginArray("entries");
+		for (const FOplogPackageInfo* Package : SortedPackages)
+		{
+			WriteOplogEntry(ManifestWriter, *Package);
+		}
+		ManifestWriter.EndArray();
+		ManifestWriter.EndObject();
+		ManifestWriter.EndObject();
+
+		FString PackageStoreManifestFilePath = FPaths::Combine(MetadataDirectoryPath, TEXT("packagestore.manifest"));
+		TUniquePtr<FArchive> Ar(IFileManager::Get().CreateFileWriter(*PackageStoreManifestFilePath));
+		if (Ar)
+		{
+			SaveCompactBinary(*Ar, ManifestWriter.Save());
+		}
+		else
+		{
+			UE_LOG(LogSavePackage, Error, TEXT("Failed saving package store manifest file '%s'"), *PackageStoreManifestFilePath);
+		}
 	}
 }
 
@@ -570,7 +714,7 @@ TUniquePtr<FAssetRegistryState> FLooseCookedPackageWriter::LoadPreviousAssetRegi
 		PreviousAssetRegistryFile = FPaths::Combine(MetadataDirectoryPath, GetDevelopmentAssetRegistryFilename());
 	}
 
-	UncookedPathToCookedPath.Reset();
+	PackageNameToCookedFiles.Reset();
 
 	FArrayReader SerializedAssetData;
 	if (!IFileManager::Get().FileExists(*PreviousAssetRegistryFile) || !FFileHelper::LoadFileToArray(SerializedAssetData, *PreviousAssetRegistryFile))
@@ -592,36 +736,32 @@ TUniquePtr<FAssetRegistryState> FLooseCookedPackageWriter::LoadPreviousAssetRegi
 		GetAllCookedFiles();
 		TSet<FName> RemoveFromRegistry;
 		TSet<FName> RemoveFromDisk;
-		RemoveFromDisk.Reserve(UncookedPathToCookedPath.Num());
-		for (TPair<FName, FName>& Pair : UncookedPathToCookedPath)
+		RemoveFromDisk.Reserve(PackageNameToCookedFiles.Num());
+		for (TPair<FName, TArray<FString>>& Pair : PackageNameToCookedFiles)
 		{
 			RemoveFromDisk.Add(Pair.Key);
 		}
+		IAssetRegistry& AssetRegistry = IAssetRegistry::GetChecked();
 		for (const TPair<FName, const FAssetPackageData*>& Pair : PreviousState->GetAssetPackageDataMap())
 		{
 			FName PackageName = Pair.Key;
-			FName UncookedFilename = PackageDatas.GetFileNameByPackageName(PackageName);
+			bool bCurrentPackageExists = AssetRegistry.DoesPackageExistOnDisk(PackageName);
 
 			bool bNoLongerExistsInEditor = false;
 			bool bIsScriptPackage = FPackageName::IsScriptPackage(WriteToString<256>(PackageName));
-			if (UncookedFilename.IsNone())
+			if (!bCurrentPackageExists)
 			{
 				// Script and generated packages do not exist uncooked
 				// Check that the package is not an exception before removing from cooked
 				bool bIsCookedOnly = bIsScriptPackage;
-				bool bIsMap = false;
 				if (!bIsCookedOnly)
 				{
 					for (const FAssetData* AssetData : PreviousState->GetAssetsByPackageName(PackageName))
 					{
 						bIsCookedOnly |= !!(AssetData->PackageFlags & PKG_CookGenerated);
-						bIsMap |= !!(AssetData->PackageFlags & PKG_ContainsMap);
 					}
 				}
 				bNoLongerExistsInEditor = !bIsCookedOnly;
-				UncookedFilename = UE::Cook::FPackageDatas::LookupFileNameOnDisk(PackageName,
-					false /* bRequireExists */, bIsMap);
-
 			}
 			if (bNoLongerExistsInEditor)
 			{
@@ -632,7 +772,7 @@ TUniquePtr<FAssetRegistryState> FLooseCookedPackageWriter::LoadPreviousAssetRegi
 			else
 			{
 				// Keep package on disk if it exists. Keep package in registry if it exists on disk or was a FailedSave.
-				bool bExistsOnDisk = (RemoveFromDisk.Remove(UncookedFilename) == 1); // Remove its RemoveFromDisk entry
+				bool bExistsOnDisk = (RemoveFromDisk.Remove(PackageName) == 1); // Remove its RemoveFromDisk entry
 				const FAssetPackageData* PackageData = Pair.Value;
 				if (!bExistsOnDisk && PackageData->DiskSize >= 0 && !bIsScriptPackage)
 				{
@@ -648,7 +788,7 @@ TUniquePtr<FAssetRegistryState> FLooseCookedPackageWriter::LoadPreviousAssetRegi
 		}
 		if (RemoveFromDisk.Num())
 		{
-			RemoveCookedPackagesByUncookedFilename(RemoveFromDisk.Array());
+			RemoveCookedPackagesByPackageName(RemoveFromDisk.Array(), true /* bRemoveRecords */);
 		}
 	}
 
@@ -663,58 +803,42 @@ FCbObject FLooseCookedPackageWriter::GetOplogAttachment(FName PackageName, FUtf8
 
 void FLooseCookedPackageWriter::RemoveCookedPackages(TArrayView<const FName> PackageNamesToRemove)
 {
-	if (UncookedPathToCookedPath.IsEmpty())
+	if (PackageNameToCookedFiles.IsEmpty())
 	{
+		FindAndDeleteCookedFilesForPackages(PackageNamesToRemove);
 		return;
 	}
 
-	if (PackageNamesToRemove.Num() > 0)
-	{
-		// if we are going to clear the cooked packages it is conceivable that we will recook the packages which we just cooked 
-		// that means it's also conceivable that we will recook the same package which currently has an outstanding async write request
-		UPackage::WaitForAsyncFileWrites();
-
-		auto DeletePackageLambda = [&PackageNamesToRemove, this](int32 PackageIndex)
-		{
-			const FName PackageName = PackageNamesToRemove[PackageIndex];
-			const FName UncookedFileName = PackageDatas.GetFileNameByPackageName(PackageName);
-			if (UncookedFileName.IsNone())
-			{
-				return;
-			}
-			FName* CookedFileName = UncookedPathToCookedPath.Find(UncookedFileName);
-			if (CookedFileName)
-			{
-				TStringBuilder<256> FilePath;
-				CookedFileName->ToString(FilePath);
-				IFileManager::Get().Delete(*FilePath, true, true, true);
-			}
-		};
-		ParallelFor(PackageNamesToRemove.Num(), DeletePackageLambda);
-	}
-
-	// We no longer have a use for UncookedPathToCookedPath, after the RemoveCookedPackages call at the beginning of the cook.
-	UncookedPathToCookedPath.Empty();
+	// if we are going to clear the cooked packages it is conceivable that we will recook the packages which we just cooked 
+	// that means it's also conceivable that we will recook the same package which currently has an outstanding async write request
+	UPackage::WaitForAsyncFileWrites();
+	RemoveCookedPackagesByPackageName(PackageNamesToRemove, false /* bRemoveRecords */);
+	// PackageNameToCookedFiles is no longer used after the RemoveCookedPackages call at the beginning of the cook.
+	PackageNameToCookedFiles.Empty();
 }
 
-void FLooseCookedPackageWriter::RemoveCookedPackagesByUncookedFilename(const TArray<FName>& UncookedFileNamesToRemove)
+void FLooseCookedPackageWriter::RemoveCookedPackagesByPackageName(TArrayView<const FName> PackageNamesToRemove, bool bRemoveRecords)
 {
-	auto DeletePackageLambda = [&UncookedFileNamesToRemove, this](int32 PackageIndex)
+	auto DeletePackageLambda = [&PackageNamesToRemove, this](int32 PackageIndex)
 	{
-		FName UncookedFileName = UncookedFileNamesToRemove[PackageIndex];
-		FName* CookedFileName = UncookedPathToCookedPath.Find(UncookedFileName);
-		if (CookedFileName)
+		FName PackageName = PackageNamesToRemove[PackageIndex];
+		TArray<FString>* CookedFileNames = PackageNameToCookedFiles.Find(PackageName);
+		if (CookedFileNames)
 		{
-			TStringBuilder<256> FilePath;
-			CookedFileName->ToString(FilePath);
-			IFileManager::Get().Delete(*FilePath, true, true, true);
+			for (const FString& CookedFileName : *CookedFileNames)
+			{
+				IFileManager::Get().Delete(*CookedFileName, true, true, true);
+			}
 		}
 	};
-	ParallelFor(UncookedFileNamesToRemove.Num(), DeletePackageLambda);
+	ParallelFor(PackageNamesToRemove.Num(), DeletePackageLambda);
 
-	for (FName UncookedFilename : UncookedFileNamesToRemove)
+	if (bRemoveRecords)
 	{
-		UncookedPathToCookedPath.Remove(UncookedFilename);
+		for (FName PackageName : PackageNamesToRemove)
+		{
+			PackageNameToCookedFiles.Remove(PackageName);
+		}
 	}
 }
 
@@ -724,9 +848,22 @@ void FLooseCookedPackageWriter::MarkPackagesUpToDate(TArrayView<const FName> UpT
 
 TFuture<FCbObject> FLooseCookedPackageWriter::WriteMPCookMessageForPackage(FName PackageName)
 {
-	FCbWriter ManifestWriter;
-	PackageStoreManifest.WritePackage(ManifestWriter, PackageName);
-	FCbFieldIterator ManifestField = ManifestWriter.Save();
+	FCbFieldIterator OplogEntryField;
+	{
+		FOplogPackageInfo PackageInfo;
+		bool bValid = false;
+		{
+			FScopeLock Lock(&OplogLock);
+			bValid = Oplog.RemoveAndCopyValue(PackageName, PackageInfo);
+		}
+		if (bValid)
+		{
+			check(PackageName == PackageInfo.PackageName);
+			FCbWriter OplogEntryWriter;
+			WriteOplogEntry(OplogEntryWriter, PackageInfo);
+			OplogEntryField = OplogEntryWriter.Save();
+		}
+	}
 
 	TRefCountPtr<FPackageHashes> PackageHashes;
 	{
@@ -734,11 +871,14 @@ TFuture<FCbObject> FLooseCookedPackageWriter::WriteMPCookMessageForPackage(FName
 		AllPackageHashes.RemoveAndCopyValue(PackageName, PackageHashes);
 	}
 
-	auto ComposeMessage = [ManifestField = MoveTemp(ManifestField)](FPackageHashes* PackageHashes)
+	auto ComposeMessage = [OplogEntryField = MoveTemp(OplogEntryField)](FPackageHashes* PackageHashes)
 	{
 		FCbWriter Writer;
 		Writer.BeginObject();
-		Writer << "Manifest" << ManifestField;
+		if (OplogEntryField.HasValue())
+		{
+			Writer << "OplogEntry" << OplogEntryField;
+		}
 		if (PackageHashes)
 		{
 			Writer << "PackageHash" << PackageHashes->PackageHash;
@@ -770,9 +910,13 @@ TFuture<FCbObject> FLooseCookedPackageWriter::WriteMPCookMessageForPackage(FName
 
 bool FLooseCookedPackageWriter::TryReadMPCookMessageForPackage(FName PackageName, FCbObjectView Message)
 {
-	if (!PackageStoreManifest.TryReadPackage(Message["Manifest"], PackageName))
+	FOplogPackageInfo PackageInfo;
+	FCbFieldView OplogEntryField(Message["OplogEntry"]);
+	if (ReadOplogEntry(PackageInfo, OplogEntryField))
 	{
-		return false;
+		check(PackageName == PackageInfo.PackageName);
+		FScopeLock Lock(&OplogLock);
+		Oplog.Add(PackageName, MoveTemp(PackageInfo));
 	}
 
 	bool bOk = true;
@@ -832,9 +976,8 @@ public:
 			FStringView Extension(FPathViews::GetExtension(Filename, true /* bIncludeDot */));
 			if (!Extension.IsEmpty())
 			{
-				const TCHAR* ExtensionStr = Extension.GetData();
-				check(ExtensionStr[Extension.Len()] == '\0'); // IsPackageExtension takes a null-terminated TCHAR; we should have it since GetExtension is from the end of the filename
-				if (FPackageName::IsPackageExtension(ExtensionStr))
+				EPackageExtension ExtensionEnum = FPackagePath::ParseExtension(Extension);
+				if (ExtensionEnum != EPackageExtension::Unspecified && ExtensionEnum != EPackageExtension::Custom)
 				{
 					FoundFiles.Add(Filename);
 				}
@@ -859,89 +1002,219 @@ void FLooseCookedPackageWriter::GetAllCookedFiles()
 	const FString SandboxProjectDir = FPaths::Combine(OutputPath, FApp::GetProjectName()) + TEXT("/");
 	const FString RelativeRootDir = FPaths::GetRelativePathToRoot();
 	const FString RelativeProjectDir = FPaths::ProjectDir();
-	FString UncookedFilename;
-	UncookedFilename.Reserve(1024);
+	FString ScratchFileName;
+	ScratchFileName.Reserve(1024);
+	FString ScratchPackageName;
+	ScratchPackageName.Reserve(1024);
 
 	for (const FString& CookedFile : CookedFiles)
 	{
-		const FName CookedFName(*CookedFile);
-		const FName UncookedFName = ConvertCookedPathToUncookedPath(
+		const FName PackageName = ConvertCookedPathToPackageName(
 			SandboxRootDir, RelativeRootDir,
 			SandboxProjectDir, RelativeProjectDir,
-			CookedFile, UncookedFilename);
+			CookedFile, ScratchFileName, ScratchPackageName);
 
-		UncookedPathToCookedPath.Add(UncookedFName, CookedFName);
+		if (!PackageName.IsNone())
+		{
+			PackageNameToCookedFiles.FindOrAdd(PackageName).Add(CookedFile);
+		}
 	}
 }
 
-FName FLooseCookedPackageWriter::ConvertCookedPathToUncookedPath(
+void FLooseCookedPackageWriter::FindAndDeleteCookedFilesForPackages(TConstArrayView<FName> PackageNames)
+{
+	const FString& SandboxRootDir = OutputPath;
+	const FString SandboxProjectDir = FPaths::Combine(OutputPath, FApp::GetProjectName()) + TEXT("/");
+	const FString RelativeRootDir = FPaths::GetRelativePathToRoot();
+	const FString RelativeProjectDir = FPaths::ProjectDir();
+
+	for (FName PackageName : PackageNames)
+	{
+		FString CookedFileName = ConvertPackageNameToCookedPath(
+			SandboxRootDir, RelativeRootDir,
+			SandboxProjectDir, RelativeProjectDir,
+			WriteToString<256>(PackageName));
+		if (CookedFileName.IsEmpty())
+		{
+			continue;
+		}
+		FStringView ParentDir;
+		FStringView BaseName;
+		FStringView Extension;
+		FPathViews::Split(CookedFileName, ParentDir, BaseName, Extension);
+
+		IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+		TArray<FString, TInlineAllocator<3>> FilesToRemove;
+		PlatformFile.IterateDirectory(*WriteToString<1024>(ParentDir),
+			[BaseName, ParentDir, &FilesToRemove](const TCHAR* FoundFullPath, bool bDirectory)
+			{
+				FStringView FoundParentDir;
+				FStringView FoundBaseName;
+				FStringView FoundExtension;
+				FPathViews::Split(FoundFullPath, FoundParentDir, FoundBaseName, FoundExtension);
+				if (FoundBaseName == BaseName)
+				{
+					if (FoundParentDir.IsEmpty())
+					{
+						FilesToRemove.Add(FPaths::ConvertRelativePathToFull(FString(ParentDir), FString(FoundFullPath)));
+					}
+					else
+					{
+						FilesToRemove.Add(FString(FoundFullPath));
+					}
+				}
+				return true;
+			});
+		for (const FString& FileName : FilesToRemove)
+		{
+			PlatformFile.DeleteFile(*FileName);
+		}
+	}
+}
+
+FName FLooseCookedPackageWriter::ConvertCookedPathToPackageName(
 	const FString& SandboxRootDir, const FString& RelativeRootDir,
 	const FString& SandboxProjectDir, const FString& RelativeProjectDir,
-	const FString& CookedPath, FString& OutUncookedPath) const
+	const FString& CookedPath, FString& ScratchFileName, FString& ScratchPackageName) const
 {
-	OutUncookedPath.Reset();
+	FString& UncookedFileName = ScratchFileName; 
+	UncookedFileName.Reset();
+	constexpr FStringView RemappedPluginsFolder(REMAPPED_PLUGINS);
+	constexpr FStringView ContentFolder(TEXTVIEW("Content/"));
 
 	// Check for remapped plugins' cooked content
-	if (PluginsToRemap.Num() > 0 && CookedPath.Contains(REMAPPED_PLUGINS))
+	if (PluginsToRemap.Num() > 0 && CookedPath.Contains(RemappedPluginsFolder))
 	{
-		int32 RemappedIndex = CookedPath.Find(REMAPPED_PLUGINS);
+		int32 RemappedIndex = CookedPath.Find(RemappedPluginsFolder);
 		check(RemappedIndex >= 0);
-		static uint32 RemappedPluginStrLen = FCString::Strlen(REMAPPED_PLUGINS);
 		// Snip everything up through the RemappedPlugins/ off so we can find the plugin it corresponds to
-		FString PluginPath = CookedPath.RightChop(RemappedIndex + RemappedPluginStrLen + 1);
+		FString PluginPath = CookedPath.RightChop(RemappedIndex + RemappedPluginsFolder.Len() + 1);
 		// Find the plugin that owns this content
 		for (const TSharedRef<IPlugin>& Plugin : PluginsToRemap)
 		{
 			if (PluginPath.StartsWith(Plugin->GetName()))
 			{
-				OutUncookedPath = Plugin->GetContentDir();
-				static uint32 ContentStrLen = FCString::Strlen(TEXT("Content/"));
+				UncookedFileName = Plugin->GetContentDir();
 				// Chop off the pluginName/Content since it's part of the full path
-				OutUncookedPath /= PluginPath.RightChop(Plugin->GetName().Len() + ContentStrLen);
+				UncookedFileName /= PluginPath.RightChop(Plugin->GetName().Len() + ContentFolder.Len());
 				break;
 			}
 		}
 
-		if (OutUncookedPath.Len() > 0)
-		{
-			return FName(*OutUncookedPath);
-		}
-		// Otherwise fall through to sandbox handling
+		// If UncookedFileName is empty fall through to sandbox handling
 	}
 
-	auto BuildUncookedPath =
-		[&OutUncookedPath](const FString& CookedPath, const FString& CookedRoot, const FString& UncookedRoot)
+	if (UncookedFileName.IsEmpty())
 	{
-		OutUncookedPath.AppendChars(*UncookedRoot, UncookedRoot.Len());
-		OutUncookedPath.AppendChars(*CookedPath + CookedRoot.Len(), CookedPath.Len() - CookedRoot.Len());
-	};
-
-	if (CookedPath.StartsWith(SandboxRootDir))
-	{
-		// Optimized CookedPath.StartsWith(SandboxProjectDir) that does not compare all of SandboxRootDir again
-		if (CookedPath.Len() >= SandboxProjectDir.Len() &&
-			0 == FCString::Strnicmp(
-				*CookedPath + SandboxRootDir.Len(),
-				*SandboxProjectDir + SandboxRootDir.Len(),
-				SandboxProjectDir.Len() - SandboxRootDir.Len()))
+		auto BuildUncookedPath =
+			[&UncookedFileName](const FString& CookedPath, const FString& CookedRoot, const FString& UncookedRoot)
 		{
-			BuildUncookedPath(CookedPath, SandboxProjectDir, RelativeProjectDir);
+			UncookedFileName.AppendChars(*UncookedRoot, UncookedRoot.Len());
+			UncookedFileName.AppendChars(*CookedPath + CookedRoot.Len(), CookedPath.Len() - CookedRoot.Len());
+		};
+
+		if (CookedPath.StartsWith(SandboxRootDir))
+		{
+			// Optimized CookedPath.StartsWith(SandboxProjectDir) that does not compare all of SandboxRootDir again
+			if (CookedPath.Len() >= SandboxProjectDir.Len() &&
+				0 == FCString::Strnicmp(
+					*CookedPath + SandboxRootDir.Len(),
+					*SandboxProjectDir + SandboxRootDir.Len(),
+					SandboxProjectDir.Len() - SandboxRootDir.Len()))
+			{
+				BuildUncookedPath(CookedPath, SandboxProjectDir, RelativeProjectDir);
+			}
+			else
+			{
+				BuildUncookedPath(CookedPath, SandboxRootDir, RelativeRootDir);
+			}
 		}
 		else
 		{
-			BuildUncookedPath(CookedPath, SandboxRootDir, RelativeRootDir);
+			FString FullCookedFilename = FPaths::ConvertRelativePathToFull(CookedPath);
+			BuildUncookedPath(FullCookedFilename, SandboxRootDir, RelativeRootDir);
 		}
+	}
+
+	if (!FPackageName::TryConvertFilenameToLongPackageName(UncookedFileName, ScratchPackageName))
+	{
+		return NAME_None;
+	}
+
+	return FName(*ScratchPackageName);
+}
+
+bool FLooseCookedPackageWriter::TryConvertUncookedFilenameToCookedRemappedPluginFilename(
+	FStringView FileName, TConstArrayView<TSharedRef<IPlugin>> InPluginsToRemap, FStringView SandboxDirectory,
+	FString& OutCookedFileName)
+{
+	// Ideally this would be in the Sandbox File but it can't access the project or plugin
+	if (InPluginsToRemap.IsEmpty())
+	{
+		return false;
+	}
+
+	for (const TSharedRef<IPlugin>& Plugin : InPluginsToRemap)
+	{
+		// If these match, then this content is part of plugin that gets remapped when packaged/staged
+		if (FileName.StartsWith(Plugin->GetContentDir()))
+		{
+			FString SearchFor;
+			SearchFor /= Plugin->GetName() / TEXT("Content");
+			int32 FoundAt = UE::String::FindLast(FileName, SearchFor, ESearchCase::IgnoreCase);
+			check(FoundAt != INDEX_NONE);
+			// Strip off everything but <PluginName/Content/<remaing path to file>
+			FStringView SnippedOffPath = FileName.RightChop(FoundAt);
+			// Put this is in <sandbox path>/RemappedPlugins/<PluginName>/Content/<remaing path to file>
+			constexpr FStringView RemappedPluginsDirName(REMAPPED_PLUGINS);
+			OutCookedFileName.Reserve(SandboxDirectory.Len() + RemappedPluginsDirName.Len() + SnippedOffPath.Len() + 2);
+			OutCookedFileName = SandboxDirectory;
+			OutCookedFileName /= REMAPPED_PLUGINS;
+			OutCookedFileName /= SnippedOffPath;
+			return true;
+		}
+	}
+	return false;
+}
+
+FString FLooseCookedPackageWriter::ConvertPackageNameToCookedPath(
+	const FString& SandboxRootDir, const FString& RelativeRootDir,
+	const FString& SandboxProjectDir, const FString& RelativeProjectDir,
+	FStringView PackageName) const
+{
+	FString UncookedFileName;
+	if (!FPackageName::TryConvertLongPackageNameToFilename(FString(PackageName), UncookedFileName))
+	{
+		return TEXT("");
+	}
+
+	FString CookedFileName;
+	if (TryConvertUncookedFilenameToCookedRemappedPluginFilename(UncookedFileName, PluginsToRemap,
+		SandboxRootDir, CookedFileName))
+	{
+		return CookedFileName;
+	}
+
+	auto BuildCookedPath =
+		[&CookedFileName](const FString& UncookedPath, const FString& CookedRoot, const FString& UncookedRoot)
+	{
+		CookedFileName.AppendChars(*CookedRoot, CookedRoot.Len());
+		CookedFileName.AppendChars(*UncookedPath + UncookedRoot.Len(), UncookedPath.Len() - UncookedRoot.Len());
+	};
+
+	if (UncookedFileName.StartsWith(RelativeProjectDir))
+	{
+		BuildCookedPath(UncookedFileName, SandboxProjectDir, RelativeProjectDir);
+	}
+	else if (UncookedFileName.StartsWith(RelativeRootDir))
+	{
+		BuildCookedPath(UncookedFileName, SandboxRootDir, RelativeRootDir);
 	}
 	else
 	{
-		FString FullCookedFilename = FPaths::ConvertRelativePathToFull(CookedPath);
-		BuildUncookedPath(FullCookedFilename, SandboxRootDir, RelativeRootDir);
+		CookedFileName.Empty();
 	}
-
-	// Convert to a standard filename as required by PackageDatas where this path is used.
-	FPaths::MakeStandardFilename(OutUncookedPath);
-
-	return FName(*OutUncookedPath);
+	return CookedFileName;
 }
 
 EPackageExtension FLooseCookedPackageWriter::BulkDataTypeToExtension(FBulkDataInfo::EType BulkDataType)

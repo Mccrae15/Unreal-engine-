@@ -7,6 +7,8 @@
 #include "GPUSkinPublicDefs.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Materials/MaterialInstance.h"
+#include "GPUSkinVertexFactory.h"
+
 #include "MuCO/CustomizableObjectInstance.h"
 #include "MuCO/MutableMeshBufferUtils.h"
 #include "MuCOE/CustomizableObjectCompiler.h"
@@ -39,6 +41,7 @@
 #include "MuT/NodeMeshFragment.h"
 #include "MuT/NodePatchImage.h"
 #include "MuT/NodePatchMesh.h"
+#include "MuT/NodeScalarConstant.h"
 #include "MuT/NodeSurfaceEdit.h"
 #include "MuT/NodeSurfaceVariation.h"
 
@@ -75,7 +78,7 @@ void LayoutOperationUVNormalizedWarning(FMutableGraphGenerationContext& Generati
 					if (!bNormalized)
 					{
 						FText Text = FText::Format(LOCTEXT("UVNotNormalized", "UV from mesh {0} not normalized. Required to perform texture layout operations."), FText::FromString(*MeshData.Mesh->GetName()));
-						GenerationContext.Compiler->CompilerLog(Text, OperationNode);
+						GenerationContext.Compiler->CompilerLog(Text, OperationNode, EMessageSeverity::Type::Info);
 					}
 				}
 			}
@@ -83,16 +86,24 @@ void LayoutOperationUVNormalizedWarning(FMutableGraphGenerationContext& Generati
 	}
 }
 
-void SetSurfaceFormat( mu::FMeshBufferSet& OutVertexBufferFormat, mu::FMeshBufferSet& OutIndexBufferFormat, const FMutableGraphMeshGenerationData& MeshData, 
-					   bool bWithExtraBoneInfluences, bool bWithRealTimeMorphs, bool bWithClothing, bool bWith16BitWeights )
+
+void SetSurfaceFormat( FMutableGraphGenerationContext& GenerationContext,
+					   mu::FMeshBufferSet& OutVertexBufferFormat, mu::FMeshBufferSet& OutIndexBufferFormat, const FMutableGraphMeshGenerationData& MeshData, 
+					   ECustomizableObjectNumBoneInfluences ECustomizableObjectNumBoneInfluences, bool bWithRealTimeMorphs, 
+					   bool bWithClothing, bool bWith16BitWeights )
 {
 	// Limit skinning weights if necessary
 	// \todo: make it more flexible to support 3 or 5 or 1 weight, since there is support for this in 4.25
-	const int32 MutableBonesPerVertex = bWithExtraBoneInfluences ? EXTRA_BONE_INFLUENCES : 4;
+	const int32 MutableBonesPerVertex = FGPUBaseSkinVertexFactory::UseUnlimitedBoneInfluences(MeshData.MaxNumBonesPerVertex, GenerationContext.Options.TargetPlatform) &&
+										MeshData.MaxNumBonesPerVertex < (int32)ECustomizableObjectNumBoneInfluences ?
+											MeshData.MaxNumBonesPerVertex :
+											(int32)ECustomizableObjectNumBoneInfluences;
+
+	ensure(MutableBonesPerVertex <= MAX_TOTAL_INFLUENCES);
 	
 	if (MutableBonesPerVertex != MeshData.MaxNumBonesPerVertex)
 	{
-		UE_LOG(LogMutable, Log, TEXT("Mesh bone number adjusted from %d to %d."), MeshData.MaxNumBonesPerVertex, MutableBonesPerVertex);
+		UE_LOG(LogMutable, Verbose, TEXT("In object [%s] Mesh bone number adjusted from %d to %d."), *GenerationContext.Object->GetName(), MeshData.MaxNumBonesPerVertex, MutableBonesPerVertex);
 	}
 
 	int MutableBufferCount = MUTABLE_VERTEXBUFFER_TEXCOORDS + 1;
@@ -208,6 +219,34 @@ void SetSurfaceFormat( mu::FMeshBufferSet& OutVertexBufferFormat, mu::FMeshBuffe
 }
 
 
+void UpdateSharedSurfaceId(FMutableGraphGenerationContext& GenerationContext, UCustomizableObjectNodeMaterial* NodeMaterial, mu::NodeSurfaceNewPtr InNodeSurface)
+{
+	// \TODO: Reusability is actually per-texture: if a texture is set to not use layouts (setting LayoutIndex to -1) then it can always be reused.
+	// Reuse materials between LODs when using automatics LODs, if texture layout management is disabled or if bReuseMaterials is enabled in the node material.
+	const bool bCanShareSurface = GenerationContext.CurrentAutoLODStrategy == ECustomizableObjectAutomaticLODStrategy::AutomaticFromMesh
+		&& NodeMaterial->bReuseMaterialBetweenLODs;
+
+	// Set shared surface Id to reuse materials and textures between LODs if automatic LODs from mesh is being used
+	if (bCanShareSurface && InNodeSurface)
+	{
+		FMutableGraphGenerationContext::FSharedSurfaces& SharedSurface = GenerationContext.SharedSurfaceIds.FindOrAdd(NodeMaterial, { GenerationContext.SharedSurfaceIds.Num(), InNodeSurface });
+		SharedSurface.NodeSurface = InNodeSurface;
+
+		InNodeSurface->SetSharedSurfaceId(SharedSurface.SharedSurfaceId);
+	}
+
+	// Invalidate the shared surface Id. 
+	else if (!bCanShareSurface && !InNodeSurface)
+	{
+		FMutableGraphGenerationContext::FSharedSurfaces* SharedSurface = GenerationContext.SharedSurfaceIds.Find(NodeMaterial);
+		if (SharedSurface && SharedSurface->NodeSurface)
+		{
+			SharedSurface->NodeSurface->SetSharedSurfaceId(INDEX_NONE);
+		}
+	}
+}
+
+
 mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutableGraphGenerationContext & GenerationContext, FMutableGraphSurfaceGenerationData& SurfaceData)
 {
 	check(Pin)
@@ -295,7 +334,9 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 			const int32 lastMaterialAmount = GenerationContext.ReferencedMaterials.Num();
 			ReferencedMaterialsIndex = GenerationContext.ReferencedMaterials.AddUnique(TypedNodeMat->Material);
 			// Used ReferencedMaterialsIndex instead of TypedNodeMat->Material->GetName() to prevent material name collisions
-			SurfNode->SetCustomID(ReferencedMaterialsIndex);
+
+			// Set shared surface Id to reuse materials and textures between LODs if automatic LODs from mesh is being used
+			UpdateSharedSurfaceId(GenerationContext, TypedNodeMat, SurfNode);
 
 			// Take slot name from skeletal mesh if one can be found, else leave empty.
 			// Keep Referenced Materials and Materail Slot Names synchronized even if no material name can be found.
@@ -311,7 +352,7 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 					{
 						if (const UCustomizableObjectNodeSkeletalMesh* SkeletalMeshNode = Cast<UCustomizableObjectNodeSkeletalMesh>(SkeletalMeshPin->GetOwningNode()))
 						{
-							if (const FSkeletalMaterial* SkeletalMaterial = SkeletalMeshNode->GetSkeletalMaterialFor(SkeletalMeshPin))
+							if (const FSkeletalMaterial* SkeletalMaterial = SkeletalMeshNode->GetSkeletalMaterialFor(*SkeletalMeshPin))
 							{
 								if (IsNewSlotName)
 								{
@@ -324,6 +365,8 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 									SlotNameFound = true;
 								}
 							}
+
+							//TODO(max): Add support for table nodes. Convert this to a function as it will be also used in the GenerateMutableSourceTable file
 						}
 					}
 				}
@@ -338,13 +381,12 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 
 		mu::NodeMeshPtr MeshNode;
 
-
 		TypedNodeMat = TypedNodeCopyMaterial; // NodeCopyMaterial. Start reading mesh pin. Set TypedNodeMat pointer to NodeCopyMaterial
 
 		if (const UEdGraphPin* ConnectedPin = FollowInputPin(*TypedNodeMat->GetMeshPin()))
 		{
 			FMutableGraphMeshGenerationData MeshData;
-			MeshNode = GenerateMutableSourceMesh(ConnectedPin, GenerationContext, MeshData);
+			MeshNode = GenerateMutableSourceMesh(ConnectedPin, GenerationContext, MeshData, false, false);
 
 			if (MeshNode)
 			{
@@ -352,9 +394,9 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 
 				mu::NodeMeshFormatPtr MeshFormatNode = new mu::NodeMeshFormat();
 				MeshFormatNode->SetSource(MeshNode.get());
-				SetSurfaceFormat( 
+				SetSurfaceFormat( GenerationContext,
 						MeshFormatNode->GetVertexBuffers(), MeshFormatNode->GetIndexBuffers(), MeshData,
-						GenerationContext.Options.bExtraBoneInfluencesEnabled,
+						GenerationContext.Options.CustomizableObjectNumBoneInfluences,
 						GenerationContext.Options.bRealTimeMorphTargetsEnabled, 
 						GenerationContext.Options.bClothingEnabled,
 						GenerationContext.Options.b16BitBoneWeightsEnabled);
@@ -373,378 +415,417 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 		TMap<FString, float> TextureNameToProjectionResFactor;
 		FString AlternateResStateName;
 
-		bool bMaterialPinConnected = FollowInputPin(*TypedNodeMat->GetMaterialAssetPin()) != nullptr;
-		TArray<FGuid> NodeTableParametersGenerated;
+		bool bTableMaterialPinLinked = TypedNodeMat->GetMaterialAssetPin() && FollowInputPin(*TypedNodeMat->GetMaterialAssetPin()) != nullptr;
+		FString TableColumnName;
 
 		// Checking if we should not use the material of the table node even if it is linked to the material node
 		if (const UEdGraphPin* ConnectedPin = FollowInputPin(*TypedNodeMat->GetMaterialAssetPin()))
 		{
 			if (const UCustomizableObjectNodeTable* TypedNodeTable = Cast< UCustomizableObjectNodeTable >(ConnectedPin->GetOwningNode()))
 			{
-				FString ColumnName = ConnectedPin->PinFriendlyName.ToString();
+				TableColumnName = ConnectedPin->PinFriendlyName.ToString();
 
-				// Generating a new data table if not exists
-				mu::TablePtr Table = GenerateMutableSourceTable(TypedNodeTable->Table->GetName(), ConnectedPin, GenerationContext);
-				
-				// Generating a column for each modified parameter(texture, color & float) if not exists
-				if (Table && Table->FindColumn(TCHAR_TO_ANSI(*ColumnName)) == INDEX_NONE)
+				if (UMaterialInstance * TableMaterial = TypedNodeTable->GetColumnDefaultAssetByType<UMaterialInstance>(ConnectedPin))
 				{
-					GenerateTableColumn(TypedNodeTable, ConnectedPin, Table, ColumnName, GenerationContext.CurrentLOD, GenerationContext);
-				}
-
-				// Checking if this material has some parameters modified by the table node linked to it
-				if (GenerationContext.GeneratedParametersInTables.Contains(TypedNodeTable))
-				{
-					NodeTableParametersGenerated = GenerationContext.GeneratedParametersInTables[TypedNodeTable];
-
-					UMaterialInstance* TableMaterial = TypedNodeTable->GetColumnDefaultAssetByType<UMaterialInstance>(ConnectedPin);
-
-					if (TableMaterial && TypedNodeMat->Material)
+					// Checking if the reference material of the Table Node has the same parent as the material of the Material Node 
+					if (!TypedNodeMat->Material || TableMaterial->GetMaterial() != TypedNodeMat->Material->GetMaterial())
 					{
-						// Checking if the reference material of the Table Node has the same parent as the material of the Material Node 
-						if (TableMaterial->GetMaterial() != TypedNodeMat->Material->GetMaterial())
-						{
-							bMaterialPinConnected = false;
+						bTableMaterialPinLinked = false;
 
-							FString msg = FString::Printf(TEXT("Material from NodeTable is an instance from a different Parent"));
-							GenerationContext.Compiler->CompilerLog(FText::FromString(msg), TypedNodeMat);
-						}
-					}
-					else
-					{
-						bMaterialPinConnected = false;
-
-						if (!TypedNodeMat->Material)
-						{
-							FString msg = FString::Printf(TEXT("Need to select a Material to work with Node Table Materials."));
-							GenerationContext.Compiler->CompilerLog(FText::FromString(msg), TypedNodeMat);
-						}
+						GenerationContext.Compiler->CompilerLog(LOCTEXT("DifferentParentMaterial","The Deafult Material Instance of the Data Table must have the same Parent Material."), TypedNodeMat);
 					}
 				}
 				else
 				{
-					bMaterialPinConnected = false;
+					FText Msg = FText::Format(LOCTEXT("DefaultValueNotFound", "Couldn't find a default value in the data table's struct for the column {0}. The default value is null or not a Material Instance."), FText::FromString(TableColumnName));
+					GenerationContext.Compiler->CompilerLog(Msg, Node);
+
+					bTableMaterialPinLinked = false;
 				}
 			}
 		}
 
 		const int32 NumImages = TypedNodeMat->GetNumParameters(EMaterialParameterType::Texture);
 		SurfNode->SetImageCount(NumImages);
+
 		for (int32 ImageIndex = 0; ImageIndex < NumImages; ++ImageIndex)
 		{
-			mu::NodeImagePtr GroupProjectionImg;
-			UTexture2D* GroupProjectionReferenceTexture = nullptr;
 			const UEdGraphPin* ImagePin = TypedNodeMat->GetParameterPin(EMaterialParameterType::Texture, ImageIndex);
-			const FString ImageName = TypedNodeMat->GetParameterName(EMaterialParameterType::Texture, ImageIndex).ToString();
-			const FGuid ImageId = TypedNodeMat->GetParameterId(EMaterialParameterType::Texture, ImageIndex);
 
-			FString MaterialImageId = FGroupProjectorImageInfo::GenerateId(TypedNodeMat, ImageIndex);
-			bool bShareProjectionTexturesBetweenLODs = false;
-			FGroupProjectorImageInfo* ProjectorInfo = GenerationContext.GroupProjectorLODCache.Find(MaterialImageId);
+			const bool bIsImagePinLinked = ImagePin && FollowInputPin(*ImagePin);
 
-			if (!ProjectorInfo) // No previous LOD of this material generated the image.
+			if (bIsImagePinLinked && !TypedNodeMaterial->IsImageMutableMode(ImageIndex))
 			{
-				bool bIsGroupProjectorImage = false;
-
-				GroupProjectionImg = GenerateMutableGroupProjection(LOD, ImageIndex, MeshNode, GenerationContext,
-				TypedNodeMat, bShareProjectionTexturesBetweenLODs, bIsGroupProjectorImage,
-				GroupProjectionReferenceTexture, TextureNameToProjectionResFactor, AlternateResStateName,
-				nullptr);
-
-				if (GroupProjectionImg.get() || TypedNodeMaterial->IsImageMutableMode(ImageIndex) || (bMaterialPinConnected && NodeTableParametersGenerated.Contains(ImageId)))
+				if (const UEdGraphPin* ConnectedPin = FollowInputPin(*ImagePin))
 				{
-					// Get the reference texture
-					UTexture2D* ReferenceTexture = nullptr;
+					// This is a connected pass-through texture that simply has to be passed to the core
+					mu::Ptr<mu::NodeImage> PassThroughImagePtr = GenerateMutableSourceImage(ConnectedPin, GenerationContext, 0);
+					SurfNode->SetImage(ImageIndex, PassThroughImagePtr);
 
-					GenerationContext.CurrentMaterialTableParameter = ImageName;
-					GenerationContext.CurrentMaterialTableParameterId = ImageId.ToString();
+					const FString ImageName = TypedNodeMat->GetParameterName(EMaterialParameterType::Texture, ImageIndex).ToString();
+					FString SurfNodeImageName = FString::Printf(TEXT("%d"), GenerationContext.ImageProperties.Num());
+					SurfNode->SetImageName(ImageIndex, StringCast<ANSICHAR>(*SurfNodeImageName).Get());
+					int32 UVLayout = TypedNodeMat->GetImageUVLayout(ImageIndex);
 
-					if (GroupProjectionImg.get() && GroupProjectionReferenceTexture)
+					if (UVLayout >= 0)
 					{
-						ReferenceTexture = GroupProjectionReferenceTexture;
-					}
-					else
-					{
-						ReferenceTexture = TypedNodeMat->GetImageReferenceTexture(ImageIndex);
+						FString msg = FString::Printf(TEXT("Passthrough texture [%s] will ignore layout despite set to use layout [%d]"), *ImageName, UVLayout);
+						GenerationContext.Compiler->CompilerLog(FText::FromString(msg), Node, EMessageSeverity::Warning);
 
-						if (!ReferenceTexture && !GroupProjectionImg.get())
-						{
-							if (ImagePin)
-							{
-								if (const UEdGraphPin* ConnectedPin = FollowInputPin(*ImagePin))
-								{
-									ReferenceTexture = FindReferenceImage(ConnectedPin, GenerationContext);
-								}
-							}
-							if (!ReferenceTexture && bMaterialPinConnected && NodeTableParametersGenerated.Contains(ImageId))
-							{
-								if (const UEdGraphPin* ConnectedPin = FollowInputPin(*TypedNodeMat->GetMaterialAssetPin()))
-								{
-									ReferenceTexture = FindReferenceImage(ConnectedPin, GenerationContext);
-								}
-							}
-							if (!ReferenceTexture)
-							{
-								ReferenceTexture = TypedNodeMat->GetImageValue(ImageIndex);
-							}
-						}
 					}
 
+					SurfNode->SetImageLayoutIndex(ImageIndex, -1);
+					SurfNode->SetImageAdditionalNames(ImageIndex, StringCast<ANSICHAR>(*TypedNodeMat->Material->GetName()).Get(), StringCast<ANSICHAR>(*ImageName).Get());
+
+					// We don't need a reference texture or props here, but we do need the parameter name.
 					FGeneratedImageProperties Props;
-					if (ReferenceTexture)
-					{
-						// Store properties for the generated images
-						Props.TextureParameterName = ImageName;
-						Props.CompressionSettings = ReferenceTexture->CompressionSettings;
-						Props.Filter = ReferenceTexture->Filter;
-						Props.SRGB = ReferenceTexture->SRGB;
- 						Props.LODBias = 0;
-						Props.MipGenSettings = ReferenceTexture->MipGenSettings;
-						Props.MaxTextureSize = GetMaxTextureSize(ReferenceTexture, GenerationContext);
-						Props.LODGroup = ReferenceTexture->LODGroup;
-						Props.AddressX = ReferenceTexture->AddressX;
-						Props.AddressY = ReferenceTexture->AddressY;
-						Props.bFlipGreenChannel = ReferenceTexture->bFlipGreenChannel;
-
-						// TODO: MTBL-1081
-						// TextureGroup::TEXTUREGROUP_UI does not support streaming. If we generate a texture that requires streaming and set this group, it will crash when initializing the resource. 
-						// If LODGroup == TEXTUREGROUP_UI, UTexture::IsPossibleToStream() will return false and UE will assume all mips are loaded, when they're not, and crash.
-						if (Props.LODGroup == TEXTUREGROUP_UI)
-						{
-							Props.LODGroup = TextureGroup::TEXTUREGROUP_Character;
-							
-							FString msg = FString::Printf(TEXT("The Reference texture [%s] is using TEXTUREGROUP_UI which does not support streaming. Please set a different TEXTURE group."),
-								*ReferenceTexture->GetName(), *ImageName);
-							GenerationContext.Compiler->CompilerLog(FText::FromString(msg), Node, EMessageSeverity::Info);
-						}
-					}
-					else if (!GroupProjectionImg.get())
-					{
-						// warning!
-						FString msg = FString::Printf(TEXT("The Reference texture for material image [%s] is not set and it couldn't be found automatically."), *ImageName);
-						GenerationContext.Compiler->CompilerLog(FText::FromString(msg), Node);
-					}
-
+					Props.TextureParameterName = ImageName;
 					GenerationContext.ImageProperties.Add(Props);
 					SurfaceData.ImageProperties = Props;
-					
-					// Calculate the LODBias for this texture
-					int32 LODBias = ComputeLODBias(GenerationContext, ReferenceTexture, Props.MaxTextureSize, TypedNodeMat, ImageIndex);
-
-					GenerationContext.CurrentTextureLODBias = LODBias;
-
-					// Generate the texture nodes
-					mu::NodeImagePtr ImageNode = [&]()
-					{
-						if (TypedNodeMaterial->IsImageMutableMode(ImageIndex))
-						{
-							if (ImagePin)
-							{
-								if (const UEdGraphPin* ConnectedPin = FollowInputPin(*ImagePin))
-								{
-									return GenerateMutableSourceImage(ConnectedPin, GenerationContext, Props.MaxTextureSize);
-								}
-							}
-							
-							if (bMaterialPinConnected && NodeTableParametersGenerated.Contains(ImageId))
-							{
-								if (const UEdGraphPin* ConnectedPin = FollowInputPin(*TypedNodeMat->GetMaterialAssetPin()))
-								{
-									return GenerateMutableSourceImage(ConnectedPin, GenerationContext, Props.MaxTextureSize);
-								}
-							}
-
-							// Else
-							{
-								UTexture2D* Texture2D = TypedNodeMat->GetImageValue(ImageIndex);
-
-								const mu::NodeImageConstantPtr ConstImageNode = new mu::NodeImageConstant();
-								GenerationContext.ArrayTextureUnrealToMutableTask.Add(FTextureUnrealToMutableTask(ConstImageNode, Texture2D, Node));
-
-								return ResizeToMaxTextureSize(Props.MaxTextureSize, Texture2D, ConstImageNode);
-							}
-						}
-						else
-						{
-							return mu::NodeImagePtr();
-						}
-					}();
-
-					if (GroupProjectionImg.get())
-					{
-						ImageNode = GroupProjectionImg;
-					}
-
-					if (GenerationContext.Options.TargetPlatform && ReferenceTexture)
-					{
-						int LayerIndex = 0;
-
-						TArray< TArray<FName> > PlatformFormats;
-						GenerationContext.Options.TargetPlatform->GetTextureFormats(ReferenceTexture, PlatformFormats);
-
-						bool bHaveFormatPlatformFormats = PlatformFormats.Num() > 0;
-
-						mu::NodeImagePtr LastImage = ImageNode;
-
-						// To apply LOD bias						
-						if (LODBias > 0)
-						{
-							mu::NodeImageResizePtr ResizeImage = new mu::NodeImageResize();
-							ResizeImage->SetBase(LastImage.get());
-							ResizeImage->SetRelative(true);
-							float factor = FMath::Pow(0.5f, LODBias);
-							ResizeImage->SetSize(factor, factor);
-							ResizeImage->SetMessageContext(Node);
-							LastImage = ResizeImage;
-						}
-						
-						mu::NodeImageMipmapPtr MipmapImage = new mu::NodeImageMipmap();
-						MipmapImage->SetSource(LastImage.get());
-						MipmapImage->SetMipmapGenerationSettings(mu::EMipmapFilterType::MFT_SimpleAverage, mu::EAddressMode::AM_NONE, 1.0f, false);
-
-						MipmapImage->SetMessageContext(Node);
-						LastImage = MipmapImage;
-
-						// Apply composite image. This needs to be computed after mipmaps generation. 	
-						if (ReferenceTexture && ReferenceTexture->CompositeTexture && ReferenceTexture->CompositeTextureMode != CTM_Disabled)
-						{
-							mu::NodeImageNormalCompositePtr CompositedImage = new mu::NodeImageNormalComposite();
-							CompositedImage->SetBase( LastImage.get() );
-							CompositedImage->SetPower( ReferenceTexture->CompositePower );
-
-							mu::ECompositeImageMode CompositeImageMode = [CompositeTextureMode = ReferenceTexture->CompositeTextureMode]() -> mu::ECompositeImageMode
-							{
-								switch(CompositeTextureMode)
-								{
-									case CTM_NormalRoughnessToRed  : return mu::ECompositeImageMode::CIM_NormalRoughnessToRed;
-									case CTM_NormalRoughnessToGreen: return mu::ECompositeImageMode::CIM_NormalRoughnessToGreen;
-									case CTM_NormalRoughnessToBlue : return mu::ECompositeImageMode::CIM_NormalRoughnessToBlue;
-									case CTM_NormalRoughnessToAlpha: return mu::ECompositeImageMode::CIM_NormalRoughnessToAlpha;
-									
-									default: return mu::ECompositeImageMode::CIM_Disabled;
-								}
-							}();
-				
-							CompositedImage->SetMode( CompositeImageMode );							
-
-							mu::NodeImageConstantPtr CompositeNormalImage = new mu::NodeImageConstant();
-
-							UTexture2D* ReferenceCompositeNormalTexture = Cast<UTexture2D>( ReferenceTexture->CompositeTexture );
-							if (ReferenceCompositeNormalTexture)
-							{
-								GenerationContext.ArrayTextureUnrealToMutableTask.Add(FTextureUnrealToMutableTask(CompositeNormalImage, ReferenceCompositeNormalTexture, Node, true));
-
-								mu::NodeImageMipmapPtr NormalCompositeMipmapImage = new mu::NodeImageMipmap();
-								NormalCompositeMipmapImage->SetSource( CompositeNormalImage );
-								NormalCompositeMipmapImage->SetMipmapGenerationSettings(mu::EMipmapFilterType::MFT_SimpleAverage, mu::EAddressMode::AM_NONE, 1.0f, true);
-								
-								CompositedImage->SetNormal( NormalCompositeMipmapImage );
-							}
-
-							LastImage = CompositedImage;
-						}
-
-						if (bHaveFormatPlatformFormats)
-						{
-							mu::NodeImageFormatPtr FormatImage = new mu::NodeImageFormat();
-							FormatImage->SetSource(LastImage.get());
-							FormatImage->SetFormat(mu::EImageFormat::IF_RGBA_UBYTE);
-							FormatImage->SetMessageContext(Node);
-							LastImage = FormatImage;
-
-							if (GenerationContext.Options.bTextureCompression)
-							{
-								check(PlatformFormats[0].Num() > LayerIndex);
-
-								const FString PlatformFormat = PlatformFormats[0][LayerIndex].ToString();
-
-								// Remove platform prefix
-								FString FormatWithoutPrefix = PlatformFormat;
-								PlatformFormat.Split(TEXT("_"), nullptr, &FormatWithoutPrefix, ESearchCase::IgnoreCase, ESearchDir::FromEnd);
-
-								mu::EImageFormat mutableFormat = mu::EImageFormat::IF_NONE;
-								mu::EImageFormat mutableFormatIfAlpha = mu::EImageFormat::IF_NONE;
-
-								if (FormatWithoutPrefix == TEXT("AutoDXT"))
-								{
-									mutableFormat = mu::EImageFormat::IF_BC1;
-									mutableFormatIfAlpha = mu::EImageFormat::IF_BC3;
-								}
-								else if (FormatWithoutPrefix == TEXT("DXT1")) mutableFormat = mu::EImageFormat::IF_BC1;
-								else if (FormatWithoutPrefix == TEXT("DXT3")) mutableFormat = mu::EImageFormat::IF_BC2;
-								else if (FormatWithoutPrefix == TEXT("DXT5")) mutableFormat = mu::EImageFormat::IF_BC3;
-								else if (FormatWithoutPrefix == TEXT("BC1")) mutableFormat = mu::EImageFormat::IF_BC1;
-								else if (FormatWithoutPrefix == TEXT("BC2")) mutableFormat = mu::EImageFormat::IF_BC2;
-								else if (FormatWithoutPrefix == TEXT("BC3")) mutableFormat = mu::EImageFormat::IF_BC3;
-								else if (FormatWithoutPrefix == TEXT("BC4")) mutableFormat = mu::EImageFormat::IF_BC4;
-								else if (FormatWithoutPrefix == TEXT("BC5")) mutableFormat = mu::EImageFormat::IF_BC5;
-								else if (FormatWithoutPrefix == TEXT("G8")) mutableFormat = mu::EImageFormat::IF_L_UBYTE;
-								else if (FormatWithoutPrefix == TEXT("BGRA8")) mutableFormat = mu::EImageFormat::IF_RGBA_UBYTE;
-								else if (PlatformFormat.Contains(TEXT("ASTC")))
-								{
-									if ((FormatWithoutPrefix == TEXT("AutoASTC")) || (FormatWithoutPrefix == TEXT("RGBAuto")))
-									{
-										mutableFormat = mu::EImageFormat::IF_ASTC_4x4_RGB_LDR;
-										mutableFormatIfAlpha = mu::EImageFormat::IF_ASTC_4x4_RGBA_LDR;
-									}
-									else if (FormatWithoutPrefix == TEXT("RGB")) mutableFormat = mu::EImageFormat::IF_ASTC_4x4_RGB_LDR;
-									else if (FormatWithoutPrefix == TEXT("RGBA")) mutableFormat = mu::EImageFormat::IF_ASTC_4x4_RGBA_LDR;
-									else if (FormatWithoutPrefix == TEXT("NormalRG")) mutableFormat = mu::EImageFormat::IF_ASTC_4x4_RG_LDR;
-								}
-
-								if (mutableFormat == mu::EImageFormat::IF_NONE)
-								{
-									// Format not supported by Mutable, use RBGA_UBYTE as default.
-									mutableFormat = mu::EImageFormat::IF_RGBA_UBYTE;
-
-									UE_LOG(LogMutable, Warning, TEXT("Unexpected image format [%s]."), *FormatWithoutPrefix);
-								}
-
-								FormatImage->SetFormat(mutableFormat, mutableFormatIfAlpha);
-							}
-						}
-
-						ImageNode = LastImage;
-					}
-
-					mu::NodeImagePtr ImageNodePtr = ImageNode;
-					SurfNode->SetImage(ImageIndex, ImageNodePtr);
-
-					FString SurfNodeImageName = FString::Printf(TEXT("%d"), GenerationContext.ImageProperties.Num() - 1);
-
-					// Encoding material layer in mutable name
-					const int32 LayerIndex = TypedNodeMat->GetParameterLayerIndex(EMaterialParameterType::Texture, ImageIndex);
-					if (LayerIndex != -1)
-					{
-						SurfNodeImageName += "-MutableLayerParam:" + FString::FromInt(LayerIndex);
-					}
-
-					SurfNode->SetImageName(ImageIndex, TCHAR_TO_ANSI(*SurfNodeImageName));
-					int32 UVLayout = TypedNodeMat->GetImageUVLayout(ImageIndex);
-					SurfNode->SetImageLayoutIndex(ImageIndex, UVLayout);
-					SurfNode->SetImageAdditionalNames(ImageIndex, TCHAR_TO_ANSI(*TypedNodeMat->Material->GetName()), TCHAR_TO_ANSI(*ImageName));
-
-					if (bShareProjectionTexturesBetweenLODs && bIsGroupProjectorImage)
-					{
-						// Add to the GroupProjectorLODCache to potentially reuse this projection texture in higher LODs
-						ensure(LOD == GenerationContext.FirstLODAvailable);
-						float* AlternateProjectionResFactor = TextureNameToProjectionResFactor.Find(ImageName);
-						GenerationContext.GroupProjectorLODCache.Add(MaterialImageId,
-							FGroupProjectorImageInfo(ImageNodePtr, ImageName, ImageName, TypedNodeMat,
-							AlternateProjectionResFactor ? *AlternateProjectionResFactor : 0.f, AlternateResStateName, SurfNode, UVLayout));
-					}
 				}
 			}
 			else
 			{
-				ensure(LOD > GenerationContext.FirstLODAvailable);
-				check(ProjectorInfo->SurfNode->GetImage(ImageIndex) == ProjectorInfo->ImageNode);
-				SurfNode->SetImage(ImageIndex, ProjectorInfo->ImageNode);
-				SurfNode->SetImageName(ImageIndex, TCHAR_TO_ANSI(*ProjectorInfo->TextureName));
-				SurfNode->SetImageLayoutIndex(ImageIndex, ProjectorInfo->UVLayout);
+				mu::NodeImagePtr GroupProjectionImg;
+				UTexture2D* GroupProjectionReferenceTexture = nullptr;
+				const FString ImageName = TypedNodeMat->GetParameterName(EMaterialParameterType::Texture, ImageIndex).ToString();
+				const FGuid ImageId = TypedNodeMat->GetParameterId(EMaterialParameterType::Texture, ImageIndex);
 
-				TextureNameToProjectionResFactor.Add(ProjectorInfo->RealTextureName, ProjectorInfo->AlternateProjectionResolutionFactor);
-				AlternateResStateName = ProjectorInfo->AlternateResStateName;
+				FString MaterialImageId = FGroupProjectorImageInfo::GenerateId(TypedNodeMat, ImageIndex);
+				bool bShareProjectionTexturesBetweenLODs = false;
+				FGroupProjectorImageInfo* ProjectorInfo = GenerationContext.GroupProjectorLODCache.Find(MaterialImageId);
+
+				if (!ProjectorInfo) // No previous LOD of this material generated the image.
+				{
+					bool bIsGroupProjectorImage = false;
+
+					GroupProjectionImg = GenerateMutableGroupProjection(LOD, ImageIndex, MeshNode, GenerationContext,
+						TypedNodeMat, bShareProjectionTexturesBetweenLODs, bIsGroupProjectorImage,
+						GroupProjectionReferenceTexture, TextureNameToProjectionResFactor, AlternateResStateName,
+						nullptr);
+
+					if (GroupProjectionImg.get() || TypedNodeMaterial->IsImageMutableMode(ImageIndex))
+					{
+						// Get the reference texture
+						UTexture2D* ReferenceTexture = nullptr;
+
+						GenerationContext.CurrentMaterialTableParameter = ImageName;
+						GenerationContext.CurrentMaterialTableParameterId = ImageId.ToString();
+
+						if (GroupProjectionImg.get() && GroupProjectionReferenceTexture)
+						{
+							ReferenceTexture = GroupProjectionReferenceTexture;
+						}
+						else
+						{
+							ReferenceTexture = TypedNodeMat->GetImageReferenceTexture(ImageIndex);
+
+							if (!ReferenceTexture && !GroupProjectionImg.get())
+							{
+								if (ImagePin)
+								{
+									if (const UEdGraphPin* ConnectedPin = FollowInputPin(*ImagePin))
+									{
+										ReferenceTexture = FindReferenceImage(ConnectedPin, GenerationContext);
+									}
+								}
+								if (!ReferenceTexture && bTableMaterialPinLinked)
+								{
+									if (const UEdGraphPin* ConnectedPin = FollowInputPin(*TypedNodeMat->GetMaterialAssetPin()))
+									{
+										ReferenceTexture = FindReferenceImage(ConnectedPin, GenerationContext);
+									}
+								}
+								if (!ReferenceTexture)
+								{
+									ReferenceTexture = TypedNodeMat->GetImageValue(ImageIndex);
+								}
+							}
+						}
+
+						FGeneratedImageProperties Props;
+						if (ReferenceTexture)
+						{
+							// Store properties for the generated images
+							Props.TextureParameterName = ImageName;
+							Props.CompressionSettings = ReferenceTexture->CompressionSettings;
+							Props.Filter = ReferenceTexture->Filter;
+							Props.SRGB = ReferenceTexture->SRGB;
+							Props.LODBias = 0;
+							Props.MipGenSettings = ReferenceTexture->MipGenSettings;
+							Props.MaxTextureSize = GetMaxTextureSize(ReferenceTexture, GenerationContext);
+							Props.LODGroup = ReferenceTexture->LODGroup;
+							Props.AddressX = ReferenceTexture->AddressX;
+							Props.AddressY = ReferenceTexture->AddressY;
+							Props.bFlipGreenChannel = ReferenceTexture->bFlipGreenChannel;
+
+							// TODO: MTBL-1081
+							// TextureGroup::TEXTUREGROUP_UI does not support streaming. If we generate a texture that requires streaming and set this group, it will crash when initializing the resource. 
+							// If LODGroup == TEXTUREGROUP_UI, UTexture::IsPossibleToStream() will return false and UE will assume all mips are loaded, when they're not, and crash.
+							if (Props.LODGroup == TEXTUREGROUP_UI)
+							{
+								Props.LODGroup = TextureGroup::TEXTUREGROUP_Character;
+
+								FString msg = FString::Printf(TEXT("The Reference texture [%s] is using TEXTUREGROUP_UI which does not support streaming. Please set a different TEXTURE group."),
+									*ReferenceTexture->GetName(), *ImageName);
+								GenerationContext.Compiler->CompilerLog(FText::FromString(msg), Node, EMessageSeverity::Info);
+							}
+						}
+						else if (!GroupProjectionImg.get())
+						{
+							// warning!
+							FString msg = FString::Printf(TEXT("The Reference texture for material image [%s] is not set and it couldn't be found automatically."), *ImageName);
+							GenerationContext.Compiler->CompilerLog(FText::FromString(msg), Node);
+						}
+
+						GenerationContext.ImageProperties.Add(Props);
+						SurfaceData.ImageProperties = Props;
+
+						// Calculate the LODBias for this texture
+						int32 LODBias = ComputeLODBias(GenerationContext, ReferenceTexture, Props.MaxTextureSize, TypedNodeMat, ImageIndex);
+
+						GenerationContext.CurrentTextureLODBias = LODBias;
+
+						// Generate the texture nodes
+						mu::NodeImagePtr ImageNode = [&]()
+						{
+							if (TypedNodeMaterial->IsImageMutableMode(ImageIndex))
+							{
+								if (ImagePin)
+								{
+									if (const UEdGraphPin* ConnectedPin = FollowInputPin(*ImagePin))
+									{
+										return GenerateMutableSourceImage(ConnectedPin, GenerationContext, Props.MaxTextureSize);
+									}
+								}
+
+								if (bTableMaterialPinLinked)
+								{
+									if (const UEdGraphPin* ConnectedPin = FollowInputPin(*TypedNodeMat->GetMaterialAssetPin()))
+									{
+										return GenerateMutableSourceImage(ConnectedPin, GenerationContext, Props.MaxTextureSize);
+									}
+								}
+
+								// Else
+								{
+									UTexture2D* Texture2D = TypedNodeMat->GetImageValue(ImageIndex);
+
+									const mu::NodeImageConstantPtr ConstImageNode = new mu::NodeImageConstant();
+									GenerationContext.ArrayTextureUnrealToMutableTask.Add(FTextureUnrealToMutableTask(ConstImageNode, Texture2D, Node));
+
+									return ResizeToMaxTextureSize(Props.MaxTextureSize, Texture2D, ConstImageNode);
+								}
+							}
+							else
+							{
+								return mu::NodeImagePtr();
+							}
+						}();
+
+						if (GroupProjectionImg.get())
+						{
+							ImageNode = GroupProjectionImg;
+						}
+
+						if (GenerationContext.Options.TargetPlatform && ReferenceTexture)
+						{
+							int LayerIndex = 0;
+
+							TArray< TArray<FName> > PlatformFormats;
+							GenerationContext.Options.TargetPlatform->GetTextureFormats(ReferenceTexture, PlatformFormats);
+
+							bool bHaveFormatPlatformFormats = PlatformFormats.Num() > 0;
+
+							mu::NodeImagePtr LastImage = ImageNode;
+
+							// To apply LOD bias						
+							if (LODBias > 0)
+							{
+								mu::NodeImageResizePtr ResizeImage = new mu::NodeImageResize();
+								ResizeImage->SetBase(LastImage.get());
+								ResizeImage->SetRelative(true);
+								float factor = FMath::Pow(0.5f, LODBias);
+								ResizeImage->SetSize(factor, factor);
+								ResizeImage->SetMessageContext(Node);
+								LastImage = ResizeImage;
+							}
+
+							mu::NodeImageMipmapPtr MipmapImage = new mu::NodeImageMipmap();
+							MipmapImage->SetSource(LastImage.get());
+							MipmapImage->SetMipmapGenerationSettings(mu::EMipmapFilterType::MFT_SimpleAverage, mu::EAddressMode::None, 1.0f, false);
+
+							MipmapImage->SetMessageContext(Node);
+							LastImage = MipmapImage;
+
+							// Apply composite image. This needs to be computed after mipmaps generation. 	
+							if (ReferenceTexture && ReferenceTexture->GetCompositeTexture() && ReferenceTexture->CompositeTextureMode != CTM_Disabled)
+							{
+								mu::NodeImageNormalCompositePtr CompositedImage = new mu::NodeImageNormalComposite();
+								CompositedImage->SetBase(LastImage.get());
+								CompositedImage->SetPower(ReferenceTexture->CompositePower);
+
+								mu::ECompositeImageMode CompositeImageMode = [CompositeTextureMode = ReferenceTexture->CompositeTextureMode]() -> mu::ECompositeImageMode
+								{
+									switch (CompositeTextureMode)
+									{
+									case CTM_NormalRoughnessToRed: return mu::ECompositeImageMode::CIM_NormalRoughnessToRed;
+									case CTM_NormalRoughnessToGreen: return mu::ECompositeImageMode::CIM_NormalRoughnessToGreen;
+									case CTM_NormalRoughnessToBlue: return mu::ECompositeImageMode::CIM_NormalRoughnessToBlue;
+									case CTM_NormalRoughnessToAlpha: return mu::ECompositeImageMode::CIM_NormalRoughnessToAlpha;
+
+									default: return mu::ECompositeImageMode::CIM_Disabled;
+									}
+								}();
+
+								CompositedImage->SetMode(CompositeImageMode);
+
+								mu::NodeImageConstantPtr CompositeNormalImage = new mu::NodeImageConstant();
+
+								UTexture2D* ReferenceCompositeNormalTexture = Cast<UTexture2D>(ReferenceTexture->GetCompositeTexture());
+								if (ReferenceCompositeNormalTexture)
+								{
+									GenerationContext.ArrayTextureUnrealToMutableTask.Add(FTextureUnrealToMutableTask(CompositeNormalImage, ReferenceCompositeNormalTexture, Node, true));
+
+									mu::NodeImageMipmapPtr NormalCompositeMipmapImage = new mu::NodeImageMipmap();
+									NormalCompositeMipmapImage->SetSource(CompositeNormalImage);
+									NormalCompositeMipmapImage->SetMipmapGenerationSettings(mu::EMipmapFilterType::MFT_SimpleAverage, mu::EAddressMode::None, 1.0f, true);
+
+									CompositedImage->SetNormal(NormalCompositeMipmapImage);
+								}
+
+								LastImage = CompositedImage;
+							}
+
+							if (bHaveFormatPlatformFormats)
+							{
+								mu::NodeImageFormatPtr FormatImage = new mu::NodeImageFormat();
+								FormatImage->SetSource(LastImage.get());
+								FormatImage->SetFormat(mu::EImageFormat::IF_RGBA_UBYTE);
+								FormatImage->SetMessageContext(Node);
+								LastImage = FormatImage;
+
+								if (GenerationContext.Options.bTextureCompression)
+								{
+									check(PlatformFormats[0].Num() > LayerIndex);
+
+									const FString PlatformFormat = PlatformFormats[0][LayerIndex].ToString();
+
+									// Remove platform prefix
+									FString FormatWithoutPrefix = PlatformFormat;
+									PlatformFormat.Split(TEXT("_"), nullptr, &FormatWithoutPrefix, ESearchCase::IgnoreCase, ESearchDir::FromEnd);
+
+									mu::EImageFormat mutableFormat = mu::EImageFormat::IF_NONE;
+									mu::EImageFormat mutableFormatIfAlpha = mu::EImageFormat::IF_NONE;
+
+									if (FormatWithoutPrefix == TEXT("AutoDXT"))
+									{
+										mutableFormat = mu::EImageFormat::IF_BC1;
+										mutableFormatIfAlpha = mu::EImageFormat::IF_BC3;
+									}
+									else if (FormatWithoutPrefix == TEXT("DXT1")) mutableFormat = mu::EImageFormat::IF_BC1;
+									else if (FormatWithoutPrefix == TEXT("DXT3")) mutableFormat = mu::EImageFormat::IF_BC2;
+									else if (FormatWithoutPrefix == TEXT("DXT5")) mutableFormat = mu::EImageFormat::IF_BC3;
+									else if (FormatWithoutPrefix == TEXT("BC1")) mutableFormat = mu::EImageFormat::IF_BC1;
+									else if (FormatWithoutPrefix == TEXT("BC2")) mutableFormat = mu::EImageFormat::IF_BC2;
+									else if (FormatWithoutPrefix == TEXT("BC3")) mutableFormat = mu::EImageFormat::IF_BC3;
+									else if (FormatWithoutPrefix == TEXT("BC4")) mutableFormat = mu::EImageFormat::IF_BC4;
+									else if (FormatWithoutPrefix == TEXT("BC5")) mutableFormat = mu::EImageFormat::IF_BC5;
+									else if (FormatWithoutPrefix == TEXT("G8")) mutableFormat = mu::EImageFormat::IF_L_UBYTE;
+									else if (FormatWithoutPrefix == TEXT("BGRA8")) mutableFormat = mu::EImageFormat::IF_RGBA_UBYTE;
+									else if (PlatformFormat.Contains(TEXT("ASTC")))
+									{
+										if ((FormatWithoutPrefix == TEXT("AutoASTC")) || (FormatWithoutPrefix == TEXT("RGBAuto")))
+										{
+											mutableFormat = mu::EImageFormat::IF_ASTC_4x4_RGB_LDR;
+											mutableFormatIfAlpha = mu::EImageFormat::IF_ASTC_4x4_RGBA_LDR;
+										}
+										else if (FormatWithoutPrefix == TEXT("RGB")) mutableFormat = mu::EImageFormat::IF_ASTC_4x4_RGB_LDR;
+										else if (FormatWithoutPrefix == TEXT("RGBA")) mutableFormat = mu::EImageFormat::IF_ASTC_4x4_RGBA_LDR;
+										else if (FormatWithoutPrefix == TEXT("NormalRG")) mutableFormat = mu::EImageFormat::IF_ASTC_4x4_RG_LDR;
+										else if (PlatformFormat.Contains(TEXT("ASTC_NormalRG_Precise")))
+										{
+											// TODO: This is just a workaround to prevent the "Unexpected image format" warning below. ASTC_NormalRG_Precise is
+											// not supported yet by Mutable so it forces IF_ASTC_4x4_RG_LDR as a replacement. It should be changed with a more
+											// appropriate format or directly implement it
+											mutableFormat = mu::EImageFormat::IF_ASTC_4x4_RG_LDR;
+
+											const FString ReplacedImageFormatMsg = FString::Printf(TEXT("In object [%s] the unsupported ASTC_NormalRG_Precise image format is used, ASTC_4x4_RG_LDR will be used instead."), *GenerationContext.Object->GetName());
+											const FText ReplacedImageFormatText = FText::FromString(ReplacedImageFormatMsg);
+											GenerationContext.Compiler->CompilerLog(ReplacedImageFormatText, Node, EMessageSeverity::Info);
+											UE_LOG(LogMutable, Log, TEXT("%s"), *ReplacedImageFormatMsg);
+										}
+										else if (PlatformFormat.Contains(TEXT("ASTC_NormalLA")))
+										{
+											// TODO: This is just a workaround to prevent the "Unexpected image format" warning below. ASTC_NormalLA is
+											// not supported yet by Mutable so it forces IF_ASTC_4x4_RG_LDR as a replacement. It should be changed with a more
+											// appropriate format or directly implement it
+											mutableFormat = mu::EImageFormat::IF_ASTC_4x4_RG_LDR;
+
+											const FString ReplacedImageFormatMsg2 = FString::Printf(TEXT("In object [%s] the unsupported ASTC_NormalLA image format is used, ASTC_4x4_RG_LDR will be used instead."), *GenerationContext.Object->GetName());
+											const FText ReplacedImageFormatText2 = FText::FromString(ReplacedImageFormatMsg2);
+											GenerationContext.Compiler->CompilerLog(ReplacedImageFormatText2, Node, EMessageSeverity::Info);
+											UE_LOG(LogMutable, Log, TEXT("%s"), *ReplacedImageFormatMsg2);
+										}
+									}
+
+									if (mutableFormat == mu::EImageFormat::IF_NONE)
+									{
+										// Format not supported by Mutable, use RBGA_UBYTE as default.
+										mutableFormat = mu::EImageFormat::IF_RGBA_UBYTE;
+
+										const FString UnexpectedImageFormatMsg = FString::Printf(TEXT("In object [%s] Unexpected image format [%s], RGBA_UBYTE will be used instead."), *GenerationContext.Object->GetName(), *PlatformFormat);
+										const FText UnexpectedImageFormatText = FText::FromString(UnexpectedImageFormatMsg);
+										GenerationContext.Compiler->CompilerLog(UnexpectedImageFormatText, Node);
+										UE_LOG(LogMutable, Warning, TEXT("%s"), *UnexpectedImageFormatMsg);
+									}
+
+									FormatImage->SetFormat(mutableFormat, mutableFormatIfAlpha);
+								}
+							}
+
+							ImageNode = LastImage;
+						}
+
+						mu::NodeImagePtr ImageNodePtr = ImageNode;
+						SurfNode->SetImage(ImageIndex, ImageNodePtr);
+
+						FString SurfNodeImageName = FString::Printf(TEXT("%d"), GenerationContext.ImageProperties.Num() - 1);
+
+						// Encoding material layer in mutable name
+						const int32 LayerIndex = TypedNodeMat->GetParameterLayerIndex(EMaterialParameterType::Texture, ImageIndex);
+						if (LayerIndex != -1)
+						{
+							SurfNodeImageName += "-MutableLayerParam:" + FString::FromInt(LayerIndex);
+						}
+
+						SurfNode->SetImageName(ImageIndex, StringCast<ANSICHAR>(*SurfNodeImageName).Get());
+						int32 UVLayout = TypedNodeMat->GetImageUVLayout(ImageIndex);
+						SurfNode->SetImageLayoutIndex(ImageIndex, UVLayout);
+						SurfNode->SetImageAdditionalNames(ImageIndex, StringCast<ANSICHAR>(*TypedNodeMat->Material->GetName()).Get(), StringCast<ANSICHAR>(*ImageName).Get());
+
+						if (bShareProjectionTexturesBetweenLODs && bIsGroupProjectorImage)
+						{
+							// Add to the GroupProjectorLODCache to potentially reuse this projection texture in higher LODs
+							ensure(LOD == GenerationContext.FirstLODAvailable);
+							float* AlternateProjectionResFactor = TextureNameToProjectionResFactor.Find(ImageName);
+							GenerationContext.GroupProjectorLODCache.Add(MaterialImageId,
+								FGroupProjectorImageInfo(ImageNodePtr, ImageName, ImageName, TypedNodeMat,
+									AlternateProjectionResFactor ? *AlternateProjectionResFactor : 0.f, AlternateResStateName, SurfNode, UVLayout));
+						}
+					}
+				}
+				else
+				{
+					ensure(LOD > GenerationContext.FirstLODAvailable);
+					check(ProjectorInfo->SurfNode->GetImage(ImageIndex) == ProjectorInfo->ImageNode);
+					SurfNode->SetImage(ImageIndex, ProjectorInfo->ImageNode);
+					SurfNode->SetImageName(ImageIndex, StringCast<ANSICHAR>(*ProjectorInfo->TextureName).Get());
+					SurfNode->SetImageLayoutIndex(ImageIndex, ProjectorInfo->UVLayout);
+
+					TextureNameToProjectionResFactor.Add(ProjectorInfo->RealTextureName, ProjectorInfo->AlternateProjectionResolutionFactor);
+					AlternateResStateName = ProjectorInfo->AlternateResStateName;
+				}
 			}
 		}
 
@@ -758,23 +839,9 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 			FString VectorName = TypedNodeMat->GetParameterName(EMaterialParameterType::Vector, VectorIndex).ToString();
 			FGuid VectorId = TypedNodeMat->GetParameterId(EMaterialParameterType::Vector, VectorIndex);
 
-			if (bVectorPinConnected || (bMaterialPinConnected && NodeTableParametersGenerated.Contains(VectorId)))
-			{
-				const UEdGraphPin* SourcePin = nullptr;
-
-				if (bVectorPinConnected)
-				{
-					SourcePin = VectorPin;
-				}
-				else if (bMaterialPinConnected)
-				{
-					GenerationContext.CurrentMaterialTableParameter = VectorName;
-					GenerationContext.CurrentMaterialTableParameterId = VectorId.ToString();
-
-					SourcePin = TypedNodeMat->GetMaterialAssetPin();
-				}
-
-				if (const UEdGraphPin* ConnectedPin = FollowInputPin(*SourcePin))
+			if (bVectorPinConnected)
+			{				
+				if (const UEdGraphPin* ConnectedPin = FollowInputPin(*VectorPin))
 				{
 					mu::NodeColourPtr ColorNode = GenerateMutableSourceColor(ConnectedPin, GenerationContext);
 
@@ -785,7 +852,7 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 					}
 
 					SurfNode->SetVector(VectorIndex, ColorNode);
-					SurfNode->SetVectorName(VectorIndex, TCHAR_TO_ANSI(*VectorName));
+					SurfNode->SetVectorName(VectorIndex, StringCast<ANSICHAR>(*VectorName).Get());
 				}
 			}
 		}
@@ -800,23 +867,9 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 			FString ScalarName = TypedNodeMat->GetParameterName(EMaterialParameterType::Scalar, ScalarIndex).ToString();
 			FGuid ScalarId = TypedNodeMat->GetParameterId(EMaterialParameterType::Scalar, ScalarIndex);
 
-			if (bScalarPinConnected || (bMaterialPinConnected && NodeTableParametersGenerated.Contains(ScalarId)))
+			if (bScalarPinConnected)
 			{
-				const UEdGraphPin* SourcePin = nullptr;
-
-				if (bScalarPinConnected)
-				{
-					SourcePin = ScalarPin;
-				}
-				else if (bMaterialPinConnected)
-				{
-					GenerationContext.CurrentMaterialTableParameter = ScalarName;
-					GenerationContext.CurrentMaterialTableParameterId = ScalarId.ToString();
-
-					SourcePin = TypedNodeMat->GetMaterialAssetPin();
-				}
-
-				if (const UEdGraphPin* ConnectedPin = FollowInputPin(*SourcePin))
+				if (const UEdGraphPin* ConnectedPin = FollowInputPin(*ScalarPin))
 				{
 					mu::NodeScalarPtr ScalarNode = GenerateMutableSourceFloat(ConnectedPin, GenerationContext);
 
@@ -827,14 +880,46 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 					}
 
 					SurfNode->SetScalar(ScalarIndex, ScalarNode);
-					SurfNode->SetScalarName(ScalarIndex, TCHAR_TO_ANSI(*ScalarName));
+					SurfNode->SetScalarName(ScalarIndex, StringCast<ANSICHAR>(*ScalarName).Get());
 				}
 			}
 		}
 
+		// New method to pass the surface id as a scalar parameter
+		{
+			int32 MaterialIndex = NumScalar;
+			SurfNode->SetScalarCount(NumScalar + 1);
+
+			const UEdGraphPin* MaterialPin = TypedNodeMat->GetMaterialAssetPin();
+
+			//Encoding name for material material id parameter
+			FString MaterialName = "__MutableMaterialId";
+
+			if (bTableMaterialPinLinked)
+			{
+				if (const UEdGraphPin* ConnectedPin = FollowInputPin(*MaterialPin))
+				{
+					GenerationContext.CurrentMaterialTableParameterId = MaterialName;
+					mu::NodeScalarPtr ScalarNode = GenerateMutableSourceFloat(ConnectedPin, GenerationContext);
+
+					SurfNode->SetScalar(MaterialIndex, ScalarNode);
+					SurfNode->SetScalarName(MaterialIndex, StringCast<ANSICHAR>(*MaterialName).Get());
+				}
+			}
+			else
+			{
+				mu::NodeScalarConstantPtr ScalarNode = new mu::NodeScalarConstant();
+				ScalarNode->SetValue(ReferencedMaterialsIndex);
+
+				SurfNode->SetScalar(MaterialIndex, ScalarNode);
+				SurfNode->SetScalarName(MaterialIndex, StringCast<ANSICHAR>(*MaterialName).Get());
+			}
+		}
+		
+
 		for (const FString& Tag : TypedNodeMat->Tags)
 		{
-			SurfNode->AddTag(TCHAR_TO_ANSI(*Tag));
+			SurfNode->AddTag(StringCast<ANSICHAR>(*Tag).Get());
 		}
 
 		TArray<mu::NodeSurfaceNewPtr>* ArraySurfaceNodePtr = GenerationContext.MapMaterialNodeToMutableSurfaceNodeArray.Find(TypedNodeMat);
@@ -877,7 +962,7 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 
 			for (const FString& Tag : TypedNodeMat->Tags)
 			{
-				SurfNode2->AddTag(TCHAR_TO_ANSI(*Tag));
+				SurfNode2->AddTag(StringCast<ANSICHAR>(*Tag).Get());
 			}
 
 			SurfNode2->SetImageCount(SurfNode->GetImageCount());
@@ -927,7 +1012,7 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 			mu::NodeSurfaceVariationPtr SurfaceVariation = new mu::NodeSurfaceVariation;
 			SurfaceVariation->SetVariationType(mu::NodeSurfaceVariation::VariationType::State);
 			SurfaceVariation->SetVariationCount(1);
-			SurfaceVariation->SetVariationTag(0, TCHAR_TO_ANSI(*AlternateResStateName));
+			SurfaceVariation->SetVariationTag(0, StringCast<ANSICHAR>(*AlternateResStateName).Get());
 
 			SurfaceVariation->AddDefaultSurface(&*SurfNode);
 			SurfaceVariation->AddVariationSurface(0, &*SurfNode2);
@@ -980,20 +1065,46 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 			FMutableGraphMeshGenerationData MeshData;
 			if (const UEdGraphPin* ConnectedPin = FollowInputPin(*TypedNodeExt->AddMeshPin()))
 			{
-				AddMeshNode = GenerateMutableSourceMesh(ConnectedPin, GenerationContext, MeshData);
+				AddMeshNode = GenerateMutableSourceMesh(ConnectedPin, GenerationContext, MeshData, true, false);
 			}
 
 			if (AddMeshNode)
 			{
+				mu::NodeMeshPtr MeshPtr = AddMeshNode;
+
+				const TArray<UCustomizableObjectLayout*> Layouts = TypedNodeExt->GetLayouts();
+				
+				if (Layouts.Num())
+				{
+					//TODO: Implement support for multiple UV channels (e.g. Add warning for vertices which have a block in a layout but not in the other)
+					mu::NodeMeshFragmentPtr MeshFrag = new mu::NodeMeshFragment();
+				
+					MeshFrag->SetMesh(MeshPtr);
+					MeshFrag->SetLayoutOrGroup(0);
+					MeshFrag->SetFragmentType(mu::NodeMeshFragment::FT_LAYOUT_BLOCKS);
+					MeshFrag->SetBlockCount(Layouts[0]->Blocks.Num());
+				
+					for (int i = 0; i < Layouts[0]->Blocks.Num(); ++i)
+					{
+						MeshFrag->SetBlock(i, i);
+					}
+				
+					MeshPtr = MeshFrag;
+				}
+				else
+				{
+					GenerationContext.Compiler->CompilerLog(LOCTEXT("ExtendMaterialLayoutMissing","Skeletal Mesh without Layout Node linked to an Extend Material. A 4x4 layout will be added as default layout."), Node);
+				}
+
 				mu::NodeMeshFormatPtr MeshFormat = new mu::NodeMeshFormat();
-				SetSurfaceFormat( 
+				SetSurfaceFormat( GenerationContext,
 						MeshFormat->GetVertexBuffers(), MeshFormat->GetIndexBuffers(), MeshData,
-						GenerationContext.Options.bExtraBoneInfluencesEnabled,
+						GenerationContext.Options.CustomizableObjectNumBoneInfluences,
 						GenerationContext.Options.bRealTimeMorphTargetsEnabled, 
 						GenerationContext.Options.bClothingEnabled,
 						GenerationContext.Options.b16BitBoneWeightsEnabled);
 
-				MeshFormat->SetSource(AddMeshNode.get());
+				MeshFormat->SetSource(MeshPtr.get());
 
 				mu::NodePatchMeshPtr MeshPatch = new mu::NodePatchMesh();
 				MeshPatch->SetAdd(MeshFormat.get());
@@ -1082,11 +1193,14 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 				const int32 UVIndex = ParentMaterialNode->GetImageUVLayout(ImageIndex);
 				LayoutOperationUVNormalizedWarning(GenerationContext, ParentMaterialNode->GetMeshPin(), Node, UVIndex);
 				LayoutOperationUVNormalizedWarning(GenerationContext, TypedNodeExt->AddMeshPin(), Node, UVIndex);
+
+				// Validate if the ParentMaterialNode can be shared between LODs.
+				UpdateSharedSurfaceId(GenerationContext, ParentMaterialNode, nullptr);
 			}
 		
 			for (const FString& Tag : TypedNodeExt->Tags)
 			{
-				SurfNode->AddTag(TCHAR_TO_ANSI(*Tag));
+				SurfNode->AddTag(StringCast<ANSICHAR>(*Tag).Get());
 			}
 		}();
 	}
@@ -1096,7 +1210,7 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 		mu::NodeSurfaceEditPtr SurfNode = new mu::NodeSurfaceEdit();
 		Result = SurfNode;
 
-		UCustomizableObjectNodeMaterialBase* ParentMaterialNode = TypedNodeRem->GetParentMaterialNode();
+		UCustomizableObjectNodeMaterial* ParentMaterialNode = TypedNodeRem->GetParentMaterialNode();
 		if (!ParentMaterialNode)
 		{
 			GenerationContext.Compiler->CompilerLog(LOCTEXT("ParentMissing", "Parent node not set (or not found)."), Node);
@@ -1113,7 +1227,7 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 			if (const UEdGraphPin* ConnectedPin = FollowInputPin(*TypedNodeRem->RemoveMeshPin()))
 			{
 				FMutableGraphMeshGenerationData DummyMeshData;
-				RemoveMeshNode = GenerateMutableSourceMesh(ConnectedPin, GenerationContext, DummyMeshData);
+				RemoveMeshNode = GenerateMutableSourceMesh(ConnectedPin, GenerationContext, DummyMeshData, false, true);
 			}
 
 			if (RemoveMeshNode)
@@ -1123,6 +1237,9 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 				SurfNode->SetMesh(MeshPatch.get());
 				MeshPatch->SetMessageContext(Node);
 			}
+
+			// Validate if the ParentMaterialNode can be shared between LODs.
+			UpdateSharedSurfaceId(GenerationContext, ParentMaterialNode, nullptr);
 		}
 	}
 
@@ -1153,12 +1270,13 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 			else
 			{
 				FMutableGraphMeshGenerationData DummyMeshData;
-				mu::NodeMeshPtr BaseSourceMesh = GenerateMutableSourceMesh(BaseSourcePin, GenerationContext, DummyMeshData);
+				mu::NodeMeshPtr BaseSourceMesh = GenerateMutableSourceMesh(BaseSourcePin, GenerationContext, DummyMeshData, false, false);
 
 				mu::NodeMeshFragmentPtr MeshFrag = new mu::NodeMeshFragment();
 				MeshFrag->SetMesh(BaseSourceMesh);
 				MeshFrag->SetLayoutOrGroup(TypedNodeRemBlocks->ParentLayoutIndex);
 				MeshFrag->SetFragmentType(mu::NodeMeshFragment::FT_LAYOUT_BLOCKS);
+				MeshFrag->SetMessageContext(TypedNodeRemBlocks);
 
 				// Add the block indices
 				TArray<int> FoundBlockIndices;
@@ -1206,6 +1324,9 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 			}
 
 			LayoutOperationUVNormalizedWarning(GenerationContext, ParentMaterialNode->GetMeshPin(), Node, TypedNodeRemBlocks->ParentLayoutIndex);
+
+			// Validate if the ParentMaterialNode can be shared between LODs.
+			UpdateSharedSurfaceId(GenerationContext, ParentMaterialNode, nullptr);
 		}
 	}
 
@@ -1256,14 +1377,12 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 					ImagePatchNode->SetImage(ImageNode);
 
 					const UEdGraphPin* ImageMaskPin = TypedNodeEdit->GetUsedImageMaskPin(ImageId);
-
-					if (ImageMaskPin)
+					check(ImageMaskPin); // Ensured when reconstructing EditMaterial nodes. If it fails, something is wrong.
+					
+					if (const UEdGraphPin* ConnectedMaskPin = FollowInputPin(*ImageMaskPin))
 					{
-						if (const UEdGraphPin* ConnectedMaskPin = FollowInputPin(*ImageMaskPin))
-						{
-							mu::NodeImagePtr MaskNode = GenerateMutableSourceImage(ConnectedMaskPin, GenerationContext, 0.f);
-							ImagePatchNode->SetMask(MaskNode);
-						}
+						mu::NodeImagePtr MaskNode = GenerateMutableSourceImage(ConnectedMaskPin, GenerationContext, 0.f);
+						ImagePatchNode->SetMask(MaskNode);
 					}
 
 					// Add the block indices
@@ -1316,6 +1435,9 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 				}
 				
 				LayoutOperationUVNormalizedWarning(GenerationContext, ParentMaterialNode->GetMeshPin(), Node, ParentMaterialNode->GetImageUVLayout(ImageIndex));
+
+				// Validate if the ParentMaterialNode can be shared between LODs.
+				UpdateSharedSurfaceId(GenerationContext, ParentMaterialNode, nullptr);
 			}
 		}
 	}
@@ -1325,7 +1447,7 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 		mu::NodeSurfaceEditPtr SurfNode = new mu::NodeSurfaceEdit();
 		Result = SurfNode;
 
-		UCustomizableObjectNodeMaterialBase* ParentMaterialNode = TypedNodeMorph->GetParentMaterialNode();
+		UCustomizableObjectNodeMaterial* ParentMaterialNode = TypedNodeMorph->GetParentMaterialNode();
 		if (!ParentMaterialNode)
 		{
 			GenerationContext.Compiler->CompilerLog(LOCTEXT("ParentMissing", "Parent node not set (or not found)."), Node);
@@ -1346,7 +1468,8 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 			else
 			{
 				//Morph Mesh
-				mu::MeshPtr MorphedSourceMesh = BuildMorphedMutableMesh(BaseSourcePin, TypedNodeMorph->MorphTargetName, GenerationContext);
+				// The Mesh Base Source from the Parent Material will always have all LODs since it is not an auxiliary Mesh (clipping, reshape...).
+				mu::MeshPtr MorphedSourceMesh = BuildMorphedMutableMesh(BaseSourcePin, TypedNodeMorph->MorphTargetName, GenerationContext, false); 
 
 				mu::NodeMeshConstantPtr MorphedSourceMeshNode = new mu::NodeMeshConstant;
 				MorphedSourceMeshNode->SetMessageContext(Node);					
@@ -1396,6 +1519,9 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 					}
 				}
 			}
+
+			// Validate if the ParentMaterialNode can be shared between LODs.
+			UpdateSharedSurfaceId(GenerationContext, ParentMaterialNode, nullptr);
 		}
 	}
 
@@ -1437,7 +1563,7 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 
 			if (UEdGraphPin* VariationPin = TypedNodeVar->VariationPin(VariationIndex))
 			{
-				SurfNode->SetVariationTag(VariationIndex, TCHAR_TO_ANSI(*TypedNodeVar->Variations[VariationIndex].Tag));
+				SurfNode->SetVariationTag(VariationIndex, StringCast<ANSICHAR>(*TypedNodeVar->Variations[VariationIndex].Tag).Get());
 				for (const UEdGraphPin* ConnectedPin : FollowInputPinArray(*VariationPin))
 				{
 					// Is it a modifier?
@@ -1472,6 +1598,7 @@ mu::NodeSurfacePtr GenerateMutableSourceSurface(const UEdGraphPin * Pin, FMutabl
 
 	return Result;
 }
+
 
 #undef LOCTEXT_NAMESPACE
 

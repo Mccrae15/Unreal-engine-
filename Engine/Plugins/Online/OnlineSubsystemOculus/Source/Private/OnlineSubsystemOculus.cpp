@@ -318,17 +318,17 @@ bool FOnlineSubsystemOculus::InitWithWindowsPlatform() const
 		try 
 #endif
 		{
-			auto InitResult = ovr_PlatformInitializeWindows(TCHAR_TO_ANSI(*OculusAppId));
+	auto InitResult = ovr_PlatformInitializeWindows(TCHAR_TO_ANSI(*OculusAppId));
 			if (InitResult == ovrPlatformInitialize_Success)
 			{
 				UE_LOG_ONLINE(Display, TEXT("FOnlineSubsystemOculus::InitWithWindowsPlatform: ovr_PlatformInitializeWindows successful"));
 			}
 			else
-			{
+	{
 				UE_LOG_ONLINE(Error, TEXT("FOnlineSubsystemOculus::InitWithWindowsPlatform: ovr_PlatformInitializeWindows error: %d"),
 					static_cast<int>(InitResult));
-				return false;
-			}
+		return false;
+	}
 		}
 #if WITH_EDITOR
 		catch (...) 
@@ -387,7 +387,7 @@ bool FOnlineSubsystemOculus::Shutdown()
 
 	if (MessageTaskManager.IsValid())
 	{
-		MessageTaskManager.Release();
+		MessageTaskManager.Reset();
 	}
 
 	bOculusInit = false;

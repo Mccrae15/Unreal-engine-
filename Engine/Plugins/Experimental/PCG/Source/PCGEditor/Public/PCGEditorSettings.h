@@ -29,6 +29,10 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = Node, meta = (HideAlphaChannel))
 	FLinearColor InstancedNodeBodyTintColor;
 
+	/** Highlighted node body tint color, used to indicate available data sources in hierarchical graphs */
+	UPROPERTY(EditAnywhere, config, Category = Node)
+	FLinearColor HighlightedNodeBodyTintColor;
+
 	/** Color used for input & output nodes */
 	UPROPERTY(EditAnywhere, config, Category = Node, meta = (HideAlphaChannel))
 	FLinearColor InputOutputNodeColor;
@@ -72,6 +76,14 @@ public:
 	/** Color used for debug operations */
 	UPROPERTY(EditAnywhere, config, Category = Node, meta = (HideAlphaChannel))
 	FLinearColor DebugNodeColor;
+
+	/** Color used for control flow operations */
+	UPROPERTY(EditAnywhere, config, Category = Node, meta = (HideAlphaChannel))
+	FLinearColor ControlFlowNodeColor;
+
+	/** Color used for hierarchical generation operations */
+	UPROPERTY(EditAnywhere, config, Category = Node, meta = (HideAlphaChannel))
+	FLinearColor HierarchicalGenerationNodeColor;
 
 	/** Default pin color */
 	UPROPERTY(EditAnywhere, config, Category = Node, meta = (HideAlphaChannel))

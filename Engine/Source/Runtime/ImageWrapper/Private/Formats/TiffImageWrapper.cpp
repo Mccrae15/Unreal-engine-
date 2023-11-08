@@ -10,11 +10,13 @@
 #include "CoreMinimal.h"
 #include "ImageWrapperPrivate.h"
 #include "Math/Float16.h"
+#include "Math/GuardedInt.h"
 #include "Math/NumericLimits.h"
 #include "Math/UnrealMathUtility.h"
 #include "Misc/CoreStats.h"
 #include "Templates/IsSigned.h"
 #include "Templates/UnrealTypeTraits.h"
+#include "ImageCoreUtils.h"
 
 #include <type_traits>
 
@@ -339,16 +341,24 @@ namespace UE::ImageWrapper::Private
 		static tmsize_t Read(thandle_t Handle, void* Buffer, tmsize_t Size)
 		{
 			FTiffImageWrapper* TiffImageWrapper = reinterpret_cast<FTiffImageWrapper*>(Handle);
-			int64 RemaningBytes = TiffImageWrapper->CompressedData.Num() - TiffImageWrapper->CurrentPosition;
-			if (RemaningBytes > 0)
+			if (TiffImageWrapper->CurrentPosition < 0 || TiffImageWrapper->CurrentPosition >= TiffImageWrapper->CompressedData.Num())
 			{
-				int64 NumBytesRead = FMath::Min<int64>(RemaningBytes, Size);
-				FMemory::Memcpy(Buffer, TiffImageWrapper->CompressedData.GetData() + TiffImageWrapper->CurrentPosition, NumBytesRead);
-				TiffImageWrapper->CurrentPosition += NumBytesRead;
-
-				return NumBytesRead;
+				return 0;
 			}
-			return 0;
+
+			if (IntFitsIn<int64>(Size) == false)
+			{
+				Size = TNumericLimits<int64>::Max();
+			}
+
+			// We now know this is [0, Num()].
+			int64 RemainingBytes = TiffImageWrapper->CompressedData.Num() - TiffImageWrapper->CurrentPosition;
+			int64 NumBytesRead = FMath::Min<int64>(RemainingBytes, Size);
+
+			FMemory::Memcpy(Buffer, TiffImageWrapper->CompressedData.GetData() + TiffImageWrapper->CurrentPosition, NumBytesRead);
+			TiffImageWrapper->CurrentPosition += NumBytesRead;
+
+			return NumBytesRead;
 		}
 
 		static tmsize_t Write(thandle_t Handle, void* Buffer, tmsize_t Size)
@@ -365,33 +375,29 @@ namespace UE::ImageWrapper::Private
 			const int OffsetFromCurrent = 1;
 			const int FromEnd = 2;
 
+			FGuardedInt64 TargetPosition;
 			switch (Whence)
 			{
 				case Set:
-						TiffImageWrapper->CurrentPosition = Offset;
-					break;
+					{
+						TargetPosition = FGuardedInt64(Offset);
+						break;
+					}
 				case OffsetFromCurrent:
 					{
-						const int64 NewPosition = TiffImageWrapper->CurrentPosition + Offset;
-						if (NewPosition >= 0)
-						{
-							TiffImageWrapper->CurrentPosition = NewPosition;
-						}
+						TargetPosition = FGuardedInt64(TiffImageWrapper->CurrentPosition) + Offset;
 						break;
 					}
 				case FromEnd:
 					{
-						const int64 NewPosition = TiffImageWrapper->CompressedData.Num() + Offset;
-						if (NewPosition >= 0)
-						{
-							TiffImageWrapper->CurrentPosition = NewPosition;
-						}
+						TargetPosition = FGuardedInt64(TiffImageWrapper->CompressedData.Num()) + Offset;
 						break;
 					}
 				default:
 					return -1;
 			}
 
+			TiffImageWrapper->CurrentPosition = FMath::Max(0, TargetPosition.Get(TiffImageWrapper->CurrentPosition));
 			return TiffImageWrapper->CurrentPosition;
 		}
 
@@ -441,12 +447,25 @@ namespace UE::ImageWrapper::Private
 
 	void FTiffImageWrapper::Uncompress(const ERGBFormat InFormat, int32 InBitDepth)
 	{
+		if ( Tiff == nullptr )
+		{
+			SetError(TEXT("Tiff invalid."));
+			return;
+		}
+
 		if (InFormat == Format && InBitDepth == BitDepth)
 		{
 			// Read using RGBA
 			if (Format == ERGBFormat::BGRA && BitDepth == 8)
 			{
-				const int64 BufferSize = int64(Width) * int64(Height) * sizeof(uint32);
+				FGuardedInt64 GuardedBufferSize = FGuardedInt64(Width) * Height * sizeof(uint32);
+				if (GuardedBufferSize.IsValid() == false)
+				{
+					SetError(TEXT("Tiff image is massive - likely corrupted file."));
+					return;
+				}
+
+				const int64 BufferSize = GuardedBufferSize.Get(0);
 				const int Flags = 0;
 	
 				RawData.Empty(BufferSize);
@@ -512,13 +531,17 @@ namespace UE::ImageWrapper::Private
 		{
 			SetError(TEXT("Unsupported requested format for the input image. Can't uncompress the tiff image."));
 		}
+
+		ReleaseTiffImage();
 	}
 
 	bool FTiffImageWrapper::SetCompressed(const void* InCompressedData, int64 InCompressedSize)
 	{
-		bool bResult = FImageWrapperBase::SetCompressed( InCompressedData, InCompressedSize );
+		if ( !  FImageWrapperBase::SetCompressed( InCompressedData, InCompressedSize ) )
+		{
+			return false;
+		}
 
-		if (bResult)
 		{
 			Tiff = TIFFClientOpen(""
 				, "r"
@@ -543,6 +566,13 @@ namespace UE::ImageWrapper::Private
 
 				Format = ERGBFormat::Invalid;
 				
+				if (Width <= 0 ||
+					Height <= 0)
+				{
+					SetError(TEXT("Invalid resolution in tiff: zero or negative."));
+					return false;
+				}
+
 				if ( SampleFormat != SAMPLEFORMAT_UINT
 					&& SampleFormat != SAMPLEFORMAT_IEEEFP
 					&& SampleFormat != 0 /* assume it's uint */)
@@ -668,12 +698,13 @@ namespace UE::ImageWrapper::Private
 					break;
 				}
 
-
 				if (Format == ERGBFormat::Invalid)
 				{
 					SetError(TEXT("Unsupported Tiff content."));
 					return false;
 				}
+				
+				// note: the "Tiff" object is retained until the Uncompress call
 			}
 			else
 			{
@@ -681,7 +712,13 @@ namespace UE::ImageWrapper::Private
 			}
 		}
 
-		return bResult;
+		if ( ! FImageCoreUtils::IsImageImportPossible(Width,Height) )
+		{
+			SetError(TEXT("Image dimensions are not possible to import"));
+			return false;
+		}
+
+		return true;
 
 	}
 
@@ -974,6 +1011,9 @@ namespace UE::ImageWrapper::Private
 
 		TQueue<TSharedPtr<TArray64<uint8>, ESPMode::ThreadSafe>, EQueueMode::Mpsc> UsableBufferQueue;
 		FGraphEventArray Tasks;
+		
+		ENamedThreads::Type NamedThread = IsInGameThread() ? ENamedThreads::GameThread : ENamedThreads::AnyThread;
+		ON_SCOPE_EXIT {	FTaskGraphInterface::Get().WaitUntilTasksComplete(Tasks, NamedThread); };
 
 		if constexpr (bIsTiled)
 		{
@@ -1093,9 +1133,20 @@ namespace UE::ImageWrapper::Private
 		// Write the alpha
 		if (bAddAlpha)
 		{
+			//Tasks[] is filling WriteArray and not done yet
+			//	even if Tasks only writes RGB and we only write A , so there is no race
+			//	it's better to not have them running at the same time
+			FTaskGraphInterface::Get().WaitUntilTasksComplete(Tasks, NamedThread);
+			Tasks.SetNum(0); // clear array so scope exit doesn't wait on tasks again
+
+			// this branch is only used for 3-channel RGB tiffs and 4-channel RGBA output pixels (NumOfChannelDest==4)
+
+			//todo: would be better to do this in the ProcessDecodedData tasks, so that we write the memory only once
+
+			//todo: ParallelFor over individual pixels is not great, better to do on rows; use ImageCore ImageParallelFor
 			ParallelFor(Width * Height, [NumOfChannelDest, &WriteArray](int32 Index)
 				{
-					const int64 WriteIndex = int64(NumOfChannelDest) * Index + 3;
+					const int64 WriteIndex = int64(NumOfChannelDest) * Index + NumOfChannelDest-1;
 					if constexpr (std::is_same_v<DataTypeDest, FFloat16> || TIsFloatingPoint<DataTypeDest>::Value)
 					{
 						WriteArray[WriteIndex] = DataTypeDest(1.f);
@@ -1107,9 +1158,7 @@ namespace UE::ImageWrapper::Private
 				}, IsInGameThread() ? EParallelForFlags::None : EParallelForFlags::BackgroundPriority);
 		}
 
-		ENamedThreads::Type NamedThread = IsInGameThread() ? ENamedThreads::GameThread : ENamedThreads::AnyThread;
-		FTaskGraphInterface::Get().WaitUntilTasksComplete(Tasks, NamedThread);
-
+		// scope exit will wait on Tasks[] completing
 
 		return true;
 	}

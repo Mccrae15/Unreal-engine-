@@ -3,7 +3,7 @@
 
 #include "Chaos/ConstraintHandle.h"
 #include "Chaos/Evolution/SolverConstraintContainer.h"
-#include "Chaos/Island/SolverIsland.h"
+#include "Chaos/Island/IslandManager.h"
 #include "Chaos/PBDConstraintContainer.h"
 
 namespace Chaos
@@ -11,7 +11,7 @@ namespace Chaos
 	/**
 	 * Base class for handles to constraints in an index-based container (e.g., FJointConstraints)
 	 */
-	class CHAOS_API FIndexedConstraintHandle : public FConstraintHandle
+	class FIndexedConstraintHandle : public FConstraintHandle
 	{
 	public:
 		using FGeometryParticleHandle = TGeometryParticleHandle<FReal, 3>;
@@ -64,7 +64,7 @@ namespace Chaos
 	 * Utility base class for FIndexedConstraintHandles
 	 */
 	template<typename T_CONTAINER>
-	class CHAOS_API TIndexedContainerConstraintHandle : public FIndexedConstraintHandle
+	class TIndexedContainerConstraintHandle : public FIndexedConstraintHandle
 	{
 	public:
 		using Base = FIndexedConstraintHandle;
@@ -125,7 +125,7 @@ namespace Chaos
 	 * as determined by the constraint graph.
 	*/
 	template<typename ConstraintContainerType>
-	class CHAOS_API TIndexedConstraintContainerSolver : public FConstraintContainerSolver
+	class TIndexedConstraintContainerSolver : public FConstraintContainerSolver
 	{
 	public:
 		using FConstraintContainerType = ConstraintContainerType;
@@ -153,12 +153,12 @@ namespace Chaos
 			ensure(false);
 		}
 
-		virtual void AddConstraints(const TArrayView<Private::FPBDIslandConstraint>& Constraints) override final
+		virtual void AddConstraints(const TArrayView<Private::FPBDIslandConstraint*>& IslandConstraints) override final
 		{
-			for (const Private::FPBDIslandConstraint& Constraint : Constraints)
+			for (const Private::FPBDIslandConstraint* IslandConstraint : IslandConstraints)
 			{
 				// We will only ever be given constraints from our container (asserts in non-shipping)
-				const FIndexedConstraintHandle* IndexedConstraintHandle = Constraint.GetConstraint()->AsUnsafe<FIndexedConstraintHandle>();
+				const FIndexedConstraintHandle* IndexedConstraintHandle = IslandConstraint->GetConstraint()->AsUnsafe<FIndexedConstraintHandle>();
 
 				int32 ConstraintIndex = IndexedConstraintHandle->GetConstraintIndex();
 
@@ -228,7 +228,7 @@ namespace Chaos
 	/**
 	* Utility base class for constraint containers usingindexed-based constraint handles (e.g., FJointConstraints)
 	*/
-	class CHAOS_API FPBDIndexedConstraintContainer : public FPBDConstraintContainer
+	class FPBDIndexedConstraintContainer : public FPBDConstraintContainer
 	{
 	public:
 		FPBDIndexedConstraintContainer(FConstraintHandleTypeID InType)
@@ -253,7 +253,7 @@ namespace Chaos
 	};
 
 	template<typename ConstaintContainerType>
-	class CHAOS_API TPBDIndexedConstraintContainer : public FPBDIndexedConstraintContainer
+	class TPBDIndexedConstraintContainer : public FPBDIndexedConstraintContainer
 	{
 	public:
 		using FConstaintContainerType = ConstaintContainerType;

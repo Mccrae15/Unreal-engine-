@@ -20,10 +20,12 @@
 #include "LandscapeStreamingProxy.h"
 #include "LandscapeSubsystem.h"
 #include "LandscapeSettings.h"
+#include "LandscapeTiledImage.h"
 
 #include "EditorSupportDelegates.h"
 #include "ScopedTransaction.h"
 #include "LandscapeEdit.h"
+#include "LandscapeEditTypes.h"
 #include "LandscapeEditorUtils.h"
 #include "LandscapeRender.h"
 #include "LandscapeDataAccess.h"
@@ -38,6 +40,7 @@
 #include "LandscapeImportHelper.h"
 #include "LandscapeConfigHelper.h"
 #include "UObject/ObjectSaveContext.h"
+#include "Math/TransformCalculus3D.h"
 
 //Slate dependencies
 #include "Misc/FeedbackContext.h"
@@ -332,7 +335,7 @@ void FEdModeLandscape::PostUpdateLayerContent()
 	}
 }
 
-ELandscapeToolTargetType::Type FEdModeLandscape::GetLandscapeToolTargetType() const
+ELandscapeToolTargetType FEdModeLandscape::GetLandscapeToolTargetType() const
 {
 	if (CurrentToolMode)
 	{
@@ -549,8 +552,8 @@ void FEdModeLandscape::Enter()
 				{
 					for (int32 X = 0; X < CurrentGizmoActor->SampleSizeX; ++X)
 					{
-						float TexX = X * SizeX / CurrentGizmoActor->SampleSizeX;
-						float TexY = Y * SizeY / CurrentGizmoActor->SampleSizeY;
+						float TexX = static_cast<float>(X * SizeX / CurrentGizmoActor->SampleSizeX);
+						float TexY = static_cast<float>(Y * SizeY / CurrentGizmoActor->SampleSizeY);
 						int32 LX = FMath::FloorToInt(TexX);
 						int32 LY = FMath::FloorToInt(TexY);
 
@@ -562,11 +565,11 @@ void FEdModeLandscape::Enter()
 						FGizmoSelectData* Data01 = CurrentGizmoActor->SelectedData.Find(FIntPoint(LX, LY + 1));
 						FGizmoSelectData* Data11 = CurrentGizmoActor->SelectedData.Find(FIntPoint(LX + 1, LY + 1));
 
-						TexData[X + Y*ALandscapeGizmoActiveActor::DataTexSize] = FMath::Lerp(
+						TexData[X + Y*ALandscapeGizmoActiveActor::DataTexSize] = static_cast<uint8>(FMath::Lerp(
 							FMath::Lerp(Data00 ? Data00->Ratio : 0, Data10 ? Data10->Ratio : 0, FracX),
 							FMath::Lerp(Data01 ? Data01->Ratio : 0, Data11 ? Data11->Ratio : 0, FracX),
 							FracY
-							) * 255;
+							) * 255);
 					}
 				}
 			}
@@ -761,7 +764,7 @@ void FEdModeLandscape::OnPreSaveWorld(UWorld* InWorld, FObjectPreSaveContext Obj
 	if (!InWorld->IsGameWorld() && !ObjectSaveContext.IsProceduralSave())
 	{
 		ULandscapeInfoMap& LandscapeInfoMap = ULandscapeInfoMap::GetLandscapeInfoMap(InWorld);
-		for (const TPair<FGuid, ULandscapeInfo*>& Pair : LandscapeInfoMap.Map)
+		for (const auto& Pair : LandscapeInfoMap.Map)
 		{
 			if (const ULandscapeInfo* LandscapeInfo = Pair.Value)
 			{
@@ -1094,8 +1097,8 @@ bool FEdModeLandscape::LandscapeMouseTrace(FEditorViewportClient* ViewportClient
 {
 	FVector HitLocation;
 	bool bResult = LandscapeMouseTrace(ViewportClient, MouseX, MouseY, HitLocation);
-	OutHitX = HitLocation.X;
-	OutHitY = HitLocation.Y;
+	OutHitX = static_cast<float>(HitLocation.X);
+	OutHitY = static_cast<float>(HitLocation.Y);
 	return bResult;
 }
 
@@ -1154,6 +1157,7 @@ bool FEdModeLandscape::ProcessLandscapeTraceHits(const TArray<FHitResult>& InRes
 
 bool FEdModeLandscape::LandscapeTrace(const FVector& InRayOrigin, const FVector& InRayEnd, const FVector& InDirection, FVector& OutHitLocation)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FEdModeLandscape_LandscapeTrace);
 	if (!CurrentTool || !CurrentToolTarget.LandscapeInfo.IsValid())
 	{
 		return false;
@@ -1166,93 +1170,144 @@ bool FEdModeLandscape::LandscapeTrace(const FVector& InRayOrigin, const FVector&
 	UWorld* World = GetWorld();
 
 	// Check Tool Trace first
-	if (CurrentTool->HitTrace(Start, End, OutHitLocation))
 	{
-		return true;
-	}
-	
-	TArray<FHitResult> Results;
-	// Each landscape component has 2 collision shapes, 1 of them is specific to landscape editor
-	// Trace only ECC_Visibility channel, so we do hit only Editor specific shape
-	if (World->LineTraceMultiByObjectType(Results, Start, End, FCollisionObjectQueryParams(ECollisionChannel::ECC_Visibility), FCollisionQueryParams(SCENE_QUERY_STAT(LandscapeTrace), true)))
-	{
-		if (FProcessLandscapeTraceHitsResult ProcessResult; ProcessLandscapeTraceHits(Results, ProcessResult))
+		TRACE_CPUPROFILER_EVENT_SCOPE(ToolTrace);
+		if (CurrentTool->HitTrace(Start, End, OutHitLocation))
 		{
-			OutHitLocation = ProcessResult.LandscapeProxy->LandscapeActorToWorld().InverseTransformPosition(ProcessResult.HitLocation);
-			
-			UE_VLOG_SEGMENT_THICK(World, LogLandscapeEdMode, VeryVerbose, InRayOrigin, InRayOrigin + 20000.0f * InDirection, FColor(100,255,100), 4, TEXT("landscape:ray-hit"));
-			UE_VLOG_LOCATION(World, LogLandscapeEdMode, VeryVerbose,  ProcessResult.LandscapeProxy->LandscapeActorToWorld().TransformPosition(OutHitLocation), 20.0,  FColor(100,100,255), TEXT("landscape:point-hit"));
 			return true;
 		}
 	}
+	
+	TArray<FHitResult> Results;
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(LineTrace);
+		// Each landscape component has 2 collision shapes, 1 of them is specific to landscape editor
+		// Trace only ECC_Visibility channel, so we do hit only Editor specific shape
+		if (World->LineTraceMultiByObjectType(Results, Start, End, FCollisionObjectQueryParams(ECollisionChannel::ECC_Visibility), FCollisionQueryParams(SCENE_QUERY_STAT(LandscapeTrace), true)))
+		{
+			if (FProcessLandscapeTraceHitsResult ProcessResult; ProcessLandscapeTraceHits(Results, ProcessResult))
+			{
+				OutHitLocation = ProcessResult.LandscapeProxy->LandscapeActorToWorld().InverseTransformPosition(ProcessResult.HitLocation);
+			
+				UE_VLOG_SEGMENT_THICK(World, LogLandscapeEdMode, VeryVerbose, InRayOrigin, InRayEnd, FColor(100,255,100), 4, TEXT("landscape:ray-hit"));
+				UE_VLOG_LOCATION(World, LogLandscapeEdMode, VeryVerbose,  ProcessResult.LandscapeProxy->LandscapeActorToWorld().TransformPosition(OutHitLocation), 20.0,  FColor(100,100,255), TEXT("landscape:point-hit"));
+				return true;
+			}
+		}
+	}
 
-	UE_VLOG_SEGMENT_THICK(World, LogLandscapeEdMode, VeryVerbose, InRayOrigin, InRayOrigin + 20000.0f * InDirection, FColor(255,100,100), 4, TEXT("landscape:ray-miss"));
+	UE_VLOG_SEGMENT_THICK(World, LogLandscapeEdMode, VeryVerbose, InRayOrigin, InRayEnd, FColor(255,100,100), 2, TEXT("landscape:ray-miss"));
 		
 	if (CurrentTool->UseSphereTrace())
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(SphereLikeTrace);
+
 		// If there is no landscape directly under the mouse search for a landscape collision
-		// under the shape of the brush.
-		FCollisionShape SphereShape;
-		SphereShape.SetSphere(UISettings->GetCurrentToolBrushRadius());
-		if (World->SweepMultiByObjectType(Results, Start, End, FQuat::Identity, FCollisionObjectQueryParams(ECollisionChannel::ECC_Visibility), SphereShape, FCollisionQueryParams(SCENE_QUERY_STAT(LandscapeTrace), true)))
+		// under the shape of the brush. 
+		FVector UpVector = FVector::UpVector;
+		if (FMath::IsNearlyEqual(FMath::Abs(FVector::DotProduct(UpVector, InDirection.GetSafeNormal(SMALL_NUMBER, UpVector))), 1.0f))
 		{
-			if (FProcessLandscapeTraceHitsResult SweepProcessResult; ProcessLandscapeTraceHits(Results, SweepProcessResult))
+			/* If we're too close to being colinear then pick another vector to do the cross products with. */
+			UpVector = FVector::RightVector;
+		}
+		FVector RightVector = InDirection.Cross(UpVector).GetUnsafeNormal();
+		UpVector = RightVector.Cross(InDirection);
+		FMatrix RayTransform(InDirection, RightVector, UpVector, FVector::ZeroVector);
+		
+		// Add a slight offset so that we don't end up with the landscape brush appearing slightly on the border of the landscape when
+		//  the "projected' brush center is at a distance from the border that is close to the radius : 
+		const double AdditionalRadius = 50.0;
+		double BrushRadius = UISettings->GetCurrentToolBrushRadius() + AdditionalRadius;
+
+		auto LineTraceAroundCenter = [this, World, &Start, &End, &RayTransform] (float InAngle, float InRadius) -> TOptional<FProcessLandscapeTraceHitsResult>
+		{
+			TArray<FHitResult> Results;
+			FVector Offset(0.0, InRadius * FMath::Cos(InAngle), InRadius * FMath::Sin(InAngle));
+			FVector AdjustedRayStart = TransformPoint(RayTransform, Offset) + Start;
+			FVector AdjustedRayEnd = TransformPoint(RayTransform, Offset) + End;
+			double HitDistance = -1.0;
+
+			if (World->LineTraceMultiByObjectType(Results, AdjustedRayStart, AdjustedRayEnd, FCollisionObjectQueryParams(ECollisionChannel::ECC_Visibility), FCollisionQueryParams(SCENE_QUERY_STAT(LandscapeTrace), true)))
 			{
-				UE_VLOG_LOCATION(World, LogLandscapeEdMode, VeryVerbose, SweepProcessResult.HitLocation, UISettings->GetCurrentToolBrushRadius(), FColor(255, 100, 100), TEXT("landscape:sweep-hit-location"));
-				FSphere HitSphere(SweepProcessResult.HitLocation, UISettings->GetCurrentToolBrushRadius());
-
-				float MeanHeight = 0.0f;
-				int32 Count = 0;
-				const int32 NumHeightSamples = 16;
-
-				for (int32 Y = 0; Y < NumHeightSamples; ++Y)
+				if (FProcessLandscapeTraceHitsResult ProcessResult; ProcessLandscapeTraceHits(Results, ProcessResult))
 				{
-					float HY = (Y / (float)NumHeightSamples) * HitSphere.W * 2.0f + HitSphere.Center.Y - HitSphere.W;
-					for (int32 X = 0; X < NumHeightSamples; ++X)
+					UE_VLOG_SEGMENT_THICK(World, LogLandscapeEdMode, VeryVerbose, AdjustedRayStart, AdjustedRayEnd, FColor(100, 255, 100), 4, TEXT("landscape:ray-hit"));
+					UE_VLOG_LOCATION(World, LogLandscapeEdMode, VeryVerbose, ProcessResult.HitLocation, 20.0, FColor(100, 100, 255), TEXT("landscape:point-hit"));
+
+					HitDistance = (ProcessResult.HitLocation - Start).Length();
+					return ProcessResult;
+				}
+			}
+			else
+			{
+				UE_VLOG_SEGMENT_THICK(World, LogLandscapeEdMode, VeryVerbose, AdjustedRayStart, AdjustedRayEnd, FColor(255, 100, 100), 2, TEXT("landscape:ray-miss"));
+			}
+			return TOptional<FProcessLandscapeTraceHitsResult>();
+		};
+
+		// Don't use a sphere cast as it can get very expensive for large brush sizes. Use several concentric ray casts instead : 
+		const int32 MaxConcentricSamples = 10;
+		const double RadiusIncrement = 1024.0;
+		// Bound the number of concentric circles so that we don't have too many ray casts at a given time even if the brush radius is very large : 
+		int32 NumConcentricSamples = FMath::Clamp(static_cast<int32>(BrushRadius / RadiusIncrement), 1, MaxConcentricSamples);
+		double ActualRadiusIncrement = BrushRadius / NumConcentricSamples;
+
+		const double DistanceBetweenAngularSamples = 1024.0;
+		// Bound the number of angular samples so that we don't have too many ray casts at a given time even if the brush radius is very large : 
+		const int32 MinAngularSamples = 6;
+		const int32 MaxAngularSamples = 12;
+		
+		float MeanHeight = 0.0f;
+		int32 Count = 0;
+		TOptional<FProcessLandscapeTraceHitsResult> BestHitResult;
+		int32 ConcentricIndex = 0;
+		for (double Radius = ActualRadiusIncrement; Radius < (BrushRadius + UE_SMALL_NUMBER); Radius += ActualRadiusIncrement, ++ConcentricIndex)
+		{
+			double Circumference = TWO_PI * Radius;
+			int32 NumAngularSamples = FMath::Clamp(static_cast<int32>(Circumference / DistanceBetweenAngularSamples), MinAngularSamples, MaxAngularSamples);
+			double AngleIncrement = TWO_PI / NumAngularSamples;
+			// Alternate by half the angle offset in order to have a better coverage over the entire radius : 
+			double InitialAngle = (ConcentricIndex % 2) * AngleIncrement / 2.0;
+			for (int32 AngularSampleIndex = 0; AngularSampleIndex < NumAngularSamples; ++AngularSampleIndex)
+			{
+				if (TOptional<FProcessLandscapeTraceHitsResult> HitResult = LineTraceAroundCenter(
+					static_cast<float>(AngularSampleIndex * AngleIncrement + InitialAngle), static_cast<float>(Radius)); HitResult.IsSet())
+				{ 
+					// Compute the mean height in order to extrapolate the landscape hit to a "fake" landscape plane that extends beyond the borders : 
+					if (TOptional<float> Height = HitResult->LandscapeProxy->GetHeightAtLocation(HitResult->HitLocation, EHeightfieldSource::Editor); Height.IsSet())
 					{
-						float HX = (X / (float)NumHeightSamples) * HitSphere.W * 2.0f + HitSphere.Center.X - HitSphere.W;
-
-						FVector HeightSampleLocation(HX, HY, HitSphere.Center.Z);
-
-						TOptional<float> Height = SweepProcessResult.LandscapeProxy->GetHeightAtLocation(HeightSampleLocation, EHeightfieldSource::Editor);
-
-						if (!Height.IsSet())
-						{
-							continue;
-						}
-
-						UE_VLOG_LOCATION(World, LogLandscapeEdMode, VeryVerbose, FVector(HX, HY, Height.GetValue()), 2.0f, FColor(100, 100, 255), TEXT(""));
-
 						MeanHeight += Height.GetValue();
 						Count++;
+						BestHitResult = HitResult;
 					}
+
 				}
-
-				FVector PointOnPlane(HitSphere.Center.X, HitSphere.Center.Y, HitSphere.Center.Z);
-
-				if (Count > 0)
-				{
-					MeanHeight /= (float)Count;
-					PointOnPlane.Z = MeanHeight;
-				}
-
-				UE_VLOG_LOCATION(World, LogLandscapeEdMode, VeryVerbose, PointOnPlane, 10.0, FColor(100, 100, 255), TEXT("landscape:point-on-plane"));
-
-				if (FMath::Abs(FVector::DotProduct(InDirection, FVector::ZAxisVector)) < SMALL_NUMBER)
-				{
-					// the ray and plane are nearly parallel, and won't intersect (or if they do it will be wildly far away)
-					return false;
-				}
-
-				const FPlane Plane(PointOnPlane, FVector::ZAxisVector);
-				FVector EstimatedHitLocation = FMath::RayPlaneIntersection(Start, InDirection, Plane);
-				check(!EstimatedHitLocation.ContainsNaN());
-
-				UE_VLOG_LOCATION(World, LogLandscapeEdMode, VeryVerbose, EstimatedHitLocation, 10.0, FColor(100, 100, 255), TEXT("landscape:estimated-hit-location"));
-
-				OutHitLocation = SweepProcessResult.LandscapeProxy->LandscapeActorToWorld().InverseTransformPosition(EstimatedHitLocation);
-				return true;
 			}
+		}
+
+		if (Count > 0)
+		{
+			check(BestHitResult.IsSet());
+			FVector PointOnPlane(BestHitResult->HitLocation);
+			MeanHeight /= (float)Count;
+			PointOnPlane.Z = MeanHeight;
+
+			UE_VLOG_LOCATION(World, LogLandscapeEdMode, VeryVerbose, PointOnPlane, 10.0, FColor(100, 100, 255), TEXT("landscape:point-on-plane"));
+
+			if (FMath::Abs(FVector::DotProduct(InDirection, FVector::ZAxisVector)) < SMALL_NUMBER)
+			{
+				// the ray and plane are nearly parallel, and won't intersect (or if they do it will be wildly far away)
+				return false;
+			}
+
+			const FPlane Plane(PointOnPlane, FVector::ZAxisVector);
+			FVector EstimatedHitLocation = FMath::RayPlaneIntersection(Start, InDirection, Plane);
+			check(!EstimatedHitLocation.ContainsNaN());
+
+			UE_VLOG_LOCATION(World, LogLandscapeEdMode, VeryVerbose, EstimatedHitLocation, 10.0, FColor(100, 100, 255), TEXT("landscape:estimated-hit-location"));
+
+			OutHitLocation = BestHitResult->LandscapeProxy->LandscapeActorToWorld().InverseTransformPosition(EstimatedHitLocation);
+			return true;
 		}
 	}
 
@@ -1686,7 +1741,7 @@ void FEdModeLandscape::ChangeBrushSize(bool bIncrease)
 			NewValue = FMath::Min(NewValue, Radius - 1.0f);
 		}
 
-		NewValue = (int32)FMath::Clamp(NewValue, SliderMin, SliderMax);
+		NewValue = FMath::Clamp(NewValue, SliderMin, SliderMax);
 		UISettings->SetCurrentToolBrushRadius(NewValue);
 	}
 }
@@ -1879,6 +1934,13 @@ bool FEdModeLandscape::InputKey(FEditorViewportClient* ViewportClient, FViewport
 					}
 				}
 				return true;
+			}
+
+			if (CurrentGizmoActor.IsValid() && CurrentGizmoActor->IsSelected() && (GLandscapeEditRenderMode & ELandscapeEditRenderMode::Gizmo) && IsAltDown(Viewport))
+			{ 
+				// When manipulating the gizmo with Alt down, don't do anything but return true to indicate it's on purpose and prevent the editor from doing the usual thing
+				//  (alt-drag is usually "duplicate actor" and we want to prevent duplicating the gizmo actor) 
+				return true; 
 			}
 		}
 
@@ -3101,102 +3163,77 @@ void FEdModeLandscape::ReimportData(const FLandscapeTargetListInfo& TargetInfo)
 template<class T>
 void ImportDataInternal(ULandscapeInfo* LandscapeInfo, const FString& Filename, FName LayerName, bool bSingleFile, bool bFlipYAxis, const FIntRect& ImportRegionVerts, ELandscapeImportTransformType TransformType, FIntPoint Offset, TFunctionRef<void(int32, int32, int32, int32, const TArray<T>&)> SetDataFunc)
 {
-	if (LandscapeInfo)
+	if (!LandscapeInfo)
 	{
-		const FLandscapeImportResolution LandscapeResolution = { (uint32)(ImportRegionVerts.Width()), (uint32)(ImportRegionVerts.Height()) };
-		FLandscapeImportDescriptor OutImportDescriptor;
-		FText OutMessage;
+		return;
+	}
 
-		ELandscapeImportResult ImportResult = FLandscapeImportHelper::GetImportDescriptor<T>(Filename, bSingleFile, bFlipYAxis, LayerName, OutImportDescriptor, OutMessage);
-		if (ImportResult == ELandscapeImportResult::Error)
+	FLandscapeTiledImage TiledImage;
+	TiledImage.Load(*Filename);
+	FIntPoint ImportResolution = TiledImage.GetResolution();
+
+	bool bResolutionMismatch = false;
+
+	if ((ImportResolution.X != ImportRegionVerts.Width() || ImportResolution.Y != ImportRegionVerts.Height()) && TransformType != ELandscapeImportTransformType::Subregion)
+	{
+		bResolutionMismatch = true;
+
+		FFormatNamedArguments Args;
+		Args.Add(TEXT("ImportSizeX"), ImportResolution.X);
+		Args.Add(TEXT("ImportSizeY"), ImportResolution.Y);
+		Args.Add(TEXT("LandscapeSizeX"), ImportRegionVerts.Width());
+		Args.Add(TEXT("LandscapeSizeY"), ImportRegionVerts.Height());
+
+		auto Result = FMessageDialog::Open(EAppMsgType::OkCancel,
+			FText::Format(NSLOCTEXT("LandscapeEditor.Import", "Import_SizeMismatch", "The import size ({ImportSizeX}\u00D7{ImportSizeY}) does not match the current Landscape extent ({LandscapeSizeX}\u00D7{LandscapeSizeY}), if you continue it will be padded/clipped to fit"), Args));
+
+		if (Result != EAppReturnType::Ok)
 		{
-			FMessageDialog::Open(EAppMsgType::Ok, OutMessage);
 			return;
 		}
+	}
 
-		check(OutImportDescriptor.ImportResolutions.Num() > 0);
+	TArray<T> ImportData;
+	if (TransformType == ELandscapeImportTransformType::Subregion)
+	{
+		TiledImage.ReadRegion<T>(ImportRegionVerts, ImportData, bFlipYAxis);
+	}
+	else if (bResolutionMismatch)
+	{
+		TiledImage.Read<T>(ImportData, bFlipYAxis);
+	}
+	else
+	{
+		const FIntRect RegionToLoad(0, 0, ImportRegionVerts.Width(), ImportRegionVerts.Height());
+		TiledImage.ReadRegion<T>(RegionToLoad, ImportData, bFlipYAxis);
+	}
 
-		int32 DescriptorIndex = 0;
-		// If there is more than one possible res it needs to match perfectly (this constraint could probably removed)
-		if (OutImportDescriptor.ImportResolutions.Num() > 1)
+	// Expand if necessary...
+	{
+		TArray<T> FinalData;
+		if (bResolutionMismatch)
 		{
-			DescriptorIndex = OutImportDescriptor.FindDescriptorIndex(LandscapeResolution.Width, LandscapeResolution.Height);
-			// if the file is a raw format with multiple possibly resolutions, only attempt import if one matches the current landscape
-			if (DescriptorIndex == INDEX_NONE)
-			{
-				FFormatNamedArguments Args;
-				Args.Add(TEXT("LandscapeSizeX"), LandscapeResolution.Width);
-				Args.Add(TEXT("LandscapeSizeY"), LandscapeResolution.Height);
-
-				FMessageDialog::Open(EAppMsgType::Ok,
-					FText::Format(NSLOCTEXT("LandscapeEditor.Import", "Import_SizeMismatchRaw", "The file resolution does not match the current Landscape extent ({LandscapeSizeX}\u00D7{LandscapeSizeY}), and its exact resolution could not be determined"), Args));
-
-				return;
-			}
+			FLandscapeImportHelper::TransformImportData<T>(ImportData, FinalData, FLandscapeImportResolution(ImportResolution.X, ImportResolution.Y), FLandscapeImportResolution(ImportRegionVerts.Width(), ImportRegionVerts.Height()), TransformType, Offset);
 		}
-				
-		// display warning message if there is one and allow user to cancel
-		if (ImportResult == ELandscapeImportResult::Warning)
+		else if (TransformType == ELandscapeImportTransformType::Subregion)
 		{
-			auto Result = FMessageDialog::Open(EAppMsgType::OkCancel, OutMessage);
-
-			if (Result != EAppReturnType::Ok)
-			{
-				return;
-			}
+			FinalData = MoveTemp(ImportData);
 		}
-
-		const FLandscapeImportResolution ImportResolution = OutImportDescriptor.ImportResolutions[DescriptorIndex];
-		bool bResolutionMismatch = false;
-		// if the file is a format with resolution information, warn the user if the resolution doesn't match the current landscape
-		// unlike for raw this is only a warning as we can pad/clip the data if we know what resolution it is
-		if (ImportResolution != LandscapeResolution)
+		else
 		{
-			bResolutionMismatch = true;
-
-			FFormatNamedArguments Args;
-			Args.Add(TEXT("ImportSizeX"), ImportResolution.Width);
-			Args.Add(TEXT("ImportSizeY"), ImportResolution.Height);
-			Args.Add(TEXT("LandscapeSizeX"), LandscapeResolution.Width);
-			Args.Add(TEXT("LandscapeSizeY"), LandscapeResolution.Height);
-
-			auto Result = FMessageDialog::Open(EAppMsgType::OkCancel,
-				FText::Format(NSLOCTEXT("LandscapeEditor.Import", "Import_SizeMismatch", "The import size ({ImportSizeX}\u00D7{ImportSizeY}) does not match the current Landscape extent ({LandscapeSizeX}\u00D7{LandscapeSizeY}), if you continue it will be padded/clipped to fit"), Args));
-
-			if (Result != EAppReturnType::Ok)
-			{
-				return;
-			}
+			FinalData = MoveTemp(ImportData);
 		}
 
-		TArray<T> ImportData;
-		ImportResult = FLandscapeImportHelper::GetImportData<T>(OutImportDescriptor, DescriptorIndex, LayerName, ImportData, OutMessage);
-		if (ImportResult == ELandscapeImportResult::Error)
-		{
-			FMessageDialog::Open(EAppMsgType::Ok, OutMessage);
-			return;
-		}
-
-		// Expand if necessary...
-		{
-			TArray<T> FinalData;
-			if (bResolutionMismatch)
-			{
-				FLandscapeImportHelper::TransformImportData<T>(ImportData, FinalData, ImportResolution, LandscapeResolution, TransformType, Offset);
-			}
-			else
-			{
-				FinalData = MoveTemp(ImportData);
-			}
-									
-			// Set Data is in Quads (so remove 1)
-			SetDataFunc(ImportRegionVerts.Min.X, ImportRegionVerts.Min.Y, ImportRegionVerts.Max.X-1, ImportRegionVerts.Max.Y-1, FinalData);
-		}
-	}			
+		// Set Data is in Quads (so remove 1)
+		SetDataFunc(ImportRegionVerts.Min.X, ImportRegionVerts.Min.Y, ImportRegionVerts.Max.X - 1, ImportRegionVerts.Max.Y - 1, FinalData);
+	}
+	
 }
 
 void FEdModeLandscape::ImportHeightData(ULandscapeInfo* LandscapeInfo, const FGuid& LayerGuid, const FString& Filename, const FIntRect& ImportRegionVerts, ELandscapeImportTransformType TransformType, FIntPoint Offset, const ELandscapeLayerPaintingRestriction& PaintRestriction, bool bFlipYAxis)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FEdModeLandscape::ImportHeightData);
+
 	ImportDataInternal<uint16>(LandscapeInfo, Filename, NAME_None, UseSingleFileImport(), bFlipYAxis, ImportRegionVerts, TransformType, Offset, [LandscapeInfo, LayerGuid, PaintRestriction](int32 MinX, int32 MinY, int32 MaxX, int32 MaxY, const TArray<uint16>& Data)
 	{
 		ALandscape* Landscape = LandscapeInfo->LandscapeActor.Get();
@@ -3632,40 +3669,45 @@ ALandscape* FEdModeLandscape::ChangeComponentSetting(int32 NumComponentsX, int32
 				}
 			}
 
-			Progress.EnterProgressFrame(CurrentTaskProgress++);
+			Progress.EnterProgressFrame(static_cast<float>(CurrentTaskProgress++));
 
 			const FVector Location = OldLandscape->GetActorLocation() + LandscapeOffset;
 			FActorSpawnParameters SpawnParams;
 			SpawnParams.OverrideLevel = OldLandscape->GetLevel();
 			NewLandscape = OldLandscape->GetWorld()->SpawnActor<ALandscape>(Location, OldLandscape->GetActorRotation(), SpawnParams);
 			NewLandscape->bCanHaveLayersContent = OldLandscape->bCanHaveLayersContent;
+			NewLandscape->bAreNewLandscapeActorsSpatiallyLoaded = OldLandscape->bAreNewLandscapeActorsSpatiallyLoaded;
+			NewLandscape->bIncludeGridSizeInNameForLandscapeActors = OldLandscape->bIncludeGridSizeInNameForLandscapeActors;
+			NewLandscape->bUseGeneratedLandscapeSplineMeshesActors = OldLandscape->bUseGeneratedLandscapeSplineMeshesActors;
+
 			const FVector OldScale = OldLandscape->GetActorScale();
 			NewLandscape->SetActorRelativeScale3D(FVector(OldScale.X * LandscapeScaleFactor, OldScale.Y * LandscapeScaleFactor, OldScale.Z));
 
-			NewLandscape->LandscapeMaterial = OldLandscape->LandscapeMaterial;
-			NewLandscape->SetPerLODOverrideMaterials(OldLandscape->GetPerLODOverrideMaterials());
-			NewLandscape->CollisionMipLevel = OldLandscape->CollisionMipLevel;
-			NewLandscape->MaxLODLevel = OldLandscape->MaxLODLevel;
-			NewLandscape->LODDistanceFactor_DEPRECATED = OldLandscape->LODDistanceFactor_DEPRECATED;
-			NewLandscape->LODFalloff_DEPRECATED = OldLandscape->LODFalloff_DEPRECATED;
-			NewLandscape->ComponentScreenSizeToUseSubSections = OldLandscape->ComponentScreenSizeToUseSubSections;
-			NewLandscape->LODDistributionSetting = OldLandscape->LODDistributionSetting;
-			NewLandscape->LOD0DistributionSetting = OldLandscape->LOD0DistributionSetting;
+			// Copy all of the shared property settings over
+			NewLandscape->CopySharedProperties(OldLandscape);
+
+			// Double check things were copied
+			check(NewLandscape->GetPerLODOverrideMaterials().Num() == OldLandscape->GetPerLODOverrideMaterials().Num());
+			check(NewLandscape->RuntimeVirtualTextures.Num() == OldLandscape->RuntimeVirtualTextures.Num());
+			check(NewLandscape->LandscapeMaterial == OldLandscape->LandscapeMaterial);
+
+			// LandscapeGuid is stomped by CopySharedProperties, but original guid is not -- fix the mismatch or it will complain during Import
+ 			NewLandscape->SetLandscapeGuid(FGuid(), /* bValidateGuid= */ false);
+			
+			// Copy settings that are not copied by CopySharedProperties
 			NewLandscape->ExportLOD = OldLandscape->ExportLOD;
 			NewLandscape->StaticLightingLOD = OldLandscape->StaticLightingLOD;
-			NewLandscape->NegativeZBoundsExtension = OldLandscape->NegativeZBoundsExtension;
-			NewLandscape->PositiveZBoundsExtension = OldLandscape->PositiveZBoundsExtension;
-			NewLandscape->DefaultPhysMaterial = OldLandscape->DefaultPhysMaterial;
 			NewLandscape->StreamingDistanceMultiplier = OldLandscape->StreamingDistanceMultiplier;
-			NewLandscape->LandscapeHoleMaterial = OldLandscape->LandscapeHoleMaterial;
 			NewLandscape->StaticLightingResolution = OldLandscape->StaticLightingResolution;
-			NewLandscape->bCastStaticShadow = OldLandscape->bCastStaticShadow;
-			NewLandscape->bCastShadowAsTwoSided = OldLandscape->bCastShadowAsTwoSided;
-			NewLandscape->LightingChannels = OldLandscape->LightingChannels;
-			NewLandscape->bRenderCustomDepth = OldLandscape->bRenderCustomDepth;
-			NewLandscape->CustomDepthStencilWriteMask = OldLandscape->CustomDepthStencilWriteMask;
-			NewLandscape->CustomDepthStencilValue = OldLandscape->CustomDepthStencilValue;
-			NewLandscape->LightmassSettings = OldLandscape->LightmassSettings;
+			NewLandscape->ShadowCacheInvalidationBehavior = OldLandscape->ShadowCacheInvalidationBehavior;
+			NewLandscape->bUseMaterialPositionOffsetInStaticLighting = OldLandscape->bUseMaterialPositionOffsetInStaticLighting;
+			NewLandscape->bUseDynamicMaterialInstance = OldLandscape->bUseDynamicMaterialInstance;
+			NewLandscape->bGenerateOverlapEvents = OldLandscape->bGenerateOverlapEvents;
+			NewLandscape->bBakeMaterialPositionOffsetIntoCollision = OldLandscape->bBakeMaterialPositionOffsetIntoCollision;
+			NewLandscape->bFillCollisionUnderLandscapeForNavmesh = OldLandscape->bFillCollisionUnderLandscapeForNavmesh;
+			NewLandscape->NavigationGeometryGatheringMode = OldLandscape->NavigationGeometryGatheringMode;
+			NewLandscape->bUseLandscapeForCullingInvisibleHLODVertices = OldLandscape->bUseLandscapeForCullingInvisibleHLODVertices;
+
 			NewLandscape->BodyInstance.SetCollisionProfileName(OldLandscape->BodyInstance.GetCollisionProfileName());
 			if (NewLandscape->BodyInstance.DoesUseCollisionProfile() == false)
 			{
@@ -3714,7 +3756,7 @@ ALandscape* FEdModeLandscape::ChangeComponentSetting(int32 NumComponentsX, int32
 				// TODO: Foliage on spline meshes
 			}
 
-			Progress.EnterProgressFrame(CurrentTaskProgress++);
+			Progress.EnterProgressFrame(static_cast<float>(CurrentTaskProgress++));
 
 			if (bResample)
 			{
@@ -3735,7 +3777,7 @@ ALandscape* FEdModeLandscape::ChangeComponentSetting(int32 NumComponentsX, int32
 					}
 				}
 
-				Progress.EnterProgressFrame(CurrentTaskProgress++);
+				Progress.EnterProgressFrame(static_cast<float>(CurrentTaskProgress++));
 
 				// delete any components that were deleted in the original
 				TSet<ULandscapeComponent*> ComponentsToDelete;
@@ -3793,14 +3835,14 @@ ALandscape* FEdModeLandscape::ChangeComponentSetting(int32 NumComponentsX, int32
 					}
 				}
 
-				Progress.EnterProgressFrame(CurrentTaskProgress++);
+				Progress.EnterProgressFrame(static_cast<float>(CurrentTaskProgress++));
 
 				// delete any components that are in areas that were entirely deleted in the original
 				TSet<ULandscapeComponent*> ComponentsToDelete;
 				for (const TPair<FIntPoint, ULandscapeComponent*>& Entry : NewLandscapeInfo->XYtoComponentMap)
 				{
-					float OldX = Entry.Key.X * NewComponentSizeQuads + LandscapeOffsetQuads.X;
-					float OldY = Entry.Key.Y * NewComponentSizeQuads + LandscapeOffsetQuads.Y;
+					const int32 OldX = Entry.Key.X * NewComponentSizeQuads + LandscapeOffsetQuads.X;
+					const int32 OldY = Entry.Key.Y * NewComponentSizeQuads + LandscapeOffsetQuads.Y;
 					TSet<ULandscapeComponent*> OverlapComponents;
 					LandscapeInfo->GetComponentsInRegion(OldX, OldY, OldX + NewComponentSizeQuads, OldY + NewComponentSizeQuads, OverlapComponents, false);
 					if (OverlapComponents.Num() == 0)
@@ -3847,7 +3889,7 @@ ELandscapeEditingState FEdModeLandscape::GetEditingState() const
 	{
 		return ELandscapeEditingState::Unknown;
 	}
-	else if (World->FeatureLevel < ERHIFeatureLevel::SM5)
+	else if (World->GetFeatureLevel() < ERHIFeatureLevel::SM5)
 	{
 		return ELandscapeEditingState::BadFeatureLevel;
 	}
@@ -4243,13 +4285,8 @@ bool FEdModeLandscape::NeedToFillEmptyMaterialLayers() const
 
 	bool bCanFill = true;
 
-	CurrentToolTarget.LandscapeInfo->ForAllLandscapeProxies([&](ALandscapeProxy* Proxy)
+	CurrentToolTarget.LandscapeInfo->ForEachLandscapeProxy([&](ALandscapeProxy* Proxy)
 	{
-		if (!bCanFill)
-		{
-			return;
-		}
-
 		ALandscape* Landscape = Proxy->GetLandscapeActor();
 
 		if (Landscape != nullptr)
@@ -4267,13 +4304,14 @@ bool FEdModeLandscape::NeedToFillEmptyMaterialLayers() const
 							if (Alloc.LayerInfo != nullptr)
 							{
 								bCanFill = false;
-								return;
+								return false;
 							}
 						}
 					}
 				}
 			}
 		}
+		return true;
 	});	
 
 	return bCanFill;

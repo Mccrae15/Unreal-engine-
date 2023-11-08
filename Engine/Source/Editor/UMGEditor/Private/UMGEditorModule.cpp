@@ -18,8 +18,6 @@
 #include "AssetToolsModule.h"
 #include "IAssetTypeActions.h"
 #include "AssetTypeActions_SlateVectorArtData.h"
-#include "AssetTypeActions_WidgetBlueprint.h"
-#include "AssetTypeActions_WidgetBlueprintGeneratedClass.h"
 #include "KismetCompilerModule.h"
 #include "WidgetBlueprintCompiler.h"
 
@@ -34,7 +32,6 @@
 
 #include "ClassIconFinder.h"
 
-#include "UMGEditorProjectSettings.h"
 #include "ISettingsModule.h"
 #include "SequencerSettings.h"
 
@@ -90,12 +87,13 @@ public:
 		// Register widget blueprint compiler we do this no matter what.
 		IKismetCompilerInterface& KismetCompilerModule = FModuleManager::LoadModuleChecked<IKismetCompilerInterface>("KismetCompiler");
 		KismetCompilerModule.GetCompilers().Add(&WidgetBlueprintCompiler);
+		KismetCompilerModule.OverrideBPTypeForClass(UUserWidget::StaticClass(), UWidgetBlueprint::StaticClass());
 
 		// Add Customization for variable in Graph editor
 		if (FBlueprintEditorModule* BlueprintEditorModule = FModuleManager::GetModulePtr<FBlueprintEditorModule>("Kismet"))
 		{
-			BlueprintVariableCustomizationHandle = BlueprintEditorModule->RegisterVariableCustomization(FProperty::StaticClass(), FOnGetVariableCustomizationInstance::CreateStatic(&FGraphVariableDetailsCustomization::MakeInstance));
-			BlueprintFunctionCustomizationHandle = BlueprintEditorModule->RegisterFunctionCustomization(UK2Node_FunctionEntry::StaticClass(), FOnGetFunctionCustomizationInstance::CreateStatic(&FGraphFunctionDetailsCustomization::MakeInstance));
+			//BlueprintVariableCustomizationHandle = BlueprintEditorModule->RegisterVariableCustomization(FProperty::StaticClass(), FOnGetVariableCustomizationInstance::CreateStatic(&FGraphVariableDetailsCustomization::MakeInstance));
+			//BlueprintFunctionCustomizationHandle = BlueprintEditorModule->RegisterFunctionCustomization(UK2Node_FunctionEntry::StaticClass(), FOnGetFunctionCustomizationInstance::CreateStatic(&FGraphFunctionDetailsCustomization::MakeInstance));
 		}
 		else
 		{
@@ -105,9 +103,7 @@ public:
 		// Register asset types
 		IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 		RegisterAssetTypeAction(AssetTools, MakeShareable(new FAssetTypeActions_SlateVectorArtData()));
-		RegisterAssetTypeAction(AssetTools, MakeShareable(new FAssetTypeActions_WidgetBlueprint()));
-		RegisterAssetTypeAction(AssetTools, MakeShareable(new FAssetTypeActions_WidgetBlueprintGeneratedClass()));
-
+		
 		FKismetCompilerContext::RegisterCompilerForBP(UWidgetBlueprint::StaticClass(), &UWidgetBlueprint::GetCompilerForWidgetBP );
 
 		// Register with the sequencer module that we provide auto-key handlers.
@@ -156,8 +152,8 @@ public:
 		{
 			if (FBlueprintEditorModule* BlueprintEditorModule = FModuleManager::GetModulePtr<FBlueprintEditorModule>("Kismet"))
 			{
-				BlueprintEditorModule->UnregisterVariableCustomization(FProperty::StaticClass(), BlueprintVariableCustomizationHandle);
-				BlueprintEditorModule->UnregisterFunctionCustomization(UK2Node_FunctionEntry::StaticClass(), BlueprintFunctionCustomizationHandle);
+				//BlueprintEditorModule->UnregisterVariableCustomization(FProperty::StaticClass(), BlueprintVariableCustomizationHandle);
+				//BlueprintEditorModule->UnregisterFunctionCustomization(UK2Node_FunctionEntry::StaticClass(), BlueprintFunctionCustomizationHandle);
 			}
 		}
 
@@ -297,6 +293,36 @@ public:
 		return RegisterLayoutExtensions; 
 	}
 
+	virtual void RegisterInstancedCustomPropertyTypeLayout(FTopLevelAssetPath Type, FOnGetInstancePropertyTypeCustomizationInstance Delegate) override
+	{
+		bool bIncluded = CustomPropertyTypeLayout.ContainsByPredicate([Type](const FCustomPropertyTypeLayout& Element) { return Element.Type == Type; });
+		if (ensure(!bIncluded))
+		{
+			FCustomPropertyTypeLayout& Layout = CustomPropertyTypeLayout.AddDefaulted_GetRef();
+			Layout.Type = Type;
+			Layout.Delegate = MoveTemp(Delegate);
+		}
+	}
+
+	virtual void UnregisterInstancedCustomPropertyTypeLayout(FTopLevelAssetPath Type) override
+	{
+		int32 IndexOf = CustomPropertyTypeLayout.IndexOfByPredicate([Type](const FCustomPropertyTypeLayout& Element){ return Element.Type == Type; });
+		if (CustomPropertyTypeLayout.IsValidIndex(IndexOf))
+		{
+			CustomPropertyTypeLayout.RemoveAtSwap(IndexOf);
+		}
+	}
+
+	virtual TArrayView<const FCustomPropertyTypeLayout> GetAllInstancedCustomPropertyTypeLayout() const override
+	{
+		return CustomPropertyTypeLayout;
+	}
+
+	virtual FOnWidgetBlueprintCreated& OnWidgetBlueprintCreated() override
+	{
+		return BlueprintCreatedEvent;
+	}
+
 private:
 	void RegisterAssetTypeAction(IAssetTools& AssetTools, TSharedRef<IAssetTypeActions> Action)
 	{
@@ -313,8 +339,8 @@ private:
 			{
 				if (FBlueprintEditorModule* BlueprintEditorModule = FModuleManager::GetModulePtr<FBlueprintEditorModule>(KismetModule))
 				{
-					BlueprintVariableCustomizationHandle = BlueprintEditorModule->RegisterVariableCustomization(FProperty::StaticClass(), FOnGetVariableCustomizationInstance::CreateStatic(&FGraphVariableDetailsCustomization::MakeInstance));
-					BlueprintFunctionCustomizationHandle = BlueprintEditorModule->RegisterFunctionCustomization(UK2Node_FunctionEntry::StaticClass(), FOnGetFunctionCustomizationInstance::CreateStatic(&FGraphFunctionDetailsCustomization::MakeInstance));
+					//BlueprintVariableCustomizationHandle = BlueprintEditorModule->RegisterVariableCustomization(FProperty::StaticClass(), FOnGetVariableCustomizationInstance::CreateStatic(&FGraphVariableDetailsCustomization::MakeInstance));
+					//BlueprintFunctionCustomizationHandle = BlueprintEditorModule->RegisterFunctionCustomization(UK2Node_FunctionEntry::StaticClass(), FOnGetFunctionCustomizationInstance::CreateStatic(&FGraphFunctionDetailsCustomization::MakeInstance));
 				}
 			}
 			FModuleManager::Get().OnModulesChanged().Remove(ModuleChangedHandle);
@@ -370,7 +396,7 @@ private:
 	TArray<FWidgetEditorToolbarExtender> WidgetEditorToolbarExtenders;
 	TArray<TSharedRef<IBlueprintWidgetCustomizationExtender>> WidgetCustomizationExtenders;
 
-	USequencerSettings* Settings;
+	TObjectPtr<USequencerSettings> Settings;
 
 	/** Compiler customization for Widgets */
 	FWidgetBlueprintCompiler WidgetBlueprintCompiler;
@@ -379,7 +405,12 @@ private:
 	FOnRegisterTabs RegisterTabsForEditor;
 
 	/** Support layout extensions */
-	FOnRegisterLayoutExtensions	RegisterLayoutExtensions;
+	FOnRegisterLayoutExtensions RegisterLayoutExtensions;
+	/** OnWidgetBlueprintCreated event */
+	FOnWidgetBlueprintCreated BlueprintCreatedEvent;
+
+	/** */
+	TArray<FCustomPropertyTypeLayout> CustomPropertyTypeLayout;
 
 	/** Handle for the FModuleManager::OnModulesChanged */
 	FDelegateHandle ModuleChangedHandle;

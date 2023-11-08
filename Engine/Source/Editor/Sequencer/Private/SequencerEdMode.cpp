@@ -9,6 +9,7 @@
 #include "MVVM/ViewModels/SequencerEditorViewModel.h"
 #include "MVVM/ViewModels/ViewModelIterators.h"
 #include "MVVM/Views/STrackAreaView.h"
+#include "MVVM/Selection/Selection.h"
 #include "EditorViewportClient.h"
 #include "Curves/KeyHandle.h"
 #include "ISequencer.h"
@@ -52,7 +53,7 @@ const FEditorModeID FSequencerEdMode::EM_SequencerMode(TEXT("EM_SequencerMode"))
 static TAutoConsoleVariable<bool> CVarDrawMeshTrails(
 	TEXT("Sequencer.DrawMeshTrails"),
 	true,
-	TEXT("Toggle to show or hide Level Sequencer VR Editor trails"));
+	TEXT("Toggle to show or hide Level Sequence VR Editor trails"));
 
 //if true still use old motion trails for sequencer objects.
 TAutoConsoleVariable<bool> CVarUseOldSequencerMotionTrails(
@@ -352,34 +353,6 @@ bool FSequencerEdMode::InputDelta(FEditorViewportClient* InViewportClient, FView
 	return FEdMode::InputDelta(InViewportClient, InViewport, InDrag, InRot, InScale);
 }
 
-static void SnapSequencerTime(TSharedPtr<FSequencer>& Sequencer, FFrameTime& ScrubTime)
-{
-	// Clamp first, snap to frame last
-	if (Sequencer->GetSequencerSettings()->ShouldKeepCursorInPlayRangeWhileScrubbing())
-	{
-		TRange<FFrameNumber> PlaybackRange = Sequencer->GetFocusedMovieSceneSequence()->GetMovieScene()->GetPlaybackRange();
-		ScrubTime = UE::MovieScene::ClampToDiscreteRange(ScrubTime, PlaybackRange);
-	}
-
-	if (Sequencer->GetSequencerSettings()->GetIsSnapEnabled())
-	{
-		FFrameRate TickResolution =  Sequencer->GetFocusedTickResolution();
-		FFrameRate DisplayRate = Sequencer->GetFocusedDisplayRate();
-
-		// Set the style of the scrub handle
-		if (Sequencer->GetScrubStyle() == ESequencerScrubberStyle::FrameBlock)
-		{
-			// Floor to the display frame
-			ScrubTime = ConvertFrameTime(ConvertFrameTime(ScrubTime, TickResolution, DisplayRate).FloorToFrame(), DisplayRate, TickResolution);
-		}
-		else
-		{
-			// Snap (round) to display rate
-			ScrubTime = FFrameRate::Snap(ScrubTime, TickResolution, DisplayRate);
-		}
-	}
-}
-
 bool FSequencerEdMode::ProcessCapturedMouseMoves(FEditorViewportClient* InViewportClient, FViewport* InViewport, const TArrayView<FIntPoint>& CapturedMouseMoves)
 {
 	TSharedPtr<FSequencer> ActiveSequencer;
@@ -422,7 +395,7 @@ bool FSequencerEdMode::ProcessCapturedMouseMoves(FEditorViewportClient* InViewpo
 							FFrameNumber FrameDiff = ViewRange.Value - ViewRange.Key;
 							FrameDiff = FrameDiff * FloatViewDiff;
 							FFrameTime ScrubTime = StartFrameNumber + FrameDiff;
-							SnapSequencerTime(ActiveSequencer, ScrubTime);
+							ActiveSequencer->SnapSequencerTime(ScrubTime);
 							ActiveSequencer->SetLocalTime(ScrubTime.GetFrame());
 						}
 					}
@@ -543,23 +516,18 @@ void FSequencerEdMode::OnKeySelected(FViewport* Viewport, HMovieSceneKeyProxy* K
 
 	for (TWeakPtr<FSequencer> WeakSequencer : Sequencers)
 	{
-		bool bChangedSelection = false;
-
 		TSharedPtr<FSequencer> Sequencer = WeakSequencer.Pin();
 		if (Sequencer.IsValid())
 		{
 			Sequencer->SetLocalTimeDirectly(KeyProxy->Key.Time);
 
-			FSequencerSelection& Selection = Sequencer->GetSelection();
+			FSequencerSelection& Selection = *Sequencer->GetViewModel()->GetSelection();
+
+			FSelectionEventSuppressor EventSuppressor = Selection.SuppressEvents();
+
 			if (!bAddToSelection && !bToggleSelection)
 			{
-				if (!bChangedSelection)
-				{
-					Sequencer->GetSelection().SuspendBroadcast();
-					bChangedSelection = true;
-				}
-
-				Sequencer->GetSelection().EmptySelectedKeys();
+				Selection.KeySelection.Empty();
 			}
 
 			for (const FTrajectoryKey::FData& KeyData : KeyProxy->Key.KeyData)
@@ -574,23 +542,19 @@ void FSequencerEdMode::OnKeySelected(FViewport* Viewport, HMovieSceneKeyProxy* K
 						TSharedPtr<FChannelModel> Channel = KeyAreaNode->GetChannel(Section);
 						if (Channel && Channel->GetKeyArea()->GetName() == KeyData.ChannelName)
 						{
-							if (!bChangedSelection)
+							if (bToggleSelection && Selection.KeySelection.IsSelected(KeyData.KeyHandle.GetValue()))
 							{
-								Sequencer->GetSelection().SuspendBroadcast();
-								bChangedSelection = true;
+								Selection.KeySelection.Deselect(KeyData.KeyHandle.GetValue());
+							}
+							else
+							{
+								Selection.KeySelection.Select(Channel, KeyData.KeyHandle.GetValue());
 							}
 
-							Sequencer->SelectKey(Section, Channel, KeyData.KeyHandle.GetValue(), bToggleSelection);
 							break;
 						}
 					}
 				}
-			}
-			if (bChangedSelection)
-			{
-				Sequencer->GetSelection().ResumeBroadcast();
-				Sequencer->GetSelection().GetOnKeySelectionChanged().Broadcast();
-				Sequencer->GetSelection().GetOnOutlinerNodeSelectionChangedObjectGuids().Broadcast();
 			}
 		}
 	}
@@ -843,7 +807,7 @@ void FSequencerEdMode::DrawTracks3D(FPrimitiveDrawInterface* PDI)
 		FObjectBindingModelStorageExtension* ObjectStorage = Sequencer->GetViewModel()->GetRootModel()->CastDynamic<FObjectBindingModelStorageExtension>();
 		check(ObjectStorage);
 
-		const FSequencerSelection& Selection = Sequencer->GetSelection();
+		const FSequencerSelection& Selection = *Sequencer->GetViewModel()->GetSelection();
 		const TSharedRef<FSequencerNodeTree>& NodeTree = Sequencer->GetNodeTree();
 		for (const FMovieSceneBinding& Binding : Sequence->GetMovieScene()->GetBindings())
 		{
@@ -853,12 +817,12 @@ void FSequencerEdMode::DrawTracks3D(FPrimitiveDrawInterface* PDI)
 				continue;
 			}
 
-			bool bSelected = Selection.IsSelected(ObjectBindingNode);
+			bool bSelected = Selection.Outliner.IsSelected(ObjectBindingNode);
 			if (!bSelected)
 			{
-				for (TSharedPtr<FViewModel> Child : ObjectBindingNode->GetDescendants())
+				for (TViewModelPtr<IOutlinerExtension> Child : ObjectBindingNode->GetDescendantsOfType<IOutlinerExtension>())
 				{
-					if (Selection.IsSelected(Child) || Selection.NodeHasSelectedKeysOrSections(Child))
+					if (Selection.Outliner.IsSelected(Child) || Selection.NodeHasSelectedKeysOrSections(Child))
 					{
 						bSelected = true;
 						// Stop traversing
@@ -867,9 +831,9 @@ void FSequencerEdMode::DrawTracks3D(FPrimitiveDrawInterface* PDI)
 				}
 
 				// If one of our parent is selected, we're considered selected
-				for (TSharedPtr<FViewModel> Parent : ObjectBindingNode->GetAncestors())
+				for (TViewModelPtr<IOutlinerExtension> Parent : ObjectBindingNode->GetAncestorsOfType<IOutlinerExtension>())
 				{
-					if (Selection.IsSelected(Parent) || Selection.NodeHasSelectedKeysOrSections(Parent))
+					if (Selection.Outliner.IsSelected(Parent) || Selection.NodeHasSelectedKeysOrSections(Parent))
 					{
 						bSelected = true;
 						break;
@@ -916,6 +880,8 @@ void FSequencerEdMode::DrawTracks3D(FPrimitiveDrawInterface* PDI)
 
 void FSequencerEdMode::DrawAudioTracks(FPrimitiveDrawInterface* PDI)
 {
+	using namespace UE::Sequencer;
+
 	for (TWeakPtr<ISequencer> WeakSequencer : Sequencers)
 	{
 		TSharedPtr<ISequencer> Sequencer = WeakSequencer.Pin();
@@ -932,10 +898,9 @@ void FSequencerEdMode::DrawAudioTracks(FPrimitiveDrawInterface* PDI)
 
 		FQualifiedFrameTime CurrentTime = Sequencer->GetLocalTime();
 
-		const FSequencerSelection& Selection = Sequencer->GetSelection();
-		for (UMovieSceneTrack* Track : Selection.GetSelectedTracks())
+		for (TViewModelPtr<ITrackExtension> TrackModel : Sequencer->GetViewModel()->GetSelection()->Outliner.Filter<ITrackExtension>())
 		{
-			UMovieSceneAudioTrack* AudioTrack = Cast<UMovieSceneAudioTrack>(Track);
+			UMovieSceneAudioTrack* AudioTrack = Cast<UMovieSceneAudioTrack>(TrackModel->GetTrack());
 
 			if (!AudioTrack)
 			{
@@ -948,14 +913,14 @@ void FSequencerEdMode::DrawAudioTracks(FPrimitiveDrawInterface* PDI)
 				const FMovieSceneActorReferenceData& AttachActorData = AudioSection->GetAttachActorData();
 
 				TMovieSceneChannelData<const FMovieSceneActorReferenceKey> ChannelData = AttachActorData.GetData();
-
-				TArrayView<const FFrameNumber> Times = ChannelData.GetTimes();
-				TArrayView<const FMovieSceneActorReferenceKey> Values = ChannelData.GetValues();
+				TArrayView<const FMovieSceneActorReferenceKey> Values = ChannelData.GetValues().Num() != 0
+					? ChannelData.GetValues()
+					: MakeArrayView(&AttachActorData.GetDefault(), 1);
 		
 				FMovieSceneActorReferenceKey CurrentValue;
 				AttachActorData.Evaluate(CurrentTime.Time, CurrentValue);
 
-				for (int32 Index = 0; Index < Times.Num(); ++Index)
+				for (int32 Index = 0; Index < Values.Num(); ++Index)
 				{
 					FMovieSceneObjectBindingID AttachBindingID = Values[Index].Object;
 					FName AttachSocketName = Values[Index].SocketName;

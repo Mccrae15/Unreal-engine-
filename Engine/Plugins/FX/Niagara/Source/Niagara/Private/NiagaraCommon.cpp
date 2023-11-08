@@ -8,7 +8,9 @@
 #include "NiagaraComponent.h"
 #include "NiagaraConstants.h"
 #include "NiagaraCustomVersion.h"
+#include "NiagaraEmitter.h"
 #include "NiagaraParameterCollection.h"
+#include "NiagaraParameterDefinitionsBase.h"
 #include "NiagaraScriptSourceBase.h"
 #include "NiagaraSettings.h"
 #include "NiagaraStats.h"
@@ -17,6 +19,7 @@
 #include "NiagaraWorldManager.h"
 #include "String/ParseTokens.h"
 #include "UObject/Class.h"
+#include "UObject/UObjectIterator.h"
 
 DECLARE_CYCLE_STAT(TEXT("Niagara - Utilities - PrepareRapidIterationParameters"), STAT_Niagara_Utilities_PrepareRapidIterationParameters, STATGROUP_Niagara);
 
@@ -35,7 +38,7 @@ FAutoConsoleVariableRef CVarAllowGPUParticles(
 	TEXT("fx.NiagaraAllowGPUParticles"),
 	GNiagaraAllowGPUParticles,
 	TEXT("If true, allow the usage of GPU particles for Niagara."),
-	ECVF_Default);
+	ECVF_Scalability | ECVF_Default);
 
 int32 GNiagaraGPUCulling = 1;
 FAutoConsoleVariableRef CVarNiagaraGPUCulling(
@@ -509,7 +512,8 @@ void FNiagaraVariableAttributeBinding::SetAsPreviousValue(const FNiagaraVariable
 	static const FString PreviousNamespace = FNiagaraConstants::PreviousNamespace.ToString();
 
 	ParamMapVariable = Src;
-	RootVariable = DataSetVariable = Src;
+	RootVariable = Src;
+	DataSetName = Src.GetName();
 
 	// Split out the name and it's namespace
 	TArray<FString> SplitName;
@@ -546,7 +550,8 @@ void FNiagaraVariableAttributeBinding::SetAsPreviousValue(const FNiagaraVariable
 	static const FString PreviousNamespace = FNiagaraConstants::PreviousNamespace.ToString();
 
 	ParamMapVariable = Src.RootVariable;
-	RootVariable = DataSetVariable = Src.RootVariable;
+	RootVariable = Src.RootVariable;
+	DataSetName = Src.RootVariable.GetName();
 
 	// Split out the name and it's namespace
 	TStringBuilder<128> VarName;
@@ -623,9 +628,13 @@ void FNiagaraVariableAttributeBinding::PostLoad(ENiagaraRendererSourceDataMode I
 #if WITH_EDITORONLY_DATA
 	if (BoundVariable.IsValid())
 	{
-		RootVariable.SetType(DataSetVariable.GetType()); //Sometimes the BoundVariable was bogus in the past. THe DataSet shouldn't be though.
+		RootVariable.SetType(ParamMapVariable.GetType()); //Sometimes the BoundVariable was bogus in the past. THe DataSet shouldn't be though.
 		SetValue(BoundVariable.GetName(), FVersionedNiagaraEmitter(), InSourceMode);
 		BoundVariable = FNiagaraVariable();
+	}
+	if (!DataSetVariable_DEPRECATED.GetName().IsNone())
+	{
+		DataSetName = DataSetVariable_DEPRECATED.GetName();
 	}
 #endif
 
@@ -635,7 +644,7 @@ void FNiagaraVariableAttributeBinding::Dump() const
 {
 	UE_LOG(LogNiagara, Log, TEXT("PostLoad for FNiagaraVariableAttributeBinding...."));
 	UE_LOG(LogNiagara, Log, TEXT("ParamMapVariable: %s %s"), *ParamMapVariable.GetName().ToString(), *ParamMapVariable.GetType().GetName());
-	UE_LOG(LogNiagara, Log, TEXT("DataSetVariable: %s %s"), *DataSetVariable.GetName().ToString(), *DataSetVariable.GetType().GetName());
+	UE_LOG(LogNiagara, Log, TEXT("DataSetName: %s"), *DataSetName.ToString());
 	UE_LOG(LogNiagara, Log, TEXT("RootVariable: %s %s"), *RootVariable.GetName().ToString(), *RootVariable.GetType().GetName());
 #if WITH_EDITORONLY_DATA
 	UE_LOG(LogNiagara, Log, TEXT("BoundVariable: %s %s"), *BoundVariable.GetName().ToString(), *BoundVariable.GetType().GetName());
@@ -654,14 +663,14 @@ void FNiagaraVariableAttributeBinding::ResetToDefault(const FNiagaraVariableAttr
 		if ((InSourceMode == ENiagaraRendererSourceDataMode::Emitter && InOther.BindingSourceMode == ENiagaraBindingSource::ImplicitFromSource) ||
 			InOther.BindingSourceMode == ENiagaraBindingSource::ExplicitEmitter)
 		{
-			ensure(!InOther.DataSetVariable.IsInNameSpace(FNiagaraConstants::EmitterNamespaceString));
-			TempVar.SetNamespacedName(FNiagaraConstants::EmitterNamespaceString, InOther.DataSetVariable.GetName());
+			ensure(!InOther.GetDataSetBindableVariable().IsInNameSpace(FNiagaraConstants::EmitterNamespaceString));
+			TempVar.SetNamespacedName(FNiagaraConstants::EmitterNamespaceString, InOther.DataSetName);
 		}
 		else if ((InSourceMode == ENiagaraRendererSourceDataMode::Particles && InOther.BindingSourceMode == ENiagaraBindingSource::ImplicitFromSource) ||
 			InOther.BindingSourceMode == ENiagaraBindingSource::ExplicitParticles)
 		{
-			ensure(!InOther.DataSetVariable.IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespaceString));
-			TempVar.SetNamespacedName(FNiagaraConstants::ParticleAttributeNamespaceString, InOther.DataSetVariable.GetName());
+			ensure(!InOther.GetDataSetBindableVariable().IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespaceString));
+			TempVar.SetNamespacedName(FNiagaraConstants::ParticleAttributeNamespaceString, InOther.DataSetName);
 		}
 
 		SetValue(TempVar.GetName(), FVersionedNiagaraEmitter(), InSourceMode);
@@ -674,7 +683,7 @@ void FNiagaraVariableAttributeBinding::ResetToDefault(const FNiagaraVariableAttr
 
 bool FNiagaraVariableAttributeBinding::MatchesDefault(const FNiagaraVariableAttributeBinding& InOther, ENiagaraRendererSourceDataMode InSourceMode) const
 {
-	if (DataSetVariable.GetName() != InOther.DataSetVariable.GetName())
+	if (DataSetName != InOther.DataSetName)
 		return false;
 	if (RootVariable.GetName() != InOther.RootVariable.GetName())
 		return false;
@@ -745,7 +754,8 @@ void FNiagaraVariableAttributeBinding::CacheValues(const FVersionedNiagaraEmitte
 		RootVariable.SetName(FNiagaraConstants::GetAttributeAsEmitterDataSetKey(RootVariable).GetName());
 	}
 
-	DataSetVariable = ParamMapVariable = (const FNiagaraVariableBase&)RootVariable;
+	ParamMapVariable = (const FNiagaraVariableBase&)RootVariable;
+	DataSetName = ParamMapVariable.GetName();
 	bBindingExistsOnSource = false;
 
 	// Decide if this is going to be bound to a particle attribute (needed for use by the renderers, for instance)
@@ -759,21 +769,21 @@ void FNiagaraVariableAttributeBinding::CacheValues(const FVersionedNiagaraEmitte
 	}
 
 	// If this is one of the possible namespaces that is implicitly defined, go ahead and expand the full namespace. RootVariable should be non-namespaced at this point.
-	if (DataSetVariable.GetName().IsNone())
+	if (DataSetName.IsNone())
 	{
 		ParamMapVariable.SetName(NAME_None);
 	}
 	else if ((InSourceMode == ENiagaraRendererSourceDataMode::Emitter && BindingSourceMode == ENiagaraBindingSource::ImplicitFromSource) ||
 		BindingSourceMode == ENiagaraBindingSource::ExplicitEmitter)
 	{
-		ensure(!DataSetVariable.IsInNameSpace(FNiagaraConstants::EmitterNamespaceString));
-		ParamMapVariable.SetNamespacedName(FNiagaraConstants::EmitterNamespaceString, DataSetVariable.GetName());
+		ensure(!GetDataSetBindableVariable().IsInNameSpace(FNiagaraConstants::EmitterNamespaceString));
+		ParamMapVariable.SetNamespacedName(FNiagaraConstants::EmitterNamespaceString, DataSetName);
 	}
 	else if ((InSourceMode == ENiagaraRendererSourceDataMode::Particles && BindingSourceMode == ENiagaraBindingSource::ImplicitFromSource) ||
 		BindingSourceMode == ENiagaraBindingSource::ExplicitParticles)
 	{
-		ensure(!DataSetVariable.IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespaceString));
-		ParamMapVariable.SetNamespacedName(FNiagaraConstants::ParticleAttributeNamespaceString, DataSetVariable.GetName());
+		ensure(!GetDataSetBindableVariable().IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespaceString));
+		ParamMapVariable.SetNamespacedName(FNiagaraConstants::ParticleAttributeNamespaceString, DataSetName);
 	}
 
 #if WITH_EDITORONLY_DATA
@@ -789,13 +799,13 @@ void FNiagaraVariableAttributeBinding::CacheValues(const FVersionedNiagaraEmitte
 			FNiagaraAliasContext ResolveAliasesContext(FNiagaraAliasContext::ERapidIterationParameterMode::EmitterOrParticleScript);
 			ResolveAliasesContext.ChangeEmitterToEmitterName(Emitter->GetUniqueEmitterName());
 			ParamMapVariable = FNiagaraUtilities::ResolveAliases(ParamMapVariable, ResolveAliasesContext);
-			DataSetVariable = FNiagaraUtilities::ResolveAliases(DataSetVariable, ResolveAliasesContext);
+			DataSetName = FNiagaraUtilities::ResolveAliases(GetDataSetBindableVariable(), ResolveAliasesContext).GetName();
 		}
 
 		FNiagaraTypeDefinition BoundVarType = ParamMapVariable.GetType();
 		if (BindingSourceMode == ENiagaraBindingSource::ExplicitParticles || (InSourceMode == ENiagaraRendererSourceDataMode::Particles && BindingSourceMode == ENiagaraBindingSource::ImplicitFromSource))
 		{
-			bBindingExistsOnSource = Emitter->CanObtainParticleAttribute(DataSetVariable, InVersionedEmitter.Version, BoundVarType);
+			bBindingExistsOnSource = Emitter->CanObtainParticleAttribute(GetDataSetBindableVariable(), InVersionedEmitter.Version, BoundVarType);
 		}
 		else if (BindingSourceMode == ENiagaraBindingSource::ExplicitEmitter || (InSourceMode == ENiagaraRendererSourceDataMode::Emitter && BindingSourceMode == ENiagaraBindingSource::ImplicitFromSource))
 		{
@@ -880,9 +890,21 @@ void FNiagaraMaterialAttributeBinding::CacheValues(const UNiagaraEmitter* InEmit
 {
 	if (InEmitter != nullptr)
 	{
+		// Resolve emitter alias.
 		ResolvedNiagaraVariable = FNiagaraUtilities::ResolveAliases(NiagaraVariable, 
 			FNiagaraAliasContext(FNiagaraAliasContext::ERapidIterationParameterMode::EmitterOrParticleScript)
 			.ChangeEmitterToEmitterName(InEmitter->GetUniqueEmitterName()));
+		
+		// Resolve DI bindings.
+		if (ResolvedNiagaraVariable.IsDataInterface())
+		{
+			
+			const FNiagaraVariableBase* ResolvedDIBinding = InEmitter->GetLatestEmitterData()->ResolvedDIBindings.Find(ResolvedNiagaraVariable);
+			if (ResolvedDIBinding != nullptr)
+			{
+				ResolvedNiagaraVariable = *ResolvedDIBinding;
+			}
+		}
 	}
 	else
 	{
@@ -1045,34 +1067,16 @@ FNiagaraVariable FNiagaraUtilities::ConvertVariableToRapidIterationConstantName(
 	return Var;
 }
 
-void FNiagaraUtilities::CollectScriptDataInterfaceParameters(const UObject& Owner, const TArrayView<UNiagaraScript*>& Scripts, FNiagaraParameterStore& OutDataInterfaceParameters)
-{
-	for (UNiagaraScript* Script : Scripts)
-	{
-		for (FNiagaraScriptDataInterfaceInfo& DataInterfaceInfo : Script->GetCachedDefaultDataInterfaces())
-		{
-			if (DataInterfaceInfo.RegisteredParameterMapWrite != NAME_None)
-			{
-				FNiagaraVariable DataInterfaceParameter(DataInterfaceInfo.Type, DataInterfaceInfo.RegisteredParameterMapWrite);
-				if (OutDataInterfaceParameters.AddParameter(DataInterfaceParameter, false, false))
-				{
-					OutDataInterfaceParameters.SetDataInterface(DataInterfaceInfo.DataInterface, DataInterfaceParameter);
-				}
-				else
-				{
-					UE_LOG(LogNiagara, Error, TEXT("Duplicate data interface parameter writes found, simulation will be incorrect.  Owner: %s Parameter: %s"),
-						*Owner.GetPathName(), *DataInterfaceInfo.RegisteredParameterMapWrite.ToString());
-				}
-			}
-		}
-	}
-}
-
 bool FNiagaraScriptDataInterfaceInfo::IsUserDataInterface() const
 {
 	TStringBuilder<128> NameBuilder;
 	Name.ToString(NameBuilder);
 	return FCString::Strnicmp(NameBuilder.ToString(), TEXT("user."), 5) == 0;
+}
+
+bool FNiagaraScriptResolvedDataInterfaceInfo::NeedsPerInstanceBinding() const
+{
+	return ResolvedVariable.GetName().ToString().StartsWith(TEXT("User."));
 }
 
 bool FNiagaraScriptDataInterfaceCompileInfo::CanExecuteOnTarget(ENiagaraSimTarget SimTarget) const
@@ -1155,28 +1159,106 @@ FString FNiagaraUtilities::SystemInstanceIDToString(FNiagaraSystemInstanceID ID)
 	return FString(Buffer);
 }
 
-EPixelFormat FNiagaraUtilities::BufferFormatToPixelFormat(ENiagaraGpuBufferFormat NiagaraFormat)
+TOptional<EPixelFormat> FNiagaraUtilities::BufferFormatToPixelFormat(ENiagaraGpuBufferFormat NiagaraFormat, EPixelFormatCapabilities RequiredCapabilities, int NumberOfChannels)
+{
+	if (!ensure(NumberOfChannels >= 1 && NumberOfChannels <= 4))
+	{
+		UE_LOG(LogNiagara, Error, TEXT("Invalid number of channels %d"), NumberOfChannels);
+		return TOptional<EPixelFormat>();
+	}
+
+	static_assert(int(ENiagaraGpuBufferFormat::Float) == 0);
+	static_assert(int(ENiagaraGpuBufferFormat::HalfFloat) == 1);
+	static_assert(int(ENiagaraGpuBufferFormat::UnsignedNormalizedByte) == 2);
+	static const EPixelFormat FormatTable[4][int(ENiagaraGpuBufferFormat::Max)] =
+	{
+		{EPixelFormat::PF_R32_FLOAT,		EPixelFormat::PF_R16F,		EPixelFormat::PF_R8},
+		{EPixelFormat::PF_G32R32F,			EPixelFormat::PF_G16R16F,	EPixelFormat::PF_R8G8},
+		{EPixelFormat::PF_A32B32G32R32F,	EPixelFormat::PF_FloatRGBA,	EPixelFormat::PF_R8G8B8A8},
+		{EPixelFormat::PF_A32B32G32R32F,	EPixelFormat::PF_FloatRGBA,	EPixelFormat::PF_R8G8B8A8},
+	};
+
+	static const TPair<EPixelFormat, EPixelFormat> FormatFallbacks[] =
+	{
+		TPairInitializer(EPixelFormat::PF_R8,			EPixelFormat::PF_R16F),
+		TPairInitializer(EPixelFormat::PF_R16F,			EPixelFormat::PF_R32_FLOAT),
+		TPairInitializer(EPixelFormat::PF_R32_FLOAT,	EPixelFormat::PF_G32R32F),
+
+		TPairInitializer(EPixelFormat::PF_R8G8,			EPixelFormat::PF_G16R16F),
+		TPairInitializer(EPixelFormat::PF_G16R16F,		EPixelFormat::PF_G32R32F),
+		TPairInitializer(EPixelFormat::PF_G32R32F,		EPixelFormat::PF_A32B32G32R32F),
+
+		TPairInitializer(EPixelFormat::PF_R8G8B8A8,		EPixelFormat::PF_FloatRGBA),
+		TPairInitializer(EPixelFormat::PF_FloatRGBA,	EPixelFormat::PF_A32B32G32R32F),
+	};
+
+	EPixelFormat CurrentFormat = FormatTable[NumberOfChannels - 1][int(NiagaraFormat)];
+	while (true)
+	{
+		if (UE::PixelFormat::HasCapabilities(CurrentFormat, RequiredCapabilities))
+		{
+			return CurrentFormat;
+		}
+
+		bool bKeepTrying = false;
+		for (const TPair<EPixelFormat, EPixelFormat>& Fallback : FormatFallbacks)
+		{
+			if (Fallback.Key == CurrentFormat)
+			{
+				CurrentFormat = Fallback.Value;
+				bKeepTrying = true;
+				break;
+			}
+		}
+		if (bKeepTrying == false)
+		{
+			break;
+		}
+	};
+
+	UE_LOG(LogNiagara, Error, TEXT("Could not find a valid EPixelFormat for NiagaraFormat(%d) Channels(%d) Caps(%08x)"), int(NiagaraFormat), NumberOfChannels, int(RequiredCapabilities));
+	return TOptional<EPixelFormat>();
+}
+
+TOptional<ETextureRenderTargetFormat> FNiagaraUtilities::BufferFormatToRenderTargetFormat(ENiagaraGpuBufferFormat NiagaraFormat, EPixelFormatCapabilities RequiredCapabilities)
 {
 	switch (NiagaraFormat)
 	{
-		case ENiagaraGpuBufferFormat::Float:					return EPixelFormat::PF_R32_FLOAT;
-		case ENiagaraGpuBufferFormat::HalfFloat:				return EPixelFormat::PF_R16F;
-		case ENiagaraGpuBufferFormat::UnsignedNormalizedByte:	return EPixelFormat::PF_R8;
+		case ENiagaraGpuBufferFormat::UnsignedNormalizedByte:
+			if (UE::PixelFormat::HasCapabilities(EPixelFormat::PF_R8, RequiredCapabilities))
+			{
+				return ETextureRenderTargetFormat::RTF_R8;
+			}
+			// Intentional fall through to next format to try
+
+		case ENiagaraGpuBufferFormat::HalfFloat:
+			if (UE::PixelFormat::HasCapabilities(EPixelFormat::PF_R16F, RequiredCapabilities))
+			{
+				return ETextureRenderTargetFormat::RTF_R16f;
+			}
+			// Intentional fall through to next format to try
+
+		case ENiagaraGpuBufferFormat::Float:
+			if (UE::PixelFormat::HasCapabilities(EPixelFormat::PF_R32_FLOAT, RequiredCapabilities))
+			{
+				return ETextureRenderTargetFormat::RTF_R32f;
+			}
+			// Intentional fall through to failure
+
+		default:
+			UE_LOG(LogNiagara, Error, TEXT("Could not find a valid ETextureRenderTargetFormat for NiagaraFormat(%d) Caps(%08x)"), int(NiagaraFormat), int(RequiredCapabilities));
+			return TOptional<ETextureRenderTargetFormat>();
 	}
-	UE_LOG(LogNiagara, Error, TEXT("NiagaraFormat(%d) is invalid, returning float format"), NiagaraFormat);
-	return EPixelFormat::PF_R32_FLOAT;
+}
+
+EPixelFormat FNiagaraUtilities::BufferFormatToPixelFormat(ENiagaraGpuBufferFormat NiagaraFormat)
+{
+	return BufferFormatToPixelFormat(NiagaraFormat, EPixelFormatCapabilities::TypedUAVLoad | EPixelFormatCapabilities::TypedUAVStore).Get(EPixelFormat::PF_R32_FLOAT);
 }
 
 ETextureRenderTargetFormat FNiagaraUtilities::BufferFormatToRenderTargetFormat(ENiagaraGpuBufferFormat NiagaraFormat)
 {
-	switch (NiagaraFormat)
-	{
-		case ENiagaraGpuBufferFormat::Float:					return ETextureRenderTargetFormat::RTF_R32f;
-		case ENiagaraGpuBufferFormat::HalfFloat:				return ETextureRenderTargetFormat::RTF_R16f;
-		case ENiagaraGpuBufferFormat::UnsignedNormalizedByte:	return ETextureRenderTargetFormat::RTF_R8;
-	}
-	UE_LOG(LogNiagara, Error, TEXT("NiagaraFormat(%d) is invalid, returning float format"), NiagaraFormat);
-	return ETextureRenderTargetFormat::RTF_R32f;
+	return BufferFormatToRenderTargetFormat(NiagaraFormat, EPixelFormatCapabilities::TypedUAVLoad | EPixelFormatCapabilities::TypedUAVStore).Get(ETextureRenderTargetFormat::RTF_R32f);
 }
 
 FString FNiagaraUtilities::SanitizeNameForObjectsAndPackages(const FString& InName)

@@ -18,10 +18,21 @@ struct CHOOSER_API FGameplayTagContextProperty :  public FChooserParameterGamepl
 	GENERATED_BODY()
 public:
 	UPROPERTY()
-	TArray<FName> PropertyBindingChain;
+	TArray<FName> PropertyBindingChain_DEPRECATED;
 	
-	virtual bool GetValue(const UObject* ContextObject, const FGameplayTagContainer*& OutResult) const override;
-
+	UPROPERTY(EditAnywhere, NoClear, Meta = (BindingType = "FGameplayTagContainer", BindingColor = "StructPinTypeColor"), Category = "Binding")
+	FChooserPropertyBinding Binding;
+	
+	virtual bool GetValue(FChooserEvaluationContext& Context, const FGameplayTagContainer*& OutResult) const override;
+	
+	virtual void PostLoad() override
+	{
+		if (PropertyBindingChain_DEPRECATED.Num() > 0)
+		{
+			Binding.PropertyBindingChain = PropertyBindingChain_DEPRECATED;
+			PropertyBindingChain_DEPRECATED.SetNum(0);
+		}
+	}
 #if WITH_EDITOR
 	static bool CanBind(const FProperty& Property)
 	{
@@ -31,14 +42,14 @@ public:
 
 	void SetBinding(const TArray<FBindingChainElement>& InBindingChain)
 	{
-		UE::Chooser::CopyPropertyChain(InBindingChain, PropertyBindingChain);
+		UE::Chooser::CopyPropertyChain(InBindingChain, Binding);
 	}
 
 	virtual void GetDisplayName(FText& OutName) const override
 	{
-		if (!PropertyBindingChain.IsEmpty())
+		if (!Binding.PropertyBindingChain.IsEmpty())
 		{
-			OutName = FText::FromName(PropertyBindingChain.Last());
+			OutName = FText::FromName(Binding.PropertyBindingChain.Last());
 		}
 	}
 #endif
@@ -51,18 +62,51 @@ struct CHOOSER_API FGameplayTagColumn : public FChooserColumnBase
 	public:
 	FGameplayTagColumn();
 	
-	UPROPERTY(EditAnywhere, Meta = (ExcludeBaseStruct, BaseStruct = "/Script/Chooser.ChooserParameterGameplayTagBase"), Category = "Hidden")
+	UPROPERTY(EditAnywhere, Meta = (ExcludeBaseStruct, BaseStruct = "/Script/Chooser.ChooserParameterGameplayTagBase"), Category = "Data")
 	FInstancedStruct InputValue;
 
-	UPROPERTY(EditAnywhere, Category=Runtime)
+	UPROPERTY(EditAnywhere, Category="Data")
 	EGameplayContainerMatchType	TagMatchType = EGameplayContainerMatchType::Any;
 
+#if WITH_EDITORONLY_DATA
+	UPROPERTY(EditAnywhere, Category=Runtime)
+	FGameplayTagContainer DefaultRowValue;
+
+#endif
+	
 	UPROPERTY(EditAnywhere, Category=Runtime)
 	// array of results (cells for this column for each row in the table)
 	// should match the length of the Results array 
 	TArray<FGameplayTagContainer> RowValues;
 	
-	virtual void Filter(const UObject* ContextObject, const TArray<uint32>& IndexListIn, TArray<uint32>& IndexListOut) const override;
+	virtual void Filter(FChooserEvaluationContext& Context, const TArray<uint32>& IndexListIn, TArray<uint32>& IndexListOut) const override;
+
+#if WITH_EDITOR
+	mutable FGameplayTagContainer TestValue;
+	virtual bool EditorTestFilter(int32 RowIndex) const override
+	{
+		if(RowValues.IsValidIndex(RowIndex))
+		{
+			if (TagMatchType == EGameplayContainerMatchType::All)
+			{
+				return TestValue.HasAll(RowValues[RowIndex]);
+			}
+			else
+			{
+				return TestValue.HasAny(RowValues[RowIndex]);
+			}
+		}
+		return false;
+	}
+#endif
+
+	virtual void PostLoad() override
+	{
+		if (InputValue.IsValid())
+		{
+			InputValue.GetMutable<FChooserParameterBase>().PostLoad();
+		}
+	}
 
 	CHOOSER_COLUMN_BOILERPLATE(FChooserParameterGameplayTagBase);
 };
@@ -81,7 +125,7 @@ public:
 	{
 		OutInstancedStruct.InitializeAs(FGameplayTagContextProperty::StaticStruct());
 		FGameplayTagContextProperty& Property = OutInstancedStruct.GetMutable<FGameplayTagContextProperty>();
-		Property.PropertyBindingChain = PropertyBindingChain;
+		Property.Binding.PropertyBindingChain = PropertyBindingChain;
 	}
 };
 
@@ -106,6 +150,7 @@ class CHOOSER_API UDEPRECATED_ChooserColumnGameplayTag : public UObject, public 
 	// array of results (cells for this column for each row in the table)
 	// should match the length of the Results array 
 	TArray<FGameplayTagContainer> RowValues;
+
 	
 	virtual void ConvertToInstancedStruct(FInstancedStruct& OutInstancedStruct) const override
 	{

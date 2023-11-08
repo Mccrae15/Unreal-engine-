@@ -1,14 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Evaluation/MovieSceneEvaluationState.h"
-#include "MovieSceneSequence.h"
-#include "MovieScene.h"
-#include "IMovieScenePlayer.h"
-#include "IMovieScenePlaybackClient.h"
-#include "MovieSceneObjectBindingID.h"
 
 #include "Algo/Sort.h"
 #include "Algo/Unique.h"
+#include "Engine/World.h"
+#include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
+#include "IMovieScenePlaybackClient.h"
+#include "IMovieScenePlayer.h"
+#include "MovieScene.h"
+#include "MovieSceneDynamicBindingInvoker.h"
+#include "MovieSceneObjectBindingID.h"
+#include "MovieSceneSequence.h"
 
 DECLARE_CYCLE_STAT(TEXT("Find Bound Objects"), MovieSceneEval_FindBoundObjects, STATGROUP_MovieSceneEval);
 DECLARE_CYCLE_STAT(TEXT("Iterate Bound Objects"), MovieSceneEval_IterateBoundObjects, STATGROUP_MovieSceneEval);
@@ -362,7 +365,16 @@ void FMovieSceneObjectCache::UpdateBindings(const FGuid& InGuid, IMovieScenePlay
 					}
 					else
 					{
-						Player.ResolveBoundObjects(InGuid, SequenceID, *Sequence, ResolutionContext, FoundObjects);
+						FMovieSceneDynamicBindingResolveResult ResolveResult = FMovieSceneDynamicBindingInvoker::ResolveDynamicBinding(Player, Sequence, SequenceID, InGuid, Possessable->DynamicBinding);
+						if (ResolveResult.Object)
+						{
+							ensureMsgf(ResolveResult.bIsPossessedObject, TEXT("Possessables don't support spawnable-type ownership"));
+							FoundObjects.Add(ResolveResult.Object);
+						}
+						else
+						{
+							Player.ResolveBoundObjects(InGuid, SequenceID, *Sequence, ResolutionContext, FoundObjects);
+						}
 					}
 					
 					Bindings = BoundObjects.Find(InGuid);
@@ -388,7 +400,16 @@ void FMovieSceneObjectCache::UpdateBindings(const FGuid& InGuid, IMovieScenePlay
 				}
 				else
 				{
-					Player.ResolveBoundObjects(InGuid, SequenceID, *Sequence, ResolutionContext, FoundObjects);
+					FMovieSceneDynamicBindingResolveResult ResolveResult = FMovieSceneDynamicBindingInvoker::ResolveDynamicBinding(Player, Sequence, SequenceID, InGuid, Possessable->DynamicBinding);
+					if (ResolveResult.Object)
+					{
+						ensureMsgf(ResolveResult.bIsPossessedObject, TEXT("Possessables don't support spawnable-type ownership"));
+						FoundObjects.Add(ResolveResult.Object);
+					}
+					else
+					{
+						Player.ResolveBoundObjects(InGuid, SequenceID, *Sequence, ResolutionContext, FoundObjects);
+					}
 				}
 				
 				Bindings = BoundObjects.Find(InGuid);

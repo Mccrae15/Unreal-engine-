@@ -12,6 +12,7 @@
 #include "MeshWeights.h"
 #include "DynamicMesh/MeshNormals.h"
 #include "DynamicMesh/MeshIndexUtil.h"
+#include "DynamicMesh/NonManifoldMappingSupport.h"
 #include "Util/BufferUtil.h"
 #include "Util/ColorConstants.h"
 #include "Selections/MeshConnectedComponents.h"
@@ -30,6 +31,21 @@
 
 #include "CanvasTypes.h"
 #include "CanvasItem.h"
+#include "ChaosClothAsset/ClothEditorContextObject.h"
+#include "ChaosClothAsset/ClothPatternVertexType.h"
+#include "ChaosClothAsset/CollectionClothFacade.h"
+#include "ChaosClothAsset/WeightedValue.h"
+#include "ContextObjectStore.h"
+#include "Dataflow/DataflowEdNode.h"
+#include "Dataflow/DataflowObject.h"
+#include "ChaosClothAsset/AddWeightMapNode.h"
+#include "GraphEditor.h"
+#include "Dataflow/DataflowSNode.h"
+#include "Dataflow/DataflowGraphEditor.h"
+#include "Widgets/Notifications/SNotificationList.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "Selection/PolygonSelectionMechanic.h"
+#include "BaseGizmos/BrushStampIndicator.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ClothWeightMapPaintTool)
 
@@ -37,7 +53,7 @@ using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "UClothEditorWeightMapPaintTool"
 
-namespace
+namespace UE::Chaos::ClothAsset::Private
 {
 	// probably should be something defined for the whole tool framework...
 #if WITH_EDITOR
@@ -51,18 +67,31 @@ namespace
 /*
  * ToolBuilder
  */
+
+void UClothEditorWeightMapPaintToolBuilder::GetSupportedViewModes(TArray<UE::Chaos::ClothAsset::EClothPatternVertexType>& Modes) const
+{
+	Modes.Add(UE::Chaos::ClothAsset::EClothPatternVertexType::Sim3D);
+	Modes.Add(UE::Chaos::ClothAsset::EClothPatternVertexType::Sim2D);
+}
+
 UMeshSurfacePointTool* UClothEditorWeightMapPaintToolBuilder::CreateNewTool(const FToolBuilderState& SceneState) const
 {
-	UClothEditorWeightMapPaintTool* SculptTool = NewObject<UClothEditorWeightMapPaintTool>(SceneState.ToolManager);
-	SculptTool->SetWorld(SceneState.World);
-	return SculptTool;
+	UClothEditorWeightMapPaintTool* PaintTool = NewObject<UClothEditorWeightMapPaintTool>(SceneState.ToolManager);
+	PaintTool->SetWorld(SceneState.World);
+
+	if (UClothEditorContextObject* ContextObject = SceneState.ToolManager->GetContextObjectStore()->FindContext<UClothEditorContextObject>())
+	{
+		PaintTool->SetClothEditorContextObject(ContextObject);
+	}
+
+	return PaintTool;
 }
 
 
 /*
- * Properties
+ * ToolActions
  */
-void UClothEditorWeightMapPaintToolActionPropertySet::PostAction(EClothEditorWeightMapPaintToolActions Action)
+void UClothEditorMeshWeightMapPaintToolActions::PostAction(EClothEditorWeightMapPaintToolActions Action)
 {
 	if (ParentTool.IsValid())
 	{
@@ -71,7 +100,16 @@ void UClothEditorWeightMapPaintToolActionPropertySet::PostAction(EClothEditorWei
 }
 
 
-
+/*
+ * Properties
+ */
+void UClothEditorUpdateWeightMapProperties::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UClothEditorUpdateWeightMapProperties, Name))
+	{
+		UE::Chaos::ClothAsset::FWeightMapTools::MakeWeightMapName(Name);
+	}
+}
 
 
 /*
@@ -81,6 +119,10 @@ void UClothEditorWeightMapPaintToolActionPropertySet::PostAction(EClothEditorWei
 void UClothEditorWeightMapPaintTool::Setup()
 {
 	UMeshSculptToolBase::Setup();
+
+	// Get the selected weight map node
+	WeightMapNodeToUpdate = ClothEditorContextObject->GetSingleSelectedNodeOfType<FChaosClothAssetAddWeightMapNode>();
+	checkf(WeightMapNodeToUpdate, TEXT("No Weight Map Node is currently selected, or more than one node is selected"));
 
 	SetToolDisplayName(LOCTEXT("ToolName", "Paint Weight Maps"));
 
@@ -104,12 +146,12 @@ void UClothEditorWeightMapPaintTool::Setup()
 	Mesh->EnableVertexColors(FVector3f::One());
 	FAxisAlignedBox3d Bounds = Mesh->GetBounds(true);
 
-	TFuture<void> PrecomputeFuture = Async(WeightPaintToolAsyncExecTarget, [&]()
+	TFuture<void> PrecomputeFuture = Async(UE::Chaos::ClothAsset::Private::WeightPaintToolAsyncExecTarget, [&]()
 	{
 		PrecomputeFilterData();
 	});
 
-	TFuture<void> OctreeFuture = Async(WeightPaintToolAsyncExecTarget, [&]()
+	TFuture<void> OctreeFuture = Async(UE::Chaos::ClothAsset::Private::WeightPaintToolAsyncExecTarget, [&]()
 	{
 		// initialize dynamic octree
 		if (Mesh->TriangleCount() > 100000)
@@ -141,18 +183,35 @@ void UClothEditorWeightMapPaintTool::Setup()
 	PolyLassoMechanic->SpacingTolerance = 10.0f;
 	PolyLassoMechanic->OnDrawPolyLassoFinished.AddUObject(this, &UClothEditorWeightMapPaintTool::OnPolyLassoFinished);
 
-	WeightMapSetProperties = NewObject<UWeightMapSetProperties>(this);
-	WeightMapSetProperties->RestoreProperties(this, TEXT("ClothEditorWeightMapPaintTool"));
 
-	InitializeWeightMapNames();
+	// Set up vertex selection mechanic
+	PolygonSelectionMechanic = NewObject<UPolygonSelectionMechanic>(this);
+	PolygonSelectionMechanic->bAddSelectionFilterPropertiesToParentTool = false;
+	PolygonSelectionMechanic->Setup(this);
+	PolygonSelectionMechanic->SetIsEnabled(false);
+	PolygonSelectionMechanic->OnSelectionChanged.AddUObject(this, &UClothEditorWeightMapPaintTool::OnSelectionModified);
 
-	WeightMapSetProperties->WatchProperty(WeightMapSetProperties->WeightMap, [&](FName) { OnSelectedWeightMapChanged(); });
-	UpdateActiveWeightMap();
-	AddToolPropertySource(WeightMapSetProperties);
+	// disable CTRL to remove from selection
+	PolygonSelectionMechanic->SetShouldRemoveFromSelectionFunc([]() { return false; });
 
-	ClothEditorWeightMapActions = NewObject<UClothEditorWeightMapActions>(this);
-	ClothEditorWeightMapActions->Initialize(this);
-	AddToolPropertySource(ClothEditorWeightMapActions);
+	PolygonSelectionMechanic->Properties->bSelectEdges = false;
+	PolygonSelectionMechanic->Properties->bSelectFaces = false;
+	PolygonSelectionMechanic->Properties->bSelectVertices = true;
+	
+	constexpr bool bAutoBuild = true;
+	GradientSelectionTopology = MakeUnique<UE::Geometry::FTriangleGroupTopology>(DynamicMeshComponent->GetMesh(), bAutoBuild);
+	
+	MeshSpatial = MakeUnique<UE::Geometry::FDynamicMeshAABBTree3>(DynamicMeshComponent->GetMesh(), bAutoBuild);
+	PolygonSelectionMechanic->Initialize(DynamicMeshComponent, GradientSelectionTopology.Get(), [this]() { return MeshSpatial.Get(); });
+
+	UpdateWeightMapProperties = NewObject<UClothEditorUpdateWeightMapProperties>(this);
+	UpdateWeightMapProperties->Name = WeightMapNodeToUpdate->Name;
+
+	UpdateWeightMapProperties->WatchProperty(WeightMapNodeToUpdate->Name, [this](const FString& NewName)
+	{
+		UpdateWeightMapProperties->Name = NewName;
+	});
+	AddToolPropertySource(UpdateWeightMapProperties);
 
 	// initialize other properties
 	FilterProperties = NewObject<UClothEditorWeightMapPaintBrushFilterProperties>(this);
@@ -160,9 +219,8 @@ void UClothEditorWeightMapPaintTool::Setup()
 		[this](EClothEditorWeightMapPaintInteractionType NewType) { UpdateSubToolType(NewType); });
 	FilterProperties->WatchProperty(FilterProperties->BrushSize,
 		[this](float NewSize) { UMeshSculptToolBase::BrushProperties->BrushSize.AdaptiveSize = NewSize; });
-	FilterProperties->RestoreProperties(this);
 	FilterProperties->BrushSize = UMeshSculptToolBase::BrushProperties->BrushSize.AdaptiveSize;
-	FilterProperties->StrengthValue = 1.0;
+	FilterProperties->RestoreProperties(this);
 	AddToolPropertySource(FilterProperties);
 
 	InitializeIndicator();
@@ -172,12 +230,18 @@ void UClothEditorWeightMapPaintTool::Setup()
 	UMeshSculptToolBase::BrushProperties->bShowPerBrushProps = false;
 	UMeshSculptToolBase::BrushProperties->bShowFalloff = true;
 	UMeshSculptToolBase::BrushProperties->bShowLazyness = false;
+	UMeshSculptToolBase::BrushProperties->FlowRate = 0.0f;
 	CalculateBrushRadius();
 
 	PaintBrushOpProperties = NewObject<UWeightMapPaintBrushOpProps>(this);
 	RegisterBrushType((int32)EClothEditorWeightMapPaintBrushType::Paint, LOCTEXT("Paint", "Paint"),
 		MakeUnique<FLambdaMeshSculptBrushOpFactory>([this]() { return MakeUnique<FWeightMapPaintBrushOp>(); }),
 		PaintBrushOpProperties);
+
+	SmoothBrushOpProperties = NewObject<UWeightMapSmoothBrushOpProps>(this);
+	RegisterBrushType((int32)EClothEditorWeightMapPaintBrushType::Smooth, LOCTEXT("SmoothBrushType", "Smooth"),
+		MakeUnique<FLambdaMeshSculptBrushOpFactory>([this]() { return MakeUnique<FWeightMapSmoothBrushOp>(); }),
+		SmoothBrushOpProperties);
 
 	// secondary brushes
 	EraseBrushOpProperties = NewObject<UWeightMapEraseBrushOpProps>(this);
@@ -202,7 +266,7 @@ void UClothEditorWeightMapPaintTool::Setup()
 	UpdateBrushType(FilterProperties->PrimaryBrushType);
 	SetActiveSecondaryBrushType((int32)EClothEditorWeightMapPaintBrushType::Erase);
 	
-	ActionsProps = NewObject<UMeshWeightMapPaintToolActions>(this);
+	ActionsProps = NewObject<UClothEditorMeshWeightMapPaintToolActions>(this);
 	ActionsProps->Initialize(this);
 	AddToolPropertySource(ActionsProps);
 
@@ -210,7 +274,8 @@ void UClothEditorWeightMapPaintTool::Setup()
 	MeshElementsDisplay->CreateInWorld(DynamicMeshComponent->GetWorld(), DynamicMeshComponent->GetComponentTransform());
 	if (ensure(MeshElementsDisplay->Settings))
 	{
-		MeshElementsDisplay->Settings->RestoreProperties(this, TEXT("ClothEditorWeightMapPaintTool"));
+		MeshElementsDisplay->Settings->bShowNormalSeams = false;
+		MeshElementsDisplay->Settings->RestoreProperties(this, TEXT("ClothEditorWeightMapPaintTool2"));
 		AddToolPropertySource(MeshElementsDisplay->Settings);
 	}
 	MeshElementsDisplay->SetMeshAccessFunction([this](UMeshElementsVisualizer::ProcessDynamicMeshFunc ProcessFunc) {
@@ -244,8 +309,97 @@ void UClothEditorWeightMapPaintTool::Setup()
 	// configure panels
 	UpdateSubToolType(FilterProperties->SubToolType);
 
+	// Setup DynamicMeshToWeight conversion
+	if (ClothEditorContextObject)
+	{
+		if (TSharedPtr<const FManagedArrayCollection> ClothCollection = ClothEditorContextObject->GetSelectedClothCollection().Pin())
+		{
+			using namespace UE::Chaos::ClothAsset;
+			const FNonManifoldMappingSupport NonManifoldMapping(*Mesh);
+
+			const bool bHasNonManifoldMapping = NonManifoldMapping.IsNonManifoldVertexInSource();
+			const bool bHas2D3DConversion = ClothEditorContextObject->GetConstructionViewMode() == EClothPatternVertexType::Sim2D;
+
+			bHaveDynamicMeshToWeightConversion = bHasNonManifoldMapping || bHas2D3DConversion;
+
+			FCollectionClothConstFacade Cloth(ClothCollection.ToSharedRef());
+			check(Cloth.IsValid());
+			if (bHasNonManifoldMapping)
+			{
+				const TConstArrayView<int32> SimVertex3DLookup = Cloth.GetSimVertex3DLookup();
+
+				DynamicMeshToWeight.SetNumUninitialized(Mesh->VertexCount());
+				WeightToDynamicMesh.Reset();
+				WeightToDynamicMesh.SetNum(Cloth.GetNumSimVertices3D());
+				for (int32 DynamicMeshVert = 0; DynamicMeshVert < Mesh->VertexCount(); ++DynamicMeshVert)
+				{
+					DynamicMeshToWeight[DynamicMeshVert] = NonManifoldMapping.GetOriginalNonManifoldVertexID(DynamicMeshVert);
+					if (bHas2D3DConversion)
+					{
+						DynamicMeshToWeight[DynamicMeshVert] = SimVertex3DLookup[DynamicMeshToWeight[DynamicMeshVert]];
+					}
+					WeightToDynamicMesh[DynamicMeshToWeight[DynamicMeshVert]].Add(DynamicMeshVert);
+				}
+			}
+			else if (bHas2D3DConversion)
+			{
+				DynamicMeshToWeight = Cloth.GetSimVertex3DLookup();
+				WeightToDynamicMesh = Cloth.GetSimVertex2DLookup();
+			}
+		}
+	}
+
 	PrecomputeFuture.Wait();
 	OctreeFuture.Wait();
+
+
+	// Create an attribute layer to temporarily paint into
+	const int NumAttributeLayers = Mesh->Attributes()->NumWeightLayers();
+	Mesh->Attributes()->SetNumWeightLayers(NumAttributeLayers + 1);
+	ActiveWeightMap = Mesh->Attributes()->GetWeightLayer(NumAttributeLayers);
+	ActiveWeightMap->SetName(FName("PaintLayer"));
+
+	// Copy weights from selected node to the preview mesh
+	const TArray<float>& CurrentWeights = WeightMapNodeToUpdate->VertexWeights;
+	
+	if (bHaveDynamicMeshToWeightConversion)
+	{
+		if (WeightToDynamicMesh.Num() == CurrentWeights.Num())	// Only copy node weights if they match the number of mesh vertices
+		{
+			for (int32 WeightID = 0; WeightID < CurrentWeights.Num(); ++WeightID)
+			{
+				for (const int32 VertexID : WeightToDynamicMesh[WeightID])
+				{
+					ActiveWeightMap->SetValue(VertexID, &CurrentWeights[WeightID]);
+				}
+			}
+		}
+	}
+	else
+	{
+		if (Mesh->MaxVertexID() == CurrentWeights.Num())	// Only copy node weights if they match the number of mesh vertices
+		{
+			for (int32 VertexID = 0; VertexID < CurrentWeights.Num(); ++VertexID)
+			{
+				ActiveWeightMap->SetValue(VertexID, &CurrentWeights[VertexID]);
+			}
+		}
+	}
+
+	UpdateWeightMapProperties->Name = WeightMapNodeToUpdate->Name;
+	SetToolPropertySourceEnabled(UpdateWeightMapProperties, true);
+
+
+	// update colors
+	DynamicMeshComponent->FastNotifyVertexAttributesUpdated(EMeshRenderAttributeFlags::VertexColors);
+	GetToolManager()->PostInvalidation();
+
+}
+
+
+void UClothEditorWeightMapPaintTool::SetClothEditorContextObject(TObjectPtr<UClothEditorContextObject> InClothEditorContextObject)
+{
+	ClothEditorContextObject = InClothEditorContextObject;
 }
 
 void UClothEditorWeightMapPaintTool::Shutdown(EToolShutdownType ShutdownType)
@@ -257,17 +411,21 @@ void UClothEditorWeightMapPaintTool::Shutdown(EToolShutdownType ShutdownType)
 
 	if (ensure(MeshElementsDisplay->Settings))
 	{
-		MeshElementsDisplay->Settings->SaveProperties(this, TEXT("ClothEditorWeightMapPaintTool"));
+		MeshElementsDisplay->Settings->SaveProperties(this, TEXT("ClothEditorWeightMapPaintTool2"));
 	}
 	MeshElementsDisplay->Disconnect();
 
 	FilterProperties->SaveProperties(this);
-	WeightMapSetProperties->SaveProperties(this, TEXT("ClothEditorWeightMapPaintTool"));
-
 	if (PreviewMeshActor != nullptr)
 	{
 		PreviewMeshActor->Destroy();
 		PreviewMeshActor = nullptr;
+	}
+
+	if (PolygonSelectionMechanic)
+	{
+		PolygonSelectionMechanic->Shutdown();
+		PolygonSelectionMechanic = nullptr;
 	}
 
 	UMeshSculptToolBase::Shutdown(ShutdownType);
@@ -277,10 +435,9 @@ void UClothEditorWeightMapPaintTool::Shutdown(EToolShutdownType ShutdownType)
 void UClothEditorWeightMapPaintTool::CommitResult(UBaseDynamicMeshComponent* Component, bool bModifiedTopology)
 {
 	GetToolManager()->BeginUndoTransaction(LOCTEXT("WeightPaintToolTransactionName", "Paint Weights"));
-	Component->ProcessMesh([&](const FDynamicMesh3& CurMesh)
-	{
-		UE::ToolTarget::CommitDynamicMeshUpdate(Target, CurMesh, true);
-	});
+
+	UpdateSelectedNode();
+
 	GetToolManager()->EndUndoTransaction();
 }
 
@@ -364,11 +521,16 @@ void UClothEditorWeightMapPaintTool::OnBeginStroke(const FRay& WorldRay)
 
 	if (PaintBrushOpProperties)
 	{
-		PaintBrushOpProperties->AttributeValue = FilterProperties->StrengthValue;
+		PaintBrushOpProperties->AttributeValue = FilterProperties->AttributeValue;
+		PaintBrushOpProperties->Strength = FilterProperties->Strength * FilterProperties->Strength;
 	}
 	if (EraseBrushOpProperties)
 	{
-		EraseBrushOpProperties->AttributeValue = FilterProperties->StrengthValue;
+		EraseBrushOpProperties->AttributeValue = 0.0;
+	}
+	if (SmoothBrushOpProperties)
+	{
+		SmoothBrushOpProperties->Strength = FilterProperties->Strength * FilterProperties->Strength;
 	}
 
 	// initialize first "Last Stamp", so that we can assume all stamps in stroke have a valid previous stamp
@@ -547,7 +709,8 @@ bool UClothEditorWeightMapPaintTool::UpdateStampPosition(const FRay& WorldRay)
 	CurrentStamp.PrevWorldFrame = LastStamp.WorldFrame;
 
 	FVector3d MoveDelta = CurrentStamp.LocalFrame.Origin - CurrentStamp.PrevLocalFrame.Origin;
-	if (UseBrushOp->IgnoreZeroMovements() && MoveDelta.SquaredLength() < FMathd::ZeroTolerance)
+
+	if (UseBrushOp->IgnoreZeroMovements() && MoveDelta.SquaredLength() < 0.1 * CurrentBrushRadius)
 	{
 		return false;
 	}
@@ -593,8 +756,19 @@ bool UClothEditorWeightMapPaintTool::SyncMeshWithWeightBuffer(FDynamicMesh3* Mes
 
 			if (ROIWeightValueBuffer[k] != CurWeight)
 			{
+				if (bHaveDynamicMeshToWeightConversion)
+				{
+					for (const int32 Idx : WeightToDynamicMesh[DynamicMeshToWeight[VertIdx]])
+					{
+						ActiveWeightEditChangeTracker->SaveVertexOneRingTriangles(Idx, true);
+						ActiveWeightMap->SetValue(Idx, &ROIWeightValueBuffer[k]);
+					}
+				}
+				else
+				{
 				ActiveWeightEditChangeTracker->SaveVertexOneRingTriangles(VertIdx, true);
 				ActiveWeightMap->SetValue(VertIdx, &ROIWeightValueBuffer[k]);
+				}
 				NumModified++;
 			}
 		}
@@ -826,11 +1000,125 @@ void UClothEditorWeightMapPaintTool::OnPolyLassoFinished(const FCameraPolyLasso&
 	FMeshVertexSelection VertexSelection(Mesh);
 	VertexSelection.SelectByVertexID([&](int32 vid) { return TempROIBuffer[vid] == 1; });
 
-	double SetWeightValue = GetInEraseStroke() ? 0.0 : FilterProperties->StrengthValue;
+	double SetWeightValue = GetInEraseStroke() ? 0.0 : FilterProperties->AttributeValue;
 	SetVerticesToWeightMap(VertexSelection.AsSet(), SetWeightValue, GetInEraseStroke());
 }
 
 
+void UClothEditorWeightMapPaintTool::ComputeGradient()
+{
+	if (!ensure(ActiveWeightMap))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("No active weight map"));
+		return;
+	}
+
+	BeginChange();
+
+	const FDynamicMesh3* const Mesh = DynamicMeshComponent->GetMesh();
+	TempROIBuffer.SetNum(0, false);
+	for (int32 vid : Mesh->VertexIndicesItr())
+	{
+		TempROIBuffer.Add(vid);
+	}
+
+	if (bHaveDynamicMeshToWeightConversion)
+	{
+	for (int32 vid : TempROIBuffer)
+	{
+			for (const int32 Idx : WeightToDynamicMesh[DynamicMeshToWeight[vid]])
+			{
+				ActiveWeightEditChangeTracker->SaveVertexOneRingTriangles(Idx, true);
+			}
+		}
+	}
+	else
+	{
+		for (int32 vid : TempROIBuffer)
+		{
+		ActiveWeightEditChangeTracker->SaveVertexOneRingTriangles(vid, true);
+	}
+	}
+
+
+	for (const int32 VertexIndex : TempROIBuffer)
+	{
+		const FVector3d Vert = Mesh->GetVertex(VertexIndex);
+
+		// (Copied from FClothPaintTool_Gradient::ApplyGradient)
+
+		// Get distances
+		// TODO: Look into surface distance instead of 3D distance? May be necessary for some complex shapes
+		float DistanceToLowSq = MAX_flt;
+		for (const int32& LowIndex : LowValueGradientVertexSelection.SelectedCornerIDs)
+		{
+			const FVector3d LowPoint = Mesh->GetVertex(LowIndex);
+			const float DistanceSq = (LowPoint - Vert).SizeSquared();
+			if (DistanceSq < DistanceToLowSq)
+			{
+				DistanceToLowSq = DistanceSq;
+			}
+		}
+
+		float DistanceToHighSq = MAX_flt;
+		for (const int32& HighIndex : HighValueGradientVertexSelection.SelectedCornerIDs)
+		{
+			const FVector3d HighPoint = Mesh->GetVertex(HighIndex);
+			const float DistanceSq = (HighPoint - Vert).SizeSquared();
+			if (DistanceSq < DistanceToHighSq)
+			{
+				DistanceToHighSq = DistanceSq;
+			}
+		}
+
+		const float Value = FMath::LerpStable(FilterProperties->GradientLowValue, FilterProperties->GradientHighValue, DistanceToLowSq / (DistanceToLowSq + DistanceToHighSq));
+		if (bHaveDynamicMeshToWeightConversion)
+		{
+			for (const int32 Idx : WeightToDynamicMesh[DynamicMeshToWeight[VertexIndex]])
+			{
+				ActiveWeightMap->SetValue(Idx, &Value);
+			}
+		}
+		else
+		{
+		ActiveWeightMap->SetValue(VertexIndex, &Value);
+	}
+	}
+
+
+	DynamicMeshComponent->FastNotifyVertexAttributesUpdated(EMeshRenderAttributeFlags::VertexColors);
+	GetToolManager()->PostInvalidation();
+	EndChange();
+
+}
+
+
+void UClothEditorWeightMapPaintTool::OnSelectionModified()
+{
+	const bool bToolTypeIsGradient = (FilterProperties->SubToolType == EClothEditorWeightMapPaintInteractionType::Gradient);
+	if (bToolTypeIsGradient && PolygonSelectionMechanic)
+	{
+		const FGroupTopologySelection NewSelection = PolygonSelectionMechanic->GetActiveSelection();
+
+		const bool bSelectingLowValueGradientVertices = GetCtrlToggle();
+		if (bSelectingLowValueGradientVertices)
+		{
+			LowValueGradientVertexSelection = NewSelection;
+		}
+		else
+		{
+			HighValueGradientVertexSelection = NewSelection;
+		}
+
+		if (LowValueGradientVertexSelection.SelectedCornerIDs.Num() > 0 && HighValueGradientVertexSelection.SelectedCornerIDs.Num() > 0)
+		{
+			ComputeGradient();
+		}
+
+		constexpr bool bBroadcast = false;
+		PolygonSelectionMechanic->SetSelection(FGroupTopologySelection(), bBroadcast);
+	}
+}
 
 
 void UClothEditorWeightMapPaintTool::SetVerticesToWeightMap(const TSet<int32>& Vertices, double WeightValue, bool bIsErase)
@@ -851,6 +1139,19 @@ void UClothEditorWeightMapPaintTool::SetVerticesToWeightMap(const TSet<int32>& V
 		TempROIBuffer = MoveTemp(VisibleVertices);
 	}
 
+	if (bHaveDynamicMeshToWeightConversion)
+	{
+		for (int32 vid : TempROIBuffer)
+		{
+			for (const int32 Idx : WeightToDynamicMesh[DynamicMeshToWeight[vid]])
+			{
+				ActiveWeightEditChangeTracker->SaveVertexOneRingTriangles(Idx, true);
+				ActiveWeightMap->SetValue(Idx, &WeightValue);
+			}
+		}
+	}
+	else
+	{
 	for (int32 vid : TempROIBuffer)
 	{
 		ActiveWeightEditChangeTracker->SaveVertexOneRingTriangles(vid, true);
@@ -858,6 +1159,7 @@ void UClothEditorWeightMapPaintTool::SetVerticesToWeightMap(const TSet<int32>& V
 	for (int32 vid : TempROIBuffer)
 	{		
 		ActiveWeightMap->SetValue(vid, &WeightValue);
+	}
 	}
 
 
@@ -1041,19 +1343,90 @@ void UClothEditorWeightMapPaintTool::DrawHUD(FCanvas* Canvas, IToolsContextRende
 		PolyLassoMechanic->LineColor = GetInEraseStroke() ? FLinearColor::Red : FLinearColor::Green;
 		PolyLassoMechanic->DrawHUD(Canvas, RenderAPI);
 	}
+
+	if (PolygonSelectionMechanic)
+	{
+		PolygonSelectionMechanic->DrawHUD(Canvas, RenderAPI);
+	}
 }
 
+void UClothEditorWeightMapPaintTool::Render(IToolsContextRenderAPI* RenderAPI)
+{
+	UMeshSculptToolBase::Render(RenderAPI);
+
+	if (PolygonSelectionMechanic)
+	{
+		PolygonSelectionMechanic->RenderMarquee(RenderAPI);
+
+		const FViewCameraState RenderCameraState = RenderAPI->GetCameraState();
+		GradientSelectionRenderer.BeginFrame(RenderAPI, RenderCameraState);
+
+		const FTransform Transform = DynamicMeshComponent->GetComponentTransform();
+		GradientSelectionRenderer.SetTransform(Transform);
+			
+		GradientSelectionRenderer.SetPointParameters(FLinearColor::Red, 1.0);
+		PolygonSelectionMechanic->UMeshTopologySelectionMechanic::GetTopologySelector()->DrawSelection(LowValueGradientVertexSelection, &GradientSelectionRenderer, &RenderCameraState);
+
+		GradientSelectionRenderer.SetPointParameters(FLinearColor::Green, 1.0);
+		PolygonSelectionMechanic->UMeshTopologySelectionMechanic::GetTopologySelector()->DrawSelection(HighValueGradientVertexSelection, &GradientSelectionRenderer, &RenderCameraState);
+
+		// Now the current unsaved selection
+		if (GetCtrlToggle())
+		{
+			GradientSelectionRenderer.SetPointParameters(FLinearColor::Red, 1.0);
+		}
+		else
+		{
+			GradientSelectionRenderer.SetPointParameters(FLinearColor::Green, 1.0);
+		}
+
+		PolygonSelectionMechanic->UMeshTopologySelectionMechanic::GetTopologySelector()->DrawSelection(PolygonSelectionMechanic->GetActiveSelection(), &GradientSelectionRenderer, &RenderCameraState);
+
+		GradientSelectionRenderer.EndFrame();
+	}
+}
+
+
+void UClothEditorWeightMapPaintTool::UpdateMaterialMode(EMeshEditingMaterialModes MaterialMode)
+{
+	if (MaterialMode == EMeshEditingMaterialModes::VertexColor)
+	{
+		constexpr bool bUseTwoSidedMaterial = true;
+		ActiveOverrideMaterial = ToolSetupUtil::GetVertexColorMaterial(GetToolManager(), bUseTwoSidedMaterial);
+		if (ensure(ActiveOverrideMaterial != nullptr))
+		{
+			GetSculptMeshComponent()->SetOverrideRenderMaterial(ActiveOverrideMaterial);
+			ActiveOverrideMaterial->SetScalarParameterValue(TEXT("FlatShading"), (ViewProperties->bFlatShading) ? 1.0f : 0.0f);
+		}
+		GetSculptMeshComponent()->SetShadowsEnabled(false);
+	}
+	else
+	{
+		UMeshSculptToolBase::UpdateMaterialMode(MaterialMode);
+	}
+}
+
+void UClothEditorWeightMapPaintTool::UpdateStampPendingState()
+{
+	if (InStroke() == false) return;
+	bIsStampPending = true;
+}
 
 void UClothEditorWeightMapPaintTool::OnTick(float DeltaTime)
 {
 	UMeshSculptToolBase::OnTick(DeltaTime);
 	MeshElementsDisplay->OnTick(DeltaTime);
 
-	bool bIsLasso = (FilterProperties->SubToolType == EClothEditorWeightMapPaintInteractionType::PolyLasso);
+	const bool bIsLasso = (FilterProperties->SubToolType == EClothEditorWeightMapPaintInteractionType::PolyLasso);
 	PolyLassoMechanic->SetIsEnabled(bIsLasso);
 
+	const bool bIsGradient = (FilterProperties->SubToolType == EClothEditorWeightMapPaintInteractionType::Gradient);
+	PolygonSelectionMechanic->SetIsEnabled(bIsGradient);
+
+	check(!(bIsLasso && bIsGradient));
+
 	ConfigureIndicator(false);
-	SetIndicatorVisibility(bIsLasso == false);
+	SetIndicatorVisibility(!bIsLasso && !bIsGradient);
 
 	if (bHavePendingAction)
 	{
@@ -1079,18 +1452,25 @@ void UClothEditorWeightMapPaintTool::OnTick(float DeltaTime)
 		return;
 	}
 
-	if (bPendingPickWeight)
+	// Get value at brush location
+	const bool bShouldPickWeight = bPendingPickWeight && IsStampPending() == false;
+	const bool bShouldUpdateValueAtBrush = IsInBrushSubMode();
+
+	if (bShouldPickWeight || bShouldUpdateValueAtBrush)
 	{
-		if (GetBrushTriangleID() >= 0 && IsStampPending() == false )
+		if (GetSculptMesh()->IsTriangle(GetBrushTriangleID()))
 		{
-			if (GetSculptMesh()->IsTriangle(GetBrushTriangleID()))
+			const double HitWeightValue = GetCurrentWeightValueUnderBrush();
+
+			if (bShouldPickWeight)
 			{
-				double HitWeightValue = GetCurrentWeightValueUnderBrush();
-				if (bPendingPickWeight)
-				{
-					FilterProperties->StrengthValue = HitWeightValue;
-					NotifyOfPropertyChangeByTool(FilterProperties);
-				}
+				FilterProperties->AttributeValue = HitWeightValue;
+				NotifyOfPropertyChangeByTool(FilterProperties);
+			}
+
+			if (bShouldUpdateValueAtBrush)
+			{
+				FilterProperties->ValueAtBrush = HitWeightValue;
 			}
 		}
 		bPendingPickWeight = false;
@@ -1119,7 +1499,7 @@ void UClothEditorWeightMapPaintTool::OnTick(float DeltaTime)
 
 			// append updated ROI to modified region (async)
 			FDynamicMesh3* Mesh = GetSculptMesh();
-			TFuture<void> AccumulateROI = Async(WeightPaintToolAsyncExecTarget, [&]()
+			TFuture<void> AccumulateROI = Async(UE::Chaos::ClothAsset::Private::WeightPaintToolAsyncExecTarget, [&]()
 			{
 				UE::Geometry::VertexToTriangleOneRing(Mesh, VertexROI, AccumulatedTriangleROI);
 			});
@@ -1141,13 +1521,17 @@ void UClothEditorWeightMapPaintTool::OnTick(float DeltaTime)
 
 }
 
+bool UClothEditorWeightMapPaintTool::CanAccept() const
+{
+	return bAnyChangeMade || UpdateWeightMapProperties->Name != WeightMapNodeToUpdate->Name;
+}
 
 
 
 FColor UClothEditorWeightMapPaintTool::GetColorForWeightValue(double WeightValue)
 {
-	FColor MaxColor = LinearColors::ForestGreen3b();
-	FColor MinColor = LinearColors::White3b();
+	FColor MaxColor = LinearColors::White3b();
+	FColor MinColor = LinearColors::Black3b();
 	FColor Color;
 	double ClampedValue = FMath::Clamp(WeightValue, 0.0, 1.0);
 	Color.R = FMath::LerpStable(MinColor.R, MaxColor.R, ClampedValue);
@@ -1167,20 +1551,35 @@ void UClothEditorWeightMapPaintTool::FloodFillCurrentWeightAction()
 
 	BeginChange();
 
-	float SetWeightValue = FilterProperties->StrengthValue;
+	const float SetWeightValue = FilterProperties->AttributeValue;
 	const FDynamicMesh3* Mesh = DynamicMeshComponent->GetMesh();
 	TempROIBuffer.SetNum(0, false);
 	for (int32 vid : Mesh->VertexIndicesItr())
 	{
 		TempROIBuffer.Add(vid);
 	}
+
+	if (bHaveDynamicMeshToWeightConversion)
+	{
 	for (int32 vid : TempROIBuffer)
 	{
+			for (const int32 Idx : WeightToDynamicMesh[DynamicMeshToWeight[vid]])
+			{
+				ActiveWeightEditChangeTracker->SaveVertexOneRingTriangles(Idx, true);
+				ActiveWeightMap->SetValue(Idx, &SetWeightValue);
+			}
+		}
+	}
+	else
+	{
+		for (int32 vid : TempROIBuffer)
+		{
 		ActiveWeightEditChangeTracker->SaveVertexOneRingTriangles(vid, true);
 	}
 	for (int32 vid : TempROIBuffer)
 	{
 		ActiveWeightMap->SetValue(vid, &SetWeightValue);
+	}
 	}
 
 	DynamicMeshComponent->FastNotifyVertexAttributesUpdated(EMeshRenderAttributeFlags::VertexColors);
@@ -1205,6 +1604,20 @@ void UClothEditorWeightMapPaintTool::ClearAllWeightsAction()
 	{
 		TempROIBuffer.Add(vid);
 	}
+
+	if (bHaveDynamicMeshToWeightConversion)
+	{
+		for (int32 vid : TempROIBuffer)
+		{
+			for (const int32 Idx : WeightToDynamicMesh[DynamicMeshToWeight[vid]])
+			{
+				ActiveWeightEditChangeTracker->SaveVertexOneRingTriangles(Idx, true);
+				ActiveWeightMap->SetValue(Idx, &SetWeightValue);
+			}
+		}
+	}
+	else
+	{
 	for (int32 vid : TempROIBuffer)
 	{
 		ActiveWeightEditChangeTracker->SaveVertexOneRingTriangles(vid, true);
@@ -1213,6 +1626,7 @@ void UClothEditorWeightMapPaintTool::ClearAllWeightsAction()
 	{
 		ActiveWeightMap->SetValue(vid, &SetWeightValue);
 	}
+	}
 
 	DynamicMeshComponent->FastNotifyVertexAttributesUpdated(EMeshRenderAttributeFlags::VertexColors);
 	GetToolManager()->PostInvalidation();
@@ -1220,105 +1634,32 @@ void UClothEditorWeightMapPaintTool::ClearAllWeightsAction()
 }
 
 
-void UClothEditorWeightMapPaintTool::InitializeWeightMapNames()
+void UClothEditorWeightMapPaintTool::UpdateSelectedNode()
 {
-	const FDynamicMesh3* const Mesh = GetSculptMesh();
+	check(ActiveWeightMap);
+	TArray<float> CurrentWeights;
+	GetCurrentWeightMap(CurrentWeights);
 
-	if (!WeightMapSetProperties || !Mesh || !Mesh->HasAttributes())
+	check(WeightMapNodeToUpdate);
+
+	if (bHaveDynamicMeshToWeightConversion)
 	{
-		return;
-	}
-
-	TArray<FString>& PropWeightMapNames = WeightMapSetProperties->WeightMapsList;
-	PropWeightMapNames.Reset();
-	PropWeightMapNames.Add(TEXT("None"));
-
-	// get names from the mesh attributes
-	for (int32 WeightMapIndex = 0; WeightMapIndex < Mesh->Attributes()->NumWeightLayers(); ++WeightMapIndex)
-	{
-		const FName& MeshWeightMapName = Mesh->Attributes()->GetWeightLayer(WeightMapIndex)->GetName();
-		PropWeightMapNames.Add(MeshWeightMapName.ToString());
-	}
-
-	// if selected weight map name is no longer in the list of valid names, reset it
-	if (!PropWeightMapNames.Contains(WeightMapSetProperties->WeightMap.ToString()))
-	{
-		WeightMapSetProperties->WeightMap = FName(PropWeightMapNames[0]);
-	}
-}
-
-
-void UClothEditorWeightMapPaintTool::AddWeightMapAction(const FName& NewWeightMapName)
-{
-	if (DynamicMeshComponent && DynamicMeshComponent->GetMesh() && DynamicMeshComponent->GetMesh()->HasAttributes())
-	{
-		FDynamicMesh3* const Mesh = DynamicMeshComponent->GetMesh();
-
-		FDynamicMeshAttributeSet* const MeshAttributes = Mesh->Attributes();
-		const int32 NumExistingWeights = MeshAttributes->NumWeightLayers();
-		
-		if (NewWeightMapName.IsNone())
+		WeightMapNodeToUpdate->VertexWeights.Init(0.f, WeightToDynamicMesh.Num());
+		for (int32 DynamicMeshIdx = 0; DynamicMeshIdx < CurrentWeights.Num(); ++DynamicMeshIdx)
 		{
-			GetToolManager()->DisplayMessage(LOCTEXT("InvalidAttributeName", "Invalid weight map name"), EToolMessageLevel::UserWarning);
-			return;
+			WeightMapNodeToUpdate->VertexWeights[DynamicMeshToWeight[DynamicMeshIdx]] = CurrentWeights[DynamicMeshIdx];
 		}
-
-		// Check for matching name	
-		for (int32 WeightMapIndex = 0; WeightMapIndex < NumExistingWeights; ++WeightMapIndex)
-		{
-			const FDynamicMeshWeightAttribute* const ExistingWeightMap = MeshAttributes->GetWeightLayer(WeightMapIndex);
-			if (ExistingWeightMap->GetName() == NewWeightMapName)
-			{
-				GetToolManager()->DisplayMessage(LOCTEXT("ErrorAddingDuplicateNameMessage", "Weight map with this name already exists"), EToolMessageLevel::UserWarning);
-				return;
-			}
-		}
-
-		MeshAttributes->SetNumWeightLayers(NumExistingWeights + 1);
-
-		const int32 NewWeightMapIndex = NumExistingWeights;
-		FDynamicMeshWeightAttribute* const NewWeightMap = MeshAttributes->GetWeightLayer(NewWeightMapIndex);
-		NewWeightMap->SetName(NewWeightMapName);
-
-		// Refresh the drop down of available weight maps and select the new one
-		InitializeWeightMapNames();
-		WeightMapSetProperties->SetSelectedFromWeightMapIndex(NewWeightMapIndex);
-
-		// Clear the New Name text field
-		ClothEditorWeightMapActions->NewWeightMapName.Empty();
-	}
-}
-
-
-void UClothEditorWeightMapPaintTool::DeleteWeightMapAction(const FName& SelectedWeightMapName)
-{
-	FDynamicMeshAttributeSet* const MeshAttributes = DynamicMeshComponent->GetMesh()->Attributes();
-
-	bool bFoundSelectedWeightMap = false;
-	
-	const int32 NumWeightMaps = MeshAttributes->NumWeightLayers();
-	for (int32 WeightMapIndex = 0; WeightMapIndex < NumWeightMaps; ++WeightMapIndex)
-	{
-		const FDynamicMeshWeightAttribute* const WeightMap = MeshAttributes->GetWeightLayer(WeightMapIndex);
-		if (WeightMap->GetName() == SelectedWeightMapName)
-		{
-			bFoundSelectedWeightMap = true;
-			MeshAttributes->RemoveWeightLayer(WeightMapIndex);		// Hopefully nothing else is holding indices into this...
-			break;
-		}
-	}
-
-	if (!bFoundSelectedWeightMap)
-	{
-		GetToolManager()->DisplayMessage(LOCTEXT("InvalidExistingWeightMapName", "No weight map with the specified name exists"), EToolMessageLevel::UserWarning);
 	}
 	else
 	{
-		InitializeWeightMapNames();
-		UpdateActiveWeightMap();
-		GetToolManager()->DisplayMessage(FText(), EToolMessageLevel::UserWarning);
+		WeightMapNodeToUpdate->VertexWeights = CurrentWeights;
 	}
+	
+	WeightMapNodeToUpdate->Name = UpdateWeightMapProperties->Name;
+
+	WeightMapNodeToUpdate->Invalidate();
 }
+
 
 //
 // Change Tracking
@@ -1382,7 +1723,10 @@ void UClothEditorWeightMapPaintTool::EndChange()
 {
 	check(ActiveWeightEditChangeTracker);
 
-	TUniquePtr < FDynamicMeshChange > EditResult = ActiveWeightEditChangeTracker->EndChange();
+	bAnyChangeMade = true;
+
+	TUniquePtr<FDynamicMeshChange> EditResult = ActiveWeightEditChangeTracker->EndChange();
+
 	TUniquePtr<ClothWeightPaintLocals::FClothWeightPaintMeshChange> ClothWeightPaintMeshChange =
 		MakeUnique<ClothWeightPaintLocals::FClothWeightPaintMeshChange>(DynamicMeshComponent.Get(), MoveTemp(EditResult));
 	ActiveWeightEditChangeTracker = nullptr;
@@ -1510,66 +1854,18 @@ int32 UClothEditorWeightMapPaintTool::GetBrushNearestVertex() const
 	return Vertices[TriangleVertex];
 }
 
-
-void UClothEditorWeightMapPaintTool::OnSelectedWeightMapChanged()
+void UClothEditorWeightMapPaintTool::GetCurrentWeightMap(TArray<float>& OutWeights) const
 {
-	GetToolManager()->BeginUndoTransaction(LOCTEXT("ChangeActiveWeightLayer", "Change Weight Layer"));
-
-	FDynamicMeshWeightAttribute* CurrentActiveLayer = ActiveWeightMap;
-	UpdateActiveWeightMap();
-	FDynamicMeshWeightAttribute* NewActiveLayer = ActiveWeightMap; 
-
-	if (CurrentActiveLayer != NewActiveLayer)
+	if (ActiveWeightMap)
 	{
-		// A value of -1 matches the property set's "None" label.
-		int32 CurrentActiveLayerIndex = -1;
-		int32 NewActiveLayerIndex = -1;
-		if (CurrentActiveLayer) {
-			WeightMapSetProperties->GetWeightMapsFunc().Find(CurrentActiveLayer->GetName().ToString(), CurrentActiveLayerIndex);
-			CurrentActiveLayerIndex = CurrentActiveLayerIndex - 1;
-		}
-		if (NewActiveLayer)
+		const FDynamicMesh3* Mesh = GetSculptMesh();
+		const int32 NumVertices = Mesh->VertexCount();
+		OutWeights.SetNumUninitialized(NumVertices);
+		for (int32 VertexID = 0; VertexID < NumVertices; ++VertexID)
 		{
-			WeightMapSetProperties->GetWeightMapsFunc().Find(NewActiveLayer->GetName().ToString(), NewActiveLayerIndex);
-			NewActiveLayerIndex = NewActiveLayerIndex - 1;
+			ActiveWeightMap->GetValue(VertexID, &OutWeights[VertexID]);
 		}
-
-		TUniquePtr<TSimpleValueLambdaChange<int32>> WeightLayerChange = MakeUnique<TSimpleValueLambdaChange<int32>>();
-		WeightLayerChange->FromValue = CurrentActiveLayerIndex;
-		WeightLayerChange->ToValue = NewActiveLayerIndex;
-		WeightLayerChange->ValueChangeFunc = [this](UObject*, int32 FromIndex, int32 ToIndex, bool)
-		{
-			this->WeightMapSetProperties->SetSelectedFromWeightMapIndex(ToIndex);
-			this->WeightMapSetProperties->SilentUpdateWatched();		// to prevent OnSelectedWeightMapChanged() from being called immediately
-			this->UpdateActiveWeightMap();
-		};
-		GetToolManager()->EmitObjectChange(this, MoveTemp(WeightLayerChange), LOCTEXT("ChangeActiveWeightSet", "Change Weight Set"));
 	}
-
-	GetToolManager()->EndUndoTransaction();
-}
-
-
-void UClothEditorWeightMapPaintTool::UpdateActiveWeightMap()
-{
-	int32 SelectedWeightSetIndex;
-	FName SelectedName = WeightMapSetProperties->WeightMap;
-	WeightMapSetProperties->GetWeightMapsFunc().Find(SelectedName.ToString(), SelectedWeightSetIndex);
-
-	FDynamicMesh3* Mesh = GetSculptMesh();
-	// Properties are 1-indexed, due to an initial None option
-	if (Mesh->Attributes()->NumWeightLayers() >= SelectedWeightSetIndex && SelectedWeightSetIndex > 0)
-	{
-		ActiveWeightMap = Mesh->Attributes()->GetWeightLayer(SelectedWeightSetIndex-1);
-	}
-	else
-	{
-		ActiveWeightMap = nullptr;
-	}
-
-	// update colors
-	DynamicMeshComponent->FastNotifyVertexAttributesUpdated(EMeshRenderAttributeFlags::VertexColors);
-	GetToolManager()->PostInvalidation();
 }
 
 
@@ -1584,12 +1880,18 @@ void UClothEditorWeightMapPaintTool::UpdateSubToolType(EClothEditorWeightMapPain
 
 	SetToolPropertySourceEnabled(FilterProperties, true);
 	SetBrushOpPropsVisibility(false);
+
+	if (NewType != EClothEditorWeightMapPaintInteractionType::Gradient)
+	{
+		LowValueGradientVertexSelection.Clear();
+		HighValueGradientVertexSelection.Clear();
+	}
 }
 
 
 void UClothEditorWeightMapPaintTool::UpdateBrushType(EClothEditorWeightMapPaintBrushType BrushType)
 {
-	static const FText BaseMessage = LOCTEXT("OnStartTool", "Hold Shift to Erase. [/] and S/D change Size (+Shift to small-step). Shift+Q for New Group, Shift+G to pick Group, Shift+F to Freeze Group.");
+	static const FText BaseMessage = LOCTEXT("OnStartTool", "Hold Shift to Erase. [/] and S/D change Size (+Shift to small-step)");
 	FTextBuilder Builder;
 	Builder.AppendLine(BaseMessage);
 
@@ -1624,15 +1926,6 @@ void UClothEditorWeightMapPaintTool::ApplyAction(EClothEditorWeightMapPaintToolA
 	case EClothEditorWeightMapPaintToolActions::ClearAll:
 		ClearAllWeightsAction();
 		break;
-
-	case EClothEditorWeightMapPaintToolActions::AddWeightMap:
-		AddWeightMapAction(FName(ClothEditorWeightMapActions->NewWeightMapName));
-		break;
-
-	case EClothEditorWeightMapPaintToolActions::DeleteWeightMap:
-		DeleteWeightMapAction(WeightMapSetProperties->WeightMap);
-		break;
-
 	}
 }
 

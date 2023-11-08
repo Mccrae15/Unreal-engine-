@@ -268,7 +268,7 @@ static int32 CleanBSPMaterials(UWorld* InWorld, bool bPreviewOnly, bool bLogBrus
 			else
 			{
 				// This poly wasn't marked, so clear its material reference if one exists.
-				UMaterialInterface*& ReferencedMaterial = Actor->Brush->Polys->Element[PolyIndex].Material;
+				auto& ReferencedMaterial = Actor->Brush->Polys->Element[PolyIndex].Material;
 				if ( ReferencedMaterial && ReferencedMaterial != UMaterial::GetDefaultMaterial(MD_Surface) )
 				{
 					NumRefrencesCleared++;
@@ -300,29 +300,6 @@ void UEditorEngine::RedrawAllViewports(bool bInvalidateHitProxies)
 		}
 	}
 }
-
-
-void UEditorEngine::InvalidateChildViewports(FSceneViewStateInterface* InParentView, bool bInvalidateHitProxies)
-{
-	if ( InParentView )
-	{
-		// Iterate over viewports and redraw those that have the specified view as a parent.
-		for (FEditorViewportClient* ViewportClient : AllViewportClients)
-		{
-			if ( ViewportClient && ViewportClient->ViewState.GetReference() )
-			{
-				if ( ViewportClient->ViewState.GetReference()->HasViewParent() &&
-					ViewportClient->ViewState.GetReference()->GetViewParent() == InParentView &&
-					!ViewportClient->ViewState.GetReference()->IsViewParent() )
-				{
-					constexpr bool bForceChildViewportRedraw = false;
-					ViewportClient->Invalidate(bForceChildViewportRedraw, bInvalidateHitProxies);
-				}
-			}
-		}
-	}
-}
-
 
 bool UEditorEngine::SafeExec( UWorld* InWorld, const TCHAR* InStr, FOutputDevice& Ar )
 {
@@ -2041,7 +2018,7 @@ void UEditorEngine::CheckForWorldGCLeaks( UWorld* NewWorld, UPackage* WorldPacka
 			(RemainingWorld->WorldType == EWorldType::GamePreview);
 		if(!bIsNewWorld && !bIsPersistantWorldType && !WorldHasValidContext(RemainingWorld))
 		{
-			FindAndPrintStaleReferencesToObject(RemainingWorld, EPrintStaleReferencesOptions::Error);
+			FReferenceChainSearch::FindAndPrintStaleReferencesToObject(RemainingWorld, EPrintStaleReferencesOptions::Error);
 			NumFailedToCleanup++;
 		}
 	}
@@ -2055,7 +2032,7 @@ void UEditorEngine::CheckForWorldGCLeaks( UWorld* NewWorld, UPackage* WorldPacka
 			const bool bIsNewWorldPackage = (NewWorldPackage && RemainingPackage == NewWorldPackage);
 			if(!bIsNewWorldPackage && RemainingPackage == WorldPackage)
 			{
-				FindAndPrintStaleReferencesToObject(RemainingPackage, EPrintStaleReferencesOptions::Error);
+				FReferenceChainSearch::FindAndPrintStaleReferencesToObject(RemainingPackage, EPrintStaleReferencesOptions::Error);
 				NumFailedToCleanup++;
 			}
 		}
@@ -2783,7 +2760,7 @@ bool UEditorEngine::Map_Load(const TCHAR* Str, FOutputDevice& Ar)
 				}
 				else
 				{
-					World->FeatureLevel = FeatureLevel;
+					World->SetFeatureLevel(FeatureLevel);
 					World->InitWorld(GetEditorWorldInitializationValues());
 				}
 				
@@ -2847,7 +2824,7 @@ bool UEditorEngine::Map_Load(const TCHAR* Str, FOutputDevice& Ar)
 						{
 							UE_LOG(LogEditorServer, Log,  TEXT("Destroying orphan Actor: %s"), *Actor->GetName() );					
 							Actor->MarkAsGarbage();
-							Actor->MarkComponentsAsPendingKill();
+							Actor->MarkComponentsAsGarbage();
 						}
 					}
 					UE_LOG(LogEditorServer, Log,  TEXT("Finished looking for orphan Actors (%3.3lf secs)"), FPlatformTime::Seconds() - StartTime );
@@ -3369,6 +3346,19 @@ bool UEditorEngine::CanCopySelectedActorsToClipboard( UWorld* InWorld, FCopySele
 			if( CopySelected.LevelAllActorsAreIn == NULL )
 			{
 				CopySelected.LevelAllActorsAreIn = Actor->GetLevel();
+			}
+
+			if (Actor->GetLevel())
+			{
+				if (UWorld* ActorWorld = Actor->GetLevel()->GetWorld())
+				{
+					// If the actor is in a PIE world but doesn't have an editor counterpart it means it's a temporary
+					// actor spawned to the world. These actors can cause issues when copied so have been disabled.
+					if (ActorWorld->WorldType == EWorldType::PIE && !GEditor->ObjectsThatExistInEditorWorld.Get(Actor))
+					{
+						return false;
+					}
+				}
 			}
 
 			if( Actor->GetLevel() != CopySelected.LevelAllActorsAreIn )
@@ -4859,7 +4849,7 @@ void UEditorEngine::MoveViewportCamerasToActor(const TArray<AActor*> &Actors, co
 				}
 
 				// Some components can have huge bounds but are not visible.  Ignore these components unless it is the only component on the actor 
-				const bool bIgnore = Components.Num() > 1 && PrimitiveComponent->IgnoreBoundsForEditorFocus();
+				const bool bIgnore = Components.Num() > 1 && PrimitiveComponent->GetIgnoreBoundsForEditorFocus();
 
 				if(!bIgnore && PrimitiveComponent->IsRegistered())
 				{
@@ -4910,7 +4900,7 @@ void UEditorEngine::MoveViewportCamerasToActor(const TArray<AActor*> &Actors, co
 							if (PrimitiveComponent && PrimitiveComponent->IsRegistered())
 							{
 								// Some components can have huge bounds but are not visible.  Ignore these components unless it is the only component on the actor 
-								const bool bIgnore = SceneComponents.Num() > 1 && PrimitiveComponent->IgnoreBoundsForEditorFocus();
+								const bool bIgnore = SceneComponents.Num() > 1 && PrimitiveComponent->GetIgnoreBoundsForEditorFocus();
 
 								if (!bIgnore)
 								{
@@ -5414,8 +5404,13 @@ void UEditorEngine::BroadcastPostUndoRedo(const FTransactionContext& UndoContext
 	// This sanitization code can be removed once blueprint ::Conform(ImplementedEvents/ImplementedInterfaces) 
 	// functions have been fixed. For the time being it improves editor stability, though:
 	UEdGraphPin::SanitizePinsPostUndoRedo();
-
-	for (auto UndoIt = UndoClients.CreateIterator(); UndoIt; ++UndoIt)
+	
+	check(InflightUndoClients.IsEmpty());
+	
+	// Note that we use a copy here as clients can register/unregister with the undo system while in PostUndo()/PostRedo()
+	// which modifies UndoClients during the loop. This can cause an infinite loop where the iterator never finishes.
+	InflightUndoClients = UndoClients;
+	for (auto UndoIt = InflightUndoClients.CreateConstIterator(); UndoIt; ++UndoIt)
 	{
 		FEditorUndoClient* Client = *UndoIt;
 		if (Client && Client->MatchesContext(UndoContext, CurrentUndoRedoContext->TransactionObjects))
@@ -5434,6 +5429,7 @@ void UEditorEngine::BroadcastPostUndoRedo(const FTransactionContext& UndoContext
 	// Invalidate all viewports
 	InvalidateAllViewportsAndHitProxies();
 
+	InflightUndoClients.Empty();
 	FEditorDelegates::PostUndoRedo.Broadcast();
 }
 
@@ -6650,7 +6646,7 @@ bool UEditorEngine::HandleSetDetailModeCommand( const TCHAR* Str, FOutputDevice&
 {
 	TArray<AActor*> ActorsToDeselect;
 
-	uint8 ParsedDetailMode = DM_High;
+	uint8 ParsedDetailMode = DM_Epic;
 	if ( FParse::Value( Str, TEXT("MODE="), ParsedDetailMode ) )
 	{
 		for ( FSelectionIterator It( GetSelectedActorIterator() ) ; It ; ++It )
@@ -6694,7 +6690,7 @@ bool UEditorEngine::HandleSetDetailModeCommand( const TCHAR* Str, FOutputDevice&
 
 bool UEditorEngine::HandleSetDetailModeViewCommand( const TCHAR* Str, FOutputDevice& Ar, UWorld* InWorld )
 {
-	uint8 DM = DM_High;
+	uint8 DM = DM_Epic;
 	if ( FParse::Value( Str, TEXT("MODE="), DM ) )
 	{
 		DetailMode = (EDetailMode)DM;
@@ -6912,6 +6908,7 @@ void UEditorEngine::UnregisterForUndo( FEditorUndoClient* Client)
 	if (Client)
 	{
 		UndoClients.Remove(Client);
+		InflightUndoClients.Remove(Client);
 	}
 }
 

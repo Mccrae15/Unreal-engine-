@@ -4,11 +4,13 @@
 
 #include "PCGSettings.h"
 
+#include "GameFramework/Actor.h"
+
 #include "PCGDebugElement.generated.h"
 
 namespace PCGDebugElement
 {
-	void ExecuteDebugDisplay(FPCGContext* Context);
+	void ExecuteDebugDisplay(FPCGContext* Context, AActor* TargetActor = nullptr);
 }
 
 UCLASS(BlueprintType, ClassGroup = (Procedural))
@@ -25,11 +27,15 @@ public:
 #endif
 
 protected:
-	virtual TArray<FPCGPinProperties> InputPinProperties() const override { return Super::DefaultPointInputPinProperties(); }
+	virtual TArray<FPCGPinProperties> InputPinProperties() const override;
 	virtual TArray<FPCGPinProperties> OutputPinProperties() const override;
 
 	virtual FPCGElementPtr CreateElement() const override;
 	// ~End UPCGSettings interface
+
+public:
+	UPROPERTY(BlueprintReadWrite, Category = Settings, meta = (PCG_Overridable))
+	TSoftObjectPtr<AActor> TargetActor;
 };
 
 class FPCGDebugElement : public FSimplePCGElement

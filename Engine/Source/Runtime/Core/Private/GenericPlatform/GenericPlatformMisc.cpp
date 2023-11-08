@@ -3,6 +3,7 @@
 #include "GenericPlatform/GenericPlatformMisc.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/AssertionMacros.h"
+#include "Misc/CoreDelegates.h"
 #include "HAL/PlatformFileManager.h"
 #include "HAL/CriticalSection.h"
 #include "Misc/ScopeRWLock.h"
@@ -942,9 +943,10 @@ bool FGenericPlatformMisc::HasSeparateChannelForDebugOutput()
 	return true;
 }
 
-void FGenericPlatformMisc::RequestExit( bool Force )
+void FGenericPlatformMisc::RequestExit( bool Force, const TCHAR* CallSite)
 {
-	UE_LOG(LogGenericPlatformMisc, Log,  TEXT("FPlatformMisc::RequestExit(%i)"), Force );
+	UE_LOG(LogGenericPlatformMisc, Log,  TEXT("FPlatformMisc::RequestExit(%i, %s)"), Force,
+		CallSite ? CallSite : TEXT("<NoCallSiteInfo>"));
 	if( Force )
 	{
 		// Force immediate exit.
@@ -971,12 +973,12 @@ bool FGenericPlatformMisc::RestartApplication()
 	return false;
 }
 
-void FGenericPlatformMisc::RequestExitWithStatus(bool Force, uint8 ReturnCode)
+void FGenericPlatformMisc::RequestExitWithStatus(bool Force, uint8 ReturnCode, const TCHAR* CallSite)
 {
 	// Generic implementation will ignore the return code - this may be important, so warn.
 	UE_LOG(LogGenericPlatformMisc, Warning, TEXT("FPlatformMisc::RequestExitWithStatus(%i, %d) - return code will be ignored by the generic implementation."), Force, ReturnCode);
 
-	return FPlatformMisc::RequestExit(Force);
+	return FPlatformMisc::RequestExit(Force, CallSite);
 }
 
 const TCHAR* FGenericPlatformMisc::GetSystemErrorMessage(TCHAR* OutBuffer, int32 BufferCount, int32 Error)
@@ -1408,6 +1410,55 @@ const TCHAR* FGenericPlatformMisc::ProjectDir()
 	}
 
 	return *ProjectDir;
+}
+
+bool FGenericPlatformMisc::GetEngineAndProjectAbsoluteDirsFromExecutable(FString& OutProjectDir, FString& OutEngineDir)
+{
+	IPlatformFile& PlatformFile = IPlatformFile::GetPlatformPhysical();
+
+	FString ExecutableDir = FPaths::GetPath(FPlatformProcess::ExecutablePath());
+	FPaths::NormalizeFilename(ExecutableDir);
+
+	FString AbsoluteEngineDir = FPaths::Combine(ExecutableDir, TEXT("../.."));
+	FPaths::CollapseRelativeDirectories(AbsoluteEngineDir);
+	FString EngineBinariesDir = AbsoluteEngineDir / TEXT("Binaries");
+	if (!PlatformFile.DirectoryExists(*EngineBinariesDir))
+	{
+		return false;
+	}
+
+	OutEngineDir = AbsoluteEngineDir;
+
+
+	// First try the most common placement of projects
+	FString AbsoluteProjectDir = FPaths::Combine(ExecutableDir, TEXT("../../.."), FApp::GetProjectName());
+	FPaths::CollapseRelativeDirectories(AbsoluteProjectDir);
+
+	FString ProjectBinariesDir = AbsoluteProjectDir / TEXT("Binaries");
+	if (PlatformFile.DirectoryExists(*ProjectBinariesDir))
+	{
+		OutProjectDir = AbsoluteProjectDir;
+		return true;
+	}
+
+	// The game binaries folder was *not* found
+	// 
+	FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Failed to find game directory: %s\n"), *ProjectBinariesDir);
+
+	FString RootDir = AbsoluteEngineDir / TEXT("..");
+	FPaths::CollapseRelativeDirectories(RootDir);
+
+	// Use the uprojectdirs
+	FUProjectDictionary Dict(RootDir);
+	FString GameProjectFile = Dict.GetProjectPathForGame(FApp::GetProjectName());
+	if (GameProjectFile.IsEmpty())
+	{
+		return false;
+	}
+	
+	OutProjectDir = FPaths::GetPath(GameProjectFile);
+
+	return true;
 }
 
 FString FGenericPlatformMisc::CloudDir()
@@ -2006,7 +2057,20 @@ int32 FGenericPlatformMisc::GetPakchunkIndexFromPakFile(const FString& InFilenam
 
 bool FGenericPlatformMisc::IsPGOEnabled()
 {
-	return PLATFORM_COMPILER_OPTIMIZATION_PG;
+	return PLATFORM_COMPILER_OPTIMIZATION_PG != 0;
+}
+
+bool FGenericPlatformMisc::IsPGICapableBinary()
+{
+	return PLATFORM_COMPILER_OPTIMIZATION_PG_PROFILING != 0;
+}
+
+
+bool FGenericPlatformMisc::IsPGIActive()
+{
+	// by default, assume it enabled from the start in PGI binaries (as is the usual behavior). If a platform provides a way
+	// to enable/disable PG data collection runtime, it can override this.
+	return FPlatformMisc::IsPGICapableBinary();
 }
 
 int FGenericPlatformMisc::GetMobilePropagateAlphaSetting()
@@ -2024,4 +2088,18 @@ void FGenericPlatformMisc::ShowConsoleWindow()
 #if !UE_BUILD_SHIPPING
 	UE_LOG(LogGenericPlatformMisc, Log, TEXT("Show console is not supported or implemented in current platform"));
 #endif
+}
+
+FDelegateHandle FGenericPlatformMisc::AddNetworkListener(FCoreDelegates::FOnNetworkConnectionChanged::FDelegate&& InNewDelegate)
+{
+	UE_LOG(LogGenericPlatformMisc, Warning, TEXT("FGenericPlatformMisc::AddNetworkListener not implemented for this platform"));
+
+	return FDelegateHandle();
+}
+
+bool FGenericPlatformMisc::RemoveNetworkListener(FDelegateHandle Handle)
+{
+	UE_LOG(LogGenericPlatformMisc, Warning, TEXT("FGenericPlatformMisc::RemoveNetworkListener not implemented for this platform"));
+
+	return false;
 }

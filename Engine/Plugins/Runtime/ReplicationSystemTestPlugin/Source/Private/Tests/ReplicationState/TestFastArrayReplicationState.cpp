@@ -4,6 +4,7 @@
 #include "Tests/ReplicationSystem/ReplicationSystemServerClientTestFixture.h"
 #include "NetworkAutomationTest.h"
 #include "NetworkAutomationTestMacros.h"
+#include "Iris/Core/IrisLog.h"
 #include "Iris/ReplicationState/InternalReplicationStateDescriptorUtils.h"
 #include "Iris/ReplicationState/ReplicationStateDescriptorBuilder.h"
 #include "Iris/ReplicationState/ReplicationStateUtil.h"
@@ -11,6 +12,7 @@
 #include "Iris/ReplicationSystem/ReplicationFragmentUtil.h"
 #include "Iris/Serialization/NetSerializers.h"
 #include "Iris/Serialization/InternalNetSerializerUtils.h"
+#include "Logging/LogScopedVerbosityOverride.h"
 #include "Misc/EnumClassFlags.h"
 #include "Net/UnrealNetwork.h"
 #include "Iris/ReplicationSystem/Filtering/NetObjectFilter.h"
@@ -187,7 +189,10 @@ UE_NET_TEST_FIXTURE(FTestFastArrayReplicationStateContext, BuildClassDescriptorF
 UE_NET_TEST_FIXTURE(FTestFastArrayReplicationStateContext, BuildClassDescriptorForSinglePropertyForFastArrayWithExtraProperty)
 {
 	// We expect this test to fail as we do not pass the flag allowing fastarrays to contain extra properties
-	InitDescriptor(UTestFastArrayReplicationState_FastArray_TestClassFastArrayWithExtraProperty::StaticClass(), (int32)UTestFastArrayReplicationState_FastArray_TestClassFastArrayWithExtraProperty::ENetFields_Private::FastArray);
+	{
+		LOG_SCOPE_VERBOSITY_OVERRIDE(LogIris, ELogVerbosity::Fatal);
+		InitDescriptor(UTestFastArrayReplicationState_FastArray_TestClassFastArrayWithExtraProperty::StaticClass(), (int32)UTestFastArrayReplicationState_FastArray_TestClassFastArrayWithExtraProperty::ENetFields_Private::FastArray);
+	}
 	UE_NET_ASSERT_FALSE(EnumHasAnyFlags(Descriptor->Traits, EReplicationStateTraits::IsFastArrayReplicationState));	
 }
 
@@ -775,7 +780,7 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestChangeMaskWra
 	UE_NET_ASSERT_EQ(ServerObject->FastArray.GetItemArray()[1].bRepBool, ClientObject->FastArray.GetItemArray()[1].bRepBool);
 }
 
-static_assert(TModels<FFastArraySerializer::CPostReplicatedReceiveFuncable, FTestFastArrayReplicationState_FastArraySerializer, const FFastArraySerializer::FPostReplicatedReceiveParameters&>::Value, "FTestFastArrayReplicationState_FastArraySerializer should have a function matching the requirements of FFastArraySerializer::CPostReplicatedReceiveFuncable");
+static_assert(TModels_V<FFastArraySerializer::CPostReplicatedReceiveFuncable, FTestFastArrayReplicationState_FastArraySerializer, const FFastArraySerializer::FPostReplicatedReceiveParameters&>, "FTestFastArrayReplicationState_FastArraySerializer should have a function matching the requirements of FFastArraySerializer::CPostReplicatedReceiveFuncable");
 
 // Test partial out of order resolve of references in  fast array
 UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestPostReplicatedReceiveCallback)
@@ -931,6 +936,60 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestFastArrayWith
 
 	// Verify that we received the data
 	UE_NET_ASSERT_EQ(ServerObject->FastArray.ExtraInt, ClientObject->FastArray.ExtraInt);
+}
+
+UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestLostDataDirtiesPropertyBitWithDataInFlight)
+{
+	UTestFastArrayReplicationState_FastArray_TestClassFastArray* ServerObject = Server->CreateObject<UTestFastArrayReplicationState_FastArray_TestClassFastArray>();
+
+	// Add a client
+	FReplicationSystemTestClient* Client = CreateClient();
+
+	// Send and deliver packet
+	Server->PreSendUpdate();
+	Server->SendAndDeliverTo(Client, true);
+	Server->PostSendUpdate();
+
+	// Store Pointer to objects
+	UTestFastArrayReplicationState_FastArray_TestClassFastArray* ClientObject = Cast<UTestFastArrayReplicationState_FastArray_TestClassFastArray>(Client->GetReplicationBridge()->GetReplicatedObject(ServerObject->NetRefHandle));
+
+	// Add entry to array
+	FTestFastArrayReplicationState_FastArrayItem NewEntry;
+	NewEntry.bRepBool = false;
+	NewEntry.RepInt32 = 0U;
+	ServerObject->FastArray.Edit().Add(NewEntry);
+	NewEntry.bRepBool = false;
+	NewEntry.RepInt32 = 3U;
+	ServerObject->FastArray.Edit().Add(NewEntry);
+
+	// Put data on wire, but hold off delivery
+	Server->PreSendUpdate();
+	Server->SendTo(Client);
+	Server->PostSendUpdate();
+
+	// Modify entry to trigger new update
+	++ServerObject->FastArray.Edit()[0].RepInt32;
+
+	// Put latest state on the wire
+	Server->PreSendUpdate();
+	Server->SendTo(Client);
+	Server->PostSendUpdate();
+
+	// Notify that we dropped the first packet, which should mark property dirty even if we already have the latest state in flight
+	Server->DeliverTo(Client, false);
+
+	// Notify that we delivered second packet
+	Server->DeliverTo(Client, true);
+
+	// Send and deliver packet
+	Server->PreSendUpdate();
+	Server->SendAndDeliverTo(Client, true);
+	Server->PostSendUpdate();
+
+	// Verify that we received the expected data, for both elements
+	UE_NET_ASSERT_EQ(ServerObject->FastArray.GetItemArray().Num(), ClientObject->FastArray.GetItemArray().Num());
+	UE_NET_ASSERT_EQ(ServerObject->FastArray.GetItemArray()[0].RepInt32, ClientObject->FastArray.GetItemArray()[0].RepInt32);
+	UE_NET_ASSERT_EQ(ServerObject->FastArray.GetItemArray()[1].RepInt32, ClientObject->FastArray.GetItemArray()[1].RepInt32);
 }
 
 

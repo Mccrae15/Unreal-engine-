@@ -44,6 +44,17 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogSubobjectSubsystem, Log, All);
 
+namespace UE::SubobjectDataSubsystem
+{
+	bool bForcePastedComponentsToSCS = true;
+	FAutoConsoleVariableRef CVarAudioShapesEnabled(
+		TEXT("bp.bForcePastedComponentsToSCS"),
+		bForcePastedComponentsToSCS,
+		TEXT("Setting this to True will change instanced components pasted into blueprints to be SCS components"),
+		ECVF_Default);
+}
+
+
 /** Notify the Level Editor that there have been subobject changes to an instance and it needs to be refreshed */
 static void BroadcastInstanceChanges()
 {
@@ -843,6 +854,16 @@ FSubobjectDataHandle USubobjectDataSubsystem::AddNewSubobject(const FAddNewSubob
 		FailReason =  LOCTEXT("AddComponentFailed", "Cannot add components that have \"Within\" markup");
 		return NewDataHandle;
 	}
+
+	// Ensure that the new class is actually a valid subobject type.
+	// As of right now, that means the class has to be a child of an Actor Component. 
+	if (!NewClass->IsChildOf(UActorComponent::StaticClass()))
+	{
+		FFormatNamedArguments Arguments;
+		Arguments.Add(TEXT("ClassName"), NewClass->GetDisplayNameText());
+		FailReason = FText::Format(LOCTEXT("AddComponentFailed_InvalidClassType", "Cannot add a subobject of class '{ClassName}'"), Arguments);
+		return NewDataHandle;
+	}
 	
 	FName TemplateVariableName;
 	const USCS_Node* SCSNode = Cast<const USCS_Node>(Asset);
@@ -1200,7 +1221,7 @@ int32 USubobjectDataSubsystem::DeleteSubobjects(const FSubobjectDataHandle& Cont
 								}
 							}
 						}
-						else
+						else if(!bForce)
 						{
 							UE_LOG(LogSubobjectSubsystem, Warning, TEXT("Cannot remove subobject '%s' because it is the default scene root!"), *Data->GetDisplayString());
 						}
@@ -1276,13 +1297,13 @@ int32 USubobjectDataSubsystem::DeleteSubobject(const FSubobjectDataHandle& Conte
 bool USubobjectDataSubsystem::RenameSubobject(const FSubobjectDataHandle& Handle, const FText& InNewName)
 {
 	FText OutErrorMessage;
-	if(!IsValidRename(Handle, InNewName, OutErrorMessage))
+	if (!IsValidRename(Handle, InNewName, OutErrorMessage))
 	{
 		return false;	
 	}
 
 	const FSubobjectData* Data = Handle.GetData();
-	if(!Data)
+	if (!Data)
 	{
 		return false;
 	}
@@ -1298,42 +1319,48 @@ bool USubobjectDataSubsystem::RenameSubobject(const FSubobjectDataHandle& Handle
 		}
 	}
 	
-	// For instanced components
-	if(UActorComponent* ComponentInstance = Data->GetMutableComponentTemplate())
+	// For components: either instanced or simple construction script ("Add Component" in Blueprint editor)
+	if (UActorComponent* ComponentInstance = Data->GetMutableComponentTemplate())
 	{
-		if(Data->IsInstancedComponent())
+		UBlueprint* BP = Data->GetBlueprint();
+		const FString DesiredName = InNewName.ToString();
+		auto ValidateNameInBP = [BP](const FString& DesiredName) 
 		{
-			ERenameFlags RenameFlags = REN_DontCreateRedirectors;
-	
-			// name collision could occur due to e.g. our archetype being updated and causing a conflict with our ComponentInstance:
-			FString NewNameAsString = InNewName.ToString();
-			if(StaticFindObject(UObject::StaticClass(), ComponentInstance->GetOuter(), *NewNameAsString) == nullptr)
+			return FKismetNameValidator(BP).IsValid(DesiredName) == EValidatorResult::Ok
+				? FName(DesiredName)
+				: FBlueprintEditorUtils::FindUniqueKismetName(BP, DesiredName);
+		};
+		
+		// When placed in level, just the component needs to be renamed.
+		if (Data->IsInstancedComponent())
+		{
+			// UBlueprint instance required may not always be available, e.g. if we added a non-Blueprint C++ class into the level like AStaticMeshActor.
+			// If they are available, use FKismetNameValidator and otherwise we'll just do our best here and replace invalid characters.
+			const FString NewNameAsString = BP
+				? ValidateNameInBP(DesiredName).ToString()
+				: FBlueprintEditorUtils::ReplaceInvalidBlueprintNameCharactersInline(DesiredName);
+			
+			// Name collision could occur due to e.g. our archetype being updated and causing a conflict with our ComponentInstance:
+			if (StaticFindObject(UObject::StaticClass(), ComponentInstance->GetOuter(), *NewNameAsString) == nullptr)
 			{
+				const ERenameFlags RenameFlags = REN_DontCreateRedirectors;
 				ComponentInstance->Rename(*NewNameAsString, nullptr, RenameFlags);
 			}
+			
 			return true;
 		}
-		else if(UBlueprint* BP = Data->GetBlueprint())
+
+		// In Blueprint editor, the component variable name must be updated.
+		if (BP)
 		{
-			FName ValidatedNewName;
-			FString DesiredName = InNewName.ToString();
-			
-			// Is this desired name the same as what is already there? If so then don't bother
+			// Is this desired name the same as what is already there? If so then don't bother.
 			USCS_Node* SCSNode = Data->GetSCSNode();
 			if(SCSNode && SCSNode->GetVariableName().ToString().Equals(DesiredName))
 			{
 				return true;
 			}
 			
-			if (FKismetNameValidator(BP).IsValid(DesiredName) == EValidatorResult::Ok)
-			{
-				ValidatedNewName = FName(DesiredName);
-			}
-			else
-			{
-				ValidatedNewName = FBlueprintEditorUtils::FindUniqueKismetName(BP, DesiredName);
-			}
-			
+			const FName ValidatedNewName = ValidateNameInBP(DesiredName);
 			FBlueprintEditorUtils::RenameComponentMemberVariable(BP, SCSNode, ValidatedNewName);
 			return true;
 		}
@@ -1532,8 +1559,8 @@ bool USubobjectDataSubsystem::ChangeSubobjectClass(const FSubobjectDataHandle& H
 
 					FGuid OperationGuid;
 					FName TemplateName;
-					const UClass* ApplyClass;
-					const UClass* RevertClass;
+					TObjectPtr<const UClass> ApplyClass;
+					TObjectPtr<const UClass> RevertClass;
 				};
 
 				// To avoid all of the subobjects we are manipulating getting serialized in to the transaction buffer unnecessarily
@@ -2288,6 +2315,15 @@ void USubobjectDataSubsystem::PasteSubobjects(const FSubobjectDataHandle& PasteT
 			// Get the component object instance
 			UActorComponent* NewActorComponent = NewObjectPair.Value;
 			check(NewActorComponent);
+			
+			// make sure creation method is set to SimpleConstructionScript
+			if (UE::SubobjectDataSubsystem::bForcePastedComponentsToSCS)
+			{
+				if (NewActorComponent->CreationMethod == EComponentCreationMethod::Instance)
+				{
+					NewActorComponent->CreationMethod = EComponentCreationMethod::SimpleConstructionScript;
+				}
+			}
 			
 			// Create a new SCS node to contain the new component and add it to the tree
 			USCS_Node* NewSCSNode = Blueprint->SimpleConstructionScript->CreateNodeAndRenameComponent(NewActorComponent);

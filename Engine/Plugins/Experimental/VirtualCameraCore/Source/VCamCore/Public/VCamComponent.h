@@ -32,6 +32,7 @@ class UVCamModifierContext;
 class UVCamOutputProviderBase;
 
 struct FEnhancedActionKeyMapping;
+struct FVCamComponentInstanceData;
 
 #if WITH_EDITOR
 class FLevelEditorViewportClient;
@@ -67,6 +68,7 @@ class VCAMCORE_API UVCamComponent : public USceneComponent
 {
 	GENERATED_BODY()
 	friend class UVCamModifier;
+	friend struct FVCamComponentInstanceData;
 public:
 
 	/**
@@ -82,7 +84,10 @@ public:
 	UVCamComponent();
 
 	//~ Begin UActorComponent Interface
+	virtual void OnComponentCreated() override;
 	virtual void OnComponentDestroyed(bool bDestroyingHierarchy) override;
+	virtual void BeginDestroy() override;
+	virtual TStructOnScope<FActorComponentInstanceData> GetComponentInstanceData() const override;
 	//~ End UActorComponent Interface
 
 	//~ Begin USceneComponent Interface
@@ -96,8 +101,9 @@ public:
 	//~ End UObject Interface
 
 #if WITH_EDITOR
+	virtual void PreSave(FObjectPreSaveContext SaveContext) override;
 	virtual void CheckForErrors() override;
-	virtual void PreEditChange(FProperty* PropertyThatWillChange) override;
+	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
 	virtual void PreEditChange(FEditPropertyChain& PropertyAboutToChange) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent) override;
@@ -105,8 +111,8 @@ public:
 	void OnTargetViewportEdited();
 #endif // WITH_EDITOR
 
-	UFUNCTION()
-	void HandleObjectReplaced(const TMap<UObject*, UObject*>& ReplacementMap);
+	/** Applies the component instance cache */
+	void ApplyComponentInstanceData(FVCamComponentInstanceData& ComponentInstanceData, ECacheApplyPhase CacheApplyPhase);
 
 	bool CanUpdate() const;
 	void Update();
@@ -295,12 +301,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category="VirtualCamera")
 	void UnregisterObjectForInput(UObject* Object) const;
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	/**
 	 * Returns a list of all player mappable keys that have been registered
 	 */
-	UFUNCTION(BlueprintCallable, Category="VirtualCamera")
+	UE_DEPRECATED(5.3, "GetPlayerMappableKeys has been deprecated. Please use UEnhancedPlayerMappableKeyProfile::GetPlayerMappingRows instead.")
+	UFUNCTION(BlueprintCallable, Category="VirtualCamera", meta=(DeprecatedFunction, DeprecationMessage="GetPlayerMappableKeys has been deprecated. Please use UEnhancedPlayerMappableKeyProfile::GetPlayerMappingRows instead."))
 	TArray<FEnhancedActionKeyMapping> GetPlayerMappableKeys() const;
-
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	
 	/**
 	 * Injects an input action. 
 	 */
@@ -458,23 +467,39 @@ private:
 
 	/** Store the Input Mapping Contexts that have been added via this component */
 	UPROPERTY(Transient, DuplicateTransient)
-	TArray<TObjectPtr<const UInputMappingContext>> AppliedInputContexts;
+	TArray<TObjectPtr<UInputMappingContext>> AppliedInputContexts;
 	
 	double LastEvaluationTime;
 
 	TArray<UVCamOutputProviderBase*> SavedOutputProviders;
 	TArray<FModifierStackEntry> SavedModifierStack;
-	
+
+#if WITH_EDITOR
 	/** Variable used for pausing update on editor objects while PIE is running */
-	bool bIsEditorObjectButPIEIsRunning = false;
+	enum class EPIEState
+	{
+		/** Default state when no PIE transition is needed. */
+		Normal,
+		/** We de-initialized this VCam before starting PIE because it was initialized. Initialize this VCam when PIE ends. */
+		WasInitializedBeforePIE,
+		/** This VCam was not initialized when PIE was started hence it need to be re-initialized when PIE ends. */
+		WasNotInitializedBeforePIE,
+	} PIEMode = EPIEState::Normal;
+#endif
 
 	/** Initialize and deinitialize calls match our  */
 	FObjectSubsystemCollection<UVCamSubsystem> SubsystemCollection;
 
 	void EnsureDelegatesRegistered();
-	void EnsureInitialized();
+	void CleanupRegisteredDelegates();
+	
+	void EnsureInitializedIfAllowed();
+	bool IsInitialized() const;
 	virtual void Initialize();
 	virtual void Deinitialize();
+
+	/** Called as part of applying component instance data */
+	void ReinitializeInput(TArray<TObjectPtr<UInputMappingContext>> InputContextsToReapply);
 
 	void SyncInputSettings();
 	
@@ -523,8 +548,7 @@ private:
 	double SecondsSinceLastLocationUpdate = 0;
 	double PreviousUpdateTime = 0;
 #endif
-
-
+	
 	/** Send the current camera state via Multi-user if connected and in a */
 	void SendCameraDataViaMultiUser();
 	
@@ -535,7 +559,9 @@ private:
 	bool IsMultiUserSession() const;
 	bool IsCameraInVPRole() const;
 
-	// When another component replaces us, get a notification so we can clean up
+	/** Detect when this instance replaces an old instance and calls NotifyComponentWasReplaced on the old instance. */
+	void HandleObjectReplaced(const TMap<UObject*, UObject*>& ReplacementMap);
+	/** When another component replaces us, get a notification so we can clean up */
 	void NotifyComponentWasReplaced(UVCamComponent* ReplacementComponent);
 
 	/** Utility functions for registering and unregistering our input component with the correct input system */

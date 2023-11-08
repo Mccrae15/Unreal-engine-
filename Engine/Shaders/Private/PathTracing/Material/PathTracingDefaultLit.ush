@@ -69,7 +69,7 @@ FMaterialEval DefaultLit_EvalMaterial(
 
 	Result.AddLobeWithMIS(DiffuseSpecularScale.y * SpecWeight, SpecPdf, 1.0 - Data.LobeProb);
 
-	Result.Weight *= Payload.GetBSDFOpacity();
+	Result.Weight *= Payload.BSDFOpacity;
 
 	return Result;
 }
@@ -100,8 +100,7 @@ FMaterialSample DefaultLit_SampleMaterial(
 	{
 		RandSample.x = RescaleRandomNumber(RandSample.x, Data.LobeProb, 1.0);
 
-		// #dxr_todo: Evaluate UniformSampleDiskConcentric
-		H = ImportanceSampleVisibleGGX_aniso(UniformSampleDisk(RandSample.xy), Data.Alpha, Data.V).xyz;
+		H = ImportanceSampleVisibleGGX(RandSample.xy, Data.Alpha, Data.V).xyz;
 		L = reflect(-V, H);
 		if (L.z <= 0)
 		{
@@ -139,6 +138,6 @@ FMaterialSample DefaultLit_SampleMaterial(
 		Result.Roughness = Payload.Roughness;
 		Result.ScatterType = PATHTRACER_SCATTER_SPECULAR;
 	}
-	Result.Weight *= Payload.GetBSDFOpacity();
+	Result.Weight *= Payload.BSDFOpacity;
 	return Result;
 }

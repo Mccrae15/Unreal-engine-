@@ -2,6 +2,86 @@
 
 #include "../Common.ush"
 #include "../HairShadingCommon.ush"
+#include "../ColorMap.ush"
+
+#if SHADER_PRINT_INSTANCE || SHADER_PRINT || SHADER_PRINT_MEMORY || SHADER_CLUSTERAABB
+/////////////////////////////////////////////////////////////////////////////////////////
+// Utils function
+
+#include "../ShaderPrint.ush"
+
+// Print float number in 0..1000 aligned on the right
+void PrintNumberAlignedRight(inout FShaderPrintContext Context, float Value, FFontColor InColor)
+{
+	if (Value >= 100.f)
+	{
+		Print(Context, Value, InColor, 5, 1);
+	}
+	else if (Value >= 10.f)
+	{
+		Print(Context, TEXT(" "), InColor);
+		Print(Context, Value, InColor, 4, 1);
+	}
+	else
+	{
+		Print(Context, TEXT("  "), InColor);
+		Print(Context, Value, InColor, 3, 1);
+	}
+}
+
+// Print 
+void PrintLargeNumber(inout FShaderPrintContext Context, uint Value, FFontColor InColor)
+{
+	if (Value > 1000000000)
+	{
+		const float fValue = Value / 1000000000.f;
+		//Print(Context, fValue, InColor, 5, 1);
+		PrintNumberAlignedRight(Context, fValue, InColor);
+		Print(Context, TEXT("B"), InColor);
+	}
+	else if (Value > 1000000)
+	{
+		const float fValue = Value / 1000000.f;
+		//Print(Context, fValue, InColor, 5, 1);
+		PrintNumberAlignedRight(Context, fValue, InColor);
+		Print(Context, TEXT("M"), InColor);
+	}
+	else if (Value > 1000)
+	{
+		const float fValue = Value / 1000.f;
+		//Print(Context, fValue, InColor, 5, 1);
+		PrintNumberAlignedRight(Context, fValue, InColor);
+		Print(Context, TEXT("k"), InColor);
+	}
+	else
+	{
+		Print(Context, TEXT("   "), InColor);
+		Print(Context, Value, InColor, 3);
+	}
+}
+
+void PrintPercentage(inout FShaderPrintContext Context, float Value, FFontColor InColor)
+{
+	const uint iValue = ceil(clamp(Value * 100.f, 0.f, 100.f));
+	if (iValue < 10)
+	{
+		Print(Context, TEXT("  "), InColor);
+		Print(Context, iValue, InColor, 1);
+	}
+	else if (iValue < 100)
+	{
+		Print(Context, TEXT(" "), InColor);
+		Print(Context, iValue, InColor, 2);
+	}
+	else
+	{
+		Print(Context, iValue, InColor, 3);
+	}
+	Print(Context, TEXT("% "), InColor);
+}
+
+#endif // SHADER_PRINT_INSTANCE || SHADER_PRINT
+
 /////////////////////////////////////////////////////////////////////////////////////////
 // Visualize hair strands data as full screen view mode (BaseColor, Tangent, Roughness, ...)
 
@@ -172,10 +252,10 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 	uint VertexIndex = VertexId;
 	float ScaleR = 1;
-	if (HairStrandsVF.CullingEnable)
+	if (HairStrandsVF.bCullingEnable)
 	{
-		ScaleR = HairStrandsVF.CulledVertexRadiusScaleBuffer[VertexIndex];
-		VertexIndex = HairStrandsVF.CulledVertexIdsBuffer[VertexIndex];
+		ScaleR = HairStrandsVF.CullingRadiusScaleBuffer[VertexIndex];
+		VertexIndex = HairStrandsVF.CullingIndexBuffer[VertexIndex];
 	}
 
 	const float3 P_Local = UnpackHairControlPoint(
@@ -215,7 +295,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 #if SHADER_MESH_PROJECTION_HAIR
 
-#include "HairStrandsMeshProjectionCommon.ush" 
+#include "HairStrandsBindingCommon.ush" 
 #include "../ShaderPrint.ush"
 
 #define INPUT_ROOT_FRAME 0
@@ -234,13 +314,8 @@ Buffer<uint>   RootBarycentricBuffer;
 
 Buffer<uint>  RootToUniqueTriangleIndexBuffer;
 
-Buffer<float4>  RestPosition0Buffer;
-Buffer<float4>  RestPosition1Buffer;
-Buffer<float4>  RestPosition2Buffer;
-
-Buffer<float4>  DeformedPosition0Buffer;
-Buffer<float4>  DeformedPosition1Buffer;
-Buffer<float4>  DeformedPosition2Buffer;
+Buffer<float4>  RestPositionBuffer;
+Buffer<float4>  DeformedPositionBuffer;
 
 Buffer<float4> RestSamplePositionsBuffer;
 Buffer<float4> DeformedSamplePositionsBuffer;
@@ -252,12 +327,11 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 #if PERMUTATION_INPUT_TYPE == INPUT_ROOT_FRAME  
 	const uint RootIndex = DispatchThreadId.x;
-
-	if (RootIndex > MaxRootCount) return;
+	if (RootIndex >= MaxRootCount) return;
 	{
 		const uint TriangleIndex = RootToUniqueTriangleIndexBuffer[RootIndex];
-		const FHairMeshTriangleWithUVs RestTriangle		= GetTriangleWithUVsTransformation(TriangleIndex, RestPosition0Buffer, RestPosition1Buffer, RestPosition2Buffer);
-		const FHairMeshTriangleWithUVs DeformedTriangle = GetTriangleWithUVsTransformation(TriangleIndex, DeformedPosition0Buffer, DeformedPosition1Buffer, DeformedPosition2Buffer);
+		const FHairMeshTriangleWithUVs RestTriangle		= GetTriangleWithUVsTransformation(TriangleIndex, RestPositionBuffer);
+		const FHairMeshTriangleWithUVs DeformedTriangle = GetTriangleWithUVsTransformation(TriangleIndex, DeformedPositionBuffer);
 
 		FHairMeshTriangleWithUVs Tri;
 		if (DeformedFrameEnable > 0)
@@ -265,7 +339,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		else
 			Tri = RestTriangle;
 
-		const float3 B  = DecodeBarycentrics(RootBarycentricBuffer[RootIndex]);
+		const float3 B  = UnpackBarycentrics(RootBarycentricBuffer[RootIndex]);
 		float3 P0 = B.x * Tri.P0 + B.y * Tri.P1 + B.z * Tri.P2;
 		float3 P1 = P0 + Tri.N;
 
@@ -281,67 +355,79 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		const float4 Color = float4(UVs, 0, 1);
 		//Color = float4(N* 0.5f + 0.5f, 1);
 		AddLineWS(P0, P1, Color);
+
+		// Add triangle
+		const float4 TriColor = ColorWhite;
+		const float3 WP0 = mul(float4(Tri.P0, 1), RootLocalToWorld).xyz;
+		const float3 WP1 = mul(float4(Tri.P1, 1), RootLocalToWorld).xyz;
+		const float3 WP2 = mul(float4(Tri.P2, 1), RootLocalToWorld).xyz;
+		AddLineWS(WP0, WP1, TriColor);
+		AddLineWS(WP1, WP2, TriColor);
+		AddLineWS(WP2, WP0, TriColor);
 	}
 #endif // INPUT_ROOT_FRAME
 
 #if PERMUTATION_INPUT_TYPE == INPUT_ROOT_TRIANGLE
 	const uint TriangleIndex = DispatchThreadId.x;
-
-	if (TriangleIndex > MaxRootCount) return;
-
-	const FHairMeshTriangleWithUVs RestTriangle		= GetTriangleWithUVsTransformation(TriangleIndex, RestPosition0Buffer, RestPosition1Buffer, RestPosition2Buffer);
-	const FHairMeshTriangleWithUVs DeformedTriangle = GetTriangleWithUVsTransformation(TriangleIndex, DeformedPosition0Buffer, DeformedPosition1Buffer, DeformedPosition2Buffer);
-
-	FHairMeshTriangleWithUVs Tri;
-	if (DeformedFrameEnable > 0)
-		Tri = DeformedTriangle;
-	else
-		Tri = RestTriangle;
-	
-
-	// Debug: To test if the rest-triangle-to-deformed-triangle transformation works correctly
-	#if 0
-	if (DeformedFrameEnable > 0)
+	if (TriangleIndex < MaxRootCount)
 	{
-		float3 Barycentric = 0;
-		if (TriangleVertex == 0)
+		const FHairMeshTriangleWithUVs RestTriangle		= GetTriangleWithUVsTransformation(TriangleIndex, RestPositionBuffer);
+		const FHairMeshTriangleWithUVs DeformedTriangle = GetTriangleWithUVsTransformation(TriangleIndex, DeformedPositionBuffer);
+	
+		FHairMeshTriangleWithUVs Tri;
+		if (DeformedFrameEnable > 0)
+			Tri = DeformedTriangle;
+		else
+			Tri = RestTriangle;
+		
+	
+		// Debug: To test if the rest-triangle-to-deformed-triangle transformation works correctly
+		#if 0
+		if (DeformedFrameEnable > 0)
 		{
-			P = RestTriangle.P0;
-			Barycentric = float3(1, 0, 0);
+			float3 Barycentric = 0;
+			if (TriangleVertex == 0)
+			{
+				P = RestTriangle.P0;
+				Barycentric = float3(1, 0, 0);
+			}
+			if (TriangleVertex == 1)
+			{
+				P = RestTriangle.P1;
+				Barycentric = float3(0, 1, 0);
+			}
+			if (TriangleVertex == 2)
+			{
+				P = RestTriangle.P2;
+				Barycentric = float3(0, 0, 1);
+			}
+			P = TransformPoint(P, Barycentric, RestTriangle, DeformedTriangle);
 		}
-		if (TriangleVertex == 1)
-		{
-			P = RestTriangle.P1;
-			Barycentric = float3(0, 1, 0);
-		}
-		if (TriangleVertex == 2)
-		{
-			P = RestTriangle.P2;
-			Barycentric = float3(0, 0, 1);
-		}
-		P = TransformPoint(P, Barycentric, RestTriangle, DeformedTriangle);
+		#endif
+	
+		float4 Color = float4(Tri.UV0, 0, 1);
+		// Color = float4((Tri.N + 1) * 0.5f, 1);
+	
+		const float3 WP0 = mul(float4(Tri.P0, 1), RootLocalToWorld).xyz;
+		const float3 WP1 = mul(float4(Tri.P1, 1), RootLocalToWorld).xyz; 
+		const float3 WP2 = mul(float4(Tri.P2, 1), RootLocalToWorld).xyz;
+	
+		FShaderPrintContext Ctx = InitShaderPrintContext(true, uint2(0, 0));
+		AddLineWS(WP0, WP1, Color);
+		AddLineWS(WP1, WP2, Color);
+		AddLineWS(WP2, WP0, Color);
 	}
-	#endif
-
-	float4 Color = float4(Tri.UV0, 0, 1);
-	// Color = float4((Tri.N + 1) * 0.5f, 1);
-
-	AddFilledTriangleWS(
-		mul(float4(Tri.P0, 1), RootLocalToWorld).xyz, 
-		mul(float4(Tri.P1, 1), RootLocalToWorld).xyz, 
-		mul(float4(Tri.P2, 1), RootLocalToWorld).xyz, 
-		Color);
 #endif // INPUT_ROOT_TRIANGLE
 
 #if PERMUTATION_INPUT_TYPE == INPUT_ROOT_SAMPLES 
-	const uint PointIndex = DispatchThreadId.x;
-	
-	if (PointIndex > MaxRootCount) return;
+	const uint PointIndex = DispatchThreadId.x;	
+	if (PointIndex < MaxRootCount)
+	{
+		float3 P = (DeformedFrameEnable > 0) ? DeformedSamplePositionsBuffer[PointIndex].xyz : RestSamplePositionsBuffer[PointIndex].xyz;
+		P = mul(float4(P, 1), RootLocalToWorld).xyz;
 
-	float3 P = (DeformedFrameEnable > 0) ? DeformedSamplePositionsBuffer[PointIndex].xyz : RestSamplePositionsBuffer[PointIndex].xyz;
-	P = mul(float4(P, 1), RootLocalToWorld).xyz;
-
-	AddCrossWS(P, 1.f, ColorYellow);
+		AddCrossWS(P, 1.f, ColorYellow);
+	}
 #endif // INPUT_ROOT_SAMPLES
 }
 #endif // SHADER_MESH_PROJECTION_HAIR
@@ -352,7 +438,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 #if SHADER_MESH_PROJECTION_SKIN_CACHE
 
-#include "HairStrandsMeshProjectionCommon.ush"
+#include "HairStrandsBindingCommon.ush"
 #include "../ShaderPrint.ush"
 
 float4x4 LocalToWorld;
@@ -787,9 +873,6 @@ uint HairVisibilityNodeGroupSize;
 uint AllocatedSampleCount;
 uint HairInstanceCount;
 
-uint NumInstances;
-uint InstanceDataSOAStride;
-
 Buffer<uint> HairInstanceIDs;
 Texture2D<float> HairCountTexture;
 Texture2D<uint> HairCountUintTexture;
@@ -815,10 +898,10 @@ void DrawInstanceAABB(uint PrimitiveId)
 	// Since we don't have the actual instance ID (they are transient instance vs. persistent instance), 
 	// we find the primitive with the matching PrimitiveID
 	uint InstanceID = ~0;
-	const uint TotalInstanceCount = min(8192u, NumInstances);
+	const uint TotalInstanceCount = min(8192u, Scene.GPUScene.NumInstances);
 	for (uint LocalInstanceID = 0; LocalInstanceID < TotalInstanceCount; ++LocalInstanceID)
 	{
-		FInstanceSceneData InstanceData = GetInstanceSceneData(LocalInstanceID, InstanceDataSOAStride);
+		FInstanceSceneData InstanceData = GetInstanceSceneData(LocalInstanceID, Scene.GPUScene.InstanceDataSOAStride);
 		if (InstanceData.PrimitiveId == PrimitiveId)
 		{
 			InstanceID = LocalInstanceID;
@@ -828,7 +911,7 @@ void DrawInstanceAABB(uint PrimitiveId)
 
 	if (InstanceID != ~0)
 	{
-		FInstanceSceneData InstanceData = GetInstanceSceneData(InstanceID, InstanceDataSOAStride);
+		FInstanceSceneData InstanceData = GetInstanceSceneData(InstanceID, Scene.GPUScene.InstanceDataSOAStride);
 		const float4 InstanceBoundColor = ColorLightGreen;
 		AddOBBWS(InstanceData.LocalBoundsCenter - InstanceData.LocalBoundsExtent, InstanceData.LocalBoundsCenter + InstanceData.LocalBoundsExtent, InstanceBoundColor, LWCHackToFloat(InstanceData.LocalToWorld));
 		AddReferentialWS(LWCHackToFloat(InstanceData.LocalToWorld), 50.f);
@@ -879,20 +962,22 @@ void MainCS(uint InGroupIndex : SV_GroupIndex, uint3 DispatchThreadId : SV_Dispa
 		const uint2 EquivalentResolution = ceil(sqrt(UsedSampleCount));
 	
 		// Pixel coord
-		FShaderPrintContext Context = InitShaderPrintContext(true, uint2(450, 50));
+		FShaderPrintContext Context = InitShaderPrintContext(true, uint2(450, 100));
 		Print(Context, TEXT("Sample Count (Used/Alloc)  "), FontCyan);
-		Print(Context, UsedSampleCount, FontCyan);
-		Print(Context, AllocatedSampleCount, FontCyan);
+		PrintLargeNumber(Context, UsedSampleCount, FontCyan);
+		Print(Context, TEXT(" / "), FontCyan);
+		PrintLargeNumber(Context, AllocatedSampleCount, FontCyan);
+		Print(Context, TEXT(" "), FontCyan);
 
 		const float AllocationPercentage = float(UsedSampleCount) / float(AllocatedSampleCount);
-		const FFontColor OccupancyColor = GetOccupancyColor(AllocationPercentage);
-		Print(Context, TEXT(" %% "), OccupancyColor);
-		Print(Context, AllocationPercentage * 100.f, OccupancyColor);
+		PrintPercentage(Context, AllocationPercentage, GetOccupancyColor(AllocationPercentage));
 
 		Newline(Context);
 
 		Print(Context, TEXT("Sample Lighting Resolution "), FontCyan);
-		Print(Context, EquivalentResolution, FontCyan);
+		Print(Context, EquivalentResolution.x, FontCyan, 4);
+		Print(Context, TEXT("x"), FontSilver);
+		Print(Context, EquivalentResolution.y, FontCyan, 4);
 		Newline(Context);
 
 		Print(Context, TEXT("MacroGroup Count           "), FontYellow);
@@ -1046,7 +1131,7 @@ void MainCS(uint InGroupIndex : SV_GroupIndex, uint3 DispatchThreadId : SV_Dispa
 		Newline(Context2);
 
 		Print(Context2, Sample.MacroGroupId, FontYellow);						Newline(Context2);
-		Print(Context2, Sample.PrimitiveId, FontEmerald);						Newline(Context2);
+		Print(Context2, Sample.ControlPointId, FontEmerald);						Newline(Context2);
 	#endif
 		Print(Context2, Sample.Coverage8bit, FontOrange);						Newline(Context2);
 	}
@@ -1059,7 +1144,6 @@ void MainCS(uint InGroupIndex : SV_GroupIndex, uint3 DispatchThreadId : SV_Dispa
 
 #if SHADER_PRINT_INSTANCE
 
-#include "../ShaderPrint.ush"
 #include "HairStrandsAABBCommon.ush"
 
 int2					MaxResolution;
@@ -1070,28 +1154,47 @@ uint					InstanceCount_CardsOrMeshesPrimaryView;
 uint					InstanceCount_CardsOrMeshesShadowView;
 
 Buffer<uint>			Infos;
-
-uint					NameInfoCount;
-uint					NameCharacterCount;
-StructuredBuffer<uint2> NameInfos;
-Buffer<uint>			Names;
 Buffer<int>				InstanceAABB;
+float4					InstanceScreenSphereBound;
+
+FSTRINGS(InstanceNames)
+FSTRINGS(AttributeNames)
 
 struct FInstanceInfo
 {
 	uint  GroupIndex;
 	uint  GroupCount;
-	float LODCount;
+	uint  LODCount;
 	uint  GeometryType;
 	uint  BindingType;
 	bool  bHasSim;
 	bool  bHasRBF;
+	bool  bHasRTGeom;
 	float LOD;
 	float ClipValue;
 
 	// Strands data
 	uint StrandsCount;
 	uint VertexCount;
+	float ScreenSize;
+	uint ActivePointCount;
+	uint ActiveCurveCount;
+	uint Attributes;
+	float Radius;
+	float Density;
+	float TipScale;
+	float RootScale;
+	float Length;
+	float LengthScale;
+	float CoverageScale;
+	bool Voxel;
+	bool Scatter;
+	bool RTGeometry;
+	bool StableRaster;
+	bool CacheRen;
+	bool CacheSim;
+	bool bHasLODSwitched;
+	bool bAutoLOD;
 
 	// Binding
 	uint UniqueTriangle;
@@ -1105,40 +1208,52 @@ struct FInstanceInfo
 
 FInstanceInfo ReadInstanceInfo(uint Index)
 {
-	const uint Index12 = Index * 12;
+	const uint Index20 = Index * 20u;
 
 	uint4 Data0 = 0;
-	Data0.x = Infos[Index12 + 0];
-	Data0.y = Infos[Index12 + 1];
-	Data0.z = Infos[Index12 + 2];
-	Data0.w = Infos[Index12 + 3];
+	Data0.x = Infos[Index20 + 0];
+	Data0.y = Infos[Index20 + 1];
+	Data0.z = Infos[Index20 + 2];
+	Data0.w = Infos[Index20 + 3];
 
 	uint4 Data1 = 0;
-	Data1.x = Infos[Index12 + 4];
-	Data1.y = Infos[Index12 + 5];
-	Data1.z = Infos[Index12 + 6];
-	Data1.w = Infos[Index12 + 7];
+	Data1.x = Infos[Index20 + 4];
+	Data1.y = Infos[Index20 + 5];
+	Data1.z = Infos[Index20 + 6];
+	Data1.w = Infos[Index20 + 7];
 
 	uint4 Data2 = 0;
-	Data2.x = Infos[Index12 + 8];
-	Data2.y = Infos[Index12 + 9];
-	Data2.z = Infos[Index12 + 10];
-	Data2.w = Infos[Index12 + 11];
+	Data2.x = Infos[Index20 + 8];
+	Data2.y = Infos[Index20 + 9];
+	Data2.z = Infos[Index20 + 10];
+	Data2.w = Infos[Index20 + 11];
+
+	uint4 Data3 = 0;
+	Data3.x = Infos[Index20 + 12];
+	Data3.y = Infos[Index20 + 13];
+	Data3.z = Infos[Index20 + 14];
+	Data3.w = Infos[Index20 + 15];
+
+	uint4 Data4 = 0;
+	Data4.x = Infos[Index20 + 16];
+	Data4.y = Infos[Index20 + 17];
+	Data4.z = Infos[Index20 + 18];
+	Data4.w = Infos[Index20 + 19];
 
 	FInstanceInfo Out = (FInstanceInfo)0;
-	Out.GroupIndex = (Data0.x >> 0) & 0xFF;
-	Out.GroupCount = (Data0.x >> 8) & 0xFF;
-	Out.LODCount = (Data0.x >> 16) & 0xFF;
-	Out.GeometryType = (Data0.x >> 24) & 0x7;
-	Out.BindingType = (Data0.x >> 27) & 0x7;
-	Out.bHasSim = (Data0.x >> 30) & 0x1;
-	Out.bHasRBF = (Data0.x >> 31) & 0x1;
+	Out.GroupIndex 		= (Data0.x >> 0) & 0xFF;
+	Out.GroupCount 		= (Data0.x >> 8) & 0xFF;
+	Out.LODCount 		= (Data0.x >> 16) & 0xFF;
+	Out.GeometryType 	= (Data0.x >> 24) & 0x7;
+	Out.BindingType 	= (Data0.x >> 27) & 0x7;
+	Out.bHasSim 		= (Data0.x >> 30) & 0x1;
+	Out.bHasRBF 		= (Data0.x >> 31) & 0x1;
 
-	Out.LOD = f16tof32((Data0.y >> 0) & 0xFFFF);
-	Out.ClipValue = f16tof32((Data0.y >> 16) & 0xFFFF);
+	Out.LOD 			= f16tof32((Data0.y >> 0) & 0xFFFF);
+	Out.ClipValue 		= f16tof32((Data0.y >> 16) & 0xFFFF);
 
-	Out.StrandsCount = Data0.z;
-	Out.VertexCount = Data0.w;
+	Out.StrandsCount 	= Data0.z;
+	Out.VertexCount 	= Data0.w;
 
 	// Strands binding data
 	Out.UniqueSection		= Data1.x;
@@ -1148,54 +1263,35 @@ FInstanceInfo ReadInstanceInfo(uint Index)
 
 	Out.bIsVisibleInPrimaryView = Data2.x & 0x1;
 	Out.bIsVisibleInShadowView	= Data2.x & 0x2;
+	Out.Scatter					= Data2.x & 0x4;
+	Out.RTGeometry				= Data2.x & 0x8;
+	Out.StableRaster			= Data2.x & 0x10;
+	Out.Voxel					= Data2.x & 0x20;
+	Out.CacheSim				= Data2.x & 0x40;
+	Out.CacheRen				= Data2.x & 0x80;
+	Out.ScreenSize				= f16tof32((Data2.x>>16) & 0xFFFF);
+	Out.ActivePointCount		= Data2.y;
+	Out.ActiveCurveCount		= Data2.z;
+	Out.Attributes				= Data2.w;
+	Out.bAutoLOD				= Data3.w >> 16u;
+
+	Out.Radius					= f16tof32(Data3.x & 0xFFFF);
+	Out.Density					= f16tof32(Data3.x >> 16u);
+	Out.RootScale				= f16tof32(Data3.y & 0xFFFF);
+	Out.TipScale				= f16tof32(Data3.y >> 16u);
+	Out.Length					= f16tof32(Data3.z & 0xFFFF);
+	Out.LengthScale				= f16tof32(Data3.z >> 16u);
+	Out.CoverageScale			= f16tof32(Data3.w & 0xFFFF);
+
+	Out.bHasLODSwitched			= Data4.x & 0x1;
+	Out.bHasRTGeom				= Data4.x & 0x2;
 
 	return Out;
 }
 
-struct FNameInfo
+bool HasAttribute(FInstanceInfo In, uint InAttributeIt)
 {
-	uint PrimitiveID;
-	uint Length;
-	uint Offset;
-	uint Pad0;
-	uint Pad1;
-};
-
-FNameInfo UnpackDebugNameInfo(uint2 In)
-{
-	FNameInfo Out = (FNameInfo)0;
-	Out.PrimitiveID = In.x;
-	Out.Offset = (In.y) & 0xFFFF;
-	Out.Length = (In.y >> 16) & 0xFF;
-
-	return Out;
-}
-
-FNameInfo FindNameInfo(uint PrimitiveID)
-{
-	FNameInfo Out = (FNameInfo)0;
-	Out.PrimitiveID = ~0;
-	for (uint It = 0; It < NameInfoCount; ++It)
-	{
-		if (NameInfos[It].x == PrimitiveID)
-		{
-			return UnpackDebugNameInfo(NameInfos[It]);
-		}
-	}
-	return Out;
-}
-
-void PrintInstanceName(inout FShaderPrintContext Context, uint PrimitiveID, FFontColor InColor)
-{
-	const FNameInfo Info = FindNameInfo(PrimitiveID);
-	if (Info.PrimitiveID != ~0 && (Info.Length + Info.Offset) <= NameCharacterCount)
-	{
-		for (uint It = 0; It < Info.Length; ++It)
-		{
-			const uint Char = Names[It + Info.Offset];
-			PrintSymbol(Context, Char, InColor);
-		}
-	}
+	return (In.Attributes & (1u<< InAttributeIt)) != 0;
 }
 
 [numthreads(1, 1, 1)]
@@ -1208,8 +1304,8 @@ void MainCS(uint GroupIndex : SV_GroupIndex, uint3 DispatchThreadId : SV_Dispatc
 		return;
 	}
 
-	FShaderPrintContext Context = InitShaderPrintContext(true, uint2(50, 50));
-	// Draw legend
+	FShaderPrintContext Context = InitShaderPrintContext(true, uint2(50, 100));
+	bool bShowAdvancedStrandsData = false;
 
 	// Draw totals
 	const uint TotalGroup = InstanceCount;
@@ -1230,36 +1326,37 @@ void MainCS(uint GroupIndex : SV_GroupIndex, uint3 DispatchThreadId : SV_Dispatc
 		Newline(Context);
 
 		Print(Context, TEXT("Total Strand Curves : "), FontWhite);
-		Print(Context,TotalStrandsCount, FontOrange, 8);
+		PrintLargeNumber(Context,TotalStrandsCount, FontOrange);
 		Newline(Context);
 
-		Print(Context, TEXT("Total Strand Vertex : "), FontWhite);
-		Print(Context,TotalVertexCount, FontSilver, 8);
+		Print(Context, TEXT("Total Strand Points : "), FontWhite);
+		PrintLargeNumber(Context,TotalVertexCount, FontSilver);
 		Newline(Context);
 	}
 	Newline(Context);
 
 	{
-		Print(Context, TEXT("Total Strand (primary)        : "), FontWhite);
-		Print(Context,InstanceCount_StrandsPrimaryView, FontYellow, 8);
+		Print(Context, TEXT("Total Strand        : "), FontWhite);
+		Print(Context, TEXT(" Visible:"), FontSilver);
+		Print(Context,InstanceCount_StrandsPrimaryView, FontYellow, 4);
+		Print(Context, TEXT("| Shadow:"), FontSilver);
+		Print(Context,InstanceCount_StrandsShadowView, FontYellow, 4);
 		Newline(Context);
 
-		Print(Context, TEXT("Total Strand (shadow)         : "), FontWhite);
-		Print(Context,InstanceCount_StrandsShadowView, FontYellow, 8);
+		Print(Context, TEXT("Total Cards/Meshes  : "), FontWhite);
+		Print(Context, TEXT(" Visible:"), FontSilver);
+		Print(Context,InstanceCount_CardsOrMeshesPrimaryView, FontYellow, 4);
+		Print(Context, TEXT("| Shadow:"), FontSilver);
+		Print(Context, InstanceCount_CardsOrMeshesShadowView, FontYellow, 4);
 		Newline(Context);
 
-		Print(Context, TEXT("Total Cards / Meshes (primary): "), FontWhite);
-		Print(Context,InstanceCount_CardsOrMeshesPrimaryView, FontYellow, 8);
-		Newline(Context);
-
-		Print(Context, TEXT("Total Cards / Meshes (shadow) : "), FontWhite);
-		Print(Context, InstanceCount_CardsOrMeshesShadowView, FontYellow, 8);
+		bShowAdvancedStrandsData = AddCheckbox(Context, TEXT("Advanced"), false, FontSilver);
 		Newline(Context);
 	}
 	Newline(Context);
 
 	// Draw instance details
-	Print(Context, TEXT("   Group  LOD     Geometry Binding Sim   RBF   Clip    Strands Vertex  Bind.Triangle Bind.Section Primary Shadow Name"));
+	Print(Context, TEXT("   Group  LOD     Geometry Binding Cache Sim RBF Clip Screen CovSc. Strands            Points             Bind.Tri/Sect Vis. Shad. SwLOD RT  Name"));
 	Newline(Context);
 
 	for (uint InstanceIndex = 0; InstanceIndex < InstanceCount; ++InstanceIndex)
@@ -1277,10 +1374,17 @@ void MainCS(uint GroupIndex : SV_GroupIndex, uint3 DispatchThreadId : SV_Dispatc
 		Print(Context, TEXT("    "));
 
 		// LOD
-		Print(Context,Info.LOD, FontYellow, 4, 2);
-		Print(Context, TEXT("/"));
-		Print(Context,Info.LODCount, FontYellow, 1);
-		Print(Context, TEXT("  "));
+		if (Info.bAutoLOD)
+		{
+			Print(Context, TEXT("Auto    "), FontYellow);
+		}
+		else
+		{
+			Print(Context,Info.LOD, FontYellow, 4, 2);
+			Print(Context, TEXT("/"));
+			Print(Context,Info.LODCount-1, FontYellow, 1);
+			Print(Context, TEXT("  "));
+		}
 
 		// Geometry
 		if (Info.GeometryType == 0)		{ Print(Context, TEXT("Strands "), FontEmerald); }
@@ -1293,64 +1397,151 @@ void MainCS(uint GroupIndex : SV_GroupIndex, uint3 DispatchThreadId : SV_Dispatc
 		else if (Info.BindingType == 1)	{ Print(Context, TEXT("Rigid   "), FontTurquoise); }
 		else if (Info.BindingType == 2)	{ Print(Context, TEXT("Skinned "), FontTurquoise); }
 
+		// Cache
+		if (Info.CacheRen)      { Print(Context, TEXT("Ren  "), FontOrange); }
+		else if (Info.CacheSim) { Print(Context, TEXT("Sim  "), FontOrange); }
+		else                    { Print(Context, TEXT("None "), FontSilver); }
+		Print(Context, TEXT(" "));
 		// Sim
-		if (Info.bHasSim)
-			Print(Context, TEXT("True "), FontGreen);
-		else
-			Print(Context, TEXT("False"), FontRed);
-		Print(Context, TEXT(" "), FontWhite);
+		PrintBool(Context, Info.bHasSim);
 
 		// RBF
-		if (Info.bHasRBF)
-			Print(Context, TEXT("True "), FontGreen);
-		else
-			Print(Context, TEXT("False"), FontRed);
-		Print(Context, TEXT(" "));
+		PrintBool(Context, Info.bHasRBF);
 
 		// Clip
 		if (Info.ClipValue >= 0)
-			Print(Context,Info.ClipValue, FontGreen, 7);
+			Print(Context,Info.ClipValue, FontGreen, 5,3);
 		else 
-			Print(Context,0u, FontSilver, 7);
-		Print(Context, TEXT(" "));
+			Print(Context,0u, FontSilver, 5, 3);
 
-		// Strands/Vertex sCount
-		Print(Context,Info.StrandsCount, FontOrange, 8);
-		Print(Context,Info.VertexCount,  FontSilver, 8);
+		// Strands effective
+		Print(Context, Info.ScreenSize, FontOrange, 4, 2);
+		Print(Context, TEXT("   "));
+
+		Print(Context, Info.CoverageScale, FontOrange, 4, 2);
+		Print(Context, TEXT("   "));
+
+		// Curve sCount
+		const float CurveRatio = Info.ActiveCurveCount / float(Info.StrandsCount);
+		PrintPercentage(Context, CurveRatio, InitFontColor(ColorMapTurbo(CurveRatio)));
+		PrintLargeNumber(Context, Info.ActiveCurveCount, FontOrange);
+		Print(Context, TEXT("/"));
+		PrintLargeNumber(Context, Info.StrandsCount, FontSilver);
+		Print(Context, TEXT(" "), FontWhite);
+
+		// Point sCount
+		const float VertexRatio = Info.ActivePointCount / float(Info.VertexCount);
+		PrintPercentage(Context, VertexRatio, InitFontColor(ColorMapTurbo(VertexRatio)));
+		PrintLargeNumber(Context, Info.ActivePointCount, FontOrange);
+		Print(Context, TEXT("/"));
+		PrintLargeNumber(Context, Info.VertexCount, FontSilver);
+		Print(Context, TEXT(" "), FontWhite);
 
 		// Binding data
 		Print(Context,Info.UniqueTriangle, FontOrange, 8);
-		Print(Context, TEXT("      "));
-		Print(Context,Info.UniqueSection, FontSilver, 8);
-		Print(Context, TEXT("     "));
+		Print(Context, TEXT(" "));
+		Print(Context,Info.UniqueSection, FontSilver, 3);
+		Print(Context, TEXT("  "));
 
 		// Primary view
-		if (Info.bIsVisibleInPrimaryView)
-			Print(Context, TEXT("True "), FontGreen);
-		else
-			Print(Context, TEXT("False"), FontRed);
-		Print(Context, TEXT(" "), FontWhite);
+		PrintBool(Context, Info.bIsVisibleInPrimaryView);
+		Print(Context, TEXT(" "));
 
 		// Shadow view
+		PrintBool(Context, Info.bIsVisibleInShadowView);
 		Print(Context, TEXT("  "));
-		if (Info.bIsVisibleInShadowView)
-			Print(Context, TEXT("True "), FontGreen);
-		else
-			Print(Context, TEXT("False"), FontRed);
-		Print(Context, TEXT(" "), FontWhite);
 
+		// Has LOD switched
+		PrintBool(Context, Info.bHasLODSwitched);
+		Print(Context, TEXT("  "));
+
+		// Has RT geom
+		PrintBool(Context, Info.bHasRTGeom);
+		Print(Context, TEXT("  "));
+		
+		
 		// Name
-		PrintInstanceName(Context, InstanceIndex, FontWhite);
+		PrintInstanceNames(Context, InstanceIndex, FontWhite);
 
 		Newline(Context);
+	}
+	Newline(Context);
+
+	// Optional advanced debugging
+	if (bShowAdvancedStrandsData)
+	{
+		// Attribute
+		Print(Context, TEXT("   Group  "), FontWhite);
+		Print(Context, TEXT("Voxel "), FontWhite);
+		Print(Context, TEXT("RT  "), FontWhite);
+		Print(Context, TEXT("Scatter "), FontWhite);
+		Print(Context, TEXT("Radius "), FontWhite);
+		Print(Context, TEXT("Root  "), FontWhite);
+		Print(Context, TEXT("Tip   "), FontWhite);
+		const uint AttributeNameInfoCount = NumAttributeNames();
+		for (uint AttributeIt=0; AttributeIt < AttributeNameInfoCount; ++AttributeIt)
+		{
+			PrintAttributeNames(Context, AttributeIt, FontWhite);
+			Print(Context, TEXT(" "));
+		}
+		Newline(Context);
+
+		for (uint StrandInstanceIndex = 0; StrandInstanceIndex < InstanceCount; ++StrandInstanceIndex)
+		{
+			const FInstanceInfo Info = ReadInstanceInfo(StrandInstanceIndex);
+			if (Info.GeometryType > 0)
+			{
+				continue;
+			}
+
+			// Index
+			Print(Context, StrandInstanceIndex, FontSilver, 2);
+			Print(Context, TEXT(" "));
+
+			// Group
+			Print(Context, Info.GroupIndex, FontYellow, 1);
+			Print(Context, TEXT("/"));
+			Print(Context, Info.GroupCount, FontYellow, 1);
+			Print(Context, TEXT("    "));
+
+			PrintBool(Context, Info.Voxel); Print(Context, TEXT("  "));
+			PrintBool(Context, Info.RTGeometry); 
+			PrintBool(Context, Info.Scatter); Print(Context, TEXT("    "));
+			Print(Context, Info.Radius, FontYellow, 5, 3); Print(Context, TEXT("  "));
+			Print(Context, Info.RootScale, FontYellow, 5, 3); Print(Context, TEXT(" "));
+			Print(Context, Info.TipScale, FontYellow, 5, 3); Print(Context, TEXT(" "));
+
+			for (uint AttributeIt = 0; AttributeIt < AttributeNameInfoCount; ++AttributeIt)
+			{
+				PrintBool(Context, HasAttribute(Info, AttributeIt));
+				const uint AttributeLen = LenAttributeNames(AttributeIt);
+				if (AttributeLen > 3)
+				{
+					const uint SpaceCount = AttributeLen - 3u;
+					for (uint SpaceIt = 0; SpaceIt < SpaceCount; ++SpaceIt)
+					{
+						Print(Context, TEXT(" "));
+					}
+				}
+			}
+
+			PrintInstanceNames(Context, StrandInstanceIndex, FontWhite);
+
+			Newline(Context);
+		}
 	}
 }
 #else  // PERMUTATION_OUTPUT_TYPE
 {
 	if (all(DispatchThreadId == 0))
 	{
+		// Bound
 		const FHairAABB AABB = ReadHairAABB(0, InstanceAABB);
 		AddAABBTWS(AABB.Min, AABB.Max, ColorDarkGreen);
+
+		// Screen size
+		FShaderPrintContext Context = InitShaderPrintContext(true, uint2(50, 50));
+		AddCircleSS(Context, InstanceScreenSphereBound.xy, InstanceScreenSphereBound.w, ColorGreen);
 	}
 }
 #endif // PERMUTATION_OUTPUT_TYPE
@@ -1502,6 +1693,9 @@ void MainCS(int2 DispatchThreadId : SV_DispatchThreadID)
 int2 MaxResolution;
 uint GroupIndex;
 uint GeometryType;
+uint CurveCount;
+uint PointCount;
+float CoverageScale;
 float LOD;
 float ScreenSize;
 float3 GroupColor;
@@ -1512,43 +1706,41 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	// Legend
 	if (GroupIndex == 0)
 	{
-		FShaderPrintContext Context = InitShaderPrintContext(true, uint2(10, 50));
-		Print(Context, TEXT("  Group Geom.   LOD  Screen Size"), FontSilver); Newline(Context);
+		FShaderPrintContext Ctx = InitShaderPrintContext(true, uint2(10, 50));
+		Print(Ctx, TEXT("  Group Geom.   LOD  Screen Size #Curve      #Point      Scale"), FontSilver); Newline(Ctx);
 	}
 
 	// Values
 	{
-		FShaderPrintContext Context = InitShaderPrintContext(true, uint2(10, 65 + GroupIndex * 15));
+		FShaderPrintContext Ctx = InitShaderPrintContext(true, uint2(10, 65 + GroupIndex * 15));
 
 		// Group Color
-		Print(Context, TEXT("* "), InitFontColor(GroupColor));
+		Print(Ctx, TEXT("* "), InitFontColor(GroupColor));
 
 		// Group index
-		Print(Context, GroupIndex, FontEmerald, 3, 0);
+		Print(Ctx, GroupIndex, FontEmerald, 3, 0);
 
 		// Geometry Type
-		Print(Context, TEXT("   "));
+		Print(Ctx, TEXT("   "));
 		if (GeometryType == 0)
 		{
-			Print(Context, TEXT("Strands "), FontOrange);
+			Print(Ctx, TEXT("Strands "), FontOrange);
 		}
 		else if (GeometryType == 1)
 		{
-			Print(Context, TEXT("Cards   "), FontOrange);
+			Print(Ctx, TEXT("Cards   "), FontOrange);
 		}
 		else if (GeometryType == 2)
 		{
-			Print(Context, TEXT("Meshes  "), FontOrange);
+			Print(Ctx, TEXT("Meshes  "), FontOrange);
 		}
 
-		// LOD
-		Print(Context, LOD, FontWhite, 4, 2);
-		Print(Context, TEXT(" "));
-
-		// Screen size
-		Print(Context, saturate(ScreenSize), FontWhite);
-
-		Newline(Context);
+		Print(Ctx, LOD, FontWhite, 4, 2); Print(Ctx, TEXT(" "));
+		Print(Ctx, saturate(ScreenSize), FontWhite);
+		Print(Ctx, CurveCount, FontWhite);
+		Print(Ctx, PointCount, FontWhite);
+		Print(Ctx, CoverageScale, FontWhite);
+		Newline(Ctx);
 	}
 }
 
@@ -1720,223 +1912,6 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 }
 
 #endif // SHADER_CARDS_GUIDE
-
-///////////////////////////////////////////////////////////////////////////////////////////////////
-// Visualize voxelized hair strands (used for cards generation)
-
-#if SHADER_CARDS_VOXEL
-
-#include "../CommonViewUniformBuffer.ush"
-#include "../SceneTextureParameters.ush"
-#include "../DeferredShadingCommon.ush"
-#include "../ShaderPrint.ush"
-#include "../PositionReconstructionCommon.ush" 
-
-uint3 PositionToCoord(float3 P, float3 InMinAABB, float3 InMaxAABB, uint3 InResolution)
-{
-	return clamp(
-		saturate((P - InMinAABB) / (InMaxAABB - InMinAABB)) * InResolution,
-		uint3(0, 0, 0),
-		InResolution - 1);
-}
-
-uint3 PositionToCoordUnclampled(float3 P, float3 InMinAABB, float3 InMaxAABB, uint3 InResolution)
-{
-	return saturate((P - InMinAABB) / (InMaxAABB - InMinAABB)) * InResolution;
-}
-
-uint CoordToIndex(uint3 InCoord, uint3 InResolution, uint LinearOffset)
-{
-	return
-		InCoord.x +
-		InCoord.y * InResolution.x +
-		InCoord.z * InResolution.x * InResolution.y +
-		LinearOffset;
-}
-
-uint3 IndexToCoord(uint InIndex, uint3 InResolution)
-{
-	const uint SliceSize = (InResolution.x * InResolution.y);
-	const uint SliceIndex = InIndex % SliceSize;
-
-	uint3 OutCoord = 0;
-	OutCoord.x = SliceIndex % InResolution.x;
-	OutCoord.y = SliceIndex / InResolution.x;
-	OutCoord.z = InIndex / SliceSize;
-
-	return OutCoord;
-}
-
-bool IsInVoxelBounds(float3 P, float3 MinP, float3 MaxP)
-{
-	return
-		P.x >= MinP.x && P.y >= MinP.y && P.z >= MinP.z &&
-		P.x <= MaxP.x && P.y <= MaxP.y && P.z <= MaxP.z;
-}
-
-float3 EncodeTangent(float3 N)
-{
-	return N * 0.5 + 0.5;
-}
-
-float3 DecodeTangent(float3 N)
-{
-	return N * 2 - 1;
-}
-
-uint PackDirection(float3 In)
-{
-	float3 T = EncodeTangent(In);
-	return
-		((0xFF & uint(T.x * 255))) |
-		((0xFF & uint(T.y * 255)) << 8) |
-		((0xFF & uint(T.z * 255)) << 16);
-}
-
-float3 UnpackDirection(uint In)
-{
-	return DecodeTangent(float3(
-		float((In)       & 0xFF) / 255.f,
-		float((In >> 8)  & 0xFF) / 255.f,
-		float((In >> 16) & 0xFF) / 255.f));
-}
-
-
-float2 OutputResolution;
-int3 Voxel_Resolution;
-float Voxel_VoxelSize;
-float3 Voxel_MinBound;
-float3 Voxel_MaxBound;
-Buffer<float4> Voxel_TangentBuffer;
-Buffer<float4> Voxel_NormalBuffer;
-Buffer<uint>   Voxel_DensityBuffer;
-Buffer<uint>   Voxel_ProcessedDensityBuffer;
-
-RWTexture2D<float4> OutputTexture;
-
-[numthreads(8, 8, 1)]
-void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
-{
-	const float2 PixelCoord = DispatchThreadId.xy + 0.5f;
-	const float2 UV = PixelCoord / float2(OutputResolution);
-
-	const bool bDebugEnabled = all(int2(PixelCoord) == GetCursorPos());
-
-	float  WorldDepth = 0;
-	float  ClipDepth = 0;
-
-
-	if (uint(PixelCoord.x) == 0 && uint(PixelCoord.y) == 0)
-	{
-		AddAABBWS(Voxel_MinBound, Voxel_MaxBound, float4(1, 0.5f, 0, 1));
-	}
-
-	bool bIsValid = false;
-	float3 HitColor = 0;
-	{
-		// Reverse-Z
-		const float3 O = LWCHackToFloat(PrimaryView.WorldCameraOrigin);
-		const float3 E = ReconstructWorldPositionFromDepth(UV, ConvertFromDeviceZ(0.0001f));
-		const float3 D = (E - O);
-
-		float PixelRadius = -1;
-		const float2 HitT = LineBoxIntersect(O, E, Voxel_MinBound, Voxel_MaxBound);
-		float AccDensity = 0;
-		if (HitT.x < HitT.y)
-		{
-			// Use different offseting to see either: 
-			// * Individual voxel (for debugging mainly)
-			// * Smoothed voxel (as used for transmittance computation)
-			const float3 Offset = 0;
-			const float Dither = InterleavedGradientNoise(PixelCoord.xy, 1);
-
-			// Intersect the indirection table to see if a brick is empty or not
-			const uint MaxStep = 256;
-			const float Delta = (HitT.y - HitT.x) / float(MaxStep);
-			for (uint StepIt = 0; StepIt < MaxStep; ++StepIt)
-			{
-				const float3 HitP = Offset + O + ((Dither + StepIt) * Delta + HitT.x) * D;
-				const int3 VoxelCoord = PositionToCoord(HitP, Voxel_MinBound, Voxel_MaxBound, Voxel_Resolution);
-				const uint VoxelLinearCoord = CoordToIndex(VoxelCoord, Voxel_Resolution, 0);
-
-				const uint Density = Voxel_DensityBuffer.Load(VoxelLinearCoord);
-
-				if (Density > 0)
-				{
-					float3 UnoccludedDirection = UnpackDirection(Density);
-
-
-					// Filtering
-					if (0)
-					{
-						int KernelSize = 1;
-						uint ValidCount = 0;
-						UnoccludedDirection = 0;
-						for (int Z = -KernelSize; Z <= KernelSize; ++Z)
-						for (int Y = -KernelSize; Y <= KernelSize; ++Y)
-						for (int X = -KernelSize; X <= KernelSize; ++X)
-						{
-							const int3 Offset = int3(X, Y, Z);
-							const int3 C = VoxelCoord + Offset;
-							if (all(C >= 0) && all(C < Voxel_Resolution))
-							{
-								const float w = all(Offset == VoxelCoord) ? 2 : 1;
-								const uint LinearC = CoordToIndex(C, Voxel_Resolution, 0);
-								const uint PackedDir = Voxel_ProcessedDensityBuffer[LinearC];
-								if (PackedDir > 0)
-								{
-									const float3 Dir = UnpackDirection(PackedDir);
-									UnoccludedDirection += normalize(Dir) * w;
-									ValidCount++;
-								}
-							}
-						}
-
-						if (ValidCount>0)
-						{
-							UnoccludedDirection = normalize(UnoccludedDirection);
-
-						}						
-
-						// CPU tangent
-						//UnoccludedDirection = Voxel_TangentBuffer.Load(VoxelLinearCoord) / Density;
-						//UnoccludedDirection = normalize(UnoccludedDirection);
-					}
-
-					const float3 Tangent = Voxel_TangentBuffer.Load(VoxelLinearCoord).xyz;
-					const float3 Normal  = Voxel_NormalBuffer.Load(VoxelLinearCoord).xyz;
-					//UnoccludedDirection = Tangent;
-					UnoccludedDirection = Normal;
-
-					AccDensity = 1;
-					bIsValid = true;
-					HitColor = VoxelCoord / 12.f;
-
-					HitColor = UnoccludedDirection * 2 + 1;
-
-					//HitColor = UnoccludedDirection; // (UnoccludedDirection + 1) * 0.5f;
-					//HitColor = float(Density) / 10.f;
-					if (bDebugEnabled)
-					{
-						//AddLineWS(HitP, HitP + UnoccludedDirection * 3, float4(1, 0, 0, 1), float4(1, 1, 0, 1));
-
-						AddLineWS(HitP, HitP + Tangent * 3, float4(0, 0, 1, 1), float4(0, 0, 1, 1));
-						AddLineWS(HitP, HitP + Normal * 3, float4(1, 0, 0, 1), float4(1, 0, 0, 1));
-					}
-
-					break;
-				}
-			}
-		}
-	}
-	
-	if (bIsValid)
-	{
-		OutputTexture[DispatchThreadId.xy] = float4(HitColor, 1);
-	}
-}
-
-#endif //SHADER_CARDS_VOXEL
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Visualize directional occlusion from voxelized hair strands (used for cards generation)
@@ -2439,3 +2414,494 @@ void MainCS(uint GroupIndex : SV_GroupIndex, uint3 DispatchThreadId : SV_Dispatc
 	}
 }
 #endif // SHADER_SHADOW_CULLING
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Display hair picking attribute
+
+#if SHADER_ATTRIBUTE_DEBUG
+
+#include "../Common.ush"
+#include "../ShaderPrint.ush"
+#include "HairStrandsVisibilityCommon.ush"
+#include "HairStrandsVertexFactoryCommon.ush"
+HAIR_STRANDS_INSTANCE_PARAMETERS(HairInstance)
+
+#include "HairStrandsAttributeCommon.ush"
+#define HAIR_STRANDS_ATTRIBUTE_ACCESSORS(Name) HairInstance_##Name
+#include "/Engine/Private/HairStrands/HairStrandsAttributeTemplate.ush"
+
+uint MaterialId;
+Texture2D<uint> NodeIndexTexture;
+StructuredBuffer<FPackedHairVis> NodeVisBuffer;
+
+[numthreads(1, 1, 1)]
+void CSMain(
+	uint DispatchThreadID : SV_DispatchThreadID, 
+	uint GroupThreadID : SV_GroupThreadID, 
+	uint GroupID : SV_GroupID)
+{
+	const int2 PixelCoord = ShaderPrintData.CursorCoord;
+	if (all(PixelCoord < 0))
+	{
+		return;
+	}
+
+	const FNodeDesc NodeDesc = DecodeNodeDesc(NodeIndexTexture.Load(uint3(PixelCoord, 0)));
+	if (NodeDesc.Count == 0)
+	{
+		return;
+	}
+
+	if (NodeDesc.Count > 0)
+	{
+		// Only show the first sample properties for simplicity
+		const uint SampleIt = 0;
+		const uint SampleIndex = NodeDesc.Offset + SampleIt;
+		const FHairVis VisNode = UnpackHairVis(NodeVisBuffer[SampleIndex]);
+		if (VisNode.MaterialId == MaterialId)
+		{
+			FHairControlPoint Out = UnpackHairControlPoint(
+				HairInstance_PositionBuffer[VisNode.ControlPointId],
+				HairInstance_PositionOffsetBuffer[0].xyz,
+				HairInstance_Radius,
+				HairInstance_RootScale,
+				HairInstance_TipScale);
+
+			FFontColor FontValue = FontYellow;
+			FFontColor FontName = FontWhite;
+
+			FShaderPrintContext Ctx = InitShaderPrintContext(true, uint2(PixelCoord) + uint2(20, 0));
+			Print(Ctx, TEXT("Group    : "), FontName); Print(Ctx, GetHairStrandsGroupIndex(), FontValue); Newline(Ctx);
+			Print(Ctx, TEXT("Radius   : "), FontName); Print(Ctx, GetHairStrandsDimensions(VisNode.ControlPointId, 0).y, FontValue); Newline(Ctx);
+			Print(Ctx, TEXT("Seed     : "), FontName); Print(Ctx, GetHairStrandsSeed(VisNode.ControlPointId), FontValue); Newline(Ctx);
+			Print(Ctx, TEXT("CoordU   : "), FontName); Print(Ctx, GetHairStrandsUV(VisNode.ControlPointId, float2(0, 0.5f)).x, FontValue); Newline(Ctx);
+			Newline(Ctx);
+
+			if (HasHairStrandsRootUV()) 	{ Print(Ctx, TEXT("RootUV   : "), FontName); Print(Ctx, GetHairStrandsRootUV(VisNode.ControlPointId),  FontValue); Newline(Ctx); }
+			if (HasHairStrandsClumpId()) 	{ Print(Ctx, TEXT("Clump ID : "), FontName); Print(Ctx, GetHairStrandsClumpID(VisNode.ControlPointId).x, FontValue); Newline(Ctx); }
+			if (HasHairStrandsClumpId3()) 	{ Print(Ctx, TEXT("Clump IDs: "), FontName); Print(Ctx, GetHairStrandsClumpID(VisNode.ControlPointId), FontValue); Newline(Ctx); }
+			if (HasHairStrandsColor()) 		{ Print(Ctx, TEXT("Color    : "), FontName); Print(Ctx, GetHairStrandsColor(VisNode.ControlPointId, 0), FontValue); Newline(Ctx); }
+			if (HasHairStrandsRoughness()) 	{ Print(Ctx, TEXT("Roughness: "), FontName); Print(Ctx, GetHairStrandsRoughness(VisNode.ControlPointId, 0), FontValue); Newline(Ctx); }
+			if (HasHairStrandsAO()) 		{ Print(Ctx, TEXT("AO       : "), FontName); Print(Ctx, GetHairStrandsAO(VisNode.ControlPointId, 0), FontValue); Newline(Ctx); }
+			Newline(Ctx);
+		}
+	}
+}
+
+#endif // SHADER_ATTRIBUTE_DEBUG
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+// Print memory
+
+#if SHADER_PRINT_MEMORY
+
+FSTRINGS(GroomNames)
+FSTRINGS(BindingNames)
+FSTRINGS(ComponentNames)
+
+uint ComponentCount;
+uint GroomCount;
+uint BindingCount;
+
+Buffer<uint> ComponentBuffer;
+Buffer<uint> GroomBuffer;
+Buffer<uint> BindingBuffer;
+
+struct FInfo
+{
+	uint4 Data0;
+	uint4 Data1;
+	uint4 Data2;
+	uint4 Data3;
+	uint4 Data4;
+};
+
+FInfo ReadInfo(uint Index, Buffer<uint> InBuffer)
+{
+	const uint Index20 = Index * 20u;
+	FInfo Out;
+	Out.Data0.x = InBuffer[Index20 + 0];
+	Out.Data0.y = InBuffer[Index20 + 1];
+	Out.Data0.z = InBuffer[Index20 + 2];
+	Out.Data0.w = InBuffer[Index20 + 3];
+	Out.Data1.x = InBuffer[Index20 + 4];
+	Out.Data1.y = InBuffer[Index20 + 5];
+	Out.Data1.z = InBuffer[Index20 + 6];
+	Out.Data1.w = InBuffer[Index20 + 7];
+	Out.Data2.x = InBuffer[Index20 + 8];
+	Out.Data2.y = InBuffer[Index20 + 9];
+	Out.Data2.z = InBuffer[Index20 + 10];
+	Out.Data2.w = InBuffer[Index20 + 11];
+	Out.Data3.x = InBuffer[Index20 + 12];
+	Out.Data3.y = InBuffer[Index20 + 13];
+	Out.Data3.z = InBuffer[Index20 + 14];
+	Out.Data3.w = InBuffer[Index20 + 15];
+	Out.Data4.x = InBuffer[Index20 + 16];
+	Out.Data4.y = InBuffer[Index20 + 17];
+	Out.Data4.z = InBuffer[Index20 + 18];
+	Out.Data4.w = InBuffer[Index20 + 19];
+	return Out;
+}
+
+struct FComponent
+{
+	uint GroupIndex;
+	uint GroupCount;
+	uint RestCurve;
+	uint ActiveCurve;
+
+	uint GPU_Guides;
+	uint GPU_Strands;
+	uint GPU_Cards;
+	uint GPU_Meshes;
+};
+
+FComponent GetComponent(uint Index)
+{	
+	const FInfo In = ReadInfo(Index, ComponentBuffer);
+
+	FComponent Out;
+	Out.GroupIndex 			=In.Data0.x;
+	Out.GroupCount 			=In.Data0.y;
+	Out.ActiveCurve			=In.Data0.z;
+	Out.RestCurve			=In.Data0.w;
+	
+	Out.GPU_Guides 			=In.Data1.x;
+	Out.GPU_Strands 		=In.Data1.y;
+	Out.GPU_Cards 			=In.Data1.z;
+	Out.GPU_Meshes 			=In.Data1.w;
+
+	return Out;
+}
+
+struct FGroom
+{
+	uint GroupIndex;
+	uint GroupCount;
+	uint RestCurve;
+	uint ActiveCurve;
+
+	uint CPU_Guides;
+	uint CPU_Strands;
+	uint CPU_Cards;
+	uint CPU_Meshes;
+
+	uint GPU_Guides;
+	uint GPU_Strands;
+	uint GPU_Cards;
+	uint GPU_Meshes;
+
+	uint GPU_Rest;
+	uint GPU_Interpolation;
+	uint GPU_Cluster;
+	uint GPU_Raytracing;
+
+	uint Curve_Rest;
+	uint Curve_Interpolation;
+	uint Curve_Cluster;
+	uint Curve_Raytracing;
+};
+
+FGroom GetGroom(uint Index)
+{	
+	const FInfo In = ReadInfo(Index, GroomBuffer);
+
+	FGroom Out;
+	Out.GroupIndex 			= In.Data0.x;
+	Out.GroupCount 			= In.Data0.y;
+	Out.ActiveCurve			= In.Data0.z;
+	Out.RestCurve			= In.Data0.w;
+
+	Out.CPU_Guides 			= In.Data1.x;
+	Out.CPU_Strands 		= In.Data1.y;
+	Out.CPU_Cards 			= In.Data1.z;
+	Out.CPU_Meshes 			= In.Data1.w;
+
+	Out.GPU_Guides 			= In.Data2.x;
+	Out.GPU_Strands 		= In.Data2.y;
+	Out.GPU_Cards 			= In.Data2.z;
+	Out.GPU_Meshes 			= In.Data2.w;
+
+	Out.GPU_Rest			= In.Data3.x;
+	Out.GPU_Interpolation	= In.Data3.y;
+	Out.GPU_Cluster			= In.Data3.z;
+	Out.GPU_Raytracing		= In.Data3.w;
+
+	Out.Curve_Rest			= In.Data4.x;
+	Out.Curve_Interpolation	= In.Data4.x;
+	Out.Curve_Cluster     	= In.Data4.x;
+	Out.Curve_Raytracing  	= In.Data4.x;
+
+	return Out;
+}
+
+struct FBinding
+{
+	uint GroupIndex;
+	uint GroupCount;
+	uint RestCurve;
+	uint ActiveCurve;
+
+	uint CPU_Guides;
+	uint CPU_Strands;
+	uint CPU_Cards;
+	uint CPU_Meshes;
+
+	uint GPU_Guides;
+	uint GPU_Strands;
+	uint GPU_Cards;
+	uint GPU_Meshes;
+};
+
+FBinding GetBinding(uint Index)
+{	
+	const FInfo In = ReadInfo(Index, BindingBuffer);
+
+	FBinding Out;
+	Out.GroupIndex 	= In.Data0.x;
+	Out.GroupCount 	= In.Data0.y;
+	Out.ActiveCurve	= In.Data0.z;
+	Out.RestCurve	= In.Data0.w;
+
+	Out.CPU_Guides 	= In.Data1.x;
+	Out.CPU_Strands = In.Data1.y;
+	Out.CPU_Cards 	= In.Data1.z;
+	Out.CPU_Meshes 	= In.Data1.w;
+
+	Out.GPU_Guides 	= In.Data2.x;
+	Out.GPU_Strands = In.Data2.y;
+	Out.GPU_Cards 	= In.Data2.z;
+	Out.GPU_Meshes 	= In.Data2.w;
+	return Out;
+}
+
+void PrintGroup(inout FShaderPrintContext Ctx, uint GroupIndex, uint GroupCount)
+{
+	Print(Ctx, GroupIndex,	FontEmerald, 2, 0);	
+	Print(Ctx, TEXT("/"), FontWhite);
+	Print(Ctx, GroupCount,	FontEmerald, 2, 0);
+}
+
+FFontColor GetOccupancyColor(float In)
+{
+	float3 Color = lerp(float3(0, 1, 0), float3(1, 0, 0), saturate(In));
+	return InitFontColor(Color);
+}
+
+void PrintCurve(inout FShaderPrintContext Ctx, uint ActiveCurve, uint RestCurve)
+{
+	const float Curve = float(ActiveCurve) / float(RestCurve);
+	PrintPercentage(Ctx, Curve, GetOccupancyColor(Curve));
+	//PrintLargeNumber(Ctx, Info.ActiveCurve,	FontOrange);	Print(Ctx, TEXT(" "), FontWhite);
+	//Print(Ctx, TEXT("/"), FontWhite);
+	//PrintLargeNumber(Ctx, Info.RestCurve,	FontOrange);	Print(Ctx, TEXT(" "), FontWhite);
+}
+
+[numthreads(1, 1, 1)]
+void MainCS(uint GroupIndex : SV_GroupIndex, uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	// Draw AABB of the instance groups
+	if (any(DispatchThreadId != 0))
+	{
+		return;
+	}
+
+	// Widgets
+	FShaderPrintContext Ctx2 = InitShaderPrintContext(true, uint2(900, 100));
+	Print(Ctx2, TEXT("Controls"), FontYellow); Newline(Ctx2);
+	const bool bComponent 	= AddCheckbox(Ctx2, TEXT("Components"), false, FontWhite); 	Newline(Ctx2);	
+	const bool bGroom     	= AddCheckbox(Ctx2, TEXT("Grooms"), true, FontWhite);     	Newline(Ctx2);	
+	const bool bBinding   	= AddCheckbox(Ctx2, TEXT("Bindings"), false, FontWhite);   	Newline(Ctx2);
+	const bool bStrandsOnly = AddCheckbox(Ctx2, TEXT("Strands Only"), true, FontWhite); Newline(Ctx2);
+
+	// Component
+	FShaderPrintContext Ctx = InitShaderPrintContext(true, uint2(50, 100));
+	uint Component_TotalGPU = 0;
+	if (bComponent)
+	{
+		Print(Ctx, TEXT("Components"), FontYellow); Newline(Ctx);
+		{
+			Print(Ctx, TEXT("Grp. Common Guides Strands Cards Meshes Total  Curv Name"), FontSilver); Newline(Ctx);
+			for (uint It = 0; It < ComponentCount; ++It)
+			{
+				const FComponent Info = GetComponent(It);
+				const uint Total
+					= Info.GPU_Guides
+					+ Info.GPU_Strands
+					+ Info.GPU_Cards;
+
+
+				PrintGroup(Ctx, Info.GroupIndex, Info.GroupCount);
+	
+				PrintLargeNumber(Ctx, Info.GPU_Guides,	FontWhite);		Print(Ctx, TEXT(" "), FontWhite);
+				PrintLargeNumber(Ctx, Info.GPU_Strands,	FontWhite);		Print(Ctx, TEXT(" "), FontWhite);
+				PrintLargeNumber(Ctx, Info.GPU_Cards,	FontWhite);		Print(Ctx, TEXT(" "), FontWhite);
+				PrintLargeNumber(Ctx, Info.GPU_Meshes,	FontWhite);		Print(Ctx, TEXT(" "), FontWhite);
+				PrintLargeNumber(Ctx, Total,			FontOrange);	Print(Ctx, TEXT(" "), FontWhite);
+				PrintCurve(Ctx, Info.ActiveCurve, Info.RestCurve);
+	
+				PrintComponentNames(Ctx, It, FontWhite);
+				Newline(Ctx);
+			}
+		}
+		Newline(Ctx);
+	}
+	// Total
+
+	// Grooms
+	if (bGroom)
+	{
+		Print(Ctx, TEXT("Grooms"), FontYellow); Newline(Ctx);
+		if (!bStrandsOnly)
+		{
+			Print(Ctx, TEXT("Grp. Guides Strands Cards Meshes Total Curv Name"), FontSilver); Newline(Ctx);
+			for (uint It = 0; It < GroomCount; ++It)
+			{
+				const FGroom Info = GetGroom(It);
+				PrintGroup(Ctx, Info.GroupIndex, Info.GroupCount);
+	
+				PrintLargeNumber(Ctx, Info.GPU_Guides, FontWhite);	Print(Ctx, TEXT(" "), FontWhite);
+				PrintLargeNumber(Ctx, Info.GPU_Strands, FontWhite);Print(Ctx, TEXT(" "), FontWhite);
+				PrintLargeNumber(Ctx, Info.GPU_Cards, FontWhite);	Print(Ctx, TEXT(" "), FontWhite);
+				PrintLargeNumber(Ctx, Info.GPU_Meshes, FontWhite);	Print(Ctx, TEXT(" "), FontWhite);
+				PrintCurve(Ctx, Info.ActiveCurve, Info.RestCurve);
+				PrintGroomNames(Ctx, It, FontWhite);
+				Newline(Ctx);
+			}
+		}
+		else
+		{
+			FFontColor FontMemory = FontWhite;
+			FFontColor FontCurve = FontSilver;
+
+			Print(Ctx, TEXT("Grp. Rest.  Intrp. Cluster  RT.  Total  Curv Name"), FontSilver); Newline(Ctx);
+			for (uint It = 0; It < GroomCount; ++It)
+			{
+				const FGroom Info = GetGroom(It);
+				const uint GPUStrandsTotal 
+					= Info.GPU_Rest
+					+ Info.GPU_Interpolation
+					+ Info.GPU_Cluster
+					+ Info.GPU_Raytracing;
+
+				PrintGroup(Ctx, Info.GroupIndex, Info.GroupCount);
+
+				PrintLargeNumber(Ctx, Info.GPU_Rest, FontMemory);	Print(Ctx, TEXT(" "), FontMemory);
+				PrintLargeNumber(Ctx, Info.GPU_Interpolation, FontMemory);Print(Ctx, TEXT(" "), FontMemory);
+				PrintLargeNumber(Ctx, Info.GPU_Cluster, FontMemory);	Print(Ctx, TEXT(" "), FontMemory);
+				PrintLargeNumber(Ctx, Info.GPU_Raytracing, FontMemory);	Print(Ctx, TEXT(" "), FontMemory);
+				PrintLargeNumber(Ctx, GPUStrandsTotal, FontOrange);	Print(Ctx, TEXT(" "), FontMemory);
+				PrintCurve(Ctx, Info.ActiveCurve, Info.RestCurve);
+				PrintGroomNames(Ctx, It, FontMemory);
+				Newline(Ctx);
+
+				// Curve count detail per resource type
+				#if 0
+				Print(Ctx, TEXT("     "), FontCurve);
+				PrintLargeNumber(Ctx, Info.Curve_Rest, FontCurve);	Print(Ctx, TEXT(" "), FontCurve);
+				PrintLargeNumber(Ctx, Info.Curve_Interpolation, FontCurve);Print(Ctx, TEXT(" "), FontCurve);
+				PrintLargeNumber(Ctx, Info.Curve_Cluster, FontCurve);	Print(Ctx, TEXT(" "), FontCurve);
+				PrintLargeNumber(Ctx, Info.Curve_Raytracing, FontCurve);	Print(Ctx, TEXT(" "), FontCurve);
+				Newline(Ctx);
+				#endif
+			}
+		}
+		Newline(Ctx);
+	}
+	// Total
+
+	// Bindings
+	if (bBinding)
+	{
+		Print(Ctx, TEXT("Bindings"), FontYellow); Newline(Ctx);
+		Print(Ctx, TEXT("Grp. Guides Strands Cards Meshes Total Curv Name"), FontSilver); Newline(Ctx);
+		for (uint It = 0; It < BindingCount; ++It)
+		{
+			const FBinding Info = GetBinding(It);
+			const uint Total
+				= Info.GPU_Guides
+				+ Info.GPU_Strands
+				+ Info.GPU_Cards
+				+ Info.GPU_Meshes;
+
+			PrintGroup(Ctx, Info.GroupIndex, Info.GroupCount);
+
+			PrintLargeNumber(Ctx, Info.GPU_Guides, FontWhite);	Print(Ctx, TEXT(" "), FontWhite);
+			PrintLargeNumber(Ctx, Info.GPU_Strands, FontWhite);	Print(Ctx, TEXT(" "), FontWhite);
+			PrintLargeNumber(Ctx, Info.GPU_Cards, FontWhite);	Print(Ctx, TEXT(" "), FontWhite);
+			PrintLargeNumber(Ctx, Info.GPU_Meshes, FontWhite);	Print(Ctx, TEXT(" "), FontWhite);
+			PrintLargeNumber(Ctx, Total, FontOrange);			Print(Ctx, TEXT(" "), FontWhite);
+			PrintCurve(Ctx, Info.ActiveCurve, Info.RestCurve);
+			PrintBindingNames(Ctx, It, FontWhite);
+			Newline(Ctx);
+		}
+		Newline(Ctx);
+	}
+	// Total
+}
+
+#endif // SHADER_PRINT_MEMORY
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// Debug draw clusters
+#ifdef SHADER_CLUSTERAABB
+
+#include "HairStrandsAABBCommon.ush"
+
+uint ClusterCount;
+uint HairGroupId;
+uint PointCount;
+uint CurveCount;
+uint bDrawAABB;
+
+Buffer<int> GroupAABBBuffer;
+Buffer<int> ClusterAABBBuffer;
+
+[numthreads(GROUP_SIZE, 1, 1)]
+void MainDrawDebugAABBCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	if (DispatchThreadId.x == 0)
+	{
+		const bool bDrawClusterInfo = true;
+		const uint HairGroupHeight = 15;
+
+		FShaderPrintContext Context = InitShaderPrintContext(true, uint2(50, 50 + (HairGroupId == 0 ? 0 : HairGroupHeight) + HairGroupId * HairGroupHeight));
+
+		FFontColor FontValue = FontWhite;
+		FFontColor FontPercent = FontSilver;
+
+		if (DispatchThreadId.x == 0)
+		{
+			if (HairGroupId == 0)
+			{
+				Print(Context, TEXT("Group Clusters Curves Points"), FontYellow);
+				Newline(Context);
+			}
+			Print(Context, HairGroupId, FontOrange, 6, 0);
+			Print(Context, ClusterCount, FontValue, 9, 0);
+			PrintLargeNumber(Context, CurveCount, FontValue);
+			Print(Context, TEXT(" "), FontYellow);
+			PrintLargeNumber(Context, PointCount, FontValue);
+		}
+	}
+
+	if (bDrawAABB)
+	{
+		// Group
+		if (DispatchThreadId.x == 0)
+		{
+			const FHairAABB GroupBound = ReadHairAABB(0, GroupAABBBuffer);
+			AddAABBTWS(GroupBound.Min, GroupBound.Max, float4(1.0f, 0.5f, 0.0f, 1.0f));
+		}
+	
+		// Cluster
+		if (DispatchThreadId.x < ClusterCount)
+		{
+			const FHairAABB ClusterBound = ReadHairAABB(DispatchThreadId, ClusterAABBBuffer, 1);
+			AddAABBTWS(ClusterBound.Min, ClusterBound.Max, float4(0.5f, 1.0f, 0.0f, 0.3f));
+		}
+	}
+}
+
+#endif // SHADER_CLUSTERAABB

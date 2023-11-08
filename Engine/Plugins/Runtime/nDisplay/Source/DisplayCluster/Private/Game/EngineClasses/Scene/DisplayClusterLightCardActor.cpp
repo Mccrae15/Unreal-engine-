@@ -147,12 +147,35 @@ void ADisplayClusterLightCardActor::OnConstruction(const FTransform& Transform)
 
 	UpdatePolygonTexture();
 
-	UMaterialInterface* Material = LightCardComponent->GetMaterial(0);
-
-	if (Material && !Material->IsA<UMaterialInstanceDynamic>())
+	if (UMaterialInterface* Material = LightCardComponent->GetMaterial(0))
 	{
-		UMaterialInstanceDynamic* LightCardMatInstance = UMaterialInstanceDynamic::Create(Material, LightCardComponent, TEXT("LightCardMID"));
-		LightCardComponent->SetMaterial(0, LightCardMatInstance);
+		if (UMaterialInstanceDynamic* MaterialInstanceDynamic = Cast<UMaterialInstanceDynamic>(Material))
+		{
+			// Clear param values and always call UpdateLightCardMaterialInstance(). Otherwise a snapshots restore
+			// may result in a desync between actor settings and MID parameter values.
+
+			// When level snapshots restores an actor the CS can run multiple times (spawn, posteditchangeproperty, etc).
+			// Our mesh component is a default sub object, so the "new" copy of it exists at this point and we set the MID.
+			// But after the actor is finished constructing, snapshots deserializes components reattaching them to the actor.
+			// What looks like is happening is the MID instance is somehow preserved, but parameter values are lost/outdated.
+			// This causes a problem in that we already set the parameter value so the value on the render thread is correct,
+			// but the value we have on the game thread is not. IE, on construction "UseMask" is true initially and the
+			// MID is updated correctly, but after snapshots loads our properties "UseMask" might be "false". Then,
+			// when snapshots deserializes the components the "true" value on the game thread incorrectly becomes "false".
+			// When we attempt to update the MID on tick to the correct value of "false" it thinks it already has
+			// the "false" value so it doesn't update the parameter render thread which is currently "true".
+			
+			// As long as we always call UpdateLightCardMaterialInstance() we can avoid the problem, but clearing the
+			// parameters out is an extra precaution to ensure we have the correct values.
+			
+			MaterialInstanceDynamic->ClearParameterValues();
+		}
+		else
+		{
+			// Initial MID creation
+			UMaterialInstanceDynamic* LightCardMatInstance = UMaterialInstanceDynamic::Create(Material, LightCardComponent, TEXT("LightCardMID"));
+			LightCardComponent->SetMaterial(0, LightCardMatInstance);
+		}
 
 		UpdateLightCardMaterialInstance();
 	}
@@ -183,6 +206,11 @@ void ADisplayClusterLightCardActor::Tick(float DeltaSeconds)
 	{
 		LabelComponent->GetWidgetComponent()->SetTranslucentSortPriority(LightCardComponent->TranslucencySortPriority + 1);
 	}
+}
+
+void ADisplayClusterLightCardActor::Destroyed()
+{
+	RemoveFromRootActor();
 }
 
 #if WITH_EDITOR
@@ -296,8 +324,39 @@ void ADisplayClusterLightCardActor::UpdateLightCardMaterialInstance()
 		LightCardMaterialInstance->SetScalarParameterValue(TEXT("Exposure"), Exposure);
 		LightCardMaterialInstance->SetScalarParameterValue(TEXT("Gain"), Gain);
 		LightCardMaterialInstance->SetScalarParameterValue(TEXT("Opacity"), IsProxy() ? ProxyOpacity : Opacity);
-		LightCardMaterialInstance->SetTextureParameterValue(TEXT("Texture"), Texture);
-		LightCardMaterialInstance->SetTextureParameterValue(TEXT("AlphaTexture"), PolygonMask);
+
+		// Here we assign the textures. These properties can become null but since SetTextureParameterValue(nullptr) is a no-op,
+		// when the textures are null we instead assign the parent material default texture.
+
+		if (Texture)
+		{
+			LightCardMaterialInstance->SetTextureParameterValue(TEXT("Texture"), Texture);
+		}
+		else
+		{
+			UTexture* DefaultTexture = nullptr;
+
+			if (ensure(LightCardMaterialInstance->Parent))
+			{
+				LightCardMaterialInstance->Parent->GetTextureParameterValue(TEXT("Texture"), DefaultTexture);
+				LightCardMaterialInstance->SetTextureParameterValue(TEXT("Texture"), DefaultTexture);
+			}
+		}
+
+		if (PolygonMask)
+		{
+			LightCardMaterialInstance->SetTextureParameterValue(TEXT("AlphaTexture"), PolygonMask);
+		}
+		else
+		{
+			UTexture* DefaultTexture = nullptr;
+
+			if (ensure(LightCardMaterialInstance->Parent))
+			{
+				LightCardMaterialInstance->Parent->GetTextureParameterValue(TEXT("AlphaTexture"), DefaultTexture);
+				LightCardMaterialInstance->SetTextureParameterValue(TEXT("AlphaTexture"), DefaultTexture);
+			}
+		}
 
 		LightCardMaterialInstance->SetScalarParameterValue(TEXT("AlphaGradient"), AlphaGradient.bEnableAlphaGradient);
 		LightCardMaterialInstance->SetScalarParameterValue(TEXT("AlphaGradientStartingAlpha"), AlphaGradient.StartingAlpha);
@@ -589,7 +648,7 @@ void ADisplayClusterLightCardActor::SetIsUVActor(bool bNewUVValue)
 	bIsUVLightCard = bNewUVValue;
 }
 
-void ADisplayClusterLightCardActor::ShowLightCardLabel(bool bValue, float ScaleValue, ADisplayClusterRootActor* InRootActor)
+void ADisplayClusterLightCardActor::ShowLightCardLabel(const FDisplayClusterLabelConfiguration& InLabelConfiguration)
 {
 	if (IsUVActor())
 	{
@@ -601,9 +660,19 @@ void ADisplayClusterLightCardActor::ShowLightCardLabel(bool bValue, float ScaleV
 	LabelComponent->Modify(false);
 	LightCardComponent->Modify(false);
 #endif
-	LabelComponent->SetVisibility(bValue, true);
-	LabelComponent->SetRootActor(InRootActor);
-	LabelComponent->SetWidgetScale(ScaleValue);
+	LabelComponent->SetLabelConfiguration(InLabelConfiguration);
+}
+
+void ADisplayClusterLightCardActor::ShowLightCardLabel(bool bValue, float ScaleValue, ADisplayClusterRootActor* InRootActor)
+{
+	FDisplayClusterLabelConfiguration LabelConfiguration;
+	{
+		LabelConfiguration.bVisible = bValue;
+		LabelConfiguration.Scale = ScaleValue;
+		LabelConfiguration.RootActor = InRootActor;
+		LabelConfiguration.LabelFlags = LabelComponent->GetLabelFlags();
+	}
+	ShowLightCardLabel(MoveTemp(LabelConfiguration));
 }
 
 void ADisplayClusterLightCardActor::SetWeakRootActorOwner(ADisplayClusterRootActor* InRootActor)
@@ -711,6 +780,9 @@ void ADisplayClusterLightCardActor::AddToRootActor(ADisplayClusterRootActor* InR
 		}
 	}
 
+#if WITH_EDITOR
+	StageActorComponent->Modify();
+#endif
 	StageActorComponent->SetRootActor(InRootActor);
 }
 
@@ -719,10 +791,30 @@ void ADisplayClusterLightCardActor::RemoveFromRootActor()
 #if WITH_EDITOR
 	Modify();
 #endif
+
+
+	if (ADisplayClusterRootActor* RootActorOwner = GetRootActorOwner())
+	{
+		// Remove this from the list of LCs for the owning root actor
+		RemoveFromRootActorList(RootActorOwner);
+	}
+	else
+	{
+		// This may be a legacy LC, so we need to check if any root actors in the scene own it and remove it from their lists if so
+		if (const UWorld* World = GetWorld())
+		{
+			for (TActorIterator<ADisplayClusterRootActor> Iter(World); Iter; ++Iter)
+			{
+				RemoveFromRootActorList(*Iter);
+			}
+		}
+	}
+
 	if (StageActorComponent)
 	{
 		StageActorComponent->SetRootActor(nullptr);
 	}
+
 	WeakRootActorOwner.Reset();
 }
 
@@ -968,10 +1060,30 @@ void ADisplayClusterLightCardActor::CleanUpComponentsForExtenders()
 	}
 }
 
+void ADisplayClusterLightCardActor::RemoveFromRootActorList(ADisplayClusterRootActor* RootActor)
+{
+	if (!RootActor)
+	{
+		return;
+	}
+
+	if (UDisplayClusterConfigurationData* CurrentData = RootActor->GetConfigData())
+	{
+		for (auto Iter = CurrentData->StageSettings.Lightcard.ShowOnlyList.Actors.CreateIterator(); Iter; ++Iter)
+		{
+			if (Iter->Get() == this)
+			{
+				Iter.RemoveCurrent();
+			}
+		}
+	}
+}
+
 #if WITH_EDITOR
 void ADisplayClusterLightCardActor::OnLevelActorDeleted(AActor* DeletedActor)
 {
-	if (DeletedActor && StageActorComponent && Cast<ADisplayClusterRootActor>(DeletedActor) == StageActorComponent->GetRootActor().Get())
+	ADisplayClusterRootActor* RootActorOwner = GetRootActorOwner();
+	if (DeletedActor && RootActorOwner && StageActorComponent && Cast<ADisplayClusterRootActor>(DeletedActor) == RootActorOwner)
 	{
 		RemoveFromRootActor();
 	}

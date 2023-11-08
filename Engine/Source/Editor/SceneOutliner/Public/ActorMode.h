@@ -13,7 +13,7 @@ namespace SceneOutliner
 	};
 
 	/** Functor which can be used to get actors from a selection including component parents */
-	struct FActorSelector
+	struct SCENEOUTLINER_API FActorSelector
 	{
 		bool operator()(const TWeakPtr<ISceneOutlinerTreeItem>& Item, AActor*& ActorPtrOut) const;
 	};
@@ -54,7 +54,7 @@ class SCENEOUTLINER_API FActorMode : public ISceneOutlinerMode
 public:
 	struct EItemSortOrder
 	{
-		enum Type { World = 0, Level = 10, Folder = 20, Actor = 30, Unloaded = 40 };
+		enum Type { World = 0, Level = 10, Folder = 20, Actor = 30 };
 	};
 	
 	FActorMode(const FActorModeParams& Params);

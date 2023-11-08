@@ -79,7 +79,8 @@ const FName SkeletalMeshEditorTabs::AdvancedPreviewTab(TEXT("AdvancedPreviewTab"
 const FName SkeletalMeshEditorTabs::MorphTargetsTab("MorphTargetsTab");
 const FName SkeletalMeshEditorTabs::AnimationMappingTab("AnimationMappingWindow");
 const FName SkeletalMeshEditorTabs::ToolboxDetailsTab("ToolBoxDetailsTab");
-
+const FName SkeletalMeshEditorTabs::CurveMetadataTab(TEXT("AnimCurveMetadataEditorTab"));
+const FName SkeletalMeshEditorTabs::FindReplaceTab("FindReplaceTab");
 
 DEFINE_LOG_CATEGORY(LogSkeletalMeshEditor);
 
@@ -144,7 +145,7 @@ bool IsReductionParentBaseLODUseSkeletalMeshBuildWorkflow(USkeletalMesh* Skeleta
 	return false;
 }
 
-bool FSkeletalMeshEditor::OnRequestClose()
+bool FSkeletalMeshEditor::OnRequestClose(EAssetEditorCloseReason InCloseReason)
 {
 	bool bAllowClose = true;
 
@@ -184,7 +185,7 @@ bool FSkeletalMeshEditor::OnRequestClose()
 			}
 		}
 
-		if (bHaveModifiedLOD)
+		if (bHaveModifiedLOD && InCloseReason != EAssetEditorCloseReason::AssetForceDeleted)
 		{
 			// find out the user wants to do with this dirty material
 			EAppReturnType::Type OkCancelReply = FMessageDialog::Open(
@@ -279,6 +280,14 @@ void FSkeletalMeshEditor::InitSkeletalMeshEditor(const EToolkitMode::Type Mode, 
 	// Make sure we get told when the editor mode changes so we can switch to the appropriate tab
 	// if there's a toolbox available.
 	GetEditorModeManager().OnEditorModeIDChanged().AddSP(this, &FSkeletalMeshEditor::OnEditorModeIdChanged);
+
+	// run attached post-init delegates
+	ISkeletalMeshEditorModule& SkeletalMeshEditorModule = FModuleManager::GetModuleChecked<ISkeletalMeshEditorModule>("SkeletalMeshEditor");
+	const TArray<ISkeletalMeshEditorModule::FOnSkeletalMeshEditorInitialized>& PostInitDelegates = SkeletalMeshEditorModule.GetPostEditorInitDelegates();
+	for (const auto& PostInitDelegate : PostInitDelegates)
+	{
+		PostInitDelegate.ExecuteIfBound(SharedThis<ISkeletalMeshEditor>(this));
+	}
 }
 
 FName FSkeletalMeshEditor::GetToolkitFName() const
@@ -346,6 +355,16 @@ void FSkeletalMeshEditor::OnEditorModeIdChanged(const FEditorModeID& ModeChanged
 		return;
 	}
 
+	static const TArray<FTabId> DefaultTabs{
+		SkeletalMeshEditorTabs::DetailsTab,
+		SkeletalMeshEditorTabs::AssetDetailsTab,
+		SkeletalMeshEditorTabs::SkeletonTreeTab,
+		SkeletalMeshEditorTabs::AdvancedPreviewTab,
+		SkeletalMeshEditorTabs::MorphTargetsTab,
+		SkeletalMeshEditorTabs::CurveMetadataTab,
+		SkeletalMeshEditorTabs::FindReplaceTab
+	};
+	
 	if (bIsEnteringMode)
 	{
 		// FIXME: We should get the hosted toolkit from here.
@@ -376,18 +395,17 @@ TSharedRef<SDockTab> FSkeletalMeshEditor::SpawnToolboxTab(const FSpawnTabArgs& A
 	ToolboxWidget = SNew(SSkeletalMeshEditorToolbox, SharedThis<ISkeletalMeshEditor>(this));
 
 	TSharedRef<SDockTab> DockTab = SNew(SDockTab)
-	    .Label(LOCTEXT("ToolboxTab", "Toolbox"))
+		.Label(LOCTEXT("ToolboxTab", "Toolbox"))
 		[
 			SNew(SBox)
-	        .AddMetaData<FTagMetaData>(FTagMetaData(TEXT("ToolboxTab")))
-	        [
+			.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("ToolboxTab")))
+			[
 				ToolboxWidget.ToSharedRef()
 			]
 		];
-
-	ToolboxWidget->SetOwningTab(DockTab);
-	ToolboxWidget->AttachToolkit(HostedToolkit.ToSharedRef());
 	
+	ToolboxWidget->AttachToolkit(HostedToolkit.ToSharedRef());
+
 	return DockTab;
 }
 
@@ -695,7 +713,7 @@ void FSkeletalMeshEditor::InitToolMenuContext(FToolMenuContext& MenuContext)
 
 void FSkeletalMeshEditor::OnToolkitHostingStarted(const TSharedRef<IToolkit>& Toolkit)
 {
-	if (ensure(!HostedToolkit.IsValid()))
+	if (!HostedToolkit.IsValid())
 	{
 		HostedToolkit = Toolkit;
 
@@ -709,7 +727,7 @@ void FSkeletalMeshEditor::OnToolkitHostingStarted(const TSharedRef<IToolkit>& To
 
 void FSkeletalMeshEditor::OnToolkitHostingFinished(const TSharedRef<IToolkit>& Toolkit)
 {
-	if (ensure(Toolkit == HostedToolkit))
+	if (Toolkit == HostedToolkit)
 	{
 		if (ToolboxWidget.IsValid())
 		{
@@ -1305,6 +1323,20 @@ void FSkeletalMeshEditor::HandleSelectionChanged(const TArrayView<TSharedPtr<ISk
 		TArray<UObject*> Objects;
 		Algo::TransformIf(InSelectedItems, Objects, [](const TSharedPtr<ISkeletonTreeItem>& InItem) { return InItem->GetObject() != nullptr; }, [](const TSharedPtr<ISkeletonTreeItem>& InItem) { return InItem->GetObject(); });
 		DetailsView->SetObjects(Objects);
+
+		if (Binding.IsValid())
+		{
+			TArray<FName> BoneSelection;
+			Algo::TransformIf(InSelectedItems, BoneSelection,
+				[](const TSharedPtr<ISkeletonTreeItem>& InItem)
+				{
+					const bool bIsBoneType = InItem->IsOfTypeByName("FSkeletonTreeBoneItem");
+					const bool bIsNotNone = InItem->GetRowItemName() != NAME_None;
+					return bIsBoneType && bIsNotNone;
+				},
+				[](const TSharedPtr<ISkeletonTreeItem>& InItem){ return InItem->GetRowItemName(); });
+			Binding->GetNotifier().Notify(BoneSelection, ESkeletalMeshNotifyType::BonesSelected);
+		}
 	}
 }
 
@@ -1342,6 +1374,10 @@ void FSkeletalMeshEditor::HandleMeshDetailsCreated(const TSharedRef<IDetailsView
 void FSkeletalMeshEditor::HandleViewportCreated(const TSharedRef<IPersonaViewport>& InViewport)
 {
 	Viewport = InViewport;
+	
+	// we need the viewport client to start out focused, or else it won't get ticked until we click inside it.
+	FEditorViewportClient& ViewportClient = InViewport->GetViewportClient(); 
+	ViewportClient.ReceivedFocus(ViewportClient.Viewport);
 }
 
 UObject* FSkeletalMeshEditor::HandleGetAsset()
@@ -1548,6 +1584,108 @@ void FSkeletalMeshEditor::HandleMeshClick(HActor* HitProxy, const FViewportClick
 				FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu)
 				);
 		}
+	}
+}
+
+TSharedPtr<ISkeletalMeshEditorBinding> FSkeletalMeshEditor::GetBinding()
+{
+	if (!Binding)
+	{
+		Binding = MakeShared<FSkeletalMeshEditorBinding>(SharedThis(this));
+	}
+	
+	return Binding;
+}
+
+FSkeletalMeshEditorBinding::FSkeletalMeshEditorBinding(TSharedRef<FSkeletalMeshEditor> InEditor)
+	: Editor(InEditor)
+	, Notifier(InEditor)
+{}
+
+ISkeletalMeshNotifier& FSkeletalMeshEditorBinding::GetNotifier()
+{
+	return Notifier;	
+}
+
+ISkeletalMeshEditorBinding::NameFunction FSkeletalMeshEditorBinding::GetNameFunction()
+{
+	return [this](HHitProxy* InHitProxy) -> TOptional<FName>
+	{
+		if (const HPersonaBoneHitProxy* BoneHitProxy = HitProxyCast<HPersonaBoneHitProxy>(InHitProxy))
+		{
+			return BoneHitProxy->BoneName;
+		}
+
+		static const TOptional<FName> Dummy;
+		return Dummy;
+	};
+}
+
+TArray<FName> FSkeletalMeshEditorBinding::GetSelectedBones() const
+{
+	TArray<FName> Selection;
+
+	if (!Editor.IsValid())
+	{
+		return Selection;
+	}
+
+	const TArray<TSharedPtr<ISkeletonTreeItem>> SelectedItems = Editor.Pin()->GetSkeletonTree()->GetSelectedItems();
+
+	Algo::TransformIf(SelectedItems, Selection,
+	[](const TSharedPtr<ISkeletonTreeItem>& InItem) { return InItem->IsOfTypeByName("FSkeletonTreeBoneItem") && InItem->GetRowItemName() != NAME_None; },
+	[](const TSharedPtr<ISkeletonTreeItem>& InItem) { return InItem->GetRowItemName(); });
+	
+	return Selection;
+}
+
+FSkeletalMeshEditorNotifier::FSkeletalMeshEditorNotifier(TSharedRef<FSkeletalMeshEditor> InEditor)
+	: ISkeletalMeshNotifier()
+	, Editor(InEditor)
+{}
+
+void FSkeletalMeshEditorNotifier::HandleNotification(const TArray<FName>& BoneNames, const ESkeletalMeshNotifyType InNotifyType)
+{
+	if (!Editor.IsValid())
+	{
+		return;
+	}
+
+	TSharedRef<ISkeletonTree> SkeletonTree = Editor.Pin()->GetSkeletonTree();
+
+	switch (InNotifyType)
+	{
+	case ESkeletalMeshNotifyType::BonesAdded:
+		SkeletonTree->DeselectAll();
+		SkeletonTree->Refresh();
+		break;
+	case ESkeletalMeshNotifyType::BonesRemoved:
+		SkeletonTree->DeselectAll();
+		SkeletonTree->Refresh();
+		break;
+	case ESkeletalMeshNotifyType::BonesMoved:
+		break;
+	case ESkeletalMeshNotifyType::BonesSelected:
+		SkeletonTree->DeselectAll();
+		if (!BoneNames.IsEmpty())
+		{
+			for (const FName BoneName: BoneNames)
+			{
+				SkeletonTree->SetSelectedBone(BoneName, ESelectInfo::Direct);
+			}
+		}
+		break;
+	case ESkeletalMeshNotifyType::BonesRenamed:
+		SkeletonTree->DeselectAll();
+		SkeletonTree->Refresh();
+		if (!BoneNames.IsEmpty())
+		{
+			SkeletonTree->SetSelectedBone(BoneNames[0], ESelectInfo::Direct);
+		}
+		break;
+	case ESkeletalMeshNotifyType::HierarchyChanged:
+		SkeletonTree->Refresh();
+		break;
 	}
 }
 

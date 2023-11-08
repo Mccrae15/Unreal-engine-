@@ -6,7 +6,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Stats/Stats.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "Containers/StaticArray.h"
@@ -80,7 +79,7 @@ private:
 		}
 
 		// FRenderResource interface.
-		virtual void InitRHI() override
+		virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 		{
 			check(!GIsRHIInitialized || !GRHISupportsRHIThread);
 			StateRHI = InitializerType::CreateRHI();
@@ -409,3 +408,6 @@ public:
 	}
 };
 
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_3
+#include "CoreMinimal.h"
+#endif

@@ -65,7 +65,7 @@ const customStyles = mergeStyleSets({
 
 });
 
-const homeWidth = 1750;
+const homeWidth = 1400;
 
 /// Projects
 
@@ -119,7 +119,7 @@ const ProjectsPanel: React.FC = observer(() => {
 class HealthHandler {
 
    constructor() {
-      makeObservable(this);      
+      makeObservable(this);
    }
 
    startPolling() {
@@ -223,11 +223,11 @@ const HealthPanel: React.FC = observer(() => {
 
    const items = issues?.map(i => { return { issue: i } });
 
-   const columns = [
+   const columns: IColumn[] = [
       { key: 'health_column1', name: 'Summary', minWidth: 600, maxWidth: 600, isResizable: false },
-      { key: 'health_column3', name: 'Status', minWidth: 420, maxWidth: 420, isResizable: false },
+      { key: 'health_column2', name: 'Workflow', minWidth: 100, maxWidth: 100, isResizable: false},
+      { key: 'health_column3', name: 'Status', minWidth: 320, maxWidth: 320, isResizable: false },
       { key: 'health_column4', name: 'Opened', minWidth: 100, maxWidth: 100, isResizable: false },
-
    ];
 
    const renderItem = (item: HealthItem, index?: number, column?: IColumn) => {
@@ -261,7 +261,7 @@ const HealthPanel: React.FC = observer(() => {
             summary = summary.slice(0, 100) + "...";
          }
 
-         return <Stack horizontal disableShrink={true}>{<IssueStatusIcon issue={issue} />}<Text>{`Issue ${issue.id} - ${summary}`}</Text></Stack>;
+         return <Stack style={{padding: 8}} horizontal disableShrink={true}>{<IssueStatusIcon issue={issue} />}<Text>{`Issue ${issue.id} - ${summary}`}</Text></Stack>;
       }
 
       if (column.name === "Status") {
@@ -270,17 +270,20 @@ const HealthPanel: React.FC = observer(() => {
             status += ` (${ack})`;
          }
 
-         return <Stack horizontalAlign="end" disableShrink={true}><Text>{status}</Text></Stack>;
+         return <Stack style={{padding: 8}} horizontalAlign="end" disableShrink={true}><Text>{status}</Text></Stack>;
       }
 
-      if (column.name === "Ack") {
-         return <Text>{ack}</Text>;
-      }
+      if (column.name === "Workflow") {
+         if (!issue.workflowThreadUrl) {
+            return null;
+         }
 
+         return <a onClick={(e) => e.stopPropagation()} style={{ fontSize: "13px" }} href={issue.workflowThreadUrl} target="_blank" rel="noreferrer"><Stack style={{padding: 8}} horizontalAlign="start" disableShrink={true}>Slack Thread</Stack></a>;
+      }
 
       if (column.name === "Opened") {
          const openSince = `${getShortNiceTime(issue.createdAt)} (${getElapsedString(moment(issue.createdAt), moment.utc(), false).trim()})`;
-         return <Stack style={{ paddingRight: 8 }} horizontalAlign="end"><Text>{openSince}</Text></Stack>;
+         return <Stack style={{ padding: 8 }} horizontalAlign="end"><Text>{openSince}</Text></Stack>;
       }
 
       return <Stack />;
@@ -289,8 +292,7 @@ const HealthPanel: React.FC = observer(() => {
    const classes = mergeStyleSets({
       detailsRow: {
          selectors: {
-            '.ms-DetailsRow-cell': {
-               padding: 8,
+            '.ms-DetailsRow-cell': {               
                overflow: "hidden",
                whiteSpace: "nowrap"
             }
@@ -322,7 +324,7 @@ const HealthPanel: React.FC = observer(() => {
             <Text variant="mediumPlus" styles={{ root: { fontFamily: "Horde Open Sans SemiBold" } }}>Issues</Text>
             <Stack styles={{ root: { paddingLeft: 4, paddingRight: 0, paddingTop: 8, paddingBottom: 4 } }}>
                <div style={{ overflowY: 'auto', overflowX: 'hidden', maxHeight: "380px" }} data-is-scrollable={true}>
-                  {!items && <Stack style={{ paddingBottom: 12 }} horizontal tokens={{ childrenGap: 12 }}><Text variant="medium">Loading issues</Text><Spinner size={SpinnerSize.medium} /></Stack>}
+                  {!items && <Stack style={{ paddingBottom: 12 }} horizontal tokens={{ childrenGap: 12 }}><Text variant="medium">Loading issues</Text><Spinner size={SpinnerSize.small} /></Stack>}
                   {!!items && !items.length && <Stack style={{ paddingBottom: 12 }}><Text variant="medium">No issues found</Text></Stack>}
                   {!!items && !!items.length && <DetailsList
                      compact={true}
@@ -346,7 +348,7 @@ const HealthPanel: React.FC = observer(() => {
 
 /// Jobs ==========================================================================================
 
-const jobsRefreshTime = 3000;
+const jobsRefreshTime = 10000;
 class UserJobsHandler {
 
    constructor() {
@@ -413,7 +415,7 @@ class UserJobsHandler {
       const maxJobs = 100;
 
       try {
-         let filter = "id,streamId,name,change,preflightChange,templateId,templateHash,graphHash,startedByUserInfo,createTime,state,arguments,updateTime,labels,defaultLabel,batches,autoSubmit,autoSubmitChange,preflightDescription";
+         let filter = "id,streamId,name,change,preflightChange,templateId,templateHash,graphHash,startedByUserInfo,createTime,state,arguments,updateTime,labels,defaultLabel,batches,autoSubmit,autoSubmitChange,preflightDescription,abortedByUserInfo";
 
          const query: JobQuery = {
             filter: filter,
@@ -536,9 +538,9 @@ class UserJobsHandler {
 
 }
 
-const jobHandler = new UserJobsHandler();
-
 const JobsPanel: React.FC<{ includeOtherPreflights: boolean }> = observer(({ includeOtherPreflights }) => {
+
+   const [jobHandler, setJobHandler] = useState(new UserJobsHandler())
 
    const { projectStore } = useBackend();
 
@@ -546,7 +548,7 @@ const JobsPanel: React.FC<{ includeOtherPreflights: boolean }> = observer(({ inc
 
       dashboard.startPolling();
 
-      return () => {
+      return () => {         
          dashboard.stopPolling();
          jobHandler.clear();
       };
@@ -584,10 +586,10 @@ const JobsPanel: React.FC<{ includeOtherPreflights: boolean }> = observer(({ inc
 
    let columns: IColumn[] = [
       { key: 'jobview_column1', name: 'Status', minWidth: 16, maxWidth: 16 },
-      { key: 'jobview_column2', name: 'Change', minWidth: 220, maxWidth: 220 },
-      { key: 'jobview_column3', name: 'Submit', minWidth: 140, maxWidth: 140 },
-      { key: 'jobview_column4', name: 'Labels', minWidth: 420, maxWidth: 420 },
-      { key: 'jobview_column5', name: 'Steps', minWidth: 380, maxWidth: 380 },
+      { key: 'jobview_column2', name: 'Change', minWidth: 114, maxWidth: 114 },
+      { key: 'jobview_column3', name: 'Submit', minWidth: 130, maxWidth: 130 },
+      { key: 'jobview_column4', name: 'Labels', minWidth: 320, maxWidth: 320 },
+      { key: 'jobview_column5', name: 'Steps', minWidth: 260, maxWidth: 260 },
       { key: 'jobview_column6', name: 'StartedBy', minWidth: 140, maxWidth: 140 },
       { key: 'jobview_column7', name: 'Time', minWidth: 130, maxWidth: 130 },
       { key: 'jobview_column8', name: 'Dismiss', minWidth: 32, maxWidth: 32 },
@@ -775,16 +777,17 @@ const JobsPanel: React.FC<{ includeOtherPreflights: boolean }> = observer(({ inc
       }
 
       if (column!.name === "Change") {
+
          return <Stack verticalAlign="center" verticalFill={true} tokens={{ childrenGap: 4 }}>
             <Stack horizontalAlign="start" style={{ whiteSpace: "normal" }}><Text style={{ fontSize: 13, fontFamily: "Horde Open Sans SemiBold", whiteSpace: "pre" }}>{item.job.name}</Text></Stack>
             {!!item.stream && <Stack horizontalAlign="start" style={{ whiteSpace: "normal" }}><Text style={{ fontSize: 11, fontFamily: "Horde Open Sans SemiBold", whiteSpace: "pre" }}>{`//${item.stream.project!.name}/${item.stream.name}`}</Text></Stack>}
-            <Stack><ChangeButton job={job} /></Stack>
+            <Stack><ChangeButton job={job} pinned={true} /></Stack>
          </Stack>
 
       }
 
       if (column!.name === "Submit") {
-         
+
          if (!job.autoSubmit) {
             return null;
          }
@@ -823,7 +826,7 @@ const JobsPanel: React.FC<{ includeOtherPreflights: boolean }> = observer(({ inc
          return <Stack horizontalAlign="start" verticalAlign="center" verticalFill={true} tokens={{ childrenGap: 12 }}>
             <Stack horizontal verticalAlign='center' verticalFill={true} tokens={{ childrenGap: 6 }}>
                {!url && <Stack horizontal verticalAlign='center' verticalFill={true} tokens={{ childrenGap: 8 }}>{icon}<Stack><Text style={{ fontSize: 11 }}>{message}</Text></Stack></Stack>}
-               {!!url && <Stack horizontal verticalAlign='center' verticalFill={true} tokens={{ childrenGap: 8 }}>{icon}<Stack style={{textAlign: "left"}}><a href={url} target="_blank" rel="noreferrer" onClick={ev => ev?.stopPropagation()}><Text variant="tiny" style={{whiteSpace: "pre" }}>{message}</Text></a></Stack></Stack>}
+               {!!url && <Stack horizontal verticalAlign='center' verticalFill={true} tokens={{ childrenGap: 8 }}>{icon}<Stack style={{ textAlign: "left" }}><a href={url} target="_blank" rel="noreferrer" onClick={ev => ev?.stopPropagation()}><Text variant="tiny" style={{ whiteSpace: "pre" }}>{message}</Text></a></Stack></Stack>}
             </Stack>
          </Stack>
       }
@@ -1029,24 +1032,23 @@ const JobsPanel: React.FC<{ includeOtherPreflights: boolean }> = observer(({ inc
                   </Stack>
                </Stack>
                <Stack styles={{ root: { paddingLeft: 4, paddingRight: 0, paddingTop: 8, paddingBottom: 4 } }}>
-                  <div style={{ overflowY: 'auto', overflowX: 'hidden', maxHeight: "800px" }} data-is-scrollable={true}>
-                     {!!jobItems.length && <DetailsList
-                        styles={{ root: { paddingLeft: 8, paddingRight: 8, marginBottom: 18 } }}
-                        compact={true}
-                        isHeaderVisible={false}
-                        indentWidth={0}
-                        items={jobItems}
-                        columns={columns}
-                        setKey="set"
-                        selectionMode={SelectionMode.none}
-                        layoutMode={DetailsListLayoutMode.fixedColumns}
-                        onRenderDetailsHeader={onRenderDetailsHeader}
-                        onRenderItemColumn={renderItem}
-                        onRenderRow={renderRow}
-                        onShouldVirtualize={() => true}
-                     />}
-                     {!dashboard.pinnedJobsIds.length && <Stack style={{ paddingBottom: 12 }}><Text variant="medium">No jobs are pinned</Text></Stack>}
-                  </div>
+                  {!!dashboard.pinnedJobsIds.length && !jobItems.length && <Stack><Spinner size={SpinnerSize.large}/></Stack>}
+                  {!!jobItems.length && <DetailsList
+                     styles={{ root: { paddingLeft: 8, paddingRight: 8, marginBottom: 18 } }}
+                     compact={true}
+                     isHeaderVisible={false}
+                     indentWidth={0}
+                     items={jobItems}
+                     columns={columns}
+                     setKey="set"
+                     selectionMode={SelectionMode.none}
+                     layoutMode={DetailsListLayoutMode.fixedColumns}
+                     onRenderDetailsHeader={onRenderDetailsHeader}
+                     onRenderItemColumn={renderItem}
+                     onRenderRow={renderRow}
+                     onShouldVirtualize={() => true}
+                  />}
+                  {!dashboard.pinnedJobsIds.length && <Stack style={{ paddingBottom: 12 }}><Text variant="medium">No jobs are pinned</Text></Stack>}
                </Stack>
             </Stack>
          </Stack>
@@ -1096,9 +1098,9 @@ export const UserHomeView: React.FC = () => {
          <TopNav />
          <Breadcrumbs items={[{ text: 'Home' }]} />
          <Stack horizontal>
-            <div key={`windowsize_streamview_${windowSize.width}_${windowSize.height}`} style={{ width: vw / 2 - 900, flexShrink: 0, backgroundColor: modeColors.background }} />
+            <div key={`windowsize_streamview_${windowSize.width}_${windowSize.height}`} style={{ width: vw / 2 - (1440 / 2), flexShrink: 0, backgroundColor: modeColors.background }} />
             <Stack tokens={{ childrenGap: 0 }} styles={{ root: { backgroundColor: modeColors.background, width: "100%" } }}>
-               <Stack style={{ maxWidth: 1800, paddingTop: 6, marginLeft: 4 }}>
+               <Stack style={{ maxWidth: 1440, paddingTop: 6, marginLeft: 4 }}>
                   <UserHomeViewInner />
                </Stack>
             </Stack>

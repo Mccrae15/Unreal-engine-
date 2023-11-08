@@ -8,7 +8,9 @@
 #include "Iris/Core/IrisLog.h"
 #include "Iris/Core/IrisMemoryTracker.h"
 #include "Iris/Core/IrisProfiler.h"
+#include "Iris/Core/IrisDebugging.h"
 
+#include "Net/Core/NetBitArrayPrinter.h"
 #include "Net/Core/NetHandle/NetHandleManager.h"
 #include "Net/Core/PropertyConditions/PropertyConditionsDelegates.h"
 #include "Net/Core/Trace/NetTrace.h"
@@ -28,6 +30,7 @@
 #include "Iris/ReplicationSystem/ReplicationOperations.h"
 #include "Iris/ReplicationSystem/ReplicationOperationsInternal.h"
 #include "Iris/ReplicationSystem/RepTag.h"
+#include "Iris/ReplicationSystem/Polling/ObjectPoller.h"
 #include "Iris/Serialization/NetSerializationContext.h"
 #include "Iris/Serialization/InternalNetSerializationContext.h"
 #include "Iris/Serialization/NetBitStreamUtil.h"
@@ -62,12 +65,19 @@ static FAutoConsoleVariableRef CVarEnableFilterMappings(
 		TEXT("Whether we honor filter mappings set in ObjectReplicationBridgeConfig. If filter mappings are enabled then objects may also be assigned the default spatial filter even if there aren't any specific mappings. Default is true.")
 		);
 
+static bool bEnableForceNetUpdate = false;
+static FAutoConsoleVariableRef CVarEnableForceNetUpdate(
+	TEXT("net.Iris.EnableForceNetUpdate"),
+	bEnableForceNetUpdate,
+	TEXT("When true the system only allows ForceNetUpdate to skip the poll frequency of objects. When false any MarkDirty object will be immediately polled.")
+);
+
 UObjectReplicationBridge::FCreateNetRefHandleParams UObjectReplicationBridge::DefaultCreateNetRefHandleParams =
 {
-	0U, // bCanReceive
-	0U, // bNeedsPreUpdate
-	0U, // bNeedsWorldLocationUpdate
-	1U, // bAllowDynamicFilter
+	false, // bCanReceive
+	false, // bNeedsPreUpdate
+	false, // bNeedsWorldLocationUpdate
+	true, // bAllowDynamicFilter
 	0.0f, // StaticPriority
 	0U, // PollFramePeriod
 };
@@ -121,28 +131,15 @@ void UObjectReplicationBridge::Initialize(UReplicationSystem* InReplicationSyste
 
 	LoadConfig();
 
-	// Hookup delegate when a property custom conditions is changed
-	OnCustomConditionChangedHandle = UE::Net::Private::FPropertyConditionDelegates::GetOnPropertyCustomConditionChangedDelegate().AddLambda([this](const UObject* Owner, uint16 RepIndex, bool bEnable)
-	{
-		using namespace UE::Net;
-		using namespace UE::Net::Private;
-
-		const FNetRefHandle RefHandle = this->GetReplicatedRefHandle(Owner);
-		if (RefHandle.IsValid())
-		{
-			FReplicationSystemInternal* ReplicationSystemInternal = this->GetReplicationSystem()->GetReplicationSystemInternal();
-			const FNetRefHandleManager& LocalNetRefHandleManager = ReplicationSystemInternal->GetNetRefHandleManager();
-			FReplicationConditionals& Conditionals = ReplicationSystemInternal->GetConditionals();
-
-			Conditionals.SetPropertyCustomCondition(LocalNetRefHandleManager.GetInternalIndex(RefHandle), Owner, RepIndex, bEnable);
-		}
-	});
+	InitConditionalPropertyDelegates();
 }
 
 void UObjectReplicationBridge::Deinitialize()
 {
 	UE::Net::Private::FPropertyConditionDelegates::GetOnPropertyCustomConditionChangedDelegate().Remove(OnCustomConditionChangedHandle);
+	UE::Net::Private::FPropertyConditionDelegates::GetOnPropertyDynamicConditionChangedDelegate().Remove(OnDynamicConditionChangedHandle);
 	OnCustomConditionChangedHandle.Reset();
+	OnDynamicConditionChangedHandle.Reset();
 	PollFrequencyLimiter->Deinit();
 	Super::Deinitialize();
 }
@@ -224,6 +221,8 @@ UE::Net::FNetRefHandle UObjectReplicationBridge::BeginReplication(UObject* Insta
 		return AllocatedRefHandle;
 	}
 
+	IRIS_PROFILER_SCOPE(BeginReplication);
+	
 	// Register fragments
 	EReplicationFragmentTraits Traits = EReplicationFragmentTraits::CanReplicate;
 	Traits |= Params.bCanReceive ? EReplicationFragmentTraits::CanReceive : EReplicationFragmentTraits::None;
@@ -236,6 +235,25 @@ UE::Net::FNetRefHandle UObjectReplicationBridge::BeginReplication(UObject* Insta
 	CallRegisterReplicationFragments(Instance, FragmentRegistrationContext, EFragmentRegistrationFlags::None);
 
 	const FReplicationFragments& RegisteredFragments = FFragmentRegistrationContextPrivateAccessor::GetReplicationFragments(FragmentRegistrationContext);
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	if (RegisteredFragments.IsEmpty() && !FragmentRegistrationContext.IsFragmentlessNetObject())
+	{
+		// Look if the class registered replicated properties
+		TArray<FLifetimeProperty> ReplicatedProps;
+		Instance->GetLifetimeReplicatedProps(ReplicatedProps);
+		
+		if (ReplicatedProps.IsEmpty())
+		{
+			ensureMsgf(false, TEXT("NetObject %s (class %s) registered no fragments. Call SetIsFragmentlessNetObject if this is intentional."), *GetNameSafe(Instance), *GetNameSafe(Instance->GetClass()));
+		}
+		else
+		{
+			ensureMsgf(false, TEXT("NetObject %s (class %s) registered no fragments but GetLifetimeReplicatedProps returned %d variables. Make sure to call CreateAndRegisterFragmentsForObject in RegisterReplicationFragments"),
+				*GetNameSafe(Instance), *GetNameSafe(Instance->GetClass()), ReplicatedProps.Num());
+		}
+	}
+#endif
 
 	// We currently identify protocols by local archetype or CDO pointer and verified the protocol id received from server and the hash of the default state
 	const UObject* ArchetypeOrCDOUsedAsKey = Instance->GetArchetype();
@@ -265,6 +283,8 @@ UE::Net::FNetRefHandle UObjectReplicationBridge::BeginReplication(UObject* Insta
 		
 	if (ReplicationProtocol)
 	{
+		IRIS_PROFILER_PROTOCOL_NAME(ReplicationProtocol->DebugName->Name);		
+
 		// Create NetHandle and bind instance
 		FNetHandle NetHandle = FNetHandleManager::GetOrCreateNetHandle(Instance);
 		FNetRefHandle RefHandle = InternalCreateNetObject(AllocatedRefHandle, NetHandle, ReplicationProtocol);
@@ -287,25 +307,33 @@ UE::Net::FNetRefHandle UObjectReplicationBridge::BeginReplication(UObject* Insta
 			ObjectsWithObjectReferences.SetBitValue(InternalReplicationIndex, EnumHasAnyFlags(InstanceProtocol->InstanceTraits, EReplicationInstanceProtocolTraits::HasObjectReference));
 
 			// Set poll frame period
-			uint8 PollFramePeriod = Params.PollFramePeriod;
-			FindPollInfo(Instance->GetClass(), PollFramePeriod);
-			SetPollFramePeriod(InternalReplicationIndex, PollFramePeriod);
+			float PollFrequency = Params.PollFrequency;
+			FindOrCachePollFrequency(Instance->GetClass(), PollFrequency);
+			
+			uint8 PollFramePeriod = ConvertPollFrequencyIntoFrames(Params.PollFrequency);
+			PollFrequencyLimiter->SetPollFramePeriod(InternalReplicationIndex, PollFramePeriod);
 
 			UE_LOG_OBJECTREPLICATIONBRIDGE(Verbose, TEXT("BeginReplication Created %s with ProtocolId:0x%" UINT64_x_FMT " for Object named %s"), *RefHandle.ToString(), ReplicationProtocol->ProtocolIdentifier, *Instance->GetName());
 
 			{
 				FWorldLocations& WorldLocations = ReplicationSystem->GetReplicationSystemInternal()->GetWorldLocations();
-				WorldLocations.SetHasWorldLocation(InternalReplicationIndex, Params.bNeedsWorldLocationUpdate);
+
+				if (Params.bNeedsWorldLocationUpdate)
+				{
+					WorldLocations.InitObjectInfoCache(InternalReplicationIndex);
+				}
 			}
 
 			// Set prioritizer
-			if (Params.StaticPriority > 0.0f)
+			const bool bRequireForceEnabled = Params.StaticPriority > 0.0f;
+			const FNetObjectPrioritizerHandle PrioritizerHandle = GetPrioritizer(Instance->GetClass(), bRequireForceEnabled);
+			// Set static priority if valid unless we have a force enabled prioritizer.
+			if (Params.StaticPriority > 0.0f && PrioritizerHandle == InvalidNetObjectPrioritizerHandle)
 			{
 				ReplicationSystem->SetStaticPriority(RefHandle, Params.StaticPriority);
 			}
 			else
 			{
-				const FNetObjectPrioritizerHandle PrioritizerHandle = GetPrioritizer(Instance->GetClass());
 				if (PrioritizerHandle != InvalidNetObjectPrioritizerHandle)
 				{
 					ReplicationSystem->SetPrioritizer(RefHandle, PrioritizerHandle);
@@ -321,6 +349,7 @@ UE::Net::FNetRefHandle UObjectReplicationBridge::BeginReplication(UObject* Insta
 				const FNetObjectFilterHandle FilterHandle = GetDynamicFilter(Instance->GetClass());
 				if (FilterHandle != InvalidNetObjectFilterHandle)
 				{
+					UE_LOG_OBJECTREPLICATIONBRIDGE(Verbose, TEXT("BeginReplication Filter: %s will be used for Object: %s "), *(ReplicationSystem->GetFilterName(FilterHandle).ToString()), *Instance->GetName());
 					ReplicationSystem->SetFilter(RefHandle, FilterHandle);
 				}
 			}
@@ -331,7 +360,7 @@ UE::Net::FNetRefHandle UObjectReplicationBridge::BeginReplication(UObject* Insta
 			}
 
 			// Release instance protocol from the uniquePtr as it is now successfully bound to the handle
-			InstanceProtocol.Release();
+			(void)InstanceProtocol.Release();
 
 			return RefHandle;
 		}
@@ -595,7 +624,7 @@ FReplicationBridgeCreateNetRefHandleResult UObjectReplicationBridge::CreateNetRe
 			RegisterRemoteInstance(Handle, InstancePtr, ReplicationProtocol, InstanceProtocol.Get(), Header.Get(), Context.ConnectionId);
 
 			// Release instance protocol from the uniquePtr as it is now successfully bound to the handle
-			InstanceProtocol.Release();
+			(void)InstanceProtocol.Release();
 
 			// Now it is safe to issue OnActorChannelOpen callback
 			ensureAlwaysMsgf(OnInstantiatedFromRemote(InstancePtr, Header.Get(), Context.ConnectionId), TEXT("Failed to invoke OnInstantiatedFromRemote for Instance named %s %s"), *InstancePtr->GetName(), *Handle.ToString());
@@ -612,16 +641,12 @@ void UObjectReplicationBridge::PostApplyInitialState(FNetRefHandle Handle)
 
 void UObjectReplicationBridge::PreSendUpdateSingleHandle(FNetRefHandle RefHandle)
 {
-	PreUpdateAndPollImpl(RefHandle);
+	ForcePollObject(RefHandle);
 }
 
 void UObjectReplicationBridge::PreSendUpdate()
 {
-	IRIS_PROFILER_SCOPE(UObjectReplicationBridge_OnPreSendUpdate);
-
-	// Invalid/default handle means update all objects
-	FNetRefHandle RefHandle;
-	PreUpdateAndPollImpl(RefHandle);
+	PreUpdateAndPoll();
 }
 
 
@@ -678,269 +703,182 @@ void UObjectReplicationBridge::SetInstancePreUpdateFunction(FInstancePreUpdateFu
 	PreUpdateInstanceFunction = InPreUpdateFunction;
 }
 
-void UObjectReplicationBridge::SetInstanceGetWorldLocationFunction(FInstanceGetWorldLocationFunction InGetWorldLocationFunction)
+void UObjectReplicationBridge::SetInstanceGetWorldObjectInfoFunction(FInstanceGetWorldObjectInfoFunction InGetWorldObjectInfoFunction)
 {
-	GetInstanceWorldLocationFunction = InGetWorldLocationFunction;
+	GetInstanceWorldObjectInfoFunction = InGetWorldObjectInfoFunction;
 }
 
-void UObjectReplicationBridge::PreUpdateAndPollImpl(FNetRefHandle Handle)
+void UObjectReplicationBridge::ForcePollObject(FNetRefHandle Handle)
+{
+	using namespace UE::Net::Private;
+
+	if (Handle.IsValid())
+	{
+		IRIS_PROFILER_SCOPE(UObjectReplicationBridge_ForcePollObject);
+
+		FObjectPoller::FInitParams PollerInitParams;
+		PollerInitParams.ObjectReplicationBridge = this;
+		PollerInitParams.ReplicationSystemInternal = GetReplicationSystem()->GetReplicationSystemInternal();
+		FObjectPoller Poller(PollerInitParams);
+
+		Poller.PollSingleObject(Handle);
+	}
+}
+
+void UObjectReplicationBridge::PreUpdateAndPoll()
 {
 	using namespace UE::Net;
 	using namespace UE::Net::Private;
 
+	IRIS_PROFILER_SCOPE(UObjectReplicationBridge_PreUpdateAndPoll);
+
+	// Update every relevant objects from here
 	FReplicationSystemInternal* ReplicationSystemInternal = GetReplicationSystem()->GetReplicationSystemInternal();
 	const FNetRefHandleManager& LocalNetRefHandleManager = ReplicationSystemInternal->GetNetRefHandleManager();
-	const TArray<UObject*>& ReplicatedInstances = LocalNetRefHandleManager.GetReplicatedInstances();
-	const bool bIsUsingPushModel = IsIrisPushModelEnabled();
-	FNetBitArrayView DirtyObjects = ReplicationSystemInternal->GetDirtyNetObjectTracker().GetDirtyNetObjects();
+	const FNetBitArrayView RelevantObjects = LocalNetRefHandleManager.GetRelevantObjectsInternalIndices();
+	const FNetBitArrayView WantToBeDormantObjects = MakeNetBitArrayView(LocalNetRefHandleManager.GetWantToBeDormantInternalIndices());
 
-	struct FPreUpdateAndPollStats
+	// Filter the set of objects considered for pre-update and polling
+	FNetBitArrayView ObjectsConsideredForPolling = LocalNetRefHandleManager.GetPolledObjectsInternalIndices();
+	ObjectsConsideredForPolling.Reset();
+
+	// We always want to consider objects marked as dirty and their subobjects
+	const FNetBitArrayView AccumulatedDirtyObjects = ReplicationSystemInternal->GetDirtyNetObjectTracker().GetAccumulatedDirtyNetObjects();
+
+	if (bUseFrequencyBasedPolling)
 	{
-		uint32 PreUpdatedObjectCount = 0;
-		uint32 PolledObjectCount = 0;
-		uint32 PolledReferencesObjectCount = 0;
-	};
-
-	FPreUpdateAndPollStats Stats;
-
-	auto UpdateAndPollFunction = [&ReplicatedInstances, this, &LocalNetRefHandleManager, &DirtyObjects, &Stats](uint32 InternalObjectIndex)
-	{
-		const FNetRefHandleManager::FReplicatedObjectData& ObjectData = LocalNetRefHandleManager.GetReplicatedObjectDataNoCheck(InternalObjectIndex);
-		if (ObjectData.InstanceProtocol)
+		if (bEnableForceNetUpdate)
 		{
-			// Call per-instance PreUpdate function
-			if (PreUpdateInstanceFunction && EnumHasAnyFlags(ObjectData.InstanceProtocol->InstanceTraits, EReplicationInstanceProtocolTraits::NeedsPreSendUpdate))
-			{
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-				IRIS_PROFILER_SCOPE(PreReplicationUpdate);
-				IRIS_PROFILER_SCOPE_TEXT(ObjectData.Protocol->DebugName->Name);
-#endif
-				(*PreUpdateInstanceFunction)(ObjectData.RefHandle, ReplicatedInstances[InternalObjectIndex], this);
-				++Stats.PreUpdatedObjectCount;
-			}
-
-			// Poll properties if the instance protocol requires it
-			if (EnumHasAnyFlags(ObjectData.InstanceProtocol->InstanceTraits, EReplicationInstanceProtocolTraits::NeedsPoll))
-			{
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-				IRIS_PROFILER_SCOPE(PreReplicationUpdate);
-				IRIS_PROFILER_SCOPE_TEXT(ObjectData.Protocol->DebugName->Name);
-#endif
-
-				const bool bIsGCAffectedObject = GarbageCollectionAffectedObjects.GetBit(InternalObjectIndex);
-				GarbageCollectionAffectedObjects.ClearBit(InternalObjectIndex);
-
-				// If this object has been around for a garbage collect and it has object references we must make sure that we update all cached object references
-				EReplicationFragmentPollFlags PollOptions = EReplicationFragmentPollFlags::PollAllState;
-				PollOptions |= bIsGCAffectedObject ? EReplicationFragmentPollFlags::ForceRefreshCachedObjectReferencesAfterGC : EReplicationFragmentPollFlags::None;
-
-				const bool bWasMarkedDirty = FReplicationInstanceOperations::PollAndRefreshCachedPropertyData(ObjectData.InstanceProtocol, PollOptions);
-				if (bWasMarkedDirty)
-				{
-					DirtyObjects.SetBit(InternalObjectIndex);
-				}
-				++Stats.PolledObjectCount;
-			}
-		}
-	};
-
-	const FNetBitArray& PrevScopableObjects = LocalNetRefHandleManager.GetPrevFrameScopableInternalIndices();
-
-	auto PushModelUpdateAndPollFunction = [&ReplicatedInstances, this, &LocalNetRefHandleManager, &DirtyObjects, &PrevScopableObjects, &Stats](uint32 InternalObjectIndex)
-	{
-		const FNetRefHandleManager::FReplicatedObjectData& ObjectData = LocalNetRefHandleManager.GetReplicatedObjectDataNoCheck(InternalObjectIndex);
-		if (const FReplicationInstanceProtocol* InstanceProtocol = ObjectData.InstanceProtocol)
-		{
-			const EReplicationInstanceProtocolTraits InstanceTraits = InstanceProtocol->InstanceTraits;
-			// Call per-instance PreUpdate function
-			if (PreUpdateInstanceFunction && EnumHasAnyFlags(InstanceTraits, EReplicationInstanceProtocolTraits::NeedsPreSendUpdate))
-			{
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-				IRIS_PROFILER_SCOPE(PreReplicationUpdate);
-				IRIS_PROFILER_SCOPE_TEXT(ObjectData.Protocol->DebugName->Name);
-#endif
-				(*PreUpdateInstanceFunction)(ObjectData.RefHandle, ReplicatedInstances[InternalObjectIndex], this);
-				++Stats.PreUpdatedObjectCount;
-			}
-
-			const bool bIsDirtyObject = DirtyObjects.GetBit(InternalObjectIndex);
-			const bool bIsNewInScope = !PrevScopableObjects.GetBit(InternalObjectIndex);
-			const bool bIsGCAffectedObject = GarbageCollectionAffectedObjects.GetBit(InternalObjectIndex);			
-			GarbageCollectionAffectedObjects.ClearBit(InternalObjectIndex);
-
-			// Early out if the instance does not require polling
-			if (!EnumHasAnyFlags(InstanceTraits, EReplicationInstanceProtocolTraits::NeedsPoll))
-			{
-				return;
-			}
-
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-			IRIS_PROFILER_SCOPE(PollPushBased);
-			IRIS_PROFILER_SCOPE_TEXT(ObjectData.Protocol->DebugName->Name);
-#endif
-
-			// If the object is fully push model we only need to poll it if it's dirty, unless it's a new object or was garbage collected.
-			bool bWasMarkedDirty = false;
-			if (EnumHasAnyFlags(InstanceTraits, EReplicationInstanceProtocolTraits::HasFullPushBasedDirtiness))
-			{
-				if (bIsDirtyObject | bIsNewInScope)
-				{
-					// We need to do a poll if object is marked as dirty
-					EReplicationFragmentPollFlags PollOptions = EReplicationFragmentPollFlags::PollAllState;
-					PollOptions |= bIsGCAffectedObject ? EReplicationFragmentPollFlags::ForceRefreshCachedObjectReferencesAfterGC : EReplicationFragmentPollFlags::None;
-					bWasMarkedDirty = FReplicationInstanceOperations::PollAndRefreshCachedPropertyData(InstanceProtocol, EReplicationFragmentTraits::None, PollOptions);
-					++Stats.PolledObjectCount;
-				}
-				else if (bIsGCAffectedObject)
-				{
-					// If this object might have been affected by GC, only refresh cached references
-					const EReplicationFragmentTraits RequiredTraits = EReplicationFragmentTraits::HasPushBasedDirtiness;
-					bWasMarkedDirty = FReplicationInstanceOperations::PollAndRefreshCachedObjectReferences(InstanceProtocol, RequiredTraits);
-					++Stats.PolledReferencesObjectCount;
-				}
-			}
-			else
-			{
-				// If the object has pushed based fragments, and not is marked dirty and object is affected by GC we need to make sure that we refresh cached references for all push based fragments
-				const bool bIsPushBasedObject = EnumHasAnyFlags(InstanceTraits, EReplicationInstanceProtocolTraits::HasPartialPushBasedDirtiness | EReplicationInstanceProtocolTraits::HasFullPushBasedDirtiness);
-				const bool bHasObjectReferences = EnumHasAnyFlags(InstanceTraits, EReplicationInstanceProtocolTraits::HasObjectReference);
-				const bool bNeedsRefreshOfCachedObjectReferences = ((!(bIsNewInScope | bIsDirtyObject)) & bIsGCAffectedObject & bIsPushBasedObject & bHasObjectReferences);
-				if (bNeedsRefreshOfCachedObjectReferences)
-				{
-					// Only states which has push based dirtiness need to be updated as the other states will be polled in full anyway.
-					const EReplicationFragmentTraits RequiredTraits = EReplicationFragmentTraits::HasPushBasedDirtiness;
-					bWasMarkedDirty = FReplicationInstanceOperations::PollAndRefreshCachedObjectReferences(InstanceProtocol, RequiredTraits);
-					++Stats.PolledReferencesObjectCount;
-				}
-
-				// If this object has been around for a garbage collect and it has object references we must make sure that we update all cached object references 
-				EReplicationFragmentPollFlags PollOptions = EReplicationFragmentPollFlags::PollAllState;
-				PollOptions |= bIsGCAffectedObject ? EReplicationFragmentPollFlags::ForceRefreshCachedObjectReferencesAfterGC : EReplicationFragmentPollFlags::None;
-
-				// If the object is not new or dirty at this point we only need to poll non-push based fragments as we know that pushed based states have not been modified
-				const EReplicationFragmentTraits ExcludeTraits = (bIsDirtyObject | bIsNewInScope) ? EReplicationFragmentTraits::None : EReplicationFragmentTraits::HasPushBasedDirtiness;
-				bWasMarkedDirty |= FReplicationInstanceOperations::PollAndRefreshCachedPropertyData(InstanceProtocol, ExcludeTraits, PollOptions);
-				++Stats.PolledObjectCount;
-			}
-
-			if (bWasMarkedDirty)
-			{
-				DirtyObjects.SetBit(InternalObjectIndex);
-			}
-		}
-	};
-
-	// Update all objects
-	if (!Handle.IsValid())
-	{
-		const FNetBitArray& ScopableObjects = LocalNetRefHandleManager.GetScopableInternalIndices();
-		const FNetBitArray& WantToBeDormantObjects = LocalNetRefHandleManager.GetWantToBeDormantInternalIndices();
-
-		// Filter the set of objects considered for pre-update and polling
-		// We always want to consider objects marked as dirty and their subobjects
-		FNetBitArray ObjectsConsideredForPolling(LocalNetRefHandleManager.GetMaxActiveObjectCount());
-		if (bUseFrequencyBasedPolling)
-		{
-			FNetBitArrayView FrequencyBasedObjectsToPollView = MakeNetBitArrayView(ObjectsConsideredForPolling);
-			PollFrequencyLimiter->Update(MakeNetBitArrayView(ScopableObjects), DirtyObjects, FrequencyBasedObjectsToPollView);
+			const FNetBitArrayView ForceNetUpdateObjects = ReplicationSystemInternal->GetDirtyNetObjectTracker().GetForceNetUpdateObjects();
+			PollFrequencyLimiter->Update(RelevantObjects, ForceNetUpdateObjects, ObjectsConsideredForPolling);
 		}
 		else
 		{
-			ObjectsConsideredForPolling.Copy(ScopableObjects);
+			PollFrequencyLimiter->Update(RelevantObjects, AccumulatedDirtyObjects, ObjectsConsideredForPolling);
 		}
+	}
+	else
+	{
+		ObjectsConsideredForPolling.Copy(RelevantObjects);
+	}
 
-		// Mask off objects pending dormancy as we do not want to poll/pre-update them unless they are marked for flush or are dirty
-		if (bUseDormancyToFilterPolling)
+	// Mask off objects pending dormancy as we do not want to poll/pre-update them unless they are marked for flush or are dirty
+	if (bUseDormancyToFilterPolling)
+	{
+		IRIS_PROFILER_SCOPE(PreUpdateAndPoll_Dormancy);
+
+		// Mask off objects pending dormancy that are not dirty
+		ObjectsConsideredForPolling.CombineMultiple(FNetBitArrayView::AndNotOp, WantToBeDormantObjects, FNetBitArrayView::AndNotOp, AccumulatedDirtyObjects);
+
+		FNetBitArrayView ForceNetUpdateObjects = ReplicationSystemInternal->GetDirtyNetObjectTracker().GetForceNetUpdateObjects();
+
+		// Force poll objects that have requested to flush dormancy
+		for (FNetRefHandle HandlePendingFlush : MakeArrayView(DormantHandlesPendingFlush))
 		{
-			IRIS_PROFILER_SCOPE(UObjectReplicationBridge_PreUpdateAndPollImpl_Dormancy);
-
-			// Mask off objects pending dormancy, masked off dirty objects are restored later
-			ObjectsConsideredForPolling.Combine(WantToBeDormantObjects, FNetBitArrayView::AndNotOp);
-
-			// Add objects that have requested to flush dormancy
-			for (FNetRefHandle HandlePendingFlush : MakeArrayView(DormantHandlesPendingFlush))
+			if (const uint32 InternalObjectIndex = LocalNetRefHandleManager.GetInternalIndex(HandlePendingFlush))
 			{
-				if (const uint32 InternalObjectIndex = LocalNetRefHandleManager.GetInternalIndex(HandlePendingFlush))
+				if (!ObjectsConsideredForPolling.IsBitSet(InternalObjectIndex))
 				{
-					if (ObjectsConsideredForPolling.GetBit(InternalObjectIndex))
-					{
-						continue;
-					}
-
 					ObjectsConsideredForPolling.SetBit(InternalObjectIndex);
-					for (const FInternalNetRefIndex SubObjectIndex : LocalNetRefHandleManager.GetSubObjects(InternalObjectIndex))
-					{
-						ObjectsConsideredForPolling.SetBit(SubObjectIndex);
-					}
+					ForceNetUpdateObjects.SetBit(InternalObjectIndex);
 				}
 			}
 		}
-		DormantHandlesPendingFlush.Reset();
 
-		/**
-		 * Make sure to propagate polling for owners to subobjects and vice versa. If an actor is not due to update due to
-		 * polling frequency it can still be dirty or a dormant object marked for flush and polled for that reason. In order to make sure all recent state updates
-		 * are replicated atomically this polling propagation is required.
-		 */
+		UE_NET_TRACE_FRAME_STATSCOUNTER(ReplicationSystem->GetId(), FlushDormancyObjectCount, DormantHandlesPendingFlush.Num(), ENetTraceVerbosity::Trace);
+	}
+	DormantHandlesPendingFlush.Reset();
+
+	/**
+	* Make sure to propagate polling for owners to subobjects and vice versa. If an actor is not due to update due to
+	* polling frequency it can still be force net update or a dormant object marked for flush and polled for that reason. In order to make sure all recent state updates
+	* are replicated atomically this polling propagation is required.
+	*/
+	{
+		IRIS_PROFILER_SCOPE(PreUpdateAndPoll_PropagatePolling);
+
+		auto PropagateSubObjectNetForceUpdateToOwner = [&LocalNetRefHandleManager, &ObjectsConsideredForPolling](uint32 InternalObjectIndex)
 		{
-			IRIS_PROFILER_SCOPE(UObjectReplicationBridge_PreUpdateAndPollImpl_PropagateDirtyness);
+			const FNetRefHandleManager::FReplicatedObjectData& ObjectData = LocalNetRefHandleManager.GetReplicatedObjectDataNoCheck(InternalObjectIndex);
+			ObjectsConsideredForPolling.SetBit(ObjectData.SubObjectRootIndex);
+		};
 
-			auto PropagateSubObjectDirtinessToOwner = [&LocalNetRefHandleManager, &ObjectsConsideredForPolling](uint32 InternalObjectIndex)
+		auto PropagateOwnerNetForceUpdateToSubObject = [&LocalNetRefHandleManager, &ObjectsConsideredForPolling](uint32 InternalObjectIndex)
+		{
+			const FNetRefHandleManager::FReplicatedObjectData& ObjectData = LocalNetRefHandleManager.GetReplicatedObjectDataNoCheck(InternalObjectIndex);
+			for (const FInternalNetRefIndex SubObjectInternalIndex : LocalNetRefHandleManager.GetSubObjects(InternalObjectIndex))
 			{
-				const FNetRefHandleManager::FReplicatedObjectData& ObjectData = LocalNetRefHandleManager.GetReplicatedObjectDataNoCheck(InternalObjectIndex);
-				ObjectsConsideredForPolling.SetBit(ObjectData.SubObjectRootIndex);
-			};
+				ObjectsConsideredForPolling.SetBit(SubObjectInternalIndex);
+			}
+		};
 
-			auto PropagateOwnerDirtinessToSubObjectsAndDependentObjects = [&LocalNetRefHandleManager, &ObjectsConsideredForPolling](uint32 InternalObjectIndex)
-			{
-				const FNetRefHandleManager::FReplicatedObjectData& ObjectData = LocalNetRefHandleManager.GetReplicatedObjectDataNoCheck(InternalObjectIndex);
+		// Update subobjects' owner first and owners' subobjects second. It's the only way to properly mark all groups of objects in two passes.
+		const FNetBitArrayView SubObjects = MakeNetBitArrayView(LocalNetRefHandleManager.GetSubObjectInternalIndices());
 
-				// Mark owner as well as we might have masked it out in the dormancy pass
-				ObjectsConsideredForPolling.SetBit(InternalObjectIndex);
-
-				for (const FInternalNetRefIndex SubObjectInternalIndex : LocalNetRefHandleManager.GetSubObjects(InternalObjectIndex))
-				{
-					ObjectsConsideredForPolling.SetBit(SubObjectInternalIndex);
-				}
-			};
-
-			// Update subobjects' owner first and owners' subobjects second. It's the only way to properly mark all groups of objects in two passes.
-			const FNetBitArrayView SubObjects = MakeNetBitArrayView(LocalNetRefHandleManager.GetSubObjectInternalIndices());
-			FNetBitArrayView::ForAllSetBits(DirtyObjects, SubObjects, FNetBitArray::AndOp, PropagateSubObjectDirtinessToOwner);
-			FNetBitArrayView::ForAllSetBits(DirtyObjects, SubObjects, FNetBitArray::AndNotOp, PropagateOwnerDirtinessToSubObjectsAndDependentObjects);
+		if (bEnableForceNetUpdate)
+		{
+			// Make a list of objects which forced an update and are also relevant
+			FNetBitArray ForceNetUpdateAndRelevantObjects(RelevantObjects.GetNumBits(), FNetBitArray::NoResetNoValidate);
+			FNetBitArrayView ForceNetUpdateAndRelevantObjectsView = MakeNetBitArrayView(ForceNetUpdateAndRelevantObjects, FNetBitArrayView::NoResetNoValidate);
 			
-			// Patch in dependent objects, not subtle as this point
-			{
-				IRIS_PROFILER_SCOPE(UObjectReplicationBridge_PreUpdateAndPollImpl Patch in depedent objects);
+			const FNetBitArrayView ForceNetUpdateObjects = ReplicationSystemInternal->GetDirtyNetObjectTracker().GetForceNetUpdateObjects();
+			ForceNetUpdateAndRelevantObjectsView.Set(RelevantObjects, FNetBitArray::AndOp, ForceNetUpdateObjects);
 
-				FNetBitArray TempObjectsConsideredForPolling(ObjectsConsideredForPolling);
-				FNetBitArray::ForAllSetBits(TempObjectsConsideredForPolling, NetRefHandleManager->GetObjectsWithDependentObjectsInternalIndices(), FNetBitArray::AndOp,
-					[&LocalNetRefHandleManager, &ObjectsConsideredForPolling](FInternalNetRefIndex ObjectIndex) 
-					{
-						LocalNetRefHandleManager.ForAllDependentObjectsRecursive(ObjectIndex, [&ObjectsConsideredForPolling, ObjectIndex](FInternalNetRefIndex DependentObjectIndex) { ObjectsConsideredForPolling.SetBit(DependentObjectIndex); });
-					}
-				);
-			}
-		}
-
-		if (IsIrisPushModelEnabled())
-		{
-			ObjectsConsideredForPolling.ForAllSetBits(PushModelUpdateAndPollFunction);
+			FNetBitArrayView::ForAllSetBits(ForceNetUpdateAndRelevantObjectsView, SubObjects, FNetBitArray::AndOp, PropagateSubObjectNetForceUpdateToOwner);
+			FNetBitArrayView::ForAllSetBits(ForceNetUpdateAndRelevantObjectsView, SubObjects, FNetBitArray::AndNotOp, PropagateOwnerNetForceUpdateToSubObject);
 		}
 		else
 		{
-			ObjectsConsideredForPolling.ForAllSetBits(UpdateAndPollFunction);
+			// Make the list of objects which are dirty and are also relevant
+			FNetBitArray DirtyAndRelevantObjects(RelevantObjects.GetNumBits(), FNetBitArray::NoResetNoValidate);
+			FNetBitArrayView DirtyAndRelevantObjectsView = MakeNetBitArrayView(DirtyAndRelevantObjects, FNetBitArrayView::NoResetNoValidate);
+
+			{
+				FDirtyObjectsAccessor DirtyObjectsAccessor(ReplicationSystemInternal->GetDirtyNetObjectTracker());
+				FNetBitArrayView DirtyObjectsThisFrame = DirtyObjectsAccessor.GetDirtyNetObjects();
+
+				DirtyAndRelevantObjectsView.Set(RelevantObjects, FNetBitArray::AndOp, DirtyObjectsThisFrame);
+			}
+
+			FNetBitArrayView::ForAllSetBits(DirtyAndRelevantObjectsView, SubObjects, FNetBitArray::AndOp, PropagateSubObjectNetForceUpdateToOwner);
+			FNetBitArrayView::ForAllSetBits(DirtyAndRelevantObjectsView, SubObjects, FNetBitArray::AndNotOp, PropagateOwnerNetForceUpdateToSubObject);
+		}
+			
+		// If an object with dependents is about to be polled, force it's dependents to poll at the same time.
+		{
+			IRIS_PROFILER_SCOPE(PreUpdateAndPoll_PatchDependentObjects);
+
+			FNetBitArray TempObjectsConsideredForPolling;
+			TempObjectsConsideredForPolling.InitAndCopy(ObjectsConsideredForPolling);
+			FNetBitArray::ForAllSetBits(TempObjectsConsideredForPolling, NetRefHandleManager->GetObjectsWithDependentObjectsInternalIndices(), FNetBitArray::AndOp,
+				[&LocalNetRefHandleManager, &ObjectsConsideredForPolling](FInternalNetRefIndex ObjectIndex) 
+				{
+					LocalNetRefHandleManager.ForAllDependentObjectsRecursive(ObjectIndex, [&ObjectsConsideredForPolling, ObjectIndex](FInternalNetRefIndex DependentObjectIndex)
+					{ 
+						ObjectsConsideredForPolling.SetBit(DependentObjectIndex); 
+					});
+				}
+			);
 		}
 	}
-	else if (uint32 InternalObjectIndex = LocalNetRefHandleManager.GetInternalIndex(Handle))
+	
 	{
-		UpdateAndPollFunction(InternalObjectIndex);
-	}
+		IRIS_PROFILER_SCOPE(PreUpdateAndPoll_Poll);
 
-	// Report stats
-	UE_NET_TRACE_FRAME_STATSCOUNTER(ReplicationSystem->GetId(), ReplicationSystem.PreUpdatedObjectCount, Stats.PreUpdatedObjectCount, ENetTraceVerbosity::Trace);
-	UE_NET_TRACE_FRAME_STATSCOUNTER(ReplicationSystem->GetId(), ReplicationSystem.PolledObjectCount, Stats.PolledObjectCount, ENetTraceVerbosity::Trace);
-	UE_NET_TRACE_FRAME_STATSCOUNTER(ReplicationSystem->GetId(), ReplicationSystem.PolledReferencesObjectCount, Stats.PolledReferencesObjectCount, ENetTraceVerbosity::Trace);
+		FObjectPoller::FInitParams PollerInitParams;
+		PollerInitParams.ObjectReplicationBridge = this;
+		PollerInitParams.ReplicationSystemInternal = GetReplicationSystem()->GetReplicationSystemInternal();
+
+		FObjectPoller Poller(PollerInitParams);
+		Poller.PollObjects(ObjectsConsideredForPolling);
+	
+		FObjectPoller::FPreUpdateAndPollStats Stats = Poller.GetPollStats();
+
+		// Report stats
+		UE_NET_TRACE_FRAME_STATSCOUNTER(ReplicationSystem->GetId(), ReplicationSystem.PreUpdatedObjectCount, Stats.PreUpdatedObjectCount, ENetTraceVerbosity::Trace);
+		UE_NET_TRACE_FRAME_STATSCOUNTER(ReplicationSystem->GetId(), ReplicationSystem.PolledObjectCount, Stats.PolledObjectCount, ENetTraceVerbosity::Trace);
+		UE_NET_TRACE_FRAME_STATSCOUNTER(ReplicationSystem->GetId(), ReplicationSystem.PolledReferencesObjectCount, Stats.PolledReferencesObjectCount, ENetTraceVerbosity::Trace);
+	}
 }
 
 void UObjectReplicationBridge::UpdateInstancesWorldLocation()
@@ -948,7 +886,7 @@ void UObjectReplicationBridge::UpdateInstancesWorldLocation()
 	using namespace UE::Net;
 	using namespace UE::Net::Private;
 
-	if (!GetInstanceWorldLocationFunction)
+	if (!GetInstanceWorldObjectInfoFunction)
 	{
 		return;
 	}
@@ -958,26 +896,24 @@ void UObjectReplicationBridge::UpdateInstancesWorldLocation()
 	FWorldLocations& WorldLocations = ReplicationSystemInternal->GetWorldLocations();
 	const TArray<UObject*>& ReplicatedInstances = LocalNetRefHandleManager.GetReplicatedInstances();
 
-
 	// Retrieve the world location for instances that supports it. Only dirty objects are considered.
 	auto UpdateInstanceWorldLocation = [this, &ReplicatedInstances, &LocalNetRefHandleManager, &WorldLocations](uint32 InternalObjectIndex)
 	{
 		const FNetRefHandleManager::FReplicatedObjectData& ObjectData = LocalNetRefHandleManager.GetReplicatedObjectDataNoCheck(InternalObjectIndex);
 		if (ObjectData.InstanceProtocol && EnumHasAnyFlags(ObjectData.InstanceProtocol->InstanceTraits, EReplicationInstanceProtocolTraits::NeedsWorldLocationUpdate))
 		{
-			FVector WorldLocation = (*GetInstanceWorldLocationFunction)(ObjectData.RefHandle, ReplicatedInstances[InternalObjectIndex]);
-			WorldLocations.SetWorldLocation(InternalObjectIndex, WorldLocation);
+			FWorldLocations::FObjectInfo CachedObjectInfo;
+			
+			GetInstanceWorldObjectInfoFunction(ObjectData.RefHandle, ReplicatedInstances[InternalObjectIndex], CachedObjectInfo.WorldLocation, CachedObjectInfo.CullDistance);
+			WorldLocations.SetObjectInfo(InternalObjectIndex, CachedObjectInfo);
 		}
 	};
 
-	const FNetBitArrayView DirtyObjects = ReplicationSystemInternal->GetDirtyNetObjectTracker().GetDirtyNetObjects();
-	DirtyObjects.ForAllSetBits(UpdateInstanceWorldLocation);
+	// $IRIS TODO: This code assumes users are calling MarkDirty whenever an actor changes location. Need to add a location tracker to ensure if that is not the case.
+	FDirtyObjectsAccessor DirtyObjectsAccessor(ReplicationSystemInternal->GetDirtyNetObjectTracker());
+	const FNetBitArrayView DirtyObjectsThisFrame = DirtyObjectsAccessor.GetDirtyNetObjects();
+	DirtyObjectsThisFrame.ForAllSetBits(UpdateInstanceWorldLocation);
 
-}
-
-void UObjectReplicationBridge::SetPollFramePeriod(UE::Net::Private::FInternalNetRefIndex InternalReplicationIndex, uint8 PollFramePeriod)
-{
-	PollFrequencyLimiter->SetPollFramePeriod(InternalReplicationIndex, PollFramePeriod);
 }
 
 void UObjectReplicationBridge::SetPollWithObject(FNetRefHandle ObjectToPollWithHandle, FNetRefHandle ObjectHandle)
@@ -1053,7 +989,7 @@ void UObjectReplicationBridge::SetNetPushIdOnInstance(UE::Net::FReplicationInsta
 #endif
 }
 
-bool UObjectReplicationBridge::FindPollInfo(const UClass* Class, uint8& OutPollPeriod)
+bool UObjectReplicationBridge::GetClassPollFrequency(const UClass* Class, float& OutPollFrequency) const
 {
 	if (!(bAllowPollPeriodOverrides & bHasPollOverrides))
 	{
@@ -1063,7 +999,67 @@ bool UObjectReplicationBridge::FindPollInfo(const UClass* Class, uint8& OutPollP
 	const FName ClassName = Class->GetFName();
 	if (const FPollInfo* PollInfo = ClassesWithPollPeriodOverride.Find(ClassName))
 	{
-		OutPollPeriod = PollInfo->PollFramePeriod;
+		OutPollFrequency = PollInfo->PollFrequency;
+		return true;
+	}
+
+	if (ClassesWithoutPollPeriodOverride.Find(ClassName))
+	{
+		return false;
+	}
+
+	bool bFoundOverride = false;
+	const UClass* SuperclassWithPollInfo = nullptr;
+	FPollInfo SuperclassPollInfo;
+	for (const auto& ClassNameAndPollInfo : ClassHierarchyPollPeriodOverrides)
+	{
+		const UClass* ClassWithPollInfo = ClassNameAndPollInfo.Value.Class.Get();
+		if (ClassWithPollInfo == nullptr)
+		{
+			continue;
+		}
+
+		if (Class->IsChildOf(ClassWithPollInfo))
+		{
+			// If we've already found a superclass with a config, see which one is closer in the hierarchy.
+			if (SuperclassWithPollInfo != nullptr)
+			{
+				if (ClassWithPollInfo->IsChildOf(SuperclassWithPollInfo))
+				{
+					bFoundOverride = true;
+					SuperclassWithPollInfo = ClassWithPollInfo;
+					SuperclassPollInfo = ClassNameAndPollInfo.Value;
+				}
+			}
+			else
+			{
+				bFoundOverride = true;
+				SuperclassWithPollInfo = ClassWithPollInfo;
+				SuperclassPollInfo = ClassNameAndPollInfo.Value;
+			}
+		}
+	}
+
+	if (bFoundOverride)
+	{
+		OutPollFrequency = SuperclassPollInfo.PollFrequency;
+		return true;
+	}
+
+	return false;
+}
+
+bool UObjectReplicationBridge::FindOrCachePollFrequency(const UClass* Class, float& OutPollFrequency)
+{
+	if (!(bAllowPollPeriodOverrides & bHasPollOverrides))
+	{
+		return false;
+	}
+
+	const FName ClassName = Class->GetFName();
+	if (const FPollInfo* PollInfo = ClassesWithPollPeriodOverride.Find(ClassName))
+	{
+		OutPollFrequency = PollInfo->PollFrequency;
 		return true;
 	}
 
@@ -1131,7 +1127,7 @@ bool UObjectReplicationBridge::FindPollInfo(const UClass* Class, uint8& OutPollP
 			ClassesWithPollPeriodOverride.FindOrAdd(ClassToAddName, SuperclassPollInfo);
 		}
 
-		OutPollPeriod = SuperclassPollInfo.PollFramePeriod;
+		OutPollFrequency = SuperclassPollInfo.PollFrequency;
 		return true;
 	}
 	else
@@ -1239,7 +1235,7 @@ UE::Net::FNetObjectFilterHandle UObjectReplicationBridge::GetDynamicFilter(const
 	return FilterHandle;
 }
 
-UE::Net::FNetObjectPrioritizerHandle UObjectReplicationBridge::GetPrioritizer(const UClass* Class)
+UE::Net::FNetObjectPrioritizerHandle UObjectReplicationBridge::GetPrioritizer(const UClass* Class, bool bRequireForceEnabled)
 {
 	using namespace UE::Net;
 
@@ -1248,29 +1244,24 @@ UE::Net::FNetObjectPrioritizerHandle UObjectReplicationBridge::GetPrioritizer(co
 		const FName ClassName = GetConfigClassPathName(Class);
 
 		// Try exact match first.
-		if (FNetObjectPrioritizerHandle* PrioritizerHandlePtr = ClassesWithPrioritizer.Find(ClassName))
+		if (const FClassPrioritizerInfo* PrioritizerInfo = ClassesWithPrioritizer.Find(ClassName))
 		{
-			return *PrioritizerHandlePtr;
+			const bool bUsePrioritizer = !bRequireForceEnabled || PrioritizerInfo->bForceEnable;
+			return bUsePrioritizer ? PrioritizerInfo->PrioritizerHandle : InvalidNetObjectPrioritizerHandle;
 		}
 
-		/**
-		 * Try to find superclass. If we find it and the classes are considered equal we copy the filter setting.
-		 * If it's not equal we check whether it can be spatialized or not and use the result of that.
-		 * In all cases we add the result to the mapping for faster lookup next time.
-		 */
+		// Try to find superclass with prioritizer config. If we find it we copy the config and add the result to the mapping for faster lookup next time.
 		for (const UClass* SuperClass = Class->GetSuperClass(); SuperClass != nullptr; SuperClass = SuperClass->GetSuperClass())
 		{
 			const FName SuperClassName = GetConfigClassPathName(SuperClass);
 
-			// Try to get exact match first.
-			if (FNetObjectPrioritizerHandle* PrioritizerHandlePtr = ClassesWithPrioritizer.Find(SuperClassName))
+			if (const FClassPrioritizerInfo* PrioritizerInfo = ClassesWithPrioritizer.Find(SuperClassName))
 			{
-				// Assume this class should use the same prioritizer
-				{
-					const FNetObjectPrioritizerHandle PrioritizerHandle = *PrioritizerHandlePtr;
-					ClassesWithPrioritizer.Add(ClassName, PrioritizerHandle);
-					return PrioritizerHandle;
-				}
+				// Copy info to this class
+				ClassesWithPrioritizer.Add(ClassName, *PrioritizerInfo);
+
+				const bool bUsePrioritizer = !bRequireForceEnabled || PrioritizerInfo->bForceEnable;
+				return bUsePrioritizer ? PrioritizerInfo->PrioritizerHandle : InvalidNetObjectPrioritizerHandle;
 			}
 		}
 	}
@@ -1313,7 +1304,7 @@ void UObjectReplicationBridge::LoadConfig()
 		bHasPollOverrides = true;
 
 		FPollInfo PollInfo;
-		PollInfo.PollFramePeriod = FPlatformMath::Min(PollOverride.PollFramePeriod, 255U) & 255U;
+		PollInfo.PollFrequency = FPlatformMath::Max(PollOverride.PollFrequency, 0.0f);
 		if (PollOverride.bIncludeSubclasses)
 		{
 			bHasDirtyClassesInPollPeriodOverrides = true;
@@ -1345,8 +1336,10 @@ void UObjectReplicationBridge::LoadConfig()
 	{
 		for (const FObjectReplicationBridgePrioritizerConfig& PrioritizerConfig : BridgeConfig->GetPrioritizerConfigs())
 		{
-			const UE::Net::FNetObjectPrioritizerHandle PrioritizerHandle = ReplicationSystem->GetPrioritizerHandle(PrioritizerConfig.PrioritizerName);
-			ClassesWithPrioritizer.Add(PrioritizerConfig.ClassName, PrioritizerHandle);
+			FClassPrioritizerInfo PrioInfo;
+			PrioInfo.PrioritizerHandle = ReplicationSystem->GetPrioritizerHandle(PrioritizerConfig.PrioritizerName);
+			PrioInfo.bForceEnable = PrioritizerConfig.bForceEnableOnAllInstances;
+			ClassesWithPrioritizer.Add(PrioritizerConfig.ClassName, PrioInfo);
 		}
 	}
 
@@ -1401,4 +1394,88 @@ void UObjectReplicationBridge::SetShouldSubclassUseSameFilterFunction(TFunction<
 	}
 
 	ShouldSubclassUseSameFilterFunction = InShouldSubclassUseSameFilterFunction;
+}
+
+void UObjectReplicationBridge::InitConditionalPropertyDelegates()
+{
+	using namespace UE::Net;
+	using namespace UE::Net::Private;
+
+	// Hookup delegate for when a property custom condition is changed
+	OnCustomConditionChangedHandle = UE::Net::Private::FPropertyConditionDelegates::GetOnPropertyCustomConditionChangedDelegate().AddLambda([this](const UObject* Owner, uint16 RepIndex, bool bEnable)
+	{
+		const FNetRefHandle RefHandle = this->GetReplicatedRefHandle(Owner);
+		if (RefHandle.IsValid())
+		{
+			FReplicationSystemInternal* ReplicationSystemInternal = this->GetReplicationSystem()->GetReplicationSystemInternal();
+			const FNetRefHandleManager& LocalNetRefHandleManager = ReplicationSystemInternal->GetNetRefHandleManager();
+			FReplicationConditionals& Conditionals = ReplicationSystemInternal->GetConditionals();
+
+			Conditionals.SetPropertyCustomCondition(LocalNetRefHandleManager.GetInternalIndex(RefHandle), Owner, RepIndex, bEnable);
+		}
+	});
+
+	// Hookup delegate for when a property dynamic condition is changed
+	OnDynamicConditionChangedHandle = UE::Net::Private::FPropertyConditionDelegates::GetOnPropertyDynamicConditionChangedDelegate().AddLambda([this](const UObject* Owner, uint16 RepIndex, ELifetimeCondition Condition)
+	{
+		const FNetRefHandle RefHandle = this->GetReplicatedRefHandle(Owner);
+		if (RefHandle.IsValid())
+		{
+			FReplicationSystemInternal* ReplicationSystemInternal = this->GetReplicationSystem()->GetReplicationSystemInternal();
+			const FNetRefHandleManager& LocalNetRefHandleManager = ReplicationSystemInternal->GetNetRefHandleManager();
+			FReplicationConditionals& Conditionals = ReplicationSystemInternal->GetConditionals();
+
+			Conditionals.SetPropertyDynamicCondition(LocalNetRefHandleManager.GetInternalIndex(RefHandle), Owner, RepIndex, Condition);
+		}
+	});
+}
+
+uint8 UObjectReplicationBridge::ConvertPollFrequencyIntoFrames(float PollFrequency) const
+{
+	if (PollFrequency <= 0.0f)
+	{
+		return 0U;
+	}
+
+	const uint32 FramesBetweenUpdatesForObject = static_cast<uint32>(MaxTickRate / FPlatformMath::Max(0.001f, PollFrequency));
+	return static_cast<uint8>(FMath::Clamp<uint32>(FramesBetweenUpdatesForObject, 0U, UE::Net::Private::FObjectPollFrequencyLimiter::GetMaxPollingFrames()));
+}
+
+float UObjectReplicationBridge::GetPollFrequencyOfRootObject(const UObject* ReplicatedObject) const
+{
+	float PollFrequency = 0.0f;
+	GetClassPollFrequency(ReplicatedObject->GetClass(), PollFrequency);
+
+	return PollFrequency;
+}
+
+void UObjectReplicationBridge::ReinitPollFrequency()
+{
+	using namespace UE::Net;
+	using namespace UE::Net::Private;
+
+	FReplicationSystemInternal* ReplicationSystemInternal = GetReplicationSystem()->GetReplicationSystemInternal();
+	const FNetRefHandleManager& LocalNetRefHandleManager = ReplicationSystemInternal->GetNetRefHandleManager();
+
+	auto UpdatePollFrequency = [this, &LocalNetRefHandleManager](uint32 RootObjectIndex)
+	{
+		if (UObject* RootObjectInstance = LocalNetRefHandleManager.GetReplicatedObjectInstance(RootObjectIndex))
+		{
+			const float PollFrequency = GetPollFrequencyOfRootObject(RootObjectInstance);
+			const uint8 PollFramePeriod = ConvertPollFrequencyIntoFrames(PollFrequency);
+
+			PollFrequencyLimiter->SetPollFramePeriod(RootObjectIndex, PollFramePeriod);
+
+			// Set the subobjects of the object
+			for (const FInternalNetRefIndex SubObjectIndex : LocalNetRefHandleManager.GetSubObjects(RootObjectIndex))
+			{
+				PollFrequencyLimiter->SetPollFramePeriod(SubObjectIndex, PollFramePeriod);
+			}
+		}
+	};
+
+	const FNetBitArrayView RootObjects = LocalNetRefHandleManager.GetScopableInternalIndicesView();
+	const FNetBitArrayView SubObjects = MakeNetBitArrayView(LocalNetRefHandleManager.GetSubObjectInternalIndices());
+
+	FNetBitArrayView::ForAllSetBits(RootObjects, SubObjects, FNetBitArrayView::AndNotOp, UpdatePollFrequency);
 }

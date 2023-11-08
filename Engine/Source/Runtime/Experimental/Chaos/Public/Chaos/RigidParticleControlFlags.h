@@ -17,7 +17,7 @@ namespace Chaos
 	class FRigidParticleControlFlags
 	{
 	public:
-		using FStorage = uint8;
+		using FStorage = uint16;
 
 		FRigidParticleControlFlags()
 			: Bits(0)
@@ -29,6 +29,17 @@ namespace Chaos
 
 		bool GetGravityEnabled() const { return Flags.bGravityEnabled; }
 		FRigidParticleControlFlags& SetGravityEnabled(const bool bEnabled) { Flags.bGravityEnabled = bEnabled; return *this; }
+
+		bool GetUpdateKinematicFromSimulation() const { return Flags.bUpdateKinematicFromSimulation; }
+		FRigidParticleControlFlags& SetUpdateKinematicFromSimulation(const bool bUpdateKinematicFromSimulation) { Flags.bUpdateKinematicFromSimulation = bUpdateKinematicFromSimulation; return *this; }
+
+		int32 GetGravityGroupIndex() const { return Flags.GravityGroupIndex; }
+		FRigidParticleControlFlags& SetGravityGroupIndex(const int32 GravityGroupIndex) 
+		{ 
+			ensure(GravityGroupIndex < 8);
+			Flags.GravityGroupIndex = static_cast<FStorage>(GravityGroupIndex);
+			return *this; 
+		}
 
 		bool GetCCDEnabled() const { return Flags.bCCDEnabled; }
 		FRigidParticleControlFlags& SetCCDEnabled(const bool bEnabled) { Flags.bCCDEnabled = bEnabled; return *this; }
@@ -60,6 +71,8 @@ namespace Chaos
 			FStorage bOneWayInteractionEnabled : 1;
 			FStorage bMaxDepenetrationVelocityOverrideEnabled : 1;
 			FStorage bInertiaConditioningEnabled : 1;
+			FStorage GravityGroupIndex : 3;
+			FStorage bUpdateKinematicFromSimulation : 1;
 			// Add new properties above this line
 			// Change FStorage typedef if we exceed the max bits
 		};

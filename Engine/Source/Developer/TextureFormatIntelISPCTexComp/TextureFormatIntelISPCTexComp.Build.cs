@@ -9,16 +9,14 @@ public class TextureFormatIntelISPCTexComp : ModuleRules
 		PrivateIncludePathModuleNames.AddRange(new string[]
 		{
 			"DerivedDataCache",
-			"Engine",
-			"TargetPlatform",
 			"TextureCompressor",
+			"TextureFormat",
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
 			"Core",
 			"ImageCore",
-			"ImageWrapper",
 			"TextureBuild",
 		});
 

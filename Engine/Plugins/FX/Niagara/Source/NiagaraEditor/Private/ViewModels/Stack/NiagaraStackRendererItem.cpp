@@ -12,7 +12,7 @@
 #include "NiagaraNodeAssignment.h"
 #include "NiagaraNodeOutput.h"
 #include "NiagaraConstants.h"
-#include "NiagaraScriptGraphViewModel.h"
+#include "ViewModels/NiagaraScriptGraphViewModel.h"
 #include "NiagaraGraph.h"
 #include "ScopedTransaction.h"
 #include "NiagaraScriptSource.h"
@@ -254,6 +254,11 @@ UNiagaraRendererProperties* UNiagaraStackRendererItem::GetRendererProperties()
 	return RendererProperties.Get();
 }
 
+const UNiagaraRendererProperties* UNiagaraStackRendererItem::GetRendererProperties() const
+{
+	return RendererProperties.Get();
+}
+
 FText UNiagaraStackRendererItem::GetDisplayName() const
 {
 	if(DisplayNameCache.IsSet() == false)
@@ -388,6 +393,13 @@ FText UNiagaraStackRendererItem::GetInheritanceMessage() const
 	return LOCTEXT("RendererItemInheritanceMessage", "This renderer is inherited from a parent emitter.  Inherited\nrenderers can only be deleted while editing the parent emitter.");
 }
 
+FNiagaraHierarchyIdentity UNiagaraStackRendererItem::DetermineSummaryIdentity() const
+{
+	FNiagaraHierarchyIdentity Identity;
+	Identity.Guids.Add(GetRendererProperties()->GetMergeId());
+	return Identity;
+}
+
 bool UNiagaraStackRendererItem::HasBaseRenderer() const
 {
 	if (HasBaseEmitter())
@@ -489,6 +501,7 @@ void UNiagaraStackRendererItem::RefreshChildrenInternal(const TArray<UNiagaraSta
 		RendererObject = NewObject<UNiagaraStackObject>(this);
 		bool bIsTopLevelObject = true;
 		RendererObject->Initialize(CreateDefaultChildRequiredData(), RendererProperties.Get(), bIsTopLevelObject, GetStackEditorDataKey());
+		RendererObject->SetObjectGuid(GetRendererProperties()->GetMergeId());
 	}
 
 	NewChildren.Add(RendererObject);
@@ -508,7 +521,36 @@ void UNiagaraStackRendererItem::ProcessRendererIssues(const TArray<FNiagaraRende
 		TArray<FStackIssueFix> Fixes;
 		if (Item.IsFixable())
 		{
-			Fixes.Add(FStackIssueFix(Item.GetFixDescriptionText(), FStackIssueFixDelegate::CreateLambda([Item]() { Item.TryFix(); })));
+			Fixes.Emplace(
+				Item.GetFixDescriptionText(),
+				FStackIssueFixDelegate::CreateLambda(
+					[WeakStackItem=TWeakObjectPtr<UNiagaraStackRendererItem>(this), Item]()
+					{
+						if ( Item.IsFixable() )
+						{
+							const FScopedTransaction ScopedTransaction(LOCTEXT("RendererItemFixTransaction", "Apply renderer fix"));
+
+							UNiagaraStackRendererItem* StackItem = WeakStackItem.Get();
+							UNiagaraRendererProperties* RendererPropertiesLocal = StackItem ? StackItem->GetRendererProperties() : nullptr;
+							if (RendererPropertiesLocal)
+							{
+								RendererPropertiesLocal->Modify();
+							}
+
+							Item.TryFix();
+
+							if (RendererPropertiesLocal)
+							{
+								RendererPropertiesLocal->PostEditChange();
+
+								TArray<UObject*> ChangedObjects;
+								ChangedObjects.Add(RendererPropertiesLocal);
+								StackItem->OnDataObjectModified().Broadcast(ChangedObjects, ENiagaraDataObjectChange::Changed);
+							}
+						}
+					}
+				)
+			);
 		}
 		FStackIssue TargetSupportError(Severity, Item.GetSummaryText(), Item.GetDescriptionText(), GetStackEditorDataKey(), Item.IsDismissable(), Fixes);
 		OutIssues.Add(TargetSupportError);

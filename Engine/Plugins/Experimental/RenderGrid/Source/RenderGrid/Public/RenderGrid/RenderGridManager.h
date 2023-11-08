@@ -85,10 +85,15 @@ namespace UE::RenderGrid
 		/** The number of characters for a generated ID. For example, a value of 4 results in IDs: "0001", "0002", etc. */
 		static constexpr int32 GeneratedIdCharacterLength = 4;
 
-
 	public:
 		/** Batch render the given render grid job(s) of the given render grid. */
 		URenderGridQueue* CreateBatchRenderQueue(URenderGrid* Grid, const TArray<URenderGridJob*>& Jobs);
+
+		/** Batch render the given render grid job(s) of the given render grid. Only renders a single frame of each job. */
+		URenderGridQueue* CreateBatchRenderQueueSingleFrame(URenderGrid* Grid, const TArray<URenderGridJob*>& Jobs, const int32 Frame);
+
+		/** Batch render the given render grid job(s) of the given render grid. Only renders a single frame of each job. The frame number it renders is based on the given FramePosition (0.0 is the first frame, 1.0 is the last frame, 0.5 is the frame in the middle, etc). */
+		URenderGridQueue* CreateBatchRenderQueueSingleFramePosition(URenderGrid* Grid, const TArray<URenderGridJob*>& Jobs, const double FramePosition);
 
 
 		/** Render a preview frame (or multiple if no frame number is specified) of the given render grid job. */
@@ -108,14 +113,13 @@ namespace UE::RenderGrid
 
 
 		/** Makes sure that all the data from the current props source is stored in all of the render grid jobs of this render grid. */
-		void UpdateRenderGridJobsPropValues(URenderGrid* Grid);
+		void UpdateStoredRenderGridJobsPropValues(URenderGrid* Grid);
 
 		/** Applies the props of the given render grid job, also requires the render grid to be given as well (to know what props the render grid job is using). */
 		FRenderGridManagerPreviousPropValues ApplyJobPropValues(const URenderGrid* Grid, const URenderGridJob* Job);
 
 		/** Restores the props that were previously applied, to the values that they were before. */
 		void RestorePropValues(const FRenderGridManagerPreviousPropValues& PreviousPropValues);
-
 
 	private:
 		/** The map that stores the start frame (of a render) of each rendered render grid job. */

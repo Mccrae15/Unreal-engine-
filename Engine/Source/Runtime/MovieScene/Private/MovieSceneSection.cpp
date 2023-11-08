@@ -315,8 +315,17 @@ void UMovieSceneSection::BuildDefaultComponents(UMovieSceneEntitySystemLinker* E
 
 	const bool bHasEasing = (Easing.GetEaseInDuration() > 0 || Easing.GetEaseOutDuration() > 0);
 
-	const bool bShouldRestoreState = (EvalOptions.CompletionMode == EMovieSceneCompletionMode::RestoreState) ||
-		( EvalOptions.CompletionMode == EMovieSceneCompletionMode::ProjectDefault && Params.Sequence.DefaultCompletionMode == EMovieSceneCompletionMode::RestoreState);
+	// Should restore state if we're not forcing keep state and any one of the following:
+	// - We're forcing restore state
+	// - This section is set to restore state
+	// - This section is set to the default, and the default is restore state
+	const bool bForceKeepState     = EnumHasAnyFlags(Params.Sequence.SubSectionFlags, EMovieSceneSubSectionFlags::OverrideKeepState);
+	const bool bShouldRestoreState = bForceKeepState == false &&
+		(
+			EnumHasAnyFlags(Params.Sequence.SubSectionFlags, EMovieSceneSubSectionFlags::OverrideRestoreState) ||
+			(EvalOptions.CompletionMode == EMovieSceneCompletionMode::RestoreState) ||
+			(EvalOptions.CompletionMode == EMovieSceneCompletionMode::ProjectDefault && Params.Sequence.DefaultCompletionMode == EMovieSceneCompletionMode::RestoreState)
+		);
 
 	TComponentTypeID<FEasingComponentData> EasingComponentID = Components->Easing;
 	FComponentTypeID RestoreStateTag = Components->Tags.RestoreState;
@@ -342,17 +351,19 @@ void UMovieSceneSection::BuildDefaultComponents(UMovieSceneEntitySystemLinker* E
 
 	OutImportedEntity->AddBuilder(
 		FEntityBuilder()
-		.AddConditional(Components->BlenderType,                BlenderSystemClass, BlenderSystemClass.Get() != nullptr)
-		.AddConditional(Components->Easing,                     FEasingComponentData{ decltype(FEasingComponentData::Section)(this) }, bHasEasing)
-		.AddConditional(Components->HierarchicalBias,           Params.Sequence.HierarchicalBias, Params.Sequence.HierarchicalBias != 0)
-		.AddConditional(Components->Interrogation.InputKey,     Params.InterrogationKey, Params.InterrogationKey.IsValid())
-		.AddConditional(Components->Interrogation.Instance,     Params.InterrogationInstance, Params.InterrogationInstance.IsValid())
-		.AddConditional(Components->EvalTime,                   Params.EntityMetaData ? Params.EntityMetaData->ForcedTime : 0, bHasForcedTime)
-		.AddTagConditional(Components->Tags.RestoreState,       bShouldRestoreState)
-		.AddTagConditional(Components->Tags.FixedTime,          bHasForcedTime)
-		.AddTagConditional(Components->Tags.SectionPreRoll,     bHasSectionPreRoll)
-		.AddTagConditional(Components->Tags.PreRoll,            bHasSequencePreRoll || bHasSectionPreRoll)
-		.AddTagConditional(BlendTag,                            BlendTag != FComponentTypeID::Invalid())
+		.AddConditional(Components->BlenderType,                    BlenderSystemClass, BlenderSystemClass.Get() != nullptr)
+		.AddConditional(Components->Easing,                         FEasingComponentData{ decltype(FEasingComponentData::Section)(this) }, bHasEasing)
+		.AddConditional(Components->HierarchicalBias,               Params.Sequence.HierarchicalBias, Params.Sequence.HierarchicalBias != 0)
+		.AddConditional(Components->Interrogation.InputKey,         Params.InterrogationKey, Params.InterrogationKey.IsValid())
+		.AddConditional(Components->Interrogation.Instance,         Params.InterrogationInstance, Params.InterrogationInstance.IsValid())
+		.AddConditional(Components->EvalTime,                       Params.EntityMetaData ? Params.EntityMetaData->ForcedTime : 0, bHasForcedTime)
+		.AddTagConditional(Components->Tags.RestoreState,           bShouldRestoreState)
+		.AddTagConditional(Components->Tags.IgnoreHierarchicalBias, EnumHasAnyFlags(Params.Sequence.SubSectionFlags, EMovieSceneSubSectionFlags::IgnoreHierarchicalBias))
+		.AddTagConditional(Components->Tags.BlendHierarchicalBias,  EnumHasAnyFlags(Params.Sequence.SubSectionFlags, EMovieSceneSubSectionFlags::BlendHierarchicalBias))
+		.AddTagConditional(Components->Tags.FixedTime,              bHasForcedTime)
+		.AddTagConditional(Components->Tags.SectionPreRoll,         bHasSectionPreRoll)
+		.AddTagConditional(Components->Tags.PreRoll,                bHasSequencePreRoll || bHasSectionPreRoll)
+		.AddTagConditional(BlendTag,                                BlendTag != FComponentTypeID::Invalid())
 	);
 
 	if (BlendTag == Components->Tags.AdditiveFromBaseBlend)
@@ -699,11 +710,11 @@ float UMovieSceneSection::EvaluateEasing(FFrameTime InTime) const
 		const int32  EaseFrame    = (InTime.FrameNumber - GetInclusiveStartFrame()).Value;
 		const double EaseInInterp = (double(EaseFrame) + InTime.GetSubFrame()) / Easing.GetEaseInDuration();
 
-		if (EaseInInterp <= 0.0)
+		if (EaseInInterp < 0.0)
 		{
 			EaseInValue = 0.0;
 		}
-		else if (EaseInInterp >= 1.0)
+		else if (EaseInInterp > 1.0)
 		{
 			EaseInValue = 1.0;
 		}
@@ -719,11 +730,11 @@ float UMovieSceneSection::EvaluateEasing(FFrameTime InTime) const
 		const int32  EaseFrame     = (InTime.FrameNumber - GetExclusiveEndFrame() + Easing.GetEaseOutDuration()).Value;
 		const double EaseOutInterp = (double(EaseFrame) + InTime.GetSubFrame()) / Easing.GetEaseOutDuration();
 
-		if (EaseOutInterp <= 0.0)
+		if (EaseOutInterp < 0.0)
 		{
 			EaseOutValue = 1.0;
 		}
-		else if (EaseOutInterp >= 1.0)
+		else if (EaseOutInterp > 1.0)
 		{
 			EaseOutValue = 0.0;
 		}
@@ -752,7 +763,7 @@ void UMovieSceneSection::EvaluateEasing(FFrameTime InTime, TOptional<float>& Out
 		}
 	}
 
-	if (HasEndFrame() && Easing.EaseOut.GetObject() && (GetEaseOutRange().Contains(InTime.FrameNumber) || GetEaseOutRange().GetUpperBoundValue() == InTime.FrameNumber))
+	if (HasEndFrame() && Easing.EaseOut.GetObject() && GetEaseOutRange().Contains(InTime.FrameNumber))
 	{
 		const int32  EaseFrame     = (InTime.FrameNumber - GetExclusiveEndFrame() + Easing.GetEaseOutDuration()).Value;
 		const double EaseOutInterp = (double(EaseFrame) + InTime.GetSubFrame()) / Easing.GetEaseOutDuration();
@@ -772,7 +783,7 @@ TRange<FFrameNumber> UMovieSceneSection::GetEaseInRange() const
 	if (HasStartFrame() && Easing.GetEaseInDuration() > 0)
 	{
 		TRangeBound<FFrameNumber> LowerBound = TRangeBound<FFrameNumber>::Inclusive(GetInclusiveStartFrame());
-		TRangeBound<FFrameNumber> UpperBound = TRangeBound<FFrameNumber>::Exclusive(GetInclusiveStartFrame() + Easing.GetEaseInDuration());
+		TRangeBound<FFrameNumber> UpperBound = TRangeBound<FFrameNumber>::Inclusive(GetInclusiveStartFrame() + Easing.GetEaseInDuration());
 
 		UpperBound = TRangeBound<FFrameNumber>::MinUpper(UpperBound, SectionRange.Value.GetUpperBound());
 		return TRange<FFrameNumber>(LowerBound, UpperBound);
@@ -786,7 +797,7 @@ TRange<FFrameNumber> UMovieSceneSection::GetEaseOutRange() const
 {
 	if (HasEndFrame() && Easing.GetEaseOutDuration() > 0)
 	{
-		TRangeBound<FFrameNumber> UpperBound = TRangeBound<FFrameNumber>::Exclusive(GetExclusiveEndFrame());
+		TRangeBound<FFrameNumber> UpperBound = TRangeBound<FFrameNumber>::Inclusive(GetExclusiveEndFrame());
 		TRangeBound<FFrameNumber> LowerBound = TRangeBound<FFrameNumber>::Inclusive(GetExclusiveEndFrame() - Easing.GetEaseOutDuration());
 
 		LowerBound = TRangeBound<FFrameNumber>::MaxLower(LowerBound, SectionRange.Value.GetLowerBound());

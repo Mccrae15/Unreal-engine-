@@ -2,10 +2,10 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Containers/ResourceArray.h"
 #include "Serialization/LargeMemoryData.h"
 #include "RHI.h"
+#include "RHITypes.h"
 
 struct Rect;
 
@@ -115,13 +115,13 @@ public:
 
 	}
 
-	virtual FBufferRHIRef RHICreateBuffer(FRHICommandListBase& RHICmdList, uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState , FRHIResourceCreateInfo& CreateInfo) final override
+	virtual FBufferRHIRef RHICreateBuffer(FRHICommandListBase& RHICmdList, FRHIBufferDesc const& Desc, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo) final override
 	{ 
 		if(CreateInfo.ResourceArray) 
 		{ 
 			CreateInfo.ResourceArray->Discard(); 
 		} 
-		return new FRHIBuffer(Size, Usage, Stride);
+		return new FRHIBuffer(Desc);
 	}
 
 	virtual void RHICopyBuffer(FRHIBuffer* SourceBuffer, FRHIBuffer* DestBuffer) final override
@@ -142,39 +142,6 @@ public:
 	virtual void RHITransferBufferUnderlyingResource(FRHIBuffer* DestBuffer, FRHIBuffer* SrcBuffer) final override
 	{
 
-	}
-
-	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FRHIBuffer* StructuredBuffer, bool bUseUAVCounter, bool bAppendBuffer) final override
-	{ 
-		return new FRHIUnorderedAccessView(StructuredBuffer); 
-	}
-
-
-	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FRHITexture* Texture, uint32 MipLevel, uint16 FirstArraySlice, uint16 NumArraySlices) final override
-	{ 
-		return new FRHIUnorderedAccessView(Texture);
-	}
-
-
-	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FRHIBuffer* Buffer, uint8 Format) final override
-	{ 
-		return new FRHIUnorderedAccessView(Buffer);
-	}
-
-	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(FRHIBuffer* Buffer) final override
-	{ 
-		return new FRHIShaderResourceView(Buffer); 
-	}
-
-
-	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(FRHIBuffer* Buffer, uint32 Stride, uint8 Format) final override
-	{ 
-		return new FRHIShaderResourceView(Buffer);
-	}
-
-	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(const FShaderResourceViewInitializer& Initializer) final override
-	{
-		return new FRHIShaderResourceView(Initializer.AsBufferSRV().Buffer);
 	}
 
 	virtual void RHIClearUAVFloat(FRHIUnorderedAccessView* UnorderedAccessViewRHI, const FVector4f& Values) final override
@@ -215,7 +182,7 @@ public:
 		return new FNullTexture(CreateDesc);
 	}
 
-	virtual FTextureRHIRef RHIAsyncCreateTexture2D(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, void** InitialMipData, uint32 NumInitialMips) final override
+	virtual FTextureRHIRef RHIAsyncCreateTexture2D(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, void** InitialMipData, uint32 NumInitialMips, FGraphEventRef& OutCompletionEvent) final override
 	{ 
 		const FRHITextureCreateDesc Desc =
 			FRHITextureCreateDesc::Create2D(TEXT("FNullDynamicRHI::RHIAsyncCreateTexture2D"), SizeX, SizeY, (EPixelFormat)Format)
@@ -223,13 +190,18 @@ public:
 			.SetFlags(Flags)
 			.SetNumMips(NumMips)
 			.SetInitialState(InResourceState);
-
+		OutCompletionEvent = nullptr;
 		return this->RHICreateTexture(Desc);
 	}
 
-	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(FRHITexture* Texture, const FRHITextureSRVCreateInfo& CreateInfo) final override
-	{ 
-		return new FRHIShaderResourceView(Texture); 
+	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(class FRHICommandListBase& RHICmdList, FRHIViewableResource* Resource, FRHIViewDesc const& ViewDesc)
+	{
+		return new FRHIShaderResourceView(Resource, ViewDesc);
+	}
+
+	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(class FRHICommandListBase& RHICmdList, FRHIViewableResource* Resource, FRHIViewDesc const& ViewDesc)
+	{
+		return new FRHIUnorderedAccessView(Resource, ViewDesc);
 	}
 
 	virtual void RHIGenerateMips(FRHITexture* Texture) final override
@@ -259,10 +231,10 @@ public:
 	{ 
 		return TexRealloc_Succeeded; 
 	}
-	virtual void* RHILockTexture2D(FRHITexture2D* Texture, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail) final override
+	virtual void* RHILockTexture2D(FRHITexture2D* Texture, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail, uint64* OutLockedByteCount) final override
 	{ 
 		DestStride = 0; 
-		return GetStaticTextureBuffer(Texture->GetSizeX(), Texture->GetSizeY(), Texture->GetFormat(), DestStride);
+		return GetStaticTextureBuffer(Texture->GetSizeX(), Texture->GetSizeY(), Texture->GetFormat(), DestStride, OutLockedByteCount);
 	}
 	virtual void RHIUnlockTexture2D(FRHITexture2D* Texture, uint32 MipIndex, bool bLockWithinMiptail) final override
 	{
@@ -293,10 +265,6 @@ public:
 	}
 	virtual void RHIUnlockTextureCubeFace(FRHITextureCube* Texture, uint32 FaceIndex, uint32 ArrayIndex, uint32 MipIndex, bool bLockWithinMiptail) final override
 	{
-	}
-	virtual void RHICopyToResolveTarget(FRHITexture* SourceTexture, FRHITexture* DestTexture, const FResolveParams& ResolveParams) final override
-	{
-
 	}
 
 	virtual void RHICopyTexture(FRHITexture* SourceTexture, FRHITexture* DestTexture, const FRHICopyTextureInfo& CopyInfo) final override
@@ -539,6 +507,14 @@ public:
 	{
 	}
 
+	virtual void RHISetShaderUnbinds(FRHIGraphicsShader* ComputeShader, TConstArrayView<FRHIShaderParameterUnbind> InUnbinds)
+	{
+	}
+
+	virtual void RHISetShaderUnbinds(FRHIComputeShader* ComputeShader, TConstArrayView<FRHIShaderParameterUnbind> InUnbinds)
+	{
+	}
+
 	virtual void RHISetDepthStencilState(FRHIDepthStencilState* NewState, uint32 StencilRef) final override
 	{
 
@@ -576,7 +552,13 @@ public:
 	{
 
 	}
+
 	virtual void RHIDrawIndexedPrimitiveIndirect(FRHIBuffer* IndexBuffer, FRHIBuffer* ArgumentBuffer, uint32 ArgumentOffset) final override
+	{
+
+	}
+
+	virtual void RHIMultiDrawIndexedPrimitiveIndirect(FRHIBuffer* IndexBuffer, FRHIBuffer* ArgumentBuffer, uint32 ArgumentOffset, FRHIBuffer* CountBuffer, uint32 CountBufferOffset, uint32 MaxDrawArguments) final override
 	{
 
 	}
@@ -589,14 +571,6 @@ public:
 		return false; 
 	}
 	virtual void RHIGetSupportedResolution(uint32& Width, uint32& Height) final override
-	{
-
-	}
-	virtual void RHIVirtualTextureSetFirstMipInMemory(FRHITexture2D* Texture, uint32 FirstMip) final override
-	{
-
-	}
-	virtual void RHIVirtualTextureSetFirstMipVisible(FRHITexture2D* Texture, uint32 FirstMip) final override
 	{
 
 	}
@@ -638,7 +612,7 @@ public:
 		return nullptr;
 	}
 
-	virtual void RHISubmitCommandLists(TArrayView<IRHIPlatformCommandList*> CommandLists) final override
+	virtual void RHISubmitCommandLists(TArrayView<IRHIPlatformCommandList*> CommandLists, bool bFlushResources) final override
 	{
 	}
 
@@ -647,5 +621,9 @@ private:
 
 	/** Allocates a static buffer for RHI functions to return as a write destination. */
 	void* GetStaticBuffer(size_t Size);
-	void* GetStaticTextureBuffer(int32 SizeX, int32 SizeY, EPixelFormat Format, uint32& DestStride);
+	void* GetStaticTextureBuffer(int32 SizeX, int32 SizeY, EPixelFormat Format, uint32& DestStride, uint64* OutLockedByteCount = nullptr);
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_3
+#include "CoreMinimal.h"
+#endif

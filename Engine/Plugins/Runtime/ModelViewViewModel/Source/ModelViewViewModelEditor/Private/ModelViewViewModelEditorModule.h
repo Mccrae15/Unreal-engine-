@@ -8,14 +8,15 @@
 namespace UE::MVVM
 {
 	class FAssetTypeActions_ViewModelBlueprint;
+	class FMVVMPropertyBindingExtension;
 }
 
 class FMVVMBindPropertiesDetailView;
-class FMVVMPropertyBindingExtension;
 class FWidgetBlueprintApplicationMode;
 class FWorkflowAllowedTabSet;
 class UBlueprint;
 class UWidgetBlueprint;
+class UWidgetBlueprintGeneratedClass;
 
 /**
  *
@@ -35,9 +36,12 @@ private:
 	void HandleRenameVariableReferences(UBlueprint* Blueprint, UClass* VariableClass, const FName& OldVarName, const FName& NewVarName);
 	void HandleDeactiveMode(FWidgetBlueprintApplicationMode& InDesignerMode);
 	void HandleActivateMode(FWidgetBlueprintApplicationMode& InDesignerMode);
-	void HandleAssetTags(const UWidgetBlueprint* Widget, TArray<UObject::FAssetRegistryTag>& OutTags);
+	void HandleWidgetBlueprintAssetTags(const UWidgetBlueprint* Widget, TArray<UObject::FAssetRegistryTag>& OutTags);
+	void HandleClassBlueprintAssetTags(const UWidgetBlueprintGeneratedClass* GeneratedClass, TArray<UObject::FAssetRegistryTag>& OutTags);
+	void HandleRegisterMenus();
+	void UnregisterMenus();
 
 private:
-	TSharedPtr<FMVVMPropertyBindingExtension> PropertyBindingExtension;
+	TSharedPtr<UE::MVVM::FMVVMPropertyBindingExtension> PropertyBindingExtension;
 	TSharedPtr<UE::MVVM::FAssetTypeActions_ViewModelBlueprint> ViewModelBlueprintActions;
 };

@@ -17,7 +17,7 @@ namespace UE::PropertyViewer
 {
 
 /** */
-class ADVANCEDWIDGETS_API IFieldExpander
+class IFieldExpander
 {
 public:
 	/** @return the class that should be expended for this instance. The instance can be null. */
@@ -35,7 +35,7 @@ public:
 	}
 };
 
-class ADVANCEDWIDGETS_API FFieldExpander_Default : public IFieldExpander
+class FFieldExpander_Default : public IFieldExpander
 {
 public:
 	FFieldExpander_Default() = default;
@@ -67,7 +67,7 @@ public:
 		{
 			return Instance->GetClass();
 		}
-		return Property->PropertyClass;
+		return Property->PropertyClass.Get();
 	}
 
 	virtual bool CanExpandScriptStruct(const FStructProperty*) const override
@@ -85,7 +85,7 @@ public:
 		{
 			if (const FObjectPropertyBase* ObjectProperty = CastField<const FObjectPropertyBase>(Function->GetReturnProperty()))
 			{
-				return ObjectProperty->PropertyClass;
+				return ObjectProperty->PropertyClass.Get();
 			}
 		}
 		return TOptional<const UStruct*>();

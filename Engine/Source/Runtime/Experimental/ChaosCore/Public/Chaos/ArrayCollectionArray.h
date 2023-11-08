@@ -17,8 +17,12 @@ class TArrayCollectionArray : public TArrayCollectionArrayBase, public TArray<T>
 	using TArray<T>::RemoveAt;
 	using TArray<T>::RemoveAtSwap;
 	using TArray<T>::Emplace;
+	using TArray<T>::Shrink;
+	using TArray<T>::Max;
 
 public:
+	constexpr static bool bAllowShrinkOnRemove = false;
+
 	using TArray<T>::Num;
 
 	TArrayCollectionArray()
@@ -54,19 +58,37 @@ public:
 		return NewArray;
 	}
 
+	// If we have more slack space than MaxSlackFraction x Num(), run the default Shrink policy
+	void ApplyShrinkPolicy(const float MaxSlackFraction, const int32 MinSlack) override
+	{
+		// Never shrink below this size
+		const int32 Slack = Max() - Num();
+		if (Slack <= MinSlack)
+		{
+			return;
+		}
+
+		// Shrink if we exceed the maximum allowed slack
+		const int32 MaxSlack = FMath::Max(MinSlack, FMath::FloorToInt(MaxSlackFraction * float(Num())));
+		if (Slack > MaxSlack)
+		{
+			Shrink();
+		}
+	}
+
 	void Resize(const int Num) override
 	{
-		SetNum(Num);
+		SetNum(Num, bAllowShrinkOnRemove);
 	}
 
 	FORCEINLINE void RemoveAt(const int Idx, const int Count) override
 	{
-		TArray<T>::RemoveAt(Idx, Count);
+		TArray<T>::RemoveAt(Idx, Count, bAllowShrinkOnRemove);
 	}
 
 	FORCEINLINE void RemoveAtSwap(const int Idx) override
 	{
-		TArray<T>::RemoveAtSwap(Idx);
+		TArray<T>::RemoveAtSwap(Idx, 1, bAllowShrinkOnRemove);
 	}
 
 	FORCEINLINE void MoveToOtherArray(const int Idx, TArrayCollectionArrayBase& Other)
@@ -74,7 +96,7 @@ public:
 		//todo: add developer check to make sure this is ok?
 		auto& OtherTArray = static_cast<TArrayCollectionArray<T>&>(Other);
 		OtherTArray.Emplace(MoveTemp(TArray<T>::operator [](Idx)));
-		TArray<T>::RemoveAtSwap(Idx);
+		TArray<T>::RemoveAtSwap(Idx, 1, bAllowShrinkOnRemove);
 	}
 
 	FORCEINLINE uint64 SizeOfElem() const override

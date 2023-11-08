@@ -2,8 +2,10 @@
 
 #pragma once
 
-#include "MuR/Parameters.h"
+#include "Misc/TVariant.h"
+#include "Math/MathFwd.h"
 
+#include "MuR/Parameters.h"
 #include "MuR/SerialisationPrivate.h"
 #include "MuR/Operations.h"
 #include "MuR/ImagePrivate.h"
@@ -13,15 +15,12 @@
 
 namespace mu
 {
+    MUTABLE_DEFINE_ENUM_SERIALISABLE(PARAMETER_TYPE)
+    MUTABLE_DEFINE_ENUM_SERIALISABLE(PARAMETER_DETAILED_TYPE)
+    MUTABLE_DEFINE_ENUM_SERIALISABLE(PROJECTOR_TYPE)
 
-    MUTABLE_DEFINE_ENUM_SERIALISABLE( PARAMETER_TYPE )
-    MUTABLE_DEFINE_ENUM_SERIALISABLE( PARAMETER_DETAILED_TYPE )
-    MUTABLE_DEFINE_ENUM_SERIALISABLE( PROJECTOR_TYPE )
 
-
-    //---------------------------------------------------------------------------------------------
-    //! Information to project an image on a mesh.
-    //---------------------------------------------------------------------------------------------
+    /** Description of a projector to project an image on a mesh. */
     struct FProjector
     {
         PROJECTOR_TYPE type = PROJECTOR_TYPE::PLANAR;
@@ -32,12 +31,12 @@ namespace mu
         float projectionAngle = 0.0f;
 
         //!
-        inline void GetDirectionSideUp(FVector3f& d, FVector3f& s, FVector3f& u ) const
+        inline void GetDirectionSideUp(FVector3f& OutDirection, FVector3f& OutSide, FVector3f& OutUp) const
         {
-            d = direction;
-            u = up;
-            s = FVector3f::CrossProduct( up, direction );
-            s.Normalize();
+			OutDirection = direction;
+            OutUp = up;
+            OutSide = FVector3f::CrossProduct( up, direction );
+			OutSide.Normalize();
         }
 
 
@@ -45,18 +44,10 @@ namespace mu
         void Serialise( OutputArchive& arch ) const
         {
             arch << type;
-            arch << position[0];
-            arch << position[1];
-            arch << position[2];
-            arch << direction[0];
-            arch << direction[1];
-            arch << direction[2];
-            arch << up[0];
-            arch << up[1];
-            arch << up[2];
-            arch << scale[0];
-            arch << scale[1];
-            arch << scale[2];
+            arch << position;
+            arch << direction;
+            arch << up;
+            arch << scale;
             arch << projectionAngle;
         }
 
@@ -64,18 +55,10 @@ namespace mu
         void Unserialise( InputArchive& arch )
         {
             arch >> type;
-            arch >> position[0];
-            arch >> position[1];
-            arch >> position[2];
-            arch >> direction[0];
-            arch >> direction[1];
-            arch >> direction[2];
-            arch >> up[0];
-            arch >> up[1];
-            arch >> up[2];
-            arch >> scale[0];
-            arch >> scale[1];
-            arch >> scale[2];
+            arch >> position;
+            arch >> direction;
+            arch >> up;
+            arch >> scale;
             arch >> projectionAngle;
         }
 
@@ -265,40 +248,38 @@ namespace mu
             arch >> defaultValue;
         }
 	};
+	
+
+	using ParamBoolType = bool;
+	using ParamIntType = int32;
+	using ParamFloatType = float;
+	using ParamColorType = FVector3f;
+	using ParamProjectorType = FProjector;
+	using ParamImageType = FName;
+	using ParamStringType = string;
+
+	
+	using PARAMETER_VALUE = TVariant<ParamBoolType, ParamIntType, ParamFloatType, ParamColorType, ParamProjectorType, ParamImageType, ParamStringType>;
 
 
-    union PARAMETER_VALUE
-    {
-        PARAMETER_VALUE()
-			: m_projector()
-        {
-            memset( this, 0, sizeof(PARAMETER_VALUE) );
-        }
+	// TVariant currently does not support this operator. Once supported remove it.
+	inline bool operator==(const PARAMETER_VALUE& ValueA, const PARAMETER_VALUE& ValueB)
+	{
+		const int32 IndexA = ValueA.GetIndex();
+		const int32 IndexB = ValueB.GetIndex();
 
-        bool m_bool;
+		if (IndexA != IndexB)
+		{
+			return false;
+		}
 
-        int m_int;
-
-        float m_float;
-
-        float m_colour[3];
-
-        FProjector m_projector;
-
-        EXTERNAL_IMAGE_ID m_image;
-
-        char m_text[MUTABLE_MAX_STRING_PARAM_LENGTH+1];
-
-        //!
-        bool operator==( const PARAMETER_VALUE& other ) const
-        {
-            return FMemory::Memcmp(this, &other, sizeof(PARAMETER_VALUE))==0;
-        }
-
-    };
-
-    MUTABLE_DEFINE_POD_SERIALISABLE( PARAMETER_VALUE )
-
+		return Visit([&ValueB](const auto& StoredValueA)
+		{
+			using Type = typename TDecay<decltype(StoredValueA)>::Type;
+			return StoredValueA == ValueB.Get<Type>();
+		}, ValueA);
+	}
+	
 
     struct FParameterDesc
     {
@@ -316,9 +297,6 @@ namespace mu
         //! Ranges, if the parameter is multi-dimensional. The indices refer to the Model's program
         //! vector of range descriptors.
 		TArray<uint32> m_ranges;
-
-        //! Additional parameter description information
-		TArray<OP::ADDRESS> m_descImages;
 
         //! Possible values of the parameter in case of being an integer, and its names
         struct INT_VALUE_DESC
@@ -357,14 +335,14 @@ namespace mu
         {
             return m_name == other.m_name && m_uid == other.m_uid && m_type == other.m_type &&
                    m_defaultValue == other.m_defaultValue &&
-                   m_ranges == other.m_ranges && m_descImages == other.m_descImages &&
+                   m_ranges == other.m_ranges &&
                    m_possibleValues == other.m_possibleValues;
         }
 
         //!
         void Serialise( OutputArchive& arch ) const
         {
-            const int32 ver = 5;
+            const int32 ver = 7;
             arch << ver;
 
 			arch << m_name;
@@ -372,7 +350,6 @@ namespace mu
             arch << m_type;
             arch << m_defaultValue;
             arch << m_ranges;
-            arch << m_descImages;
             arch << m_possibleValues;
         }
 
@@ -381,14 +358,19 @@ namespace mu
         {
             int32 ver;
             arch >> ver;
-            check( ver == 5 );
+            check( ver >= 6 );
 
 			arch >> m_name;
             arch >> m_uid;
             arch >> m_type;
             arch >> m_defaultValue;
             arch >> m_ranges;
-            arch >> m_descImages;
+
+			if (ver<=6)
+			{ 
+				TArray<OP::ADDRESS> UnusedDescImages;
+				arch >> UnusedDescImages;
+			}
             arch >> m_possibleValues;
         }
     };
@@ -476,7 +458,7 @@ namespace mu
         //!
         void Serialise( OutputArchive& arch ) const
         {
-            const uint32 ver = 1;
+            const uint32 ver = 2;
             arch << ver;
 
             arch << m_values;
@@ -488,10 +470,10 @@ namespace mu
         {
             uint32 ver;
             arch >> ver;
-            check( ver == 1 );
-
-            arch >> m_values;
-            arch >> m_multiValues;
+			check(ver == 2);
+        	
+			arch >> m_values;
+			arch >> m_multiValues;
         }
 
         //!
@@ -499,6 +481,20 @@ namespace mu
 
         //!
         FProjector GetProjectorValue( int index, const Ptr<const RangeIndex>& pos ) const;
+
+		/** Return true if the parameter has any multi-dimensional values set. This is independent to if the model
+		* accepts multi-dimensional parameters for this particular parameter.
+		*/
+		inline bool HasMultipleValues(int32 ParamIndex) const
+		{
+			if (ParamIndex >= m_multiValues.Num())
+			{
+				return false;
+			}
+
+			return m_multiValues[ParamIndex].Num()>0;
+		}
+
     };
 
 }

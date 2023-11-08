@@ -8,7 +8,8 @@
 #include "MLDeformerModelInstance.h"
 #include "MLDeformerAsset.h"
 #include "MLDeformerComponent.h"
-#include "NeuralNetwork.h"
+
+#include "VertexDeltaModelInstance.h"
 #include "OptimusDataDomain.h"
 #include "RenderGraphBuilder.h"
 #include "RenderGraphUtils.h"
@@ -105,16 +106,23 @@ namespace UE::VertexDeltaModel
 
 		const UMLDeformerAsset* DeformerAsset = DeformerComponent != nullptr ? DeformerComponent->GetDeformerAsset() : nullptr;
 		const UMLDeformerModel* Model = DeformerAsset != nullptr ? DeformerAsset->GetModel() : nullptr;
-		const UMLDeformerModelInstance* ModelInstance = DeformerComponent != nullptr ? DeformerComponent->GetModelInstance() : nullptr;
+		UMLDeformerModelInstance* ModelInstance = DeformerComponent != nullptr ? DeformerComponent->GetModelInstance() : nullptr;
 		const UVertexDeltaModel* VertexDeltaModel = Cast<UVertexDeltaModel>(Model);
+		
 		if (Model && VertexDeltaModel && ModelInstance)
 		{
-			SkeletalMeshObject = ModelInstance->GetSkeletalMeshComponent()->MeshObject;
-			NeuralNetwork = VertexDeltaModel->GetNNINetwork();
-			NeuralNetworkInferenceHandle = ModelInstance->GetNeuralNetworkInferenceHandle();
-			bCanRunNeuralNet = ModelInstance->IsCompatible() && Model->IsNeuralNetworkOnGPU() && DeformerComponent->GetModelInstance()->IsValidForDataProvider();
-			Weight = DeformerComponent->GetWeight();
-			VertexMapBufferSRV = VertexDeltaModel->GetVertexMapBuffer().ShaderResourceViewRHI;
+			VertexDeltaModelInstance = Cast<UVertexDeltaModelInstance>(ModelInstance);
+			if (VertexDeltaModelInstance)
+			{
+				SkeletalMeshObject = ModelInstance->GetSkeletalMeshComponent()->MeshObject;
+				NNEModelInstanceRDG = VertexDeltaModelInstance->GetNNEModelInstanceRDG();
+
+				if (NNEModelInstanceRDG)
+				{
+					Weight = DeformerComponent->GetWeight();
+					VertexMapBufferSRV = VertexDeltaModel->GetVertexMapBuffer().ShaderResourceViewRHI;
+				}
+			}
 		}
 	}
 
@@ -125,18 +133,22 @@ namespace UE::VertexDeltaModel
 			return false;
 		}
 
-		if (!bCanRunNeuralNet || SkeletalMeshObject == nullptr || NeuralNetwork == nullptr || VertexMapBufferSRV == nullptr)
+		if (SkeletalMeshObject == nullptr || NNEModelInstanceRDG == nullptr || VertexMapBufferSRV == nullptr)
 		{
 			return false;
 		}
 
 		return true;
 	}
+	
 
 	void FVertexDeltaGraphDataProviderProxy::AllocateResources(FRDGBuilder& GraphBuilder)
 	{
-		Buffer = GraphBuilder.RegisterExternalBuffer(NeuralNetwork->GetOutputTensorForContext(NeuralNetworkInferenceHandle).GetPooledBuffer());
-		BufferSRV = GraphBuilder.CreateSRV(Buffer, PF_R32_FLOAT);
+		if (VertexDeltaModelInstance && VertexDeltaModelInstance->IsValidForDataProvider())
+		{
+			Buffer = GraphBuilder.RegisterExternalBuffer(VertexDeltaModelInstance->GetOutputRDGBuffer());
+			BufferSRV = GraphBuilder.CreateSRV(Buffer, PF_R32_FLOAT);
+		}
 	}
 
 	void FVertexDeltaGraphDataProviderProxy::GatherDispatchData(FDispatchData const& InDispatchData)

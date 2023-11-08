@@ -28,12 +28,6 @@ public class UnrealMultiUserSlateServer : ModuleRules
 			}
 		);
 
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"Runtime/Launch/Private",           // for LaunchEngineLoop.cpp include
-			}
-		);
-
 		DynamicallyLoadedModuleNames.AddRange(
 			new string[] {
 				"ConcertSyncServer",
@@ -49,5 +43,7 @@ public class UnrealMultiUserSlateServer : ModuleRules
 				}
 			);
 		}
+
+		ShortName = "UEMultiUsrSltServ";
 	}
 }

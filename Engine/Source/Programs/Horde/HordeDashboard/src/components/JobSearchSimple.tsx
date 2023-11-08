@@ -24,7 +24,7 @@ export const JobSearchSimpleModal: React.FC<{ streamId: string, onClose: () => v
       job: GetJobResponse
    };
 
-   const [searchState, setSearchState] = useState<{ items: JobItem[], groups?: IGroup[], templateId?: string, name?: string, userId?: string, global?: boolean, streamIdOverride?: string, preflights: boolean, preflightOnly?: boolean, minDate?: Date, maxDate?: Date, minCL?: string, maxCL?: string, querying: boolean, containsStep?: string }>({ items: [], querying: false, preflights: false });
+   const [searchState, setSearchState] = useState<{ items: JobItem[], groups?: IGroup[], templateId?: string, name?: string, userId?: string, global?: boolean, streamIdOverride?: string, preflights: boolean, preflightOnly?: boolean, minDate?: Date, maxDate?: Date, minCL?: string, maxCL?: string, querying: boolean, containsStep?: string, containsParameter?: string }>({ items: [], querying: false, preflights: false });
    const [templateData, setTemplateData] = useState<{ streamId: string; templates: GetTemplateRefResponse[] } | undefined>(undefined);
 
    const stream = projectStore.streamById(streamId);
@@ -100,7 +100,7 @@ export const JobSearchSimpleModal: React.FC<{ streamId: string, onClose: () => v
 
    })
 
-   templateOptions.push({ key: `show_all_templates`, text: "All Templates", onClick: (ev) => { ev?.stopPropagation(); ev?.preventDefault(); setSearchState({ ...searchState, templateId: undefined }) } });
+   templateOptions.push({ key: `show_all_templates`, text: "All Templates", onClick: (ev) => { ev?.stopPropagation(); ev?.preventDefault(); setSearchState({ ...searchState, templateId: undefined, containsParameter: undefined }) } });
 
    const templateMenuProps: IContextualMenuProps = {
       shouldFocusOnMount: true,
@@ -117,7 +117,7 @@ export const JobSearchSimpleModal: React.FC<{ streamId: string, onClose: () => v
       { key: 'column2', name: 'Name', minWidth: 340, maxWidth: 340, isResizable: false },
       { key: 'column3', name: 'Step', minWidth: 200, maxWidth: 200, isResizable: false },
       { key: 'column4', name: 'StartedBy', minWidth: 120, maxWidth: 120, isResizable: false },
-      { key: 'column5', name: 'Created', minWidth: 100, maxWidth: 100, isResizable: false },      
+      { key: 'column5', name: 'Created', minWidth: 100, maxWidth: 100, isResizable: false },
    ];
 
    const onRenderGroupHeader: IDetailsGroupRenderProps['onRenderHeader'] = (props) => {
@@ -156,7 +156,7 @@ export const JobSearchSimpleModal: React.FC<{ streamId: string, onClose: () => v
       }
 
       if (column.name === "Name") {
-         return <Stack horizontal verticalFill={true} verticalAlign="center" tokens={{ childrenGap: 0, padding: 0 }} style={{whiteSpace:"break-spaces"}} ><Text variant="tiny">{item.job.name}</Text></Stack>;
+         return <Stack horizontal verticalFill={true} verticalAlign="center" tokens={{ childrenGap: 0, padding: 0 }} style={{ whiteSpace: "break-spaces" }} ><Text variant="tiny">{item.job.name}</Text></Stack>;
       }
 
       if (column.name === "Change") {
@@ -174,10 +174,10 @@ export const JobSearchSimpleModal: React.FC<{ streamId: string, onClose: () => v
 
       if (column.name === "Step") {
          const ref = jobToStep.get(item.job.id);
-         if (!ref || !jobStepName) { 
+         if (!ref || !jobStepName) {
             return null;
          }
-         return <Link to={`/job/${ref.jobId}?step=${ref.stepId}`}><Stack horizontal verticalAlign="center" tokens={{ childrenGap: 0, padding: 0 }} style={{ width: "100%", height: "100%" }} >{<StepRefStatusIcon stepRef={ref} />}<Stack style={{whiteSpace:"break-spaces"}}><Text variant="tiny">{jobStepName}</Text></Stack></Stack></Link>;
+         return <Link to={`/job/${ref.jobId}?step=${ref.stepId}`}><Stack horizontal verticalAlign="center" tokens={{ childrenGap: 0, padding: 0 }} style={{ width: "100%", height: "100%" }} >{<StepRefStatusIcon stepRef={ref} />}<Stack style={{ whiteSpace: "break-spaces" }}><Text variant="tiny">{jobStepName}</Text></Stack></Stack></Link>;
       }
 
 
@@ -254,7 +254,7 @@ export const JobSearchSimpleModal: React.FC<{ streamId: string, onClose: () => v
 
          }
 
-         const maxCount = 512;
+         const maxCount = 2048;
 
          let searchStreamId: string | undefined = streamId;
 
@@ -301,7 +301,7 @@ export const JobSearchSimpleModal: React.FC<{ streamId: string, onClose: () => v
          }
 
          const jobIds = stepJobIds.slice(0, 256);
-         
+
          if (stepName && !jobIds.length) {
             jobs = [];
          } else {
@@ -310,7 +310,7 @@ export const JobSearchSimpleModal: React.FC<{ streamId: string, onClose: () => v
                id: jobIds.length ? jobIds : undefined,
                streamId: searchStreamId?.toLowerCase(),
                name: name,
-               filter: "id,name,change,createTime,streamId,preflightChange,startedByUserInfo,streamId",
+               filter: "id,name,change,createTime,streamId,preflightChange,startedByUserInfo,streamId,arguments",
                minChange: minCL,
                maxChange: maxCL,
                template: (!searchState.global && template?.id && !searchState.containsStep) ? [template.id] : undefined,
@@ -321,9 +321,18 @@ export const JobSearchSimpleModal: React.FC<{ streamId: string, onClose: () => v
                startedByUserId: searchState.userId,
                count: maxCount
             }
-   
+
             jobs = await backend.getJobs(query, false);
-         }         
+
+            const p = searchState.containsParameter?.trim().toLowerCase();
+            if (p) {
+               jobs = jobs.filter(j => {
+                  return !!j.arguments.find(a => {
+                     return a.toLowerCase().indexOf(p) !== -1
+                  })
+               });
+            }
+         }
 
       } catch (reason) {
 
@@ -404,7 +413,7 @@ export const JobSearchSimpleModal: React.FC<{ streamId: string, onClose: () => v
       title = `Find Jobs in ${searchState.streamIdOverride}`;
    }
 
-   return (<Modal isOpen={true} topOffsetFixed={true} styles={{ main: { padding: 8, width: 1400, height: '800px', backgroundColor: '#FFFFFF', hasBeenOpened: false, top: "80px", position: "absolute" } } } className={hordeClasses.modal} onDismiss={() => { onClose() }}>
+   return (<Modal isOpen={true} topOffsetFixed={true} styles={{ main: { padding: 8, width: 1400, height: '800px', backgroundColor: '#FFFFFF', hasBeenOpened: false, top: "80px", position: "absolute" } }} className={hordeClasses.modal} onDismiss={() => { onClose() }}>
       {searchState.querying && <StatusModal text={"Finding Jobs"} />}
       <Stack styles={{ root: { paddingTop: 8, paddingLeft: 24, paddingRight: 12, paddingBottom: 8 } }}>
          <Stack tokens={{ childrenGap: 12 }}>
@@ -431,7 +440,7 @@ export const JobSearchSimpleModal: React.FC<{ streamId: string, onClose: () => v
                      </Stack>
 
                      <Stack>
-                        <TextField value={searchState.name ?? ""} spellCheck={false} style={{ width: 350 }} label="Name" onChange={(event, newValue) => {
+                        <TextField value={searchState.name ?? ""} spellCheck={false} autoComplete="off" style={{ width: 350 }} label="Name" onChange={(event, newValue) => {
                            setSearchState({ ...searchState, name: newValue })
 
                         }} ></TextField>
@@ -462,7 +471,7 @@ export const JobSearchSimpleModal: React.FC<{ streamId: string, onClose: () => v
                      </Stack>
 
                      <Stack>
-                        <TextField value={searchState.streamIdOverride ?? ""} spellCheck={false} style={{ width: 350 }} label="Stream Id" onChange={(event, newValue) => {
+                        <TextField value={searchState.streamIdOverride ?? ""} spellCheck={false} autoComplete="off" style={{ width: 350 }} label="Stream Id" onChange={(event, newValue) => {
                            const templateId = searchState.templateId;
                            const global = searchState.global;
                            setSearchState({ ...searchState, streamIdOverride: newValue, global: newValue ? false : global, templateId: newValue ? undefined : templateId })
@@ -471,7 +480,13 @@ export const JobSearchSimpleModal: React.FC<{ streamId: string, onClose: () => v
                      </Stack>
 
                      <Stack>
-                        <TextField value={searchState.containsStep ?? ""} spellCheck={false} style={{ width: 350 }} label="Contains Step" description="Note: Exact match is required" onChange={(event, newValue) => {
+                        <TextField disabled={!template} value={searchState.containsParameter ?? ""} spellCheck={false} autoComplete="off" style={{ width: 350 }} label="Contains Parameter" placeholder={!template ? "Please select a template to search parameters" : ""} onChange={(event, newValue) => {
+                           setSearchState({ ...searchState, containsParameter: newValue?.trim() ? newValue : undefined })
+                        }} ></TextField>
+                     </Stack>
+
+                     <Stack>
+                        <TextField value={searchState.containsStep ?? ""} spellCheck={false} autoComplete="off" style={{ width: 350 }} label="Contains Step" description="Note: Exact match is required" onChange={(event, newValue) => {
                            setSearchState({ ...searchState, containsStep: newValue?.trim() ? newValue : undefined })
                         }} ></TextField>
                      </Stack>

@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "PCGCommon.h"
+
 #include "Math/Box.h"
 
 class AActor;
@@ -9,6 +11,7 @@ class APCGWorldActor;
 class ALandscape;
 class ALandscapeProxy;
 class UPCGComponent;
+class UPCGGraph;
 class UWorld;
 
 namespace PCGHelpers
@@ -46,7 +49,24 @@ namespace PCGHelpers
 	PCG_API TArray<FString> GetStringArrayFromCommaSeparatedString(const FString& InCommaSeparatedString);
 
 #if WITH_EDITOR
-	PCG_API void GatherDependencies(UObject* Object, TSet<TObjectPtr<UObject>>& OutDependencies, int32 MaxDepth = -1);
+	PCG_API void GatherDependencies(UObject* Object, TSet<TObjectPtr<UObject>>& OutDependencies, int32 MaxDepth = -1, const TArray<UClass*>& InExcludedClasses = TArray<UClass*>());
 	PCG_API void GatherDependencies(FProperty* Property, const void* InContainer, TSet<TObjectPtr<UObject>>& OutDependencies, int32 MaxDepth);
 #endif
+
+	/** 
+	* Check if an object is a new object and not the CDO.
+	*
+	* Some objects might not have the appropriate flags if they are embedded inside of other objects. 
+	* Use the bCheckHierarchy flag to true to go up the object hierarchy if you want to check for this situation.
+	*/
+	PCG_API bool IsNewObjectAndNotDefault(const UObject* InObject, bool bCheckHierarchy = false);
+
+	/** If hierarchical generation is enabled, returns all relevant grid sizes for the graph, otherwise returns partition grid size from world actor. */
+	PCG_API bool GetGenerationGridSizes(const UPCGGraph* InGraph, const APCGWorldActor* InWorldActor, PCGHiGenGrid::FSizeArray& OutGridSizes, bool& bOutHasUnbounded);
+
+#if WITH_EDITOR
+	PCG_API void GetGeneratedActorsFolderPath(const AActor* InTargetActor, FString& OutFolderPath);
+#endif
+
+	PCG_API void AttachToParent(AActor* InActorToAttach, AActor* InParent, EPCGAttachOptions AttachOptions, const FString& GeneratedPath = FString());
 };

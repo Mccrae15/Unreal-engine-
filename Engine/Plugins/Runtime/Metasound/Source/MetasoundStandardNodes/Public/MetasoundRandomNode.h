@@ -3,15 +3,16 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "MetasoundFacade.h"
+#include "Internationalization/Text.h"
 #include "MetasoundExecutableOperator.h"
+#include "MetasoundFacade.h"
+#include "MetasoundNodeRegistrationMacro.h"
 #include "MetasoundParamHelper.h"
 #include "MetasoundPrimitives.h"
 #include "MetasoundStandardNodesNames.h"
-#include "MetasoundTrigger.h"
-#include "Internationalization/Text.h"
-#include "MetasoundStandardNodesCategories.h"
 #include "MetasoundTime.h"
+#include "MetasoundTrigger.h"
+#include "MetasoundStandardNodesCategories.h"
 #include "MetasoundVertex.h"
 
 #define LOCTEXT_NAMESPACE "MetasoundStandardNodes"
@@ -361,11 +362,7 @@ namespace Metasound
 			, bIsDefaultSeeded(*SeedValue == DefaultSeed)
 			, bIsRandomStreamInitialized(false)
 		{
-			EvaluateSeedChanges();
-			RandomStream.Reset();
-
-			// We need to initialize the output value to *something*
-			*OutputValue = TRandomNodeSpecialization<ValueType>::GetNextValue(RandomStream, *MinValue, *MaxValue);
+			ResetInternal();
 		}
 
 		TRandomNodeOperator(const FOperatorSettings& InSettings,
@@ -383,43 +380,51 @@ namespace Metasound
 			, bIsDefaultSeeded(*SeedValue == DefaultSeed)
 			, bIsRandomStreamInitialized(false)
 		{
-			EvaluateSeedChanges();
-			RandomStream.Reset();
-
-			// We need to initialize the output value to *something*
-			*OutputValue = TRandomNodeSpecialization<ValueType>::GetNextValue(RandomStream, *MinValue, *MaxValue);
+			ResetInternal();
 		}
 
 		virtual ~TRandomNodeOperator() = default;
 
 
-		virtual FDataReferenceCollection GetInputs() const override
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
 		{
 			using namespace RandomNodeNames;
 
 			FDataReferenceCollection Inputs;
-			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputNextTrigger), NextTrigger);
- 			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputResetTrigger), ResetTrigger);
- 			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputSeed), SeedValue);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputNextTrigger), NextTrigger);
+ 			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputResetTrigger), ResetTrigger);
+ 			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputSeed), SeedValue);
 
 			// If the type doesn't have a range no need for input pins to define it
 			if (TRandomNodeSpecialization<ValueType>::HasRange())
 			{
-				Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputMin), MinValue);
-				Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputMax), MinValue);
+				InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputMin), MinValue);
+				InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputMax), MaxValue);
 			}
-			return Inputs;
+		}
+
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+		{
+			using namespace RandomNodeNames;
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputOnNextTrigger), TriggerOutOnNext);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputOnResetTrigger), TriggerOutOnReset);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputValue), OutputValue);
+		}
+
+		virtual FDataReferenceCollection GetInputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		virtual FDataReferenceCollection GetOutputs() const override
 		{
-			using namespace RandomNodeNames;
-
-			FDataReferenceCollection Outputs;
-			Outputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputOnNextTrigger), TriggerOutOnNext);
-			Outputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputOnResetTrigger), TriggerOutOnReset);
-			Outputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputValue), OutputValue);
-			return Outputs;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		void Execute()
@@ -435,6 +440,9 @@ namespace Metasound
 				{
 					EvaluateSeedChanges();
 					RandomStream.Reset();
+
+					*OutputValue = TRandomNodeSpecialization<ValueType>::GetNextValue(RandomStream, *MinValue, *MaxValue);
+
 					TriggerOutOnReset->TriggerFrame(StartFrame);
 				}
 			);
@@ -451,7 +459,27 @@ namespace Metasound
 			);
 		}
 
+		// Externally visible initialize function
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			ResetInternal();
+		}
+
 	private:
+		void ResetInternal()
+		{
+			TriggerOutOnNext->Reset();
+			TriggerOutOnReset->Reset();
+			bIsDefaultSeeded = (DefaultSeed == *SeedValue);
+			bIsRandomStreamInitialized = false;
+
+			EvaluateSeedChanges();
+			RandomStream.Reset();
+
+			// We need to initialize the output value to *something*
+			*OutputValue = TRandomNodeSpecialization<ValueType>::GetNextValue(RandomStream, *MinValue, *MaxValue);
+		}
+
 		void EvaluateSeedChanges()
 		{
 			// if we have a non-zero seed

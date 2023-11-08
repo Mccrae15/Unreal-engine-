@@ -1,14 +1,14 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
-using System.Text;
-using System.IO;
-using EpicGames.Core;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
-using UnrealBuildBase;
+using System.Text;
+using EpicGames.Core;
 using Microsoft.Extensions.Logging;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -61,6 +61,13 @@ namespace UnrealBuildTool
 		[CommandLine("-NoCompileCommands")]
 		private bool bNoCompileCommands = false;
 
+		/// <summary>
+		/// Create a workspace file for use with VS Code extension that communicates directly with UBT. 
+		/// </summary>
+		[XmlConfigFile(Name = "UseVSCodeExtension")]
+		[CommandLine("-UseVSCodeExtension")]
+		private bool bUseVSCodeExtension = false;
+
 		private enum EPathType
 		{
 			Absolute,
@@ -69,7 +76,7 @@ namespace UnrealBuildTool
 
 		private enum EQuoteType
 		{
-			Single,	// can be ignored on platforms that don't need it (windows atm)
+			Single, // can be ignored on platforms that don't need it (windows atm)
 			Double,
 		}
 
@@ -81,23 +88,23 @@ namespace UnrealBuildTool
 			}
 
 			string Processed = InRef.ToString();
-			
+
 			switch (InPathType)
 			{
 				case EPathType.Relative:
-				{
-					if (InRef.IsUnderDirectory(InRelativeRoot))
 					{
-						Processed = InRef.MakeRelativeTo(InRelativeRoot).ToString();
+						if (InRef.IsUnderDirectory(InRelativeRoot))
+						{
+							Processed = InRef.MakeRelativeTo(InRelativeRoot).ToString();
+						}
+
+						break;
 					}
 
-					break;
-				}
-
 				default:
-				{
-					break;
-				}
+					{
+						break;
+					}
 			}
 
 			if (HostPlatform == UnrealTargetPlatform.Win64)
@@ -116,7 +123,7 @@ namespace UnrealBuildTool
 		{
 			string Processed = CommonMakePathString(InRef, InPathType, InRelativeRoot);
 
-			if (Processed.Contains(" "))
+			if (Processed.Contains(' '))
 			{
 				if (HostPlatform == UnrealTargetPlatform.Win64 && InQuoteType == EQuoteType.Double)
 				{
@@ -126,7 +133,7 @@ namespace UnrealBuildTool
 				{
 					Processed = "'" + Processed + "'";
 				}
- 			}
+			}
 
 			return Processed;
 		}
@@ -232,13 +239,7 @@ namespace UnrealBuildTool
 			private string TabString = "";
 		}
 
-		override public string ProjectFileExtension
-		{
-			get
-			{
-				return ".vscode";
-			}
-		}
+		public override string ProjectFileExtension => ".vscode";
 
 		public override void CleanProjectFiles(DirectoryReference InPrimaryProjectDirectory, string InPrimaryProjectName, DirectoryReference InIntermediateProjectFilesPath, ILogger Logger)
 		{
@@ -246,7 +247,7 @@ namespace UnrealBuildTool
 
 		public override bool ShouldGenerateIntelliSenseData()
 		{
-			return !bNoCompileCommands;
+			return !bNoCompileCommands && !bUseVSCodeExtension;
 		}
 
 		protected override ProjectFile AllocateProjectFile(FileReference InitFilePath, DirectoryReference BaseDir)
@@ -266,7 +267,7 @@ namespace UnrealBuildTool
 			if (bForeignProject)
 			{
 				Projects = new List<ProjectFile>();
-				foreach (var Project in AllProjectFiles)
+				foreach (ProjectFile Project in AllProjectFiles)
 				{
 					if (GameProjectName == Project.ProjectFilePath.GetFileNameWithoutAnyExtensions())
 					{
@@ -283,11 +284,9 @@ namespace UnrealBuildTool
 
 			ProjectData ProjectData = GatherProjectData(Projects, Logger);
 
-			WriteTasksFile(ProjectData, VSCodeDir);
-			WriteLaunchFile(ProjectData, VSCodeDir, Logger);
 			WriteWorkspaceIgnoreFile(Projects);
 			WriteCppPropertiesFile(VSCodeDir, ProjectData);
-			WriteWorkspaceFile();
+			WriteWorkspaceFile(ProjectData, Logger);
 
 			if (bForeignProject && bIncludeEngineSource)
 			{
@@ -336,7 +335,7 @@ namespace UnrealBuildTool
 			DirectoryReference? SysRootPath = null;
 			if (OperatingSystem.IsWindows())
 			{
-				VCEnvironment Environment = VCEnvironment.Create(WindowsPlatform.GetDefaultCompiler(null, Target.Rules.WindowsPlatform.Architecture, Logger), WindowsCompiler.Default, Target.Platform, Target.Rules.WindowsPlatform.Architecture, null, Target.Rules.WindowsPlatform.WindowsSdkVersion, null, Target.Rules.WindowsPlatform.bUseCPPWinRT, Target.Rules.WindowsPlatform.bAllowClangLinker, Logger);
+				VCEnvironment Environment = VCEnvironment.Create(WindowsPlatform.GetDefaultCompiler(null, Target.Rules.WindowsPlatform.Architecture, Logger), WindowsCompiler.Default, Target.Platform, Target.Rules.WindowsPlatform.Architecture, null, null, Target.Rules.WindowsPlatform.WindowsSdkVersion, null, Target.Rules.WindowsPlatform.bUseCPPWinRT, Target.Rules.WindowsPlatform.bAllowClangLinker, Logger);
 				CompilerPath = FileReference.FromString(Environment.CompilerPath.FullName);
 				UsingClang = false;
 			}
@@ -344,7 +343,7 @@ namespace UnrealBuildTool
 			{
 				CompilerPath = FileReference.FromString(LinuxCommon.WhichClang(Logger));
 				string? InternalSDKPath = UEBuildPlatform.GetSDK(UnrealTargetPlatform.Linux)?.GetInternalSDKPath();
-				if (!string.IsNullOrEmpty(InternalSDKPath))
+				if (!String.IsNullOrEmpty(InternalSDKPath))
 				{
 					SysRootPath = DirectoryReference.FromString(InternalSDKPath);
 				}
@@ -390,7 +389,7 @@ namespace UnrealBuildTool
 					}
 					foreach (DirectoryReference IncludePath in ModuleCompileEnvironment.UserIncludePaths)
 					{
-						CommandBuilder.AppendFormat("{0} \"{1}\" {2}",  UsingClang ? "-I" : "/I", IncludePath, Environment.NewLine);
+						CommandBuilder.AppendFormat("{0} \"{1}\" {2}", UsingClang ? "-I" : "/I", IncludePath, Environment.NewLine);
 					}
 					foreach (DirectoryReference IncludePath in ModuleCompileEnvironment.SystemIncludePaths)
 					{
@@ -421,15 +420,15 @@ namespace UnrealBuildTool
 				public UnrealTargetConfiguration Config { get; set; }
 				public UnrealTargetPlatform Platform { get; set; }
 				public EOutputType OutputType { get; set; }
-		
+
 				public CsProjectInfo? CSharpInfo { get; set; }
 
 				public override string ToString()
 				{
-					return Platform.ToString() + " " + Config.ToString(); 
+					return Platform.ToString() + " " + Config.ToString();
 				}
 
-				public BuildProduct(FileReference OutputFile) 
+				public BuildProduct(FileReference OutputFile)
 				{
 					this.OutputFile = OutputFile;
 				}
@@ -450,7 +449,7 @@ namespace UnrealBuildTool
 
 				public override string ToString()
 				{
-					return Name.ToString() + " " + Type.ToString(); 
+					return Name.ToString() + " " + Type.ToString();
 				}
 			}
 
@@ -476,7 +475,6 @@ namespace UnrealBuildTool
 			public List<Project> CSharpProjects = new List<Project>();
 			public List<Project> AllProjects = new List<Project>();
 		}
-
 
 		private ProjectData GatherProjectData(List<ProjectFile> InProjects, ILogger Logger)
 		{
@@ -533,62 +531,61 @@ namespace UnrealBuildTool
 				{
 					VCSharpProjectFile VCSharpProject = (VCSharpProjectFile)Project;
 
-	
-						string ProjectName = Project.ProjectFilePath.GetFileNameWithoutExtension();
+					string ProjectName = Project.ProjectFilePath.GetFileNameWithoutExtension();
 
-						ProjectData.Target Target = new ProjectData.Target(NewProject, ProjectName, TargetType.Program);
+					ProjectData.Target Target = new ProjectData.Target(NewProject, ProjectName, TargetType.Program);
 
-						UnrealTargetConfiguration[] Configs = { UnrealTargetConfiguration.Debug, UnrealTargetConfiguration.Development };
+					UnrealTargetConfiguration[] Configs = { UnrealTargetConfiguration.Debug, UnrealTargetConfiguration.Development };
 
-						foreach (UnrealTargetConfiguration Config in Configs)
+					foreach (UnrealTargetConfiguration Config in Configs)
+					{
+						CsProjectInfo? Info = VCSharpProject.GetProjectInfo(Config)!;
+
+						if (Info.Properties.ContainsKey("OutputPath"))
 						{
-							CsProjectInfo? Info = VCSharpProject.GetProjectInfo(Config)!;
-
-							if (Info.Properties.ContainsKey("OutputPath"))
+							ProjectData.EOutputType OutputType;
+							string? OutputTypeName;
+							if (Info.Properties.TryGetValue("OutputType", out OutputTypeName))
 							{
-								ProjectData.EOutputType OutputType;
-								string? OutputTypeName;
-								if (Info.Properties.TryGetValue("OutputType", out OutputTypeName))
-								{
-									OutputType = (ProjectData.EOutputType)Enum.Parse(typeof(ProjectData.EOutputType), OutputTypeName);
-								}
-								else
-								{
-									OutputType = ProjectData.EOutputType.Library;
-								}
+								OutputType = (ProjectData.EOutputType)Enum.Parse(typeof(ProjectData.EOutputType), OutputTypeName);
+							}
+							else
+							{
+								OutputType = ProjectData.EOutputType.Library;
+							}
 
-								if (OutputType == ProjectData.EOutputType.WinExe)
-								{
-									OutputType = ProjectData.EOutputType.Exe;
-								}
+							if (OutputType == ProjectData.EOutputType.WinExe)
+							{
+								OutputType = ProjectData.EOutputType.Exe;
+							}
 
-								FileReference? OutputFile = null;
-								HashSet<FileReference> ProjectBuildProducts = new HashSet<FileReference>();
-								Info.FindCompiledBuildProducts(DirectoryReference.Combine(VCSharpProject.ProjectFilePath.Directory, Info.Properties["OutputPath"]), ProjectBuildProducts);
-								foreach (FileReference ProjectBuildProduct in ProjectBuildProducts)
+							FileReference? OutputFile = null;
+							HashSet<FileReference> ProjectBuildProducts = new HashSet<FileReference>();
+							Info.FindCompiledBuildProducts(DirectoryReference.Combine(VCSharpProject.ProjectFilePath.Directory, Info.Properties["OutputPath"]), ProjectBuildProducts);
+							foreach (FileReference ProjectBuildProduct in ProjectBuildProducts)
+							{
+								if ((OutputType == ProjectData.EOutputType.Exe && ProjectBuildProduct.GetExtension() == FrameworkExecutableExtension) ||
+									(OutputType == ProjectData.EOutputType.Library && ProjectBuildProduct.GetExtension() == FrameworkLibraryExtension))
 								{
-									if ((OutputType == ProjectData.EOutputType.Exe && ProjectBuildProduct.GetExtension() == FrameworkExecutableExtension) ||
-										(OutputType == ProjectData.EOutputType.Library && ProjectBuildProduct.GetExtension() == FrameworkLibraryExtension))
-									{
-										OutputFile = ProjectBuildProduct;
-										break;
-									}
-								}
-
-								if (OutputFile != null)
-								{
-									Target.BuildProducts.Add(new ProjectData.BuildProduct(OutputFile)
-									{
-										Platform = HostPlatform,
-										Config = Config,
-										OutputType = OutputType,
-										CSharpInfo = Info
-									});
+									OutputFile = ProjectBuildProduct;
+									break;
 								}
 							}
-						}
 
-						ProjectData.CSharpProjects.Add(NewProject);
+							if (OutputFile != null)
+							{
+								Target.BuildProducts.Add(new ProjectData.BuildProduct(OutputFile)
+								{
+									Platform = HostPlatform,
+									Config = Config,
+									OutputType = OutputType,
+									CSharpInfo = Info
+								});
+							}
+						}
+					}
+
+					ProjectData.CSharpProjects.Add(NewProject);
 				}
 			}
 
@@ -610,7 +607,7 @@ namespace UnrealBuildTool
 					FileReference? CompilerPath = null;
 					DirectoryReference? SysRootPath = null;
 					CppStandardVersion CppStandard = CppStandardVersion.Default;
-					
+
 					foreach (ProjectData.Project Project in Projects.AllProjects)
 					{
 						AllSourceFiles.UnionWith(Project.SourceProject.SourceFiles.Select(x => x.Reference));
@@ -621,16 +618,18 @@ namespace UnrealBuildTool
 
 							// we do not generate intellisense for every target, as that just causes a lot of redundancy, as such we will not find a mapping for a lot of the targets
 							if (BuildTarget == null)
+							{
 								continue;
+							}
 
-							string Name = string.Format("{0} {1} {2} {3} ({4})", ProjectTarget.Name, ProjectTarget.Type, BuildTarget.Platform, BuildTarget.Configuration, Project.Name);
+							string Name = String.Format("{0} {1} {2} {3} ({4})", ProjectTarget.Name, ProjectTarget.Type, BuildTarget.Platform, BuildTarget.Configuration, Project.Name);
 							WriteConfiguration(Name, Project.Name, Project.SourceProject.SourceFiles.Select(x => x.Reference), BuildTarget.CppStandard, BuildTarget.CompilerPath!, BuildTarget.SysRootPath, BuildTarget.ModuleCommandLines, OutFile, OutputDirectory);
 
 							CompilerPath = BuildTarget.CompilerPath;
 
 							foreach (KeyValuePair<DirectoryReference, string> Pair in BuildTarget.ModuleCommandLines)
 							{
-								if(!AllModuleCommandLines.ContainsKey(Pair.Key))
+								if (!AllModuleCommandLines.ContainsKey(Pair.Key))
 								{
 									AllModuleCommandLines[Pair.Key] = Pair.Value;
 								}
@@ -734,11 +733,17 @@ namespace UnrealBuildTool
 				OutFile.AddField("intelliSenseMode", "clang-x64");
 			}
 
-			OutFile.AddField("configurationProvider", "epic.ue");
+			if (bUseVSCodeExtension)
+			{
+				OutFile.AddField("configurationProvider", "epic.ue");
+			}
 
-			FileReference CompileCommands = FileReference.Combine(OutputDirectory, string.Format("compileCommands_{0}.json", ProjectName));
-			WriteCompileCommands(CompileCommands, SourceFiles, CompilerPath!, ModuleCommandLines);
-			OutFile.AddField("compileCommands", MakePathString(CompileCommands, bInAbsolute: true, bForceSkipQuotes: true));
+			if (ShouldGenerateIntelliSenseData())
+			{
+				FileReference CompileCommands = FileReference.Combine(OutputDirectory, String.Format("compileCommands_{0}.json", ProjectName));
+				WriteCompileCommands(CompileCommands, SourceFiles, CompilerPath!, ModuleCommandLines);
+				OutFile.AddField("compileCommands", MakePathString(CompileCommands, bInAbsolute: true, bForceSkipQuotes: true));
+			}
 
 			OutFile.EndObject();
 		}
@@ -840,10 +845,9 @@ namespace UnrealBuildTool
 				}
 				OutFile.EndObject();
 			}
-
 		}
 
-		private void WriteCompileCommands(FileReference CompileCommandsFile, IEnumerable<FileReference> SourceFiles, 
+		private void WriteCompileCommands(FileReference CompileCommandsFile, IEnumerable<FileReference> SourceFiles,
 			FileReference CompilerPath, Dictionary<DirectoryReference, string> ModuleCommandLines)
 		{
 			// this creates a compileCommands.json
@@ -858,7 +862,7 @@ namespace UnrealBuildTool
 				DirectoryReference.CreateDirectory(ResponseFileDir);
 
 				Dictionary<DirectoryReference, FileReference?> DirectoryToResponseFile = new Dictionary<DirectoryReference, FileReference?>();
-				foreach(KeyValuePair<DirectoryReference, string> Pair in ModuleCommandLines)
+				foreach (KeyValuePair<DirectoryReference, string> Pair in ModuleCommandLines)
 				{
 					FileReference ResponseFile = FileReference.Combine(ResponseFileDir, String.Format("{0}.{1}.rsp", Pair.Key.GetDirectoryName(), DirectoryToResponseFile.Count));
 					FileReference.WriteAllText(ResponseFile, Pair.Value);
@@ -936,7 +940,6 @@ namespace UnrealBuildTool
 									CleanParam = "-clean";
 								}
 							}
-							
 
 							OutFile.BeginArray("args");
 							{
@@ -949,7 +952,7 @@ namespace UnrealBuildTool
 								}
 								OutFile.AddUnnamedField("-waitmutex");
 
-								if (!string.IsNullOrEmpty(CleanParam))
+								if (!String.IsNullOrEmpty(CleanParam))
 								{
 									OutFile.AddUnnamedField(CleanParam);
 								}
@@ -1048,34 +1051,29 @@ namespace UnrealBuildTool
 			}
 		}
 
-		private void WriteTasksFile(ProjectData ProjectData, DirectoryReference VSCodeDir)
+		private void WriteTasks(JsonFile OutFile, ProjectData ProjectData)
 		{
-			JsonFile OutFile = new JsonFile();
+			OutFile.AddField("version", "2.0.0");
 
-			OutFile.BeginRootObject();
+			OutFile.BeginArray("tasks");
 			{
-				OutFile.AddField("version", "2.0.0");
-
-				OutFile.BeginArray("tasks");
+				if (!bUseVSCodeExtension)
 				{
 					foreach (ProjectData.Project NativeProject in ProjectData.NativeProjects)
 					{
 						WriteNativeTask(NativeProject, OutFile);
 					}
-
-					foreach (ProjectData.Project CSharpProject in ProjectData.CSharpProjects)
-					{
-						WriteCSharpTask(CSharpProject, OutFile);
-					}
-
-					OutFile.EndArray();
 				}
-			}
-			OutFile.EndRootObject();
 
-			OutFile.Write(FileReference.Combine(VSCodeDir, "tasks.json"));
+				foreach (ProjectData.Project CSharpProject in ProjectData.CSharpProjects)
+				{
+					WriteCSharpTask(CSharpProject, OutFile);
+				}
+
+				OutFile.EndArray();
+			}
 		}
-		
+
 		private FileReference GetExecutableFilename(ProjectFile Project, ProjectTarget Target, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration)
 		{
 			TargetRules? TargetRulesObject = Target.TargetRules;
@@ -1091,7 +1089,13 @@ namespace UnrealBuildTool
 
 			if (TargetRulesObject != null)
 			{
-				bShouldCompileMonolithic |= (Target.CreateRulesDelegate(Platform, Configuration).LinkType == TargetLinkType.Monolithic);
+				try
+				{
+					bShouldCompileMonolithic |= (Target.CreateRulesDelegate(Platform, Configuration).LinkType == TargetLinkType.Monolithic);
+				}
+				catch (BuildException)
+				{
+				}
 			}
 
 			TargetType TargetRulesType = Target.TargetRules == null ? TargetType.Program : Target.TargetRules.Type;
@@ -1100,7 +1104,7 @@ namespace UnrealBuildTool
 			DirectoryReference RootDirectory = Unreal.EngineDirectory;
 			if (TargetRulesType != TargetType.Program && (bShouldCompileMonolithic || TargetRulesObject!.BuildEnvironment == TargetBuildEnvironment.Unique))
 			{
-				if(Target.UnrealProjectFilePath != null)
+				if (Target.UnrealProjectFilePath != null)
 				{
 					RootDirectory = Target.UnrealProjectFilePath.Directory;
 				}
@@ -1108,7 +1112,7 @@ namespace UnrealBuildTool
 
 			if (TargetRulesType == TargetType.Program)
 			{
-				if(Target.UnrealProjectFilePath != null)
+				if (Target.UnrealProjectFilePath != null)
 				{
 					RootDirectory = Target.UnrealProjectFilePath.Directory;
 				}
@@ -1119,7 +1123,7 @@ namespace UnrealBuildTool
 
 			// Get the executable name (minus any platform or config suffixes)
 			string BinaryName;
-			if(Target.TargetRules!.BuildEnvironment == TargetBuildEnvironment.Shared && TargetRulesType != TargetType.Program)
+			if (Target.TargetRules!.BuildEnvironment == TargetBuildEnvironment.Shared && TargetRulesType != TargetType.Program)
 			{
 				BinaryName = UEBuildTarget.GetAppNameForTargetType(TargetRulesType);
 			}
@@ -1145,12 +1149,10 @@ namespace UnrealBuildTool
 		{
 			ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, DirectoryReference.FromFile(BuildProduct.UProjectFile), BuildProduct.Platform);
 
-			// BEGIN META SECTION - Meta Quest Android device support
 			bool ArrayResult = Ini.GetArray("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "PackageForOculusMobile", out var OculusMobileDevices); // Backcompat for deprecated oculus device target setting
 			bool BoolResult = Ini.GetBool("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "bPackageForMetaQuest", out var bPackageForMetaQuest);
 			// Check if packaging for Meta Quest
 			if ((!ArrayResult || OculusMobileDevices == null || OculusMobileDevices.Count == 0) && (!BoolResult || !bPackageForMetaQuest))
-			// END META SECTION - Meta Quest Android device support
 			{
 				return;
 			}
@@ -1161,14 +1163,14 @@ namespace UnrealBuildTool
 			if (PackageName.Contains("[PROJECT]"))
 			{
 				// project name must start with a letter
-				if (!char.IsLetter(Target.Name[0]))
+				if (!Char.IsLetter(Target.Name[0]))
 				{
 					Trace.TraceWarning("Package name segments must all start with a letter. Please replace [PROJECT] with a valid name");
 				}
 
 				string ProjectName = Target.Name;
 				// hyphens not allowed so change them to underscores in project name
-				if (ProjectName.Contains("-"))
+				if (ProjectName.Contains('-'))
 				{
 					Trace.TraceWarning("Project name contained hyphens, converted to underscore");
 					ProjectName = ProjectName.Replace("-", "_");
@@ -1178,7 +1180,7 @@ namespace UnrealBuildTool
 				for (int Index = 0; Index < ProjectName.Length; Index++)
 				{
 					char c = ProjectName[Index];
-					if (c != '.' && c != '_' && !char.IsLetterOrDigit(c))
+					if (c != '.' && c != '_' && !Char.IsLetterOrDigit(c))
 					{
 						Trace.TraceWarning("Project name contains illegal characters (only letters, numbers, and underscore allowed); please replace [PROJECT] with a valid name");
 						ProjectName.Replace(c, '_');
@@ -1261,7 +1263,7 @@ namespace UnrealBuildTool
 			List<string> Types = new List<string>();
 			Types.Add("Launch");
 
-			if(bAddDebugAttachConfig && bIsLinux)
+			if (bAddDebugAttachConfig && bIsLinux)
 			{
 				Types.Add("Attach");
 			}
@@ -1273,12 +1275,12 @@ namespace UnrealBuildTool
 
 			string LaunchTaskName = String.Format("{0} {1} {2} Build", Target.Name, BuildProduct.Platform, BuildProduct.Config);
 
-			foreach(string Type in Types)
+			foreach (string Type in Types)
 			{
 				OutFile.BeginObject();
 				{
 					OutFile.AddField("name", Type + " " + Target.Name + " (" + BuildProduct.Config.ToString() + ")");
-					OutFile.AddField("request", (Type == "Attach")?"attach":"launch");
+					OutFile.AddField("request", (Type == "Attach") ? "attach" : "launch");
 					OutFile.AddField("program", MakeUnquotedPathString(BuildProduct.OutputFile, EPathType.Absolute));
 					switch (Type)
 					{
@@ -1288,12 +1290,12 @@ namespace UnrealBuildTool
 						case "Debug Core":
 							OutFile.AddField("coreDumpPath", "${input:coreFileName}");
 							break;
-						case "Attach": 
+						case "Attach":
 							OutFile.AddField("processId", "${command:pickProcess}");
 							break;
 					}
 
-					if(Type != "Attach")
+					if (Type != "Attach")
 					{
 						OutFile.BeginArray("args");
 						{
@@ -1311,7 +1313,6 @@ namespace UnrealBuildTool
 									}
 								}
 							}
-
 						}
 						OutFile.EndArray();
 					}
@@ -1389,11 +1390,11 @@ namespace UnrealBuildTool
 				OutFile.AddField("type", "coreclr");
 				OutFile.AddField("request", "launch");
 
-				if (!string.IsNullOrEmpty(InBuildTaskName))
+				if (!String.IsNullOrEmpty(InBuildTaskName))
 				{
 					OutFile.AddField("preLaunchTask", InBuildTaskName);
 				}
-				
+
 				DirectoryReference CWD = ProjectRoot;
 
 				OutFile.AddField("program", MakeUnquotedPathString(InExecutable, EPathType.Absolute));
@@ -1442,81 +1443,76 @@ namespace UnrealBuildTool
 			}
 		}
 
-		private void WriteLaunchFile(ProjectData ProjectData, DirectoryReference VSCodeDir, ILogger Logger)
+		private void WriteLaunch(JsonFile OutFile, ProjectData ProjectData, ILogger Logger)
 		{
-			JsonFile OutFile = new JsonFile();
-
-			OutFile.BeginRootObject();
+			OutFile.AddField("version", "0.2.0");
+			if (bAddDebugCoreConfig)
 			{
-				OutFile.AddField("version", "0.2.0");
-				if(bAddDebugCoreConfig)
-				{
-					OutFile.BeginArray("inputs");
-					OutFile.BeginObject();
-					OutFile.AddField("id", "coreFileName");
-					OutFile.AddField("type", "command");
-					OutFile.AddField("command", "filePicker.pick");
-					OutFile.BeginObject("args");
-					OutFile.AddField("masks", "core*");
-					OutFile.BeginObject("display");
-					OutFile.AddField("type", "fileRelativePath");
-					OutFile.AddField("detail", "filePath");
-					OutFile.EndObject();
-					OutFile.AddField("output", "filePath");
-					OutFile.EndObject();
-					OutFile.EndObject();
-					OutFile.EndArray();
-				}
+				OutFile.BeginArray("inputs");
+				OutFile.BeginObject();
+				OutFile.AddField("id", "coreFileName");
+				OutFile.AddField("type", "command");
+				OutFile.AddField("command", "filePicker.pick");
+				OutFile.BeginObject("args");
+				OutFile.AddField("masks", "core*");
+				OutFile.BeginObject("display");
+				OutFile.AddField("type", "fileRelativePath");
+				OutFile.AddField("detail", "filePath");
+				OutFile.EndObject();
+				OutFile.AddField("output", "filePath");
+				OutFile.EndObject();
+				OutFile.EndObject();
+				OutFile.EndArray();
+			}
 
-				OutFile.BeginArray("configurations");
+			OutFile.BeginArray("configurations");
+			{
+				if (!bUseVSCodeExtension)
 				{
 					foreach (ProjectData.Project Project in ProjectData.NativeProjects)
 					{
 						WriteNativeLaunchConfig(Project, OutFile, Logger);
 					}
-
-					foreach (ProjectData.Project Project in ProjectData.CSharpProjects)
-					{
-						WriteCSharpLaunchConfig(Project, OutFile);
-					}
 				}
 
-				// Add in a special task for regenerating project files
-				string PreLaunchTask = "";
-				List<string> Args = new List<string>();
-				Args.Add("-projectfiles");
-				Args.Add("-vscode");
-
-				if (bGeneratingGameProjectFiles)
+				foreach (ProjectData.Project Project in ProjectData.CSharpProjects)
 				{
-					Args.Add("-project=" + MakeUnquotedPathString(OnlyGameProject!, EPathType.Absolute));
-					Args.Add("-game");
+					WriteCSharpLaunchConfig(Project, OutFile);
 				}
-				if (bIncludeEngineSource)
-				{
-					Args.Add("-engine");
-				}
-				
-				if (bIncludeDotNetPrograms)
-				{
-					Args.Add("-dotnet");
-					PreLaunchTask = "UnrealBuildTool " + HostPlatform.ToString() + " Development Build";
-				}
-
-				FileReference RunUbtPath = FileReference.Combine(ProjectRoot, "Engine", "Build", "BatchFiles", "RunUBT.bat");
-				WriteSingleCSharpLaunchConfig(
-					OutFile,
-					"Generate Project Files",
-					PreLaunchTask,
-					RunUbtPath,
-					Args.ToArray()
-				);
-
-				OutFile.EndArray();
 			}
-			OutFile.EndRootObject();
 
-			OutFile.Write(FileReference.Combine(VSCodeDir, "launch.json"));
+			// Add in a special task for regenerating project files
+			string PreLaunchTask = "";
+			List<string> Args = new List<string>();
+			Args.Add("-projectfiles");
+			Args.Add("-vscode");
+
+			if (bGeneratingGameProjectFiles)
+			{
+				Args.Add("-project=" + MakeUnquotedPathString(OnlyGameProject!, EPathType.Absolute));
+				Args.Add("-game");
+			}
+			if (bIncludeEngineSource)
+			{
+				Args.Add("-engine");
+			}
+
+			if (bIncludeDotNetPrograms)
+			{
+				Args.Add("-dotnet");
+				PreLaunchTask = "UnrealBuildTool " + HostPlatform.ToString() + " Development Build";
+			}
+
+			FileReference RunUbtPath = FileReference.Combine(ProjectRoot, "Engine", "Build", "BatchFiles", "RunUBT.bat");
+			WriteSingleCSharpLaunchConfig(
+				OutFile,
+				"Generate Project Files",
+				PreLaunchTask,
+				RunUbtPath,
+				Args.ToArray()
+			);
+
+			OutFile.EndArray();
 		}
 
 		private void WriteWorkspaceIgnoreFile(List<ProjectFile> Projects)
@@ -1532,7 +1528,7 @@ namespace UnrealBuildTool
 					{
 						DirectoryReference ProjDir = Target.TargetFilePath.Directory.GetDirectoryName() == "Source" ? Target.TargetFilePath.Directory.ParentDirectory! : Target.TargetFilePath.Directory;
 						GetExcludePathsCPP(ProjDir, PathsToExclude);
-						
+
 						DirectoryReference PluginRootDir = DirectoryReference.Combine(ProjDir, "Plugins");
 						WriteWorkspaceIgnoreFileForPlugins(PluginRootDir, PathsToExclude);
 
@@ -1588,8 +1584,8 @@ namespace UnrealBuildTool
 				}
 			}
 		}
-		
-		private void WriteWorkspaceFile()
+
+		private void WriteWorkspaceFile(ProjectData ProjectData, ILogger Logger)
 		{
 			JsonFile WorkspaceFile = new JsonFile();
 
@@ -1625,9 +1621,39 @@ namespace UnrealBuildTool
 			{
 				// disable autodetect for typescript files to workaround slowdown in vscode as a result of parsing all files
 				WorkspaceFile.AddField("typescript.tsc.autoDetect", "off");
+				// disable npm script autodetect to avoid lag populating tasks list 
+				WorkspaceFile.AddField("npm.autoDetect", "off");
+
+				if (bUseVSCodeExtension)
+				{
+					if (HostPlatform == UnrealTargetPlatform.Win64)
+					{
+						WorkspaceFile.AddField("UE.UBTScriptPath", MakePathString(FileReference.Combine(ProjectRoot, "Engine", "Build", "BatchFiles", "RunUBT.bat"), true));
+					}
+					else
+					{
+						WorkspaceFile.AddField("UE.UBTScriptPath", MakePathString(FileReference.Combine(ProjectRoot, "Engine", "Build", "BatchFiles", HostPlatform.ToString(), "RunUBT.sh"), true));
+					}
+
+					// Exclude some large directories/filetypes by default
+					WorkspaceFile.BeginObject("files.exclude");
+					WorkspaceFile.AddField("**/Intermediate/", true);
+					WorkspaceFile.AddField("**/Binaries/", true);
+					WorkspaceFile.AddField("Engine/DerivedDataCache", true);
+					WorkspaceFile.AddField("**/*.uasset", true);
+					WorkspaceFile.AddField("**/*.umap", true);
+					WorkspaceFile.AddField("**/*.uexp", true);
+					WorkspaceFile.AddField("**/*.upayload", true);
+					WorkspaceFile.AddField("**/*.ubulk", true);
+					WorkspaceFile.AddField("**/*.m.ubulk", true);
+					WorkspaceFile.AddField("**/*.uptnl", true);
+					WorkspaceFile.EndObject();
+					WorkspaceFile.BeginObject("search.exclude");
+					WorkspaceFile.EndObject();
+				}
 			}
 			WorkspaceFile.EndObject();
-			
+
 			WorkspaceFile.BeginObject("extensions");
 			{
 				// extensions is a set of recommended extensions that a user should install.
@@ -1638,6 +1664,11 @@ namespace UnrealBuildTool
 					// WorkspaceFile.AddUnnamedField("epic.vscode-ue");
 					WorkspaceFile.AddUnnamedField("ms-vscode.cpptools");
 					WorkspaceFile.AddUnnamedField("ms-dotnettools.csharp");
+
+					if (bUseVSCodeExtension)
+					{
+						WorkspaceFile.AddUnnamedField("epic.vscode-ue");
+					}
 
 					// If the platform we run the generator on uses mono, there are additional debugging extensions to add.
 					if (!RuntimePlatform.IsWindows)
@@ -1651,9 +1682,17 @@ namespace UnrealBuildTool
 			}
 			WorkspaceFile.EndObject();
 
+			WorkspaceFile.BeginObject("tasks");
+			WriteTasks(WorkspaceFile, ProjectData);
+			WorkspaceFile.EndObject();
+
+			WorkspaceFile.BeginObject("launch");
+			WriteLaunch(WorkspaceFile, ProjectData, Logger);
+			WorkspaceFile.EndObject();
+
 			WorkspaceFile.EndRootObject();
 
-			string? WorkspaceName = bForeignProject ? GameProjectName : "UE5";
+			string? WorkspaceName = bForeignProject ? GameProjectName : PrimaryProjectName;
 			WorkspaceFile.Write(FileReference.Combine(PrimaryProjectPath, WorkspaceName + ".code-workspace"));
 		}
 

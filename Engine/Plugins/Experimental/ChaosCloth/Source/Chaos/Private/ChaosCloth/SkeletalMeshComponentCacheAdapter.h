@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -34,6 +34,7 @@ namespace Chaos
 										 Chaos::FReal                                       InTime,
 										 FPlaybackTickRecord&								TickRecord,
 										 TArray<TPBDRigidParticleHandle<Chaos::FReal, 3>*>& OutUpdatedRigids) const override;
+		virtual void                   WaitForSolverTasks(UPrimitiveComponent* InComponent) const override;
 		// ~End FComponentCacheAdapter interface
 
 	private :
@@ -49,11 +50,5 @@ namespace Chaos
 		*/
 		void InitializeForRestState(UPrimitiveComponent* InComponent) const;
 
-		inline static const FName VelocityXName = TEXT("VelocityX");
-		inline static const FName VelocityYName = TEXT("VelocityY");
-		inline static const FName VelocityZName = TEXT("VelocityZ");
-		inline static const FName PositionXName = TEXT("PositionX");
-		inline static const FName PositionYName = TEXT("PositionY");
-		inline static const FName PositionZName = TEXT("PositionZ");
 	};
 }    // namespace Chaos

@@ -2,16 +2,32 @@
 
 #include "NiagaraDataInterfaceArrayFunctionLibrary.h"
 
+#include "Engine/World.h"
 #include "NiagaraComponent.h"
 #include "NiagaraDataInterfaceArrayFloat.h"
 #include "NiagaraDataInterfaceArrayInt.h"
 #include "NiagaraDataInterfaceArrayImpl.h"
+#include "NiagaraDataInterfaceArrayImplHelpers.h"
+#include "NiagaraDataInterfaceArrayNiagaraID.h"
 #include "NiagaraComponent.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraSystemInstanceController.h"
 #include "NiagaraFunctionLibrary.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceArrayFunctionLibrary)
+
+NDIARRAY_GENERATE_IMPL(UNiagaraDataInterfaceArrayFloat, float, FloatData)
+NDIARRAY_GENERATE_IMPL_LWC(UNiagaraDataInterfaceArrayFloat2, FVector2f, FloatData)
+NDIARRAY_GENERATE_IMPL_LWC(UNiagaraDataInterfaceArrayFloat3, FVector3f, FloatData)
+NDIARRAY_GENERATE_IMPL(UNiagaraDataInterfaceArrayPosition, FNiagaraPosition, PositionData)
+NDIARRAY_GENERATE_IMPL_LWC(UNiagaraDataInterfaceArrayFloat4, FVector4f, FloatData)
+NDIARRAY_GENERATE_IMPL(UNiagaraDataInterfaceArrayColor, FLinearColor, ColorData)
+NDIARRAY_GENERATE_IMPL_LWC(UNiagaraDataInterfaceArrayQuat, FQuat4f, QuatData)
+NDIARRAY_GENERATE_IMPL_LWC(UNiagaraDataInterfaceArrayMatrix, FMatrix44f, MatrixData)
+NDIARRAY_GENERATE_IMPL(UNiagaraDataInterfaceArrayInt32, int32, IntData)
+NDIARRAY_GENERATE_IMPL_LWC(UNiagaraDataInterfaceArrayUInt8, uint8, IntData)
+NDIARRAY_GENERATE_IMPL(UNiagaraDataInterfaceArrayBool, bool, BoolData)
+NDIARRAY_GENERATE_IMPL(UNiagaraDataInterfaceArrayNiagaraID, FNiagaraID, IntData)
 
 // If / when we share user parameter UObjects we will need to make this per instance which introduces some tricky things about allocating before the instance is active
 template<typename TArrayType, typename TDataInterace>
@@ -156,6 +172,26 @@ void UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayQuat(UNiagaraComp
 	SetNiagaraArray<FQuat, UNiagaraDataInterfaceArrayQuat>(NiagaraComponent, OverrideName, ArrayData);
 }
 
+void UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayMatrix(UNiagaraComponent* NiagaraComponent, FName OverrideName, const TArray<FMatrix>& ArrayData, bool bApplyLWCRebase)
+{
+	if (bApplyLWCRebase)
+	{
+		const FNiagaraLWCConverter LwcConverter = GetLWCConverter(NiagaraComponent);
+
+		TArray<FMatrix> RebasedArrayData;
+		RebasedArrayData.SetNumUninitialized(ArrayData.Num());
+		for (int32 i=0; i < ArrayData.Num(); ++i)
+		{
+			RebasedArrayData[i] = LwcConverter.ConvertWorldToSimulationMatrix(ArrayData[i]);
+		}
+		SetNiagaraArray<FMatrix, UNiagaraDataInterfaceArrayMatrix>(NiagaraComponent, OverrideName, RebasedArrayData);
+	}
+	else
+	{
+		SetNiagaraArray<FMatrix, UNiagaraDataInterfaceArrayMatrix>(NiagaraComponent, OverrideName, ArrayData);
+	}
+}
+
 void UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayInt32(UNiagaraComponent* NiagaraComponent, FName OverrideName, const TArray<int32>& ArrayData)
 {
 	SetNiagaraArray<int32, UNiagaraDataInterfaceArrayInt32>(NiagaraComponent, OverrideName, ArrayData);
@@ -218,6 +254,20 @@ TArray<FQuat> UNiagaraDataInterfaceArrayFunctionLibrary::GetNiagaraArrayQuat(UNi
 	return GetNiagaraArray<FQuat, UNiagaraDataInterfaceArrayQuat>(NiagaraComponent, OverrideName);
 }
 
+TArray<FMatrix> UNiagaraDataInterfaceArrayFunctionLibrary::GetNiagaraArrayMatrix(UNiagaraComponent* NiagaraComponent, FName OverrideName, bool bApplyLWCRebase)
+{
+	TArray<FMatrix> Results = GetNiagaraArray<FMatrix, UNiagaraDataInterfaceArrayMatrix>(NiagaraComponent, OverrideName);
+	if (bApplyLWCRebase)
+	{
+		const FNiagaraLWCConverter LwcConverter = GetLWCConverter(NiagaraComponent);
+		for (FMatrix& Result : Results)
+		{
+			Result = LwcConverter.ConvertSimulationToWorldMatrix(Result);
+		}
+	}
+	return Results;
+}
+
 TArray<int32> UNiagaraDataInterfaceArrayFunctionLibrary::GetNiagaraArrayInt32(UNiagaraComponent* NiagaraComponent, FName OverrideName)
 {
 	return GetNiagaraArray<int32, UNiagaraDataInterfaceArrayInt32>(NiagaraComponent, OverrideName);
@@ -252,8 +302,8 @@ void UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayVectorValue(UNiag
 
 void UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayPositionValue(UNiagaraComponent* NiagaraComponent, FName OverrideName, int Index, const FVector& Value, bool bSizeToFit)
 {
-	FNiagaraLWCConverter LwcConverter = GetLWCConverter(NiagaraComponent);
-	FNiagaraPosition SimulationPosition = LwcConverter.ConvertWorldToSimulationPosition(Value);
+	const FNiagaraLWCConverter LwcConverter = GetLWCConverter(NiagaraComponent);
+	const FNiagaraPosition SimulationPosition = LwcConverter.ConvertWorldToSimulationPosition(Value);
 	SetNiagaraArrayValue<FNiagaraPosition, UNiagaraDataInterfaceArrayPosition>(NiagaraComponent, OverrideName, Index, SimulationPosition, bSizeToFit);
 }
 
@@ -270,6 +320,19 @@ void UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayColorValue(UNiaga
 void UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayQuatValue(UNiagaraComponent* NiagaraComponent, FName OverrideName, int Index, const FQuat& Value, bool bSizeToFit)
 {
 	SetNiagaraArrayValue<FQuat, UNiagaraDataInterfaceArrayQuat>(NiagaraComponent, OverrideName, Index, Value, bSizeToFit);
+}
+
+void UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayMatrixValue(UNiagaraComponent* NiagaraComponent, FName OverrideName, int Index, const FMatrix& Value, bool bSizeToFit, bool bApplyLWCRebase)
+{
+	if (bApplyLWCRebase)
+	{
+		const FNiagaraLWCConverter LwcConverter = GetLWCConverter(NiagaraComponent);
+		SetNiagaraArrayValue<FMatrix, UNiagaraDataInterfaceArrayMatrix>(NiagaraComponent, OverrideName, Index, LwcConverter.ConvertWorldToSimulationMatrix(Value), bSizeToFit);
+	}
+	else
+	{
+		SetNiagaraArrayValue<FMatrix, UNiagaraDataInterfaceArrayMatrix>(NiagaraComponent, OverrideName, Index, Value, bSizeToFit);
+	}
 }
 
 void UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayInt32Value(UNiagaraComponent* NiagaraComponent, FName OverrideName, int Index, int32 Value, bool bSizeToFit)
@@ -326,6 +389,18 @@ FQuat UNiagaraDataInterfaceArrayFunctionLibrary::GetNiagaraArrayQuatValue(UNiaga
 	return GetNiagaraArrayValue<FQuat, UNiagaraDataInterfaceArrayQuat>(NiagaraComponent, OverrideName, Index);
 }
 
+FMatrix UNiagaraDataInterfaceArrayFunctionLibrary::GetNiagaraArrayMatrixValue(UNiagaraComponent* NiagaraComponent, FName OverrideName, int Index, bool bApplyLWCRebase)
+{
+	FMatrix Result = GetNiagaraArrayValue<FMatrix, UNiagaraDataInterfaceArrayMatrix>(NiagaraComponent, OverrideName, Index);
+	if (bApplyLWCRebase)
+	{
+		const FNiagaraLWCConverter LwcConverter = GetLWCConverter(NiagaraComponent);
+		Result = LwcConverter.ConvertSimulationToWorldMatrix(Result);
+	}
+
+	return Result;
+}
+
 int32 UNiagaraDataInterfaceArrayFunctionLibrary::GetNiagaraArrayInt32Value(UNiagaraComponent* NiagaraComponent, FName OverrideName, int Index)
 {
 	return GetNiagaraArrayValue<int32, UNiagaraDataInterfaceArrayInt32>(NiagaraComponent, OverrideName, Index);
@@ -361,6 +436,11 @@ void UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayVector4(UNiagaraC
 void UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayQuat(UNiagaraComponent* NiagaraSystem, FName OverrideName, TConstArrayView<FQuat4f> ArrayData)
 {
 	SetNiagaraArray<FQuat4f, UNiagaraDataInterfaceArrayQuat>(NiagaraSystem, OverrideName, ArrayData);
+}
+
+void UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayMatrix(UNiagaraComponent* NiagaraSystem, FName OverrideName, TConstArrayView<FMatrix44f> ArrayData)
+{
+	SetNiagaraArray<FMatrix44f, UNiagaraDataInterfaceArrayMatrix>(NiagaraSystem, OverrideName, ArrayData);
 }
 
 void UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayUInt8(UNiagaraComponent* NiagaraSystem, FName OverrideName, TConstArrayView<uint8> ArrayData)

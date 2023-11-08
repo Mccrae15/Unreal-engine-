@@ -33,6 +33,7 @@ namespace OculusXRInput
 		static bool IsHandTrackingEnabled();
 		static bool IsHandDominant(const int32 ControllerIndex, const EOculusXRHandType DeviceHand);
 		static bool IsHandPositionValid(int32 ControllerIndex, EOculusXRHandType DeviceHand);
+		static void SetControllerDrivenHandPoses(const EOculusXRControllerDrivenHandPoseTypes Type);
 
 		// Helper functions
 		static ovrpBoneId ToOvrBone(EOculusXRBone Bone);
@@ -42,6 +43,8 @@ namespace OculusXRInput
 		// Converters for converting from ovr bone space (should match up with ovr avatar)
 		static FVector OvrBoneVectorToFVector(ovrpVector3f ovrpVector, float WorldToMeters);
 		static FQuat OvrBoneQuatToFQuat(ovrpQuatf ovrpQuat);
+
+		static EOculusXRControllerDrivenHandPoseTypes ControllerDrivenHandType;
 
 	private:
 		// Initializers for runtime hand assets

@@ -9,7 +9,10 @@
 
 const k_current_dir = "./";
 
-const k_scroll_width = 8;
+const k_style_scroll_width = 8;
+const k_style_padding_size = 10;
+const k_style_main_div_margin = 15;
+
 const k_null_json_ptr = "0000000000000000";
 
 
@@ -491,6 +494,161 @@ function test_decode_float()
 }
 
 
+// -------------------------------------------------------------------- PASS ANALYSIS
+
+var g_analysis = {};
+
+function get_frame_number(pass_data)
+{
+	var pass_event_scopes = pass_data['ParentEventScopes'];
+	var frame_event_scope_name = pass_event_scopes[pass_event_scopes.length - 1];
+
+	const regex = new RegExp("Frame (?<FrameNumber>\\d+).*");
+	//const regex = /Frame (?<FrameNumber>\d+) .*"/;
+
+	var found = frame_event_scope_name.match(regex);
+	return Number(found.groups['FrameNumber']);
+}
+
+function compare_draw_events(ref_draw_event, tested_draw_event)
+{
+	ref_draw_event = ref_draw_event.replace(/\d+\.d*/g, '');
+	ref_draw_event = ref_draw_event.replace(/\d+/g, '');
+
+	tested_draw_event = tested_draw_event.replace(/\d+\.d*/g, '');
+	tested_draw_event = tested_draw_event.replace(/\d+/g, '');
+
+	return ref_draw_event == tested_draw_event;
+}
+
+function is_pass_output_resource(pass_data, subresource_version_info)
+{
+	var subresource_unique_name = get_subresource_unique_name(subresource_version_info);
+
+	var is_output_resource = null;
+	if (pass_data['InputResources'].includes(subresource_unique_name))
+	{
+		is_output_resource = false;
+	}
+	else if (pass_data['OutputResources'].includes(subresource_unique_name))
+	{
+		is_output_resource = true;
+	}
+	console.assert(is_output_resource !== null);
+	return is_output_resource;
+}
+
+function find_similar_pass_id_in_frame(current_frame_pass_data, new_frame_id)
+{
+	var current_pass_event_scopes = current_frame_pass_data['ParentEventScopes'];
+
+	for (var pass_id in g_passes)
+	{
+		var pass_data = g_passes[pass_id];
+		if (!compare_draw_events(pass_data['EventName'], current_frame_pass_data['EventName']))
+		{
+			continue;
+		}
+
+		var frame_id = get_frame_number(pass_data);
+		if (frame_id != new_frame_id)
+		{
+			continue;
+		}
+
+		var pass_event_scopes = pass_data['ParentEventScopes'];
+		if (pass_event_scopes.length != current_pass_event_scopes.length)
+		{
+			continue;
+		}
+		else
+		{
+			var is_same_parent = true;
+			for (var parent_scope_id = 0; parent_scope_id < pass_event_scopes.length - 1; parent_scope_id++)
+			{
+				is_same_parent = is_same_parent && compare_draw_events(current_pass_event_scopes[parent_scope_id], pass_event_scopes[parent_scope_id]);
+			}
+			if (!is_same_parent)
+			{
+				continue;
+			}
+		}
+
+		return Number(pass_id);
+	}
+
+	return null;
+}
+
+function find_similar_resource_in_pass(current_frame_pass_data, current_frame_resource_desc, current_frame_subresource_info, new_pass_data)
+{
+	var is_output_resource = is_pass_output_resource(current_frame_pass_data, current_frame_subresource_info);
+
+	var new_pass_resource_list = is_output_resource ? new_pass_data['OutputResources'] : new_pass_data['InputResources'];
+
+	for (var new_pass_subresource_unique_name of new_pass_resource_list)
+	{
+		var new_pass_subresource_info = parse_subresource_unique_name(new_pass_subresource_unique_name);
+		if (new_pass_subresource_info['subresource'] !== current_frame_subresource_info['subresource'])
+		{
+			continue;
+		}
+		if (new_pass_subresource_info['array_slice'] !== current_frame_subresource_info['array_slice'])
+		{
+			continue;
+		}
+
+		var new_pass_resource_desc = get_resource_desc(new_pass_subresource_info['resource']);
+		if (new_pass_resource_desc['Name'] !== current_frame_resource_desc['Name'])
+		{
+			continue;
+		}
+
+		return new_pass_subresource_info;
+	}
+
+	// try to find with non matching array_slice
+	for (var new_pass_subresource_unique_name of new_pass_resource_list)
+	{
+		var new_pass_subresource_info = parse_subresource_unique_name(new_pass_subresource_unique_name);
+		if (new_pass_subresource_info['subresource'] !== current_frame_subresource_info['subresource'])
+		{
+			continue;
+		}
+
+		var new_pass_resource_desc = get_resource_desc(new_pass_subresource_info['resource']);
+		if (new_pass_resource_desc['Name'] !== current_frame_resource_desc['Name'])
+		{
+			continue;
+		}
+
+		return new_pass_subresource_info;
+	}
+
+
+	return null;
+}
+
+function analyses_passes()
+{
+	var frames = [];
+
+	for (var pass_id in g_passes)
+	{
+		var pass_data = g_passes[pass_id];
+		
+		var frame_id = get_frame_number(pass_data);
+
+		if (!frames.includes(frame_id))
+		{
+			frames.push(frame_id);
+		}
+	}
+
+	g_analysis['FrameList'] = frames;
+}
+
+
 // -------------------------------------------------------------------- DISPLAY PASS
 
 function display_pass_hierarchy()
@@ -610,6 +768,7 @@ class PassView extends IView
 
 		parent_dom.innerHTML = `
 			<div class="pass_title main_div">
+				<div id="pass_frame_list" style="display:none;"></div>
 				${this.pass_data['EventName']}
 				<div class="button_list" style="display:inline-block;"><a href="#display_pass_parameters(${this.pass_id});">PassParameters</a></div>
 			</div>
@@ -672,11 +831,82 @@ class PassView extends IView
 
 	refresh_all_lists()
 	{
+		this.refresh_frames_lists();
 		this.refresh_input_resource_list();
 		this.refresh_output_resource_list();
 		this.refresh_draw_resource_list();
 		this.refresh_resource_modifying_list();
 		this.refresh_resource_reading_list();
+	}
+
+	refresh_frames_lists()
+	{
+		if (g_analysis['FrameList'].length == 1)
+		{
+			return;
+		}
+
+		if (this.resource_view === null)
+		{
+			document.getElementById('pass_frame_list').style.display = 'none';
+			return;
+		}
+
+		var pass_data = this.pass_data;
+		var subresource_version_info = this.resource_view.subresource_version_info;
+
+		var current_frame_number = get_frame_number(this.pass_data);
+		var prev_frame_number = g_analysis['FrameList'].includes(current_frame_number - 1) ? current_frame_number - 1 : g_analysis['FrameList'][g_analysis['FrameList'].length - 1];
+		var next_frame_number = g_analysis['FrameList'].includes(current_frame_number + 1) ? current_frame_number + 1 : g_analysis['FrameList'][0];
+
+		var prev_frame_pass_id = find_similar_pass_id_in_frame(this.pass_data, prev_frame_number);
+		var next_frame_pass_id = find_similar_pass_id_in_frame(this.pass_data, next_frame_number);
+
+		if (prev_frame_pass_id == null || next_frame_pass_id == null)
+		{
+			document.getElementById('pass_frame_list').style.display = 'none';
+			return;
+		}
+
+		var prev_frame_href = '';
+		var next_frame_href = '';
+		if (this.resource_view.resource_desc['Desc'] == 'FRDGParameterStruct')
+		{
+			prev_frame_href = `#display_pass_parameters(${prev_frame_pass_id});`;
+			next_frame_href = `#display_pass_parameters(${next_frame_pass_id});`;
+		}
+		else
+		{
+			var prev_frame_pass_data = g_passes[prev_frame_pass_id];
+			var next_frame_pass_data = g_passes[next_frame_pass_id];
+
+			var is_output_resource = is_pass_output_resource(this.pass_data, this.resource_view.subresource_version_info);
+			var prev_frame_subresource_info = find_similar_resource_in_pass(this.pass_data, this.resource_view.resource_desc, this.resource_view.subresource_version_info, prev_frame_pass_data);
+			var next_frame_subresource_info = find_similar_resource_in_pass(this.pass_data, this.resource_view.resource_desc, this.resource_view.subresource_version_info, next_frame_pass_data);
+
+			var prev_frame_href = '';
+			var next_frame_href = '';
+			if (prev_frame_subresource_info == null || next_frame_subresource_info == null)
+			{
+				document.getElementById('pass_frame_list').style.display = 'none';
+				return;
+			}
+			else if (is_output_resource)
+			{
+				prev_frame_href = `#display_output_resource(${prev_frame_pass_id},'${get_subresource_unique_name(prev_frame_subresource_info)}');`;
+				next_frame_href = `#display_output_resource(${next_frame_pass_id},'${get_subresource_unique_name(next_frame_subresource_info)}');`;
+			}
+			else
+			{
+				prev_frame_href = `#display_input_resource(${prev_frame_pass_id},'${get_subresource_unique_name(prev_frame_subresource_info)}');`;
+				next_frame_href = `#display_input_resource(${next_frame_pass_id},'${get_subresource_unique_name(next_frame_subresource_info)}');`;
+			}
+		}
+
+		document.getElementById('pass_frame_list').style.display = 'inline-block';
+		document.getElementById('pass_frame_list').innerHTML = `
+			<div class="button_list" style="display:inline-block;"><a href="${prev_frame_href}">-</a><a title="Id of the current frame">${current_frame_number}</a><a href="${next_frame_href}">+</a></div>
+			`;
 	}
 
 	refresh_input_resource_list()
@@ -752,7 +982,7 @@ class PassView extends IView
 		var subresource_unique_name = '';
 		if (this.resource_view)
 		{
-			is_output_resource = this.pass_data['OutputResources'].includes(get_subresource_unique_name(this.resource_view.subresource_version_info));
+			is_output_resource = is_pass_output_resource(this.pass_data, this.resource_view.subresource_version_info);
 			subresource_unique_name = get_subresource_unique_name(this.resource_view.subresource_version_info);
 		}
 
@@ -945,7 +1175,14 @@ function display_resource_internal(subresource_version_info)
 
 	if (resource_desc['Desc'] == 'FRDGBufferDesc')
 	{
-		g_view.set_resource_view(new BufferView(subresource_version_info, resource_desc));
+		if (resource_desc['Usage'].includes('AccelerationStructure'))
+		{
+			g_view.set_resource_view(new RaytracingAccelerationStructureView(subresource_version_info, resource_desc));
+		}
+		else
+		{
+			g_view.set_resource_view(new BufferView(subresource_version_info, resource_desc));
+		}
 	}
 	else if (resource_desc['Desc'] == 'FRDGTextureDesc' && (resource_desc['Type'] == 'Texture2D' || resource_desc['Type'] == 'Texture2DArray'))
 	{
@@ -1204,6 +1441,7 @@ const k_tips = [
 	'Speed up your frame dump by only selecting the passes you need with r.DumpGPU.Root. For instance r.DumpGPU.Root="*PostProcessing*".',
 	'Uses r.DumpGPU.Delay to delay the dump of few seconds to have time to repro the issue with gameplay logic (for instance moving arround in the map).',
 	'Uses r.DumpGPU.FrameCount to dump more than one frame. This is useful when artifact may be produced only some frames but end up stucked in temporal histories.',
+	'Uses r.DumpGPU.FixedTickRate to automatically override the engine\'s tick rate to fixed value when dumping multiple frames.',
 	'Uses r.DumpGPU.DumpOnScreenshotTest=1 to automatically produce a GPU dump of the frame producing screenshot in the automated AScreenshotFunctionalTest',
 	'GPU dumps can be large and accumulate on your hard drive in your various projects\' Saved/ directories. Set r.DumpGPU.Directory="D:/tmp/DumpGPU/" in your console variables or UE-DumpGPUPath environment variable to dump them all at the same location on your machine.',
 	'Uses -cvarsini to override console variables with your own ConsoleVariables.ini file on a cooked build.',
@@ -1392,7 +1630,7 @@ function display_cvars()
 
 function get_log_path()
 {
-	return `Base/${g_infos['Project']}.log`;
+	return `Base/${g_infos['LogFilename']}`;
 }
 
 class LogView extends IView
@@ -1414,7 +1652,7 @@ class LogView extends IView
 	{
 		parent_dom.innerHTML = `
 			<div class="main_div">
-				<div class="pass_title">Log</div>
+				<div class="pass_title">${g_infos['LogFilename']}</div>
 				<div class="selection_list_search">
 					<input type="search" id="log_search_input" oninput="g_view.refresh_log();" onchange="g_view.refresh_log();" style="width: 100%;" placeholder="Search log..." />
 				</div>
@@ -1460,6 +1698,13 @@ class LogView extends IView
 		return [`display_log();`];
 	}
 
+	resize(ctx)
+	{
+		document.getElementById('log_pannel').style.width = `${ctx.width - 2 * k_style_padding_size}px`;
+		document.getElementById('log_pannel').style.height = `${ctx.height - 2 * k_style_padding_size - 75}px`;
+		document.getElementById('log_pannel').style.overflow = `scroll`;
+	}
+
 	release()
 	{
 		this.log = null;
@@ -1469,6 +1714,254 @@ class LogView extends IView
 function display_log()
 {
 	set_main_view(new LogView());
+}
+
+
+
+// -------------------------------------------------------------------- WEBGL UTILS
+
+function copy_canvas_to_clipboard(canvas, text)
+{
+	canvas.toBlob(function(image_blob) {
+		var text_blob = new Blob([text], { type: 'text/plain' });
+		var clipboard_data = {
+			[text_blob.type]: text_blob,
+			[image_blob.type]: image_blob,
+		};
+
+		navigator.clipboard.write([new ClipboardItem(clipboard_data)]);
+	}, 'image/png');
+}
+
+function gl_create_vertex_buffer(gl, vertices)
+{
+	var webgl_vertex_buffer = gl.createBuffer();
+	gl.bindBuffer(gl.ARRAY_BUFFER, webgl_vertex_buffer);
+	gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+	gl.bindBuffer(gl.ARRAY_BUFFER, null);
+	return webgl_vertex_buffer;
+}
+
+function gl_create_index_buffer(gl, indices)
+{
+	var webgl_index_buffer = gl.createBuffer();
+	gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, webgl_index_buffer);
+	gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+	gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+	return webgl_index_buffer;
+}
+
+function gl_create_shader(gl, shader_type, shader_code)
+{
+	const shader_std = `#version 300 es
+
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+precision highp usampler2D;
+
+struct FloatInfos
+{
+	bool is_denormal;
+	bool is_infinity;
+	bool is_nan;
+};
+
+FloatInfos decodeFloat(float x)
+{
+	const uint mantissa_bit_count = 23u;
+	const uint exp_bit_count = 8u;
+
+	uint raw = floatBitsToUint(x);
+
+	uint sign_bit      = (raw >> (mantissa_bit_count + exp_bit_count)) & 0x1u;
+	uint mantissa_bits = (raw >> 0u)                     & ((0x1u << mantissa_bit_count) - 1u);
+	uint exp_bits      = (raw >> mantissa_bit_count)     & ((0x1u << exp_bit_count) - 1u);
+
+	bool is_max_exp = exp_bits == ((0x1u << exp_bit_count) - 1u);
+
+	FloatInfos infos;
+	infos.is_denormal = exp_bits == 0u;
+	infos.is_infinity = is_max_exp && mantissa_bits == 0u;
+	infos.is_nan = is_max_exp && mantissa_bits != 0u;
+
+	return infos;
+}
+
+#define isnan(x) decodeFloat(x).is_nan
+#define isinf(x) decodeFloat(x).is_infinity
+#define isdenorm(x) decodeFloat(x).is_denormal
+
+`;
+	
+	var gl_shader = gl.createShader(shader_type);
+	gl.shaderSource(gl_shader, shader_std + shader_code);
+	gl.compileShader(gl_shader);
+
+	var compilation_status = gl.getShaderParameter(gl_shader, gl.COMPILE_STATUS);
+	if (!compilation_status)
+	{
+		var compilation_log = gl.getShaderInfoLog(gl_shader);
+		console.error('Shader compiler log: ' + compilation_log);
+		return compilation_log;
+	}
+	return gl_shader;
+}
+
+function gl_create_shader_program(gl, vert_shader, frag_shader)
+{
+	var gl_vert_shader = null;
+	if (typeof vert_shader === 'string')
+	{
+		gl_vert_shader = gl_create_shader(gl, gl.VERTEX_SHADER, vert_shader);
+		if (typeof gl_vert_shader === 'string')
+		{
+			return gl_vert_shader;
+		}
+	}
+	else if (typeof vert_shader === 'WebGLShader')
+	{
+		gl_vert_shader = vert_shader;
+	}
+	else
+	{
+		console.error('wrong vert_shader');
+		return null;
+	}
+
+	var gl_frag_shader = null;
+	if (typeof frag_shader === 'string')
+	{
+		gl_frag_shader = gl_create_shader(gl, gl.FRAGMENT_SHADER, frag_shader);
+		if (typeof gl_frag_shader === 'string')
+		{
+			return gl_frag_shader;
+		}
+	}
+	else if (typeof frag_shader === 'WebGLShader')
+	{
+		gl_frag_shader = frag_shader;
+	}
+	else
+	{
+		console.error('wrong vert_shader');
+		return null;
+	}
+
+	var shader_program = gl.createProgram();
+	gl.attachShader(shader_program, gl_vert_shader);
+	gl.attachShader(shader_program, gl_frag_shader);
+	gl.linkProgram(shader_program);
+
+	var link_status = gl.getProgramParameter(shader_program, gl.LINK_STATUS);
+	if (!link_status)
+	{
+		var link_log = gl.getProgramInfoLog(shader_program);
+		console.error('Program compiler log: ' + link_log);
+		return null;
+	}
+	return shader_program;
+}
+
+function gl_set_uniform_uint(gl, program, name, value)
+{
+	var uniform_loc = gl.getUniformLocation(program, name);
+	if (uniform_loc)
+	{
+		gl.uniform1ui(uniform_loc, value);
+	}
+}
+
+function gl_set_uniform_mat4(gl, program, name, matrix)
+{
+	var uniform_loc = gl.getUniformLocation(program, name);
+	if (uniform_loc)
+	{
+		gl.uniformMatrix4fv(uniform_loc, false, new Float32Array(matrix));
+	}
+}
+
+
+// -------------------------------------------------------------------- MATH UTILS
+
+function create_null_matrix()
+{
+	return new Array(4 * 4).fill(0.0);
+}
+
+function create_identity_matrix()
+{
+	var matrix = create_null_matrix();
+	matrix[0 + 0 * 4] = 1.0;
+	matrix[1 + 1 * 4] = 1.0;
+	matrix[2 + 2 * 4] = 1.0;
+	matrix[3 + 3 * 4] = 1.0;
+	return matrix;
+}
+
+function create_view_matrix(camera_pos, camera_dir)
+{
+	var camera_pos_x = camera_pos[0];
+	var camera_pos_y = camera_pos[1];
+	var camera_pos_z = camera_pos[2];
+
+	var camera_dir_len = Math.sqrt(
+		camera_dir[0] * camera_dir[0] +
+		camera_dir[1] * camera_dir[1] +
+		camera_dir[2] * camera_dir[2]);
+	var camera_dir_x = camera_dir[0] / camera_dir_len;
+	var camera_dir_y = camera_dir[1] / camera_dir_len;
+	var camera_dir_z = camera_dir[2] / camera_dir_len;
+
+	var horizon_dir_len = Math.sqrt(camera_dir_x * camera_dir_x + camera_dir_y * camera_dir_y);
+	var horizon_dir_x = camera_dir_y / horizon_dir_len;
+	var horizon_dir_y = -camera_dir_x / horizon_dir_len;
+	var horizon_dir_z = 0.0;
+
+	var vertical_dir_x = - camera_dir_y * horizon_dir_z + camera_dir_z * horizon_dir_y;
+	var vertical_dir_y = - camera_dir_z * horizon_dir_x + camera_dir_x * horizon_dir_z;
+	var vertical_dir_z = - camera_dir_x * horizon_dir_y + camera_dir_y * horizon_dir_x;
+
+	// column major
+	var matrix = create_identity_matrix();
+	matrix[0 + 0 * 4] = horizon_dir_x;
+	matrix[0 + 1 * 4] = horizon_dir_y;
+	matrix[0 + 2 * 4] = horizon_dir_z;
+	matrix[0 + 3 * 4] = -(horizon_dir_x * camera_pos_x + horizon_dir_y * camera_pos_y + horizon_dir_z * camera_pos_z);
+
+	matrix[1 + 0 * 4] = vertical_dir_x;
+	matrix[1 + 1 * 4] = vertical_dir_y;
+	matrix[1 + 2 * 4] = vertical_dir_z;
+	matrix[1 + 3 * 4] = -(vertical_dir_x * camera_pos_x + vertical_dir_y * camera_pos_y + vertical_dir_z * camera_pos_z);
+
+	matrix[2 + 0 * 4] = camera_dir_x;
+	matrix[2 + 1 * 4] = camera_dir_y;
+	matrix[2 + 2 * 4] = camera_dir_z;
+	matrix[2 + 3 * 4] = -(camera_dir_x * camera_pos_x + camera_dir_y * camera_pos_y + camera_dir_z * camera_pos_z);
+
+	return matrix;
+}
+
+// Matches TPerspectiveMatrix
+function create_projection_matrix_reverse_z_persepective(half_fov, aspect_ratio, clipping_plane)
+{
+	const z_precision = 0.0;
+
+	var half_fov_x = half_fov * Math.PI / 180.0;
+	var half_fov_y = half_fov_x;
+	var mult_fov_x = 1.0;
+	var mult_fov_y = aspect_ratio;
+	var min_z = clipping_plane;
+	var max_z = clipping_plane;
+
+	// column major
+	var matrix = create_null_matrix();
+	matrix[0 + 0 * 4] = mult_fov_x / Math.tan(half_fov_x);
+	matrix[1 + 1 * 4] = mult_fov_y / Math.tan(half_fov_y);
+	matrix[2 + 3 * 4] = min_z;
+	matrix[3 + 2 * 4] = 1.0;
+
+	return matrix;
 }
 
 
@@ -1490,6 +1983,8 @@ class TextureView extends ResourceView
 		this.pixel_scaling = 0;
 		this.viewport_selected = false;
 		this.is_draging_canvas = false;
+		this.src_channels = 'RGB';
+		this.src_color_space = 'sRGB/Rec709';
 		this.display_mode = 'Visualization';
 	}
 
@@ -1544,13 +2039,25 @@ class TextureView extends ResourceView
 							---><input type="button" onclick="g_view.resource_view.change_pixel_scaling(this);" value="8:1"/><!--- 
 							---><input type="button" onclick="g_view.resource_view.change_pixel_scaling(this);" value="16:1"/>
 						</div>
-						<div class="button_list">
-							<input type="button" onclick="g_view.resource_view.copy_canvas_to_clipboard();" value="Copy to clipboard"/>
+						<div class="button_list" id="texture_visualization_change_src_channels"><!---
+							---><input type="button" onclick="g_view.resource_view.change_src_channels(this);" value="RGB" title="Display the WebGL's visualization shader's display.rgb channels (default)."/><!---
+							---><input type="button" onclick="g_view.resource_view.change_src_channels(this);" value="R" title="Display the WebGL's visualization shader's display.r channel."/><!---
+							---><input type="button" onclick="g_view.resource_view.change_src_channels(this);" value="G" title="Display the WebGL's visualization shader's display.g channel."/><!---
+							---><input type="button" onclick="g_view.resource_view.change_src_channels(this);" value="B" title="Display the WebGL's visualization shader's display.b channel."/><!---
+							---><input type="button" onclick="g_view.resource_view.change_src_channels(this);" value="A" title="Display the WebGL's visualization shader's display.a channel."/>
+						</div>
+						<div class="button_list" id="texture_visualization_change_src_color"><!---
+							---><span>Src color:</span><!---
+							---><input type="button" onclick="g_view.resource_view.change_src_color(this);" value="sRGB/Rec709" title="Performs no modifications to display to WebGL's sRGB backbuffer (default)."/><!---
+							---><input type="button" onclick="g_view.resource_view.change_src_color(this);" value="RGB Linear[0;1]" title="Applies a pow(display.rgb, 2.2); to output WebGL's sRGB backbuffer."/>
 						</div>
 						<div class="button_list" id="texture_visualization_change_display_modes"><!---
-							---><input type="button" onclick="g_view.resource_view.change_display_mode(this);" value="Visualization"/><!---
-							---><input type="button" onclick="g_view.resource_view.change_display_mode(this);" value="NaN"/><!---
-							---><input type="button" onclick="g_view.resource_view.change_display_mode(this);" value="Inf"/>
+							---><input type="button" onclick="g_view.resource_view.change_display_mode(this);" value="Visualization" title="Display the WebGL's visualization shader's display.rgb."/><!---
+							---><input type="button" onclick="g_view.resource_view.change_display_mode(this);" value="NaN" title="Display any NaN in the raw texture."/><!---
+							---><input type="button" onclick="g_view.resource_view.change_display_mode(this);" value="Inf" title="Display any Inf in the raw texture."/>
+						</div>
+						<div class="button_list">
+							<input type="button" onclick="g_view.resource_view.copy_canvas_to_clipboard();" value="Copy to clipboard"/>
 						</div>
 					</div>
 					<div id="canvas_viewport">
@@ -1591,7 +2098,9 @@ class TextureView extends ResourceView
 		parent_dom.innerHTML = html;
 
 		update_value_selection(document.getElementById('texture_visualization_change_pixel_scaling'), `Fit`);
-		update_value_selection(document.getElementById('texture_visualization_change_display_modes'), `Visualization`);
+		update_value_selection(document.getElementById('texture_visualization_change_src_channels'), this.src_channels);
+		update_value_selection(document.getElementById('texture_visualization_change_src_color'), this.src_color_space);
+		update_value_selection(document.getElementById('texture_visualization_change_display_modes'), this.display_mode);
 
 		// Init WebGL 2.0
 		this.init_gl();
@@ -1895,7 +2404,7 @@ class TextureView extends ResourceView
 		// Find new pixel scaling to scale the viewport to.
 		var new_pixel_scaling = 0;
 		{
-			var viewport_width = (px_string_to_int(document.getElementById('canvas_viewport').style.width) - k_scroll_width) * dpi;
+			var viewport_width = (px_string_to_int(document.getElementById('canvas_viewport').style.width) - k_style_scroll_width) * dpi;
 
 			var min_pixel_scaling = Math.ceil(viewport_width / subresource_extent['x']);
 			if (min_pixel_scaling <= 1)
@@ -2076,8 +2585,8 @@ class TextureView extends ResourceView
 	resize(ctx)
 	{
 		var dpi = window.devicePixelRatio || 1;
-		var viewport_width = ctx.width - 100;
-		var viewport_width_no_scroll = viewport_width - k_scroll_width;
+		var viewport_width = ctx.width - 2 * k_style_padding_size - 2;
+		var viewport_width_no_scroll = viewport_width - k_style_scroll_width;
 
 		var subresource_extent = this.get_subresource_extent();
 		var canvas_rendering_res_x = subresource_extent['x'];
@@ -2086,8 +2595,8 @@ class TextureView extends ResourceView
 		var canvas_outter = document.getElementById('canvas_outter');
 		var canvas_viewport = document.getElementById('canvas_viewport');
 		canvas_outter.style.width = `${viewport_width}px`;
-		canvas_viewport.style.width = `${viewport_width_no_scroll + k_scroll_width}px`;
-		canvas_viewport.style.height = `${viewport_width_no_scroll * canvas_rendering_res_y / canvas_rendering_res_x + k_scroll_width}px`;
+		canvas_viewport.style.width = `${viewport_width_no_scroll + k_style_scroll_width}px`;
+		canvas_viewport.style.height = `${viewport_width_no_scroll * canvas_rendering_res_y / canvas_rendering_res_x + k_style_scroll_width}px`;
 
 		this.viewport_width = viewport_width;
 		if (this.is_ready)
@@ -2101,12 +2610,12 @@ class TextureView extends ResourceView
 		console.assert(this.is_ready);
 		var dpi = window.devicePixelRatio || 1;
 		var viewport_width = this.viewport_width;
-		var viewport_width_no_scroll = viewport_width - k_scroll_width;
+		var viewport_width_no_scroll = viewport_width - k_style_scroll_width;
 
 		var canvas_viewport = document.getElementById('canvas_viewport');
 		var canvas_viewport_rect = canvas_viewport.getBoundingClientRect();
 		var viewport_height = px_string_to_int(canvas_viewport.style.height);
-		var viewport_height_no_scroll = viewport_height - k_scroll_width;
+		var viewport_height_no_scroll = viewport_height - k_style_scroll_width;
 
 		var subresource_extent = this.get_subresource_extent();
 		var canvas_rendering_res_x = subresource_extent['x'];
@@ -2232,29 +2741,16 @@ class TextureView extends ResourceView
 		// Set unpacking alignement to 1 to allow uploading texture size not multple of 4 
 		gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
 
-		// Create vertex buffer
+		// Create buffers
 		{
-			var vertices = [
+			this.gl_vertex_buffer = gl_create_vertex_buffer(gl, new Float32Array([
 				-1.0,+1.0,0.0,
 				-1.0,-1.0,0.0,
 				+1.0,-1.0,0.0,
 				+1.0,+1.0,0.0, 
-			];
+			]));
 
-			this.gl_vertex_buffer = gl.createBuffer();
-			gl.bindBuffer(gl.ARRAY_BUFFER, this.gl_vertex_buffer);
-			gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
-			gl.bindBuffer(gl.ARRAY_BUFFER, null);
-		}
-
-		// Create vertex buffer
-		{
-			var indices = [0, 1, 2, 2, 0, 3];
-
-			this.gl_index_buffer = gl.createBuffer();
-			gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.gl_index_buffer);
-			gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
-			gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+			this.gl_index_buffer = gl_create_index_buffer(gl, new Uint16Array([0, 1, 2, 2, 0, 3]));
 		}
 
 		// Create simple shader program for NaN display mode
@@ -2352,34 +2848,35 @@ void main(void)
 			return;
 		}
 		
-		var texture_view = this;
-		this.canvas.toBlob(function(image_blob) {
-			var pass_data = g_view.pass_data;
+		var pass_data = g_view.pass_data;
 
-			var is_output_resource = pass_data['OutputResources'].includes(get_subresource_unique_name(texture_view.subresource_version_info));
+		var is_output_resource = is_pass_output_resource(pass_data, this.subresource_version_info);
 
-			var text = '';
-			text += `Dump:\n\t${g_infos['Project']} - ${g_infos['Platform']} - ${g_infos['RHI']} - ${g_infos['BuildVersion']} - ${g_infos['DumpTime']}\n\t${get_current_navigation()}\n`
-			text += `Pass:\n\t${pass_data['EventName']}\n`;
+		var text = '';
+		text += `Dump:\n\t${g_infos['Project']} - ${g_infos['Platform']} - ${g_infos['RHI']} - ${g_infos['BuildVersion']} - ${g_infos['DumpTime']}\n\t${get_current_navigation()}\n`
+		text += `Pass:\n\t${pass_data['EventName']}\n`;
 
+		{
+			var name = prettify_subresource_unique_name(this.subresource_version_info, this.resource_desc);
+			text += `${is_output_resource ? 'Output' : 'Input'} resource:\n\t${name}\n`;
+			if (this.display_mode == 'Visualization')
 			{
-				var name = prettify_subresource_unique_name(texture_view.subresource_version_info, texture_view.resource_desc);
-				text += `${is_output_resource ? 'Output' : 'Input'} resource:\n\t${name}\n`;
+				text += `\tDisplay shader: \n${g_shader_code_dict[this.shader_code_saving_key]}\n`;
+				text += `\tDisplay channels: ${this.src_channels}\n`;
+				text += `\tDisplay src color: ${this.src_color_space}\n`;
 			}
-
-			if (texture_view.subresource_version_info['draw'] >= 0)
+			else
 			{
-				text += `Draw ${texture_view.subresource_version_info['draw']}:\n\t${g_view.pass_draws_data[texture_view.subresource_version_info['draw']]['DrawName']}\n`;
+				text += `\tSrc color: ${this.display_mode}\n`;
 			}
+		}
 
-			var text_blob = new Blob([text], { type: 'text/plain' });
-			var clipboard_data = {
-				[text_blob.type]: text_blob,
-				[image_blob.type]: image_blob,
-			};
+		if (this.subresource_version_info['draw'] >= 0)
+		{
+			text += `Draw ${this.subresource_version_info['draw']}:\n\t${g_view.pass_draws_data[this.subresource_version_info['draw']]['DrawName']}\n`;
+		}
 
-			navigator.clipboard.write([new ClipboardItem(clipboard_data)]);
-		}, 'image/png');
+		copy_canvas_to_clipboard(this.canvas, text);
 	}
 
 	get shader_code_saving_key()
@@ -2393,6 +2890,8 @@ void main(void)
 		{
 			name = this.subresource_version_info['resource'];
 		}
+
+		name = `${name}.${this.resource_desc['Format']}`;
 
 		if (this.subresource_version_info['subresource'] && !this.subresource_version_info['subresource'].startsWith('mip'))
 		{
@@ -2813,6 +3312,44 @@ ${shader_display_assignment} = ${shader_display_operation};`;
 		update_value_selection(document.getElementById('texture_visualization_change_pixel_scaling'), pixel_scaling_button.value);
 	}
 
+	change_src_channels(new_src_channels)
+	{
+		if (!this.is_ready)
+		{
+			return;
+		}
+		
+		if (new_src_channels.value == this.src_channels)
+		{
+			return;
+		}
+
+		this.src_channels = new_src_channels.value;
+
+		update_value_selection(document.getElementById('texture_visualization_change_src_channels'), this.src_channels);
+
+		this.refresh_texture_visualization();
+	}
+
+	change_src_color(new_src_color_space)
+	{
+		if (!this.is_ready)
+		{
+			return;
+		}
+		
+		if (new_src_color_space.value == this.src_color_space)
+		{
+			return;
+		}
+
+		this.src_color_space = new_src_color_space.value;
+
+		update_value_selection(document.getElementById('texture_visualization_change_src_color'), this.src_color_space);
+
+		this.refresh_texture_visualization();
+	}
+
 	change_display_mode(new_mode)
 	{
 		if (!this.is_ready)
@@ -3023,51 +3560,6 @@ ${shader_display_assignment} = ${shader_display_operation};`;
 
 	compile_screen_shader_program(frag_code)
 	{
-		var gl = this.gl;
-
-		//console.log(frag_code);
-
-		const shader_std = `#version 300 es
-
-precision highp float;
-precision highp int;
-precision highp sampler2D;
-precision highp usampler2D;
-
-struct FloatInfos
-{
-	bool is_denormal;
-	bool is_infinity;
-	bool is_nan;
-};
-
-FloatInfos decodeFloat(float x)
-{
-	const uint mantissa_bit_count = 23u;
-	const uint exp_bit_count = 8u;
-
-	uint raw = floatBitsToUint(x);
-
-	uint sign_bit      = (raw >> (mantissa_bit_count + exp_bit_count)) & 0x1u;
-	uint mantissa_bits = (raw >> 0u)                     & ((0x1u << mantissa_bit_count) - 1u);
-	uint exp_bits      = (raw >> mantissa_bit_count)     & ((0x1u << exp_bit_count) - 1u);
-
-	bool is_max_exp = exp_bits == ((0x1u << exp_bit_count) - 1u);
-
-	FloatInfos infos;
-	infos.is_denormal = exp_bits == 0u;
-	infos.is_infinity = is_max_exp && mantissa_bits == 0u;
-	infos.is_nan = is_max_exp && mantissa_bits != 0u;
-
-	return infos;
-}
-
-#define isnan(x) decodeFloat(x).is_nan
-#define isinf(x) decodeFloat(x).is_infinity
-#define isdenorm(x) decodeFloat(x).is_denormal
-
-`;
-
 		var vert_code = `
 in vec3 coordinates;
 out highp vec2 uv;
@@ -3076,53 +3568,15 @@ void main(void) {
 	uv = coordinates.xy * 0.5 + 0.5;
 }`;
 
-		var vert_shader = gl.createShader(gl.VERTEX_SHADER);
+		var shader_program = gl_create_shader_program(this.gl, vert_code, frag_code);
+		if (typeof shader_program === 'string')
 		{
-			gl.shaderSource(vert_shader, shader_std + vert_code);
-			gl.compileShader(vert_shader);
-
-			var compilation_status = gl.getShaderParameter(vert_shader, gl.COMPILE_STATUS);
-			if (!compilation_status)
-			{
-				var compilation_log = gl.getShaderInfoLog(vert_shader);
-				console.error('Fragment shader compiler log: ' + compilation_log);
-				return null;
-			}
+			document.getElementById('texture_visualization_code_log').value = 'Compilation failed:\n' + shader_program;
+			return null;
 		}
-
-		var frag_shader = gl.createShader(gl.FRAGMENT_SHADER);
+		else
 		{
-			gl.shaderSource(frag_shader, shader_std + frag_code); 
-			gl.compileShader(frag_shader);
-
-			var compilation_status = gl.getShaderParameter(frag_shader, gl.COMPILE_STATUS);
-			if (!compilation_status)
-			{
-				var compilation_log = gl.getShaderInfoLog(frag_shader);
-				console.log(frag_code);
-				console.error('Fragment shader compiler log: ' + compilation_log);
-				document.getElementById('texture_visualization_code_log').value = 'Compilation failed:\n' + compilation_log;
-				return null;
-			}
-		}
-
-		var shader_program = gl.createProgram();
-		{
-			gl.attachShader(shader_program, vert_shader);
-			gl.attachShader(shader_program, frag_shader);
-			gl.linkProgram(shader_program);
-
-			var link_status = gl.getProgramParameter(shader_program, gl.LINK_STATUS);
-			if (!link_status)
-			{
-				var link_log = gl.getProgramInfoLog(shader_program);
-				console.error('Program compiler log: ' + link_log);
-				document.getElementById('texture_visualization_code_log').value = 'Link failed:\n' + link_log;
-			}
-			else
-			{
-				document.getElementById('texture_visualization_code_log').value = 'Compilation succeeded';
-			}
+			document.getElementById('texture_visualization_code_log').value = 'Compilation succeeded';
 		}
 		return shader_program;
 	}
@@ -3144,7 +3598,40 @@ void main(void) {
 		else
 		{
 			var user_frag_code = document.getElementById('texture_visualization_code_input').value;
-			shader_program = this.compile_screen_shader_program(this.subresource_desc['webgl_pixel_shader_private'] + 'void main(void) { display = vec4(0.0, 0.0, 0.0, 0.0);\n' + user_frag_code + `\n}`);
+
+			var final_frag_code = this.subresource_desc['webgl_pixel_shader_private'] + 'void main(void) { display = vec4(0.0, 0.0, 0.0, 0.0);\n';
+			final_frag_code += user_frag_code;
+			final_frag_code += '\n';
+
+			if (this.src_channels == 'R')
+			{
+				final_frag_code += 'display.rgb = vec3(display.r, 0.0, 0.0);';
+			}
+			else if (this.src_channels == 'G')
+			{
+				final_frag_code += 'display.rgb = vec3(0.0, display.g, 0.0);';
+			}
+			else if (this.src_channels == 'B')
+			{
+				final_frag_code += 'display.rgb = vec3(0.0, 0.0, display.b);';
+			}
+			else if (this.src_channels == 'A')
+			{
+				final_frag_code += 'display.rgb = display.aaa;';
+			}
+
+			if (this.src_color_space == 'sRGB/Rec709')
+			{
+				// NOP because src gamma = webgl display gamma.
+			}
+			else if (this.src_color_space == 'RGB Linear[0;1]')
+			{
+				// Apply webgl's 2.2 gamma curve on the display color so linear gradients look linear in web browser.
+				final_frag_code += 'display.rgb = pow(display.rgb, vec3(2.2));';
+			}
+			final_frag_code += '}';
+
+			shader_program = this.compile_screen_shader_program(final_frag_code);
 
 			if (!shader_program)
 			{
@@ -3777,7 +4264,7 @@ class GenericBufferView extends ResourceView
 
 		{
 			var min_row_count = 10;
-			document.getElementById('buffer_viewport').style.height = `${k_scroll_width + Math.min(Math.max(row_count + 1, min_row_count), k_buffer_max_display_row_count) * k_buffer_pixel_per_row}px`;
+			document.getElementById('buffer_viewport').style.height = `${k_style_scroll_width + Math.min(Math.max(row_count + 1, min_row_count), k_buffer_max_display_row_count) * k_buffer_pixel_per_row}px`;
 		}
 	}
 
@@ -3840,6 +4327,1025 @@ function display_pass_parameters(pass_id)
 
 	g_view.set_resource_view(new ParameterStructureView(subresource_version_info, resource_desc, structure_metadata));
 }
+
+
+// -------------------------------------------------------------------- GENERIC 3D STRUCTURE VIEW
+
+class Generic3DStructureView extends ResourceView
+{
+	constructor(subresource_version_info, resource_desc)
+	{
+		super(subresource_version_info, resource_desc);
+		this.is_ready = false;
+		this.release();
+		this.camera_pos = [200.0, 200.0, 200.0];
+		this.camera_fov = 90.0;
+		this.camera_longitude = 0.0;
+		this.camera_latitude = 0.0;
+		this.camera_look_at([0.0, 0.0, 0.0]);
+		this.camera_movement_u = 0;
+		this.camera_movement_v = 0;
+		this.camera_movement_z = 0;
+		this.camera_movement_speed = 100.0; // 1 m/s
+		this.prev_time = 0;
+	}
+
+	setup_html(parent_dom)
+	{
+		var resource_info_htmls = '';
+		{
+			resource_info_htmls += `
+				<table width="100%" class="pretty_table resource_desc">`;
+			
+			for (var key in this.resource_desc)
+			{
+			    if (this.resource_desc.hasOwnProperty(key)){
+					resource_info_htmls += `
+						<tr>
+							<td>${key}</td>
+							<td>${this.resource_desc[key]}</td>
+						</tr>`;
+			    }
+			}
+
+			resource_info_htmls += `
+				</table>`;
+		}
+
+		var title = prettify_subresource_unique_name(this.subresource_version_info, this.resource_desc);
+		if (this.subresource_version_info['draw'] >= 0)
+		{
+			title += ` draw:${this.subresource_version_info['draw']}`;
+		}
+
+		var html = `
+			<div class="main_div">
+				<div class="selection_list_title">Ray-tracing Acceleration Structure visualization: ${title}</div>
+				<div id="canvas_outter">
+					<div id="canvas_header">
+						<div class="button_list">
+							<input type="button" onclick="g_view.resource_view.copy_canvas_to_clipboard();" value="Copy to clipboard"/>
+						</div>
+					</div>
+					<canvas
+						id="generic_3d_visualization_canvas"
+						width="100"
+						height="100"
+						style="width: 100px; height: 100px;"></canvas>
+				</div>
+				<table width="100%">
+					<tr>
+						<td width="50%">
+							<div class="selection_list_title">Buffer descriptor</div>
+							${resource_info_htmls}
+						</td>
+					</tr>
+				</table>
+			</div>`;
+
+		parent_dom.innerHTML = html;
+
+		// Init WebGL 2.0
+		this.init_gl();
+
+		// Setup mouse motion callback
+		{
+			var generic_3d_view = this;
+
+			this.canvas.onclick = function(event) { generic_3d_view.onclick_canvas(); };
+			document.getElementById('canvas_outter').onmouseleave = function(event) { generic_3d_view.set_select_viewport(false); }
+		}
+
+		this.init();
+	}
+
+	init_gl()
+	{
+		var gl_ctx_attributes = {
+			antialias: false,
+  			depth: false
+		};
+
+		// Init WebGL 2.0
+		this.canvas = document.getElementById('generic_3d_visualization_canvas');
+
+		var gl_ctx_attributes = {
+			alpha: true,
+  			// premultipliedAlpha: true, // TODO
+			antialias: false,
+  			depth: true,
+  			stencil: false,
+  			powerPreference: "low-power",
+  			preserveDrawingBuffer: true,
+  			xrCompatible: false,
+		};
+
+		var gl = this.canvas.getContext('webgl2', gl_ctx_attributes);
+		this.gl = gl;
+
+		// Init WebGL extensions
+		{
+			var available_extensions = this.gl.getSupportedExtensions();
+			var required_extensions = ['EXT_texture_norm16'];
+
+			this.gl_ext = {};
+
+			var gl = this.gl;
+			var gl_ext = this.gl_ext;
+			required_extensions.forEach(function(ext_name)
+			{
+				gl_ext[ext_name] = gl.getExtension(ext_name);
+			});
+		}
+
+		// Create unit cube buffers exactly like GUnitCubeVertexBuffer and GUnitCubeIndexBuffer
+		{
+			var unit_cube_vertices = new Array(8 * 3);
+			for (var z = 0; z < 2; z++)
+			{
+				for (var y = 0; y < 2; y++)
+				{
+					for (var x = 0; x < 2; x++)
+					{
+						var dest = x * 4 + y * 2 + z;
+						unit_cube_vertices[dest * 3 + 0] = x ? -100.0 : 100.0;
+						unit_cube_vertices[dest * 3 + 1] = y ? -100.0 : 100.0;
+						unit_cube_vertices[dest * 3 + 2] = z ? -100.0 : 100.0;
+					}
+				}
+			}
+
+			var unit_cube_indices = [
+				0, 2, 3,
+				0, 3, 1,
+				4, 5, 7,
+				4, 7, 6,
+				0, 1, 5,
+				0, 5, 4,
+				2, 6, 7,
+				2, 7, 3,
+				0, 4, 6,
+				0, 6, 2,
+				1, 3, 7,
+				1, 7, 5,
+			];
+
+			this.gl_unit_cube = {}
+			this.gl_unit_cube.vertex_buffer = gl_create_vertex_buffer(gl, new Float32Array(unit_cube_vertices));
+			this.gl_unit_cube.index_buffer = gl_create_index_buffer(gl, new Uint16Array(unit_cube_indices));
+			this.gl_unit_cube.index_count = unit_cube_indices.length;
+		}
+
+		// Create simple shader program
+		{
+			var vert_code = `
+uniform mat4 local_to_world;
+uniform mat4 world_to_view;
+uniform mat4 view_to_clip;
+
+in vec3 vertex_coordinates;
+out vec3 interpolator_world;
+
+void main(void) {
+	vec4 world_pos = local_to_world * vec4(vertex_coordinates.xyz, 1.0);
+	vec4 view_pos = world_to_view * world_pos;
+	vec4 clip_pos = view_to_clip * view_pos;
+
+	gl_Position = clip_pos;
+	interpolator_world = world_pos.xyz;
+}`;
+
+			var frag_code = `
+in vec3 interpolator_world;
+out vec4 display;
+
+void main(void) {
+	vec3 normal = normalize(cross(dFdx(interpolator_world), dFdy(interpolator_world)));
+
+	display = vec4(normal * 0.5 + 0.5, 1.0);
+}`;
+
+			this.gl_shader_program_simple = gl_create_shader_program(gl, vert_code, frag_code);
+		}
+
+		// Set unpacking alignement to 1 to allow uploading texture size not multple of 4 
+		gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+	}
+
+	release_gl()
+	{
+		this.canvas = null;
+		this.gl = null;
+		this.gl_ext = null;
+		this.gl_unit_cube_vertex_buffer = null;
+		this.gl_unit_cube_index_buffer = null;
+		this.gl_shader_program_simple = null;
+	}
+
+	draw_canvas()
+	{
+		console.error('unimplemented');
+	}
+
+	init()
+	{
+		console.error('unimplemented');
+	}
+
+	release()
+	{
+		this.viewport_selected = false;
+		this.release_gl();
+		this.set_select_viewport(false);
+	}
+
+	resize(ctx)
+	{
+		var dpi = window.devicePixelRatio || 1;
+		var viewport_width = ctx.width - 2 * k_style_padding_size - 2;
+		var viewport_height = viewport_width * 9.0 / 16.0;
+
+		var canvas_outter = document.getElementById('canvas_outter');
+
+		this.canvas.style.width = `${viewport_width}px`;
+		this.canvas.style.height = `${viewport_height}px`;
+		this.canvas.width = Math.round(viewport_width * dpi);
+		this.canvas.height = Math.round(viewport_height * dpi);
+	}
+
+	onclick_canvas()
+	{
+		if (!this.is_ready)
+		{
+			return;
+		}
+
+		this.set_select_viewport(!this.viewport_selected);
+	}
+
+	set_select_viewport(selected)
+	{
+		if (this.viewport_selected === selected)
+		{
+			return;
+		}
+
+		this.viewport_selected = selected;
+
+		this.canvas.oncontextmenu = function(event) { return false; };
+
+		var canvas_outter = document.getElementById('canvas_outter');
+
+		if (this.viewport_selected)
+		{
+			var generic_3d_view = this;
+			canvas_outter.classList.add('selected');
+			//this.canvas.style.cursor = 'none';
+			this.canvas.onmousemove = function(event) { generic_3d_view.canvas_onmousemove(event); };
+			this.canvas.onwheel = function(event) { return generic_3d_view.canvas_onmousewheel(event); };
+
+			this.keydown_event = function(event) { generic_3d_view.canvas_onkeydown(event); };
+			this.keyup_event = function(event) { generic_3d_view.canvas_onkeyup(event); };
+			document.addEventListener(
+				"keydown",
+				this.keydown_event,
+				false);
+			document.addEventListener(
+				"keyup",
+				this.keyup_event,
+				false);
+
+			this.shedule_next_tick(performance.now());
+		}
+		else
+		{
+			canvas_outter.classList.remove('selected');
+			this.canvas.style.cursor = 'default';
+			this.canvas.onmousemove = null;
+			this.canvas.onwheel = null;
+
+			document.removeEventListener(
+				"keydown",
+				this.keydown_event);
+			document.removeEventListener(
+				"keyup",
+				this.keyup_event);
+
+			this.camera_movement_u = 0;
+			this.camera_movement_v = 0;
+			this.camera_movement_z = 0;
+		}
+	}
+
+	canvas_onmousemove(event)
+	{
+		var dx = event.movementX;
+		var dy = event.movementY;
+
+		var speed = (Math.PI / 180.0);
+
+		this.camera_longitude -= dx * speed;
+		this.camera_latitude = Math.min(Math.max(this.camera_latitude - dy * speed, -0.4 * Math.PI), 0.4 * Math.PI);
+	}
+
+	canvas_onmousewheel(event)
+	{
+		var zooming_in = event.deltaY < 0.0;
+
+		if (zooming_in)
+		{
+			this.camera_movement_speed *= 2.0;
+		}
+		else
+		{
+			this.camera_movement_speed *= 0.5;
+		}
+
+		return false;
+	}
+
+	canvas_onkeydown(event)
+	{
+		if (event.key == 'w')
+		{
+			this.camera_movement_z = 1.0;
+		}
+		else if (event.key == 's')
+		{
+			this.camera_movement_z = -1.0;
+		}
+		else if (event.key == 'q')
+		{
+			this.camera_movement_v = 1.0;
+		}
+		else if (event.key == 'e')
+		{
+			this.camera_movement_v = -1.0;
+		}
+		else if (event.key == 'a')
+		{
+			this.camera_movement_u = -1.0;
+		}
+		else if (event.key == 'd')
+		{
+			this.camera_movement_u = 1.0;
+		}
+	}
+
+	canvas_onkeyup(event)
+	{
+		if (event.key == 'w' && this.camera_movement_z > 0.0)
+		{
+			this.camera_movement_z = 0.0;
+		}
+		else if (event.key == 's' && this.camera_movement_z < 0.0)
+		{
+			this.camera_movement_z = 0.0;
+		}
+		else if (event.key == 'q' && this.camera_movement_v > 0.0)
+		{
+			this.camera_movement_v = 0.0;
+		}
+		else if (event.key == 'e' && this.camera_movement_v < 0.0)
+		{
+			this.camera_movement_v = 0.0;
+		}
+		else if (event.key == 'a' && this.camera_movement_u < 0.0)
+		{
+			this.camera_movement_u = 0.0;
+		}
+		else if (event.key == 'd' && this.camera_movement_u > 0.0)
+		{
+			this.camera_movement_u = 0.0;
+		}
+	}
+
+	copy_canvas_to_clipboard()
+	{
+		if (!this.is_ready)
+		{
+			return;
+		}
+		
+		var pass_data = g_view.pass_data;
+
+		var is_output_resource = is_pass_output_resource(pass_data, this.subresource_version_info);
+
+		var text = '';
+		text += `Dump:\n\t${g_infos['Project']} - ${g_infos['Platform']} - ${g_infos['RHI']} - ${g_infos['BuildVersion']} - ${g_infos['DumpTime']}\n\t${get_current_navigation()}\n`
+		text += `Pass:\n\t${pass_data['EventName']}\n`;
+
+		{
+			var name = prettify_subresource_unique_name(this.subresource_version_info, this.resource_desc);
+			text += `${is_output_resource ? 'Output' : 'Input'} resource:\n\t${name}\n`;
+		}
+
+		copy_canvas_to_clipboard(this.canvas, text);
+	}
+
+	camera_look_at(pos)
+	{
+		var camera_dir_x = pos[0] - this.camera_pos[0];
+		var camera_dir_y = pos[1] - this.camera_pos[1];
+		var camera_dir_z = pos[2] - this.camera_pos[2];
+		var camera_dir_len = Math.sqrt(camera_dir_x * camera_dir_x + camera_dir_y * camera_dir_y + camera_dir_z * camera_dir_z);
+
+		this.camera_longitude = Math.atan2(camera_dir_y / camera_dir_len, camera_dir_x / camera_dir_len);
+		this.camera_latitude = Math.asin(camera_dir_z / camera_dir_len);
+	}
+
+	get_view_matrix()
+	{
+		var camera_dir = [
+			Math.cos(this.camera_longitude) * Math.cos(this.camera_latitude),
+			Math.sin(this.camera_longitude) * Math.cos(this.camera_latitude),
+			Math.sin(this.camera_latitude),
+		];
+
+		return create_view_matrix(this.camera_pos, camera_dir);
+	}
+
+	get_proj_matrix()
+	{
+		if (false)
+		{
+			var width = 4.0;
+			var depth = 100.0;
+
+			var matrix = create_null_matrix();
+			matrix[0 + 0 * 4] = 1.0 / width;
+			matrix[1 + 1 * 4] = matrix[0 + 0 * 4] * this.canvas.width / this.canvas.height;
+			matrix[2 + 2 * 4] = - 1.0 / depth;
+			matrix[2 + 3 * 4] = 1.0;
+			matrix[3 + 3 * 4] = 1.0;
+			return matrix;
+		}
+
+		return create_projection_matrix_reverse_z_persepective(
+			this.camera_fov * 0.5, this.canvas.width / this.canvas.height, /* clipping_plane = */ 10.0);
+	}
+
+	shedule_next_tick(current_time)
+	{
+		var generic_3d_view = this;
+		this.prev_time = current_time;
+		requestAnimationFrame((new_time) => {
+    		generic_3d_view.tick(new_time);
+  		});
+	}
+
+	tick(current_time)
+	{
+		if (!this.viewport_selected)
+		{
+			return;
+		}
+
+		var delta_seconds = current_time - this.prev_time;
+
+		{
+			var delta_movements = 0.01 * delta_seconds * this.camera_movement_speed;
+
+			var camera_dir = [
+				Math.cos(this.camera_longitude) * Math.cos(this.camera_latitude),
+				Math.sin(this.camera_longitude) * Math.cos(this.camera_latitude),
+				Math.sin(this.camera_latitude),
+			];
+
+			var camera_dir_u = [
+				Math.sin(this.camera_longitude),
+				-Math.cos(this.camera_longitude),
+				0.0,
+			];
+
+			var camera_dir_v = [
+				Math.cos(this.camera_longitude) * Math.sin(-this.camera_latitude),
+				Math.sin(this.camera_longitude) * Math.sin(-this.camera_latitude),
+				Math.cos(this.camera_latitude),
+			];
+
+			this.camera_pos[0] += delta_movements * (
+				this.camera_movement_z * camera_dir[0] +
+				this.camera_movement_u * camera_dir_u[0] +
+				this.camera_movement_v * camera_dir_v[0]);
+			this.camera_pos[1] += delta_movements * (
+				this.camera_movement_z * camera_dir[1] +
+				this.camera_movement_u * camera_dir_u[1] +
+				this.camera_movement_v * camera_dir_v[1]);
+			this.camera_pos[2] += delta_movements * (
+				this.camera_movement_z * camera_dir[2] +
+				this.camera_movement_u * camera_dir_u[2] +
+				this.camera_movement_v * camera_dir_v[2]);
+		}
+
+		this.draw_canvas();
+		this.shedule_next_tick(current_time);
+	}
+} // class Generic3DStructureView
+
+
+// -------------------------------------------------------------------- HARDWARE ACCELERATION STRUCTURE
+
+class RaytracingAccelerationStructureView extends Generic3DStructureView
+{
+	constructor(subresource_version_info, resource_desc)
+	{
+		super(subresource_version_info, resource_desc);
+		this.draw_calls = [];
+		this.scene_visualization_shader_programs = {};
+		this.scene_visualization = 'Instances';
+	}
+
+	init()
+	{
+		document.getElementById('canvas_header').innerHTML += `
+			<div class="button_list" id="change_scene_visualization"><!---
+				---><input type="button" onclick="g_view.resource_view.change_scene_visualization(this);" value="Instances"/><!--- 
+				---><input type="button" onclick="g_view.resource_view.change_scene_visualization(this);" value="Normals"/>
+			</div>`;
+
+		update_value_selection(document.getElementById('change_scene_visualization'), this.scene_visualization);
+
+		// Create visualization shader programs
+		this.scene_visualization_shader_programs = {};
+		{
+			var vert_code = `
+uniform mat4 local_to_world;
+uniform mat4 world_to_view;
+uniform mat4 view_to_clip;
+
+in vec3 vertex_coordinates;
+out vec3 interpolator_world;
+
+void main(void) {
+	vec4 world_pos = local_to_world * vec4(vertex_coordinates.xyz, 1.0);
+	vec4 view_pos = world_to_view * world_pos;
+	vec4 clip_pos = view_to_clip * view_pos;
+
+	gl_Position = clip_pos;
+	interpolator_world = world_pos.xyz;
+}`;
+
+			var frag_normals_code = `
+in vec3 interpolator_world;
+out vec4 display;
+
+void main(void) {
+	vec3 normal = normalize(cross(dFdx(interpolator_world), dFdy(interpolator_world)));
+
+	display = vec4(normal * 0.5 + 0.5, 1.0);
+}`;
+
+			var frag_instances_code = `
+uniform uint instance_index;
+
+in vec3 interpolator_world;
+out vec4 display;
+
+uint MurmurMix(uint Hash)
+{
+	Hash ^= Hash >> 16u;
+	Hash *= 0x85ebca6bu;
+	Hash ^= Hash >> 13u;
+	Hash *= 0xc2b2ae35u;
+	Hash ^= Hash >> 16u;
+	return Hash;
+}
+
+vec3 IntToColor(uint Index)
+{
+	uint Hash = MurmurMix(Index);
+
+	vec3 Color = vec3
+	(
+		(Hash >>  0u) & 255u,
+		(Hash >>  8u) & 255u,
+		(Hash >> 16u) & 255u
+	);
+
+	return Color * (1.0f / 255.0f);
+}
+
+void main(void) {
+	vec3 normal = normalize(cross(dFdx(interpolator_world), dFdy(interpolator_world)));
+
+	vec3 vert_color = IntToColor(1u + instance_index);
+	vec3 base_color = vert_color * pow(gl_FragCoord.w, 0.1);
+
+	display = vec4(mix(base_color, normal * 0.5 + 0.5, 1.0 / 3.0), 1.0);
+}`;
+
+			this.scene_visualization_shader_programs['Normals'] = gl_create_shader_program(
+				this.gl, vert_code, frag_normals_code);
+			this.scene_visualization_shader_programs['Instances'] = gl_create_shader_program(
+				this.gl, vert_code, frag_instances_code);
+		}
+
+		var raytracing_view = this;
+		var subresource_version_name = get_subresource_unique_version_name(this.subresource_version_info);
+
+		load_resource_binary_file(`Resources/${subresource_version_name}.bin`, function(raw_raytracing_data)
+		{
+			if (raw_raytracing_data)
+			{
+				raytracing_view.parse_raw_raytracing_data(raw_raytracing_data);
+				raytracing_view.is_ready = true;
+			}
+			else
+			{
+				raytracing_view.error(`Error: Resources/${subresource_version_name}.bin couldn't be loaded.`);
+			}
+		});
+
+		document.title = `${g_view.pass_data['EventName']} - ${this.resource_desc['Name']}`;
+	}
+
+	parse_raw_raytracing_data(raw_raytracing_data)
+	{
+		var is_little_endian = true;
+
+		var data_view = new DataView(raw_raytracing_data);
+		var data_byte_offset = 0;
+
+		function set_byte_offset(byte_offset)
+		{
+			data_byte_offset = byte_offset;
+		}
+
+		function skip_bytes(byte_offset)
+		{
+			data_byte_offset += byte_offset;
+		}
+
+		function read_uint8()
+		{
+			var r = data_view.getUint8(data_byte_offset);
+			data_byte_offset += 1;
+			return r;
+		}
+
+		function read_uint32()
+		{
+			var r = data_view.getUint32(data_byte_offset, is_little_endian);
+			data_byte_offset += 4;
+			return r;
+		}
+
+		function read_uint64()
+		{
+			var l = BigInt(data_view.getUint32(data_byte_offset, is_little_endian));
+			var r = BigInt(data_view.getUint32(data_byte_offset + 4, is_little_endian));
+			data_byte_offset += 8;
+			return is_little_endian
+    			? l + BigInt(2 ** 32) * r
+    			: BigInt(2 ** 32) * l + r;
+		}
+
+		function read_uint32_array(size)
+		{
+			var r = new Array(size);
+			for (var i = 0; i < size; i++)
+			{
+				r[i] = data_view.getUint32(data_byte_offset, is_little_endian);
+				data_byte_offset += 4;
+			}
+			return r;
+		}
+
+		function read_float32_array(size)
+		{
+			var r = new Array(size);
+			for (var i = 0; i < size; i++)
+			{
+				r[i] = data_view.getFloat32(data_byte_offset, is_little_endian);
+				data_byte_offset += 4;
+			}
+			return r;
+		}
+
+		function assert_magic(magic)
+		{
+			var m = read_uint64();
+			if (magic !== m)
+			{
+				throw new Error(`Magic assertion ${magic} failed`);
+			}
+		}
+
+		const MaxNumLayers = 64;
+
+		// UE::HWRTScene::FSceneHeader
+		assert_magic(0x72ffa3376f48683bn);
+		assert_magic(1n);
+		var Offsets_Instances = read_uint32();
+		var Offsets_Geometries = read_uint32();
+		var Offsets_Buffers = read_uint32();
+		var Offsets_Strings = read_uint32();
+		var NumLayers = read_uint32();
+		var PerLayerNumInstances = read_uint32_array(MaxNumLayers);
+		var NumInstances = read_uint32();
+		var NumGeometries = read_uint32();
+		var NumBuffers = read_uint32();
+		var NumStrings = read_uint32();
+		skip_bytes(4 * 2);
+
+		set_byte_offset(Offsets_Instances);
+		var Instances = [];
+		for (var i = 0; i < NumInstances; i++)
+		{
+			var NewInstance = {};
+			Instances.push(NewInstance);
+
+			set_byte_offset(Offsets_Instances + i * (3 * 4 * 4 + 4 * 2 + 8));
+
+			// UE::HWRTScene::FInstanceDesc
+			NewInstance.Transform = read_float32_array(3 * 4);
+			var A = read_uint32();
+			var B = read_uint32();
+			NewInstance.InstanceID   = (A >>  0) & 0xFFFFFF;
+			NewInstance.InstanceMask = (A >> 24) & 0xFF;
+			NewInstance.InstanceContributionToHitGroupIndex = (B >>  0) & 0xFFFFFF;
+			NewInstance.Flags        = (B >> 24) & 0xFF;
+			NewInstance.AccelerationStructure = read_uint64();
+		}
+
+		// UE::HWRTScene::FGeometryHeader
+		set_byte_offset(Offsets_Geometries);
+		var Geometries = [];
+		for (var GeometryIndex = 0; GeometryIndex < NumGeometries; GeometryIndex++)
+		{
+			var Geometry = {};
+			Geometries.push(Geometry);
+
+			assert_magic(0x47226e42ad539683n);
+			Geometry.IndexBuffer = read_uint32();
+			Geometry.NumSegments = read_uint32();
+			skip_bytes(4 + 4 + 8);
+
+			// UE::HWRTScene::FSegmentHeader
+			Geometry.Segments = [];
+			for (var SegmentIndex = 0; SegmentIndex < Geometry.NumSegments; SegmentIndex++)
+			{
+				var Segment = {};
+				Geometry.Segments.push(Segment);
+
+				Segment.VertexBuffer = read_uint32();
+				Segment.VertexType = read_uint32();
+				Segment.VertexBufferOffset = read_uint32();
+				Segment.VertexBufferStride = read_uint32();
+				Segment.MaxVertices = read_uint32();
+				Segment.FirstPrimitive = read_uint32();
+				Segment.NumPrimitives = read_uint32();
+
+				Segment.bForceOpaque = read_uint8();
+				Segment.bAllowDuplicateAnyHitShaderInvocation = read_uint8();
+				Segment.bEnabled = read_uint8();
+				skip_bytes(1);
+			}
+		}
+
+		// UE::HWRTScene::FBufferHeader
+		set_byte_offset(Offsets_Buffers);
+		var RawBuffers = [];
+		for (var BufferIndex = 0; BufferIndex < NumBuffers; BufferIndex++)
+		{
+			var RawBuffer = {};
+			RawBuffers.push(RawBuffer);
+
+			assert_magic(0x7330d54d0195a6den);
+			RawBuffer.SizeInBytes = read_uint32();
+			RawBuffer.StrideInBytes = read_uint32();
+			RawBuffer.ByteOffset = data_byte_offset;
+			skip_bytes(RawBuffer.SizeInBytes);
+		}
+
+		// Translate UE::HWRTScene to webgl draw calls
+		var webgl_buffers = new Array(RawBuffers.length);
+		var min_position = [0, 0, 0];
+		var max_position = [0, 0, 0];
+		var gl = this.gl;
+		for (var instance_index = 0; instance_index < NumInstances; instance_index++)
+		{
+			var Instance = Instances[instance_index];
+			var Geometry = Geometries[Instance.AccelerationStructure];
+			var IndexBuffer = RawBuffers[Geometry.IndexBuffer];
+
+			// only support indexed geometry right now
+			if (IndexBuffer.SizeInBytes == 0)
+			{
+				continue;
+			}
+
+			// Upload index buffer to GPU if not already.
+			if (!webgl_buffers[Geometry.IndexBuffer])
+			{
+				var indices = null;
+				if (IndexBuffer.StrideInBytes == 4)
+				{
+					indices = new Uint32Array(raw_raytracing_data, IndexBuffer.ByteOffset, IndexBuffer.SizeInBytes / 4);
+				}
+				else if (IndexBuffer.StrideInBytes == 2)
+				{
+					indices = new Uint16Array(raw_raytracing_data, IndexBuffer.ByteOffset, IndexBuffer.SizeInBytes / 2);
+				}
+				else if (IndexBuffer.StrideInBytes == 1)
+				{
+					indices = new Uint8Array(raw_raytracing_data, IndexBuffer.ByteOffset, IndexBuffer.SizeInBytes / 1);
+				}
+				else
+				{
+					throw Error(`Unknown IndexBuffer.StrideInBytes=${IndexBuffer.StrideInBytes}`);
+				}
+				console.assert(indices.byteOffset == IndexBuffer.ByteOffset);
+				console.assert(indices.byteLength == IndexBuffer.SizeInBytes);
+
+				webgl_buffers[Geometry.IndexBuffer] = gl_create_index_buffer(gl, indices);
+			}
+
+			// setup local to world
+			var local_to_world = create_identity_matrix();
+			{
+				local_to_world[0 + 0 * 4] = Instance.Transform[0 * 4 + 0];
+				local_to_world[1 + 0 * 4] = Instance.Transform[1 * 4 + 0];
+				local_to_world[2 + 0 * 4] = Instance.Transform[2 * 4 + 0];
+				local_to_world[0 + 1 * 4] = Instance.Transform[0 * 4 + 1];
+				local_to_world[1 + 1 * 4] = Instance.Transform[1 * 4 + 1];
+				local_to_world[2 + 1 * 4] = Instance.Transform[2 * 4 + 1];
+				local_to_world[0 + 2 * 4] = Instance.Transform[0 * 4 + 2];
+				local_to_world[1 + 2 * 4] = Instance.Transform[1 * 4 + 2];
+				local_to_world[2 + 2 * 4] = Instance.Transform[2 * 4 + 2];
+				local_to_world[0 + 3 * 4] = Instance.Transform[0 * 4 + 3];
+				local_to_world[1 + 3 * 4] = Instance.Transform[1 * 4 + 3];
+				local_to_world[2 + 3 * 4] = Instance.Transform[2 * 4 + 3];
+			}
+
+			for (var SegmentIndex = 0; SegmentIndex < Geometry.NumSegments; SegmentIndex++)
+			{
+				var Segment = Geometry.Segments[SegmentIndex];
+				var VertexBuffer = RawBuffers[Segment.VertexBuffer];
+
+				console.assert(Segment.VertexType == 3); // VET_Float3
+
+				// Upload vertex buffer to GPU if not already.
+				if (!webgl_buffers[Segment.VertexBuffer])
+				{
+					var vertices = new Float32Array(raw_raytracing_data, VertexBuffer.ByteOffset, VertexBuffer.SizeInBytes / 4);
+					console.assert(vertices.byteOffset == VertexBuffer.ByteOffset);
+					console.assert(vertices.byteLength == VertexBuffer.SizeInBytes);
+					webgl_buffers[Segment.VertexBuffer] = gl_create_vertex_buffer(gl, vertices);
+				}
+
+				var draw_call = {};
+				this.draw_calls.push(draw_call);
+
+				draw_call.local_to_world = local_to_world;
+				draw_call.instance_index = instance_index;
+				if (IndexBuffer.StrideInBytes == 4)
+				{
+					draw_call.index_type = gl.UNSIGNED_INT;
+				}
+				else if (IndexBuffer.StrideInBytes == 2)
+				{
+					draw_call.index_type = gl.UNSIGNED_SHORT;
+				}
+				else if (IndexBuffer.StrideInBytes == 1)
+				{
+					draw_call.index_type = gl.UNSIGNED_BYTE;
+				}
+				else
+				{
+					throw Error(`Unknown IndexBuffer.StrideInBytes=${IndexBuffer.StrideInBytes}`);
+				}
+				draw_call.index_byte_offset = Segment.FirstPrimitive * 3 * IndexBuffer.StrideInBytes;
+				draw_call.index_count = Segment.NumPrimitives * 3;
+
+				// create vertex array.
+				{
+					console.assert(Segment.VertexBufferStride == 12);
+					console.assert((Segment.VertexBufferOffset % Segment.VertexBufferStride) == 0);
+
+					draw_call.vertex_array = gl.createVertexArray();
+					gl.bindVertexArray(draw_call.vertex_array);
+					gl.bindBuffer(gl.ARRAY_BUFFER, webgl_buffers[Segment.VertexBuffer]);
+					gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, webgl_buffers[Geometry.IndexBuffer]);
+					gl.enableVertexAttribArray(0);
+					gl.vertexAttribPointer(0, 3, gl.FLOAT, false, Segment.VertexBufferStride, Segment.VertexBufferOffset);
+					gl.bindVertexArray(null);
+					console.assert(gl.getError() == gl.NO_ERROR); 
+				}
+
+				// Track the min and max instance position for seting up the camera over the entire scene.
+				if (instance_index == 0)
+				{
+					min_position[0] = Instance.Transform[0 * 4 + 3];
+					min_position[1] = Instance.Transform[1 * 4 + 3];
+					min_position[2] = Instance.Transform[2 * 4 + 3];
+
+					max_position[0] = Instance.Transform[0 * 4 + 3];
+					max_position[1] = Instance.Transform[1 * 4 + 3];
+					max_position[2] = Instance.Transform[2 * 4 + 3];
+				}
+				else
+				{
+					min_position[0] = Math.min(min_position[0], Instance.Transform[0 * 4 + 3]);
+					min_position[1] = Math.min(min_position[0], Instance.Transform[1 * 4 + 3]);
+					min_position[2] = Math.min(min_position[0], Instance.Transform[2 * 4 + 3]);
+
+					max_position[0] = Math.max(max_position[0], Instance.Transform[0 * 4 + 3]);
+					max_position[1] = Math.max(max_position[0], Instance.Transform[1 * 4 + 3]);
+					max_position[2] = Math.max(max_position[0], Instance.Transform[2 * 4 + 3]);
+				}
+			}
+		}
+
+		if (true)
+		{
+			this.camera_pos = max_position;
+			this.camera_look_at([(min_position[0] + max_position[0]) / 2, (min_position[1] + max_position[1]) / 2, (min_position[2] + max_position[2]) / 2]);
+		}
+
+		this.draw_canvas();
+	} // parse_raw_raytracing_data()
+
+	change_scene_visualization(new_scene_visualization)
+	{
+		if (!this.is_ready)
+		{
+			return;
+		}
+		
+		if (new_scene_visualization.value == this.scene_visualization)
+		{
+			return;
+		}
+
+		this.scene_visualization = new_scene_visualization.value;
+		update_value_selection(document.getElementById('change_scene_visualization'), this.scene_visualization);
+		this.draw_canvas();
+	}
+
+	draw_canvas()
+	{
+		var gl = this.gl;
+
+		var world_to_view = this.get_view_matrix();
+		var view_to_clip = this.get_proj_matrix();
+
+		// view_matrix[0 + 0 * 4] = 0.5;
+		// view_matrix[0 + 1 * 4] = 0.5;
+		// view_matrix[1 + 1 * 4] = 0.5;
+		// view_matrix[2 + 2 * 4] = 0.5;
+
+		gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+		gl.clearColor(0.0, 0.0, 0.0, 0.0);
+		gl.clear(gl.COLOR_BUFFER_BIT);
+		
+		gl.clearDepth(0.0);
+		gl.clear(gl.DEPTH_BUFFER_BIT);
+
+		gl.enable(gl.DEPTH_TEST);
+		gl.depthFunc(gl.GEQUAL);
+
+		gl.disable(gl.CULL_FACE);
+		gl.cullFace(gl.FRONT_AND_BACK);
+
+		{
+			var shader_program = this.scene_visualization_shader_programs[this.scene_visualization];
+			gl.useProgram(shader_program);
+
+			var coord = gl.getAttribLocation(shader_program, "vertex_coordinates");
+			console.assert(coord == 0);
+
+			gl_set_uniform_mat4(gl, shader_program, 'local_to_world', create_identity_matrix());
+			gl_set_uniform_mat4(gl, shader_program, 'world_to_view', world_to_view);
+			gl_set_uniform_mat4(gl, shader_program, 'view_to_clip', view_to_clip);
+
+			for (var draw_call of this.draw_calls)
+			{
+				gl_set_uniform_mat4(gl, shader_program, 'local_to_world', draw_call.local_to_world);
+				gl_set_uniform_uint(gl, shader_program, 'instance_index', draw_call.instance_index);
+
+				gl.bindVertexArray(draw_call.vertex_array);
+				gl.drawElementsInstanced(
+					gl.TRIANGLES,
+					/* index_count = */       draw_call.index_count,
+					/* index_type = */        draw_call.index_type,
+					/* index_byte_offset = */ draw_call.index_byte_offset,
+					/* instanceCount = */     1);
+			}
+
+			gl.useProgram(null);
+			gl.bindVertexArray(null);
+		}
+	}
+
+	release()
+	{
+		super.release();
+		this.draw_calls = []
+		this.scene_visualization_shader_programs = {};
+	}
+} // class RaytracingAccelerationStructureView
 
 
 // -------------------------------------------------------------------- UI
@@ -4090,6 +5596,11 @@ function init_page()
 		add_console_event('log', `Viewer init ok`);
 	}
 
+	// Analyses the capture.
+	{
+		analyses_passes();
+	}
+
 	init_top();
 	init_top_buttons();
 	display_pass_hierarchy();
@@ -4143,38 +5654,50 @@ function init_page()
 
 function onresize_body()
 {
-	var w = window.innerWidth;
-	var h = window.innerHeight;
+	var window_width = window.innerWidth;
+	var window_height = window.innerHeight;
 
-	var top_h = 40;
+	const top_h = 45;
 
-	document.getElementById('onresize_body_top_bar').style.width = `${w}px`;
-	document.getElementById('onresize_body_top_bar').style.height = `${top_h}px`;
+	document.getElementById('onresize_body_table').style.width = `${window_width}px`;
+	document.getElementById('onresize_body_table').style.height = `${window_height}px`;
 
-	document.getElementById('onresize_body_left').style.width = `${Math.floor(w * 0.25)}px`;
-	document.getElementById('onresize_body_left').style.height = `${h - top_h}px`;
+	const top_height = 45;
 
-	document.getElementById('onresize_body_right').style.width = `${w - Math.floor(w * 0.25)}px`;
-	document.getElementById('onresize_body_right').style.height = `${h - top_h}px`;
-
-	document.getElementById('onresize_body_right').style.width = `${w - Math.floor(w * 0.25)}px`;
-	document.getElementById('onresize_body_right').style.height = `${h - top_h}px`;
-
+	var body_left_width = Math.floor(window_width * 0.25);
+	var body_right_width = window_width - body_left_width;
+	var body_height = window_height - top_height;
 	{
-		var search_h = (30 + 2 * 5) * 2;
-		document.getElementById('pass_hierarchy').style.width = `${Math.floor(w * 0.25) - 10 * 2}px`;
-		document.getElementById('pass_hierarchy').style.height = `${h - top_h - search_h - 10 * 2}px`;
+		document.getElementById('onresize_body_top_bar').style.width = `${window_width}px`;
+		document.getElementById('onresize_body_top_bar').style.height = `${top_height}px`;
+		document.getElementById('onresize_body_top_bar').style.overflow = `hidden`;
+
+		document.getElementById('onresize_body_left').style.width = `${body_left_width}px`;
+		document.getElementById('onresize_body_left').style.height = `${body_height}px`;
+
+		document.getElementById('onresize_body_right').style.width = `${body_right_width}px`;
+		document.getElementById('onresize_body_right').style.height = `${body_height}px`;
 	}
 
 	{
-		//document.getElementById('main_right_pannel').style.width = document.getElementById('onresize_body_right').style.width;
-		document.getElementById('main_right_pannel').style.height = `${h - top_h - 10 * 2}px`;
+		const search_h = (30 + 2 * 5) * 2;
+
+		document.getElementById('pass_hierarchy').style.width = `${body_left_width - k_style_padding_size * 2}px`;
+		document.getElementById('pass_hierarchy').style.height = `${body_height - search_h - k_style_padding_size * 2 - k_style_scroll_width}px`;
+		document.getElementById('pass_hierarchy').style.overflow = `scroll`;
+	}
+
+	{
+		document.getElementById('main_right_pannel').style.width = `${body_right_width}px`;
+		document.getElementById('main_right_pannel').style.height = `${body_height}px`;
+		document.getElementById('main_right_pannel').style.overflow = `scroll`;
 	}
 
 	if (g_view !== null)
 	{
 		var ctx = {};
-		ctx.width = w - Math.floor(w * 0.25);
+		ctx.width = body_right_width - k_style_scroll_width;
+		ctx.height = body_height - k_style_scroll_width;
 		g_view.resize(ctx);
 	}
 }
@@ -4437,6 +5960,11 @@ input::placeholder
 	margin-bottom: 20px;
 }
 
+#main_right_pannel .main_div:last-child
+{
+	margin-bottom: 5px;
+}
+
 
 /* ----------------------------------------------------- Selection list */
 
@@ -4591,8 +6119,13 @@ input::placeholder
 	padding: 3px 10px;
 	background-color: var(--button-bg-color);
 	color: var(--button-txt-color);
-	cursor: pointer;
 	border-radius: 0;
+}
+
+.button_list a[href],
+.button_list input
+{
+	cursor: pointer;
 }
 
 .button_list a:first-child,
@@ -4609,20 +6142,20 @@ input::placeholder
 	border-bottom-right-radius: var(--button-border-radius);
 }
 
-.button_list a:not(.match_location_hash):not(:active):hover,
+.button_list a[href]:not(.match_location_hash):not(:active):hover,
 .button_list input:not(.match_value):not(:active):hover
 {
 	background-color: var(--button-bg-color-hover);
 }
 
-.button_list a:not(.match_location_hash):not(.error):not(:active):hover,
+.button_list a[href]:not(.match_location_hash):not(.error):not(:active):hover,
 .button_list input:not(.match_value):not(:active):hover
 {
 	color: var(--button-txt-color-hover);
 }
 
-.button_list a:active,
-.button_list a.match_location_hash,
+.button_list a[href]:active,
+.button_list a[href].match_location_hash,
 .button_list input:active,
 .button_list input.match_value
 {
@@ -4630,10 +6163,16 @@ input::placeholder
 	color: var(--button-txt-color-selected);
 }
 
-.button_list a.error,
-.button_list a.error:active
+.button_list a[href].error,
+.button_list a[href].error:active
 {
 	color: var(--error-txt-color);
+}
+
+.button_list span
+{
+	margin-left: 5px;
+	margin-right: 3px;
 }
 
 
@@ -4656,13 +6195,6 @@ input::placeholder
 
 
 /* ----------------------------------------------------- main_right_pannel */
-
-#main_right_pannel
-{
-	width: auto;
-	overflow-x: auto;
-	overflow-y: scroll;
-}
 
 #main_right_pannel .pass_title
 {

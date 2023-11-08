@@ -53,6 +53,7 @@ struct FMovieSceneDoubleChannel;
 struct FMovieSceneFloatChannel;
 struct FMovieSceneIntegerChannel;
 struct FMovieSceneObjectPathChannel;
+struct FMovieSceneStringChannel;
 struct FMovieScenePropertyBinding;
 
 
@@ -183,7 +184,7 @@ struct FSourceFloatChannel
 };
 
 /**
- * The component data for evaluation a double channel
+ * The component data for evaluating a double channel
  */
 struct FSourceDoubleChannel
 {
@@ -196,6 +197,22 @@ struct FSourceDoubleChannel
 	{}
 
 	const FMovieSceneDoubleChannel* Source;
+};
+
+/**
+ * The component data for evaluating a string channel
+ */
+struct FSourceStringChannel
+{
+	FSourceStringChannel()
+		: Source(nullptr)
+	{}
+
+	FSourceStringChannel(const FMovieSceneStringChannel* InSource)
+		: Source(InSource)
+	{}
+
+	const FMovieSceneStringChannel* Source;
 };
 
 struct FEvaluationHookFlags
@@ -216,13 +233,105 @@ struct FSourceObjectPathChannel
 	const FMovieSceneObjectPathChannel* Source;
 };
 
+/** A component that represents a UObject* either as a strong or weak reference */
+struct FObjectComponent
+{
+	FObjectComponent()
+		: ObjectPtr(nullptr)
+	{}
+
+	/** Construct a new null component */
+	static FObjectComponent Null()
+	{
+		return FObjectComponent{ nullptr, FObjectKey() };
+	}
+
+	/** Construct a new strongly-referenced component from an object ptr */
+	static FObjectComponent Strong(UObject* InObject)
+	{
+		return FObjectComponent{ InObject, FObjectKey() };
+	}
+
+	/** Construct a new weakly-referenced component from an object ptr */
+	static FObjectComponent Weak(UObject* InObject)
+	{
+		return FObjectComponent{ InObject, InObject };
+	}
+
+	/** Check whether this object component is valid */
+	explicit operator bool() const
+	{
+		return ObjectPtr != nullptr;
+	}
+
+	/** Compare this component with another object ptr */
+	bool operator==(UObject* InObject) const
+	{
+		return ObjectPtr == InObject;
+	}
+
+	/** Compare this component with another object ptr */
+	bool operator!=(UObject* InObject) const
+	{
+		return ObjectPtr != InObject;
+	}
+
+	/** Equality operator */
+	friend bool operator==(const FObjectComponent& A, const FObjectComponent& B)
+	{
+		if (A.ObjectKey != FObjectKey() || B.ObjectKey != FObjectKey())
+		{
+			return A.ObjectKey == B.ObjectKey;
+		}
+
+		return A.ObjectPtr == B.ObjectPtr;
+	}
+
+	/** Generate a type has from this component */
+	friend uint32 GetTypeHash(const FObjectComponent& In)
+	{
+		if (In.ObjectKey != FObjectKey())
+		{
+			return GetTypeHash(In.ObjectKey);
+		}
+
+		return GetTypeHash(In.ObjectPtr);
+	}
+
+	UObject* operator->() const
+	{
+		UObject* Object = GetObject();
+		checkSlow(Object);
+		return Object;
+	}
+
+	MOVIESCENE_API UObject* GetObject() const;
+
+	/** Conditionally add a reference for the specified component data based on whether it is strongly referenced or not */
+	friend void AddReferencedObjectForComponent(FReferenceCollector& ReferenceCollector, FObjectComponent* ComponentData);
+
+private:
+
+	FObjectComponent(UObject* InObject, const FObjectKey& InObjectKey)
+		: ObjectPtr(InObject)
+		, ObjectKey(InObjectKey)
+	{}
+
+	bool IsStrongReference() const;
+
+	/** Raw pointer to the object. This is explicitly assigned for both strong and weak ptrs, but is only added to the reference graph when FObjectKey() is default constructed.  */
+	TObjectPtr<UObject> ObjectPtr;
+
+	/** Default constructed for strong pointers. Assigned on construction for weak ptrs. */
+	FObjectKey ObjectKey;
+};
 
 /**
  * Pre-defined built in component types
  */
-struct MOVIESCENE_API FBuiltInComponentTypes
+struct FBuiltInComponentTypes
 {
-	~FBuiltInComponentTypes();
+	MOVIESCENE_API ~FBuiltInComponentTypes();
 
 public:
 
@@ -238,7 +347,12 @@ public:
 
 	TComponentTypeID<FMovieSceneEntityID> ParentEntity;
 
+	/**
+	 * A bound object ptr component that defines the object being animated. This ptr is explicitly hidden from the reference graph and cleaned up
+	 * after a garbage collection pass if it becomes invalid by checking the BoundObjectKey component that must exist alongside it
+	 */
 	TComponentTypeID<UObject*>            BoundObject;
+	TComponentTypeID<FObjectKey>          BoundObjectKey;
 
 	TComponentTypeID<FInstanceHandle>     InstanceHandle;
 
@@ -305,6 +419,9 @@ public:
 	// An FMovieSceneDoubleChannel considered to be at index N within the source structure (ie 0 = Location.X, Vector.X; 1 = Location.Y, Vector.Y)
 	TComponentTypeID<FSourceDoubleChannel> DoubleChannel[9];
 
+	// An FMovieSceneStringChannel
+	TComponentTypeID<FSourceStringChannel> StringChannel;
+
 	// A cached interpolation structure relating to either float channels or double channels
 	TComponentTypeID<Interpolation::FCachedInterpolation> CachedInterpolation[9];
 
@@ -329,8 +446,11 @@ public:
 	TComponentTypeID<double> WeightResult;
 	TComponentTypeID<double> EasingResult;
 
+	// The result of an evaluated FMovieSceneStringChannel
+	TComponentTypeID<FString> StringResult;
+
 	// The result of an evaluated FMovieSceneObjectPathChannel
-	TComponentTypeID<UObject*> ObjectResult;
+	TComponentTypeID<FObjectComponent> ObjectResult;
 
 public:
 
@@ -342,6 +462,9 @@ public:
 
 	// The sub-sequence ID that should receive ease in/out as a whole
 	TComponentTypeID<FMovieSceneSequenceID> HierarchicalEasingProvider;
+
+	// Defines an HBias level that is the highest blend target for a given set of components that need to blend together
+	TComponentTypeID<int16>       HierarchicalBlendTarget;
 
 	// A float representing the evaluated easing weight
 	TComponentTypeID<double> WeightAndEasingResult;
@@ -376,6 +499,10 @@ public:
 		// A tag specifying that an entity wants to restore state on completioon
 		FComponentTypeID RestoreState;
 
+		// A tag that specifies this entity should always contribute to the output, regardless of hbias
+		FComponentTypeID IgnoreHierarchicalBias;
+		FComponentTypeID BlendHierarchicalBias;
+
 		FComponentTypeID AbsoluteBlend;
 		FComponentTypeID RelativeBlend;
 		FComponentTypeID AdditiveBlend;
@@ -387,7 +514,7 @@ public:
 		/** Tag that is added to imported entities with a GenericObjectBinding or SceneComponentBinding whose binding did not resolve */
 		FComponentTypeID HasUnresolvedBinding;
 
-		FComponentTypeID MigratedFromFastPath;
+		FComponentTypeID HasAssignedInitialValue;
 
 		FComponentTypeID ImportedEntity;
 
@@ -426,20 +553,20 @@ public:
 
 public:
 
-	static void Destroy();
+	static MOVIESCENE_API void Destroy();
 
-	static FBuiltInComponentTypes* Get();
+	static MOVIESCENE_API FBuiltInComponentTypes* Get();
 
 	FORCEINLINE static bool IsBoundObjectGarbage(UObject* InObject)
 	{
 		return InObject == nullptr || !IsValidChecked(InObject) || InObject->IsUnreachable();
 	}
 
-	FComponentTypeID GetBaseValueComponentType(const FComponentTypeID& InResultComponentType);
+	MOVIESCENE_API FComponentTypeID GetBaseValueComponentType(const FComponentTypeID& InResultComponentType);
 
 private:
 
-	FBuiltInComponentTypes();
+	MOVIESCENE_API FBuiltInComponentTypes();
 
 	TMap<FComponentTypeID, FComponentTypeID> ResultToBase;
 };

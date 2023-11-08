@@ -23,6 +23,7 @@ class UClass;
 class UEditorPerProjectUserSettings;
 class UWorld;
 struct FAssetData;
+struct FContentBrowserItemPath;
 struct FFrame;
 
 UCLASS()
@@ -174,15 +175,24 @@ public:
 
 	/**
 	 * Attempts to get the path for the active content browser, returns false if there is no active content browser
+	 * or if it was a virtual path
 	 * @param	OutPath	The returned path if successfully found
 	 * @return	Whether a path was successfully returned
 	 */
 	UFUNCTION(BlueprintPure, Category = "Development|Editor")
 	static bool GetCurrentContentBrowserPath(FString& OutPath);
 
+	// Gets the current content browser path if one is open, whether it is internal or virtual.
+	UFUNCTION(BlueprintPure, Category = "Development|Editor")
+	static FContentBrowserItemPath GetCurrentContentBrowserItemPath();
+
 	// Gets the path to the currently selected folder in the content browser
 	UFUNCTION(BlueprintPure, Category = "Development|Editor")
 	static TArray<FString> GetSelectedFolderPaths();
+	
+	// Returns the folders that are selected in the path view for the content browser
+    UFUNCTION(BlueprintPure, Category = "Development|Editor")
+    static TArray<FString> GetSelectedPathViewFolderPaths();
 
 	/**
 	 * Sync the Content Browser to the given folder(s)
@@ -190,5 +200,8 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Content Browser")
 	static void SyncBrowserToFolders(const TArray<FString>& FolderList);
+	
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Content Browser")
+	static void ConvertToEditorUtilityWidget(class UWidgetBlueprint* WidgetBP);
 #endif
 };

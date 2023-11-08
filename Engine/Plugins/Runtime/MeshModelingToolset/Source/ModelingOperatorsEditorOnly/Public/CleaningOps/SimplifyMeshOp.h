@@ -52,7 +52,7 @@ enum class ESimplifyType : uint8
 	MinimalPlanar = 4 UMETA(DisplayName = "Minimal Shape-Preserving"),
 
 	/** Only preserve polygroup boundaries; ignore all other shape features */
-	MinimalPolygroup = 5 UMETA(DisplayName = "Minimal Polygroup-Preserving"),
+	MinimalPolygroup = 5 UMETA(DisplayName = "Minimal PolyGroup-Preserving"),
 
 };
 
@@ -74,7 +74,7 @@ public:
 	ESimplifyType SimplifierType;
 	int TargetPercentage, TargetCount;
 	float TargetEdgeLength;
-	bool bDiscardAttributes, bReproject, bPreventNormalFlips, bPreserveSharpEdges, bAllowSeamCollapse;
+	bool bDiscardAttributes, bReproject, bPreventNormalFlips, bPreserveSharpEdges, bAllowSeamCollapse, bPreventTinyTriangles;
 	// When true, result will have attributes object regardless of whether attributes 
 	// were discarded or present initially.
 	bool bResultMustHaveAttributesEnabled = false;

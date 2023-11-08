@@ -117,26 +117,45 @@ namespace Metasound
 			}
 		}
 
-		virtual FDataReferenceCollection GetInputs() const override
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
 		{
 			using namespace DiffuserNode;
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputAudio), AudioInput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputDiffusionDepth), Depth);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputFeedbackGain), Feedback);
+		}
 
-			FDataReferenceCollection InputDataReferences;
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputAudio), AudioInput);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputDiffusionDepth), Depth);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputFeedbackGain), Feedback);
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+		{
+			using namespace DiffuserNode;
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputAudio), AudioOutput);
+		}
 
-			return InputDataReferences;
+		virtual FDataReferenceCollection GetInputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		virtual FDataReferenceCollection GetOutputs() const override
 		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
+		}
+
+		void Reset(const IOperator::FResetParams& InParams)
+		{
 			using namespace DiffuserNode;
 
-			FDataReferenceCollection OutputDataReferences;
-			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputAudio), AudioOutput);
-
-			return OutputDataReferences;
+			for (Audio::FLongDelayAPF* Delay : Delays)
+			{
+				Delay->Reset();
+			}
+			AudioOutput->Zero();
 		}
 
 		void Execute()

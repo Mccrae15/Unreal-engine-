@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "UObject/Object.h"
 
 #include "DMXControlConsoleFaderGroup.generated.h"
@@ -28,6 +27,12 @@ class DMXCONTROLCONSOLE_API UDMXControlConsoleFaderGroup
 {
 	GENERATED_BODY()
 
+	// Allow the DMXControlConsoleFixturePatchMatrixCell to read Fader Group Data
+	friend UDMXControlConsoleFixturePatchMatrixCell;
+
+	DECLARE_MULTICAST_DELEGATE_OneParam(FDMXControlConsoleElementDelegate, IDMXControlConsoleFaderGroupElement*);
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FDMXOnFaderGroupFixturePatchChangedDelegate, UDMXControlConsoleFaderGroup*, UDMXEntityFixturePatch*);
+
 public:
 	/** Adds a raw fader to this Fader Group */
 	UDMXControlConsoleRawFader* AddRawFader();
@@ -44,8 +49,8 @@ public:
 	/** Clears all Elements in this Group */
 	void ClearElements();
 
-	/** Gets the Faders array of this Fader Group */
-	TArray<TScriptInterface<IDMXControlConsoleFaderGroupElement>> GetElements() const { return Elements; };
+	/** Gets the Elements array of this Fader Group */
+	TArray<TScriptInterface<IDMXControlConsoleFaderGroupElement>> GetElements(bool bSortByUniverseAndAddress = false) const;
 
 	/** Gets all single faders from Faders array Fader Group */
 	TArray<UDMXControlConsoleFaderBase*> GetAllFaders() const;
@@ -83,28 +88,88 @@ public:
 	/** Gets a cell coordinate to AttributeName/Value map for the current list of Fixture Patch Matrix Faders */
 	TMap<FIntPoint, TMap<FDMXAttributeName, float>> GetMatrixCoordinateToAttributeMap() const;
 
+	/** Duplicates this Fader Group if there's no Fixture Patch data */
+	void Duplicate() const;
+
+	/** Clears this Fader Group and all its elements */
+	void Clear();
+
 	/** Resets this Fader Group to its default parameters */
-	void Reset();
+	void ResetToDefault();
 
 	/** Destroys this Fader Group */
 	void Destroy();
 
-	/** Resets bForceRefresh condition */
-	void ForceRefresh();
+	/** Gets wheter this Fader Group can send DMX data */
+	bool IsMuted() const { return bIsMuted; }
 
-	/** True if this Fader Group needs to be refreshed */
-	bool HasForceRefresh() const { return bForceRefresh; }
+	/** Sets mute state of this Fader Group */
+	void SetMute(bool bMute) { bIsMuted = bMute; }
+
+	/** Mutes/Unmutes this Fader Group */
+	void ToggleMute() { bIsMuted = !bIsMuted; }
+
+	/** Gets wheter this Fader Group's Faders Value can be changed */
+	bool IsLocked() const;
+	
+	/** Sets lock state of this Fader Group */
+	void SetLock(bool bLock);
+
+	/** Locks/Unlocks this Fader Group  */
+	void ToggleLock();
 
 #if WITH_EDITOR
 	/** Gets Fader Group color for Editor representation */
 	const FLinearColor& GetEditorColor() const { return EditorColor; }
+
+	/** Gets the expansion state of the Fader Group */
+	bool IsExpanded() const { return bIsExpanded; }
+
+	/** Sets the expansion state of the Fader Group */
+	void SetIsExpanded(bool bExpanded, bool bNotify = true);
+
+	/** Gets the activity state of the Fader Group */
+	bool IsActive() const { return HasFixturePatch() ? bIsActive : true; }
+
+	/** Sets the activity state of the Fader Group */
+	void SetIsActive(bool bActive) { bIsActive = bActive; }
+
+	/** True if Fader Group matches Control Console filtering system */
+	bool IsMatchingFilter() const { return bIsMatchingFilter; }
+
+	/** Sets wheter Fader Group matches Control Console filtering system */
+	void SetIsMatchingFilter(bool bMatches) { bIsMatchingFilter = bMatches; }
+
+	/** Sets in Editor visibility state of all elements to true */
+	void ShowAllElementsInEditor();
 #endif // WITH_EDITOR
+
+	/** Gets a reference to OnElementAdded delegate */
+	FDMXControlConsoleElementDelegate& GetOnElementAdded() { return OnElementAdded; }
+
+	/** Gets a reference to OnElementRemoved delegate */
+	FDMXControlConsoleElementDelegate& GetOnElementRemoved() { return OnElementRemoved; }
+
+	/** Gets a reference to OnFixturePatchChanged delegate */
+	FDMXOnFaderGroupFixturePatchChangedDelegate& GetOnFixturePatchChanged() { return OnFixturePatchChangedDelegate; }
+
+#if WITH_EDITOR
+	/** Gets a reference to OnFaderGroupExpanded delegate */
+	FSimpleMulticastDelegate& GetOnFaderGroupExpanded() { return OnFaderGroupExpanded; }
+#endif // WITH_EDITOR
+
+#if WITH_EDITORONLY_DATA
+	/** Last string from Editor filtering */
+	UPROPERTY()
+	FString FilterString;
+#endif // WITH_EDITORONLY_DATA
 
 	// Property Name getters
 	FORCEINLINE static FName GetElementsPropertyName() { return GET_MEMBER_NAME_CHECKED(UDMXControlConsoleFaderGroup, Elements); }
 	FORCEINLINE static FName GetFaderGroupNamePropertyName() { return GET_MEMBER_NAME_CHECKED(UDMXControlConsoleFaderGroup, FaderGroupName); }
 	FORCEINLINE static FName GetSoftFixturePatchPtrPropertyName() { return GET_MEMBER_NAME_CHECKED(UDMXControlConsoleFaderGroup, SoftFixturePatchPtr); }
 	FORCEINLINE static FName GetCachedWeakFixturePatchPropertyName() { return GET_MEMBER_NAME_CHECKED(UDMXControlConsoleFaderGroup, CachedWeakFixturePatch); }
+	FORCEINLINE static FName GetIsMutedPropertyName() { return GET_MEMBER_NAME_CHECKED(UDMXControlConsoleFaderGroup, bIsMuted); }
 #if WITH_EDITOR
 	FORCEINLINE static FName GetEditorColorPropertyName() { return GET_MEMBER_NAME_CHECKED(UDMXControlConsoleFaderGroup, EditorColor); }
 #endif // WITH_EDITOR
@@ -140,6 +205,20 @@ private:
 	/** Gets the next Universe and Address available for a new fader */
 	void GetNextAvailableUniverseAndAddress(int32& OutUniverse, int32& OutAddress) const;
 
+	/** Called when an Element is added to the Fader Group */
+	FDMXControlConsoleElementDelegate OnElementAdded;
+
+	/** Called when an Element is removed from the Fader Group */
+	FDMXControlConsoleElementDelegate OnElementRemoved;
+
+	/** Called when Fixture Patch is changed */
+	FDMXOnFaderGroupFixturePatchChangedDelegate OnFixturePatchChangedDelegate;
+
+#if WITH_EDITORONLY_DATA
+	/** Called when Fader Group expansion state changes */
+	FSimpleMulticastDelegate OnFaderGroupExpanded;
+#endif
+
 	/** Name identifier of this Fader Group */
 	UPROPERTY(EditAnywhere, Category = "DMX Fader Group")
 	FString FaderGroupName;
@@ -156,12 +235,24 @@ private:
 	UPROPERTY()
 	TArray<TScriptInterface<IDMXControlConsoleFaderGroupElement>> Elements;
 
+	UPROPERTY(EditAnywhere, Category = "DMX Fader Group")
+	/** If true, the Fader Group doesn't send DMX */
+	bool bIsMuted = false;
+
 #if WITH_EDITORONLY_DATA
 	/** Color for Fader Group representation on the Editor */
 	UPROPERTY(EditAnywhere, Category = "DMX Fader Group")
 	FLinearColor EditorColor = FLinearColor::White;
-#endif
 
-	/** Shows wheter this Fader Group needs to be refreshed or not */
-	bool bForceRefresh = false;
+	/** Fader Group expansion state saved from the Editor */
+	UPROPERTY()
+	bool bIsExpanded = true;
+
+	/** In Editor activity state of the Fader Group */
+	UPROPERTY()
+	bool bIsActive = false;
+
+	/** True if Fader Group matches Control Console filtering system */
+	bool bIsMatchingFilter = true;
+#endif
 };

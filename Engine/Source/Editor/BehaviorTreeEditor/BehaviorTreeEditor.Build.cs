@@ -9,8 +9,6 @@ public class BehaviorTreeEditor : ModuleRules
         PrivateIncludePaths.AddRange(
             new string[] {
 				System.IO.Path.Combine(GetModuleDirectory("AIGraph"), "Private"),
-				System.IO.Path.Combine(GetModuleDirectory("BehaviorTreeEditor"), "Private"),
-				System.IO.Path.Combine(GetModuleDirectory("GraphEditor"), "Private"),
 			}
 		);
 
@@ -18,7 +16,6 @@ public class BehaviorTreeEditor : ModuleRules
             new string[] {
 				"AssetRegistry",
 				"AssetTools",
-                "PropertyEditor",
 				"ContentBrowser"
 			}
 		);
@@ -33,7 +30,7 @@ public class BehaviorTreeEditor : ModuleRules
                 "InputCore",
 				"Slate",
 				"SlateCore",
-                
+                "AssetDefinition",
 				"EditorFramework",
 				"UnrealEd", 
                 "AudioEditor",

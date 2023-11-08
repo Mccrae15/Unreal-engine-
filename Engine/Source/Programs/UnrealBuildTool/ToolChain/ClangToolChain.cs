@@ -1,13 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using EpicGames.Core;
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using UnrealBuildBase;
-using Microsoft.Extensions.Logging;
 using System.IO;
+using System.Linq;
 using System.Text.RegularExpressions;
+using EpicGames.Core;
+using Microsoft.Extensions.Logging;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -69,12 +69,6 @@ namespace UnrealBuildTool
 		EnableThinLTO = 1 << 8,
 
 		/// <summary>
-		/// If should disable using objcopy to split the debug info into its own file or now
-		/// When we support larger the 4GB files with objcopy.exe this can be removed!
-		/// </summary>
-		DisableSplitDebugInfoWithObjCopy = 1 << 9,
-
-		/// <summary>
 		/// Enable tuning of debug info for LLDB
 		/// </summary>
 		TuneDebugInfoForLLDB = 1 << 10,
@@ -103,6 +97,21 @@ namespace UnrealBuildTool
 		/// Indicates that the target is a moduler build i.e. Target.LinkType == TargetLinkType.Modular
 		/// </summary>
 		ModularBuild = 1 << 15,
+
+		/// <summary>
+		/// Disable Dump Syms step for faster iteration
+		/// </summary>
+		DisableDumpSyms = 1 << 16,
+
+		/// <summary>
+		/// Indicates that the AutoRTFM Clang compiler should be used instead of the standard clang compiler
+		/// </summary>
+		UseAutoRTFMCompiler = 1 << 17,
+
+		/// <summary>
+		/// Enable LibFuzzer
+		/// </summary>
+		EnableLibFuzzer = 1 << 18,
 	}
 
 	abstract class ClangToolChain : ISPCToolChain
@@ -173,7 +182,7 @@ namespace UnrealBuildTool
 		protected ClangToolChainOptions Options;
 
 		// Dummy define to work around clang compilation related to the windows maximum path length limitation
-		protected static string ClangDummyDefine; 
+		protected static string ClangDummyDefine;
 		protected const int ClangCmdLineMaxSize = 32 * 1024;
 		protected const int ClangCmdlineDangerZone = 30 * 1024;
 
@@ -182,6 +191,7 @@ namespace UnrealBuildTool
 		protected StaticAnalyzer StaticAnalyzer = StaticAnalyzer.None;
 		protected StaticAnalyzerMode StaticAnalyzerMode = StaticAnalyzerMode.Deep;
 		protected StaticAnalyzerOutputType StaticAnalyzerOutputType = StaticAnalyzerOutputType.Text;
+		protected float CompileActionWeight = 1.0f;
 
 		static ClangToolChain()
 		{
@@ -208,6 +218,7 @@ namespace UnrealBuildTool
 			StaticAnalyzer = Target.StaticAnalyzer;
 			StaticAnalyzerMode = Target.StaticAnalyzerMode;
 			StaticAnalyzerOutputType = Target.StaticAnalyzerOutputType;
+			CompileActionWeight = Target.ClangCompileActionWeight;
 		}
 
 		public override void FinalizeOutput(ReadOnlyTargetRules Target, TargetMakefileBuilder MakefileBuilder)
@@ -238,7 +249,7 @@ namespace UnrealBuildTool
 						$"-HeadersFile={HeadersOutputFile.FullName}",
 					};
 
-					Action AggregateTimingInfoAction = MakefileBuilder.CreateRecursiveAction<AggregateClangTimingInfo>(ActionType.ParseTimingInfo, string.Join(" ", AggregateActionArgs));
+					Action AggregateTimingInfoAction = MakefileBuilder.CreateRecursiveAction<AggregateClangTimingInfo>(ActionType.ParseTimingInfo, String.Join(" ", AggregateActionArgs));
 					AggregateTimingInfoAction.WorkingDirectory = Unreal.EngineSourceDirectory;
 					AggregateTimingInfoAction.StatusDescription = $"Aggregating {TimingJsonFiles.Count} Timing File(s)";
 					AggregateTimingInfoAction.bCanExecuteRemotely = false;
@@ -256,7 +267,7 @@ namespace UnrealBuildTool
 						$"-ArchiveFile={ArchiveOutputFile.FullName}",
 					};
 
-					Action ArchiveTimingInfoAction = MakefileBuilder.CreateRecursiveAction<AggregateClangTimingInfo>(ActionType.ParseTimingInfo, string.Join(" ", ArchiveActionArgs));
+					Action ArchiveTimingInfoAction = MakefileBuilder.CreateRecursiveAction<AggregateClangTimingInfo>(ActionType.ParseTimingInfo, String.Join(" ", ArchiveActionArgs));
 					ArchiveTimingInfoAction.WorkingDirectory = Unreal.EngineSourceDirectory;
 					ArchiveTimingInfoAction.StatusDescription = $"Archiving {TimingJsonFiles.Count} Timing File(s)";
 					ArchiveTimingInfoAction.bCanExecuteRemotely = false;
@@ -312,9 +323,9 @@ namespace UnrealBuildTool
 		/// </summary>
 		protected bool CompilerVersionLessThan(int Major, int Minor, int Patch) => Info.ClangVersion < new Version(Major, Minor, Patch);
 
-		protected bool IsAnalyzing(CppCompileEnvironment CompileEnvironment) => 
-				StaticAnalyzer == StaticAnalyzer.Default 
-			&&	CompileEnvironment.PrecompiledHeaderAction != PrecompiledHeaderAction.Create 
+		protected bool IsAnalyzing(CppCompileEnvironment CompileEnvironment) =>
+				StaticAnalyzer == StaticAnalyzer.Default
+			&& CompileEnvironment.PrecompiledHeaderAction != PrecompiledHeaderAction.Create
 			&& !CompileEnvironment.bDisableStaticAnalysis;
 
 		protected virtual void GetCppStandardCompileArgument(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
@@ -352,13 +363,18 @@ namespace UnrealBuildTool
 				// Validate PCH inputs by content if mtime check fails
 				Arguments.Add("-fpch-validate-input-files-content");
 			}
+
+			if (CompileEnvironment.bAllowAutoRTFMInstrumentation)
+			{
+				Arguments.Add("-fautortfm");
+			}
 		}
 
 		protected virtual void GetCStandardCompileArgument(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
 		{
 			switch (CompileEnvironment.CStandard)
 			{
-				case CStandardVersion.Default:
+				case CStandardVersion.None:
 					break;
 				case CStandardVersion.C89:
 					Arguments.Add("-std=c89");
@@ -378,6 +394,11 @@ namespace UnrealBuildTool
 				default:
 					throw new BuildException($"Unsupported C standard type set: {CompileEnvironment.CStandard}");
 			}
+
+			if (CompileEnvironment.bAllowAutoRTFMInstrumentation)
+			{
+				Arguments.Add("-fautortfm");
+			}
 		}
 
 		protected virtual void GetCompileArguments_CPP(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
@@ -395,16 +416,12 @@ namespace UnrealBuildTool
 		protected virtual void GetCompileArguments_MM(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
 		{
 			Arguments.Add("-x objective-c++");
-			Arguments.Add("-fobjc-abi-version=2");
-			Arguments.Add("-fobjc-legacy-dispatch");
 			GetCppStandardCompileArgument(CompileEnvironment, Arguments);
 		}
 
 		protected virtual void GetCompileArguments_M(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
 		{
 			Arguments.Add("-x objective-c");
-			Arguments.Add("-fobjc-abi-version=2");
-			Arguments.Add("-fobjc-legacy-dispatch");
 			GetCStandardCompileArgument(CompileEnvironment, Arguments);
 		}
 
@@ -485,6 +502,10 @@ namespace UnrealBuildTool
 			{
 				Arguments.Add(GetIncludePCHFileArgument(CompileEnvironment.PrecompiledHeaderFile!));
 			}
+			else if (CompileEnvironment.PrecompiledHeaderAction == PrecompiledHeaderAction.Create && CompileEnvironment.ParentPCHInstance != null)
+			{
+				Arguments.Add(GetIncludePCHFileArgument(CompileEnvironment.ParentPrecompiledHeaderFile!));
+			}
 
 			Arguments.AddRange(CompileEnvironment.ForceIncludeFiles.Select(ForceIncludeFile => GetForceIncludeFileArgument(ForceIncludeFile)));
 		}
@@ -525,121 +546,12 @@ namespace UnrealBuildTool
 			Arguments.Add("-Wall");                                     // https://clang.llvm.org/docs/DiagnosticsReference.html#wall
 			Arguments.Add("-Werror");                                   // https://clang.llvm.org/docs/UsersManual.html#cmdoption-werror
 
-			Arguments.Add("-Wdelete-non-virtual-dtor");                 // https://clang.llvm.org/docs/DiagnosticsReference.html#wdelete-non-virtual-dtor
-			Arguments.Add("-Wenum-conversion");                         // https://clang.llvm.org/docs/DiagnosticsReference.html#wenum-conversion
-			Arguments.Add("-Wbitfield-enum-conversion");                // https://clang.llvm.org/docs/DiagnosticsReference.html#wbitfield-enum-conversion
+			ClangWarnings.GetEnabledWarnings(Arguments);
 
-			Arguments.Add("-Wno-enum-enum-conversion");                 // https://clang.llvm.org/docs/DiagnosticsReference.html#wenum-enum-conversion					// ?? no reason given
-			Arguments.Add("-Wno-enum-float-conversion");                // https://clang.llvm.org/docs/DiagnosticsReference.html#wenum-float-conversion					// ?? no reason given
-
-			if (CompileEnvironment.CppStandard >= CppStandardVersion.Cpp20)
-			{
-				Arguments.Add("-Wno-deprecated-anon-enum-enum-conversion"); // https://clang.llvm.org/docs/DiagnosticsReference.html#wdeprecated-anon-enum-enum-conversion // new warning for C++20
-			}
-
-			if (CompilerVersionGreaterOrEqual(13, 0, 0))
-			{
-				Arguments.Add("-Wno-unused-but-set-variable");           // https://clang.llvm.org/docs/DiagnosticsReference.html#wunused-but-set-variable				// new warning for clang 13
-				Arguments.Add("-Wno-unused-but-set-parameter");          // https://clang.llvm.org/docs/DiagnosticsReference.html#wunused-but-set-parameter				// new warning for clang 13
-				Arguments.Add("-Wno-ordered-compare-function-pointers"); // https://clang.llvm.org/docs/DiagnosticsReference.html#wordered-compare-function-pointers	// new warning for clang 13
-			}
-			if (CompilerVersionGreaterOrEqual(14, 0, 0))
-			{
-				Arguments.Add("-Wno-bitwise-instead-of-logical");       // https://clang.llvm.org/docs/DiagnosticsReference.html#wbitwise-instead-of-logical			// new warning for clang 14
-			}
-
-			Arguments.Add("-Wno-gnu-string-literal-operator-template"); // https://clang.llvm.org/docs/DiagnosticsReference.html#wgnu-string-literal-operator-template	// We use this feature to allow static FNames.
-			Arguments.Add("-Wno-inconsistent-missing-override");        // https://clang.llvm.org/docs/DiagnosticsReference.html#winconsistent-missing-override			// ?? no reason given
-			Arguments.Add("-Wno-invalid-offsetof");                     // https://clang.llvm.org/docs/DiagnosticsReference.html#winvalid-offsetof						// needed to suppress warnings about using offsetof on non-POD types.
-			Arguments.Add("-Wno-switch");                               // https://clang.llvm.org/docs/DiagnosticsReference.html#wswitch								// this hides the "enumeration value 'XXXXX' not handled in switch [-Wswitch]" warnings - we should maybe remove this at some point and add UE_LOG(, Fatal, ) to default cases
-			Arguments.Add("-Wno-tautological-compare");                 // https://clang.llvm.org/docs/DiagnosticsReference.html#wtautological-compare					// this hides the "warning : comparison of unsigned expression < 0 is always false" type warnings due to constant comparisons, which are possible with template arguments
-			Arguments.Add("-Wno-unknown-pragmas");                      // https://clang.llvm.org/docs/DiagnosticsReference.html#wunknown-pragmas						// Slate triggers this (with its optimize on/off pragmas)
-			Arguments.Add("-Wno-unused-function");                      // https://clang.llvm.org/docs/DiagnosticsReference.html#wunused-function						// this will hide the warnings about static functions in headers that aren't used in every single .cpp file
-			Arguments.Add("-Wno-unused-lambda-capture");                // https://clang.llvm.org/docs/DiagnosticsReference.html#wunused-lambda-capture					// suppressed because capturing of compile-time constants is seemingly inconsistent. And MSVC doesn't do that.
-			Arguments.Add("-Wno-unused-local-typedef");                 // https://clang.llvm.org/docs/DiagnosticsReference.html#wunused-local-typedef					// clang is being overly strict here? PhysX headers trigger this.
-			Arguments.Add("-Wno-unused-private-field");                 // https://clang.llvm.org/docs/DiagnosticsReference.html#wunused-private-field					// this will prevent the issue of warnings for unused private variables. MultichannelTcpSocket.h triggers this, possibly more
-			Arguments.Add("-Wno-unused-variable");                      // https://clang.llvm.org/docs/DiagnosticsReference.html#wunused-variable						// ?? no reason given
-			Arguments.Add("-Wno-undefined-var-template");               // https://clang.llvm.org/docs/DiagnosticsReference.html#wundefined-var-template				// not really a good warning to disable
-
-			// Profile Guided Optimization (PGO) and Link Time Optimization (LTO)
-			if (CompileEnvironment.bPGOOptimize)
-			{
-				//
-				// Clang emits warnings for each compiled object file that doesn't have a matching entry in the profile data.
-				// This can happen when the profile data is older than the binaries we're compiling.
-				//
-				// Disable these warnings. They are far too verbose.
-				//
-				Arguments.Add("-Wno-profile-instr-out-of-date");        // https://clang.llvm.org/docs/DiagnosticsReference.html#wprofile-instr-out-of-date
-				Arguments.Add("-Wno-profile-instr-unprofiled");         // https://clang.llvm.org/docs/DiagnosticsReference.html#wprofile-instr-unprofiled
-
-				// apparently there can be hashing conflicts with PGO which can result in:
-				// 'Function control flow change detected (hash mismatch)' warnings. 
-				Arguments.Add("-Wno-backend-plugin");                   // https://clang.llvm.org/docs/DiagnosticsReference.html#wbackend-plugin
-			}
-
-			// shipping builds will cause this warning with "ensure", so disable only in those case
-			if (CompileEnvironment.Configuration == CppConfiguration.Shipping || StaticAnalyzer != StaticAnalyzer.None)
-			{
-				Arguments.Add("-Wno-unused-value");                     // https://clang.llvm.org/docs/DiagnosticsReference.html#wunused-value
-			}
-
-			// https://clang.llvm.org/docs/DiagnosticsReference.html#wdeprecated-declarations
-			if (CompileEnvironment.DeprecationWarningLevel == WarningLevel.Error)
-			{
-				// TODO: This may be unnecessary with -Werror
-				Arguments.Add("-Werror=deprecated-declarations");
-			}
-
-			// Warn if __DATE__ or __TIME__ are used as they prevent reproducible builds
-			if (CompileEnvironment.bDeterministic)
-			{
-				Arguments.Add("-Wdate-time -Wno-error=date-time"); // https://clang.llvm.org/docs/DiagnosticsReference.html#wdate-time
-			}
-
-			// https://clang.llvm.org/docs/DiagnosticsReference.html#wshadow
-			if (CompileEnvironment.ShadowVariableWarningLevel != WarningLevel.Off)
-			{
-				Arguments.Add("-Wshadow" + ((CompileEnvironment.ShadowVariableWarningLevel == WarningLevel.Error) ? "" : " -Wno-error=shadow"));
-			}
-
-			// https://clang.llvm.org/docs/DiagnosticsReference.html#wundef
-			if (CompileEnvironment.bEnableUndefinedIdentifierWarnings)
-			{
-				Arguments.Add("-Wundef" + (CompileEnvironment.bUndefinedIdentifierWarningsAsErrors ? "" : " -Wno-error=undef"));
-			}
-
-			// Note: This should be kept in sync with PRAGMA_DISABLE_UNSAFE_TYPECAST_WARNINGS in ClangPlatformCompilerPreSetup.h
-			string[] UnsafeTypeCastWarningList = {
-				"float-conversion",
-				"implicit-float-conversion",
-				"implicit-int-conversion",
-				"c++11-narrowing"
-				//"shorten-64-to-32",	<-- too many hits right now, probably want it *soon*
-				//"sign-conversion",	<-- too many hits right now, probably want it eventually
-			};
-
-			if (CompileEnvironment.UnsafeTypeCastWarningLevel == WarningLevel.Error)
-			{
-				foreach (string Warning in UnsafeTypeCastWarningList)
-				{
-					Arguments.Add("-W" + Warning);
-				}
-			}
-			else if (CompileEnvironment.UnsafeTypeCastWarningLevel == WarningLevel.Warning)
-			{
-				foreach (string Warning in UnsafeTypeCastWarningList)
-				{
-					Arguments.Add("-W" + Warning + " -Wno-error=" + Warning);
-				}
-			}
-			else
-			{
-				foreach (string Warning in UnsafeTypeCastWarningList)
-				{
-					Arguments.Add("-Wno-" + Warning);
-				}
-			}
+			ClangWarnings.GetDisabledWarnings(CompileEnvironment,
+				StaticAnalyzer,
+				new VersionNumber(Info.ClangVersion.Major, Info.ClangVersion.Minor, Info.ClangVersion.Build),
+				Arguments);
 
 			// always use absolute paths for errors, this can help IDEs go to the error properly
 			Arguments.Add("-fdiagnostics-absolute-paths");  // https://clang.llvm.org/docs/ClangCommandLineReference.html#cmdoption-clang-fdiagnostics-absolute-paths
@@ -748,6 +660,12 @@ namespace UnrealBuildTool
 			{
 				Arguments.Add("-fsanitize=memory");
 			}
+
+			// LibFuzzer
+			if (Options.HasFlag(ClangToolChainOptions.EnableLibFuzzer))
+			{
+				Arguments.Add("-fsanitize=fuzzer");
+			}
 		}
 
 		/// <summary>
@@ -757,7 +675,7 @@ namespace UnrealBuildTool
 		/// <param name="Arguments"></param>
 		protected virtual void GetCompileArguments_AdditionalArgs(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
 		{
-			if (!string.IsNullOrWhiteSpace(CompileEnvironment.AdditionalArguments))
+			if (!String.IsNullOrWhiteSpace(CompileEnvironment.AdditionalArguments))
 			{
 				Arguments.Add(CompileEnvironment.AdditionalArguments);
 			}
@@ -794,7 +712,10 @@ namespace UnrealBuildTool
 			Arguments.Add("-Xclang -analyzer-config -Xclang path-diagnostics-alternate=true");
 
 			// Run shallow analyze if requested.
-			if (StaticAnalyzerMode == StaticAnalyzerMode.Shallow) Arguments.Add("-Xclang -analyzer-config -Xclang mode=shallow");
+			if (StaticAnalyzerMode == StaticAnalyzerMode.Shallow)
+			{
+				Arguments.Add("-Xclang -analyzer-config -Xclang mode=shallow");
+			}
 
 			if (CompileEnvironment.StaticAnalyzerCheckers.Count > 0)
 			{
@@ -836,16 +757,13 @@ namespace UnrealBuildTool
 			Arguments.Add("-pipe");
 
 			if (CompileEnvironment.Architecture.bIsX64)
-			{		
+			{
 				// UE5 minspec is 4.2
 				Arguments.Add("-msse4.2");
 			}
 
 			// Add include paths to the argument list.
 			GetCompileArguments_IncludePaths(CompileEnvironment, Arguments);
-
-			// Add force include paths to the argument list.
-			GetCompileArguments_ForceInclude(CompileEnvironment, Arguments);
 
 			// Add preprocessor definitions to the argument list.
 			GetCompileArguments_PreprocessorDefinitions(CompileEnvironment, Arguments);
@@ -886,8 +804,18 @@ namespace UnrealBuildTool
 		/// <param name="Arguments"></param>
 		/// <param name="CompileAction"></param>
 		/// <param name="CompileResult"></param>
-		protected virtual void GetCompileArguments_FileType(CppCompileEnvironment CompileEnvironment, FileItem SourceFile, DirectoryReference OutputDir, List<string> Arguments, Action CompileAction, CPPOutput CompileResult)
+		/// <returns>Path to the target file (such as .o)</returns>
+		protected virtual FileItem GetCompileArguments_FileType(CppCompileEnvironment CompileEnvironment, FileItem SourceFile, DirectoryReference OutputDir, List<string> Arguments, Action CompileAction, CPPOutput CompileResult)
 		{
+			// Add the additional response files
+			foreach (FileItem AdditionalResponseFile in CompileEnvironment.AdditionalResponseFiles)
+			{
+				Arguments.Add(GetResponseFileArgument(AdditionalResponseFile));
+			}
+
+			// Add force include paths to the argument list.
+			GetCompileArguments_ForceInclude(CompileEnvironment, Arguments);
+
 			// Add the C++ source file and its included files to the prerequisite item list.
 			CompileAction.PrerequisiteItems.UnionWith(CompileEnvironment.ForceIncludeFiles);
 			CompileAction.PrerequisiteItems.UnionWith(CompileEnvironment.AdditionalPrerequisites);
@@ -927,19 +855,41 @@ namespace UnrealBuildTool
 
 			if (CompileEnvironment.PrecompiledHeaderAction == PrecompiledHeaderAction.Include)
 			{
-				CompileAction.PrerequisiteItems.Add(CompileEnvironment.PrecompiledHeaderFile!);
 				CompileAction.PrerequisiteItems.Add(FileItem.GetItemByFileReference(CompileEnvironment.PrecompiledHeaderIncludeFilename!));
+
+				PrecompiledHeaderInstance? PCHInstance = CompileEnvironment.PCHInstance;
+				while (PCHInstance != null)
+				{
+					CompileAction.PrerequisiteItems.Add(PCHInstance.Output.GetPrecompiledHeaderFile(CompileEnvironment.Architecture)!);
+					CompileAction.PrerequisiteItems.Add(PCHInstance.HeaderFile!);
+					PCHInstance = PCHInstance.ParentPCHInstance;
+				}
+			}
+
+			string FileName = SourceFile.Name;
+			if (CompileEnvironment.CollidingNames != null && CompileEnvironment.CollidingNames.Contains(SourceFile))
+			{
+				string HashString = ContentHash.MD5(SourceFile.AbsolutePath.Substring(Unreal.RootDirectory.FullName.Length)).GetHashCode().ToString("X4");
+				FileName = Path.GetFileNameWithoutExtension(FileName) + "_" + HashString + Path.GetExtension(FileName);
 			}
 
 			FileItem OutputFile;
 			if (CompileEnvironment.PrecompiledHeaderAction == PrecompiledHeaderAction.Create)
 			{
-				OutputFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, GetFileNameFromExtension(SourceFile.AbsolutePath, ".gch")));
+				OutputFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, GetFileNameFromExtension(FileName, ".gch")));
 				CompileResult.PrecompiledHeaderFile = OutputFile;
+
+				PrecompiledHeaderInstance? ParentPCHInstance = CompileEnvironment.ParentPCHInstance;
+				while (ParentPCHInstance != null)
+				{
+					CompileAction.PrerequisiteItems.Add(ParentPCHInstance.Output.GetPrecompiledHeaderFile(CompileEnvironment.Architecture)!);
+					CompileAction.PrerequisiteItems.Add(ParentPCHInstance.HeaderFile!);
+					ParentPCHInstance = ParentPCHInstance.ParentPCHInstance;
+				}
 			}
 			else if (CompileEnvironment.bPreprocessOnly)
 			{
-				OutputFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, GetFileNameFromExtension(SourceFile.AbsolutePath, ".i")));
+				OutputFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, GetFileNameFromExtension(FileName, ".i")));
 				CompileResult.ObjectFiles.Add(OutputFile);
 
 				// Clang does EITHER pre-process or object file.
@@ -949,10 +899,16 @@ namespace UnrealBuildTool
 				// this is parsed by external tools wishing to open this file directly.
 				Logger.LogInformation("PreProcessPath: {File}", OutputFile.AbsolutePath);
 			}
+			else if (IsAnalyzing(CompileEnvironment))
+			{
+				// Clang analysis does not actually create an object, use the dependency list as the response filename
+				OutputFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, GetFileNameFromExtension(FileName, ".d")));
+				CompileResult.ObjectFiles.Add(OutputFile);
+			}
 			else
 			{
 				string ObjectFileExtension = (CompileEnvironment.AdditionalArguments != null && CompileEnvironment.AdditionalArguments.Contains("-emit-llvm")) ? ".bc" : ".o";
-				OutputFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, GetFileNameFromExtension(SourceFile.AbsolutePath, ObjectFileExtension)));
+				OutputFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, GetFileNameFromExtension(FileName, ObjectFileExtension)));
 				CompileResult.ObjectFiles.Add(OutputFile);
 			}
 
@@ -962,54 +918,120 @@ namespace UnrealBuildTool
 			// Add the source file path to the command-line.
 			Arguments.Add(GetSourceFileArgument(SourceFile));
 
+			// Generate the included header dependency list
+			if (!PreprocessDepends)
+			{
+				FileItem DependencyListFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, GetFileNameFromExtension(FileName, ".d")));
+				Arguments.Add(GetDepencenciesListFileArgument(DependencyListFile));
+				CompileAction.DependencyListFile = DependencyListFile;
+				CompileAction.ProducedItems.Add(DependencyListFile);
+			}
+
 			if (!IsAnalyzing(CompileEnvironment))
 			{
 				// Generate the timing info
 				if (CompileEnvironment.bPrintTimingInfo)
 				{
-					FileItem TraceFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, GetFileNameFromExtension(SourceFile.AbsolutePath, ".json")));
+					FileItem TraceFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, GetFileNameFromExtension(FileName, ".json")));
 					Arguments.Add("-ftime-trace");
 					CompileAction.ProducedItems.Add(TraceFile);
 				}
 
-				// Generate the included header dependency list
-				if (!PreprocessDepends)
-				{
-					FileItem DependencyListFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, GetFileNameFromExtension(SourceFile.AbsolutePath, ".d")));
-					Arguments.Add(GetDepencenciesListFileArgument(DependencyListFile));
-					CompileAction.DependencyListFile = DependencyListFile;
-					CompileAction.ProducedItems.Add(DependencyListFile);
-				}
-			}
-			else
-			{
-				OutputFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, GetFileNameFromExtension(SourceFile.AbsolutePath, ".analysis")));
+				// Add the parameters needed to compile the output file to the command-line.
+				Arguments.Add(GetOutputFileArgument(OutputFile));
 			}
 
-			// Add the parameters needed to compile the output file to the command-line.
-			Arguments.Add(GetOutputFileArgument(OutputFile));
+			return OutputFile;
 		}
 
 		protected virtual List<string> ExpandResponseFileContents(List<string> ResponseFileContents)
-        {
-			return ResponseFileContents.Select(x => Utils.ExpandVariables(x)).ToList();
+		{
+			// This code is optimized for the scenario where ResponseFile has no variables to expand
+			List<string> NewList = ResponseFileContents;
+			for (int I = 0; I != NewList.Count; ++I)
+			{
+				string Line = ResponseFileContents[I];
+				string NewLine = Utils.ExpandVariables(Line);
+				if (NewLine == Line)
+				{
+					continue;
+				}
+
+				lock (ResponseFileContents)
+				{
+					if (NewList == ResponseFileContents)
+					{
+						NewList = new List<string>(ResponseFileContents);
+					}
+				}
+				NewList[I] = NewLine;
+			}
+			return NewList;
+		}
+
+		public override CppCompileEnvironment CreateSharedResponseFile(CppCompileEnvironment CompileEnvironment, FileReference OutResponseFile, IActionGraphBuilder Graph)
+		{
+			CppCompileEnvironment NewCompileEnvironment = new CppCompileEnvironment(CompileEnvironment);
+			List<string> Arguments = new List<string>();
+
+			GetCompileArguments_Global(CompileEnvironment, Arguments);
+
+			// Stash shared include paths for validation purposes
+			NewCompileEnvironment.SharedUserIncludePaths = new(NewCompileEnvironment.UserIncludePaths);
+			NewCompileEnvironment.SharedSystemIncludePaths = new(NewCompileEnvironment.SystemIncludePaths);
+
+			NewCompileEnvironment.UserIncludePaths.Clear();
+			NewCompileEnvironment.SystemIncludePaths.Clear();
+
+			Arguments = ExpandResponseFileContents(Arguments);
+
+			FileItem FileItem = FileItem.GetItemByFileReference(OutResponseFile);
+			Graph.CreateIntermediateTextFile(FileItem, Arguments);
+
+			NewCompileEnvironment.AdditionalPrerequisites.Add(FileItem);
+			NewCompileEnvironment.AdditionalResponseFiles.Add(FileItem);
+			NewCompileEnvironment.bHasSharedResponseFile = true;
+
+			return NewCompileEnvironment;
+		}
+
+		public override void CreateSpecificFileAction(CppCompileEnvironment CompileEnvironment, DirectoryReference SourceDir, DirectoryReference OutputDir, IActionGraphBuilder Graph)
+		{
+			// This is not supported for now.. If someone wants it we can implement it
+			if (CompileEnvironment.Architectures.bIsMultiArch)
+			{
+				return;
+			}
+
+			List<string> GlobalArguments = new();
+			if (!CompileEnvironment.bHasSharedResponseFile)
+			{
+				GetCompileArguments_Global(CompileEnvironment, GlobalArguments);
+			}
+
+			string DummyName = "SingleFile.cpp";
+			FileItem DummyFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, DummyName));
+			CPPOutput Result = new();
+			ClangSpecificFileActionGraphBuilder GraphBuilder = new(Logger);
+			Action Action = CompileCPPFile(CompileEnvironment, DummyFile, OutputDir, "<Unknown>", GraphBuilder, GlobalArguments, Result);
+			Action.PrerequisiteItems.RemoveWhere(File => File.Name.Contains(DummyName));
+
+			Graph.AddAction(new ClangSpecificFileAction(SourceDir, OutputDir, Action, GraphBuilder.ContentLines));
 		}
 
 		protected virtual Action CompileCPPFile(CppCompileEnvironment CompileEnvironment, FileItem SourceFile, DirectoryReference OutputDir, string ModuleName, IActionGraphBuilder Graph, IReadOnlyCollection<string> GlobalArguments, CPPOutput Result)
 		{
 			Action CompileAction = Graph.CreateAction(ActionType.Compile);
+			CompileAction.Weight = CompileActionWeight;
 
 			// copy the global arguments into the file arguments, so GetCompileArguments_FileType can remove entries if needed (special case but can be important)
 			List<string> FileArguments = new(GlobalArguments);
 
-			// Add C or C++ specific compiler arguments.
-			GetCompileArguments_FileType(CompileEnvironment, SourceFile, OutputDir, FileArguments, CompileAction, Result);
-
-			// Gets the target file so we can get the correct output path.
-			FileItem TargetFile = CompileAction.ProducedItems.First();
+			// Add C or C++ specific compiler arguments and get the target file so we can get the correct output path.
+			FileItem TargetFile = GetCompileArguments_FileType(CompileEnvironment, SourceFile, OutputDir, FileArguments, CompileAction, Result);
 
 			// Creates the path to the response file using the name of the output file and creates its contents.
-			FileReference ResponseFileName = new FileReference(TargetFile.AbsolutePath + ".response");
+			FileReference ResponseFileName = GetResponseFileName(CompileEnvironment, TargetFile);
 			List<string> ResponseFileContents = ExpandResponseFileContents(FileArguments);
 
 			if (RuntimePlatform.IsWindows)
@@ -1021,7 +1043,12 @@ namespace UnrealBuildTool
 				// >>>> xxx-clang.exe': The filename or extension is too long.  (0xCE)
 				// Clang processes and modifies the response file contents and this makes the final cmd line size hard for us to predict.
 				// To be conservative we add a dummy define to inflate the response file size and force clang to use the response file mode when we are close to the limit.
-				int CmdLineLength = Info.Clang.ToString().Length + string.Join(' ', ResponseFileContents).Length;
+				int CmdLineLength = Info.Clang.ToString().Length;
+				foreach (string Line in ResponseFileContents)
+				{
+					CmdLineLength += 1 + Line.Length;
+				}
+
 				bool bIsInDangerZone = CmdLineLength >= ClangCmdlineDangerZone && CmdLineLength <= ClangCmdLineMaxSize;
 				if (bIsInDangerZone)
 				{
@@ -1082,17 +1109,17 @@ namespace UnrealBuildTool
 				PrepassAction.DeleteItems.UnionWith(PrepassAction.ProducedItems);
 
 				// Gets the target file so we can get the correct output path.
-				FileItem PreprocessTargetFile = PrepassAction.ProducedItems.First();
+				FileItem PreprocessTargetFile = PrepassAction.DependencyListFile;
 
 				// Creates the path to the response file using the name of the output file and creates its contents.
-				FileReference PreprocessResponseFileName = new FileReference(PreprocessTargetFile.AbsolutePath + ".response");
+				FileReference PreprocessResponseFileName = GetResponseFileName(CompileEnvironment, PreprocessTargetFile);
 				List<string> PreprocessResponseFileContents = new();
 				PreprocessResponseFileContents.AddRange(PreprocessGlobalArguments);
 				PreprocessResponseFileContents.AddRange(PreprocessFileArguments);
 
 				if (RuntimePlatform.IsWindows)
 				{
-					int CmdLineLength = Info.Clang.ToString().Length + string.Join(' ', ResponseFileContents).Length;
+					int CmdLineLength = Info.Clang.ToString().Length + String.Join(' ', ResponseFileContents).Length;
 					bool bIsInDangerZone = CmdLineLength >= ClangCmdlineDangerZone && CmdLineLength <= ClangCmdLineMaxSize;
 					if (bIsInDangerZone)
 					{
@@ -1115,7 +1142,11 @@ namespace UnrealBuildTool
 		protected override CPPOutput CompileCPPFiles(CppCompileEnvironment CompileEnvironment, List<FileItem> InputFiles, DirectoryReference OutputDir, string ModuleName, IActionGraphBuilder Graph)
 		{
 			List<string> GlobalArguments = new();
-			GetCompileArguments_Global(CompileEnvironment, GlobalArguments);
+
+			if (!CompileEnvironment.bHasSharedResponseFile)
+			{
+				GetCompileArguments_Global(CompileEnvironment, GlobalArguments);
+			}
 
 			// Create a compile action for each source file.
 			CPPOutput Result = new CPPOutput();

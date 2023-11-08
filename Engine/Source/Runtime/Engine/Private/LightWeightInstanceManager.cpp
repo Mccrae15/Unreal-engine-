@@ -4,28 +4,42 @@
 #include "GameFramework/LightWeightInstanceSubsystem.h"
 #include "Engine/Level.h"
 #include "Engine/World.h"
+#include "Misc/ScopeExit.h"
 #include "Net/UnrealNetwork.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(LightWeightInstanceManager)
 
+// CVar variable that is the size of the grid managers are placed into.
+static int32 LWIGridSize = -1;
+static FAutoConsoleVariableRef CVarLWIGridSize
+(
+	TEXT("LWI.Editor.GridSize"),
+	LWIGridSize,
+	TEXT("Sets the size of a grid that LWI managers will be generated with."),
+	ECVF_Default
+);
+
+
 UActorInstanceHandleInterface::UActorInstanceHandleInterface(const FObjectInitializer& ObjectInitializer)
+	:Super(ObjectInitializer)
 {
 	// do nothing
 }
 
 ALightWeightInstanceManager::ALightWeightInstanceManager(const FObjectInitializer& ObjectInitializer)
+	:Super(ObjectInitializer)
 {
 	bReplicates = true;
 	AcceptedClass = AActor::StaticClass();
 	if (!HasAnyFlags(RF_ClassDefaultObject))
 	{
-		FLightWeightInstanceSubsystem::Get().LWInstanceManagers.Add(this);
+		FLightWeightInstanceSubsystem::Get().AddManager(this);
 	}
 }
 
 ALightWeightInstanceManager::~ALightWeightInstanceManager()
 {
-	FLightWeightInstanceSubsystem::Get().LWInstanceManagers.Remove(this);
+	FLightWeightInstanceSubsystem::Get().RemoveManager(this);
 }
 
 void ALightWeightInstanceManager::SetRepresentedClass(UClass* ActorClass)
@@ -49,7 +63,7 @@ AActor* ALightWeightInstanceManager::FetchActorFromHandle(const FActorInstanceHa
 	if (ensure(!Handle.Actor.IsValid()))
 	{
 		// check if we already have an actor for this handle
-		AActor* const* FoundActor = nullptr;
+		TObjectPtr<AActor>* FoundActor = nullptr;
 		if ((FoundActor = Actors.Find(Handle.GetInstanceIndex())) == nullptr)
 		{
 			// spawn a new actor
@@ -57,16 +71,38 @@ AActor* ALightWeightInstanceManager::FetchActorFromHandle(const FActorInstanceHa
 		}
 		else
 		{
+#if !UE_BUILD_SHIPPING
+			const bool bSpawnInProgress = InstanceToActorConversionsInProgress.Contains(Handle.GetInstanceIndex());
+			if (!ensure(!bSpawnInProgress))
+			{
+				UE_LOG(LogLightWeightInstance, Error, 
+					TEXT("Calling FetchActorFromHandle on ActorInstance [ %s ] index [ %d ] - actor is spawned but may not be fully setup"),
+					*BaseInstanceName,
+					Handle.GetInstanceIndex());
+			}
+#endif //!UE_BUILD_SHIPPING
+
 			Handle.Actor = *FoundActor;
 		}
 	}
 
-	ensure(Handle.Actor.IsValid());
+	// Unless we are on the server or the actor has been spawned, this ensure will fail.
+	// Commented out until there is more robust replication.
+	// ensure(Handle.Actor.IsValid());
 	return Handle.Actor.Get();
 }
 
 AActor* ALightWeightInstanceManager::ConvertInstanceToActor(const FActorInstanceHandle& Handle)
 {
+#if !UE_BUILD_SHIPPING
+	check(!InstanceToActorConversionsInProgress.Contains(Handle.GetInstanceIndex()));
+	InstanceToActorConversionsInProgress.Add(Handle.GetInstanceIndex());
+	ON_SCOPE_EXIT
+	{
+		InstanceToActorConversionsInProgress.RemoveSingleSwap(Handle.GetInstanceIndex());
+	};
+#endif //!UE_BUILD_SHIPPING
+
 	// we shouldn't be calling this on indices that already have an actor representing them
 	if (Actors.Contains(Handle.GetInstanceIndex()) && Actors[Handle.GetInstanceIndex()] != nullptr)
 	{
@@ -78,23 +114,78 @@ AActor* ALightWeightInstanceManager::ConvertInstanceToActor(const FActorInstance
 		return nullptr;
 	}
 
-	FActorSpawnParameters SpawnParams;
-	SetSpawnParameters(SpawnParams);
+	//if we have previously spawned an actor for this index, don't spawn again even though we have no current actor entry.
+	//this may occur if an FActorInstanceHandle was cached before a spawned actor was destroyed and fetched after.
+	if (DestroyedActorIndices.Contains(Handle.GetInstanceIndex()))
+	{
+		UE_LOG(LogLightWeightInstance, Verbose,
+			TEXT("ALightWeightInstanceManager::ConvertInstanceToActor - manager [ %s ] had already spawned an actor for index [ %d ] that was destroyed"),
+			*GetActorNameOrLabel(),
+			Handle.GetInstanceIndex());
+		return nullptr;
+	}
 
-	AActor* NewActor = GetLevel()->GetWorld()->SpawnActor<AActor>(GetActorClassToSpawn(Handle), InstanceTransforms[Handle.GetInstanceIndex()], SpawnParams);
-	check(NewActor);
+	AActor* NewActor = nullptr;
+	// Only spawn actors on the server so they are replicated to the clients. Otherwise we'll end up with multiples.
+	if (HasAuthority())
+	{
+		FActorSpawnParameters SpawnParams;
+		SetSpawnParameters(SpawnParams);
+		SpawnParams.CustomPreSpawnInitalization = [this, &Handle](AActor* SpawnedActor)
+		{
+			PreSpawnInitalization(Handle, SpawnedActor);
+		};
 
-	Handle.Actor = NewActor;
-	Actors.Add(Handle.GetInstanceIndex(), NewActor);
+		NewActor = GetLevel()->GetWorld()->SpawnActor<AActor>(GetActorClassToSpawn(Handle), GetTransform(Handle), SpawnParams);
+		check(NewActor);
 
-	PostActorSpawn(Handle);
+		//should have been assigned in CustomPreSpawnInitialization
+		check(Handle.Actor == NewActor);
+		check(NewActor == Actors.FindRef(Handle.GetInstanceIndex()));
+
+		NewActor->OnDestroyed.AddUniqueDynamic(this, &ALightWeightInstanceManager::OnSpawnedActorDestroyed);
+
+		PostActorSpawn(Handle);
+	}
 
 	return NewActor;
 }
 
+void ALightWeightInstanceManager::OnSpawnedActorDestroyed(AActor* DestroyedActor)
+{
+	OnSpawnedActorDestroyed(DestroyedActor, FindIndexForActor(DestroyedActor));
+}
+
+void ALightWeightInstanceManager::OnSpawnedActorDestroyed(AActor* DestroyedActor, const int32 DestroyedActorInstanceIndex)
+{
+	check(DestroyedActor);
+	if (!ensure(DestroyedActorInstanceIndex != INDEX_NONE))
+	{
+		UE_LOG(LogLightWeightInstance, Error,
+			TEXT("OnSpawnedActorDestroyed - actor [ %s ] is not being tracked by manager [ %s ]"),
+			*DestroyedActor->GetName(),
+			*BaseInstanceName);
+	}
+
+	Actors.Remove(DestroyedActorInstanceIndex);
+	DestroyedActor->OnDestroyed.RemoveAll(this);
+
+	if (ensure(!DestroyedActorIndices.Contains(DestroyedActorInstanceIndex)))
+	{
+		DestroyedActorIndices.Add(DestroyedActorInstanceIndex);
+	}
+	else
+	{
+		UE_LOG(LogLightWeightInstance, Error,
+			TEXT("ALightWeightInstanceManager::OnSpawnedActorDestroyed - manager [ %s ] DestroyedActorIndices already has an entry for index [ %d ]"),
+			*GetActorNameOrLabel(),
+			DestroyedActorInstanceIndex);
+	}
+}
+
 int32 ALightWeightInstanceManager::FindIndexForActor(const AActor* InActor) const
 {
-	for (const TPair<int32, AActor*>& ActorPair : Actors)
+	for (const TPair<int32, TObjectPtr<AActor>>& ActorPair : Actors)
 	{
 		if (ActorPair.Value == InActor)
 		{
@@ -184,6 +275,42 @@ int32 ALightWeightInstanceManager::ConvertLightWeightIndexToCollisionIndex(int32
 	return InIndex;
 }
 
+int32 ALightWeightInstanceManager::GetGridSize() const
+{
+	return LWIGridSize;	
+}
+
+FInt32Vector3 ALightWeightInstanceManager::ConvertPositionToCoord(const FVector& InPosition) const
+{
+	float GridSize = GetGridSize();
+	if (GridSize > 0)
+	{
+		return FInt32Vector3(
+			FMath::FloorToInt(InPosition.X / GridSize),
+			FMath::FloorToInt(InPosition.Y / GridSize),
+			FMath::FloorToInt(InPosition.Z / GridSize)
+		);
+	}
+
+	return FInt32Vector3::ZeroValue;
+}
+
+FBox ALightWeightInstanceManager::ConvertPositionToGridBounds(const FVector& InPosition) const
+{
+	float GridSize = GetGridSize();
+	if (GridSize > 0)
+	{
+		const FInt32Vector3 GridCoord = ConvertPositionToCoord(InPosition);
+
+		FBox GridBounds;
+		GridBounds.Min = FVector(GridCoord * GridSize);
+		GridBounds.Max = FVector(GridCoord * GridSize + FInt32Vector3(GridSize));
+		return GridBounds;
+	}
+
+	return FBox(InPosition, InPosition);
+}
+
 void ALightWeightInstanceManager::SetSpawnParameters(FActorSpawnParameters& SpawnParams)
 {
 	SpawnParams.OverrideLevel = GetLevel();
@@ -194,6 +321,12 @@ void ALightWeightInstanceManager::SetSpawnParameters(FActorSpawnParameters& Spaw
 UClass* ALightWeightInstanceManager::GetActorClassToSpawn(const FActorInstanceHandle& Handle) const
 {
 	return RepresentedClass;
+}
+
+void ALightWeightInstanceManager::PreSpawnInitalization(const FActorInstanceHandle& Handle, AActor* SpawnedActor)
+{
+	Handle.Actor = SpawnedActor;
+	Actors.Add(Handle.GetInstanceIndex(), SpawnedActor);
 }
 
 void ALightWeightInstanceManager::PostActorSpawn(const FActorInstanceHandle& Handle)
@@ -213,41 +346,29 @@ bool ALightWeightInstanceManager::IsIndexValid(int32 Index) const
 
 bool ALightWeightInstanceManager::FindActorForHandle(const FActorInstanceHandle& Handle) const
 {
-	ensure(!Handle.Actor.IsValid());
+	if (Handle.Actor.IsValid())
+	{
+		return true;
+	}
 
-	AActor* const* FoundActor = Actors.Find(Handle.GetInstanceIndex());
+	const TObjectPtr<AActor>* FoundActor = Actors.Find(Handle.GetInstanceIndex());
 	Handle.Actor = FoundActor ? *FoundActor : nullptr;
 	return Handle.Actor != nullptr;
 }
 
+AActor* ALightWeightInstanceManager::FindActorForInstanceIndex(const int32 InstanceIndex)
+{
+	return Actors.FindRef(InstanceIndex);
+}
+
 FVector ALightWeightInstanceManager::GetLocation(const FActorInstanceHandle& Handle) const
 {
-	if (FindActorForHandle(Handle))
-	{
-		return Handle.Actor->GetActorLocation();
-	}
-
-	if (ensure(IsIndexValid(Handle.GetInstanceIndex())))
-	{
-		return InstanceTransforms[Handle.GetInstanceIndex()].GetTranslation();
-	}
-
-	return FVector();
+	return GetTransform(Handle).GetTranslation();
 }
 
 FRotator ALightWeightInstanceManager::GetRotation(const FActorInstanceHandle& Handle) const
 {
-	if (FindActorForHandle(Handle))
-	{
-		return Handle.Actor->GetActorRotation();
-	}
-
-	if (ensure(IsIndexValid(Handle.GetInstanceIndex())))
-	{
-		return InstanceTransforms[Handle.GetInstanceIndex()].Rotator();
-	}
-
-	return FRotator();
+	return GetTransform(Handle).Rotator();
 }
 
 FTransform ALightWeightInstanceManager::GetTransform(const FActorInstanceHandle& Handle) const
@@ -259,7 +380,8 @@ FTransform ALightWeightInstanceManager::GetTransform(const FActorInstanceHandle&
 
 	if (ensure(IsIndexValid(Handle.GetInstanceIndex())))
 	{
-		return InstanceTransforms[Handle.GetInstanceIndex()];
+		// Return in world space.
+		return InstanceTransforms[Handle.GetInstanceIndex()] * GetActorTransform();
 	}
 
 	return FTransform();
@@ -277,22 +399,22 @@ FString ALightWeightInstanceManager::GetName(const FActorInstanceHandle& Handle)
 
 bool ALightWeightInstanceManager::DoesRepresentClass(const UClass* OtherClass) const
 {
-	return OtherClass ? OtherClass->IsChildOf(RepresentedClass) : false;
+	return OtherClass ? OtherClass->IsChildOf(GetRepresentedClass()) : false;
 }
 
 bool ALightWeightInstanceManager::DoesAcceptClass(const UClass* OtherClass) const
 {
-	return OtherClass ? OtherClass->IsChildOf(AcceptedClass) : false;
+	return OtherClass ? OtherClass->IsChildOf(GetAcceptedClass()) : false;
 }
 
 UClass* ALightWeightInstanceManager::GetRepresentedClass() const
 {
-	return RepresentedClass;
+	return IsValid(RepresentedClass) ? RepresentedClass : nullptr;
 }
 
 UClass* ALightWeightInstanceManager::GetAcceptedClass() const
 {
-	return AcceptedClass;
+	return IsValid(AcceptedClass) ? AcceptedClass : nullptr;
 }
 
 int32 ALightWeightInstanceManager::AddNewInstance(FLWIData* InitData)
@@ -335,7 +457,8 @@ void ALightWeightInstanceManager::GrowDataArrays()
 
 void ALightWeightInstanceManager::UpdateDataAtIndex(FLWIData* InData, int32 Index)
 {
-	InstanceTransforms[Index] = InData->Transform;
+	// Convert to local space.
+	InstanceTransforms[Index] = InData->Transform * GetActorTransform().Inverse();
 }
 
 void ALightWeightInstanceManager::RemoveInstance(const int32 Index)
@@ -347,12 +470,26 @@ void ALightWeightInstanceManager::RemoveInstance(const int32 Index)
 		ValidIndices[Index] = false;
 
 		// destroy the associated actor if one existed
-		if (AActor** FoundActor = Actors.Find(Index))
+		if (TObjectPtr<AActor>* FoundActor = Actors.Find(Index))
 		{
 			AActor* ActorToDestroy = *FoundActor;
 			ActorToDestroy->Destroy();
 		}
 	}
+}
+
+bool ALightWeightInstanceManager::HasAnyValidInstancesOrManagedActors() const
+{
+	bool bHasAnyValidIndex = false;
+	for (const bool bIsIndexValid : ValidIndices)
+	{
+		if (bIsIndexValid)
+		{
+			bHasAnyValidIndex = true;
+			break;
+		}
+	}
+	return bHasAnyValidIndex;
 }
 
 void ALightWeightInstanceManager::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const

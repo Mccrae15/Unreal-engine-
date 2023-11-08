@@ -6,6 +6,7 @@
 #include "HAL/LowLevelMemTracker.h"
 #include "Math/IntPoint.h"
 #include "MuR/MutableMath.h"
+#include "MuR/SerialisationPrivate.h"
 
 
 namespace mu {
@@ -42,6 +43,8 @@ namespace mu {
 		pResult->m_maxsize = m_maxsize;
 		pResult->m_blocks = m_blocks;
 		pResult->m_strategy = m_strategy;
+		pResult->FirstLODToIgnoreWarnings = FirstLODToIgnoreWarnings;
+		pResult->ReductionMethod = ReductionMethod;
 		return pResult;
 	}
 
@@ -52,7 +55,17 @@ namespace mu {
 		return  (m_size == o.m_size) &&
 			(m_maxsize == o.m_maxsize) &&
 			(m_blocks == o.m_blocks) &&
-			(m_strategy == o.m_strategy);
+			(m_strategy == o.m_strategy) &&
+			// maybe this is not needed
+			(FirstLODToIgnoreWarnings == o.FirstLODToIgnoreWarnings) &&
+			(ReductionMethod==o.ReductionMethod);
+	}
+
+
+	//---------------------------------------------------------------------------------------------
+	int32 Layout::GetDataSize() const
+	{
+		return sizeof(Layout) + m_blocks.GetAllocatedSize();
 	}
 
 
@@ -111,7 +124,7 @@ namespace mu {
 
 
 	//---------------------------------------------------------------------------------------------
-	void Layout::GetBlock( int index, int* pMinX, int* pMinY, int* pSizeX, int* pSizeY ) const
+	void Layout::GetBlock( int index, uint16* pMinX, uint16* pMinY, uint16* pSizeX, uint16* pSizeY ) const
 	{
 		check( index >=0 && index < m_blocks.Num() );
 		check( pMinX && pMinY && pSizeX && pSizeY );
@@ -127,14 +140,20 @@ namespace mu {
 
 
 	//---------------------------------------------------------------------------------------------
-	void Layout::GetBlockPriority(int index, int* pPriority) const
+	void Layout::GetBlockOptions(int index, int* pPriority, bool* bUseSymmetry) const
 	{
 		check(index >= 0 && index < m_blocks.Num());
 		check(pPriority);
+		check(bUseSymmetry);
 
 		if (pPriority)
 		{
 			*pPriority = m_blocks[index].m_priority;
+		}
+
+		if (bUseSymmetry)
+		{
+			*bUseSymmetry = m_blocks[index].bUseSymmetry;
 		}
 	}
 
@@ -145,17 +164,18 @@ namespace mu {
 		check( index >=0 && index < m_blocks.Num() );
 
 		// Keeps the id
-		m_blocks[index].m_min = vec2<uint16>((uint16)minx, (uint16)miny);
-		m_blocks[index].m_size = vec2<uint16>((uint16)sizex, (uint16)sizey);
+		m_blocks[index].m_min = UE::Math::TIntVector2<uint16>((uint16)minx, (uint16)miny);
+		m_blocks[index].m_size = UE::Math::TIntVector2<uint16>((uint16)sizex, (uint16)sizey);
 	}
 
 
 	//---------------------------------------------------------------------------------------------
-	void Layout::SetBlockPriority(int index, int priority)
+	void Layout::SetBlockOptions(int index, int priority, bool bUseSymmetry)
 	{
 		check(index >= 0 && index < m_blocks.Num());
 
 		m_blocks[index].m_priority = priority;
+		m_blocks[index].bUseSymmetry = bUseSymmetry;
 	}
 
 
@@ -170,6 +190,66 @@ namespace mu {
 	EPackStrategy Layout::GetLayoutPackingStrategy() const
 	{
 		return m_strategy;
+	}
+
+
+	//---------------------------------------------------------------------------------------------
+	void Layout::Serialise(OutputArchive& arch) const
+	{
+		uint32 ver = 5;
+		arch << ver;
+
+		arch << m_size;
+		arch << m_blocks;
+
+		arch << m_maxsize;
+		arch << uint32(m_strategy);
+		arch << FirstLODToIgnoreWarnings;
+		arch << uint32(ReductionMethod);
+	}
+
+	
+	//---------------------------------------------------------------------------------------------
+	void Layout::Unserialise(InputArchive& arch)
+	{
+		uint32 ver;
+		arch >> ver;
+		check(ver <= 5);
+
+		arch >> m_size;
+
+		if (ver < 5)
+		{
+			uint32_t Size = 0;
+			arch >> Size;
+			m_blocks.SetNum(Size);
+
+			for (uint32_t BlockIndex = 0; BlockIndex < Size; ++BlockIndex)
+			{
+				m_blocks[BlockIndex].UnserialiseOldVersion(arch, ver);
+			}
+		}
+		else
+		{
+			arch >> m_blocks;
+		}
+
+		arch >> m_maxsize;
+
+		uint32 temp;
+		arch >> temp;
+		m_strategy = EPackStrategy(temp);
+
+		if (ver >= 4)
+		{
+			arch >> FirstLODToIgnoreWarnings;
+		}
+
+		if (ver >= 5)
+		{
+			arch >> temp;
+			ReductionMethod = EReductionMethod(temp);
+		}
 	}
 
 
@@ -211,12 +291,73 @@ namespace mu {
 	bool Layout::IsSingleBlockAndFull() const
 	{
 		if (m_blocks.Num() == 1
-			&& m_blocks[0].m_min == vec2<uint16>(0, 0)
+			&& m_blocks[0].m_min == UE::Math::TIntVector2<uint16>(0, 0)
 			&& m_blocks[0].m_size == m_size)
 		{
 			return true;
 		}
 		return false;
+	}
+
+
+	//---------------------------------------------------------------------------------------------
+	void Layout::SetIgnoreLODWarnings(int32 LOD)
+	{
+		FirstLODToIgnoreWarnings = LOD;
+	}
+
+
+	//---------------------------------------------------------------------------------------------
+	int32 Layout::GetIgnoreLODWarnings()
+	{
+		return FirstLODToIgnoreWarnings;
+	}
+
+
+	//---------------------------------------------------------------------------------------------
+	void Layout::SetBlockReductionMethod(EReductionMethod Method)
+	{
+		ReductionMethod = Method;
+	}
+
+
+	//---------------------------------------------------------------------------------------------
+	EReductionMethod Layout::GetBlockReductionMethod() const
+	{
+		return ReductionMethod;
+	}
+
+	
+	//---------------------------------------------------------------------------------------------
+	void Layout::FBlock::Serialise(OutputArchive& arch) const
+	{
+		arch << m_min;
+		arch << m_size;
+		arch << m_id;
+		arch << m_priority;
+		arch << bUseSymmetry;
+	}
+
+
+	//---------------------------------------------------------------------------------------------
+	void Layout::FBlock::Unserialise(InputArchive& arch)
+	{
+		arch >> m_min;
+		arch >> m_size;
+		arch >> m_id;
+		arch >> m_priority;
+		arch >> bUseSymmetry;
+	}
+
+	
+	//---------------------------------------------------------------------------------------------
+	void Layout::FBlock::UnserialiseOldVersion(InputArchive& Archive, const int32 Version)
+	{
+		// Use the version if the Layout version changes to 6
+		Archive >> m_min;
+		Archive >> m_size;
+		Archive >> m_id;
+		Archive >> m_priority;
 	}
 }
 

@@ -2,7 +2,8 @@
 
 #include "NiagaraNodeOutputTag.h"
 #include "NiagaraCustomVersion.h"
-#include "SNiagaraGraphNodeCustomHlsl.h"
+#include "NiagaraHlslTranslator.h"
+#include "Widgets/SNiagaraGraphNodeCustomHlsl.h"
 #include "EdGraphSchema_Niagara.h"
 #include "ScopedTransaction.h"
 #include "EdGraphSchema_Niagara.h"
@@ -32,7 +33,7 @@ void UNiagaraNodeOutputTag::AllocateDefaultPins()
 	CreateAddPin(EGPD_Input);
 }
 
-void UNiagaraNodeOutputTag::Compile(class FHlslNiagaraTranslator* Translator, TArray<int32>& Outputs)
+void UNiagaraNodeOutputTag::Compile(FTranslator* Translator, TArray<int32>& Outputs) const
 {
 	FPinCollectorArray InputPins;
 	GetInputPins(InputPins);
@@ -49,7 +50,7 @@ void UNiagaraNodeOutputTag::Compile(class FHlslNiagaraTranslator* Translator, TA
 		{
 			continue;
 		}
-		int32 CompiledInput = Translator->CompilePin(InputPin);
+		int32 CompiledInput = Translator->CompileInputPin(InputPin);
 
 		if (Schema->PinToTypeDefinition(InputPin) == FNiagaraTypeDefinition::GetParameterMapDef())
 		{
@@ -57,7 +58,7 @@ void UNiagaraNodeOutputTag::Compile(class FHlslNiagaraTranslator* Translator, TA
 		}
 		else
 		{
-			Translator->WriteCompilerTag(CompiledInput, InputPin, bEmitMessageOnFailure, FailureSeverity);
+			Translator->WriteCompilerTag(CompiledInput, InputPin, bEditorOnly, bEmitMessageOnFailure, FailureSeverity);
 		}
 	}
 
@@ -192,7 +193,7 @@ void UNiagaraNodeOutputTag::BuildParameterMapHistory(FNiagaraParameterMapHistory
 			continue;
 		}
 
-		OutHistory.VisitInputPin(InputPin, this, bFilterForCompilation);
+		OutHistory.VisitInputPin(InputPin, bFilterForCompilation);
 
 
 		if (!IsNodeEnabled() && OutHistory.GetIgnoreDisabled())

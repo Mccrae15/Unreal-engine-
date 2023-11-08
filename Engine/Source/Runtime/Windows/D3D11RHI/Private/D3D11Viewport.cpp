@@ -9,6 +9,7 @@
 #include "HDRHelper.h"
 #include "Engine/RendererSettings.h"
 #include "HAL/ThreadHeartBeat.h"
+#include "RHIUtilities.h"
 
 #ifndef D3D11_WITH_DWMAPI
 #define D3D11_WITH_DWMAPI	1
@@ -208,12 +209,10 @@ FD3D11Viewport::~FD3D11Viewport()
 
 	// If the swap chain was in fullscreen mode, switch back to windowed before releasing the swap chain.
 	// DXGI throws an error otherwise.
-#if !PLATFORM_HOLOLENS
 	if (SwapChain)
 	{
 		VERIFYD3D11RESULT_EX(SwapChain->SetFullscreenState(false, NULL), D3DRHI->GetDevice());
 	}
-#endif
 
 	D3DRHI->Viewports.Remove(this);
 }
@@ -314,9 +313,8 @@ void FD3D11Viewport::Resize(uint32 InSizeX, uint32 InSizeY, bool bInIsFullscreen
 	}
 
 	RECT WindowRect = {};
-#if PLATFORM_WINDOWS
 	GetWindowRect(WindowHandle, &WindowRect);
-#endif
+
 	FVector2D WindowTopLeft((float)WindowRect.left, (float)WindowRect.top);
 	FVector2D WindowBottomRight((float)WindowRect.right, (float)WindowRect.bottom);
 	bool bHDREnabled;
@@ -592,7 +590,6 @@ bool FD3D11Viewport::Present(bool bLockToVsync)
 {
 	bool bNativelyPresented = true;
 #if	D3D11_WITH_DWMAPI
-#if !PLATFORM_HOLOLENS
 	// We can't call Present if !bIsValid, as it waits a window message to be processed, but the main thread may not be pumping the message handler.
 	if(ValidState != 0 && SwapChain.IsValid())
 	{
@@ -606,7 +603,6 @@ bool FD3D11Viewport::Present(bool bLockToVsync)
 			ValidState = VIEWPORT_INVALID;
 		}
 	}
-#endif
 	if (MaximumFrameLatency != RHIConsoleVariables::MaximumFrameLatency)
 	{
 		MaximumFrameLatency = RHIConsoleVariables::MaximumFrameLatency;	

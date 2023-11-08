@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "VulkanAndroidPlatform.h"
-#include "../VulkanRHIPrivate.h"
+#include "../VulkanRayTracing.h"
 #include "../VulkanPipeline.h"
 #include "../VulkanRenderpass.h"
 #include <dlfcn.h>
@@ -301,6 +301,14 @@ bool FVulkanAndroidPlatform::LoadVulkanInstanceFunctions(VkInstance inInstance)
 	ENUM_VK_ENTRYPOINTS_PLATFORM_INSTANCE(GETINSTANCE_VK_ENTRYPOINTS);
 	ENUM_VK_ENTRYPOINTS_PLATFORM_INSTANCE(CHECK_VK_ENTRYPOINTS);
 
+#if VULKAN_RHI_RAYTRACING
+	const bool bFoundRayTracingEntries = FVulkanRayTracingPlatform::CheckVulkanInstanceFunctions(inInstance);
+	if (!bFoundRayTracingEntries)
+	{
+		UE_LOG(LogVulkanRHI, Warning, TEXT("Vulkan RHI ray tracing is enabled, but failed to load instance functions."));
+	}
+#endif
+
 	if (!bFoundAllEntryPoints)
 	{
 		return false;
@@ -422,12 +430,23 @@ static FAutoConsoleVariableRef CVarVulkanQcomRenderPassTransform(
 	ECVF_ReadOnly
 );
 
+static int32 GVulkanUseASTCDecodeMode = 1;
+static FAutoConsoleVariableRef CVarVulkanUseASTCDecodeMode(
+	TEXT("r.Vulkan.UseASTCDecodeMode"),
+	GVulkanUseASTCDecodeMode,
+	TEXT("Whether to use VK_EXT_astc_decode_mode extension\n"),
+	ECVF_ReadOnly
+);
+
 void FVulkanAndroidPlatform::GetDeviceExtensions(FVulkanDevice* Device, FVulkanDeviceExtensionArray& OutExtensions)
 {
 	OutExtensions.Add(MakeUnique<FVulkanDeviceExtension>(Device, VK_KHR_ANDROID_SURFACE_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED, VULKAN_EXTENSION_NOT_PROMOTED));
 	OutExtensions.Add(MakeUnique<FVulkanDeviceExtension>(Device, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED, VULKAN_EXTENSION_NOT_PROMOTED));
-	OutExtensions.Add(MakeUnique<FVulkanDeviceExtension>(Device, VK_EXT_ASTC_DECODE_MODE_EXTENSION_NAME, VULKAN_SUPPORTS_ASTC_DECODE_MODE, VULKAN_EXTENSION_NOT_PROMOTED, DEVICE_EXT_FLAG_SETTER(HasEXTASTCDecodeMode)));
-	//OutExtensions.Add(MakeUnique<FVulkanDeviceExtension>(Device, VK_EXT_TEXTURE_COMPRESSION_ASTC_HDR_EXTENSION_NAME, VULKAN_SUPPORTS_TEXTURE_COMPRESSION_ASTC_HDR, VK_API_VERSION_1_3, DEVICE_EXT_FLAG_SETTER(HasEXTTextureCompressionASTCHDR)));
+	if (GVulkanUseASTCDecodeMode)
+	{
+		OutExtensions.Add(MakeUnique<FVulkanDeviceExtension>(Device, VK_EXT_ASTC_DECODE_MODE_EXTENSION_NAME, VULKAN_SUPPORTS_ASTC_DECODE_MODE, VULKAN_EXTENSION_NOT_PROMOTED, DEVICE_EXT_FLAG_SETTER(HasEXTASTCDecodeMode)));
+	}
+	OutExtensions.Add(MakeUnique<FVulkanDeviceExtension>(Device, VK_EXT_TEXTURE_COMPRESSION_ASTC_HDR_EXTENSION_NAME, VULKAN_SUPPORTS_TEXTURE_COMPRESSION_ASTC_HDR, VK_API_VERSION_1_3, DEVICE_EXT_FLAG_SETTER(HasEXTTextureCompressionASTCHDR)));
 
 	if (GVulkanQcomRenderPassTransform)
 	{
@@ -567,23 +586,6 @@ void FVulkanAndroidPlatform::OverridePlatformHandlers(bool bInit)
 		FPlatformMisc::SetOnReInitWindowCallback(nullptr);
 		FPlatformMisc::SetOnReleaseWindowCallback(nullptr);
 		FPlatformMisc::SetOnPauseCallback(nullptr);
-	}
-}
-
-void FVulkanAndroidPlatform::SetupMaxRHIFeatureLevelAndShaderPlatform(ERHIFeatureLevel::Type InRequestedFeatureLevel)
-{
-	if (!GIsEditor &&
-		(FVulkanPlatform::RequiresMobileRenderer() || 
-		InRequestedFeatureLevel == ERHIFeatureLevel::ES3_1 ||
-		FParse::Param(FCommandLine::Get(), TEXT("featureleveles31"))))
-	{
-		GMaxRHIFeatureLevel = ERHIFeatureLevel::ES3_1;
-		GMaxRHIShaderPlatform = SP_VULKAN_ES3_1_ANDROID;
-	}
-	else
-	{
-		GMaxRHIFeatureLevel = ERHIFeatureLevel::SM5;
-		GMaxRHIShaderPlatform = SP_VULKAN_SM5_ANDROID;
 	}
 }
 
@@ -785,79 +787,126 @@ void CharArrayToBuffer(const TArray<const ANSICHAR*>& CharArray, TArray<char>& M
 	}
 }
 
-void GetVKStructsFromPNext(const void* pNext, TMap<uint32_t, const void*>& VkStructs)
+void GetVKStructsFromPNext(const void* InNext, TMap<VkStructureType, const void*>& VkStructs, const TArray<VkStructureType>& ValidTypes)
 {
-	const void* PointerNext = pNext;
-
-	while (PointerNext)
+	const VkBaseInStructure* Next = reinterpret_cast<const VkBaseInStructure*>(InNext);
+	while (Next != nullptr)
 	{
-		const VkStructureType* NextType = (VkStructureType*)PointerNext;
-		VkStructs.FindOrAdd((uint32_t)*NextType) = PointerNext;
+		if (!ValidTypes.Contains(Next->sType))
+		{
+			UE_LOG(LogRHI, Warning, TEXT("GetVKStructsFromPNext: Unexpected type found when reading pNext->sType %d, Valid Types: "), (uint32_t)Next->sType);
+		}
 
-		PointerNext = *((void**)(((uint8*)NextType) + sizeof(size_t)));
+		VkStructs.FindOrAdd(Next->sType) = Next;
+		Next = reinterpret_cast<const VkBaseInStructure*>(Next->pNext);
 	}
 }
 
-void HandleGraphicsPipelineCreatePNext(VkGraphicsPipelineCreateInfo* PipelineCreateInfo, TArray<char>& MemoryStream)
+void HandleGraphicsPipelineCreatePNext(const VkGraphicsPipelineCreateInfo* PipelineCreateInfo, TArray<char>& MemoryStream)
 {
-	TMap<uint32_t, const void*> VkStructs;
-	GetVKStructsFromPNext(PipelineCreateInfo->pNext, VkStructs);
+	TMap<VkStructureType, const void*> VkStructs;
+	GetVKStructsFromPNext(PipelineCreateInfo->pNext, VkStructs, { VK_STRUCTURE_TYPE_PIPELINE_FRAGMENT_SHADING_RATE_STATE_CREATE_INFO_KHR });
 
 	int32_t HandledCount = 0;
 
 	// FSR Create Info
 	bool bHasFSRCreateInfo = false;
 
-#if !VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
-	COPY_TO_BUFFER(MemoryStream, &bHasFSRCreateInfo, sizeof(bool));
-#else
-	const void** Struct = VkStructs.Find((uint32_t)VK_STRUCTURE_TYPE_PIPELINE_FRAGMENT_SHADING_RATE_STATE_CREATE_INFO_KHR);
+	const void** Struct = VkStructs.Find(VK_STRUCTURE_TYPE_PIPELINE_FRAGMENT_SHADING_RATE_STATE_CREATE_INFO_KHR);
 	bHasFSRCreateInfo = Struct != nullptr;
 	COPY_TO_BUFFER(MemoryStream, &bHasFSRCreateInfo, sizeof(bool));
 
 	if (bHasFSRCreateInfo)
 	{
-		VkPipelineFragmentShadingRateStateCreateInfoKHR FSRCreateInfo = *(VkPipelineFragmentShadingRateStateCreateInfoKHR*)*Struct;
-		FSRCreateInfo.pNext = nullptr;
+		VkPipelineFragmentShadingRateStateCreateInfoKHR* FSRCreateInfo = (VkPipelineFragmentShadingRateStateCreateInfoKHR*)*Struct;
+		check(FSRCreateInfo->pNext == nullptr);
+		FSRCreateInfo->pNext = nullptr;
 
-		COPY_TO_BUFFER(MemoryStream, &FSRCreateInfo, sizeof(VkPipelineFragmentShadingRateStateCreateInfoKHR));
+		COPY_TO_BUFFER(MemoryStream, FSRCreateInfo, sizeof(VkPipelineFragmentShadingRateStateCreateInfoKHR));
 		HandledCount++;
 	} 
-#endif
+
+	check(HandledCount == VkStructs.Num());
+}
+
+void HandlePipelineShaderStagePNext(const VkPipelineShaderStageCreateInfo* CreateInfo, TArray<char>& MemoryStream)
+{
+	TMap<VkStructureType, const void*> VkStructs;
+	GetVKStructsFromPNext(CreateInfo->pNext, VkStructs, { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO });
+
+	int32_t HandledCount = 0;
+
+	// Subgroup Size Info
+	bool bHasSubGroupSizeInfo = false;
+
+	const void** Struct = VkStructs.Find(VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO);
+	bHasSubGroupSizeInfo = Struct != nullptr;
+	COPY_TO_BUFFER(MemoryStream, &bHasSubGroupSizeInfo, sizeof(bool));
+
+	if (bHasSubGroupSizeInfo)
+	{
+		VkPipelineShaderStageRequiredSubgroupSizeCreateInfo* SubgroupSizeCreateInfo = (VkPipelineShaderStageRequiredSubgroupSizeCreateInfo*)*Struct;
+		check(SubgroupSizeCreateInfo->pNext == nullptr);
+
+		COPY_TO_BUFFER(MemoryStream, SubgroupSizeCreateInfo, sizeof(VkPipelineShaderStageRequiredSubgroupSizeCreateInfo));
+		HandledCount++;
+	}
 
 	check(HandledCount == VkStructs.Num());
 }
 
 void HandleSubpassDescriptionPNext(VkSubpassDescription2* SubpassDescription, TArray<char>& MemoryStream)
 {
-	TMap<uint32_t, const void*> VkStructs;
-	GetVKStructsFromPNext(SubpassDescription->pNext, VkStructs);
+	TMap<VkStructureType, const void*> VkStructs;
+	GetVKStructsFromPNext(SubpassDescription->pNext, VkStructs, { VK_STRUCTURE_TYPE_FRAGMENT_SHADING_RATE_ATTACHMENT_INFO_KHR });
 
 	int32_t HandledCount = 0;
 
 	// FSR Create Info 
 	bool bHasFSRAttachmentCreateInfo = false;
 
-#if !VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
-	COPY_TO_BUFFER(MemoryStream, &bHasFSRAttachmentCreateInfo, sizeof(bool));
-#else
-	const void** Struct = VkStructs.Find((uint32_t)VK_STRUCTURE_TYPE_FRAGMENT_SHADING_RATE_ATTACHMENT_INFO_KHR);
+	const void** Struct = VkStructs.Find(VK_STRUCTURE_TYPE_FRAGMENT_SHADING_RATE_ATTACHMENT_INFO_KHR);
 	bHasFSRAttachmentCreateInfo = Struct != nullptr;
 	COPY_TO_BUFFER(MemoryStream, &bHasFSRAttachmentCreateInfo, sizeof(bool));
 
 	if (bHasFSRAttachmentCreateInfo)
 	{
 		VkFragmentShadingRateAttachmentInfoKHR* FragmentShadingRateCreateInfo = (VkFragmentShadingRateAttachmentInfoKHR*)*Struct;
+
+		check(FragmentShadingRateCreateInfo->pFragmentShadingRateAttachment->pNext == nullptr);
 		COPY_TO_BUFFER(MemoryStream, FragmentShadingRateCreateInfo->pFragmentShadingRateAttachment, sizeof(VkAttachmentReference2));
 		COPY_TO_BUFFER(MemoryStream, &FragmentShadingRateCreateInfo->shadingRateAttachmentTexelSize, sizeof(VkExtent2D));
 		HandledCount++;
 	}
-#endif
 
 	check(HandledCount == VkStructs.Num());
 }
 
-void PipelineToBinary(FVulkanDevice* Device, VkGraphicsPipelineCreateInfo* PipelineInfo, FGfxPipelineDesc* GfxEntry, const FVulkanRenderTargetLayout* RTLayout, TArray<char>& MemoryStream)
+void HandleDepthStencilAttachmentPNext(const VkAttachmentReference2* Attachment, TArray<char>& MemoryStream)
+{
+	TMap<VkStructureType, const void*> VkStructs;
+	GetVKStructsFromPNext(Attachment->pNext, VkStructs, { VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_STENCIL_LAYOUT });
+
+	int32_t HandledCount = 0;
+
+	bool bHasStencilLayout = false;
+	
+	const void** Struct = VkStructs.Find(VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_STENCIL_LAYOUT);
+	bHasStencilLayout = Struct != nullptr;
+	COPY_TO_BUFFER(MemoryStream, &bHasStencilLayout, sizeof(bool));
+
+	if (bHasStencilLayout)
+	{
+		VkAttachmentReferenceStencilLayout* StencilLayout = (VkAttachmentReferenceStencilLayout*)*Struct;
+		check(StencilLayout->pNext == nullptr);
+		COPY_TO_BUFFER(MemoryStream, StencilLayout, sizeof(VkAttachmentReferenceStencilLayout));
+		HandledCount++;
+	}
+
+	check(HandledCount == VkStructs.Num());
+}
+
+void PipelineToBinary(FVulkanDevice* Device, const VkGraphicsPipelineCreateInfo* PipelineInfo, FGfxPipelineDesc* GfxEntry, const FVulkanRenderTargetLayout* RTLayout, TArray<char>& MemoryStream)
 {
 	static const unsigned int INITIAL_PSO_STREAM_SIZE = 64 * 1024;
 	MemoryStream.Reserve(INITIAL_PSO_STREAM_SIZE);
@@ -898,6 +947,8 @@ void PipelineToBinary(FVulkanDevice* Device, VkGraphicsPipelineCreateInfo* Pipel
 		ShaderStage.sType = PipelineInfo->pStages[Idx].sType;
 		ShaderStage.flags = PipelineInfo->pStages[Idx].flags;
 		ShaderStage.stage = PipelineInfo->pStages[Idx].stage;
+
+		HandlePipelineShaderStagePNext(&PipelineInfo->pStages[Idx], MemoryStream);
 
 		COPY_TO_BUFFER(MemoryStream, &ShaderStage, sizeof(VkPipelineShaderStageCreateInfo));
 
@@ -1097,6 +1148,8 @@ void PipelineToBinary(FVulkanDevice* Device, VkGraphicsPipelineCreateInfo* Pipel
 
 			VkRenderPassFragmentDensityMapCreateInfoEXT* FragmentDensityMap = (VkRenderPassFragmentDensityMapCreateInfoEXT*)RenderPassCreateInfo.pNext;
 			COPY_TO_BUFFER(MemoryStream, FragmentDensityMap, sizeof(VkRenderPassFragmentDensityMapCreateInfoEXT));
+
+			check(FragmentDensityMap->pNext == nullptr);
 		}
 
 		if(RenderPassCreateInfo.attachmentCount > 0)
@@ -1118,17 +1171,25 @@ void PipelineToBinary(FVulkanDevice* Device, VkGraphicsPipelineCreateInfo* Pipel
 			SubpassDescription.pInputAttachments = nullptr;
 			SubpassDescription.pResolveAttachments = nullptr;
 			
-			COPY_TO_BUFFER(MemoryStream, &CreateInfo.pSubpasses[Idx], sizeof(VkSubpassDescription2));
+			COPY_TO_BUFFER(MemoryStream, &SubpassDescription, sizeof(VkSubpassDescription2));
 
 			HandleSubpassDescriptionPNext(&SubpassDescription, MemoryStream);
 
 			if(SubpassDescription.colorAttachmentCount > 0)
 			{
+				for (uint32_t n = 0; n < SubpassDescription.colorAttachmentCount; ++n)
+				{
+					check(CreateInfo.pSubpasses[Idx].pColorAttachments[n].pNext == nullptr);
+				}
 				COPY_TO_BUFFER(MemoryStream, CreateInfo.pSubpasses[Idx].pColorAttachments, sizeof(VkAttachmentReference2) * SubpassDescription.colorAttachmentCount);
 			}
 
 			if(SubpassDescription.inputAttachmentCount > 0)
 			{
+				for (uint32_t n = 0; n < SubpassDescription.inputAttachmentCount; ++n)
+				{
+					check(CreateInfo.pSubpasses[Idx].pInputAttachments[n].pNext == nullptr);
+				}
 				COPY_TO_BUFFER(MemoryStream, CreateInfo.pSubpasses[Idx].pInputAttachments, sizeof(VkAttachmentReference2) * SubpassDescription.inputAttachmentCount);
 			}
 
@@ -1139,6 +1200,11 @@ void PipelineToBinary(FVulkanDevice* Device, VkGraphicsPipelineCreateInfo* Pipel
 			{
 				if(SubpassDescription.colorAttachmentCount > 0)
 				{
+					for (uint32_t n = 0; n < SubpassDescription.colorAttachmentCount; ++n)
+					{
+						check(CreateInfo.pSubpasses[Idx].pResolveAttachments[n].pNext == nullptr);
+					}
+					check(CreateInfo.pSubpasses[Idx].pResolveAttachments == nullptr);
 					COPY_TO_BUFFER(MemoryStream, CreateInfo.pSubpasses[Idx].pResolveAttachments, sizeof(VkAttachmentReference2)* SubpassDescription.colorAttachmentCount);
 				}
 			}
@@ -1148,6 +1214,7 @@ void PipelineToBinary(FVulkanDevice* Device, VkGraphicsPipelineCreateInfo* Pipel
 
 			if (bHasDepthStencilAttachment)
 			{
+				HandleDepthStencilAttachmentPNext(CreateInfo.pSubpasses[Idx].pDepthStencilAttachment, MemoryStream);
 				COPY_TO_BUFFER(MemoryStream, CreateInfo.pSubpasses[Idx].pDepthStencilAttachment, sizeof(VkAttachmentReference2));
 			}
 		}
@@ -1190,7 +1257,7 @@ void PipelineToBinary(FVulkanDevice* Device, VkGraphicsPipelineCreateInfo* Pipel
 
 			check(FragmentDensityMap->pNext == nullptr);
 			// TODO: Support Multiview create info
-		}
+		} 
 
 		if(RenderPassCreateInfo.attachmentCount > 0)
 		{
@@ -1211,7 +1278,7 @@ void PipelineToBinary(FVulkanDevice* Device, VkGraphicsPipelineCreateInfo* Pipel
 			SubpassDescription.pInputAttachments = nullptr;
 			SubpassDescription.pResolveAttachments = nullptr;
 			
-			COPY_TO_BUFFER(MemoryStream, &CreateInfo.pSubpasses[Idx], sizeof(VkSubpassDescription));
+			COPY_TO_BUFFER(MemoryStream, &SubpassDescription, sizeof(VkSubpassDescription));
 
 			if(SubpassDescription.colorAttachmentCount > 0)
 			{
@@ -1366,7 +1433,7 @@ namespace AndroidVulkanService
 	std::atomic<bool> bOneTimeErrorEncountered = false;
 }
 
-VkPipelineCache FVulkanAndroidPlatform::PrecompilePSO(FVulkanDevice* Device, VkGraphicsPipelineCreateInfo* PipelineInfo, FGfxPipelineDesc* GfxEntry, const FVulkanRenderTargetLayout* RTLayout, TArrayView<uint32_t> VS, TArrayView<uint32_t> PS, size_t& AfterSize)
+VkPipelineCache FVulkanAndroidPlatform::PrecompilePSO(FVulkanDevice* Device, const VkGraphicsPipelineCreateInfo* PipelineInfo, FGfxPipelineDesc* GfxEntry, const FVulkanRenderTargetLayout* RTLayout, TArrayView<uint32_t> VS, TArrayView<uint32_t> PS, size_t& AfterSize)
 {
 	FString FailureMessageOUT;
 	
@@ -1531,7 +1598,7 @@ void FVulkanAndroidPlatform::SetupImageMemoryRequirementWorkaround(const FVulkan
 
 		if (AFBCWorkaroundOption != 0)
 		{
-			UE_LOG(LogRHI, Display, TEXT("Enabling workaround to reduce memory requrement for BGRA textures (%s flag). 128x128 - 8 Mips BGRA texture: %u KiB -> %u KiB"),
+			UE_LOG(LogRHI, Display, TEXT("Enabling workaround to reduce memory requirement for BGRA textures (%s flag). 128x128 - 8 Mips BGRA texture: %u KiB -> %u KiB"),
 				AFBCWorkaroundOption == 1 ? TEXT("MUTABLE") : TEXT("STORAGE"),
 				Image0Mem.size / 1024,
 				AFBCWorkaroundOption == 1 ? ImageMutableMem.size / 1024 : ImageStorageMem.size / 1024
@@ -1568,7 +1635,7 @@ void FVulkanAndroidPlatform::SetupImageMemoryRequirementWorkaround(const FVulkan
 		{
 			ASTCWorkaroundOption = 1;
 
-			UE_LOG(LogRHI, Display, TEXT("Enabling workaround to reduce memory requrement for ASTC textures (VK_IMAGE_TILING_LINEAR). 128x128 - 8 Mips ASTC_8x8 texture: %u KiB -> %u KiB"),
+			UE_LOG(LogRHI, Display, TEXT("Enabling workaround to reduce memory requirement for ASTC textures (VK_IMAGE_TILING_LINEAR). 128x128 - 8 Mips ASTC_8x8 texture: %u KiB -> %u KiB"),
 				ImageOptimalMem_ASTC.size / 1024,
 				ImageLinearMem_ASTC.size / 1024
 			);
@@ -1601,4 +1668,15 @@ void FVulkanAndroidPlatform::SetImageMemoryRequirementWorkaround(VkImageCreateIn
 	{
 		ImageCreateInfo.tiling = VK_IMAGE_TILING_LINEAR;
 	}
+}
+
+FString FVulkanAndroidPlatform::GetVulkanProfileNameForFeatureLevel(ERHIFeatureLevel::Type FeatureLevel, bool bRaytracing)
+{
+	// Use the generic name and add "_Android" at the end (the RT suffix get added after the platform)
+	FString ProfileName = FVulkanGenericPlatform::GetVulkanProfileNameForFeatureLevel(FeatureLevel, false) + TEXT("_Android");
+	if (bRaytracing)
+	{
+		ProfileName += TEXT("_RT");
+	}
+	return ProfileName;
 }

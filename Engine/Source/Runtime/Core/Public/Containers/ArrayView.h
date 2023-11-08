@@ -7,6 +7,7 @@
 #include "Templates/IsSigned.h"
 #include "Templates/PointerIsConvertibleFromTo.h"
 #include "Misc/AssertionMacros.h"
+#include "Misc/ReverseIterate.h"
 #include "Templates/Invoke.h"
 #include "Templates/UnrealTypeTraits.h"
 #include "Traits/ElementType.h"
@@ -74,12 +75,17 @@ namespace ArrayViewPrivate
 	{
 	private:
 		using NaturalElementType = typename TRemovePointer<decltype(GetData(DeclVal<RangeType&>()))>::Type;
+		using TypeCompat = TContainerElementTypeCompatibility<NaturalElementType>;
 
 	public:
 		static constexpr bool Value = 
-			!std::is_same_v<typename TContainerElementTypeCompatibility<NaturalElementType>::ReinterpretType, NaturalElementType>
+			!std::is_same_v<typename TypeCompat::ReinterpretType, NaturalElementType>
 			&&
-			TIsCompatibleElementType<typename TContainerElementTypeCompatibility<NaturalElementType>::ReinterpretType, ElementType>::Value;
+			TIsCompatibleElementType<typename TypeCompat::ReinterpretType, ElementType>::Value
+			&&
+			(!UE_DEPRECATE_MUTABLE_TOBJECTPTR
+			 || std::is_same_v<ElementType, std::remove_pointer_t<typename TypeCompat::ReinterpretType>* const>
+			 || std::is_same_v<ElementType, const std::remove_pointer_t<typename TypeCompat::ReinterpretType>* const>);
 
 		template <typename T>
 		static decltype(auto) GetData(T&& Arg)
@@ -161,7 +167,7 @@ public:
 	 */
 	template <
 		typename OtherRangeType,
-		typename CVUnqualifiedOtherRangeType = typename TRemoveCV<typename TRemoveReference<OtherRangeType>::Type>::Type,
+		typename CVUnqualifiedOtherRangeType = std::remove_cv_t<typename TRemoveReference<OtherRangeType>::Type>,
 		typename = typename TEnableIf<
 			TAnd<
 				TIsContiguousContainer<CVUnqualifiedOtherRangeType>,
@@ -186,7 +192,7 @@ public:
 	}
 	template <
 		typename OtherRangeType,
-		typename CVUnqualifiedOtherRangeType = typename TRemoveCV<typename TRemoveReference<OtherRangeType>::Type>::Type,
+		typename CVUnqualifiedOtherRangeType = std::remove_cv_t<typename TRemoveReference<OtherRangeType>::Type>,
 		typename = typename TEnableIf<
 		TAnd<
 		TIsContiguousContainer<CVUnqualifiedOtherRangeType>,
@@ -378,26 +384,26 @@ public:
 	/** Returns the left-most part of the view by taking the given number of elements from the left. */
 	[[nodiscard]] inline TArrayView Left(SizeType Count) const
 	{
-		return TArrayView(DataPtr, FMath::Clamp(Count, 0, ArrayNum));
+		return TArrayView(DataPtr, FMath::Clamp(Count, (SizeType)0, ArrayNum));
 	}
 
 	/** Returns the left-most part of the view by chopping the given number of elements from the right. */
 	[[nodiscard]] inline TArrayView LeftChop(SizeType Count) const
 	{
-		return TArrayView(DataPtr, FMath::Clamp(ArrayNum - Count, 0, ArrayNum));
+		return TArrayView(DataPtr, FMath::Clamp(ArrayNum - Count, (SizeType)0, ArrayNum));
 	}
 
 	/** Returns the right-most part of the view by taking the given number of elements from the right. */
 	[[nodiscard]] inline TArrayView Right(SizeType Count) const
 	{
-		const SizeType OutLen = FMath::Clamp(Count, 0, ArrayNum);
+		const SizeType OutLen = FMath::Clamp(Count, (SizeType)0, ArrayNum);
 		return TArrayView(DataPtr + ArrayNum - OutLen, OutLen);
 	}
 
 	/** Returns the right-most part of the view by chopping the given number of elements from the left. */
 	[[nodiscard]] inline TArrayView RightChop(SizeType Count) const
 	{
-		const SizeType OutLen = FMath::Clamp(ArrayNum - Count, 0, ArrayNum);
+		const SizeType OutLen = FMath::Clamp(ArrayNum - Count, (SizeType)0, ArrayNum);
 		return TArrayView(DataPtr + ArrayNum - OutLen, OutLen);
 	}
 
@@ -416,7 +422,7 @@ public:
 		Index = (Index > CurrentLength) ? CurrentLength : Index;
 
 		// Clamp count between 0 and the distance to the end of the range
-		Count = FMath::Clamp(Count, 0, (CurrentLength - Index));
+		Count = FMath::Clamp(Count, (SizeType)0, (CurrentLength - Index));
 
 		TArrayView Result = TArrayView(CurrentStart + Index, Count);
 		return Result;
@@ -634,9 +640,9 @@ public:
 	 *          the subset of elements for which the functor returns true.
 	 */
 	template <typename Predicate>
-	TArray<typename TRemoveConst<ElementType>::Type> FilterByPredicate(Predicate Pred) const
+	TArray<std::remove_const_t<ElementType>> FilterByPredicate(Predicate Pred) const
 	{
-		TArray<typename TRemoveConst<ElementType>::Type> FilterResults;
+		TArray<std::remove_const_t<ElementType>> FilterResults;
 		for (const ElementType* RESTRICT Data = GetData(), *RESTRICT DataEnd = Data + ArrayNum; Data != DataEnd; ++Data)
 		{
 			if (::Invoke(Pred, *Data))
@@ -683,37 +689,53 @@ public:
 	 * DO NOT USE DIRECTLY
 	 * STL-like iterators to enable range-based for loop support.
 	 */
-	FORCEINLINE ElementType* begin() const { return GetData(); }
-	FORCEINLINE ElementType* end  () const { return GetData() + Num(); }
+	FORCEINLINE ElementType*                         begin () const { return GetData(); }
+	FORCEINLINE ElementType*                         end   () const { return GetData() + Num(); }
+	FORCEINLINE TReversePointerIterator<ElementType> rbegin() const { return TReversePointerIterator<ElementType>(GetData() + Num()); }
+	FORCEINLINE TReversePointerIterator<ElementType> rend  () const { return TReversePointerIterator<ElementType>(GetData()); }
 
 public:
 	/**
 	 * Sorts the array assuming < operator is defined for the item type.
+	 *
+	 * @note: If your array contains raw pointers, they will be automatically dereferenced during sorting.
+	 *        Therefore, your array will be sorted by the values being pointed to, rather than the pointers' values.
+	 *        If this is not desirable, please use Algo::Sort(MyArray) directly instead.
+	 *        The auto-dereferencing behavior does not occur with smart pointers.
 	 */
 	void Sort()
 	{
-		::Sort(GetData(), Num());
+		Algo::Sort(*this, TDereferenceWrapper<ElementType, TLess<>>(TLess<>()));
 	}
 
 	/**
 	 * Sorts the array using user define predicate class.
 	 *
 	 * @param Predicate Predicate class instance.
+	 * @note: If your array contains raw pointers, they will be automatically dereferenced during sorting.
+	 *        Therefore, your predicate will be passed references rather than pointers.
+	 *        If this is not desirable, please use Algo::Sort(MyArray, Predicate) directly instead.
+	 *        The auto-dereferencing behavior does not occur with smart pointers.
 	 */
 	template <class PREDICATE_CLASS>
 	void Sort(const PREDICATE_CLASS& Predicate)
 	{
-		::Sort(GetData(), Num(), Predicate);
+		TDereferenceWrapper<ElementType, PREDICATE_CLASS> PredicateWrapper(Predicate);
+		Algo::Sort(*this, PredicateWrapper);
 	}
 
 	/**
 	 * Stable sorts the array assuming < operator is defined for the item type.
 	 *
 	 * Stable sort is slower than non-stable algorithm.
+	 * @note: If your array contains raw pointers, they will be automatically dereferenced during sorting.
+	 *        Therefore, your array will be sorted by the values being pointed to, rather than the pointers' values.
+	 *        If this is not desirable, please use Algo::StableSort(MyArray) directly instead.
+	 *        The auto-dereferencing behavior does not occur with smart pointers.
 	 */
 	void StableSort()
 	{
-		::StableSort(GetData(), Num());
+		Algo::StableSort(*this, TDereferenceWrapper<ElementType, TLess<>>(TLess<>()));
 	}
 
 	/**
@@ -722,11 +744,16 @@ public:
 	 * Stable sort is slower than non-stable algorithm.
 	 *
 	 * @param Predicate Predicate class instance
+	 * @note: If your array contains raw pointers, they will be automatically dereferenced during sorting.
+	 *        Therefore, your predicate will be passed references rather than pointers.
+	 *        If this is not desirable, please use Algo::StableSort(MyArray, Predicate) directly instead.
+	 *        The auto-dereferencing behavior does not occur with smart pointers.
 	 */
 	template <class PREDICATE_CLASS>
 	void StableSort(const PREDICATE_CLASS& Predicate)
 	{
-		::StableSort(GetData(), Num(), Predicate);
+		TDereferenceWrapper<ElementType, PREDICATE_CLASS> PredicateWrapper(Predicate);
+		Algo::StableSort(*this, PredicateWrapper);
 	}
 
 private:
@@ -750,7 +777,7 @@ struct TIsContiguousContainer<TArrayView<T, SizeType>>
 
 template <
 	typename OtherRangeType,
-	typename CVUnqualifiedOtherRangeType = typename TRemoveCV<typename TRemoveReference<OtherRangeType>::Type>::Type,
+	typename CVUnqualifiedOtherRangeType = std::remove_cv_t<typename TRemoveReference<OtherRangeType>::Type>,
 	typename = typename TEnableIf<TIsContiguousContainer<CVUnqualifiedOtherRangeType>::Value>::Type,
 	std::enable_if_t<TIsTArrayView<std::decay_t<OtherRangeType>>::Value>* = nullptr
 >
@@ -760,7 +787,7 @@ auto MakeArrayView(OtherRangeType&& Other)
 }
 template <
 	typename OtherRangeType,
-	typename CVUnqualifiedOtherRangeType = typename TRemoveCV<typename TRemoveReference<OtherRangeType>::Type>::Type,
+	typename CVUnqualifiedOtherRangeType = std::remove_cv_t<typename TRemoveReference<OtherRangeType>::Type>,
 	typename = typename TEnableIf<TIsContiguousContainer<CVUnqualifiedOtherRangeType>::Value>::Type,
 	std::enable_if_t<!TIsTArrayView<std::decay_t<OtherRangeType>>::Value>* = nullptr
 >

@@ -7,12 +7,11 @@
 #include "Interfaces/ITargetPlatformModule.h"
 #include "Modules/ModuleManager.h"
 #include "MacTargetSettings.h"
+#include "XcodeProjectSettings.h"
 #include "UObject/Package.h"
 #include "UObject/WeakObjectPtr.h"
 
 #define LOCTEXT_NAMESPACE "FMacTargetPlatformModule"
-
-
 
 /**
  * Module for Mac as a target platform
@@ -32,6 +31,12 @@ public:
 		TargetPlatforms.Add(new TGenericMacTargetPlatform<false, true, false>());
 		// Client TP
 		TargetPlatforms.Add(new TGenericMacTargetPlatform<false, false, true>());
+
+#if PLATFORM_WINDOWS
+		// we added Mac to Windows so that the Xcode Project settings show up, but we don't
+		// want to see the Mac in the Platforms dropdown
+		FDataDrivenPlatformInfoRegistry::SetPlatformHiddenFromUI("Mac");
+#endif
 	}
 
 
@@ -68,16 +73,24 @@ public:
 		}
 		
 		TargetSettings->AddToRoot();
+        
+        ProjectSettings = NewObject<UXcodeProjectSettings>(GetTransientPackage(), "XcodeProjectSettings", RF_Standalone);
+        ProjectSettings->AddToRoot();
 
 		ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings");
 
 		if (SettingsModule != nullptr)
 		{
 			SettingsModule->RegisterSettings("Project", "Platforms", "Mac",
-				LOCTEXT("TargetSettingsName", "Mac"),
-				LOCTEXT("TargetSettingsDescription", "Settings and resources for Mac platform"),
+				LOCTEXT("MacTargetSettingsName", "Mac"),
+				LOCTEXT("MacTargetSettingsDescription", "Settings and resources for Mac platform"),
 				TargetSettings
 			);
+            SettingsModule->RegisterSettings("Project", "Platforms", "Xcode",
+                LOCTEXT("XcodeProjectSettingsName", "Xcode Projects"),
+                LOCTEXT("XcodeProjectSettingsDescription", "Settings for Xcode projects"),
+                ProjectSettings
+            );
 		}
 #endif
 	}
@@ -90,16 +103,19 @@ public:
 		if (SettingsModule != nullptr)
 		{
 			SettingsModule->UnregisterSettings("Project", "Platforms", "Mac");
+            SettingsModule->UnregisterSettings("Project", "Platforms", "Xcode");
 		}
 
 		if (!GExitPurge)
 		{
 			// If we're in exit purge, this object has already been destroyed
 			TargetSettings->RemoveFromRoot();
+            ProjectSettings->RemoveFromRoot();
 		}
 		else
 		{
 			TargetSettings = NULL;
+            ProjectSettings = NULL;
 		}
 #endif
 	}
@@ -111,6 +127,8 @@ private:
 
 	// Holds the target settings.
 	UMacTargetSettings* TargetSettings;
+    
+    UXcodeProjectSettings* ProjectSettings;
 };
 
 

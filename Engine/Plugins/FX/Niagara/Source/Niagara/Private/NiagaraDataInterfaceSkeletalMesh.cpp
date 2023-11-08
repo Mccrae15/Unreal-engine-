@@ -7,23 +7,25 @@
 #include "Async/ParallelFor.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/Canvas.h"
-#include "Engine/SkeletalMeshSocket.h"
 #include "Internationalization/Internationalization.h"
+#include "Misc/LargeWorldRenderPosition.h"
 #include "NDISkeletalMeshCommon.h"
 #include "NiagaraCompileHashVisitor.h"
-#include "NiagaraEmitterInstance.h"
 #include "NiagaraComponent.h"
+#include "NiagaraDataInterfaceMeshCommon.h"
 #include "NiagaraDataInterfaceSkeletalMeshConnectivity.h"
 #include "Experimental/NiagaraDataInterfaceSkeletalMeshUvMapping.h"
+#include "NiagaraEmitter.h"
 #include "NiagaraSettings.h"
 #include "NiagaraStats.h"
+#include "NiagaraSystem.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraRenderer.h"
 #include "NiagaraScript.h"
 #include "NiagaraShaderParametersBuilder.h"
 #include "NiagaraWorldManager.h"
+#include "Rendering/SkeletalMeshRenderData.h"
 #include "Templates/AlignmentTemplates.h"
-#include "ShaderParameterUtils.h"
 #include "ShaderCore.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceSkeletalMesh)
@@ -894,7 +896,7 @@ void FSkeletalMeshGpuSpawnStaticBuffers::Initialise(FNDISkeletalMesh_InstanceDat
 	}
 }
 
-void FSkeletalMeshGpuSpawnStaticBuffers::InitRHI()
+void FSkeletalMeshGpuSpawnStaticBuffers::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	// As of today, the UI does not allow to cull specific section of a mesh so this data could be generated on the Mesh. But Section culling might be added later?
 	// Also see https://jira.it.epicgames.net/browse/UE-69376 : we would need to know if GPU sampling of the mesh surface is needed or not on the mesh to be able to do that.
@@ -954,11 +956,11 @@ void FSkeletalMeshGpuSpawnStaticBuffers::InitRHI()
 
 		FRHIResourceCreateInfo CreateInfo(TEXT("FSkeletalMeshGpuSpawnStaticBuffers"));
 		uint32 SizeByte = NDISkelMeshLocal::GetProbAliasDWORDSize(TriangleCount) * sizeof(uint32);
-		BufferTriangleUniformSamplerProbAliasRHI = RHICreateBuffer(SizeByte, BUF_Static | BUF_VertexBuffer | BUF_ShaderResource, 0, ERHIAccess::VertexOrIndexBuffer | ERHIAccess::SRVMask, CreateInfo);
-		uint32* PackedData = (uint32*)RHILockBuffer(BufferTriangleUniformSamplerProbAliasRHI, 0, SizeByte, RLM_WriteOnly);
+		BufferTriangleUniformSamplerProbAliasRHI = RHICmdList.CreateBuffer(SizeByte, BUF_Static | BUF_VertexBuffer | BUF_ShaderResource, 0, ERHIAccess::VertexOrIndexBuffer | ERHIAccess::SRVMask, CreateInfo);
+		uint32* PackedData = (uint32*)RHICmdList.LockBuffer(BufferTriangleUniformSamplerProbAliasRHI, 0, SizeByte, RLM_WriteOnly);
 		NDISkelMeshLocal::PackProbAlias(PackedData, triangleSampler);
-		RHIUnlockBuffer(BufferTriangleUniformSamplerProbAliasRHI);
-		BufferTriangleUniformSamplerProbAliasSRV = RHICreateShaderResourceView(BufferTriangleUniformSamplerProbAliasRHI, sizeof(uint32), PF_R32_UINT);
+		RHICmdList.UnlockBuffer(BufferTriangleUniformSamplerProbAliasRHI);
+		BufferTriangleUniformSamplerProbAliasSRV = RHICmdList.CreateShaderResourceView(BufferTriangleUniformSamplerProbAliasRHI, sizeof(uint32), PF_R32_UINT);
 #if STATS
 		GPUMemoryUsage += SizeByte;
 #endif
@@ -978,8 +980,8 @@ void FSkeletalMeshGpuSpawnStaticBuffers::InitRHI()
 		if (bSamplingRegionsAllAreaWeighted)
 		{
 			CreateInfo.ResourceArray = &SampleRegionsProbAlias;
-			SampleRegionsProbAliasBuffer = RHICreateVertexBuffer(SampleRegionsProbAlias.Num() * SampleRegionsProbAlias.GetTypeSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
-			SampleRegionsProbAliasSRV = RHICreateShaderResourceView(SampleRegionsProbAliasBuffer, sizeof(uint32), PF_R32_UINT);
+			SampleRegionsProbAliasBuffer = RHICmdList.CreateVertexBuffer(SampleRegionsProbAlias.Num() * SampleRegionsProbAlias.GetTypeSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
+			SampleRegionsProbAliasSRV = RHICmdList.CreateShaderResourceView(SampleRegionsProbAliasBuffer, sizeof(uint32), PF_R32_UINT);
 #if STATS
 			GPUMemoryUsage += SampleRegionsProbAlias.Num() * SampleRegionsProbAlias.GetTypeSize();
 #endif
@@ -991,16 +993,16 @@ void FSkeletalMeshGpuSpawnStaticBuffers::InitRHI()
 
 		CreateInfo.DebugName = (TEXT("SampleRegionsTriangleIndicesBuffer"));
 		CreateInfo.ResourceArray = &SampleRegionsTriangleIndicies;
-		SampleRegionsTriangleIndicesBuffer = RHICreateVertexBuffer(SampleRegionsTriangleIndicies.Num() * SampleRegionsTriangleIndicies.GetTypeSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
-		SampleRegionsTriangleIndicesSRV = RHICreateShaderResourceView(SampleRegionsTriangleIndicesBuffer, sizeof(int32), PF_R32_UINT);
+		SampleRegionsTriangleIndicesBuffer = RHICmdList.CreateVertexBuffer(SampleRegionsTriangleIndicies.Num() * SampleRegionsTriangleIndicies.GetTypeSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
+		SampleRegionsTriangleIndicesSRV = RHICmdList.CreateShaderResourceView(SampleRegionsTriangleIndicesBuffer, sizeof(int32), PF_R32_UINT);
 #if STATS
 		GPUMemoryUsage += SampleRegionsTriangleIndicies.Num() * SampleRegionsTriangleIndicies.GetTypeSize();
 #endif
 
 		CreateInfo.DebugName = (TEXT("SampleRegionsVerticesBuffer"));
 		CreateInfo.ResourceArray = &SampleRegionsVertices;
-		SampleRegionsVerticesBuffer = RHICreateVertexBuffer(SampleRegionsVertices.Num() * SampleRegionsVertices.GetTypeSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
-		SampleRegionsVerticesSRV = RHICreateShaderResourceView(SampleRegionsVerticesBuffer, sizeof(int32), PF_R32_UINT);
+		SampleRegionsVerticesBuffer = RHICmdList.CreateVertexBuffer(SampleRegionsVertices.Num() * SampleRegionsVertices.GetTypeSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
+		SampleRegionsVerticesSRV = RHICmdList.CreateShaderResourceView(SampleRegionsVerticesBuffer, sizeof(int32), PF_R32_UINT);
 #if STATS
 		GPUMemoryUsage += SampleRegionsVertices.Num() * SampleRegionsVertices.GetTypeSize();
 #endif
@@ -1018,8 +1020,8 @@ void FSkeletalMeshGpuSpawnStaticBuffers::InitRHI()
 	if ( bMeshValid )
 	{
 		FRHIResourceCreateInfo CreateInfo(TEXT("FSkeletalMeshGpuSpawnStaticBuffers"));
-		BufferTriangleMatricesOffsetRHI = RHICreateBuffer(VertexCount * sizeof(uint32), BUF_Static | BUF_VertexBuffer | BUF_ShaderResource, 0, ERHIAccess::VertexOrIndexBuffer | ERHIAccess::SRVMask, CreateInfo);
-		uint32* MatricesOffsets = (uint32*)RHILockBuffer(BufferTriangleMatricesOffsetRHI, 0, VertexCount * sizeof(uint32), RLM_WriteOnly);
+		BufferTriangleMatricesOffsetRHI = RHICmdList.CreateBuffer(VertexCount * sizeof(uint32), BUF_Static | BUF_VertexBuffer | BUF_ShaderResource, 0, ERHIAccess::VertexOrIndexBuffer | ERHIAccess::SRVMask, CreateInfo);
+		uint32* MatricesOffsets = (uint32*)RHICmdList.LockBuffer(BufferTriangleMatricesOffsetRHI, 0, VertexCount * sizeof(uint32), RLM_WriteOnly);
 		uint32 AccumulatedMatrixOffset = 0;
 		for (uint32 s = 0; s < SectionCount; ++s)
 		{
@@ -1032,8 +1034,8 @@ void FSkeletalMeshGpuSpawnStaticBuffers::InitRHI()
 			}
 			AccumulatedMatrixOffset += Section.BoneMap.Num();
 		}
-		RHIUnlockBuffer(BufferTriangleMatricesOffsetRHI);
-		BufferTriangleMatricesOffsetSRV = RHICreateShaderResourceView(BufferTriangleMatricesOffsetRHI, sizeof(uint32), PF_R32_UINT);
+		RHICmdList.UnlockBuffer(BufferTriangleMatricesOffsetRHI);
+		BufferTriangleMatricesOffsetSRV = RHICmdList.CreateShaderResourceView(BufferTriangleMatricesOffsetRHI, sizeof(uint32), PF_R32_UINT);
 #if STATS
 		GPUMemoryUsage += VertexCount * sizeof(uint32);
 #endif
@@ -1049,8 +1051,8 @@ void FSkeletalMeshGpuSpawnStaticBuffers::InitRHI()
 		FRHIResourceCreateInfo CreateInfo(TEXT("FilteredAndUnfilteredBonesBuffer"));
 		CreateInfo.ResourceArray = &FilteredAndUnfilteredBonesArray;
 
-		FilteredAndUnfilteredBonesBuffer = RHICreateVertexBuffer(FilteredAndUnfilteredBonesArray.Num() * FilteredAndUnfilteredBonesArray.GetTypeSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
-		FilteredAndUnfilteredBonesSRV = RHICreateShaderResourceView(FilteredAndUnfilteredBonesBuffer, sizeof(uint16), PF_R16_UINT);
+		FilteredAndUnfilteredBonesBuffer = RHICmdList.CreateVertexBuffer(FilteredAndUnfilteredBonesArray.Num() * FilteredAndUnfilteredBonesArray.GetTypeSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
+		FilteredAndUnfilteredBonesSRV = RHICmdList.CreateShaderResourceView(FilteredAndUnfilteredBonesBuffer, sizeof(uint16), PF_R16_UINT);
 	}
 	else
 	{
@@ -1120,7 +1122,7 @@ void FSkeletalMeshGpuDynamicBufferProxy::Initialise(const FReferenceSkeleton& Re
 	SamplingSocketCount = InSamplingSocketCount;
 }
 
-void FSkeletalMeshGpuDynamicBufferProxy::InitRHI()
+void FSkeletalMeshGpuDynamicBufferProxy::InitRHI(FRHICommandListBase& RHICmdList)
 {
 #if STATS
 	ensure(GPUMemoryUsage == 0);
@@ -1128,11 +1130,11 @@ void FSkeletalMeshGpuDynamicBufferProxy::InitRHI()
 	for (FSkeletalBuffer& Buffer : RWBufferBones)
 	{
 		FRHIResourceCreateInfo CreateInfo(TEXT("SkeletalMeshGpuDynamicBuffer"));
-		Buffer.SectionBuffer = RHICreateVertexBuffer(sizeof(FVector4f) * 3 * SectionBoneCount, BUF_ShaderResource | BUF_Dynamic, CreateInfo);
-		Buffer.SectionSRV = RHICreateShaderResourceView(Buffer.SectionBuffer, sizeof(FVector4f), PF_A32B32G32R32F);
+		Buffer.SectionBuffer = RHICmdList.CreateVertexBuffer(sizeof(FVector4f) * 3 * SectionBoneCount, BUF_ShaderResource | BUF_Dynamic, CreateInfo);
+		Buffer.SectionSRV = RHICmdList.CreateShaderResourceView(Buffer.SectionBuffer, sizeof(FVector4f), PF_A32B32G32R32F);
 
-		Buffer.SamplingBuffer = RHICreateVertexBuffer(sizeof(FVector4f) * 3 * (SamplingBoneCount + SamplingSocketCount), BUF_ShaderResource | BUF_Dynamic, CreateInfo);
-		Buffer.SamplingSRV = RHICreateShaderResourceView(Buffer.SamplingBuffer, sizeof(FVector4f), PF_A32B32G32R32F);
+		Buffer.SamplingBuffer = RHICmdList.CreateVertexBuffer(sizeof(FVector4f) * 3 * (SamplingBoneCount + SamplingSocketCount), BUF_ShaderResource | BUF_Dynamic, CreateInfo);
+		Buffer.SamplingSRV = RHICmdList.CreateShaderResourceView(Buffer.SamplingBuffer, sizeof(FVector4f), PF_A32B32G32R32F);
 
 #if STATS
 		GPUMemoryUsage += sizeof(FVector4f) * 3 * SectionBoneCount;
@@ -1342,17 +1344,17 @@ void FSkeletalMeshGpuDynamicBufferProxy::NewFrame(const FNDISkeletalMesh_Instanc
 			// Copy bone remap data matrices
 			{
 				const uint32 NumBytes = AllSectionsRefToLocalMatrices.Num() * sizeof(FVector4f);
-				void* DstData = RHILockBuffer(ThisProxy->GetRWBufferBone().SectionBuffer, 0, NumBytes, RLM_WriteOnly);
+				void* DstData = RHICmdList.LockBuffer(ThisProxy->GetRWBufferBone().SectionBuffer, 0, NumBytes, RLM_WriteOnly);
 				FMemory::Memcpy(DstData, AllSectionsRefToLocalMatrices.GetData(), NumBytes);
-				RHIUnlockBuffer(ThisProxy->GetRWBufferBone().SectionBuffer);
+				RHICmdList.UnlockBuffer(ThisProxy->GetRWBufferBone().SectionBuffer);
 			}
 
 			// Copy bone sampling data
 			{
 				const uint32 NumBytes = BoneSamplingData.Num() * sizeof(FVector4f);
-				FVector4f* DstData = reinterpret_cast<FVector4f*>(RHILockBuffer(ThisProxy->GetRWBufferBone().SamplingBuffer, 0, NumBytes, RLM_WriteOnly));
+				FVector4f* DstData = reinterpret_cast<FVector4f*>(RHICmdList.LockBuffer(ThisProxy->GetRWBufferBone().SamplingBuffer, 0, NumBytes, RLM_WriteOnly));
 				FMemory::Memcpy(DstData, BoneSamplingData.GetData(), NumBytes);
-				RHIUnlockBuffer(ThisProxy->GetRWBufferBone().SamplingBuffer);
+				RHICmdList.UnlockBuffer(ThisProxy->GetRWBufferBone().SamplingBuffer);
 			}
 		}
 	);
@@ -1746,7 +1748,7 @@ bool FNDISkeletalMesh_InstanceData::Init(UNiagaraDataInterfaceSkeletalMesh* Inte
 
 		const bool MeshValid = SkeletalMesh.IsValid();
 		const bool SupportUvMappingCpu = UsedByCpuUvMapping && MeshValid;
-		const bool SupportUvMappingGpu = UsedByGpuUvMapping && MeshValid && Interface->IsUsedWithGPUEmitter();
+		const bool SupportUvMappingGpu = UsedByGpuUvMapping && MeshValid && Interface->IsUsedWithGPUScript();
 
 		FMeshUvMappingUsage UvMappingUsage(SupportUvMappingCpu, SupportUvMappingGpu);
 
@@ -1773,7 +1775,7 @@ bool FNDISkeletalMesh_InstanceData::Init(UNiagaraDataInterfaceSkeletalMesh* Inte
 
 		const bool MeshValid = SkeletalMesh.IsValid();
 		const bool SupportConnectivityCpu = UsedByCpuConnectivity && MeshValid;
-		const bool SupportConnectivityGpu = UsedByGpuConnectivity && MeshValid && Interface->IsUsedWithGPUEmitter();
+		const bool SupportConnectivityGpu = UsedByGpuConnectivity && MeshValid && Interface->IsUsedWithGPUScript();
 
 		FSkeletalMeshConnectivityUsage ConnectivityUsage(SupportConnectivityCpu, SupportConnectivityGpu);
 
@@ -1970,7 +1972,7 @@ bool FNDISkeletalMesh_InstanceData::Init(UNiagaraDataInterfaceSkeletalMesh* Inte
 			}
 		}
 
-		if (Interface->IsUsedWithGPUEmitter())
+		if (Interface->IsUsedWithGPUScript())
 		{
 			GPUSkinBoneInfluenceType BoneInfluenceType = SkinWeightBuffer->GetBoneInfluenceType();
 			bUnlimitedBoneInfluences = (BoneInfluenceType == GPUSkinBoneInfluenceType::UnlimitedBoneInfluence);
@@ -2027,9 +2029,9 @@ bool FNDISkeletalMesh_InstanceData::Init(UNiagaraDataInterfaceSkeletalMesh* Inte
 
 bool FNDISkeletalMesh_InstanceData::ResetRequired(UNiagaraDataInterfaceSkeletalMesh* Interface, FNiagaraSystemInstance* SystemInstance) const
 {
-	// Reset if the scene component we've cached has been invalidated
+	// Reset if the scene component we've cached has been invalidated or unregistered
 	USceneComponent* Comp = SceneComponent.Get();
-	if (bComponentValid && !Comp)
+	if (bComponentValid && (!Comp || !Comp->IsRegistered()))
 	{
 		return true;
 	}
@@ -2234,12 +2236,6 @@ void UNiagaraDataInterfaceSkeletalMesh::PostLoad()
 {
 	Super::PostLoad();
 
-#if WITH_EDITOR
-	if(USkeletalMesh* LocalPreviewMesh = PreviewMesh.Get())
-	{
-		LocalPreviewMesh->ConditionalPostLoad();
-	}
-#endif
 #if WITH_EDITORONLY_DATA
 	if (Source_DEPRECATED != nullptr)
 	{
@@ -2377,6 +2373,7 @@ bool UNiagaraDataInterfaceSkeletalMesh::CopyToInternal(UNiagaraDataInterface* De
 	OtherTyped->SourceMode = SourceMode;
 	OtherTyped->SoftSourceActor = SoftSourceActor;
 	OtherTyped->MeshUserParameter = MeshUserParameter;
+	OtherTyped->ComponentTags = ComponentTags;
 	OtherTyped->SourceComponent = SourceComponent;
 	OtherTyped->SkinningMode = SkinningMode;
 	OtherTyped->SamplingRegions = SamplingRegions;
@@ -2408,6 +2405,7 @@ bool UNiagaraDataInterfaceSkeletalMesh::Equals(const UNiagaraDataInterface* Othe
 #endif
 		OtherTyped->SoftSourceActor == SoftSourceActor &&
 		OtherTyped->MeshUserParameter == MeshUserParameter &&
+		OtherTyped->ComponentTags == ComponentTags &&
 		OtherTyped->SourceComponent == SourceComponent &&
 		OtherTyped->SkinningMode == SkinningMode &&
 		OtherTyped->SamplingRegions == SamplingRegions &&
@@ -2463,9 +2461,9 @@ bool UNiagaraDataInterfaceSkeletalMesh::PerInstanceTick(void* PerInstanceData, F
 }
 
 #if WITH_NIAGARA_DEBUGGER
-void UNiagaraDataInterfaceSkeletalMesh::DrawDebugHud(UCanvas* Canvas, FNiagaraSystemInstance* SystemInstance, FString& VariableDataString, bool bVerbose) const
+void UNiagaraDataInterfaceSkeletalMesh::DrawDebugHud(FNDIDrawDebugHudContext& DebugHudContext) const
 {
-	FNDISkeletalMesh_InstanceData* InstanceData_GT = SystemInstance->FindTypedDataInterfaceInstanceData<FNDISkeletalMesh_InstanceData>(this);
+	const FNDISkeletalMesh_InstanceData* InstanceData_GT = DebugHudContext.GetSystemInstance()->FindTypedDataInterfaceInstanceData<FNDISkeletalMesh_InstanceData>(this);
 	if (InstanceData_GT == nullptr)
 	{
 		return;
@@ -2473,9 +2471,9 @@ void UNiagaraDataInterfaceSkeletalMesh::DrawDebugHud(UCanvas* Canvas, FNiagaraSy
 
 	USceneComponent* SceneComponent = InstanceData_GT->SceneComponent.Get();
 	USkeletalMesh* SkeletalMesh = InstanceData_GT->SkeletalMesh.Get();
-	VariableDataString = FString::Printf(TEXT("Skeleton(%s) SkelComp(%s)"), *GetNameSafe(SkeletalMesh), *GetNameSafe(SceneComponent));
+	DebugHudContext.GetOutputString().Appendf(TEXT("Skeleton(%s) SkelComp(%s)"), *GetNameSafe(SkeletalMesh), *GetNameSafe(SceneComponent));
 
-	if ( bVerbose && SceneComponent && SkeletalMesh )
+	if ( DebugHudContext.IsVerbose() && SceneComponent && SkeletalMesh)
 	{
 		FSkeletalMeshAccessorHelper MeshAccessor;
 		MeshAccessor.Init<TNDISkelMesh_FilterModeNone, TNDISkelMesh_AreaWeightingOff>(InstanceData_GT);
@@ -2484,6 +2482,7 @@ void UNiagaraDataInterfaceSkeletalMesh::DrawDebugHud(UCanvas* Canvas, FNiagaraSy
 			const TArray<FTransform3f>& BoneTransforms = MeshAccessor.SkinningData->CurrComponentTransforms();
 			const FMatrix& InstanceTransform = InstanceData_GT->Transform;
 
+			UCanvas* Canvas = DebugHudContext.GetCanvas();
 			for (const FTransform3f& BoneTransform : BoneTransforms)
 			{
 				const FVector BoneLocation = InstanceTransform.TransformPosition(FVector(BoneTransform.GetLocation()));
@@ -3538,7 +3537,7 @@ void UNiagaraDataInterfaceSkeletalMesh::VMGetPreSkinnedLocalBounds(FVectorVMExte
 //////////////////////////////////////////////////////////////////////////
 
 template<>
-void FSkeletalMeshAccessorHelper::Init<TNDISkelMesh_FilterModeSingle, TNDISkelMesh_AreaWeightingOff>(FNDISkeletalMesh_InstanceData* InstData)
+void FSkeletalMeshAccessorHelper::Init<TNDISkelMesh_FilterModeSingle, TNDISkelMesh_AreaWeightingOff>(const FNDISkeletalMesh_InstanceData* InstData)
 {
 	Comp = Cast<USkeletalMeshComponent>(InstData->SceneComponent.Get());
 	Mesh = InstData->SkeletalMesh.Get();
@@ -3567,7 +3566,7 @@ void FSkeletalMeshAccessorHelper::Init<TNDISkelMesh_FilterModeSingle, TNDISkelMe
 }
 
 template<>
-void FSkeletalMeshAccessorHelper::Init<TNDISkelMesh_FilterModeSingle, TNDISkelMesh_AreaWeightingOn>(FNDISkeletalMesh_InstanceData* InstData)
+void FSkeletalMeshAccessorHelper::Init<TNDISkelMesh_FilterModeSingle, TNDISkelMesh_AreaWeightingOn>(const FNDISkeletalMesh_InstanceData* InstData)
 {
 	Comp = Cast<USkeletalMeshComponent>(InstData->SceneComponent.Get());
 	Mesh = InstData->SkeletalMesh.Get();

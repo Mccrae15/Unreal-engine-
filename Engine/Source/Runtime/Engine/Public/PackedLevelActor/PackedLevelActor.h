@@ -21,45 +21,64 @@ class UBlueprint;
  * 
  * Other components are unsupported and will result in an incomplete APackedLevelActor. In this case using a regular ALevelInstance is recommended.
  */
-UCLASS()
-class ENGINE_API APackedLevelActor : public ALevelInstance
+UCLASS(MinimalAPI)
+class APackedLevelActor : public ALevelInstance
 {
 	GENERATED_BODY()
 
 public:
-	APackedLevelActor();
+	ENGINE_API APackedLevelActor();
 
-	virtual bool IsLoadingEnabled() const override;
+	ENGINE_API virtual bool IsLoadingEnabled() const override;
 
-	virtual void Serialize(FArchive& Ar) override;
+	ENGINE_API virtual void Serialize(FArchive& Ar) override;
 #if WITH_EDITOR
-	virtual TUniquePtr<class FWorldPartitionActorDesc> CreateClassActorDesc() const override;
+	ENGINE_API virtual EWorldPartitionActorFilterType GetDetailsFilterTypes() const override;
+	ENGINE_API virtual EWorldPartitionActorFilterType GetLoadingFilterTypes() const override;
+	ENGINE_API virtual void OnFilterChanged() override;
+	void SetShouldLoadForPacking(bool bInLoadForPacking) { bLoadForPacking = bInLoadForPacking; }
+	ENGINE_API bool ShouldLoadForPacking() const;
+	// When Loading a APackedLevelActor it needs to be fully loaded for packing.
+	virtual bool SupportsPartialEditorLoading() const override { return false; }
+
+	ENGINE_API virtual TUniquePtr<class FWorldPartitionActorDesc> CreateClassActorDesc() const override;
 	
-	static bool CreateOrUpdateBlueprint(ALevelInstance* InLevelInstance, TSoftObjectPtr<UBlueprint> InBlueprintAsset, bool bCheckoutAndSave = true, bool bPromptForSave = true);
-	static bool CreateOrUpdateBlueprint(TSoftObjectPtr<UWorld> InWorldAsset, TSoftObjectPtr<UBlueprint> InBlueprintAsset, bool bCheckoutAndSave = true, bool bPromptForSave = true);
+	UE_DEPRECATED(5.3, "Use FPackedLevelActorUtils::CreateOrUpdateBlueprint instead")
+	static bool CreateOrUpdateBlueprint(ALevelInstance* InLevelInstance, TSoftObjectPtr<UBlueprint> InBlueprintAsset, bool bCheckoutAndSave = true, bool bPromptForSave = true) { return false;}
+	UE_DEPRECATED(5.3, "Use FPackedLevelActorUtils::CreateOrUpdateBlueprint instead")
+	static bool CreateOrUpdateBlueprint(TSoftObjectPtr<UWorld> InWorldAsset, TSoftObjectPtr<UBlueprint> InBlueprintAsset, bool bCheckoutAndSave = true, bool bPromptForSave = true) { return false;}
+	UE_DEPRECATED(5.3, "Use FPackedLevelActorUtils::UpdateBlueprint instead")
+	static void UpdateBlueprint(UBlueprint* InBlueprint, bool bCheckoutAndSave = true) {}
 
-	static FName GetPackedComponentTag();
+	static ENGINE_API FName GetPackedComponentTag();
 
-	virtual void PostLoad() override;
-	virtual void UpdateLevelInstanceFromWorldAsset() override;
-	virtual void OnCommit(bool bChanged) override;
-	virtual void OnCommitChild(bool bChanged) override;
-	virtual void OnEdit() override;
-	virtual void OnEditChild() override;
+	ENGINE_API virtual void PostLoad() override;
+	ENGINE_API virtual void UpdateLevelInstanceFromWorldAsset() override;
+	ENGINE_API virtual void OnCommit(bool bChanged) override;
+	ENGINE_API virtual void OnCommitChild(bool bChanged) override;
+	ENGINE_API virtual void OnEdit() override;
+	ENGINE_API virtual void OnEditChild() override;
 
-	virtual bool CanEditChange(const FProperty* InProperty) const override;
+	ENGINE_API virtual bool CanEditChange(const FProperty* InProperty) const override;
 		
-	void SetPackedVersion(const FGuid& Version) { PackedVersion = Version; }
+	void SetPackedVersion(const FGuid& InVersion) { PackedVersion = InVersion; }
 
-	virtual bool IsHiddenEd() const override;
-	virtual bool IsHLODRelevant() const override;
+	uint32 GetPackedHash() const { return PackedHash; }
+	void SetPackedHash(uint32 InHash) { PackedHash = InHash; }
 
-	void DestroyPackedComponents();
-	void GetPackedComponents(TArray<UActorComponent*>& OutPackedComponents) const;
+	ENGINE_API virtual bool IsHiddenEd() const override;
+	ENGINE_API virtual bool IsHLODRelevant() const override;
+
+	ENGINE_API void DestroyPackedComponents();
+	ENGINE_API void GetPackedComponents(TArray<UActorComponent*>& OutPackedComponents) const;
 
 	virtual ELevelInstanceRuntimeBehavior GetDefaultRuntimeBehavior() const override { return ELevelInstanceRuntimeBehavior::None; }
 
-	virtual void RerunConstructionScripts() override;
+	ENGINE_API virtual void RerunConstructionScripts() override;
+
+	static ENGINE_API bool IsRootBlueprint(UClass* InClass);
+	ENGINE_API bool IsRootBlueprintTemplate() const;
+	ENGINE_API UBlueprint* GetRootBlueprint() const;
 
 	template<class T>
 	T* AddPackedComponent(TSubclassOf<T> ComponentClass)
@@ -74,16 +93,21 @@ public:
 #endif
 
 #if WITH_EDITORONLY_DATA
-	UPROPERTY()
-	TArray<TSoftObjectPtr<UBlueprint>> PackedBPDependencies;
-
 private:
-	bool bChildChanged;
-
 	UPROPERTY()
 	FGuid PackedVersion;
+
+	UPROPERTY()
+	uint32 PackedHash;
+#endif
+
+#if WITH_EDITOR
+	bool ShouldCookWorldAsset() const override { return false; }
+
+	bool bChildChanged;
+	bool bLoadForPacking;
 #endif
 };
 
 
-DEFINE_ACTORDESC_TYPE(APackedLevelActor, FWorldPartitionActorDesc);
+DEFINE_ACTORDESC_TYPE(APackedLevelActor, FPackedLevelActorDesc);

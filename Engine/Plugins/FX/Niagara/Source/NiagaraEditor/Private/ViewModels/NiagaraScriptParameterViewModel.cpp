@@ -15,7 +15,6 @@ FNiagaraScriptParameterViewModel::FNiagaraScriptParameterViewModel(FNiagaraVaria
 	, GraphVariable(&InGraphVariable)
 	, CompiledVariable(InCompiledVariable)
 	, CompiledVariableOwner(InCompiledVariableOwner)
-	, ValueObject(nullptr)
 {
 	GraphVariableOwner = &InGraphVariableOwner;
 	bool bUsingCompiledVariable = InCompiledVariable != nullptr;
@@ -29,21 +28,32 @@ FNiagaraScriptParameterViewModel::FNiagaraScriptParameterViewModel(FNiagaraVaria
 FNiagaraScriptParameterViewModel::FNiagaraScriptParameterViewModel(FNiagaraVariable& InGraphVariable, UObject& InGraphVariableOwner, UObject* InValueObject, ENiagaraParameterEditMode ParameterEditMode)
 	: FNiagaraParameterViewModel(ParameterEditMode)
 	, GraphVariable(&InGraphVariable)
-	, CompiledVariable(nullptr)
-	, CompiledVariableOwner(nullptr)
-	, ValueVariable(nullptr)
-	, ValueVariableOwner(nullptr)
-	, ValueObject(InValueObject)
 {
 	GraphVariableOwner = &InGraphVariableOwner;
-	DefaultValueType = INiagaraParameterViewModel::EDefaultValueType::Object;
 	DebugName = GraphVariable->GetName().ToString();
+	if (InGraphVariable.IsDataInterface())
+	{
+		ValueDataInterface = Cast<UNiagaraDataInterface>(InValueObject);
+		DefaultValueType = INiagaraParameterViewModel::EDefaultValueType::DataInterface;
+	}
+	else
+	{
+		ValueObjectAsset = InValueObject;
+		DefaultValueType = INiagaraParameterViewModel::EDefaultValueType::ObjectAsset;
+	}
+
 	//UE_LOG(LogNiagaraEditor, Log, TEXT("Create %p Var %s"), this, *DebugName);
 }
 
 FNiagaraScriptParameterViewModel::~FNiagaraScriptParameterViewModel()
 {
 	//UE_LOG(LogNiagaraEditor, Log, TEXT("Delete %p Var %s"), this, *DebugName);
+}
+
+FNiagaraVariable FNiagaraScriptParameterViewModel::GetVariable() const
+{
+	check(GraphVariable);
+	return *GraphVariable;
 }
 
 void FNiagaraScriptParameterViewModel::Reset()
@@ -54,7 +64,8 @@ void FNiagaraScriptParameterViewModel::Reset()
 	CompiledVariableOwner = nullptr;
 	ValueVariable = nullptr;
 	ValueVariableOwner = nullptr;
-	ValueObject = nullptr;
+	ValueDataInterface = nullptr;
+	ValueObjectAsset = nullptr;
 }
 
 
@@ -76,7 +87,7 @@ FText FNiagaraScriptParameterViewModel::GetTypeDisplayName() const
 	return FText::Format(LOCTEXT("TypeTextFormat", "Type: {0}"), GraphVariable->GetType().GetNameText());
 }
 
-void FNiagaraScriptParameterViewModel::NameTextComitted(const FText& Name, ETextCommit::Type CommitInfo)
+void FNiagaraScriptParameterViewModel::NameTextCommitted(const FText& Name, ETextCommit::Type CommitInfo)
 {
 	check(GraphVariable);
 	FName NewName = *Name.ToString();
@@ -93,10 +104,10 @@ bool FNiagaraScriptParameterViewModel::VerifyNodeNameTextChanged(const FText& Ne
 	return OwningNode == nullptr || FNiagaraEditorUtilities::VerifyNameChangeForInputOrOutputNode(*OwningNode, GraphVariable->GetName(), NewText.ToString(), OutErrorMessage);
 }
 
-TSharedPtr<FNiagaraTypeDefinition> FNiagaraScriptParameterViewModel::GetType() const
+FNiagaraTypeDefinition FNiagaraScriptParameterViewModel::GetType() const
 {
 	check(GraphVariable);
-	return MakeShareable(new FNiagaraTypeDefinition(GraphVariable->GetType()));
+	return GraphVariable->GetType();
 }
 
 bool FNiagaraScriptParameterViewModel::CanChangeSortOrder() const
@@ -150,9 +161,20 @@ TSharedRef<FStructOnScope> FNiagaraScriptParameterViewModel::GetDefaultValueStru
 	return ParameterValue.ToSharedRef();
 }
 
-UObject* FNiagaraScriptParameterViewModel::GetDefaultValueObject()
+UNiagaraDataInterface* FNiagaraScriptParameterViewModel::GetDefaultValueDataInterface()
 {
-	return ValueObject;
+	return ValueDataInterface;
+}
+
+UObject* FNiagaraScriptParameterViewModel::GetDefaultValueObjectAsset()
+{
+	return ValueObjectAsset;
+}
+
+void FNiagaraScriptParameterViewModel::SetDefaultValueObjectAsset(UObject* Object)
+{
+	ValueObjectAsset = Object;
+	OnDefaultValueChangedDelegate.Broadcast();
 }
 
 void FNiagaraScriptParameterViewModel::NotifyDefaultValuePropertyChanged(const FPropertyChangedEvent& PropertyChangedEvent)

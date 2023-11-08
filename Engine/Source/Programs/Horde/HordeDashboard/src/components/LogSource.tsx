@@ -3,7 +3,7 @@
 import { action, makeObservable, observable } from "mobx";
 import moment, { Moment } from 'moment-timezone';
 import backend from '../backend';
-import { AgentData, BatchData, EventSeverity, GetLogEventResponse, IssueData, LeaseData, LogData, NodeData, StepData, StreamData } from "../backend/Api";
+import { AgentData, BatchData, EventSeverity, GetArtifactResponseV2, GetLogEventResponse, IssueData, LeaseData, LogData, NodeData, StepData, StreamData } from "../backend/Api";
 import { getBatchSummaryMarkdown, getStepSummaryMarkdown, JobDetails } from "../backend/JobDetails";
 import { getLeaseElapsed, getStepPercent } from '../base/utilities/timeUtils';
 import { BreadcrumbItem } from './Breadcrumbs';
@@ -67,7 +67,7 @@ export abstract class LogSource {
 
    initComplete() {
       if (this.active) {
-         setTimeout(() => { this.poll(); }, this.pollMS);
+         setTimeout(() => { this.poll(); }, 250);
       }
    }
 
@@ -78,15 +78,15 @@ export abstract class LogSource {
    resize(lineCount: number): LogItem[] | undefined {
 
       // resize items if necessary
-      let count = lineCount - this.logItems.length;
+      let count = lineCount - this._logItems.length;
 
       if (count <= 0) {
          return undefined;
       }
 
-      const items = [...this.logItems];
+      const items = [...this._logItems];
 
-      let line = this.logItems.length + 1;
+      let line = this._logItems.length + 1;
       while (count--) {
          items.push({
             lineNumber: line++,
@@ -110,10 +110,10 @@ export abstract class LogSource {
 
          for (let i = 0; i < count; i++) {
             const offset = i + index;
-            if (offset >= this.logItems.length) {
+            if (offset >= this._logItems.length) {
                break;
             }
-            const item = this.logItems![i + index];
+            const item = this._logItems![i + index];
             if (!item.requested) {
                item.requested = true;
                anyRequested = true;
@@ -135,10 +135,10 @@ export abstract class LogSource {
                const line = data.lines![i];
 
                const offset = i + data.index;
-               if (offset >= this.logItems.length) {
+               if (offset >= this._logItems.length) {
                   break;
                }
-               const item = this.logItems[offset];
+               const item = this._logItems[offset];
                item.line = line;
 
 
@@ -151,7 +151,7 @@ export abstract class LogSource {
 
             }
 
-            this.setLogItems([...this.logItems]);
+            this.setLogItems([...this._logItems]);
             resolve(true);
 
          }).catch(reason => reject(reason));
@@ -190,18 +190,14 @@ export abstract class LogSource {
          return;
       }
 
-      if (!this.active) {
-         this.stopPolling();
-         return;
-      }
-
       if (!this.pollMS) {
          return;
       }
 
-      this.pollID = setTimeout(() => { this.poll(); }, this.pollMS);
-
       if (this.polling) {
+         if (this.active) {
+            this.pollID = setTimeout(() => { this.poll(); }, !!this._logItems.find(i => !!i.line) ? this.pollMS : 3000);
+         }         
          return;
       }
 
@@ -213,8 +209,12 @@ export abstract class LogSource {
          });
       }).finally(() => {
          this.polling = false;
+         if (!this.active) {
+            this.stopPolling();
+         } else {
+            this.pollID = setTimeout(() => { this.poll(); }, !!this._logItems.find(i => !!i.line) ? this.pollMS : 3000);
+         }
       });
-
 
    }
 
@@ -236,7 +236,8 @@ export abstract class LogSource {
 
    @action
    setLogItems(items: LogItem[]) {
-      this.logItems = items;
+      this._logItems = items;
+      this.logItemsUpdated++;
    }
 
    @action
@@ -249,8 +250,16 @@ export abstract class LogSource {
       this.fatalError = error;
    }
 
-   @observable.ref
-   logItems: LogItem[] = [];
+   @observable
+   logItemsUpdated = 0;
+
+   get logItems(): LogItem[] {
+      // subscribe
+      if (this.logItemsUpdated) { }
+      return this._logItems;
+   }
+
+   private _logItems: LogItem[] = [];
 
    @observable
    active = true;
@@ -264,7 +273,7 @@ export abstract class LogSource {
    trailing?: boolean;
 
    pollID?: any = undefined;
-   pollMS = 10000;
+   private pollMS = 5000;
    polling = false;
 
    startTime?: Moment;
@@ -298,10 +307,19 @@ export class JobLogSource extends LogSource {
 
             const details = this.jobDetails;
 
-            const done = () => {
+
+            const done = async () => {
+
                if (details.fatalError) {
                   this.setFatalError(details.fatalError);
                }
+
+               if (this.logData?.id) {
+                  this.setActive(details.getLogActive(this.logData.id));
+               }
+
+               await this.updateArtifacts();
+
                this.detailsUpdated();
                this.refreshJobData();
                this.initComplete();
@@ -383,7 +401,26 @@ export class JobLogSource extends LogSource {
 
    }
 
-   private detailsUpdated() {
+   private async updateArtifacts() {
+      const details = this.jobDetails;
+
+      if (!details.jobdata?.useArtifactsV2 || this.artifactsV2 !== undefined || !this.logData?.id || details.getLogActive(this.logData.id)) {
+         return;
+      }
+
+      const step = details.getSteps().find(s => s.logId === this.logId);
+      if (step) {
+         const key = `job:${details.id!}/step:${step.id}`;
+         try {
+            const v = await backend.getJobArtifactsV2(undefined, [key]);
+            this.artifactsV2 = v.artifacts;
+         } catch (err) {
+            console.error(err);
+         }
+      }
+   }
+
+   private async detailsUpdated() {
 
       const details = this.jobDetails;
 
@@ -397,6 +434,7 @@ export class JobLogSource extends LogSource {
       const active = details.getLogActive(this.logData!.id);
 
       if (this.active !== active) {
+         await this.updateArtifacts();
          this.setActive(active);
       }
    }
@@ -524,6 +562,8 @@ export class JobLogSource extends LogSource {
    step?: StepData;
    node?: NodeData;
 
+   artifactsV2?: GetArtifactResponseV2[];
+
    jobDetails: JobDetails = new JobDetails(undefined, undefined, undefined, true);
 }
 
@@ -618,11 +658,11 @@ class LeaseLogSource extends LogSource {
          },
          {
             text: `${this.agent?.name}`,
-            link: `/agents/${this.agent?.id}`
+            link: `/agents?agentId=${this.agent?.id}`
          },
          {
             text: `${this.lease?.name ?? this.leaseId}`,
-            link: `/agents/${this.agent?.id}`
+            link: `/agents?agentId=${this.agent?.id}`
          }
 
       ];

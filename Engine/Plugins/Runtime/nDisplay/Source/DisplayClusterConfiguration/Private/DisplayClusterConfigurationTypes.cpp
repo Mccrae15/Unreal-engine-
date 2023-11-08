@@ -163,8 +163,8 @@ FDisplayClusterConfigurationProjection::FDisplayClusterConfigurationProjection()
 }
 
 
-const float UDisplayClusterConfigurationViewport::ViewportMinimumSize = 1.0f;
-const float UDisplayClusterConfigurationViewport::ViewportMaximumSize = 15360.0f;
+constexpr float UDisplayClusterConfigurationViewport::ViewportMinimumSize = 1.0f;
+constexpr float UDisplayClusterConfigurationViewport::ViewportMaximumSize = 15360.0f;
 
 UDisplayClusterConfigurationViewport::UDisplayClusterConfigurationViewport()
 {
@@ -172,6 +172,28 @@ UDisplayClusterConfigurationViewport::UDisplayClusterConfigurationViewport()
 	bIsVisible = true;
 	bIsUnlocked = true;
 #endif
+}
+
+void UDisplayClusterConfigurationViewport::PostLoad()
+{
+	Super::PostLoad();
+
+#if WITH_EDITOR
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		if (!IsValid(RenderSettings.Media.MediaInput.MediaSource) && IsValid(RenderSettings.Media.MediaSource))
+		{
+			RenderSettings.Media.MediaInput.MediaSource = RenderSettings.Media.MediaSource;
+			RenderSettings.Media.MediaSource = nullptr;
+		}
+
+		if (RenderSettings.Media.MediaOutputs.IsEmpty() && IsValid(RenderSettings.Media.MediaOutput))
+		{
+			RenderSettings.Media.MediaOutputs.Add({ RenderSettings.Media.MediaOutput , RenderSettings.Media.OutputSyncPolicy });
+			RenderSettings.Media.MediaOutput = nullptr;
+			RenderSettings.Media.OutputSyncPolicy = nullptr;
+		}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+#endif // WITH_EDITOR
 }
 
 #if WITH_EDITOR
@@ -265,6 +287,28 @@ void UDisplayClusterConfigurationHostDisplayData::PostEditChangeChainProperty(FP
 }
 #endif
 
+void UDisplayClusterConfigurationClusterNode::PostLoad()
+{
+	Super::PostLoad();
+
+#if WITH_EDITOR
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		if (!IsValid(Media.MediaInput.MediaSource) && IsValid(Media.MediaSource))
+		{
+			Media.MediaInput.MediaSource = Media.MediaSource;
+			Media.MediaSource = nullptr;
+		}
+
+		if (Media.MediaOutputs.IsEmpty() && IsValid(Media.MediaOutput))
+		{
+			Media.MediaOutputs.Add({ Media.MediaOutput, Media.OutputSyncPolicy });
+			Media.MediaOutput = nullptr;
+			Media.OutputSyncPolicy = nullptr;
+		}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+#endif // WITH_EDITOR
+}
+
 UDisplayClusterConfigurationClusterNode::UDisplayClusterConfigurationClusterNode()
 	: bIsSoundEnabled(false)
 #if WITH_EDITORONLY_DATA
@@ -309,7 +353,7 @@ void UDisplayClusterConfigurationData_Base::Serialize(FArchive& Ar)
 		ClearFlags(RF_Transient);
 		
 		ExportedObjects.Reset();
-		GetObjectsToExport(ExportedObjects);
+		GetObjectsToExport(MutableView(ExportedObjects));
 		for (UObject* Object : ExportedObjects)
 		{
 			if (!ensure(Object != nullptr))
@@ -351,16 +395,6 @@ FDisplayClusterConfigurationClusterSync::FDisplayClusterConfigurationClusterSync
 	using namespace DisplayClusterConfigurationStrings::config;
 	RenderSyncPolicy.Type = cluster::render_sync::Ethernet;
 	InputSyncPolicy.Type  = cluster::input_sync::InputSyncPolicyReplicatePrimary;
-}
-
-FDisplayClusterConfigurationNetworkSettings::FDisplayClusterConfigurationNetworkSettings()
-	: ConnectRetriesAmount     (300)   // ...
-	, ConnectRetryDelay        (1000)  // 5 minutes unless all nodes up
-	, GameStartBarrierTimeout  (1000 * 3600 * 5) // 5 hours unless ready to start rendering
-	, FrameStartBarrierTimeout (1000 * 60 * 30)  // 30 minutes for the barrier
-	, FrameEndBarrierTimeout   (1000 * 60 * 30)  // 30 minutes for the barrier
-	, RenderSyncBarrierTimeout (1000 * 60 * 30)  // 30 minutes for the barrier
-{
 }
 
 void UDisplayClusterConfigurationViewport::GetReferencedMeshNames(TArray<FString>& OutMeshNames) const
@@ -432,6 +466,25 @@ void UDisplayClusterConfigurationData::GetReferencedMeshNames(TArray<FString>& O
 	{
 		Cluster->GetReferencedMeshNames(OutMeshNames);
 	}
+}
+
+uint32 UDisplayClusterConfigurationData::GetNumberOfClusterNodes() const
+{
+	return Cluster ? static_cast<uint32>(Cluster->Nodes.Num()) : 0;
+}
+
+FString UDisplayClusterConfigurationData::GetPrimaryNodeAddress() const
+{
+	if (Cluster)
+	{
+		const FString& PrimaryNodeId = Cluster->PrimaryNode.Id;
+		if (UDisplayClusterConfigurationClusterNode* const PrimaryNode = Cluster->GetNode(PrimaryNodeId))
+		{
+			return PrimaryNode->Host;
+		}
+	}
+
+	return FString();
 }
 
 UDisplayClusterConfigurationData* UDisplayClusterConfigurationData::CreateNewConfigData(UObject* Owner, EObjectFlags ObjectFlags)

@@ -75,10 +75,18 @@ public:
 		LAYER_FLAG_TEX_EXTERNAL = 0x00000010,
 		// When set, this layer will not be rendered.
 		LAYER_FLAG_HIDDEN = 0x00000020,
-#ifdef WITH_OCULUS_BRANCH
 		// Enables bicubic filtering for the layer if supported by the device and/or runtime.
 		LAYER_FLAG_BICUBIC_FILTERING = 0x00000040,
-#endif
+// BEGIN META SECTION - XR Layer GSR
+		// Enables normal supersample filtering for the layer if supported by the device and/or runtime.
+		LAYER_FLAG_NORMAL_SUPERSAMPLE = 0x00000080,
+		// Enables qualty supersample filtering for the layer if supported by the device and/or runtime.
+		LAYER_FLAG_QUALITY_SUPERSAMPLE = 0x0000100,
+		// Enables normal sharpen filtering for the layer if supported by the device and/or runtime.
+		LAYER_FLAG_NORMAL_SHARPEN = 0x0000200,
+		// Enables qualty sharpen filtering for the layer if supported by the device and/or runtime.
+		LAYER_FLAG_QUALITY_SHARPEN = 0x0000400,
+// END META SECTION - XR Layer GSR
 	};
 
 
@@ -243,64 +251,6 @@ public:
 	virtual bool ShouldCopyDebugLayersToSpectatorScreen() const = 0;
 
 public:
-	/**
-	* Set the splash screen attributes
-	*
-	* @param Texture			(in) A texture to be used for the splash. B8R8G8A8 format.
-	* @param Scale				(in) Scale of the texture.
-	* @param Offset				(in) Position from which to start rendering the texture.
-	* @param ShowLoadingMovie	(in) Whether the splash screen presents loading movies.
-	*/
-	UE_DEPRECATED(4.24, "Use the IXRLoadingScreen interface instead of IStereoLayers::*SplashScreen")
-	void SetSplashScreen(FTextureRHIRef Texture, FVector2D Scale, FVector Offset, bool bShowLoadingMovie)
-	{
-		bSplashShowMovie = bShowLoadingMovie;
-		SplashTexture = nullptr;
-		if (Texture)
-		{
-			SplashTexture = Texture->GetTexture2D();
-			SplashOffset = Offset;
-			SplashScale = Scale;
-		}
-	}
-
-	/**
-	* Show the splash screen and override the normal VR display
-	*/
-	UE_DEPRECATED(4.24, "Use the IXRLoadingScreen interface instead of IStereoLayers::*SplashScreen")
-	void ShowSplashScreen()
-	{
-		bSplashIsShown = true;
-		UpdateSplashScreen();
-	}
-
-	/**
-	* Hide the splash screen and return to normal display.
-	*/
-	UE_DEPRECATED(4.24, "Use the IXRLoadingScreen interface instead of IStereoLayers::*SplashScreen")
-	void HideSplashScreen()
-	{
-		bSplashIsShown = false;
-		UpdateSplashScreen();
-	}
-
-	/**
-	* Set the splash screen's movie texture.
-	*
-	* @param InMovieTexture		(in) A movie texture to be used for the splash. B8R8G8A8 format.
-	*/
-	UE_DEPRECATED(4.24, "Use the IXRLoadingScreen interface instead of IStereoLayers::*SplashScreen")
-	void SetSplashScreenMovie(FTextureRHIRef Texture)
-	{
-		SplashMovie = nullptr;
-		if (Texture)
-		{
-			SplashMovie = Texture->GetTexture2D();
-			bSplashShowMovie = true;
-		}
-		UpdateSplashScreen();
-	}
-
 	virtual FLayerDesc GetDebugCanvasLayerDesc(FTextureRHIRef Texture)
 	{
 		// Default debug layer desc

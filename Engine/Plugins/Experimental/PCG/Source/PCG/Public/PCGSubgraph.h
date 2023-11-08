@@ -23,6 +23,9 @@ public:
 	UPCGGraph* GetSubgraph() const;
 	virtual UPCGGraphInterface* GetSubgraphInterface() const { return nullptr; }
 
+	/** Returns true if the subgraphs nodes were not inlined into the parent graphs tasks during compilation. */
+	virtual bool IsDynamicGraph() const { return false; }
+
 	// Use this method from the outside to set the subgraph, as it will connect editor callbacks
 	virtual void SetSubgraph(UPCGGraphInterface* InGraph);
 
@@ -37,7 +40,7 @@ protected:
 	//~End UObject interface implementation
 
 	//~Begin UPCGSettings interface
-	virtual void GetTrackedActorTags(FPCGTagToSettingsMap& OutTagToSettings, TArray<TObjectPtr<const UPCGGraph>>& OutVisitedGraphs) const override;
+	virtual void GetTrackedActorKeys(FPCGActorSelectionKeyToSettingsMap& OutKeysToSettings, TArray<TObjectPtr<const UPCGGraph>>& OutVisitedGraphs) const override;
 	virtual bool IsStructuralProperty(const FName& InPropertyName) const override;
 #endif
 
@@ -70,6 +73,9 @@ public:
 protected:
 	//~Begin UObject interface implementation
 	virtual void PostLoad() override;
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
 	//~End UObject interface implementation
 
 public:
@@ -92,6 +98,7 @@ protected:
 	//~Begin UPCGBaseSubgraphSettings interface
 public:
 	virtual UPCGGraphInterface* GetSubgraphInterface() const override { return SubgraphInstance.Get(); }
+	virtual bool IsDynamicGraph() const override;
 protected:
 	virtual void SetSubgraphInternal(UPCGGraphInterface* InGraph) override;
 #if WITH_EDITOR
@@ -102,6 +109,9 @@ protected:
 public:
 	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = Properties, Instanced, meta = (NoResetToDefault))
 	TObjectPtr<UPCGGraphInstance> SubgraphInstance;
+
+	UPROPERTY(BlueprintReadOnly, Category = Properties, meta = (PCG_Overridable))
+	TObjectPtr<UPCGGraphInterface> SubgraphOverride;
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
@@ -115,9 +125,6 @@ class PCG_API UPCGBaseSubgraphNode : public UPCGNode
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings)
-	bool bDynamicGraph = false;
-
 	TObjectPtr<UPCGGraph> GetSubgraph() const;
 	virtual TObjectPtr<UPCGGraphInterface> GetSubgraphInterface() const { return nullptr; }
 };
@@ -135,7 +142,7 @@ public:
 
 struct PCG_API FPCGSubgraphContext : public FPCGContext
 {
-	FPCGTaskId SubgraphTaskId = InvalidPCGTaskId;
+	TArray<FPCGTaskId> SubgraphTaskIds;
 	bool bScheduledSubgraph = false;
 	FInstancedStruct GraphInstanceParametersOverride;
 
@@ -147,10 +154,13 @@ class PCG_API FPCGSubgraphElement : public IPCGElement
 {
 public:
 	virtual FPCGContext* Initialize(const FPCGDataCollection& InputData, TWeakObjectPtr<UPCGComponent> SourceComponent, const UPCGNode* Node) override;
+	virtual bool IsCacheable(const UPCGSettings* InSettings) const override;
 
 protected:
 	virtual bool ExecuteInternal(FPCGContext* Context) const override;
 	virtual bool IsPassthrough(const UPCGSettings* InSettings) const override { return !InSettings || InSettings->bEnabled; }
+	void PrepareSubgraphData(const UPCGSubgraphSettings* Settings, FPCGSubgraphContext* Context, const FPCGDataCollection& InputData, FPCGDataCollection& OutputData) const;
+	void PrepareSubgraphUserParameters(const UPCGSubgraphSettings* Settings, FPCGSubgraphContext* Context, FPCGDataCollection& OutputData) const;
 };
 
 class PCG_API FPCGInputForwardingElement : public FSimplePCGElement
@@ -162,6 +172,8 @@ protected:
 	virtual bool ExecuteInternal(FPCGContext* Context) const override;
 	virtual bool IsPassthrough(const UPCGSettings* InSettings) const override { return true; }
 	FPCGDataCollection Input;
+
+	TArray<UPCGData*> RootedData;
 };
 
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2

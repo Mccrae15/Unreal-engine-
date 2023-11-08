@@ -4,8 +4,21 @@
 #include "NiagaraCommon.h"
 #include "NiagaraShared.h"
 #include "NiagaraDataInterface.h"
-#include "NiagaraParameterStore.h"
 #include "NiagaraDataInterfaceUObjectPropertyReader.generated.h"
+
+struct FNiagaraDataInterfaceGeneratedFunction;
+
+UENUM()
+enum class ENDIObjectPropertyReaderSourceMode : uint8
+{
+	/** Source object is found in the order of object binding, source actor. */
+	Binding,
+	/** Source object is found use the attached parent actor. */
+	AttachParentActor,
+	/** Source object is found in the order of object binding, source actor, then attached parent actor. */
+	BindingThenAttachParentActor,
+};
+
 
 USTRUCT()
 struct FNiagaraUObjectPropertyReaderRemap
@@ -28,7 +41,7 @@ struct FNiagaraUObjectPropertyReaderRemap
 Data interface to read properties from UObjects.
 Rather than having BP tick functions that push data into Niagara this data interface will instead pull them.
 */
-UCLASS(EditInlineNew, Category = "DataInterface", meta=(DisplayName="Object Reader"))
+UCLASS(EditInlineNew, Category = "DataInterface", CollapseCategories, meta=(DisplayName="Object Reader"))
 class UNiagaraDataInterfaceUObjectPropertyReader : public UNiagaraDataInterface
 {
 	GENERATED_UCLASS_BODY()
@@ -48,15 +61,19 @@ class UNiagaraDataInterfaceUObjectPropertyReader : public UNiagaraDataInterface
 	END_SHADER_PARAMETER_STRUCT()
 
 public:
-	/** User parameter Object binding to read properties from. */
+	/** Determines how we should select the source object we read from. */
 	UPROPERTY(EditAnywhere, Category = "UObjectPropertyReader")
+	ENDIObjectPropertyReaderSourceMode SourceMode = ENDIObjectPropertyReaderSourceMode::Binding;
+
+	/** User parameter Object binding to read properties from. */
+	UPROPERTY(EditAnywhere, Category = "UObjectPropertyReader", meta = (EditCondition = "SourceMode != ENDIObjectPropertyReaderSourceMode::AttachParentActor", EditConditionHides))
 	FNiagaraUserParameterBinding UObjectParameterBinding;
 
 	UPROPERTY(EditAnywhere, Category = "UObjectPropertyReader")
 	TArray<FNiagaraUObjectPropertyReaderRemap> PropertyRemap;
 
 	/** Optional source actor to use, if the user parameter binding is valid this will be ignored. */
-	UPROPERTY(EditAnywhere, Category = "UObjectPropertyReader")
+	UPROPERTY(EditAnywhere, Category = "UObjectPropertyReader", meta = (EditCondition = "SourceMode != ENDIObjectPropertyReaderSourceMode::AttachParentActor", EditConditionHides))
 	TSoftObjectPtr<AActor> SourceActor;
 
 	/**

@@ -21,15 +21,57 @@
 
 namespace Metasound
 {
+	DEFINE_METASOUND_ENUM_BEGIN(Audio::EMusicalScale::Scale, FEnumEMusicalScale, "MusicalScale")
+
+	// modes
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::Major, "MajorDescription", "Major Scale", "MajorDescriptionTT", "Major (Ionian)"),
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::Minor_Dorian, "Minor_DorianDescription", "Minor (Dorian)", "Minor_DorianDescriptionTT", "Dorian Minor"),
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::Phrygian, "PhrygianDescription", "Phrygian ", "PhrygianDescriptionTT", "Phrygian"),
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::Lydian, "LydianDescription", "Lydian", "LydianDescriptionTT", "Lydian (sharp-4)"),
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::Dominant7th_Mixolydian, "Dominant7th_MixolydianDescription", "Dominant 7th (Mixolydian)", "Dominant7th_MixolydianDescriptionTT", "Mioxlydian (Dominant 7)"),
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::NaturalMinor_Aeolian, "NaturalMinor_AeolianDescription", "Natural Minor (Aeolian)", "NaturalMinor_AeolianDescriptionTT", "Natural Minor (Aeolian)"),
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::HalfDiminished_Locrian, "HalfDiminished_LocrianDescription", "Half Diminished (Locrian)", "HalfDiminished_LocrianDescriptionTT", "Half-Diminished (Locrian)"),
+	// non-diatonic
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::Chromatic, "ChromaticDescription", "Chromatic", "ChromaticDescriptionTT", "Chromatic"),
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::WholeTone, "WholeToneDescription", "Whole-Tone", "WholeToneDescriptionTT", "Whole Tone"),
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::DiminishedWholeTone, "DiminishedWholeToneDescription", "Diminished Whole-Tone", "DiminishedWholeToneDescriptionTT", "Diminished Whole Tone"),
+	// petantonic
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::MajorPentatonic, "MajorPentatonicDescription", "Major Pentatonic ", "MajorPentatonicDescriptionTT", "Major Pentatonic"),
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::MinorPentatonic, "MinorPentatonicDescription", "Minor Pentatonic ", "MinorPentatonicDescriptionTT", "Minor Pentatonic"),
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::Blues, "BluesDescription", "Blues ", "BluesDescriptionTT", "Blues"),
+	// bebop
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::Bebop_Major, "Bebop_MajorDescription", "Bebop (Major)", "Bebop_MajorDescriptionTT", "Bebop Major"),
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::Bebop_Minor, "Bebop_MinorDescription", "Bebop (Minor)", "Bebop_MinorDescriptionTT", "Bebop Minor"),
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::Bebop_MinorNumber2, "Bebop_MinorNumber2Description", "Bebop (Minor) #2", "Bebop_MinorNumber2DescriptionTT", "Bebop Minor #2"),
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::Bebop_Dominant, "Bebop_DominantDescription", "Bebop (Dominant)", "Bebop_DominantDescriptionTT", "Bebop Dominant"),
+	// common major/minors
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::HarmonicMajor, "HarmonicMajorDescription", "Harmonic Major", "HarmonicMajorDescriptionTT", "Harmonic Major"),
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::HarmonicMinor, "HarmonicMinorDescription", "Harmonic Minor ", "HarmonicMinorDescriptionTT", "Harmonic Minor"),
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::MelodicMinor, "MelodicMinorDescription", "Melodic Minor ", "MelodicMinorDescriptionTT", "Melodic Minor"),
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::SixthModeOfHarmonicMinor, "SixthModeOfHarmonicMinorDescription", "Sixth Mode of Harmonic Minor", "SixthModeOfHarmonicMinorDescriptionTT", "Sixth Mode of Harmonic Minor"),
+	// lydian/augmented
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::LydianAugmented, "LydianAugmentedDescription", "Lydian Augmented", "LydianAugmentedDescriptionTT", "Lydian Augmented"),
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::LydianDominant, "LydianDominantDescription", "Lydian Dominant ", "LydianDominantDescriptionTT", "Lydian Dominant"),
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::Augmented, "AugmentedDescription", "Augmented", "AugmentedDescriptionTT", "Augmented"),
+	// diminished
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::Diminished, "DiminishedDescription", "Diminished ", "DiminishedDescriptionTT", "Diminished"),
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::Diminished_BeginWithHalfStep, "Diminished_BeginWithHalfStepDescription", "Diminished (Begin With Half-Step)", "Diminished_BeginWithHalfStepDescriptionTT", "Diminished (begins with Half Step)"),
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::Diminished_BeginWithWholeStep, "Diminished_BeginWithWholeStepDescription", "Diminished (Begin With Whole-Step", "Diminished_BeginWithWholeStepDescriptionTT", "Diminished (begins with Whole Step)"),
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::HalfDiminished_LocrianNumber2, "HalfDiminished_LocrianNumber2Description", "Half-Diminished (Locrian #2)", "HalfDiminished_LocrianNumber2DescriptionTT", "Half Diminished Locrian (#2)"),
+	// other
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::Spanish_or_Jewish, "Spanish_or_JewishDescription", "Spanish or Jewish Scale", "Spanish_or_JewishDescriptionTT", "Spanish/Jewish"),
+	DEFINE_METASOUND_ENUM_ENTRY(Audio::EMusicalScale::Scale::Hindu, "HinduDescription", "Hindu ", "HinduDescriptionTT", "Hindu")
+
+	DEFINE_METASOUND_ENUM_END()
 #pragma region Parameter Names
 	namespace MusicalScaleToNoteArrayParameterNames
 	{
 		// inputs
 		METASOUND_PARAM(ParamScaleDegreesPreset, "Scale Degrees", "Select scale preset");
-		METASOUND_PARAM(ParamChordTonesOnly, "Chord Tones Only", "If true, will only return a subset of the scale represeting chord tones. (i.e. scale degrees 1,3,5,7)");
+		METASOUND_PARAM(ParamChordTonesOnly, "Chord Tones Only", "If true, will only return a subset of the scale represeting chord tones. (i.e. scale degrees 1,3,5,7). Will not include chord extensions (i.e. 9, 11, 13).");
 
 		// outputs
-		METASOUND_PARAM(ParamNoteArrayOutput, "Scale Array Out", "Array represeting the scale as half steps above the root. The set is inclusive at both ends: (starting at 0.0f and ending with 12.0f)");
+		METASOUND_PARAM(ParamNoteArrayOutput, "Scale Array Out", "Array represeting the scale as semitones above the root starting at 0.0. The scale only includes one octave and each note only once.");
 
 	} // namespace MusicalScaleToNoteArrayParameterNames
 
@@ -47,7 +89,7 @@ namespace Metasound
 
 		// ctor
 		FMusicalScaleToNoteArrayOperator(
-			  const FOperatorSettings& InSettings
+			  const FCreateOperatorParams& InParams
 			, const FEnumMusicalScaleReadRef& InScale
 			, const FBoolReadRef& InChordTonesOnly
 		);
@@ -56,8 +98,11 @@ namespace Metasound
 		static const FNodeClassMetadata& GetNodeInfo();
 		static FVertexInterface DeclareVertexInterface();
 		static TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors);
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override;
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override;
 		virtual FDataReferenceCollection GetInputs() const override;
 		virtual FDataReferenceCollection GetOutputs() const override;
+		void Reset(const IOperator::FResetParams& InParams);
 		void Execute();
 
 	private: // members
@@ -71,10 +116,6 @@ namespace Metasound
 		// cached values
 		Audio::EMusicalScale::Scale PreviousScale = Audio::EMusicalScale::Scale::Count;
 		bool bPreviousChordTones = false;
-		TArray<float> PreviousNoteOut;
-
-		// other
-		FOperatorSettings Settings;
 
 	}; // class FMusicalScaleToNoteArrayOperator
 
@@ -85,17 +126,16 @@ namespace Metasound
 
 	// ctor
 	FMusicalScaleToNoteArrayOperator::FMusicalScaleToNoteArrayOperator(
-		  const FOperatorSettings& InSettings
+		  const FCreateOperatorParams& InParams
 		, const FEnumMusicalScaleReadRef& InScale
 		, const FBoolReadRef& InChordTonesOnly
 		)
 		: Scale(InScale)
 		, bChordTonesOnly(InChordTonesOnly)
 		, ScaleArrayOutput(FArrayScaleDegreeWriteRef::CreateNew())
-		, Settings(InSettings)
 	{
 		// prime our output array
-		Execute();
+		Reset(InParams);
 	}
 
 
@@ -129,8 +169,8 @@ namespace Metasound
 	{
 		static const FVertexInterface Interface(
 			FInputVertexInterface(
-				TInputDataVertex<FEnumEMusicalScale>(METASOUND_GET_PARAM_NAME_AND_METADATA(ParamScaleDegreesPreset)),
-				TInputDataVertex<bool>(METASOUND_GET_PARAM_NAME_AND_METADATA(ParamChordTonesOnly))
+				TInputDataVertex<FEnumEMusicalScale>(METASOUND_GET_PARAM_NAME_AND_METADATA(ParamScaleDegreesPreset), (int32)Audio::EMusicalScale::Scale::Major),
+				TInputDataVertex<bool>(METASOUND_GET_PARAM_NAME_AND_METADATA(ParamChordTonesOnly), false)
 			),
 			FOutputVertexInterface(
 				TOutputDataVertex<ScaleDegreeArrayType>(METASOUND_GET_PARAM_NAME_AND_METADATA(ParamNoteArrayOutput))
@@ -144,34 +184,52 @@ namespace Metasound
 	TUniquePtr<IOperator> FMusicalScaleToNoteArrayOperator::CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors)
 	{
 		const FDataReferenceCollection& InputDataRefs = InParams.InputDataReferences;
+		const FInputVertexInterface& InputInterface = InParams.Node.GetVertexInterface().GetInputInterface();
 
 		// inputs
-		FEnumMusicalScaleReadRef Scale = InputDataRefs.GetDataReadReferenceOrConstruct<FEnumEMusicalScale>(METASOUND_GET_PARAM_NAME(ParamScaleDegreesPreset));
-		FBoolReadRef ChordTonesOnly = InputDataRefs.GetDataReadReferenceOrConstruct<bool>(METASOUND_GET_PARAM_NAME(ParamChordTonesOnly));
+		FEnumMusicalScaleReadRef Scale = InputDataRefs.GetDataReadReferenceOrConstructWithVertexDefault<FEnumEMusicalScale>(InputInterface, METASOUND_GET_PARAM_NAME(ParamScaleDegreesPreset), InParams.OperatorSettings);
+		FBoolReadRef ChordTonesOnly = InputDataRefs.GetDataReadReferenceOrConstructWithVertexDefault<bool>(InputInterface, METASOUND_GET_PARAM_NAME(ParamChordTonesOnly), InParams.OperatorSettings);
 
 		return MakeUnique <FMusicalScaleToNoteArrayOperator>(
-			  InParams.OperatorSettings
+			  InParams
 			, Scale
 			, ChordTonesOnly
 			);
 	}
 
+	void FMusicalScaleToNoteArrayOperator::BindInputs(FInputVertexInterfaceData& InOutVertexData)
+	{
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamScaleDegreesPreset), Scale);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamChordTonesOnly), bChordTonesOnly);
+	}
+
+	void FMusicalScaleToNoteArrayOperator::BindOutputs(FOutputVertexInterfaceData& InOutVertexData)
+	{
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamNoteArrayOutput), ScaleArrayOutput);
+	}
+
 	FDataReferenceCollection FMusicalScaleToNoteArrayOperator::GetInputs() const
 	{
-		FDataReferenceCollection InputDataReferences;
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamScaleDegreesPreset), FEnumMusicalScaleReadRef(Scale));
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamChordTonesOnly), FBoolReadRef(bChordTonesOnly));
-
-		return InputDataReferences;
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
 	}
 
 	FDataReferenceCollection FMusicalScaleToNoteArrayOperator::GetOutputs() const
 	{
-		// expose read access to our output buffer for other processors in the graph
-		FDataReferenceCollection OutputDataReferences;
-		OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamNoteArrayOutput), FArrayScaleDegreeWriteRef(ScaleArrayOutput));
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
+	}
 
-		return OutputDataReferences;
+	void FMusicalScaleToNoteArrayOperator::Reset(const IOperator::FResetParams& InParams)
+	{
+		PreviousScale = *Scale;
+		bPreviousChordTones = *bChordTonesOnly;
+
+		*ScaleArrayOutput = Audio::FMidiNoteQuantizer::ScaleDegreeSetMap[PreviousScale].GetScaleDegreeSet(bPreviousChordTones);
 	}
 
 	void FMusicalScaleToNoteArrayOperator::Execute()
@@ -183,7 +241,7 @@ namespace Metasound
 			PreviousScale = *Scale;
 			bPreviousChordTones = *bChordTonesOnly;
 
-			PreviousNoteOut = *ScaleArrayOutput = Audio::FMidiNoteQuantizer::ScaleDegreeSetMap[PreviousScale].GetScaleDegreeSet(bPreviousChordTones);
+			*ScaleArrayOutput = Audio::FMidiNoteQuantizer::ScaleDegreeSetMap[PreviousScale].GetScaleDegreeSet(bPreviousChordTones);
 		}
 	}
 

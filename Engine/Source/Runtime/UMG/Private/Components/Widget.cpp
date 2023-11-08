@@ -20,6 +20,9 @@
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/SToolTip.h"
 #include "Binding/PropertyBinding.h"
+#include "Binding/States/WidgetStateBitfield.h"
+#include "Binding/States/WidgetStateSettings.h"
+#include "Binding/States/WidgetStateRegistration.h"
 #include "Binding/WidgetFieldNotificationExtension.h"
 #include "Logging/MessageLog.h"
 #include "Blueprint/GameViewportSubsystem.h"
@@ -169,9 +172,9 @@ void UWidget::FFieldNotificationClassDescriptor::ForEachField(const UClass* Clas
 			return;
 		}
 	}
-	if (const UWidgetBlueprintGeneratedClass* WidgetBPClass = Cast<const UWidgetBlueprintGeneratedClass>(Class))
+	if (const UBlueprintGeneratedClass* BPClass = Cast<const UBlueprintGeneratedClass>(Class))
 	{
-		WidgetBPClass->ForEachField(Callback);
+		BPClass->ForEachFieldNotify(Callback, true);
 	}
 }
 UE_FIELD_NOTIFICATION_IMPLEMENT_CLASS_DESCRIPTOR_ThreeFields(UWidget, ToolTipText, Visibility, bIsEnabled);
@@ -191,6 +194,7 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	RenderOpacity = 1.0f;
 	RenderTransformPivot = FVector2D(0.5f, 0.5f);
 	Cursor = EMouseCursor::Default;
+	PixelSnapping = EWidgetPixelSnapping::Inherit;
 
 #if WITH_EDITORONLY_DATA
 	bOverrideAccessibleDefaults = false;
@@ -199,6 +203,8 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	bCanChildrenBeAccessible = true;
 #endif
 	AccessibleWidgetData = nullptr;
+
+	bShouldBroadcastState = true;
 
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
@@ -305,16 +311,24 @@ bool UWidget::GetIsEnabled() const
 
 void UWidget::SetIsEnabled(bool bInIsEnabled)
 {
+	bool bValueChanged = false;
 	if (bIsEnabled != bInIsEnabled)
 	{
 		bIsEnabled = bInIsEnabled;
 		BroadcastFieldValueChanged(FFieldNotificationClassDescriptor::bIsEnabled);
+		bValueChanged = true;
 	}
 
 	TSharedPtr<SWidget> SafeWidget = GetCachedWidget();
 	if (SafeWidget.IsValid())
 	{
 		SafeWidget->SetEnabled(bInIsEnabled);
+	}
+
+	if (bValueChanged)
+	{
+		// Note: State is disabled, so we broadcast !bIsEnabled
+		BroadcastBinaryPostStateChange(UWidgetDisabledStateRegistration::Bit, !bIsEnabled);
 	}
 }
 
@@ -456,6 +470,28 @@ void UWidget::SetClipping(EWidgetClipping InClipping)
 	}
 }
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+EWidgetPixelSnapping UWidget::GetPixelSnapping() const
+{
+	TSharedPtr<SWidget> SafeWidget = GetCachedWidget();
+	if (SafeWidget.IsValid())
+	{
+		return SafeWidget->GetPixelSnapping();
+	}
+
+	return PixelSnapping;
+}
+
+void UWidget::SetPixelSnapping(EWidgetPixelSnapping InPixelSnappingMethod)
+{
+	PixelSnapping = InPixelSnappingMethod;
+
+	TSharedPtr<SWidget> SafeWidget = GetCachedWidget();
+	if (SafeWidget.IsValid())
+	{
+		SafeWidget->SetPixelSnapping(InPixelSnappingMethod);
+	}
+}
 
 void UWidget::ForceVolatile(bool bForce)
 {
@@ -1046,6 +1082,7 @@ TSharedRef<SWidget> UWidget::CreateDesignerOutline(TSharedRef<SWidget> Content) 
 		.VAlign(VAlign_Fill)
 		[
 			SNew(SBorder)
+			.DesiredSizeScale(FVector2D(0.0f, 0.0f))
 			.Visibility(HasAnyDesignerFlags(EWidgetDesignFlags::ShowOutline) ? EVisibility::HitTestInvisible : EVisibility::Collapsed)
 			.BorderImage(FUMGStyle::Get().GetBrush("MarchingAnts"))
 		];
@@ -1294,6 +1331,13 @@ void UWidget::PreSave(FObjectPreSaveContext ObjectSaveContext)
 	SynchronizeAccessibleData();
 }
 
+void UWidget::ReleaseSlateResources(bool bReleaseChildren)
+{
+	UVisual::ReleaseSlateResources(bReleaseChildren);
+
+	MyWidgetStateBitfield.Reset();
+}
+
 #if WITH_EDITOR
 bool UWidget::Modify(bool bAlwaysMarkDirty)
 {
@@ -1382,6 +1426,7 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	SafeWidget->SetClipping(Clipping);
 #endif
 
+	SafeWidget->SetPixelSnapping(PixelSnapping);
 	SafeWidget->SetFlowDirectionPreference(FlowDirectionPreference);
 
 	SafeWidget->ForceVolatile(bIsVolatile);
@@ -1538,7 +1583,7 @@ UWorld* UWidget::GetWorld() const
 		return OwningTree->GetWorld();
 	}
 
-	return nullptr;
+	return Super::GetWorld();
 }
 
 void UWidget::BeginDestroy()
@@ -1748,11 +1793,53 @@ bool UWidget::AddBinding(FDelegateProperty* DelegateProperty, UObject* SourceObj
 	return false;
 }
 
+FDelegateHandle UWidget::RegisterPostStateListener(const FOnWidgetStateBroadcast::FDelegate& ListenerDelegate, bool bBroadcastCurrentState)
+{
+	if (!MyWidgetStateBitfield.IsValid())
+	{
+		MyWidgetStateBitfield = MakeShared<FWidgetStateBitfield>(UWidgetStateSettings::Get()->GetInitialRegistrationBitfield(this));
+	}
+
+	if (bBroadcastCurrentState)
+	{
+		ListenerDelegate.ExecuteIfBound(this, *MyWidgetStateBitfield);
+	}
+
+	return PostWidgetStateChanged.Add(ListenerDelegate);
+}
+
+void UWidget::UnregisterPostStateListener(const FDelegateHandle& ListenerDelegate)
+{
+	PostWidgetStateChanged.Remove(ListenerDelegate);
+
+	if (!PostWidgetStateChanged.IsBound())
+	{
+		MyWidgetStateBitfield.Reset();
+	}
+}
+
 void UWidget::OnBindingChanged(const FName& Property)
 {
 
 }
 
+void UWidget::BroadcastBinaryPostStateChange(const FWidgetStateBitfield& StateChange, bool bInValue)
+{
+	if (bShouldBroadcastState && MyWidgetStateBitfield.IsValid())
+	{
+		MyWidgetStateBitfield->SetBinaryState(StateChange, bInValue);
+		PostWidgetStateChanged.Broadcast(this, *MyWidgetStateBitfield);
+	}
+}
+
+void UWidget::BroadcastEnumPostStateChange(const FWidgetStateBitfield& StateChange)
+{
+	if (bShouldBroadcastState && MyWidgetStateBitfield.IsValid())
+	{
+		MyWidgetStateBitfield->SetEnumState(StateChange);
+		PostWidgetStateChanged.Broadcast(this, *MyWidgetStateBitfield);
+	}
+}
 
 namespace UE::UMG::Private
 {

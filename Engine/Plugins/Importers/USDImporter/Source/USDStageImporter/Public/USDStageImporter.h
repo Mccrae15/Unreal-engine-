@@ -6,7 +6,6 @@
 
 #include "CoreMinimal.h"
 
-class UUsdAssetImportData;
 struct FUsdStageImportContext;
 
 class USDSTAGEIMPORTER_API UUsdStageImporter
@@ -14,5 +13,10 @@ class USDSTAGEIMPORTER_API UUsdStageImporter
 public:
 	void ImportFromFile(FUsdStageImportContext& ImportContext);
 
-	bool ReimportSingleAsset(FUsdStageImportContext& ImportContext, UObject* OriginalAsset, UUsdAssetImportData* OriginalImportData, UObject*& OutReimportedAsset);
+	bool ReimportSingleAsset(
+		FUsdStageImportContext& ImportContext,
+		UObject* OriginalAsset,
+		const FString& OriginalPrimPath,
+		UObject*& OutReimportedAsset
+	);
 };

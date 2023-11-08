@@ -14,6 +14,7 @@ namespace RewindDebugger
 
 FAnimCurvesTrack::FAnimCurvesTrack(uint64 InObjectId) : ObjectId(InObjectId)
 {
+	SetIsExpanded(false);
 	Icon = FSlateIcon("EditorStyle", "AnimGraph.Attribute.Curves.Icon", "AnimGraph.Attribute.Curves.Icon");
 }
 
@@ -118,50 +119,16 @@ TSharedPtr<SCurveTimelineView::FTimelineCurveData> FAnimCurveTrack::GetCurveData
 bool FAnimCurveTrack::UpdateInternal()
 {
 	IRewindDebugger* RewindDebugger = IRewindDebugger::Instance();
-	// compute curve points
-	//
-	// convert time range to from rewind debugger times to profiler times
-	TRange<double> TraceTimeRange = RewindDebugger->GetCurrentTraceRange();
-	double StartTime = TraceTimeRange.GetLowerBoundValue();
-	double EndTime = TraceTimeRange.GetUpperBoundValue();
-	
 	const TraceServices::IAnalysisSession* AnalysisSession = RewindDebugger->GetAnalysisSession();
-	const FGameplayProvider* GameplayProvider = AnalysisSession->ReadProvider<FGameplayProvider>(FGameplayProvider::ProviderName);
 	const FAnimationProvider* AnimationProvider = AnalysisSession->ReadProvider<FAnimationProvider>(FAnimationProvider::ProviderName);
 
-	
-	if(CurvesUpdateRequested > 10 && GameplayProvider && AnimationProvider)
+	if(CurvesUpdateRequested > 10 && AnimationProvider)
 	{
 		CurvesUpdateRequested = 0;
-		auto& CurvePoints = CurveData->Points;
-		CurvePoints.SetNum(0,false);
-	
-		TraceServices::FAnalysisSessionReadScope SessionReadScope(*AnalysisSession);
-
-		AnimationProvider->ReadSkeletalMeshPoseTimeline(ObjectId, [this, AnimationProvider, StartTime, EndTime, AnalysisSession, &CurvePoints](const FAnimationProvider::SkeletalMeshPoseTimeline& InTimeline, bool bHasCurves)
-		{
-			// this isn't very efficient, and it gets called every frame.  will need optimizing
-			InTimeline.EnumerateEvents(StartTime, EndTime, [this, StartTime, EndTime, AnimationProvider, AnalysisSession, &CurvePoints](double InStartTime, double InEndTime, uint32 InDepth, const FSkeletalMeshPoseMessage& InMessage)
-			{
-				if (InEndTime > StartTime && InStartTime < EndTime)
-				{
-					double Time = InMessage.RecordingTime;
-					
-					AnimationProvider->EnumerateSkeletalMeshCurves(InMessage, [this, Time, &CurvePoints](const FSkeletalMeshNamedCurve& InCurve)
-					{
-						if (InCurve.Id == CurveId)
-						{
-							CurvePoints.Add({Time,InCurve.Value});
-						}
-					});
-				}
-				return TraceServices::EEventEnumerate::Continue;
-			});
-		});
+		UpdateCurvePointsInternal();
 	}
-		
-	bool bChanged = false;
 
+	bool bChanged = false;
 	if (CurveName.IsEmpty() && AnimationProvider)
 	{
 		CurveName = FText::FromString(AnimationProvider->GetName(CurveId));
@@ -169,6 +136,44 @@ bool FAnimCurveTrack::UpdateInternal()
 	}
 
 	return bChanged;
+}
+
+void FAnimCurveTrack::UpdateCurvePointsInternal()
+{
+	IRewindDebugger* RewindDebugger = IRewindDebugger::Instance();
+	const TraceServices::IAnalysisSession* AnalysisSession = RewindDebugger->GetAnalysisSession();
+	const FAnimationProvider* AnimationProvider = AnalysisSession->ReadProvider<FAnimationProvider>(FAnimationProvider::ProviderName);
+
+	// convert time range to from rewind debugger times to profiler times
+	TRange<double> TraceTimeRange = RewindDebugger->GetCurrentTraceRange();
+	double StartTime = TraceTimeRange.GetLowerBoundValue();
+	double EndTime = TraceTimeRange.GetUpperBoundValue();
+	
+	auto& CurvePoints = CurveData->Points;
+	CurvePoints.SetNum(0,false);
+
+	TraceServices::FAnalysisSessionReadScope SessionReadScope(*AnalysisSession);
+	
+	AnimationProvider->ReadSkeletalMeshPoseTimeline(ObjectId, [this, AnimationProvider, StartTime, EndTime, AnalysisSession, &CurvePoints](const FAnimationProvider::SkeletalMeshPoseTimeline& InTimeline, bool bHasCurves)
+	{
+		// this isn't very efficient, and it gets called every frame.  will need optimizing
+		InTimeline.EnumerateEvents(StartTime, EndTime, [this, StartTime, EndTime, AnimationProvider, AnalysisSession, &CurvePoints](double InStartTime, double InEndTime, uint32 InDepth, const FSkeletalMeshPoseMessage& InMessage)
+		{
+			if (InEndTime > StartTime && InStartTime < EndTime)
+			{
+				double Time = InMessage.RecordingTime;
+			
+				AnimationProvider->EnumerateSkeletalMeshCurves(InMessage, [this, Time, &CurvePoints](const FSkeletalMeshNamedCurve& InCurve)
+				{
+					if (InCurve.Id == CurveId)
+					{
+						CurvePoints.Add({Time,InCurve.Value});
+					}
+				});
+			}
+			return TraceServices::EEventEnumerate::Continue;
+		});
+	});
 }
 
 TSharedPtr<SWidget> FAnimCurveTrack::GetDetailsViewInternal() 

@@ -11,6 +11,7 @@
 #include "LumenReflections.h"
 #include "HairStrands/HairStrandsData.h"
 #include "LumenTracingUtils.h"
+#include "ShaderPrintParameters.h"
 
 int32 GLumenReflectionScreenTraces = 1;
 FAutoConsoleVariableRef CVarLumenReflectionScreenTraces(
@@ -100,6 +101,30 @@ FAutoConsoleVariableRef GVarLumenReflectionSampleSceneColorRelativeDepthThreshol
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
+int32 GLumenReflectionsDistantScreenTraces = 1;
+FAutoConsoleVariableRef CVarLumenReflectionsDistantScreenTraces(
+	TEXT("r.Lumen.Reflections.DistantScreenTraces"),
+	GLumenReflectionsDistantScreenTraces,
+	TEXT("Whether to do a linear screen trace starting where Lumen Scene ends to handle distant reflections."),
+	ECVF_Scalability | ECVF_RenderThreadSafe
+);
+
+float GLumenReflectionDistantScreenTraceSlopeCompareTolerance = 2.0f;
+FAutoConsoleVariableRef GVarLumenReflectionDistantScreenTraceDepthThreshold(
+	TEXT("r.Lumen.Reflections.DistantScreenTraces.DepthThreshold"),
+	GLumenReflectionDistantScreenTraceSlopeCompareTolerance,
+	TEXT("Depth threshold for the linear screen traces done where other traces have missed."),
+	ECVF_Scalability | ECVF_RenderThreadSafe
+);
+
+float GLumenReflectionDistantScreenTraceMaxTraceDistance = 200000.0f;
+FAutoConsoleVariableRef GVarLumenReflectionDistantScreenTraceMaxTraceDistance(
+	TEXT("r.Lumen.Reflections.DistantScreenTraces.MaxTraceDistance"),
+	GLumenReflectionDistantScreenTraceMaxTraceDistance,
+	TEXT("Trace distance of distant screen traces."),
+	ECVF_Scalability | ECVF_RenderThreadSafe
+);
+
 static TAutoConsoleVariable<float> CVarLumenReflectionsSampleSceneColorNormalTreshold(
 	TEXT("r.Lumen.Reflections.SampleSceneColorNormalTreshold"),
 	85.0f,
@@ -107,10 +132,34 @@ static TAutoConsoleVariable<float> CVarLumenReflectionsSampleSceneColorNormalTre
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
+static TAutoConsoleVariable<int32> CVarLumenReflectionsMaxBounces(
+	TEXT("r.Lumen.Reflections.MaxBounces"),
+	0,
+	TEXT("Sets the maximum number of recursive reflection bounces. Values above 0 override Post Process Volume settings. 1 means a single reflection ray (no secondary reflections in mirrors). Currently only supported by Hardware Ray Tracing with Hit Lighting."),
+	ECVF_Scalability | ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<int32> CVarLumenReflectionsVisualizeTraces(
+	TEXT("r.Lumen.Reflections.VisualizeTraces"),
+	0,
+	TEXT("Whether to visualize reflection traces from cursor position, useful for debugging"),
+	ECVF_Scalability | ECVF_RenderThreadSafe
+);
+
 float LumenReflections::GetSampleSceneColorNormalTreshold()
 {
 	const float Radians = FMath::DegreesToRadians(FMath::Clamp(CVarLumenReflectionsSampleSceneColorNormalTreshold.GetValueOnRenderThread(), 0.0f, 180.0f));
 	return FMath::Cos(Radians);
+}
+
+uint32 LumenReflections::GetMaxReflectionBounces(const FViewInfo& View)
+{
+	int32 MaxBounces = CVarLumenReflectionsMaxBounces.GetValueOnRenderThread();
+	if (MaxBounces <= 0)
+	{
+		MaxBounces = View.FinalPostProcessSettings.LumenMaxReflectionBounces;
+	}
+	return FMath::Clamp(MaxBounces, 1, 64);
 }
 
 class FReflectionClearTracesCS : public FGlobalShader
@@ -123,6 +172,9 @@ class FReflectionClearTracesCS : public FGlobalShader
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenReflectionTileParameters, ReflectionTileParameters)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataGlobalUniformParameters, Strata)
 	END_SHADER_PARAMETER_STRUCT()
+
+	class FCleatTraceMaterialId : SHADER_PERMUTATION_BOOL("CLEAT_TRACE_MATERIAL_ID");
+	using FPermutationDomain = TShaderPermutationDomain<FCleatTraceMaterialId>;
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
@@ -176,7 +228,6 @@ class FReflectionTraceScreenTexturesCS : public FGlobalShader
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		OutEnvironment.SetDefine(TEXT("USE_GLOBAL_GPU_SCENE_DATA"), 1);
 
 		OutEnvironment.CompilerFlags.Add(CFLAG_Wave32);
 
@@ -226,8 +277,6 @@ class FReflectionCompactTracesCS : public FGlobalShader
 		SHADER_PARAMETER(uint32, CullByDistanceFromCamera)
 		SHADER_PARAMETER(float, CompactionTracingEndDistanceFromCamera)
 		SHADER_PARAMETER(float, CompactionMaxTraceDistance)
-		SHADER_PARAMETER(float, RayTracingCullingRadius)
-		SHADER_PARAMETER(float, DitheredStartDistanceFactor)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<uint>, RWCompactedTraceTexelAllocator)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<uint>, RWCompactedTraceTexelData)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, ReflectionTracingTileIndirectArgs)
@@ -268,15 +317,14 @@ class FReflectionCompactTracesCS : public FGlobalShader
 		return 1024;
 	}
 
+	class FTraceCompactionMode : SHADER_PERMUTATION_ENUM_CLASS("TRACE_COMPACTION_MODE", LumenReflections::ETraceCompactionMode);
 	class FWaveOps : SHADER_PERMUTATION_BOOL("WAVE_OPS");
 	class FThreadGroupSize : SHADER_PERMUTATION_SPARSE_INT("THREADGROUP_SIZE", 64, 128, 256, 512, 1024);
-	class FClipRayDim : SHADER_PERMUTATION_BOOL("DIM_CLIP_RAY");
-	using FPermutationDomain = TShaderPermutationDomain<FWaveOps, FThreadGroupSize, FClipRayDim>;
+	using FPermutationDomain = TShaderPermutationDomain<FTraceCompactionMode, FWaveOps, FThreadGroupSize>;
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		OutEnvironment.SetDefine(TEXT("USE_GLOBAL_GPU_SCENE_DATA"), 1);
 
 		OutEnvironment.CompilerFlags.Add(CFLAG_Wave32);
 
@@ -290,6 +338,38 @@ class FReflectionCompactTracesCS : public FGlobalShader
 };
 
 IMPLEMENT_GLOBAL_SHADER(FReflectionCompactTracesCS, "/Engine/Private/Lumen/LumenReflectionTracing.usf", "ReflectionCompactTracesCS", SF_Compute);
+
+class FReflectionSortTracesByMaterialCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FReflectionSortTracesByMaterialCS)
+	SHADER_USE_PARAMETER_STRUCT(FReflectionSortTracesByMaterialCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		RDG_BUFFER_ACCESS(IndirectArgs, ERHIAccess::IndirectArgs)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenReflectionTracingParameters, ReflectionTracingParameters)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, CompactedTraceTexelAllocator)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, CompactedTraceTexelData)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<uint>, RWCompactedTraceTexelData)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataGlobalUniformParameters, Strata)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return DoesPlatformSupportLumenGI(Parameters.Platform);
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE_1D"), GetThreadGroupSize1D());
+		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE_2D"), GetThreadGroupSize2D());
+	}
+
+	static int32 GetThreadGroupSize1D() { return GetThreadGroupSize2D() * GetThreadGroupSize2D(); }
+	static int32 GetThreadGroupSize2D() { return 16; }
+};
+
+IMPLEMENT_GLOBAL_SHADER(FReflectionSortTracesByMaterialCS, "/Engine/Private/Lumen/LumenReflectionTracing.usf", "ReflectionSortTracesByMaterialCS", SF_Compute);
 
 
 class FSetupReflectionCompactedTracesIndirectArgsCS : public FGlobalShader
@@ -362,7 +442,6 @@ class FReflectionTraceMeshSDFsCS : public FGlobalShader
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		OutEnvironment.SetDefine(TEXT("USE_GLOBAL_GPU_SCENE_DATA"), 1);
 		OutEnvironment.SetDefine(TEXT("SURFACE_CACHE_FEEDBACK"), 1);
 		OutEnvironment.SetDefine(TEXT("SURFACE_CACHE_HIGH_RES_PAGES"), 1);
 
@@ -391,25 +470,36 @@ class FReflectionTraceVoxelsCS : public FGlobalShader
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
 		SHADER_PARAMETER(float, RelativeDepthThickness)
 		SHADER_PARAMETER(float, SampleSceneColorNormalTreshold)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, DistantScreenTraceFurthestHZBTexture)
+		SHADER_PARAMETER(float, DistantScreenTraceSlopeCompareTolerance)
+		SHADER_PARAMETER(float, DistantScreenTraceMaxTraceDistance)
 	END_SHADER_PARAMETER_STRUCT()
 
 	class FThreadGroupSize32 : SHADER_PERMUTATION_BOOL("THREADGROUP_SIZE_32");
 	class FTraceGlobalSDF : SHADER_PERMUTATION_BOOL("TRACE_GLOBAL_SDF");
+	class FSimpleCoverageBasedExpand : SHADER_PERMUTATION_BOOL("GLOBALSDF_SIMPLE_COVERAGE_BASED_EXPAND");
 	class FHairStrands : SHADER_PERMUTATION_BOOL("USE_HAIRSTRANDS_VOXEL");
 	class FRadianceCache : SHADER_PERMUTATION_BOOL("RADIANCE_CACHE");
 	class FSampleSceneColor : SHADER_PERMUTATION_BOOL("SAMPLE_SCENE_COLOR");
+	class FDistantScreenTraces : SHADER_PERMUTATION_BOOL("DISTANT_SCREEN_TRACES");
 
-	using FPermutationDomain = TShaderPermutationDomain<FThreadGroupSize32, FTraceGlobalSDF, FHairStrands, FRadianceCache, FSampleSceneColor>;
+	using FPermutationDomain = TShaderPermutationDomain<FThreadGroupSize32, FTraceGlobalSDF, FSimpleCoverageBasedExpand, FHairStrands, FRadianceCache, FSampleSceneColor, FDistantScreenTraces>;
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
+		const FPermutationDomain PermutationVector(Parameters.PermutationId);
+
+		if (!PermutationVector.Get<FTraceGlobalSDF>() && PermutationVector.Get<FSimpleCoverageBasedExpand>())
+		{
+			return false;
+		}
+
 		return DoesPlatformSupportLumenGI(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		OutEnvironment.SetDefine(TEXT("USE_GLOBAL_GPU_SCENE_DATA"), 1);
 		OutEnvironment.SetDefine(TEXT("SURFACE_CACHE_FEEDBACK"), 1);
 		OutEnvironment.SetDefine(TEXT("SURFACE_CACHE_HIGH_RES_PAGES"), 1);
 
@@ -419,6 +509,39 @@ class FReflectionTraceVoxelsCS : public FGlobalShader
 
 IMPLEMENT_GLOBAL_SHADER(FReflectionTraceVoxelsCS, "/Engine/Private/Lumen/LumenReflectionTracing.usf", "ReflectionTraceVoxelsCS", SF_Compute);
 
+class FVisualizeReflectionTracesCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FVisualizeReflectionTracesCS)
+	SHADER_USE_PARAMETER_STRUCT(FVisualizeReflectionTracesCS, FGlobalShader)
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderPrint::FShaderParameters, ShaderPrintUniformBuffer)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenReflectionTracingParameters, ReflectionTracingParameters)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenIndirectTracingParameters, IndirectTracingParameters)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataGlobalUniformParameters, Strata)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneTextureUniformParameters, SceneTexturesStruct)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return DoesPlatformSupportLumenGI(Parameters.Platform);
+	}
+
+	static int32 GetGroupSize()
+	{
+		return 8;
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE"), GetGroupSize());
+	}
+};
+
+IMPLEMENT_GLOBAL_SHADER(FVisualizeReflectionTracesCS, "/Engine/Private/Lumen/LumenReflectionTracing.usf", "VisualizeReflectionTracesCS", SF_Compute);
+
 enum class ECompactedReflectionTracingIndirectArgs
 {
 	NumTracesDiv64 = 0 * sizeof(FRHIDispatchIndirectParameters),
@@ -426,7 +549,7 @@ enum class ECompactedReflectionTracingIndirectArgs
 	MAX = 2,
 };
 
-FCompactedReflectionTraceParameters CompactTraces(
+FCompactedReflectionTraceParameters LumenReflections::CompactTraces(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View, 
 	const FLumenCardTracingParameters& TracingParameters,
@@ -435,11 +558,13 @@ FCompactedReflectionTraceParameters CompactTraces(
 	bool bCullByDistanceFromCamera,
 	float CompactionTracingEndDistanceFromCamera,
 	float CompactionMaxTraceDistance,
-	ERDGPassFlags ComputePassFlags = ERDGPassFlags::Compute)
+	ERDGPassFlags ComputePassFlags,
+	ETraceCompactionMode TraceCompactionMode,
+	bool bSortByMaterial)
 {
 	FRDGBufferRef CompactedTraceTexelAllocator = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(uint32), 1), TEXT("Lumen.Reflections.CompactedTraceTexelAllocator"));
 	const int32 NumCompactedTraceTexelDataElements = ReflectionTracingParameters.ReflectionTracingBufferSize.X * ReflectionTracingParameters.ReflectionTracingBufferSize.Y;
-	FRDGBufferRef CompactedTraceTexelData = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(uint32) * 2, NumCompactedTraceTexelDataElements), TEXT("Lumen.Reflections.CompactedTraceTexelData"));
+	FRDGBufferRef CompactedTraceTexelData = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(uint32), NumCompactedTraceTexelDataElements), TEXT("Lumen.Reflections.CompactedTraceTexelData"));
 
 	const bool bWaveOps = GLumenReflectionTraceCompactionWaveOps != 0 
 		&& GRHISupportsWaveOperations 
@@ -476,20 +601,18 @@ FCompactedReflectionTraceParameters CompactTraces(
 		PassParameters->ReflectionTracingParameters = ReflectionTracingParameters;
 		PassParameters->ReflectionTileParameters = ReflectionTileParameters;
 		PassParameters->RWCompactedTraceTexelAllocator = GraphBuilder.CreateUAV(CompactedTraceTexelAllocator, PF_R32_UINT);
-		PassParameters->RWCompactedTraceTexelData = GraphBuilder.CreateUAV(CompactedTraceTexelData, PF_R32G32_UINT);
+		PassParameters->RWCompactedTraceTexelData = GraphBuilder.CreateUAV(CompactedTraceTexelData, PF_R32_UINT);
 		PassParameters->ReflectionTracingTileIndirectArgs = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(ReflectionTileParameters.TracingIndirectArgs, PF_R32_UINT));
 		PassParameters->CullByDistanceFromCamera = bCullByDistanceFromCamera ? 1 : 0;
 		PassParameters->CompactionTracingEndDistanceFromCamera = CompactionTracingEndDistanceFromCamera;
 		PassParameters->CompactionMaxTraceDistance = CompactionMaxTraceDistance;
-		PassParameters->RayTracingCullingRadius = GetRayTracingCullingRadius();
-		PassParameters->DitheredStartDistanceFactor = LumenReflections::UseFarField(*View.Family) ? Lumen::GetFarFieldDitheredStartDistanceFactor() : 1.0f;
 		PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 		PassParameters->IndirectArgs = ReflectionCompactionIndirectArgs;
 	
 		FReflectionCompactTracesCS::FPermutationDomain PermutationVector;
-		PermutationVector.Set< FReflectionCompactTracesCS::FWaveOps >(bWaveOps);
-		PermutationVector.Set< FReflectionCompactTracesCS::FThreadGroupSize >(CompactionThreadGroupSize);
-		PermutationVector.Set< FReflectionCompactTracesCS::FClipRayDim >(RayTracing::GetCullingMode(View.Family->EngineShowFlags) != RayTracing::ECullingMode::Disabled);
+		PermutationVector.Set<FReflectionCompactTracesCS::FTraceCompactionMode>(TraceCompactionMode);
+		PermutationVector.Set<FReflectionCompactTracesCS::FWaveOps>(bWaveOps);
+		PermutationVector.Set<FReflectionCompactTracesCS::FThreadGroupSize>(CompactionThreadGroupSize);
 		auto ComputeShader = View.ShaderMap->GetShader<FReflectionCompactTracesCS>(PermutationVector);
 
 		FComputeShaderUtils::AddPass(
@@ -526,8 +649,34 @@ FCompactedReflectionTraceParameters CompactTraces(
 			FIntVector(1, 1, 1));
 	}
 
+	// Sort by material
+	if (bSortByMaterial)
+	{
+		FRDGBufferRef SortedCompactedTraceTexelData = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(uint32), NumCompactedTraceTexelDataElements), TEXT("Lumen.Reflections.CompactedTraceTexelData"));
+
+		FReflectionSortTracesByMaterialCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FReflectionSortTracesByMaterialCS::FParameters>();
+		PassParameters->IndirectArgs = CompactedTraceParameters.IndirectArgs;
+		PassParameters->ReflectionTracingParameters = ReflectionTracingParameters;
+		PassParameters->CompactedTraceTexelAllocator = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(CompactedTraceTexelAllocator, PF_R32_UINT));
+		PassParameters->CompactedTraceTexelData = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(CompactedTraceTexelData, PF_R32_UINT));
+		PassParameters->RWCompactedTraceTexelData = GraphBuilder.CreateUAV(FRDGBufferUAVDesc(SortedCompactedTraceTexelData, PF_R32_UINT));
+		PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
+
+		TShaderRef<FReflectionSortTracesByMaterialCS> ComputeShader = View.ShaderMap->GetShader<FReflectionSortTracesByMaterialCS>();
+		FComputeShaderUtils::AddPass(
+			GraphBuilder,
+			RDG_EVENT_NAME("SortTracesByMaterialCS"),
+			ComputePassFlags,
+			ComputeShader,
+			PassParameters,
+			PassParameters->IndirectArgs,
+			0);
+
+		CompactedTraceTexelData = SortedCompactedTraceTexelData;
+	}
+
 	CompactedTraceParameters.CompactedTraceTexelAllocator = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(CompactedTraceTexelAllocator, PF_R32_UINT));
-	CompactedTraceParameters.CompactedTraceTexelData = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(CompactedTraceTexelData, PF_R32G32_UINT));
+	CompactedTraceParameters.CompactedTraceTexelData = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(CompactedTraceTexelData, PF_R32_UINT));
 
 	return CompactedTraceParameters;
 }
@@ -646,6 +795,7 @@ void TraceReflections(
 	const FLumenReflectionTileParameters& ReflectionTileParameters,
 	const FLumenMeshSDFGridParameters& InMeshSDFGridParameters,
 	bool bUseRadianceCache,
+	bool bLumenGIEnabled,
 	const LumenRadianceCache::FRadianceCacheInterpolationParameters& RadianceCacheParameters,
 	ERDGPassFlags ComputePassFlags)
 {
@@ -655,7 +805,9 @@ void TraceReflections(
 		PassParameters->ReflectionTileParameters = ReflectionTileParameters;
 		PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 
-		auto ComputeShader = View.ShaderMap->GetShader<FReflectionClearTracesCS>(0);
+		FReflectionClearTracesCS::FPermutationDomain PermutationVector;
+		PermutationVector.Set<FReflectionClearTracesCS::FCleatTraceMaterialId>(ReflectionTracingParameters.TraceMaterialId != nullptr);
+		auto ComputeShader = View.ShaderMap->GetShader<FReflectionClearTracesCS>(PermutationVector);
 
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
@@ -677,6 +829,7 @@ void TraceReflections(
 
 	const bool bScreenTraces = GLumenReflectionScreenTraces != 0 && View.Family->EngineShowFlags.LumenScreenTraces;
 	const bool bSampleSceneColorAtHit = (GLumenReflectionsSampleSceneColorAtHit != 0 && bScreenTraces) || GLumenReflectionsSampleSceneColorAtHit == 2;
+	const bool bDistantScreenTraces = GLumenReflectionsDistantScreenTraces && bScreenTraces;
 
 	if (bScreenTraces)
 	{
@@ -693,8 +846,8 @@ void TraceReflections(
 		}
 
 		PassParameters->MaxHierarchicalScreenTraceIterations = GLumenReflectionHierarchicalScreenTracesMaxIterations;
-		PassParameters->RelativeDepthThickness = GLumenReflectionHierarchicalScreenTraceRelativeDepthThreshold;
-		PassParameters->HistoryDepthTestRelativeThickness = GLumenReflectionHierarchicalScreenTraceHistoryDepthTestRelativeThickness;
+		PassParameters->RelativeDepthThickness = GLumenReflectionHierarchicalScreenTraceRelativeDepthThreshold * View.ViewMatrices.GetPerProjectionDepthThicknessScale();
+		PassParameters->HistoryDepthTestRelativeThickness = GLumenReflectionHierarchicalScreenTraceHistoryDepthTestRelativeThickness * View.ViewMatrices.GetPerProjectionDepthThicknessScale();
 		PassParameters->MinimumTracingThreadOccupancy = GLumenReflectionScreenTracesMinimumOccupancy;
 
 		PassParameters->ReflectionTracingParameters = ReflectionTracingParameters;
@@ -733,17 +886,6 @@ void TraceReflections(
 
 	if (Lumen::UseHardwareRayTracedReflections(*View.Family))
 	{
-		FCompactedReflectionTraceParameters CompactedTraceParameters = CompactTraces(
-			GraphBuilder,
-			View,
-			TracingParameters,
-			ReflectionTracingParameters,
-			ReflectionTileParameters,
-			false,
-			0.0f,
-			IndirectTracingParameters.MaxTraceDistance,
-			ComputePassFlags);
-
 		RenderLumenHardwareRayTracingReflections(
 			GraphBuilder,
 			SceneTextures,
@@ -753,13 +895,13 @@ void TraceReflections(
 			TracingParameters,
 			ReflectionTracingParameters,
 			ReflectionTileParameters,
-			CompactedTraceParameters,
 			IndirectTracingParameters.MaxTraceDistance,
 			bUseRadianceCache,
 			RadianceCacheParameters,
 			bSampleSceneColorAtHit,
+			bLumenGIEnabled,
 			ComputePassFlags
-			);
+		);
 	}
 	else 
 	{
@@ -783,7 +925,7 @@ void TraceReflections(
 
 			if (bTraceMeshSDFs || bTraceHeightfields)
 			{
-				FCompactedReflectionTraceParameters CompactedTraceParameters = CompactTraces(
+				FCompactedReflectionTraceParameters CompactedTraceParameters = LumenReflections::CompactTraces(
 					GraphBuilder,
 					View,
 					TracingParameters,
@@ -831,7 +973,7 @@ void TraceReflections(
 			}
 		}
 
-		FCompactedReflectionTraceParameters CompactedTraceParameters = CompactTraces(
+		FCompactedReflectionTraceParameters CompactedTraceParameters = LumenReflections::CompactTraces(
 			GraphBuilder,
 			View,
 			TracingParameters,
@@ -864,15 +1006,21 @@ void TraceReflections(
 				PassParameters->SceneTextures.GBufferVelocityTexture = GSystemTextures.GetBlackDummy(GraphBuilder);
 			}
 
-			PassParameters->RelativeDepthThickness = GLumenReflectionSampleSceneColorRelativeDepthThreshold;
+			PassParameters->RelativeDepthThickness = GLumenReflectionSampleSceneColorRelativeDepthThreshold * View.ViewMatrices.GetPerProjectionDepthThicknessScale();
 			PassParameters->SampleSceneColorNormalTreshold = LumenReflections::GetSampleSceneColorNormalTreshold();
+
+			PassParameters->DistantScreenTraceFurthestHZBTexture = View.HZB;
+			PassParameters->DistantScreenTraceSlopeCompareTolerance = GLumenReflectionDistantScreenTraceSlopeCompareTolerance;
+			PassParameters->DistantScreenTraceMaxTraceDistance = GLumenReflectionDistantScreenTraceMaxTraceDistance;
 
 			FReflectionTraceVoxelsCS::FPermutationDomain PermutationVector;
 			PermutationVector.Set< FReflectionTraceVoxelsCS::FThreadGroupSize32 >(Lumen::UseThreadGroupSize32());
 			PermutationVector.Set< FReflectionTraceVoxelsCS::FTraceGlobalSDF >(Lumen::UseGlobalSDFTracing(*View.Family));
+			PermutationVector.Set< FReflectionTraceVoxelsCS::FSimpleCoverageBasedExpand>(Lumen::UseGlobalSDFTracing(*View.Family) && Lumen::UseGlobalSDFSimpleCoverageBasedExpand());
 			PermutationVector.Set< FReflectionTraceVoxelsCS::FHairStrands >(bNeedTraceHairVoxel);
 			PermutationVector.Set< FReflectionTraceVoxelsCS::FRadianceCache >(bUseRadianceCache);
 			PermutationVector.Set< FReflectionTraceVoxelsCS::FSampleSceneColor >(bSampleSceneColorAtHit);
+			PermutationVector.Set< FReflectionTraceVoxelsCS::FDistantScreenTraces >(bDistantScreenTraces);
 			auto ComputeShader = View.ShaderMap->GetShader<FReflectionTraceVoxelsCS>(PermutationVector);
 
 			FComputeShaderUtils::AddPass(
@@ -885,5 +1033,28 @@ void TraceReflections(
 				(int32)(Lumen::UseThreadGroupSize32() ? ECompactedReflectionTracingIndirectArgs::NumTracesDiv32 : ECompactedReflectionTracingIndirectArgs::NumTracesDiv64));
 			bNeedTraceHairVoxel = false;
 		}
+	}
+
+	if (CVarLumenReflectionsVisualizeTraces.GetValueOnRenderThread())
+	{
+		ShaderPrint::SetEnabled(true);
+
+		FVisualizeReflectionTracesCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FVisualizeReflectionTracesCS::FParameters>();
+		PassParameters->View = View.ViewUniformBuffer;
+		PassParameters->ReflectionTracingParameters = ReflectionTracingParameters;
+		PassParameters->IndirectTracingParameters = IndirectTracingParameters;
+		PassParameters->SceneTexturesStruct = SceneTextures.UniformBuffer;
+		PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
+		ShaderPrint::SetParameters(GraphBuilder, View.ShaderPrintData, PassParameters->ShaderPrintUniformBuffer);
+		
+		auto ComputeShader = View.ShaderMap->GetShader<FVisualizeReflectionTracesCS>();
+
+		FComputeShaderUtils::AddPass(
+			GraphBuilder,
+			RDG_EVENT_NAME("VisualizeReflectionTraces"),
+			ComputePassFlags,
+			ComputeShader,
+			PassParameters,
+			FIntVector(1, 1, 1));
 	}
 }

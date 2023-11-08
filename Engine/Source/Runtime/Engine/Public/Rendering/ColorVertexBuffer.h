@@ -7,6 +7,7 @@
 #include "RHI.h"
 
 struct FStaticMeshBuildVertex;
+struct FConstMeshBuildVertexView;
 
 /**
 * A vertex buffer of colors.
@@ -36,6 +37,7 @@ public:
 	* @param InVertices - The vertices to initialize the buffer with.
 	*/
 	ENGINE_API void Init(const TArray<FStaticMeshBuildVertex>& InVertices, bool bNeedsCPUAccess = true);
+	ENGINE_API void Init(const FConstMeshBuildVertexView& InVertices, bool bNeedsCPUAccess = true);
 
 	/**
 	* Initializes this vertex buffer with the contents of the given vertex buffer.
@@ -58,7 +60,7 @@ public:
 	* @param	Ar					Archive to serialize with
 	* @param	bInNeedsCPUAccess	Whether the elements need to be accessed by the CPU
 	*/
-	void Serialize(FArchive& Ar, bool bNeedsCPUAccess);
+	ENGINE_API void Serialize(FArchive& Ar, bool bNeedsCPUAccess);
 
 	void SerializeMetaData(FArchive& Ar);
 
@@ -144,15 +146,12 @@ public:
 	FBufferRHIRef CreateRHIBuffer_RenderThread();
 	FBufferRHIRef CreateRHIBuffer_Async();
 
-	/** Copy everything, keeping reference to the same RHI resources. */
-	void CopyRHIForStreaming(const FColorVertexBuffer& Other, bool InAllowCPUAccess);
-
 	/** Similar to Init/ReleaseRHI but only update existing SRV so references to the SRV stays valid */
 	void InitRHIForStreaming(FRHIBuffer* IntermediateBuffer, FRHIResourceUpdateBatcher& Batcher);
 	void ReleaseRHIForStreaming(FRHIResourceUpdateBatcher& Batcher);
 
 	// FRenderResource interface.
-	ENGINE_API virtual void InitRHI() override;
+	ENGINE_API virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 	ENGINE_API virtual void ReleaseRHI() override;
 	virtual FString GetFriendlyName() const override { return TEXT("ColorOnly Mesh Vertices"); }
 

@@ -38,6 +38,7 @@ private:
 		RouteId_AnimNodeValueString,
 		RouteId_AnimNodeValueObject,
 		RouteId_AnimNodeValueClass,
+		RouteId_AnimNodeValueAnimNode,
 		RouteId_AnimSequencePlayer,
 		RouteId_BlendSpacePlayer,
 		RouteId_StateMachineState,
@@ -49,7 +50,8 @@ private:
 		RouteId_Montage,
 		RouteId_Montage2,
 		RouteId_Sync,
-		RouteId_PoseWatch
+		RouteId_PoseWatch,
+		RouteId_PoseWatch2,
 	};
 
 	TraceServices::IAnalysisSession& Session;

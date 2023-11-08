@@ -177,17 +177,18 @@ static FReplicationStateMemberTraitsDescriptor TestStructMemberTraitsDescriptors
 
 static const FReplicationStateDescriptor TestStructReplictionStateDescriptor =
 {
-	TestStructMemberDescriptors,			//FReplicationStateMemberDescriptor* MemberDescriptors;
-	static_cast<const FReplicationStateMemberChangeMaskDescriptor*>(nullptr),	//FReplicationStateMemberChangeMaskDescriptor* MemberChangeMaskDescriptors;
-	TestStructMemberSerializerDescriptors,	//FReplicationStateMemberSerializerDescriptor* MemberSerializerDescriptors;
-	TestStructMemberTraitsDescriptors, // MemberTraitsDescriptors;
+	TestStructMemberDescriptors,			// MemberDescriptors
+	static_cast<const FReplicationStateMemberChangeMaskDescriptor*>(nullptr),	// MemberChangeMaskDescriptors
+	TestStructMemberSerializerDescriptors,	// MemberSerializerDescriptors
+	TestStructMemberTraitsDescriptors, // MemberTraitsDescriptors
 	static_cast<const FReplicationStateMemberFunctionDescriptor*>(nullptr),
-	static_cast<const FReplicationStateMemberTagDescriptor*>(nullptr),	// MemberTagDescriptors;
-	static_cast<const FReplicationStateMemberReferenceDescriptor*>(nullptr),	// MemberReferenceDescriptors;
-	static_cast<const FProperty**>(nullptr),	// FProperty** MemberProperties;
+	static_cast<const FReplicationStateMemberTagDescriptor*>(nullptr),	// MemberTagDescriptors
+	static_cast<const FReplicationStateMemberReferenceDescriptor*>(nullptr),	// MemberReferenceDescriptors
+	static_cast<const FProperty**>(nullptr),	// MemberProperties
 	static_cast<const FReplicationStateMemberPropertyDescriptor*>(nullptr), // MemberPropertyDescriptors
 	static_cast<const FReplicationStateMemberLifetimeConditionDescriptor*>(nullptr),
 	static_cast<const FReplicationStateMemberRepIndexToMemberIndexDescriptor*>(nullptr),
+	static_cast<const UScriptStruct*>(nullptr), // BaseStruct
 	static_cast<const FNetDebugName*>(nullptr), // DebugName
 	static_cast<const FReplicationStateMemberDebugDescriptor*>(nullptr), // MemberDebugDescriptors
 	24,			//uint32 ExternalSize;
@@ -257,17 +258,18 @@ static FReplicationStateMemberChangeMaskDescriptor TestClassMemberChangeMaskDesc
 // Should be the same
 static const FReplicationStateDescriptor TestClassReplictionStateDescriptor
 {
-	TestClassMemberDescriptors,			//FReplicationStateMemberDescriptor* MemberDescriptors;
-	TestClassMemberChangeMaskDescriptors,	//FReplicationStateMemberChangeMaskDescriptor* MemberChangeMaskDescriptors;
-	TestClassMemberSerializerDescriptors,	//FReplicationStateMemberSerializerDescriptor* MemberSerializerDescriptors;
-	TestClassMemberTraitsDescriptors, // MemberTraitsDescriptors;
+	TestClassMemberDescriptors,			// MemberDescriptors
+	TestClassMemberChangeMaskDescriptors,	// MemberChangeMaskDescriptors
+	TestClassMemberSerializerDescriptors,	// MemberSerializerDescriptors
+	TestClassMemberTraitsDescriptors, // MemberTraitsDescriptors
 	static_cast<const FReplicationStateMemberFunctionDescriptor*>(nullptr),
 	static_cast<const FReplicationStateMemberTagDescriptor*>(nullptr), // MemberTagDescriptors
-	static_cast<const FReplicationStateMemberReferenceDescriptor*>(nullptr), // MemberReferenceDescriptors;
-	static_cast<const FProperty**>(nullptr), // FProperty** MemberProperties;
+	static_cast<const FReplicationStateMemberReferenceDescriptor*>(nullptr), // MemberReferenceDescriptors
+	static_cast<const FProperty**>(nullptr), // MemberProperties
 	static_cast<const FReplicationStateMemberPropertyDescriptor*>(nullptr), // MemberPropertyDescriptors
 	static_cast<const FReplicationStateMemberLifetimeConditionDescriptor*>(nullptr),
 	static_cast<const FReplicationStateMemberRepIndexToMemberIndexDescriptor*>(nullptr),
+	static_cast<const UScriptStruct*>(nullptr), // BaseStruct
 	static_cast<const FNetDebugName*>(nullptr), // DebugName
 	static_cast<const FReplicationStateMemberDebugDescriptor*>(nullptr), // MemberDebugDescriptors
 	32,			//uint32 ExternalSize;
@@ -292,17 +294,18 @@ static const FReplicationStateDescriptor TestClassReplictionStateDescriptor
 // Should be the same
 static const FReplicationStateDescriptor TestClassReplictionStateDescriptorNotReferenceCounted
 {
-	TestClassMemberDescriptors,			//FReplicationStateMemberDescriptor* MemberDescriptors;
-	TestClassMemberChangeMaskDescriptors,	//FReplicationStateMemberChangeMaskDescriptor* MemberChangeMaskDescriptors;
-	TestClassMemberSerializerDescriptors,	//FReplicationStateMemberSerializerDescriptor* MemberSerializerDescriptors;
-	TestClassMemberTraitsDescriptors, // MemberTraitsDescriptors;
+	TestClassMemberDescriptors,			// MemberDescriptors
+	TestClassMemberChangeMaskDescriptors,	// MemberChangeMaskDescriptors
+	TestClassMemberSerializerDescriptors,	// MemberSerializerDescriptors
+	TestClassMemberTraitsDescriptors, // MemberTraitsDescriptors
 	static_cast<const FReplicationStateMemberFunctionDescriptor*>(nullptr),
 	static_cast<const FReplicationStateMemberTagDescriptor*>(nullptr), // MemberTagDescriptors
-	static_cast<const FReplicationStateMemberReferenceDescriptor*>(nullptr), // MemberReferenceDescriptors;
-	static_cast<const FProperty**>(nullptr), // FProperty** MemberProperties;
+	static_cast<const FReplicationStateMemberReferenceDescriptor*>(nullptr), // MemberReferenceDescriptors
+	static_cast<const FProperty**>(nullptr), // MemberProperties
 	static_cast<const FReplicationStateMemberPropertyDescriptor*>(nullptr), // MemberPropertyDescriptors
 	static_cast<const FReplicationStateMemberLifetimeConditionDescriptor*>(nullptr),
 	static_cast<const FReplicationStateMemberRepIndexToMemberIndexDescriptor*>(nullptr),
+	static_cast<const UScriptStruct*>(nullptr), // BaseStruct
 	static_cast<const FNetDebugName*>(nullptr), // DebugName
 	static_cast<const FReplicationStateMemberDebugDescriptor*>(nullptr), // MemberDebugDescriptors
 	32,			//uint32 ExternalSize;
@@ -327,17 +330,18 @@ static const FReplicationStateDescriptor TestClassReplictionStateDescriptorNotRe
 // Should be the same
 static const FReplicationStateDescriptor TestClassWithNonReplicatedDataReplicationStateDescriptor =
 {
-	TestClassMemberDescriptors,			//FReplicationStateMemberDescriptor* MemberDescriptors;
-	TestClassMemberChangeMaskDescriptors,	//FReplicationStateMemberChangeMaskDescriptor* MemberChangeMaskDescriptors;
-	TestClassMemberSerializerDescriptors,	//FReplicationStateMemberSerializerDescriptor* MemberSerializerDescriptors;
+	TestClassMemberDescriptors,			// MemberDescriptors
+	TestClassMemberChangeMaskDescriptors,	// MemberChangeMaskDescriptors
+	TestClassMemberSerializerDescriptors,	// MemberSerializerDescriptors
 	TestClassMemberTraitsDescriptors,
 	static_cast<const FReplicationStateMemberFunctionDescriptor*>(nullptr),
 	static_cast<const FReplicationStateMemberTagDescriptor*>(nullptr), // MemberTagDescriptors
-	static_cast<const FReplicationStateMemberReferenceDescriptor*>(nullptr), // MemberReferenceDescriptors;
-	static_cast<const FProperty**>(nullptr), // FProperty** MemberProperties;
+	static_cast<const FReplicationStateMemberReferenceDescriptor*>(nullptr), // MemberReferenceDescriptors
+	static_cast<const FProperty**>(nullptr), // MemberProperties
 	static_cast<const FReplicationStateMemberPropertyDescriptor*>(nullptr), // MemberPropertyDescriptors
 	static_cast<const FReplicationStateMemberLifetimeConditionDescriptor*>(nullptr),
 	static_cast<const FReplicationStateMemberRepIndexToMemberIndexDescriptor*>(nullptr),
+	static_cast<const UScriptStruct*>(nullptr), // BaseStruct
 	static_cast<const FNetDebugName*>(nullptr), // DebugName
 	static_cast<const FReplicationStateMemberDebugDescriptor*>(nullptr), // MemberDebugDescriptors
 	32,			//uint32 ExternalSize;
@@ -480,11 +484,12 @@ static FReplicationStateDescriptor TestClassWithInheritanceReplictionStateDescri
 	TestClassWithInheritanceMemberTraitsDescriptors,
 	static_cast<const FReplicationStateMemberFunctionDescriptor*>(nullptr),
 	static_cast<const FReplicationStateMemberTagDescriptor*>(nullptr), // MemberTagDescriptors
-	static_cast<const FReplicationStateMemberReferenceDescriptor*>(nullptr), // MemberReferenceDescriptors;
-	static_cast<const FProperty**>(nullptr), // MemberProperties;
+	static_cast<const FReplicationStateMemberReferenceDescriptor*>(nullptr), // MemberReferenceDescriptors
+	static_cast<const FProperty**>(nullptr), // MemberProperties
 	static_cast<const FReplicationStateMemberPropertyDescriptor*>(nullptr), // MemberPropertyDescriptors
 	static_cast<const FReplicationStateMemberLifetimeConditionDescriptor*>(nullptr),
 	static_cast<const FReplicationStateMemberRepIndexToMemberIndexDescriptor*>(nullptr),
+	static_cast<const UScriptStruct*>(nullptr), // BaseStruct
 	static_cast<const FNetDebugName*>(nullptr), // DebugName
 	static_cast<const FReplicationStateMemberDebugDescriptor*>(nullptr), // MemberDebugDescriptors
 	32, // ExternalSize (rounded up since it also contains statemask)
@@ -552,11 +557,12 @@ static FReplicationStateDescriptor TestClassWithInheritanceNoSuperReplictionStat
 	TestClassWithInheritanceNoSuperMemberTraitsDescriptors,
 	static_cast<const FReplicationStateMemberFunctionDescriptor*>(nullptr),
 	static_cast<const FReplicationStateMemberTagDescriptor*>(nullptr), // MemberTagDescriptors
-	static_cast<const FReplicationStateMemberReferenceDescriptor*>(nullptr), // MemberReferenceDescriptors;
-	static_cast<const FProperty**>(nullptr), // MemberProperties;
+	static_cast<const FReplicationStateMemberReferenceDescriptor*>(nullptr), // MemberReferenceDescriptors
+	static_cast<const FProperty**>(nullptr), // MemberProperties
 	static_cast<const FReplicationStateMemberPropertyDescriptor*>(nullptr), // MemberPropertyDescriptors
 	static_cast<const FReplicationStateMemberLifetimeConditionDescriptor*>(nullptr),
 	static_cast<const FReplicationStateMemberRepIndexToMemberIndexDescriptor*>(nullptr),
+	static_cast<const UScriptStruct*>(nullptr), // BaseStruct
 	static_cast<const FNetDebugName*>(nullptr), // DebugName
 	static_cast<const FReplicationStateMemberDebugDescriptor*>(nullptr), // MemberDebugDescriptors
 	12, // ExternalSize (rounded up since it also contains statemask)
@@ -617,13 +623,14 @@ static FReplicationStateDescriptor TestClassWithReplicatedStructReplictionStateD
 	TestClassWithReplicatedStructMemberChangeMaskDescriptors,
 	TestClassWithReplicatedStructMemberSerializerDescriptors,
 	TestClassWithReplicatedStructMemberTraitsDescriptors,
-	static_cast<const FReplicationStateMemberFunctionDescriptor*>(nullptr), // MemberTagDescriptors;
+	static_cast<const FReplicationStateMemberFunctionDescriptor*>(nullptr), // MemberTagDescriptors
 	static_cast<const FReplicationStateMemberTagDescriptor*>(nullptr), // MemberTagDescriptors
-	static_cast<const FReplicationStateMemberReferenceDescriptor*>(nullptr), // MemberReferenceDescriptors;
-	static_cast<const FProperty**>(nullptr), // MemberProperties;
+	static_cast<const FReplicationStateMemberReferenceDescriptor*>(nullptr), // MemberReferenceDescriptors
+	static_cast<const FProperty**>(nullptr), // MemberProperties
 	static_cast<const FReplicationStateMemberPropertyDescriptor*>(nullptr), // MemberPropertyDescriptors
 	static_cast<const FReplicationStateMemberLifetimeConditionDescriptor*>(nullptr),
 	static_cast<const FReplicationStateMemberRepIndexToMemberIndexDescriptor*>(nullptr),
+	static_cast<const UScriptStruct*>(nullptr), // BaseStruct
 	static_cast<const FNetDebugName*>(nullptr), // DebugName
 	static_cast<const FReplicationStateMemberDebugDescriptor*>(nullptr), // MemberDebugDescriptors
 	32, // ExternalSize (rounded up since it also contains statemask)
@@ -774,8 +781,8 @@ UE_NET_TEST_FIXTURE(FTestReplicationStateDescriptorBuilderFixture, UTestReplicat
 	UE_NET_ASSERT_NE(SecondRoleConfig->RelativeInternalOffsetToOtherRole, 0);
 	UE_NET_ASSERT_NE(SecondRoleConfig->RelativeExternalOffsetToOtherRole, 0);
 
-	UE_NET_ASSERT_EQ(FirstRoleConfig->RelativeInternalOffsetToOtherRole, -SecondRoleConfig->RelativeInternalOffsetToOtherRole) << "Roles aren't referring to each other";
-	UE_NET_ASSERT_EQ(FirstRoleConfig->RelativeExternalOffsetToOtherRole, -SecondRoleConfig->RelativeExternalOffsetToOtherRole) << "Roles aren't referring to each other";
+	UE_NET_ASSERT_EQ_MSG(FirstRoleConfig->RelativeInternalOffsetToOtherRole, -SecondRoleConfig->RelativeInternalOffsetToOtherRole, "Roles aren't referring to each other");
+	UE_NET_ASSERT_EQ_MSG(FirstRoleConfig->RelativeExternalOffsetToOtherRole, -SecondRoleConfig->RelativeExternalOffsetToOtherRole, "Roles aren't referring to each other");
 }
 
 UE_NET_TEST_FIXTURE(FTestReplicationStateDescriptorBuilderFixture, UTestReplicationStateDescriptor_TestClassWithManyRoles)
@@ -1066,7 +1073,7 @@ UE_NET_TEST_FIXTURE(FTestReplicationStateDescriptorBuilderFixture, UTestReplicat
 	for (const FReplicationStateMemberLifetimeConditionDescriptor& ConditionDesc : MakeArrayView(LifetimeConditionalsDesc->MemberLifetimeConditionDescriptors, LifetimeConditionalsDesc->MemberCount))
 	{
 		const SIZE_T MemberIndex = &ConditionDesc - LifetimeConditionalsDesc->MemberLifetimeConditionDescriptors;
-		UE_NET_ASSERT_NE(ConditionDesc.Condition, int8(COND_None)) << "Unexpected lifetime condition for property " << LifetimeConditionalsDesc->MemberProperties[MemberIndex]->GetName();
+		UE_NET_ASSERT_NE_MSG(ConditionDesc.Condition, int8(COND_None), "Unexpected lifetime condition for property " << LifetimeConditionalsDesc->MemberProperties[MemberIndex]->GetName());
 	}
 }
 
@@ -1182,79 +1189,127 @@ UE_NET_TEST_FIXTURE(FTestReplicationStateDescriptorBuilderFixture, UTestReplicat
 // Function definitions
 void UTestReplicationStateDescriptor_TestClass::GetLifetimeReplicatedProps( TArray< class FLifetimeProperty > & OutLifetimeProps ) const
 {
+	DOREPLIFETIME(ThisClass, Int8);
+	DOREPLIFETIME(ThisClass, Int16);
+	DOREPLIFETIME(ThisClass, Int32);
+	DOREPLIFETIME(ThisClass, Int64);
+	DOREPLIFETIME(ThisClass, bBitFieldBoolA);
+	DOREPLIFETIME(ThisClass, bBitFieldBoolB);
+	DOREPLIFETIME(ThisClass, bNativeBool);
 }
 
 void UTestReplicationStateDescriptor_TestClassWithNonReplicatedData::GetLifetimeReplicatedProps( TArray< class FLifetimeProperty > & OutLifetimeProps ) const
 {
+	DOREPLIFETIME(ThisClass, Int8);
+	DOREPLIFETIME(ThisClass, Int16);
+	DOREPLIFETIME(ThisClass, Int32);
+	DOREPLIFETIME(ThisClass, Int64);
+	DOREPLIFETIME(ThisClass, bBitFieldBoolA);
+	DOREPLIFETIME(ThisClass, bBitFieldBoolB);
+	DOREPLIFETIME(ThisClass, bNativeBool);
 }
 
 void UTestReplicationStateDescriptor_TestClassWithInheritance::GetLifetimeReplicatedProps( TArray< class FLifetimeProperty > & OutLifetimeProps ) const
 {
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	DOREPLIFETIME(ThisClass, UInt8);
+	DOREPLIFETIME(ThisClass, UInt16);
 }
 
 void UTestReplicationStateDescriptor_TestClassWithReplicatedStruct::GetLifetimeReplicatedProps( TArray< class FLifetimeProperty > & OutLifetimeProps ) const
 {
+	DOREPLIFETIME(ThisClass, ReplicatedStruct);
 }
 
 void UTestReplicationStateDescriptor_TestClassWithTArray::GetLifetimeReplicatedProps( TArray< class FLifetimeProperty > & OutLifetimeProps ) const
 {
+	DOREPLIFETIME(ThisClass, ArrayWithStruct);
+	DOREPLIFETIME(ThisClass, ArrayWithPrimitiveType);
 }
 
 void UTestReplicationStateDescriptor_TestClassWithStructWithTArray::GetLifetimeReplicatedProps( TArray< class FLifetimeProperty > & OutLifetimeProps ) const
 {
+	DOREPLIFETIME(ThisClass, StructWithTArray);
 }
 
 void UTestReplicationStateDescriptor_TestClassWithCArray::GetLifetimeReplicatedProps(TArray<class FLifetimeProperty> & OutLifetimeProps) const
 {
+	DOREPLIFETIME(ThisClass, ArrayOfStruct);
+	DOREPLIFETIME(ThisClass, ArrayWithPrimitiveType);
 }
 
 void UTestReplicationStateDescriptor_TestClassWithStructWithCArray::GetLifetimeReplicatedProps(TArray<class FLifetimeProperty> & OutLifetimeProps) const
 {
+	DOREPLIFETIME(ThisClass, StructWithCArray);
 }
 
 void UTestReplicationStateDescriptor_TestClassWithEnums::GetLifetimeReplicatedProps(TArray<class FLifetimeProperty> & OutLifetimeProps) const
 {
+	DOREPLIFETIME(ThisClass, Int8Enum);
+	DOREPLIFETIME(ThisClass, Int16Enum);
+	DOREPLIFETIME(ThisClass, Int32Enum);
+	DOREPLIFETIME(ThisClass, Int64Enum);
+	DOREPLIFETIME(ThisClass, EnumAsByteEnum);
+	DOREPLIFETIME(ThisClass, Uint8Enum);
+	DOREPLIFETIME(ThisClass, Uint16Enum);
+	DOREPLIFETIME(ThisClass, Uint32Enum);
+	DOREPLIFETIME(ThisClass, Uint64Enum);
 }
 
 void UTestReplicationStateDescriptor_TestClassWithRoleAndRemoteRole::GetLifetimeReplicatedProps(TArray<class FLifetimeProperty> & OutLifetimeProps) const
 {
+	DOREPLIFETIME(ThisClass, Role);
+	DOREPLIFETIME(ThisClass, RemoteRole);
 }
 
 void UTestReplicationStateDescriptor_TestClassWithManyRoles::GetLifetimeReplicatedProps(TArray<class FLifetimeProperty> & OutLifetimeProps) const
 {
+	DOREPLIFETIME(ThisClass, Role);
+	DOREPLIFETIME(ThisClass, OtherRole);
+	DOREPLIFETIME(ThisClass, YetAnotherRole);
 }
 
 void UTestReplicationStateDescriptor_TestClassWithRPCs::GetLifetimeReplicatedProps(TArray<class FLifetimeProperty> & OutLifetimeProps) const
 {
+	DOREPLIFETIME(ThisClass, Int);
 }
 
 void UTestReplicationStateDescriptor_TestClassWithRef::GetLifetimeReplicatedProps(TArray<class FLifetimeProperty> & OutLifetimeProps) const
 {
+	DOREPLIFETIME(ThisClass, ObjectRef);
 }
 
 void UTestReplicationStateDescriptor_TestClassWithRefInStruct::GetLifetimeReplicatedProps(TArray<class FLifetimeProperty> & OutLifetimeProps) const
 {
+	DOREPLIFETIME(ThisClass, StructWithRef);
 }
 
 void UTestReplicationStateDescriptor_TestClassWithRefInStructWithNestedCArray::GetLifetimeReplicatedProps(TArray<class FLifetimeProperty> & OutLifetimeProps) const
 {
+	DOREPLIFETIME(ThisClass, StructWithRef);
 }
 
 void UTestReplicationStateDescriptor_TestClassWithRefInStructWithNestedTArray::GetLifetimeReplicatedProps(TArray<class FLifetimeProperty> & OutLifetimeProps) const
 {
+	DOREPLIFETIME(ThisClass, StructWithRef);
 }
 
 void UTestReplicationStateDescriptor_TestClassWithRefInCArray::GetLifetimeReplicatedProps(TArray<class FLifetimeProperty> & OutLifetimeProps) const
 {
+	DOREPLIFETIME(ThisClass, ObjectRef);
 }
 void UTestReplicationStateDescriptor_TestClassWithRefInTArray::GetLifetimeReplicatedProps(TArray<class FLifetimeProperty> & OutLifetimeProps) const
 {
+	DOREPLIFETIME(ThisClass, ObjectRefInArray);
 }
 void UTestReplicationStateDescriptor_TestClassWithRefInStructCArray::GetLifetimeReplicatedProps(TArray<class FLifetimeProperty> & OutLifetimeProps) const
 {
+	DOREPLIFETIME(ThisClass, StructWithRef);
 }
 void UTestReplicationStateDescriptor_TestClassWithRefInStructTArray::GetLifetimeReplicatedProps(TArray<class FLifetimeProperty> & OutLifetimeProps) const
 {
+	DOREPLIFETIME(ThisClass, StructWithRef);
 }
 
 void UTestReplicationStateDescriptor_TestClassWithRPCs::UnreliableRPCOnServerWithPrimitiveArgs_Implementation(bool bBool, int InInt)

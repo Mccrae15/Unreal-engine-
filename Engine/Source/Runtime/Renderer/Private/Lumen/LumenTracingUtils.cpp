@@ -1,7 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LumenTracingUtils.h"
-#include "LumenSceneRendering.h"
 #include "ScenePrivate.h"
 #include "SceneRendering.h"
 #include "SystemTextures.h"
@@ -32,6 +31,7 @@ void GetLumenCardTracingParameters(
 	LLM_SCOPE_BYTAG(Lumen);
 
 	TracingParameters.View = View.ViewUniformBuffer;
+	TracingParameters.Scene = View.GetSceneUniforms().GetBuffer(GraphBuilder);
 	TracingParameters.LumenCardScene = FrameTemporaries.LumenCardSceneUniformBuffer;
 	TracingParameters.ReflectionStruct = CreateReflectionUniformBuffer(GraphBuilder, View);
 	
@@ -43,13 +43,7 @@ void GetLumenCardTracingParameters(
 	TracingParameters.SampleHeightFog = CVarLumenSampleFog.GetValueOnRenderThread() > 0 ? 1u : 0u;
 	TracingParameters.FogUniformParameters = CreateFogUniformBuffer(GraphBuilder, View);
 
-	// GPUScene
 	const FScene* Scene = ((const FScene*)View.Family->Scene);
-	const FGPUSceneResourceParameters GPUSceneParameters = Scene->GPUScene.GetShaderParameters();
-
-	TracingParameters.GPUSceneInstanceSceneData = GPUSceneParameters.GPUSceneInstanceSceneData;
-	TracingParameters.GPUSceneInstancePayloadData = GPUSceneParameters.GPUSceneInstancePayloadData;
-	TracingParameters.GPUScenePrimitiveSceneData = GPUSceneParameters.GPUScenePrimitiveSceneData;
 
 	if (FrameTemporaries.CardPageLastUsedBufferUAV && FrameTemporaries.CardPageHighResLastUsedBufferUAV)
 	{
@@ -85,14 +79,14 @@ void GetLumenCardTracingParameters(
 	TracingParameters.SurfaceCacheUpdateFrameIndex = Scene->GetLumenSceneData(View)->GetSurfaceCacheUpdateFrameIndex();
 
 	// Lumen surface cache atlas
-	TracingParameters.DirectLightingAtlas = FrameTemporaries.DirectLightingAtlas;
-	TracingParameters.IndirectLightingAtlas = FrameTemporaries.IndirectLightingAtlas;
-	TracingParameters.FinalLightingAtlas = FrameTemporaries.FinalLightingAtlas;
-	TracingParameters.AlbedoAtlas = FrameTemporaries.AlbedoAtlas;
-	TracingParameters.OpacityAtlas = FrameTemporaries.OpacityAtlas;
-	TracingParameters.NormalAtlas = FrameTemporaries.NormalAtlas;
-	TracingParameters.EmissiveAtlas = FrameTemporaries.EmissiveAtlas;
-	TracingParameters.DepthAtlas = FrameTemporaries.DepthAtlas;
+	TracingParameters.DirectLightingAtlas = FrameTemporaries.DirectLightingAtlas ? FrameTemporaries.DirectLightingAtlas : GSystemTextures.GetBlackDummy(GraphBuilder);
+	TracingParameters.IndirectLightingAtlas = FrameTemporaries.IndirectLightingAtlas ? FrameTemporaries.IndirectLightingAtlas : GSystemTextures.GetBlackDummy(GraphBuilder);
+	TracingParameters.FinalLightingAtlas = FrameTemporaries.FinalLightingAtlas ? FrameTemporaries.FinalLightingAtlas : GSystemTextures.GetBlackDummy(GraphBuilder);
+	TracingParameters.AlbedoAtlas = FrameTemporaries.AlbedoAtlas ? FrameTemporaries.AlbedoAtlas : GSystemTextures.GetBlackDummy(GraphBuilder);
+	TracingParameters.OpacityAtlas = FrameTemporaries.OpacityAtlas ? FrameTemporaries.OpacityAtlas : GSystemTextures.GetBlackDummy(GraphBuilder);
+	TracingParameters.NormalAtlas = FrameTemporaries.NormalAtlas ? FrameTemporaries.NormalAtlas : GSystemTextures.GetBlackDummy(GraphBuilder);
+	TracingParameters.EmissiveAtlas = FrameTemporaries.EmissiveAtlas ? FrameTemporaries.EmissiveAtlas : GSystemTextures.GetBlackDummy(GraphBuilder);
+	TracingParameters.DepthAtlas = FrameTemporaries.DepthAtlas ? FrameTemporaries.DepthAtlas : GSystemTextures.GetBlackDummy(GraphBuilder);
 
 	if (View.GlobalDistanceFieldInfo.PageObjectGridBuffer)
 	{

@@ -1,18 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraDebugHud.h"
+#include "BatchedElements.h"
 #include "Engine/Engine.h"
+#include "DrawDebugHelpers.h"
 #include "GameFramework/Pawn.h"
 #include "NiagaraComponent.h"
-#include "NiagaraComputeExecutionContext.h"
 #include "NiagaraDataSetDebugAccessor.h"
 #include "NiagaraDataSetReadback.h"
+#include "NiagaraEmitterInstance.h"
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraMeshRendererProperties.h"
 #include "NiagaraScript.h"
+#include "NiagaraSimCache.h"
 #include "NiagaraSpriteRendererProperties.h"
 #include "NiagaraSystem.h"
+#include "NiagaraSystemGpuComputeProxy.h"
 #include "NiagaraSystemInstanceController.h"
 #include "NiagaraWorldManager.h"
 
@@ -22,25 +26,16 @@
 #include "GameFramework/PlayerController.h"
 #include "Particles/FXBudget.h"
 #include "SceneInterface.h"
+#include "SceneView.h"
+#include "UObject/UObjectIterator.h"
+
+#include "ParticleEmitterInstances.h"
 
 #if WITH_NIAGARA_DEBUGGER
 
 namespace NiagaraDebugLocal
 {
 	FCriticalSection RTFramesGuard;
-
-	enum class EEngineVariables : uint8
-	{
-		LODDistance,
-		LODFraction,
-		Num
-	};
-
-	static FString GEngineVariableStrings[(int)EEngineVariables::Num] =
-	{
-		TEXT("Engine.LODDistance"),
-		TEXT("Engine.LODFraction"),
-	};
 
 	enum class EParameterStoreLocation
 	{
@@ -76,8 +71,7 @@ namespace NiagaraDebugLocal
 		FDelegateHandle CompiledDelegate;
 #endif
 
-		bool bShowEngineVariable[(int)EEngineVariables::Num] = {};				// Engine variables that are not contained within the store
-
+		TArray<int32>										EngineVariables;			// Engine varibles that are visible on the HUD, these are special because they are not in the buffers
 		TArray<FNiagaraDataSetDebugAccessor>				SystemVariables;			// System & Emitter variables since both are inside the same DataBuffer
 		TArray<FParameterStoreVariable>						ParameterStoreVariables;	// Variables Stored inside Parameter Stores
 	#if WITH_EDITORONLY_DATA
@@ -86,6 +80,13 @@ namespace NiagaraDebugLocal
 
 		TArray<TArray<FNiagaraDataSetDebugAccessor>>		ParticleVariables;			// Per Emitter Particle variables
 		TArray<FNiagaraDataSetAccessor<FNiagaraPosition>>	ParticlePositionAccessors;	// Only valid if we have particle attributes
+	};
+
+	static const TPair<FString, TFunction<FString(FNiagaraSystemInstance*)>> GEngineVariables[] =
+	{
+		{TEXT("Engine.LODDistance"),		[](FNiagaraSystemInstance* SystemInstance) -> FString { return FString::Printf(TEXT("%6.2f"), SystemInstance->GetLODDistance()); }},
+		{TEXT("Engine.LODFraction"),		[](FNiagaraSystemInstance* SystemInstance) -> FString { return FString::Printf(TEXT("%6.2f"), SystemInstance->GetLODDistance() / SystemInstance->GetMaxLODDistance()); }},
+		{TEXT("Engine.System.TickCount"),	[](FNiagaraSystemInstance* SystemInstance) -> FString { return FString::Printf(TEXT("%d"), SystemInstance->GetTickCount()); }},
 	};
 
 	static TMap<TWeakObjectPtr<UNiagaraSystem>, FCachedVariables> GCachedSystemVariables;
@@ -129,7 +130,9 @@ namespace NiagaraDebugLocal
 			}
 		),
 		MakeTuple(TEXT("ValidateSystemSimulationDataBuffers="), TEXT("Enable or disable validation on system data buffers"), [](FString Arg) {Settings.bValidateSystemSimulationDataBuffers = FCString::Atoi(*Arg) != 0; }),
-		MakeTuple(TEXT("bValidateParticleDataBuffers="), TEXT("Enable or disable validation on particle data buffers"), [](FString Arg) {Settings.bValidateParticleDataBuffers = FCString::Atoi(*Arg) != 0; }),
+		MakeTuple(TEXT("ValidateParticleDataBuffers="), TEXT("Enable or disable validation on particle data buffers"), [](FString Arg) {Settings.bValidateParticleDataBuffers = FCString::Atoi(*Arg) != 0; }),
+		MakeTuple(TEXT("ValidationLogErrors="), TEXT("When enabled validation errors will be logged as we as on screen"), [](FString Arg) {Settings.bValidationLogErrors = FCString::Atoi(*Arg) != 0; }),
+		MakeTuple(TEXT("ValidationAttributeDisplayTruncate="), TEXT("When > 0 limits the number of attributes we log"), [](FString Arg) {Settings.ValidationAttributeDisplayTruncate = FCString::Atoi(*Arg); }),
 
 		MakeTuple(TEXT("OverviewEnabled="), TEXT("Enable or disable the main overview display"), [](FString Arg) {Settings.bOverviewEnabled = FCString::Atoi(*Arg) != 0; }),
 		MakeTuple(TEXT("OverviewMode="), TEXT("Change the mode of the debug overivew"), [](FString Arg) {Settings.OverviewMode = (ENiagaraDebugHUDOverviewMode)FCString::Atoi(*Arg); }),
@@ -150,6 +153,7 @@ namespace NiagaraDebugLocal
 		MakeTuple(TEXT("SystemShowActiveOnlyInWorld="), TEXT("When enabled only active systems are shown in world"), [](FString Arg) {Settings.bSystemShowActiveOnlyInWorld = FCString::Atoi(*Arg) != 0; }),
 		MakeTuple(TEXT("SystemDebugVerbosity="), TEXT("Set the in world system debug verbosity"), [](FString Arg) {Settings.SystemDebugVerbosity = FMath::Clamp(ENiagaraDebugHudVerbosity(FCString::Atoi(*Arg)), ENiagaraDebugHudVerbosity::None, ENiagaraDebugHudVerbosity::Verbose); }),
 		MakeTuple(TEXT("SystemEmitterVerbosity="), TEXT("Set the in world system emitter debug verbosity"), [](FString Arg) {Settings.SystemEmitterVerbosity = FMath::Clamp(ENiagaraDebugHudVerbosity(FCString::Atoi(*Arg)), ENiagaraDebugHudVerbosity::None, ENiagaraDebugHudVerbosity::Verbose); }),
+		MakeTuple(TEXT("DataInterfaceVerbosity="), TEXT("Set the in world system data interface debug verbosity"), [](FString Arg) {Settings.DataInterfaceVerbosity = FMath::Clamp(ENiagaraDebugHudVerbosity(FCString::Atoi(*Arg)), ENiagaraDebugHudVerbosity::None, ENiagaraDebugHudVerbosity::Verbose); }),
 		MakeTuple(TEXT("SystemVariables="), TEXT("Set the system variables to display"), [](FString Arg) {Settings.SystemVariables.Empty(); FNiagaraDebugHUDVariable::InitFromString(Arg, Settings.SystemVariables); GCachedSystemVariables.Empty(); }),
 		MakeTuple(TEXT("ShowSystemVariables="), TEXT("Set system variables visibility"), [](FString Arg) {Settings.bShowSystemVariables = FCString::Atoi(*Arg) != 0; GCachedSystemVariables.Empty(); }),
 
@@ -440,6 +444,17 @@ namespace NiagaraDebugLocal
 	#endif
 	}
 
+	FString FormatPerfValue(double dValue, int32 Length = 7)
+	{
+		const int32 Value = int32(dValue);
+		FString TempString = FString::FormatAsNumber(Value);
+		while (TempString.Len() < Length)
+		{
+			TempString.AppendChar(' ');
+		}
+		return TempString;
+	}
+
 	const FCachedVariables& GetCachedVariables(UNiagaraSystem* NiagaraSystem)
 	{
 		FCachedVariables* CachedVariables = GCachedSystemVariables.Find(NiagaraSystem);
@@ -454,14 +469,14 @@ namespace NiagaraDebugLocal
 			if (Settings.bShowSystemVariables && Settings.SystemVariables.Num() > 0)
 			{
 				FindSystemVariablesByWildcard(NiagaraSystem, Settings.SystemVariables, CachedVariables);
-
-				for (int32 iVariable = 0; iVariable < (int32)EEngineVariables::Num; ++iVariable)
+				
+				for (int32 iVariable=0; iVariable < UE_ARRAY_COUNT(GEngineVariables); ++iVariable)
 				{
 					for (const FNiagaraDebugHUDVariable& DebugVariable : Settings.SystemVariables)
 					{
-						if (DebugVariable.bEnabled && GEngineVariableStrings[iVariable].MatchesWildcard(DebugVariable.Name))
+						if (DebugVariable.bEnabled && GEngineVariables[iVariable].Key.MatchesWildcard(DebugVariable.Name))
 						{
-							CachedVariables->bShowEngineVariable[iVariable] = true;
+							CachedVariables->EngineVariables.Add(iVariable);
 							break;
 						}
 					}
@@ -955,7 +970,7 @@ void FNiagaraDebugHud::GatherSystemInfo()
 
 #if WITH_PARTICLE_PERF_STATS
 	bool bUpdateStats = false;
-	if (Settings.bOverviewEnabled && (Settings.OverviewMode == ENiagaraDebugHUDOverviewMode::Performance))
+	if (Settings.bOverviewEnabled && (Settings.OverviewMode == ENiagaraDebugHUDOverviewMode::Performance || Settings.OverviewMode == ENiagaraDebugHUDOverviewMode::PerformanceGraph))
 	{
 		if (StatsListener.IsValid() == false)
 		{
@@ -990,35 +1005,40 @@ void FNiagaraDebugHud::GatherSystemInfo()
 	}
 
 	// Iterate all components looking for active ones in the world we are in
-	for (TObjectIterator<UNiagaraComponent> It; It; ++It)
+	for (TObjectIterator<UFXSystemComponent> It; It; ++It)
 	{
-		UNiagaraComponent* NiagaraComponent = *It;
-		if (!IsValidChecked(NiagaraComponent) || NiagaraComponent->IsUnreachable() || NiagaraComponent->HasAnyFlags(EObjectFlags::RF_ClassDefaultObject))
-		{
-			continue;
-		}
-		if (NiagaraComponent->GetWorld() != World)
-		{
-			continue;
-		}
-		if (NiagaraComponent->GetAsset() == nullptr)
-		{
-			continue;
-		}
+		UFXSystemComponent* FXComponent = *It;
+		UNiagaraComponent* NiagaraComponent = Cast<UNiagaraComponent>(FXComponent);
+		UParticleSystemComponent* CascadeComponent = Cast<UParticleSystemComponent>(FXComponent);
 
-		FNiagaraSystemInstanceControllerPtr SystemInstanceController = NiagaraComponent->GetSystemInstanceController();
+		FNiagaraSystemInstanceControllerPtr SystemInstanceController = NiagaraComponent ? NiagaraComponent->GetSystemInstanceController() : nullptr;
 		FNiagaraSystemInstance* SystemInstance = SystemInstanceController.IsValid() ? SystemInstanceController->GetSystemInstance_Unsafe() : nullptr;
+		
 
-		check(NiagaraComponent->GetAsset() != nullptr);
+		if (!IsValidChecked(FXComponent) || (!IsValid(NiagaraComponent) && !IsValid(CascadeComponent)) || FXComponent->IsUnreachable() || FXComponent->HasAnyFlags(EObjectFlags::RF_ClassDefaultObject))
+		{
+			continue;
+		}
+		if (FXComponent->GetWorld() != World)
+		{
+			continue;
+		}
+		if (FXComponent->GetFXSystemAsset() == nullptr)
+		{
+			continue;
+		}
 
-		const bool bIsActive = NiagaraComponent->IsActive();
-		const bool bHasScalability = NiagaraComponent->IsRegisteredWithScalabilityManager();
+		const bool bIsActive = FXComponent->IsActive();
+		const bool bHasScalability = NiagaraComponent ? NiagaraComponent->IsRegisteredWithScalabilityManager() : CascadeComponent->bIsManagingSignificance;
 
-		FSystemDebugInfo& SystemDebugInfo = PerSystemDebugInfo.FindOrAdd(NiagaraComponent->GetAsset()->GetFName());
+		FSystemDebugInfo& SystemDebugInfo = PerSystemDebugInfo.FindOrAdd(FXComponent->GetFXSystemAsset()->GetFName());
 		if (SystemDebugInfo.SystemName.IsEmpty())
 		{
-			SystemDebugInfo.SystemName = GetNameSafe(NiagaraComponent->GetAsset());
+			SystemDebugInfo.SystemName = GetNameSafe(FXComponent->GetFXSystemAsset());
 		}
+	#if WITH_EDITORONLY_DATA
+		SystemDebugInfo.bCompileForEdit = NiagaraComponent ? NiagaraComponent->GetAsset()->bCompileForEdit : false;
+	#endif
 		SystemDebugInfo.bShowInWorld = Settings.bSystemFilterEnabled && SystemDebugInfo.SystemName.MatchesWildcard(Settings.SystemFilter);
 		SystemDebugInfo.bPassesSystemFilter = !Settings.bSystemFilterEnabled || SystemDebugInfo.SystemName.MatchesWildcard(Settings.SystemFilter);
 
@@ -1029,23 +1049,23 @@ void FNiagaraDebugHud::GatherSystemInfo()
 			// Filter by actor
 			if ( Settings.bActorFilterEnabled )
 			{
-				AActor* Actor = NiagaraComponent->GetOwner();
+				AActor* Actor = FXComponent->GetOwner();
 				bIsMatch &= (Actor != nullptr) && Actor->GetActorNameOrLabel().MatchesWildcard(Settings.ActorFilter);
 			}
 
 			// Filter by component
 			if ( bIsMatch && Settings.bComponentFilterEnabled )
 			{
-				bIsMatch &= NiagaraComponent->GetName().MatchesWildcard(Settings.ComponentFilter);
+				bIsMatch &= FXComponent->GetName().MatchesWildcard(Settings.ComponentFilter);
 			}
 
-			if (bIsMatch)
+			if (bIsMatch && NiagaraComponent)//TODO: Handle Cascade?
 			{
 				InWorldComponents.Add(NiagaraComponent);
 			}
 		}
 
-		if (NiagaraComponent->IsRegistered())
+		if (FXComponent->IsRegistered())
 		{
 			++GlobalTotalRegistered;
 			++SystemDebugInfo.TotalRegistered;
@@ -1057,13 +1077,13 @@ void FNiagaraDebugHud::GatherSystemInfo()
 			++SystemDebugInfo.TotalScalability;
 		}
 
-		if (NiagaraComponent->IsLocalPlayerEffect() && bIsActive)
+		if (NiagaraComponent && NiagaraComponent->IsLocalPlayerEffect() && bIsActive)
 		{
 			++GlobalTotalPlayerSystems;
 			++SystemDebugInfo.TotalPlayerSystems;
 		}
 
-		if (NiagaraComponent->IsRegisteredWithScalabilityManager())
+		if (NiagaraComponent && NiagaraComponent->IsRegisteredWithScalabilityManager())
 		{
 #if WITH_NIAGARA_DEBUGGER
 			if (NiagaraComponent->DebugCachedScalabilityState.bCulled)
@@ -1096,44 +1116,50 @@ void FNiagaraDebugHud::GatherSystemInfo()
 		}
 
 		// Track rough memory usage
-		if(SystemInstance)
-		{
-			for (const TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe>& EmitterInstance : SystemInstance->GetEmitters())
-			{
-				UNiagaraEmitter* NiagaraEmitter = EmitterInstance->GetCachedEmitter().Emitter;
-				if (NiagaraEmitter == nullptr)
-				{
-					continue;
-				}
-
-				const int64 BytesUsed = EmitterInstance->GetTotalBytesUsed();
-				SystemDebugInfo.TotalBytes += BytesUsed;
-				GlobalTotalBytes += BytesUsed;
-			}
-		}
+		const int64 BytesUsed = SystemInstanceController.IsValid() ? SystemInstanceController->GetTotalBytesUsed() : 0;
+		SystemDebugInfo.TotalBytes += BytesUsed;
+		GlobalTotalBytes += BytesUsed;
 
 		if (bIsActive)
 		{
-			check(SystemInstance);
 			// Accumulate totals
 			int32 ActiveEmitters = 0;
 			int32 TotalEmitters = 0;
 			int32 ActiveParticles = 0;
-
-			for (const TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe>& EmitterInstance : SystemInstance->GetEmitters())
+			if( NiagaraComponent)
 			{
-				UNiagaraEmitter* NiagaraEmitter = EmitterInstance->GetCachedEmitter().Emitter;
-				if (NiagaraEmitter == nullptr)
+				check(SystemInstance);
+				for (const TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe>& EmitterInstance : SystemInstance->GetEmitters())
 				{
-					continue;
-				}
+					UNiagaraEmitter* NiagaraEmitter = EmitterInstance->GetCachedEmitter().Emitter;
+					if (NiagaraEmitter == nullptr)
+					{
+						continue;
+					}
 
-				++TotalEmitters;
-				if (EmitterInstance->GetExecutionState() == ENiagaraExecutionState::Active)
-				{
-					++ActiveEmitters;
+					++TotalEmitters;
+					if (EmitterInstance->GetExecutionState() == ENiagaraExecutionState::Active)
+					{
+						++ActiveEmitters;
+					}
+					ActiveParticles += EmitterInstance->GetNumParticles();
 				}
-				ActiveParticles += EmitterInstance->GetNumParticles();
+			}
+			else 
+			{
+				check(CascadeComponent);				
+				for(FParticleEmitterInstance* Emitter : CascadeComponent->EmitterInstances)
+				{					
+					if(Emitter)
+					{
+						++TotalEmitters;
+						ActiveParticles += Emitter->ActiveParticles;
+						if(Emitter->HasCompleted() == false)
+						{
+							++ActiveEmitters;
+						}
+					}
+				}
 			}
 
 			++SystemDebugInfo.TotalActive;
@@ -1147,13 +1173,13 @@ void FNiagaraDebugHud::GatherSystemInfo()
 #if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
 			if(StatsListener)
 			{
-				SystemDebugInfo.PerfStats = StatsListener->GetSystemStats(NiagaraComponent->GetAsset());
+				SystemDebugInfo.PerfStats = StatsListener->GetSystemStats(FXComponent->GetFXSystemAsset());
 			}
 #endif
 		}
 
 		//Generate a unique-ish random color for use in graphs and the world to help visually ID this system.
-		FRandomStream Rands(GetTypeHash(NiagaraComponent->GetAsset()->GetName()) + Settings.SystemColorSeed);
+		FRandomStream Rands(GetTypeHash(FXComponent->GetFXSystemAsset()->GetName()) + Settings.SystemColorSeed);
 		uint8 RandomHue = (uint8)Rands.RandRange(int32(Settings.SystemColorHSVMin.X), int32(Settings.SystemColorHSVMax.X));
 		uint8 RandomSat = (uint8)Rands.RandRange(int32(Settings.SystemColorHSVMin.Y), int32(Settings.SystemColorHSVMax.Y));
 		uint8 RandomValue = (uint8)Rands.RandRange(int32(Settings.SystemColorHSVMin.Z), int32(Settings.SystemColorHSVMax.Z));
@@ -1162,7 +1188,7 @@ void FNiagaraDebugHud::GatherSystemInfo()
 
 		bool bWillBeVisible = false;
 		
-		if(Settings.OverviewMode == ENiagaraDebugHUDOverviewMode::Performance)
+		if (Settings.OverviewMode == ENiagaraDebugHUDOverviewMode::Performance || Settings.OverviewMode == ENiagaraDebugHUDOverviewMode::PerformanceGraph)
 		{
 			bWillBeVisible = SystemDebugInfo.TotalActive > 0;
 		}
@@ -1540,7 +1566,7 @@ void FNiagaraDebugHud::DrawOverview(class FNiagaraWorldManager* WorldManager, FC
 		typedef TFunction<void(FCanvas*, UFont*, float, float, FOverviewColumn&, const FSystemDebugInfo&)>  FSystemDrawFunc;
 		FSystemDrawFunc SystemDrawFunc;
 
-		FOverviewColumn(FString InGlobalHeader, FString InGlobalData, FString InSystemHeader, float& InOffset, UFont* Font, FString ExampleSystemString, FSystemDrawFunc InSystemDrawFunc)
+		FOverviewColumn(FString InGlobalHeader, FString InGlobalData, FString InSystemHeader, float& InOffset, UFont* Font, const TCHAR* ExampleSystemString, FSystemDrawFunc InSystemDrawFunc)
 			: GlobalHeader(InGlobalHeader)
 			, GlobalData(InGlobalData)
 			, SystemHeader(InSystemHeader)
@@ -1548,8 +1574,24 @@ void FNiagaraDebugHud::DrawOverview(class FNiagaraWorldManager* WorldManager, FC
 			, SystemDrawFunc(InSystemDrawFunc)
 		{
 			HeaderWidth = float(GetStringSize(Font, *GlobalHeader).X);
-			SystemWidth = float(FMath::Max(GetStringSize(Font, *SystemHeader).X, GetStringSize(Font, *ExampleSystemString).X));
+			SystemWidth = float(FMath::Max(GetStringSize(Font, *SystemHeader).X, GetStringSize(Font, ExampleSystemString).X));
 			MaxWidth = float(FMath::Max(HeaderWidth + GlobalDataSeparator + GetStringSize(Font, *GlobalData).X, SystemWidth)) + ColumnSeparator;
+
+			InOffset += MaxWidth;
+		}
+
+		FOverviewColumn(FString InGlobalHeader, FString InGlobalData, int32 GlobalDataStringSize, FString InSystemHeader, float& InOffset, UFont* Font, int32 SystemStringSize, FSystemDrawFunc InSystemDrawFunc)
+			: GlobalHeader(InGlobalHeader)
+			, GlobalData(InGlobalData)
+			, SystemHeader(InSystemHeader)
+			, Offset(InOffset)
+			, SystemDrawFunc(InSystemDrawFunc)
+		{
+			GlobalDataStringSize = FMath::Max(GetStringSize(Font, *GlobalData).X, GlobalDataStringSize);
+
+			HeaderWidth = float(GetStringSize(Font, *GlobalHeader).X);
+			SystemWidth = float(FMath::Max(GetStringSize(Font, *SystemHeader).X, SystemStringSize));
+			MaxWidth = float(FMath::Max(HeaderWidth + GlobalDataSeparator + GlobalDataStringSize, SystemWidth)) + ColumnSeparator;
 
 			InOffset += MaxWidth;
 		}
@@ -1584,8 +1626,15 @@ void FNiagaraDebugHud::DrawOverview(class FNiagaraWorldManager* WorldManager, FC
 				RowBGColor.A = Settings.SystemColorTableOpacity;
 				Canvas->DrawTile(X, Y, Col.MaxWidth, fAdvanceHeight, 0,0,0,0, RowBGColor);
 				const FLinearColor RowColor = SystemInfo.bShowInWorld ? DetailHighlightColor : DetailColor;
-				Canvas->DrawShadowedString(X, Y, *SystemInfo.SystemName, Font, RowColor);
-			});
+
+				const bool bShowEditMode = 
+#if WITH_EDITORONLY_DATA
+					SystemInfo.bCompileForEdit;
+#else
+					false;
+#endif
+					Canvas->DrawShadowedString(X, Y, bShowEditMode ? *FString::Printf(TEXT("%s (Edit Mode)"), *SystemInfo.SystemName) : *SystemInfo.SystemName, Font, RowColor);
+		});
 
 		if (Settings.OverviewMode == ENiagaraDebugHUDOverviewMode::Overview)
 		{
@@ -1739,79 +1788,79 @@ void FNiagaraDebugHud::DrawOverview(class FNiagaraWorldManager* WorldManager, FC
 		{
 			FNiagaraDebugHUDPerfStats& GlobalPerfStats = StatsListener->GetGlobalStats();
 
-			if (Settings.PerfGraphMode == ENiagaraDebugHUDPerfGraphMode::None)
-			{
-				OverviewColumns.Emplace(TEXT("Game Thread Avg:"), LexToSanitizedString(GlobalPerfStats.Avg.Time_GT), TEXT("GT Avg (us)"), ColumnOffset, Font, TEXT("000.0000"),
-					[&DetailColor, &DetailHighlightColor, &fAdvanceHeight](FCanvas* Canvas, UFont* Font, float X, float Y, FOverviewColumn& Col, const FSystemDebugInfo& SystemInfo)
-					{
-						FLinearColor RowBGColor = SystemInfo.UniqueColor;
-						RowBGColor.A = Settings.SystemColorTableOpacity;
-						Canvas->DrawTile(X, Y, Col.MaxWidth, fAdvanceHeight, 0, 0, 0, 0, RowBGColor);
-						const FLinearColor RowColor = SystemInfo.bShowInWorld ? DetailHighlightColor : DetailColor;
-						Canvas->DrawShadowedString(X, Y, *LexToSanitizedString(SystemInfo.PerfStats ? SystemInfo.PerfStats->Avg.Time_GT : 0.0), Font, RowColor);
-					});
+			const int32 GlobalDataStringSize = GetStringSize(Font, TEXT("000,000")).X;
+			const int32 SystemStringSize = GetStringSize(Font, TEXT("000,000")).X;
 
-				OverviewColumns.Emplace(TEXT("Game Thread Max:"), LexToSanitizedString(GlobalPerfStats.Max.Time_GT), TEXT("GT Max (us)"), ColumnOffset, Font, TEXT("000.0000"),
-					[&DetailColor, &DetailHighlightColor, &fAdvanceHeight](FCanvas* Canvas, UFont* Font, float X, float Y, FOverviewColumn& Col, const FSystemDebugInfo& SystemInfo)
-					{
-						FLinearColor RowBGColor = SystemInfo.UniqueColor;
-						RowBGColor.A = Settings.SystemColorTableOpacity;
-						Canvas->DrawTile(X, Y, Col.MaxWidth, fAdvanceHeight, 0, 0, 0, 0, RowBGColor);
-						const FLinearColor RowColor = SystemInfo.bShowInWorld ? DetailHighlightColor : DetailColor;
-						Canvas->DrawShadowedString(X, Y, *LexToSanitizedString(SystemInfo.PerfStats ? SystemInfo.PerfStats->Max.Time_GT : 0.0), Font, RowColor);
-					});
+			OverviewColumns.Emplace(TEXT("Game Thread Avg:"), FormatPerfValue(GlobalPerfStats.Avg.Time_GT), GlobalDataStringSize, TEXT("GT Avg (us)"), ColumnOffset, Font, SystemStringSize,
+				[&DetailColor, &DetailHighlightColor, &fAdvanceHeight](FCanvas* Canvas, UFont* Font, float X, float Y, FOverviewColumn& Col, const FSystemDebugInfo& SystemInfo)
+				{
+					FLinearColor RowBGColor = SystemInfo.UniqueColor;
+					RowBGColor.A = Settings.SystemColorTableOpacity;
+					Canvas->DrawTile(X, Y, Col.MaxWidth, fAdvanceHeight, 0, 0, 0, 0, RowBGColor);
+					const FLinearColor RowColor = SystemInfo.bShowInWorld ? DetailHighlightColor : DetailColor;
+					Canvas->DrawShadowedString(X, Y, *FormatPerfValue(SystemInfo.PerfStats ? SystemInfo.PerfStats->Avg.Time_GT : 0.0), Font, RowColor);
+				});
 
-				OverviewColumns.Emplace_GetRef(TEXT("Render Thread Avg:"), LexToSanitizedString(GlobalPerfStats.Avg.Time_RT), TEXT("RT Avg (us)"), ColumnOffset, Font, TEXT("000.0000"),
-					[&DetailColor, &DetailHighlightColor, &fAdvanceHeight](FCanvas* Canvas, UFont* Font, float X, float Y, FOverviewColumn& Col, const FSystemDebugInfo& SystemInfo)
-					{
-						FLinearColor RowBGColor = SystemInfo.UniqueColor;
-						RowBGColor.A = Settings.SystemColorTableOpacity;
-						Canvas->DrawTile(X, Y, Col.MaxWidth, fAdvanceHeight, 0, 0, 0, 0, RowBGColor);
-						const FLinearColor RowColor = SystemInfo.bShowInWorld ? DetailHighlightColor : DetailColor;
-						Canvas->DrawShadowedString(X, Y, *LexToSanitizedString(SystemInfo.PerfStats ? SystemInfo.PerfStats->Avg.Time_RT : 0.0), Font, RowColor);
-					});
+			OverviewColumns.Emplace(TEXT("Game Thread Max:"), FormatPerfValue(GlobalPerfStats.Max.Time_GT), GlobalDataStringSize, TEXT("GT Max (us)"), ColumnOffset, Font, SystemStringSize,
+				[&DetailColor, &DetailHighlightColor, &fAdvanceHeight](FCanvas* Canvas, UFont* Font, float X, float Y, FOverviewColumn& Col, const FSystemDebugInfo& SystemInfo)
+				{
+					FLinearColor RowBGColor = SystemInfo.UniqueColor;
+					RowBGColor.A = Settings.SystemColorTableOpacity;
+					Canvas->DrawTile(X, Y, Col.MaxWidth, fAdvanceHeight, 0, 0, 0, 0, RowBGColor);
+					const FLinearColor RowColor = SystemInfo.bShowInWorld ? DetailHighlightColor : DetailColor;
+					Canvas->DrawShadowedString(X, Y, *FormatPerfValue(SystemInfo.PerfStats ? SystemInfo.PerfStats->Max.Time_GT : 0.0), Font, RowColor);
+				});
 
-				OverviewColumns.Emplace(TEXT("Render Thread Max:"), LexToSanitizedString(GlobalPerfStats.Max.Time_RT), TEXT("RT Max (us)"), ColumnOffset, Font, TEXT("000.0000"),
-					[&DetailColor, &DetailHighlightColor, &fAdvanceHeight](FCanvas* Canvas, UFont* Font, float X, float Y, FOverviewColumn& Col, const FSystemDebugInfo& SystemInfo)
-					{
-						FLinearColor RowBGColor = SystemInfo.UniqueColor;
-						RowBGColor.A = Settings.SystemColorTableOpacity;
-						Canvas->DrawTile(X, Y, Col.MaxWidth, fAdvanceHeight, 0, 0, 0, 0, RowBGColor);
-						const FLinearColor RowColor = SystemInfo.bShowInWorld ? DetailHighlightColor : DetailColor;
-						Canvas->DrawShadowedString(X, Y, *LexToSanitizedString(SystemInfo.PerfStats ? SystemInfo.PerfStats->Max.Time_RT : 0.0), Font, RowColor);
-					});
+			OverviewColumns.Emplace_GetRef(TEXT("Render Thread Avg:"), FormatPerfValue(GlobalPerfStats.Avg.Time_RT), GlobalDataStringSize, TEXT("RT Avg (us)"), ColumnOffset, Font, SystemStringSize,
+				[&DetailColor, &DetailHighlightColor, &fAdvanceHeight](FCanvas* Canvas, UFont* Font, float X, float Y, FOverviewColumn& Col, const FSystemDebugInfo& SystemInfo)
+				{
+					FLinearColor RowBGColor = SystemInfo.UniqueColor;
+					RowBGColor.A = Settings.SystemColorTableOpacity;
+					Canvas->DrawTile(X, Y, Col.MaxWidth, fAdvanceHeight, 0, 0, 0, 0, RowBGColor);
+					const FLinearColor RowColor = SystemInfo.bShowInWorld ? DetailHighlightColor : DetailColor;
+					Canvas->DrawShadowedString(X, Y, *FormatPerfValue(SystemInfo.PerfStats ? SystemInfo.PerfStats->Avg.Time_RT : 0.0), Font, RowColor);
+				});
 
-				OverviewColumns.Emplace_GetRef(TEXT("Gpu Avg:"), LexToSanitizedString(GlobalPerfStats.Avg.Time_GPU), TEXT("Gpu Avg (us)"), ColumnOffset, Font, TEXT("000.0000"),
-					[&DetailColor, &DetailHighlightColor, &fAdvanceHeight](FCanvas* Canvas, UFont* Font, float X, float Y, FOverviewColumn& Col, const FSystemDebugInfo& SystemInfo)
-					{
-						FLinearColor RowBGColor = SystemInfo.UniqueColor;
-						RowBGColor.A = Settings.SystemColorTableOpacity;
-						Canvas->DrawTile(X, Y, Col.MaxWidth, fAdvanceHeight, 0, 0, 0, 0, RowBGColor);
-						const FLinearColor RowColor = SystemInfo.bShowInWorld ? DetailHighlightColor : DetailColor;
-						Canvas->DrawShadowedString(X, Y, *LexToSanitizedString(SystemInfo.PerfStats ? SystemInfo.PerfStats->Avg.Time_GPU : 0.0), Font, RowColor);
-					});
+			OverviewColumns.Emplace(TEXT("Render Thread Max:"), FormatPerfValue(GlobalPerfStats.Max.Time_RT), GlobalDataStringSize, TEXT("RT Max (us)"), ColumnOffset, Font, SystemStringSize,
+				[&DetailColor, &DetailHighlightColor, &fAdvanceHeight](FCanvas* Canvas, UFont* Font, float X, float Y, FOverviewColumn& Col, const FSystemDebugInfo& SystemInfo)
+				{
+					FLinearColor RowBGColor = SystemInfo.UniqueColor;
+					RowBGColor.A = Settings.SystemColorTableOpacity;
+					Canvas->DrawTile(X, Y, Col.MaxWidth, fAdvanceHeight, 0, 0, 0, 0, RowBGColor);
+					const FLinearColor RowColor = SystemInfo.bShowInWorld ? DetailHighlightColor : DetailColor;
+					Canvas->DrawShadowedString(X, Y, *FormatPerfValue(SystemInfo.PerfStats ? SystemInfo.PerfStats->Max.Time_RT : 0.0), Font, RowColor);
+				});
 
-				OverviewColumns.Emplace(TEXT("Gpu Max:"), LexToSanitizedString(GlobalPerfStats.Max.Time_GPU), TEXT("Gpu Max (us)"), ColumnOffset, Font, TEXT("000.0000"),
-					[&DetailColor, &DetailHighlightColor, &fAdvanceHeight](FCanvas* Canvas, UFont* Font, float X, float Y, FOverviewColumn& Col, const FSystemDebugInfo& SystemInfo)
-					{
-						FLinearColor RowBGColor = SystemInfo.UniqueColor;
-						RowBGColor.A = Settings.SystemColorTableOpacity;
-						Canvas->DrawTile(X, Y, Col.MaxWidth, fAdvanceHeight, 0, 0, 0, 0, RowBGColor);
-						const FLinearColor RowColor = SystemInfo.bShowInWorld ? DetailHighlightColor : DetailColor;
-						Canvas->DrawShadowedString(X, Y, *LexToSanitizedString(SystemInfo.PerfStats ? SystemInfo.PerfStats->Max.Time_GPU : 0.0), Font, RowColor);
-					});
-			}
-			else
-			{
-				OverviewColumns.Emplace(TEXT(""), TEXT(""), TEXT(""), ColumnOffset, Font, TEXT("------"),
-					[&DetailColor, &DetailHighlightColor, &fAdvanceHeight](FCanvas* Canvas, UFont* Font, float X, float Y, FOverviewColumn& Col, const FSystemDebugInfo& SystemInfo)
-					{
-						Canvas->DrawTile(X, Y, Col.MaxWidth - 6.0f, fAdvanceHeight - 2.0f, 0.0f, 0.0f, 0.0f, 0.0f, SystemInfo.UniqueColor);
-						FString SysCountString = LexToSanitizedString(SystemInfo.TotalActive);
-						float StringWidth = float(Font->GetStringSize(*SysCountString));
-						Canvas->DrawShadowedString((X + (Col.MaxWidth * 0.5f)) - StringWidth * 0.5f, Y, *SysCountString, Font, FLinearColor::Black);
-					});
-			}
+			OverviewColumns.Emplace_GetRef(TEXT("Gpu Avg:"), FormatPerfValue(GlobalPerfStats.Avg.Time_GPU), GlobalDataStringSize, TEXT("Gpu Avg (us)"), ColumnOffset, Font, SystemStringSize,
+				[&DetailColor, &DetailHighlightColor, &fAdvanceHeight](FCanvas* Canvas, UFont* Font, float X, float Y, FOverviewColumn& Col, const FSystemDebugInfo& SystemInfo)
+				{
+					FLinearColor RowBGColor = SystemInfo.UniqueColor;
+					RowBGColor.A = Settings.SystemColorTableOpacity;
+					Canvas->DrawTile(X, Y, Col.MaxWidth, fAdvanceHeight, 0, 0, 0, 0, RowBGColor);
+					const FLinearColor RowColor = SystemInfo.bShowInWorld ? DetailHighlightColor : DetailColor;
+					Canvas->DrawShadowedString(X, Y, *FormatPerfValue(SystemInfo.PerfStats ? SystemInfo.PerfStats->Avg.Time_GPU : 0.0), Font, RowColor);
+				});
+
+			OverviewColumns.Emplace(TEXT("Gpu Max:"), FormatPerfValue(GlobalPerfStats.Max.Time_GPU), GlobalDataStringSize, TEXT("Gpu Max (us)"), ColumnOffset, Font, SystemStringSize,
+				[&DetailColor, &DetailHighlightColor, &fAdvanceHeight](FCanvas* Canvas, UFont* Font, float X, float Y, FOverviewColumn& Col, const FSystemDebugInfo& SystemInfo)
+				{
+					FLinearColor RowBGColor = SystemInfo.UniqueColor;
+					RowBGColor.A = Settings.SystemColorTableOpacity;
+					Canvas->DrawTile(X, Y, Col.MaxWidth, fAdvanceHeight, 0, 0, 0, 0, RowBGColor);
+					const FLinearColor RowColor = SystemInfo.bShowInWorld ? DetailHighlightColor : DetailColor;
+					Canvas->DrawShadowedString(X, Y, *FormatPerfValue(SystemInfo.PerfStats ? SystemInfo.PerfStats->Max.Time_GPU : 0.0), Font, RowColor);
+				});
+		}
+		else if (Settings.OverviewMode == ENiagaraDebugHUDOverviewMode::PerformanceGraph && StatsListener)
+		{
+			OverviewColumns.Emplace(TEXT(""), TEXT(""), TEXT(""), ColumnOffset, Font, TEXT("------"),
+				[&DetailColor, &DetailHighlightColor, &fAdvanceHeight](FCanvas* Canvas, UFont* Font, float X, float Y, FOverviewColumn& Col, const FSystemDebugInfo& SystemInfo)
+				{
+					Canvas->DrawTile(X, Y, Col.MaxWidth - 6.0f, fAdvanceHeight - 2.0f, 0.0f, 0.0f, 0.0f, 0.0f, SystemInfo.UniqueColor);
+					FString SysCountString = LexToSanitizedString(SystemInfo.TotalActive);
+					float StringWidth = float(Font->GetStringSize(*SysCountString));
+					Canvas->DrawShadowedString((X + (Col.MaxWidth * 0.5f)) - StringWidth * 0.5f, Y, *SysCountString, Font, FLinearColor::Black);
+				});
 		}
 #endif//WITH_PARTICLE_PERF_STATS
 
@@ -1901,7 +1950,21 @@ void FNiagaraDebugHud::DrawOverview(class FNiagaraWorldManager* WorldManager, FC
 			TextLocation.Y += fAdvanceHeight;
 
 			const UEnum* EnumPtr = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/Niagara.ENiagaraDebugHUDOverviewMode"), true);
-			DrawCanvas->DrawShadowedString(TextLocation.X, TextLocation.Y, *EnumPtr->GetDisplayNameTextByValue((int32)Settings.OverviewMode).ToString(), Font, HeadingColor);
+			TStringBuilder<128> ModelStringBuilder;
+			ModelStringBuilder.Append(EnumPtr->GetDisplayNameTextByValue((int32)Settings.OverviewMode).ToString());
+			if(Settings.OverviewMode == ENiagaraDebugHUDOverviewMode::PerformanceGraph)
+			{
+				const UEnum* PerfGraphModeEnumPtr = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/Niagara.ENiagaraDebugHUDPerfGraphMode"), true);
+				const UEnum* PerfGraphSampleModeEnumPtr = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/Niagara.ENiagaraDebugHUDPerfSampleMode"), true);
+				
+				ModelStringBuilder.Append(TEXT(" - "));
+				ModelStringBuilder.Append(PerfGraphModeEnumPtr->GetDisplayNameTextByValue((int32)Settings.PerfGraphMode).ToString());
+				ModelStringBuilder.Append(TEXT(" - "));
+				ModelStringBuilder.Append(PerfGraphSampleModeEnumPtr->GetDisplayNameTextByValue((int32)Settings.PerfSampleMode).ToString());
+			}			
+			DrawCanvas->DrawShadowedString(TextLocation.X, TextLocation.Y, ModelStringBuilder.ToString(), Font, HeadingColor);
+			ModelStringBuilder.Reset();
+
 			TextLocation.Y += fAdvanceHeight;
 
 			if (OverviewString.Len() > 0)
@@ -1934,7 +1997,12 @@ void FNiagaraDebugHud::DrawOverview(class FNiagaraWorldManager* WorldManager, FC
 	if (Settings.bOverviewEnabled && Settings.OverviewMode != ENiagaraDebugHUDOverviewMode::GpuComputePerformance)
 	{
 		TextLocation.Y += fAdvanceHeight;		
-		uint32 NumLines = 1;
+
+		// Filter out what we won't display on the HUD and calculate number of lines
+		using FSortedPerSystemDebugInfo = TPair<FName, const FSystemDebugInfo&>;
+		TArray<FSortedPerSystemDebugInfo> SortedPerSystemDebugInfo;
+		SortedPerSystemDebugInfo.Reserve(PerSystemDebugInfo.Num());
+
 		for (const auto& Pair : PerSystemDebugInfo)
 		{
 			const FSystemDebugInfo& SystemInfo = Pair.Value;
@@ -1944,9 +2012,25 @@ void FNiagaraDebugHud::DrawOverview(class FNiagaraWorldManager* WorldManager, FC
 				continue;
 			}
 
-			++NumLines;
+			SortedPerSystemDebugInfo.Emplace(Pair);
 		}
-		DrawCanvas->DrawTile(TextLocation.X - 1.0f, TextLocation.Y - 1.0f, TotalOverviewWidth + 1.0f, 2.0f + (float(NumLines) * fAdvanceHeight), 0.0f, 0.0f, 0.0f, 0.0f, BackgroundColor);
+
+		// Sort our display list, if enabled
+		switch (Settings.OverviewSortMode)
+		{
+			case ENiagaraDebugHUDDOverviewSort::Name:				Algo::Sort(SortedPerSystemDebugInfo, [](const FSortedPerSystemDebugInfo& Lhs, const FSortedPerSystemDebugInfo& Rhs) -> bool { return Lhs.Key.LexicalLess(Rhs.Key); });	break;
+			case ENiagaraDebugHUDDOverviewSort::NumberRegistered:	Algo::Sort(SortedPerSystemDebugInfo, [](const FSortedPerSystemDebugInfo& Lhs, const FSortedPerSystemDebugInfo& Rhs) -> bool { return Lhs.Value.TotalRegistered    > Rhs.Value.TotalRegistered; }); break;
+			case ENiagaraDebugHUDDOverviewSort::NumberActive:		Algo::Sort(SortedPerSystemDebugInfo, [](const FSortedPerSystemDebugInfo& Lhs, const FSortedPerSystemDebugInfo& Rhs) -> bool { return Lhs.Value.TotalActive        > Rhs.Value.TotalActive; }); break;
+			case ENiagaraDebugHUDDOverviewSort::NumberScalability:	Algo::Sort(SortedPerSystemDebugInfo, [](const FSortedPerSystemDebugInfo& Lhs, const FSortedPerSystemDebugInfo& Rhs) -> bool { return Lhs.Value.TotalScalability   > Rhs.Value.TotalScalability; });	break;
+			case ENiagaraDebugHUDDOverviewSort::MemoryUsage:		Algo::Sort(SortedPerSystemDebugInfo, [](const FSortedPerSystemDebugInfo& Lhs, const FSortedPerSystemDebugInfo& Rhs) -> bool { return Lhs.Value.TotalBytes         > Rhs.Value.TotalBytes; });	break;
+			case ENiagaraDebugHUDDOverviewSort::RecentlyVisibilty:	Algo::Sort(SortedPerSystemDebugInfo, [](const FSortedPerSystemDebugInfo& Lhs, const FSortedPerSystemDebugInfo& Rhs) -> bool { return Lhs.Value.FramesSinceVisible < Rhs.Value.FramesSinceVisible; });	break;
+
+			default:
+				break;
+		}
+
+		// Draw background + headers
+		DrawCanvas->DrawTile(TextLocation.X - 1.0f, TextLocation.Y - 1.0f, TotalOverviewWidth + 1.0f, 2.0f + (float(SortedPerSystemDebugInfo.Num() + 1) * fAdvanceHeight), 0.0f, 0.0f, 0.0f, 0.0f, BackgroundColor);
 
 		float SystemDataY = TextLocation.Y;
 		for (FOverviewColumn& Column : OverviewColumns)
@@ -1956,17 +2040,10 @@ void FNiagaraDebugHud::DrawOverview(class FNiagaraWorldManager* WorldManager, FC
 
 		TextLocation.Y += fAdvanceHeight;
 
-		//TODO: Pull out to an array to allow sorting?
-
-		for (auto it = PerSystemDebugInfo.CreateConstIterator(); it; ++it)
+		// Draw each row
+		for (const FSortedPerSystemDebugInfo& Pair : SortedPerSystemDebugInfo)
 		{
-			const auto& SystemInfo = it->Value;
-			if ((SystemInfo.FramesSinceVisible >= Settings.PerfHistoryFrames) ||
-				(Settings.bOverviewShowFilteredSystemOnly && !SystemInfo.bPassesSystemFilter))
-			{
-				continue;
-			}
-
+			const FSystemDebugInfo& SystemInfo = Pair.Value;
 			for (FOverviewColumn& Column : OverviewColumns)
 			{
 				Column.DrawSystemData(DrawCanvas, Font, TextLocation.X, TextLocation.Y, SystemInfo);
@@ -1976,71 +2053,67 @@ void FNiagaraDebugHud::DrawOverview(class FNiagaraWorldManager* WorldManager, FC
 		
 		#if WITH_PARTICLE_PERF_STATS
 		//Draw graph
-		if (Settings.OverviewMode == ENiagaraDebugHUDOverviewMode::Performance && StatsListener)
+		if (Settings.OverviewMode == ENiagaraDebugHUDOverviewMode::PerformanceGraph && StatsListener)
 		{
-			//Render the graph
-			if (Settings.PerfGraphMode != ENiagaraDebugHUDPerfGraphMode::None)
+			FLinearColor GraphAxesColor = Settings.PerfGraphAxisColor;
+
+			TextLocation.Y += fAdvanceHeight;
+
+			FVector2f GraphLocation(TextLocation.X, SystemDataY + fAdvanceHeight);
+
+			if (OverviewColumns.Num())
 			{
-				FLinearColor GraphAxesColor = Settings.PerfGraphAxisColor;
+				GraphLocation.X += OverviewColumns.Last().Offset + OverviewColumns.Last().MaxWidth + 50.0f;
+			}
 
-				TextLocation.Y += fAdvanceHeight;
+			FGraph<double> Graph(DrawCanvas, Font, GraphLocation, FVector2f(Settings.PerfGraphSize), FVector2f(float(Settings.PerfHistoryFrames), Settings.PerfGraphTimeRange), TEXT("Frame"), TEXT("Time(us)"));
 
-				FVector2f GraphLocation(TextLocation.X, SystemDataY + fAdvanceHeight);
+			Graph.Draw(Settings.PerfGraphAxisColor, BackgroundColor);
 
-				if (OverviewColumns.Num())
+			//Add each line to the graph.
+			for (const auto& Pair : PerSystemDebugInfo)
+			{
+				const FSystemDebugInfo& SysInfo = Pair.Value;
+				if (SysInfo.PerfStats && SysInfo.bPassesSystemFilter)
 				{
-					GraphLocation.X += OverviewColumns.Last().Offset + OverviewColumns.Last().MaxWidth + 50.0f;
-				}
-
-				FGraph<double> Graph(DrawCanvas, Font, GraphLocation, FVector2f(Settings.PerfGraphSize), FVector2f(float(Settings.PerfHistoryFrames), Settings.PerfGraphTimeRange), TEXT("Frame"), TEXT("Time(us)"));
-
-				Graph.Draw(Settings.PerfGraphAxisColor, BackgroundColor);
-
-				//Add each line to the graph.
-				for (auto& Pair : PerSystemDebugInfo)
-				{
-					FSystemDebugInfo& SysInfo = Pair.Value;
-					if (SysInfo.PerfStats && SysInfo.bPassesSystemFilter)
+					TArray<double> Frames;
+					if (Settings.PerfGraphMode == ENiagaraDebugHUDPerfGraphMode::GameThread)
 					{
-						TArray<double> Frames;
-						if (Settings.PerfGraphMode == ENiagaraDebugHUDPerfGraphMode::GameThread)
-						{
-							SysInfo.PerfStats->History.GetHistoryFrames_GT(Frames);
-						}
-						else if (Settings.PerfGraphMode == ENiagaraDebugHUDPerfGraphMode::RenderThread)
-						{
-							SysInfo.PerfStats->History.GetHistoryFrames_RT(Frames);
-						}
-						else if (Settings.PerfGraphMode == ENiagaraDebugHUDPerfGraphMode::GPU)
-						{
-							SysInfo.PerfStats->History.GetHistoryFrames_GPU(Frames);
-						}
+						SysInfo.PerfStats->History.GetHistoryFrames_GT(Frames);
+					}
+					else if (Settings.PerfGraphMode == ENiagaraDebugHUDPerfGraphMode::RenderThread)
+					{
+						SysInfo.PerfStats->History.GetHistoryFrames_RT(Frames);
+					}
+					else if (Settings.PerfGraphMode == ENiagaraDebugHUDPerfGraphMode::GPU)
+					{
+						SysInfo.PerfStats->History.GetHistoryFrames_GPU(Frames);
+					}
 
-						if (Settings.bEnableSmoothing)
+					if (Settings.bEnableSmoothing)
+					{
+						TArray<double> Smoothed;
+						Smoothed.Reserve(Frames.Num());
+						for (int32 i = 0; i < Frames.Num(); ++i)
 						{
-							TArray<double> Smoothed;
-							Smoothed.Reserve(Frames.Num());
-							for (int32 i = 0; i < Frames.Num(); ++i)
+							int32 SmoothSamples = 0;
+							double SmoothTotal = 0.0f;
+							for (int32 j = i - Settings.SmoothingWidth; j < i + Settings.SmoothingWidth; ++j)
 							{
-								int32 SmoothSamples = 0;
-								double SmoothTotal = 0.0f;
-								for (int32 j = i - Settings.SmoothingWidth; j < i + Settings.SmoothingWidth; ++j)
+								if (j >= 0 && j < Frames.Num())
 								{
-									if (j >= 0 && j < Frames.Num())
-									{
-										++SmoothSamples;
-										SmoothTotal += Frames[j];
-									}
+									++SmoothSamples;
+									SmoothTotal += Frames[j];
 								}
-
-								Smoothed.Add(SmoothTotal / SmoothSamples);
 							}
 
-							Frames = MoveTemp(Smoothed);
+							Smoothed.Add(SmoothTotal / SmoothSamples);
 						}
 
-						Graph.DrawLine(SysInfo.SystemName, SysInfo.UniqueColor, Frames);
+						Frames = MoveTemp(Smoothed);
 					}
+
+					Graph.DrawLine(SysInfo.SystemName, SysInfo.UniqueColor, Frames);
 				}
 			}
 		}
@@ -2181,6 +2254,9 @@ void FNiagaraDebugHud::DrawGpuComputeOverriew(class FNiagaraWorldManager* WorldM
 
 		const bool bShowDetailed = Settings.bSystemFilterEnabled && OwnerSystem->GetName().MatchesWildcard(Settings.SystemFilter);
 		SystemIt.Value().bShowDetailed = bShowDetailed;
+#if WITH_EDITORONLY_DATA
+		SystemIt.Value().bCompileForEdit = OwnerSystem->bCompileForEdit;
+#endif
 		bHasDetailedView |= bShowDetailed;
 		bHasSimpleView |= !bShowDetailed;
 	}
@@ -2226,6 +2302,12 @@ void FNiagaraDebugHud::DrawGpuComputeOverriew(class FNiagaraWorldManager* WorldM
 				{
 					const FGpuUsagePerStage& StageUsage = StageIt.Value();
 					OwnerSystem->GetFName().AppendString(SimpleTable.GetColumnText(0));
+#if WITH_EDITORONLY_DATA
+					if (SystemIt.Value().bCompileForEdit)
+					{
+						SimpleTable.GetColumnText(0).Append(TEXT(" (Edit Mode)"));
+					}
+#endif
 					OwnerEmitter->GetFName().AppendString(SimpleTable.GetColumnText(1));
 					StageIt.Key().AppendString(SimpleTable.GetColumnText(2));
 					SimpleTable.GetColumnText(3).Appendf(TEXT("%4.1f"), StageUsage.InstanceCount.GetAverage<float>());
@@ -2270,6 +2352,12 @@ void FNiagaraDebugHud::DrawGpuComputeOverriew(class FNiagaraWorldManager* WorldM
 			const FGpuUsagePerSystem& SystemUsage = SystemIt.Value();
 
 			OwnerSystem->GetFName().AppendString(SimpleTable.GetColumnText(0));
+#if WITH_EDITORONLY_DATA
+			if (SystemIt.Value().bCompileForEdit)
+			{
+				SimpleTable.GetColumnText(0).Append(TEXT(" (Edit Mode)"));
+			}
+#endif
 			SimpleTable.GetColumnText(1).Appendf(TEXT("%4.1f"), SystemUsage.InstanceCount.GetAverage<float>());
 			SimpleTable.GetColumnText(2).Appendf(TEXT("%llu"), SystemUsage.Microseconds.GetAverage());
 			SimpleTable.GetColumnText(3).Appendf(TEXT("%llu"), SystemUsage.Microseconds.GetMax());
@@ -2441,7 +2529,7 @@ void FNiagaraDebugHud::DrawValidation(class FNiagaraWorldManager* WorldManager, 
 				SystemSimulation->MainDataSet.GetCompiledData(),
 				SystemSimulation->MainDataSet.GetCurrentData(),
 				SystemInstance->GetSystemInstanceIndex(),
-				[&](const FNiagaraVariable& Variable, int32 ComponentIndex)
+				[&](const FNiagaraVariableBase& Variable, int32 ComponentIndex)
 				{
 					auto& ValidationError = GetValidationErrorInfo(NiagaraComponent);
 					ValidationError.SystemVariablesWithErrors.AddUnique(Variable.GetName());
@@ -2475,7 +2563,7 @@ void FNiagaraDebugHud::DrawValidation(class FNiagaraWorldManager* WorldManager, 
 				FNiagaraDataSetDebugAccessor::ValidateDataBuffer(
 					ParticleDataSet->GetCompiledData(),
 					DataBuffer,
-					[&](const FNiagaraVariable& Variable, int32 InstanceIndex, int32 ComponentIndex)
+					[&](const FNiagaraVariableBase& Variable, int32 InstanceIndex, int32 ComponentIndex)
 					{
 						auto& ValidationError = GetValidationErrorInfo(NiagaraComponent);
 						const FName EmitterName(*EmitterInstance->GetCachedEmitter().Emitter->GetUniqueEmitterName());
@@ -2532,7 +2620,7 @@ void FNiagaraDebugHud::DrawValidation(class FNiagaraWorldManager* WorldManager, 
 			for (auto EmitterIt=ErrorInfo.ParticleVariablesWithErrors.CreateConstIterator(); EmitterIt; ++EmitterIt)
 			{
 				const TArray<FName>& EmitterVariables = EmitterIt.Value();
-				const int32 NumVariables = FMath::Min(EmitterVariables.Num(), 3);
+				const int32 NumVariables = Settings.ValidationAttributeDisplayTruncate > 0 ? FMath::Min(EmitterVariables.Num(), Settings.ValidationAttributeDisplayTruncate) : EmitterVariables.Num();
 				if (NumVariables > 0)
 				{
 					for (int32 iVariable = 0; iVariable < NumVariables; ++iVariable)
@@ -2552,6 +2640,7 @@ void FNiagaraDebugHud::DrawValidation(class FNiagaraWorldManager* WorldManager, 
 						ErrorString.Append(TEXT(", ..."));
 					}
 					ErrorString.Append(TEXT("\n"));
+
 				}
 			}
 		}
@@ -2570,6 +2659,11 @@ void FNiagaraDebugHud::DrawValidation(class FNiagaraWorldManager* WorldManager, 
 			TextLocation.Y += fAdvanceHeight;
 
 			DrawCanvas->DrawShadowedString(TextLocation.X, TextLocation.Y, ErrorString.ToString(), Font, Settings.MessageErrorTextColor);
+
+			if (Settings.bValidationLogErrors)
+			{
+				UE_LOG(LogNiagara, Warning, TEXT("Validation Errors - %s"), ErrorString.ToString());
+			}
 		}
 	}
 }
@@ -2586,6 +2680,7 @@ void FNiagaraDebugHud::DrawComponents(FNiagaraWorldManager* WorldManager, UCanva
 	// Draw in world components
 	UEnum* ExecutionStateEnum = StaticEnum<ENiagaraExecutionState>();
 	UEnum* PoolingMethodEnum = StaticEnum<ENCPoolMethod>();
+	UEnum* SystemInstanceState = StaticEnum<ENiagaraSystemInstanceState>();
 	for (TWeakObjectPtr<UNiagaraComponent> WeakComponent : InWorldComponents)
 	{
 		UNiagaraComponent* NiagaraComponent = WeakComponent.Get();
@@ -2742,7 +2837,12 @@ void FNiagaraDebugHud::DrawComponents(FNiagaraWorldManager* WorldManager, UCanva
 
 				if (Settings.SystemDebugVerbosity == ENiagaraDebugHudVerbosity::Verbose)
 				{
-					StringBuilder.Appendf(TEXT("System ActualState %s - RequestedState %s\n"), *ExecutionStateEnum->GetNameStringByIndex((int32)SystemInstance->GetActualExecutionState()), *ExecutionStateEnum->GetNameStringByIndex((int32)SystemInstance->GetRequestedExecutionState()));
+					StringBuilder.Appendf(
+						TEXT("System InstanceState(%s) VMActualState(%s) VMRequestedState(%s)\n"),
+						*SystemInstanceState->GetNameStringByIndex((int32)SystemInstance->SystemInstanceState),
+						*ExecutionStateEnum->GetNameStringByIndex((int32)SystemInstance->GetActualExecutionState()),
+						*ExecutionStateEnum->GetNameStringByIndex((int32)SystemInstance->GetRequestedExecutionState())
+					);
 					if (NiagaraComponent->PoolingMethod != ENCPoolMethod::None)
 					{
 						StringBuilder.Appendf(TEXT("Pooled - %s\n"), *PoolingMethodEnum->GetNameStringByIndex((int32)NiagaraComponent->PoolingMethod));
@@ -2767,18 +2867,19 @@ void FNiagaraDebugHud::DrawComponents(FNiagaraWorldManager* WorldManager, UCanva
 						StringBuilder.Append(TEXT("\n"));
 					}
 
-					if ( NiagaraComponent->bHiddenInGame || !NiagaraComponent->GetVisibleFlag() || (OwnerActor && OwnerActor->IsHidden()) )
+					if ( NiagaraComponent->bHiddenInGame || !NiagaraComponent->IsVisible() || (OwnerActor && OwnerActor->IsHidden()) )
 					{
-						StringBuilder.Appendf(TEXT("HiddenInGame(%d) Visible(%d)"), NiagaraComponent->bHiddenInGame, NiagaraComponent->GetVisibleFlag());
+						StringBuilder.Appendf(TEXT("HiddenInGame(%d) IsVisible(%d) GetVisibleFlag(%d)"), NiagaraComponent->bHiddenInGame, NiagaraComponent->IsVisible(), NiagaraComponent->GetVisibleFlag());
 						if ( OwnerActor )
 						{
 							StringBuilder.Appendf(TEXT(" OwnerActorHidden(%d)"), OwnerActor->IsHidden());
 						}
 						StringBuilder.Append(TEXT("\n"));
 					}
-					if ( !NiagaraComponent->GetVisibleFlag() )
+
+					if (UNiagaraSimCache* SimCache = NiagaraComponent->GetSimCache())
 					{
-						StringBuilder.Append(TEXT("Visibile - false\n"));
+						StringBuilder.Appendf(TEXT("SimCache(%s)\n"), *GetFullNameSafe(SimCache));
 					}
 
 					if (bIsActive)
@@ -2796,17 +2897,22 @@ void FNiagaraDebugHud::DrawComponents(FNiagaraWorldManager* WorldManager, UCanva
 						{
 							StringBuilder.Appendf(TEXT("TickGroup - %s\n"), *TickingGroupEnum->GetNameStringByValue(SystemInstance->CalculateTickGroup()));
 						}
-						BuildGpuHudInformation(StringBuilder, NiagaraComponent, SystemInstance, World->FeatureLevel);
+						BuildGpuHudInformation(StringBuilder, NiagaraComponent, SystemInstance, World->GetFeatureLevel());
+
+						StringBuilder.Appendf(TEXT("LastRenderTime - %5.2f"), NiagaraComponent->GetLastRenderTime());
+						if (NiagaraComponent->bRenderCustomDepth)
+						{
+							StringBuilder.Append(TEXT(" bRenderCustomDepth"));
+						}
+						switch (NiagaraComponent->GetOcclusionQueryMode())
+						{
+							case ENiagaraOcclusionQueryMode::AlwaysEnabled:		StringBuilder.Append(TEXT(" OcclusionQuery(AlwaysEnabled)")); break;
+							case ENiagaraOcclusionQueryMode::AlwaysDisabled:	StringBuilder.Append(TEXT(" OcclusionQuery(AlwaysDisable)")); break;
+						}
+						StringBuilder.Append(TEXT("\n"));
 					}
 
-					int64 TotalBytes = 0;
-					for (const TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe>& EmitterInstance : SystemInstance->GetEmitters())
-					{
-						if ( UNiagaraEmitter* NiagaraEmitter = EmitterInstance->GetCachedEmitter().Emitter )
-						{
-							TotalBytes += EmitterInstance->GetTotalBytesUsed();
-						}
-					}
+					int64 TotalBytes = SystemInstanceController->GetTotalBytesUsed();
 					StringBuilder.Appendf(TEXT("Memory - %6.2fMB\n"), float(double(TotalBytes) / (1024.0*1024.0)));
 				}
 
@@ -2855,13 +2961,9 @@ void FNiagaraDebugHud::DrawComponents(FNiagaraWorldManager* WorldManager, UCanva
 						const FCachedVariables& CachedVariables = GetCachedVariables(NiagaraSystem);
 
 						// Engine Variables
-						if (CachedVariables.bShowEngineVariable[(int)EEngineVariables::LODDistance])
+						for (int32 EngineVariable : CachedVariables.EngineVariables)
 						{
-							StringBuilder.Appendf(TEXT("%s = %.2f\n"), *GEngineVariableStrings[(int)EEngineVariables::LODDistance], SystemInstance->GetLODDistance());
-						}
-						if (CachedVariables.bShowEngineVariable[(int)EEngineVariables::LODFraction])
-						{
-							StringBuilder.Appendf(TEXT("%s = %.2f\n"), *GEngineVariableStrings[(int)EEngineVariables::LODFraction], SystemInstance->GetLODDistance() / SystemInstance->GetMaxLODDistance());
+							StringBuilder.Appendf(TEXT("%s = %s\n"), *GEngineVariables[EngineVariable].Key, *GEngineVariables[EngineVariable].Value(SystemInstance));
 						}
 
 						// System variables
@@ -2902,19 +3004,19 @@ void FNiagaraDebugHud::DrawComponents(FNiagaraWorldManager* WorldManager, UCanva
 								if (ParameterStoreVariable.Variable.IsDataInterface())
 								{
 									UNiagaraDataInterface* DataInterface = ParameterStore->GetDataInterface(ParameterStoreVariable.Variable);
-									FString DataInterfaceString;
+									FNDIDrawDebugHudContext DebugHudContext(Settings.DataInterfaceVerbosity == ENiagaraDebugHudVerbosity::Verbose, World, Canvas, SystemInstance);
 									if ( DataInterface != nullptr && Settings.DataInterfaceVerbosity != ENiagaraDebugHudVerbosity::None )
 									{
-										DataInterface->DrawDebugHud(Canvas, SystemInstance, DataInterfaceString, Settings.DataInterfaceVerbosity == ENiagaraDebugHudVerbosity::Verbose);
+										DataInterface->DrawDebugHud(DebugHudContext);
 									}
 
-									if ( DataInterfaceString.IsEmpty() )
+									if (DebugHudContext.GetOutputString().IsEmpty())
 									{
 										StringBuilder.Appendf(TEXT("%s(%s %s)"), *ParameterStoreVariable.Variable.GetName().ToString(), *GetNameSafe(ParameterStoreVariable.Variable.GetType().GetClass()) , *GetNameSafe(DataInterface));
 									}
 									else
 									{
-										StringBuilder.Appendf(TEXT("%s(%s)"), *ParameterStoreVariable.Variable.GetName().ToString(), *DataInterfaceString);
+										StringBuilder.Appendf(TEXT("%s(%s)"), *ParameterStoreVariable.Variable.GetName().ToString(), *DebugHudContext.GetOutputString());
 									}
 								}
 								else if (ParameterStoreVariable.Variable.IsUObject())
@@ -3173,7 +3275,7 @@ void FNiagaraDebugHudStatHistory::GetHistoryFrames_GPU(TArray<double>& OutHistor
 	} while (WriteFrame != CurrFrameGPU);
 }
 
-TSharedPtr<FNiagaraDebugHUDPerfStats> FNiagaraDebugHUDStatsListener::GetSystemStats(UNiagaraSystem* System)
+TSharedPtr<FNiagaraDebugHUDPerfStats> FNiagaraDebugHUDStatsListener::GetSystemStats(UFXSystemAsset* System)
 {
 	FScopeLock Lock(&SystemStatsGuard);//Locking on every get isn't great but it's debug hud code so meh.
 	if (TSharedPtr<FNiagaraDebugHUDPerfStats>* Stats = SystemStats.Find(System))

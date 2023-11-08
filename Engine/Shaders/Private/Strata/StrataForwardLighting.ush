@@ -19,7 +19,7 @@
 
 // Forward declarations
 void GetVolumeLightingNonDirectional(float4 AmbientLightingVector, float3 DiffuseColor, inout float3 InterpolatedLighting, out float4 VolumeLighting);
-void GetVolumeLightingDirectional(float4 AmbientLightingVector, float3 DirectionalLightingVector, float3 WorldNormal, float3 DiffuseColor, inout float3 InterpolatedLighting, out float4 VolumeLighting);
+void GetVolumeLightingDirectional(float4 AmbientLightingVector, float3 DirectionalLightingVector, float3 WorldNormal, float3 DiffuseColor, float DirectionalLightingIntensity, inout float3 InterpolatedLighting, out float4 VolumeLighting);
 
 float3 GetWorldBentNormalZero(in FMaterialPixelParameters MaterialParameters);
 
@@ -171,8 +171,7 @@ float3 StrataForwardLighting(
 
 
 
-	FStrataTree StrataTree = StrataPixelHeader.StrataTree;
-	if (StrataTree.BSDFCount > 0)
+	if (StrataPixelHeader.StrataTree.BSDFCount > 0)
 	{
 		// Write Irradiance/AO data into header in order to be retrieve correctly during lighting
 		#if STRATA_INLINE_SHADING
@@ -180,15 +179,15 @@ float3 StrataForwardLighting(
 		#endif
 
 		// Update tree (coverage/transmittance/luminace weights)
-		StrataUpdateTree(NullStrataAddressing, StrataPixelHeader, StrataTree, StrataData, V, Settings, OutCoverage, OutTransmittancePreCoverage);
+		StrataPixelHeader.StrataUpdateTree(NullStrataAddressing, StrataData, V, Settings, OutCoverage, OutTransmittancePreCoverage);
 
 		//
 		// Forward lighting
 		//
 		STRATA_UNROLL_N(STRATA_CLAMPED_BSDF_COUNT)
-		for (int BSDFIdx = 0; BSDFIdx < StrataTree.BSDFCount; ++BSDFIdx)
+		for (int BSDFIdx = 0; BSDFIdx < StrataPixelHeader.StrataTree.BSDFCount; ++BSDFIdx)
 		{
-		#define CurrentBSDF StrataTree.BSDFs[BSDFIdx]
+		#define CurrentBSDF StrataPixelHeader.StrataTree.BSDFs[BSDFIdx]
 
 			if (StrataIsBSDFVisible(CurrentBSDF))
 			{
@@ -211,7 +210,7 @@ float3 StrataForwardLighting(
 					// Update a context specific for environment lighting
 					FStrataBSDFContext EnvBSDFContext = StrataBSDFContext;
 					EnvBSDFContext.N = ShadingOcclusion.BentNormal;
-					StrataUpdateBSDFContext(EnvBSDFContext, EnvBSDFContext.L);
+					EnvBSDFContext.StrataUpdateBSDFContext(EnvBSDFContext.L);
 
 					// And evaluate diffuse parameters
 					FStrataEnvLightResult StrataEnvLight = StrataEvaluateForEnvLight(EnvBSDFContext, false/*bEnableSpecular*/, Settings);
@@ -355,7 +354,7 @@ float3 StrataForwardLighting(
 			#elif TRANSLUCENCY_LIGHTING_VOLUMETRIC_PERVERTEX_DIRECTIONAL
 
 				// ForwardShadingNote: when forward shading is enabled, this will follow the special TRANSLUCENCY_PERVERTEX_FORWARD_SHADING path above
-				GetVolumeLightingDirectional(float4(BasePassInterpolants.AmbientLightingVector, 1), BasePassInterpolants.DirectionalLightingVector, StrataBSDFContext.N, BSDFEvaluate.DiffuseColor, SurfaceLighting, VolumeLighting);
+				GetVolumeLightingDirectional(float4(BasePassInterpolants.AmbientLightingVector, 1), BasePassInterpolants.DirectionalLightingVector, StrataBSDFContext.N, BSDFEvaluate.DiffuseColor, GetMaterialTranslucencyDirectionalLightingIntensity(), SurfaceLighting, VolumeLighting);
 
 			#elif TRANSLUCENCY_LIGHTING_VOLUMETRIC_NONDIRECTIONAL && !FORWARD_SHADING
 
@@ -368,7 +367,7 @@ float3 StrataForwardLighting(
 				//ForwardShadingNote: when forward shading is enabled, StrataForwardLightingCommon path will be used 
 				float4 AmbientLightingVector = GetAmbientLightingVectorFromTranslucentLightingVolume(InnerVolumeUVs, OuterVolumeUVs, FinalLerpFactor);
 				float3 DirectionalLightingVector = GetDirectionalLightingVectorFromTranslucentLightingVolume(InnerVolumeUVs, OuterVolumeUVs, FinalLerpFactor);
-				GetVolumeLightingDirectional(AmbientLightingVector, DirectionalLightingVector, StrataBSDFContext.N, BSDFEvaluate.DiffuseColor, SurfaceLighting, VolumeLighting);
+				GetVolumeLightingDirectional(AmbientLightingVector, DirectionalLightingVector, StrataBSDFContext.N, BSDFEvaluate.DiffuseColor, GetMaterialTranslucencyDirectionalLightingIntensity(), SurfaceLighting, VolumeLighting);
 
 			#endif // TRANSLUCENCY_
 
@@ -439,7 +438,7 @@ float3 StrataForwardLighting(
 					DirectionalLightCloudShadow = BasePassInterpolants.VertexCloudShadow;
 				#endif
 
-					StrataUpdateBSDFContext(StrataBSDFContext, ToDirLight);
+					StrataBSDFContext.StrataUpdateBSDFContext(ToDirLight);
 
 					FStrataEvaluateResult BSDFEvaluate = (FStrataEvaluateResult)0;
 					Color += StrataForwardLightingCommon(
@@ -508,7 +507,7 @@ float3 StrataForwardLighting(
 					}
 
 					// Update the strata BSDF context accordgin to the new L
-					StrataUpdateBSDFContext(StrataBSDFContext, ToLight);
+					StrataBSDFContext.StrataUpdateBSDFContext(ToLight);
 
 					FStrataEvaluateResult BSDFEvaluate = (FStrataEvaluateResult)0;
 					Color += StrataForwardLightingCommon(

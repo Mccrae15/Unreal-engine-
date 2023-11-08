@@ -310,6 +310,24 @@ USoundModulationGeneratorLFO* UAudioModulationStatics::CreateLFOGenerator(UObjec
 	return NewGenerator;
 }
 
+USoundModulationGeneratorADEnvelope* UAudioModulationStatics::CreateADEnvelopeGenerator(UObject* WorldContextObject, FName Name, const FSoundModulationADEnvelopeParams& Params)
+{
+	UWorld* World = GetAudioWorld(WorldContextObject);
+	if (!World)
+	{
+		return nullptr;
+	}
+
+	USoundModulationGeneratorADEnvelope* NewGenerator = NewObject<USoundModulationGeneratorADEnvelope>(WorldContextObject, USoundModulationGeneratorADEnvelope::StaticClass(), Name);
+
+	if (NewGenerator)
+	{
+		NewGenerator->Params = Params;
+	}
+
+	return NewGenerator;
+}
+
 void UAudioModulationStatics::DeactivateBus(const UObject* WorldContextObject, USoundControlBus* Bus)
 {
 	if (Bus)
@@ -420,6 +438,15 @@ void UAudioModulationStatics::ClearAllGlobalBusMixValues(const UObject* WorldCon
 	if (AudioModulation::FAudioModulationManager* ModSystem = GetModulation(World))
 	{
 		ModSystem->ClearAllGlobalBusMixValues(FadeTime);
+	}
+}
+
+void UAudioModulationStatics::DeactivateAllBusMixes(const UObject* WorldContextObject)
+{
+	UWorld* World = GetAudioWorld(WorldContextObject);
+	if (AudioModulation::FAudioModulationManager* ModSystem = GetModulation(World))
+	{
+		ModSystem->DeactivateAllBusMixes();
 	}
 }
 

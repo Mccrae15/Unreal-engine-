@@ -95,6 +95,22 @@ public:
 	virtual void CheckValidity(const FNiagaraValidationContext& Context, TArray<FNiagaraValidationResult>& OutResults) const override;
 };
 
+/** This validation rule that can be used to inform or ban GPU usage on the provided platforms. */
+UCLASS(Category = "Validation", DisplayName = "Gpu Usage")
+class UNiagaraValidationRule_GpuUsage : public UNiagaraValidationRule
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(EditAnywhere, Category = Validation)
+	ENiagaraValidationSeverity Severity = ENiagaraValidationSeverity::Warning;
+
+	UPROPERTY(EditAnywhere, Category = Validation)
+	FNiagaraPlatformSet Platforms;
+
+	virtual void CheckValidity(const FNiagaraValidationContext& Context, TArray<FNiagaraValidationResult>& OutResults) const override;
+};
+
 /** This validation rule can marks this effect type as invalid and so must be changed. Forces a choice of correct Effect Type for an System rather than. Leaving as the default. */
 UCLASS(Category = "Validation", DisplayName = "Invalid Effect Type")
 class UNiagaraValidationRule_InvalidEffectType : public UNiagaraValidationRule
@@ -196,4 +212,30 @@ public:
 	/** Check that the skeletal mesh interface isn't adding a tick dependency on the CPU. */
 	UPROPERTY(EditAnywhere, Category = Validation)
 	bool bCheckSkeletalMeshInterface = true;
+};
+
+/** This validation rule checks to see if you have exposed user data interfaces. */
+UCLASS(Category = "Validation", DisplayName = "User Data Interfaces")
+class UNiagaraValidationRule_UserDataInterfaces : public UNiagaraValidationRule
+{
+	GENERATED_BODY()
+
+public:
+	virtual void CheckValidity(const FNiagaraValidationContext& Context, TArray<FNiagaraValidationResult>& OutResults) const override;
+
+	/** Only include data interfaces that contain exposed UObject properties in them. */
+	UPROPERTY(EditAnywhere, Category = Validation)
+	bool bOnlyIncludeExposedUObjects = false;
+
+	/** List data interfaces to validate against, if this list is empty all data interfaces will be included. */
+	UPROPERTY(EditAnywhere, Category = Validation)
+	TArray<TSubclassOf<UNiagaraDataInterface>> BannedDataInterfaces;
+
+	/** List data interfaces that we always allow. */
+	UPROPERTY(EditAnywhere, Category = Validation)
+	TArray<TSubclassOf<UNiagaraDataInterface>> AllowDataInterfaces;
+
+	/** How do we want to repro the error in the stack */
+	UPROPERTY(EditAnywhere, Category = Validation)
+	ENiagaraValidationSeverity Severity = ENiagaraValidationSeverity::Warning;
 };

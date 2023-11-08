@@ -118,9 +118,6 @@ public:
 	void HandleRequestToJoinReceived(const IOnlinePartyRequestToJoinInfo& Request);
 	void HandleRequestToJoinRemoved(const IOnlinePartyRequestToJoinInfo& Request, EPartyRequestToJoinRemovedReason Reason);
 
-	UE_DEPRECATED(5.1, "Use RequestToJoinParty(const FName&) instead of RequestToJoinParty(void)")
-	void RequestToJoinParty();
-
 	virtual void RequestToJoinParty(const FName& JoinMethod);
 	void AcceptRequestToJoinParty() const;
 	void DismissRequestToJoinParty() const;
@@ -130,9 +127,6 @@ public:
 
 	bool HasSentPartyInvite(const FOnlinePartyTypeId& PartyTypeId) const;
 	FJoinPartyResult CheckPartyJoinability(const FOnlinePartyTypeId& PartyTypeId) const;
-
-	UE_DEPRECATED(5.1, "Use JoinParty(const FOnlinePartyTypeId&, const FName&) instead of JoinParty(const FOnlinePartyTypeId&)")
-	void JoinParty(const FOnlinePartyTypeId& PartyTypeId) const;
 
 	virtual void JoinParty(const FOnlinePartyTypeId& PartyTypeId, const FName& JoinMethod) const;
 	virtual void RejectPartyInvite(const FOnlinePartyTypeId& PartyTypeId);
@@ -201,9 +195,6 @@ protected:
 	virtual void HandleSetNicknameComplete(int32 LocalUserNum, const FUniqueNetId& FriendId, const FString& ListName, const FOnlineError& Error);
 	virtual void SetSubsystemId(ESocialSubsystem SubsystemType, const FUniqueNetIdRepl& SubsystemId);
 
-	UE_DEPRECATED(5.1, "This function is deprecated and will be removed.")
-	virtual void NotifyRequestToJoinSent(const FDateTime& ExpiresAt) {}
-
 	virtual void NotifyRequestToJoinReceived(const IOnlinePartyRequestToJoinInfo& Request) {}
 	virtual void NotifyRequestToJoinRemoved(const IOnlinePartyRequestToJoinInfo& Request, EPartyRequestToJoinRemovedReason Reason) {}
 	int32 NumPendingQueries = 0;
@@ -236,8 +227,9 @@ protected:
 	};
 	const FSubsystemUserInfo* GetSubsystemUserInfo(ESocialSubsystem Subsystem) const { return SubsystemInfoByType.Find(Subsystem); }
 
-private:
 	void SetUserInfo(ESocialSubsystem SubsystemType, const TSharedRef<FOnlineUser>& UserInfo);
+
+private:
 	void HandleQueryUserInfoComplete(ESocialSubsystem SubsystemType, bool bWasSuccessful, const TSharedPtr<FOnlineUser>& UserInfo);
 
 	virtual FString SanitizePresenceString(FString InString) const;

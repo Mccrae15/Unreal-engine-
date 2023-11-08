@@ -5,10 +5,8 @@
 #include "CoreMinimal.h"
 #include "InterchangeTranslatorBase.h"
 #include "InterchangeDispatcher.h"
-#include "Mesh/InterchangeSkeletalMeshPayload.h"
-#include "Mesh/InterchangeSkeletalMeshPayloadInterface.h"
-#include "Mesh/InterchangeStaticMeshPayload.h"
-#include "Mesh/InterchangeStaticMeshPayloadInterface.h"
+#include "Mesh/InterchangeMeshPayload.h"
+#include "Mesh/InterchangeMeshPayloadInterface.h"
 #include "Nodes/InterchangeBaseNodeContainer.h"
 #include "Texture/InterchangeTexturePayloadInterface.h"
 #include "UObject/Object.h"
@@ -21,8 +19,7 @@
 UCLASS(BlueprintType, Experimental)
 class INTERCHANGEIMPORT_API UInterchangeFbxTranslator : public UInterchangeTranslatorBase
 , public IInterchangeTexturePayloadInterface
-, public IInterchangeStaticMeshPayloadInterface
-, public IInterchangeSkeletalMeshPayloadInterface
+, public IInterchangeMeshPayloadInterface
 , public IInterchangeAnimationPayloadInterface
 {
 	GENERATED_BODY()
@@ -50,13 +47,13 @@ public:
 	 * @param PayloadKey - The key to retrieve the a particular payload contain into the specified source data.
 	 * @return a PayloadData containing the imported data. The TOptional will not be set if there is an error.
 	 */
-	virtual TOptional<UE::Interchange::FImportImage> GetTexturePayloadData(const UInterchangeSourceData* InSourceData, const FString& PayLoadKey) const override;
+	virtual TOptional<UE::Interchange::FImportImage> GetTexturePayloadData(const FString& PayloadKey, TOptional<FString>& AlternateTexturePath) const override;
 
 	/* IInterchangeTexturePayloadInterface End */
 
 
 	//////////////////////////////////////////////////////////////////////////
-	/* IInterchangeStaticMeshPayloadInterface Begin */
+	/* IInterchangeMeshPayloadInterface Begin */
 
 	/**
 	 * Once the translation is done, the import process need a way to retrieve payload data.
@@ -66,31 +63,18 @@ public:
 	 * @param PayloadKey - The key to retrieve the a particular payload contain into the specified source data.
 	 * @return a PayloadData containing the imported data. The TOptional will not be set if there is an error.
 	 */
-	virtual TFuture<TOptional<UE::Interchange::FStaticMeshPayloadData>> GetStaticMeshPayloadData(const FString& PayLoadKey) const override;
+	virtual TFuture<TOptional<UE::Interchange::FMeshPayloadData>> GetMeshPayloadData(const FInterchangeMeshPayLoadKey& PayLoadKey, const FTransform& MeshGlobalTransform) const override;
 
-	/* IInterchangeStaticMeshPayloadInterface End */
-
-
-	//////////////////////////////////////////////////////////////////////////
-	/* IInterchangeSkeletalMeshPayloadInterface Begin */
-
-	virtual TFuture<TOptional<UE::Interchange::FSkeletalMeshLodPayloadData>> GetSkeletalMeshLodPayloadData(const FString& PayLoadKey) const override;
-	virtual TFuture<TOptional<UE::Interchange::FSkeletalMeshMorphTargetPayloadData>> GetSkeletalMeshMorphTargetPayloadData(const FString& PayLoadKey) const override;
-	
-	/* IInterchangeSkeletalMeshPayloadInterface End */
+	///* IInterchangeMeshPayloadInterface End */
 
 	//////////////////////////////////////////////////////////////////////////
 	/* IInterchangeAnimationPayloadInterface Begin */
-
-	virtual TFuture<TOptional<UE::Interchange::FAnimationCurvePayloadData>> GetAnimationCurvePayloadData(const FString& PayLoadKey) const override;
-
-	virtual TFuture<TOptional<UE::Interchange::FAnimationStepCurvePayloadData>> GetAnimationStepCurvePayloadData(const FString& PayLoadKey) const override;
-
-	virtual TFuture<TOptional<UE::Interchange::FAnimationBakeTransformPayloadData>> GetAnimationBakeTransformPayloadData(const FString& PayLoadKey, const double BakeFrequency, const double RangeStartSecond, const double RangeStopSecond) const override;
-
+	virtual TFuture<TOptional<UE::Interchange::FAnimationPayloadData>> GetAnimationPayloadData(const FInterchangeAnimationPayLoadKey& PayLoadKey, const double BakeFrequency = 0, const double RangeStartSecond = 0, const double RangeStopSecond = 0) const override;
 	/* IInterchangeAnimationPayloadInterface End */
 private:
 	FString CreateLoadFbxFileCommand(const FString& FbxFilePath) const;
+
+	FString CreateFetchMeshPayloadFbxCommand(const FString& FbxPayloadKey, const FTransform& MeshGlobalTransform) const;
 
 	FString CreateFetchPayloadFbxCommand(const FString& FbxPayloadKey) const;
 

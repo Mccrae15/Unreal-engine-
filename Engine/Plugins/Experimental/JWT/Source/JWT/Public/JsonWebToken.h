@@ -6,7 +6,9 @@
 
 class FJsonObject;
 class FJsonValue;
+class IJwtAlgorithm;
 enum class EJson;
+
 
 class JWT_API FJsonWebToken
 {
@@ -21,9 +23,9 @@ public:
 	 * @param InJsonWebTokenString The string to decode.
 	 * @return An optional set with a FJsonWebToken if the JWT was successfully decoded.
 	 */
-	static TOptional<FJsonWebToken> FromString(const FStringView InEncodedJsonWebToken, const bool bIsSignatureEncoded);
+	static TOptional<FJsonWebToken> FromString(const FStringView InEncodedJsonWebToken);
 
-	static bool FromString(const FStringView InEncodedJsonWebToken, FJsonWebToken& OutJsonWebToken, const bool bIsSignatureEncoded);
+	static bool FromString(const FStringView InEncodedJsonWebToken, FJsonWebToken& OutJsonWebToken);
 
 	/**
 	 * Gets the type.
@@ -50,6 +52,54 @@ public:
 	bool GetAlgorithm(FString& OutValue) const;
 
 	/**
+	 * Gets the issuer domain.
+	 * 
+	 * @param OutValue The value to output on success.
+	 * @return Whether the value exists and was successfully outputted.
+	 */
+	bool GetIssuer(FString& OutValue) const;
+
+	/**
+	 * Gets the issued at timestamp.
+	 *
+	 * @param OutValue The value to output on success.
+	 * @return Whether the value exists and was successfully outputted.
+	 */
+	bool GetIssuedAt(int64& OutValue) const;
+
+	/**
+	 * Gets the expiration timestamp.
+	 *
+	 * @param OutValue The value to output on success.
+	 * @return Whether the value exists and was successfully outputted.
+	 */
+	bool GetExpiration(int64& OutValue) const;
+
+	/**
+	 * Gets the not valid before timestamp.
+	 *
+	 * @param OutValue The value to output on success.
+	 * @return Whether the value exists and was successfully outputted.
+	 */
+	bool GetNotBefore(int64& OutValue) const;
+
+	/**
+	 * Gets the subject.
+	 *
+	 * @param OutValue The value to output on success.
+	 * @return Whether the value exists and was successfully outputted.
+	 */
+	bool GetSubject(FString& OutValue) const;
+
+	/**
+	 * Gets the audience.
+	 *
+	 * @param OutValue The value to output on success.
+	 * @return Whether the value exists and was successfully outputted.
+	 */
+	bool GetAudience(FString& OutValue) const;
+
+	/**
 	 * Gets a claim by name.
 	 * This method can be used to get custom claims that are not reserved as part of the JWT specification.
 	 *
@@ -73,17 +123,37 @@ public:
 	}
 
 	/**
-	 * Perform verification of the encoded header and encoded payload.
-	 * The is done using the cryptographic algorithm specified in the header, and a secret value obtained
-	 * by key-lookup, to generate a signature.  The generated signature must be identical to the signature
-	 * provided in the JWT for verification to succeed.
-	 * 
-	 * @return true if the header and payload were verified successfully (signature match), otherwise false.
+	 * Checks whether the tokens expiration timestamp is in the past.
+	 *
+	 * @return Whether the token has expired
 	 */
+	bool HasExpired() const;
+
+	/**
+	 * Deprecated method to signature validate the JWT.
+	 *
+	 * @return False
+	 */
+	UE_DEPRECATED(5.3, "Verify() without arguments is deprecated. Please use Verify(Algorithm, ExpectedIssuer) instead.")
 	bool Verify() const;
 
+	/**
+	 * Signature validate and verify the JWT.
+	 * - Validates the signature against the encoded header and encoded payload
+	 * - Verifies the basic claims of the JWT
+	 * - Ensures the issuers match
+	 *
+	 * @param Algorithm Implementation of the cryptographic algorithm used for signature validation
+	 * @param ExpectedIssuer The expected issuer
+	 *
+	 * @return Whether the JWT was successfully verified
+	 */
+	bool Verify(
+		const IJwtAlgorithm& Algorithm, const FStringView ExpectedIssuer) const;
+
 private:
-	FJsonWebToken(const FStringView InEncodedJsonWebToken, const TSharedRef<FJsonObject>& InHeaderPtr,
+	FJsonWebToken(
+		const FStringView InEncodedHeaderPayload, const TSharedRef<FJsonObject>& InHeaderPtr,
 		const TSharedRef<FJsonObject>& InPayloadPtr, const TOptional<TArray<uint8>>& InSignature);
 
 	static void DumpJsonObject(const FJsonObject& InJsonObject);
@@ -97,6 +167,7 @@ public:
 	static const TCHAR *const CLAIM_ISSUER;
 	static const TCHAR *const CLAIM_ISSUED_AT;
 	static const TCHAR *const CLAIM_EXPIRATION;
+	static const TCHAR* const CLAIM_NOT_BEFORE;
 	static const TCHAR *const CLAIM_SUBJECT;
 	static const TCHAR *const CLAIM_AUDIENCE;
 
@@ -109,8 +180,9 @@ public:
 	static const TCHAR* const TYPE_VALUE_JWT;
 
 private:
-	/** The full encoded JWT. */
-	FString EncodedJsonWebToken;
+
+	/** The encoded header and payload parts. */
+	FString EncodedHeaderPayload;
 
 	/** The decoded and parsed header. */
 	TSharedRef<FJsonObject> Header;

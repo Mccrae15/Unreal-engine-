@@ -15,8 +15,6 @@ FSmartObjectRuntime::FSmartObjectRuntime(const USmartObjectDefinition& InDefinit
 	: Definition(&InDefinition)
 	, bEnabled(true)
 {
-	const int32 NumSlotDefinitions = InDefinition.GetSlots().Num();
-	SlotHandles.SetNum(NumSlotDefinitions);
 }
 
 AActor* FSmartObjectRuntime::GetOwnerActor() const
@@ -69,9 +67,9 @@ bool FSmartObjectRuntimeSlot::Release(const FSmartObjectClaimHandle& ClaimHandle
 
 		State = ESmartObjectSlotState::Free;
 		User.Invalidate();
+		UserData.Reset();
 		bReleased = true;
 	}
 
 	return bReleased;
 }
-

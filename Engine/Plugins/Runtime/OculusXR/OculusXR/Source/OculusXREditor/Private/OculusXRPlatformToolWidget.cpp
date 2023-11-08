@@ -16,6 +16,7 @@
 #include "GenericPlatform/GenericPlatformMisc.h"
 #include "Interfaces/IPluginManager.h"
 #include "SHyperlinkLaunchURL.h"
+#include "Misc/EngineVersionComparison.h"
 
 #define LOCTEXT_NAMESPACE "OculusPlatformToolWidget"
 #define TEXT_INDENT_OFFSET 20.0f
@@ -88,7 +89,7 @@ void SOculusPlatformToolWidget::Construct(const FArguments& InArgs)
 	BuildButtonToolbar(ButtonToolbar);
 	BuildExpansionFileBox(ExpansionFilesSettings);
 
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		if (PlatformSettings->GetTargetPlatform() == (uint8)EOculusXRPlatformTarget::Rift)
 		{
@@ -204,7 +205,7 @@ void SOculusPlatformToolWidget::Construct(const FArguments& InArgs)
 
 void SOculusPlatformToolWidget::BuildGeneralSettingsBox(TSharedPtr<SVerticalBox> box)
 {
-	if (PlatformSettings == NULL)
+	if (PlatformSettings == nullptr)
 	{
 		return;
 	}
@@ -410,7 +411,7 @@ void SOculusPlatformToolWidget::BuildButtonToolbar(TSharedPtr<SHorizontalBox> bo
 
 void SOculusPlatformToolWidget::BuildRiftOptionalFields(TSharedPtr<SVerticalBox> box)
 {
-	if (PlatformSettings == NULL)
+	if (PlatformSettings == nullptr)
 	{
 		return;
 	}
@@ -510,7 +511,7 @@ void SOculusPlatformToolWidget::BuildRedistPackagesBox(TSharedPtr<SVerticalBox> 
 
 void SOculusPlatformToolWidget::BuildExpansionFileBox(TSharedPtr<SVerticalBox> box)
 {
-	if (PlatformSettings == NULL)
+	if (PlatformSettings == nullptr)
 	{
 		return;
 	}
@@ -597,7 +598,7 @@ void SOculusPlatformToolWidget::BuildAssetConfigBox(TSharedPtr<SVerticalBox> box
 
 bool SOculusPlatformToolWidget::ConstructArguments(FString& args)
 {
-	if (PlatformSettings == NULL)
+	if (PlatformSettings == nullptr)
 	{
 		return false;
 	}
@@ -801,6 +802,9 @@ bool SOculusPlatformToolWidget::ConstructArguments(FString& args)
 			}
 		}
 	}
+
+	args += " --upload-from-engine UNREAL";
+
 	UE_LOG(LogTemp, Warning, TEXT("%s"), *args);
 	return success;
 }
@@ -892,7 +896,7 @@ void SOculusPlatformToolWidget::OnPlatformSettingChanged(TSharedPtr<FString> Ite
 	{
 		if (PlatformEnum->GetDisplayNameTextByIndex(i).EqualTo(FText::FromString(*ItemSelected)))
 		{
-			if (PlatformSettings != NULL)
+			if (PlatformSettings != nullptr)
 			{
 				PlatformSettings->SetTargetPlatform(i);
 				PlatformSettings->SaveConfig();
@@ -914,7 +918,7 @@ void SOculusPlatformToolWidget::OnPlatformSettingChanged(TSharedPtr<FString> Ite
 
 void SOculusPlatformToolWidget::OnApplicationIDChanged(const FText& InText, ETextCommit::Type InCommitType)
 {
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		PlatformSettings->SetApplicationID(InText.ToString());
 		PlatformSettings->SaveConfig();
@@ -923,7 +927,7 @@ void SOculusPlatformToolWidget::OnApplicationIDChanged(const FText& InText, ETex
 
 void SOculusPlatformToolWidget::OnApplicationTokenChanged(const FText& InText, ETextCommit::Type InCommitType)
 {
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		PlatformSettings->SetApplicationToken(InText.ToString());
 		PlatformSettings->SaveConfig();
@@ -932,7 +936,7 @@ void SOculusPlatformToolWidget::OnApplicationTokenChanged(const FText& InText, E
 
 void SOculusPlatformToolWidget::OnReleaseChannelChanged(const FText& InText, ETextCommit::Type InCommitType)
 {
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		PlatformSettings->SetReleaseChannel(InText.ToString());
 		PlatformSettings->SaveConfig();
@@ -941,7 +945,7 @@ void SOculusPlatformToolWidget::OnReleaseChannelChanged(const FText& InText, ETe
 
 void SOculusPlatformToolWidget::OnReleaseNoteChanged(const FText& InText, ETextCommit::Type InCommitType)
 {
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		PlatformSettings->SetReleaseNote(InText.ToString());
 		PlatformSettings->SaveConfig();
@@ -950,7 +954,7 @@ void SOculusPlatformToolWidget::OnReleaseNoteChanged(const FText& InText, ETextC
 
 void SOculusPlatformToolWidget::OnRiftBuildVersionChanged(const FText& InText, ETextCommit::Type InCommitType)
 {
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		PlatformSettings->OculusRiftBuildVersion = InText.ToString();
 		PlatformSettings->SaveConfig();
@@ -959,7 +963,7 @@ void SOculusPlatformToolWidget::OnRiftBuildVersionChanged(const FText& InText, E
 
 void SOculusPlatformToolWidget::OnRiftLaunchParamsChanged(const FText& InText, ETextCommit::Type InCommitType)
 {
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		PlatformSettings->OculusRiftLaunchParams = InText.ToString();
 		PlatformSettings->SaveConfig();
@@ -968,7 +972,7 @@ void SOculusPlatformToolWidget::OnRiftLaunchParamsChanged(const FText& InText, E
 
 void SOculusPlatformToolWidget::On2DLaunchParamsChanged(const FText& InText, ETextCommit::Type InCommitType)
 {
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		PlatformSettings->OculusRift2DLaunchParams = InText.ToString();
 		PlatformSettings->SaveConfig();
@@ -977,7 +981,7 @@ void SOculusPlatformToolWidget::On2DLaunchParamsChanged(const FText& InText, ETe
 
 void SOculusPlatformToolWidget::OnRiftFirewallChanged(ECheckBoxState CheckState)
 {
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		PlatformSettings->OculusRiftFireWallException = CheckState == ECheckBoxState::Checked ? true : false;
 		PlatformSettings->SaveConfig();
@@ -986,7 +990,7 @@ void SOculusPlatformToolWidget::OnRiftFirewallChanged(ECheckBoxState CheckState)
 
 void SOculusPlatformToolWidget::OnRedistPackageStateChanged(ECheckBoxState CheckState, FOculusXRRedistPackage* Package)
 {
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		Package->Included = CheckState == ECheckBoxState::Checked;
 		PlatformSettings->SaveConfig();
@@ -996,7 +1000,7 @@ void SOculusPlatformToolWidget::OnRedistPackageStateChanged(ECheckBoxState Check
 
 void SOculusPlatformToolWidget::OnAssetConfigTypeChanged(TSharedPtr<FString> ItemSelected, ESelectInfo::Type SelectInfo, int i)
 {
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		TArray<FOculusXRAssetConfig>* AssetConfigs = PlatformSettings->GetAssetConfigs();
 		for (int e = 0; e < (uint8)EOculusXRAssetType::Length; e++)
@@ -1015,7 +1019,7 @@ void SOculusPlatformToolWidget::OnAssetConfigTypeChanged(TSharedPtr<FString> Ite
 
 void SOculusPlatformToolWidget::OnAssetConfigRequiredChanged(ECheckBoxState CheckState, int i)
 {
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		TArray<FOculusXRAssetConfig>* AssetConfigs = PlatformSettings->GetAssetConfigs();
 		(*AssetConfigs)[i].Required = CheckState == ECheckBoxState::Checked;
@@ -1027,7 +1031,7 @@ void SOculusPlatformToolWidget::OnAssetConfigRequiredChanged(ECheckBoxState Chec
 
 void SOculusPlatformToolWidget::OnAssetConfigSKUChanged(const FText& InText, ETextCommit::Type InCommitType, int i)
 {
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		TArray<FOculusXRAssetConfig>* AssetConfigs = PlatformSettings->GetAssetConfigs();
 		(*AssetConfigs)[i].Sku = InText.ToString();
@@ -1039,7 +1043,7 @@ void SOculusPlatformToolWidget::OnAssetConfigSKUChanged(const FText& InText, ETe
 
 void SOculusPlatformToolWidget::OnUploadDebugSymbolsChanged(ECheckBoxState CheckState)
 {
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		PlatformSettings->UploadDebugSymbols = CheckState == ECheckBoxState::Checked ? true : false;
 		PlatformSettings->SaveConfig();
@@ -1050,7 +1054,7 @@ void SOculusPlatformToolWidget::OnUploadDebugSymbolsChanged(ECheckBoxState Check
 
 void SOculusPlatformToolWidget::OnDebugSymbolsOnlyChanged(ECheckBoxState CheckState)
 {
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		PlatformSettings->DebugSymbolsOnly = CheckState == ECheckBoxState::Checked ? true : false;
 		PlatformSettings->SaveConfig();
@@ -1061,7 +1065,7 @@ void SOculusPlatformToolWidget::OnDebugSymbolsOnlyChanged(ECheckBoxState CheckSt
 
 void SOculusPlatformToolWidget::OnBuildIDChanged(const FText& InText, ETextCommit::Type InCommitType)
 {
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		PlatformSettings->BuildID = InText.ToString();
 		PlatformSettings->SaveConfig();
@@ -1079,7 +1083,7 @@ void SOculusPlatformToolWidget::OnRiftGamepadEmulationChanged(TSharedPtr<FString
 	{
 		if (GamepadEmulationEnum->GetDisplayNameTextByIndex(i).EqualTo(FText::FromString(*ItemSelected)))
 		{
-			if (PlatformSettings != NULL)
+			if (PlatformSettings != nullptr)
 			{
 				PlatformSettings->SetRiftGamepadEmulation(i);
 				PlatformSettings->SaveConfig();
@@ -1094,7 +1098,7 @@ FReply SOculusPlatformToolWidget::OnSelectRiftBuildDirectory()
 	TSharedPtr<SWindow> parentWindow = FSlateApplication::Get().FindWidgetWindow(AsShared());
 	const void* parentWindowHandle = (parentWindow.IsValid() && parentWindow->GetNativeWindow().IsValid()) ? parentWindow->GetNativeWindow()->GetOSWindowHandle() : nullptr;
 
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		FString path;
 		FString defaultPath = PlatformSettings->OculusRiftBuildDirectory.IsEmpty() ? FPaths::ProjectContentDir() : PlatformSettings->OculusRiftBuildDirectory;
@@ -1110,7 +1114,7 @@ FReply SOculusPlatformToolWidget::OnSelectRiftBuildDirectory()
 
 FReply SOculusPlatformToolWidget::OnClearRiftBuildDirectory()
 {
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		PlatformSettings->OculusRiftBuildDirectory.Empty();
 		PlatformSettings->SaveConfig();
@@ -1124,7 +1128,7 @@ FReply SOculusPlatformToolWidget::OnSelectLaunchFilePath()
 	TSharedPtr<SWindow> parentWindow = FSlateApplication::Get().FindWidgetWindow(AsShared());
 	const void* parentWindowHandle = (parentWindow.IsValid() && parentWindow->GetNativeWindow().IsValid()) ? parentWindow->GetNativeWindow()->GetOSWindowHandle() : nullptr;
 
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		TArray<FString> path;
 		FString defaultPath = PlatformSettings->GetLaunchFilePath().IsEmpty() ? FPaths::ProjectContentDir() : PlatformSettings->GetLaunchFilePath();
@@ -1144,7 +1148,7 @@ FReply SOculusPlatformToolWidget::OnSelectLaunchFilePath()
 
 FReply SOculusPlatformToolWidget::OnClearLaunchFilePath()
 {
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		PlatformSettings->SetLaunchFilePath("");
 		PlatformSettings->SaveConfig();
@@ -1163,7 +1167,7 @@ FReply SOculusPlatformToolWidget::OnSelectSymbolDirPath()
 	TSharedPtr<SWindow> parentWindow = FSlateApplication::Get().FindWidgetWindow(AsShared());
 	const void* parentWindowHandle = (parentWindow.IsValid() && parentWindow->GetNativeWindow().IsValid()) ? parentWindow->GetNativeWindow()->GetOSWindowHandle() : nullptr;
 
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		FString dirPath;
 		FString defaultPath = PlatformSettings->GetSymbolDirPath().IsEmpty() ? GenerateSymbolPath() : PlatformSettings->GetSymbolDirPath();
@@ -1179,7 +1183,7 @@ FReply SOculusPlatformToolWidget::OnSelectSymbolDirPath()
 
 FReply SOculusPlatformToolWidget::OnClearSymbolDirPath()
 {
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		PlatformSettings->SetSymbolDirPath("");
 		PlatformSettings->SaveConfig();
@@ -1191,7 +1195,7 @@ FReply SOculusPlatformToolWidget::OnClearSymbolDirPath()
 FReply SOculusPlatformToolWidget::OnSelect2DLaunchPath()
 {
 
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		TSharedPtr<SWindow> parentWindow = FSlateApplication::Get().FindWidgetWindow(AsShared());
 		const void* parentWindowHandle = (parentWindow.IsValid() && parentWindow->GetNativeWindow().IsValid()) ? parentWindow->GetNativeWindow()->GetOSWindowHandle() : nullptr;
@@ -1212,7 +1216,7 @@ FReply SOculusPlatformToolWidget::OnSelect2DLaunchPath()
 
 FReply SOculusPlatformToolWidget::OnClear2DLaunchPath()
 {
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		PlatformSettings->OculusRift2DLaunchPath.Empty();
 		PlatformSettings->SaveConfig();
@@ -1237,7 +1241,7 @@ FReply SOculusPlatformToolWidget::OnCancelUpload()
 FReply SOculusPlatformToolWidget::OnSelectLanguagePacksPath()
 {
 
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		TSharedPtr<SWindow> parentWindow = FSlateApplication::Get().FindWidgetWindow(AsShared());
 		const void* parentWindowHandle = (parentWindow.IsValid() && parentWindow->GetNativeWindow().IsValid()) ? parentWindow->GetNativeWindow()->GetOSWindowHandle() : nullptr;
@@ -1255,7 +1259,7 @@ FReply SOculusPlatformToolWidget::OnSelectLanguagePacksPath()
 
 FReply SOculusPlatformToolWidget::OnClearLanguagePacksPath()
 {
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		PlatformSettings->SetLanguagePacksPath("");
 		PlatformSettings->SaveConfig();
@@ -1267,7 +1271,7 @@ FReply SOculusPlatformToolWidget::OnClearLanguagePacksPath()
 FReply SOculusPlatformToolWidget::OnSelectExpansionFilesPath()
 {
 
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		TSharedPtr<SWindow> parentWindow = FSlateApplication::Get().FindWidgetWindow(AsShared());
 		const void* parentWindowHandle = (parentWindow.IsValid() && parentWindow->GetNativeWindow().IsValid()) ? parentWindow->GetNativeWindow()->GetOSWindowHandle() : nullptr;
@@ -1303,7 +1307,7 @@ FReply SOculusPlatformToolWidget::OnSelectExpansionFilesPath()
 
 FReply SOculusPlatformToolWidget::OnClearExpansionFilesPath()
 {
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		PlatformSettings->SetExpansionFilesPath("");
 		PlatformSettings->GetAssetConfigs()->Empty();
@@ -1458,7 +1462,7 @@ void FPlatformDownloadTask::DoWork()
 		UpdateLogText.Execute(SOculusPlatformToolWidget::LogText + LOCTEXT("DownloadError", "An error has occured with downloading the platform tool.\n").ToString());
 	}
 
-	if (SaveCompleteEvent != NULL)
+	if (SaveCompleteEvent != nullptr)
 	{
 		SaveCompleteEvent->Trigger();
 	}
@@ -1511,7 +1515,11 @@ void FPlatformUploadTask::DoWork()
 		FEvent* PlatformToolCreatedEvent = FGenericPlatformProcess::GetSynchEventFromPool(false);
 
 		UpdateLogText.Execute(SOculusPlatformToolWidget::LogText + LOCTEXT("NoCLI", "Unable to find Oculus Platform Utility.\n").ToString());
+#if UE_VERSION_OLDER_THAN(5, 3, 0)
 		EAppReturnType::Type dialogChoice = FMessageDialog::Open(EAppMsgType::OkCancel, OculusPlatformDialogMessage, &OculusPlatformDialogTitle);
+#else
+		EAppReturnType::Type dialogChoice = FMessageDialog::Open(EAppMsgType::OkCancel, OculusPlatformDialogMessage, OculusPlatformDialogTitle);
+#endif
 		if (dialogChoice == EAppReturnType::Ok)
 		{
 			UpdateLogText.Execute(SOculusPlatformToolWidget::LogText + LOCTEXT("DownloadCLI", "Downloading Oculus Platform Utility . . .\n").ToString());
@@ -1575,7 +1583,11 @@ void FPlatformLoadRedistPackagesTask::DoWork()
 		FEvent* PlatformToolCreatedEvent = FGenericPlatformProcess::GetSynchEventFromPool(false);
 
 		UpdateLogText.Execute(SOculusPlatformToolWidget::LogText + LOCTEXT("NoCLI", "Unable to find Oculus Platform Utility.\n").ToString());
+#if UE_VERSION_OLDER_THAN(5, 3, 0)
 		EAppReturnType::Type dialogChoice = FMessageDialog::Open(EAppMsgType::OkCancel, OculusPlatformDialogMessage, &OculusPlatformDialogTitle);
+#else
+		EAppReturnType::Type dialogChoice = FMessageDialog::Open(EAppMsgType::OkCancel, OculusPlatformDialogMessage, OculusPlatformDialogTitle);
+#endif
 		if (dialogChoice == EAppReturnType::Ok)
 		{
 			UpdateLogText.Execute(SOculusPlatformToolWidget::LogText + LOCTEXT("DownloadCLI", "Downloading Oculus Platform Utility . . .\n").ToString());
@@ -1623,7 +1635,7 @@ void FPlatformLoadRedistPackagesTask::DoWork()
 	}
 
 	// Check to see if our stored copy of redist packages is outdated
-	if (PlatformSettings != NULL)
+	if (PlatformSettings != nullptr)
 	{
 		if (LoadedPackages.Num() > PlatformSettings->OculusRedistPackages.Num())
 		{

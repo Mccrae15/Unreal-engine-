@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "Chaos/Joint/PBDJointContainerSolver.h"
 #include "Chaos/Joint/ChaosJointLog.h"
+#include "Chaos/Island/IslandManager.h"
 
 namespace Chaos
 {
@@ -119,23 +120,26 @@ namespace Chaos
 			}
 		}
 
-		void FPBDJointContainerSolver::FPBDJointContainerSolver::AddConstraints()
+		void FPBDJointContainerSolver::AddConstraints()
 		{
 			Reset(ConstraintContainer.GetNumConstraints());
 
 			// @todo(chaos): we could eliminate the index array if we're solving all constraints in the scene (RBAN)
 			for (int32 ContainerConstraintIndex = 0; ContainerConstraintIndex < ConstraintContainer.GetNumConstraints(); ++ContainerConstraintIndex)
 			{
-				AddConstraint(ContainerConstraintIndex);
+				if (ConstraintContainer.IsConstraintEnabled(ContainerConstraintIndex))
+				{
+					AddConstraint(ContainerConstraintIndex);
+				}
 			}
 		}
 
-		void FPBDJointContainerSolver::AddConstraints(const TArrayView<Private::FPBDIslandConstraint>& IslandConstraints)
+		void FPBDJointContainerSolver::AddConstraints(const TArrayView<Private::FPBDIslandConstraint*>& IslandConstraints)
 		{
-			for (Private::FPBDIslandConstraint& IslandConstraint : IslandConstraints)
+			for (Private::FPBDIslandConstraint* IslandConstraint : IslandConstraints)
 			{
 				// We will only ever be given constraints from our container (asserts in non-shipping)
-				const int32 ContainerConstraintIndex = IslandConstraint.GetConstraint()->AsUnsafe<FPBDJointConstraintHandle>()->GetConstraintIndex();
+				const int32 ContainerConstraintIndex = IslandConstraint->GetConstraint()->AsUnsafe<FPBDJointConstraintHandle>()->GetConstraintIndex();
 
 				AddConstraint(ContainerConstraintIndex);
 			}
@@ -224,6 +228,7 @@ namespace Chaos
 					SolverType& Solver = Solvers[SolverConstraintIndex];
 
 					// NOTE: Particle order was revered in the solver...
+					// NOTE: Solver impulses are positional impulses
 					const FVec3 LinearImpulse = -Solver.GetNetLinearImpulse() / Dt;
 					const FVec3 AngularImpulse = -Solver.GetNetAngularImpulse() / Dt;
 					const FSolverBody* SolverBody0 = &Solver.Body0().SolverBody();

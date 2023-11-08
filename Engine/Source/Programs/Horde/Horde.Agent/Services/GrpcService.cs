@@ -1,12 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Net.Security;
+using System.Net.Http.Json;
+using System.Net.Sockets;
+using System.Threading;
+using System.Threading.Tasks;
+using Grpc.Core;
+using Grpc.Core.Interceptors;
 using Grpc.Net.Client;
 using Horde.Agent.Utility;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using OpenTracing;
+using OpenTracing.Util;
 
 namespace Horde.Agent.Services
 {
@@ -15,9 +25,20 @@ namespace Horde.Agent.Services
 	/// </summary>
 	class GrpcService
 	{
+		class GetPortsResponse
+		{
+			public int UnencryptedHttp2 { get; set; }
+		}
+
+		private readonly IOptions<AgentSettings> _settings;
 		private readonly ServerProfile _serverProfile;
 		private readonly ILogger _logger;
 		private readonly ILoggerFactory _loggerFactory;
+
+		/// <summary>
+		/// The current server profile
+		/// </summary>
+		public ServerProfile ServerProfile => _serverProfile;
 
 		/// <summary>
 		/// Constructor
@@ -27,6 +48,7 @@ namespace Horde.Agent.Services
 		/// <param name="loggerFactory"></param>
 		public GrpcService(IOptions<AgentSettings> settings, ILogger<GrpcService> logger, ILoggerFactory loggerFactory)
 		{
+			_settings = settings;
 			_serverProfile = settings.Value.GetCurrentServerProfile();
 			_logger = logger;
 			_loggerFactory = loggerFactory;
@@ -36,60 +58,113 @@ namespace Horde.Agent.Services
 		/// Create a GRPC channel with a default token
 		/// </summary>
 		/// <returns>New grpc channel</returns>
-		public GrpcChannel CreateGrpcChannel()
+		public Task<GrpcChannel> CreateGrpcChannelAsync(CancellationToken cancellationToken)
 		{
-			return CreateGrpcChannel(_serverProfile.Token);
+			return CreateGrpcChannelAsync(_serverProfile.Token, cancellationToken);
 		}
 		
 		/// <summary>
 		/// Create a GRPC channel with the given bearer token
 		/// </summary>
 		/// <returns>New grpc channel</returns>
-		public GrpcChannel CreateGrpcChannel(string? bearerToken)
+		public async Task<GrpcChannel> CreateGrpcChannelAsync(string? bearerToken, CancellationToken cancellationToken)
 		{
-			if (bearerToken == null)
+#pragma warning disable CA2000 // Dispose objects before losing scope
+			// HTTP handler is disposed by GrpcChannel below
+			SocketsHttpHandler httpHandler = new()
 			{
-				return CreateGrpcChannel(_serverProfile.Url, null);
-			}
-			else
-			{
-				return CreateGrpcChannel(_serverProfile.Url, new AuthenticationHeaderValue("Bearer", bearerToken));
-			}
-		}
+				ConnectCallback = async (context, connectCt) =>
+				{
+					using IScope scope = GlobalTracer.Instance
+						.BuildSpan($"{nameof(GrpcService)}.ConnectCallback")
+						.WithResourceName(context.DnsEndPoint.Host)
+						.StartActive();
 
-		/// <summary>
-		/// Create a GRPC channel with the given auth header value
-		/// </summary>
-		/// <returns>New grpc channel</returns>
-		public GrpcChannel CreateGrpcChannel(Uri address, AuthenticationHeaderValue? authHeaderValue)
-		{
-			#pragma warning disable CA2000 // Dispose objects before losing scope
-			// HTTP client handler is disposed by GrpcChannel below
-			HttpClientHandler customCertHandler = new HttpClientHandler();
-			#pragma warning restore CA2000 // Dispose objects before losing scope
-			customCertHandler.ServerCertificateCustomValidationCallback += (sender, cert, chain, errors) => CertificateHelper.CertificateValidationCallBack(_logger, sender, cert, chain, errors, _serverProfile);
-			customCertHandler.CheckCertificateRevocationList = true;
+					IPAddress[] ips;
+					using (IScope _ = GlobalTracer.Instance.BuildSpan("DnsResolve").StartActive())
+					{
+						ips = await Dns.GetHostAddressesAsync(context.DnsEndPoint.Host, connectCt);
+					}
 
-			HttpClient httpClient = new (customCertHandler, true);
+					IPEndPoint ipEndpoint = new (ips[0], context.DnsEndPoint.Port);
+					using (IScope _ = GlobalTracer.Instance.BuildSpan("TcpConnect").StartActive())
+					{
+						Socket socket = new(SocketType.Stream, ProtocolType.Tcp);
+						try
+						{
+							await socket.ConnectAsync(ipEndpoint, connectCt);
+							return new NetworkStream(socket, ownsSocket: true);
+						}
+						catch
+						{
+							socket.Dispose();
+							throw;
+						}
+					}
+				},
+				
+				SslOptions = new SslClientAuthenticationOptions
+				{
+					RemoteCertificateValidationCallback = (sender, cert, chain, errors) => CertificateHelper.CertificateValidationCallBack(_logger, sender, cert, chain, errors, _serverProfile)
+				}
+			};
+#pragma warning restore CA2000 // Dispose objects before losing scope
+
+			HttpClient httpClient = new (httpHandler, true);
 			httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
-			if (authHeaderValue != null)
+			if (bearerToken != null)
 			{
-				httpClient.DefaultRequestHeaders.Authorization = authHeaderValue;
+				httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", bearerToken);
 			}
 
 			httpClient.Timeout = TimeSpan.FromSeconds(210); // Need to make sure this doesn't cancel any long running gRPC streaming calls (eg. session update)
 
-			_logger.LogInformation("Connecting to rpc server {BaseUrl}", _serverProfile.Url);
-			return GrpcChannel.ForAddress(address, new GrpcChannelOptions
+			// Get the server URL for gRPC traffic. If we're using an unencrpyted connection we need to use a different port for http/2, so 
+			// send a http1 request to the server to query it.
+			Uri serverUri = _serverProfile.Url;
+			if (serverUri.Scheme.Equals("http", StringComparison.Ordinal))
+			{
+				_logger.LogInformation("Querying server {BaseUrl} for rpc port", serverUri);
+				using (HttpResponseMessage response = await httpClient.GetAsync(new Uri(serverUri, "api/v1/server/ports"), cancellationToken))
+				{
+					GetPortsResponse? ports = await response.Content.ReadFromJsonAsync<GetPortsResponse>(Program.DefaultJsonSerializerOptions, cancellationToken);
+					if (ports != null && ports.UnencryptedHttp2 != 0)
+					{
+						UriBuilder builder = new UriBuilder(serverUri);
+						builder.Port = ports.UnencryptedHttp2;
+						serverUri = builder.Uri;
+					}
+				}
+			}
+
+			_logger.LogInformation("Connecting to rpc server {BaseUrl}", serverUri);
+			return GrpcChannel.ForAddress(serverUri, new GrpcChannelOptions
 			{
 				// Required payloads coming from CAS service can be large
 				MaxReceiveMessageSize = 1024 * 1024 * 1024, // 1 GB
 				MaxSendMessageSize = 1024 * 1024 * 1024, // 1 GB
-				
 				LoggerFactory = _loggerFactory,
 				HttpClient = httpClient,
 				DisposeHttpClient = true
 			});
+		}
+
+		/// <summary>
+		/// Get a gRPC call invoker for the given channel with extra metadata attached,
+		/// such as current version and name
+		/// </summary>
+		/// <param name="channel">gRPC channel to use</param>
+		/// <returns>A call invoker</returns>
+		public CallInvoker GetInvoker(GrpcChannel channel)
+		{
+			CallInvoker invoker = channel.Intercept(headers =>
+			{
+				headers.Add("Horde-Agent-Version", Program.Version);
+				headers.Add("Horde-Agent-Name", _settings.Value.GetAgentName());
+				return headers;
+			});
+			
+			return invoker;
 		}
 	}
 }

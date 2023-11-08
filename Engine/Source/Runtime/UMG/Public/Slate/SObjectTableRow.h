@@ -4,6 +4,7 @@
 
 #include "Slate/SObjectWidget.h"
 #include "Blueprint/IUserObjectListEntry.h"
+#include "Types/ReflectionMetadata.h"
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/STableViewBase.h"
 #include "Widgets/Text/STextBlock.h"
@@ -15,7 +16,7 @@ public:
 	virtual UListViewBase* GetOwningListView() const = 0;
 	virtual UUserWidget* GetUserWidget() const = 0;
 
-	UMG_API static TSharedPtr<const IObjectTableRow> ObjectRowFromUserWidget(const UUserWidget* RowUserWidget)
+	static TSharedPtr<const IObjectTableRow> ObjectRowFromUserWidget(const UUserWidget* RowUserWidget)
 	{
 		TWeakPtr<const IObjectTableRow>* ObjectRow = ObjectRowsByUserWidget.Find(RowUserWidget);
 		if (ObjectRow && ObjectRow->IsValid())
@@ -499,7 +500,7 @@ protected:
 		}
 		else
 		{
-			checkf(OwnerTable->Private_IsPendingRefresh(), TEXT("We were unable to find the item for this widget.  If it was removed from the source collection, the list should be pending a refresh."));
+			checkf(OwnerTable->Private_IsPendingRefresh(), TEXT("We were unable to find the item for this widget. If it was removed from the source collection, the list should be pending a refresh. %s"), *FReflectionMetaData::GetWidgetPath(this, false, false));
 		}
 
 		return nullptr;

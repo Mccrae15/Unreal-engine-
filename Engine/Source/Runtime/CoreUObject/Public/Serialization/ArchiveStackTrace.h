@@ -11,6 +11,7 @@
 #include "Serialization/Archive.h"
 #include "Serialization/LargeMemoryReader.h"
 #include "Serialization/LargeMemoryWriter.h"
+#include "Serialization/PackageWriter.h"
 #include "Templates/RefCounting.h"
 #include "Templates/UniquePtr.h"
 #include "UObject/NameTypes.h"
@@ -20,12 +21,10 @@ class FLinkerLoad;
 class FProperty;
 class FUObjectThreadContext;
 class UObject;
-struct FObjectExport;
-struct FObjectImport;
 struct FUObjectSerializeContext;
 
 /** Structure that holds stats from comparing two packages */
-struct COREUOBJECT_API FArchiveDiffStats
+struct FArchiveDiffStats
 {
 	/** Size of all of the differences between two packages */
 	int64 DiffSize;
@@ -45,26 +44,47 @@ struct COREUOBJECT_API FArchiveDiffStats
 };
 
 /** Ignores saving the stack trace when collecting serialize offsets .*/
-class COREUOBJECT_API FArchiveStackTraceIgnoreScope
+class FArchiveStackTraceIgnoreScope
 {
 	const bool bIgnore;
 public:
-	FArchiveStackTraceIgnoreScope(bool bInIgnore = true);
-	~FArchiveStackTraceIgnoreScope();
+	COREUOBJECT_API FArchiveStackTraceIgnoreScope(bool bInIgnore = true);
+	COREUOBJECT_API ~FArchiveStackTraceIgnoreScope();
 };
 
 /**
  * Disables collecting both offsets and stack traces when collecting serialize callstacks.
  * Typically used when appending data from one stack tracing archive to another.
  */
-class COREUOBJECT_API FArchiveStackTraceDisabledScope
+class FArchiveStackTraceDisabledScope
 {
 public:
-	FArchiveStackTraceDisabledScope();
-	~FArchiveStackTraceDisabledScope();
+	COREUOBJECT_API FArchiveStackTraceDisabledScope();
+	COREUOBJECT_API ~FArchiveStackTraceDisabledScope();
 };
 
-struct COREUOBJECT_API FArchiveDiffInfo
+namespace UE::ArchiveStackTrace
+{
+
+struct FPackageData
+{
+	uint8* Data = nullptr;
+	int64 Size = 0;
+	int64 HeaderSize = 0;
+	int64 StartOffset = 0;
+};
+/** Helper function to load package contents into memory. Supports EDL packages. */
+COREUOBJECT_API bool LoadPackageIntoMemory(const TCHAR* InFilename,
+	FPackageData& OutPackageData, TUniquePtr<uint8>& OutLoadedBytes);
+COREUOBJECT_API void ForceKillPackageAndLinker(FLinkerLoad* Linker);
+COREUOBJECT_API bool ShouldIgnoreDiff();
+COREUOBJECT_API bool ShouldBypassDiff();
+
+} // namespace UE::ArchiveStackTrace
+
+struct
+// Deprecated: 5.3, "FArchiveStackTrace was only used by DiffPackageWriter, and has been moved into a private helper class. Contact Epic if you need this class for another reason.")
+FArchiveDiffInfo
 {
 	int64 Offset;
 	int64 Size;
@@ -94,25 +114,17 @@ struct COREUOBJECT_API FArchiveDiffInfo
 	}
 };
 
-class COREUOBJECT_API FArchiveDiffMap : public TArray<FArchiveDiffInfo>
+class 
+UE_DEPRECATED(5.3, "FArchiveStackTrace was only used by DiffPackageWriter, and has been moved into a private helper class. Contact Epic if you need this class for another reason.")
+FArchiveDiffMap : public TArray<FArchiveDiffInfo>
 {
 public:
-	bool ContainsOffset(int64 Offset) const
-	{
-		for (const FArchiveDiffInfo& Diff : *this)
-		{
-			if (Diff.Offset <= Offset && Offset < (Diff.Offset + Diff.Size))
-			{
-				return true;
-			}
-		}
-
-		return false;
-	}
+	bool ContainsOffset(int64 Offset) const;
 };
 
-/** Holds offsets to captured callstacks. */
-class COREUOBJECT_API FArchiveCallstacks
+class
+UE_DEPRECATED(5.3, "FArchiveStackTrace was only used by DiffPackageWriter, and has been moved into a private helper class. Contact Epic if you need this class for another reason.")
+FArchiveCallstacks
 {
 public:
 	/** Offset and callstack pair */
@@ -153,10 +165,10 @@ public:
 		FCallstackData Clone() const;
 	};
 	
-	explicit FArchiveCallstacks(UObject* InAsset);
+	COREUOBJECT_API explicit FArchiveCallstacks(UObject* InAsset);
 
 	/** Returns the asset class name. */
-	FName GetAssetClass() const;
+	COREUOBJECT_API FName GetAssetClass() const;
 
 	/** Returns the total number of callstacks. */
 	int32 Num() const
@@ -165,7 +177,7 @@ public:
 	}
 
 	/** Capture and append the current callstack. */
-	void Add(
+	COREUOBJECT_API void Add(
 		int64 Offset,
 		int64 Length,
 		UObject* SerializedObject,
@@ -176,10 +188,10 @@ public:
 		int32 StackIgnoreCount);
 
 	/** Append other callstacks. */
-	void Append(const FArchiveCallstacks& Other, int64 Offset = 0);
+	COREUOBJECT_API void Append(const FArchiveCallstacks& Other, int64 Offset = 0);
 
 	/** Finds a callstack associated with data at the specified offset */
-	int32 GetCallstackIndexAtOffset(int64 Offset, int32 MinOffsetIndex = 0) const;
+	COREUOBJECT_API int32 GetCallstackIndexAtOffset(int64 Offset, int32 MinOffsetIndex = 0) const;
 
 	/** Finds a callstack associated with data at the specified offset */
 	const FCallstackAtOffset& GetCallstack(int32 CallstackIndex) const
@@ -213,7 +225,7 @@ public:
 
 private:
 	/** Adds a unique callstack to UniqueCallstacks map */
-	ANSICHAR* AddUniqueCallstack(bool bIsCollectingCallstacks, UObject* SerializedObject, FProperty* SerializedProperty, uint32& OutCallstackCRC);
+	COREUOBJECT_API ANSICHAR* AddUniqueCallstack(bool bIsCollectingCallstacks, UObject* SerializedObject, FProperty* SerializedProperty, uint32& OutCallstackCRC);
 
 	/** The asset being serialized */
 	UObject* Asset;
@@ -233,20 +245,25 @@ private:
 	int64 TotalSize;
 };
 
-/** Archive proxy that captures callstacks for each serialize call. */
-class COREUOBJECT_API FArchiveStackTraceWriter
+class
+UE_DEPRECATED(5.3, "FArchiveStackTrace was only used by DiffPackageWriter, and has been moved into a private helper class. Contact Epic if you need this class for another reason.")
+FArchiveStackTraceWriter
 	: public FArchiveProxy
 {
 public:
-	FArchiveStackTraceWriter(
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+
+	COREUOBJECT_API FArchiveStackTraceWriter(
 		FArchive& InInner,
 		FArchiveCallstacks& InCallstacks,
 		const FArchiveDiffMap* InDiffMap = nullptr,
 		int64 InDiffMapStartOffset = 0);
 
-	FORCENOINLINE virtual void Serialize(void* Data, int64 Length) override; // FORCENOINLINE so it can be counted during StackTrace
-	virtual void SetSerializeContext(FUObjectSerializeContext* Context) override;
-	virtual FUObjectSerializeContext* GetSerializeContext() override;
+	COREUOBJECT_API virtual ~FArchiveStackTraceWriter() override;
+
+	COREUOBJECT_API FORCENOINLINE virtual void Serialize(void* Data, int64 Length) override; // FORCENOINLINE so it can be counted during StackTrace
+	COREUOBJECT_API virtual void SetSerializeContext(FUObjectSerializeContext* Context) override;
+	COREUOBJECT_API virtual FUObjectSerializeContext* GetSerializeContext() override;
 	
 #if WITH_EDITOR
 	virtual void PushDebugDataString(const FName& DebugData) override
@@ -282,8 +299,10 @@ public:
 		int64 StartOffset = 0;
 	};
 
+	using EPackageHeaderFormat = ICookedPackageWriter::EPackageHeaderFormat;
+
 	/** Compares two packages and logs the differences and calltacks. */
-	static void Compare(
+	static COREUOBJECT_API void Compare(
 		const FPackageData& SourcePackage,
 		const FPackageData& DestPackage,
 		const FArchiveCallstacks& Callstacks,
@@ -296,7 +315,7 @@ public:
 		bool bSuppressLogging = false);
 
 	/** Creates map with mismatching callstacks. */
-	static bool GenerateDiffMap(
+	static COREUOBJECT_API bool GenerateDiffMap(
 		const FPackageData& SourcePackage,
 		const FPackageData& DestPackage,
 		const FArchiveCallstacks& Callstacks,
@@ -304,14 +323,15 @@ public:
 		FArchiveDiffMap& OutDiffMap);
 
 	/** Logs any mismatching header data. */
-	static void DumpPackageHeaderDiffs(
+	static COREUOBJECT_API void DumpPackageHeaderDiffs(
 		const FPackageData& SourcePackage,
 		const FPackageData& DestPackage,
 		const FString& AssetFilename,
-		const int32 MaxDiffsToLog);
+		const int32 MaxDiffsToLog,
+		const EPackageHeaderFormat PackageHeaderFormat = EPackageHeaderFormat::PackageFileSummary);
 
 	/** Returns a new linker for loading the specified package. */
-	static FLinkerLoad* CreateLinkerForPackage(
+	static COREUOBJECT_API FLinkerLoad* CreateLinkerForPackage(
 		FUObjectSerializeContext* LoadContext,
 		const FString& InPackageName,
 		const FString& InFilename,
@@ -327,16 +347,21 @@ private:
 	int64 DiffMapOffset;
 	int32 StackIgnoreCount = 2;
 	bool bInnerArchiveDisabled;
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+
 };
 
-/**
- * Memory backed stack trace writer.
- */
-class COREUOBJECT_API FArchiveStackTraceMemoryWriter final
+class
+UE_DEPRECATED(5.3, "FArchiveStackTrace was only used by DiffPackageWriter, and has been moved into a private helper class. Contact Epic if you need this class for another reason.")
+FArchiveStackTraceMemoryWriter final
 	: public FLargeMemoryWriter
 {
 public:
-	FArchiveStackTraceMemoryWriter(
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+
+	COREUOBJECT_API FArchiveStackTraceMemoryWriter(
 		FArchiveCallstacks& Callstacks,
 		const FArchiveDiffMap* DiffMap = nullptr,
 		const int64 DiffMapOffset = 0,
@@ -344,26 +369,32 @@ public:
 		bool bIsPersistent = false,
 		const TCHAR* Filename = nullptr);
 
-	FORCENOINLINE virtual void Serialize(void* Memory, int64 Length) override; // FORCENOINLINE so it can be counted during StackTrace
-	virtual void SetSerializeContext(FUObjectSerializeContext* Context) override;
-	virtual FUObjectSerializeContext* GetSerializeContext() override;
+	COREUOBJECT_API FORCENOINLINE virtual void Serialize(void* Memory, int64 Length) override; // FORCENOINLINE so it can be counted during StackTrace
+	COREUOBJECT_API virtual void SetSerializeContext(FUObjectSerializeContext* Context) override;
+	COREUOBJECT_API virtual FUObjectSerializeContext* GetSerializeContext() override;
 
 private:
 	FArchiveStackTraceWriter StackTraceWriter;
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS;
 };
 
 /**
  * Archive that stores a callstack for each of the Serialize calls and has the ability to compare itself to an existing
  * package on disk and dump all the differences to log.
  */
-class COREUOBJECT_API FArchiveStackTrace
+class
+UE_DEPRECATED(5.3, "FArchiveStackTrace was only used by DiffPackageWriter, and has been moved into a private helper class. Contact Epic if you need this class for another reason.")
+FArchiveStackTrace
 	: public FLargeMemoryWriter
 {
 public:
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+
 	using FPackageData = FArchiveStackTraceWriter::FPackageData;
 
-	FArchiveStackTrace(UObject* InAsset, const TCHAR* InFilename, bool bInCollectCallstacks = true, const FArchiveDiffMap* InDiffMap = nullptr);
-	virtual ~FArchiveStackTrace();
+	COREUOBJECT_API FArchiveStackTrace(UObject* InAsset, const TCHAR* InFilename, bool bInCollectCallstacks = true, const FArchiveDiffMap* InDiffMap = nullptr);
+	COREUOBJECT_API virtual ~FArchiveStackTrace();
 
 	FArchiveCallstacks& GetCallstacks()
 	{
@@ -375,35 +406,38 @@ public:
 		return Callstacks;
 	}
 
-	FORCENOINLINE virtual void Serialize(void* Memory, int64 Length) override; // FORCENOINLINE so it can be counted during StackTrace
-	virtual void SetSerializeContext(FUObjectSerializeContext* Context) override;
-	virtual FUObjectSerializeContext* GetSerializeContext() override;
+	COREUOBJECT_API FORCENOINLINE virtual void Serialize(void* Memory, int64 Length) override; // FORCENOINLINE so it can be counted during StackTrace
+	COREUOBJECT_API virtual void SetSerializeContext(FUObjectSerializeContext* Context) override;
+	COREUOBJECT_API virtual FUObjectSerializeContext* GetSerializeContext() override;
 
 	/** Compares this archive with the given bytes from disk or FPackageData. Dumps all differences to log. */
-	void CompareWith(const TCHAR* InFilename, const int64 TotalHeaderSize, const TCHAR* CallstackCutoffText,
+	COREUOBJECT_API void CompareWith(const TCHAR* InFilename, const int64 TotalHeaderSize, const TCHAR* CallstackCutoffText,
 		const int32 MaxDiffsToLog, TMap<FName, FArchiveDiffStats>& OutStats);
-	void CompareWith(const FPackageData& SourcePackage, const TCHAR* FileDisplayName, const int64 TotalHeaderSize,
-		const TCHAR* CallstackCutoffText, const int32 MaxDiffsToLog, TMap<FName, FArchiveDiffStats>& OutStats);
+	COREUOBJECT_API void CompareWith(const FPackageData& SourcePackage, const TCHAR* FileDisplayName, const int64 TotalHeaderSize,
+		const TCHAR* CallstackCutoffText, const int32 MaxDiffsToLog, TMap<FName, FArchiveDiffStats>& OutStats,
+		const FArchiveStackTraceWriter::EPackageHeaderFormat PackageHeaderFormat = FArchiveStackTraceWriter::EPackageHeaderFormat::PackageFileSummary);
 
 	/** Generates a map of all differences between this archive and the given bytes from disk or FPackageData. */
-	bool GenerateDiffMap(const TCHAR* InFilename, int64 TotalHeaderSize, int32 MaxDiffsToFind, FArchiveDiffMap& OutDiffMap);
-	bool GenerateDiffMap(const FPackageData& SourcePackage, int64 TotalHeaderSize, int32 MaxDiffsToFind,
+	COREUOBJECT_API bool GenerateDiffMap(const TCHAR* InFilename, int64 TotalHeaderSize, int32 MaxDiffsToFind, FArchiveDiffMap& OutDiffMap);
+	COREUOBJECT_API bool GenerateDiffMap(const FPackageData& SourcePackage, int64 TotalHeaderSize, int32 MaxDiffsToFind,
 		FArchiveDiffMap& OutDiffMap);
 
 	/** Compares the provided buffer with the given bytes from disk or FPackageData. */
-	static bool IsIdentical(const TCHAR* InFilename, int64 BufferSize, const uint8* BufferData);
-	static bool IsIdentical(const FPackageData& SourcePackage, int64 BufferSize, const uint8* BufferData);
+	static COREUOBJECT_API bool IsIdentical(const TCHAR* InFilename, int64 BufferSize, const uint8* BufferData);
+	static COREUOBJECT_API bool IsIdentical(const FPackageData& SourcePackage, int64 BufferSize, const uint8* BufferData);
 
 	/** Helper function to load package contents into memory. Supports EDL packages. */
-	static bool LoadPackageIntoMemory(const TCHAR* InFilename, FPackageData& OutPackageData,
+	static COREUOBJECT_API bool LoadPackageIntoMemory(const TCHAR* InFilename, FPackageData& OutPackageData,
 		TUniquePtr<uint8>& OutLoadedBytes);
 
 private:
 	FArchiveCallstacks Callstacks;
 	FArchiveStackTraceWriter StackTraceWriter;
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS;
 };
 
-class COREUOBJECT_API FArchiveStackTraceReader : public FLargeMemoryReader
+class FArchiveStackTraceReader : public FLargeMemoryReader
 {
 public:
 	struct FSerializeData
@@ -436,12 +470,12 @@ private:
 	FUObjectThreadContext& ThreadContext;
 public:
 
-	FArchiveStackTraceReader(const TCHAR* InFilename, const uint8* InData, const int64 Num);
+	COREUOBJECT_API FArchiveStackTraceReader(const TCHAR* InFilename, const uint8* InData, const int64 Num);
 
-	virtual void Serialize(void* OutData, int64 Num) override;
+	COREUOBJECT_API virtual void Serialize(void* OutData, int64 Num) override;
 	const TArray<FSerializeData>& GetSerializeTrace() const
 	{
 		return SerializeTrace;
 	}
-	static FArchiveStackTraceReader* CreateFromFile(const TCHAR* InFilename);
+	static COREUOBJECT_API FArchiveStackTraceReader* CreateFromFile(const TCHAR* InFilename);
 };

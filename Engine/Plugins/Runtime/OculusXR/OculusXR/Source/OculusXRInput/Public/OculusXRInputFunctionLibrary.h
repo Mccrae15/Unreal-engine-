@@ -17,6 +17,16 @@ enum class EOculusXRHandType : uint8
 };
 
 UENUM(BlueprintType)
+enum class EOculusXRSide : uint8
+{
+	None = 0,
+	Left = 1,
+	Right = 2,
+};
+
+const int EOculusXRSideCount = 3;
+
+UENUM(BlueprintType)
 enum class EOculusXRTrackingConfidence : uint8
 {
 	Low,
@@ -81,6 +91,17 @@ enum class EOculusXRHandHapticsLocation : uint8
 
 	HandHapticsLocation_Count UMETA(Hidden, DisplayName = "<INVALID>"),
 };
+
+/** Define how a controllers button touches will be used to generate a hand pose. */
+UENUM(BlueprintType)
+enum class EOculusXRControllerDrivenHandPoseTypes : uint8
+{
+	None = 0,	// Controllers do not generate any hand poses.
+	Natural,	// Controller button inputs will be used to generate a normal hand pose.
+	Controller, // Controller button inputs will be used to generate a hand pose holding a controller.
+};
+
+const int EOculusXRControllerDrivenHandPoseTypesCount = 3;
 
 struct FOculusXRHapticsDesc
 {
@@ -318,4 +339,11 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "OculusLibrary|Controller")
 	static int GetMaxHapticDuration(EControllerHand Hand);
+
+	/**
+	 * Set if / how controller inputs are used to build a syntheic hand pose.
+	 * @param	Type					How the hand should be posed.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "OculusLibrary|Controller")
+	static void SetControllerDrivenHandPoses(EOculusXRControllerDrivenHandPoseTypes Type);
 };

@@ -8,14 +8,14 @@
 
 class FLoaderAdapterActor;
 
-UCLASS(Deprecated, meta = (DeprecationMessage = "WorldPartitionVolume has been replaced by LocationVolume"))
-class ENGINE_API ADEPRECATED_WorldPartitionVolume : public AVolume
+UCLASS(Deprecated, meta = (DeprecationMessage = "WorldPartitionVolume has been replaced by LocationVolume"), MinimalAPI)
+class ADEPRECATED_WorldPartitionVolume : public AVolume
 {
 	GENERATED_UCLASS_BODY()
 
 private:
 #if WITH_EDITOR
-	virtual bool ActorTypeSupportsDataLayer() const override { return false; }
+	virtual bool IsDataLayerTypeSupported(TSubclassOf<UDataLayerInstance> DataLayerType) const override { return false; }
 #endif
 
 public:

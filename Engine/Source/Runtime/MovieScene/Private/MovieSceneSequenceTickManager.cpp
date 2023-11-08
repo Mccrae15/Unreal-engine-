@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MovieSceneSequenceTickManager.h"
+#include "MovieSceneSequencePlayer.h"
 #include "Engine/World.h"
 #include "EntitySystem/MovieSceneEntitySystemLinker.h"
 #include "MovieSceneSequenceTickManagerClient.h"
@@ -11,6 +12,7 @@
 #include "Logging/TokenizedMessage.h"
 #include "Misc/UObjectToken.h"
 #include "Algo/IndexOf.h"
+#include "ProfilingDebugging/CsvProfiler.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneSequenceTickManager)
 
@@ -152,8 +154,11 @@ void UMovieSceneSequenceTickManager::RegisterTickClient(const FMovieSceneSequenc
 			LinkerName.Appendf(TEXT("_%i_ms"), DesiredTickIntervalMs);
 		}
 
-
-		UMovieSceneEntitySystemLinker* Linker = UMovieSceneEntitySystemLinker::FindOrCreateLinker(GetWorld(), EEntitySystemLinkerRole::LevelSequences, LinkerName.ToString());
+		// With support for multi-frame evaluations, it is possible for the linker group
+		// to be torn down mid evaluation which can leave the linker in a bad state. Use a unique
+		// linker name to avoid reusing those linkers.
+		const FName UniqueLinkerName = MakeUniqueObjectName(GetWorld(), UMovieSceneEntitySystemLinker::StaticClass(), LinkerName.ToString());
+		UMovieSceneEntitySystemLinker* Linker = UMovieSceneEntitySystemLinker::FindOrCreateLinker(GetWorld(), EEntitySystemLinkerRole::LevelSequences, *UniqueLinkerName.ToString());
 		check(Linker);
 
 		FLinkerGroup& NewGroup = LinkerGroups[LinkerIndex];
@@ -296,6 +301,7 @@ void UMovieSceneSequenceTickManager::UnregisterSequenceActor(AActor* InActor, TS
 
 void UMovieSceneSequenceTickManager::TickSequenceActors(float DeltaSeconds)
 {
+	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(MovieSceneEval);
 	SCOPE_CYCLE_COUNTER(MovieSceneEval_SequenceTickManager);
 
 	// Let all tickable clients update. Some of them won't do anything, others will do synchronous
@@ -549,9 +555,19 @@ void FMovieSceneLatentActionManager::RunLatentActions(TFunctionRef<void()> Flush
 			UObject* BoundObject = Delegate.GetUObject();
 			if (ensure(BoundObject) && !ExecutedDelegateOwners.Contains(BoundObject))
 			{
-				Delegate.ExecuteIfBound();
+				UMovieSceneSequencePlayer* Player = Cast<UMovieSceneSequencePlayer>(BoundObject);
+				if (Player && Player->IsEvaluating())
+				{
+					// If our player is still evaluating, defer all latent actions for this
+					// sequence player to the next pass.
+					++Index;
+				}
+				else
+				{
+					Delegate.ExecuteIfBound();
+                	LatentActions.RemoveAt(Index);
+				}
 				ExecutedDelegateOwners.Add(BoundObject);
-				LatentActions.RemoveAt(Index);
 			}
 			else
 			{

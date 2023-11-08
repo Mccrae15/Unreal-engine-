@@ -19,11 +19,12 @@ class FSceneView;
 class FSceneViewFamily;
 class FSceneViewStateInterface;
 class FViewInfo;
+class FSceneUniformBuffer;
 struct FMeshBatch;
 struct FSynthBenchmarkResults;
 struct FSceneTextures;
 
-template<class ResourceType> class TGlobalResource;
+template<class ResourceType, FRenderResource::EInitPhase> class TGlobalResource;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogRenderer, Log, All);
 
@@ -48,6 +49,7 @@ public:
 	virtual uint32 GetNumDynamicLightsAffectingPrimitive(const FPrimitiveSceneInfo* PrimitiveSceneInfo,const FLightCacheInterface* LCI) override;
 	virtual void OnWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources, bool bWorldChanged) override;
 	virtual void InitializeSystemTextures(FRHICommandListImmediate& RHICmdList);
+	virtual FSceneUniformBuffer* CreateSinglePrimitiveSceneUniformBuffer(FRDGBuilder& GraphBuilder, const FViewInfo& SceneView, FMeshBatch& Mesh) override;
 	virtual void DrawTileMesh(FCanvasRenderContext& RenderContext, FMeshPassProcessorRenderState& DrawRenderState, const FSceneView& View, FMeshBatch& Mesh, bool bIsHitTesting, const FHitProxyId& HitProxyId, bool bUse128bitRT = false) override;
 	virtual void DebugLogOnCrash() override;
 	virtual void GPUBenchmark(FSynthBenchmarkResults& InOut, float WorkScale) override;
@@ -135,6 +137,11 @@ public:
 	virtual void BeginRenderingViewFamilies(FCanvas* Canvas, TArrayView<FSceneViewFamily*> ViewFamilies) override;
 
 	virtual void ResetSceneTextureExtentHistory() override;
+
+	virtual const FViewMatrices& GetPreviousViewMatrices(const FSceneView& View) override;
+	virtual const FGlobalDistanceFieldParameterData* GetGlobalDistanceFieldParameterData(const FSceneView& View) override;
+	virtual void RequestStaticMeshUpdate(FPrimitiveSceneInfo* Info) override;
+	virtual void AddMeshBatchToGPUScene(FGPUScenePrimitiveCollector* Collector, FMeshBatch& MeshBatch) override;
 
 private:
 	TSet<FSceneInterface*> AllocatedScenes;

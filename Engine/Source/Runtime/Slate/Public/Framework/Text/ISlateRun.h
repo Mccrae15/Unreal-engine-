@@ -20,7 +20,8 @@ struct FTextArgs
 		, DefaultStyle(InDefaultStyle)
 		, OverflowPolicy(InOverflowPolicy)
 		, OverflowDirection(InOverflowDirection)
-		, bForceEllipsisDueToClippedLine(false)
+		, bIsLastVisibleBlock(false)
+		, bIsNextBlockClipped(false)
 	{}
 
 	const FTextLayout::FLineView& Line;
@@ -28,11 +29,12 @@ struct FTextArgs
 	const FTextBlockStyle& DefaultStyle;
 	ETextOverflowPolicy OverflowPolicy;
 	ETextOverflowDirection OverflowDirection;
-	bool bForceEllipsisDueToClippedLine;
+	bool bIsLastVisibleBlock;
+	bool bIsNextBlockClipped;
 
 };
 
-class SLATE_API ISlateRun : public IRun
+class ISlateRun : public IRun
 {
 public:
 	virtual int32 OnPaint(const FPaintArgs& PaintArgs, const FTextArgs& TextArgs, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const = 0;

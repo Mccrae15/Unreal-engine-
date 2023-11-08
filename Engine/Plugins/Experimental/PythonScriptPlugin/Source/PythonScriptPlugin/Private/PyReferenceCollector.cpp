@@ -190,7 +190,8 @@ void FPyReferenceCollector::AddReferencedObjectsFromDelegate(FReferenceCollector
 	// We have to use the EvenIfUnreachable variant here as the objects are speculatively marked as unreachable during GC
 	if (UPythonCallableForDelegate* PythonCallableForDelegate = Cast<UPythonCallableForDelegate>(InDelegate.GetUObjectEvenIfUnreachable()))
 	{
-		InCollector.AddReferencedObject(PythonCallableForDelegate);
+		TWeakObjectPtr<UPythonCallableForDelegate> Ptr{PythonCallableForDelegate};
+		InCollector.AddReferencedObject(Ptr);
 	}
 }
 
@@ -202,7 +203,8 @@ void FPyReferenceCollector::AddReferencedObjectsFromMulticastDelegate(FReference
 	{
 		if (UPythonCallableForDelegate* PythonCallableForDelegate = Cast<UPythonCallableForDelegate>(DelegateObj))
 		{
-			InCollector.AddReferencedObject(PythonCallableForDelegate);
+			TWeakObjectPtr<UPythonCallableForDelegate> Ptr{PythonCallableForDelegate};
+			InCollector.AddReferencedObject(Ptr);
 		}
 	}
 }
@@ -239,7 +241,7 @@ void FPyReferenceCollector::AddReferencedObjectsFromPropertyInternal(FReferenceC
 				UObject* CurObjVal = CastProp->GetObjectPropertyValue(ObjValuePtr);
 				if (CurObjVal)
 				{
-					UObject* NewObjVal = CurObjVal;
+					TObjectPtr<UObject> NewObjVal = CurObjVal;
 					InCollector.AddReferencedObject(NewObjVal);
 
 					if (NewObjVal != CurObjVal)
@@ -263,8 +265,8 @@ void FPyReferenceCollector::AddReferencedObjectsFromPropertyInternal(FReferenceC
 			  UObject* CurObjVal = CastProp->GetPropertyValue(ValuePtr).GetObject();
 			  if (CurObjVal)
 			  {
-				  UObject* NewObjVal = CurObjVal;
-				  InCollector.AddReferencedObject(NewObjVal);
+				  TObjectPtr<UObject> NewObjVal = CurObjVal;
+          InCollector.AddReferencedObject(NewObjVal);
   
 				  if (NewObjVal != CurObjVal)
 				  {

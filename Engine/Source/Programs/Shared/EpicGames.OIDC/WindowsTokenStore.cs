@@ -9,6 +9,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
+#pragma warning disable CS1591 // Missing XML documentation on public types
+
 namespace EpicGames.OIDC
 {
 	public class WindowsTokenStore : ITokenStore, IDisposable
@@ -115,6 +117,12 @@ namespace EpicGames.OIDC
 			catch (Win32Exception e)
 			{
 				if (e.NativeErrorCode == 13) // data is invalid
+				{
+					// unable to decrypt the data, ignore it
+					refreshToken = "";
+					return false;
+				}
+				if (e.NativeErrorCode == unchecked((int)0x8009000B)) // key not valid for use in specified state
 				{
 					// unable to decrypt the data, ignore it
 					refreshToken = "";

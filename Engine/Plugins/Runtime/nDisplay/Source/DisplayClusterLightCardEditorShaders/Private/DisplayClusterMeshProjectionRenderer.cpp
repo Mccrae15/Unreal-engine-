@@ -11,6 +11,7 @@
 #include "CanvasTypes.h"
 #include "EngineModule.h"
 #include "SceneManagement.h"
+#include "SceneRendererInterface.h"
 #include "SceneViewExtension.h"
 #include "ScreenPass.h"
 #include "Components/PrimitiveComponent.h"
@@ -18,13 +19,14 @@
 #include "MaterialDomain.h"
 #include "Materials/Material.h"
 #include "DataDrivenShaderPlatformInfo.h"
-
+#include "ScreenPass.h"
 
 //////////////////////////////////////////////////////////////////////////
 // Mesh Pass Processor
 
 BEGIN_SHADER_PARAMETER_STRUCT(FMeshProjectionPassParameters, )
 	SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, Scene)
 	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FInstanceCullingGlobalUniforms, InstanceCulling)
 	SHADER_PARAMETER_STRUCT_INCLUDE(FInstanceCullingDrawParams, InstanceCullingDrawParams)
 	RENDER_TARGET_BINDING_SLOTS()
@@ -178,7 +180,7 @@ public:
 	FMeshProjectionVS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
 		: FMeshMaterialShader(Initializer)
 	{
-		PassUniformBuffer.Bind(Initializer.ParameterMap, FSceneTextureUniformParameters::StaticStructMetadata.GetShaderVariableName());
+		PassUniformBuffer.Bind(Initializer.ParameterMap, FSceneTextureUniformParameters::FTypeInfo::GetStructMetadata()->GetShaderVariableName());
 		UVProjectionIndex.Bind(Initializer.ParameterMap, TEXT("ProjectionParameters_UVProjectionIndex"), SPF_Optional);
 		UVProjectionPlaneSize.Bind(Initializer.ParameterMap, TEXT("ProjectionParameters_UVProjectionPlaneSize"), SPF_Optional);
 		UVProjectionPlaneDistance.Bind(Initializer.ParameterMap, TEXT("ProjectionParameters_UVProjectionPlaneDistance"), SPF_Optional);
@@ -234,7 +236,7 @@ public:
 	FMeshProjectionPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
 		: FMeshMaterialShader(Initializer)
 	{
-		PassUniformBuffer.Bind(Initializer.ParameterMap, FSceneTextureUniformParameters::StaticStructMetadata.GetShaderVariableName());
+		PassUniformBuffer.Bind(Initializer.ParameterMap, FSceneTextureUniformParameters::FTypeInfo::GetStructMetadata()->GetShaderVariableName());
 		NormalCorrectionMatrix.Bind(Initializer.ParameterMap, TEXT("NormalCorrectionMatrix"), SPF_Optional);
 	}
 
@@ -269,10 +271,11 @@ using FMeshProjectionNormalPS = FMeshProjectionPS<EDisplayClusterMeshProjectionO
 IMPLEMENT_MATERIAL_SHADER_TYPE(template<>, FMeshProjectionColorPS, TEXT("/Plugin/nDisplay/Private/MeshProjectionShaders.usf"), TEXT("MainPS"), SF_Pixel);
 IMPLEMENT_MATERIAL_SHADER_TYPE(template<>, FMeshProjectionNormalPS, TEXT("/Plugin/nDisplay/Private/MeshProjectionShaders.usf"), TEXT("NormalPS"), SF_Pixel);
 
-FMeshProjectionPassParameters* CreateProjectionPassParameters(FRDGBuilder& GraphBuilder, const FViewInfo* View, const FDisplayClusterMeshProjectionRenderSettings& RenderSettings)
+FMeshProjectionPassParameters* CreateProjectionPassParameters(FRDGBuilder& GraphBuilder, const FSceneView* View, const FDisplayClusterMeshProjectionRenderSettings& RenderSettings)
 {
 	FMeshProjectionPassParameters* PassParameters = GraphBuilder.AllocParameters<FMeshProjectionPassParameters>();
 	PassParameters->View = View->ViewUniformBuffer;
+	PassParameters->Scene = GetSceneUniformBufferRef(GraphBuilder, *View);
 	PassParameters->InstanceCulling = FInstanceCullingContext::CreateDummyInstanceCullingUniformBuffer(GraphBuilder);
 
 	return PassParameters;
@@ -714,48 +717,6 @@ protected:
 	}
 };
 
-namespace
-{
-	template<typename TSetupFunction>
-	void DrawScreenPass(
-		FRHICommandList& RHICmdList,
-		const FSceneView& View,
-		const FScreenPassTextureViewport& OutputViewport,
-		const FScreenPassTextureViewport& InputViewport,
-		const FScreenPassPipelineState& PipelineState,
-		TSetupFunction SetupFunction)
-	{
-		PipelineState.Validate();
-
-		const FIntRect InputRect = InputViewport.Rect;
-		const FIntPoint InputSize = InputViewport.Extent;
-		const FIntRect OutputRect = OutputViewport.Rect;
-		const FIntPoint OutputSize = OutputRect.Size();
-
-		RHICmdList.SetViewport(OutputRect.Min.X, OutputRect.Min.Y, 0.0f, OutputRect.Max.X, OutputRect.Max.Y, 1.0f);
-
-		SetScreenPassPipelineState(RHICmdList, PipelineState);
-
-		// Setting up buffers.
-		SetupFunction(RHICmdList);
-
-		FIntPoint LocalOutputPos(FIntPoint::ZeroValue);
-		FIntPoint LocalOutputSize(OutputSize);
-		EDrawRectangleFlags DrawRectangleFlags = EDRF_UseTriangleOptimization;
-
-		DrawPostProcessPass(
-			RHICmdList,
-			LocalOutputPos.X, LocalOutputPos.Y, LocalOutputSize.X, LocalOutputSize.Y,
-			InputRect.Min.X, InputRect.Min.Y, InputRect.Width(), InputRect.Height(),
-			OutputSize,
-			InputSize,
-			PipelineState.VertexShader,
-			View.StereoViewIndex,
-			false,
-			DrawRectangleFlags);
-	}
-} //! namespace
-
 //////////////////////////////////////////////////////////////////////////
 // FDisplayClusterMeshProjectionRenderer
 
@@ -975,7 +936,7 @@ void FDisplayClusterMeshProjectionRenderer::Render(FCanvas* Canvas, FSceneInterf
 			NewInitOptions.ViewFamily = &ViewFamily;
 
 			GetRendererModule().CreateAndInitSingleView(RHICmdList, &ViewFamily, &NewInitOptions);
-			FViewInfo* View = (FViewInfo*)ViewFamily.Views[0];
+			const FSceneView* View = ViewFamily.Views[0];
 
 			FRDGTextureRef OutputTexture = GraphBuilder.RegisterExternalTexture(CreateRenderTarget(RenderTarget->GetRenderTargetTexture(), TEXT("ViewRenderTarget")));
 			FRenderTargetBinding OutputRenderTargetBinding(OutputTexture, ERenderTargetLoadAction::ELoad);
@@ -1010,7 +971,7 @@ void FDisplayClusterMeshProjectionRenderer::Render(FCanvas* Canvas, FSceneInterf
 }
 
 void FDisplayClusterMeshProjectionRenderer::RenderColorOutput(FRDGBuilder& GraphBuilder,
-	const FViewInfo* View,
+	const FSceneView* View,
 	const FDisplayClusterMeshProjectionRenderSettings& RenderSettings,
 	FRenderTargetBinding& OutputRenderTargetBinding)
 {
@@ -1048,7 +1009,7 @@ void FDisplayClusterMeshProjectionRenderer::RenderColorOutput(FRDGBuilder& Graph
 		ScreenPassParameters->InputSampler = TStaticSamplerState<>::GetRHI();
 		ScreenPassParameters->RenderTargets[0] = OutputRenderTargetBinding;
 
-		FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
+		FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(View->FeatureLevel);
 		TShaderMapRef<FScreenPassVS> ScreenPassVS(GlobalShaderMap);
 		TShaderMapRef<FCopyRectPS> CopyPixelShader(GlobalShaderMap);
 
@@ -1067,6 +1028,7 @@ void FDisplayClusterMeshProjectionRenderer::RenderColorOutput(FRDGBuilder& Graph
 				RegionViewport,
 				RegionViewport,
 				FScreenPassPipelineState(ScreenPassVS, CopyPixelShader, DefaultBlendState),
+				EScreenPassDrawFlags::None,
 				[&](FRHICommandList&)
 			{
 				SetShaderParameters(RHICmdList, CopyPixelShader, CopyPixelShader.GetPixelShader(), *ScreenPassParameters);
@@ -1076,7 +1038,7 @@ void FDisplayClusterMeshProjectionRenderer::RenderColorOutput(FRDGBuilder& Graph
 }
 
 void FDisplayClusterMeshProjectionRenderer::RenderHitProxyOutput(FRDGBuilder& GraphBuilder,
-	const FViewInfo* View,
+	const FSceneView* View,
 	const FDisplayClusterMeshProjectionRenderSettings& RenderSettings,
 	FRenderTargetBinding& OutputRenderTargetBinding,
 	FHitProxyConsumer* HitProxyConsumer)
@@ -1101,7 +1063,7 @@ void FDisplayClusterMeshProjectionRenderer::RenderHitProxyOutput(FRDGBuilder& Gr
 		ScreenPassParameters->InputSampler = TStaticSamplerState<>::GetRHI();
 		ScreenPassParameters->RenderTargets[0] = OutputRenderTargetBinding;
 
-		FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
+		FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(View->FeatureLevel);
 		TShaderMapRef<FScreenPassVS> ScreenPassVS(GlobalShaderMap);
 		TShaderMapRef<FCopyRectPS> CopyPixelShader(GlobalShaderMap);
 
@@ -1120,6 +1082,7 @@ void FDisplayClusterMeshProjectionRenderer::RenderHitProxyOutput(FRDGBuilder& Gr
 				RegionViewport,
 				RegionViewport,
 				FScreenPassPipelineState(ScreenPassVS, CopyPixelShader, DefaultBlendState),
+				EScreenPassDrawFlags::None,
 				[&](FRHICommandList&)
 			{
 				SetShaderParameters(RHICmdList, CopyPixelShader, CopyPixelShader.GetPixelShader(), *ScreenPassParameters);
@@ -1129,7 +1092,7 @@ void FDisplayClusterMeshProjectionRenderer::RenderHitProxyOutput(FRDGBuilder& Gr
 }
 
 void FDisplayClusterMeshProjectionRenderer::RenderNormalsOutput(FRDGBuilder& GraphBuilder,
-	const FViewInfo* View,
+	const FSceneView* View,
 	const FDisplayClusterMeshProjectionRenderSettings& RenderSettings,
 	FRenderTargetBinding& OutputRenderTargetBinding)
 {
@@ -1159,7 +1122,7 @@ void FDisplayClusterMeshProjectionRenderer::RenderNormalsOutput(FRDGBuilder& Gra
 	}
 
 void FDisplayClusterMeshProjectionRenderer::AddBaseRenderPass(FRDGBuilder& GraphBuilder,
-	const FViewInfo* View,
+	const FSceneView* View,
 	const FDisplayClusterMeshProjectionRenderSettings& RenderSettings,
 	FRenderTargetBinding& OutputRenderTargetBinding,
 	FDepthStencilBinding& OutputDepthStencilBinding)
@@ -1181,7 +1144,7 @@ void FDisplayClusterMeshProjectionRenderer::AddBaseRenderPass(FRDGBuilder& Graph
 }
 
 void FDisplayClusterMeshProjectionRenderer::AddTranslucencyRenderPass(FRDGBuilder& GraphBuilder,
-	const FViewInfo* View,
+	const FSceneView* View,
 	const FDisplayClusterMeshProjectionRenderSettings& RenderSettings,
 	FRenderTargetBinding& OutputRenderTargetBinding,
 	FDepthStencilBinding& OutputDepthStencilBinding)
@@ -1203,7 +1166,7 @@ void FDisplayClusterMeshProjectionRenderer::AddTranslucencyRenderPass(FRDGBuilde
 }
 
 void FDisplayClusterMeshProjectionRenderer::AddHitProxyRenderPass(FRDGBuilder& GraphBuilder,
-	const FViewInfo* View,
+	const FSceneView* View,
 	const FDisplayClusterMeshProjectionRenderSettings& RenderSettings,
 	FRenderTargetBinding& OutputRenderTargetBinding,
 	FDepthStencilBinding& OutputDepthStencilBinding)
@@ -1225,7 +1188,7 @@ void FDisplayClusterMeshProjectionRenderer::AddHitProxyRenderPass(FRDGBuilder& G
 }
 
 void FDisplayClusterMeshProjectionRenderer::AddNormalsRenderPass(FRDGBuilder& GraphBuilder,
-	const FViewInfo* View,
+	const FSceneView* View,
 	const FDisplayClusterMeshProjectionRenderSettings& RenderSettings,
 	FRenderTargetBinding& OutputRenderTargetBinding,
 	FDepthStencilBinding& OutputDepthStencilBinding)
@@ -1273,7 +1236,8 @@ void GaussianSpatialFilter(float Sigma, TArray<float>& OutKernel)
 
 template<EMeshProjectionFilterType FilterType>
 void AddSeparableFilterPass(FRDGBuilder& GraphBuilder,
-	const FViewInfo* View,
+	FGlobalShaderMap* GlobalShaderMap,
+	const FSceneView* View,
 	FRDGTexture* SceneDepth,
 	FRDGTextureUAV* RWColorUAV,
 	FRDGTextureUAV* RWDepthUAV,
@@ -1303,7 +1267,7 @@ void AddSeparableFilterPass(FRDGBuilder& GraphBuilder,
 		GET_SCALAR_ARRAY_ELEMENT(HorizontalPassParameters->InteriorSpatialKernel, Index) = InteriorSpatialKernel[Index];
 	}
 
-	TShaderMapRef<FMeshProjectionNormalsFilterCS<FilterType>> ComputeShader(View->ShaderMap);
+	TShaderMapRef<FMeshProjectionNormalsFilterCS<FilterType>> ComputeShader(GlobalShaderMap);
 
 	FComputeShaderUtils::AddPass(
 		GraphBuilder,
@@ -1337,7 +1301,7 @@ void AddSeparableFilterPass(FRDGBuilder& GraphBuilder,
 }
 
 void FDisplayClusterMeshProjectionRenderer::AddNormalsFilterPass(FRDGBuilder& GraphBuilder,
-	const FViewInfo* View,
+	const FSceneView* View,
 	FRenderTargetBinding& OutputRenderTargetBinding,
 	FRDGTexture* SceneColor,
 	FRDGTexture* SceneDepth,
@@ -1365,6 +1329,8 @@ void FDisplayClusterMeshProjectionRenderer::AddNormalsFilterPass(FRDGBuilder& Gr
 	FRDGTextureRef RWStencil = GraphBuilder.CreateTexture(RWStencilDesc, TEXT("DisplayClusterMeshProjection.RWStencil"));
 	FRDGTextureUAVRef RWStencilUAV = GraphBuilder.CreateUAV(RWStencil);
 
+	FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(View->FeatureLevel);
+
 	// Copy the scene color and depth to RW buffers
 	{
 		FMeshProjectionNormalsCreateRWTexturesCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FMeshProjectionNormalsCreateRWTexturesCS::FParameters>();
@@ -1377,7 +1343,7 @@ void FDisplayClusterMeshProjectionRenderer::AddNormalsFilterPass(FRDGBuilder& Gr
 		PassParameters->RWStencil = RWStencilUAV;
 		PassParameters->NormalCorrectionMatrix = NormalCorrectionMatrix;
 
-		TShaderMapRef<FMeshProjectionNormalsCreateRWTexturesCS> ComputeShader(View->ShaderMap);
+		TShaderMapRef<FMeshProjectionNormalsCreateRWTexturesCS> ComputeShader(GlobalShaderMap);
 
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
@@ -1394,17 +1360,17 @@ void FDisplayClusterMeshProjectionRenderer::AddNormalsFilterPass(FRDGBuilder& Gr
 	// Filter the RW buffers, dilating and blurring them appropriately
 	for (int32 Index = 0; Index < DepthDilatePasses; Index++)
 	{
-		AddSeparableFilterPass<EMeshProjectionFilterType::DepthDilate>(GraphBuilder, View, SceneDepth, RWColorUAV, RWDepthUAV, RWStencilUAV);
+		AddSeparableFilterPass<EMeshProjectionFilterType::DepthDilate>(GraphBuilder, GlobalShaderMap, View, SceneDepth, RWColorUAV, RWDepthUAV, RWStencilUAV);
 	}
 
 	for (int32 Index = 0; Index < DilatePasses; ++Index)
 	{
-		AddSeparableFilterPass<EMeshProjectionFilterType::Dilate>(GraphBuilder, View, SceneDepth, RWColorUAV, RWDepthUAV, RWStencilUAV);
+		AddSeparableFilterPass<EMeshProjectionFilterType::Dilate>(GraphBuilder, GlobalShaderMap, View, SceneDepth, RWColorUAV, RWDepthUAV, RWStencilUAV);
 	}
 
 	for (int32 Index = 0; Index < BlurPasses; Index++)
 	{
-		AddSeparableFilterPass<EMeshProjectionFilterType::Blur>(GraphBuilder, View, SceneDepth, RWColorUAV, RWDepthUAV, RWStencilUAV);
+		AddSeparableFilterPass<EMeshProjectionFilterType::Blur>(GraphBuilder, GlobalShaderMap, View, SceneDepth, RWColorUAV, RWDepthUAV, RWStencilUAV);
 	}
 
 	// Copy the RW buffers to the output render target
@@ -1418,8 +1384,8 @@ void FDisplayClusterMeshProjectionRenderer::AddNormalsFilterPass(FRDGBuilder& Gr
 		ScreenPassParameters->RWDepth = RWDepthUAV;
 		ScreenPassParameters->RenderTargets[0] = OutputRenderTargetBinding;
 
-		TShaderMapRef<FScreenPassVS> ScreenPassVS(View->ShaderMap);
-		TShaderMapRef<FMeshProjectionNormalsOutputPS> OutputNormalsPS(View->ShaderMap);
+		TShaderMapRef<FScreenPassVS> ScreenPassVS(GlobalShaderMap);
+		TShaderMapRef<FMeshProjectionNormalsOutputPS> OutputNormalsPS(GlobalShaderMap);
 
 		FRHIBlendState* DefaultBlendState = FScreenPassPipelineState::FDefaultBlendState::GetRHI();
 
@@ -1435,6 +1401,7 @@ void FDisplayClusterMeshProjectionRenderer::AddNormalsFilterPass(FRDGBuilder& Gr
 				InputViewport,
 				OutputViewport,
 				FScreenPassPipelineState(ScreenPassVS, OutputNormalsPS, DefaultBlendState),
+				EScreenPassDrawFlags::None,
 				[&](FRHICommandList&)
 			{
 				SetShaderParameters(RHICmdList, OutputNormalsPS, OutputNormalsPS.GetPixelShader(), *ScreenPassParameters);
@@ -1445,7 +1412,7 @@ void FDisplayClusterMeshProjectionRenderer::AddNormalsFilterPass(FRDGBuilder& Gr
 
 #if WITH_EDITOR
 void FDisplayClusterMeshProjectionRenderer::AddSelectionDepthRenderPass(FRDGBuilder& GraphBuilder, 
-	const FViewInfo* View,
+	const FSceneView* View,
 	const FDisplayClusterMeshProjectionRenderSettings& RenderSettings,
 	FDepthStencilBinding& OutputDepthStencilBinding)
 {
@@ -1465,7 +1432,7 @@ void FDisplayClusterMeshProjectionRenderer::AddSelectionDepthRenderPass(FRDGBuil
 }
 
 void FDisplayClusterMeshProjectionRenderer::AddSelectionOutlineScreenPass(FRDGBuilder& GraphBuilder,
-	const FViewInfo* View,
+	const FSceneView* View,
 	FRenderTargetBinding& OutputRenderTargetBinding,
 	FRDGTexture* SceneColor,
 	FRDGTexture* SceneDepth,
@@ -1491,8 +1458,10 @@ void FDisplayClusterMeshProjectionRenderer::AddSelectionOutlineScreenPass(FRDGBu
 	ScreenPassParameters->OutlineColor = FVector3f(View->SelectionOutlineColor);
 	ScreenPassParameters->SelectionHighlightIntensity = GEngine->SelectionHighlightIntensity;
 
-	TShaderMapRef<FScreenPassVS> ScreenPassVS(View->ShaderMap);
-	TShaderMapRef<FMeshProjectionSelectionOutlinePS> SelectionOutlinePS(View->ShaderMap);
+	FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(View->FeatureLevel);
+
+	TShaderMapRef<FScreenPassVS> ScreenPassVS(GlobalShaderMap);
+	TShaderMapRef<FMeshProjectionSelectionOutlinePS> SelectionOutlinePS(GlobalShaderMap);
 
 	FRHIBlendState* DefaultBlendState = FScreenPassPipelineState::FDefaultBlendState::GetRHI();
 
@@ -1508,6 +1477,7 @@ void FDisplayClusterMeshProjectionRenderer::AddSelectionOutlineScreenPass(FRDGBu
 			OutputViewport,
 			OutputViewport,
 			FScreenPassPipelineState(ScreenPassVS, SelectionOutlinePS, DefaultBlendState),
+			EScreenPassDrawFlags::None,
 			[&](FRHICommandList&)
 		{
 			SetShaderParameters(RHICmdList, SelectionOutlinePS, SelectionOutlinePS.GetPixelShader(), *ScreenPassParameters);
@@ -1517,7 +1487,7 @@ void FDisplayClusterMeshProjectionRenderer::AddSelectionOutlineScreenPass(FRDGBu
 #endif
 
 void FDisplayClusterMeshProjectionRenderer::AddSimpleElementPass(FRDGBuilder& GraphBuilder,
-	const FViewInfo* View,
+	const FSceneView* View,
 	FRenderTargetBinding& OutputRenderTargetBinding,
 	FSimpleElementCollector& ElementCollector)
 {

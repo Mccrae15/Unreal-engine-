@@ -1,15 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraScriptExecutionContext.h"
+#include "NiagaraScript.h"
 #include "NiagaraSettings.h"
 #include "NiagaraStats.h"
 #include "NiagaraDataInterface.h"
+#include "NiagaraSystem.h"
 #include "NiagaraSystemInstance.h"
-#include "NiagaraWorldManager.h"
 #include "NiagaraFunctionLibrary.h"
-#include "NiagaraGPUInstanceCountManager.h"
-#include "Interfaces/ITargetPlatform.h"
-#include "HAL/PlatformFileManager.h"
 
 DECLARE_CYCLE_STAT(TEXT("Register Setup"), STAT_NiagaraSimRegisterSetup, STATGROUP_Niagara);
 DECLARE_CYCLE_STAT(TEXT("Context Ticking"), STAT_NiagaraScriptExecContextTick, STATGROUP_Niagara);
@@ -41,6 +39,8 @@ FNiagaraScriptExecutionContextBase::FNiagaraScriptExecutionContextBase()
 	, VectorVMState(nullptr)
 	, ScriptType(ENiagaraSystemSimulationScript::Update)
 	, bAllowParallel(true)
+	, bHasDIsWithPreStageTick(false)
+	, bHasDIsWithPostStageTick(false)
 #if VECTORVM_SUPPORTS_EXPERIMENTAL && VECTORVM_SUPPORTS_LEGACY
 	, bUsingExperimentalVM(true)
 #endif
@@ -55,9 +55,13 @@ FNiagaraScriptExecutionContextBase::~FNiagaraScriptExecutionContextBase()
 #endif 
 }
 
-bool FNiagaraScriptExecutionContextBase::Init(UNiagaraScript* InScript, ENiagaraSimTarget InTarget)
+bool FNiagaraScriptExecutionContextBase::Init(FNiagaraSystemInstance* Instance, UNiagaraScript* InScript, ENiagaraSimTarget InTarget)
 {
 	Script = InScript;
+	if (!ensure(Script != nullptr))
+	{
+		return false;
+	}
 
 	Parameters.InitFromOwningContext(Script, InTarget, true);
 
@@ -68,26 +72,63 @@ bool FNiagaraScriptExecutionContextBase::Init(UNiagaraScript* InScript, ENiagara
 	const bool ScriptSupportsExperimentalVM = (Script ? Script->GetVMExecutableData().SupportsExperimentalVM() : false);
 	bool SystemDisabledExperimentalVM = false;
 
-	if (InScript)
+	if (const UNiagaraSystem* OwnerSystem = Script->GetTypedOuter<UNiagaraSystem>())
 	{
-		if (const UNiagaraSystem* OwnerSystem = InScript->GetTypedOuter<UNiagaraSystem>())
+		if (OwnerSystem->ShouldDisableExperimentalVM())
 		{
-			if (OwnerSystem->ShouldDisableExperimentalVM())
-			{
-				SystemDisabledExperimentalVM = true;
-			}
+			SystemDisabledExperimentalVM = true;
 		}
 	}
 
 	bUsingExperimentalVM = ProjectSupportsExperimentalVM && ScriptSupportsExperimentalVM && ((GbForceExecVMPath > 0) || (!GbForceExecVMPath && !SystemDisabledExperimentalVM));
 #endif
 
-#	if VECTORVM_SUPPORTS_EXPERIMENTAL
+#if VECTORVM_SUPPORTS_EXPERIMENTAL
 	FVectorVMOptimizeContext OptimizeContext = Script->GetVMExecutableData().BuildExperimentalContext();
 	VectorVMState = AllocVectorVMState(&OptimizeContext);
-#	endif
+#endif
+
+	//If the instance is null, aka a system script, we need to pre calculate whether we'll have pre/post ticks or not.
+	if(Instance == nullptr)
+	{
+		ENiagaraScriptUsage Usage = Script->GetUsage();
+		for (auto& ResolvedDIInfo : Script->GetResolvedDataInterfaces())
+		{
+			if (ResolvedDIInfo.ResolvedDataInterface)
+			{
+				bHasDIsWithPreStageTick |= (ResolvedDIInfo.ResolvedDataInterface->HasPreStageTick(Usage));
+				bHasDIsWithPostStageTick |= (ResolvedDIInfo.ResolvedDataInterface->HasPostStageTick(Usage));
+			}
+			if (bHasDIsWithPreStageTick && bHasDIsWithPostStageTick)
+			{
+				break;
+			}
+		}
+	}
 
 	return true;
+}
+
+void FNiagaraScriptExecutionContextBase::InitDITickLists(class FNiagaraSystemInstance* Instance)
+{
+	ENiagaraScriptUsage Usage = Script->GetUsage();
+	for (auto& ResolvedDIInfo : Script->GetResolvedDataInterfaces())
+	{
+		if (ResolvedDIInfo.ResolvedDataInterface)
+		{
+			bHasDIsWithPreStageTick |= (ResolvedDIInfo.ResolvedDataInterface->HasPreStageTick(Usage));
+			bHasDIsWithPostStageTick |= (ResolvedDIInfo.ResolvedDataInterface->HasPostStageTick(Usage));
+		}
+		if (bHasDIsWithPreStageTick && bHasDIsWithPostStageTick)
+		{
+			break;
+		}
+	}
+
+	if (Instance && (bHasDIsWithPreStageTick || bHasDIsWithPostStageTick))
+	{
+		DIStageTickHandler.Init(Script, Instance);
+	}
 }
 
 void FNiagaraScriptExecutionContextBase::BindData(int32 Index, FNiagaraDataSet& DataSet, int32 StartInstance, bool bUpdateInstanceCounts)
@@ -96,7 +137,7 @@ void FNiagaraScriptExecutionContextBase::BindData(int32 Index, FNiagaraDataSet& 
 	FNiagaraDataBuffer* Output = DataSet.GetDestinationData();
 
 	DataSetInfo.SetNum(FMath::Max(DataSetInfo.Num(), Index + 1));
-	DataSetInfo[Index].Init(&DataSet, Input, Output, StartInstance, bUpdateInstanceCounts);
+	DataSetInfo[Index].Init(&DataSet, Input, StartInstance, bUpdateInstanceCounts);
 
 	//Would be nice to roll this and DataSetInfo into one but currently the VM being in it's own Engine module prevents this. Possibly should move the VM into Niagara itself.
 	TArrayView<uint8 const* RESTRICT const> InputRegisters = Input ? Input->GetRegisterTable() : TArrayView<uint8 const* RESTRICT const>();
@@ -124,7 +165,7 @@ void FNiagaraScriptExecutionContextBase::BindData(int32 Index, FNiagaraDataBuffe
 	check(Input && Input->GetOwner());
 	DataSetInfo.SetNum(FMath::Max(DataSetInfo.Num(), Index + 1));
 	FNiagaraDataSet* DataSet = Input->GetOwner();
-	DataSetInfo[Index].Init(DataSet, Input, nullptr, StartInstance, bUpdateInstanceCounts);
+	DataSetInfo[Index].Init(DataSet, Input, StartInstance, bUpdateInstanceCounts);
 
 	TArrayView<uint8 const* RESTRICT const> InputRegisters = Input->GetRegisterTable();
 
@@ -173,7 +214,7 @@ static void VVMFree(void* Ptr, const char *Filename, int LineNum)
 	return FMemory::Free(Ptr);
 }
 
-bool FNiagaraScriptExecutionContextBase::Execute(uint32 NumInstances, const FScriptExecutionConstantBufferTable& ConstantBufferTable)
+bool FNiagaraScriptExecutionContextBase::Execute(class FNiagaraSystemInstance* Instance, float DeltaSeconds, uint32 NumInstances, const FScriptExecutionConstantBufferTable& ConstantBufferTable)
 {
 	if (NumInstances == 0)
 	{
@@ -182,6 +223,8 @@ bool FNiagaraScriptExecutionContextBase::Execute(uint32 NumInstances, const FScr
 	}
 
 	++TickCounter;//Should this be per execution?
+
+	DIStageTickHandler.PreStageTick(Instance, DeltaSeconds);
 
 	if (GbExecVMScripts != 0)
 	{
@@ -216,9 +259,9 @@ bool FNiagaraScriptExecutionContextBase::Execute(uint32 NumInstances, const FScr
 #if NIAGARA_NAN_CHECKING
 			Info.DataSet->CheckForNaNs();
 #endif
-			if (Info.bUpdateInstanceCount)
+			if (Info.bUpdateInstanceCount && Info.GetOutput())
 			{
-				Info.Output->SetNumInstances(Info.StartInstance + DataSetMetaTable[Idx].DataSetAccessIndex + 1);
+				Info.GetOutput()->SetNumInstances(Info.StartInstance + DataSetMetaTable[Idx].DataSetAccessIndex + 1);
 			}
 		}
 
@@ -229,6 +272,8 @@ bool FNiagaraScriptExecutionContextBase::Execute(uint32 NumInstances, const FScr
 			DataSetMetaTable[DataSetIdx].Reset();
 		}
 	}
+
+	DIStageTickHandler.PostStageTick(Instance, DeltaSeconds);
 	return true;//TODO: Error cases?
 }
 
@@ -644,13 +689,14 @@ void FNiagaraSystemScriptExecutionContext::PerInstanceFunctionHook(FVectorVMExte
 }
 #endif
 
-bool FNiagaraSystemScriptExecutionContext::Init(UNiagaraScript* InScript, ENiagaraSimTarget InTarget)
+bool FNiagaraSystemScriptExecutionContext::Init(FNiagaraSystemInstance* ParentSystemInstance, UNiagaraScript* InScript, ENiagaraSimTarget InTarget)
 {
+	check(ParentSystemInstance == nullptr);
 	//FORT - 314222 - There is a bug currently when system scripts execute in parallel.
 	//This is unlikely for these scripts but we're explicitly disallowing it for safety.
 	bAllowParallel = false;
 
-	return FNiagaraScriptExecutionContextBase::Init(InScript, InTarget);
+	return FNiagaraScriptExecutionContextBase::Init(ParentSystemInstance, InScript, InTarget);
 }
 
 bool FNiagaraSystemScriptExecutionContext::Tick(class FNiagaraSystemInstance* Instance, ENiagaraSimTarget SimTarget)
@@ -665,9 +711,9 @@ bool FNiagaraSystemScriptExecutionContext::Tick(class FNiagaraSystemInstance* In
 			const TArray<UNiagaraDataInterface*>& DataInterfaces = GetDataInterfaces();
 
 			const int32 FunctionCount = ScriptExecutableData.CalledVMExternalFunctions.Num();
-			FunctionTable.Reset();
-			FunctionTable.SetNum(FunctionCount);
-			ExtFunctionInfo.AddDefaulted(FunctionCount);
+
+			FunctionTable.Init(nullptr, FunctionCount);
+			ExtFunctionInfo.Init(FExternalFuncInfo(), FunctionCount);
 
 			const FNiagaraScriptExecutionParameterStore* ScriptParameterStore = Script->GetExecutionReadyParameterStore(ENiagaraSimTarget::CPUSim);
 			check(ScriptParameterStore != nullptr);
@@ -800,6 +846,36 @@ bool FNiagaraSystemScriptExecutionContext::Tick(class FNiagaraSystemInstance* In
 	return true;
 }
 
+bool FNiagaraSystemScriptExecutionContext::Execute(FNiagaraSystemInstance* ParentSystemInstance, float DeltaSeconds, uint32 NumInstances, const FScriptExecutionConstantBufferTable& ConstantBufferTable)
+{
+	check(ParentSystemInstance == nullptr);
+	if(bHasDIsWithPreStageTick && SystemInstances)
+	{
+		for(FNiagaraSystemInstance* Inst : *SystemInstances)
+		{
+			if (FNDIStageTickHandler* Handler = Inst->GetSystemDIStageTickHandler(Script->GetUsage()))
+			{
+				Handler->PreStageTick(Inst, DeltaSeconds);
+			}
+		}
+	}
+
+	bool bSuccess = FNiagaraScriptExecutionContextBase::Execute(ParentSystemInstance, DeltaSeconds, NumInstances, ConstantBufferTable);
+
+	if(bHasDIsWithPostStageTick && SystemInstances)
+	{
+		for (FNiagaraSystemInstance* Inst : *SystemInstances)
+		{
+			if(FNDIStageTickHandler* Handler = Inst->GetSystemDIStageTickHandler(Script->GetUsage()))
+			{
+				Handler->PostStageTick(Inst, DeltaSeconds);
+			}
+		}
+	}
+
+	return bSuccess;
+}
+
 bool FNiagaraSystemScriptExecutionContext::GeneratePerInstanceDIFunctionTable(FNiagaraSystemInstance* Inst, TArray<FNiagaraPerInstanceDIFuncInfo>& OutFunctions)
 {
 	const FNiagaraScriptExecutionParameterStore* ScriptParameterStore = Script->GetExecutionReadyParameterStore(ENiagaraSimTarget::CPUSim);
@@ -812,10 +888,11 @@ bool FNiagaraSystemScriptExecutionContext::GeneratePerInstanceDIFunctionTable(FN
 		for (int32 i = 0; i < ScriptExecutableData.DataInterfaceInfo.Num(); i++)
 		{
 			const FNiagaraScriptDataInterfaceCompileInfo& ScriptDIInfo = ScriptExecutableData.DataInterfaceInfo[i];
+			const FNiagaraScriptResolvedDataInterfaceInfo& ResolvedDIInfo = Script->GetResolvedDataInterfaces()[i];
 			//UNiagaraDataInterface* ScriptInterface = ScriptDataInterfaces[i];
 			UNiagaraDataInterface* ExternalInterface = GetDataInterfaces()[i];
 
-			if (ScriptDIInfo.Name == BindingInfo.OwnerName && ScriptDIInfo.NeedsPerInstanceBinding())
+			if (ScriptDIInfo.Name == BindingInfo.OwnerName && (ScriptDIInfo.NeedsPerInstanceBinding() || ResolvedDIInfo.NeedsPerInstanceBinding()))
 			{
 				UNiagaraDataInterface* DIToBind = nullptr;
 				FNiagaraPerInstanceDIFuncInfo& NewFuncInfo = OutFunctions.AddDefaulted_GetRef();
@@ -825,6 +902,15 @@ bool FNiagaraSystemScriptExecutionContext::GeneratePerInstanceDIFunctionTable(FN
 				{
 					//If this is a User DI we bind to the user DI and find instance data with it.
 					if (UNiagaraDataInterface* UserInterface = Inst->GetInstanceParameters().GetDataInterface(*DIIndex))
+					{
+						DIToBind = UserInterface;
+						InstData = Inst->FindDataInterfaceInstanceData(UserInterface);
+					}
+				}
+				else if (const int32* ResolvedDIIndex = Inst->GetInstanceParameters().FindParameterOffset(ResolvedDIInfo.ResolvedVariable))
+				{
+					//If this is a User DI we bind to the user DI and find instance data with it.
+					if (UNiagaraDataInterface* UserInterface = Inst->GetInstanceParameters().GetDataInterface(*ResolvedDIIndex))
 					{
 						DIToBind = UserInterface;
 						InstData = Inst->FindDataInterfaceInstanceData(UserInterface);

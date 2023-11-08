@@ -4,17 +4,10 @@
 
 #include "NiagaraCommon.h"
 #include "NiagaraSettings.h"
+#include "RHI.h"
 
 namespace NiagaraDataInterfaceRenderTargetCommon
 {
-	int32 GReleaseResourceOnRemove = false;
-	static FAutoConsoleVariableRef CVarNiagaraReleaseResourceOnRemove(
-		TEXT("fx.Niagara.RenderTarget.ReleaseResourceOnRemove"),
-		GReleaseResourceOnRemove,
-		TEXT("Releases the render target resource once it is removed from the manager list rather than waiting for a GC."),
-		ECVF_Default
-	);
-
 	//-TEMP: Until we prune data interface on cook this will avoid consuming memory
 	int32 GIgnoreCookedOut = true;
 	static FAutoConsoleVariableRef CVarNiagaraRenderTargetIgnoreCookedOut(
@@ -101,8 +94,6 @@ namespace NiagaraDataInterfaceRenderTargetCommon
 			}
 			if (PreviousFormat == OutRenderTargetFormat)
 			{
-				// This is fatal as we failed to find any format that supports typed UAV stores
-				UE_LOG(LogNiagara, Warning, TEXT("Failed to find a render target format that supports UAV store"));
 				return false;
 			}
 		}

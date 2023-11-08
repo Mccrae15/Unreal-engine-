@@ -4,6 +4,7 @@
 
 #include "SUSDStageEditorStyle.h"
 #include "UnrealUSDWrapper.h"
+#include "USDAttributeUtils.h"
 #include "USDConversionUtils.h"
 #include "USDDuplicateType.h"
 #include "USDLayerUtils.h"
@@ -451,18 +452,20 @@ void SUsdStageTreeView::RefreshPrim( const FString& PrimPath, bool bResync )
 	// We couldn't find the target prim, do a full refresh instead
 	else
 	{
-		Refresh( UsdStage );
+		FWriteScopeLock StageTreeViewLock{RefreshStateLock};
+		bNeedsFullUpdate = true;
 	}
 
 	if ( bResync )
 	{
-		RequestTreeRefresh();
+		FWriteScopeLock StageTreeViewLock{RefreshStateLock};
+		bNeedsFullUpdate = true;
 	}
 }
 
 FUsdPrimViewModelPtr SUsdStageTreeView::GetItemFromPrimPath( const FString& PrimPath )
 {
-	FScopedUnrealAllocs UnrealAllocs; // RefreshPrim can be called by a delegate for which we don't know the active allocator
+	FScopedUnrealAllocs UnrealAllocs;
 
 	UE::FSdfPath UsdPrimPath( *PrimPath );
 
@@ -985,11 +988,18 @@ void SUsdStageTreeView::OnAddChildPrim()
 
 void SUsdStageTreeView::OnCutPrim()
 {
+	TArray<FUsdPrimViewModelRef> MySelectedItems = GetSelectedItems();
+	for (FUsdPrimViewModelRef SelectedItem : MySelectedItems)
+	{
+		if (UsdUtils::NotifyIfInstanceProxy(SelectedItem->UsdPrim))
+		{
+			return;
+		}
+	}
+
 	FScopedTransaction Transaction( LOCTEXT( "CutPrimTransaction", "Cut prims" ) );
 
 	UE::FSdfChangeBlock Block;
-
-	TArray< FUsdPrimViewModelRef > MySelectedItems = GetSelectedItems();
 
 	TArray<UE::FUsdPrim> Prims;
 	Prims.Reserve( MySelectedItems.Num() );
@@ -1030,11 +1040,18 @@ void SUsdStageTreeView::OnPastePrim()
 		return;
 	}
 
+	TArray<FUsdPrimViewModelRef> MySelectedItems = GetSelectedItems();
+	for (FUsdPrimViewModelRef SelectedItem : MySelectedItems)
+	{
+		if (UsdUtils::NotifyIfInstanceProxy(SelectedItem->UsdPrim))
+		{
+			return;
+		}
+	}
+
 	FScopedTransaction Transaction( LOCTEXT( "PastePrimTransaction", "Paste prims" ) );
 
 	UE::FSdfChangeBlock Block;
-
-	TArray< FUsdPrimViewModelRef > MySelectedItems = GetSelectedItems();
 
 	TArray<UE::FUsdPrim> ParentPrims;
 
@@ -1071,11 +1088,16 @@ void SUsdStageTreeView::OnDuplicatePrim( EUsdDuplicateType DuplicateType )
 		return;
 	}
 
+	TArray<FUsdPrimViewModelRef> MySelectedItems = GetSelectedItems();
+	for (FUsdPrimViewModelRef SelectedItem : MySelectedItems)
+	{
+		if (UsdUtils::NotifyIfInstanceProxy(SelectedItem->UsdPrim))
+		{
+			return;
+		}
+	}
+
 	FScopedTransaction Transaction( LOCTEXT( "DuplicatePrimTransaction", "Duplicate prims" ) );
-
-	UE::FSdfChangeBlock Block;
-
-	TArray< FUsdPrimViewModelRef > MySelectedItems = GetSelectedItems();
 
 	TArray<UE::FUsdPrim> Prims;
 	Prims.Reserve( MySelectedItems.Num() );
@@ -1093,11 +1115,18 @@ void SUsdStageTreeView::OnDuplicatePrim( EUsdDuplicateType DuplicateType )
 
 void SUsdStageTreeView::OnDeletePrim()
 {
+	TArray<FUsdPrimViewModelRef> MySelectedItems = GetSelectedItems();
+	for (FUsdPrimViewModelRef SelectedItem : MySelectedItems)
+	{
+		if (UsdUtils::NotifyIfInstanceProxy(SelectedItem->UsdPrim))
+		{
+			return;
+		}
+	}
+
 	FScopedTransaction Transaction( LOCTEXT( "DeletePrimTransaction", "Delete prims" ) );
 
 	UE::FSdfChangeBlock Block;
-
-	TArray< FUsdPrimViewModelRef > MySelectedItems = GetSelectedItems();
 
 	for ( FUsdPrimViewModelRef SelectedItem : MySelectedItems )
 	{
@@ -1149,6 +1178,10 @@ void SUsdStageTreeView::OnAddReference()
 		return;
 	}
 	UE::FUsdPrim Referencer = MySelectedItems[ 0 ]->UsdPrim;
+	if (UsdUtils::NotifyIfInstanceProxy(Referencer))
+	{
+		return;
+	}
 
 	// This transaction is important as adding a reference may trigger the creation of new unreal assets, which need to be
 	// destroyed if we spam undo afterwards. Undoing won't remove the actual reference from the stage yet though, sadly...
@@ -1183,9 +1216,16 @@ void SUsdStageTreeView::OnAddReference()
 
 void SUsdStageTreeView::OnClearReferences()
 {
-	FScopedTransaction Transaction( LOCTEXT( "ClearReferenceTransaction", "Clear references to USD layers" ) );
+	TArray<FUsdPrimViewModelRef> MySelectedItems = GetSelectedItems();
+	for (FUsdPrimViewModelRef SelectedItem : MySelectedItems)
+	{
+		if (UsdUtils::NotifyIfInstanceProxy(SelectedItem->UsdPrim))
+		{
+			return;
+		}
+	}
 
-	TArray< FUsdPrimViewModelRef > MySelectedItems = GetSelectedItems();
+	FScopedTransaction Transaction( LOCTEXT( "ClearReferenceTransaction", "Clear references to USD layers" ) );
 
 	for ( FUsdPrimViewModelRef SelectedItem : MySelectedItems )
 	{
@@ -1223,6 +1263,10 @@ void SUsdStageTreeView::OnAddPayload()
 		return;
 	}
 	UE::FUsdPrim Referencer = MySelectedItems[ 0 ]->UsdPrim;
+	if (UsdUtils::NotifyIfInstanceProxy(Referencer))
+	{
+		return;
+	}
 
 	// This transaction is important as adding a payload may trigger the creation of new unreal assets, which need to be
 	// destroyed if we spam undo afterwards. Undoing won't remove the actual payload from the stage yet though, sadly...
@@ -1257,9 +1301,16 @@ void SUsdStageTreeView::OnAddPayload()
 
 void SUsdStageTreeView::OnClearPayloads()
 {
-	FScopedTransaction Transaction( LOCTEXT( "ClearPayloadTransaction", "Clear payloads to USD layers" ) );
+	TArray<FUsdPrimViewModelRef> MySelectedItems = GetSelectedItems();
+	for (FUsdPrimViewModelRef SelectedItem : MySelectedItems)
+	{
+		if (UsdUtils::NotifyIfInstanceProxy(SelectedItem->UsdPrim))
+		{
+			return;
+		}
+	}
 
-	TArray< FUsdPrimViewModelRef > MySelectedItems = GetSelectedItems();
+	FScopedTransaction Transaction( LOCTEXT( "ClearPayloadTransaction", "Clear payloads to USD layers" ) );
 
 	for ( FUsdPrimViewModelRef SelectedItem : MySelectedItems )
 	{
@@ -1269,12 +1320,19 @@ void SUsdStageTreeView::OnClearPayloads()
 
 void SUsdStageTreeView::OnApplySchema( FName SchemaName )
 {
+	TArray<FUsdPrimViewModelRef> MySelectedItems = GetSelectedItems();
+	for (FUsdPrimViewModelRef SelectedItem : MySelectedItems)
+	{
+		if (UsdUtils::NotifyIfInstanceProxy(SelectedItem->UsdPrim))
+		{
+			return;
+		}
+	}
+
 	FScopedTransaction Transaction( FText::Format(
 		LOCTEXT( "ApplySchemaTransaction", "Apply the '{0}' schema onto selected prims" ),
 		FText::FromName( SchemaName )
 	));
-
-	TArray< FUsdPrimViewModelRef > MySelectedItems = GetSelectedItems();
 
 	UE::FSdfChangeBlock Block;
 
@@ -1286,12 +1344,19 @@ void SUsdStageTreeView::OnApplySchema( FName SchemaName )
 
 void SUsdStageTreeView::OnRemoveSchema( FName SchemaName )
 {
+	TArray<FUsdPrimViewModelRef> MySelectedItems = GetSelectedItems();
+	for (FUsdPrimViewModelRef SelectedItem : MySelectedItems)
+	{
+		if (UsdUtils::NotifyIfInstanceProxy(SelectedItem->UsdPrim))
+		{
+			return;
+		}
+	}
+
 	FScopedTransaction Transaction( FText::Format(
 		LOCTEXT( "RemoveSchemaTransaction", "Remove the '{0}' schema from selected prims" ),
 		FText::FromName( SchemaName )
 	) );
-
-	TArray< FUsdPrimViewModelRef > MySelectedItems = GetSelectedItems();
 
 	UE::FSdfChangeBlock Block;
 
@@ -1500,7 +1565,7 @@ void SUsdStageTreeView::OnToggleAllPayloads( EPayloadsTrigger PayloadsTrigger )
 			{
 				UE::FUsdPrim& UsdPrim = InSelectedItem->UsdPrim;
 
-				if ( UsdPrim.HasPayload() )
+				if ( UsdPrim.HasAuthoredPayloads() )
 				{
 					bool bPrimIsLoaded = UsdPrim.IsLoaded();
 
@@ -1630,27 +1695,38 @@ void SUsdStageTreeView::OnPrimNameCommitted( const FUsdPrimViewModelRef& ViewMod
 	const bool bRenamingExistingPrim = ViewModel->bIsRenamingExistingPrim;
 	ViewModel->bIsRenamingExistingPrim = false;
 
-	if ( InPrimName.IsEmptyOrWhitespace() )
+	// Escaped out of initially setting a prim name
+	TFunction<void()> CancelInput = [&ViewModel, this]()
 	{
-		// Escaped out of initially setting a prim name
-		if ( !ViewModel->UsdPrim )
+		if (!ViewModel->UsdPrim)
 		{
 			if (FUsdPrimViewModel* Parent = ViewModel->ParentItem)
 			{
-				ViewModel->ParentItem->Children.Remove( ViewModel );
+				ViewModel->ParentItem->Children.Remove(ViewModel);
 			}
 			else
 			{
-				RootItems.Remove( ViewModel );
+				RootItems.Remove(ViewModel);
 			}
 
 			RequestTreeRefresh();
 		}
+	};
+
+	if ( InPrimName.IsEmptyOrWhitespace() )
+	{
+		CancelInput();
 		return;
 	}
 
 	if ( bRenamingExistingPrim )
 	{
+		if (UsdUtils::NotifyIfInstanceProxy(ViewModel->UsdPrim))
+		{
+			CancelInput();
+			return;
+		}
+
 		FScopedTransaction Transaction( LOCTEXT( "RenamePrimTransaction", "Rename a prim" ) );
 
 		// e.g. "/Root/OldPrim/"
@@ -1683,6 +1759,15 @@ void SUsdStageTreeView::OnPrimNameCommitted( const FUsdPrimViewModelRef& ViewMod
 	}
 	else
 	{
+		if (FUsdPrimViewModel* ParentModel = ViewModel->ParentItem)
+		{
+			if (UsdUtils::NotifyIfInstanceProxy(ParentModel->UsdPrim))
+			{
+				CancelInput();
+				return;
+			}
+		}
+
 		FScopedTransaction Transaction( LOCTEXT( "AddPrimTransaction", "Add a new prim" ) );
 
 		ViewModel->DefinePrim( *InPrimName.ToString() );

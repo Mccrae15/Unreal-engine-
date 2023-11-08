@@ -6,6 +6,8 @@ namespace UnrealBuildTool.Rules
 	{
 		public OculusXRMR(ReadOnlyTargetRules Target) : base(Target)
 		{
+			bUseUnity = true;
+
 			PrivateIncludePathModuleNames.AddRange(
 				new string[]
 				{
@@ -30,8 +32,17 @@ namespace UnrealBuildTool.Rules
 					"MediaAssets",
 					"HeadMountedDisplay",
 					"OculusXRHMD",
-					"OVRPluginXR"
+					"OVRPluginXR",
 				});
+
+			if (Target.Version.MajorVersion > 5 || (Target.Version.MajorVersion == 5 && Target.Version.MinorVersion >= 3))
+			{
+				PrivateDependencyModuleNames.AddRange(
+					new string[]
+					{
+						"XRBase",
+					});
+			}
 
 			PrivateIncludePaths.AddRange(
 				new string[] {

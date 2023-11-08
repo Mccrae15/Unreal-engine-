@@ -93,42 +93,20 @@ bool UInterchangePCXTranslator::Translate(UInterchangeBaseNodeContainer& BaseNod
 	return UE::Interchange::FTextureTranslatorUtilities::Generic2DTextureTranslate(GetSourceData(), BaseNodeContainer);
 }
 
-TOptional<UE::Interchange::FImportImage> UInterchangePCXTranslator::GetTexturePayloadData(const UInterchangeSourceData* PayloadSourceData, const FString& PayLoadKey) const
+TOptional<UE::Interchange::FImportImage> UInterchangePCXTranslator::GetTexturePayloadData(const FString& /*PayloadKey*/, TOptional<FString>& AlternateTexturePath) const
 {
-	check(PayloadSourceData == GetSourceData());
-
-	if (!GetSourceData())
-	{
-		UE_LOG(LogInterchangeImport, Error, TEXT("Failed to import PCX, bad source data."));
-		return TOptional<UE::Interchange::FImportImage>();
-	}
+	using namespace UE::Interchange;
 
 	TArray64<uint8> SourceDataBuffer;
-	FString Filename = GetSourceData()->GetFilename();
-	
-	//Make sure the key fit the filename, The key should always be valid
-	if (!Filename.Equals(PayLoadKey))
+	if (!FTextureTranslatorUtilities::LoadSourceBuffer(*this, TEXT("PCX"), SourceDataBuffer))
 	{
-		UE_LOG(LogInterchangeImport, Error, TEXT("Failed to import PCX, wrong payload key. [%s]"), *Filename);
-		return TOptional<UE::Interchange::FImportImage>();
-	}
-
-	if (!FPaths::FileExists(Filename))
-	{
-		UE_LOG(LogInterchangeImport, Error, TEXT("Failed to import PCX, cannot open file. [%s]"), *Filename);
-		return TOptional<UE::Interchange::FImportImage>();
-	}
-
-	if (!FFileHelper::LoadFileToArray(SourceDataBuffer, *Filename))
-	{
-		UE_LOG(LogInterchangeImport, Error, TEXT("Failed to import PCX, cannot load file content into an array. [%s]"), *Filename);
-		return TOptional<UE::Interchange::FImportImage>();
+		return {};
 	}
 
 	const uint8* Buffer = SourceDataBuffer.GetData();
 	const uint8* BufferEnd = Buffer + SourceDataBuffer.Num();
 
-	const int32 Length = BufferEnd - Buffer;
+	const int64 Length = BufferEnd - Buffer;
 
 	FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
 
@@ -140,6 +118,14 @@ TOptional<UE::Interchange::FImportImage> UInterchangePCXTranslator::GetTexturePa
 	const UE::Interchange::Private::FPCXFileHeader* PCX = (UE::Interchange::Private::FPCXFileHeader*)Buffer;
 	if (Length >= sizeof(UE::Interchange::Private::FPCXFileHeader) && PCX->Manufacturer == 10)
 	{
+		if (PCX->XMax < PCX->XMin ||
+			PCX->YMax < PCX->YMin)
+		{
+			FText ErrorMessage = NSLOCTEXT("InterchangePCXTranslator", "CorruptedFileDim", "Failed to import PCX, invalid dims.");
+			FTextureTranslatorUtilities::LogError(*this, MoveTemp(ErrorMessage));
+			return TOptional<UE::Interchange::FImportImage>();
+		}
+
 		int32 NewU = PCX->XMax + 1 - PCX->XMin;
 		int32 NewV = PCX->YMax + 1 - PCX->YMin;
 
@@ -191,9 +177,9 @@ TOptional<UE::Interchange::FImportImage> UInterchangePCXTranslator::GetTexturePa
 			);
 
 			uint8* Dest = static_cast<uint8*>(PayloadData.RawData.GetData());
-
+			uint64 DestSize = PayloadData.RawData.GetSize();
 			// Doing a memset to make sure the alpha channel is set to 0xff since we only have 3 color planes.
-			FMemory::Memset(Dest, 0xff, NewU * NewV * FTextureSource::GetBytesPerPixel(PayloadData.Format));
+			FMemory::Memset(Dest, 0xff, DestSize);
 
 			// Copy upside-down scanlines.
 			Buffer += 128;
@@ -225,6 +211,16 @@ TOptional<UE::Interchange::FImportImage> UInterchangePCXTranslator::GetTexturePa
 							Overflow = Overflow - RunLength;
 						}
 
+						// NewU is max uint16, i is max uint16, j is max uint16, runlength is max uint16.
+						uint64 FarthestOffset = ((uint64)i * NewU + (j + RunLength - 1))*4 + ColorPlane;
+
+						if (FarthestOffset >= DestSize)
+						{
+							FText ErrorMessage = NSLOCTEXT("InterchangePCXTranslator", "InvalidRunLength", "Failed to import PCX, RLE length is invalid during decode");
+							FTextureTranslatorUtilities::LogError(*this, MoveTemp(ErrorMessage));
+							return TOptional<UE::Interchange::FImportImage>();
+						}
+
 						//checkf(((i*NewU + RunLength) * 4 + ColorPlane) < (Texture->Source.CalcMipSize(0)),
 						//	TEXT("RLE going off the end of buffer"));
 						for (int32 k = j; k < j + RunLength; k++)
@@ -238,13 +234,14 @@ TOptional<UE::Interchange::FImportImage> UInterchangePCXTranslator::GetTexturePa
 		}
 		else
 		{
-			UE_LOG(LogInterchangeImport, Error, TEXT("Failed to import PCX, unsupported format. (%i/%i) [%s]"), PCX->NumPlanes, PCX->BitsPerPixel, *Filename);
+			FText ErrorMessage = FText::Format(NSLOCTEXT("InterchangePCXTranslator", "UnsupportedFormat", "Failed to import PCX, unsupported format. ({0}{1})"), (int)PCX->NumPlanes, (int)PCX->BitsPerPixel);
+			FTextureTranslatorUtilities::LogError(*this, MoveTemp(ErrorMessage));
 			return TOptional<UE::Interchange::FImportImage>();
 		}
 	}
 	else
 	{
-		UE_LOG(LogInterchangeImport, Error, TEXT("Failed to import PCX, unsupported file version. [%s]"), *Filename);
+		FTextureTranslatorUtilities::LogError(*this, NSLOCTEXT("InterchangePCXTranslator", "UnsupportedVersion", "Failed to import PCX, unsupported file version."));
 		return TOptional<UE::Interchange::FImportImage>();
 	}
 

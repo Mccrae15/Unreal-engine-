@@ -6,8 +6,10 @@
 #include "UObject/ObjectSaveContext.h"
 #include "WorldConditions/WorldCondition_SmartObjectActorTagQuery.h"
 #include "WorldConditions/SmartObjectWorldConditionObjectTagQuery.h"
+#include "SmartObjectUserComponent.h"
+#include "Engine/SCS_Node.h"
+#include "Misc/DataValidation.h"
 #endif
-
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SmartObjectDefinition)
 
@@ -27,13 +29,59 @@ USmartObjectDefinition::USmartObjectDefinition(const FObjectInitializer& ObjectI
 
 #if WITH_EDITOR
 
-EDataValidationResult USmartObjectDefinition::IsDataValid(TArray<FText>& ValidationErrors)
+EDataValidationResult USmartObjectDefinition::IsDataValid(FDataValidationContext& Context) const
 {
-	const EDataValidationResult Result = Super::IsDataValid(ValidationErrors);
+	const EDataValidationResult Result = Super::IsDataValid(Context);
 
+	TArray<FText> ValidationErrors;
 	Validate(&ValidationErrors);
+
+	for (const FText& Error : ValidationErrors)
+	{
+		Context.AddError(Error);
+	}
 	
-	return CombineDataValidationResults(Result, bValid ? EDataValidationResult::Valid : EDataValidationResult::Invalid);
+	return CombineDataValidationResults(Result, bValid.GetValue() ? EDataValidationResult::Valid : EDataValidationResult::Invalid);
+}
+
+TSubclassOf<USmartObjectSlotValidationFilter> USmartObjectDefinition::GetPreviewValidationFilterClass() const
+{
+	if (PreviewData.UserActorClass.IsValid())
+	{
+		if (const UClass* UserActorClass = PreviewData.UserActorClass.Get())
+		{
+			// Try to get smart object user component added in the BP.
+			if (const UBlueprintGeneratedClass* UserBlueprintClass = Cast<UBlueprintGeneratedClass>(UserActorClass))
+			{
+				const TArray<USCS_Node*>& Nodes = UserBlueprintClass->SimpleConstructionScript->GetAllNodes();
+				for (USCS_Node* Node : Nodes)
+				{
+					UActorComponent* Component = Node->GetActualComponentTemplate(const_cast<UBlueprintGeneratedClass*>(UserBlueprintClass));
+					if (const USmartObjectUserComponent* UserComponent = Cast<USmartObjectUserComponent>(Component))
+					{
+						return UserComponent->GetValidationFilter();
+					}
+				}
+			}
+			
+			// Try to get the component from the CDO (e.g. added as default object in C++).
+			if (const AActor* UserActor = Cast<AActor>(UserActorClass->GetDefaultObject()))
+			{
+				if (const USmartObjectUserComponent* UserComponent = UserActor->GetComponentByClass<USmartObjectUserComponent>())
+				{
+					return UserComponent->GetValidationFilter();
+				}
+			}
+		}
+		return nullptr;
+	}
+
+	if (PreviewData.UserValidationFilterClass.IsValid())
+	{
+		return PreviewData.UserValidationFilterClass.Get();
+	}
+	
+	return nullptr;
 }
 
 #endif // WITH_EDITOR
@@ -41,17 +89,6 @@ EDataValidationResult USmartObjectDefinition::IsDataValid(TArray<FText>& Validat
 bool USmartObjectDefinition::Validate(TArray<FText>* ErrorsToReport) const
 {
 	bValid = false;
-	if (Slots.Num() == 0)
-	{
-		if (ErrorsToReport)
-		{
-			ErrorsToReport->Emplace(LOCTEXT("MissingSlotError", "Need to provide at least one slot definition"));
-		}
-		else
-		{
-			return false;
-		}
-	}
 
 	// Detect null entries in default definitions
 	int32 NullEntryIndex;
@@ -104,8 +141,8 @@ bool USmartObjectDefinition::Validate(TArray<FText>* ErrorsToReport) const
 		}
 	}
 
-	bValid = true;
-	return true;
+	bValid = ErrorsToReport == nullptr || ErrorsToReport->IsEmpty();
+	return bValid.GetValue();
 }
 
 FBox USmartObjectDefinition::GetBounds() const
@@ -113,13 +150,13 @@ FBox USmartObjectDefinition::GetBounds() const
 	FBox BoundingBox(ForceInitToZero);
 	for (const FSmartObjectSlotDefinition& Slot : GetSlots())
 	{
-		BoundingBox += Slot.Offset + UE::SmartObject::DefaultSlotSize;
-		BoundingBox += Slot.Offset - UE::SmartObject::DefaultSlotSize;
+		BoundingBox += FVector(Slot.Offset) + UE::SmartObject::DefaultSlotSize;
+		BoundingBox += FVector(Slot.Offset) - UE::SmartObject::DefaultSlotSize;
 	}
 	return BoundingBox;
 }
 
-void USmartObjectDefinition::GetSlotActivityTags(const FSmartObjectSlotIndex& SlotIndex, FGameplayTagContainer& OutActivityTags) const
+void USmartObjectDefinition::GetSlotActivityTags(const int32 SlotIndex, FGameplayTagContainer& OutActivityTags) const
 {
 	if (ensureMsgf(Slots.IsValidIndex(SlotIndex), TEXT("Requesting activity tags for an out of range slot index: %s"), *LexToString(SlotIndex)))
 	{
@@ -141,6 +178,7 @@ void USmartObjectDefinition::GetSlotActivityTags(const FSmartObjectSlotDefinitio
 	}
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 TOptional<FTransform> USmartObjectDefinition::GetSlotTransform(const FTransform& OwnerTransform, const FSmartObjectSlotIndex SlotIndex) const
 {
 	TOptional<FTransform> Transform;
@@ -148,14 +186,24 @@ TOptional<FTransform> USmartObjectDefinition::GetSlotTransform(const FTransform&
 	if (ensureMsgf(Slots.IsValidIndex(SlotIndex), TEXT("Requesting slot transform for an out of range index: %s"), *LexToString(SlotIndex)))
 	{
 		const FSmartObjectSlotDefinition& Slot = Slots[SlotIndex];
-		Transform = FTransform(Slot.Rotation, Slot.Offset) * OwnerTransform;
+		Transform = FTransform(FRotator(Slot.Rotation), FVector(Slot.Offset)) * OwnerTransform;
 	}
 
 	return Transform;
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
+FTransform USmartObjectDefinition::GetSlotWorldTransform(const int32 SlotIndex, const FTransform& OwnerTransform) const
+{
+	if (ensureMsgf(Slots.IsValidIndex(SlotIndex), TEXT("Requesting slot transform for an out of range index: %s"), *LexToString(SlotIndex)))
+	{
+		const FSmartObjectSlotDefinition& Slot = Slots[SlotIndex];
+		return FTransform(FRotator(Slot.Rotation), FVector(Slot.Offset)) * OwnerTransform;
+	}
+	return OwnerTransform;
+}
 
-const USmartObjectBehaviorDefinition* USmartObjectDefinition::GetBehaviorDefinition(const FSmartObjectSlotIndex& SlotIndex,
+const USmartObjectBehaviorDefinition* USmartObjectDefinition::GetBehaviorDefinition(const int32 SlotIndex,
 																					const TSubclassOf<USmartObjectBehaviorDefinition>& DefinitionClass) const
 {
 	const USmartObjectBehaviorDefinition* Definition = nullptr;
@@ -221,7 +269,7 @@ void USmartObjectDefinition::PostEditChangeChainProperty(FPropertyChangedChainEv
 			{
 				FSmartObjectSlotDefinition& Slot = Slots[ArrayIndex];
 				Slot.ID = FGuid::NewGuid();
-				Slot.SelectionPreconditions.SchemaClass = WorldConditionSchemaClass;
+				Slot.SelectionPreconditions.SetSchemaClass(WorldConditionSchemaClass);
 			}
 		}
 	}
@@ -237,8 +285,8 @@ void USmartObjectDefinition::PostEditChangeChainProperty(FPropertyChangedChainEv
 	{
 		for (FSmartObjectSlotDefinition& Slot : Slots)
 		{
-			Slot.SelectionPreconditions.SchemaClass = WorldConditionSchemaClass;
-			Slot.SelectionPreconditions.Initialize(*this);
+			Slot.SelectionPreconditions.SetSchemaClass(WorldConditionSchemaClass);
+			Slot.SelectionPreconditions.Initialize(this);
 		}
 	}
 
@@ -249,7 +297,7 @@ void USmartObjectDefinition::PreSave(FObjectPreSaveContext SaveContext)
 {
 	for (FSmartObjectSlotDefinition& Slot : Slots)
 	{
-		Slot.SelectionPreconditions.Initialize(*this);
+		Slot.SelectionPreconditions.Initialize(this);
 	}
 
 	UpdateSlotReferences();
@@ -297,9 +345,9 @@ void USmartObjectDefinition::PostLoad()
 		WorldConditionSchemaClass = GetDefault<USmartObjectSettings>()->DefaultWorldConditionSchemaClass;
 	}
 
-	if (!Preconditions.SchemaClass)
+	if (Preconditions.GetSchemaClass().Get() == nullptr)
 	{
-		Preconditions.SchemaClass = WorldConditionSchemaClass;
+		Preconditions.SetSchemaClass(WorldConditionSchemaClass);
 	}
 
 #if WITH_EDITOR
@@ -308,17 +356,28 @@ void USmartObjectDefinition::PostLoad()
 	{
 		FWorldCondition_SmartObjectActorTagQuery NewActorTagQueryCondition;
 		NewActorTagQueryCondition.TagQuery = ObjectTagFilter;
-		Preconditions.EditableConditions.Emplace(0, EWorldConditionOperator::And, FConstStructView::Make(NewActorTagQueryCondition));
+		Preconditions.AddCondition(FWorldConditionEditable(0, EWorldConditionOperator::And, FConstStructView::Make(NewActorTagQueryCondition)));
 		ObjectTagFilter.Clear();
 		UE_ASSET_LOG(LogSmartObject, Log, this, TEXT("Deprecated object tag filter has been replaced by a %s precondition to validate tags on the smart object actor."
 			" If the intent was to validate against instance runtime tags then the condition should be replaced by %s."),
 			*FWorldCondition_SmartObjectActorTagQuery::StaticStruct()->GetName(),
 			*FSmartObjectWorldConditionObjectTagQuery::StaticStruct()->GetName());
 	}
+
+	if (PreviewClass_DEPRECATED.IsValid())
+	{
+		PreviewData.ObjectActorClass = PreviewClass_DEPRECATED;
+		PreviewClass_DEPRECATED.Reset();
+	}
+	if (PreviewMeshPath_DEPRECATED.IsValid())
+	{
+		PreviewData.ObjectMeshPath = PreviewMeshPath_DEPRECATED;
+		PreviewMeshPath_DEPRECATED.Reset();
+	}
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #endif	
 
-	Preconditions.Initialize(*this);
+	Preconditions.Initialize(this);
 	
 	for (FSmartObjectSlotDefinition& Slot : Slots)
 	{
@@ -330,12 +389,12 @@ void USmartObjectDefinition::PostLoad()
 		}
 #endif
 		// Fill in missing world condition schema for old data.
-		if (!Slot.SelectionPreconditions.SchemaClass)
+		if (Slot.SelectionPreconditions.GetSchemaClass().Get() == nullptr)
 		{
-			Slot.SelectionPreconditions.SchemaClass = WorldConditionSchemaClass;
+			Slot.SelectionPreconditions.SetSchemaClass(WorldConditionSchemaClass);
 		}
 
-		Slot.SelectionPreconditions.Initialize(*this);
+		Slot.SelectionPreconditions.Initialize(this);
 	}
 	
 #if WITH_EDITOR

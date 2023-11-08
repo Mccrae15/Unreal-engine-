@@ -12,34 +12,47 @@
 	"SupportURL" : "",
 	"EnabledByDefault" : false,
 	"CanContainContent" : false,
-	"IsBetaVersion" : true,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": true,
 	"Installed" : false,
 	"Plugins":
 	[
 		{
 			"Name": "ControlRig",
 			"Enabled": true
+		},
+		{
+			"Name": "StructUtils",
+			"Enabled": true
+		},
+		{
+			"Name": "ContentBrowserFileDataSource",
+			"Enabled": true
+		},
+		{
+			"Name": "PythonScriptPlugin",
+			"Enabled": true
 		}
 	],
 	"Modules" :
 	[
 		{
-			"Name" : "AnimNextInterface",
+			"Name" : "AnimNext",
 			"Type" : "Runtime",
 			"LoadingPhase" : "PreDefault"
 		},
 		{
-			"Name" : "AnimNextInterfaceGraph",
-			"Type" : "Runtime",
-			"LoadingPhase" : "Default"
-		},
-		{
-			"Name" : "AnimNextInterfaceGraphEditor",
+			"Name" : "AnimNextEditor",
 			"Type" : "Editor",
 			"LoadingPhase" : "Default"
 		},
 		{
-			"Name" : "AnimNextInterfaceGraphUncookedOnly",
+			"Name" : "AnimNextUncookedOnly",
+			"Type" : "UncookedOnly",
+			"LoadingPhase" : "Default"
+		},
+		{
+			"Name" : "AnimNextTestSuite",
 			"Type" : "UncookedOnly",
 			"LoadingPhase" : "Default"
 		}

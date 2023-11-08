@@ -33,9 +33,19 @@ public:
 	//virtual bool Restore();
 
 
+	virtual bool IsLockable() const override;
+	virtual bool IsLocked() const override;
+	virtual void SetLockedState(bool bLocked) override;
+
 
 	virtual IGeometrySelectionTransformer* InitializeTransformation(const FGeometrySelection& Selection) override;
 	virtual void ShutdownTransformation(IGeometrySelectionTransformer* Transformer) override;
+
+	virtual void UpdateAfterGeometryEdit(
+		IToolsContextTransactionsAPI* TransactionsAPI,
+		bool bInTransaction,
+		TUniquePtr<UE::Geometry::FDynamicMeshChange> DynamicMeshChange,
+		FText GeometryEditTransactionString) override;
 
 protected:
 	UStaticMeshComponent* StaticMeshComponent = nullptr;
@@ -46,15 +56,20 @@ protected:
 	TStrongObjectPtr<UDynamicMesh> LocalTargetMesh;
 	void CopyFromStaticMesh();
 
-	TPimplPtr<FBasicDynamicMeshSelectionTransformer> ActiveTransformer;
+	TSharedPtr<FBasicDynamicMeshSelectionTransformer> ActiveTransformer;
 	void CommitMeshTransform();
+
+
+public:
+	static void SetAssetUnlockedOnCreation(UStaticMesh* StaticMesh);
+	static void ResetUnlockedStaticMeshAssets();
 };
 
 
 
 /**
  * FStaticMeshComponentSelectorFactory constructs FStaticMeshSelector instances 
- * for UBrushComponents
+ * for UStaticMeshComponents
  */
 class MODELINGCOMPONENTSEDITORONLY_API FStaticMeshComponentSelectorFactory : public IGeometrySelectorFactory
 {

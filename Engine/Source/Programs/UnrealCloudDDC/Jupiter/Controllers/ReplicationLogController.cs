@@ -4,17 +4,18 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Linq;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using EpicGames.Horde.Storage;
 using EpicGames.Serialization;
+using Jupiter.Common;
 using Jupiter.Implementation;
 using Jupiter.Implementation.TransactionLog;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
-using Newtonsoft.Json;
 
 namespace Jupiter.Controllers
 {
@@ -114,7 +115,7 @@ namespace Jupiter.Controllers
                     {
                         Title = $"Log file is not available, use snapshot {snapshot.SnapshotBlob} instead",
                         Type = ProblemTypes.UseSnapshot,
-                        Extensions = { { "SnapshotId", snapshot.SnapshotBlob } }
+                        Extensions = { { "SnapshotId", snapshot.SnapshotBlob }, { "BlobNamespace", snapshot.BlobNamespace },  }
                     });
                 }
 

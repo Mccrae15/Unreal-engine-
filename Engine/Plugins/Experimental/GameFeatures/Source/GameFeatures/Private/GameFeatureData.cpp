@@ -2,6 +2,7 @@
 
 #include "GameFeatureData.h"
 #include "AssetRegistry/AssetData.h"
+#include "Engine/AssetManager.h"
 #include "GameFeaturesSubsystem.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/ConfigContext.h"
@@ -9,6 +10,11 @@
 #include "GameFeatureAction_AddWPContent.h"
 #include "WorldPartition/ContentBundle/ContentBundleDescriptor.h"
 #include "AssetRegistry/AssetData.h"
+#include "Interfaces/IPluginManager.h"
+
+#if WITH_EDITOR
+#include "Misc/DataValidation.h"
+#endif
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(GameFeatureData)
 
@@ -34,22 +40,22 @@ void UGameFeatureData::UpdateAssetBundleData()
 #endif // WITH_EDITORONLY_DATA
 
 #if WITH_EDITOR
-EDataValidationResult UGameFeatureData::IsDataValid(TArray<FText>& ValidationErrors)
+EDataValidationResult UGameFeatureData::IsDataValid(FDataValidationContext& Context) const
 {
-	EDataValidationResult Result = CombineDataValidationResults(Super::IsDataValid(ValidationErrors), EDataValidationResult::Valid);
+	EDataValidationResult Result = CombineDataValidationResults(Super::IsDataValid(Context), EDataValidationResult::Valid);
 
 	int32 EntryIndex = 0;
-	for (UGameFeatureAction* Action : Actions)
+	for (const UGameFeatureAction* Action : Actions)
 	{
 		if (Action)
 		{
-			EDataValidationResult ChildResult = Action->IsDataValid(ValidationErrors);
+			EDataValidationResult ChildResult = Action->IsDataValid(Context);
 			Result = CombineDataValidationResults(Result, ChildResult);
 		}
 		else
 		{
 			Result = EDataValidationResult::Invalid;
-			ValidationErrors.Add(FText::Format(LOCTEXT("ActionEntryIsNull", "Null entry at index {0} in Actions"), FText::AsNumber(EntryIndex)));
+			Context.AddError(FText::Format(LOCTEXT("ActionEntryIsNull", "Null entry at index {0} in Actions"), FText::AsNumber(EntryIndex)));
 		}
 
 		++EntryIndex;
@@ -77,7 +83,8 @@ void UGameFeatureData::InitializeBasePluginIniFile(const FString& PluginInstalle
 	if (!FConfigCacheIni::LoadExternalIniFile(PluginConfig, *PluginName, *EngineConfigDir, *PluginConfigDir, bIsBaseIniName, nullptr, bForceReloadFromDisk, bWriteDestIni))
 	{
 		// Now try the same rules as PluginManager using Default and the config hierarchy
-		FConfigContext Context = FConfigContext::ReadIntoPluginFile(PluginConfig, *FPaths::GetPath(PluginInstalledFilename));
+		FConfigContext Context = FConfigContext::ReadIntoPluginFile(PluginConfig, *FPaths::GetPath(PluginInstalledFilename),
+				IPluginManager::Get().FindPluginFromPath(PluginName)->GetExtensionBaseDirs());
 
 		if (!Context.Load(*PluginName))
 		{
@@ -111,7 +118,12 @@ void UGameFeatureData::InitializeHierarchicalPluginIniFiles(const FString& Plugi
 	const bool bWriteDestIni = false;
 
 	// @todo: Likely we need to track the diffs this config caused and/or store versions/layers in order to unwind settings during unloading/deactivation
-	TArray<FString> IniNamesToLoad = { TEXT("Input"), TEXT("Game"), TEXT("Engine") };
+	TArray<FString> IniNamesToLoad = { 
+		TEXT("Input"), TEXT("Game"), TEXT("Engine")
+#if UE_EDITOR
+		, TEXT("Editor")
+#endif
+	};
 	for (const FString& IniName : IniNamesToLoad)
 	{
 		const FString PluginIniName = PluginName + IniName;
@@ -258,6 +270,37 @@ void UGameFeatureData::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) 
 	}
 }
 #endif
+
+void UGameFeatureData::GetPluginName(FString& PluginName) const
+{
+	UGameFeatureData::GetPluginName(this, PluginName);
+}
+
+void UGameFeatureData::GetPluginName(const UGameFeatureData* GFD, FString& PluginName)
+{
+	if (GFD)
+	{
+		const bool bIsTransient = (GFD->GetFlags() & RF_Transient) != 0;
+		if (bIsTransient)
+		{
+			PluginName = GFD->GetName();
+		}
+		else
+		{
+			const FString GameFeaturePath = GFD->GetOutermost()->GetName();
+			if (ensureMsgf(UAssetManager::GetContentRootPathFromPackageName(GameFeaturePath, PluginName), TEXT("Must be a valid package path with a root. GameFeaturePath: %s"), *GameFeaturePath))
+			{
+				// Trim the leading and trailing slashes
+				PluginName = PluginName.LeftChop(1).RightChop(1);
+			}
+			else
+			{
+				// Not a great fallback but better than nothing. Make sure this asset is in the right folder so we can get the plugin name.
+				PluginName = GFD->GetName();
+			}
+		}
+	}
+}
 
 #undef LOCTEXT_NAMESPACE
 

@@ -8,6 +8,7 @@
 #include "Animation/AnimData/IAnimationDataController.h"
 #include "Animation/AnimationPoseData.h"
 #include "EngineLogs.h"
+#include "Animation/AnimationSettings.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimComposite)
 
@@ -27,6 +28,12 @@ void UAnimComposite::ReplaceReferredAnimations(const TMap<UAnimationAsset*, UAni
 {
 	AnimationTrack.ReplaceReferredAnimations(ReplacementMap);
 }
+
+void UAnimComposite::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+	UpdateCommonTargetFrameRate();
+}
 #endif
 
 bool UAnimComposite::IsNotifyAvailable() const
@@ -36,35 +43,17 @@ bool UAnimComposite::IsNotifyAvailable() const
 
 void UAnimComposite::GetAnimNotifiesFromDeltaPositions(const float& PreviousPosition, const float & CurrentPosition, FAnimNotifyContext& NotifyContext) const
 {
-	const bool bMovingForward = (RateScale >= 0.f);
-
 	Super::GetAnimNotifiesFromDeltaPositions(PreviousPosition, CurrentPosition, NotifyContext);
-
-	if (bMovingForward)
-	{
-		if (PreviousPosition <= CurrentPosition)
-		{
-			AnimationTrack.GetAnimNotifiesFromTrackPositions(PreviousPosition, CurrentPosition, NotifyContext);
-		}
-		else
-		{
-			AnimationTrack.GetAnimNotifiesFromTrackPositions(PreviousPosition, GetPlayLength(), NotifyContext);
-			AnimationTrack.GetAnimNotifiesFromTrackPositions(0.f, CurrentPosition, NotifyContext);
-		}
-	}
-	else
-	{
-		if (PreviousPosition >= CurrentPosition)
-		{
-			AnimationTrack.GetAnimNotifiesFromTrackPositions(PreviousPosition, CurrentPosition, NotifyContext);
-		}
-		else
-		{
-			AnimationTrack.GetAnimNotifiesFromTrackPositions(PreviousPosition, 0.f, NotifyContext);
-			AnimationTrack.GetAnimNotifiesFromTrackPositions(GetPlayLength(), CurrentPosition, NotifyContext);
-		}
-	}
+	AnimationTrack.GetAnimNotifiesFromTrackPositions(PreviousPosition, CurrentPosition, NotifyContext);
 }
+
+void UAnimComposite::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
+{
+	Super::GetResourceSizeEx(CumulativeResourceSize);
+
+	CumulativeResourceSize.AddDedicatedSystemMemoryBytes(AnimationTrack.GetTotalBytesUsed());
+}
+
 
 void UAnimComposite::HandleAssetPlayerTickedInternal(FAnimAssetTickContext &Context, const float PreviousTime, const float MoveDelta, const FAnimTickRecord &Instance, struct FAnimNotifyQueue& NotifyQueue) const
 {
@@ -205,5 +194,81 @@ void UAnimComposite::PostLoad()
 		}
 	}
 #endif
+}
+
+#if WITH_EDITOR
+void UAnimComposite::UpdateCommonTargetFrameRate()
+{
+	CommonTargetFrameRate = FFrameRate(0,0);
+	FFrameRate TargetRate = UAnimationSettings::Get()->GetDefaultFrameRate();
+
+	bool bFirst = true;
+	bool bValidFrameRate = AnimationTrack.AnimSegments.Num() != 0;
+	for (const FAnimSegment& Segment : AnimationTrack.AnimSegments)
+	{
+		const UAnimSequenceBase* Base = Segment.GetAnimReference();
+		if (Base && Base != this)
+		{
+			const FFrameRate BaseFrameRate = Base->GetSamplingFrameRate();
+			if (bFirst)
+			{
+				TargetRate = BaseFrameRate;
+				bFirst = false;
+			}
+			else
+			{
+				if (BaseFrameRate.IsValid())
+				{					
+					if (TargetRate.IsMultipleOf(BaseFrameRate))
+					{
+						TargetRate = BaseFrameRate;
+					}
+					else if (TargetRate != BaseFrameRate && !BaseFrameRate.IsMultipleOf(TargetRate))
+					{						
+						FString AssetString;
+						TArray<UAnimationAsset*> Assets;
+						if(GetAllAnimationSequencesReferred(Assets, false))
+						{
+							for (const UAnimationAsset* AnimAsset : Assets)
+							{
+								if (const UAnimSequenceBase* AnimSequenceBase = Cast<UAnimSequenceBase>(AnimAsset))
+								{
+									AssetString.Append(FString::Printf(TEXT("\n\t%s - %s"), *AnimSequenceBase->GetName(), *AnimSequenceBase->GetSamplingFrameRate().ToPrettyText().ToString()));
+								}
+							}
+						}						
+
+						if (UE::Anim::CVarOutputMontageFrameRateWarning.GetValueOnAnyThread() == true)
+						{
+							UE_LOG(LogAnimation, Warning, TEXT("Frame rate of animation %s (%s) is incompatible with other animations in Animation Composite %s - underlying frame-rate will be set to %s:%s"), *Base->GetName(), *BaseFrameRate.ToPrettyText().ToString(), *GetName(), *Super::GetSamplingFrameRate().ToPrettyText().ToString(), *AssetString);
+						}
+						
+						bValidFrameRate = false;
+						break;
+					}
+				}
+				else
+				{
+					UE_LOG(LogAnimation, Warning, TEXT("Invalid frame rate %s for %s in %s"), *BaseFrameRate.ToPrettyText().ToString(), *Base->GetName(), *GetName());
+				}
+			}			
+		}	
+	}
+
+	if (bValidFrameRate)
+	{
+		CommonTargetFrameRate = TargetRate;
+	}
+}
+#endif // WITH_EDITOR
+
+FFrameRate UAnimComposite::GetSamplingFrameRate() const
+{
+	if (CommonTargetFrameRate.IsValid())
+	{
+		return CommonTargetFrameRate;
+	}
+
+	return Super::GetSamplingFrameRate();
 }
 

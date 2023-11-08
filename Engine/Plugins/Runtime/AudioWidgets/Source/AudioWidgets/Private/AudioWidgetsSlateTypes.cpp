@@ -3,9 +3,20 @@
 #include "AudioWidgetsSlateTypes.h"
 #include "Brushes/SlateNoResource.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
+#include "Styling/AppStyle.h"
 #include "Styling/StyleColors.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AudioWidgetsSlateTypes)
+
+namespace AudioWidgetStylesSharedParams
+{
+	const FLazyName BackgroundBrushName = "WhiteBrush";
+	const FLazyName PlayheadHandleBrushName = "Sequencer.Timeline.VanillaScrubHandleDown";
+	const FLinearColor PlayheadColor = FLinearColor(255.f, 0.1f, 0.2f, 1.f);
+	const FLinearColor RulerTicksColor = FLinearColor(1.f, 1.f, 1.f, 0.9f);
+	const float DefaultHeight = 720.f;
+	const float DefaultWidth = 1280.f;
+}
 
 // Audio Text Box Style 
 FAudioTextBoxStyle::FAudioTextBoxStyle()
@@ -72,3 +83,93 @@ const FAudioRadialSliderStyle& FAudioRadialSliderStyle::GetDefault()
 	return Default;
 }
 
+const FName FSampledSequenceViewerStyle::TypeName("FSampledSequenceViewerStyle");
+
+FSampledSequenceViewerStyle::FSampledSequenceViewerStyle()
+	: SequenceColor(FLinearColor::White)
+	, SequenceLineThickness(1.f)
+	, MajorGridLineColor(FLinearColor::Black)
+	, MinorGridLineColor(FLinearColor(0.f, 0.f, 0.f, 0.5f))
+	, ZeroCrossingLineColor(FLinearColor::Black)
+	, ZeroCrossingLineThickness(1.f)
+	, SampleMarkersSize(2.5f)
+	, SequenceBackgroundColor(FLinearColor(0.02f, 0.02f, 0.02f, 1.f))
+	, BackgroundBrush(*FAppStyle::GetBrush(AudioWidgetStylesSharedParams::BackgroundBrushName))
+	, DesiredWidth(AudioWidgetStylesSharedParams::DefaultWidth)
+	, DesiredHeight(AudioWidgetStylesSharedParams::DefaultHeight)
+{
+}
+
+const FSampledSequenceViewerStyle& FSampledSequenceViewerStyle::GetDefault()
+{
+	static FSampledSequenceViewerStyle Default;
+	return Default;
+}
+
+void FSampledSequenceViewerStyle::GetResources(TArray< const FSlateBrush* >& OutBrushes) const
+{
+	OutBrushes.Add(&BackgroundBrush);
+}
+
+const FName FPlayheadOverlayStyle::TypeName("FPlayheadOverlayStyle");
+
+FPlayheadOverlayStyle::FPlayheadOverlayStyle()
+	: PlayheadColor(AudioWidgetStylesSharedParams::PlayheadColor)
+	, PlayheadWidth(1.0f)
+	, DesiredWidth(AudioWidgetStylesSharedParams::DefaultWidth)
+	, DesiredHeight(AudioWidgetStylesSharedParams::DefaultHeight)
+{
+}
+
+const FPlayheadOverlayStyle& FPlayheadOverlayStyle::GetDefault()
+{
+	static FPlayheadOverlayStyle Default;
+	return Default;
+}
+
+const FName FFixedSampleSequenceRulerStyle::TypeName("FFixedSampleSequenceRulerStyle");
+
+FFixedSampleSequenceRulerStyle::FFixedSampleSequenceRulerStyle()
+	: HandleWidth(15.f)
+	, HandleColor(AudioWidgetStylesSharedParams::PlayheadColor)
+	, HandleBrush(*FAppStyle::GetBrush(AudioWidgetStylesSharedParams::PlayheadHandleBrushName))
+	, TicksColor(AudioWidgetStylesSharedParams::RulerTicksColor)
+	, TicksTextColor(AudioWidgetStylesSharedParams::RulerTicksColor)
+	, TicksTextFont(FAppStyle::GetFontStyle("Regular"))
+	, TicksTextOffset(5.f)
+	, BackgroundColor(FLinearColor::Black)
+	, BackgroundBrush(*FAppStyle::GetBrush(AudioWidgetStylesSharedParams::BackgroundBrushName))
+	, DesiredWidth(AudioWidgetStylesSharedParams::DefaultWidth)
+	, DesiredHeight(30.f)
+{
+}
+
+const FFixedSampleSequenceRulerStyle& FFixedSampleSequenceRulerStyle::GetDefault()
+{
+	static FFixedSampleSequenceRulerStyle Default;
+	return Default;
+}
+
+void FFixedSampleSequenceRulerStyle::GetResources(TArray< const FSlateBrush* >& OutBrushes) const
+{
+	OutBrushes.Add(&HandleBrush);
+	OutBrushes.Add(&BackgroundBrush);
+}
+
+FSampledSequenceValueGridOverlayStyle::FSampledSequenceValueGridOverlayStyle()
+	: GridColor(FLinearColor::Black)
+	, GridThickness(1.f)
+	, LabelTextColor(FLinearColor::White)
+	, LabelTextFont(FAppStyle::GetFontStyle("Regular"))
+	, DesiredWidth(AudioWidgetStylesSharedParams::DefaultWidth)
+	, DesiredHeight(AudioWidgetStylesSharedParams::DefaultHeight)
+{
+}
+
+const FSampledSequenceValueGridOverlayStyle& FSampledSequenceValueGridOverlayStyle::GetDefault()
+{
+	static FSampledSequenceValueGridOverlayStyle Default;
+	return Default;
+}
+
+const FName FSampledSequenceValueGridOverlayStyle::TypeName("FSampledSequenceValueGridOverlayStyle");

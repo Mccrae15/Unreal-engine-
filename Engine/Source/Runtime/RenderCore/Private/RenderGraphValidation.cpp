@@ -1,10 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RenderGraphValidation.h"
+#include "RenderGraphEvent.h"
 #include "RenderGraphPrivate.h"
-#include "Misc/FileHelper.h"
-#include "Misc/Paths.h"
 #include "MultiGPU.h"
+#include "RenderGraphPass.h"
 
 #if RDG_ENABLE_DEBUG
 
@@ -1325,6 +1325,11 @@ void FRDGUserValidation::SetAllowRHIAccess(const FRDGPass* Pass, bool bAllowAcce
 			if (FRDGTextureRef Texture = RenderTargets.DepthStencil.GetTexture())
 			{
 				Texture->GetDebugData().bAllowRHIAccess = bAllowAccess;
+			}
+
+			if (FRDGTextureRef ResolveTexture = RenderTargets.DepthStencil.GetResolveTexture())
+			{
+				ResolveTexture->GetDebugData().bAllowRHIAccess = bAllowAccess;
 			}
 
 			if (FRDGTexture* Texture = RenderTargets.ShadingRateTexture)

@@ -50,16 +50,6 @@ namespace Metasound
 	DECLARE_METASOUND_ENUM(ETriggerComparisonType, ETriggerComparisonType::Equals, METASOUNDSTANDARDNODES_API,
 	FEnumTriggerComparisonType, FEnumTriggerComparisonTypeInfo, FEnumTriggerComparisonTypeReadRef, FEnumTriggerComparisonTypeWriteRef);
 
-	DEFINE_METASOUND_ENUM_BEGIN(ETriggerComparisonType, FEnumTriggerComparisonType, "TriggerComparisonType")
-		DEFINE_METASOUND_ENUM_ENTRY(ETriggerComparisonType::Equals, "EqualsDescription", "Equals", "EqualsDescriptionTT", "True if A and B are equal."),
-		DEFINE_METASOUND_ENUM_ENTRY(ETriggerComparisonType::NotEquals, "NotEqualsDescriptioin", "Not Equals", "NotEqualsTT", "True if A and B are not equal."),
-		DEFINE_METASOUND_ENUM_ENTRY(ETriggerComparisonType::LessThan, "LessThanDescription", "Less Than", "LessThanTT", "True if A is less than B."),
-		DEFINE_METASOUND_ENUM_ENTRY(ETriggerComparisonType::GreaterThan, "GreaterThanDescription", "Greater Than", "GreaterThanTT", "True if A is greater than B."),
-		DEFINE_METASOUND_ENUM_ENTRY(ETriggerComparisonType::LessThanOrEquals, "LessThanOrEqualsDescription", "Less Than Or Equals", "LessThanOrEqualsTT", "True if A is less than or equal to B."),
-		DEFINE_METASOUND_ENUM_ENTRY(ETriggerComparisonType::GreaterThanOrEquals, "GreaterThanOrEqualsDescription", "Greater Than Or Equals", "GreaterThanOrEqualsTT", "True if A is greater than or equal to B."),
-	DEFINE_METASOUND_ENUM_END()
-
-
 	template<typename ValueType>
 	class TTriggerCompareNodeOperator : public TExecutableOperator<TTriggerCompareNodeOperator<ValueType>>
 	{
@@ -74,7 +64,7 @@ namespace Metasound
 					TInputDataVertex<FTrigger>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputCompare)),
 					TInputDataVertex<ValueType>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputParamA)),
 					TInputDataVertex<ValueType>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputParamB)),
-					TInputDataVertex<FEnumTriggerComparisonType>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputCompareType))
+					TInputDataVertex<FEnumTriggerComparisonType>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputCompareType), (int32)ETriggerComparisonType::Equals)
 				),
 				FOutputVertexInterface(
 					TOutputDataVertex<FTrigger>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputOnTrue)),
@@ -112,7 +102,7 @@ namespace Metasound
 			FTriggerReadRef InOnTriggerCompare = InputCollection.GetDataReadReferenceOrConstruct<FTrigger>(METASOUND_GET_PARAM_NAME(InputCompare), InParams.OperatorSettings);
 			TDataReadReference<ValueType> InValueA = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<ValueType>(InputInterface, METASOUND_GET_PARAM_NAME(InputParamA), InParams.OperatorSettings);
 			TDataReadReference<ValueType> InValueB = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<ValueType>(InputInterface, METASOUND_GET_PARAM_NAME(InputParamB), InParams.OperatorSettings);
-			FEnumTriggerComparisonTypeReadRef InComparison = InputCollection.GetDataReadReferenceOrConstruct<FEnumTriggerComparisonType>(METASOUND_GET_PARAM_NAME(InputCompareType));
+			FEnumTriggerComparisonTypeReadRef InComparison = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<FEnumTriggerComparisonType>(InputInterface, METASOUND_GET_PARAM_NAME(InputCompareType), InParams.OperatorSettings);
 
 			return MakeUnique<TTriggerCompareNodeOperator<ValueType>>(InParams.OperatorSettings, InOnTriggerCompare, InValueA, InValueB, InComparison);
 
@@ -136,28 +126,38 @@ namespace Metasound
 
 		virtual ~TTriggerCompareNodeOperator() = default;
 
-		virtual FDataReferenceCollection GetInputs() const override
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
 		{
 			using namespace TriggerCompareVertexNames;
 
-			FDataReferenceCollection Inputs;
-			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputCompare), OnCompareTrigger);
-			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputParamA), ValueA);
-			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputParamB), ValueB);
-			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputCompareType), TriggerComparisonType);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputCompare), OnCompareTrigger);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputParamA), ValueA);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputParamB), ValueB);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputCompareType), TriggerComparisonType);
+		}
 
-			return Inputs;
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+		{
+			using namespace TriggerCompareVertexNames;
+
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputOnTrue), TriggerOutOnTrue);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputOnFalse), TriggerOutOnFalse);
+		}
+
+		virtual FDataReferenceCollection GetInputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		virtual FDataReferenceCollection GetOutputs() const override
 		{
-			using namespace TriggerCompareVertexNames;
-
-			FDataReferenceCollection Outputs;
-			Outputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputOnTrue), TriggerOutOnTrue);
-			Outputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputOnFalse), TriggerOutOnFalse);
-
-			return Outputs;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		void Execute()
@@ -207,6 +207,12 @@ namespace Metasound
 					}
 				}
 				);
+		}
+
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			TriggerOutOnTrue->Reset();
+			TriggerOutOnFalse->Reset();
 		}
 
 	private:

@@ -26,6 +26,21 @@ using namespace BuildPatchServices;
 // incase of previous partial write.
 #define NUM_BYTES_RESUME_IGNORE     1024
 
+static int32 SleepTimeWhenFileSystemThrottledSeconds = 15;
+static FAutoConsoleVariableRef CVarSleepTimeWhenFileSystemThrottledSeconds(
+	TEXT("BuildPatchFileConstructor.SleepTimeWhenFileSystemThrottledSeconds"),
+	SleepTimeWhenFileSystemThrottledSeconds,
+	TEXT("The amount of time to sleep if the destination filesystem is throttled."),
+	ECVF_Default);
+
+static bool bStallWhenFileSystemThrottled = false;
+static FAutoConsoleVariableRef CVarStallWhenFileSystemThrottled(
+	TEXT("BuildPatchFileConstructor.bStallWhenFileSystemThrottled"),
+	bStallWhenFileSystemThrottled,
+	TEXT("Whether to stall if the file system is throttled"),
+	ECVF_Default);
+
+
 // Helper functions wrapping common code.
 namespace FileConstructorHelpers
 {
@@ -240,10 +255,6 @@ public:
  *****************************************************************************/
 FBuildPatchFileConstructor::FBuildPatchFileConstructor(FFileConstructorConfig InConfiguration, IFileSystem* InFileSystem, IChunkSource* InChunkSource, IChunkReferenceTracker* InChunkReferenceTracker, IInstallerError* InInstallerError, IInstallerAnalytics* InInstallerAnalytics, IFileConstructorStat* InFileConstructorStat)
 	: Configuration(MoveTemp(InConfiguration))
-	, Thread(nullptr)
-	, bIsRunning(false)
-	, bIsInited(false)
-	, bInitFailed(false)
 	, bIsDownloadStarted(false)
 	, bInitialDiskSizeCheck(false)
 	, bIsPaused(false)
@@ -275,38 +286,14 @@ FBuildPatchFileConstructor::FBuildPatchFileConstructor(FFileConstructorConfig In
 		}
 		ConstructionStack[(ConstructListNum - 1) - ConstructListIdx] = ConstructListElem;
 	}
-
-	// Start thread!
-	const TCHAR* ThreadName = TEXT("FileConstructorThread");
-
-	// Ideally this would check if we were forkable or a forked child process but there is 
-	// currently no in-engine way to check that.  Since BPS does not currently support
-	// FRunnableThread::ThreadType::Fake or FRunnableThread::ThreadType::Forkable 
-	// this check ends up being equivalent for now.  We most likely *never* want support 
-	// forking while an installer is running.
-	if (FPlatformProcess::SupportsMultithreading() || FForkProcessHelper::IsForkedMultithreadInstance())
-	{
-		Thread = FForkProcessHelper::CreateForkableThread(this, ThreadName);
-		check(Thread != nullptr);
-		check(Thread->GetThreadType() == FRunnableThread::ThreadType::Real);
-	}
 }
 
 FBuildPatchFileConstructor::~FBuildPatchFileConstructor()
 {
-	// Wait for and deallocate the thread
-	if( Thread != nullptr )
-	{
-		Thread->WaitForCompletion();
-		delete Thread;
-		Thread = nullptr;
-	}
 }
 
-uint32 FBuildPatchFileConstructor::Run()
+void FBuildPatchFileConstructor::Run()
 {
-	SetRunning(true);
-	SetInited(true);
 	FileConstructorStat->OnTotalRequiredUpdated(TotalJobSize);
 
 	// Check for resume data, we need to also look for a legacy resume file to use instead in case we are resuming from an install of previous code version.
@@ -426,23 +413,6 @@ uint32 FBuildPatchFileConstructor::Run()
 		FileConstructorStat->OnResumeCompleted();
 	}
 	FileConstructorStat->OnConstructionCompleted();
-
-	SetRunning(false);
-	return 0;
-}
-
-void FBuildPatchFileConstructor::Wait()
-{
-	if( Thread != nullptr )
-	{
-		Thread->WaitForCompletion();
-	}
-}
-
-bool FBuildPatchFileConstructor::IsComplete()
-{
-	FScopeLock Lock( &ThreadLock );
-	return ( !bIsRunning && bIsInited ) || bInitFailed;
 }
 
 uint64 FBuildPatchFileConstructor::GetRequiredDiskSpace()
@@ -460,24 +430,6 @@ uint64 FBuildPatchFileConstructor::GetAvailableDiskSpace()
 FBuildPatchFileConstructor::FOnBeforeDeleteFile& FBuildPatchFileConstructor::OnBeforeDeleteFile()
 {
 	return BeforeDeleteFileEvent;
-}
-
-void FBuildPatchFileConstructor::SetRunning( bool bRunning )
-{
-	FScopeLock Lock( &ThreadLock );
-	bIsRunning = bRunning;
-}
-
-void FBuildPatchFileConstructor::SetInited( bool bInited )
-{
-	FScopeLock Lock( &ThreadLock );
-	bIsInited = bInited;
-}
-
-void FBuildPatchFileConstructor::SetInitFailed( bool bFailed )
-{
-	FScopeLock Lock( &ThreadLock );
-	bInitFailed = bFailed;
 }
 
 void FBuildPatchFileConstructor::CountBytesProcessed( const int64& ByteCount )
@@ -835,6 +787,18 @@ bool FBuildPatchFileConstructor::ConstructFileFromChunks(const FFileManifest& Fi
 
 bool FBuildPatchFileConstructor::InsertChunkData(const FChunkPart& ChunkPart, FArchive& DestinationFile, FSHA1& HashState, EConstructionError& ConstructionError)
 {
+	if (bStallWhenFileSystemThrottled)
+	{
+		int64 AvailableBytes = FileSystem->GetAllowedBytesToWriteThrottledStorage(*DestinationFile.GetArchiveName());
+		while (ChunkPart.Size > AvailableBytes)
+		{
+			UE_LOG(LogBuildPatchServices, Display, TEXT("Avaliable write bytes to write throttled storage exhausted (%s).  Sleeping %ds.  Bytes needed: %u, bytes available: %lld")
+				, *DestinationFile.GetArchiveName(), SleepTimeWhenFileSystemThrottledSeconds, ChunkPart.Size, AvailableBytes);
+			FPlatformProcess::Sleep(SleepTimeWhenFileSystemThrottledSeconds);
+			AvailableBytes = FileSystem->GetAllowedBytesToWriteThrottledStorage(*DestinationFile.GetArchiveName());
+		}
+	}
+
 	uint8* Data;
 	uint8* DataStart;
 	ConstructionError = EConstructionError::None;

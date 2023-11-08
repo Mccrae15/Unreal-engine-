@@ -38,6 +38,8 @@ public:
 
 	virtual FLinearColor GetWorldCentricTabColorScale() const override;
 
+	virtual bool IncludeAssetInRestoreOpenAssetsPrompt() const override { return false; }
+
 	bool IsExposedAsColumn( const TWeakPtr< IPropertyTreeRow >& Row ) const;
 
 	void ToggleColumnForProperty( const TSharedPtr< class FPropertyPath >& PropertyPath );
@@ -51,6 +53,13 @@ public:
 	static TSharedRef<FPropertyEditorToolkit> CreateEditor( const EToolkitMode::Type Mode, const TSharedPtr< IToolkitHost >& InitToolkitHost, UObject* ObjectToEdit );
 
 	static TSharedRef<FPropertyEditorToolkit> CreateEditor( const EToolkitMode::Type Mode, const TSharedPtr< IToolkitHost >& InitToolkitHost, const TArray<UObject*>& ObjectsToEdit );
+
+
+protected:
+
+	/** "Find in Content Browser" is not visible in the property matrix because it only works on assets (and not on actors) */
+	virtual bool IsFindInContentBrowserButtonVisible() const override { return false; }
+
 private:
 	static TSharedPtr<FPropertyEditorToolkit> FindExistingEditor( UObject* Object );
 
@@ -85,8 +94,6 @@ private:
 	EVisibility GetToggleColumnButtonVisibility( const TSharedRef< class IPropertyTreeRow > Row ) const;
 
 	void TableColumnsChanged();
-
-	EVisibility GetAddColumnInstructionsOverlayVisibility() const;
 
 private:
 

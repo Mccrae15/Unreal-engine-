@@ -71,9 +71,6 @@ FPhysicsAssetEditorSharedData::FPhysicsAssetEditorSharedData()
 	, bSuspendSelectionBroadcast(false)
 	, InsideSelChange(0)
 {
-	// Editor variables
-	bShowCOM = false;
-
 	bRunningSimulation = false;
 	bNoGravitySimulation = false;
 
@@ -288,6 +285,32 @@ bool FPhysicsAssetEditorSharedData::ClipboardHasCompatibleData()
 	FString DummyObjectType;
 	UObject* DummyObject = nullptr;
 	return ParseClipboard(DummyAsset, DummyObjectType, DummyObject);
+}
+
+void FPhysicsAssetEditorSharedData::ToggleShowCom()
+{
+	if(FPhysicsAssetRenderSettings* const PhysicsAssetRenderSettings = GetRenderSettings())
+	{
+		PhysicsAssetRenderSettings->bShowCOM = !PhysicsAssetRenderSettings->bShowCOM;
+	}
+}
+
+void FPhysicsAssetEditorSharedData::SetShowCom(bool InValue)
+{
+	if(FPhysicsAssetRenderSettings* const PhysicsAssetRenderSettings = GetRenderSettings())
+	{
+		PhysicsAssetRenderSettings->bShowCOM = InValue;
+	}
+}
+
+bool FPhysicsAssetEditorSharedData::GetShowCom() const
+{
+	if(FPhysicsAssetRenderSettings* const PhysicsAssetRenderSettings = GetRenderSettings())
+	{
+		return PhysicsAssetRenderSettings->bShowCOM;
+	}
+
+	return false;
 }
 
 bool FPhysicsAssetEditorSharedData::ParseClipboard(UPhysicsAsset*& OutAsset, FString& OutObjectType, UObject*& OutObject)
@@ -1726,7 +1749,6 @@ void FPhysicsAssetEditorSharedData::PasteBodiesAndConstraintsFromClipboard(int32
 						{
 							// none found, create a brand new one 
 							ConstraintIndex = FPhysicsAssetUtils::CreateNewConstraint(PhysicsAsset, ConstraintUniqueName);
-							check(ConstraintIndex != INDEX_NONE);
 						}
 
 						if (PhysicsAsset->ConstraintSetup.IsValidIndex(ConstraintIndex))
@@ -2135,6 +2157,8 @@ void FPhysicsAssetEditorSharedData::MakeNewBody(int32 NewBoneIndex, bool bAutoSe
 	// name the new created primitives
 	AutoNameAllPrimitives(NewBodyIndex, NewBodyData.GeomType);
 
+	const bool bCanCreateConstraints = FPhysicsAssetUtils::CanCreateConstraints();
+
 	// Check if the bone of the new body has any physical children bones
 	for (int32 i = 0; i < EditorSkelMesh->GetRefSkeleton().GetRawBoneNum(); ++i)
 	{
@@ -2161,8 +2185,11 @@ void FPhysicsAssetEditorSharedData::MakeNewBody(int32 NewBoneIndex, bool bAutoSe
 				// We are currently doing the latter...
 				if (ConstraintIndex == INDEX_NONE)
 				{
-					ConstraintIndex = FPhysicsAssetUtils::CreateNewConstraint(PhysicsAsset, ChildBody->BoneName);
-					check(ConstraintIndex != INDEX_NONE);
+					if (bCanCreateConstraints)
+					{
+						ConstraintIndex = FPhysicsAssetUtils::CreateNewConstraint(PhysicsAsset, ChildBody->BoneName);
+						check(ConstraintIndex != INDEX_NONE);
+					}
 				}
 				// If there's a pre-existing constraint, see if it needs to be fixed up
 				else
@@ -2193,16 +2220,19 @@ void FPhysicsAssetEditorSharedData::MakeNewBody(int32 NewBoneIndex, bool bAutoSe
 					}
 				}
 
-				UPhysicsConstraintTemplate* ChildConstraintSetup = PhysicsAsset->ConstraintSetup[ ConstraintIndex ];
-				check(ChildConstraintSetup);
+				if (PhysicsAsset->ConstraintSetup.IsValidIndex(ConstraintIndex))
+				{
+					UPhysicsConstraintTemplate* ChildConstraintSetup = PhysicsAsset->ConstraintSetup[ConstraintIndex];
+					check(ChildConstraintSetup);
 
-				InitConstraintSetup(ChildConstraintSetup, ChildBodyIndex, NewBodyIndex);
+					InitConstraintSetup(ChildConstraintSetup, ChildBodyIndex, NewBodyIndex);
+				}
 			}
 		}
 	}
 
 	// If we have a physics parent, create a joint to it.
-	if (ParentBodyIndex != INDEX_NONE)
+	if (ParentBodyIndex != INDEX_NONE && bCanCreateConstraints)
 	{
 		const int32 NewConstraintIndex = FPhysicsAssetUtils::CreateNewConstraint(PhysicsAsset, NewBoneName);
 		UPhysicsConstraintTemplate* ConstraintSetup = PhysicsAsset->ConstraintSetup[ NewConstraintIndex ];
@@ -2242,22 +2272,24 @@ void FPhysicsAssetEditorSharedData::MakeNewConstraints(int32 ParentBodyIndex, co
 	check(ParentBodyIndex < PhysicsAsset->SkeletalBodySetups.Num());
 
 	TArray<int32> NewlyCreatedConstraints;
-
-	for (const int32 ChildBodyIndex : ChildBodyIndices)
+	if (ensure(FPhysicsAssetUtils::CanCreateConstraints()))
 	{
-		check(ChildBodyIndex < PhysicsAsset->SkeletalBodySetups.Num());
+		for (const int32 ChildBodyIndex : ChildBodyIndices)
+		{
+			check(ChildBodyIndex < PhysicsAsset->SkeletalBodySetups.Num());
 
-		// Make a new unique name for this constraint
-		FString ConstraintName = MakeUniqueNewConstraintName();
+			// Make a new unique name for this constraint
+			FString ConstraintName = MakeUniqueNewConstraintName();
 
-		// Create new constraint with a name not related to a bone, so it wont get auto managed in code that creates new bodies
-		const int32 NewConstraintIndex = FPhysicsAssetUtils::CreateNewConstraint(PhysicsAsset, *ConstraintName);
-		UPhysicsConstraintTemplate* ConstraintSetup = PhysicsAsset->ConstraintSetup[NewConstraintIndex];
-		check(ConstraintSetup);
+			// Create new constraint with a name not related to a bone, so it wont get auto managed in code that creates new bodies
+			const int32 NewConstraintIndex = FPhysicsAssetUtils::CreateNewConstraint(PhysicsAsset, *ConstraintName);
+			UPhysicsConstraintTemplate* ConstraintSetup = PhysicsAsset->ConstraintSetup[NewConstraintIndex];
+			check(ConstraintSetup);
 
-		NewlyCreatedConstraints.Add(NewConstraintIndex);
+			NewlyCreatedConstraints.Add(NewConstraintIndex);
 
-		InitConstraintSetup(ConstraintSetup, ChildBodyIndex, ParentBodyIndex);
+			InitConstraintSetup(ConstraintSetup, ChildBodyIndex, ParentBodyIndex);
+		}
 	}
 
 	ClearSelectedConstraints();
@@ -2290,10 +2322,10 @@ void FPhysicsAssetEditorSharedData::SetConstraintRelTM(const FPhysicsAssetEditor
 	ConstraintSetup->Modify();
 
 	// Get child bone transform
-	int32 BoneIndex = EditorSkelMesh->GetRefSkeleton().FindBoneIndex(ConstraintSetup->DefaultInstance.ConstraintBone1);
+	const int32 BoneIndex = EditorSkelComp->GetBoneIndex(ConstraintSetup->DefaultInstance.ConstraintBone1);
 	if (BoneIndex != INDEX_NONE)
 	{
-		FTransform BoneTM = EditorSkelComp->GetBoneTransform(BoneIndex);
+		const FTransform BoneTM = EditorSkelComp->GetBoneTransform(BoneIndex);
 		ConstraintSetup->DefaultInstance.SetRefFrame(EConstraintFrame::Frame1, WNewChildFrame.GetRelativeTransform(BoneTM));
 	}
 }
@@ -2502,8 +2534,11 @@ void FPhysicsAssetEditorSharedData::DeleteBody(int32 DelBodyIndex, bool bRefresh
 					if (Constraint->DefaultInstance.ConstraintBone1 == BodyBelow->BoneName)
 					{
 						int32 NewConstraintIndex = FPhysicsAssetUtils::CreateNewConstraint(PhysicsAsset, BodyBelow->BoneName, Constraint);
-						UPhysicsConstraintTemplate * NewConstraint = PhysicsAsset->ConstraintSetup[NewConstraintIndex];
-						InitConstraintSetup(NewConstraint, BodyBelowIndex, ParentBodyIndex);
+						if (ensure(PhysicsAsset->ConstraintSetup.IsValidIndex(NewConstraintIndex)))
+						{
+							UPhysicsConstraintTemplate* NewConstraint = PhysicsAsset->ConstraintSetup[NewConstraintIndex];
+							InitConstraintSetup(NewConstraint, BodyBelowIndex, ParentBodyIndex);
+						}
 					}
 				}
 			}
@@ -2615,49 +2650,28 @@ void FPhysicsAssetEditorSharedData::DeleteCurrentPrim()
 
 FTransform FPhysicsAssetEditorSharedData::GetConstraintBodyTM(const UPhysicsConstraintTemplate* ConstraintSetup, EConstraintFrame::Type Frame) const
 {
-	if (ConstraintSetup == NULL)
+	if ((ConstraintSetup != nullptr) && (EditorSkelComp != nullptr))
 	{
-		return FTransform::Identity;
+		const FName BoneName = (Frame == EConstraintFrame::Frame1) ? ConstraintSetup->DefaultInstance.ConstraintBone1 : ConstraintSetup->DefaultInstance.ConstraintBone2;
+		const int32 BoneIndex = EditorSkelComp->GetBoneIndex(BoneName);
+
+		if (BoneIndex != INDEX_NONE)
+		{
+			FTransform BoneTM = EditorSkelComp->GetBoneTransform(BoneIndex);
+			BoneTM.RemoveScaling();
+			return BoneTM;
+		}
 	}
 
-	USkeletalMesh* EditorSkelMesh = PhysicsAsset->GetPreviewMesh();
-	if(EditorSkelMesh == nullptr)
-	{
-		return FTransform::Identity;
-	}
-
-	int32 BoneIndex;
-	if (Frame == EConstraintFrame::Frame1)
-	{
-		BoneIndex = EditorSkelMesh->GetRefSkeleton().FindBoneIndex(ConstraintSetup->DefaultInstance.ConstraintBone1);
-	}
-	else
-	{
-		BoneIndex = EditorSkelMesh->GetRefSkeleton().FindBoneIndex(ConstraintSetup->DefaultInstance.ConstraintBone2);
-	}
-
-	// If we couldn't find the bone - fall back to identity.
-	if (BoneIndex == INDEX_NONE)
-	{
-		return FTransform::Identity;
-	}
-	else
-	{
-		FTransform BoneTM = EditorSkelComp->GetBoneTransform(BoneIndex);
-		BoneTM.RemoveScaling();
-
-		return BoneTM;
-	}
+	return FTransform::Identity; // If we couldn't find the bone - fall back to identity.
 }
 
 FTransform FPhysicsAssetEditorSharedData::GetConstraintWorldTM(const UPhysicsConstraintTemplate* const ConstraintSetup, const EConstraintFrame::Type Frame, const float Scale) const
 {
-	USkeletalMesh* EditorSkelMesh = PhysicsAsset->GetPreviewMesh();
-
-	if ((ConstraintSetup != nullptr) && (EditorSkelMesh != nullptr))
+	if ((ConstraintSetup != nullptr) && (EditorSkelComp != nullptr))
 	{
 		const FName BoneName = (Frame == EConstraintFrame::Frame1) ? ConstraintSetup->DefaultInstance.ConstraintBone1 : ConstraintSetup->DefaultInstance.ConstraintBone2;
-		const int32 BoneIndex = EditorSkelMesh->GetRefSkeleton().FindBoneIndex(BoneName);
+		const int32 BoneIndex = EditorSkelComp->GetBoneIndex(BoneName);
 
 		if (BoneIndex != INDEX_NONE)
 		{	

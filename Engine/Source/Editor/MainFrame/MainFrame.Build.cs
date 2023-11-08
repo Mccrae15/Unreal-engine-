@@ -50,16 +50,12 @@ public class MainFrame : ModuleRules
 
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
-				"AssetTools",
-				"DerivedDataCache",
-				"DesktopPlatform",
 				"LauncherPlatform",
 				"GameProjectGeneration",
 				"ProjectTargetPlatformEditor",
 				"LevelEditor",
 				"Settings",
 				"SourceCodeAccess",
-				"LocalizationDashboard", // not required but causes circular depends issues on Linux/Mac
 				"HotReload",
 			}
 		);

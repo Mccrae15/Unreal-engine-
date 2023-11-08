@@ -21,6 +21,10 @@
 #include "Serialization/MemoryImage.h"
 #include "Stats/StatsTrace.h"
 #include "RHITextureReference.h"
+#include "RHIStats.h"
+#include "RHICommandList.h"
+#include "RHIUniformBufferLayoutInitializer.h"
+#include <type_traits>
 
 #if RHI_ENABLE_RESOURCE_INFO
 #include "HAL/FileManager.h"
@@ -39,7 +43,7 @@ CSV_DEFINE_CATEGORY(DrawCall, true);
 #endif
 
 IMPLEMENT_TYPE_LAYOUT(FRHIUniformBufferLayoutInitializer);
-IMPLEMENT_TYPE_LAYOUT(FRHIUniformBufferResource);
+IMPLEMENT_TYPE_LAYOUT(FRHIUniformBufferResourceInitializer);
 
 #if !defined(RHIRESOURCE_NUM_FRAMES_TO_EXPIRE)
 	#define RHIRESOURCE_NUM_FRAMES_TO_EXPIRE 3
@@ -146,6 +150,12 @@ const FClearValueBinding FClearValueBinding::DefaultNormal8Bit(FLinearColor(128.
 #endif
 
 TRefCountPtr<FRHITexture> FRHITextureReference::DefaultTexture;
+
+// This is necessary to get expected results for code that zeros, assigns and then CRC's the whole struct.
+//
+// See: https://en.cppreference.com/w/cpp/types/has_unique_object_representations
+// "This trait was introduced to make it possible to determine whether a type can be correctly hashed by hashing its object representation as a byte array."
+static_assert(std::has_unique_object_representations_v<FVertexElement>, "FVertexElement should not have compiler-injected padding");
 
 FString FVertexElement::ToString() const
 {
@@ -633,6 +643,7 @@ namespace RHIInternal
 
 	struct FResourceFlags
 	{
+		bool bResident = false;
 		bool bMarkedForDelete = false;
 		bool bTransient = false;
 		bool bStreaming = false;
@@ -646,9 +657,14 @@ namespace RHIInternal
 		{
 			FString FlagsString;
 			bool bHasFlag = false;
+			if (bResident)
+			{
+				FlagsString += "Resident";
+				bHasFlag = true;
+			}
 			if (bMarkedForDelete)
 			{
-				FlagsString += "MarkedForDelete";
+				FlagsString += bHasFlag ? " | MarkedForDelete" : "MarkedForDelete";
 				bHasFlag = true;
 			}
 			if (bTransient)
@@ -773,6 +789,7 @@ namespace RHIInternal
 	FResourceFlags GetResourceFlagsInternal(const FResourceEntry& Resource)
 	{
 		FResourceFlags Flags;
+		Flags.bResident = Resource.ResourceInfo.bResident;
 		Flags.bMarkedForDelete = !Resource.ResourceInfo.bValid;
 		Flags.bTransient = Resource.ResourceInfo.IsTransient;
 
@@ -796,7 +813,7 @@ namespace RHIInternal
 			Flags.bRTAS = EnumHasAnyFlags((EBufferUsageFlags)Buffer->GetUsage(), BUF_AccelerationStructure);
 		}
 
-		Flags.bHasFlags = Flags.bMarkedForDelete || Flags.bTransient || Flags.bStreaming || Flags.bRT || Flags.bDS || Flags.bUAV || Flags.bRTAS;
+		Flags.bHasFlags = Flags.bResident || Flags.bMarkedForDelete || Flags.bTransient || Flags.bStreaming || Flags.bRT || Flags.bDS || Flags.bUAV || Flags.bRTAS;
 		return Flags;
 	}
 }
@@ -824,7 +841,7 @@ void RHIGetTrackedResourceStats(TArray<TSharedPtr<FRHIResourceStats>>& OutResour
 		const int64 SizeInBytes = ResourceInfo.VRamAllocation.AllocationSize;
 		RHIInternal::FResourceFlags Flags = GetResourceFlagsInternal(Resources[Index]);
 		OutResourceStats[Index] = MakeShared<FRHIResourceStats>(ResourceInfo.Name, Resource->GetOwnerName(), ResourceType, Flags.GetString(), SizeInBytes,
-									Flags.bMarkedForDelete, Flags.bTransient, Flags.bStreaming, Flags.bRT, Flags.bDS, Flags.bUAV, Flags.bRTAS, Flags.bHasFlags);
+									Flags.bResident, Flags.bMarkedForDelete, Flags.bTransient, Flags.bStreaming, Flags.bRT, Flags.bDS, Flags.bUAV, Flags.bRTAS, Flags.bHasFlags);
 	});
 }
 
@@ -852,12 +869,12 @@ void RHIDumpResourceMemory(const FString& NameFilter, ERHIResourceType TypeFilte
 
 	if (bOutputToCSVFile)
 	{
-		const TCHAR* Header = TEXT("Name,Type,Size,Resident,MarkedForDelete,Transient,Streaming,RenderTarget,UAV,\"Raytracing Acceleration Structure\"\n");
+		const TCHAR* Header = TEXT("Name,Type,Size,Resident,MarkedForDelete,Transient,Streaming,RenderTarget,UAV,\"Raytracing Acceleration Structure\",Owner\n");
 		CSVFile->Serialize(TCHAR_TO_ANSI(Header), FPlatformString::Strlen(Header));
 	}
 	else if (bUseCSVOutput)
 	{
-		BufferedOutput.CategorizedLogf(CategoryName, ELogVerbosity::Log, TEXT("Name,Type,Size,Resident,MarkedForDelete,Transient,Streaming,RenderTarget,UAV,\"Raytracing Acceleration Structure\""));
+		BufferedOutput.CategorizedLogf(CategoryName, ELogVerbosity::Log, TEXT("Name,Type,Size,Resident,MarkedForDelete,Transient,Streaming,RenderTarget,UAV,\"Raytracing Acceleration Structure\",Owner"));
 	}
 	else
 	{
@@ -873,6 +890,7 @@ void RHIDumpResourceMemory(const FString& NameFilter, ERHIResourceType TypeFilte
 	}
 
 	TCHAR ResourceNameBuffer[FName::StringBufferSize];
+	TCHAR ResourceOwnerBuffer[FName::StringBufferSize];
 	int64 TotalShownResourceSize = 0;
 
 	for (int32 Index = 0; Index < Resources.Num(); Index++)
@@ -883,26 +901,27 @@ void RHIDumpResourceMemory(const FString& NameFilter, ERHIResourceType TypeFilte
 
 			ResourceInfo.Name.ToString(ResourceNameBuffer);
 			const TCHAR* ResourceType = StringFromRHIResourceType(ResourceInfo.Type);
-			const int64 SizeInBytes = ResourceInfo.VRamAllocation.AllocationSize;
-			
-			bool bResident = ResourceInfo.bResident;
+			const int64 SizeInBytes = ResourceInfo.VRamAllocation.AllocationSize;			
+			Resources[Index].Resource->GetOwnerName().ToString(ResourceOwnerBuffer);
+
 			RHIInternal::FResourceFlags Flags = GetResourceFlagsInternal(Resources[Index]);
 
 			if (bSummaryOutput == false)
 			{
 				if (bOutputToCSVFile || bUseCSVOutput)
 				{		
-					const FString Row = FString::Printf(TEXT("%s,%s,%.9f,%s,%s,%s,%s,%s,%s,%s\n"),
+					const FString Row = FString::Printf(TEXT("%s,%s,%.9f,%s,%s,%s,%s,%s,%s,%s,%s\n"),
 						ResourceNameBuffer,
 						ResourceType,
 						SizeInBytes / double(1 << 20),
-						bResident ? TEXT("Yes") : TEXT("No"),
+						Flags.bResident ? TEXT("Yes") : TEXT("No"),
 						Flags.bMarkedForDelete ? TEXT("Yes") : TEXT("No"),
 						Flags.bTransient ? TEXT("Yes") : TEXT("No"),
 						Flags.bStreaming ? TEXT("Yes") : TEXT("No"),
 						(Flags.bRT || Flags.bDS) ? TEXT("Yes") : TEXT("No"),
 						Flags.bUAV ? TEXT("Yes") : TEXT("No"),
-						Flags.bRTAS ? TEXT("Yes") : TEXT("No"));
+						Flags.bRTAS ? TEXT("Yes") : TEXT("No"),
+						ResourceOwnerBuffer);
 
 					if (bOutputToCSVFile)
 					{
@@ -916,11 +935,12 @@ void RHIDumpResourceMemory(const FString& NameFilter, ERHIResourceType TypeFilte
 				else
 				{
 					FString ResoureFlags = Flags.GetString();
-					BufferedOutput.CategorizedLogf(CategoryName, ELogVerbosity::Log, TEXT("Name: %s - Type: %s - Size: %.9f MB - Flags: %s"),
+					BufferedOutput.CategorizedLogf(CategoryName, ELogVerbosity::Log, TEXT("Name: %s - Type: %s - Size: %.9f MB - Flags: %s - Owner: %s"),
 						ResourceNameBuffer,
 						ResourceType,
 						SizeInBytes / double(1 << 20),
-						ResoureFlags.IsEmpty() ? TEXT("None") : *ResoureFlags);
+						ResoureFlags.IsEmpty() ? TEXT("None") : *ResoureFlags,
+						ResourceOwnerBuffer);
 				}
 			}
 
@@ -1159,47 +1179,102 @@ static FAutoConsoleVariableRef CVarEnableAttachmentVariableRateShading(
 	ECVF_RenderThreadSafe);
 
 
-int32 GRHIBindlessResourceConfiguration = 0;
+FString GRHIBindlessResourceConfiguration = TEXT("Disabled");
 static FAutoConsoleVariableRef CVarEnableBindlessResources(
 	TEXT("rhi.Bindless.Resources"),
 	GRHIBindlessResourceConfiguration,
-	TEXT("Set to 1 to enable for all shader types. Set to 2 to restrict to Raytracing shaders."),
+	TEXT("Set to Enabled to enable for all shader types. Set to RayTracingOnly to restrict to Raytracing shaders."),
 	ECVF_ReadOnly
 );
 
-int32 GRHIBindlessSamplerConfiguration = 0;
+FString GRHIBindlessSamplerConfiguration = TEXT("Disabled");
 static FAutoConsoleVariableRef CVarEnableBindlessSamplers(
 	TEXT("rhi.Bindless.Samplers"),
 	GRHIBindlessSamplerConfiguration,
-	TEXT("Set to 1 to enable for all shader types. Set to 2 to restrict to Raytracing shaders."),
+	TEXT("Set to Enabled to enable for all shader types. Set to RayTracingOnly to restrict to Raytracing shaders."),
 	ECVF_ReadOnly
 );
 
-static ERHIBindlessConfiguration DetermineBindlessConfiguration(EShaderPlatform Platform, int32 BindlessConfigSetting)
+static ERHIBindlessConfiguration ParseConfigurationFromString(const FString& InSetting)
 {
-	const ERHIBindlessSupport BindlessSupport = RHIGetBindlessSupport(Platform);
-
-	if (BindlessSupport == ERHIBindlessSupport::Unsupported || BindlessConfigSetting == 0)
+	if (InSetting.IsEmpty())
 	{
 		return ERHIBindlessConfiguration::Disabled;
 	}
 
+	if (FCString::Stricmp(*InSetting, TEXT("Disabled")) == 0)
+	{
+		return ERHIBindlessConfiguration::Disabled;
+	}
+
+	if (FCString::Stricmp(*InSetting, TEXT("Enabled")) == 0)
+	{
+		return ERHIBindlessConfiguration::AllShaders;
+	}
+
+	if (FCString::Stricmp(*InSetting, TEXT("RayTracingOnly")) == 0)
+	{
+		return ERHIBindlessConfiguration::RayTracingShaders;
+	}
+
+	return ERHIBindlessConfiguration::Disabled;
+}
+
+static bool GetBindlessConfigurationSetting(FString& OutSetting, EShaderPlatform Platform, const TCHAR* SettingName)
+{
+	const FString ShaderFormat = FDataDrivenShaderPlatformInfo::GetShaderFormat(Platform).ToString();
+	if (!ShaderFormat.IsEmpty())
+	{
+		return GConfig->GetString(*ShaderFormat, SettingName, OutSetting, GEngineIni);
+	}
+
+	return false;
+}
+
+ERHIBindlessConfiguration RHIParseBindlessConfiguration(EShaderPlatform Platform, const FString& ConfigSettingString, const FString& CVarSettingString)
+{
+	const ERHIBindlessSupport BindlessSupport = RHIGetBindlessSupport(Platform);
+
+	const ERHIBindlessConfiguration ConfigSetting = ParseConfigurationFromString(ConfigSettingString);
+	const ERHIBindlessConfiguration CVarSetting = ParseConfigurationFromString(CVarSettingString);
+
+	if (BindlessSupport == ERHIBindlessSupport::Unsupported || (ConfigSetting == ERHIBindlessConfiguration::Disabled && CVarSetting == ERHIBindlessConfiguration::Disabled))
+	{
+		return ERHIBindlessConfiguration::Disabled;
+	}
+
+	// There's no choice here if the platform only supports RayTracing.
 	if (BindlessSupport == ERHIBindlessSupport::RayTracingOnly)
 	{
 		return ERHIBindlessConfiguration::RayTracingShaders;
 	}
 
-	return BindlessConfigSetting == 2 ? ERHIBindlessConfiguration::RayTracingShaders : ERHIBindlessConfiguration::AllShaders;
+	// CVar should always take precedence over the config setting
+	return CVarSetting != ERHIBindlessConfiguration::Disabled ? CVarSetting : ConfigSetting;
 }
 
-ERHIBindlessConfiguration RHIGetBindlessResourcesConfiguration(EShaderPlatform Platform)
+static ERHIBindlessConfiguration DetermineBindlessConfiguration(EShaderPlatform Platform, const TCHAR* ConfigName, const FString& CVarSetting)
 {
-	return DetermineBindlessConfiguration(Platform, GRHIBindlessResourceConfiguration);
+	const ERHIBindlessSupport BindlessSupport = RHIGetBindlessSupport(Platform);
+	if (BindlessSupport == ERHIBindlessSupport::Unsupported)
+	{
+		return ERHIBindlessConfiguration::Disabled;
+	}
+
+	FString ConfigSetting;
+	GetBindlessConfigurationSetting(ConfigSetting, Platform, ConfigName);
+
+	return RHIParseBindlessConfiguration(Platform, ConfigSetting, CVarSetting);
 }
 
-ERHIBindlessConfiguration RHIGetBindlessSamplersConfiguration(EShaderPlatform Platform)
+ERHIBindlessConfiguration RHIGetRuntimeBindlessResourcesConfiguration(EShaderPlatform Platform)
 {
-	return DetermineBindlessConfiguration(Platform, GRHIBindlessSamplerConfiguration);
+	return DetermineBindlessConfiguration(Platform, TEXT("BindlessResources"), GRHIBindlessResourceConfiguration);
+}
+
+ERHIBindlessConfiguration RHIGetRuntimeBindlessSamplersConfiguration(EShaderPlatform Platform)
+{
+	return DetermineBindlessConfiguration(Platform, TEXT("BindlessSamplers"), GRHIBindlessSamplerConfiguration);
 }
 
 namespace RHIConfig
@@ -1220,192 +1295,13 @@ namespace RHIConfig
 	}
 }
 
-/**
- * RHI globals.
- */
-
-bool GIsRHIInitialized = false;
-int32 GRHIPersistentThreadGroupCount = 0;
-int32 GMaxTextureMipCount = MAX_TEXTURE_MIP_COUNT;
-bool GSupportsQuadBufferStereo = false;
-FString GRHIAdapterName;
-FString GRHIAdapterInternalDriverVersion;
-FString GRHIAdapterUserDriverVersion;
-FString GRHIAdapterDriverDate;
-bool GRHIAdapterDriverOnDenyList = false;
-uint32 GRHIVendorId = 0;
-uint32 GRHIDeviceId = 0;
-uint32 GRHIDeviceRevision = 0;
-bool GRHIDeviceIsAMDPreGCNArchitecture = false;
-bool GSupportsRenderDepthTargetableShaderResources = true;
-TRHIGlobal<bool> GSupportsRenderTargetFormat_PF_G8(true);
-TRHIGlobal<bool> GSupportsRenderTargetFormat_PF_FloatRGBA(true);
-bool GSupportsShaderFramebufferFetch = false;
-bool GSupportsShaderDepthStencilFetch = false;
-bool GSupportsShaderMRTFramebufferFetch = false;
-bool GSupportsPixelLocalStorage = false;
-bool GSupportsTimestampRenderQueries = false;
-bool GRHISupportsGPUTimestampBubblesRemoval = false;
-bool GRHISupportsFrameCyclesBubblesRemoval = false;
-bool GRHISupportsGPUUsage = false;
-bool GHardwareHiddenSurfaceRemoval = false;
-bool GRHISupportsAsyncTextureCreation = false;
-bool GRHISupportsQuadTopology = false;
-bool GRHISupportsRectTopology = false;
-bool GRHISupportsPrimitiveShaders = false;
-bool GRHISupportsAtomicUInt64 = false;
-bool GRHISupportsDX12AtomicUInt64 = false;
-bool GRHISupportsPipelineStateSortKey = false;
-bool GRHISupportsResummarizeHTile = false;
-bool GRHISupportsExplicitHTile = false;
-bool GRHISupportsExplicitFMask = false;
-bool GRHISupportsDepthUAV = false;
-bool GSupportsParallelRenderingTasksWithSeparateRHIThread = true;
-bool GRHIThreadNeedsKicking = false;
-int32 GRHIMaximumReccommendedOustandingOcclusionQueries = MAX_int32;
-bool GRHISupportsExactOcclusionQueries = true;
-bool GSupportsVolumeTextureRendering = true;
-bool GSupportsSeparateRenderTargetBlendState = false;
-bool GRHINeedsUnatlasedCSMDepthsWorkaround = false;
-bool GSupportsTexture3D = true;
-bool GSupportsMobileMultiView = false;
-bool GSupportsImageExternal = false;
-bool GRHISupportsDrawIndirect = true;
-bool GRHISupportsMultithreading = false;
-bool GRHISupportsAsyncGetRenderQueryResult = false;
-bool GRHISupportsUpdateFromBufferTexture = false;
-bool GSupportsWideMRT = true;
-bool GRHINeedsExtraDeletionLatency = false;
-bool GRHIForceNoDeletionLatencyForStreamingTextures = false;
-TRHIGlobal<int32> GMaxComputeDispatchDimension((1 << 16) - 1);
-bool GRHILazyShaderCodeLoading = false;
-bool GRHISupportsLazyShaderCodeLoading = false;
-TRHIGlobal<int32> GMaxShadowDepthBufferSizeX(2048);
-TRHIGlobal<int32> GMaxShadowDepthBufferSizeY(2048);
-TRHIGlobal<int32> GMaxTextureDimensions(2048);
-TRHIGlobal<int64> GMaxBufferDimensions(1<<27);
-TRHIGlobal<int64> GRHIMaxConstantBufferByteSize(1<<27);
-TRHIGlobal<int64> GMaxComputeSharedMemory(1<<15);
-TRHIGlobal<int32> GMaxVolumeTextureDimensions(2048);
-TRHIGlobal<int32> GMaxCubeTextureDimensions(2048);
-TRHIGlobal<int32> GMaxWorkGroupInvocations(1024);
-bool GRHISupportsRawViewsForAnyBuffer = false;
-bool GRHISupportsRWTextureBuffers = true;
-bool GRHISupportsVRS = false;
-bool GRHISupportsLateVRSUpdate = false;
-int32 GMaxTextureArrayLayers = 256;
-int32 GMaxTextureSamplers = 16;
-bool GUsingNullRHI = false;
-int32 GDrawUPVertexCheckCount = MAX_int32;
-int32 GDrawUPIndexCheckCount = MAX_int32;
-bool GTriggerGPUProfile = false;
-FString GGPUTraceFileName;
-bool GRHISupportsTextureStreaming = false;
-bool GSupportsDepthBoundsTest = false;
-bool GSupportsEfficientAsyncCompute = false;
-bool GRHISupportsBaseVertexIndex = true;
-bool GRHISupportsFirstInstance = false;
-bool GRHISupportsDynamicResolution = false;
-bool GRHISupportsRayTracing = false;
-bool GRHISupportsRayTracingPSOAdditions = false;
-bool GRHISupportsRayTracingDispatchIndirect = false;
-bool GRHISupportsRayTracingAsyncBuildAccelerationStructure = false;
-bool GRHISupportsRayTracingAMDHitToken = false;
-bool GRHISupportsInlineRayTracing = false;
-bool GRHISupportsRayTracingShaders = false;
-uint32 GRHIRayTracingAccelerationStructureAlignment = 0;
-uint32 GRHIRayTracingScratchBufferAlignment = 0;
-uint32 GRHIRayTracingShaderTableAlignment = 0;
-uint32 GRHIRayTracingInstanceDescriptorSize = 0;
-bool GRHISupportsWaveOperations = false;
-int32 GRHIMinimumWaveSize = 0;
-int32 GRHIMaximumWaveSize = 0;
-bool GRHISupportsRHIThread = false;
-bool GRHISupportsRHIOnTaskThread = false;
-bool GRHISupportsParallelRHIExecute = false;
-bool GSupportsParallelOcclusionQueries = false;
-bool GRHIRequiresRenderTargetForPixelShaderUAVs = false;
-bool GRHISupportsUAVFormatAliasing = false;
-bool GRHISupportsTextureViews = true;
-bool GRHISupportsDirectGPUMemoryLock = false;
-bool GRHISupportsMultithreadedShaderCreation = true;
-bool GRHISupportsMultithreadedResources = false;
-
-bool GRHISupportAsyncTextureStreamOut = false;
-bool GRHISupportsMSAADepthSampleAccess = false;
-
-bool GRHISupportsBackBufferWithCustomDepthStencil = true;
-
-bool GRHIIsHDREnabled = false;
-bool GRHISupportsHDROutput = false;
-
-bool GRHIVariableRateShadingEnabled = true;
-bool GRHIAttachmentVariableRateShadingEnabled = true;
-bool GRHISupportsPipelineVariableRateShading = false;
-bool GRHISupportsLargerVariableRateShadingSizes = false;
-bool GRHISupportsAttachmentVariableRateShading = false;
-bool GRHISupportsComplexVariableRateShadingCombinerOps = false;
-bool GRHISupportsVariableRateShadingAttachmentArrayTextures = false;
-int32 GRHIVariableRateShadingImageTileMaxWidth = 0;
-int32 GRHIVariableRateShadingImageTileMaxHeight = 0;
-int32 GRHIVariableRateShadingImageTileMinWidth = 0;
-int32 GRHIVariableRateShadingImageTileMinHeight = 0;
-FIntPoint GRHIVariableRateShadingImageOffsetGranularity(0, 0);
-EVRSImageDataType GRHIVariableRateShadingImageDataType = VRSImage_NotSupported;
-EPixelFormat GRHIVariableRateShadingImageFormat = PF_Unknown;
-bool GRHISupportsLateVariableRateShadingUpdate = false;
-
-EPixelFormat GRHIHDRDisplayOutputFormat = PF_FloatRGBA;
-
-FIntVector GRHIMaxDispatchThreadGroupsPerDimension(0, 0, 0);
-
-uint64 GRHIPresentCounter = 1;
-
-bool GRHISupportsArrayIndexFromAnyShader = false;
-bool GRHISupportsStencilRefFromPixelShader = false;
-bool GRHISupportsConservativeRasterization = false;
-
-bool GRHISupportsPipelineFileCache = false;
-
-bool GRHIDeviceIsIntegrated = false;
-
-/** Whether we are profiling GPU hitches. */
-bool GTriggerGPUHitchProfile = false;
-
-bool GRHISupportsPixelShaderUAVs = true;
-
-bool GRHISupportsMeshShadersTier0 = false;
-bool GRHISupportsMeshShadersTier1 = false;
-
-bool GRHISupportsShaderTimestamp = false;
-
-bool GRHISupportsEfficientUploadOnResourceCreation = false;
-
-bool GRHISupportsAsyncPipelinePrecompile = true;
-
-bool GRHISupportsMapWriteNoOverwrite = false;
-
-bool GRHISupportsSeparateDepthStencilCopyAccess = true;
-
-ERHIBindlessSupport GRHIBindlessSupport = ERHIBindlessSupport::Unsupported;
-bool GRHISupportsBindless = false;
-
-RHI_API int32 volatile GCurrentTextureMemorySize = 0;
-RHI_API int32 volatile GCurrentRendertargetMemorySize = 0;
-RHI_API int64 GTexturePoolSize = 0 * 1024 * 1024;
-RHI_API int32 GPoolSizeVRAMPercentage = 0;
-
-RHI_API uint64 GDemotedLocalMemorySize = 0;
-
-RHI_API EShaderPlatform GShaderPlatformForFeatureLevel[ERHIFeatureLevel::Num] = {SP_NumPlatforms,SP_NumPlatforms,SP_NumPlatforms,SP_NumPlatforms,SP_NumPlatforms};
-
 // By default, read only states and UAV states are allowed to participate in state merging.
 ERHIAccess GRHIMergeableAccessMask = ERHIAccess::ReadOnlyMask | ERHIAccess::UAVMask;
 
 // By default, only exclusively read only accesses are allowed.
 ERHIAccess GRHIMultiPipelineMergeableAccessMask = ERHIAccess::ReadOnlyExclusiveMask;
 
-RHI_API void FRHIDrawStats::Accumulate(FRHIDrawStats& Other)
+void FRHIDrawStats::Accumulate(FRHIDrawStats& Other)
 {
 	for (uint32 GPUIndex = 0; GPUIndex < GNumExplicitGPUsForRendering; ++GPUIndex)
 	{
@@ -1493,39 +1389,40 @@ void FRHICommandListImmediate::ProcessStats()
 	FrameDrawStats.Reset();
 }
 
-/** Whether to initialize 3D textures using a bulk data (or through a mip update if false). */
-RHI_API bool GUseTexture3DBulkDataRHI = false;
-
 //
 // The current shader platform.
 //
 
-RHI_API EShaderPlatform GMaxRHIShaderPlatform = SP_PCD3D_SM5;
+EShaderPlatform GMaxRHIShaderPlatform = SP_PCD3D_SM5;
 
 /** The maximum feature level supported on this machine */
-RHI_API ERHIFeatureLevel::Type GMaxRHIFeatureLevel = ERHIFeatureLevel::SM5;
+ERHIFeatureLevel::Type GMaxRHIFeatureLevel = ERHIFeatureLevel::SM5;
 
-RHI_API bool IsRHIDeviceAMD()
+bool IsRHIDeviceAMD()
 {
 	check(GRHIVendorId != 0);
-	// AMD's drivers tested on July 11 2013 have hitching problems with async resource streaming, setting single threaded for now until fixed.
 	return GRHIVendorId == 0x1002;
 }
 
-RHI_API bool IsRHIDeviceIntel()
+bool IsRHIDeviceIntel()
 {
 	check(GRHIVendorId != 0);
 	return GRHIVendorId == 0x8086;
 }
 
-RHI_API bool IsRHIDeviceNVIDIA()
+bool IsRHIDeviceNVIDIA()
 {
 	check(GRHIVendorId != 0);
-	// NVIDIA GPUs are discrete and use DedicatedVideoMemory only.
 	return GRHIVendorId == 0x10DE;
 }
 
-RHI_API uint32 RHIGetMetalShaderLanguageVersion(const FStaticShaderPlatform Platform)
+bool IsRHIDeviceApple()
+{
+    check(GRHIVendorId != 0);
+    return GRHIVendorId == (uint32) EGpuVendorId::Apple;
+}
+
+uint32 RHIGetMetalShaderLanguageVersion(const FStaticShaderPlatform Platform)
 {
     if (IsMetalPlatform(Platform))
 	{
@@ -1558,7 +1455,8 @@ RHI_API uint32 RHIGetMetalShaderLanguageVersion(const FStaticShaderPlatform Plat
 }
 
 static ERHIFeatureLevel::Type GRHIMobilePreviewFeatureLevel = ERHIFeatureLevel::Num;
-RHI_API void RHISetMobilePreviewFeatureLevel(ERHIFeatureLevel::Type MobilePreviewFeatureLevel)
+
+void RHISetMobilePreviewFeatureLevel(ERHIFeatureLevel::Type MobilePreviewFeatureLevel)
 {
 	check(GRHIMobilePreviewFeatureLevel == ERHIFeatureLevel::Num);
 	check(!GIsEditor);
@@ -1584,7 +1482,7 @@ bool RHIGetPreviewFeatureLevel(ERHIFeatureLevel::Type& PreviewFeatureLevelOUT)
 	return true;
 }
 
- RHI_API EPixelFormat RHIPreferredPixelFormatHint(EPixelFormat PreferredPixelFormat)
+EPixelFormat RHIPreferredPixelFormatHint(EPixelFormat PreferredPixelFormat)
 {
 	if (GDynamicRHI)
 	{
@@ -1593,7 +1491,7 @@ bool RHIGetPreviewFeatureLevel(ERHIFeatureLevel::Type& PreviewFeatureLevelOUT)
 	return PreferredPixelFormat;
 }
 
-RHI_API int32 RHIGetPreferredClearUAVRectPSResourceType(const FStaticShaderPlatform Platform)
+int32 RHIGetPreferredClearUAVRectPSResourceType(const FStaticShaderPlatform Platform)
 {
 	// We can't bind Nanite buffers as RWBuffer to perform a clear op.
 	if (IsMetalPlatform(Platform) && !FDataDrivenShaderPlatformInfo::GetSupportsNanite(Platform))
@@ -1650,6 +1548,12 @@ void FRHIRenderPassInfo::ConvertToRenderTargetsInfo(FRHISetRenderTargetsInfo& Ou
 		DepthStencilRenderTarget.ExclusiveDepthStencil);
 	OutRTInfo.bClearDepth = (DepthLoadAction == ERenderTargetLoadAction::EClear);
 	OutRTInfo.bClearStencil = (StencilLoadAction == ERenderTargetLoadAction::EClear);
+
+	if (OutRTInfo.bHasResolveAttachments && DepthStencilRenderTarget.ResolveTarget && DepthStencilRenderTarget.ResolveTarget != DepthStencilRenderTarget.DepthStencilTarget)
+	{
+		OutRTInfo.DepthStencilResolveRenderTarget = OutRTInfo.DepthStencilRenderTarget;
+		OutRTInfo.DepthStencilResolveRenderTarget.Texture = DepthStencilRenderTarget.ResolveTarget;
+	}
 
 	OutRTInfo.ShadingRateTexture = ShadingRateTexture;
 	OutRTInfo.ShadingRateTextureCombiner = ShadingRateTextureCombiner;
@@ -1746,6 +1650,20 @@ void FRHIRenderPassInfo::Validate() const
 			// 1. render pass must have depth target
 			// 2. depth target must support InputAttachement
 			ensure(EnumHasAnyFlags(DepthStencilRenderTarget.DepthStencilTarget->GetFlags(), TexCreate_InputAttachmentRead));
+		}
+
+		if (DepthStencilRenderTarget.ResolveTarget && DepthStencilRenderTarget.ResolveTarget != DepthStencilRenderTarget.DepthStencilTarget)
+		{
+			// for depth resolve
+			// 1. RHI must support depth stencil resolve
+			// 2. Must be using MSAA resolve
+			// 3. Resolve target sample count must be 1
+			// 4. Resolve target format must be the same as the MSAA target format
+			ensureMsgf(GRHISupportsDepthStencilResolve, TEXT("Attempted to resolve depth/stencil target but feature is not supported."));
+			ensureMsgf(bIsMSAAResolve, TEXT("Depth/stencil resolve target is bound but resolve was not requested."));
+			ensureMsgf(DepthStencilRenderTarget.ResolveTarget->GetNumSamples() == 1, TEXT("Depth/stencil resolve targets must have a sample count of 1."));
+			ensureMsgf(DepthStencilRenderTarget.ResolveTarget->GetFormat() == DepthStencilRenderTarget.DepthStencilTarget->GetFormat(),
+				TEXT("Depth/stencil resolve targets must have the same format as the MSAA target."));
 		}
 	}
 	else
@@ -1950,52 +1868,7 @@ FRHIPanicEvent& RHIGetPanicDelegate()
 	return RHIPanicEvent;
 }
 
-//
-//	MSAA sample offsets.
-//
-// https://docs.microsoft.com/en-us/windows/win32/api/d3d11/ne-d3d11-d3d11_standard_multisample_quality_levels
-FVector2f GRHIDefaultMSAASampleOffsets[1 + 2 + 4 + 8 + 16] = {
-	// MSAA x1
-	FVector2f(+0.0f / 8.0f, +0.0f / 8.0f),
 
-	// MSAA x2
-	FVector2f(+4.0f / 8.0f, +4.0f / 8.0f),
-	FVector2f(-4.0f / 8.0f, -4.0f / 8.0f),
-
-	// MSAA x4
-	FVector2f(-2.0f / 8.0f, -6.0f / 8.0f),
-	FVector2f(+6.0f / 8.0f, -2.0f / 8.0f),
-	FVector2f(-6.0f / 8.0f, +2.0f / 8.0f),
-	FVector2f(+2.0f / 8.0f, +6.0f / 8.0f),
-
-	// MSAA x8
-	FVector2f(+1.0f / 8.0f, -3.0f / 8.0f),
-	FVector2f(-1.0f / 8.0f, +3.0f / 8.0f),
-	FVector2f(+5.0f / 8.0f, +1.0f / 8.0f),
-	FVector2f(-3.0f / 8.0f, -5.0f / 8.0f),
-	FVector2f(-5.0f / 8.0f, +5.0f / 8.0f),
-	FVector2f(-7.0f / 8.0f, -1.0f / 8.0f),
-	FVector2f(+3.0f / 8.0f, +7.0f / 8.0f),
-	FVector2f(+7.0f / 8.0f, -7.0f / 8.0f),
-
-	// MSAA x16
-	FVector2f(+1.0f / 8.0f, +1.0f / 8.0f),
-	FVector2f(-1.0f / 8.0f, -3.0f / 8.0f),
-	FVector2f(-3.0f / 8.0f, +2.0f / 8.0f),
-	FVector2f(+4.0f / 8.0f, -1.0f / 8.0f),
-	FVector2f(-5.0f / 8.0f, -2.0f / 8.0f),
-	FVector2f(+2.0f / 8.0f, +5.0f / 8.0f),
-	FVector2f(+5.0f / 8.0f, +3.0f / 8.0f),
-	FVector2f(+3.0f / 8.0f, -5.0f / 8.0f),
-	FVector2f(-2.0f / 8.0f, +6.0f / 8.0f),
-	FVector2f(+0.0f / 8.0f, -7.0f / 8.0f),
-	FVector2f(-4.0f / 8.0f, -6.0f / 8.0f),
-	FVector2f(-6.0f / 8.0f, +4.0f / 8.0f),
-	FVector2f(-8.0f / 8.0f, +0.0f / 8.0f),
-	FVector2f(+7.0f / 8.0f, -4.0f / 8.0f),
-	FVector2f(+6.0f / 8.0f, +7.0f / 8.0f),
-	FVector2f(-7.0f / 8.0f, -8.0f / 8.0f),
-};
 
 int32 CalculateMSAASampleArrayIndex(int32 NumSamples, int32 SampleIndex)
 {
@@ -2055,6 +1928,11 @@ SIZE_T CalculateImageBytes(uint32 SizeX,uint32 SizeY,uint32 SizeZ,uint8 Format)
 
 FRHIShaderResourceView* FRHITextureViewCache::GetOrCreateSRV(FRHITexture* Texture, const FRHITextureSRVCreateInfo& SRVCreateInfo)
 {
+	return GetOrCreateSRV(FRHICommandListImmediate::Get(), Texture, SRVCreateInfo);
+}
+
+FRHIShaderResourceView* FRHITextureViewCache::GetOrCreateSRV(FRHICommandListBase& RHICmdList, FRHITexture* Texture, const FRHITextureSRVCreateInfo& SRVCreateInfo)
+{
 	for (const auto& KeyValue : SRVs)
 	{
 		if (KeyValue.Key == SRVCreateInfo)
@@ -2063,34 +1941,21 @@ FRHIShaderResourceView* FRHITextureViewCache::GetOrCreateSRV(FRHITexture* Textur
 		}
 	}
 
-	FShaderResourceViewRHIRef RHIShaderResourceView;
+    check(Texture);
+    ETextureDimension Dimension = Texture->GetDesc().Dimension;
+    if(SRVCreateInfo.DimensionOverride.IsSet())
+    {
+        Dimension = *SRVCreateInfo.DimensionOverride;
+    }
 
-	if (SRVCreateInfo.MetaData != ERHITextureMetaDataAccess::None)
-	{
-		FRHITexture2D* Texture2D = Texture->GetTexture2D();
-		check(Texture2D);
-
-		switch (SRVCreateInfo.MetaData)
-		{
-		case ERHITextureMetaDataAccess::HTile:
-			check(GRHISupportsExplicitHTile);
-			RHIShaderResourceView = RHICreateShaderResourceViewHTile(Texture2D);
-			break;
-
-		case ERHITextureMetaDataAccess::FMask:
-			RHIShaderResourceView = RHICreateShaderResourceViewFMask(Texture2D);
-			break;
-
-		case ERHITextureMetaDataAccess::CMask:
-			RHIShaderResourceView = RHICreateShaderResourceViewWriteMask(Texture2D);
-			break;
-		}
-	}
-
-	if (!RHIShaderResourceView)
-	{
-		RHIShaderResourceView = RHICreateShaderResourceView(Texture, SRVCreateInfo);
-	}
+	FShaderResourceViewRHIRef RHIShaderResourceView = RHICmdList.CreateShaderResourceView(Texture, FRHIViewDesc::CreateTextureSRV()
+		.SetDimension   (Dimension)
+		.SetFormat      (SRVCreateInfo.Format)
+		.SetMipRange    (SRVCreateInfo.MipLevel, SRVCreateInfo.NumMipLevels)
+		.SetDisableSRGB (SRVCreateInfo.SRGBOverride == SRGBO_ForceDisable)
+		.SetArrayRange  (SRVCreateInfo.FirstArraySlice, SRVCreateInfo.NumArraySlices)
+		.SetPlane       (SRVCreateInfo.MetaData)
+	);
 
 	check(RHIShaderResourceView);
 	FRHIShaderResourceView* View = RHIShaderResourceView.GetReference();
@@ -2100,6 +1965,11 @@ FRHIShaderResourceView* FRHITextureViewCache::GetOrCreateSRV(FRHITexture* Textur
 
 FRHIUnorderedAccessView* FRHITextureViewCache::GetOrCreateUAV(FRHITexture* Texture, const FRHITextureUAVCreateInfo& UAVCreateInfo)
 {
+	return GetOrCreateUAV(FRHICommandListImmediate::Get(), Texture, UAVCreateInfo);
+}
+
+FRHIUnorderedAccessView* FRHITextureViewCache::GetOrCreateUAV(FRHICommandListBase& RHICmdList, FRHITexture* Texture, const FRHITextureUAVCreateInfo& UAVCreateInfo)
+{
 	for (const auto& KeyValue : UAVs)
 	{
 		if (KeyValue.Key == UAVCreateInfo)
@@ -2108,37 +1978,20 @@ FRHIUnorderedAccessView* FRHITextureViewCache::GetOrCreateUAV(FRHITexture* Textu
 		}
 	}
 
-	FUnorderedAccessViewRHIRef RHIUnorderedAccessView;
-
-	if (UAVCreateInfo.MetaData != ERHITextureMetaDataAccess::None)
-	{
-		FRHITexture2D* Texture2D = Texture->GetTexture2D();
-		check(Texture2D);
-
-		switch (UAVCreateInfo.MetaData)
-		{
-		case ERHITextureMetaDataAccess::HTile:
-			check(GRHISupportsExplicitHTile);
-			RHIUnorderedAccessView = RHICreateUnorderedAccessViewHTile(Texture2D);
-			break;
-
-		case ERHITextureMetaDataAccess::Stencil:
-			RHIUnorderedAccessView = RHICreateUnorderedAccessViewStencil(Texture2D, UAVCreateInfo.MipLevel);
-			break;
-		}
-	}
-
-	if (!RHIUnorderedAccessView)
-	{
-		if (UAVCreateInfo.Format != PF_Unknown)
-		{
-			RHIUnorderedAccessView = RHICreateUnorderedAccessView(Texture, UAVCreateInfo.MipLevel, UAVCreateInfo.Format, UAVCreateInfo.FirstArraySlice, UAVCreateInfo.NumArraySlices);
-		}
-		else
-		{
-			RHIUnorderedAccessView = RHICreateUnorderedAccessView(Texture, UAVCreateInfo.MipLevel, UAVCreateInfo.FirstArraySlice, UAVCreateInfo.NumArraySlices);
-		}
-	}
+    check(Texture);
+    ETextureDimension Dimension = Texture->GetDesc().Dimension;
+    if(UAVCreateInfo.DimensionOverride.IsSet())
+    {
+        Dimension = *UAVCreateInfo.DimensionOverride;
+    }
+    
+	FUnorderedAccessViewRHIRef RHIUnorderedAccessView = RHICmdList.CreateUnorderedAccessView(Texture, FRHIViewDesc::CreateTextureUAV()
+		.SetDimension (Dimension)
+		.SetFormat    (UAVCreateInfo.Format)
+		.SetMipLevel  (UAVCreateInfo.MipLevel)
+		.SetArrayRange(UAVCreateInfo.FirstArraySlice, UAVCreateInfo.NumArraySlices)
+		.SetPlane     (UAVCreateInfo.MetaData)
+	);
 
 	check(RHIUnorderedAccessView);
 	FRHIUnorderedAccessView* View = RHIUnorderedAccessView.GetReference();
@@ -2148,6 +2001,11 @@ FRHIUnorderedAccessView* FRHITextureViewCache::GetOrCreateUAV(FRHITexture* Textu
 
 FRHIShaderResourceView* FRHIBufferViewCache::GetOrCreateSRV(FRHIBuffer* Buffer, const FRHIBufferSRVCreateInfo& SRVCreateInfo)
 {
+	return GetOrCreateSRV(FRHICommandListImmediate::Get(), Buffer, SRVCreateInfo);
+}
+
+FRHIShaderResourceView* FRHIBufferViewCache::GetOrCreateSRV(FRHICommandListBase& RHICmdList, FRHIBuffer* Buffer, const FRHIBufferSRVCreateInfo& SRVCreateInfo)
+{
 	for (const auto& KeyValue : SRVs)
 	{
 		if (KeyValue.Key == SRVCreateInfo)
@@ -2156,16 +2014,33 @@ FRHIShaderResourceView* FRHIBufferViewCache::GetOrCreateSRV(FRHIBuffer* Buffer, 
 		}
 	}
 
-	FShaderResourceViewRHIRef RHIShaderResourceView;
+	auto CreateDesc = FRHIViewDesc::CreateBufferSRV();
+	CreateDesc.SetOffsetInBytes(SRVCreateInfo.StartOffsetBytes);
 
-	if (SRVCreateInfo.Format != PF_Unknown)
+	if (SRVCreateInfo.NumElements != UINT32_MAX)
 	{
-		RHIShaderResourceView = RHICreateShaderResourceView(Buffer, SRVCreateInfo.BytesPerElement, SRVCreateInfo.Format);
+		CreateDesc.SetNumElements(SRVCreateInfo.NumElements);
+	}
+
+	if (EnumHasAnyFlags(Buffer->GetUsage(), BUF_ByteAddressBuffer))
+	{
+		CreateDesc.SetType(FRHIViewDesc::EBufferType::Raw);
+	}
+	else if (EnumHasAnyFlags(Buffer->GetUsage(), BUF_StructuredBuffer))
+	{
+		CreateDesc.SetType(FRHIViewDesc::EBufferType::Structured);
+	}
+	else if (EnumHasAnyFlags(Buffer->GetUsage(), BUF_AccelerationStructure))
+	{
+		CreateDesc.SetType(FRHIViewDesc::EBufferType::AccelerationStructure);
 	}
 	else
 	{
-		RHIShaderResourceView = RHICreateShaderResourceView(Buffer);
+		CreateDesc.SetType(FRHIViewDesc::EBufferType::Typed);
+		CreateDesc.SetFormat(SRVCreateInfo.Format);
 	}
+
+	FShaderResourceViewRHIRef RHIShaderResourceView = RHICmdList.CreateShaderResourceView(Buffer, CreateDesc);
 
 	FRHIShaderResourceView* View = RHIShaderResourceView.GetReference();
 	SRVs.Emplace(SRVCreateInfo, MoveTemp(RHIShaderResourceView));
@@ -2173,6 +2048,11 @@ FRHIShaderResourceView* FRHIBufferViewCache::GetOrCreateSRV(FRHIBuffer* Buffer, 
 }
 
 FRHIUnorderedAccessView* FRHIBufferViewCache::GetOrCreateUAV(FRHIBuffer* Buffer, const FRHIBufferUAVCreateInfo& UAVCreateInfo)
+{
+	return GetOrCreateUAV(FRHICommandListImmediate::Get(), Buffer, UAVCreateInfo);
+}
+
+FRHIUnorderedAccessView* FRHIBufferViewCache::GetOrCreateUAV(FRHICommandListBase& RHICmdList, FRHIBuffer* Buffer, const FRHIBufferUAVCreateInfo& UAVCreateInfo)
 {
 	for (const auto& KeyValue : UAVs)
 	{
@@ -2182,16 +2062,29 @@ FRHIUnorderedAccessView* FRHIBufferViewCache::GetOrCreateUAV(FRHIBuffer* Buffer,
 		}
 	}
 
-	FUnorderedAccessViewRHIRef RHIUnorderedAccessView;
+	auto CreateDesc = FRHIViewDesc::CreateBufferUAV();
+	CreateDesc.SetAtomicCounter(UAVCreateInfo.bSupportsAtomicCounter);
+	CreateDesc.SetAppendBuffer(UAVCreateInfo.bSupportsAppendBuffer);
 
-	if (UAVCreateInfo.Format != PF_Unknown)
+	if (EnumHasAnyFlags(Buffer->GetUsage(), BUF_ByteAddressBuffer))
 	{
-		RHIUnorderedAccessView = RHICreateUnorderedAccessView(Buffer, UAVCreateInfo.Format);
+		CreateDesc.SetType(FRHIViewDesc::EBufferType::Raw);
+	}
+	else if (EnumHasAnyFlags(Buffer->GetUsage(), BUF_StructuredBuffer))
+	{
+		CreateDesc.SetType(FRHIViewDesc::EBufferType::Structured);
+	}
+	else if (EnumHasAnyFlags(Buffer->GetUsage(), BUF_AccelerationStructure))
+	{
+		CreateDesc.SetType(FRHIViewDesc::EBufferType::AccelerationStructure);
 	}
 	else
 	{
-		RHIUnorderedAccessView = RHICreateUnorderedAccessView(Buffer, UAVCreateInfo.bSupportsAtomicCounter, UAVCreateInfo.bSupportsAppendBuffer);
+		CreateDesc.SetType(FRHIViewDesc::EBufferType::Typed);
+		CreateDesc.SetFormat(UAVCreateInfo.Format);
 	}
+
+	FUnorderedAccessViewRHIRef RHIUnorderedAccessView = RHICmdList.CreateUnorderedAccessView(Buffer, CreateDesc);
 
 	FRHIUnorderedAccessView* View = RHIUnorderedAccessView.GetReference();
 	UAVs.Emplace(UAVCreateInfo, MoveTemp(RHIUnorderedAccessView));
@@ -2254,15 +2147,9 @@ FDebugName::FDebugName(FName InName, int32 InNumber)
 {
 }
 
-FDebugName::FDebugName(FMemoryImageName InName, int32 InNumber)
-	: Name(InName)
-	, Number(InNumber)
-{
-}
-
 FDebugName& FDebugName::operator=(FName Other)
 {
-	Name = FMemoryImageName(Other);
+	Name = Other;
 	Number = NAME_NO_NUMBER_INTERNAL;
 	return *this;
 }
@@ -2270,7 +2157,7 @@ FDebugName& FDebugName::operator=(FName Other)
 FString FDebugName::ToString() const
 {
 	FString Out;
-	FName(Name).AppendString(Out);
+	Name.AppendString(Out);
 	if (Number != NAME_NO_NUMBER_INTERNAL)
 	{
 		Out.Appendf(TEXT("_%u"), Number);
@@ -2280,7 +2167,7 @@ FString FDebugName::ToString() const
 
 void FDebugName::AppendString(FStringBuilderBase& Builder) const
 {
-	FName(Name).AppendString(Builder);
+	Name.AppendString(Builder);
 	if (Number != NAME_NO_NUMBER_INTERNAL)
 	{
 		Builder << '_' << Number;

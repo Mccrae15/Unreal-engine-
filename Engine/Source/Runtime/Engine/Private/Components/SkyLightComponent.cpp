@@ -110,7 +110,7 @@ FAutoConsoleVariableRef CVarSkylightRealTimeReflectionCapture(
 
 constexpr EPixelFormat SKYLIGHT_CUBEMAP_FORMAT = PF_FloatRGBA;
 
-void FSkyTextureCubeResource::InitRHI()
+void FSkyTextureCubeResource::InitRHI(FRHICommandListBase&)
 {
 	if (GetFeatureLevel() >= ERHIFeatureLevel::SM5 || GSupportsRenderTargetFormat_PF_FloatRGBA)
 	{
@@ -494,32 +494,6 @@ void USkyLightComponent::UpdateOcclusionRenderingStateFast()
 
 }
 
-/** 
-* This is called when property is modified by InterpPropertyTracks
-*
-* @param PropertyThatChanged	Property that changed
-*/
-void USkyLightComponent::PostInterpChange(FProperty* PropertyThatChanged)
-{
-	static FName LightColorName(TEXT("LightColor"));
-	static FName IntensityName(TEXT("Intensity"));
-	static FName IndirectLightingIntensityName(TEXT("IndirectLightingIntensity"));
-	static FName VolumetricScatteringIntensityName(TEXT("VolumetricScatteringIntensity"));
-
-	FName PropertyName = PropertyThatChanged->GetFName();
-	if (PropertyName == LightColorName
-		|| PropertyName == IntensityName
-		|| PropertyName == IndirectLightingIntensityName
-		|| PropertyName == VolumetricScatteringIntensityName)
-	{
-		UpdateLimitedRenderingStateFast();
-	}
-	else
-	{
-		Super::PostInterpChange(PropertyThatChanged);
-	}
-}
-
 void USkyLightComponent::DestroyRenderState_Concurrent()
 {
 	Super::DestroyRenderState_Concurrent();
@@ -740,6 +714,11 @@ void USkyLightComponent::UpdateSkyCaptureContentsArray(UWorld* WorldToUpdate, TA
 		USkyLightComponent* CaptureComponent = ComponentArray[CaptureIndex];
 		AActor* Owner = CaptureComponent->GetOwner();
 
+		if (CaptureComponent->GetWorld() != WorldToUpdate)
+		{
+			continue;
+		}
+
 		// Reset the luminance scale in case the texture has been switched
 		CaptureComponent->SpecifiedCubemapColorScale = FLinearColor::White;
 
@@ -763,7 +742,7 @@ void USkyLightComponent::UpdateSkyCaptureContentsArray(UWorld* WorldToUpdate, TA
 		const bool bCaptureSkyLightWaitingForMeshOrTexAssets= CaptureComponent->SourceType == SLS_CapturedScene		&& bSceneIsAsyncCompiling;
 #endif
 
-		if (((!Owner || !Owner->GetLevel() || Owner->GetLevel()->bIsVisible) && CaptureComponent->GetWorld() == WorldToUpdate)
+		if ((!Owner || !Owner->GetLevel() || Owner->GetLevel()->bIsVisible)
 			// Only process sky capture requests once async texture and shader compiling completes, otherwise we will capture the scene with temporary shaders/textures
 			&& (
 #if WITH_EDITOR
@@ -918,7 +897,7 @@ void USkyLightComponent::UpdateSkyCaptureContents(UWorld* WorldToUpdate)
 		{
 			FScopeLock Lock(&SkyCapturesToUpdateLock);
 			// Remove the sky captures if real time capture is enabled. 
-			SkyCapturesToUpdate.RemoveAll([](const USkyLightComponent* CaptureComponent) { return CaptureComponent->IsRealTimeCaptureEnabled(); });
+			SkyCapturesToUpdate.RemoveAll([WorldToUpdate](const USkyLightComponent* CaptureComponent) { return CaptureComponent->GetWorld() == WorldToUpdate && CaptureComponent->IsRealTimeCaptureEnabled(); });
 			UpdateSkyCaptureContentsArray(WorldToUpdate, SkyCapturesToUpdate, true);
 		}
 		
@@ -1132,6 +1111,12 @@ bool USkyLightComponent::IsRealTimeCaptureEnabled() const
 	// Don't call in PostLoad and SetCaptureIsDirty, because the LocalScene could be null and sky wouldn't be updated on mobile.
 	const bool bIsMobile = LocalScene && LocalScene->GetFeatureLevel() <= ERHIFeatureLevel::ES3_1;
 	return bRealTimeCapture && (Mobility == EComponentMobility::Movable || Mobility == EComponentMobility::Stationary) && GSkylightRealTimeReflectionCapture >0 && !bIsMobile;
+}
+
+void USkyLightComponent::SetRealTimeCaptureEnabled(bool bNewRealTimeCaptureEnabled)
+{
+	bRealTimeCapture = bNewRealTimeCaptureEnabled;
+	MarkRenderStateDirty();
 }
 
 void USkyLightComponent::OnVisibilityChanged()

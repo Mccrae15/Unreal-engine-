@@ -2,6 +2,7 @@
 #pragma once
 
 #include "CADKernel/Core/Types.h"
+#include "CADKernel/Math/SlopeUtils.h"
 #include "CADKernel/Mesh/MeshEnum.h"
 #include "CADKernel/Mesh/Structure/Grid.h"
 
@@ -29,10 +30,13 @@ enum class EIsoNodeStates : uint16
 	LinkedToPreviousV = 0x0004u,
 	LinkedToNextV = 0x0008u,
 
-	TriangleComplete = 0x000Fu,
+	NodeComplete = 0x000Fu,
 
 	LinkedToLoop = 0x0010u,
 	InnerMeshLoop = 0x0020u,
+	ThinZoneNode = 0x0040u,
+
+	Delete = 0x0080u,
 
 	FirstQuarter = 0x0100u,
 	SecondQuarter = 0x0200u,
@@ -42,7 +46,8 @@ enum class EIsoNodeStates : uint16
 	NearlyIsoU = 0x1000u,  // Loop nodes
 	NearlyIsoV = 0x2000u,  // Loop nodes
 
-	Delete = 0x8000u,
+	HasMarker1 = 0x4000u,
+	HasMarker2 = 0x8000u,
 
 	All = 0xFFFFu
 };
@@ -61,17 +66,17 @@ protected:
 	TArray<FIsoSegment*> ConnectedSegments;
 	EIsoNodeStates States;
 
-	int32 Index; // Index of the node either in loop nodes either in inner nodes
-	int32 FaceIndex; // Index of the node in the face
-	int32 Id;
+	int32 LocalIndex; // Index of the node either in loop nodes either in inner nodes
+	int32 GlobalIndex; // Index of the node in the face
+	int32 NodeId; // Id of the node in the mesh
 
 public:
 	FIsoNode(int32 InNodeIndex, int32 InFaceIndex, int32 InNodeId)
 		: ConnectedSegments()
 		, States(EIsoNodeStates::None)
-		, Index(InNodeIndex)
-		, FaceIndex(InFaceIndex)
-		, Id(InNodeId)
+		, LocalIndex(InNodeIndex)
+		, GlobalIndex(InFaceIndex)
+		, NodeId(InNodeId)
 	{
 		ConnectedSegments.Reserve(5);
 	};
@@ -81,7 +86,7 @@ public:
 	virtual void Delete()
 	{
 		ConnectedSegments.Empty();
-		FaceIndex = -1;
+		GlobalIndex = -1;
 
 		States = EIsoNodeStates::Delete;
 	}
@@ -93,17 +98,17 @@ public:
 
 	const int32 GetIndex() const
 	{
-		return Index;
+		return LocalIndex;
 	}
 
-	const int32 GetFaceIndex() const
+	const int32 GetGlobalIndex() const
 	{
-		return FaceIndex;
+		return GlobalIndex;
 	}
 
-	const int32 GetId() const
+	const int32 GetNodeId() const
 	{
-		return Id;
+		return NodeId;
 	}
 
 	const TArray<FIsoSegment*>& GetConnectedSegments() const
@@ -125,7 +130,23 @@ public:
 
 	const virtual bool IsALoopNode() const = 0;
 
-	void SetAsLinkedToLoop()
+	void SetThinZoneNodeMarker()
+	{
+		States |= EIsoNodeStates::ThinZoneNode;
+	}
+
+	bool IsThinZoneNode() const
+	{
+		return (States & EIsoNodeStates::ThinZoneNode) == EIsoNodeStates::ThinZoneNode;
+	}
+
+	bool IsDeleteOrThinNode() const
+	{
+		constexpr EIsoNodeStates DeleteOrThinNode = EIsoNodeStates::ThinZoneNode | EIsoNodeStates::Delete;
+		return (States & DeleteOrThinNode) != EIsoNodeStates::None;
+	}
+
+	void SetLinkedToLoopMarker()
 	{
 		States |= EIsoNodeStates::LinkedToLoop;
 	}
@@ -204,6 +225,44 @@ public:
 		}
 	}
 
+	bool HasMarker1() const
+	{
+		return ((States & EIsoNodeStates::HasMarker1) == EIsoNodeStates::HasMarker1);
+	}
+
+	bool HasMarker2() const
+	{
+		return ((States & EIsoNodeStates::HasMarker2) == EIsoNodeStates::HasMarker2);
+	}
+
+	bool IsDeleteOrHasMarker2() const
+	{
+		constexpr EIsoNodeStates HasMarkerDeleteOrMarker2 = EIsoNodeStates::Delete | EIsoNodeStates::HasMarker2;
+		return ((States & HasMarkerDeleteOrMarker2) != EIsoNodeStates::None);
+	}
+
+	bool HasMarker1NotMarker2() const
+	{
+		constexpr EIsoNodeStates HasMarker12 = EIsoNodeStates::HasMarker1 | EIsoNodeStates::HasMarker2;
+		return ((States & HasMarker12) == EIsoNodeStates::HasMarker1);
+	}
+
+	void SetMarker1()
+	{
+		States |= EIsoNodeStates::HasMarker1;
+	}
+
+	void SetMarker2()
+	{
+		States |= EIsoNodeStates::HasMarker2;
+	}
+
+	void ResetMarkers()
+	{
+		constexpr EIsoNodeStates ResetAllMarkers = ~(EIsoNodeStates::HasMarker1 | EIsoNodeStates::HasMarker2);
+		States &= ResetAllMarkers;
+	}
+
 	/**
 	 * Return the 2d coordinate of the node according to the space
 	 */
@@ -236,8 +295,8 @@ protected:
 	FLoopNode* ConnectedLoopNodes[2];
 
 public:
-	FLoopNode(int32 InLoopIndex, int32 InNodeIndex, int32 InFaceIndex, int32 NodeId)
-		: FIsoNode(InNodeIndex, InFaceIndex, NodeId)
+	FLoopNode(int32 InLoopIndex, int32 InNodeLoopIndex, int32 InNodeFaceIndex, int32 NodeId)
+		: FIsoNode(InNodeLoopIndex, InNodeFaceIndex, NodeId)
 		, LoopIndex(InLoopIndex)
 		, ConnectedLoopNodes{ nullptr, nullptr }
 	{
@@ -311,22 +370,22 @@ public:
 	 */
 	virtual const FPoint2D& Get2DPoint(EGridSpace Space, const FGrid& Grid) const override
 	{
-		return Grid.GetLoop2DPoint(Space, LoopIndex, Index);
+		return Grid.GetLoop2DPoint(Space, LoopIndex, LocalIndex);
 	}
 
 	virtual void Set2DPoint(EGridSpace Space, FGrid& Grid, const FPoint2D& NewCoordinate) override
 	{
-		Grid.SetLoop2DPoint(Space, LoopIndex, Index, NewCoordinate);
+		Grid.SetLoop2DPoint(Space, LoopIndex, LocalIndex, NewCoordinate);
 	}
 
 	virtual const FPoint& Get3DPoint(const FGrid& Grid) const override
 	{
-		return Grid.GetLoops3D()[LoopIndex][Index];
+		return Grid.GetLoops3D()[LoopIndex][LocalIndex];
 	}
 
 	virtual const FVector3f& GetNormal(const FGrid& Grid) const override
 	{
-		return Grid.GetLoopNormals()[LoopIndex][Index];
+		return Grid.GetLoopNormals()[LoopIndex][LocalIndex];
 	}
 
 	/**
@@ -339,7 +398,7 @@ public:
 		case EGridSpace::Default2D:
 		case EGridSpace::Scaled:
 		case EGridSpace::UniformScaled:
-			return Grid.GetLoop2DPoint(Space, LoopIndex, Index);
+			return Grid.GetLoop2DPoint(Space, LoopIndex, LocalIndex);
 		}
 		return FPoint::ZeroPoint;
 	}
@@ -373,38 +432,6 @@ public:
 	bool IsSegmentBeInsideFace(const FPoint2D& EndSegmentCoordinate, const FGrid& Grid, const double FlatAngle) const
 	{
 		return (!IsPointPInsideSectorABC(GetPreviousNode().Get2DPoint(EGridSpace::UniformScaled, Grid), Get2DPoint(EGridSpace::UniformScaled, Grid), GetNextNode().Get2DPoint(EGridSpace::UniformScaled, Grid), EndSegmentCoordinate, FlatAngle));
-	}
-
-	void SetAsIsoU()
-	{
-		States |= EIsoNodeStates::NearlyIsoU;
-	}
-
-	bool IsIsoU() const
-	{
-		return (States & EIsoNodeStates::NearlyIsoU) == EIsoNodeStates::NearlyIsoU;
-	}
-
-	void SetAsIsoV()
-	{
-		States |= EIsoNodeStates::NearlyIsoV;
-	}
-
-	bool IsIsoV() const
-	{
-		return (States & EIsoNodeStates::NearlyIsoV) == EIsoNodeStates::NearlyIsoV;
-	}
-
-	constexpr bool IsIso(EIso Axe) const
-	{
-		if (Axe == IsoV)
-		{
-			return IsIsoV();
-		}
-		else
-		{
-			return IsIsoU();
-		}
 	}
 
 	virtual uint32 GetTypeHash() const override
@@ -474,7 +501,7 @@ public:
 	/** the node is connected in its 4 directions*/
 	bool IsComplete() const
 	{
-		return (States & EIsoNodeStates::TriangleComplete) == EIsoNodeStates::TriangleComplete;
+		return (States & EIsoNodeStates::NodeComplete) == EIsoNodeStates::NodeComplete;
 	}
 
 	bool IsLinkedToBoundary() const
@@ -484,22 +511,22 @@ public:
 
 	virtual const FPoint2D& Get2DPoint(EGridSpace Space, const FGrid& Grid) const override
 	{
-		return Grid.GetInner2DPoint(Space, Index);
+		return Grid.GetInner2DPoint(Space, LocalIndex);
 	}
 
 	virtual void Set2DPoint(EGridSpace Space, FGrid& Grid, const FPoint2D& NewCoordinate) override
 	{
-		return Grid.SetInner2DPoint(Space, Index, NewCoordinate);
+		return Grid.SetInner2DPoint(Space, LocalIndex, NewCoordinate);
 	}
 
 	virtual const FPoint& Get3DPoint(const FGrid& Grid) const override
 	{
-		return Grid.GetInner3DPoint(Index);
+		return Grid.GetInner3DPoint(LocalIndex);
 	}
 
 	virtual const FVector3f& GetNormal(const FGrid& Grid) const override
 	{
-		return Grid.GetPointNormal(Index);
+		return Grid.GetPointNormal(LocalIndex);
 	}
 
 	/**
@@ -512,14 +539,14 @@ public:
 		case EGridSpace::Default2D:
 		case EGridSpace::Scaled:
 		case EGridSpace::UniformScaled:
-			return Grid.GetInner2DPoint(Space, Index);
+			return Grid.GetInner2DPoint(Space, LocalIndex);
 		}
 		return FPoint::ZeroPoint;
 	}
 
 	void OffsetId(int32 StartId)
 	{
-		Id += StartId;
+		NodeId += StartId;
 	}
 
 	virtual uint32 GetTypeHash() const override

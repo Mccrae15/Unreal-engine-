@@ -146,6 +146,7 @@ namespace UnrealGameSync
 			this.FilterContextMenu_Author_Name = new System.Windows.Forms.ToolStripTextBox();
 			this.FilterContextMenu_AfterBadgeSeparator = new System.Windows.Forms.ToolStripSeparator();
 			this.FilterContextMenu_ShowBuildMachineChanges = new System.Windows.Forms.ToolStripMenuItem();
+			this.BadgeContextMenu = new System.Windows.Forms.ContextMenuStrip(this.components);
 			this.BuildHealthContextMenu = new System.Windows.Forms.ContextMenuStrip(this.components);
 			this.BuildHealthContextMenu_Browse = new System.Windows.Forms.ToolStripMenuItem();
 			this.BuildHealthContextMenu_MinSeparator = new System.Windows.Forms.ToolStripSeparator();
@@ -168,6 +169,7 @@ namespace UnrealGameSync
 			this.RecentMenu.SuspendLayout();
 			this.BuildListMultiContextMenu.SuspendLayout();
 			this.FilterContextMenu.SuspendLayout();
+			this.BadgeContextMenu.SuspendLayout();
 			this.BuildHealthContextMenu.SuspendLayout();
 			((System.ComponentModel.ISupportInitialize)(this.EditorConfigWatcher)).BeginInit();
 			this.SuspendLayout();
@@ -857,7 +859,6 @@ namespace UnrealGameSync
 			this.StatusPanel.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(250)))), ((int)(((byte)(250)))), ((int)(((byte)(250)))));
 			this.StatusPanel.BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle;
 			this.StatusPanel.Dock = System.Windows.Forms.DockStyle.Fill;
-			this.StatusPanel.Font = new System.Drawing.Font("Segoe UI", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
 			this.StatusPanel.Location = new System.Drawing.Point(0, 0);
 			this.StatusPanel.Margin = new System.Windows.Forms.Padding(0, 0, 0, 3);
 			this.StatusPanel.Name = "StatusPanel";
@@ -1204,7 +1205,7 @@ namespace UnrealGameSync
 			// 
 			this.FilterContextMenu_Author_Name.Name = "FilterContextMenu_Author_Name";
 			this.FilterContextMenu_Author_Name.Size = new System.Drawing.Size(100, 22);
-			this.FilterContextMenu_Author_Name.Text = _authorFilterPlaceholderText;
+			this.FilterContextMenu_Author_Name.Text = AuthorFilterPlaceholderText;
 			// no placeholder text property in 4.x so do it manually
 			this.FilterContextMenu_Author_Name.TextBox.ForeColor = Color.DarkGray;
 			this.FilterContextMenu_Author_Name.TextBox.GotFocus += new System.EventHandler(this.FilterContextMenu_Author_Name_GotFocus);
@@ -1223,6 +1224,10 @@ namespace UnrealGameSync
 			this.FilterContextMenu_ShowBuildMachineChanges.Text = "Show Build Machine Changes";
 			this.FilterContextMenu_ShowBuildMachineChanges.Click += new System.EventHandler(this.FilterContextMenu_ShowBuildMachineChanges_Click);
 			// 
+			// BadgeContextMenu
+			//
+			this.BadgeContextMenu.Name = "BadgeContextMenu";
+			//
 			// BuildHealthContextMenu
 			// 
 			this.BuildHealthContextMenu.Items.AddRange(new System.Windows.Forms.ToolStripItem[] {
@@ -1277,7 +1282,6 @@ namespace UnrealGameSync
 			this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Dpi;
 			this.BackColor = System.Drawing.SystemColors.Control;
 			this.Controls.Add(this.tableLayoutPanel2);
-			this.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
 			this.Margin = new System.Windows.Forms.Padding(0);
 			this.Name = "WorkspaceControl";
 			this.Size = new System.Drawing.Size(1363, 752);
@@ -1303,6 +1307,7 @@ namespace UnrealGameSync
 			this.BuildListMultiContextMenu.ResumeLayout(false);
 			this.FilterContextMenu.ResumeLayout(false);
 			this.BuildHealthContextMenu.ResumeLayout(false);
+			this.BadgeContextMenu.ResumeLayout(false);
 			((System.ComponentModel.ISupportInitialize)(this.EditorConfigWatcher)).EndInit();
 			this.ResumeLayout(false);
 
@@ -1432,6 +1437,7 @@ namespace UnrealGameSync
 		private System.Windows.Forms.ToolStripTextBox FilterContextMenu_Author_Name;
 		private System.Windows.Forms.ToolStripSeparator toolStripSeparator10;
 		private System.Windows.Forms.ContextMenuStrip BuildHealthContextMenu;
+		private System.Windows.Forms.ContextMenuStrip BadgeContextMenu;
 		private System.Windows.Forms.ToolStripSeparator BuildHealthContextMenu_MaxSeparator;
 		private System.Windows.Forms.ToolStripMenuItem BuildHealthContextMenu_Settings;
 		private System.Windows.Forms.ToolStripMenuItem BuildHealthContextMenu_Browse;

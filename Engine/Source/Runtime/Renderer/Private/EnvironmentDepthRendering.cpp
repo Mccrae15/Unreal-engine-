@@ -1,0 +1,28 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+/*=============================================================================
+ EnvironmentDepthRendering.cpp
+=============================================================================*/
+
+#include "EnvironmentDepthRendering.h"
+#include "MobileBasePassRendering.h"
+
+void SetupEnvironmentDepthUniformParameters(const class FSceneView& View, const FRDGSystemTextures& SystemTextures, const FMobileBasePassTextures& MobileBasePassTextures, FEnvironmentDepthUniformParameters& OutParameters)
+{
+	if (MobileBasePassTextures.EnvironmentDepthTexture != nullptr)
+	{
+		OutParameters.EnvironmentDepthTexture = MobileBasePassTextures.EnvironmentDepthTexture;
+	}
+	else
+	{
+		OutParameters.EnvironmentDepthTexture = SystemTextures.White;
+	}
+	OutParameters.EnvironmentDepthSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp, 0, 0, 0, SCF_Less>::GetRHI();
+	OutParameters.DepthFactors = MobileBasePassTextures.DepthFactors;
+	for (int i = 0; i < 2; ++i)
+	{
+		OutParameters.ScreenToDepthMatrices[i] = MobileBasePassTextures.ScreenToDepthMatrices[i];
+	}
+}
+
+IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FEnvironmentDepthUniformParameters, "EnvironmentDepthStruct");

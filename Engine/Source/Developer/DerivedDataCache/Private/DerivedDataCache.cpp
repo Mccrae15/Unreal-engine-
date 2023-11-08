@@ -20,7 +20,6 @@
 #include "DerivedDataRequest.h"
 #include "DerivedDataRequestOwner.h"
 #include "DerivedDataThreadPoolTask.h"
-#include "Experimental/Async/LazyEvent.h"
 #include "Experimental/ZenServerInterface.h"
 #include "Features/IModularFeatures.h"
 #include "HAL/ThreadSafeCounter.h"
@@ -62,9 +61,9 @@ namespace UE::DerivedData::CookStats
 	// See https://developercommunity.visualstudio.com/content/problem/576913/c6244-regression-in-new-lambda-processorpermissive.html
 	static void AddCookStats(FCookStatsManager::AddStatFuncRef AddStat)
 	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		TSharedRef<FDerivedDataCacheStatsNode> RootNode = GetDerivedDataCacheRef().GatherUsageStats();
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		{
 			const FString StatName(TEXT("DDC.Usage"));
@@ -107,15 +106,20 @@ namespace UE::DerivedData::CookStats
 				LocalGetMisses += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Miss, FCookStats::CallStats::EStatType::Counter);
 				LocalSpeedStats = (*LocalNode)->SpeedStats;
 			}
+			const int64 LocalGetTotal = LocalGetHits + LocalGetMisses;
+
+			int64 ZenLocalGetHits = 0;
+			int64 ZenLocalGetMisses = 0;
+			FDerivedDataCacheSpeedStats ZenLocalSpeedStats;
 			if (ZenLocalNode)
 			{
 				const FDerivedDataCacheUsageStats& UsageStats = (*ZenLocalNode)->UsageStats.CreateConstIterator().Value();
-				LocalGetHits += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter);
-				LocalGetMisses += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Miss, FCookStats::CallStats::EStatType::Counter);
-				LocalSpeedStats = (*ZenLocalNode)->SpeedStats;
-			}
-			const int64 LocalGetTotal = LocalGetHits + LocalGetMisses;
-
+				ZenLocalGetHits += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter);
+				ZenLocalGetMisses += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Miss, FCookStats::CallStats::EStatType::Counter);
+				ZenLocalSpeedStats = (*ZenLocalNode)->SpeedStats;
+			}			
+			const int64 ZenLocalGetTotal = ZenLocalGetHits + ZenLocalGetMisses;
+			
 			int64 SharedGetHits = 0;
 			int64 SharedGetMisses = 0;
 			FDerivedDataCacheSpeedStats SharedSpeedStats;
@@ -127,14 +131,19 @@ namespace UE::DerivedData::CookStats
 				SharedGetMisses += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Miss, FCookStats::CallStats::EStatType::Counter);
 				SharedSpeedStats = (*SharedNode)->SpeedStats;
 			}
+			const int64 SharedGetTotal = SharedGetHits + SharedGetMisses;
+
+			int64 ZenRemoteGetHits = 0;
+			int64 ZenRemoteGetMisses = 0;
+			FDerivedDataCacheSpeedStats ZenRemoteSpeedStats;
 			if (ZenRemoteNode)
 			{
 				const FDerivedDataCacheUsageStats& UsageStats = (*ZenRemoteNode)->UsageStats.CreateConstIterator().Value();
-				SharedGetHits += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter);
-				SharedGetMisses += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Miss, FCookStats::CallStats::EStatType::Counter);
-				SharedSpeedStats = (*ZenRemoteNode)->SpeedStats;
+				ZenRemoteGetHits += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter);
+				ZenRemoteGetMisses += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Miss, FCookStats::CallStats::EStatType::Counter);
+				ZenRemoteSpeedStats = (*ZenRemoteNode)->SpeedStats;
 			}
-			const int64 SharedGetTotal = SharedGetHits + SharedGetMisses;
+			const int64 ZenRemoteGetTotal = ZenRemoteGetHits + ZenRemoteGetMisses;
 
 			int64 CloudGetHits = 0;
 			int64 CloudGetMisses = 0;
@@ -178,6 +187,12 @@ namespace UE::DerivedData::CookStats
 				TEXT("SharedGetHits"), SharedGetHits,
 				TEXT("SharedGetTotal"), SharedGetTotal,
 				TEXT("SharedGetHitPct"), SafeDivide(SharedGetHits, SharedGetTotal),
+				TEXT("ZenLocalGetHits"), ZenLocalGetHits,
+				TEXT("ZenLocalGetTotal"), ZenLocalGetTotal,
+				TEXT("ZenLocalGetHitPct"), SafeDivide(ZenLocalGetHits, ZenLocalGetTotal),
+				TEXT("ZenRemoteGetHits"), ZenRemoteGetHits,
+				TEXT("ZenRemoteGetTotal"), ZenRemoteGetTotal,
+				TEXT("ZenRemoteGetHitPct"), SafeDivide(ZenRemoteGetHits, ZenRemoteGetTotal),
 				TEXT("CloudGetHits"), CloudGetHits,
 				TEXT("CloudGetTotal"), CloudGetTotal,
 				TEXT("CloudGetHitPct"), SafeDivide(CloudGetHits, CloudGetTotal),
@@ -198,7 +213,6 @@ namespace UE::DerivedData::CookStats
 }
 #endif
 
-void GatherDerivedDataCacheResourceStats(TArray<FDerivedDataCacheResourceStat>& DDCResourceStats);
 void GatherDerivedDataCacheSummaryStats(FDerivedDataCacheSummaryStats& DDCSummaryStats);
 
 /** Whether we want to verify the DDC (pass in -VerifyDDC on the command line)*/
@@ -372,14 +386,6 @@ class FDerivedDataCache final
 	class FBuildAsyncWorker : public FNonAbandonableTask
 	{
 	public:
-		enum EWorkerState : uint32
-		{
-			WorkerStateNone			= 0,
-			WorkerStateRunning		= 1 << 0,
-			WorkerStateFinished		= 1 << 1,
-			WorkerStateDestroyed	= 1 << 2,
-		};
-
 		/** 
 		 * Constructor for async task 
 		 * @param	InDataDeriver	plugin to produce cache key and in the event of a miss, return the data.
@@ -396,31 +402,13 @@ class FDerivedDataCache final
 		{
 		}
 
-		virtual ~FBuildAsyncWorker()
-		{
-			// Record that the task is destroyed and check that it was not running or destroyed previously.
-			{
-				const uint32 PreviousState = WorkerState.fetch_or(WorkerStateDestroyed, std::memory_order_relaxed);
-				checkf(!(PreviousState & WorkerStateRunning), TEXT("Destroying DDC worker that is still running! Key: %s"), *CacheKey);
-				checkf(!(PreviousState & WorkerStateDestroyed), TEXT("Destroying DDC worker that has been destroyed previously! Key: %s"), *CacheKey);
-			}
-		}
-
 		/** Async worker that checks the cache backend and if that fails, calls the deriver to build the data and then puts the results to the cache **/
 		void DoWork()
 		{
-			// Record that the task is running and check that it was not running, finished, or destroyed previously.
-			{
-				const uint32 PreviousState = WorkerState.fetch_or(WorkerStateRunning, std::memory_order_relaxed);
-				checkf(!(PreviousState & WorkerStateRunning), TEXT("Starting DDC worker that is already running! Key: %s"), *CacheKey);
-				checkf(!(PreviousState & WorkerStateFinished), TEXT("Starting DDC worker that is already finished! Key: %s"), *CacheKey);
-				checkf(!(PreviousState & WorkerStateDestroyed), TEXT("Starting DDC worker that has been destroyed! Key: %s"), *CacheKey);
-			}
-
 			TRACE_CPUPROFILER_EVENT_SCOPE(DDC_DoWork);
 
 			const int64 NumBeforeDDC = Data.Num();
-			bool bGetResult;
+			bool bGetResult = false;
 			{
 				TRACE_CPUPROFILER_EVENT_SCOPE(DDC_Get);
 
@@ -445,15 +433,18 @@ class FDerivedDataCache final
 								{
 									Data.Append(static_cast<const uint8*>(Segment.GetData()), int64(Segment.GetSize()));
 								}
+								UE_CLOG(Data.Num() != int64(RawSize), LogDerivedDataCache, Display,
+									TEXT("Copied %" INT64_FMT " bytes when %" INT64_FMT " bytes were expected for %s from '%s'"),
+									Data.Num(), int64(RawSize), *CacheKey, *Response.Name);
 							}
 						});
 					BlockingOwner.Wait();
 				}
 				INC_FLOAT_STAT_BY(STAT_DDC_SyncGetTime, bSynchronousForStats ? (float)ThisTime : 0.0f);
 			}
-			if (bGetResult)
+
+			if (bGetResult && Data.Num())
 			{
-				
 				if (GVerifyDDC && DataDeriver && DataDeriver->IsDeterministic())
 				{
 					TArray<uint8> CmpData;
@@ -535,14 +526,6 @@ class FDerivedDataCache final
 				Data.Empty();
 			}
 			Backend->AddToAsyncCompletionCounter(-1);
-
-			// Record that the task is finished and check that it was running and not finished or destroyed previously.
-			{
-				const uint32 PreviousState = WorkerState.fetch_xor(WorkerStateRunning | WorkerStateFinished, std::memory_order_relaxed);
-				checkf((PreviousState & WorkerStateRunning), TEXT("Finishing DDC worker that was not running! Key: %s"), *CacheKey);
-				checkf(!(PreviousState & WorkerStateFinished), TEXT("Finishing DDC worker that is already finished! Key: %s"), *CacheKey);
-				checkf(!(PreviousState & WorkerStateDestroyed), TEXT("Finishing DDC worker that has been destroyed! Key: %s"), *CacheKey);
-			}
 		}
 
 		FORCEINLINE TStatId GetStatId() const
@@ -550,7 +533,6 @@ class FDerivedDataCache final
 			RETURN_QUICK_DECLARE_CYCLE_STAT(FBuildAsyncWorker, STATGROUP_ThreadPoolAsyncTasks);
 		}
 
-		std::atomic<uint32>				WorkerState{WorkerStateNone};
 		/** true in the case of a cache hit, otherwise the result of the deriver build call **/
 		bool							bSuccess;
 		/** true if we should record the timing **/
@@ -924,13 +906,6 @@ public:
 		Backend->GetDirectories(OutResults);
 	}
 
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	virtual IDDCCleanup* GetCleanup() const override
-	{
-		return const_cast<IDDCCleanup*>(static_cast<const IDDCCleanup*>(this));
-	}
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
 	virtual bool IsFinished() const override
 	{
 		return IsIdle();
@@ -958,7 +933,7 @@ public:
 
 	virtual void GatherResourceStats(TArray<FDerivedDataCacheResourceStat>& DDCResourceStats) const override
 	{
-		GatherDerivedDataCacheResourceStats(DDCResourceStats);
+		Backend->GatherResourceStats(DDCResourceStats);
 	}
 
 	virtual void GatherSummaryStats(FDerivedDataCacheSummaryStats& DDCSummaryStats) const override
@@ -973,7 +948,7 @@ public:
 		// Gather the latest resource stats
 		TArray<FDerivedDataCacheResourceStat> ResourceStats;
 
-		GatherDerivedDataCacheResourceStats(ResourceStats);
+		GatherResourceStats(ResourceStats);
 
 		FDerivedDataCacheResourceStat ResourceStatsTotal(TEXT("Total"));
 
@@ -988,37 +963,37 @@ public:
 		// Append to the attributes
 		for (const FDerivedDataCacheResourceStat& Stat : ResourceStats)
 		{
-			FString BaseName = TEXT("DDC.Resource.") + Stat.AssetType;
+			FString BaseName = TEXT("DDC_Resource_") + Stat.AssetType;
 
 			BaseName = BaseName.Replace(TEXT("("), TEXT("")).Replace(TEXT(")"), TEXT(""));
 
 			{
-				FString AttrName = BaseName + TEXT(".BuildCount");
+				FString AttrName = BaseName + TEXT("_BuildCount");
 				Attributes.Emplace(MoveTemp(AttrName), Stat.BuildCount);
 			}
 
 			{
-				FString AttrName = BaseName + TEXT(".BuildTimeSec");
+				FString AttrName = BaseName + TEXT("_BuildTimeSec");
 				Attributes.Emplace(MoveTemp(AttrName), Stat.BuildTimeSec);
 			}
 
 			{
-				FString AttrName = BaseName + TEXT(".BuildSizeMB");
+				FString AttrName = BaseName + TEXT("_BuildSizeMB");
 				Attributes.Emplace(MoveTemp(AttrName), Stat.BuildSizeMB);
 			}
 
 			{
-				FString AttrName = BaseName + TEXT(".LoadCount");
+				FString AttrName = BaseName + TEXT("_LoadCount");
 				Attributes.Emplace(MoveTemp(AttrName), Stat.LoadCount);
 			}
 
 			{
-				FString AttrName = BaseName + TEXT(".LoadTimeSecLoadTimeSec");
+				FString AttrName = BaseName + TEXT("_LoadTimeSecLoadTimeSec");
 				Attributes.Emplace(MoveTemp(AttrName), Stat.LoadTimeSec);
 			}
 
 			{
-				FString AttrName = BaseName + TEXT(".LoadSizeMB");
+				FString AttrName = BaseName + TEXT("_LoadSizeMB");
 				Attributes.Emplace(MoveTemp(AttrName), Stat.LoadSizeMB);
 			}
 		}
@@ -1031,8 +1006,16 @@ public:
 		// Append to the attributes
 		for (const FDerivedDataCacheSummaryStat& Stat : SummaryStats.Stats)
 		{
-			FString FormattedAttrName = "DDC.Summary." + Stat.Key;
-			Attributes.Emplace(FormattedAttrName, Stat.Value);
+			FString FormattedAttrName = "DDC_Summary_" + Stat.Key.Replace(TEXT("."), TEXT("_"));
+
+			if (Stat.Value.IsNumeric())
+			{
+				Attributes.Emplace(FormattedAttrName, FCString::Atof(*Stat.Value));
+			}
+			else
+			{
+				Attributes.Emplace(FormattedAttrName, Stat.Value);
+			}
 		}
 
 		TSharedRef<FDerivedDataCacheStatsNode> RootNode = Backend->GatherUsageStats();
@@ -1040,7 +1023,18 @@ public:
 			{
 				for (const FCookStatsManager::StringKeyValue& Stat : Node->CustomStats)
 				{
-					Attributes.Emplace(Stat.Key, Stat.Value);
+					FString FormattedAttrName = Stat.Key.Replace(TEXT("."), TEXT("_"));
+
+					if (Stat.Value.IsNumeric())
+					{
+						Attributes.Emplace(FormattedAttrName, FCString::Atof(*Stat.Value));
+					}
+					else
+					{
+						Attributes.Emplace(FormattedAttrName, Stat.Value);
+					}
+
+
 				}
 			});
 #endif

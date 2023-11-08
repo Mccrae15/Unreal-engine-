@@ -16,23 +16,15 @@ namespace UnrealBuildTool.Rules
 			PublicIncludePaths.AddRange(
 				new string[]
 				{
-				"Runtime/Launch/Public",
-				Path.Combine(Target.UEThirdPartySourceDirectory, "Catch2", "v3.0.1", "src")
-				}
-			);
-
-			PrivateIncludePaths.AddRange(
-				new string[] {
-				"Runtime/Launch/Private"
+					Path.Combine(Target.UEThirdPartySourceDirectory, "Catch2", "v3.0.1", "src")
 				}
 			);
 
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
-				"Core",
-				"Projects"
+					"Core"
 				}
-			);
+			);		
 		}
 	}
 }

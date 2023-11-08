@@ -40,6 +40,8 @@ public:
 	/** Broadcasts callback to notify registrants that a plugin has been created */
 	void BroadcastNewPluginCreated() const {NewPluginCreatedDelegate.Broadcast();}
 
+	virtual FOnLaunchReferenceViewer& OnLaunchReferenceViewerDelegate() override { return LaunchReferenceViewerDelegate; }
+
 	/**
 	 * Sets whether a plugin is pending enable/disable
 	 * @param PluginName The name of the plugin
@@ -76,7 +78,7 @@ public:
 	/** Spawns the plugin creator tab with a specific wizard definition */
 	virtual TSharedRef<SDockTab> SpawnPluginCreatorTab(const FSpawnTabArgs& SpawnTabArgs, TSharedPtr<IPluginWizardDefinition> PluginWizardDefinition) override;
 
-	const TArray<TSharedRef<FPluginTemplateDescription>>& GetAddedPluginTemplates() const { return AddedPluginTemplates; }
+	virtual const TArray<TSharedRef<FPluginTemplateDescription>>& GetAddedPluginTemplates() const override { return AddedPluginTemplates; }
 
 	const TArray<TPair<FOnPluginBeingEdited, FPluginEditorExtensionHandle>>& GetCustomizePluginEditingDelegates() { return CustomizePluginEditingDelegates; }
 
@@ -120,6 +122,9 @@ private:
 
 	/** Delegate called when a new plugin is created */
 	FOnNewPluginCreated NewPluginCreatedDelegate;
+
+	/** Delegate that if bound the Plugin Browser will show the Reference Viewer button. Delegate called when the button is clicked */
+	FOnLaunchReferenceViewer LaunchReferenceViewerDelegate;
 
 	/** Notification popup that new plugins are available */
 	TWeakPtr<SNotificationItem> NewPluginsNotification;

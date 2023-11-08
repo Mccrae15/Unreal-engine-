@@ -20,6 +20,7 @@
 #include "UObject/GCObjectScopeGuard.h"
 #include "Serialization/ArchiveFindCulprit.h"
 #include "Misc/PackageName.h"
+#include "Editor/Transactor.h"
 #include "Editor/EditorPerProjectUserSettings.h"
 #include "ISourceControlOperation.h"
 #include "SourceControlOperations.h"
@@ -28,7 +29,6 @@
 #include "SourceControlHelpers.h"
 #include "Editor.h"
 #include "Dialogs/Dialogs.h"
-
 
 #include "ObjectTools.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -96,6 +96,37 @@ void UPackageTools::FlushAsyncCompilation(TArrayView<UPackage* const> InPackages
 		FAssetCompilingManager::Get().FinishCompilationForObjects(ObjectsToFinish);
 	}
 }
+
+struct FPackageToolsCommands
+{
+	FPackageToolsCommands()
+		: ReloadConsoleCommand(TEXT("PackageTools.ReloadPackage"),
+							   TEXT("Force a reload of the named package, e.g. PackageTools.ReloadPackage /Game/MyAsset"),
+							   FConsoleCommandWithArgsDelegate::CreateRaw(this, &FPackageToolsCommands::ReloadPackageCommand))
+	{
+	}
+
+	void ReloadPackageCommand(const TArray<FString>& Params)
+	{
+		TArray<UPackage*> Packages;
+		for (const FString& Param : Params)
+		{
+			UPackage* ExistingPackage = FindPackage(nullptr, *Param);
+			if (ExistingPackage)
+			{
+				Packages.Add(ExistingPackage);
+			}
+		}
+		if (Packages.Num() > 0)
+		{
+			UPackageTools::ReloadPackages(Packages);
+		}
+	}
+
+	FAutoConsoleCommand ReloadConsoleCommand;
+};
+
+static FPackageToolsCommands PackageCommands;
 
 UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -290,7 +321,7 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 	bool UPackageTools::UnloadPackages( const TArray<UPackage*>& TopLevelPackages )
 	{
 		FText ErrorMessage;
-		bool bResult = UnloadPackages(TopLevelPackages, ErrorMessage);
+		const bool bResult = UnloadPackages(TopLevelPackages, ErrorMessage);
 		if(!ErrorMessage.IsEmpty())
 		{
 			FMessageDialog::Open( EAppMsgType::Ok, ErrorMessage );
@@ -301,8 +332,17 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 
 	bool UPackageTools::UnloadPackages(const TArray<UPackage*>& TopLevelPackages, FText& OutErrorMessage, bool bUnloadDirtyPackages)
 	{
+		FUnloadPackageParams Params(TopLevelPackages);
+		Params.bUnloadDirtyPackages = bUnloadDirtyPackages;
+		const bool bResult = UnloadPackages(Params);
+		OutErrorMessage = Params.OutErrorMessage;
+		return bResult;
+	}
+
+	bool UPackageTools::UnloadPackages(FUnloadPackageParams& Params)
+	{
 		// Early out if no package is provided
-		if (TopLevelPackages.IsEmpty())
+		if (Params.Packages.IsEmpty())
 		{
 			return true;
 		}
@@ -315,11 +355,11 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 		// Split the set of selected top level packages into packages which are dirty (and thus cannot be unloaded)
 		// and packages that are not dirty (and thus can be unloaded).
 		TArray<UPackage*> DirtyPackages;
-		for (UPackage* TopLevelPackage : TopLevelPackages)
+		for (UPackage* TopLevelPackage : Params.Packages)
 		{
 			if (TopLevelPackage)
 			{
-				if (!bUnloadDirtyPackages && TopLevelPackage->IsDirty())
+				if (!Params.bUnloadDirtyPackages && TopLevelPackage->IsDirty())
 				{
 					DirtyPackages.Add(TopLevelPackage);
 				}
@@ -347,7 +387,7 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 			FFormatNamedArguments Args;
 			Args.Add(TEXT("DirtyPackages"), FText::FromString(DirtyPackagesList));
 
-			OutErrorMessage = FText::Format( NSLOCTEXT("UnrealEd", "UnloadDirtyPackagesList", "The following assets have been modified and cannot be unloaded:{DirtyPackages}\nSaving these assets will allow them to be unloaded."), Args );
+			Params.OutErrorMessage = FText::Format( NSLOCTEXT("UnrealEd", "UnloadDirtyPackagesList", "The following assets have been modified and cannot be unloaded:{DirtyPackages}\nSaving these assets will allow them to be unloaded."), Args );
 		}
 		if (GEditor)
 		{
@@ -387,12 +427,16 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 			FlushAsyncLoading();
 			(*GFlushStreamingFunc)();
 
+			GWarn->BeginSlowTask(NSLOCTEXT("UnrealEd", "Unloading", "Unloading"), true);
+
 			// Remove potential references to to-be deleted objects from the GB selection set.
 			GEditor->GetSelectedObjects()->GetElementSelectionSet()->ClearSelection(FTypedElementSelectionOptions());
 
-			bool bScriptPackageWasUnloaded = false;
-
-			GWarn->BeginSlowTask( NSLOCTEXT("UnrealEd", "Unloading", "Unloading"), true );
+			// Clear undo history because transaction records can hold onto assets we want to unload
+			if (GEditor->Trans && Params.bResetTransBuffer)
+			{
+				GEditor->Trans->Reset(NSLOCTEXT("UnrealEd", "UnloadPackagesResetUndo", "Unload Assets"));
+			}
 
 			// First add all packages to unload to the root set so they don't get garbage collected while we are operating on them
 			TArray<UPackage*> PackagesAddedToRoot;
@@ -410,6 +454,7 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 			FlushAsyncCompilation(PackagesToUnload.Array());
 
 			// Now try to clean up assets in all packages to unload.
+			bool bScriptPackageWasUnloaded = false;
 			int32 PackageIndex = 0;
 			for (UPackage* PackageBeingUnloaded : PackagesToUnload)
 			{
@@ -496,24 +541,27 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 					ObjectsInPackage.Reset();
 				}
 
-				// Calling ::ResetLoaders now will force any bulkdata objects still attached to the FLinkerLoad to load
-				// their payloads into memory. If we don't call this now, then the version that will be called during
-				// garbage collection will cause the bulkdata objects to be invalidated rather than loading the payloads 
-				// into memory.
-				// This might seem odd, but if the package we are unloading is being renamed, then the inner UObjects will
-				// be moved to the newly named package rather than being garbage collected and so we need to make sure that
-				// their bulkdata objects remain valid, otherwise renamed packages will not save correctly and cease to function.
-				ResetLoaders(PackageBeingUnloaded);
+				// Cleanup.
+				bResult = true;
+			}
 
-				if( PackageBeingUnloaded->IsDirty() )
+			// Calling ::ResetLoaders now will force any bulkdata objects still attached to the FLinkerLoad to load
+			// their payloads into memory. If we don't call this now, then the version that will be called during
+			// garbage collection will cause the bulkdata objects to be invalidated rather than loading the payloads 
+			// into memory.
+			// This might seem odd, but if the package we are unloading is being renamed, then the inner UObjects will
+			// be moved to the newly named package rather than being garbage collected and so we need to make sure that
+			// their bulkdata objects remain valid, otherwise renamed packages will not save correctly and cease to function.
+			ResetLoaders(TArray<UObject*>(PackagesToUnload.Array()));
+
+			for (UPackage* PackageBeingUnloaded : PackagesToUnload)
+			{
+				if (PackageBeingUnloaded->IsDirty())
 				{
 					// The package was marked dirty as a result of something that happened above (e.g callbacks in CollectGarbage).  
 					// Dirty packages we actually care about unloading were filtered above so if the package becomes dirty here it should still be unloaded
 					PackageBeingUnloaded->SetDirtyFlag(false);
 				}
-
-				// Cleanup.
-				bResult = true;
 			}
 
 			// Set the callback for restoring RF_Standalone post reachability analysis.

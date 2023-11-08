@@ -6,7 +6,7 @@
 namespace UE::PoseSearch
 {
 
-static inline float CompareFeatureVectors(TConstArrayView<float> A, TConstArrayView<float> B, TConstArrayView<float> WeightsSqrt)
+static FORCEINLINE float CompareFeatureVectors(TConstArrayView<float> A, TConstArrayView<float> B, TConstArrayView<float> WeightsSqrt)
 {
 	check(A.Num() == B.Num() && A.Num() == WeightsSqrt.Num());
 
@@ -15,6 +15,52 @@ static inline float CompareFeatureVectors(TConstArrayView<float> A, TConstArrayV
 	Eigen::Map<const Eigen::ArrayXf> VW(WeightsSqrt.GetData(), WeightsSqrt.Num());
 
 	return ((VA - VB) * VW).square().sum();
+}
+
+static FORCEINLINE float CompareAlignedFeatureVectors(TConstArrayView<float> A, TConstArrayView<float> B, TConstArrayView<float> WeightsSqrt)
+{
+	check(A.Num() == B.Num() && A.Num() == WeightsSqrt.Num());
+	check(A.Num() % 4 == 0);
+	check(IsAligned(A.GetData(), alignof(VectorRegister4Float)));
+	check(IsAligned(B.GetData(), alignof(VectorRegister4Float)));
+	check(IsAligned(WeightsSqrt.GetData(), alignof(VectorRegister4Float)));
+	// sufficient condition to check for pointer overlapping
+	check(A.GetData() != B.GetData() && A.GetData() != WeightsSqrt.GetData());
+
+	const int32 NumVectors = A.Num() / 4;
+
+	const VectorRegister4Float* RESTRICT VA = reinterpret_cast<const VectorRegister4Float*>(A.GetData());
+	const VectorRegister4Float* RESTRICT VB = reinterpret_cast<const VectorRegister4Float*>(B.GetData());
+	const VectorRegister4Float* RESTRICT VW = reinterpret_cast<const VectorRegister4Float*>(WeightsSqrt.GetData());
+
+	VectorRegister4Float PartialCost = VectorZero();
+	for (int32 VectorIdx = 0; VectorIdx < NumVectors; ++VectorIdx, ++VA, ++VB, ++VW)
+	{
+		const VectorRegister4Float Diff = VectorSubtract(*VA, *VB);
+		const VectorRegister4Float WeightedDiff = VectorMultiply(Diff, *VW);
+		PartialCost = VectorMultiplyAdd(WeightedDiff, WeightedDiff, PartialCost);
+	}
+
+	// calculating PartialCost.X + PartialCost.Y + PartialCost.Z + PartialCost.W
+	VectorRegister4Float Swizzle = VectorSwizzle(PartialCost, 1, 0, 3, 2);	// (Y, X, W, Z) of PartialCost
+	PartialCost = VectorAdd(PartialCost, Swizzle);							// (X + Y, Y + X, Z + W, W + Z)
+	Swizzle = VectorSwizzle(PartialCost, 2, 3, 0, 1);						// (Z + W, W + Z, X + Y, Y + X)
+	PartialCost = VectorAdd(PartialCost, Swizzle);							// (X + Y + Z + W, Y + X + W + Z, Z + W + X + Y, W + Z + Y + X)
+	float Cost;
+	VectorStoreFloat1(PartialCost, &Cost);
+
+// keeping this debug code to validate CompareAlignedFeatureVectors against CompareFeatureVectors
+//#if DO_CHECK
+//	const float EigenCost = CompareFeatureVectors(A, B, WeightsSqrt);
+//
+//	if (!FMath::IsNearlyEqual(Cost, EigenCost))
+//	{
+//		const float RelativeDifference = Cost > EigenCost ? (Cost - EigenCost) / Cost : (EigenCost - Cost) / EigenCost;
+//		check(FMath::IsNearlyZero(RelativeDifference, UE_KINDA_SMALL_NUMBER));
+//	}
+//#endif //DO_CHECK
+	
+	return Cost;
 }
 
 void CompareFeatureVectors(TConstArrayView<float> A, TConstArrayView<float> B, TConstArrayView<float> WeightsSqrt, TArrayView<float> Result)
@@ -29,21 +75,63 @@ void CompareFeatureVectors(TConstArrayView<float> A, TConstArrayView<float> B, T
 	VR = ((VA - VB) * VW).square();
 }
 
-} // namespace UE::PoseSearch
+float CompareFeatureVectors(TConstArrayView<float> A, TConstArrayView<float> B)
+{
+	check(A.Num() == B.Num() && A.Num());
+
+	Eigen::Map<const Eigen::ArrayXf> VA(A.GetData(), A.Num());
+	Eigen::Map<const Eigen::ArrayXf> VB(B.GetData(), B.Num());
+
+	return (VA - VB).square().sum();
+}
+
+//////////////////////////////////////////////////////////////////////////
+// FPoseMetadata
+FArchive& operator<<(FArchive& Ar, FPoseMetadata& Metadata)
+{
+	Ar << Metadata.Data;
+	Ar << Metadata.CostAddend;
+	return Ar;
+}
+
+//////////////////////////////////////////////////////////////////////////
+// FSearchIndexAsset
+FArchive& operator<<(FArchive& Ar, FSearchIndexAsset& IndexAsset)
+{
+	Ar << IndexAsset.SourceAssetIdx;
+	Ar << IndexAsset.bMirrored;
+	Ar << IndexAsset.PermutationIdx;
+	Ar << IndexAsset.BlendParameters;
+	Ar << IndexAsset.FirstPoseIdx;
+	Ar << IndexAsset.FirstSampleIdx;
+	Ar << IndexAsset.LastSampleIdx;
+	return Ar;
+}
+
+//////////////////////////////////////////////////////////////////////////
+// FSearchStats
+FArchive& operator<<(FArchive& Ar, FSearchStats& Stats)
+{
+	Ar << Stats.AverageSpeed;
+	Ar << Stats.MaxSpeed;
+	Ar << Stats.AverageAcceleration;
+	Ar << Stats.MaxAcceleration;
+	return Ar;
+}
 
 //////////////////////////////////////////////////////////////////////////
 // FPoseSearchBaseIndex
-const FPoseSearchIndexAsset& FPoseSearchIndexBase::GetAssetForPose(int32 PoseIdx) const
+const FSearchIndexAsset& FSearchIndexBase::GetAssetForPose(int32 PoseIdx) const
 {
-	const int32 AssetIndex = PoseMetadata[PoseIdx].AssetIndex;
+	const uint32 AssetIndex = PoseMetadata[PoseIdx].GetAssetIndex();
 	return Assets[AssetIndex];
 }
 
-const FPoseSearchIndexAsset* FPoseSearchIndexBase::GetAssetForPoseSafe(int32 PoseIdx) const
+const FSearchIndexAsset* FSearchIndexBase::GetAssetForPoseSafe(int32 PoseIdx) const
 {
 	if (PoseMetadata.IsValidIndex(PoseIdx))
 	{
-		const int32 AssetIndex = PoseMetadata[PoseIdx].AssetIndex;
+		const uint32 AssetIndex = PoseMetadata[PoseIdx].GetAssetIndex();
 		if (Assets.IsValidIndex(AssetIndex))
 		{
 			return &Assets[AssetIndex];
@@ -52,203 +140,187 @@ const FPoseSearchIndexAsset* FPoseSearchIndexBase::GetAssetForPoseSafe(int32 Pos
 	return nullptr;
 }
 
-float FPoseSearchIndexBase::GetAssetTime(int32 PoseIdx, float SamplingInterval) const
+bool FSearchIndexBase::IsEmpty() const
 {
-	const FPoseSearchIndexAsset& Asset = GetAssetForPose(PoseIdx);
-
-	if (Asset.Type == ESearchIndexAssetType::Sequence || Asset.Type == ESearchIndexAssetType::AnimComposite)
-	{
-		const FFloatInterval SamplingRange = Asset.SamplingInterval;
-
-		float AssetTime = FMath::Min(SamplingRange.Min + SamplingInterval * (PoseIdx - Asset.FirstPoseIdx), SamplingRange.Max);
-		return AssetTime;
-	}
-
-	if (Asset.Type == ESearchIndexAssetType::BlendSpace)
-	{
-		const FFloatInterval SamplingRange = Asset.SamplingInterval;
-
-		// For BlendSpaces the AssetTime is in the range [0, 1] while the Sampling Range
-		// is in real time (seconds)
-		float AssetTime = FMath::Min(SamplingRange.Min + SamplingInterval * (PoseIdx - Asset.FirstPoseIdx), SamplingRange.Max) / (Asset.NumPoses * SamplingInterval);
-		return AssetTime;
-	}
-	
-	checkNoEntry();
-	return -1.0f;
+	return Assets.IsEmpty() || PoseMetadata.IsEmpty();
 }
 
-bool FPoseSearchIndexBase::IsEmpty() const
+void FSearchIndexBase::Reset()
 {
-	const bool bEmpty = Assets.Num() == 0 || NumPoses == 0;
-	return bEmpty;
+	*this = FSearchIndexBase();
 }
 
-void FPoseSearchIndexBase::Reset()
+FArchive& operator<<(FArchive& Ar, FSearchIndexBase& Index)
 {
-	FPoseSearchIndexBase Default;
-	*this = Default;
-}
-
-FArchive& operator<<(FArchive& Ar, FPoseSearchIndexBase& Index)
-{
-	int32 NumValues = 0;
-	int32 NumAssets = 0;
-
-	if (Ar.IsSaving())
-	{
-		NumValues = Index.Values.Num();
-		NumAssets = Index.Assets.Num();
-	}
-
-	Ar << Index.NumPoses;
-	Ar << NumValues;
-	Ar << NumAssets;
-	Ar << Index.OverallFlags;
-
-	if (Ar.IsLoading())
-	{
-		Index.Values.SetNumUninitialized(NumValues);
-		Index.PoseMetadata.SetNumUninitialized(Index.NumPoses);
-		Index.Assets.SetNumUninitialized(NumAssets);
-	}
-
-	if (Index.Values.Num() > 0)
-	{
-		Ar.Serialize(&Index.Values[0], Index.Values.Num() * Index.Values.GetTypeSize());
-	}
-
-	if (Index.PoseMetadata.Num() > 0)
-	{
-		Ar.Serialize(&Index.PoseMetadata[0], Index.PoseMetadata.Num() * Index.PoseMetadata.GetTypeSize());
-	}
-
-	if (Index.Assets.Num() > 0)
-	{
-		Ar.Serialize(&Index.Assets[0], Index.Assets.Num() * Index.Assets.GetTypeSize());
-	}
-
+	Ar << Index.Values;
+	Ar << Index.PoseMetadata;
+	Ar << Index.bAnyBlockTransition;
+	Ar << Index.Assets;
 	Ar << Index.MinCostAddend;
-
+	Ar << Index.Stats;
 	return Ar;
 }
 
 //////////////////////////////////////////////////////////////////////////
-// FPoseSearchIndex
-FPoseSearchIndex::FPoseSearchIndex(const FPoseSearchIndex& Other)
-	: FPoseSearchIndexBase(Other)
+// FSearchIndex
+FSearchIndex::FSearchIndex(const FSearchIndex& Other)
+	: FSearchIndexBase(Other)
+	, WeightsSqrt(Other.WeightsSqrt)
 	, PCAValues(Other.PCAValues)
 	, PCAProjectionMatrix(Other.PCAProjectionMatrix)
 	, Mean(Other.Mean)
-	, WeightsSqrt(Other.WeightsSqrt)
 	, KDTree(Other.KDTree)
-#if WITH_EDITORONLY_DATA
 	, PCAExplainedVariance(Other.PCAExplainedVariance)
-	, Deviation(Other.Deviation)
-#endif // WITH_EDITORONLY_DATA
 {
 	check(!PCAValues.IsEmpty() || KDTree.DataSource.PointCount == 0);
 	KDTree.DataSource.Data = PCAValues.IsEmpty() ? nullptr : PCAValues.GetData();
 }
 
-FPoseSearchIndex& FPoseSearchIndex::operator=(const FPoseSearchIndex& Other)
+FSearchIndex& FSearchIndex::operator=(const FSearchIndex& Other)
 {
 	if (this != &Other)
 	{
-		this->~FPoseSearchIndex();
-		new(this)FPoseSearchIndex(Other);
+		this->~FSearchIndex();
+		new(this)FSearchIndex(Other);
 	}
 	return *this;
 }
 
-void FPoseSearchIndex::Reset()
+void FSearchIndex::Reset()
 {
-	FPoseSearchIndex Default;
+	FSearchIndex Default;
 	*this = Default;
 }
 
-TConstArrayView<float> FPoseSearchIndex::GetPoseValues(int32 PoseIdx) const
+TConstArrayView<float> FSearchIndex::GetPoseValues(int32 PoseIdx) const
 {
-	const int32 SchemaCardinality = WeightsSqrt.Num();
-	check(PoseIdx >= 0 && PoseIdx < NumPoses&& SchemaCardinality > 0);
-	const int32 ValueOffset = PoseIdx * SchemaCardinality;
-	return MakeArrayView(&Values[ValueOffset], SchemaCardinality);
+	const int32 NumDimensions = WeightsSqrt.Num();
+	check(!Values.IsEmpty() && PoseIdx >= 0 && PoseIdx < GetNumPoses() && NumDimensions > 0);
+	const int32 ValueOffset = PoseIdx * NumDimensions;
+	return MakeArrayView(&Values[ValueOffset], NumDimensions);
 }
 
-TConstArrayView<float> FPoseSearchIndex::GetPoseValuesSafe(int32 PoseIdx) const
+TConstArrayView<float> FSearchIndex::GetReconstructedPoseValues(int32 PoseIdx, TArrayView<float> BufferUsedForReconstruction) const
 {
-	if (PoseIdx >= 0 && PoseIdx < NumPoses)
-	{
-		const int32 SchemaCardinality = WeightsSqrt.Num();
-		const int32 ValueOffset = PoseIdx * SchemaCardinality;
-		return MakeArrayView(&Values[ValueOffset], SchemaCardinality);
-	}
-	return TConstArrayView<float>();
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_PoseSearch_PCAReconstruct);
+
+	const int32 NumDimensions = WeightsSqrt.Num();
+	const int32 NumPoses = GetNumPoses();
+	check(PoseIdx >= 0 && PoseIdx < NumPoses&& NumDimensions > 0);
+	check(BufferUsedForReconstruction.Num() == NumDimensions);
+
+	const int32 NumberOfPrincipalComponents = PCAValues.Num() / NumPoses;
+	check(NumPoses * NumberOfPrincipalComponents == PCAValues.Num());
+
+	const RowMajorVectorMapConst MapWeightsSqrt(WeightsSqrt.GetData(), 1, NumDimensions);
+	const ColMajorMatrixMapConst MapPCAProjectionMatrix(PCAProjectionMatrix.GetData(), NumDimensions, NumberOfPrincipalComponents);
+	const RowMajorVectorMapConst MapMean(Mean.GetData(), 1, NumDimensions);
+	const RowMajorMatrixMapConst MapPCAValues(PCAValues.GetData(), NumPoses, NumberOfPrincipalComponents);
+
+	const RowMajorVector ReciprocalWeightsSqrt = MapWeightsSqrt.cwiseInverse();
+	const RowMajorVector WeightedReconstructedValues = MapPCAValues.row(PoseIdx) * MapPCAProjectionMatrix.transpose() + MapMean;
+
+	RowMajorVectorMap ReconstructedPoseValues(BufferUsedForReconstruction.GetData(), 1, NumDimensions);
+	ReconstructedPoseValues = WeightedReconstructedValues.array() * ReciprocalWeightsSqrt.array();
+
+	return BufferUsedForReconstruction;
 }
 
-FPoseSearchCost FPoseSearchIndex::ComparePoses(int32 PoseIdx, EPoseSearchBooleanRequest QueryMirrorRequest, UE::PoseSearch::EPoseComparisonFlags PoseComparisonFlags, float MirrorMismatchCostBias, TConstArrayView<float> QueryValues) const
+TConstArrayView<float> FSearchIndex::PCAProject(TConstArrayView<float> PoseValues, TArrayView<float> BufferUsedForProjection) const
 {
-	// base dissimilarity cost representing how the associated PoseIdx differ, in a weighted way, from the query pose (QueryValues)
-	const float DissimilarityCost = UE::PoseSearch::CompareFeatureVectors(GetPoseValues(PoseIdx), QueryValues, WeightsSqrt);
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_PoseSearch_PCAProject);
 
-	// cost addend associated to a mismatch in mirror state between query and analyzed PoseIdx
-	float MirrorMismatchAddend = 0.f;
-	if (QueryMirrorRequest != EPoseSearchBooleanRequest::Indifferent)
+	const int32 NumDimensions = WeightsSqrt.Num();
+	const int32 NumberOfPrincipalComponents = PCAProjectionMatrix.Num() / NumDimensions;
+
+	check(PCAProjectionMatrix.Num() > 0 && PCAProjectionMatrix.Num() % NumDimensions == 0);
+	check(BufferUsedForProjection.Num() == NumberOfPrincipalComponents);
+
+	const RowMajorVectorMapConst WeightsSqrtMap(WeightsSqrt.GetData(), 1, NumDimensions);
+	const RowMajorVectorMapConst MeanMap(Mean.GetData(), 1, NumDimensions);
+	const ColMajorMatrixMapConst PCAProjectionMatrixMap(PCAProjectionMatrix.GetData(), NumDimensions, NumberOfPrincipalComponents);
+	const RowMajorVectorMapConst PoseValuesMap(PoseValues.GetData(), 1, NumDimensions);
+
+	RowMajorVectorMap WeightedPoseValuesMap((float*)FMemory_Alloca(NumDimensions * sizeof(float)), 1, NumDimensions);
+	WeightedPoseValuesMap = PoseValuesMap.array() * WeightsSqrtMap.array();
+
+	RowMajorVectorMap CenteredPoseValuesMap((float*)FMemory_Alloca(NumDimensions * sizeof(float)), 1, NumDimensions);
+	CenteredPoseValuesMap.noalias() = WeightedPoseValuesMap - MeanMap;
+
+	RowMajorVectorMap ProjectedPoseValuesMap(BufferUsedForProjection.GetData(), 1, NumberOfPrincipalComponents);
+	ProjectedPoseValuesMap.noalias() = CenteredPoseValuesMap * PCAProjectionMatrixMap;
+
+	return BufferUsedForProjection;
+}
+
+TArray<float> FSearchIndex::GetPoseValuesSafe(int32 PoseIdx) const
+{
+	TArray<float> PoseValues;
+	if (PoseIdx >= 0 && PoseIdx < GetNumPoses())
 	{
-		const FPoseSearchIndexAsset& IndexAsset = GetAssetForPose(PoseIdx);
-		const bool bMirroringMismatch =
-			(IndexAsset.bMirrored && QueryMirrorRequest == EPoseSearchBooleanRequest::FalseValue) ||
-			(!IndexAsset.bMirrored && QueryMirrorRequest == EPoseSearchBooleanRequest::TrueValue);
-		if (bMirroringMismatch)
+		if (Values.IsEmpty())
 		{
-			MirrorMismatchAddend = MirrorMismatchCostBias;
+			const int32 NumDimensions = WeightsSqrt.Num();
+			PoseValues.SetNumUninitialized(NumDimensions);
+			GetReconstructedPoseValues(PoseIdx, PoseValues);
+		}
+		else
+		{
+			PoseValues = GetPoseValues(PoseIdx);
 		}
 	}
+	return PoseValues;
+}
 
-	const FPoseSearchPoseMetadata& PoseIdxMetadata = PoseMetadata[PoseIdx];
+TConstArrayView<float> FSearchIndex::GetPCAPoseValues(int32 PoseIdx) const
+{
+	if (PCAValues.IsEmpty())
+	{
+		return TConstArrayView<float>();
+	}
+
+	const int32 NumDimensions = WeightsSqrt.Num();
+	const int32 NumberOfPrincipalComponents = PCAProjectionMatrix.Num() / NumDimensions;
+
+	check(PCAProjectionMatrix.Num() > 0 && PCAProjectionMatrix.Num() % NumDimensions == 0);
+	check(PoseIdx >= 0 && PoseIdx < GetNumPoses() && NumDimensions > 0);
+
+	const int32 ValueOffset = PoseIdx * NumberOfPrincipalComponents;
+	return MakeArrayView(&PCAValues[ValueOffset], NumberOfPrincipalComponents);
+}
+
+FPoseSearchCost FSearchIndex::ComparePoses(int32 PoseIdx, float ContinuingPoseCostBias, TConstArrayView<float> PoseValues, TConstArrayView<float> QueryValues) const
+{
+	// base dissimilarity cost representing how the associated PoseIdx differ, in a weighted way, from the query pose (QueryValues)
+	const float DissimilarityCost = CompareFeatureVectors(PoseValues, QueryValues, WeightsSqrt);
 
 	// cost addend associated to Schema->BaseCostBias or overriden by UAnimNotifyState_PoseSearchModifyCost
-	const float NotifyAddend = PoseIdxMetadata.CostAddend;
-
-	// cost addend associated to Schema->ContinuingPoseCostBias or overriden by UAnimNotifyState_PoseSearchOverrideContinuingPoseCostBias
-	const float ContinuingPoseCostAddend = EnumHasAnyFlags(PoseComparisonFlags, UE::PoseSearch::EPoseComparisonFlags::ContinuingPose) ? PoseIdxMetadata.ContinuingPoseCostAddend : 0.f;
-
-	return FPoseSearchCost(DissimilarityCost, NotifyAddend, MirrorMismatchAddend, ContinuingPoseCostAddend);
+	const float NotifyAddend = PoseMetadata[PoseIdx].GetCostAddend();
+	return FPoseSearchCost(DissimilarityCost, NotifyAddend, ContinuingPoseCostBias);
 }
 
-FArchive& operator<<(FArchive& Ar, FPoseSearchIndex& Index)
+FPoseSearchCost FSearchIndex::CompareAlignedPoses(int32 PoseIdx, float ContinuingPoseCostBias, TConstArrayView<float> PoseValues, TConstArrayView<float> QueryValues) const
 {
-	Ar << static_cast<FPoseSearchIndexBase&>(Index);
+	// base dissimilarity cost representing how the associated PoseIdx differ, in a weighted way, from the query pose (QueryValues)
+	const float DissimilarityCost = CompareAlignedFeatureVectors(PoseValues, QueryValues, WeightsSqrt);
 
-	int32 NumPCAValues = 0;
+	// cost addend associated to Schema->BaseCostBias or overriden by UAnimNotifyState_PoseSearchModifyCost
+	const float NotifyAddend = PoseMetadata[PoseIdx].GetCostAddend();
+	return FPoseSearchCost(DissimilarityCost, NotifyAddend, ContinuingPoseCostBias);
+}
 
-	if (Ar.IsSaving())
-	{
-		NumPCAValues = Index.PCAValues.Num();
-	}
-
-	Ar << NumPCAValues;
-
-	if (Ar.IsLoading())
-	{
-		Index.PCAValues.SetNumUninitialized(NumPCAValues);
-	}
-
-	if (Index.PCAValues.Num() > 0)
-	{
-		Ar.Serialize(&Index.PCAValues[0], Index.PCAValues.Num() * Index.PCAValues.GetTypeSize());
-	}
+FArchive& operator<<(FArchive& Ar, FSearchIndex& Index)
+{
+	Ar << static_cast<FSearchIndexBase&>(Index);
 
 	Ar << Index.WeightsSqrt;
-	Ar << Index.Mean;
+	Ar << Index.PCAValues;
 	Ar << Index.PCAProjectionMatrix;
+	Ar << Index.Mean;
+	Ar << Index.PCAExplainedVariance;
 
 	Serialize(Ar, Index.KDTree, Index.PCAValues.GetData());
-
-#if WITH_EDITORONLY_DATA
-	Ar << Index.PCAExplainedVariance;
-	Ar << Index.Deviation;
-#endif // WITH_EDITORONLY_DATA
-
 	return Ar;
 }
+
+} // namespace UE::PoseSearch

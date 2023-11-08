@@ -29,6 +29,32 @@ namespace BlackmagicDesign
 		const uint32_t DefaultAudioSampleRate = static_cast<uint32_t>(bmdDefaultAudioSampleRate);
 		const BMDAudioSampleType DefaultAudioSampleType = bmdAudioSampleType32bitInteger;
 
+		/** Implements buffer guarding */
+		struct FSampleBufferHolder : public BlackmagicDesign::IInputEventCallback::FFrameBufferHolder
+		{
+		public:
+			FSampleBufferHolder(IUnknown* InObject)
+				: Object(InObject)
+			{
+				if (Object)
+				{
+					Object->AddRef();
+				}
+			}
+
+			~FSampleBufferHolder()
+			{
+				if (Object)
+				{
+					Object->Release();
+				}
+			}
+
+		private:
+			IUnknown* Object = nullptr;
+		};
+
+
 		FInputChannelNotificationCallback::FInputChannelNotificationCallback(FInputChannel* InOwner, IDeckLinkInput* InDeckLinkInput, IDeckLinkStatus* InDeckLinkStatus)
 			: InputChannel(InOwner)
 			, DeckLinkInput(InDeckLinkInput)
@@ -286,6 +312,23 @@ namespace BlackmagicDesign
 				for (FInputChannel::FListener& Listener : InputChannel->Listeners)
 				{
 					Listener.Callback->OnFrameReceived(FrameInfo);
+
+					{
+						IInputEventCallback::FFrameReceivedBufferHolders BufferHolders;
+						Listener.Callback->OnFrameReceived(FrameInfo, BufferHolders);
+
+						// Instantiate audio buffer holder if requested
+						if (BufferHolders.AudioBufferHolder)
+						{
+							*BufferHolders.AudioBufferHolder = MakeShared<BlackmagicDesign::Private::FSampleBufferHolder>(InAudioPacket);
+						}
+
+						// Instantiate video buffer holder if requested
+						if (BufferHolders.VideoBufferHolder)
+						{
+							*BufferHolders.VideoBufferHolder = MakeShared<BlackmagicDesign::Private::FSampleBufferHolder>(InVideoFrame);
+						}
+					}
 				}
 			}
 
@@ -381,6 +424,14 @@ namespace BlackmagicDesign
 						bmdDeckLinkFrameMetadataHDRDisplayPrimariesBlueX);
 					FrameInfo.HDRMetaData.DisplayPrimariesBlueY = GetFloatMetaData(MetadataExtensions,
 						bmdDeckLinkFrameMetadataHDRDisplayPrimariesBlueY);
+					FrameInfo.HDRMetaData.MaxDisplayLuminance = GetFloatMetaData(MetadataExtensions,
+						bmdDeckLinkFrameMetadataHDRMaxDisplayMasteringLuminance);
+					FrameInfo.HDRMetaData.MinDisplayLuminance = GetFloatMetaData(MetadataExtensions,
+						bmdDeckLinkFrameMetadataHDRMinDisplayMasteringLuminance);
+					FrameInfo.HDRMetaData.MaxContentLightLevel = GetFloatMetaData(MetadataExtensions,
+					bmdDeckLinkFrameMetadataHDRMaximumContentLightLevel);
+					FrameInfo.HDRMetaData.MaxFrameAverageLightLevel = GetFloatMetaData(MetadataExtensions,
+						bmdDeckLinkFrameMetadataHDRMaximumFrameAverageLightLevel);
 
 					MetadataExtensions->Release();
 				}
@@ -420,6 +471,18 @@ namespace BlackmagicDesign
 							break;
 						case bmdDeckLinkFrameMetadataHDRWhitePointY:
 							UE_LOG(LogBlackmagicCore, Warning,TEXT("Could not get meta data HDR white point Y."));
+							break;
+						case bmdDeckLinkFrameMetadataHDRMaxDisplayMasteringLuminance:
+							UE_LOG(LogBlackmagicCore, Warning,TEXT("Could not get meta data HDR maximum mastering luminance."));
+							break;
+						case bmdDeckLinkFrameMetadataHDRMinDisplayMasteringLuminance:
+							UE_LOG(LogBlackmagicCore, Warning,TEXT("Could not get meta data HDR minimum mastering luminance."));
+							break;
+						case bmdDeckLinkFrameMetadataHDRMaximumContentLightLevel:
+							UE_LOG(LogBlackmagicCore, Warning,TEXT("Could not get meta data HDR maximum content light level."));
+							break;
+						case bmdDeckLinkFrameMetadataHDRMaximumFrameAverageLightLevel:
+							UE_LOG(LogBlackmagicCore, Warning,TEXT("Could not get meta data HDR maximum frame average light level."));
 							break;
 					}
 				}

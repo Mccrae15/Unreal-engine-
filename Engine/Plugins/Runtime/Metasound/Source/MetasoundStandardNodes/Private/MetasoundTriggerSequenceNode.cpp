@@ -47,11 +47,13 @@ namespace Metasound
 			const FTriggerReadRef& InReset,
 			const FBoolReadRef& bInLoop);
 
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override;
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override;
 		virtual FDataReferenceCollection GetInputs() const override;
-
 		virtual FDataReferenceCollection GetOutputs() const override;
 
 		void Execute();
+		void Reset(const IOperator::FResetParams& InParams);
 
 	private:
 		FTriggerReadRef TriggerInput;
@@ -73,7 +75,6 @@ namespace Metasound
 		, TriggerResetInput(InReset)
 		, bLoopInput(bInLoop)
 	{
-		
 		for (uint32 i = 0; i < NumOutputs; ++i)
 		{
 			TriggerOutputs.Add(FTriggerWriteRef::CreateNew(InSettings));
@@ -81,30 +82,44 @@ namespace Metasound
 	}
 
 	template<uint32 NumOutputs>
-	FDataReferenceCollection TTriggerSequenceOperator<NumOutputs>::GetInputs() const
+	void TTriggerSequenceOperator<NumOutputs>::BindInputs(FInputVertexInterfaceData& InOutVertexData)
 	{
 		using namespace TriggerSequenceVertexNames;
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputTrigger), TriggerInput);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputReset), TriggerResetInput);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputLoop), bLoopInput);
+	}
 
-		FDataReferenceCollection InputDataReferences;
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputTrigger), TriggerInput);
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputReset), TriggerResetInput);
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputLoop), bLoopInput);
-		return InputDataReferences;
+	template<uint32 NumOutputs>
+	void TTriggerSequenceOperator<NumOutputs>::BindOutputs(FOutputVertexInterfaceData& InOutVertexData)
+	{
+		using namespace TriggerSequenceVertexNames;
+		for (uint32 i = 0; i < NumOutputs; ++i)
+		{
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME_WITH_INDEX(OutputTrigger, i), TriggerOutputs[i]);
+		}
+	}
+
+
+	template<uint32 NumOutputs>
+	FDataReferenceCollection TTriggerSequenceOperator<NumOutputs>::GetInputs() const
+	{
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
 	}
 
 	template<uint32 NumOutputs>
 	FDataReferenceCollection TTriggerSequenceOperator<NumOutputs>::GetOutputs() const
 	{
-		using namespace TriggerSequenceVertexNames;
-
-		FDataReferenceCollection OutputDataReferences;
-		for (uint32 i = 0; i < NumOutputs; ++i)
-		{
-			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME_WITH_INDEX(OutputTrigger, i), TriggerOutputs[i]);
-		}
-
-		return OutputDataReferences;
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
 	}
+
+
 
 	template<uint32 NumOutputs>
 	void TTriggerSequenceOperator<NumOutputs>::Execute()
@@ -147,6 +162,16 @@ namespace Metasound
 				}
 			}
 		);
+	}
+
+	template<uint32 NumOutputs>
+	void TTriggerSequenceOperator<NumOutputs>::Reset(const IOperator::FResetParams& InParams)
+	{
+		for (uint32 i = 0; i < NumOutputs; ++i)
+		{
+			TriggerOutputs[i]->Reset();
+		}
+		CurrentIndex = 0;
 	}
 
 	template<uint32 NumOutputs>

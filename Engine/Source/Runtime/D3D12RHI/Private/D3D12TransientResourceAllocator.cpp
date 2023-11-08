@@ -4,6 +4,7 @@
 #include "D3D12TransientResourceAllocator.h"
 #include "D3D12Stats.h"
 #include "ProfilingDebugging/MemoryTrace.h"
+#include "ProfilingDebugging/AssetMetadataTrace.h"
 
 D3D12_RESOURCE_STATES GetInitialResourceState(const D3D12_RESOURCE_DESC& InDesc)
 {
@@ -28,6 +29,9 @@ D3D12_RESOURCE_STATES GetInitialResourceState(const D3D12_RESOURCE_DESC& InDesc)
 FD3D12TransientHeap::FD3D12TransientHeap(const FInitializer& Initializer, FD3D12Adapter* Adapter, FD3D12Device* Device, FRHIGPUMask VisibleNodeMask)
 	: FRHITransientHeap(Initializer)
 {
+	const static FLazyName D3D12TransientHeapName(TEXT("FD3D12TransientHeap"));
+	UE_TRACE_METADATA_SCOPE_ASSET_FNAME(D3D12TransientHeapName, D3D12TransientHeapName, NAME_None);
+
 	D3D12_HEAP_FLAGS HeapFlags = D3D12_HEAP_FLAG_ALLOW_ALL_BUFFERS_AND_TEXTURES;
 
 	if (Initializer.Flags != ERHITransientHeapFlags::AllowAll)
@@ -87,6 +91,7 @@ FD3D12TransientHeap::FD3D12TransientHeap(const FInitializer& Initializer, FD3D12
 
 	Heap = new FD3D12Heap(Device, VisibleNodeMask);
 	Heap->SetHeap(D3DHeap, TEXT("TransientResourceAllocator Backing Heap"), true, true);
+	Heap->SetIsTransient(true);
 	Heap->BeginTrackingResidency(Desc.SizeInBytes);
 
 	SetGpuVirtualAddress(Heap->GetGPUVirtualAddress());

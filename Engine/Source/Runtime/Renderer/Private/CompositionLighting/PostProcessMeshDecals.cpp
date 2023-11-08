@@ -492,10 +492,12 @@ void RenderMeshDecals(
 	}
 }
 
-void RenderMeshDecalsMobile(FRHICommandListImmediate& RHICmdList, const FViewInfo& View, EDecalRenderStage DecalRenderStage, EDecalRenderTargetMode RenderTargetMode)
+void RenderMeshDecalsMobile(FRHICommandList& RHICmdList, const FViewInfo& View, EDecalRenderStage DecalRenderStage, EDecalRenderTargetMode RenderTargetMode)
 {
 	FGraphicsPipelineStateInitializer GraphicsPSOInit;
-	RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1);
+	// BEGIN META SECTION - Multi-View Per View Viewports / Render Areas
+	FMobileSceneRenderer::SetViewport(RHICmdList, View);
+	// END META SECTION - Multi-View Per View Viewports / Render Areas
 	RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
 
 	DrawDynamicMeshPass(View, RHICmdList, [&View, DecalRenderStage, RenderTargetMode](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)

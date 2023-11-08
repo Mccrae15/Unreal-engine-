@@ -118,7 +118,7 @@ UObject* FLazyObjectProperty::GetObjectPropertyValue(const void* PropertyValueAd
 UObject* FLazyObjectProperty::GetObjectPropertyValue_InContainer(const void* ContainerAddress, int32 ArrayIndex) const
 {
 	UObject* Result = nullptr;
-	GetWrappedUObjectPtrValues_InContainer<FLazyObjectPtr>(&Result, ContainerAddress, ArrayIndex, 1);
+	GetWrappedUObjectPtrValues<FLazyObjectPtr>(&Result, ContainerAddress, EPropertyMemoryAccess::InContainer, ArrayIndex, 1);
 	return Result;
 }
 
@@ -138,7 +138,7 @@ void FLazyObjectProperty::SetObjectPropertyValue_InContainer(void* ContainerAddr
 {
 	if (Value || !HasAnyPropertyFlags(CPF_NonNullable))
 	{
-		SetWrappedUObjectPtrValues_InContainer<FLazyObjectPtr>(ContainerAddress, &Value, ArrayIndex, 1);
+		SetWrappedUObjectPtrValues<FLazyObjectPtr>(ContainerAddress, EPropertyMemoryAccess::InContainer, &Value, ArrayIndex, 1);
 	}
 	else
 	{
@@ -156,12 +156,32 @@ uint32 FLazyObjectProperty::GetValueTypeHashInternal(const void* Src) const
 	return GetTypeHash(GetPropertyValue(Src));
 }
 
+void FLazyObjectProperty::CopySingleValueToScriptVM( void* Dest, void const* Src ) const
+{
+	*(UObject**)Dest = ((const FLazyObjectPtr*)Src)->Get();
+}
+
+void FLazyObjectProperty::CopySingleValueFromScriptVM( void* Dest, void const* Src ) const
+{
+	*(FLazyObjectPtr*)Dest = *(UObject**)Src;
+}
+
+void FLazyObjectProperty::CopyCompleteValueToScriptVM( void* Dest, void const* Src ) const
+{
+	GetWrappedUObjectPtrValues<FLazyObjectPtr>((UObject**)Dest, Src, EPropertyMemoryAccess::Direct, 0, ArrayDim);
+}
+
+void FLazyObjectProperty::CopyCompleteValueFromScriptVM( void* Dest, void const* Src ) const
+{
+	SetWrappedUObjectPtrValues<FLazyObjectPtr>(Dest, EPropertyMemoryAccess::Direct, (UObject**)Src, 0, ArrayDim);
+}
+
 void FLazyObjectProperty::CopyCompleteValueToScriptVM_InContainer(void* OutValue, void const* InContainer) const
 {
-	GetWrappedUObjectPtrValues_InContainer<FLazyObjectPtr>((UObject**)OutValue, InContainer, 0, ArrayDim);
+	GetWrappedUObjectPtrValues<FLazyObjectPtr>((UObject**)OutValue, InContainer, EPropertyMemoryAccess::InContainer, 0, ArrayDim);
 }
 
 void FLazyObjectProperty::CopyCompleteValueFromScriptVM_InContainer(void* OutContainer, void const* InValue) const
 {
-	SetWrappedUObjectPtrValues_InContainer<FLazyObjectPtr>(OutContainer, (UObject**)InValue, 0, ArrayDim);
+	SetWrappedUObjectPtrValues<FLazyObjectPtr>(OutContainer, EPropertyMemoryAccess::InContainer, (UObject**)InValue, 0, ArrayDim);
 }

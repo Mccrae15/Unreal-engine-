@@ -124,10 +124,10 @@ namespace mu
 
 		Ptr<ASTOpFixed> op = new ASTOpFixed();
 		op->op.type = OP_TYPE::CO_CONSTANT;
-		op->op.args.ColourConstant.value[0] = node.m_value[0];
-		op->op.args.ColourConstant.value[1] = node.m_value[1];
-		op->op.args.ColourConstant.value[2] = node.m_value[2];
-		op->op.args.ColourConstant.value[3] = 1.0f;
+		op->op.args.ColourConstant.value[0] = node.m_value.X;
+		op->op.args.ColourConstant.value[1] = node.m_value.Y;
+		op->op.args.ColourConstant.value[2] = node.m_value.Z;
+		op->op.args.ColourConstant.value[3] = node.m_value.W;
 
 		result.op = op;
 	}
@@ -148,10 +148,14 @@ namespace mu
 			param.m_name = node.m_name;
 			param.m_uid = node.m_uid;
 			param.m_type = PARAMETER_TYPE::T_COLOUR;
-			param.m_defaultValue.m_colour[0] = node.m_defaultValue[0];
-			param.m_defaultValue.m_colour[1] = node.m_defaultValue[1];
-			param.m_defaultValue.m_colour[2] = node.m_defaultValue[2];
 
+			ParamColorType Value;
+			Value[0] =  node.m_defaultValue[0];
+			Value[1] = node.m_defaultValue[1];
+			Value[2] = node.m_defaultValue[2];
+
+			param.m_defaultValue.Set<ParamColorType>(Value);
+			
 			op = new ASTOpParameter();
 			op->type = OP_TYPE::CO_PARAMETER;
 			op->parameter = param;
@@ -185,8 +189,7 @@ namespace mu
 		if (node.m_options.Num() == 0)
 		{
 			// No options in the switch!
-			Ptr<ASTOp> missingOp = GenerateMissingColourCode("Switch option",
-				node.m_errorContext);
+			Ptr<ASTOp> missingOp = GenerateMissingColourCode(TEXT("Switch option"), node.m_errorContext);
 			result.op = missingOp;
 			return;
 		}
@@ -202,7 +205,7 @@ namespace mu
 		else
 		{
 			// This argument is required
-			op->variable = GenerateMissingScalarCode("Switch variable", 0.0f, node.m_errorContext);
+			op->variable = GenerateMissingScalarCode(TEXT("Switch variable"), 0.0f, node.m_errorContext);
 		}
 
 		// Options
@@ -216,8 +219,7 @@ namespace mu
 			else
 			{
 				// This argument is required
-				branch = GenerateMissingColourCode("Switch option",
-					node.m_errorContext);
+				branch = GenerateMissingColourCode(TEXT("Switch option"), node.m_errorContext);
 			}
 			op->cases.Emplace((int16)t, op, branch);
 		}
@@ -242,7 +244,7 @@ namespace mu
 		else
 		{
 			// This argument is required
-			currentOp = GenerateMissingColourCode("Variation default", node.m_errorContext);
+			currentOp = GenerateMissingColourCode(TEXT("Variation default"), node.m_errorContext);
 		}
 
 		// Process variations in reverse order, since conditionals are built bottom-up.
@@ -260,11 +262,8 @@ namespace mu
 
 			if (tagIndex < 0)
 			{
-				char buf[256];
-				mutable_snprintf(buf, 256, "Unknown tag found in image variation [%s].",
-					tag.c_str());
-
-				m_pErrorLog->GetPrivate()->Add(buf, ELMT_WARNING, node.m_errorContext);
+				FString Msg = FString::Printf(TEXT("Unknown tag found in color variation [%s]."), *FString(tag.c_str()));
+				m_pErrorLog->GetPrivate()->Add(Msg, ELMT_WARNING, node.m_errorContext);
 				continue;
 			}
 
@@ -276,7 +275,7 @@ namespace mu
 			else
 			{
 				// This argument is required
-				variationOp = GenerateMissingColourCode("Variation option", node.m_errorContext);
+				variationOp = GenerateMissingColourCode(TEXT("Variation option"), node.m_errorContext);
 			}
 
 
@@ -302,30 +301,26 @@ namespace mu
 		Ptr<ASTOpFixed> op = new ASTOpFixed();
 		op->op.type = OP_TYPE::CO_SAMPLEIMAGE;
 
-
 		// Source image
-		Ptr<ASTOp> base;
-		if (Node* pSource = node.m_pImage.get())
+		FImageGenerationOptions ImageOptions;
+		ImageOptions.CurrentStateIndex = m_currentStateIndex;
+		if (!m_activeTags.IsEmpty())
 		{
-			// We take whatever size will be produced
-			FImageDesc desc = CalculateImageDesc(*pSource->GetBasePrivate());
-			IMAGE_STATE newState;
-			newState.m_imageSize = desc.m_size;
-			newState.m_imageRect.min[0] = 0;
-			newState.m_imageRect.min[1] = 0;
-			newState.m_imageRect.size = desc.m_size;
-			m_imageState.Add(newState);
+			ImageOptions.ActiveTags = m_activeTags.Last();
+		}
 
+		Ptr<ASTOp> base;
+		if (node.m_pImage)
+		{
 			// Generate
-			base = Generate(pSource);
-
-			// Restore rect
-			m_imageState.Pop();
+			FImageGenerationResult MapResult;
+			GenerateImage(ImageOptions, MapResult, node.m_pImage);
+			base = MapResult.op;
 		}
 		else
 		{
 			// This argument is required
-			base = GenerateMissingImageCode("Sample image", EImageFormat::IF_RGB_UBYTE, node.m_errorContext);
+			base = GenerateMissingImageCode(TEXT("Sample image"), EImageFormat::IF_RGB_UBYTE, node.m_errorContext, ImageOptions);
 		}
 		base = GenerateImageFormat(base, EImageFormat::IF_RGB_UBYTE);
 		op->SetChild(op->op.args.ColourSampleImage.image, base);
@@ -376,49 +371,49 @@ namespace mu
 		// X
 		if (Node* pX = node.m_pX.get())
 		{
-			op->SetChild(op->op.args.ColourFromScalars.x, Generate(pX));
+			op->SetChild(op->op.args.ColourFromScalars.v[0], Generate(pX));
 		}
 		else
 		{
 			NodeScalarConstantPtr pNode = new NodeScalarConstant();
 			pNode->SetValue(1.0f);
-			op->SetChild(op->op.args.ColourFromScalars.x, Generate(pNode));
+			op->SetChild(op->op.args.ColourFromScalars.v[0], Generate(pNode));
 		}
 
 		// Y
 		if (Node* pY = node.m_pY.get())
 		{
-			op->SetChild(op->op.args.ColourFromScalars.y, Generate(pY));
+			op->SetChild(op->op.args.ColourFromScalars.v[1], Generate(pY));
 		}
 		else
 		{
 			NodeScalarConstantPtr pNode = new NodeScalarConstant();
 			pNode->SetValue(1.0f);
-			op->SetChild(op->op.args.ColourFromScalars.y, Generate(pNode));
+			op->SetChild(op->op.args.ColourFromScalars.v[1], Generate(pNode));
 		}
 
 		// Z
 		if (Node* pZ = node.m_pZ.get())
 		{
-			op->SetChild(op->op.args.ColourFromScalars.z, Generate(pZ));
+			op->SetChild(op->op.args.ColourFromScalars.v[2], Generate(pZ));
 		}
 		else
 		{
 			NodeScalarConstantPtr pNode = new NodeScalarConstant();
 			pNode->SetValue(1.0f);
-			op->SetChild(op->op.args.ColourFromScalars.z, Generate(pNode));
+			op->SetChild(op->op.args.ColourFromScalars.v[2], Generate(pNode));
 		}
 
 		// W
 		if (Node* pW = node.m_pW.get())
 		{
-			op->SetChild(op->op.args.ColourFromScalars.w, Generate(pW));
+			op->SetChild(op->op.args.ColourFromScalars.v[3], Generate(pW));
 		}
 		else
 		{
 			NodeScalarConstantPtr pNode = new NodeScalarConstant();
 			pNode->SetValue(1.0f);
-			op->SetChild(op->op.args.ColourFromScalars.w, Generate(pNode));
+			op->SetChild(op->op.args.ColourFromScalars.v[3], Generate(pNode));
 		}
 
 		result.op = op;
@@ -453,11 +448,7 @@ namespace mu
 		else
 		{
 			op->SetChild(op->op.args.ColourArithmetic.a,
-				CodeGenerator::GenerateMissingColourCode
-				(
-					"ColourArithmetic A",
-					node.m_errorContext
-				));
+				CodeGenerator::GenerateMissingColourCode(TEXT("ColourArithmetic A"), node.m_errorContext));
 		}
 
 		// B
@@ -468,11 +459,7 @@ namespace mu
 		else
 		{
 			op->SetChild(op->op.args.ColourArithmetic.b,
-				CodeGenerator::GenerateMissingColourCode
-				(
-					"ColourArithmetic B",
-					node.m_errorContext
-				));
+				CodeGenerator::GenerateMissingColourCode(TEXT("ColourArithmetic B"),node.m_errorContext));
 		}
 
 		result.op = op;
@@ -487,25 +474,24 @@ namespace mu
 		result.op = GenerateTableSwitch<NodeColourTable::Private, TCT_COLOUR, OP_TYPE::CO_SWITCH>(node,
 			[this](const NodeColourTable::Private& node, int colIndex, int row, ErrorLog* pErrorLog)
 			{
-				NodeColourConstantPtr pCell = new NodeColourConstant();
-				vec3<float> colour = node.m_pTable->GetPrivate()->m_rows[row].m_values[colIndex].m_colour;
-				pCell->SetValue(colour[0], colour[1], colour[2]);
-				return Generate(pCell);
+				NodeColourConstantPtr CellData = new NodeColourConstant();
+				FVector4f Colour = node.m_pTable->GetPrivate()->m_rows[row].m_values[colIndex].m_colour;
+				CellData->SetValue(Colour);
+				return Generate(CellData);
 			});
 	}
 
 
 	//---------------------------------------------------------------------------------------------
-	mu::Ptr<ASTOp> CodeGenerator::GenerateMissingColourCode(const char* strWhere, const void* errorContext)
+	mu::Ptr<ASTOp> CodeGenerator::GenerateMissingColourCode(const TCHAR* strWhere, const void* errorContext)
 	{
 		// Log a warning
-		char buf[256];
-		mutable_snprintf(buf, 256, "Required connection not found: %s", strWhere);
-		m_pErrorLog->GetPrivate()->Add(buf, ELMT_ERROR, errorContext);
+		FString Msg = FString::Printf(TEXT("Required connection not found: %s"), strWhere);
+		m_pErrorLog->GetPrivate()->Add(Msg, ELMT_ERROR, errorContext);
 
 		// Create a constant colour node
 		NodeColourConstantPtr pNode = new NodeColourConstant();
-		pNode->SetValue(1, 1, 0);
+		pNode->SetValue(FVector4f(1, 1, 0, 1));
 
 		FColorGenerationResult Result;
 		GenerateColor(Result, pNode);

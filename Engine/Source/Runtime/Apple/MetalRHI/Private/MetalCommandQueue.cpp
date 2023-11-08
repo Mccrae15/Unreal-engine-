@@ -19,12 +19,28 @@ uint64 FMetalCommandQueue::Features = 0;
 extern mtlpp::VertexFormat GMetalFColorVertexFormat;
 bool GMetalCommandBufferDebuggingEnabled = 0;
 
+
+static int32 GForceNoMetalHeap = 1;
+static FAutoConsoleVariableRef CVarMetalForceNoHeap(
+	TEXT("rhi.Metal.ForceNoHeap"),
+	GForceNoMetalHeap,
+	TEXT("[IOS] When enabled, act as if -nometalheap was on the commandline\n")
+	TEXT("(On by default (1))"));
+
+static int32 GForceNoMetalFence = 1;
+static FAutoConsoleVariableRef CVarMetalForceNoFence(
+	TEXT("rhi.Metal.ForceNoFence"),
+	GForceNoMetalFence,
+	TEXT("[IOS] When enabled, act as if -nometalfence was on the commandline\n")
+	TEXT("(On by default (1))"));
+
+
+
 #pragma mark - Public C++ Boilerplate -
 
 FMetalCommandQueue::FMetalCommandQueue(mtlpp::Device InDevice, uint32 const MaxNumCommandBuffers /* = 0 */)
-: Device(InDevice)
-, ParallelCommandLists(0)
-, RuntimeDebuggingLevel(EMetalDebugLevelOff)
+	: Device(InDevice)
+	, RuntimeDebuggingLevel(EMetalDebugLevelOff)
 {
 	int32 IndirectArgumentTier = 0;
     int32 MetalShaderVersion = 0;
@@ -75,7 +91,7 @@ FMetalCommandQueue::FMetalCommandQueue(mtlpp::Device InDevice, uint32 const MaxN
 		Features |= EMetalFeaturesFences;
 	}
 					
-					if (FParse::Param(FCommandLine::Get(),TEXT("metalheap")))
+    if (FParse::Param(FCommandLine::Get(),TEXT("metalheap")))
 	{
 		Features |= EMetalFeaturesHeaps;
 	}
@@ -87,9 +103,9 @@ FMetalCommandQueue::FMetalCommandQueue(mtlpp::Device InDevice, uint32 const MaxN
 		Features |= EMetalFeaturesCountingQueries | EMetalFeaturesBaseVertexInstance | EMetalFeaturesIndirectBuffer | EMetalFeaturesMSAADepthResolve;
 	}
 		
-		if(Device.SupportsFeatureSet(mtlpp::FeatureSet::iOS_GPUFamily3_v2) || Device.SupportsFeatureSet(mtlpp::FeatureSet::iOS_GPUFamily2_v3) || Device.SupportsFeatureSet(mtlpp::FeatureSet::iOS_GPUFamily1_v3))
+    if(Device.SupportsFeatureSet(mtlpp::FeatureSet::iOS_GPUFamily3_v2) || Device.SupportsFeatureSet(mtlpp::FeatureSet::iOS_GPUFamily2_v3) || Device.SupportsFeatureSet(mtlpp::FeatureSet::iOS_GPUFamily1_v3))
 	{
-			if (FParse::Param(FCommandLine::Get(),TEXT("metalfence")))
+        if (FParse::Param(FCommandLine::Get(),TEXT("metalfence")))
 		{
 			Features |= EMetalFeaturesFences;
 		}
@@ -117,12 +133,12 @@ FMetalCommandQueue::FMetalCommandQueue(mtlpp::Device InDevice, uint32 const MaxN
 	Features |= EMetalFeaturesPresentMinDuration | EMetalFeaturesGPUCaptureManager | EMetalFeaturesBufferSubAllocation | EMetalFeaturesParallelRenderEncoders | EMetalFeaturesPipelineBufferMutability;
 
 	Features |= EMetalFeaturesMaxThreadsPerThreadgroup;
-	if (!FParse::Param(FCommandLine::Get(), TEXT("nometalfence")))
+	if (!GForceNoMetalFence && !FParse::Param(FCommandLine::Get(), TEXT("nometalfence")))
 	{
 		Features |= EMetalFeaturesFences;
 	}
                     
-                    if (!FParse::Param(FCommandLine::Get(),TEXT("nometalheap")))
+    if (!GForceNoMetalHeap && !FParse::Param(FCommandLine::Get(),TEXT("nometalheap")))
 	{
 		Features |= EMetalFeaturesHeaps;
 	}
@@ -193,7 +209,7 @@ FMetalCommandQueue::FMetalCommandQueue(mtlpp::Device InDevice, uint32 const MaxN
 		}
             
 		IConsoleVariable* GPUCrashDebuggingCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.GPUCrashDebugging"));
-            GMetalCommandBufferDebuggingEnabled = (GPUCrashDebuggingCVar && GPUCrashDebuggingCVar->GetInt() != 0) || FParse::Param(FCommandLine::Get(),TEXT("metalgpudebug"));
+        GMetalCommandBufferDebuggingEnabled = (GPUCrashDebuggingCVar && GPUCrashDebuggingCVar->GetInt() != 0) || FParse::Param(FCommandLine::Get(),TEXT("metalgpudebug"));
             
 		// The editor spawns so many viewports and preview icons that we can run out of hardware fences!
 		// Need to figure out a way to safely flush the rendering and reuse the fences when that happens.
@@ -201,13 +217,13 @@ FMetalCommandQueue::FMetalCommandQueue(mtlpp::Device InDevice, uint32 const MaxN
 		if (!GIsEditor)
 #endif
 		{
-				if (FParse::Param(FCommandLine::Get(),TEXT("metalfence")))
+            if (FParse::Param(FCommandLine::Get(),TEXT("metalfence")))
 			{
 				Features |= EMetalFeaturesFences;
 			}
 				
 			// There are still too many driver bugs to use MTLHeap on macOS - nothing works without causing random, undebuggable GPU hangs that completely deadlock the Mac and don't generate any validation errors or command-buffer failures
-				if (FParse::Param(FCommandLine::Get(),TEXT("forcemetalheap")))
+            if (FParse::Param(FCommandLine::Get(),TEXT("forcemetalheap")))
 			{
 				Features |= EMetalFeaturesHeaps;
 			}
@@ -294,7 +310,7 @@ mtlpp::CommandBuffer FMetalCommandQueue::CreateCommandBuffer(void)
 	mtlpp::CommandBuffer CmdBuffer;
 	@autoreleasepool
 	{
-		CmdBuffer = bUnretainedRefs ? MTLPP_VALIDATE(mtlpp::CommandQueue, CommandQueue, SafeGetRuntimeDebuggingLevel() >= EMetalDebugLevelValidation, CommandBufferWithUnretainedReferences()) : MTLPP_VALIDATE(mtlpp::CommandQueue, CommandQueue, SafeGetRuntimeDebuggingLevel() >= EMetalDebugLevelValidation, CommandBuffer());
+		CmdBuffer = bUnretainedRefs ? MTLPP_VALIDATE(mtlpp::CommandQueue, CommandQueue, SafeGetRuntimeDebuggingLevel() >= EMetalDebugLevelValidation, CommandBuffer(false, GMetalCommandBufferDebuggingEnabled)) : MTLPP_VALIDATE(mtlpp::CommandQueue, CommandQueue, SafeGetRuntimeDebuggingLevel() >= EMetalDebugLevelValidation, CommandBuffer(true, GMetalCommandBufferDebuggingEnabled));
 		
 		if (RuntimeDebuggingLevel > EMetalDebugLevelOff)
 		{			
@@ -321,40 +337,17 @@ void FMetalCommandQueue::CommitCommandBuffer(mtlpp::CommandBuffer& CommandBuffer
 	}
 }
 
-void FMetalCommandQueue::SubmitCommandBuffers(TArray<mtlpp::CommandBuffer> BufferList, uint32 Index, uint32 Count)
-{
-	CommandBuffers.SetNumZeroed(Count);
-	CommandBuffers[Index] = BufferList;
-	ParallelCommandLists |= (1 << Index);
-	if (ParallelCommandLists == ((1 << Count) - 1))
-	{
-		for (uint32 i = 0; i < Count; i++)
-		{
-			TArray<mtlpp::CommandBuffer>& CmdBuffers = CommandBuffers[i];
-			for (mtlpp::CommandBuffer Buffer : CmdBuffers)
-			{
-				check(Buffer);
-				CommitCommandBuffer(Buffer);
-			}
-			CommandBuffers[i].Empty();
-		}
-		
-		ParallelCommandLists = 0;
-	}
-}
-
 FMetalFence* FMetalCommandQueue::CreateFence(ns::String const& Label) const
 {
 	if ((Features & EMetalFeaturesFences) != 0)
 	{
 		FMetalFence* InternalFence = FMetalFencePool::Get().AllocateFence();
-		for (uint32 i = mtlpp::RenderStages::Vertex; InternalFence && i <= mtlpp::RenderStages::Fragment; i++)
 		{
-			mtlpp::Fence InnerFence = InternalFence->Get((mtlpp::RenderStages)i);
+			mtlpp::Fence InnerFence = InternalFence->Get();
 			NSString* String = nil;
 			if (GetEmitDrawEvents())
 			{
-				String = [NSString stringWithFormat:@"%u %p: %@", i, InnerFence.GetPtr(), Label.GetPtr()];
+				String = [NSString stringWithFormat:@"%p: %@", InnerFence.GetPtr(), Label.GetPtr()];
 			}
 	#if METAL_DEBUG_OPTIONS
 			if (RuntimeDebuggingLevel >= EMetalDebugLevelValidation)
@@ -401,7 +394,11 @@ mtlpp::ResourceOptions FMetalCommandQueue::GetCompatibleResourceOptions(mtlpp::R
 #if PLATFORM_IOS // Swizzle Managed to Shared for iOS - we can do this as they are equivalent, unlike Shared -> Managed on Mac.
 	if ((Options & (1 /*mtlpp::StorageMode::Managed*/ << mtlpp::ResourceStorageModeShift)))
 	{
+#if WITH_IOS_SIMULATOR
+		NewOptions |= mtlpp::ResourceOptions::StorageModePrivate;
+#else
 		NewOptions |= mtlpp::ResourceOptions::StorageModeShared;
+#endif
 	}
 #endif
 	return (mtlpp::ResourceOptions)NewOptions;

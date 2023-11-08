@@ -19,8 +19,8 @@
 /**
  * Default animation settings.
  */
-UCLASS(config=Engine, defaultconfig, meta=(DisplayName="Animation"))
-class ENGINE_API UAnimationSettings : public UDeveloperSettings
+UCLASS(config=Engine, defaultconfig, meta=(DisplayName="Animation"), MinimalAPI)
+class UAnimationSettings : public UDeveloperSettings
 {
 	GENERATED_UCLASS_BODY()
 
@@ -75,7 +75,7 @@ class ENGINE_API UAnimationSettings : public UDeveloperSettings
 	/** Gets the complete list of bone animation attribute names to consider for import.
 	    This includes the designated timecode animation attributes as well as other bone animation attributes identified in the settings. */
 	UFUNCTION(BlueprintPure, Category = AnimationAttributes)
-	TArray<FString> GetBoneCustomAttributeNamesToImport() const;
+	ENGINE_API TArray<FString> GetBoneCustomAttributeNamesToImport() const;
 
 	/** List of bone names for which all animation attributes are directly imported on the bone. */
 	UPROPERTY(config, EditAnywhere, Category = AnimationAttributes, meta=(DisplayName="Bone names with Animation Attributes"))
@@ -104,13 +104,17 @@ class ENGINE_API UAnimationSettings : public UDeveloperSettings
 	/** Project specific default frame-rate used when (re)initializing any animation based data */
 	UPROPERTY(config, EditAnywhere, Category = AnimationData)
 	FFrameRate DefaultFrameRate;
+
+	/** Whether to enforce the project to only use entries from SupportedFrameRates for the animation assets, if disable will warn instead */
+	UPROPERTY(config, EditAnywhere, Category = AnimationData)
+	bool bEnforceSupportedFrameRates;
 public:
 	static UAnimationSettings * Get() { return CastChecked<UAnimationSettings>(UAnimationSettings::StaticClass()->GetDefaultObject()); }
 
 	/** Returns the project specific default frame-rate */
-	const FFrameRate& GetDefaultFrameRate() const;
+	ENGINE_API const FFrameRate& GetDefaultFrameRate() const;
 
 #if WITH_EDITOR
-	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+	ENGINE_API virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif // WITH_EDITOR
 };

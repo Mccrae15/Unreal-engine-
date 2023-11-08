@@ -2,20 +2,13 @@
 
 set -e
 
-USD_VERSION=22.08
+USD_VERSION=23.02
 
 # This path may be adjusted to point to wherever the USD source is located.
 # It is typically obtained by either downloading a zip/tarball of the source
 # code, or more commonly by cloning the GitHub repository, e.g. for the
 # current engine USD version:
-#     git clone --branch v22.08 https://github.com/PixarAnimationStudios/USD.git USD_src
-# Note that a small patch to the USD CMake build is currently necessary for
-# the usdAbc plugin to require and link against Imath instead of OpenEXR:
-#     git apply USD_v2208_usdAbc_Imath.patch
-# Specifically for Mac, an additional patch is needed to bring forward a
-# workaround for a CMake build issue that causes code signing invalidation
-# (this can be removed once the USD release after 22.11 is adopted):
-#     git apply USD_v2208_Mac_code_sign.patch
+#     git clone --branch v23.02 https://github.com/PixarAnimationStudios/USD.git USD_src
 # Note also that this path may be emitted as part of USD error messages, so
 # it is suggested that it not reveal any sensitive information.
 SOURCE_LOCATION="/tmp/USD_src"
@@ -34,6 +27,9 @@ BOOST_LIB_LOCATION="$BOOST_LOCATION/lib/Mac"
 IMATH_LOCATION="$UE_THIRD_PARTY_LOCATION/Imath/Deploy/Imath-3.1.3"
 IMATH_LIB_LOCATION="$IMATH_LOCATION/Mac"
 IMATH_CMAKE_LOCATION="$IMATH_LIB_LOCATION/lib/cmake/Imath"
+OPENSUBDIV_LOCATION="$UE_THIRD_PARTY_LOCATION/OpenSubdiv/Deploy/OpenSubdiv-3.4.4"
+OPENSUBDIV_INCLUDE_DIR="$OPENSUBDIV_LOCATION/include"
+OPENSUBDIV_LIB_LOCATION="$OPENSUBDIV_LOCATION/Mac/lib"
 ALEMBIC_LOCATION="$UE_THIRD_PARTY_LOCATION/Alembic/Deploy/alembic-1.8.2"
 ALEMBIC_INCLUDE_LOCATION="$ALEMBIC_LOCATION/include"
 ALEMBIC_LIB_LOCATION="$ALEMBIC_LOCATION/Mac"
@@ -70,11 +66,13 @@ CMAKE_ARGS=(
     -DBOOST_INCLUDEDIR="$BOOST_INCLUDE_LOCATION"
     -DBOOST_LIBRARYDIR="$BOOST_LIB_LOCATION"
     -DPXR_USE_PYTHON_3=ON
-    -DPYTHON_EXECUTABLE="$PYTHON_EXECUTABLE_LOCATION"
-    -DPYTHON_INCLUDE_DIR="$PYTHON_INCLUDE_LOCATION"
-    -DPYTHON_LIBRARY="$PYTHON_LIBRARY_LOCATION"
+    -DPython3_EXECUTABLE="$PYTHON_EXECUTABLE_LOCATION"
+    -DPython3_INCLUDE_DIR="$PYTHON_INCLUDE_LOCATION"
+    -DPython3_LIBRARY="$PYTHON_LIBRARY_LOCATION"
     -DPXR_BUILD_ALEMBIC_PLUGIN=ON
     -DPXR_ENABLE_HDF5_SUPPORT=OFF
+    -DOPENSUBDIV_INCLUDE_DIR="$OPENSUBDIV_INCLUDE_DIR"
+    -DOPENSUBDIV_ROOT_DIR="$OPENSUBDIV_LIB_LOCATION"
     -DALEMBIC_INCLUDE_DIR="$ALEMBIC_INCLUDE_LOCATION"
     -DALEMBIC_DIR="$ALEMBIC_LIB_LOCATION"
     -DBUILD_SHARED_LIBS=ON
@@ -82,8 +80,8 @@ CMAKE_ARGS=(
     -DPXR_BUILD_EXAMPLES=OFF
     -DPXR_BUILD_TUTORIALS=OFF
     -DPXR_BUILD_USD_TOOLS=OFF
-    -DPXR_BUILD_IMAGING=OFF
-    -DPXR_BUILD_USD_IMAGING=OFF
+    -DPXR_BUILD_IMAGING=ON
+    -DPXR_BUILD_USD_IMAGING=ON
     -DPXR_BUILD_USDVIEW=OFF
 )
 
@@ -96,10 +94,15 @@ cmake --build . --config Release -j8
 echo Installing USD for Release...
 cmake --install . --config Release
 
-popd
+popd > /dev/null
+
+INSTALL_BIN_LOCATION="$INSTALL_LOCATION/bin"
+INSTALL_LIB_LOCATION="$INSTALL_LOCATION/lib"
+
+echo Removing command-line tools...
+rm -rf "$INSTALL_BIN_LOCATION"
 
 echo Moving built-in USD plugins to UsdResources plugins directory...
-INSTALL_LIB_LOCATION="$INSTALL_LOCATION/lib"
 INSTALL_RESOURCES_LOCATION="$INSTALL_LOCATION/Resources/UsdResources/Mac"
 INSTALL_RESOURCES_PLUGINS_LOCATION="$INSTALL_RESOURCES_LOCATION/plugins"
 mkdir -p $INSTALL_RESOURCES_LOCATION
@@ -113,8 +116,11 @@ mv $INSTALL_PLUGIN_USD_LOCATION/*.dylib "$INSTALL_LIB_LOCATION"
 echo Removing top-level USD plugins plugInfo.json file...
 rm -f "$INSTALL_PLUGIN_USD_LOCATION/plugInfo.json"
 
-echo Moving UsdAbc plugin directory to UsdResources plugins directory
+echo Moving USD plugin resource directories to UsdResources plugins directory
+mv "$INSTALL_PLUGIN_USD_LOCATION/hdStorm" "$INSTALL_RESOURCES_PLUGINS_LOCATION"
+mv "$INSTALL_PLUGIN_USD_LOCATION/sdrGlslfx" "$INSTALL_RESOURCES_PLUGINS_LOCATION"
 mv "$INSTALL_PLUGIN_USD_LOCATION/usdAbc" "$INSTALL_RESOURCES_PLUGINS_LOCATION"
+mv "$INSTALL_PLUGIN_USD_LOCATION/usdShaders" "$INSTALL_RESOURCES_PLUGINS_LOCATION"
 
 rmdir "$INSTALL_PLUGIN_USD_LOCATION"
 rmdir "$INSTALL_PLUGIN_LOCATION"
@@ -134,6 +140,9 @@ INSTALL_CONTENT_LOCATION="$INSTALL_LOCATION/Content/Python/Lib/Mac/site-packages
 mkdir -p "$INSTALL_CONTENT_LOCATION"
 mv "$INSTALL_LOCATION/lib/python/pxr" "$INSTALL_CONTENT_LOCATION"
 rmdir "$INSTALL_LOCATION/lib/python"
+
+echo Removing share directory...
+rm -rf "$INSTALL_LOCATION/share"
 
 echo Cleaning @rpath entries for shared libraries...
 for SHARED_LIB in `find $INSTALL_LOCATION -name '*.so' -o -name '*.dylib'`

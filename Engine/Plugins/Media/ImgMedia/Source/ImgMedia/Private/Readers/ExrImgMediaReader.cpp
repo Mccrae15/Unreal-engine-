@@ -13,8 +13,8 @@
 #include "UObject/UObjectGlobals.h"
 #include "HardwareInfo.h"
 #include "IImgMediaModule.h"
-#include "ImgMediaLoader.h"
-#include "ImgMediaMipMapInfo.h"
+#include "Loader/ImgMediaLoader.h"
+#include "Assets/ImgMediaMipMapInfo.h"
 
 DECLARE_MEMORY_STAT(TEXT("EXR Reader Pool Memory."), STAT_ExrMediaReaderPoolMem, STATGROUP_ImgMediaPlugin);
 
@@ -59,7 +59,6 @@ FExrImgMediaReader::EReadResult FExrImgMediaReader::ReadTiles
 	( uint16* Buffer
 	, int64 BufferSize
 	, const FString& ImagePath
-	, int32 FrameId
 	, const TArray<FIntRect>& TileRegions
 	, TSharedPtr<FSampleConverterParameters> ConverterParams
 	, const int32 CurrentMipLevel
@@ -113,9 +112,9 @@ FExrImgMediaReader::EReadResult FExrImgMediaReader::ReadTiles
 				// Check to see if the frame was canceled.
 				{
 					FScopeLock RegionScopeLock(&CanceledFramesCriticalSection);
-					if (CanceledFrames.Remove(FrameId) > 0)
+					if (CanceledFrames.Remove(ConverterParams->FrameId) > 0)
 					{
-						UE_LOG(LogImgMedia, Verbose, TEXT("Reader %p: Canceling Frame %i At tile row # %i"), this, FrameId, TileRow);
+						UE_LOG(LogImgMedia, Verbose, TEXT("Reader %p: Canceling Frame %i At tile row # %i"), this, ConverterParams->FrameId, TileRow);
 						Result = Cancelled;
 						break;
 					}
@@ -272,9 +271,10 @@ bool FExrImgMediaReader::ReadFrame(int32 FrameId, const TMap<int32, FImgMediaTil
 					ConverterParams->TileDimWithBorders = OutFrame->Info.TileDimensions + OutFrame->Info.TileBorder * 2;
 					ConverterParams->NumMipLevels = Loader->GetNumMipLevels();
 					ConverterParams->bCustomExr = OutFrame->Info.FormatName == TEXT("EXR CUSTOM");
+					ConverterParams->FrameId = FrameId;
 
 					TArray<UE::Math::TIntPoint<int64>> OutBufferRegionsToCopy;
-					EReadResult ReadResult = ReadTiles((uint16*)MipDataPtr, GetMipBufferTotalSize(Dim / MipLevelDiv), Image, FrameId, TileRegions, ConverterParams, CurrentMipLevel, OutBufferRegionsToCopy);
+					EReadResult ReadResult = ReadTiles((uint16*)MipDataPtr, GetMipBufferTotalSize(Dim / MipLevelDiv), Image, TileRegions, ConverterParams, CurrentMipLevel, OutBufferRegionsToCopy);
 					if (ReadResult != Fail)
 					{
 						OutFrame->MipTilesPresent.Emplace(CurrentMipLevel, CurrentTileSelection);
@@ -362,6 +362,7 @@ TSharedPtr<IImgMediaReader, ESPMode::ThreadSafe> FExrImgMediaReader::GetReader(c
 	}
 
 	// Check GetCompressionName of OpenExrWrapper for other compression names.
+	// todo: Add and test Vulkan support
 	if (GDynamicRHI && GDynamicRHI->GetInterfaceType() == ERHIInterfaceType::D3D12
 		&& Info.CompressionName == "Uncompressed" 
 		&& CVarEnableUncompressedExrGpuReader.GetValueOnAnyThread()

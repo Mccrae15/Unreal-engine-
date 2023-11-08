@@ -323,7 +323,6 @@ namespace DatasmithImportFactoryImpl
 			EventAttributes.Emplace( TEXT("ImportedWithViaScript"), ImportContext.bImportedViaScript );
 
 			// Import info
-			EventAttributes.Emplace( TEXT("ImporterID"), FPlatformMisc::GetEpicAccountId() );
 			EventAttributes.Emplace( TEXT("ImporterVersion"), FDatasmithUtils::GetEnterpriseVersionAsString() );
 			EventAttributes.Emplace( TEXT("ImportDuration"), ImportDurationInSeconds );
 
@@ -1057,4 +1056,3 @@ int32 UDatasmithImportFactory::GetPriority() const
 }
 
 #undef LOCTEXT_NAMESPACE
-

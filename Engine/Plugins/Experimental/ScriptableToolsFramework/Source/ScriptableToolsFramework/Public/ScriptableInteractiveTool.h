@@ -11,6 +11,7 @@ class UWorld;
 class UCombinedTransformGizmo;
 class UTransformProxy;
 class UScriptableInteractiveTool;
+class UBaseScriptableToolBuilder;
 class FToolDataVisualizer;
 class FCanvas;
 class FSceneView;
@@ -63,6 +64,14 @@ enum class EScriptableToolGizmoCoordinateSystem : uint8
 	World = 0,
 	Local = 1,
 	FromViewportSettings = 2
+};
+
+UENUM(BlueprintType)
+enum class EScriptableToolGizmoStateChangeType : uint8
+{
+	BeginTransform = 0,
+	EndTransform = 1,
+	UndoRedo = 2
 };
 
 UENUM(BlueprintType, meta = (Bitflags, UseEnumValuesAsMaskValuesInEditor = "true"))
@@ -288,6 +297,19 @@ public:
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Scriptable Tool Settings", meta=(DisplayName="Tooltip"))
 	FText ToolTooltip;
 
+	/**
+	 * Relative Path to a custom Icon Image for this Tool. The Image file format must be png or svg. 
+	 *
+	 * The Image file must reside in the same Content folder hierarchy as contains the Tool Class (ie Blueprint asset), 
+	 * i.e. either the Project Content folder or a Plugin Content folder.
+	 * 
+	 * So for example if the Tool BP is in a plugin named MyCustomTools, the icon must be in 
+	 *      MyProject/Plugins/MyCustomTools/Content/<SubFolders>/MyToolIcon.png,
+	 * and the relative path to use here would be <SubFolders>/MyToolIcon.png
+	 */ 
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Scriptable Tool Settings", meta = (DisplayName = "Custom Icon Path"))
+	FString CustomIconPath;
+
 	/** A generic flag to indicate whether this Tool should be shown in the UE Editor. This may be interpreted in different ways */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Scriptable Tool Settings", meta=(DisplayName="Visible in Editor"))
 	bool bShowToolInEditor = true;
@@ -295,7 +317,6 @@ public:
 	/** Specifies how the user exits this Tool, either Accept/Cancel-style or Complete-style */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Scriptable Tool Settings", meta=(DisplayName="Shutdown Type"))
 	EScriptableToolShutdownType ToolShutdownType = EScriptableToolShutdownType::Complete;
-
 
 	/**
 	 * Implement OnScriptSetup to do initial setup/configuration of the Tool, such as adding
@@ -361,6 +382,11 @@ public:
 
 protected:
 	virtual void PostInitProperties() override;
+
+
+	// return instance of custom tool builder. Should only be called on CDO.
+	virtual UBaseScriptableToolBuilder* GetNewCustomToolBuilderInstance(UObject* Outer) { return nullptr; }
+	friend class UScriptableToolSet;
 
 
 protected:
@@ -678,12 +704,22 @@ public:
 	UFUNCTION(BlueprintImplementableEvent, Category = "ScriptableTool|Events")
 	void OnGizmoTransformChanged(const FString& GizmoIdentifier, FTransform NewTransform);
 
+	/**
+	 * The OnGizmoTransformStateChange event fires whenever the user start/ends a Gizmo transform, or when an Undo/Redo event occurs.
+	 * Note that when Undo/Redo occurs, OnGizmoTransformChanged will also fire.
+	 * The GizmoIdentifier can be used to disambiguate multiple active Gizmos.
+	 */
+	UFUNCTION(BlueprintImplementableEvent, Category = "ScriptableTool|Events")
+	void OnGizmoTransformStateChange(const FString& GizmoIdentifier, FTransform CurrentTransform, EScriptableToolGizmoStateChangeType ChangeType);
+
+
 protected:
 	// trying to avoid making a UStruct for this internal stuff
 	UPROPERTY(Transient, DuplicateTransient, NonTransactional, SkipSerialization)
 	TMap<FString, TObjectPtr<UCombinedTransformGizmo>> Gizmos;
 
 	virtual void OnGizmoTransformChanged_Handler(FString GizmoIdentifier, FTransform NewTransform);
+	virtual void OnGizmoTransformStateChange_Handler(FString GizmoIdentifier, FTransform CurrentTransform, EScriptableToolGizmoStateChangeType ChangeType);
 
 
 

@@ -88,7 +88,7 @@
 #include "BlueprintNodeBinder.h"
 #include "BlueprintComponentNodeSpawner.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-
+#include "UObject/UE5MainStreamObjectVersion.h"
 #include "K2Node_CastByteToEnum.h"
 #include "K2Node_ClassDynamicCast.h"
 #include "K2Node_GetEnumeratorName.h"
@@ -112,7 +112,7 @@ enum class EBlueprintRealDisplayMode : uint8
 	Number
 };
 
-namespace UE::BlueprintDisplay::Private
+namespace UE::EdGraphSchemaK2::Private
 {
 	int32 LastRealNamingMode = -1;
 	int32 RealNamingMode = static_cast<int32>(EBlueprintRealDisplayMode::Float);
@@ -128,6 +128,51 @@ namespace UE::BlueprintDisplay::Private
 		const bool bResult = LastRealNamingMode != RealNamingMode;
 		LastRealNamingMode = RealNamingMode;
 		return bResult;
+	}
+
+	template <class... T>
+	constexpr bool TAlwaysFalse = false;
+
+	template <typename TProperty>
+	UClass* GetAuthoritativeClass(const TProperty& Property)
+	{
+		UClass* PropertyClass = nullptr;
+		if constexpr (std::is_same_v<TProperty, FObjectPropertyBase>)
+		{
+			PropertyClass = Property.PropertyClass;
+		}
+		else if constexpr (std::is_same_v<TProperty, FSoftObjectProperty>)
+		{
+			PropertyClass = Property.PropertyClass;
+		}
+		else if constexpr (std::is_same_v<TProperty, FInterfaceProperty>)
+		{
+			PropertyClass = Property.InterfaceClass;
+		}
+		else if constexpr (std::is_same_v<TProperty, FClassProperty>)
+		{
+			PropertyClass = Property.MetaClass;
+		}
+		else if constexpr (std::is_same_v<TProperty, FSoftClassProperty>)
+		{
+			PropertyClass = Property.MetaClass;
+		}
+		else
+		{
+			static_assert(TAlwaysFalse<TProperty>, "Invalid property used.");
+		}
+
+		if (PropertyClass && PropertyClass->ClassGeneratedBy)
+		{
+			PropertyClass = PropertyClass->GetAuthoritativeClass();
+		}
+
+		if (PropertyClass && FKismetEditorUtilities::IsClassABlueprintSkeleton(PropertyClass))
+		{
+			UE_LOG(LogBlueprint, Warning, TEXT("'%s' is a skeleton class. SubCategoryObject will serialize to a null value."), *PropertyClass->GetFullName());
+		}
+
+		return PropertyClass;
 	}
 }
 
@@ -235,6 +280,7 @@ const FName FBlueprintMetadata::MD_Namespace(TEXT("Namespace"));
 
 const FName FBlueprintMetadata::MD_ThreadSafe(TEXT("BlueprintThreadSafe"));
 const FName FBlueprintMetadata::MD_NotThreadSafe(TEXT("NotBlueprintThreadSafe"));
+const FName FBlueprintMetadata::MD_FieldNotify(TEXT("FieldNotify"));
 
 //////////////////////////////////////////////////////////////////////////
 
@@ -1036,6 +1082,21 @@ void UEdGraphSchema_K2::GetAutoEmitTermParameters(const UFunction* Function, TAr
 			else
 			{
 				++NameIndex;
+			}
+		}
+	}
+
+	// Allow any params that are blueprint defined to be autocreated:
+	if (!FBlueprintEditorUtils::IsNativeSignature(Function))
+	{
+		for (	TFieldIterator<FProperty> ParamIter(Function, EFieldIterationFlags::Default); 
+				ParamIter && (ParamIter->PropertyFlags & CPF_Parm); 
+				++ParamIter)
+		{
+			FProperty* Param = *ParamIter;
+			if(Param->HasAnyPropertyFlags(CPF_ReferenceParm))
+			{
+				AutoEmitParameterNames.Add(Param->GetName());
 			}
 		}
 	}
@@ -2396,10 +2457,47 @@ public:
 #endif //SCHEMA_K2_AUTOCASTFUNCTIONMAP_LOG_TIME
 
 		InnerMap.Empty();
-		const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
 
 		TArray<UClass*> Libraries;
 		GetDerivedClasses(UBlueprintFunctionLibrary::StaticClass(), Libraries);
+		AddLibraries(Libraries);
+
+#if SCHEMA_K2_AUTOCASTFUNCTIONMAP_LOG_TIME
+		const double EndTime = FPlatformTime::Seconds();
+		UE_LOG(LogBlueprint, Warning, TEXT("FAutocastFunctionMap::Refresh took %fs"), EndTime - StartTime);
+#endif //SCHEMA_K2_AUTOCASTFUNCTIONMAP_LOG_TIME
+#undef SCHEMA_K2_AUTOCASTFUNCTIONMAP_LOG_TIME
+	}
+
+	void AddLibrariesFromModule(FName ModuleThatChanged)
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(WILD_FAutocastFunctionMap::AddLibrariesFromModule);
+
+		const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
+
+		if (UPackage* ModuleScriptPacakge = FindPackage(nullptr, *FString::Printf(TEXT("/Script/%s"), *ModuleThatChanged.ToString())))
+		{
+			TArray<UClass*> Libraries;
+			ForEachObjectWithPackage(ModuleScriptPacakge, [&Libraries](UObject* Obj) -> bool
+				{
+					if (UClass* Class = Cast<UClass>(Obj))
+					{
+						if (Class->IsChildOf(UBlueprintFunctionLibrary::StaticClass()))
+						{
+							Libraries.Add(Class);
+						}
+					}
+
+					return true;
+				}, false);
+
+			AddLibraries(Libraries);
+		}
+	}
+
+	void AddLibraries(const TArray<UClass*>& Libraries)
+	{
+		const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
 		for (UClass* Library : Libraries)
 		{
 			if (Library && (CLASS_Native == (Library->ClassFlags & (CLASS_Native | CLASS_Deprecated | CLASS_NewerVersionExists))))
@@ -2413,12 +2511,6 @@ public:
 				}
 			}
 		}
-
-#if SCHEMA_K2_AUTOCASTFUNCTIONMAP_LOG_TIME
-		const double EndTime = FPlatformTime::Seconds();
-		UE_LOG(LogBlueprint, Warning, TEXT("FAutocastFunctionMap::Refresh took %fs"), EndTime - StartTime);
-#endif //SCHEMA_K2_AUTOCASTFUNCTIONMAP_LOG_TIME
-#undef SCHEMA_K2_AUTOCASTFUNCTIONMAP_LOG_TIME
 	}
 
 	UFunction* Find(const FEdGraphPinType& InputPinType, const FEdGraphPinType& OutputPinType) const
@@ -2454,7 +2546,14 @@ public:
 	{
 		if (AutocastFunctionMap)
 		{
-			AutocastFunctionMap->Refresh();
+			if (ReasonForChange == EModuleChangeReason::ModuleLoaded)
+			{
+				AutocastFunctionMap->AddLibrariesFromModule(ModuleThatChanged);
+			}
+			else if (ReasonForChange == EModuleChangeReason::ModuleUnloaded)
+			{
+				AutocastFunctionMap->Refresh();
+			}
 		}
 	}
 
@@ -2648,7 +2747,7 @@ TOptional<UEdGraphSchema_K2::FFindSpecializedConversionNodeResults> UEdGraphSche
 	const bool bTryAlternateObjectProperty =
 		InputPin.GetOwningNode()->IsA(UK2Node_CallFunction::StaticClass()) &&
 		IsSelfPin(InputPin) &&
-		((OutputPinType.PinCategory == PC_Object) || (OutputPinType.PinCategory == PC_Interface));
+		((OutputPinType.PinCategory == PC_Object) || ((OutputPinType.PinCategory == PC_Interface) && !OutputPinType.IsContainer()));
 
 	if (bConvertScalarToArray)
 	{
@@ -2726,10 +2825,26 @@ TOptional<UEdGraphSchema_K2::FFindSpecializedConversionNodeResults> UEdGraphSche
 				Result->TargetNode = CastByteToEnum;
 			}
 		}
-		else
+		else if (!OutputPinType.IsContainer())
 		{
-			UClass* InputClass  = FBlueprintEditorUtils::GetTypeForPin(InputPin);
+			// Note: Cast nodes do not support a ForEach-style expansion, so we exclude container types here.
+		
+			const UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNodeChecked(InputPin.GetOwningNode());
+			UClass* BlueprintClass = (Blueprint->GeneratedClass != nullptr) ? Blueprint->GeneratedClass : Blueprint->ParentClass;
+
+			UClass* InputClass = Cast<UClass>(InputPin.PinType.PinSubCategoryObject.Get());
+
+			if ((InputClass == nullptr) && (InputPin.PinType.PinSubCategory == UEdGraphSchema_K2::PSC_Self))
+			{
+				InputClass = BlueprintClass;
+			}
+
 			const UClass* OutputClass = Cast<UClass>(OutputPinType.PinSubCategoryObject.Get());
+
+			if ((OutputClass == nullptr) && (OutputPinType.PinSubCategory == UEdGraphSchema_K2::PSC_Self))
+			{
+				OutputClass = BlueprintClass;
+			}
 
 			bool bNeedsDynamicCast = false;
 			if ((OutputPinType.PinCategory == PC_Interface) && (InputPinType.PinCategory == PC_Object))
@@ -2880,7 +2995,7 @@ bool UEdGraphSchema_K2::CreatePromotedConnection(UEdGraphPin* PinA, UEdGraphPin*
 	return true;
 }
 
-FString UEdGraphSchema_K2::IsPinDefaultValid(const UEdGraphPin* Pin, const FString& NewDefaultValue, UObject* NewDefaultObject, const FText& InNewDefaultText) const
+FString UEdGraphSchema_K2::IsPinDefaultValid(const UEdGraphPin* Pin, const FString& NewDefaultValue, TObjectPtr<UObject> NewDefaultObject, const FText& InNewDefaultText) const
 {
 	check(Pin);
 
@@ -3389,30 +3504,32 @@ void UEdGraphSchema_K2::CreateFunctionGraphTerminators(UEdGraph& Graph, const UF
 
 bool UEdGraphSchema_K2::GetPropertyCategoryInfo(const FProperty* TestProperty, FName& OutCategory, FName& OutSubCategory, UObject*& OutSubCategoryObject, bool& bOutIsWeakPointer)
 {
+	using namespace UE::EdGraphSchemaK2::Private;
+
 	if (const FInterfaceProperty* InterfaceProperty = CastField<const FInterfaceProperty>(TestProperty))
 	{
 		OutCategory = PC_Interface;
-		OutSubCategoryObject = InterfaceProperty->InterfaceClass;
+		OutSubCategoryObject = GetAuthoritativeClass(*InterfaceProperty);
 	}
 	else if (const FClassProperty* ClassProperty = CastField<const FClassProperty>(TestProperty))
 	{
 		OutCategory = PC_Class;
-		OutSubCategoryObject = ClassProperty->MetaClass;
+		OutSubCategoryObject = GetAuthoritativeClass(*ClassProperty);
 	}
 	else if (const FSoftClassProperty* SoftClassProperty = CastField<const FSoftClassProperty>(TestProperty))
 	{
 		OutCategory = PC_SoftClass;
-		OutSubCategoryObject = SoftClassProperty->MetaClass;
+		OutSubCategoryObject = GetAuthoritativeClass(*SoftClassProperty);
 	}
 	else if (const FSoftObjectProperty* SoftObjectProperty = CastField<const FSoftObjectProperty>(TestProperty))
 	{
 		OutCategory = PC_SoftObject;
-		OutSubCategoryObject = SoftObjectProperty->PropertyClass;
+		OutSubCategoryObject = GetAuthoritativeClass(*SoftObjectProperty);
 	}
 	else if (const FObjectPropertyBase* ObjectProperty = CastField<const FObjectPropertyBase>(TestProperty))
 	{
 		OutCategory = PC_Object;
-		OutSubCategoryObject = ObjectProperty->PropertyClass;
+		OutSubCategoryObject = GetAuthoritativeClass(*ObjectProperty);
 		bOutIsWeakPointer = TestProperty->IsA(FWeakObjectProperty::StaticClass());
 	}
 	else if (const FStructProperty* StructProperty = CastField<const FStructProperty>(TestProperty))
@@ -3725,7 +3842,7 @@ FText UEdGraphSchema_K2::GetCategoryText(const FName Category, const bool bForMe
 
 FText UEdGraphSchema_K2::GetCategoryText(FName Category, FName SubCategory, bool bForMenu)
 {
-	using namespace UE::BlueprintDisplay::Private;
+	using namespace UE::EdGraphSchemaK2::Private;
 
 	if (Category.IsNone())
 	{
@@ -3868,7 +3985,7 @@ FText UEdGraphSchema_K2::TerminalTypeToText(const FName Category, const FName Su
 	{
 		if (Category == UEdGraphSchema_K2::PC_Real)
 		{
-			using namespace UE::BlueprintDisplay::Private;
+			using namespace UE::EdGraphSchemaK2::Private;
 
 			switch (GetRealDisplayMode())
 			{
@@ -4174,7 +4291,7 @@ namespace
 };
 
 
-bool UEdGraphSchema_K2::DefaultValueSimpleValidation(const FEdGraphPinType& PinType, const FName PinName, const FString& NewDefaultValue, UObject* NewDefaultObject, const FText& InNewDefaultText, FString* OutMsg /*= NULL*/) const
+bool UEdGraphSchema_K2::DefaultValueSimpleValidation(const FEdGraphPinType& PinType, const FName PinName, const FString& NewDefaultValue, TObjectPtr<UObject> NewDefaultObject, const FText& InNewDefaultText, FString* OutMsg /*= NULL*/) const
 {
 #ifdef DVSV_RETURN_MSG
 	static_assert(false, "Macro redefinition.");
@@ -4319,14 +4436,14 @@ bool UEdGraphSchema_K2::DefaultValueSimpleValidation(const FEdGraphPinType& PinT
 		}
 		if (NewDefaultObject != nullptr && ObjectClass != nullptr)
 		{
-			const UClass* AuthoritativeClass = NewDefaultObject->GetClass()->GetAuthoritativeClass();
+			const UClass* AuthoritativeClass = NewDefaultObject.GetClass()->GetAuthoritativeClass();
 			if (!AuthoritativeClass || !AuthoritativeClass->IsChildOf(ObjectClass))
 			{
 				// Not a type of object, but is it an object implementing an interface?
-                if(PinCategory != PC_Interface || !NewDefaultObject->GetClass()->ImplementsInterface(ObjectClass))
-                {
-                	DVSV_RETURN_MSG(FString::Printf(TEXT("%s isn't a %s (specified on pin %s)"), *NewDefaultObject->GetPathName(), *ObjectClass->GetName(), *PinName.ToString()));
-                }
+				if(PinCategory != PC_Interface || !NewDefaultObject.GetClass()->ImplementsInterface(ObjectClass))
+				{
+					DVSV_RETURN_MSG(FString::Printf(TEXT("%s isn't a %s (specified on pin %s)"), *NewDefaultObject->GetPathName(), *ObjectClass->GetName(), *PinName.ToString()));
+				}
 			}
 		}
 	}
@@ -4680,7 +4797,10 @@ void UEdGraphSchema_K2::BreakPinLinks(UEdGraphPin& TargetPin, bool bSendsNodeNot
 
 	Super::BreakPinLinks(TargetPin, bSendsNodeNotifcation);
 
-	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+	if (Blueprint != nullptr)
+	{
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+	}
 }
 
 void UEdGraphSchema_K2::BreakSinglePinLink(UEdGraphPin* SourcePin, UEdGraphPin* TargetPin) const
@@ -5230,6 +5350,7 @@ void UEdGraphSchema_K2::SetPinAutogeneratedDefaultValueBasedOnType(UEdGraphPin* 
 
 static void ConformAutogeneratedDefaultValuePackage(
 	const FEdGraphPinType& PinType, 
+	const UEdGraphNode* OwningNode, 
 	FString& AutogeneratedDefaultValue, 
 	const FText& DefaultTextValue
 )
@@ -5238,36 +5359,34 @@ static void ConformAutogeneratedDefaultValuePackage(
 		!PinType.IsContainer() &&
 		!AutogeneratedDefaultValue.IsEmpty())
 	{
-		FText TextValue;
-		const TCHAR* Success = FTextStringHelper::ReadFromBuffer(*AutogeneratedDefaultValue, TextValue);
-		check(Success);
-
-		const TOptional<FString> RealPackageNamespace = FTextInspector::GetNamespace(DefaultTextValue);
-		const TOptional<FString> SavedPackageNamespace = FTextInspector::GetNamespace(TextValue);
-		const TOptional<FString> CurrentKey = FTextInspector::GetKey(TextValue);
-
-		if (RealPackageNamespace.IsSet() &&
-			CurrentKey.IsSet() &&
-			DefaultTextValue.ToString() == TextValue.ToString() &&
-			(	!SavedPackageNamespace.IsSet() ||
-				*RealPackageNamespace != *SavedPackageNamespace ) )
+		// Attempt to find the correct package namespace to use for text within this pin
+		// Favor using the node if we have it, as that will be most up-to-date
+		FString PackageNamespace;
+		if (OwningNode)
 		{
-			const TOptional<FString> RealKey = FTextInspector::GetKey(DefaultTextValue);
+			PackageNamespace = TextNamespaceUtil::GetPackageNamespace(OwningNode);
+		}
+		else if (!DefaultTextValue.IsEmpty())
+		{
+			PackageNamespace = TextNamespaceUtil::ExtractPackageNamespace(FTextInspector::GetNamespace(DefaultTextValue).Get(FString()));
+		}
 
-			// make new text value with same key in current namespace:
-			AutogeneratedDefaultValue.Empty();
-			if (RealKey.IsSet())
+		if (!PackageNamespace.IsEmpty())
+		{
+			FText AutogeneratedDefaultTextValue;
+			const TCHAR* Success = FTextStringHelper::ReadFromBuffer(*AutogeneratedDefaultValue, AutogeneratedDefaultTextValue);
+			check(Success);
+
+			// Conform the auto-generated default against this package ID, preserving its key to avoid determinism issues
+			const FText ConformedAutogeneratedDefaultTextValue = TextNamespaceUtil::CopyTextToPackage(AutogeneratedDefaultTextValue, PackageNamespace, TextNamespaceUtil::ETextCopyMethod::PreserveKey);
+
+			// IdenticalTo is a quick test for whether CopyTextToPackage returned the same text it was given (meaning there's nothing to update)
+			if (!ConformedAutogeneratedDefaultTextValue.IdenticalTo(AutogeneratedDefaultTextValue))
 			{
-				// maintain the key on DefaultTextValue:
-				TextValue = FText::ChangeKey(*RealPackageNamespace, *RealKey, TextValue);
+				// Fix-up the auto-generated default from the conformed value
+				AutogeneratedDefaultValue.Reset();
+				FTextStringHelper::WriteToBuffer(AutogeneratedDefaultValue, ConformedAutogeneratedDefaultTextValue);
 			}
-			else
-			{
-				// reset back to the key in AutogeneratedDefaultValue - generating a new one
-				// will cause determinism issues which are extremely hard to track down:
-				TextValue = FText::ChangeKey(*RealPackageNamespace, *CurrentKey, TextValue);
-			}
-			FTextStringHelper::WriteToBuffer(AutogeneratedDefaultValue, TextValue);
 		}
 	}
 }
@@ -5282,7 +5401,7 @@ void UEdGraphSchema_K2::ResetPinToAutogeneratedDefaultValue(UEdGraphPin* Pin, bo
 	else
 	{
 		// Autogenerated value has unreliable package namespace for text value, hack fix it up now:
-		ConformAutogeneratedDefaultValuePackage(Pin->PinType, Pin->AutogeneratedDefaultValue, Pin->DefaultTextValue);
+		ConformAutogeneratedDefaultValuePackage(Pin->PinType, Pin->GetOwningNodeUnchecked(), Pin->AutogeneratedDefaultValue, Pin->DefaultTextValue);
 
 		GetPinDefaultValuesFromString(Pin->PinType, Pin->GetOwningNodeUnchecked(), Pin->AutogeneratedDefaultValue, Pin->DefaultValue, Pin->DefaultObject, Pin->DefaultTextValue, false);
 
@@ -5858,7 +5977,7 @@ void UEdGraphSchema_K2::DroppedAssetsOnGraph(const TArray<FAssetData>& Assets, c
 			{
 				const FScopedTransaction Transaction(LOCTEXT("CreateAddComponentFromAsset", "Add Component From Asset"), UEdGraphSchemaImpl::ShouldActuallyTransact());
 
-				FComponentTypeEntry ComponentType = { FString(), FString(), DestinationComponentType };
+				FComponentTypeEntry ComponentType = { FString(), FString(), DestinationComponentType.GetGCPtr() };
 
 				IBlueprintNodeBinder::FBindingSet Bindings;
 				Bindings.Add(Asset);
@@ -6040,7 +6159,7 @@ struct FBackwardCompatibilityConversionHelper
 
 		for (UEdGraphPin* OldLink : OldLinks)
 		{
-			if (!NewPin || !NewPin->LinkedTo.Contains(OldLink))
+			if (!NewPin || (!NewPin->LinkedTo.Contains(OldLink) && NewNode->GetSchema()->CanCreateConnection(NewPin, OldLink).Response != CONNECT_RESPONSE_MAKE_WITH_CONVERSION_NODE))
 			{
 				OrphanedLinks.Add(OldLink);
 			}

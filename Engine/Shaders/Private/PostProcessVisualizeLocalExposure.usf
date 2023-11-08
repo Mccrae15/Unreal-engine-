@@ -32,10 +32,10 @@ float4 MainPS(noperspective float4 UVAndScreenPos : TEXCOORD0, float4 SvPosition
 
 	float LuminanceVal = CalculateEyeAdaptationLuminance(SceneColor.rgb);
 	float LogLuminance = log2(LuminanceVal);
-	float MiddleGreyLumValue = log2(0.18 * ExposureScaleMiddleGrey.y * EyeAdaptation_LocalExposureMiddleGreyExposureCompensation);
+	float MiddleGreyLumValue = log2(0.18 * ExposureScaleMiddleGrey.y * LocalExposure_MiddleGreyExposureCompensation);
 
-	float BaseLogLum = CalculateBaseLogLuminance(LogLuminance, EyeAdaptation_LocalExposureBlurredLuminanceBlend, ExposureScaleMiddleGrey.x, ViewportUV, LumBilateralGrid, BlurredLogLum, TextureSampler, TextureSampler);
-	float LocalExposure = CalculateLocalExposure(LogLuminance + log2(ExposureScaleMiddleGrey.x), BaseLogLum, MiddleGreyLumValue, EyeAdaptation_LocalExposureHighlightContrastScale, EyeAdaptation_LocalExposureShadowContrastScale, EyeAdaptation_LocalExposureDetailStrength);
+	float BaseLogLum = CalculateBaseLogLuminance(LogLuminance, LocalExposure_BlurredLuminanceBlend, ExposureScaleMiddleGrey.x, ViewportUV, LumBilateralGrid, BlurredLogLum, TextureSampler, TextureSampler);
+	float LocalExposure = CalculateLocalExposure(LogLuminance + log2(ExposureScaleMiddleGrey.x), BaseLogLum, MiddleGreyLumValue, LocalExposure_HighlightContrastScale, LocalExposure_ShadowContrastScale, LocalExposure_DetailStrength);
 	float DetailLogLum = (LogLuminance + log2(ExposureScaleMiddleGrey.x)) - BaseLogLum;
 
 	float3 OutValue;
@@ -51,6 +51,24 @@ float4 MainPS(noperspective float4 UVAndScreenPos : TEXCOORD0, float4 SvPosition
 	else if (DebugMode == 2)
 	{
 		OutValue = exp2(DetailLogLum);
+	}
+	else if (DebugMode == 3)
+	{
+		float3 BilateralGridUVW;
+		BilateralGridUVW.xy = ViewportUV * LocalExposure_BilateralGridUVScale;
+		BilateralGridUVW.z = (ComputeHistogramPositionFromLogLuminance(LogLuminance) * (BILATERAL_GRID_DEPTH - 1) + 0.5f) / BILATERAL_GRID_DEPTH;
+
+		float2 BilateralGridLum = Texture3DSample(LumBilateralGrid, TextureSampler, BilateralGridUVW).xy;
+
+		if (BilateralGridLum.y < 0.001)
+		{
+			// bilateral grid doesn't have valid data
+			OutValue = float3(1,0,0);
+		}
+		else
+		{
+			OutValue = float3(0,1,0);
+		}
 	}
 
 	return float4(OutValue, 1.0f);

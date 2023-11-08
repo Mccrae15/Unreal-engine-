@@ -19,6 +19,7 @@
 #include "NiagaraObjectSelection.h"
 #include "NiagaraParameterDefinitions.h"
 #include "NiagaraScriptGraphViewModel.h"
+#include "NiagaraScriptSource.h"
 #include "NiagaraScriptVariable.h"
 #include "NiagaraSimulationStageBase.h"
 #include "NiagaraSystem.h"
@@ -267,13 +268,10 @@ void INiagaraParameterPanelViewModel::RefreshFull(bool bDoCategoryExpansion) con
 
 bool INiagaraParameterPanelViewModel::CanAddType(const FNiagaraTypeDefinition& InType, TOptional<FNiagaraParameterPanelCategory> Category)
 {
-	bool bCanAddObjects = Category.IsSet() && Category.GetValue().NamespaceMetaData.GetGuid() == FNiagaraEditorGuids::UserNamespaceMetaDataGuid;
-	
 	return !(
 		InType == FNiagaraTypeDefinition::GetParameterMapDef()
 		|| InType == FNiagaraTypeDefinition::GetGenericNumericDef()
 		|| InType.IsInternalType()
-		|| ((!bCanAddObjects && InType.IsUObject()) && !InType.IsDataInterface())
 		);
 }
 
@@ -1160,14 +1158,14 @@ void FNiagaraSystemToolkitParameterPanelViewModel::AddParameter(FNiagaraVariable
 		else
 		{
 			UNiagaraEditorParametersAdapter* EditorParametersAdapter = SystemViewModel->GetEditorOnlyParametersAdapter();
-			TArray<UNiagaraScriptVariable*>& EditorOnlyScriptVars = EditorParametersAdapter->GetParameters();
+			TArray<TObjectPtr<UNiagaraScriptVariable>>& EditorOnlyScriptVars = EditorParametersAdapter->GetParameters();
 			bool bNewScriptVarAlreadyExists = EditorOnlyScriptVars.ContainsByPredicate([&NewVariable](const UNiagaraScriptVariable* ScriptVar) { return ScriptVar->Variable == NewVariable; });
 
 			// unless the namespace prevents name changes we make sure the new parameter has a unique name  
 			if (bMakeUniqueName && !Category.NamespaceMetaData.Options.Contains(ENiagaraNamespaceMetadataOptions::PreventEditingName))
 			{
 				TSet<FName> Names;
-				for (UNiagaraScriptVariable* ScriptVar : EditorOnlyScriptVars)
+				for (const auto& ScriptVar : EditorOnlyScriptVars)
 				{
 					Names.Add(ScriptVar->Variable.GetName());
 				}
@@ -1223,7 +1221,7 @@ void FNiagaraSystemToolkitParameterPanelViewModel::FindOrAddParameter(FNiagaraVa
 	else
 	{
 		UNiagaraEditorParametersAdapter* EditorParametersAdapter = SystemViewModel->GetEditorOnlyParametersAdapter();
-		TArray<UNiagaraScriptVariable*>& EditorOnlyScriptVars = EditorParametersAdapter->GetParameters();
+		TArray<TObjectPtr<UNiagaraScriptVariable>>& EditorOnlyScriptVars = EditorParametersAdapter->GetParameters();
 		bool bNewScriptVarAlreadyExists = EditorOnlyScriptVars.ContainsByPredicate([&Variable](const UNiagaraScriptVariable* ScriptVar) { return ScriptVar->Variable == Variable; });
 		
 		if (bNewScriptVarAlreadyExists == false)
@@ -1661,14 +1659,14 @@ bool FNiagaraSystemToolkitParameterPanelViewModel::GetCanSetParameterCustomNames
 
 TSharedRef<SWidget> FNiagaraSystemToolkitParameterPanelViewModel::CreateAddParameterMenuForAssignmentNode(UNiagaraNodeAssignment* AssignmentNode, const TSharedPtr<SComboButton>& AddButton) 
 {
-	auto AddParameterLambda = [this, AssignmentNode](FNiagaraVariable& NewParameter) {
+	auto AddParameterLambda = [this, AssignmentNode](FNiagaraVariable NewParameter) {
 		// If an assignment target is already setting the associated parameter, make a unique name here so that the assignment target is valid.
 		// Because the unique name is made before calling FNiagaraSystemToolkitParameterPanelViewModel::AddParameter, pass bMakeUniqueName = false.
 		if (AssignmentNode->GetAssignmentTargets().Contains(NewParameter))
 		{
 			TSet<FName> Names;
 			UNiagaraEditorParametersAdapter* EditorParametersAdapter = SystemViewModel->GetEditorOnlyParametersAdapter();
-			TArray<UNiagaraScriptVariable*>& EditorOnlyScriptVars = EditorParametersAdapter->GetParameters();
+			TArray<TObjectPtr<UNiagaraScriptVariable>>& EditorOnlyScriptVars = EditorParametersAdapter->GetParameters();
 			for (UNiagaraScriptVariable* ScriptVar : EditorOnlyScriptVars)
 			{
 				Names.Add(ScriptVar->Variable.GetName());
@@ -1684,7 +1682,7 @@ TSharedRef<SWidget> FNiagaraSystemToolkitParameterPanelViewModel::CreateAddParam
 		AssignmentNode->AddParameter(NewParameter, VarDefaultValue);
 	};
 
-	auto AddExistingParameterLambda = [this, AssignmentNode](FNiagaraVariable& NewParameter) {
+	auto AddExistingParameterLambda = [this, AssignmentNode](const FNiagaraVariable& NewParameter) {
 		// If an assignment target is already setting the associated parameter, we simply don't do anything
 		if (AssignmentNode->GetAssignmentTargets().Contains(NewParameter))
 		{
@@ -1968,7 +1966,7 @@ TArray<FNiagaraParameterPanelItem> FNiagaraSystemToolkitParameterPanelViewModel:
 					: FCompileConstantResolver();
 				 
 				Builder.SetIgnoreDisabled(bIgnoreDisabled);
-				Builder.ConstantResolver = ConstantResolver;
+				*Builder.ConstantResolver = ConstantResolver;
 				FName StageName;
 				ENiagaraScriptUsage StageUsage = OutputNode->GetUsage();
 				if (StageUsage == ENiagaraScriptUsage::ParticleSimulationStageScript && GraphOwningEmitter.Emitter)
@@ -2057,7 +2055,7 @@ TArray<FNiagaraParameterPanelItem> FNiagaraSystemToolkitParameterPanelViewModel:
 						bool bVarOnlyInTopLevelGraph = true;
 						if (!bForceScript)
 						{
-							for (FModuleScopedPin& WritePin : Builder.Histories[0].PerVariableWriteHistory[VariableIndex])
+							for (FNiagaraParameterMapHistory::FModuleScopedPin& WritePin : Builder.Histories[0].PerVariableWriteHistory[VariableIndex])
 							{
 								UEdGraphNode* VariableOwningNode = WritePin.Pin->GetOwningNode();
 								bVarOnlyInTopLevelGraph &= AllGraphs.Contains(static_cast<const UNiagaraGraph*>(VariableOwningNode->GetGraph()));
@@ -2201,7 +2199,7 @@ void FNiagaraSystemToolkitParameterPanelViewModel::AddScriptVariable(const UNiag
 	else
 	{
 		UNiagaraEditorParametersAdapter* EditorParametersAdapter = SystemViewModel->GetEditorOnlyParametersAdapter();
-		TArray<UNiagaraScriptVariable*>& EditorOnlyScriptVars = EditorParametersAdapter->GetParameters();
+		TArray<TObjectPtr<UNiagaraScriptVariable>>& EditorOnlyScriptVars = EditorParametersAdapter->GetParameters();
 		const FGuid& NewScriptVarId = NewScriptVar->Metadata.GetVariableGuid();
 		bool bNewScriptVarAlreadyExists = EditorOnlyScriptVars.ContainsByPredicate([&NewScriptVarId](const UNiagaraScriptVariable* ScriptVar){ return ScriptVar->Metadata.GetVariableGuid() == NewScriptVarId; });
 		if (bNewScriptVarAlreadyExists == false)
@@ -3101,86 +3099,61 @@ TArray<FNiagaraParameterPanelItem> FNiagaraScriptToolkitParameterPanelViewModel:
 	TMap<FNiagaraVariable, FNiagaraParameterPanelItem> VisitedParameterToItemMap;
 	TArray<FNiagaraVariable> VisitedInvalidParameters;
 
-	TArray<UNiagaraGraph*> Graphs = GetEditableGraphsConst();
-
-	// For scripts we use the reference maps cached in the graph to collect parameters.
-	for (const UNiagaraGraph* Graph : Graphs)
+	TArray<UNiagaraGraph*> EditableGraphs = GetEditableGraphsConst();
+	for(UNiagaraGraph* Graph : EditableGraphs)
 	{
-		TMap<FNiagaraVariable, TObjectPtr<UNiagaraScriptVariable>> ParameterToScriptVariableMap;
-		ParameterToScriptVariableMap.Append(Graph->GetAllMetaData());
-		// Collect all subgraphs to get their UNiagaraScriptVariables to resolve metadata for parameters in the parameter reference map.
-		TSet<UNiagaraGraph*> SubGraphs;
-		TArray<UNiagaraNodeFunctionCall*> FunctionCallNodes;
-		Graph->GetNodesOfClass<UNiagaraNodeFunctionCall>(FunctionCallNodes);
-		for (UNiagaraNodeFunctionCall* FunctionCallNode : FunctionCallNodes)
-		{
-			UNiagaraScriptSource* FunctionScriptSource = FunctionCallNode->GetFunctionScriptSource();
-			if (FunctionScriptSource)
-			{
-				ParameterToScriptVariableMap.Append(FunctionScriptSource->NodeGraph->GetAllMetaData());
-			}
-		}
+		const TMap<FNiagaraVariable, TObjectPtr<UNiagaraScriptVariable>>& ParameterMetaData = Graph->GetAllMetaData();
+		const TMap<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection>& ReferenceCollection = Graph->GetParameterReferenceMap();
 
-		for (const TPair<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection>& ParameterElement : Graph->GetParameterReferenceMap())
+		for(const auto& ParameterMetaDataPair : ParameterMetaData)
 		{
-			const FNiagaraVariable& Var = ParameterElement.Key;
+			const FNiagaraVariable Parameter = ParameterMetaDataPair.Key;
+			const UNiagaraScriptVariable* ScriptVariable = ParameterMetaDataPair.Value;
+
 			// If this variable has already been visited and does not have a valid namespace then skip it.
-			if (VisitedInvalidParameters.Contains(Var))
+			if (VisitedInvalidParameters.Contains(Parameter))
 			{
 				continue;
 			}
 
-			if (FNiagaraParameterPanelItem* ItemPtr = VisitedParameterToItemMap.Find(Var))
+			// -Now make sure the variable namespace is in a valid category. If not, skip it.
+			FNiagaraNamespaceMetadata CandidateNamespaceMetaData;
+			if (ScriptVariable->GetIsStaticSwitch())
 			{
-				// This variable has already been registered, increment the reference count.
-				ItemPtr->ReferenceCount += ParameterElement.Value.ParameterReferences.Num();
+				CandidateNamespaceMetaData = FNiagaraEditorUtilities::GetNamespaceMetaDataForId(FNiagaraEditorGuids::StaticSwitchNamespaceMetaDataGuid);
 			}
 			else
 			{
-				// This variable has not been registered, prepare the FNiagaraParameterPanelItem.
-				// -First lookup the script variable.
-				TObjectPtr<UNiagaraScriptVariable> const* ScriptVarPtr = ParameterToScriptVariableMap.Find(Var);
-				TObjectPtr<UNiagaraScriptVariable> ScriptVar = ScriptVarPtr != nullptr ? *ScriptVarPtr : nullptr;
-				if (!ScriptVar)
-				{
-					// Create a new UNiagaraScriptVariable to represent this parameter for the lifetime of the ParameterPanelViewModel.
-					ScriptVar = NewObject<UNiagaraScriptVariable>(GetTransientPackage());
-					ScriptVar->AddToRoot();
-					ScriptVar->Init(Var, FNiagaraVariableMetaData());
-					TransientParameterToScriptVarMap.Add(Var, ScriptVar);
-				}
-
-				// -Now make sure the variable namespace is in a valid category. If not, skip it.
-				FNiagaraNamespaceMetadata CandidateNamespaceMetaData;
-				if (ScriptVar->GetIsStaticSwitch())
-				{
-					CandidateNamespaceMetaData = FNiagaraEditorUtilities::GetNamespaceMetaDataForId(FNiagaraEditorGuids::StaticSwitchNamespaceMetaDataGuid);
-				}
-				else
-				{
-					CandidateNamespaceMetaData = FNiagaraEditorUtilities::GetNamespaceMetaDataForVariableName(Var.GetName());
-				}
-
-				if (CachedCurrentCategories.Contains(FNiagaraParameterPanelCategory(CandidateNamespaceMetaData)) == false)
-				{
-					VisitedInvalidParameters.Add(Var);
-					continue;
-				}
-
-				FNiagaraParameterPanelItem Item = FNiagaraParameterPanelItem();
-				Item.ScriptVariable = ScriptVar;
-				Item.NamespaceMetaData = CandidateNamespaceMetaData;
-				Item.bExternallyReferenced = false;
-				Item.bSourcedFromCustomStackContext = false;
-
-				// Determine whether the item is name aliasing a parameter definition's parameter.
-				Item.DefinitionMatchState = FNiagaraParameterDefinitionsUtilities::GetDefinitionMatchStateForParameter(ScriptVar->Variable);
-
-				// -Increment the reference count.
-				Item.ReferenceCount += ParameterElement.Value.ParameterReferences.Num();
-
-				VisitedParameterToItemMap.Add(Var, Item);
+				CandidateNamespaceMetaData = FNiagaraEditorUtilities::GetNamespaceMetaDataForVariableName(Parameter.GetName());
 			}
+
+			if (CachedCurrentCategories.Contains(FNiagaraParameterPanelCategory(CandidateNamespaceMetaData)) == false)
+			{
+				VisitedInvalidParameters.Add(Parameter);
+				continue;
+			}
+
+			FNiagaraParameterPanelItem Item = FNiagaraParameterPanelItem();
+			Item.ScriptVariable = ScriptVariable;
+			Item.NamespaceMetaData = CandidateNamespaceMetaData;
+			Item.bExternallyReferenced = false;
+			Item.bSourcedFromCustomStackContext = false;
+
+			// Determine whether the item is name aliasing a parameter definition's parameter.
+			Item.DefinitionMatchState = FNiagaraParameterDefinitionsUtilities::GetDefinitionMatchStateForParameter(Parameter);
+
+			// Set the reference count. It is possible a parameter has no entry in the reference collection,
+			// for example a static switch that was added via propagation but then removed again will have no references. There might be other exceptions, too.
+			if(ReferenceCollection.Contains(Parameter))
+			{
+				Item.ReferenceCount = ReferenceCollection[Parameter].ParameterReferences.Num();
+			}
+			else
+			{
+				Item.ReferenceCount = 0;
+			}
+
+			VisitedParameterToItemMap.Add(Parameter, Item);
 		}
 	}
 

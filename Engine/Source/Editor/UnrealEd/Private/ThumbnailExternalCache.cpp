@@ -24,7 +24,6 @@ namespace ThumbnailExternalCache
 {
 	const int64 LatestVersion = 0;
 	const uint64 ExpectedHeaderId = 0x424d5548545f4555; // "UE_THUMB"
-	const FString ThumbnailFilenamePart(TEXT("CachedEditorThumbnails.bin"));
 	const FString ThumbnailImageFormatName(TEXT(""));
 
 	void ResizeThumbnailImage(FObjectThumbnail& Thumbnail, const int32 NewWidth, const int32 NewHeight)
@@ -111,7 +110,6 @@ public:
 	FSaveThumbnailCache();
 	~FSaveThumbnailCache();
 
-	void Save(const FString& InFilename, const TArrayView<FAssetData> InAssetDatas, const FThumbnailExternalCacheSettings& InSettings);
 	void Save(FArchive& Ar, const TArrayView<FAssetData> InAssetDatas, const FThumbnailExternalCacheSettings& InSettings);
 };
 
@@ -123,15 +121,6 @@ FSaveThumbnailCache::~FSaveThumbnailCache()
 {
 }
 
-void FSaveThumbnailCache::Save(const FString& InFilename, const TArrayView<FAssetData> InAssetDatas, const FThumbnailExternalCacheSettings& InSettings)
-{
-	if (TUniquePtr<FArchive> FileWriter = TUniquePtr<FArchive>(IFileManager::Get().CreateFileWriter(*InFilename)))
-	{
-		Save(*FileWriter, InAssetDatas, InSettings);
-		return;
-	}
-}
-
 void FSaveThumbnailCache::Save(FArchive& Ar, const TArrayView<FAssetData> InAssetDatas, const FThumbnailExternalCacheSettings& InSettings)
 {
 	// Reduce peak memory to support larger asset counts by loading then saving in batches
@@ -140,6 +129,8 @@ void FSaveThumbnailCache::Save(FArchive& Ar, const TArrayView<FAssetData> InAsse
 	const double TimeStart = FPlatformTime::Seconds();
 
 	const int32 NumAssetDatas = InAssetDatas.Num();
+
+	UE_LOG(LogThumbnailExternalCache, Log, TEXT("Saving thumbnails for %d assets to %s"), NumAssetDatas, *Ar.GetArchiveName());
 
 	FText StatusText = LOCTEXT("SaveStatus", "Saving Thumbnails: {0}");
 	FScopedSlowTask SlowTask( (float)NumAssetDatas / (float)TaskBatchSize, FText::Format(StatusText, FText::AsNumber(NumAssetDatas)));
@@ -184,8 +175,7 @@ void FSaveThumbnailCache::Save(FArchive& Ar, const TArrayView<FAssetData> InAsse
 		ParallelFor(AssetsForSegment.Num(), [AssetsForSegment, &Tasks, &InSettings](int32 Index)
 		{
 			FSaveThumbnailCacheTask& Task = Tasks[Index];
-			Task.ObjectThumbnail = FThumbnailExternalCache::LoadThumbnailFromPackage(AssetsForSegment[Index]);
-			if (!Task.ObjectThumbnail.IsEmpty())
+			if (ThumbnailTools::LoadThumbnailFromPackage(AssetsForSegment[Index], Task.ObjectThumbnail) && !Task.ObjectThumbnail.IsEmpty())
 			{
 				{
 					FNameBuilder ObjectFullNameBuilder;
@@ -249,14 +239,17 @@ void FSaveThumbnailCache::Save(FArchive& Ar, const TArrayView<FAssetData> InAsse
 
 	int64 NumThumbnails = PackageThumbnailRecords.Num();
 	Ar << NumThumbnails;
-
-	FString ThumbnailNameString;
-	for (FPackageThumbnailRecord& PackageThumbnailRecord : PackageThumbnailRecords)
 	{
-		ThumbnailNameString.Reset();
-		PackageThumbnailRecord.Name.AppendString(ThumbnailNameString);
-		Ar << ThumbnailNameString;
-		Ar << PackageThumbnailRecord.Offset;
+		FString ThumbnailNameString;
+		int64 Index = 0;
+		for (FPackageThumbnailRecord& PackageThumbnailRecord : PackageThumbnailRecords)
+		{
+			ThumbnailNameString.Reset();
+			PackageThumbnailRecord.Name.AppendString(ThumbnailNameString);
+			UE_LOG(LogThumbnailExternalCache, Verbose, TEXT("\t[%d] %s"), Index++, *ThumbnailNameString);
+			Ar << ThumbnailNameString;
+			Ar << PackageThumbnailRecord.Offset;
+		}
 	}
 
 	// Modify top of archive to know where table of contents is located
@@ -319,6 +312,12 @@ FThumbnailExternalCache& FThumbnailExternalCache::Get()
 	return ThumbnailExternalCache;
 }
 
+const FString& FThumbnailExternalCache::GetCachedEditorThumbnailsFilename()
+{
+	static const FString Filename = TEXT("CachedEditorThumbnails.bin");
+	return Filename;
+}
+
 void FThumbnailExternalCache::Init()
 {
 	if (!bHasInit)
@@ -326,7 +325,7 @@ void FThumbnailExternalCache::Init()
 		bHasInit = true;
 
 		// Load file for project
-		LoadCacheFileIndex(FPaths::ProjectDir() / ThumbnailExternalCache::ThumbnailFilenamePart);
+		LoadCacheFileIndex(FPaths::ProjectDir() / FThumbnailExternalCache::GetCachedEditorThumbnailsFilename());
 
 		// Load any thumbnail files for content plugins
 		TArray<TSharedRef<IPlugin>> ContentPlugins = IPluginManager::Get().GetEnabledPluginsWithContent();
@@ -366,7 +365,7 @@ bool FThumbnailExternalCache::LoadThumbnailsFromExternalCache(const TSet<FName>&
 		return false;
 	}
 
-	static const FString BlueprintGeneratedClassPrefix = TEXT("BlueprintGeneratedClass ");
+	static const FString BlueprintGeneratedClassPrefix = TEXT("/Script/Engine.BlueprintGeneratedClass ");
 
 	int32 NumLoaded = 0;
 	for (const FName ObjectFullName : InObjectFullNames)
@@ -381,7 +380,7 @@ bool FThumbnailExternalCache::LoadThumbnailsFromExternalCache(const TSet<FName>&
 		{
 			// Look for the thumbnail of the Blueprint version of this object instead
 			FNameBuilder ModifiedNameBuilder;
-			ModifiedNameBuilder.Append(TEXT("Blueprint "));
+			ModifiedNameBuilder.Append(TEXT("/Script/Engine.Blueprint "));
 			FStringView ViewToAppend = NameView;
 			ViewToAppend.RightChopInline(BlueprintGeneratedClassPrefix.Len());
 			ViewToAppend.LeftChopInline(2);
@@ -450,30 +449,6 @@ void FThumbnailExternalCache::SaveExternalCache(FArchive& Ar, const TArrayView<F
 	bIsSavingCache = false;
 }
 
-FObjectThumbnail FThumbnailExternalCache::LoadThumbnailFromPackage(const FAssetData& AssetData)
-{
-	// Determine filename
-	FString PackageFilename;
-	if (FPackageName::DoesPackageExist(AssetData.PackageName.ToString(), &PackageFilename))
-	{
-		// Thumbnails are identified in package with full object names
-		TSet<FName> ObjectFullNames;
-		FNameBuilder ObjectFullNameBuilder;
-		AssetData.GetFullName(ObjectFullNameBuilder);
-		const FName ObjectFullName(ObjectFullNameBuilder);
-		ObjectFullNames.Add(ObjectFullName);
-
-		FThumbnailMap ThumbnailMap;
-		ThumbnailTools::LoadThumbnailsFromPackage(PackageFilename, ObjectFullNames, ThumbnailMap);
-		if (FObjectThumbnail* Found = ThumbnailMap.Find(ObjectFullName))
-		{
-			return MoveTemp(*Found);
-		}
-	}
-
-	return FObjectThumbnail();
-}
-
 void FThumbnailExternalCache::OnContentPathMounted(const FString& InAssetPath, const FString& InFilesystemPath)
 {
 	if (TSharedPtr<IPlugin> FoundPlugin = IPluginManager::Get().FindPluginFromPath(InAssetPath))
@@ -488,7 +463,7 @@ void FThumbnailExternalCache::OnContentPathDismounted(const FString& InAssetPath
 	{
 		if (FoundPlugin->CanContainContent())
 		{
-			FString Filename = FoundPlugin->GetBaseDir() / ThumbnailExternalCache::ThumbnailFilenamePart;
+			const FString Filename = FoundPlugin->GetBaseDir() / FThumbnailExternalCache::GetCachedEditorThumbnailsFilename();
 			CacheFiles.Remove(Filename);
 		}
 	}
@@ -498,7 +473,7 @@ void FThumbnailExternalCache::LoadCacheFileIndexForPlugin(const TSharedPtr<IPlug
 {
 	if (InPlugin && InPlugin->CanContainContent())
 	{
-		FString Filename = InPlugin->GetBaseDir() / ThumbnailExternalCache::ThumbnailFilenamePart;
+		const FString Filename = InPlugin->GetBaseDir() / FThumbnailExternalCache::GetCachedEditorThumbnailsFilename();
 		if (IFileManager::Get().FileExists(*Filename))
 		{
 			LoadCacheFileIndex(Filename);

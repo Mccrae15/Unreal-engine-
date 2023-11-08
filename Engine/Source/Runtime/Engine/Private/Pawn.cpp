@@ -26,6 +26,7 @@
 #include "Components/PawnNoiseEmitterComponent.h"
 #include "GameFramework/GameNetworkManager.h"
 #include "GameFramework/InputSettings.h"
+#include "PhysicsEngine/PhysicsSettings.h"
 #include "Engine/DemoNetDriver.h"
 #include "Misc/EngineNetworkCustomVersion.h"
 
@@ -306,9 +307,14 @@ UPawnNoiseEmitterComponent* APawn::GetPawnNoiseEmitterComponent() const
 	 return NoiseEmitterComponent;
 }
 
-FVector APawn::GetGravityDirection()
+FVector APawn::GetGravityDirection() const
 {
 	return FVector(0.f,0.f,-1.f);
+}
+
+FQuat APawn::GetGravityTransform() const
+{
+	return FQuat::Identity;
 }
 
 bool APawn::ShouldTickIfViewportsOnly() const 
@@ -395,7 +401,7 @@ void APawn::BecomeViewTarget(APlayerController* PC)
 
 	if (GetNetMode() != NM_Client)
 	{
-		PC->ForceSingleNetUpdateFor(this);
+		ForceNetUpdate();
 	}
 
 	if (GetNetMode() != NM_DedicatedServer)
@@ -610,15 +616,21 @@ void APawn::OnRep_PlayerState()
 
 void APawn::SetPlayerState(APlayerState* NewPlayerState)
 {
+	APlayerState* OldPlayerState = PlayerState;
+
 	if (PlayerState && PlayerState->GetPawn() == this)
 	{
 		FSetPlayerStatePawn(PlayerState, nullptr);
 	}
+
 	PlayerState = NewPlayerState;
+
 	if (PlayerState)
 	{
 		FSetPlayerStatePawn(PlayerState, this);
 	}
+
+	OnPlayerStateChanged(NewPlayerState, OldPlayerState);
 }
 
 void APawn::PossessedBy(AController* NewController)
@@ -1157,6 +1169,11 @@ void APawn::GetMoveGoalReachTest(const AActor* MovingActor, const FVector& MoveO
 
 void APawn::PostNetReceiveVelocity(const FVector& NewVelocity)
 {
+	const FPhysicsPredictionSettings& PhysicsPredictionSettings = UPhysicsSettings::Get()->PhysicsPrediction;
+	if (PhysicsPredictionSettings.bEnablePhysicsPrediction)
+	{
+		Super::PostNetReceiveVelocity(NewVelocity);
+	}
 	if (GetLocalRole() == ROLE_SimulatedProxy)
 	{
 		UMovementComponent* const MoveComponent = GetMovementComponent();

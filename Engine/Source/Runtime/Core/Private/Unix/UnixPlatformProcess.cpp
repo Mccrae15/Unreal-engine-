@@ -47,6 +47,14 @@ __thread uint32 FUnixTLS::ThreadIdTLS = 0;
 uint32 FUnixTLS::ThreadIdTLSKey = FUnixTLS::AllocTlsSlot();
 #endif
 
+#if UE_CHECK_LARGE_ALLOCATIONS
+static TAutoConsoleVariable<int32> CVarEnableLargeAllocationChecksAfterFork(
+	TEXT("memory.EnableLargeAllocationChecksAfterFork"),
+	false,
+	TEXT("After forking, Turn on ensure which checks no single allocation is greater than 'LargeAllocationThreshold'"),
+	ECVF_Default);
+#endif
+
 void* FUnixPlatformProcess::GetDllHandle( const TCHAR* Filename )
 {
 	check( Filename );
@@ -309,6 +317,23 @@ const TCHAR* FUnixPlatformProcess::ApplicationSettingsDir()
 	return Result;
 }
 
+FString FUnixPlatformProcess::GetApplicationSettingsDir(const ApplicationSettingsContext& Settings)
+{
+	// The ApplicationSettingsDir is where the engine stores settings and configuration
+	// data.  On linux this corresponds to $HOME/.config/Epic
+	TCHAR Result[UNIX_MAX_PATH] = TEXT("");
+	FCString::Strncpy(Result, FPlatformProcess::UserHomeDir(), UE_ARRAY_COUNT(Result));
+	if (Settings.bIsEpic)
+	{
+		FCString::Strncat(Result, TEXT("/.config/Epic/"), UE_ARRAY_COUNT(Result));
+	}
+	else
+	{
+		FCString::Strncat(Result, TEXT("/.config/"), UE_ARRAY_COUNT(Result));
+	}
+	return FString(Result);
+}
+
 bool FUnixPlatformProcess::SetProcessLimits(EProcessResource::Type Resource, uint64 Limit)
 {
 	rlimit NativeLimit;
@@ -557,19 +582,17 @@ bool FUnixPlatformProcess::ReadPipeToArray(void* ReadPipe, TArray<uint8> & Outpu
 bool FUnixPlatformProcess::WritePipe(void* WritePipe, const FString& Message, FString* OutWritten)
 {
 	// if there is not a message or WritePipe is null
-	if ((Message.Len() == 0) || (WritePipe == nullptr))
+	int32 MessageLen = Message.Len();
+	if ((MessageLen == 0) || (WritePipe == nullptr))
 	{
 		return false;
 	}
 
 	// Convert input to UTF8CHAR
-	uint32 BytesAvailable = Message.Len();
-	UTF8CHAR * Buffer = new UTF8CHAR[BytesAvailable + 2];
-	for (uint32 i = 0; i < BytesAvailable; i++)
-	{
-		Buffer[i] = (UTF8CHAR)Message[i];
-	}
-	Buffer[BytesAvailable] = (UTF8CHAR)'\n';
+	const TCHAR* MessagePtr = *Message;
+	int32 BytesAvailable = FPlatformString::ConvertedLength<UTF8CHAR>(MessagePtr, MessageLen);
+	UTF8CHAR* Buffer = new UTF8CHAR[BytesAvailable + 2];
+	*FPlatformString::Convert(Buffer, BytesAvailable, MessagePtr, MessageLen) = (UTF8CHAR)'\n';
 
 	// write to pipe
 	uint32 BytesWritten = write(*(int*)WritePipe, Buffer, BytesAvailable + 1);
@@ -577,8 +600,7 @@ bool FUnixPlatformProcess::WritePipe(void* WritePipe, const FString& Message, FS
 	// Get written message
 	if (OutWritten)
 	{
-		Buffer[BytesWritten] = (UTF8CHAR)'\0';
-		*OutWritten = FUTF8ToTCHAR((const ANSICHAR*)Buffer).Get();
+		*OutWritten = StringCast<TCHAR>(Buffer, BytesWritten).Get();
 	}
 
 	delete[] Buffer;
@@ -1601,6 +1623,13 @@ FGenericPlatformProcess::EWaitAndForkResult FUnixPlatformProcess::WaitAndFork()
 
 				OnEndFrameHandle = FCoreDelegates::OnEndFrame.AddStatic(FUnixPlatformProcess::OnChildEndFramePostFork);
 				FCoreDelegates::OnPostFork.Broadcast(EForkProcessRole::Child);
+
+#if UE_CHECK_LARGE_ALLOCATIONS
+				if (CVarEnableLargeAllocationChecksAfterFork.GetValueOnAnyThread())
+				{
+					UE::Memory::Private::CVarEnableLargeAllocationChecks->Set(true);
+				}
+#endif
 
 				// Children break out of the loop and return
 				RetVal = EWaitAndForkResult::Child;

@@ -51,7 +51,7 @@ class USkyAtmosphereComponent : public USceneComponent
 
 
 	/** The ground albedo that will tint the atmosphere when the sun light will bounce on it. Only taken into account when MultiScattering>0.0. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, interp, Category = "Planet", meta = (HideAlphaChannel))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Planet", meta = (HideAlphaChannel))
 	ESkyAtmosphereTransformMode TransformMode;
 
 	/** The radius in kilometers from the center of the planet to the ground level. */
@@ -140,7 +140,7 @@ class USkyAtmosphereComponent : public USceneComponent
 	
 
 
-	/** Scales the luminance of pixels representing the sky, i.e. not belonging to any surface. */
+	/** Scales the luminance of pixels representing the sky. This will impact the captured sky light. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, interp, Category = "Art Direction", meta = (HideAlphaChannel))
 	FLinearColor SkyLuminanceFactor;
 
@@ -169,6 +169,11 @@ class USkyAtmosphereComponent : public USceneComponent
 	ENGINE_API FVector GetOverridenAtmosphereLightDirection(int32 AtmosphereLightIndex);
 	UFUNCTION(BlueprintCallable, Category = "Rendering")
 	ENGINE_API void ResetAtmosphereLightDirectionOverride(int32 AtmosphereLightIndex);
+
+	UFUNCTION(BlueprintCallable, Category = "Rendering", meta = (DisplayName = "Set Ground Radius"))
+	ENGINE_API void SetBottomRadius(float NewValue);
+	UFUNCTION(BlueprintCallable, Category = "Rendering")
+	ENGINE_API void SetGroundAlbedo(const FColor& NewValue);
 
 	UFUNCTION(BlueprintCallable, Category = "Rendering")
 	ENGINE_API void SetAtmosphereHeight(float NewValue);
@@ -223,7 +228,6 @@ protected:
 public:
 
 	//~ Begin UObject Interface. 
-	virtual void PostInterpChange(FProperty* PropertyThatChanged) override;
 	virtual void Serialize(FArchive& Ar) override;
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
@@ -282,7 +286,7 @@ class ASkyAtmosphere : public AInfo
 
 private:
 #if WITH_EDITOR
-	virtual bool ActorTypeSupportsDataLayer() const override { return true; }
+	virtual bool IsDataLayerTypeSupported(TSubclassOf<UDataLayerInstance> DataLayerType) const override { return true; }
 #endif
 
 	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = Atmosphere, meta = (AllowPrivateAccess = "true"))
@@ -297,6 +301,6 @@ private:
 public:
 
 	/** Returns SkyAtmosphereComponent subobject */
-	ENGINE_API USkyAtmosphereComponent* GetComponent() const { return SkyAtmosphereComponent; }
+	USkyAtmosphereComponent* GetComponent() const { return SkyAtmosphereComponent; }
 
 };

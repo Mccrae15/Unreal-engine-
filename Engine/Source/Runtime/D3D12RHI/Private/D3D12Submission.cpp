@@ -27,7 +27,7 @@ static FAutoConsoleVariableRef CVarD3D12AsyncPayloadMerge(
 // @todo mgpu - fix crashes when submission thread is enabled)
 static TAutoConsoleVariable<int32> CVarRHIUseSubmissionThread(
 	TEXT("rhi.UseSubmissionThread"),
-	1,
+	2,
 	TEXT("Whether to enable the RHI submission thread.\n")
 	TEXT("  0: No\n")
 	TEXT("  1: Yes, but not when running with multi-gpu.\n")
@@ -41,6 +41,20 @@ DECLARE_CYCLE_STAT(TEXT("GPU Total Time [Hardware Timer]"), STAT_RHI_GPUTotalTim
 DECLARE_CYCLE_STAT(TEXT("GPU Total Time [Graphics]"), STAT_RHI_GPUTotalTimeGraphics, STATGROUP_D3D12RHI);
 DECLARE_CYCLE_STAT(TEXT("GPU Total Time [Async Compute]"), STAT_RHI_GPUTotalTimeAsyncCompute, STATGROUP_D3D12RHI);
 DECLARE_CYCLE_STAT(TEXT("GPU Total Time [Copy]"), STAT_RHI_GPUTotalTimeCopy, STATGROUP_D3D12RHI);
+
+DECLARE_STATS_GROUP(TEXT("D3D12RHIPipeline"), STATGROUP_D3D12RHIPipeline, STATCAT_Advanced);
+
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("GPU IA Vertices"   ), STAT_D3D12RHI_IAVertices   , STATGROUP_D3D12RHIPipeline);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("GPU IA Primitives" ), STAT_D3D12RHI_IAPrimitives , STATGROUP_D3D12RHIPipeline);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("GPU VS Invocations"), STAT_D3D12RHI_VSInvocations, STATGROUP_D3D12RHIPipeline);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("GPU GS Invocations"), STAT_D3D12RHI_GSInvocations, STATGROUP_D3D12RHIPipeline);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("GPU GS Primitives" ), STAT_D3D12RHI_GSPrimitives , STATGROUP_D3D12RHIPipeline);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("GPU C Invocations" ), STAT_D3D12RHI_CInvocations , STATGROUP_D3D12RHIPipeline);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("GPU C Primitives"  ), STAT_D3D12RHI_CPrimitives  , STATGROUP_D3D12RHIPipeline);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("GPU PS Invocations"), STAT_D3D12RHI_PSInvocations, STATGROUP_D3D12RHIPipeline);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("GPU HS Invocations"), STAT_D3D12RHI_HSInvocations, STATGROUP_D3D12RHIPipeline);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("GPU DS Invocations"), STAT_D3D12RHI_DSInvocations, STATGROUP_D3D12RHIPipeline);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("GPU CS Invocations"), STAT_D3D12RHI_CSInvocations, STATGROUP_D3D12RHIPipeline);
 
 // The maximum time, in seconds, that a submitted GPU command list is allowed to take before the RHI reports a GPU hang.
 const double SubmissionTimeOutInSeconds = 5.0;
@@ -196,9 +210,14 @@ IRHIPlatformCommandList* FD3D12DynamicRHI::RHIFinalizeContext(IRHIComputeContext
 	}
 }
 
-void FD3D12DynamicRHI::RHISubmitCommandLists(TArrayView<IRHIPlatformCommandList*> CommandLists)
+void FD3D12DynamicRHI::RHISubmitCommandLists(TArrayView<IRHIPlatformCommandList*> CommandLists, bool bFlushResources)
 {
 	SubmitCommands(MakeArrayView(reinterpret_cast<FD3D12FinalizedCommands**>(CommandLists.GetData()), CommandLists.Num()));
+
+	if (bFlushResources)
+	{
+		ProcessDeferredDeletionQueue();
+	}
 }
 
 void FD3D12DynamicRHI::SubmitCommands(TConstArrayView<FD3D12FinalizedCommands*> Commands)
@@ -226,7 +245,8 @@ void FD3D12DynamicRHI::SubmitCommands(TConstArrayView<FD3D12FinalizedCommands*> 
 					Payload->SubmissionEvent ||
 					Payload->SubmissionTime.IsSet() ||
 					Payload->TimestampQueries.Num() ||
-					Payload->OcclusionQueries.Num())
+					Payload->OcclusionQueries.Num() ||
+					Payload->PipelineStatsQueries.Num())
 				{
 					bCanMergePayloads = false;
 					break;
@@ -255,6 +275,8 @@ void FD3D12DynamicRHI::SubmitCommands(TConstArrayView<FD3D12FinalizedCommands*> 
 					MergedPayload->SyncPointsToSignal.Append(Payload->SyncPointsToSignal);
 					MergedPayload->AllocatorsToRelease.Append(Payload->AllocatorsToRelease);
 					MergedPayload->QueryRanges.Append(Payload->QueryRanges);
+					MergedPayload->BreadcrumbStacks.Append(Payload->BreadcrumbStacks);
+					Payload->BreadcrumbStacks.Empty();
 
 					// Need to clear out allocator array, so Payload destructor doesn't delete them
 					Payload->AllocatorsToRelease.Empty();
@@ -324,7 +346,7 @@ static int32 GetMaxExecuteBatchSize()
 {
 	return
 #if UE_BUILD_DEBUG
-		D3D12RHI_ShouldCreateWithD3DDebug() ? 1 :
+		GRHIGlobals.IsDebugLayerEnabled ? 1 :
 #endif
 		TNumericLimits<int32>::Max();
 }
@@ -402,8 +424,9 @@ FD3D12DynamicRHI::FProcessResult FD3D12DynamicRHI::ProcessSubmissionQueue()
 				{
 					FD3D12Queue& TargetQueue = CommandList->Device->GetQueue(CommandList->QueueType);
 
-					// Occlusion Queries
+					// Occlusion + Pipeline Stats Queries
 					TargetQueue.PendingOcclusionQueries.Append(MoveTemp(CommandList->State.OcclusionQueries));
+					TargetQueue.PendingPipelineStatsQueries.Append(MoveTemp(CommandList->State.PipelineStatsQueries));
 
 					// Timestamp Queries
 					// Keep only the first Begin() in the batch
@@ -476,6 +499,7 @@ FD3D12DynamicRHI::FProcessResult FD3D12DynamicRHI::ProcessSubmissionQueue()
 				check(Payload->QueryRanges.Num() == 0);
 				check(Payload->TimestampQueries.Num() == 0);
 				check(Payload->OcclusionQueries.Num() == 0);
+				check(Payload->PipelineStatsQueries.Num() == 0);
 
 				if (Queue->PendingQueryRanges.Num())
 				{
@@ -503,7 +527,7 @@ FD3D12DynamicRHI::FProcessResult FD3D12DynamicRHI::ProcessSubmissionQueue()
 								if (!Queue->BarrierAllocator)
 									Queue->BarrierAllocator = Queue->Device->ObtainCommandAllocator(Queue->QueueType); 
 
-								return ResolveCommandList = Queue->Device->ObtainCommandList(Queue->BarrierAllocator, nullptr);
+								return ResolveCommandList = Queue->Device->ObtainCommandList(Queue->BarrierAllocator, nullptr, nullptr);
 							};
 
 							// We've got queries to resolve. Allocate a command list.
@@ -535,15 +559,16 @@ FD3D12DynamicRHI::FProcessResult FD3D12DynamicRHI::ProcessSubmissionQueue()
 										Range.Start,
 										Range.End - Range.Start,
 										Range.Heap->GetResultBuffer()->GetResource(),
-										Range.Start * FD3D12QueryHeap::ResultSize
+										Range.Start * Range.Heap->GetResultSize()
 									);
 								}
 							}
 						}
 
-						Payload->QueryRanges      = MoveTemp(Queue->PendingQueryRanges     );
-						Payload->TimestampQueries = MoveTemp(Queue->PendingTimestampQueries);
-						Payload->OcclusionQueries = MoveTemp(Queue->PendingOcclusionQueries);
+						Payload->QueryRanges          = MoveTemp(Queue->PendingQueryRanges         );
+						Payload->TimestampQueries     = MoveTemp(Queue->PendingTimestampQueries    );
+						Payload->OcclusionQueries     = MoveTemp(Queue->PendingOcclusionQueries    );
+						Payload->PipelineStatsQueries = MoveTemp(Queue->PendingPipelineStatsQueries);
 
 						if (ResolveCommandList)
 						{
@@ -728,7 +753,7 @@ FD3D12CommandList* FD3D12DynamicRHI::GenerateBarrierCommandListAndUpdateState(FD
 		Queue.BarrierAllocator = Queue.Device->ObtainCommandAllocator(Queue.QueueType);
 
 	// Get a new command list
-	FD3D12CommandList* BarrierCommandList = Queue.Device->ObtainCommandList(Queue.BarrierAllocator, &Queue.BarrierTimestamps);
+	FD3D12CommandList* BarrierCommandList = Queue.Device->ObtainCommandList(Queue.BarrierAllocator, &Queue.BarrierTimestamps, nullptr);
 
 #if ENABLE_RESIDENCY_MANAGEMENT
 	BarrierCommandList->UpdateResidency(ResidencyHandles);
@@ -915,6 +940,22 @@ void FD3D12DynamicRHI::ProcessInterruptQueueUntil(FGraphEvent* GraphEvent)
 	}
 }
 
+D3D12_QUERY_DATA_PIPELINE_STATISTICS& operator += (D3D12_QUERY_DATA_PIPELINE_STATISTICS& LHS, D3D12_QUERY_DATA_PIPELINE_STATISTICS const& RHS)
+{
+	LHS.IAVertices	  += RHS.IAVertices;
+	LHS.IAPrimitives  += RHS.IAPrimitives;
+	LHS.VSInvocations += RHS.VSInvocations;
+	LHS.GSInvocations += RHS.GSInvocations;
+	LHS.GSPrimitives  += RHS.GSPrimitives;
+	LHS.CInvocations  += RHS.CInvocations;
+	LHS.CPrimitives	  += RHS.CPrimitives;
+	LHS.PSInvocations += RHS.PSInvocations;
+	LHS.HSInvocations += RHS.HSInvocations;
+	LHS.DSInvocations += RHS.DSInvocations;
+	LHS.CSInvocations += RHS.CSInvocations;
+	return LHS;
+}
+
 FD3D12DynamicRHI::FProcessResult FD3D12DynamicRHI::ProcessInterruptQueue()
 {
 	SCOPED_NAMED_EVENT_TEXT("InterruptQueue_Process", FColor::Yellow);
@@ -997,7 +1038,20 @@ FD3D12DynamicRHI::FProcessResult FD3D12DynamicRHI::ProcessInterruptQueue()
 				for (FD3D12QueryLocation& Query : Payload->OcclusionQueries)
 				{
 					check(Query.Target);
-					*Query.Target = Query.GetResult();
+					Query.CopyResultTo(Query.Target);
+				}
+
+				for (FD3D12QueryLocation& Query : Payload->PipelineStatsQueries)
+				{
+					if (Query.Target)
+					{
+						Query.CopyResultTo(Query.Target);
+					}
+					else
+					{
+						// Pipeline stats queries without targets are the ones that surround whole command lists.
+						CurrentQueue.Timing->PipelineStats += Query.GetResult<D3D12_QUERY_DATA_PIPELINE_STATISTICS>();
+					}
 				}
 
 				if (Payload->TimestampQueries.Num())
@@ -1012,7 +1066,7 @@ FD3D12DynamicRHI::FProcessResult FD3D12DynamicRHI::ProcessInterruptQueue()
 					{
 						if (Query.Target)
 						{
-							*Query.Target = Query.GetResult();
+							Query.CopyResultTo(Query.Target);
 						}
 
 						switch (Query.Type)
@@ -1022,7 +1076,7 @@ FD3D12DynamicRHI::FProcessResult FD3D12DynamicRHI::ProcessInterruptQueue()
 						case ED3D12QueryType::IdleBegin:
 						case ED3D12QueryType::IdleEnd:
 							check(CurrentQueue.Timing);
-							CurrentQueue.Timing->Timestamps.Add(Query.GetResult());
+							CurrentQueue.Timing->Timestamps.Add(Query.GetResult<uint64>());
 							break;
 						}
 
@@ -1036,8 +1090,8 @@ FD3D12DynamicRHI::FProcessResult FD3D12DynamicRHI::ProcessInterruptQueue()
 						case ED3D12QueryType::CommandListEnd:
 							check(ListBegin != nullptr && IdleBegin == nullptr);
 							// Accumulate the number of ticks that have elapsed between the end of the previous command list, and the start of this one.
-							CurrentQueue.CumulativeIdleTicks += (CurrentQueue.LastEndTime != 0) ? ListBegin->GetResult() - CurrentQueue.LastEndTime : 0; //-V522
-							CurrentQueue.LastEndTime = Query.GetResult();
+							CurrentQueue.CumulativeIdleTicks += (CurrentQueue.LastEndTime != 0) ? ListBegin->GetResult<uint64>() - CurrentQueue.LastEndTime : 0; //-V522
+							CurrentQueue.LastEndTime = Query.GetResult<uint64>();
 							ListBegin = nullptr;
 							break;
 
@@ -1049,7 +1103,7 @@ FD3D12DynamicRHI::FProcessResult FD3D12DynamicRHI::ProcessInterruptQueue()
 						case ED3D12QueryType::IdleEnd:
 							check(ListBegin != nullptr && IdleBegin != nullptr);
 							// Accumulate the time this pipe spent in an idle scope. This includes vsync and waiting on other pipes.
-							CurrentQueue.CumulativeIdleTicks += Query.GetResult() - IdleBegin->GetResult(); //-V522
+							CurrentQueue.CumulativeIdleTicks += Query.GetResult<uint64>() - IdleBegin->GetResult<uint64>(); //-V522
 							IdleBegin = nullptr;
 							break;
 
@@ -1063,7 +1117,7 @@ FD3D12DynamicRHI::FProcessResult FD3D12DynamicRHI::ProcessInterruptQueue()
 							if (Query.Type == ED3D12QueryType::AdjustedMicroseconds)
 							{
 								// Convert to microseconds
-								*Query.Target = FPlatformMath::TruncToInt(double(*Query.Target) * MicrosecondsScale);
+								*static_cast<uint64*>(Query.Target) = FPlatformMath::TruncToInt(double(*static_cast<uint64*>(Query.Target)) * MicrosecondsScale);
 							}
 							break;
 						}
@@ -1102,6 +1156,52 @@ FD3D12PayloadBase::~FD3D12PayloadBase()
 	for (FD3D12CommandAllocator* Allocator : AllocatorsToRelease)
 	{
 		Queue.Device->ReleaseCommandAllocator(Allocator);
+	}
+}
+
+void FBreadcrumbStack::Initialize(TUniquePtr<FD3D12DiagnosticBuffer>& DiagnosticBuffer)
+{
+	{
+		FScopeLock Lock(&DiagnosticBuffer->CriticalSection);
+
+		if (DiagnosticBuffer->FreeContextIds.Num() == 0)
+		{
+			ContextId = 0;
+			return;
+		}
+
+		ContextId = DiagnosticBuffer->FreeContextIds.Pop();
+	}
+
+	check(ContextId > 0);
+	{
+		const uint32 ContextSize = DiagnosticBuffer->BreadCrumbsContextSize;
+		const uint32 Offset = DiagnosticBuffer->BreadCrumbsContextSize * (ContextId - 1);
+
+		MaxMarkers = ContextSize / sizeof(uint32);
+		WriteAddress = DiagnosticBuffer->GpuAddress + Offset;
+		CPUAddress = (uint8*)(DiagnosticBuffer->CpuAddress) + Offset;
+
+		FMemory::Memzero(CPUAddress, DiagnosticBuffer->BreadCrumbsContextSize);
+	}
+}
+
+FBreadcrumbStack::FBreadcrumbStack()
+{
+	Scopes.Reserve(2048);
+	ScopeStack.Reserve(128);
+}
+
+FBreadcrumbStack::~FBreadcrumbStack()
+{
+	TUniquePtr<FD3D12DiagnosticBuffer>& DiagnosticBuffer = Queue->DiagnosticBuffer;
+	if (ContextId > 0 && DiagnosticBuffer.IsValid())
+	{
+		{
+			FScopeLock Lock(&DiagnosticBuffer->CriticalSection);
+			DiagnosticBuffer->FreeContextIds.Push(ContextId);
+		}
+		ContextId = 0;
 	}
 }
 
@@ -1166,6 +1266,24 @@ void FD3D12DynamicRHI::ProcessTimestamps(TIndirectArray<FD3D12Timing>& Timing)
 
 	check(BusyPipes == 0);
 	
+	D3D12_QUERY_DATA_PIPELINE_STATISTICS PipelineStats{};
+	for (FD3D12Timing& Current : Timing)
+	{
+		PipelineStats += Current.PipelineStats;
+	}
+
+	SET_DWORD_STAT(STAT_D3D12RHI_IAVertices   , PipelineStats.IAVertices   );
+	SET_DWORD_STAT(STAT_D3D12RHI_IAPrimitives , PipelineStats.IAPrimitives );
+	SET_DWORD_STAT(STAT_D3D12RHI_VSInvocations, PipelineStats.VSInvocations);
+	SET_DWORD_STAT(STAT_D3D12RHI_GSInvocations, PipelineStats.GSInvocations);
+	SET_DWORD_STAT(STAT_D3D12RHI_GSPrimitives , PipelineStats.GSPrimitives );
+	SET_DWORD_STAT(STAT_D3D12RHI_CInvocations , PipelineStats.CInvocations );
+	SET_DWORD_STAT(STAT_D3D12RHI_CPrimitives  , PipelineStats.CPrimitives  );
+	SET_DWORD_STAT(STAT_D3D12RHI_PSInvocations, PipelineStats.PSInvocations);
+	SET_DWORD_STAT(STAT_D3D12RHI_HSInvocations, PipelineStats.HSInvocations);
+	SET_DWORD_STAT(STAT_D3D12RHI_DSInvocations, PipelineStats.DSInvocations);
+	SET_DWORD_STAT(STAT_D3D12RHI_CSInvocations, PipelineStats.CSInvocations);
+
 	// @todo mgpu - how to handle multiple devices / queues with potentially different timestamp frequencies?
 	FD3D12Device* Device = GetAdapter().GetDevice(0);
 	double Frequency = Device->GetTimestampFrequency(ED3D12QueueType::Direct);

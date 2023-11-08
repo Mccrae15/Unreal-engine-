@@ -13,7 +13,7 @@
 #include "Player/PlayerStreamReader.h"
 #include "Utilities/URLParser.h"
 #include "Utilities/UtilsMP4.h"
-
+#include "ElectraCDMClient.h"
 
 namespace Electra
 {
@@ -57,6 +57,7 @@ public:
 	FTimeValue GetMinBufferTime() const override;
 	FTimeValue GetDesiredLiveLatency() const override
 	{ return FTimeValue(); }
+	TRangeSet<double> GetPossiblePlaybackRates(EPlayRateType InForType) const override;
 	TSharedPtrTS<IProducerReferenceTimeInfo> GetProducerReferenceTimeInfo(int64 ID) const override;
 	void UpdateDynamicRefetchCounter() override;
 	void TriggerClockSync(EClockSyncType InClockSyncType) override;
@@ -261,6 +262,7 @@ public:
 		FPlayRangeEndInfo								PlayRangeEndInfo;
 		// Metadata from the 'meta' box, if any.
 		TSharedPtrTS<UtilsMP4::FMetadataParser>			MediaMetadata;
+		TSharedPtrTS<ElectraCDM::IMediaCDMClient>		DrmClient;
 	};
 
 
@@ -278,7 +280,7 @@ public:
 		FString GetSelectedAdaptationSetID(EStreamType StreamType) override;
 		ETrackChangeResult ChangeTrackStreamPreference(EStreamType ForStreamType, const FStreamSelectionAttributes& StreamAttributes) override;
 		TSharedPtrTS<ITimelineMediaAsset> GetMediaAsset() const override;
-		void SelectStream(const FString& AdaptationSetID, const FString& RepresentationID) override;
+		void SelectStream(const FString& AdaptationSetID, const FString& RepresentationID, int32 QualityIndex, int32 MaxQualityIndex) override;
 		void TriggerInitSegmentPreload(const TArray<FInitSegmentPreload>& InitSegmentsToPreload) override;
 		FResult GetStartingSegment(TSharedPtrTS<IStreamSegment>& OutSegment, const FPlayerSequenceState& InSequenceState, const FPlayStartPosition& StartPosition, ESearchType SearchType) override;
 		FResult GetContinuationSegment(TSharedPtrTS<IStreamSegment>& OutSegment, EStreamType StreamType, const FPlayerSequenceState& LoopState, const FPlayStartPosition& StartPosition, ESearchType SearchType) override;

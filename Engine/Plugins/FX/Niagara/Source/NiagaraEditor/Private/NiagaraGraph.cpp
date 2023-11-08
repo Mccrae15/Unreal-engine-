@@ -352,7 +352,7 @@ void UNiagaraGraph::PostLoad_LWCFixup(int32 NiagaraVersion)
 				TArray<UEdGraphPin*> Pins = FindParameterMapDefaultValuePins(Variable.GetName());
 				for (UEdGraphPin* Pin : Pins)
 				{
-					check(ChangedScriptVariable->DefaultMode == ENiagaraDefaultMode::Value && !Variable.GetType().IsDataInterface());
+					check(ChangedScriptVariable->DefaultMode == ENiagaraDefaultMode::Value && !Variable.GetType().IsDataInterface() && !Variable.GetType().IsUObject());
 
 					Variable.AllocateData();
 					FString NewDefaultValue = TypeUtilityValue->GetPinDefaultStringFromValue(Variable);
@@ -1527,6 +1527,13 @@ TOptional<FNiagaraScriptVariableData> UNiagaraGraph::GetScriptVariableData(const
 
 void UNiagaraGraph::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
+	// if this is a compilation copy we want to avoid sending any notifications (as we're not really tied to anything anymore).
+	// one area that this can happen is through a Reload of the source system while a compilation is in flight.
+	if (bIsForCompilationOnly)
+	{
+		return;
+	}
+
 	NotifyGraphChanged();
 	RefreshParameterReferences();
 }
@@ -2267,6 +2274,90 @@ UNiagaraScriptVariable* UNiagaraGraph::GetScriptVariable(FName ParameterName) co
 	return nullptr;
 }
 
+UNiagaraScriptVariable* UNiagaraGraph::GetScriptVariable(FGuid VariableGuid) const
+{
+	check(!bIsForCompilationOnly);
+
+	for (auto& VariableToScriptVariableItem : VariableToScriptVariable)
+	{
+		if(VariableToScriptVariableItem.Value->Metadata.GetVariableGuid() == VariableGuid)
+		{
+			return VariableToScriptVariableItem.Value;
+		}
+	}
+	
+	return nullptr;
+}
+
+TArray<UNiagaraScriptVariable*> UNiagaraGraph::GetChildScriptVariablesForInput(FGuid VariableGuid) const
+{
+	check(!bIsForCompilationOnly);
+
+	TArray<UNiagaraScriptVariable*> ChildrenVariables;
+	
+	TOptional<FNiagaraVariable> FoundVariable;
+	for (auto& VariableToScriptVariableItem : VariableToScriptVariable)
+	{
+		if(VariableToScriptVariableItem.Value->Metadata.GetVariableGuid() == VariableGuid)
+		{
+			FoundVariable = VariableToScriptVariableItem.Key;
+		}
+	}
+
+	if(FoundVariable.IsSet())
+	{
+		for (auto& VariableToScriptVariableItem : VariableToScriptVariable)
+		{
+			if(VariableToScriptVariableItem.Value->Metadata.ParentAttribute == FoundVariable->GetName())
+			{
+				ChildrenVariables.Add(VariableToScriptVariableItem.Value);
+			}
+		}
+	}
+
+	ChildrenVariables.Sort([&](const UNiagaraScriptVariable& VariableA, const UNiagaraScriptVariable& VariableB)
+	{
+		return VariableA.Metadata.EditorSortPriority < VariableB.Metadata.EditorSortPriority;
+	});
+	
+	return ChildrenVariables;
+}
+
+TArray<FGuid> UNiagaraGraph::GetChildScriptVariableGuidsForInput(FGuid VariableGuid) const
+{
+	check(!bIsForCompilationOnly);
+
+	TArray<FGuid> ChildrenVariableGuids;
+	TMap<FGuid, int32> SortOrderMap;
+	TOptional<FNiagaraVariable> FoundVariable;
+	for (auto& VariableToScriptVariableItem : VariableToScriptVariable)
+	{
+		if(VariableToScriptVariableItem.Value->Metadata.GetVariableGuid() == VariableGuid)
+		{
+			FoundVariable = VariableToScriptVariableItem.Key;
+		}
+	}
+
+	if(FoundVariable.IsSet())
+	{
+		for (auto& VariableToScriptVariableItem : VariableToScriptVariable)
+		{
+			if(VariableToScriptVariableItem.Value->Metadata.ParentAttribute == FoundVariable->GetName())
+			{
+				ChildrenVariableGuids.Add(VariableToScriptVariableItem.Value->Metadata.GetVariableGuid());
+				SortOrderMap.Add(VariableToScriptVariableItem.Value->Metadata.GetVariableGuid(), VariableToScriptVariableItem.Value->Metadata.EditorSortPriority);
+			}
+		}
+	}
+
+	ChildrenVariableGuids.Sort([&](const FGuid& GuidA, const FGuid& GuidB)
+	{
+		return SortOrderMap[GuidA] < SortOrderMap[GuidB];
+	});
+	
+	return ChildrenVariableGuids;
+}
+
 UNiagaraScriptVariable* UNiagaraGraph::AddParameter(const FNiagaraVariable& Parameter, bool bIsStaticSwitch /*= false*/)
 {
 	check(!bIsForCompilationOnly);
@@ -2767,7 +2858,7 @@ bool UNiagaraGraph::RenameStaticSwitch(UNiagaraNodeStaticSwitch* SwitchNode, FNa
 
 		if (!StaticSwitchInputs.Contains(OrigVariable))
 		{
-			RemoveParameter(OrigVariable);
+			RemoveParameter(OrigVariable, true);
 		}
 	}
 
@@ -2787,8 +2878,24 @@ void UNiagaraGraph::ScriptVariableChanged(FNiagaraVariable Variable)
 	check(!bIsForCompilationOnly);
 
 	UNiagaraScriptVariable* ScriptVariable = GetScriptVariable(Variable);
-	if (!ScriptVariable || ScriptVariable->GetIsStaticSwitch())
+	if (!ScriptVariable)
 	{
+		return;
+	}
+
+	if(ScriptVariable->GetIsStaticSwitch())
+	{
+		TArray<UNiagaraNodeStaticSwitch*> StaticSwitchNodes;
+		GetNodesOfClass<UNiagaraNodeStaticSwitch>(StaticSwitchNodes);
+
+		for(UNiagaraNodeStaticSwitch* StaticSwitchNode : StaticSwitchNodes)
+		{
+			if(StaticSwitchNode->InputParameterName == ScriptVariable->Variable.GetName())
+			{
+				StaticSwitchNode->AttemptUpdatePins();
+			}
+		}
+		
 		return;
 	}
 
@@ -2801,7 +2908,7 @@ void UNiagaraGraph::ScriptVariableChanged(FNiagaraVariable Variable)
 			MapGetNodes.Add(MapGetNode);
 		}
 		
-		if (ScriptVariable->DefaultMode == ENiagaraDefaultMode::Value && !Variable.GetType().IsDataInterface())
+		if (ScriptVariable->DefaultMode == ENiagaraDefaultMode::Value && !Variable.GetType().IsDataInterface() && !Variable.GetType().IsUObject())
 		{
 			FNiagaraEditorModule& EditorModule = FNiagaraEditorModule::Get();
 			auto TypeUtilityValue = EditorModule.GetTypeUtilities(Variable.GetType());
@@ -3394,7 +3501,7 @@ void UNiagaraGraph::RebuildCachedCompileIds()
 		NewUsageCache[i].UsageType = OutputNode->GetUsage();
 		NewUsageCache[i].UsageId = OutputNode->GetUsageId();
 
-		BuildTraversal(NewUsageCache[i].Traversal, OutputNode);
+		BuildTraversal(MutableView(NewUsageCache[i].Traversal), OutputNode);
 
 		int32 FoundMatchIdx = INDEX_NONE;
 		for (int32 j = 0; j < CachedUsageInfo.Num(); j++)
@@ -3586,13 +3693,13 @@ void UNiagaraGraph::InvalidateNumericCache()
 	CachedNumericConversions.Empty();
 }
 
-FString UNiagaraGraph::GetFunctionAliasByContext(const FNiagaraGraphFunctionAliasContext& FunctionAliasContext)
+FString UNiagaraGraph::GetFunctionAliasByContext(const FNiagaraGraphFunctionAliasContext& FunctionAliasContext) const
 {
 	FString FunctionAlias;
 	TSet<UClass*> SkipNodeTypes;
-	for (UEdGraphNode* Node : Nodes)
+	for (const UEdGraphNode* Node : Nodes)
 	{
-		UNiagaraNode* NiagaraNode = Cast<UNiagaraNode>(Node);
+		const UNiagaraNode* NiagaraNode = Cast<const UNiagaraNode>(Node);
 		if (NiagaraNode != nullptr)
 		{
 			if (SkipNodeTypes.Contains(NiagaraNode->GetClass()))
@@ -3608,10 +3715,10 @@ FString UNiagaraGraph::GetFunctionAliasByContext(const FNiagaraGraphFunctionAlia
 		}
 	}
 
-	for (UEdGraphPin* Pin : FunctionAliasContext.StaticSwitchValues)
+	for (const UEdGraphPin* Pin : FunctionAliasContext.StaticSwitchValues)
 	{
-		FunctionAlias += TEXT("_") + FHlslNiagaraTranslator::GetSanitizedFunctionNameSuffix(Pin->GetName()) 
-			+ TEXT("_") + FHlslNiagaraTranslator::GetSanitizedFunctionNameSuffix(Pin->DefaultValue);
+		FunctionAlias += TEXT("_") + FNiagaraHlslTranslator::GetSanitizedFunctionNameSuffix(Pin->GetName())
+			+ TEXT("_") + FNiagaraHlslTranslator::GetSanitizedFunctionNameSuffix(Pin->DefaultValue);
 	}
 	return FunctionAlias;
 }
@@ -3839,7 +3946,7 @@ void UNiagaraGraph::RefreshParameterReferences() const
 		for (int32 Index = 0; Index < History.VariablesWithOriginalAliasesIntact.Num(); Index++)
 		{
 			const FNiagaraVariable& Parameter = History.VariablesWithOriginalAliasesIntact[Index];
-			for (const FModuleScopedPin& WriteEvent : History.PerVariableWriteHistory[Index])
+			for (const FNiagaraParameterMapHistory::FModuleScopedPin& WriteEvent : History.PerVariableWriteHistory[Index])
 			{
 				if (WriteEvent.Pin->PinType.PinSubCategory == UNiagaraNodeParameterMapBase::ParameterPinSubCategory)
 				{
@@ -4186,4 +4293,3 @@ bool UNiagaraGraph::ReferencesStaticVariable(FNiagaraStaticVariableSearchContext
 
 #undef NIAGARA_SCOPE_CYCLE_COUNTER
 #undef LOCTEXT_NAMESPACE
-

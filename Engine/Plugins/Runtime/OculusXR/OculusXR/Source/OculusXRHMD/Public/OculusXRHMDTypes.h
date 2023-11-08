@@ -169,6 +169,7 @@ enum class EOculusXRDeviceType : uint8
 	OculusQuest_Deprecated,
 	OculusQuest2,
 	MetaQuestPro,
+	MetaQuest3,
 
 	//PC HMDs
 	Rift = 100,
@@ -176,6 +177,7 @@ enum class EOculusXRDeviceType : uint8
 	Quest_Link_Deprecated,
 	Quest2_Link,
 	MetaQuestProLink,
+	MetaQuest3Link,
 
 	//default
 	OculusUnknown = 200,
@@ -187,6 +189,7 @@ enum class EOculusXRControllerType : uint8
 	None = 0,
 	MetaQuestTouch = 1,
 	MetaQuestTouchPro = 2,
+	MetaQuestTouchPlus = 3,
 	Unknown = 0x7f,
 };
 
@@ -287,5 +290,39 @@ struct FOculusXRSplashDesc
 	{
 		return TexturePath == d.TexturePath && TransformInMeters.Equals(d.TransformInMeters) && QuadSizeInMeters == d.QuadSizeInMeters && DeltaRotation.Equals(d.DeltaRotation) && TextureOffset == d.TextureOffset && TextureScale == d.TextureScale && bNoAlphaChannel == d.bNoAlphaChannel && LoadingTexture == d.LoadingTexture && LoadedTexture == d.LoadedTexture && bIsDynamic == d.bIsDynamic;
 	}
+};
+
+UENUM(BlueprintType)
+enum class EOculusXROcclusionsMode : uint8
+{
+	/// Environment depth occlusions disabled.
+	Disabled = 0,
+	/// Hard occlusions, good performance, shows hard edges between the real and virtual world.
+	HardOcclusions = 1,
+	/// Soft occlusions, most expensive, shows soft edges between the real and virtual world.
+	SoftOcclusions = 2,
+};
+
+UENUM(BlueprintType)
+enum class EOculusXREyeBufferSharpenType : uint8
+{
+	/** No Sharpening */
+	SLST_None UMETA(DisplayName = "No Sharpening"),
+
+	/** Normal Sharpening */
+	SLST_Normal UMETA(DisplayName = "Normal Sharpening"),
+
+	/** Quality Sharpening */
+	SLST_Quality UMETA(DisplayName = "Quality Sharpening"),
+
+	SLST_MAX,
+};
+
+UENUM()
+enum class EProcessorFavor : int8
+{
+	FavorEqually = 0 UMETA(DisplayName = "Favor Equally"),
+	FavorCPU = 1 UMETA(DisplayName = "Favor CPU"),
+	FavorGPU = 2 UMETA(DisplayName = "Favor GPU"),
 };
 

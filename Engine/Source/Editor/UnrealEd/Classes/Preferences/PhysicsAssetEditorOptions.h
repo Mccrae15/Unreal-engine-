@@ -34,8 +34,8 @@ enum class EPhysicsAssetEditorConstraintViewMode : uint8
 	AllLimits
 };
 
-UCLASS(hidecategories=Object, config=EditorPerProjectUserSettings)
-class UNREALED_API UPhysicsAssetEditorOptions : public UObject
+UCLASS(hidecategories=Object, config=EditorPerProjectUserSettings, MinimalAPI)
+class UPhysicsAssetEditorOptions : public UObject
 {
 	GENERATED_UCLASS_BODY()
 
@@ -162,4 +162,13 @@ class UNREALED_API UPhysicsAssetEditorOptions : public UObject
 	/** When set, cloth will reset each time simulation is toggled */
 	UPROPERTY(EditAnywhere, config, Category=Clothing)
 	bool bResetClothWhenSimulating;
+
+	// The following are for enabling/disabling controls at runtime.
+	// Some controls use the new "UToolMenu" menus. These are enabled/disabled via json permissions.
+	// Other controls use the legacy FMenuBuilder. These use the following properties to enable/disable.
+	UPROPERTY()
+	bool bExposeLegacyMenuSimulationControls = true;
+
+	UPROPERTY()
+	bool bExposeLegacyMenuConstraintControls = true;
 };

@@ -18,7 +18,7 @@
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/GameEngine.h"
-#include "Engine/Public/SceneUtils.h"
+#include "SceneUtils.h"
 #include "OculusXRHMDPrivate.h"
 #include "OculusXRHMDModule.h"
 #include "OculusXRHMD_DeferredDeletionQueue.h"
@@ -54,14 +54,42 @@ namespace OculusXRHMD
 	//-------------------------------------------------------------------------------------------------
 
 	FLayer::FLayer(uint32 InId)
-		: bNeedsTexSrgbCreate(false), Id(InId), OvrpLayerId(0), bUpdateTexture(false), bInvertY(false), bHasDepth(false), bSupportDepthComposite(false), PokeAHoleComponentPtr(nullptr), PokeAHoleActor(nullptr)
+		: bNeedsTexSrgbCreate(false)
+		, Id(InId)
+		, OvrpLayerId(0)
+		, bUpdateTexture(false)
+		, bInvertY(false)
+		, bHasDepth(false)
+		, bSupportDepthComposite(false)
+		, PokeAHoleComponentPtr(nullptr)
+		, PokeAHoleActor(nullptr)
 	{
 		FMemory::Memzero(OvrpLayerDesc);
 		FMemory::Memzero(OvrpLayerSubmit);
 	}
 
 	FLayer::FLayer(const FLayer& Layer)
-		: bNeedsTexSrgbCreate(Layer.bNeedsTexSrgbCreate), Id(Layer.Id), Desc(Layer.Desc), OvrpLayerId(Layer.OvrpLayerId), OvrpLayer(Layer.OvrpLayer), SwapChain(Layer.SwapChain), DepthSwapChain(Layer.DepthSwapChain), FoveationSwapChain(Layer.FoveationSwapChain), RightSwapChain(Layer.RightSwapChain), RightDepthSwapChain(Layer.RightDepthSwapChain), MotionVectorSwapChain(Layer.MotionVectorSwapChain), MotionVectorDepthSwapChain(Layer.MotionVectorDepthSwapChain), InvAlphaTexture(Layer.InvAlphaTexture), bUpdateTexture(Layer.bUpdateTexture), bInvertY(Layer.bInvertY), bHasDepth(Layer.bHasDepth), bSupportDepthComposite(Layer.bSupportDepthComposite), PokeAHoleComponentPtr(Layer.PokeAHoleComponentPtr), PokeAHoleActor(Layer.PokeAHoleActor), UserDefinedGeometryMap(Layer.UserDefinedGeometryMap), PassthroughPokeActorMap(Layer.PassthroughPokeActorMap)
+		: bNeedsTexSrgbCreate(Layer.bNeedsTexSrgbCreate)
+		, Id(Layer.Id)
+		, Desc(Layer.Desc)
+		, OvrpLayerId(Layer.OvrpLayerId)
+		, OvrpLayer(Layer.OvrpLayer)
+		, SwapChain(Layer.SwapChain)
+		, DepthSwapChain(Layer.DepthSwapChain)
+		, FoveationSwapChain(Layer.FoveationSwapChain)
+		, RightSwapChain(Layer.RightSwapChain)
+		, RightDepthSwapChain(Layer.RightDepthSwapChain)
+		, MotionVectorSwapChain(Layer.MotionVectorSwapChain)
+		, MotionVectorDepthSwapChain(Layer.MotionVectorDepthSwapChain)
+		, InvAlphaTexture(Layer.InvAlphaTexture)
+		, bUpdateTexture(Layer.bUpdateTexture)
+		, bInvertY(Layer.bInvertY)
+		, bHasDepth(Layer.bHasDepth)
+		, bSupportDepthComposite(Layer.bSupportDepthComposite)
+		, PokeAHoleComponentPtr(Layer.PokeAHoleComponentPtr)
+		, PokeAHoleActor(Layer.PokeAHoleActor)
+		, UserDefinedGeometryMap(Layer.UserDefinedGeometryMap)
+		, PassthroughPokeActorMap(Layer.PassthroughPokeActorMap)
 	{
 		FMemory::Memcpy(&OvrpLayerDesc, &Layer.OvrpLayerDesc, sizeof(OvrpLayerDesc));
 		FMemory::Memcpy(&OvrpLayerSubmit, &Layer.OvrpLayerSubmit, sizeof(OvrpLayerSubmit));
@@ -167,7 +195,7 @@ namespace OculusXRHMD
 
 				FOculusXRHMD* OculusXRHMD = static_cast<FOculusXRHMD*>(GEngine->XRSystem->GetHMDDevice());
 				UMaterial* PokeAHoleMaterial = OculusXRHMD->GetResourceHolder()->PokeAHoleMaterial;
-				UMaterialInstanceDynamic* DynamicMaterial = UMaterialInstanceDynamic::Create(PokeAHoleMaterial, NULL);
+				UMaterialInstanceDynamic* DynamicMaterial = UMaterialInstanceDynamic::Create(PokeAHoleMaterial, nullptr);
 				PokeAHoleComponentPtr->SetMaterial(0, DynamicMaterial);
 			}
 			PokeAHoleComponentPtr->SetWorldTransform(Desc.Transform);
@@ -320,7 +348,7 @@ namespace OculusXRHMD
 		FOculusXRHMD* OculusXRHMD = static_cast<FOculusXRHMD*>(GEngine->XRSystem->GetHMDDevice());
 		UMaterial* PokeAHoleMaterial = OculusXRHMD->GetResourceHolder()->PokeAHoleMaterial;
 
-		UMaterialInstanceDynamic* DynamicMaterial = UMaterialInstanceDynamic::Create(PokeAHoleMaterial, NULL);
+		UMaterialInstanceDynamic* DynamicMaterial = UMaterialInstanceDynamic::Create(PokeAHoleMaterial, nullptr);
 		PassthoughPokeComponentPtr->SetMaterial(0, DynamicMaterial);
 
 		OutPassthroughPokeActor.PokeAHoleActor = PassthoughPokeActor;
@@ -607,7 +635,7 @@ namespace OculusXRHMD
 							for (int32 TextureIndex = 0; TextureIndex < TextureCount; TextureIndex++)
 							{
 								ovrpTextureHandle* DepthTexHdlPtr = bHasDepth ? &DepthTextures[TextureIndex] : nullptr;
-								if (!OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetLayerTexture2(OvrpLayerId, TextureIndex, ovrpEye_Left, &ColorTextures[TextureIndex], DepthTexHdlPtr)))
+								if (OVRP_FAILURE(FOculusXRHMDModule::GetPluginWrapper().GetLayerTexture2(OvrpLayerId, TextureIndex, ovrpEye_Left, &ColorTextures[TextureIndex], DepthTexHdlPtr)))
 								{
 									UE_LOG(LogHMD, Error, TEXT("Failed to create Oculus layer texture. NOTE: This causes a leak of %d other texture(s), which will go unused."), TextureIndex);
 									// skip setting bLayerCreated and allocating any other textures
@@ -617,7 +645,7 @@ namespace OculusXRHMD
 								{
 									// Call fails on unsupported platforms and returns null textures for no foveation texture
 									// Since this texture is not required for rendering, don't return on failure
-									if (!OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetLayerTextureFoveation(OvrpLayerId, TextureIndex, ovrpEye_Left, &FoveationTextures[TextureIndex], &FoveationTextureSize)) || FoveationTextures[TextureIndex] == (unsigned long long)nullptr)
+									if (OVRP_FAILURE(FOculusXRHMDModule::GetPluginWrapper().GetLayerTextureFoveation(OvrpLayerId, TextureIndex, ovrpEye_Left, &FoveationTextures[TextureIndex], &FoveationTextureSize)) || FoveationTextures[TextureIndex] == (unsigned long long)nullptr)
 									{
 										bValidFoveationTextures = false;
 									}
@@ -628,7 +656,7 @@ namespace OculusXRHMD
 									// Call fails on unsupported platforms and returns null textures for no motion vector texture
 									// Since this texture is not required for rendering, don't return on failure
 
-									if (!OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetLayerTextureSpaceWarp(OvrpLayerId, TextureIndex, ovrpEye_Left, &MotionVectorTextures[TextureIndex], &MotionVectorTextureSize, &MotionVectorDepthTextures[TextureIndex], &MotionVectorDepthTextureSize)) || MotionVectorTextures[TextureIndex] == (unsigned long long)nullptr)
+									if (OVRP_FAILURE(FOculusXRHMDModule::GetPluginWrapper().GetLayerTextureSpaceWarp(OvrpLayerId, TextureIndex, ovrpEye_Left, &MotionVectorTextures[TextureIndex], &MotionVectorTextureSize, &MotionVectorDepthTextures[TextureIndex], &MotionVectorDepthTextureSize)) || MotionVectorTextures[TextureIndex] == (unsigned long long)nullptr)
 									{
 										bValidMotionVectorTextures = false;
 										UE_LOG(LogHMD, Error, TEXT("[Mobile SpaceWarp] Space Warpovrp_GetLayerTextureMotionVector failed"));
@@ -649,7 +677,7 @@ namespace OculusXRHMD
 							for (int32 TextureIndex = 0; TextureIndex < TextureCount; TextureIndex++)
 							{
 								ovrpTextureHandle* DepthTexHdlPtr = bHasDepth ? &RightDepthTextures[TextureIndex] : nullptr;
-								if (!OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetLayerTexture2(OvrpLayerId, TextureIndex, ovrpEye_Right, &RightColorTextures[TextureIndex], DepthTexHdlPtr)))
+								if (OVRP_FAILURE(FOculusXRHMDModule::GetPluginWrapper().GetLayerTexture2(OvrpLayerId, TextureIndex, ovrpEye_Right, &RightColorTextures[TextureIndex], DepthTexHdlPtr)))
 								{
 									UE_LOG(LogHMD, Error, TEXT("Failed to create Oculus layer texture. NOTE: This causes a leak of %d other texture(s), which will go unused."), TextureCount + TextureIndex);
 									// skip setting bLayerCreated and allocating any other textures
@@ -710,8 +738,12 @@ namespace OculusXRHMD
 						ColorTexCreateFlags |= (Desc.Texture->GetFlags() & TexCreate_SRGB);
 					}
 
-					FClearValueBinding ColorTextureBinding = FClearValueBinding();
+					FClearValueBinding ColorTextureBinding;
 					FClearValueBinding DepthTextureBinding = FClearValueBinding::DepthFar;
+					if (OvrpLayerDesc.Shape == ovrpShape_EyeFov)
+					{
+						ColorTextureBinding = FClearValueBinding::Black;
+					}
 
 					SwapChain = CustomPresent->CreateSwapChain_RenderThread(SizeX, SizeY, ColorFormat, ColorTextureBinding, NumMips, NumSamples, NumSamplesTileMem, ResourceType, ColorTextures, ColorTexCreateFlags, *FString::Printf(TEXT("Oculus Color Swapchain %d"), OvrpLayerId));
 
@@ -758,7 +790,7 @@ namespace OculusXRHMD
 						}
 						else
 						{
-							MotionVectorDepthSwapChain = NULL;
+							MotionVectorDepthSwapChain = nullptr;
 						}
 					}
 					else
@@ -914,7 +946,7 @@ namespace OculusXRHMD
 						UserDefinedGeometryMap->Add(MeshName, FPassthroughMesh(MeshHandle, InstanceHandle));
 					}
 				}
-				else if (GeometryDesc.bUpdateTransform)
+				else
 				{
 					const FMatrix Transform = TransformToPassthroughSpace(GeometryDesc.Transform, Frame);
 					UpdatePassthroughMeshTransform_RenderThread(LayerPassthroughMesh->InstanceHandle, Transform);
@@ -1187,6 +1219,25 @@ namespace OculusXRHMD
 			{
 				OvrpLayerSubmit.LayerSubmitFlags |= ovrpLayerSubmitFlag_NoDepth;
 			}
+
+#ifdef WITH_OCULUS_BRANCH
+			if (Desc.Flags & IStereoLayers::LAYER_FLAG_NORMAL_SUPERSAMPLE)
+			{
+				OvrpLayerSubmit.LayerSubmitFlags |= ovrpLayerSubmitFlag_EfficientSuperSample;
+			}
+			if (Desc.Flags & IStereoLayers::LAYER_FLAG_QUALITY_SUPERSAMPLE)
+			{
+				OvrpLayerSubmit.LayerSubmitFlags |= ovrpLayerSubmitFlag_ExpensiveSuperSample;
+			}
+			if (Desc.Flags & IStereoLayers::LAYER_FLAG_NORMAL_SHARPEN)
+			{
+				OvrpLayerSubmit.LayerSubmitFlags |= ovrpLayerSubmitFlag_EfficientSharpen;
+			}
+			if (Desc.Flags & IStereoLayers::LAYER_FLAG_QUALITY_SHARPEN)
+			{
+				OvrpLayerSubmit.LayerSubmitFlags |= ovrpLayerSubmitFlag_QualitySharpen;
+			}
+#endif
 		}
 		else
 		{

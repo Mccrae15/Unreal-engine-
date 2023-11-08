@@ -85,16 +85,18 @@ struct FDiscoveredPathData
 	FDateTime PackageTimestamp;
 	/** The type of file that was found */
 	EGatherableFileType Type = EGatherableFileType::Invalid;
+	/** Whether the file should just be reported as blocked and not further data gathered */
+	bool bBlocked = false;
 
 	FDiscoveredPathData() = default;
 	FDiscoveredPathData(FStringView InLocalAbsPath, FStringView InLongPackageName, FStringView InRelPath,
-		const FDateTime& InPackageTimestamp, EGatherableFileType InType);
+		const FDateTime& InPackageTimestamp, EGatherableFileType InType, bool bInBlocked);
 	FDiscoveredPathData(FStringView InLocalAbsPath, FStringView InLongPackageName, FStringView InRelPath,
-		EGatherableFileType InType);
+		EGatherableFileType InType, bool bInBlocked);
 	void Assign(FStringView InLocalAbsPath, FStringView InLongPackageName, FStringView InRelPath,
-		const FDateTime& InPackageTimestamp, EGatherableFileType InType);
+		const FDateTime& InPackageTimestamp, EGatherableFileType InType, bool bInBlocked);
 	void Assign(FStringView InLocalAbsPath, FStringView InLongPackageName, FStringView InRelPath,
-		EGatherableFileType InType);
+		EGatherableFileType InType, bool bInBlocked);
 
 	/** Return the total amount of heap memory used by the gatherer (including not-yet-claimed search results). */
 	SIZE_T GetAllocatedSize() const;
@@ -111,14 +113,16 @@ struct FGatheredPathData
 	FDateTime PackageTimestamp;
 	/** The type of file that was found */
 	EGatherableFileType Type = EGatherableFileType::Invalid;
+	/** Whether the file should just be reported as blocked and not further data gathered */
+	bool bBlocked = false;
 
 	FGatheredPathData() = default;
 	FGatheredPathData(FStringView InLocalAbsPath, FStringView InLongPackageName, const FDateTime& InPackageTimestamp,
-		EGatherableFileType InType);
+		EGatherableFileType InType, bool bInBlocked);
 	explicit FGatheredPathData(const FDiscoveredPathData& DiscoveredData);
 	explicit FGatheredPathData(FDiscoveredPathData&& DiscoveredData);
 	void Assign(FStringView InLocalAbsPath, FStringView InLongPackageName, const FDateTime& InPackageTimestamp,
-		EGatherableFileType InType);
+		EGatherableFileType InType, bool bInBlocked);
 	void Assign(const FDiscoveredPathData& DiscoveredData);
 
 	/**
@@ -573,7 +577,7 @@ class FAssetDataDiscovery : public FRunnable
 {
 public:
 	FAssetDataDiscovery(const TArray<FString>& InLongPackageNamesDenyList,
-		const TArray<FString>& InMountRelativePathsDenyList, bool bInIsSynchronous);
+		const TArray<FString>& InMountRelativePathsDenyList, bool bInAsyncEnabled);
 	virtual ~FAssetDataDiscovery();
 
 
@@ -590,6 +594,8 @@ public:
 
 	/** Signals to end the thread and waits for it to close before returning */
 	void EnsureCompletion();
+
+	bool IsSynchronous() const;
 
 	// Receiving Results and reading properties (possibly while tick is running)
 	/** Gets search results from the file discovery. */
@@ -719,8 +725,11 @@ private:
 	TSet<FString> DirLongPackageNamesToNotReport;
 	/** Thread to run the discovery FRunnable on. Read-only while threading is possible. */
 	FRunnableThread* Thread;
-	/** True if this gather request is synchronous (i.e, IsRunningCommandlet()). */
-	bool bIsSynchronous;
+	/**
+	 * True if async discovery is enabled, false if e.g. singlethreaded or disabled by commandline.
+	 * Even when enabled, discovery is still synchronous until StartAsync is called.
+	 */
+	bool bAsyncEnabled;
 
 
 	// Variable section for variables that are atomics read/writable from outside critical sections.

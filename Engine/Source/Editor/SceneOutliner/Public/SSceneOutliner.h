@@ -336,13 +336,13 @@ public:
 	 * @param ColumnId The id of the column to add
 	 * @param ColumInfo The struct that contains the information on how to present and retrieve the column
 	 */
-	virtual void AddColumn(FName ColumId, const FSceneOutlinerColumnInfo& ColumInfo) override;
+	virtual void AddColumn(FName ColumnId, const FSceneOutlinerColumnInfo& ColumInfo) override;
 
 	/**
 	 * Remove a column of the scene outliner
 	 * @param ColumnId The name of the column to remove
 	 */
-	virtual void RemoveColumn(FName ColumId) override;
+	virtual void RemoveColumn(FName ColumnId) override;
 
 	void SetColumnVisibility(FName ColumnId, bool bIsVisible);
 
@@ -628,13 +628,16 @@ private:
 	TMap<FName, TSharedPtr<ISceneOutlinerColumn>> Columns;
 
 	/** Set up the columns required for this outliner */
-	void SetupColumns(SHeaderRow& HeaderRow);
+	void SetupColumns();
 
 	void HandleHiddenColumnsChanged();
 
-	/** Refresh the scene outliner for when a colum was added or removed */
+	/** Refresh the scene outliner columns */
 	void RefreshColumns();
 
+	void AddColumn_Internal(const FName& ColumnId, const FSceneOutlinerColumnInfo& ColumnInfo, const TMap<FName, bool>& ColumnVisibilities, int32 InsertPosition = INDEX_NONE);
+	void RemoveColumn_Internal(const FName& ColumnId);
+	
 	/** Populates OutSearchStrings with the strings associated with TreeItem that should be used in searching */
 	void PopulateSearchStrings( const ISceneOutlinerTreeItem& TreeItem, OUT TArray< FString >& OutSearchStrings ) const;
 
@@ -758,6 +761,9 @@ private:
 	/** Maps pre-existing children during paste or duplicate */
 	TMap<FFolder, TArray<FSceneOutlinerTreeItemID>> CachePasteFolderExistingChildrenMap;
 
+	/** Cache which columns are hidden to know what changed */
+	TSet<FName> CacheHiddenColumns;
+
 private:
 	bool GetCommonRootObjectFromSelection(FFolder::FRootObject& OutCommonRootObject) const;
 
@@ -858,14 +864,11 @@ private:
 	/** Structure containing information relating to the expansion state of parent items in the tree */
 	typedef TMap<FSceneOutlinerTreeItemID, bool> FParentsExpansionState;
 	
-	/** Cached expansion state info, in case we need to process >500 items so we don't re-fetch from the partially rebuilt tree */
-	FParentsExpansionState CachedExpansionStateInfo;
+	/** Cached expansion state info */
+	mutable FParentsExpansionState CachedExpansionStateInfo;
 
-	/** Gets the current expansion state of parent items */
-	FParentsExpansionState GetParentsExpansionState() const;
-
-	/** Updates the expansion state of parent items after a repopulate, according to the previous state */
-	void SetParentsExpansionState(const FParentsExpansionState& ExpansionStateInfo) const;
+	/** Updates the expansion state of parent items after a repopulate */
+	void SetParentsExpansionState() const;
 
 private:
 
@@ -886,6 +889,9 @@ private:
 	uint8 bDisableIntermediateSorting : 1;
 
 	uint8 bNeedsColumRefresh : 1;
+
+	/** True if the outliner should cache changes to column visibility into the config */
+	uint8 bShouldCacheColumnVisibility : 1;
 
 	/** Reentrancy guard */
 	bool bIsReentrant;
@@ -918,9 +924,6 @@ private:
 	TWeakPtr<ISceneOutlinerTreeItem> PendingRenameItem;
 
 	TMap<FName, const FSlateBrush*> CachedIcons;
-
-	/** Maintain a count of the number of folders active in the outliner */
-	uint32 FolderCount = 0;
 
 	SceneOutliner::FTreeItemPtrEvent OnDoubleClickOnTreeEvent;
 

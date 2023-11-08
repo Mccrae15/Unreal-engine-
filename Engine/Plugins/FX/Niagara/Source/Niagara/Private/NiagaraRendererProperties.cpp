@@ -126,8 +126,8 @@ bool FNiagaraRendererLayout::SetVariable(const FNiagaraDataSetCompiledData* Comp
 	const FNiagaraVariableLayoutInfo& DataSetVariableLayout = CompiledData->VariableLayouts[VariableIndex];
 	const int32 VarSize = bHalfVariable ? sizeof(FFloat16) : sizeof(float);
 	const int32 NumComponents = DataSetVariable.GetSizeInBytes() / VarSize;
-	const int32 Offset = bHalfVariable ? DataSetVariableLayout.HalfComponentStart : DataSetVariableLayout.FloatComponentStart;
-	int32& TotalVFComponents = bHalfVariable ? TotalHalfComponents_GT : TotalFloatComponents_GT;
+	const int32 Offset = bHalfVariable ? DataSetVariableLayout.GetHalfComponentStart() : DataSetVariableLayout.GetFloatComponentStart();
+	uint16& TotalVFComponents = bHalfVariable ? TotalHalfComponents_GT : TotalFloatComponents_GT;
 
 	int32 GPULocation = INDEX_NONE;
 	bool bUpload = true;
@@ -144,6 +144,7 @@ bool FNiagaraRendererLayout::SetVariable(const FNiagaraDataSetCompiledData* Comp
 		{
 			//For CPU Sims we pack just the required data tightly in a GPU buffer we upload. For GPU sims the data is there already so we just provide the real data location.
 			GPULocation = CompiledData->SimTarget == ENiagaraSimTarget::CPUSim ? TotalVFComponents : Offset;
+			check(int32(TotalVFComponents ) + NumComponents <= TNumericLimits<uint16>::Max());
 			TotalVFComponents += NumComponents;
 		}
 	}
@@ -490,13 +491,17 @@ void UNiagaraRendererProperties::UpdateMaterialParametersMIC(const FNiagaraRende
 		return;
 	}
 
+	FNameBuilder NameBuilder;
+	InOutMaterial->GetFName().ToString(NameBuilder);
+	NameBuilder.Append(TEXT("_MIC"));
 	if (InOutMIC == nullptr)
 	{
-		InOutMIC = NewObject<UMaterialInstanceConstant>(this);
+		InOutMIC = NewObject<UMaterialInstanceConstant>(this, FName(NameBuilder));
 		InOutMIC->SetParentEditorOnly(InOutMaterial);
 	}
 	else if (InOutMIC->Parent != InOutMaterial)
 	{
+		InOutMIC->Rename(NameBuilder.ToString());
 		InOutMIC->SetParentEditorOnly(InOutMaterial);
 	}
 
@@ -536,10 +541,26 @@ void UNiagaraRendererProperties::UpdateMaterialParametersMIC(const FNiagaraRende
 		}
 
 		//-OPT: We should be able to reuse rather than create
+		FNameBuilder NameBuilder;
+		Material->GetFName().ToString(NameBuilder);
+		NameBuilder.Append(TEXT("_MIC"));
+
 		UMaterialInstanceConstant* MIC = nullptr;
+		bool bNeedsRename = false;
 		if (MICPool.Num() > 0)
 		{
-			MIC = MICPool.Pop();
+			FName MICName(NameBuilder);
+			const int32 ExistingIndex = MICPool.IndexOfByPredicate([&MICName](UMaterialInstanceConstant* MIC) { return MIC->GetFName() == MICName; });
+			if (ExistingIndex != INDEX_NONE)
+			{
+				MIC = MICPool[ExistingIndex];
+				MICPool.RemoveAtSwap(ExistingIndex, 1, false);
+			}
+			else
+			{
+				bNeedsRename = true;
+				MIC = MICPool.Pop();
+			}
 			if (MIC->Parent != Material)
 			{
 				MIC->SetParentEditorOnly(Material);
@@ -547,7 +568,7 @@ void UNiagaraRendererProperties::UpdateMaterialParametersMIC(const FNiagaraRende
 		}
 		else
 		{
-			MIC = NewObject<UMaterialInstanceConstant>(this);
+			MIC = NewObject<UMaterialInstanceConstant>(this, FName(NameBuilder));
 			MIC->SetParentEditorOnly(Material);
 		}
 
@@ -559,8 +580,49 @@ void UNiagaraRendererProperties::UpdateMaterialParametersMIC(const FNiagaraRende
 		{
 			InOutMICs.SetNum(i + 1);
 			InOutMICs[i] = MIC;
+			if (bNeedsRename)
+			{
+				if (MIC->Rename(NameBuilder.ToString(), nullptr, REN_Test))
+				{
+					MIC->Rename(NameBuilder.ToString());
+				}
+			}
 		}
 	}
+
+	// Garabge the MICs we are no longer going to use
+	for (int i=0; i < MICPool.Num(); ++i)
+	{
+		MICPool[i]->MarkAsGarbage();
+	}
+}
+
+int32 UNiagaraRendererProperties::GetDynamicParameterChannelMask(const FVersionedNiagaraEmitterData* EmitterData, FName BindingName, int32 DefaultChannelMask) const
+{
+	if (EmitterData == nullptr)
+	{
+		return DefaultChannelMask;
+	}
+
+	TOptional<int32> ChannelMask;
+	EmitterData->ForEachScript(
+		[&ChannelMask, &BindingName](const UNiagaraScript* NiagaraScript)
+		{
+			const FNiagaraVMExecutableData& VMExecData = NiagaraScript->GetVMExecutableData();
+
+			FNameBuilder NameBuilder;
+			BindingName.ToString(NameBuilder);
+			NameBuilder.Append(TEXT("ChannelMask"));
+
+			const FNiagaraVariableBase ChannelMaskVariable(FNiagaraTypeDefinition::GetIntDef().ToStaticDef(), FName(NameBuilder));
+			TOptional<int32> ChannelMaskValue = NiagaraScript->GetStaticVariableValue<int32>(ChannelMaskVariable);
+			if (ChannelMaskValue.IsSet())
+			{
+				ChannelMask = ChannelMask.Get(0) | ChannelMaskValue.GetValue();
+			}
+		}
+	);
+	return ChannelMask.Get(DefaultChannelMask);
 }
 
 FNiagaraVariable UNiagaraRendererProperties::GetBoundAttribute(const FNiagaraVariableAttributeBinding* Binding) const
@@ -683,17 +745,17 @@ uint32 UNiagaraRendererProperties::ComputeMaxUsedComponents(const FNiagaraDataSe
 
 			if (const uint32 FloatCount = DataSetVarLayout.GetNumFloatComponents())
 			{
-				AccumulateUniqueComponents(BaseType_Float, FloatCount, DataSetVarLayout.FloatComponentStart);
+				AccumulateUniqueComponents(BaseType_Float, FloatCount, DataSetVarLayout.GetFloatComponentStart());
 			}
 
 			if (const uint32 IntCount = DataSetVarLayout.GetNumInt32Components())
 			{
-				AccumulateUniqueComponents(BaseType_Int, IntCount, DataSetVarLayout.Int32ComponentStart);
+				AccumulateUniqueComponents(BaseType_Int, IntCount, DataSetVarLayout.GetInt32ComponentStart());
 			}
 
 			if (const uint32 HalfCount = DataSetVarLayout.GetNumHalfComponents())
 			{
-				AccumulateUniqueComponents(BaseType_Half, HalfCount, DataSetVarLayout.HalfComponentStart);
+				AccumulateUniqueComponents(BaseType_Half, HalfCount, DataSetVarLayout.GetHalfComponentStart());
 			}
 		}
 	}
@@ -797,10 +859,12 @@ void UNiagaraRendererProperties::PostLoad()
 {
 	Super::PostLoad();
 
+#if WITH_EDITORONLY_DATA
 	if (bMotionBlurEnabled_DEPRECATED == false)
 	{
 		MotionVectorSetting = ENiagaraRendererMotionVectorSetting::Disable;
 	}
+#endif
 }
 
 #if WITH_EDITORONLY_DATA

@@ -2,8 +2,8 @@
 
 #include "USDConversionUtils.h"
 
-#include "PhysicsEngine/PhysicsAsset.h"
 #include "USDAssetImportData.h"
+#include "USDClassesModule.h"
 #include "USDDuplicateType.h"
 #include "USDErrorUtils.h"
 #include "USDGeomMeshConversion.h"
@@ -18,7 +18,7 @@
 #include "UsdWrappers/UsdPrim.h"
 #include "UsdWrappers/UsdStage.h"
 
-#include "Algo/Copy.h"
+#include "AnalyticsEventAttribute.h"
 #include "Animation/AnimBlueprint.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/Skeleton.h"
@@ -46,11 +46,8 @@
 #include "InstancedFoliageActor.h"
 #include "LandscapeProxy.h"
 #include "Misc/PackageName.h"
+#include "PhysicsEngine/PhysicsAsset.h"
 #include "Widgets/Notifications/SNotificationList.h"
-
-#if WITH_EDITOR
-#include "ObjectTools.h"
-#endif // WITH_EDITOR
 
 #if USE_USD_SDK
 #include "USDIncludesStart.h"
@@ -72,8 +69,6 @@
 	#include "pxr/usd/usdGeom/metrics.h"
 	#include "pxr/usd/usdGeom/primvar.h"
 	#include "pxr/usd/usdGeom/primvarsAPI.h"
-	#include "pxr/usd/usdGeom/scope.h"
-	#include "pxr/usd/usdGeom/xform.h"
 	#include "pxr/usd/usdLux/diskLight.h"
 	#include "pxr/usd/usdLux/distantLight.h"
 	#include "pxr/usd/usdLux/domeLight.h"
@@ -90,22 +85,14 @@
 
 #define LOCTEXT_NAMESPACE "USDConversionUtils"
 
+static bool GParseUVSetsFromFloat2Primvars = true;
+static FAutoConsoleVariableRef CVarParseUVSetsFromFloat2Primvars(
+	TEXT("USD.ParseUVSetsFromFloat2Primvars"),
+	GParseUVSetsFromFloat2Primvars,
+	TEXT("Primvars with the 'texCoord2f' role will always be parsed when handling potential UV sets. If this cvar is enabled, we'll also handle primvars declared as just 'float2' however. You could disable this cvar if your pipeline emits many 'float2' primvars that you do not wish to be parsed as UV sets."));
+
 namespace USDConversionUtilsImpl
 {
-	// Adapted from ObjectTools as it is within an Editor-only module
-	FString SanitizeObjectName( const FString& InObjectName )
-	{
-		FString SanitizedText = InObjectName;
-		const TCHAR* InvalidChar = INVALID_OBJECTNAME_CHARACTERS;
-		while ( *InvalidChar )
-		{
-			SanitizedText.ReplaceCharInline( *InvalidChar, TCHAR( '_' ), ESearchCase::CaseSensitive );
-			++InvalidChar;
-		}
-
-		return SanitizedText;
-	}
-
 	/** Show some warnings if the UVSet primvars show some unsupported/problematic behavior */
 	void CheckUVSetPrimvars( TMap<int32, TArray<pxr::UsdGeomPrimvar>> UsablePrimvars, TMap<int32, TArray<pxr::UsdGeomPrimvar>> UsedPrimvars, const FString& MeshPath )
 	{
@@ -379,7 +366,7 @@ bool UsdUtils::HasCompositionArcs( const pxr::UsdPrim& Prim )
 		return false;
 	}
 
-	return Prim.HasAuthoredReferences() || Prim.HasPayload() || Prim.HasAuthoredInherits() || Prim.HasAuthoredSpecializes() || Prim.HasVariantSets();
+	return Prim.HasAuthoredReferences() || Prim.HasAuthoredPayloads() || Prim.HasAuthoredInherits() || Prim.HasAuthoredSpecializes() || Prim.HasVariantSets();
 }
 
 bool UsdUtils::HasCompositionArcs( const pxr::SdfPrimSpecHandle& PrimSpec )
@@ -675,170 +662,212 @@ int32 UsdUtils::GetPrimvarUVIndex( FString PrimvarName )
 	return 0;
 }
 
-TArray< TUsdStore< pxr::UsdGeomPrimvar > > UsdUtils::GetUVSetPrimvars( const pxr::UsdGeomMesh& UsdMesh )
-{
-	return UsdUtils::GetUVSetPrimvars(UsdMesh, {});
-}
-
-TArray< TUsdStore< pxr::UsdGeomPrimvar > > UsdUtils::GetUVSetPrimvars(
+TArray<TUsdStore<pxr::UsdGeomPrimvar>> UsdUtils::GetUVSetPrimvars(
 	const pxr::UsdGeomMesh& UsdMesh,
-	const TMap< FString, TMap< FString, int32 > >& MaterialToPrimvarsUVSetNames,
-	const pxr::TfToken& RenderContext,
-	const pxr::TfToken& MaterialPurpose
+	int32 MaxNumPrimvars
 )
 {
-	if ( !UsdMesh )
-	{
-		return {};
-	}
-
-	const bool bProvideMaterialIndices = false;
-	UsdUtils::FUsdPrimMaterialAssignmentInfo Info = UsdUtils::GetPrimMaterialAssignments(
-		UsdMesh.GetPrim(),
-		pxr::UsdTimeCode( 0.0 ),
-		bProvideMaterialIndices,
-		RenderContext,
-		MaterialPurpose
-	);
-
-	return UsdUtils::GetUVSetPrimvars( UsdMesh, MaterialToPrimvarsUVSetNames, Info );
-}
-
-TArray< TUsdStore< pxr::UsdGeomPrimvar > > UsdUtils::GetUVSetPrimvars( const pxr::UsdGeomMesh& UsdMesh, const TMap< FString, TMap< FString, int32 > >& MaterialToPrimvarsUVSetNames, const UsdUtils::FUsdPrimMaterialAssignmentInfo& UsdMeshMaterialAssignmentInfo )
-{
-	if ( !UsdMesh )
+	if (!UsdMesh)
 	{
 		return {};
 	}
 
 	FScopedUsdAllocs Allocs;
 
+	TArray<TUsdStore<pxr::UsdGeomPrimvar>> TexCoord2fPrimvars;
+	TArray<TUsdStore<pxr::UsdGeomPrimvar>> Float2Primvars;
+
 	// Collect all primvars that could be used as UV sets
-	TMap<FString, pxr::UsdGeomPrimvar> PrimvarsByName;
-	TMap<int32, TArray<pxr::UsdGeomPrimvar>> UsablePrimvarsByUVIndex;
-	pxr::UsdGeomPrimvarsAPI PrimvarsAPI{ UsdMesh };
-	for ( const pxr::UsdGeomPrimvar& Primvar : PrimvarsAPI.GetPrimvars() )
+	pxr::UsdGeomPrimvarsAPI PrimvarsAPI{UsdMesh};
+	for (const pxr::UsdGeomPrimvar& Primvar : PrimvarsAPI.GetPrimvars())
 	{
-		if ( !Primvar || !Primvar.HasValue() )
+		if (!Primvar || !Primvar.HasValue())
 		{
 			continue;
 		}
 
 		// We only care about primvars that can be used as float2[]. TexCoord2f is included
 		const pxr::SdfValueTypeName& TypeName = Primvar.GetTypeName();
-		if ( !TypeName.GetType().IsA( pxr::SdfValueTypeNames->Float2Array.GetType() ) )
+		if (!TypeName.GetType().IsA(pxr::SdfValueTypeNames->Float2Array.GetType()))
 		{
 			continue;
 		}
 
-		FString PrimvarName = UsdToUnreal::ConvertToken( Primvar.GetBaseName() );
-		int32 TargetUVIndex = UsdUtils::GetPrimvarUVIndex( PrimvarName );
-
-		UsablePrimvarsByUVIndex.FindOrAdd( TargetUVIndex ).Add( Primvar );
-		PrimvarsByName.Add( PrimvarName, Primvar );
-	}
-
-	// Collect all primvars that are in fact used by the materials assigned to this mesh
-	TMap<int32, TArray<pxr::UsdGeomPrimvar>> PrimvarsUsedByAssignedMaterialsPerUVIndex;
-	{
-		const bool bProvideMaterialIndices = false;
-		for ( const FUsdPrimMaterialSlot& Slot : UsdMeshMaterialAssignmentInfo.Slots )
+		if (Primvar.GetTypeName().GetRole() == pxr::SdfValueTypeNames->TexCoord2f.GetRole())
 		{
-			if ( Slot.AssignmentType == EPrimAssignmentType::MaterialPrim )
-			{
-				const FString& MaterialPath = Slot.MaterialSource;
-				if ( const TMap< FString, int32 >* FoundMaterialPrimvars = MaterialToPrimvarsUVSetNames.Find( MaterialPath ) )
-				{
-					for ( const TPair<FString, int32>& PrimvarAndUVIndex : *FoundMaterialPrimvars )
-					{
-						if ( pxr::UsdGeomPrimvar* FoundPrimvar = PrimvarsByName.Find( PrimvarAndUVIndex.Key ) )
-						{
-							PrimvarsUsedByAssignedMaterialsPerUVIndex.FindOrAdd( PrimvarAndUVIndex.Value ).AddUnique( *FoundPrimvar );
-						}
-					}
-				}
-			}
+			TexCoord2fPrimvars.Add(Primvar);
+		}
+		else if (GParseUVSetsFromFloat2Primvars)
+		{
+			Float2Primvars.Add(Primvar);
 		}
 	}
 
-	// Sort all primvars we found by name, so we get consistent results
-	for ( TPair<int32, TArray<pxr::UsdGeomPrimvar>>& UVIndexToPrimvars : UsablePrimvarsByUVIndex )
+	TexCoord2fPrimvars.Sort([](const TUsdStore<pxr::UsdGeomPrimvar>& A, const TUsdStore<pxr::UsdGeomPrimvar>& B)
 	{
-		TArray<pxr::UsdGeomPrimvar>& Primvars = UVIndexToPrimvars.Value;
-		Primvars.Sort( []( const pxr::UsdGeomPrimvar& A, const pxr::UsdGeomPrimvar& B )
-		{
-			return A.GetName() < B.GetName();
-		} );
+		return A.Get().GetName() < B.Get().GetName();
+	});
+	Float2Primvars.Sort([](const TUsdStore<pxr::UsdGeomPrimvar>& A, const TUsdStore<pxr::UsdGeomPrimvar>& B)
+	{
+		return A.Get().GetName() < B.Get().GetName();
+	});
+
+	TArray<TUsdStore<pxr::UsdGeomPrimvar>> Result;
+	Result.Reserve(FMath::Min(TexCoord2fPrimvars.Num() + Float2Primvars.Num(), MaxNumPrimvars));
+
+	int32 TexCoordPrimvarIndex = 0;
+	while (Result.Num() < MaxNumPrimvars && TexCoord2fPrimvars.IsValidIndex(TexCoordPrimvarIndex))
+	{
+		Result.Add(TexCoord2fPrimvars[TexCoordPrimvarIndex++]);
 	}
-	for ( TPair<int32, TArray<pxr::UsdGeomPrimvar>>& UVIndexToPrimvars : PrimvarsUsedByAssignedMaterialsPerUVIndex )
+
+	int32 Float2PrimvarIndex = 0;
+	while (Result.Num() < MaxNumPrimvars && Float2Primvars.IsValidIndex(Float2PrimvarIndex))
 	{
-		TArray<pxr::UsdGeomPrimvar>& Primvars = UVIndexToPrimvars.Value;
-		Primvars.Sort( []( const pxr::UsdGeomPrimvar& A, const pxr::UsdGeomPrimvar& B )
-		{
-			return A.GetName() < B.GetName();
-		} );
-	}
-
-	// A lot of things can go wrong, so show some feedback in case they do
-	FString MeshPath = UsdToUnreal::ConvertPath( UsdMesh.GetPrim().GetPath() );
-	USDConversionUtilsImpl::CheckUVSetPrimvars( UsablePrimvarsByUVIndex, PrimvarsUsedByAssignedMaterialsPerUVIndex, MeshPath );
-
-	// Assemble our final results by picking the best primvar we can find for each UV index.
-	// Note that we should keep searching even if we don't find our ideal case, because we don't
-	// want to just discard potential UV sets if the material we happen to have bound doesn't use them, as the
-	// user may just want to assign another material that does.
-	TArray< TUsdStore< pxr::UsdGeomPrimvar > > Result;
-	Result.SetNum( MAX_STATIC_TEXCOORDS );
-	for ( int32 UVIndex = 0; UVIndex < MAX_STATIC_TEXCOORDS; ++UVIndex )
-	{
-		// Best case scenario: float2[]-like primvars that are actually being used by texture readers as texcoords, regardless of role
-		TArray<pxr::UsdGeomPrimvar>* FoundUsedPrimvars = PrimvarsUsedByAssignedMaterialsPerUVIndex.Find( UVIndex );
-		if ( FoundUsedPrimvars && FoundUsedPrimvars->Num() > 0 )
-		{
-			Result[ UVIndex ] = ( *FoundUsedPrimvars )[ 0 ];
-			continue;
-		}
-
-		TArray<pxr::UsdGeomPrimvar>* FoundUsablePrimvars = UsablePrimvarsByUVIndex.Find( UVIndex );
-		if ( FoundUsablePrimvars && FoundUsablePrimvars->Num() > 0 )
-		{
-			pxr::UsdGeomPrimvar* FoundTexcoordPrimvar = FoundUsablePrimvars->FindByPredicate( []( const pxr::UsdGeomPrimvar& Primvar )
-			{
-				return Primvar.GetTypeName().GetRole() == pxr::SdfValueTypeNames->TexCoord2f.GetRole();
-			} );
-
-			// Second-best case: Primvars with texcoord2f role
-			if ( FoundTexcoordPrimvar )
-			{
-				Result[ UVIndex ] = *FoundTexcoordPrimvar;
-				continue;
-			}
-
-			// Third-best case: Any valid primvar
-			// Disabled for now as these could be any other random data the user may have as float2[]
-			// Result[UVIndex] = FoundUsedPrimvars[0];
-		}
+		Result.Add(Float2Primvars[Float2PrimvarIndex++]);
 	}
 
 	return Result;
 }
 
-bool UsdUtils::IsAnimated( const pxr::UsdPrim& Prim )
+TArray<TUsdStore<pxr::UsdGeomPrimvar>> UsdUtils::GetUVSetPrimvars(
+	const pxr::UsdGeomMesh& UsdMesh,
+	const TMap<FString, TMap<FString, int32>>& MaterialToPrimvarsUVSetNames,
+	const pxr::TfToken& RenderContext,
+	const pxr::TfToken& MaterialPurpose
+)
 {
-	if ( !Prim || !Prim.IsActive() )
+	return UsdUtils::GetUVSetPrimvars(UsdMesh);
+}
+
+TArray<TUsdStore<pxr::UsdGeomPrimvar>> UsdUtils::GetUVSetPrimvars(
+	const pxr::UsdGeomMesh& UsdMesh,
+	const TMap<FString, TMap<FString, int32>>& MaterialToPrimvarsUVSetNames,
+	const UsdUtils::FUsdPrimMaterialAssignmentInfo& UsdMeshMaterialAssignmentInfo
+)
+{
+	return UsdUtils::GetUVSetPrimvars(UsdMesh);
+}
+
+TArray<TUsdStore<pxr::UsdGeomPrimvar>> UsdUtils::AssemblePrimvarsIntoUVSets(
+	const TArray<TUsdStore<pxr::UsdGeomPrimvar>>& AllMeshUVPrimvars,
+	const TMap<FString, int32>& AllowedPrimvarsToUVIndex
+)
+{
+	TArray<TUsdStore<pxr::UsdGeomPrimvar>> PrimvarsByUVIndex;
+
+	if (AllowedPrimvarsToUVIndex.Num() > 0)
+	{
+		for (const TUsdStore<pxr::UsdGeomPrimvar>& MeshUVPrimvar : AllMeshUVPrimvars)
+		{
+			FString PrimvarName = UsdToUnreal::ConvertToken(MeshUVPrimvar.Get().GetName());
+			PrimvarName.RemoveFromStart(TEXT("primvars:"));
+
+			if (const int32* FoundTargetUVIndex = AllowedPrimvarsToUVIndex.Find(PrimvarName))
+			{
+				int32 TargetUVIndex = *FoundTargetUVIndex;
+				if (TargetUVIndex < 0)
+				{
+					continue;
+				}
+
+				if (!PrimvarsByUVIndex.IsValidIndex(TargetUVIndex))
+				{
+					if (TargetUVIndex < USD_PREVIEW_SURFACE_MAX_UV_SETS)
+					{
+						PrimvarsByUVIndex.SetNum(TargetUVIndex + 1);
+					}
+					else
+					{
+						continue;
+					}
+				}
+
+				TUsdStore<pxr::UsdGeomPrimvar>& ExistingPrimvar = PrimvarsByUVIndex[TargetUVIndex];
+				if (!ExistingPrimvar.Get())
+				{
+					PrimvarsByUVIndex[TargetUVIndex] = MeshUVPrimvar;
+				}
+			}
+		}
+	}
+
+	return PrimvarsByUVIndex;
+}
+
+TMap<FString, int32> UsdUtils::AssemblePrimvarsIntoPrimvarToUVIndexMap(
+	const TArray<TUsdStore<pxr::UsdGeomPrimvar>>& AllMeshUVPrimvars
+)
+{
+	TMap<FString, int32> Result;
+	Result.Reserve(AllMeshUVPrimvars.Num());
+
+	for (int32 UVIndex = 0; UVIndex < AllMeshUVPrimvars.Num(); ++UVIndex)
+	{
+		const TUsdStore<pxr::UsdGeomPrimvar>& Primvar = AllMeshUVPrimvars[UVIndex];
+		FString PrimvarName = UsdToUnreal::ConvertToken(Primvar.Get().GetName());
+		PrimvarName.RemoveFromStart(TEXT("primvars:"));
+
+		Result.Add(PrimvarName, UVIndex);
+	}
+
+	return Result;
+}
+
+TMap<FString, int32> UsdUtils::CombinePrimvarsIntoUVSets(
+	const TSet<FString>& AllPrimvars,
+	const TSet<FString>& PreferredPrimvars
+)
+{
+	TArray<FString> SortedPrimvars = AllPrimvars.Array();
+
+	// Promote a deterministic primvar-to-UV-index assignment preferring texCoord2f primvars
+	SortedPrimvars.Sort(
+		[&PreferredPrimvars](const FString& LHS, const FString& RHS)
+		{
+			const bool bLHSPreferred = PreferredPrimvars.Contains(LHS);
+			const bool bRHSPreferred = PreferredPrimvars.Contains(RHS);
+			if (bLHSPreferred == bRHSPreferred)
+			{
+				return LHS < RHS;
+			}
+			else
+			{
+				return bLHSPreferred < bRHSPreferred;
+			}
+		}
+	);
+
+	// We can only have up to USD_PREVIEW_SURFACE_MAX_UV_SETS UV sets
+	SortedPrimvars.SetNum(FMath::Min(SortedPrimvars.Num(), (int32)USD_PREVIEW_SURFACE_MAX_UV_SETS));
+
+	TMap<FString, int32> PrimvarToUVIndex;
+	PrimvarToUVIndex.Reserve(SortedPrimvars.Num());
+	int32 UVIndex = 0;
+	for (const FString& Primvar : SortedPrimvars)
+	{
+		PrimvarToUVIndex.Add(Primvar, UVIndex++);
+	}
+
+	return PrimvarToUVIndex;
+}
+
+bool UsdUtils::IsAnimated(const pxr::UsdPrim& Prim)
+{
+	if (!Prim || !Prim.IsActive())
 	{
 		return false;
 	}
 
 	FScopedUsdAllocs UsdAllocs;
 
-	pxr::UsdGeomXformable Xformable( Prim );
-	if ( Xformable )
+	pxr::UsdGeomXformable Xformable(Prim);
+	if (Xformable)
 	{
 		std::vector< double > TimeSamples;
-		Xformable.GetTimeSamples( &TimeSamples );
+		Xformable.GetTimeSamples(&TimeSamples);
 
-		if ( TimeSamples.size() > 0 )
+		if (TimeSamples.size() > 0)
 		{
 			return true;
 		}
@@ -876,7 +905,7 @@ bool UsdUtils::IsAnimated( const pxr::UsdPrim& Prim )
 	}
 
 	const std::vector< pxr::UsdAttribute >& Attributes = Prim.GetAttributes();
-	for ( const pxr::UsdAttribute& Attribute : Attributes )
+	for (const pxr::UsdAttribute& Attribute : Attributes)
 	{
 		std::vector<double> TimeSamples;
 		if ( Attribute.GetTimeSamples( &TimeSamples ) && TimeSamples.size() > 0 )
@@ -885,20 +914,20 @@ bool UsdUtils::IsAnimated( const pxr::UsdPrim& Prim )
 		}
 	}
 
-	if ( pxr::UsdSkelRoot SkeletonRoot{ Prim } )
+	if (pxr::UsdSkelRoot SkeletonRoot{Prim})
 	{
 		pxr::UsdSkelCache SkeletonCache;
-		SkeletonCache.Populate( SkeletonRoot, pxr::UsdTraverseInstanceProxies() );
+		SkeletonCache.Populate(SkeletonRoot, pxr::UsdTraverseInstanceProxies());
 
 		std::vector< pxr::UsdSkelBinding > SkeletonBindings;
-		SkeletonCache.ComputeSkelBindings( SkeletonRoot, &SkeletonBindings, pxr::UsdTraverseInstanceProxies() );
+		SkeletonCache.ComputeSkelBindings(SkeletonRoot, &SkeletonBindings, pxr::UsdTraverseInstanceProxies());
 
-		for ( const pxr::UsdSkelBinding& Binding : SkeletonBindings )
+		for (const pxr::UsdSkelBinding& Binding : SkeletonBindings)
 		{
 			const pxr::UsdSkelSkeleton& Skeleton = Binding.GetSkeleton();
-			pxr::UsdSkelSkeletonQuery SkelQuery = SkeletonCache.GetSkelQuery( Skeleton );
+			pxr::UsdSkelSkeletonQuery SkelQuery = SkeletonCache.GetSkelQuery(Skeleton);
 			pxr::UsdSkelAnimQuery AnimQuery = SkelQuery.GetAnimQuery();
-			if ( !AnimQuery )
+			if (!AnimQuery)
 			{
 				continue;
 			}
@@ -1114,7 +1143,7 @@ FString UsdUtils::GetAssetPathFromPrimPath( const FString& RootContentPath, cons
 	ModelApi.GetAssetName( &RawAssetName );
 
 	FString AssetName = UsdToUnreal::ConvertString( RawAssetName );
-	FString MeshName = USDConversionUtilsImpl::SanitizeObjectName( RawPrimName );
+	FString MeshName = IUsdClassesModule::SanitizeObjectName(RawPrimName);
 
 	FString USDPath = UsdToUnreal::ConvertString( Prim.GetPrimPath().GetString().c_str() );
 
@@ -1279,6 +1308,49 @@ UUsdAssetImportData* UsdUtils::GetAssetImportData( UObject* Asset )
 	return ImportData;
 }
 
+void UsdUtils::SetAssetImportData(UObject* Asset, UAssetImportData* ImportData)
+{
+	if (!Asset)
+	{
+		return;
+	}
+
+#if WITH_EDITOR
+	if (UStaticMesh* Mesh = Cast<UStaticMesh>(Asset))
+	{
+		Mesh->AssetImportData = ImportData;
+	}
+	else if (USkeletalMesh* SkMesh = Cast<USkeletalMesh>(Asset))
+	{
+		SkMesh->SetAssetImportData(ImportData);
+	}
+	else if (UAnimSequence* SkelAnim = Cast<UAnimSequence>(Asset))
+	{
+		SkelAnim->AssetImportData = ImportData;
+	}
+	else if (UMaterialInterface* Material = Cast<UMaterialInterface>(Asset))
+	{
+		Material->AssetImportData = ImportData;
+	}
+	else if (UTexture* Texture = Cast<UTexture>(Asset))
+	{
+		Texture->AssetImportData = ImportData;
+	}
+	else if (UGeometryCache* GeometryCache = Cast<UGeometryCache>(Asset))
+	{
+		GeometryCache->AssetImportData = ImportData;
+	}
+	else if (UGroomAsset* Groom = Cast<UGroomAsset>(Asset))
+	{
+		Groom->AssetImportData = ImportData;
+	}
+	else if (UGroomCache* GroomCache = Cast<UGroomCache>(Asset))
+	{
+		GroomCache->AssetImportData = ImportData;
+	}
+#endif // WITH_EDITOR
+}
+
 namespace UE::UsdConversionUtils::Private
 {
 #if USE_USD_SDK
@@ -1403,6 +1475,37 @@ void UsdUtils::AddReference( UE::FUsdPrim& Prim, const TCHAR* AbsoluteFilePath, 
 		pxr::SdfLayerOffset{ TimeCodeOffset, TimeCodeScale }
 	);
 #endif // #if USE_USD_SDK
+}
+
+bool UsdUtils::GetReferenceFilePath(const UE::FUsdPrim& Prim, const FString& FileExtension, FString& OutReferenceFilePath)
+{
+#if USE_USD_SDK
+	FScopedUsdAllocs UsdAllocs;
+
+	pxr::UsdPrimCompositionQuery PrimCompositionQuery = pxr::UsdPrimCompositionQuery::GetDirectReferences(Prim);
+	for (const pxr::UsdPrimCompositionQueryArc& CompositionArc : PrimCompositionQuery.GetCompositionArcs())
+	{
+		if (CompositionArc.GetArcType() == pxr::PcpArcTypeReference)
+		{
+			pxr::SdfReferenceEditorProxy ReferenceEditor;
+			pxr::SdfReference UsdReference;
+
+			if (CompositionArc.GetIntroducingListEditor(&ReferenceEditor, &UsdReference))
+			{
+				FString AbsoluteFilePath = UsdToUnreal::ConvertString(UsdReference.GetAssetPath());
+
+				FString Extension = FPaths::GetExtension(AbsoluteFilePath);
+				if (Extension == FileExtension && FPaths::FileExists(AbsoluteFilePath))
+				{
+					OutReferenceFilePath = AbsoluteFilePath;
+					return true;
+				}
+			}
+		}
+	}
+#endif // #if USE_USD_SDK
+
+	return false;
 }
 
 void UsdUtils::AddPayload( UE::FUsdPrim& Prim, const TCHAR* AbsoluteFilePath, const UE::FSdfPath& TargetPrimPath, double TimeCodeOffset, double TimeCodeScale )
@@ -1791,6 +1894,47 @@ bool UsdUtils::HasInvisibleParent( const UE::FUsdPrim& Prim, const UE::FUsdPrim&
 	return false;
 }
 
+TArray<UE::FUsdPrim> UsdUtils::GetVisibleChildren(const UE::FUsdPrim& Prim, EUsdPurpose AllowedPurposes)
+{
+	TArray<UE::FUsdPrim> VisiblePrims;
+
+#if USE_USD_SDK
+	FScopedUsdAllocs UsdAllocs;
+
+	TFunction<void(const pxr::UsdPrim& Prim)> RecursivelyCollectVisibleMeshes;
+	RecursivelyCollectVisibleMeshes = [&RecursivelyCollectVisibleMeshes, &VisiblePrims, AllowedPurposes](const pxr::UsdPrim& Prim)
+	{
+		if (!Prim || !EnumHasAllFlags(AllowedPurposes, IUsdPrim::GetPurpose(Prim)))
+		{
+			return;
+		}
+
+		if (pxr::UsdGeomImageable UsdGeomImageable = pxr::UsdGeomImageable(Prim))
+		{
+			if (pxr::UsdAttribute VisibilityAttr = UsdGeomImageable.GetVisibilityAttr())
+			{
+				pxr::TfToken VisibilityToken;
+				if (VisibilityAttr.Get(&VisibilityToken) && VisibilityToken == pxr::UsdGeomTokens->invisible)
+				{
+					// We don't propagate the (in)visibility token, we just flat out stop recursing instead
+					return;
+				}
+			}
+		}
+
+		VisiblePrims.Add(UE::FUsdPrim{Prim});
+
+		for (const pxr::UsdPrim& ChildPrim : Prim.GetFilteredChildren(pxr::UsdTraverseInstanceProxies()))
+		{
+			RecursivelyCollectVisibleMeshes(ChildPrim);
+		}
+	};
+	RecursivelyCollectVisibleMeshes(Prim);
+#endif // USE_USD_SDK
+
+	return VisiblePrims;
+}
+
 UE::FSdfPath UsdUtils::GetPrimSpecPathForLayer( const UE::FUsdPrim& Prim, const UE::FSdfLayer& Layer )
 {
 	UE::FSdfPath Result;
@@ -1976,11 +2120,47 @@ bool UsdUtils::CopyPrims( const TArray<UE::FUsdPrim>& Prims )
 		return false;
 	}
 
+	// USD will retain instances and prototypes even when flattening, which is not what we want
+	// so let's disable instancing on our temp stage before we ask it to flatten.
+	// Note how we traverse the entire masked stage here, because we also need to handle the case
+	// where the prim we're duplicating is not instanceable, but has instanceable children
+	TArray<pxr::SdfPath> OldInstanceablePrims;
+	if (TempStage->GetPrototypes().size() > 0)
+	{
+		pxr::UsdEditContext Context{TempStage, TempStage->GetSessionLayer()};
+
+		pxr::UsdPrimRange PrimRange(TempStage->GetPseudoRoot());
+		for (pxr::UsdPrimRange::iterator PrimRangeIt = PrimRange.begin(); PrimRangeIt != PrimRange.end(); ++PrimRangeIt)
+		{
+			if (PrimRangeIt->IsPseudoRoot())
+			{
+				continue;
+			}
+
+			if (PrimRangeIt->HasAuthoredInstanceable())
+			{
+				PrimRangeIt->SetInstanceable(false);
+				OldInstanceablePrims.Add(PrimRangeIt->GetPrimPath());
+			}
+		}
+	}
+
 	const bool bAddSourceFileComment = false;
 	pxr::SdfLayerRefPtr FlattenedLayer = TempStage->Flatten( bAddSourceFileComment );
 	if ( !FlattenedLayer )
 	{
 		return false;
+	}
+
+	// We may had to force instanceable=false on the prims we duplicated in order to get our session layer
+	// opinion to disable instancing. We don't want those prims to come out with "instanceable=false" on the
+	// flattened copy though, so here we clear that opinion
+	for (const pxr::SdfPath& Path : OldInstanceablePrims)
+	{
+		if (pxr::SdfPrimSpecHandle Spec = FlattenedLayer->GetPrimAtPath(Path))
+		{
+			Spec->ClearInstanceable();
+		}
 	}
 
 	ClipboardRoot->Clear();
@@ -2253,11 +2433,47 @@ TArray<UE::FSdfPath> UsdUtils::DuplicatePrims( const TArray<UE::FUsdPrim>& Prims
 			return Result;
 		}
 
+		// USD will retain instances and prototypes even when flattening, which is not what we want
+		// so let's disable instancing on our temp stage before we ask it to flatten.
+		// Note how we travere the entire masked stage here, because we also need to handle the case
+		// where the prim we're duplicating is not instanceable, but has instanceable children
+		TArray<pxr::SdfPath> OldInstanceablePrims;
+		if (TempStage->GetPrototypes().size() > 0)
+		{
+			pxr::UsdEditContext Context{TempStage, TempStage->GetSessionLayer()};
+
+			pxr::UsdPrimRange PrimRange(TempStage->GetPseudoRoot());
+			for (pxr::UsdPrimRange::iterator PrimRangeIt = PrimRange.begin(); PrimRangeIt != PrimRange.end(); ++PrimRangeIt)
+			{
+				if (PrimRangeIt->IsPseudoRoot())
+				{
+					continue;
+				}
+
+				if (PrimRangeIt->HasAuthoredInstanceable())
+				{
+					PrimRangeIt->SetInstanceable(false);
+					OldInstanceablePrims.Add(PrimRangeIt->GetPrimPath());
+				}
+			}
+		}
+
 		const bool bAddSourceFileComment = false;
 		FlattenedLayer = TempStage->Flatten( bAddSourceFileComment );
 		if ( !FlattenedLayer )
 		{
 			return Result;
+		}
+
+		// We may had to force instanceable=false on the prims we duplicated in order to get our session layer
+		// opinion to disable instancing. We don't want those prims to come out with "instanceable=false" on the
+		// flattened copy though, so here we clear that opinion
+		for (const pxr::SdfPath& Path : OldInstanceablePrims)
+		{
+			if (pxr::SdfPrimSpecHandle Spec = FlattenedLayer->GetPrimAtPath(Path))
+			{
+				Spec->ClearInstanceable();
+			}
 		}
 	}
 
@@ -2279,8 +2495,11 @@ TArray<UE::FSdfPath> UsdUtils::DuplicatePrims( const TArray<UE::FUsdPrim>& Prims
 		std::unordered_set<pxr::SdfLayerHandle, pxr::TfHash> LayersThatWillBeAffected;
 		LayersThatWillBeAffected.reserve( PrimSpecs.size() );
 
-		for ( const pxr::SdfPrimSpecHandle& Spec : PrimSpecs )
+		pxr::SdfPath TargetPath = UsdPrim.GetPrimPath();
+		for (int32 SpecIndex = PrimSpecs.size() - 1; SpecIndex >= 0; --SpecIndex)
 		{
+			const pxr::SdfPrimSpecHandle& Spec = PrimSpecs[SpecIndex];
+
 			// For whatever reason sometimes there are invalid specs in the layer stack, so we need to be careful
 			if ( !Spec )
 			{
@@ -2288,7 +2507,13 @@ TArray<UE::FSdfPath> UsdUtils::DuplicatePrims( const TArray<UE::FUsdPrim>& Prims
 			}
 
 			pxr::SdfPath SpecPath = Spec->GetPath();
-			if ( !SpecPath.IsPrimPath() )
+
+			// Skip specs that have a different path than the actual prim path. The only way this could happen
+			// is if the prim is referencing this particular path, and if we were to duplicate this spec
+			// we'd essentially end up flattening the referenced prim over the new duplicate prim, which
+			// is not what we want. We'll already get the fact that "prim references this other prim" by copying
+			// the spec at the actual TargetPath however
+			if (!SpecPath.IsPrimPath() || SpecPath.StripAllVariantSelections() != TargetPath)
 			{
 				continue;
 			}
@@ -2390,12 +2615,47 @@ TArray<UE::FSdfPath> UsdUtils::DuplicatePrims( const TArray<UE::FUsdPrim>& Prims
 					continue;
 				}
 
-				if ( !pxr::SdfCopySpec( SpecLayerHandle, SpecPath, SpecLayerHandle, NewSpecPath ) )
+				pxr::SdfShouldCopyValueFn ShouldCopyValue =
+					[](pxr::SdfSpecType SpecType,
+					   const pxr::TfToken& Field,
+					   const pxr::SdfLayerHandle& SrcLayer,
+					   const pxr::SdfPath& SrcPath,
+					   bool FieldInSrc,
+					   const pxr::SdfLayerHandle& DstLayer,
+					   const pxr::SdfPath& DstPath,
+					   bool FieldInDst,
+					   boost::optional<pxr::VtValue>* ValueToCopy) -> bool
 				{
-					UE_LOG( LogUsd, Warning, TEXT( "Failed to copy spec from path '%s' onto path '%s' within layer '%s'" ),
-						*UsdToUnreal::ConvertPath( SpecPath ),
-						*UsdToUnreal::ConvertPath( NewSpecPath ),
-						*UsdToUnreal::ConvertString( SpecLayerHandle->GetIdentifier() )
+					// Only copy a field over if it has a value. Otherwise it seems to clear the destination spec
+					// for nothing
+					return FieldInSrc;
+				};
+
+				pxr::SdfShouldCopyChildrenFn ShouldCopyChildren =
+					[](const pxr::TfToken& ChildrenField,
+					   const pxr::SdfLayerHandle& SrcLayer,
+					   const pxr::SdfPath& SrcPath,
+					   bool FieldInSrc,
+					   const pxr::SdfLayerHandle& DstLayer,
+					   const pxr::SdfPath& DstPath,
+					   bool FieldInDst,
+					   boost::optional<pxr::VtValue>* SrcChildren,
+					   boost::optional<pxr::VtValue>* DstChildren) -> bool
+				{
+					return true;
+				};
+
+				// We use the advanced version of SdfCopySpec here as otherwise the default behavior is to fully clear
+				// the destination spec before copying stuff, and we may want to copy multiple specs overwriting each other
+				if (!pxr::SdfCopySpec(SpecLayerHandle, SpecPath, SpecLayerHandle, NewSpecPath, ShouldCopyValue, ShouldCopyChildren))
+				{
+					UE_LOG(
+						LogUsd,
+						Warning,
+						TEXT("Failed to copy spec from path '%s' onto path '%s' within layer '%s'"),
+						*UsdToUnreal::ConvertPath(SpecPath),
+						*UsdToUnreal::ConvertPath(NewSpecPath),
+						*UsdToUnreal::ConvertString(SpecLayerHandle->GetIdentifier())
 					);
 				}
 			}
@@ -2556,6 +2816,165 @@ FUsdUnrealAssetInfo UsdUtils::GetPrimAssetInfo( const UE::FUsdPrim& Prim )
 #endif // USE_USD_SDK
 
 	return Result;
+}
+
+void UsdUtils::CollectSchemaAnalytics(const UE::FUsdStage& Stage, const FString& EventName)
+{
+#if USE_USD_SDK
+	if (!Stage)
+	{
+		return;
+	}
+
+	TMap<FString, int32> Counts;
+
+	{
+		FScopedUsdAllocs Allocs;
+
+		pxr::UsdPrimRange PrimRange{Stage.GetPseudoRoot(), pxr::UsdTraverseInstanceProxies()};
+		for (pxr::UsdPrimRange::iterator PrimRangeIt = ++PrimRange.begin(); PrimRangeIt != PrimRange.end(); ++PrimRangeIt)
+		{
+			// It's perfectly fine to have a typeless prim (e.g. "def 'Cube'")
+			if (PrimRangeIt->HasAuthoredTypeName())
+			{
+				const pxr::TfToken& TypeName = PrimRangeIt->GetTypeName();
+				const FString TypeNameStr = UsdToUnreal::ConvertToken(TypeName);
+
+				if (!TypeNameStr.IsEmpty())
+				{
+					Counts.FindOrAdd(TypeNameStr) += 1;
+				}
+			}
+
+			for (const pxr::TfToken& AppliedSchema : PrimRangeIt->GetAppliedSchemas())
+			{
+				std::pair<pxr::TfToken, pxr::TfToken> Pair = pxr::UsdSchemaRegistry::GetTypeNameAndInstance(AppliedSchema);
+				FString TypeName = UsdToUnreal::ConvertToken(Pair.first);
+
+				// These applied schema names shouldn't ever end up as the empty string... but we don't really want to pop
+				// an ensure or show a warning when analytics fails
+				if (!TypeName.IsEmpty())
+				{
+					Counts.FindOrAdd(TypeName) += 1;
+				}
+			}
+		}
+	}
+
+	const static TSet<FString> NativeSchemaNames{
+		"AssetPreviewsAPI",
+		"Backdrop",
+		"BasisCurves",
+		"BlendShape",
+		"Camera",
+		"Capsule",
+		"ClipsAPI",
+		"CollectionAPI",
+		"Cone",
+		"ConnectableAPI",
+		"ControlRigAPI",
+		"CoordSysAPI",
+		"Cube",
+		"Cylinder",
+		"CylinderLight",
+		"DiskLight",
+		"DistantLight",
+		"DomeLight",
+		"Field3DAsset",
+		"GenerativeProcedural",
+		"GeomModelAPI",
+		"GeomSubset",
+		"GeometryLight",
+		"GroomAPI",
+		"GroomBindingAPI",
+		"HermiteCurves",
+		"HydraGenerativeProceduralAPI",
+		"LightAPI",
+		"LightFilter",
+		"LightListAPI",
+		"ListAPI",
+		"LiveLinkAPI",
+		"Material",
+		"MaterialBindingAPI",
+		"Mesh",
+		"MeshLightAPI",
+		"ModelAPI",
+		"MotionAPI",
+		"NodeDefAPI",
+		"NodeGraph",
+		"NodeGraphNodeAPI",
+		"NurbsCurves",
+		"NurbsPatch",
+		"OpenVDBAsset",
+		"PackedJointAnimation",
+		"PhysicsArticulationRootAPI",
+		"PhysicsCollisionAPI",
+		"PhysicsCollisionGroup",
+		"PhysicsDistanceJoint",
+		"PhysicsDriveAPI",
+		"PhysicsFilteredPairsAPI",
+		"PhysicsFixedJoint",
+		"PhysicsJoint",
+		"PhysicsLimitAPI",
+		"PhysicsMassAPI",
+		"PhysicsMaterialAPI",
+		"PhysicsMeshCollisionAPI",
+		"PhysicsPrismaticJoint",
+		"PhysicsRevoluteJoint",
+		"PhysicsRigidBodyAPI",
+		"PhysicsScene",
+		"PhysicsSphericalJoint",
+		"Plane",
+		"PluginLight",
+		"PluginLightFilter",
+		"PointInstancer",
+		"Points",
+		"PortalLight",
+		"PrimvarsAPI",
+		"RectLight",
+		"RenderDenoisePass",
+		"RenderPass",
+		"RenderProduct",
+		"RenderSettings",
+		"RenderVar",
+		"RiMaterialAPI",
+		"RiSplineAPI",
+		"SceneGraphPrimAPI",
+		"Scope",
+		"Shader",
+		"ShadowAPI",
+		"ShapingAPI",
+		"SkelAnimation",
+		"SkelBindingAPI",
+		"SkelRoot",
+		"Skeleton",
+		"SpatialAudio",
+		"Sphere",
+		"SphereLight",
+		"StatementsAPI",
+		"VisibilityAPI",
+		"Volume",
+		"VolumeLightAPI",
+		"Xform",
+		"XformCommonAPI"};
+
+	TArray<FAnalyticsEventAttribute> EventAttributes;
+	EventAttributes.Reserve(Counts.Num());
+
+	for (const TPair<FString, int32>& Pair : Counts)
+	{
+		// We only care about non-native schemas
+		if (!NativeSchemaNames.Contains(Pair.Key))
+		{
+			EventAttributes.Emplace(Pair.Key, Pair.Value);
+		}
+	}
+
+	if (EventAttributes.Num() > 0)
+	{
+		IUsdClassesModule::SendAnalytics(MoveTemp(EventAttributes), FString::Printf(TEXT("%s.NonNativeSchemaCounts"), *EventName));
+	}
+#endif	  // USE_USD_SDK
 }
 
 #if USE_USD_SDK

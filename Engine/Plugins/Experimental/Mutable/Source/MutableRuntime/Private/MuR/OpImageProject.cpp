@@ -10,7 +10,6 @@
 #include "MuR/MeshPrivate.h"
 #include "MuR/MutableMath.h"
 #include "MuR/MutableTrace.h"
-#include "MuR/Octree.h"
 #include "MuR/OpMeshClipWithMesh.h"
 #include "MuR/Parameters.h"
 #include "MuR/ParametersPrivate.h"
@@ -22,7 +21,11 @@
 #include "Math/IntPoint.h"
 #include "Math/UnrealMathSSE.h"
 #include "Misc/AssertionMacros.h"
+#include "Math/UnrealMathUtility.h"
 
+#include "Math/VectorRegister.h"
+
+#include "Spatial/PointHashGrid3.h"
 
 namespace mu
 {
@@ -30,392 +33,6 @@ namespace mu
 
 namespace
 {
-
-//	class RaycastPixelProcessor
-//	{
-//	public:
-//
-//		RaycastPixelProcessor( const FProjector& projector,
-//							   const Image* pSource,
-//                               const uint8* pTargetData,
-//                               const uint8* pMaskData,
-//							   float fadeStart,
-//							   float fadeEnd )
-//		{
-//			projector.GetDirectionSideUp( m_direction, m_side, m_up );
-//
-//			m_position[0] = projector.position[0];
-//			m_position[1] = projector.position[1];
-//			m_position[2] = projector.position[2];
-//
-//			m_scale[0] = projector.scale[0];
-//            m_scale[1] = projector.scale[1];
-//            m_scale[2] = projector.scale[2];
-//
-//			m_pSource = pSource;
-//
-//            m_fadeStartCos = cosf(fadeStart);
-//            m_fadeEndCos = cosf(fadeEnd);
-//
-//			m_pTargetData = pTargetData;
-//			m_pMaskData = pMaskData;
-//
-//			EImageFormat format = m_pSource->GetFormat();
-//			m_pixelSize = GetImageFormatData( format ).m_bytesPerBlock;
-//
-//		}
-//
-//
-//		//-----------------------------------------------------------------------------------------
-//        inline void ProcessPixel( unsigned char* pBufferPos, float varying[4] ) const
-//		{
-//			float factor = 1;
-//
-//            // depth clamp
-//            if (varying[2]<0.0f || varying[2]>1.0f)
-//            {
-//                factor = 0;
-//            }
-//
-//            if ( factor>0 && m_pMaskData )
-//			{
-//                uint8 maskFactor = m_pMaskData[ (pBufferPos-m_pTargetData) / m_pixelSize ];
-//				factor = float(maskFactor) / 255.0f;
-//			}
-//
-//			if ( factor>0 )
-//			{
-////				vec3<float> normal( varying[2], varying[3], varying[4] );
-////				normal = normalise_approx( normal );
-//
-////				float angleCos = dot( normal, m_direction * -1.0f );
-//                float angleCos = varying[3];
-//
-//                if ( angleCos<m_fadeStartCos && angleCos>m_fadeEndCos )
-//				{
-//                    factor *= ( angleCos - m_fadeEndCos ) / ( m_fadeStartCos - m_fadeEndCos );
-//				}
-//                else if ( angleCos<=m_fadeEndCos )
-//				{
-//					factor = 0;
-//				}
-//			}
-//
-//
-//			if ( factor>0 )
-//			{
-//				// Transform the origin to the projected image texture coordinates
-//				float u = varying[0];
-//				float v = varying[1];
-//
-//				if ( u>=0 && u<1 && v>=0 && v<1 )
-//				{
-//
-//                    const uint8* pPixel = m_pSource->GetData();
-//					// TODO: clamp?
-//					pPixel += ( m_pSource->GetSizeX() * int(m_pSource->GetSizeY() * v)
-//								+ int( m_pSource->GetSizeX() * u ) )
-//							* m_pixelSize;
-//
-//					// Write result
-//					switch ( m_pSource->GetFormat() )
-//					{
-//					case EImageFormat::IF_L_UBYTE:
-//                        pBufferPos[0] = uint8( pPixel[0] * factor );
-//						break;
-//
-//					case EImageFormat::IF_RGB_UBYTE:
-//                        pBufferPos[0] = uint8( pPixel[0] * factor );
-//                        pBufferPos[1] = uint8( pPixel[1] * factor );
-//                        pBufferPos[2] = uint8( pPixel[2] * factor );
-//						break;
-//
-//                    case EImageFormat::IF_BGRA_UBYTE:
-//                    case EImageFormat::IF_RGBA_UBYTE:
-//                        pBufferPos[0] = uint8( pPixel[0] * factor );
-//                        pBufferPos[1] = uint8( pPixel[1] * factor );
-//                        pBufferPos[2] = uint8( pPixel[2] * factor );
-//                        pBufferPos[3] = uint8( pPixel[3] * factor );
-//						break;
-//
-//					default:
-//						// Not implemented
-//						check( false );
-//						break;
-//					}
-//				}
-//			}
-//		}
-//
-//
-//		const Image* m_pSource = nullptr;
-//		FVector3f m_direction;
-//		FVector3f m_up;
-//		FVector3f m_side;
-//		FVector3f m_position;
-//		FVector3f m_scale;
-//
-//        //! Cosine of the fading angle range
-//		float m_fadeStartCos = 0.0f, m_fadeEndCos = 0.0f;
-//
-//        const uint8* m_pTargetData = nullptr;
-//        const uint8* m_pMaskData = nullptr;
-//		int m_pixelSize = 0;
-//
-//	};
-
-
-	//---------------------------------------------------------------------------------------------
-//    template<int PIXEL_SIZE,bool HAS_MASK=true>
-//	class RaycastPixelProcessor_UBYTE
-//	{
-//	public:
-//
-//		RaycastPixelProcessor_UBYTE( const FProjector& projector,
-//									 const Image* pSource,
-//                                     const uint8* pTargetData,
-//                                     const uint8* pMaskData,
-//									 float fadeStart,
-//									 float fadeEnd )
-//		{
-//			projector.GetDirectionSideUp( m_direction, m_side, m_up );
-//
-//			m_position[0] = projector.position[0];
-//			m_position[1] = projector.position[1];
-//			m_position[2] = projector.position[2];
-//
-//			m_scale[0] = projector.scale[0];
-//            m_scale[1] = projector.scale[1];
-//            m_scale[2] = projector.scale[2];
-//
-//			m_pSourceData = pSource->GetData();
-//			m_sourceSizeX = pSource->GetSizeX();
-//			m_sourceSizeY = pSource->GetSizeY();
-//
-//            m_fadeStartCos = cosf(fadeStart);
-//            m_fadeEndCos = cosf(fadeEnd);
-//
-//			m_pTargetData = pTargetData;
-//			m_pMaskData = pMaskData;
-//
-//			check( GetImageFormatData( pSource->GetFormat() ).m_bytesPerBlock
-//							==
-//							PIXEL_SIZE );
-//		}
-//
-//
-//		//-----------------------------------------------------------------------------------------
-//        inline void ProcessPixel( unsigned char* pBufferPos, float varying[4] ) const
-//		{
-//            int32 factor_8 = 256;
-//
-//            // depth clamp
-//            if (varying[2]<0.0f || varying[2]>1.0f)
-//            {
-//                factor_8 = 0;
-//            }
-//
-////				vec3<float> normal( varying[2], varying[3], varying[4] );
-////				normal = normalise_approx( normal );
-//
-////				float angleCos = dot( normal, m_direction * -1.0f );
-//            float angleCos = varying[3];
-//
-//            if (HAS_MASK)
-//            {
-//                if ( factor_8>0 && m_pMaskData )
-//                {
-//                    uint8 maskFactor = m_pMaskData[ (pBufferPos-m_pTargetData) / PIXEL_SIZE ];
-//                    factor_8 = maskFactor;
-//                }
-//
-//                if ( factor_8>0 )
-//                {
-//                    if ( angleCos<m_fadeStartCos && angleCos>m_fadeEndCos )
-//                    {
-//                        factor_8 = ( factor_8
-//                                     *
-//                                     int32( 256.0f * ( angleCos - m_fadeEndCos ) / ( m_fadeStartCos - m_fadeEndCos ) )
-//                                     ) >> 8;
-//                    }
-//                    else if ( angleCos<=m_fadeEndCos )
-//                    {
-//                        factor_8 = 0;
-//                    }
-//                }
-//            }
-//            else
-//            {
-//                if ( angleCos<m_fadeStartCos && angleCos>m_fadeEndCos )
-//                {
-//                    factor_8 = int32( 256.0f * ( angleCos - m_fadeEndCos ) / ( m_fadeStartCos - m_fadeEndCos ) );
-//                }
-//                else if ( angleCos<=m_fadeEndCos )
-//                {
-//                    factor_8 = 0;
-//                }
-//            }
-//
-//
-//			if ( factor_8>0 )
-//			{
-//				float u = varying[0];
-//				float v = varying[1];
-//
-//				if ( u>=0 && u<1 && v>=0 && v<1 )
-//				{
-//
-//                    const uint8* pPixel = m_pSourceData;
-//					// TODO: clamp?
-//					pPixel += ( m_sourceSizeX * int(m_sourceSizeY * v)
-//								+ int( m_sourceSizeX * u ) )
-//							* PIXEL_SIZE;
-//
-//					// Write result
-//					for ( int i=0; i<PIXEL_SIZE; ++i )
-//					{
-//						pBufferPos[i] = uint8( ( pPixel[i] * factor_8 ) >> 8 );
-//					}
-//				}
-//			}
-//		}
-//
-//
-//        const uint8* m_pSourceData;
-//		int m_sourceSizeX, m_sourceSizeY;
-//
-//		FVector3f m_direction;
-//		FVector3f m_up;
-//		FVector3f m_side;
-//		FVector3f m_position;
-//		FVector3f m_scale;
-//
-//        //! Cosine of the fading angle range
-//        float m_fadeStartCos, m_fadeEndCos;
-//
-//        const uint8* m_pTargetData;
-//        const uint8* m_pMaskData;
-//	};
-
-
-
-  //  class RasterProjectedPixelProcessor
-  //  {
-  //  public:
-
-  //      RasterProjectedPixelProcessor( const Image* pSource,
-		//	const uint8* pTargetData,
-		//	const uint8* pMaskData,
-		//	bool bIsRGBFadingEnabled, bool bIsAlphaFadingEnabled,
-		//	float fadeStart, float fadeEnd )
-  //      {
-  //          m_pSource = pSource;
-
-		//	// \TODO: to template parameters?
-		//	m_bIsRGBFadingEnabled = bIsRGBFadingEnabled;
-		//	m_bIsAlphaFadingEnabled = bIsAlphaFadingEnabled;
-
-  //          m_fadeStartCos = cosf(fadeStart);
-  //          m_fadeEndCos = cosf(fadeEnd);
-
-  //          m_pTargetData = pTargetData;
-  //          m_pMaskData = pMaskData;
-
-		//	EImageFormat format = m_pSource->GetFormat();
-  //          m_pixelSize = GetImageFormatData( format ).m_bytesPerBlock;
-
-  //      }
-
-
-  //      //-----------------------------------------------------------------------------------------
-  //      inline void ProcessPixel( unsigned char* pBufferPos, float varying[4] ) const
-  //      {
-  //          float factor = 1;
-
-  //          // depth clamp
-  //          if (varying[2]<0.0f || varying[2]>1.0f)
-  //          {
-  //              factor = 0;
-  //          }
-
-  //          if ( factor>0 && m_pMaskData )
-  //          {
-  //              uint8 maskFactor = m_pMaskData[ (pBufferPos-m_pTargetData) / m_pixelSize ];
-  //              factor = float(maskFactor) / 255.0f;
-  //          }
-
-  //          if ( factor>0 )
-  //          {
-  //              float angleCos = varying[3];
-
-  //              if ( angleCos<m_fadeStartCos && angleCos>m_fadeEndCos )
-  //              {
-  //                  factor *= ( angleCos - m_fadeEndCos ) / ( m_fadeStartCos - m_fadeEndCos );
-  //              }
-  //              else if ( angleCos<=m_fadeEndCos )
-  //              {
-  //                  factor = 0;
-  //              }
-  //          }
-
-
-  //          if ( factor>0 )
-  //          {
-  //              // Transform the origin to the projected image texture coordinates
-  //              float u = varying[0];
-  //              float v = varying[1];
-
-  //              if ( u>=0 && u<1 && v>=0 && v<1 )
-  //              {
-
-  //                  const uint8* pPixel = m_pSource->GetData();
-  //                  // TODO: clamp?
-  //                  pPixel += ( m_pSource->GetSizeX() * int(m_pSource->GetSizeY() * v)
-  //                              + int( m_pSource->GetSizeX() * u ) )
-  //                          * m_pixelSize;
-
-  //                  // Write result
-  //                  switch ( m_pSource->GetFormat() )
-  //                  {
-  //                  case EImageFormat::IF_L_UBYTE:
-  //                      pBufferPos[0] = uint8( pPixel[0] * factor );
-  //                      break;
-
-  //                  case EImageFormat::IF_RGB_UBYTE:
-  //                      pBufferPos[0] = uint8( pPixel[0] * factor );
-  //                      pBufferPos[1] = uint8( pPixel[1] * factor );
-  //                      pBufferPos[2] = uint8( pPixel[2] * factor );
-  //                      break;
-
-  //                  case EImageFormat::IF_BGRA_UBYTE:
-  //                  case EImageFormat::IF_RGBA_UBYTE:
-  //                      pBufferPos[0] = uint8( pPixel[0] * factor );
-  //                      pBufferPos[1] = uint8( pPixel[1] * factor );
-  //                      pBufferPos[2] = uint8( pPixel[2] * factor );
-  //                      pBufferPos[3] = uint8( pPixel[3] * factor );
-  //                      break;
-
-  //                  default:
-  //                      // Not implemented
-  //                      check( false );
-  //                      break;
-  //                  }
-  //              }
-  //          }
-  //      }
-
-
-  //      const Image* m_pSource;
-
-  //      //! Cosine of the fading angle range
-  //      float m_fadeStartCos, m_fadeEndCos;
-		//bool m_bIsRGBFadingEnabled, m_bIsAlphaFadingEnabled;
-
-  //      const uint8* m_pTargetData;
-  //      const uint8* m_pMaskData;
-  //      int m_pixelSize;
-
-  //  };
 
 
     //---------------------------------------------------------------------------------------------
@@ -444,7 +61,7 @@ namespace
             m_pTargetData = pTargetData;
             m_pMaskData = pMaskData;
 
-            check( GetImageFormatData( pSource->GetFormat() ).m_bytesPerBlock
+            check( GetImageFormatData( pSource->GetFormat() ).BytesPerBlock
                             ==
                             PIXEL_SIZE );
         }
@@ -507,7 +124,6 @@ namespace
 					factor_unfaded_8 = 0;
                 }
             }
-
 
             if ( factor_8>0 )
             {
@@ -582,6 +198,387 @@ namespace
     };
 
 
+
+    //---------------------------------------------------------------------------------------------
+    template<int PIXEL_SIZE, bool bUseVectorImpl = false, bool HAS_MASK = true>
+    class RasterProjectedPixelProcessorLinear_UBYTE
+    {
+    public:
+
+        RasterProjectedPixelProcessorLinear_UBYTE( const Image* Source,
+			const uint8* pTargetData,
+			const uint8* pMaskData,
+			bool bInIsRGBFadingEnabled, bool bInIsAlphaFadingEnabled,
+			float FadeStart, float FadeEnd, float MipSamplingFactor )
+        {
+
+            Source0SizeX = static_cast<uint16>(Source->GetSizeX());
+            Source0SizeY = static_cast<uint16>(Source->GetSizeY());
+
+			// If we don't have the next mip, use the first mip as a fallback.
+			const bool bHasNextMip = Source->GetLODCount() >= 2;
+
+            Source0DataPtr = (Source0SizeX > 0 && Source0SizeY > 0) ? Source->GetData() : nullptr;
+			Source1DataPtr = bHasNextMip ? Source->GetMipData(1) : Source0DataPtr;
+	
+			FIntVector2 Source1Size = Source->CalculateMipSize(1);
+            Source1SizeX = bHasNextMip ? static_cast<uint16>(Source1Size.X) : Source0SizeX;
+            Source1SizeY = bHasNextMip ? static_cast<uint16>(Source1Size.Y) : Source0SizeY;
+
+			// Invalidate SourceDataPtrs if either of the two is not valid. 
+			if (!(Source0DataPtr && Source1DataPtr))
+			{
+				Source0DataPtr = nullptr;
+				Source1DataPtr = nullptr;
+			}
+
+			RGBFadingEnabledValue = bInIsRGBFadingEnabled ? -1 : 0;
+			AlphaFadingEnabledValue = bInIsAlphaFadingEnabled ? -1 : 0;
+
+			const float FadeStartCos = FMath::Cos(FadeStart);
+            FadeEndCos = FMath::Cos(FadeEnd);
+
+			const float FadeCosRangeSafeDiv = 
+				FMath::IsNearlyZero(FadeStartCos - FadeEndCos, UE_KINDA_SMALL_NUMBER) 
+				? UE_KINDA_SMALL_NUMBER 
+				: FadeStartCos - FadeEndCos;
+
+			OneOverFadeRangeTimes255 = 255.0f / FadeCosRangeSafeDiv;
+
+            TargetDataPtr = pTargetData;
+            MaskDataPtr = pMaskData;
+
+            check(GetImageFormatData(Source->GetFormat() ).BytesPerBlock == PIXEL_SIZE);
+        }
+
+		inline void ProcessPixel(uint8* BufferPosPtr, float Varying[4]) const
+		{
+			if constexpr (bUseVectorImpl)
+			{
+				ProcessPixelVectorImpl(BufferPosPtr, Varying);
+			}
+			else
+			{
+				ProcessPixelImpl(BufferPosPtr, Varying);
+			}
+		}
+
+        //-----------------------------------------------------------------------------------------
+        inline void ProcessPixelImpl( uint8* BufferPosPtr, float Varying[4] ) const
+        {
+			if (!Source0DataPtr)
+			{
+				return;
+			}
+
+			const bool bDepthClamp = (Varying[2] < 0.0f) | (Varying[2] > 1.0f);
+            const float AngleCos = Varying[3];
+
+			uint16 Factor = static_cast<uint16>(FMath::Clamp((AngleCos - FadeEndCos) * OneOverFadeRangeTimes255, 0.0f, 255.0f));
+			Factor = Factor < 255 ? Factor : static_cast<uint16>(!bDepthClamp) * 255;
+
+			uint16 MaskFactor = AngleCos > FadeEndCos ? 255 : 0;
+
+			if constexpr (HAS_MASK)
+			{
+				// Only read from memory if needed.
+				if (Factor > 0)
+				{
+					MaskFactor = ((MaskFactor > 0) && MaskDataPtr) 
+							? MaskDataPtr[(BufferPosPtr - TargetDataPtr) / PIXEL_SIZE] 
+							: MaskFactor;
+					Factor = (Factor * MaskFactor) / 255;
+				}
+			}
+
+            if (Factor > 0)
+            {
+				const FVector2f Uv = { Varying[0], Varying[1] };
+				const FVector2f Source0SizeF = FVector2f(Source0SizeX, Source0SizeY);
+				const FVector2f Source1SizeF = FVector2f(Source1SizeX, Source1SizeY);
+
+                if ((Uv.X >= 0.0f) & (Uv.X < 1.0f) & (Uv.Y >= 0.0f) & (Uv.Y < 1.0f))
+                {
+					using FUInt16Vector2 = UE::Math::TIntVector2<uint16>;
+					struct FPixelData
+					{
+						alignas(8) uint16 Data[PIXEL_SIZE];
+					};
+
+					auto SampleImageBilinear = [](FVector2f Uv, FUInt16Vector2 Size, const uint8* DataPtr)
+					{
+						auto ComputeInterpolator = [](float T) -> uint16
+						{
+							return static_cast<uint16>(255.0f * T);
+						};
+
+						const FVector2f SizeF(Size.X, Size.Y);
+
+						const FVector2f CoordsF = FVector2f(
+							FMath::Clamp(Uv.X * SizeF.X - 0.5f, 0.0f, SizeF.X - 1.0f),
+							FMath::Clamp(Uv.Y * SizeF.Y - 0.5f, 0.0f, SizeF.Y - 1.0f));
+
+						const FUInt16Vector2 Frac = FUInt16Vector2(
+							ComputeInterpolator(FMath::Frac(CoordsF.X)),
+							ComputeInterpolator(FMath::Frac(CoordsF.Y)));
+
+						const FIntVector2 Coords = FIntVector2(CoordsF.X, CoordsF.Y);
+						const FIntVector2 CoordsPlusOne = FIntVector2( 
+								FMath::Min(Size.X - 1, Coords.X + 1),
+								FMath::Min(Size.Y - 1, Coords.Y + 1));
+
+						uint8 const * const Pixel00Ptr = DataPtr + (Coords.Y        * Size.X + Coords.X)        * PIXEL_SIZE;
+						uint8 const * const Pixel10Ptr = DataPtr + (Coords.Y        * Size.X + CoordsPlusOne.X) * PIXEL_SIZE;
+						uint8 const * const Pixel01Ptr = DataPtr + (CoordsPlusOne.Y * Size.X + Coords.X)        * PIXEL_SIZE;
+						uint8 const * const Pixel11Ptr = DataPtr + (CoordsPlusOne.Y * Size.X + CoordsPlusOne.X) * PIXEL_SIZE;
+
+						auto LoadPixel = [](const uint8* Ptr) -> FPixelData
+						{
+							FPixelData Result;
+							if constexpr (PIXEL_SIZE == 4)
+							{
+								const uint32 PackedData = *reinterpret_cast<const uint32*>(Ptr);
+								
+								Result.Data[0] = static_cast<uint16>((PackedData >> (8 * 0)) & 0xFF);
+								Result.Data[1] = static_cast<uint16>((PackedData >> (8 * 1)) & 0xFF);
+								Result.Data[2] = static_cast<uint16>((PackedData >> (8 * 2)) & 0xFF);
+								Result.Data[3] = static_cast<uint16>((PackedData >> (8 * 3)) & 0xFF);
+							}
+							else
+							{
+								for (int32 C = 0; C < PIXEL_SIZE; ++C)
+								{
+									Result.Data[C] = static_cast<uint16>(Ptr[C]);
+								}
+							}
+							return Result;
+						};
+
+						FPixelData PixelData00 = LoadPixel(Pixel00Ptr);
+						FPixelData PixelData10 = LoadPixel(Pixel10Ptr);
+						FPixelData PixelData01 = LoadPixel(Pixel01Ptr);
+						FPixelData PixelData11 = LoadPixel(Pixel11Ptr);
+
+						FPixelData FilteredPixelData;
+					
+						for (int32 C = 0; C < PIXEL_SIZE; ++C)
+						{
+							const uint16 LerpY0 = ((PixelData10.Data[C] * Frac.X) + PixelData00.Data[C] * (255 - Frac.X)) / 255;
+							const uint16 LerpY1 = ((PixelData11.Data[C] * Frac.X) + PixelData01.Data[C] * (255 - Frac.X)) / 255;
+							FilteredPixelData.Data[C] = ((LerpY1 * Frac.Y) + LerpY0*(255 - Frac.Y)) / 255;
+						} 
+
+						return FilteredPixelData;
+					};
+
+					FPixelData Sample0 = SampleImageBilinear(Uv, FUInt16Vector2(Source0SizeX, Source0SizeY), Source0DataPtr);
+					FPixelData Sample1 = SampleImageBilinear(Uv, FUInt16Vector2(Source1SizeX, Source1SizeY), Source1DataPtr);
+
+					const uint16 MipFactor = static_cast<uint16>(MipInterpolationFactor * 255.0f);
+
+					FPixelData& FilteredPixelData = Sample0;
+					for (int32 C = 0; C < PIXEL_SIZE; ++C)
+					{
+						FilteredPixelData.Data[C] = ((Sample1.Data[C] * MipFactor) + Sample0.Data[C]*(255 - MipFactor)) / 255;
+					}
+
+					static_assert(PIXEL_SIZE <= 4);
+
+					// FadingEnabledValue will be -1 if enabled and 0 otherwise.
+					const uint16 FadingMask[4] = { 
+						static_cast<uint16>(-RGBFadingEnabledValue), 
+						static_cast<uint16>(-RGBFadingEnabledValue), 
+						static_cast<uint16>(-RGBFadingEnabledValue), 
+						static_cast<uint16>(-AlphaFadingEnabledValue)};
+
+					for (int32 I = 0; I < PIXEL_SIZE; ++I)
+					{
+						BufferPosPtr[I] = static_cast<uint8>(
+							(FilteredPixelData.Data[I] * (MaskFactor * (1 - FadingMask[I]) + (Factor * FadingMask[I]))) / 255);
+					}				
+                }
+            }
+        }
+
+        //-----------------------------------------------------------------------------------------
+        inline void ProcessPixelVectorImpl( uint8* BufferPosPtr, float Varying[4] ) const
+        {
+			if (!Source0DataPtr)
+			{
+				return;
+			}
+
+			const bool bDepthClamp = (Varying[2] < 0.0f) | (Varying[2] > 1.0f);
+            const float AngleCos = Varying[3];
+
+			float Factor = FMath::Clamp((AngleCos - FadeEndCos) * OneOverFadeRangeTimes255, 0.0f, 255.0f);
+			Factor = Factor < 255.0f ? Factor : static_cast<float>(!bDepthClamp) * 255.0f;
+
+			float MaskFactor = AngleCos > FadeEndCos ? 255.0f : 0.0f;
+
+			if constexpr (HAS_MASK)
+			{
+				// Only read from memory if needed.
+				if (Factor > UE_SMALL_NUMBER)
+				{
+					MaskFactor = ((MaskFactor > 0.0f) && MaskDataPtr) 
+							? static_cast<float>(MaskDataPtr[(BufferPosPtr - TargetDataPtr) / PIXEL_SIZE]) 
+							: MaskFactor;
+					Factor = (Factor * MaskFactor) * (1.0f/255.0f);
+				}
+			}
+
+            if (Factor > UE_SMALL_NUMBER)
+            {
+				const FVector2f Uv = { Varying[0], Varying[1] };
+
+                if ((Uv.X >= 0.0f) & (Uv.X < 1.0f) & (Uv.Y >= 0.0f) & (Uv.Y < 1.0f))
+                {
+					using namespace GlobalVectorConstants;
+
+					const VectorRegister4Int SizeI = 
+						MakeVectorRegisterInt(Source0SizeX, Source0SizeY, Source1SizeX, Source1SizeY);
+
+					const VectorRegister4Float SizeF = VectorIntToFloat(SizeI);
+
+					const VectorRegister4Float CoordsF = VectorMin(VectorMax(
+						VectorMultiplyAdd(MakeVectorRegister(Uv.X, Uv.Y, Uv.X, Uv.Y), SizeF, FloatMinusOneHalf),
+						FloatZero), 
+						VectorSubtract(SizeF, FloatOne));
+
+					const VectorRegister4Float Frac = VectorSubtract(CoordsF, VectorFloor(CoordsF));
+					
+					const VectorRegister4Int CoordsI = VectorFloatToInt(CoordsF);
+					const VectorRegister4Int CoordsIPlusOne = VectorIntMin(
+							VectorIntAdd(CoordsI, IntOne), VectorIntSubtract(SizeI, IntOne));
+
+					alignas(VectorRegister4Int) int32 CoordsIData[4];
+					VectorIntStoreAligned(CoordsI, CoordsIData);
+
+					alignas(VectorRegister4Int) int32 CoordsIPlusOneData[4];
+					VectorIntStoreAligned(CoordsIPlusOne, CoordsIPlusOneData);
+
+					uint8 const * const Pixel000Ptr = Source0DataPtr + (CoordsIData[1]        * Source0SizeX + CoordsIData[0])        * PIXEL_SIZE;
+					uint8 const * const Pixel010Ptr = Source0DataPtr + (CoordsIData[1]        * Source0SizeX + CoordsIPlusOneData[0]) * PIXEL_SIZE;
+					uint8 const * const Pixel001Ptr = Source0DataPtr + (CoordsIPlusOneData[1] * Source0SizeX + CoordsIData[0])        * PIXEL_SIZE;
+					uint8 const * const Pixel011Ptr = Source0DataPtr + (CoordsIPlusOneData[1] * Source0SizeX + CoordsIPlusOneData[0]) * PIXEL_SIZE;
+
+					uint8 const * const Pixel100Ptr = Source1DataPtr + (CoordsIData[3]        * Source1SizeX + CoordsIData[2])        * PIXEL_SIZE;
+					uint8 const * const Pixel110Ptr = Source1DataPtr + (CoordsIData[3]        * Source1SizeX + CoordsIPlusOneData[2]) * PIXEL_SIZE;
+					uint8 const * const Pixel101Ptr = Source1DataPtr + (CoordsIPlusOneData[3] * Source1SizeX + CoordsIData[2])        * PIXEL_SIZE;
+					uint8 const * const Pixel111Ptr = Source1DataPtr + (CoordsIPlusOneData[3] * Source1SizeX + CoordsIPlusOneData[2]) * PIXEL_SIZE;
+
+					auto LoadPixel = [](const uint8* Ptr) -> VectorRegister4Float
+					{
+						constexpr VectorRegister4Float OneOver255 = 
+							MakeVectorRegisterFloatConstant(1.0f/255.0f, 1.0f/255.0f, 1.0f/255.0f, 1.0f/255.0f);
+
+						if constexpr (PIXEL_SIZE == 4)
+						{
+							const uint32 PackedData = *reinterpret_cast<const uint32*>(Ptr);
+							return VectorMultiply(MakeVectorRegister(
+								static_cast<float>((PackedData >> (8 * 0)) & 0xFF),
+								static_cast<float>((PackedData >> (8 * 1)) & 0xFF),
+								static_cast<float>((PackedData >> (8 * 2)) & 0xFF),
+								static_cast<float>((PackedData >> (8 * 3)) & 0xFF)), OneOver255);
+						}
+						else
+						{
+							alignas(VectorRegister4Float) float PixelData[4];
+							for (int32 C = 0; C < PIXEL_SIZE; ++C)
+							{
+								PixelData[C] = static_cast<float>(Ptr[C]);
+							}
+
+							return VectorMultiply(VectorLoadAligned(&(PixelData[0])), OneOver255);
+						}
+					};
+
+					const VectorRegister4Float Pixel000 = LoadPixel(Pixel000Ptr);
+					const VectorRegister4Float Pixel010 = LoadPixel(Pixel010Ptr);
+					const VectorRegister4Float Pixel001 = LoadPixel(Pixel001Ptr);
+					const VectorRegister4Float Pixel011 = LoadPixel(Pixel011Ptr);
+
+					const VectorRegister4Float Pixel100 = LoadPixel(Pixel100Ptr);
+					const VectorRegister4Float Pixel110 = LoadPixel(Pixel110Ptr);
+					const VectorRegister4Float Pixel101 = LoadPixel(Pixel101Ptr);
+					const VectorRegister4Float Pixel111 = LoadPixel(Pixel111Ptr);
+					
+					const VectorRegister4Float Frac0X = VectorReplicate(Frac, 0);
+					const VectorRegister4Float Frac0Y = VectorReplicate(Frac, 1);
+
+					// Bilerp image 0
+					VectorRegister4Float Sample0 = VectorMultiplyAdd(Frac0X, VectorSubtract(Pixel010, Pixel000), Pixel000);
+					Sample0 = VectorMultiplyAdd(
+						Frac0Y, 
+						VectorSubtract(
+							VectorMultiplyAdd(Frac0X, VectorSubtract(Pixel011, Pixel001), Pixel001), 
+							Sample0), 
+						Sample0);
+
+					const VectorRegister4Float Frac1X = VectorReplicate(Frac, 2);
+					const VectorRegister4Float Frac1Y = VectorReplicate(Frac, 3);
+
+					// Bilerp image 1
+					VectorRegister4Float Sample1 = VectorMultiplyAdd(Frac1X, VectorSubtract(Pixel110, Pixel100), Pixel100);
+					Sample1 = VectorMultiplyAdd(
+						Frac1Y, 
+						VectorSubtract(
+							VectorMultiplyAdd(Frac1X, VectorSubtract(Pixel111, Pixel101), Pixel101), 
+							Sample1), 
+						Sample1);
+
+					VectorRegister4Float Result = VectorMultiply(
+						// Lerp mip
+						VectorMultiplyAdd(VectorSetFloat1(MipInterpolationFactor), VectorSubtract(Sample1, Sample0), Sample0),
+						// Fadding factor
+						VectorSelect(
+							// The selction mask needs to be 0xFFFFFFFF if enabled 0 otherwise. FadingEnabledValue will be -1
+							// if enabled and 0 otherwise.
+							VectorCastIntToFloat(MakeVectorRegisterInt( 
+								static_cast<int32>(RGBFadingEnabledValue), 
+								static_cast<int32>(RGBFadingEnabledValue), 
+								static_cast<int32>(RGBFadingEnabledValue), 
+								static_cast<int32>(AlphaFadingEnabledValue))), 
+							VectorSetFloat1(Factor), 
+							VectorSetFloat1(MaskFactor)));
+
+					if constexpr (PIXEL_SIZE == 4)
+					{
+						VectorStoreByte4(Result, BufferPosPtr);
+						VectorResetFloatRegisters();
+					}
+					else
+					{
+						const AlignedFloat4 ResultData(VectorMin(VectorMax(Result, FloatZero), Float255));
+						for (int32 C = 0; C < PIXEL_SIZE; ++C)
+						{
+							BufferPosPtr[C] = static_cast<uint8>(ResultData[C]);		
+						}				
+					}
+                }
+            }
+        }
+
+        const uint8* Source0DataPtr;
+        const uint8* Source1DataPtr;
+        uint16 Source0SizeX, Source0SizeY;
+        uint16 Source1SizeX, Source1SizeY;
+
+        //! Cosine of the fading angle range
+		float FadeEndCos;
+		float MipInterpolationFactor;
+
+		// precomputation of 255 / (FadeStartCos - FadeEndCos) 
+		float OneOverFadeRangeTimes255;
+
+		int8 RGBFadingEnabledValue, AlphaFadingEnabledValue;
+
+        const uint8* TargetDataPtr;
+        const uint8* MaskDataPtr;
+    };
+
+
     //---------------------------------------------------------------------------------------------
     template<int PIXEL_SIZE,bool HAS_MASK=true>
     class RasterCylindricalProjectedPixelProcessor_UBYTE
@@ -606,7 +603,7 @@ namespace
             m_pTargetData = pTargetData;
             m_pMaskData = pMaskData;
 
-            check( GetImageFormatData( pSource->GetFormat() ).m_bytesPerBlock
+            check( GetImageFormatData( pSource->GetFormat() ).BytesPerBlock
                             ==
                             PIXEL_SIZE );
         }
@@ -710,163 +707,6 @@ namespace
 
 
 //-------------------------------------------------------------------------------------------------
-//void ImageRasterProjected_Generic( const Mesh* pMesh,
-//                           Image* pImage,
-//                           const Image* pSource,
-//                           const Image* pMask,
-//                           float fadeStart,
-//                           float fadeEnd,
-//                           int layout,
-//                           int block )
-//{
-//	MUTABLE_CPUPROFILER_SCOPE(ImageRasterProjected_Generic);
-//
-//	EImageFormat format = pImage->GetFormat();
-//    int pixelSize = GetImageFormatData( format ).m_bytesPerBlock;
-//
-//    int sizeX = pImage->GetSizeX();
-//    int sizeY = pImage->GetSizeY();
-//
-//    RasterProjectedPixelProcessor pixelProc( pSource,
-//                                     pImage->GetData(),
-//                                     pMask ? pMask->GetData() : 0,
-//                                     fadeStart, fadeEnd );
-//
-//    // Get the vertices
-//    int vertexCount = pMesh->GetVertexCount();
-//	TArray< RasterVertex<4> > vertices;
-//	vertices.SetNum(vertexCount);
-//
-//    UntypedMeshBufferIteratorConst texIt( pMesh->GetVertexBuffers(), MBS_TEXCOORDS, layout );
-//    UntypedMeshBufferIteratorConst posIt( pMesh->GetVertexBuffers(), MBS_POSITION, 0 );
-//    UntypedMeshBufferIteratorConst norIt( pMesh->GetVertexBuffers(), MBS_NORMAL, 0 );
-//    for ( int v=0; v<vertexCount; ++v )
-//    {
-//        float uv[2]={0.0f,0.0f};
-//        ConvertData( 0, uv, MBF_FLOAT32, texIt.ptr(), texIt.GetFormat() );
-//        ConvertData( 1, uv, MBF_FLOAT32, texIt.ptr(), texIt.GetFormat() );
-//
-//        vertices[v].x = uv[0] * sizeX;
-//        vertices[v].y = uv[1] * sizeY;
-//
-//        FVector3f pos={0.0f,0.0f,0.0f};
-//        ConvertData( 0, &pos[0], MBF_FLOAT32, posIt.ptr(), posIt.GetFormat() );
-//        ConvertData( 1, &pos[0], MBF_FLOAT32, posIt.ptr(), posIt.GetFormat() );
-//        ConvertData( 2, &pos[0], MBF_FLOAT32, posIt.ptr(), posIt.GetFormat() );
-//        vertices[v].interpolators[0] = pos[0];
-//        vertices[v].interpolators[1] = pos[1];
-//        vertices[v].interpolators[2] = pos[2];
-//
-//        float nor=0.0f;
-//        ConvertData( 0, &nor, MBF_FLOAT32, norIt.ptr(), norIt.GetFormat() );
-//        vertices[v].interpolators[3] = nor;
-//
-//        ++texIt;
-//        ++posIt;
-//        ++norIt;
-//    }
-//
-//    // Get the indices
-//    int faceCount = pMesh->GetFaceCount();
-//	TArray<int> indices;
-//	indices.SetNum(faceCount * 3);
-//
-//    UntypedMeshBufferIteratorConst indIt( pMesh->GetIndexBuffers(), MBS_VERTEXINDEX, 0 );
-//    for ( int i=0; i<faceCount*3; ++i )
-//    {
-//        uint32 index=0;
-//        ConvertData( 0, &index, MBF_UINT32, indIt.ptr(), indIt.GetFormat() );
-//
-//        indices[i] = index;
-//        ++indIt;
-//    }
-//
-//    // Get the block per face
-//	TArray<int> blocks;
-//	blocks.SetNum(vertexCount);
-//
-//    UntypedMeshBufferIteratorConst bloIt( pMesh->GetVertexBuffers(), MBS_LAYOUTBLOCK, layout );
-//    if (bloIt.ptr())
-//    {
-//        for ( int i=0; i<vertexCount; ++i )
-//        {
-//            uint16 index=0;
-//            ConvertData( 0, &index, MBF_UINT16, bloIt.ptr(), bloIt.GetFormat() );
-//
-//            blocks[i] = index;
-//            ++bloIt;
-//        }
-//    }
-//
-//    if ( block<0 )
-//    {
-//        // We are rastering the entire layout in an image, so we need to apply the block->layout
-//        // transform to the UVs
-//        const Layout* pLayout = layout<pMesh->GetLayoutCount() ? pMesh->GetLayout( layout ) : nullptr;
-//        if (pLayout && bloIt.ptr())
-//        {
-//			TArray< box< vec2<float> > > transforms;
-//			transforms.SetNum(pLayout->GetBlockCount());
-//            for ( int b=0; b<pLayout->GetBlockCount(); ++b )
-//            {
-//                FIntPoint grid = pLayout->GetGridSize();
-//
-//                box< vec2<int> > blockRect;
-//                pLayout->GetBlock( b, &blockRect.min[0], &blockRect.min[1], &blockRect.size[0], &blockRect.size[1] );
-//
-//                box< vec2<float> > rect;
-//                rect.min[0] = ( (float)blockRect.min[0] ) / (float) grid[0];
-//                rect.min[1] = ( (float)blockRect.min[1] ) / (float) grid[1];
-//                rect.size[0] = ( (float)blockRect.size[0] ) / (float) grid[0];
-//                rect.size[1] = ( (float)blockRect.size[1] ) / (float) grid[1];
-//                transforms[b] = rect;
-//            }
-//
-//            for ( int i=0; i<vertexCount; ++i )
-//            {
-//                int relBlock = pLayout->FindBlock( blocks[i] );
-//                vertices[i].x = vertices[i].x * transforms[ relBlock ].size[0]
-//                        + transforms[ relBlock ].min[0] * sizeX;
-//                vertices[i].y = vertices[i].y * transforms[ relBlock ].size[1]
-//                        + transforms[ relBlock ].min[1] * sizeY;
-//            }
-//        }
-//
-//        // Raster all the faces
-//        for ( int f=0; f<faceCount; ++f )
-//        {
-//            Triangle( pImage->GetData(),
-//                      sizeX, sizeY,
-//                      pixelSize,
-//                      vertices[indices[f*3+0]],
-//                      vertices[indices[f*3+1]],
-//                      vertices[indices[f*3+2]],
-//                      pixelProc,
-//                      false );
-//        }
-//    }
-//    else
-//    {
-//        // Raster only the faces in the selected block
-//        for ( int f=0; f<faceCount; ++f )
-//        {
-//            if ( blocks[ indices[f*3+0] ]==block )
-//            {
-//                Triangle( pImage->GetData(),
-//                          sizeX, sizeY,
-//                          pixelSize,
-//                          vertices[indices[f*3+0]],
-//                          vertices[indices[f*3+1]],
-//                          vertices[indices[f*3+2]],
-//                          pixelProc,
-//                          false );
-//            }
-//        }
-//    }
-//}
-//
-
-//-------------------------------------------------------------------------------------------------
 //! This format is the one we assumee the meshes optimised for planar and cylindrical projection
 //! will have.
 //! See CreateMeshOptimisedForProjection
@@ -896,11 +736,10 @@ static_assert( sizeof(OPTIMISED_VERTEX_WRAPPING)==36, "UNEXPECTED_STRUCT_SIZE" )
 
 //-------------------------------------------------------------------------------------------------
 template<class PIXEL_PROCESSOR>
-void ImageRasterProjected_Optimised( const Mesh* pMesh,
-                             Image* pImage,
-                             PIXEL_PROCESSOR& pixelProc,
-                             float fadeEnd,
-                             SCRATCH_IMAGE_PROJECT* scratch )
+void ImageRasterProjected_Optimised( const Mesh* pMesh, Image* pImage,
+	PIXEL_PROCESSOR& pixelProc, float fadeEnd,
+	UE::Math::TIntVector2<uint16> CropMin, UE::Math::TIntVector2<uint16> UncroppedSize,
+	SCRATCH_IMAGE_PROJECT* scratch )
 {
 	MUTABLE_CPUPROFILER_SCOPE(ImageRasterProjected_Optimised);
 
@@ -910,10 +749,12 @@ void ImageRasterProjected_Optimised( const Mesh* pMesh,
     }
 
 	EImageFormat format = pImage->GetFormat();
-    int pixelSize = GetImageFormatData( format ).m_bytesPerBlock;
+    int pixelSize = GetImageFormatData( format ).BytesPerBlock;
 
-    int sizeX = pImage->GetSizeX();
-    int sizeY = pImage->GetSizeY();
+    int32 sizeX = pImage->GetSizeX();
+    int32 sizeY = pImage->GetSizeY();
+
+	bool bUseCropping = UncroppedSize[0] > 0;
 
     // Get the vertices
     int vertexCount = pMesh->GetVertexCount();
@@ -927,8 +768,16 @@ void ImageRasterProjected_Optimised( const Mesh* pMesh,
     float fadeEndCos = cosf(fadeEnd);
     for ( int v=0; v<vertexCount; ++v )
     {
-        scratch->vertices[v].x = pVertices[v].uv[0] * sizeX;
-        scratch->vertices[v].y = pVertices[v].uv[1] * sizeY;
+		if (bUseCropping)
+		{
+			scratch->vertices[v].x = pVertices[v].uv[0] * UncroppedSize[0] - CropMin[0];
+			scratch->vertices[v].y = pVertices[v].uv[1] * UncroppedSize[1] - CropMin[1];
+		}
+		else
+		{
+			scratch->vertices[v].x = pVertices[v].uv[0] * sizeX;
+			scratch->vertices[v].y = pVertices[v].uv[1] * sizeY;
+		}
 
         // TODO: No need to copy all. use scratch for the rest only.
         scratch->vertices[v].interpolators[0] = pVertices[v].pos[0];
@@ -958,7 +807,7 @@ void ImageRasterProjected_Optimised( const Mesh* pMesh,
 				!scratch->culledVertex[i1] ||
 				!scratch->culledVertex[i2])
 			{
-				Triangle(pImage->GetData(),
+				Triangle(pImage->GetData(), pImage->GetDataSize(),
 					sizeX, sizeY,
 					pixelSize,
 					scratch->vertices[i0],
@@ -969,17 +818,49 @@ void ImageRasterProjected_Optimised( const Mesh* pMesh,
 			}
 		});
 
+	// Update the relevancy map
+	// \TODO: fix it to work with cropping.
+	if (!bUseCropping)
+	{
+		MUTABLE_CPUPROFILER_SCOPE(ImageRasterProjected_Optimised_Relevancy);
+
+		float MinY = float(sizeY) - 1.0f;
+		float MaxY = 0.0f;
+		for (int f = 0; f < faceCount; ++f)
+		{
+			int i0 = pIndices[f * 3 + 0];
+			int i1 = pIndices[f * 3 + 1];
+			int i2 = pIndices[f * 3 + 2];
+
+			// A bit ugly, probably can be improved if integrated in above loops and made more precise
+			// inside the pixel processor to account for masked out pixels?
+			if (!scratch->culledVertex[i0] ||
+				!scratch->culledVertex[i1] ||
+				!scratch->culledVertex[i2])
+			{
+				MinY = FMath::Min(MinY, scratch->vertices[i0].y);
+				MinY = FMath::Min(MinY, scratch->vertices[i1].y);
+				MinY = FMath::Min(MinY, scratch->vertices[i2].y);
+				MaxY = FMath::Max(MaxY, scratch->vertices[i0].y);
+				MaxY = FMath::Max(MaxY, scratch->vertices[i1].y);
+				MaxY = FMath::Max(MaxY, scratch->vertices[i2].y);
+			}
+		}
+
+		pImage->m_flags |= Image::IF_HAS_RELEVANCY_MAP;
+		pImage->RelevancyMinY = uint16(FMath::FloorToFloat(MinY));
+		pImage->RelevancyMaxY = uint16(FMath::Min( int32(FMath::CeilToFloat(MaxY)), sizeY-1 ));
+	}
 }
 
 
 //-------------------------------------------------------------------------------------------------
 template<class PIXEL_PROCESSOR>
-void ImageRasterProjected_OptimisedWrapping( const Mesh* pMesh,
-                             Image* pImage,
-                             PIXEL_PROCESSOR& pixelProc,
-                             float fadeEnd,
-                             int block,
-                             SCRATCH_IMAGE_PROJECT* scratch )
+void ImageRasterProjected_OptimisedWrapping( const Mesh* pMesh, Image* pImage, PIXEL_PROCESSOR& pixelProc,
+	float fadeEnd,
+	int block,
+	UE::Math::TIntVector2<uint16> CropMin, UE::Math::TIntVector2<uint16> UncroppedSize,
+	SCRATCH_IMAGE_PROJECT* scratch )
 {
 	MUTABLE_CPUPROFILER_SCOPE(ImageRasterProjected_OptimisedWrapping);
 
@@ -989,7 +870,7 @@ void ImageRasterProjected_OptimisedWrapping( const Mesh* pMesh,
     }
 
 	EImageFormat format = pImage->GetFormat();
-    int pixelSize = GetImageFormatData( format ).m_bytesPerBlock;
+    int pixelSize = GetImageFormatData( format ).BytesPerBlock;
 
     int sizeX = pImage->GetSizeX();
     int sizeY = pImage->GetSizeY();
@@ -1006,8 +887,17 @@ void ImageRasterProjected_OptimisedWrapping( const Mesh* pMesh,
     float fadeEndCos = cosf(fadeEnd);
     for ( int v=0; v<vertexCount; ++v )
     {
-        scratch->vertices[v].x = pVertices[v].uv[0] * sizeX;
-        scratch->vertices[v].y = pVertices[v].uv[1] * sizeY;
+		bool bUseCropping = UncroppedSize[0] > 0;
+		if (bUseCropping)
+		{
+			scratch->vertices[v].x = pVertices[v].uv[0] * UncroppedSize[0] - CropMin[0];
+			scratch->vertices[v].y = pVertices[v].uv[1] * UncroppedSize[1] - CropMin[1];
+		}
+		else
+		{
+			scratch->vertices[v].x = pVertices[v].uv[0] * sizeX;
+			scratch->vertices[v].y = pVertices[v].uv[1] * sizeY;
+		}
 
         // TODO: No need to copy all. use scratch for the rest only.
         scratch->vertices[v].interpolators[0] = pVertices[v].pos[0];
@@ -1042,14 +932,12 @@ void ImageRasterProjected_OptimisedWrapping( const Mesh* pMesh,
              !scratch->culledVertex[i1] ||
              !scratch->culledVertex[i2] )
         {
-            Triangle( pImage->GetData(),
-                      sizeX, sizeY,
-                      pixelSize,
-                      scratch->vertices[i0],
-                      scratch->vertices[i1],
-                      scratch->vertices[i2],
-                      pixelProc,
-                      false );
+            Triangle( pImage->GetData(), pImage->GetDataSize(),
+				sizeX, sizeY,
+				pixelSize,
+				scratch->vertices[i0], scratch->vertices[i1], scratch->vertices[i2],
+				pixelProc,
+				false );
         }
     }
 
@@ -1062,9 +950,11 @@ void ImageRasterProjectedPlanar( const Mesh* pMesh,
 	const Image* pSource,
 	const Image* pMask,
 	bool bIsRGBFadingEnabled, bool bIsAlphaFadingEnabled,
-	float fadeStart, float fadeEnd,
+	ESamplingMethod SamplingMethod,
+	float fadeStart, float fadeEnd, float MipInterpolationFactor,
 	int layout, int block,
-	SCRATCH_IMAGE_PROJECT* scratch )
+	UE::Math::TIntVector2<uint16> CropMin, UE::Math::TIntVector2<uint16> UncroppedSize,
+	SCRATCH_IMAGE_PROJECT* scratch, bool bUseVectorImplementation)
 {
     check( !pMask || pMask->GetSizeX() == pImage->GetSizeX() );
     check( !pMask || pMask->GetSizeY() == pImage->GetSizeY() );
@@ -1077,86 +967,189 @@ void ImageRasterProjectedPlanar( const Mesh* pMesh,
         // Mesh-optimised version
         if ( pSource->GetFormat() == EImageFormat::IF_RGB_UBYTE )
         {
-            RasterProjectedPixelProcessor_UBYTE<3> pixelProc( 
-				pSource,
-				pImage->GetData(),
-				pMask ? pMask->GetData() : 0,
-				bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
-				fadeStart, fadeEnd );
-
-            ImageRasterProjected_Optimised( pMesh, pImage, pixelProc, fadeEnd, scratch );
+			if (SamplingMethod == ESamplingMethod::Point)
+			{
+				const RasterProjectedPixelProcessor_UBYTE<3> pixelProc(pSource,
+					pImage->GetData(),
+					pMask ? pMask->GetData() : nullptr,
+					bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
+					fadeStart, fadeEnd);
+				ImageRasterProjected_Optimised(pMesh, pImage, pixelProc, fadeEnd, CropMin, UncroppedSize, scratch);
+			}
+			else if (SamplingMethod == ESamplingMethod::BiLinear)
+			{
+				if (bUseVectorImplementation)
+				{
+					constexpr bool bUseVectorImpl = true;
+					const RasterProjectedPixelProcessorLinear_UBYTE<3, bUseVectorImpl> pixelProc(pSource,
+						pImage->GetData(),
+						pMask ? pMask->GetData() : nullptr,
+						bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
+						fadeStart, fadeEnd, MipInterpolationFactor);
+					ImageRasterProjected_Optimised(pMesh, pImage, pixelProc, fadeEnd, CropMin, UncroppedSize, scratch);
+				}
+				else
+				{
+					constexpr bool bUseVectorImpl = false;
+					const RasterProjectedPixelProcessorLinear_UBYTE<3, bUseVectorImpl> pixelProc(pSource,
+						pImage->GetData(),
+						pMask ? pMask->GetData() : nullptr,
+						bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
+						fadeStart, fadeEnd, MipInterpolationFactor);
+					ImageRasterProjected_Optimised(pMesh, pImage, pixelProc, fadeEnd, CropMin, UncroppedSize, scratch);
+				}
+			}
+			else
+			{
+				check(false);
+			}
         }
 
         else if ( pSource->GetFormat() == EImageFormat::IF_RGBA_UBYTE ||
                   pSource->GetFormat() == EImageFormat::IF_BGRA_UBYTE )
         {
-            if (pMask!=nullptr)
+            if (pMask != nullptr)
             {
-                RasterProjectedPixelProcessor_UBYTE<4,true> pixelProc( pSource,
-                    pImage->GetData(),
-                    pMask->GetData(),
-					bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
-					fadeStart, fadeEnd );
-                ImageRasterProjected_Optimised( pMesh, pImage, pixelProc, fadeEnd, scratch );
+				if (SamplingMethod == ESamplingMethod::Point)
+				{
+					const RasterProjectedPixelProcessor_UBYTE<4, true> pixelProc(pSource,
+						pImage->GetData(),
+						pMask->GetData(),
+						bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
+						fadeStart, fadeEnd);
+					ImageRasterProjected_Optimised(pMesh, pImage, pixelProc, fadeEnd, CropMin, UncroppedSize, scratch);
+				}
+				else if (SamplingMethod == ESamplingMethod::BiLinear)
+				{
+					if (bUseVectorImplementation)
+					{
+						constexpr bool bUseVectorImpl = true;
+						const RasterProjectedPixelProcessorLinear_UBYTE<4, bUseVectorImpl, true> pixelProc(pSource,
+							pImage->GetData(),
+							pMask->GetData(),
+							bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
+							fadeStart, fadeEnd, MipInterpolationFactor);
+						ImageRasterProjected_Optimised(pMesh, pImage, pixelProc, fadeEnd, CropMin, UncroppedSize, scratch);
+					}
+					else
+					{
+						constexpr bool bUseVectorImpl = false;
+						const RasterProjectedPixelProcessorLinear_UBYTE<4, bUseVectorImpl, true> pixelProc(pSource,
+							pImage->GetData(),
+							pMask->GetData(),
+							bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
+							fadeStart, fadeEnd, MipInterpolationFactor);
+						ImageRasterProjected_Optimised(pMesh, pImage, pixelProc, fadeEnd, CropMin, UncroppedSize, scratch);
+					}
+				}
+				else
+				{
+					check(false);
+				}
             }
             else
             {
-                RasterProjectedPixelProcessor_UBYTE<4,false> pixelProc( pSource,
-                    pImage->GetData(),
-                    nullptr,
-					bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
-					fadeStart, fadeEnd );
-                ImageRasterProjected_Optimised( pMesh, pImage, pixelProc, fadeEnd, scratch );
+				if (SamplingMethod == ESamplingMethod::Point) 
+				{
+					const RasterProjectedPixelProcessor_UBYTE<4, false> pixelProc(pSource,
+						pImage->GetData(),
+						nullptr,
+						bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
+						fadeStart, fadeEnd);
+					ImageRasterProjected_Optimised(pMesh, pImage, pixelProc, fadeEnd, CropMin, UncroppedSize, scratch);
+				}
+				else if (SamplingMethod == ESamplingMethod::BiLinear)
+				{
+					if (bUseVectorImplementation)
+					{
+						constexpr bool bUseVectorImpl = true;
+						const RasterProjectedPixelProcessorLinear_UBYTE<4, bUseVectorImpl, false> pixelProc(pSource,
+							pImage->GetData(),
+							nullptr,
+							bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
+							fadeStart, fadeEnd, MipInterpolationFactor);
+						ImageRasterProjected_Optimised(pMesh, pImage, pixelProc, fadeEnd, CropMin, UncroppedSize, scratch);
+					}
+					else
+					{
+						constexpr bool bUseVectorImpl = false;
+						const RasterProjectedPixelProcessorLinear_UBYTE<4, bUseVectorImpl, false> pixelProc(pSource,
+							pImage->GetData(),
+							nullptr,
+							bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
+							fadeStart, fadeEnd, MipInterpolationFactor);
+						ImageRasterProjected_Optimised(pMesh, pImage, pixelProc, fadeEnd, CropMin, UncroppedSize, scratch);
+					}
+				}
+				else
+				{
+					check(false);
+				}
             }
-
         }
-
         else if ( pSource->GetFormat() == EImageFormat::IF_L_UBYTE )
         {
-            RasterProjectedPixelProcessor_UBYTE<1> pixelProc( pSource,
-				pImage->GetData(),
-				pMask ? pMask->GetData() : 0,
-				bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
-				fadeStart, fadeEnd );
-
-            ImageRasterProjected_Optimised( pMesh, pImage, pixelProc, fadeEnd, scratch );
+			if (SamplingMethod == ESamplingMethod::Point)
+			{
+				const RasterProjectedPixelProcessor_UBYTE<1> pixelProc(pSource,
+					pImage->GetData(),
+					pMask ? pMask->GetData() : nullptr,
+					bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
+					fadeStart, fadeEnd);
+				ImageRasterProjected_Optimised(pMesh, pImage, pixelProc, fadeEnd, CropMin, UncroppedSize, scratch);
+			}
+			else if (SamplingMethod == ESamplingMethod::BiLinear)
+			{
+				if (bUseVectorImplementation)
+				{
+					constexpr bool bUseVectorImpl = true;
+					const RasterProjectedPixelProcessorLinear_UBYTE<1, bUseVectorImpl> pixelProc(pSource,
+						pImage->GetData(),
+						pMask ? pMask->GetData() : nullptr,
+						bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
+						fadeStart, fadeEnd, MipInterpolationFactor);
+					ImageRasterProjected_Optimised(pMesh, pImage, pixelProc, fadeEnd, CropMin, UncroppedSize, scratch);
+				}
+				else
+				{
+					constexpr bool bUseVectorImpl = false;
+					const RasterProjectedPixelProcessorLinear_UBYTE<1, bUseVectorImpl> pixelProc(pSource,
+						pImage->GetData(),
+						pMask ? pMask->GetData() : nullptr,
+						bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
+						fadeStart, fadeEnd, MipInterpolationFactor);
+					ImageRasterProjected_Optimised(pMesh, pImage, pixelProc, fadeEnd, CropMin, UncroppedSize, scratch);
+				}
+			}
+			else
+			{
+				check(false);
+			}
         }
 
         else
         {
 			check(false);
-    //        RasterProjectedPixelProcessor pixelProc( pSource,
-    //                                         pImage->GetData(),
-    //                                         pMask ? pMask->GetData() : 0, 
-				//bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
-    //                                         fadeStart, fadeEnd );
-
-    //        ImageRasterProjected_Optimised( pMesh, pImage, pixelProc, fadeEnd, scratch );
         }
     }
 
     else
     {
         check(false);
-        // Generic version
-        //ImageRasterProjected_Generic( pMesh, pImage, pSource, pMask,
-        //                      fadeStart, fadeEnd,
-        //                      layout, block );
     }
 
 }
 
 
 //-------------------------------------------------------------------------------------------------
-void ImageRasterProjectedWrapping( const Mesh* pMesh,
-                                       Image* pImage,
-                                       const Image* pSource,
-                                       const Image* pMask,
-									   bool bIsRGBFadingEnabled, bool bIsAlphaFadingEnabled,
-                                       float fadeStart, float fadeEnd,
-                                       int layout,
-                                       int block,
-                                       SCRATCH_IMAGE_PROJECT* scratch )
+void ImageRasterProjectedWrapping( const Mesh* pMesh, Image* pImage,
+	const Image* pSource, const Image* pMask,
+	bool bIsRGBFadingEnabled, bool bIsAlphaFadingEnabled,
+	ESamplingMethod SamplingMethod,
+	float fadeStart, float fadeEnd, float MipInterpolationFactor,
+	int layout, int block,
+	UE::Math::TIntVector2<uint16> CropMin, UE::Math::TIntVector2<uint16> UncroppedSize,
+	SCRATCH_IMAGE_PROJECT* scratch )
 {
     check( !pMask || pMask->GetSizeX() == pImage->GetSizeX() );
     check( !pMask || pMask->GetSizeY() == pImage->GetSizeY() );
@@ -1164,19 +1157,38 @@ void ImageRasterProjectedWrapping( const Mesh* pMesh,
 
 	MUTABLE_CPUPROFILER_SCOPE(ImageProjectWrapping);
 
-    if ( ( pMesh->m_staticFormatFlags & (1<<SMF_PROJECTWRAPPING) )
-         )
+
+	constexpr bool bUseSmoothInterpolator = false;
+
+    if ( ( pMesh->m_staticFormatFlags & (1<<SMF_PROJECTWRAPPING) ) )
     {
         // Mesh-optimised version
         if ( pSource->GetFormat() == EImageFormat::IF_RGB_UBYTE )
         {
-            RasterProjectedPixelProcessor_UBYTE<3> pixelProc(  pSource,
-				pImage->GetData(),
-				pMask ? pMask->GetData() : 0,
-				bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
-				fadeStart, fadeEnd );
+			if (SamplingMethod == ESamplingMethod::Point)
+			{
+				RasterProjectedPixelProcessor_UBYTE<3> pixelProc(pSource,
+					pImage->GetData(),
+					pMask ? pMask->GetData() : 0,
+					bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
+					fadeStart, fadeEnd);
 
-            ImageRasterProjected_OptimisedWrapping( pMesh, pImage, pixelProc, fadeEnd, block, scratch );
+				ImageRasterProjected_OptimisedWrapping(pMesh, pImage, pixelProc, fadeEnd, block, CropMin, UncroppedSize, scratch);
+			}
+			else if (SamplingMethod == ESamplingMethod::BiLinear)
+			{
+				RasterProjectedPixelProcessorLinear_UBYTE<3, bUseSmoothInterpolator> pixelProc(pSource,
+					pImage->GetData(),
+					pMask ? pMask->GetData() : 0,
+					bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
+					fadeStart, fadeEnd, MipInterpolationFactor);
+
+				ImageRasterProjected_OptimisedWrapping(pMesh, pImage, pixelProc, fadeEnd, block, CropMin, UncroppedSize, scratch);
+			}
+			else
+			{
+				check(false);
+			}
         }
 
         else if ( pSource->GetFormat() == EImageFormat::IF_RGBA_UBYTE ||
@@ -1184,71 +1196,168 @@ void ImageRasterProjectedWrapping( const Mesh* pMesh,
         {
             if (pMask!=nullptr)
             {
-                RasterProjectedPixelProcessor_UBYTE<4,true> pixelProc( pSource,
-					pImage->GetData(),
-					pMask->GetData(),
-					bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
-					fadeStart, fadeEnd );
-                ImageRasterProjected_OptimisedWrapping( pMesh, pImage, pixelProc, fadeEnd, block, scratch );
+				if (SamplingMethod == ESamplingMethod::Point)
+				{
+					RasterProjectedPixelProcessor_UBYTE<4, true> pixelProc(pSource,
+						pImage->GetData(),
+						pMask->GetData(),
+						bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
+						fadeStart, fadeEnd);
+					ImageRasterProjected_OptimisedWrapping(pMesh, pImage, pixelProc, fadeEnd, block, CropMin, UncroppedSize, scratch);
+				}
+				else if (SamplingMethod == ESamplingMethod::BiLinear)
+				{
+					RasterProjectedPixelProcessorLinear_UBYTE<4, bUseSmoothInterpolator, true> pixelProc(pSource,
+						pImage->GetData(),
+						pMask->GetData(),
+						bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
+						fadeStart, fadeEnd, MipInterpolationFactor);
+					ImageRasterProjected_OptimisedWrapping(pMesh, pImage, pixelProc, fadeEnd, block, CropMin, UncroppedSize, scratch);
+				}
+				else
+				{
+					check(false);
+				}
             }
             else
             {
-                RasterProjectedPixelProcessor_UBYTE<4,false> pixelProc( pSource,
-					pImage->GetData(),
-					nullptr,
-					bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
-					fadeStart, fadeEnd );
-                ImageRasterProjected_OptimisedWrapping( pMesh, pImage, pixelProc, fadeEnd, block, scratch );
+				if (SamplingMethod == ESamplingMethod::Point)
+				{
+					RasterProjectedPixelProcessor_UBYTE<4, false> pixelProc(pSource,
+						pImage->GetData(),
+						nullptr,
+						bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
+						fadeStart, fadeEnd);
+					ImageRasterProjected_OptimisedWrapping(pMesh, pImage, pixelProc, fadeEnd, block, CropMin, UncroppedSize, scratch);
+				}
+				else if (SamplingMethod == ESamplingMethod::BiLinear)
+				{
+					RasterProjectedPixelProcessorLinear_UBYTE<4, bUseSmoothInterpolator, false> pixelProc(pSource,
+						pImage->GetData(),
+						nullptr,
+						bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
+						fadeStart, fadeEnd, MipInterpolationFactor);
+					ImageRasterProjected_OptimisedWrapping(pMesh, pImage, pixelProc, fadeEnd, block, CropMin, UncroppedSize, scratch);
+				}
+				else
+				{
+					check(false);
+				}
             }
-
         }
 
         else if ( pSource->GetFormat() == EImageFormat::IF_L_UBYTE )
         {
-            RasterProjectedPixelProcessor_UBYTE<1> pixelProc( pSource,
-				pImage->GetData(),
-				pMask ? pMask->GetData() : 0,
-				bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
-				fadeStart, fadeEnd );
+			if (SamplingMethod == ESamplingMethod::Point)
+			{
+				RasterProjectedPixelProcessor_UBYTE<1> pixelProc(pSource,
+					pImage->GetData(),
+					pMask ? pMask->GetData() : 0,
+					bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
+					fadeStart, fadeEnd);
 
-            ImageRasterProjected_OptimisedWrapping( pMesh, pImage, pixelProc, fadeEnd, block, scratch );
+				ImageRasterProjected_OptimisedWrapping(pMesh, pImage, pixelProc, fadeEnd, block, CropMin, UncroppedSize, scratch);
+			}
+			else if (SamplingMethod == ESamplingMethod::BiLinear)
+			{	
+				RasterProjectedPixelProcessorLinear_UBYTE<1, bUseSmoothInterpolator> pixelProc(pSource,
+					pImage->GetData(),
+					pMask ? pMask->GetData() : 0,
+					bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
+					fadeStart, fadeEnd, MipInterpolationFactor);
+
+				ImageRasterProjected_OptimisedWrapping(pMesh, pImage, pixelProc, fadeEnd, block, CropMin, UncroppedSize, scratch);
+			}
+			else
+			{
+				check(false);
+			}
         }
 
         else
         {
 			check(false);
-    //        RasterProjectedPixelProcessor pixelProc( pSource,
-				//pImage->GetData(),
-				//pMask ? pMask->GetData() : 0,
-				//bIsRGBFadingEnabled, bIsAlphaFadingEnabled,
-				//fadeStart, fadeEnd );
-
-    //        ImageRasterProjected_OptimisedWrapping( pMesh, pImage, pixelProc, fadeEnd, block, scratch );
-        }
+         }
     }
 
     else
     {
         check(false);
-        // Generic version
-        //ImageRasterProjected_Generic( pMesh, pImage, pSource, pMask,
-        //                      fadeStart, fadeEnd,
-        //                      layout, block );
     }
 
 }
 
+float ComputeProjectedFootprintBestMip(
+	const Mesh* pMesh, const FProjector& Projector, const FVector2f& TargetSize, const FVector2f& SourceSize)
+{
+	// Compute projected mesh footprint on the traget image and extract a desired size for source image.
+	check(pMesh->GetVertexBuffers().GetElementSize(0) == sizeof(OPTIMISED_VERTEX));
+	const OPTIMISED_VERTEX* VerticesPtr = reinterpret_cast<const OPTIMISED_VERTEX*>(pMesh->GetVertexBuffers().GetBufferData(0));
+
+	check(pMesh->GetIndexBuffers().GetElementSize(0) == sizeof(uint32));
+	const uint32* IndicesPtr = reinterpret_cast<const uint32*>(pMesh->GetIndexBuffers().GetBufferData(0));
+
+	const uint32 NumIndices = pMesh->GetIndexBuffers().GetElementCount();
+
+	// Source area is the fraction of source image that is covered by the projected mesh.
+	float SourceArea = UE_KINDA_SMALL_NUMBER;
+	// Target area is the fraction of the target image that is covered by the projected mesh.
+	float TargetArea = UE_KINDA_SMALL_NUMBER;
+
+	auto ComputeTriangleArea = [](const FVector2f& A, const FVector2f& B, const FVector2f& C) -> float
+	{
+		return (A.X * (B.Y - C.Y) + B.X * (C.Y - A.Y) + C.X * (A.Y - B.Y)) * 0.5f;
+	};
+
+	const bool bIsPlanarProjection = Projector.type == PROJECTOR_TYPE::PLANAR;
+
+	// TODO: evaluate other strategies to get a better mip estimate. Maybe use the median of area change?
+	check(NumIndices % 3 == 0);
+	for (uint32 I = 0; I < NumIndices; I += 3)
+	{
+		const OPTIMISED_VERTEX& A = VerticesPtr[IndicesPtr[I + 0]];
+		const OPTIMISED_VERTEX& B = VerticesPtr[IndicesPtr[I + 1]];
+		const OPTIMISED_VERTEX& C = VerticesPtr[IndicesPtr[I + 2]];
+
+		const float TriangleSourceArea = ComputeTriangleArea(
+			FVector2f(A.pos.X, A.pos.Y), FVector2f(B.pos.X, B.pos.Y), FVector2f(C.pos.X, C.pos.Y));
+
+		const float TriangleTargetArea = ComputeTriangleArea(A.uv, B.uv, C.uv);
+
+		// Set weight to zero if source or target area are close to zero to remove outliers.
+		float TriangleWeight = static_cast<float>(!FMath::IsNearlyZero(TriangleSourceArea)) *
+							   static_cast<float>(!FMath::IsNearlyZero(TriangleTargetArea));
+		if (bIsPlanarProjection)
+		{
+			// Scale contribution to total area based on the mean of the projected triangle fade factor, e.i.,
+			// the cosinus of the angle between the projection direction and the vertices normal.
+			TriangleWeight *= FMath::Clamp((A.nor.X + B.nor.X + C.nor.X) * (1.0f / 3.0f), 0.0f, 1.0f);
+		}
+
+		SourceArea += TriangleSourceArea * TriangleWeight;
+		TargetArea += TriangleTargetArea * TriangleWeight;
+	}
+
+	const float SourceFootprintAreaOnTarget = TargetArea * (1.0f / SourceArea);
+	const float SourceFootprintAreaOnTargetInPixelsSquared = 
+		SourceFootprintAreaOnTarget * (TargetSize.X * TargetSize.Y);
+
+	// Find the mip that better adapts to the footprint.
+	float BestMip = FMath::Log2(FMath::Max(1.0f, SourceSize.X * SourceSize.Y)) * 0.5f - 
+				    FMath::Log2(FMath::Max(1.0f, SourceFootprintAreaOnTargetInPixelsSquared)) * 0.5f;
+
+	return BestMip;
+}
 
 //-------------------------------------------------------------------------------------------------
-void ImageRasterProjectedCylindrical( const Mesh* pMesh,
-                                        Image* pImage,
-                                        const Image* pSource,
-                                        const Image* pMask,
-										bool bIsRGBFadingEnabled, bool bIsAlphaFadingEnabled,
-                                        float fadeStart, float fadeEnd,
-                                        int /*layout*/,
-                                        float projectionAngle,
-                                        SCRATCH_IMAGE_PROJECT* scratch )
+void ImageRasterProjectedCylindrical( const Mesh* pMesh, Image* pImage,
+	const Image* pSource, const Image* pMask,
+	bool bIsRGBFadingEnabled, bool bIsAlphaFadingEnabled,
+	float fadeStart, float fadeEnd,
+	int /*layout*/,
+	float projectionAngle,
+	UE::Math::TIntVector2<uint16> CropMin, UE::Math::TIntVector2<uint16> UncroppedSize,
+	SCRATCH_IMAGE_PROJECT* scratch )
 {
     check( !pMask || pMask->GetSizeX() == pImage->GetSizeX() );
     check( !pMask || pMask->GetSizeY() == pImage->GetSizeY() );
@@ -1268,7 +1377,7 @@ void ImageRasterProjectedCylindrical( const Mesh* pMesh,
                                                        fadeStart, fadeEnd,
                                                                           projectionAngle);
 
-            ImageRasterProjected_Optimised( pMesh, pImage, pixelProc, fadeEnd, scratch );
+            ImageRasterProjected_Optimised( pMesh, pImage, pixelProc, fadeEnd, CropMin, UncroppedSize, scratch );
         }
 
         else if ( pSource->GetFormat() == EImageFormat::IF_RGBA_UBYTE ||
@@ -1281,7 +1390,7 @@ void ImageRasterProjectedCylindrical( const Mesh* pMesh,
                                                            pMask->GetData(),
                                                            fadeStart, fadeEnd,
                                                                                   projectionAngle );
-                ImageRasterProjected_Optimised( pMesh, pImage, pixelProc, fadeEnd, scratch );
+                ImageRasterProjected_Optimised( pMesh, pImage, pixelProc, fadeEnd, CropMin, UncroppedSize, scratch );
             }
             else
             {
@@ -1290,7 +1399,7 @@ void ImageRasterProjectedCylindrical( const Mesh* pMesh,
                                                            nullptr,
                                                            fadeStart, fadeEnd,
                                                                                    projectionAngle );
-                ImageRasterProjected_Optimised( pMesh, pImage, pixelProc, fadeEnd, scratch );
+                ImageRasterProjected_Optimised( pMesh, pImage, pixelProc, fadeEnd, CropMin, UncroppedSize, scratch );
             }
 
         }
@@ -1303,30 +1412,17 @@ void ImageRasterProjectedCylindrical( const Mesh* pMesh,
                                                      fadeStart, fadeEnd,
                                                                          projectionAngle );
 
-            ImageRasterProjected_Optimised( pMesh, pImage, pixelProc, fadeEnd, scratch );
+            ImageRasterProjected_Optimised( pMesh, pImage, pixelProc, fadeEnd, CropMin, UncroppedSize, scratch );
         }
 
         else
         {
             check(false);
-//            RasterCylindricalProjectedPixelProcessor pixelProc( pSource,
-//                                             pImage->GetData(),
-//                                             pMask ? pMask->GetData() : 0,
-//                                             fadeStart, fadeEnd,
-//                                                                projectionAngle );
-
-//            ImageRasterProjected_Optimised( pMesh, pImage, pixelProc, fadeEnd, block, scratch );
         }
     }
     else
     {
         check(false);
-        // Generic version
-        // TODO: It will allocate temp memory.
-//        ImageRasterCylindricalProjected_Generic( pMesh, pImage, pSource, pMask,
-//                              fadeStart, fadeEnd,
-//                                                 projectionAngle,
-//                              layout, block );
     }
 
 }
@@ -1349,88 +1445,59 @@ constexpr float vert_collapse_eps = 0.0001f;
 //! Create a map from vertices into vertices, collapsing vertices that have the same position
 //---------------------------------------------------------------------------------------------
 inline void MeshCreateCollapsedVertexMap( const Mesh* pMesh,
-	TArray<int>& collapsedVertexMap,
-	TArray<FVector3f>& vertices,
-	TMultiMap<int, int>& collapsedVertsMap
-)
+	TArray<int32>& CollapsedVertices,
+	TMultiMap<int32, int32>& CollapsedVerticesMap,
+	TArray<FVector3f>& OutVertices)
 {
 	MUTABLE_CPUPROFILER_SCOPE(CreateCollapseMap);
 
-    int vcount = pMesh->GetVertexCount();
-    collapsedVertexMap.SetNum(vcount);
-    vertices.SetNum(vcount);
-	collapsedVertsMap.Reserve(vcount);
+	const int32 NumVertices = pMesh->GetVertexCount();
 
-    const FMeshBufferSet& MBSPriv = pMesh->GetVertexBuffers();
-    for (int32 b = 0; b < MBSPriv.m_buffers.Num(); ++b)
-    {
-        for (int32 c = 0; c < MBSPriv.m_buffers[b].m_channels.Num(); ++c)
-        {
-            MESH_BUFFER_SEMANTIC sem = MBSPriv.m_buffers[b].m_channels[c].m_semantic;
-            int semIndex = MBSPriv.m_buffers[b].m_channels[c].m_semanticIndex;
+	// Used to speed up vertex comparison
+	UE::Geometry::TPointHashGrid3f<int32> VertHash(0.01f, INDEX_NONE);
+	VertHash.Reserve(NumVertices);
 
-			UntypedMeshBufferIteratorConst it = UntypedMeshBufferIteratorConst(pMesh->GetVertexBuffers(), sem, semIndex);
+	// Info to collect. Vertices, collapsed vertices and unique vertices to nearby vertices map
+	OutVertices.SetNumUninitialized(NumVertices);
+	CollapsedVertices.Init(INDEX_NONE, NumVertices);
+	CollapsedVerticesMap.Reserve(NumVertices);
 
-			box<FVector3f> meshBoundingBox;
-			Octree* pOctree = nullptr;
+	// Get Vertices
+	mu::UntypedMeshBufferIteratorConst ItPosition = mu::UntypedMeshBufferIteratorConst(pMesh->GetVertexBuffers(), mu::MBS_POSITION);
+	FVector3f* VertexData = OutVertices.GetData();
+	
+	for (int32 VertexIndex = 0; VertexIndex < NumVertices; ++VertexIndex)
+	{
+		*VertexData = ItPosition.GetAsVec3f();
+		VertHash.InsertPointUnsafe(VertexIndex, *VertexData);
 
-            switch (sem)
-            {
-            case MBS_POSITION:
+		++ItPosition;
+		++VertexData;
+	}
 
-                // First create a cache of the vertices in the vertices array
-                for (int v = 0; v < vcount; ++v)
-                {
-                    FVector3f vertex(0.0f, 0.0f, 0.0f);
-                    for (int i = 0; i < 3; ++i)
-                    {
-                        ConvertData(i, &vertex[0], MBF_FLOAT32, it.ptr(), it.GetFormat());
-                    }
 
-                    vertices[v] = vertex;
+	// Find unique vertices
+	TArray<int32> NearbyVertices;
+	for (int32 VertexIndex = 0; VertexIndex < NumVertices; ++VertexIndex)
+	{
+		if (CollapsedVertices[VertexIndex] != INDEX_NONE)
+		{
+			continue;
+		}
 
-                    ++it;
-                }
-				
-				//Initializing Octree boundingbox
-				meshBoundingBox.min = vertices[0];
-				meshBoundingBox.size = FVector3f(0.0f, 0.0f, 0.0f);
-				for (int32 i = 1; i < vertices.Num(); ++i)
-				{
-					meshBoundingBox.Bound3(vertices[i]);
-				}
+		const FVector3f& Vertex = OutVertices[VertexIndex];
 
-				//Initializing and filling Octree
-				pOctree = new Octree(meshBoundingBox.min, meshBoundingBox.min + meshBoundingBox.size,0.001f);
-				for (int32 itr = 0; itr < vertices.Num(); ++itr)
-				{
-					pOctree->InsertElement(vertices[itr], int(itr));
-				}
+		NearbyVertices.Reset();
+		VertHash.FindPointsInBall(Vertex, vert_collapse_eps,
+			[&Vertex, &OutVertices](const int32& Other) -> float {return FVector3f::DistSquared(OutVertices[Other], Vertex); },
+			NearbyVertices);
 
-				// Create map to store which vertices are the same (collapse nearby vertices)
-				for (int32 itr = 0; itr < vertices.Num(); ++itr)
-				{
-					int collapsed_candidate_v_idx = pOctree->GetNearests(vertices[itr], vert_collapse_eps, int(itr));
-					collapsedVertexMap[itr] = collapsed_candidate_v_idx;
-
-					if (collapsed_candidate_v_idx != int(itr))
-					{
-						collapsedVertsMap.Add(collapsed_candidate_v_idx, itr);
-					}
-				}
-                break;
-
-            default:
-                break;
-            }
-
-			if (pOctree)
-			{
-				delete pOctree;
-				pOctree = nullptr;
-			}
-        }
-    }
+		for (int32 NearbyVertexIndex : NearbyVertices)
+		{
+			CollapsedVertices[NearbyVertexIndex] = VertexIndex;
+			CollapsedVerticesMap.Add(VertexIndex, NearbyVertexIndex);
+		}
+	}
 }
 
 
@@ -1877,10 +1944,10 @@ void MeshProject_Optimised_Wrapping( const Mesh* pMesh,
 	faceStep.SetNum(faceCount);
 
     // Map vertices to the one they are collapsed to because they are very similar, if they aren't collapsed then they are mapped to themselves
-    TArray<int> collapsedVertexMap;
+    TArray<int32> collapsedVertexMap;
 	TArray<FVector3f> vertices;
-    TMultiMap<int, int> collapsedVertsMap; // Maps a collapsed vertex to all the vertices that collapse to it
-    MeshCreateCollapsedVertexMap(pMesh, collapsedVertexMap, vertices, collapsedVertsMap);
+    TMultiMap<int32, int32> collapsedVertsMap; // Maps a collapsed vertex to all the vertices that collapse to it
+    MeshCreateCollapsedVertexMap(pMesh, collapsedVertexMap, collapsedVertsMap, vertices);
 
     // Used to speed up connectivity building
 	TMultiMap<int, int> vertToFacesMap;
@@ -1895,9 +1962,6 @@ void MeshProject_Optimised_Wrapping( const Mesh* pMesh,
         vertToFacesMap.Add(collapsedVertexMap[i0], f);
         vertToFacesMap.Add(collapsedVertexMap[i1], f);
         vertToFacesMap.Add(collapsedVertexMap[i2], f);
-        //vertToFacesMap.insert(std::pair<int, int>(i0, f));
-        //vertToFacesMap.insert(std::pair<int, int>(i1, f));
-        //vertToFacesMap.insert(std::pair<int, int>(i2, f));
     }
 
     // Trace a ray in the projection direction to find the face that will be projected planarly and be the root of the unfolding
@@ -2618,10 +2682,11 @@ void MeshProject_Optimised_Wrapping( const Mesh* pMesh,
 
 
 //-------------------------------------------------------------------------------------------------
-MeshPtr MeshProject_Optimised( const Mesh* pMesh,
-                               const FProjector& projector )
+void MeshProject_Optimised(Mesh* Result, const Mesh* pMesh, const FProjector& projector, bool& bOutSuccess)
 {
 	MUTABLE_CPUPROFILER_SCOPE(MeshProject_Optimised);
+
+	bOutSuccess = true;
 
     FVector3f projectorPosition,projectorDirection,projectorSide,projectorUp;
     projectorPosition = FVector3f( projector.position[0], projector.position[1], projector.position[2] );
@@ -2631,7 +2696,6 @@ MeshPtr MeshProject_Optimised( const Mesh* pMesh,
     // Create with worse case, shrink later.
     int vertexCount = pMesh->GetVertexCount();
     int indexCount = pMesh->GetIndexCount();
-    MeshPtr pResult;
     int currentVertex = 0;
     int currentIndex = 0;
 
@@ -2644,41 +2708,41 @@ MeshPtr MeshProject_Optimised( const Mesh* pMesh,
     case PROJECTOR_TYPE::PLANAR:
     case PROJECTOR_TYPE::CYLINDRICAL:
     {
-        pResult = CreateMeshOptimisedForProjection( layout );
-        pResult->GetVertexBuffers().SetElementCount(vertexCount);
-        pResult->GetIndexBuffers().SetElementCount(indexCount);
-		uint32* pResultIndices = reinterpret_cast<uint32*>( pResult->GetIndexBuffers().GetBufferData(0) );
-		OPTIMISED_VERTEX* pResultVertices = reinterpret_cast<OPTIMISED_VERTEX*>( pResult->GetVertexBuffers().GetBufferData(0) );
+        CreateMeshOptimisedForProjection(Result, layout);
+        Result->GetVertexBuffers().SetElementCount(vertexCount);
+        Result->GetIndexBuffers().SetElementCount(indexCount);
+		uint32* pResultIndices = reinterpret_cast<uint32*>(Result->GetIndexBuffers().GetBufferData(0));
+		OPTIMISED_VERTEX* pResultVertices = reinterpret_cast<OPTIMISED_VERTEX*>(Result->GetVertexBuffers().GetBufferData(0));
 
         // Get the vertices
-        check( pMesh->GetVertexBuffers().GetElementSize(0)==sizeof(OPTIMISED_VERTEX) );
-		const OPTIMISED_VERTEX* pVertices = reinterpret_cast<const OPTIMISED_VERTEX*>( pMesh->GetVertexBuffers().GetBufferData(0) );
+        check(pMesh->GetVertexBuffers().GetElementSize(0)==sizeof(OPTIMISED_VERTEX));
+		const OPTIMISED_VERTEX* pVertices = reinterpret_cast<const OPTIMISED_VERTEX*>(pMesh->GetVertexBuffers().GetBufferData(0));
 
         // Get the indices
-        check( pMesh->GetIndexBuffers().GetElementSize(0)==4 );
-		const uint32* pIndices = reinterpret_cast<const uint32*>( pMesh->GetIndexBuffers().GetBufferData(0) );
+        check(pMesh->GetIndexBuffers().GetElementSize(0) == 4);
+		const uint32* pIndices = reinterpret_cast<const uint32*>(pMesh->GetIndexBuffers().GetBufferData(0));
         int faceCount = pMesh->GetFaceCount();
 
         if (projector.type==PROJECTOR_TYPE::PLANAR)
         {
-            MeshProject_Optimised_Planar( pVertices, vertexCount,
+            MeshProject_Optimised_Planar(pVertices, vertexCount,
                                           pIndices, faceCount,
                                           projectorPosition, projectorDirection,
                                           projectorSide, projectorUp,
                                           projectorScale,
                                           pResultVertices, currentVertex,
-                                          pResultIndices, currentIndex  );
+                                          pResultIndices, currentIndex);
         }
 
         else
         {
-            MeshProject_Optimised_Cylindrical( pVertices, vertexCount,
-                                               pIndices, faceCount,
-                                               projectorPosition, projectorDirection,
-                                               projectorSide, projectorUp,
-                                               projectorScale,
-                                               pResultVertices, currentVertex,
-                                               pResultIndices, currentIndex  );
+            MeshProject_Optimised_Cylindrical(pVertices, vertexCount,
+                                              pIndices, faceCount,
+                                              projectorPosition, projectorDirection,
+                                              projectorSide, projectorUp,
+                                              projectorScale,
+                                              pResultVertices, currentVertex,
+                                              pResultIndices, currentIndex);
         }
 
         break;
@@ -2686,18 +2750,18 @@ MeshPtr MeshProject_Optimised( const Mesh* pMesh,
 
     case PROJECTOR_TYPE::WRAPPING:
 	{
-        pResult = CreateMeshOptimisedForWrappingProjection( layout );
-        pResult->GetVertexBuffers().SetElementCount(vertexCount);
-        pResult->GetIndexBuffers().SetElementCount(indexCount);
-		uint32* pResultIndices = reinterpret_cast<uint32*>( pResult->GetIndexBuffers().GetBufferData(0) );
-		OPTIMISED_VERTEX_WRAPPING* pResultVertices = reinterpret_cast<OPTIMISED_VERTEX_WRAPPING*>( pResult->GetVertexBuffers().GetBufferData(0) );
+        CreateMeshOptimisedForWrappingProjection(Result, layout);
+        Result->GetVertexBuffers().SetElementCount(vertexCount);
+        Result->GetIndexBuffers().SetElementCount(indexCount);
+		uint32* pResultIndices = reinterpret_cast<uint32*>(Result->GetIndexBuffers().GetBufferData(0));
+		OPTIMISED_VERTEX_WRAPPING* pResultVertices = reinterpret_cast<OPTIMISED_VERTEX_WRAPPING*>(Result->GetVertexBuffers().GetBufferData(0));
 
-        MeshProject_Optimised_Wrapping( pMesh,
-                                        projectorPosition, projectorDirection,
-                                        projectorSide, projectorUp,
-                                        projectorScale,
-                                        pResultVertices, currentVertex,
-                                        pResultIndices, currentIndex  );
+        MeshProject_Optimised_Wrapping(pMesh,
+                                       projectorPosition, projectorDirection,
+                                       projectorSide, projectorUp,
+                                       projectorScale,
+                                       pResultVertices, currentVertex,
+                                       pResultIndices, currentIndex);
 
         break;
 	}
@@ -2705,16 +2769,15 @@ MeshPtr MeshProject_Optimised( const Mesh* pMesh,
     default:
         // Projector type not implemented.
         check(false);
+		bOutSuccess = false;
         break;
 
     }
 
     // Shrink result mesh
-    pResult->GetVertexBuffers().SetElementCount(currentVertex);
-    pResult->GetIndexBuffers().SetElementCount(currentIndex);
-    pResult->GetFaceBuffers().SetElementCount(currentIndex/3);
-
-    return pResult;
+    Result->GetVertexBuffers().SetElementCount(currentVertex);
+    Result->GetIndexBuffers().SetElementCount(currentIndex);
+    Result->GetFaceBuffers().SetElementCount(currentIndex/3);
 }
 #ifdef DEBUG_PROJECTION
 UE_ENABLE_OPTIMIZATION
@@ -2723,47 +2786,41 @@ UE_ENABLE_OPTIMIZATION
 
 
 //-------------------------------------------------------------------------------------------------
-MeshPtr MeshProject( const Mesh* pMesh,
-                         const FProjector& projector )
+void MeshProject(Mesh* Result, const Mesh* pMesh, const FProjector& projector, bool& bOutSuccess)
 {
 	MUTABLE_CPUPROFILER_SCOPE(MeshProject);
 
-    MeshPtr pResult;
-
-    if ( pMesh->m_staticFormatFlags & (1<<SMF_PROJECT) )
+    if (pMesh->m_staticFormatFlags & (1<<SMF_PROJECT))
     {
         // Mesh-optimised version
-        pResult = MeshProject_Optimised( pMesh, projector );
+        MeshProject_Optimised(Result, pMesh, projector, bOutSuccess);
     }
-    else if ( pMesh->m_staticFormatFlags & (1<<SMF_PROJECTWRAPPING) )
+    else if (pMesh->m_staticFormatFlags & (1<<SMF_PROJECTWRAPPING))
     {
         // Mesh-optimised version for wrapping projectors
         // \todo: make sure the projector is a wrapping projector
-        pResult = MeshProject_Optimised( pMesh, projector );
+        MeshProject_Optimised(Result, pMesh, projector, bOutSuccess);
     }
     else
     {
         check(false);
     }
 
-	if (pResult)
+	if (bOutSuccess)
 	{
-		pResult->m_surfaces.SetNum(0);
-		pResult->EnsureSurfaceData();
-		pResult->ResetStaticFormatFlags();
+		Result->m_surfaces.SetNum(0);
+		Result->EnsureSurfaceData();
+		Result->ResetStaticFormatFlags();
 	}
-
-    return pResult;
 }
 
 
 
 //-------------------------------------------------------------------------------------------------
-MeshPtr CreateMeshOptimisedForProjection( int layout )
+void CreateMeshOptimisedForProjection(Mesh* Result, int layout)
 {
-    MeshPtr pFormatMesh = new Mesh();
-    pFormatMesh->GetVertexBuffers().SetBufferCount( 1 );
-    pFormatMesh->GetIndexBuffers().SetBufferCount( 1 );
+    Result->GetVertexBuffers().SetBufferCount( 1 );
+    Result->GetIndexBuffers().SetBufferCount( 1 );
 
     MESH_BUFFER_SEMANTIC semantics[3] =	{ MBS_TEXCOORDS,	MBS_POSITION,	MBS_NORMAL };
     int semanticIndices[3] =			{ 0,				0,				0 };
@@ -2771,7 +2828,7 @@ MeshPtr CreateMeshOptimisedForProjection( int layout )
     int componentCounts[3] =			{ 2,				3,				3 };
     int offsets[3] =					{ 0,				8,				20 };
     semanticIndices[0] = layout;
-    pFormatMesh->GetVertexBuffers().SetBuffer
+    Result->GetVertexBuffers().SetBuffer
             ( 0, 32, 3,
               semantics, semanticIndices,
               formats, componentCounts,
@@ -2782,22 +2839,19 @@ MeshPtr CreateMeshOptimisedForProjection( int layout )
     MESH_BUFFER_FORMAT iformats[1] =		{ MBF_UINT32 };
     int icomponentCounts[1] =				{ 1 };
     int ioffsets[1] =						{ 0 };
-    pFormatMesh->GetIndexBuffers().SetBuffer
+    Result->GetIndexBuffers().SetBuffer
             ( 0, 4, 1,
               isemantics, isemanticIndices,
               iformats, icomponentCounts,
               ioffsets );
-
-    return pFormatMesh;
 }
 
 
 //-------------------------------------------------------------------------------------------------
-MeshPtr CreateMeshOptimisedForWrappingProjection( int layout )
+void CreateMeshOptimisedForWrappingProjection(Mesh* Result, int layout)
 {
-    MeshPtr pFormatMesh = new Mesh();
-    pFormatMesh->GetVertexBuffers().SetBufferCount( 1 );
-    pFormatMesh->GetIndexBuffers().SetBufferCount( 1 );
+    Result->GetVertexBuffers().SetBufferCount( 1 );
+    Result->GetIndexBuffers().SetBufferCount( 1 );
 
     MESH_BUFFER_SEMANTIC semantics[4] =	{ MBS_TEXCOORDS,	MBS_POSITION,	MBS_NORMAL,     MBS_LAYOUTBLOCK };
     int semanticIndices[4] =			{ 0,				0,				0,              0 };
@@ -2806,7 +2860,7 @@ MeshPtr CreateMeshOptimisedForWrappingProjection( int layout )
     int offsets[4] =					{ 0,				8,				20,             32 };
     semanticIndices[0] = layout;
     semanticIndices[3] = layout;
-    pFormatMesh->GetVertexBuffers().SetBuffer
+    Result->GetVertexBuffers().SetBuffer
             ( 0, 36, 4,
               semantics, semanticIndices,
               formats, componentCounts,
@@ -2817,13 +2871,11 @@ MeshPtr CreateMeshOptimisedForWrappingProjection( int layout )
     MESH_BUFFER_FORMAT iformats[1] =		{ MBF_UINT32 };
     int icomponentCounts[1] =				{ 1 };
     int ioffsets[1] =						{ 0 };
-    pFormatMesh->GetIndexBuffers().SetBuffer
+    Result->GetIndexBuffers().SetBuffer
             ( 0, 4, 1,
               isemantics, isemanticIndices,
               iformats, icomponentCounts,
               ioffsets );
-
-    return pFormatMesh;
 }
 
 }

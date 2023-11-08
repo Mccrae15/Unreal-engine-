@@ -2,6 +2,7 @@
 
 #include "Elements/PCGSurfaceSampler.h"
 
+#include "PCGCommon.h"
 #include "PCGComponent.h"
 #include "PCGCustomVersion.h"
 #include "PCGEdge.h"
@@ -13,6 +14,7 @@
 #include "Helpers/PCGHelpers.h"
 #include "Helpers/PCGSettingsHelpers.h"
 
+#include "HAL/UnrealMemory.h"
 #include "Math/RandomStream.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PCGSurfaceSampler)
@@ -77,7 +79,9 @@ namespace PCGSurfaceSampler
 			}
 
 			const int64 CellCount64 = CellCountX * CellCountY;
-			if (CellCount64 <= 0 || CellCount64 >= MAX_int32)
+			if (CellCount64 <= 0 || 
+				CellCount64 >= MAX_int32 ||
+				(PCGFeatureSwitches::CVarCheckSamplerMemory.GetValueOnAnyThread() && FPlatformMemory::GetStats().AvailablePhysical < sizeof(FPCGPoint) * CellCount64))
 			{
 				if (Context)
 				{
@@ -153,7 +157,7 @@ namespace PCGSurfaceSampler
 		// Drop points slightly by an epsilon otherwise point can be culled. If the sampler has a volume connected as the Bounding Shape,
 		// the volume will call through to PCGHelpers::IsInsideBounds() which is a one sided test and points at the top of the volume
 		// will fail it. TODO perhaps the one-sided check can be isolated to component-bounds
-		const FVector::FReal ZMultiplier = 1.0 - UE_DOUBLE_SMALL_NUMBER;
+		constexpr FVector::FReal ZMultiplier = 1.0 - UE_DOUBLE_SMALL_NUMBER;
 		// Try to use a multiplier instead of a simply offset to combat loss of precision in floats. However if MaxZ is very small,
 		// then multiplier will not work, so just use an offset.
 		FVector::FReal SampleZ = (FMath::Abs(LoopData.InputBoundsMaxZ) > UE_DOUBLE_SMALL_NUMBER) ? LoopData.InputBoundsMaxZ * ZMultiplier : -UE_DOUBLE_SMALL_NUMBER;
@@ -197,6 +201,10 @@ namespace PCGSurfaceSampler
 				return false;
 			}
 
+			// Set physical properties that are needed for the bounding shape checks, etc.
+			OutPoint.SetExtents(LoopData.PointExtents);
+			OutPoint.Steepness = LoopData.PointSteepness;
+
 			// Now run gauntlet of shape network (if there is one) to accept or reject the point.
 			if (InBoundingShape)
 			{
@@ -215,9 +223,7 @@ namespace PCGSurfaceSampler
 			}
 
 			// Apply final parameters on the point
-			OutPoint.SetExtents(LoopData.PointExtents);
 			OutPoint.Density *= (LoopData.bApplyDensityToPoints ? ((Ratio - Chance) / Ratio) : 1.0f);
-			OutPoint.Steepness = LoopData.PointSteepness;
 			OutPoint.Seed = RandomSource.GetCurrentSeed();
 
 			return true;
@@ -354,8 +360,33 @@ bool FPCGSurfaceSamplerElement::AddGeneratingShapesToContext(FPCGSurfaceSamplerC
 		return false;
 	}
 
+	TArray<FPCGTaggedData> SurfaceInputs = InContext->InputData.GetInputsByPin(PCGSurfaceSamplerConstants::SurfaceLabel);
+
+	// If there are no surfaces to sample, early out
+	if (SurfaceInputs.IsEmpty())
+	{
+		return false;
+	}
+
+	// Construct a list of shapes to generate samples from. Get these directly from the first input pin.
+	for (FPCGTaggedData& TaggedData : SurfaceInputs)
+	{
+		if (const UPCGSpatialData* SurfaceData = Cast<UPCGSpatialData>(TaggedData.Data))
+		{
+			InContext->GeneratingShapes.Add(SurfaceData);
+			Outputs.Add(TaggedData);
+		}
+	}
+
+	// If there are no generating shapes, early out
+	if (InContext->GeneratingShapes.IsEmpty())
+	{
+		PCGE_LOG_C(Warning, GraphAndLog, InContext, LOCTEXT("NoSurfaceFound", "No valid surfaces found from which to generate"));
+		return false;
+	}
+
 	// Grab the Bounding Shape input if there is one.
-	TArray<FPCGTaggedData> BoundingShapeInputs = InContext->InputData.GetInputsByPin(PCGSurfaceSamplerConstants::BoundingShapeLabel);
+	const TArray<FPCGTaggedData> BoundingShapeInputs = InContext->InputData.GetInputsByPin(PCGSurfaceSamplerConstants::BoundingShapeLabel);
 
 	if (!Settings->bUnbounded)
 	{
@@ -367,9 +398,9 @@ bool FPCGSurfaceSamplerElement::AddGeneratingShapesToContext(FPCGSurfaceSamplerC
 			const_cast<UPCGSpatialData*>(InContext->BoundingShapeSpatialInput)->AddToRoot();
 		}
 
-		if (!InContext->BoundingShapeSpatialInput && InContext->SourceComponent.IsValid())
+		// Fallback to getting bounds from actor but only if we actually have some inputs
+		if (!InContext->BoundingShapeSpatialInput && InContext->SourceComponent.IsValid() && !InContext->GeneratingShapes.IsEmpty())
 		{
-			// Fallback to getting bounds from actor
 			InContext->BoundingShapeSpatialInput = Cast<UPCGSpatialData>(InContext->SourceComponent->GetActorPCGData());
 		}
 	}
@@ -381,49 +412,6 @@ bool FPCGSurfaceSamplerElement::AddGeneratingShapesToContext(FPCGSurfaceSamplerC
 	if (InContext->BoundingShapeSpatialInput)
 	{
 		InContext->BoundingShapeBounds = InContext->BoundingShapeSpatialInput->GetBounds();
-	}
-
-	TArray<FPCGTaggedData> SurfaceInputs = InContext->InputData.GetInputsByPin(PCGSurfaceSamplerConstants::SurfaceLabel);
-
-	// Construct a list of shapes to generate samples from. Prefer to get these directly from the first input pin.
-	for (FPCGTaggedData& TaggedData : SurfaceInputs)
-	{
-		if (const UPCGSpatialData* SpatialData = Cast<UPCGSpatialData>(TaggedData.Data))
-		{
-			// Find a concrete shape for sampling. Prefer a 2D surface if we can find one.
-			if (const UPCGSpatialData* SurfaceData = SpatialData->FindShapeFromNetwork(/*InDimension=*/2))
-			{
-				InContext->GeneratingShapes.Add(SurfaceData);
-				Outputs.Add(TaggedData);
-			}
-			else if (const UPCGSpatialData* ConcreteData = SpatialData->FindFirstConcreteShapeFromNetwork())
-			{
-				// Alternatively surface-sample any concrete data - can be used to sprinkle samples down onto shapes like volumes.
-				// Searching like this allows the user to plonk in any composite network and it will often find the shape of interest.
-				// A potential extension would be to find all (unique?) concrete shapes and use all of them rather than just the first.
-				InContext->GeneratingShapes.Add(ConcreteData);
-				Outputs.Add(TaggedData);
-			}
-		}
-	}
-
-	// If no shapes were obtained from the first input pin, try to find a shape to sample from nodes connected to the second pin.
-	if (InContext->GeneratingShapes.Num() == 0 && InContext->BoundingShapeSpatialInput)
-	{
-		if (const UPCGSpatialData* GeneratorFromBoundingShapeInput = InContext->BoundingShapeSpatialInput->FindShapeFromNetwork(/*InDimension=*/2))
-		{
-			InContext->GeneratingShapes.Add(GeneratorFromBoundingShapeInput);
-
-			// If there was a bounding shape input, use it as the starting point to get the tags
-			if (BoundingShapeInputs.Num() > 0)
-			{
-				Outputs.Add(BoundingShapeInputs[0]);
-			}
-			else
-			{
-				Outputs.Emplace();
-			}
-		}
 	}
 
 	// Warn if something is connected but no shape could be obtained for sampling

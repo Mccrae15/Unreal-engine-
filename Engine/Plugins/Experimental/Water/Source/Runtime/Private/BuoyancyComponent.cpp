@@ -294,7 +294,7 @@ void UBuoyancyComponent::EnteredWaterBody(UWaterBodyComponent* WaterBodyComponen
 	}
 	if (bIsFirstBody)
 	{
-		bIsOverlappingWaterBody = true;
+		bIsOverlappingWaterBody = -1;
 	}
 }
 
@@ -416,7 +416,7 @@ void UBuoyancyComponent::ComputePontoonCoefficients()
 			//Distribute a mass of 1 to each pontoon so that we get a scaling factor based on position relative to CoM
 			FString ErrMsg;
 			bool ComputeSuccess = FSimpleSuspensionHelpers::ComputeSprungMasses(LocalPontoonLocations, LocalCOM, 1.f, PontoonCoefficients, &ErrMsg);
-			ensureMsgf(ComputeSuccess, TEXT("Failed to compute %d sprung masses for: %s\nErrMsg: \"%s\""), LocalPontoonLocations.Num(), *GetOwner()->GetName(), *ErrMsg);
+			ensureMsgf(ComputeSuccess, TEXT("Failed to compute %d sprung masses for: %s\nErrMsg: \"%s\""), LocalPontoonLocations.Num(), *GetOwner()->GetActorNameOrLabel(), *ErrMsg);
 		}
 	}
 
@@ -538,10 +538,10 @@ float GetWaterSplineKeyFast(FVector Location, const UWaterBodyComponent* WaterBo
 	if (Segment == -1)
 	{
 		float DummyDistance;
-		return InterpCurve.InaccurateFindNearest(LocalLocation, DummyDistance, Segment);
+		return InterpCurve.FindNearest(LocalLocation, DummyDistance, Segment);
 	}
 
-	//We have the cached segment, so search for the best point as in FInterpCurve<T>::InaccurateFindNearest
+	//We have the cached segment, so search for the best point as in FInterpCurve<T>::FindNearest
 	//but only in the current segment and the two immediate neighbors
 
 	//River splines aren't looped, so we don't have to handle that case
@@ -556,7 +556,7 @@ float GetWaterSplineKeyFast(FVector Location, const UWaterBodyComponent* WaterBo
 		{
 			const int32 SegmentIdx = FMath::Clamp(i, 0, LastSegmentIdx);
 			float LocalDistanceSq;
-			float LocalResult = InterpCurve.InaccurateFindNearestOnSegment(LocalLocation, SegmentIdx, LocalDistanceSq);
+			float LocalResult = InterpCurve.FindNearestOnSegment(LocalLocation, SegmentIdx, LocalDistanceSq);
 			if (LocalDistanceSq < BestDistanceSq)
 			{
 				BestDistanceSq = LocalDistanceSq;
@@ -569,7 +569,7 @@ float GetWaterSplineKeyFast(FVector Location, const UWaterBodyComponent* WaterBo
 		{
 			//We're at either end of the search - it's possible we skipped a segment so just do a full lookup in this case
 			float DummyDistance;
-			return InterpCurve.InaccurateFindNearest(LocalLocation, DummyDistance, Segment);
+			return InterpCurve.FindNearest(LocalLocation, DummyDistance, Segment);
 		}
 
 		Segment = BestSegment;

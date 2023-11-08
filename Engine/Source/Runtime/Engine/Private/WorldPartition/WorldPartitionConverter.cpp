@@ -48,11 +48,6 @@ bool FWorldPartitionConverter::Convert()
 	UWorldPartition* WorldPartition = World->GetWorldPartition();
 	if (!WorldPartition)
 	{
-		if (Parameters.bCanBeUsedByLevelInstance && Parameters.bEnableStreaming)
-		{
-			return false;
-		}
-
 		World->PersistentLevel->ConvertAllActorsToPackaging(true);
 		World->PersistentLevel->bUseExternalActors = true;
 		
@@ -65,7 +60,6 @@ bool FWorldPartitionConverter::Convert()
 		FLevelActorFoldersHelper::SetUseActorFolders(World->PersistentLevel, Parameters.bUseActorFolders);
 		WorldPartition->bEnableStreaming = Parameters.bEnableStreaming;
 		WorldPartition->bStreamingWasEnabled = Parameters.bEnableStreaming;
-		WorldPartition->SetCanBeUsedByLevelInstance(Parameters.bCanBeUsedByLevelInstance);
 		bCreatedWorldPartition = true;
 	}
 
@@ -73,7 +67,7 @@ bool FWorldPartitionConverter::Convert()
 	ULevel* MainLevel = MainWorld->PersistentLevel;
 	UPackage* MainPackage = MainLevel->GetPackage();
 
-	TArray<AActor*> Actors = MainLevel->Actors;
+	TArray<AActor*> Actors = ObjectPtrDecay(MainLevel->Actors);
 	for (AActor* Actor : Actors)
 	{
 		if (IsValid(Actor) && ShouldDeleteActor(Actor, /*bIsMainLevel*/ true))
@@ -112,7 +106,7 @@ bool FWorldPartitionConverter::Convert()
 			DuplicatedLevel->ConvertAllActorsToPackaging(true);
 			DuplicatedLevel->bUseExternalActors = true;
 
-			TArray<AActor*> ActorsToConvert = DuplicatedLevel->Actors;
+			TArray<AActor*> ActorsToConvert = ObjectPtrDecay(DuplicatedLevel->Actors);
 			for (AActor* Actor : ActorsToConvert)
 			{
 				if (IsValid(Actor) && !ShouldDeleteActor(Actor, /*bIsMainLevel*/ false))
@@ -176,6 +170,7 @@ bool FWorldPartitionConverter::Convert()
 	if (bCreatedWorldPartition)
 	{
 		WorldPartition->Initialize(World, FTransform::Identity);
+		UWorldPartition::WorldPartitionChangedEvent.Broadcast(World);
 	}
 
 	return true;

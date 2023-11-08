@@ -31,6 +31,11 @@ void UTransformGizmo::SetDisallowNegativeScaling(bool bDisallow)
 
 void UTransformGizmo::Setup()
 {
+	if (IsValid(GizmoElementRoot))
+	{
+		return;
+	}
+	
 	UInteractiveGizmo::Setup();
 
 	SetupBehaviors();
@@ -66,7 +71,17 @@ void UTransformGizmo::SetupBehaviors()
 
 void UTransformGizmo::SetupMaterials()
 {
-	UMaterial* AxisMaterialBase = GEngine->ArrowMaterial;
+	auto GetBaseMaterial = [this]()
+	{
+		if (CustomizationFunction)
+		{
+			const FGizmoCustomization& GizmoCustomization = CustomizationFunction();
+			return GizmoCustomization.Material ? GizmoCustomization.Material : GEngine->ArrowMaterial; 
+		}
+		return GEngine->ArrowMaterial;
+	};
+	
+	UMaterial* AxisMaterialBase = GetBaseMaterial(); 
 
 	AxisMaterialX = UMaterialInstanceDynamic::Create(AxisMaterialBase, NULL);
 	AxisMaterialX->SetVectorParameterValue("GizmoColor", AxisColorX);
@@ -110,14 +125,23 @@ void UTransformGizmo::Shutdown()
 
 FTransform UTransformGizmo::GetGizmoTransform() const
 {
-	float Scale = 1.0f;
-
-	if (TransformGizmoSource)
+	const float Scale = TransformGizmoSource ? TransformGizmoSource->GetGizmoScale() : 1.0f;
+	
+	auto GetCoordinateSystem = [&]()
 	{
-		Scale = TransformGizmoSource->GetGizmoScale();
+		if (TransformGizmoSource)
+		{
+			return TransformGizmoSource->GetGizmoCoordSystemSpace(); 
+		}
+		return GetGizmoManager()->GetContextQueriesAPI()->GetCurrentCoordinateSystem();
+	};
+	const bool bLocal = GetCoordinateSystem() == EToolContextCoordinateSystem::Local;
+	
+	FTransform GizmoLocalToWorldTransform(CurrentTransform.GetTranslation());
+	if (bLocal)
+	{
+		GizmoLocalToWorldTransform.SetRotation(CurrentTransform.GetRotation());
 	}
-
-	FTransform GizmoLocalToWorldTransform = CurrentTransform;
 	GizmoLocalToWorldTransform.SetScale3D(FVector(Scale, Scale, Scale));
 
 	return GizmoLocalToWorldTransform;
@@ -242,11 +266,46 @@ FInputRayHit UTransformGizmo::CanBeginClickDragSequence(const FInputDeviceRay& P
 
 void UTransformGizmo::UpdateMode()
 {
-	if (TransformGizmoSource && TransformGizmoSource->GetVisible())
+	auto GetTransformMode = [&]()
 	{
-		EGizmoTransformMode NewMode = TransformGizmoSource->GetGizmoMode();
-		EAxisList::Type NewAxisToDraw = TransformGizmoSource->GetGizmoAxisToDraw(NewMode);
+		if (TransformGizmoSource)
+		{
+			return TransformGizmoSource->GetGizmoMode();
+		}
+		
+		const EToolContextTransformGizmoMode ActiveGizmoMode = GetGizmoManager()->GetContextQueriesAPI()->GetCurrentTransformGizmoMode();
+		switch (ActiveGizmoMode)
+		{
+			case EToolContextTransformGizmoMode::Translation: return EGizmoTransformMode::Translate;
+			case EToolContextTransformGizmoMode::Rotation: return EGizmoTransformMode::Rotate;
+			case EToolContextTransformGizmoMode::Scale: return EGizmoTransformMode::Scale;
+		}
+		return EGizmoTransformMode::None;
+	};
 
+	auto GetAxisToDraw = [&]()
+	{
+		if (TransformGizmoSource)
+		{
+			return TransformGizmoSource->GetGizmoAxisToDraw(TransformGizmoSource->GetGizmoMode());
+		}
+		return EAxisList::Type::All;
+	};
+
+	auto GetVisible = [&]()
+	{
+		if (TransformGizmoSource)
+		{
+			return TransformGizmoSource->GetVisible();
+		}
+		return true;
+	};
+	
+	if (GetVisible())
+	{
+		const EGizmoTransformMode NewMode = GetTransformMode();
+		const EAxisList::Type NewAxisToDraw = GetAxisToDraw();
+		
 		if (NewMode != CurrentMode)
 		{
 			EnableMode(CurrentMode, EAxisList::None);
@@ -554,7 +613,7 @@ void UTransformGizmo::Tick(float DeltaTime)
 	UpdateCameraAxisSource();
 }
 
-void UTransformGizmo::SetActiveTarget(UTransformProxy* Target, IToolContextTransactionProvider* TransactionProvider)
+void UTransformGizmo::SetActiveTarget(UTransformProxy* Target, IToolContextTransactionProvider* TransactionProvider, IGizmoStateTarget* InStateTarget)
 {
 	if (ActiveTarget != nullptr)
 	{
@@ -577,9 +636,17 @@ void UTransformGizmo::SetActiveTarget(UTransformProxy* Target, IToolContextTrans
 	{
 		TransactionProvider = GetGizmoManager();
 	}
-	
-	StateTarget = UGizmoObjectModifyStateTarget::Construct(Target,
-		LOCTEXT("UTransformGizmoTransaction", "Transform"), TransactionProvider, this);
+
+	if (InStateTarget)
+	{
+		StateTarget = Cast<UObject>(InStateTarget);
+	}
+	else
+	{
+		StateTarget = UGizmoObjectModifyStateTarget::Construct(Target,
+			LOCTEXT("UTransformGizmoTransaction", "Transform"), TransactionProvider, this);	
+	}
+
 
 	CameraAxisSource = NewObject<UGizmoConstantFrameAxisSource>(this);
 }
@@ -599,18 +666,25 @@ void UTransformGizmo::SetVisibility(bool bVisibleIn)
 	bVisible = bVisibleIn;
 }
 
+void UTransformGizmo::SetCustomizationFunction(const TFunction<const FGizmoCustomization()>& InFunction)
+{
+	CustomizationFunction = InFunction;
+}
+
 UGizmoElementArrow* UTransformGizmo::MakeTranslateAxis(ETransformGizmoPartIdentifier InPartId, const FVector& InAxisDir, const FVector& InSideDir, UMaterialInterface* InMaterial)
 {
+	const float SizeCoeff = CustomizationFunction ? CustomizationFunction().SizeCoefficient : 1.f;
+	
 	UGizmoElementArrow* ArrowElement = NewObject<UGizmoElementArrow>();
 	ArrowElement->SetPartIdentifier(static_cast<uint32>(InPartId));
 	ArrowElement->SetHeadType(EGizmoElementArrowHeadType::Cone);
 	ArrowElement->SetBase(InAxisDir * AxisLengthOffset);
 	ArrowElement->SetDirection(InAxisDir);
 	ArrowElement->SetSideDirection(InSideDir);
-	ArrowElement->SetBodyLength(TranslateAxisLength);
+	ArrowElement->SetBodyLength(TranslateAxisLength * SizeCoeff);
 	ArrowElement->SetBodyRadius(AxisRadius);
-	ArrowElement->SetHeadLength(TranslateAxisConeHeight);
-	ArrowElement->SetHeadRadius(TranslateAxisConeRadius);
+	ArrowElement->SetHeadLength(TranslateAxisConeHeight * SizeCoeff);
+	ArrowElement->SetHeadRadius(TranslateAxisConeRadius * SizeCoeff);
 	ArrowElement->SetNumSides(32);
 	ArrowElement->SetMaterial(InMaterial);
 	ArrowElement->SetViewDependentType(EGizmoElementViewDependentType::Axis);
@@ -620,15 +694,17 @@ UGizmoElementArrow* UTransformGizmo::MakeTranslateAxis(ETransformGizmoPartIdenti
 
 UGizmoElementArrow* UTransformGizmo::MakeScaleAxis(ETransformGizmoPartIdentifier InPartId, const FVector& InAxisDir, const FVector& InSideDir, UMaterialInterface* InMaterial)
 {
+	const float SizeCoeff = CustomizationFunction ? CustomizationFunction().SizeCoefficient : 1.f;
+
 	UGizmoElementArrow* ArrowElement = NewObject<UGizmoElementArrow>();
 	ArrowElement->SetPartIdentifier(static_cast<uint32>(InPartId));
 	ArrowElement->SetHeadType(EGizmoElementArrowHeadType::Cube);
 	ArrowElement->SetBase(InAxisDir * AxisLengthOffset);
 	ArrowElement->SetDirection(InAxisDir);
 	ArrowElement->SetSideDirection(InSideDir);
-	ArrowElement->SetBodyLength(ScaleAxisLength);
+	ArrowElement->SetBodyLength(ScaleAxisLength * SizeCoeff);
 	ArrowElement->SetBodyRadius(AxisRadius);
-	ArrowElement->SetHeadLength(ScaleAxisCubeDim);
+	ArrowElement->SetHeadLength(ScaleAxisCubeDim * SizeCoeff);
 	ArrowElement->SetNumSides(32);
 	ArrowElement->SetMaterial(InMaterial);
 	ArrowElement->SetViewDependentType(EGizmoElementViewDependentType::Axis);
@@ -638,12 +714,14 @@ UGizmoElementArrow* UTransformGizmo::MakeScaleAxis(ETransformGizmoPartIdentifier
 
 UGizmoElementBox* UTransformGizmo::MakeUniformScaleHandle()
 {
+	const float SizeCoeff = CustomizationFunction ? CustomizationFunction().SizeCoefficient : 1.f;
+	
 	UGizmoElementBox* BoxElement = NewObject<UGizmoElementBox>();
 	BoxElement->SetPartIdentifier(static_cast<uint32>(ETransformGizmoPartIdentifier::ScaleUniform));
 	BoxElement->SetCenter(FVector::ZeroVector);
 	BoxElement->SetUpDirection(FVector::UpVector);
 	BoxElement->SetSideDirection(FVector::RightVector);
-	BoxElement->SetDimensions(FVector(ScaleAxisCubeDim, ScaleAxisCubeDim, ScaleAxisCubeDim));
+	BoxElement->SetDimensions(FVector(ScaleAxisCubeDim, ScaleAxisCubeDim, ScaleAxisCubeDim) * SizeCoeff);
 	BoxElement->SetMaterial(GreyMaterial);
 	return BoxElement;
 }
@@ -651,7 +729,9 @@ UGizmoElementBox* UTransformGizmo::MakeUniformScaleHandle()
 UGizmoElementRectangle* UTransformGizmo::MakePlanarHandle(ETransformGizmoPartIdentifier InPartId, const FVector& InUpDirection, const FVector& InSideDirection, const FVector& InPlaneNormal,
 	UMaterialInterface* InMaterial, const FLinearColor& InVertexColor)
 {
-	FVector PlanarHandleCenter = (InUpDirection + InSideDirection) * PlanarHandleOffset;
+	const float SizeCoeff = CustomizationFunction ? CustomizationFunction().SizeCoefficient : 1.f;
+	
+	FVector PlanarHandleCenter = (InUpDirection + InSideDirection) * PlanarHandleOffset * SizeCoeff;
 
 	FLinearColor LineColor = InVertexColor;
 	FLinearColor VertexColor = LineColor;
@@ -662,8 +742,8 @@ UGizmoElementRectangle* UTransformGizmo::MakePlanarHandle(ETransformGizmoPartIde
 	RectangleElement->SetUpDirection(InUpDirection);
 	RectangleElement->SetSideDirection(InSideDirection);
 	RectangleElement->SetCenter(PlanarHandleCenter);
-	RectangleElement->SetHeight(PlanarHandleSize);
-	RectangleElement->SetWidth(PlanarHandleSize);
+	RectangleElement->SetHeight(PlanarHandleSize * SizeCoeff);
+	RectangleElement->SetWidth(PlanarHandleSize * SizeCoeff);
 	RectangleElement->SetMaterial(InMaterial);
 	RectangleElement->SetVertexColor(VertexColor);
 	RectangleElement->SetLineColor(LineColor);
@@ -677,13 +757,15 @@ UGizmoElementRectangle* UTransformGizmo::MakePlanarHandle(ETransformGizmoPartIde
 
 UGizmoElementRectangle* UTransformGizmo::MakeTranslateScreenSpaceHandle()
 {
+	const float SizeCoeff = CustomizationFunction ? CustomizationFunction().SizeCoefficient : 1.f;
+	
 	UGizmoElementRectangle* RectangleElement = NewObject<UGizmoElementRectangle>();
 	RectangleElement->SetPartIdentifier(static_cast<uint32>(ETransformGizmoPartIdentifier::TranslateScreenSpace));
 	RectangleElement->SetUpDirection(FVector::UpVector);
 	RectangleElement->SetSideDirection(FVector::RightVector);
 	RectangleElement->SetCenter(FVector::ZeroVector);
-	RectangleElement->SetHeight(TranslateScreenSpaceHandleSize);
-	RectangleElement->SetWidth(TranslateScreenSpaceHandleSize);
+	RectangleElement->SetHeight(TranslateScreenSpaceHandleSize * SizeCoeff);
+	RectangleElement->SetWidth(TranslateScreenSpaceHandleSize * SizeCoeff);
 	RectangleElement->SetViewAlignType(EGizmoElementViewAlignType::PointScreen);
 	RectangleElement->SetViewAlignAxis(FVector::UpVector);
 	RectangleElement->SetViewAlignNormal(-FVector::ForwardVector);
@@ -700,12 +782,14 @@ UGizmoElementRectangle* UTransformGizmo::MakeTranslateScreenSpaceHandle()
 UGizmoElementTorus* UTransformGizmo::MakeRotateAxis(ETransformGizmoPartIdentifier InPartId, const FVector& TorusAxis0, const FVector& TorusAxis1,
 	UMaterialInterface* InMaterial, UMaterialInterface* InCurrentMaterial)
 {
+	const float SizeCoeff = CustomizationFunction ? CustomizationFunction().SizeCoefficient : 1.f;
+	
 	UGizmoElementTorus* RotateAxisElement = NewObject<UGizmoElementTorus>();
 	RotateAxisElement->SetPartIdentifier(static_cast<uint32>(InPartId));
 	RotateAxisElement->SetCenter(FVector::ZeroVector);
-	RotateAxisElement->SetRadius(UTransformGizmo::RotateAxisOuterRadius);
+	RotateAxisElement->SetRadius(UTransformGizmo::RotateAxisOuterRadius * SizeCoeff);
 	RotateAxisElement->SetNumSegments(UTransformGizmo::RotateAxisNumSegments);
-	RotateAxisElement->SetInnerRadius(UTransformGizmo::RotateAxisInnerRadius);
+	RotateAxisElement->SetInnerRadius(UTransformGizmo::RotateAxisInnerRadius * SizeCoeff);
 	RotateAxisElement->SetNumInnerSlices(UTransformGizmo::RotateAxisInnerSlices);
 	RotateAxisElement->SetAxis0(TorusAxis0);
 	RotateAxisElement->SetAxis1(TorusAxis1);
@@ -723,10 +807,12 @@ UGizmoElementTorus* UTransformGizmo::MakeRotateAxis(ETransformGizmoPartIdentifie
 
 UGizmoElementCircle* UTransformGizmo::MakeRotateCircleHandle(ETransformGizmoPartIdentifier InPartId, float InRadius, const FLinearColor& InColor, float bFill)
 {
+	const float SizeCoeff = CustomizationFunction ? CustomizationFunction().SizeCoefficient : 1.f;
+	
 	UGizmoElementCircle* CircleElement = NewObject<UGizmoElementCircle>();
 	CircleElement->SetPartIdentifier(static_cast<uint32>(InPartId));
 	CircleElement->SetCenter(FVector::ZeroVector);
-	CircleElement->SetRadius(InRadius);
+	CircleElement->SetRadius(InRadius * SizeCoeff);
 	CircleElement->SetAxis0(FVector::UpVector);
 	CircleElement->SetAxis1(-FVector::RightVector);
 	CircleElement->SetLineColor(InColor);
@@ -819,7 +905,16 @@ FQuat UTransformGizmo::RotationSnapFunction(const FQuat& DeltaRotation) const
 
 FVector UTransformGizmo::GetWorldAxis(const FVector& InAxis)
 {
-	if (TransformGizmoSource->GetGizmoCoordSystemSpace() == EToolContextCoordinateSystem::Local)
+	auto GetCoordinateSystem = [&]()
+	{
+		if (TransformGizmoSource)
+		{
+			return TransformGizmoSource->GetGizmoCoordSystemSpace(); 
+		}
+		return GetGizmoManager()->GetContextQueriesAPI()->GetCurrentCoordinateSystem();
+	};
+	
+	if (GetCoordinateSystem() == EToolContextCoordinateSystem::Local)
 	{
 		return CurrentTransform.TransformVectorNoScale(InAxis);
 	}
@@ -1284,7 +1379,16 @@ void UTransformGizmo::OnClickDragScale(const FInputDeviceRay& DragPos)
 {
 	FVector2D ScreenDelta = DragPos.ScreenPosition - InteractionScreenCurrPos;
 
-	if (TransformGizmoSource->GetScaleType() != EGizmoTransformScaleType::PercentageBased)
+	auto GetScaleType = [&]()
+	{
+		if (TransformGizmoSource)
+		{
+			return TransformGizmoSource->GetScaleType();
+		}
+		return EGizmoTransformScaleType::Default;
+	};
+	
+	if (GetScaleType() != EGizmoTransformScaleType::PercentageBased)
 	{
 		ScreenDelta *= ScaleMultiplier;
 	}
@@ -1337,7 +1441,7 @@ FVector UTransformGizmo::ComputeScaleDelta(const FVector2D& InStartPos, const FV
 
 void UTransformGizmo::OnClickPressRotateXAxis(const FInputDeviceRay& PressPos)
 {
-	InteractionScreenAxisDirection = GetScreenRotateAxisDir(FVector::YAxisVector, FVector::ZAxisVector).GetSafeNormal();
+	InteractionScreenAxisDirection = GetScreenRotateAxisDir(FVector::ZAxisVector, FVector::YAxisVector).GetSafeNormal();
 	InteractionAxisList = EAxisList::X;
 	InteractionScreenStartPos = InteractionScreenCurrPos = PressPos.ScreenPosition;
 	bInInteraction = true;
@@ -1345,7 +1449,7 @@ void UTransformGizmo::OnClickPressRotateXAxis(const FInputDeviceRay& PressPos)
 
 void UTransformGizmo::OnClickPressRotateYAxis(const FInputDeviceRay& PressPos)
 {
-	InteractionScreenAxisDirection = GetScreenRotateAxisDir(FVector::ZAxisVector, FVector::XAxisVector).GetSafeNormal();
+	InteractionScreenAxisDirection = GetScreenRotateAxisDir(FVector::XAxisVector, FVector::ZAxisVector).GetSafeNormal();
 	InteractionAxisList = EAxisList::Y;
 	InteractionScreenStartPos = InteractionScreenCurrPos = PressPos.ScreenPosition;
 	bInInteraction = true;
@@ -1372,9 +1476,10 @@ FVector2D UTransformGizmo::GetScreenRotateAxisDir(const FVector& InAxis0, const 
 	const bool bMirrorAxis1 = (FVector::DotProduct(Axis1, DirectionToWidget) <= 0.0f);
 	const float Direction = (bMirrorAxis0 ^ bMirrorAxis1) ? -1.0f : 1.0f;
 
-	const FVector AxisDir = (Axis1 - Axis0) * Direction;
-
-	return GetScreenProjectedAxis(GizmoViewContext, AxisDir);
+	const FVector2D Axis0Screen = GetScreenProjectedAxis(GizmoViewContext, bMirrorAxis0 ? Axis0:-Axis0);
+	const FVector2D Axis1Screen = GetScreenProjectedAxis(GizmoViewContext, bMirrorAxis1 ? Axis1:-Axis1);
+	
+	return ((Axis1Screen - Axis0Screen) * Direction).GetSafeNormal();
 }
 
 void UTransformGizmo::OnClickDragRotateAxis(const FInputDeviceRay& DragPos)
@@ -1401,8 +1506,16 @@ FQuat UTransformGizmo::ComputeAxisRotateDelta(const FVector2D& InStartPos, const
 		DeltaRot.Yaw = FVector2D::DotProduct(InteractionScreenAxisDirection, DragDir);
 	}
 
-	check(TransformGizmoSource);
-	if (TransformGizmoSource->GetGizmoCoordSystemSpace() == EToolContextCoordinateSystem::Local)
+	auto GetCoordinateSystem = [&]()
+	{
+		if (TransformGizmoSource)
+		{
+			return TransformGizmoSource->GetGizmoCoordSystemSpace(); 
+		}
+		return GetGizmoManager()->GetContextQueriesAPI()->GetCurrentCoordinateSystem();
+	};
+	
+	if (GetCoordinateSystem() == EToolContextCoordinateSystem::Local)
 	{
 		check(ActiveTarget);
 		FMatrix CurrCoordSystem = ActiveTarget->GetTransform().ToMatrixNoScale();

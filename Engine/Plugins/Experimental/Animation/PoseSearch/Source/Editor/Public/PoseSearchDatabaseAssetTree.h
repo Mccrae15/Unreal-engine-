@@ -39,7 +39,7 @@ namespace UE::PoseSearch
 		void RefreshTreeView(bool bIsInitialSetup = false, bool bRecoverSelection = false);
 		void FinalizeTreeChanges(bool bRecoverSelection = false);
 
-		TWeakPtr<FDatabaseAssetTreeNode> SetSelectedItem(int32 SourceAssetIdx);
+		void SetSelectedItem(int32 SourceAssetIdx, bool bClearSelection);
 		FDetailColumnSizeData& GetColumnSizeData() { return ColumnSizeData; }
 		
 	protected:
@@ -88,6 +88,7 @@ namespace UE::PoseSearch
 		void OnAddSequence(bool bFinalizeChanges = true);
 		void OnAddBlendSpace(bool bFinalizeChanges = true);
 		void OnAddAnimComposite(bool bFinalizeChanges = true);
+		void OnAddAnimMontage(bool bFinalizeChanges = true);
 
 		void OnDeleteAsset(TSharedPtr<FDatabaseAssetTreeNode> Node, bool bFinalizeChanges = true);
 		void CreateCommandList();

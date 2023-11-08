@@ -14,6 +14,9 @@
 #include "Engine/LocalPlayer.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
+#include "HttpManager.h"
+#include "Async/TaskGraphInterfaces.h"
+#include "Misc/Fork.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(HttpNetworkReplayStreaming)
 
@@ -154,32 +157,33 @@ public:
 
 void FHttpStreamFArchive::Serialize( void* V, int64 Length ) 
 {
-	if ( IsLoading() )
+	if (IsLoading())
 	{
-		if ( Pos + Length > Buffer.Num() )
+		if ((Pos + Length) > Buffer.Num())
 		{
 			SetError();
 			return;
 		}
 			
-		FMemory::Memcpy( V, Buffer.GetData() + Pos, Length );
+		FMemory::Memcpy(V, Buffer.GetData() + Pos, Length);
 
-		Pos += Length;
+		Pos += IntCastChecked<int32>(Length);
 	}
 	else
 	{
-		check( Pos <= Buffer.Num() );
+		check(Pos <= Buffer.Num());
 
-		const int32 SpaceNeeded = Length - ( Buffer.Num() - Pos );
+		const int32 LocalLength = IntCastChecked<int32>(Length);
+		const int32 SpaceNeeded = LocalLength - (Buffer.Num() - Pos);
 
-		if ( SpaceNeeded > 0 )
+		if (SpaceNeeded > 0)
 		{
-			Buffer.AddZeroed( SpaceNeeded );
+			Buffer.AddZeroed(SpaceNeeded);
 		}
 
-		FMemory::Memcpy( Buffer.GetData() + Pos, V, Length );
+		FMemory::Memcpy(Buffer.GetData() + Pos, V, LocalLength);
 
-		Pos += Length;
+		Pos += LocalLength;
 	}
 }
 
@@ -197,7 +201,7 @@ void FHttpStreamFArchive::Seek( int64 InPos )
 {
 	check( InPos <= Buffer.Num() );
 
-	Pos = InPos;
+	Pos = IntCastChecked<int32>(InPos);
 }
 
 bool FHttpStreamFArchive::AtEnd() 
@@ -678,7 +682,7 @@ void FHttpNetworkReplayStreamer::FlushStream()
 
 	TotalUploadBytes += HttpRequest->GetContentLength();
 
-	HttpRequest->SetURL( FString::Printf( TEXT( "%sreplay/%s/file/stream.%i?numChunks=%i&time=%i&mTime1=%i&mTime2=%i&absSize=%i" ), *ServerURL, *SessionName, StreamChunkIndex, StreamChunkIndex + 1, TotalDemoTimeInMS, StreamTimeRangeStart, StreamTimeRangeEnd, TotalUploadBytes ) );
+	HttpRequest->SetURL( FString::Printf( TEXT( "%sreplay/%s/file/stream.%i?numChunks=%i&time=%i&mTime1=%i&mTime2=%i&absSize=%llu" ), *ServerURL, *SessionName, StreamChunkIndex, StreamChunkIndex + 1, TotalDemoTimeInMS, StreamTimeRangeStart, StreamTimeRangeEnd, TotalUploadBytes ) );
 	HttpRequest->SetVerb( TEXT( "POST" ) );
 	HttpRequest->SetHeader( TEXT( "Content-Type" ), TEXT( "application/octet-stream" ) );
 
@@ -717,7 +721,7 @@ void FHttpNetworkReplayStreamer::StopUploading()
 
 	HttpRequest->OnProcessRequestComplete().BindRaw( this, &FHttpNetworkReplayStreamer::HttpStopUploadingFinished );
 
-	HttpRequest->SetURL( FString::Printf( TEXT( "%sreplay/%s/stopUploading?numChunks=%i&time=%i&absSize=%i" ), *ServerURL, *SessionName, StreamChunkIndex, TotalDemoTimeInMS, TotalUploadBytes ) );
+	HttpRequest->SetURL( FString::Printf( TEXT( "%sreplay/%s/stopUploading?numChunks=%i&time=%i&absSize=%llu" ), *ServerURL, *SessionName, StreamChunkIndex, TotalDemoTimeInMS, TotalUploadBytes ) );
 	HttpRequest->SetVerb( TEXT( "POST" ) );
 	HttpRequest->SetHeader( TEXT( "Content-Type" ), TEXT( "application/octet-stream" ) );
 
@@ -749,7 +753,7 @@ bool FQueuedGotoFakeCheckpoint::PreProcess( FHttpNetworkReplayStreamer* Streamer
 	Streamer->CheckpointArchive.Buffer.Empty();
 	Streamer->CheckpointArchive.Pos = 0;
 
-	if (!Streamer->IsDataAvailableForTimeRange(0, Streamer->LastGotoTimeInMS))
+	if (!Streamer->IsDataAvailableForTimeRange(0, IntCastChecked<uint32>(Streamer->LastGotoTimeInMS)))
 	{
 		// Completely reset our stream (we're going to start downloading from the start of the checkpoint)
 		Streamer->StreamArchive.Buffer.Empty();
@@ -810,7 +814,7 @@ void FHttpNetworkReplayStreamer::GotoCheckpointIndex( const int32 CheckpointInde
 	if ( CheckpointIndex == -1 )
 	{
 		GotoCheckpointDelegate = Delegate;
-		SetHighPriorityTimeRange( 0, LastGotoTimeInMS );
+		SetHighPriorityTimeRange(0, IntCastChecked<uint32>(LastGotoTimeInMS));
 		LastChunkTime = 0;		// Force the next chunk to start downloading immediately
 		AddCustomRequestToQueue( TSharedPtr< FQueuedHttpRequest >( new FQueuedGotoFakeCheckpoint() ) );
 		return;
@@ -1796,7 +1800,7 @@ void FHttpNetworkReplayStreamer::HttpHeaderUploadFinished( FHttpRequestPtr HttpR
 			TotalUploadBytes += HttpRequest->GetContentLength();
 		}
 
-		UE_LOG( LogHttpReplay, Verbose, TEXT( "FHttpNetworkReplayStreamer::HttpHeaderUploadFinished. TotalUploadBytes: %i" ), TotalUploadBytes );
+		UE_LOG( LogHttpReplay, Verbose, TEXT( "FHttpNetworkReplayStreamer::HttpHeaderUploadFinished. TotalUploadBytes: %llu" ), TotalUploadBytes );
 		Result.Result = EStreamingOperationResult::Success;
 	}
 	else
@@ -1849,7 +1853,7 @@ void FHttpNetworkReplayStreamer::HttpUploadCheckpointFinished( FHttpRequestPtr H
 			TotalUploadBytes += HttpRequest->GetContentLength();
 		}
 
-		UE_LOG( LogHttpReplay, Verbose, TEXT( "FHttpNetworkReplayStreamer::HttpUploadCheckpointFinished. TotalUploadBytes: %i" ), TotalUploadBytes );
+		UE_LOG( LogHttpReplay, Verbose, TEXT( "FHttpNetworkReplayStreamer::HttpUploadCheckpointFinished. TotalUploadBytes: %llu" ), TotalUploadBytes );
 	}
 	else
 	{
@@ -1874,7 +1878,7 @@ void FHttpNetworkReplayStreamer::HttpUploadCustomEventFinished(FHttpRequestPtr H
 			TotalUploadBytes += HttpRequest->GetContentLength();
 		}
 
-		UE_LOG( LogHttpReplay, Verbose, TEXT( "FHttpNetworkReplayStreamer::HttpUploadCustomEventFinished. TotalUploadBytes: %i" ), TotalUploadBytes );
+		UE_LOG( LogHttpReplay, Verbose, TEXT( "FHttpNetworkReplayStreamer::HttpUploadCustomEventFinished. TotalUploadBytes: %llu" ), TotalUploadBytes );
 	}
 	else
 	{
@@ -2184,7 +2188,7 @@ void FHttpNetworkReplayStreamer::HttpDownloadCheckpointFinished( FHttpRequestPtr
 		if ( LastGotoTimeInMS >= 0 )
 		{
 			// If we are fine scrubbing, make sure to wait on the part of the stream that is needed to do this in one frame
-			SetHighPriorityTimeRange( Checkpoint.Time1, LastGotoTimeInMS );
+			SetHighPriorityTimeRange(Checkpoint.Time1, IntCastChecked<uint32>(LastGotoTimeInMS));
 			
 			// Subtract off checkpoint time so we pass in the leftover to the engine to fast forward through for the fine scrubbing part
 			LastGotoTimeInMS -= Checkpoint.Time1;
@@ -2315,15 +2319,7 @@ void FHttpNetworkReplayStreamer::HttpEnumerateCheckpointsFinished( FHttpRequestP
 		else
 		{
 			// Sort checkpoints by time
-			struct FCompareCheckpointTime
-			{
-				FORCEINLINE bool operator()(const FReplayEventListItem & A, const FReplayEventListItem & B) const
-				{
-					return A.Time1 < B.Time1;
-				}
-			};
-
-			Sort( CheckpointList.ReplayEvents.GetData(), CheckpointList.ReplayEvents.Num(), FCompareCheckpointTime() );
+			Algo::SortBy(CheckpointList.ReplayEvents, &FReplayEventListItem::Time1);
 
 			Result.Result = EStreamingOperationResult::Success;
 		}	
@@ -2653,7 +2649,7 @@ void FHttpNetworkReplayStreamer::HttpDownloadCheckpointDeltaFinished( FHttpReque
 			if ( LastGotoTimeInMS >= 0 )
 			{
 				// If we are fine scrubbing, make sure to wait on the part of the stream that is needed to do this in one frame
-				SetHighPriorityTimeRange( CheckpointList.ReplayEvents[ DownloadCheckpointIndex ].Time1, LastGotoTimeInMS );
+				SetHighPriorityTimeRange(CheckpointList.ReplayEvents[ DownloadCheckpointIndex ].Time1, IntCastChecked<uint32>(LastGotoTimeInMS));
 
 				// Subtract off checkpoint time so we pass in the leftover to the engine to fast forward through for the fine scrubbing part
 				LastGotoTimeInMS -= CheckpointList.ReplayEvents[ DownloadCheckpointIndex ].Time1;
@@ -2732,6 +2728,74 @@ void FHttpNetworkReplayStreamingFactory::Tick( float DeltaTime )
 TStatId FHttpNetworkReplayStreamingFactory::GetStatId() const
 {
 	RETURN_QUICK_DECLARE_CYCLE_STAT( FHttpNetworkReplayStreamingFactory, STATGROUP_Tickables );
+}
+
+bool FHttpNetworkReplayStreamingFactory::HasPendingHttpRequests() const
+{
+	bool bPendingRequests = false;
+
+	for (const TSharedPtr<FHttpNetworkReplayStreamer>& Streamer : HttpStreamers)
+	{
+		if (Streamer.IsValid() && Streamer->HasPendingHttpRequests())
+		{
+			bPendingRequests = true;
+			break;
+		}
+	}
+
+	return bPendingRequests;
+}
+
+void FHttpNetworkReplayStreamingFactory::Flush()
+{
+	// defaulting to false as that was the previous behavior
+	bool bFlushStreamersOnShutdown = false;
+	GConfig->GetBool(TEXT("HttpNetworkReplayStreamingFactory"), TEXT("bFlushStreamersOnShutdown"), bFlushStreamersOnShutdown, GEngineIni);
+
+	if (bFlushStreamersOnShutdown)
+	{
+		double MaxFlushTimeSeconds = -1.0;
+		GConfig->GetDouble(TEXT("HttpNetworkReplayStreamingFactory"), TEXT("MaxFlushTimeSeconds"), MaxFlushTimeSeconds, GEngineIni);
+
+		const double BeginWaitTime = FPlatformTime::Seconds();
+		double LastTime = BeginWaitTime;
+		while (HasPendingHttpRequests())
+		{
+			const double AppTime = FPlatformTime::Seconds();
+			const double TotalWait = AppTime - BeginWaitTime;
+
+			if ((MaxFlushTimeSeconds > 0) && (TotalWait > MaxFlushTimeSeconds))
+			{
+				UE_LOG(LogHttpReplay, Display, TEXT("Abandoning streamer flush after waiting %0.2f seconds"), TotalWait);
+				break;
+			}
+
+			const float DeltaTime = FloatCastChecked<float>(AppTime - LastTime, UE::LWC::DefaultFloatPrecision);
+			Tick(DeltaTime);
+
+			LastTime = AppTime;
+
+			if (HasPendingHttpRequests())
+			{
+				const float SleepInterval = 0.05f;
+
+				FHttpModule::Get().GetHttpManager().Flush(EHttpFlushReason::Default);
+
+				FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
+
+				if (FPlatformProcess::SupportsMultithreading() || FForkProcessHelper::SupportsMultithreadingPostFork())
+				{
+					UE_LOG(LogHttpReplay, Display, TEXT("Sleeping to wait for outstanding requests."));
+					FPlatformProcess::Sleep(SleepInterval);
+				}
+			}
+		}
+	}
+}
+
+void FHttpNetworkReplayStreamingFactory::ShutdownModule()
+{
+	Flush();
 }
 
 #define CASE_EHTTPREPLAYRESULT_TO_TEXT_RET(txt) case txt: ReturnVal = TEXT(#txt); break;

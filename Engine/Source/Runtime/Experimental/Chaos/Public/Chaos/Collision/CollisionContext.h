@@ -9,7 +9,8 @@ namespace Chaos
 	{
 		class FCollisionContextAllocator;
 	}
-	class FMultiShapePairCollisionDetector;
+
+	class FParticlePairMidPhase;
 
 	class FCollisionDetectorSettings
 	{
@@ -17,6 +18,7 @@ namespace Chaos
 		FCollisionDetectorSettings()
 			: BoundsExpansion(0)
 			, BoundsVelocityInflation(0)
+			, MaxVelocityBoundsExpansion(0)
 			, bFilteringEnabled(true)
 			, bDeferNarrowPhase(false)
 			, bAllowManifolds(true)
@@ -30,6 +32,9 @@ namespace Chaos
 		
 		// Shape bounds in the broadphase are expanded by this multiple of velocity
 		FReal BoundsVelocityInflation;
+
+		// We only allow the bounds to grow from velocity by this much
+		FReal MaxVelocityBoundsExpansion;
 
 		// Whether to check the shape query flags in the narrow phase (e.g., Rigid Body nodes have already performed filtering prior to collision detection)
 		bool bFilteringEnabled;
@@ -59,7 +64,7 @@ namespace Chaos
 		FCollisionContext()
 			: Settings(nullptr)
 			, Allocator(nullptr)
-			, MultiShapeCollisionDetector(nullptr)
+			, MidPhase(nullptr)
 		{
 		}
 
@@ -67,7 +72,7 @@ namespace Chaos
 		{
 			Settings = nullptr;
 			Allocator = nullptr;
-			MultiShapeCollisionDetector = nullptr;
+			MidPhase = nullptr;
 		}
 
 		const FCollisionDetectorSettings& GetSettings() const { return *Settings; }
@@ -76,10 +81,6 @@ namespace Chaos
 		Private::FCollisionContextAllocator* GetAllocator() const { return Allocator; }
 		void SetAllocator(Private::FCollisionContextAllocator* InAllocator) { Allocator = InAllocator; }
 
-		FMultiShapePairCollisionDetector* GetMultiShapePairCollisionDetector() const { return MultiShapeCollisionDetector; }
-		void SetMultiShapePairCollisionDetector(FMultiShapePairCollisionDetector* InDetector) { MultiShapeCollisionDetector = InDetector; }
-
-
 		const FCollisionDetectorSettings* Settings;
 
 		Private::FCollisionContextAllocator* Allocator;
@@ -87,6 +88,6 @@ namespace Chaos
 		// This is used in the older collision detection path which is still used for particles that do not flatten their implicit hierrarchies
 		// into the Particle's ShapesArray. Currently this is only Clusters.
 		// @todo(chaos): remove thsi from here and make it a parameter on ConstructCollisions and all inner functions.
-		FMultiShapePairCollisionDetector* MultiShapeCollisionDetector;
+		FParticlePairMidPhase* MidPhase;
 	};
 }

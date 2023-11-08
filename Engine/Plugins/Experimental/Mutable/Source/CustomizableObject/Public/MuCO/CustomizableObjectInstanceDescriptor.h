@@ -3,18 +3,12 @@
 #pragma once
 
 #include "MuCO/MultilayerProjector.h"
+#include "MuCO/CustomizableObjectParameterTypeDefinitions.h"
 
 #include "CustomizableObjectInstanceDescriptor.generated.h"
 
 class UTexture2D;
 enum class ECustomizableObjectProjectorType : uint8;
-struct FCustomizableObjectBoolParameterValue;
-struct FCustomizableObjectFloatParameterValue;
-struct FCustomizableObjectIntParameterValue;
-struct FCustomizableObjectProjector;
-struct FCustomizableObjectProjectorParameterValue;
-struct FCustomizableObjectTextureParameterValue;
-struct FCustomizableObjectVectorParameterValue;
 
 class FArchive;
 class UCustomizableInstancePrivateData;
@@ -22,6 +16,9 @@ class UCustomizableObject;
 class UCustomizableObjectInstance;
 class FDescriptorHash;
 class FDescriptorRuntimeHash;
+class FMutableUpdateCandidate;
+
+typedef TMap<const UCustomizableObjectInstance*, FMutableUpdateCandidate> FMutableInstanceUpdateMap;
 
 namespace mu
 {
@@ -45,21 +42,29 @@ struct CUSTOMIZABLEOBJECT_API FCustomizableObjectInstanceDescriptor
 	
 	explicit FCustomizableObjectInstanceDescriptor(UCustomizableObject& Object);
 
-	FCustomizableObjectInstanceDescriptor(const FCustomizableObjectInstanceDescriptor& Other) = default;
-
-	/** Serialize this object. Does not support Multilayer Projectors! */
-	void SaveDescriptor(FArchive &Ar);
+	/** Serialize this object. 
+	 *
+	 * Backwards compatibility is not guaranteed.
+ 	 * Multilayer Projectors not supported.
+	 *
+  	 * @param bUseCompactDescriptor If true it assumes the compiled objects are the same on both ends of the serialisation */
+	void SaveDescriptor(FArchive &Ar, bool bUseCompactDescriptor);
 
 	/** Deserialize this object. Does not support Multilayer Projectors! */
+
+	/** Deserialize this object.
+     *
+	 * Backwards compatibility is not guaranteed.
+	 * Multilayer Projectors not supported */
 	void LoadDescriptor(FArchive &Ar);
 
 	UCustomizableObject* GetCustomizableObject() const;
 
 	void SetCustomizableObject(UCustomizableObject& InCustomizableObject);
 	
-	bool GetBuildParameterDecorations() const;
+	bool GetBuildParameterRelevancy() const;
 	
-	void SetBuildParameterDecorations(bool Value);
+	void SetBuildParameterRelevancy(bool Value);
 	
 	/** Update all parameters to be up to date with the Mutable Core parameters. */
 	void ReloadParameters();
@@ -123,17 +128,14 @@ struct CUSTOMIZABLEOBJECT_API FCustomizableObjectInstanceDescriptor
 	void SetFloatParameterSelectedOption(const FString& FloatParamName, float FloatValue, int32 RangeIndex = -1);
 
 	/** Gets the value of a texture parameter with name "TextureParamName". */
-	uint64 GetTextureParameterSelectedOption(const FString& TextureParamName, int32 RangeIndex) const;
-
-	/** Gets the texture of a texture parameter with name "TextureParamName". */
-	UTexture2D* GetTextureParameterSelectedOptionT(const FString& TextureParamName, int32 RangeIndex) const;
+	FName GetTextureParameterSelectedOption(const FString& TextureParamName, int32 RangeIndex) const;
 
 	/** Sets the texture value "TextureValue" of a texture parameter with index "TextureParamIndex". */
-	void SetTextureParameterSelectedOption(const FString& TextureParamName, uint64 TextureValue, int32 RangeIndex);
+	void SetTextureParameterSelectedOption(const FString& TextureParamName, const FString& TextureValue, int32 RangeIndex);
 
-	/** Sets the texture "Texture" of a texture parameter with index "TextureParamIndex". */
+	/** @deprecated Use SetTextureParameterSelectedOption instead. */
 	void SetTextureParameterSelectedOptionT(const FString& TextureParamName, UTexture2D* TextureValue, int32 RangeIndex);
-
+	
 	/** Gets the value of a color parameter with name "ColorParamName". */
 	FLinearColor GetColorParameterSelectedOption(const FString& ColorParamName) const;
 
@@ -211,14 +213,17 @@ struct CUSTOMIZABLEOBJECT_API FCustomizableObjectInstanceDescriptor
 
 	// Parameter Ranges
 
-	/** Returns true if the parameter is multidimensional (has multiple ranges). */
-	bool IsParamMultidimensional(const FString& ParamName) const;
-
-	/** Returns true if the parameter is multidimensional (has multiple ranges). */
-	bool IsParamMultidimensional(int32 ParamIndex) const;
-
 	/** Gets the range of values of the projector with ParamName, returns -1 if the parameter does not exist. */
 	int32 GetProjectorValueRange(const FString& ParamName) const;
+
+	/** Gets the range of values of the int with ParamName, returns -1 if the parameter does not exist. */
+	int32 GetIntValueRange(const FString& ParamName) const;
+
+	/** Gets the range of values of the float with ParamName, returns -1 if the parameter does not exist. */
+	int32 GetFloatValueRange(const FString& ParamName) const;
+
+	/** Gets the range of values of the texture with ParamName, returns -1 if the parameter does not exist. */
+	int32 GetTextureValueRange(const FString& ParamName) const;
 
 	/** Increases the range of values of the integer with ParamName, returns the index of the new integer value, -1 otherwise.
 	 * The added value is initialized with the first integer option and is the last one of the range. */
@@ -260,10 +265,6 @@ struct CUSTOMIZABLEOBJECT_API FCustomizableObjectInstanceDescriptor
 	/** Remove the RangeIndex element of the projector range of values from the parameter ParamName, returns the index of the last valid projector, -1 if no values left. */
 	int32 RemoveValueFromProjectorRange(const FString& ParamName, int32 RangeIndex);
 
-	// Default values
-
-	FCustomizableObjectProjector GetProjectorDefaultValue(int32 ParamIndex) const;
-	
 	// ------------------------------------------------------------
    	// States
    	// ------------------------------------------------------------
@@ -282,7 +283,7 @@ struct CUSTOMIZABLEOBJECT_API FCustomizableObjectInstanceDescriptor
 
 	// ------------------------------------------------------------
 	
-	void SetRandomValues();
+	void SetRandomValues(const int32& InRandomizationSeed);
 
 	// ------------------------------------------------------------
 	// Multilayer Projectors
@@ -334,7 +335,11 @@ struct CUSTOMIZABLEOBJECT_API FCustomizableObjectInstanceDescriptor
 	/** See FMultilayerProjector::UpdateVirtualLayer. */
 	void MultilayerProjectorUpdateVirtualLayer(const FName& ProjectorParamName, const FName& Id, const FMultilayerProjectorVirtualLayer& Layer);
 
+	/** Return a Mutable Core object containing all parameters. */
+	mu::Ptr<mu::Parameters> GetParameters() const;
+
 private:
+
 	UPROPERTY()
 	TObjectPtr<UCustomizableObject> CustomizableObject = nullptr;
 
@@ -359,9 +364,8 @@ private:
 	/** Mutable parameters optimization state. */
 	int32 State = 0;
 	
-	/** Flag to control the build of the parameter description images required for customization UI.
-     * These descriptions get generated with every instance update, so it should be disabled when not needed. */
-	bool bBuildParameterDecorations = false;
+	/** If this is set to true, when updating the instance an additional step will be performed to calculate the list of instance parameters that are relevant for the current parameter vaules. */
+	bool bBuildParameterRelevancy = false;
 
 	/** These are the LODs Mutable can generate, they MUST NOT be used in an update (Mutable thread). */
 	int32 MinLOD = 0;
@@ -377,9 +381,6 @@ private:
 	UPROPERTY()
 	TMap<FName, FMultilayerProjector> MultilayerProjectors;
 
-	/** Return a Mutable Core object containing all parameters. */
-	mu::Ptr<mu::Parameters> GetParameters() const;
-
 	void CreateParametersLookupTable();
 	
 	// Friends
@@ -388,6 +389,7 @@ private:
 	friend UCustomizableObjectInstance;
 	friend UCustomizableInstancePrivateData;
 	friend FMultilayerProjector;
+	friend FMutableUpdateCandidate;
 };
 
 

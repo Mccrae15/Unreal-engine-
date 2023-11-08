@@ -57,6 +57,8 @@
 #include "WorldPartition/WorldPartitionBuildNavigationOptions.h"
 #include "WorldPartition/WorldPartitionHelpers.h"
 #include "WorldPartition/WorldPartitionRuntimeVirtualTextureBuilder.h"
+#include "AssetCompilingManager.h"
+#include "ComponentRecreateRenderStateContext.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogEditorBuildUtils, Log, All);
 
@@ -88,7 +90,8 @@ FName FEditorBuildUtils::InProgressBuildId;
 namespace UE::EditorBuildUtils
 {
 	static bool bNavmeshAllowPartitionedBuildingFromEditor = false; // Experimental, not enabled by default yet.
-	static FAutoConsoleVariableRef AllowPartitionedBuildingFromEditor(TEXT("n.bNavmeshAllowPartitionedBuildingFromEditor"), bNavmeshAllowPartitionedBuildingFromEditor, TEXT("Enable experimental navmesh partition building."), ECVF_Default);
+	static FAutoConsoleVariableRef AllowPartitionedBuildingFromEditorDeprecated(TEXT("n.bNavmeshAllowPartitionedBuildingFromEditor"), bNavmeshAllowPartitionedBuildingFromEditor, TEXT("Enable experimental navmesh partition building. Deprecated 5.3: use ai.nav.bNavmeshAllowPartitionedBuildingFromEditor instead."), ECVF_Default);
+	static FAutoConsoleVariableRef AllowPartitionedBuildingFromEditor(TEXT("ai.nav.bNavmeshAllowPartitionedBuildingFromEditor"), bNavmeshAllowPartitionedBuildingFromEditor, TEXT("Enable experimental navmesh partition building."), ECVF_Default);
 }
 
 /**
@@ -251,6 +254,23 @@ bool FEditorBuildUtils::EditorAutomatedBuildAndSubmit( const FEditorAutomatedBui
 static bool IsBuildCancelled()
 {
 	return GEditor->GetMapBuildCancelled();
+}
+
+
+bool FEditorBuildUtils::EditorCanBuild( UWorld* InWorld, FName Id )
+{
+	// Only process custom types with conditional execution.
+	// Preserving legacy behavior otherwise.
+	if (CustomBuildTypes.Contains(Id))
+	{
+		const FCustomBuildType& CustomBuild = CustomBuildTypes.FindChecked(Id);
+		if (CustomBuild.CanDoBuild.IsBound())
+		{
+			return CustomBuild.CanDoBuild.Execute(InWorld, Id);
+		}
+	}
+
+	return true;
 }
 
 /**
@@ -468,7 +488,7 @@ bool FEditorBuildUtils::EditorBuild( UWorld* InWorld, FName Id, const bool bAllo
 				bDirtyPersistentLevel = false;
 			}
 
-			TriggerHierarchicalLODBuilder(InWorld, Id);
+			TriggerHierarchicalLODBuilder(InWorld);
 		}
 	}
 	else if (Id == FBuildOptions::BuildMinimap)
@@ -485,7 +505,7 @@ bool FEditorBuildUtils::EditorBuild( UWorld* InWorld, FName Id, const bool bAllo
 			bShouldMapCheck = false;
 			bDirtyPersistentLevel = false;
 
-			TriggerMinimapBuilder(InWorld, Id);
+			TriggerMinimapBuilder(InWorld);
 		}
 	}
 	else if (Id == FBuildOptions::BuildLandscapeSplineMeshes)
@@ -955,7 +975,7 @@ bool FEditorBuildUtils::WorldPartitionBuildNavigation(const FString& InLongPacka
 	DefaultBuildNavigationOptions->bVerbose = false;
 	DefaultBuildNavigationOptions->bCleanPackages = false;
 
-	TSharedPtr<SWindow> DlgWindow =
+	const TSharedPtr<SWindow> DlgWindow =
 		SNew(SWindow)
 		.Title(LOCTEXT("BuildNavigationWindowTitle", "Build Navigation Settings"))
 		.ClientSize(SWorldPartitionBuildNavigationDialog::DEFAULT_WINDOW_SIZE)
@@ -963,106 +983,131 @@ bool FEditorBuildUtils::WorldPartitionBuildNavigation(const FString& InLongPacka
 		.SupportsMaximize(false)
 		.SizingRule(ESizingRule::FixedSize);
 
-	TSharedRef<SWorldPartitionBuildNavigationDialog> Dialog =
+	const TSharedRef<SWorldPartitionBuildNavigationDialog> Dialog =
 		SNew(SWorldPartitionBuildNavigationDialog)
 		.ParentWindow(DlgWindow)
 		.BuildNavigationOptions(DefaultBuildNavigationOptions);
 
 	DlgWindow->SetContent(Dialog);
 
-	IMainFrameModule& MainFrameModule = FModuleManager::LoadModuleChecked<IMainFrameModule>(TEXT("MainFrame"));
+	const IMainFrameModule& MainFrameModule = FModuleManager::LoadModuleChecked<IMainFrameModule>(TEXT("MainFrame"));
 	FSlateApplication::Get().AddModalWindow(DlgWindow.ToSharedRef(), MainFrameModule.GetParentWindow());
 
 	if (Dialog->ClickedOk())
 	{
-		// Ask user to save dirty packages
-		if (!FEditorFileUtils::SaveDirtyPackages(/*bPromptUserToSave=*/true, /*bSaveMapPackages=*/true, /*bSaveContentPackages=*/false))
-		{
-			return false;
-		}
+		// Try to provide complete Path, if we can't try with project name
+		const FString ProjectPath = FPaths::IsProjectFilePathSet() ? FPaths::GetProjectFilePath() : FApp::GetProjectName();
 
-		// Unload any loaded map
-		if (!UEditorLoadingAndSavingUtils::NewBlankMap(/*bSaveExistingMap*/false))
-		{
-			return false;
-		}
-	
-		FProcHandle ProcessHandle;
-		bool bCancelled = false;
+		const ISourceControlProvider& SCCProvider = ISourceControlModule::Get().GetProvider();
 
-		// Task scope
-		{
-			FScopedSlowTask SlowTask(0, LOCTEXT("WorldPartitionBuildNavigationProgress", "Building navigation..."));
-			SlowTask.MakeDialog(true);
-
-			const FString CurrentExecutableName = FPlatformProcess::ExecutablePath();
-
-			// Try to provide complete Path, if we can't try with project name
-			const FString ProjectPath = FPaths::IsProjectFilePathSet() ? FPaths::GetProjectFilePath() : FApp::GetProjectName();
-
-			uint32 ProcessID;
-
-			ISourceControlProvider& SCCProvider = ISourceControlModule::Get().GetProvider();
-
-			const FString Arguments = FString::Printf(TEXT("\"%s\" -run=WorldPartitionBuilderCommandlet %s %s -SCCProvider=%s %s %s"),
+		const FString Arguments = FString::Printf(TEXT("\"%s\" -run=WorldPartitionBuilderCommandlet %s %s -SCCProvider=%s %s %s"),
 				*ProjectPath,
 				*InLongPackageName,
 				TEXT(" -AllowCommandletRendering -Builder=WorldPartitionNavigationDataBuilder -log=WPNavigationBuilderLog.txt"),
 				*SCCProvider.GetName().ToString(),
 				DefaultBuildNavigationOptions->bVerbose ? TEXT("-Verbose") : TEXT(""),
 				DefaultBuildNavigationOptions->bCleanPackages ? TEXT("-CleanPackages") : TEXT(""));
-				
-			ProcessHandle = FPlatformProcess::CreateProc(*CurrentExecutableName, *Arguments, true, false, false, &ProcessID, 0, nullptr, nullptr);
 		
-			while (FPlatformProcess::IsProcRunning(ProcessHandle))
-			{
-				if (SlowTask.ShouldCancel())
-				{
-					bCancelled = true;
-					FPlatformProcess::TerminateProc(ProcessHandle);
-					break;
-				}
-
-				SlowTask.EnterProgressFrame(0);
-				FPlatformProcess::Sleep(0.1);
-			}
-		}
-
-		int32 Result = 0;
-		if (!bCancelled && FPlatformProcess::GetProcReturnCode(ProcessHandle, &Result))
-		{	
-			// Force a directory watcher tick for the asset registry to get notified of the changes
-			FDirectoryWatcherModule& DirectoryWatcherModule = FModuleManager::Get().LoadModuleChecked<FDirectoryWatcherModule>(TEXT("DirectoryWatcher"));
-			DirectoryWatcherModule.Get()->Tick(-1.0f);
-			
-			// Unload any loaded map
-			if (!UEditorLoadingAndSavingUtils::NewBlankMap(/*bSaveExistingMap*/false))
-			{
-				return false;
-			}
-		
-			// Force registry update before loading converted map
-			const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
-			IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
-										
-			FString MapToLoad = InLongPackageName;
-		
-			AssetRegistry.ScanModifiedAssetFiles({ MapToLoad });
-			AssetRegistry.ScanPathsSynchronous(ULevel::GetExternalObjectsPaths(MapToLoad), true);
-		
-			FEditorFileUtils::LoadMap(MapToLoad);
-		}
-		else if (bCancelled)
-		{
-			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("WorldPartitionBuildNavigationCancelled", "Building navigation cancelled!"));
-		}
-	
-		if (Result != 0)
-		{
-			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("WorldPartitionBuildNavigationFailed", "Errors occured during the build process, please refer to the logs ('WPNavigationBuilderLog.txt')."));
-		}
+		RunWorldPartitionBuilder(InLongPackageName,
+			LOCTEXT("WorldPartitionBuildNavigationProgress", "Building navigation..."),
+			LOCTEXT("WorldPartitionBuildNavigationCancelled", "Building navigation cancelled!"),
+			LOCTEXT("WorldPartitionBuildNavigationFailed", "Errors occured during the build process, please refer to the logs ('WPNavigationBuilderLog.txt')."),
+			Arguments);
 	}
 	
+	return false;
+}
+
+bool FEditorBuildUtils::RunWorldPartitionBuilder(
+	const FString& MapToLoad,
+	const FText& ProgressText,
+	const FText& CancelledText,
+	const FText& FailureText,
+	const FString& CommandLineArguments
+	)
+{
+	// Ask user to save dirty packages
+	if (!FEditorFileUtils::SaveDirtyPackages(/*bPromptUserToSave=*/true, /*bSaveMapPackages=*/true, /*bSaveContentPackages=*/false))
+	{
+		return false;
+	}
+
+	// Unload any loaded map
+	if (!UEditorLoadingAndSavingUtils::NewBlankMap(/*bSaveExistingMap*/false))
+	{
+		return false;
+	}
+
+	FProcHandle ProcessHandle;
+	bool bCancelled = false;
+
+	// Task scope
+	{
+		FScopedSlowTask SlowTask(0, ProgressText);
+		SlowTask.MakeDialog(true);
+
+		const FString CurrentExecutableName = FPlatformProcess::ExecutablePath();
+
+		uint32 ProcessID;
+		ProcessHandle = FPlatformProcess::CreateProc(
+			*CurrentExecutableName,
+			*CommandLineArguments,
+			/*bLaunchedDetached*/true,
+			/*bLaunchedHidden*/false,
+			/*bLaunchedReallyHidden*/false,
+			&ProcessID,
+			/*PriorityModifier*/0,
+			/*OptionalWorkingDirectory*/nullptr,
+			/*PipeWriteChild*/nullptr);
+
+		while (FPlatformProcess::IsProcRunning(ProcessHandle))
+		{
+			if (SlowTask.ShouldCancel())
+			{
+				bCancelled = true;
+				FPlatformProcess::TerminateProc(ProcessHandle);
+				break;
+			}
+
+			SlowTask.EnterProgressFrame(0);
+			FPlatformProcess::Sleep(0.1);
+		}
+	}
+
+	int32 Result = 0;
+	if (!bCancelled && FPlatformProcess::GetProcReturnCode(ProcessHandle, &Result))
+	{
+		// Force a directory watcher tick for the asset registry to get notified of the changes
+		FDirectoryWatcherModule& DirectoryWatcherModule = FModuleManager::Get().LoadModuleChecked<FDirectoryWatcherModule>(TEXT("DirectoryWatcher"));
+		DirectoryWatcherModule.Get()->Tick(-1.0f);
+
+		// Unload any loaded map
+		if (!UEditorLoadingAndSavingUtils::NewBlankMap(/*bSaveExistingMap*/false))
+		{
+			return false;
+		}
+
+		// Force registry update before loading converted map
+		const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+		IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+		AssetRegistry.ScanModifiedAssetFiles({MapToLoad});
+		AssetRegistry.ScanPathsSynchronous(ULevel::GetExternalObjectsPaths(MapToLoad), true);
+
+		FEditorFileUtils::LoadMap(MapToLoad);
+		return true;
+	}
+	
+	if (bCancelled)
+	{
+		FMessageDialog::Open(EAppMsgType::Ok, CancelledText);
+	}
+
+	if (Result != 0)
+	{
+		FMessageDialog::Open(EAppMsgType::Ok, FailureText);
+	}
+
 	return false;
 }
 
@@ -1093,14 +1138,36 @@ bool FEditorBuildUtils::IsBuildCurrentlyRunning()
 
 /**
  * Register a custom build type.
- * @param Id The identifier to use for this build type.
- * @param DoBuild The delegate to execute to run this build.
- * @param BuildAllExtensionPoint If a valid name, run this build *before* running the build with this id when performing a Build All.
  */
-void FEditorBuildUtils::RegisterCustomBuildType(FName Id, const FDoEditorBuildDelegate& DoBuild, FName BuildAllExtensionPoint)
+void FEditorBuildUtils::RegisterCustomBuildType(
+	const FName Id,
+	const FDoEditorBuildDelegate& DoBuild,
+	const FName BuildAllExtensionPoint,
+	const FText& MenuEntryLabel,
+	const FText& MenuSectionLabel)
 {
 	check(!CustomBuildTypes.Contains(Id));
-	CustomBuildTypes.Add(Id, FCustomBuildType(DoBuild, BuildAllExtensionPoint));
+	CustomBuildTypes.Add(Id, FCustomBuildType(DoBuild, BuildAllExtensionPoint, MenuEntryLabel, MenuSectionLabel));
+
+	if (BuildAllExtensionPoint != NAME_None)
+	{
+		FBuildAllHandler::Get().AddCustomBuildStep(Id, BuildAllExtensionPoint);
+	}
+}
+
+/**
+ * Register a custom build type.
+ */
+void FEditorBuildUtils::RegisterCustomBuildType(
+	const FName Id,
+	const FCanDoEditorBuildDelegate& CanDoBuild,
+	const FDoEditorBuildDelegate& DoBuild,
+	const FName BuildAllExtensionPoint,
+	const FText& MenuEntryLabel,
+	const FText& MenuSectionLabel)
+{
+	check(!CustomBuildTypes.Contains(Id));
+	CustomBuildTypes.Add(Id, FCustomBuildType(CanDoBuild, DoBuild, BuildAllExtensionPoint, MenuEntryLabel, MenuSectionLabel));
 
 	if (BuildAllExtensionPoint != NAME_None)
 	{
@@ -1116,6 +1183,20 @@ void FEditorBuildUtils::UnregisterCustomBuildType(FName Id)
 {
 	CustomBuildTypes.Remove(Id);
 	FBuildAllHandler::Get().RemoveCustomBuildStep(Id);
+}
+
+void FEditorBuildUtils::GetBuildTypes(TArray<FName>& Types)
+{
+	CustomBuildTypes.GetKeys(Types);
+}
+
+void FEditorBuildUtils::GetBuildTypesLocalizedLabels(TArray<FText>& RegisteredBuildTypesEntryLabels, TArray<FText>& RegisteredBuildTypesSectionLabels)
+{
+	for (auto It = CustomBuildTypes.CreateConstIterator(); It; ++It)
+	{
+		RegisteredBuildTypesEntryLabels.Add(It->Value.MenuEntryLabel);
+		RegisteredBuildTypesSectionLabels.Add(It->Value.MenuSectionLabel);
+	}
 }
 
 /**
@@ -1221,12 +1302,12 @@ void FBuildAllHandler::ProcessBuild(const TWeakPtr<SBuildProgressWidget>& BuildP
 		else if (StepId == FBuildOptions::BuildHierarchicalLOD)
 		{
 			BuildProgressWidget.Pin()->SetBuildType(SBuildProgressWidget::BUILDTYPE_HLODs);
-			FEditorBuildUtils::TriggerHierarchicalLODBuilder(CurrentWorld, CurrentBuildId);
+			FEditorBuildUtils::TriggerHierarchicalLODBuilder(CurrentWorld);
 		}
 		else if (StepId == FBuildOptions::BuildMinimap)
 		{
 			BuildProgressWidget.Pin()->SetBuildType(SBuildProgressWidget::BUILDTYPE_Minimap);
-			FEditorBuildUtils::TriggerMinimapBuilder(CurrentWorld, CurrentBuildId);
+			FEditorBuildUtils::TriggerMinimapBuilder(CurrentWorld);
 		}
 		else if (StepId == FBuildOptions::BuildLandscapeSplineMeshes)
 		{
@@ -1284,17 +1365,20 @@ void FBuildAllHandler::ProcessBuild(const TWeakPtr<SBuildProgressWidget>& BuildP
 		}
 		else
 		{
-			auto& CustomBuildType = FEditorBuildUtils::CustomBuildTypes[StepId];
-			auto Result = CustomBuildType.DoBuild.Execute(CurrentWorld, CurrentBuildId);
-
-			if (Result == EEditorBuildResult::InProgress)
+			FEditorBuildUtils::FCustomBuildType& CustomBuildType = FEditorBuildUtils::CustomBuildTypes[StepId];
+			if (CustomBuildType.CanDoBuild.IsBound() == false || CustomBuildType.CanDoBuild.Execute(CurrentWorld, CurrentBuildId))
 			{
-				// Build & Submit builds must be synchronous.
-				check(CurrentBuildId != FBuildOptions::BuildAllSubmit);
+				const EEditorBuildResult Result = CustomBuildType.DoBuild.Execute(CurrentWorld, CurrentBuildId);
 
-				// Build step is running asynchronously, so let it run.
-				FEditorBuildUtils::InProgressBuildId = CurrentBuildId;
-				break;
+				if (Result == EEditorBuildResult::InProgress)
+				{
+					// Build & Submit builds must be synchronous.
+					check(CurrentBuildId != FBuildOptions::BuildAllSubmit);
+
+					// Build step is running asynchronously, so let it run.
+					FEditorBuildUtils::InProgressBuildId = CurrentBuildId;
+					break;
+				}
 			}
 		}
 
@@ -1313,7 +1397,7 @@ void FBuildAllHandler::BuildFinished()
 	CurrentBuildId = NAME_None;
 }
 
-void FEditorBuildUtils::TriggerHierarchicalLODBuilder(UWorld* InWorld, FName Id)
+void FEditorBuildUtils::TriggerHierarchicalLODBuilder(UWorld* InWorld)
 {
 	if (InWorld->IsPartitionedWorld())
 	{
@@ -1328,7 +1412,7 @@ void FEditorBuildUtils::TriggerHierarchicalLODBuilder(UWorld* InWorld, FName Id)
 	}
 }
 
-void FEditorBuildUtils::TriggerMinimapBuilder(UWorld* InWorld, FName Id)
+void FEditorBuildUtils::TriggerMinimapBuilder(UWorld* InWorld)
 {
 	if (InWorld->IsPartitionedWorld())
 	{
@@ -1628,6 +1712,29 @@ bool FEditorBuildUtils::EditorBuildMaterialTextureStreamingData(UPackage* Packag
 	return bAnyPackagesDirtied;
 }
 
+static bool BuildVirtualTextureComponents(IVirtualTexturingEditorModule* Module, EShadingPath ShadingPath, TArray<URuntimeVirtualTextureComponent*>& Components)
+{
+	if (Components.Num() == 0)
+	{
+		return true;
+	}
+
+	FScopedSlowTask BuildTask(static_cast<float>(Components.Num()), LOCTEXT("VirtualTextureBuild", "Building Virtual Textures"));
+	BuildTask.MakeDialog(true);
+
+	for (URuntimeVirtualTextureComponent* Component : Components)
+	{
+		BuildTask.EnterProgressFrame();
+
+		// Note that Build*() functions return true if the associated Has*() functions return false
+		if (BuildTask.ShouldCancel() || !Module->BuildStreamedMips(ShadingPath, Component))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
 bool FEditorBuildUtils::EditorBuildVirtualTexture(UWorld* InWorld)
 {
 	if (InWorld == nullptr)
@@ -1656,33 +1763,50 @@ bool FEditorBuildUtils::EditorBuildVirtualTexture(UWorld* InWorld)
 			UWorldPartitionRuntimeVirtualTextureBuilder::LoadRuntimeVirtualTextureActors(WorldPartition, ForEachActorWithLoadingResult);
 		}
 
-		TArray<URuntimeVirtualTextureComponent*> Components;
+		// We will need to build VTs for both shading paths
+		const ERHIFeatureLevel::Type CurFeatureLevel = InWorld->GetFeatureLevel();
+		const ERHIFeatureLevel::Type AltFeatureLevel = (CurFeatureLevel == ERHIFeatureLevel::ES3_1 ? GMaxRHIFeatureLevel : ERHIFeatureLevel::ES3_1);
+		const EShadingPath CurShadingPath = FSceneInterface::GetShadingPath(CurFeatureLevel);
+		const EShadingPath AltShadingPath = FSceneInterface::GetShadingPath(AltFeatureLevel);
+
+		TArray<URuntimeVirtualTextureComponent*> Components[2];
 		for (TObjectIterator<URuntimeVirtualTextureComponent> It; It; ++It)
 		{
-			if (Module->HasStreamedMips(*It))
+			if (Module->HasStreamedMips(CurShadingPath, *It))
 			{
-				Components.Add(*It);
+				Components[0].Add(*It);
+			}
+
+			if (Module->HasStreamedMips(AltShadingPath, *It))
+			{
+				Components[1].Add(*It);
 			}
 		}
-
-		if (Components.Num() == 0)
+		
+		// Build for a current feature level first
+		if (!BuildVirtualTextureComponents(Module, CurShadingPath, Components[0]))
 		{
-			return true;
+			return false;
 		}
-
-		FScopedSlowTask BuildTask(static_cast<float>(Components.Num()), LOCTEXT("VirtualTextureBuild", "Building Virtual Textures"));
-		BuildTask.MakeDialog(true);
-
-		for (URuntimeVirtualTextureComponent* Component : Components)
+		
+		// Build for others if any
+		bool bResult = true;
+		if (Components[1].Num() != 0)
 		{
-			BuildTask.EnterProgressFrame();
-
-			// Note that Build*() functions return true if the associated Has*() functions return false
-			if (BuildTask.ShouldCancel() || !Module->BuildStreamedMips(Component))
+			InWorld->ChangeFeatureLevel(AltFeatureLevel);
+			// Make sure all assets are finished compiling. Recreate render state after shader compilation complete
 			{
-				return false;
+				UMaterialInterface::SubmitRemainingJobsForWorld(InWorld);
+				FAssetCompilingManager::Get().FinishAllCompilation();
+				FAssetCompilingManager::Get().ProcessAsyncTasks();
+				FGlobalComponentRecreateRenderStateContext Context;
 			}
+			bResult = BuildVirtualTextureComponents(Module, AltShadingPath, Components[1]);
 		}
+		
+		// Restore world feature level
+		InWorld->ChangeFeatureLevel(CurFeatureLevel);
+		return bResult;
 	}
 	
 	return true;

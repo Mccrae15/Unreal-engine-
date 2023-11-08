@@ -14,7 +14,8 @@
 #include "ScopedTransaction.h"
 #include "Engine/UserDefinedStruct.h"
 #include "SPinTypeSelector.h"
-#include "PropertyBag.h"
+#include "StructUtilsMetadata.h"
+#include "Templates/ValueOrError.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PropertyBagDetails)
 
@@ -35,7 +36,7 @@ bool IsScriptStruct(const TSharedPtr<IPropertyHandle>& PropertyHandle)
 	}
 
 	FStructProperty* StructProperty = CastField<FStructProperty>(PropertyHandle->GetProperty());
-	return StructProperty && StructProperty->Struct == TBaseStructure<T>::Get();
+	return StructProperty && StructProperty->Struct->IsA(TBaseStructure<T>::Get()->GetClass());
 }
 
 /** @return true if the property is one of the known missing types. */
@@ -219,7 +220,9 @@ FEdGraphPinType GetPropertyDescAsPin(const FPropertyBagPropertyDesc& Desc)
 	PinType.PinSubCategory = NAME_None;
 
 	// Container type
-	switch (Desc.ContainerType)
+	//@todo: Handle nested containers in property selection.
+	const EPropertyBagContainerType ContainerType = Desc.ContainerTypes.GetFirstContainerType();
+	switch (ContainerType)
 	{
 	case EPropertyBagContainerType::Array:
 		PinType.ContainerType = EPinContainerType::Array;
@@ -299,14 +302,23 @@ void SetPropertyDescFromPin(FPropertyBagPropertyDesc& Desc, const FEdGraphPinTyp
 	const UPropertyBagSchema* Schema = GetDefault<UPropertyBagSchema>();
 	check(Schema);
 
-	// Container type
+	// remove any existing containers
+	Desc.ContainerTypes.Reset();
+
+	// Fill Container types, if any
 	switch (PinType.ContainerType)
 	{
 	case EPinContainerType::Array:
-		Desc.ContainerType = EPropertyBagContainerType::Array;
+		Desc.ContainerTypes.Add(EPropertyBagContainerType::Array);
+		break;
+	case EPinContainerType::Set:
+		ensureMsgf(false, TEXT("Unsuported container type [Set] "));
+		break;
+	case EPinContainerType::Map:
+		ensureMsgf(false, TEXT("Unsuported container type [Map] "));
 		break;
 	default:
-		Desc.ContainerType = EPropertyBagContainerType::None;
+		break;
 	}
 	
 	// Value type
@@ -428,26 +440,277 @@ void ApplyChangesToPropertyDescs(const FText& SessionName, const TSharedPtr<IPro
 
 bool CanHaveMemberVariableOfType(const FEdGraphPinType& PinType)
 {
-	if ((PinType.PinCategory == UEdGraphSchema_K2::PC_Struct))
-	{
-		if (const UObject* TypeObject = PinType.PinSubCategoryObject.Get())
-		{
-			if (TypeObject->IsA<UUserDefinedStruct>())
-			{
-				return false;
-			}
-		}
-	}
-	else if ((PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) 
-		|| (PinType.PinCategory == UEdGraphSchema_K2::PC_Wildcard)
-		|| (PinType.PinCategory == UEdGraphSchema_K2::PC_MCDelegate)
-		|| (PinType.PinCategory == UEdGraphSchema_K2::PC_Delegate)
-		|| (PinType.PinCategory == UEdGraphSchema_K2::PC_Interface))
+	if (PinType.PinCategory == UEdGraphSchema_K2::PC_Exec 
+		|| PinType.PinCategory == UEdGraphSchema_K2::PC_Wildcard
+		|| PinType.PinCategory == UEdGraphSchema_K2::PC_MCDelegate
+		|| PinType.PinCategory == UEdGraphSchema_K2::PC_Delegate
+		|| PinType.PinCategory == UEdGraphSchema_K2::PC_Interface)
 	{
 		return false;
 	}
 	
 	return true;
+}
+
+bool FindUserFunction(TSharedPtr<IPropertyHandle> InStructProperty, FName InFuncMetadataName, UFunction*& OutFunc, UObject*& OutTarget)
+{
+	FProperty* MetadataProperty = InStructProperty->GetMetaDataProperty();
+
+	OutFunc = nullptr;
+	OutTarget = nullptr;
+
+	if (!MetadataProperty || !MetadataProperty->HasMetaData(InFuncMetadataName))
+	{
+		return false;
+	}
+
+	FString FunctionName = MetadataProperty->GetMetaData(InFuncMetadataName);
+	if (FunctionName.IsEmpty())
+	{
+		return false;
+	}
+
+	TArray<UObject*> OutObjects;
+	InStructProperty->GetOuterObjects(OutObjects);
+
+	// Check for external function references, taken from GetOptions
+	if (FunctionName.Contains(TEXT(".")))
+	{
+		OutFunc = FindObject<UFunction>(nullptr, *FunctionName, true);
+
+		if (ensureMsgf(OutFunc && OutFunc->HasAnyFunctionFlags(EFunctionFlags::FUNC_Static), TEXT("[%s] Didn't find function %s or expected it to be static"), *InFuncMetadataName.ToString(), *FunctionName))
+		{
+			UObject* GetOptionsCDO = OutFunc->GetOuterUClass()->GetDefaultObject();
+			OutTarget = GetOptionsCDO;
+		}
+	}
+	else if (OutObjects.Num() > 0)
+	{
+		OutTarget = OutObjects[0];
+		OutFunc = OutTarget->GetClass() ? OutTarget->GetClass()->FindFunctionByName(*FunctionName) : nullptr;
+	}
+
+	// Only support native functions
+	if (!ensureMsgf(OutFunc && OutFunc->IsNative(), TEXT("[%s] Didn't find function %s or expected it to be native"), *InFuncMetadataName.ToString(), *FunctionName))
+	{
+		OutFunc = nullptr;
+		OutTarget = nullptr;
+	}
+
+	return OutTarget != nullptr && OutFunc != nullptr;
+}
+
+// UFunction calling helpers. 
+// Use our "own" hardcoded reflection system for types used in UFunctions calls in this file.
+template<typename T> struct TypeName { static const TCHAR* Get() = delete; };
+
+#define DEFINE_TYPENAME(InType) template<> struct TypeName<InType> { static const TCHAR *Get() { return TEXT(#InType); }};
+DEFINE_TYPENAME(bool)
+DEFINE_TYPENAME(FGuid)
+DEFINE_TYPENAME(FName)
+DEFINE_TYPENAME(FEdGraphPinType)
+#undef DEFINE_TYPENAME
+
+// Wrapper around a param that store an address (const_cast for const ptr, be careful of that)
+// a string identifiying the underlying cpp type and if the input value is const, mark it const.
+struct FFuncParam
+{
+	void* Value = nullptr;
+	const TCHAR* CppType;
+	bool bIsConst = false;
+
+	template<typename T>
+	static FFuncParam Make(T& Value)
+	{
+		FFuncParam Result;
+		Result.Value = &Value;
+		Result.CppType = TypeName<T>::Get();
+		return Result;
+	}
+
+	template<typename T>
+	static FFuncParam Make(const T& Value)
+	{
+		FFuncParam Result;
+		Result.Value = &const_cast<T&>(Value);
+		Result.CppType = TypeName<T>::Get();
+		Result.bIsConst = true;
+		return Result;
+	}
+};
+
+// Validate that the function pass as parameter has signature ReturnType(ArgsTypes...)
+template <typename ReturnType, typename... ArgsTypes>
+bool ValidateFunctionSignature(UFunction* InFunc)
+{
+	if (!InFunc)
+	{
+		return false;
+	}
+
+	constexpr int32 NumParms = std::is_same_v <ReturnType, void> ? sizeof...(ArgsTypes) : (sizeof...(ArgsTypes) + 1);
+
+	if (NumParms != InFunc->NumParms)
+	{
+		return false;
+	}
+
+	const TCHAR* ArgsCppTypes[NumParms] = { TypeName<ArgsTypes>::Get() ... };
+	
+	// If we have a return type, put it at the end. UFunction will have the return type after InArgs in the field iterator.
+	if constexpr (!std::is_same_v<ReturnType, void>)
+	{
+		ArgsCppTypes[NumParms - 1] = TypeName<ReturnType>::Get();
+	}
+	else
+	{
+		// Otherwise, check that the function doesn't have a return param
+		if (InFunc->GetReturnProperty() != nullptr)
+		{
+			return false;
+		}
+	}
+
+	int32 ArgCppTypesIndex = 0;
+	for (TFieldIterator<FProperty> It(InFunc); It && It->HasAnyPropertyFlags(EPropertyFlags::CPF_Parm); ++It)
+	{
+		const FString PropertyCppType = It->GetCPPType();
+		if (PropertyCppType != ArgsCppTypes[ArgCppTypesIndex])
+		{
+			return false;
+		}
+
+		// Also making sure that the last param is a return param, if we have a return value
+		if constexpr (!std::is_same_v<ReturnType, void>)
+		{
+			if (ArgCppTypesIndex == NumParms - 1 && !It->HasAnyPropertyFlags(EPropertyFlags::CPF_ReturnParm))
+			{
+				return false;
+			}
+		}
+
+		ArgCppTypesIndex++;
+	}
+
+	return true;
+}
+
+template <typename ReturnType, typename... ArgsTypes>
+TValueOrError<ReturnType, void> CallFunc(UObject* InTargetObject, UFunction* InFunc, ArgsTypes&& ...InArgs)
+{
+	if (!InTargetObject || !InFunc)
+	{
+		return MakeError();
+	}
+
+	constexpr int32 NumParms = std::is_same_v <ReturnType, void> ? sizeof...(ArgsTypes) : (sizeof...(ArgsTypes) + 1);
+
+	if (NumParms != InFunc->NumParms)
+	{
+		return MakeError();
+	}
+
+	FFuncParam InParams[NumParms] = { FFuncParam::Make(std::forward<ArgsTypes>(InArgs)) ... };
+
+	auto Invoke = [InTargetObject, InFunc, &InParams, NumParms](ReturnType* OutResult) -> bool
+	{
+		// Validate that the function has a return property if the return type is not void.
+		if (std::is_same_v<ReturnType, void> != (InFunc->GetReturnProperty() == nullptr))
+		{
+			return false;
+		}
+
+		// Allocating our "stack" for the function call on the stack (will be freed when this function is exited)
+		uint8* StackMemory = (uint8*)FMemory_Alloca(InFunc->ParmsSize);
+		FMemory::Memzero(StackMemory, InFunc->ParmsSize);
+
+		if constexpr (!std::is_same_v<ReturnType, void>)
+		{
+			check(OutResult != nullptr);
+			InParams[NumParms - 1] = FFuncParam::Make(*OutResult);
+		}
+
+		bool bValid = true;
+		int32 ParamIndex = 0;
+
+		// Initializing our "stack" with our parameters. Use the property system to make sure more complex types
+		// are constructed before being set.
+		for (TFieldIterator<FProperty> It(InFunc); It && It->HasAnyPropertyFlags(CPF_Parm); ++It)
+		{
+			FProperty* LocalProp = *It;
+			if (!LocalProp->HasAnyPropertyFlags(CPF_ZeroConstructor))
+			{
+				LocalProp->InitializeValue_InContainer(StackMemory);
+			}
+
+			if (bValid)
+			{
+				if (ParamIndex >= NumParms)
+				{
+					bValid = false;
+					continue;
+				}
+
+				FFuncParam& Param = InParams[ParamIndex++];
+
+				if (LocalProp->GetCPPType() != Param.CppType)
+				{
+					bValid = false;
+					continue;
+				}
+
+				LocalProp->SetValue_InContainer(StackMemory, Param.Value);
+			}
+		}
+
+		if (bValid)
+		{
+			FFrame Stack(InTargetObject, InFunc, StackMemory, nullptr, InFunc->ChildProperties);
+			InFunc->Invoke(InTargetObject, Stack, OutResult);
+		}
+
+		ParamIndex = 0;
+		// Copy back all non-const out params (that is not the return param, this one is already set by the invoke call)
+		// from the stack, also making sure that the constructed types are destroyed accordingly.
+		for (TFieldIterator<FProperty> It(InFunc); It && It->HasAnyPropertyFlags(CPF_Parm); ++It)
+		{
+			FProperty* LocalProp = *It;
+			FFuncParam& Param = InParams[ParamIndex++];
+
+			if (LocalProp->HasAnyPropertyFlags(CPF_OutParm) && !LocalProp->HasAnyPropertyFlags(CPF_ReturnParm) && !Param.bIsConst)
+			{
+				LocalProp->GetValue_InContainer(StackMemory, Param.Value);
+			}
+
+			LocalProp->DestroyValue_InContainer(StackMemory);
+		}
+
+		return bValid;
+	};
+
+	if constexpr (std::is_same_v<ReturnType, void>)
+	{
+		if (Invoke(nullptr))
+		{
+			return MakeValue();
+		}
+		else
+		{
+			return MakeError();
+		}
+	}
+	else
+	{
+		ReturnType OutResult{};
+		if (Invoke(&OutResult))
+		{
+			return MakeValue(std::move(OutResult));
+		}
+		else
+		{
+			return MakeError();
+		}
+	}
 }
 
 } // UE::StructUtils::Private
@@ -459,11 +722,12 @@ bool CanHaveMemberVariableOfType(const FEdGraphPinType& PinType)
 //  - ChildPropertyHandle a child property of the FInstancedPropertyBag::Value (FInstancedStruct)  
 //----------------------------------------------------------------//
 
-FPropertyBagInstanceDataDetails::FPropertyBagInstanceDataDetails(TSharedPtr<IPropertyHandle> InStructProperty, const TSharedPtr<IPropertyUtilities>& InPropUtils, const bool bInFixedLayout)
+FPropertyBagInstanceDataDetails::FPropertyBagInstanceDataDetails(TSharedPtr<IPropertyHandle> InStructProperty, const TSharedPtr<IPropertyUtilities>& InPropUtils, const bool bInFixedLayout, const bool bInAllowArrays)
 	: FInstancedStructDataDetails(InStructProperty.IsValid() ? InStructProperty->GetChildHandle(TEXT("Value")) : nullptr)
 	, BagStructProperty(InStructProperty)
 	, PropUtils(InPropUtils)
 	, bFixedLayout(bInFixedLayout)
+	, bAllowArrays(bInAllowArrays)
 {
 	ensure(UE::StructUtils::Private::IsScriptStruct<FInstancedPropertyBag>(BagStructProperty));
 	ensure(PropUtils != nullptr);
@@ -478,6 +742,19 @@ void FPropertyBagInstanceDataDetails::OnChildRowAdded(IDetailPropertyRow& ChildR
 
 	TSharedPtr<IPropertyHandle> ChildPropertyHandle = ChildRow.GetPropertyHandle();
 	
+	bool bSupportedType = true;
+
+	TArray<FPropertyBagPropertyDesc> PropertyDescs = UE::StructUtils::Private::GetCommonPropertyDescs(BagStructProperty);
+	const FProperty* Property = ChildPropertyHandle->GetProperty();
+	if (FPropertyBagPropertyDesc* Desc = PropertyDescs.FindByPredicate([Property](const FPropertyBagPropertyDesc& Desc){ return Desc.CachedProperty == Property; }))
+	{
+		if (Desc->ContainerTypes.Num() > 1)
+		{
+			bSupportedType = false;
+			ChildRow.IsEnabled(false);
+		}
+	}
+
 	if (!bFixedLayout)
 	{
 		// Inline editable name
@@ -552,10 +829,15 @@ void FPropertyBagInstanceDataDetails::OnChildRowAdded(IDetailPropertyRow& ChildR
 				.HeightOverride(12)
 				[
 					SNew(SImage)
-					.ToolTipText(LOCTEXT("MissingType", "The property is missing type. The Struct, Enum, or Object may have been removed."))
-					.Visibility_Lambda([ChildPropertyHandle]()
+					.ToolTipText_Lambda([ChildPropertyHandle, bSupportedType]()
 					{
-						return UE::StructUtils::Private::HasMissingType(ChildPropertyHandle) ? EVisibility::Visible : EVisibility::Collapsed;
+						return !bSupportedType
+							? LOCTEXT("UnsupportedType", "This property type is not supported in the property bag UI.")
+							: LOCTEXT("MissingType", "The property is missing type. The Struct, Enum, or Object may have been removed.");
+					})
+					.Visibility_Lambda([ChildPropertyHandle, bSupportedType]()
+					{
+						return UE::StructUtils::Private::HasMissingType(ChildPropertyHandle) || !bSupportedType ? EVisibility::Visible : EVisibility::Collapsed;
 					})
 					.Image(FAppStyle::GetBrush("Icons.Error"))
 				]
@@ -578,17 +860,51 @@ TSharedRef<SWidget> FPropertyBagInstanceDataDetails::OnPropertyNameContent(TShar
 	constexpr bool bInShouldCloseWindowAfterMenuSelection = true;
 	FMenuBuilder MenuBuilder(bInShouldCloseWindowAfterMenuSelection, nullptr);
 
-	auto GetFilteredVariableTypeTree = [](TArray<TSharedPtr<UEdGraphSchema_K2::FPinTypeTreeInfo>>& TypeTree, ETypeTreeFilter TypeTreeFilter)
+	auto GetFilteredVariableTypeTree = [BagStructProperty = BagStructProperty](TArray<TSharedPtr<UEdGraphSchema_K2::FPinTypeTreeInfo>>& TypeTree, ETypeTreeFilter TypeTreeFilter)
 	{
-		check(GetDefault<UEdGraphSchema_K2>());
-		GetDefault<UPropertyBagSchema>()->GetVariableTypeTree(TypeTree, TypeTreeFilter);
+		// The SPinTypeSelector popup might outlive this details view, so bag struct property can be invalid here.
+    	if (!BagStructProperty || !BagStructProperty->IsValidHandle())
+    	{
+    		return;
+    	}
 
-		// Filter
-		for (TSharedPtr<UEdGraphSchema_K2::FPinTypeTreeInfo>& PinType : TypeTree)
+		UFunction* IsPinTypeAcceptedFunc = nullptr;
+		UObject* IsPinTypeAcceptedTarget = nullptr;
+		if (UE::StructUtils::Private::FindUserFunction(BagStructProperty, UE::StructUtils::Metadata::IsPinTypeAcceptedName, IsPinTypeAcceptedFunc, IsPinTypeAcceptedTarget))
 		{
-			if (!PinType.IsValid())
+			check(IsPinTypeAcceptedFunc && IsPinTypeAcceptedTarget);
+
+			// We need to make sure the signature matches perfectly: bool(FEdGraphPinType)
+			bool bFuncIsValid = UE::StructUtils::Private::ValidateFunctionSignature<bool, FEdGraphPinType>(IsPinTypeAcceptedFunc);
+			if (!ensureMsgf(bFuncIsValid, TEXT("[%s] Function %s does not have the right signature."), *UE::StructUtils::Metadata::IsPinTypeAcceptedName.ToString(), *IsPinTypeAcceptedFunc->GetName()))
 			{
 				return;
+			}
+		}
+
+		auto IsPinTypeAccepted = [IsPinTypeAcceptedFunc, IsPinTypeAcceptedTarget](const FEdGraphPinType& InPinType) -> bool
+		{
+			if (IsPinTypeAcceptedFunc && IsPinTypeAcceptedTarget)
+			{
+				const TValueOrError<bool, void> bIsValid = UE::StructUtils::Private::CallFunc<bool>(IsPinTypeAcceptedTarget, IsPinTypeAcceptedFunc, InPinType);
+				return bIsValid.HasValue() && bIsValid.GetValue();
+			}
+			else
+			{
+				return true;
+			}
+		};
+
+		check(GetDefault<UEdGraphSchema_K2>());
+		TArray<TSharedPtr<UEdGraphSchema_K2::FPinTypeTreeInfo>> TempTypeTree;
+		GetDefault<UPropertyBagSchema>()->GetVariableTypeTree(TempTypeTree, TypeTreeFilter);
+
+		// Filter
+		for (TSharedPtr<UEdGraphSchema_K2::FPinTypeTreeInfo>& PinType : TempTypeTree)
+		{
+			if (!PinType.IsValid() || !IsPinTypeAccepted(PinType->GetPinType(/*bForceLoadSubCategoryObject*/false)))
+			{
+				continue;
 			}
 
 			for (int32 ChildIndex = 0; ChildIndex < PinType->Children.Num(); )
@@ -596,7 +912,9 @@ TSharedRef<SWidget> FPropertyBagInstanceDataDetails::OnPropertyNameContent(TShar
 				TSharedPtr<UEdGraphSchema_K2::FPinTypeTreeInfo> Child = PinType->Children[ChildIndex];
 				if (Child.IsValid())
 				{
-					if (!UE::StructUtils::Private::CanHaveMemberVariableOfType(Child->GetPinType(/*bForceLoadSubCategoryObject*/false)))
+					const FEdGraphPinType& ChildPinType = Child->GetPinType(/*bForceLoadSubCategoryObject*/false);
+
+					if (!UE::StructUtils::Private::CanHaveMemberVariableOfType(ChildPinType) || !IsPinTypeAccepted(ChildPinType))
 					{
 						PinType->Children.RemoveAt(ChildIndex);
 						continue;
@@ -604,7 +922,9 @@ TSharedRef<SWidget> FPropertyBagInstanceDataDetails::OnPropertyNameContent(TShar
 				}
 				++ChildIndex;
 			}
-		}			
+
+			TypeTree.Add(PinType);
+		}
 	};
 
 	auto GetPinInfo = [BagStructProperty = BagStructProperty, ChildPropertyHandle]()
@@ -654,6 +974,38 @@ TSharedRef<SWidget> FPropertyBagInstanceDataDetails::OnPropertyNameContent(TShar
 			return;
 		}
 
+		// Extra check provided by the user to cancel a remove action. Useful to provide the user a possibility to cancel the action if
+		// the given property is in use elsewhere.
+		UFunction* CanRemovePropertyFunc = nullptr;
+		UObject* CanRemovePropertyTarget = nullptr;
+		if (UE::StructUtils::Private::FindUserFunction(BagStructProperty, UE::StructUtils::Metadata::CanRemovePropertyName, CanRemovePropertyFunc, CanRemovePropertyTarget))
+		{
+			check(CanRemovePropertyFunc && CanRemovePropertyTarget);
+
+			FName PropertyName = ChildPropertyHandle->GetProperty()->GetFName();
+			const UPropertyBag* PropertyBag = UE::StructUtils::Private::GetCommonBagStruct(BagStructProperty);
+			const FPropertyBagPropertyDesc* PropertyDesc = PropertyBag ? PropertyBag->FindPropertyDescByName(PropertyName) : nullptr;
+
+			if (!PropertyDesc)
+			{
+				return;
+			}
+
+			// We need to make sure the signature matches perfectly: bool(FGuid, FName)s
+			bool bFuncIsValid = UE::StructUtils::Private::ValidateFunctionSignature<bool, FGuid, FName>(CanRemovePropertyFunc);
+			if(!ensureMsgf(bFuncIsValid, TEXT("[%s] Function %s does not have the right signature."), *UE::StructUtils::Metadata::CanRemovePropertyName.ToString(), *CanRemovePropertyFunc->GetName()))
+			{
+				return;
+			}
+
+			const TValueOrError<bool, void> bCanRemove = UE::StructUtils::Private::CallFunc<bool>(CanRemovePropertyTarget, CanRemovePropertyFunc, PropertyDesc->ID, PropertyDesc->Name);
+
+			if (bCanRemove.HasError() || !bCanRemove.GetValue())
+			{
+				return;
+			}
+		}
+
 		UE::StructUtils::Private::ApplyChangesToPropertyDescs(
 			LOCTEXT("OnPropertyRemoved", "Remove Property"), BagStructProperty, PropUtils,
 			[&ChildPropertyHandle](TArray<FPropertyBagPropertyDesc>& PropertyDescs)
@@ -698,7 +1050,7 @@ TSharedRef<SWidget> FPropertyBagInstanceDataDetails::OnPropertyNameContent(TShar
 				.TargetPinType_Lambda(GetPinInfo)
 				.OnPinTypeChanged_Lambda(PinInfoChanged)
 				.Schema(GetDefault<UPropertyBagSchema>())
-				.bAllowArrays(true)
+				.bAllowArrays(bAllowArrays)
 				.TypeTreeFilter(ETypeTreeFilter::None)
 				.Font( IDetailLayoutBuilder::GetDetailFont() )
 		],
@@ -754,16 +1106,39 @@ void FPropertyBagDetails::CustomizeHeader(TSharedRef<IPropertyHandle> StructProp
 	StructProperty = StructPropertyHandle;
 	check(StructProperty);
 	
-	static const FName NAME_FixedLayout = "FixedLayout";
+	static const FName NAME_ShowOnlyInnerProperties = "ShowOnlyInnerProperties";
+	
 	if (const FProperty* MetaDataProperty = StructProperty->GetMetaDataProperty())
 	{
-		bFixedLayout = MetaDataProperty->HasMetaData(NAME_FixedLayout);
+		bFixedLayout = MetaDataProperty->HasMetaData(UE::StructUtils::Metadata::FixedLayoutName);
+
+		bAllowArrays = MetaDataProperty->HasMetaData(UE::StructUtils::Metadata::AllowArraysName)
+			? MetaDataProperty->GetBoolMetaData(UE::StructUtils::Metadata::AllowArraysName)
+			: true;
+
+		// Don't show the header if ShowOnlyInnerProperties is set
+		if (MetaDataProperty->HasMetaData(NAME_ShowOnlyInnerProperties))
+		{
+			return;
+		}
+
+		if (MetaDataProperty->HasMetaData(UE::StructUtils::Metadata::DefaultTypeName))
+		{
+			if (UEnum* Enum = StaticEnum<EPropertyBagPropertyType>())
+			{
+				int32 EnumIndex = Enum->GetIndexByNameString(MetaDataProperty->GetMetaData(UE::StructUtils::Metadata::DefaultTypeName));
+				if (EnumIndex != INDEX_NONE)
+				{
+					DefaultType = EPropertyBagPropertyType(Enum->GetValueByIndex(EnumIndex));
+				}
+			}
+		}
 	}
 
 	TSharedPtr<SWidget> ValueWidget = SNullWidget::NullWidget;
 	if (!bFixedLayout)
 	{
-		ValueWidget = MakeAddPropertyWidget(StructProperty, PropUtils);
+		ValueWidget = MakeAddPropertyWidget(StructProperty, PropUtils, DefaultType);
 	}
 	
 	HeaderRow
@@ -782,11 +1157,11 @@ void FPropertyBagDetails::CustomizeHeader(TSharedRef<IPropertyHandle> StructProp
 void FPropertyBagDetails::CustomizeChildren(TSharedRef<IPropertyHandle> StructPropertyHandle, IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils)
 {
 	// Show the Value (FInstancedStruct) as child rows.
-	const TSharedRef<FPropertyBagInstanceDataDetails> InstanceDetails = MakeShareable(new FPropertyBagInstanceDataDetails(StructProperty, PropUtils, bFixedLayout));
+	const TSharedRef<FPropertyBagInstanceDataDetails> InstanceDetails = MakeShareable(new FPropertyBagInstanceDataDetails(StructProperty, PropUtils, bFixedLayout, bAllowArrays));
 	StructBuilder.AddCustomBuilder(InstanceDetails);
 }
 
-TSharedPtr<SWidget> FPropertyBagDetails::MakeAddPropertyWidget(TSharedPtr<IPropertyHandle> InStructProperty, TSharedPtr<IPropertyUtilities> InPropUtils)
+TSharedPtr<SWidget> FPropertyBagDetails::MakeAddPropertyWidget(TSharedPtr<IPropertyHandle> InStructProperty, TSharedPtr<IPropertyUtilities> InPropUtils, EPropertyBagPropertyType DefaultType)
 {
 	return SNew(SHorizontalBox)
 		+SHorizontalBox::Slot()
@@ -797,7 +1172,7 @@ TSharedPtr<SWidget> FPropertyBagDetails::MakeAddPropertyWidget(TSharedPtr<IPrope
 			.HAlign(HAlign_Center)
 			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
 			.ToolTipText(LOCTEXT("AddProperty_Tooltip", "Add new property"))
-			.OnClicked_Lambda([StructProperty = InStructProperty, PropUtils = InPropUtils]()
+			.OnClicked_Lambda([StructProperty = InStructProperty, PropUtils = InPropUtils, DefaultType]()
 			{
 				constexpr int32 MaxIterations = 100;
 				FName NewName(TEXT("NewProperty"));
@@ -814,9 +1189,9 @@ TSharedPtr<SWidget> FPropertyBagDetails::MakeAddPropertyWidget(TSharedPtr<IPrope
 
 				UE::StructUtils::Private::ApplyChangesToPropertyDescs(
 					LOCTEXT("OnPropertyAdded", "Add Property"), StructProperty, PropUtils,
-					[&NewName](TArray<FPropertyBagPropertyDesc>& PropertyDescs)
+					[&NewName, DefaultType](TArray<FPropertyBagPropertyDesc>& PropertyDescs)
 					{
-						PropertyDescs.Emplace(NewName, EPropertyBagPropertyType::Bool);
+						PropertyDescs.Emplace(NewName, DefaultType);
 					});
 					
 				return FReply::Handled();
@@ -840,6 +1215,4 @@ bool UPropertyBagSchema::SupportsPinTypeContainer(TWeakPtr<const FEdGraphSchemaA
 	return ContainerType == EPinContainerType::None || ContainerType == EPinContainerType::Array;
 }
 
-
 #undef LOCTEXT_NAMESPACE
-

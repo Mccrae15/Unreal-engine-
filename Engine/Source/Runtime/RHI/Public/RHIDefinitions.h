@@ -8,7 +8,8 @@
 #pragma once
 
 #include "GpuProfilerTrace.h" // TODO Move defines into RHIDefinitions
-#include "Serialization/MemoryLayout.h"
+#include "Math/NumericLimits.h"
+#include "Misc/EnumClassFlags.h"
 #include "ProfilingDebugging/CsvProfilerConfig.h" // TODO Move defines into RHIDefinitions
 
 #ifndef USE_STATIC_SHADER_PLATFORM_ENUMS
@@ -400,7 +401,6 @@ enum EVertexElementType
 	VET_NumBits = 5,
 };
 static_assert(VET_MAX <= (1 << VET_NumBits), "VET_MAX will not fit on VET_NumBits");
-DECLARE_INTRINSIC_TYPE_LAYOUT(EVertexElementType);
 
 enum ECubeFace : uint32
 {
@@ -519,7 +519,6 @@ enum EUniformBufferBaseType : uint8
 	EUniformBufferBaseType_NumBits = 5,
 };
 static_assert(EUniformBufferBaseType_Num <= (1 << EUniformBufferBaseType_NumBits), "EUniformBufferBaseType_Num will not fit on EUniformBufferBaseType_NumBits");
-DECLARE_INTRINSIC_TYPE_LAYOUT(EUniformBufferBaseType);
 
 /** The list of flags declaring which binding models are allowed for a uniform buffer layout. */
 enum class EUniformBufferBindingFlags : uint8
@@ -538,7 +537,6 @@ enum class EUniformBufferBindingFlags : uint8
 	StaticAndShader = Static | Shader
 };
 ENUM_CLASS_FLAGS(EUniformBufferBindingFlags);
-DECLARE_INTRINSIC_TYPE_LAYOUT(EUniformBufferBindingFlags);
 
 /** Numerical type used to store the static slot indices. */
 using FUniformBufferStaticSlot = uint8;
@@ -730,7 +728,7 @@ enum class EBufferUsageFlags : uint32
 	SourceCopy              = 1 << 5,
 
 	/** Create a buffer that can be bound as a stream output target. */
-	StreamOutput            = 1 << 6,
+	StreamOutput            UE_DEPRECATED(5.3, "StreamOut is not supported") = 1 << 6,
 
 	/** Create a buffer which contains the arguments used by DispatchIndirect or DrawIndirect. */
 	DrawIndirect            = 1 << 7,
@@ -776,6 +774,9 @@ enum class EBufferUsageFlags : uint32
 	**/
 	RayTracingScratch = (1 << 19) | UnorderedAccess,
 
+	/** The buffer is a placeholder for streaming, and does not contain an underlying GPU resource. */
+	NullResource = 1 << 20,
+
 	// Helper bit-masks
 	AnyDynamic = (Dynamic | Volatile),
 };
@@ -803,10 +804,11 @@ ENUM_CLASS_FLAGS(EBufferUsageFlags);
 #define BUF_AnyDynamic             EBufferUsageFlags::AnyDynamic
 #define BUF_MultiGPUAllocate       EBufferUsageFlags::MultiGPUAllocate
 #define BUF_MultiGPUGraphIgnore    EBufferUsageFlags::MultiGPUGraphIgnore
+#define BUF_NullResource           EBufferUsageFlags::NullResource
 
-enum class EGpuVendorId
+enum class EGpuVendorId : uint32
 {
-	Unknown		= -1,
+	Unknown		= 0xffffffff,
 	NotQueried	= 0,
 
 	Amd			= 0x1002,
@@ -819,6 +821,8 @@ enum class EGpuVendorId
 	Apple		= 0x106B,
 	Vivante		= 0x7a05,
 	VeriSilicon	= 0x1EB1,
+	SamsungAMD  = 0x144D,
+	Microsoft   = 0x1414,
 
 	Kazan		= 0x10003,	// VkVendorId
 	Codeplay	= 0x10004,	// VkVendorId
@@ -964,6 +968,13 @@ enum class ETextureCreateFlags : uint64
 	External                		  = 1ull << 34,
 	/** Don't automatically transfer across GPUs in multi-GPU scenarios.  For example, if you are transferring it yourself manually. */
 	MultiGPUGraphIgnore				  = 1ull << 35,
+	/** EXPERIMENTAL: Allow the texture to be created as a reserved (AKA tiled/sparse/virtual) resource internally, without physical memory backing. */
+	ReservedResource                  = 1ull << 37,
+	/** EXPERIMENTAL: Used with ReservedResource flag to immediately allocate and commit memory on creation. May use N small physical memory allocations instead of a single large one. */
+	ImmediateCommit                   = 1ull << 38,
+
+	/** Don't lump this texture with streaming memory when tracking total texture allocation sizes */
+	ForceIntoNonStreamingMemoryTracking = 1ull << 39,
 };
 ENUM_CLASS_FLAGS(ETextureCreateFlags);
 
@@ -1004,6 +1015,8 @@ ENUM_CLASS_FLAGS(ETextureCreateFlags);
 #define TexCreate_AtomicCompatible               ETextureCreateFlags::AtomicCompatible
 #define TexCreate_External               		 ETextureCreateFlags::External
 #define TexCreate_MultiGPUGraphIgnore            ETextureCreateFlags::MultiGPUGraphIgnore
+#define TexCreate_ReservedResource               ETextureCreateFlags::ReservedResource
+#define TexCreate_ImmediateCommit                ETextureCreateFlags::ImmediateCommit
 
 enum EAsyncComputePriority
 {
@@ -1125,14 +1138,12 @@ struct FRHIDescriptorHandle
 	inline ERHIDescriptorHeapType GetType() const { return (ERHIDescriptorHeapType)Type; }
 	inline uint8                  GetRawType() const { return Type; }
 
-	inline bool IsValid() const { return Index != UINT_MAX && Type != (uint8)ERHIDescriptorHeapType::Invalid; }
+	inline bool IsValid() const { return Index != MAX_uint32 && Type != (uint8)ERHIDescriptorHeapType::Invalid; }
 
 private:
-	uint32    Index{ UINT_MAX };
+	uint32    Index{ MAX_uint32 };
 	uint8     Type{ (uint8)ERHIDescriptorHeapType::Invalid };
 };
-
-using FDisplayInformationArray = TArray<struct FDisplayInformation>;
 
 enum class ERHIBindlessConfiguration
 {
@@ -1278,6 +1289,8 @@ inline EGpuVendorId RHIConvertToGpuVendorId(uint32 VendorId)
 	case EGpuVendorId::Broadcom:
 	case EGpuVendorId::Qualcomm:
 	case EGpuVendorId::Intel:
+	case EGpuVendorId::SamsungAMD:
+	case EGpuVendorId::Microsoft:
 		return (EGpuVendorId)VendorId;
 
 	default:
@@ -1320,7 +1333,6 @@ inline ERHIResourceType GetRHIResourceType(ETextureDimension Dimension)
 	case ETextureDimension::TextureCubeArray:
 		return ERHIResourceType::RRT_TextureCube;
 	}
-	checkNoEntry();
 	return ERHIResourceType::RRT_None;
 }
 
@@ -1338,6 +1350,12 @@ struct FScreenResolutionRHI
 	uint32	RefreshRate;
 };
 
+struct FShaderCodeValidationStride
+{
+	uint16 BindPoint;
+	uint16 Stride;
+};
+
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "CoreMinimal.h"
 #include "DataDrivenShaderPlatformInfo.h"
@@ -1347,4 +1365,8 @@ struct FScreenResolutionRHI
 #include "RHIImmutableSamplerState.h"
 #include "RHIShaderPlatform.h"
 #include "RHIStrings.h"
+#endif
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_3
+#include "Serialization/MemoryLayout.h"
 #endif

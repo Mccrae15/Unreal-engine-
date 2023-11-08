@@ -17,6 +17,7 @@
 #include "RetargetEditor/IKRetargetDefaultMode.h"
 #include "RetargetEditor/IKRetargetEditPoseMode.h"
 #include "RetargetEditor/IKRetargetEditor.h"
+#include "RetargetEditor/IKRetargetEditorStyle.h"
 #include "RetargetEditor/IKRetargetHitProxies.h"
 #include "RetargetEditor/SIKRetargetChainMapList.h"
 #include "RetargetEditor/SIKRetargetHierarchy.h"
@@ -41,7 +42,11 @@ FBoundIKRig::FBoundIKRig(UIKRigDefinition* InIKRig, const FIKRetargetEditorContr
 
 void FBoundIKRig::UnBind() const
 {
-	check(IKRig);
+	if (!IsValid(IKRig))
+	{
+		return;
+	}
+	
 	UIKRigController* IKRigController = UIKRigController::GetController(IKRig);
 	IKRigController->OnIKRigNeedsInitialized().Remove(ReInitIKDelegateHandle);
 	IKRigController->OnRetargetChainAdded().Remove(AddedChainDelegateHandle);
@@ -76,14 +81,15 @@ void FRetargetPlaybackManager::PlayAnimationAsset(UAnimationAsset* AssetToPlay)
 	}
 }
 
-void FRetargetPlaybackManager::StopPlayback() const
+void FRetargetPlaybackManager::StopPlayback()
 {
 	UIKRetargetAnimInstance* AnimInstance = EditorController.Pin()->SourceAnimInstance.Get();
 	if (!AnimInstance)
 	{
 		return;
 	}
-	
+
+	AnimThatWasPlaying = AnimInstance->GetAnimationAsset();
 	AnimInstance->SetPlaying(false);
 	AnimInstance->SetAnimationAsset(nullptr);
 }
@@ -96,15 +102,13 @@ void FRetargetPlaybackManager::PausePlayback()
 		return;
 	}
 	
-	AnimThatWasPlaying = AnimInstance->GetAnimationAsset();
-	
 	if (AnimThatWasPlaying)
 	{
 		TimeWhenPaused = AnimInstance->GetCurrentTime();
 	}
-	
+
+	AnimThatWasPlaying = AnimInstance->GetAnimationAsset();
 	AnimInstance->SetPlaying(false);
-	AnimInstance->SetAnimationAsset(nullptr);
 }
 
 void FRetargetPlaybackManager::ResumePlayback() const
@@ -168,6 +172,7 @@ void FIKRetargetEditorController::Close()
 {
 	AssetController->OnRetargeterNeedsInitialized().Remove(RetargeterReInitDelegateHandle);
 	AssetController->OnIKRigReplaced().Remove(IKRigReplacedDelegateHandle);
+	AssetController->OnPreviewMeshReplaced().Remove(PreviewMeshReplacedDelegateHandle);
 
 	for (const FBoundIKRig& BoundIKRig : BoundIKRigs)
 	{
@@ -263,13 +268,7 @@ void FIKRetargetEditorController::BindToIKRigAssets()
 void FIKRetargetEditorController::HandleIKRigNeedsInitialized(UIKRigDefinition* ModifiedIKRig) const
 {
 	UIKRetargeter* Retargeter = AssetController->GetAsset();
-	check(ModifiedIKRig && Retargeter)
-	 
-	const bool bIsSource = ModifiedIKRig == Retargeter->GetSourceIKRig();
-	const bool bIsTarget = ModifiedIKRig == Retargeter->GetTargetIKRig();
-	check(bIsSource || bIsTarget);
-
-	// the target anim instance has the RetargetPoseFromMesh node which needs reinitialized with new asset version
+	check(Retargeter)
 	HandleRetargeterNeedsInitialized();
 }
 
@@ -600,13 +599,17 @@ FTransform FIKRetargetEditorController::GetGlobalRetargetPoseOfBone(
 	const float& Scale,
 	const FVector& Offset) const
 {
-	if (BoneIndex == INDEX_NONE)
+	const UIKRetargetAnimInstance* AnimInstance = GetAnimInstance(SourceOrTarget);
+	if (!AnimInstance)
 	{
 		return FTransform::Identity;
 	}
 	
-	const UIKRetargetAnimInstance* AnimInstance = GetAnimInstance(SourceOrTarget);
 	const TArray<FTransform>& GlobalRetargetPose = AnimInstance->GetGlobalRetargetPose();
+	if (!GlobalRetargetPose.IsValidIndex(BoneIndex))
+	{
+		return FTransform::Identity;
+	}
 	
 	// get transform of bone
 	FTransform BoneTransform = GlobalRetargetPose[BoneIndex];
@@ -677,6 +680,30 @@ void FIKRetargetEditorController::ClearOutputLog() const
 			Processor->Log.Clear();
 		}
 	}
+}
+
+bool FIKRetargetEditorController::IsObjectInDetailsView(const UObject* Object)
+{
+	if (!DetailsView.IsValid())
+	{
+		return false;
+	}
+
+	if (!Object)
+	{
+		return false;
+	}
+	
+	TArray<TWeakObjectPtr<UObject>> SelectedObjects = DetailsView->GetSelectedObjects();
+	for (TWeakObjectPtr<UObject> SelectedObject : SelectedObjects)
+	{
+		if (SelectedObject.Get() == Object)
+		{
+			return true;
+		}
+	}
+
+	return false;
 }
 
 void FIKRetargetEditorController::RefreshAllViews() const
@@ -969,16 +996,9 @@ void FIKRetargetEditorController::SetRootSelected(const bool bIsSelected)
 	{
 		return;
 	}
-	
-	URetargetRootSettings* RootSettings = AssetController->GetAsset()->GetRootSettingsUObject();
-	if (RootSettings->EditorController.Get() != this)
-	{
-		RootSettings->EditorController = SharedThis(this);	
-	}
-	
-	SetDetailsObject(RootSettings);
 
 	LastSelectedItem = ERetargetSelectionType::ROOT;
+	ShowRootSettings();
 }
 
 void FIKRetargetEditorController::CleanSelection(ERetargetSourceOrTarget SourceOrTarget)
@@ -1085,46 +1105,49 @@ void FIKRetargetEditorController::SetRetargeterMode(ERetargeterOutputMode Mode)
 	RefreshDetailsView();
 }
 
-FReply FIKRetargetEditorController::HandleShowRetargetPose()
+FText FIKRetargetEditorController::GetRetargeterModeLabel()
 {
-	const ERetargeterOutputMode CurrentMode = GetRetargeterMode();
-	if (CurrentMode == ERetargeterOutputMode::ShowRetargetPose || CurrentMode == ERetargeterOutputMode::EditRetargetPose)
+	switch (GetRetargeterMode())
 	{
-		SetRetargeterMode(ERetargeterOutputMode::RunRetarget);
-	}
-	else
-	{
-		SetRetargeterMode(ERetargeterOutputMode::ShowRetargetPose);
-	}
-	
-	return FReply::Handled();
-}
-
-bool FIKRetargetEditorController::CanShowRetargetPose() const
-{
-	return GetRetargeterMode() != ERetargeterOutputMode::ShowRetargetPose;
-}
-
-bool FIKRetargetEditorController::IsShowingRetargetPose() const
-{
-	return GetRetargeterMode() == ERetargeterOutputMode::ShowRetargetPose;
-}
-
-void FIKRetargetEditorController::HandleEditPose()
-{
-	if (IsEditingPose())
-	{
-		// stop pose editing
-		SetRetargeterMode(PreviousMode);
-	}
-	else
-	{
-		// start pose editing
-		SetRetargeterMode(ERetargeterOutputMode::EditRetargetPose);
+	case ERetargeterOutputMode::RunRetarget:
+		return FText::FromString("Running Retarget");
+	case ERetargeterOutputMode::EditRetargetPose:
+		return FText::FromString("Editing Retarget Pose");
+	case ERetargeterOutputMode::ShowRetargetPose:
+		return FText::FromString("Showing Retarget Pose");
+	default:
+		checkNoEntry();
+		return FText::FromString("Unknown Mode.");
 	}
 }
 
-bool FIKRetargetEditorController::CanEditPose() const
+FSlateIcon FIKRetargetEditorController::GetCurrentRetargetModeIcon() const
+{
+	return GetRetargeterModeIcon(GetRetargeterMode());
+}
+
+FSlateIcon FIKRetargetEditorController::GetRetargeterModeIcon(ERetargeterOutputMode Mode) const
+{
+	switch (Mode)
+	{
+	case ERetargeterOutputMode::RunRetarget:
+		return FSlateIcon(FIKRetargetEditorStyle::Get().GetStyleSetName(), "IKRetarget.RunRetargeter");
+	case ERetargeterOutputMode::EditRetargetPose:
+		return FSlateIcon(FIKRetargetEditorStyle::Get().GetStyleSetName(), "IKRetarget.EditRetargetPose");
+	case ERetargeterOutputMode::ShowRetargetPose:
+		return FSlateIcon(FIKRetargetEditorStyle::Get().GetStyleSetName(), "IKRetarget.ShowRetargetPose");
+	default:
+		checkNoEntry();
+		return FSlateIcon(FIKRetargetEditorStyle::Get().GetStyleSetName(), "IKRetarget.ShowRetargetPose");
+	}
+}
+
+bool FIKRetargetEditorController::IsReadyToRetarget() const
+{
+	return GetRetargetProcessor()->IsInitialized();
+}
+
+bool FIKRetargetEditorController::IsCurrentMeshLoaded() const
 {
 	return GetSkeletalMesh(GetSourceOrTarget()) != nullptr;
 }
@@ -1649,6 +1672,73 @@ void FIKRetargetEditorController::OnPoseSelected(TSharedPtr<FName> InPose, ESele
 	{
 		AssetController->SetCurrentRetargetPose(*InPose.Get(), GetSourceOrTarget());
 	}
+}
+
+void FIKRetargetEditorController::ShowGlobalSettings()
+{
+	UIKRetargetGlobalSettings* GlobalSettings = AssetController->GetAsset()->GetGlobalSettingsUObject();
+	if (GlobalSettings->EditorController.Get() != this)
+	{
+		GlobalSettings->EditorController = SharedThis(this);
+	}
+	
+	SetDetailsObject(GlobalSettings);
+}
+
+bool FIKRetargetEditorController::IsShowingGlobalSettings()
+{
+	const UIKRetargetGlobalSettings* GlobalSettings = AssetController->GetAsset()->GetGlobalSettingsUObject();
+	return IsObjectInDetailsView(GlobalSettings);
+}
+
+bool FIKRetargetEditorController::IsShowingRootSettings()
+{
+	const URetargetRootSettings* RootSettings = AssetController->GetAsset()->GetRootSettingsUObject();
+	return IsObjectInDetailsView(RootSettings);
+}
+
+void FIKRetargetEditorController::ToggleRootRetargetPass()
+{
+	UIKRetargetGlobalSettings* GlobalSettings = AssetController->GetAsset()->GetGlobalSettingsUObject();
+	GlobalSettings->Settings.bEnableRoot = !GlobalSettings->Settings.bEnableRoot;
+}
+
+bool FIKRetargetEditorController::IsRootRetargetOn()
+{
+	return AssetController->GetAsset()->GetGlobalSettingsUObject()->Settings.bEnableRoot;
+}
+
+void FIKRetargetEditorController::ToggleFKRetargetPass()
+{
+	UIKRetargetGlobalSettings* GlobalSettings = AssetController->GetAsset()->GetGlobalSettingsUObject();
+	GlobalSettings->Settings.bEnableFK = !GlobalSettings->Settings.bEnableFK;
+}
+
+bool FIKRetargetEditorController::IsFKRetargetOn()
+{
+	return AssetController->GetAsset()->GetGlobalSettingsUObject()->Settings.bEnableFK;
+}
+
+void FIKRetargetEditorController::ToggleIKRetargetPass()
+{
+	UIKRetargetGlobalSettings* GlobalSettings = AssetController->GetAsset()->GetGlobalSettingsUObject();
+	GlobalSettings->Settings.bEnableIK = !GlobalSettings->Settings.bEnableIK;
+}
+
+bool FIKRetargetEditorController::IsIKRetargetOn()
+{
+	return AssetController->GetAsset()->GetGlobalSettingsUObject()->Settings.bEnableIK;
+}
+
+void FIKRetargetEditorController::ShowRootSettings()
+{
+	URetargetRootSettings* RootSettings = AssetController->GetAsset()->GetRootSettingsUObject();
+	if (RootSettings->EditorController.Get() != this)
+	{
+		RootSettings->EditorController = SharedThis(this);	
+	}
+	
+	SetDetailsObject(RootSettings);
 }
 
 #undef LOCTEXT_NAMESPACE

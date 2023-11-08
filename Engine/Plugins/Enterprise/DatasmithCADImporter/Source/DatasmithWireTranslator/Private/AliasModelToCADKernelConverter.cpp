@@ -14,7 +14,6 @@
 #include "CADKernel/Geo/Surfaces/Surface.h"
 
 #include "CADKernel/Math/Point.h"
-#include "CADKernel/Mesh/Meshers/ParametricMesher.h"
 #include "CADKernel/Mesh/Structure/ModelMesh.h"
 
 #include "CADKernel/Topo/Body.h"
@@ -236,6 +235,16 @@ TSharedPtr<UE::CADKernel::FTopologicalFace> FAliasModelToCADKernelConverter::Add
 
 	int32 DoubtfulLoopOrientationCount = 0;
 	Face->AddLoops(Loops, DoubtfulLoopOrientationCount);
+
+	if (Face->GetLoops().Num() == 0)
+	{
+		Face->SetAsDegenerated();
+		Face->Delete();
+
+		UE::CADKernel::FMessage::Printf(UE::CADKernel::EVerboseLevel::Log, TEXT("The Face %s is degenerate, this face is ignored\n"), TrimRegion.name());
+		return TSharedPtr<UE::CADKernel::FTopologicalFace>();
+	}
+
 	return Face;
 }
 
@@ -281,14 +290,15 @@ bool FAliasModelToCADKernelConverter::AddBRep(AlDagNode& DagNode, const FColor& 
 	AlEdge2CADKernelEdge.Empty();
 
 	TSharedRef<UE::CADKernel::FBody> CADKernelBody = UE::CADKernel::FEntity::MakeShared<UE::CADKernel::FBody>();
-	TSharedRef<UE::CADKernel::FShell> CADKernelShell = UE::CADKernel::FEntity::MakeShared<UE::CADKernel::FShell>();
 	uint32 ColorId = (uint32) CADLibrary::BuildColorUId(Color);
-	CADKernelShell->SetColorId(ColorId);
+	CADKernelBody->SetColorId(ColorId);
+
+	TSharedRef<UE::CADKernel::FShell> CADKernelShell = UE::CADKernel::FEntity::MakeShared<UE::CADKernel::FShell>();
 	CADKernelBody->AddShell(CADKernelShell);
 
 	boolean bAlOrientation;
 	DagNode.getSurfaceOrientation(bAlOrientation);
-	bool bOrientation = (bool)bAlOrientation;
+	bool bOrientation = !(bool)bAlOrientation;
 
 	AlMatrix4x4 AlMatrix;
 	if (InObjectReference == EAliasObjectReference::ParentReference)
@@ -331,14 +341,10 @@ bool FAliasModelToCADKernelConverter::AddBRep(AlDagNode& DagNode, const FColor& 
 		break;
 	}
 
-	if (CADKernelShell->FaceCount() == 0)
-	{
-		return false;
-	}
-
-	// Create body from faces
+	CADKernelBody->CompleteMetaData();
 	CADKernelSession.GetModel().Add(CADKernelBody);
-	return true;
+
+	return CADKernelShell->FaceCount() > 0;
 }
 
 }

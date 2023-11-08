@@ -1,19 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using EpicGames.Perforce;
-using Microsoft.Extensions.Logging;
 using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
 using System.Diagnostics.CodeAnalysis;
 using System.Drawing;
-using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows.Forms;
-using UnrealGameSync.Properties;
 
 namespace UnrealGameSync.Forms
 {
@@ -21,36 +12,37 @@ namespace UnrealGameSync.Forms
 	{
 		public class BuildInfo
 		{
-			public AutomatedSyncWindow.WorkspaceInfo SelectedWorkspaceInfo;
-			public string ProjectPath;
-			public bool Sync;
-			public string ExecCommand;
+			public AutomatedSyncWindow.WorkspaceInfo SelectedWorkspaceInfo { get; }
+			public string ProjectPath { get; }
+			public bool Sync { get; }
+			public string ExecCommand { get; }
 
 			public BuildInfo(AutomatedSyncWindow.WorkspaceInfo selectedWorkspaceInfo, string projectPath, bool sync, string execCommand)
 			{
-				this.SelectedWorkspaceInfo = selectedWorkspaceInfo;
-				this.ProjectPath = projectPath;
-				this.Sync = sync;
-				this.ExecCommand = execCommand;
+				SelectedWorkspaceInfo = selectedWorkspaceInfo;
+				ProjectPath = projectPath;
+				Sync = sync;
+				ExecCommand = execCommand;
 			}
 		}
 
-		string _streamName;
-		IServiceProvider _serviceProvider;
+		readonly string _streamName;
+		readonly IServiceProvider _serviceProvider;
 
 		string? _serverAndPortOverride;
 		string? _userNameOverride;
-		IPerforceSettings _defaultPerforceSettings;
+		readonly IPerforceSettings _defaultPerforceSettings;
 
 		BuildInfo? _result;
 
 		private AutomatedBuildWindow(string streamName, int changelist, string command, IPerforceSettings defaultPerforceSettings, string? defaultWorkspaceName, string? defaultProjectPath, IServiceProvider serviceProvider)
 		{
-			this._streamName = streamName;
-			this._defaultPerforceSettings = defaultPerforceSettings;
-			this._serviceProvider = serviceProvider;
+			_streamName = streamName;
+			_defaultPerforceSettings = defaultPerforceSettings;
+			_serviceProvider = serviceProvider;
 
 			InitializeComponent();
+			Font = new System.Drawing.Font("Segoe UI", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
 
 			ActiveControl = WorkspaceNameTextBox;
 
@@ -77,10 +69,7 @@ namespace UnrealGameSync.Forms
 			UpdateWorkspacePathBrowseButton();
 		}
 
-		private IPerforceSettings Perforce
-		{
-			get => Utility.OverridePerforceSettings(_defaultPerforceSettings, _serverAndPortOverride, _userNameOverride);
-		}
+		private IPerforceSettings Perforce => Utility.OverridePerforceSettings(_defaultPerforceSettings, _serverAndPortOverride, _userNameOverride);
 
 		public static bool ShowModal(IWin32Window owner, IPerforceSettings defaultPerforceSettings, string streamName, string projectPath, int changelist, string command, UserSettings settings, IServiceProvider loggerFactory, [NotNullWhen(true)] out BuildInfo? buildInfo)
 		{
@@ -104,7 +93,7 @@ namespace UnrealGameSync.Forms
 				}
 			}
 
-			AutomatedBuildWindow window = new AutomatedBuildWindow(streamName, changelist, command, defaultPerforceSettings, defaultWorkspaceName, defaultProjectPath, loggerFactory);
+			using AutomatedBuildWindow window = new AutomatedBuildWindow(streamName, changelist, command, defaultPerforceSettings, defaultWorkspaceName, defaultProjectPath, loggerFactory);
 			if (window.ShowDialog() == DialogResult.OK)
 			{
 				buildInfo = window._result!;
@@ -173,8 +162,7 @@ namespace UnrealGameSync.Forms
 
 		private void UpdateWorkspacePathBrowseButton()
 		{
-			string? workspaceName;
-			WorkspacePathBrowseBtn.Enabled = TryGetWorkspaceName(out workspaceName);
+			WorkspacePathBrowseBtn.Enabled = TryGetWorkspaceName(out _);
 		}
 
 		private void WorkspacePathBrowseBtn_Click(object sender, EventArgs e)

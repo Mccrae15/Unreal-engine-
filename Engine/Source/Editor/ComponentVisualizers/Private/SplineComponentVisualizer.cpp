@@ -3,11 +3,15 @@
 #include "SplineComponentVisualizer.h"
 #include "CoreMinimal.h"
 #include "Algo/AnyOf.h"
+#include "Components/BrushComponent.h"
+#include "CollisionQueryParams.h"
+#include "Engine/HitResult.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Commands/InputChord.h"
 #include "Framework/Commands/Commands.h"
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "GameFramework/Volume.h"
 #include "Styling/AppStyle.h"
 #include "UnrealWidgetFwd.h"
 #include "Editor.h"
@@ -37,6 +41,65 @@ IMPLEMENT_HIT_PROXY(HSplineTangentHandleProxy, HSplineVisProxy);
 DEFINE_LOG_CATEGORY_STATIC(LogSplineComponentVisualizer, Log, All)
 
 #define VISUALIZE_SPLINE_UPVECTORS 0
+
+namespace SplineComponentVisualizerLocals
+{
+	// This is mostly modeled on FindNearestVisibleObjectHit_Internal in ModelingSceneSnappingManager.cpp,
+	// which we probably can't access because it lives in a plugin.
+	// TODO: Perhaps this code should live in some common utility place? Certainly if we do this again.
+	bool RaycastWorld(const UWorld* World, FEditorViewportClient* ViewportClient, FViewport* Viewport, FHitResult& HitResultOut)
+	{
+		FSceneViewFamilyContext ViewFamily(FSceneViewFamily::ConstructionValues(
+			ViewportClient->Viewport,
+			ViewportClient->GetScene(),
+			ViewportClient->EngineShowFlags));
+		// this View is deleted by the FSceneViewFamilyContext destructor
+		FSceneView* View = ViewportClient->CalcSceneView(&ViewFamily);
+
+		FViewportCursorLocation MouseViewportRay(View, ViewportClient, Viewport->GetMouseX(), Viewport->GetMouseY());
+		FRay Ray(MouseViewportRay.GetOrigin(), MouseViewportRay.GetDirection());
+
+		FCollisionObjectQueryParams ObjectQueryParams(FCollisionObjectQueryParams::AllObjects);
+		FCollisionQueryParams QueryParams = FCollisionQueryParams::DefaultQueryParam;
+		QueryParams.bTraceComplex = true;
+
+		TArray<FHitResult> OutHits;
+		FVector RayEnd = (FVector)(Ray.PointAt(HALF_WORLD_MAX));
+		if (World->LineTraceMultiByObjectType(OutHits, (FVector)Ray.Origin, RayEnd, ObjectQueryParams, QueryParams) == false)
+		{
+			return false;
+		}
+
+		double NearestVisible = TNumericLimits<double>::Max();
+		for (const FHitResult& CurResult : OutHits)
+		{
+			UPrimitiveComponent* Component = CurResult.Component.Get();
+			AActor* Actor = CurResult.GetActor();
+
+			// Don't use volumes
+			if (Cast<UBrushComponent>(Component) != nullptr &&
+				Cast<AVolume>(Actor) != nullptr)
+			{
+				continue;
+			}
+
+			// Ignore invisible things
+			if ((Actor && Actor->IsHidden())
+				|| (Component && !Component->IsVisibleInEditor()))
+			{
+				continue;
+			}
+
+			if (CurResult.Distance < NearestVisible)
+			{
+				HitResultOut = CurResult;
+				NearestVisible = CurResult.Distance;
+			}
+		}
+
+		return NearestVisible < TNumericLimits<double>::Max();
+	}
+}
 
 int32 USplineComponentVisualizerSelectionState::GetVerifiedLastKeyIndexSelected(const int32 InNumSplinePoints) const
 {
@@ -99,7 +162,7 @@ public:
 	{
 		UI_COMMAND(DeleteKey, "Delete Spline Point", "Delete the currently selected spline point.", EUserInterfaceActionType::Button, FInputChord(EKeys::Delete));
 		UI_COMMAND(DuplicateKey, "Duplicate Spline Point", "Duplicate the currently selected spline point.", EUserInterfaceActionType::Button, FInputChord());
-		UI_COMMAND(AddKey, "Add Spline Point Here", "Add a new spline point at the cursor location.", EUserInterfaceActionType::Button, FInputChord());
+		UI_COMMAND(AddKey, "Add Spline Point Here", "Add a new spline point at the cursor location.", EUserInterfaceActionType::Button, FInputChord(EKeys::A));
 		UI_COMMAND(SelectAll, "Select All Spline Points", "Select all spline points.", EUserInterfaceActionType::Button, FInputChord());
 		UI_COMMAND(SelectNextSplinePoint, "Select Next Spline Point", "Select next spline point.", EUserInterfaceActionType::Button, FInputChord(EKeys::Period));
 		UI_COMMAND(SelectPrevSplinePoint, "Select Prev Spline Point", "Select prev spline point.", EUserInterfaceActionType::Button, FInputChord(EKeys::Comma));
@@ -453,6 +516,16 @@ void FSplineComponentVisualizer::OnRegister()
 		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::SnapToFloor_Clicked, bAlign, bUseLineTrace, bUseBounds, bUsePivot),
 		FCanExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::ActorSelected_CanExecute)
 		);
+}
+
+bool FSplineComponentVisualizer::ShouldShowForSelectedSubcomponents(const UActorComponent* Component)
+{
+	if (const USplineComponent* SplineComp = Cast<const USplineComponent>(Component))
+	{
+		return SplineComp->bDrawDebug;
+	}
+
+	return false;
 }
 
 FSplineComponentVisualizer::~FSplineComponentVisualizer()
@@ -1137,8 +1210,10 @@ bool FSplineComponentVisualizer::AreKeysSelected() const
 	return (IsSingleKeySelected() || AreMultipleKeysSelected());
 }
 
-bool FSplineComponentVisualizer::HandleInputDelta(FEditorViewportClient* ViewportClient, FViewport* Viewport, FVector& DeltaTranslate, FRotator& DeltaRotate, FVector& DeltaScale)
+bool FSplineComponentVisualizer::HandleInputDelta(FEditorViewportClient* ViewportClient, FViewport* Viewport, FVector& DeltaTranslateIn, FRotator& DeltaRotate, FVector& DeltaScale)
 {
+	using namespace SplineComponentVisualizerLocals;
+
 	ResetTempModes();
 
 	USplineComponent* SplineComp = GetEditedSplineComponent();
@@ -1152,6 +1227,30 @@ bool FSplineComponentVisualizer::HandleInputDelta(FEditorViewportClient* Viewpor
 		}
 
 		check(SelectionState);
+
+		// Use a local value for DeltaTranslate so that we can modify it based on the SnapToSurface setting without
+		// changing it for the caller (that parameter should probably be const, but it's a base class function)
+		FVector DeltaTranslate = DeltaTranslateIn;
+
+		// It's tough to port the actor "surface snapping" toggle behavior here because the original code only works on actors
+		// and involves things like keeping track of last transform, snapping to surface even if moving in a different plane, etc
+		// (see FLevelEditorViewportClient::ProjectActorsIntoWorld). However we can at least support the limited but useful case
+		// of trying to drag points around by the ball of the widget.
+		const ULevelEditorViewportSettings* ViewportSettings = GetDefault<ULevelEditorViewportSettings>();
+		const float SnapOffsetExtent = (ViewportSettings->SnapToSurface.bEnabled) ? (ViewportSettings->SnapToSurface.SnapOffsetExtent) : (0.0f);
+		if (ViewportSettings->SnapToSurface.bEnabled
+			&& ViewportClient->GetWidgetMode() == UE::Widget::EWidgetMode::WM_Translate
+			&& (ViewportClient->GetCurrentWidgetAxis() == EAxisList::Screen || ViewportClient->GetCurrentWidgetAxis() == EAxisList::XYZ)
+			&& !ViewportClient->IsOrtho())
+		{
+			FHitResult HitResult;
+			if (RaycastWorld(SplineComp->GetWorld(), ViewportClient, Viewport, HitResult))
+			{
+				FVector3d NewGizmoLocation = HitResult.ImpactPoint + ViewportSettings->SnapToSurface.SnapOffsetExtent * HitResult.ImpactNormal;
+				DeltaTranslate = NewGizmoLocation - ViewportClient->GetWidgetLocation();
+			}
+		}
+
 		if (SelectionState->GetSelectedTangentHandle() != INDEX_NONE)
 		{
 			// Transform the tangent using an EPropertyChangeType::Interactive change. Later on, at the end of mouse tracking, a non-interactive change will be notified via void TrackingStopped :
@@ -2391,7 +2490,7 @@ float FSplineComponentVisualizer::FindNearest(const FVector& InLocalPos, int32 I
 
 	FInterpCurveVector& SplinePosition = SplineComp->GetSplinePointsPosition();
 	float OutSquaredDistance = 0.0f;
-	float t = SplinePosition.InaccurateFindNearestOnSegment(InLocalPos, InSegmentIndex, OutSquaredDistance);
+	float t = SplinePosition.FindNearestOnSegment(InLocalPos, InSegmentIndex, OutSquaredDistance);
 	OutSplinePos = SplinePosition.Eval(t, FVector::ZeroVector);
 	OutSplineTangent = SplinePosition.EvalDerivative(t, FVector::ZeroVector);
 
@@ -3070,6 +3169,8 @@ void FSplineComponentVisualizer::OnResetToDefault()
 	check(SelectionState);
 
 	SplineComp->Modify();
+	SplineComp->ResetToDefault();
+
 	if (AActor* Owner = SplineComp->GetOwner())
 	{
 		Owner->Modify();

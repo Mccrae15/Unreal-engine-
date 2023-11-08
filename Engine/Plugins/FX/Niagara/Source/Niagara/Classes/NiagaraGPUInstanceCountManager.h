@@ -59,7 +59,7 @@ public:
 	~FNiagaraGPUInstanceCountManager();
 
 	// Init resource for the first time.
-	void InitRHI();
+	void InitRHI(FRHICommandListBase& RHICmdList);
 	// Free resources.
 	void ReleaseRHI();
 
@@ -98,12 +98,12 @@ public:
 	bool HasPendingGPUReadback() const;
 
 	/** Add a draw indirect task to generate the draw indirect args. Returns the draw indirect arg buffer offset. */
-	FIndirectArgSlot AddDrawIndirect(uint32 InstanceCountBufferOffset, uint32 NumIndicesPerInstance, uint32 StartIndexLocation, bool bIsInstancedStereoEnabled, bool bCulled, ENiagaraGpuComputeTickStage::Type ReadyTickStage);
+	FIndirectArgSlot AddDrawIndirect(FRHICommandListBase& RHICmdList, uint32 InstanceCountBufferOffset, uint32 NumIndicesPerInstance, uint32 StartIndexLocation, bool bIsInstancedStereoEnabled, bool bCulled, ENiagaraGpuComputeTickStage::Type ReadyTickStage);
 
 	// Resize instance count and draw indirect buffers to ensure it is big enough to hold all draw indirect args.
 	void ResizeBuffers(FRHICommandListImmediate& RHICmdList, int32 ReservedInstanceCounts);
 
-	void FlushIndirectArgsPool();
+	void FlushIndirectArgsPool(FRHICommandListBase& RHICmdList);
 
 	// Generate the draw indirect buffers, and reset all release counts.
 	void UpdateDrawIndirectBuffers(FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface, FRHICommandList& RHICmdList, ENiagaraGPUCountUpdatePhase::Type CountPhase);
@@ -112,6 +112,8 @@ public:
 	static const ERHIAccess kIndirectArgsDefaultState;
 
 	bool HasEntriesPendingFree() const { return InstanceCountClearTasks.Num() > 0; }
+
+	void CopyToMultiViewCountBuffer(FRHICommandListImmediate& RHICmdList);
 
 protected:
 	struct FIndirectArgsPoolEntry
@@ -149,6 +151,10 @@ protected:
 	TArray<uint32> FreeEntries;
 	FRHIGPUMemoryReadback* CountReadback = nullptr;
 	int32 CountReadbackSize = 0;
+
+	/** Mirrored copy of CountBuffer for multi-view rendering. */
+	int32 MultiViewAllocatedInstanceCounts = 0;
+	FRWBuffer MultiViewCountBuffer;
 
 	/** The list of all draw indirected tasks that are to be run in UpdateDrawIndirectBuffers() */
 	TArray<FNiagaraDrawIndirectArgGenTaskInfo> DrawIndirectArgGenTasks[ENiagaraGPUCountUpdatePhase::Max];

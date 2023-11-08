@@ -1,32 +1,30 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ProxyTableEditorModule.h"
-#include "IAssetTools.h"
-#include "AssetTypeActions_ProxyTable.h"
 #include "ProxyTableEditor.h"
+#include "ProxyTableEditorCommands.h"
+#include "StructOutputDataCustomization.h"
+#include "PropertyEditorModule.h"
 
-#define LOCTEXT_NAMESPACE "ChooserEditorModule"
+#define LOCTEXT_NAMESPACE "ProxyTableEditorModule"
 
 namespace UE::ProxyTableEditor
 {
 
 void FModule::StartupModule()
 {
-	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-	
-	AssetTypeActions_ProxyTable = MakeShared<FAssetTypeActions_ProxyTable>();
-	AssetTools.RegisterAssetTypeActions(AssetTypeActions_ProxyTable.ToSharedRef());
 	FProxyTableEditor::RegisterWidgets();
+
+	FProxyTableEditorCommands::Register();
+	
+	FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+	PropertyModule.RegisterCustomPropertyTypeLayout(FProxyStructOutput::StaticStruct()->GetFName(), FOnGetPropertyTypeCustomizationInstance::CreateLambda([] { return MakeShared<FStructOutputDataCustomization>(); }));
 }
-		 
 
 void FModule::ShutdownModule()
 {
-	if(FModuleManager::Get().IsModuleLoaded("AssetTools"))
-	{
-		IAssetTools& AssetTools = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools").Get();
-		AssetTools.UnregisterAssetTypeActions(AssetTypeActions_ProxyTable.ToSharedRef());
-	}
+	FProxyTableEditorCommands::Unregister();
+	FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 }
 
 }

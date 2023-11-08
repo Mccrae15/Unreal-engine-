@@ -20,12 +20,13 @@ public class LinuxTargetPlatform : ModuleRules
 
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
-				"Settings",
+				"Settings"
 			}
 		);
 
 		if (Target.bCompileAgainstEngine)
 		{
+			PublicIncludePathModuleNames.Add("Engine");
 			PrivateDependencyModuleNames.Add("Engine");
 			PrivateIncludePathModuleNames.Add("TextureCompressor");
 		}

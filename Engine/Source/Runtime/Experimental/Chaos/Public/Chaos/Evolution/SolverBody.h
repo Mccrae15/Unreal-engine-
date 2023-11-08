@@ -98,6 +98,8 @@ namespace Chaos
 	class FSolverBody
 	{
 	public:
+		static constexpr FSolverReal ZeroMassThreshold() { return std::numeric_limits<FSolverReal>::min(); }
+
 
 		/**
 		 * A factory method to create a safely initialized Solverbody. 
@@ -253,11 +255,13 @@ namespace Chaos
 		 * @brief Net world-space position displacement applied by the constraints
 		*/
 		inline const FSolverVec3& DP() const { return State.DP; }
+		inline void SetDP(const FSolverVec3& InDP) { State.DP = InDP; }
 
 		/**
 		 * @brief Net world-space rotation displacement applied by the constraints (axis-angle vector equivalent to angular velocity but for position)
 		*/
 		inline const FSolverVec3& DQ() const { return State.DQ; }
+		inline void SetDQ(const FSolverVec3& InDQ) { State.DQ = InDQ; }
 
 		/**
 		 * @brief Net world-space position correction applied by the constraints
@@ -330,7 +334,7 @@ namespace Chaos
 		 * @brief Whether the body has a finite mass
 		 * @note This is based on the current inverse mass, so a "dynamic" particle with 0 inverse mass will return true here.
 		*/
-		inline bool IsDynamic() const { return (State.InvM > UE_SMALL_NUMBER); }
+		inline bool IsDynamic() const { return (State.InvM > FSolverBody::ZeroMassThreshold()); }
 
 		/**
 		 * @brief Apply a world-space position and rotation delta to the body center of mass, and update inverse mass
@@ -422,6 +426,20 @@ namespace Chaos
 		*/
 		void UpdateRotationDependentState();
 
+
+
+		void PrefetchPositionSolverData() const
+		{
+			// The position solver only uses DP,DQ
+			FPlatformMisc::PrefetchBlock(&State.DP, 8 * sizeof(float));
+		}
+
+		void PrefetchVelocitySolverData() const
+		{
+			// The velocity solver only uses V,W
+			FPlatformMisc::PrefetchBlock(&State.V, 8 * sizeof(float));
+		}
+
 	private:
 
 		// The struct exists only so that we can use the variable names
@@ -433,6 +451,10 @@ namespace Chaos
 
 			void Init()
 			{
+				DP = FSolverVec3(0);
+				DQ = FSolverVec3(0);
+				V = FSolverVec3(0);
+				W = FSolverVec3(0);
 				InvI = FSolverMatrix33(0);
 				RoM = FRotation3::FromIdentity();
 				R = FRotation3::FromIdentity();
@@ -442,14 +464,22 @@ namespace Chaos
 				P = FVec3(0);
 				InvILocal = FSolverVec3(0);
 				InvM = 0;
-				DP = FSolverVec3(0);
-				DQ = FSolverVec3(0);
 				CP = FSolverVec3(0);
 				CQ = FSolverVec3(0);
-				V = FSolverVec3(0);
-				W = FSolverVec3(0);
 				Level = 0;
 			}
+
+			// Net position delta applied by all constraints (constantly changing as we iterate over constraints)
+			alignas(16) FSolverVec3 DP;
+
+			// Net rotation delta applied by all constraints (constantly changing as we iterate over constraints)
+			alignas(16) FSolverVec3 DQ;
+
+			// World-space center of mass velocity
+			alignas(16) FSolverVec3 V;
+
+			// World-space center of mass angular velocity
+			alignas(16) FSolverVec3 W;
 
 			// World-space inverse inertia
 			// NOTE: Matrix and Rotation are alignas(16) so beware of padding
@@ -482,12 +512,6 @@ namespace Chaos
 			// Inverse mass
 			FSolverReal InvM;
 
-			// Net position delta applied by all constraints (constantly changing as we iterate over constraints)
-			FSolverVec3 DP;
-
-			// Net rotation delta applied by all constraints (constantly changing as we iterate over constraints)
-			FSolverVec3 DQ;
-
 			// Net position correction delta applied by all constraints (constantly changing as we iterate over constraints)
 			// Will translate the body without introducing linear velocity
 			FSolverVec3 CP;
@@ -495,12 +519,6 @@ namespace Chaos
 			// Net rotation correction delta applied by all constraints (constantly changing as we iterate over constraints)
 			// Will rotate the body without introducing angular velocity
 			FSolverVec3 CQ;
-
-			// World-space center of mass velocity
-			FSolverVec3 V;
-
-			// World-space center of mass angular velocity
-			FSolverVec3 W;
 
 			// Distance to a kinematic body (through the contact graph). Used by collision shock propagation
 			int32 Level;
@@ -601,7 +619,7 @@ namespace Chaos
 		/**
 		 * @brief Whether the body is dynamic (i.e., has a finite mass) after scaling is applied
 		*/
-		inline bool IsDynamic() const { return (InvM() > TNumericLimits<FSolverReal>::Min()); }
+		inline bool IsDynamic() const { return (InvM() > FSolverBody::ZeroMassThreshold()); }
 
 		//
 		// From here all methods just forward to the FSolverBody

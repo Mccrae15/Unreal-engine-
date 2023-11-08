@@ -2,8 +2,8 @@
 #pragma once
 
 #include "MLDeformerMorphModelInstance.h"
-#include "NeuralTensor.h"
 #include "NearestNeighborModelInstance.generated.h"
+
 
 class UNearestNeighborModelInputInfo;
 class UNearestNeighborModelInstance;
@@ -44,14 +44,17 @@ private:
 
     void InitPreviousWeights();
     void InitOptimizedNetworkInstance();
-    void GetInputDataPointer(float*& OutInputData, int32& OutNumInputFloats) const;
-    void GetOutputDataPointer(float*& OutOutputData, int32& OutNumOutputFloats) const;
+    void GetInputDataPointer(float*& OutInputData, int32& OutNumInputFloats);
+    void GetOutputDataPointer(float*& OutOutputData, int32& OutNumOutputFloats);
 
     virtual int64 SetBoneTransforms(float* OutputBuffer, int64 OutputBufferSize, int64 StartIndex) override;
 
     void RunNearestNeighborModel(float DeltaTime, float ModelWeight);
     int32 FindNearestNeighbor(const float* PCAData, int32 PartId);
     void UpdateWeightWithDecay(TArray<float>& MorphWeights, int32 Index, float W, float DecayCoeff);
+
+    UFUNCTION(BlueprintCallable, Category = "Python")
+    TArray<float> Eval(const TArray<float>& InputData);
 
 #if WITH_EDITORONLY_DATA
     TArray<uint32> NearestNeighborIds;

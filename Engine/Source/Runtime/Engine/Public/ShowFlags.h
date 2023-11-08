@@ -22,6 +22,7 @@ enum EShowFlagGroup
 	SFG_LightingComponents,
 	SFG_LightingFeatures,
 	SFG_Lumen,
+	SFG_Nanite,
 	SFG_Hidden,
 	SFG_Transient, // Hidden, and don't serialize it
 	SFG_Custom,
@@ -314,7 +315,7 @@ struct FEngineShowFlags
 	 * @param CommaSeparatedNames leave 0 for normal purpose, is used internally for the grouping feature
 	 * @return success
 	 */
-	ENGINE_API static inline bool IsNameThere(const TCHAR* Name, const TCHAR *CommaSeparatedNames)
+	static inline bool IsNameThere(const TCHAR* Name, const TCHAR *CommaSeparatedNames)
 	{
 		return FindIndexByName(Name, CommaSeparatedNames) != -1;
 	}

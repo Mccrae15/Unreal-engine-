@@ -2,16 +2,15 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Xml;
 using System.Xml.Linq;
-using System.Diagnostics;
-using System.IO;
 using EpicGames.Core;
-using UnrealBuildBase;
-using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Logging;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -500,13 +499,13 @@ namespace UnrealBuildTool
 		private UnrealTargetPlatform TargetPlatform;
 
 		/** Trace flag to enable debugging */
-		static private bool bGlobalTrace = false;
-		static private bool bGlobalTraceFilename = false;
+		private static bool bGlobalTrace = false;
+		private static bool bGlobalTraceFilename = false;
 
 		/** Project file reference */
 		private FileReference? ProjectFile;
-		
-		static private XDocument XMLDummy = XDocument.Parse("<manifest></manifest>");
+
+		private static XDocument XMLDummy = XDocument.Parse("<manifest></manifest>");
 
 		private class UPLContext
 		{
@@ -531,7 +530,7 @@ namespace UnrealBuildTool
 				StringVariables = new Dictionary<string, string>();
 				ElementVariables = new Dictionary<string, XElement>();
 
-				if (PluginDir == null || PluginDir == "")
+				if (PluginDir == null || String.IsNullOrEmpty(PluginDir))
 				{
 					PluginDir = ".";
 				}
@@ -616,7 +615,7 @@ namespace UnrealBuildTool
 			{
 				return false;
 			}
-	
+
 			// create a context for each architecture
 			ContextIndex++;
 			foreach (string Architecture in Architectures)
@@ -670,19 +669,19 @@ namespace UnrealBuildTool
 			StringBuilder Text = new StringBuilder();
 			foreach (KeyValuePair<string, bool> Variable in Context.BoolVariables)
 			{
-				Text.AppendLine(string.Format("\tbool {0} = {1}", Variable.Key, Variable.Value.ToString().ToLower()));
+				Text.AppendLine(String.Format("\tbool {0} = {1}", Variable.Key, Variable.Value.ToString().ToLower()));
 			}
 			foreach (KeyValuePair<string, int> Variable in Context.IntVariables)
 			{
-				Text.AppendLine(string.Format("\tint {0} = {1}", Variable.Key, Variable.Value));
+				Text.AppendLine(String.Format("\tint {0} = {1}", Variable.Key, Variable.Value));
 			}
 			foreach (KeyValuePair<string, string> Variable in Context.StringVariables)
 			{
-				Text.AppendLine(string.Format("\tstring {0} = {1}", Variable.Key, Variable.Value));
+				Text.AppendLine(String.Format("\tstring {0} = {1}", Variable.Key, Variable.Value));
 			}
 			foreach (KeyValuePair<string, XElement> Variable in Context.ElementVariables)
 			{
-				Text.AppendLine(string.Format("\telement {0} = {1}", Variable.Key, Variable.Value));
+				Text.AppendLine(String.Format("\telement {0} = {1}", Variable.Key, Variable.Value));
 			}
 			return Text.ToString();
 		}
@@ -869,7 +868,7 @@ namespace UnrealBuildTool
 		private int StringToInt(UPLContext Context, XElement Node, string? Input)
 		{
 			int Result = 0;
-			if (!int.TryParse(Input, out Result))
+			if (!Int32.TryParse(Input, out Result))
 			{
 				Logger.LogWarning("\nInvalid integer '{Input}' in '{Node}' (defaulting to 0)", Input, TraceNodeString(Context, Node));
 			}
@@ -908,7 +907,7 @@ namespace UnrealBuildTool
 			return bExpand ? ExpandVariables(Context, Result) : Result;
 		}
 
-		static private Dictionary<string, ConfigCacheIni_UPL>? ConfigCache = null;
+		private static Dictionary<string, ConfigCacheIni_UPL>? ConfigCache = null;
 
 		private ConfigCacheIni_UPL GetConfigCacheIni_UPL(string baseIniName)
 		{
@@ -1074,7 +1073,7 @@ namespace UnrealBuildTool
 			{
 				foreach (XElement Index in Source.Elements())
 				{
-//					if (Target.Element(Index.Name) == null)
+					//					if (Target.Element(Index.Name) == null)
 					{
 						Target.Add(Index);
 					}
@@ -1817,7 +1816,7 @@ namespace UnrealBuildTool
 							string? Filespec = GetAttribute(CurrentContext, Node, "filespec");
 							if (Filespec != null)
 							{
-								if (Filespec.Contains(":") || Filespec.Contains(".."))
+								if (Filespec.Contains(':') || Filespec.Contains(".."))
 								{
 									Logger.LogInformation("\nFilespec {FileSpec} not allowed; ignored.", Filespec);
 								}
@@ -2426,9 +2425,9 @@ namespace UnrealBuildTool
 									{
 										int Index = StringToInt(CurrentContext, Node, IndexStr);
 										if (Index >= 0 && Index < StringList.Count)
-                                        {
+										{
 											Value = StringList.ElementAt(Index);
-                                        }
+										}
 									}
 								}
 								if (Result == "Output")
@@ -2619,7 +2618,7 @@ namespace UnrealBuildTool
 		}
 
 		public void Init(List<string> Architectures, bool bDistribution, string EngineDirectory, string BuildDirectory, string ProjectDirectory, string Configuration, bool bIsEmbedded,
-			bool bPerArchBuildDir=false, Dictionary<string, string>? ArchRemapping = null)
+			bool bPerArchBuildDir = false, Dictionary<string, string>? ArchRemapping = null)
 		{
 			GlobalContext.BoolVariables["Distribution"] = bDistribution;
 			GlobalContext.BoolVariables["IsEmbedded"] = bIsEmbedded;
@@ -2728,7 +2727,6 @@ namespace UnrealBuildTool
 				: base(String.Format(Format, Args))
 			{ }
 		}
-
 
 		/// <summary>
 		/// command class for being able to create config caches over and over without needing to read the ini files
@@ -2879,8 +2877,8 @@ namespace UnrealBuildTool
 		/// <param name="Logger"></param>
 		/// <param name="EngineDirectory"></param>
 		public ConfigCacheIni_UPL(UnrealTargetPlatform Platform, string BaseIniName, string? ProjectDirectory, ILogger Logger, string? EngineDirectory = null)
-			: this(Platform, BaseIniName, 
-				  (ProjectDirectory == null) ? null : new DirectoryReference(ProjectDirectory), 
+			: this(Platform, BaseIniName,
+				  (ProjectDirectory == null) ? null : new DirectoryReference(ProjectDirectory),
 				  Logger,
 				  (EngineDirectory == null) ? null : new DirectoryReference(EngineDirectory))
 		{
@@ -3247,7 +3245,7 @@ namespace UnrealBuildTool
 				int LineIndex = 1;
 				bool bMultiLine = false;
 				string SingleValue = "";
-				string  Key = "";
+				string Key = "";
 				ParseAction LastAction = ParseAction.None;
 
 				// Parse each line
@@ -3455,7 +3453,6 @@ namespace UnrealBuildTool
 			yield return FileReference.Combine(EngineDirectory, "Restricted", "NotForLicensees", "Config", "Base" + BaseIniName + ".ini");
 		}
 
-
 		/// <summary>
 		/// Returns a list of INI filenames for the given project
 		/// </summary>
@@ -3499,28 +3496,15 @@ namespace UnrealBuildTool
 			}
 
 			DirectoryReference? UserSettingsFolder = Unreal.UserSettingDirectory; // Match FPlatformProcess::UserSettingsDir()
-			DirectoryReference? PersonalFolder = null; // Match FPlatformProcess::UserDir()
-			if (RuntimePlatform.IsMac || RuntimePlatform.IsLinux)
-			{
-				PersonalFolder = new DirectoryReference(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Personal), "Documents"));
-			}
-			else
-			{
-				// Not all user accounts have a local application data directory (eg. SYSTEM, used by Jenkins for builds).
-				string PersonalFolderSetting = Environment.GetFolderPath(Environment.SpecialFolder.Personal);
-				if (!String.IsNullOrEmpty(PersonalFolderSetting))
-				{
-					PersonalFolder = new DirectoryReference(PersonalFolderSetting);
-				}
-			}
+			DirectoryReference? PersonalFolder = Unreal.UserDirectory; // Match FPlatformProcess::UserDir()
 
-			if(UserSettingsFolder != null)
+			if (UserSettingsFolder != null)
 			{
 				// <AppData>/Unreal/EngineConfig/User* ini
 				yield return FileReference.Combine(UserSettingsFolder, "Unreal Engine", "Engine", "Config", "User" + BaseIniName + ".ini");
 			}
 
-			if(PersonalFolder != null)
+			if (PersonalFolder != null)
 			{
 				// <Documents>/Unreal/EngineConfig/User* ini
 				yield return FileReference.Combine(PersonalFolder, "Unreal Engine", "Engine", "Config", "User" + BaseIniName + ".ini");
@@ -3548,5 +3532,4 @@ namespace UnrealBuildTool
 			}
 		}
 	}
-
 }

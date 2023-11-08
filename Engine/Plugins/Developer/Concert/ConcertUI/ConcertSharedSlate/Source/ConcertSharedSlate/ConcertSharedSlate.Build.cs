@@ -6,6 +6,8 @@ namespace UnrealBuildTool.Rules
 	{
 		public ConcertSharedSlate(ReadOnlyTargetRules Target) : base(Target)
 		{
+			ShortName = "ConShrSlate";
+
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{
@@ -20,14 +22,12 @@ namespace UnrealBuildTool.Rules
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
-					"Concert",
 					"ConcertTransport",
 					"ConcertSyncCore",
 					"InputCore",
 					"Json",
 					"Projects",
 					"SlateCore",
-					"UndoHistory",
 					"ToolWidgets"
 				}
 			);

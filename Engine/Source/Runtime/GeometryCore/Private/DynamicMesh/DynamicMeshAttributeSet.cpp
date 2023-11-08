@@ -3,6 +3,7 @@
 #include "DynamicMesh/DynamicMeshAttributeSet.h"
 
 #include "DynamicMesh/DynamicVertexSkinWeightsAttribute.h"
+#include "DynamicMesh/DynamicBoneAttribute.h"
 #include "IndexTypes.h"
 #include "Async/Async.h"
 #include "Serialization/NameAsStringProxyArchive.h"
@@ -80,6 +81,8 @@ void FDynamicMeshAttributeSet::Copy(const FDynamicMeshAttributeSet& Copy)
 		AttachSkinWeightsAttribute(AttribPair.Key,
 			static_cast<FDynamicMeshVertexSkinWeightsAttribute *>(AttribPair.Value->MakeCopy(ParentMesh)));
 	}
+
+	CopyBoneAttributes(Copy);
 	
 	GenericAttributes.Reset();
 	for (const TPair<FName, TUniquePtr<FDynamicMeshAttributeBase>>& AttribPair : Copy.GenericAttributes)
@@ -173,6 +176,8 @@ void FDynamicMeshAttributeSet::CompactCopy(const FCompactMaps& CompactMaps, cons
 		AttachSkinWeightsAttribute(AttribPair.Key,
 			static_cast<FDynamicMeshVertexSkinWeightsAttribute *>(AttribPair.Value->MakeCompactCopy(CompactMaps, ParentMesh)));
 	}
+
+	CopyBoneAttributes(Copy);
 	
 	GenericAttributes.Reset();
 	for (const TPair<FName, TUniquePtr<FDynamicMeshAttributeBase>>& AttribPair : Copy.GenericAttributes)
@@ -286,7 +291,7 @@ void FDynamicMeshAttributeSet::EnableMatchingAttributes(const FDynamicMeshAttrib
 	}
 
 	int32 ExistingNormalLayers = NumNormalLayers();
-	int32 RequiredNormalLayers = (bClearExisting || bDiscardExtraAttributes) ? ToMatch.NumUVLayers() : FMath::Max(ExistingNormalLayers, ToMatch.NumNormalLayers());
+	int32 RequiredNormalLayers = (bClearExisting || bDiscardExtraAttributes) ? ToMatch.NumNormalLayers() : FMath::Max(ExistingNormalLayers, ToMatch.NumNormalLayers());
 	SetNumNormalLayers(RequiredNormalLayers);
 	for (int32 k = bClearExisting ? 0 : ExistingNormalLayers; k < NumNormalLayers(); k++)
 	{
@@ -406,9 +411,7 @@ void FDynamicMeshAttributeSet::EnableMatchingAttributes(const FDynamicMeshAttrib
 		}
 	}
 
-
-
-
+	EnableMatchingBoneAttributes(ToMatch, bClearExisting, bDiscardExtraAttributes);
 }
 
 
@@ -448,6 +451,26 @@ void FDynamicMeshAttributeSet::Reparent(FDynamicMesh3* NewParent)
 	for (const TPair<FName, TUniquePtr<FDynamicMeshVertexSkinWeightsAttribute>>& AttribPair : SkinWeightAttributes)
 	{
 		AttribPair.Value.Get()->Reparent(NewParent);
+	}
+
+	if (BoneNameAttrib)
+	{
+		BoneNameAttrib->Reparent(NewParent);
+	}
+
+	if (BoneParentIndexAttrib)
+	{
+		BoneParentIndexAttrib->Reparent(NewParent);
+	}
+
+	if (BonePoseAttrib)
+	{
+		BonePoseAttrib->Reparent(NewParent);
+	}
+
+	if (BoneColorAttrib)
+	{
+		BoneColorAttrib->Reparent(NewParent);
 	}
 	
 	for (const TPair<FName, TUniquePtr<FDynamicMeshAttributeBase>>& AttribPair : GenericAttributes)
@@ -695,6 +718,14 @@ bool FDynamicMeshAttributeSet::IsSeamEndEdge(int eid) const
 
 bool FDynamicMeshAttributeSet::IsSeamEdge(int EdgeID, bool& bIsUVSeamOut, bool& bIsNormalSeamOut, bool& bIsColorSeamOut) const
 {
+	bool bIsTangentSeam;
+	bool IsSeam = IsSeamEdge(EdgeID, bIsUVSeamOut, bIsNormalSeamOut, bIsColorSeamOut, bIsTangentSeam);
+	bIsNormalSeamOut = bIsNormalSeamOut || bIsTangentSeam;
+	return IsSeam;
+}
+
+bool FDynamicMeshAttributeSet::IsSeamEdge(int EdgeID, bool& bIsUVSeamOut, bool& bIsNormalSeamOut, bool& bIsColorSeamOut, bool& bIsTangentSeamOut) const
+{
 	bIsUVSeamOut = false;
 	for (const FDynamicMeshUVOverlay& UVLayer : UVLayers)
 	{
@@ -704,12 +735,14 @@ bool FDynamicMeshAttributeSet::IsSeamEdge(int EdgeID, bool& bIsUVSeamOut, bool& 
 		}
 	}
 
-	bIsNormalSeamOut = false;
-	for (const FDynamicMeshNormalOverlay& NormalLayer : NormalLayers)
+	bIsNormalSeamOut = !NormalLayers.IsEmpty() && NormalLayers[0].IsSeamEdge(EdgeID);
+	bIsTangentSeamOut = false;
+	for (int32 LayerIdx = 1; LayerIdx < NormalLayers.Num(); ++LayerIdx)
 	{
+		const FDynamicMeshNormalOverlay& NormalLayer = NormalLayers[LayerIdx];
 		if (NormalLayer.IsSeamEdge(EdgeID))
 		{
-			bIsNormalSeamOut = true;
+			bIsTangentSeamOut = true;
 		}
 	}
 
@@ -718,7 +751,7 @@ bool FDynamicMeshAttributeSet::IsSeamEdge(int EdgeID, bool& bIsUVSeamOut, bool& 
 	{
 		bIsColorSeamOut = true;
 	}
-	return (bIsUVSeamOut || bIsNormalSeamOut || bIsColorSeamOut);
+	return (bIsUVSeamOut || bIsNormalSeamOut || bIsColorSeamOut || bIsTangentSeamOut);
 }
 
 
@@ -1205,6 +1238,11 @@ bool FDynamicMeshAttributeSet::IsSameAs(const FDynamicMeshAttributeSet& Other, b
 			++ItOther;
 		}
 	}
+
+	if (!IsSameBoneAttributesAs(Other))
+	{
+		return false;
+	}
 	
 	// TODO: Test GenericAttributes
 
@@ -1352,5 +1390,227 @@ void FDynamicMeshAttributeSet::Serialize(FArchive& Ar, const FCompactMaps* Compa
 		}
 	}
 
+
+	// TODO: Serialize bone attributes
+
 	//Ar << GenericAttributes; // TODO
+}
+
+bool FDynamicMeshAttributeSet::CheckValidity(bool bAllowNonmanifold, EValidityCheckFailMode FailMode) const
+{
+	bool bValid = FDynamicMeshAttributeSetBase::CheckValidity(bAllowNonmanifold, FailMode);
+	for (int UVLayerIndex = 0; UVLayerIndex < NumUVLayers(); UVLayerIndex++)
+	{
+		bValid = GetUVLayer(UVLayerIndex)->CheckValidity(bAllowNonmanifold, FailMode) && bValid;
+	}
+	bValid = PrimaryNormals()->CheckValidity(bAllowNonmanifold, FailMode) && bValid;
+	if (ColorLayer)
+	{
+		bValid = ColorLayer->CheckValidity(bAllowNonmanifold, FailMode) && bValid;
+	}
+	if (MaterialIDAttrib)
+	{
+		bValid = MaterialIDAttrib->CheckValidity(bAllowNonmanifold, FailMode) && bValid;
+	}
+	for (int PolygroupLayerIndex = 0; PolygroupLayerIndex < NumPolygroupLayers(); PolygroupLayerIndex++)
+	{
+		bValid = GetPolygroupLayer(PolygroupLayerIndex)->CheckValidity(bAllowNonmanifold, FailMode) && bValid;
+	}
+	for (int WeightLayerIndex = 0; WeightLayerIndex < NumWeightLayers(); WeightLayerIndex++)
+	{
+		bValid = GetWeightLayer(WeightLayerIndex)->CheckValidity(bAllowNonmanifold, FailMode) && bValid;
+	}
+	for (const TPair<FName, TUniquePtr<FDynamicMeshVertexSkinWeightsAttribute>>& Pair : SkinWeightAttributes)
+	{
+		if (Pair.Value)
+		{
+			bValid = Pair.Value->CheckValidity(bAllowNonmanifold, FailMode) && bValid;
+		}
+	}
+
+	bValid = CheckBoneValidity(FailMode) && bValid;
+
+	return bValid;
+}
+
+
+//
+// Bone Attributes Methods
+//
+
+namespace BoneAttributeHelpers
+{	
+	template <typename ParentType, typename AttribValueType>
+ 	void EnableIfMatching(FDynamicMesh3* Mesh,
+						  TUniquePtr<TDynamicBoneAttributeBase<ParentType, AttribValueType>>& Attribute,
+						  const TDynamicBoneAttributeBase<ParentType, AttribValueType>* ToMatch,
+						  const AttribValueType& InitialValue,
+						  bool bClearExisting, 
+						  bool bDiscardExtraAttributes)
+	{
+		const bool bToMatchIsNotNull = ToMatch != nullptr;
+		const bool bWantAttrib = (bClearExisting || bDiscardExtraAttributes) ? bToMatchIsNotNull : (bToMatchIsNotNull || Attribute.Get());
+		if (bClearExisting || bWantAttrib == false)
+		{
+			Attribute.Reset();
+		}
+		if (bWantAttrib)
+		{	
+			const int32 NumBones = ToMatch ? ToMatch->Num() : 0;
+			if (!Attribute)
+			{
+				TDynamicBoneAttributeBase<ParentType, AttribValueType>* Ptr = new TDynamicBoneAttributeBase<ParentType, AttribValueType>(Mesh);
+				Attribute = TUniquePtr<TDynamicBoneAttributeBase<ParentType, AttribValueType>>(Ptr);
+				Attribute->Initialize(NumBones, InitialValue);
+			}
+		}
+	}
+
+	template <typename ParentType, typename AttribValueType>
+ 	void CopyBoneAttribute(FDynamicMesh3* Mesh,
+						   TUniquePtr<TDynamicBoneAttributeBase<ParentType, AttribValueType>>& Attribute,
+						   const TDynamicBoneAttributeBase<ParentType, AttribValueType>* Copy)
+	{
+		if (Copy)
+		{
+			TDynamicBoneAttributeBase<ParentType, AttribValueType>* Ptr = new TDynamicBoneAttributeBase<ParentType, AttribValueType>(Mesh);
+			Attribute = TUniquePtr<TDynamicBoneAttributeBase<ParentType, AttribValueType>>(Ptr);
+			Attribute->Copy(*(Copy));
+		}
+		else
+		{
+			Attribute.Reset();
+		}
+	}
+}
+
+int32 FDynamicMeshAttributeSet::GetNumBones() const
+{
+	return HasBones() ? GetBoneNames()->Num() : 0;
+}
+
+void FDynamicMeshAttributeSet::CopyBoneAttributes(const FDynamicMeshAttributeSet& Copy)
+{
+	BoneAttributeHelpers::CopyBoneAttribute(ParentMesh, BoneNameAttrib, Copy.GetBoneNames());
+	BoneAttributeHelpers::CopyBoneAttribute(ParentMesh, BoneParentIndexAttrib, Copy.GetBoneParentIndices());
+	BoneAttributeHelpers::CopyBoneAttribute(ParentMesh, BonePoseAttrib, Copy.GetBonePoses());
+	BoneAttributeHelpers::CopyBoneAttribute(ParentMesh, BoneColorAttrib, Copy.GetBoneColors());
+}
+
+void FDynamicMeshAttributeSet::EnableMatchingBoneAttributes(const FDynamicMeshAttributeSet& ToMatch, bool bClearExisting, bool bDiscardExtraAttributes)
+{
+	BoneAttributeHelpers::EnableIfMatching(ParentMesh, BoneNameAttrib, ToMatch.GetBoneNames(), (FName)NAME_None, bClearExisting, bDiscardExtraAttributes);
+	BoneAttributeHelpers::EnableIfMatching(ParentMesh, BoneParentIndexAttrib, ToMatch.GetBoneParentIndices(), (int32)INDEX_NONE, bClearExisting, bDiscardExtraAttributes);
+	BoneAttributeHelpers::EnableIfMatching(ParentMesh, BonePoseAttrib, ToMatch.GetBonePoses(), FTransform::Identity, bClearExisting, bDiscardExtraAttributes);
+	BoneAttributeHelpers::EnableIfMatching(ParentMesh, BoneColorAttrib, ToMatch.GetBoneColors(), FVector4f::One(), bClearExisting, bDiscardExtraAttributes);
+}
+
+void FDynamicMeshAttributeSet::EnableBones(const int InBonesNum)
+{
+	if (HasBones() == false || GetNumBones() != InBonesNum)
+	{
+		BoneNameAttrib = MakeUnique<FDynamicMeshBoneNameAttribute>(ParentMesh, InBonesNum, NAME_None);
+		BoneParentIndexAttrib = MakeUnique<FDynamicMeshBoneParentIndexAttribute>(ParentMesh, InBonesNum, INDEX_NONE);
+		BonePoseAttrib = MakeUnique<FDynamicMeshBonePoseAttribute>(ParentMesh, InBonesNum, FTransform::Identity);
+		BoneColorAttrib = MakeUnique<FDynamicMeshBoneColorAttribute>(ParentMesh, InBonesNum, FVector4f::One());
+	}
+}
+
+void FDynamicMeshAttributeSet::DisableBones()
+{
+	BoneNameAttrib.Reset();
+	BoneParentIndexAttrib.Reset();
+	BonePoseAttrib.Reset();
+	BoneColorAttrib.Reset();
+}
+
+bool FDynamicMeshAttributeSet::IsSameBoneAttributesAs(const FDynamicMeshAttributeSet& Other) const
+{
+	if (HasBones() != Other.HasBones())
+	{
+		return false;
+	}
+	
+	if (HasBones())
+	{
+		if (!BoneNameAttrib->IsSameAs(*Other.BoneNameAttrib))
+		{
+			return false;
+		}
+
+		if (!BoneParentIndexAttrib->IsSameAs(*Other.BoneParentIndexAttrib))
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+bool FDynamicMeshAttributeSet::AppendBonesUnique(const FDynamicMeshAttributeSet& Other)
+{
+	if (!Other.CheckBoneValidity(EValidityCheckFailMode::ReturnOnly))
+	{
+		checkSlow(false);
+		return false; // don't append from an invalid bone data
+	}
+
+	if (!Other.HasBones())
+	{
+		return true;
+	}
+
+	const FDynamicMeshBoneNameAttribute* OtherBoneNameAttrib = Other.GetBoneNames();
+
+	if (!HasBones())
+	{
+		EnableBones(0);
+	}
+
+	// Used to check if bone with a given name in Other already exists
+	TSet<FName> HashSet;
+	HashSet.Append(BoneNameAttrib->GetAttribValues());
+
+	for (int BoneIdx = 0; BoneIdx < OtherBoneNameAttrib->Num(); ++BoneIdx)
+	{
+		if (HashSet.Contains(OtherBoneNameAttrib->GetValue(BoneIdx)) == false)
+		{
+			BoneNameAttrib->Append(OtherBoneNameAttrib->GetValue(BoneIdx));
+			BoneParentIndexAttrib->Append(Other.GetBoneParentIndices()->GetValue(BoneIdx));
+			BonePoseAttrib->Append(Other.GetBonePoses()->GetValue(BoneIdx));
+			BoneColorAttrib->Append(Other.GetBoneColors()->GetValue(BoneIdx));
+		}
+	}
+
+	return true;
+}
+
+bool FDynamicMeshAttributeSet::CheckBoneValidity(EValidityCheckFailMode FailMode) const
+{
+	bool bValid = true;
+	
+	if (!HasBones())
+	{
+		// if boneless, no bone-related attributes should be set
+		bValid = !BoneNameAttrib && !BoneParentIndexAttrib && !BoneColorAttrib && !BonePoseAttrib;
+	}
+	else
+	{
+		const int32 NumBones = GetNumBones();
+	
+		bValid = (BoneParentIndexAttrib->Num() == NumBones || BoneParentIndexAttrib->IsEmpty()) && bValid;
+		bValid = (BoneColorAttrib->Num() == NumBones || BoneColorAttrib->IsEmpty()) && bValid;
+		bValid = (BonePoseAttrib->Num() == NumBones || BonePoseAttrib->IsEmpty()) && bValid;
+	}
+
+	if (FailMode == EValidityCheckFailMode::Check)
+	{
+		checkf(bValid, TEXT("FDynamicMeshAttributeSet::CheckBoneValidity failed!"));
+	}
+	else if (FailMode == EValidityCheckFailMode::Ensure)
+	{ 
+		ensureMsgf(bValid, TEXT("FDynamicMeshAttributeSet::CheckBoneValidity failed!"));
+	}
+
+	return bValid;
 }

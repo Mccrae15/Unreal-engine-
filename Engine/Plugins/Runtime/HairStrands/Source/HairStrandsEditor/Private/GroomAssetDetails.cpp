@@ -64,9 +64,6 @@
 
 #include "Styling/AppStyle.h"
 
-static FLinearColor HairGroupColor(1.0f, 0.5f, 0.0f);
-static FLinearColor HairLODColor(1.0f, 0.5f, 0.0f);
-
 #define LOCTEXT_NAMESPACE "GroomRenderingDetails"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGroomAssetDetails, Log, All);
@@ -110,6 +107,78 @@ static uint32 GetHairCardsAtlasResolution(int32 InLODIndex, int32 PrevResolution
 	const uint32 MinResolution = 128;
 	const uint32 MaxResolution = 16384;
 	return FMath::Clamp(OutResolution, MinResolution, MaxResolution);
+}
+
+FText GetHairAttributeLocText(EHairAttribute In, uint32 InFlags);
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Array panel for hair strands infos
+TSharedRef<SUniformGridPanel> MakeHairStrandsAttributeInfoGrid(const FSlateFontInfo& DetailFontInfo, const uint32 InAttributes, const uint32 InAttributeFlags)
+{
+	TSharedRef<SUniformGridPanel> Grid = SNew(SUniformGridPanel).SlotPadding(2.0f);
+
+	const FLinearColor AttributeColor = FLinearColor(FColor::Yellow);
+
+	uint32 SlotIndex = 0;
+	for (uint32 AttributeIt = 0, AttributeCount = uint32(EHairAttribute::Count); AttributeIt<AttributeCount; ++AttributeIt)
+	{
+		const EHairAttribute Attribute = (EHairAttribute)AttributeIt;
+		if (HasHairAttribute(InAttributes, Attribute))
+		{
+			Grid->AddSlot(0, SlotIndex++) // x, y
+			.HAlign(HAlign_Right)
+			[
+				SNew(STextBlock)
+				.Font(DetailFontInfo)
+				.ColorAndOpacity(AttributeColor)
+				.Text(GetHairAttributeLocText(Attribute, InAttributeFlags))
+			];
+		}
+	}
+
+	return Grid;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Array panel for hair strands infos
+TSharedRef<SUniformGridPanel> MakeHairStrandsLODInfoGrid(const FSlateFontInfo& DetailFontInfo, const FHairLODInfo& LODInfo)
+{
+	TSharedRef<SUniformGridPanel> Grid = SNew(SUniformGridPanel).SlotPadding(2.0f);
+
+	// Header
+	Grid->AddSlot(1, 0) // x, y
+	.HAlign(HAlign_Right)
+	[
+		SNew(STextBlock)
+		.Font(DetailFontInfo)
+		.Text(LOCTEXT("HairInfo_CurveLOD", "Curves"))
+	];
+
+	Grid->AddSlot(2, 0) // x, y
+	.HAlign(HAlign_Right)
+	[
+		SNew(STextBlock)
+		.Font(DetailFontInfo)
+		.Text(LOCTEXT("HairInfo_PointLOD", "Points"))
+	];
+
+	// Strands
+	Grid->AddSlot(1, 1) // x, y
+	.HAlign(HAlign_Right)
+	[
+		SNew(STextBlock)
+		.Font(DetailFontInfo)
+		.Text(FText::AsNumber(LODInfo.CurveCount))
+	];
+	Grid->AddSlot(2, 1) // x, y
+	.HAlign(HAlign_Right)
+	[
+		SNew(STextBlock)
+		.Font(DetailFontInfo)
+		.Text(FText::AsNumber(LODInfo.PointCount))
+	];
+	   
+	return Grid;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -204,28 +273,6 @@ TSharedRef<SUniformGridPanel> MakeHairStrandsInfoGrid(const FSlateFontInfo& Deta
 		.Text(FText::AsNumber(MaxRadius*2.0f))
 	];
 
-	// Imported Width (mm)
-	Grid->AddSlot(0, 4) // x, y
-	.HAlign(HAlign_Left)
-	[
-		SNew(STextBlock)
-		.Font(DetailFontInfo)
-	.Text(LOCTEXT("HairInfo_ImportedWidth", "Max. Imported Width"))
-	];
-	Grid->AddSlot(1, 4) // x, y
-	.HAlign(HAlign_Right)
-	[
-		SNew(STextBlock)
-		.Font(DetailFontInfo)
-	.Text(LOCTEXT("HairInfo_GuideImportedWidth", ""))
-	];
-	Grid->AddSlot(2, 4) // x, y
-	.HAlign(HAlign_Right)
-	[
-		SNew(STextBlock)
-		.Font(DetailFontInfo)
-		.Text(CurrentAsset.MaxImportedWidth > 0.f ? FText::AsNumber(CurrentAsset.MaxImportedWidth) : LOCTEXT("HairInfo_ImportedWidthDefault", "Not exported"))
-	];
 	return Grid;
 }
 
@@ -383,104 +430,110 @@ void FGroomRenderingDetails::CustomizeStrandsGroupProperties(IDetailLayoutBuilde
 	{
 	case EMaterialPanelType::Cards:
 	{
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsInterpolation), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsRendering), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsPhysics), UGroomAsset::StaticClass()));
-//		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsCards), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMeshes), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMaterials), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsLOD), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsInfo), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, EnableGlobalInterpolation), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairInterpolationType), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, MinLOD), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, DisableBelowMinLodStripping), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, RiggedSkeletalMesh), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsInterpolationMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsRenderingMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsPhysicsMemberName(), UGroomAsset::StaticClass()));
+//		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsCardsMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsMeshesMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsMaterialsMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsLODMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsInfoMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetEnableGlobalInterpolationMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetEnableSimulationCacheMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairInterpolationTypeMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetMinLODMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetDisableBelowMinLodStrippingMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetRiggedSkeletalMeshMemberName(), UGroomAsset::StaticClass()));
 	}
 	break;
 	case EMaterialPanelType::Meshes:
 	{
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsInterpolation), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsRendering), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsPhysics), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsCards), UGroomAsset::StaticClass()));
-//		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMeshes), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMaterials), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsLOD), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsInfo), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, EnableGlobalInterpolation), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairInterpolationType), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, MinLOD), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, DisableBelowMinLodStripping), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, RiggedSkeletalMesh), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsInterpolationMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsRenderingMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsPhysicsMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsCardsMemberName(), UGroomAsset::StaticClass()));
+//		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsMeshesMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsMaterialsMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsLODMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsInfoMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetEnableGlobalInterpolationMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetEnableSimulationCacheMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairInterpolationTypeMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetMinLODMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetDisableBelowMinLodStrippingMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetRiggedSkeletalMeshMemberName(), UGroomAsset::StaticClass()));
 	}
 	break;
 	case EMaterialPanelType::Strands:
 	{
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsInterpolation), UGroomAsset::StaticClass()));
-//		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsRendering), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsPhysics), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsCards), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMeshes), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMaterials), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsLOD), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsInfo), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, EnableGlobalInterpolation), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairInterpolationType), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, MinLOD), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, DisableBelowMinLodStripping), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, RiggedSkeletalMesh), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsInterpolationMemberName(), UGroomAsset::StaticClass()));
+//		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsRenderingMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsPhysicsMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsCardsMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsMeshesMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsMaterialsMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsLODMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsInfoMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetEnableGlobalInterpolationMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetEnableSimulationCacheMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairInterpolationTypeMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetMinLODMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetDisableBelowMinLodStrippingMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetRiggedSkeletalMeshMemberName(), UGroomAsset::StaticClass()));
 	}
 	break;
 	case EMaterialPanelType::Physics:
 	{
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsInterpolation), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsRendering), UGroomAsset::StaticClass()));
-//		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsPhysics), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsCards), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMeshes), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMaterials), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsLOD), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsInfo), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, EnableGlobalInterpolation), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairInterpolationType), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, MinLOD), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, DisableBelowMinLodStripping), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, RiggedSkeletalMesh), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsInterpolationMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsRenderingMemberName(), UGroomAsset::StaticClass()));
+//		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsPhysicsMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsCardsMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsMeshesMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsMaterialsMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsLODMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsInfoMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetEnableGlobalInterpolationMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetEnableSimulationCacheMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairInterpolationTypeMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetMinLODMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetDisableBelowMinLodStrippingMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetRiggedSkeletalMeshMemberName(), UGroomAsset::StaticClass()));
 	}
 	break;
 	case EMaterialPanelType::Interpolation:
 	{
-//		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsInterpolation), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsRendering), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsPhysics), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsCards), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMeshes), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMaterials), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsLOD), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsInfo), UGroomAsset::StaticClass()));
-//		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, EnableGlobalInterpolation), UGroomAsset::StaticClass()));
-//		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairInterpolationType), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, MinLOD), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, DisableBelowMinLodStripping), UGroomAsset::StaticClass()));
-		//DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, RiggedSkeletalMesh), UGroomAsset::StaticClass()));
+//		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsInterpolationMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsRenderingMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsPhysicsMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsCardsMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsMeshesMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsMaterialsMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsLODMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsInfoMemberName(), UGroomAsset::StaticClass()));
+//		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetEnableGlobalInterpolationMemberName(), UGroomAsset::StaticClass()));
+//		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetEnableSimulationCacheMemberName(), UGroomAsset::StaticClass()));
+//		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairInterpolationTypeMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetMinLODMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetDisableBelowMinLodStrippingMemberName(), UGroomAsset::StaticClass()));
+//		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetRiggedSkeletalMeshMemberName(), UGroomAsset::StaticClass()));
 	}
 	break;
 	case EMaterialPanelType::LODs:
 	{
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsInterpolation), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsRendering), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsPhysics), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsCards), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMeshes), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMaterials), UGroomAsset::StaticClass()));
-//		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsLOD), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsInfo), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, EnableGlobalInterpolation), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairInterpolationType), UGroomAsset::StaticClass()));
-//		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, MinLOD), UGroomAsset::StaticClass()));
-//		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, DisableBelowMinLodStripping), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, RiggedSkeletalMesh), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsInterpolationMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsRenderingMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsPhysicsMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsCardsMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsMeshesMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsMaterialsMemberName(), UGroomAsset::StaticClass()));
+//		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsLODMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairGroupsInfoMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetEnableGlobalInterpolationMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetEnableSimulationCacheMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetHairInterpolationTypeMemberName(), UGroomAsset::StaticClass()));
+//		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetMinLODMemberName(), UGroomAsset::StaticClass()));
+//		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetDisableBelowMinLodStrippingMemberName(), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(UGroomAsset::GetRiggedSkeletalMeshMemberName(), UGroomAsset::StaticClass()));
 	}
 	break;
 	}
@@ -489,7 +542,7 @@ void FGroomRenderingDetails::CustomizeStrandsGroupProperties(IDetailLayoutBuilde
 	{
 		case EMaterialPanelType::Cards:		
 		{
-			TSharedRef<IPropertyHandle> Property = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsCards), UGroomAsset::StaticClass());
+			TSharedRef<IPropertyHandle> Property = DetailLayout.GetProperty(UGroomAsset::GetHairGroupsCardsMemberName(), UGroomAsset::StaticClass());
 			AddNewGroupButton(FilesCategory, Property->GetProperty(), FText::FromString(TEXT("Add Card asset")));
 			if (Property->IsValidHandle())
 			{
@@ -502,7 +555,7 @@ void FGroomRenderingDetails::CustomizeStrandsGroupProperties(IDetailLayoutBuilde
 		break;
 		case EMaterialPanelType::Meshes:	
 		{
-			TSharedRef<IPropertyHandle> Property = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMeshes), UGroomAsset::StaticClass());
+			TSharedRef<IPropertyHandle> Property = DetailLayout.GetProperty(UGroomAsset::GetHairGroupsMeshesMemberName(), UGroomAsset::StaticClass());
 			AddNewGroupButton(FilesCategory, Property->GetProperty(), FText::FromString(TEXT("Add Mesh asset")));
 			if (Property->IsValidHandle())
 			{
@@ -515,7 +568,7 @@ void FGroomRenderingDetails::CustomizeStrandsGroupProperties(IDetailLayoutBuilde
 		break;
 		case EMaterialPanelType::Strands:	
 		{
-			TSharedRef<IPropertyHandle> Property = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsRendering), UGroomAsset::StaticClass());
+			TSharedRef<IPropertyHandle> Property = DetailLayout.GetProperty(UGroomAsset::GetHairGroupsRenderingMemberName(), UGroomAsset::StaticClass());
 			if (Property->IsValidHandle())
 			{
 				TSharedRef<FDetailArrayBuilder> PropertyBuilder = MakeShareable(new FDetailArrayBuilder(Property, false, false, false));
@@ -527,7 +580,7 @@ void FGroomRenderingDetails::CustomizeStrandsGroupProperties(IDetailLayoutBuilde
 		break;
 		case EMaterialPanelType::Physics:
 		{
-			TSharedRef<IPropertyHandle> Property = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsPhysics), UGroomAsset::StaticClass());
+			TSharedRef<IPropertyHandle> Property = DetailLayout.GetProperty(UGroomAsset::GetHairGroupsPhysicsMemberName(), UGroomAsset::StaticClass());
 			if (Property->IsValidHandle())
 			{
 				TSharedRef<FDetailArrayBuilder> PropertyBuilder = MakeShareable(new FDetailArrayBuilder(Property, false, false, false));
@@ -539,7 +592,7 @@ void FGroomRenderingDetails::CustomizeStrandsGroupProperties(IDetailLayoutBuilde
 		break;
 		case EMaterialPanelType::Interpolation:
 		{
-			TSharedRef<IPropertyHandle> Property = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsInterpolation), UGroomAsset::StaticClass());
+			TSharedRef<IPropertyHandle> Property = DetailLayout.GetProperty(UGroomAsset::GetHairGroupsInterpolationMemberName(), UGroomAsset::StaticClass());
 			if (Property->IsValidHandle())
 			{
 				TSharedRef<FDetailArrayBuilder> PropertyBuilder = MakeShareable(new FDetailArrayBuilder(Property, false, false, false));
@@ -551,7 +604,7 @@ void FGroomRenderingDetails::CustomizeStrandsGroupProperties(IDetailLayoutBuilde
 		break;
 		case EMaterialPanelType::LODs:
 		{
-			TSharedRef<IPropertyHandle> Property = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsLOD), UGroomAsset::StaticClass());
+			TSharedRef<IPropertyHandle> Property = DetailLayout.GetProperty(UGroomAsset::GetHairGroupsLODMemberName(), UGroomAsset::StaticClass());
 			if (Property->IsValidHandle())
 			{
 				TSharedRef<FDetailArrayBuilder> PropertyBuilder = MakeShareable(new FDetailArrayBuilder(Property, false, false, false));
@@ -584,13 +637,13 @@ FReply FGroomRenderingDetails::OnAddGroup(FProperty* Property)
 	case EMaterialPanelType::Cards:
 	{
 		FScopedTransaction Transaction(FText::FromString(TEXT("AddCardsGroup")));
-		GroomAsset->HairGroupsCards.AddDefaulted();
+		GroomAsset->GetHairGroupsCards().AddDefaulted();
 
-		const int32 LODCount = GroomAsset->HairGroupsCards.Num();
+		const int32 LODCount = GroomAsset->GetHairGroupsCards().Num();
 		if (LODCount > 1)
 		{
-			const FHairGroupsCardsSourceDescription& Prev = GroomAsset->HairGroupsCards[LODCount - 2];
-			FHairGroupsCardsSourceDescription& Current = GroomAsset->HairGroupsCards[LODCount - 1];
+			const FHairGroupsCardsSourceDescription& Prev = GroomAsset->GetHairGroupsCards()[LODCount - 2];
+			FHairGroupsCardsSourceDescription& Current = GroomAsset->GetHairGroupsCards()[LODCount - 1];
 
 			Current.SourceType = Prev.SourceType;
 			Current.GroupIndex = Prev.GroupIndex;
@@ -602,7 +655,7 @@ FReply FGroomRenderingDetails::OnAddGroup(FProperty* Property)
 		}
 		else
 		{
-			FHairGroupsCardsSourceDescription& Current = GroomAsset->HairGroupsCards[LODCount - 1];
+			FHairGroupsCardsSourceDescription& Current = GroomAsset->GetHairGroupsCards()[LODCount - 1];
 			Current.ProceduralSettings.TextureSettings.AtlasMaxResolution  = GetHairCardsAtlasResolution(0,0);
 			Current.LODIndex = 0;
 		}
@@ -614,7 +667,7 @@ FReply FGroomRenderingDetails::OnAddGroup(FProperty* Property)
 	case EMaterialPanelType::Meshes:
 	{
 		FScopedTransaction Transaction(FText::FromString(TEXT("AddMeshesGroup")));
-		GroomAsset->HairGroupsMeshes.AddDefaulted();
+		GroomAsset->GetHairGroupsMeshes().AddDefaulted();
 
 		FPropertyChangedEvent PropertyChangedEvent(Property, EPropertyChangeType::ArrayAdd);
 		GroomAsset->PostEditChangeProperty(PropertyChangedEvent);
@@ -641,9 +694,9 @@ FName& FGroomRenderingDetails::GetMaterialSlotName(int32 GroupIndex)
 	check(GroomAsset);
 	switch (PanelType)
 	{
-		case EMaterialPanelType::Cards:		return GroomAsset->HairGroupsCards[GroupIndex].MaterialSlotName;
-		case EMaterialPanelType::Meshes:	return GroomAsset->HairGroupsMeshes[GroupIndex].MaterialSlotName;
-		case EMaterialPanelType::Strands:	return GroomAsset->HairGroupsRendering[GroupIndex].MaterialSlotName;
+		case EMaterialPanelType::Cards:		return GroomAsset->GetHairGroupsCards()[GroupIndex].MaterialSlotName;
+		case EMaterialPanelType::Meshes:	return GroomAsset->GetHairGroupsMeshes()[GroupIndex].MaterialSlotName;
+		case EMaterialPanelType::Strands:	return GroomAsset->GetHairGroupsRendering()[GroupIndex].MaterialSlotName;
 	}
 
 	static FName Default;
@@ -656,9 +709,9 @@ const FName& FGroomRenderingDetails::GetMaterialSlotName(int32 GroupIndex) const
 	check(GroomAsset);
 	switch (PanelType)
 	{
-	case EMaterialPanelType::Cards:		return GroupIndex < GroomAsset->HairGroupsCards.Num() ? GroomAsset->HairGroupsCards[GroupIndex].MaterialSlotName : Default;
-	case EMaterialPanelType::Meshes:	return GroupIndex < GroomAsset->HairGroupsMeshes.Num() ? GroomAsset->HairGroupsMeshes[GroupIndex].MaterialSlotName : Default;
-	case EMaterialPanelType::Strands:	return GroupIndex < GroomAsset->HairGroupsRendering.Num() ? GroomAsset->HairGroupsRendering[GroupIndex].MaterialSlotName : Default;
+		case EMaterialPanelType::Cards:		return GroupIndex < GroomAsset->GetHairGroupsCards().Num() ? GroomAsset->GetHairGroupsCards()[GroupIndex].MaterialSlotName : Default;
+		case EMaterialPanelType::Meshes:	return GroupIndex < GroomAsset->GetHairGroupsMeshes().Num() ? GroomAsset->GetHairGroupsMeshes()[GroupIndex].MaterialSlotName : Default;
+		case EMaterialPanelType::Strands:	return GroupIndex < GroomAsset->GetHairGroupsRendering().Num() ? GroomAsset->GetHairGroupsRendering()[GroupIndex].MaterialSlotName : Default;
 	}
 
 	return Default;
@@ -669,12 +722,12 @@ int32 FGroomRenderingDetails::GetGroupCount() const
 	check(GroomAsset);
 	switch (PanelType)
 	{
-	case EMaterialPanelType::Cards:			return GroomAsset->HairGroupsCards.Num();
-	case EMaterialPanelType::Meshes:		return GroomAsset->HairGroupsMeshes.Num();
-	case EMaterialPanelType::Strands:		return GroomAsset->HairGroupsRendering.Num();
-	case EMaterialPanelType::Physics:		return GroomAsset->HairGroupsPhysics.Num();
-	case EMaterialPanelType::Interpolation:	return GroomAsset->HairGroupsInterpolation.Num();
-	case EMaterialPanelType::LODs:			return GroomAsset->HairGroupsLOD.Num();
+		case EMaterialPanelType::Cards:			return GroomAsset->GetHairGroupsCards().Num();
+		case EMaterialPanelType::Meshes:		return GroomAsset->GetHairGroupsMeshes().Num();
+		case EMaterialPanelType::Strands:		return GroomAsset->GetHairGroupsRendering().Num();
+		case EMaterialPanelType::Physics:		return GroomAsset->GetHairGroupsPhysics().Num();
+		case EMaterialPanelType::Interpolation:	return GroomAsset->GetHairGroupsInterpolation().Num();
+		case EMaterialPanelType::LODs:			return GroomAsset->GetHairGroupsLOD().Num();
 	}
 
 	return 0;
@@ -687,10 +740,10 @@ FReply FGroomRenderingDetails::OnRemoveGroupClicked(int32 GroupIndex, FProperty*
 	{
 	case EMaterialPanelType::Cards:		
 	{
-		if (GroupIndex < GroomAsset->HairGroupsCards.Num())
+		if (GroupIndex < GroomAsset->GetHairGroupsCards().Num())
 		{
 			FScopedTransaction Transaction(FText::FromString(TEXT("RemoveCardsGroup")));
-			GroomAsset->HairGroupsCards.RemoveAt(GroupIndex);
+			GroomAsset->GetHairGroupsCards().RemoveAt(GroupIndex);
 
 			FPropertyChangedEvent PropertyChangedEvent(Property, EPropertyChangeType::ArrayRemove);
 			GroomAsset->PostEditChangeProperty(PropertyChangedEvent);
@@ -699,10 +752,10 @@ FReply FGroomRenderingDetails::OnRemoveGroupClicked(int32 GroupIndex, FProperty*
 	break;
 	case EMaterialPanelType::Meshes:
 	{
-		if (GroupIndex < GroomAsset->HairGroupsMeshes.Num())
+		if (GroupIndex < GroomAsset->GetHairGroupsMeshes().Num())
 		{
 			FScopedTransaction Transaction(FText::FromString(TEXT("RemoveMeshesGroup")));
-			GroomAsset->HairGroupsMeshes.RemoveAt(GroupIndex);
+			GroomAsset->GetHairGroupsMeshes().RemoveAt(GroupIndex);
 
 			FPropertyChangedEvent PropertyChangedEvent(Property, EPropertyChangeType::ArrayRemove);
 			GroomAsset->PostEditChangeProperty(PropertyChangedEvent);
@@ -726,9 +779,9 @@ void FGroomRenderingDetails::SetMaterialSlot(int32 GroupIndex, int32 MaterialInd
 	{
 		GetMaterialSlotName(GroupIndex) = NAME_None;
 	}
-	else if (GroupIndex < GroupCount && MaterialIndex >= 0 && MaterialIndex < GroomAsset->HairGroupsMaterials.Num())
+	else if (GroupIndex < GroupCount && MaterialIndex >= 0 && MaterialIndex < GroomAsset->GetHairGroupsMaterials().Num())
 	{
-		GetMaterialSlotName(GroupIndex) = GroomAsset->HairGroupsMaterials[MaterialIndex].SlotName;
+		GetMaterialSlotName(GroupIndex) = GroomAsset->GetHairGroupsMaterials()[MaterialIndex].SlotName;
 	}
 
 	GroomAsset->MarkMaterialsHasChanged();
@@ -741,7 +794,7 @@ TSharedRef<SWidget> FGroomRenderingDetails::OnGenerateStrandsMaterialMenuPicker(
 		return SNullWidget::NullWidget;
 	}
 
-	const int32 MaterialCount = GroomAsset->HairGroupsMaterials.Num();
+	const int32 MaterialCount = GroomAsset->GetHairGroupsMaterials().Num();
 	if(MaterialCount == 0)
 	{
 		return SNullWidget::NullWidget;
@@ -759,7 +812,7 @@ TSharedRef<SWidget> FGroomRenderingDetails::OnGenerateStrandsMaterialMenuPicker(
 	// Add a menu item for material
 	for (int32 MaterialIt = 0; MaterialIt < MaterialCount; ++MaterialIt)
 	{
-		FText MaterialString = FText::FromString(FString::FromInt(MaterialIt) + TEXT(" - ") + GroomAsset->HairGroupsMaterials[MaterialIt].SlotName.ToString());
+		FText MaterialString = FText::FromString(FString::FromInt(MaterialIt) + TEXT(" - ") + GroomAsset->GetHairGroupsMaterials()[MaterialIt].SlotName.ToString());
 		FUIAction Action(FExecuteAction::CreateSP(this, &FGroomRenderingDetails::SetMaterialSlot, GroupIndex, MaterialIt));
 		MenuBuilder.AddMenuEntry(MaterialString, FText::GetEmpty(), FSlateIcon(), Action);
 	}
@@ -774,7 +827,7 @@ FText FGroomRenderingDetails::GetStrandsMaterialName(int32 GroupIndex) const
 	FText MaterialString = FText::FromString(TEXT("Default"));
 	if (MaterialIndex != INDEX_NONE)
 	{
-		MaterialString = FText::FromString(FString::FromInt(MaterialIndex) + TEXT(" - ") + GroomAsset->HairGroupsMaterials[MaterialIndex].SlotName.ToString());
+		MaterialString = FText::FromString(FString::FromInt(MaterialIndex) + TEXT(" - ") + GroomAsset->GetHairGroupsMaterials()[MaterialIndex].SlotName.ToString());
 	}
 	return MaterialString;
 }
@@ -817,8 +870,8 @@ bool FGroomRenderingDetails::CommonResetToDefault(TSharedPtr<IPropertyHandle> Ch
 
 	// For cards & meshes the incoming index is actually the cards/mesh description index, not the group index
 	// For the rest, the group index refers to the actual group index.
-	const bool bIsCardDescIndexValid = GroupIndex < GroomAsset->HairGroupsCards.Num();
-	const bool bIsMeshDescIndexValid = GroupIndex < GroomAsset->HairGroupsMeshes.Num();
+	const bool bIsCardDescIndexValid = GroupIndex < GroomAsset->GetHairGroupsCards().Num();
+	const bool bIsMeshDescIndexValid = GroupIndex < GroomAsset->GetHairGroupsMeshes().Num();
 	const bool bIsGroupIndexValid = GroupIndex < GroomAsset->GetNumHairGroups();
 		
 	// Hair strands
@@ -826,23 +879,23 @@ bool FGroomRenderingDetails::CommonResetToDefault(TSharedPtr<IPropertyHandle> Ch
 	{
 		{
 			FHairGeometrySettings Default;
-			HAIR_RESET1(HairGroupsRendering, FHairGeometrySettings, GeometrySettings, HairWidth);
-			HAIR_RESET1(HairGroupsRendering, FHairGeometrySettings, GeometrySettings, HairRootScale);
-			HAIR_RESET1(HairGroupsRendering, FHairGeometrySettings, GeometrySettings, HairTipScale);
+			HAIR_RESET1(GetHairGroupsRendering(), FHairGeometrySettings, GeometrySettings, HairWidth);
+			HAIR_RESET1(GetHairGroupsRendering(), FHairGeometrySettings, GeometrySettings, HairRootScale);
+			HAIR_RESET1(GetHairGroupsRendering(), FHairGeometrySettings, GeometrySettings, HairTipScale);
 		}
 
 		{
 			FHairShadowSettings Default;
-			HAIR_RESET1(HairGroupsRendering, FHairShadowSettings, ShadowSettings, bVoxelize);
-			HAIR_RESET1(HairGroupsRendering, FHairShadowSettings, ShadowSettings, bUseHairRaytracingGeometry);
-			HAIR_RESET1(HairGroupsRendering, FHairShadowSettings, ShadowSettings, HairRaytracingRadiusScale);
-			HAIR_RESET1(HairGroupsRendering, FHairShadowSettings, ShadowSettings, HairRaytracingRadiusScale);
+			HAIR_RESET1(GetHairGroupsRendering(), FHairShadowSettings, ShadowSettings, bVoxelize);
+			HAIR_RESET1(GetHairGroupsRendering(), FHairShadowSettings, ShadowSettings, bUseHairRaytracingGeometry);
+			HAIR_RESET1(GetHairGroupsRendering(), FHairShadowSettings, ShadowSettings, HairRaytracingRadiusScale);
+			HAIR_RESET1(GetHairGroupsRendering(), FHairShadowSettings, ShadowSettings, HairRaytracingRadiusScale);
 		}
 
 		{
 			FHairAdvancedRenderingSettings Default;
-			HAIR_RESET1(HairGroupsRendering, FHairAdvancedRenderingSettings, AdvancedSettings, bScatterSceneLighting);
-			HAIR_RESET1(HairGroupsRendering, FHairAdvancedRenderingSettings, AdvancedSettings, bUseStableRasterization);
+			HAIR_RESET1(GetHairGroupsRendering(), FHairAdvancedRenderingSettings, AdvancedSettings, bScatterSceneLighting);
+			HAIR_RESET1(GetHairGroupsRendering(), FHairAdvancedRenderingSettings, AdvancedSettings, bUseStableRasterization);
 		}
 	}
 
@@ -851,44 +904,33 @@ bool FGroomRenderingDetails::CommonResetToDefault(TSharedPtr<IPropertyHandle> Ch
 	{
 		{
 			FHairDecimationSettings Default;
-			HAIR_RESET1(HairGroupsInterpolation, FHairDecimationSettings, DecimationSettings, CurveDecimation);
-			HAIR_RESET1(HairGroupsInterpolation, FHairDecimationSettings, DecimationSettings, VertexDecimation);
+			HAIR_RESET1(GetHairGroupsInterpolation(), FHairDecimationSettings, DecimationSettings, CurveDecimation);
+			HAIR_RESET1(GetHairGroupsInterpolation(), FHairDecimationSettings, DecimationSettings, VertexDecimation);
 		}
 
 		{
 			FHairInterpolationSettings Default;
-			HAIR_RESET1(HairGroupsInterpolation, FHairInterpolationSettings, InterpolationSettings, bOverrideGuides);
-			HAIR_RESET1(HairGroupsInterpolation, FHairInterpolationSettings, InterpolationSettings, HairToGuideDensity);
-			HAIR_RESET1(HairGroupsInterpolation, FHairInterpolationSettings, InterpolationSettings, bRandomizeGuide);
-			HAIR_RESET1(HairGroupsInterpolation, FHairInterpolationSettings, InterpolationSettings, bUseUniqueGuide);
-		}
-
-		{
-			FHairDeformationSettings Default;
-			HAIR_RESET1(HairGroupsInterpolation, FHairDeformationSettings, RiggingSettings, NumCurves);
-			HAIR_RESET1(HairGroupsInterpolation, FHairDeformationSettings, RiggingSettings, NumPoints);
-			HAIR_RESET1(HairGroupsInterpolation, FHairDeformationSettings, RiggingSettings, bEnableRigging);
+			HAIR_RESET1(GetHairGroupsInterpolation(), FHairInterpolationSettings, InterpolationSettings, GuideType);
+			HAIR_RESET1(GetHairGroupsInterpolation(), FHairInterpolationSettings, InterpolationSettings, HairToGuideDensity);
+			HAIR_RESET1(GetHairGroupsInterpolation(), FHairInterpolationSettings, InterpolationSettings, bRandomizeGuide);
+			HAIR_RESET1(GetHairGroupsInterpolation(), FHairInterpolationSettings, InterpolationSettings, bUseUniqueGuide);
+			HAIR_RESET1(GetHairGroupsInterpolation(), FHairInterpolationSettings, InterpolationSettings, RiggedGuideNumCurves);
+			HAIR_RESET1(GetHairGroupsInterpolation(), FHairInterpolationSettings, InterpolationSettings, RiggedGuideNumPoints);
 		}
 	}
 
 	// LODs
 	if (bIsGroupIndexValid)
 	{
-		{
-			FHairGroupsLOD Default;
-			HAIR_RESET0(HairGroupsLOD, FHairGroupsLOD, ClusterWorldSize);
-			HAIR_RESET0(HairGroupsLOD, FHairGroupsLOD, ClusterScreenSizeScale);
-		}
-
-		if (LODIndex>=0 && LODIndex < GroomAsset->HairGroupsLOD[GroupIndex].LODs.Num())
+		if (LODIndex>=0 && LODIndex < GroomAsset->GetHairGroupsLOD()[GroupIndex].LODs.Num())
 		{
 			FHairLODSettings Default;
-			HAIR_RESET1(HairGroupsLOD, FHairLODSettings, LODs[LODIndex], CurveDecimation);
-			HAIR_RESET1(HairGroupsLOD, FHairLODSettings, LODs[LODIndex], VertexDecimation);
-			HAIR_RESET1(HairGroupsLOD, FHairLODSettings, LODs[LODIndex], AngularThreshold);
-			HAIR_RESET1(HairGroupsLOD, FHairLODSettings, LODs[LODIndex], ScreenSize);
-			HAIR_RESET1(HairGroupsLOD, FHairLODSettings, LODs[LODIndex], ThicknessScale);
-			HAIR_RESET1(HairGroupsLOD, FHairLODSettings, LODs[LODIndex], GeometryType);
+			HAIR_RESET1(GetHairGroupsLOD(), FHairLODSettings, LODs[LODIndex], CurveDecimation);
+			HAIR_RESET1(GetHairGroupsLOD(), FHairLODSettings, LODs[LODIndex], VertexDecimation);
+			HAIR_RESET1(GetHairGroupsLOD(), FHairLODSettings, LODs[LODIndex], AngularThreshold);
+			HAIR_RESET1(GetHairGroupsLOD(), FHairLODSettings, LODs[LODIndex], ScreenSize);
+			HAIR_RESET1(GetHairGroupsLOD(), FHairLODSettings, LODs[LODIndex], ThicknessScale);
+			HAIR_RESET1(GetHairGroupsLOD(), FHairLODSettings, LODs[LODIndex], GeometryType);
 		}
 	}
 
@@ -897,21 +939,21 @@ bool FGroomRenderingDetails::CommonResetToDefault(TSharedPtr<IPropertyHandle> Ch
 	{
 		{
 			FHairGroupsCardsSourceDescription Default;
-			HAIR_RESET0(HairGroupsCards, FHairGroupsCardsSourceDescription, SourceType);
-			HAIR_RESET0(HairGroupsCards, FHairGroupsCardsSourceDescription, ProceduralMesh);
-			HAIR_RESET0(HairGroupsCards, FHairGroupsCardsSourceDescription, ImportedMesh);
-			HAIR_RESET0(HairGroupsCards, FHairGroupsCardsSourceDescription, GroupIndex);
-			HAIR_RESET0(HairGroupsCards, FHairGroupsCardsSourceDescription, LODIndex);
+			HAIR_RESET0(GetHairGroupsCards(), FHairGroupsCardsSourceDescription, SourceType);
+			HAIR_RESET0(GetHairGroupsCards(), FHairGroupsCardsSourceDescription, ProceduralMesh);
+			HAIR_RESET0(GetHairGroupsCards(), FHairGroupsCardsSourceDescription, ImportedMesh);
+			HAIR_RESET0(GetHairGroupsCards(), FHairGroupsCardsSourceDescription, GroupIndex);
+			HAIR_RESET0(GetHairGroupsCards(), FHairGroupsCardsSourceDescription, LODIndex);
 		}
 
 		{
 			FHairGroupCardsTextures Default;
-			HAIR_RESET1(HairGroupsCards, FHairGroupCardsTextures, Textures, DepthTexture);
-			HAIR_RESET1(HairGroupsCards, FHairGroupCardsTextures, Textures, CoverageTexture);
-			HAIR_RESET1(HairGroupsCards, FHairGroupCardsTextures, Textures, TangentTexture);
-			HAIR_RESET1(HairGroupsCards, FHairGroupCardsTextures, Textures, AttributeTexture);
-			HAIR_RESET1(HairGroupsCards, FHairGroupCardsTextures, Textures, MaterialTexture);
-			HAIR_RESET1(HairGroupsCards, FHairGroupCardsTextures, Textures, AuxilaryDataTexture);
+			HAIR_RESET1(GetHairGroupsCards(), FHairGroupCardsTextures, Textures, DepthTexture);
+			HAIR_RESET1(GetHairGroupsCards(), FHairGroupCardsTextures, Textures, CoverageTexture);
+			HAIR_RESET1(GetHairGroupsCards(), FHairGroupCardsTextures, Textures, TangentTexture);
+			HAIR_RESET1(GetHairGroupsCards(), FHairGroupCardsTextures, Textures, AttributeTexture);
+			HAIR_RESET1(GetHairGroupsCards(), FHairGroupCardsTextures, Textures, MaterialTexture);
+			HAIR_RESET1(GetHairGroupsCards(), FHairGroupCardsTextures, Textures, AuxilaryDataTexture);
 		}
 	}
 
@@ -920,19 +962,19 @@ bool FGroomRenderingDetails::CommonResetToDefault(TSharedPtr<IPropertyHandle> Ch
 	{
 		{
 			FHairGroupsMeshesSourceDescription Default;
-			HAIR_RESET0(HairGroupsMeshes, FHairGroupsMeshesSourceDescription, ImportedMesh);
-			HAIR_RESET0(HairGroupsMeshes, FHairGroupsMeshesSourceDescription, GroupIndex);
-			HAIR_RESET0(HairGroupsMeshes, FHairGroupsMeshesSourceDescription, LODIndex);
+			HAIR_RESET0(GetHairGroupsMeshes(), FHairGroupsMeshesSourceDescription, ImportedMesh);
+			HAIR_RESET0(GetHairGroupsMeshes(), FHairGroupsMeshesSourceDescription, GroupIndex);
+			HAIR_RESET0(GetHairGroupsMeshes(), FHairGroupsMeshesSourceDescription, LODIndex);
 		}
 
 		{
 			FHairGroupCardsTextures Default;
-			HAIR_RESET1(HairGroupsMeshes, FHairGroupCardsTextures, Textures, DepthTexture);
-			HAIR_RESET1(HairGroupsMeshes, FHairGroupCardsTextures, Textures, CoverageTexture);
-			HAIR_RESET1(HairGroupsMeshes, FHairGroupCardsTextures, Textures, TangentTexture);
-			HAIR_RESET1(HairGroupsMeshes, FHairGroupCardsTextures, Textures, AttributeTexture);
-			HAIR_RESET1(HairGroupsMeshes, FHairGroupCardsTextures, Textures, MaterialTexture);
-			HAIR_RESET1(HairGroupsMeshes, FHairGroupCardsTextures, Textures, AuxilaryDataTexture);
+			HAIR_RESET1(GetHairGroupsMeshes(), FHairGroupCardsTextures, Textures, DepthTexture);
+			HAIR_RESET1(GetHairGroupsMeshes(), FHairGroupCardsTextures, Textures, CoverageTexture);
+			HAIR_RESET1(GetHairGroupsMeshes(), FHairGroupCardsTextures, Textures, TangentTexture);
+			HAIR_RESET1(GetHairGroupsMeshes(), FHairGroupCardsTextures, Textures, AttributeTexture);
+			HAIR_RESET1(GetHairGroupsMeshes(), FHairGroupCardsTextures, Textures, MaterialTexture);
+			HAIR_RESET1(GetHairGroupsMeshes(), FHairGroupCardsTextures, Textures, AuxilaryDataTexture);
 		}
 	}
 
@@ -941,58 +983,58 @@ bool FGroomRenderingDetails::CommonResetToDefault(TSharedPtr<IPropertyHandle> Ch
 	{
 		{
 			FHairSolverSettings Default;
-			HAIR_RESET1(HairGroupsPhysics, FHairSolverSettings, SolverSettings, EnableSimulation);
-			HAIR_RESET1(HairGroupsPhysics, FHairSolverSettings, SolverSettings, NiagaraSolver);
-			HAIR_RESET1(HairGroupsPhysics, FHairSolverSettings, SolverSettings, CustomSystem);
-			HAIR_RESET1(HairGroupsPhysics, FHairSolverSettings, SolverSettings, SubSteps);
-			HAIR_RESET1(HairGroupsPhysics, FHairSolverSettings, SolverSettings, IterationCount);
+			HAIR_RESET1(GetHairGroupsPhysics(), FHairSolverSettings, SolverSettings, EnableSimulation);
+			HAIR_RESET1(GetHairGroupsPhysics(), FHairSolverSettings, SolverSettings, NiagaraSolver);
+			HAIR_RESET1(GetHairGroupsPhysics(), FHairSolverSettings, SolverSettings, CustomSystem);
+			HAIR_RESET1(GetHairGroupsPhysics(), FHairSolverSettings, SolverSettings, SubSteps);
+			HAIR_RESET1(GetHairGroupsPhysics(), FHairSolverSettings, SolverSettings, IterationCount);
 		}
 
 		{
 			FHairExternalForces Default;
-			HAIR_RESET1(HairGroupsPhysics, FHairExternalForces, ExternalForces, GravityVector);
-			HAIR_RESET1(HairGroupsPhysics, FHairExternalForces, ExternalForces, AirDrag);
-			HAIR_RESET1(HairGroupsPhysics, FHairExternalForces, ExternalForces, AirVelocity);
+			HAIR_RESET1(GetHairGroupsPhysics(), FHairExternalForces, ExternalForces, GravityVector);
+			HAIR_RESET1(GetHairGroupsPhysics(), FHairExternalForces, ExternalForces, AirDrag);
+			HAIR_RESET1(GetHairGroupsPhysics(), FHairExternalForces, ExternalForces, AirVelocity);
 		}
 
 		{
 			FHairBendConstraint Default;
-			HAIR_RESET2(HairGroupsPhysics, FHairBendConstraint, MaterialConstraints, BendConstraint, SolveBend);
-			HAIR_RESET2(HairGroupsPhysics, FHairBendConstraint, MaterialConstraints, BendConstraint, ProjectBend);
-			HAIR_RESET2(HairGroupsPhysics, FHairBendConstraint, MaterialConstraints, BendConstraint, BendDamping);
-			HAIR_RESET2(HairGroupsPhysics, FHairBendConstraint, MaterialConstraints, BendConstraint, BendStiffness);
-//			HAIR_RESET2(HairGroupsPhysics, FHairBendConstraint, MaterialConstraints, BendConstraint, BendScale);
+			HAIR_RESET2(GetHairGroupsPhysics(), FHairBendConstraint, MaterialConstraints, BendConstraint, SolveBend);
+			HAIR_RESET2(GetHairGroupsPhysics(), FHairBendConstraint, MaterialConstraints, BendConstraint, ProjectBend);
+			HAIR_RESET2(GetHairGroupsPhysics(), FHairBendConstraint, MaterialConstraints, BendConstraint, BendDamping);
+			HAIR_RESET2(GetHairGroupsPhysics(), FHairBendConstraint, MaterialConstraints, BendConstraint, BendStiffness);
+//			HAIR_RESET2(GetHairGroupsPhysics(), FHairBendConstraint, MaterialConstraints, BendConstraint, BendScale);
 		}
 
 		{
 			FHairStretchConstraint Default;
-			HAIR_RESET2(HairGroupsPhysics, FHairStretchConstraint, MaterialConstraints, StretchConstraint, SolveStretch);
-			HAIR_RESET2(HairGroupsPhysics, FHairStretchConstraint, MaterialConstraints, StretchConstraint, ProjectStretch);
-			HAIR_RESET2(HairGroupsPhysics, FHairStretchConstraint, MaterialConstraints, StretchConstraint, StretchDamping);
-			HAIR_RESET2(HairGroupsPhysics, FHairStretchConstraint, MaterialConstraints, StretchConstraint, StretchStiffness);
-//			HAIR_RESET2(HairGroupsPhysics, FHairStretchConstraint, MaterialConstraints, StretchConstraint, StretchScale);
+			HAIR_RESET2(GetHairGroupsPhysics(), FHairStretchConstraint, MaterialConstraints, StretchConstraint, SolveStretch);
+			HAIR_RESET2(GetHairGroupsPhysics(), FHairStretchConstraint, MaterialConstraints, StretchConstraint, ProjectStretch);
+			HAIR_RESET2(GetHairGroupsPhysics(), FHairStretchConstraint, MaterialConstraints, StretchConstraint, StretchDamping);
+			HAIR_RESET2(GetHairGroupsPhysics(), FHairStretchConstraint, MaterialConstraints, StretchConstraint, StretchStiffness);
+//			HAIR_RESET2(GetHairGroupsPhysics(), FHairStretchConstraint, MaterialConstraints, StretchConstraint, StretchScale);
 		}
 
 		{
 			FHairCollisionConstraint Default;
-			HAIR_RESET2(HairGroupsPhysics, FHairCollisionConstraint, MaterialConstraints, CollisionConstraint, SolveCollision);
-			HAIR_RESET2(HairGroupsPhysics, FHairCollisionConstraint, MaterialConstraints, CollisionConstraint, ProjectCollision);
-			HAIR_RESET2(HairGroupsPhysics, FHairCollisionConstraint, MaterialConstraints, CollisionConstraint, StaticFriction);
-			HAIR_RESET2(HairGroupsPhysics, FHairCollisionConstraint, MaterialConstraints, CollisionConstraint, KineticFriction);
-			HAIR_RESET2(HairGroupsPhysics, FHairCollisionConstraint, MaterialConstraints, CollisionConstraint, StrandsViscosity);
-			HAIR_RESET2(HairGroupsPhysics, FHairCollisionConstraint, MaterialConstraints, CollisionConstraint, GridDimension);
-			HAIR_RESET2(HairGroupsPhysics, FHairCollisionConstraint, MaterialConstraints, CollisionConstraint, CollisionRadius);
-//			HAIR_RESET2(HairGroupsPhysics, FHairCollisionConstraint, MaterialConstraints, CollisionConstraint, RadiusScale);
+			HAIR_RESET2(GetHairGroupsPhysics(), FHairCollisionConstraint, MaterialConstraints, CollisionConstraint, SolveCollision);
+			HAIR_RESET2(GetHairGroupsPhysics(), FHairCollisionConstraint, MaterialConstraints, CollisionConstraint, ProjectCollision);
+			HAIR_RESET2(GetHairGroupsPhysics(), FHairCollisionConstraint, MaterialConstraints, CollisionConstraint, StaticFriction);
+			HAIR_RESET2(GetHairGroupsPhysics(), FHairCollisionConstraint, MaterialConstraints, CollisionConstraint, KineticFriction);
+			HAIR_RESET2(GetHairGroupsPhysics(), FHairCollisionConstraint, MaterialConstraints, CollisionConstraint, StrandsViscosity);
+			HAIR_RESET2(GetHairGroupsPhysics(), FHairCollisionConstraint, MaterialConstraints, CollisionConstraint, GridDimension);
+			HAIR_RESET2(GetHairGroupsPhysics(), FHairCollisionConstraint, MaterialConstraints, CollisionConstraint, CollisionRadius);
+//			HAIR_RESET2(GetHairGroupsPhysics(), FHairCollisionConstraint, MaterialConstraints, CollisionConstraint, RadiusScale);
 		}
 		
 
 		{
 			FHairStrandsParameters Default;
-			HAIR_RESET1(HairGroupsPhysics, FHairStrandsParameters, StrandsParameters, StrandsSize);
-			HAIR_RESET1(HairGroupsPhysics, FHairStrandsParameters, StrandsParameters, StrandsDensity);
-			HAIR_RESET1(HairGroupsPhysics, FHairStrandsParameters, StrandsParameters, StrandsSmoothing);
-			HAIR_RESET1(HairGroupsPhysics, FHairStrandsParameters, StrandsParameters, StrandsThickness);
-//			HAIR_RESET1(HairGroupsPhysics, FHairStrandsParameters, StrandsParameters, ThicknessScale);
+			HAIR_RESET1(GetHairGroupsPhysics(), FHairStrandsParameters, StrandsParameters, StrandsSize);
+			HAIR_RESET1(GetHairGroupsPhysics(), FHairStrandsParameters, StrandsParameters, StrandsDensity);
+			HAIR_RESET1(GetHairGroupsPhysics(), FHairStrandsParameters, StrandsParameters, StrandsSmoothing);
+			HAIR_RESET1(GetHairGroupsPhysics(), FHairStrandsParameters, StrandsParameters, StrandsThickness);
+//			HAIR_RESET1(GetHairGroupsPhysics(), FHairStrandsParameters, StrandsParameters, ThicknessScale);
 		}
 	}
 
@@ -1042,16 +1084,19 @@ void FGroomRenderingDetails::ExpandStructForLOD(TSharedRef<IPropertyHandle>& Pro
 			continue;
 		}
 
+		const bool bAutoLOD = GroomAsset->GetHairGroupsLOD()[GroupIndex].LODType == EGroomLODType::Auto;
 		if (bOverrideReset)
 		{
 			FIsResetToDefaultVisible IsResetVisible = FIsResetToDefaultVisible::CreateSP(this, &FGroomRenderingDetails::ShouldResetToDefault, GroupIndex, LODIndex);
 			FResetToDefaultHandler ResetHandler = FResetToDefaultHandler::CreateSP(this, &FGroomRenderingDetails::ResetToDefault, GroupIndex, LODIndex);
 			FResetToDefaultOverride ResetOverride = FResetToDefaultOverride::Create(IsResetVisible, ResetHandler);
-			ChildrenBuilder.AddProperty(ChildHandle.ToSharedRef()).OverrideResetToDefault(ResetOverride);
+			IDetailPropertyRow& Row = ChildrenBuilder.AddProperty(ChildHandle.ToSharedRef()).OverrideResetToDefault(ResetOverride);
+			Row.IsEnabled(!bAutoLOD);
 		}
 		else
 		{
-			ChildrenBuilder.AddProperty(ChildHandle.ToSharedRef());
+			IDetailPropertyRow& Row = ChildrenBuilder.AddProperty(ChildHandle.ToSharedRef());
+			Row.IsEnabled(!bAutoLOD);
 		}
 	}
 }
@@ -1099,14 +1144,50 @@ void FGroomRenderingDetails::ExpandStruct(TSharedRef<IPropertyHandle>& PropertyH
 	}
 }
 
+void FGroomRenderingDetails::AddPropertySeparator(FName PropertyName, IDetailChildrenBuilder& ChildrenBuilder)
+{
+	static const FSlateBrush* GenericBrush = FCoreStyle::Get().GetBrush("GenericWhiteBox");
+	float OtherMargin = 0.0f;
+	float RightMargin = 10.0f;
+	const FLinearColor SeparatorColor(0.05f, 0.05f,0.05f);
+	ChildrenBuilder.AddCustomRow(LOCTEXT("Hair_Separator", "Separator"))
+	.WholeRowContent()
+	.VAlign(VAlign_Fill)
+	.HAlign(HAlign_Fill)
+	[
+		SNew(SOverlay)
+		+ SOverlay::Slot()
+		[
+			SNew(SImage)
+			.Image(GenericBrush)
+			.ColorAndOpacity(SeparatorColor)
+		]
+		+ SOverlay::Slot()
+		.HAlign(HAlign_Left)
+		.VAlign(VAlign_Center)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.VAlign(VAlign_Center)
+			.Padding(RightMargin, OtherMargin, RightMargin, OtherMargin)
+			[
+				SNew(STextBlock)
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+				.ColorAndOpacity(FLinearColor(0.9f, 0.9f,0.9f))
+				.Text(FText::FromName(PropertyName))
+			]						
+		]
+	];
+}
+
 FReply FGroomRenderingDetails::OnRemoveLODClicked(int32 GroupIndex, int32 LODIndex, FProperty* Property)
 {
 	check(GroomAsset);
-	if (GroupIndex < GroomAsset->HairGroupsLOD.Num() && LODIndex >= 0 && LODIndex < GroomAsset->HairGroupsLOD[GroupIndex].LODs.Num() && GroomAsset->HairGroupsLOD[GroupIndex].LODs.Num() > 1)
+	if (GroupIndex < GroomAsset->GetHairGroupsLOD().Num() && LODIndex >= 0 && LODIndex < GroomAsset->GetHairGroupsLOD()[GroupIndex].LODs.Num() && GroomAsset->GetHairGroupsLOD()[GroupIndex].LODs.Num() > 1)
 	{
 		FScopedTransaction Transaction(FText::FromString(TEXT("RemoveLOD")));
 
-		GroomAsset->HairGroupsLOD[GroupIndex].LODs.RemoveAt(LODIndex);
+		GroomAsset->GetHairGroupsLOD()[GroupIndex].LODs.RemoveAt(LODIndex);
 
 		FPropertyChangedEvent PropertyChangedEvent(Property, EPropertyChangeType::ArrayRemove);
 		GroomAsset->PostEditChangeProperty(PropertyChangedEvent);
@@ -1117,16 +1198,16 @@ FReply FGroomRenderingDetails::OnRemoveLODClicked(int32 GroupIndex, int32 LODInd
 FReply FGroomRenderingDetails::OnAddLODClicked(int32 GroupIndex, FProperty* Property)
 {
 	const int32 MaxLODCount = 8; 
-	if (GroupIndex < GroomAsset->HairGroupsLOD.Num() && GroomAsset->HairGroupsLOD[GroupIndex].LODs.Num() < MaxLODCount)
+	if (GroupIndex < GroomAsset->GetHairGroupsLOD().Num() && GroomAsset->GetHairGroupsLOD()[GroupIndex].LODs.Num() < MaxLODCount)
 	{
 		FScopedTransaction Transaction(FText::FromString(TEXT("AddLOD")));
 
-		GroomAsset->HairGroupsLOD[GroupIndex].LODs.AddDefaulted();
-		const int32 LODCount = GroomAsset->HairGroupsLOD[GroupIndex].LODs.Num();
+		GroomAsset->GetHairGroupsLOD()[GroupIndex].LODs.AddDefaulted();
+		const int32 LODCount = GroomAsset->GetHairGroupsLOD()[GroupIndex].LODs.Num();
 		if (LODCount > 1)
 		{
-			const FHairLODSettings& PrevLODSettings = GroomAsset->HairGroupsLOD[GroupIndex].LODs[LODCount-2];
-			FHairLODSettings& LODSettings = GroomAsset->HairGroupsLOD[GroupIndex].LODs[LODCount-1];
+			const FHairLODSettings& PrevLODSettings = GroomAsset->GetHairGroupsLOD()[GroupIndex].LODs[LODCount-2];
+			FHairLODSettings& LODSettings = GroomAsset->GetHairGroupsLOD()[GroupIndex].LODs[LODCount-1];
 
 			// Prefill the LOD setting with basic preset
 			LODSettings.VertexDecimation = PrevLODSettings.VertexDecimation * 0.5f;
@@ -1145,7 +1226,7 @@ FReply FGroomRenderingDetails::OnAddLODClicked(int32 GroupIndex, FProperty* Prop
 // Hair_TODO: rename into OnReloadCards
 FReply FGroomRenderingDetails::OnRefreshCards(int32 DescIndex, FProperty* Property)
 {
-	if (DescIndex < GroomAsset->HairGroupsCards.Num() && GroomAsset->HairGroupsCards[DescIndex].SourceType == EHairCardsSourceType::Procedural)
+	if (DescIndex < GroomAsset->GetHairGroupsCards().Num() && GroomAsset->GetHairGroupsCards()[DescIndex].SourceType == EHairCardsSourceType::Procedural)
 	{
 		FScopedTransaction Transaction(FText::FromString(TEXT("RefreshCards")));
 		
@@ -1158,7 +1239,7 @@ FReply FGroomRenderingDetails::OnRefreshCards(int32 DescIndex, FProperty* Proper
 // Hair_TODO: rename into OnGenerageCards
 FReply FGroomRenderingDetails::OnSaveCards(int32 DescIndex, FProperty* Property)
 {
-	if (DescIndex < GroomAsset->HairGroupsCards.Num())
+	if (DescIndex < GroomAsset->GetHairGroupsCards().Num())
 	{
 		GroomAsset->SaveProceduralCards(DescIndex);
 	}
@@ -1167,7 +1248,7 @@ FReply FGroomRenderingDetails::OnSaveCards(int32 DescIndex, FProperty* Property)
 
 FReply FGroomRenderingDetails::OnGenerateCardDataUsingPlugin(int32 GroupIndex)
 {
-	if (GroomAsset && GroomAsset->HairGroupsCards.IsValidIndex(GroupIndex))
+	if (GroomAsset && GroomAsset->GetHairGroupsCards().IsValidIndex(GroupIndex))
 	{
 		TArray<IHairCardGenerator*> HairCardGeneratorPlugins = IModularFeatures::Get().GetModularFeatureImplementations<IHairCardGenerator>(IHairCardGenerator::ModularFeatureName);
 		if (HairCardGeneratorPlugins.Num() > 0)
@@ -1177,7 +1258,7 @@ FReply FGroomRenderingDetails::OnGenerateCardDataUsingPlugin(int32 GroupIndex)
 			const FScopedTransaction Transaction(LOCTEXT("GenerateHairCardsTransaction", "Generate hair cards."));
 
 			// Use a copy so we can only apply changes on success
-			FHairGroupsCardsSourceDescription HairCardsCopy = GroomAsset->HairGroupsCards[GroupIndex];
+			FHairGroupsCardsSourceDescription HairCardsCopy = GroomAsset->GetHairGroupsCards()[GroupIndex];
 			// Clear fields that are supposed to be set by the generation (in case it leaves any unset, and we don't cary over old settings)
 			HairCardsCopy.Textures = FHairGroupCardsTextures();
 
@@ -1185,16 +1266,11 @@ FReply FGroomRenderingDetails::OnGenerateCardDataUsingPlugin(int32 GroupIndex)
 			if (bSuccess)
 			{
 				GroomAsset->Modify();
-				GroomAsset->HairGroupsCards[GroupIndex] = HairCardsCopy;
+				GroomAsset->GetHairGroupsCards()[GroupIndex] = HairCardsCopy;
 			}
 		}
 	}
 	return FReply::Handled();
-}
-
-void FGroomRenderingDetails::AddLODSlot(TSharedRef<IPropertyHandle>& LODHandle, IDetailChildrenBuilder& ChildrenBuilder, int32 GroupIndex, int32 LODIndex)
-{	
-	ExpandStruct(LODHandle, ChildrenBuilder, GroupIndex, LODIndex, true);
 }
 
 void FGroomRenderingDetails::OnGenerateElementForLODs(TSharedRef<IPropertyHandle> StructProperty, int32 LODIndex, IDetailChildrenBuilder& ChildrenBuilder, IDetailLayoutBuilder* DetailLayout, int32 GroupIndex)
@@ -1207,6 +1283,7 @@ void FGroomRenderingDetails::OnGenerateElementForLODs(TSharedRef<IPropertyHandle
 	static const FSlateBrush* GenericBrush = FCoreStyle::Get().GetBrush("GenericWhiteBox");
 	float OtherMargin = 2.0f;
 
+	// LOD Bar with add button
 	ChildrenBuilder.AddCustomRow(LOCTEXT("HairInfo_Separator", "Separator"))
 	.WholeRowContent()
 	.VAlign(VAlign_Fill)
@@ -1250,6 +1327,20 @@ void FGroomRenderingDetails::OnGenerateElementForLODs(TSharedRef<IPropertyHandle
 		]
 	];
 
+	// LOD Stats
+	const FHairStrandsClusterBulkData& ClusterBulkData = GroomAsset->GetHairGroupsPlatformData()[GroupIndex].Strands.ClusterBulkData;
+	if (ClusterBulkData.IsValid() && LODIndex < ClusterBulkData.Header.LODInfos.Num())
+	{
+		const FHairLODInfo& LODInfo = ClusterBulkData.Header.LODInfos[LODIndex];
+
+		ChildrenBuilder.AddCustomRow(LOCTEXT("HairStrandsLODInfo_Array", "HairStrandsLODInfo"))
+		.ValueContent()
+		.HAlign(HAlign_Fill)
+		[
+			MakeHairStrandsLODInfoGrid(DetailFontInfo, LODInfo)
+		];
+	}
+	
 	// Rename the array entry name by its group name and adds all its existing properties
 	StructProperty->SetPropertyDisplayName(LOCTEXT("LODProperties", "LOD Properties"));
 	ExpandStructForLOD(StructProperty, ChildrenBuilder, GroupIndex, LODIndex, true); ///
@@ -1305,9 +1396,9 @@ TSharedRef<SWidget> FGroomRenderingDetails::MakeGroupNameButtonCustomization(int
 
 static FName GetGroupName(const UGroomAsset* GroomAsset, int32 GroupIndex)
 {
-	if (GroomAsset && GroupIndex >= 0 && GroupIndex < GroomAsset->HairGroupsInfo.Num())
+	if (GroomAsset && GroupIndex >= 0 && GroupIndex < GroomAsset->GetHairGroupsInfo().Num())
 	{
-		return GroomAsset->HairGroupsInfo[GroupIndex].GroupName;
+		return GroomAsset->GetHairGroupsInfo()[GroupIndex].GroupName;
 	}
 	return NAME_None;
 }
@@ -1411,23 +1502,29 @@ void FGroomRenderingDetails::OnGenerateElementForHairGroup(TSharedRef<IPropertyH
 		]
 	];
 
-	if (GroomAsset != nullptr && GroupIndex>=0 && GroupIndex < GroomAsset->HairGroupsInfo.Num() && (PanelType == EMaterialPanelType::Strands || PanelType == EMaterialPanelType::Interpolation))
+	if (GroomAsset != nullptr && GroupIndex>=0 && GroupIndex < GroomAsset->GetHairGroupsInfo().Num() && (PanelType == EMaterialPanelType::Strands || PanelType == EMaterialPanelType::Interpolation))
 	{
 		ChildrenBuilder.AddCustomRow(LOCTEXT("HairStrandsInfo_Array", "HairStrandsInfo"))
 		.ValueContent()
 		.HAlign(HAlign_Fill)
 		[
-			MakeHairStrandsInfoGrid(DetailFontInfo, GroomAsset->HairGroupsInfo[GroupIndex], GroomAsset->HairGroupsData[GroupIndex].Strands.BulkData.MaxRadius)
+			MakeHairStrandsInfoGrid(DetailFontInfo, GroomAsset->GetHairGroupsInfo()[GroupIndex], GroomAsset->GetHairGroupsPlatformData()[GroupIndex].Strands.BulkData.Header.MaxRadius)
+		];
+		ChildrenBuilder.AddCustomRow(LOCTEXT("HairStrandsAttributeInfo_Array", "HairStrandsAttributeInfo"))
+		.ValueContent()
+		.HAlign(HAlign_Fill)
+		[
+			MakeHairStrandsAttributeInfoGrid(DetailFontInfo, GroomAsset->GetHairGroupsPlatformData()[GroupIndex].Strands.BulkData.Header.ImportedAttributes, GroomAsset->GetHairGroupsPlatformData()[GroupIndex].Strands.BulkData.Header.ImportedAttributeFlags)
 		];
 	}
 
-	if (GroomAsset != nullptr && GroupIndex >= 0 && GroupIndex < GroomAsset->HairGroupsCards.Num() && (PanelType == EMaterialPanelType::Cards))
+	if (GroomAsset != nullptr && GroupIndex >= 0 && GroupIndex < GroomAsset->GetHairGroupsCards().Num() && (PanelType == EMaterialPanelType::Cards))
 	{
 		ChildrenBuilder.AddCustomRow(LOCTEXT("HairCardsInfo_Array", "HairCardsInfo"))
 		.ValueContent()
 		.HAlign(HAlign_Fill)
 		[
-			MakeHairCardsInfoGrid(DetailFontInfo, GroomAsset->HairGroupsCards[GroupIndex].CardsInfo)
+			MakeHairCardsInfoGrid(DetailFontInfo, GroomAsset->GetHairGroupsCards()[GroupIndex].CardsInfo)
 		];
 	}
 
@@ -1519,8 +1616,8 @@ void FGroomRenderingDetails::OnGenerateElementForHairGroup(TSharedRef<IPropertyH
 				TWeakObjectPtr<UGroomAsset> GroomAssetPtr = GroomAsset;
 				auto ShouldShowProceduralProperties = [GroomAssetPtr, GroupIndex]()
 				{
-					return GroomAssetPtr.IsValid() && GroomAssetPtr->HairGroupsCards.IsValidIndex(GroupIndex) &&
-						GroomAssetPtr->HairGroupsCards[GroupIndex].SourceType == EHairCardsSourceType::Procedural;
+					return GroomAssetPtr.IsValid() && GroomAssetPtr->GetHairGroupsCards().IsValidIndex(GroupIndex) &&
+						GroomAssetPtr->GetHairGroupsCards()[GroupIndex].SourceType == EHairCardsSourceType::Procedural;
 				};
 				TAttribute<EVisibility> ProceduralPropertyVisibility = TAttribute<EVisibility>::CreateLambda([ShouldShowProceduralProperties]()
 					{
@@ -1662,6 +1759,12 @@ void FGroomRenderingDetails::OnGenerateElementForHairGroup(TSharedRef<IPropertyH
 		break;
 		case EMaterialPanelType::LODs:
 		{
+			// Reload layout when the LOD type change
+			if (PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupsLOD, LODType))
+			{
+				ChildHandle->SetOnPropertyValueChanged(FSimpleDelegate::CreateSP(this, &FGroomRenderingDetails::OnGroomLODTypeChanged));
+			}
+
 			if (PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupsLOD, LODs))
 			{
 				// Add a custom builder for each LOD arrays within each group. This way we can customize this 'nested/inner' array
@@ -1678,7 +1781,29 @@ void FGroomRenderingDetails::OnGenerateElementForHairGroup(TSharedRef<IPropertyH
 		break;
 		case EMaterialPanelType::Physics:
 		{
-			AddPropertyWithCustomReset(ChildHandle, ChildrenBuilder, GroupIndex, -1);
+			if (PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupsPhysics, SolverSettings) ||
+				PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupsPhysics, ExternalForces) ||
+				PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupsPhysics, StrandsParameters))
+			{
+				AddPropertySeparator(PropertyName, ChildrenBuilder);
+				ExpandStruct(ChildHandle, ChildrenBuilder, GroupIndex, -1, true);
+			}
+			else if (PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupsPhysics, MaterialConstraints))
+			{
+				// Expand the constraint, so that each constraints type has its own block (so that custom value reset works correctly)
+				uint32 SubChildrenCount = 0;
+				ChildHandle->GetNumChildren(SubChildrenCount);
+				for (uint32 SubChildIt = 0; SubChildIt < SubChildrenCount; ++SubChildIt)
+				{
+					TSharedPtr<IPropertyHandle> SubChildHandle = ChildHandle->GetChildHandle(SubChildIt);					
+					AddPropertySeparator(SubChildHandle->GetProperty()->GetFName(), ChildrenBuilder);
+					ExpandStruct(SubChildHandle, ChildrenBuilder, GroupIndex, -1, true);
+				}
+			}
+			else
+			{
+				AddPropertyWithCustomReset(ChildHandle, ChildrenBuilder, GroupIndex, -1);
+			}
 		}
 		break;
 		case EMaterialPanelType::Bindings:
@@ -1694,6 +1819,11 @@ void FGroomRenderingDetails::OnGenerateElementForHairGroup(TSharedRef<IPropertyH
 		}
 
 	}
+}
+
+void FGroomRenderingDetails::OnGroomLODTypeChanged()
+{
+	GroomDetailLayout->ForceRefreshDetails();
 }
 
 // Hair binding display
@@ -1742,25 +1872,25 @@ FString FGroomRenderingDetails::OnGetObjectPath(int32 GroupIndex) const
 	{
 	case EMaterialPanelType::Cards:
 	{
-		if (GroupIndex < GroomAsset->HairGroupsCards.Num())
+		if (GroupIndex < GroomAsset->GetHairGroupsCards().Num())
 		{
-			MaterialIndex = GroomAsset->GetMaterialIndex(GroomAsset->HairGroupsCards[GroupIndex].MaterialSlotName);
+			MaterialIndex = GroomAsset->GetMaterialIndex(GroomAsset->GetHairGroupsCards()[GroupIndex].MaterialSlotName);
 		}
 	}
 	break;
 	case EMaterialPanelType::Meshes:
 	{
-		if (GroupIndex < GroomAsset->HairGroupsMeshes.Num())
+		if (GroupIndex < GroomAsset->GetHairGroupsMeshes().Num())
 		{
-			MaterialIndex = GroomAsset->GetMaterialIndex(GroomAsset->HairGroupsMeshes[GroupIndex].MaterialSlotName);
+			MaterialIndex = GroomAsset->GetMaterialIndex(GroomAsset->GetHairGroupsMeshes()[GroupIndex].MaterialSlotName);
 		}
 	}
 	break;
 	case EMaterialPanelType::Strands:
 	{
-		if (GroupIndex < GroomAsset->HairGroupsRendering.Num())
+		if (GroupIndex < GroomAsset->GetHairGroupsRendering().Num())
 		{
-			MaterialIndex = GroomAsset->GetMaterialIndex(GroomAsset->HairGroupsRendering[GroupIndex].MaterialSlotName);
+			MaterialIndex = GroomAsset->GetMaterialIndex(GroomAsset->GetHairGroupsRendering()[GroupIndex].MaterialSlotName);
 		}
 	}
 	break;
@@ -1769,7 +1899,7 @@ FString FGroomRenderingDetails::OnGetObjectPath(int32 GroupIndex) const
 	if (MaterialIndex == INDEX_NONE)
 		return FString();
 	
-	return GroomAsset->HairGroupsMaterials[MaterialIndex].Material->GetPathName();
+	return GroomAsset->GetHairGroupsMaterials()[MaterialIndex].Material->GetPathName();
 }
 
 /**

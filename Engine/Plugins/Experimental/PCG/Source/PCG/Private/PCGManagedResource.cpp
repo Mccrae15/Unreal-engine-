@@ -127,9 +127,14 @@ bool UPCGManagedActors::MoveResourceToNewActor(AActor* NewActor)
 			continue;
 		}
 
-		Actor->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
-		Actor->SetOwner(nullptr);
-		Actor->AttachToActor(NewActor, FAttachmentTransformRules::KeepWorldTransform);
+		const bool bWasAttached = (Actor->GetAttachParentActor() != nullptr);
+
+		if (bWasAttached)
+		{
+			Actor->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+			Actor->SetOwner(nullptr);
+			Actor->AttachToActor(NewActor, FAttachmentTransformRules::KeepWorldTransform);
+		}
 	}
 
 	GeneratedActors.Empty();
@@ -201,13 +206,14 @@ bool UPCGManagedComponent::Release(bool bHardRelease, TSet<TSoftObjectPtr<AActor
 	TRACE_CPUPROFILER_EVENT_SCOPE(UPCGManagedComponent::Release);
 
 	const bool bSupportsComponentReset = SupportsComponentReset();
-	const bool bDeleteComponent = bHardRelease || !bSupportsComponentReset;
+	bool bDeleteComponent = bHardRelease || !bSupportsComponentReset;
 
 	if (GeneratedComponent.IsValid())
 	{
 		if (bDeleteComponent)
 		{
 			GeneratedComponent->DestroyComponent();
+			ForgetComponent();
 		}
 		else
 		{
@@ -215,6 +221,11 @@ bool UPCGManagedComponent::Release(bool bHardRelease, TSet<TSoftObjectPtr<AActor
 			bIsMarkedUnused = true;
 			GeneratedComponent->ComponentTags.Add(PCGHelpers::MarkedForCleanupPCGTag);
 		}
+	}
+	else
+	{
+		// Dead component reference - clear it out.
+		bDeleteComponent = true;
 	}
 
 	return bDeleteComponent;
@@ -225,7 +236,7 @@ bool UPCGManagedComponent::ReleaseIfUnused(TSet<TSoftObjectPtr<AActor>>& OutActo
 	return Super::ReleaseIfUnused(OutActorsToDelete) || !GeneratedComponent.IsValid();
 }
 
-bool UPCGManagedComponent::MoveResourceToNewActor(AActor* NewActor)
+bool UPCGManagedComponent::MoveResourceToNewActor(AActor* NewActor, const AActor* ExpectedPreviousOwner)
 {
 	check(NewActor);
 
@@ -236,6 +247,12 @@ bool UPCGManagedComponent::MoveResourceToNewActor(AActor* NewActor)
 
 	TObjectPtr<AActor> OldOwner = GeneratedComponent->GetOwner();
 	check(OldOwner);
+
+	// Prevent moving of components on external (or spawned) actors
+	if (ExpectedPreviousOwner && OldOwner != ExpectedPreviousOwner)
+	{
+		return false;
+	}
 
 	bool bDetached = false;
 	bool bAttached = false;
@@ -348,18 +365,83 @@ bool UPCGManagedISMComponent::ReleaseIfUnused(TSet<TSoftObjectPtr<AActor>>& OutA
 
 void UPCGManagedISMComponent::ResetComponent()
 {
-	if (UInstancedStaticMeshComponent * ISMC = GetComponent())
+	if (UInstancedStaticMeshComponent* ISMC = GetComponent())
 	{
 		ISMC->ClearInstances();
 		ISMC->UpdateBounds();
 	}
 }
 
+void UPCGManagedISMComponent::MarkAsUsed()
+{
+	Super::MarkAsUsed();
+
+	if (UInstancedStaticMeshComponent* ISMC = GetComponent())
+	{
+		// Keep track of the current root location so if we reuse this later we are able to update this appropriately
+		if (USceneComponent* RootComponent = ISMC->GetAttachmentRoot())
+		{
+			bHasRootLocation = true;
+			RootLocation = RootComponent->GetComponentLocation();
+		}
+		else
+		{
+			bHasRootLocation = false;
+			RootLocation = FVector::ZeroVector;
+		}
+
+		// Reset the rotation/scale to be identity otherwise if the root component transform has changed, the final transform will be wrong
+		// Since this is technically 'moving' the ISM, we need to unregister it before moving otherwise we could get a warning that we're moving a component with static mobility
+		ISMC->UnregisterComponent();
+		ISMC->SetWorldTransform(FTransform(FQuat::Identity, RootLocation, FVector::OneVector));
+		ISMC->RegisterComponent();
+	}
+}
+
+void UPCGManagedISMComponent::MarkAsReused()
+{
+	Super::MarkAsReused();
+
+	if (UInstancedStaticMeshComponent* ISMC = GetComponent())
+	{
+		// Reset the rotation/scale to be identity otherwise if the root component transform has changed, the final transform will be wrong
+		FVector TentativeRootLocation = RootLocation;
+
+		if (!bHasRootLocation)
+		{
+			if (USceneComponent* RootComponent = ISMC->GetAttachmentRoot())
+			{
+				TentativeRootLocation = RootComponent->GetComponentLocation();
+			}
+		}
+
+		// Since this is technically 'moving' the ISM, we need to unregister it before moving otherwise we could get a warning that we're moving a component with static mobility
+		ISMC->UnregisterComponent();
+		ISMC->SetWorldTransform(FTransform(FQuat::Identity, TentativeRootLocation, FVector::OneVector));
+		ISMC->RegisterComponent();
+	}
+}
+
+void UPCGManagedISMComponent::SetRootLocation(const FVector& InRootLocation)
+{
+	bHasRootLocation = true;
+	RootLocation = InRootLocation;
+}
+
 UInstancedStaticMeshComponent* UPCGManagedISMComponent::GetComponent() const
 {
 	if (!CachedRawComponentPtr)
 	{
-		CachedRawComponentPtr = Cast<UInstancedStaticMeshComponent>(GeneratedComponent.Get());
+		UInstancedStaticMeshComponent* GeneratedComponentPtr = Cast<UInstancedStaticMeshComponent>(GeneratedComponent.Get());
+
+		// Implementation note:
+		// There is no surefire way to make sure that we can use the raw pointer UNLESS it is from the same owner
+		if (GeneratedComponentPtr && Cast<UPCGComponent>(GetOuter()) && GeneratedComponentPtr->GetOwner() == Cast<UPCGComponent>(GetOuter())->GetOwner())
+		{
+			CachedRawComponentPtr = GeneratedComponentPtr;
+		}
+
+		return GeneratedComponentPtr;
 	}
 
 	return CachedRawComponentPtr;

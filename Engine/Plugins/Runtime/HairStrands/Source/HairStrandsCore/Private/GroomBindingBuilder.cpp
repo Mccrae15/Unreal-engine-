@@ -11,6 +11,7 @@
 #include "Async/ParallelFor.h"
 #include "GlobalShader.h"
 #include "Misc/ScopedSlowTask.h"
+#include "GroomRBFDeformer.h"
 
 #if WITH_EDITORONLY_DATA
 
@@ -57,30 +58,30 @@ static FAutoConsoleVariableRef CVarHairStrandsBindingBuilderWarningEnable(TEXT("
 FString FGroomBindingBuilder::GetVersion()
 {
 	// Important to update the version when groom building changes
-	return TEXT("2gc");
+	return TEXT("3i");
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Common utils functions
-// These utils function are a copy of function in HairStrandsMeshProjectionCommon.ush
-uint32 FHairStrandsRootUtils::EncodeTriangleIndex(uint32 TriangleIndex, uint32 SectionIndex)
+// These utils function are a copy of function in HairStrandsBindingCommon.ush
+uint32 FHairStrandsRootUtils::PackTriangleIndex(uint32 TriangleIndex, uint32 SectionIndex)
 {
 	return ((SectionIndex & 0xFF) << 24) | (TriangleIndex & 0xFFFFFF);
 }
 
-// This function is a copy of DecodeTriangleIndex in HairStrandsMeshProjectionCommon.ush
-void FHairStrandsRootUtils::DecodeTriangleIndex(uint32 Encoded, uint32& OutTriangleIndex, uint32& OutSectionIndex)
+// This function is a copy of UnpackTriangleIndex in HairStrandsBindingCommon.ush
+void FHairStrandsRootUtils::UnpackTriangleIndex(uint32 Encoded, uint32& OutTriangleIndex, uint32& OutSectionIndex)
 {
 	OutSectionIndex = (Encoded >> 24) & 0xFF;
 	OutTriangleIndex = Encoded & 0xFFFFFF;
 }
 
-uint32 FHairStrandsRootUtils::EncodeBarycentrics(const FVector2f& B)
+uint32 FHairStrandsRootUtils::PackBarycentrics(const FVector2f& B)
 {
 	return uint32(FFloat16(B.X).Encoded) | (uint32(FFloat16(B.Y).Encoded)<<16);
 }
 
-FVector2f FHairStrandsRootUtils::DecodeBarycentrics(uint32 B)
+FVector2f FHairStrandsRootUtils::UnpackBarycentrics(uint32 B)
 {
 	FFloat16 BX;
 	BX.Encoded = (B & 0xFFFF);
@@ -562,11 +563,20 @@ namespace GroomBinding_RBFWeighting
 	FWeightsBuilder::FWeightsBuilder(const uint32 NumRows, const uint32 NumColumns,
 		const FVector3f* SourcePositions, const FVector3f* TargetPositions)
 	{
-		const uint32 PolyRows = NumRows + 4;
-		const uint32 PolyColumns = NumColumns + 4;
+		const uint32 PolyRows 	 = FGroomRBFDeformer::GetEntryCount(NumRows);
+		const uint32 PolyColumns = FGroomRBFDeformer::GetEntryCount(NumColumns);
+
+		const uint32 SampleCount = NumRows;
+		const uint32 WeightCount = FGroomRBFDeformer::GetWeightCount(SampleCount);
 
 		MatrixEntries.Init(0.0, PolyRows * PolyColumns);
 		InverseEntries.Init(0.0, PolyRows * PolyColumns);
+
+		// Sanity check
+		check(NumRows == NumColumns);
+		check(WeightCount == MatrixEntries.Num());
+		check(WeightCount == InverseEntries.Num());
+
 		TArray<float>& LocalEntries = MatrixEntries;
 		ParallelFor(NumRows,
 			[
@@ -662,7 +672,7 @@ namespace GroomBinding_RBFWeighting
 		{
 			uint32 SectionIndex = 0;
 			uint32 TriangleIndex = 0;
-			FHairStrandsRootUtils::DecodeTriangleIndex(EncodedTriangleId, TriangleIndex, SectionIndex);
+			FHairStrandsRootUtils::UnpackTriangleIndex(EncodedTriangleId, TriangleIndex, SectionIndex);
 			if (!ValidSection || (ValidSection && (SectionIndex == TargetSection)))
 			{
 				const IMeshSectionData& Section = MeshLODData.GetSection(SectionIndex);
@@ -698,14 +708,23 @@ namespace GroomBinding_RBFWeighting
 		}
 	}
 
+	void ResetSampleData(FHairStrandsRootData& Out, uint32 LODIndex)
+	{
+		FHairStrandsRootData::FMeshProjectionLOD& LOD = Out.MeshProjectionLODs[LODIndex];
+		LOD.SampleCount = 0;	
+		LOD.MeshInterpolationWeightsBuffer.SetNum(0);
+		LOD.MeshSampleIndicesBuffer.SetNum(0);
+		LOD.RestSamplePositionsBuffer.SetNum(0);
+	}
+
 	void ComputeInterpolationWeights(
-		TArray<FHairRootGroupData>& Out, 
+		FHairRootGroupData& Out, 
+		const bool bNeedStrandsRoot,
 		const uint32 NumInterpolationPoints, 
 		const int32 MatchingSection, 
 		const IMeshData* MeshData, 
 		const TArray<TArray<FVector3f>>& TransferedPositions)
 	{
-		const uint32 GroupCount  = Out.Num();
 		const uint32 MeshLODCount= MeshData->GetNumLODs();
 		const uint32 MaxSamples  = NumInterpolationPoints;
 
@@ -730,18 +749,23 @@ namespace GroomBinding_RBFWeighting
 			if (!GlobalSamples)
 			{
 				TArray<bool> ValidPoints;
-				for (uint32 GroupIt = 0; GroupIt < GroupCount; ++GroupIt)
 				{
-					FillLocalValidPoints(MeshLODData, TargetSection, Out[GroupIt].SimRootData.MeshProjectionLODs[LODIndex], ValidPoints);
+					FillLocalValidPoints(MeshLODData, TargetSection, Out.SimRootData.MeshProjectionLODs[LODIndex], ValidPoints);
 
 					FPointsSampler PointsSampler(ValidPoints, PositionsPointer, MaxSamples);
 					const uint32 SampleCount = PointsSampler.SamplePositions.Num();
 
-					FWeightsBuilder InterpolationWeights(SampleCount, SampleCount,
-						PointsSampler.SamplePositions.GetData(), PointsSampler.SamplePositions.GetData());
+					FWeightsBuilder InterpolationWeights(SampleCount, SampleCount, PointsSampler.SamplePositions.GetData(), PointsSampler.SamplePositions.GetData());
 
-					UpdateInterpolationWeights(InterpolationWeights, PointsSampler, LODIndex, Out[GroupIt].SimRootData);
-					UpdateInterpolationWeights(InterpolationWeights, PointsSampler, LODIndex, Out[GroupIt].RenRootData);
+					// Guides
+					UpdateInterpolationWeights(InterpolationWeights, PointsSampler, LODIndex, Out.SimRootData);
+
+					// Strands
+					// No sample data, only used/available for guides
+					if (bNeedStrandsRoot)
+					{
+						ResetSampleData(Out.RenRootData, LODIndex);
+					}
 				}
 			}
 			else
@@ -753,13 +777,16 @@ namespace GroomBinding_RBFWeighting
 				FPointsSampler PointsSampler(ValidPoints, PositionsPointer, MaxSamples);
 				const uint32 SampleCount = PointsSampler.SamplePositions.Num();
 
-				FWeightsBuilder InterpolationWeights(SampleCount, SampleCount,
-					PointsSampler.SamplePositions.GetData(), PointsSampler.SamplePositions.GetData());
+				FWeightsBuilder InterpolationWeights(SampleCount, SampleCount, PointsSampler.SamplePositions.GetData(), PointsSampler.SamplePositions.GetData());
 
-				for (uint32 GroupIt = 0; GroupIt < GroupCount; ++GroupIt)
+				// Guides
+				UpdateInterpolationWeights(InterpolationWeights, PointsSampler, LODIndex, Out.SimRootData);
+
+				// Strands 
+				// No sample data, only used/available for guides
+				if (bNeedStrandsRoot)
 				{
-					UpdateInterpolationWeights(InterpolationWeights, PointsSampler, LODIndex, Out[GroupIt].SimRootData);
-					UpdateInterpolationWeights(InterpolationWeights, PointsSampler, LODIndex, Out[GroupIt].RenRootData);
+					ResetSampleData(Out.RenRootData, LODIndex);
 				}
 			}
 		}
@@ -1242,12 +1269,8 @@ namespace GroomBinding_RootProjection
 			TArray<FHairStrandsUniqueTriangleIndexFormat::Type> RootTriangleIndexBuffer;
 			RootTriangleIndexBuffer.SetNum(CurveCount);
 
-			TArray<FHairStrandsMeshTrianglePositionFormat::Type> RestRootTrianglePosition0Buffer;
-			TArray<FHairStrandsMeshTrianglePositionFormat::Type> RestRootTrianglePosition1Buffer;
-			TArray<FHairStrandsMeshTrianglePositionFormat::Type> RestRootTrianglePosition2Buffer;
-			RestRootTrianglePosition0Buffer.SetNum(CurveCount);
-			RestRootTrianglePosition1Buffer.SetNum(CurveCount);
-			RestRootTrianglePosition2Buffer.SetNum(CurveCount);
+			TArray<FHairStrandsMeshTrianglePositionFormat::Type> RestRootTrianglePositionBuffer;
+			RestRootTrianglePositionBuffer.SetNum(CurveCount * 3);
 
 		#if BINDING_PARALLEL_BUILDING
 			TAtomic<uint32> bIsValid(1);
@@ -1257,9 +1280,7 @@ namespace GroomBinding_RootProjection
 					&InStrandsData,
 					&Grid,
 					&RootTriangleIndexBuffer,
-					&RestRootTrianglePosition0Buffer,
-					&RestRootTrianglePosition1Buffer,
-					&RestRootTrianglePosition2Buffer,
+					&RestRootTrianglePositionBuffer,
 					&OutRootData,
 					&bIsValid
 				] (uint32 CurveIndex)
@@ -1300,14 +1321,14 @@ namespace GroomBinding_RootProjection
 				check(ClosestDistance < FLT_MAX);
 
 				// Record closest triangle and the root's barycentrics
-				const uint32 EncodedBarycentrics = FHairStrandsRootUtils::EncodeBarycentrics(FVector2f(ClosestBarycentrics));	// LWC_TODO: Precision loss
-				const uint32 EncodedTriangleIndex = FHairStrandsRootUtils::EncodeTriangleIndex(ClosestTriangle.TriangleIndex, ClosestTriangle.SectionIndex);
+				const uint32 EncodedBarycentrics = FHairStrandsRootUtils::PackBarycentrics(FVector2f(ClosestBarycentrics));	// LWC_TODO: Precision loss
+				const uint32 EncodedTriangleIndex = FHairStrandsRootUtils::PackTriangleIndex(ClosestTriangle.TriangleIndex, ClosestTriangle.SectionIndex);
 				OutRootData.MeshProjectionLODs[LODIt].RootBarycentricBuffer[CurveIndex] = EncodedBarycentrics;
 
 				RootTriangleIndexBuffer[CurveIndex] = EncodedTriangleIndex;
-				RestRootTrianglePosition0Buffer[CurveIndex] = FVector4f((FVector3f)ClosestTriangle.P0, FHairStrandsRootUtils::PackUVsToFloat(FVector2f(ClosestTriangle.UV0)));	// LWC_TODO: Precision loss
-				RestRootTrianglePosition1Buffer[CurveIndex] = FVector4f((FVector3f)ClosestTriangle.P1, FHairStrandsRootUtils::PackUVsToFloat(FVector2f(ClosestTriangle.UV1)));	// LWC_TODO: Precision loss
-				RestRootTrianglePosition2Buffer[CurveIndex] = FVector4f((FVector3f)ClosestTriangle.P2, FHairStrandsRootUtils::PackUVsToFloat(FVector2f(ClosestTriangle.UV2)));	// LWC_TODO: Precision loss
+				RestRootTrianglePositionBuffer[CurveIndex * 3 + 0] = FVector4f((FVector3f)ClosestTriangle.P0, FHairStrandsRootUtils::PackUVsToFloat(FVector2f(ClosestTriangle.UV0)));	// LWC_TODO: Precision loss
+				RestRootTrianglePositionBuffer[CurveIndex * 3 + 1] = FVector4f((FVector3f)ClosestTriangle.P1, FHairStrandsRootUtils::PackUVsToFloat(FVector2f(ClosestTriangle.UV1)));	// LWC_TODO: Precision loss
+				RestRootTrianglePositionBuffer[CurveIndex * 3 + 2] = FVector4f((FVector3f)ClosestTriangle.P2, FHairStrandsRootUtils::PackUVsToFloat(FVector2f(ClosestTriangle.UV2)));	// LWC_TODO: Precision loss
 			}
 		#if BINDING_PARALLEL_BUILDING
 			);
@@ -1333,7 +1354,7 @@ namespace GroomBinding_RootProjection
 					// Add unique section
 					uint32 TriangleIndex;
 					uint32 SectionIndex;
-					FHairStrandsRootUtils::DecodeTriangleIndex(EncodedTriangleId, TriangleIndex, SectionIndex);
+					FHairStrandsRootUtils::UnpackTriangleIndex(EncodedTriangleId, TriangleIndex, SectionIndex);
 					UniqueSectionId.AddUnique(SectionIndex);
 
 					// Add unique triangle
@@ -1349,10 +1370,8 @@ namespace GroomBinding_RootProjection
 
 			// Build final unique triangle list and the root-to-unique-triangle mapping
 			const uint32 UniqueTriangleCount = UniqueTriangleToRootList.Num();
-			OutRootData.MeshProjectionLODs[LODIt].UniqueTriangleIndexBuffer.Reserve(UniqueTriangleCount);
-			OutRootData.MeshProjectionLODs[LODIt].RestUniqueTrianglePosition0Buffer.Reserve(UniqueTriangleCount);
-			OutRootData.MeshProjectionLODs[LODIt].RestUniqueTrianglePosition1Buffer.Reserve(UniqueTriangleCount);
-			OutRootData.MeshProjectionLODs[LODIt].RestUniqueTrianglePosition2Buffer.Reserve(UniqueTriangleCount);
+			OutRootData.MeshProjectionLODs[LODIt].UniqueTriangleIndexBuffer.Reserve(UniqueTriangleCount );
+			OutRootData.MeshProjectionLODs[LODIt].RestUniqueTrianglePositionBuffer.Reserve(UniqueTriangleCount * 3);
 			for (uint32 EncodedTriangleId : UniqueTriangleToRootList)
 			{
 				auto It = UniqueTriangleToRootMap.Find(EncodedTriangleId);
@@ -1361,9 +1380,9 @@ namespace GroomBinding_RootProjection
 				OutRootData.MeshProjectionLODs[LODIt].UniqueTriangleIndexBuffer.Add(EncodedTriangleId);
 
 				const uint32 FirstCurveIndex = (*It)[0];
-				OutRootData.MeshProjectionLODs[LODIt].RestUniqueTrianglePosition0Buffer.Add(RestRootTrianglePosition0Buffer[FirstCurveIndex]);
-				OutRootData.MeshProjectionLODs[LODIt].RestUniqueTrianglePosition1Buffer.Add(RestRootTrianglePosition1Buffer[FirstCurveIndex]);
-				OutRootData.MeshProjectionLODs[LODIt].RestUniqueTrianglePosition2Buffer.Add(RestRootTrianglePosition2Buffer[FirstCurveIndex]);
+				OutRootData.MeshProjectionLODs[LODIt].RestUniqueTrianglePositionBuffer.Add(RestRootTrianglePositionBuffer[FirstCurveIndex * 3 + 0]);
+				OutRootData.MeshProjectionLODs[LODIt].RestUniqueTrianglePositionBuffer.Add(RestRootTrianglePositionBuffer[FirstCurveIndex * 3 + 1]);
+				OutRootData.MeshProjectionLODs[LODIt].RestUniqueTrianglePositionBuffer.Add(RestRootTrianglePositionBuffer[FirstCurveIndex * 3 + 2]);
 
 				// Write for each root, the index of the triangle
 				const uint32 UniqueTriangleIndex = OutRootData.MeshProjectionLODs[LODIt].UniqueTriangleIndexBuffer.Num()-1;
@@ -1375,9 +1394,7 @@ namespace GroomBinding_RootProjection
 
 			// Sanity check
 			check(OutRootData.MeshProjectionLODs[LODIt].RootToUniqueTriangleIndexBuffer.Num() == CurveCount);
-			check(OutRootData.MeshProjectionLODs[LODIt].RestUniqueTrianglePosition0Buffer.Num() == UniqueTriangleCount);
-			check(OutRootData.MeshProjectionLODs[LODIt].RestUniqueTrianglePosition1Buffer.Num() == UniqueTriangleCount);
-			check(OutRootData.MeshProjectionLODs[LODIt].RestUniqueTrianglePosition2Buffer.Num() == UniqueTriangleCount);
+			check(OutRootData.MeshProjectionLODs[LODIt].RestUniqueTrianglePositionBuffer.Num() == UniqueTriangleCount * 3);
 			check(OutRootData.MeshProjectionLODs[LODIt].UniqueTriangleIndexBuffer.Num() == UniqueTriangleCount);
 
 			// Update the root mesh projection data with unique valid mesh section IDs, based on the projection data
@@ -1747,7 +1764,7 @@ namespace GroomBinding_Transfer
 			{
 				if ( TargetMeshLODData.GetNumSections() == 0 )
 				{
-					UE_LOG(LogHairStrands, Error, TEXT("[Groom] Binding asset could not be built for LOD %d. TargetMeshLODData.GetNumSections() == 0."));
+					UE_LOG(LogHairStrands, Error, TEXT("[Groom] Binding asset could not be built for LOD %d. TargetMeshLODData.GetNumSections() == 0."), TargetLODIndex);
 					return false;
 				}
 
@@ -1761,7 +1778,7 @@ namespace GroomBinding_Transfer
 				const bool bIsGridPopulated = BuildGrid(SourceLODIndex, LocalSourceSectionId, LocalTargetSectionId, ChannelIndex, Grid);
 				if (!bIsGridPopulated)
 				{
-					UE_LOG(LogHairStrands, Error, TEXT("[Groom] Binding asset could not be built for LOD %d. The source skeletal mesh is missing or has invalid UVs."));
+					UE_LOG(LogHairStrands, Error, TEXT("[Groom] Binding asset could not be built for LOD %d. The source skeletal mesh is missing or has invalid UVs."), TargetLODIndex);
 					return false;
 				}
 			}
@@ -1887,6 +1904,12 @@ void CopyToBulkData(FByteBulkData& Out, const TArray<typename TFormatType::Type>
 }
 
 template<typename TFormatType>
+void CopyToBulkData(FHairBulkContainer& Out, const TArray<typename TFormatType::Type>& Data)
+{
+	CopyToBulkData<TFormatType>(Out.Data, Data);
+}
+
+template<typename TFormatType>
 void CopyFromBulkData(TArray<typename TFormatType::Type>& Out, const FByteBulkData& In)
 {
 	const uint32 InDataSize = In.GetBulkDataSize();
@@ -1899,16 +1922,34 @@ void CopyFromBulkData(TArray<typename TFormatType::Type>& Out, const FByteBulkDa
 	In.Unlock();
 }
 
+template<typename TFormatType>
+void CopyFromBulkData(TArray<typename TFormatType::Type>& Out, const FHairBulkContainer& In)
+{
+	CopyFromBulkData<TFormatType>(Out, In.Data);
+}
+
+
 // Convert "root data" -> "root bulk data"
 static void BuildRootBulkData(
 	FHairStrandsRootBulkData& Out,
 	const FHairStrandsRootData& In)
 {
-	Out.RootCount = In.RootCount;
-	Out.PointCount = In.PointCount;
-
 	const uint32 MeshLODCount = In.MeshProjectionLODs.Num();
-	Out.MeshProjectionLODs.SetNum(MeshLODCount);
+
+	// Header
+	Out.Header.RootCount  = In.RootCount;
+	Out.Header.PointCount = In.PointCount;
+
+	Out.Header.Strides.RootToUniqueTriangleIndexBufferStride 	= FHairStrandsRootToUniqueTriangleIndexFormat::SizeInByte;
+	Out.Header.Strides.RootBarycentricBufferStride 				= FHairStrandsRootBarycentricFormat::SizeInByte;
+	Out.Header.Strides.UniqueTriangleIndexBufferStride 			= FHairStrandsUniqueTriangleIndexFormat::SizeInByte;
+	Out.Header.Strides.RestUniqueTrianglePositionBufferStride 	= FHairStrandsMeshTrianglePositionFormat::SizeInByte * 3; // 3 vertices per triangle
+
+	Out.Header.Strides.MeshInterpolationWeightsBufferStride 	= FHairStrandsWeightFormat::SizeInByte;
+	Out.Header.Strides.MeshSampleIndicesBufferStride 			= FHairStrandsIndexFormat::SizeInByte;
+	Out.Header.Strides.RestSamplePositionsBufferStride 			= FHairStrandsMeshTrianglePositionFormat::SizeInByte;
+
+	Out.Header.LODs.SetNum(MeshLODCount);
 	for (uint32 MeshLODIt = 0; MeshLODIt < MeshLODCount; ++MeshLODIt)
 	{
 		const bool bHasValidSamples =
@@ -1916,31 +1957,37 @@ static void BuildRootBulkData(
 			In.MeshProjectionLODs[MeshLODIt].MeshSampleIndicesBuffer.Num() > 0 &&
 			In.MeshProjectionLODs[MeshLODIt].RestSamplePositionsBuffer.Num() > 0;
 
-		Out.MeshProjectionLODs[MeshLODIt].LODIndex = In.MeshProjectionLODs[MeshLODIt].LODIndex;
-		Out.MeshProjectionLODs[MeshLODIt].SampleCount = bHasValidSamples ? In.MeshProjectionLODs[MeshLODIt].SampleCount : 0u;
-		Out.MeshProjectionLODs[MeshLODIt].UniqueTriangleCount = In.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition0Buffer.Num();
+		Out.Header.LODs[MeshLODIt].LODIndex 			= In.MeshProjectionLODs[MeshLODIt].LODIndex;
+		Out.Header.LODs[MeshLODIt].SampleCount 			= bHasValidSamples ? In.MeshProjectionLODs[MeshLODIt].SampleCount : 0u;
+		Out.Header.LODs[MeshLODIt].UniqueTriangleCount 	= In.MeshProjectionLODs[MeshLODIt].UniqueTriangleIndexBuffer.Num();
+		Out.Header.LODs[MeshLODIt].UniqueSectionIndices = In.MeshProjectionLODs[MeshLODIt].UniqueSectionIds;
+	}
 
-		CopyToBulkData<FHairStrandsUniqueTriangleIndexFormat>(Out.MeshProjectionLODs[MeshLODIt].UniqueTriangleIndexBuffer, In.MeshProjectionLODs[MeshLODIt].UniqueTriangleIndexBuffer);
-		CopyToBulkData<FHairStrandsRootBarycentricFormat>(Out.MeshProjectionLODs[MeshLODIt].RootBarycentricBuffer, In.MeshProjectionLODs[MeshLODIt].RootBarycentricBuffer);
-		CopyToBulkData<FHairStrandsRootToUniqueTriangleIndexFormat>(Out.MeshProjectionLODs[MeshLODIt].RootToUniqueTriangleIndexBuffer, In.MeshProjectionLODs[MeshLODIt].RootToUniqueTriangleIndexBuffer);
+	// Data
+	Out.Data.LODs.SetNum(MeshLODCount);
+	for (uint32 MeshLODIt = 0; MeshLODIt < MeshLODCount; ++MeshLODIt)
+	{
+		const bool bHasValidSamples =
+			In.MeshProjectionLODs[MeshLODIt].MeshInterpolationWeightsBuffer.Num() > 0 &&
+			In.MeshProjectionLODs[MeshLODIt].MeshSampleIndicesBuffer.Num() > 0 &&
+			In.MeshProjectionLODs[MeshLODIt].RestSamplePositionsBuffer.Num() > 0;
 
-		CopyToBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition0Buffer, In.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition0Buffer);
-		CopyToBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition1Buffer, In.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition1Buffer);
-		CopyToBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition2Buffer, In.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition2Buffer);
-
-		Out.MeshProjectionLODs[MeshLODIt].UniqueSectionIndices = In.MeshProjectionLODs[MeshLODIt].UniqueSectionIds;
+		CopyToBulkData<FHairStrandsUniqueTriangleIndexFormat>(Out.Data.LODs[MeshLODIt].UniqueTriangleIndexBuffer, In.MeshProjectionLODs[MeshLODIt].UniqueTriangleIndexBuffer);
+		CopyToBulkData<FHairStrandsRootBarycentricFormat>(Out.Data.LODs[MeshLODIt].RootBarycentricBuffer, In.MeshProjectionLODs[MeshLODIt].RootBarycentricBuffer);
+		CopyToBulkData<FHairStrandsRootToUniqueTriangleIndexFormat>(Out.Data.LODs[MeshLODIt].RootToUniqueTriangleIndexBuffer, In.MeshProjectionLODs[MeshLODIt].RootToUniqueTriangleIndexBuffer);
+		CopyToBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.Data.LODs[MeshLODIt].RestUniqueTrianglePositionBuffer, In.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePositionBuffer);
 
 		if (bHasValidSamples)
 		{
-			CopyToBulkData<FHairStrandsWeightFormat>(Out.MeshProjectionLODs[MeshLODIt].MeshInterpolationWeightsBuffer, In.MeshProjectionLODs[MeshLODIt].MeshInterpolationWeightsBuffer);
-			CopyToBulkData<FHairStrandsIndexFormat>(Out.MeshProjectionLODs[MeshLODIt].MeshSampleIndicesBuffer, In.MeshProjectionLODs[MeshLODIt].MeshSampleIndicesBuffer);
-			CopyToBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.MeshProjectionLODs[MeshLODIt].RestSamplePositionsBuffer, In.MeshProjectionLODs[MeshLODIt].RestSamplePositionsBuffer);
+			CopyToBulkData<FHairStrandsWeightFormat>(Out.Data.LODs[MeshLODIt].MeshInterpolationWeightsBuffer, In.MeshProjectionLODs[MeshLODIt].MeshInterpolationWeightsBuffer);
+			CopyToBulkData<FHairStrandsIndexFormat>(Out.Data.LODs[MeshLODIt].MeshSampleIndicesBuffer, In.MeshProjectionLODs[MeshLODIt].MeshSampleIndicesBuffer);
+			CopyToBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.Data.LODs[MeshLODIt].RestSamplePositionsBuffer, In.MeshProjectionLODs[MeshLODIt].RestSamplePositionsBuffer);
 		}
 		else
 		{
-			Out.MeshProjectionLODs[MeshLODIt].MeshInterpolationWeightsBuffer.RemoveBulkData();
-			Out.MeshProjectionLODs[MeshLODIt].MeshSampleIndicesBuffer.RemoveBulkData();
-			Out.MeshProjectionLODs[MeshLODIt].RestSamplePositionsBuffer.RemoveBulkData();
+			Out.Data.LODs[MeshLODIt].MeshInterpolationWeightsBuffer.RemoveBulkData();
+			Out.Data.LODs[MeshLODIt].MeshSampleIndicesBuffer.RemoveBulkData();
+			Out.Data.LODs[MeshLODIt].RestSamplePositionsBuffer.RemoveBulkData();
 		}
 	}
 }
@@ -1950,33 +1997,31 @@ static void BuildRootData(
 	FHairStrandsRootData& Out,
 	const FHairStrandsRootBulkData& In)
 {
-	Out.RootCount = In.RootCount;
-	Out.PointCount = In.PointCount;
+	// TODO: do we need to force load the data into the bulk data prior to running the convertion (bulk -> data)?
 
-	const uint32 MeshLODCount = In.MeshProjectionLODs.Num();
+	Out.RootCount = In.Header.RootCount;
+	Out.PointCount = In.Header.PointCount;
+
+	const uint32 MeshLODCount = In.Header.LODs.Num();
 	Out.MeshProjectionLODs.SetNum(MeshLODCount);
 	for (uint32 MeshLODIt = 0; MeshLODIt < MeshLODCount; ++MeshLODIt)
 	{
-		const bool bHasValidSamples = In.MeshProjectionLODs[MeshLODIt].SampleCount > 0;
+		const bool bHasValidSamples = In.Header.LODs[MeshLODIt].SampleCount > 0;
 
-		Out.MeshProjectionLODs[MeshLODIt].LODIndex = In.MeshProjectionLODs[MeshLODIt].LODIndex;
-		Out.MeshProjectionLODs[MeshLODIt].SampleCount = bHasValidSamples ? In.MeshProjectionLODs[MeshLODIt].SampleCount : 0u;
+		Out.MeshProjectionLODs[MeshLODIt].LODIndex = In.Header.LODs[MeshLODIt].LODIndex;
+		Out.MeshProjectionLODs[MeshLODIt].SampleCount = bHasValidSamples ? In.Header.LODs[MeshLODIt].SampleCount : 0u;
+		Out.MeshProjectionLODs[MeshLODIt].UniqueSectionIds = In.Header.LODs[MeshLODIt].UniqueSectionIndices;
 
-		CopyFromBulkData<FHairStrandsUniqueTriangleIndexFormat>(Out.MeshProjectionLODs[MeshLODIt].UniqueTriangleIndexBuffer, In.MeshProjectionLODs[MeshLODIt].UniqueTriangleIndexBuffer);
-		CopyFromBulkData<FHairStrandsRootToUniqueTriangleIndexFormat>(Out.MeshProjectionLODs[MeshLODIt].RootToUniqueTriangleIndexBuffer, In.MeshProjectionLODs[MeshLODIt].RootToUniqueTriangleIndexBuffer);
-		CopyFromBulkData<FHairStrandsRootBarycentricFormat>(Out.MeshProjectionLODs[MeshLODIt].RootBarycentricBuffer, In.MeshProjectionLODs[MeshLODIt].RootBarycentricBuffer);
-
-		CopyFromBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition0Buffer, In.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition0Buffer);
-		CopyFromBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition1Buffer, In.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition1Buffer);
-		CopyFromBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition2Buffer, In.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition2Buffer);
-
-		Out.MeshProjectionLODs[MeshLODIt].UniqueSectionIds = In.MeshProjectionLODs[MeshLODIt].UniqueSectionIndices;
+		CopyFromBulkData<FHairStrandsUniqueTriangleIndexFormat>(Out.MeshProjectionLODs[MeshLODIt].UniqueTriangleIndexBuffer, In.Data.LODs[MeshLODIt].UniqueTriangleIndexBuffer);
+		CopyFromBulkData<FHairStrandsRootToUniqueTriangleIndexFormat>(Out.MeshProjectionLODs[MeshLODIt].RootToUniqueTriangleIndexBuffer, In.Data.LODs[MeshLODIt].RootToUniqueTriangleIndexBuffer);
+		CopyFromBulkData<FHairStrandsRootBarycentricFormat>(Out.MeshProjectionLODs[MeshLODIt].RootBarycentricBuffer, In.Data.LODs[MeshLODIt].RootBarycentricBuffer);
+		CopyFromBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePositionBuffer, In.Data.LODs[MeshLODIt].RestUniqueTrianglePositionBuffer);
 
 		if (bHasValidSamples)
 		{
-			CopyFromBulkData<FHairStrandsWeightFormat>(Out.MeshProjectionLODs[MeshLODIt].MeshInterpolationWeightsBuffer, In.MeshProjectionLODs[MeshLODIt].MeshInterpolationWeightsBuffer);
-			CopyFromBulkData<FHairStrandsIndexFormat>(Out.MeshProjectionLODs[MeshLODIt].MeshSampleIndicesBuffer, In.MeshProjectionLODs[MeshLODIt].MeshSampleIndicesBuffer);
-			CopyFromBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.MeshProjectionLODs[MeshLODIt].RestSamplePositionsBuffer, In.MeshProjectionLODs[MeshLODIt].RestSamplePositionsBuffer);
+			CopyFromBulkData<FHairStrandsWeightFormat>(Out.MeshProjectionLODs[MeshLODIt].MeshInterpolationWeightsBuffer, In.Data.LODs[MeshLODIt].MeshInterpolationWeightsBuffer);
+			CopyFromBulkData<FHairStrandsIndexFormat>(Out.MeshProjectionLODs[MeshLODIt].MeshSampleIndicesBuffer, In.Data.LODs[MeshLODIt].MeshSampleIndicesBuffer);
+			CopyFromBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.MeshProjectionLODs[MeshLODIt].RestSamplePositionsBuffer, In.Data.LODs[MeshLODIt].RestSamplePositionsBuffer);
 		}
 		else
 		{
@@ -1989,22 +2034,21 @@ static void BuildRootData(
 
 // Convert the root data into root bulk data
 static void BuildRootBulkData(
-	TArray<FHairGroupBulkData>& Out,
-	const TArray<FHairRootGroupData>& In)
+	UGroomBindingAsset::FHairGroupPlatformData& Out,
+	const FHairRootGroupData& In)
 {
-	const uint32 GroupCount = In.Num();
-	Out.SetNum(GroupCount);
-	for (uint32 GroupIt = 0; GroupIt < GroupCount; ++GroupIt)
-	{
-		BuildRootBulkData(Out[GroupIt].SimRootBulkData, In[GroupIt].SimRootData);
-		BuildRootBulkData(Out[GroupIt].RenRootBulkData, In[GroupIt].RenRootData);
+	// Guides
+	BuildRootBulkData(Out.SimRootBulkData, In.SimRootData);
 
-		const uint32 LODCount = In[GroupIt].CardsRootData.Num();
-		Out[GroupIt].CardsRootBulkData.SetNum(LODCount);
-		for (uint32 LODIt = 0; LODIt < LODCount; ++LODIt)
-		{
-			BuildRootBulkData(Out[GroupIt].CardsRootBulkData[LODIt], In[GroupIt].CardsRootData[LODIt]);
-		}
+	// Strands
+	BuildRootBulkData(Out.RenRootBulkData, In.RenRootData);
+
+	// Cards
+	const uint32 LODCount = In.CardsRootData.Num();
+	Out.CardsRootBulkData.SetNum(LODCount);
+	for (uint32 LODIt = 0; LODIt < LODCount; ++LODIt)
+	{
+		BuildRootBulkData(Out.CardsRootBulkData[LODIt], In.CardsRootData[LODIt]);
 	}
 }
 
@@ -2012,50 +2056,49 @@ static void BuildRootBulkData(
 
   ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Main entry (CPU path)
-static bool InternalBuildBinding_CPU(UGroomBindingAsset* BindingAsset, bool bInitResources)
+static bool InternalBuildBinding_CPU(UGroomBindingAsset* BindingAsset, uint32 InGroupIndex)
 {
 #if WITH_EDITORONLY_DATA
 	if (!BindingAsset ||
-		!BindingAsset->Groom ||
+		!BindingAsset->GetGroom() ||
 		!BindingAsset->HasValidTarget() ||
-		BindingAsset->Groom->GetNumHairGroups() == 0)
+		BindingAsset->GetGroom()->GetNumHairGroups() == 0)
 	{
 		UE_LOG(LogHairStrands, Error, TEXT("[Groom] Binding asset cannot be created/rebuilt."));
 		return false;
 	}
 
 	// 1. Build groom root data
-	TArray<FHairRootGroupData> OutHairGroupDatas;
+	FHairRootGroupData OutData;
 	{
+		BindingAsset->GetGroom()->ConditionalPostLoad();
 
-		BindingAsset->Groom->ConditionalPostLoad();
-
-		const int32 NumInterpolationPoints = BindingAsset->NumInterpolationPoints;
-		UGroomAsset* GroomAsset = BindingAsset->Groom;
+		const int32 NumInterpolationPoints = BindingAsset->GetNumInterpolationPoints();
+		UGroomAsset* GroomAsset = BindingAsset->GetGroom();
 
 		TUniquePtr<IMeshData> SourceMeshData;
 		TUniquePtr<IMeshData> TargetMeshData;
-		if (BindingAsset->GroomBindingType == EGroomBindingMeshType::SkeletalMesh)
+		if (BindingAsset->GetGroomBindingType() == EGroomBindingMeshType::SkeletalMesh)
 		{
-			BindingAsset->TargetSkeletalMesh->ConditionalPostLoad();
-			if (BindingAsset->SourceSkeletalMesh)
+			BindingAsset->GetTargetSkeletalMesh()->ConditionalPostLoad();
+			if (BindingAsset->GetSourceSkeletalMesh())
 			{
-				BindingAsset->SourceSkeletalMesh->ConditionalPostLoad();
+				BindingAsset->GetSourceSkeletalMesh()->ConditionalPostLoad();
 			}
 
-			SourceMeshData = TUniquePtr<FSkeletalMeshData, TDefaultDelete<IMeshData>>(new FSkeletalMeshData(BindingAsset->SourceSkeletalMesh));
-			TargetMeshData = TUniquePtr<FSkeletalMeshData, TDefaultDelete<IMeshData>>(new FSkeletalMeshData(BindingAsset->TargetSkeletalMesh));
+			SourceMeshData = TUniquePtr<FSkeletalMeshData, TDefaultDelete<IMeshData>>(new FSkeletalMeshData(BindingAsset->GetSourceSkeletalMesh()));
+			TargetMeshData = TUniquePtr<FSkeletalMeshData, TDefaultDelete<IMeshData>>(new FSkeletalMeshData(BindingAsset->GetTargetSkeletalMesh()));
 		}
 		else
 		{
-			BindingAsset->TargetGeometryCache->ConditionalPostLoad();
-			if (BindingAsset->SourceGeometryCache)
+			BindingAsset->GetTargetGeometryCache()->ConditionalPostLoad();
+			if (BindingAsset->GetSourceGeometryCache())
 			{
-				BindingAsset->SourceGeometryCache->ConditionalPostLoad();
+				BindingAsset->GetSourceGeometryCache()->ConditionalPostLoad();
 			}
 
-			SourceMeshData = TUniquePtr<FGeometryCacheData, TDefaultDelete<IMeshData>>(new FGeometryCacheData(BindingAsset->SourceGeometryCache));
-			TargetMeshData = TUniquePtr<FGeometryCacheData, TDefaultDelete<IMeshData>>(new FGeometryCacheData(BindingAsset->TargetGeometryCache));
+			SourceMeshData = TUniquePtr<FGeometryCacheData, TDefaultDelete<IMeshData>>(new FGeometryCacheData(BindingAsset->GetSourceGeometryCache()));
+			TargetMeshData = TUniquePtr<FGeometryCacheData, TDefaultDelete<IMeshData>>(new FGeometryCacheData(BindingAsset->GetTargetGeometryCache()));
 		}
 
 		if (!TargetMeshData->IsValid())
@@ -2066,17 +2109,37 @@ static bool InternalBuildBinding_CPU(UGroomBindingAsset* BindingAsset, bool bIni
 		const uint32 GroupCount = GroomAsset->GetNumHairGroups();
 		const uint32 MeshLODCount = TargetMeshData->GetNumLODs();
 
-		uint32 GroupIndex = 0;
-		for (const FHairGroupData& GroupData : GroomAsset->HairGroupsData)
-		{
-			FHairStrandsDatas StrandsData;
-			FHairStrandsDatas GuidesData;
-			GroomAsset->GetHairStrandsDatas(GroupIndex, StrandsData, GuidesData);
+		check(InGroupIndex < uint32(GroomAsset->GetHairGroupsPlatformData().Num()));
 
-			FHairRootGroupData& OutData = OutHairGroupDatas.AddDefaulted_GetRef();
-			InitHairStrandsRootData(OutData.RenRootData, &StrandsData, MeshLODCount, NumInterpolationPoints);
+		// Check if root data are needs for strands
+		bool bNeedStrandsRoot = false;
+		for (const FHairLODSettings& LODSettings : GroomAsset->GetHairGroupsLOD()[InGroupIndex].LODs)
+		{
+			if (LODSettings.GeometryType == EGroomGeometryType::Strands)
+			{
+				bNeedStrandsRoot = true;
+				break;
+			}
+		}
+		
+		// 1.1 Build guide/strands data
+		FHairStrandsDatas StrandsData;
+		FHairStrandsDatas GuidesData;
+		GroomAsset->GetHairStrandsDatas(InGroupIndex, StrandsData, GuidesData);
+
+		// 1.2 Init root data for guides/strands/cards
+		const FHairGroupPlatformData& GroupData = GroomAsset->GetHairGroupsPlatformData()[InGroupIndex];
+		{
+			// Guides
 			InitHairStrandsRootData(OutData.SimRootData, &GuidesData, MeshLODCount, NumInterpolationPoints);
 
+			// Strands
+			if (bNeedStrandsRoot)
+			{
+				InitHairStrandsRootData(OutData.RenRootData, &StrandsData, MeshLODCount, NumInterpolationPoints);
+			}
+
+			// Cards
 			const uint32 CardsLODCount = GroupData.Cards.LODs.Num();
 			OutData.CardsRootData.SetNum(GroupData.Cards.LODs.Num());
 			for (uint32 CardsLODIt = 0; CardsLODIt < CardsLODCount; ++CardsLODIt)
@@ -2084,154 +2147,159 @@ static bool InternalBuildBinding_CPU(UGroomBindingAsset* BindingAsset, bool bIni
 				if (GroupData.Cards.IsValid(CardsLODIt))
 				{
 					FHairStrandsDatas LODGuidesData;
-					const bool bIsValid = GroomAsset->GetHairCardsGuidesDatas(GroupIndex, CardsLODIt, LODGuidesData);
+					const bool bIsValid = GroomAsset->GetHairCardsGuidesDatas(InGroupIndex, CardsLODIt, LODGuidesData);
 					if (bIsValid)
 					{
 						InitHairStrandsRootData(OutData.CardsRootData[CardsLODIt], &LODGuidesData, MeshLODCount, NumInterpolationPoints);
 					}
 				}
 			}
-			++GroupIndex;
 		}
 
+		// Transfer requires root UV embedded into the groom asset. It is not possible to read safely hair description here to extra this data.
 		const bool bNeedTransferPosition = SourceMeshData->IsValid();
 
 		// Create mapping between the source & target using their UV
-		uint32 WorkItemCount = 1 + (bNeedTransferPosition ? 1 : 0); //RBF + optional position transfer
-		for (uint32 GroupIt = 0; GroupIt < GroupCount; ++GroupIt)
+		uint32 WorkItemCount = 1 + (bNeedTransferPosition ? 1 : 0); // RBF + optional position transfer
 		{
-			WorkItemCount += 2; // Sim & Render
-			const uint32 CardsLODCount = OutHairGroupDatas[GroupIt].CardsRootData.Num();
-			WorkItemCount += CardsLODCount;
+			// Guides
+			WorkItemCount += 1;
+			// Strands
+			WorkItemCount += bNeedStrandsRoot ? 1 : 0;
+			// Cards
+			WorkItemCount += OutData.CardsRootData.Num();
 		}
 	
 		uint32 WorkItemIndex = 0;
 		FScopedSlowTask SlowTask(WorkItemCount, LOCTEXT("BuildBindingData", "Building groom binding data"));
 		SlowTask.MakeDialog();
 
+		// 1.3 Transfer positions
 		TArray<TArray<FVector3f>> TransferredPositions;
 		if (bNeedTransferPosition)
 		{
-			bool bSucceed = GroomBinding_Transfer::Transfer( 
+			if (!GroomBinding_Transfer::Transfer(
 				SourceMeshData.Get(),
 				TargetMeshData.Get(),
-				TransferredPositions, BindingAsset->MatchingSection);
-
-			if (!bSucceed)
+				TransferredPositions, BindingAsset->GetMatchingSection()))
 			{
+				UE_LOG(LogHairStrands, Error, TEXT("[Groom] Binding asset could not be built. Positions transfer between source and target mesh failed."));
 				return false;
 			}
-
 			SlowTask.EnterProgressFrame();
 		}
 
-		bool bSucceed = false;
-		for (uint32 GroupIt=0; GroupIt < GroupCount; ++GroupIt)
+		// 1.4 Build root data for guides/strands/cards
 		{
-			FHairStrandsDatas StrandsData;
-			FHairStrandsDatas GuidesData;
-			GroomAsset->GetHairStrandsDatas(GroupIt, StrandsData, GuidesData);
-
-			bSucceed = GroomBinding_RootProjection::Project(
-				StrandsData,
-				TargetMeshData.Get(),
-				TransferredPositions,
-				OutHairGroupDatas[GroupIt].RenRootData);
-			if (!bSucceed)
+			// Guides
 			{
-				UE_LOG(LogHairStrands, Error, TEXT("[Groom] Binding asset could not be built. Some strand roots are not close enough to the target mesh to be projected onto it."));
-				return false;
+				if (!GroomBinding_RootProjection::Project(
+					GuidesData,
+					TargetMeshData.Get(),
+					TransferredPositions,
+					OutData.SimRootData))
+				{
+					UE_LOG(LogHairStrands, Error, TEXT("[Groom] Binding asset could not be built. Some guide roots are not close enough to the target mesh to be projected onto it."));
+					return false; 
+				}
+				SlowTask.EnterProgressFrame();
 			}
 
-			SlowTask.EnterProgressFrame();
-
-			bSucceed = GroomBinding_RootProjection::Project(
-				GuidesData,
-				TargetMeshData.Get(),
-				TransferredPositions,
-				OutHairGroupDatas[GroupIt].SimRootData);
-			if (!bSucceed) 
+			// Strands
+			if (bNeedStrandsRoot)
 			{
-				UE_LOG(LogHairStrands, Error, TEXT("[Groom] Binding asset could not be built. Some guide roots are not close enough to the target mesh to be projected onto it."));
-				return false; 
+				if (!GroomBinding_RootProjection::Project(
+					StrandsData,
+					TargetMeshData.Get(),
+					TransferredPositions,
+					OutData.RenRootData))
+				{
+					UE_LOG(LogHairStrands, Error, TEXT("[Groom] Binding asset could not be built. Some strand roots are not close enough to the target mesh to be projected onto it."));
+					return false;
+				}
+				SlowTask.EnterProgressFrame();
 			}
 
-			SlowTask.EnterProgressFrame();
-
-			const uint32 CardsLODCount = OutHairGroupDatas[GroupIt].CardsRootData.Num();
+			// Cards
+			const uint32 CardsLODCount = OutData.CardsRootData.Num();
 			for (uint32 CardsLODIt = 0; CardsLODIt < CardsLODCount; ++CardsLODIt)
 			{
-				if (BindingAsset->Groom->HairGroupsData[GroupIt].Cards.IsValid(CardsLODIt))
+				if (BindingAsset->GetGroom()->GetHairGroupsPlatformData()[InGroupIndex].Cards.IsValid(CardsLODIt))
 				{
 					FHairStrandsDatas LODGuidesData;
-					const bool bIsValid = GroomAsset->GetHairCardsGuidesDatas(GroupIt, CardsLODIt, LODGuidesData);
+					const bool bIsValid = GroomAsset->GetHairCardsGuidesDatas(InGroupIndex, CardsLODIt, LODGuidesData);
 					if (bIsValid)
 					{
-						bSucceed = GroomBinding_RootProjection::Project(
+						if (!GroomBinding_RootProjection::Project(
 							LODGuidesData,
 							TargetMeshData.Get(),
 							TransferredPositions,
-							OutHairGroupDatas[GroupIt].CardsRootData[CardsLODIt]);
-
-						if (!bSucceed) 
+							OutData.CardsRootData[CardsLODIt]))
 						{
 							UE_LOG(LogHairStrands, Error, TEXT("[Groom] Binding asset could not be built. Some cards guide roots are not close enough to the target mesh to be projected onto it."));
 							return false; 
 						}
 					}
 				}
-
 				SlowTask.EnterProgressFrame();
 			}
 		}
 		
-		GroomBinding_RBFWeighting::ComputeInterpolationWeights(OutHairGroupDatas, BindingAsset->NumInterpolationPoints, BindingAsset->MatchingSection, TargetMeshData.Get(), TransferredPositions);
-		SlowTask.EnterProgressFrame();
+		// 1.5 RBF building
+		{
+			GroomBinding_RBFWeighting::ComputeInterpolationWeights(OutData, bNeedStrandsRoot, BindingAsset->GetNumInterpolationPoints(), BindingAsset->GetMatchingSection(), TargetMeshData.Get(), TransferredPositions);
+			SlowTask.EnterProgressFrame();
+		}
 	}
 
 	// 2. Release existing resources data
-	UGroomBindingAsset::FHairGroupResources& OutHairGroupResources = BindingAsset->HairGroupResources;
-	if (BindingAsset->HairGroupResources.Num() > 0)
+	UGroomBindingAsset::FHairGroupResources& OutHairGroupResources = BindingAsset->GetHairGroupResources();
+	if (OutHairGroupResources.Num() > 0)
 	{
 		for (UGroomBindingAsset::FHairGroupResource& GroupResrouces : OutHairGroupResources)
 		{
-			BindingAsset->HairGroupResourcesToDelete.Enqueue(GroupResrouces);
+			BindingAsset->AddHairGroupResourcesToDelete(GroupResrouces);
 		}
 		OutHairGroupResources.Empty();
 	}
 	check(OutHairGroupResources.Num() == 0);
 
-	// 2. Convert data to bulk data
-	GroomBinding_BulkCopy::BuildRootBulkData(BindingAsset->HairGroupBulkDatas, OutHairGroupDatas);
-
-	// 3. Update GroomBindingAsset infos
-	{
-		TArray<FGoomBindingGroupInfo>& OutGroupInfos = BindingAsset->GroupInfos;
-		OutGroupInfos.Empty();
-		for (const FHairRootGroupData& Data : OutHairGroupDatas)
-		{
-			FGoomBindingGroupInfo& Info = OutGroupInfos.AddDefaulted_GetRef();
-			Info.SimRootCount = Data.SimRootData.RootCount;
-			Info.SimLODCount  = Data.SimRootData.MeshProjectionLODs.Num();
-			Info.RenRootCount = Data.RenRootData.RootCount;
-			Info.RenLODCount  = Data.RenRootData.MeshProjectionLODs.Num();
-		}
-	}
+	// 3. Convert data to bulk data
+	GroomBinding_BulkCopy::BuildRootBulkData(BindingAsset->GetHairGroupsPlatformData()[InGroupIndex], OutData);
 
 	BindingAsset->QueryStatus = UGroomBindingAsset::EQueryStatus::Completed;
-
-	// 4. Optionnally update resources
-	if (bInitResources)
-	{
-		BindingAsset->InitResource();
-	}
 #endif
 	return true;
+}
+void UpdateGroomBindingAssetInfos(UGroomBindingAsset* In);
+
+bool FGroomBindingBuilder::BuildBinding(UGroomBindingAsset* BindingAsset, uint32 InGroupIndex)
+{
+	return InternalBuildBinding_CPU(BindingAsset, InGroupIndex);
 }
 
 bool FGroomBindingBuilder::BuildBinding(UGroomBindingAsset* BindingAsset, bool bInitResources)
 {
-	return InternalBuildBinding_CPU(BindingAsset, bInitResources);
+	bool bOutValid = true;
+
+	// 1. Build binding asset
+	const uint32 GroupCount = BindingAsset->GetHairGroupsPlatformData().Num();
+	BindingAsset->GetGroupInfos().SetNum(GroupCount);
+	for (uint32 InGroupIndex = 0; InGroupIndex < GroupCount; ++InGroupIndex)
+	{
+		bOutValid = InternalBuildBinding_CPU(BindingAsset, InGroupIndex) && bOutValid;
+	}
+
+	// 2. Optionnally update resources
+	if (bOutValid && bInitResources)
+	{
+		BindingAsset->InitResource();
+	}
+
+	// 3. Update GroomBindingAsset infos
+	UpdateGroomBindingAssetInfos(BindingAsset);
+
+	return bOutValid;
 }
 
 void FGroomBindingBuilder::GetRootData(

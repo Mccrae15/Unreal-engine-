@@ -6,6 +6,8 @@
 #include "NiagaraDataInterface.h"
 #include "NiagaraCommon.h"
 #include "VectorVM.h"
+#include "RHIUtilities.h"
+
 #include "NiagaraDataInterfaceRigidMeshCollisionQuery.generated.h"
 
 // Forward declaration
@@ -69,7 +71,7 @@ struct FNDIRigidMeshCollisionArrays
 struct FNDIRigidMeshCollisionBuffer : public FRenderResource
 {
 	/** Init the buffer */
-	virtual void InitRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 
 	/** Release the buffer */
 	virtual void ReleaseRHI() override;
@@ -229,7 +231,7 @@ public:
 	virtual void GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction& OutFunc) override;
 	virtual bool CanExecuteOnTarget(ENiagaraSimTarget Target) const override { return Target == ENiagaraSimTarget::GPUComputeSim; }
 #if WITH_NIAGARA_DEBUGGER
-	virtual void DrawDebugHud(UCanvas* Canvas, FNiagaraSystemInstance* SystemInstance, FString& VariableDataString, bool bVerbose) const override;
+	virtual void DrawDebugHud(FNDIDrawDebugHudContext& DebugHudContext) const override;
 #endif
 	virtual bool InitPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance) override;
 	virtual void DestroyPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance)override;
@@ -283,13 +285,13 @@ protected:
 /**
 * C++ and Blueprint library for accessing array types
 */
-UCLASS()
-class NIAGARA_API UNiagaraDIRigidMeshCollisionFunctionLibrary : public UBlueprintFunctionLibrary
+UCLASS(MinimalAPI)
+class UNiagaraDIRigidMeshCollisionFunctionLibrary : public UBlueprintFunctionLibrary
 {
 	GENERATED_BODY()
 
 public:
 
 	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Niagara Set Source Actors"))
-	static void SetSourceActors(UNiagaraComponent* NiagaraSystem, FName OverrideName, const TArray<AActor*>& SourceActors);
+	static NIAGARA_API void SetSourceActors(UNiagaraComponent* NiagaraSystem, FName OverrideName, const TArray<AActor*>& SourceActors);
 };

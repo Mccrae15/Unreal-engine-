@@ -2,31 +2,25 @@
 
 #include "SDetailsViewBase.h"
 
+#include "Algo/AllOf.h"
+#include "Algo/AnyOf.h"
 #include "Engine/Engine.h"
 #include "GameFramework/Actor.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Modules/ModuleManager.h"
 #include "Presentation/PropertyEditor/PropertyEditor.h"
-#include "Settings/EditorExperimentalSettings.h"
-#include "UserInterface/PropertyEditor/SPropertyEditorEditInline.h"
 #include "Widgets/Colors/SColorPicker.h"
 #include "Widgets/Input/SSearchBox.h"
-
-#include "CategoryPropertyNode.h"
+#include "Framework/Application/SlateApplication.h"
 #include "DetailCategoryBuilderImpl.h"
 #include "DetailLayoutBuilderImpl.h"
 #include "DetailLayoutHelpers.h"
-#include "DetailPropertyRow.h"
-#include "EditConditionParser.h"
 #include "Editor.h"
-#include "EditorConfigSubsystem.h"
 #include "IDetailCustomization.h"
-#include "ObjectEditorUtils.h"
 #include "ObjectPropertyNode.h"
+#include "PropertyPermissionList.h"
 #include "ScopedTransaction.h"
 #include "SDetailNameArea.h"
-#include "SDetailsView.h"
-#include "PropertyEditorPermissionList.h"
 #include "ThumbnailRendering/ThumbnailManager.h"
 
 SDetailsViewBase::SDetailsViewBase() :
@@ -297,15 +291,16 @@ static TSharedPtr<FDetailTreeNode> FindBestFitTreeNodeFromProperty(const TArray<
 
 void SDetailsViewBase::HighlightProperty(const FPropertyPath& Property)
 {
-	if (!Property.IsValid())
-	{
-		return;
-	}
-	
 	TSharedPtr<FDetailTreeNode> PrevHighlightedNodePtr = CurrentlyHighlightedNode.Pin();
 	if (PrevHighlightedNodePtr.IsValid())
 	{
 		PrevHighlightedNodePtr->SetIsHighlighted(false);
+	}
+	
+	if (!Property.IsValid())
+	{
+		CurrentlyHighlightedNode = nullptr;
+		return;
 	}
 
 	const TSharedPtr< FDetailTreeNode > TreeNode = FindBestFitTreeNodeFromProperty(RootTreeNodes, Property);
@@ -329,6 +324,103 @@ void SDetailsViewBase::HighlightProperty(const FPropertyPath& Property)
 	CurrentlyHighlightedNode = TreeNode;
 }
 
+static void ExpandPaintSpacePropertyBoundsRecursive(const TArray<TSharedRef<FDetailTreeNode>>& TreeNodes, TSharedPtr<SDetailTree> DetailTree, FSlateRect& InOutRect)
+{
+	for(const TSharedRef<FDetailTreeNode>& TreeNode : TreeNodes)
+	{
+		if (const TSharedPtr<ITableRow> Row = DetailTree->WidgetFromItem(TreeNode))
+		{
+			if (const TSharedPtr<SWidget> Widget = Row->AsWidget())
+			{
+				FSlateRect ChildRect = Widget->GetPaintSpaceGeometry().GetLayoutBoundingRect();
+				InOutRect = InOutRect.IsValid() ? InOutRect.Expand(ChildRect) : ChildRect;
+			}
+		}
+		
+		if (!TreeNode->IsLeaf() && DetailTree->IsItemExpanded(TreeNode))
+		{
+			TArray<TSharedRef<FDetailTreeNode>> Children;
+			TreeNode->GetChildren(Children);
+			ExpandPaintSpacePropertyBoundsRecursive(Children, DetailTree, InOutRect);
+		}
+	}
+}
+
+FSlateRect SDetailsViewBase::GetPaintSpacePropertyBounds(const TSharedRef<FDetailTreeNode>& InDetailTreeNode, bool bIncludeChildren) const
+{
+	const TSharedRef<FDetailTreeNode> DetailTreeNode = StaticCastSharedRef<FDetailTreeNode>(InDetailTreeNode);
+	FSlateRect Result{-1,-1,-1,-1};
+	if (const TSharedPtr<ITableRow> Row = DetailTree->WidgetFromItem(DetailTreeNode))
+	{
+		if (const TSharedPtr<SWidget> Widget = Row->AsWidget())
+		{
+			Result = Widget->GetPaintSpaceGeometry().GetLayoutBoundingRect();
+		}
+	}
+	if (bIncludeChildren && !DetailTreeNode->IsLeaf() && DetailTree->IsItemExpanded(DetailTreeNode))
+	{
+		TArray<TSharedRef<FDetailTreeNode>> Children;
+		DetailTreeNode->GetChildren(Children);
+		ExpandPaintSpacePropertyBoundsRecursive(Children, DetailTree, Result);
+	}
+	return Result;
+}
+
+static void ExpandTickSpacePropertyBoundsRecursive(const TArray<TSharedRef<FDetailTreeNode>>& TreeNodes, TSharedPtr<SDetailTree> DetailTree, FSlateRect& InOutRect)
+{
+	for(const TSharedRef<FDetailTreeNode>& TreeNode : TreeNodes)
+	{
+		if (const TSharedPtr<ITableRow> Row = DetailTree->WidgetFromItem(TreeNode))
+		{
+			if (const TSharedPtr<SWidget> Widget = Row->AsWidget())
+			{
+				FSlateRect ChildRect = Widget->GetTickSpaceGeometry().GetLayoutBoundingRect();
+				InOutRect = InOutRect.IsValid() ? InOutRect.Expand(ChildRect) : ChildRect;
+			}
+		}
+		
+		if (!TreeNode->IsLeaf() && DetailTree->IsItemExpanded(TreeNode))
+		{
+			TArray<TSharedRef<FDetailTreeNode>> Children;
+			TreeNode->GetChildren(Children);
+			ExpandTickSpacePropertyBoundsRecursive(Children, DetailTree, InOutRect);
+		}
+	}
+}
+
+FSlateRect SDetailsViewBase::GetTickSpacePropertyBounds(const TSharedRef<FDetailTreeNode>& InDetailTreeNode, bool bIncludeChildren) const
+{
+	const TSharedRef<FDetailTreeNode> DetailTreeNode = StaticCastSharedRef<FDetailTreeNode>(InDetailTreeNode);
+	FSlateRect Result{-1,-1,-1,-1};
+	if (const TSharedPtr<ITableRow> Row = DetailTree->WidgetFromItem(DetailTreeNode))
+	{
+		if (const TSharedPtr<SWidget> Widget = Row->AsWidget())
+		{
+			Result = Widget->GetTickSpaceGeometry().GetLayoutBoundingRect();
+		}
+	}
+	if (bIncludeChildren && !DetailTreeNode->IsLeaf() && DetailTree->IsItemExpanded(DetailTreeNode))
+	{
+		TArray<TSharedRef<FDetailTreeNode>> Children;
+		DetailTreeNode->GetChildren(Children);
+		ExpandTickSpacePropertyBoundsRecursive(Children, DetailTree, Result);
+	}
+	return Result;
+}
+
+bool SDetailsViewBase::IsAncestorCollapsed(const TSharedRef<IDetailTreeNode>& Node) const
+{
+	// in order for a node to be expanded, all it's parents have to be expanded
+	bool bIsCollapsed = false;
+	TSharedPtr<FDetailTreeNode> Ancestor = StaticCastSharedRef<FDetailTreeNode>(Node)->GetParentNode().Pin();
+	while (!bIsCollapsed && Ancestor)
+	{
+		bIsCollapsed = !Ancestor->ShouldShowOnlyChildren() && !DetailTree->IsItemExpanded(Ancestor.ToSharedRef());
+		Ancestor = Ancestor->GetParentNode().Pin();
+	}
+	return bIsCollapsed;
+}
+
 void SDetailsViewBase::ShowAllAdvancedProperties()
 {
 	CurrentFilter.bShowAllAdvanced = true;
@@ -337,6 +429,14 @@ void SDetailsViewBase::ShowAllAdvancedProperties()
 void SDetailsViewBase::SetOnDisplayedPropertiesChanged(FOnDisplayedPropertiesChanged InOnDisplayedPropertiesChangedDelegate)
 {
 	OnDisplayedPropertiesChangedDelegate = InOnDisplayedPropertiesChangedDelegate;
+}
+
+void SDetailsViewBase::GetHeadNodes(TArray<TWeakPtr<FDetailTreeNode>>& OutNodes)
+{
+	for (TSharedRef<FDetailTreeNode>& Node : RootTreeNodes)
+	{
+		OutNodes.Add(Node.ToWeakPtr());
+	}
 }
 
 void SDetailsViewBase::SetRightColumnMinWidth(float InMinWidth)
@@ -1035,29 +1135,27 @@ void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InC
 
 	if (bHadDeferredActions)
 	{
-		bRunningDeferredActions = true;
-		ON_SCOPE_EXIT { bRunningDeferredActions = false; };
-
-		TArray<FSimpleDelegate> DeferredActionsCopy;
-		
-		do
+		// Note: Extra scope so that RestoreAllExpandedItems actually restores state, as it does nothing when bRunningDeferredActions is true
 		{
-			// Execute any deferred actions
-			DeferredActionsCopy = MoveTemp(DeferredActions);
-			DeferredActions.Reset();
+			bRunningDeferredActions = true;
+			ON_SCOPE_EXIT{ bRunningDeferredActions = false; };
 
-			// Execute any deferred actions
-			for (const FSimpleDelegate& DeferredAction : DeferredActionsCopy)
+			TArray<FSimpleDelegate> DeferredActionsCopy;
+
+			do
 			{
-				DeferredAction.ExecuteIfBound();
-			}
-		} while (DeferredActions.Num() > 0);
-	}
+				// Execute any deferred actions
+				DeferredActionsCopy = MoveTemp(DeferredActions);
+				DeferredActions.Reset();
 
-	if (bHadDeferredActions)
-	{
-		// Restore expansion state after processing all deferred actions. Must be done outside of the scope where
-		// bRunningDeferredActions is true since RestoreAllExpandedItems returns immediately when it is true
+				// Execute any deferred actions
+				for (const FSimpleDelegate& DeferredAction : DeferredActionsCopy)
+				{
+					DeferredAction.ExecuteIfBound();
+				}
+			} while (DeferredActions.Num() > 0);
+		}
+
 		RestoreAllExpandedItems();
 	}
 
@@ -1442,30 +1540,102 @@ void SDetailsViewBase::RestoreExpandedItems(TSharedRef<FPropertyNode> StartNode)
 	}
 }
 
-void SDetailsViewBase::MarkNodeAnimating(TSharedPtr<FPropertyNode> InNode, float InAnimationDuration)
+void SDetailsViewBase::MarkNodeAnimating(TSharedPtr<FPropertyNode> InNode, float InAnimationDuration, TOptional<FGuid> InAnimationBatchId)
 {
 	if (InNode.IsValid() && InAnimationDuration > 0.0f)
 	{
-		CurrentlyAnimatingNodePath = FPropertyNode::CreatePropertyPath(InNode.ToSharedRef());
-		GEditor->GetTimerManager()->ClearTimer(AnimateNodeTimer);
-		GEditor->GetTimerManager()->SetTimer(AnimateNodeTimer, FTimerDelegate::CreateSP(this, &SDetailsViewBase::HandleNodeAnimationComplete), InAnimationDuration, false);
+		TSharedPtr<FPropertyPath> NodePropertyPath = FPropertyNode::CreatePropertyPath(InNode.ToSharedRef());
+		
+		// Try finding existing, ignore Batch Id
+		FAnimatingNodeCollection* AnimatingNode = CurrentlyAnimatingNodeCollections.FindByPredicate(
+			[NodePropertyPath](const FAnimatingNodeCollection& AnimatingNode)
+			{
+				return Algo::AnyOf(AnimatingNode.NodePaths, [NodePropertyPath](const TSharedPtr<FPropertyPath>& NodePath)
+				{
+					return FPropertyPath::AreEqual(NodePath.ToSharedRef(), NodePropertyPath.ToSharedRef());
+				});
+			});
+
+		// If this node is part of a batch animation, let it play out (don't reset it)
+		if (AnimatingNode)
+		{
+			if (AnimatingNode->NodePaths.Num() > 1
+				|| (InAnimationBatchId.IsSet() && AnimatingNode->BatchId == InAnimationBatchId))
+			{
+				return;
+			}
+		}
+		
+		// If not found, but batch id found, add it to that batch
+		if (!AnimatingNode && InAnimationBatchId.IsSet())
+		{
+			AnimatingNode = CurrentlyAnimatingNodeCollections.FindByPredicate(
+				[InAnimationBatchId](const FAnimatingNodeCollection& AnimatingNode)
+				{
+					return AnimatingNode.BatchId == InAnimationBatchId;
+				});
+			
+			if (AnimatingNode != nullptr)
+			{
+				AnimatingNode->NodePaths.Add(NodePropertyPath);
+
+				// Timer Handle already in progress, so no need to clear/set below
+				return;
+			}
+		}
+
+		// Otherwise add it
+		if (AnimatingNode == nullptr)
+		{
+			AnimatingNode = &CurrentlyAnimatingNodeCollections.Add_GetRef({{NodePropertyPath}});
+			if (InAnimationBatchId.IsSet())
+			{
+				AnimatingNode->BatchId = InAnimationBatchId.GetValue();
+			}
+		}
+		
+		GEditor->GetTimerManager()->ClearTimer(AnimatingNode->NodeTimer);
+		GEditor->GetTimerManager()->SetTimer(AnimatingNode->NodeTimer, FTimerDelegate::CreateSP(this, &SDetailsViewBase::HandleNodeAnimationComplete, AnimatingNode), InAnimationDuration, false);
 	}
 }
 
 bool SDetailsViewBase::IsNodeAnimating(TSharedPtr<FPropertyNode> InNode)
 {
-	if (CurrentlyAnimatingNodePath.IsValid() && InNode.IsValid())
+	if (!InNode.IsValid())
 	{
-		TSharedRef<FPropertyPath> InNodePath = FPropertyNode::CreatePropertyPath(InNode.ToSharedRef());
-		return FPropertyPath::AreEqual(CurrentlyAnimatingNodePath.ToSharedRef(), InNodePath);
+		return false;
 	}
 
-	return false;
+	TSharedRef<FPropertyPath> InNodePath = FPropertyNode::CreatePropertyPath(InNode.ToSharedRef());
+	return CurrentlyAnimatingNodeCollections.ContainsByPredicate(
+		[InNodePath](const FAnimatingNodeCollection& AnimatingNode)
+		{
+			return Algo::AnyOf(AnimatingNode.NodePaths, [InNodePath](const TSharedPtr<FPropertyPath>& NodePath)
+			{
+				return FPropertyPath::AreEqual(NodePath.ToSharedRef(), InNodePath);
+			});
+		});
 }
 
-void SDetailsViewBase::HandleNodeAnimationComplete()
+bool SDetailsViewBase::FAnimatingNodeCollection::IsValid() const
 {
-	CurrentlyAnimatingNodePath = nullptr;
+	return Algo::AllOf(NodePaths,
+			[](const TSharedPtr<FPropertyPath>& InNodePath)
+			{
+				return InNodePath.IsValid();
+			});
+}
+
+void SDetailsViewBase::HandleNodeAnimationComplete(FAnimatingNodeCollection* InAnimatedNode)
+{
+	if (InAnimatedNode)
+	{
+		GEditor->GetTimerManager()->ClearTimer(InAnimatedNode->NodeTimer);
+		CurrentlyAnimatingNodeCollections.RemoveAll([InAnimatedNode](FAnimatingNodeCollection& AnimatedNode)
+		{
+			return AnimatedNode == *InAnimatedNode;		
+		});
+	}
 }
 
 void SDetailsViewBase::FilterRootNode(const TSharedPtr<FComplexPropertyNode>& RootNode)

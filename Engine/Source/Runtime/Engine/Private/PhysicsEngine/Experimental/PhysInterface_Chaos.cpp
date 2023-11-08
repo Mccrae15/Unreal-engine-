@@ -688,6 +688,9 @@ void FPhysInterface_Chaos::AddGeometry(FPhysicsActorHandle& InActor, const FGeom
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FPhysInterface_Chaos::AddGeometry);
 	LLM_SCOPE(ELLMTag::ChaosGeometry);
+
+	// @todo(chaos): we should not be creating unique geometry per actor
+	// @todo(chaos): we are creating the Shapes array twice. Once here and again in SetGeometry or MergeGeometry. Fix this.
 	TArray<TUniquePtr<Chaos::FImplicitObject>> Geoms;
 	Chaos::FShapesArray Shapes;
 	ChaosInterface::CreateGeometry(InParams, Geoms, Shapes);
@@ -708,21 +711,31 @@ void FPhysInterface_Chaos::AddGeometry(FPhysicsActorHandle& InActor, const FGeom
 			//FPhysInterface_Chaos::SetMaterials(NewHandle, InParams.ComplexMaterials.Num() > 0 ? InParams.ComplexMaterials : SimpleView);
 		}
 
+		// NOTE: Both MergeGeometry and SetGeometry will extend the ShapesInstances array to contain enough elements for
+		// each geometry in the Union. However the shape data will not have been filled in, hence the call to MergeShapeInstance at the end.
+		// todo: we should not be creating unique geometry per actor
 		bool bMergeShapesArray = false;
-		//todo: we should not be creating unique geometry per actor
-		// we always have a union so we can support any future welding operations. (Non-trivial converting the SharedPtr to UniquePtr)
 		{
-			if (InActor->GetGameThreadAPI().Geometry()) // geometry already exists - combine new geometry with the existing
+			if (InActor->GetGameThreadAPI().Geometry())
 			{
+				// Geometry already exists - combine new geometry with the existing
+				// NOTE: We do not need to set the AllowBVH flag because it will be cloned (see below)
 				InActor->GetGameThreadAPI().MergeGeometry(MoveTemp(Geoms));
 				bMergeShapesArray = true;
 			}
 			else
 			{
-				InActor->GetGameThreadAPI().SetGeometry(MakeUnique<Chaos::FImplicitObjectUnion>(MoveTemp(Geoms)));
+				// We always have a union so we can support any future welding operations. (Non-trivial converting the SharedPtr to UniquePtr).
+				// NOTE: The root union always supports BVH (if there are enough shapes) and is the only Union in the hierarchy that is allowed 
+				// to do so, but we don't create it here because that makes welding even more expensive (bodies are welded one by one). 
+				// Search for SetAllowBVH to see where the BVH is enabled.
+				TUniquePtr<Chaos::FImplicitObjectUnion> Union = MakeUnique<Chaos::FImplicitObjectUnion>(MoveTemp(Geoms));
+				InActor->GetGameThreadAPI().SetGeometry(MoveTemp(Union));
 			}
 		}
 
+		// Update the newly added shapes with the collision filters, materials etc
+		// NOTE: MergeShapes overwrites the last N shapes (see comments above)
 		if (bMergeShapesArray)
 		{
 			InActor->GetGameThreadAPI().MergeShapesArray(MoveTemp(Shapes));
@@ -745,7 +758,7 @@ void FPhysInterface_Chaos::SetMaterials(const FPhysicsShapeHandle& InShape, cons
 		NewMaterialHandles.Add(UnrealMaterial->GetPhysicsMaterial());
 	}
 
-	InShape.Shape->SetMaterials(NewMaterialHandles);
+	InShape.Shape->SetMaterials(MoveTemp(NewMaterialHandles));
 }
 
 void FPhysInterface_Chaos::SetMaterials(const FPhysicsShapeHandle& InShape, const TArrayView<UPhysicalMaterial*> InMaterials, const TArrayView<FPhysicalMaterialMaskParams>& InMaterialMasks)
@@ -1172,10 +1185,10 @@ bool FPhysInterface_Chaos::GetSquaredDistanceToBody(const FBodyInstance* InInsta
 	return bFoundValidBody;
 }
 
-uint32 GetTriangleMeshExternalFaceIndex(const FPhysicsShape& Shape, uint32 InternalFaceIndex)
+uint32 GetTriangleMeshExternalFaceIndex(const Chaos::FImplicitObject* Geom, uint32 InternalFaceIndex)
 {
 	using namespace Chaos;
-	uint8 OuterType = Shape.GetGeometry()->GetType();
+	uint8 OuterType = Geom->GetType();
 	uint8 InnerType = GetInnerType(OuterType);
 	if (ensure(InnerType == ImplicitObjectType::TriangleMesh))
 	{
@@ -1183,22 +1196,28 @@ uint32 GetTriangleMeshExternalFaceIndex(const FPhysicsShape& Shape, uint32 Inter
 
 		if (IsScaled(OuterType))
 		{
-			const TImplicitObjectScaled<FTriangleMeshImplicitObject>& ScaledTriangleMesh = Shape.GetGeometry()->GetObjectChecked<TImplicitObjectScaled<FTriangleMeshImplicitObject>>();
+			const TImplicitObjectScaled<FTriangleMeshImplicitObject>& ScaledTriangleMesh = Geom->GetObjectChecked<TImplicitObjectScaled<FTriangleMeshImplicitObject>>();
 			TriangleMesh = ScaledTriangleMesh.GetUnscaledObject();
 		}
 		else if(IsInstanced(OuterType))
 		{
-			TriangleMesh = Shape.GetGeometry()->GetObjectChecked<TImplicitObjectInstanced<FTriangleMeshImplicitObject>>().GetInstancedObject();
+			TriangleMesh = Geom->GetObjectChecked<TImplicitObjectInstanced<FTriangleMeshImplicitObject>>().GetInstancedObject();
 		}
 		else
 		{
-			TriangleMesh = &Shape.GetGeometry()->GetObjectChecked<FTriangleMeshImplicitObject>();
+			TriangleMesh = &Geom->GetObjectChecked<FTriangleMeshImplicitObject>();
 		}
 
 		return TriangleMesh->GetExternalFaceIndexFromInternal(InternalFaceIndex);
 	}
 
 	return -1;
+}
+
+uint32 GetTriangleMeshExternalFaceIndex(const FPhysicsShape& Shape, uint32 InternalFaceIndex)
+{
+	// NOTE: GetLeafGeometry will strip Transformed and Instanced wrappers (but not Scaled)
+	return GetTriangleMeshExternalFaceIndex(Shape.GetLeafGeometry(), InternalFaceIndex);
 }
 
 void FPhysInterface_Chaos::CalculateMassPropertiesFromShapeCollection(Chaos::FMassProperties& OutProperties,const TArray<FPhysicsShapeHandle>& InShapes,float InDensityKGPerCM)

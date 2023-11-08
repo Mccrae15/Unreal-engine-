@@ -7,14 +7,6 @@
 #define NEEDS_D3D12_INDIRECT_ARGUMENT_HEAP_WORKAROUND 0
 #endif
 
-int32 GUseCommittedTexturesNV = 0;
-static FAutoConsoleVariableRef CVarUseCommittedTexturesNV(
-	TEXT("r.D3D12.UseCommittedTexturesNV"),
-	GUseCommittedTexturesNV,
-	TEXT("Force committed resource creation for textures to fix possible driver bug"),
-	ECVF_Default
-);
-
 //-----------------------------------------------------------------------------
 //	FD3D12MemoryPool
 //-----------------------------------------------------------------------------
@@ -30,6 +22,7 @@ FD3D12MemoryPool::FD3D12MemoryPool(
 		, uint32 InPoolAlignment
 		, ERHIPoolResourceTypes InSupportedResourceTypes
 		, EFreeListOrder InFreeListOrder
+		, HeapId InTraceParentHeapId
 	)
 	: FRHIMemoryPool(InPoolIndex, InPoolSize, InPoolAlignment, InSupportedResourceTypes, InFreeListOrder)
 	, FD3D12DeviceChild(ParentDevice)
@@ -39,6 +32,9 @@ FD3D12MemoryPool::FD3D12MemoryPool(
 	, AllocationStrategy(InAllocationStrategy)
 	, LastUsedFrameFence(0)
 {
+#if UE_MEMORY_TRACE_ENABLED
+	TraceHeapId = MemoryTrace_HeapSpec(InTraceParentHeapId, AllocationStrategy == EResourceAllocationStrategy::kPlacedResource ? TEXT("D3D12MemoryPool (PlacedResource)") : TEXT("D3D12MemoryPool (ManualSubAllocation)"));
+#endif
 }
 
 
@@ -94,7 +90,7 @@ void FD3D12MemoryPool::Init()
 			VERIFYD3D12RESULT(Adapter->GetD3DDevice()->CreateHeap(&Desc, IID_PPV_ARGS(&Heap)));
 		}
 
-		BackingHeap = new FD3D12Heap(GetParentDevice(), GetVisibilityMask());
+		BackingHeap = new FD3D12Heap(GetParentDevice(), GetVisibilityMask(), TraceHeapId);
 		BackingHeap->SetHeap(Heap, TEXT("PoolAllocator Heap"));
 
 		// Only track resources that cannot be accessed on the CPU.
@@ -109,6 +105,9 @@ void FD3D12MemoryPool::Init()
 			LLM_SCOPED_PAUSE_TRACKING_FOR_TRACKER(ELLMTracker::Default, ELLMAllocType::System);
 			const D3D12_HEAP_PROPERTIES HeapProps = CD3DX12_HEAP_PROPERTIES(InitConfig.HeapType, GetGPUMask().GetNative(), GetVisibilityMask().GetNative());
 			VERIFYD3D12RESULT(Adapter->CreateBuffer(HeapProps, GetGPUMask(), InitConfig.InitialResourceState, ED3D12ResourceStateMode::SingleState, InitConfig.InitialResourceState, PoolSize, BackingResource.GetInitReference(), TEXT("Resource Allocator Underlying Buffer"), InitConfig.ResourceFlags));
+#if UE_MEMORY_TRACE_ENABLED
+			MemoryTrace_MarkAllocAsHeap(BackingResource->GetGPUVirtualAddress(), TraceHeapId);
+#endif
 		}
 
 		if (IsCPUAccessible(InitConfig.HeapType))
@@ -145,6 +144,10 @@ void FD3D12MemoryPool::Destroy()
 
 	if (BackingResource)
 	{
+#if UE_MEMORY_TRACE_ENABLED
+		MemoryTrace_UnmarkAllocAsHeap(BackingResource->GetGPUVirtualAddress(), TraceHeapId);
+		MemoryTrace_Free(BackingResource->GetGPUVirtualAddress(), EMemoryTraceRootHeap::VideoMemory);
+#endif
 		ensure(BackingResource->GetRefCount() == 1 || GNumExplicitGPUsForRendering > 1);
 		BackingResource = nullptr;
 	}
@@ -218,14 +221,18 @@ EResourceAllocationStrategy FD3D12PoolAllocator::GetResourceAllocationStrategy(D
 
 
 FD3D12PoolAllocator::FD3D12PoolAllocator(FD3D12Device* ParentDevice, FRHIGPUMask VisibleNodes, const FD3D12ResourceInitConfig& InInitConfig, const FString& InName,
-	EResourceAllocationStrategy InAllocationStrategy, uint64 InDefaultPoolSize, uint32 InPoolAlignment, uint32 InMaxAllocationSize, FRHIMemoryPool::EFreeListOrder InFreeListOrder, bool bInDefragEnabled) :
+	EResourceAllocationStrategy InAllocationStrategy, uint64 InDefaultPoolSize, uint32 InPoolAlignment, uint32 InMaxAllocationSize, FRHIMemoryPool::EFreeListOrder InFreeListOrder, bool bInDefragEnabled, HeapId InTraceParentHeapId) :
 	FRHIPoolAllocator(InDefaultPoolSize, InPoolAlignment, InMaxAllocationSize, InFreeListOrder, bInDefragEnabled), 
 	FD3D12DeviceChild(ParentDevice), 
 	FD3D12MultiNodeGPUObject(ParentDevice->GetGPUMask(), VisibleNodes), 
 	InitConfig(InInitConfig), 
 	Name(InName), 
 	AllocationStrategy(InAllocationStrategy)
-{}
+{
+#if UE_MEMORY_TRACE_ENABLED
+	TraceHeapId = MemoryTrace_HeapSpec(InTraceParentHeapId, *Name);
+#endif
+}
 
 
 FD3D12PoolAllocator::~FD3D12PoolAllocator()
@@ -317,8 +324,7 @@ void FD3D12PoolAllocator::AllocateResource(uint32 GPUIndex, D3D12_HEAP_TYPE InHe
 	// Disable pooling for VRAM allocated textures and force use the committed resource path
 	bool bForceCommittedResourcePath = false;
 #if PLATFORM_WINDOWS
-	const bool bUseCommittedTexturesNV = GUseCommittedTexturesNV && IsRHIDeviceNVIDIA();
-	if (bPoolResource && bUseCommittedTexturesNV && InHeapType == D3D12_HEAP_TYPE_DEFAULT && InDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+	if (bPoolResource && GD3D12WorkaroundFlags.bForceCommittedResourceTextureAllocation && InHeapType == D3D12_HEAP_TYPE_DEFAULT && InDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
 	{
 		bForceCommittedResourcePath = true;
 	}
@@ -417,7 +423,7 @@ void FD3D12PoolAllocator::AllocateResource(uint32 GPUIndex, D3D12_HEAP_TYPE InHe
 
 			ID3D12Heap* Heap = nullptr;
 			VERIFYD3D12RESULT(Adapter->GetD3DDevice()->CreateHeap(&HeapDesc, IID_PPV_ARGS(&Heap)));
-			TRefCountPtr<FD3D12Heap> BackingHeap = new FD3D12Heap(GetParentDevice(), GetVisibilityMask());
+			TRefCountPtr<FD3D12Heap> BackingHeap = new FD3D12Heap(GetParentDevice(), GetVisibilityMask(), TraceHeapId);
 			bool bTrack = false;
 			BackingHeap->SetHeap(Heap, InName, bTrack);		
 			
@@ -505,7 +511,7 @@ void FD3D12PoolAllocator::DeallocateResource(FD3D12ResourceLocation& ResourceLoc
 	}
 
 	int16 PoolIndex = AllocationData.GetPoolIndex();
-	FRHIPoolAllocationData* ReleasedAllocationData = (AllocationDataPool.Num() > 0) ? AllocationDataPool.Pop(false) : new FRHIPoolAllocationData();;
+	FRHIPoolAllocationData* ReleasedAllocationData = (AllocationDataPool.Num() > 0) ? AllocationDataPool.Pop(false) : new FRHIPoolAllocationData();
 	bool bLocked = true;
 	ReleasedAllocationData->MoveFrom(AllocationData, bLocked);
 
@@ -552,7 +558,7 @@ FRHIMemoryPool* FD3D12PoolAllocator::CreateNewPool(int16 InPoolIndex, uint32 InM
 	}
 
 	FD3D12MemoryPool* NewPool = new FD3D12MemoryPool(GetParentDevice(),	GetVisibilityMask(), InitConfig,
-		Name, AllocationStrategy, InPoolIndex, PoolSize, PoolAlignment, InAllocationResourceType, FreeListOrder);
+		Name, AllocationStrategy, InPoolIndex, PoolSize, PoolAlignment, InAllocationResourceType, FreeListOrder, TraceHeapId);
 	NewPool->Init();
 	return NewPool;
 }
@@ -746,52 +752,6 @@ void FD3D12PoolAllocator::TransferOwnership(FD3D12ResourceLocation& InSource, FD
 	DestinationPoolData.MoveFrom(InSource.GetPoolAllocatorPrivateData().PoolData, bLocked);
 	DestinationPoolData.SetOwner(&InDest);
 }
-
-
-void FD3D12PoolAllocator::Swap(FD3D12ResourceLocation& InLHS, FD3D12ResourceLocation& InRHS)
-{
-	FScopeLock Lock(&CS);
-
-	check(IsOwner(InLHS) && IsOwner(InRHS));
-
-	FRHIPoolAllocationData& LHSPoolData = InLHS.GetPoolAllocatorPrivateData().PoolData;
-	FRHIPoolAllocationData& RHSPoolData = InRHS.GetPoolAllocatorPrivateData().PoolData;
-
-	// If locked then assume the block is currently being defragged and then the frame fenced operation
-	// also needs to be updated
-	if (LHSPoolData.IsLocked() || RHSPoolData.IsLocked())
-	{
-		int32 bFoundRequired = 0;
-		bFoundRequired += LHSPoolData.IsLocked() ? 1 : 0;
-		bFoundRequired += RHSPoolData.IsLocked() ? 1 : 0;
-		for (FrameFencedAllocationData& Operation : FrameFencedOperations)
-		{
-			if (Operation.AllocationData == &LHSPoolData || Operation.AllocationData == &RHSPoolData)
-			{
-				check(Operation.Operation == FrameFencedAllocationData::EOperation::Unlock);
-				Operation.AllocationData = Operation.AllocationData == &LHSPoolData ? &RHSPoolData : &LHSPoolData;
-				bFoundRequired--;
-				if (bFoundRequired == 0)
-				{
-					break;
-				}
-			}
-		}
-		check(bFoundRequired == 0);
-	}
-
-	// Perform swap with data & locking state but keep ownership
-	FRHIPoolAllocationData TmpAllocationData = LHSPoolData;
-	bool TmpIsLocked = LHSPoolData.IsLocked();
-	FRHIPoolResource* TmpOwnerLHS = LHSPoolData.GetOwner();
-	FRHIPoolResource* TmpOwnerRHS = RHSPoolData.GetOwner();
-
-	LHSPoolData.MoveFrom(RHSPoolData, RHSPoolData.IsLocked());
-	LHSPoolData.SetOwner(TmpOwnerLHS);
-	RHSPoolData.MoveFrom(TmpAllocationData, TmpIsLocked);
-	RHSPoolData.SetOwner(TmpOwnerRHS);
-}
-
 
 FD3D12Resource* FD3D12PoolAllocator::GetBackingResource(FD3D12ResourceLocation& InResourceLocation) const
 {

@@ -48,6 +48,7 @@ public:
 	virtual ~FNiagaraEmitterInstance();
 
 	void Init(int32 InEmitterIdx, FNiagaraSystemInstanceID SystemInstanceID);
+	void InitDITickLists();
 
 	void ResetSimulation(bool bKillExisting = true);
 
@@ -86,6 +87,7 @@ public:
 
 	FNiagaraDataSet& GetData()const { return *ParticleDataSet; }
 
+	FORCEINLINE bool IsActive()const { return ExecutionState == ENiagaraExecutionState::Active; }
 	FORCEINLINE bool IsDisabled()const { return ExecutionState == ENiagaraExecutionState::Disabled; }
 	FORCEINLINE bool IsInactive()const { return ExecutionState == ENiagaraExecutionState::Inactive; }
 	FORCEINLINE bool IsComplete()const { return ExecutionState == ENiagaraExecutionState::Complete || ExecutionState == ENiagaraExecutionState::Disabled; }
@@ -120,7 +122,7 @@ public:
 	float NIAGARA_API GetTotalCPUTimeMS();
 	int64 NIAGARA_API GetTotalBytesUsed();
 
-	ENiagaraExecutionState NIAGARA_API GetExecutionState() { return ExecutionState; }
+	ENiagaraExecutionState GetExecutionState() { return ExecutionState; }
 	void NIAGARA_API SetExecutionState(ENiagaraExecutionState InState);
 
 	bool AreBoundsDynamic() const { return bCachedBoundsDynamic; }
@@ -199,9 +201,6 @@ private:
 
 	TUniquePtr<FEventInstanceData> EventInstanceData;
 
-	/** A parameter store which contains the data interfaces parameters which were defined by the scripts. */
-	FNiagaraParameterStore ScriptDefinedDataInterfaceParameters;
-
 	/* Are the cached emitter bounds dynamic */
 	bool bCachedBoundsDynamic = false;
 
@@ -257,8 +256,6 @@ private:
 
 	/** Typical resets must be deferred until the tick as the RT could still be using the current buffer. */
 	uint32 bResetPending : 1;
-	/** Allows event spawn to be combined into a single spawn.  This is only safe when not using things like ExecIndex(). */
-	uint32 bCombineEventSpawn : 1;
 
 	// This is used to keep track which particles have spawned a component. This is needed when the bOnlyCreateComponentsOnParticleSpawn flag is set in the renderer.
 	// Without this bookkeeping, the particles would lose their components when the render state is recreated or the visibility tag flips them off and on again.

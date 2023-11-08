@@ -8,6 +8,7 @@
 #include "Materials/MaterialExpressionFunctionInput.h"
 #include "Materials/MaterialExpressionFunctionOutput.h"
 #include "Materials/MaterialExpressionVolumetricAdvancedMaterialOutput.h"
+#include "Materials/MaterialParameterCollection.h"
 #include "Materials/Material.h"
 #include "MaterialDomain.h"
 #include "MaterialHLSLTree.h"
@@ -17,6 +18,7 @@
 #include "Containers/LazyPrintf.h"
 #include "RenderUtils.h"
 #include "DataDrivenShaderPlatformInfo.h"
+#include "Engine/SubsurfaceProfile.h"
 
 static bool SharedPixelProperties[CompiledMP_MAX];
 
@@ -58,6 +60,7 @@ static FString GenerateMaterialTemplateHLSL(EShaderPlatform ShaderPlatform,
 	const TCHAR* VertexShaderCode,
 	const TCHAR* PixelShaderCodePhase0[2],
 	const TCHAR* PixelShaderCodePhase1[2],
+	const TCHAR* SubsurfaceProfileCode,
 	FMaterialCompilationOutput& OutCompilationOutput)
 {
 	using namespace UE::HLSLTree;
@@ -239,8 +242,10 @@ static FString GenerateMaterialTemplateHLSL(EShaderPlatform ShaderPlatform,
 
 	LazyPrintf.PushParam(*FString::Printf(TEXT("return %.5f"), Material.GetOpacityMaskClipValue()));
 
+	LazyPrintf.PushParam(TEXT("return Parameters.MaterialAttributes.Displacement"));
 	LazyPrintf.PushParam(TEXT("return Parameters.MaterialAttributes.WorldPositionOffset"));
 	LazyPrintf.PushParam(TEXT("return Parameters.MaterialAttributes.PrevWorldPositionOffset"));
+	
 	// CustomData0/1 are named ClearCoat/ClearCoatRoughness
 	LazyPrintf.PushParam(TEXT("return Parameters.MaterialAttributes.ClearCoat"));
 	LazyPrintf.PushParam(TEXT("return Parameters.MaterialAttributes.ClearCoatRoughness"));
@@ -351,8 +356,11 @@ static FString GenerateMaterialTemplateHLSL(EShaderPlatform ShaderPlatform,
 				}
 				else if (PropertyIndex == MP_SubsurfaceColor)
 				{
-					// TODO - properly handle subsurface profile
-					EvaluateMaterialAttributesCode += FString::Printf("    PixelMaterialInputs.Subsurface = float4(MaterialAttributesPhase%d.%s, 0.0f);" LINE_TERMINATOR, EvaluatePhase, *PropertyName);
+					EvaluateMaterialAttributesCode += FString::Printf(
+						"    PixelMaterialInputs.Subsurface = float4(MaterialAttributesPhase%d.%s, %s);" LINE_TERMINATOR,
+						EvaluatePhase,
+						*PropertyName,
+						SubsurfaceProfileCode ? SubsurfaceProfileCode : TEXT("1.0f"));
 				}
 				else
 				{
@@ -375,6 +383,9 @@ static void GetMaterialEnvironment(EShaderPlatform InPlatform,
 	const FMaterial& InMaterial,
 	const UE::HLSLTree::FEmitContext& EmitContext,
 	const FMaterialCompilationOutput& MaterialCompilationOutput,
+	bool bUsesEmissiveColor,
+	bool bUsesAnisotropy,
+	bool bIsFullyRough,
 	FShaderCompilerEnvironment& OutEnvironment)
 {
 	using namespace UE::HLSLTree;
@@ -398,11 +409,10 @@ static void GetMaterialEnvironment(EShaderPlatform InPlatform,
 		OutEnvironment.SetDefine(TEXT("NEEDS_PARTICLE_VELOCITY"), 1);
 	}
 
-	uint32 DynamicParticleParameterMask = 0u;
-	if (DynamicParticleParameterMask)
+	if (EmitContext.DynamicParticleParameterMask)
 	{
 		OutEnvironment.SetDefine(TEXT("USE_DYNAMIC_PARAMETERS"), 1);
-		OutEnvironment.SetDefine(TEXT("DYNAMIC_PARAMETERS_MASK"), DynamicParticleParameterMask);
+		OutEnvironment.SetDefine(TEXT("DYNAMIC_PARAMETERS_MASK"), EmitContext.DynamicParticleParameterMask);
 	}
 
 	if (false)//bNeedsParticleTime)
@@ -482,15 +492,16 @@ static void GetMaterialEnvironment(EShaderPlatform InPlatform,
 
 	// @todo MetalMRT: Remove this hack and implement proper atmospheric-fog solution for Metal MRT...
 	OutEnvironment.SetDefine(TEXT("MATERIAL_ATMOSPHERIC_FOG"), false);// !IsMetalMRTPlatform(InPlatform) ? bUsesAtmosphericFog : 0);
-	OutEnvironment.SetDefine(TEXT("MATERIAL_SKY_ATMOSPHERE"), false);// bUsesSkyAtmosphere);
+	OutEnvironment.SetDefine(TEXT("MATERIAL_SKY_ATMOSPHERE"), EmitContext.bUsesSkyAtmosphere);
 	OutEnvironment.SetDefine(TEXT("INTERPOLATE_VERTEX_COLOR"), bUsesVertexColor);
 	OutEnvironment.SetDefine(TEXT("NEEDS_PARTICLE_COLOR"), bUsesParticleColor);
 	OutEnvironment.SetDefine(TEXT("NEEDS_PARTICLE_LOCAL_TO_WORLD"), false);// bUsesParticleLocalToWorld);
 	OutEnvironment.SetDefine(TEXT("NEEDS_PARTICLE_WORLD_TO_LOCAL"), false);// bUsesParticleWorldToLocal);
 	OutEnvironment.SetDefine(TEXT("USES_TRANSFORM_VECTOR"), false);// bUsesTransformVector);
-	OutEnvironment.SetDefine(TEXT("WANT_PIXEL_DEPTH_OFFSET"), false);// bUsesPixelDepthOffset);
-	OutEnvironment.SetDefine(TEXT("USES_WORLD_POSITION_OFFSET"), false);// bUsesWorldPositionOffset);
-	OutEnvironment.SetDefine(TEXT("USES_EMISSIVE_COLOR"), false);// bUsesEmissiveColor);
+	OutEnvironment.SetDefine(TEXT("WANT_PIXEL_DEPTH_OFFSET"), MaterialCompilationOutput.bUsesPixelDepthOffset);
+	OutEnvironment.SetDefineAndCompileArgument(TEXT("USES_WORLD_POSITION_OFFSET"), (bool)MaterialCompilationOutput.bUsesWorldPositionOffset);
+	OutEnvironment.SetDefineAndCompileArgument(TEXT("USES_DISPLACEMENT"), false);// bUsesDisplacement);
+	OutEnvironment.SetDefine(TEXT("USES_EMISSIVE_COLOR"), bUsesEmissiveColor);
 	// Distortion uses tangent space transform 
 	OutEnvironment.SetDefine(TEXT("USES_DISTORTION"), InMaterial.IsDistorted());
 
@@ -498,8 +509,8 @@ static void GetMaterialEnvironment(EShaderPlatform InPlatform,
 	OutEnvironment.SetDefine(TEXT("MATERIAL_ENABLE_TRANSLUCENCY_CLOUD_FOGGING"), InMaterial.ShouldApplyCloudFogging());
 	OutEnvironment.SetDefine(TEXT("MATERIAL_IS_SKY"), InMaterial.IsSky());
 	OutEnvironment.SetDefine(TEXT("MATERIAL_COMPUTE_FOG_PER_PIXEL"), InMaterial.ComputeFogPerPixel());
-	OutEnvironment.SetDefine(TEXT("MATERIAL_FULLY_ROUGH"), false);// bIsFullyRough || InMaterial.IsFullyRough());
-	OutEnvironment.SetDefine(TEXT("MATERIAL_USES_ANISOTROPY"), false);// bUsesAnisotropy);
+	OutEnvironment.SetDefine(TEXT("MATERIAL_FULLY_ROUGH"), bIsFullyRough);
+	OutEnvironment.SetDefine(TEXT("MATERIAL_USES_ANISOTROPY"), bUsesAnisotropy);
 
 	// Count the number of VTStacks (each stack will allocate a feedback slot)
 	OutEnvironment.SetDefine(TEXT("NUM_VIRTUALTEXTURE_SAMPLES"), EmitMaterialData.VTStacks.Num());
@@ -526,7 +537,8 @@ static void GetMaterialEnvironment(EShaderPlatform InPlatform,
 		OutEnvironment.SetDefine(PageTableName.ToString(), PageTableValue.ToString());
 	}
 
-	/*for (int32 CollectionIndex = 0; CollectionIndex < ParameterCollections.Num(); CollectionIndex++)
+	const TArray<UMaterialParameterCollection*>& ParameterCollections = InMaterial.GetCachedHLSLTree()->GetParameterCollections();
+	for (int32 CollectionIndex = 0; CollectionIndex < ParameterCollections.Num(); CollectionIndex++)
 	{
 		// Add uniform buffer declarations for any parameter collections referenced
 		const FString CollectionName = FString::Printf(TEXT("MaterialCollection%u"), CollectionIndex);
@@ -534,7 +546,7 @@ static void GetMaterialEnvironment(EShaderPlatform InPlatform,
 		// OutEnvironment.ResourceTableMap has a map by name, and the N ParameterCollection Uniform Buffers ALL are names "MaterialCollection"
 		// (and the hlsl cbuffers are named MaterialCollection0, etc, so the names don't match the layout)
 		FShaderUniformBufferParameter::ModifyCompilationEnvironment(*CollectionName, ParameterCollections[CollectionIndex]->GetUniformBufferStruct(), InPlatform, OutEnvironment);
-	}*/
+	}
 	OutEnvironment.SetDefine(TEXT("IS_MATERIAL_SHADER"), true);
 
 	// Set all the shading models for this material here 
@@ -790,9 +802,14 @@ bool MaterialEmitHLSL(const FMaterialCompileTargetParameters& InCompilerTarget,
 	SharedPixelProperties[MP_ShadingModel] = true;
 	SharedPixelProperties[MP_SurfaceThickness] = true;
 	SharedPixelProperties[MP_FrontMaterial] = true;
+	SharedPixelProperties[MP_Displacement] = true;
 
 	bool bUsesWorldPositionOffset = false;
 	bool bUsesPixelDepthOffset = false;
+	bool bUsesEmissiveColor = false;
+	bool bUsesAnisotropy = false;
+	bool bIsFullyRough = false;
+	bool bUsesDisplacement = false;
 
 	const FTargetParameters TargetParameters(InCompilerTarget.ShaderPlatform, InCompilerTarget.FeatureLevel, InCompilerTarget.TargetPlatform);
 	const FMaterialCachedHLSLTree* CachedTree = InOutMaterial.GetCachedHLSLTree();
@@ -818,6 +835,7 @@ bool MaterialEmitHLSL(const FMaterialCompileTargetParameters& InCompilerTarget,
 	// Prepare pixel shader code
 	FStringBuilderBase* PixelCodePhase0[2] = { nullptr };
 	FStringBuilderBase* PixelCodePhase1[2] = { nullptr };
+	const TCHAR* SubsurfaceProfileShaderCode = nullptr;
 
 	for(int32 DerivativeIndex = 0; DerivativeIndex < 2; ++DerivativeIndex)
 	{
@@ -841,9 +859,54 @@ bool MaterialEmitHLSL(const FMaterialCompileTargetParameters& InCompilerTarget,
 		EmitContext.PrepareExpression(CachedTree->GetResultExpression(), *EmitResultScope, RequestedPixelAttributesType);
 		EmitContext.bMarkLiveValues = false;
 
-		if (CachedTree->IsAttributeUsed(EmitContext, *EmitResultScope, PixelResultType0, MP_PixelDepthOffset))
+		if (DerivativeIndex == 0)
 		{
-			bUsesPixelDepthOffset = true;
+			const EMaterialDomain MaterialDomain = EmitContext.Material->GetMaterialDomain();
+			if (MaterialDomain == MD_Volume || (MaterialDomain == MD_Surface && IsSubsurfaceShadingModel(EmitMaterialData.ShadingModelsFromCompilation)))
+			{
+				const FMaterialParameterInfo SubsurfaceProfileParameterInfo(GetSubsurfaceProfileParameterName());
+				const FMaterialParameterMetadata SubsurfaceProfileParameterMetadata(1.f);
+				const Material::FExpressionParameter SubsurfaceProfileExpression(SubsurfaceProfileParameterInfo, SubsurfaceProfileParameterMetadata);
+
+				const FPreparedType SubsurfaceProfilePreparedType = EmitContext.PrepareExpression(&SubsurfaceProfileExpression, *EmitResultScope, EValueType::Float1);
+				const FEmitShaderExpression* SubsurfaceProfileEmitExpression = SubsurfaceProfileExpression.GetValueShader(
+					EmitContext,
+					*EmitResultScope,
+					EValueType::Float1,
+					SubsurfaceProfilePreparedType,
+					EValueType::Float1);
+				check(SubsurfaceProfileEmitExpression && SubsurfaceProfileEmitExpression->Reference);
+				SubsurfaceProfileShaderCode = SubsurfaceProfileEmitExpression->Reference;
+			}
+		}
+
+		bUsesPixelDepthOffset = bUsesPixelDepthOffset || CachedTree->IsAttributeUsed(EmitContext, *EmitResultScope, PixelResultType0, MP_PixelDepthOffset);
+		bUsesEmissiveColor = bUsesEmissiveColor || CachedTree->IsAttributeUsed(EmitContext, *EmitResultScope, PixelResultType0, MP_EmissiveColor);
+
+		bUsesAnisotropy = bUsesAnisotropy || (FDataDrivenShaderPlatformInfo::GetSupportsAnisotropicMaterials(InCompilerTarget.ShaderPlatform)
+			&& CachedTree->IsAttributeUsed(EmitContext, *EmitResultScope, PixelResultType0, MP_Anisotropy));
+
+		bIsFullyRough = bIsFullyRough || EmitContext.Material->IsFullyRough();
+		if (!bIsFullyRough)
+		{
+			const FStructField* RoughnessField = CachedTree->GetMaterialAttributesType()->FindFieldByName(*FMaterialAttributeDefinitionMap::GetAttributeName(MP_Roughness));
+			check(RoughnessField && RoughnessField->GetNumComponents() == 1);
+
+			FRequestedType RequestedType(CachedTree->GetMaterialAttributesType(), false);
+			RequestedType.SetFieldRequested(RoughnessField);
+
+			const EExpressionEvaluation Evaluation = PixelResultType0.GetFieldEvaluation(*EmitResultScope, RequestedType, RoughnessField->ComponentIndex, 1);
+			if (Evaluation == EExpressionEvaluation::Constant)
+			{
+				const FValue ConstantValue = CachedTree->GetResultExpression()->GetValueConstant(EmitContext, *EmitResultScope, RequestedType);
+				check(ConstantValue.GetType().GetFlatFieldType(RoughnessField->FlatFieldIndex) == EValueType::Float1);
+				bIsFullyRough = ConstantValue.Component[RoughnessField->ComponentIndex].Float == 1.f;
+			}
+		}
+
+		if (CachedTree->IsAttributeUsed(EmitContext, *EmitResultScope, PixelResultType0, MP_Displacement))
+		{
+			bUsesDisplacement = true;
 		}
 
 		const bool bUseNormal = EmitMaterialData.IsExternalInputUsed(SF_Pixel, Material::EExternalInput::WorldNormal);
@@ -926,6 +989,7 @@ bool MaterialEmitHLSL(const FMaterialCompileTargetParameters& InCompilerTarget,
 		EmitContext.EmitStatement(*EmitResultScope, TEXT("Parameters.MaterialAttributes = %;"), EmitResultExpression);
 		EmitMaterialData.EmitInterpolatorStatements(EmitContext, *EmitResultScope);
 
+		// TODO: Do we need to check PrevWorldPositionOffset?
 		bUsesWorldPositionOffset = CachedTree->IsAttributeUsed(EmitContext, *EmitResultScope, VertexResultType, MP_WorldPositionOffset);
 
 		CachedTree->GetTree().EmitShader(EmitContext, VertexCode);
@@ -936,9 +1000,10 @@ bool MaterialEmitHLSL(const FMaterialCompileTargetParameters& InCompilerTarget,
 		return false;
 	}
 
-	OutCompilationOutput.bModifiesMeshPosition = bUsesPixelDepthOffset || bUsesWorldPositionOffset;
+	OutCompilationOutput.bModifiesMeshPosition = bUsesPixelDepthOffset || bUsesWorldPositionOffset || bUsesDisplacement;
 	OutCompilationOutput.bUsesWorldPositionOffset = bUsesWorldPositionOffset;
-	OutCompilationOutput.bUsesPixelDepthOffset = bUsesPixelDepthOffset;
+	OutCompilationOutput.bUsesPixelDepthOffset = bUsesPixelDepthOffset && AllowPixelDepthOffset(InCompilerTarget.ShaderPlatform);
+	OutCompilationOutput.bUsesDisplacement = bUsesDisplacement;
 	OutCompilationOutput.bUsesEyeAdaptation = EmitMaterialData.IsExternalInputUsed(SF_Pixel, Material::EExternalInput::EyeAdaptation);
 
 	FStringBuilderMemstack Declarations(Allocator, 32 * 1024);
@@ -969,12 +1034,23 @@ bool MaterialEmitHLSL(const FMaterialCompileTargetParameters& InCompilerTarget,
 			VertexCode.ToString(),
 			InputPixelCodePhase0,
 			InputPixelCodePhase1,
+			SubsurfaceProfileShaderCode,
 			OutCompilationOutput);
 	}
 
+	OutCompilationOutput.UniformExpressionSet.SetParameterCollections(CachedTree->GetParameterCollections());
+
 	OutMaterialEnvironment = new FSharedShaderCompilerEnvironment();
 	OutMaterialEnvironment->TargetPlatform = InCompilerTarget.TargetPlatform;
-	GetMaterialEnvironment(InCompilerTarget.ShaderPlatform, InOutMaterial, EmitContext, OutCompilationOutput, *OutMaterialEnvironment);
+	GetMaterialEnvironment(
+		InCompilerTarget.ShaderPlatform,
+		InOutMaterial,
+		EmitContext,
+		OutCompilationOutput,
+		bUsesEmissiveColor,
+		bUsesAnisotropy,
+		bIsFullyRough,
+		*OutMaterialEnvironment);
 	OutMaterialEnvironment->IncludeVirtualPathToContentsMap.Add(TEXT("/Engine/Generated/Material.ush"), MoveTemp(MaterialTemplateSource));
 
 	return true;

@@ -202,27 +202,27 @@ FMeshDescriptionImporter::FMeshDescriptionImporter(FFbxParser& InParser, FMeshDe
 	bInitialized = ensure(MeshDescription) && ensure(SDKScene) && ensure(SDKGeometryConverter);
 }
 			
-bool FMeshDescriptionImporter::FillStaticMeshDescriptionFromFbxMesh(FbxMesh* Mesh)
+bool FMeshDescriptionImporter::FillStaticMeshDescriptionFromFbxMesh(FbxMesh* Mesh, const FTransform& MeshGlobalTransform)
 {
 	if (!ensure(bInitialized) || !ensure(MeshDescription) || !ensure(Mesh))
 	{
 		return false;
 	}
 	TArray<FString> UnusedArray;
-	return FillMeshDescriptionFromFbxMesh(Mesh, UnusedArray, EMeshType::Static);
+	return FillMeshDescriptionFromFbxMesh(Mesh, MeshGlobalTransform, UnusedArray, EMeshType::Static);
 }
 
-bool FMeshDescriptionImporter::FillSkinnedMeshDescriptionFromFbxMesh(FbxMesh* Mesh, TArray<FString>& OutJointUniqueNames)
+bool FMeshDescriptionImporter::FillSkinnedMeshDescriptionFromFbxMesh(FbxMesh* Mesh, const FTransform& MeshGlobalTransform, TArray<FString>& OutJointUniqueNames)
 {
 	if (!ensure(bInitialized) || !ensure(MeshDescription) || !ensure(Mesh) || !ensure(Mesh->GetDeformerCount() > 0))
 	{
 		return false;
 	}
 
-	return FillMeshDescriptionFromFbxMesh(Mesh, OutJointUniqueNames, EMeshType::Skinned);
+	return FillMeshDescriptionFromFbxMesh(Mesh, MeshGlobalTransform, OutJointUniqueNames, EMeshType::Skinned);
 }
 
-bool FMeshDescriptionImporter::FillMeshDescriptionFromFbxShape(FbxShape* Shape)
+bool FMeshDescriptionImporter::FillMeshDescriptionFromFbxShape(FbxShape* Shape, const FTransform& MeshGlobalTransform)
 {
 	//For the shape we just need the vertex positions
 	if (!ensure(bInitialized) || !ensure(MeshDescription))
@@ -243,9 +243,8 @@ bool FMeshDescriptionImporter::FillMeshDescriptionFromFbxShape(FbxShape* Shape)
 		MeshDescription->SuspendVertexIndexing();
 
 		// Construct the matrices for the conversion from right handed to left handed system
-		FbxAMatrix TotalMatrix;
+		FbxAMatrix TotalMatrix = FFbxConvert::ConvertMatrix(MeshGlobalTransform.ToMatrixWithScale());
 		FbxAMatrix TotalMatrixForNormal;
-		TotalMatrix.SetIdentity(); //We use the identity since we want to bake in the interchange factory if the pipeline request it
 		TotalMatrixForNormal = TotalMatrix.Inverse();
 		TotalMatrixForNormal = TotalMatrixForNormal.Transpose();
 
@@ -287,7 +286,7 @@ bool FMeshDescriptionImporter::FillMeshDescriptionFromFbxShape(FbxShape* Shape)
 	return true;
 }
 
-bool FMeshDescriptionImporter::FillMeshDescriptionFromFbxMesh(FbxMesh* Mesh, TArray<FString>& OutJointUniqueNames, EMeshType MeshType)
+bool FMeshDescriptionImporter::FillMeshDescriptionFromFbxMesh(FbxMesh* Mesh, const FTransform& MeshGlobalTransform, TArray<FString>& OutJointUniqueNames, EMeshType MeshType)
 {
 	if (!ensure(bInitialized) || !ensure(MeshDescription) || !ensure(Mesh))
 	{
@@ -502,9 +501,8 @@ bool FMeshDescriptionImporter::FillMeshDescriptionFromFbxMesh(FbxMesh* Mesh, TAr
 		TRACE_CPUPROFILER_EVENT_SCOPE(BuildTriangles);
 
 		// Construct the matrices for the conversion from right handed to left handed system
-		FbxAMatrix TotalMatrix;
+		FbxAMatrix TotalMatrix = FFbxConvert::ConvertMatrix(MeshGlobalTransform.ToMatrixWithScale());
 		FbxAMatrix TotalMatrixForNormal;
-		TotalMatrix.SetIdentity();
 		TotalMatrixForNormal = TotalMatrix.Inverse();
 		TotalMatrixForNormal = TotalMatrixForNormal.Transpose();
 		int32 PolygonCount = Mesh->GetPolygonCount();
@@ -518,6 +516,7 @@ bool FMeshDescriptionImporter::FillMeshDescriptionFromFbxMesh(FbxMesh* Mesh, TAr
 		}
 
 		int32 VertexCount = Mesh->GetControlPointsCount();
+		//Todo implement the odd negative scale, see legacy fbx 
 		bool OddNegativeScale = IsOddNegativeScale(TotalMatrix);
 
 		TVertexAttributesRef<FVector3f> VertexPositions = Attributes.GetVertexPositions();
@@ -539,6 +538,30 @@ bool FMeshDescriptionImporter::FillMeshDescriptionFromFbxMesh(FbxMesh* Mesh, TAr
 		check(PolygonOffset == MeshDescription->Polygons().GetArraySize());
 
 		TMap<int32, FPolygonGroupID> PolygonGroupMapping;
+
+		//Ensure the polygon groups are create in the same order has the imported materials order
+		for (int32 FbxMeshMaterialIndex = 0; FbxMeshMaterialIndex < MaterialNames.Num(); ++FbxMeshMaterialIndex)
+		{
+			FName MaterialName = MaterialNames[FbxMeshMaterialIndex];
+			if (!PolygonGroupMapping.Contains(FbxMeshMaterialIndex))
+			{
+				FPolygonGroupID ExistingPolygonGroup = INDEX_NONE;
+				for (const FPolygonGroupID PolygonGroupID : MeshDescription->PolygonGroups().GetElementIDs())
+				{
+					if (PolygonGroupImportedMaterialSlotNames[PolygonGroupID] == MaterialName)
+					{
+						ExistingPolygonGroup = PolygonGroupID;
+						break;
+					}
+				}
+				if (ExistingPolygonGroup == INDEX_NONE)
+				{
+					ExistingPolygonGroup = MeshDescription->CreatePolygonGroup();
+					PolygonGroupImportedMaterialSlotNames[ExistingPolygonGroup] = MaterialName;
+				}
+				PolygonGroupMapping.Add(FbxMeshMaterialIndex, ExistingPolygonGroup);
+			}
+		}
 
 		// When importing multiple mesh pieces to the same static mesh.  Ensure each mesh piece has the same number of Uv's
 		int32 ExistingUVCount = VertexInstanceUVs.GetNumChannels();
@@ -664,20 +687,39 @@ bool FMeshDescriptionImporter::FillMeshDescriptionFromFbxMesh(FbxMesh* Mesh, TAr
 			TArray<FVertexID> CornerVerticesIDs;
 			TArray<FVector, TInlineAllocator<3>> P;
 
+			bool bCorruptedMsgDone = false;
 			//Polygons
 			for (int32 PolygonIndex = 0; PolygonIndex < PolygonCount; PolygonIndex++)
 			{
 				int32 PolygonVertexCount = Mesh->GetPolygonSize(PolygonIndex);
 				//Verify if the polygon is degenerate, in this case do not add them
 				{
-					float ComparisonThreshold = SMALL_NUMBER;
+					float ComparisonThreshold = 1.e-12f; //SMALL_NUMBER (1.e-8f)  was not small enough, it produced missing/partial geometry on Drone from UE-192178
 					P.Reset();
 					P.AddUninitialized(PolygonVertexCount);
+					bool bAllCornerValid = true;
 					for (int32 CornerIndex = 0; CornerIndex < PolygonVertexCount; CornerIndex++)
 					{
 						const int32 ControlPointIndex = Mesh->GetPolygonVertex(PolygonIndex, CornerIndex);
 						const FVertexID VertexID(VertexOffset + ControlPointIndex);
+						if (!MeshDescription->Vertices().IsValid(VertexID))
+						{
+							bAllCornerValid = false;
+							break;
+						}
 						P[CornerIndex] = (FVector)VertexPositions[VertexID];
+					}
+					if (!bAllCornerValid)
+					{
+						if (!bCorruptedMsgDone)
+						{
+							UInterchangeResultMeshError_Generic* Message = AddMessage<UInterchangeResultMeshError_Generic>(Mesh);
+							Message->Text = LOCTEXT("CorruptedFbxPolygon", "Corrupted triangle for the mesh '{MeshName}'.");
+							bCorruptedMsgDone = true;
+						}
+
+						SkippedVertexInstance += PolygonVertexCount;
+						continue;
 					}
 					check(P.Num() > 2); //triangle is the smallest polygon we can have
 					const FVector Normal = ((P[1] - P[2]) ^ (P[0] - P[2])).GetSafeNormal(ComparisonThreshold);
@@ -1051,7 +1093,7 @@ bool FMeshDescriptionImporter::FillMeshDescriptionFromFbxMesh(FbxMesh* Mesh, TAr
 				if (!SortedJoints.Find(Link, BoneIndex))
 				{
 					BoneIndex = SortedJoints.Add(Link);
-					FString JointNodeUniqueID = Parser.GetFbxHelper()->GetFbxObjectName(Link);
+					FString JointNodeUniqueID = Parser.GetFbxHelper()->GetFbxObjectName(Link, true);
 					OutJointUniqueNames.Add(JointNodeUniqueID);
 				}
 
@@ -1108,6 +1150,25 @@ bool FMeshDescriptionImporter::FillMeshDescriptionFromFbxMesh(FbxMesh* Mesh, TAr
 			}
 		}
 	}
+
+	TArray<FPolygonGroupID> EmptyPolygonGroups;
+	for (const FPolygonGroupID PolygonGroupID : MeshDescription->PolygonGroups().GetElementIDs())
+	{
+		if (MeshDescription->GetNumPolygonGroupTriangles(PolygonGroupID) == 0)
+		{
+			EmptyPolygonGroups.Add(PolygonGroupID);
+		}
+	}
+	if (EmptyPolygonGroups.Num() > 0)
+	{
+		for (const FPolygonGroupID PolygonGroupID : EmptyPolygonGroups)
+		{
+			MeshDescription->DeletePolygonGroup(PolygonGroupID);
+		}
+		FElementIDRemappings OutRemappings;
+		MeshDescription->Compact(OutRemappings);
+	}
+	
 	// needed?
 	FBXUVs.Cleanup();
 
@@ -1136,7 +1197,7 @@ bool FMeshDescriptionImporter::IsOddNegativeScale(FbxAMatrix& TotalMatrix)
 //////////////////////////////////////////////////////////////////////////
 /// FMeshPayloadContext implementation
 
-bool FMeshPayloadContext::FetchPayloadToFile(FFbxParser& Parser, const FString& PayloadFilepath)
+bool FMeshPayloadContext::FetchMeshPayloadToFile(FFbxParser& Parser, const FTransform& MeshGlobalTransform, const FString& PayloadFilepath)
 {
 	if (!ensure(SDKScene != nullptr))
 	{
@@ -1169,7 +1230,7 @@ bool FMeshPayloadContext::FetchPayloadToFile(FFbxParser& Parser, const FString& 
 		FSkeletalMeshAttributes SkeletalMeshAttribute(MeshDescription);
 		SkeletalMeshAttribute.Register();
 		FMeshDescriptionImporter MeshDescriptionImporter(Parser, &MeshDescription, SDKScene, SDKGeometryConverter);
-		if (!MeshDescriptionImporter.FillSkinnedMeshDescriptionFromFbxMesh(Mesh, JointUniqueNames))
+		if (!MeshDescriptionImporter.FillSkinnedMeshDescriptionFromFbxMesh(Mesh, MeshGlobalTransform, JointUniqueNames))
 		{
 			UInterchangeResultError_Generic* Message = Parser.AddMessage<UInterchangeResultError_Generic>();
 			Message->InterchangeKey = Parser.GetFbxHelper()->GetMeshUniqueID(Mesh);
@@ -1182,7 +1243,7 @@ bool FMeshPayloadContext::FetchPayloadToFile(FFbxParser& Parser, const FString& 
 		FStaticMeshAttributes StaticMeshAttribute(MeshDescription);
 		StaticMeshAttribute.Register();
 		FMeshDescriptionImporter MeshDescriptionImporter(Parser, &MeshDescription, SDKScene, SDKGeometryConverter);
-		if (!MeshDescriptionImporter.FillStaticMeshDescriptionFromFbxMesh(Mesh))
+		if (!MeshDescriptionImporter.FillStaticMeshDescriptionFromFbxMesh(Mesh, MeshGlobalTransform))
 		{
 			UInterchangeResultError_Generic* Message = Parser.AddMessage<UInterchangeResultError_Generic>();
 			Message->InterchangeKey = Parser.GetFbxHelper()->GetMeshUniqueID(Mesh);
@@ -1213,7 +1274,7 @@ bool FMeshPayloadContext::FetchPayloadToFile(FFbxParser& Parser, const FString& 
 //////////////////////////////////////////////////////////////////////////
 /// FMorphTargetPayloadContext implementation
 
-bool FMorphTargetPayloadContext::FetchPayloadToFile(FFbxParser& Parser, const FString& PayloadFilepath)
+bool FMorphTargetPayloadContext::FetchMeshPayloadToFile(FFbxParser& Parser, const FTransform& MeshGlobalTransform, const FString& PayloadFilepath)
 {
 	if (!ensure(Shape))
 	{
@@ -1225,7 +1286,7 @@ bool FMorphTargetPayloadContext::FetchPayloadToFile(FFbxParser& Parser, const FS
 	FStaticMeshAttributes StaticMeshAttribute(MorphTargetMeshDescription);
 	StaticMeshAttribute.Register();
 	FMeshDescriptionImporter MeshDescriptionImporter(Parser, &MorphTargetMeshDescription, SDKScene, SDKGeometryConverter);
-	if (!MeshDescriptionImporter.FillMeshDescriptionFromFbxShape(Shape))
+	if (!MeshDescriptionImporter.FillMeshDescriptionFromFbxShape(Shape, MeshGlobalTransform))
 	{
 		UInterchangeResultError_Generic* Message = Parser.AddMessage<UInterchangeResultError_Generic>();
 		Message->InterchangeKey = Parser.GetFbxHelper()->GetMeshUniqueID(Shape);
@@ -1392,13 +1453,9 @@ void FFbxMesh::AddAllMeshes(FbxScene* SDKScene, FbxGeometryConverter* SDKGeometr
 			GeoPayload->bIsSkinnedMesh = MeshNode->IsSkinnedMesh();
 			PayloadContexts.Add(PayLoadKey, GeoPayload);
 		}
-		MeshNode->SetPayLoadKey(PayLoadKey);
+		MeshNode->SetPayLoadKey(PayLoadKey, MeshNode->IsSkinnedMesh() ? EInterchangeMeshPayLoadType::SKELETAL : EInterchangeMeshPayLoadType::STATIC);
 
 		int32 NumAnimations = SDKScene->GetSrcObjectCount<FbxAnimStack>();
-			
-		//Anim stack should be merge so we expect to have only one stack here
-		ensure(NumAnimations <= 1);
-		FbxAnimStack* AnimStack = NumAnimations == 1 ? (FbxAnimStack*)SDKScene->GetSrcObject<FbxAnimStack>(0) : nullptr;
 
 		//Add all MorphTargets for this geometry node
 
@@ -1471,16 +1528,24 @@ void FFbxMesh::AddAllMeshes(FbxScene* SDKScene, FbxGeometryConverter* SDKGeometr
 							GeoPayload->SDKGeometryConverter = SDKGeometryConverter;
 							PayloadContexts.Add(MorphTargetPayLoadKey, GeoPayload);
 						}
-						MorphTargetNode->SetPayLoadKey(MorphTargetPayLoadKey);
+						MorphTargetNode->SetPayLoadKey(MorphTargetPayLoadKey, EInterchangeMeshPayLoadType::MORPHTARGET);
 
-						//Add the morph target animation float curve payload to the morph target.
-						if (AnimStack)
+						for (int32 AnimationIndex = 0; AnimationIndex < NumAnimations; AnimationIndex++)
 						{
-							//If the morph target node is animated prepare a curve payload to retrieve the morph target animation
-							FbxAnimCurve* Curve = Geometry->GetShapeChannel(MorphTargetIndex, ChannelIndex, (FbxAnimLayer*)AnimStack->GetMember(0));
-							if ((Curve && Curve->KeyGetCount() > 0))
+							FbxAnimStack* AnimStack = (FbxAnimStack*)SDKScene->GetSrcObject<FbxAnimStack>(AnimationIndex);
+							if (AnimStack)
 							{
-								UE::Interchange::Private::FFbxAnimation::AddMorphTargetCurvesAnimation(MorphTargetNode, SDKScene, GeometryIndex, MorphTargetIndex, ChannelIndex, MorphTargetPayLoadKey, PayloadContexts);
+								FbxAnimLayer* AnimLayer = (FbxAnimLayer*)AnimStack->GetMember(0);
+								
+								FbxAnimCurve* Curve = Mesh->GetShapeChannel(MorphTargetIndex, ChannelIndex, AnimLayer);
+								if (Curve && Curve->KeyGetCount() > 0)
+								{
+									FbxTimeSpan TimeInterval;
+									Curve->GetTimeInterval(TimeInterval);
+
+									//In order to appropriately identify the Skeleton Node Uids we have to process the MorphTarget animations once the hierarchy is processed
+									MorphTargetAnimationsBuildingData.Add(FMorphTargetAnimationBuildingData(TimeInterval.GetStart().GetSecondDouble(), TimeInterval.GetStop().GetSecondDouble(), MeshNode, GeometryIndex, AnimationIndex, AnimLayer, MorphTargetIndex, ChannelIndex, MorphTargetUniqueID));
+								}
 							}
 						}
 					}
@@ -1558,19 +1623,15 @@ bool FFbxMesh::ExtractSkinnedMeshNodeJoints(FbxScene* SDKScene, UInterchangeBase
 				continue;
 			}
 			FbxNode* Link = Cluster->GetLink();
-			//Any valid link should be under the scene root node
-			if (Link->GetParent() != nullptr)
+			bFoundValidJoint = true;
+
+			FString JointNodeUniqueID = Parser.GetFbxHelper()->GetFbxNodeHierarchyName(Link);
+
+			// find the bone index
+			if (!JointNodeUniqueIDs.Contains(JointNodeUniqueID))
 			{
-				bFoundValidJoint = true;
-
-				FString JointNodeUniqueID = Parser.GetFbxHelper()->GetFbxNodeHierarchyName(Link);
-
-				// find the bone index
-				if (!JointNodeUniqueIDs.Contains(JointNodeUniqueID))
-				{
-					JointNodeUniqueIDs.Add(JointNodeUniqueID);
-					MeshNode->SetSkeletonDependencyUid(JointNodeUniqueID);
-				}
+				JointNodeUniqueIDs.Add(JointNodeUniqueID);
+				MeshNode->SetSkeletonDependencyUid(JointNodeUniqueID);
 			}
 		}
 	}

@@ -59,42 +59,72 @@ public:
 	FOcclusionQueryVS(const ShaderMetaType::CompiledShaderInitializerType& Initializer):
 		FGlobalShader(Initializer)
 	{
-			StencilingGeometryParameters.Bind(Initializer.ParameterMap);
-			ViewId.Bind(Initializer.ParameterMap, TEXT("ViewId"));
+		// BEGIN META SECTION - GPU Occlusion Query Optimizations
+		StencilPosAndScale.Bind(Initializer.ParameterMap, TEXT("StencilPosAndScale"));
+		// END META SECTION - GPU Occlusion Query Optimizations
 	}
 
 	FOcclusionQueryVS() {}
 
-	void SetParametersWithBoundingSphere(FRHICommandList& RHICmdList, const FViewInfo& View, const FSphere& BoundingSphere)
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FViewInfo& View, const FSphere& BoundingSphere)
 	{
-		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, RHICmdList.GetBoundVertexShader(), View.ViewUniformBuffer);
-
-		FVector4f StencilingSpherePosAndScale;
-		StencilingGeometry::GStencilSphereVertexBuffer.CalcTransform(StencilingSpherePosAndScale, BoundingSphere, View.ViewMatrices.GetPreViewTranslation());
-		StencilingGeometryParameters.Set(RHICmdList, this, StencilingSpherePosAndScale);
-
-		if (ViewId.IsBound())
+		// BEGIN META SECTION - GPU Occlusion Query Optimizations
+		FVector4f StencilingSpherePosAndScale[2];
+		StencilingGeometry::GStencilSphereVertexBuffer.CalcTransform(StencilingSpherePosAndScale[0], BoundingSphere, View.ViewMatrices.GetPreViewTranslation());
+		if (View.bShouldBindInstancedViewUB)
 		{
-			SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), ViewId, (View.StereoPass == EStereoscopicPass::eSSP_FULL) ? 0 : View.StereoViewIndex);
+			if (const FViewInfo* InstancedView = View.GetInstancedView())
+			{
+				StencilingGeometry::GStencilSphereVertexBuffer.CalcTransform(StencilingSpherePosAndScale[1], BoundingSphere, InstancedView->ViewMatrices.GetPreViewTranslation());
+			}
+			else
+			{
+				StencilingSpherePosAndScale[1] = StencilingSpherePosAndScale[0];
+			}
 		}
+		// END META SECTION - GPU Occlusion Query Optimizations
+
+		SetParametersInternal(BatchedParameters, View, StencilingSpherePosAndScale);
 	}
 
-	void SetParameters(FRHICommandList& RHICmdList, const FViewInfo& View)
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FViewInfo& View)
 	{
-		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, RHICmdList.GetBoundVertexShader(),View.ViewUniformBuffer);
-
+		// BEGIN META SECTION - GPU Occlusion Query Optimizations
 		// Don't transform if rendering frustum
-		StencilingGeometryParameters.Set(RHICmdList, this, FVector4f(0,0,0,1));
-
-		if (ViewId.IsBound())
+		FVector4f InstancedOffsetScale[2] = { FVector4f(0, 0, 0, 1), FVector4f(0, 0, 0, 1) };
+		if (View.bShouldBindInstancedViewUB)
 		{
-			SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), ViewId, (View.StereoPass == EStereoscopicPass::eSSP_FULL) ? 0 : View.StereoViewIndex);
+			// Occlusion queries are generated to be offset by the PreViewTranslation.
+			// However for multiview, we still need to apply that offset to the right eye.
+			// In that case we also need to undo the baked left eye translation.
+			if (const FViewInfo* InstancedView = View.GetInstancedView())
+			{
+				InstancedOffsetScale[1] = FVector4f(FVector3f(InstancedView->ViewMatrices.GetPreViewTranslation() - View.ViewMatrices.GetPreViewTranslation()), 1.0f);
+			}
+		}
+		SetParametersInternal(BatchedParameters, View, InstancedOffsetScale);
+		// END META SECTION - GPU Occlusion Query Optimizations
+	}
+
+	// BEGIN META SECTION - GPU Occlusion Query Optimizations
+private:
+	void SetParametersInternal(FRHIBatchedShaderParameters& BatchedParameters, const FViewInfo& View, const FVector4f StencilingSpherePosAndScale[2])
+	{
+		FGlobalShader::SetParameters<FViewUniformShaderParameters>(BatchedParameters, View.ViewUniformBuffer);
+		if (!View.bShouldBindInstancedViewUB)
+		{
+			SetShaderValue(BatchedParameters, StencilPosAndScale, StencilingSpherePosAndScale[0]);
+		}
+		else
+		{
+			FGlobalShader::SetParameters<FInstancedViewUniformShaderParameters>(BatchedParameters, View.GetInstancedViewUniformBuffer());
+			SetShaderValueArray(BatchedParameters, StencilPosAndScale, StencilingSpherePosAndScale, 2);
 		}
 	}
 
 private:
-	LAYOUT_FIELD(FStencilingGeometryShaderParameters, StencilingGeometryParameters)
-	LAYOUT_FIELD(FShaderParameter, ViewId)
+	LAYOUT_FIELD(FShaderParameter, StencilPosAndScale)
+	// END META SECTION - GPU Occlusion Query Optimizations
 };
 
 /**

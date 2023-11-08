@@ -9,6 +9,7 @@
 #include "Internationalization/Internationalization.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
 #include "Misc/ScopedSlowTask.h"
 #include "PackageUtils.h"
 #include "Serialization/EditorBulkData.h"
@@ -20,6 +21,7 @@
 #include "Virtualization/VirtualizationSystem.h"
 #include "VirtualizationManager.h"
 #include "VirtualizationSourceControlUtilities.h"
+#include "VirtualizationUtilities.h"
 
 #define LOCTEXT_NAMESPACE "Virtualization"
 
@@ -162,6 +164,13 @@ void VirtualizePackages(TConstArrayView<FString> PackagePaths, EVirtualizationOp
 	IVirtualizationSystem& System = IVirtualizationSystem::Get();
 
 	const double StartTime = FPlatformTime::Seconds();
+	
+	ON_SCOPE_EXIT
+	{
+		OutResultInfo.TimeTaken = FPlatformTime::Seconds() - StartTime;
+		UE_LOG(LogVirtualization, Display, TEXT("Virtualization process complete"));
+		UE_LOG(LogVirtualization, Verbose, TEXT("Virtualization process took %.3f(s)"), OutResultInfo.TimeTaken);
+	};
 
 	FScopedSlowTask Progress(5.0f, LOCTEXT("Virtualization_Task", "Virtualizing Assets..."));
 	// Force the task to be visible otherwise it might not be shown if the initial progress frames are too fast
@@ -193,12 +202,25 @@ void VirtualizePackages(TConstArrayView<FString> PackagePaths, EVirtualizationOp
 
 	// From the list of files to submit we need to find all of the valid packages that contain
 	// local payloads that need to be virtualized.
-	int64 TotalPackagesFound = 0;
+	int64 TotalPackagesFound = 0; 
+	int64 TotalOutOfDatePackages = 0;
 	int64 TotalPackageTrailersFound = 0;
 	int64 TotalPayloadsToVirtualize = 0;
+
+	TSet<FString> ConsideredPackages;
+	ConsideredPackages.Reserve(PackagePaths.Num());
+
 	for (const FString& AbsoluteFilePath : PackagePaths)
 	{
 		FPackagePath PackagePath = FPackagePath::FromLocalPath(AbsoluteFilePath);
+
+		bool bIsDuplicate = false;
+		ConsideredPackages.Add(PackagePath.GetPackageName(), &bIsDuplicate);
+		if (bIsDuplicate)
+		{
+			UE_LOG(LogVirtualization, Verbose, TEXT("Skipping duplicate package entry '%s'"), *AbsoluteFilePath);
+			continue; // Skip duplicate packages
+		}
 
 		// TODO: How to handle text packages?
 		if (FPackageName::IsPackageExtension(PackagePath.GetHeaderExtension()) || FPackageName::IsTextPackageExtension(PackagePath.GetHeaderExtension()))
@@ -233,10 +255,20 @@ void VirtualizePackages(TConstArrayView<FString> PackagePaths, EVirtualizationOp
 					Packages.Emplace(MoveTemp(PkgInfo));
 				}
 			}
+			else if(Utils::FindTrailerFailedReason(PackagePath) == Utils::ETrailerFailedReason::OutOfDate)
+			{
+				
+				TotalOutOfDatePackages++;
+			}
 		}
 	}
 
+	const int32 NumSkippedPackages = PackagePaths.Num() - ConsideredPackages.Num();
+	ConsideredPackages.Empty();
+
 	UE_LOG(LogVirtualization, Display, TEXT("Found %" INT64_FMT " package(s), %" INT64_FMT " of which had payload trailers"), TotalPackagesFound, TotalPackageTrailersFound);
+	UE_CLOG(NumSkippedPackages > 0, LogVirtualization, Warning, TEXT("Discarded %d duplicate package paths"), NumSkippedPackages);
+	UE_CLOG(TotalOutOfDatePackages > 0, LogVirtualization, Warning, TEXT("Found %" INT64_FMT " package(s) that are out of date and need resaving"), TotalOutOfDatePackages);
 
 	// TODO: Currently not all of the filtering is done as package save time, so some of the local payloads may not get virtualized.
 	// When/if we move all filtering to package save we can change this log message to state that the local payloads *will* be virtualized.
@@ -272,6 +304,8 @@ void VirtualizePackages(TConstArrayView<FString> PackagePaths, EVirtualizationOp
 	Progress.EnterProgressFrame(1.0f);
 	if(System.IsPushingEnabled(EStorageType::Cache))
 	{
+		UE_LOG(LogVirtualization, Display, TEXT("Pushing payload(s) to EStorageType::Cache storage..."));
+
 		if (!System.PushData(PayloadsToSubmit, EStorageType::Cache))
 		{
 			// Caching is not critical to the process so we only warn if it fails
@@ -297,6 +331,8 @@ void VirtualizePackages(TConstArrayView<FString> PackagePaths, EVirtualizationOp
 	// Push payloads to persistent storage
 	{
 		Progress.EnterProgressFrame(1.0f);
+
+		UE_LOG(LogVirtualization, Display, TEXT("Pushing payload(s) to EStorageType::Persistent storage..."));
 
 		if (!System.PushData(PayloadsToSubmit, EStorageType::Persistent))
 		{
@@ -339,77 +375,98 @@ void VirtualizePackages(TConstArrayView<FString> PackagePaths, EVirtualizationOp
 		}
 	}
 
+	// If the process has created new errors by this point we should early out before we actually start making changes on disk
+	if (NumErrors != OutResultInfo.GetNumErrors())
+	{
+		return;
+	}
+
 	Progress.EnterProgressFrame(1.0f);
 
-	TArray<TPair<FPackagePath, FString>> PackagesToReplace;
+	struct FPackageReplacement
+	{
+		FPackagePath Path;
+		FPackageTrailer Trailer;
+	};
 
-	// Any package with an updated trailer needs to be copied and an updated trailer appended
+	TArray<FPackageReplacement> PackagesToReplace;
+	PackagesToReplace.Reserve(Packages.Num());
+
 	for (FPackageInfo& PackageInfo : Packages)
 	{
-		if (!PackageInfo.bWasTrailerUpdated)
+		if (PackageInfo.bWasTrailerUpdated)
 		{
-			continue;
+			PackagesToReplace.Add({MoveTemp(PackageInfo.Path), MoveTemp(PackageInfo.Trailer)});
 		}
+	}
+	Packages.Empty(); // No longer used, the useful data have been moved to PackagesToReplace
 
-		const FPackagePath& PackagePath = PackageInfo.Path; // No need to validate path, we checked this earlier
-
-		FString NewPackagePath = DuplicatePackageWithUpdatedTrailer(PackagePath.GetLocalFullPath(), PackageInfo.Trailer, OutResultInfo.Errors);
-
-		if (!NewPackagePath.IsEmpty())
-		{
-			// Now that we have successfully created a new version of the package with an updated trailer 
-			// we need to mark that it should replace the original package.
-			PackagesToReplace.Emplace(PackagePath, MoveTemp(NewPackagePath));
-		}
-		else
-		{
-			return;
-		}
-
+	if (PackagesToReplace.IsEmpty())
+	{
+		UE_LOG(LogVirtualization, Display, TEXT("No packages need to be updated on disk"));
+		return;
 	}
 
 	UE_LOG(LogVirtualization, Display, TEXT("%d package(s) had their trailer container modified and need to be updated"), PackagesToReplace.Num());
 
-	if (NumErrors == OutResultInfo.GetNumErrors())
 	{
-		// TODO: Consider using the SavePackage model (move the original, then replace, so we can restore all of the original packages if needed)
-		// having said that, once a package is in PackagesToReplace it should still be safe to submit so maybe we don't need this level of protection?
+		// We need to reset the loader of any loaded package that we want save over on disk so that
+		// the file lock is relinquished
 
-		
-		// We need to reset the loader of any package that we want to re-save over
-		for (const TPair<FPackagePath, FString>& Pair : PackagesToReplace)
+		TRACE_CPUPROFILER_EVENT_SCOPE(UE::Virtualization::VirtualizePackages::ResetLoaders);
+
+		UE_LOG(LogVirtualization, Display, TEXT("Detaching loaded packages from disk..."));
+
+		int32 NumPackagesReset = 0;
+		for (const FPackageReplacement& PackageInfo : PackagesToReplace)
 		{
-			UPackage* Package = FindObjectFast<UPackage>(nullptr, Pair.Key.GetPackageFName());
-			if (Package != nullptr)
+			UPackage* LoadedPackage = FindObjectFast<UPackage>(nullptr, PackageInfo.Path.GetPackageFName());
+			if (LoadedPackage != nullptr)
 			{
-				UE_LOG(LogVirtualization, Verbose, TEXT("Detaching '%s' from disk so that it can be virtualized"), *Pair.Key.GetDebugName());
-				ResetLoadersForSave(Package, *Pair.Key.GetLocalFullPath());
+				UE_LOG(LogVirtualization, Verbose, TEXT("Detaching '%s'"), *PackageInfo.Path.GetDebugName());
+				// TODO: Consider using the batch API
+				ResetLoadersForSave(LoadedPackage, *PackageInfo.Path.GetLocalFullPath());
+				NumPackagesReset++;
 			}
 		}
 
-		// Should we try to check out packages from revision control?
-		if (EnumHasAnyFlags(Options, EVirtualizationOptions::Checkout))
+		UE_LOG(LogVirtualization, Display, TEXT("Reset the loaders of %d package(s)"), NumPackagesReset);
+	}
+
+	if (EnumHasAnyFlags(Options, EVirtualizationOptions::Checkout))
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(UE::Virtualization::VirtualizePackages::Checkout);
+
+		UE_LOG(LogVirtualization, Display, TEXT("Checking out packages from revision control..."));
+
+		TArray<FString> FilesToCheckState;
+		FilesToCheckState.Reserve(PackagesToReplace.Num());
+
+		for (const FPackageReplacement& PackageInfo : PackagesToReplace)
 		{
-			TArray<FString> FilesToCheckState;
-			FilesToCheckState.Reserve(PackagesToReplace.Num());
-
-			for (const TPair<FPackagePath, FString>& Pair : PackagesToReplace)
-			{
-				FilesToCheckState.Add(Pair.Key.GetLocalFullPath());
-			}
-
-			if (!TryCheckoutFiles(FilesToCheckState, OutResultInfo.Errors, &OutResultInfo.CheckedOutPackages))
-			{
-				return;
-			}
+			FilesToCheckState.Add(PackageInfo.Path.GetLocalFullPath());
 		}
+
+		if (!TryCheckoutFiles(FilesToCheckState, OutResultInfo.Errors, &OutResultInfo.CheckedOutPackages))
+		{
+			return;
+		}
+
+		UE_LOG(LogVirtualization, Display, TEXT("Checked out %d package(s)"), OutResultInfo.CheckedOutPackages.Num());
+	}
+
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(UE::Virtualization::VirtualizePackages::EnsureWritePermissions);
+
+		UE_CLOG(!PackagesToReplace.IsEmpty(), LogVirtualization, Display, TEXT("Checking packages for write access permission..."));
 
 		// Now check to see if there are package files that cannot be edited because they are read only
+		int32 NumSkipped = 0;
 		for (int32 Index = 0; Index < PackagesToReplace.Num(); ++Index)
 		{
-			const TPair<FPackagePath, FString>& Pair = PackagesToReplace[Index];
+			const FPackageReplacement& PackageInfo = PackagesToReplace[Index];
 
-			if (!CanWriteToFile(Pair.Key.GetLocalFullPath()))
+			if (!CanWriteToFile(PackageInfo.Path.GetLocalFullPath()))
 			{
 				// Technically the package could have local payloads that won't be virtualized due to filtering or min payload sizes and so the
 				// following warning is misleading. This will be solved if we move that evaluation to the point of saving a package.
@@ -418,35 +475,74 @@ void VirtualizePackages(TConstArrayView<FString> PackagePaths, EVirtualizationOp
 				// Long term, the stand alone tool should be able to request the UnrealEditor relinquish the lock on the package file so this becomes 
 				// less of a problem.
 				FText Message = FText::Format(LOCTEXT("Virtualization_PkgLocked", "The package file '{0}' has local payloads but is locked for modification and cannot be virtualized, this package will be skipped!"),
-					FText::FromString(Pair.Key.GetDebugName()));
+					FText::FromString(PackageInfo.Path.GetDebugName()));
+
 				UE_LOG(LogVirtualization, Warning, TEXT("%s"), *Message.ToString());
-				
+
 				PackagesToReplace.RemoveAt(Index--);
+				NumSkipped++;
 			}
 		}
 
+		UE_CLOG(NumSkipped > 0, LogVirtualization, Warning, TEXT("Skipped %d package(s)"), NumSkipped);
+		UE_CLOG(NumSkipped == 0, LogVirtualization, Display, TEXT("All packages have write permission"));
+	}
+	
+	{
 		// Since we had no errors we can now replace all of the packages that were virtualized data with the virtualized replacement file.
-		for(const TPair<FPackagePath,FString>&  Iterator : PackagesToReplace)
+		TRACE_CPUPROFILER_EVENT_SCOPE(UE::Virtualization::VirtualizePackages::ReplacePackages);
+
+		UE_LOG(LogVirtualization, Display, TEXT("Replacing old packages with the virtualized version..."));
+
+		int64 OriginalSizeTotal = 0;
+		int64 ReducedSizeTotal = 0;
+
+		for (const FPackageReplacement& PackageInfo : PackagesToReplace)
 		{
-			const FString OriginalPackagePath = Iterator.Key.GetLocalFullPath();
-			const FString& NewPackagePath = Iterator.Value;
+			const FString OriginalPackagePath = PackageInfo.Path.GetLocalFullPath();
+			const FString NewPackagePath = DuplicatePackageWithUpdatedTrailer(OriginalPackagePath, PackageInfo.Trailer, OutResultInfo.Errors);
+
+			if (NewPackagePath.IsEmpty())
+			{
+				// Duplication failed so skip this package for now. The error will be in OutResultInfo.Errors
+				continue;
+			}
+
+			const int64 OriginalSize = IFileManager::Get().GetStatData(*OriginalPackagePath).FileSize;
+			const int64 ReducedSize = IFileManager::Get().GetStatData(*NewPackagePath).FileSize;
 
 			if (IFileManager::Get().Move(*OriginalPackagePath, *NewPackagePath))
 			{
 				OutResultInfo.VirtualizedPackages.Add(OriginalPackagePath);
+
+				OriginalSizeTotal += OriginalSize;
+				ReducedSizeTotal += ReducedSize;
+
+				UE_LOG(LogVirtualization, Verbose, TEXT("Reducing %s: %s -> %s"),
+					*PackageInfo.Path.GetDebugName(),
+					*FText::AsMemory(OriginalSize).ToString(),
+					*FText::AsMemory(ReducedSize).ToString());
 			}
 			else
 			{
-				FText Message = FText::Format(	LOCTEXT("Virtualization_MoveFailed", "Unable to replace the package '{0}' with the virtualized version"),
-												FText::FromString(Iterator.Key.GetDebugName()));
+				FText Message = FText::Format(LOCTEXT("Virtualization_MoveFailed", "Unable to replace the package '{0}' with the virtualized version"),
+					FText::FromString(PackageInfo.Path.GetDebugName()));
+
 				OutResultInfo.AddError(MoveTemp(Message));
 				continue;
 			}
 		}
-	}
 
-	OutResultInfo.TimeTaken = FPlatformTime::Seconds() - StartTime;
-	UE_LOG(LogVirtualization, Verbose, TEXT("Virtualization process took %.3f(s)"), OutResultInfo.TimeTaken);
+		if (OriginalSizeTotal != ReducedSizeTotal)
+		{
+			UE_LOG(LogVirtualization, Display, TEXT("Total Reduction %s (%s -> %s)"),
+				*FText::AsMemory(OriginalSizeTotal - ReducedSizeTotal).ToString(),
+				*FText::AsMemory(OriginalSizeTotal).ToString(),
+				*FText::AsMemory(ReducedSizeTotal).ToString());
+		}
+
+		UE_LOG(LogVirtualization, Display, TEXT("Replaced %d package(s)"), OutResultInfo.VirtualizedPackages.Num());
+	}
 }
 
 } // namespace UE::Virtualization

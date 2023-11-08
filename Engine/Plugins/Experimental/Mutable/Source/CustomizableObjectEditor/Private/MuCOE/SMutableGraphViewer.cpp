@@ -11,9 +11,11 @@
 #include "MuCOE/CustomizableObjectCompileRunnable.h"
 #include "MuCOE/CustomizableObjectEditorStyle.h"
 #include "MuCOE/SMutableCodeViewer.h"
+#include "MuCOE/UnrealEditorPortabilityHelpers.h"
 #include "MuT/Streams.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Input/STextComboBox.h"
+#include "Widgets/Input/SNumericDropDown.h"
 #include "Widgets/Views/STreeView.h"
 
 class FExtender;
@@ -44,10 +46,10 @@ public:
 
 		const char* TypeName = RowItem->MutableNode->GetType()->m_strName;
 
-		FText MainLabel = FText::FromString(ANSI_TO_TCHAR(TypeName));
+		FText MainLabel = FText::FromString(StringCast<TCHAR>(TypeName).Get());
 		if (RowItem->DuplicatedOf)
 		{
-			MainLabel = FText::FromString( FString::Printf(TEXT("%s (Duplicated)"), ANSI_TO_TCHAR(TypeName)));
+			MainLabel = FText::FromString( FString::Printf(TEXT("%s (Duplicated)"), StringCast<TCHAR>(TypeName).Get()));
 		}
 
 		// TODO
@@ -153,7 +155,7 @@ void SMutableGraphViewer::Construct(const FArguments& InArgs, const mu::NodePtr&
 
 					// Dump source model to a file.
 					FString SaveFileName = FString(SaveFilenames[0]);
-					mu::OutputFileStream stream(TCHAR_TO_ANSI(*SaveFileName));
+					mu::OutputFileStream stream(StringCast<ANSICHAR>(*SaveFileName).Get());
 					stream.Write(MUTABLE_SOURCE_MODEL_FILETAG, 4);
 					mu::OutputArchive arch(&stream);
 					mu::Node::Serialise(InRootNode.get(), arch);
@@ -213,7 +215,7 @@ void SMutableGraphViewer::Construct(const FArguments& InArgs, const mu::NodePtr&
 			.Value(0.25f)
 			[
 				SNew(SBorder)
-				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(UE_MUTABLE_GET_BRUSH("ToolPanel.GroupBorder"))
 				.Padding(FMargin(4.0f, 4.0f))
 				[
 					SAssignNew(TreeView, STreeView<TSharedPtr<FMutableGraphTreeElement>>)
@@ -236,7 +238,7 @@ void SMutableGraphViewer::Construct(const FArguments& InArgs, const mu::NodePtr&
 			.Value(0.75f)
 			[
 				SNew(SBorder)
-				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(UE_MUTABLE_GET_BRUSH("ToolPanel.GroupBorder"))
 				.Padding(FMargin(4.0f, 4.0f))
 				//[
 				//	SubjectsTreeView->AsShared()
@@ -252,7 +254,7 @@ void SMutableGraphViewer::Construct(const FArguments& InArgs, const mu::NodePtr&
 void SMutableGraphViewer::CompileMutableCodePressed()
 {
 	// Do the compilation to Mutable Code synchronously.
-	TSharedPtr<FCustomizableObjectCompileRunnable> CompileTask = MakeShareable(new FCustomizableObjectCompileRunnable(RootNode, false));
+	TSharedPtr<FCustomizableObjectCompileRunnable> CompileTask = MakeShareable(new FCustomizableObjectCompileRunnable(RootNode));
 	CompileTask->Options = CompileOptions;
 	CompileTask->Init();
 	CompileTask->Run();
@@ -300,18 +302,21 @@ TSharedRef<SWidget> SMutableGraphViewer::GenerateCompileOptionsMenuContent()
 			;
 		MenuBuilder.AddWidget(CompileOptimizationCombo.ToSharedRef(), LOCTEXT("MutableCompileOptimizationLevel", "Optimization Level"));
 
-		// Parallel compilation
-		MenuBuilder.AddMenuEntry(
-			LOCTEXT("MutableEnableParallelCompilation", "Enable compiling in multiple threads."),
-			LOCTEXT("MutableEnableParallelCompilationTooltip", "This is faster but use more memory."),
-			FSlateIcon(),
-			FUIAction(
-				FExecuteAction::CreateLambda([this]() { CompileOptions.bUseParallelCompilation = !CompileOptions.bUseParallelCompilation; }),
-				FCanExecuteAction(),
-				FIsActionChecked::CreateLambda([this]() { return CompileOptions.bUseParallelCompilation; })),
-			NAME_None,
-			EUserInterfaceActionType::ToggleButton
-		);
+		// Image tiling
+		// Unfortunately SNumericDropDown doesn't work with integers at the time of writing.
+		TArray<SNumericDropDown<float>::FNamedValue> TilingOptions;
+		TilingOptions.Add(SNumericDropDown<float>::FNamedValue(0, FText::FromString(TEXT("0")), FText::FromString(TEXT("Disabled"))));
+		TilingOptions.Add(SNumericDropDown<float>::FNamedValue(64, FText::FromString(TEXT("64")), FText::FromString(TEXT("64"))));
+		TilingOptions.Add(SNumericDropDown<float>::FNamedValue(128, FText::FromString(TEXT("128")), FText::FromString(TEXT("128"))));
+		TilingOptions.Add(SNumericDropDown<float>::FNamedValue(256, FText::FromString(TEXT("256")), FText::FromString(TEXT("256"))));
+		TilingOptions.Add(SNumericDropDown<float>::FNamedValue(512, FText::FromString(TEXT("512")), FText::FromString(TEXT("512"))));
+
+		CompileTilingCombo = SNew(SNumericDropDown<float>)
+			.DropDownValues(TilingOptions)
+			.Value_Lambda([&]() { return float(CompileOptions.ImageTiling); })
+			.OnValueChanged_Lambda([&](float Value) { CompileOptions.ImageTiling = int32(Value); })
+			;
+		MenuBuilder.AddWidget(CompileTilingCombo.ToSharedRef(), LOCTEXT("MutableCompileImageTiling", "Image Tiling"));
 
 		// Disk as cache
 		MenuBuilder.AddMenuEntry(
@@ -460,7 +465,7 @@ FReply SMutableGraphViewer::OnDragOver(const FGeometry& MyGeometry, const FDragD
 				if (DraggedFileExtension == TEXT(".mutable_source"))
 				{
 					// Dump source model to a file.
-					mu::InputFileStream stream(TCHAR_TO_ANSI(*Files[0]));
+					mu::InputFileStream stream(StringCast<ANSICHAR>(*Files[0]).Get());
 
 					char MutableSourceTag[4] = {};
 					stream.Read(MutableSourceTag, 4);
@@ -496,7 +501,7 @@ FReply SMutableGraphViewer::OnDrop(const FGeometry& MyGeometry, const FDragDropE
 				if (DraggedFileExtension == TEXT(".mutable_source"))
 				{
 					// Dump source model to a file.
-					mu::InputFileStream stream(TCHAR_TO_ANSI(*Files[0]));
+					mu::InputFileStream stream(StringCast<ANSICHAR>(*Files[0]).Get());
 
 					char MutableSourceTag[4] = {};
 					stream.Read(MutableSourceTag, 4);

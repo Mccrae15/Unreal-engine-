@@ -167,3 +167,8 @@ int UOculusXRInputFunctionLibrary::GetMaxHapticDuration(EControllerHand Hand)
 {
 	return OculusXRInput::FOculusXRControllerTracking::GetMaxHapticDuration(Hand);
 }
+
+void UOculusXRInputFunctionLibrary::SetControllerDrivenHandPoses(EOculusXRControllerDrivenHandPoseTypes Type)
+{
+	return OculusXRInput::FOculusHandTracking::SetControllerDrivenHandPoses(Type);
+}

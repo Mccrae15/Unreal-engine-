@@ -46,8 +46,13 @@ bool FHttpServerIntegrationTest::RunTest(const FString& Parameters)
 	FHttpRouteHandle DuplicateHandle = HttpRouter->BindRoute(HttpPath, EHttpServerRequestVerbs::VERB_GET, RequestHandler);
 	TestFalse(TEXT("HttpRouteHandle Duplicated"), DuplicateHandle.IsValid());
 
+	// Because of the ValidHttpRouterOnFail was created by FHttpServerModule::Get().GetHttpRouter(InvalidHttpRouterPort...), it will fail to listen in StartAllListeners
+	// Also after bHttpListenersEnabled got set to true by StartAllListeners, when call GetHttpRouter(InvalidHttpRouterPort...) again, it will call StartListening again in there and fail
+	AddExpectedError(TEXT("HttpListener detected invalid port"), EAutomationExpectedErrorFlags::Contains, 2);
 	FHttpServerModule::Get().StartAllListeners();
 
+	// Because of the ValidHttpRouterOnFail was created by FHttpServerModule::Get().GetHttpRouter(InvalidHttpRouterPort...)
+	AddExpectedError(TEXT("is not listening/bound and listeners are still enabled"), EAutomationExpectedErrorFlags::Contains, 1);
 	// Ensure failed port binds result in a null router instance if requested (and listeners are enabled)
 	TSharedPtr<IHttpRouter> InvalidHttpRouterOnFail = FHttpServerModule::Get().GetHttpRouter(InvalidHttpRouterPort, /* bFailOnBindFailure = */ true);
 	TestFalse(TEXT("HttpRouter is null on bind failure if requested"), InvalidHttpRouterOnFail.IsValid());

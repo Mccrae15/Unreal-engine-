@@ -9,6 +9,8 @@ namespace UnrealBuildTool.Rules
 	{
 		public OculusXRHMD(ReadOnlyTargetRules Target) : base(Target)
 		{
+			bUseUnity = true;
+
 			var EngineDir = Path.GetFullPath(Target.RelativeEnginePath);
 
 			PrivateIncludePaths.AddRange(
@@ -56,6 +58,15 @@ namespace UnrealBuildTool.Rules
 				{
 					"HeadMountedDisplay",
 				});
+
+			if (Target.Version.MajorVersion > 5 || (Target.Version.MajorVersion == 5 && Target.Version.MinorVersion >= 3))
+			{
+				PublicDependencyModuleNames.AddRange(
+					new string[]
+					{
+						"XRBase",
+					});
+			}
 
 			if (Target.bBuildEditor == true)
 			{

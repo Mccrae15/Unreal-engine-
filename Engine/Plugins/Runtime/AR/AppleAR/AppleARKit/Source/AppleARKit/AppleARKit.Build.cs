@@ -9,7 +9,6 @@ public class AppleARKit : ModuleRules
 	{
 		PrivateIncludePaths.AddRange(new string[]
 		{
-			System.IO.Path.Combine(GetModuleDirectory("Renderer"), "Private"),
 		});
 			
 		
@@ -31,6 +30,7 @@ public class AppleARKit : ModuleRules
 			"Renderer",
 			"RenderCore",
 			"HeadMountedDisplay",
+			"XRBase",
 			"AugmentedReality",
 			"AppleImageUtils",
 			"Projects",

@@ -29,100 +29,9 @@ enum
 	Uniform buffer RHI object
 -----------------------------------------------------------------------------*/
 
-
-static void UpdateBindlessHandles(const void* SourceData, const FRHIUniformBufferLayout* Layout)
-{
-	UE::RHICore::FUniformDataReader Reader(SourceData);
-
-	// Update views before picking up their bindless handles
-	for (const FRHIUniformBufferResource& Resource : Layout->Resources)
-	{
-		switch (Resource.MemberType)
-		{
-			case UBMT_SRV:
-			{
-				FVulkanShaderResourceView* ShaderResourceView = Reader.Read<FVulkanShaderResourceView*>(Resource);
-				if (ShaderResourceView)
-				{
-					ShaderResourceView->UpdateView();
-				}
-			}
-			break;
-			case UBMT_RDG_TEXTURE_SRV:
-			case UBMT_RDG_BUFFER_SRV:
-			{
-				FRDGShaderResourceView* RDGShaderResourceView = Reader.Read<FRDGShaderResourceView*>(Resource);
-				if (RDGShaderResourceView && RDGShaderResourceView->GetRHI())
-				{
-					FVulkanShaderResourceView* ShaderResourceView = ResourceCast(RDGShaderResourceView->GetRHI());
-					ShaderResourceView->UpdateView();
-				}
-			}
-			break;
-			case UBMT_UAV:
-			{
-				FVulkanUnorderedAccessView* UnorderedAccessView = Reader.Read<FVulkanUnorderedAccessView*>(Resource);
-				if (UnorderedAccessView)
-				{
-					UnorderedAccessView->UpdateView();
-				}
-			}
-			break;
-			case UBMT_RDG_TEXTURE_UAV:
-			case UBMT_RDG_BUFFER_UAV:
-			{
-				FRDGUnorderedAccessView* RDGUnorderedAccessView = Reader.Read<FRDGUnorderedAccessView*>(Resource);
-				if (RDGUnorderedAccessView && RDGUnorderedAccessView->GetRHI())
-				{
-					FVulkanUnorderedAccessView* UnorderedAccessView = ResourceCast(RDGUnorderedAccessView->GetRHI());
-					UnorderedAccessView->UpdateView();
-				}
-			}
-			break;
-			case UBMT_SAMPLER:
-			case UBMT_TEXTURE:
-			case UBMT_RDG_TEXTURE:
-			case UBMT_NESTED_STRUCT:
-			case UBMT_INCLUDED_STRUCT:
-			case UBMT_REFERENCED_STRUCT:
-			{
-				// Do nothing
-			}
-			break;
-
-			default:
-			//checkf(false, TEXT("Unhandled resource type?"));
-			break;
-		}
-	}
-}
-
 static void UpdateUniformBufferConstants(FVulkanDevice* Device, void* DestinationData, const void* SourceData, const FRHIUniformBufferLayout* Layout)
 {
-	const bool bSupportsBindless = Device->SupportsBindless();
-	if (bSupportsBindless)
-	{
-		// Update the bindless handles in views before we use them
-		UpdateBindlessHandles(SourceData, Layout);
-	}
-
-	UE::RHICore::UpdateUniformBufferConstants(DestinationData, SourceData, *Layout, bSupportsBindless);
-}
-
-static inline EBufferUsageFlags UniformBufferToBufferUsage(EUniformBufferUsage Usage)
-{
-	switch (Usage)
-	{
-	default:
-		ensure(0);
-		// fall through...
-	case UniformBuffer_SingleDraw:
-		return BUF_Volatile;
-	case UniformBuffer_SingleFrame:
-		return BUF_Volatile;
-	case UniformBuffer_MultiFrame:
-		return BUF_Static;
-	}
+	UE::RHICore::UpdateUniformBufferConstants(DestinationData, SourceData, *Layout, Device->SupportsBindless());
 }
 
 static bool UseRingBuffer(EUniformBufferUsage Usage)
@@ -227,7 +136,7 @@ FVulkanUniformBuffer::FVulkanUniformBuffer(FVulkanDevice& InDevice, const FRHIUn
 		const bool bInRenderingThread = IsInRenderingThread();
 		const bool bInRHIThread = IsInRHIThread();
 
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		if (UseRingBuffer(InUsage) && (bInRenderingThread || bInRHIThread)
 			// :todo-jn:  Temporary check until we have a command list arg passed in to avoid a race where the RenderThread
 			// would pick up other tasks (because of task retraction) and execute them as if on the RenderThread.
@@ -273,6 +182,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				Allocation.FlushMappedMemory(Device);
 			}
 		}
+
 	}
 }
 
@@ -300,6 +210,17 @@ void FVulkanUniformBuffer::UpdateResourceTable(FRHIResource** Resources, int32 R
 	{
 		ResourceTable[ResourceIndex] = Resources[ResourceIndex];
 	}
+}
+
+VkDeviceAddress FVulkanUniformBuffer::GetDeviceAddress() const
+{
+	// :todo-jn: there will be more and more churn on this, cache the value
+	VkBufferDeviceAddressInfo BufferInfo;
+	ZeroVulkanStruct(BufferInfo, VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO);
+	BufferInfo.buffer = GetBufferHandle();
+	VkDeviceAddress BufferAddress = VulkanRHI::vkGetBufferDeviceAddressKHR(Device->GetInstanceHandle(), &BufferInfo);
+	BufferAddress += GetOffset();
+	return BufferAddress;
 }
 
 
@@ -443,13 +364,19 @@ FVulkanRingBuffer::FVulkanRingBuffer(FVulkanDevice* InDevice, uint64 TotalSize, 
 	, BufferAddress(0)
 	, MinAlignment(0)
 {
+	const bool bHasBufferDeviceAddress = InDevice->GetOptionalExtensions().HasBufferDeviceAddress;
+	if (bHasBufferDeviceAddress)
+	{
+		Usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+	}
+
 	check(TotalSize <= (uint64)MAX_uint32);
 	InDevice->GetMemoryManager().AllocateBufferPooled(Allocation, nullptr, TotalSize, 0, Usage, MemPropertyFlags, EVulkanAllocationMetaRingBuffer, __FILE__, __LINE__);
 	MinAlignment = Allocation.GetBufferAlignment(Device);
 	// Start by wrapping around to set up the correct fence
 	BufferOffset = TotalSize;
 
-	if (InDevice->GetOptionalExtensions().HasBufferDeviceAddress)
+	if (bHasBufferDeviceAddress)
 	{
 		VkBufferDeviceAddressInfo BufferInfo;
 		ZeroVulkanStruct(BufferInfo, VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO);

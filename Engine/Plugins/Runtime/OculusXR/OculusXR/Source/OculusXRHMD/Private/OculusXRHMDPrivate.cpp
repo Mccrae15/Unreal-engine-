@@ -11,6 +11,7 @@ namespace OculusXRHMD
 	// Utility functions
 	//-------------------------------------------------------------------------------------------------
 
+	// TODO: Change in case of parallel game threads
 	bool InGameThread()
 	{
 		if (GIsGameThreadIdInitialized)
@@ -27,7 +28,7 @@ namespace OculusXRHMD
 	{
 		if (GIsThreadedRendering && !GIsRenderingThreadSuspended.Load(EMemoryOrder::Relaxed))
 		{
-			return IsInActualRenderingThread();
+			return IsInParallelRenderingThread();
 		}
 		else
 		{
@@ -35,6 +36,7 @@ namespace OculusXRHMD
 		}
 	}
 
+	// TODO: Change in case of parallel RHI threads
 	bool InRHIThread()
 	{
 		if (GIsThreadedRendering && !GIsRenderingThreadSuspended.Load(EMemoryOrder::Relaxed))
@@ -46,7 +48,7 @@ namespace OculusXRHMD
 					return true;
 				}
 
-				if (IsInActualRenderingThread())
+				if (IsInParallelRenderingThread())
 				{
 					return GetImmediateCommandList_ForRenderCommand().Bypass();
 				}
@@ -55,7 +57,7 @@ namespace OculusXRHMD
 			}
 			else
 			{
-				return IsInActualRenderingThread();
+				return IsInParallelRenderingThread();
 			}
 		}
 		else

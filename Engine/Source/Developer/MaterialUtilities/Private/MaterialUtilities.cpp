@@ -259,9 +259,9 @@ struct FExportMaterialCompiler : public FProxyMaterialCompiler
 #endif
 	}
 
-	virtual int32 ObjectWorldPosition() override
+	virtual int32 ObjectWorldPosition(EPositionOrigin OriginType) override
 	{
-		return Compiler->ObjectWorldPosition();
+		return Compiler->ObjectWorldPosition(OriginType);
 	}
 
 	virtual int32 DistanceCullFade() override
@@ -269,9 +269,9 @@ struct FExportMaterialCompiler : public FProxyMaterialCompiler
 		return Compiler->Constant(1.0f);
 	}
 
-	virtual int32 ActorWorldPosition() override
+	virtual int32 ActorWorldPosition(EPositionOrigin OriginType) override
 	{
-		return Compiler->ActorWorldPosition();
+		return Compiler->ActorWorldPosition(OriginType);
 	}
 
 	virtual int32 ParticleRelativeTime() override
@@ -308,6 +308,11 @@ struct FExportMaterialCompiler : public FProxyMaterialCompiler
 	virtual int32 ParticleSize() override
 	{
 		return Compiler->Constant2(0.0f,0.0f);
+	}
+
+	virtual int32 ParticleSpriteRotation() override
+	{
+		return Compiler->Constant2(0.0f, 0.0f);
 	}
 
 	virtual int32 ObjectRadius() override
@@ -610,7 +615,7 @@ public:
 	
 			return Compiler->Constant(0.0f);
 		}
-		else if (Property == MP_WorldPositionOffset)
+		else if (Property == MP_WorldPositionOffset || Property == MP_Displacement)
 		{
 			//This property MUST return 0 as a default or during the process of rendering textures out for lightmass to use, pixels will be off by 1.
 			return Compiler->Constant(0.0f);
@@ -1006,17 +1011,36 @@ static bool ExportLandscapeMaterial(const ALandscapeProxy* InLandscape, const TS
 
 bool FMaterialUtilities::ExportLandscapeMaterial(const ALandscapeProxy* InLandscape, FFlattenMaterial& OutFlattenMaterial)
 {
-	TSet<FPrimitiveComponentId> ShowOnlyPrimitives;
+	bool bExportSuccess = false;
 
-	for (ULandscapeComponent* LandscapeComponent : InLandscape->LandscapeComponents)
+	if (InLandscape)
 	{
-		if (ensure(LandscapeComponent->SceneProxy))
+		TSet<FPrimitiveComponentId> ShowOnlyPrimitives;
+
+		// Include all landscape components scene proxies
+		for (ULandscapeComponent* LandscapeComponent : InLandscape->LandscapeComponents)
 		{
-			ShowOnlyPrimitives.Add(LandscapeComponent->SceneProxy->GetPrimitiveComponentId());
+			if (LandscapeComponent && LandscapeComponent->SceneProxy)
+			{
+				ShowOnlyPrimitives.Add(LandscapeComponent->SceneProxy->GetPrimitiveComponentId());
+			}
 		}
+
+		// Include Nanite landscape scene proxy - these are the ones that are actually visible when rendering LS with Nanite support
+		if (InLandscape->HasNaniteComponents())
+		{
+			ShowOnlyPrimitives.Append(InLandscape->GetNanitePrimitiveComponentIds());
+		}
+
+		bExportSuccess = ::ExportLandscapeMaterial(InLandscape, ShowOnlyPrimitives, {}, OutFlattenMaterial);
+	}
+	
+	if (!bExportSuccess)
+	{
+		UE_LOG(LogMaterialUtilities, Warning, TEXT("ExportLandscapeMaterial: Failed to export material for the provided ALandcapeProxy (%s)"), InLandscape ? *InLandscape->GetName() : TEXT("<null>"));
 	}
 
-	return ::ExportLandscapeMaterial(InLandscape, ShowOnlyPrimitives, {}, OutFlattenMaterial);
+	return bExportSuccess;
 }
 
 bool FMaterialUtilities::ExportLandscapeMaterial(const ALandscapeProxy* InLandscape, const TSet<FPrimitiveComponentId>& HiddenPrimitives, FFlattenMaterial& OutFlattenMaterial)

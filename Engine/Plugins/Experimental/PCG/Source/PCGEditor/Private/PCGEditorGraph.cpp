@@ -22,6 +22,25 @@ void UPCGEditorGraph::InitFromNodeGraph(UPCGGraph* InPCGGraph)
 
 	PCGGraph->OnGraphParametersChangedDelegate.AddUObject(this, &UPCGEditorGraph::OnGraphUserParametersChanged);
 
+	ReconstructGraph();
+}
+
+void UPCGEditorGraph::ReconstructGraph()
+{
+	check(PCGGraph);
+
+	// If there are already some nodes, remove all of them.
+	if (!Nodes.IsEmpty())
+	{
+		Modify();
+
+		TArray<TObjectPtr<class UEdGraphNode>> NodesCopy = Nodes;
+		for (UEdGraphNode* Node : NodesCopy)
+		{
+			RemoveNode(Node);
+		}
+	}
+
 	TMap<UPCGNode*, UPCGEditorGraphNodeBase*> NodeLookup;
 	const bool bSelectNewNode = false;
 
@@ -113,6 +132,18 @@ void UPCGEditorGraph::CreateLinks(UPCGEditorGraphNodeBase* GraphNode, bool bCrea
 
 	// Forward the call
 	CreateLinks(GraphNode, bCreateInbound, bCreateOutbound, GraphNodeToPCGNodeMap);
+}
+
+void UPCGEditorGraph::UpdateGridSizeVisualization(UPCGComponent* InPCGComponentBeingInspected)
+{
+	for (UEdGraphNode* EditorNode : Nodes)
+	{
+		UPCGEditorGraphNodeBase* PCGEditorNode = Cast<UPCGEditorGraphNodeBase>(EditorNode);
+		if (PCGEditorNode && PCGEditorNode->UpdateGridSizeVisualization(InPCGComponentBeingInspected) != EPCGChangeType::None)
+		{
+			PCGEditorNode->ReconstructNode();
+		}
+	}
 }
 
 void UPCGEditorGraph::CreateLinks(UPCGEditorGraphNodeBase* GraphNode, bool bCreateInbound, bool bCreateOutbound, const TMap<UPCGNode*, UPCGEditorGraphNodeBase*>& GraphNodeToPCGNodeMap)

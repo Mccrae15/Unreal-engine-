@@ -16,10 +16,13 @@
 #include "PropertyHandle.h"
 #include "ScopedTransaction.h"
 #include "ViewModels/NiagaraEmitterHandleViewModel.h"
-#include "ViewModels/NiagaraSystemSelectionViewModel.h"
 #include "ViewModels/Stack/NiagaraStackViewModel.h"
 #include "Styling/AppStyle.h"
 #include "IDetailTreeNode.h"
+#include "NiagaraNodeFunctionCall.h"
+#include "NiagaraSettings.h"
+#include "Toolkits/SystemToolkitModes/NiagaraSystemToolkitModeBase.h"
+#include "Widgets/SNiagaraHierarchy.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraStackEmitterSettingsGroup)
 
@@ -128,7 +131,7 @@ void UNiagaraStackEmitterPropertiesItem::RefreshChildrenInternal(const TArray<UN
 
 UNiagaraStackEntry::FStackIssueFixDelegate UNiagaraStackEmitterPropertiesItem::GetUpgradeVersionFix()
 {
-	return FStackIssueFixDelegate::CreateLambda([=]()
+	return FStackIssueFixDelegate::CreateLambda([this]()
 	{
 		FGuid NewVersion = GetEmitterViewModel()->GetParentEmitter().Emitter->GetExposedVersion().VersionGuid;
 		FNiagaraEditorUtilities::SwitchParentEmitterVersion(GetEmitterViewModel().ToSharedRef(), GetSystemViewModel(), NewVersion);
@@ -200,12 +203,13 @@ void UNiagaraStackEmitterPropertiesItem::RefreshIssues(TArray<FStackIssue>& NewI
 		TWeakPtr<FNiagaraSystemViewModel> WeakSysViewModel = GetSystemViewModel();
 		if (System.NeedsWarmup())
 		{
+			const UNiagaraSettings* NiagaraSettings = GetDefault<UNiagaraSettings>();
 			float WarmupDelta = System.GetWarmupTickDelta();
-			if (ActualEmitterData->bLimitDeltaTime && ActualEmitterData->MaxDeltaTimePerTick < WarmupDelta)
+			if (NiagaraSettings->bLimitDeltaTime && NiagaraSettings->MaxDeltaTimePerTick < WarmupDelta)
 			{
 				TArray<FStackIssueFix> Fixes;
 
-				float MaxEmitterDt = ActualEmitterData->MaxDeltaTimePerTick;
+				float MaxEmitterDt = NiagaraSettings->MaxDeltaTimePerTick;
 				//This emitter does not allow ticks with a delta time so large.
 				FText FixDescriptionReduceWarmupDt = LOCTEXT("FixWarmupDeltaTime", "Reduce System Warmup Delta Time");
 				Fixes.Emplace(
@@ -221,28 +225,10 @@ void UNiagaraStackEmitterPropertiesItem::RefreshIssues(TArray<FStackIssue>& NewI
 							}
 						}));
 
-				FVersionedNiagaraEmitterWeakPtr WeakEmitter = GetEmitterViewModel()->GetEmitter().ToWeakPtr();
-				FText FixDescriptionReduceIncreaseEmitterDt = LOCTEXT("FixEmitterDeltaTime", "Increase Max Emitter Delta Time");
-				Fixes.Emplace(
-					FixDescriptionReduceIncreaseEmitterDt,
-					FStackIssueFixDelegate::CreateLambda([=]()
-						{
-							auto PinnedSysViewModel = WeakSysViewModel.Pin();
-							FVersionedNiagaraEmitter PinnedEmitter = WeakEmitter.ResolveWeakPtr();
-							if (PinnedEmitter.Emitter && PinnedSysViewModel)
-							{
-								FScopedTransaction ScopedTransaction(FixDescriptionReduceIncreaseEmitterDt);
-
-								PinnedEmitter.Emitter->Modify();
-								PinnedEmitter.GetEmitterData()->MaxDeltaTimePerTick = WarmupDelta;
-								PinnedSysViewModel->RefreshAll();
-							}
-						}));
-
 				FStackIssue WarmupDeltaTimeExceedsEmitterDeltaTimeWarning(
 					EStackIssueSeverity::Warning,
 					LOCTEXT("WarmupDeltaTimeExceedsEmitterDeltaTimeWarningSummary", "System Warmup Delta Time Exceeds Emitter Max Delta Time."),
-					LOCTEXT("WarmupDeltaTimeExceedsEmitterDeltaTimeWarningText", "Max Tick Delta Time is smaller than the System's Warmup Delta Time. This could cause unintended results during warmup for this emitter."),
+					LOCTEXT("WarmupDeltaTimeExceedsEmitterDeltaTimeWarningText", "Max Tick Delta Time is smaller than the System's Warmup Delta Time. This could cause unintended results during warmup for this emitter.\nThe max tick delta time can be changed in the Niagara settings."),
 					GetStackEditorDataKey(),
 					false,
 					Fixes);
@@ -325,32 +311,21 @@ FText UNiagaraStackEmitterSummaryItem::GetIconText() const
 
 void UNiagaraStackEmitterSummaryItem::RefreshChildrenInternal(const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues)
 {
-	if (GetEmitterViewModel()->GetSummaryIsInEditMode())
+	if (SummaryViewCollection == nullptr)
 	{
-		if (SummaryEditorData == nullptr)
-		{
-			SummaryEditorData = NewObject<UNiagaraStackObject>(this);
-			bool bIsTopLevelObject = true;
-			SummaryEditorData->Initialize(CreateDefaultChildRequiredData(), &GetEmitterViewModel()->GetOrCreateEditorData(), bIsTopLevelObject, GetStackEditorDataKey());
-			SummaryEditorData->SetOnSelectRootNodes(UNiagaraStackObject::FOnSelectRootNodes::CreateUObject(this,
-				&UNiagaraStackEmitterSummaryItem::SelectSummaryNodesFromEmitterEditorDataRootNodes));
-		}
-		NewChildren.Add(SummaryEditorData);
-	}
-	else
-	{
-		SummaryEditorData = nullptr;
-	}
-
-	if (FilteredObject == nullptr)
-	{
-		FilteredObject = NewObject<UNiagaraStackSummaryViewObject>(this);
+		SummaryViewCollection = NewObject<UNiagaraStackSummaryViewCollection>(this);
 		FRequiredEntryData RequiredEntryData(GetSystemViewModel(), GetEmitterViewModel(), FExecutionCategoryNames::Emitter, NAME_None, GetStackEditorData());
-		FilteredObject->Initialize(RequiredEntryData, Emitter, GetStackEditorDataKey());
+		SummaryViewCollection->Initialize(RequiredEntryData, Emitter, GetStackEditorDataKey());
 	}
 
-	NewChildren.Add(FilteredObject);
+	NewChildren.Add(SummaryViewCollection);
 	Super::RefreshChildrenInternal(CurrentChildren, NewChildren, NewIssues);
+}
+
+void UNiagaraStackEmitterSummaryItem::ToggleShowAdvancedInternal()
+{
+	// this will cause section data & filtered children to be refreshed while caching the last active section
+	SummaryViewCollection->RefreshForAdvancedToggle();
 }
 
 TSharedPtr<IDetailTreeNode> GetSummarySectionsPropertyNode(const TArray<TSharedRef<IDetailTreeNode>>& Nodes)
@@ -387,21 +362,32 @@ void UNiagaraStackEmitterSummaryItem::SelectSummaryNodesFromEmitterEditorDataRoo
 	}
 }
 
-bool UNiagaraStackEmitterSummaryItem::GetEditModeIsActive() const
-{ 
-	return GetEmitterViewModel().IsValid() && GetEmitterViewModel()->GetSummaryIsInEditMode();
-}
-
-void UNiagaraStackEmitterSummaryItem::SetEditModeIsActive(bool bInEditModeIsActive)
+void UNiagaraStackEmitterSummaryItem::OnEditButtonClicked()
 {
 	if (GetEmitterViewModel().IsValid())
 	{
-		if (GetEmitterViewModel()->GetSummaryIsInEditMode() != bInEditModeIsActive)
-		{
-			GetEmitterViewModel()->SetSummaryIsInEditMode(bInEditModeIsActive);
-			RefreshChildren();
-		}
+		GetSystemViewModel()->FocusTab(FNiagaraSystemToolkitModeBase::EmitterSummaryViewEditorTabID, true);
 	}
+}
+
+TOptional<FText> UNiagaraStackEmitterSummaryItem::GetEditModeButtonText() const
+{
+	return LOCTEXT("EditSummaryViewButtonLabel", "Edit Summary");
+}
+
+TOptional<FText> UNiagaraStackEmitterSummaryItem::GetEditModeButtonTooltip() const
+{
+	return LOCTEXT("EditSummaryViewButtonTooltip", "Summons the Summary Editor that lets you define what inputs, renderers and properties (and more) should be displayed when looking at the Emitter Summary.");
+}
+
+EVisibility UNiagaraStackEmitterSummaryItem::IsEditButtonVisible() const
+{
+	if(GetEmitterViewModel().IsValid())
+	{
+		return GetEmitterViewModel()->GetEditorData().ShouldShowSummaryView() ? EVisibility::Collapsed : EVisibility::Visible;
+	}
+
+	return EVisibility::Collapsed;
 }
 
 UNiagaraStackEmitterSummaryGroup::UNiagaraStackEmitterSummaryGroup()
@@ -425,9 +411,6 @@ FText UNiagaraStackEmitterSummaryGroup::GetIconText() const
 {
 	return FText::FromString(FString(TEXT("\xf0ca")/* fa-list-ul */));
 }
-
-
-
 
 void UNiagaraStackSummaryViewCollapseButton::Initialize(FRequiredEntryData InRequiredEntryData)
 {

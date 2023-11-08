@@ -10,6 +10,7 @@
 
 #include "ISequencer.h"
 #include "ISequencerTrackEditor.h"
+#include "ViewModels/NiagaraSimCacheViewModel.h"
 
 #include "ViewModels/NiagaraEmitterViewModel.h"
 #include "Widgets/SItemSelector.h"
@@ -35,6 +36,7 @@ class UNiagaraSequence;
 struct FAssetData;
 class FMenuBuilder;
 class ISequencer;
+class FNiagaraEmitterHandleViewModel;
 class FNiagaraMessageLogViewModel;
 class FNiagaraSystemToolkitParameterPanelViewModel;
 class FNiagaraSystemToolkitParameterDefinitionsPanelViewModel;
@@ -96,6 +98,8 @@ public:
 
 	TSharedPtr<FNiagaraSystemViewModel> GetSystemViewModel();
 	TSharedPtr<FNiagaraSystemGraphSelectionViewModel> GetSystemGraphSelectionViewModel();
+
+	TSharedPtr<FNiagaraSimCacheViewModel> GetSimCacheViewModel();
 	
 	// @todo This is a hack for now until we reconcile the default toolbar with application modes [duplicated from counterpart in Blueprint Editor]
 	void RegisterToolbarTab(const TSharedRef<class FTabManager>& TabManager);
@@ -154,6 +158,10 @@ protected:
 	void ToggleDrawOption(int32 Element);
 	bool IsDrawOptionEnabled(int32 Element) const;
 
+	bool CanShowEmitterBounds() const;
+	bool IsShowEmitterBounds(TSharedRef<FNiagaraEmitterHandleViewModel> EmitterViewModel) const;
+	void ToggleShowEmitterBounds(TSharedRef<FNiagaraEmitterHandleViewModel> EmitterViewModel);
+
 	void OpenDebugHUD();
 	void OpenDebugOutliner();
 	void OpenAttributeSpreadsheet();
@@ -162,7 +170,7 @@ protected:
 	virtual void GetSaveableObjects(TArray<UObject*>& OutObjects) const override;
 	virtual void SaveAsset_Execute() override;
 	virtual void SaveAssetAs_Execute() override;
-	virtual bool OnRequestClose() override;
+	virtual bool OnRequestClose(EAssetEditorCloseReason InCloseReason) override;
 	
 private:
 	void InitializeInternal(const EToolkitMode::Type Mode, const TSharedPtr<class IToolkitHost>& InitToolkitHost, const FGuid& MessageLogGuid);
@@ -204,13 +212,13 @@ private:
 private:
 
 	/** The System being edited in system mode, or the placeholder system being edited in emitter mode. */
-	UNiagaraSystem* System = nullptr;
+	TObjectPtr<UNiagaraSystem> System = nullptr;
 
 	/** The emitter being edited in emitter mode, or null when editing in system mode. Note that we are NOT using the FVersionedEmitter here, because this is the full asset. The version being edited is defined by the emitter view model. */
 	UNiagaraEmitter* Emitter = nullptr;
 
 	/** Temp object to hold version data being edited in the versioning widget's property editor. */
-	UNiagaraVersionMetaData* VersionMetadata = nullptr;
+	TObjectPtr<UNiagaraVersionMetaData> VersionMetadata = nullptr;
 
 	/** The value of the emitter change id from the last time it was in sync with the original emitter. */
 	FGuid LastSyncedEmitterChangeId;
@@ -248,6 +256,9 @@ private:
 	TSharedPtr<FNiagaraSystemToolkitParameterPanelViewModel> ParameterPanelViewModel;
 	TSharedPtr<FNiagaraSystemToolkitParameterDefinitionsPanelViewModel> ParameterDefinitionsPanelViewModel;
 	TSharedPtr<class SNiagaraParameterPanel> ParameterPanel;
+
+	/** Sim Cache editor view model**/
+	TSharedPtr<FNiagaraSimCacheViewModel> SimCacheViewModel;
 
 	TSharedPtr<FNiagaraObjectSelection> ObjectSelectionForParameterMapView;
 

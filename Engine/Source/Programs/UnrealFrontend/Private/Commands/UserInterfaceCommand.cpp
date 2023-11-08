@@ -10,12 +10,15 @@
 #include "Containers/Ticker.h"
 #include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/App.h"
 #include "Framework/Docking/TabManager.h"
 #include "Framework/Docking/LayoutService.h"
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformApplicationMisc.h"
-#include "OutputLog/Public/OutputLogModule.h"
+#include "OutputLogModule.h"
+#include "IDirectoryWatcher.h"
+#include "DirectoryWatcherModule.h"
 
 #define IDEAL_FRAMERATE 60;
 
@@ -55,7 +58,9 @@ void FUserInterfaceCommand::Run(  )
 
 	// load optional modules
 	FModuleManager::Get().LoadModule("DeviceManager");
+#if STATS && UE_DEPRECATED_PROFILER_ENABLED
 	FModuleManager::Get().LoadModule("ProfilerClient");
+#endif
 	FModuleManager::Get().LoadModule("ProjectLauncher");
 	FModuleManager::Get().LoadModule("SessionFrontend");
 	FModuleManager::Get().LoadModule("SettingsEditor");
@@ -65,6 +70,14 @@ void FUserInterfaceCommand::Run(  )
 	// initialize source code access
 	// Load the source code access module
 	ISourceCodeAccessModule& SourceCodeAccessModule = FModuleManager::LoadModuleChecked<ISourceCodeAccessModule>( FName( "SourceCodeAccess" ) );
+
+	// Initialize directory watcher module
+	// Load the directory watcher module
+	FDirectoryWatcherModule& DirectoryWatcherModule = FModuleManager::LoadModuleChecked<FDirectoryWatcherModule>(FName("DirectoryWatcher"));
+
+	// trigger loading of post default plug-ins
+	// (for UDP Messaging)
+	IPluginManager::Get().LoadModulesForEnabledPlugins(ELoadingPhase::PostDefault);
 
 	// Manually load in the source code access plugins, as standalone programs don't currently support plugins.
 #if PLATFORM_MAC
@@ -86,6 +99,12 @@ void FUserInterfaceCommand::Run(  )
 		//UserInterfaceCommand::UserConfiguredNewLayout = FGlobalTabmanager::Get()->PersistLayout();
 
 		FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
+
+		//We have to force tick here to be able to update Screen Comparison tab in the Slate applications without Engine loop
+		if (!FApp::IsProjectNameEmpty())
+		{
+			DirectoryWatcherModule.Get()->Tick(FApp::GetDeltaTime());
+		}
 
 		FSlateApplication::Get().PumpMessages();
 		FSlateApplication::Get().Tick();

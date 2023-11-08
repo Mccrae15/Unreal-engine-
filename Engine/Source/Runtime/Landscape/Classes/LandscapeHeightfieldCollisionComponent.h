@@ -250,12 +250,17 @@ public:
 	struct FWriteRuntimeDataParams
 	{
 		bool bUseDefaultMaterialOnly = false;
+		bool bProcessRenderIndices = true;
+		bool bProcessVisibilityLayer = true;
 		TArrayView<const uint16> Heights;
 		TArrayView<const uint16> SimpleHeights;
 		TArrayView<const uint8> DominantLayers;
 		TArrayView<const uint8> SimpleDominantLayers;
 		TArrayView<const uint8> RenderPhysicalMaterialIds;
 		TArrayView<const uint8> SimpleRenderPhysicalMaterialIds;
+		TArrayView<const TObjectPtr<UPhysicalMaterial>> PhysicalMaterialRenderObjects;
+		TArrayView<const TObjectPtr<ULandscapeLayerInfoObject>> ComponentLayerInfos;
+		int32 VisibilityLayerIndex = INDEX_NONE;
 	};
 
 	void GetCollisionSampleInfo(int32& OutCollisionSizeVerts, int32& OutSimpleCollisionSizeVerts, int32& OutNumSamples, int32& OutNumSimpleSamples) const;
@@ -274,6 +279,13 @@ public:
 	/** Creates collision object from a cooked collision data */
 	virtual void CreateCollisionObject();
 
+	/** Creates collision object from raw runtime data.  Data is assumed at this point to contain valid physical material indices with visiblility layer set to 0xFF*/
+	LANDSCAPE_API void CreateCollisionObject(
+		bool bUseDefaultMaterialOnly,
+		TArrayView<const uint16> Heights, TArrayView<const uint16> SimpleHeights,
+		TArrayView<const uint8> PhysicalMaterialIds, TArrayView<const uint8> SimplePhysicalMaterialIds,
+		TArrayView<const TObjectPtr<UPhysicalMaterial>> PhysicalMaterialObjects);
+
 	/** Return the landscape actor associated with this component. */
 	LANDSCAPE_API ALandscapeProxy* GetLandscapeProxy() const;
 
@@ -286,6 +298,11 @@ public:
 	/** Recreate heightfield and restart physics */
 	LANDSCAPE_API virtual bool RecreateCollision();
 
+private:
+	// @todo(chaos): remove when implicit objects are ref counted
+	void DeferredDestroyCollision(const TRefCountPtr<FHeightfieldGeometryRef>& HeightfieldRefLifetimeExtender);
+public:
+
 #if WITH_EDITORONLY_DATA
 	// Called from editor code to manage foliage instances on landscape.
 	LANDSCAPE_API void SnapFoliageInstances(const FBox& InInstanceBox);
@@ -293,7 +310,7 @@ public:
 	LANDSCAPE_API void SnapFoliageInstances();
 #endif
 
-	LANDSCAPE_API void SetRenderComponent(ULandscapeComponent* InRenderComponent) { RenderComponentRef = InRenderComponent; }
+	void SetRenderComponent(ULandscapeComponent* InRenderComponent) { RenderComponentRef = InRenderComponent; }
 
 public:
 	TOptional<float> GetHeight(float X, float Y, EHeightfieldSource HeightFieldSource);

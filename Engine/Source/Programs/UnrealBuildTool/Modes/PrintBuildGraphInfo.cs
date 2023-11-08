@@ -4,9 +4,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
-using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using EpicGames.Core;
-using UnrealBuildBase;
 using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
@@ -23,7 +22,7 @@ namespace UnrealBuildTool
 		/// <param name="Arguments">Command line arguments</param>
 		/// <returns>Exit code</returns>
 		/// <param name="Logger"></param>
-		public override int Execute(CommandLineArguments Arguments, ILogger Logger)
+		public override Task<int> ExecuteAsync(CommandLineArguments Arguments, ILogger Logger)
 		{
 			Arguments.ApplyTo(this);
 
@@ -33,7 +32,7 @@ namespace UnrealBuildTool
 			Arguments.ApplyTo(BuildConfiguration);
 
 			// Parse all the target descriptors
-			List<TargetDescriptor> TargetDescriptors = TargetDescriptor.ParseCommandLine(Arguments, BuildConfiguration.bUsePrecompiled, BuildConfiguration.bSkipRulesCompile, BuildConfiguration.bForceRulesCompile, Logger);
+			List<TargetDescriptor> TargetDescriptors = TargetDescriptor.ParseCommandLine(Arguments, BuildConfiguration, Logger);
 
 			using (ISourceFileWorkingSet WorkingSet = new EmptySourceFileWorkingSet())
 			{
@@ -46,7 +45,7 @@ namespace UnrealBuildTool
 					Logger.LogInformation("------------------------");
 
 					// Create a makefile for the target
-					UEBuildTarget Target = UEBuildTarget.Create(TargetDescriptor, BuildConfiguration.bSkipRulesCompile, BuildConfiguration.bForceRulesCompile, BuildConfiguration.bUsePrecompiled, Logger);
+					UEBuildTarget Target = UEBuildTarget.Create(TargetDescriptor, BuildConfiguration, Logger);
 
 					List<UEBuildModule> NoUnityModules = new();
 					List<UEBuildModule> NotOptimizedModules = new();
@@ -60,13 +59,13 @@ namespace UnrealBuildTool
 					foreach (UEBuildBinary Binary in Target.Binaries)
 					{
 						CppCompileEnvironment BinaryCompileEnvironment = Binary.CreateBinaryCompileEnvironment(GlobalCompileEnvironment);
-						foreach (UEBuildModule Module in Binary.Modules)
+						foreach (UEBuildModule Module in UEBuildModule.StableTopologicalSort(Binary.Modules))
 						{
 							if (Module is UEBuildModuleCPP ModuleCPP)
 							{
 								ModuleCPP.CreateCompileEnvironmentForIntellisense(Target.Rules, BinaryCompileEnvironment, Logger);
 							}
-							
+
 							Modules.Add(Module);
 						}
 					}
@@ -151,6 +150,7 @@ namespace UnrealBuildTool
 						}
 					}
 
+					Dictionary<UEBuildModule, PrecompiledHeaderTemplate> ModulesUsingSharedPCHs = new();
 					if (GlobalCompileEnvironment.SharedPCHs.Any())
 					{
 						Logger.LogInformation(" Shared PCHs:");
@@ -163,21 +163,101 @@ namespace UnrealBuildTool
 							SortedInstances.SortBy(Instance => Instance.HeaderFile.Name);
 							foreach (PrecompiledHeaderInstance Instance in SortedInstances)
 							{
-								Logger.LogInformation("   {InstanceName} - Used by {TimesUsed} modules:", Instance.CompileEnvironment.PrecompiledHeaderIncludeFilename, Instance.Modules.Count);
+								Logger.LogInformation("   {InstanceName} - Used by {TimesUsed} modules:", Instance.HeaderFile, Instance.Modules.Count);
+								if (Instance.ParentPCHInstance != null)
+								{
+									Logger.LogInformation("    ParentPCH: {ParentInstanceName}", Instance.ParentPCHInstance.HeaderFile);
+								}
 
 								List<UEBuildModuleCPP> SortedModules = new(Instance.Modules);
 								SortedModules.SortBy(Module => Module.Name);
 								foreach (UEBuildModuleCPP Module in SortedModules)
 								{
 									Logger.LogInformation("    {ModuleName}", Module.Name);
+									ModulesUsingSharedPCHs.Add(Module, Template);
 								}
+							}
+						}
+					}
+
+					Logger.LogInformation("Circular Dependencies that are not declared.");
+					Logger.LogInformation("NOTE: Anything prefixed with a '!!!' means that the circular dependency could possibly create linker errors.");
+					foreach (UEBuildModule Module in Modules)
+					{
+						List<Stack<UEBuildModule>> ModuleDepStacks = new List<Stack<UEBuildModule>>();
+						FindCircularDependencyModules(Module, Module, new HashSet<UEBuildModule>(), true, new Stack<UEBuildModule>(), ModuleDepStacks);
+						if (ModuleDepStacks.Any())
+						{
+							bool UsesSharedPCH = ModulesUsingSharedPCHs.ContainsKey(Module);
+							Logger.LogInformation(" {ModuleName} - {DepCount}", Module.Name, ModuleDepStacks.Count);
+							foreach (Stack<UEBuildModule> DepModuleStack in ModuleDepStacks)
+							{
+								StringBuilder Dependencies = new StringBuilder();
+
+								if (UsesSharedPCH && DepModuleStack.Contains(ModulesUsingSharedPCHs[Module].Module))
+								{
+									Dependencies.Append("!!! ");
+								}
+
+								UEBuildModule[] DepModuleArray = DepModuleStack.Reverse().ToArray();
+								for (int DepModuleIndex = 0; DepModuleIndex < DepModuleArray.Length; DepModuleIndex++)
+								{
+									Dependencies.Append(DepModuleArray[DepModuleIndex].Name);
+									if (DepModuleIndex != DepModuleArray.Length - 1)
+									{
+										Dependencies.Append(" -> ");
+									}
+								}
+								Logger.LogInformation($"   {Dependencies}");
 							}
 						}
 					}
 				}
 			}
 
-			return 0;
+			return Task.FromResult(0);
+		}
+
+		private void FindCircularDependencyModules(UEBuildModule SearchForBuildModule, UEBuildModule CurrentBuildModule, HashSet<UEBuildModule> IgnoreReferencedModules, bool bIncludePrivateDependencyModules, Stack<UEBuildModule> CurrentStack, List<Stack<UEBuildModule>> ModuleDepStacks)
+		{
+			CurrentStack.Push(CurrentBuildModule);
+
+			if (SearchForBuildModule == CurrentBuildModule && CurrentStack.Count > 1)
+			{
+				ModuleDepStacks.Add(new Stack<UEBuildModule>(CurrentStack.Reverse()));
+			}
+
+			List<UEBuildModule> AllDependencyModules = new List<UEBuildModule>(
+				((bIncludePrivateDependencyModules && CurrentBuildModule.PrivateDependencyModules != null) ? CurrentBuildModule.PrivateDependencyModules.Count : 0) +
+				(CurrentBuildModule.PublicDependencyModules != null ? CurrentBuildModule.PublicDependencyModules.Count : 0) +
+				(CurrentBuildModule.PublicIncludePathModules != null ? CurrentBuildModule.PublicIncludePathModules!.Count : 0)
+				);
+			if (bIncludePrivateDependencyModules && CurrentBuildModule.PrivateDependencyModules != null)
+			{
+				AllDependencyModules.AddRange(CurrentBuildModule.PrivateDependencyModules);
+			}
+			if (CurrentBuildModule.PublicDependencyModules != null)
+			{
+				AllDependencyModules.AddRange(CurrentBuildModule.PublicDependencyModules!);
+			}
+			if (CurrentBuildModule.PublicIncludePathModules != null)
+			{
+				AllDependencyModules.AddRange(CurrentBuildModule.PublicIncludePathModules);
+			}
+
+			foreach (UEBuildModule DependencyModule in AllDependencyModules)
+			{
+				// Don't follow circular back-references!
+				if (!CurrentBuildModule.HasCircularDependencyOn(DependencyModule.Name))
+				{
+					if (IgnoreReferencedModules.Add(DependencyModule))
+					{
+						// Recurse into dependent modules
+						FindCircularDependencyModules(SearchForBuildModule, DependencyModule, new HashSet<UEBuildModule>(IgnoreReferencedModules), false, CurrentStack, ModuleDepStacks);
+					}
+				}
+			}
+			CurrentStack.Pop();
 		}
 	}
 }

@@ -38,6 +38,7 @@
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
 
+#include "Blueprint/BlueprintExtension.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
@@ -74,6 +75,7 @@ const FText FFindInBlueprintSearchTags::FiB_UberGraphs = LOCTEXT("Uber", "Uber")
 const FText FFindInBlueprintSearchTags::FiB_Functions = LOCTEXT("Functions", "Functions");
 const FText FFindInBlueprintSearchTags::FiB_Macros = LOCTEXT("Macros", "Macros");
 const FText FFindInBlueprintSearchTags::FiB_SubGraphs = LOCTEXT("Sub", "Sub");
+const FText FFindInBlueprintSearchTags::FiB_Extensions = LOCTEXT("Extensions", "Extensions");
 
 const FText FFindInBlueprintSearchTags::FiB_Name = LOCTEXT("Name", "Name");
 const FText FFindInBlueprintSearchTags::FiB_NativeName = LOCTEXT("NativeName", "Native Name");
@@ -529,12 +531,12 @@ namespace BlueprintSearchMetaDataHelpers
 
 	/** Json Writer used for serializing FText's in the correct format for Find-in-Blueprints */
 	class FFindInBlueprintJsonWriter : public TFindInBlueprintJsonStringWriter<TCondensedJsonPrintPolicy<TCHAR>>
-			{
+	{
 	public:
 		FFindInBlueprintJsonWriter(FString* const InOutString, int32 InFormatVersion)
 			:TFindInBlueprintJsonStringWriter<TCondensedJsonPrintPolicy<TCHAR>>(InOutString, InFormatVersion)
 			,JsonOutput(InOutString)
-				{
+		{
 		}
 
 		virtual bool Close() override
@@ -1193,6 +1195,63 @@ namespace BlueprintSearchMetaDataHelpers
 	}
 
 	template<class PrintPolicy>
+	void GatherExtensionsSearchData_Recursive(const TSharedRef<TFindInBlueprintJsonStringWriter<PrintPolicy>>& InWriter, const UBlueprintExtension::FSearchData& SearchData)
+	{
+		for (const UBlueprintExtension::FSearchTagDataPair& Data : SearchData.Datas)
+		{
+			InWriter->WriteValue(Data.Key, Data.Value);
+		}
+
+		for (const TUniquePtr<UBlueprintExtension::FSearchArrayData>& ArrayData : SearchData.SearchArrayDatas)
+		{
+			InWriter->WriteArrayStart(ArrayData->Identifier.IsEmpty() ? FFindInBlueprintSearchTags::FiB_Extensions : ArrayData->Identifier);
+			for (const UBlueprintExtension::FSearchData& Data : ArrayData->SearchSubList)
+			{
+				InWriter->WriteObjectStart();
+				GatherExtensionsSearchData_Recursive(InWriter, Data);
+				InWriter->WriteObjectEnd();
+			}
+			InWriter->WriteArrayEnd();
+		}
+	}
+
+	template<class PrintPolicy>
+	void GatherExtensionsSearchData(const TSharedRef<TFindInBlueprintJsonStringWriter<PrintPolicy>>& InWriter, const UBlueprint* InBlueprint)
+	{
+		if (InBlueprint->GetExtensions().Num() > 0)
+		{
+			// Collect all extensions
+			bool bExtensionArrayStarted = false;
+			for (UBlueprintExtension* Extension : InBlueprint->GetExtensions())
+			{
+				if (Extension)
+				{
+					if (!bExtensionArrayStarted)
+					{
+						InWriter->WriteArrayStart(FFindInBlueprintSearchTags::FiB_Extensions);
+						bExtensionArrayStarted = true;
+					}
+
+					InWriter->WriteObjectStart();
+					InWriter->WriteValue(FFindInBlueprintSearchTags::FiB_Name, FText::FromString(Extension->GetName()));
+					InWriter->WriteValue(FFindInBlueprintSearchTags::FiB_ClassName, FText::FromString(Extension->GetClass()->GetName()));
+
+					// Retrieve the custom search metadata from the extension.
+					UBlueprintExtension::FSearchData SearchData = Extension->GatherSearchData(InBlueprint);
+					GatherExtensionsSearchData_Recursive(InWriter, SearchData);
+
+					InWriter->WriteObjectEnd();
+				}
+			}
+
+			if (bExtensionArrayStarted)
+			{
+				InWriter->WriteArrayEnd();
+			}
+		}
+	}
+
+	template<class PrintPolicy>
 	void GatherBlueprintSearchMetadata(const TSharedRef<TFindInBlueprintJsonStringWriter<PrintPolicy>>& InWriter, const UBlueprint* Blueprint)
 	{
 		FTemporarilyUseFriendlyNodeTitles TemporarilyUseFriendlyNodeTitles;
@@ -1272,6 +1331,8 @@ namespace BlueprintSearchMetaDataHelpers
 			}
 			InWriter->WriteArrayEnd(); // Components
 		}
+
+		GatherExtensionsSearchData(InWriter, Blueprint);
 
 		InWriter->WriteObjectEnd();
 		InWriter->Close();
@@ -1981,6 +2042,7 @@ FFindInBlueprintSearchManager::FFindInBlueprintSearchManager()
 	, bEnableCSVStatsProfiling(false)
 	, bEnableDeveloperMenuTools(false)
 	, bDisableSearchResultTemplates(false)
+	, bDisableImmediateAssetDiscovery(false)
 {
 	for (int32 TabIdx = 0; TabIdx < UE_ARRAY_COUNT(GlobalFindResultsTabIDs); TabIdx++)
 	{
@@ -2021,6 +2083,7 @@ void FFindInBlueprintSearchManager::Initialize()
 	GConfig->GetBool(TEXT("BlueprintSearchSettings"), TEXT("bEnableCsvStatsProfiling"), bEnableCSVStatsProfiling, GEditorIni);
 	GConfig->GetBool(TEXT("BlueprintSearchSettings"), TEXT("bEnableDeveloperMenuTools"), bEnableDeveloperMenuTools, GEditorIni);
 	GConfig->GetBool(TEXT("BlueprintSearchSettings"), TEXT("bDisableSearchResultTemplates"), bDisableSearchResultTemplates, GEditorIni);
+	GConfig->GetBool(TEXT("BlueprintSearchSettings"), TEXT("bDisableImmediateAssetDiscovery"), bDisableImmediateAssetDiscovery, GEditorIni);
 
 #if CSV_PROFILER
 	// If profiling has been enabled, turn on the stat category and begin a capture.
@@ -2042,9 +2105,6 @@ void FFindInBlueprintSearchManager::Initialize()
 		IAssetRegistry* AssetRegistry = AssetRegistryModule->TryGet();
 		if (AssetRegistry)
 		{
-			AssetRegistry->OnAssetAdded().AddRaw(this, &FFindInBlueprintSearchManager::OnAssetAdded);
-			AssetRegistry->OnAssetRemoved().AddRaw(this, &FFindInBlueprintSearchManager::OnAssetRemoved);
-			AssetRegistry->OnAssetRenamed().AddRaw(this, &FFindInBlueprintSearchManager::OnAssetRenamed);
 			AssetRegistry->OnFilesLoaded().AddRaw(this, &FFindInBlueprintSearchManager::OnAssetRegistryFilesLoaded);
 		}
 	}
@@ -2068,7 +2128,7 @@ void FFindInBlueprintSearchManager::Initialize()
 	// Register to be notified of reloads
 	FCoreUObjectDelegates::ReloadCompleteDelegate.AddRaw(this, &FFindInBlueprintSearchManager::OnReloadComplete);
 
-	if(!GIsSavingPackage && AssetRegistryModule)
+	if(!GIsSavingPackage && AssetRegistryModule && (!bDisableImmediateAssetDiscovery || !AssetRegistryModule->GetRegistry().IsLoadingAssets()))
 	{
 		// Do an immediate load of the cache to catch any Blueprints that were discovered by the asset registry before we initialized.
 		BuildCache();
@@ -2330,6 +2390,13 @@ void FFindInBlueprintSearchManager::OnAssetRenamed(const struct FAssetData& InAs
 void FFindInBlueprintSearchManager::OnAssetRegistryFilesLoaded()
 {
 	CSV_EVENT(FindInBlueprint, TEXT("OnAssetRegistryFilesLoaded"));
+
+	// If we've deferred asset discovery, scan all registered assets now to extract search metadata from the asset tags.
+	// Note: Depending on how many assets there are (loaded/unloaded), this may block the UI frame for an extended period.
+	if (bDisableImmediateAssetDiscovery)
+	{
+		BuildCache();
+	}
 
 	if (!IsCacheInProgress() && PendingAssets.Num() == 0)
 	{
@@ -2946,7 +3013,18 @@ void FFindInBlueprintSearchManager::CleanCache()
 
 void FFindInBlueprintSearchManager::BuildCache()
 {
-	AssetRegistryModule = &FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	TRACE_CPUPROFILER_EVENT_SCOPE(FFindInBlueprintSearchManager::BuildCache);
+
+	if (!ensure(AssetRegistryModule))
+	{
+		return;
+	}
+
+	IAssetRegistry* AssetRegistry = AssetRegistryModule->TryGet();
+	if (!AssetRegistry)
+	{
+		return;
+	}
 
 	TArray< FAssetData > BlueprintAssets;
 	FARFilter ClassFilter;
@@ -2957,12 +3035,17 @@ void FFindInBlueprintSearchManager::BuildCache()
 		ClassFilter.ClassPaths.Add(ClassPathName);
 	}
 
-	AssetRegistryModule->Get().GetAssets(ClassFilter, BlueprintAssets);
+	AssetRegistry->GetAssets(ClassFilter, BlueprintAssets);
 	
 	for( FAssetData& Asset : BlueprintAssets )
 	{
 		OnAssetAdded(Asset);
 	}
+
+	// Register to be notified for future asset registry events.
+	AssetRegistry->OnAssetAdded().AddRaw(this, &FFindInBlueprintSearchManager::OnAssetAdded);
+	AssetRegistry->OnAssetRemoved().AddRaw(this, &FFindInBlueprintSearchManager::OnAssetRemoved);
+	AssetRegistry->OnAssetRenamed().AddRaw(this, &FFindInBlueprintSearchManager::OnAssetRenamed);
 }
 
 void FFindInBlueprintSearchManager::DumpCache(FArchive& Ar)
@@ -3172,7 +3255,7 @@ void FFindInBlueprintSearchManager::CacheAllAssets(TWeakPtr< SFindInBlueprints >
 				DialogDisplayText = FText::Format(LOCTEXT("CacheAllConfirmationMessage_OutOfDateOnly", "This process can take a long time and the editor may become unresponsive; there are {PackageCount} out-of-date Blueprints to load.\n\nWould you like to checkout, load, and save all Blueprints to make this indexing permanent? Otherwise, all Blueprints will still be loaded but you will be required to re-index the next time you start the editor!"), Args);
 			}
 
-			const EAppReturnType::Type ReturnValue = FMessageDialog::Open(EAppMsgType::YesNoCancel, DialogDisplayText, &DialogTitle);
+			const EAppReturnType::Type ReturnValue = FMessageDialog::Open(EAppMsgType::YesNoCancel, DialogDisplayText, DialogTitle);
 
 			// If Yes is chosen, checkout and save all Blueprints, if No is chosen, only load all Blueprints
 			if (ReturnValue != EAppReturnType::Cancel)

@@ -38,6 +38,20 @@ namespace OutputLogModule
 {
 	static const FName OutputLogTabName = FName(TEXT("OutputLog"));
 	static const FName DeviceOutputLogTabName = FName(TEXT("DeviceOutputLog"));
+
+	bool bHideConsole = false;
+	FAutoConsoleVariableRef CVarHideConsoleCommand(
+		TEXT("OutputLogModule.HideConsole"), 
+		bHideConsole, 
+		TEXT("Whether debug console widgets should be hidden (false by default)"), 
+		FConsoleVariableDelegate::CreateLambda([](IConsoleVariable* /*CVar*/)
+			{
+				if (bHideConsole)
+				{
+					FOutputLogModule::Get().CloseDebugConsole();
+				}
+			}),
+		ECVF_ReadOnly);
 }
 
 /** This class is to capture all log output even if the log window is closed */
@@ -84,6 +98,7 @@ private:
 TSharedRef<SDockTab> FOutputLogModule::SpawnOutputLogTab(const FSpawnTabArgs& Args)
 {
 	TSharedRef<SOutputLog> NewLog = SNew(SOutputLog, false).Messages(OutputLogHistory->GetMessages());
+	NewLog->UpdateOutputLogFilter(*OutputLogFilterCache);
 
 	OutputLog = NewLog;
 
@@ -94,9 +109,20 @@ TSharedRef<SDockTab> FOutputLogModule::SpawnOutputLogTab(const FSpawnTabArgs& Ar
 			NewLog
 		];
 
+	NewTab->SetOnTabClosed(SDockTab::FOnTabClosedCallback::CreateRaw(this, &FOutputLogModule::OnOutputLogTabClosed));
+
 	OutputLogTab = NewTab;
 
 	return NewTab;
+}
+
+void FOutputLogModule::OnOutputLogTabClosed(TSharedRef<SDockTab> Tab)
+{
+	if (TSharedPtr<SOutputLog> SharedOutputLog = OutputLog.Pin())
+	{
+		// Cache the closing LogFilterTab so that we can restore the same filter when it's opened again
+		*OutputLogFilterCache = SharedOutputLog->GetOutputLogFilter();
+	}
 }
 
 TSharedRef<SDockTab> FOutputLogModule::SpawnDeviceOutputLogTab(const FSpawnTabArgs& Args)
@@ -142,6 +168,7 @@ void FOutputLogModule::StartupModule()
 #endif
 
 	OutputLogHistory = MakeShareable(new FOutputLogHistory);
+	OutputLogFilterCache = MakeUnique<FOutputLogFilter>();
 }
 
 void FOutputLogModule::ShutdownModule()
@@ -168,10 +195,16 @@ FOutputLogModule& FOutputLogModule::Get()
 	return FModuleManager::Get().LoadModuleChecked<FOutputLogModule>(OutputLog);
 }
 
+bool FOutputLogModule::ShouldHideConsole() const
+{
+	return OutputLogModule::bHideConsole;
+}
+
 TSharedRef<SWidget> FOutputLogModule::MakeConsoleInputBox(TSharedPtr<SMultiLineEditableTextBox>& OutExposedEditableTextBox, const FSimpleDelegate& OnCloseConsole, const FSimpleDelegate& OnConsoleCommandExecuted) const
 {
 	TSharedRef<SConsoleInputBox> NewConsoleInputBox =
 		SNew(SConsoleInputBox)
+		.Visibility(MakeAttributeLambda([](){ return FOutputLogModule::Get().ShouldHideConsole() ? EVisibility::Collapsed : EVisibility::Visible; }))
 		.OnCloseConsole(OnCloseConsole)
 		.OnConsoleCommandExecuted(OnConsoleCommandExecuted);
 
@@ -189,6 +222,9 @@ TSharedRef<SWidget> FOutputLogModule::MakeOutputLogDrawerWidget(const FSimpleDel
 			SNew(SOutputLog, true)
 			.OnCloseConsole(OnCloseConsole)
 			.Messages(OutputLogHistory->GetMessages());
+
+		OutputLogDrawerPinned->UpdateOutputLogFilter(*OutputLogFilterCache);
+
 		OutputLogDrawer = OutputLogDrawerPinned;
 	}
 
@@ -207,6 +243,11 @@ TSharedRef<SWidget> FOutputLogModule::MakeOutputLogWidget(const FOutputLogCreati
 
 void FOutputLogModule::ToggleDebugConsoleForWindow(const TSharedRef<SWindow>& Window, const EDebugConsoleStyle::Type InStyle, const FDebugConsoleDelegates& DebugConsoleDelegates)
 {
+	if (ShouldHideConsole())
+	{
+		return;
+	}
+
 	bool bShouldOpen = true;
 	// Close an existing console box, if there is one
 	TSharedPtr< SWidget > PinnedDebugConsole(DebugConsole.Pin());
@@ -287,7 +328,7 @@ void FOutputLogModule::CloseDebugConsole()
 void FOutputLogModule::ClearOnPIE(const bool bIsSimulating)
 {
 	bool bClearOnPIEEnabled = false;
-	GConfig->GetBool(TEXT("/Script/UnrealEd.EditorPerProjectUserSettings"), TEXT("bEnableOutputLogClearOnPIE"), bClearOnPIEEnabled, GEditorPerProjectIni);
+	GConfig->GetBool(TEXT("/Script/OutputLog.OutputLogSettings"), TEXT("bEnableOutputLogClearOnPIE"), bClearOnPIEEnabled, GEditorPerProjectIni);
 
 	if (bClearOnPIEEnabled)
 	{
@@ -362,9 +403,49 @@ void FOutputLogModule::FocusOutputLog()
 
 void FOutputLogModule::UpdateOutputLogFilter(const TArray<FName>& CategoriesToShow, TOptional<bool> bShowErrors, TOptional<bool> bShowWarnings, TOptional<bool> bShowLogs)
 {
+	FOutputFilterParams Params;
+	Params.bShowErrors = bShowErrors;
+	Params.bShowWarnings = bShowWarnings;
+	Params.bShowLogs = bShowLogs;
+
+	UpdateOutputLogFilter(CategoriesToShow, Params);
+}
+
+void FOutputLogModule::UpdateOutputLogFilter(const TArray<FName>& CategoriesToShow, const FOutputFilterParams& InParams)
+{
+	if (InParams.bShowErrors.IsSet())
+	{
+		OutputLogFilterCache->bShowErrors = InParams.bShowErrors.GetValue();
+	}
+	// Update the filter cache to these new settings
+	// This will be useful for the case where the OutputLog Drawer or Tab get created after this call
+	if (InParams.bShowWarnings.IsSet())
+	{
+		OutputLogFilterCache->bShowWarnings = InParams.bShowWarnings.GetValue();
+	}
+	if (InParams.bShowLogs.IsSet())
+	{
+		OutputLogFilterCache->bShowLogs = InParams.bShowLogs.GetValue();
+	}
+	if (InParams.IgnoreFilterVerbosities.IsSet())
+	{
+		OutputLogFilterCache->IgnoreFilterVerbosities = InParams.IgnoreFilterVerbosities.GetValue();
+	}
+
+	OutputLogFilterCache->ClearSelectedLogCategories();
+	for (const FName& CategoryToShow : CategoriesToShow)
+	{
+		OutputLogFilterCache->ToggleLogCategory(CategoryToShow);
+	}
+
 	if (TSharedPtr<SOutputLog> SharedOutputLog = OutputLog.Pin())
 	{
-		SharedOutputLog->UpdateOutputLogFilter(CategoriesToShow, bShowErrors, bShowWarnings, bShowLogs);
+		SharedOutputLog->UpdateOutputLogFilter(*OutputLogFilterCache);
+	}
+
+	if (TSharedPtr<SOutputLog> SharedOutputLogDrawer = OutputLogDrawer.Pin())
+	{
+		SharedOutputLogDrawer->UpdateOutputLogFilter(*OutputLogFilterCache);
 	}
 }
 

@@ -10,15 +10,10 @@
 #include "HAL/IConsoleManager.h"
 #include "Misc/CoreDelegates.h"
 
-#if USE_MALLOC_PROFILER && WITH_ENGINE && IS_MONOLITHIC
-	#include "MallocProfilerEx.h"
-#endif
-
 /*-----------------------------------------------------------------------------
 	Memory functions.
 -----------------------------------------------------------------------------*/
 
-#include "ProfilingDebugging/MallocProfiler.h"
 #include "ProfilingDebugging/MemoryTrace.h"
 #include "HAL/MallocThreadSafeProxy.h"
 #include "HAL/MallocVerify.h"
@@ -180,10 +175,12 @@ public:
 		return(UsedMalloc->ValidateHeap());
 	}
 
+#if UE_ALLOW_EXEC_COMMANDS
 	virtual bool Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override
 	{
 		return UsedMalloc->Exec(InWorld, Cmd, Ar);
 	}
+#endif // UE_ALLOW_EXEC_COMMANDS
 
 	/**
 	* If possible determine the size of the memory allocated at the given address
@@ -348,7 +345,7 @@ static int FMemory_GCreateMalloc_ThreadUnsafe()
 	FPlatformMallocCrash::Get( GMalloc );
 
 #if PLATFORM_USES_FIXED_GMalloc_CLASS
-#if USE_MALLOC_PROFILER || MALLOC_VERIFY || MALLOC_LEAKDETECTION || UE_USE_MALLOC_FILL_BYTES
+#if MALLOC_VERIFY || MALLOC_LEAKDETECTION || UE_USE_MALLOC_FILL_BYTES
 #error "Turn off PLATFORM_USES_FIXED_GMalloc_CLASS in order to use special allocator proxies"
 #endif
 	if (!GMalloc->IsInternallyThreadSafe())
@@ -364,20 +361,7 @@ static int FMemory_GCreateMalloc_ThreadUnsafe()
 		GMalloc = TraceMalloc;
 		MemoryTrace_Initialize();
 	}
-	else
 #endif // UE_MEMORY_TRACE_ENABLED
-	{
-	// so now check to see if we are using a Mem Profiler which wraps the GMalloc
-#if USE_MALLOC_PROFILER
-		#if WITH_ENGINE && IS_MONOLITHIC
-			GMallocProfiler = new FMallocProfilerEx( GMalloc );
-		#else
-			GMallocProfiler = new FMallocProfiler( GMalloc );
-		#endif
-		GMallocProfiler->BeginProfiling();
-		GMalloc = GMallocProfiler;
-#endif
-	}
 
 #if WITH_MALLOC_STOMP2
 	GMalloc = FMallocStomp2::OverrideIfEnabled(GMalloc);

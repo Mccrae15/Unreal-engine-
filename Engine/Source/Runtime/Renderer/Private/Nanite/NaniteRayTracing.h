@@ -13,6 +13,10 @@
 
 #include "Experimental/Containers/SherwoodHashTable.h"
 
+// Workaround for UE-185539
+// The update to Agility SDK 1.608.3 introduced a crash when MeshDataBuffer is transient
+#define USE_NON_TRANSIENT_MESH_DATA_BUFFER 1
+
 #if RHI_RAYTRACING
 
 class FScene;
@@ -27,19 +31,19 @@ namespace Nanite
 		FRayTracingManager();
 		~FRayTracingManager();
 
-		virtual void InitRHI() override;
+		virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 		virtual void ReleaseRHI() override;
 
 		void Add(FPrimitiveSceneInfo* SceneInfo);
 		void Remove(FPrimitiveSceneInfo* SceneInfo);
 		void AddVisiblePrimitive(const FPrimitiveSceneInfo* SceneInfo);
 
-		void RequestUpdates(const TSet<uint32>& InUpdateRequests);
+		void RequestUpdates(const TMap<uint32, uint32>& InUpdateRequests);
 
 		void Update();
 
 		// Dispatch compute shader to stream out mesh data for resources with update requests.
-		void ProcessUpdateRequests(FRDGBuilder& GraphBuilder, FShaderResourceViewRHIRef GPUScenePrimitiveBufferSRV);
+		void ProcessUpdateRequests(FRDGBuilder& GraphBuilder, FSceneUniformBuffer &SceneUniformBuffer);
 
 		// Commit pending BLAS builds. This allocates a transient scratch buffer internally.
 		bool ProcessBuildRequests(FRDGBuilder& GraphBuilder);
@@ -72,6 +76,9 @@ namespace Nanite
 			uint32 NumTriangles;
 			uint32 NumMaterials;
 			uint32 NumSegments;
+
+			uint32 NumResidentClusters;
+			uint32 NumResidentClustersUpdate;
 
 			uint32 PrimitiveId;
 
@@ -132,6 +139,10 @@ namespace Nanite
 		TArray<FPendingBuild> PendingBuilds;
 
 		TRefCountPtr<FRDGPooledBuffer> NodesAndClusterBatchesBuffer;
+
+#if USE_NON_TRANSIENT_MESH_DATA_BUFFER
+		TRefCountPtr<FRDGPooledBuffer> MeshDataBufferPooled;
+#endif
 
 		TUniformBufferRef<FNaniteRayTracingUniformParameters> UniformBuffer;
 

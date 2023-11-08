@@ -8,7 +8,8 @@
 
 enum class EModelingModeActionCommands
 {
-	FocusViewToCursor
+	FocusViewToCursor,
+	ToggleSelectionLockState
 };
 
 
@@ -20,6 +21,7 @@ public:
 	virtual void RegisterCommands() override;
 
 	TSharedPtr<FUICommandInfo> FocusViewCommand;
+	TSharedPtr<FUICommandInfo> ToggleSelectionLockStateCommand;
 
 	static void RegisterCommandBindings(TSharedPtr<FUICommandList> UICommandList, TFunction<void(EModelingModeActionCommands)> OnCommandExecuted);
 	static void UnRegisterCommandBindings(TSharedPtr<FUICommandList> UICommandList);
@@ -77,6 +79,7 @@ public:\
 DECLARE_TOOL_ACTION_COMMANDS(FSculptToolActionCommands);
 DECLARE_TOOL_ACTION_COMMANDS(FVertexSculptToolActionCommands);
 DECLARE_TOOL_ACTION_COMMANDS(FMeshGroupPaintToolActionCommands);
+DECLARE_TOOL_ACTION_COMMANDS(FMeshVertexPaintToolActionCommands);
 DECLARE_TOOL_ACTION_COMMANDS(FMeshAttributePaintToolActionCommands);
 DECLARE_TOOL_ACTION_COMMANDS(FTransformToolActionCommands);
 DECLARE_TOOL_ACTION_COMMANDS(FDrawPolygonToolActionCommands);

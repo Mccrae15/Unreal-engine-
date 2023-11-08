@@ -8,11 +8,8 @@
 #include "RHIStaticStates.h"
 #include "OneColorShader.h"
 
-#if WITH_AMD_AGS
-#include "Windows/AllowWindowsPlatformTypes.h"
-#include "amd_ags.h"
-#include "Windows/HideWindowsPlatformTypes.h"
-#endif
+#include "D3D12AmdExtensions.h"
+#include "D3D12IntelExtensions.h"
 
 #if !defined(D3D12_PLATFORM_NEEDS_DISPLAY_MODE_ENUMERATION)
 	#define D3D12_PLATFORM_NEEDS_DISPLAY_MODE_ENUMERATION 1
@@ -68,7 +65,7 @@ FD3D12DynamicRHI::FD3D12DynamicRHI(const TArray<TSharedPtr<FD3D12Adapter>>& Chos
 	FeatureLevel = GetAdapter().GetFeatureLevel();
 	check(FeatureLevel >= D3D_FEATURE_LEVEL_11_0);
 
-#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
+#if PLATFORM_WINDOWS
 	// Allocate a buffer of zeroes. This is used when we need to pass D3D memory
 	// that we don't care about and will overwrite with valid data in the future.
 	ZeroBufferSize = FMath::Max(CVarD3D12ZeroBufferSizeInMB.GetValueOnAnyThread(), 0) * (1 << 20);
@@ -78,6 +75,8 @@ FD3D12DynamicRHI::FD3D12DynamicRHI(const TArray<TSharedPtr<FD3D12Adapter>>& Chos
 	ZeroBufferSize = 0;
 	ZeroBuffer = nullptr;
 #endif // PLATFORM_WINDOWS
+
+	GRHIGlobals.SupportsMultiDrawIndirect = true;
 
 	GRHISupportsMultithreading = true;
 	GRHISupportsMultithreadedResources = true;
@@ -111,6 +110,7 @@ FD3D12DynamicRHI::FD3D12DynamicRHI(const TArray<TSharedPtr<FD3D12Adapter>>& Chos
 		GPixelFormats[PF_DepthStencil].bIs24BitUnormDepthStencil = true;
 		GPixelFormats[PF_X24_G8].PlatformFormat = DXGI_FORMAT_X24_TYPELESS_G8_UINT;
 		GPixelFormats[PF_X24_G8].BlockBytes = 4;
+		GPixelFormats[PF_X24_G8].Supported = true;
 	}
 	else
 	{
@@ -120,6 +120,7 @@ FD3D12DynamicRHI::FD3D12DynamicRHI(const TArray<TSharedPtr<FD3D12Adapter>>& Chos
 		GPixelFormats[PF_DepthStencil].bIs24BitUnormDepthStencil = false;
 		GPixelFormats[PF_X24_G8].PlatformFormat = DXGI_FORMAT_X32_TYPELESS_G8X24_UINT;
 		GPixelFormats[PF_X24_G8].BlockBytes = 5;
+		GPixelFormats[PF_X24_G8].Supported = true;
 	}
 	GPixelFormats[PF_ShadowDepth	].PlatformFormat = DXGI_FORMAT_R16_TYPELESS;
 	GPixelFormats[PF_ShadowDepth	].BlockBytes = 2;
@@ -247,6 +248,7 @@ FD3D12DynamicRHI::FD3D12DynamicRHI(const TArray<TSharedPtr<FD3D12Adapter>>& Chos
 	GRHISupportsRayTracingAsyncBuildAccelerationStructure = true;
 
 	GRHISupportsPipelineFileCache = PLATFORM_WINDOWS;
+	GRHISupportsPSOPrecaching = PLATFORM_WINDOWS;
 
 	GRHISupportsMapWriteNoOverwrite = true;
 
@@ -255,11 +257,43 @@ FD3D12DynamicRHI::FD3D12DynamicRHI(const TArray<TSharedPtr<FD3D12Adapter>>& Chos
 	GRHISupportsRHIOnTaskThread = true;
 }
 
+void FD3D12DynamicRHI::PostInit()
+{
+	if (GRHISupportsRayTracing)
+	{
+		for (TSharedPtr<FD3D12Adapter>& Adapter : ChosenAdapters)
+		{
+			Adapter->InitializeRayTracing();
+		}
+	}
+}
+
 FD3D12DynamicRHI::~FD3D12DynamicRHI()
 {
 	UE_LOG(LogD3D12RHI, Log, TEXT("~FD3D12DynamicRHI"));
 
 	check(ChosenAdapters.Num() == 0);
+}
+
+void FD3D12DynamicRHI::ForEachQueue(TFunctionRef<void(FD3D12Queue&)> Callback)
+{
+	for (uint32 AdapterIndex = 0; AdapterIndex < GetNumAdapters(); ++AdapterIndex)
+	{
+		FD3D12Adapter& Adapter = GetAdapter(AdapterIndex);
+
+		for (FD3D12Device* Device : Adapter.GetDevices())
+		{
+			for (FD3D12Queue& Queue : Device->GetQueues())
+			{
+				Callback(Queue);
+			}
+		}
+	}
+}
+
+FD3D12Device* FD3D12DynamicRHI::GetRHIDevice(uint32 GPUIndex) const
+{
+	return GetAdapter().GetDevice(GPUIndex);
 }
 
 void FD3D12DynamicRHI::Shutdown()
@@ -302,7 +336,7 @@ void FD3D12DynamicRHI::Shutdown()
 		int32 DeletedCount;
 		do
 		{
-			DeletedCount = FRHIResource::FlushPendingDeletes(RHICmdList);
+			DeletedCount = RHICmdList.FlushPendingDeletes();
 			RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
 		} while (DeletedCount);
 
@@ -367,34 +401,6 @@ IRHIComputeContext* FD3D12DynamicRHI::RHIGetDefaultAsyncComputeContext()
 	// This should never be called. There is no "default" async compute context anymore.
 	checkNoEntry(); 
 	return nullptr;
-}
-
-void FD3D12DynamicRHI::UpdateBuffer(FD3D12ResourceLocation* Dest, uint32 DestOffset, FD3D12ResourceLocation* Source, uint32 SourceOffset, uint32 NumBytes)
-{
-	FD3D12Resource* SourceResource = Source->GetResource();
-	uint32 SourceFullOffset = Source->GetOffsetFromBaseOfResource() + SourceOffset;
-
-	FD3D12Resource* DestResource = Dest->GetResource();
-	uint32 DestFullOffset = Dest->GetOffsetFromBaseOfResource() + DestOffset;
-
-	FD3D12Device* Device = DestResource->GetParentDevice();
-
-	FD3D12CommandContext& DefaultContext = Device->GetDefaultCommandContext();
-	
-	// Clear the resource if still bound to make sure the SRVs are rebound again on next operation (and get correct resource transitions enqueued)
-	DefaultContext.ConditionalClearShaderResource(Dest);
-
-	FScopedResourceBarrier ScopeResourceBarrierDest(DefaultContext, DestResource, D3D12_RESOURCE_STATE_COPY_DEST, 0);
-	// Don't need to transition upload heaps
-
-	DefaultContext.FlushResourceBarriers();
-	DefaultContext.GraphicsCommandList()->CopyBufferRegion(DestResource->GetResource(), DestFullOffset, SourceResource->GetResource(), SourceFullOffset, NumBytes);
-	DefaultContext.UpdateResidency(DestResource);
-	DefaultContext.UpdateResidency(SourceResource);
-	
-	DefaultContext.ConditionalSplitCommandList();
-
-	DEBUG_RHI_EXECUTE_COMMAND_LIST(this);
 }
 
 void FD3D12DynamicRHI::RHIFlushResources()
@@ -466,8 +472,10 @@ void FD3D12DynamicRHI::FlushTiming(bool bCreateNew)
 	});
 }
 
-void FD3D12DynamicRHI::RHIPerFrameRHIFlushComplete()
+void FD3D12DynamicRHI::ProcessDeferredDeletionQueue()
 {
+	ProcessDeferredDeletionQueue_Platform();
+
 	TArray<FD3D12DeferredDeleteObject> Local;
 	{
 		FScopeLock Lock(&ObjectsToDeleteCS);
@@ -487,16 +495,21 @@ void FD3D12DynamicRHI::RHIPerFrameRHIFlushComplete()
 					check(ObjectToDelete.RHIObject->GetRefCount() == 1);
 					ObjectToDelete.RHIObject->Release();
 					break;
-				case FD3D12DeferredDeleteObject::EType::D3DHeap:
+				case FD3D12DeferredDeleteObject::EType::Heap:
 					// Heaps can have additional references active.
-					ObjectToDelete.D3DHeap->Release();
+					ObjectToDelete.Heap->Release();
+					break;
+				case FD3D12DeferredDeleteObject::EType::DescriptorHeap:
+					ObjectToDelete.DescriptorHeap->GetParentDevice()->GetDescriptorHeapManager().ImmediateFreeHeap(ObjectToDelete.DescriptorHeap);
 					break;
 				case FD3D12DeferredDeleteObject::EType::D3DObject:
 					ObjectToDelete.D3DObject->Release();
 					break;
+#if PLATFORM_SUPPORTS_BINDLESS_RENDERING
 				case FD3D12DeferredDeleteObject::EType::BindlessDescriptor:
 					ObjectToDelete.BindlessDescriptor.Device->GetBindlessDescriptorManager().ImmediateFree(ObjectToDelete.BindlessDescriptor.Handle);
 					break;
+#endif
 				case FD3D12DeferredDeleteObject::EType::CPUAllocation:
 					FMemory::Free(ObjectToDelete.CPUAllocation);
 					break;
@@ -586,8 +599,8 @@ ID3D12GraphicsCommandList* FD3D12DynamicRHI::RHIGetGraphicsCommandList(uint32 In
 
 DXGI_FORMAT FD3D12DynamicRHI::RHIGetSwapChainFormat(EPixelFormat InFormat) const
 {
-	const DXGI_FORMAT PlatformFormat = D3D12RHI::FindDepthStencilDXGIFormat(static_cast<DXGI_FORMAT>(GPixelFormats[InFormat].PlatformFormat));
-	return D3D12RHI::FindShaderResourceDXGIFormat(PlatformFormat, true);
+	const DXGI_FORMAT PlatformFormat = UE::DXGIUtilities::FindDepthStencilFormat(static_cast<DXGI_FORMAT>(GPixelFormats[InFormat].PlatformFormat));
+	return UE::DXGIUtilities::FindShaderResourceFormat(PlatformFormat, true);
 }
 
 ID3D12Resource* FD3D12DynamicRHI::RHIGetResource(FRHIBuffer* InBuffer) const
@@ -641,7 +654,7 @@ D3D12_CPU_DESCRIPTOR_HANDLE FD3D12DynamicRHI::RHIGetRenderTargetView(FRHITexture
 {
 	FD3D12Texture* D3D12Texture = GetD3D12TextureFromRHITexture(InTexture);
 	FD3D12RenderTargetView* RTV = D3D12Texture->GetRenderTargetView(InMipIndex, InArraySliceIndex);
-	return RTV ? RTV->GetView() : D3D12_CPU_DESCRIPTOR_HANDLE{};
+	return RTV ? RTV->GetOfflineCpuHandle() : D3D12_CPU_DESCRIPTOR_HANDLE{};
 }
 
 void FD3D12DynamicRHI::RHIFinishExternalComputeWork(uint32 InDeviceIndex, ID3D12GraphicsCommandList* InCommandList)
@@ -681,9 +694,9 @@ void FD3D12DynamicRHI::RHIWaitManualFence(FRHICommandList& RHICmdList, ID3D12Fen
 	Context.WaitManualFence(Fence, Value);
 }
 
-bool ID3D12DynamicRHI::IsD3DDebugEnabled()
+void FD3D12DynamicRHI::RHIVerifyResult(ID3D12Device* Device, HRESULT Result, const ANSICHAR* Code, const ANSICHAR* Filename, uint32 Line, FString Message) const
 {
-	return D3D12RHI_ShouldCreateWithD3DDebug();
+	D3D12RHI::VerifyD3D12Result(Result, Code, Filename, Line, Device, Message);
 }
 
 void* FD3D12DynamicRHI::RHIGetNativeDevice()

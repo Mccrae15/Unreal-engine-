@@ -16,6 +16,7 @@
 
 #include "Math/UnrealMathUtility.h"
 
+#include "Spatial/PointHashGrid3.h"
 
 namespace mu
 {
@@ -24,72 +25,56 @@ namespace mu
     //! Create a map from vertices into vertices, collapsing vertices that have the same position, 
 	//! This version uses UE Containers to return.	
     //---------------------------------------------------------------------------------------------
-    inline void MeshCreateCollapsedVertexMap( const Mesh* pMesh, TArray<int32>& OutCollapsedVertexMap, TArray<FVector3f>& Vertices )
-    {
-        MUTABLE_CPUPROFILER_SCOPE(MeshCreateCollapsedVertexMap);
-    	
-        int32 VCount = pMesh->GetVertexCount();
+	inline void MeshCreateCollapsedVertexMap(const Mesh* pMesh,	TArray<int32>& OutCollapsedVertices, TArray<FVector3f>& OutVertices)
+	{
+		MUTABLE_CPUPROFILER_SCOPE(MeshCreateCollapsedVertexMap);
 
-        OutCollapsedVertexMap.SetNum(VCount);
-        Vertices.SetNum(VCount);
+		const int32 NumVertices = pMesh->GetVertexCount();
 
-        const FMeshBufferSet& MBSPriv = pMesh->GetVertexBuffers();
-        for (int32 b = 0; b < MBSPriv.m_buffers.Num(); ++b)
-        {
-            for (int32 c = 0; c < MBSPriv.m_buffers[b].m_channels.Num(); ++c)
-            {
-                MESH_BUFFER_SEMANTIC Sem = MBSPriv.m_buffers[b].m_channels[c].m_semantic;
-                int32 SemIndex = MBSPriv.m_buffers[b].m_channels[c].m_semanticIndex;
+		// Used to speed up vertex comparison
+		UE::Geometry::TPointHashGrid3f<int32> VertHash(0.01f, INDEX_NONE);
+		VertHash.Reserve(NumVertices);
 
-                UntypedMeshBufferIteratorConst It(pMesh->GetVertexBuffers(), Sem, SemIndex);
+		// Info to collect. Vertices and collapsed vertices
+		OutVertices.SetNumUninitialized(NumVertices);
+		OutCollapsedVertices.Init(INDEX_NONE, NumVertices);
 
-                switch (Sem)
-                {
-                case MBS_POSITION:
-				{
-                    // First create a cache of the vertices in the vertices array
-                    for (int32 V = 0; V < VCount; ++V)
-                    {
-                        FVector3f Vertex(0.0f, 0.0f, 0.0f);
-                        for (int32 I = 0; I < 3; ++I)
-                        {
-                            ConvertData(I, &Vertex[0], MBF_FLOAT32, It.ptr(), It.GetFormat());
-                        }
+		// Get Vertices
+		mu::UntypedMeshBufferIteratorConst ItPosition = mu::UntypedMeshBufferIteratorConst(pMesh->GetVertexBuffers(), mu::MBS_POSITION);
+		FVector3f* VertexData = OutVertices.GetData();
 
-                        Vertices[V] = Vertex;
+		for (int32 VertexIndex = 0; VertexIndex < NumVertices; ++VertexIndex)
+		{
+			*VertexData = ItPosition.GetAsVec3f();
+			VertHash.InsertPointUnsafe(VertexIndex, *VertexData);
 
-                        ++It;
-                    }
-					
-                    // Create map to store which vertices are the same (collapse nearby vertices)
-					const int32 VerticesNum = Vertices.Num();
-                    for (int32 V = 0; V < VerticesNum; ++V)
-                    {
-                        OutCollapsedVertexMap[V] = V;
+			++ItPosition;
+			++VertexData;
+		}
 
-                        for (int32 CandidateV = 0; CandidateV < V; ++CandidateV)
-                        {
-                            const int32 CollapsedCandidateVIdx = OutCollapsedVertexMap[CandidateV];
+		// Find unique vertices
+		TArray<int32> NearbyVertices;
+		for (int32 VertexIndex = 0; VertexIndex < NumVertices; ++VertexIndex)
+		{
+			if (OutCollapsedVertices[VertexIndex] != INDEX_NONE)
+			{
+				continue;
+			}
 
-                            // Test whether v and the collapsed candidate are close enough to be collapsed
-                            const FVector3f R = Vertices[CollapsedCandidateVIdx] - Vertices[V];
+			const FVector3f& Vertex = OutVertices[VertexIndex];
 
-                            if (R.Dot(R) <= TMathUtilConstants<float>::ZeroTolerance)
-                            {
-                                OutCollapsedVertexMap[V] = CollapsedCandidateVIdx;
-                                break;
-                            }
-                        }
-                    }
+			NearbyVertices.Reset();
+			VertHash.FindPointsInBall(Vertex, TMathUtilConstants<float>::ZeroTolerance,
+				[&Vertex, &OutVertices](const int32& Other) -> float {return FVector3f::DistSquared(OutVertices[Other], Vertex); },
+				NearbyVertices);
 
-                    break;
-				}
-                default:
-                    break;
-                }
-            }
-        }
-    }
+			for (int32 NearbyVertexIndex : NearbyVertices)
+			{
+				OutCollapsedVertices[NearbyVertexIndex] = VertexIndex;
+			}
+		}
+	}
+
 
     //---------------------------------------------------------------------------------------------
     //! Return true if a mesh is closed
@@ -609,27 +594,29 @@ namespace mu
     //---------------------------------------------------------------------------------------------
     //! Reference version
     //---------------------------------------------------------------------------------------------
-    inline MeshPtr MeshClipWithMesh_Reference(const Mesh* pBase, const Mesh* pClipMesh)
+    inline void MeshClipWithMesh_Reference(Mesh* Result, const Mesh* pBase, const Mesh* pClipMesh, bool& bOutSuccess)
     {
         MUTABLE_CPUPROFILER_SCOPE(MeshClipWithMesh_Reference);
         
-		MeshPtr pDest = pBase->Clone();
+		bOutSuccess = true;
 
         uint32 vcount = pClipMesh->GetVertexBuffers().GetElementCount();
         if (!vcount)
         {
-            return pDest; // Since there's nothing to clip against return a copy of the original base mesh
+			bOutSuccess = false;
+			return; // Since there's nothing to clip against return a copy of the original base mesh
         }
 
         TArray<uint8> vertex_in_clip_mesh;  // Stores whether each vertex in the original mesh in in the clip mesh volume
-        MeshClipMeshClassifyVertices( vertex_in_clip_mesh, pBase, pClipMesh );
+        MeshClipMeshClassifyVertices(vertex_in_clip_mesh, pBase, pClipMesh);
 
+		Result->CopyFrom(*pBase);
         // Now remove all the faces from the result mesh that have all the vertices outside the clip volume
-        UntypedMeshBufferIteratorConst itBase(pDest->GetIndexBuffers(), MBS_VERTEXINDEX);
-        UntypedMeshBufferIterator itDest(pDest->GetIndexBuffers(), MBS_VERTEXINDEX);
-        int aFaceCount = pDest->GetFaceCount();
+        UntypedMeshBufferIteratorConst itBase(Result->GetIndexBuffers(), MBS_VERTEXINDEX);
+        UntypedMeshBufferIterator itDest(Result->GetIndexBuffers(), MBS_VERTEXINDEX);
+        int aFaceCount = Result->GetFaceCount();
 
-        UntypedMeshBufferIteratorConst ito(pDest->GetIndexBuffers(), MBS_VERTEXINDEX);
+        UntypedMeshBufferIteratorConst ito(Result->GetIndexBuffers(), MBS_VERTEXINDEX);
         for (int f = 0; f < aFaceCount; ++f)
         {
             vec3<uint32> ov;
@@ -655,48 +642,48 @@ namespace mu
         SIZE_T removedIndices = itBase - itDest;
         check(removedIndices % 3 == 0);
 
-        pDest->GetFaceBuffers().SetElementCount(aFaceCount - (int)removedIndices / 3);
-        pDest->GetIndexBuffers().SetElementCount(aFaceCount * 3 - (int)removedIndices);
+        Result->GetFaceBuffers().SetElementCount(aFaceCount - (int)removedIndices / 3);
+        Result->GetIndexBuffers().SetElementCount(aFaceCount * 3 - (int)removedIndices);
 
         // TODO: Should redo/reorder the face buffer before SetElementCount since some deleted faces could be left and some remaining faces deleted.
 
-        //if (pDest->GetFaceBuffers().GetElementCount() == 0)
+        //if (Result->GetFaceBuffers().GetElementCount() == 0)
         //{
-        //	pDest = pBase->Clone(); // If all faces have been discarded, return a copy of the unmodified mesh because unreal doesn't like empty meshes
+        //	Result->CopyFrom(pBase); // If all faces have been discarded, return a copy of the unmodified mesh because unreal doesn't like empty meshes
         //}
 
         // [jordi] Remove unused vertices. This is necessary to avoid returning a mesh with vertices and no faces, which screws some
         // engines like Unreal Engine 4.
-        MeshRemoveUnusedVertices( pDest.get() );
-
-        return pDest;
+        MeshRemoveUnusedVertices(Result);
     }
 
 
     //---------------------------------------------------------------------------------------------
     //! CoreGeometry version
     //---------------------------------------------------------------------------------------------
-    inline MeshPtr MeshClipWithMesh(const Mesh* pBase, const Mesh* pClipMesh)
+    inline void MeshClipWithMesh(Mesh* Result, const Mesh* pBase, const Mesh* pClipMesh, bool& bOutSuccess)
     {
         MUTABLE_CPUPROFILER_SCOPE(MeshClipWithMesh);
-
-        MeshPtr pDest = pBase->Clone();
+		bOutSuccess = true;
 
         uint32 VCount = pClipMesh->GetVertexBuffers().GetElementCount();
         if (!VCount)
         {
-            return pDest; // Since there's nothing to clip against return a copy of the original base mesh
+			bOutSuccess = false;
+			return; // OutSuccess false indicates the pBase can be reused in this case. 
         }
 
+		Result->CopyFrom(*pBase);
+
         TArray<uint8> VertexInClipMesh;  // Stores whether each vertex in the original mesh in in the clip mesh volume
-        MeshClipMeshClassifyVertices( VertexInClipMesh, pBase, pClipMesh );
+        MeshClipMeshClassifyVertices(VertexInClipMesh, pBase, pClipMesh);
 
         // Now remove all the faces from the result mesh that have all the vertices outside the clip volume
-        UntypedMeshBufferIteratorConst ItBase(pDest->GetIndexBuffers(), MBS_VERTEXINDEX);
-        UntypedMeshBufferIterator ItDest(pDest->GetIndexBuffers(), MBS_VERTEXINDEX);
-        int32 AFaceCount = pDest->GetFaceCount();
+        UntypedMeshBufferIteratorConst ItBase(Result->GetIndexBuffers(), MBS_VERTEXINDEX);
+        UntypedMeshBufferIterator ItDest(Result->GetIndexBuffers(), MBS_VERTEXINDEX);
+        int32 AFaceCount = Result->GetFaceCount();
 
-        UntypedMeshBufferIteratorConst Ito(pDest->GetIndexBuffers(), MBS_VERTEXINDEX);
+        UntypedMeshBufferIteratorConst Ito(Result->GetIndexBuffers(), MBS_VERTEXINDEX);
         for (int32 F = 0; F < AFaceCount; ++F)
         {
 			uint32 OV[3] = {0, 0, 0};
@@ -723,28 +710,26 @@ namespace mu
         SIZE_T RemovedIndices = ItBase - ItDest;
         check(RemovedIndices % 3 == 0);
 
-        pDest->GetFaceBuffers().SetElementCount(AFaceCount - (int32)RemovedIndices / 3);
-        pDest->GetIndexBuffers().SetElementCount(AFaceCount * 3 - (int32)RemovedIndices);
+        Result->GetFaceBuffers().SetElementCount(AFaceCount - (int32)RemovedIndices / 3);
+        Result->GetIndexBuffers().SetElementCount(AFaceCount * 3 - (int32)RemovedIndices);
 
         // TODO: Should redo/reorder the face buffer before SetElementCount since some deleted faces could be left and some remaining faces deleted.
 
-        //if (pDest->GetFaceBuffers().GetElementCount() == 0)
+        //if (Result->GetFaceBuffers().GetElementCount() == 0)
         //{
-        //	pDest = pBase->Clone(); // If all faces have been discarded, return a copy of the unmodified mesh because unreal doesn't like empty meshes
+        //	Result->CopyFrom(pBase); // If all faces have been discarded, return a copy of the unmodified mesh because unreal doesn't like empty meshes
         //}
 
         // [jordi] Remove unused vertices. This is necessary to avoid returning a mesh with vertices and no faces, which screws some
         // engines like Unreal Engine 4.
-        MeshRemoveUnusedVertices( pDest.get() );
-
-        return pDest;
+        MeshRemoveUnusedVertices(Result);
     }
 
 
     //---------------------------------------------------------------------------------------------
     //!
     //---------------------------------------------------------------------------------------------
-    inline MeshPtr CreateMask( MeshPtrConst pBase, const TArray<uint8>& excludedVertices )
+    inline void CreateMask(Mesh* Result, const Mesh* pBase, const TArray<uint8>& excludedVertices)
     {
 
         int maskVertexCount = 0;
@@ -753,12 +738,11 @@ namespace mu
             if (!b) ++maskVertexCount;
         }
 
-        MeshPtr pMask = new Mesh();
 
         // Create the vertex buffer
         {
-            pMask->GetVertexBuffers().SetElementCount( maskVertexCount );
-            pMask->GetVertexBuffers().SetBufferCount( 1 );
+            Result->GetVertexBuffers().SetElementCount( maskVertexCount );
+            Result->GetVertexBuffers().SetBufferCount( 1 );
 
 			// Vertex index channel
 			MESH_BUFFER_SEMANTIC semantic = MBS_VERTEXINDEX;
@@ -767,7 +751,7 @@ namespace mu
 			int components = 1;
 			int offsets = 0;
 
-            pMask->GetVertexBuffers().SetBuffer
+            Result->GetVertexBuffers().SetBuffer
                 (
                     0,
                     4,
@@ -780,7 +764,7 @@ namespace mu
                 );
         }
 
-        MeshBufferIterator<MBF_UINT32,uint32,1> itMask( pMask->GetVertexBuffers(), MBS_VERTEXINDEX, 0 );
+        MeshBufferIterator<MBF_UINT32,uint32,1> itMask( Result->GetVertexBuffers(), MBS_VERTEXINDEX, 0 );
         UntypedMeshBufferIteratorConst itBase( pBase->GetVertexBuffers(), MBS_VERTEXINDEX, 0 );
 
         for (size_t v = 0; v<excludedVertices.Num(); ++v)
@@ -794,21 +778,23 @@ namespace mu
             ++itBase;
         }
 
-        return pMask;
     }
 
 
     //---------------------------------------------------------------------------------------------
     //! Generate a mask mesh with the faces of the base mesh inside the clip mesh.
     //---------------------------------------------------------------------------------------------
-    inline MeshPtr MeshMaskClipMesh(const Mesh* pBase, const Mesh* pClipMesh )
+    inline void MeshMaskClipMesh(Mesh* Result, const Mesh* pBase, const Mesh* pClipMesh, bool& bOutSuccess)
     {
         MUTABLE_CPUPROFILER_SCOPE(MeshMaskClipMesh);
+
+		bOutSuccess = true;
 
         uint32 VCount = pClipMesh->GetVertexBuffers().GetElementCount();
         if (!VCount)
         {
-            return nullptr; // Since there's nothing to clip against return a copy of the original base mesh
+			bOutSuccess = false;
+			return;
         }
 
         TArray<uint8> VertexInClipMesh;  // Stores whether each vertex in the original mesh in in the clip mesh volume
@@ -841,20 +827,20 @@ namespace mu
             }
         }
 
-        return CreateMask( pBase, VertexWithFaceNotClipped );
+        CreateMask(Result, pBase, VertexWithFaceNotClipped);
     }
 
     //---------------------------------------------------------------------------------------------
     //! Generate a mask mesh with the faces of the base mesh inside the clip mesh.
     //---------------------------------------------------------------------------------------------
-    inline MeshPtr MeshMaskClipMesh_Reference(const Mesh* pBase, const Mesh* pClipMesh )
+    inline void MeshMaskClipMesh_Reference(Mesh* Result, const Mesh* pBase, const Mesh* pClipMesh )
     {
         MUTABLE_CPUPROFILER_SCOPE(MeshMaskClipMesh_Reference);
 
         uint32 vcount = pClipMesh->GetVertexBuffers().GetElementCount();
         if (!vcount)
         {
-            return nullptr; // Since there's nothing to clip against return a copy of the original base mesh
+            return; // Since there's nothing to clip against return a copy of the original base mesh
         }
 
         TArray<uint8> vertex_in_clip_mesh;  // Stores whether each vertex in the original mesh in in the clip mesh volume
@@ -886,21 +872,22 @@ namespace mu
             }
         }
 
-
-        return CreateMask( pBase, vertex_with_face_not_clipped );
+		CreateMask(Result, pBase, vertex_with_face_not_clipped );
     }
 
     //---------------------------------------------------------------------------------------------
     //! Generate a mask mesh with the faces of the base mesh matching the fragment.
     //---------------------------------------------------------------------------------------------
-    inline MeshPtr MeshMaskDiff(const Mesh* pBase, const Mesh* pFragment )
+    inline void MeshMaskDiff(Mesh* Result, const Mesh* pBase, const Mesh* pFragment, bool& bOutSuccess)
     {
         MUTABLE_CPUPROFILER_SCOPE(MeshMaskDiff);
+		bOutSuccess = true;
 
         uint32 vcount = pFragment->GetVertexBuffers().GetElementCount();
         if (!vcount)
         {
-            return nullptr;
+			bOutSuccess = false;
+            return;
         }
 
         int sourceFaceCount = pBase->GetFaceCount();
@@ -1032,7 +1019,7 @@ namespace mu
             }
         }
 
-        return CreateMask( pBase, vertex_with_face_not_clipped );
+		CreateMask(Result, pBase, vertex_with_face_not_clipped);
     }
 
 }

@@ -19,10 +19,11 @@ FMemoryAlloc::FMemoryAlloc()
 	, TagId(0)
 	, Tag(nullptr)
 	, Asset(nullptr)
+	, Package(nullptr)
 	, Callstack(nullptr)
 	, FreeCallstack(nullptr)
 	, RootHeap(0)
-	, bIsBlock(false)
+	, bIsHeap(false)
 	, bIsDecline(false)
 {
 }

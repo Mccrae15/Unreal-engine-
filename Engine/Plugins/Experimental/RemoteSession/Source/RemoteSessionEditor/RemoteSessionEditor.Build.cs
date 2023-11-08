@@ -14,6 +14,7 @@ public class RemoteSessionEditor : ModuleRules
 				"Core",
 				"CoreUObject",
 				"RemoteSession",
+				"FieldNotification",
 				"UMG",
 				"UMGEditor",
 			}
@@ -23,7 +24,6 @@ public class RemoteSessionEditor : ModuleRules
 			new string[]
 			{
 				"AssetRegistry",
-				"CoreUObject",
 				"EditorFramework",
 				"Engine",
 				"LevelEditor",

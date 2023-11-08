@@ -6,6 +6,7 @@
 #include "Engine/Level.h"
 #include "Engine/World.h"
 #include "Landscape.h"
+#include "LandscapeEditTypes.h"
 #include "LandscapeDataAccess.h"
 #include "LandscapePatchComponent.h"
 #include "LandscapePatchLogging.h"
@@ -21,8 +22,9 @@ ALandscapePatchManager::ALandscapePatchManager(const FObjectInitializer& ObjectI
 	: ALandscapeBlueprintBrushBase(ObjectInitializer)
 {
 #if WITH_EDITOR
-	SetAffectsHeightmap(true);
-	SetAffectsWeightmap(true);
+	SetCanAffectHeightmap(true);
+	SetCanAffectWeightmap(true);
+	SetCanAffectVisibilityLayer(true);
 #endif
 }
 
@@ -70,12 +72,11 @@ void ALandscapePatchManager::Initialize_Native(const FTransform & InLandscapeTra
 		+ InLandscapeTransform.GetTranslation());
 }
 
-UTextureRenderTarget2D* ALandscapePatchManager::Render_Native(bool InIsHeightmap,
-	UTextureRenderTarget2D* InCombinedResult,
-	const FName& InWeightmapLayerName)
+UTextureRenderTarget2D* ALandscapePatchManager::RenderLayer_Native(const FLandscapeBrushParameters& InParameters)
 {
 	// Used to determine whether we need to remove any invalid brushes
 	bool bHaveInvalidPatches = false;
+	FLandscapeBrushParameters BrushParameters = InParameters;
 
 	// TODO: There are many uncertainties in how we iterate across the height patches and have them
 	// apply themselves. For one thing we may want to pass around a render graph, in which case this
@@ -95,7 +96,7 @@ UTextureRenderTarget2D* ALandscapePatchManager::Render_Native(bool InIsHeightmap
 		{
 			if (Component->IsEnabled())
 			{
-				InCombinedResult = Component->Render_Native(InIsHeightmap, InCombinedResult, InWeightmapLayerName);
+				BrushParameters.CombinedResult = Component->RenderLayer_Native(BrushParameters);
 			}
 		}
 		else if (Component.IsNull())
@@ -124,10 +125,10 @@ UTextureRenderTarget2D* ALandscapePatchManager::Render_Native(bool InIsHeightmap
 	{
 		PatchComponents.RemoveAll([](TSoftObjectPtr<ULandscapePatchComponent> Component) {
 			return Component.IsNull();
-		});
+			});
 	}
 
-	return InCombinedResult;
+	return BrushParameters.CombinedResult;
 }
 
 void ALandscapePatchManager::SetTargetLandscape(ALandscape* InTargetLandscape)
@@ -247,8 +248,20 @@ void ALandscapePatchManager::MovePatchToIndex(TObjectPtr<ULandscapePatchComponen
 }
 
 #if WITH_EDITOR
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 bool ALandscapePatchManager::IsAffectingWeightmapLayer(const FName& InLayerName) const
 {
+	return AffectsWeightmapLayer(InLayerName);
+}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+bool ALandscapePatchManager::AffectsWeightmapLayer(const FName& InLayerName) const
+{
+	if (!CanAffectWeightmap())
+	{
+		return false;
+	}
+	
 	for (const TSoftObjectPtr<ULandscapePatchComponent>& Component : PatchComponents)
 	{
 		if (Component.IsPending())
@@ -256,7 +269,30 @@ bool ALandscapePatchManager::IsAffectingWeightmapLayer(const FName& InLayerName)
 			Component.LoadSynchronous();
 		}
 
-		if (Component.IsValid() && Component->IsEnabled() && Component->IsAffectingWeightmapLayer(InLayerName))
+		if (Component.IsValid() && Component->IsEnabled() && Component->AffectsWeightmapLayer(InLayerName))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool ALandscapePatchManager::AffectsVisibilityLayer() const
+{
+	if (!CanAffectVisibilityLayer())
+	{
+		return false;
+	}
+
+	for (const TSoftObjectPtr<ULandscapePatchComponent>& Component : PatchComponents)
+	{
+		if (Component.IsPending())
+		{
+			Component.LoadSynchronous();
+		}
+
+		if (Component.IsValid() && Component->IsEnabled() && Component->AffectsVisibilityLayer())
 		{
 			return true;
 		}

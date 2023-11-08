@@ -41,7 +41,7 @@ void FSmartObjectAssetEditorViewportClient::Draw(const FSceneView* View, FPrimit
 		// Draw slots and annotations.
 		if (const USmartObjectDefinition* Definition = SmartObjectDefinition.Get())
 		{
-			UE::SmartObjects::Editor::Draw(*Definition, Selection, FTransform::Identity, *View, *PDI);
+			UE::SmartObjects::Editor::Draw(*Definition, Selection, FTransform::Identity, *View, *PDI, *PreviewScene->GetWorld(), PreviewActor.Get());
 		}
 
 		// Draw the object origin.
@@ -57,7 +57,7 @@ void FSmartObjectAssetEditorViewportClient::DrawCanvas(FViewport& InViewport, FS
 	// Draw slots and annotations.
 	if (const USmartObjectDefinition* Definition = SmartObjectDefinition.Get())
 	{
-		UE::SmartObjects::Editor::DrawCanvas(*Definition, Selection, FTransform::Identity, View, Canvas);
+		UE::SmartObjects::Editor::DrawCanvas(*Definition, Selection, FTransform::Identity, View, Canvas, *PreviewScene->GetWorld(), PreviewActor.Get());
 	}
 }
 
@@ -127,17 +127,13 @@ FVector FSmartObjectAssetEditorViewportClient::GetWidgetLocation() const
 		
 		for (int32 Index = 0; Index < Slots.Num(); ++Index)
 		{
-			TOptional<FTransform> SlotTransform = Definition->GetSlotTransform(OwnerLocalToWorld, FSmartObjectSlotIndex(Index));
-			if (!SlotTransform.IsSet())
-			{
-				continue;
-			}
+			const FTransform SlotTransform = Definition->GetSlotWorldTransform(Index, OwnerLocalToWorld);
 
 			const FSmartObjectSlotDefinition& Slot = Slots[Index];
 
 			if (Selection.Contains(UE::SmartObjects::Editor::FSelectedItem(Slot.ID)))
 			{
-				AccumulatedSlotLocation += SlotTransform->GetLocation();
+				AccumulatedSlotLocation += SlotTransform.GetLocation();
 				NumSlots++;
 			}
 
@@ -148,10 +144,10 @@ FVector FSmartObjectAssetEditorViewportClient::GetWidgetLocation() const
 				{
 					if (Selection.Contains(UE::SmartObjects::Editor::FSelectedItem(Slot.ID, AnnotationIndex)))
 					{
-						const TOptional<FTransform> AnnotationTransform = Annotation->GetWorldTransform(*SlotTransform);
-						if (AnnotationTransform.IsSet())
+						if (Annotation->HasTransform())
 						{
-							AccumulatedSlotLocation += AnnotationTransform->GetLocation();
+							const FTransform AnnotationTransform = Annotation->GetAnnotationWorldTransform(SlotTransform);
+							AccumulatedSlotLocation += AnnotationTransform.GetLocation();
 							NumSlots++;
 						}
 					}
@@ -195,14 +191,10 @@ UE::Widget::EWidgetMode FSmartObjectAssetEditorViewportClient::GetWidgetMode() c
 		{
 			const FSmartObjectSlotDefinition& Slot = Slots[Index];
 
-			TOptional<FTransform> SlotTransform = Definition->GetSlotTransform(OwnerLocalToWorld, FSmartObjectSlotIndex(Index));
-			if (SlotTransform.IsSet())
+			if (Selection.Contains(UE::SmartObjects::Editor::FSelectedItem(Slot.ID)))
 			{
-				if (Selection.Contains(UE::SmartObjects::Editor::FSelectedItem(Slot.ID)))
-				{
-					bIsWidgetValid = true;
-					break;
-				}
+				bIsWidgetValid = true;
+				break;
 			}
 
 			for (int32 AnnotationIndex = 0; AnnotationIndex < Slot.Data.Num(); AnnotationIndex++)
@@ -212,8 +204,7 @@ UE::Widget::EWidgetMode FSmartObjectAssetEditorViewportClient::GetWidgetMode() c
 				{
 					if (Selection.Contains(UE::SmartObjects::Editor::FSelectedItem(Slot.ID, AnnotationIndex)))
 					{
-						const TOptional<FTransform> AnnotationTransform = Annotation->GetWorldTransform(*SlotTransform);
-						if (AnnotationTransform.IsSet())
+						if (Annotation->HasTransform())
 						{
 							bIsWidgetValid = true;
 							break;
@@ -314,63 +305,60 @@ bool FSmartObjectAssetEditorViewportClient::InputWidgetDelta(FViewport* InViewpo
 		for (int32 Index = 0; Index < Definition->GetSlots().Num(); ++Index)
 		{
 			FSmartObjectSlotDefinition& Slot = Slots[Index];
-
-			TOptional<FTransform> SlotTransform = Definition->GetSlotTransform(OwnerLocalToWorld, FSmartObjectSlotIndex(Index));
-			if (SlotTransform.IsSet())
+			const FTransform SlotTransform = Definition->GetSlotWorldTransform(Index, OwnerLocalToWorld);
+			
+			// Do not move annotations if slot is selected, or else, the annotation will get the adjustment in double (assumes annotations are generally relative to slot).
+			if (Selection.Contains(UE::SmartObjects::Editor::FSelectedItem(Slot.ID)))
 			{
-				// Do not move annotations if slot is selected, or else, the annotation will get the adjustment in double (assumes annotations are generally relative to slot).
-				if (Selection.Contains(UE::SmartObjects::Editor::FSelectedItem(Slot.ID)))
+				FVector SlotDrag = Drag;
+				if (!Rot.IsZero())
 				{
-					FVector SlotDrag = Drag;
-					if (!Rot.IsZero())
+					// Rotate around gizmo pivot
+					const FVector SlotOffset = SlotTransform.GetTranslation() - CachedWidgetLocation;
+					if (!SlotOffset.IsNearlyZero())
 					{
-						// Rotate around gizmo pivot
-						const FVector SlotOffset = SlotTransform->GetTranslation() - CachedWidgetLocation;
-						if (!SlotOffset.IsNearlyZero())
-						{
-							const FVector RotatedSlotOffset = Rot.RotateVector(SlotOffset);
-							SlotDrag += RotatedSlotOffset - SlotOffset;
-						}
-					}
-
-					check(OwnerLocalToWorld.EqualsNoScale(FTransform::Identity));
-					if (!SlotDrag.IsZero())
-					{
-						Slot.Offset += SlotDrag;
-					}
-
-					if (!Rot.IsZero())
-					{
-						Slot.Rotation += Rot;
-						Slot.Rotation.Normalize();
+						const FVector RotatedSlotOffset = Rot.RotateVector(SlotOffset);
+						SlotDrag += RotatedSlotOffset - SlotOffset;
 					}
 				}
-				else
-				{
-					for (int32 AnnotationIndex = 0; AnnotationIndex < Slot.Data.Num(); AnnotationIndex++)
-					{
-						FInstancedStruct& Data = Slot.Data[AnnotationIndex];
-						if (FSmartObjectSlotAnnotation* Annotation = Data.GetMutablePtr<FSmartObjectSlotAnnotation>())
-						{
-							if (Selection.Contains(UE::SmartObjects::Editor::FSelectedItem(Slot.ID, AnnotationIndex)))
-							{
-								const TOptional<FTransform> AnnotationTransform = Annotation->GetWorldTransform(*SlotTransform);
-								if (AnnotationTransform.IsSet())
-								{
-									FVector AnnotationDrag = Drag;
-									if (!Rot.IsZero())
-									{
-										// Rotate around gizmo pivot
-										const FVector AnnotationOffset = AnnotationTransform->GetTranslation() - CachedWidgetLocation;
-										if (!AnnotationOffset.IsNearlyZero())
-										{
-											const FVector RotatedSlotOffset = Rot.RotateVector(AnnotationOffset);
-											AnnotationDrag += RotatedSlotOffset - AnnotationOffset;
-										}
-									}
 
-									Annotation->AdjustWorldTransform(*SlotTransform, AnnotationDrag, Rot);
+				check(OwnerLocalToWorld.EqualsNoScale(FTransform::Identity));
+				if (!SlotDrag.IsZero())
+				{
+					Slot.Offset += FVector3f(SlotDrag);
+				}
+
+				if (!Rot.IsZero())
+				{
+					Slot.Rotation += FRotator3f(Rot);
+					Slot.Rotation.Normalize();
+				}
+			}
+			else
+			{
+				for (int32 AnnotationIndex = 0; AnnotationIndex < Slot.Data.Num(); AnnotationIndex++)
+				{
+					FInstancedStruct& Data = Slot.Data[AnnotationIndex];
+					if (FSmartObjectSlotAnnotation* Annotation = Data.GetMutablePtr<FSmartObjectSlotAnnotation>())
+					{
+						if (Selection.Contains(UE::SmartObjects::Editor::FSelectedItem(Slot.ID, AnnotationIndex)))
+						{
+							if (Annotation->HasTransform())
+							{
+								const FTransform AnnotationTransform = Annotation->GetAnnotationWorldTransform(SlotTransform);
+								FVector AnnotationDrag = Drag;
+								if (!Rot.IsZero())
+								{
+									// Rotate around gizmo pivot
+									const FVector AnnotationOffset = AnnotationTransform.GetTranslation() - CachedWidgetLocation;
+									if (!AnnotationOffset.IsNearlyZero())
+									{
+										const FVector RotatedSlotOffset = Rot.RotateVector(AnnotationOffset);
+										AnnotationDrag += RotatedSlotOffset - AnnotationOffset;
+									}
 								}
+
+								Annotation->AdjustWorldTransform(SlotTransform, AnnotationDrag, Rot);
 							}
 						}
 					}
@@ -393,25 +381,34 @@ void FSmartObjectAssetEditorViewportClient::SetSmartObjectDefinition(USmartObjec
 	}
 }
 
-void FSmartObjectAssetEditorViewportClient::SetPreviewMesh(UStaticMesh* InStaticMesh)
-{
-	if (PreviewMeshComponent == nullptr)
-	{
-		PreviewMeshComponent = NewObject<UStaticMeshComponent>();
-		ON_SCOPE_EXIT { PreviewScene->AddComponent(PreviewMeshComponent.Get(),FTransform::Identity); };
-	}
-
-	PreviewMeshComponent->SetStaticMesh(InStaticMesh);
-	FocusViewportOnBox(GetPreviewBounds());
-}
-
-void FSmartObjectAssetEditorViewportClient::SetPreviewActor(AActor* InActor)
+void FSmartObjectAssetEditorViewportClient::ResetPreviewActor()
 {
 	if (AActor* Actor = PreviewActor.Get())
 	{
 		PreviewScene->GetWorld()->DestroyActor(Actor);
 		PreviewActor.Reset();
 	}
+}
+
+void FSmartObjectAssetEditorViewportClient::SetPreviewMesh(UStaticMesh* InStaticMesh)
+{
+	ResetPreviewActor();
+	
+	AActor* Actor = PreviewScene->GetWorld()->SpawnActor<AActor>();
+	UStaticMeshComponent* MeshComponent = Cast<UStaticMeshComponent>(Actor->AddComponentByClass(UStaticMeshComponent::StaticClass(), true, FTransform::Identity, false));
+	if (MeshComponent)
+	{
+		MeshComponent->SetStaticMesh(InStaticMesh);
+	}
+	
+	PreviewActor = Actor;
+
+	FocusViewportOnBox(GetPreviewBounds());
+}
+
+void FSmartObjectAssetEditorViewportClient::SetPreviewActor(AActor* InActor)
+{
+	ResetPreviewActor();
 
 	if (InActor != nullptr)
 	{
@@ -423,15 +420,11 @@ void FSmartObjectAssetEditorViewportClient::SetPreviewActor(AActor* InActor)
 
 void FSmartObjectAssetEditorViewportClient::SetPreviewActorClass(const UClass* ActorClass)
 {
-	if (AActor* Actor = PreviewActorFromClass.Get())
-	{
-		PreviewScene->GetWorld()->DestroyActor(Actor);
-		PreviewActorFromClass.Reset();
-	}
+	ResetPreviewActor();
 
 	if (ActorClass != nullptr)
 	{
-		PreviewActorFromClass = PreviewScene->GetWorld()->SpawnActor(const_cast<UClass*>(ActorClass));
+		PreviewActor = PreviewScene->GetWorld()->SpawnActor(const_cast<UClass*>(ActorClass));
 	}
 
 	FocusViewportOnBox(GetPreviewBounds());
@@ -439,20 +432,10 @@ void FSmartObjectAssetEditorViewportClient::SetPreviewActorClass(const UClass* A
 
 FBox FSmartObjectAssetEditorViewportClient::GetPreviewBounds() const
 {
-	FBoxSphereBounds Bounds(FSphere(FVector::ZeroVector, 100.f));
+	FBoxSphereBounds::Builder Bounds;
 	if (const AActor* Actor = PreviewActor.Get())
 	{
-		Bounds = Bounds+ Actor->GetComponentsBoundingBox();
-	}
-
-	if (const AActor* Actor = PreviewActorFromClass.Get())
-	{
-		Bounds = Bounds+ Actor->GetComponentsBoundingBox();
-	}
-
-	if (const UStaticMeshComponent* Component = PreviewMeshComponent.Get())
-	{
-		Bounds = Bounds + Component->CalcBounds(FTransform::Identity);
+		Bounds += Actor->GetComponentsBoundingBox();
 	}
 
 	const TSharedRef<const FSmartObjectAssetToolkit> Toolkit = AssetEditorToolkit.Pin().ToSharedRef();
@@ -464,12 +447,13 @@ FBox FSmartObjectAssetEditorViewportClient::GetPreviewBounds() const
 			const USmartObjectDefinition* Definition = Cast<USmartObjectDefinition>(EditedObject);
 			if (IsValid(Definition))
 			{
-				Bounds = Bounds + Definition->GetBounds();
+				Bounds += Definition->GetBounds();
 			}
 		}
 	}
 
-	return Bounds.GetBox();
+	const FBoxSphereBounds DefaultBounds(FSphere(FVector::ZeroVector, 100.f));
+	return Bounds.IsValid() ? FBoxSphereBounds(Bounds).GetBox() : DefaultBounds.GetBox();
 }
 
 #undef LOCTEXT_NAMESPACE

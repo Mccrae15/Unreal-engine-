@@ -24,6 +24,7 @@
 #define UE_API ZEN_API
 
 struct FAnalyticsEventAttribute;
+class FCbFieldView;
 
 namespace UE::Zen
 {
@@ -41,6 +42,8 @@ struct FServiceAutoLaunchSettings
 	uint16 DesiredPort = 1337;
 	bool bShowConsole = false;
 	bool bLimitProcessLifetime = false;
+	bool bSendUnattendedBugReports = false;
+	bool bIsDefaultSharedRunContext = true;
 };
 
 struct FServiceSettings
@@ -51,10 +54,10 @@ struct FServiceSettings
 	inline bool IsConnectExisting() const { return SettingsVariant.IsType<FServiceConnectSettings>(); }
 
 	UE_API void ReadFromConfig();
-	UE_API void ReadFromJson(FJsonObject& JsonObject);
+	UE_API void ReadFromCompactBinary(FCbFieldView Field);
 	UE_API void ReadFromURL(FStringView InstanceURL);
 
-	UE_API void WriteToJson(TJsonWriter<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>& Writer) const;
+	UE_API void WriteToCompactBinary(FCbWriter& Writer) const;
 
 private:
 	bool TryApplyAutoLaunchOverride();
@@ -195,7 +198,6 @@ public:
 private:
 
 	void Initialize();
-	void PromptUserToStopRunningServerInstance(const FString& ServerFilePath);
 	FString ConditionalUpdateLocalInstall();
 	static bool AutoLaunch(const FServiceAutoLaunchSettings& InSettings, FString&& ExecutablePath, FString& OutHostName, uint16& OutPort);
 	

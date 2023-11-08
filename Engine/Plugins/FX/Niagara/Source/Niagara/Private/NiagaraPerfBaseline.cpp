@@ -8,14 +8,14 @@
 #include "NiagaraFunctionLibrary.h"
 #include "Components/TextRenderComponent.h"
 #include "Misc/OutputDeviceArchiveWrapper.h"
+#include "NiagaraSystem.h"
 #include "RenderingThread.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/FileManager.h"
-#include "Slate/SceneViewport.h"
-#include "HighResScreenshot.h"
 #include "CanvasTypes.h"
 #include "HAL/FileManager.h"
-#include "UObject/UObjectIterator.h"
+#include "UnrealClient.h"
+#include "UObject/UObjectIterator.h" // IWYU pragma: keep
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraPerfBaseline)
 
@@ -378,7 +378,7 @@ void FNiagaraPerfBaselineStatsListener::TickRT()
 }
 
 //////////////////////////////////////////////////////////////////////////
-const int32 FParticlePerfStatsListener_NiagaraPerformanceReporter::TestDebugMessageID = GetTypeHash(TEXT("NiagaraPerfReporterMessageID"));
+const int32 FParticlePerfStatsListener_NiagaraPerformanceReporter::TestDebugMessageID = FCrc::Strihash_DEPRECATED(TEXT("NiagaraPerfReporterMessageID"));
 
 void FParticlePerfStatsListener_NiagaraPerformanceReporter::ReportToLog()
 {
@@ -1209,7 +1209,7 @@ void FNiagaraPerfBaselineHandler::Tick(UWorld* World, float DeltaSeconds)
 			{
 				if (BaselineGenerationState == EBaselineGenState::WaitingToGenerate)
 				{
-					static const int32 GenBaselineMessageID = GetTypeHash(TEXT("NiagaraGenBaselineMessageID"));
+					static const int32 GenBaselineMessageID = FCrc::Strihash_DEPRECATED(TEXT("NiagaraGenBaselineMessageID"));
 					if (World->GetTimeSeconds() >= WorldTimeToGenerate)
 					{
 						BaselineGenerationState = EBaselineGenState::Generating;

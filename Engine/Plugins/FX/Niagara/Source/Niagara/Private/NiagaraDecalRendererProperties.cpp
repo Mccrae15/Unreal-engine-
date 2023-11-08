@@ -5,6 +5,7 @@
 #include "NiagaraEmitterInstance.h"
 #include "NiagaraRenderer.h"
 #include "NiagaraRendererDecals.h"
+#include "Components/DecalComponent.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Modules/ModuleManager.h"
 
@@ -14,7 +15,6 @@
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/SWidget.h"
-#include "Styling/SlateBrush.h"
 #include "Styling/SlateIconFinder.h"
 #include "AssetThumbnail.h"
 #endif
@@ -81,15 +81,17 @@ namespace NiagaraDecalRendererPropertiesLocal
 
 UNiagaraDecalRendererProperties::UNiagaraDecalRendererProperties()
 {
-	AttributeBindings.Reserve(6);
-	AttributeBindings.Add(&PositionBinding);
-	AttributeBindings.Add(&DecalOrientationBinding);
-	AttributeBindings.Add(&DecalSizeBinding);
-	AttributeBindings.Add(&DecalFadeBinding);
-	AttributeBindings.Add(&DecalSortOrderBinding);
-	AttributeBindings.Add(&DecalColorBinding);
-	AttributeBindings.Add(&DecalVisibleBinding);
-	AttributeBindings.Add(&RendererVisibilityTagBinding);
+	AttributeBindings =
+	{
+		&PositionBinding,
+		&DecalOrientationBinding,
+		&DecalSizeBinding,
+		&DecalFadeBinding,
+		&DecalSortOrderBinding,
+		&DecalColorBinding,
+		&DecalVisibleBinding,
+		&RendererVisibilityTagBinding,
+	};
 }
 
 void UNiagaraDecalRendererProperties::PostLoad()
@@ -242,14 +244,14 @@ void UNiagaraDecalRendererProperties::CacheFromCompiledData(const FNiagaraDataSe
 	UpdateSourceModeDerivates(SourceMode);
 	UpdateMICs();
 
-	PositionDataSetAccessor.Init(CompiledData, PositionBinding.GetDataSetBindableVariable().GetName());
-	DecalOrientationDataSetAccessor.Init(CompiledData, DecalOrientationBinding.GetDataSetBindableVariable().GetName());
-	DecalSizeDataSetAccessor.Init(CompiledData, DecalSizeBinding.GetDataSetBindableVariable().GetName());
-	DecalFadeDataSetAccessor.Init(CompiledData, DecalFadeBinding.GetDataSetBindableVariable().GetName());
-	DecalSortOrderDataSetAccessor.Init(CompiledData, DecalSortOrderBinding.GetDataSetBindableVariable().GetName());
-	DecalColorDataSetAccessor.Init(CompiledData, DecalColorBinding.GetDataSetBindableVariable().GetName());
-	DecalVisibleAccessor.Init(CompiledData, DecalVisibleBinding.GetDataSetBindableVariable().GetName());
-	RendererVisibilityTagAccessor.Init(CompiledData, RendererVisibilityTagBinding.GetDataSetBindableVariable().GetName());
+	InitParticleDataSetAccessor(PositionDataSetAccessor, CompiledData, PositionBinding);
+	InitParticleDataSetAccessor(DecalOrientationDataSetAccessor, CompiledData, DecalOrientationBinding);
+	InitParticleDataSetAccessor(DecalSizeDataSetAccessor, CompiledData, DecalSizeBinding);
+	InitParticleDataSetAccessor(DecalFadeDataSetAccessor, CompiledData, DecalFadeBinding);
+	InitParticleDataSetAccessor(DecalSortOrderDataSetAccessor, CompiledData, DecalSortOrderBinding);
+	InitParticleDataSetAccessor(DecalColorDataSetAccessor, CompiledData, DecalColorBinding);
+	InitParticleDataSetAccessor(DecalVisibleAccessor, CompiledData, DecalVisibleBinding);
+	InitParticleDataSetAccessor(RendererVisibilityTagAccessor, CompiledData, RendererVisibilityTagBinding);
 }
 
 void UNiagaraDecalRendererProperties::UpdateSourceModeDerivates(ENiagaraRendererSourceDataMode InSourceMode, bool bFromPropertyEdit)
@@ -308,7 +310,13 @@ const TArray<FNiagaraVariable>& UNiagaraDecalRendererProperties::GetOptionalAttr
 
 void UNiagaraDecalRendererProperties::GetRendererWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const
 {
-	OutWidgets.Add(SNew(SImage).Image(FSlateIconFinder::FindIconBrushForClass(GetClass())));
+	TSharedRef<SWidget> Widget = SNew(SImage).Image(GetStackIcon());
+	OutWidgets.Add(Widget);
+}
+
+const FSlateBrush* UNiagaraDecalRendererProperties::GetStackIcon() const
+{
+	return FSlateIconFinder::FindIconBrushForClass(UDecalComponent::StaticClass());
 }
 
 void UNiagaraDecalRendererProperties::GetRendererTooltipWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const
@@ -371,7 +379,7 @@ UMaterialInterface* UNiagaraDecalRendererProperties::GetMaterial(const FNiagaraE
 	UMaterialInterface* MaterialInterface = nullptr;
 	if (InEmitter != nullptr)
 	{
-		MaterialInterface = Cast<UMaterialInterface>(InEmitter->FindBinding(MaterialParameterBinding.Parameter));
+		MaterialInterface = Cast<UMaterialInterface>(InEmitter->FindBinding(MaterialParameterBinding.ResolvedParameter));
 	}
 
 #if WITH_EDITORONLY_DATA

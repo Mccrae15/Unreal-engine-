@@ -37,9 +37,9 @@ void UVoxelMorphologyMeshesTool::SetupProperties()
 	MorphologyProperties->RestoreProperties(this);
 	AddToolPropertySource(MorphologyProperties);
 
-	SetToolDisplayName(LOCTEXT("VoxelMorphologyMeshesToolName", "Voxel Morphology"));
+	SetToolDisplayName(LOCTEXT("VoxelMorphologyMeshesToolName", "Voxel Offset"));
 	GetToolManager()->DisplayMessage(
-		LOCTEXT("OnStartTool", "Apply Morphological operations to the input meshes to create a new Mesh, using voxelization techniques. UVs, sharp edges, and small/thin features will be lost. Increase Voxel Count to enhance accuracy."),
+		LOCTEXT("OnStartTool", "Apply Offset (aka Morphology) operations to the input meshes to create a new Mesh, using voxelization techniques. UVs, sharp edges, and small/thin features will be lost. Increase Voxel Count to enhance accuracy."),
 		EToolMessageLevel::UserNotification);
 
 }
@@ -48,8 +48,20 @@ void UVoxelMorphologyMeshesTool::SetupProperties()
 void UVoxelMorphologyMeshesTool::SaveProperties()
 {
 	Super::SaveProperties();
+	MorphologyProperties->SaveProperties(this);
+}
 
-	VoxProperties->SaveProperties(this);
+
+void UVoxelMorphologyMeshesTool::ConvertInputsAndSetPreviewMaterials(bool bSetPreviewMesh)
+{
+	Super::ConvertInputsAndSetPreviewMaterials(bSetPreviewMesh);
+
+	if (!MorphologyProperties->bVoxWrap && HasOpenBoundariesInMeshInputs())
+	{
+		GetToolManager()->DisplayMessage(
+			LOCTEXT("WarnOpenEdges", "Open edges found: Consider using the 'Vox Wrap Preprocess' settings to avoid artifacts."),
+			EToolMessageLevel::UserWarning);
+	}
 }
 
 
@@ -79,12 +91,12 @@ TUniquePtr<FDynamicMeshOperator> UVoxelMorphologyMeshesTool::MakeNewOperator()
 
 FString UVoxelMorphologyMeshesTool::GetCreatedAssetName() const
 {
-	return TEXT("Morphology");
+	return TEXT("Offset");
 }
 
 FText UVoxelMorphologyMeshesTool::GetActionName() const
 {
-	return LOCTEXT("VoxelMorphologyMeshes", "Voxel Morphology");
+	return LOCTEXT("VoxelMorphologyMeshes", "Voxel Offset");
 }
 
 

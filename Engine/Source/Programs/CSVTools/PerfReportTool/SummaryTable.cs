@@ -5,9 +5,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Xml.Linq;
 using PerfReportTool;
-using System.IO;
-using System.Data.Common;
-using System.Runtime.InteropServices;
 
 namespace PerfSummaries
 {
@@ -67,7 +64,7 @@ namespace PerfSummaries
 
 	class SummaryTableInfo
 	{
-		public SummaryTableInfo(XElement tableElement, Dictionary<string,string> substitutionsDict)
+		public SummaryTableInfo(XElement tableElement, Dictionary<string,string> substitutionsDict, string[] appendList, string[] rowSortAppendList)
 		{
 			XAttribute rowSortAt = tableElement.Attribute("rowSort");
 			if (rowSortAt != null)
@@ -75,6 +72,11 @@ namespace PerfSummaries
 				rowSortList.AddRange(rowSortAt.Value.Split(','));
 				ApplySubstitutionsToList(rowSortList, substitutionsDict);
 			}
+			if (rowSortAppendList != null)
+			{
+				rowSortList.AddRange(rowSortAppendList);
+			}
+
 			XAttribute weightByColumnAt = tableElement.Attribute("weightByColumn");
 			if (weightByColumnAt != null)
 			{
@@ -86,6 +88,11 @@ namespace PerfSummaries
 			{
 				columnFilterList.AddRange(filterEl.Value.Split(','));
 				ApplySubstitutionsToList(columnFilterList, substitutionsDict);
+			}
+
+			if (appendList != null)
+			{
+				columnFilterList.AddRange(appendList);
 			}
 
 			bReverseSortRows = tableElement.GetSafeAttibute<bool>("reverseSortRows", false);
@@ -240,6 +247,15 @@ namespace PerfSummaries
 		LowIsBad,
 	};
 
+	enum ColumnAggregateType
+	{
+		None,
+		Avg,
+		Min,
+		Max
+	};
+
+
 	class SummaryTableColumnFormatInfo
 	{
 		public SummaryTableColumnFormatInfo()
@@ -270,6 +286,21 @@ namespace PerfSummaries
 				maxStringLengthCollated = maxStringLength;
 			}
 
+			noWrap = element.GetSafeAttibute<string>("noWrap") == "true";
+
+			if (IsDate())
+			{
+				dateFormat = element.GetSafeAttibute<string>("dateFormat");
+				string timeZoneId = element.GetSafeAttibute<string>("dateTimeZoneId");
+				dateTimeZone = TimeZoneInfo.Utc;
+				if (timeZoneId != null)
+				{
+					// Matches time zones in HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\Time Zones.
+					// Will raise an exception if Id is invalid.
+					dateTimeZone = TimeZoneInfo.FindSystemTimeZoneById(timeZoneId);
+				}
+			}
+
 			includeValueWithBucketName = element.GetSafeAttibute<bool>("includeValueWithBucketName", true);
 			string bucketNamesString = element.GetSafeAttibute<string>("valueBucketNames");
 			if (bucketNamesString != null)
@@ -292,8 +323,11 @@ namespace PerfSummaries
 			colourThresholdList = ColourThresholdList.ReadColourThresholdListXML(element.Element("colourThresholds"));
 		}
 
+		public bool IsDate() => numericFormat == "date";
+
 		public AutoColorizeMode autoColorizeMode = AutoColorizeMode.HighIsBad;
 		public string name;
+		public bool noWrap = false;
 		public string numericFormat;
 		public int maxStringLength;
 		public int maxStringLengthCollated;
@@ -305,6 +339,9 @@ namespace PerfSummaries
 		public List<float> bucketThresholds = new List<float>();
 		// Colour thresholds override for this column.
 		public ColourThresholdList colourThresholdList = null;
+		// Date properties
+		public string dateFormat = null;
+		public TimeZoneInfo dateTimeZone = null;
 	};
 
 	class SummaryTableColumn
@@ -314,10 +351,14 @@ namespace PerfSummaries
 		public string displayName;
 		public bool isRowWeightColumn = false;
 		public bool hasDiffRows = false;
+		public bool isCountColumn = false;
 		// Column header tooltip. Displayed when hovering over the header.
 		public string tooltip = null;
 		// Multiplied with the colour of each cell to modify the colour (including header).
 		public Colour columnColourModifier = null;
+		public ColumnAggregateType aggregateType = ColumnAggregateType.None;
+		public SummaryTableColumn aggregateBaseColumn = null; // For avg/min/max columns, this will point back to the base(avg) column
+
 		List<double> doubleValues = new List<double>();
 		List<string> stringValues = new List<string>();
 		List<string> toolTips = new List<string>();
@@ -337,9 +378,12 @@ namespace PerfSummaries
 			SummaryTableElement.Type inElementType,
 			SummaryTableColumnFormatInfo inFormatInfo = null,
 			string inTooltip = null,
-			Colour inColumnColourModifier = null)
+			Colour inColumnColourModifier = null,
+			ColumnAggregateType inAggregateType = ColumnAggregateType.None,
+			SummaryTableColumn inAggregateBaseColumn = null,
+			bool bInIsCountColumn = false)
 		{
-			name = inName;
+			name = SummaryTableColumn.getAggregateTypePrefix(inAggregateType) + inName;
 			isNumeric = inIsNumeric;
 			displayName = inDisplayName;
 			isRowWeightColumn = inIsRowWeightColumn;
@@ -347,7 +391,30 @@ namespace PerfSummaries
 			formatInfo = inFormatInfo;
 			tooltip = inTooltip;
 			columnColourModifier = inColumnColourModifier;
+			aggregateType = inAggregateType;
+			aggregateBaseColumn = inAggregateBaseColumn;
+			isCountColumn = bInIsCountColumn;
+			if (inAggregateType == ColumnAggregateType.Avg && aggregateBaseColumn == null)
+			{
+				aggregateBaseColumn = this;
+			}
 		}
+
+		public static string getAggregateTypePrefix(ColumnAggregateType aggregateType)
+		{
+			switch (aggregateType)
+			{
+				case ColumnAggregateType.Avg:
+					return "Avg ";
+				case ColumnAggregateType.Min:
+					return "Min ";
+				case ColumnAggregateType.Max:
+					return "Max ";
+				default:
+					return "";
+			}
+		}
+
 		public SummaryTableColumn Clone()
 		{
 			SummaryTableColumn newColumn = new SummaryTableColumn(name, isNumeric, displayName, isRowWeightColumn, elementType, formatInfo, tooltip, columnColourModifier);
@@ -358,6 +425,27 @@ namespace PerfSummaries
 			newColumn.colourModifiers = colourModifiers.ToDictionary(entry => entry.Key, entry => entry.Value); // Deep copy
 			newColumn.hasDiffRows = hasDiffRows;
 			return newColumn;
+		}
+
+		// In the case of CSV stats, returns the category. Otherwise, returns an empty string
+		public string GetStatCategory()
+		{
+			if (elementType == SummaryTableElement.Type.CsvStatAverage)
+			{
+				int lastSlashIndex = name.LastIndexOf('/');
+				if (lastSlashIndex != -1)
+				{
+					return name.Substring(0, lastSlashIndex);
+				}
+			}
+			return "";
+		}
+
+		// Returns true if we should displaya min/max/avg sub columns (if enabled).
+		public bool DisplayAggregates()
+		{
+			// Date columns are numeric since they're a timestamp, but we don't want to display them as avg/min/max.
+			return isNumeric && (formatInfo == null || !formatInfo.IsDate());
 		}
 
 		private double FilterInvalidValue(double value)
@@ -382,7 +470,7 @@ namespace PerfSummaries
 			List<string> newToolTips = new List<string>(toolTips.Count > 0 ? newCount : 0);
 			List<ColourThresholdList> newColourThresholds = new List<ColourThresholdList>(colourThresholds.Count > 0 ? newCount : 0);
 
-			bool bComputeDiff = isNumeric && name != "Count";
+			bool bComputeDiff = isNumeric && !isCountColumn;
 
 			// Add diff rows to each of the arrays
 			for (int i = 0; i < doubleValues.Count; i++)
@@ -441,6 +529,40 @@ namespace PerfSummaries
 				return false;
 			}
 			return ((rowIndex - 2) % 2) == 0;
+		}
+
+		// Computes a score (significance indicator) for a column based on its diff values. This takes into account the max value. If LowIsBad for this column then the sign is reversed
+		public double GetDiffScore()
+		{
+			if (!hasDiffRows || !isNumeric)
+			{
+				return 0.0;
+			}
+			bool bLowIsBad = formatInfo != null && formatInfo.autoColorizeMode == AutoColorizeMode.LowIsBad;
+
+			// Find the max of all diff values for this column. If LowIsBad then we reverse the sign
+			double maxDiffScore = double.MinValue;
+			for (int diffRowIndex = 2; diffRowIndex < GetCount(); diffRowIndex += 2)
+			{
+				double diffValue = GetValue(diffRowIndex);
+				maxDiffScore = Math.Max(maxDiffScore, bLowIsBad ? -diffValue : diffValue);
+			}
+			return maxDiffScore;
+		}
+
+		// Computes the max of the abs diff values for a column
+		public double GetMaxAbsDiff()
+		{
+			if (!hasDiffRows || !isNumeric)
+			{
+				return 0.0;
+			}
+			double maxAbsDiff = double.MinValue;
+			for (int diffRowIndex = 2; diffRowIndex < GetCount(); diffRowIndex += 2)
+			{
+				maxAbsDiff = Math.Max(maxAbsDiff, Math.Abs(GetValue(diffRowIndex)));
+			}
+			return maxAbsDiff;
 		}
 
 		public string GetDisplayName(string hideStatPrefix=null, bool bAddStatCategorySeparatorSpaces = true, bool bGreyOutStatCategories = false)
@@ -653,8 +775,8 @@ namespace PerfSummaries
 			colourThresholds = new List<ColourThresholdList>();
 			double maxValue = -double.MaxValue;
 			double minValue = double.MaxValue;
-			double totalValue = 0.0f;
-			double validCount = 0.0f;
+			double totalValue = 0.0;
+			double validCount = 0.0;
 			for (int i = 0; i < doubleValues.Count; i++)
 			{
 				if (IsDiffRow(i))
@@ -667,19 +789,34 @@ namespace PerfSummaries
 					maxValue = Math.Max(val, maxValue);
 					minValue = Math.Min(val, minValue);
 					totalValue += val;
-					validCount += 1.0f;
+					validCount += 1.0;
 				}
 			}
-			if (minValue == maxValue)
+			if (minValue == maxValue || validCount == 0.0)
 			{
 				return;
 			}
+
+			double averageValue = totalValue / validCount;
+			double range = maxValue - minValue;
+
+			// Disable colorization where values are very similar
+			// The range has to be outside 0.25% of the average and >0.01 to get colorized
+			double colorizationRangeThreshold = Math.Max( Math.Abs(averageValue) * 0.0025, 0.01 ); 
+			if (range < colorizationRangeThreshold)
+			{
+				return;
+			}
+
+			// Adjust Min/Max value to ensure close values are not just binary red/green. If min/max is within 1% of the average or 0.02, adjust accordingly
+			double minColorizationRangeExtent = Math.Max( Math.Abs(averageValue) * 0.01, 0.02); 
+			maxValue = Math.Max(maxValue, averageValue + minColorizationRangeExtent);
+			minValue = Math.Min(minValue, averageValue - minColorizationRangeExtent);
 
 			Colour green = Colour.Green;
 			Colour yellow = Colour.Yellow;
 			Colour red = Colour.Red;
 
-			double averageValue = totalValue / validCount; // TODO: Weighted average 
 			colourThresholdOverride = new ColourThresholdList();
 			colourThresholdOverride.Add(new ThresholdInfo(minValue, (autoColorizeMode == AutoColorizeMode.HighIsBad) ? green : red));
 			colourThresholdOverride.Add(new ThresholdInfo(averageValue, yellow));
@@ -774,6 +911,13 @@ namespace PerfSummaries
 
 				if (forceNumericFormat != null)
 				{
+					if (forceNumericFormat == "date")
+					{
+						DateTimeOffset dateTimeOffset = DateTimeOffset.FromUnixTimeSeconds((long)val);
+						TimeSpan timeZoneOffset = formatInfo.dateTimeZone.GetUtcOffset(dateTimeOffset);
+						dateTimeOffset = dateTimeOffset.Add(timeZoneOffset);
+						return dateTimeOffset.ToString(formatInfo.dateFormat);
+					}
 					return prefix + val.ToString(forceNumericFormat);
 				}
 				else if (roundNumericValues)
@@ -913,7 +1057,7 @@ namespace PerfSummaries
 				}
 			}
 
-			newColumns.Add(new SummaryTableColumn("Count", true, null, false, SummaryTableElement.Type.ToolMetadata));
+			newColumns.Add(new SummaryTableColumn("Count", true, null, false, SummaryTableElement.Type.ToolMetadata, bInIsCountColumn:true));
 			int countColumnIndex = newColumns.Count - 1;
 
 			int numericColumnStartIndex = newColumns.Count;
@@ -921,14 +1065,15 @@ namespace PerfSummaries
 			foreach (SummaryTableColumn column in columns)
 			{
 				// Add avg/min/max columns for this column if it's numeric and we didn't already add it above 
-				if (column.isNumeric && !collateByColumns.Contains(column))
+				if (column.DisplayAggregates() && !collateByColumns.Contains(column))
 				{
 					srcToDestBaseColumnIndex.Add(newColumns.Count);
-					newColumns.Add(new SummaryTableColumn("Avg " + column.name, true, null, false, column.elementType, column.formatInfo, column.tooltip, column.columnColourModifier));
+					SummaryTableColumn avgColumn = new SummaryTableColumn(column.name, true, null, false, column.elementType, column.formatInfo, column.tooltip, column.columnColourModifier, ColumnAggregateType.Avg);
+					newColumns.Add(avgColumn);
 					if (addMinMaxColumns)
 					{
-						newColumns.Add(new SummaryTableColumn("Min " + column.name, true, null, false, column.elementType, column.formatInfo, column.tooltip, column.columnColourModifier));
-						newColumns.Add(new SummaryTableColumn("Max " + column.name, true, null, false, column.elementType, column.formatInfo, column.tooltip, column.columnColourModifier));
+						newColumns.Add(new SummaryTableColumn(column.name, true, null, false, column.elementType, column.formatInfo, column.tooltip, column.columnColourModifier, ColumnAggregateType.Min, avgColumn));
+						newColumns.Add(new SummaryTableColumn(column.name, true, null, false, column.elementType, column.formatInfo, column.tooltip, column.columnColourModifier, ColumnAggregateType.Max, avgColumn));
 					}
 				}
 				else
@@ -984,7 +1129,7 @@ namespace PerfSummaries
 				for (int j = 0; j < columns.Count; j++)
 				{
 					SummaryTableColumn column = columns[j];
-					if (column.isNumeric)
+					if (column.DisplayAggregates())
 					{
 						double value = column.GetValue(i);
 						if (value != double.MaxValue)
@@ -1030,7 +1175,7 @@ namespace PerfSummaries
 						if (destColumnBaseIndex != -1 && RowCounts[j] > 0)
 						{
 							newColumns[destColumnBaseIndex].SetValue(destRowIndex, RowTotals[j] / RowWeights[j]);
-							if (addMinMaxColumns)
+							if (addMinMaxColumns && newColumns[destColumnBaseIndex].DisplayAggregates())
 							{
 								newColumns[destColumnBaseIndex + 1].SetValue(destRowIndex, RowMinValues[j]);
 								newColumns[destColumnBaseIndex + 2].SetValue(destRowIndex, RowMaxValues[j]);
@@ -1059,6 +1204,31 @@ namespace PerfSummaries
 			newTable.hasMinMaxColumns = addMinMaxColumns;
 			return newTable;
 		}
+
+		// Finds a particular aggregate column corresponding to a specified column
+		private SummaryTableColumn GetAggregateColumn(SummaryTableColumn inColumn, ColumnAggregateType aggregateType)
+		{
+			// Add the avg column and the corresponding min/max columns
+			if (inColumn.aggregateType == ColumnAggregateType.None)
+			{
+				throw new Exception("Column isn't an aggregate column");
+			}
+
+			// Aggregate columns keep a ref to the avg/base column so use that if appropriate
+			if (aggregateType == ColumnAggregateType.Avg && inColumn.aggregateBaseColumn != null)
+			{
+				return inColumn.aggregateBaseColumn;
+			}
+
+			string prefix = GetBaseStatPrefix(inColumn.name);
+			string lookupKey = ( SummaryTableColumn.getAggregateTypePrefix(aggregateType) + inColumn.name.Substring(prefix.Length) ).ToLower();
+			if ( !columnLookup.TryGetValue(lookupKey, out SummaryTableColumn outColumn) )
+			{
+				throw new Exception("Aggregate column "+lookupKey+" not found!");
+			}
+			return outColumn;
+		}
+
 
 		public SummaryTable SortAndFilter(string customFilter, string customRowSort = "buildversion,deviceprofile", bool bReverseSort = false, string weightByColumnName = null)
 		{
@@ -1184,7 +1354,7 @@ namespace PerfSummaries
 			return newTable;
 		}
 
-		public void AddDiffRows()
+		public void AddDiffRows(bool bSortColumnsByDiff, double columnDiffDisplayThreshold)
 		{
 			for (int i=0; i<columns.Count; i++)
 			{
@@ -1192,6 +1362,15 @@ namespace PerfSummaries
 			}
 			rowCount += rowCount - 1;
 
+			if ( columnDiffDisplayThreshold > 0.0 )
+			{
+				FilterColumnsByDiffThreshold(columnDiffDisplayThreshold);
+			}
+
+			if ( bSortColumnsByDiff )
+			{
+				SortColumnsByDiffRows();
+			}
 			// Just set rowWeightings to null for now. We shouldn't need it, since we should have already collated by this point
 			rowWeightings = null;
 		}
@@ -1212,6 +1391,13 @@ namespace PerfSummaries
 				}
 			}
 		}
+
+		public static string GetBaseStatPrefix(string inName)
+		{
+			GetBaseStatNameWithPrefixAndSuffix(inName, out string prefix, out _);
+			return prefix;
+		}
+
 		public static string GetBaseStatName(string inName)
 		{
 			return GetBaseStatNameWithPrefixAndSuffix(inName, out _, out _);
@@ -1260,6 +1446,91 @@ namespace PerfSummaries
 			csvFile.Close();
 		}
 
+		// Sorts columns by their diff score. 
+		// Requires max rows. Also works with collated tables with min/max
+		private void SortColumnsByDiffRows()
+		{
+			List<Tuple<SummaryTableColumn, double>> numericColumnSortKeyPairs = new List<Tuple<SummaryTableColumn, double>>();
+			List<SummaryTableColumn> staticColumns = new List<SummaryTableColumn>();
+
+			foreach (SummaryTableColumn column in columns)
+			{
+				if (column.isNumeric && !column.isCountColumn )
+				{
+					double maxDiffScore = column.GetDiffScore();
+					if (hasMinMaxColumns)
+					{
+						// If we have a collated table with avg/min/max then sort by the avg column and we'll re-add the min/max columns later
+						// Columns without a prefix will be treated as static and ordered first
+						if (column.aggregateType == ColumnAggregateType.Avg)
+						{
+							numericColumnSortKeyPairs.Add(new Tuple<SummaryTableColumn, double>(column, maxDiffScore));
+						}
+						else if (column.aggregateType == ColumnAggregateType.None)
+						{
+							staticColumns.Add(column);
+						}
+					}
+					else
+					{
+						numericColumnSortKeyPairs.Add(new Tuple<SummaryTableColumn, double>(column, maxDiffScore));
+					}
+				}
+				else
+				{
+					staticColumns.Add(column);
+				}
+			}
+
+			columns = new List<SummaryTableColumn>();
+			columns.AddRange(staticColumns);
+
+			// Sort the numeric columns by stat
+			numericColumnSortKeyPairs.Sort((a, b) => -a.Item2.CompareTo(b.Item2));
+			List<SummaryTableColumn> sortedNumericColumns = new List<SummaryTableColumn>();
+			foreach (Tuple<SummaryTableColumn, double> pair in numericColumnSortKeyPairs)
+			{
+				sortedNumericColumns.Add(pair.Item1);
+			}
+
+			// Stable sort the columns by stat prefix
+			IEnumerable<SummaryTableColumn> sortedNumericColumnsOrderedByCategory = sortedNumericColumns.OrderBy(column => column.GetStatCategory());
+
+			foreach (SummaryTableColumn column in sortedNumericColumnsOrderedByCategory)
+			{
+				columns.Add(column);
+				if (hasMinMaxColumns)
+				{
+					columns.Add(GetAggregateColumn(column, ColumnAggregateType.Min));
+					columns.Add(GetAggregateColumn(column, ColumnAggregateType.Max));
+				}
+			}
+		}
+
+		// Filters out columns with a a max abs diff value below thes specified threshold
+		// Requires max rows. Also works with collated tables with min/max
+		private void FilterColumnsByDiffThreshold(double threshold)
+		{
+			List<SummaryTableColumn> newColumns = new List<SummaryTableColumn>();
+			foreach (SummaryTableColumn column in columns)
+			{
+				if (column.isNumeric && !column.isCountColumn)
+				{
+					// If this is a min or max column then we use the Avg column to compute the diff score. All 3 columns will be filtered together
+					double maxAbsDiff = hasMinMaxColumns ? column.aggregateBaseColumn.GetMaxAbsDiff() : column.GetMaxAbsDiff();
+					if (maxAbsDiff >= threshold)
+					{
+						newColumns.Add(column);
+					}
+				}
+				else
+				{
+					newColumns.Add(column);
+				}
+			}
+			columns = newColumns;
+		}
+
 
 		public void WriteToHTML(
 			string htmlFilename, 
@@ -1306,7 +1577,7 @@ namespace PerfSummaries
 				{
 					for (int i = 0; i < columns.Count; i++)
 					{
-						if (columns[i].name == "Count")
+						if (columns[i].isCountColumn)
 						{
 							stickyColumnCount = i + 1;
 							break;
@@ -1629,7 +1900,16 @@ namespace PerfSummaries
 						string toolTip = column.GetToolTipValue(rowIndex);
 						if (toolTip == "")
 						{
-							toolTip = column.GetDisplayName();
+							if (column.isNumeric && column.formatInfo != null && column.formatInfo.IsDate())
+							{
+								// For dates use a standard UTC timestamp for the tooltip
+								DateTimeOffset dateTimeOffset = DateTimeOffset.FromUnixTimeSeconds((long)column.GetValue(rowIndex));
+								toolTip = dateTimeOffset.ToString("yyyy-MM-dd HH:mm:ss (UTC)");
+							}
+							else
+							{
+								toolTip = column.GetDisplayName();
+							}
 						}
 						attributes.Add("title='" + toolTip + "'");
 					}
@@ -1639,10 +1919,18 @@ namespace PerfSummaries
 					{
 						attributes.Add("bgcolor=" + bgColour);
 					}
+
+					Dictionary<string, string> styleAttributes = new Dictionary<string, string>();
 					string textColour = column.GetTextColor(rowIndex);
 					if (textColour != null)
 					{
-						attributes.Add("style='color:" + textColour + "'");
+						styleAttributes.Add("color",  textColour);
+					}
+
+					if (column.formatInfo != null && column.formatInfo.noWrap)
+					{
+						// Disable whitespace wrapping so the column is sized to the width of the longest cell item.
+						styleAttributes.Add("white-space", "nowrap");
 					}
 
 					bool bold = false;
@@ -1684,7 +1972,7 @@ namespace PerfSummaries
 					{
 						stringValue = "'" + stringValue;
 					}
-					currentRow.AddCell( (bold ? "<b>" : "") + stringValue + (bold ? "</b>" : ""), attributes );
+					currentRow.AddCell( (bold ? "<b>" : "") + stringValue + (bold ? "</b>" : ""), attributes, styleAttributes);
 					columnIndex++;
 				}
 			}
@@ -1744,7 +2032,7 @@ namespace PerfSummaries
 					if (columnLookup.ContainsKey(s.ToLower()))
 					{
 						SummaryTableColumn column = columnLookup[s.ToLower()];
-						key += "{" + column.GetStringValue(i,false,"0.0000000000") + "}";
+						key += "{" + column.GetStringValue(i,false,"0000000000.0000000000") + "}";
 					}
 					else
 					{
@@ -1884,8 +2172,11 @@ namespace PerfSummaries
 				cells.Add(new Cell(contents, attributes));
 			}
 
-			public void AddCell(string contents, List<string> attributes)
+			public void AddCell(string contents, List<string> attributes, Dictionary<string, string> styleAttributes)
 			{
+				List<string> styleLines = styleAttributes.Select(pair => $"{pair.Key}:{pair.Value}").ToList();
+				attributes.Add($"style='{String.Join(";", styleLines)}'");
+
 				cells.Add(new Cell(contents, String.Join(" ",attributes)));
 			}
 

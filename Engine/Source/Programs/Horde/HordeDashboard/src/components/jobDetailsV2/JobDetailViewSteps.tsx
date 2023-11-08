@@ -3,7 +3,7 @@ import { observer } from "mobx-react-lite";
 import React, { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { BatchData, GetBatchResponse, JobStepBatchError, JobStepBatchState, JobStepOutcome, JobStepState, NodeData, StepData } from "../../backend/Api";
-import dashboard from "../../backend/Dashboard";
+import dashboard, { StatusColor } from "../../backend/Dashboard";
 import { getDetailStyle } from "../../backend/JobDetails";
 import { ISideRailLink } from "../../base/components/SideRail";
 import { getBatchInitElapsed, getNiceTime, getStepElapsed, getStepETA, getStepFinishTime, getStepPercent, getStepStartTime, getStepTimingDelta } from "../../base/utilities/timeUtils";
@@ -183,7 +183,7 @@ export const StepsPanelInner: React.FC<{ jobDetails: JobDetailsV2, depStepId?: s
    const buildColumns = (): IColumn[] => {
 
       const widths: Record<string, number> = {
-         "Name": 1074,
+         "Name": 732,
          "Progress": 120,
          "Start": 100,
          "End": 100,
@@ -211,7 +211,7 @@ export const StepsPanelInner: React.FC<{ jobDetails: JobDetailsV2, depStepId?: s
 
    function renderAgentRow(item: StepItem, index?: number, column?: IColumn) {
 
-      let error = false;  //(!!jobDetails.events.find(e => e.severity === EventSeverity.Error && e.logId === item.batch?.logId)) || (item.batch?.error !== JobStepBatchError.None);
+      let error = !!item.batch?.startTime && item.batch?.error !== JobStepBatchError.None;
       let warning = false; //!!jobDetails.events.find(e => e.severity === EventSeverity.Warning && e.logId === item.batch?.logId);
 
       if (error) {
@@ -222,8 +222,6 @@ export const StepsPanelInner: React.FC<{ jobDetails: JobDetailsV2, depStepId?: s
       if (item.agentType && item.agentPool) {
          url = `/job/${jobId}?agenttype=${encodeURIComponent(item.agentType)}&agentpool=${encodeURIComponent(item.agentPool)}`;
       }
-
-      const style = getDetailStyle(JobStepState.Completed, error ? JobStepOutcome.Failure : JobStepOutcome.Warnings);
 
       if (!item.agentId && column!.key === 'ViewLogColumn') {
          return <div />;
@@ -237,26 +235,27 @@ export const StepsPanelInner: React.FC<{ jobDetails: JobDetailsV2, depStepId?: s
          batchText = item.agentId ?? (item.batch?.state ?? "Unassigned");
       }
 
+      const statusColors = dashboard.getStatusColors();
+      const errorColor = error ? statusColors.get(StatusColor.Failure) : undefined;
+
       switch (column!.key) {
 
          case 'Name':
             if (!item.agentId) {
                if (item.agentPool && (item.batch?.state === JobStepBatchState.Ready || item.batch?.error === JobStepBatchError.NoAgentsOnline || item.batch?.error === JobStepBatchError.NoAgentsInPool)) {
                   return <Stack horizontal disableShrink={true} horizontalAlign="start">
-                     {(error || warning) && <Icon styles={{ root: { paddingTop: 3, paddingRight: 8 } }} className={style!.className} iconName="Square" />}
-                     <Link to={`/agents?search=${encodeURI(item.agentPool)}`} ><Text nowrap={true}>{batchText}</Text></Link>
+                     {(error || warning) && <Icon styles={{ root: { paddingTop: 3, paddingRight: 8, color: errorColor } }} iconName="Warning" />}
+                     <Link to={`/pools?pool=${encodeURI(item.agentPool)}`} ><Text styles={{ root: { color: errorColor } }} nowrap={true}>{batchText}</Text></Link>
                   </Stack>
-                     ;
-
                }
                return <Stack horizontal disableShrink={true} horizontalAlign="start">
-                  {(error || warning) && <Icon styles={{ root: { paddingTop: 3, paddingRight: 8 } }} className={style!.className} iconName="Square" />}
-                  <Text nowrap={true}>{batchText}</Text>
+                  {(error || warning) && <Icon styles={{ root: { paddingTop: 3, paddingRight: 8, color: errorColor } }} iconName="Warning" />}
+                  <Text styles={{ root: { color: errorColor } }} nowrap={true}>{batchText}</Text>
                </Stack>;
             } else {
-               return <Stack horizontal disableShrink={true}>{(error || warning) && <Icon styles={{ root: { paddingTop: 3, paddingRight: 8 } }} className={style!.className} iconName="Square" />}
+               return <Stack horizontal disableShrink={true}>{(error || warning) && <Icon styles={{ root: { paddingTop: 3, paddingRight: 8, color: errorColor } }} iconName="Warning" />}
                   <Stack>
-                     <Link to={url} onClick={(ev) => { ev.stopPropagation(); ev.preventDefault(); setLastSelectedAgent(item.agentId); }}><Text styles={{ root: { cursor: 'pointer' } }} >{batchText}</Text></Link>
+                     <Link to={url} onClick={(ev) => { ev.stopPropagation(); ev.preventDefault(); setLastSelectedAgent(item.agentId); }}><Text styles={{ root: { cursor: 'pointer', color: errorColor } }} >{batchText}</Text></Link>
                   </Stack>
                </Stack>
             }
@@ -363,7 +362,22 @@ export const StepsPanelInner: React.FC<{ jobDetails: JobDetailsV2, depStepId?: s
 
    const stateFilter = jobFilter.filterStates;
    jobDetails.getSteps().forEach(step => {
-      if (stateFilter.indexOf("All") === -1 && stateFilter.indexOf(step.outcome as StateFilter) === -1 && stateFilter.indexOf(step.state) === -1) {
+
+      if (stateFilter.indexOf("All") !== -1) {
+         return;
+      }
+
+      if (stateFilter.indexOf("Skipped") === -1 && step.state === JobStepState.Skipped) {
+         jobStateFilter.add(step.id);
+         return;
+      }
+
+      if (stateFilter.indexOf("Aborted") === -1 && step.state === JobStepState.Aborted) {
+         jobStateFilter.add(step.id);
+         return;
+      }
+
+      if (stateFilter.indexOf(step.outcome as StateFilter) === -1 && stateFilter.indexOf(step.state) === -1) {
          jobStateFilter.add(step.id);
       }
    })
@@ -416,7 +430,9 @@ export const StepsPanelInner: React.FC<{ jobDetails: JobDetailsV2, depStepId?: s
    const query = new URLSearchParams(window.location.search);
    const batchFilter = query.get("batch");
 
-   jobDetails.batches.forEach(b => {
+   let jobBatches = jobDetails.batches.sort((a, b) => a.groupIdx - b.groupIdx);
+
+   jobBatches.forEach(b => {
 
       if (batchFilter && b.id !== batchFilter) {
          return;
@@ -559,7 +575,7 @@ export const StepsPanelInner: React.FC<{ jobDetails: JobDetailsV2, depStepId?: s
       groups.add(jobDetails.getStepGroupIndex(step.id));
    });
 
-   const batches = jobDetails.batches.filter(b => {
+   let batches = jobBatches.filter(b => {
       if ((groups.size && !groups.has(b.groupIdx)) || b.steps.length || b.error === JobStepBatchError.None) {
          return false;
       }
@@ -614,7 +630,7 @@ export const StepsPanelInner: React.FC<{ jobDetails: JobDetailsV2, depStepId?: s
          onRenderDetailsHeader={onRenderDetailsHeader}
          onRenderItemColumn={onRenderItemColumn}
          onRenderRow={onRenderRow}
-         onShouldVirtualize={() => { return true; }} // <--- significant speedup if enabled
+         onShouldVirtualize={() => { return false; }} // <--- previous versions of Fluent were very slow if not virtualized, new version seems faster and not virtualizing makes the size estimations less janky, if there are performance issues, look here
       />
    </Stack>;
 
@@ -645,7 +661,7 @@ export const StepsPanelV2: React.FC<{ jobDetails: JobDetailsV2, depStepId?: stri
    }
 
    const sideRail = depStepId ? depSideRail : stepsSideRail;
-   
+
    // do not use useQuery() hook as will negatively impact rendering   
    const query = new URLSearchParams(window.location.search);
    const batchFilter = query.get("batch");
@@ -727,13 +743,13 @@ export const getStepSummaryMarkdown = (jobDetails: JobDetailsV2, stepId: string)
       eta.display = eta.server = "";
       let aborted = "";
       if (step.abortedByUserInfo) {
-         aborted = "This step was aborted";
+         aborted = "This step was canceled";
          aborted += ` by ${step.abortedByUserInfo.name}.`;
       } else if (jobData.abortedByUserInfo) {
-         aborted = "The job was aborted";
+         aborted = "The job was canceled";
          aborted += ` by ${jobData.abortedByUserInfo.name}.`;
       } else {
-         aborted = "The step was aborted";
+         aborted = "The step was canceled";
       }
       text.push(aborted);
    } else if (step.state === JobStepState.Skipped) {

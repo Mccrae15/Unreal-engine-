@@ -5,10 +5,12 @@
 #include "CoreMinimal.h"
 #include "AnimNodeFunctionRef.generated.h"
 
+struct FAnimNode_StateMachine;
 struct FPoseLink;
 struct FPoseLinkBase;
 struct FComponentSpacePoseLink;
 struct FAnimNode_Base;
+struct FAnimationBaseContext;
 struct FAnimationInitializeContext;
 struct FAnimationUpdateContext;
 struct FPoseContext;
@@ -19,22 +21,22 @@ struct FAnimInstanceProxy;
  * Cached function name/ptr that is resolved at init time
  */
 USTRUCT()
-struct ENGINE_API FAnimNodeFunctionRef
+struct FAnimNodeFunctionRef
 {
 	GENERATED_BODY()
 
 public:
 	// Cache the function ptr from the name
-	void Initialize(const UClass* InClass);
+	ENGINE_API void Initialize(const UClass* InClass);
 	
 	// Call the function
-	void Call(UObject* InObject, void* InParameters = nullptr) const;
+	ENGINE_API void Call(UObject* InObject, void* InParameters = nullptr) const;
 
 	// Set the function via name
 	void SetFromFunctionName(FName InName) { FunctionName = InName; ClassName = NAME_None; }
 
 	// Set the function via a function
-	void SetFromFunction(UFunction* InFunction);
+	ENGINE_API void SetFromFunction(UFunction* InFunction);
 	
 	// Get the function name
 	FName GetFunctionName() const { return FunctionName; }
@@ -88,6 +90,7 @@ private:
 	friend struct ::FPoseLink;
 	friend struct ::FComponentSpacePoseLink;
 	friend struct ::FAnimInstanceProxy;
+	friend struct ::FAnimNode_StateMachine;
 	
 	// Call the InitialUpdate function of this node
 	static void InitialUpdate(const FAnimationUpdateContext& InContext, FAnimNode_Base& InNode);
@@ -97,6 +100,9 @@ private:
 
 	// Call the Update function of this node
 	static void Update(const FAnimationUpdateContext& InContext, FAnimNode_Base& InNode);
+	
+	// Call a generic function for this node
+	static void CallFunction(const FAnimNodeFunctionRef& InFunction, const FAnimationBaseContext& InContext, FAnimNode_Base& InNode);
 };
 
 }}

@@ -47,12 +47,14 @@ struct FChildEntityInitializer;
 struct FComponentRegistry;
 struct FEntityAllocationIteratorProxy;
 struct FFreeEntityOperation;
+struct FMutualEntityInitializer;
 struct IComponentTypeHandler;
 struct IMovieSceneEntityMutation;
 template <typename T> struct TReadOptional;
 template <typename T> struct TWriteOptional;
 struct IMovieSceneConditionalEntityMutation;
 
+enum class EMutuallyInclusiveComponentType : uint8;
 
 enum class EEntityRecursion : uint8
 {
@@ -89,12 +91,12 @@ enum class EEntityThreadingModel : uint8
  * offset from the start of each component array. This enables efficient read/write access into specific component arrays and makes issuing parallel tasks that require component data trivial. See FEntityAllocation for
  * a more detailed explanation of entity component data layout.
  */
-class MOVIESCENE_API FEntityManager : public FUObjectArray::FUObjectDeleteListener
+class FEntityManager : public FUObjectArray::FUObjectDeleteListener
 {
 public:
 
-	FEntityManager();
-	~FEntityManager();
+	MOVIESCENE_API FEntityManager();
+	MOVIESCENE_API ~FEntityManager();
 
 	FEntityManager(const FEntityManager&) = delete;
 	void operator=(const FEntityManager&) = delete;
@@ -119,7 +121,7 @@ public:
 	/**
 	 * Destroy this entity manager and all the entities and components contained within it, resetting it back to its default state
 	 */
-	void Destroy();
+	MOVIESCENE_API void Destroy();
 
 
 	/**
@@ -127,7 +129,7 @@ public:
 	 *
 	 * @return A stable ID that relates to this entity. Will remain valid until the entity is freed
 	 */
-	FMovieSceneEntityID AllocateEntity();
+	MOVIESCENE_API FMovieSceneEntityID AllocateEntity();
 
 
 	/**
@@ -136,7 +138,7 @@ public:
 	 * @param EntityID  A valid entity ID to free
 	 * @return The number of entities released
 	 */
-	void FreeEntity(FMovieSceneEntityID EntityID);
+	MOVIESCENE_API void FreeEntity(FMovieSceneEntityID EntityID);
 
 
 	/**
@@ -146,7 +148,7 @@ public:
 	 * @param OutFreedEntities (Optional) A set to populate with all the entities that were freed (including any children)
 	 * @return The number of entities released
 	 */
-	int32 FreeEntities(const FEntityComponentFilter& Filter, TSet<FMovieSceneEntityID>* OutFreedEntities = nullptr);
+	MOVIESCENE_API int32 FreeEntities(const FEntityComponentFilter& Filter, TSet<FMovieSceneEntityID>* OutFreedEntities = nullptr);
 
 
 	/**
@@ -156,7 +158,7 @@ public:
 	 * @param OutFreedEntities (Optional) A set to populate with all the entities that were freed (including any children)
 	 * @return The number of entities released
 	 */
-	int32 FreeEntities(const FFreeEntityOperation& Operation, TSet<FMovieSceneEntityID>* OutFreedEntities = nullptr);
+	MOVIESCENE_API int32 FreeEntities(const FFreeEntityOperation& Operation, TSet<FMovieSceneEntityID>* OutFreedEntities = nullptr);
 
 
 	/**
@@ -167,7 +169,7 @@ public:
 	 * @param InOutNum               A valid pointer to the desired number to allocate. Is overwritten with the number that were actually allocated.
 	 * @return A structure that points to the first entity that was allocated.
 	 */
-	FEntityDataLocation AllocateContiguousEntities(const FComponentMask& EntityComponentMask, int32* InOutNum);
+	MOVIESCENE_API FEntityDataLocation AllocateContiguousEntities(const FComponentMask& EntityComponentMask, int32* InOutNum);
 
 
 	/**
@@ -176,7 +178,7 @@ public:
 	 * @param EntityComponentMask    Defines the components that should exist on the allocated components. Set bits denote allocated components and tags.
 	 * @return A structure that points to the allocated entity.
 	 */
-	FEntityInfo AllocateEntity(const FComponentMask& EntityComponentMask);
+	MOVIESCENE_API FEntityInfo AllocateEntity(const FComponentMask& EntityComponentMask);
 
 
 	/**
@@ -184,7 +186,7 @@ public:
 	 *
 	 * @return A structure that points to the allocated entity.
 	 */
-	FEntityInfo GetEntity(FMovieSceneEntityID EntityID) const;
+	MOVIESCENE_API FEntityInfo GetEntity(FMovieSceneEntityID EntityID) const;
 
 
 	/**
@@ -192,7 +194,7 @@ public:
 	 *
 	 * @return A handle that points to the allocated entity.
 	 */
-	FEntityHandle GetEntityHandle(FMovieSceneEntityID EntityID);
+	MOVIESCENE_API FEntityHandle GetEntityHandle(FMovieSceneEntityID EntityID);
 
 
 	/**
@@ -212,25 +214,25 @@ public:
 	 *
 	 * @return true if the entity ID is allocated, false otherwise
 	 */
-	bool IsHandleValid(FEntityHandle EntityID) const;
+	MOVIESCENE_API bool IsHandleValid(FEntityHandle EntityID) const;
 
 
 	/**
 	 * Compute and return this entity manager's threading model. Does not change the current cached threading model.
 	 */
-	EEntityThreadingModel ComputeThreadingModel() const;
+	MOVIESCENE_API EEntityThreadingModel ComputeThreadingModel() const;
 
 
 	/**
 	 * Compute and store the current threading model.
 	 */
-	void UpdateThreadingModel();
+	MOVIESCENE_API void UpdateThreadingModel();
 
 
 	/**
 	 * Get this entitiy manager's current threading model based on the last time UpdateThreadingModel was called.
 	 */
-	EEntityThreadingModel GetThreadingModel() const;
+	MOVIESCENE_API EEntityThreadingModel GetThreadingModel() const;
 
 public:
 
@@ -251,18 +253,11 @@ public:
 		if (Entry.Data.Allocation != nullptr)
 		{
 			const FComponentHeader& Header = Entry.Data.Allocation->GetComponentHeaderChecked(ComponentTypeID);
-			if (Entry.Data.Allocation->GetCurrentLockMode() != EComponentHeaderLockMode::LockFree)
-			{
-				Header.ReadWriteLock.WriteLock();
-			}
+
+			FScopedHeaderWriteLock WriteLock(&Header, Entry.Data.Allocation->GetCurrentLockMode(), FEntityAllocationWriteContext::NewAllocation());
 
 			T* Component = reinterpret_cast<T*>(Header.GetValuePtr(Entry.Data.ComponentOffset));
 			*Component = Forward<ValueType>(InValue);
-
-			if (Entry.Data.Allocation->GetCurrentLockMode() != EComponentHeaderLockMode::LockFree)
-			{
-				Header.ReadWriteLock.WriteUnlock();
-			}
 		}
 	}
 
@@ -273,8 +268,8 @@ public:
 	 * @param EntityID         The ID of the entity to add the component to
 	 * @param ComponentTypeID  The ID of the component type to add to the entity
 	 */
-	void AddComponent(FMovieSceneEntityID EntityID, FComponentTypeID ComponentTypeID);
-	void AddComponent(FMovieSceneEntityID EntityID, FComponentTypeID ComponentTypeID, EEntityRecursion Recursion);
+	MOVIESCENE_API void AddComponent(FMovieSceneEntityID EntityID, FComponentTypeID ComponentTypeID);
+	MOVIESCENE_API void AddComponent(FMovieSceneEntityID EntityID, FComponentTypeID ComponentTypeID, EEntityRecursion Recursion);
 
 
 	/**
@@ -283,8 +278,8 @@ public:
 	 * @param EntityID             The ID of the entity to add the components to
 	 * @param EntityComponentMask  A mask constituting the components that should be added (set bits indicate components to add)
 	 */
-	void AddComponents(FMovieSceneEntityID EntityID, const FComponentMask& EntityComponentMask);
-	void AddComponents(FMovieSceneEntityID EntityID, const FComponentMask& EntityComponentMask, EEntityRecursion Recursion);
+	MOVIESCENE_API void AddComponents(FMovieSceneEntityID EntityID, const FComponentMask& EntityComponentMask);
+	MOVIESCENE_API void AddComponents(FMovieSceneEntityID EntityID, const FComponentMask& EntityComponentMask, EEntityRecursion Recursion);
 
 
 	/**
@@ -293,8 +288,8 @@ public:
 	 * @param EntityID         The ID of the entity to remove the component from
 	 * @param ComponentTypeID  The ID of the component type to remove from the entity
 	 */
-	void RemoveComponent(FMovieSceneEntityID EntityID, FComponentTypeID ComponentTypeID);
-	void RemoveComponent(FMovieSceneEntityID EntityID, FComponentTypeID ComponentTypeID, EEntityRecursion Recursion);
+	MOVIESCENE_API void RemoveComponent(FMovieSceneEntityID EntityID, FComponentTypeID ComponentTypeID);
+	MOVIESCENE_API void RemoveComponent(FMovieSceneEntityID EntityID, FComponentTypeID ComponentTypeID, EEntityRecursion Recursion);
 
 
 	/**
@@ -303,8 +298,8 @@ public:
 	 * @param EntityID             The ID of the entity to remove the components from
 	 * @param ComponentsToRemove   A mask constituting the components that should be removed (set bits indicate components to add)
 	 */
-	void RemoveComponents(FMovieSceneEntityID EntityID, const FComponentMask& ComponentsToRemove);
-	void RemoveComponents(FMovieSceneEntityID EntityID, const FComponentMask& ComponentsToRemove, EEntityRecursion Recursion);
+	MOVIESCENE_API void RemoveComponents(FMovieSceneEntityID EntityID, const FComponentMask& ComponentsToRemove);
+	MOVIESCENE_API void RemoveComponents(FMovieSceneEntityID EntityID, const FComponentMask& ComponentsToRemove, EEntityRecursion Recursion);
 
 
 	/**
@@ -314,7 +309,7 @@ public:
 	 * @param DstEntityID      The ID of the entity to copy to
 	 * @param ComponentTypeID  The ID of the component type to copy. Must exist on SrcEntityID
 	 */
-	bool CopyComponent(FMovieSceneEntityID SrcEntityID, FMovieSceneEntityID DstEntityID, FComponentTypeID ComponentTypeID);
+	MOVIESCENE_API bool CopyComponent(FMovieSceneEntityID SrcEntityID, FMovieSceneEntityID DstEntityID, FComponentTypeID ComponentTypeID);
 
 
 	/**
@@ -324,7 +319,7 @@ public:
 	 * @param DstEntityID      The ID of the entity to copy to
 	 * @param ComponentsToCopy  A mask constituting the components that should be copied (set bits indicate components to copy)
 	 */
-	void CopyComponents(FMovieSceneEntityID SrcEntityID, FMovieSceneEntityID DstEntityID, const FComponentMask& ComponentsToCopy);
+	MOVIESCENE_API void CopyComponents(FMovieSceneEntityID SrcEntityID, FMovieSceneEntityID DstEntityID, const FComponentMask& ComponentsToCopy);
 
 
 	/**
@@ -333,7 +328,7 @@ public:
 	 * @param EntityID             The ID of the entity to check
 	 * @param ComponentTypeID      The type of the component that is being tested for
 	 */
-	bool HasComponent(FMovieSceneEntityID EntityID, FComponentTypeID ComponentTypeID) const;
+	MOVIESCENE_API bool HasComponent(FMovieSceneEntityID EntityID, FComponentTypeID ComponentTypeID) const;
 
 
 	/**
@@ -342,7 +337,7 @@ public:
 	 * @param InEntity  The ID of the entity
 	 * @return The type mask for this entity, or an empty mask if it has no components
 	 */
-	const FComponentMask& GetEntityType(FMovieSceneEntityID InEntity) const;
+	MOVIESCENE_API const FComponentMask& GetEntityType(FMovieSceneEntityID InEntity) const;
 
 
 	/**
@@ -351,7 +346,7 @@ public:
 	 * @param InEntity   The ID of the entity
 	 * @param InNewMask  The new mask of the entity that defines which components it should have
 	 */
-	void ChangeEntityType(FMovieSceneEntityID InEntity, const FComponentMask& InNewMask);
+	MOVIESCENE_API void ChangeEntityType(FMovieSceneEntityID InEntity, const FComponentMask& InNewMask);
 
 
 	/**
@@ -360,7 +355,7 @@ public:
 	 * @param EntityID             The ID of the entity to remove the components from
 	 * @param EntitiesToKeep       A mask constituting the components that should be kept on the entity
 	 */
-	void FilterComponents(FMovieSceneEntityID EntityID, const FComponentMask& EntitiesToKeep);
+	MOVIESCENE_API void FilterComponents(FMovieSceneEntityID EntityID, const FComponentMask& EntitiesToKeep);
 
 
 	/**
@@ -370,7 +365,7 @@ public:
 	 * @param SourceEntityID       The ID of the entity to copy components from
 	 * @param OptionalMask         (Optional) A mask constituting the components that should be copied
 	 */
-	void CombineComponents(FMovieSceneEntityID DestinationEntityID, FMovieSceneEntityID SourceEntityID, const FComponentMask* OptionalMask = nullptr);
+	MOVIESCENE_API void CombineComponents(FMovieSceneEntityID DestinationEntityID, FMovieSceneEntityID SourceEntityID, const FComponentMask* OptionalMask = nullptr);
 
 
 	/**
@@ -379,7 +374,7 @@ public:
 	 * @param InOther  The ID of the entity to duplicate
 	 * @return An ID to a new entity that has exactly the same combination and value of components as InOther
 	 */
-	FMovieSceneEntityID DuplicateEntity(FMovieSceneEntityID InOther);
+	MOVIESCENE_API FMovieSceneEntityID DuplicateEntity(FMovieSceneEntityID InOther);
 
 
 	/**
@@ -388,7 +383,7 @@ public:
 	 * @param InOutEntity          The ID of the entity to overwrite. Doesn't have to be valid.
 	 * @param InEntityToDuplicate  The ID of the entity to duplicate
 	 */
-	void OverwriteEntityWithDuplicate(FMovieSceneEntityID& InOutEntity, FMovieSceneEntityID InEntityToDuplicate);
+	MOVIESCENE_API void OverwriteEntityWithDuplicate(FMovieSceneEntityID& InOutEntity, FMovieSceneEntityID InEntityToDuplicate);
 
 
 	/**
@@ -406,7 +401,7 @@ public:
 	/**
 	 * Runs all initializers for the specified parent/child allocation
 	 */
-	void InitializeChildAllocation(const FComponentMask& ParentType, const FComponentMask& ChildType, const FEntityAllocation* ParentAllocation, TArrayView<const int32> ParentAllocationOffsets, const FEntityRange& InChildEntityRange);
+	MOVIESCENE_API void InitializeChildAllocation(const FComponentMask& ParentType, const FComponentMask& ChildType, const FEntityAllocation* ParentAllocation, TArrayView<const int32> ParentAllocationOffsets, const FEntityRange& InChildEntityRange);
 
 	/**
 	 * Destroy a previously registered instanced child initializer using its index
@@ -419,12 +414,12 @@ public:
 	/**
 	 * Run through all entities in this entity manager, ensuring that all mutual components exist
 	 */
-	void AddMutualComponents();
+	MOVIESCENE_API void AddMutualComponents();
 
 	/**
 	 * Run through all entities in this entity manager, ensuring that all mutual components exist for any component types that match the specified filter
 	 */
-	void AddMutualComponents(const FEntityComponentFilter& InFilter);
+	MOVIESCENE_API void AddMutualComponents(const FEntityComponentFilter& InFilter);
 
 public:
 
@@ -573,7 +568,7 @@ public:
 	/**
 	 * Goes through all entity data and compacts like-for-like allocations into as few allocations as possible, resulting in the optimal data layout
 	 */
-	void Compact();
+	MOVIESCENE_API void Compact();
 
 
 	/**
@@ -583,7 +578,7 @@ public:
 	 * @param Mutation    Implementation that defines how to mutate the entities that match the filter
 	 * @return The number of entities that were mutated, or 0 if none were matched
 	 */
-	int32 MutateAll(const FEntityComponentFilter& Filter, const IMovieSceneEntityMutation& Mutation);
+	MOVIESCENE_API int32 MutateAll(const FEntityComponentFilter& Filter, const IMovieSceneEntityMutation& Mutation, EMutuallyInclusiveComponentType MutualTypes = EMutuallyInclusiveComponentType::Mandatory);
 
 
 	/**
@@ -593,7 +588,7 @@ public:
 	 * @param Mutation    Implementation that defines how to mutate the entities that match the filter
 	 * @return The number of entities that were mutated, or 0 if none were matched
 	 */
-	int32 MutateConditional(const FEntityComponentFilter& Filter, const IMovieSceneConditionalEntityMutation& Mutation);
+	MOVIESCENE_API int32 MutateConditional(const FEntityComponentFilter& Filter, const IMovieSceneConditionalEntityMutation& Mutation, EMutuallyInclusiveComponentType MutualTypes = EMutuallyInclusiveComponentType::Mandatory);
 
 
 	/**
@@ -603,7 +598,7 @@ public:
 	 *
 	 * @param EntityID    The ID of the entity to touch.
 	 */
-	void TouchEntity(FMovieSceneEntityID EntityID);
+	MOVIESCENE_API void TouchEntity(FMovieSceneEntityID EntityID);
 
 
 	/**
@@ -612,7 +607,7 @@ public:
 	 * @param ParentID   The ID of the parent
 	 * @param ChildID    The ID of the child
 	 */
-	void AddChild(FMovieSceneEntityID ParentID, FMovieSceneEntityID ChildID);
+	MOVIESCENE_API void AddChild(FMovieSceneEntityID ParentID, FMovieSceneEntityID ChildID);
 
 
 	/**
@@ -622,7 +617,7 @@ public:
 	 * @param ParentID    The ID of the parent
 	 * @param OutChildren (out) Array to populate with child entities.
 	 */
-	void GetImmediateChildren(FMovieSceneEntityID ParentID, TArray<FMovieSceneEntityID>& OutChildren) const;
+	MOVIESCENE_API void GetImmediateChildren(FMovieSceneEntityID ParentID, TArray<FMovieSceneEntityID>& OutChildren) const;
 
 
 	/**
@@ -632,7 +627,7 @@ public:
 	 * @param ParentID    The ID of the parent
 	 * @param OutChildren (out) Array to populate with child entities.
 	 */
-	void GetChildren_ParentFirst(FMovieSceneEntityID ParentID, TArray<FMovieSceneEntityID>& OutChildren) const;
+	MOVIESCENE_API void GetChildren_ParentFirst(FMovieSceneEntityID ParentID, TArray<FMovieSceneEntityID>& OutChildren) const;
 
 
 	/**
@@ -678,13 +673,13 @@ public:
 	 * @param Ar          The archive to save to. Ar.IsCountingMemory() must be true.
 	 * @param EntityID    Identifier for the entity to replace object references within
 	 */
-	void CountMemory(FArchive& Ar, FMovieSceneEntityID EntityID);
+	MOVIESCENE_API void CountMemory(FArchive& Ar, FMovieSceneEntityID EntityID);
 
 
 	/**
 	 * Find a component type hander from its registered GUID
 	 */
-	static IComponentTypeHandler* FindComponentTypeHandler(const FGuid& ComponentGuid);
+	static MOVIESCENE_API IComponentTypeHandler* FindComponentTypeHandler(const FGuid& ComponentGuid);
 
 public:
 
@@ -694,7 +689,7 @@ public:
 	 * @param InFilter (required, non-null) The filter to match allocations against. Filter is copied into the iterator.
 	 * @return An iterator object that walks over all allocations matching the filter.
 	 */
-	FEntityAllocationIteratorProxy Iterate(const FEntityComponentFilter* InFilter) const;
+	MOVIESCENE_API FEntityAllocationIteratorProxy Iterate(const FEntityComponentFilter* InFilter) const;
 
 
 	/**
@@ -703,7 +698,7 @@ public:
 	 * @param InFilter The filter to match allocations against.
 	 * @return True if the entity manager contains any allocations that match the filter, false otherwise
 	 */
-	bool Contains(const FEntityComponentFilter& InFilter) const;
+	MOVIESCENE_API bool Contains(const FEntityComponentFilter& InFilter) const;
 
 
 	/**
@@ -739,7 +734,7 @@ public:
 	bool ContainsAnyComponent(const FComponentMask& ComponentTypeIDs) const
 	{
 		const FComponentMask& Mask = GetAccumulatedMask();
-		return FComponentMask::BitwiseAND(Mask, ComponentTypeIDs, EBitwiseOperatorFlags::MinSize).NumComponents() != 0;
+		return FComponentMask::BitwiseAND(Mask, ComponentTypeIDs, EBitwiseOperatorFlags::MinSize).First() != FComponentTypeID::Invalid();
 	}
 
 	/**
@@ -762,13 +757,13 @@ public:
 	 * @param InFilter The filter to match allocations against. Filter is copied into the iterator.
 	 * @param OutMask  The mask to receive the binary OR accumulation of all entities that pass the filter
 	 */
-	void AccumulateMask(const FEntityComponentFilter& InFilter, FComponentMask& OutMask) const;
+	MOVIESCENE_API void AccumulateMask(const FEntityComponentFilter& InFilter, FComponentMask& OutMask) const;
 
 
 	/**
 	 * Retrieve an up-to-date accumulation of all components present on entities in this manager
 	 */
-	const FComponentMask& GetAccumulatedMask() const;
+	MOVIESCENE_API const FComponentMask& GetAccumulatedMask() const;
 
 
 	/**
@@ -777,8 +772,8 @@ public:
 	 * @param InFilter The filter to match allocations against.
 	 * @return True if the entity manager contains any allocations that match the filter, false otherwise
 	 */
-	void EnterIteration() const;
-	void ExitIteration() const;
+	MOVIESCENE_API void EnterIteration() const;
+	MOVIESCENE_API void ExitIteration() const;
 
 	void CheckCanChangeStructure() const
 	{
@@ -824,9 +819,9 @@ public:
 	/**
 	 * Increment the current serial number for systems observing this manager. Should be called after any system is run
 	 */
-	void IncrementSystemSerial()
+	void IncrementSystemSerial(uint64 IncAmount = 1)
 	{
-		++SystemSerialNumber;
+		SystemSerialNumber += IncAmount;
 	}
 
 	/**
@@ -868,7 +863,7 @@ public:
 	/**
 	 * Explicitly add referenced objects from an external source. This is not called by default for the global entity manager because each entity owner should do so to avoid cyclic dependencies.
 	 */
-	void AddReferencedObjects(FReferenceCollector& ReferenceCollector);
+	MOVIESCENE_API void AddReferencedObjects(FReferenceCollector& ReferenceCollector);
 
 	
 	/**
@@ -877,7 +872,7 @@ public:
 	 * @param InOutEntity     The entity ID to be reassigned. If it is already valid, the existing entity will be freed
 	 * @param EntityToDiscard The entity containing the components to replace InOutEntity with. This Entity ID will be invalid after this function call.
 	 */
-	void ReplaceEntityID(FMovieSceneEntityID& InOutEntity, FMovieSceneEntityID EntityToDiscard);
+	MOVIESCENE_API void ReplaceEntityID(FMovieSceneEntityID& InOutEntity, FMovieSceneEntityID EntityToDiscard);
 
 	uint32 GetHandleGeneration() const
 	{
@@ -897,39 +892,39 @@ private:
 		Uninitialized,
 		DefaultConstructed
 	};
-	void OnStructureChanged();
+	MOVIESCENE_API void OnStructureChanged();
 
-	FEntityAllocation* CreateEntityAllocation(const FComponentMask& EntityComponentMask, uint16 InitialCapacity, uint16 MaxCapacity, FEntityAllocation* MigrateComponentDataFrom = nullptr);
-	int32 CreateEntityAllocationEntry(const FComponentMask& EntityComponentMask, uint16 InitialCapacity, uint16 MaxCapacity);
+	MOVIESCENE_API FEntityAllocation* CreateEntityAllocation(const FComponentMask& EntityComponentMask, uint16 InitialCapacity, uint16 MaxCapacity, FEntityAllocation* MigrateComponentDataFrom = nullptr);
+	MOVIESCENE_API int32 CreateEntityAllocationEntry(const FComponentMask& EntityComponentMask, uint16 InitialCapacity, uint16 MaxCapacity);
 
-	int32 GetOrCreateAllocationWithSlack(const FComponentMask& EntityComponentMask, int32* InOutDesiredSlack = nullptr);
-	int32 CreateAllocationWithSlack(const FComponentMask& EntityComponentMask, int32* InOutDesiredSlack = nullptr);
-	int32 MigrateEntity(int32 DestIndex, int32 SourceIndex, int32 SourceEntryIndexWithinAllocation);
+	MOVIESCENE_API int32 GetOrCreateAllocationWithSlack(const FComponentMask& EntityComponentMask, int32* InOutDesiredSlack = nullptr);
+	MOVIESCENE_API int32 CreateAllocationWithSlack(const FComponentMask& EntityComponentMask, int32* InOutDesiredSlack = nullptr);
+	MOVIESCENE_API int32 MigrateEntity(int32 DestIndex, int32 SourceIndex, int32 SourceEntryIndexWithinAllocation);
 
-	void CopyComponents(int32 DestAllocationIndex, int32 DestEntityIndex, int32 SourceAllocationIndex, int32 SourceEntityIndex, const FComponentMask* OptionalMask = nullptr);
+	MOVIESCENE_API void CopyComponents(int32 DestAllocationIndex, int32 DestEntityIndex, int32 SourceAllocationIndex, int32 SourceEntityIndex, const FComponentMask* OptionalMask = nullptr);
 
-	int32 AddEntityToAllocation(int32 AllocationIndex, FMovieSceneEntityID ID, EMemoryType MemoryType = EMemoryType::DefaultConstructed);
-	void RemoveEntityFromAllocation(int32 AllocationIndex, int32 SourceEntryIndexWithinAllocation);
+	MOVIESCENE_API int32 AddEntityToAllocation(int32 AllocationIndex, FMovieSceneEntityID ID, EMemoryType MemoryType = EMemoryType::DefaultConstructed);
+	MOVIESCENE_API void RemoveEntityFromAllocation(int32 AllocationIndex, int32 SourceEntryIndexWithinAllocation);
 
-	FEntityAllocation* MigrateAllocation(int32 AllocationIndex, const FComponentMask& NewComponentMask);
+	MOVIESCENE_API FEntityAllocation* MigrateAllocation(int32 AllocationIndex, const FComponentMask& NewComponentMask);
 
-	void CombineAllocations(int32 DestinationIndex, int32 SourceIndex);
+	MOVIESCENE_API void CombineAllocations(int32 DestinationIndex, int32 SourceIndex);
 
 	FEntityAllocation* GetAllocation(int32 AllocationIndex) const
 	{
 		return EntityAllocations[AllocationIndex];
 	}
 
-	int32 ReserveAllocation(int32 AllocationIndex, int32 NumToReserve);
-	FEntityAllocation* GrowAllocation(int32 AllocationIndex, int32 MinNumToGrowBy = 1);
+	MOVIESCENE_API int32 ReserveAllocation(int32 AllocationIndex, int32 NumToReserve);
+	MOVIESCENE_API FEntityAllocation* GrowAllocation(int32 AllocationIndex, int32 MinNumToGrowBy = 1);
 
-	void DestroyAllocation(FEntityAllocation* Allocation, bool bDestructComponentData = true);
+	MOVIESCENE_API void DestroyAllocation(FEntityAllocation* Allocation, bool bDestructComponentData = true);
 
-	virtual void NotifyUObjectDeleted(const UObjectBase* Object, int32 Index) override;
-	virtual void OnUObjectArrayShutdown() override;
-	virtual FString GetReferencerName() const;
+	MOVIESCENE_API virtual void NotifyUObjectDeleted(const UObjectBase* Object, int32 Index) override;
+	MOVIESCENE_API virtual void OnUObjectArrayShutdown() override;
+	MOVIESCENE_API virtual FString GetReferencerName() const;
 
-	void CheckInvariants();
+	MOVIESCENE_API void CheckInvariants();
 
 	friend struct FEntityAllocationProxy;
 	friend struct FEntityAllocationIterator;

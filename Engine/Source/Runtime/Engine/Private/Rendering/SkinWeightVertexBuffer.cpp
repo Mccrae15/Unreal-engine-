@@ -125,10 +125,9 @@ void FSkinWeightLookupVertexBuffer::AllocateData()
 	LookupData = new TStaticMeshVertexData<uint32>(bNeedsCPUAccess);
 }
 
-void FSkinWeightLookupVertexBuffer::InitRHI()
+void FSkinWeightLookupVertexBuffer::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	// BUF_ShaderResource is needed for support of the SkinCache (we could make is dependent on GEnableGPUSkinCacheShaders or are there other users?)
-	const bool bHadLookupData = LookupData != nullptr;
 	VertexBufferRHI = CreateRHIBuffer_RenderThread();
 	if (VertexBufferRHI)
 	{
@@ -140,7 +139,7 @@ void FSkinWeightLookupVertexBuffer::InitRHI()
 
 		if (bSRV)
 		{
-			SRVValue = RHICreateShaderResourceView(FShaderResourceViewInitializer(bHadLookupData? VertexBufferRHI : nullptr, PixelFormat));
+			SRVValue = RHICmdList.CreateShaderResourceView(VertexBufferRHI, PixelFormatStride, PixelFormat);
 		}
 	}
 }
@@ -166,9 +165,7 @@ void FSkinWeightLookupVertexBuffer::InitRHIForStreaming(FRHIBuffer* Intermediate
 {
 	if (VertexBufferRHI && IntermediateBuffer)
 	{
-		check(SRVValue);
 		Batcher.QueueUpdateRequest(VertexBufferRHI, IntermediateBuffer);
-		Batcher.QueueUpdateRequest(SRVValue, VertexBufferRHI, PixelFormatStride, PixelFormat);
 	}
 }
 
@@ -177,10 +174,6 @@ void FSkinWeightLookupVertexBuffer::ReleaseRHIForStreaming(FRHIResourceUpdateBat
 	if (VertexBufferRHI)
 	{
 		Batcher.QueueUpdateRequest(VertexBufferRHI, nullptr);
-	}
-	if (SRVValue)
-	{
-		Batcher.QueueUpdateRequest(SRVValue, nullptr, 0, 0);
 	}
 }
 
@@ -421,9 +414,7 @@ void FSkinWeightDataVertexBuffer::InitRHIForStreaming(FRHIBuffer* IntermediateBu
 {
 	if (VertexBufferRHI && IntermediateBuffer)
 	{
-		check(SRVValue);
 		Batcher.QueueUpdateRequest(VertexBufferRHI, IntermediateBuffer);
-		Batcher.QueueUpdateRequest(SRVValue, VertexBufferRHI, GetPixelFormatStride(), GetPixelFormat());
 	}
 }
 
@@ -433,10 +424,6 @@ void FSkinWeightDataVertexBuffer::ReleaseRHIForStreaming(FRHIResourceUpdateBatch
 	{
 		Batcher.QueueUpdateRequest(VertexBufferRHI, nullptr);
 	}
-	if (SRVValue)
-	{
-		Batcher.QueueUpdateRequest(SRVValue, nullptr, 0, 0);
-	}
 }
 
 bool FSkinWeightDataVertexBuffer::IsWeightDataValid() const
@@ -444,12 +431,11 @@ bool FSkinWeightDataVertexBuffer::IsWeightDataValid() const
 	return WeightData != nullptr;
 }
 
-void FSkinWeightDataVertexBuffer::InitRHI()
+void FSkinWeightDataVertexBuffer::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	SCOPED_LOADTIMER(FSkinWeightVertexBuffer_InitRHI);
 
 	// BUF_ShaderResource is needed for support of the SkinCache (we could make is dependent on GEnableGPUSkinCacheShaders or are there other users?)
-	const bool bHadWeightData = WeightData != nullptr;
 	VertexBufferRHI = CreateRHIBuffer_RenderThread();
 	
 	bool bSRV = VertexBufferRHI && GPixelFormats[GetPixelFormat()].Supported;
@@ -460,7 +446,7 @@ void FSkinWeightDataVertexBuffer::InitRHI()
 
 	if (bSRV)
 	{
-		SRVValue = RHICreateShaderResourceView(FShaderResourceViewInitializer(bHadWeightData ? VertexBufferRHI : nullptr, GetPixelFormat()));
+		SRVValue = RHICmdList.CreateShaderResourceView(VertexBufferRHI, GetPixelFormatStride(), GetPixelFormat());
 	}
 }
 
@@ -673,6 +659,20 @@ void FSkinWeightVertexBuffer::CleanUp()
 	LookupVertexBuffer.CleanUp();
 }
 
+void FSkinWeightVertexBuffer::RebuildLookupVertexBuffer()
+{
+	uint32 MaxBoneInfluences = DataVertexBuffer.GetMaxBoneInfluences();
+	uint32 NumVertices = DataVertexBuffer.GetNumBoneWeights() / DataVertexBuffer.GetMaxBoneInfluences();
+	LookupVertexBuffer.Init(NumVertices);
+
+	uint32 WeightOffset = 0;
+	for (uint32 VertIdx = 0; VertIdx < NumVertices; VertIdx++)
+	{
+		LookupVertexBuffer.SetWeightOffsetAndInfluenceCount(VertIdx, WeightOffset * GetBoneIndexAndWeightByteSize(), MaxBoneInfluences);
+		WeightOffset += MaxBoneInfluences;
+	}
+}
+
 FArchive& operator<<(FArchive& Ar, FSkinWeightVertexBuffer& VertexBuffer)
 {
 	Ar.UsingCustomVersion(FAnimObjectVersion::GUID);	
@@ -681,16 +681,7 @@ FArchive& operator<<(FArchive& Ar, FSkinWeightVertexBuffer& VertexBuffer)
 	if (Ar.IsLoading() && Ar.CustomVer(FAnimObjectVersion::GUID) < FAnimObjectVersion::UnlimitedBoneInfluences)
 	{
 		// LookupVertexBuffer doesn't exist before this version, so construct its content from scratch
-		uint32 MaxBoneInfluences = VertexBuffer.DataVertexBuffer.GetMaxBoneInfluences();
-		uint32 NumVertices = VertexBuffer.DataVertexBuffer.GetNumBoneWeights() / VertexBuffer.DataVertexBuffer.GetMaxBoneInfluences();
-		VertexBuffer.LookupVertexBuffer.Init(NumVertices);
-
-		uint32 WeightOffset = 0;
-		for (uint32 VertIdx = 0; VertIdx < NumVertices; VertIdx++)
-		{
-			VertexBuffer.LookupVertexBuffer.SetWeightOffsetAndInfluenceCount(VertIdx, WeightOffset * VertexBuffer.GetBoneIndexAndWeightByteSize(), MaxBoneInfluences);
-			WeightOffset += MaxBoneInfluences;
-		}
+		VertexBuffer.RebuildLookupVertexBuffer();
 	}
 	else
 	{

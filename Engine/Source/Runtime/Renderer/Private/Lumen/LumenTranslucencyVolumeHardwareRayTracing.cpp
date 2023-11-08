@@ -52,7 +52,6 @@ class FLumenTranslucencyVolumeHardwareRayTracing : public FLumenHardwareRayTraci
 	DECLARE_LUMEN_RAYTRACING_SHADER(FLumenTranslucencyVolumeHardwareRayTracing, Lumen::ERayTracingShaderDispatchSize::DispatchSize1D)
 
 	class FRadianceCache : SHADER_PERMUTATION_BOOL("USE_RADIANCE_CACHE");
-
 	using FPermutationDomain = TShaderPermutationDomain<FRadianceCache>;
 
 	// Parameters
@@ -68,7 +67,7 @@ class FLumenTranslucencyVolumeHardwareRayTracing : public FLumenHardwareRayTraci
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, Lumen::ERayTracingShaderDispatchType ShaderDispatchType, FShaderCompilerEnvironment& OutEnvironment)
 	{
-		FLumenHardwareRayTracingShaderBase::ModifyCompilationEnvironment(Parameters, ShaderDispatchType, Lumen::ESurfaceCacheSampling::AlwaysResidentPages, OutEnvironment);
+		FLumenHardwareRayTracingShaderBase::ModifyCompilationEnvironment(Parameters, ShaderDispatchType, Lumen::ESurfaceCacheSampling::AlwaysResidentPagesWithoutFeedback, OutEnvironment);
 	}
 
 	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)

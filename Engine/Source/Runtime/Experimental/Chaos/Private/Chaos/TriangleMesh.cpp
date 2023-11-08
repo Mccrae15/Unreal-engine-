@@ -250,29 +250,50 @@ TArray<TVec2<int32>> FTriangleMesh::GetUniqueAdjacentPoints() const
 TArray<TVec4<int32>> FTriangleMesh::GetUniqueAdjacentElements() const
 {
 	// Build a map with a list of opposite points for every edges
-	TMap<TVec2<int32> /*Edge*/, TArray<int32> /*OppositePoints*/> EdgeMap;
+	// OppositePoint = { Index, bEdgeFlipped }
+	TMap<TVec2<int32> /*Edge*/, TArray<TTuple<int32, bool>> /*OppositePoints*/> EdgeMap;
 
 	auto SortedEdge = [](int32 P0, int32 P1) { return P0 <= P1 ? TVec2<int32>(P0, P1) : TVec2<int32>(P1, P0); };
 
 	for (const TVec3<int32>& Element : MElements)
 	{
-		EdgeMap.FindOrAdd(SortedEdge(Element[0], Element[1])).AddUnique(Element[2]);
-		EdgeMap.FindOrAdd(SortedEdge(Element[1], Element[2])).AddUnique(Element[0]);
-		EdgeMap.FindOrAdd(SortedEdge(Element[2], Element[0])).AddUnique(Element[1]);
+		EdgeMap.FindOrAdd(SortedEdge(Element[0], Element[1])).AddUnique({ Element[2], Element[0] > Element[1] });
+		EdgeMap.FindOrAdd(SortedEdge(Element[1], Element[2])).AddUnique({ Element[0], Element[1] > Element[2] });
+		EdgeMap.FindOrAdd(SortedEdge(Element[2], Element[0])).AddUnique({ Element[1], Element[2] > Element[0] });
 	}
+
+	auto OrderOppositePoints = [](const TVec2<int32>& Edge, const TTuple<int32, bool>& Opposite0, const TTuple<int32, bool>& Opposite1)->TVec4<int32>
+	{
+		// Unflipped opposite point before flipped
+		if (!Opposite0.Get<1>() && Opposite1.Get<1>())
+		{
+			return TVec4<int32>(Edge[0], Edge[1], Opposite0.Get<0>(), Opposite1.Get<0>());
+		}
+		if (Opposite0.Get<1>() && !Opposite1.Get<1>())
+		{
+			return TVec4<int32>(Edge[0], Edge[1], Opposite1.Get<0>(), Opposite0.Get<0>());
+		}
+		// Both same flipped, just order lowest to highest
+		if (Opposite0.Get<0>() < Opposite1.Get<0>())
+		{
+			return TVec4<int32>(Edge[0], Edge[1], Opposite0.Get<0>(), Opposite1.Get<0>());
+		}
+
+		return TVec4<int32>(Edge[0], Edge[1], Opposite1.Get<0>(), Opposite0.Get<0>());
+	};
 
 	// Build constraints
 	TArray<TVec4<int32>> BendingConstraints;
-	for (const TPair<TVec2<int32>, TArray<int32>>& EdgeOppositePoints : EdgeMap)
+	for (const TPair<TVec2<int32>, TArray<TTuple<int32, bool>>>& EdgeOppositePoints : EdgeMap)
 	{
 		const TVec2<int32>& Edge = EdgeOppositePoints.Key;
-		const TArray<int32>& OppositePoints = EdgeOppositePoints.Value;
+		const TArray<TTuple<int32, bool>>& OppositePoints = EdgeOppositePoints.Value;
 
 		for (int32 Index0 = 0; Index0 < OppositePoints.Num(); ++Index0)
 		{
 			for (int32 Index1 = Index0 + 1; Index1 < OppositePoints.Num(); ++Index1)
 			{
-				BendingConstraints.Add({ Edge[0], Edge[1], OppositePoints[Index0], OppositePoints[Index1] });
+				BendingConstraints.Add(OrderOppositePoints(Edge, OppositePoints[Index0], OppositePoints[Index1] ));
 			}
 		}
 	}
@@ -1185,7 +1206,7 @@ TArray<int32> FTriangleMesh::GetVertexImportanceOrdering(
 			}
 			if (NumCoincident > NumCoincidentPrev)
 			{
-				Sort(&PointOrder[0], NumPoints - NumCoincidentPrev, AscendingRankPred);
+				Algo::Sort(MakeArrayView(PointOrder.GetData(), NumPoints - NumCoincidentPrev), AscendingRankPred);
 			}
 		}
 	}
@@ -1369,7 +1390,7 @@ TArray<int32> FTriangleMesh::GetVertexImportanceOrdering(
 
 		// Sort the just-added points by curvature (they were in arbitrary order before)
 		DescendingPredicate<FReal> DescendingCurvaturePred(PointCurvatures);
-		Sort(&PointOrder[MovedPtsOffset], NumToMoveToFront, DescendingCurvaturePred);
+		Algo::Sort(MakeArrayView(&PointOrder[MovedPtsOffset], NumToMoveToFront), DescendingCurvaturePred);
 
 		MovedPtsOffset += NumToMoveToFront;
 	}
@@ -1378,7 +1399,7 @@ TArray<int32> FTriangleMesh::GetVertexImportanceOrdering(
 	if (MovedPtsOffset < NumPoints)
 	{
 		DescendingPredicate<FReal> DescendingCurvaturePred(PointCurvatures);
-		Sort(&PointOrder[MovedPtsOffset], NumPoints - MovedPtsOffset - NumCoincident, DescendingCurvaturePred);
+		Algo::Sort(MakeArrayView(&PointOrder[MovedPtsOffset], NumPoints - MovedPtsOffset - NumCoincident), DescendingCurvaturePred);
 	}
 
 	return PointOrder;
@@ -1652,7 +1673,7 @@ template CHAOS_API bool FTriangleMesh::SmoothProject<FRealSingle>(const TBVHType
 template CHAOS_API bool FTriangleMesh::SmoothProject<FRealDouble>(const TBVHType<FRealDouble>& BVH, const TConstArrayView<FVec3>& Points, const TArray<FVec3>& PointNormals, const FVec3& Point, int32& TriangleIndex, FVec3& Weights, const int32 MaxIters) const;
 
 template<typename T>
-void FTriangleMesh::BuildSpatialHash(const TConstArrayView<TVec3<T>>& Points, TSpatialHashType<T>& SpatialHash) const
+void FTriangleMesh::BuildSpatialHash(const TConstArrayView<TVec3<T>>& Points, TSpatialHashType<T>& SpatialHash, const T MinSpatialLodSize) const
 {
 	TArray<TTriangleMeshBvEntry<T>> BVEntries;
 	const int32 NumTris = MElements.Num();
@@ -1662,10 +1683,10 @@ void FTriangleMesh::BuildSpatialHash(const TConstArrayView<TVec3<T>>& Points, TS
 		BVEntries.Add({ this, &Points, Tri });
 	}
 
-	SpatialHash.Initialize(BVEntries);
+	SpatialHash.Initialize(BVEntries, MinSpatialLodSize);
 }
-template void FTriangleMesh::BuildSpatialHash<FRealSingle>(const TConstArrayView<TVec3<FRealSingle>>& Points, TSpatialHashType<FRealSingle>& SpatialHash) const;
-template void FTriangleMesh::BuildSpatialHash<FRealDouble>(const TConstArrayView<TVec3<FRealDouble>>& Points, TSpatialHashType<FRealDouble>& SpatialHash) const;
+template void FTriangleMesh::BuildSpatialHash<FRealSingle>(const TConstArrayView<TVec3<FRealSingle>>& Points, TSpatialHashType<FRealSingle>& SpatialHash, const FRealSingle MinSpatialLodSize) const;
+template void FTriangleMesh::BuildSpatialHash<FRealDouble>(const TConstArrayView<TVec3<FRealDouble>>& Points, TSpatialHashType<FRealDouble>& SpatialHash, const FRealDouble MinSpatialLodSize) const;
 
 template<typename T>
 bool FTriangleMesh::PointProximityQuery(const TSpatialHashType<T>& SpatialHash, const TConstArrayView<TVec3<T>>& Points, const int32 PointIndex, const TVec3<T>& PointPosition, const T PointThickness, const T ThisThickness,

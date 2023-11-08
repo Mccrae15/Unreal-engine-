@@ -168,7 +168,7 @@ DEFINE_FUNCTION(UDataRegistrySubsystem::execGetCachedItemFromLookupBP)
 
 UDataRegistry* UDataRegistrySubsystem::GetRegistryForType(FName RegistryType) const
 {
-	UDataRegistry* const * FoundRegistry = RegistryMap.Find(RegistryType);
+	auto* FoundRegistry = RegistryMap.Find(RegistryType);
 
 	if (FoundRegistry && *FoundRegistry)
 	{
@@ -853,16 +853,9 @@ void UDataRegistrySubsystem::PostEngineInit()
 
 void UDataRegistrySubsystem::PostGameplayTags()
 {
-	UAssetManager* AssetManager = UAssetManager::GetIfValid();
-
-	if (AssetManager)
-	{
-		AssetManager->CallOrRegister_OnCompletedInitialScan(FSimpleMulticastDelegate::FDelegate::CreateUObject(this, &UDataRegistrySubsystem::PostAssetManager));
-	}
-	else
-	{
-		UE_LOG(LogDataRegistry, Error, TEXT("Cannot initialize DataRegistrySubsystem because there is no AssetManager! Enable AssetManager or disable DataRegistry plugin"));
-	}
+	check(UAssetManager::IsInitialized());
+	UAssetManager& AssetManager = UAssetManager::Get();
+	AssetManager.CallOrRegister_OnCompletedInitialScan(FSimpleMulticastDelegate::FDelegate::CreateUObject(this, &UDataRegistrySubsystem::PostAssetManager));
 }
 
 void UDataRegistrySubsystem::PostAssetManager()

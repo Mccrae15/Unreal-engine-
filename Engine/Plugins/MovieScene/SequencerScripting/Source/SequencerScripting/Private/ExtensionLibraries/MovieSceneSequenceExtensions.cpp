@@ -7,6 +7,7 @@
 #include "MovieSceneSequence.h"
 #include "MovieScene.h"
 #include "MovieSceneFolder.h"
+#include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
 #include "Compilation/MovieSceneCompiledDataManager.h"
 #include "MovieSceneSpawnable.h"
 #include "SequencerScriptingRange.h"
@@ -648,23 +649,6 @@ EUpdateClockSource UMovieSceneSequenceExtensions::GetClockSource(UMovieSceneSequ
 	return EUpdateClockSource::Tick;
 }
 
-FTimecode UMovieSceneSequenceExtensions::GetTimecodeSource(UMovieSceneSequence* Sequence)
-{
-	if (!Sequence)
-	{
-		FFrame::KismetExecutionMessage(TEXT("Cannot call GetTimecodeSource on a null sequence"), ELogVerbosity::Error);
-		return FTimecode();
-	}
-
-	UMovieScene* MovieScene = GetMovieScene(Sequence);
-	if (!MovieScene)
-	{
-		return FTimecode();
-	}
-
-	return MovieScene->GetEarliestTimecodeSource().Timecode;
-}
-
 FMovieSceneBindingProxy UMovieSceneSequenceExtensions::FindBindingByName(UMovieSceneSequence* Sequence, FString Name)
 {
 	if (!Sequence)
@@ -837,33 +821,33 @@ TArray<UObject*> UMovieSceneSequenceExtensions::LocateBoundObjects(UMovieSceneSe
 		return TArray<UObject*>();
 	}
 
-	TArray<UObject*> Result;
-	TArray<UObject*, TInlineAllocator<1>> OutObjects;
-	Sequence->LocateBoundObjects(InBinding.BindingID, Context, OutObjects);
-	Result.Append(OutObjects);
+	class FTransientPlayer : public IMovieScenePlayer
+	{
+	public:
+		FMovieSceneRootEvaluationTemplateInstance Template;
+		virtual FMovieSceneRootEvaluationTemplateInstance& GetEvaluationTemplate() override { return Template; }
+		virtual void UpdateCameraCut(UObject* CameraObject, const EMovieSceneCameraCutParams& CameraCutParams) override {}
+		virtual void SetViewportSettings(const TMap<FViewportClient*, EMovieSceneViewportParams>& ViewportParamsMap) override {}
+		virtual void GetViewportSettings(TMap<FViewportClient*, EMovieSceneViewportParams>& ViewportParamsMap) const override {}
+		virtual EMovieScenePlayerStatus::Type GetPlaybackStatus() const { return EMovieScenePlayerStatus::Stopped; }
+		virtual void SetPlaybackStatus(EMovieScenePlayerStatus::Type InPlaybackStatus) override {}
+	} Player;
 
+	Player.State.AssignSequence(MovieSceneSequenceID::Root, *Sequence, Player);
+
+	TArrayView<TWeakObjectPtr<>> Objects = Player.FindBoundObjects(InBinding.BindingID, MovieSceneSequenceID::Root);
+	TArray<UObject*> Result;
+	for (TWeakObjectPtr<> WeakObject : Objects)
+	{
+		if (WeakObject.IsValid())
+		{
+			Result.Add(WeakObject.Get());
+		}
+	}
 	return Result;
 }
 
-FMovieSceneObjectBindingID UMovieSceneSequenceExtensions::MakeBindingID(UMovieSceneSequence* RootSequence, const FMovieSceneBindingProxy& InBinding, EMovieSceneObjectBindingSpace Space)
-{
-	if (!RootSequence)
-	{
-		FFrame::KismetExecutionMessage(TEXT("Cannot call MakeBindingID on a null sequence"), ELogVerbosity::Error);
-		return FMovieSceneObjectBindingID();
-	}
-
-	// This function was kinda flawed before - when ::Local was passed for the Space parameter,
-	// and the sub sequence ID could not be found it would always fall back to a binding for ::Root without any Sequence ID
-	FMovieSceneObjectBindingID BindingID = GetPortableBindingID(RootSequence, RootSequence, InBinding);
-	if (Space == EMovieSceneObjectBindingSpace::Root)
-	{
-		BindingID.ReinterpretAsFixed();
-	}
-	return BindingID;
-}
-
-FMovieSceneObjectBindingID UMovieSceneSequenceExtensions::GetBindingID(const FMovieSceneBindingProxy& InBinding)
+FMovieSceneObjectBindingID UMovieSceneSequenceExtensions::GetBindingID(UMovieSceneSequence* Sequence, const FMovieSceneBindingProxy& InBinding)
 {
 	return UE::MovieScene::FRelativeObjectBindingID(InBinding.BindingID);
 }
@@ -1227,6 +1211,80 @@ bool UMovieSceneSequenceExtensions::IsReadOnly(UMovieSceneSequence* Sequence)
 	{
 
 		return MovieScene->IsReadOnly();
+	}
+#endif
+
+	return false;
+}
+
+void UMovieSceneSequenceExtensions::SetPlaybackRangeLocked(UMovieSceneSequence* Sequence, bool bInLocked)
+{
+	if (!Sequence)
+	{
+		FFrame::KismetExecutionMessage(TEXT("Cannot call SetPlaybackRangeLocked on a null sequence"), ELogVerbosity::Error);
+		return;
+	}
+
+#if WITH_EDITORONLY_DATA
+	UMovieScene* MovieScene = Sequence->GetMovieScene();
+	if (MovieScene)
+	{
+		MovieScene->SetPlaybackRangeLocked(bInLocked);
+	}
+#endif
+}
+
+bool UMovieSceneSequenceExtensions::IsPlaybackRangeLocked(UMovieSceneSequence* Sequence)
+{
+	if (!Sequence)
+	{
+		FFrame::KismetExecutionMessage(TEXT("Cannot call IsPlaybackRangeLocked on a null sequence"), ELogVerbosity::Error);
+		return false;
+	}
+
+#if WITH_EDITORONLY_DATA
+	UMovieScene* MovieScene = Sequence->GetMovieScene();
+	if (MovieScene)
+	{
+
+		return MovieScene->IsPlaybackRangeLocked();
+	}
+#endif
+
+	return false;
+}
+
+void UMovieSceneSequenceExtensions::SetMarkedFramesLocked(UMovieSceneSequence* Sequence, bool bInLocked)
+{
+	if (!Sequence)
+	{
+		FFrame::KismetExecutionMessage(TEXT("Cannot call SetMarkedFramesLocked on a null sequence"), ELogVerbosity::Error);
+		return;
+	}
+
+#if WITH_EDITORONLY_DATA
+	UMovieScene* MovieScene = Sequence->GetMovieScene();
+	if (MovieScene)
+	{
+		MovieScene->SetMarkedFramesLocked(bInLocked);
+	}
+#endif
+}
+
+bool UMovieSceneSequenceExtensions::AreMarkedFramesLocked(UMovieSceneSequence* Sequence)
+{
+	if (!Sequence)
+	{
+		FFrame::KismetExecutionMessage(TEXT("Cannot call AreMarkedFramesLocked on a null sequence"), ELogVerbosity::Error);
+		return false;
+	}
+
+#if WITH_EDITORONLY_DATA
+	UMovieScene* MovieScene = Sequence->GetMovieScene();
+	if (MovieScene)
+	{
+
+		return MovieScene->AreMarkedFramesLocked();
 	}
 #endif
 

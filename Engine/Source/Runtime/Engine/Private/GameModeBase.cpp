@@ -482,15 +482,9 @@ void AGameModeBase::ProcessServerTravel(const FString& URL, bool bAbsolute)
 		}
 	}
 
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	FGuid NextMapGuid = UEngine::GetPackageGuid(FName(*NextURL.Map), GetWorld()->IsPlayInEditor());
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
 	// Notify clients we're switching level and give them time to receive.
 	FString URLMod = NextURL.ToString();
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	APlayerController* LocalPlayer = ProcessClientTravel(URLMod, NextMapGuid, bSeamless, bAbsolute);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	APlayerController* LocalPlayer = ProcessClientTravel(URLMod, bSeamless, bAbsolute);
 
 	World->NextURL = URLMod;
 	ENetMode NetMode = GetNetMode();
@@ -673,6 +667,13 @@ void AGameModeBase::PreLogin(const FString& Options, const FString& Address, con
 	}
 
 	FGameModeEvents::GameModePreLoginEvent.Broadcast(this, UniqueId, ErrorMessage);
+}
+
+void AGameModeBase::PreLoginAsync(const FString& Options, const FString& Address, const FUniqueNetIdRepl& UniqueId, const FOnPreLoginCompleteDelegate& OnComplete)
+{
+	FString ErrorMessage;
+	PreLogin(Options, Address, UniqueId, ErrorMessage);
+	OnComplete.ExecuteIfBound(ErrorMessage);
 }
 
 APlayerController* AGameModeBase::Login(UPlayer* NewPlayer, ENetRole InRemoteRole, const FString& Portal, const FString& Options, const FUniqueNetIdRepl& UniqueId, FString& ErrorMessage)

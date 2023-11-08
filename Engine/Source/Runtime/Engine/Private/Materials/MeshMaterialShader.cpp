@@ -11,11 +11,11 @@
 #if ENABLE_COOK_STATS
 namespace MaterialMeshCookStats
 {
-	static int32 ShadersCompiled = 0;
+	static int32 MeshMaterialShadersCompiled = 0;
 	static FCookStatsManager::FAutoRegisterCallback RegisterCookStats([](FCookStatsManager::AddStatFuncRef AddStat)
 	{
-		AddStat(TEXT("MeshMaterial.Misc"), FCookStatsManager::CreateKeyValueArray(
-			TEXT("ShadersCompiled"), ShadersCompiled
+		AddStat(TEXT("Material"), FCookStatsManager::CreateKeyValueArray(
+			TEXT("MeshMaterialShadersCompiled"), MeshMaterialShadersCompiled
 			));
 	});
 }
@@ -29,6 +29,7 @@ static void PrepareMeshMaterialShaderCompileJob(EShaderPlatform Platform,
 	const FMaterialShaderMapId& MaterialShaderMapId,
 	FSharedShaderCompilerEnvironment* MaterialEnvironment,
 	const FShaderPipelineType* ShaderPipeline,
+	const FString& DebugGroupName,
 	const TCHAR* DebugDescription,
 	const TCHAR* DebugExtension,
 	FShaderCompileJob* NewJob)
@@ -49,13 +50,13 @@ static void PrepareMeshMaterialShaderCompileJob(EShaderPlatform Platform,
 	check(VertexFactoryType);
 	VertexFactoryType->ModifyCompilationEnvironment(FVertexFactoryShaderPermutationParameters(Platform, MaterialParameters, VertexFactoryType, ShaderType, PermutationFlags), ShaderEnvironment);
 
-	Material->SetupExtaCompilationSettings(Platform, NewJob->Input.ExtraSettings);
+	Material->SetupExtraCompilationSettings(Platform, NewJob->Input.ExtraSettings);
 
 	//update material shader stats
 	UpdateMaterialShaderCompilingStats(Material);
 
 	UE_LOG(LogShaders, Verbose, TEXT("			%s"), ShaderType->GetName());
-	COOK_STAT(MaterialMeshCookStats::ShadersCompiled++);
+	COOK_STAT(MaterialMeshCookStats::MeshMaterialShadersCompiled++);
 
 	// Allow the shader type to modify the compile environment.
 	ShaderType->SetupCompileEnvironment(Platform, MaterialParameters, VertexFactoryType, Key.PermutationId, PermutationFlags, ShaderEnvironment);
@@ -64,7 +65,7 @@ static void PrepareMeshMaterialShaderCompileJob(EShaderPlatform Platform,
 
 	// Compile the shader environment passed in with the shader type's source code.
 	::GlobalBeginCompileShader(
-		Material->GetUniqueAssetName(Platform, MaterialShaderMapId) / LexToString(Material->GetQualityLevel()),
+		DebugGroupName,
 		VertexFactoryType,
 		ShaderType,
 		ShaderPipeline,
@@ -97,13 +98,14 @@ void FMeshMaterialShaderType::BeginCompileShader(
 	FSharedShaderCompilerEnvironment* MaterialEnvironment,
 	const FVertexFactoryType* VertexFactoryType,
 	TArray<FShaderCommonCompileJobPtr>& NewJobs,
+	const FString& DebugGroupName,
 	const TCHAR* DebugDescription,
 	const TCHAR* DebugExtension) const
 {
 	FShaderCompileJob* NewJob = GShaderCompilingManager->PrepareShaderCompileJob(ShaderMapJobId, FShaderCompileJobKey(this, VertexFactoryType, PermutationId), Priority);
 	if (NewJob)
 	{
-		PrepareMeshMaterialShaderCompileJob(Platform, PermutationFlags, Material, ShaderMapId, MaterialEnvironment, nullptr, DebugDescription, DebugExtension, NewJob);
+		PrepareMeshMaterialShaderCompileJob(Platform, PermutationFlags, Material, ShaderMapId, MaterialEnvironment, nullptr, DebugGroupName, DebugDescription, DebugExtension, NewJob);
 		NewJobs.Add(FShaderCommonCompileJobPtr(NewJob));
 	}
 }
@@ -120,6 +122,7 @@ void FMeshMaterialShaderType::BeginCompileShaderPipeline(
 	const FVertexFactoryType* VertexFactoryType,
 	const FShaderPipelineType* ShaderPipeline,
 	TArray<FShaderCommonCompileJobPtr>& NewJobs,
+	const FString& DebugGroupName,
 	const TCHAR* DebugDescription,
 	const TCHAR* DebugExtension)
 {
@@ -132,7 +135,7 @@ void FMeshMaterialShaderType::BeginCompileShaderPipeline(
 	{
 		for (FShaderCompileJob* StageJob : NewPipelineJob->StageJobs)
 		{
-			PrepareMeshMaterialShaderCompileJob(Platform, PermutationFlags, Material, ShaderMapId, MaterialEnvironment, ShaderPipeline, DebugDescription, DebugExtension, StageJob);
+			PrepareMeshMaterialShaderCompileJob(Platform, PermutationFlags, Material, ShaderMapId, MaterialEnvironment, ShaderPipeline, DebugGroupName, DebugDescription, DebugExtension, StageJob);
 		}
 		NewJobs.Add(FShaderCommonCompileJobPtr(NewPipelineJob));
 	}

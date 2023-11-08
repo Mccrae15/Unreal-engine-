@@ -26,6 +26,7 @@ const SUNSET_PERSISTED_NOTIFICATIONS_DAYS = 30
 const EPIC_TIME_OPTIONS: DateTimeFormatOptions = {timeZone: 'EST5EDT', timeZoneName: 'short'}
 
 const KNOWN_BOT_NAMES = ['buildmachine', 'robomerge'];
+const KNOWN_BOT_EMAILS = ['bot.email@companyname.com'];
 
 let SLACK_TOKENS: {[name: string]: string} = {}
 const SLACK_DEV_DUMMY_TOKEN = 'dev'
@@ -64,7 +65,7 @@ export function notificationsInit(inArgs: Args) {
 }
 
 export function isUserAKnownBot(user: string) {
-	return KNOWN_BOT_NAMES.indexOf(user) !== -1
+	return KNOWN_BOT_NAMES.indexOf(user) !== -1 || KNOWN_BOT_EMAILS.indexOf(user) !== -1
 }
 
 
@@ -286,9 +287,12 @@ export class SlackMessages {
 		}
 	}
 
-	async postDM(emailAddress: string|null, cl: number, branchArg: BranchArg, dm: SlackMessage, persistMessage = true) {
+	async postDM(emailAddress: string|Promise<string|null>|null, cl: number, branchArg: BranchArg, dm: SlackMessage, persistMessage = true) {
 		// The Slack API requires a user ID to open a direct message with users.
 		// The most consistent way to do this is getting their email address out of P4.
+		if (emailAddress && typeof(emailAddress) !== 'string') {
+			emailAddress = await emailAddress
+		}
 		if (!emailAddress) {
 			console.error("Failed to get email address during notifications for CL " + cl)
 			return
@@ -362,36 +366,44 @@ export class SlackMessages {
 
 	async addUserToChannel(emailAddress: string, channel: string, externalUser? :boolean)
 	{
-		const user = await this.getSlackUser(emailAddress)
-		if (user) {
-			const result = await this.slack.addUserToChannel(user, channel, externalUser)
-			if (!result.ok) {
-				if (result.error === "already_in_channel") { /* this is expected and fine */ }
-				else if (result.error === "failed_for_some_users") { 
-					if (result.failed_user_ids[user] === "unable_to_add_user_to_public_channel") {
-						/* this is expected and fine */ 
+		if (!isUserAKnownBot(emailAddress)) {
+			const user = await this.getSlackUser(emailAddress)
+			if (user) {
+				const result = await this.slack.addUserToChannel(user, channel, externalUser)
+				if (!result.ok) {
+					if (result.error === "already_in_channel") { /* this is expected and fine */ }
+					else if (result.error === "failed_for_some_users") { 
+						if (result.failed_user_ids[user] === "unable_to_add_user_to_public_channel") {
+							/* this is expected and fine */ 
+						}
+						else {
+							const errorMsg = `Error inviting ${emailAddress} (${user}) to channel <#${channel}>: ${result.error}\n${result.failed_user_ids}`
+							this.smLogger.error(errorMsg)
+							postToRobomergeAlerts(errorMsg)
+						}
+					}
+					else if (result.error === "user_is_restricted") {
+						// This an external user so we need to use the admin invite and validate that the channel ends in -ext
+						const channelInfo = await this.slack.getChannelInfo(channel)
+						if (channelInfo.channel.name.endsWith('-ext')) {
+							await this.addUserToChannel(emailAddress, channel, true)
+						}
+						else {
+							this.smLogger.error(`Cannot invite external user ${emailAddress} (${user}) to restricted channel ${channel}`)
+						}
 					}
 					else {
-						this.smLogger.error(`Error inviting ${emailAddress} (${user}) to channel ${channel}: ${result.error}\n${result.failed_user_ids}`)
+						const errorMsg = `Error inviting ${emailAddress} (${user}) to channel <#${channel}>: ${result.error}`
+						this.smLogger.error(errorMsg)
+						postToRobomergeAlerts(errorMsg)
 					}
-				}
-				else if (result.error === "user_is_restricted") {
-					// This an external user so we need to use the admin invite and validate that the channel ends in -ext
-					const channelInfo = await this.slack.getChannelInfo(channel)
-					if (channelInfo.channel.name.endsWith('-ext')) {
-						await this.addUserToChannel(emailAddress, channel, true)
-					}
-					else {
-						this.smLogger.error(`Cannot invite external user ${emailAddress} (${user}) to restricted channel ${channel}`)
-					}
-				}
-				else {
-					this.smLogger.error(`Error inviting ${emailAddress} (${user}) to channel ${channel}: ${result.error}`)
 				}
 			}
-		}
-		else {
-			this.smLogger.error(`Unable to add ${emailAddress} to channel ${channel}`)
+			else {
+				const errorMsg = `Unable to add ${emailAddress} to channel <#${channel}>`
+				this.smLogger.error(errorMsg)
+				postToRobomergeAlerts(errorMsg)
+			}
 		}
 	}
 
@@ -486,11 +498,11 @@ export class BotNotifications implements BotEventHandler {
 
 		const userEmail = await blockage.ownerEmail
 		const slackUser = userEmail ? await this.slackMessages.getSlackUser(userEmail) : null
-		const channelPing = slackUser ? `<@${slackUser}>` : `@${blockage.owner}`
+		const channelPing = slackUser ? `<@${slackUser}>` : blockage.owner.startsWith('@') ? blockage.owner : `@${blockage.owner}`
 
 		const isBotUser = isUserAKnownBot(blockage.owner)
 		const text =
-			blockage.approval ?				`${channelPing}'s change needs to be approved in ${blockage.approval.settings.channelName}` :
+			blockage.approval ?				`${channelPing}'s change needs to be approved in <#${blockage.approval.settings.channelId}>` :
 			isBotUser ? 									`Blockage caused by \`${blockage.owner}\` commit!` :
 			blockage.failure.kind === 'Too many files' ?	`${channelPing}, please request a shelf for this large changelist` :
 															`${channelPing}, please resolve the following ${issue}:`
@@ -596,10 +608,10 @@ export class BotNotifications implements BotEventHandler {
 			if (blockage.approval) {
 				dm = {
 					title: 'Approval needed to commit to ' + targetBranch.name,
-					text: `Your change has been shelved in ${makeClLink(cl)} and sent to ${blockage.approval.settings.channelName} for approval\n\n` +
+					text: `Your change has been shelved in ${makeClLink(cl)} and sent to <#${blockage.approval.settings.channelId}> for approval\n\n` +
 							blockage.approval.settings.description,
 					channel: "",
-					mrkdwn: false
+					mrkdwn: true
 				}
 			}
 			else {

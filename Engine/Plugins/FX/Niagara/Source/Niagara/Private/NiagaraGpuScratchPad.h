@@ -1,15 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreMinimal.h"
 
 #include "RHIDefinitions.h"
-#include "PrimitiveSceneInfo.h"
-#include "RHI.h"
 #include "RHIUtilities.h"
+#include "RendererInterface.h"
 
 class FScene;
-class FViewInfo;
+class FSceneView;
 class FRayTracingPipelineState;
 class FRHICommandList;
 class FRHIRayTracingScene;
@@ -28,7 +26,7 @@ struct FNiagaraDataInterfaceProxy;
 *	Useful for transient working data generated in one dispatch and consumed in others.
 *	All buffers in the same scratch pad are transitioned as one.
 */
-class NIAGARA_API FNiagaraGpuScratchPad
+class FNiagaraGpuScratchPad
 {
 public:
 	struct FAllocation
@@ -76,7 +74,7 @@ public:
 				//Round up the size to pow 2 to ensure a slowly growing user doesn't just keep allocating new buckets. Probably a better guess size here than power of 2.
 				uint32 NewBufferSize = FPlatformMath::RoundUpToPowerOfTwo(FMath::Max(MinBucketSize, NumElements));
 
-				NewBuffer->Buffer.Initialize(*BufferDebugName, BytesPerElement, NewBufferSize, PixelFormat, CurrentAccess, BufferUsageFlags);
+				NewBuffer->Buffer.Initialize(RHICmdList, *BufferDebugName, BytesPerElement, NewBufferSize, PixelFormat, CurrentAccess, BufferUsageFlags);
 			
 				ToUse = NewBuffer;
 
@@ -277,7 +275,7 @@ FORCEINLINE FNiagaraGpuScratchPad::FAllocation FNiagaraGpuScratchPad::Alloc<uint
 /** Behaves similar to FNiagaraGpuScratchPad but for use with RWStructuredBuffers
 */
 template<typename T>
-class NIAGARA_API FNiagaraGpuScratchPadStructured
+class FNiagaraGpuScratchPadStructured
 {
 public:
 	struct FAllocation
@@ -302,7 +300,7 @@ public:
 	}
 
 	/** Allocates NumElements from the scratch pad. Will try to allocate from an existing buffer but will create a new one if needed. */
-	FAllocation Alloc(uint32 NumElements)
+	FAllocation Alloc(FRHICommandListBase& RHICmdList, uint32 NumElements)
 	{
 		//Look for a buffer to fit this allocation.
 		FBuffer* ToUse = nullptr;
@@ -326,6 +324,7 @@ public:
 			uint32 NewBufferSize = FPlatformMath::RoundUpToPowerOfTwo(FMath::Max(MinBucketSize, NumElements));
 
 			NewBuffer->Buffer.Initialize(
+				RHICmdList,
 				*DebugName,
 				sizeof(T),
 				NewBufferSize,

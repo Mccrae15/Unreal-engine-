@@ -15,6 +15,7 @@ public class Blutility : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
+				"AutomationController",
 				"Core",
 				"CoreUObject",
 				"Engine",
@@ -24,6 +25,7 @@ public class Blutility : ModuleRules
 				"EditorFramework",
 				"UnrealEd",
 				"Kismet",
+				"AssetDefinition",
 				"AssetRegistry",
 				"AssetTools",
 				"WorkspaceMenuStructure",
@@ -42,7 +44,8 @@ public class Blutility : ModuleRules
 				"RHI",
 				"RenderCore",
 				"ImageWrapper",
-				"ImageWriteQueue"
+				"ImageWriteQueue",
+				"DeveloperSettings",
 			}
 			);
 	}

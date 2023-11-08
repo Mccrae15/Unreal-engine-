@@ -169,6 +169,13 @@ namespace mu
 
 
 	//---------------------------------------------------------------------------------------------
+	Ptr<const Layout> NodeLayoutBlocks::GetLayout() const
+	{
+		return m_pD->m_pLayout;
+	}
+
+
+	//---------------------------------------------------------------------------------------------
     void NodeLayoutBlocks::SetBlock( int index, int minx, int miny, int sizex, int sizey )
 	{
         m_pD->m_pLayout->SetBlock( index, minx, miny, sizex, sizey );
@@ -176,19 +183,9 @@ namespace mu
 
 
 	//---------------------------------------------------------------------------------------------
-	void NodeLayoutBlocks::GetBlock(int index, int* minx, int* miny, int* sizex, int* sizey)
+	void NodeLayoutBlocks::SetBlockOptions(int index, int priority, bool bUseSymmetry)
 	{
-		if (minx && miny && sizex && sizey)
-		{
-			m_pD->m_pLayout->GetBlock(index, minx, miny, sizex, sizey);
-		}
-	}
-
-
-	//---------------------------------------------------------------------------------------------
-	void NodeLayoutBlocks::SetBlockPriority(int index, int priority)
-	{
-		m_pD->m_pLayout->SetBlockPriority(index, priority);
+		m_pD->m_pLayout->SetBlockOptions(index, priority, bUseSymmetry);
 	}
 
 
@@ -197,6 +194,7 @@ namespace mu
 	{
 		m_pD->m_pLayout->SetLayoutPackingStrategy(strategy);
 	}
+
 
 	//---------------------------------------------------------------------------------------------
 	NodeLayoutBlocksPtr NodeLayoutBlocks::GenerateLayoutBlocks(const MeshPtr pMesh, int layoutIndex, int gridSizeX, int gridSizeY)
@@ -401,6 +399,33 @@ namespace mu
 		}
 
 		return layout;
+	}
+
+	//---------------------------------------------------------------------------------------------
+	void NodeLayoutBlocks::SetIgnoreWarningsLOD(int32 LOD)
+	{
+		m_pD->m_pLayout->SetIgnoreLODWarnings(LOD);
+	}
+
+
+	//---------------------------------------------------------------------------------------------
+	int32 NodeLayoutBlocks::GetIgnoreWarningsLOD()
+	{
+		return m_pD->m_pLayout->GetIgnoreLODWarnings();
+	}
+
+
+	//---------------------------------------------------------------------------------------------
+	void NodeLayoutBlocks::SetBlockReductionMethod(EReductionMethod Method)
+	{
+		m_pD->m_pLayout->SetBlockReductionMethod(Method);
+	}
+
+
+	//---------------------------------------------------------------------------------------------
+	EReductionMethod NodeLayoutBlocks::GetBlockReductionMethod()
+	{
+		return m_pD->m_pLayout->GetBlockReductionMethod();
 	}
 }
 

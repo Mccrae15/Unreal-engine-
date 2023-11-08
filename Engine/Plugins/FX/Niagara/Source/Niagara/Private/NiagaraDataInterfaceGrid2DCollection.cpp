@@ -1,24 +1,29 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "NiagaraDataInterfaceGrid2DCollection.h"
+#include "CanvasTypes.h"
 #include "NiagaraBatchedElements.h"
+#include "GlobalRenderResources.h"
 #include "NiagaraConstants.h"
+#include "NiagaraCompileHashVisitor.h"
 #include "NiagaraGpuComputeDebugInterface.h"
+#include "NiagaraComponent.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
+#include "NiagaraEmitter.h"
 #include "NiagaraRenderer.h"
+#include "NiagaraRenderGraphUtils.h"
 #include "NiagaraSettings.h"
-#include "NiagaraShader.h"
 #include "NiagaraShaderParametersBuilder.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraSimStageData.h"
 #include "NiagaraSystemInstanceController.h"
 
-#include "Engine/Canvas.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/TextureRenderTarget2DArray.h"
-#include "ClearQuad.h"
 #include "CanvasItem.h"
+#include "RHIStaticStates.h"
+#include "RenderGraphBuilder.h"
+#include "RenderGraphUtils.h"
 #include "ShaderParameterMetadataBuilder.h"
-#include "ShaderParameterUtils.h"
 #include "TextureResource.h"
 
 #include "NiagaraDataInterfaceGrid2DCollectionReader.h"
@@ -40,6 +45,8 @@ BEGIN_SHADER_PARAMETER_STRUCT(FNDIGrid2DShaderParameters, )
 	SHADER_PARAMETER_SAMPLER(SamplerState,						GridSampler)
 	SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2DArray<float>,	OutputGrid)
 END_SHADER_PARAMETER_STRUCT()
+
+static constexpr EPixelFormatCapabilities GNDIGrid2DFomatCaps = EPixelFormatCapabilities::TypedUAVLoad | EPixelFormatCapabilities::TypedUAVStore | EPixelFormatCapabilities::Texture2D;
 
 const FString UNiagaraDataInterfaceGrid2DCollection::GridName(TEXT("_Grid"));
 const FString UNiagaraDataInterfaceGrid2DCollection::OutputGridName(TEXT("_OutputGrid"));
@@ -190,6 +197,12 @@ struct FNiagaraGrid2DLegacyTiled2DInfo
 
 	void CopyTo2D(FRDGBuilder& GraphBuilder, FRDGTexture* SourceTexture, FRHITexture* DestinationTextureRHI, const TCHAR* NameIfNotRegistered) const
 	{
+		const FRHITextureDesc& DestTextureDesc = DestinationTextureRHI->GetDesc();
+		if (ensureMsgf(DestTextureDesc.Dimension != ETextureDimension::Texture2D, TEXT("Destination for Grid2D copy is invalid type (%d), copy will fail"), DestTextureDesc.Dimension))
+		{
+			return;
+		}
+
 		FRDGTexture* DestinationTexture = GraphBuilder.FindExternalTexture(DestinationTextureRHI);
 		if (DestinationTexture == nullptr)
 		{
@@ -204,13 +217,24 @@ struct FNiagaraGrid2DLegacyTiled2DInfo
 			CopyInfo.DestPosition.X = (iAttribute % NumTiles.X) * NumCells.X;
 			CopyInfo.DestPosition.Y = (iAttribute / NumTiles.X) * NumCells.Y;
 			CopyInfo.DestPosition.Z = 0;
-			AddCopyTexturePass(GraphBuilder, SourceTexture, DestinationTexture, CopyInfo);
+			if (ensureMsgf(
+					(CopyInfo.DestPosition.X + CopyInfo.Size.X <= DestTextureDesc.Extent.X) && (CopyInfo.DestPosition.Y + CopyInfo.Size.Y <= DestTextureDesc.Extent.Y),
+					TEXT("Destination for Grid2D can not hold all the attributes, copy will fail.")))
+			{
+				AddCopyTexturePass(GraphBuilder, SourceTexture, DestinationTexture, CopyInfo);
+			}
 		}
 	}
 
 	void CopyTo2D(FRHICommandList& RHICmdList, FRHITexture* Src, FRHITexture* Dst) const
 	{
 		check(Src != nullptr && Dst != nullptr);
+
+		const FRHITextureDesc& DestTextureDesc = Dst->GetDesc();
+		if (ensureMsgf(DestTextureDesc.Dimension != ETextureDimension::Texture2D, TEXT("Destination for Grid2D copy is invalid type (%d), copy will fail"), DestTextureDesc.Dimension))
+		{
+			return;
+		}
 
 		FRHITransitionInfo TransitionsBefore[] = {
 			FRHITransitionInfo(Src, ERHIAccess::SRVMask, ERHIAccess::CopySrc),
@@ -226,7 +250,12 @@ struct FNiagaraGrid2DLegacyTiled2DInfo
 			CopyInfo.DestPosition.X = (iAttribute % NumTiles.X) * NumCells.X;
 			CopyInfo.DestPosition.Y = (iAttribute / NumTiles.X) * NumCells.Y;
 			CopyInfo.DestPosition.Z = 0;
-			RHICmdList.CopyTexture(Src, Dst, CopyInfo);
+			if (ensureMsgf(
+				(CopyInfo.DestPosition.X + CopyInfo.Size.X <= DestTextureDesc.Extent.X) && (CopyInfo.DestPosition.Y + CopyInfo.Size.Y <= DestTextureDesc.Extent.Y),
+				TEXT("Destination for Grid2D can not hold all the attributes, copy will fail.")))
+			{
+				RHICmdList.CopyTexture(Src, Dst, CopyInfo);
+			}
 		}
 
 		FRHITransitionInfo TransitionsAfter[] = {
@@ -1790,7 +1819,7 @@ bool UNiagaraDataInterfaceGrid2DCollection::InitPerInstanceData(void* PerInstanc
 		BufferFormat = ENiagaraGpuBufferFormat(GNiagaraGrid2DOverrideFormat);
 	}
 
-	InstanceData->PixelFormat = FNiagaraUtilities::BufferFormatToPixelFormat(BufferFormat);
+	InstanceData->PixelFormat = FNiagaraUtilities::BufferFormatToPixelFormat(BufferFormat, GNDIGrid2DFomatCaps);
 
 	if (!FMath::IsNearlyEqual(GNiagaraGrid2DResolutionMultiplier, 1.0f))
 	{
@@ -1977,26 +2006,15 @@ bool UNiagaraDataInterfaceGrid2DCollection::GetExposedVariableValue(const FNiaga
 	return false;
 }
 
-void UNiagaraDataInterfaceGrid2DCollection::CollectAttributesForScript(UNiagaraScript* Script, FName VariableName, TArray<FNiagaraVariableBase>& OutVariables, TArray<uint32>& OutVariableOffsets, int32& TotalAttributes, TArray<FText>* OutWarnings, bool UseReader)
+void UNiagaraDataInterfaceGrid2DCollection::CollectAttributesForScript(UNiagaraScript* Script, const UNiagaraDataInterface* DataInterface, TArray<FNiagaraVariableBase>& OutVariables, TArray<uint32>& OutVariableOffsets, int32& TotalAttributes, TArray<FText>* OutWarnings)
 {
 	if (const FNiagaraScriptExecutionParameterStore* ParameterStore = Script->GetExecutionReadyParameterStore(ENiagaraSimTarget::GPUComputeSim))
 	{
-		FNiagaraVariableBase DataInterfaceVariable(FNiagaraTypeDefinition(UNiagaraDataInterfaceGrid2DCollection::StaticClass()), VariableName);
-
-		if (UseReader)
-		{
-			DataInterfaceVariable = FNiagaraVariableBase(FNiagaraTypeDefinition(UNiagaraDataInterfaceGrid2DCollectionReader::StaticClass()), VariableName);
-		}
-		else
-		{
-			DataInterfaceVariable = FNiagaraVariableBase(FNiagaraTypeDefinition(UNiagaraDataInterfaceGrid2DCollection::StaticClass()), VariableName);
-		}
-
-		const int32 * IndexOfDataInterface = ParameterStore->FindParameterOffset(DataInterfaceVariable);
-		if (IndexOfDataInterface != nullptr)
+		int32 IndexOfDataInterface = ParameterStore->GetDataInterfaces().IndexOfByKey(DataInterface);
+		if (IndexOfDataInterface != INDEX_NONE)
 		{
 			TConstArrayView<FNiagaraDataInterfaceGPUParamInfo> ParamInfoArray = Script->GetDataInterfaceGPUParamInfos();
-			for (const FNiagaraDataInterfaceGeneratedFunction& Func : ParamInfoArray[*IndexOfDataInterface].GeneratedFunctions)
+			for (const FNiagaraDataInterfaceGeneratedFunction& Func : ParamInfoArray[IndexOfDataInterface].GeneratedFunctions)
 			{
 				if (const FName* AttributeName = Func.FindSpecifierValue(UNiagaraDataInterfaceRWBase::NAME_Attribute))
 				{
@@ -2029,7 +2047,7 @@ void UNiagaraDataInterfaceGrid2DCollection::CollectAttributesForScript(UNiagaraS
 	}
 }
 
-void UNiagaraDataInterfaceGrid2DCollection::FindAttributesByName(FName VariableName, TArray<FNiagaraVariableBase>& OutVariables, TArray<uint32>& OutVariableOffsets, int32& OutNumAttribChannelsFound, TArray<FText>* OutWarnings) const
+void UNiagaraDataInterfaceGrid2DCollection::FindAttributes(TArray<FNiagaraVariableBase>& OutVariables, TArray<uint32>& OutVariableOffsets, int32& OutNumAttribChannelsFound, TArray<FText>* OutWarnings) const
 {
 	OutNumAttribChannelsFound = 0;
 
@@ -2045,57 +2063,7 @@ void UNiagaraDataInterfaceGrid2DCollection::FindAttributesByName(FName VariableN
 		FVersionedNiagaraEmitterData* EmitterData = EmitterHandle.GetEmitterData();
 		if (EmitterData && EmitterHandle.GetIsEnabled() && EmitterData->IsValid() && (EmitterData->SimTarget == ENiagaraSimTarget::GPUComputeSim))
 		{
-			CollectAttributesForScript(EmitterData->GetGPUComputeScript(), VariableName, OutVariables, OutVariableOffsets, TotalAttributes, OutWarnings);
-		}
-	}
-	OutNumAttribChannelsFound = TotalAttributes - NumAttributes;
-}
-
-void UNiagaraDataInterfaceGrid2DCollection::FindAttributes(TArray<FNiagaraVariableBase>& OutVariables, TArray<uint32>& OutVariableOffsets, int32& OutNumAttribChannelsFound, TArray<FText>* OutWarnings, bool UseReader) const
-{
-	OutNumAttribChannelsFound = 0;
-
-	UNiagaraSystem* OwnerSystem = GetTypedOuter<UNiagaraSystem>();
-	if (OwnerSystem == nullptr)
-	{
-		return;
-	}
-
-	int32 TotalAttributes = NumAttributes;
-	for (const FNiagaraEmitterHandle& EmitterHandle : OwnerSystem->GetEmitterHandles())
-	{
-		FVersionedNiagaraEmitterData* EmitterData = EmitterHandle.GetEmitterData();
-		if (EmitterData && EmitterHandle.GetIsEnabled() && EmitterData->IsValid() && (EmitterData->SimTarget == ENiagaraSimTarget::GPUComputeSim))
-		{
-			// Search scripts for this data interface so we get the variable name
-			auto FindDataInterfaceVariable =
-				[&OwnerSystem, &EmitterData](const UNiagaraDataInterface* DataInterface) -> FName
-				{
-					UNiagaraScript* Scripts[] =
-					{
-						OwnerSystem->GetSystemSpawnScript(),
-						OwnerSystem->GetSystemUpdateScript(),
-						EmitterData->GetGPUComputeScript(),
-					};
-
-					for (UNiagaraScript* Script : Scripts)
-					{
-						for (FNiagaraScriptDataInterfaceInfo& DataInterfaceInfo : Script->GetCachedDefaultDataInterfaces())
-						{
-							if (DataInterfaceInfo.DataInterface == DataInterface)
-							{
-								return DataInterfaceInfo.RegisteredParameterMapRead.IsNone() ? DataInterfaceInfo.RegisteredParameterMapWrite : DataInterfaceInfo.RegisteredParameterMapRead;
-							}
-						}
-					}
-					return NAME_None;
-				};
-
-			const FName VariableName = FindDataInterfaceVariable(this);
-			if (!VariableName.IsNone() )
-			{
-				CollectAttributesForScript(EmitterData->GetGPUComputeScript(), VariableName, OutVariables, OutVariableOffsets, TotalAttributes, OutWarnings, UseReader);
-			}
+			CollectAttributesForScript(EmitterData->GetGPUComputeScript(), this, OutVariables, OutVariableOffsets, TotalAttributes, OutWarnings);
 		}
 	}
 	OutNumAttribChannelsFound = TotalAttributes - NumAttributes;
@@ -2415,35 +2383,35 @@ bool UNiagaraDataInterfaceGrid2DCollection::PerInstanceTickPostSimulate(void* Pe
 				BufferFormat = ENiagaraGpuBufferFormat(GNiagaraGrid2DOverrideFormat);
 			}
 
-			InstanceData->UpdateTargetTexture(BufferFormat);
+			bNeedsReset = InstanceData->UpdateTargetTexture(BufferFormat);
 		}
 
 		// Push Updates to Proxy.
 		FNiagaraDataInterfaceProxyGrid2DCollectionProxy* RT_Proxy = GetProxyAs<FNiagaraDataInterfaceProxyGrid2DCollectionProxy>();
 		ENQUEUE_RENDER_COMMAND(FUpdateData)(
 			[RT_Resource=InstanceData->TargetTexture ? InstanceData->TargetTexture->GetResource() : nullptr, RT_Proxy, InstanceID=SystemInstance->GetId(), RT_InstanceData=*InstanceData](FRHICommandListImmediate& RHICmdList)
-		{
-			check(RT_Proxy->SystemInstancesToProxyData_RT.Contains(InstanceID));
-			FGrid2DCollectionRWInstanceData_RenderThread* TargetData = RT_Proxy->SystemInstancesToProxyData_RT.Find(InstanceID);
-
-			TargetData->NumCells = RT_InstanceData.NumCells;
-			TargetData->NumAttributes = RT_InstanceData.NumAttributes;
-			TargetData->CellSize = RT_InstanceData.CellSize;
-
-			TargetData->Buffers.Empty();
-			TargetData->CurrentData = nullptr;
-			TargetData->DestinationData = nullptr;
-
-			if (RT_Resource && RT_Resource->TextureRHI.IsValid())
 			{
-				TargetData->RenderTargetToCopyTo = RT_Resource->TextureRHI;
-			}
-			else
-			{
-				TargetData->RenderTargetToCopyTo = nullptr;
-			}
-		});
+				check(RT_Proxy->SystemInstancesToProxyData_RT.Contains(InstanceID));
+				FGrid2DCollectionRWInstanceData_RenderThread* TargetData = RT_Proxy->SystemInstancesToProxyData_RT.Find(InstanceID);
 
+				TargetData->NumCells = RT_InstanceData.NumCells;
+				TargetData->NumAttributes = RT_InstanceData.NumAttributes;
+				TargetData->CellSize = RT_InstanceData.CellSize;
+
+				TargetData->Buffers.Empty();
+				TargetData->CurrentData = nullptr;
+				TargetData->DestinationData = nullptr;
+
+				if (RT_Resource && RT_Resource->TextureRHI.IsValid())
+				{
+					TargetData->RenderTargetToCopyTo = RT_Resource->TextureRHI;
+				}
+				else
+				{
+					TargetData->RenderTargetToCopyTo = nullptr;
+				}
+			}
+		);
 	}
 
 	return false;
@@ -2507,14 +2475,17 @@ bool FGrid2DCollectionRWInstanceData_GameThread::UpdateTargetTexture(ENiagaraGpu
 	{
 		if ( UTextureRenderTarget2DArray* TargetTextureArray = Cast<UTextureRenderTarget2DArray>(TargetTexture) )
 		{
-			const EPixelFormat RenderTargetFormat = FNiagaraUtilities::BufferFormatToPixelFormat(BufferFormat);
-			if (TargetTextureArray->SizeX != NumCells.X || TargetTextureArray->SizeY != NumCells.Y || TargetTextureArray->Slices != NumAttributes || TargetTextureArray->OverrideFormat != RenderTargetFormat)
+			const TOptional<EPixelFormat> RenderTargetFormat = FNiagaraUtilities::BufferFormatToPixelFormat(BufferFormat, GNDIGrid2DFomatCaps);
+			if (RenderTargetFormat.IsSet())
 			{
-				TargetTextureArray->OverrideFormat = RenderTargetFormat;
-				TargetTextureArray->ClearColor = FLinearColor(0.5, 0, 0, 0);
-				TargetTextureArray->InitAutoFormat(NumCells.X, NumCells.Y, NumAttributes);
-				TargetTextureArray->UpdateResourceImmediate(true);
-				return true;
+				if (TargetTextureArray->SizeX != NumCells.X || TargetTextureArray->SizeY != NumCells.Y || TargetTextureArray->Slices != NumAttributes || TargetTextureArray->OverrideFormat != RenderTargetFormat.GetValue())
+				{
+					TargetTextureArray->OverrideFormat = RenderTargetFormat.GetValue();
+					TargetTextureArray->ClearColor = FLinearColor(0.5, 0, 0, 0);
+					TargetTextureArray->InitAutoFormat(NumCells.X, NumCells.Y, NumAttributes);
+					TargetTextureArray->UpdateResourceImmediate(true);
+					return true;
+				}
 			}
 		}
 		else if (UTextureRenderTarget2D* TargetTexture2D = Cast<UTextureRenderTarget2D>(TargetTexture))
@@ -2531,15 +2502,18 @@ bool FGrid2DCollectionRWInstanceData_GameThread::UpdateTargetTexture(ENiagaraGpu
 			{
 				const FNiagaraGrid2DLegacyTiled2DInfo Tiled2DInfo(NumCells, NumAttributes);
 
-				const ETextureRenderTargetFormat RenderTargetFormat  = FNiagaraUtilities::BufferFormatToRenderTargetFormat(BufferFormat);
-				if (TargetTexture2D->SizeX != Tiled2DInfo.Size.X || TargetTexture2D->SizeY != Tiled2DInfo.Size.Y || TargetTexture2D->RenderTargetFormat != RenderTargetFormat)
+				const TOptional<ETextureRenderTargetFormat> RenderTargetFormat  = FNiagaraUtilities::BufferFormatToRenderTargetFormat(BufferFormat, GNDIGrid2DFomatCaps);
+				if ( RenderTargetFormat.IsSet() )
 				{
-					TargetTexture2D->RenderTargetFormat = RenderTargetFormat;
-					TargetTexture2D->ClearColor = FLinearColor(0.5, 0, 0, 0);
-					TargetTexture2D->bAutoGenerateMips = false;
-					TargetTexture2D->InitAutoFormat(Tiled2DInfo.Size.X, Tiled2DInfo.Size.Y);
-					TargetTexture2D->UpdateResourceImmediate(true);
-					return true;
+					if (TargetTexture2D->SizeX != Tiled2DInfo.Size.X || TargetTexture2D->SizeY != Tiled2DInfo.Size.Y || TargetTexture2D->RenderTargetFormat != RenderTargetFormat.GetValue())
+					{
+						TargetTexture2D->RenderTargetFormat = RenderTargetFormat.GetValue();
+						TargetTexture2D->ClearColor = FLinearColor(0.5, 0, 0, 0);
+						TargetTexture2D->bAutoGenerateMips = false;
+						TargetTexture2D->InitAutoFormat(Tiled2DInfo.Size.X, Tiled2DInfo.Size.Y);
+						TargetTexture2D->UpdateResourceImmediate(true);
+						return true;
+					}
 				}
 			}
 		}
@@ -2560,12 +2534,12 @@ void FGrid2DCollectionRWInstanceData_RenderThread::BeginSimulate(FRDGBuilder& Gr
 		}
 	}
 
-	if (DestinationData == nullptr)
+	if (DestinationData == nullptr && PixelFormat.IsSet())
 	{
 		DestinationData = new FGrid2DBuffer();
 		Buffers.Emplace(DestinationData);
 
-		const FRDGTextureDesc TextureDesc = FRDGTextureDesc::Create2DArray(NumCells, PixelFormat, FClearValueBinding::Black, ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV, uint16(NumAttributes));
+		const FRDGTextureDesc TextureDesc = FRDGTextureDesc::Create2DArray(NumCells, PixelFormat.GetValue(), FClearValueBinding::Black, ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV, uint16(NumAttributes));
 
 		const TCHAR* GridTextureName = TEXT("Grid2D::GridTexture");
 	#if 0
@@ -2623,7 +2597,7 @@ void FNiagaraDataInterfaceProxyGrid2DCollectionProxy::PreStage(const FNDIGpuComp
 		const FNiagaraSimStageData& SimStageData = Context.GetSimStageData();
 		const FIntVector3& ElementCount = SimStageData.DispatchArgs.ElementCount;
 
-		if (ProxyData->ClearBeforeNonIterationStage && (ElementCount.X != ProxyData->NumCells.X || ElementCount.Y != ProxyData->NumCells.Y))
+		if (ProxyData->ClearBeforeNonIterationStage && ProxyData->DestinationData && (ElementCount.X != ProxyData->NumCells.X || ElementCount.Y != ProxyData->NumCells.Y))
 		{
 			AddClearUAVPass(GraphBuilder, ProxyData->DestinationData->GetOrCreateUAV(GraphBuilder), FVector4f(ForceInitToZero));
 		}
@@ -2694,23 +2668,22 @@ void FNiagaraDataInterfaceProxyGrid2DCollectionProxy::PostSimulate(const FNDIGpu
 	}
 }
 
-FIntVector FNiagaraDataInterfaceProxyGrid2DCollectionProxy::GetElementCount(FNiagaraSystemInstanceID SystemInstanceID) const
+void FNiagaraDataInterfaceProxyGrid2DCollectionProxy::GetDispatchArgs(const FNDIGpuComputeDispatchArgsGenContext& Context)
 {
-	if ( const FGrid2DCollectionRWInstanceData_RenderThread* ProxyData = SystemInstancesToProxyData_RT.Find(SystemInstanceID) )
+	if ( const FGrid2DCollectionRWInstanceData_RenderThread* ProxyData = SystemInstancesToProxyData_RT.Find(Context.GetSystemInstanceID()) )
 	{
 		// support a grid reader acting as an iteration source
 		if (ProxyData->OtherProxy != nullptr)
 		{
 			FNiagaraDataInterfaceProxyGrid2DCollectionProxy* OtherGrid2DProxy = static_cast<FNiagaraDataInterfaceProxyGrid2DCollectionProxy*>(ProxyData->OtherProxy);
-			const FGrid2DCollectionRWInstanceData_RenderThread* OtherProxyData = OtherGrid2DProxy->SystemInstancesToProxyData_RT.Find(SystemInstanceID);
-			return  FIntVector(OtherProxyData->NumCells.X, OtherProxyData->NumCells.Y, 1);
+			const FGrid2DCollectionRWInstanceData_RenderThread* OtherProxyData = OtherGrid2DProxy->SystemInstancesToProxyData_RT.Find(Context.GetSystemInstanceID());
+			Context.SetDirect(OtherProxyData->NumCells);
 		}
 		else
 		{
-			return FIntVector(ProxyData->NumCells.X, ProxyData->NumCells.Y, 1);
+			Context.SetDirect(ProxyData->NumCells);
 		}		
 	}
-	return FIntVector::ZeroValue;
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -3,6 +3,7 @@
 #include "NetworkAutomationTest.h"
 #include "NetworkAutomationTestMacros.h"
 #include "Net/Core/NetBitArray.h"
+#include "Net/Core/NetBitArrayPrinter.h"
 
 namespace UE::Net::Private
 {
@@ -670,6 +671,33 @@ UE_NET_TEST(FNetBitArrayView, TestFindLastZero)
 
 		UE_NET_ASSERT_EQ(BitArray.FindLastZero(), 49U);
 	}
+
+	// All bits zero, with unaligned bitcount
+	{
+		uint32 WordBuffer[] = { 0x0 };
+		FNetBitArrayView BitArray(WordBuffer, 31);
+
+		// Verify that we do not get an out of bounds value
+		UE_NET_ASSERT_LT(BitArray.FindLastZero(), 31U);
+		UE_NET_ASSERT_EQ(BitArray.FindLastZero(), 30U);
+	}
+
+	// Set last bit, unaligned bitcount
+	{
+		uint32 WordBuffer[] = { 0x40000000 };
+		FNetBitArrayView BitArray(WordBuffer, 31);
+
+		UE_NET_ASSERT_EQ(BitArray.FindLastZero(), 29U);
+	}
+
+	// All bits set, unaligned bitcount
+	{
+		uint32 WordBuffer[] = { 0x7fffffff };
+		FNetBitArrayView BitArray(WordBuffer, 31);
+
+		UE_NET_ASSERT_EQ(BitArray.FindLastZero(), BitArray.InvalidIndex);
+	}
+
 }
 
 UE_NET_TEST(FNetBitArrayView, TestFindLastOne)
@@ -1044,6 +1072,25 @@ UE_NET_TEST(FNetBitArrayView, Or)
 			UE_NET_ASSERT_EQ(ExpectedWordBuffer[it], WordBufferA[it]);
 		}
 	}
+
+	// Test Multiple arrays
+	{
+		const uint32 ExpectedWordBuffer[] = { 0x0011, 0x0110, 0x1100, 0x1001 };
+		uint32 WordBufferA[] = { 0x0000, 0x0000, 0x0000, 0x0000 };
+		uint32 WordBufferB[] = { 0x0001, 0x0010, 0x0100, 0x1000 };
+		uint32 WordBufferC[] = { 0x0010, 0x0100, 0x1000, 0x0001 };
+
+		FNetBitArrayView BitArrayA(&WordBufferA[0], 128);
+		const FNetBitArrayView BitArrayB(&WordBufferB[0], 128);
+		const FNetBitArrayView BitArrayC(&WordBufferC[0], 128);
+
+		BitArrayA.CombineMultiple(WordOp, BitArrayB, WordOp, BitArrayC);
+
+		for (uint32 it = 0; it < UE_ARRAY_COUNT(ExpectedWordBuffer); ++it)
+		{
+			UE_NET_ASSERT_EQ(ExpectedWordBuffer[it], WordBufferA[it]);
+		}
+	}
 }
 
 UE_NET_TEST(FNetBitArrayView, And)
@@ -1088,6 +1135,25 @@ UE_NET_TEST(FNetBitArrayView, And)
 		const FNetBitArrayView BitArrayB(&WordBufferB[0], 128);
 
 		BitArrayA.Combine(BitArrayB, WordOp);
+
+		for (uint32 it = 0; it < UE_ARRAY_COUNT(ExpectedWordBuffer); ++it)
+		{
+			UE_NET_ASSERT_EQ(ExpectedWordBuffer[it], WordBufferA[it]);
+		}
+	}
+
+	// Test Multiple arrays
+	{
+		const uint32 ExpectedWordBuffer[] = { 0x0001, 0x0010, 0x0100, 0x1000 };
+		uint32 WordBufferA[] = { 0x0001, 0x0010, 0x0100, 0x1000 };
+		uint32 WordBufferB[] = { 0x0001, 0x0010, 0x0100, 0x1000 };
+		uint32 WordBufferC[] = { 0x0001, 0x0010, 0x0100, 0x1000 };
+
+		FNetBitArrayView BitArrayA(&WordBufferA[0], 128);
+		const FNetBitArrayView BitArrayB(&WordBufferB[0], 128);
+		const FNetBitArrayView BitArrayC(&WordBufferC[0], 128);
+
+		BitArrayA.CombineMultiple(WordOp, BitArrayB, WordOp, BitArrayC);
 
 		for (uint32 it = 0; it < UE_ARRAY_COUNT(ExpectedWordBuffer); ++it)
 		{
@@ -1144,6 +1210,25 @@ UE_NET_TEST(FNetBitArrayView, AndNot)
 			UE_NET_ASSERT_EQ(ExpectedWordBuffer[it], WordBufferA[it]);
 		}
 	}
+
+	// Test Multiple arrays
+	{
+		const uint32 ExpectedWordBuffer[] = { 0xFFFe, 0xFFeF, 0xFeFF, 0xeFFF };
+		uint32 WordBufferA[] = { 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF };
+		uint32 WordBufferB[] = { 0x0001, 0x0010, 0x0100, 0x1000 };
+		uint32 WordBufferC[] = { 0x0000, 0x0000, 0x0000, 0x0000 };
+
+		FNetBitArrayView BitArrayA(&WordBufferA[0], 128);
+		const FNetBitArrayView BitArrayB(&WordBufferB[0], 128);
+		const FNetBitArrayView BitArrayC(&WordBufferC[0], 128);
+
+		BitArrayA.CombineMultiple(WordOp, BitArrayB, WordOp, BitArrayC);
+
+		for (uint32 it = 0; it < UE_ARRAY_COUNT(ExpectedWordBuffer); ++it)
+		{
+			UE_NET_ASSERT_EQ(ExpectedWordBuffer[it], WordBufferA[it]);
+		}
+	}
 }
 
 UE_NET_TEST(FNetBitArrayView, Xor)
@@ -1194,6 +1279,115 @@ UE_NET_TEST(FNetBitArrayView, Xor)
 			UE_NET_ASSERT_EQ(ExpectedWordBuffer[it], WordBufferA[it]);
 		}
 	}
+
+	// Test Multiple arrays
+	{
+		const uint32 ExpectedWordBuffer[] = { 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF };
+		uint32 WordBufferA[] = { 0xFFee, 0xFeeF, 0xeeFF, 0xeFFe };
+		uint32 WordBufferB[] = { 0x0001, 0x0010, 0x0100, 0x1000 };
+		uint32 WordBufferC[] = { 0x0010, 0x0100, 0x1000, 0x0001 };
+
+		FNetBitArrayView BitArrayA(&WordBufferA[0], 128);
+		const FNetBitArrayView BitArrayB(&WordBufferB[0], 128);
+		const FNetBitArrayView BitArrayC(&WordBufferC[0], 128);
+
+		BitArrayA.CombineMultiple(WordOp, BitArrayB, WordOp, BitArrayC);
+
+		for (uint32 it = 0; it < UE_ARRAY_COUNT(ExpectedWordBuffer); ++it)
+		{
+			UE_NET_ASSERT_EQ(ExpectedWordBuffer[it], WordBufferA[it]);
+		}
+	}
+}
+
+UE_NET_TEST(FNetBitArrayView, TestCombineMultiple)
+{
+	auto&& FirstWordOp = FNetBitArrayView::OrOp;
+	auto&& SecondWordOp = FNetBitArrayView::AndOp;
+
+	// Test Multiple arrays
+	{
+		uint32 WordBufferA[] = { 0xFF00, 0xF00F, 0x00FF, 0x0FF0 };
+		uint32 WordBufferB[] = { 0x0011, 0x0110, 0x1100, 0x1001 };
+		uint32 WordBufferC[] = { 0x0010, 0x0100, 0x1000, 0x0001 };
+		const uint32 ExpectedWordBuffer[] = { 0xFF10, 0xF10F, 0x10FF, 0x0FF1 };
+
+		FNetBitArrayView BitArrayA(&WordBufferA[0], 128);
+		const FNetBitArrayView BitArrayB(&WordBufferB[0], 128);
+		const FNetBitArrayView BitArrayC(&WordBufferC[0], 128);
+
+		BitArrayA.CombineMultiple(FirstWordOp, BitArrayB, SecondWordOp, BitArrayC);
+
+		for (uint32 it = 0; it < UE_ARRAY_COUNT(ExpectedWordBuffer); ++it)
+		{
+			UE_NET_ASSERT_EQ(ExpectedWordBuffer[it], WordBufferA[it]);
+		}
+	}
+
+	// Test Multiple arrays
+	{
+		uint32 WordBufferA[] = { 0xFF00, 0xF00F, 0x00FF, 0x0FF0 };
+		uint32 WordBufferB[] = { 0x0011, 0x0110, 0x1100, 0x1001 };
+		uint32 WordBufferC[] = { 0x0010, 0x0100, 0x1000, 0x0001 };
+		const uint32 ExpectedWordBuffer[] = { 0xFF10, 0xF10F, 0x10FF, 0x0FF1 };
+
+		FNetBitArray BitArrayA, BitArrayB, BitArrayC;
+		BitArrayA.Init(128);
+		BitArrayB.Init(128);
+		BitArrayC.Init(128);
+		MakeNetBitArrayView(BitArrayA).Copy(FNetBitArrayView(&WordBufferA[0], 128));
+		MakeNetBitArrayView(BitArrayB).Copy(FNetBitArrayView(&WordBufferB[0], 128));
+		MakeNetBitArrayView(BitArrayC).Copy(FNetBitArrayView(&WordBufferC[0], 128));
+
+		BitArrayA.CombineMultiple(FirstWordOp, BitArrayB, SecondWordOp, BitArrayC);
+
+		for (uint32 it = 0; it < UE_ARRAY_COUNT(ExpectedWordBuffer); ++it)
+		{
+			UE_NET_ASSERT_EQ(ExpectedWordBuffer[it], BitArrayA.GetData()[it]);
+		}
+	}
+}
+
+UE_NET_TEST(FNetBitArrayView, TestSet)
+{
+	// Test Set function on BitArrayView
+	{
+		const uint32 ExpectedWordBuffer[] = { 0x0011, 0x0110, 0x1100, 0x1001 };
+		uint32 WordBufferA[] = { 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF };
+		uint32 WordBufferB[] = { 0x0001, 0x0010, 0x0100, 0x1000 };
+		uint32 WordBufferC[] = { 0x0010, 0x0100, 0x1000, 0x0001 };
+
+		FNetBitArrayView BitArrayA(&WordBufferA[0], 128);
+		const FNetBitArrayView BitArrayB(&WordBufferB[0], 128);
+		const FNetBitArrayView BitArrayC(&WordBufferC[0], 128);
+
+		BitArrayA.Set(BitArrayB, FNetBitArrayView::OrOp, BitArrayC);
+
+		for (uint32 it = 0; it < UE_ARRAY_COUNT(ExpectedWordBuffer); ++it)
+		{
+			UE_NET_ASSERT_EQ(ExpectedWordBuffer[it], BitArrayA.GetData()[it]);
+		}
+	}
+
+	// Test Set function on BitArray
+	{
+		const uint32 ExpectedWordBuffer[] = { 0x0011, 0x0110, 0x1100, 0x1001 };
+		uint32 WordBufferA[] = { 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF };
+		uint32 WordBufferB[] = { 0x0001, 0x0010, 0x0100, 0x1000 };
+		uint32 WordBufferC[] = { 0x0010, 0x0100, 0x1000, 0x0001 };
+
+		FNetBitArray BitArrayA, BitArrayB, BitArrayC;
+		BitArrayA.InitAndCopy(FNetBitArrayView(&WordBufferA[0], 128));
+		BitArrayB.InitAndCopy(FNetBitArrayView(&WordBufferB[0], 128));
+		BitArrayC.InitAndCopy(FNetBitArrayView(&WordBufferC[0], 128));
+
+		BitArrayA.Set(BitArrayB, FNetBitArrayView::OrOp, BitArrayC);
+
+		for (uint32 it = 0; it < UE_ARRAY_COUNT(ExpectedWordBuffer); ++it)
+		{
+			UE_NET_ASSERT_EQ(ExpectedWordBuffer[it], BitArrayA.GetData()[it]);
+		}
+	}
 }
 
 UE_NET_TEST(FNetBitArrayView, Copy)
@@ -1228,6 +1422,131 @@ UE_NET_TEST(FNetBitArrayView, Copy)
 		{
 			UE_NET_ASSERT_EQ(WordBufferB[it], WordBufferA[it]);
 		}
+	}
+
+	// Test View copying BitArray
+	{
+		uint32 WordBufferA[] = { 1, 2, 3, 4 };
+		FNetBitArrayView BitArrayA(&WordBufferA[0], 128);
+		
+		const uint32 WordBufferB[] = { 5, 6, 7, 8 };
+		FNetBitArray BitArrayB;
+		BitArrayB.Init(128);
+		BitArrayB.GetData()[0] = WordBufferB[0];
+		BitArrayB.GetData()[1] = WordBufferB[1];
+		BitArrayB.GetData()[2] = WordBufferB[2];
+		BitArrayB.GetData()[3] = WordBufferB[3];
+
+		BitArrayA.Copy(BitArrayB);
+
+		for (uint32 it = 0; it < UE_ARRAY_COUNT(WordBufferA); ++it)
+		{
+			UE_NET_ASSERT_EQ(BitArrayB.GetData()[it], WordBufferA[it]);
+		}
+	}
+
+	// Test BitArray copying View
+	{
+		uint32 WordBufferA[] = { 1, 2, 3, 4 };
+		FNetBitArrayView BitArrayA(&WordBufferA[0], 128);
+
+		const uint32 WordBufferB[] = { 5, 6, 7, 8 };
+		FNetBitArray BitArrayB;
+		BitArrayB.Init(128);
+		BitArrayB.GetData()[0] = WordBufferB[0];
+		BitArrayB.GetData()[1] = WordBufferB[1];
+		BitArrayB.GetData()[2] = WordBufferB[2];
+		BitArrayB.GetData()[3] = WordBufferB[3];
+
+		BitArrayB.Copy(BitArrayA);
+
+		for (uint32 it = 0; it < UE_ARRAY_COUNT(WordBufferA); ++it)
+		{
+			UE_NET_ASSERT_EQ(BitArrayB.GetData()[it], WordBufferA[it]);
+		}
+	}
+}
+
+UE_NET_TEST(FNetBitArrayView, InitAndCopy)
+{
+	{
+		uint32 WordBufferA[] = { 1, 2, 3, 4 };
+		const FNetBitArrayView BitArrayA(&WordBufferA[0], 128);
+
+		FNetBitArray TestBitArrayA;
+		TestBitArrayA.InitAndCopy(BitArrayA);
+
+		for (uint32 it = 0; it < UE_ARRAY_COUNT(WordBufferA); ++it)
+		{
+			UE_NET_ASSERT_EQ(TestBitArrayA.GetData()[it], WordBufferA[it]);
+		}
+	}
+
+	{
+		uint32 WordBufferB[] = { 5, 6, 7, 8 };
+		FNetBitArray BitArrayB;
+		BitArrayB.Init(128);
+		BitArrayB.GetData()[0] = WordBufferB[0];
+		BitArrayB.GetData()[1] = WordBufferB[1];
+		BitArrayB.GetData()[2] = WordBufferB[2];
+		BitArrayB.GetData()[3] = WordBufferB[3];
+
+		FNetBitArray TestBitArrayB;
+		TestBitArrayB.InitAndCopy(BitArrayB);
+
+		for (uint32 it = 0; it < UE_ARRAY_COUNT(WordBufferB); ++it)
+		{
+			UE_NET_ASSERT_EQ(TestBitArrayB.GetData()[it], WordBufferB[it]);
+		}
+	}
+}
+
+UE_NET_TEST(FNetBitArrayView, PrintHelper)
+{
+	{
+		uint32 WordBufferA[] = { 0xFF00, 0xF00F, 0x00FF, 0x0FF0 };
+
+		FNetBitArray BitArrayB;
+		BitArrayB.Init(128);
+		BitArrayB.GetData()[0] = WordBufferA[0];
+		BitArrayB.GetData()[1] = WordBufferA[1];
+		BitArrayB.GetData()[2] = WordBufferA[2];
+		BitArrayB.GetData()[3] = WordBufferA[3];
+		
+		const FNetBitArrayView BitArrayA(&WordBufferA[0], 128);
+		FString PrintBufferA;
+		FString PrintBufferB;
+
+		PrintBufferA = FNetBitArrayPrinter::PrintSetBits(BitArrayA);
+		PrintBufferB = FNetBitArrayPrinter::PrintSetBits(BitArrayB);
+		UE_NET_ASSERT_EQ(PrintBufferA, PrintBufferB);
+
+		PrintBufferA = FNetBitArrayPrinter::PrintSetSummary(BitArrayA);
+		PrintBufferB = FNetBitArrayPrinter::PrintSetSummary(BitArrayB);
+		UE_NET_ASSERT_EQ(PrintBufferA, PrintBufferB);
+
+		PrintBufferA = BitArrayA.ToString();
+		PrintBufferB = BitArrayB.ToString();
+		UE_NET_ASSERT_EQ(PrintBufferA, PrintBufferB);
+
+		PrintBufferA = FNetBitArrayPrinter::PrintZeroBits(BitArrayA);
+		PrintBufferB = FNetBitArrayPrinter::PrintZeroBits(BitArrayB);
+		UE_NET_ASSERT_EQ(PrintBufferA, PrintBufferB);
+		
+		PrintBufferA = FNetBitArrayPrinter::PrintZeroSummary(BitArrayA);
+		PrintBufferB = FNetBitArrayPrinter::PrintZeroSummary(BitArrayB);
+		UE_NET_ASSERT_EQ(PrintBufferA, PrintBufferB);
+
+		uint32 WordBufferDelta[] = { 0x0011, 0xF00F, 0x1100, 0x0FF0 };
+		const FNetBitArrayView BitArrayDelta(&WordBufferDelta[0], 128);
+
+		PrintBufferA = FNetBitArrayPrinter::PrintDeltaSummary(BitArrayA, BitArrayDelta);
+		PrintBufferB = FNetBitArrayPrinter::PrintDeltaSummary(BitArrayDelta, BitArrayB);
+		UE_NET_ASSERT_EQ(PrintBufferA, PrintBufferB);
+
+		PrintBufferA = FNetBitArrayPrinter::PrintDeltaBits(BitArrayA, BitArrayDelta);
+		PrintBufferB = FNetBitArrayPrinter::PrintDeltaBits(BitArrayB, BitArrayDelta);
+		UE_NET_ASSERT_EQ(PrintBufferA, PrintBufferB);
 	}
 }
 
@@ -1626,6 +1945,57 @@ UE_NET_TEST_FIXTURE(FNetBitArrayFixture, MakeNetBitArrayView)
 		UE_NET_ASSERT_EQ(BitArray.GetData(), BitArrayView.GetData());
 		UE_NET_ASSERT_EQ(BitArray.GetNumBits(), BitArrayView.GetNumBits());
 	}
+}
+
+UE_NET_TEST(FNetBitArrayConstRangeIterator, CanIterateOverEmptyBitArray)
+{
+	bool bIteratedOverEmptyArray = false;
+	FNetBitArrayView Empty;
+	for (const uint32 Index : Empty)
+	{
+		bIteratedOverEmptyArray = true;
+	}
+
+	UE_NET_ASSERT_FALSE(bIteratedOverEmptyArray);
+}
+
+UE_NET_TEST(FNetBitArrayConstRangeIterator, CanIterateOverArbitrailySizedBitArrayWithAllBitsSet)
+{
+	FNetBitArrayBase::StorageWordType WordBuffer[] = { ~0U, ~0U, ~0U, ~0U, ~0U, ~0U, ~0U, };
+
+	constexpr uint32 ArraySize = 126U;
+	FNetBitArrayView BitArray(WordBuffer, ArraySize, FNetBitArrayView::NoResetNoValidate);
+	uint32 It = 0;
+	for (const uint32 Index : BitArray)
+	{
+		// Make sure we're hitting the right indices.
+		UE_NET_ASSERT_EQ(Index, It);
+		++It;
+	}
+
+	UE_NET_ASSERT_EQ(It, ArraySize);
+}
+
+UE_NET_TEST(FNetBitArrayConstRangeIterator, CanIterateOverArbitrailySizedBitArrayWithArbitraryBitsSet)
+{
+	constexpr uint32 ArraySize = 128U;
+	FNetBitArray BitArray(ArraySize);
+
+	const uint32 IndicesToSet[] = { 65, 68 };
+	for (uint32 IndexToSet : IndicesToSet)
+	{
+		BitArray.SetBit(IndexToSet);
+	}
+
+	uint32 It = 0;
+	for (const uint32 Index : BitArray)
+	{
+		// Make sure we're hitting the right indices.
+		UE_NET_ASSERT_EQ(Index, IndicesToSet[It]);
+		++It;
+	}
+
+	UE_NET_ASSERT_EQ(It, (uint32)UE_ARRAY_COUNT(IndicesToSet));
 }
 
 }

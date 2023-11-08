@@ -1,14 +1,29 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "PhysicsEngine/PhysicsObjectExternalInterface.h"
 
-FLockedReadPhysicsObjectExternalInterface FPhysicsObjectExternalInterface::LockRead(TArrayView<Chaos::FPhysicsObjectHandle> InObjects)
+FLockedReadPhysicsObjectExternalInterface FPhysicsObjectExternalInterface::LockRead(FChaosScene* Scene)
 {
-	return FLockedReadPhysicsObjectExternalInterface{ GetScene(InObjects), CreateReadInterface<Chaos::EThreadContext::External>() };
+	return FLockedReadPhysicsObjectExternalInterface{ Scene, CreateReadInterface<Chaos::EThreadContext::External>() };
 }
 
-FLockedWritePhysicsObjectExternalInterface FPhysicsObjectExternalInterface::LockWrite(TArrayView<Chaos::FPhysicsObjectHandle> InObjects)
+FLockedReadPhysicsObjectExternalInterface FPhysicsObjectExternalInterface::LockRead(Chaos::FConstPhysicsObjectHandle InObject)
 {
-	return FLockedWritePhysicsObjectExternalInterface{ GetScene(InObjects), CreateWriteInterface<Chaos::EThreadContext::External>() };
+	return LockRead(TArray<Chaos::FConstPhysicsObjectHandle>{ InObject });
+}
+
+FLockedReadPhysicsObjectExternalInterface FPhysicsObjectExternalInterface::LockRead(TArrayView<const Chaos::FConstPhysicsObjectHandle> InObjects)
+{
+	return LockRead(GetScene(InObjects));
+}
+
+FLockedWritePhysicsObjectExternalInterface FPhysicsObjectExternalInterface::LockWrite(FChaosScene* Scene)
+{
+	return FLockedWritePhysicsObjectExternalInterface{ Scene, CreateWriteInterface<Chaos::EThreadContext::External>() };
+}
+
+FLockedWritePhysicsObjectExternalInterface FPhysicsObjectExternalInterface::LockWrite(TArrayView<const Chaos::FPhysicsObjectHandle> InObjects)
+{
+	return LockWrite(GetScene(InObjects));
 }
 
 Chaos::FReadPhysicsObjectInterface_External FPhysicsObjectExternalInterface::GetRead_AssumesLocked()

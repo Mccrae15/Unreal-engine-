@@ -30,7 +30,7 @@ struct FFoliageISMActor : public FFoliageImpl, public IISMPartitionInstanceManag
 	FGuid Guid;
 	FISMClientHandle ClientHandle;
 	TSortedMap<int32, TArray<FTransform>> ISMDefinition;
-	UClass* ActorClass;
+	TObjectPtr<UClass> ActorClass;
 #endif
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostSerialize(FArchive& Ar) override;
@@ -68,7 +68,7 @@ struct FFoliageISMActor : public FFoliageImpl, public IISMPartitionInstanceManag
 	virtual void PreEditUndo(UFoliageType* FoliageType) override;
 	virtual void PostEditUndo(FFoliageInfo* InInfo, UFoliageType* FoliageType) override;
 	virtual void NotifyFoliageTypeWillChange(UFoliageType* FoliageType) override;
-	virtual void NotifyFoliageTypeChanged(UFoliageType* FoliageType, bool bSourceChanged) override;
+	virtual bool NotifyFoliageTypeChanged(UFoliageType* FoliageType, bool bSourceChanged) override;
 
 private:
 	void RegisterDelegates();

@@ -16,13 +16,35 @@
 #include "DecalRenderingCommon.h"
 #include "DecalRenderingShared.h"
 #include "RenderCore.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
-void RenderMeshDecalsMobile(FRHICommandListImmediate& RHICmdList, const FViewInfo& View, EDecalRenderStage DecalRenderStage, EDecalRenderTargetMode RenderTargetMode);
-extern void RenderDeferredDecalsMobile(FRHICommandListImmediate& RHICmdList, const FScene& Scene, const FViewInfo& View, EDecalRenderStage DecalRenderStage, EDecalRenderTargetMode RenderTargetMode);
+void RenderMeshDecalsMobile(FRHICommandList& RHICmdList, const FViewInfo& View, EDecalRenderStage DecalRenderStage, EDecalRenderTargetMode RenderTargetMode);
+extern void RenderDeferredDecalsMobile(FRHICommandList& RHICmdList, const FScene& Scene, const FViewInfo& View, EDecalRenderStage DecalRenderStage, EDecalRenderTargetMode RenderTargetMode);
 
-void FMobileSceneRenderer::RenderDecals(FRHICommandListImmediate& RHICmdList, const FViewInfo& View)
+static bool DoesPlatformSupportDecals(EShaderPlatform ShaderPlatform)
 {
-	if (!IsMobileHDR() || !ViewFamily.EngineShowFlags.Decals || View.bIsPlanarReflection)
+	if (!IsMobileHDR())
+	{
+		// Vulkan uses sub-pass to fetch SceneDepth
+		if (IsVulkanPlatform(ShaderPlatform) ||
+			IsSimulatedPlatform(ShaderPlatform) ||
+			// Some Androids support SceneDepth fetch
+			(IsAndroidOpenGLESPlatform(ShaderPlatform) && GSupportsShaderDepthStencilFetch))
+		{
+			return true;
+		}
+
+		// Metal needs DepthAux to fetch depth, and its not availle in LDR mode
+		return false;
+	}
+
+	// HDR always supports decals
+	return true;
+}
+
+void FMobileSceneRenderer::RenderDecals(FRHICommandList& RHICmdList, const FViewInfo& View)
+{
+	if (!DoesPlatformSupportDecals(View.GetShaderPlatform()) || !ViewFamily.EngineShowFlags.Decals || View.bIsPlanarReflection)
 	{
 		return;
 	}
@@ -49,7 +71,7 @@ void FMobileSceneRenderer::RenderDecals(FRHICommandListImmediate& RHICmdList, co
 	}
 }
 
-void RenderDeferredDecalsMobile(FRHICommandListImmediate& RHICmdList, const FScene& Scene, const FViewInfo& View, EDecalRenderStage DecalRenderStage, EDecalRenderTargetMode RenderTargetMode)
+void RenderDeferredDecalsMobile(FRHICommandList& RHICmdList, const FScene& Scene, const FViewInfo& View, EDecalRenderStage DecalRenderStage, EDecalRenderTargetMode RenderTargetMode)
 {
 	const uint32 DecalCount = Scene.Decals.Num();
 	int32 SortedDecalCount = 0;
@@ -68,7 +90,9 @@ void RenderDeferredDecalsMobile(FRHICommandListImmediate& RHICmdList, const FSce
 		FGraphicsPipelineStateInitializer GraphicsPSOInit;
 		RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
 
-		RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1);
+		// BEGIN META SECTION - Multi-View Per View Viewports / Render Areas
+		FMobileSceneRenderer::SetViewport(RHICmdList, View);
+		// END META SECTION - Multi-View Per View Viewports / Render Areas
 		RHICmdList.SetStreamSource(0, GetUnitCubeVertexBuffer(), 0);
 
 		for (int32 DecalIndex = 0; DecalIndex < SortedDecalCount; DecalIndex++)

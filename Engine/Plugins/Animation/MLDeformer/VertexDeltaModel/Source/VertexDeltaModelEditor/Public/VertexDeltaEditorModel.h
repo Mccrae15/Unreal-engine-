@@ -2,11 +2,12 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "CoreTypes.h"
 #include "MLDeformerGeomCacheEditorModel.h"
 
 class UNeuralNetwork;
 class UVertexDeltaModel;
+class UNNEModelData;
 
 namespace UE::VertexDeltaModel
 {
@@ -33,7 +34,7 @@ namespace UE::VertexDeltaModel
 		virtual FString GetHeatMapDeformerGraphPath() const override;
 		// ~END FMLDeformerEditorModel overrides.
 
-		UNeuralNetwork* LoadNeuralNetworkFromOnnx(const FString& Filename) const;
+		TObjectPtr<UNNEModelData> LoadNeuralNetworkFromOnnx(const FString& Filename) const;
 		UVertexDeltaModel* GetVertexDeltaModel() const;
 	};
 }	// namespace UE::VertexDeltaModel

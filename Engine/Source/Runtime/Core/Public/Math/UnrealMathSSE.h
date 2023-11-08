@@ -656,8 +656,10 @@ FORCEINLINE VectorRegister4Double VectorLoadDouble1(const double* Ptr)
  */
 FORCEINLINE VectorRegister4Float VectorLoadFloat2(const float* Ptr)
 {
-	// This intentionally casts to a double* to be able to load 64 bits of data using the "load 1 double" instruction to fill in the two 32-bit floats.
-	return _mm_castpd_ps(_mm_load1_pd(reinterpret_cast<const double*>(Ptr))); // -V615
+	// Switched from _mm_load1_pd and a cast to avoid a compiler bug in VC. This has the benefit of
+	// being very clear about not needing any alignment, and the optimizer will still result in
+	// movsd and movlhps in both clang and vc.
+	return _mm_setr_ps(Ptr[0], Ptr[1], Ptr[0], Ptr[1]);
 }
 
 FORCEINLINE VectorRegister4Double VectorLoadFloat2(const double* Ptr)
@@ -2203,15 +2205,21 @@ CORE_API void VectorMatrixMultiply(FMatrix44f* Result, const FMatrix44f* Matrix1
 CORE_API void VectorMatrixMultiply(FMatrix44d* Result, const FMatrix44d* Matrix1, const FMatrix44d* Matrix2);
 
 /**
- * Calculate the inverse of an FMatrix.
+ * Calculate the inverse of an FMatrix44.  Src == Dst is allowed
  *
- * @param DstMatrix		FMatrix pointer to where the result should be stored
- * @param SrcMatrix		FMatrix pointer to the Matrix to be inversed
+ * @param DstMatrix		FMatrix44 pointer to where the result should be stored
+ * @param SrcMatrix		FMatrix44 pointer to the Matrix to be inversed
+ * @return bool			returns false if matrix is not invertable and stores identity 
+ *
  */
-CORE_API void VectorMatrixInverse(FMatrix44f* DstMatrix, const FMatrix44f* SrcMatrix);
-CORE_API void VectorMatrixInverse(FMatrix44d* DstMatrix, const FMatrix44d* SrcMatrix);
-
-
+FORCEINLINE bool VectorMatrixInverse(FMatrix44d* DstMatrix, const FMatrix44d* SrcMatrix)
+{
+	return FMath::MatrixInverse(DstMatrix,SrcMatrix);
+}
+FORCEINLINE bool VectorMatrixInverse(FMatrix44f* DstMatrix, const FMatrix44f* SrcMatrix)
+{
+	return FMath::MatrixInverse(DstMatrix,SrcMatrix);
+}
 
 /**
  * Calculate Homogeneous transform.

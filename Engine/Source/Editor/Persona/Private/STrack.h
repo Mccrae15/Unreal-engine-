@@ -23,6 +23,7 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/SPanel.h"
+#include "DragAndDrop/AssetDragDropOp.h"
 
 class FArrangedChildren;
 class FChildren;
@@ -34,6 +35,7 @@ class FUICommandList;
 class FWidgetStyle;
 class SWidget;
 class UObject;
+class UAnimSequenceBase;
 struct FPointerEvent;
 struct FSlateBrush;
 
@@ -47,11 +49,14 @@ DECLARE_DELEGATE_OneParam( FOnBarClicked, int32)
 DECLARE_DELEGATE_TwoParams( FOnBarDrag, int32, float)
 DECLARE_DELEGATE_OneParam( FOnBarDrop, int32 )
 DECLARE_DELEGATE_TwoParams( FOnTrackDragDop, TSharedPtr<FDragDropOperation>, float )
+DECLARE_DELEGATE_RetVal_OneParam( bool, FOnAssetDragDrop, TSharedPtr<FAssetDragDropOp>)
+DECLARE_DELEGATE_RetVal_TwoParams(bool, FIsAnimAssetValid, const UAnimSequenceBase*, FText* OutReason)
 
 DECLARE_DELEGATE_RetVal( FString, FOnGetNodeName )
 DECLARE_DELEGATE_OneParam( FOnTrackNodeDragged, float )
 DECLARE_DELEGATE( FOnTrackNodeDropped )
 DECLARE_DELEGATE( FOnTrackNodeClicked )
+DECLARE_DELEGATE( FOnTrackNodeDoubleClicked )
 
 DECLARE_DELEGATE_RetVal_TwoParams( TSharedPtr<SWidget>, FOnSummonContextMenu, const FGeometry&, const FPointerEvent& );
 DECLARE_DELEGATE_ThreeParams( FOnTrackRightClickContextMenu, FMenuBuilder&, float, int32 )
@@ -112,6 +117,7 @@ public:
 		, _OnSelectionChanged()
 		, _OnNodeRightClickContextMenu()
 		, _OnTrackNodeClicked()
+		, _OnTrackNodeDoubleClicked()
 		, _CenterOnPosition(false)
 	{
 	}
@@ -131,6 +137,7 @@ public:
 	SLATE_EVENT( FOnNodeSelectionChanged, OnSelectionChanged )
 	SLATE_EVENT( FOnNodeRightClickContextMenu, OnNodeRightClickContextMenu )
 	SLATE_EVENT( FOnTrackNodeClicked, OnTrackNodeClicked )
+	SLATE_EVENT( FOnTrackNodeDoubleClicked, OnTrackNodeDoubleClicked)
 	SLATE_ARGUMENT( bool, CenterOnPosition )
 	SLATE_NAMED_SLOT(FArguments, OverrideContent)
 
@@ -144,6 +151,7 @@ public:
 	virtual void OnMouseEnter( const FGeometry& MyGeometry, const FPointerEvent& MouseEvent ) override;
 	virtual void OnMouseLeave( const FPointerEvent& MouseEvent ) override;
 	virtual void OnDragged(const class FDragDropEvent& DragDropEvent );
+	virtual FReply OnMouseButtonDoubleClick(const FGeometry& InMyGeometry, const FPointerEvent& InMouseEvent) override;
 
 	// virtual draw related functions
 	virtual FVector2D GetOffsetRelativeToParent(const FGeometry& ParentAllottedGeometry) const;
@@ -211,6 +219,7 @@ protected:
 	FOnTrackNodeDropped			OnTrackNodeDropped;
 	
 	FOnTrackNodeClicked				OnTrackNodeClicked;
+	FOnTrackNodeDoubleClicked		OnTrackNodeDoubleClicked;
 	FOnNodeRightClickContextMenu	OnNodeRightClickContextMenu;
 	
 	FSlateFontInfo Font;
@@ -265,6 +274,7 @@ public:
 		SLATE_EVENT( FOnBarDrag, OnBarDrag)
 		SLATE_EVENT( FOnBarClicked, OnBarClicked)
 		SLATE_EVENT( FOnTrackDragDop, OnTrackDragDrop )
+		SLATE_EVENT( FOnAssetDragDrop, OnAssetDragDrop )
 		SLATE_EVENT( FOnBarDrop, OnBarDrop )
 		SLATE_EVENT( FOnSummonContextMenu, OnSummonContextMenu )
 		SLATE_EVENT( FOnTrackRightClickContextMenu, OnTrackRightClickContextMenu )
@@ -281,6 +291,8 @@ public:
 	virtual FReply	OnDrop( const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent ) override;	
 	virtual FReply	OnDragOver( const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent ) override;
 	virtual FReply	OnDragDetected( const FGeometry& MyGeometry, const FPointerEvent& MouseEvent ) override;
+	virtual void OnDragEnter(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override;
+	virtual void OnDragLeave(const FDragDropEvent& DragDropEvent) override;
 
 	int32			GetHitNode(const FGeometry& MyGeometry, const FVector2D& CursorPosition);
 
@@ -332,6 +344,7 @@ protected:
 
 	FOnGetBarPos							OnGetDraggableBarPos;
 	FOnTrackDragDop							OnTrackDragDrop;
+	FOnAssetDragDrop						OnAssetDragDrop;
 	
 	TAttribute<const FSlateBrush*>			StyleInfo;
 	FOnSummonContextMenu					OnSummonContextMenu;

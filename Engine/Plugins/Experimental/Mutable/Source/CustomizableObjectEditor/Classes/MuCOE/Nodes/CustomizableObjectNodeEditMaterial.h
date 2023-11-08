@@ -53,7 +53,6 @@ public:
 	virtual void BackwardsCompatibleFixup() override;
 	virtual void PostBackwardsCompatibleFixup() override;
 	virtual void AllocateDefaultPins(UCustomizableObjectNodeRemapPins* RemapPins) override;
-	virtual void RemapPins(const TMap<UEdGraphPin*, UEdGraphPin*>& PinsToRemap) override;
 	virtual bool IsNodeOutDatedAndNeedsRefresh() override;
 	virtual FString GetRefreshMessage() const override;
 	virtual bool IsSingleOutputNode() const override;
@@ -61,6 +60,7 @@ public:
 
 	// UCustomizableObjectNodeEditMaterialBase interface
 	virtual UEdGraphPin* OutputPin() const override;
+	virtual void SetLayoutIndex(const int32 LayoutIndex) override;
 	
 	// ICustomizableObjectNodeParentedMaterial interface
 	virtual void SetParentNode(UCustomizableObject* Object, FGuid NodeId) override;
@@ -75,6 +75,9 @@ public:
 	 *
 	 * @returns Always returns a valid pin if EditsImage(const FGuid&) returns true. */
 	const UEdGraphPin* GetUsedImageMaskPin(const FGuid& ImageId) const;
+
+	// Function to select all the layout blocks. Called when a parameter is reset (ParentMaterial, ParentLayoutIndex)
+	void SelectAllLayoutBlocks();
 
 private:
 	/** Relates a Parameter id to a Pin. Only used to improve performance. */

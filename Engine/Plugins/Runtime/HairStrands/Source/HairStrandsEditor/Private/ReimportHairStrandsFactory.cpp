@@ -366,7 +366,7 @@ EReimportResult::Type UReimportHairStrandsFactory::Reimport(UObject* Obj)
 		GroomReimportOptions->InterpolationSettings.Init(FHairGroupsInterpolation(), GroupCount);
 		for (uint32 GroupIndex = 0; GroupIndex < GroupCount; ++GroupIndex)
 		{
-			GroomReimportOptions->InterpolationSettings[GroupIndex] = HairAsset->HairGroupsInterpolation[GroupIndex];
+			GroomReimportOptions->InterpolationSettings[GroupIndex] = HairAsset->GetHairGroupsInterpolation()[GroupIndex];
 		}
 	}
 
@@ -380,12 +380,13 @@ EReimportResult::Type UReimportHairStrandsFactory::Reimport(UObject* Obj)
 			for (const FHairDescriptionGroup& Group : OutDescription.HairGroups)
 			{
 				FGroomHairGroupPreview& OutGroup = GroupsPreview->Groups.AddDefaulted_GetRef();
-				OutGroup.GroupName  = Group.Info.GroupName;
-				OutGroup.GroupID	= Group.Info.GroupID;
-				OutGroup.CurveCount = Group.Info.NumCurves;
-				OutGroup.GuideCount = Group.Info.NumGuides;
-				OutGroup.bHasPrecomputedWeights = Group.Strands.StrandsCurves.HasPrecomputedWeights();
-
+				OutGroup.GroupName  	= Group.Info.GroupName;
+				OutGroup.GroupID		= Group.Info.GroupID;
+				OutGroup.CurveCount 	= Group.Info.NumCurves;
+				OutGroup.GuideCount 	= Group.Info.NumGuides;
+				OutGroup.Attributes 	= Group.GetHairAttributes();
+				OutGroup.AttributeFlags = Group.GetHairAttributeFlags();
+				OutGroup.Flags			= Group.Info.Flags;
 				if (OutGroup.GroupID < OutDescription.HairGroups.Num())
 				{
 					OutGroup.InterpolationSettings = GroomReimportOptions->InterpolationSettings[OutGroup.GroupID];

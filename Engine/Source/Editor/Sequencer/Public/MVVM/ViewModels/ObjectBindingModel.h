@@ -20,6 +20,8 @@ class UMovieScene;
 class UMovieSceneTrack;
 class FMenuBuilder;
 class FPropertyPath;
+class FStructOnScope;
+struct FMovieSceneDynamicBinding;
 enum class ECheckBoxState : uint8;
 
 namespace UE
@@ -37,7 +39,7 @@ enum class EObjectBindingType
 	Possessable, Spawnable, Unknown
 };
 
-class FObjectBindingModel
+class SEQUENCER_API FObjectBindingModel
 	: public FOutlinerItemModel
 	, public IObjectBindingExtension
 	, public IDraggableOutlinerExtension
@@ -117,6 +119,9 @@ public:
 
 	TSharedRef<SWidget> GetAddTrackMenuContent();
 
+	/** Build a sub-menu for editing the given dynamic binding */
+	void AddDynamicBindingMenu(FMenuBuilder& MenuBuilder, FMovieSceneDynamicBinding& DynamicBinding);
+
 protected:
 
 	/*~ FViewModel interface */
@@ -124,22 +129,18 @@ protected:
 
 private:
 
-	void AddSpawnOwnershipMenu(FMenuBuilder& MenuBuilder);
-	void AddSpawnLevelMenu(FMenuBuilder& MenuBuilder);
-	void AddTagMenu(FMenuBuilder& MenuBuilder);
-	void AddChangeClassMenu(FMenuBuilder& MenuBuilder);
-
-private:
-
 	void AddPropertyMenuItems(FMenuBuilder& AddTrackMenuBuilder, TArray<FPropertyPath> KeyableProperties, int32 PropertyNameIndexStart, int32 PropertyNameIndexEnd);
 	void HandleAddTrackSubMenuNew(FMenuBuilder& AddTrackMenuBuilder, TArray<FPropertyPath> KeyablePropertyPaths, int32 PropertyNameIndexStart);
 	void HandlePropertyMenuItemExecute(FPropertyPath PropertyPath);
 
+	void AddTagMenu(FMenuBuilder& MenuBuilder);
 	ECheckBoxState GetTagCheckState(FName TagName);
 	void ToggleTag(FName TagName);
 	void HandleDeleteTag(FName TagName);
 	void HandleAddTag(FName TagName);
 	void HandleTemplateActorClassPicked(UClass* ChosenClass);
+
+	void OnFinishedChangingDynamicBindingProperties(const FPropertyChangedEvent& ChangeEvent, TSharedPtr<FStructOnScope> ValueStruct);
 
 protected:
 

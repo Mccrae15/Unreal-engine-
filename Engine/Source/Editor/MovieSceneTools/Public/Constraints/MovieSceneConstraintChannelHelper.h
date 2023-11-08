@@ -4,6 +4,8 @@
 
 #include "Templates/SharedPointer.h"
 #include "UObject/ObjectPtr.h"
+#include "MovieSceneSection.h"
+
 
 class IMovieSceneConstrainedSection;
 struct ITransformConstraintChannelInterface;
@@ -16,7 +18,8 @@ class UTickableParentConstraint;
 class UTransformableHandle;
 struct FMovieSceneConstraintChannel;
 struct FFrameNumber;
-
+struct FConstraintAndActiveChannel;
+enum class EMovieSceneKeyInterpolation : uint8;
 
 struct MOVIESCENETOOLS_API FCompensationEvaluator
 {
@@ -32,6 +35,7 @@ public:
 	void ComputeCompensation(UWorld* InWorld, const TSharedPtr<ISequencer>& InSequencer, const FFrameNumber& InTime);
 	void ComputeLocalTransformsForBaking(UWorld* InWorld, const TSharedPtr<ISequencer>& InSequencer, const TArray<FFrameNumber>& InFrames);
 	void CacheTransforms(UWorld* InWorld, const TSharedPtr<ISequencer>& InSequencer, const TArray<FFrameNumber>& InFrames);
+	void ComputeCurrentTransforms(UWorld* InWorld);
 	
 private:
 
@@ -41,6 +45,14 @@ private:
 	UTransformableHandle* Handle = nullptr;
 };
 
+struct MOVIESCENETOOLS_API FConstraintSections
+{
+	UMovieSceneSection* ConstraintSection = nullptr;
+	UMovieSceneSection* ChildTransformSection = nullptr;
+	UMovieSceneSection* ParentTransformSection = nullptr;
+	FConstraintAndActiveChannel* ActiveChannel = nullptr;
+	ITransformConstraintChannelInterface* Interface = nullptr;
+};
 struct MOVIESCENETOOLS_API FMovieSceneConstraintChannelHelper
 {
 public:
@@ -84,6 +96,20 @@ public:
 		UMovieSceneSection* InSection,
 		const FFrameNumber& InCurrentFrame, const FFrameNumber& InNextFrame);
 
+	/* Get the section and the channel for the given constraint, will be nullptr's if it doesn't exist in Sequencer*/
+	static FConstraintSections  GetConstraintSectionAndChannel(
+		const UTickableTransformConstraint* InConstraint,
+		const TSharedPtr<ISequencer>& InSequencer);
+
+	/* For the given constraint get all of the transform keys for it's child and parent handles*/
+	static void GetTransformFramesForConstraintHandles(
+		const UTickableTransformConstraint* InConstraint,
+		const TSharedPtr<ISequencer>& InSequencer,
+		const FFrameNumber& StartFrame,
+		const FFrameNumber& EndFrame,
+		TArray<FFrameNumber>& OutFramesToBake);
+
+
 	/** @todo documentation. */
 	template<typename ChannelType>
 	static void GetFramesToCompensate(
@@ -115,11 +141,18 @@ public:
 		const FFrameNumber& InCurrentTime,
 		const FFrameNumber& InNextTime);
 
-	/** @todo documentation. */
+	/** delete transform keys at that time */
 	template< typename ChannelType >
 	static void DeleteTransformKeys(
 		const TArrayView<ChannelType*>& InChannels,
 		const FFrameNumber& InTime);
+
+	/** Change key interpolation at the specified time*/
+	template< typename ChannelType >
+	static void ChangeKeyInterpolation(
+		const TArrayView<ChannelType*>& InChannels,
+		const FFrameNumber& InTime,
+		EMovieSceneKeyInterpolation KeyInterpolation);
 
 	static void HandleConstraintPropertyChanged(
 		UTickableTransformConstraint* InConstraint,
@@ -127,6 +160,26 @@ public:
 		const FPropertyChangedEvent& InPropertyChangedEvent,
 		const TSharedPtr<ISequencer>& InSequencer,
 		UMovieSceneSection* InSection);
+
+	template< typename ChannelType >
+	static TArray<FFrameNumber> GetTransformTimes(
+		const TArrayView<ChannelType*>& InChannels,
+		const FFrameNumber& StartTime, 
+		const FFrameNumber& EndTime);
+
+	template< typename ChannelType >
+	static  void DeleteTransformTimes(
+		const TArrayView<ChannelType*>& InChannels,
+		const FFrameNumber& StartTime,
+		const FFrameNumber& EndTime,
+		EMovieSceneTransformChannel Channels = EMovieSceneTransformChannel::AllTransform);
+
+	/** this will only set the value son channels with keys at the specified time, reusing tangent time etc. */
+	template< typename ChannelType >
+	static void SetTransformTimes(
+		const TArrayView<ChannelType*>& InChannels,
+		const TArray<FFrameNumber>& Frames,
+		const TArray<FTransform>& Transforms);
 
 	static bool bDoNotCompensate;
 
@@ -137,9 +190,16 @@ private:
 	/** For the given handle create any movie scene binding for it based upon the current sequencer that's open*/
 	static void CreateBindingIDForHandle(const TSharedPtr<ISequencer>& InSequencer, UTransformableHandle* InHandle);
 
+	/** Compensate scale keys when enabling/disabling scaling for parent constraints. */
 	static void CompensateScale(
 		UTickableParentConstraint* InParentConstraint,
 		const FMovieSceneConstraintChannel& InActiveChannel,
 		const TSharedPtr<ISequencer>& InSequencer,
 		UMovieSceneSection* InSection);
+
+	/** Handle offset modifications so that the child's transform channels are synced. */
+	static void HandleOffsetChanged(
+		UTickableTransformConstraint* InConstraint,
+		const FMovieSceneConstraintChannel& InActiveChannel,
+		const TSharedPtr<ISequencer>& InSequencer);
 };

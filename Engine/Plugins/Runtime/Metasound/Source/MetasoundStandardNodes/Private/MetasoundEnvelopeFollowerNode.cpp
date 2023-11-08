@@ -3,6 +3,7 @@
 #include "MetasoundEnvelopeFollowerNode.h"
 
 #include "Algo/MaxElement.h"
+#include "DSP/EnvelopeFollower.h"
 #include "Internationalization/Text.h"
 #include "MetasoundAudioBuffer.h"
 #include "MetasoundEnvelopeFollowerTypes.h"
@@ -12,15 +13,16 @@
 #include "MetasoundNodeRegistrationMacro.h"
 #include "MetasoundDataTypeRegistrationMacro.h"
 #include "MetasoundOperatorSettings.h"
+#include "MetasoundParamHelper.h"
 #include "MetasoundPrimitives.h"
+#include "MetasoundStandardNodesCategories.h"
 #include "MetasoundStandardNodesNames.h"
 #include "MetasoundTrigger.h"
 #include "MetasoundTime.h"
 #include "MetasoundVertex.h"
-#include "MetasoundParamHelper.h"
-#include "DSP/EnvelopeFollower.h"
 
 #define LOCTEXT_NAMESPACE "MetasoundStandardNodes_EnvelopeFollower"
+
 
 namespace Metasound
 {
@@ -42,14 +44,17 @@ namespace Metasound
 		static const FVertexInterface& GetVertexInterface();
 		static TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors);
 
-		FEnvelopeFollowerOperator(const FOperatorSettings& InSettings,
+		FEnvelopeFollowerOperator(const FCreateOperatorParams& InOperatorSettings,
 			const FAudioBufferReadRef& InAudioInput,
 			const FTimeReadRef& InAttackTime,
 			const FTimeReadRef& InReleaseTime,
 			const FEnvelopePeakModeReadRef& InEnvelopeMode);
 
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override;
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override;
 		virtual FDataReferenceCollection GetInputs() const override;
 		virtual FDataReferenceCollection GetOutputs() const override;
+		void Reset(const IOperator::FResetParams& InParams);
 		void Execute();
 
 	private:
@@ -77,7 +82,7 @@ namespace Metasound
 		EEnvelopePeakMode PrevFollowMode = EEnvelopePeakMode::Peak;
 	};
 
-	FEnvelopeFollowerOperator::FEnvelopeFollowerOperator(const FOperatorSettings& InSettings,
+	FEnvelopeFollowerOperator::FEnvelopeFollowerOperator(const FCreateOperatorParams& InParams,
 		const FAudioBufferReadRef& InAudioInput,
 		const FTimeReadRef& InAttackTime,
 		const FTimeReadRef& InReleaseTime,
@@ -87,42 +92,60 @@ namespace Metasound
 		, ReleaseTimeInput(InReleaseTime)
 		, FollowModeInput(InEnvelopeMode)
 		, EnvelopeFloatOutput(FFloatWriteRef::CreateNew())
-		, EnvelopeAudioOutput(FAudioBufferWriteRef::CreateNew(InSettings))
+		, EnvelopeAudioOutput(FAudioBufferWriteRef::CreateNew(InParams.OperatorSettings))
+	{
+		Reset(InParams);
+	}
+
+	void FEnvelopeFollowerOperator::BindInputs(FInputVertexInterfaceData& InOutVertexData)
+	{
+		using namespace EnvelopeFollowerVertexNames;
+
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InParamAudioInput), AudioInput);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InParamAttackTime), AttackTimeInput);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InParamReleaseTime), ReleaseTimeInput);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InParamFollowMode), FollowModeInput);
+	}
+
+	void FEnvelopeFollowerOperator::BindOutputs(FOutputVertexInterfaceData& InOutVertexData)
+	{
+		using namespace EnvelopeFollowerVertexNames;
+
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutParamEnvelope), EnvelopeFloatOutput);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputAudioEnvelope), EnvelopeAudioOutput);
+	}
+
+	FDataReferenceCollection FEnvelopeFollowerOperator::GetInputs() const
+	{
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
+	}
+
+	FDataReferenceCollection FEnvelopeFollowerOperator::GetOutputs() const
+	{
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
+	}
+
+	void FEnvelopeFollowerOperator::Reset(const IOperator::FResetParams& InParams)
 	{
 		PrevAttackTime = FMath::Max(FTime::ToMilliseconds(*AttackTimeInput), 0.0);
 		PrevReleaseTime = FMath::Max(FTime::ToMilliseconds(*ReleaseTimeInput), 0.0);
 
 		Audio::FEnvelopeFollowerInitParams EnvelopeParamsInitParams;
 	
-		EnvelopeParamsInitParams.SampleRate = InSettings.GetSampleRate();
+		EnvelopeParamsInitParams.SampleRate = InParams.OperatorSettings.GetSampleRate();
 		EnvelopeParamsInitParams.NumChannels = 1;
 		EnvelopeParamsInitParams.AttackTimeMsec = PrevAttackTime;
 		EnvelopeParamsInitParams.ReleaseTimeMsec = PrevReleaseTime;
 
 		EnvelopeFollower.Init(EnvelopeParamsInitParams);
-	}
-
-	FDataReferenceCollection FEnvelopeFollowerOperator::GetInputs() const
-	{
-		using namespace EnvelopeFollowerVertexNames;
-
-		FDataReferenceCollection InputDataReferences;
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InParamAudioInput), AudioInput);
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InParamAttackTime), AttackTimeInput);
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InParamReleaseTime), ReleaseTimeInput);
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InParamFollowMode), FollowModeInput);
-
-		return InputDataReferences;
-	}
-
-	FDataReferenceCollection FEnvelopeFollowerOperator::GetOutputs() const
-	{
-		using namespace EnvelopeFollowerVertexNames;
-
-		FDataReferenceCollection OutputDataReferences;
-		OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutParamEnvelope), EnvelopeFloatOutput);
-		OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputAudioEnvelope), EnvelopeAudioOutput);
-		return OutputDataReferences;
+		*EnvelopeFloatOutput = 0.f;
+		EnvelopeAudioOutput->Zero();
 	}
 
 	void FEnvelopeFollowerOperator::Execute()
@@ -181,7 +204,7 @@ namespace Metasound
 				TInputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(InParamAudioInput)),
 				TInputDataVertex<FTime>(METASOUND_GET_PARAM_NAME_AND_METADATA(InParamAttackTime), 0.01f),
 				TInputDataVertex<FTime>(METASOUND_GET_PARAM_NAME_AND_METADATA(InParamReleaseTime), 0.1f),
-				TInputDataVertex<FEnumEnvelopePeakMode>(METASOUND_GET_PARAM_NAME_AND_METADATA(InParamFollowMode))
+				TInputDataVertex<FEnumEnvelopePeakMode>(METASOUND_GET_PARAM_NAME_AND_METADATA(InParamFollowMode), (int32)EEnvelopePeakMode::Peak)
 			),
 			FOutputVertexInterface(
 				TOutputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutParamEnvelope)),
@@ -203,6 +226,7 @@ namespace Metasound
 			Info.DisplayName = METASOUND_LOCTEXT("Metasound_EnvelopeFollowerDisplayName", "Envelope Follower");
 			Info.Description = METASOUND_LOCTEXT("Metasound_EnvelopeFollowerDescription", "Outputs an envelope from an input audio signal.");
 			Info.Author = PluginAuthor;
+			Info.CategoryHierarchy = { NodeCategories::Envelopes };
 			Info.PromptIfMissing = PluginNodeMissingPrompt;
 			Info.DefaultInterface = GetVertexInterface();
 
@@ -225,10 +249,9 @@ namespace Metasound
 		FAudioBufferReadRef AudioIn = InputCollection.GetDataReadReferenceOrConstruct<FAudioBuffer>(METASOUND_GET_PARAM_NAME(InParamAudioInput), InParams.OperatorSettings);
 		FTimeReadRef AttackTime = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<FTime>(InputInterface, METASOUND_GET_PARAM_NAME(InParamAttackTime), InParams.OperatorSettings);
 		FTimeReadRef ReleaseTime = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<FTime>(InputInterface, METASOUND_GET_PARAM_NAME(InParamReleaseTime), InParams.OperatorSettings);
-		FEnvelopePeakModeReadRef EnvelopeModeIn = InputCollection.GetDataReadReferenceOrConstruct<FEnumEnvelopePeakMode>(METASOUND_GET_PARAM_NAME(InParamFollowMode));
+		FEnvelopePeakModeReadRef EnvelopeModeIn = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<FEnumEnvelopePeakMode>(InputInterface, METASOUND_GET_PARAM_NAME(InParamFollowMode), InParams.OperatorSettings);
 
-
-		return MakeUnique<FEnvelopeFollowerOperator>(InParams.OperatorSettings, AudioIn, AttackTime, ReleaseTime, EnvelopeModeIn);
+		return MakeUnique<FEnvelopeFollowerOperator>(InParams, AudioIn, AttackTime, ReleaseTime, EnvelopeModeIn);
 	}
 
 	FEnvelopeFollowerNode::FEnvelopeFollowerNode(const FNodeInitData& InitData)

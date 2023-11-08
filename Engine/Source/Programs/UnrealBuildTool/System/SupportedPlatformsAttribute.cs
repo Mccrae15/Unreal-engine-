@@ -1,11 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -35,7 +30,6 @@ namespace UnrealBuildTool
 				EpicGames.Core.ExceptionUtils.AddContext(Ex, "while parsing a SupportedPlatforms attribute");
 				throw;
 			}
-
 		}
 
 		/// <summary>
@@ -44,7 +38,7 @@ namespace UnrealBuildTool
 		/// <param name="Category">Category of platforms to add</param>
 		public SupportedPlatformsAttribute(UnrealPlatformClass Category)
 		{
-			this.Platforms = Utils.GetPlatformsInClass(Category);
+			Platforms = Utils.GetPlatformsInClass(Category);
 		}
 	}
 }

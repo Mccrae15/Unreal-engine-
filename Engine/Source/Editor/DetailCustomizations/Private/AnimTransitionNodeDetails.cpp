@@ -175,58 +175,80 @@ void FAnimTransitionNodeDetails::CustomizeDetails( IDetailLayoutBuilder& DetailB
 				}
 			}
 
-			// indicate if a native transition rule applies to this
-			UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNodeChecked(TransitionNode.Get());
-			if(Blueprint && Blueprint->ParentClass)
+			if (TransNode->bAutomaticRuleBasedOnSequencePlayerInState)
 			{
-				UAnimInstance* AnimInstance = CastChecked<UAnimInstance>(Blueprint->ParentClass->GetDefaultObject());
-				if(AnimInstance)
+				if (CanExecPin != nullptr && CanExecPin->LinkedTo.Num() > 0)
 				{
-					UEdGraph* ParentGraph = TransitionNode->GetGraph();
-					UAnimStateNodeBase* PrevState = TransitionNode->GetPreviousState();
-					UAnimStateNodeBase* NextState = TransitionNode->GetNextState();
-					if(PrevState != nullptr && NextState != nullptr && ParentGraph != nullptr)
+					TransitionCategory.AddCustomRow(LOCTEXT("AnimGraphNodeDetailsAutomaticRule_RowWarning", "Automatic Rule"))
+					[
+						SNew(SBox)
+						.VAlign(VAlign_Center)
+						.HAlign(HAlign_Left)
+						[
+							SNew(STextBlock)
+							.Text(LOCTEXT("AnimGraphNodeDetailsAutomaticRule_Warning", "Warning : Automatic Rule Based Transition will override graph exit rule."))
+							.ColorAndOpacity(FCoreStyle::Get().GetColor("ErrorReporting.WarningBackgroundColor"))
+							.Font(IDetailLayoutBuilder::GetDetailFontBold())
+						]
+					];
+				}
+				else
+				{
+					TransitionCategory.AddCustomRow(LOCTEXT("AnimGraphNodeDetailsAutomaticRule_Row", "Automatic Rule"))
+					[
+						SNew(SBox)
+						.VAlign(VAlign_Center)
+						.HAlign(HAlign_Left)
+						[
+							SNew(STextBlock)
+							.Text(LOCTEXT("AnimGraphNodeDetailsAutomaticRule", "Automatic Rule Based Transition"))
+							.Font(IDetailLayoutBuilder::GetDetailFontBold())
+						]
+					];
+				}
+			}
+			else
+			{
+				// indicate if a native transition rule applies to this
+				UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNodeChecked(TransitionNode.Get());
+				if(Blueprint && Blueprint->ParentClass)
+				{
+					UAnimInstance* AnimInstance = CastChecked<UAnimInstance>(Blueprint->ParentClass->GetDefaultObject());
+					if(AnimInstance)
 					{
-						FName FunctionName;
-						if(AnimInstance->HasNativeTransitionBinding(ParentGraph->GetFName(), FName(*PrevState->GetStateName()), FName(*NextState->GetStateName()), FunctionName))
+						UEdGraph* ParentGraph = TransitionNode->GetGraph();
+						UAnimStateNodeBase* PrevState = TransitionNode->GetPreviousState();
+						UAnimStateNodeBase* NextState = TransitionNode->GetNextState();
+						if(PrevState != nullptr && NextState != nullptr && ParentGraph != nullptr)
 						{
-							TransitionCategory.AddCustomRow( LOCTEXT("NativeBindingPresent_Filter", "Transition has native binding") )
-							[
-								SNew(STextBlock)
-								.Text(FText::Format(LOCTEXT("NativeBindingPresent", "Transition has native binding to {0}()"), FText::FromName(FunctionName)))
-								.Font( IDetailLayoutBuilder::GetDetailFontBold() )
-							];
+							FName FunctionName;
+							if(AnimInstance->HasNativeTransitionBinding(ParentGraph->GetFName(), FName(*PrevState->GetStateName()), FName(*NextState->GetStateName()), FunctionName))
+							{
+								TransitionCategory.AddCustomRow( LOCTEXT("NativeBindingPresent_Filter", "Transition has native binding") )
+								[
+									SNew(STextBlock)
+									.Text(FText::Format(LOCTEXT("NativeBindingPresent", "Transition has native binding to {0}()"), FText::FromName(FunctionName)))
+									.Font( IDetailLayoutBuilder::GetDetailFontBold() )
+								];
+							}
 						}
 					}
 				}
-			}
 
-			TransitionCategory.AddCustomRow( CanExecPin ? CanExecPin->PinFriendlyName : FText::GetEmpty() )
-			[
-				SNew(SKismetLinearExpression, CanExecPin)
-			];
+				TransitionCategory.AddCustomRow( CanExecPin ? CanExecPin->PinFriendlyName : FText::GetEmpty() )
+				[
+					SNew(SKismetLinearExpression, CanExecPin)
+				];
+			}
 		}
 
 		//////////////////////////////////////////////////////////////////////////
-
-		auto BlendSettingsEnabled = [LogicTypeHandle]()
-		{
-			uint8 LogicType;
-			if (LogicTypeHandle->GetValue(LogicType) == FPropertyAccess::Result::Success)
-			{
-				return LogicType != ETransitionLogicType::TLT_Inertialization;
-			}
-			return true;
-		};
-
-		auto BlendSettingsEnabledAttribute = TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateLambda(BlendSettingsEnabled));
 
 		IDetailCategoryBuilder& CrossfadeCategory = DetailBuilder.EditCategory("BlendSettings", LOCTEXT("BlendSettingsCategoryTitle", "Blend Settings") );
 		if (TransitionNode != NULL && SelectedObjects.Num() == 1)
 		{
 			// The sharing option for the crossfade settings
 			CrossfadeCategory.AddCustomRow( LOCTEXT("TransitionCrossfadeSharingLabel", "Transition Crossfade Sharing") )
-			.IsEnabled(BlendSettingsEnabledAttribute)
 			.NameContent()
 			[
 				SNew(STextBlock)
@@ -247,8 +269,8 @@ void FAnimTransitionNodeDetails::CustomizeDetails( IDetailLayoutBuilder& DetailB
 
 		//@TODO: Gate editing these on shared non-authoritative ones
 		CrossfadeCategory.AddProperty(GET_MEMBER_NAME_CHECKED(UAnimStateTransitionNode, CrossfadeDuration)).DisplayName( LOCTEXT("DurationLabel", "Duration") );
-		CrossfadeCategory.AddProperty(GET_MEMBER_NAME_CHECKED(UAnimStateTransitionNode, BlendMode)).DisplayName(LOCTEXT("ModeLabel", "Mode")).IsEnabled(BlendSettingsEnabledAttribute);
-		CrossfadeCategory.AddProperty(GET_MEMBER_NAME_CHECKED(UAnimStateTransitionNode, CustomBlendCurve)).DisplayName(LOCTEXT("CurveLabel", "Custom Blend Curve")).IsEnabled(BlendSettingsEnabledAttribute);
+		CrossfadeCategory.AddProperty(GET_MEMBER_NAME_CHECKED(UAnimStateTransitionNode, BlendMode)).DisplayName(LOCTEXT("ModeLabel", "Mode"));
+		CrossfadeCategory.AddProperty(GET_MEMBER_NAME_CHECKED(UAnimStateTransitionNode, CustomBlendCurve)).DisplayName(LOCTEXT("CurveLabel", "Custom Blend Curve"));
 		CrossfadeCategory.AddProperty(GET_MEMBER_NAME_CHECKED(UAnimStateTransitionNode, BlendProfile)).DisplayName(LOCTEXT("BlendProfileLabel", "Blend Profile"));
 
 		//////////////////////////////////////////////////////////////////////////

@@ -6,7 +6,6 @@
 
 #pragma once
 
-#include "GlobalShader.h"
 #include "ShaderParameters.h"
 #include "SceneView.h"
 #include "Shader.h"
@@ -15,19 +14,21 @@
 #include "NiagaraScriptBase.h"
 #include "NiagaraShared.h"
 #include "NiagaraShaderType.h"
-//#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
+#include "SceneTexturesConfig.h"
+#include "RendererUtils.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_3
+#include "GlobalShader.h"
 #include "RenderGraph.h"
 #include "SceneRenderTargetParameters.h"
-
-#include "RendererUtils.h"
-//#endif
+#endif
 
 class UClass;
 
 template<typename TBufferStruct> class TUniformBufferRef;
 
 /** Base class of all shaders that need material parameters. */
-class NIAGARASHADER_API FNiagaraShader : public FShader
+class FNiagaraShader : public FShader
 {
 public:
 	DECLARE_SHADER_TYPE(FNiagaraShader, Niagara);
@@ -207,7 +208,7 @@ public:
 
 	using FPermutationParameters = FNiagaraShaderPermutationParameters;
 
-	static FName UniformBufferLayoutName;
+	static NIAGARASHADER_API FName UniformBufferLayoutName;
 
 	static FIntVector GetDefaultThreadGroupSize(ENiagaraGpuDispatchType DispatchType)
 	{
@@ -229,7 +230,7 @@ public:
 	}
 
 	FNiagaraShader() {}
-	FNiagaraShader(const FNiagaraShaderType::CompiledShaderInitializerType& Initializer);
+	NIAGARASHADER_API FNiagaraShader(const FNiagaraShaderType::CompiledShaderInitializerType& Initializer);
 
 	TConstArrayView<FNiagaraDataInterfaceParamRef> GetDIParameters()
 	{
@@ -237,6 +238,7 @@ public:
 	}
 
 	LAYOUT_FIELD(bool, bNeedsViewUniformBuffer);
+	LAYOUT_FIELD(uint16, MiscUsageBitMask);
 	LAYOUT_ARRAY(FShaderUniformBufferParameter, ExternalConstantBufferParam, 2);
 
 private:

@@ -2,9 +2,9 @@
 
 #include "SNiagaraGraphNodeConvert.h"
 #include "NiagaraNodeConvert.h"
-#include "NiagaraConvertNodeViewModel.h"
-#include "NiagaraConvertPinViewModel.h"
-#include "NiagaraConvertPinSocketViewModel.h"
+#include "ViewModels/NiagaraConvertNodeViewModel.h"
+#include "ViewModels/NiagaraConvertPinViewModel.h"
+#include "ViewModels/NiagaraConvertPinSocketViewModel.h"
 #include "SNiagaraConvertPinSocket.h"
 #include "GraphEditorSettings.h"
 #include "Rendering/DrawElements.h"
@@ -33,7 +33,7 @@ void SNiagaraGraphNodeConvert::SetDefaultTitleAreaWidget(TSharedRef<SOverlay> De
 		.OnCheckStateChanged(this, &SNiagaraGraphNodeConvert::ToggleShowWiring)
 		.IsChecked(this, &SNiagaraGraphNodeConvert::GetToggleButtonChecked)
 		.Cursor(EMouseCursor::Default)
-		.ToolTipText(LOCTEXT("ToggleShaderCode_Tooltip", "Toggle visibility of shader code."))
+		.ToolTipText(LOCTEXT("ToggleConvertNode_Tooltip", "Toggle visibility of convert node wiring."))
 		.Style(FAppStyle::Get(), "Graph.Node.AdvancedView")
 		[
 			SNew(SHorizontalBox)
@@ -130,6 +130,13 @@ void SNiagaraGraphNodeConvert::UpdateGraphNode()
 		ConvertNodeViewModel = MakeShareable(new FNiagaraConvertNodeViewModel(*ConvertNode));
 	}
 	SNiagaraGraphNode::UpdateGraphNode();
+	
+	// set visibility of add pins
+	if (InputPins.Num() > 0 && OutputPins.Num() > 0 && ConvertNode)
+	{
+		InputPins.Last()->SetVisibility(ConvertNode->IsWiringShown() ? EVisibility::Visible : EVisibility::Collapsed);
+		OutputPins.Last()->SetVisibility(ConvertNode->IsWiringShown() ? EVisibility::Visible : EVisibility::Collapsed);
+	}
 }
 
 void SNiagaraGraphNodeConvert::AddPin(const TSharedRef<SGraphPin>& PinToAdd)

@@ -1,16 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "NiagaraSystemToolkitModeBase.h"
+#include "Toolkits/SystemToolkitModes/NiagaraSystemToolkitModeBase.h"
 
 #include "AdvancedPreviewSceneModule.h"
+#include "ClassIconFinder.h"
 #include "NiagaraConstants.h"
 #include "NiagaraEditorModule.h"
 #include "NiagaraEditorSettings.h"
 #include "NiagaraEditorStyle.h"
-#include "NiagaraScriptGraphViewModel.h"
-#include "NiagaraSystemToolkit.h"
+#include "NiagaraNodeAssignment.h"
+#include "ViewModels/NiagaraScriptGraphViewModel.h"
+#include "Toolkits/NiagaraSystemToolkit.h"
 #include "NiagaraScriptSource.h"
-#include "NiagaraScriptStatsViewModel.h"
+#include "ViewModels/NiagaraScriptStatsViewModel.h"
 #include "ViewModels/NiagaraEmitterHandleViewModel.h"
 #include "ViewModels/NiagaraEmitterViewModel.h"
 #include "ViewModels/NiagaraScriptViewModel.h"
@@ -28,15 +30,24 @@
 #include "Widgets/SNiagaraGeneratedCodeView.h"
 #include "Widgets/SNiagaraHierarchy.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
+#include "Widgets/Layout/SBox.h"
 #include "Widgets/Input/SButton.h"
 #include "ViewModels/NiagaraScratchPadScriptViewModel.h"
 #include "Widgets/SNiagaraSelectedObjectsDetails.h"
+#include "Widgets/SNiagaraHierarchyModuleInput.h"
 #include "NiagaraObjectSelection.h"
-#include "SNiagaraSystemUserParameters.h"
+#include "NiagaraSimulationStageBase.h"
+#include "Widgets/SNiagaraDebugCaptureView.h"
+#include "Widgets/SNiagaraSimCacheView.h"
+#include "Widgets/SNiagaraSimCacheViewTimeline.h"
+#include "Widgets/SNiagaraSimCacheViewTransportControls.h"
+#include "Widgets/SNiagaraSystemUserParameters.h"
 #include "Customizations/NiagaraComponentDetails.h"
 #include "Styling/StyleColors.h"
 #include "ViewModels/NiagaraSystemEditorDocumentsViewModel.h"
+#include "ViewModels/HierarchyEditor/NiagaraSummaryViewViewModel.h"
 #include "ViewModels/HierarchyEditor/NiagaraUserParametersHierarchyViewModel.h"
+#include "Widgets/SNiagaraHierarchyAssignment.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraSystemToolkitModeBase"
 
@@ -44,12 +55,12 @@ const FName FNiagaraSystemToolkitModeBase::ViewportTabID(TEXT("NiagaraSystemEdit
 const FName FNiagaraSystemToolkitModeBase::CurveEditorTabID(TEXT("NiagaraSystemEditor_CurveEditor"));
 const FName FNiagaraSystemToolkitModeBase::SequencerTabID(TEXT("NiagaraSystemEditor_Sequencer"));
 const FName FNiagaraSystemToolkitModeBase::SystemScriptTabID(TEXT("NiagaraSystemEditor_SystemScript"));
-const FName FNiagaraSystemToolkitModeBase::SystemDetailsTabID(TEXT("NiagaraSystemEditor_SystemDetails"));
 const FName FNiagaraSystemToolkitModeBase::SystemParametersTabID(TEXT("NiagaraSystemEditor_SystemParameters"));
 const FName FNiagaraSystemToolkitModeBase::SystemParameterDefinitionsTabID(TEXT("NiagaraSystemEditor_SystemParameterDefinitions"));
-const FName FNiagaraSystemToolkitModeBase::SelectedEmitterStackTabID(TEXT("NiagaraSystemEditor_SelectedEmitterStack"));
+const FName FNiagaraSystemToolkitModeBase::DetailsTabID(TEXT("NiagaraSystemEditor_Details"));
 const FName FNiagaraSystemToolkitModeBase::SelectedEmitterGraphTabID(TEXT("NiagaraSystemEditor_SelectedEmitterGraph"));
 const FName FNiagaraSystemToolkitModeBase::DebugSpreadsheetTabID(TEXT("NiagaraSystemEditor_DebugAttributeSpreadsheet"));
+const FName FNiagaraSystemToolkitModeBase::DebugCacheSpreadsheetTabID(TEXT("NiagaraSystemEditor_DebugCacheSpreadsheet"));
 const FName FNiagaraSystemToolkitModeBase::PreviewSettingsTabId(TEXT("NiagaraSystemEditor_PreviewSettings"));
 const FName FNiagaraSystemToolkitModeBase::GeneratedCodeTabID(TEXT("NiagaraSystemEditor_GeneratedCode"));
 const FName FNiagaraSystemToolkitModeBase::MessageLogTabID(TEXT("NiagaraSystemEditor_MessageLog"));
@@ -60,6 +71,7 @@ const FName FNiagaraSystemToolkitModeBase::VersioningTabID(TEXT("NiagaraSystemEd
 const FName FNiagaraSystemToolkitModeBase::ScratchPadScriptsTabID(TEXT("NiagaraSystemEditor_ScratchPadScripts"));
 const FName FNiagaraSystemToolkitModeBase::UserParametersTabID(TEXT("NiagaraSystemEditor_UserParameters"));
 const FName FNiagaraSystemToolkitModeBase::UserParametersHierarchyTabID(TEXT("NiagaraSystemEditor_UserParametersHierarchy"));
+const FName FNiagaraSystemToolkitModeBase::EmitterSummaryViewEditorTabID(TEXT("NiagaraSystemEditor_SummaryViewHierarchyEditor"));
 
 FNiagaraSystemToolkitModeBase::FNiagaraSystemToolkitModeBase(FName InModeName, TWeakPtr<FNiagaraSystemToolkit> InSystemToolkit) : FApplicationMode(InModeName), SystemToolkit(InSystemToolkit), SwitcherIdx(0)
 {
@@ -76,6 +88,11 @@ FNiagaraSystemToolkitModeBase::~FNiagaraSystemToolkitModeBase()
 		{
 			TSharedPtr<FNiagaraScratchPadScriptViewModel> OldScratchScriptVM = LastActiveDocumentModel.Pin();
 			OldScratchScriptVM->GetGraphViewModel()->GetNodeSelection()->OnSelectedObjectsChanged().Remove(LastSelectionUpdateDelegate);
+		}
+		
+		if(UpdateSummaryViewHandle.IsValid())
+		{
+			SystemToolkit.Pin()->GetSystemViewModel()->GetSelectionViewModel()->OnEmitterHandleIdSelectionChanged().Remove(UpdateSummaryViewHandle);
 		}
 	}
 }
@@ -102,6 +119,8 @@ void FNiagaraSystemToolkitModeBase::OnActiveDocumentChanged(TSharedPtr<SDockTab>
 
 	SwitcherIdx = 0;
 	TSharedPtr<SDockTab>  ActiveTab = Toolkit->GetSystemViewModel()->GetDocumentViewModel()->GetActiveDocumentTab().Pin();
+	// active tab might be nullptr due to a scratch pad tab closing. In that case, the details panel should update to clear the selected objects
+	UpdateSelectionForActiveDocument();
 	if (ActiveTab.IsValid())
 	{
 		if (ActiveTab->GetLayoutIdentifier().TabType == SystemOverviewTabID)
@@ -112,7 +131,6 @@ void FNiagaraSystemToolkitModeBase::OnActiveDocumentChanged(TSharedPtr<SDockTab>
 		{
 			SwitcherIdx = 1;
 		}
-		UpdateSelectionForActiveDocument();
 
 		TSharedPtr<FNiagaraScratchPadScriptViewModel> ScratchScriptVM = Toolkit->GetSystemViewModel()->GetDocumentViewModel()->GetActiveScratchPadViewModelIfSet();
 		if (ScratchScriptVM.IsValid())
@@ -255,10 +273,10 @@ void FNiagaraSystemToolkitModeBase::RegisterTabFactories(TSharedPtr<FTabManager>
 // 		.SetDisplayName(LOCTEXT("SystemParameterDefinitions", "Parameter Definitions"))
 // 		.SetGroup(WorkspaceMenuCategory.ToSharedRef());
 
-	InTabManager->RegisterTabSpawner(SelectedEmitterStackTabID, FOnSpawnTab::CreateSP(this, &FNiagaraSystemToolkitModeBase::SpawnTab_SelectedEmitterStack))
-		.SetDisplayName(LOCTEXT("SelectedEmitterStacks", "Selected Emitters"))
+	InTabManager->RegisterTabSpawner(DetailsTabID, FOnSpawnTab::CreateSP(this, &FNiagaraSystemToolkitModeBase::SpawnTab_Details))
+		.SetDisplayName(LOCTEXT("Details", "Details"))
 		.SetGroup(WorkspaceMenuCategory.ToSharedRef())
-		.SetIcon(FSlateIcon(FNiagaraEditorStyle::Get().GetStyleSetName(), "Tab.VisualEffects"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Details"));
 
 	InTabManager->RegisterTabSpawner(SelectedEmitterGraphTabID, FOnSpawnTab::CreateSP(this, &FNiagaraSystemToolkitModeBase::SpawnTab_SelectedEmitterGraph))
 		.SetDisplayName(LOCTEXT("SelectedEmitterGraph", "Selected Emitter Graph"))
@@ -266,7 +284,12 @@ void FNiagaraSystemToolkitModeBase::RegisterTabFactories(TSharedPtr<FTabManager>
 		.SetAutoGenerateMenuEntry(GbShowNiagaraDeveloperWindows != 0);
 
 	InTabManager->RegisterTabSpawner(DebugSpreadsheetTabID, FOnSpawnTab::CreateSP(this, &FNiagaraSystemToolkitModeBase::SpawnTab_DebugSpreadsheet))
-		.SetDisplayName(LOCTEXT("DebugSpreadsheet", "Attribute Spreadsheet"))
+		.SetDisplayName(LOCTEXT("DebugSpreadsheet", "Attribute Spreadsheet (Legacy)"))
+		.SetGroup(WorkspaceMenuCategory.ToSharedRef())
+		.SetIcon(FSlateIcon(FNiagaraEditorStyle::Get().GetStyleSetName(), "Tab.Spreadsheet"));
+
+	InTabManager->RegisterTabSpawner(DebugCacheSpreadsheetTabID, FOnSpawnTab::CreateSP(this, &FNiagaraSystemToolkitModeBase::SpawnTab_DebugCacheSpreadsheet))
+		.SetDisplayName(LOCTEXT("DebugSpreadshseet", "Attribute Spreadsheet"))
 		.SetGroup(WorkspaceMenuCategory.ToSharedRef())
 		.SetIcon(FSlateIcon(FNiagaraEditorStyle::Get().GetStyleSetName(), "Tab.Spreadsheet"));
 
@@ -317,6 +340,11 @@ void FNiagaraSystemToolkitModeBase::RegisterTabFactories(TSharedPtr<FTabManager>
 	
 	InTabManager->RegisterTabSpawner(UserParametersHierarchyTabID, FOnSpawnTab::CreateSP(this, &FNiagaraSystemToolkitModeBase::SpawnTab_UserParametersHierarchyEditor))
 		.SetDisplayName(LOCTEXT("UserParametersHierarchyTab", "User Parameters Hierarchy"))
+		.SetGroup(WorkspaceMenuCategory.ToSharedRef())
+		.SetIcon(FSlateIcon(FNiagaraEditorStyle::Get().GetStyleSetName(), "Tab.UserParameterHierarchy"));
+		
+	InTabManager->RegisterTabSpawner(EmitterSummaryViewEditorTabID, FOnSpawnTab::CreateSP(this, &FNiagaraSystemToolkitModeBase::SpawnTab_SummaryViewEditor))
+		.SetDisplayName(LOCTEXT("SummaryViewEditorTitle", "Edit Summary View"))
 		.SetGroup(WorkspaceMenuCategory.ToSharedRef())
 		.SetIcon(FSlateIcon(FNiagaraEditorStyle::Get().GetStyleSetName(), "Tab.UserParameterHierarchy"));
 }
@@ -456,7 +484,7 @@ TSharedRef<SDockTab> FNiagaraSystemToolkitModeBase::SpawnTab_Viewport(const FSpa
 
 	if(!Toolkit->Viewport.IsValid())
 	{
-		Toolkit->Viewport = SNew(SNiagaraSystemViewport)
+		Toolkit->Viewport = SNew(SNiagaraSystemViewport, Toolkit->GetSystemViewModel().ToSharedRef())
 			.OnThumbnailCaptured(Toolkit.Get(), &FNiagaraSystemToolkit::OnThumbnailCaptured)
 			.Sequencer(Toolkit->GetSystemViewModel()->GetSequencer());
 	}
@@ -571,13 +599,13 @@ TSharedRef<SDockTab> FNiagaraSystemToolkitModeBase::SpawnTab_SystemParameterDefi
 	return SpawnedTab;
 }
 
-TSharedRef<SDockTab> FNiagaraSystemToolkitModeBase::SpawnTab_SelectedEmitterStack(const FSpawnTabArgs& Args)
+TSharedRef<SDockTab> FNiagaraSystemToolkitModeBase::SpawnTab_Details(const FSpawnTabArgs& Args)
 {
-	check(Args.GetTabId().TabType == SelectedEmitterStackTabID);
+	check(Args.GetTabId().TabType == DetailsTabID);
 
 	FNiagaraEditorModule& NiagaraEditorModule = FModuleManager::LoadModuleChecked<FNiagaraEditorModule>("NiagaraEditor");
 	TSharedRef<SDockTab> SpawnedTab = SNew(SDockTab)
-		.Label(LOCTEXT("SystemOverviewSelection", "Selection"))
+		.Label(LOCTEXT("SystemOverviewDetails", "Details"))
 		[
 			SNew(SWidgetSwitcher)
 			.WidgetIndex(this, &FNiagaraSystemToolkitModeBase::GetActiveSelectionDetailsIndex)
@@ -613,7 +641,7 @@ TSharedRef<SDockTab> FNiagaraSystemToolkitModeBase::SpawnTab_SelectedEmitterStac
 			]
 		];
 
-	SDockTab::FOnTabClosedCallback TabClosedCallback = SDockTab::FOnTabClosedCallback::CreateLambda([=](TSharedRef<SDockTab> DockTab)
+	SDockTab::FOnTabClosedCallback TabClosedCallback = SDockTab::FOnTabClosedCallback::CreateLambda([this](TSharedRef<SDockTab> DockTab)
 	{
 		SystemToolkit.Pin()->GetSystemViewModel()->GetSelectionViewModel()->GetSelectionStackViewModel()->ResetSearchText();
 	});
@@ -658,6 +686,49 @@ TSharedRef<SDockTab> FNiagaraSystemToolkitModeBase::SpawnTab_DebugSpreadsheet(co
 		SNew(SDockTab)
 		[
 			SNew(SNiagaraSpreadsheetView, SystemToolkit.Pin()->GetSystemViewModel().ToSharedRef())
+		];
+
+	return SpawnedTab;
+}
+
+TSharedRef<SDockTab> FNiagaraSystemToolkitModeBase::SpawnTab_DebugCacheSpreadsheet(const FSpawnTabArgs& Args)
+{
+	check(Args.GetTabId().TabType == DebugCacheSpreadsheetTabID);
+
+	TSharedRef<SNiagaraSimCacheView> SimCacheSpreadsheetView =
+		SNew(SNiagaraSimCacheView)
+		.SimCacheViewModel(SystemToolkit.Pin()->GetSimCacheViewModel());
+
+	TSharedRef<SNiagaraDebugCaptureView> DebugCaptureView =
+		SNew(SNiagaraDebugCaptureView, SystemToolkit.Pin()->GetSystemViewModel().ToSharedRef(), SystemToolkit.Pin()->GetSimCacheViewModel().ToSharedRef());
+
+	const TSharedRef<SVerticalBox> Contents = SNew(SVerticalBox);
+
+	Contents->AddSlot()
+		.FillHeight(1.0f)
+		[
+			SNew(SVerticalBox)
+			+SVerticalBox::Slot()
+			[
+				SNew(SSplitter)
+				.Orientation(Orient_Vertical)
+				+SSplitter::Slot()
+				.SizeRule(SSplitter::SizeToContent)
+				[
+					DebugCaptureView
+				]
+				+SSplitter::Slot()
+				.Value(0.8f)
+				[
+					SimCacheSpreadsheetView
+				]
+			]
+		];
+
+	TSharedRef<SDockTab> SpawnedTab =
+		SNew(SDockTab)
+		[
+			Contents
 		];
 
 	return SpawnedTab;
@@ -838,7 +909,7 @@ TSharedRef<SWidget> GenerateRowContentForUserParameterHierarchyEditor(TSharedRef
 	return SNullWidget::NullWidget;
 }
 
-TSharedRef<SWidget> GenerateCustomDetailsPanelNameWidget(TSharedPtr<FNiagaraHierarchyItemViewModelBase> HierarchyItem)
+TSharedRef<SWidget> GenerateCustomDetailsPanelNameWidgetForUserParameterEditor(TSharedPtr<FNiagaraHierarchyItemViewModelBase> HierarchyItem)
 {
 	if(!HierarchyItem.IsValid())
 	{
@@ -877,9 +948,217 @@ TSharedRef<SDockTab> FNiagaraSystemToolkitModeBase::SpawnTab_UserParametersHiera
 			[
 				SNew(SNiagaraHierarchy, SystemToolkit.Pin()->GetSystemViewModel()->GetUserParametersHierarchyViewModel())
 				.OnGenerateRowContentWidget_Static(&GenerateRowContentForUserParameterHierarchyEditor, SystemToolkit.Pin()->GetSystemViewModel())
-				.OnGenerateCustomDetailsPanelNameWidget_Static(&GenerateCustomDetailsPanelNameWidget)
+				.OnGenerateCustomDetailsPanelNameWidget_Static(&GenerateCustomDetailsPanelNameWidgetForUserParameterEditor)
 			]
 		];
+	
+	return SpawnedTab;
+}
+
+TSharedRef<SWidget> GenerateRowContentForSummaryViewHierarchyEditor(TSharedRef<FNiagaraHierarchyItemViewModelBase> HierarchyItem, TSharedPtr<FNiagaraEmitterViewModel> EmitterViewModel)
+{
+	if(const UNiagaraHierarchyModuleInput* ModuleInput = Cast<UNiagaraHierarchyModuleInput>(HierarchyItem->GetData()))
+	{
+		TSharedRef<FNiagaraModuleInputViewModel> ModuleInputViewModel = StaticCastSharedRef<FNiagaraModuleInputViewModel>(HierarchyItem);
+		return SNew(SNiagaraHierarchyModuleInput, ModuleInputViewModel);
+	}
+	else if(const UNiagaraHierarchyAssignmentInput* AssignmentInput = Cast<UNiagaraHierarchyAssignmentInput>(HierarchyItem->GetData()))
+	{
+		TSharedRef<FNiagaraAssignmentInputViewModel> AssignmentInputViewModel = StaticCastSharedRef<FNiagaraAssignmentInputViewModel>(HierarchyItem);
+		TOptional<FNiagaraStackGraphUtilities::FMatchingFunctionInputData> InputData = AssignmentInputViewModel->GetInputData();
+
+		if(ensure(InputData.IsSet()))
+		{
+			return FNiagaraParameterUtilities::GetParameterWidget(FNiagaraVariable(InputData->Type, InputData->InputName), false, false);
+		}
+	}
+	else if(const UNiagaraHierarchyModule* Module = Cast<UNiagaraHierarchyModule>(HierarchyItem->GetDataMutable()))
+	{
+		TSharedPtr<FNiagaraHierarchyItemViewModelBase> ItemPtr = HierarchyItem;
+		TSharedPtr<FNiagaraFunctionViewModel> ModuleViewModel = StaticCastSharedPtr<FNiagaraFunctionViewModel>(ItemPtr);
+
+		if(UNiagaraNodeAssignment* AssignmentNode = Cast<UNiagaraNodeAssignment>(ModuleViewModel->GetFunctionCallNode()))
+		{
+			return SNew(SNiagaraHierarchyAssignment, *AssignmentNode);
+		}
+		else
+		{
+			return SNew(SNiagaraHierarchyModule, ModuleViewModel);
+		}		
+	}
+	else if(const UNiagaraHierarchyRenderer* Renderer = Cast<UNiagaraHierarchyRenderer>(HierarchyItem->GetDataMutable()))
+	{
+		TSharedPtr<FNiagaraHierarchyItemViewModelBase> ItemPtr = HierarchyItem;
+		TSharedPtr<FNiagaraHierarchyRendererViewModel> RendererViewModel = StaticCastSharedPtr<FNiagaraHierarchyRendererViewModel>(ItemPtr);
+		return SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(2.f)
+			[
+				SNew(SImage).Image(FSlateIconFinder::FindIconBrushForClass(RendererViewModel->GetRendererProperties()->GetClass()))
+			]
+			+ SHorizontalBox::Slot()
+			[
+				SNew(STextBlock).Text(RendererViewModel.ToSharedRef(), &FNiagaraHierarchyRendererViewModel::ToStringAsText)
+			];
+	}
+	else if(const UNiagaraHierarchyEventHandler* EventHandler = Cast<UNiagaraHierarchyEventHandler>(HierarchyItem->GetDataMutable()))
+	{
+		TSharedPtr<FNiagaraHierarchyItemViewModelBase> ItemPtr = HierarchyItem;
+		TSharedPtr<FNiagaraHierarchyEventHandlerViewModel> EventHandlerViewModel = StaticCastSharedPtr<FNiagaraHierarchyEventHandlerViewModel>(ItemPtr);
+		return SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(2.f)
+			[
+				SNew(SImage).Image(FNiagaraEditorStyle::Get().GetBrush("NiagaraEditor.EventIcon"))
+			]
+			+ SHorizontalBox::Slot()
+			[
+				SNew(STextBlock).Text(EventHandlerViewModel.ToSharedRef(), &FNiagaraHierarchyEventHandlerViewModel::ToStringAsText)
+			];
+	}
+	else if(const UNiagaraHierarchySimStage* SimStage = Cast<UNiagaraHierarchySimStage>(HierarchyItem->GetDataMutable()))
+	{
+		TSharedPtr<FNiagaraHierarchyItemViewModelBase> ItemPtr = HierarchyItem;
+		TSharedPtr<FNiagaraHierarchySimStageViewModel> SimStageViewModel = StaticCastSharedPtr<FNiagaraHierarchySimStageViewModel>(ItemPtr);
+		return SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(2.f)
+			[
+				SNew(SImage).Image(FNiagaraEditorStyle::Get().GetBrush("NiagaraEditor.SimulationStageIcon"))
+			]
+			+ SHorizontalBox::Slot()
+			[
+				SNew(STextBlock).Text(SimStageViewModel.ToSharedRef(), &FNiagaraHierarchySimStagePropertiesViewModel::ToStringAsText)
+			];
+	}
+	else if(const UNiagaraHierarchySimStageProperties* SimStageProperties = Cast<UNiagaraHierarchySimStageProperties>(HierarchyItem->GetDataMutable()))
+	{
+		TSharedPtr<FNiagaraHierarchyItemViewModelBase> ItemPtr = HierarchyItem;
+		TSharedPtr<FNiagaraHierarchySimStagePropertiesViewModel> SimStagePropertiesViewModel = StaticCastSharedPtr<FNiagaraHierarchySimStagePropertiesViewModel>(ItemPtr);
+		return SNew(STextBlock).Text(SimStagePropertiesViewModel.ToSharedRef(), &FNiagaraHierarchySimStagePropertiesViewModel::ToStringAsText);
+	}
+	else if(HierarchyItem->GetDataMutable()->IsA<UNiagaraHierarchyCategory>())
+	{
+		TSharedRef<FNiagaraHierarchyCategoryViewModel> TreeViewCategory = StaticCastSharedRef<FNiagaraHierarchyCategoryViewModel>(HierarchyItem);
+		return SNew(SNiagaraHierarchyCategory, TreeViewCategory);
+	}
+	else if(const UNiagaraHierarchyItem* Item = Cast<UNiagaraHierarchyItem>(HierarchyItem->GetData()))
+	{
+		return SNew(STextBlock).Text(FText::FromString(HierarchyItem->ToString()));
+	}
+
+	return SNullWidget::NullWidget;
+}
+
+TSharedRef<SWidget> GenerateCustomDetailsPanelNameWidgetForSummaryViewEditor(TSharedPtr<FNiagaraHierarchyItemViewModelBase> HierarchyItem)
+{
+	if(!HierarchyItem.IsValid())
+	{
+		return SNew(STextBlock).Text(FText::FromString("None selected"));
+	}
+	
+	if(HierarchyItem->GetData()->IsA<UNiagaraHierarchyCategory>() || HierarchyItem->GetData()->IsA<UNiagaraHierarchySection>())
+	{
+		return SNew(SBox).Padding(2.f)
+		[
+			SNew(STextBlock)
+			.Text_Lambda([HierarchyItem]
+			{
+				return FText::FromString(HierarchyItem->ToString());
+			})
+		];
+	}
+	else if(HierarchyItem->GetData()->IsA<UNiagaraHierarchyModuleInput>())
+	{
+		TSharedPtr<FNiagaraModuleInputViewModel> ModuleInputViewModel = StaticCastSharedPtr<FNiagaraModuleInputViewModel>(HierarchyItem);
+		return SNew(SNiagaraHierarchyModuleInput, ModuleInputViewModel.ToSharedRef());
+	}
+	else if(HierarchyItem->GetData()->IsA<UNiagaraHierarchyItem>())
+	{
+		return SNew(STextBlock).Text(FText::FromString(HierarchyItem->ToString()));
+	}
+
+	return SNullWidget::NullWidget;
+}
+
+TSharedRef<SWidget> FNiagaraSystemToolkitModeBase::CreateSummaryViewWidget() const
+{
+	TArray<FGuid> SelectedEmitterHandleGuids = SystemToolkit.Pin()->GetSystemViewModel()->GetSelectionViewModel()->GetSelectedEmitterHandleIds();
+
+	TSharedPtr<SWidget> ContentWidget = SNullWidget::NullWidget;
+	if(SystemToolkit.Pin()->GetSystemViewModel()->GetEditMode() == ENiagaraSystemViewModelEditMode::EmitterAsset)
+	{
+		TSharedPtr<FNiagaraEmitterViewModel> EmitterViewModel = SystemToolkit.Pin()->GetSystemViewModel()->GetEmitterHandleViewModels()[0]->GetEmitterViewModel();
+		UNiagaraSummaryViewViewModel* SummaryViewHierarchyViewModel = EmitterViewModel->GetSummaryHierarchyViewModel();
+		
+		ContentWidget = SNew(SNiagaraHierarchy, SummaryViewHierarchyViewModel)
+		.OnGenerateRowContentWidget_Static(&GenerateRowContentForSummaryViewHierarchyEditor, EmitterViewModel)
+		.OnGenerateCustomDetailsPanelNameWidget_Static(&GenerateCustomDetailsPanelNameWidgetForSummaryViewEditor);
+	}
+	else
+	{
+		if(SelectedEmitterHandleGuids.Num() != 1)
+		{
+			ContentWidget = SNew(SBox)
+			.HAlign(HAlign_Center)
+			.VAlign(VAlign_Center)
+			[
+				SNew(STextBlock).Text(LOCTEXT("SummaryViewEditorInvalidSelection", "Please select a single emitter to display its summary view options."))
+			];
+		}
+		else
+		{		
+			TSharedPtr<FNiagaraEmitterViewModel> EmitterViewModel = SystemToolkit.Pin()->GetSystemViewModel()->GetEmitterHandleViewModelById(SelectedEmitterHandleGuids[0])->GetEmitterViewModel();
+			UNiagaraSummaryViewViewModel* SummaryViewHierarchyViewModel = EmitterViewModel->GetSummaryHierarchyViewModel();
+		
+			ContentWidget = SNew(SNiagaraHierarchy, SummaryViewHierarchyViewModel)
+			.OnGenerateRowContentWidget_Static(&GenerateRowContentForSummaryViewHierarchyEditor, EmitterViewModel)
+			.OnGenerateCustomDetailsPanelNameWidget_Static(&GenerateCustomDetailsPanelNameWidgetForSummaryViewEditor);
+		}
+	}
+
+	return ContentWidget.ToSharedRef();
+}
+
+void FNiagaraSystemToolkitModeBase::UpdateSummaryViewOnSelectionChanged() const
+{
+	if(SystemToolkit.Pin()->GetTabManager()->FindExistingLiveTab(EmitterSummaryViewEditorTabID).IsValid())
+	{
+		SummaryViewContainer->SetContent(CreateSummaryViewWidget());
+	}
+}
+
+void FNiagaraSystemToolkitModeBase::OnSummaryViewEditorClosed(TSharedRef<SDockTab> DockTab) const
+{
+	SummaryViewContainer->SetContent(SNullWidget::NullWidget);
+}
+
+TSharedRef<SDockTab> FNiagaraSystemToolkitModeBase::SpawnTab_SummaryViewEditor(const FSpawnTabArgs& Args)
+{
+	check(Args.GetTabId().TabType == EmitterSummaryViewEditorTabID);
+
+	if(UpdateSummaryViewHandle.IsValid())
+	{
+		SystemToolkit.Pin()->GetSystemViewModel()->GetSelectionViewModel()->OnEmitterHandleIdSelectionChanged().Remove(UpdateSummaryViewHandle);
+	}
+
+	if(SystemToolkit.Pin()->GetSystemViewModel()->GetEditMode() == ENiagaraSystemViewModelEditMode::SystemAsset)
+	{
+		UpdateSummaryViewHandle = SystemToolkit.Pin()->GetSystemViewModel()->GetSelectionViewModel()->OnEmitterHandleIdSelectionChanged().AddSP(this, &FNiagaraSystemToolkitModeBase::UpdateSummaryViewOnSelectionChanged);
+	}
+	
+	TSharedRef<SDockTab> SpawnedTab = SNew(SDockTab)
+		.OnTabClosed(this, &FNiagaraSystemToolkitModeBase::OnSummaryViewEditorClosed)
+		.Label(LOCTEXT("SummaryViewHierarchyTitle", "Edit Summary View"))
+		[
+			SAssignNew(SummaryViewContainer, SBox)
+			.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("SummaryView")))
+		];
+
+	SummaryViewContainer->SetContent(CreateSummaryViewWidget());
 	
 	return SpawnedTab;
 }

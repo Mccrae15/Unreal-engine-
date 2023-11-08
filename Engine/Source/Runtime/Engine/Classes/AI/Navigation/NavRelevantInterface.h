@@ -35,7 +35,7 @@ struct FNavigationRelevantDataFilter
 
 // @todo consider optional structures that can contain a delegate instead of 
 // actual copy of collision data
-struct ENGINE_API FNavigationRelevantData : public TSharedFromThis<FNavigationRelevantData, ESPMode::ThreadSafe>
+struct FNavigationRelevantData : public TSharedFromThis<FNavigationRelevantData, ESPMode::ThreadSafe>
 {
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FFilterNavDataDelegate, const struct FNavDataConfig*);
 
@@ -69,7 +69,7 @@ struct ENGINE_API FNavigationRelevantData : public TSharedFromThis<FNavigationRe
 	FCompositeNavModifier Modifiers;
 
 	/** UObject these data represents */
-	const TWeakObjectPtr<UObject> SourceObject;
+	TWeakObjectPtr<UObject> SourceObject;
 
 	/** get set to true when lazy navigation exporting is enabled and this navigation data has "potential" of
 	*	containing geometry data. First access will result in gathering the data and setting this flag back to false.
@@ -117,10 +117,10 @@ struct ENGINE_API FNavigationRelevantData : public TSharedFromThis<FNavigationRe
 		return Modifiers.HasMetaAreas() ? Modifiers.GetInstantiatedMetaModifier(NavAgent, SourceObject) : Modifiers;
 	}
 
-	bool HasPerInstanceTransforms() const;
-	bool IsMatchingFilter(const FNavigationRelevantDataFilter& Filter) const;
-	void Shrink();
-	bool IsCollisionDataValid() const;
+	ENGINE_API bool HasPerInstanceTransforms() const;
+	ENGINE_API bool IsMatchingFilter(const FNavigationRelevantDataFilter& Filter) const;
+	ENGINE_API void Shrink();
+	ENGINE_API bool IsCollisionDataValid() const;
 
 	void ValidateAndShrink()
 	{
@@ -135,6 +135,7 @@ struct ENGINE_API FNavigationRelevantData : public TSharedFromThis<FNavigationRe
 	}
 
 	FORCEINLINE UObject* GetOwner() const { return SourceObject.Get(); }
+	ENGINE_API FORCEINLINE decltype(SourceObject)& GetOwnerPtr() { return SourceObject; }
 };
 
 UINTERFACE(MinimalAPI, meta=(CannotImplementInterfaceInBlueprint))

@@ -13,6 +13,10 @@ using EpicGames.Core;
 using OpenTracing;
 using UnrealBuildBase;
 using UnrealBuildTool;
+using Microsoft.Extensions.Logging;
+using System.Runtime.InteropServices;
+
+using static AutomationTool.CommandUtils;
 
 namespace AutomationTool
 {
@@ -97,6 +101,11 @@ namespace AutomationTool
 	/// </summary>
 	public abstract class BgTaskImpl
 	{
+		/// <summary>
+		/// Accessor for the default log interface
+		/// </summary>
+		protected static ILogger Logger => Log.Logger;
+
 		/// <summary>
 		/// Line number in a source file that this task was declared. Optional; used for log messages.
 		/// </summary>
@@ -315,7 +324,7 @@ namespace AutomationTool
 			// If we got a null reference, it's because the tag is not listed as an input for this node (see RunGraph.BuildSingleNode). Fill it in, but only with an error.
 			if(Files == null)
 			{
-				CommandUtils.LogError("Attempt to reference tag '{0}', which is not listed as a dependency of this node.", TagName);
+				Logger.LogError("Attempt to reference tag '{TagName}', which is not listed as a dependency of this node.", TagName);
 				Files = new HashSet<FileReference>();
 				TagNameToFileSet.Add(TagName, Files);
 			}
@@ -423,6 +432,31 @@ namespace AutomationTool
 		public static List<string> SplitDelimitedList(string Text)
 		{
 			return Text.Split(';').Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+		}
+
+		/// <summary>
+		/// Name of the environment variable containing cleanup commands
+		/// </summary>
+		public const string CleanupScriptEnvVarName = "UE_HORDE_CLEANUP";
+
+		/// <summary>
+		/// Name of the environment variable containing lease cleanup commands
+		/// </summary>
+		public const string LeaseCleanupScriptEnvVarName = "UE_HORDE_LEASE_CLEANUP";
+
+		/// <summary>
+		/// Add cleanup commands to run after the step completes
+		/// </summary>
+		/// <param name="NewLines">Lines to add to the cleanup script</param>
+		/// <param name="Lease">Whether to add the commands to run on lease termination</param>
+		public static async Task AddCleanupCommandsAsync(IEnumerable<string> NewLines, bool Lease = false)
+		{
+			string CleanupScriptEnvVar = Environment.GetEnvironmentVariable(Lease? LeaseCleanupScriptEnvVarName : CleanupScriptEnvVarName);
+			if (!String.IsNullOrEmpty(CleanupScriptEnvVar))
+			{
+				FileReference CleanupScript = new FileReference(CleanupScriptEnvVar);
+				await FileReference.AppendAllLinesAsync(CleanupScript, NewLines);
+			}
 		}
 	}
 

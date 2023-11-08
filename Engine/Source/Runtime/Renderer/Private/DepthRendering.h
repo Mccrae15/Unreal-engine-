@@ -93,7 +93,19 @@ public:
 		return (
 			Parameters.MaterialParameters.bIsSpecialEngineMaterial ||
 			!Parameters.MaterialParameters.bWritesEveryPixel ||
-			Parameters.MaterialParameters.bMaterialMayModifyMeshPosition);
+			Parameters.MaterialParameters.bMaterialMayModifyMeshPosition)
+			&& !Parameters.VertexFactoryType->SupportsNaniteRendering();
+	}
+
+	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FMeshMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+
+		// @lh-todo: Same workaround as for the VS of MobileBasePass. See TMobileBasePassVSPolicyParamType::ModifyCompilationEnvironment for details.
+		if (!Strata::IsStrataEnabled())
+		{
+			OutEnvironment.SetCompileArgument(TEXT("WORKAROUND_DISABLE_rShadersForceDXC"), true);
+		}
 	}
 
 	void GetShaderBindings(
@@ -126,7 +138,8 @@ public:
 		
 		return
 			// Compile for materials that are masked
-			(!Parameters.MaterialParameters.bWritesEveryPixel || Parameters.MaterialParameters.bHasPixelDepthOffsetConnected);
+			(!Parameters.MaterialParameters.bWritesEveryPixel || Parameters.MaterialParameters.bHasPixelDepthOffsetConnected)
+			&& !Parameters.VertexFactoryType->SupportsNaniteRendering();
 	}
 
 	FDepthOnlyPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer):
@@ -140,6 +153,12 @@ public:
 		
 		OutEnvironment.SetDefine(TEXT("ALLOW_DEBUG_VIEW_MODES"), AllowDebugViewmodes(Parameters.Platform));
 		OutEnvironment.SetDefine(TEXT("SCENE_TEXTURES_DISABLED"), 1u);
+
+		// @lh-todo: Same workaround as for the VS of MobileBasePass. See TMobileBasePassVSPolicyParamType::ModifyCompilationEnvironment for details.
+		if (!Strata::IsStrataEnabled())
+		{
+			OutEnvironment.SetCompileArgument(TEXT("WORKAROUND_DISABLE_rShadersForceDXC"), true);
+		}
 	}
 
 	FDepthOnlyPS() {}
@@ -184,7 +203,8 @@ public:
 		/** Whether this mesh processor is being reused for rendering a pass that marks all fading out pixels on the screen */
 		const bool bDitheredLODFadingOutMaskPass,
 		FMeshPassDrawListContext* InDrawListContext,
-		const bool bShadowProjection = false);
+		const bool bShadowProjection = false,
+		const bool bSecondStageDepthPass = false);
 
 	virtual void AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId = -1) override final;
 	virtual void CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FPSOPrecacheVertexFactoryData& VertexFactoryData, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers) override final;
@@ -204,7 +224,7 @@ private:
 		ERasterizerFillMode MeshFillMode,
 		ERasterizerCullMode MeshCullMode);
 
-	bool UseDefaultMaterial(const FMaterial& Material, bool bMaterialModifiesMeshPosition, bool bSupportPositionOnlyStream, bool& bPositionOnly);
+	bool UseDefaultMaterial(const FMaterial& Material, bool bMaterialModifiesMeshPosition, bool bSupportPositionOnlyStream, bool bVFTypeSupportsNullPixelShader, bool& bPositionOnly);
 
 	void CollectDefaultMaterialPSOInitializers(
 		const FSceneTexturesConfig& SceneTexturesConfig, 
@@ -230,6 +250,7 @@ private:
 	const bool bEarlyZPassMovable;
 	const bool bDitheredLODFadingOutMaskPass;
 	const bool bShadowProjection;
+	const bool bSecondStageDepthPass;
 };
 
 extern void SetupDepthPassState(FMeshPassProcessorRenderState& DrawRenderState);

@@ -11,7 +11,7 @@
 struct FDisplayClusterRenderFrameSettings
 {
 	// customize mono\stereo render modes
-	EDisplayClusterRenderFrameMode RenderMode = EDisplayClusterRenderFrameMode::Mono;
+	EDisplayClusterRenderFrameMode RenderMode = EDisplayClusterRenderFrameMode::Unknown;
 
 	// nDisplay has its own implementation of cross-GPU transfer.
 	struct FCrossGPUTransfer
@@ -76,6 +76,9 @@ struct FDisplayClusterRenderFrameSettings
 	// Configuration used to render preview
 	bool bIsPreviewRendering = false;
 
+	// If the preview rendering should be frozen
+	bool bFreezePreviewRender = false;
+	
 	// Allow mGPU in editor mode
 	bool bAllowMultiGPURenderingInEditor = false;
 	int32 PreviewMinGPUIndex = 0;

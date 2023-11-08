@@ -2,10 +2,7 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.IO;
-using EpicGames.Core;
 using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
@@ -15,7 +12,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Loads JunkManifest.txt file and removes all junk files/folders defined in it.
 		/// </summary>
-		static public void DeleteJunk(ILogger Logger)
+		public static void DeleteJunk(ILogger Logger)
 		{
 			List<string> JunkManifest = LoadJunkManifest();
 			DeleteAllJunk(JunkManifest, Logger);
@@ -25,7 +22,7 @@ namespace UnrealBuildTool
 		/// Loads JunkManifest.txt file.
 		/// </summary>
 		/// <returns>Junk manifest file contents.</returns>
-		static private List<string> LoadJunkManifest()
+		private static List<string> LoadJunkManifest()
 		{
 			string ManifestPath = ".." + Path.DirectorySeparatorChar + "Build" + Path.DirectorySeparatorChar + "JunkManifest.txt";
 			List<string> JunkManifest = new List<string>();
@@ -96,7 +93,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="JunkManifest">JunkManifest.txt entries.</param>
 		/// <param name="Logger">Logger for output</param>
-		static private void DeleteAllJunk(List<string> JunkManifest, ILogger Logger)
+		private static void DeleteAllJunk(List<string> JunkManifest, ILogger Logger)
 		{
 			foreach (string Junk in JunkManifest)
 			{
@@ -138,7 +135,7 @@ namespace UnrealBuildTool
 			}
 		}
 
-		static private bool IsFile(string PathToCheck)
+		private static bool IsFile(string PathToCheck)
 		{
 			string FileName = Path.GetFileName(PathToCheck);
 			if (String.IsNullOrEmpty(FileName) == false)
@@ -164,7 +161,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="DirectoryPath">Path.</param>
 		/// <param name="Logger">Logger for output</param>
-		static private void DeleteDirectory(string DirectoryPath, ILogger Logger)
+		private static void DeleteDirectory(string DirectoryPath, ILogger Logger)
 		{
 			try
 			{
@@ -183,7 +180,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="Filename">Filename.</param>
 		/// <param name="Logger">Logger for output</param>
-		static private void DeleteFile(string Filename, ILogger Logger)
+		private static void DeleteFile(string Filename, ILogger Logger)
 		{
 			try
 			{

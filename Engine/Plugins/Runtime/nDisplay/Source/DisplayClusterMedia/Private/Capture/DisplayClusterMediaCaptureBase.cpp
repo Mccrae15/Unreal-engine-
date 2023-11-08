@@ -6,6 +6,9 @@
 #include "IDisplayCluster.h"
 #include "IDisplayClusterCallbacks.h"
 
+#include "DisplayClusterConfigurationTypes_Media.h"
+#include "DisplayClusterConfigurationTypes_MediaSync.h"
+
 #include "MediaCapture.h"
 #include "MediaOutput.h"
 
@@ -15,8 +18,9 @@
 #include "UObject/Package.h"
 
 
-FDisplayClusterMediaCaptureBase::FDisplayClusterMediaCaptureBase(const FString& InMediaId, const FString& InClusterNodeId, UMediaOutput* InMediaOutput)
+FDisplayClusterMediaCaptureBase::FDisplayClusterMediaCaptureBase(const FString& InMediaId, const FString& InClusterNodeId, UMediaOutput* InMediaOutput, UDisplayClusterMediaOutputSynchronizationPolicy* InSyncPolicy)
 	: FDisplayClusterMediaBase(InMediaId, InClusterNodeId)
+	, SyncPolicy(InSyncPolicy)
 {
 	checkSlow(InMediaOutput);
 	MediaOutput = DuplicateObject(InMediaOutput, GetTransientPackage());
@@ -33,11 +37,19 @@ FDisplayClusterMediaCaptureBase::~FDisplayClusterMediaCaptureBase()
 
 void FDisplayClusterMediaCaptureBase::AddReferencedObjects(FReferenceCollector& Collector)
 {
-	Collector.AddReferencedObject(MediaOutput);
+	if (MediaOutput)
+	{
+		Collector.AddReferencedObject(MediaOutput);
+	}
 
 	if (MediaCapture)
 	{
 		Collector.AddReferencedObject(MediaCapture);
+	}
+
+	if (SyncPolicy)
+	{
+		Collector.AddReferencedObject(SyncPolicy);
 	}
 }
 
@@ -46,9 +58,37 @@ bool FDisplayClusterMediaCaptureBase::StartCapture()
 	if (MediaOutput && !MediaCapture)
 	{
 		MediaCapture = MediaOutput->CreateMediaCapture();
-		if (MediaCapture)
+		if (IsValid(MediaCapture))
 		{
 			MediaCapture->SetMediaOutput(MediaOutput);
+
+			// Initialize and start capture synchronization
+			if (IsValid(SyncPolicy))
+			{
+				SyncPolicyHandler = SyncPolicy->GetHandler();
+				if (SyncPolicyHandler)
+				{
+					if (SyncPolicyHandler->IsCaptureTypeSupported(MediaCapture))
+					{
+						if (SyncPolicyHandler->StartSynchronization(MediaCapture, GetMediaId()))
+						{
+							UE_LOG(LogDisplayClusterMedia, Log, TEXT("MediaCapture '%s' started synchronization type '%s'."), *GetMediaId(), *SyncPolicy->GetName());
+						}
+						else
+						{
+							UE_LOG(LogDisplayClusterMedia, Warning, TEXT("MediaCapture '%s': couldn't start synchronization."), *GetMediaId());
+						}
+					}
+					else
+					{
+						UE_LOG(LogDisplayClusterMedia, Warning, TEXT("MediaCapture '%s' is not compatible with media SyncPolicy '%s'."), *GetMediaId(), *SyncPolicy->GetName());
+					}
+				}
+				else
+				{
+					UE_LOG(LogDisplayClusterMedia, Warning, TEXT("Could not create media sync policy handler from '%s'."), *SyncPolicy->GetName());
+				}
+			}
 
 			bWasCaptureStarted = StartMediaCapture();
 			return bWasCaptureStarted;
@@ -60,6 +100,13 @@ bool FDisplayClusterMediaCaptureBase::StartCapture()
 
 void FDisplayClusterMediaCaptureBase::StopCapture()
 {
+	// Stop synchronization
+	if (SyncPolicyHandler)
+	{
+		SyncPolicyHandler->StopSynchronization();
+	}
+
+	// Stop capture
 	if (MediaCapture)
 	{
 		MediaCapture->StopCapture(false);
@@ -74,6 +121,8 @@ void FDisplayClusterMediaCaptureBase::ExportMediaData(FRDGBuilder& GraphBuilder,
 
 	if (SrcTexture)
 	{
+		UE_LOG(LogDisplayClusterMedia, Verbose, TEXT("MediaCapture '%s': exporting texture on RT frame '%lu'..."), *GetMediaId(), GFrameCounterRenderThread);
+
 		MediaCapture->SetValidSourceGPUMask(GraphBuilder.RHICmdList.GetGPUMask());
 
 		LastSrcRegionSize = FIntSize(TextureInfo.Region.Size());

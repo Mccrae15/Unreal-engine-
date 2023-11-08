@@ -12,7 +12,7 @@ namespace Chaos
 	/**
 	 * @brief Data held alongside contact points when generating contacts against a (likely non-convex) mesh of triangles
 	*/
-	class CHAOS_API FContactTriangle
+	class FContactTriangle
 	{
 	public:
 		// Triangle data
@@ -118,40 +118,28 @@ namespace Chaos
 		}
 	};
 
-	/**
-	 * @brief A set of triangles assocuated with some contact points.
-	*/
-	class CHAOS_API FContactTriangles
-	{
-	public:
-
-		inline const int32 Num() const
-		{
-			return Triangles.Num();
-		}
-
-		inline const FContactTriangle& At(const int32 Index) const
-		{
-			return Triangles[Index];
-		}
-
-
-	private:
-		TArray<FContactTriangle> Triangles;
-	};
-
 	using FContactVertexID = int32;
 
 	struct FContactEdgeID
 	{
 		FContactEdgeID()
-			: VertexIDs{ INDEX_NONE < INDEX_NONE }
+			: VertexIDs{ INDEX_NONE, INDEX_NONE }
 		{
 		}
 
-		FContactEdgeID(const FContactVertexID VertextIndexA, const FContactVertexID VertexIndexB)
-			: VertexIDs{ FMath::Min(VertextIndexA, VertexIndexB), FMath::Max(VertextIndexA, VertexIndexB) }
+		FContactEdgeID(const FContactVertexID VertexIndexA, const FContactVertexID VertexIndexB)
 		{
+			// EdgeID is the same if we swap the vertex indices
+			if (VertexIndexA < VertexIndexB)
+			{
+				VertexIDs[0] = VertexIndexA;
+				VertexIDs[1] = VertexIndexB;
+			}
+			else
+			{
+				VertexIDs[0] = VertexIndexB;
+				VertexIDs[1] = VertexIndexA;
+			}
 		}
 
 		bool IsValid() const
@@ -223,8 +211,23 @@ namespace Chaos
 	class FContactTriangleCollector
 	{
 	public:
+		UE_DEPRECATED(5.3, "Use the constructor below which take PhiTolerance etc")
 		FContactTriangleCollector(const bool bInOneSided, const FRigidTransform3& InConvexTransform)
-			: bOneSidedCollision(bInOneSided)
+			: PhiTolerance(0.1)
+			, DistanceTolerance(0.1)
+			, bOneSidedCollision(bInOneSided)
+			, ConvexTransform(InConvexTransform)
+		{
+		}
+
+		FContactTriangleCollector(
+			const bool bInOneSided,
+			const FReal InPhiTolerance,
+			const FReal InDistanceTolerance,
+			const FRigidTransform3& InConvexTransform)
+			: PhiTolerance(InPhiTolerance)
+			, DistanceTolerance(InDistanceTolerance)
+			, bOneSidedCollision(bInOneSided)
 			, ConvexTransform(InConvexTransform)
 		{
 		}
@@ -268,7 +271,7 @@ namespace Chaos
 		void PruneEdgeContactPoints();
 		void FixInvalidNormalContactPoints();
 		void PruneInfacingContactPoints();
-		void PruneUnnecessaryContactPoints(const FReal PhiTolerance, const FReal DistanceTolerance);
+		void PruneUnnecessaryContactPoints();
 		void ReduceManifoldContactPointsTriangeMesh();
 		void FinalizeContacts(const FRigidTransform3& MeshToConvexTransform);
 
@@ -293,6 +296,12 @@ namespace Chaos
 
 		// A list of all the vertices of contacts with faces and edges. Used to prune vertex contacts
 		TSet<FContactVertexID> ContactVertices;
+
+		// We remove contacts that are shallower by this much compared to the deepest contact (negative to disable this functionality)
+		FReal PhiTolerance;
+
+		// We remove contacts that are closer than this to any other contact (negative to disable this functionality)
+		FReal DistanceTolerance;
 
 		bool bOneSidedCollision;
 

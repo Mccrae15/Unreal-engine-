@@ -2,6 +2,7 @@
 
 #include "WinDualShock.h"
 #include "Containers/CircularQueue.h"
+#include "Engine/Engine.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/MessageDialog.h"
 #include "Modules/ModuleManager.h"
@@ -130,8 +131,20 @@ public:
 	{
 		for (int32 UserIndex = 0; UserIndex < SCE_USER_SERVICE_MAX_LOGIN_USERS; UserIndex++)
 		{
-			FInputDeviceScope InputScope(this, InputClassName, UserIndex, Controllers.GetControllerTypeIdentifierName(UserIndex));
-			Controllers.SendControllerEvents(UserIndex, MessageHandler);
+			// On Windows all controllers exist and can be opened, but until their state changes to connected
+			// (which is updated asynchronously on an internal thread in libScePad) we don't know the controller type.
+			// That's why checking querying the type in ConnectStateToUser is not enough and we need this lazy update.
+			if (Controllers.GetControllerTypeIdentifier(UserIndex) == ESonyControllerType::None)
+			{
+				Controllers.RefreshControllerType(UserIndex);
+			}
+
+			// Don't send events until we have the controller type as we need to set the device scope up.
+			if (Controllers.GetControllerTypeIdentifier(UserIndex) != ESonyControllerType::None)
+			{
+				FInputDeviceScope InputScope(this, InputClassName, UserIndex, Controllers.GetControllerTypeIdentifierName(UserIndex));
+				Controllers.SendControllerEvents(UserIndex, MessageHandler);
+			}
 		}
 		UpdateAudioDevices();
 	}
@@ -546,12 +559,12 @@ protected:
 			bStreamStarted = false;
 		}
 
-		void SubmitBuffer(FCallbackInfo& CallbackInfo) const
+		void SubmitBuffer(FCallbackInfo& InCallbackInfo) const
 		{
 			XAUDIO2_BUFFER XAudio2Buffer = { 0 };
 			XAudio2Buffer.AudioBytes = EWinDualShockDefaults::NumFrames * NumOutputChannels * sizeof(float);
 			XAudio2Buffer.pAudioData = (const BYTE*)OutputBuffer.GetData();
-			XAudio2Buffer.pContext = &CallbackInfo;
+			XAudio2Buffer.pContext = &InCallbackInfo;
 
 			// Submit buffer to the output streaming voice
 			HRESULT hr;

@@ -40,6 +40,7 @@
 #include "GPUSkinCache.h"
 #include "ComputeWorkerInterface.h"
 #include "RenderGraphBuilder.h"
+#include "StaticMeshResources.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
@@ -987,7 +988,6 @@ void BeginSendEndOfFrameUpdatesDrawEvent(FSendAllEndOfFrameUpdates& SendAllEndOf
 
 DECLARE_GPU_STAT(EndOfFrameUpdates);
 DECLARE_GPU_STAT(GPUSkinCacheRayTracingGeometry);
-DECLARE_GPU_STAT(ComputeTaskWorkerUpdates);
 void EndSendEndOfFrameUpdatesDrawEvent(FSendAllEndOfFrameUpdates& SendAllEndOfFrameUpdates)
 {
 	ENQUEUE_RENDER_COMMAND(EndDrawEventCommand)(
@@ -1003,17 +1003,13 @@ void EndSendEndOfFrameUpdatesDrawEvent(FSendAllEndOfFrameUpdates& SendAllEndOfFr
 				GPUSkinCache->EndBatchDispatch(RHICmdList);
 			}
 
-			if (ComputeTaskWorkers.Num() > 0)
+			for (IComputeTaskWorker* ComputeTaskWorker : ComputeTaskWorkers)
 			{
-				SCOPED_GPU_STAT(RHICmdList, ComputeTaskWorkerUpdates);
-				for (IComputeTaskWorker* ComputeTaskWorker : ComputeTaskWorkers)
+				if (ComputeTaskWorker->HasWork(ComputeTaskExecutionGroup::EndOfFrameUpdate))
 				{
-					if (ComputeTaskWorker->HasWork(ComputeTaskExecutionGroup::EndOfFrameUpdate))
-					{
-						FRDGBuilder GraphBuilder(RHICmdList, RDG_EVENT_NAME("ComputeTaskWorker"));
-						ComputeTaskWorker->SubmitWork(GraphBuilder, ComputeTaskExecutionGroup::EndOfFrameUpdate, FeatureLevel);
-						GraphBuilder.Execute();
-					}
+					FRDGBuilder GraphBuilder(RHICmdList, RDG_EVENT_NAME("ComputeTaskWorker"));
+					ComputeTaskWorker->SubmitWork(GraphBuilder, ComputeTaskExecutionGroup::EndOfFrameUpdate, FeatureLevel);
+					GraphBuilder.Execute();
 				}
 			}
 		});
@@ -1142,6 +1138,9 @@ void UWorld::SendAllEndOfFrameUpdates()
 
 		ComponentsThatNeedEndOfFrameUpdate_OnGameThread.Reset();
 		ComponentsThatNeedEndOfFrameUpdate.Reset();
+
+		// We are only regenerating render state here, not components
+		FStaticMeshComponentBulkReregisterContext ReregisterContext(Scene, DeferredUpdates, EBulkReregister::RenderState);
 
 		for (UActorComponent* Component : DeferredUpdates)
 		{
@@ -1303,10 +1302,13 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 	FWorldDelegates::OnWorldTickStart.Broadcast(this, TickType, DeltaSeconds);
 
 	//Tick game and other thread trackers.
-	for (int32 Tracker = 0; Tracker < (int32)EInGamePerfTrackers::Num; ++Tracker)
+	if (PerfTrackers)
 	{
-		PerfTrackers->GetInGamePerformanceTracker((EInGamePerfTrackers)Tracker, EInGamePerfTrackerThreads::GameThread).Tick();
-		PerfTrackers->GetInGamePerformanceTracker((EInGamePerfTrackers)Tracker, EInGamePerfTrackerThreads::OtherThread).Tick();
+		for (int32 Tracker = 0; Tracker < (int32)EInGamePerfTrackers::Num; ++Tracker)
+		{
+			PerfTrackers->GetInGamePerformanceTracker((EInGamePerfTrackers)Tracker, EInGamePerfTrackerThreads::GameThread).Tick();
+			PerfTrackers->GetInGamePerformanceTracker((EInGamePerfTrackers)Tracker, EInGamePerfTrackerThreads::OtherThread).Tick();
+		}
 	}
 
 #if LOG_DETAILED_PATHFINDING_STATS
@@ -1397,6 +1399,7 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 	if (Info->bHighPriorityLoading || Info->bHighPriorityLoadingLocal || IsInSeamlessTravel())
 	{
 		CSV_SCOPED_SET_WAIT_STAT(AsyncLoading);
+		TRACE_CPUPROFILER_EVENT_SCOPE(HighPriorityAsyncLoading)
 		// Force it to use the entire time slice, even if blocked on I/O
 		ProcessAsyncLoading(true, true, GPriorityAsyncLoadingExtraTime / 1000.0f);
 	}
@@ -1783,9 +1786,12 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 		[WorldParam](FRHICommandList& RHICmdList)
 		{
 			//Tick game and other thread trackers.
-			for (int32 Tracker = 0; Tracker < (int32)EInGamePerfTrackers::Num; ++Tracker)
+			if (WorldParam->PerfTrackers)
 			{
-				WorldParam->PerfTrackers->GetInGamePerformanceTracker((EInGamePerfTrackers)Tracker, EInGamePerfTrackerThreads::RenderThread).Tick();
+				for (int32 Tracker = 0; Tracker < (int32)EInGamePerfTrackers::Num; ++Tracker)
+				{
+					WorldParam->PerfTrackers->GetInGamePerformanceTracker((EInGamePerfTrackers)Tracker, EInGamePerfTrackerThreads::RenderThread).Tick();
+				}
 			}
 		});
 

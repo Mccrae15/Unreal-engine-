@@ -2,12 +2,15 @@
 
 #pragma once
 
+#include "CoreMinimal.h"
 #include "NiagaraSystem.h"
 #include "NiagaraEmitter.h"
 #include "NiagaraScript.h"
 #include "NiagaraValidationRuleSet.h"
 #include "Engine/DeveloperSettings.h"
 #include "NiagaraSpawnShortcut.h"
+#include "Editor/UnrealEdTypes.h"
+#include "Viewports.h"
 #include "NiagaraEditorSettings.generated.h"
 
 class UCurveFloat;
@@ -50,6 +53,19 @@ struct FNiagaraNewAssetDialogConfig
 };
 
 UENUM()
+enum class ENiagaraCategoryExpandState : uint8
+{
+	/** Categories will use the default expand / collapse state. */
+	Default,
+	/** Categories will use the default expand / collapse state unless they contain modified properties in which case they will expand. */
+	DefaultExpandModified,
+	/** Categories will ignore the default state and be collapsed. */
+	CollapseAll,
+	/** Categories will ignore the default state and be expanded. */
+	ExpandAll,
+};
+
+UENUM()
 enum class ENiagaraNamespaceMetadataOptions
 {
 	HideInScript,
@@ -63,14 +79,27 @@ enum class ENiagaraNamespaceMetadataOptions
 	HideInDefinitions,
 };
 
+UENUM()
+enum class ENiagaraAddDefaultsTrackMode : uint8
+{
+	/** Adding a Niagara actor to a sequence will not add any additional subtracks by default */
+	NoSubtracks,
+
+	/** Adding a Niagara actor will add a component subtrack, but nothing else */
+	ComponentTrackOnly,
+	
+	/** Adding a Niagara actor to a sequence will also add a life cycle track to it by default  */
+	LifecycleTrack,
+};
+
 USTRUCT()
-struct NIAGARAEDITOR_API FNiagaraNamespaceMetadata
+struct FNiagaraNamespaceMetadata
 {
 	GENERATED_BODY()
 
-	FNiagaraNamespaceMetadata();
+	NIAGARAEDITOR_API FNiagaraNamespaceMetadata();
 
-	FNiagaraNamespaceMetadata(TArray<FName> InNamespaces, FName InRequiredNamespaceModifier = NAME_None);
+	NIAGARAEDITOR_API FNiagaraNamespaceMetadata(TArray<FName> InNamespaces, FName InRequiredNamespaceModifier = NAME_None);
 
 	//FNiagaraNamespaceMetadata(const FNiagaraNamespaceMetadata& Other);
 
@@ -183,7 +212,7 @@ private:
 };
 
 USTRUCT()
-struct NIAGARAEDITOR_API FNiagaraCurveTemplate
+struct FNiagaraCurveTemplate
 {
 	GENERATED_BODY();
 
@@ -195,11 +224,11 @@ struct NIAGARAEDITOR_API FNiagaraCurveTemplate
 };
 
 USTRUCT()
-struct NIAGARAEDITOR_API FNiagaraActionColors
+struct FNiagaraActionColors
 {
 	GENERATED_BODY()
 
-	FNiagaraActionColors();
+	NIAGARAEDITOR_API FNiagaraActionColors();
 	
 	UPROPERTY(EditAnywhere, Category = Color)
 	FLinearColor NiagaraColor;
@@ -216,7 +245,7 @@ struct NIAGARAEDITOR_API FNiagaraActionColors
 
 
 USTRUCT()
-struct NIAGARAEDITOR_API FNiagaraParameterPanelSectionStorage
+struct FNiagaraParameterPanelSectionStorage
 {
 	GENERATED_BODY()
 		
@@ -234,13 +263,82 @@ struct NIAGARAEDITOR_API FNiagaraParameterPanelSectionStorage
 	TArray<FGuid> ExpandedCategories;
 };
 
+/** Contains all the settings that should be shared across sessions. */
+USTRUCT()
+struct FNiagaraViewportSharedSettings
+{
+	GENERATED_USTRUCT_BODY()
+
+	FNiagaraViewportSharedSettings() {}
+
+	/** The viewport type */
+	UPROPERTY(config)
+	TEnumAsByte<ELevelViewportType> ViewportType = LVT_Perspective;
+
+	/* View mode to set when this viewport is of type LVT_Perspective. */
+	UPROPERTY(config)
+	TEnumAsByte<EViewModeIndex> PerspViewModeIndex = VMI_Lit;
+
+	/* View mode to set when this viewport is not of type LVT_Perspective. */
+	UPROPERTY(config)
+	TEnumAsByte<EViewModeIndex> OrthoViewModeIndex = VMI_BrushWireframe;
+
+	/**
+	 * A set of flags that determines visibility for various scene elements (FEngineShowFlags), converted to string form.
+	 * These have to be saved as strings since FEngineShowFlags is too complex for UHT to parse correctly.
+	 */
+	UPROPERTY(config)
+	FString EditorShowFlagsString;
+
+	/**
+	 * A set of flags that determines visibility for various scene elements (FEngineShowFlags), converted to string form.
+	 * These have to be saved as strings since FEngineShowFlags is too complex for UHT to parse correctly.
+	 */
+	UPROPERTY(config)
+	FString GameShowFlagsString;
+
+	/** Setting to allow designers to override the automatic expose. */
+	UPROPERTY(config)
+	FExposureSettings ExposureSettings;
+
+	/* Field of view angle for the viewport. */
+	UPROPERTY(config)
+	float FOVAngle = EditorViewportDefs::DefaultPerspectiveFOVAngle;
+
+	/* Whether this viewport is updating in real-time. */
+	UPROPERTY(config)
+	bool bIsRealtime = true;
+	
+	/* Whether viewport statistics should be shown. */
+	UPROPERTY(config)
+	bool bShowOnScreenStats = true;
+
+	UPROPERTY(config)
+	bool bShowGridInViewport = false;
+
+	UPROPERTY(config)
+	bool bShowInstructionsCount = false;
+	
+	UPROPERTY(config)
+	bool bShowParticleCountsInViewport = false;
+
+	UPROPERTY(config)
+	bool bShowEmitterExecutionOrder = false;
+
+	UPROPERTY(config)
+	bool bShowGpuTickInformation = false;
+
+	UPROPERTY(config)
+	bool bShowMemoryInfo = false;
+};
+
 FORCEINLINE uint32 GetTypeHash(const FNiagaraNamespaceMetadata& NamespaceMetaData)
 {
 	return GetTypeHash(NamespaceMetaData.GetGuid());
 }
 
-UCLASS(config = Niagara, defaultconfig, meta=(DisplayName="Niagara"))
-class NIAGARAEDITOR_API UNiagaraEditorSettings : public UDeveloperSettings
+UCLASS(config = Niagara, defaultconfig, meta=(DisplayName="Niagara"), MinimalAPI)
+class UNiagaraEditorSettings : public UDeveloperSettings
 {
 public:
 	GENERATED_UCLASS_BODY()
@@ -285,113 +383,139 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = Niagara)
 	bool bAlwaysZoomToFitSystemGraph = true;
 
-	TArray<float> GetPlaybackSpeeds() const;
+	UPROPERTY(config, EditAnywhere, Category = Niagara)
+	ENiagaraCategoryExpandState RendererCategoryExpandState = ENiagaraCategoryExpandState::Default;
+	
+	UPROPERTY(config, EditAnywhere, Category = Niagara)
+	ENiagaraAddDefaultsTrackMode DefaultsSequencerSubtracks = ENiagaraAddDefaultsTrackMode::NoSubtracks;
+
+	NIAGARAEDITOR_API TArray<float> GetPlaybackSpeeds() const;
 
 	/** Gets whether or not auto-compile is enabled in the editors. */
-	bool GetAutoCompile() const;
+	NIAGARAEDITOR_API bool GetAutoCompile() const;
 
 	/** Sets whether or not auto-compile is enabled in the editors. */
-	void SetAutoCompile(bool bInAutoCompile);
+	NIAGARAEDITOR_API void SetAutoCompile(bool bInAutoCompile);
 
 	/** Gets whether or not simulations should start playing automatically when the emitter or system editor is opened, or when the data is changed in the editor. */
-	bool GetAutoPlay() const;
+	NIAGARAEDITOR_API bool GetAutoPlay() const;
 
 	/** Sets whether or not simulations should start playing automatically when the emitter or system editor is opened, or when the data is changed in the editor. */
-	void SetAutoPlay(bool bInAutoPlay);
+	NIAGARAEDITOR_API void SetAutoPlay(bool bInAutoPlay);
 
 	/** Gets whether or not the simulation should reset when a value on the emitter or system is changed. */
-	bool GetResetSimulationOnChange() const;
+	NIAGARAEDITOR_API bool GetResetSimulationOnChange() const;
 
 	/** Sets whether or not the simulation should reset when a value on the emitter or system is changed. */
-	void SetResetSimulationOnChange(bool bInResetSimulationOnChange);
+	NIAGARAEDITOR_API void SetResetSimulationOnChange(bool bInResetSimulationOnChange);
 
 	/** Gets whether or not to rerun the simulation to the current time when making modifications while paused. */
-	bool GetResimulateOnChangeWhilePaused() const;
+	NIAGARAEDITOR_API bool GetResimulateOnChangeWhilePaused() const;
 
 	/** Sets whether or not to rerun the simulation to the current time when making modifications while paused. */
-	void SetResimulateOnChangeWhilePaused(bool bInResimulateOnChangeWhilePaused);
+	NIAGARAEDITOR_API void SetResimulateOnChangeWhilePaused(bool bInResimulateOnChangeWhilePaused);
 
 	/** Gets whether or not to reset all components that include the system that is currently being reset */
-	bool GetResetDependentSystemsWhenEditingEmitters() const;
+	NIAGARAEDITOR_API bool GetResetDependentSystemsWhenEditingEmitters() const;
 
 	/** Sets whether or not to reset all components that include the system that is currently being reset */
-	void SetResetDependentSystemsWhenEditingEmitters(bool bInResetDependentSystemsWhenEditingEmitters);
+	NIAGARAEDITOR_API void SetResetDependentSystemsWhenEditingEmitters(bool bInResetDependentSystemsWhenEditingEmitters);
 
 	/** Gets whether or not to display advanced categories for the parameter panel. */
-	bool GetDisplayAdvancedParameterPanelCategories() const;
+	NIAGARAEDITOR_API bool GetDisplayAdvancedParameterPanelCategories() const;
 
 	/** Sets whether or not to display advanced categories for the parameter panel. */
-	void SetDisplayAdvancedParameterPanelCategories(bool bInDisplayAdvancedParameterPanelCategories);
+	NIAGARAEDITOR_API void SetDisplayAdvancedParameterPanelCategories(bool bInDisplayAdvancedParameterPanelCategories);
 
-	bool GetDisplayAffectedAssetStats() const;
-	int32 GetAssetStatsSearchLimit() const;
+	NIAGARAEDITOR_API bool GetDisplayAffectedAssetStats() const;
+	NIAGARAEDITOR_API int32 GetAssetStatsSearchLimit() const;
 
-	bool IsShowGridInViewport() const;
-	void SetShowGridInViewport(bool bShowGridInViewport);
+	NIAGARAEDITOR_API bool IsShowGridInViewport() const;
+	NIAGARAEDITOR_API void SetShowGridInViewport(bool bShowGridInViewport);
 	
-	bool IsShowParticleCountsInViewport() const;
-	void SetShowParticleCountsInViewport(bool bShowParticleCountsInViewport);
+	NIAGARAEDITOR_API bool IsShowParticleCountsInViewport() const;
+	NIAGARAEDITOR_API void SetShowParticleCountsInViewport(bool bShowParticleCountsInViewport);
 	
-	FNiagaraNewAssetDialogConfig GetNewAssetDailogConfig(FName InDialogConfigKey) const;
+	NIAGARAEDITOR_API FNiagaraNewAssetDialogConfig GetNewAssetDailogConfig(FName InDialogConfigKey) const;
 
-	void SetNewAssetDialogConfig(FName InDialogConfigKey, const FNiagaraNewAssetDialogConfig& InNewAssetDialogConfig);
+	NIAGARAEDITOR_API void SetNewAssetDialogConfig(FName InDialogConfigKey, const FNiagaraNewAssetDialogConfig& InNewAssetDialogConfig);
 
-	FNiagaraNamespaceMetadata GetDefaultNamespaceMetadata() const;
-	FNiagaraNamespaceMetadata GetMetaDataForNamespaces(TArray<FName> Namespaces) const;
-	FNiagaraNamespaceMetadata GetMetaDataForId(const FGuid& NamespaceId) const;
-	const FGuid& GetIdForUsage(ENiagaraScriptUsage Usage) const;
-	const TArray<FNiagaraNamespaceMetadata>& GetAllNamespaceMetadata() const;
+	NIAGARAEDITOR_API FNiagaraNamespaceMetadata GetDefaultNamespaceMetadata() const;
+	NIAGARAEDITOR_API FNiagaraNamespaceMetadata GetMetaDataForNamespaces(TArray<FName> Namespaces) const;
+	NIAGARAEDITOR_API FNiagaraNamespaceMetadata GetMetaDataForId(const FGuid& NamespaceId) const;
+	NIAGARAEDITOR_API const FGuid& GetIdForUsage(ENiagaraScriptUsage Usage) const;
+	NIAGARAEDITOR_API const TArray<FNiagaraNamespaceMetadata>& GetAllNamespaceMetadata() const;
 
-	FNiagaraNamespaceMetadata GetDefaultNamespaceModifierMetadata() const;
-	FNiagaraNamespaceMetadata GetMetaDataForNamespaceModifier(FName NamespaceModifier) const;
-	const TArray<FNiagaraNamespaceMetadata>& GetAllNamespaceModifierMetadata() const;
+	NIAGARAEDITOR_API FNiagaraNamespaceMetadata GetDefaultNamespaceModifierMetadata() const;
+	NIAGARAEDITOR_API FNiagaraNamespaceMetadata GetMetaDataForNamespaceModifier(FName NamespaceModifier) const;
+	NIAGARAEDITOR_API const TArray<FNiagaraNamespaceMetadata>& GetAllNamespaceModifierMetadata() const;
 
-	const TArray<FNiagaraCurveTemplate>& GetCurveTemplates() const;
+	NIAGARAEDITOR_API const TArray<FNiagaraCurveTemplate>& GetCurveTemplates() const;
 	
 	// Begin UDeveloperSettings Interface
-	virtual FName GetCategoryName() const override;
-	virtual FText GetSectionText() const override;
+	NIAGARAEDITOR_API virtual FName GetCategoryName() const override;
+	NIAGARAEDITOR_API virtual FText GetSectionText() const override;
 	// END UDeveloperSettings Interface
 
-	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	NIAGARAEDITOR_API virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	
+	const FNiagaraViewportSharedSettings& GetViewportSharedSettings() const { return ViewportSettings; }
+	void SetViewportSharedSettings(const FNiagaraViewportSharedSettings& InViewportSharedSettings);
 
-	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnNiagaraEditorSettingsChanged, const FString&, const UNiagaraEditorSettings*);
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnNiagaraEditorSettingsChanged, const FString&,
+	                                     const UNiagaraEditorSettings*);
 
 	/** Gets a multicast delegate which is called whenever one of the parameters in this settings object changes. */
-	static FOnNiagaraEditorSettingsChanged& OnSettingsChanged();
+	static NIAGARAEDITOR_API FOnNiagaraEditorSettingsChanged& OnSettingsChanged();
 
 	const TMap<FString, FString>& GetHLSLKeywordReplacementsMap()const { return HLSLKeywordReplacements; }
 
-	FLinearColor GetSourceColor(EScriptSource Source) const;
+	NIAGARAEDITOR_API FLinearColor GetSourceColor(EScriptSource Source) const;
 
-	FNiagaraParameterPanelSectionStorage& FindOrAddParameterPanelSectionStorage(FGuid PanelSectionId, bool& bOutAdded);
+	NIAGARAEDITOR_API FNiagaraParameterPanelSectionStorage& FindOrAddParameterPanelSectionStorage(FGuid PanelSectionId, bool& bOutAdded);
 
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FOnIsClassAllowed, const UClass* /*InClass*/);
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FOnIsClassPathAllowed, const FTopLevelAssetPath& /*InClassPath*/);
+	DECLARE_DELEGATE_RetVal_OneParam(bool, FOnShouldFilterAssetByClassUsage, const FTopLevelAssetPath& /*InAssetPath*/)
 	
 	/** Sets a delegate that allows external code to restrict which features can be used within the niagara editor by filtering which classes are allowed. */
-	void SetOnIsClassAllowed(const FOnIsClassAllowed& InOnIsClassAllowed);
+	NIAGARAEDITOR_API void SetOnIsClassAllowed(const FOnIsClassAllowed& InOnIsClassAllowed);
 
 	/** Sets a delegate that allows external code to restrict which features can be used within the niagara editor by filtering which classes are allowed by class path. */
-	void SetOnIsClassPathAllowed(const FOnIsClassPathAllowed& InOnIsClassPathAllowed);
+	NIAGARAEDITOR_API void SetOnIsClassPathAllowed(const FOnIsClassPathAllowed& InOnIsClassPathAllowed);
+
+	/** Sets a delegate that allows external code to restrict which features can be used within the niagara editor by filtering which assets are allowed. */
+	NIAGARAEDITOR_API void SetOnShouldFilterAssetByClassUsage(const FOnShouldFilterAssetByClassUsage& InOnShouldFilterAssetByClassUsage);
 
 	/** Returns whether or not the supplied class can be used in the current editor context. */
-	bool IsAllowedClass(const UClass* InClass) const;
+	NIAGARAEDITOR_API bool IsAllowedClass(const UClass* InClass) const;
 
 	/** Returns whether or not the class referenced by the supplied class path can be used in the current editor context. */
-	bool IsAllowedClassPath(const FTopLevelAssetPath& InClassPath) const;
+	NIAGARAEDITOR_API bool IsAllowedClassPath(const FTopLevelAssetPath& InClassPath) const;
 
 	/** Returns whether or not the supplied niagara type definition can be used in the current editor context. */
-	bool IsAllowedTypeDefinition(const FNiagaraTypeDefinition& InTypeDefinition) const;
+	NIAGARAEDITOR_API bool IsAllowedTypeDefinition(const FNiagaraTypeDefinition& InTypeDefinition) const;
 
-	FAssetRegistryTag CreateClassUsageAssetRegistryTag(const UObject* SourceObject) const;
+	NIAGARAEDITOR_API FAssetRegistryTag CreateClassUsageAssetRegistryTag(const UObject* SourceObject) const;
 
-	bool IsAllowedAssetByClassUsage(const FAssetData& InAssetData) const;
+	NIAGARAEDITOR_API bool IsAllowedAssetByClassUsage(const FAssetData& InAssetData) const;
+	NIAGARAEDITOR_API bool IsAllowedAssetObjectByClassUsage(const UObject& InAssetObject) const;
 
+	NIAGARAEDITOR_API bool GetUpdateStackValuesOnCommitOnly() const;
+
+	NIAGARAEDITOR_API bool GetUseAutoExposure() const;
+	NIAGARAEDITOR_API void SetUseAutoExposure(bool bInUseAutoExposure);
+	
+	NIAGARAEDITOR_API float GetExposureValue() const;
+	NIAGARAEDITOR_API void SetAutoExposureValue(bool bInUseAutoExposure);
+	
 private:
-	void SetupNamespaceMetadata();
-	void BuildCachedPlaybackSpeeds() const;
-	bool ShouldTrackClassUsage(const UClass* InClass) const;
+	NIAGARAEDITOR_API bool IsAllowedObjectByClassUsageInternal(const UObject& InObject, TSet<const UObject*>& CheckedObjects) const;
+	NIAGARAEDITOR_API bool IsAllowedAssetObjectByClassUsageInternal(const UObject& InAssetObject, TSet<const UObject*>& CheckedAssetObjects) const;
+
+	NIAGARAEDITOR_API void SetupNamespaceMetadata();
+	NIAGARAEDITOR_API void BuildCachedPlaybackSpeeds() const;
+	NIAGARAEDITOR_API bool ShouldTrackClassUsage(const UClass* InClass) const;
 protected:
 	FOnNiagaraEditorSettingsChanged SettingsChangedDelegate;
 private:
@@ -427,6 +551,10 @@ private:
 	UPROPERTY(config, EditAnywhere, Category=Niagara, meta=(EditCondition="bDisplayAffectedAssetStats", ClampMin=1))
 	int32 AffectedAssetSearchLimit = 25;
 
+	/** This affects numeric inputs for modules. When set to false, the inputs update the simulation while typing. When set to true, the simulation is only updated after submitting the change by pressing Enter. */
+	UPROPERTY(config, EditAnywhere, Category = Niagara)
+	bool bUpdateStackValuesOnCommitOnly = false;
+
 	/** Speeds used for slowing down and speeding up the playback speeds */
 	UPROPERTY(config, EditAnywhere, Category = Niagara)
 	TArray<float> PlaybackSpeeds;
@@ -457,36 +585,27 @@ private:
 
 	UPROPERTY(config, EditAnywhere, Category = Niagara)
 	TArray<FNiagaraCurveTemplate> CurveTemplates;
-
-	UPROPERTY(config)
-	bool bShowGridInViewport;
-
-	UPROPERTY(config)
-	bool bShowInstructionsCount;
 	
 	UPROPERTY(config)
-	bool bShowParticleCountsInViewport;
-
-	UPROPERTY(config)
-	bool bShowEmitterExecutionOrder;
-
-	UPROPERTY(config)
-	bool bShowGpuTickInformation;
-
-
+	FNiagaraViewportSharedSettings ViewportSettings;
+	
 	UPROPERTY(config)
 	TArray<FNiagaraParameterPanelSectionStorage> SystemParameterPanelSectionData;
+	
 
 	FOnIsClassAllowed OnIsClassAllowedDelegate;
 	FOnIsClassPathAllowed OnIsClassPathAllowedDelegate;
+	FOnShouldFilterAssetByClassUsage OnShouldFilterAssetByClassUsage;
 
 	TArray<UClass*> TrackedUsageBaseClasses;
 
 public:
-	bool IsShowInstructionsCount() const;
-	void SetShowInstructionsCount(bool bShowInstructionsCount);
-	bool IsShowEmitterExecutionOrder() const;
-	void SetShowEmitterExecutionOrder(bool bShowEmitterExecutionOrder);
-	bool IsShowGpuTickInformation() const;
-	void SetShowGpuTickInformation(bool bShowGpuTickInformation);
+	NIAGARAEDITOR_API bool IsShowInstructionsCount() const;
+	NIAGARAEDITOR_API void SetShowInstructionsCount(bool bShowInstructionsCount);
+	NIAGARAEDITOR_API bool IsShowEmitterExecutionOrder() const;
+	NIAGARAEDITOR_API void SetShowEmitterExecutionOrder(bool bShowEmitterExecutionOrder);
+	NIAGARAEDITOR_API bool IsShowGpuTickInformation() const;
+	NIAGARAEDITOR_API void SetShowGpuTickInformation(bool bShowGpuTickInformation);
+	NIAGARAEDITOR_API bool IsShowMemoryInfo() const;
+	NIAGARAEDITOR_API void SetShowMemoryInfo(bool bInShowInfo);
 };

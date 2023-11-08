@@ -12,31 +12,62 @@
 namespace Chaos
 {
 
-struct FLargeImplicitObjectUnionData;
+namespace Private
+{
+	class FImplicitBVH;
+	class FImplicitBVHObject;
+}
 
-class CHAOS_API FImplicitObjectUnion : public FImplicitObject
+namespace CVars
+{
+	extern bool bChaosUnionBVHEnabled;
+}
+
+class FImplicitObjectUnion : public FImplicitObject
 {
   public:
 
 	using FImplicitObject::GetTypeName;
 
-	FImplicitObjectUnion(TArray<TUniquePtr<FImplicitObject>>&& Objects);
-	void Combine(TArray<TUniquePtr<FImplicitObject>>& Objects);
-	void RemoveAt(int32 RemoveIndex);
-
+	CHAOS_API FImplicitObjectUnion(TArray<TUniquePtr<FImplicitObject>>&& Objects);
 	FImplicitObjectUnion(const FImplicitObjectUnion& Other) = delete;
-	FImplicitObjectUnion(FImplicitObjectUnion&& Other);
-	virtual ~FImplicitObjectUnion();
+	CHAOS_API FImplicitObjectUnion(FImplicitObjectUnion&& Other);
+	CHAOS_API virtual ~FImplicitObjectUnion();
 
 	FORCEINLINE static constexpr EImplicitObjectType StaticType()
 	{
 		return ImplicitObjectType::Union;
 	}
 
-	virtual TUniquePtr<FImplicitObject> Copy() const;
-	virtual TUniquePtr<FImplicitObject> CopyWithScale(const FVec3& Scale) const override;
-	virtual TUniquePtr<FImplicitObject> DeepCopy() const;
-	virtual TUniquePtr<FImplicitObject> DeepCopyWithScale(const FVec3& Scale) const override;
+	CHAOS_API void Combine(TArray<TUniquePtr<FImplicitObject>>& Objects);
+	CHAOS_API void RemoveAt(int32 RemoveIndex);
+
+	// The total number of root objects in the hierarchy (same as GetObjects().Num())
+	int32 GetNumRootObjects() const
+	{
+		return MObjects.Num();
+	}
+
+	// The total number of leaf objects in the hierarchy
+	int32 GetNumLeafObjects() const
+	{
+		return int32(NumLeafObjects);
+	}
+
+	// Enable BVH suport for this Union. This should only be done for the root Union in a hierarchy
+	void SetAllowBVH(const bool bInAllowBVH)
+	{
+		if (bInAllowBVH != Flags.bAllowBVH)
+		{
+			Flags.bAllowBVH = bInAllowBVH;
+			RebuildBVH();
+		}
+	}
+
+	CHAOS_API virtual TUniquePtr<FImplicitObject> Copy() const;
+	CHAOS_API virtual TUniquePtr<FImplicitObject> CopyWithScale(const FVec3& Scale) const override;
+	CHAOS_API virtual TUniquePtr<FImplicitObject> DeepCopy() const;
+	CHAOS_API virtual TUniquePtr<FImplicitObject> DeepCopyWithScale(const FVec3& Scale) const override;
 	
 	virtual FReal PhiWithNormal(const FVec3& x, FVec3& Normal) const override
 	{
@@ -92,8 +123,9 @@ class CHAOS_API FImplicitObjectUnion : public FImplicitObject
 		}
 	}
 
-	virtual void FindAllIntersectingObjects(TArray < Pair<const FImplicitObject*, FRigidTransform3>>& Out, const FAABB3& LocalBounds) const;
-	virtual void CacheAllImplicitObjects();
+	CHAOS_API virtual void FindAllIntersectingObjects(TArray < Pair<const FImplicitObject*, FRigidTransform3>>& Out, const FAABB3& LocalBounds) const;
+	
+	virtual void CacheAllImplicitObjects() { RebuildBVH(); }
 
 	virtual bool Raycast(const FVec3& StartPoint, const FVec3& Dir, const FReal Length, const FReal Thickness, FReal& OutTime, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex) const override
 	{
@@ -136,7 +168,7 @@ class CHAOS_API FImplicitObjectUnion : public FImplicitObject
 		return false;
 	}
 
-	virtual void Serialize(FChaosArchive& Ar) override;
+	CHAOS_API virtual void Serialize(FChaosArchive& Ar) override;
 
 	virtual bool IsValidGeometry() const
 	{
@@ -146,6 +178,11 @@ class CHAOS_API FImplicitObjectUnion : public FImplicitObject
 	}
 
 	const TArray<TUniquePtr<FImplicitObject>>& GetObjects() const { return MObjects; }
+
+	TArray<TUniquePtr<FImplicitObject>>& GetObjects() { return MObjects; }
+
+	// The lambda returns TRUE if an object was found and iteration should stop.
+	CHAOS_API void ForEachObject(TFunctionRef<bool(const FImplicitObject&, const FRigidTransform3&)> Lambda) const;
 
 	virtual uint32 GetTypeHash() const override
 	{
@@ -173,10 +210,17 @@ class CHAOS_API FImplicitObjectUnion : public FImplicitObject
 			}
 		}
 
-		return new FImplicitObjectUnion(MoveTemp(NewObjects));
+		FImplicitObjectUnion* Union = new FImplicitObjectUnion(MoveTemp(NewObjects));
+		Union->SetAllowBVH(Flags.bAllowBVH);
+		return Union;
 	}
 
-#if INTEL_ISPC && !UE_BUILD_SHIPPING
+	const Private::FImplicitBVH* GetBVH() const
+	{
+		return BVH.Get();
+	}
+
+#if INTEL_ISPC
 	// See PerParticlePBDCollisionConstraint.cpp
 	// ISPC code has matching structs for interpreting FImplicitObjects.
 	// This is used to verify that the structs stay the same.
@@ -186,7 +230,7 @@ class CHAOS_API FImplicitObjectUnion : public FImplicitObject
 		static constexpr int32 SizeOfMObjects() { return sizeof(FImplicitObjectUnion::MObjects); }
 	};
 	friend FISPCDataVerifier;
-#endif // #if INTEL_ISPC && !UE_BUILD_SHIPPING
+#endif // #if INTEL_ISPC
 
 protected:
 	virtual Pair<FVec3, bool> FindClosestIntersectionImp(const FVec3& StartPoint, const FVec3& EndPoint, const FReal Thickness) const override
@@ -209,14 +253,64 @@ protected:
 		return ClosestIntersection;
 	}
 
+	CHAOS_API virtual void VisitOverlappingLeafObjectsImpl(
+		const FAABB3& LocalBounds,
+		const FRigidTransform3& ObjectTransform,
+		const int32 RootObjectIndex,
+		int32& ObjectIndex,
+		int32& LeafObjectIndex,
+		const FImplicitHierarchyVisitor& VisitorFunc) const override final;
+
+	CHAOS_API virtual void VisitLeafObjectsImpl(
+		const FRigidTransform3& ObjectTransform,
+		const int32 RootObjectIndex,
+		int32& ObjectIndex,
+		int32& LeafObjectIndex,
+		const FImplicitHierarchyVisitor& VisitorFunc) const override final;
+
+	CHAOS_API virtual bool VisitObjectsImpl(
+		const FRigidTransform3& ObjectTransform,
+		const int32 RootObjectIndex,
+		int32& ObjectIndex,
+		int32& LeafObjectIndex,
+		const FImplicitHierarchyVisitorBool& VisitorFunc) const override final;
+
+	CHAOS_API virtual bool IsOverlappingBoundsImpl(
+		const FAABB3& LocalBounds) const override final;
+
   protected:
-	//needed for serialization
-	FImplicitObjectUnion();
-	friend FImplicitObject;	//needed for serialization
+	// Needed for serialization
+	CHAOS_API FImplicitObjectUnion();
+	friend FImplicitObject;
+
+	CHAOS_API void SetNumLeafObjects(const int32 InNumLeafObjects);
+	CHAOS_API void CreateBVH();
+	CHAOS_API void DestroyBVH();
+	CHAOS_API void RebuildBVH();
+
+	CHAOS_API void LegacySerializeBVH(FChaosArchive& Ar);
+
+	union FFLags
+	{
+	public:
+		FFLags() : Bits(0) {}
+		struct
+		{
+			// NOTE: Flags are serialized. Ordering must be retained
+			uint8 bAllowBVH : 1;				// Are we allowed to use a BVH for this Union? (We generally only want a BVH in the root union)
+			uint8 bHasBVH : 1;					// Do we currently have a BVH? Equivalent to checking BVH pointer, but used by serialization to know whether to load a BVH
+		};
+		uint8 Bits;
+	};
 
 	TArray<TUniquePtr<FImplicitObject>> MObjects;
 	FAABB3 MLocalBoundingBox;
-	TUniquePtr<FLargeImplicitObjectUnionData> LargeUnionData;	//only needed when there are many objects
+
+	// BVH is only created when there are many objects.
+	// @todo(chaos): consider registering particles that may need BVH updated in evolution instead
+	TUniquePtr<Private::FImplicitBVH> BVH;
+	uint16 NumLeafObjects;
+	FFLags Flags;
 };
 
 struct FLargeUnionClusteredImplicitInfo
@@ -233,13 +327,13 @@ struct FLargeUnionClusteredImplicitInfo
 	const FBVHParticles* BVHParticles;
 };
 
-class CHAOS_API FImplicitObjectUnionClustered: public FImplicitObjectUnion
+class FImplicitObjectUnionClustered: public FImplicitObjectUnion
 {
 public:
-	FImplicitObjectUnionClustered();
-	FImplicitObjectUnionClustered(TArray<TUniquePtr<FImplicitObject>>&& Objects, const TArray<FPBDRigidParticleHandle*>& OriginalParticleLookupHack = TArray<FPBDRigidParticleHandle*>());
+	CHAOS_API FImplicitObjectUnionClustered();
+	CHAOS_API FImplicitObjectUnionClustered(TArray<TUniquePtr<FImplicitObject>>&& Objects, const TArray<FPBDRigidParticleHandle*>& OriginalParticleLookupHack = TArray<FPBDRigidParticleHandle*>());
 	FImplicitObjectUnionClustered(const FImplicitObjectUnionClustered& Other) = delete;
-	FImplicitObjectUnionClustered(FImplicitObjectUnionClustered&& Other);
+	CHAOS_API FImplicitObjectUnionClustered(FImplicitObjectUnionClustered&& Other);
 	virtual ~FImplicitObjectUnionClustered() = default;
 
 	FORCEINLINE static constexpr EImplicitObjectType StaticType()
@@ -247,47 +341,36 @@ public:
 		return ImplicitObjectType::UnionClustered;
 	}
 
-	void FindAllIntersectingClusteredObjects(TArray<FLargeUnionClusteredImplicitInfo>& Out, const FAABB3& LocalBounds) const;
-	TArray<FPBDRigidParticleHandle*> FindAllIntersectingChildren(const FAABB3& LocalBounds) const;
+	UE_DEPRECATED(5.3, "Not supported")
+	void FindAllIntersectingClusteredObjects(TArray<FLargeUnionClusteredImplicitInfo>& Out, const FAABB3& LocalBounds) const {}
 
-#if CHAOS_PARTICLEHANDLE_TODO
-	TArray<int32> FindAllIntersectingChildren(const TSpatialRay<FReal,3>& LocalRay) const;
-	{
-		TArray<int32> IntersectingChildren;
-		if (LargeUnionData) //todo: make this work when hierarchy is not built
-		{
-			IntersectingChildren = LargeUnionData->Hierarchy.FindAllIntersections(LocalRay);
-			for (int32 i = IntersectingChildren.Num() - 1; i >= 0; --i)
-			{
-				const int32 Idx = IntersectingChildren[i];
-				if (Idx < MOriginalParticleLookupHack.Num())
-				{
-					IntersectingChildren[i] = MOriginalParticleLookupHack[Idx];
-				}
-				else
-				{
-					IntersectingChildren.RemoveAtSwap(i);
-				}
-			}
-			/*for (int32& Idx : IntersectingChildren)
-			{
-				Idx = MOriginalParticleLookupHack[Idx];
-			}*/
-		}
-		else
-		{
-			IntersectingChildren = MOriginalParticleLookupHack;
-		}
+	CHAOS_API TArray<FPBDRigidParticleHandle*> FindAllIntersectingChildren(const FAABB3& LocalBounds) const;
 
-		return IntersectingChildren;
-	}
-#endif
+	// DO NOT USE!!
+	// @todo(chaos): we should get rid of this. Instead we should hold the map/whatever on the GeometryParticle that currently owns the geom
+	CHAOS_API const FPBDRigidParticleHandle* FindParticleForImplicitObject(const FImplicitObject* Object) const;
 
-	const FPBDRigidParticleHandle* FindParticleForImplicitObject(const FImplicitObject* Object) const;
+	// DO NOT USE!!
+	// @todo(chaos): move this fucntionality to the geometry particle?
+	CHAOS_API const FBVHParticles* GetChildSimplicial(const int32 ChildIndex) const;
 
 private:
 	// Temp hack for finding original particles
 	TArray<FPBDRigidParticleHandle*> MOriginalParticleLookupHack;	
 	TMap<const FImplicitObject*,FPBDRigidParticleHandle*> MCollisionParticleLookupHack;	//temp hack for finding collision particles
 };
+
+template<>
+struct TImplicitTypeInfo<FImplicitObjectUnion>
+{
+	// @todo(chaos): this is a bit topsy-turvy because the base class needs to know about all derived classes. 
+	// Ideally we would have a function like GetBaseType(InType) and implement TImplicitTypeInfo<FImplicitObjectUnionClustered> 
+	// but then we'd need a runtime of type->basetype for all valid types (and then there's the bitmask complication)
+	static bool IsBaseOf(const EImplicitObjectType InType)
+	{
+		return (InType == FImplicitObjectUnion::StaticType()) || TImplicitTypeInfo<FImplicitObjectUnionClustered>::IsBaseOf(InType);
+	}
+};
+
+
 }

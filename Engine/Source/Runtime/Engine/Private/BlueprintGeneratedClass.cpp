@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/BlueprintGeneratedClass.h"
+
+#include "Containers/RingBuffer.h"
 #include "Blueprint/BlueprintSupport.h"
 #include "HAL/IConsoleManager.h"
 #include "EngineLogs.h"
@@ -17,6 +19,9 @@
 #include "Engine/LevelScriptActor.h"
 #include "Engine/SCS_Node.h"
 #include "Engine/InheritableComponentHandler.h"
+#include "IFieldNotificationClassDescriptor.h"
+#include "INotifyFieldValueChanged.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Net/Core/PushModel/PushModel.h"
 #include "UObject/FortniteMainBranchObjectVersion.h"
 #include "UObject/Package.h" // IWYU pragma: keep
@@ -31,6 +36,8 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "BlueprintCompilationManager.h"
 #include "Engine/LevelScriptBlueprint.h"
+#include "WorldPartition/WorldPartitionActorDescUtils.h"
+#include "UObject/UObjectGlobals.h"
 extern UNREALED_API class UEditorEngine* GEditor;
 #else
 #include "UObject/LinkerLoad.h"
@@ -39,11 +46,11 @@ extern UNREALED_API class UEditorEngine* GEditor;
 DEFINE_STAT(STAT_PersistentUberGraphFrameMemory);
 DEFINE_STAT(STAT_BPCompInstancingFastPathMemory);
 
-int32 GBlueprintClusteringEnabled = 0;
-static FAutoConsoleVariableRef CVarBlueprintClusteringEnabled(
-	TEXT("gc.BlueprintClusteringEnabled"),
-	GBlueprintClusteringEnabled,
-	TEXT("Whether to allow Blueprint classes to create GC clusters."),
+static int32 GBlueprintNativePropertyInitFastPathDisabled = 0;
+static FAutoConsoleVariableRef CVarBlueprintNativePropertyInitFastPathDisabled(
+	TEXT("bp.NativePropertyInitFastPathDisabled"),
+	GBlueprintNativePropertyInitFastPathDisabled,
+	TEXT("Disable the native property initialization fast path."),
 	ECVF_Default
 );
 
@@ -95,6 +102,99 @@ void WriteBPGCBreadcrumbs(FCrashContextExtendedWriter& Writer, const BPGCBreadcr
 	++ThreadCount;
 }
 #endif // WITH_ADDITIONAL_CRASH_CONTEXTS
+
+namespace UE::Runtime::Engine::Private
+{
+	struct FBlueprintGeneratedClassUtils
+	{
+		static UClass* FindFirstNativeClassInHierarchy(UClass* InClass)
+		{
+			UClass* CurrentClass = InClass;
+			while (CurrentClass && !CurrentClass->HasAnyClassFlags(CLASS_Native | CLASS_Intrinsic))
+			{
+				CurrentClass = CurrentClass->GetSuperClass();
+			}
+
+			return CurrentClass;
+		}
+
+		static bool RequiresCompleteValueForPostConstruction(FProperty* Property)
+		{
+			static TSet<FProperty*> PropertiesRequiringCompleteValueInitialization;
+
+			static bool bIsInitialized = false;
+#if WITH_EDITOR
+			static bool bNeedsDelegateRegistration = true;
+			if (bNeedsDelegateRegistration)
+			{
+				FCoreUObjectDelegates::ReloadCompleteDelegate.AddLambda([](EReloadCompleteReason Reason)
+				{
+					switch (Reason)
+					{
+					case EReloadCompleteReason::HotReloadManual:
+					case EReloadCompleteReason::HotReloadAutomatic:
+					{
+						// Re-initialize after hot reload in editor context.
+						bIsInitialized = false;
+						PropertiesRequiringCompleteValueInitialization.Reset();
+					}
+					break;
+
+					default:
+						break;
+					}
+				});
+
+				bNeedsDelegateRegistration = false;
+			}
+#endif	// WITH_EDITOR
+
+			if (!bIsInitialized && GConfig)
+			{
+				static constexpr TCHAR ConfigSection[] = TEXT("/Script/Engine.BlueprintGeneratedClass");
+				static constexpr TCHAR ConfigKeyName[] = TEXT("RequiresCompleteValueForPostConstruction");
+
+				// List of native class-owned properties that require complete values for comparison when generating the post-construction
+				// property list due to how they are used. These properties can't be further reduced into a list of subfields (e.g. structs).
+				TArray<FString> RequiresCompleteValueForPostConstruction_Value;
+				if (GConfig->GetArray(ConfigSection, ConfigKeyName, RequiresCompleteValueForPostConstruction_Value, GEngineIni))
+				{
+					PropertiesRequiringCompleteValueInitialization.Reserve(RequiresCompleteValueForPostConstruction_Value.Num());
+
+					for (const FString& PropertyPathString : RequiresCompleteValueForPostConstruction_Value)
+					{
+						TFieldPath<FProperty> PropertyPath;
+						PropertyPath.Generate(*PropertyPathString);
+						if (FProperty* ResolvedProperty = PropertyPath.Get())
+						{
+							check(ResolvedProperty->IsNative());
+							PropertiesRequiringCompleteValueInitialization.Add(ResolvedProperty);
+						}
+					}
+				}
+
+				bIsInitialized = true;
+			}
+
+			return PropertiesRequiringCompleteValueInitialization.Contains(Property);
+		}
+
+		static bool ShouldInitializePropertyDuringPostConstruction(const FProperty& Property)
+		{
+			const UClass* OwnerClass = Property.GetOwnerClass();
+			const bool bIsConfigProperty = Property.HasAnyPropertyFlags(CPF_Config) && !(OwnerClass && OwnerClass->HasAnyClassFlags(CLASS_PerObjectConfig));
+			const bool bIsTransientProperty = Property.HasAnyPropertyFlags(CPF_Transient | CPF_DuplicateTransient | CPF_NonPIEDuplicateTransient);
+
+			// Skip config properties as they're already in the PostConstructLink chain. Also skip transient properties if they contain a reference to an instanced subobjects (as those should not be initialized from defaults).
+			if (!bIsConfigProperty && (!bIsTransientProperty || !Property.ContainsInstancedObjectProperty()))
+			{
+				return true;
+			}
+
+			return false;
+		}
+	};
+}
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 UBlueprintGeneratedClass::UBlueprintGeneratedClass(const FObjectInitializer& ObjectInitializer)
@@ -212,7 +312,26 @@ void UBlueprintGeneratedClass::PostLoad()
 		}
 	}
 
+	InitializeFieldNotifies();
+
 	AssembleReferenceTokenStream(true);
+}
+
+void UBlueprintGeneratedClass::InitializeFieldNotifies()
+{
+	//Initialize the interface with the computed FieldNotifies
+	FieldNotifiesStartBitNumber = 0;
+	if (FieldNotifies.Num() && ImplementsInterface(UNotifyFieldValueChanged::StaticClass()) && ensure(ClassDefaultObject))
+	{
+		int32 NumberOfField = 0;
+		TScriptInterface<INotifyFieldValueChanged>(ClassDefaultObject)->GetFieldNotificationDescriptor().ForEachField(this, [&NumberOfField](::UE::FieldNotification::FFieldId FielId)
+			{
+				++NumberOfField;
+				return true;
+			});
+		FieldNotifiesStartBitNumber = NumberOfField - FieldNotifies.Num();
+		ensureMsgf(FieldNotifiesStartBitNumber >= 0, TEXT("The FieldNotifyStartIndex is negative. The number of field should be positive."));
+	}
 }
 
 void UBlueprintGeneratedClass::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
@@ -258,6 +377,30 @@ void UBlueprintGeneratedClass::GetAssetRegistryTags(TArray<FAssetRegistryTag>& O
 		OutTags.Add(FAssetRegistryTag(EditorTag.Key, EditorTag.Value, FAssetRegistryTag::TT_Hidden));
 	}
 #endif //#if WITH_EDITORONLY_DATA
+
+#if WITH_EDITOR
+	/*
+	 * Can't use GetExtendedAssetRegistryTagsForSave here because:
+	 *	- UBlueprint is an asset in editor builds only.
+	 *	- UBlueprintGeneratedClass is an asset in cooked builds only.
+	 *	- Extended tags are not present in cooked builds.
+	 *
+	 * See UBlueprint::GetExtendedAssetRegistryTagsForSave.
+	 */
+	if (GIsSavingPackage)
+	{
+		if (AActor* BlueprintCDO = Cast<AActor>(ClassDefaultObject))
+		{
+			if (UPackage* BlueprintCDOPackage = BlueprintCDO->GetPackage())
+			{
+				if (!FPackageName::IsTempPackage(BlueprintCDOPackage->GetName()) && !BlueprintCDOPackage->HasAnyPackageFlags(PKG_PlayInEditor))
+				{
+					FWorldPartitionActorDescUtils::AppendAssetDataTagsFromActor(BlueprintCDO, OutTags);
+				}
+			}
+		}
+	}
+#endif
 }
 
 #if WITH_EDITOR
@@ -270,7 +413,8 @@ void UBlueprintGeneratedClass::PostLoadAssetRegistryTags(const FAssetData& InAss
 		FString TagValue = InAssetData.GetTagValueRef<FString>(TagName);
 		if (!TagValue.IsEmpty() && TagValue != TEXT("None"))
 		{
-			if (UClass::TryFixShortClassNameExportPath(TagValue, ELogVerbosity::Warning, TEXT("UBlueprintGeneratedClass::PostLoadAssetRegistryTags")))
+			if (UClass::TryFixShortClassNameExportPath(TagValue, ELogVerbosity::Warning,
+				TEXT("UBlueprintGeneratedClass::PostLoadAssetRegistryTags"), true /* bClearOnError */))
 			{
 				OutTagsAndValuesToUpdate.Add(FAssetRegistryTag(TagName, TagValue, TagType));
 			}
@@ -314,7 +458,7 @@ UClass* UBlueprintGeneratedClass::GetAuthoritativeClass()
  	if (nullptr == ClassGeneratedBy) // to track UE-11597 and UE-11595
  	{
 		// If this is a cooked blueprint, the generatedby class will have been discarded so we'll just have to assume we're authoritative!
-		if (bCooked || RootPackageHasAnyFlags(PKG_FilterEditorOnly))
+		if (bCooked || RootPackageHasAnyFlags(PKG_Cooked))
 		{ 
 			return this;
 		}
@@ -527,7 +671,7 @@ void UBlueprintGeneratedClass::SerializeDefaultObject(UObject* Object, FStructur
 	}
 
 #if WITH_EDITORONLY_DATA
-	if (bIsSparseClassDataSerializable || GetOutermost()->bIsCookedForEditor)
+	if (bIsSparseClassDataSerializable || GetPackage()->HasAnyPackageFlags(PKG_Cooked))
 #endif
 	{
 		if(bSkipSparseClassDataSerialization)
@@ -551,15 +695,26 @@ void UBlueprintGeneratedClass::SerializeDefaultObject(UObject* Object, FStructur
 
 	if (UnderlyingArchive.IsLoading())
 	{
-		if (SparseClassDataStruct)
-		{
-			// TODO: We should make sure that this instance conforms to its archetype (keeping data where possible, potentially via 
-			// an explicit upgrade path for sparse data), as it may have changed since this BPGC was saved (UE-127121)
-		}
-		else
+		if (!SparseClassDataStruct)
 		{
 			SparseClassDataStruct = GetSparseClassDataArchetypeStruct();
 		}
+
+#if WITH_EDITOR
+		if (!GetPackage()->HasAnyPackageFlags(PKG_Cooked))
+		{
+			PrepareToConformSparseClassData(GetSparseClassDataArchetypeStruct());
+			if(ClassDefaultObject)
+			{
+				// conform immediately, so that child types can correct delta serialize their
+				// sparse data - we can't check RF_LoadCompleted because it is going to be set by the 
+				// preload call that is causing SerializeDefaultObject to run, but Super::SerializeDefaultObject
+				// has run...
+				ConformSparseClassData(ClassDefaultObject);
+				ClassDefaultObject->MoveDataToSparseClassDataStruct();
+			}
+		}
+#endif
 	}
 }
 
@@ -582,8 +737,11 @@ void UBlueprintGeneratedClass::PostLoadDefaultObject(UObject* Object)
 	}
 
 #if WITH_EDITOR
-#if WITH_EDITORONLY_DATA
-	Object->MoveDataToSparseClassDataStruct();
+	if (!GetPackage()->HasAnyPackageFlags(PKG_Cooked))
+	{
+		ConformSparseClassData(Object);
+		Object->MoveDataToSparseClassDataStruct();
+	}
 
 	if (Object->GetSparseClassDataStruct())
 	{
@@ -591,85 +749,159 @@ void UBlueprintGeneratedClass::PostLoadDefaultObject(UObject* Object)
 		bIsSparseClassDataSerializable = true;
 	}
 #endif
-#endif
 }
+
+#if WITH_EDITOR
+void UBlueprintGeneratedClass::PrepareToConformSparseClassData(UScriptStruct* SparseClassDataArchetypeStruct)
+{
+	checkf(SparseClassDataPendingConformStruct.IsExplicitlyNull() && SparseClassDataPendingConform == nullptr, TEXT("PrepareToConformSparseClassData was called while data was already pending conform!"));
+
+	if (SparseClassDataStruct)
+	{
+		if (SparseClassDataStruct != SparseClassDataArchetypeStruct)
+		{
+			if (SparseClassDataArchetypeStruct)
+			{
+				SparseClassDataPendingConformStruct = SparseClassDataStruct;
+				SparseClassDataPendingConform = SparseClassData;
+
+				SparseClassDataStruct = SparseClassDataArchetypeStruct;
+				SparseClassData = nullptr;
+			}
+			else
+			{
+				CleanupSparseClassData();
+				SparseClassDataStruct = nullptr;
+			}
+		}
+	}
+}
+
+void UBlueprintGeneratedClass::ConformSparseClassData(UObject* Object)
+{
+	if (UScriptStruct* SparseClassDataPendingConformStructPtr = SparseClassDataPendingConformStruct.Get();
+		SparseClassDataPendingConformStructPtr && SparseClassDataPendingConform)
+	{
+		// Always allow the CDO first refusal at handling the conversion
+		if (!Object->ConformSparseClassDataStruct(SparseClassDataPendingConformStructPtr, SparseClassDataPendingConform))
+		{
+			UScriptStruct* SparseClassDataArchetypeStruct = GetSparseClassDataArchetypeStruct();
+
+			// Copy common properties if the structs are related types
+			UScriptStruct* SparseClassDataStructToCopy = nullptr;
+			if (SparseClassDataArchetypeStruct->IsChildOf(SparseClassDataPendingConformStructPtr))
+			{
+				SparseClassDataStructToCopy = SparseClassDataPendingConformStructPtr;
+			}
+			else if (SparseClassDataPendingConformStructPtr->IsChildOf(SparseClassDataArchetypeStruct))
+			{
+				SparseClassDataStructToCopy = SparseClassDataArchetypeStruct;
+			}
+			if (SparseClassDataStructToCopy)
+			{
+				SparseClassDataStructToCopy->CopyScriptStruct(GetOrCreateSparseClassData(), SparseClassDataPendingConform);
+			}
+		}
+
+		SparseClassDataPendingConformStructPtr->DestroyStruct(SparseClassDataPendingConform);
+	}
+
+	SparseClassDataPendingConformStruct = nullptr;
+	if (SparseClassDataPendingConform)
+	{
+		FMemory::Free(SparseClassDataPendingConform);
+		SparseClassDataPendingConform = nullptr;
+	}
+}
+#endif
 
 bool UBlueprintGeneratedClass::BuildCustomPropertyListForPostConstruction(FCustomPropertyListNode*& InPropertyList, UStruct* InStruct, const uint8* DataPtr, const uint8* DefaultDataPtr)
 {
+	using namespace UE::Runtime::Engine::Private;
+
 	const UClass* OwnerClass = Cast<UClass>(InStruct);
 	FCustomPropertyListNode** CurrentNodePtr = &InPropertyList;
 
 	for (FProperty* Property = InStruct->PropertyLink; Property; Property = Property->PropertyLinkNext)
 	{
-		const bool bIsConfigProperty = Property->HasAnyPropertyFlags(CPF_Config) && !(OwnerClass && OwnerClass->HasAnyClassFlags(CLASS_PerObjectConfig));
-		const bool bIsTransientProperty = Property->HasAnyPropertyFlags(CPF_Transient | CPF_DuplicateTransient | CPF_NonPIEDuplicateTransient);
-
-		// Skip config properties as they're already in the PostConstructLink chain. Also skip transient properties if they contain a reference to an instanced subobjects (as those should not be initialized from defaults).
-		if (!bIsConfigProperty && (!bIsTransientProperty || !Property->ContainsInstancedObjectProperty()))
+		if (FBlueprintGeneratedClassUtils::ShouldInitializePropertyDuringPostConstruction(*Property))
 		{
+			// Some properties require a full value comparison; check for those cases here.
+			const bool bAlwaysUseCompleteValue = FBlueprintGeneratedClassUtils::RequiresCompleteValueForPostConstruction(Property);
+
 			for (int32 Idx = 0; Idx < Property->ArrayDim; Idx++)
 			{
 				const uint8* PropertyValue = Property->ContainerPtrToValuePtr<uint8>(DataPtr, Idx);
 				const uint8* DefaultPropertyValue = Property->ContainerPtrToValuePtrForDefaults<uint8>(InStruct, DefaultDataPtr, Idx);
 
-				// If this is a struct property, recurse to pull out any fields that differ from the native CDO.
-				if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+				bool bUseCompleteValue = bAlwaysUseCompleteValue;
+				if (!bUseCompleteValue)
 				{
-					// Create a new node for the struct property.
-					*CurrentNodePtr = new FCustomPropertyListNode(Property, Idx);
-					CustomPropertyListForPostConstruction.Add(*CurrentNodePtr);
-
-					UScriptStruct::ICppStructOps* CppStructOps = nullptr;
-					if (StructProperty->Struct)
+					// If this is a struct property, recurse to pull out any fields that differ from the native CDO.
+					if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
 					{
-						CppStructOps = StructProperty->Struct->GetCppStructOps();
+						// Create a new node for the struct property.
+						*CurrentNodePtr = new FCustomPropertyListNode(Property, Idx);
+						CustomPropertyListForPostConstruction.Add(*CurrentNodePtr);
+
+						UScriptStruct::ICppStructOps* CppStructOps = nullptr;
+						if (StructProperty->Struct)
+						{
+							CppStructOps = StructProperty->Struct->GetCppStructOps();
+						}
+
+						// Check if we should initialize using the full value (e.g. a USTRUCT with one or more non-reflected fields).
+						bool bIsIdentical = false;
+						const uint32 PortFlags = 0;
+						if (!CppStructOps || !CppStructOps->HasIdentical() || !CppStructOps->Identical(PropertyValue, DefaultPropertyValue, PortFlags, bIsIdentical))
+						{
+							// Recursively gather up all struct fields that differ and assign to the current node's sub property list.
+							bIsIdentical = !BuildCustomPropertyListForPostConstruction((*CurrentNodePtr)->SubPropertyList, StructProperty->Struct, PropertyValue, DefaultPropertyValue);
+						}
+
+						if (!bIsIdentical)
+						{
+							// Advance to the next node in the list.
+							CurrentNodePtr = &(*CurrentNodePtr)->PropertyListNext;
+						}
+						else
+						{
+							// Remove the node for the struct property since it does not differ from the native CDO.
+							CustomPropertyListForPostConstruction.RemoveAt(CustomPropertyListForPostConstruction.Num() - 1);
+
+							// Clear the current node ptr since the array will have freed up the memory it referenced.
+							*CurrentNodePtr = nullptr;
+						}
 					}
-
-					// Check if we should initialize using the full value (e.g. a USTRUCT with one or more non-reflected fields).
-					bool bIsIdentical = false;
-					const uint32 PortFlags = 0;
-					if(!CppStructOps || !CppStructOps->HasIdentical() || !CppStructOps->Identical(PropertyValue, DefaultPropertyValue, PortFlags, bIsIdentical))
+					else if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
 					{
-						// Recursively gather up all struct fields that differ and assign to the current node's sub property list.
-						bIsIdentical = !BuildCustomPropertyListForPostConstruction((*CurrentNodePtr)->SubPropertyList, StructProperty->Struct, PropertyValue, DefaultPropertyValue);
-					}
+						// Create a new node for the array property.
+						*CurrentNodePtr = new FCustomPropertyListNode(Property, Idx);
+						CustomPropertyListForPostConstruction.Add(*CurrentNodePtr);
 
-					if (!bIsIdentical)
-					{
-						// Advance to the next node in the list.
-						CurrentNodePtr = &(*CurrentNodePtr)->PropertyListNext;
+						// Recursively gather up all array item indices that differ and assign to the current node's sub property list.
+						if (BuildCustomArrayPropertyListForPostConstruction(ArrayProperty, (*CurrentNodePtr)->SubPropertyList, PropertyValue, DefaultPropertyValue))
+						{
+							// Advance to the next node in the list.
+							CurrentNodePtr = &(*CurrentNodePtr)->PropertyListNext;
+						}
+						else
+						{
+							// Remove the node for the array property since it does not differ from the native CDO.
+							CustomPropertyListForPostConstruction.RemoveAt(CustomPropertyListForPostConstruction.Num() - 1);
+
+							// Clear the current node ptr since the array will have freed up the memory it referenced.
+							*CurrentNodePtr = nullptr;
+						}
 					}
 					else
 					{
-						// Remove the node for the struct property since it does not differ from the native CDO.
-						CustomPropertyListForPostConstruction.RemoveAt(CustomPropertyListForPostConstruction.Num() - 1);
-
-						// Clear the current node ptr since the array will have freed up the memory it referenced.
-						*CurrentNodePtr = nullptr;
+						// Not explicitly handled above; fall back to using a full value comparison and emit this property if anything differs.
+						bUseCompleteValue = true;
 					}
 				}
-				else if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
-				{
-					// Create a new node for the array property.
-					*CurrentNodePtr = new FCustomPropertyListNode(Property, Idx);
-					CustomPropertyListForPostConstruction.Add(*CurrentNodePtr);
-
-					// Recursively gather up all array item indices that differ and assign to the current node's sub property list.
-					if (BuildCustomArrayPropertyListForPostConstruction(ArrayProperty, (*CurrentNodePtr)->SubPropertyList, PropertyValue, DefaultPropertyValue))
-					{
-						// Advance to the next node in the list.
-						CurrentNodePtr = &(*CurrentNodePtr)->PropertyListNext;
-					}
-					else
-					{
-						// Remove the node for the array property since it does not differ from the native CDO.
-						CustomPropertyListForPostConstruction.RemoveAt(CustomPropertyListForPostConstruction.Num() - 1);
-
-						// Clear the current node ptr since the array will have freed up the memory it referenced.
-						*CurrentNodePtr = nullptr;
-					}
-				}
-				else if (!Property->Identical(PropertyValue, DefaultPropertyValue))
+				
+				if (bUseCompleteValue && !Property->Identical(PropertyValue, DefaultPropertyValue))
 				{
 					// Create a new node, link it into the chain and add it into the array.
 					*CurrentNodePtr = new FCustomPropertyListNode(Property, Idx);
@@ -755,25 +987,9 @@ bool UBlueprintGeneratedClass::BuildCustomArrayPropertyListForPostConstruction(F
 		}
 		else
 		{
-			// Create a temp default array as a placeholder to compare against the remaining elements in the value.
-			FScriptArray TempDefaultArray;
-			const int32 Count = ArrayValueHelper.Num() - DefaultArrayValueHelper.Num();
-			TempDefaultArray.Add(Count, ArrayProperty->Inner->ElementSize, ArrayProperty->Inner->GetMinAlignment());
-			uint8 *Dest = (uint8*)TempDefaultArray.GetData();
-			if (ArrayProperty->Inner->PropertyFlags & CPF_ZeroConstructor)
-			{
-				FMemory::Memzero(Dest, Count * ArrayProperty->Inner->ElementSize);
-			}
-			else
-			{
-				for (int32 i = 0; i < Count; i++, Dest += ArrayProperty->Inner->ElementSize)
-				{
-					ArrayProperty->Inner->InitializeValue(Dest);
-				}
-			}
-
-			// Recursively fill out the property list for the remainder of the elements in the value that extend beyond the size of the default value.
-			BuildCustomArrayPropertyListForPostConstruction(ArrayProperty, *CurrentArrayNodePtr, DataPtr, (uint8*)&TempDefaultArray, ArrayValueIndex);
+			// NULL signals the end of the array value change at the current index.
+			*CurrentArrayNodePtr = new FCustomPropertyListNode(nullptr, ArrayValueIndex);
+			CustomPropertyListForPostConstruction.Add(*CurrentArrayNodePtr);
 
 			// Don't need to record anything else.
 			break;
@@ -786,24 +1002,20 @@ bool UBlueprintGeneratedClass::BuildCustomArrayPropertyListForPostConstruction(F
 
 void UBlueprintGeneratedClass::UpdateCustomPropertyListForPostConstruction()
 {
+	using namespace UE::Runtime::Engine::Private;
+
 	// Empty the current list.
 	CustomPropertyListForPostConstruction.Reset();
 	bCustomPropertyListForPostConstructionInitialized = false;
 
 	// Find the first native antecedent. All non-native decendant properties are attached to the PostConstructLink chain (see UStruct::Link), so we only need to worry about properties owned by native super classes here.
-	UClass* SuperClass = GetSuperClass();
-	while (SuperClass && !SuperClass->HasAnyClassFlags(CLASS_Native | CLASS_Intrinsic))
-	{
-		SuperClass = SuperClass->GetSuperClass();
-	}
-
-	if (SuperClass)
+	if (UClass* SuperClass = FBlueprintGeneratedClassUtils::FindFirstNativeClassInHierarchy(GetSuperClass()))
 	{
 		check(ClassDefaultObject != nullptr);
 
 		// Recursively gather native class-owned property values that differ from defaults.
 		FCustomPropertyListNode* PropertyList = nullptr;
-		BuildCustomPropertyListForPostConstruction(PropertyList, SuperClass, (uint8*)ClassDefaultObject, (uint8*)SuperClass->GetDefaultObject(false));
+		BuildCustomPropertyListForPostConstruction(PropertyList, SuperClass, (uint8*)ClassDefaultObject.Get(), (uint8*)SuperClass->GetDefaultObject(false));
 	}
 
 	bCustomPropertyListForPostConstructionInitialized = true;
@@ -822,11 +1034,36 @@ void UBlueprintGeneratedClass::SetupObjectInitializer(FObjectInitializer& Object
 void UBlueprintGeneratedClass::InitPropertiesFromCustomList(uint8* DataPtr, const uint8* DefaultDataPtr)
 {
 	FScopeLock SerializeAndPostLoadLock(&SerializeAndPostLoadCritical);
-	checkf(bCustomPropertyListForPostConstructionInitialized, TEXT("Custom Property List Not Initialized for %s"), *GetPathNameSafe(this)); // Something went wrong, probably a race condition
 
-	if (const FCustomPropertyListNode* CustomPropertyList = GetCustomPropertyListForPostConstruction())
+	if (GBlueprintNativePropertyInitFastPathDisabled
+		|| !ensureMsgf(bCustomPropertyListForPostConstructionInitialized, TEXT("Custom Property List Not Initialized for %s"), *GetPathNameSafe(this))) // Something went wrong, probably a race condition
 	{
-		InitPropertiesFromCustomList(CustomPropertyList, this, DataPtr, DefaultDataPtr);
+		// Slow path - initialize all inherited native properties, regardless of whether they have been modified away from natively-initialized values.
+		using namespace UE::Runtime::Engine::Private;
+		if (const UClass* NativeParentClass = FBlueprintGeneratedClassUtils::FindFirstNativeClassInHierarchy(GetSuperClass()))
+		{
+			for (TFieldIterator<FProperty> It(NativeParentClass); It; ++It)
+			{
+				const FProperty* Property = *It;
+				check(Property);
+
+				if (FBlueprintGeneratedClassUtils::ShouldInitializePropertyDuringPostConstruction(*Property))
+				{
+					Property->CopyCompleteValue_InContainer(DataPtr, DefaultDataPtr);
+				}
+			}
+		}
+	}
+	else
+	{
+		// Note: It is valid to have a NULL custom property list when the 'initialized' flag is also set - this
+		// implies that no inherited native properties have been modified and thus do not need to be initialized.
+		if (const FCustomPropertyListNode* CustomPropertyList = GetCustomPropertyListForPostConstruction())
+		{
+			// Fast path - will initialize only the subset of inherited native properties that have been modified. The rest
+			// have already been initialized by the native class ctor, and initializing them again here would be redundant.
+			InitPropertiesFromCustomList(CustomPropertyList, this, DataPtr, DefaultDataPtr);
+		}
 	}
 }
 
@@ -862,9 +1099,15 @@ void UBlueprintGeneratedClass::InitArrayPropertyFromCustomList(const FArrayPrope
 		DstArrayValueHelper.RemoveValues(SrcNum, DstNum - SrcNum);
 	}
 
+	int32 ArrayIndex = 0;
 	for (const FCustomPropertyListNode* CustomArrayPropertyListNode = InPropertyList; CustomArrayPropertyListNode; CustomArrayPropertyListNode = CustomArrayPropertyListNode->PropertyListNext)
 	{
-		int32 ArrayIndex = CustomArrayPropertyListNode->ArrayIndex;
+		ArrayIndex = CustomArrayPropertyListNode->ArrayIndex;
+		if (CustomArrayPropertyListNode->Property == nullptr)
+		{
+			// This signals the end of the default value change.
+			break;
+		}
 
 		uint8* DstArrayItemValue = DstArrayValueHelper.GetRawPtr(ArrayIndex);
 		const uint8* SrcArrayItemValue = SrcArrayValueHelper.GetRawPtr(ArrayIndex);
@@ -874,10 +1117,49 @@ void UBlueprintGeneratedClass::InitArrayPropertyFromCustomList(const FArrayPrope
 			continue;
 		}
 
+		if (!SrcArrayValueHelper.IsValidIndex(ArrayIndex)) // dst bounds were conformed above, so just need to check source
+		{
+			ensureMsgf(false,
+				TEXT("InitArrayPropertyFromCustomList attempted out of bounds access within %s,"
+				"this indicates a template was mutated without calling UpdateCustomPropertyListForPostConstruction"),
+				*ArrayProperty->GetOwner<UStruct>()->GetFullName()
+				);
+			continue;
+		}
+
 		if (!InitPropertyFromSubPropertyList(ArrayProperty->Inner, CustomArrayPropertyListNode->SubPropertyList, DstArrayItemValue, SrcArrayItemValue))
 		{
 			// Unable to init properties from sub custom property list, fall back to the default copy value behavior
 			ArrayProperty->Inner->CopyCompleteValue(DstArrayItemValue, SrcArrayItemValue);
+		}
+	}
+
+	// If necessary, copy the remainder of the source array value to the destination. It's possible for the number of elements in the
+	// derived Blueprint class default object to exceed the number of elements in the first antecedent native superclass default object,
+	// since the custom property list that's generated for the array will cover only the subset of elements that are common to both sides.
+	if (ArrayIndex < SrcNum)
+	{
+		if (ArrayProperty->Inner->HasAnyPropertyFlags(CPF_IsPlainOldData))
+		{
+			uint8* DstArrayItemValue = DstArrayValueHelper.GetRawPtr(ArrayIndex);
+			const uint8* SrcArrayItemValue = SrcArrayValueHelper.GetRawPtr(ArrayIndex);
+
+			FMemory::Memcpy(DstArrayItemValue, SrcArrayItemValue, (SrcNum - ArrayIndex) * ArrayProperty->Inner->ElementSize);
+		}
+		else
+		{
+			for (; ArrayIndex < SrcNum; ++ArrayIndex)
+			{
+				uint8* DstArrayItemValue = DstArrayValueHelper.GetRawPtr(ArrayIndex);
+				const uint8* SrcArrayItemValue = SrcArrayValueHelper.GetRawPtr(ArrayIndex);
+
+				if (DstArrayItemValue == nullptr && SrcArrayItemValue == nullptr)
+				{
+					continue;
+				}
+
+				ArrayProperty->Inner->CopyCompleteValue(DstArrayItemValue, SrcArrayItemValue);
+			}
 		}
 	}
 }
@@ -1163,18 +1445,32 @@ void UBlueprintGeneratedClass::UnbindDynamicDelegatesForProperty(UObject* InInst
 bool UBlueprintGeneratedClass::GetGeneratedClassesHierarchy(const UClass* InClass, TArray<const UBlueprintGeneratedClass*>& OutBPGClasses)
 {
 	OutBPGClasses.Empty();
-	bool bNoErrors = true;
-	while(const UBlueprintGeneratedClass* BPGClass = Cast<const UBlueprintGeneratedClass>(InClass))
+
+	return ForEachGeneratedClassInHierarchy(InClass, [&OutBPGClasses](const UBlueprintGeneratedClass* BPGClass)
 	{
+		OutBPGClasses.Add(BPGClass);
+		return true;
+	});
+}
+
+bool UBlueprintGeneratedClass::ForEachGeneratedClassInHierarchy(const UClass* InClass, TFunctionRef<bool(const UBlueprintGeneratedClass*)> InFunc)
+{
+	bool bNoErrors = true;
+	while (const UBlueprintGeneratedClass* BPGClass = Cast<const UBlueprintGeneratedClass>(InClass))
+	{
+		if (!InFunc(BPGClass))
+		{
+			return bNoErrors;
+		}
+
 #if WITH_EDITORONLY_DATA
 		// A cooked class has already been validated and will not have a source Blueprint asset.
-		if(!BPGClass->bCooked)
+		if (!BPGClass->bCooked)
 		{
 			const UBlueprint* BP = Cast<const UBlueprint>(BPGClass->ClassGeneratedBy);
 			bNoErrors &= (NULL != BP) && (BP->Status != BS_Error);
 		}
 #endif
-		OutBPGClasses.Add(BPGClass);
 		InClass = BPGClass->GetSuperClass();
 	}
 	return bNoErrors;
@@ -1471,7 +1767,7 @@ void UBlueprintGeneratedClass::GetPreloadDependencies(TArray<UObject*>& OutDeps)
 	{
 		ForEachObjectWithOuter(CDO, [&OutDeps](UObject* SubObj)
 		{
-			if (SubObj->HasAllFlags(RF_DefaultSubObject))
+			if (SubObj->HasAnyFlags(RF_DefaultSubObject | RF_ArchetypeObject))
 			{
 				OutDeps.Add(SubObj->GetClass());
 				OutDeps.Add(SubObj->GetArchetype());
@@ -1637,8 +1933,8 @@ bool UBlueprintGeneratedClass::NeedsLoadForEditorGame() const
 
 bool UBlueprintGeneratedClass::CanBeClusterRoot() const
 {
-	// Clustering level BPs doesn't work yet
-	return GBlueprintClusteringEnabled && !GetOutermost()->ContainsMap();
+	// We don't want to cluster level BPs with the rest of the contents of the map 
+	return !GetOutermost()->ContainsMap();
 }
 
 #if WITH_EDITOR
@@ -1922,7 +2218,7 @@ public:
 			}
 
 			// This is a hard reference or we don't know what's serializing it, so serialize it normally
-			InnerCollector.AddReferencedObject(Object, Referencer, ReferencingProperty);
+			InnerCollector.AddReferencedObject(ObjectPtrWrap(Object), Referencer, ReferencingProperty);
 		}
 	}
 
@@ -2037,6 +2333,47 @@ ENGINE_API int32 IncrementUberGraphSerialNumber()
 }
 #endif//VALIDATE_UBER_GRAPH_PERSISTENT_FRAME
 
+
+#if WITH_EDITORONLY_DATA
+/** An Archive that records all of the imported packages from a tree of exports. */
+class FImportExportCollector : public FArchiveUObject
+{
+public:
+	explicit FImportExportCollector(UPackage* InRootPackage);
+
+	/**
+	 * Mark that a given export (e.g. the export that is doing the collecting) should not be explored
+	 * if encountered again. Prevents infinite recursion when the collector is constructed and called during
+	 * Serialize.
+	 */
+	void AddExportToIgnore(UObject* Export);
+	/**
+	 * Serialize the given object, following its object references to find other imports and exports,
+	 * and recursively serialize any new exports that it references.
+	 */
+	void SerializeObjectAndReferencedExports(UObject* RootObject);
+	/** Restore the collector to empty. */
+	void Reset();
+	const TSet<UObject*>& GetExports() const { return Exports; }
+	const TMap<FSoftObjectPath, ESoftObjectPathCollectType>& GetImports() const { return Imports; }
+	const TMap<FName, ESoftObjectPathCollectType>& GetImportedPackages() const { return ImportedPackages; }
+
+	virtual FArchive& operator<<(UObject*& Obj) override;
+	virtual FArchive& operator<<(FSoftObjectPath& Value) override;
+
+private:
+	void AddImport(const FSoftObjectPath& Path, ESoftObjectPathCollectType CollectType);
+	ESoftObjectPathCollectType Union(ESoftObjectPathCollectType A, ESoftObjectPathCollectType B);
+
+	TSet<UObject*> Exports;
+	TRingBuffer<UObject*> ExportsExploreQueue;
+	TMap<FSoftObjectPath, ESoftObjectPathCollectType> Imports;
+	TMap<FName, ESoftObjectPathCollectType> ImportedPackages;
+	UPackage* RootPackage;
+	FName RootPackageName;
+};
+#endif
+
 void UBlueprintGeneratedClass::Serialize(FArchive& Ar)
 {
 #if VALIDATE_UBER_GRAPH_PERSISTENT_FRAME
@@ -2078,6 +2415,36 @@ void UBlueprintGeneratedClass::Serialize(FArchive& Ar)
 	if (Ar.IsLoading())
 	{
 		UberGraphFramePointerProperty_DEPRECATED = nullptr;
+	}
+#endif
+
+#if WITH_EDITORONLY_DATA
+	if (Ar.IsSaving() && Ar.IsCooking() && Ar.IsObjectReferenceCollector())
+	{
+		// The UBlueprint class and its subobjects have imports that we need to include at runtime,
+		// but we exclude the Blueprint and its subobject from the saved cooked package.
+		// Find all imported packages from the Blueprint and its subobjects and declare them as
+		// used-in-game imports of the cooked package by serializing them as SoftObjectPaths.
+		FImportExportCollector Collector(this->GetPackage());
+		Collector.SetCookData(Ar.GetCookData());
+		Collector.AddExportToIgnore(this);
+		Collector.SetFilterEditorOnly(Ar.IsFilterEditorOnly());
+		Collector.SerializeObjectAndReferencedExports(ClassGeneratedBy);
+		for (const TPair<FName, ESoftObjectPathCollectType>& Pair : Collector.GetImportedPackages())
+		{
+			if (Pair.Value != ESoftObjectPathCollectType::AlwaysCollect)
+			{
+				continue;
+			}
+			FName PackageName = Pair.Key;
+			if (FPackageName::IsScriptPackage(WriteToString<256>(PackageName)))
+			{
+				// Ignore native imports; we don't need to mark them for cooking
+				continue;
+			}
+			FSoftObjectPath PackageSoftPath(PackageName, NAME_None, FString());
+			Ar << PackageSoftPath;
+		}
 	}
 #endif
 }
@@ -2363,6 +2730,25 @@ FGuid UBlueprintGeneratedClass::FindPropertyGuidFromName(const FName InName) con
 	return FGuid();
 }
 
+void UBlueprintGeneratedClass::ForEachFieldNotify(TFunctionRef<bool(::UE::FieldNotification::FFieldId FieldId)> Callback, bool bIncludeSuper) const
+{
+	ensureMsgf(FieldNotifiesStartBitNumber >= 0, TEXT("The FieldNotifyStartIndex is negative. The number of field should be positive."));
+	for (int32 Index = 0; Index < FieldNotifies.Num(); ++Index)
+	{
+		if (!Callback(UE::FieldNotification::FFieldId(FieldNotifies[Index].GetFieldName(), Index + FieldNotifiesStartBitNumber)))
+		{
+			return;
+		}
+	}
+	if (bIncludeSuper)
+	{
+		if (UBlueprintGeneratedClass* ParentClass = Cast<UBlueprintGeneratedClass>(GetSuperClass()))
+		{
+			ParentClass->ForEachFieldNotify(Callback, bIncludeSuper);
+		}
+	}
+}
+
 #if WITH_EDITORONLY_DATA
 void UBlueprintGeneratedClass::GetEditorTags(FEditorTags& Tags) const
 {
@@ -2381,6 +2767,7 @@ void UBlueprintGeneratedClass::GetEditorTags(FEditorTags& Tags) const
 		};
 
 		AddEditorTag(FBlueprintTags::BlueprintType, GET_MEMBER_NAME_CHECKED(UBlueprint, BlueprintType));
+		AddEditorTag(FBlueprintTags::BlueprintDisplayName, GET_MEMBER_NAME_CHECKED(UBlueprint, BlueprintDisplayName));
 
 		{
 			// Clear the FBPInterfaceDescription Graphs because they are irrelevant to the BPGC
@@ -2427,5 +2814,100 @@ void UBlueprintGeneratedClass::PurgeCookedMetaData()
 		CookedMetaDataUtil::PurgeCookedMetaData<UClassCookedMetaData>(CachedCookedMetaDataPtr);
 	}
 }
+
+FImportExportCollector::FImportExportCollector(UPackage* InRootPackage)
+	: RootPackage(InRootPackage)
+	, RootPackageName(InRootPackage->GetFName())
+{
+	ArIsObjectReferenceCollector = true;
+	ArIsModifyingWeakAndStrongReferences = true;
+	SetIsSaving(true);
+	SetIsPersistent(true);
+}
+
+void FImportExportCollector::Reset()
+{
+	Exports.Reset();
+	Imports.Reset();
+}
+
+void FImportExportCollector::AddExportToIgnore(UObject* Export)
+{
+	Exports.Add(Export);
+}
+
+void FImportExportCollector::SerializeObjectAndReferencedExports(UObject* RootObject)
+{
+	*this << RootObject;
+	while (!ExportsExploreQueue.IsEmpty())
+	{
+		UObject* Export = ExportsExploreQueue.PopFrontValue();
+		Export->Serialize(*this);
+	}
+}
+
+FArchive& FImportExportCollector::operator<<(UObject*& Obj)
+{
+	if (!Obj)
+	{
+		return *this;
+	}
+	UPackage* Package = Obj->GetPackage();
+	if (!Package)
+	{
+		return *this;
+	}
+	if (Package != RootPackage)
+	{
+		AddImport(FSoftObjectPath(Obj), ESoftObjectPathCollectType::AlwaysCollect);
+		return *this;
+	}
+
+	bool bAlreadyExists;
+	Exports.Add(Obj, &bAlreadyExists);
+	if (bAlreadyExists)
+	{
+		return *this;
+	}
+	ExportsExploreQueue.Add(Obj);
+	return *this;
+}
+
+FArchive& FImportExportCollector::operator<<(FSoftObjectPath& Value)
+{
+	FName CurrentPackage;
+	FName PropertyName;
+	ESoftObjectPathCollectType CollectType;
+	ESoftObjectPathSerializeType SerializeType;
+	FSoftObjectPathThreadContext& ThreadContext = FSoftObjectPathThreadContext::Get();
+	ThreadContext.GetSerializationOptions(CurrentPackage, PropertyName, CollectType, SerializeType, this);
+
+	if (CollectType != ESoftObjectPathCollectType::NeverCollect && CollectType != ESoftObjectPathCollectType::NonPackage)
+	{
+		FName PackageName = Value.GetLongPackageFName();
+		if (PackageName != RootPackageName && !PackageName.IsNone())
+		{
+			AddImport(Value, CollectType);
+		}
+	}
+	return *this;
+}
+
+void FImportExportCollector::AddImport(const FSoftObjectPath& Path, ESoftObjectPathCollectType CollectType)
+{
+	ESoftObjectPathCollectType& ExistingImport = Imports.FindOrAdd(
+		Path, ESoftObjectPathCollectType::EditorOnlyCollect);
+	ExistingImport = Union(ExistingImport, CollectType);
+
+	ESoftObjectPathCollectType& ExistingPackage = ImportedPackages.FindOrAdd(
+		Path.GetLongPackageFName(), ESoftObjectPathCollectType::EditorOnlyCollect);
+	ExistingPackage = Union(ExistingPackage, CollectType);
+}
+
+ESoftObjectPathCollectType FImportExportCollector::Union(ESoftObjectPathCollectType A, ESoftObjectPathCollectType B)
+{
+	return static_cast<ESoftObjectPathCollectType>(FMath::Max(static_cast<int>(A), static_cast<int>(B)));
+}
+
 #endif //if WITH_EDITORONLY_DATA
 

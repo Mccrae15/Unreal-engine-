@@ -7,7 +7,7 @@ uint64 FMemoryUsageInfoProviderLLM::GetAssetMemoryUsage(FName Asset, FOutputDevi
 #if ENABLE_LOW_LEVEL_MEM_TRACKER
 	if (FLowLevelMemTracker::IsEnabled())
 	{
-		return FLowLevelMemTracker::Get().GetTagAmountForTracker(ELLMTracker::Default, Asset, ELLMTagSet::Assets, false);
+		return FLowLevelMemTracker::Get().GetTagAmountForTracker(ELLMTracker::Default, Asset, ELLMTagSet::Assets, UE::LLM::ESizeParams::Default);
 	}
 #endif
 	ErrorOutput->Logf(TEXT("MemoryUsageInfoProvider Error: LLM is disabled. Please run with -LLM"));
@@ -22,7 +22,26 @@ uint64 FMemoryUsageInfoProviderLLM::GetAssetsMemoryUsage(const TSet<FName>& Asse
 		uint64 TotalSize = 0;
 		for (const FName& Asset : Assets)
 		{
-			TotalSize += FLowLevelMemTracker::Get().GetTagAmountForTracker(ELLMTracker::Default, Asset, ELLMTagSet::Assets, false);
+			TotalSize += FLowLevelMemTracker::Get().GetTagAmountForTracker(ELLMTracker::Default, Asset, ELLMTagSet::Assets, UE::LLM::ESizeParams::Default);
+		}
+		return TotalSize;
+	}
+#endif
+	ErrorOutput->Logf(TEXT("MemoryUsageInfoProvider Error: LLM is disabled. Please run with -LLM"));
+	return 0U;
+}
+
+uint64 FMemoryUsageInfoProviderLLM::GetAssetsMemoryUsageWithSize(const TSet<FName>& Assets, TMap<FName, uint64>& OutSizes, FOutputDevice* ErrorOutput /* = GLog */) const
+{
+#if ENABLE_LOW_LEVEL_MEM_TRACKER
+	if (FLowLevelMemTracker::IsEnabled())
+	{
+		uint64 TotalSize = 0;
+		for (const FName& Asset : Assets)
+		{
+			int64 AssetSize = FLowLevelMemTracker::Get().GetTagAmountForTracker(ELLMTracker::Default, Asset, ELLMTagSet::Assets, UE::LLM::ESizeParams::Default);
+			OutSizes.Add(Asset, AssetSize);
+			TotalSize += AssetSize;
 		}
 		return TotalSize;
 	}

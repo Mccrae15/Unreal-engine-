@@ -4,14 +4,16 @@
 
 #include "IDMXPixelMappingRenderer.h"
 
+#include "DMXPixelMappingPreprocessRenderer.h"
+
 class IRendererModule;
 class FWidgetRenderer;
 
 struct FSlateMaterialBrush;
 
-/**
- * Implementation of Pixel Mapping Renderer
- */
+
+/** DEPRECATED 5.2 */
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 class FDMXPixelMappingRenderer
 	: public IDMXPixelMappingRenderer
 {
@@ -20,9 +22,6 @@ public:
 	FDMXPixelMappingRenderer();
 
 	//~ Begin IDMXPixelMappingRenderer implementation
-	virtual void RenderMaterial(UTextureRenderTarget2D* InRenderTarget, UMaterialInterface* InMaterialInterface) const override;
-	virtual void RenderWidget(UTextureRenderTarget2D* InRenderTarget, UUserWidget* InUserWidget) const override;
-
 	virtual void DownsampleRender(
 		const FTextureResource* InputTexture,
 		const FTextureResource* DstTexture,
@@ -30,6 +29,9 @@ public:
 		const TArray<FDMXPixelMappingDownsamplePixelParamsV2>& InDownsamplePixelPass,
 		DownsampleReadCallback InCallback
 	) const override;
+
+	virtual void RenderMaterial(UTextureRenderTarget2D* InRenderTarget, UMaterialInterface* InMaterialInterface) const override;
+	virtual void RenderWidget(UTextureRenderTarget2D* InRenderTarget, UUserWidget* InUserWidget) const override;
 
 	virtual void RenderTextureToRectangle(const FTextureResource* InTextureResource, const FTexture2DRHIRef InRenderTargetTexture, FVector2D InSize, bool bSRGBSource) const override;
 
@@ -51,3 +53,4 @@ private:
 	/** The public interface of the renderer module. */
 	IRendererModule* RendererModule;
 };
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

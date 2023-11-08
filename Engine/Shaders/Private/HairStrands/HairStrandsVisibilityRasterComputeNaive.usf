@@ -22,9 +22,8 @@ ByteAddressBuffer	IndirectPrimIDCount;
 Buffer<uint>		IndirectPrimIDs;
 float2				OutputResolution;
 uint				HairMaterialId;
-uint				ControlPointStart;
 uint				ControlPointCount;
-float				SampleWeight;
+float				CoverageScale;
 uint				NumWorkGroups;
 
 // Line clipping based on "CLIPPING USING HOMOGENEOUS COORDINATES" by Blinn et al.
@@ -111,7 +110,7 @@ void Plot(int2 Coord, float AntiAliasingFactor, float4 P0, float4 P1, float Rad0
 		// Divide by W to make thickness dependent on screen space depth? This division was kept from the previous line rasterization algorithm.
 		const float Rad = lerp(Rad0, Rad1, PerspectiveAlpha) * LerpedRcpW;
 
-		InterlockedAdd(OutHairCountTexture[Coord], min(Rad, 0.5f) * 2.0f * 1000.0f * SampleWeight * AntiAliasingFactor);
+		InterlockedAdd(OutHairCountTexture[Coord], min(Rad, 0.5f) * 2.0f * 1000.0f * CoverageScale * AntiAliasingFactor);
 	}
 }
 
@@ -124,7 +123,7 @@ void CSMain(uint DispatchThreadID : SV_DispatchThreadID, uint GroupThreadID : SV
 	const uint NumControlPoints = IndirectPrimIDCount.Load(0);
 #else // PERMUTATION_INDIRECT_PRIM_IDS
 	#if PERMUTATION_CULLING	
-	const uint NumControlPoints = HairStrandsVF_bIsCullingEnable ? HairStrandsVF_CullingIndirectBuffer[3] : ControlPointCount;
+	const uint NumControlPoints = HairStrandsVF_bCullingEnable ? HairStrandsVF_CullingIndirectBuffer[3] : ControlPointCount;
 	#else // PERMUTATION_CULLING
 	const uint NumControlPoints = ControlPointCount;
 	#endif //PERMUTATION_CULLING
@@ -152,7 +151,7 @@ void CSMain(uint DispatchThreadID : SV_DispatchThreadID, uint GroupThreadID : SV
 		uint PrimID = BatchIndex * 64 + GroupThreadID;
 		bSegValid = bSegValid && (PrimID < NumControlPoints);
 
-		if (bSegValid && HairStrandsVF_bIsCullingEnable)
+		if (bSegValid && HairStrandsVF_bCullingEnable)
 		{
 			const uint FetchIndex0 = PrimID;
 			const uint FetchIndex1 = min(FetchIndex0 + 1, NumControlPoints - 1);
@@ -171,13 +170,9 @@ void CSMain(uint DispatchThreadID : SV_DispatchThreadID, uint GroupThreadID : SV
 				PrimID = VertexIndex0;
 			}
 		}
-		else if (bSegValid)
-		{
-			PrimID += ControlPointStart;
-		}
 	#else // PERMUTATION_CULLING
-		const uint PrimID = BatchIndex * 64 + GroupThreadID + ControlPointStart;
-		bSegValid = bSegValid && (PrimID < (ControlPointStart + ControlPointCount));
+		const uint PrimID = BatchIndex * 64 + GroupThreadID;
+		bSegValid = bSegValid && (PrimID < ControlPointCount);
 	#endif // PERMUTATION_CULLING
 #endif // PERMUTATION_INDIRECT_PRIM_IDS
 
@@ -226,7 +221,7 @@ void CSMain(uint DispatchThreadID : SV_DispatchThreadID, uint GroupThreadID : SV
 		const uint NumSteps = (uint)ceil(max(DeltaAbs.x, DeltaAbs.y)) + 1;
 		const float RcpNumSteps = NumSteps > 1 ? (1.0f / (NumSteps - 1)) : 1.0f;
 		const bool bIsSteep = DeltaAbs.y > DeltaAbs.x;
-		const uint PrimMatID = PackHairVisPrimitiveMaterialId(PrimID, HairMaterialId);
+		const uint PrimMatID = PackHairVisControlPointMaterialId(PrimID, HairMaterialId);
 
 		LOOP for (int J = 0; J < NumSteps; ++J)
 		{

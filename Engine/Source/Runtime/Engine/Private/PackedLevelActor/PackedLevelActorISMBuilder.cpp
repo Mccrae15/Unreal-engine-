@@ -13,6 +13,8 @@
 #include "Engine/StaticMesh.h"
 
 #include "ISMPartition/ISMComponentBatcher.h"
+#include "Templates/TypeHash.h"
+#include "Misc/Crc.h"
 
 FPackedLevelActorBuilderID FPackedLevelActorISMBuilder::BuilderID = 'ISMP';
 
@@ -23,6 +25,15 @@ FPackedLevelActorBuilderID FPackedLevelActorISMBuilder::GetID() const
 
 void FPackedLevelActorISMBuilder::GetPackClusters(FPackedLevelActorBuilderContext& InContext, AActor* InActor) const
 {
+	// Skip PackedLevelActors that are loaded for Packing as their Level Actors will get packed
+	if (APackedLevelActor* PackedLevelActor = Cast<APackedLevelActor>(InActor))
+	{
+		if (PackedLevelActor->ShouldLoadForPacking())
+		{
+			return;
+		}
+	}
+
 	TArray<UStaticMeshComponent*> StaticMeshComponents;
 	InActor->GetComponents(StaticMeshComponents);
 
@@ -37,26 +48,35 @@ void FPackedLevelActorISMBuilder::GetPackClusters(FPackedLevelActorBuilderContex
 	}
 }
 
-void FPackedLevelActorISMBuilder::PackActors(FPackedLevelActorBuilderContext& InContext, APackedLevelActor* InPackingActor, const FPackedLevelActorBuilderClusterID& InClusterID, const TArray<UActorComponent*>& InComponents) const
+uint32 FPackedLevelActorISMBuilder::PackActors(FPackedLevelActorBuilderContext& InContext, const FPackedLevelActorBuilderClusterID& InClusterID, const TArray<UActorComponent*>& InComponents) const
 {
 	check(InClusterID.GetBuilderID() == GetID());
-	FTransform ActorTransform = InPackingActor->GetActorTransform();
+	APackedLevelActor* PackingActor = InContext.GetPackedLevelActor();
+	FTransform ActorTransform = PackingActor->GetActorTransform();
 
 	FPackedLevelActorISMBuilderCluster* ISMCluster = (FPackedLevelActorISMBuilderCluster*)InClusterID.GetData();
 	check(ISMCluster);
 
 	FISMComponentBatcher ISMComponentBatcher;
-	ISMComponentBatcher.Append(InComponents, [&ActorTransform, &InContext](const FTransform& InTransform) { return InTransform.GetRelativeTransform(ActorTransform) * InContext.GetRelativePivotTransform() * ActorTransform; });
+	TArray<UActorComponent*> Components(InComponents);
+	
+	// Sort by path name to generate stable hash
+	Components.Sort([](const UActorComponent& LHS, const UActorComponent& RHS)
+	{
+		return LHS.GetPathName() < RHS.GetPathName();
+	});
+	
+	ISMComponentBatcher.Append(Components, [&ActorTransform, &InContext](const FTransform& InTransform) { return InTransform.GetRelativeTransform(ActorTransform) * InContext.GetRelativePivotTransform() * ActorTransform; });
 
 	TSubclassOf<UInstancedStaticMeshComponent> ComponentClass = UInstancedStaticMeshComponent::StaticClass();
-	if (ISMComponentBatcher.GetNumInstances() > 1 && ISMCluster->ISMDescriptor.StaticMesh && !ISMCluster->ISMDescriptor.StaticMesh->NaniteSettings.bEnabled)
+	if (ISMComponentBatcher.GetNumInstances() > 1 && ISMCluster->ISMDescriptor.StaticMesh && !ISMCluster->ISMDescriptor.StaticMesh->IsNaniteEnabled())
 	{
 		// Use HISM for non-nanite when there is more than one transform (no use in using HISM cpu occlusion for a single instance)
 		ComponentClass = UHierarchicalInstancedStaticMeshComponent::StaticClass();
 	}
 
-	UInstancedStaticMeshComponent* PackComponent = InPackingActor->AddPackedComponent<UInstancedStaticMeshComponent>(ComponentClass);
-	PackComponent->AttachToComponent(InPackingActor->GetRootComponent(), FAttachmentTransformRules::SnapToTargetIncludingScale);
+	UInstancedStaticMeshComponent* PackComponent = PackingActor->AddPackedComponent<UInstancedStaticMeshComponent>(ComponentClass);
+	PackComponent->AttachToComponent(PackingActor->GetRootComponent(), FAttachmentTransformRules::SnapToTargetIncludingScale);
 
 	// Initialize the ISM properties using the ISM descriptor
 	ISMCluster->ISMDescriptor.InitComponent(PackComponent);
@@ -65,6 +85,10 @@ void FPackedLevelActorISMBuilder::PackActors(FPackedLevelActorBuilderContext& In
 	ISMComponentBatcher.InitComponent(PackComponent);
 
 	PackComponent->RegisterComponent();
+
+	uint32 Hash = FCrc::StrCrc32(*ComponentClass->GetPathName(), 0);
+	Hash = HashCombine(Hash, HashCombine(InClusterID.GetHash(), ISMComponentBatcher.GetHash()));
+	return Hash;
 }
 
 FPackedLevelActorISMBuilderCluster::FPackedLevelActorISMBuilderCluster(FPackedLevelActorBuilderID InBuilderID, UStaticMeshComponent* InComponent)

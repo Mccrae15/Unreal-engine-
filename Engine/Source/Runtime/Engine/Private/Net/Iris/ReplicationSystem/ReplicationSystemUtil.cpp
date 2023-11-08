@@ -328,12 +328,17 @@ void FReplicationSystemUtil::AddDependentActor(const AActor* Parent, AActor* Chi
 		{
 			if (ReplicationSystem->IsServer())
 			{
-				if (UObjectReplicationBridge* Bridge = ReplicationSystem->GetReplicationBridgeAs<UObjectReplicationBridge>())
+				if (UActorReplicationBridge* Bridge = ReplicationSystem->GetReplicationBridgeAs<UActorReplicationBridge>())
 				{
 					const FNetRefHandle ParentRefHandle = Bridge->GetReplicatedRefHandle(ParentHandle);
 					if (ParentRefHandle.IsValid())
 					{
-						const FNetRefHandle ChildRefHandle = Bridge->BeginReplication(Child);
+						FNetRefHandle ChildRefHandle = Bridge->GetReplicatedRefHandle(Child);
+						if (!ChildRefHandle.IsValid())
+						{
+							const FActorBeginReplicationParams BeginReplicationParams;
+							ChildRefHandle = Bridge->BeginReplication(Child, BeginReplicationParams);
+						}
 						if (ensureMsgf(ChildRefHandle.IsValid(), TEXT("FReplicationSystemUtil::AddDependentActor Child %s must be replicated"), *GetPathNameSafe(Child)))
 						{
 							Bridge->AddDependentObject(ParentRefHandle, ChildRefHandle, SchedulingHint);
@@ -514,8 +519,7 @@ void FReplicationSystemUtil::RemoveSubObjectGroupMembership(const APlayerControl
 	}
 	
 	// We assume the player controller is tied to a single connection.
-	UNetConnection* Conn = PC->GetNetConnection();
-	if (ensureAlways(Conn))
+	if (UNetConnection* Conn = PC->GetNetConnection())
 	{
 		if (UReplicationSystem* ReplicationSystem = Conn->GetDriver() ? Conn->GetDriver()->GetReplicationSystem() : nullptr)
 		{

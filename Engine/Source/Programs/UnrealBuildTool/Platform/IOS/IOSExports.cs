@@ -1,15 +1,12 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.IO;
-using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
 using System.Xml.Linq;
 using EpicGames.Core;
-using UnrealBuildBase;
 using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
@@ -143,14 +140,14 @@ namespace UnrealBuildTool
 				return;
 			}
 
-            // Also don't attempt to use a remote Mac if packaging for TVOS on PC.
-            if (Platform == UnrealTargetPlatform.TVOS && BuildHostPlatform.Current.Platform != UnrealTargetPlatform.Mac)
-            {
-                return;
-            }
+			// Also don't attempt to use a remote Mac if packaging for TVOS on PC.
+			if (Platform == UnrealTargetPlatform.TVOS && BuildHostPlatform.Current.Platform != UnrealTargetPlatform.Mac)
+			{
+				return;
+			}
 
 			// Compile the asset catalog immediately
-			if(BuildHostPlatform.Current.Platform != UnrealTargetPlatform.Mac)
+			if (BuildHostPlatform.Current.Platform != UnrealTargetPlatform.Mac)
 			{
 				FileReference OutputFile = FileReference.Combine(StageDirectory, "Assets.car");
 
@@ -171,10 +168,10 @@ namespace UnrealBuildTool
 				}
 
 				// Run the process locally
-				using(Process Process = new Process())
+				using (Process Process = new Process())
 				{
 					Process.StartInfo.FileName = "/usr/bin/xcrun";
-					Process.StartInfo.Arguments = IOSToolChain.GetAssetCatalogArgs(Platform, ResourcesDir.FullName, OutputFile.Directory.FullName);; 
+					Process.StartInfo.Arguments = IOSToolChain.GetAssetCatalogArgs(Platform, ResourcesDir.FullName, OutputFile.Directory.FullName); ;
 					Process.StartInfo.UseShellExecute = false;
 					Utils.RunLocalProcess(Process);
 				}
@@ -182,171 +179,30 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
-		/// Reads the per-platform .PackageVersionCounter file to get a version, and modifies it with updated value so that next build will get new version
+		/// Set a secondary remote Mac to retrieve built data on a remote Mac.
 		/// </summary>
-		/// <param name="UProjectFile">Location of .uproject file (or null for the engine project)</param>
-		/// <param name="Platform">Which plaform to look up</param>
 		/// <returns></returns>
-		public static string GetAndUpdateVersionFile(FileReference? UProjectFile, UnrealTargetPlatform Platform)
+
+		public static void SetSecondaryRemoteMac(string ClientPlatform, FileReference ProjectFile, ILogger Logger)
 		{
-			FileReference RunningVersionFilename = UProjectFile == null ?
-				FileReference.Combine(Unreal.EngineDirectory, "Build", Platform.ToString(), "Engine.PackageVersionCounter") :
-				FileReference.Combine(UProjectFile.Directory, "Build", Platform.ToString(), $"{UProjectFile.GetFileNameWithoutAnyExtensions()}.PackageVersionCounter");
+			RemoteMac Remote = new RemoteMac(ProjectFile, Logger, true, true);
+			Remote.RetrieveFilesGeneratedOnPrimaryMac(ProjectFile, Logger, ClientPlatform);
 
-			string CurrentVersion = "0.0";
-			if (FileReference.Exists(RunningVersionFilename))
-			{
-				CurrentVersion = FileReference.ReadAllText(RunningVersionFilename);
-			}
-
-			string[] VersionParts = CurrentVersion.Split('.');
-			int Major = int.Parse(VersionParts[0]);
-			int Minor = int.Parse(VersionParts[1]);
-
-			Minor++;
-
-			DirectoryReference.CreateDirectory(RunningVersionFilename.Directory);
-			FileReference.WriteAllText(RunningVersionFilename, $"{Major}.{Minor}");
-
-			return CurrentVersion;
+			RemoteMac SecondaryRemote = new RemoteMac(ProjectFile, Logger, false);
+			SecondaryRemote.UploadToSecondaryMac(ProjectFile, Logger);
 		}
 
 		/// <summary>
-		/// Genearate an run-only Xcode project, that is not meant to be used for anything else besides code-signing/running/etc of the native .app bundle
+		/// Prepare the build and project on a Remote Mac to be able to debug an iOS or tvOS package built remotely
 		/// </summary>
-		/// <param name="UProjectFile">Location of .uproject file (or null for the engine project</param>
-		/// <param name="Platform">The platform to generate a project for</param>
-		/// <param name="bForDistribution">True if this is making a bild for uploading to app store</param>
-		/// <param name="Logger">Logging object</param>
-		/// <param name="GeneratedProjectFile">Returns the .xcworkspace that was made</param>
-		public static void GenerateRunOnlyXcodeProject(FileReference? UProjectFile, UnrealTargetPlatform Platform, bool bForDistribution, ILogger Logger, out DirectoryReference? GeneratedProjectFile)
-		{
-			List<string> Options = new()
-			{
-				$"-platforms={Platform}",
-				$"-{Platform}DeployOnly",
-				"-NoIntellisens",
-				"-IngnoreJunk",
-				bForDistribution ? "-distribution" : "-development",
-				"-IncludeTempTargets",
-				"-projectfileformat = XCode",
-				"-automated",
-			};
-
-			if (UProjectFile == null || UProjectFile.IsUnderDirectory(Unreal.EngineDirectory))
-			{
-				// @todo do we need these? where would the bundleid come from if there's no project?
-//				Options.Add("-bundleID=" + BundleID);
-//				Options.Add("-appname=" + AppName);
-				// @todo add an option to only add Engine target?
-			}
-			else
-			{
-				Options.Add($"-project=\"{UProjectFile.FullName}\"");
-				Options.Add("-game");
-			}
-
-			IOSToolChain.GenerateProjectFiles(UProjectFile, Options.ToArray(), Logger, out GeneratedProjectFile);
-		}
-
-		/// <summary>
-		/// Version of FinalizeAppWithXcode that is meant for modern xcode mode, where we assume all codesigning is setup already in the project, so nothing else is needed
-		/// </summary>
-		/// <param name="XcodeProject">The .xcworkspace file to build</param>
-		/// <param name="Platform">THe platform to make the .app for</param>
-		/// <param name="SchemeName">The name of the scheme (basically the target on the .xcworkspace)</param>
-		/// <param name="Configuration">Which configuration to make (Debug, etc)</param>
-		/// <param name="bForDistribution">True if this is making a bild for uploading to app store</param>
-		/// <param name="Logger">Logging object</param>
-		public static void FinalizeAppWithModernXcode(DirectoryReference XcodeProject, UnrealTargetPlatform Platform, string SchemeName, string Configuration, bool bForDistribution, ILogger Logger)
-		{
-			FinalizeAppWithXcode(XcodeProject, Platform, SchemeName, Configuration, null, null, null, false, bForDistribution, bUseModernXcode: true, Logger);
-		}
-
-		/// <summary>
-		/// Runs xcodebuild on a project (likely created with GenerateRunOnlyXcodeProject) to perform codesigning and creation of final .app
-		/// </summary>
-		/// <param name="XcodeProject">The .xcworkspace file to build</param>
-		/// <param name="Platform">THe platform to make the .app for</param>
-		/// <param name="SchemeName">The name of the scheme (basically the target on the .xcworkspace)</param>
-		/// <param name="Configuration">Which configuration to make (Debug, etc)</param>
-		/// <param name="Provision">An optional provision to codesign with (ignored in modern mod)</param>
-		/// <param name="Certificate">An optional certificate to codesign with (ignored in modern mode)</param>
-		/// <param name="Team">Optional Team to use when codesigning (ignored in modern mode)</param>
-		/// <param name="bAutomaticSigning">True if using automatic codesigning (where provision and certificate are not used) (ignored in modern mode)</param>
-		/// <param name="bForDistribution">True if this is making a bild for uploading to app store</param>
-		/// <param name="bUseModernXcode">True if the project was made with modern xcode mode</param>
-		/// <param name="Logger">Logging object</param>
+		/// <param name="ClientPlatform">TargetPlatform, iOS or tvOS</param>
+		/// <param name="ProjectFile">Location of .uproject file</param>
+		/// <param name="Logger">A logger</param>
 		/// <returns></returns>
-		public static int FinalizeAppWithXcode(DirectoryReference XcodeProject, UnrealTargetPlatform Platform, string SchemeName, string Configuration,
-			string? Provision, string? Certificate, string? Team, bool bAutomaticSigning, bool bForDistribution, bool bUseModernXcode, ILogger Logger)
+		public static void PrepareRemoteMacForDebugging(string ClientPlatform, FileReference ProjectFile, ILogger Logger)
 		{
-			List<string> Arguments = new()
-			{
-				"UBT_NO_POST_DEPLOY=true",
-				new IOSToolChainSettings(Logger).XcodeDeveloperDir + "usr/bin/xcodebuild",
-				"build",
-				$"-workspace \"{XcodeProject.FullName}\"",
-				$"-scheme \"{SchemeName}\"",
-				$"-configuration \"{Configuration}\"",
-				$"-destination generic/platform=" + (Platform == UnrealTargetPlatform.TVOS ? "tvOS" : "iOS"),
-				//$"-sdk {SDKName}",
-			};
-
-			if (bUseModernXcode)
-			{
-				Arguments.Add("-allowProvisioningUpdates");
-				// xcode gets confused it we _just_ wrote out entitlements while generating the temp project, and it thinks it was modified _during_ building
-				// but it wasn't, it was written before the build started
-				Arguments.Add("CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION=YES");
-			}
-			else
-			{
-				if (bAutomaticSigning)
-				{
-					Arguments.Add("CODE_SIGN_IDENTITY=" + (bForDistribution ? "\"iPhone Distribution\"" : "\"iPhone Developer\""));
-					Arguments.Add("CODE_SIGN_STYLE=\"Automatic\"");
-					Arguments.Add("-allowProvisioningUpdates");
-					Arguments.Add($"DEVELOPMENT_TEAM={Team}");
-				}
-				else
-				{
-					if (!string.IsNullOrEmpty(Certificate))
-					{
-						Arguments.Add($"CODE_SIGN_IDENTITY=\"{Certificate}\"");
-					}
-					else
-					{
-						Arguments.Add("CODE_SIGN_IDENTITY=" + (bForDistribution ? "\"iPhone Distribution\"" : "\"iPhone Developer\""));
-					}
-					if (!string.IsNullOrEmpty(Provision))
-					{
-						// read the provision to get the UUID
-						if (File.Exists(Environment.GetEnvironmentVariable("HOME") + "/Library/MobileDevice/Provisioning Profiles/" + Provision))
-						{
-							string UUID = "";
-							string AllText = File.ReadAllText(Environment.GetEnvironmentVariable("HOME") + "/Library/MobileDevice/Provisioning Profiles/" + Provision);
-							int idx = AllText.IndexOf("<key>UUID</key>");
-							if (idx > 0)
-							{
-								idx = AllText.IndexOf("<string>", idx);
-								if (idx > 0)
-								{
-									idx += "<string>".Length;
-									UUID = AllText.Substring(idx, AllText.IndexOf("</string>", idx) - idx);
-									Arguments.Add($"PROVISIONING_PROFILE_SPECIFIER={UUID}");
-
-									Logger.LogInformation("Extracted Provision UUID {0} from {1}", UUID, Provision);
-								}
-							}
-						}
-					}
-				}
-			}
-
-			int ReturnCode = Utils.RunLocalProcessAndLogOutput("/usr/bin/env", string.Join(" ", Arguments), Logger);
-//			DirectoryReference.Delete(XcodeProject, true);
-			return ReturnCode;
+			RemoteMac Remote = new RemoteMac(ProjectFile, Logger);
+			Remote.PrepareToDebug(ClientPlatform, ProjectFile, Logger);
 		}
 
 		/// <summary>
@@ -374,7 +230,7 @@ namespace UnrealBuildTool
 			if (MobileProvisionFile != null && File.Exists(MobileProvisionFile.FullName))
 			{
 				Console.WriteLine("Write entitlements from provisioning file {0}", MobileProvisionFile);
-				
+
 				MobileProvisionContents MobileProvisionContent = MobileProvisionContents.Read(MobileProvisionFile);
 
 				iCloudContainerIdentifier = MobileProvisionContent.GetNodeValueByName("com.apple.developer.icloud-container-identifiers");
@@ -382,21 +238,21 @@ namespace UnrealBuildTool
 
 				string entitlementXML = MobileProvisionContent.GetNodeXMLValueByName("com.apple.developer.icloud-services");
 
-				if (!entitlementXML.Contains("*") || Platform == UnrealTargetPlatform.TVOS)
+				if (!entitlementXML.Contains('*') || Platform == UnrealTargetPlatform.TVOS)
 				{
 					// for iOS, replace the generic value (*) with the default
 					iCloudServicesXML = entitlementXML;
 				}
 
 				entitlementXML = MobileProvisionContent.GetNodeXMLValueByName("com.apple.developer.ubiquity-container-identifiers");
-				if (!entitlementXML.Contains("*") || !bForDistribution)
+				if (!entitlementXML.Contains('*') || !bForDistribution)
 				{
 					// for distribution, replace the generic value (*) with the default
 					UbiquityContainerIdentifiersXML = entitlementXML;
 				}
 
 				entitlementXML = MobileProvisionContent.GetNodeXMLValueByName("com.apple.developer.ubiquity-kvstore-identifier");
-				if (!entitlementXML.Contains("*") || !bForDistribution)
+				if (!entitlementXML.Contains('*') || !bForDistribution)
 				{
 					// for distribution, replace the generic value (*) with the default
 					UbiquityKVStoreIdentifiersXML = entitlementXML;
@@ -420,35 +276,35 @@ namespace UnrealBuildTool
 				Text.AppendLine("<plist version=\"1.0\">");
 				Text.AppendLine("<dict>");
 				Text.AppendLine("\t<key>get-task-allow</key>");
-				Text.AppendLine(string.Format("\t<{0}/>", bForDistribution ? "false" : "true"));
+				Text.AppendLine(String.Format("\t<{0}/>", bForDistribution ? "false" : "true"));
 				if (bCloudKitSupported)
 				{
-					if (iCloudContainerIdentifiersXML != "")
+					if (!String.IsNullOrEmpty(iCloudContainerIdentifiersXML))
 					{
 						Text.AppendLine("\t<key>com.apple.developer.icloud-container-identifiers</key>");
 						Text.AppendLine(iCloudContainerIdentifiersXML);
 					}
 
-					if (iCloudServicesXML != "")
+					if (!String.IsNullOrEmpty(iCloudServicesXML))
 					{
 						Text.AppendLine("\t<key>com.apple.developer.icloud-services</key>");
 						Text.AppendLine(iCloudServicesXML);
 					}
 
-					if (UbiquityContainerIdentifiersXML != "")
+					if (!String.IsNullOrEmpty(UbiquityContainerIdentifiersXML))
 					{
 						Text.AppendLine("\t<key>com.apple.developer.ubiquity-container-identifiers</key>");
 						Text.AppendLine(UbiquityContainerIdentifiersXML);
 					}
 
-					if (UbiquityKVStoreIdentifiersXML != "")
+					if (!String.IsNullOrEmpty(UbiquityKVStoreIdentifiersXML))
 					{
 						Text.AppendLine("\t<key>com.apple.developer.ubiquity-kvstore-identifier</key>");
 						Text.AppendLine(UbiquityKVStoreIdentifiersXML);
 					}
 
 					Text.AppendLine("\t<key>com.apple.developer.icloud-container-environment</key>");
-					Text.AppendLine(string.Format("\t<string>{0}</string>", bForDistribution ? "Production" : "Development"));
+					Text.AppendLine(String.Format("\t<string>{0}</string>", bForDistribution ? "Production" : "Development"));
 				}
 
 				bool bRemoteNotificationsSupported = false;
@@ -463,7 +319,7 @@ namespace UnrealBuildTool
 				if (bRemoteNotificationsSupported)
 				{
 					Text.AppendLine("\t<key>aps-environment</key>");
-					Text.AppendLine(string.Format("\t<string>{0}</string>", bForDistribution ? "production" : "development"));
+					Text.AppendLine(String.Format("\t<string>{0}</string>", bForDistribution ? "production" : "development"));
 				}
 
 				// for Sign in with Apple
@@ -477,15 +333,13 @@ namespace UnrealBuildTool
 				}
 
 				// Add Multi-user support for tvOS
-				bool bRunAsCurrentUser = false;
-				PlatformGameConfig.GetBool("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bRunAsCurrentUser", out bRunAsCurrentUser);
-
-				if (bRunAsCurrentUser && Platform == UnrealTargetPlatform.TVOS)
+				bool bUserSwitching = false;
+				PlatformGameConfig.GetBool("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bUserSwitching", out bUserSwitching);
+				if (bUserSwitching && Platform == UnrealTargetPlatform.TVOS)
 				{
 					Text.AppendLine("\t<key>com.apple.developer.user-management</key>");
 					Text.AppendLine("\t<array><string>runs-as-current-user</string></array>");
 				}
-
 
 				// End of entitlements
 				Text.AppendLine("</dict>");
@@ -510,7 +364,7 @@ namespace UnrealBuildTool
 
 			// create a pList key named ICloudContainerIdentifier
 			// to be used at run-time when intializing the CloudKit services
-			if (iCloudContainerIdentifier != "")
+			if (!String.IsNullOrEmpty(iCloudContainerIdentifier))
 			{
 				string PListFile = IntermediateDir + "/" + AppName + "-Info.plist";
 				if (File.Exists(PListFile))
@@ -559,10 +413,8 @@ namespace UnrealBuildTool
 					{
 						throw new BuildException("plist is invalid {0}\n{1}", e, OldPListData);
 					}
-
 				}
 			}
 		}
-
 	}
 }

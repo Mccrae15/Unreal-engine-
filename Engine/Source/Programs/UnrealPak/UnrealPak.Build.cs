@@ -6,7 +6,7 @@ public class UnrealPak : ModuleRules
 {
 	public UnrealPak(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PublicIncludePaths.Add("Runtime/Launch/Public");
+		PublicIncludePathModuleNames.Add("Launch");
 
 		PrivateDependencyModuleNames.AddRange(new string[] { 
 			"Core", 
@@ -18,12 +18,6 @@ public class UnrealPak : ModuleRules
 			"PakFileUtilities", 
 			"RSA", 
 			"ApplicationCore" 
-		});
-
-		PrivateIncludePaths.Add("Runtime/Launch/Private"); // For LaunchEngineLoop.cpp include
-
-		PrivateIncludePathModuleNames.AddRange(new string[] {
-			"Json"
 		});
 
 		if (Target.bBuildWithEditorOnlyData)

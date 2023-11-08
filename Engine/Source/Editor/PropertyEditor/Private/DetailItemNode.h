@@ -26,6 +26,7 @@ public:
 	virtual TSharedPtr<IPropertyHandle> CreatePropertyHandle() const override;
 	virtual void GetFilterStrings(TArray<FString>& OutFilterStrings) const override;
 	virtual bool GetInitiallyCollapsed() const override;
+	virtual void RefreshVisibility() override;
 
 	/**
 	 * Initializes this node                                                              
@@ -58,12 +59,17 @@ public:
 	 */
 	EVisibility ComputeItemVisibility() const;
 
+	/**
+	 * updates the cached node visibility and optionally calls a tree refresh if it changed
+	 */
+	void RefreshCachedVisibility(bool bCallChangeDelegate = false);
+
 	/** FDetailTreeNode interface */
 	virtual IDetailsView* GetNodeDetailsView() const override { TSharedPtr<FDetailCategoryImpl> PC = GetParentCategory(); return PC.IsValid() ? PC->GetNodeDetailsView() : nullptr; }
 	virtual IDetailsViewPrivate* GetDetailsView() const override{ TSharedPtr<FDetailCategoryImpl> PC = GetParentCategory(); return PC.IsValid() ? PC->GetDetailsView() : nullptr; }
 	virtual TSharedRef< ITableRow > GenerateWidgetForTableView( const TSharedRef<STableViewBase>& OwnerTable, bool bAllowFavoriteSystem) override;
 	virtual bool GenerateStandaloneWidget(FDetailWidgetRow& OutRow) const override;
-	virtual void GetChildren( FDetailNodeList& OutChildren )  override;
+	virtual void GetChildren(FDetailNodeList& OutChildren, const bool& bInIgnoreVisibility = false) override;
 	virtual void OnItemExpansionChanged( bool bInIsExpanded, bool bShouldSaveState) override;
 	virtual bool ShouldBeExpanded() const override;
 	virtual ENodeVisibility GetVisibility() const override;
@@ -78,6 +84,7 @@ public:
 	virtual bool IsLeaf() override { return Children.Num() == 0;  }
 	virtual TAttribute<bool> IsPropertyEditingEnabled() const override;
 	virtual TSharedPtr<FPropertyNode> GetPropertyNode() const override;
+	virtual void GetAllPropertyNodes(TArray<TSharedRef<FPropertyNode>>& OutNodes) const override;
 	virtual TSharedPtr<FComplexPropertyNode> GetExternalRootPropertyNode() const override;
 	virtual TSharedPtr<IDetailPropertyRow> GetRow() const override;
 

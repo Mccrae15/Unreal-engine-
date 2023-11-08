@@ -7,14 +7,14 @@
 #include "Selection/DynamicMeshSelector.h"
 
 #include "UObject/StrongObjectPtr.h"
-
+#include "EditorUndoClient.h"
 
 class UDynamicMesh;
 class AVolume;
 class UBrushComponent;
 
 
-class MODELINGCOMPONENTSEDITORONLY_API FVolumeSelector : public FBaseDynamicMeshSelector
+class MODELINGCOMPONENTSEDITORONLY_API FVolumeSelector : public FBaseDynamicMeshSelector, public FEditorUndoClient
 {
 public:
 	using FBaseDynamicMeshSelector::Initialize;
@@ -32,9 +32,27 @@ public:
 	//virtual bool Sleep();
 	//virtual bool Restore();
 
+	virtual bool IsLockable() const override;
+	virtual bool IsLocked() const override;
+	virtual void SetLockedState(bool bLocked) override;
 
 	virtual IGeometrySelectionTransformer* InitializeTransformation(const FGeometrySelection& Selection) override;
 	virtual void ShutdownTransformation(IGeometrySelectionTransformer* Transformer) override;
+
+	virtual void UpdateAfterGeometryEdit(
+		IToolsContextTransactionsAPI* TransactionsAPI,
+		bool bInTransaction,
+		TUniquePtr<UE::Geometry::FDynamicMeshChange> DynamicMeshChange,
+		FText GeometryEditTransactionString) override;
+
+
+	// FEditorUndoClient implementation
+	virtual void PostUndo(bool bSuccess) override;
+	virtual void PostRedo(bool bSuccess) override;
+
+public:
+	static void SetComponentUnlockedOnCreation(UBrushComponent* Component);
+	static void ResetUnlockedBrushComponents();
 
 protected:
 	AVolume* ParentVolume = nullptr;
@@ -43,7 +61,9 @@ protected:
 	// TODO: this is not a great design, it would be better if something external could own this mesh...
 	TStrongObjectPtr<UDynamicMesh> LocalTargetMesh;
 
-	TPimplPtr<FBasicDynamicMeshSelectionTransformer> ActiveTransformer;
+	void UpdateDynamicMeshFromVolume();
+
+	TSharedPtr<FBasicDynamicMeshSelectionTransformer> ActiveTransformer;
 	void CommitMeshTransform();
 };
 

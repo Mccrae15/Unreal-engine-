@@ -10,7 +10,9 @@
 #include "LandscapeDataAccess.h"
 #include "LandscapeInfoMap.h"
 #include "LandscapeProxy.h"
+
 #include "Async/ParallelFor.h"
+#include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
 #include "Serialization/BufferWriter.h"
@@ -50,6 +52,12 @@ namespace PCGLandscapeCache
 		Result.YFraction = FMath::Fractional(ClampedLocalPoint.Y);
 
 		return Result;
+	}
+
+	FIntPoint GetCoordinates(const ULandscapeComponent* LandscapeComponent)
+	{
+		check(LandscapeComponent && LandscapeComponent->ComponentSizeQuads != 0);
+		return FIntPoint(LandscapeComponent->SectionBaseX / LandscapeComponent->ComponentSizeQuads, LandscapeComponent->SectionBaseY / LandscapeComponent->ComponentSizeQuads);
 	}
 }
 
@@ -110,7 +118,7 @@ FPCGLandscapeCacheEntry* FPCGLandscapeCacheEntry::CreateCacheEntry(ULandscapeInf
 				continue;
 			}
 
-			if (CDI.GetWeightmapTextureData(LayerInfo, LayerCache, /*bUseEditingLayer=*/false))
+			if (CDI.GetWeightmapTextureData(LayerInfo, LayerCache, /*bUseEditingLayer=*/false, /*bRemoveSubsectionDuplicates=*/true))
 			{
 				Result->LayerDataNames.Add(Layer.LayerName);
 				Result->LayerData.Emplace(std::move(LayerCache));
@@ -298,11 +306,12 @@ void FPCGLandscapeCacheEntry::GetInterpolatedPointMetadataOnly(const FVector2D& 
 	GetInterpolatedPointMetadataInternal(Indices, OutPoint, OutMetadata);
 }
 
-void FPCGLandscapeCacheEntry::GetInterpolatedPointHeightOnly(const FVector2D& LocalPoint, FPCGPoint& OutPoint) const
+void FPCGLandscapeCacheEntry::GetInterpolatedPointHeightOnly(const FVector2D& LocalPoint, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const
 {
 	check(bDataLoaded);
 	const PCGLandscapeCache::FSafeIndices Indices = PCGLandscapeCache::CalcSafeIndices(LocalPoint, Stride);
 	GetInterpolatedPointInternal(Indices, OutPoint, /*bHeightOnly=*/true);
+	GetInterpolatedPointMetadataInternal(Indices, OutPoint, OutMetadata);
 }
 
 bool FPCGLandscapeCacheEntry::TouchAndLoad(int32 InTouch) const
@@ -476,7 +485,7 @@ void UPCGLandscapeCache::Serialize(FArchive& Archive)
 	}
 }
 
-void UPCGLandscapeCache::Tick(float DeltaSeconds)
+void UPCGLandscapeCache::Initialize()
 {
 #if WITH_EDITOR
 	if (!bInitialized && GetWorld())
@@ -485,7 +494,14 @@ void UPCGLandscapeCache::Tick(float DeltaSeconds)
 		CacheLayerNames();
 		bInitialized = true;
 	}
-#else
+#endif
+}
+
+void UPCGLandscapeCache::Tick(float DeltaSeconds)
+{
+	Initialize();
+
+#if !WITH_EDITOR
 	// Important implementation note:
 	// If the threshold is too low, it could lead to some issues - namely the check(bDataLoaded) in the cache entries
 	// as we currently do not have a state in the landscape cache to know whether something is still under use.
@@ -559,10 +575,11 @@ void UPCGLandscapeCache::PrimeCache()
 		if (IsValid(LandscapeInfo))
 		{
 			// Build per-component information
-			LandscapeInfo->ForAllLandscapeProxies([this, LandscapeInfo, &CacheEntriesToBuild](const ALandscapeProxy* LandscapeProxy)
+			LandscapeInfo->ForEachLandscapeProxy([this, LandscapeInfo, &CacheEntriesToBuild](ALandscapeProxy* LandscapeProxy)
 			{
 				check(LandscapeProxy);
-				const FGuid LandscapeGuid = LandscapeProxy->GetLandscapeGuid();
+				Landscapes.Add(LandscapeProxy);
+				const FGuid LandscapeGuid = LandscapeProxy->GetOriginalLandscapeGuid();
 
 				for (ULandscapeComponent* LandscapeComponent : LandscapeProxy->LandscapeComponents)
 				{
@@ -571,14 +588,14 @@ void UPCGLandscapeCache::PrimeCache()
 						continue;
 					}
 
-					FIntPoint Coordinate(LandscapeComponent->SectionBaseX / LandscapeComponent->ComponentSizeQuads, LandscapeComponent->SectionBaseY / LandscapeComponent->ComponentSizeQuads);
-					TPair<FGuid, FIntPoint> ComponentKey(LandscapeGuid, Coordinate);
+					TPair<FGuid, FIntPoint> ComponentKey(LandscapeGuid, PCGLandscapeCache::GetCoordinates(LandscapeComponent));
 
 					if (!CachedData.Contains(ComponentKey))
 					{
 						CacheEntriesToBuild.Emplace(LandscapeInfo, LandscapeComponent, ComponentKey);
 					}
 				}
+				return true;
 			});
 		}
 	}
@@ -620,7 +637,7 @@ void UPCGLandscapeCache::ClearCache()
 #if WITH_EDITOR
 const FPCGLandscapeCacheEntry* UPCGLandscapeCache::GetCacheEntry(ULandscapeComponent* LandscapeComponent, const FIntPoint& ComponentCoordinate)
 {
-	const FGuid LandscapeGuid = (LandscapeComponent && LandscapeComponent->GetLandscapeProxy() ? LandscapeComponent->GetLandscapeProxy()->GetLandscapeGuid() : FGuid());
+	const FGuid LandscapeGuid = (LandscapeComponent && LandscapeComponent->GetLandscapeProxy() ? LandscapeComponent->GetLandscapeProxy()->GetOriginalLandscapeGuid() : FGuid());
 	const FPCGLandscapeCacheEntry* CacheEntry = GetCacheEntry(LandscapeGuid, ComponentCoordinate);
 
 	if (!CacheEntry && LandscapeComponent && LandscapeComponent->GetLandscapeInfo())
@@ -709,7 +726,7 @@ void UPCGLandscapeCache::SampleMetadataOnPoint(ALandscapeProxy* Landscape, FPCGP
 	ULandscapeComponent* LandscapeComponent = LandscapeInfo->XYtoComponentMap.FindRef(ComponentMapKey);
 	const FPCGLandscapeCacheEntry* CacheEntry = GetCacheEntry(LandscapeComponent, ComponentMapKey);
 #else
-	const FPCGLandscapeCacheEntry* CacheEntry = GetCacheEntry(Landscape->GetLandscapeGuid(), ComponentMapKey);
+	const FPCGLandscapeCacheEntry* CacheEntry = GetCacheEntry(Landscape->GetOriginalLandscapeGuid(), ComponentMapKey);
 #endif
 
 	if (!CacheEntry || CacheEntry->LayerData.IsEmpty())
@@ -744,6 +761,14 @@ void UPCGLandscapeCache::SetupLandscapeCallbacks()
 		Landscapes.Add(Landscape);
 		Landscape->OnComponentDataChanged.AddUObject(this, &UPCGLandscapeCache::OnLandscapeChanged);
 	}
+
+	// Also track when the landscape is moved, added, or deleted
+	if (GEngine)
+	{
+		GEngine->OnActorMoved().AddUObject(this, &UPCGLandscapeCache::OnLandscapeMoved);
+		GEngine->OnLevelActorAdded().AddUObject(this, &UPCGLandscapeCache::OnLandscapeAdded);
+		GEngine->OnLevelActorDeleted().AddUObject(this, &UPCGLandscapeCache::OnLandscapeDeleted);
+	}
 }
 
 void UPCGLandscapeCache::TeardownLandscapeCallbacks()
@@ -755,11 +780,18 @@ void UPCGLandscapeCache::TeardownLandscapeCallbacks()
 			Landscape->OnComponentDataChanged.RemoveAll(this);
 		}
 	}
+
+	if (GEngine)
+	{
+		GEngine->OnActorMoved().RemoveAll(this);
+		GEngine->OnLevelActorAdded().RemoveAll(this);
+		GEngine->OnLevelActorDeleted().RemoveAll(this);
+	}
 }
 
-void UPCGLandscapeCache::OnLandscapeChanged(ALandscapeProxy* Landscape, const FLandscapeProxyComponentDataChangedParams& ChangeParams)
+void UPCGLandscapeCache::OnLandscapeChanged(ALandscapeProxy* InLandscape, const FLandscapeProxyComponentDataChangedParams& InChangeParams)
 {
-	if (!Landscapes.Contains(Landscape))
+	if (!Landscapes.Contains(InLandscape))
 	{
 		return;
 	}
@@ -767,24 +799,70 @@ void UPCGLandscapeCache::OnLandscapeChanged(ALandscapeProxy* Landscape, const FL
 	CacheLock.WriteLock();
 
 	// Just remove these from the cache, they'll be added back on demand
-	ChangeParams.ForEachComponent([this, Landscape](const ULandscapeComponent* LandscapeComponent)
+	InChangeParams.ForEachComponent([this, InLandscape](const ULandscapeComponent* LandscapeComponent)
 	{
 		if (LandscapeComponent)
 		{
-			FIntPoint Coordinate(LandscapeComponent->SectionBaseX / LandscapeComponent->ComponentSizeQuads, LandscapeComponent->SectionBaseY / LandscapeComponent->ComponentSizeQuads);
-			TPair<FGuid, FIntPoint> ComponentKey(Landscape->GetLandscapeGuid(), Coordinate);
+			const TPair<FGuid, FIntPoint> ComponentKey(InLandscape->GetOriginalLandscapeGuid(), PCGLandscapeCache::GetCoordinates(LandscapeComponent));
 
-			if (FPCGLandscapeCacheEntry** FoundEntry = CachedData.Find(ComponentKey))
+			FPCGLandscapeCacheEntry* EntryToDelete = nullptr;
+
+			if (CachedData.RemoveAndCopyValue(ComponentKey, EntryToDelete))
 			{
-				delete *FoundEntry;
-				CachedData.Remove(ComponentKey);
+				delete EntryToDelete;
 			}
 		}
 	});
 
+	CacheLayerNames(InLandscape);
+
+	CacheLock.WriteUnlock();
+}
+
+void UPCGLandscapeCache::OnLandscapeMoved(AActor* InActor)
+{
+	ALandscapeProxy* Landscape = Cast<ALandscapeProxy>(InActor);
+	if (!Landscape || !Landscapes.Contains(Landscape))
+	{
+		return;
+	}
+
+	CacheLock.WriteLock();
+
+	// Just remove these from the cache, they'll be added back on demand
+	RemoveComponentFromCache(Landscape);
+
 	CacheLayerNames(Landscape);
 
 	CacheLock.WriteUnlock();
+}
+
+void UPCGLandscapeCache::OnLandscapeDeleted(AActor* Actor)
+{
+	ALandscapeProxy* LandscapeProxy = Cast<ALandscapeProxy>(Actor);
+	if (!LandscapeProxy || !Landscapes.Contains(LandscapeProxy))
+	{
+		return;
+	}
+
+	CacheLock.WriteLock();
+
+	RemoveComponentFromCache(LandscapeProxy);
+
+	Landscapes.Remove(LandscapeProxy);
+	LandscapeProxy->OnComponentDataChanged.RemoveAll(this);
+
+	CacheLock.WriteUnlock();
+}
+
+void UPCGLandscapeCache::OnLandscapeAdded(AActor* Actor)
+{
+	if (ALandscapeProxy* LandscapeProxy = Cast<ALandscapeProxy>(Actor))
+	{
+		Landscapes.Add(LandscapeProxy);
+		LandscapeProxy->OnComponentDataChanged.AddUObject(this, &UPCGLandscapeCache::OnLandscapeChanged);
+		// Note: Landscape Proxies have no components at this stage, so they will need to be added on demand
+	}
 }
 
 void UPCGLandscapeCache::CacheLayerNames()
@@ -800,11 +878,30 @@ void UPCGLandscapeCache::CacheLayerNames()
 	}
 }
 
-void UPCGLandscapeCache::CacheLayerNames(ALandscapeProxy* Landscape)
+void UPCGLandscapeCache::RemoveComponentFromCache(const ALandscapeProxy* LandscapeProxy)
 {
-	check(Landscape);
+	check(LandscapeProxy);
 
-	if (ULandscapeInfo* LandscapeInfo = Landscape->GetLandscapeInfo())
+	LandscapeProxy->ForEachComponent<ULandscapeComponent>(/*bIncludeFromChildActors=*/false, [this, LandscapeProxy](const ULandscapeComponent* LandscapeComponent)
+	{
+		if (LandscapeComponent)
+		{
+			const TPair<FGuid, FIntPoint> ComponentKey(LandscapeProxy->GetOriginalLandscapeGuid(), PCGLandscapeCache::GetCoordinates(LandscapeComponent));
+
+			if (FPCGLandscapeCacheEntry** FoundEntry = CachedData.Find(ComponentKey))
+			{
+				CachedData.Remove(ComponentKey);
+				delete* FoundEntry;
+			}
+		}
+	});
+}
+
+void UPCGLandscapeCache::CacheLayerNames(ALandscapeProxy* InLandscape)
+{
+	check(InLandscape);
+
+	if (ULandscapeInfo* LandscapeInfo = InLandscape->GetLandscapeInfo())
 	{
 		for (const FLandscapeInfoLayerSettings& Layer : LandscapeInfo->Layers)
 		{

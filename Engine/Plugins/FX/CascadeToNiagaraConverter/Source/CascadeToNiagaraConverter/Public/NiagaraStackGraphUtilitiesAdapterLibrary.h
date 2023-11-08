@@ -415,9 +415,7 @@ struct FNiagaraEventHandlerAddAction
 		, SourceEventName()
 		, bRandomSpawnNumber(false)
 		, MinSpawnNumber(0)
-	{};
-
-	FNiagaraEventHandlerAddAction(const FNiagaraEventHandlerAddAction& Other) = default;
+	{}
 
 	UPROPERTY(BlueprintReadWrite, Category = "Event Handler Options")
 	ENiagaraEventHandlerAddMode Mode;
@@ -635,6 +633,7 @@ public:
 	 * Apply all pending UNiagaraScriptConversionContexts and UNiagaraRendererProperties to the owned
 	 * UNiagaraEmitterContexts by creating clipboard inputs and pasting them onto the emitter conversion context's
 	 * Emitter.
+	 * Afterwards compile the system so the changes take effect.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "FXConverterUtilities")
 	void Finalize();
@@ -950,6 +949,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, meta = (ScriptMethod), Category = "FXConverterUtilities")
 	static FName GetCascadeEmitterName(UParticleEmitter* Emitter);
+
+	UFUNCTION(BlueprintCallable, meta = (ScriptMethod), Category = "FXConverterUtilities")
+	static int32 GetCascadeEmitterRenderMode(UParticleEmitter* Emitter);
 
 
 	// Niagara Script and Script Input Helpers

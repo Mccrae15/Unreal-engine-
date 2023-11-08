@@ -81,11 +81,7 @@ void UNetworkPredictionWorldManager::OnWorldPreTick(UWorld* InWorld, ELevelTick 
 
 	UE_NP_TRACE_WORLD_FRAME_START(InWorld->GetGameInstance(), InDeltaSeconds);
 
-	// Update fixed tick rate, this can be changed via editor settings
-	FixedTickState.FixedStepRealTimeMS = (1.f /  GEngine->FixedFrameRate) * 1000.f;
-	FixedTickState.FixedStepMS = (int32)FixedTickState.FixedStepRealTimeMS;
-
-	ActiveInstance = this;
+	OnWorldPreTick_Internal(InDeltaSeconds, GEngine->FixedFrameRate);
 
 	// Instantiate replicated manager on server
 	if (!ReplicatedManager && InWorld->GetNetMode() != NM_Client)
@@ -95,15 +91,30 @@ void UNetworkPredictionWorldManager::OnWorldPreTick(UWorld* InWorld, ELevelTick 
 	}
 }
 
+void UNetworkPredictionWorldManager::OnWorldPreTick_Internal(float InDeltaSeconds, float InFixedFrameRate)
+{
+	// Update fixed tick rate, this can be changed via editor settings
+	FixedTickState.FixedStepRealTimeMS = (1.f /  InFixedFrameRate) * 1000.f;
+	FixedTickState.FixedStepMS = (int32)FixedTickState.FixedStepRealTimeMS;
+
+	ActiveInstance = this;
+}
+
 void UNetworkPredictionWorldManager::ReconcileSimulationsPostNetworkUpdate()
 {
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_NP_RECONCILE);
-
 	UWorld* World = GetWorld();
 	if (World->GetNetMode() != NM_Client)
 	{
 		return;
 	}
+
+	ReconcileSimulationsPostNetworkUpdate_Internal();
+}
+
+void UNetworkPredictionWorldManager::ReconcileSimulationsPostNetworkUpdate_Internal()
+{
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_NP_RECONCILE);
+	TRACE_CPUPROFILER_EVENT_SCOPE(NetworkPrediction::Reconcile);
 
 	ActiveInstance = this;
 	bLockServices = true;
@@ -156,7 +167,8 @@ void UNetworkPredictionWorldManager::ReconcileSimulationsPostNetworkUpdate()
 
 	if (RollbackFrame != INDEX_NONE)
 	{
-		QUICK_SCOPE_CYCLE_COUNTER(STAT_NP_ROLLBACK);		
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_NP_ROLLBACK);
+		TRACE_CPUPROFILER_EVENT_SCOPE(NetworkPrediction::Rollback);
 
 		if (RollbackFrame < FixedTickState.PendingFrame)
 		{
@@ -244,7 +256,7 @@ void UNetworkPredictionWorldManager::ReconcileSimulationsPostNetworkUpdate()
 		else if (RollbackFrame > FixedTickState.PendingFrame)
 		{
 			// Most likely we haven't had a confirmed frame yet so our local frame -> server mapping hasn't been set yet
-			UE_LOG(LogNetworkPrediction, Warning, TEXT("RollbackFrame %d AHEAD of PendingFrame %d... Offset: %d"), RollbackFrame, FixedTickState.PendingFrame, FixedTickState.Offset);
+			UE_LOG(LogNetworkPrediction, Log, TEXT("RollbackFrame %d AHEAD of PendingFrame %d... Offset: %d"), RollbackFrame, FixedTickState.PendingFrame, FixedTickState.Offset);
 		}
 	}
 
@@ -268,12 +280,18 @@ void UNetworkPredictionWorldManager::BeginNewSimulationFrame(UWorld* InWorld, EL
 		return;
 	}
 
+	BeginNewSimulationFrame_Internal(DeltaTimeSeconds);
+}
+
+void UNetworkPredictionWorldManager::BeginNewSimulationFrame_Internal(float DeltaTimeSeconds)
+{
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_NP_TICK);
+	TRACE_CPUPROFILER_EVENT_SCOPE(NetworkPrediction::Tick);
+	
 	ActiveInstance = this;
 	bLockServices = true;
 
 	const float fEngineFrameDeltaTimeMS = DeltaTimeSeconds * 1000.f;
-
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_NP_TICK);
 
 	// -------------------------------------------------------------------------
 	//	Fixed Tick
@@ -281,6 +299,7 @@ void UNetworkPredictionWorldManager::BeginNewSimulationFrame(UWorld* InWorld, EL
 	if (Physics.bUsingPhysics || Services.FixedTick.Array.Num() > 0)
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_NP_TICK_FIXED);
+		TRACE_CPUPROFILER_EVENT_SCOPE(NetworkPrediction::FixedTick);
 
 		FixedTickState.UnspentTimeMS += fEngineFrameDeltaTimeMS;
 		
@@ -337,6 +356,8 @@ void UNetworkPredictionWorldManager::BeginNewSimulationFrame(UWorld* InWorld, EL
 	//	Local Independent Tick
 	// -------------------------------------------------------------------------
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(NetworkPrediction::IndependentTick);
+
 		// Update VariableTickState	
 		constexpr int32 MinStepMS = 1;
 		constexpr int32 MaxStepMS = 100;
@@ -386,118 +407,127 @@ void UNetworkPredictionWorldManager::BeginNewSimulationFrame(UWorld* InWorld, EL
 	// -------------------------------------------------------------------------
 	// Interpolation
 	// -------------------------------------------------------------------------
-	if (Services.FixedInterpolate.Array.Num() > 0)
 	{
-		const int32 LatestRecvFrame = FixedTickState.Interpolation.LatestRecvFrameAP != INDEX_NONE ? FixedTickState.Interpolation.LatestRecvFrameAP : FixedTickState.Interpolation.LatestRecvFrameSP;
-		if (LatestRecvFrame != INDEX_NONE)
+		TRACE_CPUPROFILER_EVENT_SCOPE(NetworkPrediction::Interpolation);
+
+		if (Services.FixedInterpolate.Array.Num() > 0)
 		{
-			// We want 100ms of buffered time. As long a actors replicate at >= 10hz, this is should be good
-			// Its better to keep this simple with a single time rather than trying to coordinate lowest amount of buffered time
-			// between all the registered instances in the different ModelDefs
-			const int32 DesiredBufferedMS = Settings.FixedTickInterpolationBufferedMS;
-
-			float InterpolateRate = 1.f;
-			if (FixedTickState.Interpolation.ToFrame == INDEX_NONE)
+			const int32 LatestRecvFrame = FMath::Max(FixedTickState.Interpolation.LatestRecvFrameAP, FixedTickState.Interpolation.LatestRecvFrameSP);
+			if (LatestRecvFrame != INDEX_NONE)
 			{
-				const int32 NumBufferedFrames = LatestRecvFrame;
-				const int32 BufferedMS = NumBufferedFrames * FixedTickState.FixedStepMS;
+				// We want 100ms of buffered time. As long a actors replicate at >= 10hz, this is should be good
+				// Its better to keep this simple with a single time rather than trying to coordinate lowest amount of buffered time
+				// between all the registered instances in the different ModelDefs
+				const int32 DesiredBufferedMS = Settings.FixedTickInterpolationBufferedMS;
 
-				//UE_LOG(LogTemp, Warning, TEXT("BufferedMS: %d Frames: %d (No ToFrame)"), BufferedMS, NumBufferedFrames);
-
-				if (BufferedMS < DesiredBufferedMS)
+				float InterpolateRate = 1.f;
+				if (FixedTickState.Interpolation.ToFrame == INDEX_NONE)
 				{
-					// Not enough time buffered yet to start interpolating
-					InterpolateRate = 0.f;
+					const int32 NumBufferedFrames = LatestRecvFrame;
+					const int32 BufferedMS = NumBufferedFrames * FixedTickState.FixedStepMS;
+
+					//UE_LOG(LogTemp, Warning, TEXT("BufferedMS: %d Frames: %d (No ToFrame)"), BufferedMS, NumBufferedFrames);
+
+					if (BufferedMS < DesiredBufferedMS)
+					{
+						// Not enough time buffered yet to start interpolating
+						InterpolateRate = 0.f;
+					}
+					else
+					{
+						// Begin interpolation
+						const int32 DesiredNumBufferedFrames = (DesiredBufferedMS / FixedTickState.FixedStepMS);
+						FixedTickState.Interpolation.ToFrame = LatestRecvFrame - DesiredNumBufferedFrames;
+
+						FixedTickState.Interpolation.PCT = 0.f;
+						FixedTickState.Interpolation.AccumulatedTimeMS = 0.f;
+
+						// We need to force a reconcile here since we supress the call until interpolation starts
+						for (TUniquePtr<IFixedInterpolateService>& Ptr : Services.FixedInterpolate.Array)
+						{
+							Ptr->Reconcile(&FixedTickState);
+						}
+					}
 				}
 				else
 				{
-					// Begin interpolation
-					const int32 DesiredNumBufferedFrames = (DesiredBufferedMS / FixedTickState.FixedStepMS);
-					FixedTickState.Interpolation.ToFrame = LatestRecvFrame - DesiredNumBufferedFrames;
+					const int32 NumBufferedFrames = LatestRecvFrame - FixedTickState.Interpolation.ToFrame;
+					const int32 BufferedMS = NumBufferedFrames * FixedTickState.FixedStepMS;
 
-					FixedTickState.Interpolation.PCT = 0.f;
-					FixedTickState.Interpolation.AccumulatedTimeMS = 0.f;
+					//UE_LOG(LogTemp, Warning, TEXT("BufferedMS: %d Frames: %d"), BufferedMS, NumBufferedFrames);
 
-					// We need to force a reconcile here since we supress the call until interpolation starts
-					for (TUniquePtr<IFixedInterpolateService>& Ptr : Services.FixedInterpolate.Array)
+					if (NumBufferedFrames <= 0)
 					{
-						Ptr->Reconcile(&FixedTickState);
+						InterpolateRate = 0.f;
+					}
+				}
+
+				int32 AdvanceFrames = 0;
+				if (InterpolateRate > 0.f)
+				{
+					const float fScaledDeltaTimeMS = (InterpolateRate * fEngineFrameDeltaTimeMS);
+
+					FixedTickState.Interpolation.AccumulatedTimeMS += fScaledDeltaTimeMS;
+					AdvanceFrames = (int32)FixedTickState.Interpolation.AccumulatedTimeMS / FixedTickState.FixedStepRealTimeMS;
+					if (AdvanceFrames > 0)
+					{
+						FixedTickState.Interpolation.ToFrame += AdvanceFrames;
+						FixedTickState.Interpolation.AccumulatedTimeMS -= (AdvanceFrames * FixedTickState.FixedStepRealTimeMS);
+					}
+					const float RawPCT = FixedTickState.Interpolation.AccumulatedTimeMS / (float)FixedTickState.FixedStepRealTimeMS;
+					FixedTickState.Interpolation.PCT = FMath::Clamp<float>(RawPCT, 0.f, 1.f);
+					npEnsureMsgf(FixedTickState.Interpolation.PCT >= 0.f && FixedTickState.Interpolation.PCT <= 1.f, TEXT("Interpolation PCT out of range. %f"), FixedTickState.Interpolation.PCT);
+
+					const float PCTms = FixedTickState.Interpolation.PCT * (float)FixedTickState.FixedStepMS;
+					FixedTickState.Interpolation.InterpolatedTimeMS = ((FixedTickState.Interpolation.ToFrame-1) * FixedTickState.FixedStepMS) + (int32)PCTms;
+
+					//UE_LOG(LogTemp, Warning, TEXT("[Interpolate] %s Interpolating ToFrame %d. PCT: %.2f. Buffered: %d"), *GetPathName(), FixedTickState.Interpolation.ToFrame, FixedTickState.Interpolation.PCT, FixedTickState.Interpolation.LatestRecvFrame - FixedTickState.Interpolation.ToFrame);
+
+					{
+						TRACE_CPUPROFILER_EVENT_SCOPE(NetworkPrediction::FinalizeFrame);
+						for (TUniquePtr<IFixedInterpolateService>& Ptr : Services.FixedInterpolate.Array)
+						{
+							Ptr->FinalizeFrame(DeltaTimeSeconds, &FixedTickState);
+						}
 					}
 				}
 			}
-			else
-			{
-				const int32 NumBufferedFrames = LatestRecvFrame - FixedTickState.Interpolation.ToFrame;
-				const int32 BufferedMS = NumBufferedFrames * FixedTickState.FixedStepMS;
-
-				//UE_LOG(LogTemp, Warning, TEXT("BufferedMS: %d Frames: %d"), BufferedMS, NumBufferedFrames);
-
-				if (NumBufferedFrames <= 0)
-				{
-					InterpolateRate = 0.f;
-				}
-			}
-
-			int32 AdvanceFrames = 0;
-			if (InterpolateRate > 0.f)
-			{
-				const float fScaledDeltaTimeMS = (InterpolateRate * fEngineFrameDeltaTimeMS);
-
-				FixedTickState.Interpolation.AccumulatedTimeMS += fScaledDeltaTimeMS;
-				AdvanceFrames = (int32)FixedTickState.Interpolation.AccumulatedTimeMS / FixedTickState.FixedStepRealTimeMS;
-				if (AdvanceFrames > 0)
-				{
-					FixedTickState.Interpolation.ToFrame += AdvanceFrames;
-					FixedTickState.Interpolation.AccumulatedTimeMS -= (AdvanceFrames * FixedTickState.FixedStepRealTimeMS);
-				}
-				const float RawPCT = FixedTickState.Interpolation.AccumulatedTimeMS / (float)FixedTickState.FixedStepRealTimeMS;
-				FixedTickState.Interpolation.PCT = FMath::Clamp<float>(RawPCT, 0.f, 1.f);
-				npEnsureMsgf(FixedTickState.Interpolation.PCT >= 0.f && FixedTickState.Interpolation.PCT <= 1.f, TEXT("Interpolation PCT out of range. %f"), FixedTickState.Interpolation.PCT);
-
-				const float PCTms = FixedTickState.Interpolation.PCT * (float)FixedTickState.FixedStepMS;
-				FixedTickState.Interpolation.InterpolatedTimeMS = ((FixedTickState.Interpolation.ToFrame-1) * FixedTickState.FixedStepMS) + (int32)PCTms;
-
-				//UE_LOG(LogTemp, Warning, TEXT("[Interpolate] %s Interpolating ToFrame %d. PCT: %.2f. Buffered: %d"), *GetPathName(), FixedTickState.Interpolation.ToFrame, FixedTickState.Interpolation.PCT, FixedTickState.Interpolation.LatestRecvFrame - FixedTickState.Interpolation.ToFrame);
-
-				for (TUniquePtr<IFixedInterpolateService>& Ptr : Services.FixedInterpolate.Array)
-				{
-					Ptr->FinalizeFrame(DeltaTimeSeconds, &FixedTickState);
-				}
-			}
 		}
-	}
 
-
-	if (Services.IndependentInterpolate.Array.Num() > 0)
-	{
-		const int32 DesiredBufferedMS = Settings.IndependentTickInterpolationBufferedMS;
-		const int32 MaxBufferedMS = Settings.IndependentTickInterpolationMaxBufferedMS;
-		
-		if (VariableTickState.Interpolation.LatestRecvTimeMS > DesiredBufferedMS)
+		if (Services.IndependentInterpolate.Array.Num() > 0)
 		{
-			float InterpolationRate = 1.f;
+			const int32 DesiredBufferedMS = Settings.IndependentTickInterpolationBufferedMS;
+			const int32 MaxBufferedMS = Settings.IndependentTickInterpolationMaxBufferedMS;
+		
+			if (VariableTickState.Interpolation.LatestRecvTimeMS > DesiredBufferedMS)
+			{
+				float InterpolationRate = 1.f;
 
-			const int32 BufferedMS = VariableTickState.Interpolation.LatestRecvTimeMS - (int32)VariableTickState.Interpolation.fTimeMS;
-			if (BufferedMS > MaxBufferedMS)
-			{
-				UE_LOG(LogNetworkPrediction, Warning, TEXT("Independent Interpolation fell behind. BufferedMS: %d"), BufferedMS);
-				VariableTickState.Interpolation.fTimeMS = (float)(VariableTickState.Interpolation.LatestRecvTimeMS - DesiredBufferedMS);
-			}
-			else if (BufferedMS <= 0)
-			{
-				UE_LOG(LogNetworkPrediction, Warning, TEXT("Independent Interpolation starved: %d"), BufferedMS);
-				InterpolationRate = 0.f;
-			}
+				const int32 BufferedMS = VariableTickState.Interpolation.LatestRecvTimeMS - (int32)VariableTickState.Interpolation.fTimeMS;
+				if (BufferedMS > MaxBufferedMS)
+				{
+					UE_LOG(LogNetworkPrediction, Warning, TEXT("Independent Interpolation fell behind. BufferedMS: %d"), BufferedMS);
+					VariableTickState.Interpolation.fTimeMS = (float)(VariableTickState.Interpolation.LatestRecvTimeMS - DesiredBufferedMS);
+				}
+				else if (BufferedMS <= 0)
+				{
+					UE_LOG(LogNetworkPrediction, Warning, TEXT("Independent Interpolation starved: %d"), BufferedMS);
+					InterpolationRate = 0.f;
+				}
 
-			if (InterpolationRate > 0.f)
-			{
-				const float fScaledDeltaTimeMS = (InterpolationRate * fEngineFrameDeltaTimeMS);
-				VariableTickState.Interpolation.fTimeMS += fScaledDeltaTimeMS;
-			}
+				if (InterpolationRate > 0.f)
+				{
+					const float fScaledDeltaTimeMS = (InterpolationRate * fEngineFrameDeltaTimeMS);
+					VariableTickState.Interpolation.fTimeMS += fScaledDeltaTimeMS;
+				}
 
-			for (TUniquePtr<IIndependentInterpolateService>& Ptr : Services.IndependentInterpolate.Array)
-			{
-				Ptr->FinalizeFrame(DeltaTimeSeconds, &VariableTickState);
+				{
+					TRACE_CPUPROFILER_EVENT_SCOPE(NetworkPrediction::FinalizeFrame);
+					for (TUniquePtr<IIndependentInterpolateService>& Ptr : Services.IndependentInterpolate.Array)
+					{
+						Ptr->FinalizeFrame(DeltaTimeSeconds, &VariableTickState);
+					}
+				}
 			}
 		}
 	}
@@ -514,23 +544,27 @@ void UNetworkPredictionWorldManager::BeginNewSimulationFrame(UWorld* InWorld, EL
 	// -------------------------------------------------------------------------
 	//	Finalize
 	// -------------------------------------------------------------------------
-	const int32 FixedTotalSimTimeMS = FixedTickState.GetTotalSimTimeMS();
-	const int32 FixedServerFrame = FixedTickState.PendingFrame + FixedTickState.Offset;
-	for (TUniquePtr<IFinalizeService>& Ptr : Services.FixedFinalize.Array)
 	{
-		Ptr->FinalizeFrame(DeltaTimeSeconds, FixedServerFrame, FixedTotalSimTimeMS, FixedTickState.FixedStepMS);
-	}
+		TRACE_CPUPROFILER_EVENT_SCOPE(NetworkPrediction::FinalizeFrame);
 
-	const int32 IndependentTotalSimTimeMS = VariableTickState.Frames[VariableTickState.PendingFrame].TotalMS;
-	const int32 IndependentFrame = VariableTickState.PendingFrame;
-	for (TUniquePtr<IFinalizeService>& Ptr : Services.IndependentLocalFinalize.Array)
-	{
-		Ptr->FinalizeFrame(DeltaTimeSeconds, IndependentFrame, IndependentTotalSimTimeMS, 0);
-	}
+		const int32 FixedTotalSimTimeMS = FixedTickState.GetTotalSimTimeMS();
+		const int32 FixedServerFrame = FixedTickState.PendingFrame + FixedTickState.Offset;
+		for (TUniquePtr<IFinalizeService>& Ptr : Services.FixedFinalize.Array)
+		{
+			Ptr->FinalizeFrame(DeltaTimeSeconds, FixedServerFrame, FixedTotalSimTimeMS, FixedTickState.FixedStepMS);
+		}
+
+		const int32 IndependentTotalSimTimeMS = VariableTickState.Frames[VariableTickState.PendingFrame].TotalMS;
+		const int32 IndependentFrame = VariableTickState.PendingFrame;
+		for (TUniquePtr<IFinalizeService>& Ptr : Services.IndependentLocalFinalize.Array)
+		{
+			Ptr->FinalizeFrame(DeltaTimeSeconds, IndependentFrame, IndependentTotalSimTimeMS, 0);
+		}
 	
-	for (TUniquePtr<IRemoteFinalizeService>& Ptr : Services.IndependentRemoteFinalize.Array)
-	{
-		Ptr->FinalizeFrame(DeltaTimeSeconds);
+		for (TUniquePtr<IRemoteFinalizeService>& Ptr : Services.IndependentRemoteFinalize.Array)
+		{
+			Ptr->FinalizeFrame(DeltaTimeSeconds);
+		}
 	}
 
 	// -------------------------------------------------------------------------
@@ -544,10 +578,12 @@ void UNetworkPredictionWorldManager::BeginNewSimulationFrame(UWorld* InWorld, EL
 	// -------------------------------------------------------------------------
 	// Call server RPC (common)
 	// -------------------------------------------------------------------------
-
-	for (TUniquePtr<IServerRPCService>& Ptr : Services.ServerRPC.Array)
 	{
-		Ptr->CallServerRPC(DeltaTimeSeconds);
+		TRACE_CPUPROFILER_EVENT_SCOPE(NetworkPrediction::CallServerRPC);
+		for (TUniquePtr<IServerRPCService>& Ptr : Services.ServerRPC.Array)
+		{
+			Ptr->CallServerRPC(DeltaTimeSeconds);
+		}
 	}
 }
 
@@ -572,8 +608,8 @@ void UNetworkPredictionWorldManager::AdvancePhysicsResimFrame(int32& PhysicsFram
 
 bool UNetworkPredictionWorldManager::CanPhysicsFixTick() const
 {
-	npCheckSlow(GEngine);
-	return (GEngine->bUseFixedFrameRate) || Settings.bForceEngineFixTickForcePhysics;
+	// GEngine may be null in some contexts, like unit tests.
+	return (GEngine && GEngine->bUseFixedFrameRate) || Settings.bForceEngineFixTickForcePhysics;
 }
 
 void UNetworkPredictionWorldManager::SetUsingPhysics()

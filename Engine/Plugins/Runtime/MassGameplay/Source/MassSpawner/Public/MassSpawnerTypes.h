@@ -13,13 +13,33 @@ class APawn;
 class UCurveFloat;
 class UMassEntityConfigAsset;
 class UMassEntitySpawnDataGeneratorBase;
+class UMassEntityTraitBase;
+
+namespace UE::MassSpawner
+{
+	MASSSPAWNER_API uint32 HashTraits(TConstArrayView<UMassEntityTraitBase*> CombinedTraits);
+}
 
 USTRUCT()
 struct FMassTransformsSpawnData
 {
 	GENERATED_BODY()
 
-	TArray<FTransform> Transforms;
+	FMassTransformsSpawnData()
+	: bRandomize(true)
+	{}
+
+	// declaring the type used to be able to statically test it against other types 
+	using FTransformsContainerType = TArray<FTransform>;
+	FTransformsContainerType Transforms;
+	
+	// When true, Transforms will be assigned to entities as if pre-shuffled. 
+	// If Transforms >= Entities, this provides the best chance for a good spread of entity transforms 
+	// and transforms choices will be guaranteed unique. If Transforms < Entities, the same 
+	// transform will be used for multiple entities and a warning logged.
+	//
+	// When false, Transforms will be assigned in order to spawned entities.
+	bool bRandomize : 1;
 };
 
 /**

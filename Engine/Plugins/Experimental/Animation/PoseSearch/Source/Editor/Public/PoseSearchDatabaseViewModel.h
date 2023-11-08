@@ -3,15 +3,15 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/GCObject.h"
+#include "InstancedStruct.h"
 #include "MovieSceneFwd.h"
 #include "PoseSearch/PoseSearchAssetSampler.h"
 #include "PoseSearch/PoseSearchIndex.h"
 #include "PoseSearchDatabasePreviewScene.h"
+#include "UObject/GCObject.h"
 
 class UWorld;
 class UPoseSearchDatabase;
-struct FPoseSearchIndexAsset;
 class UAnimPreviewInstance;
 class UDebugSkelMeshComponent;
 class UAnimComposite;
@@ -22,6 +22,8 @@ class UMirrorDataTable;
 namespace UE::PoseSearch
 {
 	class FDatabaseAssetTreeNode;
+	struct FSearchIndexAsset;
+	class SDatabaseDataDetails;
 
 	enum class EFeaturesDrawMode : uint8
 	{
@@ -33,7 +35,6 @@ namespace UE::PoseSearch
 
 	enum class EAnimationPreviewMode : uint8
 	{
-		None,
 		OriginalOnly,
 		OriginalAndMirrored
 	};
@@ -42,18 +43,16 @@ namespace UE::PoseSearch
 	struct FDatabasePreviewActor
 	{
 	public:
-		TWeakObjectPtr<AActor> Actor = nullptr;
+		TObjectPtr<AActor> Actor;
 		int32 IndexAssetIndex = INDEX_NONE;
 		int32 CurrentPoseIndex = INDEX_NONE;
-
-		FSequenceBaseSampler SequenceSampler;
-		FBlendSpaceSampler BlendSpaceSampler;
-		ESearchIndexAssetType Type = ESearchIndexAssetType::Invalid;
+		float PlayTimeOffset = 0.f;
+		float CurrentTime = 0.f;
+		FAnimationAssetSampler Sampler;
+		FTransform QuantizedTimeRootTransform = FTransform::Identity;
 
 		bool IsValid() const;
-		void Process();
-		const IAssetSampler* GetSampler() const;
-		float GetScaledTime(float Time) const;
+		void Process(const FBoneContainer& BoneContainer);
 		UDebugSkelMeshComponent* GetDebugSkelMeshComponent();
 		UAnimPreviewInstance* GetAnimPreviewInstance();
 	};
@@ -69,11 +68,9 @@ namespace UE::PoseSearch
 		virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 		virtual FString GetReferencerName() const override { return TEXT("FPoseSearchDatabaseViewModel"); }
 
-		void Initialize(UPoseSearchDatabase* InPoseSearchDatabase, const TSharedRef<FDatabasePreviewScene>& InPreviewScene);
+		void Initialize(UPoseSearchDatabase* InPoseSearchDatabase, const TSharedRef<FDatabasePreviewScene>& InPreviewScene, const TSharedRef<SDatabaseDataDetails>& InDatabaseDataDetails);
 
 		void RemovePreviewActors();
-		void ResetPreviewActors();
-		void RespawnPreviewActors();
 		void BuildSearchIndex();
 
 		void PreviewBackwardEnd();
@@ -84,7 +81,7 @@ namespace UE::PoseSearch
 		void PreviewForwardStep();
 		void PreviewForwardEnd();
 
-		UPoseSearchDatabase* GetPoseSearchDatabase() const { return PoseSearchDatabase; }
+		UPoseSearchDatabase* GetPoseSearchDatabase() { return PoseSearchDatabase; }
 		void OnPreviewActorClassChanged();
 
 		void Tick(float DeltaSeconds);
@@ -98,30 +95,45 @@ namespace UE::PoseSearch
 		void OnSetAnimationPreviewMode(EAnimationPreviewMode PreviewMode);
 		bool IsAnimationPreviewMode(EAnimationPreviewMode PreviewMode) const;
 
-		void OnToggleDisplayRootMotionSpeed();
-		bool IsDisplayRootMotionSpeedChecked() const { return DisplayRootMotionSpeed; };
+		void OnToggleDisplayRootMotionSpeed() { bDisplayRootMotionSpeed = !bDisplayRootMotionSpeed; }
+		bool IsDisplayRootMotionSpeedChecked() const { return bDisplayRootMotionSpeed; };
+
+		void OnToggleQuantizeAnimationToPoseData() { bQuantizeAnimationToPoseData = !bQuantizeAnimationToPoseData; }
+		bool IsQuantizeAnimationToPoseDataChecked() const { return bQuantizeAnimationToPoseData; };
+
+		void OnToggleShowBones() { bShowBones = !bShowBones; }
+		bool IsShowBones() const { return bShowBones; };
 
 		void AddSequenceToDatabase(UAnimSequence* AnimSequence);
 		void AddBlendSpaceToDatabase(UBlendSpace* BlendSpace);
 		void AddAnimCompositeToDatabase(UAnimComposite* AnimComposite);
+		void AddAnimMontageToDatabase(UAnimMontage* AnimMontage);
 		void DeleteFromDatabase(int32 AnimationAssetIndex);
 
 		void SetIsEnabled(int32 AnimationAssetIndex, bool bEnabled);
 		bool IsEnabled(int32 AnimationAssetIndex) const;
 
-		void SetSelectedNode(const TSharedPtr<FDatabaseAssetTreeNode>& InSelectedNode);
+		int32 SetSelectedNode(int32 PoseIdx, bool bClearSelection, bool bDrawQuery, TConstArrayView<float> InQueryVector);
 		void SetSelectedNodes(const TArrayView<TSharedPtr<FDatabaseAssetTreeNode>>& InSelectedNodes);
 		void ProcessSelectedActor(AActor* Actor);
 		
-		const FPoseSearchIndexAsset* GetSelectedActorIndexAsset() const;
+		TConstArrayView<float> GetQueryVector() const { return QueryVector; }
+		void SetDrawQueryVector(bool bValue);
+		bool ShouldDrawQueryVector() const { return bDrawQueryVector && !bIsEditorSelection; }
 
-		float GetMaxPreviewPlayLength() const;
-		float GetPlayTime() const;
+		const FSearchIndexAsset* GetSelectedActorIndexAsset() const;
+
+		TRange<double> GetPreviewPlayRange() const;
+
 		void SetPlayTime(float NewPlayTime, bool bInTickPlayTime);
+		float GetPlayTime() const;
+		bool IsEditorSelection() const { return bIsEditorSelection; }
+		bool GetAnimationTime(int32 SourceAssetIdx, float& CurrentPlayTime, FVector& BlendParameters) const;
+
 
 	private:
-		float PlayTime = 0.0f;
-		float DeltaTimeMultiplier = 1.0f;
+		float PlayTime = 0.f;
+		float DeltaTimeMultiplier = 1.f;
 
 		/** Scene asset being viewed and edited by this view model. */
 		TObjectPtr<UPoseSearchDatabase> PoseSearchDatabase;
@@ -129,11 +141,19 @@ namespace UE::PoseSearch
 		/** Weak pointer to the PreviewScene */
 		TWeakPtr<FDatabasePreviewScene> PreviewScenePtr;
 
+		/** Weak pointer to the SDatabaseDataDetails */
+		TWeakPtr<SDatabaseDataDetails> DatabaseDataDetails;
+
 		/** Actors to be displayed in the preview viewport */
 		TArray<FDatabasePreviewActor> PreviewActors;
 		
 		/** From zero to the play length of the longest preview */
-		float MaxPreviewPlayLength = 0.0f;
+		float MaxPreviewPlayLength = 0.f;
+		float MinPreviewPlayLength = 0.f;
+
+		bool bIsEditorSelection = true;
+		bool bDrawQueryVector = false;
+		TArray<float> QueryVector;
 
 		/** What features to show in the viewport */
 		EFeaturesDrawMode PoseFeaturesDrawMode = EFeaturesDrawMode::All;
@@ -142,20 +162,20 @@ namespace UE::PoseSearch
 		EAnimationPreviewMode AnimationPreviewMode = EAnimationPreviewMode::OriginalAndMirrored;
 
 		/** Is animation debug draw enabled */
-		bool DisplayRootMotionSpeed = false;
-		
-		TArray<TSharedPtr<FDatabaseAssetTreeNode>> SelectedNodes;
+		bool bDisplayRootMotionSpeed = false;
+
+		bool bQuantizeAnimationToPoseData = false;
+
+		bool bShowBones = false;
 
 		int32 SelectedActorIndexAssetIndex = INDEX_NONE;
 
-		UWorld* GetWorld() const;
+		UWorld* GetWorld();
 
-		UObject* GetPlaybackContext() const;
-
-		FDatabasePreviewActor SpawnPreviewActor(int32 IndexAssetIndex, const FBoneContainer& BoneContainer);
+		FDatabasePreviewActor SpawnPreviewActor(int32 IndexAssetIndex, int32 PoseIdxForTimeOffset = -1);
 
 		void UpdatePreviewActors(bool bInTickPlayTime = false);
 
-		FTransform MirrorRootMotion(FTransform RootMotion, const class UMirrorDataTable* MirrorDataTable);
+		FTransform MirrorRootTransform(const FTransform& RootTransform);
 	};
 }

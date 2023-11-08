@@ -12,6 +12,7 @@
 #include "PostProcess/PostProcessing.h"
 #include "PostProcess/SceneFilterRendering.h"
 #include "PostProcess/PostProcessCombineLUTs.h"
+#include "PostProcess/PostProcessLocalExposure.h"
 #include "PostProcess/PostProcessMobile.h"
 #include "PostProcess/PostProcessing.h"
 #include "ClearQuad.h"
@@ -33,9 +34,10 @@ namespace
 {
 TAutoConsoleVariable<float> CVarTonemapperSharpen(
 	TEXT("r.Tonemapper.Sharpen"),
-	0,
+	-1,
 	TEXT("Sharpening in the tonemapper (not for mobile), actual implementation is work in progress, clamped at 10\n")
-	TEXT("   0: off(default)\n")
+	TEXT("  <0: inherit from PostProcessVolume settings (default)\n")
+	TEXT("   0: off\n")
 	TEXT(" 0.5: half strength\n")
 	TEXT("   1: full strength"),
 	ECVF_Scalability | ECVF_RenderThreadSafe);
@@ -61,6 +63,12 @@ TAutoConsoleVariable<int32> CVarFilmGrainSequenceLength(
 TAutoConsoleVariable<int32> CVarFilmGrainCacheTextureConstants(
 	TEXT("r.FilmGrain.CacheTextureConstants"), 1,
 	TEXT("Wether the constants related to the film grain should be cached."),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarBackbufferQuantizationDitheringOverride(
+	TEXT("r.BackbufferQuantizationDitheringOverride"), 0,
+	TEXT("Override the bitdepth in bits of each channel of the backbuffer targeted by the quantization dithering. ")
+	TEXT("Disabled by default. Instead is automatically found out by FSceneViewFamily::RenderTarget's pixel format of the backbuffer."),
 	ECVF_RenderThreadSafe);
 
 const int32 GTonemapComputeTileSizeX = 8;
@@ -122,6 +130,13 @@ bool ShouldCompileCommonPermutation(const FGlobalShaderPermutationParameters& Pa
 	return true;
 }
 
+static float GetSharpenSetting(const FPostProcessSettings& Settings)
+{
+	float CVarSharpen = CVarTonemapperSharpen.GetValueOnRenderThread();
+	float Sharpen = CVarSharpen >= 0.0 ? CVarSharpen : Settings.Sharpen;
+	return FMath::Clamp(Sharpen, 0.0f, 10.0f);
+}
+
 // Common conversion of engine settings into.
 FCommonDomain BuildCommonPermutationDomain(const FViewInfo& View, bool bGammaOnly, bool bLocalExposure, bool bMetalMSAAHDRDecode, bool bUseSubpass, uint32 NumSamples)
 {
@@ -148,7 +163,7 @@ FCommonDomain BuildCommonPermutationDomain(const FViewInfo& View, bool bGammaOnl
 	PermutationVector.Set<FTonemapperBloomDim>(Settings.BloomIntensity > 0.0);
 	PermutationVector.Set<FTonemapperLocalExposureDim>(bLocalExposure);
 	PermutationVector.Set<FTonemapperFilmGrainDim>(View.FilmGrainTexture != nullptr);
-	PermutationVector.Set<FTonemapperSharpenDim>(CVarTonemapperSharpen.GetValueOnRenderThread() > 0.0f);
+	PermutationVector.Set<FTonemapperSharpenDim>(GetSharpenSetting(Settings) > 0.0f);
 	PermutationVector.Set<FTonemapperMsaaDim>(bMetalMSAAHDRDecode);
 	PermutationVector.Set<FTonemapperSubpassDim>(bUseSubpass);
 	if (bUseSubpass && IsVulkanMobilePlatform(View.GetShaderPlatform()))
@@ -164,14 +179,12 @@ FCommonDomain BuildCommonPermutationDomain(const FViewInfo& View, bool bGammaOnl
 
 // Desktop renderer permutation dimensions.
 class FTonemapperColorFringeDim       : SHADER_PERMUTATION_BOOL("USE_COLOR_FRINGE");
-class FTonemapperGrainQuantizationDim : SHADER_PERMUTATION_BOOL("USE_GRAIN_QUANTIZATION");
 class FTonemapperOutputDeviceDim      : SHADER_PERMUTATION_ENUM_CLASS("DIM_OUTPUT_DEVICE", EDisplayOutputFormat);
 class FTonemapperOutputLuminance	  : SHADER_PERMUTATION_BOOL("OUTPUT_LUMINANCE");
 
 using FDesktopDomain = TShaderPermutationDomain<
 	FCommonDomain,
 	FTonemapperColorFringeDim,
-	FTonemapperGrainQuantizationDim,
 	FTonemapperOutputLuminance,
 	FTonemapperOutputDeviceDim>;
 
@@ -206,21 +219,20 @@ FDesktopDomain RemapPermutation(FDesktopDomain PermutationVector, ERHIFeatureLev
 	// You most likely need Bloom anyway. Not compatible with subpass.
 	CommonPermutationVector.Set<FTonemapperBloomDim>(!CommonPermutationVector.Get<FTonemapperSubpassDim>());
 
-	// Mobile supports only sRGB and LinearNoToneCurve output
-	if (FeatureLevel <= ERHIFeatureLevel::ES3_1 &&
-		PermutationVector.Get<FTonemapperOutputDeviceDim>() != EDisplayOutputFormat::HDR_LinearNoToneCurve)
+	if (FeatureLevel >= ERHIFeatureLevel::SM5)
 	{
-		PermutationVector.Set<FTonemapperOutputDeviceDim>(EDisplayOutputFormat::SDR_sRGB);
+		// Disabling bloom on desktop renderer is very rare, not worth compiling shader permutation without.
+		CommonPermutationVector.Set<FTonemapperBloomDim>(true);
 	}
-
-	// Disable grain quantization for LinearNoToneCurve and LinearWithToneCurve output device
-	if (PermutationVector.Get<FTonemapperOutputDeviceDim>() == EDisplayOutputFormat::HDR_LinearNoToneCurve || PermutationVector.Get<FTonemapperOutputDeviceDim>() == EDisplayOutputFormat::HDR_LinearWithToneCurve)
-		PermutationVector.Set<FTonemapperGrainQuantizationDim>(false);
 	else
-		PermutationVector.Set<FTonemapperGrainQuantizationDim>(true);
-
-	if (FeatureLevel < ERHIFeatureLevel::SM5)
 	{
+		// Mobile supports only sRGB and LinearNoToneCurve output
+		if (PermutationVector.Get<FTonemapperOutputDeviceDim>() != EDisplayOutputFormat::HDR_LinearNoToneCurve)
+		{
+			PermutationVector.Set<FTonemapperOutputDeviceDim>(EDisplayOutputFormat::SDR_sRGB);
+		}
+
+		// Mobile doesn't support film grain.
 		CommonPermutationVector.Set<FTonemapperFilmGrainDim>(false);
 	}
 
@@ -250,8 +262,7 @@ bool ShouldCompileDesktopPermutation(const FGlobalShaderPermutationParameters& P
 
 	if (CommonPermutationVector.Get<FTonemapperGammaOnlyDim>())
 	{
-		return !PermutationVector.Get<FTonemapperColorFringeDim>() &&
-			!PermutationVector.Get<FTonemapperGrainQuantizationDim>();
+		return !PermutationVector.Get<FTonemapperColorFringeDim>();
 	}
 	return true;
 }
@@ -332,7 +343,8 @@ BEGIN_SHADER_PARAMETER_STRUCT(FTonemapParameters, )
 	SHADER_PARAMETER_STRUCT(FScreenPassTextureViewportParameters, Color)
 	SHADER_PARAMETER_STRUCT(FScreenPassTextureViewportParameters, Output)
 	SHADER_PARAMETER_STRUCT(FEyeAdaptationParameters, EyeAdaptation)
-	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ColorTexture)
+	SHADER_PARAMETER_STRUCT(FLocalExposureParameters, LocalExposure)
+	SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D, ColorTexture)
 
 	// Parameters to apply to the scene color.
 	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, SceneColorApplyParamaters)
@@ -366,6 +378,7 @@ BEGIN_SHADER_PARAMETER_STRUCT(FTonemapParameters, )
 	SHADER_PARAMETER(float, LUTScale)
 	SHADER_PARAMETER(float, LUTOffset)
 	SHADER_PARAMETER(float, EditorNITLevel)
+	SHADER_PARAMETER(float, BackbufferQuantizationDithering)
 	SHADER_PARAMETER(uint32, bOutputInHDR)
 END_SHADER_PARAMETER_STRUCT()
 
@@ -594,13 +607,12 @@ FScreenPassTexture AddTonemapPass(FRDGBuilder& GraphBuilder, const FViewInfo& Vi
 
 	if (!Output.IsValid() && !Inputs.bUseSubpass)
 	{
-		FRDGTextureDesc OutputDesc = Inputs.SceneColor.Texture->Desc;
-		OutputDesc.Reset();
-		OutputDesc.Flags |= View.bUseComputePasses ? TexCreate_UAV : TexCreate_RenderTargetable;
-		OutputDesc.Flags |= GFastVRamConfig.Tonemap;
-		// RGB is the color in LDR, A is the luminance for PostprocessAA
-		OutputDesc.ClearValue = FClearValueBinding(FLinearColor(0, 0, 0, 0));
-
+		FRDGTextureDesc OutputDesc = FRDGTextureDesc::Create2D(
+			SceneColorViewport.Extent,
+			Inputs.SceneColor.TextureSRV->Desc.Texture->Desc.Format,
+			FClearValueBinding(FLinearColor(0, 0, 0, 0)),
+			GFastVRamConfig.Tonemap | TexCreate_ShaderResource | (View.bUseComputePasses ? TexCreate_UAV : TexCreate_RenderTargetable));;
+		
 		const FTonemapperOutputDeviceParameters OutputDeviceParameters = GetTonemapperOutputDeviceParameters(*View.Family);
 		const EDisplayOutputFormat OutputDevice = static_cast<EDisplayOutputFormat>(OutputDeviceParameters.OutputDevice);
 
@@ -643,7 +655,7 @@ FScreenPassTexture AddTonemapPass(FRDGBuilder& GraphBuilder, const FViewInfo& Vi
 	FRHISamplerState* BilinearClampSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 	FRHISamplerState* PointClampSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
-	const float SharpenDiv6 = FMath::Clamp(CVarTonemapperSharpen.GetValueOnRenderThread(), 0.0f, 10.0f) / 6.0f;
+	const float SharpenDiv6 = TonemapperPermutation::GetSharpenSetting(View.FinalPostProcessSettings) / 6.0f;
 
 	FVector4f ChromaticAberrationParams;
 
@@ -782,12 +794,20 @@ FScreenPassTexture AddTonemapPass(FRDGBuilder& GraphBuilder, const FViewInfo& Vi
 	
 	const float LUTSize = Inputs.ColorGradingTexture ? (float)Inputs.ColorGradingTexture->Desc.Extent.Y : /* unused (default): */ 32.0f;
 
+	const bool bLocalExposureEnabled = Inputs.LocalExposureTexture != nullptr;
+
+	if (bLocalExposureEnabled)
+	{
+		checkf(Inputs.LocalExposureParameters != nullptr, TEXT("When Local Exposure is enabled, corresponding parameters must be provided"));
+		CommonParameters.LocalExposure = *Inputs.LocalExposureParameters;
+	}
+
 	CommonParameters.OutputDevice = GetTonemapperOutputDeviceParameters(ViewFamily);
 	if (!Inputs.bUseSubpass)
 	{
 		CommonParameters.Color = GetScreenPassTextureViewportParameters(SceneColorViewport);
 		CommonParameters.Output = GetScreenPassTextureViewportParameters(OutputViewport);
-		CommonParameters.ColorTexture = Inputs.SceneColor.Texture;
+		CommonParameters.ColorTexture = Inputs.SceneColor.TextureSRV;
 		CommonParameters.EyeAdaptationBuffer = GraphBuilder.CreateSRV(EyeAdaptationBuffer);
 	}
 	CommonParameters.LumBilateralGrid = Inputs.LocalExposureTexture;
@@ -802,6 +822,32 @@ FScreenPassTexture AddTonemapPass(FRDGBuilder& GraphBuilder, const FViewInfo& Vi
 	CommonParameters.ChromaticAberrationParams = ChromaticAberrationParams;
 	CommonParameters.TonemapperParams = FVector4f(PostProcessSettings.VignetteIntensity, SharpenDiv6, 0.0f, 0.0f);
 	CommonParameters.EditorNITLevel = EditorNITLevel;
+	{
+		const bool bSupportsBackbufferQuantizationDithering = EDisplayOutputFormat(CommonParameters.OutputDevice.OutputDevice) != EDisplayOutputFormat::HDR_LinearNoToneCurve && EDisplayOutputFormat(CommonParameters.OutputDevice.OutputDevice) != EDisplayOutputFormat::HDR_LinearWithToneCurve;
+		const int32 BitdepthOverride = CVarBackbufferQuantizationDitheringOverride.GetValueOnRenderThread();
+
+		if (!bSupportsBackbufferQuantizationDithering)
+		{
+			CommonParameters.BackbufferQuantizationDithering = 0.0f;
+		}
+		else if (BitdepthOverride > 0)
+		{
+			CommonParameters.BackbufferQuantizationDithering = 1.0f / (FMath::Pow(2.0f, float(BitdepthOverride)) - 1.0f);
+		}
+		else
+		{
+			CommonParameters.BackbufferQuantizationDithering = 1.0f / 1023.0f;
+
+			if (View.Family->RenderTarget && View.Family->RenderTarget->GetRenderTargetTexture())
+			{
+				EPixelFormat BackbufferPixelFormat = View.Family->RenderTarget->GetRenderTargetTexture()->GetFormat();
+				if (BackbufferPixelFormat == PF_B8G8R8A8 || BackbufferPixelFormat == PF_R8G8B8A8)
+				{
+					CommonParameters.BackbufferQuantizationDithering = 1.0f / 255.0f;
+				}
+			}
+		}
+	}
 	CommonParameters.bOutputInHDR = ViewFamily.bIsHDR;
 	CommonParameters.LUTSize = LUTSize;
 	CommonParameters.InvLUTSize = 1.0f / LUTSize;
@@ -809,37 +855,11 @@ FScreenPassTexture AddTonemapPass(FRDGBuilder& GraphBuilder, const FViewInfo& Vi
 	CommonParameters.LUTOffset = 0.5f / LUTSize;
 	CommonParameters.LensPrincipalPointOffsetScale = View.LensPrincipalPointOffsetScale;
 
-	// TODO: PostProcessSettings.BloomDirtMask->GetResource() is not thread safe
-	if (PostProcessSettings.BloomDirtMask && PostProcessSettings.BloomDirtMask->GetResource() && PostProcessSettings.BloomDirtMaskIntensity > 0 && PostProcessSettings.BloomIntensity > 0.0)
-	{
-		CommonParameters.BloomDirtMaskTint = PostProcessSettings.BloomDirtMaskTint * PostProcessSettings.BloomDirtMaskIntensity / PostProcessSettings.BloomIntensity;
-		CommonParameters.BloomDirtMaskTexture = PostProcessSettings.BloomDirtMask->GetResource()->TextureRHI;
-		CommonParameters.BloomDirtMaskSampler = BilinearClampSampler;
-	}
-	else
-	{
-		CommonParameters.BloomDirtMaskTint = FLinearColor::Black;
-		CommonParameters.BloomDirtMaskTexture = GBlackTexture->TextureRHI;
-		CommonParameters.BloomDirtMaskSampler = BilinearClampSampler;
-	}
-
-	if (!FTonemapInputs::SupportsSceneColorApplyParametersBuffer(View.GetShaderPlatform()))
-	{
-		check(Inputs.SceneColorApplyParamaters == nullptr);
-	}
-	else if (Inputs.SceneColorApplyParamaters)
-	{
-		CommonParameters.SceneColorApplyParamaters = GraphBuilder.CreateSRV(Inputs.SceneColorApplyParamaters);
-	}
-	else
-	{
-		FRDGBufferRef ApplyParametersBuffer = GSystemTextures.GetDefaultStructuredBuffer(GraphBuilder, sizeof(FVector4f), FVector4f(1.0f, 1.0f, 1.0f, 1.0f));
-		CommonParameters.SceneColorApplyParamaters = GraphBuilder.CreateSRV(ApplyParametersBuffer);
-	}
-
 	// Bloom parameters
 	{
-		if (Inputs.Bloom.Texture)
+		const bool bUseBloom = Inputs.Bloom.Texture != nullptr;
+
+		if (bUseBloom)
 		{
 			const FScreenPassTextureViewport BloomViewport(Inputs.Bloom);
 			CommonParameters.ColorToBloom = FScreenTransform::ChangeTextureUVCoordinateFromTo(SceneColorViewport, BloomViewport);
@@ -855,6 +875,34 @@ FScreenPassTexture AddTonemapPass(FRDGBuilder& GraphBuilder, const FViewInfo& Vi
 			CommonParameters.BloomUVViewportBilinearMax = FVector2f::UnitVector;
 			CommonParameters.BloomTexture = GSystemTextures.GetBlackDummy(GraphBuilder);
 			CommonParameters.BloomSampler = BilinearClampSampler;
+		}
+
+		if (!FTonemapInputs::SupportsSceneColorApplyParametersBuffer(View.GetShaderPlatform()))
+		{
+			check(Inputs.SceneColorApplyParamaters == nullptr);
+		}
+		else if (Inputs.SceneColorApplyParamaters)
+		{
+			CommonParameters.SceneColorApplyParamaters = GraphBuilder.CreateSRV(Inputs.SceneColorApplyParamaters);
+		}
+		else
+		{
+			FRDGBufferRef ApplyParametersBuffer = GSystemTextures.GetDefaultStructuredBuffer(GraphBuilder, sizeof(FVector4f), FVector4f(1.0f, 1.0f, 1.0f, 1.0f));
+			CommonParameters.SceneColorApplyParamaters = GraphBuilder.CreateSRV(ApplyParametersBuffer);
+		}
+
+		// TODO: PostProcessSettings.BloomDirtMask->GetResource() is not thread safe
+		if (bUseBloom && PostProcessSettings.BloomDirtMask && PostProcessSettings.BloomDirtMask->GetResource() && PostProcessSettings.BloomDirtMaskIntensity > 0 && PostProcessSettings.BloomIntensity > 0.0)
+		{
+			CommonParameters.BloomDirtMaskTint = PostProcessSettings.BloomDirtMaskTint * PostProcessSettings.BloomDirtMaskIntensity / PostProcessSettings.BloomIntensity;
+			CommonParameters.BloomDirtMaskTexture = PostProcessSettings.BloomDirtMask->GetResource()->TextureRHI;
+			CommonParameters.BloomDirtMaskSampler = BilinearClampSampler;
+		}
+		else
+		{
+			CommonParameters.BloomDirtMaskTint = FLinearColor::Black;
+			CommonParameters.BloomDirtMaskTexture = GBlackTexture->TextureRHI;
+			CommonParameters.BloomDirtMaskSampler = BilinearClampSampler;
 		}
 	}
 
@@ -873,18 +921,11 @@ FScreenPassTexture AddTonemapPass(FRDGBuilder& GraphBuilder, const FViewInfo& Vi
 	TonemapperPermutation::FDesktopDomain DesktopPermutationVector;
 
 	{
-		TonemapperPermutation::FCommonDomain CommonDomain = TonemapperPermutation::BuildCommonPermutationDomain(View, Inputs.bGammaOnly, Inputs.LocalExposureTexture != nullptr, Inputs.bMetalMSAAHDRDecode, Inputs.bUseSubpass, Inputs.MsaaSamples);
+		TonemapperPermutation::FCommonDomain CommonDomain = TonemapperPermutation::BuildCommonPermutationDomain(View, Inputs.bGammaOnly, bLocalExposureEnabled, Inputs.bMetalMSAAHDRDecode, Inputs.bUseSubpass, Inputs.MsaaSamples);
 		DesktopPermutationVector.Set<TonemapperPermutation::FCommonDomain>(CommonDomain);
 
 		if (!CommonDomain.Get<TonemapperPermutation::FTonemapperGammaOnlyDim>())
 		{
-			// Grain Quantization
-			{
-				static TConsoleVariableData<int32>* CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Tonemapper.GrainQuantization"));
-				const int32 Value = CVar->GetValueOnRenderThread();
-				DesktopPermutationVector.Set<TonemapperPermutation::FTonemapperGrainQuantizationDim>(Value > 0);
-			}
-
 			DesktopPermutationVector.Set<TonemapperPermutation::FTonemapperColorFringeDim>(PostProcessSettings.SceneFringeIntensity > 0.01f);
 		}
 
@@ -900,7 +941,7 @@ FScreenPassTexture AddTonemapPass(FRDGBuilder& GraphBuilder, const FViewInfo& Vi
 
 	FRDGTextureRef OutputLuminance = {};
 	const bool bOutputLuminance = DesktopPermutationVector.Get<TonemapperPermutation::FTonemapperOutputLuminance>();
-	if (bOutputLuminance)
+	if (bOutputLuminance && !Inputs.bUseSubpass)
 	{
 		// Due to the way split-screen shares the same render target for all views, make sure
 		// that we use the same texture for saving out the luminance as well to keep the memory
@@ -986,11 +1027,6 @@ FScreenPassTexture AddTonemapPass(FRDGBuilder& GraphBuilder, const FViewInfo& Vi
 			SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), PassParameters->Tonemap);
 			SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), *PassParameters);
 		});
-
-		if (OutputLuminance && View.ViewState)
-		{
-			GraphBuilder.QueueTextureExtraction(OutputLuminance, &View.ViewState->PrevFrameViewInfo.LuminanceHistory);
-		}
 	}
 	else
 	{
@@ -1034,6 +1070,11 @@ FScreenPassTexture AddTonemapPass(FRDGBuilder& GraphBuilder, const FViewInfo& Vi
 			TargetSize,
 			VertexShader,
 			EDRF_UseTriangleOptimization);
+	}
+
+	if (OutputLuminance && View.ViewState)
+	{
+		GraphBuilder.QueueTextureExtraction(OutputLuminance, &View.ViewState->PrevFrameViewInfo.LuminanceHistory);
 	}
 
 	return MoveTemp(Output);

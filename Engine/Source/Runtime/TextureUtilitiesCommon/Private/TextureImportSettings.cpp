@@ -4,6 +4,7 @@
 #include "HAL/IConsoleManager.h"
 #include "UObject/UnrealType.h"
 #include "UObject/PropertyPortFlags.h"
+#include "Misc/ConfigCacheIni.h"
 
 #if WITH_EDITOR
 #include "Engine/Texture.h"
@@ -26,6 +27,28 @@ void UTextureImportSettings::PostInitProperties()
 		ImportConsoleVariableValues();
 	}
 #endif // #if WITH_EDITOR
+}
+
+// Get the PNGInfill setting, with Default mapped to a concrete choice
+ETextureImportPNGInfill UTextureImportSettings::GetPNGInfillMapDefault() const
+{
+	if ( PNGInfill == ETextureImportPNGInfill::Default )
+	{
+		// Default is OnlyOnBinaryTransparency unless changed by legacy config
+
+		// get legacy config :
+		bool bFillPNGZeroAlpha = true;
+		if ( GConfig )
+		{
+			GConfig->GetBool(TEXT("TextureImporter"), TEXT("FillPNGZeroAlpha"), bFillPNGZeroAlpha, GEditorIni);		
+		}
+		
+		return bFillPNGZeroAlpha ? ETextureImportPNGInfill::OnlyOnBinaryTransparency : ETextureImportPNGInfill::Never;
+	}
+	else
+	{
+		return PNGInfill;
+	}
 }
 
 #if WITH_EDITOR

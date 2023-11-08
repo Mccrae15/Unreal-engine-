@@ -6,29 +6,27 @@
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SmartObjectSlotLinkAnnotation)
 
-#if UE_ENABLE_DEBUG_DRAWING
+#if WITH_EDITOR
 
 void FSmartObjectSlotLinkAnnotation::DrawVisualization(FSmartObjectVisualizationContext& VisContext) const
 {
+	constexpr float DepthBias = 2.0f;
+	constexpr bool Screenspace = true;
+
 	if (!LinkedSlot.IsValid() || !VisContext.Definition.IsValidSlotIndex(LinkedSlot.GetIndex()))
 	{
 		return;
 	}
 	
-	const FSmartObjectSlotIndex SlotIndex(VisContext.SlotIndex);
-	const FSmartObjectSlotIndex LinkedSlotIndex(LinkedSlot.GetIndex());
-	const TOptional<FTransform> Transform = VisContext.Definition.GetSlotTransform(VisContext.OwnerLocalToWorld, SlotIndex);
-	const TOptional<FTransform> TargetTransform = VisContext.Definition.GetSlotTransform(VisContext.OwnerLocalToWorld, LinkedSlotIndex);
+	const FTransform Transform = VisContext.Definition.GetSlotWorldTransform(VisContext.SlotIndex, VisContext.OwnerLocalToWorld);
+	const FTransform TargetTransform = VisContext.Definition.GetSlotWorldTransform(LinkedSlot.GetIndex(), VisContext.OwnerLocalToWorld);
 	
-	if (Transform.IsSet() && TargetTransform.IsSet())
+	FLinearColor Color = FLinearColor::White;
+	if (VisContext.bIsSlotSelected)
 	{
-		FLinearColor Color = FLinearColor::White;
-		if (VisContext.bIsSlotSelected)
-		{
-			Color = VisContext.SelectedColor;
-		}
-		VisContext.DrawArrow(Transform.GetValue().GetLocation(), TargetTransform.GetValue().GetLocation(), Color, 15.0f, 15.0f, /*DepthPrioGroup*/0, /*Thickness*/1.0f, /*DepthBias*/2.0);
+		Color = VisContext.SelectedColor;
 	}
+	VisContext.DrawArrow(Transform.GetLocation(), TargetTransform.GetLocation(), Color, 5.0f, 5.0f, /*DepthPrioGroup*/0, /*Thickness*/1.0f, DepthBias, Screenspace);
 }
 
 void FSmartObjectSlotLinkAnnotation::DrawVisualizationHUD(FSmartObjectVisualizationContext& VisContext) const
@@ -37,17 +35,14 @@ void FSmartObjectSlotLinkAnnotation::DrawVisualizationHUD(FSmartObjectVisualizat
 	{
 		return;
 	}
-	const FSmartObjectSlotIndex SlotIndex(VisContext.SlotIndex);
-	const FSmartObjectSlotIndex LinkedSlotIndex(LinkedSlot.GetIndex());
-	const TOptional<FTransform> Transform = VisContext.Definition.GetSlotTransform(VisContext.OwnerLocalToWorld, SlotIndex);
-	const TOptional<FTransform> TargetTransform = VisContext.Definition.GetSlotTransform(VisContext.OwnerLocalToWorld, LinkedSlotIndex);
+	const FTransform Transform = VisContext.Definition.GetSlotWorldTransform(VisContext.SlotIndex, VisContext.OwnerLocalToWorld);
+	const FTransform TargetTransform = VisContext.Definition.GetSlotWorldTransform(LinkedSlot.GetIndex(), VisContext.OwnerLocalToWorld);
 
-	if (VisContext.bIsSlotSelected
-		&& Transform.IsSet() && TargetTransform.IsSet())
+	if (VisContext.bIsSlotSelected)
 	{
-		const FVector LabelPos = FMath::Lerp(Transform.GetValue().GetLocation(), TargetTransform.GetValue().GetLocation(), 0.3f);
+		const FVector LabelPos = FMath::Lerp(Transform.GetLocation(), TargetTransform.GetLocation(), 0.3);
 		VisContext.DrawString(LabelPos, *Tag.ToString(), FLinearColor::White);
 	}
 }
 
-#endif
+#endif // WITH_EDITOR

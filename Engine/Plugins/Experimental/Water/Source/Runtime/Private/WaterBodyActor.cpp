@@ -15,13 +15,18 @@
 #include "WaterBodyLakeComponent.h"
 #include "WaterBodyOceanComponent.h"
 #include "WaterBodyRiverComponent.h"
+#include "WaterBodyInfoMeshComponent.h"
+#include "WaterBodyStaticMeshComponent.h"
 #include "WaterVersion.h"
+#include "Algo/RemoveIf.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(WaterBodyActor)
 
 #if WITH_EDITOR
 #include "Editor/EditorEngine.h"
 #include "Landscape.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/Level.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "Water"
@@ -53,6 +58,14 @@ AWaterBody::AWaterBody(const FObjectInitializer& ObjectInitializer)
 	// Temporarily set the root component to the spline because the WaterBodyComponent has not yet been created
 	RootComponent = SplineComp;
 
+	WaterInfoMeshComponent = CreateDefaultSubobject<UWaterBodyInfoMeshComponent>(TEXT("WaterInfoMeshComponent"));
+	WaterInfoMeshComponent->SetMobility(EComponentMobility::Static);
+	WaterInfoMeshComponent->SetupAttachment(RootComponent);
+
+	DilatedWaterInfoMeshComponent = CreateDefaultSubobject<UWaterBodyInfoMeshComponent>(TEXT("DilatedWaterInfoMeshComponent"));
+	DilatedWaterInfoMeshComponent->SetMobility(EComponentMobility::Static);
+	DilatedWaterInfoMeshComponent->SetupAttachment(RootComponent);
+
 #if WITH_EDITORONLY_DATA
 	bAffectsLandscape_DEPRECATED = true;
 	CollisionProfileName_DEPRECATED = GetDefault<UWaterRuntimeSettings>()->GetDefaultWaterCollisionProfileName();
@@ -70,7 +83,22 @@ void AWaterBody::PreRegisterAllComponents()
 	Super::PreRegisterAllComponents();
 
 	SetRootComponent(WaterBodyComponent);
-	SplineComp->AttachToComponent(WaterBodyComponent, FAttachmentTransformRules::KeepRelativeTransform);
+	if (SplineComp)
+	{
+		SplineComp->AttachToComponent(WaterBodyComponent, FAttachmentTransformRules::KeepRelativeTransform);
+	}
+	
+	if (IsValid(WaterInfoMeshComponent))
+	{
+		WaterInfoMeshComponent->SetMobility(WaterBodyComponent->Mobility);
+		WaterInfoMeshComponent->AttachToComponent(WaterBodyComponent, FAttachmentTransformRules::SnapToTargetIncludingScale);
+	}
+
+	if (IsValid(DilatedWaterInfoMeshComponent))
+	{
+		DilatedWaterInfoMeshComponent->SetMobility(WaterBodyComponent->Mobility);
+		DilatedWaterInfoMeshComponent->AttachToComponent(WaterBodyComponent, FAttachmentTransformRules::SnapToTargetIncludingScale);
+	}
 }
 
 void AWaterBody::NotifyActorBeginOverlap(AActor* OtherActor)
@@ -194,6 +222,24 @@ void AWaterBody::SetWaterWavesInternal(UWaterWavesBase* InWaterWaves)
 	}
 }
 
+void AWaterBody::CleanupInvalidStaticMeshComponents()
+{
+	WaterBodyStaticMeshComponents.SetNum(Algo::RemoveIf(WaterBodyStaticMeshComponents, [](const TObjectPtr<UWaterBodyStaticMeshComponent>& StaticMeshComponent)
+	{
+		return !IsValid(StaticMeshComponent);
+	}));
+}
+
+void AWaterBody::SetWaterBodyStaticMeshComponents(TArrayView<TObjectPtr<UWaterBodyStaticMeshComponent>> NewComponentList, TConstArrayView<TObjectPtr<UWaterBodyStaticMeshComponent>> ComponentsToUnregister)
+{
+	for (const TObjectPtr<UWaterBodyStaticMeshComponent>& StaticMeshComponent : ComponentsToUnregister)
+	{
+		StaticMeshComponent.Get()->UnregisterComponent();
+		StaticMeshComponent.Get()->DestroyComponent();
+	}
+	WaterBodyStaticMeshComponents = NewComponentList;
+}
+
 static FName GetWaterBodyComponentName(EWaterBodyType Type)
 {
 	switch (Type)
@@ -273,7 +319,7 @@ void AWaterBody::InitializeBody()
 		WaterBodyComponent->SetMobility(EComponentMobility::Static);
 	}
 
-	checkf(WaterBodyComponent, TEXT("Failed to create a water body component for a water body actor (%s)!"), *GetName());
+	checkf(WaterBodyComponent, TEXT("Failed to create a water body component for a water body actor (%s)!"), *GetActorNameOrLabel());
 
 	SetRootComponent(WaterBodyComponent);
 
@@ -440,9 +486,9 @@ void AWaterBody::DeprecateData()
 		FMemory::Memcpy((void*)&WaterHeightmapSettings_DEPRECATED, (void*)&TerrainCarvingSettings_DEPRECATED, sizeof(WaterHeightmapSettings_DEPRECATED));
 	}
 
-	if (GIsEditor && !HasAnyFlags(RF_ClassDefaultObject))
+	if (GIsEditor && !HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject | RF_DefaultSubObject))
 	{
-		if (WaterWaves && (WaterWaves->GetOuter() != this))
+		if (WaterWaves && (!WaterWaves->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject | RF_DefaultSubObject)) && (WaterWaves->GetOuter() != this))
 		{
 			WaterWaves->ClearFlags(RF_Public);
 			// At one point, WaterWaves's outer was the level. We need them to be outered by the water body : 
@@ -572,6 +618,16 @@ void AWaterBody::PostRegisterAllComponents()
 		// At this point, the water mesh actor should be ready and we can setup the MID accordingly : 
 		// Needs to be done at the end so that all data needed by the MIDs (e.g. WaterBodyIndex) is up to date :
 		WaterBodyComponent->UpdateMaterialInstances();
+
+#if WITH_EDITOR
+		// We need to generate the water body render data for the first time here after the waterbody component is registered to the actor.
+		if (GetLinkerCustomVersion(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::WaterBodyStaticMeshComponents)
+		{
+			WaterBodyComponent->UpdateWaterBodyRenderData();
+		}
+#endif // WITH_EDITOR
+
+		WaterBodyComponent->OnPostRegisterAllComponents();
 	}
 }
 
@@ -581,6 +637,24 @@ bool AWaterBody::IsHLODRelevant() const
 }
 
 #if WITH_EDITOR
+void AWaterBody::PopulatePIEDuplicationSeed(AActor::FDuplicationSeedInterface& DuplicationSeed)
+{
+	Super::PopulatePIEDuplicationSeed(DuplicationSeed);
+
+	// Avoid copying expensive UStaticMesh when entering pie, instead use the duplication seed to have the PIE instance share the same mesh pointer.
+	TArray<TObjectPtr<UWaterBodyMeshComponent>> MeshComponents = { WaterInfoMeshComponent, DilatedWaterInfoMeshComponent };
+	MeshComponents.Append(WaterBodyStaticMeshComponents);
+
+	for (TObjectPtr<UWaterBodyMeshComponent> MeshComponent : MeshComponents)
+	{
+		if (IsValid(MeshComponent) && IsValid(MeshComponent->GetStaticMesh()))
+		{
+			UStaticMesh* StaticMesh = MeshComponent->GetStaticMesh();
+			DuplicationSeed.AddEntry(StaticMesh, StaticMesh);
+		}
+	}
+}
+
 void AWaterBody::SetActorHiddenInGame(bool bNewHidden)
 {
 	// It's kinda sad that being hidden in game for the actor doesn't end up calling OnHiddenInGameChanged on the component but intercepting it on the actor, we can inform the component that it needs
@@ -633,6 +707,21 @@ void AWaterBody::GetActorDescProperties(FPropertyPairsMap& PropertyPairsMap) con
 	{
 		PropertyPairsMap.AddProperty(ALandscape::AffectsLandscapeActorDescProperty);
 	}
+}
+
+void AWaterBody::PostActorCreated()
+{
+	Super::PostActorCreated();
+
+	FOnWaterBodyChangedParams Params;
+
+	Params.PropertyChangedEvent.ChangeType = EPropertyChangeType::ValueSet;
+	Params.bShapeOrPositionChanged = true;
+	Params.bUserTriggered = false;
+	
+	WaterBodyComponent->OnWaterBodyChanged(Params);
+
+	WaterBodyComponent->OnPostActorCreated();
 }
 
 #endif // WITH_EDITOR

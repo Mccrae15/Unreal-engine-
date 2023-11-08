@@ -1,9 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-/*=============================================================================
-	LumenScreenProbeGather.cpp
-=============================================================================*/
-
 #include "LumenScreenProbeGather.h"
 #include "BasePassRendering.h"
 #include "Lumen/LumenRadianceCache.h"
@@ -19,6 +15,8 @@
 #include "HairStrands/HairStrandsEnvironment.h"
 #include "ShaderPrint.h"
 #include "Strata/Strata.h"
+#include "LumenReflections.h"
+#include "DepthCopy.h"
 
 extern FLumenGatherCvarState GLumenGatherCvars;
 
@@ -196,7 +194,7 @@ FAutoConsoleVariableRef CVarLumenScreenProbeTemporalFastUpdateModeUseNeighborhoo
 	ECVF_Scalability | ECVF_RenderThreadSafe
 	);
 
-int32 GLumenScreenProbeTemporalRejectBasedOnNormal = 1;
+int32 GLumenScreenProbeTemporalRejectBasedOnNormal = 0;
 FAutoConsoleVariableRef CVarLumenScreenProbeTemporalRejectBasedOnNormal(
 	TEXT("r.Lumen.ScreenProbeGather.Temporal.RejectBasedOnNormal"),
 	GLumenScreenProbeTemporalRejectBasedOnNormal,
@@ -537,7 +535,7 @@ namespace LumenScreenProbeGatherRadianceCache
 		Parameters.RadianceProbeClipmapResolution = GetClipmapGridResolution();
 		Parameters.ProbeAtlasResolutionInProbes = FIntPoint(GRadianceCacheProbeAtlasResolutionInProbes, GRadianceCacheProbeAtlasResolutionInProbes);
 		Parameters.NumRadianceProbeClipmaps = GetNumClipmaps();
-		Parameters.RadianceProbeResolution = GetProbeResolution();
+		Parameters.RadianceProbeResolution = FMath::Max(GetProbeResolution(), LumenRadianceCache::MinRadianceProbeResolution);
 		Parameters.FinalProbeResolution = GetFinalProbeResolution();
 		Parameters.FinalRadianceAtlasMaxMip = GRadianceCacheNumMipmaps - 1;
 		const float LightingUpdateSpeed = FMath::Clamp(View.FinalPostProcessSettings.LumenFinalGatherLightingUpdateSpeed, .5f, 4.0f);
@@ -547,39 +545,6 @@ namespace LumenScreenProbeGatherRadianceCache
 		return Parameters;
 	}
 };
-
-class FCopyDepthCS : public FGlobalShader
-{
-	DECLARE_GLOBAL_SHADER(FCopyDepthCS)
-	SHADER_USE_PARAMETER_STRUCT(FCopyDepthCS, FGlobalShader)
-
-	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float3>, RWDepth)
-		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneDepthTexture)
-	END_SHADER_PARAMETER_STRUCT()
-
-	using FPermutationDomain = TShaderPermutationDomain<>;
-
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return DoesPlatformSupportLumenGI(Parameters.Platform);
-	}
-
-	static int32 GetGroupSize() 
-	{
-		return 8;
-	}
-
-	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE"), GetGroupSize());
-	}
-};
-
-IMPLEMENT_GLOBAL_SHADER(FCopyDepthCS, "/Engine/Private/Lumen/LumenScreenProbeGather.usf", "CopyDepthCS", SF_Compute);
-
 
 class FScreenProbeDownsampleDepthUniformCS : public FGlobalShader
 {
@@ -1403,8 +1368,10 @@ void UpdateHistoryScreenProbeGather(
 		TRefCountPtr<IPooledRenderTarget>* HistoryNumFramesAccumulated = &ScreenProbeGatherState.NumFramesAccumulatedRT;
 		TRefCountPtr<IPooledRenderTarget>* FastUpdateModeHistoryState = &ScreenProbeGatherState.FastUpdateModeHistoryRT;
 		TRefCountPtr<IPooledRenderTarget>& NormalHistoryState = ScreenProbeGatherState.NormalHistoryRT;
-		const bool bRejectBasedOnNormal = GLumenScreenProbeTemporalRejectBasedOnNormal != 0 && NormalHistoryState
+
+		const bool bWantToRejectBasedOnNormal = GLumenScreenProbeTemporalRejectBasedOnNormal != 0
 			&& !Strata::IsStrataEnabled(); // STRATA_TODO provide Lumen with a valid normal
+		const bool bRejectBasedOnNormal = bWantToRejectBasedOnNormal && NormalHistoryState;
 		const bool bSupportBackfaceDiffuse = BackfaceDiffuseIndirect != nullptr;
 		const bool bOverflowTileHistoryValid = Strata::IsStrataEnabled() ? View.StrataViewData.MaxBSDFCount == ScreenProbeGatherState.HistoryStrataMaxBSDFCount : true;
 
@@ -1623,7 +1590,7 @@ void UpdateHistoryScreenProbeGather(
 			ScreenProbeGatherState.HistoryEffectiveResolution = EffectiveResolution;
 			ScreenProbeGatherState.HistorySceneTexturesExtent = SceneTextures.Config.Extent;
 
-			if (bRejectBasedOnNormal)
+			if (bWantToRejectBasedOnNormal)
 			{
 				if (Strata::IsStrataEnabled())
 				{
@@ -1652,20 +1619,7 @@ void FDeferredShadingSceneRenderer::StoreLumenDepthHistory(FRDGBuilder& GraphBui
 		FRDGTextureDesc NewDepthHistoryDesc = FRDGTextureDesc::Create2D(DepthDesc.Extent, PF_R32_FLOAT, FClearValueBinding::Black, TexCreate_ShaderResource | TexCreate_UAV);
 		FRDGTextureRef NewDepthHistory = GraphBuilder.CreateTexture(NewDepthHistoryDesc, TEXT("Lumen.DepthHistory"));
 
-		FCopyDepthCS::FPermutationDomain PermutationVector;
-		auto ComputeShader = View.ShaderMap->GetShader<FCopyDepthCS>(PermutationVector);
-
-		FCopyDepthCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FCopyDepthCS::FParameters>();
-		PassParameters->RWDepth = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(NewDepthHistory));
-		PassParameters->View = View.ViewUniformBuffer;
-		PassParameters->SceneDepthTexture = SceneTextures.Depth.Resolve;
-
-		FComputeShaderUtils::AddPass(
-			GraphBuilder,
-			RDG_EVENT_NAME("CopyDepth"),
-			ComputeShader,
-			PassParameters,
-			FComputeShaderUtils::GetGroupCount(View.ViewRect.Size(), FCopyDepthCS::GetGroupSize()));
+		AddViewDepthCopyCSPass(GraphBuilder, View, SceneTextures.Depth.Resolve, NewDepthHistory);
 
 		GraphBuilder.QueueTextureExtraction(NewDepthHistory, &View.ViewState->Lumen.DepthHistoryRT);
 	}
@@ -1841,7 +1795,7 @@ FSSDSignalTextures FDeferredShadingSceneRenderer::RenderLumenScreenProbeGather(
 
 	ScreenProbeParameters.ScreenProbeGatherMaxMip = GLumenScreenProbeGatherNumMips - 1;
 	ScreenProbeParameters.RelativeSpeedDifferenceToConsiderLightingMoving = GLumenScreenProbeRelativeSpeedDifferenceToConsiderLightingMoving;
-	ScreenProbeParameters.ScreenTraceNoFallbackThicknessScale = Lumen::UseHardwareRayTracedScreenProbeGather(ViewFamily) ? 1.0f : GLumenScreenProbeScreenTracesThicknessScaleWhenNoFallback;
+	ScreenProbeParameters.ScreenTraceNoFallbackThicknessScale = (Lumen::UseHardwareRayTracedScreenProbeGather(ViewFamily) ? 1.0f : GLumenScreenProbeScreenTracesThicknessScaleWhenNoFallback) * View.ViewMatrices.GetPerProjectionDepthThicknessScale();
 	ScreenProbeParameters.NumUniformScreenProbes = ScreenProbeParameters.ScreenProbeViewSize.X * ScreenProbeParameters.ScreenProbeViewSize.Y;
 	ScreenProbeParameters.MaxNumAdaptiveProbes = FMath::TruncToInt(ScreenProbeParameters.NumUniformScreenProbes * GLumenScreenProbeGatherAdaptiveProbeAllocationFraction);
 	
@@ -1987,118 +1941,125 @@ FSSDSignalTextures FDeferredShadingSceneRenderer::RenderLumenScreenProbeGather(
 
 	if (LumenScreenProbeGather::UseRadianceCache(View))
 	{
-		FMarkUsedRadianceCacheProbes GraphicsMarkUsedRadianceCacheProbesCallbacks;
-		FMarkUsedRadianceCacheProbes ComputeMarkUsedRadianceCacheProbesCallbacks;
-
-		ComputeMarkUsedRadianceCacheProbesCallbacks.AddLambda([ComputePassFlags](
-			FRDGBuilder& GraphBuilder, 
-			const FViewInfo& View, 
-			const LumenRadianceCache::FRadianceCacheMarkParameters& RadianceCacheMarkParameters)
-			{
-				MarkUsedProbesForVisualize(GraphBuilder, View, RadianceCacheMarkParameters, ComputePassFlags);
-			});
-
-		// Mark radiance caches for screen probes
-		ComputeMarkUsedRadianceCacheProbesCallbacks.AddLambda([&SceneTextures, &ScreenProbeParameters, ComputePassFlags](
-			FRDGBuilder& GraphBuilder, 
-			const FViewInfo& View, 
-			const LumenRadianceCache::FRadianceCacheMarkParameters& RadianceCacheMarkParameters)
-			{
-				ScreenGatherMarkUsedProbes(
-					GraphBuilder,
-					View,
-					SceneTextures,
-					ScreenProbeParameters,
-					RadianceCacheMarkParameters,
-					ComputePassFlags);
-			});
-
-		// Mark radiance caches for hair strands
-		if (HairStrands::HasViewHairStrandsData(View))
+		if (!ShouldUseStereoLumenOptimizations() || View.ShouldRenderView())
 		{
+			FMarkUsedRadianceCacheProbes GraphicsMarkUsedRadianceCacheProbesCallbacks;
+			FMarkUsedRadianceCacheProbes ComputeMarkUsedRadianceCacheProbesCallbacks;
+
 			ComputeMarkUsedRadianceCacheProbesCallbacks.AddLambda([ComputePassFlags](
 				FRDGBuilder& GraphBuilder,
 				const FViewInfo& View,
 				const LumenRadianceCache::FRadianceCacheMarkParameters& RadianceCacheMarkParameters)
 				{
-					HairStrandsMarkUsedProbes(
-						GraphBuilder,
-						View,
-						RadianceCacheMarkParameters,
-						ComputePassFlags);
+					MarkUsedProbesForVisualize(GraphBuilder, View, RadianceCacheMarkParameters, ComputePassFlags);
 				});
-		}
 
-		if (Lumen::UseLumenTranslucencyRadianceCacheReflections(View))
-		{
-			const FSceneRenderer& SceneRenderer = *this;
-			FViewInfo& ViewNonConst = View;
-
-			GraphicsMarkUsedRadianceCacheProbesCallbacks.AddLambda([&SceneTextures, &SceneRenderer, &ViewNonConst](
+			// Mark radiance caches for screen probes
+			ComputeMarkUsedRadianceCacheProbesCallbacks.AddLambda([&SceneTextures, &ScreenProbeParameters, ComputePassFlags](
 				FRDGBuilder& GraphBuilder,
 				const FViewInfo& View,
 				const LumenRadianceCache::FRadianceCacheMarkParameters& RadianceCacheMarkParameters)
 				{
-					LumenTranslucencyReflectionsMarkUsedProbes(
+					ScreenGatherMarkUsedProbes(
 						GraphBuilder,
-						SceneRenderer,
-						ViewNonConst,
+						View,
 						SceneTextures,
-						RadianceCacheMarkParameters);
+						ScreenProbeParameters,
+						RadianceCacheMarkParameters,
+						ComputePassFlags);
 				});
-		}
 
-		LumenRadianceCache::TInlineArray<LumenRadianceCache::FUpdateInputs> InputArray;
-		LumenRadianceCache::TInlineArray<LumenRadianceCache::FUpdateOutputs> OutputArray;
+			// Mark radiance caches for hair strands
+			if (HairStrands::HasViewHairStrandsData(View))
+			{
+				ComputeMarkUsedRadianceCacheProbesCallbacks.AddLambda([ComputePassFlags](
+					FRDGBuilder& GraphBuilder,
+					const FViewInfo& View,
+					const LumenRadianceCache::FRadianceCacheMarkParameters& RadianceCacheMarkParameters)
+					{
+						HairStrandsMarkUsedProbes(
+							GraphBuilder,
+							View,
+							RadianceCacheMarkParameters,
+							ComputePassFlags);
+					});
+			}
 
-		InputArray.Add(LumenRadianceCache::FUpdateInputs(
-			RadianceCacheInputs,
-			FRadianceCacheConfiguration(),
-			View,
-			nullptr,
-			nullptr,
-			MoveTemp(GraphicsMarkUsedRadianceCacheProbesCallbacks),
-			MoveTemp(ComputeMarkUsedRadianceCacheProbesCallbacks)));
+			if (Lumen::UseLumenTranslucencyRadianceCacheReflections(View))
+			{
+				const FSceneRenderer& SceneRenderer = *this;
+				FViewInfo& ViewNonConst = View;
 
-		OutputArray.Add(LumenRadianceCache::FUpdateOutputs(
-			View.ViewState->Lumen.RadianceCacheState,
-			RadianceCacheParameters));
+				GraphicsMarkUsedRadianceCacheProbesCallbacks.AddLambda([&SceneTextures, &SceneRenderer, &ViewNonConst](
+					FRDGBuilder& GraphBuilder,
+					const FViewInfo& View,
+					const LumenRadianceCache::FRadianceCacheMarkParameters& RadianceCacheMarkParameters)
+					{
+						LumenTranslucencyReflectionsMarkUsedProbes(
+							GraphBuilder,
+							SceneRenderer,
+							ViewNonConst,
+							SceneTextures,
+							RadianceCacheMarkParameters);
+					});
+			}
 
-		// Add the Translucency Volume radiance cache to the update so its dispatches can overlap
-		{
-			LumenRadianceCache::FUpdateInputs TranslucencyVolumeRadianceCacheUpdateInputs = GetLumenTranslucencyGIVolumeRadianceCacheInputs(
-				GraphBuilder,
+			LumenRadianceCache::TInlineArray<LumenRadianceCache::FUpdateInputs> InputArray;
+			LumenRadianceCache::TInlineArray<LumenRadianceCache::FUpdateOutputs> OutputArray;
+
+			InputArray.Add(LumenRadianceCache::FUpdateInputs(
+				RadianceCacheInputs,
+				FRadianceCacheConfiguration(),
 				View,
+				nullptr,
+				nullptr,
+				MoveTemp(GraphicsMarkUsedRadianceCacheProbesCallbacks),
+				MoveTemp(ComputeMarkUsedRadianceCacheProbesCallbacks)));
+
+			OutputArray.Add(LumenRadianceCache::FUpdateOutputs(
+				View.ViewState->Lumen.RadianceCacheState,
+				RadianceCacheParameters));
+
+			// Add the Translucency Volume radiance cache to the update so its dispatches can overlap
+			{
+				LumenRadianceCache::FUpdateInputs TranslucencyVolumeRadianceCacheUpdateInputs = GetLumenTranslucencyGIVolumeRadianceCacheInputs(
+					GraphBuilder,
+					View,
+					FrameTemporaries,
+					ComputePassFlags);
+
+				if (TranslucencyVolumeRadianceCacheUpdateInputs.IsAnyCallbackBound())
+				{
+					InputArray.Add(TranslucencyVolumeRadianceCacheUpdateInputs);
+					OutputArray.Add(LumenRadianceCache::FUpdateOutputs(
+						View.ViewState->Lumen.TranslucencyVolumeRadianceCacheState,
+						TranslucencyVolumeRadianceCacheParameters));
+				}
+			}
+
+			LumenRadianceCache::UpdateRadianceCaches(
+				GraphBuilder,
 				FrameTemporaries,
+				InputArray,
+				OutputArray,
+				Scene,
+				ViewFamily,
+				LumenCardRenderer.bPropagateGlobalLightingChange,
 				ComputePassFlags);
 
-			if (TranslucencyVolumeRadianceCacheUpdateInputs.IsAnyCallbackBound())
+			if (Lumen::UseLumenTranslucencyRadianceCacheReflections(View))
 			{
-				InputArray.Add(TranslucencyVolumeRadianceCacheUpdateInputs);
-				OutputArray.Add(LumenRadianceCache::FUpdateOutputs(
-					View.ViewState->Lumen.TranslucencyVolumeRadianceCacheState,
-					TranslucencyVolumeRadianceCacheParameters));
+				View.GetOwnLumenTranslucencyGIVolume().RadianceCacheInterpolationParameters = RadianceCacheParameters;
+
+				extern float GLumenTranslucencyReflectionsRadianceCacheReprojectionRadiusScale;
+				extern float GLumenTranslucencyVolumeRadianceCacheClipmapFadeSize;
+				View.GetOwnLumenTranslucencyGIVolume().RadianceCacheInterpolationParameters.RadianceCacheInputs.ReprojectionRadiusScale = GLumenTranslucencyReflectionsRadianceCacheReprojectionRadiusScale;
+				View.GetOwnLumenTranslucencyGIVolume().RadianceCacheInterpolationParameters.RadianceCacheInputs.InvClipmapFadeSize = 1.0f / FMath::Clamp(GLumenTranslucencyVolumeRadianceCacheClipmapFadeSize, .001f, 16.0f);
 			}
 		}
-
-		LumenRadianceCache::UpdateRadianceCaches(
-			GraphBuilder, 
-			FrameTemporaries,
-			InputArray,
-			OutputArray,
-			Scene,
-			ViewFamily,
-			LumenCardRenderer.bPropagateGlobalLightingChange,
-			ComputePassFlags);
-
-		if (Lumen::UseLumenTranslucencyRadianceCacheReflections(View))
+		else
 		{
-			View.LumenTranslucencyGIVolume.RadianceCacheInterpolationParameters = RadianceCacheParameters;
-
-			extern float GLumenTranslucencyReflectionsRadianceCacheReprojectionRadiusScale;
-			extern float GLumenTranslucencyVolumeRadianceCacheClipmapFadeSize;
-			View.LumenTranslucencyGIVolume.RadianceCacheInterpolationParameters.RadianceCacheInputs.ReprojectionRadiusScale = GLumenTranslucencyReflectionsRadianceCacheReprojectionRadiusScale;
-			View.LumenTranslucencyGIVolume.RadianceCacheInterpolationParameters.RadianceCacheInputs.InvClipmapFadeSize = 1.0f / FMath::Clamp(GLumenTranslucencyVolumeRadianceCacheClipmapFadeSize, .001f, 16.0f);
+			RadianceCacheParameters = View.GetLumenTranslucencyGIVolume().RadianceCacheInterpolationParameters;
 		}
 	}
 

@@ -32,6 +32,7 @@
 #include "UObject/MetaData.h"
 #include "Blueprint/BlueprintExtension.h"
 #include "UObject/TextProperty.h"
+#include "WorldPartition/WorldPartitionActorDescUtils.h"
 #endif
 
 #include "Engine/InheritableComponentHandler.h"
@@ -118,6 +119,12 @@ void UBlueprint::ConformNativeComponents()
 
 //////////////////////////////////////////////////////////////////////////
 // FBPVariableDescription
+
+FBPVariableDescription::FBPVariableDescription()
+	: PropertyFlags(CPF_Edit)
+	, ReplicationCondition(ELifetimeCondition::COND_None)
+{
+}
 
 int32 FBPVariableDescription::FindMetaDataEntryIndexForKey(const FName Key) const
 {
@@ -517,6 +524,19 @@ bool UBlueprint::RenameGeneratedClasses( const TCHAR* InName, UObject* NewOuter,
 			}
 		};
 
+		const auto CheckRedirectors = [](FName ClassName, UClass* ForClass, UObject* NewOuter)
+		{
+			if (UObjectRedirector* Redirector = FindObjectFast<UObjectRedirector>(NewOuter, ClassName))
+			{
+				// If we found a redirector, check that the object it points to is of the same class.
+				if (Redirector->DestinationObject
+					&& Redirector->DestinationObject->GetClass() == ForClass->GetClass())
+				{
+					Redirector->Rename(nullptr, GetTransientPackage(), REN_ForceNoResetLoaders | REN_DontCreateRedirectors);
+				}
+			}
+		};
+
 		FName SkelClassName, GenClassName;
 		GetBlueprintClassNames(GenClassName, SkelClassName, FName(InName));
 
@@ -525,6 +545,7 @@ bool UBlueprint::RenameGeneratedClasses( const TCHAR* InName, UObject* NewOuter,
 		{
 			// check for collision of CDO name, move aside if necessary:
 			TryFreeCDOName(GeneratedClass, NewTopLevelObjectOuter, Flags);
+			CheckRedirectors(GenClassName, GeneratedClass, NewTopLevelObjectOuter);
 			bool bMovedOK = GeneratedClass->Rename(*GenClassName.ToString(), NewTopLevelObjectOuter, Flags);
 			if (!bMovedOK)
 			{
@@ -536,6 +557,7 @@ bool UBlueprint::RenameGeneratedClasses( const TCHAR* InName, UObject* NewOuter,
 		if (SkeletonGeneratedClass != NULL && SkeletonGeneratedClass != GeneratedClass)
 		{
 			TryFreeCDOName(SkeletonGeneratedClass, NewTopLevelObjectOuter, Flags);
+			CheckRedirectors(SkelClassName, SkeletonGeneratedClass, NewTopLevelObjectOuter);
 			bool bMovedOK = SkeletonGeneratedClass->Rename(*SkelClassName.ToString(), NewTopLevelObjectOuter, Flags);
 			if (!bMovedOK)
 			{
@@ -1062,6 +1084,19 @@ void UBlueprint::GetExtendedAssetRegistryTagsForSave(const ITargetPlatform* Targ
 			OutTags.Add( FAssetRegistryTag(FBlueprintTags::FindInBlueprintsData, Value, FAssetRegistryTag::TT_Hidden) );
 		}
 	}
+
+	/*
+	 * Using GetExtendedAssetRegistryTagsForSave here because:
+	 *	- UBlueprint is an asset in editor builds only.
+	 *	- UBlueprintGeneratedClass is an asset in cooked builds only.
+	 *	- Extended tags are only present in editor builds.
+	 *
+	 * See UBlueprintGeneratedClass::GetAssetRegistryTags.
+	 */
+	if (AActor* BlueprintCDO = GeneratedClass ? Cast<AActor>(GeneratedClass->ClassDefaultObject) : nullptr)
+	{
+		FWorldPartitionActorDescUtils::AppendAssetDataTagsFromActor(BlueprintCDO, OutTags);
+	}
 }
 #endif
 
@@ -1078,7 +1113,8 @@ void UBlueprint::PostLoadBlueprintAssetRegistryTags(const FAssetData& InAssetDat
 		FString TagValue = InAssetData.GetTagValueRef<FString>(TagName);
 		if (!TagValue.IsEmpty() && TagValue != TEXT("None"))
 		{
-			if (UClass::TryFixShortClassNameExportPath(TagValue, ELogVerbosity::Warning, TEXT("UBlueprint::PostLoadAssetRegistryTags")))
+			if (UClass::TryFixShortClassNameExportPath(TagValue, ELogVerbosity::Warning,
+				TEXT("UBlueprint::PostLoadAssetRegistryTags"), true /* bClearOnError */))
 			{
 				OutTagsAndValuesToUpdate.Add(FAssetRegistryTag(TagName, TagValue, TagType));
 			}
@@ -1200,6 +1236,42 @@ bool UBlueprint::ForceLoad(UObject* Obj)
 
 void UBlueprint::ForceLoadMembers(UObject* InObject)
 {
+	if(const UBlueprint* Blueprint = Cast<UBlueprint>(InObject))
+	{
+		ForceLoadMembers(InObject, Blueprint);
+		return;
+	}
+
+	if(const UClass* Class = Cast<UClass>(InObject))
+	{
+		ForceLoadMembers(InObject, Cast<UBlueprint>(Class->ClassGeneratedBy));
+		return;
+	}
+
+	if(InObject->HasAnyFlags(RF_ClassDefaultObject))
+	{
+		if(const UClass* Class = InObject->GetClass())
+		{
+			ForceLoadMembers(InObject, Cast<UBlueprint>(Class->ClassGeneratedBy));
+			return;
+		}
+	}
+
+	ForceLoadMembers(InObject, nullptr);
+}
+
+void UBlueprint::ForceLoadMembers(UObject* InObject, const UBlueprint* InBlueprint)
+{
+	check(InObject);
+	
+	if(InObject && InBlueprint)
+	{
+		if(!InBlueprint->RequiresForceLoadMembers(InObject))
+		{
+			return;
+		}
+	}
+	
 	// Collect a list of all things this element owns
 	TArray<UObject*> MemberReferences;
 	FReferenceFinder ComponentCollector(MemberReferences, InObject, false, true, true, true);
@@ -1211,7 +1283,7 @@ void UBlueprint::ForceLoadMembers(UObject* InObject)
 		UObject* CurrentObject = *it;
 		if (ForceLoad(CurrentObject))
 		{
-			ForceLoadMembers(CurrentObject);
+			ForceLoadMembers(CurrentObject, InBlueprint);
 		}
 	}
 }
@@ -1735,6 +1807,13 @@ bool UBlueprint::NeedsLoadForEditorGame() const
 	return true;
 }
 
+bool UBlueprint::HasNonEditorOnlyReferences() const
+{
+	// The this->BlueprintGeneratedClass is reference that we need to mark as UsedInGame,
+	// despite UBlueprint being editor-only due to NeedsLoadForClient,NeedsLoadForServer == false
+	return true;
+}
+
 void UBlueprint::TagSubobjects(EObjectFlags NewFlags)
 {
 	Super::TagSubobjects(NewFlags);
@@ -1998,37 +2077,38 @@ UInheritableComponentHandler* UBlueprint::GetInheritableComponentHandler(bool bC
 }
 
 
-EDataValidationResult UBlueprint::IsDataValid(TArray<FText>& ValidationErrors)
+EDataValidationResult UBlueprint::IsDataValid(FDataValidationContext& Context) const
 {
-	EDataValidationResult IsValid = GeneratedClass ? GeneratedClass->GetDefaultObject()->IsDataValid(ValidationErrors) : EDataValidationResult::Invalid;
+	const UObject* GeneratedClassCDO = GeneratedClass ? GeneratedClass->GetDefaultObject() : nullptr;
+	EDataValidationResult IsValid = GeneratedClassCDO ? GeneratedClassCDO->IsDataValid(Context) : EDataValidationResult::Invalid;
 	IsValid = (IsValid == EDataValidationResult::NotValidated) ? EDataValidationResult::Valid : IsValid;
 
 	if (SimpleConstructionScript)
 	{
-		EDataValidationResult IsSCSValid = SimpleConstructionScript->IsDataValid(ValidationErrors);
+		EDataValidationResult IsSCSValid = SimpleConstructionScript->IsDataValid(Context);
 		IsValid = CombineDataValidationResults(IsValid, IsSCSValid);
 	}
 
 	if (InheritableComponentHandler)
 	{
-		EDataValidationResult IsICHValid = InheritableComponentHandler->IsDataValid(ValidationErrors);
+		EDataValidationResult IsICHValid = InheritableComponentHandler->IsDataValid(Context);
 		IsValid = CombineDataValidationResults(IsValid, IsICHValid);
 	}
 
-	for (UActorComponent* Component : ComponentTemplates)
+	for (const UActorComponent* Component : ComponentTemplates)
 	{
 		if (Component)
 		{
-			EDataValidationResult IsComponentValid = Component->IsDataValid(ValidationErrors);
+			EDataValidationResult IsComponentValid = Component->IsDataValid(Context);
 			IsValid = CombineDataValidationResults(IsValid, IsComponentValid);
 		}
 	}
 
-	for (UTimelineTemplate* Timeline : Timelines)
+	for (const UTimelineTemplate* Timeline : Timelines)
 	{
 		if (Timeline)
 		{
-			EDataValidationResult IsTimelineValid = Timeline->IsDataValid(ValidationErrors);
+			EDataValidationResult IsTimelineValid = Timeline->IsDataValid(Context);
 			IsValid = CombineDataValidationResults(IsValid, IsTimelineValid);
 		}
 	}

@@ -29,7 +29,7 @@ void FSmartObjectSlotDefinitionDetails::CustomizeHeader(TSharedRef<class IProper
 		]
 		.ValueContent()
 		[
-			StructPropertyHandle->CreatePropertyValueWidget()
+			StructPropertyHandle->CreatePropertyValueWidget(/*bDisplayDefaultPropertyButtons*/false)
 		]
 		.CopyAction(FUIAction(FExecuteAction::CreateSP(this, &FSmartObjectSlotDefinitionDetails::OnCopy)))
 		.PasteAction(FUIAction(FExecuteAction::CreateSP(this, &FSmartObjectSlotDefinitionDetails::OnPaste)));
@@ -84,14 +84,10 @@ void FSmartObjectSlotDefinitionDetails::OnPaste() const
 		
 		for (int32 Index = 0; Index < RawNodeData.Num(); Index++)
 		{
-			if (UObject* Outer = OuterObjects[Index])
+			if (FSmartObjectSlotDefinition* Slot = static_cast<FSmartObjectSlotDefinition*>(RawNodeData[Index]))
 			{
-				if (FSmartObjectSlotDefinition* Slot = static_cast<FSmartObjectSlotDefinition*>(RawNodeData[Index]))
-				{
-					Slot->ID = FGuid::NewGuid();
-					Slot->SelectionPreconditions.SchemaClass = Definition->GetWorldConditionSchemaClass();
-					Slot->SelectionPreconditions.Initialize(*Outer);
-				}
+				Slot->ID = FGuid::NewGuid();
+				Slot->SelectionPreconditions.Initialize(OuterObjects[Index], Definition->GetWorldConditionSchemaClass(), {});
 			}
 		}
 		

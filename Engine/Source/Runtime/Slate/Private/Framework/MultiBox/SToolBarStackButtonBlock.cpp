@@ -264,7 +264,7 @@ void SToolBarStackButtonBlock::BuildMultiBlockWidget(const ISlateStyle* StyleSet
 	// Create the content for our button
 	EMultiBlockLocation::Type BlockLocation = GetMultiBlockLocation();
 	FName BlockStyle = EMultiBlockLocation::ToName(ISlateStyle::Join(StyleName, ".Button"), BlockLocation);
-	const FComboButtonStyle* ComboButtonStyle = &FAppStyle::Get().GetWidgetStyle<FComboButtonStyle>("StatusBar.StatusBarComboButton");
+	const FComboButtonStyle* ComboButtonStyle = &FAppStyle::Get().GetWidgetStyle<FComboButtonStyle>("SimpleComboButton");
 	const FButtonStyle* ButtonStyle = BlockLocation == EMultiBlockLocation::None ? &ToolBarStyle.ButtonStyle : &StyleSet->GetWidgetStyle<FButtonStyle>(BlockStyle);
 	const FCheckBoxStyle* CheckStyle = BlockLocation == EMultiBlockLocation::None ? &ToolBarStyle.ToggleButton : &StyleSet->GetWidgetStyle<FCheckBoxStyle>(BlockStyle);
 
@@ -280,7 +280,8 @@ void SToolBarStackButtonBlock::BuildMultiBlockWidget(const ISlateStyle* StyleSet
 	FMargin ExtraLabelPadding = FMargin(4, 0, 0, 0);
 
 	TSharedRef<SWidget> ButtonContent = SNullWidget::NullWidget;
-	if (MultiBox->GetType() == EMultiBoxType::SlimHorizontalToolBar)
+	if (MultiBox->GetType() == EMultiBoxType::SlimHorizontalToolBar
+		|| MultiBox->GetType() == EMultiBoxType::SlimHorizontalUniformToolBar)
 	{
 		const FVector2f IconSize = ToolBarStyle.IconSize;
 

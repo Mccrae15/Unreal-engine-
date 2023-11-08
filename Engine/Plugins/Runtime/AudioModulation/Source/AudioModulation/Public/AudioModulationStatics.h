@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Generators/SoundModulationADEnvelope.h"
 #include "Generators/SoundModulationEnvelopeFollower.h"
 #include "Generators/SoundModulationLFO.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
@@ -163,6 +164,20 @@ public:
 			FName Name,
 			FSoundModulationLFOParams Params);
 
+	/** Creates a modulation generator based on an Attack/Decay Envelope.
+	 * @param Name - Name of generator.
+	 * @param Settings - The AD Envelope Settings.
+	 * @return Capture this in a Blueprint variable to prevent it from being garbage collected.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Audio|Modulation", DisplayName = "Create AD Envelope Generator", meta = (
+		WorldContext = "WorldContextObject",
+		Keywords = "make modulator")
+	)
+		static UPARAM(DisplayName = "Generator") USoundModulationGeneratorADEnvelope* CreateADEnvelopeGenerator(
+			UObject* WorldContextObject,
+			FName Name,
+			const FSoundModulationADEnvelopeParams& Params);
+
 	/** Deactivates a bus. Does nothing if the provided bus is already inactive.
 	 * @param Bus - Scope of modulator
 	 */
@@ -266,6 +281,14 @@ public:
 	)
 	static void ClearAllGlobalBusMixValues(const UObject* WorldContextObject, float FadeTime = -1.0f);
 
+	/** Deactivates all currently active Control Bus Mixes. This includes the Global Control Bus Mixes.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Audio|Modulation", DisplayName = "Deactivate All Control Bus Mixes", meta = (
+		WorldContext = "WorldContextObject",
+		Keywords = "modulation modulator stage")
+	)
+	static void DeactivateAllBusMixes(const UObject* WorldContextObject);
+
 	/** Sets filtered stages of a given class to a provided target value for active instance of mix.
 	 * Does not update UObject definition of mix.
 	 * @param Mix - Mix to modify
@@ -311,7 +334,7 @@ public:
 		Keywords = "set control bus mix modulation modulator generator")
 	)
 	static void UpdateModulator(const UObject* WorldContextObject, USoundModulatorBase* Modulator);
-
+	
 	/** Gets the (normalized) value of the given modulator. 
 	 * @return Value - The current value of the modulator. If the modulator is not active, returns 1.0.
 	 */
@@ -320,7 +343,7 @@ public:
 		Keywords = "modulation generator bus")
 	)
 	static UPARAM(DisplayName = "Value") float GetModulatorValue(const UObject* WorldContextObject, USoundModulatorBase* Modulator);
-
+	
 	/** Gets the list of modulators currently applied to a Modulation Destination.
 	* @param Destination - The Modulation Destination.
 	* @return Modulators - The set of Modulators.

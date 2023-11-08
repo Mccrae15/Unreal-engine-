@@ -22,7 +22,6 @@ void Mesh::Serialise( const Mesh* p, OutputArchive& arch )
     arch << *p;
 }
 
-
 //---------------------------------------------------------------------------------------------
 MeshPtr Mesh::StaticUnserialise( InputArchive& arch )
 {
@@ -72,14 +71,16 @@ MeshPtr Mesh::Clone() const
 	
 	// Clone bone poses
 	pResult->BonePoses = BonePoses;
+	pResult->BoneMap = BoneMap;
 
 	// Clone SkeletonIDs
 	pResult->SkeletonIDs = SkeletonIDs;
+	pResult->AdditionalPhysicsBodies = AdditionalPhysicsBodies;
 
     return pResult;
 }
 
-MeshPtr Mesh::Clone(EMeshCloneFlags Flags) const
+MeshPtr Mesh::Clone(EMeshCopyFlags Flags) const
 {
     //MUTABLE_CPUPROFILER_SCOPE(MeshClone);
 	LLM_SCOPE_BYNAME(TEXT("MutableRuntime"));
@@ -89,55 +90,55 @@ MeshPtr Mesh::Clone(EMeshCloneFlags Flags) const
     pResult->m_internalId = m_internalId;
 	pResult->m_staticFormatFlags = m_staticFormatFlags;
 
-	if (EnumHasAnyFlags(Flags, EMeshCloneFlags::WithSurfaces ))
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithSurfaces))
 	{
 		pResult->m_surfaces = m_surfaces;
 	}
 
-	if (EnumHasAnyFlags(Flags, EMeshCloneFlags::WithSkeleton ))
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithSkeleton))
 	{
 		pResult->m_pSkeleton = m_pSkeleton;
 	}
 
-	if (EnumHasAnyFlags(Flags, EMeshCloneFlags::WithPhysicsBody ))
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithPhysicsBody))
 	{
 		pResult->m_pPhysicsBody = m_pPhysicsBody;
 	}
 
-	if (EnumHasAnyFlags(Flags, EMeshCloneFlags::WithFaceGroups ))
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithFaceGroups))
 	{
 		pResult->m_faceGroups = m_faceGroups;
 	}
 
-	if (EnumHasAnyFlags(Flags, EMeshCloneFlags::WithTags ))
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithTags))
 	{
 		pResult->m_tags = m_tags;
 	}
 
     // Clone the main buffers
-	if (EnumHasAnyFlags(Flags, EMeshCloneFlags::WithVertexBuffers ))
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithVertexBuffers))
     {
 		pResult->m_VertexBuffers = m_VertexBuffers;
 	}
 
-	if (EnumHasAnyFlags(Flags, EMeshCloneFlags::WithIndexBuffers ))
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithIndexBuffers))
     {
 		pResult->m_IndexBuffers = m_IndexBuffers;
 	}
 
-	if (EnumHasAnyFlags(Flags, EMeshCloneFlags::WithFaceBuffers ))
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithFaceBuffers))
     {
 		pResult->m_FaceBuffers = m_FaceBuffers;
 	}
 
 	// Clone additional buffers
-	if (EnumHasAnyFlags(Flags, EMeshCloneFlags::WithAdditionalBuffers))
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithAdditionalBuffers))
 	{
 		pResult->m_AdditionalBuffers = m_AdditionalBuffers;
 	}
 
     // Clone the layout	
-	if (EnumHasAnyFlags(Flags, EMeshCloneFlags::WithLayouts))
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithLayouts))
 	{
 		pResult->m_layouts = m_layouts;
 	}
@@ -147,20 +148,121 @@ MeshPtr Mesh::Clone(EMeshCloneFlags Flags) const
 	// physics body doen't need to be deep cloned either as they are also assumed to be shared.
 	
 	// Clone bone poses
-	if (EnumHasAnyFlags(Flags, EMeshCloneFlags::WithPoses))
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithPoses))
 	{
 		pResult->BonePoses = BonePoses;
 	}
 
+	// Clone BoneMap
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithBoneMap))
+	{
+		pResult->BoneMap = BoneMap;
+	}
+
 	// Clone SkeletonIDs
-	if (EnumHasAnyFlags(Flags, EMeshCloneFlags::WithSkeletonIDs))
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithSkeletonIDs))
 	{
 		pResult->SkeletonIDs = SkeletonIDs;
+	}
+
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithAdditionalPhysics))
+	{
+		pResult->AdditionalPhysicsBodies = AdditionalPhysicsBodies;
 	}
 
     return pResult;
 }
 
+
+//---------------------------------------------------------------------------------------------
+void Mesh::CopyFrom(const Mesh& From, EMeshCopyFlags Flags)
+{
+    //MUTABLE_CPUPROFILER_SCOPE(CopyFrom);
+
+    m_internalId = From.m_internalId;
+	m_staticFormatFlags = From.m_staticFormatFlags;
+
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithSurfaces))
+	{
+		m_surfaces = From.m_surfaces;
+	}
+
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithSkeleton))
+	{
+		m_pSkeleton = From.m_pSkeleton;
+	}
+
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithPhysicsBody))
+	{
+		m_pPhysicsBody = From.m_pPhysicsBody;
+	}
+
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithFaceGroups))
+	{
+		m_faceGroups = From.m_faceGroups;
+	}
+
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithTags))
+	{
+		m_tags = From.m_tags;
+	}
+
+    // Copy the main buffers
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithVertexBuffers))
+    {
+		m_VertexBuffers = From.m_VertexBuffers;
+	}
+
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithIndexBuffers))
+    {
+		m_IndexBuffers = From.m_IndexBuffers;
+	}
+
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithFaceBuffers))
+    {
+		m_FaceBuffers = From.m_FaceBuffers;
+	}
+
+	// Copy additional buffers
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithAdditionalBuffers))
+	{
+		m_AdditionalBuffers = From.m_AdditionalBuffers;
+	}
+
+    // Copy the layout	
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithLayouts))
+	{
+		m_layouts = From.m_layouts;
+	}
+    // The skeleton is not copied because it is not owned by this mesh and it is always assumed
+    // to be shared.
+
+	// physics body doen't need to be deep copied either as they are also assumed to be shared.
+	
+	// Copy bone poses
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithPoses))
+	{
+		BonePoses = From.BonePoses;
+	}
+
+	// Copy BoneMap
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithBoneMap))
+	{
+		BoneMap = From.BoneMap;
+	}
+
+	// Copy SkeletonIDs
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithSkeletonIDs))
+	{
+		SkeletonIDs = From.SkeletonIDs;
+	}
+
+	if (EnumHasAnyFlags(Flags, EMeshCopyFlags::WithAdditionalPhysics))
+	{
+		AdditionalPhysicsBodies = From.AdditionalPhysicsBodies;
+	}
+
+}
 
 //---------------------------------------------------------------------------------------------
 uint32_t Mesh::GetId() const
@@ -215,6 +317,20 @@ void Mesh::SetPhysicsBody( Ptr<const PhysicsBody> PhysicsBody )
 {
     m_pPhysicsBody = PhysicsBody;
 }
+
+//---------------------------------------------------------------------------------------------
+int32 Mesh::AddAdditionalPhysicsBody(Ptr<const PhysicsBody> Body)
+{
+	return AdditionalPhysicsBodies.Add(Body);
+}
+
+Ptr<const PhysicsBody> Mesh::GetAdditionalPhysicsBody(int32 I) const
+{
+	check(I >= 0 && I < AdditionalPhysicsBodies.Num());
+
+	return AdditionalPhysicsBodies[I];
+}
+
 
 //---------------------------------------------------------------------------------------------
 int Mesh::GetFaceCount() const
@@ -277,9 +393,10 @@ int Mesh::GetSurfaceCount() const
 
 
 //---------------------------------------------------------------------------------------------
-void Mesh::GetSurface( int surfaceIndex,
-                       int* firstVertex, int* vertexCount,
-                       int* firstIndex, int* indexCount ) const
+void Mesh::GetSurface( int32 surfaceIndex,
+                       int32* firstVertex, int32* vertexCount,
+                       int32* firstIndex, int32* indexCount,
+					   int32* BoneIndex, int32* BoneCount) const
 {
     int count = GetSurfaceCount();
 
@@ -292,6 +409,8 @@ void Mesh::GetSurface( int surfaceIndex,
             if (vertexCount) *vertexCount = surf.m_vertexCount;
             if (firstIndex) *firstIndex = surf.m_firstIndex;
             if (indexCount) *indexCount = surf.m_indexCount;
+            if (BoneIndex) *BoneIndex = surf.BoneMapIndex;
+            if (BoneCount) *BoneCount = surf.BoneMapCount;
         }
         else
         {
@@ -300,6 +419,8 @@ void Mesh::GetSurface( int surfaceIndex,
             if (vertexCount) *vertexCount = GetVertexCount();
             if (firstIndex) *firstIndex = 0;
             if (indexCount) *indexCount = GetIndexCount();
+			if (BoneIndex) *BoneIndex = 0;
+			if (BoneCount) *BoneCount = BoneMap.Num();
         }
     }
     else
@@ -309,6 +430,8 @@ void Mesh::GetSurface( int surfaceIndex,
         if (vertexCount) *vertexCount = 0;
         if (firstIndex) *firstIndex = 0;
         if (indexCount) *indexCount = 0;
+		if (BoneIndex) *BoneIndex = 0;
+		if (BoneCount) *BoneCount = 0;
     }
 }
 
@@ -468,21 +591,9 @@ void Mesh::SetTag( int tagIndex, const char* strName )
 
 
 //---------------------------------------------------------------------------------------------
-const char* Mesh::GetBonePoseName(int32 BoneIndex) const
+int32 Mesh::FindBonePose(const uint16 BoneId) const
 {
-	check(BoneIndex >= 0 && BoneIndex < GetBonePoseCount());
-	if (BoneIndex >= 0 && BoneIndex < GetBonePoseCount())
-	{
-		return BonePoses[BoneIndex].BoneName.c_str();
-	}
-	return "";
-}
-
-
-//---------------------------------------------------------------------------------------------
-int32 Mesh::FindBonePose(const char* StrName) const
-{
-	return BonePoses.IndexOfByPredicate([StrName](const FBonePose& Pose) { return Pose.BoneName == StrName; });
+	return BonePoses.IndexOfByPredicate([BoneId](const FBonePose& Pose) { return Pose.BoneId == BoneId; });
 }
 
 
@@ -502,16 +613,26 @@ int32 mu::Mesh::GetBonePoseCount() const
 
 
 //---------------------------------------------------------------------------------------------
-void mu::Mesh::SetBonePose(int32 BoneIndex, const char* StrName, FTransform3f Transform, EBoneUsageFlags BoneUsageFlags)
+void mu::Mesh::SetBonePose(int32 Index, uint16 BoneId, FTransform3f Transform, EBoneUsageFlags BoneUsageFlags)
 {
-	if (BoneIndex >= 0 && BoneIndex < BonePoses.Num())
+	check(BonePoses.IsValidIndex(Index));
+	if (BonePoses.IsValidIndex(Index))
 	{
-		BonePoses[BoneIndex] = FBonePose{ StrName, BoneUsageFlags, Transform };
+		BonePoses[Index] = FBonePose{ BoneId, BoneUsageFlags, Transform };
 	}
-	else 
+}
+
+
+//---------------------------------------------------------------------------------------------
+int32 Mesh::GetBonePoseBoneId(int32 Index) const
+{
+	check(BonePoses.IsValidIndex(Index));
+	if (BonePoses.IsValidIndex(Index))
 	{
-		check(false);
+		return BonePoses[Index].BoneId;
 	}
+
+	return INDEX_NONE;
 }
 
 
@@ -522,10 +643,26 @@ void mu::Mesh::GetBoneTransform(int32 BoneIndex, FTransform3f& Transform) const
 	Transform = BoneIndex > INDEX_NONE ? BonePoses[BoneIndex].BoneTransform : FTransform3f::Identity;
 }
 
+
+//---------------------------------------------------------------------------------------------
 EBoneUsageFlags Mesh::GetBoneUsageFlags(int32 BoneIndex) const
 {
 	check(BoneIndex >= 0 && BoneIndex < BonePoses.Num());
 	return BoneIndex > INDEX_NONE ? BonePoses[BoneIndex].BoneUsageFlags : EBoneUsageFlags::None;
+}
+
+
+//---------------------------------------------------------------------------------------------
+void Mesh::SetBoneMap(const TArray<uint16>& InBoneMap)
+{
+	BoneMap = InBoneMap;
+}
+
+
+//---------------------------------------------------------------------------------------------
+const TArray<uint16>& Mesh::GetBoneMap() const
+{
+	return BoneMap;
 }
 
 
@@ -554,13 +691,25 @@ void Mesh::AddSkeletonID(int32 SkeletonID)
 //---------------------------------------------------------------------------------------------
 //---------------------------------------------------------------------------------------------
 //---------------------------------------------------------------------------------------------
-size_t Mesh::GetDataSize() const
+int32 Mesh::GetDataSize() const
 {
-    return m_IndexBuffers.GetDataSize()
-            + m_VertexBuffers.GetDataSize()
-            + m_FaceBuffers.GetDataSize();
-}
+	// TODO: review if other mesh fields like additional physics assets
+	// are relevant and add them to the count.
 
+	// Should be allocation sizes used for this?
+	int32 AdditionalBuffersSize = 0;
+	for (const TPair<EMeshBufferType, FMeshBufferSet>&  AdditionalBuffer : m_AdditionalBuffers)
+	{
+		AdditionalBuffersSize += AdditionalBuffer.Value.GetDataSize();
+	}
+
+	return sizeof(Mesh)
+		+ m_IndexBuffers.GetDataSize()
+		+ m_VertexBuffers.GetDataSize()
+		+ m_FaceBuffers.GetDataSize()
+		+ BonePoses.Num() * sizeof(FBonePose)
+		+ AdditionalBuffersSize;
+}
 
 //---------------------------------------------------------------------------------------------
 bool Mesh::HasCompatibleFormat( const Mesh* pOther ) const
@@ -610,9 +759,9 @@ bool Mesh::HasCompatibleFormat( const Mesh* pOther ) const
 
 
 //---------------------------------------------------------------------------------------------
-vec3<uint32_t>  Mesh::GetFaceVertexIndices( int f ) const
+UE::Math::TIntVector3<uint32_t>  Mesh::GetFaceVertexIndices( int f ) const
 {
-    vec3<uint32_t> res;
+	UE::Math::TIntVector3<uint32> res;
 
     MeshBufferIteratorConst<MBF_UINT32,uint32_t,1> it( m_IndexBuffers, MBS_VERTEXINDEX );
     it += f*3;
@@ -640,13 +789,13 @@ bool Mesh::HasFace
 {
     bool found = false;
 
-    vec3<uint32_t> ov = other.GetFaceVertexIndices( otherFaceIndex );
+	UE::Math::TIntVector3<uint32> ov = other.GetFaceVertexIndices( otherFaceIndex );
 
     UntypedMeshBufferIteratorConst it( m_IndexBuffers, MBS_VERTEXINDEX );
 
     for ( int f=0; !found && f<m_FaceBuffers.GetElementCount(); f++ )
     {
-        vec3<uint32_t> v;
+		UE::Math::TIntVector3<uint32> v;
         v[0] = it.GetAsUINT32(); ++it;
         v[1] = it.GetAsUINT32(); ++it;
         v[2] = it.GetAsUINT32(); ++it;
@@ -953,6 +1102,7 @@ void Mesh::EnsureSurfaceData()
 		MESH_SURFACE s;
 		s.m_vertexCount = m_VertexBuffers.GetElementCount();
 		s.m_indexCount = m_IndexBuffers.GetElementCount();
+		s.BoneMapCount = BoneMap.Num();
 		m_surfaces.Add(s);
 	}
 }
@@ -964,6 +1114,272 @@ void Mesh::ResetBufferIndices()
 	m_VertexBuffers.ResetBufferIndices();
 	m_IndexBuffers.ResetBufferIndices();
 	m_FaceBuffers.ResetBufferIndices();
+}
+
+
+//---------------------------------------------------------------------------------------------
+void UnserialiseLegacySurfaces(InputArchive& arch, TArray<MESH_SURFACE>& OutMeshSurfaces)
+{
+	struct FMeshSurfaceLegacy
+	{
+		FMeshSurfaceLegacy()
+		{}
+
+		int32 m_firstVertex = 0;
+		int32 m_vertexCount = 0;
+		int32 m_firstIndex = 0;
+		int32 m_indexCount = 0;
+		uint32 m_id = 0;
+
+		void Unserialise(InputArchive& arch)
+		{
+			arch >> m_firstVertex;
+			arch >> m_vertexCount;
+			arch >> m_firstIndex;
+			arch >> m_indexCount;
+			arch >> m_id;
+		}
+	}; 
+
+	TArray<FMeshSurfaceLegacy> LegacyMeshSurfaces;
+	arch >> LegacyMeshSurfaces;
+	
+	const int32 NumSurfaces = LegacyMeshSurfaces.Num();
+	OutMeshSurfaces.SetNumZeroed(NumSurfaces);
+
+	for (int32 SurfaceIndex = 0; SurfaceIndex < NumSurfaces; ++SurfaceIndex)
+	{
+		FMeshSurfaceLegacy& LegacySurface = LegacyMeshSurfaces[SurfaceIndex];
+		MESH_SURFACE& Surface = OutMeshSurfaces[SurfaceIndex];
+		Surface.m_firstVertex = LegacySurface.m_firstVertex;
+		Surface.m_vertexCount = LegacySurface.m_vertexCount;
+		Surface.m_firstIndex = LegacySurface.m_firstIndex;
+		Surface.m_indexCount = LegacySurface.m_indexCount;
+		Surface.m_id = LegacySurface.m_id;
+	}
+}
+
+
+//-------------------------------------------------------------------------------------------------
+void MESH_SURFACE::Serialise(OutputArchive& arch) const
+{
+
+	const int32 ver = 0;
+	arch << ver;
+
+	arch << m_firstVertex;
+	arch << m_vertexCount;
+	arch << m_firstIndex;
+	arch << m_indexCount;
+	arch << BoneMapIndex;
+	arch << BoneMapCount;
+	
+	arch << m_id;
+
+}
+
+
+//-------------------------------------------------------------------------------------------------
+void MESH_SURFACE::Unserialise(InputArchive& arch)
+{
+	int32 ver = 0;
+	arch >> ver;
+	check(ver == 0);
+
+	arch >> m_firstVertex;
+	arch >> m_vertexCount;
+	arch >> m_firstIndex;
+	arch >> m_indexCount;
+	arch >> BoneMapIndex;
+	arch >> BoneMapCount;
+		 
+	arch >> m_id;
+}
+
+
+//-------------------------------------------------------------------------------------------------
+void Mesh::FACE_GROUP::Serialise(OutputArchive& arch) const
+{
+	const int32 ver = 0;
+	arch << ver;
+
+	arch << m_name;
+	arch << m_faces;
+}
+
+
+//-------------------------------------------------------------------------------------------------
+void Mesh::FACE_GROUP::Unserialise(InputArchive& arch)
+{
+	int32 ver = 0;
+	arch >> ver;
+	check(ver == 0);
+
+	arch >> m_name;
+	arch >> m_faces;
+}
+
+
+//-------------------------------------------------------------------------------------------------
+void Mesh::FBonePose::Serialise(OutputArchive& arch) const
+{
+	const int32 ver = 2;
+	arch << ver;
+
+	arch << BoneId;
+	arch << BoneUsageFlags;
+	arch << BoneTransform;
+}
+
+
+//-------------------------------------------------------------------------------------------------
+void Mesh::FBonePose::Unserialise(InputArchive& arch)
+{
+	int32 ver = 0;
+	arch >> ver;
+	check(ver <= 2);
+
+	if (ver <= 1)
+	{
+		string BoneName;
+		arch >> BoneName;
+
+		BoneId = 0;
+	}
+	else
+	{
+		arch >> BoneId;
+	}
+
+	if (ver == 0)
+	{
+		uint8 Skinned = 0;
+		arch >> Skinned;
+		BoneUsageFlags = Skinned ? EBoneUsageFlags::Skinning : EBoneUsageFlags::None;
+	}
+	else
+	{
+		arch >> BoneUsageFlags;
+	}
+
+	arch >> BoneTransform;
+}
+
+
+//-------------------------------------------------------------------------------------------------
+void Mesh::Serialise(OutputArchive& arch) const
+{
+	uint32 ver = 16;
+	arch << ver;
+
+	arch << m_IndexBuffers;
+	arch << m_VertexBuffers;
+	arch << m_FaceBuffers;
+	arch << m_AdditionalBuffers;
+	arch << m_layouts;
+
+	arch << SkeletonIDs;
+
+	arch << m_pSkeleton;
+	arch << m_pPhysicsBody;
+
+	arch << m_staticFormatFlags;
+	arch << m_surfaces;
+	arch << m_faceGroups;
+
+	arch << m_tags;
+
+	arch << BonePoses;
+	arch << BoneMap;
+
+	arch << AdditionalPhysicsBodies;
+}
+
+
+//-------------------------------------------------------------------------------------------------
+void Mesh::Unserialise(InputArchive& arch)
+{
+	uint32 ver;
+	arch >> ver;
+	check(ver <= 16);
+
+	arch >> m_IndexBuffers;
+	arch >> m_VertexBuffers;
+	arch >> m_FaceBuffers;
+	arch >> m_AdditionalBuffers;
+	arch >> m_layouts;
+
+	if (ver >= 14)
+	{
+		arch >> SkeletonIDs;
+	}
+
+	arch >> m_pSkeleton;
+	if (ver >= 12)
+	{ 
+		arch >> m_pPhysicsBody;
+	}
+	else
+	{
+		m_pPhysicsBody = nullptr;
+	}
+
+	arch >> m_staticFormatFlags;
+
+	if (ver >= 16)
+	{
+		arch >> m_surfaces;
+	}
+	else
+	{
+		// Deserialize LegacySurfaces
+		UnserialiseLegacySurfaces(arch, m_surfaces);
+	}
+	arch >> m_faceGroups;
+
+	arch >> m_tags;
+
+	if (ver >= 13)
+	{
+		arch >> BonePoses;
+	}
+	else if (m_pSkeleton)
+	{
+		const int32 NumBones = m_pSkeleton->GetBoneCount();
+		BonePoses.SetNum(NumBones);
+		check(m_pSkeleton->m_boneTransforms_DEPRECATED.Num() == NumBones);
+
+		for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
+		{
+			BonePoses[BoneIndex].BoneId = BoneIndex;
+			BonePoses[BoneIndex].BoneUsageFlags = EBoneUsageFlags::Skinning;
+			BonePoses[BoneIndex].BoneTransform = m_pSkeleton->m_boneTransforms_DEPRECATED[BoneIndex];
+		}
+	}
+
+	if (ver >= 16)
+	{
+		arch >> BoneMap;
+	}
+	else
+	{
+		const int32 NumBonePoses = BonePoses.Num();
+		BoneMap.SetNum(NumBonePoses);
+		for (int32 BoneIndex = 0; BoneIndex < NumBonePoses; ++BoneIndex)
+		{
+			BoneMap[BoneIndex] = BoneIndex;
+		}
+
+		for (MESH_SURFACE& Surface : m_surfaces)
+		{
+			Surface.BoneMapCount = NumBonePoses;
+		}
+	}
+
+	if (ver >= 15)
+	{
+		arch >> AdditionalPhysicsBodies;
+	}
 }
 
 
@@ -1438,4 +1854,10 @@ void Mesh::Log( FString& out, int32 BufferElementLimit)
     LogBuffer( out, m_FaceBuffers, BufferElementLimit);
 }
 
+
+MUTABLE_IMPLEMENT_ENUM_SERIALISABLE(EBoneUsageFlags)
+MUTABLE_IMPLEMENT_ENUM_SERIALISABLE(EMeshBufferType)
+MUTABLE_IMPLEMENT_ENUM_SERIALISABLE(EShapeBindingMethod)
+MUTABLE_IMPLEMENT_ENUM_SERIALISABLE(EVertexColorUsage)
+	
 }

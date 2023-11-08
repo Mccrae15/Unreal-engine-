@@ -1,18 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Collections.Generic;
-using System.IO;
 using EpicGames.Core;
-using System.Text.RegularExpressions;
-using Microsoft.Win32;
-using System.Diagnostics;
 
 namespace UnrealBuildTool
 {
 	internal partial class ApplePlatformSDK : UEBuildPlatformSDK
 	{
-		public override string GetMainVersion()
+		protected override string GetMainVersionInternal()
 		{
 			// Xcode prefered version?
 			return "14.1";
@@ -41,13 +36,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The minimum macOS SDK version that a dynamic library can be built with
 		/// </summary>
-		public virtual Version MinimumDynamicLibSDKVersion
-		{
-			get
-			{
-				return new Version("12.1");		// SDK used in Xcode13.2.1
-			}
-		}
+		public virtual Version MinimumDynamicLibSDKVersion => new Version("12.1");      // SDK used in Xcode13.2.1
 
 	}
 }

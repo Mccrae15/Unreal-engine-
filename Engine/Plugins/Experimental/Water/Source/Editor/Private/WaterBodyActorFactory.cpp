@@ -41,6 +41,7 @@ void UWaterBodyActorFactory::PostSpawnActor(UObject* Asset, AActor* NewActor)
 	if (const FWaterBodyDefaults* WaterBodyDefaults = GetWaterBodyDefaults())
 	{
 		WaterBodyComponent->SetWaterMaterial(WaterBodyDefaults->GetWaterMaterial());
+		WaterBodyComponent->SetWaterStaticMeshMaterial(WaterBodyDefaults->GetWaterStaticMeshMaterial());
 		WaterBodyComponent->SetHLODMaterial(WaterBodyDefaults->GetWaterHLODMaterial());
 		WaterBodyComponent->SetUnderwaterPostProcessMaterial(WaterBodyDefaults->GetUnderwaterPostProcessMaterial());
 
@@ -48,6 +49,15 @@ void UWaterBodyActorFactory::PostSpawnActor(UObject* Asset, AActor* NewActor)
 		if (ShouldOverrideWaterSplineDefaults(WaterSpline))
 		{
 			WaterSpline->WaterSplineDefaults = WaterBodyDefaults->SplineDefaults;
+		}
+	}
+
+	// If the water body is spawned into a zone which is using local only tessellation, we must default to enabling static meshes.
+	if (const AWaterZone* WaterZone = WaterBodyComponent->GetWaterZone())
+	{
+		if (WaterZone->IsLocalOnlyTessellationEnabled())
+		{
+			WaterBodyComponent->SetWaterBodyStaticMeshEnabled(true);
 		}
 	}
 }
@@ -136,6 +146,7 @@ void UWaterBodyOceanActorFactory::PostSpawnActor(UObject* Asset, AActor* NewActo
 		{
 			const double ExistingCollisionHeight = OceanComponent->GetCollisionExtents().Z;
 			OceanComponent->SetCollisionExtents(FVector(OwningWaterZone->GetZoneExtent() / 2.0, ExistingCollisionHeight));
+			OceanComponent->FillWaterZoneWithOcean();
 		}
 	}
 }

@@ -5,12 +5,16 @@
 #include "CoreTypes.h"
 #include "Containers/ArrayView.h"
 #include "EngineDefines.h"
+#include "Engine/EngineTypes.h"
 #include "GPUSceneWriter.h"
 #include "HitProxies.h"
-#include "InstanceUniformShaderParameters.h"
 #include "RHIDefinitions.h"
+#include "SceneDefinitions.h"
 #include "VT/RuntimeVirtualTextureEnum.h"
 
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_3
+#include "InstanceUniformShaderParameters.h"
+#endif
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "CoreMinimal.h"
 #include "UniformBuffer.h"
@@ -32,6 +36,7 @@ struct FInstanceDynamicData;
 struct FInstanceSceneData;
 struct FMaterialShaderParameters;
 struct FRenderBounds;
+template<typename TBufferStruct> class TUniformBuffer;
 
 enum EPrimitiveIdMode
 {
@@ -201,6 +206,10 @@ struct FMeshBatchElement
 	 */
 	const TUniformBuffer<FPrimitiveUniformShaderParameters>* PrimitiveUniformBufferResource;
 
+	/** Uniform buffer containing the "loose" parameters that aren't wrapped in other uniform buffers. Those parameters can be unique per mesh batch, e.g. view dependent. */
+	FUniformBufferRHIRef LooseParametersUniformBuffer;
+
+	/** The index buffer to draw the mesh batch with. */
 	const FIndexBuffer* IndexBuffer;
 
 	/**
@@ -214,7 +223,7 @@ struct FMeshBatchElement
 		/** If !bIsSplineProxy, Instance runs, where number of runs is specified by NumInstances.  Run structure is [StartInstanceIndex, EndInstanceIndex]. */
 		uint32* InstanceRuns;
 		/** If bIsSplineProxy, a pointer back to the proxy */
-		class FSplineMeshSceneProxy* SplineMeshSceneProxy;
+		const class FSplineMeshSceneProxy* SplineMeshSceneProxy;
 	};
 	const void* UserData;
 
@@ -397,6 +406,12 @@ struct FMeshBatch
 	uint32 CastRayTracedShadow : 1;	// Whether it casts ray traced shadow.
 #endif
 
+	/** 
+	 * Whether mesh has a view dependent draw arguments. 
+	 * Gives an opportunity to override mesh arguments for a View just before creating MDC for a mesh (makes MDC "non-cached")
+	 */
+	uint32 bViewDependentArguments : 1;
+
 #if UE_ENABLE_DEBUG_DRAWING
 	/** Conceptual HLOD index used for the HLOD Coloration visualization. */
 	int8 VisualizeHLODIndex;
@@ -475,6 +490,7 @@ struct FMeshBatch
 #if RHI_RAYTRACING
 	,	CastRayTracedShadow(true)
 #endif
+	,	bViewDependentArguments(false)
 #if (!(UE_BUILD_SHIPPING || UE_BUILD_TEST) || WITH_EDITOR)
 	,	VisualizeHLODIndex(INDEX_NONE)
 #endif
@@ -483,7 +499,7 @@ struct FMeshBatch
 #endif
 	{
 		// By default always add the first element.
-		new(Elements) FMeshBatchElement;
+		Elements.AddDefaulted();
 	}
 };
 

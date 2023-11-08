@@ -3,8 +3,7 @@
 #pragma once
 
 #include "MuR/ImagePrivate.h"
-#include "MuR/OpImageLayer.h"
-
+#include "Math/VectorRegister.h"
 
 namespace mu
 {
@@ -20,16 +19,6 @@ namespace mu
 		uint32 blend = blended;
 		uint32 masked = ( ( ( 255 - mask ) * base ) + ( mask * blend ) ) / 255;
 		return masked;
-	}
-
-	//! Blend a subimage on the base using a mask.
-	inline void ImageBlendOnBaseNoAlpha( Image* pBase,
-										 const Image* pMask,
-										 const Image* pBlended,
-										 const box< vec2<int> >& rect )
-	{
-		ImageLayerOnBaseNoAlpha< BlendChannel, false>
-				( pBase, pMask, pBlended, rect );
 	}
 
 
@@ -135,8 +124,7 @@ namespace mu
 		uint32 overlay = base + (blended * uint32(255 - base) >> 8);
 		uint32 masked = (((255 - mask) * base) + (mask * overlay)) >> 8;
 		return masked;
-	}
-
+	}	
 
 	inline uint32 LightenChannel(uint32 base, uint32 blended)
 	{
@@ -171,6 +159,25 @@ namespace mu
 	{
 		uint32 overlay = (base * (base + ((2 * blended * (255 - base)) >> 8))) >> 8;
 		return overlay;
+	}
+
+	//---------------------------------------------------------------------------------------------
+	FORCEINLINE VectorRegister4Int VectorBlendChannelMasked(
+		const VectorRegister4Int& Base, const VectorRegister4Int& Blended, const VectorRegister4Int& Mask)
+	{
+		const VectorRegister4Int Value = VectorIntAdd(
+				VectorIntMultiply(Base, VectorIntSubtract(MakeVectorRegisterIntConstant(255, 255, 255, 255), Mask)),
+				VectorIntMultiply(Blended, Mask));
+
+		// fast division by 255 assuming Value is in the range [0, (1 << 16)]
+		return VectorShiftRightImmLogical(
+				VectorIntMultiply(Value, MakeVectorRegisterIntConstant(32897, 32897, 32897, 32897)),
+				23);
+	}
+
+	FORCEINLINE int32 VectorLightenChannel(int32 Base, int32 Blended)
+	{
+		return Base + (Blended * (255 - Base) >> 8);
 	}
 
 }

@@ -198,7 +198,7 @@ float3 GenerateReflectedRayDirection(
 
 		float NoV = saturate(dot(V, WorldNormal));
 
-		float4 Sample = ImportanceSampleVisibleGGX(UniformSampleDisk(E), Pow4(Roughness), TangentV);
+		float4 Sample = ImportanceSampleVisibleGGX(E, Pow2(Roughness), TangentV);
 
 		float3 H = mul(Sample.xyz, TangentBasis);
 		float3 L = 2 * dot(V, H) * H - V;
@@ -382,8 +382,8 @@ bool HasBackfaceDiffuse(FPackedMaterialClosestHitPayload Payload)
 	{
 		FStrataAddressing StrataAddressing = GetStrataPixelDataByteOffset(0,0,0);
 		FStrataPixelHeader StrataPixelHeader = UnpackStrataHeaderIn(Payload.StrataData, StrataAddressing, Payload.StrataData);
-		const uint BSDFType = StrataGetBSDFType(StrataPixelHeader);
-		return BSDFType == STRATA_BSDF_TYPE_SLAB && HasSubsurface(StrataPixelHeader);
+		const uint BSDFType = StrataPixelHeader.StrataGetBSDFType();
+		return BSDFType == STRATA_BSDF_TYPE_SLAB && StrataPixelHeader.HasSubsurface();
 	}
 	#else
 	{

@@ -61,7 +61,20 @@ struct WORLDCONDITIONS_API FWorldConditionEditable
 		ExpressionDepth = 0;
 		Condition.Reset();
 	}
-	
+
+	bool operator==(const FWorldConditionEditable& Other) const
+	{
+		return ExpressionDepth == Other.ExpressionDepth
+				&& Operator == Other.Operator
+				&& bInvert == Other.bInvert
+				&& Condition == Other.Condition;
+	}
+
+	bool operator!=(const FWorldConditionEditable& Other) const
+	{
+		return !(*this == Other);
+	}
+
 	/** Expression depth controlling the parenthesis of the expression. */
 	UPROPERTY(EditAnywhere, Category="Default")
 	uint8 ExpressionDepth = 0;
@@ -84,13 +97,42 @@ struct WORLDCONDITIONS_API FWorldConditionEditable
  * Class that describes a specific configuration of a world condition. Should not be used directly.
  * It is shared between all query states initialized with a specific FWorldConditionQueryDefinition.
  */
-UCLASS()
-class WORLDCONDITIONS_API UWorldConditionQuerySharedDefinition : public UObject
+USTRUCT()
+struct WORLDCONDITIONS_API FWorldConditionQuerySharedDefinition
 {
-public:
 	GENERATED_BODY()
+	
+	FWorldConditionQuerySharedDefinition()
+		: bIsLinked(false)
+	{
+	}
 
-	virtual void PostLoad() override;
+	void PostSerialize(const FArchive& Ar);
+	bool Identical(const FWorldConditionQuerySharedDefinition* Other, uint32 PortFlags) const;
+
+	/** @return the schema used for the definition. */
+	TSubclassOf<UWorldConditionSchema> GetSchemaClass() const { return SchemaClass; }
+
+	/** @return conditions in the definition. */
+	const FInstancedStructContainer& GetConditions() const { return Conditions; }
+
+	/** @return the amount of memory needed for the state (in bytes). */
+	int32 GetStateSize() const { return StateSize; }
+	
+	/** @return the alignment of the memory needed for the state (in bytes). */
+	int32 GetStateMinAlignment() const { return StateMinAlignment; }
+
+	/** @return true if the shared definition is successfully linked. */
+	bool IsLinked() const { return bIsLinked; }
+	
+private:
+
+	/** Updates the state memory layout and initializes the conditions. */
+	bool Link(const UObject* Outer);
+	
+	/** Sets the definition data. */
+	void Set(const TSubclassOf<UWorldConditionSchema> InSchema, const TArrayView<FConstStructView> InConditions);
+	void Set(const TSubclassOf<UWorldConditionSchema> InSchema, const TArrayView<FStructView> InConditions);
 	
 	/** All the conditions of the world conditions. */
 	UPROPERTY()
@@ -100,8 +142,26 @@ public:
 	UPROPERTY()
 	TSubclassOf<UWorldConditionSchema> SchemaClass = nullptr;
 
-	/** Describes the number of active states using this definition. */
-	int32 ActiveStates = 0;
+	/** Min alignment of the state storage */
+	int32 StateMinAlignment = 8;
+	
+	/** Size of the state storage */
+	int32 StateSize = 0;
+
+	/** Flag indicating the last result of Link(), if true, the definition is ready to use. */
+	uint8 bIsLinked : 1;
+	
+	friend struct FWorldConditionQueryDefinition;
+};
+
+template<>
+struct TStructOpsTypeTraits<FWorldConditionQuerySharedDefinition> : public TStructOpsTypeTraitsBase2<FWorldConditionQuerySharedDefinition>
+{
+	enum
+	{
+		WithPostSerialize = true,
+		WithIdentical = true,
+	};
 };
 
 /**
@@ -117,20 +177,49 @@ struct WORLDCONDITIONS_API FWorldConditionQueryDefinition
 	/** Sets the schema class that is used to create the conditions. */
 	void SetSchemaClass(const TSubclassOf<UWorldConditionSchema> InSchema);
 
+	/** @return the schema class of the definition. */
+	TSubclassOf<UWorldConditionSchema> GetSchemaClass() const { return SchemaClass; }
+	
 	/** @return true of the definition has conditions and has been initialized. */
 	bool IsValid() const;
 
-	/** Initialized the condition from editable data. */
-	bool Initialize(UObject& Outer);
+	/**
+	 * Initialized the condition from editable data.
+	 * @param Outer Used in logging error messages, optional
+	 * @return true if initialization succeeded.
+	 */
+	bool Initialize(const UObject* Outer);
 
-	void PostSerialize(const FArchive& Ar);
+	bool Serialize(FArchive& Ar);
+	bool ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText, FArchive* InSerializingArchive = nullptr);
+	bool ExportTextItem(FString& ValueStr, FWorldConditionQueryDefinition const& DefaultValue, class UObject* Parent, int32 PortFlags, class UObject* ExportRootScope) const;
+	void AddStructReferencedObjects(FReferenceCollector& Collector) const;
+	bool Identical(const FWorldConditionQueryDefinition* Other, uint32 PortFlags) const;
 
+#if WITH_EDITORONLY_DATA
+	/** Initialized the condition with specific data. */
+	bool Initialize(const UObject* Outer, const TSubclassOf<UWorldConditionSchema> InSchemaClass, const TConstArrayView<FWorldConditionEditable> InConditions);
+
+	/** Adds a single condition to the definition. The condition will not be in use until Initialize() is called, and a state is initialized. */
+	void AddCondition(const FWorldConditionEditable& NewCondition)
+	{
+		EditableConditions.Add(NewCondition);
+	}
+#endif
+
+#if WITH_EDITOR
+	/** @returs description of the query expression. */
+	FText GetDescription() const;
+#endif
+
+	const TSharedPtr<FWorldConditionQuerySharedDefinition> GetSharedDefinitionPtr() const { return SharedDefinition; }
+	
+private:
 	/**
 	 * The definition used to initialize and execute world conditions.
 	 * Created from editable conditions during edit via Initialize().
 	 */
-	UPROPERTY()
-	TObjectPtr<UWorldConditionQuerySharedDefinition> SharedDefinition = nullptr;
+	TSharedPtr<FWorldConditionQuerySharedDefinition> SharedDefinition;
 	
 	/** Schema of the definition, also stored in SharedDefinition. */
 	UPROPERTY()
@@ -141,10 +230,6 @@ struct WORLDCONDITIONS_API FWorldConditionQueryDefinition
 	UPROPERTY(EditAnywhere, Category="Default", meta=(BaseStruct = "/Script/SmartObjectsModule.WorldCondition"))
 	TArray<FWorldConditionEditable> EditableConditions;
 #endif // WITH_EDITORONLY_DATA
-	
-	friend struct FWorldConditionQueryState;
-	friend struct FWorldConditionBase;
-	friend struct FWorldConditionContext;
 };
 
 template<>
@@ -152,7 +237,12 @@ struct TStructOpsTypeTraits<FWorldConditionQueryDefinition> : public TStructOpsT
 {
 	enum
 	{
-		WithPostSerialize = true,
+		WithCopy = true, // Ensures that the SharedDefinition gets copied too.
+		WithIdentical = true,
+		WithAddStructReferencedObjects = true,
+		WithSerializer = true,
+		WithImportTextItem = true,
+		WithExportTextItem = true,
 	};
 };
 
@@ -206,13 +296,13 @@ struct WORLDCONDITIONS_API FWorldConditionResultInvalidationHandle
 	FWorldConditionResultInvalidationHandle() = default;
 
 	/** @return True if the handle is valid. */
-	bool IsValid() const { return CachedResult != nullptr && Item != nullptr; }
+	bool IsValid() const { return WeakStateMemory.IsValid(); }
 
 	/** Resets the handle. */
 	void Reset()
 	{
-		CachedResult = nullptr;
-		Item = nullptr;
+		WeakStateMemory = nullptr;
+		ItemOffset = 0;
 	}
 
 	/**
@@ -222,14 +312,14 @@ struct WORLDCONDITIONS_API FWorldConditionResultInvalidationHandle
 	
 protected:
 
-	explicit FWorldConditionResultInvalidationHandle(EWorldConditionResultValue* InCachedResult, FWorldConditionItem* InItem)
-		: CachedResult(InCachedResult)
-		, Item(InItem)
+	explicit FWorldConditionResultInvalidationHandle(const TWeakPtr<uint8> InStateMemory, const int32 InItemOffset)
+		: WeakStateMemory(InStateMemory)
+		, ItemOffset(InItemOffset)
 	{
 	}
 
-	EWorldConditionResultValue* CachedResult = nullptr;
-	FWorldConditionItem* Item = nullptr;
+	TWeakPtr<uint8> WeakStateMemory = nullptr;
+	int32 ItemOffset = 0;
 
 	friend struct FWorldConditionQueryState;
 };
@@ -248,12 +338,23 @@ struct WORLDCONDITIONS_API FWorldConditionQueryState
 	GENERATED_BODY()
 
 	FWorldConditionQueryState()
-		: bHasPerConditionState(false)
-		, bIsInitialized(false)
+		: bIsInitialized(false)
 	{
+	}
+
+	FWorldConditionQueryState(const FWorldConditionQueryState& Other)
+		: FWorldConditionQueryState()
+	{
+		// Query state cannot be copied, it always needs to be initialized for specific purpose. 
 	}
 	
 	~FWorldConditionQueryState();
+
+	FWorldConditionQueryState& operator=(const FWorldConditionQueryState& RHS)
+	{
+		// Query state cannot be copied, it always needs to be initialized for specific purpose. 
+		return *this;
+	}
 
 	/** @return True if the state is properly initialized. */
 	bool IsInitialized() const { return bIsInitialized; }
@@ -276,24 +377,25 @@ struct WORLDCONDITIONS_API FWorldConditionQueryState
 	{
 		check(bIsInitialized);
 		// If Memory is null, and the query is initialized, it's empty query, which evaluates to true. 
-		return Memory ? *reinterpret_cast<EWorldConditionResultValue*>(Memory + CachedResultOffset) : EWorldConditionResultValue::IsTrue;
+		return Memory.IsValid() ? *reinterpret_cast<EWorldConditionResultValue*>(Memory.Get() + CachedResultOffset) : EWorldConditionResultValue::IsTrue;
 	}
 
 	/** @return Condition item at specific index */
 	FWorldConditionItem& GetItem(const int32 Index) const
 	{
 		check(bIsInitialized);
-		check(Memory && Index >= 0 && Index < (int32)NumConditions);
-		return *reinterpret_cast<FWorldConditionItem*>(Memory + ItemsOffset + Index * sizeof(FWorldConditionItem));
+		check(Memory.IsValid() && Index >= 0 && Index < (int32)NumConditions);
+		return *reinterpret_cast<FWorldConditionItem*>(Memory.Get() + ItemsOffset + Index * sizeof(FWorldConditionItem));
 	}
 
 	/** @return Object describing the state of a specified condition. */
 	UObject* GetStateObject(const FWorldConditionBase& Condition) const
 	{
 		check(bIsInitialized);
-		check(Condition.StateDataOffset > 0);
-		check(Condition.bIsStateObject);
-		const FWorldConditionStateObject& StateObject = *reinterpret_cast<FWorldConditionStateObject*>(Memory + Condition.StateDataOffset);
+		check(Condition.GetStateDataOffset() > 0);
+		check(Condition.IsStateObject());
+		check(Memory.IsValid());
+		const FWorldConditionStateObject& StateObject = *reinterpret_cast<FWorldConditionStateObject*>(Memory.Get() + Condition.GetStateDataOffset());
 		return StateObject.Object;
 	}
 
@@ -301,15 +403,13 @@ struct WORLDCONDITIONS_API FWorldConditionQueryState
 	FStructView GetStateStruct(const FWorldConditionBase& Condition) const
 	{
 		check(bIsInitialized);
-		check(Condition.StateDataOffset > 0);
-		check (!Condition.bIsStateObject);
-		const UScriptStruct* ScriptStruct = Cast<UScriptStruct>(Condition.GetRuntimeStateType());
+		check(Condition.GetStateDataOffset() > 0);
+		check (!Condition.IsStateObject());
+		const UScriptStruct* ScriptStruct = Cast<UScriptStruct>(Condition.GetRuntimeStateType()->Get());
 		check(ScriptStruct);
-		return FStructView(Cast<UScriptStruct>(Condition.GetRuntimeStateType()), Memory + Condition.StateDataOffset);
+		check(Memory.IsValid());
+		return FStructView(Cast<UScriptStruct>(Condition.GetRuntimeStateType()->Get()), Memory.Get() + Condition.GetStateDataOffset());
 	}
-
-	/** @return True if any of the conditions has runtime state. */
-	bool HasPerConditionState() const { return bHasPerConditionState; }
 
 	/** @return The number of conditions in the state data. */
 	int32 GetNumConditions() const { return NumConditions; }
@@ -325,39 +425,40 @@ struct WORLDCONDITIONS_API FWorldConditionQueryState
 	 */
 	FWorldConditionResultInvalidationHandle GetInvalidationHandle(const FWorldConditionBase& Condition) const;
 
+	/** @return the owner the state was initialized with. */
 	const UObject* GetOwner() const { return Owner; }
-	
-protected:
 
+	/** @return shared definition used to initialize the state, or nullptr if query is empty. */
+	const FWorldConditionQuerySharedDefinition* GetSharedDefinition() const { return SharedDefinition.Get(); }
+
+	/** Sets the combined cached result of the query. */
 	void SetCachedResult(const EWorldConditionResultValue InResult) const
 	{
 		check(bIsInitialized);
-		if (Memory)
+		if (Memory.IsValid())
 		{
-			EWorldConditionResultValue& CachedResult = *reinterpret_cast<EWorldConditionResultValue*>(Memory + CachedResultOffset); 
+			EWorldConditionResultValue& CachedResult = *reinterpret_cast<EWorldConditionResultValue*>(Memory.Get() + CachedResultOffset); 
 			CachedResult = InResult;
 		}
 	}
 
-private:
-
+	/** Offset in state memory where cached result is. */
 	static constexpr int32 CachedResultOffset = 0;
+
+	/** Offset in state memory where condition items are. */
 	static constexpr int32 ItemsOffset = Align(sizeof(EWorldConditionResultValue), alignof(FWorldConditionItem));
  
-	uint8 NumConditions = 0;
-	uint8 bHasPerConditionState : 1;
-	uint8 bIsInitialized : 1;
-	uint8* Memory = nullptr;
+private:
 
-	UPROPERTY(Transient)
-	TObjectPtr<UWorldConditionQuerySharedDefinition> SharedDefinition = nullptr;
+	void InitializeInternal(const UObject* InOwner, const TSharedPtr<FWorldConditionQuerySharedDefinition>& InSharedDefinition);
+
+	uint8 NumConditions = 0;
+	uint8 bIsInitialized : 1;
+	TSharedPtr<uint8> Memory = nullptr;
+	TSharedPtr<FWorldConditionQuerySharedDefinition> SharedDefinition = nullptr;
 
 	UPROPERTY(Transient)
 	TObjectPtr<const UObject> Owner = nullptr;
-
-	friend struct FWorldConditionBase;
-	friend struct FWorldConditionContext;
-	friend struct FWorldConditionQuery;
 };
 
 template<>
@@ -407,7 +508,7 @@ struct WORLDCONDITIONS_API FWorldConditionQuery
 	 * Initializes a query from array of conditions for testing.
 	 * @return true of the query was created and initialized.
 	 */
-	bool DebugInitialize(UObject& Outer, const TSubclassOf<UWorldConditionSchema> InSchemaClass, const TConstArrayView<FWorldConditionEditable> InConditions);
+	bool DebugInitialize(const UObject* Outer, const TSubclassOf<UWorldConditionSchema> InSchemaClass, const TConstArrayView<FWorldConditionEditable> InConditions);
 #endif // WITH_EDITORONLY_DATA
 	
 protected:
@@ -419,7 +520,3 @@ protected:
 	UPROPERTY(Transient);
 	mutable FWorldConditionQueryState QueryState;
 };
-
-#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
-#include "WorldConditionSchema.h"
-#endif

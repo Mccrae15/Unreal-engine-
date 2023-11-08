@@ -69,7 +69,10 @@ bool UPatternToolBuilder::CanBuildTool(const FToolBuilderState& SceneState) cons
 
 UMultiSelectionMeshEditingTool* UPatternToolBuilder::CreateNewTool(const FToolBuilderState& SceneState) const
 {
-	return NewObject<UPatternTool>(SceneState.ToolManager);
+	UPatternTool* NewTool = NewObject<UPatternTool>(SceneState.ToolManager);
+	NewTool->SetEnableCreateISMCs(bEnableCreateISMCs);
+	return NewTool;
+	
 }
 
 void UPatternToolBuilder::InitializeNewTool(UMultiSelectionMeshEditingTool* NewTool, const FToolBuilderState& SceneState) const
@@ -589,6 +592,7 @@ void UPatternTool::Setup()
 	Settings->WatchProperty(Settings->ProjectionOffset, [this](float NewValue) { MarkPatternDirty(); } );
 	Settings->WatchProperty(Settings->bHideSources, [this](bool bNewValue) { OnSourceVisibilityToggled(!bNewValue); } );
 	Settings->WatchProperty(Settings->bUseRelativeTransforms, [this](bool bNewValue) { MarkPatternDirty(); } );
+	Settings->WatchProperty(Settings->bRandomlyPickElements, [this](bool bNewValue) { MarkPatternDirty(); });
 
 	BoundingBoxSettings = NewObject<UPatternTool_BoundingBoxSettings>();
 	AddToolPropertySource(BoundingBoxSettings);
@@ -704,6 +708,8 @@ void UPatternTool::Setup()
 	OutputSettings = NewObject<UPatternTool_OutputSettings>();
 	AddToolPropertySource(OutputSettings);
 	OutputSettings->RestoreProperties(this);
+	OutputSettings->bCreateISMCs &= bEnableCreateISMCs;
+	OutputSettings->bEnableCreateISMCs = bEnableCreateISMCs;
 
 	BoundingBoxVisualizer.LineThickness = 2.0f;
 	
@@ -1060,6 +1066,15 @@ void UPatternTool::OnParametersUpdated()
 	MarkPatternDirty();
 }
 
+void UPatternTool::SetEnableCreateISMCs(bool bEnable)
+{
+	bEnableCreateISMCs = bEnable;
+	if (OutputSettings)
+	{
+		OutputSettings->bCreateISMCs &= bEnableCreateISMCs;
+		OutputSettings->bEnableCreateISMCs = bEnableCreateISMCs;
+	}
+}
 
 void UPatternTool::OnTransformGizmoUpdated(UTransformProxy* Proxy, FTransform Transform)
 {
@@ -1437,40 +1452,67 @@ void UPatternTool::UpdatePattern()
 	int32 NumElements = Elements.Num();
 	check(PreviewComponents.Num() == NumElements);
 
-	for (int32 ElemIdx = 0; ElemIdx < NumElements; ++ElemIdx)
+	auto AddComponent = [this, &Pattern](int32 PatternItemIdx, const FPatternElement& Element, const FTransformSRT3d& ElementTransform, FComponentSet& ElemComponents)
 	{
-		FPatternElement& Element = Elements[ElemIdx];
-		FTransformSRT3d ElementTransform = Element.BaseRotateScale;
-		FComponentSet& ElemComponents = PreviewComponents[ElemIdx];
-
-		if (Settings->bUseRelativeTransforms)
+		UPrimitiveComponent* Component = nullptr;
+		if (Element.SourceDynamicMesh != nullptr)
 		{
-			ElementTransform.SetTranslation(ElementTransform.GetTranslation() + Element.RelativePosition);
+			Component = GetPreviewDynamicMesh(Element);
 		}
-		
+		else if (Element.SourceStaticMesh != nullptr)
+		{
+			Component = GetPreviewStaticMesh(Element);
+		}
+		if (Component != nullptr)
+		{
+			FTransform WorldTransform;
+			ComputeWorldTransform(WorldTransform, ElementTransform, Pattern[PatternItemIdx]);
+
+			Component->SetWorldTransform(WorldTransform);
+			Component->SetVisibility(true);
+
+			ElemComponents.Components.Add(Component);
+		}
+	};
+
+	if (Settings->bRandomlyPickElements)
+	{
+		FRandomStream Stream(Settings->Seed);
 		for (int32 k = 0; k < NumPatternItems; ++k)
 		{
-			UPrimitiveComponent* Component = nullptr;
-			if (Element.SourceDynamicMesh != nullptr)
+			int32 ElemIdx = Stream.RandHelper(NumElements);
+			FPatternElement& Element = Elements[ElemIdx];
+			FTransformSRT3d ElementTransform = Element.BaseRotateScale;
+			FComponentSet& ElemComponents = PreviewComponents[ElemIdx];
+
+			if (Settings->bUseRelativeTransforms)
 			{
-				Component = GetPreviewDynamicMesh(Element);
+				ElementTransform.SetTranslation(ElementTransform.GetTranslation() + Element.RelativePosition);
 			}
-			else if (Element.SourceStaticMesh != nullptr)
+
+			AddComponent(k, Element, ElementTransform, ElemComponents);
+		}
+	}
+	else // always pick all elements
+	{
+		for (int32 ElemIdx = 0; ElemIdx < NumElements; ++ElemIdx)
+		{
+			FPatternElement& Element = Elements[ElemIdx];
+			FTransformSRT3d ElementTransform = Element.BaseRotateScale;
+			FComponentSet& ElemComponents = PreviewComponents[ElemIdx];
+
+			if (Settings->bUseRelativeTransforms)
 			{
-				Component = GetPreviewStaticMesh(Element);
+				ElementTransform.SetTranslation(ElementTransform.GetTranslation() + Element.RelativePosition);
 			}
-			if (Component != nullptr)
+
+			for (int32 k = 0; k < NumPatternItems; ++k)
 			{
-				FTransform WorldTransform;
-				ComputeWorldTransform(WorldTransform, ElementTransform, Pattern[k]);
-				
-				Component->SetWorldTransform( WorldTransform );
-				Component->SetVisibility(true);
-		
-				ElemComponents.Components.Add(Component);
+				AddComponent(k, Element, ElementTransform, ElemComponents);
 			}
 		}
 	}
+
 
 	// ResetPreviews() does not hide the preview components because changing their visibility
 	// will destroy their SceneProxies, which is expensive, and in most cases the same set of
@@ -1544,7 +1586,7 @@ void UPatternTool::ComputeCombinedPatternBounds()
 	CombinedPatternBounds.Expand(BoundingBoxSettings->Adjustment);
 }
 
-UStaticMeshComponent* UPatternTool::GetPreviewStaticMesh(FPatternElement& Element)
+UStaticMeshComponent* UPatternTool::GetPreviewStaticMesh(const FPatternElement& Element)
 {
 	FComponentSet* FoundPool = StaticMeshPools.Find(Element.TargetIndex);
 	if (FoundPool == nullptr)
@@ -1600,7 +1642,7 @@ void UPatternTool::ReturnStaticMeshes(FPatternElement& Element, FComponentSet& C
 
 
 
-UDynamicMeshComponent* UPatternTool::GetPreviewDynamicMesh(FPatternElement& Element)
+UDynamicMeshComponent* UPatternTool::GetPreviewDynamicMesh(const FPatternElement& Element)
 {
 	FComponentSet* FoundPool = DynamicMeshPools.Find(Element.TargetIndex);
 	if (FoundPool == nullptr)
@@ -1816,20 +1858,43 @@ void UPatternTool::EmitResults()
 					FTransformSRT3d PatternTransform = CurrentPattern[k];
 					FTransform WorldTransform;
 					ComputeWorldTransform(WorldTransform, (FTransform)ElementTransform, (FTransform)PatternTransform);
-					
-					FActorSpawnParameters SpawnInfo;
-					AActor* NewActor = GetTargetWorld()->SpawnActor<AActor>(SpawnInfo);
-					if (NewActor != nullptr)
-					{
-						NewActors.Add(NewActor);
 
-						UStaticMeshComponent* TemplateComponent = DuplicateObject<UStaticMeshComponent>(SourceComponent, NewActor);
-						TemplateComponent->ClearFlags(RF_DefaultSubObject);
-						TemplateComponent->OnComponentCreated();
-						NewActor->SetRootComponent(TemplateComponent);
-						TemplateComponent->RegisterComponent();
-						TemplateComponent->SetWorldTransform(WorldTransform);
-						TemplateComponent->SetVisibility(false, bPropagateToChildren);
+					FCreateActorParams SpawnInfo;
+					SpawnInfo.BaseName = FString::Printf(TEXT("Pattern_%d_%d"), ElemIdx, k);
+					SpawnInfo.TargetWorld = GetTargetWorld();
+					SpawnInfo.TemplateActor = SourceComponent->GetOwner();
+					SpawnInfo.Transform = WorldTransform;
+
+					FCreateActorResult Result = UE::Modeling::CreateNewActor(GetToolManager(), MoveTemp(SpawnInfo));
+					if (Result.IsOK())
+					{
+						AActor* NewActor = Result.NewActor;
+						UStaticMeshComponent* NewComponent = NewActor->GetComponentByClass<UStaticMeshComponent>();
+
+						// Not sure this will ever happen but we probably don't want to proceed if it does
+						ensureMsgf(NewActor->GetRootComponent(), TEXT("New actor has no root component."));
+
+						if (NewComponent)
+						{
+							NewComponent->SetStaticMesh(SourceComponent->GetStaticMesh());
+							for (int32 j = 0; j < Element.SourceMaterials.Num(); ++j)
+							{
+								NewComponent->SetMaterial(j, Element.SourceMaterials[j]);
+							}
+						}
+						else
+						{
+							NewComponent = DuplicateObject<UStaticMeshComponent>(SourceComponent, NewActor);
+							NewActor->SetRootComponent(NewComponent);
+							NewComponent->OnComponentCreated();
+							NewActor->AddInstanceComponent(NewComponent);
+							NewComponent->RegisterComponent();
+						}
+
+						NewComponent->SetWorldTransform(WorldTransform);
+
+						NewActors.Add(NewActor);
+						SetActorComponentsVisibility(NewActor, false);
 					}
 				}
 			}
@@ -1873,40 +1938,73 @@ void UPatternTool::EmitResults()
 			}
 			else
 			{
-				// Emit a single actor with multiple StaticMeshComponents
-				FActorSpawnParameters SpawnInfo;
-				AActor* ParentActor = GetTargetWorld()->SpawnActor<AActor>(SpawnInfo);
-				if (ParentActor != nullptr)
+				AActor* NewActor = nullptr;
+				UStaticMeshComponent* TemplateComponent = nullptr;
+
+				for (int32 k = 0; k < NumPatternItems; ++k)
 				{
-					NewActors.Add(ParentActor);
-					
-					UStaticMeshComponent* TemplateComponent = nullptr;
-					for (int32 k = 0; k < NumPatternItems; ++k)
+					FTransformSRT3d PatternTransform = CurrentPattern[k];
+					FTransform WorldTransform;
+					ComputeWorldTransform(WorldTransform, (FTransform)ElementTransform, (FTransform)PatternTransform);
+
+					if (k == 0)
 					{
-						FTransformSRT3d PatternTransform = CurrentPattern[k];
-                        FTransform WorldTransform;
-                        ComputeWorldTransform(WorldTransform, (FTransform)ElementTransform, (FTransform)PatternTransform);
-						if (k == 0)
+						FCreateActorParams SpawnInfo;
+						SpawnInfo.BaseName = FString::Printf(TEXT("Pattern_%d"), ElemIdx);
+						SpawnInfo.TargetWorld = GetTargetWorld();
+						SpawnInfo.TemplateActor = SourceComponent->GetOwner();
+						SpawnInfo.Transform = FTransform::Identity;
+
+						FCreateActorResult Result = UE::Modeling::CreateNewActor(GetToolManager(), MoveTemp(SpawnInfo));
+						if (Result.IsOK())
 						{
-							TemplateComponent = DuplicateObject<UStaticMeshComponent>(SourceComponent, ParentActor);
-							TemplateComponent->ClearFlags(RF_DefaultSubObject);
-							TemplateComponent->OnComponentCreated();
-							ParentActor->SetRootComponent(TemplateComponent);
-							TemplateComponent->RegisterComponent();
-							TemplateComponent->SetWorldTransform( WorldTransform );
-                            TemplateComponent->SetVisibility(false, bPropagateToChildren);
+							NewActor = Result.NewActor;
+							TemplateComponent = NewActor->GetComponentByClass<UStaticMeshComponent>();
+
+							// Not sure this will ever happen but we probably don't want to proceed if it does
+							ensureMsgf(NewActor->GetRootComponent(), TEXT("New actor has no root component."));
+
+							if (TemplateComponent)
+							{
+								TemplateComponent->SetStaticMesh(SourceComponent->GetStaticMesh());
+								for (int32 j = 0; j < Element.SourceMaterials.Num(); ++j)
+								{
+									TemplateComponent->SetMaterial(j, Element.SourceMaterials[j]);
+								}
+							}
+							else
+							{
+								TemplateComponent = DuplicateObject<UStaticMeshComponent>(SourceComponent, NewActor);
+								TemplateComponent->SetupAttachment(NewActor->GetRootComponent());
+								TemplateComponent->OnComponentCreated();
+								NewActor->AddInstanceComponent(TemplateComponent);
+								TemplateComponent->RegisterComponent();
+							}
+
+							TemplateComponent->SetWorldTransform(WorldTransform);
+
+							NewActors.Add(NewActor);
+							SetActorComponentsVisibility(NewActor, false);
 						}
 						else
 						{
-							UStaticMeshComponent* NewCloneComponent = DuplicateObject<UStaticMeshComponent>(TemplateComponent, ParentActor);
-							NewCloneComponent->ClearFlags(RF_DefaultSubObject);
-							NewCloneComponent->SetupAttachment(ParentActor->GetRootComponent());
-							NewCloneComponent->OnComponentCreated();
-							ParentActor->AddInstanceComponent(NewCloneComponent);
-							NewCloneComponent->RegisterComponent();
-							NewCloneComponent->SetWorldTransform( WorldTransform );
-                            NewCloneComponent->SetVisibility(false, bPropagateToChildren);
+							break;
 						}
+					}
+					else
+					{
+						UStaticMeshComponent* NewCloneComponent = DuplicateObject<UStaticMeshComponent>(TemplateComponent, NewActor);
+						NewCloneComponent->ClearFlags(RF_DefaultSubObject);
+						NewCloneComponent->SetupAttachment(NewActor->GetRootComponent());
+						NewCloneComponent->OnComponentCreated();
+						NewActor->AddInstanceComponent(NewCloneComponent);
+						NewCloneComponent->RegisterComponent();
+						NewCloneComponent->SetWorldTransform(WorldTransform);
+
+						// Using SetVisibility here instead of SetActorComponentsVisibility because in this particular output
+						// case with large patterns, there could be a lot of redundant iteration over and casting for components
+						// which have already been set to invisible.
+						NewCloneComponent->SetVisibility(false, bPropagateToChildren);
 					}
 				}
 			}

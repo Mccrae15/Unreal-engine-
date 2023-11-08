@@ -12,13 +12,15 @@
 namespace Chaos::Softs
 {
 
-class CHAOS_API FPBDLongRangeConstraintsBase
+class FPBDLongRangeConstraintsBase
 {
 public:
+	UE_NONCOPYABLE(FPBDLongRangeConstraintsBase);
+
 	static constexpr FSolverReal MinTetherScale = (FSolverReal)0.01;
 	static constexpr FSolverReal MaxTetherScale = (FSolverReal)10.;
 
-	enum class EMode : uint8
+	enum class UE_DEPRECATED(5.3, "Tether EMode has been replaced with bUseGeodesicTethers.") EMode : uint8
 	{
 		Euclidean,
 		Geodesic,
@@ -31,7 +33,7 @@ public:
 
 	typedef TTuple<int32, int32, FRealSingle> FTether;
 
-	FPBDLongRangeConstraintsBase(
+	CHAOS_API FPBDLongRangeConstraintsBase(
 		const FSolverParticles& Particles,
 		const int32 InParticleOffset,
 		const int32 InParticleCount,
@@ -98,7 +100,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 protected:
 	// Return the minimum number of long range tethers in a batch to process in parallel
-	static int32 GetMinParallelBatchSize();
+	static CHAOS_API int32 GetMinParallelBatchSize();
 
 	// Return whether the constraint has been setup with a weightmap to interpolate between two low and high values of scales
 	UE_DEPRECATED(5.2, "Use TetherScale.HasWeightMap() instead")
@@ -138,9 +140,10 @@ protected:
 protected:
 	static constexpr int32 TableSize = 16;  // The size of the weightmaps lookup table
 	const TArray<TConstArrayView<FTether>>& Tethers;  // Array view on the tether provided to this constraint
+	const int32 ParticleOffset;  // Index of the first usable particle
+	const int32 ParticleCount;
 	FPBDStiffness Stiffness;  // Stiffness weightmap lookup table
 	FPBDWeightMap TetherScale;  // Scale weightmap lookup table
-	const int32 ParticleOffset;  // Index of the first usable particle
 
 	UE_DEPRECATED(5.2, "Use TetherScale instead")
 	TArray<uint8> ScaleIndices;
@@ -148,7 +151,5 @@ protected:
 	TArray<FSolverReal> ScaleTable;
 	UE_DEPRECATED(5.2, "Use TetherScale instead")
 	FSolverVec2 Scale;
-	UE_DEPRECATED(5.2, "Use TetherScale.Num() or Stiffness.Num(), instead")
-	const int32 ParticleCount = 0;
 };
 }  // End namespace Chaos::Softs

@@ -26,7 +26,7 @@ class FHttpModule :
 	public IModuleInterface, public FSelfRegisteringExec
 {
 
-public:
+protected:
 
 	// FSelfRegisteringExec
 
@@ -39,7 +39,9 @@ public:
 	 *
 	 * @return true if the handler consumed the input, false to continue searching handlers
 	 */
-	virtual bool Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override;
+	virtual bool Exec_Runtime(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override;
+
+public:
 
 	/** 
 	 * Exec command handlers
@@ -249,6 +251,14 @@ public:
 	}
 
 	/**
+	 * @return Duration between explicit tick calls when running an event loop http thread.
+	 */
+	inline float GetHttpEventLoopThreadTickIntervalInSeconds() const
+	{
+		return HttpEventLoopThreadTickIntervalInSeconds;
+	}
+
+	/**
 	 * Get the default headers that are appended to every request
 	 * @return the default headers
 	 */
@@ -280,6 +290,14 @@ public:
 	}
 
 	/**
+	 * @returns the domains which won't use proxy even if ProxyAddress is set
+	 */
+	inline const FString& GetHttpNoProxy() const
+	{
+		return HttpNoProxy;
+	}
+
+	/**
 	 * Method to check dynamic proxy setting support.
 	 * @returns Whether this http implementation supports dynamic proxy setting.
 	 */
@@ -291,6 +309,7 @@ public:
 	/**
 	 * @returns the list of domains allowed to be visited in a shipping build
 	 */
+	UE_DEPRECATED(5.3, "GetAllowedDomains has been deprecated. URLRequestFilter should be used instead.")
 	inline const TArray<FString>& GetAllowedDomains() const
 	{
 		return AllowedDomains;
@@ -323,6 +342,10 @@ private:
 	 */
 	virtual void ShutdownModule() override;
 
+	/**
+	 * Delegate for config file changes.
+	 */
+	void OnConfigSectionsChanged(const FString& IniFilename, const TSet<FString>& SectionNames);
 
 	/** Keeps track of Http requests while they are being processed */
 	FHttpManager* HttpManager;
@@ -344,6 +367,8 @@ private:
 	float HttpThreadIdleFrameTimeInSeconds;
 	/** Time in seconds to sleep minimally when idle, waiting for requests. */
 	float HttpThreadIdleMinimumSleepTimeInSeconds;
+	/** Time in seconds between explicit calls to tick requests when using an event loop to run http requests. */
+	float HttpEventLoopThreadTickIntervalInSeconds;
 	/** Max number of simultaneous connections to a specific server */
 	int32 HttpMaxConnectionsPerServer;
 	/** Max buffer size for individual http reads */
@@ -358,6 +383,8 @@ private:
 	static FHttpModule* Singleton;
 	/** The address to use for proxy, in format IPADDRESS:PORT */
 	FString ProxyAddress;
+	/** The domains which won't use proxy even if the ProxyAddress is set, in format "127.0.0.1,localhost,example.com" */
+	FString HttpNoProxy;
 	/** Whether or not the http implementation we are using supports dynamic proxy setting. */
 	bool bSupportsDynamicProxy;
 	/** List of domains that can be accessed. If Empty then no filtering is applied */

@@ -19,6 +19,7 @@ enum class EPCGMedadataMathsOperation : uint16
 	Abs,
 	Floor,
 	Ceil,
+	OneMinus UMETA(Tooltip = "1 - X operation"),
 
 	// Binary op
 	BinaryOp = 1 << 11 UMETA(Hidden),
@@ -32,6 +33,7 @@ enum class EPCGMedadataMathsOperation : uint16
 	ClampMin,
 	ClampMax,
 	Modulo,
+	Set,
 
 	// Ternary op
 	TernaryOp = 1 << 12 UMETA(Hidden),
@@ -54,12 +56,15 @@ public:
 #if WITH_EDITOR
 	virtual FName GetDefaultNodeName() const override;
 	virtual FText GetDefaultNodeTitle() const override;
+	virtual TArray<FPCGPreConfiguredSettingsInfo> GetPreconfiguredInfo() const override;
+	virtual bool OnlyExposePreconfiguredSettings() const override { return true; }
 #endif
 	virtual FName AdditionalTaskName() const override;
+	virtual void ApplyPreconfiguredSettings(const FPCGPreConfiguredSettingsInfo& PreconfigureInfo) override;
 	//~End UPCGSettings interface
 
 	//~Begin UPCGMetadataSettingsBase interface
-	FPCGAttributePropertySelector GetInputSource(uint32 Index) const override;
+	FPCGAttributePropertyInputSelector GetInputSource(uint32 Index) const override;
 
 	virtual FName GetInputPinLabel(uint32 Index) const override;
 	virtual uint32 GetInputPinNum() const override;
@@ -77,13 +82,13 @@ public:
 	EPCGMedadataMathsOperation Operation = EPCGMedadataMathsOperation::Add;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Input)
-	FPCGAttributePropertySelector InputSource1;
+	FPCGAttributePropertyInputSelector InputSource1;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Input, meta = (EditCondition = "(Operation & '/Script/PCG.EPCGMedadataMathsOperation::BinaryOp') || (Operation & '/Script/PCG.EPCGMedadataMathsOperation::TernaryOp')", EditConditionHides))
-	FPCGAttributePropertySelector InputSource2;
+	FPCGAttributePropertyInputSelector InputSource2;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Input, meta = (EditCondition = "Operation & '/Script/PCG.EPCGMedadataMathsOperation::TernaryOp'", EditConditionHides))
-	FPCGAttributePropertySelector InputSource3;
+	FPCGAttributePropertyInputSelector InputSource3;
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()

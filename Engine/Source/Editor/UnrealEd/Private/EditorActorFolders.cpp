@@ -5,6 +5,7 @@
 #include "GameFramework/Actor.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
+#include "Misc/LazySingleton.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -36,7 +37,6 @@ FOnActorFolderDelete	FActorFolders::OnFolderDelete;
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 //~ End Deprecated
 
-FActorFolders* FActorFolders::Singleton;
 FOnActorFolderCreated	FActorFolders::OnFolderCreated;
 FOnActorFolderMoved		FActorFolders::OnFolderMoved;
 FOnActorFolderDeleted	FActorFolders::OnFolderDeleted;
@@ -51,18 +51,29 @@ FActorFolders::FActorFolders()
 	FEditorDelegates::MapChange.AddRaw(this, &FActorFolders::OnMapChange);
 	FEditorDelegates::PostSaveWorldWithContext.AddRaw(this, &FActorFolders::OnWorldSaved);
 	FEditorDelegates::PostSaveExternalActors.AddRaw(this, &FActorFolders::SaveWorldFoldersState);
+
+	check(GEditor);
+	UActorEditorContextSubsystem::Get()->RegisterClient(this);
+	bAnyLevelsChanged = false;
 }
 
 FActorFolders::~FActorFolders()
 {
-	check(GEngine);
-	GEngine->OnLevelActorFolderChanged().RemoveAll(this);
-	GEngine->OnLevelActorListChanged().RemoveAll(this);
-	GEngine->OnActorFolderAdded().RemoveAll(this);
+	if (GEngine)
+	{
+		GEngine->OnLevelActorFolderChanged().RemoveAll(this);
+		GEngine->OnLevelActorListChanged().RemoveAll(this);
+		GEngine->OnActorFolderAdded().RemoveAll(this);
+	}
 
 	FEditorDelegates::MapChange.RemoveAll(this);
 	FEditorDelegates::PostSaveWorldWithContext.RemoveAll(this);
 	FEditorDelegates::PostSaveExternalActors.RemoveAll(this);
+
+	if (GEditor)
+	{
+		UActorEditorContextSubsystem::Get()->UnregisterClient(this);
+	}
 }
 
 void FActorFolders::AddReferencedObjects(FReferenceCollector& Collector)
@@ -73,21 +84,7 @@ void FActorFolders::AddReferencedObjects(FReferenceCollector& Collector)
 
 FActorFolders& FActorFolders::Get()
 {
-	check(Singleton);
-	return *Singleton;
-}
-
-void FActorFolders::Init()
-{
-	Singleton = new FActorFolders;
-	UActorEditorContextSubsystem::Get()->RegisterClient(Singleton);
-}
-
-void FActorFolders::Cleanup()
-{
-	UActorEditorContextSubsystem::Get()->UnregisterClient(Singleton);
-	delete Singleton;
-	Singleton = nullptr;
+	return TLazySingleton<FActorFolders>::Get();
 }
 
 void FActorFolders::Housekeeping()
@@ -110,7 +107,7 @@ void FActorFolders::BroadcastOnActorFolderCreated(UWorld& InWorld, const FFolder
 		OnFolderCreate.Broadcast(InWorld, InFolder.GetPath());
 	}
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	BroadcastOnActorEditorContextClientChanged();
+	BroadcastOnActorEditorContextClientChanged(InWorld);
 }
 
 void FActorFolders::BroadcastOnActorFolderDeleted(UWorld& InWorld, const FFolder& InFolder)
@@ -122,7 +119,7 @@ void FActorFolders::BroadcastOnActorFolderDeleted(UWorld& InWorld, const FFolder
 		OnFolderDelete.Broadcast(InWorld, InFolder.GetPath());
 	}
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	BroadcastOnActorEditorContextClientChanged();
+	BroadcastOnActorEditorContextClientChanged(InWorld);
 }
 
 void FActorFolders::BroadcastOnActorFolderMoved(UWorld& InWorld, const FFolder& InSrcFolder, const FFolder& InDstFolder)
@@ -134,11 +131,22 @@ void FActorFolders::BroadcastOnActorFolderMoved(UWorld& InWorld, const FFolder& 
 		OnFolderMove.Broadcast(InWorld, InSrcFolder.GetPath(), InDstFolder.GetPath());
 	}
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	BroadcastOnActorEditorContextClientChanged();
+	BroadcastOnActorEditorContextClientChanged(InWorld);
 }
 
 void FActorFolders::OnLevelActorListChanged()
 {
+	bAnyLevelsChanged = true;
+}
+
+void FActorFolders::OnAllLevelsChanged()
+{
+	if (!bAnyLevelsChanged)
+	{
+		return;
+	}
+	QUICK_SCOPE_CYCLE_COUNTER(FActorFolders_OnAllLevelsChanged);
+	bAnyLevelsChanged = false;
 	Housekeeping();
 
 	check(GEngine);
@@ -180,7 +188,7 @@ void FActorFolders::OnWorldSaved(UWorld* World, FObjectPostSaveContext ObjectSav
 
 void FActorFolders::SaveWorldFoldersState(UWorld* World)
 {
-	if (UWorldFolders** Folders = WorldFolders.Find(World))
+	if (auto* Folders = WorldFolders.Find(World))
 	{
 		(*Folders)->SaveState();
 	}
@@ -193,7 +201,7 @@ bool FActorFolders::IsInitializedForWorld(UWorld& InWorld) const
 
 UWorldFolders& FActorFolders::GetOrCreateWorldFolders(UWorld& InWorld)
 {
-	if (UWorldFolders** Folders = WorldFolders.Find(&InWorld))
+	if (auto* Folders = WorldFolders.Find(&InWorld))
 	{
 		return **Folders;
 	}
@@ -218,7 +226,7 @@ void FActorFolders::OnActorFolderChanged(const AActor* InActor, FName OldPath)
 
 void FActorFolders::RebuildFolderListForWorld(UWorld& InWorld)
 {
-	if (UWorldFolders** Folders = WorldFolders.Find(&InWorld))
+	if (auto* Folders = WorldFolders.Find(&InWorld))
 	{
 		// For world folders, we don't empty the existing folders so that we keep empty ones.
 		// Explicitly deleted folders will already be removed from the list.
@@ -243,6 +251,7 @@ UWorldFolders& FActorFolders::CreateWorldFolders(UWorld& InWorld)
 	Housekeeping();
 
 	InWorld.OnLevelsChanged().AddRaw(this, &FActorFolders::OnLevelActorListChanged);
+	InWorld.OnAllLevelsChanged().AddRaw(this, &FActorFolders::OnAllLevelsChanged);
 
 	// We intentionally don't pass RF_Transactional to ConstructObject so that we don't record the creation of the object into the undo buffer
 	// (to stop it getting deleted on undo as we manage its lifetime), but we still want it to be RF_Transactional so we can record any changes later
@@ -559,9 +568,12 @@ FFolder FActorFolders::GetActorEditorContextFolder(UWorld& InWorld, bool bMustMa
 
 void FActorFolders::SetActorEditorContextFolder(UWorld& InWorld, const FFolder& InFolder)
 {
-	if (GetOrCreateWorldFolders(InWorld).SetActorEditorContextFolder(InFolder))
+	if (!InWorld.IsGameWorld())
 	{
-		BroadcastOnActorEditorContextClientChanged();
+		if (GetOrCreateWorldFolders(InWorld).SetActorEditorContextFolder(InFolder))
+		{
+			BroadcastOnActorEditorContextClientChanged(InWorld);
+		}
 	}
 }
 
@@ -621,9 +633,12 @@ TSharedRef<SWidget> FActorFolders::GetActorEditorContextWidget(UWorld* InWorld) 
 	return SNew(STextBlock).Text(Text);
 }
 
-void FActorFolders::BroadcastOnActorEditorContextClientChanged()
+void FActorFolders::BroadcastOnActorEditorContextClientChanged(UWorld& InWorld)
 {
-	ActorEditorContextClientChanged.Broadcast(this);
+	if (!InWorld.IsGameWorld())
+	{
+		ActorEditorContextClientChanged.Broadcast(this);
+	}
 }
 
 void FActorFolders::ForEachFolder(UWorld& InWorld, TFunctionRef<bool(const FFolder&)> Operation)

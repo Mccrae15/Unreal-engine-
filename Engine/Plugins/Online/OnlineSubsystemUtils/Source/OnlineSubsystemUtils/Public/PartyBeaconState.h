@@ -197,7 +197,7 @@ struct ONLINESUBSYSTEMUTILS_API FPartyReservation
 	int32 RemoveAllPartyMembers(const FPlayerReservation& OtherRes);
 
 	/** Is this data well formed */
-	bool IsValid() const;
+	bool IsValid(bool bIsValidationStrRequired=true) const;
 
 	/** Dump this reservation to log */
 	void Dump() const;
@@ -261,6 +261,13 @@ class ONLINESUBSYSTEMUTILS_API UPartyBeaconState : public UObject
 	 * @param InNumReservations the total number of players to allow to join (if different than team * players)
 	 */
 	virtual bool ReconfigureTeamAndPlayerCount(int32 InNumTeams, int32 InNumPlayersPerTeam, int32 InNumReservations);
+
+	/**
+	 * Competitive integrity represents how "fair" we need to keep the game. So no friends on other teams, no cross team chat, etc.
+	 *
+	 * @param bNewCompetitiveIntegrity New value for Competitive integrity
+	 */
+	virtual void SetCompetitiveIntegrity(bool bNewCompetitiveIntegrity);
 
 	/**
 	 * Define the method for assignment new reservations to teams
@@ -412,6 +419,13 @@ class ONLINESUBSYSTEMUTILS_API UPartyBeaconState : public UObject
 	 * @return The number of player per team
 	 */
 	virtual int32 GetMaxPlayersPerTeam() const { return NumPlayersPerTeam; }
+
+	/**
+	 * Competitive integrity represents how "fair" we need to keep the game. So no friends on other teams, no cross team chat, etc.
+	 *
+	 * @return Whether we should respect competitive integrity
+	 */
+	virtual bool ShouldRespectCompetitiveIntegrity() const { return bRespectCompetitiveIntegrity; }
 
 	/**
 	 * Determine the maximum team size that can be accommodated based
@@ -578,6 +592,9 @@ protected:
 	/** Process requests from clients to remove players from beacon */
 	UPROPERTY(Transient)
 	bool bEnableRemovalRequests;
+	/** Competitive integrity represents how "fair" we need to keep the game. So no friends on other teams, no cross team chat, etc. */
+	UPROPERTY(Transient)
+	bool bRespectCompetitiveIntegrity;
 
 	/** Current reservations in the system */
 	UPROPERTY(Transient)

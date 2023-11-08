@@ -797,9 +797,9 @@ bool FBlueprintEditor::IsInAScriptingMode() const
 	return IsModeCurrent(FBlueprintEditorApplicationModes::StandardBlueprintEditorMode) || IsModeCurrent(FBlueprintEditorApplicationModes::BlueprintMacroMode);
 }
 
-bool FBlueprintEditor::OnRequestClose()
+bool FBlueprintEditor::OnRequestClose(EAssetEditorCloseReason InCloseReason)
 {
-	return FWorkflowCentricApplication::OnRequestClose();
+	return FWorkflowCentricApplication::OnRequestClose(InCloseReason);
 }
 
 void FBlueprintEditor::OnClose()
@@ -1748,21 +1748,28 @@ FGraphAppearanceInfo FBlueprintEditor::GetGraphAppearance(UEdGraph* InGraph) con
 	UBlueprint* Blueprint = (InGraph != nullptr) ? FBlueprintEditorUtils::FindBlueprintForGraph(InGraph) : GetBlueprintObj();
 	if (Blueprint != nullptr)
 	{
-	switch (Blueprint->BlueprintType)
-	{
-	case BPTYPE_LevelScript:
-		AppearanceInfo.CornerText = LOCTEXT("AppearanceCornerText_LevelScript", "LEVEL BLUEPRINT");
-		break;
-	case BPTYPE_MacroLibrary:
-		AppearanceInfo.CornerText = LOCTEXT("AppearanceCornerText_Macro", "MACRO");
-		break;
-	case BPTYPE_Interface:
-		AppearanceInfo.CornerText = LOCTEXT("AppearanceCornerText_Interface", "INTERFACE");
-		break;
-	default:
-		AppearanceInfo.CornerText = LOCTEXT("AppearanceCornerText_Blueprint", "BLUEPRINT");
-		break;
-	}
+		if (FBlueprintEditorUtils::IsEditorUtilityBlueprint(Blueprint))
+		{
+			AppearanceInfo.CornerText = LOCTEXT("EditorUtilityAppearanceCornerText", "EDITOR UTILITY");
+		}
+		else
+		{
+			switch (Blueprint->BlueprintType)
+			{
+			case BPTYPE_LevelScript:
+				AppearanceInfo.CornerText = LOCTEXT("AppearanceCornerText_LevelScript", "LEVEL BLUEPRINT");
+				break;
+			case BPTYPE_MacroLibrary:
+				AppearanceInfo.CornerText = LOCTEXT("AppearanceCornerText_Macro", "MACRO");
+				break;
+			case BPTYPE_Interface:
+				AppearanceInfo.CornerText = LOCTEXT("AppearanceCornerText_Interface", "INTERFACE");
+				break;
+			default:
+				AppearanceInfo.CornerText = LOCTEXT("AppearanceCornerText_Blueprint", "BLUEPRINT");
+				break;
+			}
+		}
 	}
 
 	UEdGraph const* EditingGraph = GetFocusedGraph();
@@ -1854,7 +1861,7 @@ void FBlueprintEditor::EnsureBlueprintIsUpToDate(UBlueprint* BlueprintObj)
 		{
 			ExistingUCS->bAllowDeletion = false;
 		}
-		else
+		else if(GetDefault<UBlueprintEditorSettings>()->IsFunctionAllowed(BlueprintObj, UEdGraphSchema_K2::FN_UserConstructionScript))
 		{
 			UEdGraph* UCSGraph = FBlueprintEditorUtils::CreateNewGraph(BlueprintObj, UEdGraphSchema_K2::FN_UserConstructionScript, UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
 			FBlueprintEditorUtils::AddFunctionGraph(BlueprintObj, UCSGraph, /*bIsUserCreated=*/ false, AActor::StaticClass());
@@ -1921,18 +1928,24 @@ struct FLoadObjectsFromAssetRegistryHelper
 
 		const double CompileStartTime = FPlatformTime::Seconds();
 
-		TArray<FAssetData> AssetData;
-		AssetRegistryModule.Get().GetAssetsByClass(TObjectType::StaticClass()->GetClassPathName(), AssetData);
+		TArray<FAssetData> AssetDatas;
+		AssetRegistryModule.Get().GetAssetsByClass(TObjectType::StaticClass()->GetClassPathName(), AssetDatas);
 
-		for (int32 AssetIndex = 0; AssetIndex < AssetData.Num(); ++AssetIndex)
+		for (FAssetData& AssetData : AssetDatas)
 		{
-			if(AssetData[AssetIndex].IsValid())
+			if (AssetData.IsValid())
 			{
-				FString AssetPath = AssetData[AssetIndex].GetObjectPathString();
-				TObjectType* Object = LoadObject<TObjectType>(nullptr, *AssetPath, nullptr, 0, nullptr);
-				if (Object)
+				FString AssetPath = AssetData.GetObjectPathString();
+				// Workaround for UE-178174: AssetRegistry returning unmounted AssetPaths. Test the path for mountedness before loading.
+				FString PackagePathString = FPackageName::ObjectPathToPackageName(AssetPath);
+				FPackagePath UnusedPackagePath;
+				if (FPackagePath::TryFromMountedName(PackagePathString, UnusedPackagePath))
 				{
-					Collection.Add( MakeWeakObjectPtr(Object) );
+					TObjectType* Object = LoadObject<TObjectType>(nullptr, *AssetPath, nullptr, 0, nullptr);
+					if (Object)
+					{
+						Collection.Add(MakeWeakObjectPtr(Object));
+					}
 				}
 			}
 		}
@@ -2013,6 +2026,9 @@ void FBlueprintEditor::CommonInitialization(const TArray<UBlueprint*>& InitBluep
 	}
 
 	CreateDefaultTabContents(InitBlueprints);
+
+	FCoreUObjectDelegates::OnPreObjectPropertyChanged.AddSP(this, &FBlueprintEditor::OnPreObjectPropertyChanged);
+	FCoreUObjectDelegates::OnObjectPropertyChanged.AddSP(this, &FBlueprintEditor::OnPostObjectPropertyChanged);
 
 	FKismetEditorUtilities::OnBlueprintUnloaded.AddSP(this, &FBlueprintEditor::OnBlueprintUnloaded);
 }
@@ -2169,7 +2185,7 @@ void FBlueprintEditor::ImportNamespaceEx(const FImportNamespaceExParameters& InP
 
 	// Update the imported set for all edited objects.
 	bool bWasAddedAsImport = false;
-	const TArray<UObject*>& EditingObjs = GetEditingObjects();
+	const auto& EditingObjs = GetEditingObjects();
 	for (UObject* EditingObj : EditingObjs)
 	{
 		if (UBlueprint* BlueprintObj = Cast<UBlueprint>(EditingObj))
@@ -2254,7 +2270,7 @@ void FBlueprintEditor::RemoveNamespace(const FString& InNamespace)
 	}
 
 	// Update the imported set for all edited objects.
-	const TArray<UObject*>& EditingObjs = GetEditingObjects();
+	const auto& EditingObjs = GetEditingObjects();
 	for (UObject* EditingObj : EditingObjs)
 	{
 		if (UBlueprint* BlueprintObj = Cast<UBlueprint>(EditingObj))
@@ -2592,11 +2608,6 @@ FText FBlueprintEditor::GetParentClassNameText() const
 	return (ParentClass != nullptr) ? ParentClass->GetDisplayNameText() : LOCTEXT("BlueprintEditor_NoParentClass", "None");
 }
 
-bool FBlueprintEditor::IsParentClassOfObjectABlueprint(const UBlueprint* Blueprint) const
-{
-	return FBlueprintEditorUtils::IsParentClassABlueprint(Blueprint);
-}
-
 bool FBlueprintEditor::IsParentClassABlueprint() const
 {
 	return FBlueprintEditorUtils::IsParentClassABlueprint(GetBlueprintObj());
@@ -2820,6 +2831,9 @@ FBlueprintEditor::~FBlueprintEditor()
 	{
 		SubobjectDataSubsystem->OnNewSubobjectAdded().RemoveAll(this);
 	}
+
+	FCoreUObjectDelegates::OnPreObjectPropertyChanged.RemoveAll(this);
+	FCoreUObjectDelegates::OnObjectPropertyChanged.RemoveAll(this);
 
 	FKismetEditorUtilities::OnBlueprintUnloaded.RemoveAll(this);
 
@@ -3462,6 +3476,13 @@ void FBlueprintEditor::ReparentBlueprint_NewParentChosen(UClass* ChosenClass)
 			EnsureBlueprintIsUpToDate(BlueprintObj);
 			FBlueprintEditorUtils::RefreshAllNodes(GetBlueprintObj());
 			FBlueprintEditorUtils::MarkBlueprintAsModified(BlueprintObj);
+
+			// Changing the parent may change the sparse data used, so mark any current 
+			// sparse data as requiring a conform post-compile against the new archetype
+			if (UBlueprintGeneratedClass* Class = Cast<UBlueprintGeneratedClass>(BlueprintObj->GeneratedClass))
+			{
+				Class->PrepareToConformSparseClassData(ChosenClass->GetSparseClassDataStruct());
+			}
 
 			Compile();
 
@@ -4457,29 +4478,21 @@ void FBlueprintEditor::AddReferencedObjects( FReferenceCollector& Collector )
 {
 	if (GetObjectsCurrentlyBeingEdited()->Num() > 0)
 	{
-		TArray<UObject*>& LocalEditingObjects = const_cast<TArray<UObject*>&>(GetEditingObjects());
-
-		Collector.AddReferencedObjects(LocalEditingObjects);
+		Collector.AddReferencedObjects(GetEditingObjectPtrs());
 	}
 
 	Collector.AddReferencedObjects(StandardLibraries);
 
 	UserDefinedEnumerators.Remove(TWeakObjectPtr<UUserDefinedEnum>()); // Remove NULLs
-	for (const TWeakObjectPtr<UUserDefinedEnum>& ObjectPtr : UserDefinedEnumerators)
+	for (TWeakObjectPtr<UUserDefinedEnum>& ObjectPtr : UserDefinedEnumerators)
 	{
-		if (UObject* Obj = ObjectPtr.Get())
-		{
-			Collector.AddReferencedObject(Obj);
-		}
+			Collector.AddReferencedObject(ObjectPtr);
 	}
 
 	UserDefinedStructures.Remove(TWeakObjectPtr<UUserDefinedStruct>()); // Remove NULLs
-	for (const TWeakObjectPtr<UUserDefinedStruct>& ObjectPtr : UserDefinedStructures)
+	for (TWeakObjectPtr<UUserDefinedStruct>& ObjectPtr : UserDefinedStructures)
 	{
-		if (UObject* Obj = ObjectPtr.Get())
-		{
-			Collector.AddReferencedObject(Obj);
-		}
+			Collector.AddReferencedObject(ObjectPtr);
 	}
 }
 
@@ -6463,7 +6476,7 @@ void FBlueprintEditor::ConvertFunctionToEvent(UK2Node_FunctionEntry* SelectedCal
 		UEdGraphNode* Entry = nullptr;
 		UEdGraphNode* Result = nullptr;
 		FunctionGraph->Modify();
-		MoveNodesToGraph(FunctionGraph->Nodes, EventGraph, ExpandedNodes, &Entry, &Result, false);
+		MoveNodesToGraph(MutableView(FunctionGraph->Nodes), EventGraph, ExpandedNodes, &Entry, &Result, false);
 
 		MoveNodesToAveragePos(ExpandedNodes, FVector2D(SpawnPos.X + 500.0f, SpawnPos.Y));
 		
@@ -8913,7 +8926,7 @@ void FBlueprintEditor::ExpandNode(UEdGraphNode* InNodeToExpand, UEdGraph* InSour
 
 	const bool bIsCollapsedGraph = InNodeToExpand->IsA<UK2Node_Composite>();
 
-	MoveNodesToGraph(SourceGraph->Nodes, DestinationGraph, OutExpandedNodes, &Entry, &Result, bIsCollapsedGraph);
+	MoveNodesToGraph(MutableView(SourceGraph->Nodes), DestinationGraph, OutExpandedNodes, &Entry, &Result, bIsCollapsedGraph);
 
 	UEdGraphPin* OutputExecPinReconnect = nullptr;
 	if(UK2Node_CallFunction* CallFunction = Cast<UK2Node_CallFunction>(InNodeToExpand))
@@ -9119,7 +9132,7 @@ void FBlueprintEditor::Tick(float DeltaTime)
 	{
 		IAssetEditorInstance* EditorInst = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(GetBlueprintObj(), /*bFocusIfOpen =*/false);
 		check(EditorInst != nullptr);
-		EditorInst->CloseWindow();
+		EditorInst->CloseWindow(EAssetEditorCloseReason::AssetUnloadingOrInvalid);
 	}
 	else
 	{
@@ -9568,6 +9581,98 @@ void FBlueprintEditor::OnFinishedChangingProperties(const FPropertyChangedEvent&
 	}
 }
 
+void FBlueprintEditor::OnPreObjectPropertyChanged(UObject* InObject, const FEditPropertyChain& EditPropertyChain)
+{
+	if (GetDefault<UBlueprintEditorSettings>()->bDoNotMarkAllInstancesDirtyOnDefaultValueChange)
+	{
+		// Determine which inspector widget is currently in use.
+		TSharedPtr<SKismetInspector> CurrentInspectorWidget;
+		if (GetCurrentMode() == FBlueprintEditorApplicationModes::BlueprintDefaultsMode)
+		{
+			CurrentInspectorWidget = DefaultEditor;
+		}
+		else
+		{
+			CurrentInspectorWidget = Inspector;
+		}
+
+		// Note: While we could rely on our notify hook to determine whether an incoming change belongs to this
+		// context, NotifyPreChange() may end up getting called after this event is broadcast (e.g. from inside
+		// of a details customization). So it's not safe to assume they will get called in any specific order.
+		// It is, however, safe to assume this will get called for an archetype/CDO prior to change propagation.
+		if (CurrentInspectorWidget.IsValid())
+		{
+			check(InObject);
+
+			auto IsSubobjectOfAnySelectedObject = [](const UObject* InObject, const TArray<TWeakObjectPtr<UObject>>& SelectedObjects)
+			{
+				for (const TWeakObjectPtr<UObject>& SelectedObject : SelectedObjects)
+				{
+					if (SelectedObject.IsValid() && InObject->IsInOuter(SelectedObject.Get()))
+					{
+						return true;
+					}
+				}
+
+				return false;
+			};
+
+			// If we're modifying an object that's selected into our property editor context (e.g. the Blueprint CDO, or an SCS
+			// component template), set up change propagation so that instances do not always mark their outer package as dirty.
+			bool bIsObjectSelectedForEditing = false;
+			const TArray<TWeakObjectPtr<UObject>>& SelectedObjects = CurrentInspectorWidget->GetSelectedObjects();
+			if (SelectedObjects.Contains(InObject) || IsSubobjectOfAnySelectedObject(InObject, SelectedObjects))
+			{
+				bIsObjectSelectedForEditing = true;
+			}
+			else if (IsEditingSingleBlueprint())
+			{
+				// Resolve the property that's about to be changed.
+				FProperty* PropertyAboutToChange = nullptr;
+				if (FEditPropertyChain::TDoubleLinkedListNode* PropertyNode = EditPropertyChain.GetActiveNode())
+				{
+					PropertyAboutToChange = PropertyNode->GetValue();
+				}
+
+				// When actions from the "My Blueprint" tab are selected (e.g. class variable actions), a property "wrapper"
+				// object is selected to the inspector view instead, and the details customization will then pass the object
+				// instance that's about to be changed (e.g. the Blueprint CDO) as the input parameter to this delegate.
+				if (PropertyAboutToChange)
+				{
+					const UBlueprint* BlueprintContext = GetBlueprintObj();
+					check(BlueprintContext);
+
+					// Redirect to the skeleton class if the property's owner class was generated by the Blueprint that's
+					// associated with this editing context. For details customization purposes, the property that's wrapped
+					// belongs to the skeleton class and not the actual generated class (see SMyBlueprint::CollectAllActions).
+					const UClass* OwnerClass = PropertyAboutToChange->GetOwnerClass();
+					if (OwnerClass && OwnerClass->ClassGeneratedBy == BlueprintContext && BlueprintContext->SkeletonGeneratedClass)
+					{
+						PropertyAboutToChange = BlueprintContext->SkeletonGeneratedClass->FindPropertyByName(PropertyAboutToChange->GetFName());
+						if (PropertyAboutToChange && SelectedObjects.Contains(PropertyAboutToChange->GetUPropertyWrapper()) && InObject == OwnerClass->GetDefaultObject())
+						{
+							bIsObjectSelectedForEditing = true;
+						}
+					}
+				}
+			}
+			
+			if (bIsObjectSelectedForEditing)
+			{
+				InObject->SetEditChangePropagationFlags(EEditChangePropagationFlags::OnlyMarkRealignedInstancesAsDirty);
+			}
+		}
+	}
+}
+
+void FBlueprintEditor::OnPostObjectPropertyChanged(UObject* InObject, FPropertyChangedEvent& PropertyChangedEvent)
+{
+	check(InObject);
+
+	// Reset propagation flags so that any changes external to our editing context will use the standard (default) behavior.
+	InObject->SetEditChangePropagationFlags(EEditChangePropagationFlags::None);
+}
+
 FName FBlueprintEditor::GetToolkitFName() const
 {
 	return FName("BlueprintEditor");
@@ -9606,7 +9711,7 @@ FText FBlueprintEditor::GetBaseToolkitName() const
 
 FText FBlueprintEditor::GetToolkitName() const
 {
-	const TArray<UObject*>& EditingObjs = GetEditingObjects();
+	const auto& EditingObjs = GetEditingObjects();
 
 	if( IsEditingSingleBlueprint() )
 	{
@@ -9650,7 +9755,7 @@ FText FBlueprintEditor::GetToolkitName() const
 
 FText FBlueprintEditor::GetToolkitToolTipText() const
 {
-	const TArray<UObject*>& EditingObjs = GetEditingObjects();
+	const auto& EditingObjs = GetEditingObjects();
 
 	if( IsEditingSingleBlueprint() )
 	{
@@ -9909,6 +10014,7 @@ void FBlueprintEditor::RestoreEditedObjectState()
 		}
 	}
 
+	TSet<FSoftObjectPath> PathsToRemove;
 	for (int32 i = 0; i < Blueprint->LastEditedDocuments.Num(); i++)
 	{
 		if (UObject* Obj = Blueprint->LastEditedDocuments[i].EditedObjectPath.ResolveObject())
@@ -9957,6 +10063,20 @@ void FBlueprintEditor::RestoreEditedObjectState()
 				TSharedPtr<SDockTab> TabWithGraph = OpenDocument(Obj, FDocumentTracker::RestorePreviousDocument);
 			}
 		}
+		else
+		{
+			PathsToRemove.Add(Blueprint->LastEditedDocuments[i].EditedObjectPath);
+		}
+	}
+
+	// Older assets may have neglected to clean up this array when referenced objects were deleted, so
+	// we'll check for that now. This is done to ensure we don't store invalid object paths indefinitely.
+	if (PathsToRemove.Num() > 0)
+	{
+		Blueprint->LastEditedDocuments.RemoveAll([&PathsToRemove](const FEditedDocumentInfo& Entry)
+		{
+			return PathsToRemove.Contains(Entry.EditedObjectPath);
+		});
 	}
 }
 

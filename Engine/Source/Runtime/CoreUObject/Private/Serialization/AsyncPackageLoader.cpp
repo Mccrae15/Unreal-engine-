@@ -189,16 +189,18 @@ void InitAsyncThread()
 	{
 		bool bSettingsEnabled = false;
 		bool bCommandLineEnabled = false;
+		bool bCommandLineDisabled = false;
 		bool bHasUseIoStoreParamInEditor = false;
 #if WITH_EDITOR
 		bCommandLineEnabled = FParse::Param(FCommandLine::Get(), TEXT("ZenLoader"));
+		bCommandLineDisabled = FParse::Param(FCommandLine::Get(), TEXT("NoZenLoader"));
 		check(GConfig);
 		GConfig->GetBool(TEXT("/Script/Engine.EditorStreamingSettings"), TEXT("s.ZenLoaderEnabled"), bSettingsEnabled, GEngineIni);
 		bHasUseIoStoreParamInEditor = UE_FORCE_USE_IOSTORE || FParse::Param(FCommandLine::Get(), TEXT("UseIoStore"));
 #endif
 		FIoDispatcher& IoDispatcher = FIoDispatcher::Get();
 		bool bHasScriptObjectsChunk = IoDispatcher.DoesChunkExist(CreateIoChunkId(0, 0, EIoChunkType::ScriptObjects));
-		if (bSettingsEnabled || bCommandLineEnabled)
+		if (!bCommandLineDisabled && (bSettingsEnabled || bCommandLineEnabled))
 		{
 			GPackageLoader.Reset(MakeAsyncPackageLoader2(IoDispatcher));
 		}
@@ -251,6 +253,18 @@ bool IsInAsyncLoadingThreadCoreUObjectInternal()
 
 void FlushAsyncLoading(int32 RequestId /* = INDEX_NONE */)
 {
+	if (RequestId == INDEX_NONE)
+	{
+		FlushAsyncLoading(TConstArrayView<int32>());
+	}
+	else
+	{
+		FlushAsyncLoading(MakeArrayView({RequestId}));
+	}
+}
+
+void FlushAsyncLoading(TConstArrayView<int32> RequestIds)
+{
 	TRACE_CPUPROFILER_EVENT_SCOPE(FlushAsyncLoading);
 
 #if defined(WITH_CODE_GUARD_HANDLER) && WITH_CODE_GUARD_HANDLER
@@ -266,18 +280,19 @@ void FlushAsyncLoading(int32 RequestId /* = INDEX_NONE */)
 		{
 			// Log the flush, but only display once per frame to avoid log spam.
 			static uint64 LastFrameNumber = -1;
+			TStringBuilder<1024> Buffer;
 			if (LastFrameNumber != GFrameNumber)
 			{
-				UE_LOG(LogStreaming, Display, TEXT("FlushAsyncLoading(%d): %d QueuedPackages, %d AsyncPackages"), RequestId, GPackageLoader->GetNumQueuedPackages(), GPackageLoader->GetNumAsyncPackages());
+				UE_LOG(LogStreaming, Display, TEXT("FlushAsyncLoading(%s): %d QueuedPackages, %d AsyncPackages"), *Buffer.Join(RequestIds, TEXT(",")), GPackageLoader->GetNumQueuedPackages(), GPackageLoader->GetNumAsyncPackages());
 			}
 			else
 			{
-				UE_LOG(LogStreaming, Log, TEXT("FlushAsyncLoading(%d): %d QueuedPackages, %d AsyncPackages"), RequestId, GPackageLoader->GetNumQueuedPackages(), GPackageLoader->GetNumAsyncPackages());
+				UE_LOG(LogStreaming, Log, TEXT("FlushAsyncLoading(%s): %d QueuedPackages, %d AsyncPackages"), *Buffer.Join(RequestIds, TEXT(",")), GPackageLoader->GetNumQueuedPackages(), GPackageLoader->GetNumAsyncPackages());
 			}
 			LastFrameNumber = GFrameNumber;
 		}
 #endif
-		GPackageLoader->FlushLoading(RequestId);
+		GPackageLoader->FlushLoading(RequestIds);
 	}
 }
 
@@ -560,20 +575,6 @@ static FPackagePath GetLoadPackageAsyncPackagePath(FStringView InPackageNameOrFi
 	return PackagePath;
 }
 
-int32 IAsyncPackageLoader::LoadPackage(
-	const FString& InPackageName,
-	const FGuid* InGuid,
-	const TCHAR* InPackageToLoadFrom,
-	FLoadPackageAsyncDelegate InCompletionDelegate,
-	EPackageFlags InPackageFlags,
-	int32 InPIEInstanceID,
-	int32 InPackagePriority,
-	const FLinkerInstancingContext* InstancingContext)
-{
-	FPackagePath PackagePath = GetLoadPackageAsyncPackagePath(InPackageToLoadFrom ? FStringView(InPackageToLoadFrom) : FStringView(InPackageName));
-	return LoadPackage(PackagePath, FName(InPackageName), InCompletionDelegate, InPackageFlags, InPIEInstanceID, InPackagePriority, InstancingContext);
-}
-
 bool ShouldAlwaysLoadPackageAsync(const FPackagePath& InPackagePath)
 {
 	if (!GPackageLoader)
@@ -583,14 +584,21 @@ bool ShouldAlwaysLoadPackageAsync(const FPackagePath& InPackagePath)
 	return GPackageLoader->ShouldAlwaysLoadPackageAsync(InPackagePath);
 }
 
-int32 LoadPackageAsync(const FPackagePath& InPackagePath, FName InPackageNameToCreate /* = NAME_None*/, FLoadPackageAsyncDelegate InCompletionDelegate /*= FLoadPackageAsyncDelegate()*/, EPackageFlags InPackageFlags /*= PKG_None*/, int32 InPIEInstanceID /*= INDEX_NONE*/, int32 InPackagePriority /*= 0*/, const FLinkerInstancingContext* InstancingContext /*=nullptr*/)
+int32 LoadPackageAsync(const FPackagePath& InPackagePath,
+		FName InPackageNameToCreate /* = NAME_None*/,
+		FLoadPackageAsyncDelegate InCompletionDelegate /*= FLoadPackageAsyncDelegate()*/,
+		EPackageFlags InPackageFlags /*= PKG_None*/,
+		int32 InPIEInstanceID /*= INDEX_NONE*/,
+		int32 InPackagePriority /*= 0*/,
+		const FLinkerInstancingContext* InstancingContext /*=nullptr*/,
+		uint32 LoadFlags /*=LOAD_None*/)
 {
 	LLM_SCOPE(ELLMTag::AsyncLoading);
 	UE_CLOG(!GAsyncLoadingAllowed && !IsInAsyncLoadingThread(), LogStreaming, Fatal, TEXT("Requesting async load of \"%s\" when async loading is not allowed (after shutdown). Please fix higher level code."), *InPackagePath.GetDebugName());
 #if DO_TRACK_ASYNC_LOAD_REQUESTS
 	FTrackAsyncLoadRequests::Get().TrackRequest(InPackagePath.GetDebugName(), nullptr, InPackagePriority);
 #endif
-	return GetAsyncPackageLoader().LoadPackage(InPackagePath, InPackageNameToCreate, InCompletionDelegate, InPackageFlags, InPIEInstanceID, InPackagePriority, InstancingContext);
+	return GetAsyncPackageLoader().LoadPackage(InPackagePath, InPackageNameToCreate, InCompletionDelegate, InPackageFlags, InPIEInstanceID, InPackagePriority, InstancingContext, LoadFlags);
 }
 
 int32 LoadPackageAsync(const FString& InName, const FGuid* InGuid /* nullptr*/)

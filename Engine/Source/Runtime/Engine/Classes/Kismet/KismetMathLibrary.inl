@@ -985,12 +985,6 @@ FTransform UKismetMathLibrary::MakeRelativeTransform(const FTransform& A, const 
 }
 
 KISMET_MATH_INLINE
-FTransform UKismetMathLibrary::ConvertTransformToRelative(const FTransform& Transform, const FTransform& ParentTransform)
-{
-	return ParentTransform.GetRelativeTransform(Transform);
-}
-
-KISMET_MATH_INLINE
 FTransform UKismetMathLibrary::InvertTransform(const FTransform& T)
 {
 	return T.Inverse();
@@ -1514,12 +1508,6 @@ KISMET_MATH_FORCEINLINE
 FRotator UKismetMathLibrary::Conv_VectorToRotator(FVector InVec)
 {
 	return InVec.ToOrientationRotator();
-}
-
-KISMET_MATH_FORCEINLINE
-FQuat UKismetMathLibrary::Conv_VectorToQuaterion(FVector InVec)
-{
-	return InVec.ToOrientationQuat();
 }
 
 KISMET_MATH_FORCEINLINE
@@ -2129,12 +2117,6 @@ FRotator UKismetMathLibrary::Conv_Vector4ToRotator(const FVector4& InVec)
 }
 
 KISMET_MATH_FORCEINLINE
-FQuat UKismetMathLibrary::Conv_Vector4ToQuaterion(const FVector4& InVec)
-{
-	return InVec.ToOrientationQuat();
-}
-
-KISMET_MATH_FORCEINLINE
 FQuat UKismetMathLibrary::Conv_Vector4ToQuaternion(const FVector4& InVec)
 {
 	return InVec.ToOrientationQuat();
@@ -2553,6 +2535,24 @@ KISMET_MATH_FORCEINLINE
 bool UKismetMathLibrary::DateTimeFromString(FString DateTimeString, FDateTime& Result)
 {
 	return FDateTime::Parse(DateTimeString, Result);
+}
+
+KISMET_MATH_FORCEINLINE
+int64 UKismetMathLibrary::ToUnixTimestamp(const FDateTime& Time)
+{
+	return Time.ToUnixTimestamp();
+}
+
+KISMET_MATH_FORCEINLINE
+double UKismetMathLibrary::ToUnixTimestampDouble(const FDateTime& Time)
+{
+	return Time.ToUnixTimestampDecimal();
+}
+
+KISMET_MATH_FORCEINLINE
+FDateTime UKismetMathLibrary::FromUnixTimestamp(const int64 UnixTime)
+{
+	return FDateTime::FromUnixTimestamp(UnixTime);
 }
 
 /* Timespan functions
@@ -3819,6 +3819,12 @@ KISMET_MATH_FORCEINLINE
 FLinearColor UKismetMathLibrary::Divide_LinearColorLinearColor(FLinearColor A, FLinearColor B)
 {
 	return A / B;
+}
+
+KISMET_MATH_FORCEINLINE
+FString UKismetMathLibrary::ToHex_LinearColor(FLinearColor InColor)
+{
+	return InColor.ToFColor(true).ToHex();
 }
 
 

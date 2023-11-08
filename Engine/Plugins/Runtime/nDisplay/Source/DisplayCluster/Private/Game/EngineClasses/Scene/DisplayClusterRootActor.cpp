@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DisplayClusterRootActor.h"
+#include "DisplayClusterRootActorPreviewRenderingManager.h"
 
 #include "Async/ParallelFor.h"
 #include "Components/SceneComponent.h"
@@ -89,7 +90,7 @@ ADisplayClusterRootActor::ADisplayClusterRootActor(const FObjectInitializer& Obj
 	DefaultViewPoint->AttachToComponent(GetRootComponent(), FAttachmentTransformRules::KeepRelativeTransform);
 	DefaultViewPoint->SetRelativeLocation(FVector(0.f, 0.f, 50.f));
 
-	ViewportManager = MakeUnique<FDisplayClusterViewportManager>();
+	CreateViewportManagerImpl();
 
 	PrimaryActorTick.bCanEverTick = true;
 	PrimaryActorTick.TickGroup = ETickingGroup::TG_PostUpdateWork;
@@ -101,6 +102,12 @@ ADisplayClusterRootActor::ADisplayClusterRootActor(const FObjectInitializer& Obj
 	// Enabled by default to avoid being active on Stage
 	SetActorHiddenInGame(true);
 
+	// By default, we don't want the NDC to be spatially loaded.
+#if WITH_EDITORONLY_DATA
+	bIsSpatiallyLoaded = false;
+#endif
+
+
 #if WITH_EDITOR
 	Constructor_Editor();
 #endif
@@ -111,6 +118,32 @@ ADisplayClusterRootActor::~ADisplayClusterRootActor()
 #if WITH_EDITOR
 	Destructor_Editor();
 #endif
+}
+
+IDisplayClusterViewportManager* ADisplayClusterRootActor::GetViewportManager() const
+{
+	return ViewportManager.Get();
+}
+
+void ADisplayClusterRootActor::CreateViewportManagerImpl()
+{
+	if (!ViewportManager.IsValid())
+	{
+		ViewportManager = MakeShared<FDisplayClusterViewportManager, ESPMode::ThreadSafe>();
+		ViewportManager->Initialize();
+
+		// Preview rendering depends on the DC VM
+		FDisplayClusterRootActorPreviewRenderingManager::HandleEvent(EDisplayClusterRootActorPreviewEvent::Create, this);
+	}
+}
+
+void ADisplayClusterRootActor::RemoveViewportManagerImpl()
+{
+	// Preview rendering depends on the  DC VM
+	FDisplayClusterRootActorPreviewRenderingManager::HandleEvent(EDisplayClusterRootActorPreviewEvent::Remove, this);
+
+	// Immediately release the viewport manager with resources
+	ViewportManager.Reset();
 }
 
 bool ADisplayClusterRootActor::IsRunningGameOrPIE() const
@@ -140,6 +173,35 @@ const FDisplayClusterConfigurationRenderFrame& ADisplayClusterRootActor::GetRend
 	check(CurrentConfigData);
 
 	return CurrentConfigData->RenderFrameSettings;
+}
+
+EDisplayClusterRenderFrameMode ADisplayClusterRootActor::GetRenderMode() const
+{
+	if (ViewportManager.IsValid())
+	{
+		return ViewportManager->GetRenderMode();
+	}
+
+	return EDisplayClusterRenderFrameMode::Unknown;
+}
+
+EDisplayClusterRenderFrameMode ADisplayClusterRootActor::GetPreviewRenderMode() const
+{
+#if WITH_EDITOR
+	switch (RenderMode)
+	{
+	case EDisplayClusterConfigurationRenderMode::SideBySide:
+		return EDisplayClusterRenderFrameMode::SideBySide;
+
+	case EDisplayClusterConfigurationRenderMode::TopBottom:
+		return EDisplayClusterRenderFrameMode::TopBottom;
+
+	default:
+		break;
+	}
+#endif
+
+	return EDisplayClusterRenderFrameMode::Mono;
 }
 
 void ADisplayClusterRootActor::InitializeFromConfig(UDisplayClusterConfigurationData* ConfigData)
@@ -283,6 +345,12 @@ void ADisplayClusterRootActor::OverrideFromConfig(UDisplayClusterConfigurationDa
 		}
 	}
 
+	// Update component transforms if any of them have been changed in the file
+	{
+		TUniquePtr<FDisplayClusterRootActorInitializer> Initializer = MakeUnique<FDisplayClusterRootActorInitializer>();
+		Initializer->UpdateComponentTransformsOnly(this, ConfigData);
+	}
+
 	// There is no sense to call BuildHierarchy because it works for non-BP root actors.
 	// On the other hand, OverwriteFromConfig method is called for BP root actors only by nature.
 
@@ -374,13 +442,16 @@ UDisplayClusterConfigurationData* ADisplayClusterRootActor::GetConfigData() cons
 
 bool ADisplayClusterRootActor::IsInnerFrustumEnabled(const FString& InnerFrustumID) const
 {
+	// Common condition for any camera/frustum
+	const bool bClusterGlobalInnersEnabled = (CurrentConfigData ? CurrentConfigData->StageSettings.bEnableInnerFrustums : true);
+
 	// add more GUI rules here
 	// Inner Frustum Enabled
 	//  Camera_1  [ ]
 	//  Camera_2  [X]
 	//  Camera_3  [X]
 
-	return true;
+	return bClusterGlobalInnersEnabled; // && bOtherCondition(s)
 }
 
 int ADisplayClusterRootActor::GetInnerFrustumPriority(const FString& InnerFrustumID) const
@@ -657,10 +728,7 @@ void ADisplayClusterRootActor::InitializeRootActor()
 		UpdateConfigDataInstance(GetDefaultConfigDataFromAsset());
 	}
 
-	if (ViewportManager.IsValid() == false)
-	{
-		ViewportManager = MakeUnique<FDisplayClusterViewportManager>();
-	}
+	CreateViewportManagerImpl();
 
 	StageGeometryComponent->Invalidate();
 
@@ -704,6 +772,20 @@ void ADisplayClusterRootActor::UpdateProceduralMeshComponentData(const UProcedur
 	}
 }
 
+void ADisplayClusterRootActor::SetPreviewEnablePostProcess(const bool bNewPreviewEnablePostProcess)
+{
+#if WITH_EDITOR
+	if (bNewPreviewEnablePostProcess != bPreviewEnablePostProcess)
+	{
+		bPreviewEnablePostProcess = bNewPreviewEnablePostProcess;
+
+		ResetPreviewComponents_Editor(true);
+		PreviewRenderFrame.Reset();
+	}
+#endif // WITH_EDITOR
+}
+
+
 bool ADisplayClusterRootActor::BuildHierarchy()
 {
 	check(CurrentConfigData);
@@ -746,7 +828,14 @@ void ADisplayClusterRootActor::SetLightCardOwnership()
 		
 			for (UDisplayClusterICVFXCameraComponent* Camera : ICVFXComponents)
 			{
-				FDisplayClusterConfigurationICVFX_VisibilityList& ChromakeyCards = Camera->CameraSettings.Chromakey.ChromakeyRenderTexture.ShowOnlyList;
+				FDisplayClusterConfigurationICVFX_ChromakeyRenderSettings* CameraChromakeyRenderSettings = Camera->CameraSettings.Chromakey.GetWritableChromakeyRenderSettings(GetStageSettings());
+				if (!CameraChromakeyRenderSettings)
+				{
+					// Updating the CK visibility list only for cameras using chromakey actor rendering
+					continue;
+				}
+
+				FDisplayClusterConfigurationICVFX_VisibilityList& ChromakeyCards = CameraChromakeyRenderSettings->ShowOnlyList;
 				ChromakeyCards.AutoAddedActors.Reset();
 				
 				for (const TSoftObjectPtr<AActor>& Actor : ChromakeyCards.Actors)
@@ -770,7 +859,14 @@ void ADisplayClusterRootActor::SetLightCardOwnership()
 				{
 					for (UDisplayClusterICVFXCameraComponent* Camera : ICVFXComponents)
 					{
-						FDisplayClusterConfigurationICVFX_VisibilityList& ChromakeyCards = Camera->CameraSettings.Chromakey.ChromakeyRenderTexture.ShowOnlyList;
+						FDisplayClusterConfigurationICVFX_ChromakeyRenderSettings* CameraChromakeyRenderSettings = Camera->CameraSettings.Chromakey.GetWritableChromakeyRenderSettings(GetStageSettings());
+						if (!CameraChromakeyRenderSettings)
+						{
+							// Updating the CK visibility list only for cameras using chromakey actor rendering
+							continue;
+						}
+
+						FDisplayClusterConfigurationICVFX_VisibilityList& ChromakeyCards = CameraChromakeyRenderSettings->ShowOnlyList;
 
 						const UDisplayClusterChromakeyCardStageActorComponent* ChromakeyStageActor = Cast<UDisplayClusterChromakeyCardStageActorComponent>(ChromakeyCardActor->GetStageActorComponent());
 						if (ChromakeyStageActor && ChromakeyStageActor->IsReferencedByICVFXCamera(Camera))
@@ -944,7 +1040,14 @@ void ADisplayClusterRootActor::Tick(float DeltaSeconds)
 
 #if WITH_EDITOR
 	// Tick editor preview
-	Tick_Editor(DeltaSeconds);
+	if (!IsPreviewEnabled())
+	{
+		ResetPreviewInternals_Editor();
+	}
+	else
+	{
+		FDisplayClusterRootActorPreviewRenderingManager::HandleEvent(EDisplayClusterRootActorPreviewEvent::Render, this);
+	}
 #endif
 
 	SetLightCardOwnership();
@@ -990,7 +1093,7 @@ void ADisplayClusterRootActor::Destroyed()
 #endif
 
 	// Release viewport manager with resources immediatelly
-	ViewportManager.Reset();
+	RemoveViewportManagerImpl();
 
 	Super::Destroyed();
 }
@@ -1001,7 +1104,7 @@ void ADisplayClusterRootActor::BeginDestroy()
 	BeginDestroy_Editor();
 #endif
 
-	ViewportManager.Reset();
+	RemoveViewportManagerImpl();
 
 	Super::BeginDestroy();
 }
@@ -1348,22 +1451,6 @@ bool ADisplayClusterRootActor::SetReplaceTextureFlagForAllViewports(bool bReplac
 				ViewportItem.Value->RenderSettings.Replace.bAllowReplace = bReplace;
 			}
 		}
-
-		for (const TPair<FString, TObjectPtr<UDisplayClusterConfigurationClusterNode>>& NodeItem : ConfigData->Cluster->Nodes)
-		{
-			if (!NodeItem.Value)
-			{
-				continue;
-			}
-
-			for (const TPair<FString, TObjectPtr<UDisplayClusterConfigurationViewport>>& ViewportItem : NodeItem.Value->Viewports)
-			{
-				if (ViewportItem.Value)
-				{
-					ViewportItem.Value->RenderSettings.Replace.bAllowReplace = bReplace;
-				}
-			}
-		}
 	}
 
 	return true;
@@ -1378,8 +1465,15 @@ bool ADisplayClusterRootActor::SetFreezeOuterViewports(bool bEnable)
 		UE_LOG(LogDisplayClusterGame, Warning, TEXT("ADisplayClusterRootActor::SetFreezeOuterViewports failed because ConfigData was null"));
 		return false;
 	}
-
-	ConfigData->StageSettings.bFreezeRenderOuterViewports = bEnable;
+	
+	if (ConfigData->StageSettings.bFreezeRenderOuterViewports != bEnable)
+	{
+#if WITH_EDITOR
+		Modify();
+		ConfigData->Modify();
+#endif
+		ConfigData->StageSettings.bFreezeRenderOuterViewports = bEnable;
+	}
 
 	return true;
 }

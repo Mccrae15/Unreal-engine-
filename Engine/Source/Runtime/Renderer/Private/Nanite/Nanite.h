@@ -14,32 +14,19 @@
 namespace Nanite
 {
 
-void ExtractRasterStats(
-	FRDGBuilder& GraphBuilder,
-	const FSharedContext& SharedContext,
-	const FCullingContext& CullingContext,
-	const FBinningData& MainPassBinning,
-	const FBinningData& PostPassBinning,
-	bool bVirtualTextureTarget
-);
+struct FShadeBinning;
 
-void ExtractShadingStats(
+void ExtractShadingDebug(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View,
 	FRDGBufferRef MaterialIndirectArgs,
+	const FShadeBinning& ShadeBinning,
 	uint32 NumShadingBins
 );
 
 void PrintStats(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View
-);
-
-void ExtractResults(
-	FRDGBuilder& GraphBuilder,
-	const FCullingContext& CullingContext,
-	const FRasterContext& RasterContext,
-	FRasterResults& RasterResults
 );
 
 void EmitShadowMap(

@@ -19,7 +19,7 @@
 #include "Insights/InsightsStyle.h"
 #include "Insights/ViewModels/Filters.h"
 
-#define LOCTEXT_NAMESPACE "SFilterConfiguratorRow"
+#define LOCTEXT_NAMESPACE "Insights::SFilterConfiguratorRow"
 
 namespace Insights
 {
@@ -99,7 +99,7 @@ TSharedRef<SWidget> SFilterConfiguratorRow::GenerateWidgetForColumn(const FName&
 				.Padding(FMargin(4.0f, 0.0f, 4.0f, 0.0f))
 				[
 					SNew(SSuggestionTextBox)
-					.MinDesiredWidth(50.0f)
+					.MinDesiredWidth(300.0f)
 					.ForegroundColor(FSlateColor::UseForeground())
 					.OnTextCommitted(this, &SFilterConfiguratorRow::SuggestionTextBox_OnValueCommitted)
 					.OnTextChanged(this, &SFilterConfiguratorRow::SuggestionTextBox_OnValueChanged)
@@ -239,7 +239,7 @@ TSharedRef<SWidget> SFilterConfiguratorRow::GenerateWidgetForColumn(const FName&
 			];
 
 		// Do not show Delete button for the Root node
-		EVisibility DeleteVisibility = FilterConfiguratorNodePtr->GetGroupPtr().IsValid() ? EVisibility::Visible : EVisibility::Hidden;
+		EVisibility DeleteVisibility = FilterConfiguratorNodePtr->GetParent().IsValid() ? EVisibility::Visible : EVisibility::Hidden;
 		RightBox->AddSlot()
 			.VAlign(VAlign_Center)
 			.HAlign(HAlign_Right)
@@ -289,7 +289,7 @@ TSharedRef<SWidget> SFilterConfiguratorRow::AvailableFilters_OnGenerateWidget(TS
 		.AutoWidth()
 		[
 			SNew(STextBlock)
-			.Text(InFilter->Name)
+			.Text(InFilter->GetName())
 			.Margin(2.0f)
 		];
 
@@ -317,12 +317,12 @@ TSharedRef<SWidget> SFilterConfiguratorRow::AvailableFilterOperators_OnGenerateW
 TSharedRef<SWidget> SFilterConfiguratorRow::FilterGroupOperators_OnGenerateWidget(TSharedPtr<FFilterGroupOperator> InFilterGroupOperator)
 {
 	TSharedRef<SHorizontalBox> Widget = SNew(SHorizontalBox);
-	Widget->SetToolTipText(InFilterGroupOperator->Desc);
+	Widget->SetToolTipText(InFilterGroupOperator->GetDesc());
 	Widget->AddSlot()
 		.AutoWidth()
 		[
 			SNew(STextBlock)
-			.Text(InFilterGroupOperator->Name)
+			.Text(InFilterGroupOperator->GetName())
 			.Margin(2.0f)
 		];
 
@@ -333,9 +333,9 @@ END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-const TArray<TSharedPtr<struct FFilter>>* SFilterConfiguratorRow::GetAvailableFilters()
+const TArray<TSharedPtr<FFilter>>* SFilterConfiguratorRow::GetAvailableFilters()
 {
-	return &*FilterConfiguratorNodePtr->GetAvailableFilters();
+	return FilterConfiguratorNodePtr->GetAvailableFilters().Get();
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -354,7 +354,7 @@ void SFilterConfiguratorRow::AvailableFilters_OnSelectionChanged(TSharedPtr<FFil
 
 FText SFilterConfiguratorRow::AvailableFilters_GetSelectionText() const
 {
-	return FilterConfiguratorNodePtr->GetSelectedFilter()->Name;
+	return FilterConfiguratorNodePtr->GetSelectedFilter()->GetName();
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -396,7 +396,7 @@ void SFilterConfiguratorRow::FilterGroupOperators_OnSelectionChanged(TSharedPtr<
 
 FText SFilterConfiguratorRow::FilterGroupOperators_GetSelectionText() const
 {
-	return FilterConfiguratorNodePtr->GetSelectedFilterGroupOperator()->Name;
+	return FilterConfiguratorNodePtr->GetSelectedFilterGroupOperator()->GetName();
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -406,7 +406,7 @@ FReply SFilterConfiguratorRow::AddFilter_OnClicked()
 	FFilterConfiguratorNodePtr ChildNode = MakeShared<FFilterConfiguratorNode>(TEXT(""), false);
 	ChildNode->SetAvailableFilters(FilterConfiguratorNodePtr->GetAvailableFilters());
 
-	FilterConfiguratorNodePtr->AddChildAndSetGroupPtr(ChildNode);
+	FilterConfiguratorNodePtr->AddChildAndSetParent(ChildNode);
 	FilterConfiguratorNodePtr->SetExpansion(true);
 	OwnerTablePtr.Pin()->Private_SetItemExpansion(FilterConfiguratorNodePtr, true);
 
@@ -418,12 +418,7 @@ FReply SFilterConfiguratorRow::AddFilter_OnClicked()
 
 FReply SFilterConfiguratorRow::DeleteFilter_OnClicked()
 {
-	Insights::FBaseTreeNodeWeak GroupWeakPtr = FilterConfiguratorNodePtr->GetGroupPtr();
-	if (GroupWeakPtr.IsValid())
-	{
-		FFilterConfiguratorNodePtr GroupPtr = StaticCastSharedPtr<FFilterConfiguratorNode>(GroupWeakPtr.Pin());
-		GroupPtr->DeleteChildNode(FilterConfiguratorNodePtr);
-	}
+	FilterConfiguratorNodePtr->RemoveFromParent();
 
 	StaticCastSharedPtr<STreeView<FFilterConfiguratorNodePtr>>(OwnerTablePtr.Pin())->RequestTreeRefresh();
 	return FReply::Handled();
@@ -437,7 +432,7 @@ FReply SFilterConfiguratorRow::AddGroup_OnClicked()
 	ChildNode->SetAvailableFilters(FilterConfiguratorNodePtr->GetAvailableFilters());
 	ChildNode->SetExpansion(true);
 
-	FilterConfiguratorNodePtr->AddChildAndSetGroupPtr(ChildNode);
+	FilterConfiguratorNodePtr->AddChildAndSetParent(ChildNode);
 	FilterConfiguratorNodePtr->SetExpansion(true);
 	OwnerTablePtr.Pin()->Private_SetItemExpansion(FilterConfiguratorNodePtr, true);
 
@@ -449,12 +444,7 @@ FReply SFilterConfiguratorRow::AddGroup_OnClicked()
 
 FReply SFilterConfiguratorRow::DeleteGroup_OnClicked()
 {
-	Insights::FBaseTreeNodeWeak GroupWeakPtr = FilterConfiguratorNodePtr->GetGroupPtr();
-	if (GroupWeakPtr.IsValid())
-	{
-		FFilterConfiguratorNodePtr GroupPtr = StaticCastSharedPtr<FFilterConfiguratorNode>(GroupWeakPtr.Pin());
-		GroupPtr->DeleteChildNode(FilterConfiguratorNodePtr);
-	}
+	FilterConfiguratorNodePtr->RemoveFromParent();
 
 	StaticCastSharedPtr<STreeView<FFilterConfiguratorNodePtr>>(OwnerTablePtr.Pin())->RequestTreeRefresh();
 	return FReply::Handled();
@@ -478,7 +468,7 @@ void SFilterConfiguratorRow::OnTextBoxValueCommitted(const FText& InNewText, ETe
 
 FText SFilterConfiguratorRow::GetTextBoxTooltipText() const
 {
-	TSharedPtr<IFilterValueConverter> Converter = FilterConfiguratorNodePtr->GetSelectedFilter()->Converter;
+	const TSharedPtr<IFilterValueConverter>& Converter = FilterConfiguratorNodePtr->GetSelectedFilter()->GetConverter();
 	if (Converter.IsValid())
 	{
 		return Converter->GetTooltipText();
@@ -491,7 +481,7 @@ FText SFilterConfiguratorRow::GetTextBoxTooltipText() const
 
 FText SFilterConfiguratorRow::GetTextBoxHintText() const
 {
-	TSharedPtr<IFilterValueConverter> Converter = FilterConfiguratorNodePtr->GetSelectedFilter()->Converter;
+	const TSharedPtr<IFilterValueConverter>& Converter = FilterConfiguratorNodePtr->GetSelectedFilter()->GetConverter();
 	if (Converter.IsValid())
 	{
 		return Converter->GetHintText();
@@ -504,15 +494,15 @@ FText SFilterConfiguratorRow::GetTextBoxHintText() const
 
 bool SFilterConfiguratorRow::TextBox_OnVerifyTextChanged(const FText& InText, FText& OutErrorMessage)
 {
-	TSharedPtr<IFilterValueConverter> Converter = FilterConfiguratorNodePtr->GetSelectedFilter()->Converter;
+	const TSharedPtr<IFilterValueConverter>& Converter = FilterConfiguratorNodePtr->GetSelectedFilter()->GetConverter();
 	if (Converter.IsValid())
 	{
-		if (FilterConfiguratorNodePtr->GetSelectedFilter()->DataType == EFilterDataType::Int64)
+		if (FilterConfiguratorNodePtr->GetSelectedFilter()->GetDataType() == EFilterDataType::Int64)
 		{
 			int64 Value;
 			return Converter->Convert(InText.ToString(), Value, OutErrorMessage);
 		}		
-		else if (FilterConfiguratorNodePtr->GetSelectedFilter()->DataType == EFilterDataType::Double)
+		else if (FilterConfiguratorNodePtr->GetSelectedFilter()->GetDataType() == EFilterDataType::Double)
 		{
 			double Value;
 			return Converter->Convert(InText.ToString(), Value, OutErrorMessage);
@@ -531,7 +521,7 @@ void SFilterConfiguratorRow::SuggestionTextBox_GetSuggestions(const FString& Tex
 	if (Filter->Is<FFilterWithSuggestions>())
 	{
 		TSharedPtr<FFilterWithSuggestions> FilterWithSuggestions = StaticCastSharedPtr<FFilterWithSuggestions>(Filter);
-		FilterWithSuggestions->Callback(Text, Suggestions);
+		FilterWithSuggestions->GetSuggestions(Text, Suggestions);
 	}
 }
 

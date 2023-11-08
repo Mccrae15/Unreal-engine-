@@ -36,7 +36,7 @@ bool UPoseableMeshComponent::AllocateTransformData()
 				RequiredBoneIndexArray[BoneIndex] = BoneIndex;
 			}
 
-			RequiredBones.InitializeTo(RequiredBoneIndexArray, FCurveEvaluationOption(false), *GetSkinnedAsset());
+			RequiredBones.InitializeTo(RequiredBoneIndexArray, UE::Anim::FCurveFilterSettings(UE::Anim::ECurveFilterMode::DisallowAll), *GetSkinnedAsset());
 		}
 
 		FillComponentSpaceTransforms();
@@ -287,6 +287,11 @@ void UPoseableMeshComponent::CopyPoseFromSkeletalComponent(USkeletalMeshComponen
 	if(RequiredBones.IsValid())
 	{
 		TArray<FTransform> LocalTransforms = InComponentToCopy->GetBoneSpaceTransforms();
+		if (LocalTransforms.IsEmpty()) // during incremental unregistering this might be empty
+		{
+			return;
+		}
+
 		if(this->GetSkinnedAsset() == InComponentToCopy->GetSkinnedAsset()
 			&& LocalTransforms.Num() == BoneSpaceTransforms.Num())
 		{

@@ -58,6 +58,7 @@ class CORE_API FThreadIdleStats : public TThreadSingleton<FThreadIdleStats>
 		: Waits(0)
 		, WaitsCriticalPath(0)
 		, IsCriticalPathCounter(1)
+		, bInIdleScope(false)
 	{}
 
 public:
@@ -69,6 +70,7 @@ public:
 	uint32 WaitsCriticalPath;
 
 	int IsCriticalPathCounter;
+	bool bInIdleScope;
 
 	static void BeginCriticalPath()
 	{
@@ -108,24 +110,21 @@ public:
 
 	struct FScopeIdle
 	{
+#if defined(DISABLE_THREAD_IDLE_STATS) && DISABLE_THREAD_IDLE_STATS
+		FScopeIdle( bool bInIgnore = false )
+		{}
+#else
 		/** Starting cycle counter. */
 		const uint32 Start;
 
 		/** If true, we ignore this thread idle stats. */
 		const bool bIgnore;
 
-#if defined(DISABLE_THREAD_IDLE_STATS) && DISABLE_THREAD_IDLE_STATS
-		FScopeIdle( bool bInIgnore = false )
-			: Start(0)
-			, bIgnore( bInIgnore )
-		{
-		}
-#else
-		FScopeIdle( bool bInIgnore = false )
-			: Start(FPlatformTime::Cycles())
-			, bIgnore( bInIgnore )
-		{
-		}
+#if CPUPROFILERTRACE_ENABLED
+		FCpuProfilerTrace::FEventScope TraceEventScope;
+#endif
+
+		CORE_API FScopeIdle(bool bInIgnore = false);
 
 		~FScopeIdle()
 		{
@@ -139,6 +138,8 @@ public:
 				{
 					IdleStats.WaitsCriticalPath += CyclesElapsed;
 				}
+
+				IdleStats.bInIdleScope = false;
 			}
 		}
 #endif
@@ -149,36 +150,36 @@ public:
 CORE_API bool DirectStatsCommand(const TCHAR* Cmd, bool bBlockForCompletion = false, FOutputDevice* Ar = nullptr);
 
 /** Helper struct that contains method available even when the stats are disabled. */
-struct CORE_API FStats
+struct FStats
 {
 	/** Delegate to fire every time we need to advance the stats for the rendering thread. */
 	DECLARE_DELEGATE_ThreeParams( FOnAdvanceRenderingThreadStats, bool /*bDiscardCallstack*/, int64 /*StatsFrame*/, int32 /*PrimaryDisableChangeTagStartFrame*/ );
 
 	/** Advances stats for the current frame. */
-	static void AdvanceFrame( bool bDiscardCallstack, const FOnAdvanceRenderingThreadStats& AdvanceRenderingThreadStatsDelegate = FOnAdvanceRenderingThreadStats() );
+	static CORE_API void AdvanceFrame( bool bDiscardCallstack, const FOnAdvanceRenderingThreadStats& AdvanceRenderingThreadStatsDelegate = FOnAdvanceRenderingThreadStats() );
 
 	/** Advances stats for commandlets, only valid if the command line has the proper token. @see HasStatsForCommandletsToken */
-	static void TickCommandletStats();
+	static CORE_API void TickCommandletStats();
 
 	/**
 	* @return true, if the command line has the LoadTimeStatsForCommandlet or LoadTimeFileForCommandlet token which enables stats in the commandlets.
 	* !!!CAUTION!!! You need to manually advance stats frame in order to maintain the data integrity and not to leak the memory.
 	*/
-	static bool EnabledForCommandlet();
+	static CORE_API bool EnabledForCommandlet();
 
 	/**
 	* @return true, if the command line has the LoadTimeStatsForCommandlet token which enables LoadTimeStats equivalent for commandlets.
 	* All collected stats will be dumped to the log file at the end of running the specified commandlet.
 	*/
-	static bool HasLoadTimeStatsForCommandletToken();
+	static CORE_API bool HasLoadTimeStatsForCommandletToken();
 
 	/**
 	* @return true, if the command line has the LoadTimeFileForCommandlet token which enables LoadTimeFile equivalent for commandlets.
 	*/
-	static bool HasLoadTimeFileForCommandletToken();
+	static CORE_API bool HasLoadTimeFileForCommandletToken();
 
 	/** Current game thread stats frame. */
-	static TAtomic<int32> GameThreadStatsFrame;
+	static CORE_API TAtomic<int32> GameThreadStatsFrame;
 };
 
 enum class EStatFlags : uint8
@@ -372,7 +373,7 @@ struct EStatOperation
 		MaxVal,
 
 		/** This is a memory operation. @see EMemoryOperation. */
-		Memory,
+		Memory UE_DEPRECATED(5.3, "Use Trace/MemoryInsights and/or LLM for memory profiling."),
 
 		Num,
 		Mask = 0xf,
@@ -430,7 +431,7 @@ struct EMemoryRegion
 };
 
 /** Memory operation for STAT_Memory_AllocPtr. */
-enum class EMemoryOperation : uint8
+enum class UE_DEPRECATED(5.3, "Use Trace/MemoryInsights and/or LLM for memory profiling.") EMemoryOperation : uint8
 {
 	/** Invalid. */
 	Invalid,	
@@ -1484,9 +1485,12 @@ public:
 
 	/** Pseudo-Memory operation. */
 	template<typename TValue>
+	UE_DEPRECATED(5.3, "Use Trace/MemoryInsights and/or LLM for memory profiling.")
 	FORCEINLINE_STATS void AddMemoryMessage( FName InStatName, TValue Value )
 	{
+#if UE_STATS_MEMORY_PROFILER_ENABLED
 		AddStatMessage(FStatMessage(InStatName, EStatOperation::Memory, Value, false));
+#endif //UE_STATS_MEMORY_PROFILER_ENABLED
 	}
 
 	/** 
@@ -1679,7 +1683,8 @@ public:
 #if CPUPROFILERTRACE_ENABLED
 			if (UE_TRACE_CHANNELEXPR_IS_ENABLED(CpuChannel))
 			{
-				FCpuProfilerTrace::OutputBeginDynamicEvent(InStatId.GetStatDescriptionANSI()); //todo: Could we use FName index as event id?
+				FName StatName = MinimalNameToName(StatMinimalName);
+				FCpuProfilerTrace::OutputBeginDynamicEventWithId(StatName, InStatId.GetStatDescriptionWIDE());
 				EmittedEvent |= TraceEvent;
 			}
 #endif

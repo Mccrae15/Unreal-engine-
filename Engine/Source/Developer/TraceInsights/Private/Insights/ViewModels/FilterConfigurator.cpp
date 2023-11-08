@@ -39,22 +39,22 @@ FFilterConfigurator& FFilterConfigurator::operator=(const FFilterConfigurator& O
 		return *this;
 	}
 
-	RootNode = MakeShared<FFilterConfiguratorNode>(*Other.RootNode);
-	RootNode->SetGroupPtrForChildren();
+	RootNode = FFilterConfiguratorNode::DeepCopy(*Other.RootNode);
+
 	AvailableFilters = Other.AvailableFilters;
 	OnDestroyedEvent = Other.OnDestroyedEvent;
 
 	ComputeUsedKeys();
 	RootNode->ProcessFilter();
 
-	OnChangesCommitedEvent.Broadcast();
+	OnChangesCommittedEvent.Broadcast();
 
 	return *this;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-bool FFilterConfigurator::operator==(const FFilterConfigurator& Other)
+bool FFilterConfigurator::operator==(const FFilterConfigurator& Other) const
 {
 	bool bIsEqual = AvailableFilters.Get() == Other.AvailableFilters.Get();
 	bIsEqual &= RootNode.IsValid() == Other.RootNode.IsValid();

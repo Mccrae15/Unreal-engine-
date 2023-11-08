@@ -4,11 +4,10 @@
 
 #include "OptimusCoreNotify.h"
 #include "OptimusDiagnostic.h"
-#include "OptimusTemplates.h"
 
-#include "UObject/Object.h"
 #include "CoreMinimal.h"
 #include "OptimusNodePin.h"
+#include "UObject/Object.h"
 
 #include "OptimusNode.generated.h"
 
@@ -181,6 +180,9 @@ public:
 	//== UObject overrides
 	void Serialize(FArchive& Ar) override;
 	void PostLoad() override;
+#if WITH_EDITOR
+	void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
 	
 protected:
 	friend class UOptimusNodeGraph;
@@ -290,6 +292,11 @@ protected:
 	bool MovePinDirect(
 		UOptimusNodePin* InPinToMove,
 		const UOptimusNodePin* InPinBefore
+		);
+
+	bool MovePinToGroupPinDirect(
+		UOptimusNodePin* InPinToMove,
+		UOptimusNodePin* InGroupPin
 		);
 	
 	/** Set the pin data type. */

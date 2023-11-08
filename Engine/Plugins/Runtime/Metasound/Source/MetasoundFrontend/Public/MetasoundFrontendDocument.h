@@ -1,5 +1,4 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
-
 #pragma once
 
 #include "Algo/Transform.h"
@@ -23,8 +22,11 @@
 // Forward Declarations
 struct FMetasoundFrontendClass;
 struct FMetasoundFrontendClassInterface;
+
+
 namespace Metasound
 {
+	// Forward Declarations
 	struct FLiteral;
 
 	extern const FGuid METASOUNDFRONTEND_API FrontendInvalidID;
@@ -88,8 +90,8 @@ public:
 	// Performs union of provided interface set with the set of interfaces that have been modified since last context reset/construction
 	void AddInterfacesModified(const TSet<FName>& InInterfacesModified);
 
-	// Adds a MemberID to the set of interfaces that have been modified since last context reset/construction
-	void AddMemberIDModified(const FGuid& InMemberIDModified);
+	// Adds a MemberID to the set of MemberIDs that have been modified since last context reset/construction
+	void AddMemberIDModified(const FGuid& InMemberNodeIDModified);
 
 	// Performs union of provided MemberIDs set with the set of MemberIDs that have been modified since last context reset/construction
 	void AddMemberIDsModified(const TSet<FGuid>& InMemberIDsModified);
@@ -97,7 +99,7 @@ public:
 	// Performs union of provided NodeID set with the set of NodeIDs that have been modified since last context reset/construction
 	void AddNodeIDModified(const FGuid& InNodeIDModified);
 
-	// Performs union of provided interface set with the set of interfaces that have been modified since last context reset/construction
+	// Performs union of provided NodeID set with the set of NodeIDs that have been modified since last context reset/construction
 	void AddNodeIDsModified(const TSet<FGuid>& InNodeIDsModified);
 };
 #endif // WITH_EDITORONLY_DATA
@@ -153,17 +155,17 @@ enum class EMetasoundFrontendClassType : uint8
 };
 
 // General purpose version number for Metasound Frontend objects.
-USTRUCT()
+USTRUCT(BlueprintType)
 struct METASOUNDFRONTEND_API FMetasoundFrontendVersionNumber
 {
 	GENERATED_BODY()
 
 	// Major version number.
-	UPROPERTY(VisibleAnywhere, Category = General)
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = General)
 	int32 Major = 1;
 
 	// Minor version number.
-	UPROPERTY(VisibleAnywhere, Category = General)
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = General)
 	int32 Minor = 0;
 
 	static const FMetasoundFrontendVersionNumber& GetInvalid()
@@ -244,17 +246,17 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendVersionNumber
 };
 
 // General purpose version info for Metasound Frontend objects.
-USTRUCT()
+USTRUCT(BlueprintType)
 struct METASOUNDFRONTEND_API FMetasoundFrontendVersion
 {
 	GENERATED_BODY()
 
 	// Name of version.
-	UPROPERTY(VisibleAnywhere, Category = CustomView)
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = CustomView)
 	FName Name;
 
 	// Version number.
-	UPROPERTY(VisibleAnywhere, Category = CustomView)
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = CustomView)
 	FMetasoundFrontendVersionNumber Number;
 
 	FString ToString() const;
@@ -339,6 +341,42 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendVertex
 
 	// Returns true if vertices have equal name & type.
 	static bool IsFunctionalEquivalent(const FMetasoundFrontendVertex& InLHS, const FMetasoundFrontendVertex& InRHS);
+};
+
+// Pair of guids used to address location of vertex within a FrontendDocument graph
+USTRUCT()
+struct METASOUNDFRONTEND_API FMetasoundFrontendVertexHandle
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY()
+	FGuid NodeID;
+
+	UPROPERTY()
+	FGuid VertexID;
+
+	// Returns whether or not the vertex handle is set (may or may not be
+	// valid depending on what builder context it is referenced against)
+	bool IsSet() const
+	{
+		return NodeID.IsValid() && VertexID.IsValid();
+	}
+
+	friend bool operator==(const FMetasoundFrontendVertexHandle& InLHS, const FMetasoundFrontendVertexHandle& InRHS)
+	{
+		return InLHS.NodeID == InRHS.NodeID && InLHS.VertexID == InRHS.VertexID;
+	}
+
+	friend bool operator!=(const FMetasoundFrontendVertexHandle& InLHS, const FMetasoundFrontendVertexHandle& InRHS)
+	{
+		return InLHS.NodeID != InRHS.NodeID || InLHS.VertexID != InRHS.VertexID;
+	}
+
+	friend FORCEINLINE uint32 GetTypeHash(const FMetasoundFrontendVertexHandle& InHandle)
+	{
+		return HashCombineFast(InHandle.NodeID.A, InHandle.VertexID.D);
+	}
 };
 
 // Contains a default value for a single vertex ID
@@ -548,6 +586,16 @@ struct FMetasoundFrontendEdge
 	// ID of destination point on destination node.
 	UPROPERTY()
 	FGuid ToVertexID = Metasound::FrontendInvalidID;
+
+	FMetasoundFrontendVertexHandle GetFromVertexHandle() const
+	{
+		return FMetasoundFrontendVertexHandle { FromNodeID, FromVertexID };
+	}
+
+	FMetasoundFrontendVertexHandle GetToVertexHandle() const
+	{
+		return FMetasoundFrontendVertexHandle { ToNodeID, ToVertexID };
+	}
 };
 
 USTRUCT()
@@ -615,11 +663,9 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendGraph
 	TArray<FMetasoundFrontendVariable> Variables;
 
 #if WITH_EDITORONLY_DATA
-
 	// Style of graph display.
 	UPROPERTY()
 	FMetasoundFrontendGraphStyle Style;
-
 #endif // WITH_EDITORONLY_DATA
 };
 
@@ -742,7 +788,7 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendClassVertex : public FMetasoundFr
 	FGuid NodeID = Metasound::FrontendInvalidID;
 
 #if WITH_EDITORONLY_DATA
-	// Metadata associated with input.
+	// Metadata associated with vertex.
 	UPROPERTY(EditAnywhere, Category = CustomView)
 	FMetasoundFrontendVertexMetadata Metadata;
 #endif // WITH_EDITORONLY_DATA
@@ -804,6 +850,7 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendClassInput : public FMetasoundFro
 	FMetasoundFrontendClassInput() = default;
 
 	FMetasoundFrontendClassInput(const FMetasoundFrontendClassVertex& InOther);
+	FMetasoundFrontendClassInput(const Audio::FParameterInterface::FInput& InInput);
 
 	// Default value for this input.
 	UPROPERTY(EditAnywhere, Category = Parameters)
@@ -832,17 +879,17 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendClassOutput : public FMetasoundFr
 	GENERATED_BODY()
 
 	FMetasoundFrontendClassOutput() = default;
-
-	FMetasoundFrontendClassOutput(const FMetasoundFrontendClassVertex& InOther)
-	:	FMetasoundFrontendClassVertex(InOther)
-	{
-	}
+	FMetasoundFrontendClassOutput(const FMetasoundFrontendClassVertex& InOther);
+	FMetasoundFrontendClassOutput(const Audio::FParameterInterface::FOutput& Output);
 };
 
 USTRUCT()
 struct METASOUNDFRONTEND_API FMetasoundFrontendClassEnvironmentVariable
 {
 	GENERATED_BODY()
+
+	FMetasoundFrontendClassEnvironmentVariable() = default;
+	FMetasoundFrontendClassEnvironmentVariable(const Audio::FParameterInterface::FEnvironmentVariable& InVariable);
 
 	// Name of environment variable.
 	UPROPERTY()
@@ -1039,20 +1086,110 @@ public:
 	friend struct FMetasoundFrontendClass;
 };
 
+USTRUCT()
+struct METASOUNDFRONTEND_API FMetasoundFrontendInterfaceVertexBinding
+{
+	GENERATED_BODY()
 
+	UPROPERTY()
+	FName OutputName;
+
+	UPROPERTY()
+	FName InputName;
+
+	friend bool operator==(const FMetasoundFrontendInterfaceVertexBinding& InLHS, const FMetasoundFrontendInterfaceVertexBinding& InRHS)
+	{
+		return InLHS.OutputName == InRHS.OutputName && InLHS.InputName == InRHS.InputName;
+	}
+
+	friend bool operator!=(const FMetasoundFrontendInterfaceVertexBinding& InLHS, const FMetasoundFrontendInterfaceVertexBinding& InRHS)
+	{
+		return InLHS.OutputName != InRHS.OutputName || InLHS.InputName != InRHS.InputName;
+	}
+
+	FString ToString() const
+	{
+		return FString::Format(TEXT("{0}->{1}"), { OutputName.ToString(), InputName.ToString() });
+	}
+
+	friend FORCEINLINE uint32 GetTypeHash(const FMetasoundFrontendInterfaceVertexBinding& InBinding)
+	{
+		return HashCombineFast(GetTypeHash(InBinding.OutputName), GetTypeHash(InBinding.InputName));
+	}
+};
+
+
+USTRUCT()
+struct METASOUNDFRONTEND_API FMetasoundFrontendInterfaceBinding
+{
+	GENERATED_BODY()
+
+	// Version of interface to bind from (the corresponding output vertices)
+	UPROPERTY()
+	FMetasoundFrontendVersion OutputInterfaceVersion;
+
+	// Version of interface to bind to (the corresponding input vertices)
+	UPROPERTY()
+	FMetasoundFrontendVersion InputInterfaceVersion;
+
+	// Value describing if interface binding priority is higher or lower than another interface
+	// binding that may be shared between vertices attempting to be connected via binding functionality.
+	UPROPERTY()
+	int32 BindingPriority = 0;
+
+	// Array of named pairs (output & input names) that describe what edges to create if binding functionality
+	// is executed between two nodes.
+	UPROPERTY()
+	TArray<FMetasoundFrontendInterfaceVertexBinding> VertexBindings;
+};
+
+
+// Options used to restrict a corresponding UClass that interface may be applied to.
+// If unspecified, interface is assumed to be applicable to any arbitrary UClass.
+USTRUCT()
+struct METASOUNDFRONTEND_API FMetasoundFrontendInterfaceUClassOptions
+{
+	GENERATED_BODY()
+
+	FMetasoundFrontendInterfaceUClassOptions() = default;
+	FMetasoundFrontendInterfaceUClassOptions(const Audio::FParameterInterface::FClassOptions& InOptions);
+	FMetasoundFrontendInterfaceUClassOptions(const FTopLevelAssetPath& InClassPath, bool bInIsModifiable = true, bool bInIsDefault = false);
+
+	UPROPERTY()
+	FTopLevelAssetPath ClassPath;
+
+	UPROPERTY()
+	bool bIsModifiable = true;
+
+	UPROPERTY()
+	bool bIsDefault = false;
+};
+
+
+// Definition of an interface that an FMetasoundFrontendClass adheres to in part or full.
 USTRUCT()
 struct METASOUNDFRONTEND_API FMetasoundFrontendInterface : public FMetasoundFrontendClassInterface
 {
 	GENERATED_BODY()
 
+	FMetasoundFrontendInterface() = default;
+	FMetasoundFrontendInterface(Audio::FParameterInterfacePtr InInterface);
+
 	// Name and version number of the interface
 	UPROPERTY()
 	FMetasoundFrontendVersion Version;
+
+	// If specified, options used to restrict a corresponding UClass that interface may be
+	// applied to.  If unspecified, interface is assumed to be applicable to any arbitrary UClass.
+	UPROPERTY()
+	TArray<FMetasoundFrontendInterfaceUClassOptions> UClassOptions;
+
+	const FMetasoundFrontendInterfaceUClassOptions* FindClassOptions(const FTopLevelAssetPath& InClassPath) const;
 };
 
 
 // Name of a Metasound class
-USTRUCT()
+USTRUCT(BlueprintType)
 struct METASOUNDFRONTEND_API FMetasoundFrontendClassName
 {
 	GENERATED_BODY()
@@ -1064,15 +1201,15 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendClassName
 	FMetasoundFrontendClassName(const Metasound::FNodeClassName& InName);
 
 	// Namespace of class.
-	UPROPERTY(EditAnywhere, Category = General)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = General)
 	FName Namespace;
 
 	// Name of class.
-	UPROPERTY(EditAnywhere, Category = General)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = General)
 	FName Name;
 
 	// Variant of class. The Variant is used to describe an equivalent class which performs the same operation but on differing types.
-	UPROPERTY(EditAnywhere, Category = General)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = General)
 	FName Variant;
 
 	// Returns a full name of the class.
@@ -1089,6 +1226,11 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendClassName
 
 	// Return string version of full name.
 	FString ToString() const;
+
+	friend FORCEINLINE uint32 GetTypeHash(const FMetasoundFrontendClassName& ClassName)
+	{
+		return GetTypeHash(ClassName.GetFullName());
+	}
 
 	METASOUNDFRONTEND_API friend bool operator==(const FMetasoundFrontendClassName& InLHS, const FMetasoundFrontendClassName& InRHS);
 
@@ -1428,6 +1570,7 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendDocument
 {
 	GENERATED_BODY()
 
+public:
 	static FMetasoundFrontendVersionNumber GetMaxVersion();
 
 	Metasound::Frontend::FAccessPoint AccessPoint;
@@ -1437,7 +1580,6 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendDocument
 	UPROPERTY(EditAnywhere, Category = Metadata)
 	FMetasoundFrontendDocumentMetadata Metadata;
 
-public:
 	UPROPERTY(VisibleAnywhere, Category = CustomView)
 	TSet<FMetasoundFrontendVersion> Interfaces;
 
@@ -1480,4 +1622,5 @@ public:
 	}
 };
 
+METASOUNDFRONTEND_API const TCHAR* LexToString(EMetasoundFrontendClassType InClassType);
 METASOUNDFRONTEND_API const TCHAR* LexToString(EMetasoundFrontendVertexAccessType InVertexAccess);

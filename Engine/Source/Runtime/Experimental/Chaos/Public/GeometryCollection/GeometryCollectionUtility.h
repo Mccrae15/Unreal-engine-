@@ -45,8 +45,10 @@ namespace GeometryCollection
 		TManagedArray<bool>& Visible = RestCollection->Visible;
 		TManagedArray<int32>& MaterialIndex = RestCollection->MaterialIndex;
 		TManagedArray<int32>& MaterialID = RestCollection->MaterialID;
+		TManagedArray<bool>& Internal = RestCollection->Internal;
 		TManagedArray<FTransform>& Transform = RestCollection->Transform;
 		TManagedArray<int32>& SimulationType = RestCollection->SimulationType;
+		TManagedArray<int32>& BoneMap = RestCollection->BoneMap;
 
 		// Set particle info
 		Transform[0] = Xf;
@@ -63,6 +65,7 @@ namespace GeometryCollection
 			UV0[Idx] = FVector2f(UV);
 			
 			Colors[Idx] = FLinearColor::White;
+			BoneMap[Idx] = 0;
 		}
 
 		// Set face info
@@ -73,6 +76,7 @@ namespace GeometryCollection
 			Indices[Idx] = FIntVector(Tri[0], Tri[1], Tri[2]);
 
 			Visible[Idx] = true;
+			Internal[Idx] = false;
 			MaterialIndex[Idx] = Idx;
 			MaterialID[Idx] = Idx / NumberOfEachMaterial;
 
@@ -163,7 +167,7 @@ namespace GeometryCollection
 	*/
 	void 
 	CHAOS_API
-	GenerateTemporaryGuids(FTransformCollection* Collection, int32 StartIdx = 0, bool bForceInit=false);
+	GenerateTemporaryGuids(FManagedArrayCollection* Collection, int32 StartIdx = 0, bool bForceInit=false);
 
 	/***
 	* Compute inner and outer radius from a set of vertices 

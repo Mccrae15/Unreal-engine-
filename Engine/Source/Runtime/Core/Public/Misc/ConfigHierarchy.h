@@ -6,7 +6,7 @@
 
 // See FConfigContext.cpp for the types here
 
-static FConfigLayer GConfigLayers[] =
+inline FConfigLayer GConfigLayers[] =
 {
 	/**************************************************
 	**** CRITICAL NOTES
@@ -47,7 +47,7 @@ static FConfigLayer GConfigLayers[] =
 /// <summary>
 /// Plugins don't need to look at the same number of insane layers. Here PROJECT is the Plugin dir
 /// </summary>
-static FConfigLayer GPluginLayers[] =
+inline FConfigLayer GPluginLayers[] =
 {
 	// Engine/Base.ini
 	{ TEXT("AbsoluteBase"),				TEXT("{ENGINE}/Config/Base.ini"), EConfigLayerFlags::NoExpand},
@@ -70,7 +70,7 @@ static FConfigLayer GPluginLayers[] =
 **** CRITICAL NOTES
 **** If you change these arrays, you need to also change EnumerateConfigFileLocations() in ConfigHierarchy.cs!!!
 **************************************************/
-static FConfigLayerExpansion GConfigExpansions[] =
+inline FConfigLayerExpansion GConfigExpansions[] =
 {
 	// No replacements
 	{ nullptr, nullptr, nullptr, nullptr, EConfigExpansionFlags::All },
@@ -78,20 +78,27 @@ static FConfigLayerExpansion GConfigExpansions[] =
 	// Restricted Locations
 	{ 
 		TEXT("{ENGINE}/"),						TEXT("{ENGINE}/Restricted/NotForLicensees/"),	
-		TEXT("{PROJECT}/Config/"),				TEXT("{RESTRICTEDPROJECT_NFL}/Config/"), 
+		TEXT("{PROJECT}/Config/"),				TEXT("{RESTRICTEDPROJECT_NFL}/Config/"),
 		EConfigExpansionFlags::ForUncooked | EConfigExpansionFlags::ForCooked
 	},
 	{ 
 		TEXT("{ENGINE}/"),						TEXT("{ENGINE}/Restricted/NoRedist/"),			
-		TEXT("{PROJECT}/Config/"),				TEXT("{RESTRICTEDPROJECT_NR}/Config/"), 
+		TEXT("{PROJECT}/Config/"),				TEXT("{RESTRICTEDPROJECT_NR}/Config/"),
 		EConfigExpansionFlags::ForUncooked 
 	},
 
 	// Platform Extensions
 	{
-		TEXT("{ENGINE}/Config/{PLATFORM}/"),	TEXT("{EXTENGINE}/Config/"),	
-		TEXT("{PROJECT}/Config/{PLATFORM}/"),	TEXT("{EXTPROJECT}/Config/"), 
-		EConfigExpansionFlags::ForUncooked | EConfigExpansionFlags::ForCooked | EConfigExpansionFlags::ForPlugin
+		TEXT("{ENGINE}/Config/{PLATFORM}/"),	TEXT("{EXTENGINE}/Config/"),
+		TEXT("{PROJECT}/Config/{PLATFORM}/"),	TEXT("{EXTPROJECT}/Config/"),
+		EConfigExpansionFlags::ForUncooked | EConfigExpansionFlags::ForCooked,
+	},
+
+	// Plugin Platform Extensions
+	{
+		TEXT("{PLUGIN}/Config/{PLATFORM}/"),	TEXT("{EXTPLUGIN}/Config/"),
+		TEXT("{PROJECT}/Config/{PLATFORM}/"),	TEXT("{EXTPROJECT}/Config/"),
+		EConfigExpansionFlags::ForPlugin,
 	},
 
 	// Platform Extensions in Restricted Locations
@@ -105,8 +112,8 @@ static FConfigLayerExpansion GConfigExpansions[] =
 		EConfigExpansionFlags::ForUncooked | EConfigExpansionFlags::ForCooked // | EConfigExpansionFlags::ForPlugin 
 	},
 	{
-		TEXT("{ENGINE}/Config/{PLATFORM}/"),	TEXT("{ENGINE}/Restricted/NoRedist/Platforms/{PLATFORM}/Config/"),			
-		TEXT("{PROJECT}/Config/{PLATFORM}/"),	TEXT("{RESTRICTEDPROJECT_NR}/Platforms/{PLATFORM}/Config/"), 
+		TEXT("{ENGINE}/Config/{PLATFORM}/"),	TEXT("{ENGINE}/Restricted/NoRedist/Platforms/{PLATFORM}/{OPT_SUBDIR}Config/"),
+		TEXT("{PROJECT}/Config/{PLATFORM}/"),	TEXT("{RESTRICTEDPROJECT_NR}/Platforms/{PLATFORM}/{OPT_SUBDIR}Config/"), 
 		EConfigExpansionFlags::ForUncooked // | EConfigExpansionFlags::ForPlugin
 	},
 };

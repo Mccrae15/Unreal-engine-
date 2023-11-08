@@ -59,11 +59,11 @@ struct FVelocityFlattenTextures
 	static constexpr int32 kTileSize = 16;
 
 	FScreenPassTexture VelocityFlatten;
-	FScreenPassTexture VelocityTile[kMaxVelocityTileTextureCount];
+	FScreenPassTexture VelocityTileArray;
 
 	bool IsValid() const
 	{
-		return VelocityFlatten.IsValid() && VelocityTile[0].IsValid();
+		return VelocityFlatten.IsValid() && VelocityTileArray.IsValid();
 	}
 
 	// returns whether FVelocityFlattenTextures can be generated in external system.
@@ -79,7 +79,7 @@ struct FMotionBlurInputs
 	FScreenPassRenderTarget OverrideOutput;
 
 	// [Required] The input scene color and view rect.
-	FScreenPassTexture SceneColor;
+	FScreenPassTextureSlice SceneColor;
 
 	// [Required] The input scene depth and view rect.
 	FScreenPassTexture SceneDepth;
@@ -102,10 +102,10 @@ struct FMotionBlurInputs
 
 struct FMotionBlurOutputs
 {
-	FScreenPassTexture FullRes;
+	FScreenPassTextureSlice FullRes;
 	FScreenPassTexture HalfRes;
 	FScreenPassTexture QuarterRes;
 };
 
 FMotionBlurOutputs AddMotionBlurPass(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FMotionBlurInputs& Inputs);
-FScreenPassTexture AddVisualizeMotionBlurPass(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FMotionBlurInputs& Inputs);
+FScreenPassTextureSlice AddVisualizeMotionBlurPass(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FMotionBlurInputs& Inputs);

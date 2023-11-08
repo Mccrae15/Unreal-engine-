@@ -12,7 +12,6 @@ public class LevelSnapshots : ModuleRules
         PublicIncludePaths.AddRange(
 	        new string[] 
 	        {
-		        Path.Combine(ModuleDirectory, "Public"),
 		        Path.Combine(ModuleDirectory, "Public", "Data"),
 		        Path.Combine(ModuleDirectory, "Public", "Restorability"),
 		        Path.Combine(ModuleDirectory, "Public", "Settings")
@@ -21,7 +20,6 @@ public class LevelSnapshots : ModuleRules
         PrivateIncludePaths.AddRange(
 	        new string[] 
 	        {
-		        Path.Combine(ModuleDirectory, "Private"),
 		        Path.Combine(ModuleDirectory, "Private", "Archive"),
 		        Path.Combine(ModuleDirectory, "Private", "Data")
 	        }
@@ -51,7 +49,8 @@ public class LevelSnapshots : ModuleRules
 			PrivateDependencyModuleNames.AddRange( new string[]
 			{
 				"UnrealEd", // This is needed for undo / redo system in editor
-				"Settings"	// For registering settings
+				"Settings",	// For registering settings
+				"Projects"	// For determining enabled plugins
 			});
 		}
 	}

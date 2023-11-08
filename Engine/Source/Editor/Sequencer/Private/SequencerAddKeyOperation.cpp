@@ -31,19 +31,19 @@ namespace UE
 namespace Sequencer
 {
 
-FAddKeyOperation FAddKeyOperation::FromNodes(const TSet<TWeakPtr<FViewModel>>& InNodes)
+FAddKeyOperation FAddKeyOperation::FromNodes(const TSet<TWeakViewModelPtr<IOutlinerExtension>>& InNodes)
 {
 	FAddKeyOperation Operation;
 
 	TArray<TWeakPtr<FViewModel>> FilteredNodes;
 
 	// Remove any child nodes that have a parent also included in the set
-	for (const TWeakPtr<FViewModel>& ProspectiveNode : InNodes)
+	for (const TWeakViewModelPtr<IOutlinerExtension>& ProspectiveNode : InNodes)
 	{
-		TSharedPtr<FViewModel> Parent = ProspectiveNode.Pin()->GetParent();
+		TSharedPtr<FViewModel> Parent = ProspectiveNode.Pin().AsModel()->GetParent();
 		while (Parent)
 		{
-			if (InNodes.Contains(Parent.ToSharedRef()))
+			if (InNodes.Contains(CastViewModel<IOutlinerExtension>(Parent)))
 			{
 				goto Continue;
 			}
@@ -112,9 +112,28 @@ bool FAddKeyOperation::ConsiderKeyableAreas(TSharedPtr<ITrackExtension> InTrackM
 	bool bKeyedAnything = false;
 
 	constexpr bool bIncludeThis = true;
-	for (TParentFirstChildIterator<FChannelGroupModel> ChannelGroupModelIt(KeyAnythingBeneath->AsShared(), bIncludeThis); ChannelGroupModelIt; ++ChannelGroupModelIt)
+	
+	// Prefer the section that is marked SectionToKey
+	for (const TViewModelPtr<FSectionModel>& SectionModel : KeyAnythingBeneath->GetDescendantsOfType<FSectionModel>(bIncludeThis))
 	{
-		bKeyedAnything |= ProcessKeyArea(InTrackModel, *ChannelGroupModelIt);
+		UMovieSceneSection* Section = SectionModel->GetSection();
+		UMovieSceneTrack* Track = Cast<UMovieSceneTrack>(Section->GetOuter());
+		if (Track && Track->GetSectionToKey() == Section)
+		{
+			for (TParentFirstChildIterator<FChannelGroupModel> ChannelGroupModelIt(SectionModel->AsShared(), bIncludeThis); ChannelGroupModelIt; ++ChannelGroupModelIt)
+			{
+				bKeyedAnything |= ProcessKeyArea(InTrackModel, *ChannelGroupModelIt);
+			}
+		}
+	}
+
+	// Otherwise if nothing was found, key all
+	if (!bKeyedAnything)
+	{
+		for (TParentFirstChildIterator<FChannelGroupModel> ChannelGroupModelIt(KeyAnythingBeneath->AsShared(), bIncludeThis); ChannelGroupModelIt; ++ChannelGroupModelIt)
+		{
+			bKeyedAnything |= ProcessKeyArea(InTrackModel, *ChannelGroupModelIt);
+		}
 	}
 
 	return bKeyedAnything;

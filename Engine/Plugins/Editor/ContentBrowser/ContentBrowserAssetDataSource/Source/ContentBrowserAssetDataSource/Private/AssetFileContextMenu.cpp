@@ -79,6 +79,13 @@ void FAssetFileContextMenu::MakeContextMenu(UToolMenu* InMenu, const TArray<FAss
 	SelectedAssets = InSelectedAssets;
 	OnShowAssetsInPathsView = InOnShowAssetsInPathsView;
 
+	// We don't want the regular menu options if the selection contains unsupported assets
+	const UContentBrowserDataMenuContext_FileMenu* Context = InMenu->FindContext<UContentBrowserDataMenuContext_FileMenu>();
+	if(Context && Context->bContainsUnsupportedAssets)
+	{
+		return;
+	}
+	
 	if (SelectedAssets.Num() > 0)
 	{
 		AddMenuOptions(InMenu);
@@ -370,10 +377,7 @@ void FAssetFileContextMenu::MakeAssetActionsSubMenu(UToolMenu* Menu)
 	if (bCanBeModified)
 	{
 		FToolMenuSection& Section = Menu->AddSection("AssetContextMoveActions", LOCTEXT("AssetContextMoveActionsMenuHeading", "Move"));
-		const bool bCanExportAllSelectedAssets = !Algo::AnyOf(SelectedAssets, [](const FAssetData& AssetData)
-		{
-			return AssetData.HasAnyPackageFlags(EPackageFlags::PKG_DisallowExport);
-		});
+		const bool bCanExportAllSelectedAssets = FAssetToolsModule::GetModule().Get().CanExportAssets(SelectedAssets);
 
 		if (bCanExportAllSelectedAssets)
 		{
@@ -469,7 +473,7 @@ void FAssetFileContextMenu::MakeAssetActionsSubMenu(UToolMenu* Menu)
 
 			Section.AddMenuEntry(
 				"PropertyMatrix",
-				LOCTEXT("PropertyMatrix", "Bulk Edit via Property Matrix..."),
+				LOCTEXT("PropertyMatrix", "Edit Selection in Property Matrix"),
 				DynamicTooltipAttribute,
 				FSlateIcon(),
 				FUIAction(
@@ -1219,27 +1223,40 @@ void FAssetFileContextMenu::ExecuteReimportWithNewFile(int32 SourceFileIndex /*=
 	if (const UAssetDefinition* AssetDefinition = UAssetDefinitionRegistry::Get()->GetAssetDefinitionForAsset(SelectedAssets[0]))
 	{
 		FAssetData SelectedAsset = SelectedAssets[0];
-		
-		AssetDefinition->GetSourceFiles(SelectedAsset, [&](const FAssetImportInfo& AssetImportInfo)
+
+		FAssetSourceFilesArgs GetSourceFilesArgs;
+		GetSourceFilesArgs.Assets = TConstArrayView<FAssetData>(&SelectedAsset, 1);
+
+		// Doesn't need to resolve the paths so it is a bit quicker
+		GetSourceFilesArgs.FilePathFormat = EPathUse::Display;
+
+		int32 SourceFileCount = 0;
+		AssetDefinition->GetSourceFiles(GetSourceFilesArgs, [&SourceFileCount, SourceFileIndex](const FAssetSourceFilesResult& AssetImportInfo)
 		{
-			int32 SourceFileIndexToReplace = SourceFileIndex;
-			//Check if the data is valid
-			if (SourceFileIndex == INDEX_NONE)
+			++SourceFileCount;
+			if (SourceFileIndex < SourceFileCount)
 			{
-				if (AssetImportInfo.SourceFiles.Num() > 1)
-				{
-					//Ask for a new file for the index 0
-					SourceFileIndexToReplace = 0;
-				}
-			}
-			else
-			{
-				check(AssetImportInfo.SourceFiles.IsValidIndex(SourceFileIndex));
+				return false;
 			}
 
-			TArray<UObject*> LoadedAssets = { SelectedAsset.GetAsset() };
-			FReimportManager::Instance()->ValidateAllSourceFileAndReimport(LoadedAssets, true, SourceFileIndexToReplace, true);
+			return true;
 		});
+
+		int32 SourceFileIndexToReplace = SourceFileIndex;
+		//Check if the data is valid
+		if (SourceFileIndex == INDEX_NONE)
+		{
+			//Ask for a new file for the index 0
+			SourceFileIndexToReplace = 0;
+		}
+		else
+		{
+			// Validate that the index is validate
+			check(SourceFileIndex >= 0 && SourceFileIndex < SourceFileCount);
+		}
+
+		TArray<UObject*> LoadedAssets = { SelectedAsset.GetAsset() };
+		FReimportManager::Instance()->ValidateAllSourceFileAndReimport(LoadedAssets, true, SourceFileIndexToReplace, true);
 	}
 }
 
@@ -1282,22 +1299,29 @@ void FAssetFileContextMenu::GetSelectedAssetSourceFilePaths(TArray<FString>& Out
 	GetSelectedAssetsByClass(SelectedAssetsByClass);
 
 	OutValidSelectedAssetCount = 0;
+
+	FAssetSourceFilesArgs GetSourceFilesArgs;
 	// Get the source file paths for the assets of each type
 	for (const auto& AssetsByClassPair : SelectedAssetsByClass)
 	{
 		if (const UAssetDefinition* AssetDefinition = UAssetDefinitionRegistry::Get()->GetAssetDefinitionForClass(AssetsByClassPair.Key))
 		{
-			for (const FAssetData& Asset : AssetsByClassPair.Value)
+			for (const FAssetData& AssetData :  AssetsByClassPair.Value)
 			{
-				AssetDefinition->GetSourceFiles(Asset, [&](const FAssetImportInfo& AssetImportInfo)
+				GetSourceFilesArgs.Assets = TConstArrayView<FAssetData>(&AssetData, 1);
+
+				EAssetCommandResult Result = AssetDefinition->GetSourceFiles(GetSourceFilesArgs, [&OutFilePaths, &OutUniqueSourceFileLabels](const FAssetSourceFilesResult& AssetImportInfo)
 				{
-					OutValidSelectedAssetCount++;
-					for (const auto& SourceFile : AssetImportInfo.SourceFiles)
-					{
-						OutFilePaths.Add(SourceFile.RelativeFilename);
-						OutUniqueSourceFileLabels.AddUnique(SourceFile.DisplayLabelName);
-					}
+					OutFilePaths.Add(AssetImportInfo.FilePath);
+					OutUniqueSourceFileLabels.AddUnique(AssetImportInfo.DisplayLabel);
+					return true;
 				});
+
+				if (Result == EAssetCommandResult::Handled)
+				{
+					// We found some import data for the asset if the call is handled
+					++OutValidSelectedAssetCount;
+				}
 			}
 		}
 	}
@@ -1393,7 +1417,7 @@ struct WorldReferenceGenerator : public FFindReferencedAssets
 			Actor->GetReferencedContentObjects(ReferencedObjects);
 			for(UObject* Reference : ReferencedObjects)
 			{
-				TSet<UObject*>& Objects = ReferenceGraph.FindOrAdd(Reference);
+				auto& Objects = ReferenceGraph.FindOrAdd(Reference);
 				Objects.Add(Actor);
 			}
 		}
@@ -1426,12 +1450,12 @@ struct WorldReferenceGenerator : public FFindReferencedAssets
 		}
 
 		// Traverse the reference graph looking for actor objects
-		TSet<UObject*>* ReferencingObjects = ReferenceGraph.Find(AssetToFind);
+		auto* ReferencingObjects = ReferenceGraph.Find(AssetToFind);
 		if (ReferencingObjects)
 		{
-			for(TSet<UObject*>::TConstIterator SetIt(*ReferencingObjects); SetIt; ++SetIt)
+			for (const auto& SetIt : *ReferencingObjects)
 			{
-				Generate(*SetIt, OutObjects);
+				Generate(SetIt, OutObjects);
 			}
 		}
 	}
@@ -1930,7 +1954,7 @@ FText FAssetFileContextMenu::GetExecutePropertyMatrixTooltip() const
 	FText ResultTooltip;
 	if (CanExecutePropertyMatrix(ResultTooltip))
 	{
-		ResultTooltip = LOCTEXT("PropertyMatrixTooltip", "Opens the property matrix editor for the selected assets.");
+		ResultTooltip = LOCTEXT("PropertyMatrixTooltip", "Bulk edit the selected assets in the Property Matrix");
 	}
 	return ResultTooltip;
 }

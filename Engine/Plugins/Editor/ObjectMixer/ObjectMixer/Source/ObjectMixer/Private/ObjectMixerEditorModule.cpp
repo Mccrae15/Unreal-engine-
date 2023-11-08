@@ -3,18 +3,19 @@
 #include "ObjectMixerEditorModule.h"
 
 #include "ObjectMixerEditorLog.h"
-#include "Engine/Level.h"
 #include "ObjectMixerEditorSettings.h"
-#include "Misc/CoreDelegates.h"
 #include "ObjectMixerEditorSerializedData.h"
 #include "ObjectMixerEditorStyle.h"
 #include "Views/List/ObjectMixerEditorList.h"
 #include "Views/Widgets/ObjectMixerEditorListMenuContext.h"
 
+#include "Engine/Level.h"
 #include "ISettingsModule.h"
 #include "LevelEditor.h"
-#include "Selection.h"
+#include "LevelEditorSequencerIntegration.h"
+#include "Misc/CoreDelegates.h"
 #include "Misc/TransactionObjectEvent.h"
+#include "Selection.h"
 #include "ToolMenus.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "WorkspaceMenuStructure.h"
@@ -77,7 +78,6 @@ void FObjectMixerEditorModule::Teardown()
 
 	if (GEditor)
 	{
-		GEditor->OnBlueprintCompiled().RemoveAll(this);
 		GEditor->OnLevelActorAdded().RemoveAll(this);
 		GEditor->OnLevelActorDeleted().RemoveAll(this);
 		GEditor->GetSelectedActors()->SelectionChangedEvent.RemoveAll(this);
@@ -92,6 +92,8 @@ void FObjectMixerEditorModule::Teardown()
 	{
 		LevelEditorModule->OnComponentsEdited().RemoveAll(this);
 	}
+
+	FLevelEditorSequencerIntegration::Get().GetOnSequencersChanged().RemoveAll(this);
 
 	for (FDelegateHandle& Delegate : DelegateHandles)
 	{
@@ -137,9 +139,31 @@ TSharedPtr<SWidget> FObjectMixerEditorModule::MakeObjectMixerDialog(
 		ListModel->SetDefaultFilterClass(InDefaultFilterClass);
 	}
 	
-	const TSharedPtr<SWidget> ObjectMixerDialog = ListModel->GetOrCreateWidget();
+	const TSharedPtr<SWidget> ObjectMixerDialog = ListModel->CreateWidget();
 
 	return ObjectMixerDialog;
+}
+
+TSharedPtr<SDockTab> FObjectMixerEditorModule::FindNomadTab()
+{
+	if (!DockTab.IsValid())
+	{
+		DockTab = FGlobalTabmanager::Get()->FindExistingLiveTab(GetTabSpawnerId());
+	}
+	
+	return DockTab.Pin();
+}
+
+bool FObjectMixerEditorModule::RegenerateListWidget()
+{
+	if (const TSharedPtr<SDockTab> FoundTab = FindNomadTab())
+	{
+		const TSharedPtr<SWidget> ObjectMixerDialog = MakeObjectMixerDialog(DefaultFilterClass);
+		FoundTab->SetContent(ObjectMixerDialog ? ObjectMixerDialog.ToSharedRef() : SNullWidget::NullWidget);
+		return true;
+	}
+
+	return false;
 }
 
 void FObjectMixerEditorModule::RequestRebuildList() const
@@ -211,7 +235,8 @@ void FObjectMixerEditorModule::RegisterTabSpawner()
 		.SetIcon(MenuItemIcon)
 		.SetDisplayName(MenuItemName)
 		.SetTooltipText(MenuItemTooltip)
-		.SetMenuType(TabSpawnerType);
+		.SetMenuType(TabSpawnerType)
+	;
 
 	// Always use the base ObjectMixer function call or WorkspaceGroup may be null 
 	if (!FObjectMixerEditorModule::Get().RegisterItemInMenuGroup(BrowserSpawnerEntry))
@@ -265,16 +290,14 @@ void FObjectMixerEditorModule::UnregisterSettings() const
 
 TSharedRef<SDockTab> FObjectMixerEditorModule::SpawnTab(const FSpawnTabArgs& Args)
 {
-	const TSharedRef<SDockTab> DockTab =
-		SNew(SDockTab)
+	TSharedRef<SDockTab> NewDockTab = SAssignNew(DockTab, SDockTab)
 		.Label(TabLabel)
 		.TabRole(ETabRole::NomadTab)
 	;
 
-	const TSharedPtr<SWidget> ObjectMixerDialog = MakeObjectMixerDialog(DefaultFilterClass);
-	DockTab->SetContent(ObjectMixerDialog ? ObjectMixerDialog.ToSharedRef() : SNullWidget::NullWidget);
+	RegenerateListWidget();
 			
-	return DockTab;
+	return NewDockTab;
 }
 
 TSharedPtr<FWorkspaceItem> FObjectMixerEditorModule::GetWorkspaceGroup()
@@ -310,10 +333,6 @@ void FObjectMixerEditorModule::BindDelegates()
 		RequestRebuildList();
 	}));
 
-	DelegateHandles.Add(GEditor->OnBlueprintCompiled().AddLambda([this] ()
-	{
-		RequestRebuildList();
-	}));
 	DelegateHandles.Add(GEditor->OnLevelActorAdded().AddLambda([this] (AActor*)
 	{
 		RequestRebuildList();
@@ -357,10 +376,16 @@ void FObjectMixerEditorModule::BindDelegates()
 	}));
 	
 	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
-	LevelEditorModule.OnComponentsEdited().AddLambda([this]()
+	DelegateHandles.Add(LevelEditorModule.OnComponentsEdited().AddLambda([this]()
 	{
 		RequestRebuildList();
-	});
+	}));
+	
+	DelegateHandles.Add(FLevelEditorSequencerIntegration::Get().GetOnSequencersChanged().AddLambda(
+		[this]
+		{
+			RegenerateListWidget();
+		}));
 }
 
 TSet<FName> FObjectMixerEditorModule::GetPropertiesThatRequireRefresh() const

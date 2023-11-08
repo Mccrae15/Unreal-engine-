@@ -525,7 +525,7 @@ bool FSlateRHIResourceManager::LoadTexture( const FName& TextureName, const FStr
 		{
 			ImageFormat = EImageFormat::PNG;
 		}
-		TSharedPtr<IImageWrapper> ImageWrapper = ImageWrapperModule.CreateImageWrapper(ImageFormat);
+		TSharedPtr<IImageWrapper> ImageWrapper = ImageWrapperModule.CreateImageWrapper(ImageFormat, *ResourcePath);
 
 		if ( ImageWrapper.IsValid() && ImageWrapper->SetCompressed( RawFileData.GetData(), RawFileData.Num()) )
 		{
@@ -746,7 +746,7 @@ TSharedPtr<FSlateDynamicTextureResource> FSlateRHIResourceManager::MakeDynamicTe
 			}
 
 			// Initialize and link the rendering resource
-			InTextureResource->RHIRefTexture->InitResource();
+			InTextureResource->RHIRefTexture->InitResource(RHICmdList);
 		});
 
 	// Map the new resource so we don't have to load again

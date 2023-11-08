@@ -561,9 +561,20 @@ public:
 	 * @return Time of day.
 	 * @see FromUnixTimestamp
 	 */
-	CORE_API int64 ToUnixTimestamp() const
+	int64 ToUnixTimestamp() const
 	{
 		return (Ticks - FDateTime(1970, 1, 1).Ticks) / ETimespan::TicksPerSecond;
+	}
+
+	/**
+	 * Returns this date as the number of seconds since the Unix Epoch (January 1st of 1970).
+	 *
+	 * @return Time of day.
+	 * @see FromUnixTimestamp
+	 */
+	double ToUnixTimestampDecimal() const
+	{
+		return double(Ticks - FDateTime(1970, 1, 1).Ticks) / ETimespan::TicksPerSecond;
 	}
 
 public:
@@ -609,6 +620,18 @@ public:
 	static FDateTime FromUnixTimestamp(int64 UnixTime)
 	{
 		return FDateTime(1970, 1, 1) + FTimespan(UnixTime * ETimespan::TicksPerSecond);
+	}
+
+	/**
+	 * Returns the date from Unix time (seconds from midnight 1970-01-01)
+	 *
+	 * @param UnixTime Unix time (seconds from midnight 1970-01-01)
+	 * @return Gregorian date and time.
+	 * @see ToUnixTimestampDecimal
+	 */
+	static FDateTime FromUnixTimestampDecimal(double UnixTime)
+	{
+		return FDateTime(1970, 1, 1) + FTimespan(int64(UnixTime * ETimespan::TicksPerSecond));
 	}
 
 	/**

@@ -2,6 +2,7 @@
 
 #include "SPackageTableTreeView.h"
 
+#include "Common/ProviderLock.h" // TraceServices
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "SlateOptMacros.h"
 #include "Widgets/Input/STextComboBox.h"
@@ -126,15 +127,19 @@ void SPackageTableTreeView::RebuildTree(bool bResync)
 	TSharedPtr<FPackageTable> PackageTable = GetPackageTable();
 	TArray<FPackageEntry>& Packages = PackageTable->GetPackageEntries();
 	Packages.Empty();
-	TableTreeNodes.Empty();
+	TableRowNodes.Empty();
 
 	const TraceServices::ICookProfilerProvider* CookProvider = TraceServices::ReadCookProfilerProvider(*Session.Get());
 
 	if (CookProvider)
 	{
 		TraceServices::FProviderReadScopeLock ProviderReadScope(*CookProvider);
-		TArray<FTableTreeNodePtr>* Nodes = &TableTreeNodes;
 
+		const uint32 NumPackages = CookProvider->GetNumPackages();
+		Packages.Reserve(NumPackages);
+		TableRowNodes.Reserve(NumPackages);
+
+		TArray<FTableTreeNodePtr>* Nodes = &TableRowNodes;
 		CookProvider->EnumeratePackages(0, 0, [&Packages, &PackageTable, Nodes](const TraceServices::FPackageData& Package)
 			{
 				Packages.Emplace(Package);

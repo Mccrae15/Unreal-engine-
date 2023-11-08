@@ -2,6 +2,7 @@
 
 #include "Iris/ReplicationState/PropertyReplicationState.h"
 #include "Iris/ReplicationState/InternalPropertyReplicationState.h"
+#include "Iris/ReplicationState/InternalReplicationStateDescriptorUtils.h"
 #include "Iris/ReplicationState/ReplicationStateUtil.h"
 #include "Iris/ReplicationSystem/ReplicationSystem.h"
 #include "Net/Core/NetBitArray.h"
@@ -12,6 +13,7 @@
 #include "UObject/PropertyPortFlags.h"
 #include "Containers/StringFwd.h"
 #include "Iris/Core/IrisDebugging.h"
+#include "Iris/Core/IrisProfiler.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogIrisRepNotify, Warning, All);
 
@@ -127,32 +129,17 @@ void FPropertyReplicationState::InjectState(const FReplicationStateDescriptor* D
 
 void FPropertyReplicationState::Set(const FPropertyReplicationState& Other)
 {
-	if (IsValid())
+	if (IsValid() && this != &Other)
 	{
 		const FReplicationStateDescriptor* Descriptor = ReplicationStateDescriptor;
-		uint8* DstStateBuffer = StateBuffer;
-		uint8* SrcStateBuffer = Other.StateBuffer;
-
 		const FReplicationStateMemberDescriptor* MemberDescriptors = Descriptor->MemberDescriptors;
-		const FProperty*const* Properties = Descriptor->MemberProperties;
-		const uint32 MemberCount = Descriptor->MemberCount;
 
-		for (uint32 MemberIt = 0; MemberIt < MemberCount; ++MemberIt)
+		const uint8* SrcStateBuffer = Other.StateBuffer;
+		for (uint32 MemberIt = 0, MemberEndIt = Descriptor->MemberCount; MemberIt < MemberEndIt; ++MemberIt)
 		{
 			const FReplicationStateMemberDescriptor& MemberDescriptor = MemberDescriptors[MemberIt];
-			const FProperty* Property = Properties[MemberIt];
-
-			uint8* DstValue = DstStateBuffer + MemberDescriptor.ExternalMemberOffset;
-			uint8* SrcValue = SrcStateBuffer + MemberDescriptor.ExternalMemberOffset;
-	
-			// $IRIS TODO: Could use serializer IsEqual.
-			if (!IsDirty(MemberIt) && IsCustomConditionEnabled(MemberIt) && !Property->Identical(SrcValue, DstValue))
-			{
-				MarkDirty(MemberIt);
-			}
-
-			// We need to use the internal copy as we do not want to run custom assign/copy constructors as we want a true copy of all replicated data
-			Private::InternalCopyPropertyValue(Descriptor, MemberIt, DstValue, SrcValue);
+			const uint8* SrcValue = SrcStateBuffer + MemberDescriptor.ExternalMemberOffset;
+			SetPropertyValue(MemberIt, SrcValue);
 		}
 	}
 }
@@ -162,12 +149,31 @@ void FPropertyReplicationState::SetPropertyValue(uint32 Index, const void* SrcVa
 	const FReplicationStateDescriptor* Descriptor = ReplicationStateDescriptor;
 	void* DstValue = StateBuffer + Descriptor->MemberDescriptors[Index].ExternalMemberOffset;
 
+	// Special handling for top level arrays with changemask bits for elements
+	const FReplicationStateMemberSerializerDescriptor& MemberSerializerDescriptor = Descriptor->MemberSerializerDescriptors[Index];
+	if (IsUsingArrayPropertyNetSerializer(MemberSerializerDescriptor))
+	{
+		const FReplicationStateMemberChangeMaskDescriptor& ChangeMaskInfo = Descriptor->MemberChangeMaskDescriptors[Index];
+		if (!IsInitState() && IsCustomConditionEnabled(Index) && ChangeMaskInfo.BitCount > 1U)
+		{
+			FNetBitArrayView MemberChangeMask = Private::GetMemberChangeMask(StateBuffer, Descriptor);
+
+			const bool bArraysAreEqual = Private::InternalCompareAndCopyArrayWithElementChangeMask(Descriptor, Index, DstValue, SrcValue, MemberChangeMask);
+			if (!bArraysAreEqual && !MemberChangeMask.GetBit(ChangeMaskInfo.BitOffset + TArrayPropertyChangeMaskBitIndex))
+			{
+				MarkArrayDirty(Index);
+			}
+
+			return;
+		}
+	}
+
 	if (!IsDirty(Index) && IsCustomConditionEnabled(Index) && !Private::InternalCompareMember(Descriptor, Index, SrcValue, DstValue))
 	{
 		MarkDirty(Index);
 	}
 
-	Private::InternalCopyPropertyValue(Descriptor, Index, DstValue, SrcValue);		
+	Private::InternalCopyPropertyValue(Descriptor, Index, DstValue, SrcValue);
 }
 
 void FPropertyReplicationState::GetPropertyValue(uint32 Index, void* DstValue) const
@@ -217,12 +223,40 @@ bool FPropertyReplicationState::IsDirty(uint32 Index) const
 	}
 }
 
+void FPropertyReplicationState::MarkArrayDirty(uint32 Index)
+{
+	const FReplicationStateDescriptor* Descriptor = ReplicationStateDescriptor;
+	FReplicationStateHeader& Header = Private::GetReplicationStateHeader(StateBuffer, Descriptor);
+
+	if (IsInitState())
+	{
+		if (!Private::FReplicationStateHeaderAccessor::GetIsInitStateDirty(Header))
+		{
+			Private::FReplicationStateHeaderAccessor::MarkInitStateDirty(Header);
+			if (Header.IsBound())
+			{
+				MarkNetObjectStateDirty(Header);
+			}
+		}
+	}
+	else
+	{
+		FNetBitArrayView MemberChangeMask = Private::GetMemberChangeMask(StateBuffer, Descriptor);
+		FReplicationStateMemberChangeMaskDescriptor ChangeMaskInfo = Descriptor->MemberChangeMaskDescriptors[Index];
+		ChangeMaskInfo.BitOffset += TArrayPropertyChangeMaskBitIndex;
+		ChangeMaskInfo.BitCount = 1;
+		Private::MarkDirty(Header, MemberChangeMask, ChangeMaskInfo);
+	}
+}
+
 bool FPropertyReplicationState::PollPropertyReplicationState(const void* RESTRICT SrcStateData)
 {
 	if (IsValid())
 	{
 		const FReplicationStateDescriptor* Descriptor = ReplicationStateDescriptor;
 		const uint8* SrcBuffer = reinterpret_cast<const uint8*>(SrcStateData);
+
+		IRIS_PROFILER_PROTOCOL_NAME(ReplicationStateDescriptor->DebugName->Name);
 
 		const FReplicationStateMemberDescriptor* MemberDescriptors = Descriptor->MemberDescriptors;
 		const FProperty** MemberProperties = Descriptor->MemberProperties;
@@ -243,6 +277,36 @@ bool FPropertyReplicationState::PollPropertyReplicationState(const void* RESTRIC
 	return IsDirty();
 }
 
+bool FPropertyReplicationState::PollPropertyReplicationStateForRepNotifies(const void* RESTRICT SrcStateData)
+{
+	if (IsValid())
+	{
+		const FReplicationStateDescriptor* Descriptor = ReplicationStateDescriptor;
+		const uint8* SrcBuffer = reinterpret_cast<const uint8*>(SrcStateData);
+
+		IRIS_PROFILER_PROTOCOL_NAME(ReplicationStateDescriptor->DebugName->Name);
+
+		const FReplicationStateMemberDescriptor* MemberDescriptors = Descriptor->MemberDescriptors;
+		const FProperty** MemberProperties = Descriptor->MemberProperties;
+		const FReplicationStateMemberPropertyDescriptor* MemberPropertyDescriptors = Descriptor->MemberPropertyDescriptors;
+		const uint32 MemberCount = Descriptor->MemberCount;
+
+		for (uint32 MemberIt = 0; MemberIt < MemberCount; ++MemberIt)
+		{
+			const FReplicationStateMemberDescriptor& MemberDescriptor = MemberDescriptors[MemberIt];
+			const FReplicationStateMemberPropertyDescriptor& MemberPropertyDescriptor = MemberPropertyDescriptors[MemberIt];
+
+			if (MemberPropertyDescriptor.RepNotifyFunction)
+			{
+				const FProperty* Property = MemberProperties[MemberIt];
+				SetPropertyValue(MemberIt, SrcBuffer + Property->GetOffset_ForGC() + Property->ElementSize*MemberPropertyDescriptor.ArrayIndex);
+			}
+		}
+	}
+
+	return IsDirty();
+}
+
 void FPropertyReplicationState::PushPropertyReplicationState(void* RESTRICT DstData, bool bInPushAll) const
 {
 	// $IRIS TODO: Rewrite this to iterate over change mask instead of iterating over all members and querying the mask
@@ -251,6 +315,8 @@ void FPropertyReplicationState::PushPropertyReplicationState(void* RESTRICT DstD
 	{
 		const FReplicationStateDescriptor* Descriptor = ReplicationStateDescriptor;
 		uint8* DstBuffer = reinterpret_cast<uint8*>(DstData);
+
+		IRIS_PROFILER_PROTOCOL_NAME(ReplicationStateDescriptor->DebugName->Name);
 
 		const FReplicationStateMemberDescriptor* MemberDescriptors = Descriptor->MemberDescriptors;
 		const FProperty** MemberProperties = Descriptor->MemberProperties;
@@ -343,12 +409,12 @@ void FPropertyReplicationState::CallRepNotifies(void* RESTRICT DstData, const FC
 				bool bShouldCallRepNotify = false;
 				if (Params.bOnlyCallIfDiffersFromLocal)
 				{
-					// We try to be backwards compatible and respect RepNotify_Always/RepNotify_Changed unless it is the intial state where we only will call the repnotify of the received value differs from the local one.
+					// We try to be backwards compatible and respect RepNotify_Always/RepNotify_Changed unless it is the initial state where we only will call the repnotify of the received value differs from the local one.
 					bShouldCallRepNotify = Params.bIsInit ? !Private::InternalCompareMember(Descriptor, MemberIt, ValuePtr, PrevValuePtr) : EnumHasAnyFlags(Descriptor->MemberTraitsDescriptors[MemberIt].Traits, EReplicationStateMemberTraits::HasRepNotifyAlways) || !Private::InternalCompareMember(Descriptor, MemberIt, ValuePtr, PrevValuePtr);
 				}
 				else
 				{
-					// Trust data from server and call RepNotify without doing additonal compare unless it is the inital state.
+					// Trust data from server and call RepNotify without doing additonal compare unless it is the initial state.
 					bShouldCallRepNotify = !Params.bIsInit || !Private::InternalCompareMember(Descriptor, MemberIt, ValuePtr, PrevValuePtr);
 				}
 

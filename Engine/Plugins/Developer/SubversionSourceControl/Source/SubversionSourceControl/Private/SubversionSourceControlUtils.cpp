@@ -59,11 +59,21 @@ namespace SubversionSourceControlUtils
 
 static FString DetectSubversionPath()
 {
-	auto& Settings = FModuleManager::GetModulePtr<FSubversionSourceControlModule>("SubversionSourceControl")->AccessSettings();
+#if PLATFORM_WINDOWS
+	const TCHAR* SVNExecutableName = TEXT("svn.exe");
+#else
+	const TCHAR* SVNExecutableName = TEXT("svn");
+#endif
+
+	const FSubversionSourceControlSettings& Settings = FModuleManager::GetModulePtr<FSubversionSourceControlModule>("SubversionSourceControl")->AccessSettings();
 
 	FString SVNPath = Settings.GetExecutableOverride();
 	if (!SVNPath.IsEmpty())
 	{
+		// Only allow to use a svn executable and not any arbitrary executable to prevent malicious users from running cmd.exe or something similar.
+		FPaths::NormalizeFilename(SVNPath);
+		SVNPath = FPaths::Combine(FPaths::GetPath(SVNPath), SVNExecutableName);
+
 		if (FPaths::FileExists(SVNPath))
 		{
 			UE_LOG(LogSourceControl, Log, TEXT("Using user-supplied path %s for svn operations"), *FPaths::ConvertRelativePathToFull(SVNPath));
@@ -77,19 +87,19 @@ static FString DetectSubversionPath()
 	const bool bLaunchHidden = true;
 
 #if PLATFORM_WINDOWS
-	const TCHAR* Command[] = { TEXT("where"), TEXT("svn.exe") };
-	const FString DefaultPath = FPaths::EngineDir() / TEXT("Binaries/ThirdParty/svn") / FPlatformProcess::GetBinariesSubdirectory() / TEXT("svn.exe");
+	const TCHAR* Command[] = { TEXT("where"), SVNExecutableName };
+	const FString DefaultPath = FPaths::EngineDir() / TEXT("Binaries/ThirdParty/svn") / FPlatformProcess::GetBinariesSubdirectory() / SVNExecutableName;
 #elif PLATFORM_MAC
-	const TCHAR* Command[] = { TEXT("/usr/bin/which"), TEXT("svn") };
-	const FString DefaultPath = FPaths::EngineDir() / TEXT("Binaries/ThirdParty/svn") / FPlatformProcess::GetBinariesSubdirectory() / TEXT("bin/svn");
-	const FString UsrLocalPath = TEXT("/usr/local/bin/svn");
+	const TCHAR* Command[] = { TEXT("/usr/bin/which"), SVNExecutableName };
+	const FString DefaultPath = FPaths::EngineDir() / TEXT("Binaries/ThirdParty/svn") / FPlatformProcess::GetBinariesSubdirectory() / TEXT("bin") / SVNExecutableName;
+	const FString UsrLocalPath = FString(TEXT("/usr/local/bin")) / SVNExecutableName;
 #else
-	const TCHAR* Command[] = { TEXT("/usr/bin/which"), TEXT("svn") };
-	const FString DefaultPath = TEXT("/usr/bin/svn");
+	const TCHAR* Command[] = { TEXT("/usr/bin/which"), SVNExecutableName };
+	const FString DefaultPath = FString(TEXT("/usr/bin")) / SVNExecutableName;
 #endif
 
 	{
-		// Attmpt to detect a system wide version of the svn command line tools
+		// Attempt to detect a system wide version of the svn command line tools
 		void* ReadPipe = nullptr, *WritePipe = nullptr;
 		FPlatformProcess::CreatePipe(ReadPipe, WritePipe);
 
@@ -674,38 +684,33 @@ void ParseStatusResults(const TArray<FXmlFile>& ResultsXml, const TArray<FString
 								IFileManager::Get().FindFiles( Filenames, *WildCard, true /*=Files*/, false /*=Directories*/ );
 								if( Filenames.Num() == 2 )
 								{
-									int MergeBaseFileRevNumber;
 									{
 										// This is just a guess, we'll swap filenames if it turns out that Filenames[0] is actually
 										// the conflicting file:
-										FString PendingMergeBaseFile = Filenames[0];
-										FString PendingMergeConflictingFile = Filenames[1];
+										State.PendingResolveInfo.BaseFile = Filenames[0];
+										State.PendingResolveInfo.RemoteFile = Filenames[1];
 
 										// Helper function to find the filename with the lower .r###:
-										const auto EndingToInt = [](const FString& FileName)
+										const auto SplitFileAndRev = [](FString& InOutFilename, FString& OutRevision)
 										{
 											int32 Idx = -1;
-											const bool found = FileName.FindLastChar('r', Idx);
+											const bool found = InOutFilename.FindLastChar('r', Idx);
 											check(found); // regex failed, Filenames should only contain files that end in .r*
-											int32 RetVal = -1;
-											TTypeFromString<int>::FromString(RetVal, &FileName[Idx + 1]);
-											return RetVal;
+											OutRevision = InOutFilename.RightChop(Idx + 1);
+											InOutFilename.LeftInline(Idx - 1);
 										};
-										int FirstFile = EndingToInt(PendingMergeBaseFile);
-										int SecondFile = EndingToInt(PendingMergeConflictingFile);
-										check(FirstFile != SecondFile);
-										if (FirstFile > SecondFile)
+										
+										SplitFileAndRev(State.PendingResolveInfo.BaseFile, State.PendingResolveInfo.BaseRevision);
+										SplitFileAndRev(State.PendingResolveInfo.RemoteFile, State.PendingResolveInfo.RemoteRevision);
+										
+										check(State.PendingResolveInfo.BaseRevision != State.PendingResolveInfo.RemoteRevision);
+										if (State.PendingResolveInfo.BaseRevision > State.PendingResolveInfo.RemoteRevision)
 										{
 											// Guessed wrong, swap our decision!
-											Swap(PendingMergeBaseFile, PendingMergeConflictingFile);
-											Swap(FirstFile, SecondFile);
+											Swap(State.PendingResolveInfo.BaseFile, State.PendingResolveInfo.RemoteFile);
+											Swap(State.PendingResolveInfo.BaseRevision, State.PendingResolveInfo.RemoteRevision);
 										}
-
-										MergeBaseFileRevNumber = FirstFile;
 									}
-
-									// Save the result, this information can be used to perform a merge operation:
-									State.PendingMergeBaseFileRevNumber = MergeBaseFileRevNumber;
 
 									// For the file into a 'locked' state, since it's in conflict, if we don't do
 									// this we can't perform a merge because of logic in the asset tools module:

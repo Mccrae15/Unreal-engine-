@@ -646,6 +646,18 @@ public:
 	/** Fetches a virtual property by specified name. */
 	URCVirtualPropertyBase* GetControllerByDisplayName(const FName InDisplayName) const;
 
+	/** Fetches the first found Controller matching the specified Field Id */
+	URCVirtualPropertyBase* GetControllerByFieldId(const FName InFieldId) const;
+
+	/** Fetches the first Controller matching the specified Field Id and ValueType */
+	URCVirtualPropertyBase* GetControllerByFieldId(const FName InFieldId, const EPropertyBagPropertyType InType) const;
+
+	/** Fetches an array of all Controllers with the specified Field Id. */
+	TArray<URCVirtualPropertyBase*> GetControllersByFieldId(const FName InFieldId) const;
+
+	/** Fetches an array of all Controllers Types with the specified Field Id. */
+	TArray<EPropertyBagPropertyType> GetControllersTypesByFieldId(const FName InFieldId) const;
+
 	/** Adds a Virtual Property (Controller) to the Remote Control Preset */
 	URCVirtualPropertyInContainer* AddController(TSubclassOf<URCVirtualPropertyInContainer> InPropertyClass, const EPropertyBagPropertyType InValueType, UObject* InValueTypeObject = nullptr, const FName InPropertyName = NAME_None);
 
@@ -732,6 +744,9 @@ private:
 	//~ Frame events handlers.
 	void OnBeginFrame();
 	void OnEndFrame();
+
+	/** Handles dynamic level change. */
+	void OnMapLoadFinished(UWorld* LoadedWorld);
 	
 	/** Get a field ptr using it's id. */
 	FRemoteControlField* GetFieldPtr(FGuid FieldId);

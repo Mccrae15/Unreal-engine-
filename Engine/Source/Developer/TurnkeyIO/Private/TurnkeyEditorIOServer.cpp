@@ -167,7 +167,7 @@ private:
 
 	void DoPauseForUser( TSharedPtr<FJsonObject> JsonObject )
 	{
-		AsyncTask( ENamedThreads::GameThread, [=]()
+		AsyncTask( ENamedThreads::GameThread, [this, JsonObject]()
 		{
 			// read parameters
 			FString Message;
@@ -175,8 +175,7 @@ private:
 
 			// display the message box
 			FString Prompt = Message.IsEmpty() ? *LOCTEXT("ReadyToContinue", "Click OK To Continue").ToString() : Message;
-			FText Title = LOCTEXT("Turnkey","Turnkey");
-			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(Prompt), &Title );
+			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(Prompt), LOCTEXT("Turnkey", "Turnkey") );
 
 			// send empty response
 			TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -187,7 +186,7 @@ private:
 
 	void DoReadInput( TSharedPtr<FJsonObject> JsonObject )
 	{
-		AsyncTask( ENamedThreads::GameThread, [=]()
+		AsyncTask( ENamedThreads::GameThread, [this, JsonObject]()
 		{
 			// read parameters
 			FString Prompt;
@@ -209,7 +208,7 @@ private:
 
 	void DoReadInputInt( TSharedPtr<FJsonObject> JsonObject )
 	{
-		AsyncTask( ENamedThreads::GameThread, [=]()
+		AsyncTask( ENamedThreads::GameThread, [this, JsonObject]()
 		{
 			// read parameters
 			FString Prompt;
@@ -238,7 +237,7 @@ private:
 
 	void DoGetUserConfirmation( TSharedPtr<FJsonObject> JsonObject )
 	{
-		AsyncTask( ENamedThreads::GameThread, [=]()
+		AsyncTask( ENamedThreads::GameThread, [this, JsonObject]()
 		{
 			// read parameters
 			FString Message;
@@ -248,9 +247,8 @@ private:
 			JsonObject->TryGetBoolField(TEXT("DefaultValue"), bDefaultValue );
 
 			// display the message box
-			FText Title = LOCTEXT("Turnkey","Turnkey");
 			EAppReturnType::Type Result = (bDefaultValue ? EAppReturnType::Yes : EAppReturnType::No );
-			Result = FMessageDialog::Open(EAppMsgType::YesNo, Result, FText::FromString(Message), &Title );
+			Result = FMessageDialog::Open(EAppMsgType::YesNo, Result, FText::FromString(Message), LOCTEXT("Turnkey", "Turnkey") );
 
 			// send empty response
 			TSharedPtr<FJsonObject> JsonResult = MakeShared<FJsonObject>();
@@ -275,7 +273,7 @@ private:
 			];
 
 		// even though HasCloseButton is false, the window can still be closed via Windows' alt-tab screen
-		Window->GetOnWindowClosedEvent().AddLambda( [=]( const TSharedRef<SWindow>& InWindow )
+		Window->GetOnWindowClosedEvent().AddLambda( [this]( const TSharedRef<SWindow>& InWindow )
 		{
 			if (Window.IsValid())
 			{

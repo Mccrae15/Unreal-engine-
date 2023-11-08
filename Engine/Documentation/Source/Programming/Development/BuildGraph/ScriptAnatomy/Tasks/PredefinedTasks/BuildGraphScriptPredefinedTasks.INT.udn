@@ -2,7 +2,7 @@ Availability: NoPublish
 Title: BuildGraph Predefined Tasks
 Crumbs: %ROOT%, Programming, Programming/Development, Programming/Development/BuildGraph, Programming/Development/BuildGraph/BuildGraphScriptTasks
 Description: This is a procedurally generated markdown page.
-version: 5.2
+version: 5.3
 parent:Programming/Development/BuildGraph/BuildGraphScriptTasks
 
 ### AgeStore
@@ -106,16 +106,17 @@ Compiles a target with UnrealBuildTool.
 
 Cook a selection of maps for a certain platform
 
-|           |           |          |                                                                                   |
-| --------- | --------- | -------- | --------------------------------------------------------------------------------- |
-| Project   | String    | Required | Project file to be cooked.                                                        |
-| Platform  | String    | Required | The cook platform to target (for example, Windows).                               |
-| Maps      | String    | Optional | List of maps to be cooked, separated by '+' characters.                           |
-| Versioned | Boolean   | Optional | Additional arguments to be passed to the cooker.                                  |
-| Arguments | String    | Optional | Additional arguments to be passed to the cooker.                                  |
-| EditorExe | String    | Optional | Optional path to what editor executable to run for cooking.                       |
-| Tag       | TagList   | Optional | Tag to be applied to build products of this task.                                 |
-| If        | Condition | Optional | Whether to execute this task. It is ignored if this condition evaluates to false. |
+|           |           |          |                                                                                                                                                                          |
+| --------- | --------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Project   | String    | Required | Project file to be cooked.                                                                                                                                               |
+| Platform  | String    | Required | The cook platform to target (for example, Windows).                                                                                                                      |
+| Maps      | String    | Optional | List of maps to be cooked, separated by '+' characters.                                                                                                                  |
+| Versioned | Boolean   | Optional | Additional arguments to be passed to the cooker.                                                                                                                         |
+| Arguments | String    | Optional | Additional arguments to be passed to the cooker.                                                                                                                         |
+| EditorExe | String    | Optional | Optional path to what editor executable to run for cooking.                                                                                                              |
+| TagOutput | Boolean   | Optional | Whether to tag the output from the cook. Since cooks produce a lot of files, it can be detrimental to spend time tagging them if we don't need them in a dependent node. |
+| Tag       | TagList   | Optional | Tag to be applied to build products of this task.                                                                                                                        |
+| If        | Condition | Optional | Whether to execute this task. It is ignored if this condition evaluates to false.                                                                                        |
 
 ### Copy
 
@@ -160,6 +161,21 @@ Delete a set of files.
 | DeleteEmptyDirectories | Boolean   | Optional | Whether to delete empty directories after deleting the files. Defaults to true.                                     |
 | Verbose                | Boolean   | Optional | Whether or not to use verbose logging.                                                                              |
 | If                     | Condition | Optional | Whether to execute this task. It is ignored if this condition evaluates to false.                                   |
+
+### DeployTool
+
+Deploys a tool update through Horde
+
+|           |           |          |                                                                                                         |
+| --------- | --------- | -------- | ------------------------------------------------------------------------------------------------------- |
+| Id        | String    | Required | Identifier for the tool                                                                                 |
+| Settings  | String    | Required | Settings file to use for the deployment. Should be a JSON file containing server name and access token. |
+| Version   | String    | Required | Version number for the new tool                                                                         |
+| Duration  | Integer   | Optional | Duration over which to roll out the tool, in minutes.                                                   |
+| Paused    | Boolean   | Optional | Whether to create the deployment as paused                                                              |
+| File      | String    | Optional | Zip file containing files to upload                                                                     |
+| Directory | String    | Optional | Directory to upload for the tool                                                                        |
+| If        | Condition | Optional | Whether to execute this task. It is ignored if this condition evaluates to false.                       |
 
 ### Docker
 
@@ -245,14 +261,14 @@ Spawns Docker and waits for it to complete.
 
 Compiles C# project files, and their dependencies.
 
-|           |               |          |                                                                                                |
-| --------- | ------------- | -------- | ---------------------------------------------------------------------------------------------- |
-| Paths     | String        | Required | The C# project file to compile. Using semicolons, more than one project file can be specified. |
-| Change    | Integer       | Optional | The configuration to compile.                                                                  |
-| MinChange | Integer       | Optional | The configuration to compile.                                                                  |
-| MaxChange | Integer       | Optional | The configuration to compile.                                                                  |
-| Output    | FileReference | Optional | The file to write to                                                                           |
-| If        | Condition     | Optional | Whether to execute this task. It is ignored if this condition evaluates to false.              |
+|           |               |          |                                                                                   |
+| --------- | ------------- | -------- | --------------------------------------------------------------------------------- |
+| Path      | FileSpec      | Optional | List of file specifications separated by semicolon (default is ...)               |
+| Change    | Integer       | Optional | The configuration to compile.                                                     |
+| MinChange | Integer       | Optional | The configuration to compile.                                                     |
+| MaxChange | Integer       | Optional | The configuration to compile.                                                     |
+| Output    | FileReference | Optional | The file to write to                                                              |
+| If        | Condition     | Optional | Whether to execute this task. It is ignored if this condition evaluates to false. |
 
 ### Git
 
@@ -295,6 +311,18 @@ Spawns Helm and waits for it to complete.
 | Arguments       | String    | Optional | Additional arguments                                                              |
 | WorkingDir      | String    | Optional | Base directory for running the command                                            |
 | If              | Condition | Optional | Whether to execute this task. It is ignored if this condition evaluates to false. |
+
+### Horde-CreateReport
+
+Creates a Horde report file, which will be displayed on the dashboard with any job running this task.
+
+|           |           |          |                                                                                   |
+| --------- | --------- | -------- | --------------------------------------------------------------------------------- |
+| Name      | String    | Required | Name for the report                                                               |
+| Scope     | String    | Required | Where to display the report                                                       |
+| Placement | String    | Required | Where to show the report                                                          |
+| Text      | String    | Required | Text to be displayed                                                              |
+| If        | Condition | Optional | Whether to execute this task. It is ignored if this condition evaluates to false. |
 
 ### Kubectl
 
@@ -345,14 +373,15 @@ Modifies json files by setting a value specified in the key path
 
 Moves files from one directory to another.
 
-|           |           |          |                                                                                   |
-| --------- | --------- | -------- | --------------------------------------------------------------------------------- |
-| Files     | FileSpec  | Optional | Optional filter to be applied to the list of input files.                         |
-| From      | FileSpec  | Required | The pattern(s) to copy from (for example, Engine/*.txt).                          |
-| To        | FileSpec  | Required | The directory to copy to.                                                         |
-| Overwrite | Boolean   | Optional | Optionally if files should be overwritten, defaults to false.                     |
-| Tag       | TagList   | Optional | Tag to be applied to build products of this task.                                 |
-| If        | Condition | Optional | Whether to execute this task. It is ignored if this condition evaluates to false. |
+|                 |           |          |                                                                                   |
+| --------------- | --------- | -------- | --------------------------------------------------------------------------------- |
+| Files           | FileSpec  | Optional | Optional filter to be applied to the list of input files.                         |
+| From            | FileSpec  | Required | The pattern(s) to copy from (for example, Engine/*.txt).                          |
+| To              | FileSpec  | Required | The directory to copy to.                                                         |
+| Overwrite       | Boolean   | Optional | Optionally if files should be overwritten, defaults to false.                     |
+| Tag             | TagList   | Optional | Tag to be applied to build products of this task.                                 |
+| ErrorIfNotFound | Boolean   | Optional | Whether or not to throw an error if no files were found to copy                   |
+| If              | Condition | Optional | Whether to execute this task. It is ignored if this condition evaluates to false. |
 
 ### MsBuild
 
@@ -366,6 +395,27 @@ Executes MsBuild
 | Arguments     | String    | Optional | Additional options to pass to the compiler.                                                    |
 | Verbosity     | String    | Optional | The MSBuild output verbosity.                                                                  |
 | If            | Condition | Optional | Whether to execute this task. It is ignored if this condition evaluates to false.              |
+
+### NuGet-LicenseCheck
+
+Spawns Docker and waits for it to complete.
+
+|                |                    |          |                                                                                                                                                          |
+| -------------- | ------------------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| BaseDir        | String             | Required | Base directory for running the command                                                                                                                   |
+| IgnorePackages | String             | Optional | Specifies a list of packages to ignore for version checks, separated by semicolons. Optional version number may be specified with 'name@version' syntax. |
+| LicenseDir     | DirectoryReference | Optional | Directory containing allowed licenses                                                                                                                    |
+| If             | Condition          | Optional | Whether to execute this task. It is ignored if this condition evaluates to false.                                                                        |
+
+### OnExit
+
+Spawns an external executable and waits for it to complete.
+
+|         |           |          |                                                                                   |
+| ------- | --------- | -------- | --------------------------------------------------------------------------------- |
+| Command | String    | Required | Executable to spawn.                                                              |
+| Lease   | Boolean   | Optional | Whether to execute on lease termination                                           |
+| If      | Condition | Optional | Whether to execute this task. It is ignored if this condition evaluates to false. |
 
 ### PakFile
 
@@ -383,6 +433,18 @@ Creates a PAK file from a given set of files.
 | Arguments    | String        | Optional | Additional arguments to pass to UnrealPak.                                                                                        |
 | Tag          | TagList       | Optional | Tag to be applied to build products of this task.                                                                                 |
 | If           | Condition     | Optional | Whether to execute this task. It is ignored if this condition evaluates to false.                                                 |
+
+### QueryTargets
+
+Runs UBT to query all the targets for a particular project
+
+|                   |               |          |                                                                                                               |
+| ----------------- | ------------- | -------- | ------------------------------------------------------------------------------------------------------------- |
+| ProjectFile       | FileReference | Optional | Path to the project file to query                                                                             |
+| OutputFile        | FileReference | Optional | Path to the output file to receive information about the targets                                              |
+| IncludeAllTargets | Boolean       | Optional | Write out all targets, even if a default is specified in the BuildSettings section of the Default*.ini files. |
+| Tag               | TagList       | Optional | Tag to be applied to build products of this task.                                                             |
+| If                | Condition     | Optional | Whether to execute this task. It is ignored if this condition evaluates to false.                             |
 
 ### RandomData
 
@@ -429,6 +491,7 @@ Updates the local version files (Engine/Source/Runtime/Launch/Resources/Version.
 | CompatibleChange | Integer   | Optional | The engine compatible changelist to set in the version files.                                                      |
 | Branch           | String    | Required | The branch string.                                                                                                 |
 | Build            | String    | Optional | The build version string.                                                                                          |
+| BuildURL         | String    | Optional | The URL for a running continuous integration job.                                                                  |
 | Licensee         | Boolean   | Optional | Whether to set the IS_LICENSEE_VERSION flag to true.                                                               |
 | Promoted         | Boolean   | Optional | Whether to set the ENGINE_IS_PROMOTED_BUILD flag to true.                                                          |
 | SkipWrite        | Boolean   | Optional | If set, do not write to the files -- just return the version files that would be updated. Useful for local builds. |
@@ -563,6 +626,7 @@ Extract files from a zip archive.
 | ZipFile        | FileSpec           | Required | Path to the zip file to extract.                                                  |
 | ToDir          | DirectoryReference | Required | Output directory for the extracted files.                                         |
 | UseLegacyUnzip | Boolean            | Optional | Whether or not to use the legacy unzip code.                                      |
+| OverwriteFiles | Boolean            | Optional | Whether or not to overwrite files during unzip.                                   |
 | Tag            | TagList            | Optional | Tag to be applied to the extracted files.                                         |
 | If             | Condition          | Optional | Whether to execute this task. It is ignored if this condition evaluates to false. |
 
@@ -594,6 +658,17 @@ Waits a defined number of seconds.
 | Seconds | Integer   | Required | Number of seconds to wait.                                                        |
 | If      | Condition | Optional | Whether to execute this task. It is ignored if this condition evaluates to false. |
 
+### WriteJsonValue
+
+Modifies json files by setting a value specified in the key path
+
+|       |           |          |                                                                                                                                                                                                                                                                                                                                 |
+| ----- | --------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| File  | FileSpec  | Required | Json file(s) which will be modified                                                                                                                                                                                                                                                                                             |
+| Key   | String    | Required | Json element to set in each file. Syntax for this string is a limited subset of JsonPath notation, and may support object properties and array indices. Any array indices which are omitted or out of range will add a new element to the array (eg. '$.foo.bar[]' will add an element to the 'bar' array in the 'foo' object). |
+| Value | String    | Required | New value to set. May be any value JSON value (string, array, object, number, boolean or null).                                                                                                                                                                                                                                 |
+| If    | Condition | Optional | Whether to execute this task. It is ignored if this condition evaluates to false.                                                                                                                                                                                                                                               |
+
 ### WriteTextFile
 
 Writes text to a file.
@@ -607,15 +682,32 @@ Writes text to a file.
 | Tag    | TagList       | Optional | Tag to be applied to build products of this task.                                   |
 | If     | Condition     | Optional | Whether to execute this task. It is ignored if this condition evaluates to false.   |
 
+### ZenExportSnapshot
+
+Exports an snapshot from Zen to a specified destination.
+
+|                            |               |          |                                                                                   |
+| -------------------------- | ------------- | -------- | --------------------------------------------------------------------------------- |
+| Project                    | FileReference | Optional | The project from which to export the snapshot                                     |
+| Platform                   | String        | Optional | The target platform(s) to export the snapshot for                                 |
+| SnapshotDescriptorFile     | FileReference | Optional | A file to create with information about the snapshot that was exported            |
+| DestinationStorageType     | String        | Required | The type of destination to export the snapshot to (cloud, ...)                    |
+| DestinationCloudHost       | String        | Optional | The host name to use when exporting to a cloud destination                        |
+| DestinationCloudNamespace  | String        | Optional | The namespace to use when exporting to a cloud destination                        |
+| DestinationCloudIdentifier | String        | Optional | The identifier to use when exporting to a cloud destination                       |
+| DestinationCloudBucket     | String        | Optional | A custom bucket name to use when exporting to a cloud destination                 |
+| If                         | Condition     | Optional | Whether to execute this task. It is ignored if this condition evaluates to false. |
+
 ### Zip
 
 Compresses files into a zip archive.
 
-|         |                    |          |                                                                                                                                                             |
-| ------- | ------------------ | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| FromDir | DirectoryReference | Required | The directory to read compressed files from.                                                                                                                |
-| Files   | FileSpec           | Optional | List of file specifications separated by semicolons (for example, *.cpp;Engine/.../*.bat), or the name of a tag set. Relative paths are taken from FromDir. |
-| ZipFile | FileReference      | Required | The zip file to create.                                                                                                                                     |
-| Tag     | TagList            | Optional | Tag to be applied to the created zip file.                                                                                                                  |
-| If      | Condition          | Optional | Whether to execute this task. It is ignored if this condition evaluates to false.                                                                           |
+|                 |                    |          |                                                                                                                                                             |
+| --------------- | ------------------ | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| FromDir         | DirectoryReference | Required | The directory to read compressed files from.                                                                                                                |
+| Files           | FileSpec           | Optional | List of file specifications separated by semicolons (for example, *.cpp;Engine/.../*.bat), or the name of a tag set. Relative paths are taken from FromDir. |
+| ExecutableFiles | FileSpec           | Optional | List of files that should have an executable bit set.                                                                                                       |
+| ZipFile         | FileReference      | Required | The zip file to create.                                                                                                                                     |
+| Tag             | TagList            | Optional | Tag to be applied to the created zip file.                                                                                                                  |
+| If              | Condition          | Optional | Whether to execute this task. It is ignored if this condition evaluates to false.                                                                           |
 

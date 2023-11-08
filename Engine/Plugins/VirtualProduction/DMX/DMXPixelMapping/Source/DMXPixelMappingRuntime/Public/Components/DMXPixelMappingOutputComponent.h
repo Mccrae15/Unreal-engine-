@@ -11,30 +11,17 @@
 #include "DMXPixelMappingOutputComponent.generated.h"
 
 struct FDMXPixelMappingLayoutToken;
+class SBox;
 class UDMXEntityFixturePatch;
 class UDMXPixelMappingRendererComponent;
+namespace UE::DMXPixelMapping::Rendering::PixelMapRenderer { class FPixelMapRenderElement; }
+
 
 #if WITH_EDITOR
 enum class EDMXPixelMappingComponentLabelAlignment : uint8;
 class FDMXPixelMappingComponentWidget;
 #endif
 
-class SBox;
-
-
-/** Enum that defines the quality of how pixels are rendered */
-UENUM()
-enum class EDMXPixelBlendingQuality : uint8
-{
-	/** 1 sample */
-	Low,
-
-    /** 5 samples ( 2 x 2 with center) */
-    Medium,
-
-	/** 9 samples ( 3 x 3 ) */
-	High
-};
 
 /**
  * Base class for all Designer and configurable components
@@ -108,22 +95,27 @@ public:
 	virtual bool OverlapsComponent(UDMXPixelMappingOutputComponent* Other) const;
 
 	/** Get pixel index in downsample texture */
+	UE_DEPRECATED(5.3, "Please use UDMXPixelMappingPixelMapRenderer to render the pixel map")
 	virtual int32 GetDownsamplePixelIndex() const { return 0; }
 
 	/** Queue rendering to downsample rendering target */
+	UE_DEPRECATED(5.3, "Please use UDMXPixelMappingPixelMapRenderer to render the pixel map")
 	virtual void QueueDownsample() {}
 
 	/** Sets the position */
 	virtual void SetPosition(const FVector2D& NewPosition);
 
-	/** Returns the position. Note this is the position before a layout has been applied, use GetLayoutedPosition() to get the final position.. */
-	FVector2D GetPosition() const { return FVector2D(PositionX, PositionY); }
+	/** Returns the position */
+	FVector2D GetPosition() const;
 
 	/** Sets the size */
 	virtual void SetSize(const FVector2D& NewSize);
 
-	/** Get the size. Note this is the position before a layout has been applied, use GetLayoutedSize() to get the final position.. */
+	/** Get the size */
 	FVector2D GetSize() const { return FVector2D(SizeX, SizeY); }
+
+	/** Invalidates the pixel map, effectively causing the renderer component to aquire a new pixel map */
+	void InvalidatePixelMapRenderer();
 
 	/** Helper that returns render component if available */
 	UDMXPixelMappingRendererComponent* FindRendererComponent() const;
@@ -131,7 +123,7 @@ public:
 
 #if WITH_EDITOR
 	/** Makes the component the highest ZOrdered of components in the component rectangle, updates childs if needed */
-	void MakeHighestZOrderInComponentRect();
+	void ZOrderTopmost();
 #endif // WITH_EDITOR
 
 public:
@@ -185,21 +177,17 @@ public:
 	FORCEINLINE static FName GetSizeYPropertyName() { return GET_MEMBER_NAME_CHECKED(UDMXPixelMappingOutputComponent, SizeY); }
 #endif
 
-	/** The quality level to use when averaging colors during downsampling. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pixel Settings")
-	EDMXPixelBlendingQuality CellBlendingQuality;
-
 private:
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Common Settings", Meta = (EditCondition = "!bLockInDesigner", AllowPrivateAccess = true))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Transform", Meta = (EditCondition = "!bLockInDesigner", AllowPrivateAccess = true))
 	float PositionX;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Common Settings", Meta = (EditCondition = "!bLockInDesigner", AllowPrivateAccess = true))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Transform", Meta = (EditCondition = "!bLockInDesigner", AllowPrivateAccess = true))
 	float PositionY;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Common Settings", Meta = (ClampMin = 1, UIMin = 1, EditCondition = "!bLockInDesigner", AllowPrivateAccess = true))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Transform", Meta = (ClampMin = 1, UIMin = 1, EditCondition = "!bLockInDesigner", AllowPrivateAccess = true))
 	float SizeX;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Common Settings", Meta = (ClampMin = 1, UIMin = 1, EditCondition = "!bLockInDesigner", AllowPrivateAccess = true))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Transform", Meta = (ClampMin = 1, UIMin = 1, EditCondition = "!bLockInDesigner", AllowPrivateAccess = true))
 	float SizeY;
 
 protected:

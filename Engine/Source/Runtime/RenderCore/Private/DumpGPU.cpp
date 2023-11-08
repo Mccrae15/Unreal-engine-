@@ -1,13 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DumpGPU.h"
-#include "RenderGraph.h"
 #include "HAL/PlatformFileManager.h"
 #include "HAL/PlatformMisc.h"
+#include "HAL/PlatformOutputDevices.h"
+#include "Async/AsyncWork.h"
+#include "Misc/App.h"
 #include "Misc/FileHelper.h"
 #include "Misc/WildcardString.h"
 #include "Misc/OutputDeviceRedirector.h"
 #include "Misc/CoreDelegates.h"
+#include "RenderingThread.h"
 #include "Runtime/Launch/Resources/Version.h"
 #include "BuildSettings.h"
 #include "Serialization/JsonTypes.h"
@@ -17,9 +20,11 @@
 #include "GenericPlatform/GenericPlatformDriver.h"
 #include "RenderGraphUtils.h"
 #include "GlobalShader.h"
+#include "RHIUtilities.h"
 #include "RHIValidation.h"
 #include "RenderGraphPrivate.h"
-#include "RenderCore.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogDumpGPU, Log, All);
 
 IDumpGPUUploadServiceProvider* IDumpGPUUploadServiceProvider::GProvider = nullptr;
 
@@ -91,6 +96,20 @@ static TAutoConsoleVariable<float> GDumpGPUDelay(
 static TAutoConsoleVariable<int32> GDumpGPUFrameCount(
 	TEXT("r.DumpGPU.FrameCount"), 1,
 	TEXT("Number of consecutive frames to dump (default=1)."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> GDumpGPUFixedTickRate(
+	TEXT("r.DumpGPU.FixedTickRate"), 0.0f,
+	TEXT("Override the engine's tick rate to be fixed for every dumped frames (default=0)."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> GDumpGPUStream(
+	TEXT("r.DumpGPU.Stream"), 0,
+	TEXT("Asynchronously readback from GPU to disk.\n")
+	TEXT(" 0: Synchronously copy from GPU to disk with extra carefulness to avoid OOM (default);\n")
+	TEXT(" 1: Asynchronously copy from GPU to disk with dedicated staging resources pool. May run OOM. ")
+	TEXT("Please consider using r.DumpGPU.Root to minimise amount of passes to stream and r.Test.SecondaryUpscaleOverride ")
+	TEXT("to reduce resource size to minimise OOM and disk bandwidth bottleneck per frame."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<int32> GDumpGPUDraws(
@@ -193,6 +212,9 @@ BEGIN_SHADER_PARAMETER_STRUCT(FDumpBufferPass, )
 	RDG_BUFFER_ACCESS(Buffer, ERHIAccess::CopySrc)
 END_SHADER_PARAMETER_STRUCT()
 
+const FName GDumpGPUTextureFenceName(TEXT("DumpGPU.TextureFence"));
+const FName GDumpGPUBufferFenceName(TEXT("DumpGPU.BufferFence"));
+
 }
 
 class FRDGResourceDumpContext
@@ -206,6 +228,8 @@ public:
 
 	bool bEnableDiskWrite = false;
 	bool bUpload = false;
+	bool bStream = false;
+	float DeltaTime = 0.0f;
 	int32 RemainingFrameCount = 1;
 	FName UploadResourceCompressionName;
 	FString DumpingDirectoryPath;
@@ -218,14 +242,19 @@ public:
 	TMap<const FRDGResource*, const FRDGPass*> LastResourceVersion;
 	TSet<const void*> IsDumpedToDisk;
 
+	bool bOverrideFixedDeltaTime = false;
+	double PreviousFixedDeltaTime = 0.0f;
+
 	// Pass being dumping individual draws
 	const FRDGPass* DrawDumpingPass = nullptr;
 	int32 DrawDumpCount = 0;
 
-	int32 MetadataFilesOpened = 0;
-	int64 MetadataFilesWriteBytes = 0;
-	int32 ResourceBinaryFilesOpened = 0;
-	int64 ResourceBinaryWriteBytes = 0;
+	TAtomic<int32> MetadataFilesOpened = 0;
+	TAtomic<int64> MetadataFilesWriteBytes = 0;
+	TAtomic<int32> ParametersFilesOpened = 0;
+	TAtomic<int64> ParametersFilesWriteBytes = 0;
+	TAtomic<int32> ResourceBinaryFilesOpened = 0;
+	TAtomic<int64> ResourceBinaryWriteBytes = 0;
 
 	enum class ETimingBucket : uint8
 	{
@@ -234,10 +263,11 @@ public:
 		GPUWait,
 		CPUPostProcessing,
 		MetadataFileWrite,
+		ParametersFileWrite,
 		ResourceBinaryFileWrite,
 		MAX
 	};
-	mutable double TimingBucket[int32(ETimingBucket::MAX)];
+	mutable TAtomic<double> TimingBucket[int32(ETimingBucket::MAX)];
 
 	class FTimeBucketMeasure
 	{
@@ -251,7 +281,13 @@ public:
 		~FTimeBucketMeasure()
 		{
 			uint64 End = FPlatformTime::Cycles64();
-			DumpCtx->TimingBucket[int32(Bucket)] += FPlatformTime::ToSeconds64(FMath::Max(End - Start, uint64(0)));
+
+			double Add = FPlatformTime::ToSeconds64(FMath::Max(End - Start, uint64(0)));
+			double Old;
+			do
+			{
+				Old = DumpCtx->TimingBucket[int32(Bucket)].Load();
+			} while (!DumpCtx->TimingBucket[int32(Bucket)].CompareExchange(Old, Old + Add));
 		}
 
 	protected:
@@ -273,6 +309,11 @@ public:
 				DumpCtx->MetadataFilesOpened += FilesOpened;
 				DumpCtx->MetadataFilesWriteBytes += WriteSizeBytes;
 			}
+			else if (InBucket == ETimingBucket::ParametersFileWrite)
+			{
+				DumpCtx->ParametersFilesOpened += FilesOpened;
+				DumpCtx->ParametersFilesWriteBytes += WriteSizeBytes;
+			}
 			else if (InBucket == ETimingBucket::ResourceBinaryFileWrite)
 			{
 				DumpCtx->ResourceBinaryFilesOpened += FilesOpened;
@@ -292,6 +333,40 @@ public:
 		for (int32 i = 0; i < int32(ETimingBucket::MAX); i++)
 		{
 			TimingBucket[i] = 0.0f;
+		}
+	}
+
+	using FTaskCallback = TFunction<void()>;
+
+	class FDumpGPUTask : public FNonAbandonableTask
+	{
+	public:
+		FTaskCallback TaskCallback;
+
+		FDumpGPUTask(FTaskCallback&& InTaskCallback)
+			: TaskCallback(InTaskCallback)
+		{ }
+
+		void DoWork()
+		{
+			TaskCallback();
+		}
+
+		FORCEINLINE TStatId GetStatId() const
+		{
+			RETURN_QUICK_DECLARE_CYCLE_STAT(FDumpGPUTask, STATGROUP_ThreadPoolAsyncTasks);
+		}
+	};
+
+	void KickOffAsyncTask(FTaskCallback&& Callback)
+	{
+		if (bStream)
+		{
+			(new FAutoDeleteAsyncTask<FDumpGPUTask>(MoveTemp(Callback)))->StartBackgroundTask();
+		}
+		else
+		{
+			Callback();
 		}
 	}
 
@@ -328,6 +403,7 @@ public:
 
 	bool DumpStatusToFile(FStringView StatusString)
 	{
+		UE_LOG(LogDumpGPU, Display, TEXT("DumpGPU status = %s"), StatusString.GetData());
 		return DumpStringToFile(StatusString, FString(FRDGResourceDumpContext::kBaseDir) / TEXT("Status.txt"));
 	}
 
@@ -340,7 +416,7 @@ public:
 		return DumpStringToFile(OutputString, FileName, WriteFlags);
 	}
 
-	bool DumpBinaryToFile(TArrayView<const uint8> ArrayView, const FString& FileName)
+	bool DumpBinaryToFile(TArrayView<const uint8> ArrayView, const FString& FileName, ETimingBucket Bucket)
 	{
 		// Make it has if the write happened and was successful.
 		if (!bEnableDiskWrite)
@@ -349,11 +425,11 @@ public:
 		}
 
 		FString FullPath = GetDumpFullPath(FileName);
-		FFileWriteCtx WriteCtx(this, ETimingBucket::ResourceBinaryFileWrite, ArrayView.Num());
+		FFileWriteCtx WriteCtx(this, Bucket, ArrayView.Num());
 		return FFileHelper::SaveArrayToFile(ArrayView, *FullPath);
 	}
 
-	bool DumpBinaryToFile(const uint8* Data, int64 DataByteSize, const FString& FileName)
+	bool DumpBinaryToFile(const uint8* Data, int64 DataByteSize, const FString& FileName, ETimingBucket Bucket)
 	{
 		// Make it has if the write happened and was successful.
 		if (!bEnableDiskWrite)
@@ -362,7 +438,7 @@ public:
 		}
 
 		FString FullPath = GetDumpFullPath(FileName);
-		FFileWriteCtx WriteCtx(this, ETimingBucket::ResourceBinaryFileWrite, DataByteSize);
+		FFileWriteCtx WriteCtx(this, Bucket, DataByteSize);
 
 		TUniquePtr<FArchive> Ar = TUniquePtr<FArchive>(IFileManager::Get().CreateFileWriter(*FullPath, /* WriteFlags = */ 0));
 		if (!Ar)
@@ -379,7 +455,7 @@ public:
 
 	bool DumpResourceBinaryToFile(const uint8* UncompressedData, int64 UncompressedSize, const FString& FileName)
 	{
-		return DumpBinaryToFile(UncompressedData, UncompressedSize, FileName);
+		return DumpBinaryToFile(UncompressedData, UncompressedSize, FileName, ETimingBucket::ResourceBinaryFileWrite);
 	}
 
 	bool IsUnsafeToDumpResource(SIZE_T ResourceByteSize, float DumpMemoryMultiplier) const
@@ -444,7 +520,6 @@ public:
 		{
 			RHICmdList.SubmitCommandsAndFlushGPU();
 			RHICmdList.BlockUntilGPUIdle();
-			FRHIResource::FlushPendingDeletes(RHICmdList);
 			RHICmdList.FlushResources();
 			RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
 		}
@@ -456,7 +531,7 @@ public:
 
 		if (ResourcesDumpExecutedPasses % 10 == 0)
 		{
-			UE_LOG(LogRendererCore, Display, TEXT("Dumped %d / %d resources"), ResourcesDumpExecutedPasses, ResourcesDumpPasses);
+			UE_LOG(LogDumpGPU, Display, TEXT("Dumped %d / %d resources"), ResourcesDumpExecutedPasses, ResourcesDumpPasses);
 		}
 	}
 
@@ -502,67 +577,7 @@ public:
 				return;
 			}
 
-			const TCHAR* SetByName = TEXT("Unknown");
-			switch (CVarFlags & ECVF_SetByMask)
-			{
-			case ECVF_SetByConstructor:
-			{
-				SetByName = TEXT("Constructor");
-				break;
-			}
-			case ECVF_SetByScalability:
-			{
-				SetByName = TEXT("Scalability");
-				break;
-			}
-			case ECVF_SetByGameSetting:
-			{
-				SetByName = TEXT("GameSetting");
-				break;
-			}
-			case ECVF_SetByProjectSetting:
-			{
-				SetByName = TEXT("ProjectSetting");
-				break;
-			}
-			case ECVF_SetBySystemSettingsIni:
-			{
-				SetByName = TEXT("SystemSettingsIni");
-				break;
-			}
-			case ECVF_SetByDeviceProfile:
-			{
-				SetByName = TEXT("DeviceProfile");
-				break;
-			}
-			case ECVF_SetByGameOverride:
-			{
-				SetByName = TEXT("GameOverride");
-				break;
-			}
-			case ECVF_SetByConsoleVariablesIni:
-			{
-				SetByName = TEXT("ConsoleVariablesIni");
-				break;
-			}
-			case ECVF_SetByCommandline:
-			{
-				SetByName = TEXT("Commandline");
-				break;
-			}
-			case ECVF_SetByCode:
-			{
-				SetByName = TEXT("Code");
-				break;
-			}
-			case ECVF_SetByConsole:
-			{
-				SetByName = TEXT("Console");
-				break;
-			}
-			default:
-				ensure(false);
-			}
+			const TCHAR* SetByName = GetConsoleVariableSetByName(CVarFlags);
 
 			FString Value = CVar->GetString();
 
@@ -584,7 +599,7 @@ public:
 				Ar->Serialize((ANSICHAR*)Src.Get(), Src.Length() * sizeof(ANSICHAR));
 			}
 
-			if (GDumpRenderingConsoleVariablesCVar.GetValueOnGameThread() != 0)
+			if (GDumpRenderingConsoleVariablesCVar.GetValueOnAnyThread() != 0)
 			{
 				IConsoleManager::Get().ForEachConsoleObjectThatStartsWith(FConsoleObjectVisitor::CreateLambda(OnConsoleVariable), TEXT(""));
 			}
@@ -600,11 +615,11 @@ public:
 
 		if (bSuccess)
 		{
-			UE_LOG(LogRendererCore, Display, TEXT("DumpGPU dumped rendering cvars to %s."), *FileName);
+			UE_LOG(LogDumpGPU, Display, TEXT("DumpGPU dumped rendering cvars to %s."), *FileName);
 		}
 		else
 		{
-			UE_LOG(LogRendererCore, Error, TEXT("DumpGPU had a file error when dumping rendering cvars to %s."), *FileName);
+			UE_LOG(LogDumpGPU, Error, TEXT("DumpGPU had a file error when dumping rendering cvars to %s."), *FileName);
 		}
 	}
 
@@ -791,6 +806,7 @@ public:
 		bool bPreprocessForStaging = false;
 		FDumpTextureCS::ETextureType DumpTextureType = FDumpTextureCS::ETextureType::MAX;
 		EPixelFormat PreprocessedPixelFormat;
+		EPixelFormat PostprocessedPixelFormat;
 
 		bool IsDumpSupported() const
 		{
@@ -806,7 +822,7 @@ public:
 		const FRDGTextureDesc& Desc = SubresourceDesc.Texture->Desc;
 
 		FTextureSubresourceDumpDesc SubresourceDumpDesc;
-		SubresourceDumpDesc.PreprocessedPixelFormat = Desc.Format;
+		SubresourceDumpDesc.PostprocessedPixelFormat = Desc.Format;
 
 		bool bIsUnsupported = false;
 
@@ -841,56 +857,281 @@ public:
 
 			if (SubresourceDesc.Format == PF_X24_G8)
 			{
-				SubresourceDumpDesc.PreprocessedPixelFormat = PF_R8_UINT;
+				SubresourceDumpDesc.PostprocessedPixelFormat = PF_R8_UINT;
 				SubresourceDumpDesc.DumpTextureType = FDumpTextureCS::ETextureType::Texture2DDepthStencilNoMSAA;
 			}
 			else if (Desc.Format == PF_DepthStencil)
 			{
-				SubresourceDumpDesc.PreprocessedPixelFormat = PF_R32_FLOAT;
+				SubresourceDumpDesc.PostprocessedPixelFormat = PF_R32_FLOAT;
 				SubresourceDumpDesc.DumpTextureType = FDumpTextureCS::ETextureType::Texture2DFloatNoMSAA;
 			}
 			else if (Desc.Format == PF_ShadowDepth)
 			{
-				SubresourceDumpDesc.PreprocessedPixelFormat = PF_R32_FLOAT;
+				SubresourceDumpDesc.PostprocessedPixelFormat = PF_R32_FLOAT;
 				SubresourceDumpDesc.DumpTextureType = FDumpTextureCS::ETextureType::Texture2DFloatNoMSAA;
 			}
 			else if (Desc.Format == PF_D24)
 			{
-				SubresourceDumpDesc.PreprocessedPixelFormat = PF_R32_FLOAT;
+				SubresourceDumpDesc.PostprocessedPixelFormat = PF_R32_FLOAT;
 				SubresourceDumpDesc.DumpTextureType = FDumpTextureCS::ETextureType::Texture2DFloatNoMSAA;
 			}
 			else if (Desc.Format == PF_BC4)
 			{
-				SubresourceDumpDesc.PreprocessedPixelFormat = PF_R32_FLOAT;
+				SubresourceDumpDesc.PostprocessedPixelFormat = PF_R32_FLOAT;
 				SubresourceDumpDesc.DumpTextureType = FDumpTextureCS::ETextureType::Texture2DFloatNoMSAA;
 			}
 			else if (Desc.Format == PF_BC5)
 			{
-				SubresourceDumpDesc.PreprocessedPixelFormat = PF_G16R16F;
+				SubresourceDumpDesc.PostprocessedPixelFormat = PF_G16R16F;
 				SubresourceDumpDesc.DumpTextureType = FDumpTextureCS::ETextureType::Texture2DFloatNoMSAA;
 			}
 			else if ((Desc.Format == PF_BC6H) || (Desc.Format == PF_BC7))
 			{
-				SubresourceDumpDesc.PreprocessedPixelFormat = PF_FloatRGBA;
+				SubresourceDumpDesc.PostprocessedPixelFormat = PF_FloatRGBA;
 				SubresourceDumpDesc.DumpTextureType = FDumpTextureCS::ETextureType::Texture2DFloatNoMSAA;
 			}
 		}
 
-		SubresourceDumpDesc.ByteSize = SIZE_T(SubresourceDumpDesc.SubResourceExtent.X) * SIZE_T(SubresourceDumpDesc.SubResourceExtent.Y) * SIZE_T(GPixelFormats[SubresourceDumpDesc.PreprocessedPixelFormat].BlockBytes);
-
 		// Whether the subresource need preprocessing pass before copy into staging.
 		{
 			// If need a pixel format conversion, use a pixel shader to do it.
-			SubresourceDumpDesc.bPreprocessForStaging |= SubresourceDumpDesc.PreprocessedPixelFormat != Desc.Format;
+			SubresourceDumpDesc.bPreprocessForStaging |= SubresourceDumpDesc.PostprocessedPixelFormat != Desc.Format;
 
 			// If the texture has a mip chain, use pixel shader to correctly copy the right mip given RHI doesn't support copy from mip levels. Also on Mip 0 to avoid bugs on D3D11
 			SubresourceDumpDesc.bPreprocessForStaging |= SubresourceDesc.Texture->Desc.NumMips > 1;
 
 			// If the texture is an array, use pixel shader to correctly copy the right slice given RHI doesn't support copy from slices
 			SubresourceDumpDesc.bPreprocessForStaging |= SubresourceDesc.Texture->Desc.IsTextureArray();
+
+			// Reads the texture using a shader if it has SkipTracking to avoid transitioning it in anyway from its SRV read state.
+			SubresourceDumpDesc.bPreprocessForStaging |= EnumHasAnyFlags(SubresourceDesc.Texture->Flags, ERDGTextureFlags::SkipTracking);
 		}
 
+		// Some RHIs (GL) only support 32Bit single channel images as CS output
+		SubresourceDumpDesc.PreprocessedPixelFormat = SubresourceDumpDesc.PostprocessedPixelFormat;
+		if (SubresourceDumpDesc.bPreprocessForStaging)
+		{
+			if (IsOpenGLPlatform(GMaxRHIShaderPlatform) &&
+				GPixelFormats[SubresourceDumpDesc.PostprocessedPixelFormat].NumComponents == 1 &&
+				GPixelFormats[SubresourceDumpDesc.PostprocessedPixelFormat].BlockBytes < 4)
+			{
+				SubresourceDumpDesc.PreprocessedPixelFormat = PF_R32_UINT;
+			}
+		}
+
+		SubresourceDumpDesc.ByteSize = SIZE_T(SubresourceDumpDesc.SubResourceExtent.X) * SIZE_T(SubresourceDumpDesc.SubResourceExtent.Y) * SIZE_T(GPixelFormats[SubresourceDumpDesc.PreprocessedPixelFormat].BlockBytes);
+
 		return SubresourceDumpDesc;
+	}
+
+	void PostProcessTexture(
+		const FTextureSubresourceDumpDesc& SubresourceDumpDesc,
+		void* Content,
+		int32 RowPitchInPixels,
+		int32 ColumnPitchInPixels,
+		TArray64<uint8>& Array)
+	{
+		FTimeBucketMeasure TimeBucketMeasure(this, ETimingBucket::CPUPostProcessing);
+
+		Array.SetNumUninitialized(SubresourceDumpDesc.ByteSize);
+
+		SIZE_T BytePerPixel = SIZE_T(GPixelFormats[SubresourceDumpDesc.PreprocessedPixelFormat].BlockBytes);
+
+		const uint8* SrcData = static_cast<const uint8*>(Content);
+
+		for (int32 y = 0; y < SubresourceDumpDesc.SubResourceExtent.Y; y++)
+		{
+			// Flip the data to be bottom left corner for the WebGL viewer.
+			const uint8* SrcPos = SrcData + SIZE_T(SubresourceDumpDesc.SubResourceExtent.Y - 1 - y) * SIZE_T(RowPitchInPixels) * BytePerPixel;
+			uint8* DstPos = (&Array[0]) + SIZE_T(y) * SIZE_T(SubresourceDumpDesc.SubResourceExtent.X) * BytePerPixel;
+
+			FPlatformMemory::Memmove(DstPos, SrcPos, SIZE_T(SubresourceDumpDesc.SubResourceExtent.X) * BytePerPixel);
+		}
+
+		if (SubresourceDumpDesc.PreprocessedPixelFormat != SubresourceDumpDesc.PostprocessedPixelFormat)
+		{
+			// Convert 32Bit values back to 16 or 8bit
+			const int32 DstPixelNumBytes = GPixelFormats[SubresourceDumpDesc.PostprocessedPixelFormat].BlockBytes;
+			const uint32* SrcData32 = (const uint32*)Array.GetData();
+			uint8* DstData8 = Array.GetData();
+			uint16* DstData16 = (uint16*)Array.GetData();
+
+			for (int32 Index = 0; Index < Array.Num() / 4; Index++)
+			{
+				uint32 Value32 = SrcData32[Index];
+				if (DstPixelNumBytes == 2)
+				{
+					DstData16[Index] = (uint16)Value32;
+				}
+				else
+				{
+					DstData8[Index] = (uint8)Value32;
+				}
+			}
+
+			Array.SetNum(Array.Num() / (4 / DstPixelNumBytes));
+		}
+	}
+
+	enum class FStagingResourceStatus
+	{
+		Unused,
+		RenderingIntermediaryOnly,
+		Rendering,
+		WritingToDisk,
+		WritingToDiskComplete,
+	};
+
+	struct FStagingPoolEntry
+	{
+		FStagingResourceStatus Status = FStagingResourceStatus::Unused;
+
+		FString DumpFilePath;
+		int32 GPUIndex = 0;
+		FGPUFenceRHIRef WriteToResourceComplete;
+		FEvent* WriteToDiskComplete = nullptr;
+	};
+
+	struct FStagingTexturePoolEntry : public FStagingPoolEntry
+	{
+		FTextureSubresourceDumpDesc SubresourceDumpDesc;
+		FRHITextureCreateDesc Desc;
+		FTextureRHIRef Texture;
+		FUnorderedAccessViewRHIRef UAV;
+	};
+
+	struct FStagingBufferPoolEntry : public FStagingPoolEntry
+	{
+		int32 ByteSize = 0;
+		FStagingBufferRHIRef StagingBuffer;
+	};
+
+	TArray<TUniquePtr<FStagingTexturePoolEntry>> StagingTexturePool;
+	TArray<TUniquePtr<FStagingBufferPoolEntry>> StagingBufferPool;
+
+	void CreateStagingTexture(const FRHITextureCreateDesc& Desc, FTextureRHIRef* Texture)
+	{
+		check(IsInRenderingThread());
+		(*Texture) = RHICreateTexture(Desc);
+		(*Texture)->DisableLifetimeExtension();
+	}
+
+	FShaderResourceViewRHIRef CreateSRVNoLifetimeExtension(FRHICommandList& RHICmdList, FRHITexture* Texture, const FRHITextureSRVCreateInfo& Desc)
+	{
+		FShaderResourceViewRHIRef SRV = RHICmdList.CreateShaderResourceView(Texture, Desc);
+		SRV->DisableLifetimeExtension();
+		return SRV;
+	}
+
+	FUnorderedAccessViewRHIRef CreateUAVNoLifetimeExtension(FRHICommandList& RHICmdList, FRHITexture* Texture, uint32 MipLevel)
+	{
+		FUnorderedAccessViewRHIRef UAV = RHICmdList.CreateUnorderedAccessView(Texture, MipLevel);
+		UAV->DisableLifetimeExtension();
+		return UAV;
+	}
+
+	FStagingTexturePoolEntry& ReuseStagingTexture(
+		FRHICommandListImmediate& RHICmdList,
+		const FRHITextureCreateDesc& Desc,
+		ERHIAccess Access,
+		FTextureRHIRef* Texture,
+		FUnorderedAccessViewRHIRef* UAV)
+	{
+		check(IsInRenderingThread());
+		check(bStream);
+		check(Access == ERHIAccess::CopyDest || Access == ERHIAccess::UAVCompute);
+
+		for (TUniquePtr<FStagingTexturePoolEntry>& Entry : StagingTexturePool)
+		{
+			if (Entry->Desc != Desc)
+			{
+				continue;
+			}
+
+			if (Access == ERHIAccess::CopyDest)
+			{
+				if (Entry->Status == FStagingResourceStatus::Unused)
+				{
+					check(Entry->Texture.GetRefCount() == 1);
+					*Texture = Entry->Texture;
+					check(Entry->Texture.GetRefCount() == 2);
+					Entry->Status = FStagingResourceStatus::Rendering;
+					Entry->WriteToResourceComplete->Clear();
+					return *Entry;
+				}
+			}
+			else
+			{
+				if (Entry->Status == FStagingResourceStatus::RenderingIntermediaryOnly && Entry->Texture.GetRefCount() == 1)
+				{
+					*Texture = Entry->Texture;
+					check(Entry->Texture.GetRefCount() == 2);
+					check(!Entry->WriteToResourceComplete);
+					return *Entry;
+				}
+			}
+		}
+
+		CreateStagingTexture(Desc, /* out */ Texture);
+
+		FStagingTexturePoolEntry* NewEntry = new FStagingTexturePoolEntry;
+		NewEntry->Status = Access == ERHIAccess::CopyDest ? FStagingResourceStatus::Rendering : FStagingResourceStatus::RenderingIntermediaryOnly;
+		NewEntry->Desc = Desc;
+		NewEntry->Texture = *Texture;
+
+		StagingTexturePool.Add(TUniquePtr<FStagingTexturePoolEntry>(NewEntry));
+
+		RHICmdList.Transition(FRHITransitionInfo(*Texture, ERHIAccess::Unknown, Access));
+
+		if (UAV)
+		{
+			check(Access == ERHIAccess::UAVCompute);
+			NewEntry->UAV = CreateUAVNoLifetimeExtension(RHICmdList, *Texture, /* MipLevel = */ 0);
+			*UAV = NewEntry->UAV;
+		}
+		else
+		{
+			check(Access == ERHIAccess::CopyDest);
+			NewEntry->WriteToResourceComplete = RHICreateGPUFence(GDumpGPUTextureFenceName);
+			NewEntry->WriteToResourceComplete->Clear();
+		}
+
+		return *NewEntry;
+	}
+
+	FStagingBufferPoolEntry& ReuseStagingBuffer(
+		FRHICommandListImmediate& RHICmdList,
+		int32 ByteSize)
+	{
+		check(IsInRenderingThread());
+		check(bStream);
+
+		for (TUniquePtr<FStagingBufferPoolEntry>& Entry : StagingBufferPool)
+		{
+			if (Entry->ByteSize != ByteSize)
+			{
+				continue;
+			}
+
+			if (Entry->Status == FStagingResourceStatus::Unused)
+			{
+				Entry->Status = FStagingResourceStatus::Rendering;
+				Entry->WriteToResourceComplete->Clear();
+				return *Entry;
+			}
+		}
+
+		FStagingBufferPoolEntry* NewEntry = new FStagingBufferPoolEntry;
+		NewEntry->Status = FStagingResourceStatus::Rendering;
+		NewEntry->ByteSize = ByteSize;
+		NewEntry->StagingBuffer = RHICreateStagingBuffer();
+		NewEntry->StagingBuffer->DisableLifetimeExtension();
+		NewEntry->WriteToResourceComplete = RHICreateGPUFence(GDumpGPUBufferFenceName);
+		NewEntry->WriteToResourceComplete->Clear();
+
+		StagingBufferPool.Add(TUniquePtr<FStagingBufferPoolEntry>(NewEntry));
+
+		return *NewEntry;
 	}
 
 	void DumpTextureSubResource(
@@ -904,36 +1145,34 @@ public:
 		check(IsInRenderingThread());
 
 		// Preprocess
-		FTextureRHIRef StagingSrcTexture;
-		EPixelFormat PreprocessedPixelFormat = SubresourceDumpDesc.PreprocessedPixelFormat;
-		SIZE_T SubresourceByteSize = SubresourceDumpDesc.ByteSize;
+		FTextureRHIRef StagingSrcTextureRef;
+		FRHITexture* StagingSrcTexture;
 		FTextureRHIRef StagingTexture;
+		FStagingTexturePoolEntry* StagingTexturePoolEntry = nullptr;
 
 		{
 			FTimeBucketMeasure TimeBucketMeasure(this, ETimingBucket::RHIReadbackCommands);
 			if (SubresourceDumpDesc.bPreprocessForStaging)
 			{
-				// Some RHIs (GL) only support 32Bit single channel images as CS output
-				if (IsOpenGLPlatform(GMaxRHIShaderPlatform) &&
-					GPixelFormats[PreprocessedPixelFormat].NumComponents == 1 && 
-					GPixelFormats[PreprocessedPixelFormat].BlockBytes < 4)
-				{
-					SubresourceByteSize*= (4 / GPixelFormats[PreprocessedPixelFormat].BlockBytes);
-					PreprocessedPixelFormat = PF_R32_UINT;
-				}
-
+				FUnorderedAccessViewRHIRef StagingOutput;
 				{
 					const FRHITextureCreateDesc Desc =
-						FRHITextureCreateDesc::Create2D(TEXT("DumpGPU.PreprocessTexture"), SubresourceDumpDesc.SubResourceExtent, PreprocessedPixelFormat)
+						FRHITextureCreateDesc::Create2D(TEXT("DumpGPU.PreprocessTexture"), SubresourceDumpDesc.SubResourceExtent, SubresourceDumpDesc.PreprocessedPixelFormat)
 						.SetFlags(ETextureCreateFlags::UAV | ETextureCreateFlags::ShaderResource | ETextureCreateFlags::HideInVisualizeTexture);
 
-					StagingSrcTexture = RHICreateTexture(Desc);
-					StagingSrcTexture->DisableLifetimeExtension();
+					if (bStream)
+					{
+						ReuseStagingTexture(RHICmdList, Desc, ERHIAccess::UAVCompute, /* out */ &StagingSrcTextureRef, /* out */ &StagingOutput);
+					}
+					else
+					{
+						CreateStagingTexture(Desc, /* out */ &StagingSrcTextureRef);
+
+						RHICmdList.Transition(FRHITransitionInfo(StagingSrcTextureRef, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+						StagingOutput = CreateUAVNoLifetimeExtension(RHICmdList, StagingSrcTextureRef, /* MipLevel = */ 0);
+					}
+					StagingSrcTexture = StagingSrcTextureRef;
 				}
-
-				FUnorderedAccessViewRHIRef StagingOutput = RHICreateUnorderedAccessView(StagingSrcTexture, /* MipLevel = */ 0);
-
-				RHICmdList.Transition(FRHITransitionInfo(StagingSrcTexture, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 
 				FDumpTextureCS::FPermutationDomain PermutationVector;
 				PermutationVector.Set<FDumpTextureCS::FTextureTypeDim>(SubresourceDumpDesc.DumpTextureType);
@@ -958,36 +1197,31 @@ public:
 			// Copy the texture for CPU readback
 			{
 				const FRHITextureCreateDesc Desc =
-					FRHITextureCreateDesc::Create2D(TEXT("DumpGPU.StagingTexture"), SubresourceDumpDesc.SubResourceExtent, PreprocessedPixelFormat)
+					FRHITextureCreateDesc::Create2D(TEXT("DumpGPU.StagingTexture"), SubresourceDumpDesc.SubResourceExtent, SubresourceDumpDesc.PreprocessedPixelFormat)
 					.SetFlags(ETextureCreateFlags::CPUReadback | ETextureCreateFlags::HideInVisualizeTexture);
 
-				StagingTexture = RHICreateTexture(Desc);
-				StagingTexture->DisableLifetimeExtension();
-
-				RHICmdList.Transition(FRHITransitionInfo(StagingTexture, ERHIAccess::Unknown, ERHIAccess::CopyDest));
+				if (bStream)
+				{
+					StagingTexturePoolEntry = &ReuseStagingTexture(RHICmdList, Desc, ERHIAccess::CopyDest, /* out */ &StagingTexture, /* UAV = */ nullptr);
+				}
+				else
+				{
+					CreateStagingTexture(Desc, /* out */ &StagingTexture);
+					RHICmdList.Transition(FRHITransitionInfo(StagingTexture, ERHIAccess::Unknown, ERHIAccess::CopyDest));
+				}
 
 				// Transfer memory GPU -> CPU
 				RHICmdList.CopyTexture(StagingSrcTexture, StagingTexture, {});
 
 				RHICmdList.Transition(FRHITransitionInfo(StagingTexture, ERHIAccess::CopyDest, ERHIAccess::CPURead));
 			}
+
+			// Transition back the intermediary texture to UAVCompute for next ReuseStagingTexture().
+			if (StagingSrcTextureRef && bStream)
+			{
+				RHICmdList.Transition(FRHITransitionInfo(StagingSrcTextureRef, ERHIAccess::CopySrc, ERHIAccess::UAVCompute));
+			}
 		}
-
-		// Submit to GPU and wait for completion.
-		static const FName FenceName(TEXT("DumpGPU.TextureFence"));
-		FGPUFenceRHIRef Fence = RHICreateGPUFence(FenceName);
-		{
-			FTimeBucketMeasure TimeBucketMeasure(this, ETimingBucket::GPUWait);
-
-			Fence->Clear();
-			RHICmdList.WriteGPUFence(Fence);
-			RHICmdList.SubmitCommandsAndFlushGPU();
-			RHICmdList.BlockUntilGPUIdle();
-		}
-
-		void* Content = nullptr;
-		int32 RowPitchInPixels = 0;
-		int32 ColumnPitchInPixels = 0;
 
 		// jhoerner_todo 12/9/2021:  pick arbitrary GPU out of mask to avoid assert.  Eventually want to dump results for all GPUs, but
 		// I need to understand how to modify the dumping logic, and this works for now (usually when debugging, the bugs happen on
@@ -996,61 +1230,52 @@ public:
 		// modified by the graph (especially useful for MGPU, where we are concerned about cross-view or cross-frame state).
 		uint32 GPUIndex = RHICmdList.GetGPUMask().GetLastIndex();
 
-		RHICmdList.MapStagingSurface(StagingTexture, Fence.GetReference(), Content, RowPitchInPixels, ColumnPitchInPixels, GPUIndex);
-
-		if (Content)
+		if (bStream)
 		{
-			TArray64<uint8> Array;
-			{
-				FTimeBucketMeasure TimeBucketMeasure(this, ETimingBucket::CPUPostProcessing);
-
-				Array.SetNumUninitialized(SubresourceByteSize);
-
-				SIZE_T BytePerPixel = SIZE_T(GPixelFormats[PreprocessedPixelFormat].BlockBytes);
-
-				const uint8* SrcData = static_cast<const uint8*>(Content);
-
-				for (int32 y = 0; y < SubresourceDumpDesc.SubResourceExtent.Y; y++)
-				{
-					// Flip the data to be bottom left corner for the WebGL viewer.
-					const uint8* SrcPos = SrcData + SIZE_T(SubresourceDumpDesc.SubResourceExtent.Y - 1 - y) * SIZE_T(RowPitchInPixels) * BytePerPixel;
-					uint8* DstPos = (&Array[0]) + SIZE_T(y) * SIZE_T(SubresourceDumpDesc.SubResourceExtent.X) * BytePerPixel;
-
-					FPlatformMemory::Memmove(DstPos, SrcPos, SIZE_T(SubresourceDumpDesc.SubResourceExtent.X) * BytePerPixel);
-				}
-
-				RHICmdList.UnmapStagingSurface(StagingTexture, GPUIndex);
-
-				if (PreprocessedPixelFormat != SubresourceDumpDesc.PreprocessedPixelFormat)
-				{
-					// Convert 32Bit values back to 16 or 8bit
-					const int32 DstPixelNumBytes = GPixelFormats[SubresourceDumpDesc.PreprocessedPixelFormat].BlockBytes;
-					const uint32* SrcData32 = (const uint32*)Array.GetData();
-					uint8* DstData8 = Array.GetData();
-					uint16* DstData16 = (uint16*)Array.GetData();
-											
-					for (int32 Index = 0; Index < Array.Num()/4; Index++)
-					{
-						uint32 Value32 = SrcData32[Index];
-						if (DstPixelNumBytes == 2)
-						{
-							DstData16[Index] = (uint16)Value32;
-						}
-						else
-						{
-							DstData8[Index] = (uint8)Value32;
-						}
-					}
-
-					Array.SetNum(Array.Num() / (4 / DstPixelNumBytes));
-				}
-			}
-
-			DumpResourceBinaryToFile(Array.GetData(), Array.Num(), DumpFilePath);
+			check(StagingTexturePoolEntry);
+			// Write a fence to know when to transition to 
+			RHICmdList.WriteGPUFence(StagingTexturePoolEntry->WriteToResourceComplete);
+			StagingTexturePoolEntry->SubresourceDumpDesc = SubresourceDumpDesc;
+			StagingTexturePoolEntry->DumpFilePath = DumpFilePath;
+			StagingTexturePoolEntry->GPUIndex = GPUIndex;
 		}
 		else
 		{
-			UE_LOG(LogRendererCore, Warning, TEXT("RHICmdList.MapStagingSurface() to dump texture %s failed."), TextureDebugName);
+			// Submit to GPU and wait for completion.
+			FGPUFenceRHIRef Fence = RHICreateGPUFence(GDumpGPUTextureFenceName);
+			{
+				FTimeBucketMeasure TimeBucketMeasure(this, ETimingBucket::GPUWait);
+
+				Fence->Clear();
+				RHICmdList.WriteGPUFence(Fence);
+				RHICmdList.SubmitCommandsAndFlushGPU();
+				RHICmdList.BlockUntilGPUIdle();
+			}
+
+			void* Content = nullptr;
+			int32 RowPitchInPixels = 0;
+			int32 ColumnPitchInPixels = 0;
+
+			RHICmdList.MapStagingSurface(StagingTexture, Fence.GetReference(), Content, RowPitchInPixels, ColumnPitchInPixels, GPUIndex);
+
+			if (Content)
+			{
+				TArray64<uint8> Array;
+				PostProcessTexture(
+					SubresourceDumpDesc,
+					Content,
+					RowPitchInPixels,
+					ColumnPitchInPixels,
+					/* out */ Array);
+
+				RHICmdList.UnmapStagingSurface(StagingTexture, GPUIndex);
+
+				DumpResourceBinaryToFile(Array.GetData(), Array.Num(), DumpFilePath);
+			}
+			else
+			{
+				UE_LOG(LogDumpGPU, Warning, TEXT("RHICmdList.MapStagingSurface() to dump texture %s failed."), TextureDebugName);
+			}
 		}
 	}
 
@@ -1077,7 +1302,7 @@ public:
 		FShaderResourceViewRHIRef SubResourceSRV;
 		if (SubresourceDumpDesc.bPreprocessForStaging)
 		{
-			SubResourceSRV = RHICreateShaderResourceView(RHITexture, FRHITextureSRVCreateInfo(SubresourceDesc));
+			SubResourceSRV = CreateSRVNoLifetimeExtension(RHICmdList, RHITexture, FRHITextureSRVCreateInfo(SubresourceDesc));
 			RHICmdListImmediate.Transition(FRHITransitionInfo(RHITexture, ERHIAccess::Unknown, ERHIAccess::SRVCompute));
 		}
 		else
@@ -1109,7 +1334,10 @@ public:
 		}
 
 		SubResourceSRV = nullptr;
-		ReleaseRHIResources(RHICmdListImmediate);
+		if (!bStream)
+		{
+			ReleaseRHIResources(RHICmdListImmediate);
+		}
 	}
 
 	void AddDumpTextureSubResourcePass(
@@ -1159,20 +1387,14 @@ public:
 		// Verify there is enough available memory to dump the resource.
 		if (IsUnsafeToDumpResource(SubresourceDumpDesc.ByteSize, 2.2f + (SubresourceDumpDesc.bPreprocessForStaging ? 1.0f : 0.0f)))
 		{
-			UE_LOG(LogRendererCore, Warning, TEXT("Not dumping %s because of insuficient memory available for staging texture."), SubresourceDesc.Texture->Name);
-			return;
-		}
-
-		// Verify the texture is able to do resource transitions.
-		if (EnumHasAnyFlags(SubresourceDesc.Texture->Flags, ERDGTextureFlags::SkipTracking))
-		{
-			UE_LOG(LogRendererCore, Warning, TEXT("Not dumping %s because has ERDGTextureFlags::SkipTracking."), SubresourceDesc.Texture->Name);
+			UE_LOG(LogDumpGPU, Warning, TEXT("Not dumping %s because of insuficient memory available for staging texture."), SubresourceDesc.Texture->Name);
 			return;
 		}
 
 		const FRDGViewableResource::FAccessModeState AccessModeState = SubresourceDesc.Texture->AccessModeState;
 
-		if (AccessModeState.Mode == FRDGViewableResource::EAccessMode::External)
+		const bool bIsExternalMode = AccessModeState.Mode == FRDGViewableResource::EAccessMode::External && !EnumHasAnyFlags(SubresourceDesc.Texture->Flags, ERDGTextureFlags::SkipTracking);
+		if (bIsExternalMode)
 		{
 			GraphBuilder.UseInternalAccessMode(SubresourceDesc.Texture);
 		}
@@ -1186,7 +1408,7 @@ public:
 			{
 				if (!(SubresourceDesc.Texture->Desc.Flags & TexCreate_ShaderResource))
 				{
-					UE_LOG(LogRendererCore, Warning, TEXT("Not dumping %s because requires copy to staging texture using compute, but is missing TexCreate_ShaderResource."), *UniqueResourceSubResourceName);
+					UE_LOG(LogDumpGPU, Warning, TEXT("Not dumping %s because requires copy to staging texture using compute, but is missing TexCreate_ShaderResource."), *UniqueResourceSubResourceName);
 					return;
 				}
 
@@ -1216,14 +1438,17 @@ public:
 					SubresourceDumpDesc.bPreprocessForStaging ? PassParameters->Texture->GetRHI() : nullptr,
 					SubresourceDumpDesc,
 					DumpFilePath);
-				this->ReleaseRHIResources(RHICmdList);
+				if (!bStream)
+				{
+					this->ReleaseRHIResources(RHICmdList);
+				}
 				this->UpdatePassProgress();
 			});
 
 			ResourcesDumpPasses++;
 		}
 
-		if (AccessModeState.Mode == FRDGViewableResource::EAccessMode::External)
+		if (bIsExternalMode)
 		{
 			GraphBuilder.UseExternalAccessMode(SubresourceDesc.Texture, AccessModeState.Access, AccessModeState.Pipelines);
 		}
@@ -1250,6 +1475,7 @@ public:
 				FRDGTextureSRVDesc SubresourceDesc = SubresourceRangeDesc;
 				SubresourceDesc.FirstArraySlice = ArraySlice;
 				SubresourceDesc.NumArraySlices = 1;
+				SubresourceDesc.DimensionOverride = ETextureDimension::Texture2D;
 
 				AddDumpTextureAllSubResourcesPasses(
 					GraphBuilder,
@@ -1282,7 +1508,11 @@ public:
 				FRDGTextureSRVDesc SubresourceDesc = SubresourceRangeDesc;
 				SubresourceDesc.MipLevel = MipLevel;
 				SubresourceDesc.NumMipLevels = 1;
-
+				if(SubresourceRangeDesc.Texture->Desc.IsTextureArray())
+				{
+                	SubresourceDesc.DimensionOverride = ETextureDimension::Texture2D;
+				}
+                
 				AddDumpTextureSubResourcePass(
 					GraphBuilder,
 					InputResourceNames,
@@ -1443,20 +1673,20 @@ public:
 		// Dump the resource's binary to a .bin file.
 		if (bDumpResourceBinary && DumpBufferMode == 2)
 		{
-			int32 StagingResourceByteSize = FMath::Min(ByteSize, GDumpMaxStagingSize.GetValueOnRenderThread() * 1024 * 1024);
+			const int32 StagingResourceByteSize = bStream ? ByteSize : FMath::Min(ByteSize, GDumpMaxStagingSize.GetValueOnRenderThread() * 1024 * 1024);
 
 			FString DumpFilePath = kResourcesDir / FString::Printf(TEXT("%s.v%016x.bin"), *UniqueResourceName, PtrToUint(bIsOutputResource ? Pass : nullptr));
 
 			if (IsUnsafeToDumpResource(StagingResourceByteSize, 1.2f))
 			{
-				UE_LOG(LogRendererCore, Warning, TEXT("Not dumping %s because of insuficient memory available for staging buffer."), *DumpFilePath);
+				UE_LOG(LogDumpGPU, Warning, TEXT("Not dumping %s because of insuficient memory available for staging buffer."), *DumpFilePath);
 				return;
 			}
 
 			// Verify the texture is able to do resource transitions.
 			if (EnumHasAnyFlags(Buffer->Flags, ERDGBufferFlags::SkipTracking))
 			{
-				UE_LOG(LogRendererCore, Warning, TEXT("Not dumping %s because has ERDGBufferFlags::SkipTracking."), Buffer->Name);
+				UE_LOG(LogDumpGPU, Warning, TEXT("Not dumping %s because has ERDGBufferFlags::SkipTracking."), Buffer->Name);
 				return;
 			}
 
@@ -1477,75 +1707,91 @@ public:
 				[this, DumpFilePath, Buffer, ByteSize, StagingResourceByteSize](FRHICommandListImmediate& RHICmdList)
 			{
 				check(IsInRenderingThread());
-
-				FStagingBufferRHIRef StagingBuffer;
-				FGPUFenceRHIRef Fence;
+				if (bStream)
 				{
-					FTimeBucketMeasure TimeBucketMeasure(this, ETimingBucket::RHIReadbackCommands);
-					StagingBuffer = RHICreateStagingBuffer();
-					StagingBuffer->DisableLifetimeExtension();
+					check(ByteSize == StagingResourceByteSize);
 
-					static const FName FenceName(TEXT("DumpGPU.BufferFence"));
-					Fence = RHICreateGPUFence(FenceName);
-				}
-				
-				TUniquePtr<FArchive> Ar;
-				if (bEnableDiskWrite)
-				{
-					FString FullPath = GetDumpFullPath(DumpFilePath);
-					FFileWriteCtx WriteCtx(this, ETimingBucket::ResourceBinaryFileWrite, /* ByteSize = */ 0);
-
-					Ar = TUniquePtr<FArchive>(IFileManager::Get().CreateFileWriter(*FullPath, /* WriteFlags = */ 0));
-				}
-
-				for (int32 Offset = 0; Offset < ByteSize; Offset += StagingResourceByteSize)
-				{
-					int32 CopyByteSize = FMath::Min(StagingResourceByteSize, ByteSize - Offset);
+					FStagingBufferPoolEntry& StagingBufferPoolEntry = ReuseStagingBuffer(RHICmdList, StagingResourceByteSize);
+					StagingBufferPoolEntry.DumpFilePath = DumpFilePath;
 
 					// Transfer memory GPU -> CPU
 					{
 						FTimeBucketMeasure TimeBucketMeasure(this, ETimingBucket::RHIReadbackCommands);
-						RHICmdList.CopyToStagingBuffer(Buffer->GetRHI(), StagingBuffer, Offset, CopyByteSize);
-					}
-
-					// Submit to GPU and wait for completion.
-					{
-						FTimeBucketMeasure TimeBucketMeasure(this, ETimingBucket::GPUWait);
-						Fence->Clear();
-						RHICmdList.WriteGPUFence(Fence);
-						RHICmdList.SubmitCommandsAndFlushGPU();
-						RHICmdList.BlockUntilGPUIdle();
-					}
-
-					void* Content = RHICmdList.LockStagingBuffer(StagingBuffer, Fence.GetReference(), 0, CopyByteSize);
-					if (Content)
-					{
-						if (Ar)
-						{
-							FFileWriteCtx WriteCtx(this, ETimingBucket::ResourceBinaryFileWrite, CopyByteSize, /* OpenedFiles = */ 0);
-							Ar->Serialize((void*)Content, CopyByteSize);
-							Ar->Flush();
-						}
-						RHICmdList.UnlockStagingBuffer(StagingBuffer);
-					}
-					else
-					{
-						UE_LOG(LogRendererCore, Warning, TEXT("RHICmdList.LockStagingBuffer() to dump buffer %s failed."), Buffer->Name);
-						break;
+						RHICmdList.CopyToStagingBuffer(Buffer->GetRHI(), StagingBufferPoolEntry.StagingBuffer, /* Offset = */ 0, ByteSize);
+						RHICmdList.WriteGPUFence(StagingBufferPoolEntry.WriteToResourceComplete);
 					}
 				}
-
-				if (Ar)
+				else // if (!bStream)
 				{
-					FFileWriteCtx WriteCtx(this, ETimingBucket::ResourceBinaryFileWrite, /* ByteSize = */ 0, /* OpenedFiles = */ 0);
-					// Always explicitly close to catch errors from flush/close
-					Ar->Close();
-					Ar = nullptr;
-				}
+					FStagingBufferRHIRef StagingBuffer;
+					FGPUFenceRHIRef Fence;
+					{
+						FTimeBucketMeasure TimeBucketMeasure(this, ETimingBucket::RHIReadbackCommands);
+						StagingBuffer = RHICreateStagingBuffer();
+						StagingBuffer->DisableLifetimeExtension();
 
-				StagingBuffer = nullptr;
-				Fence = nullptr;
-				this->ReleaseRHIResources(RHICmdList);
+						Fence = RHICreateGPUFence(GDumpGPUBufferFenceName);
+					}
+				
+					TUniquePtr<FArchive> Ar;
+					if (bEnableDiskWrite)
+					{
+						FString FullPath = GetDumpFullPath(DumpFilePath);
+						FFileWriteCtx WriteCtx(this, ETimingBucket::ResourceBinaryFileWrite, /* ByteSize = */ 0);
+
+						Ar = TUniquePtr<FArchive>(IFileManager::Get().CreateFileWriter(*FullPath, /* WriteFlags = */ 0));
+					}
+
+					for (int32 Offset = 0; Offset < ByteSize; Offset += StagingResourceByteSize)
+					{
+						int32 CopyByteSize = FMath::Min(StagingResourceByteSize, ByteSize - Offset);
+
+						// Transfer memory GPU -> CPU
+						{
+							FTimeBucketMeasure TimeBucketMeasure(this, ETimingBucket::RHIReadbackCommands);
+							RHICmdList.CopyToStagingBuffer(Buffer->GetRHI(), StagingBuffer, Offset, CopyByteSize);
+						}
+
+						// Submit to GPU and wait for completion.
+						{
+							FTimeBucketMeasure TimeBucketMeasure(this, ETimingBucket::GPUWait);
+							Fence->Clear();
+							RHICmdList.WriteGPUFence(Fence);
+							RHICmdList.SubmitCommandsAndFlushGPU();
+							RHICmdList.BlockUntilGPUIdle();
+						}
+
+						void* Content = RHICmdList.LockStagingBuffer(StagingBuffer, Fence.GetReference(), 0, CopyByteSize);
+						if (Content)
+						{
+							if (Ar)
+							{
+								FFileWriteCtx WriteCtx(this, ETimingBucket::ResourceBinaryFileWrite, CopyByteSize, /* OpenedFiles = */ 0);
+								Ar->Serialize((void*)Content, CopyByteSize);
+								Ar->Flush();
+							}
+							RHICmdList.UnlockStagingBuffer(StagingBuffer);
+						}
+						else
+						{
+							UE_LOG(LogDumpGPU, Warning, TEXT("RHICmdList.LockStagingBuffer() to dump buffer %s failed."), Buffer->Name);
+							break;
+						}
+					}
+
+					if (Ar)
+					{
+						FFileWriteCtx WriteCtx(this, ETimingBucket::ResourceBinaryFileWrite, /* ByteSize = */ 0, /* OpenedFiles = */ 0);
+						// Always explicitly close to catch errors from flush/close
+						Ar->Close();
+						Ar = nullptr;
+					}
+
+					StagingBuffer = nullptr;
+					Fence = nullptr;
+					this->ReleaseRHIResources(RHICmdList);
+				} // if (!bStream)
+
 				this->UpdatePassProgress();
 			});
 
@@ -1556,6 +1802,159 @@ public:
 
 			ResourcesDumpPasses++;
 		}
+	}
+
+	static void WaitDiskWriteAndReset(FStagingPoolEntry* Entry)
+	{
+		check(Entry->Status == FStagingResourceStatus::WritingToDisk || Entry->Status == FStagingResourceStatus::WritingToDiskComplete);
+		check(Entry->WriteToDiskComplete);
+
+		Entry->WriteToDiskComplete->Wait();
+		FPlatformProcess::ReturnSynchEventToPool(Entry->WriteToDiskComplete);
+		Entry->WriteToDiskComplete = nullptr;
+
+		check(Entry->Status == FStagingResourceStatus::WritingToDiskComplete);
+		Entry->Status = FStagingResourceStatus::Unused;
+	}
+
+	void LandCompletedResources(FRHICommandListImmediate& RHICmdList)
+	{
+		check(IsInRenderingThread());
+		check(bStream);
+		for (TUniquePtr<FStagingTexturePoolEntry>& Entry : StagingTexturePool)
+		{
+			if (Entry->Status == FStagingResourceStatus::Rendering)
+			{
+				// Try lock the staging surface.
+
+				void* Content = nullptr;
+				int32 RowPitchInPixels = 0;
+				int32 ColumnPitchInPixels = 0;
+
+				RHICmdList.MapStagingSurface(Entry->Texture, Entry->WriteToResourceComplete.GetReference(), Content, RowPitchInPixels, ColumnPitchInPixels, Entry->GPUIndex);
+
+				if (!Content)
+				{
+					// NOP
+				}
+				else
+				{
+					check(Entry->WriteToDiskComplete == nullptr);
+					Entry->WriteToDiskComplete = FPlatformProcess::GetSynchEventFromPool(true);
+					Entry->Status = FStagingResourceStatus::WritingToDisk;
+
+					FStagingTexturePoolEntry* Staging = Entry.Get();
+
+					KickOffAsyncTask([this, Staging, Content, RowPitchInPixels, ColumnPitchInPixels](){
+						check(Staging->WriteToDiskComplete);
+						check(Staging->Status == FStagingResourceStatus::WritingToDisk);
+
+						TArray64<uint8> Array;
+						this->PostProcessTexture(
+							Staging->SubresourceDumpDesc,
+							Content,
+							RowPitchInPixels,
+							ColumnPitchInPixels,
+							/* out */ Array);
+
+						this->DumpResourceBinaryToFile(Array.GetData(), Array.Num(), Staging->DumpFilePath);
+
+						Staging->Status = FStagingResourceStatus::WritingToDiskComplete;
+						Staging->WriteToDiskComplete->Trigger();
+					});
+				}
+			}
+			else if (Entry->Status == FStagingResourceStatus::WritingToDiskComplete)
+			{
+				WaitDiskWriteAndReset(Entry.Get());
+
+				RHICmdList.UnmapStagingSurface(Entry->Texture, Entry->GPUIndex);
+				RHICmdList.Transition(FRHITransitionInfo(Entry->Texture, ERHIAccess::CPURead, ERHIAccess::CopyDest));
+			}
+		}
+
+		for (TUniquePtr<FStagingBufferPoolEntry>& Entry : StagingBufferPool)
+		{
+			if (Entry->Status == FStagingResourceStatus::Rendering)
+			{
+				// Try lock the staging buffer.
+				void* Content = RHICmdList.LockStagingBuffer(Entry->StagingBuffer, Entry->WriteToResourceComplete.GetReference(), 0, Entry->ByteSize);
+				if (!Content)
+				{
+					// NOP
+				}
+				else
+				{
+					check(Entry->WriteToDiskComplete == nullptr);
+					Entry->WriteToDiskComplete = FPlatformProcess::GetSynchEventFromPool(true);
+					Entry->Status = FStagingResourceStatus::WritingToDisk;
+
+					FStagingBufferPoolEntry* Staging = Entry.Get();
+
+					KickOffAsyncTask([this, Staging, Content]() {
+						check(Staging->WriteToDiskComplete);
+						check(Staging->Status == FStagingResourceStatus::WritingToDisk);
+
+						this->DumpResourceBinaryToFile(static_cast<const uint8*>(Content), Staging->ByteSize, Staging->DumpFilePath);
+
+						Staging->Status = FStagingResourceStatus::WritingToDiskComplete;
+						Staging->WriteToDiskComplete->Trigger();
+					});
+				}
+			}
+			else if (Entry->Status == FStagingResourceStatus::WritingToDiskComplete)
+			{
+				WaitDiskWriteAndReset(Entry.Get());
+
+				RHICmdList.UnlockStagingBuffer(Entry->StagingBuffer);
+				Entry->Status = FStagingResourceStatus::Unused;
+			}
+		}
+	}
+
+	void WaitAndReleaseStagingResources(FRHICommandListImmediate& RHICmdList)
+	{
+		check(IsInRenderingThread());
+		check(bStream);
+
+		RHICmdList.SubmitCommandsAndFlushGPU();
+		RHICmdList.BlockUntilGPUIdle();
+
+		LandCompletedResources(RHICmdList);
+
+		for (TUniquePtr<FStagingTexturePoolEntry>& Entry : StagingTexturePool)
+		{
+			if (Entry->Status == FStagingResourceStatus::WritingToDisk || Entry->Status == FStagingResourceStatus::WritingToDiskComplete)
+			{
+				WaitDiskWriteAndReset(Entry.Get());
+
+				RHICmdList.UnmapStagingSurface(Entry->Texture, Entry->GPUIndex);
+			}
+
+			check(Entry->WriteToDiskComplete == nullptr);
+			check(Entry->Status == FStagingResourceStatus::Unused || Entry->Status == FStagingResourceStatus::RenderingIntermediaryOnly);
+		}
+
+		for (TUniquePtr<FStagingBufferPoolEntry>& Entry : StagingBufferPool)
+		{
+			if (Entry->Status == FStagingResourceStatus::WritingToDisk || Entry->Status == FStagingResourceStatus::WritingToDiskComplete)
+			{
+				WaitDiskWriteAndReset(Entry.Get());
+
+				RHICmdList.UnlockStagingBuffer(Entry->StagingBuffer);
+			}
+
+			check(Entry->WriteToDiskComplete == nullptr);
+			check(Entry->Status == FStagingResourceStatus::Unused);
+		}
+
+		RHICmdList.SubmitCommandsAndFlushGPU();
+		RHICmdList.BlockUntilGPUIdle();
+
+		// Releases all staging resources
+		StagingTexturePool.Reset();
+		StagingBufferPool.Reset();
+		ReleaseRHIResources(RHICmdList);
 	}
 
 	// Look whether the pass matches matches r.DumpGPU.Root
@@ -1612,9 +2011,23 @@ bool IsDumpingRDGResources()
 
 void FRDGBuilder::InitResourceDump()
 {
+	check(IsInGameThread());
+
 	if(DumpingFrameCounter_GameThread == MAX_uint64)
 	{
 		DumpingFrameCounter_GameThread = GFrameCounter;
+	}
+
+	if (GRDGResourceDumpContext)
+	{
+		float DeltaTime = FApp::GetDeltaTime();
+
+		ENQUEUE_RENDER_COMMAND(FDumpGPUUpdateDeltaTime)(
+			[DeltaTime](FRHICommandListImmediate& ImmediateRHICmdList)
+		{
+			GRDGResourceDumpContext->DeltaTime = DeltaTime;
+			UE_LOG(LogDumpGPU, Display, TEXT("Remaining frames %d"), GRDGResourceDumpContext->RemainingFrameCount);
+		});
 	}
 }
 
@@ -1687,18 +2100,20 @@ FString FRDGBuilder::BeginResourceDump(const TCHAR* Cmd)
 			}
 			NewResourceDumpContext->DumpingDirectoryPath = DirectoryPath / FApp::GetProjectName() + TEXT("-") + FPlatformProperties::PlatformName() + TEXT("-") + NewResourceDumpContext->Time.ToString() + TEXT("/");
 		}
+		NewResourceDumpContext->bStream = GDumpGPUStream.GetValueOnGameThread() != 0;
 		NewResourceDumpContext->bEnableDiskWrite = GDumpTestEnableDiskWrite.GetValueOnGameThread() != 0;
+		NewResourceDumpContext->DeltaTime = FApp::GetDeltaTime();
 		NewResourceDumpContext->RemainingFrameCount = FMath::Max(GDumpGPUFrameCount.GetValueOnGameThread(), 1);
 
 		if (Switches.Contains(TEXT("upload")))
 		{
 			if (!IDumpGPUUploadServiceProvider::GProvider || !NewResourceDumpContext->bEnableDiskWrite)
 			{
-				UE_LOG(LogRendererCore, Warning, TEXT("DumpGPU upload services are not set up."));
+				UE_LOG(LogDumpGPU, Warning, TEXT("DumpGPU upload services are not set up."));
 			}
 			else if (GDumpGPUUploadCVar.GetValueOnGameThread() == 0)
 			{
-				UE_LOG(LogRendererCore, Warning, TEXT("DumpGPU upload services are not available because r.DumpGPU.Upload=0."));
+				UE_LOG(LogDumpGPU, Warning, TEXT("DumpGPU upload services are not available because r.DumpGPU.Upload=0."));
 			}
 			else
 			{
@@ -1724,6 +2139,7 @@ FString FRDGBuilder::BeginResourceDump(const TCHAR* Cmd)
 		{
 			GNextDumpingRemainingTime = GDumpGPUDelay.GetValueOnGameThread();
 			GNextRDGResourceDumpContext = NewResourceDumpContext;
+			UE_LOG(LogDumpGPU, Display, TEXT("DumpGPU to %s armed for %f seconds."), *NewResourceDumpContext->DumpingDirectoryPath, GNextDumpingRemainingTime);
 			return NewResourceDumpContext->DumpingDirectoryPath;
 		}
 	}
@@ -1732,7 +2148,8 @@ FString FRDGBuilder::BeginResourceDump(const TCHAR* Cmd)
 		NewResourceDumpContext = GNextRDGResourceDumpContext;
 		GNextRDGResourceDumpContext = nullptr;
 	}
-	
+
+	UE_LOG(LogDumpGPU, Display, TEXT("DumpGPU to %s starting this frame"), *NewResourceDumpContext->DumpingDirectoryPath);
 	NewResourceDumpContext->MemoryConstants = FPlatformMemory::GetConstants();
 	NewResourceDumpContext->MemoryStats = FPlatformMemory::GetStats();
 
@@ -1761,6 +2178,17 @@ FString FRDGBuilder::BeginResourceDump(const TCHAR* Cmd)
 	if (NewResourceDumpContext->bEnableDiskWrite)
 	{
 		NewResourceDumpContext->GetDumpParameters().DumpServiceParametersFile();
+	}
+
+	if (GDumpGPUFixedTickRate.GetValueOnGameThread() > 0.0f && !FApp::UseFixedTimeStep())
+	{
+		NewResourceDumpContext->bOverrideFixedDeltaTime = true;
+		NewResourceDumpContext->PreviousFixedDeltaTime = FApp::GetFixedDeltaTime();
+
+		FApp::SetFixedDeltaTime(1.0f / GDumpGPUFixedTickRate.GetValueOnGameThread());
+		FApp::SetUseFixedTimeStep(true);
+
+		UE_LOG(LogDumpGPU, Display, TEXT("DumpGPU overriding tick rate to %fs"), float(FApp::GetFixedDeltaTime()));
 	}
 
 	// Output informations
@@ -1809,6 +2237,11 @@ FString FRDGBuilder::BeginResourceDump(const TCHAR* Cmd)
 		JsonObject->SetStringField(TEXT("RHI"), GDynamicRHI->GetName());
 		JsonObject->SetStringField(TEXT("RHIMaxFeatureLevel"), LexToString(GMaxRHIFeatureLevel));
 		JsonObject->SetStringField(TEXT("DumpTime"), NewResourceDumpContext->Time.ToString());
+		{
+			const FString LogSrcAbsolute = FPlatformOutputDevices::GetAbsoluteLogFilename();
+			FString LogFilename = FPaths::GetCleanFilename(LogSrcAbsolute);
+			JsonObject->SetStringField(TEXT("LogFilename"), LogFilename);
+		}
 
 		NewResourceDumpContext->DumpJsonToFile(JsonObject, FString(FRDGResourceDumpContext::kBaseDir) / TEXT("Infos.json"));
 	}
@@ -1816,21 +2249,25 @@ FString FRDGBuilder::BeginResourceDump(const TCHAR* Cmd)
 	// Dump the rendering cvars
 	if (NewResourceDumpContext->bEnableDiskWrite)
 	{
-		NewResourceDumpContext->DumpRenderingCVarsToCSV();
+		NewResourceDumpContext->KickOffAsyncTask([NewResourceDumpContext]() {
+			NewResourceDumpContext->DumpRenderingCVarsToCSV();
+		});
 	}
 
 	// Copy the viewer
 	if (NewResourceDumpContext->bEnableDiskWrite)
 	{
-		const TCHAR* OpenGPUDumpViewerBatName = TEXT("OpenGPUDumpViewer.bat");
-		const TCHAR* OpenGPUDumpViewerShName = TEXT("OpenGPUDumpViewer.sh");
+		NewResourceDumpContext->KickOffAsyncTask([NewResourceDumpContext, &PlatformFile]() {
+			const TCHAR* OpenGPUDumpViewerBatName = TEXT("OpenGPUDumpViewer.bat");
+			const TCHAR* OpenGPUDumpViewerShName = TEXT("OpenGPUDumpViewer.sh");
 
-		const TCHAR* ViewerHTML = TEXT("GPUDumpViewer.html");
-		FString DumpGPUViewerSourcePath = FPaths::EngineDir() + FString(TEXT("Extras")) / TEXT("GPUDumpViewer");
+			const TCHAR* ViewerHTML = TEXT("GPUDumpViewer.html");
+			FString DumpGPUViewerSourcePath = FPaths::EngineDir() + FString(TEXT("Extras")) / TEXT("GPUDumpViewer");
 
-		PlatformFile.CopyFile(*(NewResourceDumpContext->DumpingDirectoryPath / ViewerHTML), *(DumpGPUViewerSourcePath / ViewerHTML));
-		PlatformFile.CopyFile(*(NewResourceDumpContext->DumpingDirectoryPath / OpenGPUDumpViewerBatName), *(DumpGPUViewerSourcePath / OpenGPUDumpViewerBatName));
-		PlatformFile.CopyFile(*(NewResourceDumpContext->DumpingDirectoryPath / OpenGPUDumpViewerShName), *(DumpGPUViewerSourcePath / OpenGPUDumpViewerShName));
+			PlatformFile.CopyFile(*(NewResourceDumpContext->DumpingDirectoryPath / ViewerHTML), *(DumpGPUViewerSourcePath / ViewerHTML));
+			PlatformFile.CopyFile(*(NewResourceDumpContext->DumpingDirectoryPath / OpenGPUDumpViewerBatName), *(DumpGPUViewerSourcePath / OpenGPUDumpViewerBatName));
+			PlatformFile.CopyFile(*(NewResourceDumpContext->DumpingDirectoryPath / OpenGPUDumpViewerShName), *(DumpGPUViewerSourcePath / OpenGPUDumpViewerShName));
+		});
 	}
 
 	ENQUEUE_RENDER_COMMAND(FStartGPUDump)(
@@ -1883,16 +2320,30 @@ void FRDGBuilder::EndResourceDump()
 	GRDGResourceDumpContext->RemainingFrameCount--;
 	if (GRDGResourceDumpContext->RemainingFrameCount > 0)
 	{
+		if (GRDGResourceDumpContext->bStream)
+		{
+			ENQUEUE_RENDER_COMMAND(FEndGPUDump)(
+				[](FRHICommandListImmediate& ImmediateRHICmdList)
+			{
+				GRDGResourceDumpContext->LandCompletedResources(ImmediateRHICmdList);
+			});
+		}
+
 		return;
 	}
 
 	// Wait all rendering commands are completed to finish with GRDGResourceDumpContext.
 	{
-		UE_LOG(LogRendererCore, Display, TEXT("Stalling game thread until render thread finishes to dump resources"));
+		UE_LOG(LogDumpGPU, Display, TEXT("Stalling game thread until render thread finishes to dump resources"));
 
 		ENQUEUE_RENDER_COMMAND(FEndGPUDump)(
 			[](FRHICommandListImmediate& ImmediateRHICmdList)
 		{
+			if (GRDGResourceDumpContext->bStream)
+			{
+				GRDGResourceDumpContext->WaitAndReleaseStagingResources(ImmediateRHICmdList);
+			}
+
 			ImmediateRHICmdList.SubmitCommandsAndFlushGPU();
 			#if ENABLE_RHI_VALIDATION
 				GRHIValidateBufferSourceCopy = true;
@@ -1911,24 +2362,30 @@ void FRDGBuilder::EndResourceDump()
 		double GPUWaitSeconds = GRDGResourceDumpContext->TimingBucket[int32(FRDGResourceDumpContext::ETimingBucket::GPUWait)];
 		double CPUPostProcessingSeconds = GRDGResourceDumpContext->TimingBucket[int32(FRDGResourceDumpContext::ETimingBucket::CPUPostProcessing)];
 		double MetadataFileWriteSeconds = GRDGResourceDumpContext->TimingBucket[int32(FRDGResourceDumpContext::ETimingBucket::MetadataFileWrite)];
+		double ParametersFileWriteSeconds = GRDGResourceDumpContext->TimingBucket[int32(FRDGResourceDumpContext::ETimingBucket::ParametersFileWrite)];
 		double ResourceBinaryFileWriteSeconds = GRDGResourceDumpContext->TimingBucket[int32(FRDGResourceDumpContext::ETimingBucket::ResourceBinaryFileWrite)];
 		double RHIReleaseResourcesTimeSeconds = GRDGResourceDumpContext->TimingBucket[int32(FRDGResourceDumpContext::ETimingBucket::RHIReleaseResources)];
 
-		UE_LOG(LogRendererCore, Display, TEXT("Dumped %d resources in %.3f s to %s"), GRDGResourceDumpContext->ResourcesDumpPasses, float(TotalDumpSeconds), *AbsDumpingDirectoryPath);
-		UE_LOG(LogRendererCore, Display, TEXT("Dumped GPU readback commands: %.3f s"), float(RHIReadbackCommandsSeconds));
-		UE_LOG(LogRendererCore, Display, TEXT("Dumped GPU wait: %.3f s"), float(GPUWaitSeconds));
-		UE_LOG(LogRendererCore, Display, TEXT("Dumped CPU resource binary post processing: %.3f s"), float(CPUPostProcessingSeconds));
-		UE_LOG(LogRendererCore, Display, TEXT("Dumped metadata: %.3f MB in %d files under %.3f s at %.3f MB/s"),
+		UE_LOG(LogDumpGPU, Display, TEXT("Dumped %d resources in %.3f s to %s"), GRDGResourceDumpContext->ResourcesDumpPasses, float(TotalDumpSeconds), *AbsDumpingDirectoryPath);
+		UE_LOG(LogDumpGPU, Display, TEXT("Dumped GPU readback commands: %.3f s"), float(RHIReadbackCommandsSeconds));
+		UE_LOG(LogDumpGPU, Display, TEXT("Dumped GPU wait: %.3f s"), float(GPUWaitSeconds));
+		UE_LOG(LogDumpGPU, Display, TEXT("Dumped CPU resource binary post processing: %.3f s"), float(CPUPostProcessingSeconds));
+		UE_LOG(LogDumpGPU, Display, TEXT("Dumped metadata: %.3f MB in %d files under %.3f s at %.3f MB/s"),
 			float(GRDGResourceDumpContext->MetadataFilesWriteBytes) / float(1024 * 1024),
-			GRDGResourceDumpContext->MetadataFilesOpened,
+			int32(GRDGResourceDumpContext->MetadataFilesOpened),
 			float(MetadataFileWriteSeconds),
 			float(GRDGResourceDumpContext->MetadataFilesWriteBytes) / (float(1024 * 1024) * float(MetadataFileWriteSeconds)));
-		UE_LOG(LogRendererCore, Display, TEXT("Dumped resource binary: %.3f MB in %d files under %.3f s at %.3f MB/s"),
+		UE_LOG(LogDumpGPU, Display, TEXT("Dumped parameters: %.3f MB in %d files under %.3f s at %.3f MB/s"),
+			float(GRDGResourceDumpContext->ParametersFilesWriteBytes) / float(1024 * 1024),
+			int32(GRDGResourceDumpContext->ParametersFilesOpened),
+			float(ParametersFileWriteSeconds),
+			float(GRDGResourceDumpContext->ParametersFilesWriteBytes) / (float(1024 * 1024) * float(ParametersFileWriteSeconds)));
+		UE_LOG(LogDumpGPU, Display, TEXT("Dumped resource binary: %.3f MB in %d files under %.3f s at %.3f MB/s"),
 			float(GRDGResourceDumpContext->ResourceBinaryWriteBytes) / float(1024 * 1024),
-			GRDGResourceDumpContext->ResourceBinaryFilesOpened,
+			int32(GRDGResourceDumpContext->ResourceBinaryFilesOpened),
 			float(ResourceBinaryFileWriteSeconds),
 			float(GRDGResourceDumpContext->ResourceBinaryWriteBytes) / (float(1024 * 1024) * float(ResourceBinaryFileWriteSeconds)));
-		UE_LOG(LogRendererCore, Display, TEXT("Dumped GPU readback resource release: %.3f s"), float(RHIReleaseResourcesTimeSeconds));
+		UE_LOG(LogDumpGPU, Display, TEXT("Dumped GPU readback resource release: %.3f s"), float(RHIReleaseResourcesTimeSeconds));
 	}
 
 	// Dump the log into the dump directory.
@@ -1968,6 +2425,13 @@ void FRDGBuilder::EndResourceDump()
 		FPlatformProcess::ExploreFolder(*AbsDumpingDirectoryPath);
 	}
 	#endif
+
+	// Restore the engine tick rate to what it was
+	if (GRDGResourceDumpContext->bOverrideFixedDeltaTime)
+	{
+		FApp::SetFixedDeltaTime(GRDGResourceDumpContext->PreviousFixedDeltaTime);
+		FApp::SetUseFixedTimeStep(false);
+	}
 
 	delete GRDGResourceDumpContext;
 	GRDGResourceDumpContext = nullptr;
@@ -2037,7 +2501,7 @@ void FRDGBuilder::DumpResourcePassOutputs(const FRDGPass* Pass)
 				}
 				else
 				{
-					UE_LOG(LogRendererCore, Warning, TEXT("Dumping texture %s's meta data unsupported"), SRV->Desc.Texture->Name);
+					UE_LOG(LogDumpGPU, Warning, TEXT("Dumping texture %s's meta data unsupported"), SRV->Desc.Texture->Name);
 				}
 			}
 		}
@@ -2060,7 +2524,7 @@ void FRDGBuilder::DumpResourcePassOutputs(const FRDGPass* Pass)
 				}
 				else
 				{
-					UE_LOG(LogRendererCore, Warning, TEXT("Dumping texture %s's meta data unsupported"), UAV->Desc.Texture->Name);
+					UE_LOG(LogDumpGPU, Warning, TEXT("Dumping texture %s's meta data unsupported"), UAV->Desc.Texture->Name);
 				}
 			}
 		}
@@ -2069,10 +2533,7 @@ void FRDGBuilder::DumpResourcePassOutputs(const FRDGPass* Pass)
 		{
 			if (FRDGTextureAccess TextureAccess = Parameter.GetAsTextureAccess())
 			{
-				bool bIsOutputResource = (
-					TextureAccess.GetAccess() == ERHIAccess::UAVCompute ||
-					TextureAccess.GetAccess() == ERHIAccess::UAVGraphics ||
-					TextureAccess.GetAccess() == ERHIAccess::RTV);
+				bool bIsOutputResource = IsWritableAccess(TextureAccess.GetAccess());
 
 				FRDGTextureSRVDesc TextureSubResource = FRDGTextureSRVDesc::Create(TextureAccess);
 				GRDGResourceDumpContext->AddDumpTexturePasses(*this, InputResourceNames, OutputResourceNames, Pass, TextureSubResource, bIsOutputResource);
@@ -2085,10 +2546,7 @@ void FRDGBuilder::DumpResourcePassOutputs(const FRDGPass* Pass)
 
 			for (FRDGTextureAccess TextureAccess : TextureAccessArray)
 			{
-				bool bIsOutputResource = (
-					TextureAccess.GetAccess() == ERHIAccess::UAVCompute ||
-					TextureAccess.GetAccess() == ERHIAccess::UAVGraphics ||
-					TextureAccess.GetAccess() == ERHIAccess::RTV);
+				bool bIsOutputResource = IsWritableAccess(TextureAccess.GetAccess());
 
 				FRDGTextureSRVDesc TextureSubResource = FRDGTextureSRVDesc::Create(TextureAccess);
 				GRDGResourceDumpContext->AddDumpTexturePasses(*this, InputResourceNames, OutputResourceNames, Pass, TextureSubResource, bIsOutputResource);
@@ -2118,9 +2576,7 @@ void FRDGBuilder::DumpResourcePassOutputs(const FRDGPass* Pass)
 		{
 			if (FRDGBufferAccess BufferAccess = Parameter.GetAsBufferAccess())
 			{
-				bool bIsOutputResource = (
-					BufferAccess.GetAccess() == ERHIAccess::UAVCompute ||
-					BufferAccess.GetAccess() == ERHIAccess::UAVGraphics);
+				bool bIsOutputResource = IsWritableAccess(BufferAccess.GetAccess());
 
 				GRDGResourceDumpContext->AddDumpBufferPass(*this, InputResourceNames, OutputResourceNames, Pass, BufferAccess, bIsOutputResource);
 			}
@@ -2132,9 +2588,7 @@ void FRDGBuilder::DumpResourcePassOutputs(const FRDGPass* Pass)
 
 			for (FRDGBufferAccess BufferAccess : BufferAccessArray)
 			{
-				bool bIsOutputResource = (
-					BufferAccess.GetAccess() == ERHIAccess::UAVCompute ||
-					BufferAccess.GetAccess() == ERHIAccess::UAVGraphics);
+				bool bIsOutputResource = IsWritableAccess(BufferAccess.GetAccess());
 
 				GRDGResourceDumpContext->AddDumpBufferPass(*this, InputResourceNames, OutputResourceNames, Pass, BufferAccess, bIsOutputResource);
 			}
@@ -2150,7 +2604,7 @@ void FRDGBuilder::DumpResourcePassOutputs(const FRDGPass* Pass)
 				FRDGTextureRef Texture = RenderTarget.GetTexture();
 				FRDGTextureSRVDesc TextureSubResource = FRDGTextureSRVDesc::CreateForMipLevel(Texture, RenderTarget.GetMipIndex());
 
-				if (Texture->Desc.IsTextureArray())
+				if (Texture->Desc.IsTextureArray() && RenderTarget.GetArraySlice() != -1)
 				{
 					TextureSubResource.FirstArraySlice = RenderTarget.GetArraySlice();
 					TextureSubResource.NumArraySlices = 1;
@@ -2213,7 +2667,7 @@ void FRDGBuilder::DumpResourcePassOutputs(const FRDGPass* Pass)
 		}
 		#endif
 		{
-			ParentEventScopeNames.Add(MakeShareable(new FJsonValueString(FString::Printf(TEXT("Frame %llu"), GFrameCounterRenderThread))));
+			ParentEventScopeNames.Add(MakeShareable(new FJsonValueString(FString::Printf(TEXT("Frame %llu (Delta=%fs)"), GFrameCounterRenderThread, GRDGResourceDumpContext->DeltaTime))));
 		}
 
 		FString EventNameStorage;
@@ -2255,7 +2709,7 @@ void FRDGBuilder::DumpResourcePassOutputs(const FRDGPass* Pass)
 		{
 			TArrayView<const uint8> ArrayView(PassParametersContent, PassParametersByteSize);
 			FString DumpFilePath = FRDGResourceDumpContext::kStructuresDir / FRDGResourceDumpContext::PtrToString(PassParametersContent) + TEXT(".bin");
-			GRDGResourceDumpContext->DumpBinaryToFile(ArrayView, DumpFilePath);
+			GRDGResourceDumpContext->DumpBinaryToFile(ArrayView, DumpFilePath, FRDGResourceDumpContext::ETimingBucket::ParametersFileWrite);
 			GRDGResourceDumpContext->SetDumped(PassParametersContent);
 		}
 	}
@@ -2284,7 +2738,7 @@ void FRDGBuilder::BeginPassDump(const FRDGPass* Pass)
 
 	if (!IsInRenderingThread())
 	{
-		UE_LOG(LogRendererCore, Warning, TEXT("Couldn't start dumping draw's resources for pass %s because not in the rendering thread"), Pass->GetEventName().GetTCHAR());
+		UE_LOG(LogDumpGPU, Warning, TEXT("Couldn't start dumping draw's resources for pass %s because not in the rendering thread"), Pass->GetEventName().GetTCHAR());
 		return;
 	}
 
@@ -2307,7 +2761,7 @@ void FRDGBuilder::DumpDraw(const FRDGEventName& DrawEventName)
 
 	if (!IsInRenderingThread())
 	{
-		UE_LOG(LogRendererCore, Warning, TEXT("Couldn't dump draw because not in the rendering thread"));
+		UE_LOG(LogDumpGPU, Warning, TEXT("Couldn't dump draw because not in the rendering thread"));
 		return;
 	}
 
@@ -2390,7 +2844,7 @@ void FRDGBuilder::DumpDraw(const FRDGEventName& DrawEventName)
 
 	if (GRDGResourceDumpContext->DrawDumpCount % 10 == 0)
 	{
-		UE_LOG(LogRendererCore, Display, TEXT("Dumped %d draws' resources"), GRDGResourceDumpContext->DrawDumpCount);
+		UE_LOG(LogDumpGPU, Display, TEXT("Dumped %d draws' resources"), GRDGResourceDumpContext->DrawDumpCount);
 		return;
 	}
 }
@@ -2426,7 +2880,7 @@ void FRDGBuilder::EndPassDump(const FRDGPass* Pass)
 
 		GRDGResourceDumpContext->DumpJsonToFile(JsonObject, FString(FRDGResourceDumpContext::kBaseDir) / TEXT("PassDrawCounts.json"), FILEWRITE_Append);
 
-		UE_LOG(LogRendererCore, Display, TEXT("Completed dump of %d draws for pass: %s"), GRDGResourceDumpContext->DrawDumpCount, Pass->GetEventName().GetTCHAR());
+		UE_LOG(LogDumpGPU, Display, TEXT("Completed dump of %d draws for pass: %s"), GRDGResourceDumpContext->DrawDumpCount, Pass->GetEventName().GetTCHAR());
 	}
 
 	GRDGResourceDumpContext->DrawDumpingPass = nullptr;

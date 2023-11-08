@@ -10,6 +10,8 @@ namespace UnrealBuildTool.Rules
 	{
 		public GoogleARCoreBase(ReadOnlyTargetRules Target) : base(Target)
 		{
+			DeterministicWarningLevel = WarningLevel.Off; // __DATE__ __TIME__ in Private/GoogleARCoreXRTrackingSystem.cpp
+
 			PublicIncludePathModuleNames.Add("TargetPlatform");
 
 			PublicDependencyModuleNames.AddRange(new string[]
@@ -36,6 +38,7 @@ namespace UnrealBuildTool.Rules
 				"UElibPNG",
 				"zlib",
 				"MRMesh",
+				"XRBase",
 			});
 
 			PrivateIncludePathModuleNames.AddRange(

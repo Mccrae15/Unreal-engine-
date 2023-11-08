@@ -7,8 +7,6 @@
 #include "Shader.h"
 #include "Misc/CoreMisc.h"
 #include "Misc/StringBuilder.h"
-#include "Stats/StatsMisc.h"
-#include "Serialization/MemoryWriter.h"
 #include "VertexFactory.h"
 #include "ProfilingDebugging/DiagnosticTable.h"
 #include "Interfaces/ITargetPlatform.h"
@@ -22,8 +20,6 @@
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/ScopeLock.h"
 #include "UObject/RenderingObjectVersion.h"
-#include "UObject/FortniteMainBranchObjectVersion.h"
-#include "Misc/ScopeRWLock.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
 #include "Misc/LargeWorldRenderPosition.h"
 #include "DataDrivenShaderPlatformInfo.h"
@@ -84,6 +80,15 @@ static TAutoConsoleVariable<int32> CVarUsePipelines(
 	TEXT("r.ShaderPipelines"),
 	1,
 	TEXT("Enable using Shader pipelines."));
+
+static TAutoConsoleVariable<int32> CVarRemoveUnusedInterpolators(
+	TEXT("r.Shaders.RemoveUnusedInterpolators"),
+	0,
+	TEXT("Enables removing unused interpolators mode when compiling shader pipelines.\n")
+	TEXT(" 0: Disable (default)\n")
+	TEXT(" 1: Enable removing unused"),
+	ECVF_ReadOnly
+);
 
 static TAutoConsoleVariable<int32> CVarSkipShaderCompression(
 	TEXT("r.Shaders.SkipCompression"),
@@ -203,8 +208,8 @@ bool FShaderType::bInitializedSerializationHistory = false;
 
 static TArray<FShaderType*>& GetSortedShaderTypes(FShaderType::EShaderTypeForDynamicCast Type)
 {
-	static TArray<FShaderType*> SortedTypes[(uint32)FShaderType::EShaderTypeForDynamicCast::NumShaderTypes];
-	return SortedTypes[(uint32)Type];
+	static TArray<FShaderType*>* SortedTypesArray = new TArray<FShaderType*>[(uint32)FShaderType::EShaderTypeForDynamicCast::NumShaderTypes];
+	return SortedTypesArray[(uint32)Type];
 }
 
 
@@ -294,6 +299,25 @@ FShaderType::~FShaderType()
 	const int32 SortedIndex = Algo::BinarySearchBy(SortedTypes, HashedName, [](const FShaderType* InType) { return InType->GetHashedName(); });
 	check(SortedIndex != INDEX_NONE);
 	SortedTypes.RemoveAt(SortedIndex);
+}
+
+static TArray<const FShaderTypeRegistration*>* GShaderTypeRegistrationInstances = nullptr;
+TArray<const FShaderTypeRegistration*>& FShaderTypeRegistration::GetInstances()
+{
+	if (GShaderTypeRegistrationInstances == nullptr)
+	{
+		GShaderTypeRegistrationInstances = new TArray<const FShaderTypeRegistration*>();
+	}
+	return *GShaderTypeRegistrationInstances;
+}
+
+void FShaderTypeRegistration::CommitAll()
+{
+	for (const auto& Instance : GetInstances())
+	{
+		FShaderType& ShaderType = Instance->LazyShaderTypeAccessor(); // constructs and registers type
+	}
+	GetInstances().Empty();
 }
 
 TLinkedList<FShaderType*>*& FShaderType::GetTypeList()
@@ -433,8 +457,18 @@ void FShaderType::ModifyCompilationEnvironment(const FShaderPermutationParameter
 	{
 		checkf(IsRayTracingPayloadRegistered(RayTracingPayloadType), TEXT("Raytracing shader %s is using a payload type (%u) which was never registered"), Name, RayTracingPayloadType);
 
-		OutEnvironment.SetDefine(TEXT("RT_PAYLOAD_TYPE"), static_cast<int32>(RayTracingPayloadType));
-		OutEnvironment.SetDefine(TEXT("RT_PAYLOAD_MAX_SIZE"), GetRayTracingPayloadTypeMaxSize(RayTracingPayloadType));
+		OutEnvironment.SetDefineAndCompileArgument(TEXT("RT_PAYLOAD_TYPE"), static_cast<uint32>(RayTracingPayloadType));
+		OutEnvironment.SetDefineAndCompileArgument(TEXT("RT_PAYLOAD_MAX_SIZE"), GetRayTracingPayloadTypeMaxSize(RayTracingPayloadType));
+
+		if (   (uint32(RayTracingPayloadType) & uint32(ERayTracingPayloadType::RayTracingMaterial))
+			|| (uint32(RayTracingPayloadType) & uint32(ERayTracingPayloadType::GPULightmass))
+			)
+		{
+			// If any payload requires a fully simplified material, we force fully simplified material all the way.
+			// That is used to have material ray tracing shaders compressed to single slab.
+			// Smaller payload means faster performance and for some tracing this will be enough, e.g. reflected materials, lightmass diffuse interactions.
+			OutEnvironment.SetDefine(TEXT("STRATA_USE_FULLYSIMPLIFIED_MATERIAL"), 1);
+		}
 	}
 #endif
 }
@@ -1411,7 +1445,7 @@ bool IsDxcEnabledForPlatform(EShaderPlatform Platform, bool bHlslVersion2021)
 	{
 		// D3D backend supports a precompile step for HLSL2021 which is separate from ForceDXC option
 		static const IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.D3D.ForceDXC"));
-		return (CVar && CVar->GetInt() != 0);
+		return ((CVar && CVar->GetInt() != 0));
 	}
 	if (IsOpenGLPlatform(Platform))
 	{
@@ -1630,15 +1664,9 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 		KeyString += TEXT("_NoPPSM");
 	}
 	
-	if (IsD3DPlatform(Platform) && IsPCPlatform(Platform))
+	if (UseRemoveUnsedInterpolators(Platform) && !IsOpenGLPlatform(Platform))
 	{
-		{
-			static const auto CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.D3D.RemoveUnusedInterpolators"));
-			if (CVar && CVar->GetInt() != 0)
-			{
-				KeyString += TEXT("_UnInt");
-			}
-		}
+		KeyString += TEXT("_UnInt");
 	}
 
 	if (IsMobilePlatform(Platform))
@@ -1681,20 +1709,18 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 		}
 
 		{
-			static IConsoleVariable* MobileShadingPathCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Mobile.ShadingPath"));			
-			if (MobileShadingPathCVar)
+			bool bIsMobileDeferredShading = IsMobileDeferredShadingEnabled(Platform);
+
+			if (bIsMobileDeferredShading)
 			{
-				if (MobileShadingPathCVar->GetInt() != 0)
+				KeyString += (MobileUsesExtenedGBuffer(Platform) ? TEXT("_MobDShEx") : TEXT("_MobDSh"));
+			}
+			else
+			{
+				static IConsoleVariable* MobileForwardEnableClusteredReflectionsCVAR = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Mobile.Forward.EnableClusteredReflections"));
+				if (MobileForwardEnableClusteredReflectionsCVAR && MobileForwardEnableClusteredReflectionsCVAR->GetInt() != 0)
 				{
-					KeyString += (MobileUsesExtenedGBuffer(Platform) ? TEXT("_MobDShEx") : TEXT("_MobDSh"));
-				}
-				else
-				{
-					static IConsoleVariable* MobileForwardEnableClusteredReflectionsCVAR = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Mobile.Forward.EnableClusteredReflections"));
-					if (MobileForwardEnableClusteredReflectionsCVAR && MobileForwardEnableClusteredReflectionsCVAR->GetInt() != 0)
-					{
-						KeyString += TEXT("_MobFCR");
-					}
+					KeyString += TEXT("_MobFCR");
 				}
 			}
 		}
@@ -1711,6 +1737,22 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 			KeyString += IsMobileDistanceFieldEnabled(Platform) ? TEXT("_MobSDF") : TEXT("");
 		}
 
+		{
+			static FShaderPlatformCachedIniValue<bool> EnableCullBeforeFetchIniValue(TEXT("r.CullBeforeFetch"));
+			if (EnableCullBeforeFetchIniValue.Get(Platform) == 1)
+			{
+				KeyString += TEXT("_CBF");
+			}
+			static FShaderPlatformCachedIniValue<bool> EnableWarpCullingIniValue(TEXT("r.WarpCulling"));
+			if (EnableWarpCullingIniValue.Get(Platform) == 1)
+			{
+				KeyString += TEXT("_WC");
+			}
+		}
+
+		{
+			KeyString += MobileUsesFullDepthPrepass(Platform) ? TEXT("_MobFDP") : TEXT("");
+		}
 	}
 	else
 	{
@@ -1874,6 +1916,12 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 		}
 	}
 
+	if (TargetPlatform && 
+		TargetPlatform->SupportsFeature(ETargetPlatformFeatures::NormalmapLAEncodingMode))
+	{
+		KeyString += TEXT("_NLA");
+	}
+
 	{
 		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VertexFoggingForOpaque"));
 		bool bVertexFoggingForOpaque = CVar && CVar->GetValueOnAnyThread() > 0;
@@ -1974,9 +2022,22 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 			KeyString += FString::Printf(TEXT("_ADVDEBUG"));
 		}
 
-		if (Strata::IsAccurateSRGBEnabled())
 		{
-			KeyString += FString::Printf(TEXT("_SRGB"));
+			KeyString += FString::Printf(TEXT("_STSHQL%u"), Strata::GetShadingQuality(Platform));
+		}
+
+		{
+			KeyString += FString::Printf(TEXT("_SSHEEN%u"), Strata::GetSheenQuality());
+		}
+
+		if (Strata::IsGlintEnabled())
+		{
+			KeyString += FString::Printf(TEXT("_STRTGLT"));
+		}
+
+		if (Strata::IsSpecularProfileEnabled())
+		{
+			KeyString += FString::Printf(TEXT("_STRTSP"));
 		}
 	}
 
@@ -2080,14 +2141,6 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 		}
 	}
 
-	{
-		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataBool(TEXT("r.Shaders.UseLegacyPreprocessor"));
-		if (CVar && CVar->GetValueOnAnyThread() != 0)
-		{
-			KeyString += TEXT("_MCPP");
-		}
-	}
-
 	if (RHISupportsRenderTargetWriteMask(Platform))
 	{
 		KeyString += TEXT("_RTWM");
@@ -2115,8 +2168,8 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 
 	if (RHIGetBindlessSupport(Platform) != ERHIBindlessSupport::Unsupported)
 	{
-		const ERHIBindlessConfiguration ResourcesConfig = RHIGetBindlessResourcesConfiguration(Platform);
-		const ERHIBindlessConfiguration SamplersConfig = RHIGetBindlessSamplersConfiguration(Platform);
+		const ERHIBindlessConfiguration ResourcesConfig = UE::ShaderCompiler::GetBindlessResourcesConfiguration(ShaderFormatName);
+		const ERHIBindlessConfiguration SamplersConfig = UE::ShaderCompiler::GetBindlessSamplersConfiguration(ShaderFormatName);
 
 		if (ResourcesConfig != ERHIBindlessConfiguration::Disabled)
 		{

@@ -17,13 +17,13 @@ struct CStaticStructProvider;
 /**
 * Calculates a checksum from the input provided to the archive.
 */
-class COREUOBJECT_API FArchiveCrc32 : public FArchiveUObject
+class FArchiveCrc32 : public FArchiveUObject
 {
 public:
 	/**
 	* Default constructor.
 	*/
-	FArchiveCrc32(uint32 InCRC = 0, UObject* InRootObject = nullptr);
+	COREUOBJECT_API FArchiveCrc32(uint32 InCRC = 0, UObject* InRootObject = nullptr);
 
 	/**
 	 * @return The checksum computed so far.
@@ -31,9 +31,9 @@ public:
 	uint32 GetCrc() const { return CRC; }
 
 	//~ Begin FArchive Interface
-	virtual void Serialize(void* Data, int64 Num) override;
-	virtual FArchive& operator<<(class FName& Name);
-	virtual FArchive& operator<<(class UObject*& Object);
+	COREUOBJECT_API virtual void Serialize(void* Data, int64 Num) override;
+	COREUOBJECT_API virtual FArchive& operator<<(class FName& Name);
+	COREUOBJECT_API virtual FArchive& operator<<(class UObject*& Object);
 	virtual FString GetArchiveName() const { return TEXT("FArchiveCrc32"); }
 	//~ End FArchive Interface
 
@@ -49,7 +49,7 @@ private:
 	* @param Value The value to serialize.
 	*/
 template <typename StructType>
-FORCEINLINE typename TEnableIf<TModels<CStaticStructProvider, StructType>::Value, FArchive&>::Type operator <<(FArchive& Ar, const StructType& Value)
+FORCEINLINE typename TEnableIf<TModels_V<CStaticStructProvider, StructType>, FArchive&>::Type operator <<(FArchive& Ar, const StructType& Value)
 {
 	StructType* MutableValue = const_cast<StructType*>(&Value);
 	StructType::StaticStruct()->SerializeItem(Ar, MutableValue, nullptr);

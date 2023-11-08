@@ -86,6 +86,8 @@ FPluginDescriptor::FPluginDescriptor()
 	, bInstalled(false)
 	, bRequiresBuildPlatform(false)
 	, bIsHidden(false)
+	, bIsSealed(false)
+	, bNoCode(false)
 	, bExplicitlyLoaded(false)
 	, bHasExplicitPlatforms(false)
 	, bIsPluginExtension(false)
@@ -241,11 +243,13 @@ bool FPluginDescriptor::Read(const FJsonObject& Object, FText* OutFailReason /*=
 
 	Object.TryGetBoolField(TEXT("CanContainContent"), bCanContainContent);
 	Object.TryGetBoolField(TEXT("CanContainVerse"), bCanContainVerse);
+	Object.TryGetBoolField(TEXT("NoCode"), bNoCode);
 	Object.TryGetBoolField(TEXT("IsBetaVersion"), bIsBetaVersion);
 	Object.TryGetBoolField(TEXT("IsExperimentalVersion"), bIsExperimentalVersion);
 	Object.TryGetBoolField(TEXT("Installed"), bInstalled);
 	Object.TryGetBoolField(TEXT("RequiresBuildPlatform"), bRequiresBuildPlatform);
 	Object.TryGetBoolField(TEXT("Hidden"), bIsHidden);
+	Object.TryGetBoolField(TEXT("Sealed"), bIsSealed);
 	Object.TryGetBoolField(TEXT("ExplicitlyLoaded"), bExplicitlyLoaded);
 	Object.TryGetBoolField(TEXT("HasExplicitPlatforms"), bHasExplicitPlatforms);
 
@@ -262,6 +266,8 @@ bool FPluginDescriptor::Read(const FJsonObject& Object, FText* OutFailReason /*=
 	{
 		return false;
 	}
+
+	Object.TryGetStringArrayField(TEXT("DisallowedPlugins"), DisallowedPlugins);
 
 	return true;
 }
@@ -372,6 +378,10 @@ void FPluginDescriptor::UpdateJson(FJsonObject& JsonObject) const
 	{
 		JsonObject.SetBoolField(TEXT("CanContainVerse"), bCanContainVerse);
 	}
+	if (bNoCode)
+	{
+		JsonObject.SetBoolField(TEXT("NoCode"), bNoCode);
+	}
 	JsonObject.SetBoolField(TEXT("IsBetaVersion"), bIsBetaVersion);
 	JsonObject.SetBoolField(TEXT("IsExperimentalVersion"), bIsExperimentalVersion);
 	JsonObject.SetBoolField(TEXT("Installed"), bInstalled);
@@ -435,6 +445,15 @@ void FPluginDescriptor::UpdateJson(FJsonObject& JsonObject) const
 		JsonObject.RemoveField(TEXT("Hidden"));
 	}
 
+	if (bIsSealed)
+	{
+		JsonObject.SetBoolField(TEXT("Sealed"), bIsSealed);
+	}
+	else
+	{
+		JsonObject.RemoveField(TEXT("Sealed"));
+	}
+
 	if (bExplicitlyLoaded)
 	{
 		JsonObject.SetBoolField(TEXT("ExplicitlyLoaded"), bExplicitlyLoaded);
@@ -457,6 +476,20 @@ void FPluginDescriptor::UpdateJson(FJsonObject& JsonObject) const
 	PostBuildSteps.UpdateJson(JsonObject, TEXT("PostBuildSteps"));
 
 	FPluginReferenceDescriptor::UpdateArray(JsonObject, TEXT("Plugins"), Plugins);
+
+	if (DisallowedPlugins.Num() > 0)
+	{
+		TArray<TSharedPtr<FJsonValue>> DisallowedPluginsValues;
+		for (const FString& DisallowedPlugin : DisallowedPlugins)
+		{
+			DisallowedPluginsValues.Add(MakeShareable(new FJsonValueString(DisallowedPlugin)));
+		}
+		JsonObject.SetArrayField(TEXT("DisallowedPlugins"), DisallowedPluginsValues);
+	}
+	else
+	{
+		JsonObject.RemoveField(TEXT("DisallowedPlugins"));
+	}
 
 #if WITH_EDITOR
 	for (const auto& KVP : AdditionalFieldsToWrite)

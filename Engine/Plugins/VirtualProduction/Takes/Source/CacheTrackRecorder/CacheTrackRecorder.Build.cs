@@ -6,8 +6,6 @@ public class CacheTrackRecorder : ModuleRules
 {
 	public CacheTrackRecorder(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PublicIncludePaths.Add(ModuleDirectory + "/Public");
-		
 		PrivateDependencyModuleNames.AddRange(
 			new[] {
 				"Core",
@@ -15,7 +13,6 @@ public class CacheTrackRecorder : ModuleRules
 				"Engine",
 				"LevelEditor",
 				"LevelSequence",
-				"LevelSequenceEditor",
 				"MovieScene",
 				"TakesCore",
 				"TakeMovieScene",
@@ -28,9 +25,9 @@ public class CacheTrackRecorder : ModuleRules
 
 		PublicDependencyModuleNames.AddRange(
 			new[] {
-                "TakeTrackRecorders",
-                "Sequencer",
-            }
-        );
-    }
+				"TakeTrackRecorders",
+				"Sequencer",
+			}
+		);
+	}
 }

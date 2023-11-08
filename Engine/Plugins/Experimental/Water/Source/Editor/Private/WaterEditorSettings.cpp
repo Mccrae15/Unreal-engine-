@@ -42,6 +42,11 @@ UMaterialInterface* FWaterBodyDefaults::GetWaterMaterial() const
 	return WaterMaterial.LoadSynchronous();
 }
 
+UMaterialInterface* FWaterBodyDefaults::GetWaterStaticMeshMaterial() const
+{
+	return WaterStaticMeshMaterial.LoadSynchronous();
+}
+
 UMaterialInterface* FWaterBodyDefaults::GetWaterHLODMaterial() const
 {
 	return WaterHLODMaterial.LoadSynchronous();
@@ -64,6 +69,7 @@ FWaterBodyRiverDefaults::FWaterBodyRiverDefaults()
 	BrushDefaults.HeightmapSettings.FalloffSettings.ZOffset = 16.0f;
 	
 	WaterMaterial = FSoftObjectPath(TEXT("/Water/Materials/WaterSurface/Water_Material_River.Water_Material_River"));
+	WaterStaticMeshMaterial = FSoftObjectPath(TEXT("/Water/Materials/WaterSurface/LODs/Water_Material_River_LOD.Water_Material_River_LOD"));
 }
 
 UMaterialInterface* FWaterBodyRiverDefaults::GetRiverToOceanTransitionMaterial() const
@@ -87,6 +93,7 @@ FWaterBodyLakeDefaults::FWaterBodyLakeDefaults()
 	BrushDefaults.HeightmapSettings.FalloffSettings.ZOffset = 0.0f;
 
 	WaterMaterial = FSoftObjectPath(TEXT("/Water/Materials/WaterSurface/Water_Material_Lake.Water_Material_Lake"));
+	WaterStaticMeshMaterial = FSoftObjectPath(TEXT("/Water/Materials/WaterSurface/LODs/Water_Material_Lake_LOD.Water_Material_Lake_LOD"));
 }
 
 FWaterBodyOceanDefaults::FWaterBodyOceanDefaults()
@@ -100,6 +107,7 @@ FWaterBodyOceanDefaults::FWaterBodyOceanDefaults()
 	BrushDefaults.HeightmapSettings.FalloffSettings.ZOffset = 32.0f;
 
 	WaterMaterial = FSoftObjectPath(TEXT("/Water/Materials/WaterSurface/Water_Material_Ocean.Water_Material_Ocean"));
+	WaterStaticMeshMaterial = FSoftObjectPath(TEXT("/Water/Materials/WaterSurface/LODs/Water_Material_Ocean_LOD.Water_Material_Ocean_LOD"));
 }
 
 FWaterBodyCustomDefaults::FWaterBodyCustomDefaults()
@@ -151,16 +159,16 @@ UWaterEditorSettings::UWaterEditorSettings()
 {
 
 	// Ideally, this should be done in FWaterBodyLakeDefaults but we need CreateEditorOnlyDefaultSubobject, which is only available in a UObject : 
+	if (UWaterWavesAssetReference* WaterWavesRef = CreateEditorOnlyDefaultSubobject<UWaterWavesAssetReference>(TEXT("DefaultLakeWaterWaves"), /* bTransient = */false))
 	{
-		UWaterWavesAssetReference* WaterWavesRef = CreateEditorOnlyDefaultSubobject<UWaterWavesAssetReference>(TEXT("DefaultLakeWaterWaves"), /* bTransient = */false);
 		static ConstructorHelpers::FObjectFinder<UWaterWavesAsset> WaterWavesAssetRef(TEXT("/Water/Waves/GerstnerWaves_Lake.GerstnerWaves_Lake"));
 		WaterWavesRef->SetWaterWavesAsset(WaterWavesAssetRef.Object);
 		WaterBodyLakeDefaults.WaterWaves = WaterWavesRef;
 	}
 
 	// Ideally, this should be done in FWaterBodyLakeDefaults but we need CreateEditorOnlyDefaultSubobject, which is only available in a UObject : 
+	if (UWaterWavesAssetReference* WaterWavesRef = CreateEditorOnlyDefaultSubobject<UWaterWavesAssetReference>(TEXT("DefaultOceanWaterWaves"), /* bTransient = */false))
 	{
-		UWaterWavesAssetReference* WaterWavesRef = CreateEditorOnlyDefaultSubobject<UWaterWavesAssetReference>(TEXT("DefaultOceanWaterWaves"), /* bTransient = */false);
 		static ConstructorHelpers::FObjectFinder<UWaterWavesAsset> WaterWavesAssetRef(TEXT("/Water/Waves/GerstnerWaves_Ocean.GerstnerWaves_Ocean"));
 		WaterWavesRef->SetWaterWavesAsset(WaterWavesAssetRef.Object);
 		WaterBodyOceanDefaults.WaterWaves = WaterWavesRef;

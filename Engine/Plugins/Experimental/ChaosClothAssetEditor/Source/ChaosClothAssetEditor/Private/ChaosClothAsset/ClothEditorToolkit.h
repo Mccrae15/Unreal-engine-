@@ -6,7 +6,6 @@
 #include "Dataflow/DataflowObjectInterface.h"
 #include "ChaosClothAsset/ClothEditorPreviewScene.h"
 
-class FChaosClothAssetEditor3DViewportClient;
 template<typename T> class SComboBox;
 class SClothCollectionOutliner;
 class UDataflow;
@@ -16,6 +15,14 @@ class SDataflowGraphEditor;
 class IStructureDetailsView;
 class UEdGraphNode;
 class UChaosClothComponent;
+class SChaosClothAssetEditorRestSpaceViewport;
+class SChaosClothAssetEditor3DViewport;
+
+namespace UE::Chaos::ClothAsset
+{
+class FClothEditorSimulationVisualization;
+class FChaosClothAssetEditor3DViewportClient;
+}
 
 namespace Dataflow
 {
@@ -30,8 +37,10 @@ namespace Dataflow
 	};
 }
 
+namespace UE::Chaos::ClothAsset
+{
 /**
- * The toolkit is supposed to act as the UI manager for the asset editor. It's responsible 
+ * The toolkit is supposed to act as the UI manager for the asset editor. It's responsible
  * for setting up viewports and most toolbars, except for the internals of the mode panel.
  * However, because the toolkit also sets up the mode manager, and much of the important
  * state is held in the UChaosClothAssetEditorMode managed by the mode manager, the toolkit also ends up
@@ -72,12 +81,15 @@ private:
 	// FAssetEditorToolkit
 	virtual void AddViewportOverlayWidget(TSharedRef<SWidget> InViewportOverlayWidget) override;
 	virtual void RemoveViewportOverlayWidget(TSharedRef<SWidget> InViewportOverlayWidget) override;
-	virtual bool OnRequestClose() override;
+	virtual bool OnRequestClose(EAssetEditorCloseReason InCloseReason) override;
 	virtual void PostInitAssetEditor() override;
+	virtual void InitToolMenuContext(FToolMenuContext& MenuContext) override;
+	virtual void GetSaveableObjects(TArray<UObject*>& OutObjects) const override;
+	virtual bool ShouldReopenEditorForSavedAsset(const UObject* Asset) const override;
+	virtual void OnAssetsSavedAs(const TArray<UObject*>& SavedObjects) override;
 
 	// IAssetEditorInstance
-	// TODO: If this returns true then the editor cannot re-open after it's closed. Figure out why.
-	virtual bool IsPrimaryEditor() const override { return false; };
+	virtual bool IsPrimaryEditor() const override { return true; };
 
 	// IToolkit
 	virtual FText GetToolkitName() const override;
@@ -99,6 +111,23 @@ private:
 	void InitDetailsViewPanel();
 	void OnFinishedChangingAssetProperties(const FPropertyChangedEvent&);
 
+	void OnClothAssetChanged();
+	void InvalidateViews();
+
+	// Dataflow
+	void EvaluateNode(FDataflowNode* Node, FDataflowOutput* Out);
+	TSharedRef<SDataflowGraphEditor> CreateGraphEditorWidget();
+	void ReinitializeGraphEditorWidget();
+	TSharedPtr<IStructureDetailsView> CreateNodeDetailsEditorWidget(UObject* ObjectToEdit);
+
+	// DataflowEditorActions
+	void OnPropertyValueChanged(const FPropertyChangedEvent& PropertyChangedEvent);
+	bool OnNodeVerifyTitleCommit(const FText& NewText, UEdGraphNode* GraphNode, FText& OutErrorMessage) const;
+	void OnNodeTitleCommitted(const FText& InNewText, ETextCommit::Type InCommitType, UEdGraphNode* GraphNode) const;
+	void OnNodeSelectionChanged(const TSet<UObject*>& NewSelection);
+	void OnNodeDeleted(const TSet<UObject*>& DeletedNodes) const;
+	void OnNodeSingleClicked(UObject* ClickedNode) const;
+
 	/** Scene in which the 3D sim space preview meshes live. Ownership shared with AdvancedPreviewSettingsWidget*/
 	TSharedPtr<FChaosClothPreviewScene> ClothPreviewScene;
 
@@ -106,43 +135,30 @@ private:
 	AssetEditorViewportFactoryFunction ClothPreviewViewportDelegate;
 	TSharedPtr<FChaosClothAssetEditor3DViewportClient> ClothPreviewViewportClient;
 	TSharedPtr<FAssetEditorModeManager> ClothPreviewEditorModeManager;
+	TSharedPtr<FClothEditorSimulationVisualization> ClothEditorSimulationVisualization;
 
-	TWeakPtr<SEditorViewport> RestSpaceViewport;
+	TSharedPtr<SChaosClothAssetEditorRestSpaceViewport> RestSpaceViewportWidget;
+	TSharedPtr<SChaosClothAssetEditor3DViewport> PreviewViewportWidget;
 
 	TSharedPtr<SDockTab> PreviewSceneDockTab;
 	TSharedPtr<SWidget> AdvancedPreviewSettingsWidget;
 
 	TSharedPtr<SClothCollectionOutliner> Outliner;
 
-	TSharedPtr<SComboBox<FName>> SelectedGroupNameComboBox;
-	TArray<FName> ClothCollectionGroupNames;		// Data source for SelectedGroupNameComboBox
-
-	//~ Begin Dataflow support
-	 
+	// Dataflow
 	UDataflow* Dataflow = nullptr;
-
-	void EvaluateNode(FDataflowNode* Node, FDataflowOutput* Out);
-
-	static const FName GraphCanvasTabId;
-	TSharedPtr<SDataflowGraphEditor> GraphEditor;
-	TSharedRef<SDataflowGraphEditor> CreateGraphEditorWidget();
-	void ReinitializeGraphEditorWidget();
-
-	static const FName NodeDetailsTabId;
-	TSharedPtr<IStructureDetailsView> NodeDetailsEditor;
-	TSharedPtr<IStructureDetailsView> CreateNodeDetailsEditorWidget(UObject* ObjectToEdit);
-
 	FString DataflowTerminalPath = "";
 	TSharedPtr<Dataflow::FEngineContext> DataflowContext;
 	Dataflow::FTimestamp LastDataflowNodeTimestamp = Dataflow::FTimestamp::Invalid;
+	FDelegateHandle OnNodeInvalidatedDelegateHandle;
+	TSharedPtr<FDataflowNode> DataflowNode;
 
-	// DataflowEditorActions
-	void OnPropertyValueChanged(const FPropertyChangedEvent& PropertyChangedEvent);
-	bool OnNodeVerifyTitleCommit(const FText& NewText, UEdGraphNode* GraphNode, FText& OutErrorMessage) const;
-	void OnNodeTitleCommitted(const FText& InNewText, ETextCommit::Type InCommitType, UEdGraphNode* GraphNode) const;
-	void OnNodeSelectionChanged(const TSet<UObject*>& NewSelection) const;
+	static const FName GraphCanvasTabId;
+	TSharedPtr<SDockTab> GraphEditorTab;
+	TSharedPtr<SDataflowGraphEditor> GraphEditor;
 
-	//~ End Dataflow support
-
+	static const FName NodeDetailsTabId;
+	TSharedPtr<SDockTab> NodeDetailsTab;
+	TSharedPtr<IStructureDetailsView> NodeDetailsEditor;
 };
-
+} // namespace UE::Chaos::ClothAsset

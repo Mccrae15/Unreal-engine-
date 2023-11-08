@@ -2,13 +2,12 @@
 
 #pragma once
 
-#include "CoreTypes.h"
+#include "HAL/Platform.h"
 #include "Logging/LogVerbosity.h"
 #include "Templates/Function.h"
 #include "TraceServices/Containers/Tables.h"
 #include "TraceServices/Model/AnalysisSession.h"
-
-template <typename FuncType> class TFunctionRef;
+#include "UObject/NameTypes.h"
 
 namespace TraceServices
 {
@@ -63,13 +62,13 @@ public:
 	*
 	* @param CategoryPointer	The unique identity (memory address) of the category instrumentation.
 	*
-	* @return A reference to the category stucture.
+	* @return A reference to the category structure.
 	*/
 	virtual FLogCategoryInfo& GetCategory(uint64 CategoryPointer) = 0;
-	
+
 	/*
 	* Update a log message's Category information.
-	* 
+	*
 	* @param LogPoint			The log message to update.
 	* @param InCategoryPointer	The category.
 	*/
@@ -98,7 +97,7 @@ public:
 	* @param LogPoint		The log message to update.
 	* @param InVerbosity	The verbosity of the message.
 	*/
-	virtual void UpdateMessageVebosity(uint64 LogPoint, ELogVerbosity::Type InVerbosity) = 0;
+	virtual void UpdateMessageVerbosity(uint64 LogPoint, ELogVerbosity::Type InVerbosity) = 0;
 
 	/*
 	* Update a log message's information.
@@ -131,6 +130,7 @@ public:
 	virtual void AppendMessage(uint64 LogPoint, double Time, const TCHAR* Text) = 0;
 };
 
+TRACESERVICES_API FName GetLogProviderName();
 TRACESERVICES_API const ILogProvider& ReadLogProvider(const IAnalysisSession& Session);
 TRACESERVICES_API IEditableLogProvider& EditLogProvider(IAnalysisSession& Session);
 TRACESERVICES_API void FormatString(TCHAR* OutputString, uint32 OutputStringCount, const TCHAR* FormatString, const uint8* FormatArgs);

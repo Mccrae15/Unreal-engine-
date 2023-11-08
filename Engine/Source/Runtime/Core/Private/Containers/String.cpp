@@ -18,6 +18,7 @@
 #include "Misc/VarArgs.h"
 #include "Serialization/Archive.h"
 #include "String/HexToBytes.h"
+#include "String/ParseTokens.h"
 #include "Templates/MemoryOps.h"
 #include "Templates/RemoveReference.h"
 #include "Templates/UnrealTemplate.h"
@@ -1277,37 +1278,18 @@ bool FString::IsNumeric() const
 	return FCString::IsNumeric(Data.GetData());
 }
 
-/**
- * Breaks up a delimited string into elements of a string array.
- *
- * @param	InArray		The array to fill with the string pieces
- * @param	pchDelim	The string to delimit on
- * @param	InCullEmpty	If 1, empty strings are not added to the array
- *
- * @return	The number of elements in InArray
- */
 int32 FString::ParseIntoArray( TArray<FString>& OutArray, const TCHAR* pchDelim, const bool InCullEmpty ) const
 {
-	// Make sure the delimit string is not null or empty
 	check(pchDelim);
 	OutArray.Reset();
-	const TCHAR *Start = **this;
-	const int32 DelimLength = FCString::Strlen(pchDelim);
-	if (Start && *Start != TEXT('\0') && DelimLength)
+	// TODO Legacy behavior: if DelimLength is 0 we return an empty array. Can we change this to return { Text }?
+	if (pchDelim[0] != '\0')
 	{
-		while( const TCHAR *At = FCString::Strstr(Start,pchDelim) )
-		{
-			if (!InCullEmpty || At-Start)
-			{
-				OutArray.Emplace(UE_PTRDIFF_TO_INT32(At-Start),Start);
-			}
-			Start = At + DelimLength;
-		}
-		if (!InCullEmpty || *Start)
-		{
-			OutArray.Emplace(Start);
-		}
-
+		UE::String::EParseTokensOptions ParseOptions = UE::String::EParseTokensOptions::IgnoreCase |
+			(InCullEmpty ? UE::String::EParseTokensOptions::SkipEmpty : UE::String::EParseTokensOptions::None);
+		UE::String::ParseTokens(FStringView(*this), FStringView(pchDelim),
+			[&OutArray](FStringView Token) { OutArray.Emplace(Token); },
+			ParseOptions);
 	}
 	return OutArray.Num();
 }
@@ -1406,7 +1388,7 @@ int32 FString::ParseIntoArray(TArray<FString>& OutArray, const TCHAR* const * De
 				if(!InCullEmpty || SubstringLength != 0)
 				{
 					// ... add new string from substring beginning up to the beginning of this delimiter.
-					new (OutArray) FString(SubstringEndIndex - SubstringBeginIndex, Start + SubstringBeginIndex);
+					OutArray.Emplace(SubstringEndIndex - SubstringBeginIndex, Start + SubstringBeginIndex);
 				}
 				// Next substring begins at the end of the discovered delimiter.
 				SubstringBeginIndex = SubstringEndIndex + DelimiterLength;
@@ -1424,7 +1406,7 @@ int32 FString::ParseIntoArray(TArray<FString>& OutArray, const TCHAR* const * De
 		if(!InCullEmpty || SubstringLength != 0)
 		{
 			// ... add new string from substring beginning up to the beginning of this delimiter.
-			new (OutArray) FString(Start + SubstringBeginIndex);
+			OutArray.Emplace(Start + SubstringBeginIndex);
 		}
 	}
 

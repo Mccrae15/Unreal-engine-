@@ -8,6 +8,7 @@
 #include "Sections/MovieSceneSkeletalAnimationSection.h"
 #include "MovieSceneSkeletalAnimationTrack.generated.h"
 
+enum class ESwapRootBone : uint8;
 
 /**Struct to hold the cached root motion positions based upon how we calculated them.
 * Also provides way to get the root motion at a particular time.
@@ -48,7 +49,7 @@ public:
 	MOVIESCENETRACKS_API virtual UMovieSceneSection* AddNewAnimationOnRow(FFrameNumber KeyTime, class UAnimSequenceBase* AnimSequence, int32 RowIndex);
 
 	/** Adds a new animation to this track on the next available/non-overlapping row */
-	MOVIESCENETRACKS_API virtual UMovieSceneSection* AddNewAnimation(FFrameNumber KeyTime, class UAnimSequenceBase* AnimSequence) { return AddNewAnimationOnRow(KeyTime, AnimSequence, INDEX_NONE); }
+	virtual UMovieSceneSection* AddNewAnimation(FFrameNumber KeyTime, class UAnimSequenceBase* AnimSequence) { return AddNewAnimationOnRow(KeyTime, AnimSequence, INDEX_NONE); }
 
 	/** Gets the animation sections at a certain time */
 	MOVIESCENETRACKS_API TArray<UMovieSceneSection*> GetAnimSectionsAtTime(FFrameNumber Time);
@@ -119,6 +120,15 @@ public:
 	/** Whether to blend and adjust the first child node with animation instead of the root, this should be true for blending when the root is static, false if the animations have proper root motion*/
 	UPROPERTY(EditAnywhere, Category = "Root Motions")
 	bool bBlendFirstChildOfRoot;
+
+	/** If on the root bone transform will be swapped to the specified root*/
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Setter,Getter, Category = "Root Motions")
+	ESwapRootBone SwapRootBone;
+
+	UFUNCTION()
+	MOVIESCENETRACKS_API void SetSwapRootBone(ESwapRootBone InValue);
+	UFUNCTION()
+	MOVIESCENETRACKS_API ESwapRootBone GetSwapRootBone() const;
 
 #if WITH_EDITORONLY_DATA
 public:

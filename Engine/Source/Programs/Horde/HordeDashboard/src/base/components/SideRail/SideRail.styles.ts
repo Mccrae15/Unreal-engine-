@@ -1,4 +1,5 @@
-import { FontWeights, getFocusOutlineStyle, IStyleFunction } from '@fluentui/react/lib/index';
+//import { FontWeights, getFocusOutlineStyle, IStyleFunction } from '@fluentui/react/lib/index';
+import { FontWeights, getFocusOutlineStyle, IStyleFunction } from '@fluentui/react';
 import { modeColors } from '../../../styles/Styles';
 import { ISideRailStyleProps, ISideRailStyles } from './SideRail.types';
 
@@ -41,9 +42,9 @@ export const getStyles: IStyleFunction<ISideRailStyleProps, ISideRailStyles> = p
           {
             display: 'block',
             flex: '1',
-            padding: '4px 0px',
+            padding: '4px 20px',
             selectors: {              
-              ':active,:visited,:hover,:focus': { background: theme.palette.neutralLight }
+              ':active,:visited,:hover': { color: modeColors.text, textDecoration: "none", background: theme.palette.neutralLight }
             }
           },
           getFocusOutlineStyle(theme, 1)

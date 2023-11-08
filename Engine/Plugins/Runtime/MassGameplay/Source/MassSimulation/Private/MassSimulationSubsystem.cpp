@@ -196,12 +196,8 @@ void UMassSimulationSubsystem::OnProcessingPhaseStarted(const float DeltaSeconds
 #if WITH_EDITOR
 void UMassSimulationSubsystem::OnPieBegin(const bool bIsSimulation)
 {
-	UWorld* World = GetWorld();
-	if (!World)
-	{
-		// called so that we're not processing phases for the editor world while PIE/SIE is running
-		StopSimulation();
-	}
+	// called so that we're not processing phases for the editor world while PIE/SIE is running
+	StopSimulation();
 }
 
 void UMassSimulationSubsystem::OnPieEnded(const bool bIsSimulation)

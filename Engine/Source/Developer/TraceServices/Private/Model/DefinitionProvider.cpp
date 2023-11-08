@@ -1,15 +1,11 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DefinitionProvider.h"
+
 #include "HAL/UnrealMemory.h"
-#include "UObject/NameTypes.h"
 
 namespace TraceServices
 {
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-const FName FDefinitionProvider::ProviderName(TEXT("DefinitionProvider"));
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -56,16 +52,24 @@ void* FDefinitionProvider::Allocate(uint32 Size, uint32 Alignment)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-IDefinitionProvider* GetDefinitionProvider(IAnalysisSession& Session)
+FName GetDefinitionProviderName()
 {
-	return Session.EditProvider<IDefinitionProvider>(FDefinitionProvider::ProviderName);
+	static const FName Name("DefinitionProvider");
+	return Name;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 const IDefinitionProvider* ReadDefinitionProvider(const IAnalysisSession& Session)
 {
-	return Session.ReadProvider<IDefinitionProvider>(FDefinitionProvider::ProviderName);
+	return Session.ReadProvider<IDefinitionProvider>(GetDefinitionProviderName());
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+IDefinitionProvider* EditDefinitionProvider(IAnalysisSession& Session)
+{
+	return Session.EditProvider<IDefinitionProvider>(GetDefinitionProviderName());
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

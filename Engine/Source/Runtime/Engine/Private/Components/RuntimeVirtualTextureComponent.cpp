@@ -5,6 +5,7 @@
 #include "Async/TaskGraphInterfaces.h"
 #include "GameDelegates.h"
 #include "Engine/Texture.h"
+#include "Engine/World.h"
 #include "Logging/MessageLog.h"
 #include "GameFramework/Actor.h"
 #include "Misc/UObjectToken.h"
@@ -15,6 +16,7 @@
 #include "VT/RuntimeVirtualTexture.h"
 #include "VT/VirtualTextureBuilder.h"
 #include "RenderUtils.h"
+#include "SceneUtils.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(RuntimeVirtualTextureComponent)
 
@@ -43,11 +45,21 @@ bool URuntimeVirtualTextureComponent::IsReadyForFinishDestroy()
 	return bResult;
 }
 
+bool URuntimeVirtualTextureComponent::IsActiveInWorld() const
+{
+	UWorld* World = GetWorld();
+	return ((World != nullptr) 
+		&& ((World->WorldType == EWorldType::Game) 
+			|| (World->WorldType == EWorldType::Editor) 
+			|| (World->WorldType == EWorldType::PIE)));
+}
+
 #if WITH_EDITOR
 
 void URuntimeVirtualTextureComponent::OnRegister()
 {
 	Super::OnRegister();
+
 	// PIE duplicate will take ownership of the URuntimeVirtualTexture, so we add a delegate to be called when PIE finishes allowing us to retake ownership.
 	PieEndDelegateHandle = FGameDelegates::Get().GetEndPlayMapDelegate().AddUObject(this, &URuntimeVirtualTextureComponent::MarkRenderStateDirty);
 }
@@ -78,7 +90,8 @@ void URuntimeVirtualTextureComponent::GetHidePrimitiveSettings(bool& OutHidePrim
 
 bool URuntimeVirtualTextureComponent::IsVisible() const
 {
-	return Super::IsVisible() && UseVirtualTexturing(GetScene()->GetFeatureLevel());
+	// Make sure to have the component do nothing if VT is disabled or if the world is not compatible with RVT
+	return Super::IsVisible() && IsActiveInWorld() && UseVirtualTexturing(GetScene()->GetFeatureLevel());
 }
 
 void URuntimeVirtualTextureComponent::ApplyWorldOffset(const FVector& InOffset, bool bWorldShift)
@@ -90,7 +103,8 @@ void URuntimeVirtualTextureComponent::ApplyWorldOffset(const FVector& InOffset, 
 
 void URuntimeVirtualTextureComponent::CreateRenderState_Concurrent(FRegisterComponentContext* Context)
 {
-	if (ShouldRender() && VirtualTexture != nullptr)
+	// Make sure not to create a render state if the world is not compatible with RVT :
+	if (IsActiveInWorld() && ShouldRender() && VirtualTexture != nullptr)
 	{
 		// This will modify the URuntimeVirtualTexture and allocate its VT
 		GetScene()->AddRuntimeVirtualTexture(this);
@@ -101,8 +115,11 @@ void URuntimeVirtualTextureComponent::CreateRenderState_Concurrent(FRegisterComp
 
 void URuntimeVirtualTextureComponent::SendRenderTransform_Concurrent()
 {
-	if (ShouldRender() && VirtualTexture != nullptr)
+	// We don't have a render state if the world is not compatible with RVT :
+	if (IsActiveInWorld() && ShouldRender() && VirtualTexture != nullptr)
 	{
+		checkf(IsActiveInWorld(), TEXT("ShouldRender should never return true for a world where we're inactive"));
+
 		// We do a full recreate of the URuntimeVirtualTexture here which can cause a visual glitch.
 		// We do this because, for an arbitrary transform, there is no way to only modify the transform and maintain the VT contents.
 		// Possibly, with some work, the contents could be maintained for any transform change that is an exact multiple of the page size in world space.
@@ -114,15 +131,18 @@ void URuntimeVirtualTextureComponent::SendRenderTransform_Concurrent()
 
 void URuntimeVirtualTextureComponent::DestroyRenderState_Concurrent()
 {
-	// This will modify the URuntimeVirtualTexture and free its VT
-	GetScene()->RemoveRuntimeVirtualTexture(this);
+	if (IsActiveInWorld())
+	{
+		// This will modify the URuntimeVirtualTexture and free its VT
+		GetScene()->RemoveRuntimeVirtualTexture(this);
+	}
 
 	Super::DestroyRenderState_Concurrent();
 }
 
 void URuntimeVirtualTextureComponent::Invalidate(FBoxSphereBounds const& InWorldBounds)
 {
-	if (GetScene() != nullptr)
+	if (IsActiveInWorld() && (GetScene() != nullptr))
 	{
 		GetScene()->InvalidateRuntimeVirtualTexture(this, InWorldBounds);
 	}
@@ -191,23 +211,43 @@ uint64 URuntimeVirtualTextureComponent::CalculateStreamingTextureSettingsHash() 
 	return Settings.PackedValue;
 }
 
-bool URuntimeVirtualTextureComponent::IsStreamingLowMips() const
+bool URuntimeVirtualTextureComponent::IsStreamingLowMips(EShadingPath ShadingPath) const
 {
+	checkf(IsActiveInWorld(), TEXT("This function should never be called for a world where we're inactive"));
+	
 #if WITH_EDITOR
 	if (!bUseStreamingLowMipsInEditor && GIsEditor)
 	{
 		return false;
 	}
 #endif
-	return VirtualTexture != nullptr && StreamingTexture != nullptr && StreamingTexture->Texture != nullptr;
+	return VirtualTexture != nullptr && StreamingTexture != nullptr && StreamingTexture->GetVirtualTexture(ShadingPath) != nullptr;
 }
 
-bool URuntimeVirtualTextureComponent::IsStreamingTextureInvalid() const
+bool URuntimeVirtualTextureComponent::IsStreamingTextureInvalid(EShadingPath ShadingPath) const
 {
-	return VirtualTexture != nullptr && StreamingTexture != nullptr && StreamingTexture->Texture != nullptr && StreamingTexture->BuildHash != CalculateStreamingTextureSettingsHash();
+	checkf(IsActiveInWorld(), TEXT("This function should never be called for a world where we're inactive"));
+
+	return 
+		VirtualTexture != nullptr && 
+		StreamingTexture != nullptr && 
+		StreamingTexture->GetVirtualTexture(ShadingPath) != nullptr && 
+		StreamingTexture->BuildHash != CalculateStreamingTextureSettingsHash();
 }
 
 #if WITH_EDITOR
+
+bool URuntimeVirtualTextureComponent::IsStreamingTextureInvalid() const
+{
+	checkf(IsActiveInWorld(), TEXT("This function should never be called for a world where we're inactive"));
+
+	return 
+		VirtualTexture != nullptr && 
+		StreamingTexture != nullptr && 
+		StreamingTexture->GetVirtualTexture(EShadingPath::Deferred) != nullptr && 
+		StreamingTexture->GetVirtualTexture(EShadingPath::Mobile) != nullptr && 
+		StreamingTexture->BuildHash != CalculateStreamingTextureSettingsHash();
+}
 
 // RAII class to release and recreate runtime virtual texture producers associated with a UVirtualTextureBuilder.
 // Required around modifications of a UVirtualTextureBuilder because virtual producers hold pointers to the internal data.
@@ -252,10 +292,10 @@ static void GetLayerFormatSettings(FTextureFormatSettings& OutFormatSettings, EP
 	OutFormatSettings.CompressionYCoCg = IsLayerYCoCg;
 	OutFormatSettings.SRGB = IsLayerSRGB;
 }
-void URuntimeVirtualTextureComponent::InitializeStreamingTexture(uint32 InSizeX, uint32 InSizeY, uint8* InData)
+void URuntimeVirtualTextureComponent::InitializeStreamingTexture(EShadingPath ShadingPath, uint32 InSizeX, uint32 InSizeY, uint8* InData)
 {
 	// We need an existing StreamingTexture object to update.
-	if (VirtualTexture != nullptr && StreamingTexture != nullptr)
+	if (IsActiveInWorld() && VirtualTexture != nullptr && StreamingTexture != nullptr)
 	{
 		FScopedRuntimeVirtualTextureRecreate ProducerRecreate(StreamingTexture);
 
@@ -288,7 +328,7 @@ void URuntimeVirtualTextureComponent::InitializeStreamingTexture(uint32 InSizeX,
 		BuildDesc.InData = InData;
 
 		StreamingTexture->Modify();
-		StreamingTexture->BuildTexture(BuildDesc);
+		StreamingTexture->BuildTexture(ShadingPath, BuildDesc);
 	}
 }
 
@@ -311,7 +351,7 @@ void URuntimeVirtualTextureComponent::CheckForErrors()
 	Super::CheckForErrors();
 
 	// Check if streaming texture has been built with the latest settings. If not then it won't be used which would cause a performance regression.
-	if (IsStreamingTextureInvalid())
+	if (IsActiveInWorld() && IsStreamingTextureInvalid())
 	{
 		FMessageLog("MapCheck").PerformanceWarning()
 			->AddToken(FUObjectToken::Create(this))

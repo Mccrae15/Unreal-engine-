@@ -20,15 +20,48 @@
 struct FPropertyChangedEvent;
 
 /**
+ * Defines the directional strengths of a physical material in term of force per surface area
+ */
+USTRUCT(BlueprintType)
+struct FPhysicalMaterialStrength
+{
+	GENERATED_USTRUCT_BODY()
+
+	FPhysicalMaterialStrength();
+
+	/**
+	* Tensile strength of the material in MegaPascal ( 10^6 N/m2 )
+	* This amount of tension force per area the material can withstand before it fractures
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "PhysicalMaterial", meta = (ClampMin = 0, ForceUnits = "MPa"))
+	float TensileStrength;
+
+	/**
+	* Compression strength of the material in MegaPascal ( 10^6 N/m2 )
+	* This amount of compression force per area the material can withstand before it fractures, crumbles or buckles
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "PhysicalMaterial", meta = (ClampMin = 0, ForceUnits = "MPa"))
+	float CompressionStrength;
+
+	/**
+	* Shear strength of the material in MegaPascal ( 10^6 N/m2 )
+	* This amount of shear force per area the material can withstand before it fractures
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "PhysicalMaterial", meta = (ClampMin = 0, ForceUnits = "MPa"))
+	float ShearStrength;
+};
+
+
+/**
  * Physical materials are used to define the response of a physical object when interacting dynamically with the world.
  */
-UCLASS(BlueprintType, Blueprintable, CollapseCategories, HideCategories = Object)
-class PHYSICSCORE_API UPhysicalMaterial : public UObject
+UCLASS(BlueprintType, Blueprintable, CollapseCategories, HideCategories = Object, MinimalAPI)
+class UPhysicalMaterial : public UObject
 {
 	GENERATED_UCLASS_BODY()
 
-	virtual ~UPhysicalMaterial();
-	UPhysicalMaterial(FVTableHelper& Helper);
+	PHYSICSCORE_API virtual ~UPhysicalMaterial();
+	PHYSICSCORE_API UPhysicalMaterial(FVTableHelper& Helper);
 	//
 	// Surface properties.
 	//
@@ -90,8 +123,9 @@ class PHYSICSCORE_API UPhysicalMaterial : public UObject
 	float RaiseMassToPower;
 
 	/** How much to scale the damage threshold by on any destructible we are applied to */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Destruction)
-	float DestructibleDamageThresholdScale;
+	UE_DEPRECATED(5.3, "This property is not used anywhere, use Geometry Collection damage threshold related features instead")
+	UPROPERTY()
+	float DestructibleDamageThresholdScale_DEPRECATED;
 
 	UPROPERTY()
 	TObjectPtr<class UDEPRECATED_PhysicalMaterialPropertyBase> PhysicalMaterialProperty_DEPRECATED;
@@ -102,6 +136,9 @@ class PHYSICSCORE_API UPhysicalMaterial : public UObject
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = PhysicalProperties)
 	TEnumAsByte<EPhysicalSurface> SurfaceType;
 
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = PhysicalProperties)
+	FPhysicalMaterialStrength Strength;
+
 public:
 
 	TUniquePtr<FPhysicsMaterialHandle> MaterialHandle;
@@ -110,22 +147,22 @@ public:
 
 	//~ Begin UObject Interface
 #if WITH_EDITOR
-	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
-	static void RebuildPhysicalMaterials();
+	PHYSICSCORE_API virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	static PHYSICSCORE_API void RebuildPhysicalMaterials();
 #endif // WITH_EDITOR
-	virtual void PostLoad() override;
-	virtual void FinishDestroy() override;
+	PHYSICSCORE_API virtual void PostLoad() override;
+	PHYSICSCORE_API virtual void FinishDestroy() override;
 	//~ End UObject Interface
 
 	/** Get the physics-interface derived version of this material */
-	FPhysicsMaterialHandle& GetPhysicsMaterial();
+	PHYSICSCORE_API FPhysicsMaterialHandle& GetPhysicsMaterial();
 
-	static void SetEngineDefaultPhysMaterial(UPhysicalMaterial* Material);
+	static PHYSICSCORE_API void SetEngineDefaultPhysMaterial(UPhysicalMaterial* Material);
 
-	static void SetEngineDefaultDestructiblePhysMaterial(UPhysicalMaterial* Material);
+	static PHYSICSCORE_API void SetEngineDefaultDestructiblePhysMaterial(UPhysicalMaterial* Material);
 
 	/** Determine Material Type from input PhysicalMaterial **/
-	static EPhysicalSurface DetermineSurfaceType(UPhysicalMaterial const* PhysicalMaterial);
+	static PHYSICSCORE_API EPhysicalSurface DetermineSurfaceType(UPhysicalMaterial const* PhysicalMaterial);
 };
 
 

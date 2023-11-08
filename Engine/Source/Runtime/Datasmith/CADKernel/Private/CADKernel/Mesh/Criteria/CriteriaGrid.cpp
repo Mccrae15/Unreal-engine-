@@ -2,26 +2,27 @@
 #include "CADKernel/Mesh/Criteria/CriteriaGrid.h"
 
 #include "CADKernel/Mesh/Criteria/Criterion.h"
-
-#include "CADKernel/Topo/TopologicalFace.h"
 #include "CADKernel/Geo/Surfaces/Surface.h"
+#include "CADKernel/Topo/TopologicalFace.h"
 #include "CADKernel/UI/Display.h"
 
 #ifdef CADKERNEL_DEV
-#include "CADKernel/Mesh/Meshers/IsoTriangulator/DefineForDebug.h"
+#include "CADKernel/UI/DefineForDebug.h"
 #endif
 
 namespace UE::CADKernel
 {
 
-void FCriteriaGrid::Init(const FTopologicalFace& Face)
+void FCriteriaGrid::Init()
 {
-	TFunction<void(const TArray<double>&, TArray<double>&)> ComputeMiddlePointsCoordinates = [](const TArray<double>& Tab, TArray<double>& Tab2)
+	TFunction<void(EIso)> ComputeMiddlePointsCoordinates = [&](EIso Iso)
 	{
-		const int32 TabSize = Tab.Num();
-		ensure(TabSize);
+		const TArray<double>& Tab = Face.GetCrossingPointCoordinates(Iso);
+		TArray<double>& Tab2 = CoordinateGrid[Iso];
 
-		Tab2.SetNum(TabSize * 2 - 1);
+		CuttingCount[Iso] = Tab.Num() * 2 - 1;
+		ensure(CuttingCount[Iso]);
+		Tab2.SetNum(CuttingCount[Iso]);
 
 		Tab2[0] = Tab[0];
 		for (int32 Index = 1; Index < Tab.Num(); Index++)
@@ -31,111 +32,91 @@ void FCriteriaGrid::Init(const FTopologicalFace& Face)
 		}
 	};
 
-	FCoordinateGrid CoordinateGrid2;
-	ComputeMiddlePointsCoordinates(Face.GetCrossingPointCoordinates(EIso::IsoU), CoordinateGrid2[EIso::IsoU]);
-	ComputeMiddlePointsCoordinates(Face.GetCrossingPointCoordinates(EIso::IsoV), CoordinateGrid2[EIso::IsoV]);
+	ComputeMiddlePointsCoordinates(EIso::IsoU);
+	ComputeMiddlePointsCoordinates(EIso::IsoV);
 
-	Face.GetCarrierSurface()->EvaluatePointGrid(CoordinateGrid2, Grid, true);
-	TrueUcoorindateCount = CoordinateGrid2[EIso::IsoU].Num();
+	EvaluatePointGrid(CoordinateGrid, false);
 }
 
-FCriteriaGrid::FCriteriaGrid(const FTopologicalFace& InFace)
-	: CoordinateGrid(InFace.GetCrossingPointCoordinates())
+FCriteriaGrid::FCriteriaGrid(FTopologicalFace& InFace)
+	: FGridBase(InFace)
+	, CoordinateGrid(InFace.GetCrossingPointCoordinates())
 {
-	Init(InFace);
+	Init();
+	FaceMinMax.Init();
+
 #ifdef DISPLAY_CRITERIA_GRID
 	Display();
 #endif
 }
 
-#ifdef DISPLAY_CRITERIA_GRID
-void FCriteriaGrid::Display() const
+void FCriteriaGrid::ComputeFaceMinMaxThicknessAlongIso()
 {
-	F3DDebugSession _(TEXT("Grid"));
+	using FGetPointFunc = TFunction<const FPoint& (int32, int32)>;
 
+	TFunction<void(EIso, FGetPointFunc, FGetPointFunc, int32, int32)> ComputeFaceThicknessAlong = [this](EIso Iso, FGetPointFunc GetPointAlong, FGetPointFunc GetIntermediatePointAlong, int32 IsoUCount, int32 IsoVCount)
 	{
-		F3DDebugSession A(TEXT("CriteriaGrid Point 3d"));
-		for (int32 VIndex = 0; VIndex < GetCoordinateCount(EIso::IsoV); ++VIndex)
+		for (int32 VIndex = 0; VIndex < IsoVCount; ++VIndex)
 		{
-			for (int32 UIndex = 0; UIndex < GetCoordinateCount(EIso::IsoU); ++UIndex)
-			{
-				UE::CADKernel::DisplayPoint(GetPoint(UIndex, VIndex), UIndex);
-			}
-		}
-	}
+			const FPoint& StartPoint = GetPointAlong(0, VIndex);
+			const FPoint* PreviousPoint = &GetIntermediatePointAlong(0, VIndex);
+			double Length = StartPoint.Distance(*PreviousPoint);
 
+			for (int32 UIndex = 1; UIndex < IsoUCount - 1; ++UIndex)
+			{
+				const FPoint& Point = GetPointAlong(UIndex, VIndex);
+
+				PreviousPoint = &GetIntermediatePointAlong(UIndex, VIndex);
+				Length += Point.Distance(*PreviousPoint);
+			}
+			const FPoint& LastPoint = GetPointAlong(IsoUCount - 1, VIndex);
+			Length += LastPoint.Distance(*PreviousPoint);
+
+			this->FaceMinMax[Iso].ExtendTo(Length);
+		}
+	};
+
+	FGetPointFunc GetPointAlongU = [this](int32 UIndex, int32 VIndex) -> const FPoint&
 	{
-		F3DDebugSession A(TEXT("CriteriaGrid IntermediateU"));
-		for (int32 VIndex = 0; VIndex < GetCoordinateCount(EIso::IsoV); ++VIndex)
-		{
-			for (int32 UIndex = 0; UIndex < GetCoordinateCount(EIso::IsoU) - 1; ++UIndex)
-			{
-				UE::CADKernel::DisplayPoint(GetIntermediateU(UIndex, VIndex), EVisuProperty::PurplePoint);
-			}
-		}
-	}
+		return GetPoint(UIndex, VIndex);
+	};
 
+	FGetPointFunc GetPointAlongV = [this](int32 VIndex, int32 UIndex) -> const FPoint&
 	{
-		F3DDebugSession A(TEXT("CriteriaGrid IntermediateV"));
-		for (int32 VIndex = 0; VIndex < GetCoordinateCount(EIso::IsoV) - 1; ++VIndex)
-		{
-			for (int32 UIndex = 0; UIndex < GetCoordinateCount(EIso::IsoU); ++UIndex)
-			{
-				UE::CADKernel::DisplayPoint(GetIntermediateV(UIndex, VIndex), EVisuProperty::PurplePoint);
-			}
-		}
-	}
+		return GetPoint(UIndex, VIndex);
+	};
 
+	FGetPointFunc GetIntermediatePointAlongU = [this](int32 UIndex, int32 VIndex) -> const FPoint&
 	{
-		F3DDebugSession A(TEXT("CriteriaGrid IntermediateUV"));
-		for (int32 VIndex = 0; VIndex < GetCoordinateCount(EIso::IsoV) - 1; ++VIndex)
-		{
-			for (int32 UIndex = 0; UIndex < GetCoordinateCount(EIso::IsoU) - 1; ++UIndex)
-			{
-				UE::CADKernel::DisplayPoint(GetIntermediateUV(UIndex, VIndex), EVisuProperty::PurplePoint);
-			}
-		}
-	}
+		return GetIntermediateU(UIndex, VIndex);
+	};
 
+	FGetPointFunc GetIntermediatePointAlongV = [this](int32 VIndex, int32 UIndex) -> const FPoint&
 	{
-		F3DDebugSession A(TEXT("CriteriaGrid Point 2D"));
-		for (int32 VIndex = 0; VIndex < GetCoordinateCount(EIso::IsoV); ++VIndex)
-		{
-			for (int32 UIndex = 0; UIndex < GetCoordinateCount(EIso::IsoU); ++UIndex)
-			{
-				UE::CADKernel::DisplayPoint(FPoint2D(GetCoordinate(EIso::IsoU, UIndex), GetCoordinate(EIso::IsoV, VIndex)));
-			}
-		}
-	}
+		return GetIntermediateV(UIndex, VIndex);
+	};
 
+	TFunction<int32(EIso)> GetCoordinateCount = [&](EIso Iso) -> int32
 	{
-		F3DDebugSession A(TEXT("CriteriaGrid Point 2D Intermediate"));
-		for (int32 VIndex = 0; VIndex < GetCoordinateCount(EIso::IsoV); ++VIndex)
-		{
-			for (int32 UIndex = 1; UIndex < GetCoordinateCount(EIso::IsoU); ++UIndex)
-			{
-				UE::CADKernel::DisplayPoint(FPoint2D((GetCoordinate(EIso::IsoU, UIndex) + GetCoordinate(EIso::IsoU, UIndex - 1)) * 0.5, GetCoordinate(EIso::IsoV, VIndex)), EVisuProperty::PurplePoint);
-			}
-		}
-		for (int32 VIndex = 1; VIndex < GetCoordinateCount(EIso::IsoV); ++VIndex)
-		{
-			for (int32 UIndex = 0; UIndex < GetCoordinateCount(EIso::IsoU); ++UIndex)
-			{
-				UE::CADKernel::DisplayPoint(FPoint2D(GetCoordinate(EIso::IsoU, UIndex), (GetCoordinate(EIso::IsoV, VIndex) + GetCoordinate(EIso::IsoV, VIndex - 1)) * 0.5), EVisuProperty::PurplePoint);
-			}
-		}
-		for (int32 VIndex = 1; VIndex < GetCoordinateCount(EIso::IsoV); ++VIndex)
-		{
-			for (int32 UIndex = 1; UIndex < GetCoordinateCount(EIso::IsoU); ++UIndex)
-			{
-				UE::CADKernel::DisplayPoint(FPoint2D((GetCoordinate(EIso::IsoU, UIndex) + GetCoordinate(EIso::IsoU, UIndex - 1)) * 0.5, (GetCoordinate(EIso::IsoV, VIndex) + GetCoordinate(EIso::IsoV, VIndex - 1)) * 0.5), EVisuProperty::PurplePoint);
-			}
-		}
-	}
+		return Face.GetCrossingPointCoordinates().IsoCount(Iso);
+	};
 
-	Wait();
+	const int32 IsoUCount = GetCoordinateCount(EIso::IsoU);
+	const int32 IsoVCount = GetCoordinateCount(EIso::IsoV);
+
+	ComputeFaceThicknessAlong(EIso::IsoU, GetPointAlongU, GetIntermediatePointAlongU, IsoUCount, IsoVCount);
+	ComputeFaceThicknessAlong(EIso::IsoV, GetPointAlongV, GetIntermediatePointAlongV, IsoVCount, IsoUCount);
+
+	Face.SetEstimatedMinimalElementLength(FMath::Min(FaceMinMax[EIso::IsoU].GetMax(), FaceMinMax[EIso::IsoV].GetMax()));
 }
-#endif
+
+bool FCriteriaGrid::CheckIfIsDegenerate()
+{
+	ensureCADKernel(FaceMinMax.IsValid());
+	const double MinFaceThickness = Tolerance3D * 3.;
+	return (FaceMinMax[EIso::IsoU].Max < MinFaceThickness) || (FaceMinMax[EIso::IsoV].Max < MinFaceThickness);
+}
+
 
 } // namespace UE::CADKernel
 

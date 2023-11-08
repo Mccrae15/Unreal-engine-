@@ -31,6 +31,8 @@ private:
 	friend class TSubclassOf;
 
 public:
+	using ElementType = T;
+
 	TSubclassOf() = default;
 	TSubclassOf(TSubclassOf&&) = default;
 	TSubclassOf(const TSubclassOf&) = default;
@@ -155,6 +157,11 @@ public:
 		return GetTypeHash(SubclassOf.Class);
 	}
 
+	TObjectPtr<UClass>& GetGCPtr()
+	{
+		return Class;
+	}
+
 #if DO_CHECK
 	// This is a DEVELOPMENT ONLY debugging function and should not be relied upon. Client
 	// systems should never require unsafe access to the referenced UClass
@@ -165,7 +172,13 @@ public:
 #endif
 
 private:
-	UClass* Class = nullptr;
+	TObjectPtr<UClass> Class = nullptr;
+};
+
+template <typename T>
+struct TCallTraits<TSubclassOf<T>> : public TCallTraitsBase<TSubclassOf<T>>
+{
+	using ConstPointerType = TSubclassOf<const T>;
 };
 
 template <typename T>

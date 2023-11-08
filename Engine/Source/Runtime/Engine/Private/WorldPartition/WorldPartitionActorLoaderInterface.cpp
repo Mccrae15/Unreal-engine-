@@ -7,11 +7,9 @@
 #if WITH_EDITOR
 #include "Editor.h"
 #include "Engine/Level.h"
+#include "Containers/Ticker.h"
 #include "Misc/ScopedSlowTask.h"
 #include "WorldPartition/WorldPartition.h"
-#include "WorldPartition/WorldPartitionActorDescViewProxy.h"
-#include "WorldPartition/DataLayer/WorldDataLayers.h"
-#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "WorldPartition"
@@ -21,6 +19,15 @@ UWorldPartitionActorLoaderInterface::UWorldPartitionActorLoaderInterface(const F
 {}
 
 #if WITH_EDITOR
+TArray<TSharedRef<IWorldPartitionActorLoaderInterface::FActorDescFilter>> IWorldPartitionActorLoaderInterface::ActorDescFilters;
+IWorldPartitionActorLoaderInterface::FOnActorLoaderInterfaceRefreshState IWorldPartitionActorLoaderInterface::ActorLoaderInterfaceRefreshState;
+
+void IWorldPartitionActorLoaderInterface::RegisterActorDescFilter(const TSharedRef<FActorDescFilter>& InActorDescFilter)
+{
+	ActorDescFilters.Add(InActorDescFilter);
+	ActorDescFilters.Sort([](const TSharedRef<FActorDescFilter>& FilterA, const TSharedRef<FActorDescFilter>& FilterB) { return FilterA.Get().GetFilterPriority() > FilterB.Get().GetFilterPriority(); });
+}
+
 IWorldPartitionActorLoaderInterface::ILoaderAdapter::ILoaderAdapter(UWorld* InWorld)
 	: World(InWorld)
 	, bLoaded(false)
@@ -66,7 +73,7 @@ void IWorldPartitionActorLoaderInterface::ILoaderAdapter::Unload()
 			int32 NumUnloads = 0;
 			{
 				FWorldPartitionLoadingContext::FDeferred LoadingContext;
-				ActorReferences.Empty();
+				ContainerActorReferences.Empty();
 				NumUnloads = LoadingContext.GetNumUnregistrations();
 			}
 
@@ -81,7 +88,7 @@ void IWorldPartitionActorLoaderInterface::ILoaderAdapter::Unload()
 
 			if (NumUnloads)
 			{
-				PostLoadedStateChanged(0, NumUnloads);
+				PostLoadedStateChanged(0, NumUnloads, true);
 			}
 		}
 	}
@@ -94,8 +101,8 @@ bool IWorldPartitionActorLoaderInterface::ILoaderAdapter::IsLoaded() const
 
 void IWorldPartitionActorLoaderInterface::ILoaderAdapter::RegisterDelegates()
 {
-	FDataLayersEditorBroadcast::Get().OnActorDataLayersEditorLoadingStateChanged().AddRaw(this, &IWorldPartitionActorLoaderInterface::ILoaderAdapter::OnActorDataLayersEditorLoadingStateChanged);
-	check(World->GetWorldPartition() != nullptr);
+	ActorLoaderInterfaceRefreshState.AddRaw(this, &IWorldPartitionActorLoaderInterface::ILoaderAdapter::OnRefreshLoadedState);
+
 	if (UWorldPartition* WorldPartition = World->GetWorldPartition())
 	{
 		WorldPartition->OnActorDescContainerRegistered.AddRaw(this, &IWorldPartitionActorLoaderInterface::ILoaderAdapter::ILoaderAdapter::OnActorDescContainerInitialize);
@@ -105,8 +112,8 @@ void IWorldPartitionActorLoaderInterface::ILoaderAdapter::RegisterDelegates()
 
 void IWorldPartitionActorLoaderInterface::ILoaderAdapter::UnregisterDelegates()
 {
-	FDataLayersEditorBroadcast::Get().OnActorDataLayersEditorLoadingStateChanged().RemoveAll(this);
-	check(World->GetWorldPartition() != nullptr);
+	ActorLoaderInterfaceRefreshState.RemoveAll(this);
+
 	if (UWorldPartition* WorldPartition = World->GetWorldPartition())
 	{
 		WorldPartition->OnActorDescContainerRegistered.RemoveAll(this);
@@ -116,35 +123,7 @@ void IWorldPartitionActorLoaderInterface::ILoaderAdapter::UnregisterDelegates()
 
 bool IWorldPartitionActorLoaderInterface::ILoaderAdapter::PassActorDescFilter(const FWorldPartitionHandle& Actor) const
 {
-	return !Actor->GetActorIsRuntimeOnly();
-}
-
-bool IWorldPartitionActorLoaderInterface::ILoaderAdapter::PassDataLayersFilter(const FWorldPartitionHandle& Actor) const
-{
-	UWorld* OwningWorld = World->PersistentLevel->GetWorld();
-	if (UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(OwningWorld))
-	{
-		FWorldPartitionActorViewProxy ActorDescProxy(*Actor);
-
-		if (IsRunningCookCommandlet())
-		{
-			// When running cook commandlet, dont allow loading of actors with runtime loaded data layers
-			for (const FName& DataLayerInstanceName : ActorDescProxy.GetDataLayers())
-			{
-				const UDataLayerInstance* DataLayerInstance = DataLayerSubsystem->GetDataLayerInstance(DataLayerInstanceName);
-				if (DataLayerInstance && DataLayerInstance->IsRuntime())
-				{
-					return false;
-				}
-			}
-		}
-		else
-		{
-			return DataLayerSubsystem->ResolveIsLoadedInEditor(ActorDescProxy.GetDataLayers());
-		}
-	}
-
-	return true;
+	return Actor->IsEditorRelevant();
 }
 
 void IWorldPartitionActorLoaderInterface::ILoaderAdapter::RefreshLoadedState()
@@ -157,14 +136,16 @@ void IWorldPartitionActorLoaderInterface::ILoaderAdapter::RefreshLoadedState()
 			TArray<FWorldPartitionHandle> ActorsToUnload;			
 			ForEachActor([this, &ActorsToLoad, &ActorsToUnload](const FWorldPartitionHandle& Actor)
 			{
+				const FActorReferenceMap* ActorReferences = GetContainerReferencesConst(Actor->GetContainer());
+
 				if (ShouldActorBeLoaded(Actor))
 				{
-					if (!ActorReferences.Contains(Actor->GetGuid()))
+					if (!ActorReferences || !ActorReferences->Contains(Actor->GetGuid()))
 					{
 						ActorsToLoad.Add(Actor);
 					}
 				}
-				else if (ActorReferences.Contains(Actor->GetGuid()))
+				else if (ActorReferences && ActorReferences->Contains(Actor->GetGuid()))
 				{
 					ActorsToUnload.Add(Actor);
 				}
@@ -174,6 +155,7 @@ void IWorldPartitionActorLoaderInterface::ILoaderAdapter::RefreshLoadedState()
 			{
 				int32 NumLoads = 0;
 				int32 NumUnloads = 0;
+				bool bClearTransactions = false;
 				{
 					FWorldPartitionLoadingContext::FDeferred LoadingContext;
 
@@ -184,8 +166,7 @@ void IWorldPartitionActorLoaderInterface::ILoaderAdapter::RefreshLoadedState()
 
 						for (FWorldPartitionHandle& ActorToLoad : ActorsToLoad)
 						{
-							FWorldPartitionHandle ActorHandle(WorldPartition, ActorToLoad->GetGuid());
-							AddReferenceToActor(ActorHandle);
+							AddReferenceToActor(ActorToLoad);
 							SlowTask.EnterProgressFrame(1);
 						}
 					}
@@ -204,13 +185,23 @@ void IWorldPartitionActorLoaderInterface::ILoaderAdapter::RefreshLoadedState()
 
 					NumLoads = LoadingContext.GetNumRegistrations();
 					NumUnloads = LoadingContext.GetNumUnregistrations();
+					bClearTransactions = LoadingContext.GetNeedsClearTransactions();
 				}
 
 				if (NumLoads || NumUnloads)
 				{
-					PostLoadedStateChanged(NumLoads, NumUnloads);
+					PostLoadedStateChanged(NumLoads, NumUnloads, bClearTransactions);
 				}
 			}
+		}
+	}
+
+	// Remove invalid containers (happens when reloading level instances, etc)
+	for (FContainerReferenceMap::TIterator It(ContainerActorReferences); It; ++It)
+	{
+		if (!It->Key.IsValid())
+		{
+			It.RemoveCurrent();
 		}
 	}
 }
@@ -227,7 +218,9 @@ void IWorldPartitionActorLoaderInterface::ILoaderAdapter::OnActorDescContainerUn
 	TArray<FWorldPartitionHandle> ActorsToUnload;
 	for(UActorDescContainer::TConstIterator<> It(Container); It; ++It)
 	{
-		if( ActorReferences.Find(It->GetGuid()))
+		const FActorReferenceMap* ActorReferences = GetContainerReferencesConst(It->GetContainer());
+
+		if (!ActorReferences || !ActorReferences->Find(It->GetGuid()))
 		{
 			ActorsToUnload.Emplace(Container, It->GetGuid());
 		}
@@ -246,33 +239,44 @@ void IWorldPartitionActorLoaderInterface::ILoaderAdapter::OnActorDescContainerUn
 			SlowTask.EnterProgressFrame(1);
 		}
 	
-		PostLoadedStateChanged(0, ActorsToUnload.Num());
+		PostLoadedStateChanged(0, ActorsToUnload.Num(), true);
 	}
 }
 
 bool IWorldPartitionActorLoaderInterface::ILoaderAdapter::ShouldActorBeLoaded(const FWorldPartitionHandle& Actor) const
 {
 	check(Actor.IsValid());
-	return PassActorDescFilter(Actor) && PassDataLayersFilter(Actor);
+
+	Actor->SetUnloadedReason(nullptr);
+
+	if (!PassActorDescFilter(Actor))
+	{
+		return false;
+	}
+
+	for (auto& ActorDescFilter : ActorDescFilters)
+	{
+		if (!ActorDescFilter.Get().PassFilter(World, Actor))
+		{
+			Actor->SetUnloadedReason(ActorDescFilter.Get().GetFilterReason());
+			return false;
+		}
+	}
+
+	return true;
 };
 
-void IWorldPartitionActorLoaderInterface::ILoaderAdapter::PostLoadedStateChanged(int32 NumLoads, int32 NumUnloads)
+void IWorldPartitionActorLoaderInterface::ILoaderAdapter::PostLoadedStateChanged(int32 NumLoads, int32 NumUnloads, bool bClearTransactions)
 {
 	check(NumLoads || NumUnloads);
 
 	if (!IsRunningCommandlet())
 	{
-		if (NumUnloads)
-		{
-			GEditor->SelectNone(true, true);
-		}
-
 		GEngine->BroadcastLevelActorListChanged();
-		GEditor->NoteSelectionChange();
 
 		if (NumUnloads)
 		{
-			if (!GIsTransacting)
+			if (!GIsTransacting && bClearTransactions)
 			{
 				GEditor->ResetTransaction(LOCTEXT("UnloadingEditorActorResetTrans", "Editor Actors Unloaded"));
 			}
@@ -284,15 +288,15 @@ void IWorldPartitionActorLoaderInterface::ILoaderAdapter::PostLoadedStateChanged
 
 void IWorldPartitionActorLoaderInterface::ILoaderAdapter::AddReferenceToActor(FWorldPartitionHandle& ActorHandle)
 {
-	TFunction<void(const FWorldPartitionHandle&, TMap<FGuid, FWorldPartitionReference>&)> AddReferences = [this, &ActorHandle, &AddReferences](const FWorldPartitionHandle& Handle, TMap<FGuid, FWorldPartitionReference>& ReferenceMap)
+	TFunction<void(const FWorldPartitionHandle&, FReferenceMap&)> AddReferences = [this, &AddReferences](const FWorldPartitionHandle& Handle, FReferenceMap& ReferenceMap)
 	{
 		if (!ReferenceMap.Contains(Handle->GetGuid()))
 		{
 			ReferenceMap.Emplace(Handle->GetGuid(), Handle.ToReference());
 			
-			for (const FGuid& ReferencedActorGuid : ActorHandle->GetReferences())
+			for (const FGuid& ReferencedActorGuid : Handle->GetReferences())
 			{
-				FWorldPartitionHandle ReferenceActorHandle(ActorHandle->GetContainer(), ReferencedActorGuid);
+				FWorldPartitionHandle ReferenceActorHandle(Handle->GetContainer(), ReferencedActorGuid);
 
 				if (ReferenceActorHandle.IsValid())
 				{
@@ -302,17 +306,49 @@ void IWorldPartitionActorLoaderInterface::ILoaderAdapter::AddReferenceToActor(FW
 		}
 	};
 
+	FActorReferenceMap& ActorReferences = GetContainerReferences(ActorHandle->GetContainer());
 	AddReferences(ActorHandle, ActorReferences.Emplace(ActorHandle->GetGuid()));
 }
 
 void IWorldPartitionActorLoaderInterface::ILoaderAdapter::RemoveReferenceToActor(FWorldPartitionHandle& ActorHandle)
 {
+	FActorReferenceMap& ActorReferences = GetContainerReferences(ActorHandle->GetContainer());
 	ActorReferences.Remove(ActorHandle->GetGuid());
 }
 
-void IWorldPartitionActorLoaderInterface::ILoaderAdapter::OnActorDataLayersEditorLoadingStateChanged(bool bFromUserOperation)
+void IWorldPartitionActorLoaderInterface::ILoaderAdapter::OnRefreshLoadedState(bool bFromUserOperation)
 {
 	RefreshLoadedState();
+}
+
+void IWorldPartitionActorLoaderInterface::RefreshLoadedState(bool bIsFromUserChange)
+{
+	if (!GUndo && !GIsTransacting)
+	{
+		ActorLoaderInterfaceRefreshState.Broadcast(bIsFromUserChange);
+	}
+	else
+	{
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([=](float DeltaTime)
+		{
+			if (!GUndo && !GIsTransacting)
+			{
+				ActorLoaderInterfaceRefreshState.Broadcast(bIsFromUserChange);
+				return false;
+			}
+			return true;
+		}));
+	}
+}
+
+IWorldPartitionActorLoaderInterface::FActorReferenceMap& IWorldPartitionActorLoaderInterface::ILoaderAdapter::GetContainerReferences(UActorDescContainer* InContainer)
+{
+	return ContainerActorReferences.FindOrAdd(InContainer);
+}
+
+const IWorldPartitionActorLoaderInterface::FActorReferenceMap* IWorldPartitionActorLoaderInterface::ILoaderAdapter::GetContainerReferencesConst(UActorDescContainer* InContainer) const
+{
+	return ContainerActorReferences.Find(InContainer);
 }
 #endif
 

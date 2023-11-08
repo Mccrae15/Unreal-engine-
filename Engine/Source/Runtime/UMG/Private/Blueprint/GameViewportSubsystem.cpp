@@ -102,33 +102,33 @@ bool UGameViewportSubsystem::IsWidgetAdded(const UWidget* Widget) const
 	return false;
 }
 
-void UGameViewportSubsystem::AddWidget(UWidget* Widget, FGameViewportWidgetSlot Slot)
+bool UGameViewportSubsystem::AddWidget(UWidget* Widget, FGameViewportWidgetSlot Slot)
 {
-	AddToScreen(Widget, nullptr, Slot);
+	return AddToScreen(Widget, nullptr, Slot);
 }
 
-void UGameViewportSubsystem::AddWidgetForPlayer(UWidget* Widget, ULocalPlayer* Player, FGameViewportWidgetSlot Slot)
+bool UGameViewportSubsystem::AddWidgetForPlayer(UWidget* Widget, ULocalPlayer* Player, FGameViewportWidgetSlot Slot)
 {
 	if (!Player)
 	{
 		FFrame::KismetExecutionMessage(TEXT("The Player is invalid."), ELogVerbosity::Warning);
-		return;
+		return false;
 	}
-	AddToScreen(Widget, Player, Slot);
+	return AddToScreen(Widget, Player, Slot);
 }
 
-void UGameViewportSubsystem::AddToScreen(UWidget* Widget, ULocalPlayer* Player, FGameViewportWidgetSlot& Slot)
+bool UGameViewportSubsystem::AddToScreen(UWidget* Widget, ULocalPlayer* Player, FGameViewportWidgetSlot& Slot)
 {
 	if (!Widget)
 	{
 		FFrame::KismetExecutionMessage(TEXT("The Widget is invalid."), ELogVerbosity::Warning);
-		return;
+		return false;
 	}
 
 	if (UPanelWidget* ParentPanel = Widget->GetParent())
 	{
 		FFrame::KismetExecutionMessage(*FString::Printf(TEXT("The widget '%s' already has a parent widget. It can't also be added to the viewport!"), *Widget->GetName()), ELogVerbosity::Warning);
-		return;
+		return false;
 	}
 
 	// Add the widget to the current worlds viewport.
@@ -136,54 +136,59 @@ void UGameViewportSubsystem::AddToScreen(UWidget* Widget, ULocalPlayer* Player, 
 	if (!World || !World->IsGameWorld())
 	{
 		FFrame::KismetExecutionMessage(*FString::Printf(TEXT("The widget '%s' does not have a World."), *Widget->GetName()), ELogVerbosity::Warning);
-		return;
+		return false;
 	}
 
 	UGameViewportClient* ViewportClient = World->GetGameViewport();
 	if (!ViewportClient)
 	{
 		FFrame::KismetExecutionMessage(*FString::Printf(TEXT("No game viewport was found."), *Widget->GetName()), ELogVerbosity::Warning);
-		return;
+		return false;
 	}
 
-	FSlotInfo& SlotInfo = ViewportWidgets.FindOrAdd(Widget);
-	Widget->bIsManagedByGameViewportSubsystem = true;
-
-	if (SlotInfo.FullScreenWidget.IsValid())
-	{
-		FFrame::KismetExecutionMessage(*FString::Printf(TEXT("The widget '%s' was already added to the screen."), *Widget->GetName()), ELogVerbosity::Warning);
-		return;
-	}
-
-	TPair<FMargin, bool> OffsetArgument = UE::UMG::Private::CalculateOffsetArgument(Slot);
 	SConstraintCanvas::FSlot* RawSlot = nullptr;
-	TSharedRef<SConstraintCanvas> FullScreenCanvas = SNew(SConstraintCanvas)
-		+ SConstraintCanvas::Slot()
-		.Offset(OffsetArgument.Get<0>())
-		.AutoSize(OffsetArgument.Get<1>())
-		.Anchors(Slot.Anchors)
-		.Alignment(Slot.Alignment)
-		.Expose(RawSlot)
-		[
-			Widget->TakeWidget()
-		];
+	TSharedPtr<SConstraintCanvas> FullScreenCanvas;
+	{
+		FSlotInfo& SlotInfo = ViewportWidgets.FindOrAdd(Widget);
+		Widget->bIsManagedByGameViewportSubsystem = true;
 
-	SlotInfo.Slot = Slot;
-	SlotInfo.LocalPlayer = Player;
-	SlotInfo.FullScreenWidget = FullScreenCanvas;
-	SlotInfo.FullScreenWidgetSlot = RawSlot;
+		if (SlotInfo.FullScreenWidget.IsValid())
+		{
+			FFrame::KismetExecutionMessage(*FString::Printf(TEXT("The widget '%s' was already added to the screen."), *Widget->GetName()), ELogVerbosity::Warning);
+			return false;
+		}
+
+		TPair<FMargin, bool> OffsetArgument = UE::UMG::Private::CalculateOffsetArgument(Slot);
+		FullScreenCanvas = SNew(SConstraintCanvas)
+			+ SConstraintCanvas::Slot()
+			.Offset(OffsetArgument.Get<0>())
+			.AutoSize(OffsetArgument.Get<1>())
+			.Anchors(Slot.Anchors)
+			.Alignment(Slot.Alignment)
+			.Expose(RawSlot);
+
+		SlotInfo.Slot = Slot;
+		SlotInfo.LocalPlayer = Player;
+		SlotInfo.FullScreenWidget = FullScreenCanvas;
+		SlotInfo.FullScreenWidgetSlot = RawSlot;
+	}
+
+	check(RawSlot);
+	RawSlot->AttachWidget(Widget->TakeWidget());
 
 	if (Player)
 	{
-		ViewportClient->AddViewportWidgetForPlayer(Player, FullScreenCanvas, Slot.ZOrder);
+		ViewportClient->AddViewportWidgetForPlayer(Player, FullScreenCanvas.ToSharedRef(), Slot.ZOrder);
 	}
 	else
 	{
 		// We add 10 to the zorder when adding to the viewport to avoid 
 		// displaying below any built-in controls, like the virtual joysticks on mobile builds.
-		ViewportClient->AddViewportWidgetContent(FullScreenCanvas, Slot.ZOrder + 10);
+		ViewportClient->AddViewportWidgetContent(FullScreenCanvas.ToSharedRef(), Slot.ZOrder + 10);
 	}
 	OnWidgetAdded.Broadcast(Widget, Player);
+
+	return true;
 }
 
 void UGameViewportSubsystem::RemoveWidget(UWidget* Widget)

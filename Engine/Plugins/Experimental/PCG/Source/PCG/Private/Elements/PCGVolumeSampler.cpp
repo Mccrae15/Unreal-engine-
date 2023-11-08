@@ -2,6 +2,7 @@
 
 #include "Elements/PCGVolumeSampler.h"
 
+#include "PCGCommon.h"
 #include "PCGComponent.h"
 #include "PCGContext.h"
 #include "PCGCustomVersion.h"
@@ -9,6 +10,8 @@
 #include "Data/PCGSpatialData.h"
 #include "Helpers/PCGAsync.h"
 #include "Helpers/PCGHelpers.h"
+
+#include "HAL/UnrealMemory.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PCGVolumeSampler)
 
@@ -78,7 +81,11 @@ namespace PCGVolumeSampler
 				return;
 			}
 
-			if (NumIterationsXY64 > 0 && NumIterationsXY64 < MAX_int32 && NumIterations64 > 0 && NumIterations64 < MAX_int32)
+			if (NumIterationsXY64 > 0 && 
+				NumIterationsXY64 < MAX_int32 && 
+				NumIterations64 > 0 && 
+				NumIterations64 < MAX_int32 &&
+				(!PCGFeatureSwitches::CVarCheckSamplerMemory.GetValueOnAnyThread() || FPlatformMemory::GetStats().AvailablePhysical >= sizeof(FPCGPoint) * NumIterations64))
 			{
 				NumIterations = static_cast<int32>(NumIterations64);
 			}
@@ -93,7 +100,7 @@ namespace PCGVolumeSampler
 			}
 		}
 
-		FPCGAsync::AsyncPointProcessing(InContext, NumIterations, Points, [InVolume, InBoundingShape, VoxelSize, MinX, MaxX, MinY, MaxY, MinZ, MaxZ](int32 Index, FPCGPoint& OutPoint)
+		FPCGAsync::AsyncPointProcessing(InContext, NumIterations, Points, [InVolume, InBoundingShape, PointSteepness = InSamplerSettings.PointSteepness, VoxelSize, MinX, MaxX, MinY, MaxY, MinZ](int32 Index, FPCGPoint& OutPoint)
 		{
 			const int X = MinX + (Index % (MaxX - MinX));
 			const int Y = MinY + (Index / (MaxX - MinX) % (MaxY - MinY));
@@ -119,6 +126,7 @@ namespace PCGVolumeSampler
 				}
 
 				OutPoint.Seed = PCGHelpers::ComputeSeed(X, Y, Z);
+				OutPoint.Steepness = PointSteepness;
 				return true;
 			}
 			else
@@ -174,12 +182,14 @@ bool FPCGVolumeSamplerElement::ExecuteInternal(FPCGContext* Context) const
 
 	PCGVolumeSampler::FVolumeSamplerSettings SamplerSettings;
 	SamplerSettings.VoxelSize = VoxelSize;
+	SamplerSettings.PointSteepness = Settings->PointSteepness;
 
 	TArray<FPCGTaggedData>& Outputs = Context->OutputData.TaggedData;
 
 	// Grab the Bounding Shape input if there is one.
 	TArray<FPCGTaggedData> BoundingShapeInputs = Context->InputData.GetInputsByPin(PCGVolumeSamplerConstants::BoundingShapeLabel);
 	const UPCGSpatialData* BoundingShape = nullptr;
+	bool bUsedDefaultBoundingShape = false;
 
 	if (!Settings->bUnbounded)
 	{
@@ -189,6 +199,7 @@ bool FPCGVolumeSamplerElement::ExecuteInternal(FPCGContext* Context) const
 		if (!BoundingShape && Context->SourceComponent.IsValid())
 		{
 			BoundingShape = Cast<UPCGSpatialData>(Context->SourceComponent->GetActorPCGData());
+			bUsedDefaultBoundingShape = true;
 		}
 	}
 	else if (BoundingShapeInputs.Num() > 0)
@@ -215,7 +226,7 @@ bool FPCGVolumeSamplerElement::ExecuteInternal(FPCGContext* Context) const
 	}
 
 	// If no shapes were obtained from the first input pin, try to find a shape to sample from nodes connected to the second pin.
-	if (GeneratingShapes.Num() == 0 && BoundingShape)
+	if (GeneratingShapes.Num() == 0 && BoundingShape && !bUsedDefaultBoundingShape)
 	{
 		GeneratingShapes.Add(BoundingShape);
 

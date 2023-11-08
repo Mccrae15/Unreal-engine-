@@ -1,12 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "NiagaraDataInterfaceGrid3DCollection.h"
 #include "NiagaraCompileHashVisitor.h"
+#include "NiagaraComponent.h"
 #include "NiagaraConstants.h"
+#include "NiagaraEmitter.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
+#include "NiagaraRenderGraphUtils.h"
 #include "NiagaraSimStageData.h"
 #include "NiagaraRenderer.h"
 #include "NiagaraSettings.h"
-#include "NiagaraShader.h"
 #include "NiagaraShaderParametersBuilder.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraSystemInstanceController.h"
@@ -15,9 +17,8 @@
 
 #include "DataDrivenShaderPlatformInfo.h"
 #include "Engine/TextureRenderTargetVolume.h"
-#include "Engine/VolumeTexture.h"
-#include "ClearQuad.h"
-#include "ShaderParameterUtils.h"
+#include "RHIStaticStates.h"
+#include "RenderGraphUtils.h"
 #include "TextureResource.h"
 
 #include "NiagaraDataInterfaceGrid3DCollectionReader.h"
@@ -61,6 +62,8 @@ static FAutoConsoleVariableRef CVarNiagaraGrid3DOverrideFormat(
 	TEXT("Optional override for all grids to use this format.\n"),
 	ECVF_Default
 );
+
+static constexpr EPixelFormatCapabilities GNDIGrid3DFomatCaps = EPixelFormatCapabilities::TypedUAVLoad | EPixelFormatCapabilities::TypedUAVStore | EPixelFormatCapabilities::Texture3D;
 
 const FString UNiagaraDataInterfaceGrid3DCollection::NumTilesName(TEXT("_NumTiles"));
 const FString UNiagaraDataInterfaceGrid3DCollection::OneOverNumTilesName(TEXT("_OneOverNumTiles"));
@@ -366,9 +369,22 @@ void UNiagaraDataInterfaceGrid3DCollection::GetFeedback(UNiagaraSystem* Asset, U
 	TArray<FNiagaraDataInterfaceFeedback>& OutWarnings, TArray<FNiagaraDataInterfaceFeedback>& OutInfo)
 {
 	Super::GetFeedback(Asset, Component, OutErrors, OutWarnings, OutInfo);
-	// Put in placeholder for now.
+		
+	int32 NumAttribChannelsFound = 0;
+	int32 NumNamedAttribChannelsFound = 0;
+	TArray<FNiagaraVariableBase> Vars;
+	TArray<uint32> Offsets;
+	FindAttributes(Vars, Offsets, NumNamedAttribChannelsFound);
 
+	// Ensure we never allocate 0 attributes as that would fail to create the texture
+	NumAttribChannelsFound = NumAttributes + NumNamedAttribChannelsFound;
 
+	if (NumAttribChannelsFound == 0)
+	{
+		OutWarnings.Emplace(LOCTEXT("Grid3DZeroAttrs", "Zero attributes defined on grid"),
+			LOCTEXT("Grid3DZeroAttrsFmt", "Zero attributes defined on grid"),
+			FNiagaraDataInterfaceFix());		
+	}
 }
 #endif
 #if WITH_EDITORONLY_DATA
@@ -2881,6 +2897,8 @@ void UNiagaraDataInterfaceGrid3DCollection::SetShaderParameters(const FNiagaraDa
 	FGrid3DCollectionRWInstanceData_RenderThread* OriginalProxyData = ProxyData;
 	check(ProxyData);
 
+	FRDGBuilder& GraphBuilder = Context.GetGraphBuilder();
+
 	if (ProxyData->OtherProxy != nullptr)
 	{
 		FNiagaraDataInterfaceProxyGrid3DCollectionProxy* OtherGrid3DProxy = static_cast<FNiagaraDataInterfaceProxyGrid3DCollectionProxy*>(ProxyData->OtherProxy);
@@ -2934,13 +2952,11 @@ void UNiagaraDataInterfaceGrid3DCollection::SetShaderParameters(const FNiagaraDa
 			);
 		}
 		PerAttributeData[ProxyData->TotalNumAttributes * 2] = FVector4f(65535, 65535, 65535, 65535);
-		ProxyData->PerAttributeData.Initialize(TEXT("Grid3D::PerAttributeData"), sizeof(FVector4f), PerAttributeData.Num(), EPixelFormat::PF_A32B32G32R32F, BUF_Static, &PerAttributeData);
+		ProxyData->PerAttributeData.Initialize(GraphBuilder.RHICmdList, TEXT("Grid3D::PerAttributeData"), sizeof(FVector4f), PerAttributeData.Num(), EPixelFormat::PF_A32B32G32R32F, BUF_Static, &PerAttributeData);
 	}
 
 	// Set parameters
 	const FVector3f HalfPixelOffset = FVector3f(0.5f / ProxyData->NumCells.X, 0.5f / ProxyData->NumCells.Y, 0.5f / ProxyData->NumCells.Z);
-
-	FRDGBuilder& GraphBuilder = Context.GetGraphBuilder();
 
 	FNDIGrid3DShaderParameters* Parameters = Context.GetParameterNestedStruct<FNDIGrid3DShaderParameters>();
 	Parameters->NumAttributes = ProxyData->TotalNumAttributes;
@@ -3342,7 +3358,7 @@ bool UNiagaraDataInterfaceGrid3DCollection::InitPerInstanceData(void* PerInstanc
 	{
 		if (!Proxy->SourceDIName.IsNone())
 		{
-			UE_LOG(LogNiagara, Warning, TEXT("Zero attributes defined on %s"), *Proxy->SourceDIName.ToString());
+			UE_LOG(LogNiagara, Log, TEXT("Zero attributes defined on %s"), *Proxy->SourceDIName.ToString());
 		}
 
 		// Push Updates to Proxy.
@@ -3380,46 +3396,9 @@ bool UNiagaraDataInterfaceGrid3DCollection::InitPerInstanceData(void* PerInstanc
 		InstanceData->NumTiles.X = 1;
 		InstanceData->NumTiles.Y = 1;
 		InstanceData->NumTiles.Z = 1;
+		
+		InstanceData->PixelFormat = FNiagaraUtilities::BufferFormatToPixelFormat(BufferFormat, GNDIGrid3DFomatCaps, NumAttribChannelsFound);
 
-		switch (BufferFormat)
-		{
-		case ENiagaraGpuBufferFormat::Float:
-		{
-			switch (NumAttribChannelsFound)
-			{
-			case 1: InstanceData->PixelFormat = EPixelFormat::PF_R32_FLOAT; break;
-			case 2:	InstanceData->PixelFormat = EPixelFormat::PF_G32R32F; break;
-			case 3: InstanceData->PixelFormat = EPixelFormat::PF_R32G32B32F; break;
-			case 4:	InstanceData->PixelFormat = EPixelFormat::PF_A32B32G32R32F; break;
-			}
-			break;
-		}
-		/** 16-bit per channel floating point, range [-65504, 65504] */
-		case ENiagaraGpuBufferFormat::HalfFloat:
-		{
-			switch (NumAttribChannelsFound)
-			{
-			case 1: InstanceData->PixelFormat = EPixelFormat::PF_R16F; break;
-			case 2:	InstanceData->PixelFormat = EPixelFormat::PF_G16R16F; break;
-			case 3: InstanceData->PixelFormat = EPixelFormat::PF_FloatRGBA; break; // #todo(dmp): PF_FloatRGB translates to r11g11b10
-			case 4:	InstanceData->PixelFormat = EPixelFormat::PF_FloatRGBA; break;
-			}
-			break;
-		}
-		/** 8-bit per channel fixed point, range [0, 1]. */
-		case ENiagaraGpuBufferFormat::UnsignedNormalizedByte:
-		{
-			switch (NumAttribChannelsFound)
-			{
-			case 1: InstanceData->PixelFormat = EPixelFormat::PF_R8; break;
-			case 2:	InstanceData->PixelFormat = EPixelFormat::PF_R8G8; break;
-			case 3: InstanceData->PixelFormat = EPixelFormat::PF_R8G8B8A8; break; // #todo(dmp): need a 3 channel variant
-			case 4:	InstanceData->PixelFormat = EPixelFormat::PF_R8G8B8A8; break;
-			}
-
-			break;
-		}
-		}
 		InstanceData->UseRGBATexture = true;
 	}
 	else
@@ -3459,7 +3438,7 @@ bool UNiagaraDataInterfaceGrid3DCollection::InitPerInstanceData(void* PerInstanc
 		check(InstanceData->NumTiles.Z > 0);
 
 		InstanceData->UseRGBATexture = false;
-		InstanceData->PixelFormat = FNiagaraUtilities::BufferFormatToPixelFormat(BufferFormat);
+		InstanceData->PixelFormat = FNiagaraUtilities::BufferFormatToPixelFormat(BufferFormat, GNDIGrid3DFomatCaps);
 	}
 
 	InstanceData->TargetTexture = nullptr;
@@ -3614,30 +3593,6 @@ bool UNiagaraDataInterfaceGrid3DCollection::GetExposedVariableValue(const FNiaga
 		return true;
 	}
 	return false;
-}
-
-
-
-void UNiagaraDataInterfaceGrid3DCollection::FindAttributesByName(FName VariableName, TArray<FNiagaraVariableBase>& OutVariables, TArray<uint32>& OutVariableOffsets, int32& OutNumAttribChannelsFound, TArray<FText>* OutWarnings) const
-{
-	OutNumAttribChannelsFound = 0;
-
-	UNiagaraSystem* OwnerSystem = GetTypedOuter<UNiagaraSystem>();
-	if (OwnerSystem == nullptr)
-	{
-		return;
-	}
-
-	int32 TotalAttributes = NumAttributes;
-	for (const FNiagaraEmitterHandle& EmitterHandle : OwnerSystem->GetEmitterHandles())
-	{
-		FVersionedNiagaraEmitterData* EmitterData = EmitterHandle.GetEmitterData();
-		if (EmitterData && EmitterHandle.GetIsEnabled() && EmitterData->IsValid() && (EmitterData->SimTarget == ENiagaraSimTarget::GPUComputeSim))
-		{
-			CollectAttributesForScript(EmitterData->GetGPUComputeScript(), VariableName, OutVariables, OutVariableOffsets, TotalAttributes, OutWarnings);
-		}
-	}
-	OutNumAttribChannelsFound = TotalAttributes - NumAttributes;
 }
 
 bool UNiagaraDataInterfaceGrid3DCollection::FillVolumeTexture(const UNiagaraComponent* Component, UVolumeTexture* Dest, int AttributeIndex)
@@ -4071,15 +4026,18 @@ bool FGrid3DCollectionRWInstanceData_GameThread::UpdateTargetTexture(ENiagaraGpu
 	if (TargetTexture != nullptr)
 	{
 		const FIntVector RTSize(NumCells.X * NumTiles.X, NumCells.Y * NumTiles.Y, NumCells.Z * NumTiles.Z);
-		const EPixelFormat RenderTargetFormat = FNiagaraUtilities::BufferFormatToPixelFormat(BufferFormat);
-		if (TargetTexture->SizeX != RTSize.X || TargetTexture->SizeY != RTSize.Y || TargetTexture->SizeZ != RTSize.Z || TargetTexture->OverrideFormat != RenderTargetFormat)
+		const TOptional<EPixelFormat> RenderTargetFormat = FNiagaraUtilities::BufferFormatToPixelFormat(BufferFormat, GNDIGrid3DFomatCaps);
+		if (RenderTargetFormat.IsSet())
 		{
-			TargetTexture->OverrideFormat = RenderTargetFormat;
-			TargetTexture->ClearColor = FLinearColor(0, 0, 0, 0);
-			TargetTexture->InitAutoFormat(RTSize.X, RTSize.Y, RTSize.Z);
-			TargetTexture->UpdateResourceImmediate(true);
+			if (TargetTexture->SizeX != RTSize.X || TargetTexture->SizeY != RTSize.Y || TargetTexture->SizeZ != RTSize.Z || TargetTexture->OverrideFormat != RenderTargetFormat.GetValue())
+			{
+				TargetTexture->OverrideFormat = RenderTargetFormat.GetValue();
+				TargetTexture->ClearColor = FLinearColor(0, 0, 0, 0);
+				TargetTexture->InitAutoFormat(RTSize.X, RTSize.Y, RTSize.Z);
+				TargetTexture->UpdateResourceImmediate(true);
 
-			return true;
+				return true;
+			}
 		}
 	}
 
@@ -4098,13 +4056,13 @@ void FGrid3DCollectionRWInstanceData_RenderThread::BeginSimulate(FRDGBuilder& Gr
 		}
 	}
 
-	if (DestinationData == nullptr)
+	if (DestinationData == nullptr && PixelFormat.IsSet())
 	{
 		DestinationData = new FGrid3DBuffer();
 		Buffers.Emplace(DestinationData);
 
 		const FIntVector TextureSize(NumCells.X * NumTiles.X, NumCells.Y * NumTiles.Y, NumCells.Z * NumTiles.Z);
-		const FRDGTextureDesc TextureDesc = FRDGTextureDesc::Create3D(TextureSize, PixelFormat, FClearValueBinding::Black, ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV);
+		const FRDGTextureDesc TextureDesc = FRDGTextureDesc::Create3D(TextureSize, PixelFormat.GetValue(), FClearValueBinding::Black, ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV);
 
 		const TCHAR* GridTextureName = TEXT("Grid3D::GridTexture");
 	#if 0
@@ -4162,6 +4120,7 @@ void FNiagaraDataInterfaceProxyGrid3DCollectionProxy::PreStage(const FNDIGpuComp
 		const FIntVector3& ElementCount = SimStageData.DispatchArgs.ElementCount;
 
 		if (ProxyData->ClearBeforeNonIterationStage && 
+			ProxyData->DestinationData &&
 			(ElementCount.X != ProxyData->NumCells.X || ElementCount.Y != ProxyData->NumCells.Y || ElementCount.Z != ProxyData->NumCells.Z))
 		{
 			AddClearUAVPass(GraphBuilder, ProxyData->DestinationData->GetOrCreateUAV(GraphBuilder), FVector4f(ForceInitToZero));
@@ -4225,26 +4184,25 @@ void FNiagaraDataInterfaceProxyGrid3DCollectionProxy::PostSimulate(const FNDIGpu
 	}
 }
 
-FIntVector FNiagaraDataInterfaceProxyGrid3DCollectionProxy::GetElementCount(FNiagaraSystemInstanceID SystemInstanceID) const
+void FNiagaraDataInterfaceProxyGrid3DCollectionProxy::GetDispatchArgs(const FNDIGpuComputeDispatchArgsGenContext& Context)
 {
-	if (const FGrid3DCollectionRWInstanceData_RenderThread* ProxyData = SystemInstancesToProxyData_RT.Find(SystemInstanceID))
+	if (const FGrid3DCollectionRWInstanceData_RenderThread* ProxyData = SystemInstancesToProxyData_RT.Find(Context.GetSystemInstanceID()))
 	{
 		// support a grid reader acting as an iteration source
 		if (ProxyData->OtherProxy != nullptr)
 		{
 			FNiagaraDataInterfaceProxyGrid3DCollectionProxy* OtherGrid3DProxy = static_cast<FNiagaraDataInterfaceProxyGrid3DCollectionProxy*>(ProxyData->OtherProxy);
-			const FGrid3DCollectionRWInstanceData_RenderThread* OtherProxyData = OtherGrid3DProxy->SystemInstancesToProxyData_RT.Find(SystemInstanceID);
-			return OtherProxyData->NumCells;
+			const FGrid3DCollectionRWInstanceData_RenderThread* OtherProxyData = OtherGrid3DProxy->SystemInstancesToProxyData_RT.Find(Context.GetSystemInstanceID());
+			Context.SetDirect(OtherProxyData->NumCells);
 		}
 		else
 		{
-			return ProxyData->NumCells;
+			Context.SetDirect(ProxyData->NumCells);
 		}
 	}
-	return FIntVector::ZeroValue;
 }
 
-void UNiagaraDataInterfaceGrid3DCollection::FindAttributes(TArray<FNiagaraVariableBase>& OutVariables, TArray<uint32>& OutVariableOffsets, int32& OutNumAttribChannelsFound, TArray<FText>* OutWarnings, bool UseReader) const
+void UNiagaraDataInterfaceGrid3DCollection::FindAttributes(TArray<FNiagaraVariableBase>& OutVariables, TArray<uint32>& OutVariableOffsets, int32& OutNumAttribChannelsFound, TArray<FText>* OutWarnings) const
 {
 	{
 		OutNumAttribChannelsFound = 0;
@@ -4261,61 +4219,22 @@ void UNiagaraDataInterfaceGrid3DCollection::FindAttributes(TArray<FNiagaraVariab
 			FVersionedNiagaraEmitterData* EmitterData = EmitterHandle.GetEmitterData();
 			if (EmitterData && EmitterHandle.GetIsEnabled() && EmitterData->IsValid() && (EmitterData->SimTarget == ENiagaraSimTarget::GPUComputeSim))
 			{
-				// Search scripts for this data interface so we get the variable name
-				auto FindDataInterfaceVariable =
-					[&OwnerSystem, &EmitterData](const UNiagaraDataInterface* DataInterface) -> FName
-				{
-					UNiagaraScript* Scripts[] =
-					{
-						OwnerSystem->GetSystemSpawnScript(),
-						OwnerSystem->GetSystemUpdateScript(),
-						EmitterData->GetGPUComputeScript(),
-					};
-
-					for (UNiagaraScript* Script : Scripts)
-					{
-						for (FNiagaraScriptDataInterfaceInfo& DataInterfaceInfo : Script->GetCachedDefaultDataInterfaces())
-						{
-							if (DataInterfaceInfo.DataInterface == DataInterface)
-							{
-								return DataInterfaceInfo.RegisteredParameterMapRead.IsNone() ? DataInterfaceInfo.RegisteredParameterMapWrite : DataInterfaceInfo.RegisteredParameterMapRead;
-							}
-						}
-					}
-					return NAME_None;
-				};
-
-				const FName VariableName = FindDataInterfaceVariable(this);
-				if (!VariableName.IsNone())
-				{
-					CollectAttributesForScript(EmitterData->GetGPUComputeScript(), VariableName, OutVariables, OutVariableOffsets, TotalAttributes, OutWarnings, UseReader);
-				}
+				CollectAttributesForScript(EmitterData->GetGPUComputeScript(), this, OutVariables, OutVariableOffsets, TotalAttributes, OutWarnings);
 			}
 		}
 		OutNumAttribChannelsFound = TotalAttributes - NumAttributes;
 	}
 }
 
-void UNiagaraDataInterfaceGrid3DCollection::CollectAttributesForScript(UNiagaraScript* Script, FName VariableName, TArray<FNiagaraVariableBase>& OutVariables, TArray<uint32>& OutVariableOffsets, int32& TotalAttributes, TArray<FText>* OutWarnings, bool UseReader)
+void UNiagaraDataInterfaceGrid3DCollection::CollectAttributesForScript(UNiagaraScript* Script, const UNiagaraDataInterface* DataInterface, TArray<FNiagaraVariableBase>& OutVariables, TArray<uint32>& OutVariableOffsets, int32& TotalAttributes, TArray<FText>* OutWarnings)
 {
 	if (const FNiagaraScriptExecutionParameterStore* ParameterStore = Script->GetExecutionReadyParameterStore(ENiagaraSimTarget::GPUComputeSim))
 	{
-		FNiagaraVariableBase DataInterfaceVariable;
-
-		if (UseReader)
-		{
-			DataInterfaceVariable = FNiagaraVariableBase(FNiagaraTypeDefinition(UNiagaraDataInterfaceGrid3DCollectionReader::StaticClass()), VariableName);
-		}
-		else
-		{
-			DataInterfaceVariable = FNiagaraVariableBase(FNiagaraTypeDefinition(UNiagaraDataInterfaceGrid3DCollection::StaticClass()), VariableName);
-		}
-
-		const int32* IndexOfDataInterface = ParameterStore->FindParameterOffset(DataInterfaceVariable);
-		if (IndexOfDataInterface != nullptr)
+		int32 IndexOfDataInterface = ParameterStore->GetDataInterfaces().IndexOfByKey(DataInterface);
+		if (IndexOfDataInterface != INDEX_NONE)
 		{
 			TConstArrayView<FNiagaraDataInterfaceGPUParamInfo> ParamInfoArray = Script->GetDataInterfaceGPUParamInfos();
-			for (const FNiagaraDataInterfaceGeneratedFunction& Func : ParamInfoArray[*IndexOfDataInterface].GeneratedFunctions)
+			for (const FNiagaraDataInterfaceGeneratedFunction& Func : ParamInfoArray[IndexOfDataInterface].GeneratedFunctions)
 			{
 				if (const FName* AttributeName = Func.FindSpecifierValue(UNiagaraDataInterfaceRWBase::NAME_Attribute))
 				{

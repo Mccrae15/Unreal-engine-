@@ -35,7 +35,7 @@ enum class EGroomStrandsSize : uint8
 UENUM(BlueprintType)
 enum class EGroomInterpolationType : uint8
 {
-	None = 0 UMETA(Hidden),
+	None = 0 UMETA(DisplayName = "No skinning"),
 	RigidTransform = 0x02 UMETA(DisplayName = "Rigid Transform"),
 	OffsetTransform = 0x04 UMETA(DisplayName = "Offset Transform"),
 	SmoothTransform = 0x08 UMETA(DisplayName = "Smooth Transform")
@@ -71,6 +71,10 @@ struct HAIRSTRANDSCORE_API FHairSolverSettings
 	/** Number of iterations for the constraint solver  */
 	UPROPERTY(EditAnywhere, Category = "SolverSettings", meta = (ToolTip = "Number of iterations to solve the constraints with the xpbd solver"))
 	int32 IterationCount;
+
+	/** Force the Niagara solver component to be visible  */
+	UPROPERTY(EditAnywhere, Category = "SolverSettings", meta = (ToolTip = "Force the Niagara solver component to be visible"))
+	bool bForceVisible;
 
 	bool operator==(const FHairSolverSettings& A) const;
 };

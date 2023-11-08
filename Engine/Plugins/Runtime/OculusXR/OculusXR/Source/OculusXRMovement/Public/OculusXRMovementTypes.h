@@ -231,6 +231,26 @@ public:
 	float Time;
 };
 
+USTRUCT(BlueprintType)
+struct OCULUSXRMOVEMENT_API FOculusXRFaceExpressionModifier
+{
+	GENERATED_BODY()
+public:
+	FOculusXRFaceExpressionModifier();
+
+	UPROPERTY(EditAnywhere, Category = "OculusXR|Movement")
+	TArray<EOculusXRFaceExpression> FaceExpressions;
+
+	UPROPERTY(EditAnywhere, Category = "OculusXR|Movement")
+	float MinValue;
+
+	UPROPERTY(EditAnywhere, Category = "OculusXR|Movement")
+	float MaxValue;
+
+	UPROPERTY(EditAnywhere, Category = "OculusXR|Movement")
+	float Multiplier;
+};
+
 UENUM(BlueprintType)
 enum class EOculusXREye : uint8
 {

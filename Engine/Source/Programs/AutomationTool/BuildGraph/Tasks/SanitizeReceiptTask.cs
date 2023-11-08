@@ -10,6 +10,9 @@ using System.Xml;
 using EpicGames.Core;
 using UnrealBuildBase;
 using UnrealBuildTool;
+using Microsoft.Extensions.Logging;
+
+using static AutomationTool.CommandUtils;
 
 namespace AutomationTool.Tasks
 {
@@ -80,14 +83,14 @@ namespace AutomationTool.Tasks
 				}
 
 				// Print the name of the file being scanned
-				Log.TraceInformation("Sanitizing {0}", TargetFile);
+				Logger.LogInformation("Sanitizing {TargetFile}", TargetFile);
 				using(new LogIndentScope("  "))
 				{
 					// Read the receipt
 					TargetReceipt Receipt;
 					if (!TargetReceipt.TryRead(TargetFile, EngineDir, out Receipt))
 					{
-						CommandUtils.LogWarning("Unable to load file using TagReceipt task ({0})", TargetFile.FullName);
+						Logger.LogWarning("Unable to load file using TagReceipt task ({Arg0})", TargetFile.FullName);
 						continue;
 					}
 
@@ -101,7 +104,7 @@ namespace AutomationTool.Tasks
 						}
 						else
 						{
-							Log.TraceInformation("Removing build product: {0}", BuildProduct.Path);
+							Logger.LogInformation("Removing build product: {File}", BuildProduct.Path);
 						}
 					}
 					Receipt.BuildProducts = NewBuildProducts;
@@ -116,7 +119,7 @@ namespace AutomationTool.Tasks
 						}
 						else
 						{
-							Log.TraceInformation("Removing runtime dependency: {0}", RuntimeDependency.Path);
+							Logger.LogInformation("Removing runtime dependency: {File}", RuntimeDependency.Path);
 						}
 					}
 					Receipt.RuntimeDependencies = NewRuntimeDependencies;

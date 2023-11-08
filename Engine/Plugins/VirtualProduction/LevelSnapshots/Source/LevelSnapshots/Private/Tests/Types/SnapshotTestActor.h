@@ -18,10 +18,10 @@ class USubSubobject : public UObject
 public:
 
 	UPROPERTY(EditAnywhere, Category = "Level Snapshots")
-	int32 IntProperty;
+	int32 IntProperty = 0;
 
 	UPROPERTY(EditAnywhere, Category = "Level Snapshots")
-	float FloatProperty;
+	float FloatProperty = 0;
 	
 };
 
@@ -34,10 +34,10 @@ public:
 	USubobject();
 	
 	UPROPERTY(EditAnywhere, Category = "Level Snapshots")
-	int32 IntProperty;
+	int32 IntProperty = 0;
 
 	UPROPERTY(EditAnywhere, Category = "Level Snapshots")
-	float FloatProperty;
+	float FloatProperty = 0;
 
 	UPROPERTY(EditAnywhere, Instanced, Category = "Level Snapshots")
 	TObjectPtr<USubSubobject> NestedChild;
@@ -59,10 +59,10 @@ public:
 	USnapshotTestComponent();
 	
 	UPROPERTY(EditAnywhere, Category = "Level Snapshots")
-	int32 IntProperty;
+	int32 IntProperty = 0;
 
 	UPROPERTY(EditAnywhere, Category = "Level Snapshots")
-	float FloatProperty;
+	float FloatProperty = 0;
 
 	UPROPERTY(Instanced)
 	TObjectPtr<USubobject> Subobject;
@@ -93,6 +93,28 @@ public:
 	//~ Begin UObject Interface
 	virtual void PostInitProperties() override;
 	//~ End UObject Interface
+
+#if WITH_EDITOR
+	enum class ECanDeleteMode
+	{
+		CallSuper,
+		Yes,
+		No
+	} DeleteSelectedActorMode = ECanDeleteMode::CallSuper;
+	bool bIsUserManaged = true;
+	
+	virtual bool CanDeleteSelectedActor(FText& OutReason) const override
+	{
+		switch (DeleteSelectedActorMode)
+		{
+		case ECanDeleteMode::Yes: return true;
+		case ECanDeleteMode::No: return false;
+		default:
+			return Super::CanDeleteSelectedActor(OutReason);
+		}
+	}
+	virtual bool IsUserManaged() const override  { return bIsUserManaged; }
+#endif
 	
 	
 	/******************** Skipped properties  ********************/
@@ -104,7 +126,7 @@ public:
 	int32 TransientProperty = 200;
 
 	UPROPERTY(EditAnywhere, Category = "Level Snapshots")
-	int32 IntProperty;
+	int32 IntProperty = 0;
 
 
 	

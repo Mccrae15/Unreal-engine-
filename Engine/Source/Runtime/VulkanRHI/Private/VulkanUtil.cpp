@@ -29,6 +29,16 @@ static const uint32	EventDeepCRC = FCrc::StrCrc32<TCHAR>(*EventDeepString);
 static const uint32 BUFFERED_TIMING_QUERIES = 1;
 static const uint32 TIMING_QUERY_RETRIES = 1;
 
+#if NV_AFTERMATH
+	float GVulkanNVAfterMathDumpWaitTime = 10.0f;
+	static FAutoConsoleVariableRef CVarVulkanNVAfterMathDumpWaitTime(
+		TEXT("r.VulkanNVAfterMathDumpWaitTime"),
+		GVulkanNVAfterMathDumpWaitTime,
+		TEXT("Amount of time to wait for NV Aftermath to finish processing GPU crash dumps."),
+		ECVF_Default
+	);
+#endif
+
 /**
  * Initializes the static variables, if necessary.
  */
@@ -129,6 +139,22 @@ void FVulkanDynamicRHI::RHIUnlockStagingBuffer(FRHIStagingBuffer* StagingBufferR
 {
 	FVulkanStagingBuffer* StagingBuffer = ResourceCast(StagingBufferRHI);
 	StagingBuffer->Unlock();
+}
+
+void FVulkanGPUFence::Clear()
+{
+	CmdBuffer = nullptr;
+	FenceSignaledCounter = MAX_uint64;
+}
+
+bool FVulkanGPUFence::Poll() const
+{
+	return (CmdBuffer && (FenceSignaledCounter < CmdBuffer->GetFenceSignaledCounter()));
+}
+
+FGPUFenceRHIRef FVulkanDynamicRHI::RHICreateGPUFence(const FName& Name)
+{
+	return new FVulkanGPUFence(Name);
 }
 
 FVulkanGPUTiming::~FVulkanGPUTiming()
@@ -738,7 +764,6 @@ void FVulkanGPUProfiler::PopMarkerForCrash(VkCommandBuffer CmdBuffer, VkBuffer D
 
 void FVulkanGPUProfiler::DumpCrashMarkers(void* BufferData)
 {
-#if VULKAN_SUPPORTS_AMD_BUFFER_MARKER
 	if (Device->GetOptionalExtensions().HasAMDBufferMarker)
 	{
 		uint32* Entries = (uint32*)BufferData;
@@ -750,40 +775,35 @@ void FVulkanGPUProfiler::DumpCrashMarkers(void* BufferData)
 			++Entries;
 		}
 	}
-	else
-#endif
+
+	if (Device->GetOptionalExtensions().HasNVDiagnosticCheckpoints)
 	{
-#if VULKAN_SUPPORTS_NV_DIAGNOSTICS
-		if (Device->GetOptionalExtensions().HasNVDiagnosticCheckpoints)
+		struct FCheckpointDataNV : public VkCheckpointDataNV
 		{
-			struct FCheckpointDataNV : public VkCheckpointDataNV
+			FCheckpointDataNV()
 			{
-				FCheckpointDataNV()
-				{
-					ZeroVulkanStruct(*this, VK_STRUCTURE_TYPE_CHECKPOINT_DATA_NV);
-				}
-			};
-			TArray<FCheckpointDataNV> Data;
-			uint32 Num = 0;
-			VkQueue QueueHandle = Device->GetGraphicsQueue()->GetHandle();
-			VulkanDynamicAPI::vkGetQueueCheckpointDataNV(QueueHandle, &Num, nullptr);
-			if (Num > 0)
-			{
-				Data.AddDefaulted(Num);
-				VulkanDynamicAPI::vkGetQueueCheckpointDataNV(QueueHandle, &Num, &Data[0]);
-				check(Num == Data.Num());
-				for (uint32 Index = 0; Index < Num; ++Index)
-				{
-					check(Data[Index].sType == VK_STRUCTURE_TYPE_CHECKPOINT_DATA_NV);
-					uint32 Value = (uint32)(size_t)Data[Index].pCheckpointMarker;
-					const FString* Frame = CachedStrings.Find(Value);
-					UE_LOG(LogVulkanRHI, Error, TEXT("[VK_NV_device_diagnostic_checkpoints] %i: Stage %s (0x%08x), %s (CRC 0x%x)"), 
-						Index, VK_TYPE_TO_STRING(VkPipelineStageFlagBits, Data[Index].stage), Data[Index].stage, Frame ? *(*Frame) : TEXT("<undefined>"), Value);
-				}
-				GLog->Panic();
+				ZeroVulkanStruct(*this, VK_STRUCTURE_TYPE_CHECKPOINT_DATA_NV);
 			}
+		};
+		TArray<FCheckpointDataNV> Data;
+		uint32 Num = 0;
+		VkQueue QueueHandle = Device->GetGraphicsQueue()->GetHandle();
+		VulkanDynamicAPI::vkGetQueueCheckpointDataNV(QueueHandle, &Num, nullptr);
+		if (Num > 0)
+		{
+			Data.AddDefaulted(Num);
+			VulkanDynamicAPI::vkGetQueueCheckpointDataNV(QueueHandle, &Num, &Data[0]);
+			check(Num == Data.Num());
+			for (uint32 Index = 0; Index < Num; ++Index)
+			{
+				check(Data[Index].sType == VK_STRUCTURE_TYPE_CHECKPOINT_DATA_NV);
+				uint32 Value = (uint32)(size_t)Data[Index].pCheckpointMarker;
+				const FString* Frame = CachedStrings.Find(Value);
+				UE_LOG(LogVulkanRHI, Error, TEXT("[VK_NV_device_diagnostic_checkpoints] %i: Stage %s (0x%08x), %s (CRC 0x%x)"), 
+					Index, VK_TYPE_TO_STRING(VkPipelineStageFlagBits, Data[Index].stage), Data[Index].stage, Frame ? *(*Frame) : TEXT("<undefined>"), Value);
+			}
+			GLog->Panic();
 		}
-#endif
 	}
 
 	if (!Device->GetOptionalExtensions().HasGPUCrashDumpExtensions())
@@ -801,7 +821,7 @@ void FVulkanGPUProfiler::DumpCrashMarkers(void* BufferData)
 		GLog->Panic();
 	}
 }
-#endif
+#endif // VULKAN_SUPPORTS_GPU_CRASH_DUMPS
 
 #if NV_AFTERMATH
 void AftermathGpuCrashDumpCallback(const void* CrashDump, const uint32 CrashDumpSize, void* UserData)
@@ -899,18 +919,23 @@ void AftermathCrashDumpDescriptionCallback(PFN_GFSDK_Aftermath_AddGpuCrashDumpDe
 
 void AftermathResolveMarkerCallback(const void* pMarker, void* pUserData, void** resolvedMarkerData, uint32_t* markerSize)
 {
-	// @todo: this needs implementing
+#if VULKAN_SUPPORTS_NV_DIAGNOSTICS
+	FVulkanDevice* VulkanDevice = (FVulkanDevice*)pUserData;
+	if (VulkanDevice->GetOptionalExtensions().HasNVDiagnosticCheckpoints)
+	{
+		const uint32 Value = (uint32)(size_t)pMarker;
+		const FString* MarkerName = VulkanDevice->GetImmediateContext().GetGPUProfiler().CachedStrings.Find(Value);
+		UE_LOG(LogVulkanRHI, Display, TEXT("[AftermathResolveMarkerCallback] Requested %u [%s]"), Value, MarkerName ? *(*MarkerName) : TEXT("<undefined>"));
+		if (MarkerName && !MarkerName->IsEmpty() && resolvedMarkerData && markerSize)
+		{
+			const TArray<TCHAR, FString::AllocatorType>& CharArray = MarkerName->GetCharArray();
+			(*resolvedMarkerData) = (void*)CharArray.GetData();
+			(*markerSize) = CharArray.Num() * CharArray.GetTypeSize();
+		}
+	}
+#endif // VULKAN_SUPPORTS_NV_DIAGNOSTICS
 }
 #endif
-
-#include "VulkanRHIBridge.h"
-namespace VulkanRHIBridge
-{
-	FVulkanDevice* GetDevice(FVulkanDynamicRHI* RHI)
-	{
-		return RHI->GetDevice();
-	}
-}
 
 namespace VulkanRHI
 {
@@ -928,6 +953,76 @@ namespace VulkanRHI
 		VulkanRHI::vkGetBufferMemoryRequirements(Device, Buffer, &OutMemoryRequirements);
 
 		return Buffer;
+	}
+
+	void CheckDeviceFault(FVulkanDevice* InDevice)
+	{
+		if (InDevice->GetOptionalExtensions().HasEXTDeviceFault)
+		{
+			const VkDevice DeviceHandle = InDevice->GetInstanceHandle();
+			VkResult Result;
+
+			VkDeviceFaultCountsEXT FaultCounts;
+			ZeroVulkanStruct(FaultCounts, VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT);
+			Result = vkGetDeviceFaultInfoEXT(DeviceHandle, &FaultCounts, nullptr);
+			if (Result == VK_SUCCESS)
+			{
+				VkDeviceFaultInfoEXT FaultInfo;
+				ZeroVulkanStruct(FaultInfo, VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT);
+
+				TArray<VkDeviceFaultAddressInfoEXT> AddressInfos;
+				AddressInfos.SetNumZeroed(FaultCounts.addressInfoCount);
+				FaultInfo.pAddressInfos = AddressInfos.GetData();
+
+				TArray<VkDeviceFaultVendorInfoEXT> VendorInfos;
+				VendorInfos.SetNumZeroed(FaultCounts.vendorInfoCount);
+				FaultInfo.pVendorInfos = VendorInfos.GetData();
+
+				TArray<uint8> VendorBinaryData;
+				VendorBinaryData.SetNumZeroed(FaultCounts.vendorBinarySize);
+				FaultInfo.pVendorBinaryData = VendorBinaryData.GetData();
+
+				Result = vkGetDeviceFaultInfoEXT(DeviceHandle, &FaultCounts, &FaultInfo);
+				if (Result == VK_SUCCESS)
+				{
+					// :todo-jn: match these up to resources
+
+					auto ReportAddrToStr = [&AddressInfos]() {
+						FString AddrStr;
+						for (const VkDeviceFaultAddressInfoEXT& AddrInfo : AddressInfos)
+						{
+							const uint64_t LowerAddress = (AddrInfo.reportedAddress & ~(AddrInfo.addressPrecision - 1));
+							const uint64_t UpperAddress = (AddrInfo.reportedAddress | (AddrInfo.addressPrecision - 1));
+
+							AddrStr += FString::Printf(TEXT("\n    - %s : 0x%016llX (range:0x%016llX-0x%016llX)"), 
+								VK_TYPE_TO_STRING(VkDeviceFaultAddressTypeEXT, AddrInfo.addressType),
+								AddrInfo.reportedAddress, LowerAddress, UpperAddress);
+						}
+						return AddrStr;
+					};
+
+					auto ReportVendorToStr = [&VendorInfos]() {
+						FString VendorStr;
+						for (const VkDeviceFaultVendorInfoEXT& VendorInfo : VendorInfos)
+						{
+							VendorStr += FString::Printf(TEXT("\n    - %s (code:0x%016llX data:0x%016llX)"),
+								StringCast<TCHAR>((UTF8CHAR*)VendorInfo.description).Get(), VendorInfo.vendorFaultCode, VendorInfo.vendorFaultData);
+						}
+						return VendorStr;
+					};
+
+					UE_LOG(LogVulkanRHI, Error, 
+						TEXT("\nDEVICE FAULT REPORT:\n")
+						TEXT("* Description: %s\n")
+						TEXT("* Address Info: %s\n")
+						TEXT("* Vendor Info: %s\n")
+						TEXT("* Vendor Binary Size: %llu\n"),
+
+						StringCast<TCHAR>((UTF8CHAR*)FaultInfo.description).Get(), *ReportAddrToStr(), *ReportVendorToStr(), FaultCounts.vendorBinarySize
+					);
+				}
+			}
+		}
 	}
 
 	/**
@@ -967,19 +1062,11 @@ namespace VulkanRHI
 		VKERRORCASE(VK_ERROR_OUT_OF_DATE_KHR); break;
 		VKERRORCASE(VK_ERROR_INCOMPATIBLE_DISPLAY_KHR); break;
 		VKERRORCASE(VK_ERROR_VALIDATION_FAILED_EXT); break;
-#if VK_HEADER_VERSION >= 13
 		VKERRORCASE(VK_ERROR_INVALID_SHADER_NV); break;
-#endif
-#if VK_HEADER_VERSION >= 24
 		VKERRORCASE(VK_ERROR_FRAGMENTED_POOL); break;
-#endif
-#if VK_HEADER_VERSION >= 39
 		VKERRORCASE(VK_ERROR_OUT_OF_POOL_MEMORY_KHR); break;
-#endif
-#if VK_HEADER_VERSION >= 65
 		VKERRORCASE(VK_ERROR_INVALID_EXTERNAL_HANDLE_KHR); break;
 		VKERRORCASE(VK_ERROR_NOT_PERMITTED_EXT); break;
-#endif
 #undef VKERRORCASE
 		default:
 			break;
@@ -998,13 +1085,40 @@ namespace VulkanRHI
 		UE_LOG(LogVulkanRHI, Error, TEXT("%s failed, VkResult=%d\n at %s:%u \n with error %s"),
 			ANSI_TO_TCHAR(VkFunction), (int32)Result, ANSI_TO_TCHAR(Filename), Line, *ErrorString);
 
-#if VULKAN_SUPPORTS_GPU_CRASH_DUMPS
-		if (GIsGPUCrashed && GGPUCrashDebuggingEnabled)
+		if (GIsGPUCrashed)
 		{
 			FVulkanDevice* Device = GVulkanRHI->GetDevice();
-			Device->GetImmediateContext().GetGPUProfiler().DumpCrashMarkers(Device->GetCrashMarkerMappedPointer());
-		}
+
+#if VULKAN_SUPPORTS_GPU_CRASH_DUMPS
+			if (GGPUCrashDebuggingEnabled)
+			{
+				Device->GetImmediateContext().GetGPUProfiler().DumpCrashMarkers(Device->GetCrashMarkerMappedPointer());
+			}
 #endif
+
+			CheckDeviceFault(Device);
+
+			// Make sure we wait on the Aftermath crash dump before we crash.
+#if NV_AFTERMATH
+			if (GGPUCrashDebuggingEnabled && GVulkanNVAftermathModuleLoaded)
+			{
+				GFSDK_Aftermath_CrashDump_Status AftermathStatus{};
+				GFSDK_Aftermath_GetCrashDumpStatus(&AftermathStatus);
+				if (AftermathStatus != GFSDK_Aftermath_CrashDump_Status_Unknown && AftermathStatus != GFSDK_Aftermath_CrashDump_Status_NotStarted)
+				{
+					const float StartTime = FPlatformTime::Seconds();
+					const float EndTime = StartTime + GVulkanNVAfterMathDumpWaitTime;
+					while (AftermathStatus != GFSDK_Aftermath_CrashDump_Status_CollectingDataFailed
+						&& AftermathStatus != GFSDK_Aftermath_CrashDump_Status_Finished
+						&& FPlatformTime::Seconds() < EndTime)
+					{
+						FPlatformProcess::Sleep(0.01f);
+						GFSDK_Aftermath_GetCrashDumpStatus(&AftermathStatus);
+					}
+				}
+			}
+#endif
+		}
 
 #if UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT
 		if (bDumpMemory)

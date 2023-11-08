@@ -5,11 +5,9 @@ using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
 using EpicGames.Core;
-using UnrealBuildBase;
 using Microsoft.Extensions.Logging;
-using System.Runtime.InteropServices;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -44,6 +42,12 @@ namespace UnrealBuildTool
 		public FileReference? ForeignPlugin = null;
 
 		/// <summary>
+		/// Whether we should treat the ForeignPlugin argument as a local plugin for building purposes
+		/// </summary>
+		[CommandLine("-BuildPluginAsLocal")]
+		public bool bBuildPluginAsLocal = false;
+
+		/// <summary>
 		/// Set of module names to compile.
 		/// </summary>
 		[CommandLine("-Module=")]
@@ -53,7 +57,7 @@ namespace UnrealBuildTool
 		/// Lists of files to compile
 		/// </summary>
 		[CommandLine("-FileList=")]
-		public List<FileReference> FileLists = new List<FileReference>(); 
+		public List<FileReference> FileLists = new List<FileReference>();
 
 		/// <summary>
 		/// Individual file(s) to compile
@@ -63,10 +67,22 @@ namespace UnrealBuildTool
 		public List<FileReference> SpecificFilesToCompile = new List<FileReference>();
 
 		/// <summary>
-		/// Individual files to compile which may or may not be part of the target. This file set is built from a header scan, and may include files
-		/// not part of the target by design.
+		/// Relative path to file(s) to compile
 		/// </summary>
-		public List<FileReference> OptionalFilesToCompile = new List<FileReference>();
+		[CommandLine("-Files=", ListSeparator = ';')]
+		public List<string> RelativePathsToSpecificFilesToCompile = new List<string>();
+
+		/// <summary>
+		/// Working directory when compiling with RelativePathsToSpecificFilesToCompile
+		/// </summary>
+		[CommandLine("-WorkingDir=")]
+		public string? WorkingDir = null;
+
+		/// <summary>
+		/// Will build all files that directly include any of the files provided in -SingleFile
+		/// </summary>
+		[CommandLine("-SingleFileBuildDependents")]
+		public bool bSingleFileBuildDependents;
 
 		/// <summary>
 		/// Whether to perform hot reload for this target
@@ -112,6 +128,49 @@ namespace UnrealBuildTool
 		public bool bRebuild;
 
 		/// <summary>
+		/// Whether to unify C++ code into larger files for faster compilation.
+		/// </summary>
+		[CommandLine("-DisableUnity", Value = "false")]
+		public bool bUseUnityBuild = true;
+
+		/// <summary>
+		/// Whether to force C++ source files to be combined into larger files for faster compilation.
+		/// </summary>
+		[CommandLine("-ForceUnity")]
+		public bool bForceUnityBuild = false;
+
+		/// <summary>
+		/// Enables "include what you use" mode.
+		/// </summary>
+		[CommandLine("-IWYU")]
+		public bool bIWYU = false;
+
+		/// <summary>
+		/// Intermediate environment. Determines if the intermediates end up in a different folder than normal.
+		/// </summary>
+		public UnrealIntermediateEnvironment IntermediateEnvironment
+		{
+			get
+			{
+				if (IntermediateEnvironmentOverride.HasValue)
+				{
+					return IntermediateEnvironmentOverride.Value;
+				}
+				if (bIWYU)
+				{
+					return UnrealIntermediateEnvironment.IWYU;
+				}
+				if (!bUseUnityBuild && !bForceUnityBuild)
+				{
+					return UnrealIntermediateEnvironment.NonUnity;
+				}
+				return UnrealIntermediateEnvironment.Default;
+			}
+			set { IntermediateEnvironmentOverride = value; }
+		}
+		private UnrealIntermediateEnvironment? IntermediateEnvironmentOverride;
+
+		/// <summary>
 		/// Constructor
 		/// </summary>
 		/// <param name="ProjectFile">Path to the project file</param>
@@ -123,7 +182,7 @@ namespace UnrealBuildTool
 		public TargetDescriptor(FileReference? ProjectFile, string TargetName, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration, UnrealArchitectures Architectures, CommandLineArguments? Arguments)
 		{
 			this.ProjectFile = ProjectFile;
-			this.Name = TargetName;
+			Name = TargetName;
 			this.Platform = Platform;
 			this.Configuration = Configuration;
 			if (Architectures == null)
@@ -137,7 +196,7 @@ namespace UnrealBuildTool
 
 			// If there are any additional command line arguments
 			List<string> AdditionalArguments = new List<string>();
-			if(Arguments != null)
+			if (Arguments != null)
 			{
 				// Apply the arguments to this object
 				Arguments.ApplyTo(this);
@@ -146,20 +205,29 @@ namespace UnrealBuildTool
 				foreach (FileReference FileList in FileLists)
 				{
 					string[] Files = FileReference.ReadAllLines(FileList);
-					foreach (string File in Files)
+					foreach (string File in Files.Where(x => !String.IsNullOrWhiteSpace(x)))
 					{
-						if (!String.IsNullOrWhiteSpace(File))
-						{
-							SpecificFilesToCompile.Add(FileReference.Combine(Unreal.RootDirectory, File));
-						}
+						SpecificFilesToCompile.Add(FileReference.Combine(Unreal.RootDirectory, File));
 					}
 				}
 
+				// Create the full path for the files specified in RelativePathsToSpecificFilesToCompile
+				DirectoryReference CurrentWorkingDir = Unreal.RootDirectory;
+				if (WorkingDir != null)
+				{
+					CurrentWorkingDir = new DirectoryReference(WorkingDir);
+				}
+
+				foreach (string RelativeFilePath in RelativePathsToSpecificFilesToCompile)
+				{
+					SpecificFilesToCompile.Add(FileReference.Combine(CurrentWorkingDir, RelativeFilePath));
+				}
+
 				// Parse all the hot-reload module names
-				foreach(string ModuleWithSuffix in Arguments.GetValues("-ModuleWithSuffix="))
+				foreach (string ModuleWithSuffix in Arguments.GetValues("-ModuleWithSuffix="))
 				{
 					int SuffixIdx = ModuleWithSuffix.LastIndexOf(',');
-					if(SuffixIdx == -1)
+					if (SuffixIdx == -1)
 					{
 						throw new BuildException("Missing suffix argument from -ModuleWithSuffix=Name,Suffix");
 					}
@@ -167,7 +235,7 @@ namespace UnrealBuildTool
 					string ModuleName = ModuleWithSuffix.Substring(0, SuffixIdx);
 
 					int Suffix;
-					if(!Int32.TryParse(ModuleWithSuffix.Substring(SuffixIdx + 1), out Suffix))
+					if (!Int32.TryParse(ModuleWithSuffix.Substring(SuffixIdx + 1), out Suffix))
 					{
 						throw new BuildException("Suffix for modules must be an integer");
 					}
@@ -176,9 +244,9 @@ namespace UnrealBuildTool
 				}
 
 				// Pull out all the arguments that haven't been used so far
-				for(int Idx = 0; Idx < Arguments.Count; Idx++)
+				for (int Idx = 0; Idx < Arguments.Count; Idx++)
 				{
-					if(!Arguments.HasBeenUsed(Idx))
+					if (!Arguments.HasBeenUsed(Idx))
 					{
 						AdditionalArguments.Add(Arguments[Idx]);
 					}
@@ -189,12 +257,46 @@ namespace UnrealBuildTool
 
 		public TargetDescriptor Copy()
 		{
-			return (TargetDescriptor)this.MemberwiseClone();
+			return (TargetDescriptor)MemberwiseClone();
 		}
 
 		public static TargetDescriptor FromTargetInfo(TargetInfo Info)
 		{
 			return new TargetDescriptor(Info.ProjectFile, Info.Name, Info.Platform, Info.Configuration, Info.Architectures, Info.Arguments);
+		}
+
+		/// <summary>
+		/// Parse a list of target descriptors from the command line
+		/// </summary>
+		/// <param name="Arguments">Command-line arguments</param>
+		/// <param name="BuildConfiguration">Build configuration to get common flags from</param>
+		/// <param name="Logger">Logger for output</param>
+		/// <returns>List of target descriptors</returns>
+		public static List<TargetDescriptor> ParseCommandLine(CommandLineArguments Arguments, BuildConfiguration BuildConfiguration, ILogger Logger)
+		{
+			List<TargetDescriptor> TargetDescriptors = new List<TargetDescriptor>();
+			ParseCommandLine(Arguments, BuildConfiguration.bUsePrecompiled, BuildConfiguration.bSkipRulesCompile, BuildConfiguration.bForceRulesCompile, TargetDescriptors, Logger);
+
+			// apply the intermediate environment from the build configuration
+			if (BuildConfiguration.IntermediateEnvironment.HasValue)
+			{
+				TargetDescriptors.ForEach(x => x.IntermediateEnvironment = BuildConfiguration.IntermediateEnvironment.Value);
+			}
+
+			return TargetDescriptors;
+		}
+
+		/// <summary>
+		/// Parse a list of target descriptors from the command line
+		/// </summary>
+		/// <param name="Arguments">Command-line arguments</param>
+		/// <param name="Logger">Logger for output</param>
+		/// <returns>List of target descriptors</returns>
+		public static List<TargetDescriptor> ParseCommandLine(CommandLineArguments Arguments, ILogger Logger)
+		{
+			List<TargetDescriptor> TargetDescriptors = new List<TargetDescriptor>();
+			ParseCommandLine(Arguments, false, false, false, TargetDescriptors, Logger);
+			return TargetDescriptors;
 		}
 
 		/// <summary>
@@ -230,16 +332,16 @@ namespace UnrealBuildTool
 			List<string> Targets;
 			Arguments = Arguments.Remove("-Target=", out Targets);
 
-			if(TargetLists.Count > 0 || Targets.Count > 0)
+			if (TargetLists.Count > 0 || Targets.Count > 0)
 			{
 				// Try to parse multiple arguments from a single command line
-				foreach(string TargetList in TargetLists)
+				foreach (string TargetList in TargetLists)
 				{
 					string[] Lines = File.ReadAllLines(TargetList);
-					foreach(string Line in Lines)
+					foreach (string Line in Lines)
 					{
 						string TrimLine = Line.Trim();
-						if(TrimLine.Length > 0 && TrimLine[0] != ';')
+						if (TrimLine.Length > 0 && TrimLine[0] != ';')
 						{
 							CommandLineArguments NewArguments = Arguments.Append(CommandLineArguments.Split(TrimLine));
 							ParseCommandLine(NewArguments, bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile, TargetDescriptors, Logger);
@@ -247,7 +349,7 @@ namespace UnrealBuildTool
 					}
 				}
 
-				foreach(string Target in Targets)
+				foreach (string Target in Targets)
 				{
 					CommandLineArguments NewArguments = Arguments.Append(CommandLineArguments.Split(Target));
 					ParseCommandLine(NewArguments, bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile, TargetDescriptors, Logger);
@@ -280,16 +382,16 @@ namespace UnrealBuildTool
 			for (int ArgumentIndex = 0; ArgumentIndex < Arguments.Count; ArgumentIndex++)
 			{
 				string Argument = Arguments[ArgumentIndex];
-				if(Argument.Length > 0 && Argument[0] != '-')
+				if (Argument.Length > 0 && Argument[0] != '-')
 				{
 					// Mark this argument as used. We'll interpret it as one thing or another.
 					Arguments.MarkAsUsed(ArgumentIndex);
 
 					// Check if it's a project file argument
-					if(Argument.EndsWith(".uproject", StringComparison.OrdinalIgnoreCase))
+					if (Argument.EndsWith(".uproject", StringComparison.OrdinalIgnoreCase))
 					{
 						FileReference NewProjectFile = new FileReference(Argument);
-						if(ProjectFile != null && ProjectFile != NewProjectFile)
+						if (ProjectFile != null && ProjectFile != NewProjectFile)
 						{
 							throw new BuildException("Multiple project files specified on command line (first {0}, then {1})", ProjectFile, NewProjectFile);
 						}
@@ -302,10 +404,10 @@ namespace UnrealBuildTool
 
 					// Try to parse them as platforms
 					UnrealTargetPlatform ParsedPlatform;
-					if(UnrealTargetPlatform.TryParse(InlineArguments[0], out ParsedPlatform))
+					if (UnrealTargetPlatform.TryParse(InlineArguments[0], out ParsedPlatform))
 					{
 						Platforms.Add(ParsedPlatform);
-						for(int InlineArgumentIdx = 1; InlineArgumentIdx < InlineArguments.Length; InlineArgumentIdx++)
+						for (int InlineArgumentIdx = 1; InlineArgumentIdx < InlineArguments.Length; InlineArgumentIdx++)
 						{
 							Platforms.Add(UnrealTargetPlatform.Parse(InlineArguments[InlineArgumentIdx]));
 						}
@@ -314,13 +416,13 @@ namespace UnrealBuildTool
 
 					// Try to parse them as configurations
 					UnrealTargetConfiguration ParsedConfiguration;
-					if(Enum.TryParse(InlineArguments[0], true, out ParsedConfiguration))
+					if (Enum.TryParse(InlineArguments[0], true, out ParsedConfiguration))
 					{
 						Configurations.Add(ParsedConfiguration);
-						for(int InlineArgumentIdx = 1; InlineArgumentIdx < InlineArguments.Length; InlineArgumentIdx++)
+						for (int InlineArgumentIdx = 1; InlineArgumentIdx < InlineArguments.Length; InlineArgumentIdx++)
 						{
 							string InlineArgument = InlineArguments[InlineArgumentIdx];
-							if(!Enum.TryParse(InlineArgument, true, out ParsedConfiguration))
+							if (!Enum.TryParse(InlineArgument, true, out ParsedConfiguration))
 							{
 								throw new BuildException("Invalid configuration '{0}'", InlineArgument);
 							}
@@ -344,10 +446,10 @@ namespace UnrealBuildTool
 			}
 
 			// Make sure the project file exists, and make sure we're using the correct case.
-			if(ProjectFile != null)
+			if (ProjectFile != null)
 			{
 				FileInfo ProjectFileInfo = FileUtils.FindCorrectCase(ProjectFile.ToFileInfo());
-				if(!ProjectFileInfo.Exists)
+				if (!ProjectFileInfo.Exists)
 				{
 					throw new BuildException("Unable to find project '{0}'.", ProjectFile);
 				}
@@ -355,7 +457,7 @@ namespace UnrealBuildTool
 			}
 
 			// Expand all the platforms, architectures and configurations
-			foreach(UnrealTargetPlatform Platform in Platforms)
+			foreach (UnrealTargetPlatform Platform in Platforms.Distinct())
 			{
 				// Make sure the platform is valid
 				if (!InstalledPlatformInfo.IsValid(null, Platform, null, EProjectType.Code, InstalledPlatformState.Downloaded))
@@ -370,20 +472,22 @@ namespace UnrealBuildTool
 					}
 				}
 
-				UEBuildPlatform BuildPlatform = UEBuildPlatform.GetBuildPlatform(Platform);
+				// there are times that this can be run before we have setup build platforms (ie Per-Project AutoSDK version), in which case we
+				// cannot get Architecture info, but it's not needed yet
+				UEBuildPlatform? BuildPlatform;
+				UEBuildPlatform.TryGetBuildPlatform(Platform, out BuildPlatform);
 
 				// Parse the architecture parameter, or use null to look up platform defaults later
 				string ParamArchitectureList = Arguments.GetStringOrDefault("-Architecture=", "") + Arguments.GetStringOrDefault("-Architectures=", "");
 				UnrealArchitectures? ParamArchitectures = UnrealArchitectures.FromString(ParamArchitectureList, Platform);
 
-
-				foreach(UnrealTargetConfiguration Configuration in Configurations)
+				foreach (UnrealTargetConfiguration Configuration in Configurations.Distinct())
 				{
 					// Create all the target descriptors for targets specified by type
-					foreach(string TargetTypeString in Arguments.GetValues("-TargetType="))
+					foreach (string TargetTypeString in Arguments.GetValues("-TargetType="))
 					{
 						TargetType TargetType;
-						if(!Enum.TryParse(TargetTypeString, out TargetType))
+						if (!Enum.TryParse(TargetTypeString, out TargetType))
 						{
 							throw new BuildException("Invalid target type '{0}'", TargetTypeString);
 						}
@@ -405,7 +509,7 @@ namespace UnrealBuildTool
 					}
 
 					// Create all the target descriptors
-					foreach(string TargetName in TargetNames)
+					foreach (string TargetName in TargetNames)
 					{
 						FileReference? TargetProjectFile = ProjectFile;
 						UnrealArchitectures Architectures;
@@ -419,28 +523,39 @@ namespace UnrealBuildTool
 						if (TargetProjectFile == null)
 						{
 							// find one with a matching name
-							TargetProjectFile = NativeProjects.EnumerateProjectFiles(Log.Logger)
+							TargetProjectFile = NativeProjects.EnumerateProjectFiles(Logger)
 								.Where(x => x.GetFileNameWithoutAnyExtensions().Equals(TargetName, StringComparison.InvariantCultureIgnoreCase))
 								.FirstOrDefault();
 						}
 
-						if (ParamArchitectures == null)
+						// make a temp target for hybrid content-as-code projects
+						if (TargetProjectFile != null)
+						{
+							NativeProjects.ConditionalMakeTempTargetForHybridProject(TargetProjectFile, new List<UnrealTargetPlatform>(1) { Platform }, Logger);
+						}
+
+						if (ParamArchitectures != null)
+						{
+							Architectures = ParamArchitectures;
+						}
+						else if (BuildPlatform == null)
+						{
+							// if we can't use BuildPlatform yet, we just use any random architecture, since we need _something_
+							Architectures = new UnrealArchitectures(UnrealArch.X64);
+						}
+						else
 						{
 							// ask the platform what achitectures it wants for this project
 							Architectures = BuildPlatform.ArchitectureConfig.ActiveArchitectures(TargetProjectFile, TargetName);
 						}
-						else
-						{
-							Architectures = ParamArchitectures;
-						}
 
 						// If the platform wants a target for each architecture, make a target descriptor for each architecture, otherwise one target for all architectures
-						if (BuildPlatform.ArchitectureConfig.Mode == UnrealArchitectureMode.OneTargetPerArchitecture)
+						if (BuildPlatform != null && BuildPlatform.ArchitectureConfig.Mode == UnrealArchitectureMode.OneTargetPerArchitecture)
 						{
 							foreach (UnrealArch Architecture in Architectures.Architectures)
 							{
 								TargetDescriptors.Add(new TargetDescriptor(TargetProjectFile, TargetName, Platform, Configuration, new UnrealArchitectures(Architecture), Arguments));
-						}
+							}
 						}
 						else
 						{
@@ -460,15 +575,15 @@ namespace UnrealBuildTool
 		public static bool TryParseProjectFileArgument(CommandLineArguments Arguments, [NotNullWhen(true)] out FileReference? ProjectFile)
 		{
 			FileReference? ExplicitProjectFile;
-			if(Arguments.TryGetValue("-Project=", out ExplicitProjectFile))
+			if (Arguments.TryGetValue("-Project=", out ExplicitProjectFile))
 			{
 				ProjectFile = ExplicitProjectFile;
 				return true;
 			}
 
-			for(int Idx = 0; Idx < Arguments.Count; Idx++)
+			for (int Idx = 0; Idx < Arguments.Count; Idx++)
 			{
-				if(Arguments[Idx][0] != '-' && Arguments[Idx].EndsWith(".uproject", StringComparison.OrdinalIgnoreCase))
+				if (Arguments[Idx][0] != '-' && Arguments[Idx].EndsWith(".uproject", StringComparison.OrdinalIgnoreCase))
 				{
 					Arguments.MarkAsUsed(Idx);
 					ProjectFile = new FileReference(Arguments[Idx]);
@@ -476,7 +591,7 @@ namespace UnrealBuildTool
 				}
 			}
 
-			if(UnrealBuildTool.IsProjectInstalled())
+			if (UnrealBuildTool.IsProjectInstalled())
 			{
 				ProjectFile = UnrealBuildTool.GetInstalledProjectFile()!;
 				return true;
@@ -495,11 +610,11 @@ namespace UnrealBuildTool
 			StringBuilder Result = new StringBuilder();
 			Result.AppendFormat("{0} {1} {2}", Name, Platform, Configuration);
 			Result.AppendFormat($" -Architecture={Architectures}");
-			if(ProjectFile != null)
+			if (ProjectFile != null)
 			{
 				Result.AppendFormat(" -Project={0}", Utils.MakePathSafeToUseWithCommandLine(ProjectFile));
 			}
-			if(AdditionalArguments != null && AdditionalArguments.Count > 0)
+			if (AdditionalArguments != null && AdditionalArguments.Count > 0)
 			{
 				Result.AppendFormat(" {0}", AdditionalArguments);
 			}
@@ -509,15 +624,15 @@ namespace UnrealBuildTool
 		public override int GetHashCode()
 		{
 #pragma warning disable RS1024
-			return String.GetHashCode(ProjectFile?.FullName) + 
-				Name.GetHashCode() + 
-				Platform.GetHashCode() + 
-				Configuration.GetHashCode() + 
+			return String.GetHashCode(ProjectFile?.FullName) +
+				Name.GetHashCode() +
+				Platform.GetHashCode() +
+				Configuration.GetHashCode() +
 				Architectures.GetHashCode();
 #pragma warning restore RE1024
 		}
 
-		public override bool Equals(object? Obj) 
+		public override bool Equals(object? Obj)
 		{
 			TargetDescriptor? Other = Obj as TargetDescriptor;
 			if (Other != null)

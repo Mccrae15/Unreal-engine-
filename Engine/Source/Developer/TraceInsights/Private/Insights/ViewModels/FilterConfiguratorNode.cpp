@@ -7,7 +7,7 @@
 // Insights
 #include "Insights/ViewModels/Filters.h"
 
-#define LOCTEXT_NAMESPACE "FFilterConfiguratorNode"
+#define LOCTEXT_NAMESPACE "Insights::FFilterConfiguratorNode"
 
 namespace Insights
 {
@@ -29,32 +29,33 @@ FFilterConfiguratorNode::FFilterConfiguratorNode(const FName InName, bool bInIsG
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-FFilterConfiguratorNode::FFilterConfiguratorNode(const FFilterConfiguratorNode& Other)
-	: FBaseTreeNode(Other.GetName(), Other.IsGroup())
+TSharedRef<FFilterConfiguratorNode> FFilterConfiguratorNode::DeepCopy(const FFilterConfiguratorNode& InSourceNode)
 {
-	*this = Other;
-}
+	TSharedRef<FFilterConfiguratorNode> NodeCopyPtr = MakeShared<FFilterConfiguratorNode>(InSourceNode.GetName(), InSourceNode.IsGroup());
+	FFilterConfiguratorNode& NodeCopy = *NodeCopyPtr;
 
-////////////////////////////////////////////////////////////////////////////////////////////////////
+	NodeCopy.AvailableFilters = InSourceNode.AvailableFilters;
+	NodeCopy.AvailableFilterOperators = InSourceNode.AvailableFilterOperators;
+	NodeCopy.SelectedFilter = InSourceNode.SelectedFilter;
+	NodeCopy.SelectedFilterOperator = InSourceNode.SelectedFilterOperator;
+	NodeCopy.SelectedFilterGroupOperator = InSourceNode.SelectedFilterGroupOperator;
+	NodeCopy.TextBoxValue = InSourceNode.TextBoxValue;
 
-FFilterConfiguratorNode& FFilterConfiguratorNode::operator=(const FFilterConfiguratorNode& Other)
-{
-	GetChildrenMutable().Empty();
+	NodeCopy.SetExpansion(InSourceNode.IsExpanded());
 
-	AvailableFilters = Other.AvailableFilters;
-	AvailableFilterOperators = Other.AvailableFilterOperators;
-	SelectedFilter = Other.SelectedFilter;
-	SelectedFilterOperator = Other.SelectedFilterOperator;
-	SelectedFilterGroupOperator = Other.SelectedFilterGroupOperator;
-	TextBoxValue = Other.TextBoxValue;
-	SetExpansion(Other.IsExpanded());
-
-	for (Insights::FBaseTreeNodePtr Child : Other.GetChildren())
+	if (InSourceNode.IsGroup())
 	{
-		GetChildrenMutable().Add(MakeShared<FFilterConfiguratorNode>(*StaticCastSharedPtr<FFilterConfiguratorNode>(Child)));
+		check(NodeCopy.IsGroup());
+		NodeCopy.ClearChildren(InSourceNode.GetChildrenCount());
+		for (FBaseTreeNodePtr Child : InSourceNode.GetChildren())
+		{
+			check(Child.IsValid() && Child->Is<FFilterConfiguratorNode>());
+			TSharedPtr<FFilterConfiguratorNode> ChildCopy = FFilterConfiguratorNode::DeepCopy(Child->As<FFilterConfiguratorNode>());
+			NodeCopy.AddChildAndSetParent(ChildCopy);
+		}
 	}
 
-	return *this;
+	return NodeCopyPtr;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -67,11 +68,12 @@ bool FFilterConfiguratorNode::operator==(const FFilterConfiguratorNode& Other) c
 	bIsEqual &= SelectedFilterOperator.Get() == Other.SelectedFilterOperator.Get();
 	bIsEqual &= SelectedFilterGroupOperator.Get() == Other.SelectedFilterGroupOperator.Get();
 	bIsEqual &= TextBoxValue == Other.TextBoxValue;
-	bIsEqual &= GetChildren().Num() == Other.GetChildren().Num();
+	bIsEqual &= GetChildrenCount() == Other.GetChildrenCount();
 
 	if (bIsEqual)
 	{
-		for (int32 Index = 0; Index < GetChildren().Num(); ++Index)
+		const int32 Count = GetChildrenCount();
+		for (int32 Index = 0; Index < Count; ++Index)
 		{
 			bIsEqual &= *StaticCastSharedPtr<FFilterConfiguratorNode>(GetChildren()[Index]) == *StaticCastSharedPtr<FFilterConfiguratorNode>(Other.GetChildren()[Index]);
 		}
@@ -82,34 +84,14 @@ bool FFilterConfiguratorNode::operator==(const FFilterConfiguratorNode& Other) c
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-const TArray<TSharedPtr<struct FFilterGroupOperator>>& FFilterConfiguratorNode::GetFilterGroupOperators()
+const TArray<TSharedPtr<FFilterGroupOperator>>& FFilterConfiguratorNode::GetFilterGroupOperators()
 {
 	return FFilterService::Get()->GetFilterGroupOperators();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void FFilterConfiguratorNode::DeleteChildNode(FFilterConfiguratorNodePtr InNode)
-{
-	Insights::FBaseTreeNodePtr Node = StaticCastSharedPtr<Insights::FBaseTreeNode>(InNode);
-	GetChildrenMutable().Remove(Node);
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void FFilterConfiguratorNode::SetGroupPtrForChildren()
-{
-	for (Insights::FBaseTreeNodePtr Child : GetChildrenMutable())
-	{
-		FFilterConfiguratorNodePtr CastedChild = StaticCastSharedPtr<FFilterConfiguratorNode>(Child);
-		CastedChild->SetGroupPtrForChildren();
-		CastedChild->SetGroupPtr(SharedThis(this));
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void FFilterConfiguratorNode::SetAvailableFilters(TSharedPtr<TArray<TSharedPtr<struct FFilter>>> InAvailableFilters)
+void FFilterConfiguratorNode::SetAvailableFilters(TSharedPtr<TArray<TSharedPtr<FFilter>>> InAvailableFilters)
 {
 	AvailableFilters = InAvailableFilters;
 
@@ -121,7 +103,7 @@ void FFilterConfiguratorNode::SetAvailableFilters(TSharedPtr<TArray<TSharedPtr<s
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void FFilterConfiguratorNode::SetSelectedFilter(TSharedPtr<struct FFilter> InSelectedFilter)
+void FFilterConfiguratorNode::SetSelectedFilter(TSharedPtr<FFilter> InSelectedFilter)
 {
 	SelectedFilter = InSelectedFilter;
 	if (SelectedFilter.IsValid() && SelectedFilter->GetSupportedOperators()->Num() > 0)
@@ -129,7 +111,7 @@ void FFilterConfiguratorNode::SetSelectedFilter(TSharedPtr<struct FFilter> InSel
 		SetSelectedFilterOperator(SelectedFilter->GetSupportedOperators()->GetData()[0]);
 
 		AvailableFilterOperators->Empty();
-		Insights::SupportedOperatorsArrayPtr AvailableOperators = InSelectedFilter->SupportedOperators;
+		SupportedOperatorsArrayPtr AvailableOperators = InSelectedFilter->GetSupportedOperators();
 		for (auto& FilterOperator : *AvailableOperators)
 		{
 			AvailableFilterOperators->Add(FilterOperator);
@@ -143,8 +125,8 @@ void FFilterConfiguratorNode::ProcessFilter()
 {
 	if (IsGroup())
 	{
-		TArray<Insights::FBaseTreeNodePtr> ChildArray = GetChildrenMutable();
-		for (Insights::FBaseTreeNodePtr Child : ChildArray)
+		TArray<FBaseTreeNodePtr> ChildArray = GetChildrenMutable();
+		for (FBaseTreeNodePtr Child : ChildArray)
 		{
 			FFilterConfiguratorNodePtr CastedChild = StaticCastSharedPtr<FFilterConfiguratorNode>(Child);
 			CastedChild->ProcessFilter();
@@ -152,15 +134,15 @@ void FFilterConfiguratorNode::ProcessFilter()
 	}
 	else
 	{
-		switch (SelectedFilter->DataType)
+		switch (SelectedFilter->GetDataType())
 		{
 		case EFilterDataType::Double:
 		{
-			if (SelectedFilter->Converter.IsValid())
+			if (SelectedFilter->GetConverter().IsValid())
 			{
 				double Value = 0.0;
 				FText Errors;
-				bool Result = SelectedFilter->Converter->Convert(TextBoxValue, Value, Errors);
+				bool Result = SelectedFilter->GetConverter()->Convert(TextBoxValue, Value, Errors);
 				FilterValue.Set<double>(Result ? Value : 0.0);
 			}
 			else
@@ -171,11 +153,11 @@ void FFilterConfiguratorNode::ProcessFilter()
 		}
 		case EFilterDataType::Int64:
 		{
-			if (SelectedFilter->Converter.IsValid())
+			if (SelectedFilter->GetConverter().IsValid())
 			{
 				int64 Value = 0;
 				FText Errors;
-				bool Result = SelectedFilter->Converter->Convert(TextBoxValue, Value, Errors);
+				bool Result = SelectedFilter->GetConverter()->Convert(TextBoxValue, Value, Errors);
 				FilterValue.Set<int64>(Result ? Value : 0);
 			}
 			else
@@ -198,10 +180,10 @@ void FFilterConfiguratorNode::ProcessFilter()
 		}
 		case EFilterDataType::StringInt64Pair:
 		{
-			checkf(SelectedFilter->Converter.IsValid(), TEXT("StringToInt64Pair filters must have a converter set"));
+			checkf(SelectedFilter->GetConverter().IsValid(), TEXT("StringToInt64Pair filters must have a converter set"));
 			int64 Value = 0;
 			FText Errors;
-			bool Result = SelectedFilter->Converter->Convert(TextBoxValue, Value, Errors);
+			bool Result = SelectedFilter->GetConverter()->Convert(TextBoxValue, Value, Errors);
 			FilterValue.Set<int64>(Result ? Value : -1);
 		}
 		}
@@ -220,7 +202,7 @@ void FFilterConfiguratorNode::GetUsedKeys(TSet<int32>& KeysUsed) const
 	}
 	else
 	{
-		KeysUsed.Add(SelectedFilter->Key);
+		KeysUsed.Add(SelectedFilter->GetKey());
 	}
 }
 
@@ -231,7 +213,7 @@ bool FFilterConfiguratorNode::ApplyFilters(const FFilterContext& Context) const
 	bool Ret = true;
 	if (IsGroup())
 	{
-		switch (SelectedFilterGroupOperator->Type)
+		switch (SelectedFilterGroupOperator->GetType())
 		{
 		case EFilterGroupOperator::And:
 		{
@@ -260,21 +242,21 @@ bool FFilterConfiguratorNode::ApplyFilters(const FFilterContext& Context) const
 	}
 	else
 	{
-		if (!Context.HasFilterData(SelectedFilter->Key))
+		if (!Context.HasFilterData(SelectedFilter->GetKey()))
 		{
 			// If data is not set for this filter return the value specified in the Context.
 			return Context.GetReturnValueForUnsetFilters();
 		}
 
-		switch (SelectedFilter->DataType)
+		switch (SelectedFilter->GetDataType())
 		{
 		case EFilterDataType::Double:
 		{
 			FFilterOperator<double>* Operator = (FFilterOperator<double>*) SelectedFilterOperator.Get();
 			double Value = 0.0;
-			Context.GetFilterData<double>(SelectedFilter->Key, Value);
+			Context.GetFilterData<double>(SelectedFilter->GetKey(), Value);
 
-			Ret = Operator->Func(Value, FilterValue.Get<double>());
+			Ret = Operator->Apply(Value, FilterValue.Get<double>());
 			break;
 		}
 		case EFilterDataType::Int64:
@@ -282,18 +264,18 @@ bool FFilterConfiguratorNode::ApplyFilters(const FFilterContext& Context) const
 		{
 			FFilterOperator<int64>* Operator = (FFilterOperator<int64>*) SelectedFilterOperator.Get();
 			int64 Value = 0;
-			Context.GetFilterData<int64>(SelectedFilter->Key, Value);
+			Context.GetFilterData<int64>(SelectedFilter->GetKey(), Value);
 
-			Ret = Operator->Func(Value, FilterValue.Get<int64>());
+			Ret = Operator->Apply(Value, FilterValue.Get<int64>());
 			break;
 		}
 		case EFilterDataType::String:
 		{
 			FFilterOperator<FString>* Operator = (FFilterOperator<FString>*) SelectedFilterOperator.Get();
 			FString Value;
-			Context.GetFilterData<FString>(SelectedFilter->Key, Value);
+			Context.GetFilterData<FString>(SelectedFilter->GetKey(), Value);
 
-			Ret = Operator->Func(Value, FilterValue.Get<FString>());
+			Ret = Operator->Apply(Value, FilterValue.Get<FString>());
 			break;
 		}
 		default:

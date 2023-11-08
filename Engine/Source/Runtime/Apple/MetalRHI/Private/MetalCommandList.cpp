@@ -21,19 +21,28 @@ extern bool GIsSuspended;
 #endif
 extern int32 GMetalDebugOpsCount;
 
-FMetalCommandList::FMetalCommandList(FMetalCommandQueue& InCommandQueue, bool const bInImmediate)
-: CommandQueue(InCommandQueue)
-, Index(0)
-, Num(0)
-, bImmediate(bInImmediate)
-{
-}
+FMetalCommandList::FMetalCommandList(FMetalCommandQueue& InCommandQueue)
+	: CommandQueue(InCommandQueue)
+{}
 
 FMetalCommandList::~FMetalCommandList(void)
 {
 }
 	
 #pragma mark - Public Command List Mutators -
+
+static const TCHAR* StringFromCommandEncoderError(MTLCommandEncoderErrorState ErrorState)
+{
+    switch (ErrorState)
+    {
+        case MTLCommandEncoderErrorStateUnknown: return TEXT("Unknown");
+        case MTLCommandEncoderErrorStateAffected: return TEXT("Affected");
+        case MTLCommandEncoderErrorStateCompleted: return TEXT("Completed");
+        case MTLCommandEncoderErrorStateFaulted: return TEXT("Faulted");
+        case MTLCommandEncoderErrorStatePending: return TEXT("Pending");
+    }
+    return TEXT("Unknown");
+}
 
 extern CORE_API bool GIsGPUCrashed;
 static void ReportMetalCommandBufferFailure(mtlpp::CommandBuffer const& CompletedBuffer, TCHAR const* ErrorType, bool bDoCheck=true)
@@ -169,6 +178,26 @@ static void ReportMetalCommandBufferFailure(mtlpp::CommandBuffer const& Complete
 			}
 		}
 		
+        // Dump GPU fault information for the GPU encoders
+        if (&MTLCommandBufferEncoderInfoErrorKey != nullptr)
+        {
+            if (NSArray<id<MTLCommandBufferEncoderInfo>>* EncoderInfoArray = [CompletedBuffer.GetError() userInfo][MTLCommandBufferEncoderInfoErrorKey]) {
+                UE_LOG(LogMetal, Warning, TEXT("GPU Encoder Crash Info:"));
+                for (id<MTLCommandBufferEncoderInfo> EncoderInfo in EncoderInfoArray)
+                {
+                    UE_LOG(LogMetal, Warning, TEXT("MTLCommandBufferEncoder - Label: %s, State: %s"), *FString(EncoderInfo.label), StringFromCommandEncoderError(EncoderInfo.errorState));
+                    if (EncoderInfo.debugSignposts.count > 0)
+                    {
+                        UE_LOG(LogMetal, Warning, TEXT("    Signposts:"));
+                        for (NSString* Signpost in EncoderInfo.debugSignposts)
+                        {
+                            UE_LOG(LogMetal, Warning, TEXT("    - %s"), *FString(Signpost));
+                        }
+                    }
+                }
+            }
+        }
+        
 #if PLATFORM_IOS
         UE_LOG(LogMetal, Warning, TEXT("Command Buffer %s Failed with %s Error! Error Domain: %s Code: %d Description %s %s %s"), *LabelString, ErrorType, *DomainString, Code, *ErrorString, *FailureString, *RecoveryString);
         FIOSPlatformMisc::GPUAssert();
@@ -291,15 +320,6 @@ void FMetalCommandList::HandleMetalCommandBufferFailure(mtlpp::CommandBuffer con
 	}
 }
 
-void FMetalCommandList::SetParallelIndex(uint32 InIndex, uint32 InNum)
-{
-	if (!IsImmediate())
-	{
-		Index = InIndex;
-		Num = InNum;
-	}
-}
-
 void FMetalCommandList::Commit(mtlpp::CommandBuffer& Buffer, TArray<ns::Object<mtlpp::CommandBufferHandler>> CompletionHandlers, bool const bWait, bool const bIsLastCommandBuffer)
 {
 	check(Buffer);
@@ -348,27 +368,9 @@ void FMetalCommandList::Commit(mtlpp::CommandBuffer& Buffer, TArray<ns::Object<m
 		FrameCommitedBufferTimings = MakeShared<TArray<FMetalCommandBufferTiming>, ESPMode::ThreadSafe>();
 	}
 
-	if (bImmediate)
+	CommandQueue.CommitCommandBuffer(Buffer);
+	if (bWait)
 	{
-		CommandQueue.CommitCommandBuffer(Buffer);
-		if (bWait)
-		{
-			Buffer.WaitUntilCompleted();
-		}
+		Buffer.WaitUntilCompleted();
 	}
-	else
-	{
-		check(!bWait);
-		SubmittedBuffers.Add(Buffer);
-	}
-}
-
-void FMetalCommandList::Submit(uint32 InIndex, uint32 Count)
-{
-	// Only deferred contexts should call Submit, the immediate context commits directly to the command-queue.
-	check(!bImmediate);
-
-	// Command queue takes ownership of the array
-	CommandQueue.SubmitCommandBuffers(SubmittedBuffers, InIndex, Count);
-	SubmittedBuffers.Empty();
 }

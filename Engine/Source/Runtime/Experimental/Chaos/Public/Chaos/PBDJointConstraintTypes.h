@@ -110,16 +110,16 @@ namespace Chaos
 		}
 	};
 
-	class CHAOS_API FPBDJointSettings
+	class FPBDJointSettings
 	{
 	public:
 		using FTransformPair = TVector<FRigidTransform3, 2>;
 
-		FPBDJointSettings();
+		CHAOS_API FPBDJointSettings();
 
 		// Ensure that settings are consistent and within valid ranges. Should be called
 		// whenever settings change.
-		void Sanitize();
+		CHAOS_API void Sanitize();
 
 		bool operator==(const FPBDJointSettings& Other) const
 		{
@@ -202,10 +202,10 @@ namespace Chaos
 		void* UserData;
 	};
 
-	class CHAOS_API FPBDJointSolverSettings
+	class FPBDJointSolverSettings
 	{
 	public:
-		FPBDJointSolverSettings();
+		CHAOS_API FPBDJointSolverSettings();
 
 		// Tolerances
 		FReal SwingTwistAngleTolerance;
@@ -231,6 +231,9 @@ namespace Chaos
 		// Whether to solve rotation then position limits (true), or vice versa
 		// Solving position last leads to less separation at the joints when limits are being forced
 		bool bSolvePositionLast;
+
+		// Whether joints are position-based or velocity-based in the solver
+		bool bUsePositionBasedDrives;
 
 		// @todo(chaos): remove these TEMP overrides for testing
 		bool bEnableTwistLimits;

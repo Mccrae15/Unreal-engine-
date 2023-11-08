@@ -45,28 +45,45 @@ private:
 	TArray<FGuid> ChildEmitterHandleIds;
 };
 
+/** View settings that are saved per asset and aren't shared between different Niagara viewports. */
+USTRUCT()
+struct FNiagaraPerAssetViewportSettings
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY()
+	FVector ViewLocation = FVector::ZeroVector;
+
+	UPROPERTY()
+	FRotator ViewRotation = FRotator::ZeroRotator;
+
+	UPROPERTY()
+	bool bUseOrbitMode = true;
+};
+
 /** Editor only data for systems. */
-UCLASS()
-class NIAGARAEDITOR_API UNiagaraSystemEditorData : public UNiagaraEditorDataBase
+UCLASS(MinimalAPI)
+class UNiagaraSystemEditorData : public UNiagaraEditorDataBase
 {
 	GENERATED_BODY()
 
 	DECLARE_MULTICAST_DELEGATE(FOnUserParameterScriptVariablesSynced)
 public:
-	UNiagaraSystemEditorData(const FObjectInitializer& ObjectInitializer);
+	NIAGARAEDITOR_API UNiagaraSystemEditorData(const FObjectInitializer& ObjectInitializer);
 
-	void PostInitProperties();
+	NIAGARAEDITOR_API void PostInitProperties();
 
-	virtual void PostLoadFromOwner(UObject* InOwner) override;
+	NIAGARAEDITOR_API virtual void PostLoadFromOwner(UObject* InOwner) override;
 #if WITH_EDITORONLY_DATA
-	static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
+	static NIAGARAEDITOR_API void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
 #endif
 
 	/** Gets the root folder for UI folders for emitters. */
-	UNiagaraSystemEditorFolder& GetRootFolder() const;
+	NIAGARAEDITOR_API UNiagaraSystemEditorFolder& GetRootFolder() const;
 
 	/** Gets the stack editor data for the system. */
-	UNiagaraStackEditorData& GetStackEditorData() const;
+	NIAGARAEDITOR_API UNiagaraStackEditorData& GetStackEditorData() const;
 
 	const FTransform& GetOwnerTransform() const {
 		return OwnerTransform;
@@ -76,45 +93,42 @@ public:
 		OwnerTransform = InTransform;
 	}
 
-	TRange<float> GetPlaybackRange() const;
+	NIAGARAEDITOR_API TRange<float> GetPlaybackRange() const;
 
-	void SetPlaybackRange(TRange<float> InPlaybackRange);
+	NIAGARAEDITOR_API void SetPlaybackRange(TRange<float> InPlaybackRange);
 
-	UEdGraph* GetSystemOverviewGraph() const;
+	NIAGARAEDITOR_API UEdGraph* GetSystemOverviewGraph() const;
 
-	const FNiagaraGraphViewSettings& GetSystemOverviewGraphViewSettings() const;
+	NIAGARAEDITOR_API const FNiagaraGraphViewSettings& GetSystemOverviewGraphViewSettings() const;
 
-	void SetSystemOverviewGraphViewSettings(const FNiagaraGraphViewSettings& InOverviewGraphViewSettings);
+	NIAGARAEDITOR_API void SetSystemOverviewGraphViewSettings(const FNiagaraGraphViewSettings& InOverviewGraphViewSettings);
 
-	bool GetOwningSystemIsPlaceholder() const;
+	NIAGARAEDITOR_API bool GetOwningSystemIsPlaceholder() const;
 
-	void SetOwningSystemIsPlaceholder(bool bInSystemIsPlaceholder, UNiagaraSystem& OwnerSystem);
+	NIAGARAEDITOR_API void SetOwningSystemIsPlaceholder(bool bInSystemIsPlaceholder, UNiagaraSystem& OwnerSystem);
 
-	void SynchronizeOverviewGraphWithSystem(UNiagaraSystem& OwnerSystem);
+	NIAGARAEDITOR_API void SynchronizeOverviewGraphWithSystem(UNiagaraSystem& OwnerSystem);
 
-	void InitOnSyncScriptVariables(UNiagaraSystem& System);
+	NIAGARAEDITOR_API void InitOnSyncScriptVariables(UNiagaraSystem& System);
 	
-	void SyncUserScriptVariables(UNiagaraSystem* System);
+	NIAGARAEDITOR_API void SyncUserScriptVariables(UNiagaraSystem* System);
 	FOnUserParameterScriptVariablesSynced& OnUserParameterScriptVariablesSynced() { return OnUserParameterScriptVariablesSyncedDelegate; }
 	
-	UNiagaraScriptVariable* FindOrAddUserScriptVariable(FNiagaraVariable UserParameter, UNiagaraSystem& System);
-	UNiagaraScriptVariable* FindUserScriptVariable(FGuid UserParameterGuid);
-	bool RenameUserScriptVariable(FNiagaraVariable OldVariable, FName NewName);
-	bool RemoveUserScriptVariable(FNiagaraVariable Variable);
+	NIAGARAEDITOR_API UNiagaraScriptVariable* FindOrAddUserScriptVariable(FNiagaraVariable UserParameter, UNiagaraSystem& System);
+	NIAGARAEDITOR_API const UNiagaraScriptVariable* FindUserScriptVariable(FGuid UserParameterGuid) const;
+	NIAGARAEDITOR_API bool RenameUserScriptVariable(FNiagaraVariable OldVariable, FName NewName);
+	NIAGARAEDITOR_API bool RemoveUserScriptVariable(FNiagaraVariable Variable);
 
-	// If true then the preview viewport's orbit setting is saved in the asset data
-	UPROPERTY()
-	bool bSetOrbitModeByAsset = false;
-
-	UPROPERTY()
-	bool bSystemViewportInOrbitMode = true;
+	NIAGARAEDITOR_API const FNiagaraPerAssetViewportSettings& GetAssetViewportSettings() const;
+	NIAGARAEDITOR_API void SetAssetViewportSettings(FNiagaraPerAssetViewportSettings InSettings);
+	NIAGARAEDITOR_API void SetUseOrbitMode(bool bInUseOrbitMode);
 	
 	/** Contains the root ids for organizing user parameters. */
 	UPROPERTY()
 	TObjectPtr<UNiagaraHierarchyRoot> UserParameterHierarchy;
 	
 private:
-	void UpdatePlaybackRangeFromEmitters(UNiagaraSystem& OwnerSystem);
+	NIAGARAEDITOR_API void UpdatePlaybackRangeFromEmitters(UNiagaraSystem& OwnerSystem);
 
 private:
 	UPROPERTY(Instanced)
@@ -139,6 +153,9 @@ private:
 	UPROPERTY()
 	FNiagaraGraphViewSettings OverviewGraphViewSettings;
 
+	UPROPERTY()
+	FNiagaraPerAssetViewportSettings AssetViewportSettings;
+	
 	UPROPERTY()
 	bool bSystemIsPlaceholder;
 

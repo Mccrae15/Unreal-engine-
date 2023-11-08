@@ -128,21 +128,32 @@ public:
 };
 
 /** The base class of resources that may be bound as shader resources. */
-class FD3D11BaseShaderResource : public IRefCountedObject
+class FD3D11ViewableResource
 {
 public:
-	FD3D11BaseShaderResource() {}
+	~FD3D11ViewableResource()
+	{
+		checkf(!HasLinkedViews(), TEXT("All linked views must have been removed before the underlying resource can be deleted."));
+	}
+
+	bool HasLinkedViews() const
+	{
+		return LinkedViews != nullptr;
+	}
+
+	void UpdateLinkedViews();
+
+private:
+	friend class FD3D11ShaderResourceView;
+	friend class FD3D11UnorderedAccessView;
+	class FD3D11View* LinkedViews = nullptr;
 };
 
 /** Texture base class. */
-class D3D11RHI_API FD3D11Texture final : public FRHITexture, public FD3D11BaseShaderResource
+class FD3D11Texture final : public FRHITexture, public FD3D11ViewableResource
 {
 public:
-	virtual uint32 AddRef     () const override	{ return FRHITexture::AddRef();      }
-	virtual uint32 Release    () const override	{ return FRHITexture::Release();     }
-	virtual uint32 GetRefCount() const override	{ return FRHITexture::GetRefCount(); }
-
-	explicit FD3D11Texture(
+	D3D11RHI_API explicit FD3D11Texture(
 		const FRHITextureCreateDesc& InDesc,
 		ID3D11Resource* InResource,
 		ID3D11ShaderResourceView* InShaderResourceView,
@@ -153,10 +164,10 @@ public:
 	);
 
 	enum EAliasResourceParam { CreateAlias };
-	explicit FD3D11Texture(FD3D11Texture const& Other, const FString& Name, EAliasResourceParam);
-	void AliasResource(FD3D11Texture const& Other);
+	D3D11RHI_API explicit FD3D11Texture(FD3D11Texture const& Other, const FString& Name, EAliasResourceParam);
+	D3D11RHI_API void AliasResource(FD3D11Texture const& Other);
 
-	virtual ~FD3D11Texture();
+	D3D11RHI_API virtual ~FD3D11Texture();
 
 	inline uint64 GetMemorySize() const
 	{
@@ -268,10 +279,10 @@ public:
 	* Locks one of the texture's mip-maps.
 	* @return A pointer to the specified texture data.
 	*/
-	void* Lock(class FD3D11DynamicRHI* D3DRHI, uint32 MipIndex, uint32 ArrayIndex, EResourceLockMode LockMode, uint32& DestStride, bool bForceLockDeferred = false);
+	D3D11RHI_API void* Lock(class FD3D11DynamicRHI* D3DRHI, uint32 MipIndex, uint32 ArrayIndex, EResourceLockMode LockMode, uint32& DestStride, bool bForceLockDeferred = false, uint64* OutLockedByteCount = nullptr);
 
 	/** Unlocks a previously locked mip-map. */
-	void Unlock(class FD3D11DynamicRHI* D3DRHI, uint32 MipIndex, uint32 ArrayIndex);
+	D3D11RHI_API void Unlock(class FD3D11DynamicRHI* D3DRHI, uint32 MipIndex, uint32 ArrayIndex);
 
 private:
 	//Resource handle for use by IHVs for SLI and other purposes.
@@ -323,9 +334,6 @@ public:
 
 };
 
-/** Updates tracked stats for a buffer. */
-extern void UpdateBufferStats(TRefCountPtr<ID3D11Buffer> Buffer, bool bAllocating);
-
 /** Forward declare the constants ring buffer. */
 class FD3D11ConstantsRingBuffer;
 
@@ -373,19 +381,16 @@ private:
 };
 
 /** Buffer resource class. */
-class FD3D11Buffer : public FRHIBuffer, public FD3D11BaseShaderResource
+class FD3D11Buffer : public FRHIBuffer, public FD3D11ViewableResource
 {
 public:
 
 	TRefCountPtr<ID3D11Buffer> Resource;
 
-	FD3D11Buffer() = default;
-
-	FD3D11Buffer(ID3D11Buffer* InResource, uint32 InSize, EBufferUsageFlags InUsage, uint32 InStride)
-	: FRHIBuffer(InSize, InUsage, InStride)
-	, Resource(InResource)
-	{
-	}
+	FD3D11Buffer(ID3D11Buffer* InResource, FRHIBufferDesc const& InDesc)
+		: FRHIBuffer(InDesc)
+		, Resource(InResource)
+	{}
 
 	// FRHIResource overrides
 #if RHI_ENABLE_RESOURCE_INFO
@@ -399,27 +404,10 @@ public:
 	}
 #endif
 
-	virtual ~FD3D11Buffer()
-	{
-		if (Resource)
-		{
-			UpdateBufferStats(Resource, false);
-		}
-	}
+	virtual ~FD3D11Buffer();
 
-	void Swap(FD3D11Buffer& SrcBuffer)
-	{
-		FRHIBuffer::Swap(SrcBuffer);
-		Resource.Swap(SrcBuffer.Resource);
-	}
-
-	void ReleaseUnderlyingResource()
-	{
-		check(Resource);
-		UpdateBufferStats(Resource, false);
-		Resource = nullptr;
-		FRHIBuffer::ReleaseUnderlyingResource();
-	}
+	void TakeOwnership(FD3D11Buffer& Other);
+	void ReleaseOwnership();
 
 	// IRefCountedObject interface.
 	virtual uint32 AddRef() const
@@ -456,42 +444,45 @@ private:
 	uint32 ShadowBufferSize;
 };
 
-/** Shader resource view class. */
-class FD3D11ShaderResourceView : public FRHIShaderResourceView
+namespace D3D11BufferStats
+{
+	void UpdateUniformBufferStats(ID3D11Buffer* Buffer, int64 BufferSize, bool bAllocating);
+	void UpdateBufferStats(FD3D11Buffer& Buffer, bool bAllocating);
+}
+
+class FD3D11View : public TIntrusiveLinkedList<FD3D11View>
 {
 public:
-	
-	TRefCountPtr<ID3D11ShaderResourceView> View;
-	TRefCountPtr<FD3D11BaseShaderResource> Resource;
-
-	FD3D11ShaderResourceView(ID3D11ShaderResourceView* InView, FRHIViewableResource* InParentResource, FD3D11BaseShaderResource* InResource)
-	: FRHIShaderResourceView(InParentResource)
-	, View(InView)
-	, Resource(InResource)
-	{}
-
-	void Rename(ID3D11ShaderResourceView* InView, FD3D11BaseShaderResource* InResource)
+	virtual ~FD3D11View()
 	{
-		View = InView;
-		Resource = InResource;
+		Unlink();
 	}
+
+	virtual void UpdateView() = 0;
+};
+
+/** Shader resource view class. */
+class FD3D11ShaderResourceView final : public FRHIShaderResourceView, public FD3D11View
+{
+public:
+	TRefCountPtr<ID3D11ShaderResourceView> View;
+
+	FD3D11ShaderResourceView(FRHICommandListBase& RHICmdList, FRHIViewableResource* Resource, FRHIViewDesc const& ViewDesc);
+	FD3D11ViewableResource* GetBaseResource() const;
+
+	virtual void UpdateView() override;
 };
 
 /** Unordered access view class. */
-class FD3D11UnorderedAccessView : public FRHIUnorderedAccessView
+class FD3D11UnorderedAccessView final : public FRHIUnorderedAccessView, public FD3D11View
 {
 public:
-	
 	TRefCountPtr<ID3D11UnorderedAccessView> View;
-	TRefCountPtr<FD3D11BaseShaderResource> Resource;	
-	void* IHVResourceHandle;
-	
-	FD3D11UnorderedAccessView(ID3D11UnorderedAccessView* InView, FRHIViewableResource* InParentResource, FD3D11BaseShaderResource* InResource)
-	: FRHIUnorderedAccessView(InParentResource)
-	, View(InView)
-	, Resource(InResource)
-	, IHVResourceHandle(nullptr)
-	{}
+
+	FD3D11UnorderedAccessView(FRHICommandListBase& RHICmdList, FRHIViewableResource* Resource, FRHIViewDesc const& ViewDesc);
+	FD3D11ViewableResource* GetBaseResource() const;
+
+	virtual void UpdateView() override;
 };
 
 template<class T>

@@ -23,17 +23,13 @@ public class SequencerAnimTools: ModuleRules
 			{
 				"CoreUObject",
 				"Engine",
-				"Slate",
-				"SlateCore",
 				"InputCore",
 				"UnrealEd",
 				"LevelEditor",
-				"AppFramework",
 				
 				"EditorFramework",
                 "EditorInteractiveToolsFramework",
                 "InteractiveToolsFramework",
-                "ViewportInteraction",
 
                 "MovieScene",
                 "MovieSceneTracks",
@@ -41,7 +37,6 @@ public class SequencerAnimTools: ModuleRules
                 "Sequencer",
 				"LevelSequence",
 				"LevelSequenceEditor",
-				"SequencerScripting",
 
 				"ControlRig",
 				"ControlRigEditor"

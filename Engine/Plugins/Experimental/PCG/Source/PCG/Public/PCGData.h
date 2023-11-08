@@ -4,12 +4,15 @@
 
 #include "PCGCommon.h"
 #include "PCGCrc.h"
+#include "Metadata/PCGAttributePropertySelector.h"
 
 #include "Kismet/BlueprintFunctionLibrary.h"
+#include "Templates/SubclassOf.h"
 
 #include "PCGData.generated.h"
 
 class FArchiveCrc32;
+class UPCGMetadata;
 class UPCGNode;
 class UPCGParamData;
 class UPCGSettings;
@@ -43,6 +46,14 @@ public:
 	/** CRC for this object instance. */
 	mutable FPCGCrc Crc;
 
+	virtual bool HasCachedLastSelector() const { return false; }
+	virtual FPCGAttributePropertyInputSelector GetCachedLastSelector() const { return FPCGAttributePropertyInputSelector{}; }
+	virtual void SetLastSelector(const FPCGAttributePropertySelector& InSelector) {};
+
+	// ~Begin UObject interface
+	virtual void PostDuplicate(bool bDuplicateForPIE) override { InitUID(); }
+	// ~End UObject interface
+
 protected:
 	/** Computes Crc for this and any connected data. */
 	virtual FPCGCrc ComputeCrc(bool bFullDataCrc) const;
@@ -54,6 +65,8 @@ protected:
 	bool PropagateCrcThroughBooleanData() const;
 
 private:
+	void InitUID();
+
 	/** Serves unique ID values to instances of this object. */
 	static inline std::atomic<uint64> UIDCounter{ 1 };
 };
@@ -102,6 +115,13 @@ struct PCG_API FPCGDataCollection
 	TArray<FPCGTaggedData> GetInputs() const;
 	/** Returns all data on a given pin */
 	TArray<FPCGTaggedData> GetInputsByPin(const FName& InPinLabel) const;
+	/** Returns all spatial data on a given pin */
+	TArray<FPCGTaggedData> GetSpatialInputsByPin(const FName& InPinLabel) const;
+	
+	/** Gets number of data items on a given pin */
+	int32 GetInputCountByPin(const FName& InPinLabel) const;
+	/** Gets number of spatial data items on a given pin */
+	int32 GetSpatialInputCountByPin(const FName& InPinLabel) const;
 	/** Returns spatial union of all data on a given pin, returns null if no such data exists. bOutUnionDataCreated indicates if new data created that may need rooting. */
 	const UPCGSpatialData* GetSpatialUnionOfInputsByPin(const FName& InPinLabel, bool& bOutUnionDataCreated) const;
 	/** Returns all spatial data in the collection with the given tag */
@@ -189,27 +209,50 @@ class PCG_API UPCGDataFunctionLibrary : public UBlueprintFunctionLibrary
 	GENERATED_BODY()
 
 public:
+	/** Gets all inputs of the given class type, returning matching tagged data in the OutTaggedData value too */
+	UFUNCTION(BlueprintCallable, Category = Data, meta = (ScriptMethod, DeterminesOutputType = "InDataTypeClass"))
+	static TArray<UPCGData*> GetTypedInputs(const FPCGDataCollection& InCollection, TArray<FPCGTaggedData>& OutTaggedData, TSubclassOf<UPCGData> InDataTypeClass = nullptr);
+
+	/** Gets all inputs of the given class type and on the given pin, returning matching tagged data in the OutTaggedData value too */
+	UFUNCTION(BlueprintCallable, Category = Data, meta = (ScriptMethod, DeterminesOutputType = "InDataTypeClass"))
+	static TArray<UPCGData*> GetTypedInputsByPin(const FPCGDataCollection& InCollection, const FPCGPinProperties& InPin, TArray<FPCGTaggedData>& OutTaggedData, TSubclassOf<UPCGData> InDataTypeClass = nullptr);
+
+	/** Gets all inputs of the given class type and on the given pin label, returning matching tagged data in the OutTaggedData value too */
+	UFUNCTION(BlueprintCallable, Category = Data, meta = (ScriptMethod, DeterminesOutputType = "InDataTypeClass"))
+	static TArray<UPCGData*> GetTypedInputsByPinLabel(const FPCGDataCollection& InCollection, FName InPinLabel, TArray<FPCGTaggedData>& OutTaggedData, TSubclassOf<UPCGData> InDataTypeClass = nullptr);
+
+	/** Gets all inputs of the given class type and having the provided tag, returning matching tagged data in the OutTaggedData value too */
+	UFUNCTION(BlueprintCallable, Category = Data, meta = (ScriptMethod, DeterminesOutputType = "InDataTypeClass"))
+	static TArray<UPCGData*> GetTypedInputsByTag(const FPCGDataCollection& InCollection, const FString& InTag, TArray<FPCGTaggedData>& OutTaggedData, TSubclassOf<UPCGData> InDataTypeClass = nullptr);
+
+	/** Adds a data object to a given collection, simpler usage than making a PCGTaggedData object */
+	UFUNCTION(BlueprintCallable, Category = Data, meta = (ScriptMethod))
+	static void AddToCollection(UPARAM(ref) FPCGDataCollection& InCollection, const UPCGData* InData, FName InPinLabel, TArray<FString> InTags);
+
 	// Blueprint methods to support interaction with FPCGDataCollection
 	UFUNCTION(BlueprintCallable, Category = Data)
 	static TArray<FPCGTaggedData> GetInputs(const FPCGDataCollection& InCollection);
 
 	UFUNCTION(BlueprintCallable, Category = Data)
-	static TArray<FPCGTaggedData> GetInputsByPin(const FPCGDataCollection& InCollection, const FName& InPinLabel);
+	static TArray<FPCGTaggedData> GetInputsByPinLabel(const FPCGDataCollection& InCollection, const FName InPinLabel);
 
 	UFUNCTION(BlueprintCallable, Category = Data)
-	static TArray<FPCGTaggedData> GetTaggedInputs(const FPCGDataCollection& InCollection, const FString& InTag);
+	static TArray<FPCGTaggedData> GetInputsByTag(const FPCGDataCollection& InCollection, const FString& InTag);
 
 	UFUNCTION(BlueprintCallable, Category = Data)
 	static TArray<FPCGTaggedData> GetParams(const FPCGDataCollection& InCollection);
 
 	UFUNCTION(BlueprintCallable, Category = Data)
-	static TArray<FPCGTaggedData> GetParamsByPin(const FPCGDataCollection& InCollection, const FName& InPinLabel);
+	static TArray<FPCGTaggedData> GetParamsByPinLabel(const FPCGDataCollection& InCollection, const FName InPinLabel);
 
 	UFUNCTION(BlueprintCallable, Category = Data)
-	static TArray<FPCGTaggedData> GetTaggedParams(const FPCGDataCollection& InCollection, const FString& InTag);
+	static TArray<FPCGTaggedData> GetParamsByTag(const FPCGDataCollection& InCollection, const FString& InTag);
 
 	UFUNCTION(BlueprintCallable, Category = Data)
 	static TArray<FPCGTaggedData> GetAllSettings(const FPCGDataCollection& InCollection);
+
+protected:
+	static TArray<UPCGData*> GetInputsByPredicate(const FPCGDataCollection& InCollection, TArray<FPCGTaggedData>& OutTaggedData, TFunctionRef<bool(const FPCGTaggedData&)> InPredicate);
 };
 
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2

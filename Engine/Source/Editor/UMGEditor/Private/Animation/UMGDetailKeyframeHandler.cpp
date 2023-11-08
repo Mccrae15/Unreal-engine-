@@ -2,7 +2,6 @@
 
 #include "Animation/UMGDetailKeyframeHandler.h"
 #include "Animation/WidgetAnimation.h"
-#include "UMGEditorProjectSettings.h"
 
 #include "PropertyHandle.h"
 #include "MovieScene.h"
@@ -13,8 +12,7 @@ FUMGDetailKeyframeHandler::FUMGDetailKeyframeHandler(TSharedPtr<FWidgetBlueprint
 
 bool FUMGDetailKeyframeHandler::IsPropertyKeyable(const UClass* InObjectClass, const IPropertyHandle& InPropertyHandle) const
 {
-	return !GetDefault<UUMGEditorProjectSettings>()->bHideWidgetAnimationEditor 
-			&& BlueprintEditor.Pin()->GetSequencer()->CanKeyProperty(FCanKeyPropertyParams(InObjectClass, InPropertyHandle));
+	return BlueprintEditor.Pin()->GetSequencer()->CanKeyProperty(FCanKeyPropertyParams(InObjectClass, InPropertyHandle));
 }
 
 bool FUMGDetailKeyframeHandler::IsPropertyKeyingEnabled() const
@@ -29,7 +27,8 @@ bool FUMGDetailKeyframeHandler::IsPropertyAnimated(const IPropertyHandle& Proper
 	TSharedPtr<ISequencer> Sequencer = BlueprintEditor.Pin()->GetSequencer();
 	if (Sequencer.IsValid() && Sequencer->GetFocusedMovieSceneSequence())
 	{
-		FGuid ObjectHandle = Sequencer->GetHandleToObject(ParentObject);
+		constexpr bool bCreateHandleIfMissing = false;
+		FGuid ObjectHandle = Sequencer->GetHandleToObject(ParentObject, bCreateHandleIfMissing);
 		if (ObjectHandle.IsValid()) 
 		{
 			UMovieScene* MovieScene = Sequencer->GetFocusedMovieSceneSequence()->GetMovieScene();

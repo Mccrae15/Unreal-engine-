@@ -5,6 +5,7 @@
 #include "DesktopPlatformModule.h"
 #include "SlateOptMacros.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Images/SImage.h"
 
@@ -26,6 +27,7 @@
 
 SMemInvestigationView::SMemInvestigationView()
 	: ProfilerWindowWeakPtr()
+	, bIncludeHeapAllocs(false)
 {
 }
 
@@ -144,6 +146,27 @@ TSharedRef<SWidget> SMemInvestigationView::ConstructInvestigationWidgetArea()
 		.AutoHeight()
 		.Padding(0.0f, 4.0f, 0.0f, 0.0f)
 		[
+			SNew(SCheckBox)
+			.IsChecked_Lambda([this]()
+			{
+				return bIncludeHeapAllocs ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+			})
+			.OnCheckStateChanged_Lambda([this](ECheckBoxState InCheckBoxState)
+			{
+				bIncludeHeapAllocs = (InCheckBoxState == ECheckBoxState::Checked);
+			})
+			.Content()
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("IncludeHeapAllocsText", "Include Heap Allocs"))
+			]
+			.ToolTipText(LOCTEXT("IncludeHeapAllocsToolTipText", "Include heap allocs."))
+		]
+
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 4.0f, 0.0f, 0.0f)
+		[
 			SNew(SHorizontalBox)
 
 			+ SHorizontalBox::Slot()
@@ -188,7 +211,6 @@ TSharedRef<SWidget> SMemInvestigationView::ConstructInvestigationWidgetArea()
 		.HAlign(HAlign_Fill)
 		[
 			SAssignNew(SymbolPathsTextBlock, STextBlock)
-			.Text(GetSymbolPathsText())
 			.ColorAndOpacity(FLinearColor(0.3f, 0.3f, 0.3f, 1.0f))
 			.AutoWrapText(true)
 		]
@@ -344,13 +366,14 @@ void SMemInvestigationView::InsightsManager_OnSessionChanged()
 
 void SMemInvestigationView::Reset()
 {
-	SymbolPathsTextBlock->SetText(GetSymbolPathsText());
+	SymbolPathsTextBlock->SetText(FText::GetEmpty());
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void SMemInvestigationView::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
+	UpdateSymbolPathsText();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -451,16 +474,16 @@ void SMemInvestigationView::QueryTarget_OnSelectionChanged(TSharedPtr<Insights::
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-FText SMemInvestigationView::GetSymbolPathsText() const
+
+void SMemInvestigationView::UpdateSymbolPathsText() const
 {
-	if (Session)
+	if (SymbolPathsTextBlock->GetText().IsEmpty() && Session)
 	{
 		if (const TraceServices::IModuleProvider* ModuleProvider = ReadModuleProvider(*Session.Get()))
 		{
-			return FSymbolSearchPathsHelper::GetLocalizedSymbolSearchPathsText(ModuleProvider);
+			SymbolPathsTextBlock->SetText(FSymbolSearchPathsHelper::GetLocalizedSymbolSearchPathsText(ModuleProvider));
 		}
 	}
-	return FText();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -540,12 +563,14 @@ FReply SMemInvestigationView::RunQuery()
 	TSharedPtr<Insights::SMemAllocTableTreeView> MemAllocTableTreeView = ProfilerWindow->ShowMemAllocTableTreeViewTab();
 	if (MemAllocTableTreeView)
 	{
-		double TimeMarkers[4];
-		TimeMarkers[0] = (RuleNumTimeMarkers > 0) ? ProfilerWindow->GetCustomTimeMarker(0)->GetTime() : 0.0;
-		TimeMarkers[1] = (RuleNumTimeMarkers > 1) ? ProfilerWindow->GetCustomTimeMarker(1)->GetTime() : 0.0;
-		TimeMarkers[2] = (RuleNumTimeMarkers > 2) ? ProfilerWindow->GetCustomTimeMarker(2)->GetTime() : 0.0;
-		TimeMarkers[3] = (RuleNumTimeMarkers > 3) ? ProfilerWindow->GetCustomTimeMarker(3)->GetTime() : 0.0;
-		MemAllocTableTreeView->SetQueryParams(Rule, TimeMarkers[0], TimeMarkers[1], TimeMarkers[2], TimeMarkers[3]);
+		Insights::SMemAllocTableTreeView::FQueryParams QueryParams;
+		QueryParams.Rule = Rule;
+		QueryParams.TimeMarkers[0] = (RuleNumTimeMarkers > 0) ? ProfilerWindow->GetCustomTimeMarker(0)->GetTime() : 0.0;
+		QueryParams.TimeMarkers[1] = (RuleNumTimeMarkers > 1) ? ProfilerWindow->GetCustomTimeMarker(1)->GetTime() : 0.0;
+		QueryParams.TimeMarkers[2] = (RuleNumTimeMarkers > 2) ? ProfilerWindow->GetCustomTimeMarker(2)->GetTime() : 0.0;
+		QueryParams.TimeMarkers[3] = (RuleNumTimeMarkers > 3) ? ProfilerWindow->GetCustomTimeMarker(3)->GetTime() : 0.0;
+		QueryParams.bIncludeHeapAllocs = bIncludeHeapAllocs;
+		MemAllocTableTreeView->SetQueryParams(QueryParams);
 	}
 
 	return FReply::Handled();

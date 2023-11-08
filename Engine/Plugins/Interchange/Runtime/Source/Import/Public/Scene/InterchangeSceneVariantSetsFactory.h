@@ -11,6 +11,7 @@
 
 #include "InterchangeSceneVariantSetsFactory.generated.h"
 
+class ULevelVariantSets;
 class UVariantObjectBinding;
 
 UCLASS(BlueprintType, Experimental)
@@ -23,7 +24,7 @@ public:
 	// Interchange factory base interface begin
 
 	virtual UClass* GetFactoryClass() const override;
-	virtual UObject* ImportAssetObject_GameThread(const FImportAssetObjectParams& Arguments) override;
+	virtual FImportAssetResult BeginImportAsset_GameThread(const FImportAssetObjectParams& Arguments) override;
 	
 	virtual void SetupObject_GameThread(const FSetupObjectParams& Arguments) override;
 
@@ -31,7 +32,7 @@ public:
 	//////////////////////////////////////////////////////////////////////////
 
 private:
-	UObject* ImportObjectSourceData(const FImportAssetObjectParams& Arguments);
+	UObject* ImportObjectSourceData(const FImportAssetObjectParams& Arguments, ULevelVariantSets* LevelVariantSets);
 	const UInterchangeTranslatorBase* Translator = nullptr;
 };
 

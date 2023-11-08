@@ -682,7 +682,9 @@ void AndroidEGL::InitRenderSurface(bool bUseSmallSurface, bool bCreateWndSurface
 		AndroidThunkCpp_SetDesiredViewSize(Width, Height);
 	}
 
-	FPlatformMisc::LowLevelOutputDebugStringf(TEXT("AndroidEGL::InitRenderSurface, wnd: %p, width: %d, height %d "), PImplData->Window, Width, Height);
+	FIntVector2 OriginalWindowSize(ANativeWindow_getWidth(PImplData->Window), ANativeWindow_getHeight(PImplData->Window));
+
+	FPlatformMisc::LowLevelOutputDebugStringf(TEXT("AndroidEGL::InitRenderSurface, setting wnd: %p, width: %d->%d, height %d->%d "), PImplData->Window, OriginalWindowSize.X, Width, OriginalWindowSize.Y, Height);
 	ANativeWindow_setBuffersGeometry(PImplData->Window, Width, Height, PImplData->NativeVisualID);
 	CreateEGLRenderSurface(PImplData->Window, bCreateWndSurface);
 
@@ -1268,8 +1270,6 @@ void BlockRendering()
 
 	UE_LOG(LogAndroid, Log, TEXT("Blocking renderer on invalid window."));
 	
-	// Wait for GC to complete and prevent further GCs
-	FGCScopeGuard GCGuard;
 	TSharedPtr<FEvent, ESPMode::ThreadSafe> BlockedTrigger = MakeShareable(FPlatformProcess::GetSynchEventFromPool(), [](FEvent* EventToDelete)
 	{
 		FPlatformProcess::ReturnSynchEventToPool(EventToDelete);
@@ -1283,6 +1283,9 @@ void BlockRendering()
 
 	UE_LOG(LogAndroid, Log, TEXT("Waiting for game thread to release EGL context/surface."));
 	BlockedTrigger->Wait();
+
+	// Wait for GC to complete and prevent further GCs
+	FGCScopeGuard GCGuard;
 
 	FGraphEventRef RTBlockTask = FFunctionGraphTask::CreateAndDispatchWhenReady([BlockedTrigger]()
 	{

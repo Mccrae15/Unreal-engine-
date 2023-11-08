@@ -1,7 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "Internationalization/Text.h"
 #include "MetasoundBuilderInterface.h"
 #include "MetasoundBuildError.h"
 #include "MetasoundDataReference.h"
@@ -11,16 +10,9 @@
 #include "MetasoundLiteral.h"
 #include "MetasoundNode.h"
 #include "MetasoundNodeInterface.h"
-#include "MetasoundNodeRegistrationMacro.h"
 #include "MetasoundOperatorInterface.h"
-#include "MetasoundParameterTransmitter.h"
-#include "MetasoundRouter.h"
-#include "MetasoundTrigger.h"
 #include "MetasoundVertexData.h"
 #include "UObject/NameTypes.h"
-
-#define LOCTEXT_NAMESPACE "MetasoundFrontend"
-
 
 namespace Metasound
 {
@@ -32,20 +24,24 @@ namespace Metasound
 			virtual FDataReferenceCollection GetInputs() const override;
 			virtual FDataReferenceCollection GetOutputs() const override;
 		};
-
+		
 		class METASOUNDFRONTEND_API FNonExecutableInputOperatorBase : public FInputOperatorBase
 		{	
 		public:
-			virtual void Bind(FVertexInterfaceData& InVertexData) const override;
+			virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override;
+			virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override;
+
 			virtual IOperator::FExecuteFunction GetExecuteFunction() override;
+			virtual IOperator::FPostExecuteFunction GetPostExecuteFunction() override;
+			virtual IOperator::FResetFunction GetResetFunction() override;
 
 		protected:
 			FNonExecutableInputOperatorBase(const FVertexName& InVertexName, FAnyDataReference&& InDataRef);
 
-		private:
 			FVertexName VertexName;
 			FAnyDataReference DataRef;
 		};
+
 
 		class METASOUNDFRONTEND_API FNonExecutableInputPassThroughOperator : public FNonExecutableInputOperatorBase
 		{
@@ -58,46 +54,54 @@ namespace Metasound
 
 			template<typename DataType>
 			FNonExecutableInputPassThroughOperator(const FVertexName& InVertexName, const TDataWriteReference<DataType>& InDataRef)
-			: FNonExecutableInputOperatorBase(InVertexName, FAnyDataReference{InDataRef})
+			: FNonExecutableInputPassThroughOperator(InVertexName, TDataReadReference<DataType>(InDataRef))
 			{
 			}
 		};
 
-		/** FInputValueOperator provides an input for value references. */
-		class METASOUNDFRONTEND_API FInputValueOperator : public FNonExecutableInputOperatorBase
+
+		/** TInputValueOperator provides an input for value references. */
+		template<typename DataType>
+		class TInputValueOperator : public FNonExecutableInputOperatorBase
 		{
 		public:
-			/** Construct an FInputValueOperator with the name of the vertex and the 
+			/** Construct an TInputValueOperator with the name of the vertex and the 
 			 * value reference associated with input. 
 			 */
-			template<typename DataType>
-			explicit FInputValueOperator(const FName& InVertexName, const TDataValueReference<DataType>& InValueRef)
+			explicit TInputValueOperator(const FName& InVertexName, const TDataValueReference<DataType>& InValueRef)
 			: FNonExecutableInputOperatorBase(InVertexName, FAnyDataReference{InValueRef})
 			{
 			}
+
+			TInputValueOperator(const FVertexName& InVertexName, const FOperatorSettings& InSettings, const FLiteral& InLiteral)
+			: FNonExecutableInputOperatorBase(InVertexName, FAnyDataReference{TDataValueReferenceLiteralFactory<DataType>::CreateExplicitArgs(InSettings, InLiteral)})
+			{
+			}
 		};
 
-		/** A writable input and a readable output. */
 		template<typename DataType>
 		class TExecutableInputOperator : public FInputOperatorBase
 		{
 			static_assert(TExecutableDataType<DataType>::bIsExecutable, "TExecutableInputOperatorBase should only be used with executable data types");
 		public:
 			using FDataWriteReference = TDataWriteReference<DataType>;
+			using FDataWriteReferenceFactory = TDataWriteReferenceLiteralFactory<DataType>;
 
-			TExecutableInputOperator(const FVertexName& InDataReferenceName, FDataWriteReference InDataReference)
+			TExecutableInputOperator(const FVertexName& InDataReferenceName, TDataWriteReference<DataType> InValue)
 				: DataReferenceName(InDataReferenceName)
-				// Executable DataTypes require a copy of the output to operate on whereas non-executable
-				// types do not. Avoid copy by assigning to reference for non-executable types.
-				, InputValue(InDataReference)
-				, OutputValue(FDataWriteReference::CreateNew(*InDataReference))
+				, InputValue(InValue)
+				, OutputValue(FDataWriteReferenceFactory::CreateNew(*InValue))
 			{
 			}
 
-			virtual void Bind(FVertexInterfaceData& InOutVertexData) const override
+			virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
 			{
-				InOutVertexData.GetInputs().BindWriteVertex(DataReferenceName, InputValue);
-				InOutVertexData.GetOutputs().BindReadVertex(DataReferenceName, OutputValue);
+				InOutVertexData.BindWriteVertex(DataReferenceName, InputValue);
+			}
+
+			virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+			{
+				InOutVertexData.BindReadVertex(DataReferenceName, OutputValue);
 			}
 
 			virtual FExecuteFunction GetExecuteFunction() override
@@ -105,7 +109,13 @@ namespace Metasound
 				return &Execute;
 			}
 
-		private:
+			virtual FResetFunction GetResetFunction() override
+			{
+				return nullptr;
+			}
+
+
+		protected:
 
 			static void Execute(IOperator* InOperator)
 			{
@@ -121,97 +131,156 @@ namespace Metasound
 
 			FDataWriteReference InputValue;
 			FDataWriteReference OutputValue;
+
 		};
 
-
-		/** FInputValueOperator provides support for transmittable inputs. */
 		template<typename DataType>
-		class TInputReceiverOperator : public FInputOperatorBase
+		class TResetableExecutableInputOperator : public TExecutableInputOperator<DataType>
 		{
 		public:
-			using FDataReadReference = TDataReadReference<DataType>;
 			using FDataWriteReference = TDataWriteReference<DataType>;
-			using FInputReceiverOperator = TInputReceiverOperator<DataType>;
+			using FDataWriteReferenceFactory = TDataWriteReferenceLiteralFactory<DataType>;
 
-			/** Construct an TInputReceiverOperator with the name of the vertex, value reference associated with input, SendAddress, & Receiver
-			 */
-			TInputReceiverOperator(const FVertexName& InDataReferenceName, FDataReadReference InDataReference, FSendAddress&& InSendAddress, TReceiverPtr<DataType>&& InReceiver)
-				: DataReferenceName(InDataReferenceName) 
-				, InputValue(InDataReference)
-				, OutputValue(FDataWriteReference::CreateNew(*InDataReference))
-				, SendAddress(MoveTemp(InSendAddress))
-				, Receiver(MoveTemp(InReceiver))
+			TResetableExecutableInputOperator(const FVertexName& InDataReferenceName, const FOperatorSettings& InSettings, const FLiteral& InLiteral)
+			: TExecutableInputOperator<DataType>(InDataReferenceName, FDataWriteReferenceFactory::CreateExplicitArgs(InSettings, InLiteral))
+			, Literal(InLiteral)
 			{
 			}
 
-			virtual ~TInputReceiverOperator()
+			virtual IOperator::FResetFunction GetResetFunction() override
 			{
-				Receiver.Reset();
-				FDataTransmissionCenter::Get().UnregisterDataChannelIfUnconnected(SendAddress);
+				return &Reset;
 			}
 
-			virtual void Bind(FVertexInterfaceData& InOutVertexData) const override
+		private:
+
+			static void Reset(IOperator* InOperator, const IOperator::FResetParams& InParams)
 			{
-				InOutVertexData.GetInputs().BindReadVertex(DataReferenceName, InputValue);
-				InOutVertexData.GetOutputs().BindReadVertex(DataReferenceName, OutputValue);
+				using FResetableExecutableInputOperator = TResetableExecutableInputOperator<DataType>;
+
+				FResetableExecutableInputOperator* Operator = static_cast<FResetableExecutableInputOperator*>(InOperator);
+				check(nullptr != Operator);
+
+				*Operator->InputValue = TDataTypeLiteralFactory<DataType>::CreateExplicitArgs(InParams.OperatorSettings, Operator->Literal);
+				*Operator->OutputValue = *Operator->InputValue;
+			}
+
+			FLiteral Literal;
+		};
+
+		template<typename DataType>
+		class TPostExecutableInputOperator : public FInputOperatorBase
+		{
+			static_assert(TPostExecutableDataType<DataType>::bIsPostExecutable, "TPostExecutableInputOperator should only be used with post executable data types");
+			static_assert(!TExecutableDataType<DataType>::bIsExecutable, "A data type cannot be Executable and PostExecutable");
+
+		public:
+			using FDataWriteReference = TDataWriteReference<DataType>;
+			using FDataWriteReferenceFactory = TDataWriteReferenceLiteralFactory<DataType>;
+
+			TPostExecutableInputOperator(const FVertexName& InDataReferenceName, TDataWriteReference<DataType> InValue)
+				: DataReferenceName(InDataReferenceName)
+				, Value(InValue)
+			{
+			}
+
+			virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
+			{
+				InOutVertexData.BindWriteVertex(DataReferenceName, Value);
+			}
+
+			virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+			{
+				InOutVertexData.BindReadVertex(DataReferenceName, Value);
 			}
 
 			virtual FExecuteFunction GetExecuteFunction() override
 			{
-				return &StaticExecute;
+				return nullptr;
 			}
 
-		private:
-			void Execute()
+			virtual FPostExecuteFunction GetPostExecuteFunction() override
 			{
-				DataType& OutputData = *OutputValue;
-
-				bool bHasNewData = Receiver->CanPop();
-				if (bHasNewData)
-				{
-					Receiver->Pop(OutputData);
-					bHasNotReceivedData = false;
-				}
-
-				if (bHasNotReceivedData)
-				{
-					OutputData = *InputValue;
-					bHasNewData = true;
-				}
-
-				if constexpr (TExecutableDataType<DataType>::bIsExecutable)
-				{
-					TExecutableDataType<DataType>::ExecuteInline(OutputData, bHasNewData);
-				}
+				return &PostExecute;
 			}
 
-			static void StaticExecute(IOperator* InOperator)
+			virtual FResetFunction GetResetFunction() override
 			{
-				using FOperator = TInputReceiverOperator<DataType>;
+				return nullptr;
+			}
 
-				FOperator* Operator = static_cast<FOperator*>(InOperator);
-				check(nullptr != Operator);
-				Operator->Execute();
+		protected:
+
+			static void PostExecute(IOperator* InOperator)
+			{
+				using FPostExecutableInputOperator = TPostExecutableInputOperator<DataType>;
+
+				FPostExecutableInputOperator* DerivedOperator = static_cast<FPostExecutableInputOperator*>(InOperator);
+				check(nullptr != DerivedOperator);
+
+				TPostExecutableDataType<DataType>::PostExecute(*(DerivedOperator->Value));
 			}
 
 			FVertexName DataReferenceName;
-			FDataReadReference InputValue;
-			FDataWriteReference OutputValue;
-			FSendAddress SendAddress;
-			TReceiverPtr<DataType> Receiver;
-			bool bHasNotReceivedData = true;
+			FDataWriteReference Value;
 		};
+
+		template<typename DataType>
+		class TResetablePostExecutableInputOperator : public TPostExecutableInputOperator<DataType>
+		{
+		public:
+			using FDataWriteReference = TDataWriteReference<DataType>;
+			using FDataWriteReferenceFactory = TDataWriteReferenceLiteralFactory<DataType>;
+
+			TResetablePostExecutableInputOperator(const FVertexName& InDataReferenceName, const FOperatorSettings& InSettings, const FLiteral& InLiteral)
+			: TPostExecutableInputOperator<DataType>(InDataReferenceName, FDataWriteReferenceFactory::CreateExplicitArgs(InSettings, InLiteral))
+			, Literal(InLiteral)
+			{
+			}
+
+			virtual IOperator::FResetFunction GetResetFunction() override
+			{
+				return &Reset;
+			}
+
+		private:
+
+			static void Reset(IOperator* InOperator, const IOperator::FResetParams& InParams)
+			{
+				using FResetablePostExecutableInputOperator = TResetablePostExecutableInputOperator<DataType>;
+
+				FResetablePostExecutableInputOperator* Operator = static_cast<FResetablePostExecutableInputOperator*>(InOperator);
+				check(nullptr != Operator);
+
+				*Operator->Value = TDataTypeLiteralFactory<DataType>::CreateExplicitArgs(InParams.OperatorSettings, Operator->Literal);
+			}
+
+			FLiteral Literal;
+		};
+
+		/** Non owning input operator that may need execution. */
+		template<typename DataType, EVertexAccessType VertexAccess=EVertexAccessType::Reference>
+		using TNonOwningInputOperator = std::conditional_t<
+			TExecutableDataType<DataType>::bIsExecutable,
+			TExecutableInputOperator<DataType>, // Use this input operator if the data type is not owned by the input node but needs execution.
+			std::conditional_t<
+				TPostExecutableDataType<DataType>::bIsPostExecutable,
+				TPostExecutableInputOperator<DataType>, // Use this input operator if the data type is not owned by the input node but needs post execution.
+				MetasoundInputNodePrivate::FNonExecutableInputPassThroughOperator // Use this input operator if the data type is not owned by the input node and is not executable, nor post executable.
+			>
+		>;
 	}
 
-	/** Choose input operator based upon data type and access type */
+	/** Owning input operator that may need execution. */
 	template<typename DataType, EVertexAccessType VertexAccess=EVertexAccessType::Reference>
 	using TInputOperator = std::conditional_t<
-		VertexAccess == EVertexAccessType::Value,
-		MetasoundInputNodePrivate::FInputValueOperator,
+		VertexAccess == EVertexAccessType::Value || (!TExecutableDataType<DataType>::bIsExecutable && !TPostExecutableDataType<DataType>::bIsPostExecutable),
+		MetasoundInputNodePrivate::TInputValueOperator<DataType>, // Use this input operator if the data type is owned by the input node and is not executable, nor post executable.
 		std::conditional_t<
 			TExecutableDataType<DataType>::bIsExecutable,
-			MetasoundInputNodePrivate::TExecutableInputOperator<DataType>,
-			MetasoundInputNodePrivate::FNonExecutableInputPassThroughOperator
+			MetasoundInputNodePrivate::TResetableExecutableInputOperator<DataType>, // Use this input operator if the data type is owned by the input node and is executable.
+			MetasoundInputNodePrivate::TResetablePostExecutableInputOperator<DataType> // Use this input operator if the data type is owned by the input node and is post executable.
+
 		>
 	>;
 
@@ -219,82 +288,49 @@ namespace Metasound
 	template<typename DataType, EVertexAccessType VertexAccess=EVertexAccessType::Reference>
 	using TPassThroughOperator = std::conditional_t<
 		VertexAccess == EVertexAccessType::Value,
-		MetasoundInputNodePrivate::FInputValueOperator,
+		MetasoundInputNodePrivate::TInputValueOperator<DataType>,
 		MetasoundInputNodePrivate::FNonExecutableInputPassThroughOperator
 	>;
 
-	/** Data type creation policy to create by copy construction. */
-	template<typename DataType>
-	struct UE_DEPRECATED(5.1, "Moved to private implementation.") FCreateDataReferenceWithCopy
+	/** FInputNode represents an input to a metasound graph. */
+	class METASOUNDFRONTEND_API FInputNode : public FNode
 	{
-		template<typename... ArgTypes>
-		FCreateDataReferenceWithCopy(ArgTypes&&... Args)
-		:	Data(Forward<ArgTypes>(Args)...)
-		{
-		}
+		static FLazyName ConstructorVariant;
+		// Use Variant names to differentiate between normal input nodes and constructor 
+		// input nodes.
+		static FName GetVariantName(EVertexAccessType InVertexAccess);
 
-		TDataWriteReference<DataType> CreateDataReference(const FOperatorSettings& InOperatorSettings) const
-		{
-			return TDataWriteReferenceFactory<DataType>::CreateExplicitArgs(InOperatorSettings, Data);
-		}
+		static FVertexInterface CreateVertexInterface(const FVertexName& InVertexName, const FName& InDataTypeName, EVertexAccessType InVertexAccess, const FLiteral& InLiteral);
+
+	protected:
+
+		static FVertexInterface CreateDefaultVertexInterface(const FVertexName& InVertexName, const FName& InDataTypeName, EVertexAccessType InVertexAccess);
+
+	public:
+
+		static FNodeClassMetadata GetNodeMetadata(const FVertexName& InVertexName, const FName& InDataTypeName, EVertexAccessType InVertexAccess);
+
+		/* Construct a TInputNode using the TInputOperatorLiteralFactory<> and moving
+		 * InParam to the TInputOperatorLiteralFactory constructor.*/
+		explicit FInputNode(FInputNodeConstructorParams&& InParams, const FName& InDataTypeName, EVertexAccessType InVertexAccess, FOperatorFactorySharedRef InFactory);
+
+		const FVertexName& GetVertexName() const;
+
+		virtual const FVertexInterface& GetVertexInterface() const override;
+		virtual bool SetVertexInterface(const FVertexInterface& InInterface) override;
+		virtual bool IsVertexInterfaceSupported(const FVertexInterface& InInterface) const override;
+		virtual TSharedRef<IOperatorFactory, ESPMode::ThreadSafe> GetDefaultOperatorFactory() const override;
 
 	private:
-		DataType Data;
+		FVertexName VertexName;
+		FVertexInterface Interface;
+		FOperatorFactorySharedRef Factory;
 	};
 
-
-	/** Data type creation policy to create by literal construction. */
-	template<typename DataType>
-	struct UE_DEPRECATED(5.1, "Moved to private implementation.") FCreateDataReferenceWithLiteral
-	{
-		// If the data type is parsable from a literal type, then the data type 
-		// can be registered as an input type with the frontend.  To make a 
-		// DataType registrable, either create a constructor for the data type
-		// which accepts the one of the supported literal types with an optional 
-		// FOperatorSettings argument, or create a default constructor, or specialize
-		// this factory with an implementation for that specific data type.
-		static constexpr bool bCanCreateWithLiteral = TLiteralTraits<DataType>::bIsParsableFromAnyLiteralType;
-
-		FCreateDataReferenceWithLiteral(FLiteral&& InLiteral)
-		:	Literal(MoveTemp(InLiteral))
-		{
-		}
-
-		TDataWriteReference<DataType> CreateDataReference(const FOperatorSettings& InOperatorSettings) const
-		{
-			return TDataWriteReferenceLiteralFactory<DataType>::CreateExplicitArgs(InOperatorSettings, Literal);
-		}
-
-	private:
-		FLiteral Literal;
-	};
-
-
-	/** TInputOperatorFactory initializes the DataType at construction. It uses
-	 * the ReferenceCreatorType to create a data reference if one is not passed in.
-	 */
-	template<typename DataType, typename ReferenceCreatorType>
-	class UE_DEPRECATED(5.1, "Moved to private implementation") TInputOperatorFactory : public IOperatorFactory
-	{
-		public:
-
-			using FDataWriteReference = TDataWriteReference<DataType>;
-			using FDataReadReference = TDataReadReference<DataType>;
-
-			TInputOperatorFactory(ReferenceCreatorType&& InReferenceCreator)
-			:	ReferenceCreator(MoveTemp(InReferenceCreator))
-			{
-			}
-
-			virtual TUniquePtr<IOperator> CreateOperator(const FBuildOperatorParams& InParams, FBuildResults& OutResults) override;
-
-		private:
-			ReferenceCreatorType ReferenceCreator;
-	};
 
 	/** TInputNode represents an input to a metasound graph. */
 	template<typename DataType, EVertexAccessType VertexAccess=EVertexAccessType::Reference>
-	class TInputNode : public FNode
+	class TInputNode : public FInputNode
 	{
 		static constexpr bool bIsConstructorInput = VertexAccess == EVertexAccessType::Value;
 		static constexpr bool bIsSupportedConstructorInput = TIsConstructorVertexSupported<DataType>::Value && bIsConstructorInput;
@@ -302,20 +338,6 @@ namespace Metasound
 		static constexpr bool bIsSupportedReferenceInput = TLiteralTraits<DataType>::bIsParsableFromAnyLiteralType && bIsReferenceInput;
 
 		static constexpr bool bIsSupportedInput = bIsSupportedConstructorInput || bIsSupportedReferenceInput;
-
-		// Use Variant names to differentiate between normal input nodes and constructor 
-		// input nodes.
-		static FName GetVariantName()
-		{
-			if constexpr (EVertexAccessType::Value == VertexAccess)
-			{
-				return FName("Constructor");
-			}
-			else
-			{
-				return FName();
-			}
-		}
 
 		// Factory for creating input operators. 
 		class FInputNodeOperatorFactory : public IOperatorFactory
@@ -326,71 +348,29 @@ namespace Metasound
 			static_assert(bIsValueVertexAccess || bIsReferenceVertexAccess, "Unsupported EVertexAccessType");
 
 			// Choose which data reference type is created based on template parameters
-			using FDataReference = std::conditional_t<bIsReferenceVertexAccess, TDataWriteReference<DataType>, TDataValueReference<DataType>>;
+			using FDataReference = std::conditional_t<bIsReferenceVertexAccess, TDataReadReference<DataType>, TDataValueReference<DataType>>;
+			using FDataReferenceFactory = std::conditional_t<bIsReferenceVertexAccess, TDataReadReferenceLiteralFactory<DataType>, TDataValueReferenceLiteralFactory<DataType>>;
 			using FPassThroughDataReference = std::conditional_t<bIsReferenceVertexAccess, TDataReadReference<DataType>, TDataValueReference<DataType>>;
 
-			// Utility struct for creating data references for varying flavors of 
-			// runtime scenarios and vertex access types.
-			struct FDataReferenceCreatorBase
+			// Return correct data reference type based on vertex access type for pass through scenario.
+			FPassThroughDataReference CreatePassThroughDataReference(const FAnyDataReference& InRef)
 			{
-				virtual ~FDataReferenceCreatorBase() = default;
-
-				// Create a a new data reference for constructing operators 
-				virtual FDataReference CreateDataReference(const FOperatorSettings& InOperatorSettings) const = 0;
-
-				// Create a data reference for constructing operators from a given data reference
-				virtual FPassThroughDataReference CreateDataReference(const FAnyDataReference& InRef) const
+				if constexpr (bIsReferenceVertexAccess)
 				{
-					if constexpr (bIsReferenceVertexAccess)
-					{
-						return InRef.GetDataReadReference<DataType>();
-					}
-					else if constexpr (bIsValueVertexAccess)
-					{
-						return InRef.GetDataValueReference<DataType>();
-					}
-					else
-					{
-						static_assert("Unsupported EVertexAccessType");
-					}
+					return InRef.GetDataReadReference<DataType>();
 				}
-			};
-
-			// Create data references using a literal 
-			struct FCreateWithLiteral : FDataReferenceCreatorBase
-			{
-				using FDataFactory = std::conditional_t<bIsReferenceVertexAccess, TDataWriteReferenceLiteralFactory<DataType>, TDataValueReferenceLiteralFactory<DataType>>;
-
-				FLiteral Literal;
-
-				FCreateWithLiteral(FLiteral&& InLiteral)
-				: Literal(MoveTemp(InLiteral))
+				else if constexpr (bIsValueVertexAccess)
 				{
+					return InRef.GetDataValueReference<DataType>();
 				}
-
-				virtual FDataReference CreateDataReference(const FOperatorSettings& InOperatorSettings) const override
+				else
 				{
-					return FDataFactory::CreateExplicitArgs(InOperatorSettings, Literal);
+					static_assert("Unsupported EVertexAccessType");
 				}
-			};
-
-			// Create data references using a copy 
-			struct FCreateWithCopy : FDataReferenceCreatorBase
-			{
-				using FDataFactory = std::conditional_t<bIsReferenceVertexAccess, TDataWriteReferenceFactory<DataType>, TDataValueReferenceFactory<DataType>>;
-
-				DataType Value;
-
-				virtual FDataReference CreateDataReference(const FOperatorSettings& InOperatorSettings) const override
-				{
-					return FDataFactory::CreateExplicitArgs(InOperatorSettings, Value);
-				}
-			};
+			}
 
 		public:
-			explicit FInputNodeOperatorFactory(FLiteral&& InLiteral, bool bInEnableTransmission)
-			: ReferenceCreator(MakeUnique<FCreateWithLiteral>(MoveTemp(InLiteral)))
-			, bEnableTransmission(bInEnableTransmission)
+			explicit FInputNodeOperatorFactory()
 			{
 			}
 
@@ -400,48 +380,28 @@ namespace Metasound
 
 				using FInputNodeType = TInputNode<DataType, VertexAccess>;
 
-				checkf(!(bEnableTransmission && bIsValueVertexAccess), TEXT("Input cannot enable transmission for vertex with access 'EVertexAccessType::Reference'"));
-
 				const FInputNodeType& InputNode = static_cast<const FInputNodeType&>(InParams.Node);
 				const FVertexName& VertexKey = InputNode.GetVertexName();
 
-				if (bEnableTransmission)
-				{
-					const FName DataTypeName = GetMetasoundDataTypeName<DataType>();
-					FSendAddress SendAddress = FMetaSoundParameterTransmitter::CreateSendAddressFromEnvironment(InParams.Environment, VertexKey, DataTypeName);
-					TReceiverPtr<DataType> Receiver = FDataTransmissionCenter::Get().RegisterNewReceiver<DataType>(SendAddress, FReceiverInitParams{ InParams.OperatorSettings });
-					if (Receiver.IsValid())
-					{
-						// Transmittable input value
-						if (const FAnyDataReference* Ref = InParams.InputData.FindDataReference(VertexKey))
-						{
-							return MakeUnique<TInputReceiverOperator<DataType>>(VertexKey, ReferenceCreator->CreateDataReference(*Ref), MoveTemp(SendAddress), MoveTemp(Receiver));
-						}
-						else
-						{
-							FDataReference DataRef = ReferenceCreator->CreateDataReference(InParams.OperatorSettings);
-							return MakeUnique<TInputReceiverOperator<DataType>>(VertexKey, DataRef, MoveTemp(SendAddress), MoveTemp(Receiver));
-						}
-					}
-
-					AddBuildError<FInputReceiverInitializationError>(OutResults.Errors, InParams.Node, VertexKey, DataTypeName);
-					return nullptr;
-				}
-
 				if (const FAnyDataReference* Ref = InParams.InputData.FindDataReference(VertexKey))
 				{
+					if constexpr (bIsReferenceVertexAccess)
+					{
+						if (EDataReferenceAccessType::Write == Ref->GetAccessType())
+						{
+							return MakeUnique<TNonOwningInputOperator<DataType, VertexAccess>>(VertexKey, Ref->GetDataWriteReference<DataType>());
+						}
+					}
 					// Pass through input value
-					return MakeUnique<TPassThroughOperator<DataType, VertexAccess>>(VertexKey, ReferenceCreator->CreateDataReference(*Ref));
+					return MakeUnique<TPassThroughOperator<DataType, VertexAccess>>(VertexKey, CreatePassThroughDataReference(*Ref));
 				}
-
-				// Owned input value
-				FDataReference DataRef = ReferenceCreator->CreateDataReference(InParams.OperatorSettings);
-				return MakeUnique<TInputOperator<DataType, VertexAccess>>(VertexKey, DataRef);
+				else
+				{
+					const FLiteral& Literal = InputNode.GetVertexInterface().GetInputInterface()[VertexKey].GetDefaultLiteral();
+					// Owned input value
+					return MakeUnique<TInputOperator<DataType, VertexAccess>>(VertexKey, InParams.OperatorSettings, Literal);
+				}
 			}
-
-		private:
-			TUniquePtr<FDataReferenceCreatorBase> ReferenceCreator;
-			bool bEnableTransmission = false;
 		};
 
 
@@ -449,127 +409,22 @@ namespace Metasound
 		// If true, this node can be instantiated by the Frontend.
 		static constexpr bool bCanRegister = bIsSupportedInput;
 
+		UE_DEPRECATED(5.3, "Access the default vertex interface from the input node metadata.")
 		static FVertexInterface DeclareVertexInterface(const FVertexName& InVertexName)
 		{
-			return FVertexInterface(
-				FInputVertexInterface(
-					FInputDataVertex(InVertexName, GetMetasoundDataTypeName<DataType>(), FDataVertexMetadata{ FText::GetEmpty() }, VertexAccess)
-				),
-				FOutputVertexInterface(
-					FOutputDataVertex(InVertexName, GetMetasoundDataTypeName<DataType>(), FDataVertexMetadata{ FText::GetEmpty() }, VertexAccess)
-				)
-			);
+			return CreateDefaultVertexInterface(InVertexName, GetMetasoundDataTypeName<DataType>(), VertexAccess);
 		}
 
 		static FNodeClassMetadata GetNodeInfo(const FVertexName& InVertexName)
 		{
-			FNodeClassMetadata Info;
-
-			Info.ClassName = { "Input", GetMetasoundDataTypeName<DataType>(), GetVariantName() };
-			Info.MajorVersion = 1;
-			Info.MinorVersion = 0;
-			Info.Description = METASOUND_LOCTEXT("Metasound_InputNodeDescription", "Input into the parent Metasound graph.");
-			Info.Author = PluginAuthor;
-			Info.PromptIfMissing = PluginNodeMissingPrompt;
-			Info.DefaultInterface = DeclareVertexInterface(InVertexName);
-
-			return Info;
-		}
-
-		template<typename... ArgTypes>
-		UE_DEPRECATED(5.1, "Moved to internal implementation.")
-		static FOperatorFactorySharedRef CreateOperatorFactoryWithArgs(ArgTypes&&... Args)
-		{
-			using FCreatorType = FCreateDataReferenceWithCopy<DataType>;
-			using FFactoryType = TInputOperatorFactory<DataType, FCreatorType>;
-
-			return MakeOperatorFactoryRef<FFactoryType>(FCreatorType(Forward<ArgTypes>(Args)...));
-		}
-
-		UE_DEPRECATED(5.1, "Moved to internal implementation.")
-		static FOperatorFactorySharedRef CreateOperatorFactoryWithLiteral(FLiteral&& InLiteral)
-		{
-			using FCreatorType = FCreateDataReferenceWithLiteral<DataType>;
-			using FFactoryType = TInputOperatorFactory<DataType, FCreatorType>;
-
-			return MakeOperatorFactoryRef<FFactoryType>(FCreatorType(MoveTemp(InLiteral)));
-		}
-
-		/* Construct a TInputNode using the TInputOperatorFactory<> and forwarding 
-		 * Args to the TInputOperatorFactory constructor.*/
-		template<typename... ArgTypes>
-		UE_DEPRECATED(5.1, "Constructing an TInputNode with args will no longer be supported.")
-		TInputNode(const FVertexName& InInstanceName, const FGuid& InInstanceID, const FVertexName& InVertexName, ArgTypes&&... Args)
-		:	FNode(InInstanceName, InInstanceID, GetNodeInfo(InVertexName))
-		,	VertexName(InVertexName)
-		,	Interface(DeclareVertexInterface(InVertexName))
-		,	Factory(MakeShared<FInputNodeOperatorFactory>(Forward<ArgTypes>(Args)...))
-		{
+			return GetNodeMetadata(InVertexName, GetMetasoundDataTypeName<DataType>(), VertexAccess);
 		}
 
 		/* Construct a TInputNode using the TInputOperatorLiteralFactory<> and moving
 		 * InParam to the TInputOperatorLiteralFactory constructor.*/
 		explicit TInputNode(FInputNodeConstructorParams&& InParams)
-		:	FNode(InParams.NodeName, InParams.InstanceID, GetNodeInfo(InParams.VertexName))
-		,	VertexName(InParams.VertexName)
-		,	Interface(DeclareVertexInterface(InParams.VertexName))
-		,	Factory(MakeShared<FInputNodeOperatorFactory>(MoveTemp(InParams.InitParam), InParams.bEnableTransmission))
+		:	FInputNode(MoveTemp(InParams), GetMetasoundDataTypeName<DataType>(), VertexAccess, MakeShared<FInputNodeOperatorFactory>())
 		{
 		}
-
-		const FVertexName& GetVertexName() const
-		{
-			return VertexName;
-		}
-
-		virtual const FVertexInterface& GetVertexInterface() const override
-		{
-			return Interface;
-		}
-
-		virtual bool SetVertexInterface(const FVertexInterface& InInterface) override
-		{
-			return Interface == InInterface;
-		}
-
-		virtual bool IsVertexInterfaceSupported(const FVertexInterface& InInterface) const override
-		{
-			return Interface == InInterface;
-		}
-
-		virtual TSharedRef<IOperatorFactory, ESPMode::ThreadSafe> GetDefaultOperatorFactory() const override
-		{
-			return Factory;
-		}
-
-	private:
-		FVertexName VertexName;
-
-		FVertexInterface Interface;
-		FOperatorFactorySharedRef Factory;
 	};
-
-
-	template<typename DataType, typename ReferenceCreatorType>
-	TUniquePtr<IOperator> TInputOperatorFactory<DataType, ReferenceCreatorType>::CreateOperator(const FBuildOperatorParams& InParams, FBuildResults& OutResults)
-	{
-		using FInputNodeType = TInputNode<DataType>;
-
-		const FInputNodeType& InputNode = static_cast<const FInputNodeType&>(InParams.Node);
-		const FVertexName& VertexKey = InputNode.GetVertexName();
-
-		if (InParams.InputData.IsVertexBound(VertexKey))
-		{
-			// Data is externally owned. Use pass through operator
-			TDataReadReference<DataType> DataRef = InParams.InputData.GetDataReadReference<DataType>(VertexKey);
-			return MakeUnique<TPassThroughOperator<DataType>>(InputNode.GetVertexName(), DataRef);
-		}
-		else
-		{
-			// Create write reference by calling compatible constructor with literal.
-			TDataWriteReference<DataType> DataRef = ReferenceCreator.CreateDataReference(InParams.OperatorSettings);
-			return MakeUnique<TInputOperator<DataType>>(InputNode.GetVertexName(), DataRef);
-		}
-	}
 } // namespace Metasound
-#undef LOCTEXT_NAMESPACE // MetasoundFrontend

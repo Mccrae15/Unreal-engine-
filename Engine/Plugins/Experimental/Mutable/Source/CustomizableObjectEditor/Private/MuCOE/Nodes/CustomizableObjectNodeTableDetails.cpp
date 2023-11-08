@@ -12,6 +12,7 @@
 #include "MuCOE/CustomizableObjectLayout.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTable.h"
 #include "MuCOE/SCustomizableObjectNodeLayoutBlocksEditor.h"
+#include "MuCOE/UnrealEditorPortabilityHelpers.h"
 #include "Widgets/Input/STextComboBox.h"
 #include "Widgets/Input/SButton.h"
 
@@ -70,7 +71,7 @@ void FCustomizableObjectNodeTableDetails::CustomizeDetails(const TSharedPtr<IDet
 				+ SHorizontalBox::Slot()
 				[
 					SNew(SBorder)
-					.BorderImage(FAppStyle::GetBrush("NoBorder"))
+					.BorderImage(UE_MUTABLE_GET_BRUSH("NoBorder"))
 					.Padding(FMargin(0.0f, 0.0f, 10.0f, 0.0f))
 					[
 						SAssignNew(AnimMeshColumnComboBox, STextComboBox)
@@ -108,7 +109,7 @@ void FCustomizableObjectNodeTableDetails::CustomizeDetails(const TSharedPtr<IDet
 				+ SHorizontalBox::Slot()
 				[
 					SNew(SBorder)
-					.BorderImage(FAppStyle::GetBrush("NoBorder"))
+					.BorderImage(UE_MUTABLE_GET_BRUSH("NoBorder"))
 					.Padding(FMargin(0.0f, 0.0f, 10.0f, 0.0f))
 					[
 						SAssignNew(AnimComboBox, STextComboBox)
@@ -146,7 +147,7 @@ void FCustomizableObjectNodeTableDetails::CustomizeDetails(const TSharedPtr<IDet
 				+ SHorizontalBox::Slot()
 				[
 					SNew(SBorder)
-					.BorderImage(FAppStyle::GetBrush("NoBorder"))
+					.BorderImage(UE_MUTABLE_GET_BRUSH("NoBorder"))
 					.Padding(FMargin(0.0f, 0.0f, 10.0f, 0.0f))
 					[
 						SAssignNew(AnimSlotComboBox, STextComboBox)
@@ -184,7 +185,7 @@ void FCustomizableObjectNodeTableDetails::CustomizeDetails(const TSharedPtr<IDet
 				+ SHorizontalBox::Slot()
 				[
 					SNew(SBorder)
-					.BorderImage(FAppStyle::GetBrush("NoBorder"))
+					.BorderImage(UE_MUTABLE_GET_BRUSH("NoBorder"))
 					.Padding(FMargin(0.0f, 0.0f, 10.0f, 0.0f))
 					[
 						SAssignNew(AnimTagsComboBox, STextComboBox)
@@ -238,7 +239,7 @@ void FCustomizableObjectNodeTableDetails::CustomizeDetails(const TSharedPtr<IDet
 				+ SHorizontalBox::Slot()
 				[
 					SNew(SBorder)
-					.BorderImage(FAppStyle::GetBrush("NoBorder"))
+					.BorderImage(UE_MUTABLE_GET_BRUSH("NoBorder"))
 					.Padding(FMargin(0.0f, 0.0f, 10.0f, 0.0f))
 					[
 						SAssignNew(LayoutMeshColumnComboBox, STextComboBox)
@@ -297,7 +298,7 @@ void FCustomizableObjectNodeTableDetails::GenerateMeshColumnComboBoxOptions()
 					{
 						const UCustomizableObjectNodeTableMeshPinData* PinData = Cast<UCustomizableObjectNodeTableMeshPinData >(Node->GetPinData(*Pin));
 
-						if (!PinData || PinData->ColumnName != MeshColumnName)
+						if (!PinData || PinData->ColumnName != MeshColumnName || Node->GetPinMeshType(Pin) != ETableMeshPinType::SKELETAL_MESH)
 						{
 							continue;
 						}
@@ -346,7 +347,7 @@ void FCustomizableObjectNodeTableDetails::GenerateAnimInstanceComboBoxOptions()
 
 	const UScriptStruct* TableStruct = Node->Table->GetRowStruct();
 
-	// Fillins name options arrays and setting the selected item if any
+	// Fill in name option arrays and set the selected item if any
 	for (TFieldIterator<FProperty> It(TableStruct); It; ++It)
 	{
 		if (FProperty* ColumnProperty = *It)
@@ -370,7 +371,7 @@ void FCustomizableObjectNodeTableDetails::GenerateAnimInstanceComboBoxOptions()
 					}
 				}
 			}
-			else if (const FIntProperty* NumProperty = CastField<FIntProperty>(ColumnProperty))
+			else if (CastField<FIntProperty>(ColumnProperty) || CastField<FNameProperty>(ColumnProperty))
 			{
 				TSharedPtr<FString> Option = MakeShareable(new FString(DataTableUtils::GetPropertyExportName(ColumnProperty)));
 				AnimSlotOptionNames.Add(Option);

@@ -18,6 +18,8 @@ class SBox;
 class IStructureDetailsView;
 class SComboButton;
 struct FGraphActionListBuilderBase;
+class FNiagaraStackCommandContext;
+class FMenuBuilder;
 
 typedef SItemSelector<FString, TSharedPtr<FNiagaraMenuAction_Generic>, ENiagaraMenuSections> SNiagaraMenuActionSelector;
 
@@ -25,8 +27,21 @@ class SNiagaraStackFunctionInputValue: public SCompoundWidget
 {
 public:
 	DECLARE_DELEGATE_OneParam(FOnColumnWidthChanged, float)
+
+	enum class ELayoutMode
+	{
+		FullRow,
+		CompactInline,
+		EditDropDownOnly
+	};
+
 public:
-	SLATE_BEGIN_ARGS(SNiagaraStackFunctionInputValue) { }
+	SLATE_BEGIN_ARGS(SNiagaraStackFunctionInputValue)
+		: _LayoutMode(ELayoutMode::FullRow)
+		, _CompactActionMenuButtonVisibility(EVisibility::Visible)
+		{ }
+		SLATE_ARGUMENT(ELayoutMode, LayoutMode)
+		SLATE_ATTRIBUTE(EVisibility, CompactActionMenuButtonVisibility)
 	SLATE_END_ARGS();
 
 	void Construct(const FArguments& InArgs, UNiagaraStackFunctionInput* InFunctionInput);
@@ -53,6 +68,8 @@ private:
 	FName GetLinkedValueHandleName() const;
 
 	FText GetDataValueText() const;
+
+	FText GetObjectAssetValueText() const;
 
 	FText GetDynamicValueText() const;
 
@@ -101,6 +118,10 @@ private:
 	static TSharedRef<SExpanderArrow> CreateCustomNiagaraFunctionInputActionExpander(const FCustomExpanderData& ActionMenuData);
 
 	TSharedRef<SWidget> OnGetAvailableHandleMenu();
+
+	TSharedRef<SWidget> OnGetCompactActionMenu();
+
+	void OnFillAssignSubMenu(FMenuBuilder& MenuBuilder);
 
 	TSharedRef<SWidget> GetVersionSelectorDropdownMenu();
 	void SwitchToVersion(FNiagaraAssetVersion Version);
@@ -157,30 +178,10 @@ private:
 
 	FReply ScratchButtonPressed() const;
 
-	const FSlateBrush* GetFilteredViewIcon() const;
-	EVisibility GetFilteredViewContextButtonVisibility() const;
-	bool GetSummaryViewChangeEnabledStateAllowed() const;
-	bool GetSummaryViewChangeDisplayNameAllowed() const;
-	bool GetSummaryViewChangeCategoryAllowed() const;
-	TSharedRef<SWidget> GetFilteredViewPropertiesContent();
-	
-	FText GetFilteredViewDisplayName() const;
-	bool VerifyFilteredViewDisplayName(const FText& InText, FText& OutErrorMessage) const;
-	void FilteredViewDisplayNameTextCommitted(const FText& Text, ETextCommit::Type CommitType);
-
-	FText GetFilteredViewCategory() const;
-	bool VerifyFilteredViewCategory(const FText& InText, FText& OutErrorMessage) const;
-	void FilteredViewCategoryTextCommitted(const FText& Text, ETextCommit::Type CommitType);
-
-	FText GetFilteredViewSortIndex() const;
-	bool VerifyFilteredSortIndex(const FText& InText, FText& OutErrorMessage) const;
-	void FilteredSortIndexTextCommitted(const FText& Text, ETextCommit::Type CommitType);
-
-	ECheckBoxState GetFilteredViewVisibleCheckState() const;
-	void FilteredVisibleCheckStateChanged(ECheckBoxState CheckBoxState);
-
 private:
 	UNiagaraStackFunctionInput* FunctionInput;
+
+	ELayoutMode LayoutMode;
 
 	TSharedPtr<SBox> ValueContainer;
 	UNiagaraStackFunctionInput::EValueMode ValueModeForGeneratedWidgets;
@@ -193,6 +194,9 @@ private:
 	TSharedPtr<SNiagaraFilterBox> FilterBox;
 	TSharedPtr<SComboButton> SetFunctionInputButton;
 	TSharedPtr<FNiagaraHLSLSyntaxHighlighter> SyntaxHighlighter;
+
+	TAttribute<EVisibility> CompactActionMenuButtonVisibilityAttribute;
+	TSharedPtr<FNiagaraStackCommandContext> StackCommandContext;
 
 	static bool bLibraryOnly;
 

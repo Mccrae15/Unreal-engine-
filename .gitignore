@@ -162,6 +162,9 @@
 /Engine/Extras/VirtualProduction/LiveLinkVCAM/UE4LiveLinkProvider.framework/UE4LiveLinkProvider
 /Engine/Extras/VirtualProduction/LiveLinkVCAM/UE5LiveLinkProvider.framework/UE5LiveLinkProvider
 
+# Exception for VP EpicStageApp dart files
+!/Engine/Extras/VirtualProduction/EpicStageApp/**/*.dart
+
 # Ignore the automatically created mono symlink
 /Engine/Binaries/ThirdParty/Mono/Mac/bin/mono
 
@@ -228,6 +231,16 @@ Engine/Binaries/Android/packageInfo.txt
 # Ignore version files in the Engine/Binaries directory created by UBT
 /Engine/Binaries/**/*.version
 
+# Ignore built Mac apps
+/Engine/Binaries/Mac/UnrealEditor*.app/**
+/Engine/Binaries/Mac/UnrealGame*.app/**
+
+# Ignore generated Xcode settings file
+/Engine/Build/Xcode/ContentOnlySettings.xcconfig
+
+# Ignore .build folder
+/Engine/Binaries/*.build/**
+
 # Ignore exp files in Engine and Plugin Binaries directories as they aren't C/C++ source files
 /Engine/**/Binaries/**/*.exp
 
@@ -276,8 +289,8 @@ Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/**
 # Ignore USD resources copied into Binaries directory at build time
 /Engine/Binaries/ThirdParty/USD/**
 
-# Ignore test json data files in NeuralNetworkInterface
-/Engine/Plugins/Experimental/NNI/Source/ThirdParty/Deps/json/**
+# Ignore vulkan registry
+/Engine/Source/ThirdParty/Vulkan/share/vulkan/registry/**
 
 # Add exceptions for Oculus Collaboration folder
 !/Collaboration/Oculus/**
@@ -290,7 +303,6 @@ Engine/Plugins/Runtime/OculusXR
 
 # Ignore Samples and SamplesInternal folders, they are junctions
 Collaboration/Oculus/Samples
-
 Collaboration/Oculus/SamplesInternal
 
 # Ignore VoiceSDK Template

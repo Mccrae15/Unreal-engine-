@@ -11,6 +11,7 @@ namespace UnrealBuildTool.Rules
 				{
 					"ApplicationCore",
 					"AppFramework",
+					"AssetDefinition",
 					"AssetRegistry",
 					"AssetTools",
 					"CameraCalibrationCore",
@@ -24,6 +25,7 @@ namespace UnrealBuildTool.Rules
 					"EditorStyle",
 					"EditorWidgets",
 					"Engine",
+					"RenderCore",
 					"ImageCore",
 					"InputCore",
 					"Json",
@@ -34,6 +36,7 @@ namespace UnrealBuildTool.Rules
 					"OpenCVHelper",
 					"PlacementMode",
 					"PropertyEditor",
+					"SequencerWidgets",
 					"Settings",
 					"Slate",
 					"SlateCore",

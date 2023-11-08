@@ -111,10 +111,10 @@ public:
 			DeleteObject(StatusLightBrush[I]);
 	}
 
-	void AddLogEntry(const FStringView& Text, ELogVerbosity::Type Verbosity, const class FName& Category, double Time, uint16 TextAttribute)
+	void AddLogEntry(const FStringView& Text, ELogVerbosity::Type Verbosity, const class FName& Category, double Time, uint16 InTextAttribute)
 	{
 		FScopeLock _(&NewLogEntriesCs);
-		NewLogEntries.Add({FString(Text), Verbosity, Category, Time, TextAttribute});
+		NewLogEntries.Add({FString(Text), Verbosity, Category, Time, InTextAttribute});
 		SetEvent(DirtyEvent);
 	}
 
@@ -1793,11 +1793,19 @@ public:
 
 		case WM_SIZE:
 		{
-			UpdateSize(LOWORD(lParam), HIWORD(lParam), true);
-			RECT WindowRect;
-			GetWindowRect(MainHwnd, &WindowRect);
-			ConsoleWidth = WindowRect.right - WindowRect.left;
-			ConsoleHeight = WindowRect.bottom - WindowRect.top;
+			switch (wParam)
+			{
+			case SIZE_MAXIMIZED:
+			case SIZE_RESTORED:
+				UpdateSize(LOWORD(lParam), HIWORD(lParam), true);
+				RECT WindowRect;
+				GetWindowRect(MainHwnd, &WindowRect);
+				ConsoleWidth = WindowRect.right - WindowRect.left;
+				ConsoleHeight = WindowRect.bottom - WindowRect.top;
+			default:
+				// ignore all other messages, such as minimize
+				break;
+			}
 			return 0;
 		}
 		case WM_MOVE:

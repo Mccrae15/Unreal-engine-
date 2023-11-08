@@ -3,6 +3,7 @@
 #include "RenderGraphBuilder.h"
 #include "RenderGraphPrivate.h"
 #include "RenderGraphTrace.h"
+#include "RenderGraphUtils.h"
 #include "RenderTargetPool.h"
 #include "RenderGraphResourcePool.h"
 #include "VisualizeTexture.h"
@@ -43,6 +44,18 @@ inline void GatherPassUAVsForOverlapValidation(const FRDGPass* Pass, TArray<FRHI
 }
 
 #endif
+
+struct FParallelPassSet : public FRHICommandListImmediate::FQueuedCommandList
+{
+	FParallelPassSet() = default;
+
+	TArray<FRDGPass*, FRDGArrayAllocator> Passes;
+	IF_RHI_WANT_BREADCRUMB_EVENTS(FRDGBreadcrumbState* BreadcrumbStateBegin{});
+	IF_RHI_WANT_BREADCRUMB_EVENTS(FRDGBreadcrumbState* BreadcrumbStateEnd{});
+	int8 bInitialized = 0;
+	bool bDispatchAfterExecute = false;
+	bool bParallelTranslate = false;
+};
 
 inline void BeginUAVOverlap(const FRDGPass* Pass, FRHIComputeCommandList& RHICmdList)
 {
@@ -209,8 +222,10 @@ void EnumerateTextureAccess(FRDGParameterStruct PassParameters, ERDGPassFlags Pa
 
 			const FDepthStencilBinding& DepthStencil = RenderTargets.DepthStencil;
 
+
 			if (FRDGTextureRef Texture = DepthStencil.GetTexture())
 			{
+				FRDGTextureRef ResolveTexture = DepthStencil.GetResolveTexture();
 				DepthStencil.GetDepthStencilAccess().EnumerateSubresources([&](ERHIAccess NewAccess, uint32 PlaneSlice)
 				{
 					FRDGTextureSubresourceRange Range = Texture->GetSubresourceRange();
@@ -223,6 +238,12 @@ void EnumerateTextureAccess(FRDGParameterStruct PassParameters, ERDGPassFlags Pa
 					}
 
 					AccessFunction(nullptr, Texture, NewAccess, RenderTargetAccess, Range);
+
+					if (ResolveTexture && ResolveTexture != Texture)
+					{
+						// If we're resolving depth stencil, it must be DSVWrite and ResolveDst
+						AccessFunction(nullptr, ResolveTexture, ERHIAccess::DSVWrite | ERHIAccess::ResolveDst, RenderTargetAccess, Range);
+					}
 				});
 			}
 
@@ -271,7 +292,7 @@ void EnumerateBufferAccess(FRDGParameterStruct PassParameters, ERDGPassFlags Pas
 
 				if (EnumHasAnyFlags(Buffer->Desc.Usage, BUF_AccelerationStructure))
 				{
-					BufferAccess = ERHIAccess::BVHRead;
+					BufferAccess = ERHIAccess::BVHRead | ERHIAccess::SRVMask;
 				}
 
 				AccessFunction(SRV, Buffer, BufferAccess);
@@ -359,11 +380,7 @@ void FRDGBuilder::BeginFlushResourcesRHI()
 
 	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(STAT_RDG_FlushResourcesRHI);
 	SCOPED_NAMED_EVENT(BeginFlushResourcesRHI, FColor::Emerald);
-
-	if (GDynamicRHI->RHIIncludeOptionalFlushes())
-	{
-		RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
-	}
+	RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
 }
 
 void FRDGBuilder::EndFlushResourcesRHI()
@@ -1725,6 +1742,13 @@ void FRDGBuilder::Execute()
 		CompilePassBarriersTask = LaunchCompileTask(TEXT("FRDGBuilder::CompilePassBarriers"), bParallelSetupEnabled, [this] { CompilePassBarriers(); });
 
 		BeginFlushResourcesRHI();
+
+		if (!ParallelSetupEvents.IsEmpty())
+		{
+			UE::Tasks::Wait(ParallelSetupEvents);
+			ParallelSetupEvents.Empty();
+		}
+
 		PrepareBufferUploads();
 
 		GPUScopeStacks.ReserveOps(Passes.Num());
@@ -1820,12 +1844,6 @@ void FRDGBuilder::Execute()
 				TransientResourceAllocator->Flush(RHICmdList);
 			#endif
 			}
-		}
-
-		if (!ParallelSetupEvents.IsEmpty())
-		{
-			UE::Tasks::Wait(ParallelSetupEvents);
-			ParallelSetupEvents.Empty();
 		}
 
 		// We have to wait until after view creation to launch uploads because we can't lock / unlock while creating views simultaneously.
@@ -2921,13 +2939,11 @@ void FRDGBuilder::ExecutePass(FRDGPass* Pass, FRHIComputeCommandList& RHICmdList
 		}
 	}
 
-	if (!bParallelExecuteEnabled)
+	if (GRDGDebugFlushGPU)
 	{
-		if (GRDGDebugFlushGPU && !GRDGAsyncCompute)
-		{
-			RHICmdList.SubmitCommandsAndFlushGPU();
-			RHICmdList.BlockUntilGPUIdle();
-		}
+		check(!GRDGAsyncCompute && !bParallelExecuteEnabled);
+		RHICmdList.SubmitCommandsAndFlushGPU();
+		RHICmdList.BlockUntilGPUIdle();
 	}
 }
 
@@ -3613,7 +3629,7 @@ void FRDGBuilder::InitRHI(FRDGTextureSRVRef SRV)
 	FRHITexture* TextureRHI = Texture->GetRHIUnchecked();
 	check(TextureRHI);
 
-	SRV->ResourceRHI = Texture->ViewCache->GetOrCreateSRV(TextureRHI, SRV->Desc);
+	SRV->ResourceRHI = Texture->ViewCache->GetOrCreateSRV(RHICmdList, TextureRHI, SRV->Desc);
 }
 
 void FRDGBuilder::InitRHI(FRDGTextureUAVRef UAV)
@@ -3629,7 +3645,7 @@ void FRDGBuilder::InitRHI(FRDGTextureUAVRef UAV)
 	FRHITexture* TextureRHI = Texture->GetRHIUnchecked();
 	check(TextureRHI);
 
-	UAV->ResourceRHI = Texture->ViewCache->GetOrCreateUAV(TextureRHI, UAV->Desc);
+	UAV->ResourceRHI = Texture->ViewCache->GetOrCreateUAV(RHICmdList, TextureRHI, UAV->Desc);
 }
 
 void FRDGBuilder::BeginResourceRHI(FRDGPassHandle PassHandle, FRDGBufferRef Buffer)
@@ -3716,7 +3732,7 @@ void FRDGBuilder::InitRHI(FRDGBufferSRVRef SRV)
 		SRVCreateInfo.Format = PF_Unknown;
 	}
 
-	SRV->ResourceRHI = Buffer->ViewCache->GetOrCreateSRV(BufferRHI, SRVCreateInfo);
+	SRV->ResourceRHI = Buffer->ViewCache->GetOrCreateSRV(RHICmdList, BufferRHI, SRVCreateInfo);
 }
 
 void FRDGBuilder::InitRHI(FRDGBufferUAV* UAV)
@@ -3741,7 +3757,7 @@ void FRDGBuilder::InitRHI(FRDGBufferUAV* UAV)
 		UAVCreateInfo.Format = PF_Unknown;
 	}
 
-	UAV->ResourceRHI = Buffer->ViewCache->GetOrCreateUAV(Buffer->GetRHIUnchecked(), UAVCreateInfo);
+	UAV->ResourceRHI = Buffer->ViewCache->GetOrCreateUAV(RHICmdList, Buffer->GetRHIUnchecked(), UAVCreateInfo);
 }
 
 void FRDGBuilder::InitRHI(FRDGView* View)
@@ -3856,9 +3872,23 @@ void FRDGBuilder::VisualizePassOutputs(const FRDGPass* Pass)
 		{
 			if (FRDGTextureAccess TextureAccess = Parameter.GetAsTextureAccess())
 			{
-				if (TextureAccess.GetAccess() == ERHIAccess::UAVCompute ||
-					TextureAccess.GetAccess() == ERHIAccess::UAVGraphics ||
-					TextureAccess.GetAccess() == ERHIAccess::RTV)
+				if (IsWritableAccess(TextureAccess.GetAccess()))
+				{
+					if (TOptional<uint32> CaptureId = GVisualizeTexture.ShouldCapture(TextureAccess->Name, /* MipIndex = */ 0))
+					{
+						GVisualizeTexture.CreateContentCapturePass(*this, TextureAccess.GetTexture(), *CaptureId);
+					}
+				}
+			}
+		}
+		break;
+		case UBMT_RDG_TEXTURE_ACCESS_ARRAY:
+		{
+			const FRDGTextureAccessArray& TextureAccessArray = Parameter.GetAsTextureAccessArray();
+
+			for (FRDGTextureAccess TextureAccess : TextureAccessArray)
+			{
+				if (IsWritableAccess(TextureAccess.GetAccess()))
 				{
 					if (TOptional<uint32> CaptureId = GVisualizeTexture.ShouldCapture(TextureAccess->Name, /* MipIndex = */ 0))
 					{

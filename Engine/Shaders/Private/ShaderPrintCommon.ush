@@ -11,16 +11,16 @@
 // 
 // 0. Contex-based state API
 // -------------------------
-// FShaderPrintContext Ctx = InitShaderPrintContext(all(SvPosition.xy == float2(100, 100), uint2(50,50))
-//                             ------------------------------------   ------------
-//                                 Pixel/thread to filter             Coord at which 
-//                                                                       to draw
+// FShaderPrintContext Ctx = InitShaderPrintContext(all(SvPosition.xy == float2(100, 100)), uint2(50,50));
+//                                                      ---------------------------------   ------------
+//                                                           Pixel/thread to filter        Coord at which 
+//                                                                                            to draw
 // 
 // 1. How to print value?
 // ----------------------
 // First create a context, then print scalar/vector/matrix/text...
 // 
-//   FShaderPrintContext Ctx = InitShaderPrintContext(all(PixelPos.xy == uint2(100, 100), uint2(50,50))
+//   FShaderPrintContext Ctx = InitShaderPrintContext(all(PixelPos.xy == uint2(100, 100)), uint2(50,50));
 // 
 //   Print(Ctx, MyFloat);
 //   Newline(Ctx);
@@ -52,11 +52,11 @@
 // Widget can be added from shader. 
 // For slider:
 // 
-//   const float MySliderValue  = AddSlider(Ctx, DefaultValue, TEXT("My Slider"));
+//   const float MySliderValue  = AddSlider(Ctx, TEXT("My Slider"), DefaultValue, GetDefaultFontColor());
 // 
 // For checkbox:
 // 
-//   const bool MyCheckboxValue = AddCheckbox(Ctx, DefaultValue, TEXT("My Checkbox"));
+//   const bool MyCheckboxValue = AddCheckbox(Ctx, TEXT("My Checkbox"), DefaultValue, GetDefaultFontColor());
 //
 // The value of these widgets can be retrieved/evaluated from *any* thread/pixels, but the 
 // drawing need to be done from a single thread/pixel. This is done through the ShaderPrintContext, 
@@ -66,10 +66,10 @@
 //    void MainCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 //    {
 //       // Create context which 'add' the widget only on thread (0,0)
-//       FShaderPrintContext Ctx = InitShaderPrintContext(all(DispatchThreadId == uint2(0, 0), uint2(50,50))
+//       FShaderPrintContext Ctx = InitShaderPrintContext(all(DispatchThreadId == uint2(0, 0)), uint2(50,50));
 // 
 //		 // Any threads can get the slider value with this call
-//       const float ScaleValue = AddSlider(Ctx, 1.f, TEXT("Scale"));
+//       const float ScaleValue = AddSlider(Ctx, TEXT("Scale"), 1.f, GetDefaultFontColor());
 //       ...
 //    }
 // 
@@ -216,7 +216,7 @@ FFontColor GetDefaultFontColor()							{ FFontColor Out; Out.Color = float3(1,1,
 #define ColorDarkBlue	float4(0.25f, 0.25f, 0.50f, 1.0f)
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
-// Util pack/unpac functions
+// Util pack/unpack functions
 
 struct FShaderPrintItem
 {
@@ -1175,16 +1175,15 @@ void AddCircleSS(FShaderPrintContext Ctx, float2 Center, float Radius, float4 Co
 {
 	if (Ctx.bIsActive)
 	{
-		const float TStep = 0.05f;
-
-		float S, C;
-		sincos(0.0, S, C);
-		float2 PrevP = Center + float2(C, S) * Radius;
-
-		for (uint SegIt = 1; SegIt <= SegmentCount; ++SegIt)
+		const float AngleStep = 2.0f * PI * rcp(float(SegmentCount-1));
+		float Angle = 0.0f;
+		float2 PrevP = Center + float2(Radius, 0.0f);
+		for (uint SegIt = 0; SegIt < SegmentCount; ++SegIt)
 		{
-			const float t = float(SegIt) / float(SegmentCount-1);
-			sincos(t * 2 * PI, S, C);
+			Angle += AngleStep;
+
+			float S, C;
+			sincos(Angle, S, C);
 			float2 P = Center + float2(C, S) * Radius;
 
 			AddLineSS(Ctx, PrevP, P, Color, Color);
@@ -1192,6 +1191,50 @@ void AddCircleSS(FShaderPrintContext Ctx, float2 Center, float Radius, float4 Co
 		}
 	}
 }
+
+void AddCircleTWS(FShaderPrintContext Ctx, float3 Center, float3 Normal, float Radius, float4 Color, uint SegmentCount = 16)
+{
+	if (Ctx.bIsActive)
+	{
+		// Calculate two perpendicular unit vectors to the normal
+		const float3 RefUp = abs(Normal.z) < 0.999f ? float3(0, 0, 1) : float3(1, 0, 0);
+		float3 X = normalize(cross(RefUp, Normal));
+		float3 Y = cross(Normal, X);
+		X *= Radius;
+		Y *= Radius;
+
+		const float AngleStep = 2.0f * PI * rcp(float(SegmentCount-1));
+		float Angle = 0.0f;
+		float3 PrevP = Center + X;
+		for (uint SegIt = 0; SegIt < SegmentCount; ++SegIt)
+		{
+			Angle += AngleStep;
+
+			float S, C;
+			sincos(Angle, S, C);
+			float3 P = Center + X * C + Y * S;
+
+			AddLineTWS(Ctx, PrevP, P, Color, Color);
+			PrevP = P;
+		}
+	}
+}
+
+void AddCircleWS (FShaderPrintContext Ctx, float3 Center, float3 Normal, float Radius, float4 Color, uint SegmentCount = 16) { AddCircleTWS(Ctx, Center + Ctx.Config.TranslatedWorldOffset, Normal, Radius, Color, SegmentCount); }
+void AddCircle   (FShaderPrintContext Ctx, float3 Center, float3 Normal, float Radius, float4 Color, uint SegmentCount = 16) { AddCircleTWS(Ctx, Center + Ctx.Config.TranslatedWorldOffset, Normal, Radius, Color, SegmentCount); }
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Spheres
+
+void AddSphereTWS(FShaderPrintContext Ctx, float3 Center, float Radius, float4 Color, uint SegmentCount = 16)
+{
+	AddCircleTWS(Ctx, Center, float3(1, 0, 0), Radius, Color, SegmentCount);
+	AddCircleTWS(Ctx, Center, float3(0, 1, 0), Radius, Color, SegmentCount);
+	AddCircleTWS(Ctx, Center, float3(0, 0, 1), Radius, Color, SegmentCount);
+}
+
+void AddSphereWS (FShaderPrintContext Ctx, float3 Center, float Radius, float4 Color, uint SegmentCount = 16) { AddSphereTWS(Ctx, Center + Ctx.Config.TranslatedWorldOffset, Radius, Color, SegmentCount); }
+void AddSphere   (FShaderPrintContext Ctx, float3 Center, float Radius, float4 Color, uint SegmentCount = 16) { AddSphereTWS(Ctx, Center + Ctx.Config.TranslatedWorldOffset, Radius, Color, SegmentCount); }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Referential
@@ -1299,3 +1342,73 @@ void AddOBBTWS(FShaderPrintContext Ctx, float3 Min, float3 Max, float4 Color, fl
 
 void AddOBBWS (FShaderPrintContext Ctx, float3 Min, float3 Max, float4 Color, float4x4 Transform)	{ Transform[3].xyz += Ctx.Config.TranslatedWorldOffset; AddOBBTWS(Ctx, Min, Max, Color, Transform); }
 void AddOBB   (FShaderPrintContext Ctx, float3 Min, float3 Max, float4 Color, float4x4 Transform)	{ Transform[3].xyz += Ctx.Config.TranslatedWorldOffset; AddOBBTWS(Ctx, Min, Max, Color, Transform); }
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Strings
+struct FStringInfo
+{
+	uint EntryID;
+	uint Length;
+	uint Offset;
+	uint Pad;
+};
+
+FStringInfo UnpackStringInfo(uint2 In)
+{
+	FStringInfo Out = (FStringInfo)0;
+	Out.EntryID = In.x;
+	Out.Offset  = (In.y) & 0xFFFF;
+	Out.Length  = (In.y >> 16) & 0xFF;
+	return Out;
+}
+
+FStringInfo FindStringInfo(uint InEntryID, uint InInfoCount, StructuredBuffer<uint2> InInfoBuffer)
+{
+	FStringInfo Out = (FStringInfo)0;
+	Out.EntryID = ~0;
+	for (uint It = 0; It < InInfoCount; ++It)
+	{
+		if (InInfoBuffer[It].x == InEntryID)
+		{
+			return UnpackStringInfo(InInfoBuffer[It]);
+		}
+	}
+	return Out;
+}
+
+void PrintString(inout FShaderPrintContext Ctx, uint InEntryID, FFontColor InColor, uint InInfoCount, uint InCharCount, StructuredBuffer<uint2> InInfoBuffer, Buffer<uint> InCharBuffer)
+{
+	const FStringInfo Info = FindStringInfo(InEntryID, InInfoCount, InInfoBuffer);
+	if (Info.EntryID != ~0 && (Info.Length + Info.Offset) <= InCharCount)
+	{
+		for (uint It = 0; It < Info.Length; ++It)
+		{
+			const uint Char = InCharBuffer[It + Info.Offset];
+			PrintSymbol(Ctx, Char, InColor);
+		}
+	}
+}
+
+uint LenString(uint InEntryID, uint InInfoCount, StructuredBuffer<uint2> InInfoBuffer)
+{
+	const FStringInfo Info = FindStringInfo(InEntryID, InInfoCount, InInfoBuffer);
+	return Info.EntryID != ~0 ? Info.Length : 0;
+}
+
+#define FSTRINGS(N) \
+	uint					N##_InfoCount;\
+	uint					N##_CharCount;\
+	StructuredBuffer<uint2> N##_InfoBuffer;\
+	Buffer<uint>			N##_CharBuffer;\
+	void Print##N(inout FShaderPrintContext Ctx, uint InEntryID, FFontColor InColor)\
+	{\
+		PrintString(Ctx, InEntryID, InColor, N##_InfoCount, N##_CharCount, N##_InfoBuffer, N##_CharBuffer);\
+	}\
+	uint Len##N(uint InEntryID)\
+	{\
+		return LenString(InEntryID, N##_InfoCount, N##_InfoBuffer);\
+	}\
+	uint Num##N()\
+	{\
+		return N##_InfoCount;\
+	}

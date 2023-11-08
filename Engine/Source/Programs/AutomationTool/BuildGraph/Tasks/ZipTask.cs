@@ -4,12 +4,15 @@ using AutomationTool;
 using EpicGames.BuildGraph;
 using System;
 using System.Collections.Generic;
+using System.IO.Compression;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml;
 using EpicGames.Core;
 using UnrealBuildTool;
+using Microsoft.Extensions.Logging;
+using System.IO;
 
 namespace AutomationTool.Tasks
 {
@@ -29,6 +32,12 @@ namespace AutomationTool.Tasks
 		/// </summary>
 		[TaskParameter(Optional = true, ValidationType = TaskParameterValidationType.FileSpec)]
 		public string Files;
+
+		/// <summary>
+		/// List of files that should have an executable bit set.
+		/// </summary>
+		[TaskParameter(Optional = true, ValidationType = TaskParameterValidationType.FileSpec)]
+		public string ExecutableFiles;
 
 		/// <summary>
 		/// The zip file to create.
@@ -83,11 +92,22 @@ namespace AutomationTool.Tasks
 			}
 
 			// Create the zip file
-			Log.TraceInformation("Adding {0} files to {1}...", Files.Count, Parameters.ZipFile);
-			CommandUtils.ZipFiles(Parameters.ZipFile, Parameters.FromDir, Files);
+			Logger.LogInformation("Adding {NumFiles} files to {ZipFile}...", Files.Count, Parameters.ZipFile);
+
+			HashSet<FileReference> ExecutableFiles = null;
+			if (Parameters.ExecutableFiles != null)
+			{
+				ExecutableFiles = ResolveFilespec(Parameters.FromDir, Parameters.ExecutableFiles, TagNameToFileSet);
+				foreach (FileReference ExecutableFile in Files.Intersect(ExecutableFiles))
+				{
+					Logger.LogInformation("  Executable file: {File}", ExecutableFile);
+				}
+			}
+
+			CommandUtils.ZipFiles(Parameters.ZipFile, Parameters.FromDir, Files, ExecutableFiles);
 
 			// Apply the optional tag to the produced archive
-			foreach(string TagName in FindTagNamesFromList(Parameters.Tag))
+			foreach (string TagName in FindTagNamesFromList(Parameters.Tag))
 			{
 				FindOrAddTagSet(TagNameToFileSet, TagName).Add(Parameters.ZipFile);
 			}

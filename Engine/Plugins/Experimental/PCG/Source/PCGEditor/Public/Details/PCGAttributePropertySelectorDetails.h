@@ -3,9 +3,10 @@
 #pragma once
 
 #include "IPropertyTypeCustomization.h"
-
+#include "Layout/Visibility.h"
 
 enum class EPCGPointProperties : uint8;
+enum class EPCGExtraProperties : uint8;
 namespace ETextCommit { enum Type : int; }
 
 struct FPCGAttributePropertySelector;
@@ -29,11 +30,14 @@ protected:
 	const FPCGAttributePropertySelector* GetStruct() const;
 
 	TSharedRef<SWidget> GenerateExtraMenu();
+	EVisibility ExtraMenuVisibility() const;
+	bool IsEnabled() const;
 
 	FText GetText() const;
 	void SetText(const FText& NewText, ETextCommit::Type CommitInfo);
 	void SetPointProperty(EPCGPointProperties EnumValue);
 	void SetAttributeName(FName NewName);
+	void SetExtraProperty(EPCGExtraProperties EnumValue);
 
 	TSharedPtr<IPropertyHandle> PropertyHandle;
 };

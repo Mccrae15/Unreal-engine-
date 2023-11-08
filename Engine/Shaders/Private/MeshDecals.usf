@@ -21,8 +21,8 @@
 #include "/Engine/Generated/VertexFactory.ush"
 
 
-// If virtual texture is enabled then use early depth test so that UAV feedback buffer writes respect the depth test
-#if NUM_VIRTUALTEXTURE_SAMPLES
+// If virtual texture feedback is enabled then use early depth test so that UAV feedback buffer writes respect the depth test
+#if MATERIAL_VIRTUALTEXTURE_FEEDBACK
 	#if COMPILER_SUPPORTS_DEPTHSTENCIL_EARLYTEST_LATEWRITE
 		// If we support early depth test with late write behaviour then use it since we may be using discard, or modifying depth
 		#define PIXELSHADER_EARLYDEPTHSTENCIL DEPTHSTENCIL_EARLYTEST_LATEWRITE
@@ -133,27 +133,27 @@ void FPixelShaderInOut_MainPS(
 #endif
 
 #if STRATA_ENABLED
-	FStrataPixelHeader StrataHeader = InitialiseStrataPixelHeader();
-	StrataHeader.StrataTree = MaterialParameters.StrataTree;
-	StrataHeader.BSDFCount = MaterialParameters.StrataTree.BSDFCount; // Must be one due to parameter blending being forced on the entire Strata tree form the convert-to-decal node.
-	StrataHeader.IrradianceAO = InitIrradianceAndOcclusion();
+	FStrataPixelHeader StrataHeader = MaterialParameters.GetFrontStrataHeader();
 	StrataHeader.IrradianceAO.MaterialAO = GetMaterialAmbientOcclusion(PixelMaterialInputs);
-	StrataHeader.SharedLocalBases = MaterialParameters.SharedLocalBases;
 
 	float Coverage = 0.0;
 	if (StrataHeader.StrataTree.BSDFCount > 0)
 	{
-		FStrataData StrataData = PixelMaterialInputs.FrontMaterial;
-
 		FStrataAddressing NullStrataAddressing = (FStrataAddressing)0;	// Fake unused in StrataCreateBSDFContext when using Forward inline shading
 		const float3 V = MaterialParameters.CameraVector;
 
 		// Update tree (coverage/transmittance/luminace weights)
 		const FStrataIntegrationSettings Settings = InitStrataIntegrationSettings(false /*bForceFullyRough*/, false /*bRoughDiffuseEnabled*/, 0, false/*bRoughnessTracking*/);
-		StrataUpdateTree(NullStrataAddressing, StrataHeader, StrataHeader.StrataTree, V, Settings);
+		StrataHeader.StrataUpdateTree(NullStrataAddressing, V, Settings);
+
+		// Either propagate the BSDF opacity, or use the one for AlphaComposite (premultiplied alpha)
+		float CoverageOverBackground = StrataHeader.StrataTree.BSDFs[0].Coverage;
+#if STRATA_USE_PREMULTALPHA_OVERRIDE // AlphaComposite - Premultiplied alpha blending
+		CoverageOverBackground = GetMaterialOpacity(PixelMaterialInputs);
+#endif 
 
 		// Since the Convert-To-Decal node forces parameter blending for the entire Strata tree, the BSDF we are interested in will be in 0.
-		Coverage = DecalCommonOutput(Out, StrataHeader, StrataHeader.StrataTree.BSDFs[0], 1.0f /*CoverageWeight*/);
+		Coverage = DecalCommonOutput(Out, StrataHeader, StrataHeader.StrataTree.BSDFs[0], 1.0f /*CoverageWeight*/, CoverageOverBackground);
 	}
 	const float Opacity = Coverage;
 #else // STRATA_ENABLED
@@ -180,7 +180,7 @@ void FPixelShaderInOut_MainPS(
 	DecalCommonOutput(In, Out, Color, Opacity, GBufferData);
 #endif // STRATA_ENABLED
 
-#if NUM_VIRTUALTEXTURE_SAMPLES
+#if MATERIAL_VIRTUALTEXTURE_FEEDBACK
 	FinalizeVirtualTextureFeedback(
 		MaterialParameters.VirtualTextureFeedback,
 		MaterialParameters.SvPosition,

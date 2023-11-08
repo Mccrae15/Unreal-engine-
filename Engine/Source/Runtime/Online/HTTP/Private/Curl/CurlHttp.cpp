@@ -69,7 +69,6 @@ FCurlHttpRequest::FCurlHttpRequest()
 	,	bRedirected(false)
 	,	CurlAddToMultiResult(CURLM_OK)
 	,	CurlCompletionResult(CURLE_OK)
-	,	CompletionStatus(EHttpRequestStatus::NotStarted)
 	,	ElapsedTime(0.0f)
 	,	TimeSinceLastResponse(0.0f)
 	,	bAnyHttpActivity(false)
@@ -123,6 +122,12 @@ FCurlHttpRequest::FCurlHttpRequest()
 	{
 		// guaranteed to be valid at this point
 		curl_easy_setopt(EasyHandle, CURLOPT_PROXY, TCHAR_TO_ANSI(*ProxyAddress));
+	}
+
+	const FString& HttpNoProxy = FHttpModule::Get().GetHttpNoProxy();
+	if (!HttpNoProxy.IsEmpty())
+	{
+		curl_easy_setopt(EasyHandle, CURLOPT_NOPROXY, TCHAR_TO_ANSI(*HttpNoProxy));
 	}
 
 	if (FCurlHttpManager::CurlRequestOptions.bDontReuseConnections)
@@ -278,7 +283,7 @@ FString FCurlHttpRequest::GetContentType() const
 	return GetHeader(TEXT( "Content-Type" ));
 }
 
-int32 FCurlHttpRequest::GetContentLength() const
+uint64 FCurlHttpRequest::GetContentLength() const
 {
 	return RequestPayload.IsValid() ? RequestPayload->GetContentLength() : 0;
 }
@@ -338,7 +343,7 @@ void FCurlHttpRequest::SetContentAsString(const FString& ContentString)
 		return;
 	}
 
-	int32 Utf8Length = FPlatformString::ConvertedLength<UTF8CHAR>(*ContentString, ContentString.Len());
+	uint64 Utf8Length = FPlatformString::ConvertedLength<UTF8CHAR>(*ContentString, ContentString.Len());
 	TArray<uint8> Buffer;
 	Buffer.SetNumUninitialized(Utf8Length);
 	FPlatformString::Convert((UTF8CHAR*)Buffer.GetData(), Buffer.Num(), *ContentString, ContentString.Len());
@@ -382,6 +387,12 @@ bool FCurlHttpRequest::SetContentFromStream(TSharedRef<FArchive, ESPMode::Thread
 
 	RequestPayload = MakeUnique<FRequestPayloadInFileStream>(Stream);
 	bIsRequestPayloadSeekable = false;
+	return true;
+}
+
+bool FCurlHttpRequest::SetResponseBodyReceiveStream(TSharedRef<FArchive> Stream)
+{
+	ResponseBodyReceiveStream = Stream;
 	return true;
 }
 
@@ -480,59 +491,56 @@ size_t FCurlHttpRequest::StaticDebugCallback(CURL * Handle, curl_infotype DebugI
 size_t FCurlHttpRequest::ReceiveResponseHeaderCallback(void* Ptr, size_t SizeInBlocks, size_t BlockSizeInBytes)
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FCurlHttpRequest_ReceiveResponseHeaderCallback);
-	check(Response.IsValid());
-	
-	TimeSinceLastResponse = 0.0f;
-	if (Response.IsValid())
+
+	if (!Response.IsValid())
 	{
-		uint32 HeaderSize = SizeInBlocks * BlockSizeInBytes;
-		if (HeaderSize > 0 && HeaderSize <= CURL_MAX_HTTP_HEADER)
+		Response = MakeShared<FCurlHttpResponse, ESPMode::ThreadSafe>(*this);
+	}
+
+	TimeSinceLastResponse = 0.0f;
+	uint32 HeaderSize = SizeInBlocks * BlockSizeInBytes;
+	if (HeaderSize > 0 && HeaderSize <= CURL_MAX_HTTP_HEADER)
+	{
+		TArray<char> AnsiHeader;
+		AnsiHeader.AddUninitialized(HeaderSize + 1);
+
+		FMemory::Memcpy(AnsiHeader.GetData(), Ptr, HeaderSize);
+		AnsiHeader[HeaderSize] = 0;
+
+		FString Header(ANSI_TO_TCHAR(AnsiHeader.GetData()));
+		// kill \n\r
+		Header = Header.Replace(TEXT("\n"), TEXT(""));
+		Header = Header.Replace(TEXT("\r"), TEXT(""));
+
+		UE_LOG(LogHttp, Verbose, TEXT("%p: Received response header '%s'."), this, *Header);
+
+		FString HeaderKey, HeaderValue;
+		if (Header.Split(TEXT(":"), &HeaderKey, &HeaderValue))
 		{
-			TArray<char> AnsiHeader;
-			AnsiHeader.AddUninitialized(HeaderSize + 1);
-
-			FMemory::Memcpy(AnsiHeader.GetData(), Ptr, HeaderSize);
-			AnsiHeader[HeaderSize] = 0;
-
-			FString Header(ANSI_TO_TCHAR(AnsiHeader.GetData()));
-			// kill \n\r
-			Header = Header.Replace(TEXT("\n"), TEXT(""));
-			Header = Header.Replace(TEXT("\r"), TEXT(""));
-
-			UE_LOG(LogHttp, Verbose, TEXT("%p: Received response header '%s'."), this, *Header);
-
-			FString HeaderKey, HeaderValue;
-			if (Header.Split(TEXT(":"), &HeaderKey, &HeaderValue))
+			HeaderValue.TrimStartInline();
+			if (!HeaderKey.IsEmpty() && !HeaderValue.IsEmpty() && !bRedirected)
 			{
-				HeaderValue.TrimStartInline();
-				if (!HeaderKey.IsEmpty() && !HeaderValue.IsEmpty() && !bRedirected)
+				//Store the content length so OnRequestProgress() delegates have something to work with
+				if (HeaderKey == TEXT("Content-Length"))
 				{
-					//Store the content length so OnRequestProgress() delegates have something to work with
-					if (HeaderKey == TEXT("Content-Length"))
-					{
-						Response->ContentLength = FCString::Atoi(*HeaderValue);
-					}
-					Response->NewlyReceivedHeaders.Enqueue(TPair<FString, FString>(MoveTemp(HeaderKey), MoveTemp(HeaderValue)));
+					Response->ContentLength = FCString::Atoi64(*HeaderValue);
 				}
+				Response->NewlyReceivedHeaders.Enqueue(TPair<FString, FString>(MoveTemp(HeaderKey), MoveTemp(HeaderValue)));
 			}
-			else
-			{
-				long HttpCode = 0;
-				if (CURLE_OK == curl_easy_getinfo(EasyHandle, CURLINFO_RESPONSE_CODE, &HttpCode))
-				{
-					bRedirected = (HttpCode >= 300 && HttpCode < 400);
-				}
-			}
-			return HeaderSize;
 		}
 		else
 		{
-			UE_LOG(LogHttp, Warning, TEXT("%p: Could not process response header for request - header size (%d) is invalid."), this, HeaderSize);
+			long HttpCode = 0;
+			if (CURLE_OK == curl_easy_getinfo(EasyHandle, CURLINFO_RESPONSE_CODE, &HttpCode))
+			{
+				bRedirected = (HttpCode >= 300 && HttpCode < 400);
+			}
 		}
+		return HeaderSize;
 	}
 	else
 	{
-		UE_LOG(LogHttp, Warning, TEXT("%p: Could not download response header for request - response not valid."), this);
+		UE_LOG(LogHttp, Warning, TEXT("%p: Could not process response header for request - header size (%d) is invalid."), this, HeaderSize);
 	}
 
 	return 0;
@@ -541,37 +549,51 @@ size_t FCurlHttpRequest::ReceiveResponseHeaderCallback(void* Ptr, size_t SizeInB
 size_t FCurlHttpRequest::ReceiveResponseBodyCallback(void* Ptr, size_t SizeInBlocks, size_t BlockSizeInBytes)
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FCurlHttpRequest_ReceiveResponseBodyCallback);
-	check(Response.IsValid());
-	  
-	TimeSinceLastResponse = 0.0f;
-	if (Response.IsValid())
+
+	if (!Response.IsValid())
 	{
-		uint32 SizeToDownload = SizeInBlocks * BlockSizeInBytes;
+		Response = MakeShared<FCurlHttpResponse, ESPMode::ThreadSafe>(*this);
+	}
 
-		UE_LOG(LogHttp, Verbose, TEXT("%p: ReceiveResponseBodyCallback: %d bytes out of %d received. (SizeInBlocks=%d, BlockSizeInBytes=%d, Response->TotalBytesRead=%d, Response->GetContentLength()=%d, SizeToDownload=%d (<-this will get returned from the callback))"),
-			this,
-			static_cast<int32>(Response->TotalBytesRead.GetValue() + SizeToDownload), Response->GetContentLength(),
-			static_cast<int32>(SizeInBlocks), static_cast<int32>(BlockSizeInBytes), Response->TotalBytesRead.GetValue(), Response->GetContentLength(), static_cast<int32>(SizeToDownload)
-			);
+	TimeSinceLastResponse = 0.0f;
 
-		// note that we can be passed 0 bytes if file transmitted has 0 length
-		if (SizeToDownload > 0)
+	// Number of bytes actually taken care of. If that amount differs from the amount passed to your 
+	// callback function, it will signal an error condition to the library. This will cause the transfer 
+	// to get aborted and the libcurl function used will return CURLE_WRITE_ERROR.
+	size_t NumberOfBytesProcessed = 0;
+	  
+	uint64 SizeToDownload = SizeInBlocks * BlockSizeInBytes;
+
+	UE_LOG(LogHttp, Verbose, TEXT("%p: ReceiveResponseBodyCallback: %llu bytes out of %llu received. (SizeInBlocks=%llu, BlockSizeInBytes=%llu, Response->TotalBytesRead=%llu, Response->GetContentLength()=%llu, SizeToDownload=%llu (<-this will get returned from the callback))"),
+		this, Response->TotalBytesRead.GetValue() + SizeToDownload, Response->GetContentLength(),
+		SizeInBlocks, BlockSizeInBytes, Response->TotalBytesRead.GetValue(), Response->GetContentLength(), SizeToDownload);
+
+	// note that we can be passed 0 bytes if file transmitted has 0 length
+	if (SizeToDownload == 0)
+	{
+		return NumberOfBytesProcessed;
+	}
+
+	if (ResponseBodyReceiveStream)
+	{
+		ResponseBodyReceiveStream->Serialize(Ptr, SizeToDownload);
+
+		if (!ResponseBodyReceiveStream->GetError())
 		{
-			Response->Payload.AddUninitialized(SizeToDownload);
-
-			// save
-			FMemory::Memcpy(static_cast<uint8*>(Response->Payload.GetData()) + Response->TotalBytesRead.GetValue(), Ptr, SizeToDownload);
-			Response->TotalBytesRead.Add(SizeToDownload);
-
-			return SizeToDownload;
+			NumberOfBytesProcessed = SizeToDownload;
 		}
 	}
 	else
 	{
-		UE_LOG(LogHttp, Warning, TEXT("%p: Could not download response data for request - response not valid."), this);
+		Response->Payload.AddUninitialized(SizeToDownload);
+		FMemory::Memcpy(static_cast<uint8*>(Response->Payload.GetData()) + Response->TotalBytesRead.GetValue(), Ptr, SizeToDownload);
+
+		NumberOfBytesProcessed = SizeToDownload;
 	}
 
-	return 0;	// request will fail with write error if we had non-zero bytes to download
+	Response->TotalBytesRead.Add(NumberOfBytesProcessed);
+
+	return NumberOfBytesProcessed;
 }
 
 size_t FCurlHttpRequest::UploadCallback(void* Ptr, size_t SizeInBlocks, size_t BlockSizeInBytes)
@@ -579,20 +601,13 @@ size_t FCurlHttpRequest::UploadCallback(void* Ptr, size_t SizeInBlocks, size_t B
 	TimeSinceLastResponse = 0.0f;
 
 	size_t MaxBufferSize = SizeInBlocks * BlockSizeInBytes;
-	size_t SizeAlreadySent = static_cast<size_t>(BytesSent.GetValue());
+	size_t SizeAlreadySent = BytesSent.GetValue();
 	size_t SizeSentThisTime = RequestPayload->FillOutputBuffer(Ptr, MaxBufferSize, SizeAlreadySent);
 	BytesSent.Add(SizeSentThisTime);
 	TotalBytesSent.Add(SizeSentThisTime);
 
-	UE_LOG(LogHttp, Verbose, TEXT("%p: UploadCallback: %d bytes out of %d sent (%d bytes total sent). (SizeInBlocks=%d, BlockSizeInBytes=%d, SizeToSendThisTime=%d (<-this will get returned from the callback))"),
-		this,
-		static_cast< int32 >(BytesSent.GetValue()),
-		RequestPayload->GetContentLength(),
-		static_cast< int32 >(TotalBytesSent.GetValue()),
-		static_cast< int32 >(SizeInBlocks),
-		static_cast< int32 >(BlockSizeInBytes),
-		static_cast< int32 >(SizeSentThisTime)
-		);
+	UE_LOG(LogHttp, Verbose, TEXT("%p: UploadCallback: %llu bytes out of %llu sent (%llu bytes total sent). (SizeInBlocks=%llu, BlockSizeInBytes=%llu, SizeToSendThisTime=%llu (<-this will get returned from the callback))"),
+		this, BytesSent.GetValue(), RequestPayload->GetContentLength(), TotalBytesSent.GetValue(), SizeInBlocks, BlockSizeInBytes, SizeSentThisTime);
 
 	return SizeSentThisTime;
 }
@@ -602,9 +617,7 @@ int FCurlHttpRequest::SeekCallback(curl_off_t Offset, int Origin)
 	// Only support seeking to the very beginning
 	if (bIsRequestPayloadSeekable && Origin == SEEK_SET && Offset == 0)
 	{
-		UE_LOG(LogHttp, Log, TEXT("%p: SeekCallback: Resetting to the beginning. We had uploaded %d bytes"),
-			this,
-			static_cast<int32>(BytesSent.GetValue()));
+		UE_LOG(LogHttp, Log, TEXT("%p: SeekCallback: Resetting to the beginning. We had uploaded %llu bytes"), this, BytesSent.GetValue());
 		BytesSent.Reset();
 		bIsRequestPayloadSeekable = false; // Do not attempt to re-seek
 		return CURL_SEEKFUNC_OK;
@@ -756,18 +769,6 @@ bool FCurlHttpRequest::SetupRequest()
 		UE_LOG(LogHttp, Verbose, TEXT("Http disabled. Skipping request. url=%s"), *GetURL());
 		return false;
 	}
-	// Prevent overlapped requests using the same instance
-	else if (CompletionStatus == EHttpRequestStatus::Processing)
-	{
-		UE_LOG(LogHttp, Warning, TEXT("ProcessRequest failed. Still processing last request."));
-		return false;
-	}
-	// Nothing to do without a valid URL
-	else if (URL.IsEmpty())
-	{
-		UE_LOG(LogHttp, Log, TEXT("Cannot process HTTP request: URL is empty"));
-		return false;
-	}
 	if ((GetVerb().IsEmpty() || GetVerb().Equals(TEXT("GET"), ESearchCase::IgnoreCase))
 		&& (RequestPayload.IsValid() && RequestPayload->GetContentLength() > 0))
 	{
@@ -797,7 +798,7 @@ bool FCurlHttpRequest::SetupRequest()
 	UE_LOG(LogHttp, Verbose, TEXT("%p: URL='%s'"), this, *URL);
 	UE_LOG(LogHttp, Verbose, TEXT("%p: Verb='%s'"), this, *Verb);
 	UE_LOG(LogHttp, Verbose, TEXT("%p: Custom headers are %s"), this, Headers.Num() ? TEXT("present") : TEXT("NOT present"));
-	UE_LOG(LogHttp, Verbose, TEXT("%p: Payload size=%d"), this, RequestPayload->GetContentLength());
+	UE_LOG(LogHttp, Verbose, TEXT("%p: Payload size=%llu"), this, RequestPayload->GetContentLength());
 
 	if (GetHeader(TEXT("User-Agent")).IsEmpty())
 	{
@@ -807,7 +808,7 @@ bool FCurlHttpRequest::SetupRequest()
 	// content-length should be present http://www.w3.org/Protocols/rfc2616/rfc2616-sec4.html#sec4.4
 	if (GetHeader(TEXT("Content-Length")).IsEmpty())
 	{
-		SetHeader(TEXT("Content-Length"), FString::Printf(TEXT("%d"), RequestPayload->GetContentLength()));
+		SetHeader(TEXT("Content-Length"), FString::Printf(TEXT("%llu"), RequestPayload->GetContentLength()));
 	}
 
 	// Remove "Expect: 100-continue" since this is supposed to cause problematic behavior on Amazon ELB (and WinInet doesn't send that either)
@@ -851,6 +852,7 @@ bool FCurlHttpRequest::SetupRequestHttpThread()
 			curl_easy_setopt(EasyHandle, CURLOPT_POST, 1L);
 			curl_easy_setopt(EasyHandle, CURLOPT_POSTFIELDS, NULL);
 #if WITH_CURL_XCURL
+			checkf(RequestPayload->GetContentLength() <= TNumericLimits<int32>::Max(), TEXT("xCurl 2206.4.0.0 doesn't support uploading file with length more than 32 bits"));
 			curl_easy_setopt(EasyHandle, CURLOPT_INFILESIZE, RequestPayload->GetContentLength());
 #else
 			curl_easy_setopt(EasyHandle, CURLOPT_POSTFIELDSIZE, RequestPayload->GetContentLength());
@@ -860,6 +862,9 @@ bool FCurlHttpRequest::SetupRequestHttpThread()
 		else if (Verb == TEXT("PUT") || Verb == TEXT("PATCH"))
 		{
 			curl_easy_setopt(EasyHandle, CURLOPT_UPLOAD, 1L);
+#if WITH_CURL_XCURL
+			checkf(RequestPayload->GetContentLength() <= TNumericLimits<int32>::Max(), TEXT("xCurl 2206.4.0.0 doesn't support uploading file with length more than 32 Bits"));
+#endif
 			curl_easy_setopt(EasyHandle, CURLOPT_INFILESIZE, RequestPayload->GetContentLength());
 			if (Verb != TEXT("PUT"))
 			{
@@ -980,9 +985,6 @@ bool FCurlHttpRequest::SetupRequestHttpThread()
 
 	UE_LOG(LogHttp, Log, TEXT("%p: Starting %s request to URL='%s'"), this, *Verb, *URL);
 
-	// Response object to handle data that comes back after starting this request
-	Response = MakeShared<FCurlHttpResponse, ESPMode::ThreadSafe>(*this);
-
 	return true;
 }
 
@@ -995,56 +997,28 @@ bool FCurlHttpRequest::ProcessRequest()
 	Response = nullptr;
 	LastReportedBytesRead = 0;
 
-	bool bStarted = false;
-	if (!FHttpModule::Get().GetHttpManager().IsDomainAllowed(URL))
+	if (!PreCheck() || !SetupRequest())
 	{
-		UE_LOG(LogHttp, Warning, TEXT("ProcessRequest failed. URL '%s' is not using an allowed domain. %p"), *URL, this);
+		return FinishRequestNotInHttpManager();
 	}
-	else if (!SetupRequest())
+
+	// Clear the info cache log so we don't output messages from previous requests when reusing/retrying a request
 	{
-		UE_LOG(LogHttp, Warning, TEXT("Could not perform game thread setup, processing HTTP request failed. Increase verbosity for additional information."));
-	}
-	else
-	{
-		// Clear the info cache log so we don't output messages from previous requests when reusing/retrying a request
 		const FScopeLock CacheLock(&InfoMessageCacheCriticalSection);
 		for (FString& Line : InfoMessageCache)
 		{
 			Line.Reset();
 		}
-
-		bStarted = true;
 	}
 
-	if (!bStarted)
-	{
-		if (!IsInGameThread())
-		{
-			// Always finish on the game thread
-			FHttpModule::Get().GetHttpManager().AddGameThreadTask([StrongThis = StaticCastSharedRef<FCurlHttpRequest>(AsShared())]()
-			{
-				StrongThis->FinishedRequest();
-			});
-			return true;
-		}
-		else
-		{
-			// Cleanup and call delegate
-			FinishedRequest();
-		}
-	}
-	else
-	{
-		QUICK_SCOPE_CYCLE_COUNTER(STAT_CurlHttpAddThreadedRequest);
-		// Mark as in-flight to prevent overlapped requests using the same object
-		CompletionStatus = EHttpRequestStatus::Processing;
-		// Add to global list while being processed so that the ref counted request does not get deleted
-		FHttpModule::Get().GetHttpManager().AddThreadedRequest(SharedThis(this));
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_CurlHttpAddThreadedRequest);
+	// Mark as in-flight to prevent overlapped requests using the same object
+	CompletionStatus = EHttpRequestStatus::Processing;
+	// Add to global list while being processed so that the ref counted request does not get deleted
+	FHttpModule::Get().GetHttpManager().AddThreadedRequest(SharedThis(this));
 
-		UE_LOG(LogHttp, Verbose, TEXT("%p: request (easy handle:%p) has been added to threaded queue for processing"), this, EasyHandle);
-	}
-
-	return bStarted;
+	UE_LOG(LogHttp, Verbose, TEXT("%p: request (easy handle:%p) has been added to threaded queue for processing"), this, EasyHandle);
+	return true;
 }
 
 bool FCurlHttpRequest::StartThreadedRequest()
@@ -1057,11 +1031,6 @@ bool FCurlHttpRequest::StartThreadedRequest()
 	UE_LOG(LogHttp, Verbose, TEXT("%p: request (easy handle:%p) has started threaded processing"), this, EasyHandle);
 
 	return true;
-}
-
-void FCurlHttpRequest::FinishRequest()
-{
-	FinishedRequest();
 }
 
 bool FCurlHttpRequest::IsThreadedRequestComplete()
@@ -1119,24 +1088,10 @@ void FCurlHttpRequest::CancelRequest()
 	{
 		HttpManager.CancelThreadedRequest(SharedThis(this));
 	}
-	else if (!IsInGameThread())
-	{
-		// Always finish on the game thread
-		FHttpModule::Get().GetHttpManager().AddGameThreadTask([StrongThis = StaticCastSharedRef<FCurlHttpRequest>(AsShared())]()
-		{
-			StrongThis->FinishedRequest();
-		});
-	}
 	else
 	{
-		// Finish immediately
-		FinishedRequest();
+		FinishRequestNotInHttpManager();
 	}
-}
-
-EHttpRequestStatus::Type FCurlHttpRequest::GetStatus() const
-{
-	return CompletionStatus;
 }
 
 const FHttpResponsePtr FCurlHttpRequest::GetResponse() const
@@ -1153,8 +1108,8 @@ void FCurlHttpRequest::Tick(float DeltaSeconds)
 void FCurlHttpRequest::CheckProgressDelegate()
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FCurlHttpRequest_CheckProgressDelegate);
-	const int32 CurrentBytesRead = Response.IsValid() ? Response->TotalBytesRead.GetValue() : 0;
-	const int32 CurrentBytesSent = BytesSent.GetValue();
+	const uint64 CurrentBytesRead = Response.IsValid() ? Response->TotalBytesRead.GetValue() : 0;
+	const uint64 CurrentBytesSent = BytesSent.GetValue();
 
 	const bool bProcessing = CompletionStatus == EHttpRequestStatus::Processing;
 	const bool bBytesSentChanged = (CurrentBytesSent != LastReportedBytesSent);
@@ -1174,7 +1129,7 @@ void FCurlHttpRequest::CheckProgressDelegate()
 
 void FCurlHttpRequest::BroadcastNewlyReceivedHeaders()
 {
-	check(IsInGameThread());
+	check(IsInGameThread() || DelegateThreadPolicy == EHttpRequestDelegateThreadPolicy::CompleteOnHttpThread);
 	if (Response.IsValid())
 	{
 		// Process the headers received on the HTTP thread and merge them into the response's list of headers and then broadcast the new headers
@@ -1201,10 +1156,11 @@ void FCurlHttpRequest::BroadcastNewlyReceivedHeaders()
 	}
 }
 
-void FCurlHttpRequest::FinishedRequest()
+void FCurlHttpRequest::FinishRequest()
 {
-	check(IsInGameThread());
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_FCurlHttpRequest_FinishedRequest);
+	check(IsInGameThread() || DelegateThreadPolicy == EHttpRequestDelegateThreadPolicy::CompleteOnHttpThread);
+
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_FCurlHttpRequest_FinishRequest);
 
 	curl_easy_setopt(EasyHandle, CURLOPT_SHARE, nullptr);
 	
@@ -1223,21 +1179,25 @@ void FCurlHttpRequest::FinishedRequest()
 				Response->HttpCode = HttpCode;
 			}
 
-			double ContentLengthDownload = 0.0;
-			if (CURLE_OK == curl_easy_getinfo(EasyHandle, CURLINFO_CONTENT_LENGTH_DOWNLOAD, &ContentLengthDownload) && ContentLengthDownload >= 0.0)
+			// If content length wasn't received through response header 
+			if (Response->ContentLength == 0)
 			{
-				Response->ContentLength = static_cast< int32 >(ContentLengthDownload);
-			}
-			else
-			{
-				// If curl did not know how much we downloaded, or we were missing a Content-Length header (Chunked request), set our ContentLength as the amount we downloaded
-				Response->ContentLength = Response->TotalBytesRead.GetValue();
+				double ContentLengthDownload = 0.0;
+				if (CURLE_OK == curl_easy_getinfo(EasyHandle, CURLINFO_CONTENT_LENGTH_DOWNLOAD, &ContentLengthDownload) && ContentLengthDownload > 0.0)
+				{
+					Response->ContentLength = static_cast< uint64 >(ContentLengthDownload);
+				}
+				else
+				{
+					// If curl did not know how much we downloaded, or we were missing a Content-Length header (Chunked request), set our ContentLength as the amount we downloaded
+					Response->ContentLength = Response->TotalBytesRead.GetValue();
+				}
 			}
 
 			if (Response->HttpCode <= 0 && URL.StartsWith(TEXT("Http"), ESearchCase::IgnoreCase))
 			{
-				UE_LOG(LogHttp, Warning, TEXT("%p: invalid HTTP response code received. URL: %s, HTTP code: %d, content length: %d, actual payload size: %d"),
-					this, *GetURL(), Response->HttpCode, Response->ContentLength, Response->Payload.Num());
+				UE_LOG(LogHttp, Warning, TEXT("%p: invalid HTTP response code received. URL: %s, HTTP code: %d, content length: %llu, actual payload size: %llu"),
+					this, *GetURL(), Response->HttpCode, Response->ContentLength, Response->TotalBytesRead.GetValue());
 				Response->bSucceeded = false;
 			}
 		}
@@ -1261,13 +1221,13 @@ void FCurlHttpRequest::FinishedRequest()
 		{
 			if (bDebugServerResponse)
 			{
-				UE_LOG(LogHttp, Warning, TEXT("%p: request has been successfully processed. URL: %s, HTTP code: %d, content length: %d, actual payload size: %d, elapsed: %.2fs"),
-					this, *GetURL(), Response->HttpCode, Response->ContentLength, Response->Payload.Num(), ElapsedTime);
+				UE_LOG(LogHttp, Warning, TEXT("%p: request has been successfully processed. URL: %s, HTTP code: %d, content length: %llu, actual payload size: %llu, elapsed: %.2fs"),
+					this, *GetURL(), Response->HttpCode, Response->ContentLength, Response->TotalBytesRead.GetValue(), ElapsedTime);
 			}
 			else
 			{
-				UE_LOG(LogHttp, Log, TEXT("%p: request has been successfully processed. URL: %s, HTTP code: %d, content length: %d, actual payload size: %d, elapsed: %.2fs"),
-					this, *GetURL(), Response->HttpCode, Response->ContentLength, Response->Payload.Num(), ElapsedTime);
+				UE_LOG(LogHttp, Log, TEXT("%p: request has been successfully processed. URL: %s, HTTP code: %d, content length: %llu, actual payload size: %llu, elapsed: %.2fs"),
+					this, *GetURL(), Response->HttpCode, Response->ContentLength, Response->TotalBytesRead.GetValue(), ElapsedTime);
 			}
 
 			TArray<FString> AllHeaders = Response->GetAllHeaders();
@@ -1435,7 +1395,7 @@ FString FCurlHttpResponse::GetContentType() const
 	return GetHeader(TEXT("Content-Type"));
 }
 
-int32 FCurlHttpResponse::GetContentLength() const
+uint64 FCurlHttpResponse::GetContentLength() const
 {
 	return ContentLength;
 }

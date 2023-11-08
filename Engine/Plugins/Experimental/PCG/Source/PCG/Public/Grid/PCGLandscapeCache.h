@@ -52,7 +52,7 @@ public:
 	void GetPointHeightOnly(int32 PointIndex, FPCGPoint& OutPoint) const;
 	void GetInterpolatedPoint(const FVector2D& LocalPoint, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const;
 	void GetInterpolatedPointMetadataOnly(const FVector2D& LocalPoint, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const;
-	void GetInterpolatedPointHeightOnly(const FVector2D& LocalPoint, FPCGPoint& OutPoint) const;
+	void GetInterpolatedPointHeightOnly(const FVector2D& LocalPoint, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const;
 	void GetInterpolatedLayerWeights(const FVector2D& LocalPoint, TArray<FPCGLandscapeLayerWeight>& OutLayerWeights) const;
 
 private:
@@ -105,6 +105,9 @@ public:
 	virtual void Serialize(FArchive& Archive) override;
 	//~End UObject interface
 
+	/** Initialize cache. Can be safely called multiple times. */
+	void Initialize();
+
 	void PrimeCache();
 	void ClearCache();
 	void Tick(float DeltaSeconds);
@@ -126,9 +129,13 @@ private:
 #if WITH_EDITOR
 	void SetupLandscapeCallbacks();
 	void TeardownLandscapeCallbacks();
-	void OnLandscapeChanged(ALandscapeProxy* Landscape, const FLandscapeProxyComponentDataChangedParams& ChangeParams);
-	void CacheLayerNames(ALandscapeProxy* Landscape);
+	void OnLandscapeChanged(ALandscapeProxy* InLandscape, const FLandscapeProxyComponentDataChangedParams& InChangeParams);
+	void OnLandscapeMoved(AActor* InActor);
+	void OnLandscapeAdded(AActor* Actor);
+	void OnLandscapeDeleted(AActor* Actor);
+	void CacheLayerNames(ALandscapeProxy* InLandscape);
 	void CacheLayerNames();
+	void RemoveComponentFromCache(const ALandscapeProxy* LandscapeProxy);
 #endif
 
 	TMap<TPair<FGuid, FIntPoint>, FPCGLandscapeCacheEntry*> CachedData;

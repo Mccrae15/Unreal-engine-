@@ -129,6 +129,17 @@ void FCurveEditor::InitCurveEditor(const FCurveEditorInitParams& InInitParams)
 	GEditor->RegisterForUndo(this);
 }
 
+int32 FCurveEditor::GetSupportedTangentTypes()
+{
+	return ((int32)ECurveEditorTangentTypes::InterpolationConstant |
+		(int32)ECurveEditorTangentTypes::InterpolationLinear |
+		(int32)ECurveEditorTangentTypes::InterpolationCubicAuto |
+		(int32)ECurveEditorTangentTypes::InterpolationCubicUser |
+		(int32)ECurveEditorTangentTypes::InterpolationCubicBreak |
+		(int32)ECurveEditorTangentTypes::InterpolationCubicWeighted);
+		//nope we don't support smart auto by default, FRichCurve doesn't support i
+}
+
 void FCurveEditor::SetPanel(TSharedPtr<SCurveEditorPanel> InPanel)
 {
 	WeakPanel = InPanel;
@@ -207,7 +218,14 @@ FCurveModelID FCurveEditor::AddCurveForTreeItem(TUniquePtr<FCurveModel>&& InCurv
 
 	return NewID;
 }
-
+void FCurveEditor::ResetMinMaxes()
+{
+	TSharedPtr<SCurveEditorPanel> Panel = WeakPanel.Pin();
+	if (Panel.IsValid())
+	{
+		Panel->ResetMinMaxes();
+	}
+}
 void FCurveEditor::RemoveCurve(FCurveModelID InCurveID)
 {
 	TSharedPtr<SCurveEditorPanel> Panel = WeakPanel.Pin();
@@ -459,6 +477,12 @@ void FCurveEditor::BindCommands()
 		FIsActionChecked::CreateLambda( [CurveSettings]{ return CurveSettings->GetAutoFrameCurveEditor(); } )
 	);
 
+	CommandList->MapAction(FCurveEditorCommands::Get().ToggleShowBars,
+		FExecuteAction::CreateLambda([this, CurveSettings] { CurveSettings->SetShowBars(!CurveSettings->GetShowBars()); Tree.RecreateModelsFromExistingSelection(this); }),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateLambda([CurveSettings] { return CurveSettings->GetShowBars(); })
+	);
+
 	CommandList->MapAction(FCurveEditorCommands::Get().ToggleSnapTimeToSelection,
 		FExecuteAction::CreateLambda( [CurveSettings]{ CurveSettings->SetSnapTimeToSelection( !CurveSettings->GetSnapTimeToSelection() ); } ),
 		FCanExecuteAction(),
@@ -694,13 +718,14 @@ void FCurveEditor::ZoomToFitInternal(EAxisList::Type Axes, const TMap<FCurveMode
 	for (const TTuple<TSharedRef<SCurveEditorView>, TTuple<double, double>>& ViewAndBounds : ViewToOutputBounds)
 	{
 		TSharedRef<SCurveEditorView> View = ViewAndBounds.Key;
+
 		double OutputMin = ViewAndBounds.Value.Get<0>();
 		double OutputMax = ViewAndBounds.Value.Get<1>();
 
 		// If zooming to the same (or invalid) min/max, keep the same zoom scale and center within the timeline
 		if (OutputMin >= OutputMax)
 		{
-			const double HalfOutputScale = (View->GetOutputMax() - View->GetOutputMin())*0.5;
+			const double HalfOutputScale = (View->GetOutputMax() - View->GetOutputMin()) * 0.5;
 			OutputMin -= HalfOutputScale;
 			OutputMax += HalfOutputScale;
 		}
@@ -713,7 +738,7 @@ void FCurveEditor::ZoomToFitInternal(EAxisList::Type Axes, const TMap<FCurveMode
 			{
 				PanelHeight = WeakPanel.Pin()->GetViewContainerGeometry().GetLocalSize().Y;
 			}
-			else 
+			else
 			{
 				PanelHeight = View->GetViewSpace().GetPhysicalHeight();
 			}
@@ -726,8 +751,7 @@ void FCurveEditor::ZoomToFitInternal(EAxisList::Type Axes, const TMap<FCurveMode
 			OutputMin -= OutputPadding;
 			OutputMax = FMath::Max(OutputMin + MinOutputZoom, OutputMax) + OutputPadding;
 		}
-
-		View->SetOutputBounds(OutputMin, OutputMax);
+		View->FrameVertical(OutputMin, OutputMax);
 	}
 }
 
@@ -1768,7 +1792,7 @@ void FCurveEditor::FlattenSelection()
 				if (Attributes.HasTangentMode() && (Attributes.HasArriveTangent() || Attributes.HasLeaveTangent()))
 				{
 					Attributes.SetArriveTangent(0.f).SetLeaveTangent(0.f);
-					if (Attributes.GetTangentMode() == RCTM_Auto)
+					if (Attributes.GetTangentMode() == RCTM_Auto || Attributes.GetTangentMode() == RCTM_SmartAuto)
 					{
 						Attributes.SetTangentMode(RCTM_User);
 					}
@@ -1845,7 +1869,7 @@ void FCurveEditor::StraightenSelection()
 				{
 					float NewTangent = (Attributes.GetLeaveTangent() + Attributes.GetArriveTangent()) * 0.5f;
 					Attributes.SetArriveTangent(NewTangent).SetLeaveTangent(NewTangent);
-					if (Attributes.GetTangentMode() == RCTM_Auto)
+					if (Attributes.GetTangentMode() == RCTM_Auto || Attributes.GetTangentMode() == RCTM_SmartAuto)
 					{
 						Attributes.SetTangentMode(RCTM_User);
 					}
@@ -2322,6 +2346,11 @@ void FCurveEditor::PostUndo(bool bSuccess)
 			}
 		}
 	}
+}
+
+void FCurveEditor::PostRedo(bool bSuccess)
+{
+	PostUndo(bSuccess);
 }
 
 void FCurveEditor::OnCustomColorsChanged()

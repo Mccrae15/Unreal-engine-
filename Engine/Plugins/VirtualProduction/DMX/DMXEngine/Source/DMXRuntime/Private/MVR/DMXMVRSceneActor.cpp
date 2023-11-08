@@ -48,6 +48,7 @@ ADMXMVRSceneActor::ADMXMVRSceneActor()
 
 	MVRSceneRoot = CreateDefaultSubobject<USceneComponent>("MVRSceneRoot");
 	SetRootComponent(MVRSceneRoot);
+	AddInstanceComponent(MVRSceneRoot);
 }
 
 ADMXMVRSceneActor::~ADMXMVRSceneActor()
@@ -532,6 +533,7 @@ AActor* ADMXMVRSceneActor::SpawnMVRActor(const TSubclassOf<AActor>&ActorClass, U
 	ActorSpawnParameters.Template = Template;
 	ActorSpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 	ActorSpawnParameters.Name = ActorName;
+	ActorSpawnParameters.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Requested;
 	AActor* NewFixtureActor = World->SpawnActor<AActor>(ActorClass, Transform, ActorSpawnParameters);
 	if (!NewFixtureActor)
 	{

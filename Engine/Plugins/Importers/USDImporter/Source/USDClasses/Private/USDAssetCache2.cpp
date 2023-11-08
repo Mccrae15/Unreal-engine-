@@ -5,12 +5,21 @@
 #include "USDClassesModule.h"
 #include "USDLog.h"
 
+#include "Animation/Skeleton.h"
+#include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/Texture2D.h"
+#include "Interfaces/ITargetPlatform.h"
+#include "Interfaces/ITargetPlatformManagerModule.h"
+#include "Materials/MaterialInterface.h"
+#include "MaterialShared.h"
+#include "MeshDescription.h"
 #include "Misc/ScopeRWLock.h"
+#include "PhysicsEngine/PhysicsAsset.h"
+#include "Serialization/ObjectAndNameAsStringProxyArchive.h"
 #include "Serialization/ObjectReader.h"
 #include "Serialization/ObjectWriter.h"
-#include "Serialization/ObjectAndNameAsStringProxyArchive.h"
+#include "StaticMeshResources.h"
 #include "UObject/ObjectRedirector.h"
 #include "UObject/Package.h"
 
@@ -21,7 +30,7 @@ static FAutoConsoleVariableRef COnDemandCachedAssetLoading(
 	TEXT("When true will cause the USD Asset Cache to only load cached UObjects from disk once they are needed, regardless of when the actual Asset Cache asset itself is loaded."));
 
 static int32 GCurrentCacheVersion = 1;
-static int32 GCurrentAssetInfoVersion = 1;
+static int32 GCurrentAssetInfoVersion = 2;
 
 namespace UE::AssetCache::Private
 {
@@ -50,8 +59,14 @@ namespace UE::AssetCache::Private
 		}
 		UClass* AssetClass = FindClass(ClassName);
 
-		// Just textures for now
-		static TArray<const UClass*> AllowedPersistentClasses = { UTexture2D::StaticClass() };
+		static TArray<const UClass*> AllowedPersistentClasses = {
+			UTexture2D::StaticClass(),
+			UMaterialInterface::StaticClass(),
+			UStaticMesh::StaticClass(),
+			UPhysicsAsset::StaticClass(),
+			USkeleton::StaticClass(),
+			USkeletalMesh::StaticClass()
+		};
 
 		for (const UClass* AllowedClass : AllowedPersistentClasses)
 		{
@@ -119,6 +134,42 @@ namespace UE::AssetCache::Private
 
 			return *this;
 		}
+
+		// Override FObjectAndNameAsStringProxyArchive::operator<< because we don't want to blindly call LoadObject
+		// on 'None' strings, which is what gets serialized in case we have a nullptr (check
+		// UObjectBaseUtility::GetPathName)
+		virtual FArchive& operator<<(UObject*& Obj) override
+		{
+			if (IsLoading())
+			{
+				// load the path name to the object
+				FString LoadedString;
+				InnerArchive << LoadedString;
+
+				const static FString NullptrString = TEXT("None");
+				if (LoadedString == NullptrString || LoadedString.IsEmpty())
+				{
+					Obj = nullptr;
+				}
+				else
+				{
+					// look up the object by fully qualified pathname
+					Obj = FindObject<UObject>(nullptr, *LoadedString, false);
+					// If we couldn't find it, and we want to load it, do that
+					if (!Obj && bLoadIfFindFails)
+					{
+						Obj = LoadObject<UObject>(nullptr, *LoadedString);
+					}
+				}
+			}
+			else
+			{
+				// save out the fully qualified object name
+				FString SavedString(Obj->GetPathName());
+				InnerArchive << SavedString;
+			}
+			return *this;
+		}
 	};
 
 	// The main archiver used to write UObjects to byte buffers
@@ -173,9 +224,9 @@ namespace UE::AssetCache::Private
 						return FArchiveUObject::operator<<(Obj);
 					}
 					// Stop serialization when a dependency is found or has been found
-					else if (Obj != SourceObject && !DependentObjects.Contains(Obj) && ValidObjects.Contains(Obj))
+					else if (Obj != SourceObject && !ConsumerObjects.Contains(Obj) && ValidObjects.Contains(Obj))
 					{
-						DependentObjects.Add(Obj);
+						ConsumerObjects.Add(Obj);
 					}
 				}
 
@@ -184,7 +235,7 @@ namespace UE::AssetCache::Private
 
 			UObject* SourceObject;
 			const TSet<UObject*>& ValidObjects;
-			TSet<UObject*> DependentObjects;
+			TSet<UObject*> ConsumerObjects;
 		};
 
 		FAssetCacheObjectWriter Writer{ *Object, Buffer };
@@ -198,10 +249,12 @@ namespace UE::AssetCache::Private
 		Ar.SetLicenseeUEVer(DestArchive.LicenseeUEVer());
 		Ar.SetCustomVersions(DestArchive.GetCustomVersions());
 
+		ensure(!Object->IsEditorOnly() || !Ar.IsCooking());
+
 		// Collect sub-objects depending on input object including nested objects
 		TArray< UObject* > SubObjectsArray;
 		GetObjectsWithOuter(Object, SubObjectsArray, /*bIncludeNestedObjects = */ true);
-		TSet<UObject*> SubObjectsSet(SubObjectsArray);
+		TSet<UObject*> AllowedSubObjectsSet(SubObjectsArray);
 
 		// Keep track of which subobjects are actually referenced by our UObject tree.
 		// Other objects may just be hiding inside of them if they're referenced by an external UObject, and so
@@ -210,9 +263,9 @@ namespace UE::AssetCache::Private
 		// referenced by the transaction buffer);
 		TSet<UObject*> ActualDependencies;
 		{
-			FObjectDependencyAnalyzer Analyzer(Object, SubObjectsSet);
+			FObjectDependencyAnalyzer Analyzer(Object, AllowedSubObjectsSet);
 			Object->Serialize(Analyzer);
-			ActualDependencies.Append(Analyzer.DependentObjects);
+			ActualDependencies.Append(Analyzer.ConsumerObjects);
 		}
 
 		// Sort array of sub-objects based on their inter-dependency
@@ -221,37 +274,21 @@ namespace UE::AssetCache::Private
 			TMap< UObject*, TSet<UObject*> > SubObjectDependencyGraph;
 			SubObjectDependencyGraph.Reserve(SubObjectsArray.Num());
 
+			// Build graph of dependency: each entry contains the set of sub-objects to create before itself.
+			// Note that we're not using ActualDependencies for this because we want to map out
+			// all transitive dependencies as well, and FObjectDependencyAnalyzer is not recursive
 			for (UObject* SubObject : SubObjectsArray)
 			{
-				SubObjectDependencyGraph.Add(SubObject);
-			}
-
-			// Build graph of dependency: each entry contains the set of sub-objects to create before itself
-			for (UObject* SubObject : SubObjectsArray)
-			{
-				FObjectDependencyAnalyzer SubAnalyzer(SubObject, SubObjectsSet);
+				FObjectDependencyAnalyzer SubAnalyzer(SubObject, AllowedSubObjectsSet);
 				SubObject->Serialize(SubAnalyzer);
 
-				SubObjectDependencyGraph[SubObject].Append(SubAnalyzer.DependentObjects);
-				ActualDependencies.Append(SubAnalyzer.DependentObjects);
+				SubObjectDependencyGraph.FindOrAdd(SubObject).Append(SubAnalyzer.ConsumerObjects);
+				ActualDependencies.Append(SubAnalyzer.ConsumerObjects);
 			}
-
-			// Only keep the UObjects that we're actually referencing
-			TArray<UObject*> UsedSubObjectsArray;
-			UsedSubObjectsArray.Reserve(SubObjectsArray.Num());
-			for (UObject* SubObject : SubObjectsArray)
-			{
-				if (ActualDependencies.Contains(SubObject))
-				{
-					UsedSubObjectsArray.Add(SubObject);
-				}
-			}
-			Swap(UsedSubObjectsArray, SubObjectsArray);
 
 			// Sort array of sub-objects: first objects do not depend on ones below
-			int32 Count = SubObjectsArray.Num();
+			int32 Count = ActualDependencies.Num();
 			SubObjectsArray.Empty(Count);
-
 			while (Count != SubObjectsArray.Num())
 			{
 				for (auto& Entry : SubObjectDependencyGraph)
@@ -262,7 +299,10 @@ namespace UE::AssetCache::Private
 
 						SubObjectDependencyGraph.Remove(SubObject);
 
-						SubObjectsArray.Add(SubObject);
+						if (ActualDependencies.Contains(SubObject))
+						{
+							SubObjectsArray.Add(SubObject);
+						}
 
 						for (auto& SubEntry : SubObjectDependencyGraph)
 						{
@@ -277,6 +317,26 @@ namespace UE::AssetCache::Private
 				}
 			}
 		}
+
+		// Filter objects we'll be serializing beforehand. This is a significant difference from the reference code,
+		// but essentially if we aren't going to be serializing an object, we shouldn't serialize the info about it
+		// either: If it's a default subobject we'll find another instance of it with the same name when deserializing
+		// anyway. If it's not, it probably shouldn't be serialized anyway
+		{
+			TArray<UObject*> FilteredSubObjects;
+			FilteredSubObjects.Reserve(SubObjectsArray.Num());
+			for (UObject* SubObject : SubObjectsArray)
+			{
+				if (SubObject &&
+					!SubObject->HasAnyFlags(RF_DefaultSubObject) &&
+					(!SubObject->IsEditorOnly() || !Ar.IsCooking()))
+				{
+					FilteredSubObjects.Add(SubObject);
+				}
+			}
+			Swap(FilteredSubObjects, SubObjectsArray);
+		}
+
 
 		// Serialize size of array
 		int32 SubObjectsCount = SubObjectsArray.Num();
@@ -314,18 +374,15 @@ namespace UE::AssetCache::Private
 
 		for (UObject* SubObject : SubObjectsArray)
 		{
-			if (SubObject && !SubObject->HasAnyFlags(RF_DefaultSubObject))
+			// Ensure these objects are serialized with flags as if they were regular
+			// persistent assets, in case they have branching on their serialization functions that watch
+			// out for this
+			SubObject->ClearFlags(RF_Transient);
+			SubObject->SetFlags(RF_Public);
 			{
-				// Ensure these objects are serialized with flags as if they were regular
-				// persistent assets, in case they have branching on their serialization functions that watch
-				// out for this
-				SubObject->ClearFlags(RF_Transient);
-				SubObject->SetFlags(RF_Public);
-				{
-					SubObject->Serialize(Ar);
-				}
-				SubObject->SetFlags(RF_Transient);
+				SubObject->Serialize(Ar);
 			}
+			SubObject->SetFlags(RF_Transient);
 		}
 
 		Object->ClearFlags(RF_Transient);
@@ -344,7 +401,7 @@ namespace UE::AssetCache::Private
 			return;
 		}
 
-		// Remove all objects created by default that InObject is dependent on
+		// Remove all objects created by default that InObject is an outer of.
 		// This method must obviously be called just after the InObject is created
 		auto RemoveDefaultDependencies = [](UObject* InObject)
 		{
@@ -358,7 +415,7 @@ namespace UE::AssetCache::Private
 				{
 					if (ObjectWithOuter != nullptr)
 					{
-						ObjectWithOuter->Rename(nullptr, GetTransientPackage(), REN_NonTransactional | REN_DontCreateRedirectors);
+						ObjectWithOuter->Rename(nullptr, GetTransientPackage(), REN_NonTransactional | REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
 					}
 					ObjectWithOuter->MarkAsGarbage();
 				}
@@ -369,6 +426,7 @@ namespace UE::AssetCache::Private
 
 		FAssetCacheObjectReader Reader{ *Object, InBuffer };
 		FArchiveObjectPtrAsStringWrapper Ar{ Reader };
+		Ar.bLoadIfFindFails = true;
 
 		// Deserialize count of sub-objects
 		int32 SubObjectsCount = 0;
@@ -420,24 +478,28 @@ namespace UE::AssetCache::Private
 				if (NewOuter != SubObject->GetOuter())
 				{
 					const TCHAR* NewName = nullptr;
-					SubObject->Rename(NewName, NewOuter, REN_NonTransactional | REN_DontCreateRedirectors);
+					SubObject->Rename(NewName, NewOuter, REN_NonTransactional | REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
 				}
 
 				UObject* NoNewOuter = nullptr;
 				if (SubObjectName != SubObject->GetName() && SubObject->Rename(*SubObjectName, NoNewOuter, REN_Test))
 				{
-					SubObject->Rename(*SubObjectName, NoNewOuter, REN_NonTransactional | REN_DontCreateRedirectors);
+					SubObject->Rename(*SubObjectName, NoNewOuter, REN_NonTransactional | REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
 				}
 			}
 		}
 
+		TArray<UTexture*> DeserializedTextures;
+		TArray<UStaticMesh*> DeserializedStaticMeshes;
+		TArray<USkeletalMesh*> DeserializedSkeletalMeshes;
+		TArray<UMaterialInterface*> DeserializedMaterials;
+
 		for (UObject* SubObject : SubObjectsArray)
 		{
-			if (SubObject && !SubObject->HasAnyFlags(RF_DefaultSubObject))
-			{
-				SubObject->Serialize(Ar);
-				SubObject->SetFlags(RF_Transient | RF_Public);
-			}
+			ensure(SubObject && !SubObject->HasAnyFlags(RF_DefaultSubObject));
+
+			SubObject->Serialize(Ar);
+			SubObject->SetFlags(RF_Transient | RF_Public);
 		}
 
 		Object->Serialize(Ar);
@@ -446,6 +508,35 @@ namespace UE::AssetCache::Private
 		if (UTexture* Texture = Cast<UTexture>(Object))
 		{
 			Texture->UpdateResource();
+		}
+#if WITH_EDITOR
+		else if (UStaticMesh* StaticMesh = Cast<UStaticMesh>(Object))
+		{
+			// These steps are copied from USDGeomMeshTranslator.cpp, from the PreBuildStaticMesh, BuildStaticMesh
+			// and PostBuildStaticMesh functions, although we will have serialized our body setup and extended bounds
+			// already. Ideally this will hit DDC and should be fast.
+			// We only need these in the editor: When we're cooking we'll just save the cooked mesh data into the
+			// asset itself, so at runtime there is no need for an additional "build" step that we have to handle here
+
+			StaticMesh->SetRenderData(MakeUnique< FStaticMeshRenderData >());
+			ITargetPlatformManagerModule& TargetPlatformManager = GetTargetPlatformManagerRef();
+			ITargetPlatform* RunningPlatform = TargetPlatformManager.GetRunningTargetPlatform();
+			const FStaticMeshLODSettings& LODSettings = RunningPlatform->GetStaticMeshLODSettings();
+			StaticMesh->GetRenderData()->Cache(RunningPlatform, StaticMesh, LODSettings);
+			StaticMesh->InitResources();
+		}
+		else if (USkeletalMesh* SkeletalMesh = Cast<USkeletalMesh>(Object))
+		{
+			SkeletalMesh->CalculateInvRefMatrices();
+			SkeletalMesh->InitMorphTargetsAndRebuildRenderData();
+		}
+#endif // WITH_EDITOR
+		if (UMaterialInterface* Material = Cast<UMaterialInterface>(Object))
+		{
+			// TODO: If this presents a performance issue we could possibly just do part of the work that this seems
+			// to be doing, but until then it's probably good to run the entire FMaterialUpdateContext for robustness
+			FMaterialUpdateContext UpdateContext;
+			UpdateContext.AddMaterialInterface(Material);
 		}
 	}
 }
@@ -458,16 +549,36 @@ FArchive& operator<<(FArchive& Ar, UUsdAssetCache2::ECacheStorageType& Type)
 
 void UUsdAssetCache2::FCachedAssetInfo::Serialize(FArchive& Ar, UObject* Owner)
 {
+	int32 SavedAssetInfoVersion = INDEX_NONE;
 	if (Ar.IsSaving())
 	{
 		Ar << GCurrentAssetInfoVersion;
+		SavedAssetInfoVersion = GCurrentAssetInfoVersion;
 	}
 	else if (Ar.IsLoading())
 	{
-		int32 SavedAssetInfoVersion = INDEX_NONE;
 		Ar << SavedAssetInfoVersion;
 		ensure(SavedAssetInfoVersion <= GCurrentAssetInfoVersion);
 	}
+
+	UE_LOG(
+		LogUsd,
+		Verbose,
+		TEXT("Serializing Asset Info '%s' (%s) with version %d, storage type: %d, disk bytes: %d, memory bytes: %d, bulkdata size: %d, saving? %d, persistent? %d, "
+			 "transacting? %d, duplicating? %d, cooking? %d"),
+		*AssetName,
+		*Hash,
+		SavedAssetInfoVersion,
+		int(CurrentStorageType),
+		SizeOnDiskInBytes,
+		SizeOnMemoryInBytes,
+		BulkData.GetBulkDataSize(),
+		Ar.IsSaving(),
+		Ar.IsPersistent(),
+		Ar.IsTransacting(),
+		(Ar.GetPortFlags() & (PPF_DuplicateForPIE | PPF_Duplicate)),
+		Ar.IsCooking()
+	);
 
 	Ar << Hash;
 	Ar << AssetClassName;
@@ -477,12 +588,22 @@ void UUsdAssetCache2::FCachedAssetInfo::Serialize(FArchive& Ar, UObject* Owner)
 	Ar << SizeOnDiskInBytes;
 	Ar << SizeOnMemoryInBytes;
 	Ar << Dependencies;
-	Ar << Dependents;
+	Ar << Consumers;
 
-	// Very important: This flag ensures that when we call Serialize below we won't actually
-	// load the full bulkdata right away, so that we can do it on-demand
-	BulkData.SetBulkDataFlags(BULKDATA_Force_NOT_InlinePayload);
-	BulkData.Serialize(Ar, Owner);
+	// We do need to serialize this in case we do too many undo/redo operations without a cache resync between them
+	if (SavedAssetInfoVersion > 1)
+	{
+		Ar << CurrentStorageType;
+	}
+
+	// We only need to read/write to our bulkdata when saving to disk
+	if (Ar.IsPersistent())
+	{
+		// Very important: This flag ensures that when we call Serialize below we won't actually
+		// load the full bulkdata right away, so that we can do it on-demand
+		BulkData.SetBulkDataFlags(BULKDATA_Force_NOT_InlinePayload);
+		BulkData.Serialize(Ar, Owner);
+	}
 }
 
 UUsdAssetCache2::UUsdAssetCache2()
@@ -516,12 +637,6 @@ void UUsdAssetCache2::CacheAsset(const FString& Hash, UObject* Asset, const UObj
 		return;
 	}
 
-	UE_LOG(LogUsd, Verbose, TEXT("Caching asset '%s' with for hash '%s' into the USD Asset Cache '%s'"),
-		*Asset->GetPathName(),
-		*Hash,
-		*GetPathName()
-	);
-
 	FCachedAssetInfo* FoundInfo = nullptr;
 	{
 		FReadScopeLock Lock(RWLock);
@@ -548,18 +663,18 @@ void UUsdAssetCache2::CacheAsset(const FString& Hash, UObject* Asset, const UObj
 	{
 		if (Asset == ExistingAsset)
 		{
+			UE_LOG(LogUsd, Verbose, TEXT("Recaching asset '%s' with hash '%s' into the USD Asset Cache '%s'"),
+				*Asset->GetPathName(),
+				*Hash,
+				*GetPathName()
+			);
+
 			// We're trying to cache an asset that's already in the cache with this same hash.
 			// Just record that we "touched" this asset and return
 			Modify();
 
 			FWriteScopeLock Lock(RWLock);
-
-			if (ReferencerToUse)
-			{
-				FoundInfo->Referencers.Add(FObjectKey{ ReferencerToUse });
-			}
-			LRUCache.FindAndTouch(Asset);
-			ActiveAssets.Add(Asset);
+			TouchAssetInternal(Asset, ReferencerToUse);
 			return;
 		}
 		else
@@ -592,6 +707,12 @@ void UUsdAssetCache2::CacheAsset(const FString& Hash, UObject* Asset, const UObj
 		}
 	}
 
+	UE_LOG(LogUsd, Verbose, TEXT("Caching asset '%s' with hash '%s' into the USD Asset Cache '%s'"),
+		*Asset->GetPathName(),
+		*Hash,
+		*GetPathName()
+	);
+
 	Modify();
 
 	FWriteScopeLock Lock(RWLock);
@@ -606,7 +727,7 @@ void UUsdAssetCache2::CacheAsset(const FString& Hash, UObject* Asset, const UObj
 	{
 		UObject* NewOuter = this;
 		const FName NewName = MakeUniqueObjectName(NewOuter, Asset->GetClass(), Asset->GetFName());
-		Asset->Rename(*NewName.ToString(), NewOuter);
+		Asset->Rename(*NewName.ToString(), NewOuter, REN_DontCreateRedirectors | REN_NonTransactional | REN_ForceNoResetLoaders);
 	}
 
 	FCachedAssetInfo NewInfo;
@@ -644,7 +765,7 @@ bool UUsdAssetCache2::CanRemoveAsset(const FString& Hash)
 		return true;
 	}
 
-	if (Info->Referencers.Num() > 0 || Info->Dependents.Num() > 0)
+	if (Info->Referencers.Num() > 0 || Info->Consumers.Num() > 0)
 	{
 		return false;
 	}
@@ -680,14 +801,14 @@ UObject* UUsdAssetCache2::RemoveAsset(const FString& Hash)
 		if (FCachedAssetInfo* Info = LRUCache.Find(FoundObjectPath))
 		{
 			ensure(Info->Referencers.Num() == 0);
-			ensure(Info->Dependents.Num() == 0);
+			ensure(Info->Consumers.Num() == 0);
 
-			// Make sure all of our dependencies know we're no longer dependent on them
+			// Make sure all of our dependencies know we're no longer Consumer on them
 			for (const FSoftObjectPath& Dependency : Info->Dependencies)
 			{
 				if (FCachedAssetInfo* DependencyInfo = LRUCache.Find(Dependency))
 				{
-					DependencyInfo->Dependents.Remove(FoundObjectPath);
+					DependencyInfo->Consumers.Remove(FoundObjectPath);
 				}
 			}
 			Info->Dependencies.Empty();
@@ -703,121 +824,170 @@ UObject* UUsdAssetCache2::RemoveAsset(const FString& Hash)
 
 UObject* UUsdAssetCache2::GetCachedAsset(const FString& Hash)
 {
-	// Write here as this will affect LRUCache order and PendingPersistentStorage
-	TOptional<FRWScopeLock> Lock;
-	Lock.Emplace(RWLock, SLT_Write);
-
-	UObject* FoundObject = AssetStorage.FindRef(Hash);
-
+	// Try to fetch a loaded asset from the cache with this hash
+	UObject* FoundAsset = nullptr;
+	{
+		FReadScopeLock Lock{RWLock};
+		FoundAsset = AssetStorage.FindRef(Hash);
+	}
 	UE_LOG(LogUsd, Verbose, TEXT("Fetching cached asset with hash '%s' for cache '%s'. Loaded in AssetStorage? %d. Size of LRU cache: %d, Pending persistent assets: %d"),
 		*Hash,
 		*GetPathName(),
-		FoundObject != nullptr,
+		FoundAsset != nullptr,
 		LRUCache.Num(),
 		PendingPersistentStorage.Num()
 	);
-
-	// Maybe this is a persistent asset we just haven't loaded yet
-	if (!FoundObject)
+	if (FoundAsset)
 	{
-		if (FSoftObjectPath* FoundSoftPath = PendingPersistentStorage.Find(Hash))
+		FWriteScopeLock Lock{RWLock};
+		TouchAssetInternal(FoundAsset, CurrentScopedReferencer);
+		return FoundAsset;
+	}
+
+	// Check if we know about this persistent asset but just haven't loaded it yet
+	FSoftObjectPath* FoundAssetPath = nullptr;
+	{
+		FReadScopeLock Lock{RWLock};
+		FoundAssetPath = PendingPersistentStorage.Find(Hash);
+		if (!FoundAssetPath)
 		{
-			if (FCachedAssetInfo* FoundCachedInfo = LRUCache.Find(*FoundSoftPath))
+			UE_LOG(LogUsd, Verbose, TEXT("Full cache miss: We do not know about any assets with hash '%s' in cache '%s'"),
+				*Hash,
+				*GetPathName()
+			);
+			return nullptr;
+		}
+	}
+
+	TFunction<UObject* (FCachedAssetInfo* ObjectInfo)> LoadAssetFromBulkData = [this](FCachedAssetInfo* ObjectInfo) -> UObject*
+	{
+		if (!ObjectInfo)
+		{
+			return nullptr;
+		}
+
+		const FString ClassNameString = ObjectInfo->AssetClassName.ToString();
+		UClass* FoundClass = UE::AssetCache::Private::FindClass(*ClassNameString);
+		if (!FoundClass)
+		{
+			UE_LOG(LogUsd, Warning, TEXT("Failed to find object class '%s' when deserializing asset '%s' with hash '%s'"),
+				*ClassNameString,
+				*ObjectInfo->AssetName,
+				*ObjectInfo->Hash
+			);
+			return nullptr;
+		}
+
+		// Deserialize the referenced asset from the Info's bulkdata
+		// TODO: If performance is an issue here we can probably prevent this copy by having our own
+		// FObjectReader that uses a pointer and offset and reads it off the bulkdata directly
+		TArray<uint8> BulkDataCopy;
+		const void* BulkDataBytes = ObjectInfo->BulkData.LockReadOnly();
+		{
+			BulkDataCopy.SetNumUninitialized(ObjectInfo->BulkData.GetBulkDataSize());
+			FMemory::Memcpy(BulkDataCopy.GetData(), BulkDataBytes, BulkDataCopy.Num());
+		}
+		ObjectInfo->BulkData.Unlock();
+
+		FName AssetName = ObjectInfo->AssetName.IsEmpty() ? NAME_None : FName{*ObjectInfo->AssetName};
+
+		// They're always "transient", since we'll persist them ourselves
+		UObject* NewAsset = NewObject<UObject>(this, FoundClass, AssetName, ObjectInfo->AssetFlags | RF_Transient);
+		UE::AssetCache::Private::DeserializeObjectAndSubObjects(NewAsset, BulkDataCopy);
+		ensure(NewAsset);
+
+		UE_LOG(LogUsd, Log, TEXT("Deserialized asset at '%s' (%s, hash '%s', storage %d) from bulkdata (%.3f MB)"),
+			*ObjectInfo->AssetName,
+			NewAsset ? *NewAsset->GetPathName() : TEXT("nullptr"),
+			*ObjectInfo->Hash,
+			int(ObjectInfo->CurrentStorageType),
+			BulkDataCopy.Num() / 1000000.0
+		);
+
+		AssetStorage.Add(ObjectInfo->Hash, NewAsset);
+		PendingPersistentStorage.Remove(ObjectInfo->Hash);
+		return NewAsset;
+	};
+
+	// Since LoadAssetFromBulkData will modify our member maps, the safest is to collect all hashes that we'll be
+	// loading first and then do a pass
+	TArray<FSoftObjectPath> AssetsToLoad;
+	TFunction<void(const FSoftObjectPath&)> RecursivelyCollectAssetsToLoad;
+	RecursivelyCollectAssetsToLoad = [this, &RecursivelyCollectAssetsToLoad, &AssetsToLoad](const FSoftObjectPath& AssetPath)
+	{
+		if (FCachedAssetInfo* FoundCachedInfo = LRUCache.Find(AssetPath))
+		{
+			if (PendingPersistentStorage.Contains(FoundCachedInfo->Hash))
 			{
-				const FString ClassNameString = FoundCachedInfo->AssetClassName.ToString();
-
-				// Actually load the UObject and subobjects from disk
-				if (UClass* FoundClass = UE::AssetCache::Private::FindClass(*ClassNameString))
+				// Before we deserialize the asset, we need to make sure all of it's dependencies are also
+				// deserialized, so push our dependency assets first
+				for (const FSoftObjectPath& DependencyPath : FoundCachedInfo->Dependencies)
 				{
-					// Deserialize the referenced asset from the Info's bulkdata
-					// TODO: If performance is an issue here we can probably prevent this copy by having our own
-					// FObjectReader that uses a pointer and offset and reads it off the bulkdata directly
-					TArray<uint8> BulkDataCopy;
-					const void* BulkDataBytes = FoundCachedInfo->BulkData.LockReadOnly();
-					{
-						BulkDataCopy.SetNumUninitialized(FoundCachedInfo->BulkData.GetBulkDataSize());
-						FMemory::Memcpy(BulkDataCopy.GetData(), BulkDataBytes, BulkDataCopy.Num());
-					}
-					FoundCachedInfo->BulkData.Unlock();
-
-					FName AssetName = FoundCachedInfo->AssetName.IsEmpty() ? NAME_None : FName{ *FoundCachedInfo->AssetName };
-
-					// They're always "transient", since we'll persist them ourselves
-					UObject* NewAsset = NewObject<UObject>(this, FoundClass, AssetName, FoundCachedInfo->AssetFlags | RF_Transient);
-					UE::AssetCache::Private::DeserializeObjectAndSubObjects(NewAsset, BulkDataCopy);
-					ensure(NewAsset);
-
-					UE_LOG(LogUsd, Verbose, TEXT("Deserialized asset at '%s' (%s, hash '%s', storage %d) from bulkdata (%.3f MB)"),
-						*FoundSoftPath->ToString(),
-						NewAsset ? *NewAsset->GetPathName() : TEXT("nullptr"),
-						*Hash,
-						FoundCachedInfo->CurrentStorageType,
-						BulkDataCopy.Num() / 1000000.0
-					);
-
-					// Explicitly clearing this here for safety, as it will be invalidated when we remove Hash from
-					// PendingPersistentStorage just below
-					FoundSoftPath = nullptr;
-
-					FoundObject = NewAsset;
-					AssetStorage.Add(Hash, NewAsset);
-					PendingPersistentStorage.Remove(Hash);
+					RecursivelyCollectAssetsToLoad(DependencyPath);
 				}
-				else
-				{
-					UE_LOG(LogUsd, Warning, TEXT("Failed to find object class '%s' when deserializing asset '%s' with hash '%s'"),
-						*ClassNameString,
-						*FoundSoftPath->ToString(),
-						*Hash
-					);
-				}
+
+				AssetsToLoad.Add(AssetPath);
 			}
-			else
+		}
+		else
+		{
+			UE_LOG(LogUsd, Warning, TEXT("Failed to find info about asset '%s' when deserializing on-demand"),
+				*AssetPath.ToString()
+			);
+		}
+	};
+	{
+		FReadScopeLock Lock{RWLock};
+		RecursivelyCollectAssetsToLoad(*FoundAssetPath);
+	}
+
+	ensure(AssetsToLoad.Num() > 0);
+	UE_LOG(LogUsd, Verbose, TEXT("Partial cache miss: Will attempt to load %d assets from bulk data of cache '%s'"),
+		AssetsToLoad.Num(),
+		*GetPathName()
+	);
+	{
+		FWriteScopeLock Lock{RWLock};
+		for (const FSoftObjectPath& AssetToLoad : AssetsToLoad)
+		{
+			if (FCachedAssetInfo* FoundCachedInfo = LRUCache.Find(AssetToLoad))
 			{
-				UE_LOG(LogUsd, Warning, TEXT("Failed to find info about asset '%s' with hash '%s' when deserializing on-demand"),
-					*FoundSoftPath->ToString(),
-					*Hash
-				);
+				UObject* LoadedAsset = LoadAssetFromBulkData(FoundCachedInfo);
+				ensure(LoadedAsset);
+
+				TouchAssetInternal(LoadedAsset, CurrentScopedReferencer);
+				FoundAsset = LoadedAsset;  // The very last asset we loaded is our main asset, as it's pushed last into AssetsToLoad
 			}
 		}
 	}
 
-	if (FoundObject)
-	{
-		ActiveAssets.Add(FoundObject);
-		ensure(LRUCache.FindAndTouch(FoundObject));
-
-		if (CurrentScopedReferencer)
-		{
-			Lock.Reset(); // Release our lock as AddAssetReference will want to acquire it
-			AddAssetReference(FoundObject, CurrentScopedReferencer);
-		}
-	}
-
-	return FoundObject;
+	return FoundAsset;
 }
 
-bool UUsdAssetCache2::AddAssetReference(const UObject* Asset, const UObject* Referencer)
+bool UUsdAssetCache2::TouchAsset(const UObject* Asset, const UObject* Referencer)
 {
-	if (!Asset || !Referencer)
+	if (!Asset)
 	{
 		return false;
 	}
 
-	FWriteScopeLock Lock(RWLock);
-
-	if (FCachedAssetInfo* Info = LRUCache.Find(Asset))
+	if (IsAssetOwnedByCache(Asset->GetPathName()))
 	{
-		Info->Referencers.Add(FObjectKey{Referencer});
+		Modify();
 
-		UE_LOG(LogUsd, Verbose, TEXT("Added referencer '%s' for asset '%s'"),
-			*Referencer->GetPathName(),
-			*Asset->GetPathName()
-		);
+		FWriteScopeLock Lock(RWLock);
+		TouchAssetInternal(Asset, Referencer);
+
 		return true;
 	}
 
 	return false;
+}
+
+bool UUsdAssetCache2::AddAssetReference(const UObject* Asset, const UObject* Referencer)
+{
+	FWriteScopeLock Lock(RWLock);
+	return AddAssetReferenceInternal(Asset, Referencer);
 }
 
 bool UUsdAssetCache2::RemoveAssetReference(const UObject* Asset, const UObject* Referencer)
@@ -1032,27 +1202,27 @@ void UUsdAssetCache2::RefreshStorage()
 					Info.Dependencies.Add(Dependency);
 					if (FCachedAssetInfo* DependencyInfo = LRUCache.Find(Dependency))
 					{
-						DependencyInfo->Dependents.Add(AssetPath);
+						DependencyInfo->Consumers.Add(AssetPath);
 					}
 				}
 			}
 		}
 	}
 
-	TFunction<bool(const FCachedAssetInfo&)> DependentTreeHasReferencedAsset;
-	DependentTreeHasReferencedAsset = [this, &DependentTreeHasReferencedAsset](const FCachedAssetInfo& Info) -> bool
+	TFunction<bool(const FCachedAssetInfo&)> ConsumerTreeHasReferencedAsset;
+	ConsumerTreeHasReferencedAsset = [this, &ConsumerTreeHasReferencedAsset](const FCachedAssetInfo& Info) -> bool
 	{
-		for (const FSoftObjectPath& Dependent : Info.Dependents)
+		for (const FSoftObjectPath& Consumer : Info.Consumers)
 		{
-			FCachedAssetInfo* DependentInfo = LRUCache.Find(Dependent);
-			if (ensure(DependentInfo))
+			FCachedAssetInfo* ConsumerInfo = LRUCache.Find(Consumer);
+			if (ensure(ConsumerInfo))
 			{
-				if (DependentInfo->Referencers.Num() > 0)
+				if (ConsumerInfo->Referencers.Num() > 0)
 				{
 					return true;
 				}
 
-				if (DependentTreeHasReferencedAsset(*DependentInfo))
+				if (ConsumerTreeHasReferencedAsset(*ConsumerInfo))
 				{
 					return true;
 				}
@@ -1066,7 +1236,7 @@ void UUsdAssetCache2::RefreshStorage()
 	VisitEntryRecursively =
 		[
 			this,
-			&DependentTreeHasReferencedAsset,
+			&ConsumerTreeHasReferencedAsset,
 			&VisitEntryRecursively,
 			&VisitedAssets,
 			bIsTransientAssetCache,
@@ -1114,7 +1284,7 @@ void UUsdAssetCache2::RefreshStorage()
 			const bool bAssetFitsInUnreferenced = UnreferencedAssetsSumBytes + Info.SizeOnMemoryInBytes <= MaxUnreferencedTransientBytes;
 			const bool bDependenciesArePersistent = WorstDependencyStorage == ECacheStorageType::Persistent;
 			const bool bAllDependenciesInStorage = WorstDependencyStorage != ECacheStorageType::None;
-			const bool bDependentIsReferenced = DependentTreeHasReferencedAsset(Info);
+			const bool bConsumerIsReferenced = ConsumerTreeHasReferencedAsset(Info);
 
 			const FString AssetPathStr = AssetPath.ToString();
 			const FString AssetClassNameStr = Info.AssetClassName.ToString();
@@ -1126,8 +1296,8 @@ void UUsdAssetCache2::RefreshStorage()
 				Info.CurrentStorageType = ECacheStorageType::Persistent;
 			}
 
-			// Priority 2: Asset is kept on transient storage because it (or a dependent) is referenced
-			else if (Info.Referencers.Num() > 0 || bDependentIsReferenced)
+			// Priority 2: Asset is kept on transient storage because it (or a Consumer) is referenced
+			else if (Info.Referencers.Num() > 0 || bConsumerIsReferenced)
 			{
 				Info.CurrentStorageType = ECacheStorageType::Referenced;
 			}
@@ -1149,7 +1319,7 @@ void UUsdAssetCache2::RefreshStorage()
 				bAssetFitsInUnreferenced,
 				Info.Referencers.Num(),
 				Info.Dependencies.Num(),
-				Info.CurrentStorageType
+				int(Info.CurrentStorageType)
 			);
 
 			switch (Info.CurrentStorageType)
@@ -1175,8 +1345,20 @@ void UUsdAssetCache2::RefreshStorage()
 				{
 					Info.BulkData.UnloadBulkData();
 
-					ensure(Asset);
-					NewAssetStorage.Add(Info.Hash, Asset);
+					if (Asset)
+					{
+						ensure(AssetStorage.Contains(Info.Hash));
+						NewAssetStorage.Add(Info.Hash, Asset);
+					}
+					// It's possible to end up with an asset that is currently persistent but living in
+					// Unreferenced storage if we load an asset cache and discover the asset fits in the latter
+					// but not in the former (e.g. if size on disk > size in memory somehow, or if the storage
+					// sizes are tweaked to cause that)
+					else
+					{
+						ensure(!AssetStorage.Contains(Info.Hash));
+						NewPendingPersistentStorage.Add(Info.Hash, AssetPath);
+					}
 
 					UnreferencedAssetsSumBytes += Info.SizeOnMemoryInBytes;
 					UE_LOG(LogUsd, Verbose, TEXT("Updated unreferenced sum to %.3f out of max %u MB"),
@@ -1243,12 +1425,12 @@ void UUsdAssetCache2::RefreshStorage()
 				TryUnloadAsset(Info);
 				Info.BulkData.RemoveBulkData();
 
-				// Make sure all of our dependencies know we're no longer a dependent
+				// Make sure all of our dependencies know we're no longer a Consumer
 				for (const FSoftObjectPath& Dependency : Info.Dependencies)
 				{
 					if (FCachedAssetInfo* DepInfo = LRUCache.Find(Dependency))
 					{
-						DepInfo->Dependents.Remove(AssetPath);
+						DepInfo->Consumers.Remove(AssetPath);
 					}
 				}
 
@@ -1321,24 +1503,24 @@ bool UUsdAssetCache2::TryUnloadAsset(FCachedAssetInfo& InOutInfo)
 		// Asset is currently loaded
 		if (TObjectPtr<UObject> Asset = AssetStorage.FindRef(InOutInfo.Hash))
 		{
-			// Check to see if all of its dependents can be unloaded too
-			for (const FSoftObjectPath& Dependent : InOutInfo.Dependents)
+			// Check to see if all of its Consumers can be unloaded too
+			for (const FSoftObjectPath& Consumer : InOutInfo.Consumers)
 			{
-				if (FCachedAssetInfo* DependentInfo = LRUCache.Find(Dependent))
+				if (FCachedAssetInfo* ConsumerInfo = LRUCache.Find(Consumer))
 				{
-					ensure(DependentInfo->Dependencies.Contains(Asset));
+					ensure(ConsumerInfo->Dependencies.Contains(Asset));
 
-					bool bDependentIsUnloaded = TryUnloadAsset(*DependentInfo);
-					if (!bDependentIsUnloaded)
+					bool bConsumerIsUnloaded = TryUnloadAsset(*ConsumerInfo);
+					if (!bConsumerIsUnloaded)
 					{
-						// Our dependent must stay loaded -> So must we
+						// Our Consumer must stay loaded -> So must we
 						return false;
 					}
 				}
-				// We don't know about this dependent anymore (maybe it was evicted?)
+				// We don't know about this Consumer anymore (maybe it was evicted?)
 				else
 				{
-					InOutInfo.Dependents.Remove(Dependent);
+					InOutInfo.Consumers.Remove(Consumer);
 				}
 			}
 
@@ -1347,7 +1529,7 @@ bool UUsdAssetCache2::TryUnloadAsset(FCachedAssetInfo& InOutInfo)
 
 			const TCHAR* NewName = nullptr;
 			UObject* NewOuter = GetTransientPackage();
-			Asset->Rename(NewName, NewOuter);
+			Asset->Rename(NewName, NewOuter, REN_DontCreateRedirectors | REN_NonTransactional | REN_ForceNoResetLoaders);
 		}
 
 		return InOutInfo.BulkData.UnloadBulkData();
@@ -1359,6 +1541,43 @@ bool UUsdAssetCache2::TryUnloadAsset(FCachedAssetInfo& InOutInfo)
 bool UUsdAssetCache2::IsAssetOwnedByCacheInternal(const FString& AssetPath) const
 {
 	return !AssetPath.IsEmpty() && LRUCache.Contains(AssetPath);
+}
+
+bool UUsdAssetCache2::AddAssetReferenceInternal(const UObject* Asset, const UObject* Referencer)
+{
+	if (!Asset || !Referencer)
+	{
+		return false;
+	}
+
+	if (FCachedAssetInfo* Info = LRUCache.Find(Asset))
+	{
+		Info->Referencers.Add(FObjectKey{Referencer});
+
+		UE_LOG(LogUsd, Verbose, TEXT("Added referencer '%s' for asset '%s'"),
+			*Referencer->GetPathName(),
+			*Asset->GetPathName()
+		);
+		return true;
+	}
+
+	return false;
+}
+
+void UUsdAssetCache2::TouchAssetInternal(const UObject* Asset, const UObject* Referencer)
+{
+	if (!Asset)
+	{
+		return;
+	}
+
+	ActiveAssets.Add(const_cast<UObject*>(Asset));
+	ensure(LRUCache.FindAndTouch(Asset));
+
+	if (Referencer)
+	{
+		ensure(AddAssetReferenceInternal(Asset, Referencer));
+	}
 }
 
 void UUsdAssetCache2::Serialize(FArchive& Ar)
@@ -1374,32 +1593,22 @@ void UUsdAssetCache2::Serialize(FArchive& Ar)
 		ensure(SavedCacheVersion <= GCurrentCacheVersion);
 	}
 
-	FWriteScopeLock Lock(RWLock);
-
 	Super::Serialize(Ar);
 
 	if (Ar.IsPersistent() || Ar.IsTransacting() || (Ar.GetPortFlags() & (PPF_DuplicateForPIE | PPF_Duplicate)))
 	{
 		if (Ar.IsSaving())
 		{
-			TSet<FSoftObjectPath> PersistentAssets;
-			for (TLruCache<FSoftObjectPath, FCachedAssetInfo>::TIterator Iter{ LRUCache }; Iter; ++Iter)
-			{
-				const FCachedAssetInfo& Info = Iter.Value();
-				if (Info.CurrentStorageType == ECacheStorageType::Persistent)
-				{
-					PersistentAssets.Add(Iter.Key());
-				}
-			}
-			int32 NumPersistent = PersistentAssets.Num();
-			Ar << NumPersistent;
-
 			// When we cook we must generate a new cooked bulkdata as it may need to filter editor-only stuff during
 			// the serialization process, so make sure none of these assets are pending
 			if (Ar.IsCooking())
 			{
 				// Take a copy here because GetCachedAsset will modify PendingPersistentStorage
-				TMap<FString, FSoftObjectPath> PendingStorageCopy = PendingPersistentStorage;
+				TMap<FString, FSoftObjectPath> PendingStorageCopy;
+				{
+					FReadScopeLock Lock(RWLock);
+					PendingStorageCopy = PendingPersistentStorage;
+				}
 				for (const TPair<FString, FSoftObjectPath>& PendingAsset : PendingStorageCopy)
 				{
 					UObject* AssetFromBulkData = GetCachedAsset(PendingAsset.Key);
@@ -1407,76 +1616,144 @@ void UUsdAssetCache2::Serialize(FArchive& Ar)
 				}
 			}
 
+			FWriteScopeLock Lock(RWLock);
+
+			TSet<FSoftObjectPath> PersistentAssetsWithInfo;
+			if (Ar.IsPersistent())
+			{
+				for (TLruCache<FSoftObjectPath, FCachedAssetInfo>::TIterator Iter{LRUCache}; Iter; ++Iter)
+				{
+					const FCachedAssetInfo& Info = Iter.Value();
+					if (Info.CurrentStorageType == ECacheStorageType::Persistent)
+					{
+						PersistentAssetsWithInfo.Add(Iter.Key());
+					}
+				}
+			}
+
+			int32 NumInfos = Ar.IsPersistent() ? PersistentAssetsWithInfo.Num() : LRUCache.Num();
+			Ar << NumInfos;
+
+			UE_LOG(LogUsd, Verbose, TEXT("Serializing USD Asset Cache '%s' with %d asset infos. Persistent? %d, transacting? %d, duplicating? %d, cooking? %d"),
+				*GetPathName(),
+				NumInfos,
+				Ar.IsPersistent(),
+				Ar.IsTransacting(),
+				(Ar.GetPortFlags() & (PPF_DuplicateForPIE | PPF_Duplicate)),
+				Ar.IsCooking()
+			);
+
 			// By using the iterators we'll traverse the most recently used object first
-			for (TLruCache<FSoftObjectPath, FCachedAssetInfo>::TIterator Iter{ LRUCache }; Iter; ++Iter)
+			for (TLruCache<FSoftObjectPath, FCachedAssetInfo>::TIterator Iter{LRUCache}; Iter; ++Iter)
 			{
 				FCachedAssetInfo& Info = Iter.Value();
 				FSoftObjectPath& AssetPath = Iter.Key();
 				ensure(!AssetPath.IsNull());
 
-				if (Info.CurrentStorageType != ECacheStorageType::Persistent)
+				if (Ar.IsPersistent() && Info.CurrentStorageType != ECacheStorageType::Persistent)
 				{
+					UE_LOG(
+						LogUsd,
+						Verbose,
+						TEXT("Skipping serialization of info on asset '%s' (%s) as it will not be persisted"),
+						*Info.AssetName,
+						*Info.Hash
+					);
 					continue;
 				}
 
-				// This is the main way in which assets get serialized into the bulkdata
-				if (UObject* Asset = AssetStorage.FindRef(Info.Hash))
+				// This is the main way in which assets get serialized into the memory bulkdata, which we only ever need to do
+				// when serializing to disk (which will happen within the Info.Serialize call below)
+				if (Ar.IsPersistent())
 				{
-					// Serialize the referenced asset into a byte buffer
-					TArray<uint8> Buffer;
-					UE::AssetCache::Private::SerializeObjectAndSubObjects(Asset, Buffer, Ar);
-					SIZE_T NumBytes = Buffer.Num();
+					// The asset should either be loaded and in AssetStorage, or have been unloaded back into persistent storage
+					UObject* Asset = AssetStorage.FindRef(Info.Hash);
+					ensure(Asset || PendingPersistentStorage.Contains(Info.Hash));
 
-					// Copy the byte buffer into the Info's bulkdata in memory
-					// TODO: Maybe it's possible to avoid this copy by having a custom object writer
-					// that can write directly to the realloc'd bulkdata bytes
-					Info.BulkData.Lock(LOCK_READ_WRITE);
+					// We're only going to serialize it back to disk if it is already loaded of course. We could prevent overwriting
+					// on disk an already serialized asset that happens to be loaded right now since we don't really support
+					// modifying our generated assets, but I suppose this could be useful if the user just changed a couple of
+					// settings on his StaticMesh or whatever and expects them to persist.
+					if (Asset)
 					{
-						void* BulkDataBytes = Info.BulkData.Realloc(Buffer.Num());
-						FMemory::Memcpy(BulkDataBytes, Buffer.GetData(), Buffer.Num());
-					}
-					Info.BulkData.Unlock();
+						// Serialize the referenced asset into a byte buffer
+						TArray<uint8> Buffer;
+						UE::AssetCache::Private::SerializeObjectAndSubObjects(Asset, Buffer, Ar);
 
-					// Now we know *exactly* how big the asset is on disk now
-					Info.SizeOnDiskInBytes = Buffer.Num();
+						// Copy the byte buffer into the Info's bulkdata in memory
+						// TODO: Maybe it's possible to avoid this copy by having a custom object writer
+						// that can write directly to the realloc'd bulkdata bytes
+						Info.BulkData.Lock(LOCK_READ_WRITE);
+						{
+							void* BulkDataBytes = Info.BulkData.Realloc(Buffer.Num());
+							FMemory::Memcpy(BulkDataBytes, Buffer.GetData(), Buffer.Num());
+						}
+						Info.BulkData.Unlock();
+
+						// Now we know *exactly* how big the asset is on disk
+						Info.SizeOnDiskInBytes = Buffer.Num();
+						ensure(Info.SizeOnDiskInBytes > 0);
+
+						UE_LOG(
+							LogUsd,
+							Verbose,
+							TEXT("Serializing asset '%s' (%s) to %d bulk data bytes"),
+							*Info.AssetName,
+							*Info.Hash,
+							Info.SizeOnDiskInBytes
+						);
+					}
 				}
 
 				Ar << AssetPath;
 
-				// We only want to serialize dependencies on persistent assets, or else when we deserialize this
+				// When persisting, we only want to serialize dependencies on persistent assets, or else when we deserialize this
 				// we'll have a bunch of dependencies on assets that don't exist
-				TSet<FSoftObjectPath> PersistentDependencies = Info.Dependencies.Intersect(PersistentAssets);
-				TSet<FSoftObjectPath> PersistentDependents = Info.Dependents.Intersect(PersistentAssets);
-				Swap(Info.Dependencies, PersistentDependencies);
-				Swap(Info.Dependents, PersistentDependents);
+				TSet<FSoftObjectPath> PersistentDependencies;
+				TSet<FSoftObjectPath> PersistentConsumers;
+				if (Ar.IsPersistent())
 				{
-					Info.CurrentStorageType = ECacheStorageType::Persistent;
-					Info.Serialize(Ar, this);
+					PersistentDependencies = Info.Dependencies.Intersect(PersistentAssetsWithInfo);
+					PersistentConsumers = Info.Consumers.Intersect(PersistentAssetsWithInfo);
+					Swap(Info.Dependencies, PersistentDependencies);
+					Swap(Info.Consumers, PersistentConsumers);
 				}
-				Swap(Info.Dependencies, PersistentDependencies);
-				Swap(Info.Dependents, PersistentDependents);
+
+				Info.Serialize(Ar, this);
+
+				if (Ar.IsPersistent())
+				{
+					Swap(Info.Dependencies, PersistentDependencies);
+					Swap(Info.Consumers, PersistentConsumers);
+				}
 			}
 		}
 		else if (Ar.IsLoading())
 		{
-			int32 NumPersistent = INDEX_NONE;
-			Ar << NumPersistent;
-			ensure(NumPersistent >= 0);
+			FWriteScopeLock Lock(RWLock);
+
+			int32 NumInfos = INDEX_NONE;
+			Ar << NumInfos;
+			ensure(NumInfos >= 0);
 
 			TArray<FCachedAssetInfo> MostToLeastRecent;
-			MostToLeastRecent.Reserve(NumPersistent);
+			MostToLeastRecent.Reserve(NumInfos);
 
 			TArray<FSoftObjectPath> AssetPaths;
-			AssetPaths.Reserve(NumPersistent);
+			AssetPaths.Reserve(NumInfos);
 
-			for (int32 Index = 0; Index < NumPersistent; ++Index)
+			UE_LOG(LogUsd, Verbose, TEXT("Deserializing USD Asset Cache '%s' with %d asset infos"),
+				*GetPathName(),
+				NumInfos
+			);
+
+			for (int32 Index = 0; Index < NumInfos; ++Index)
 			{
 				FSoftObjectPath& AssetPath = AssetPaths.Emplace_GetRef();
 				Ar << AssetPath;
 
 				FCachedAssetInfo& NewEl = MostToLeastRecent.Emplace_GetRef();
 				NewEl.Serialize(Ar, this);
-				NewEl.CurrentStorageType = ECacheStorageType::Persistent;
 
 				PendingPersistentStorage.Add(NewEl.Hash, AssetPath);
 			}
@@ -1486,7 +1763,7 @@ void UUsdAssetCache2::Serialize(FArchive& Ar)
 			LRUCache.Empty(MaxElements);
 
 			// Push them back-to-front into the LRU cache to make sure the most recent one is added last
-			for (int32 Index = NumPersistent - 1; Index >= 0; --Index)
+			for (int32 Index = NumInfos - 1; Index >= 0; --Index)
 			{
 				LRUCache.Add(MoveTemp(AssetPaths[Index]), MoveTemp(MostToLeastRecent[Index]));
 			}
@@ -1499,7 +1776,7 @@ FUsdScopedAssetCacheReferencer::FUsdScopedAssetCacheReferencer(UUsdAssetCache2* 
 	// For now we're assuming you can't nest these objects
 	if (ensure(InAssetCache))
 	{
-		ensure(Referencer && !InAssetCache->CurrentScopedReferencer);
+		ensure(Referencer && (!InAssetCache->CurrentScopedReferencer || InAssetCache->CurrentScopedReferencer == Referencer));
 		InAssetCache->CurrentScopedReferencer = Referencer;
 	}
 

@@ -9,6 +9,7 @@
 #include "UObject/ObjectPtr.h"
 #include "Containers/Map.h"
 #include "WorldPartition/WorldPartitionActorDesc.h"
+#include "WorldPartition/Filter/WorldPartitionActorFilter.h"
 
 class ULevelInstanceSubsystem;
 class UActorDescContainer;
@@ -18,34 +19,41 @@ enum class ELevelInstanceRuntimeBehavior : uint8;
 /**
  * ActorDesc for Actors that are part of a LevelInstanceActor Level.
  */
-class ENGINE_API FLevelInstanceActorDesc : public FWorldPartitionActorDesc
+class FLevelInstanceActorDesc : public FWorldPartitionActorDesc
 {
 public:
-	FLevelInstanceActorDesc();
-	virtual ~FLevelInstanceActorDesc() override;
+	ENGINE_API FLevelInstanceActorDesc();
+	ENGINE_API virtual ~FLevelInstanceActorDesc() override;
 
-	virtual bool IsContainerInstance() const override;
-	virtual FName GetLevelPackage() const override { return LevelPackage; }
-	virtual bool GetContainerInstance(const UActorDescContainer*& OutLevelContainer, FTransform& OutLevelTransform, EContainerClusterMode& OutClusterMode) const override;
-	virtual void CheckForErrors(IStreamingGenerationErrorHandler* ErrorHandler) const override;
+	ENGINE_API virtual bool IsContainerInstance() const override;
+	virtual EWorldPartitionActorFilterType GetContainerFilterType() const { return IsContainerInstance() ? EWorldPartitionActorFilterType::Loading : EWorldPartitionActorFilterType::None; }
+	virtual FName GetContainerPackage() const override { return WorldAsset.GetLongPackageFName(); }
+	ENGINE_API virtual bool GetContainerInstance(FContainerInstance& OutContainerInstance) const override;
+	virtual const FWorldPartitionActorFilter* GetContainerFilter() const override { return &Filter; }
+	ENGINE_API virtual void CheckForErrors(IStreamingGenerationErrorHandler* ErrorHandler) const override;
 
 protected:
-	virtual void Init(const AActor* InActor) override;
-	virtual void Init(const FWorldPartitionActorDescInitData& DescData) override;
-	virtual bool Equals(const FWorldPartitionActorDesc* Other) const override;
-	virtual void TransferFrom(const FWorldPartitionActorDesc* From) override;
-	virtual void Serialize(FArchive& Ar) override;
-	virtual void SetContainer(UActorDescContainer* InContainer) override;
+	ENGINE_API virtual void Init(const AActor* InActor) override;
+	ENGINE_API virtual void Init(const FWorldPartitionActorDescInitData& DescData) override;
+	ENGINE_API virtual bool Equals(const FWorldPartitionActorDesc* Other) const override;
+	ENGINE_API virtual void TransferFrom(const FWorldPartitionActorDesc* From) override;
+	virtual uint32 GetSizeOf() const override { return sizeof(FLevelInstanceActorDesc); }
+	ENGINE_API virtual void Serialize(FArchive& Ar) override;
+	ENGINE_API virtual void SetContainer(UActorDescContainer* InContainer, UWorld* InWorldContext) override;
 
-	FName LevelPackage;
+	FSoftObjectPath WorldAsset;
 	FTransform LevelInstanceTransform;
 	ELevelInstanceRuntimeBehavior DesiredRuntimeBehavior;
 
 	TWeakObjectPtr<UActorDescContainer> LevelInstanceContainer;
+	TWeakObjectPtr<UWorld> LevelInstanceContainerWorldContext;
 
+	FWorldPartitionActorFilter Filter;
+	bool bIsContainerInstance;
 private:
-	void RegisterContainerInstance(UWorld* InWorld);
-	void UnregisterContainerInstance();
-	void UpdateBounds();
+	ENGINE_API bool IsContainerInstanceInternal() const;
+	ENGINE_API void RegisterContainerInstance(UWorld* InWorldContext);
+	ENGINE_API void UnregisterContainerInstance();
+	ENGINE_API void UpdateBounds();
 };
 #endif

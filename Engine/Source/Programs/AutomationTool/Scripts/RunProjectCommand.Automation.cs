@@ -14,6 +14,8 @@ using AutomationTool;
 using UnrealBuildTool;
 using EpicGames.Core;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
+using EpicGames.Serialization;
 
 namespace AutomationScripts
 {
@@ -82,7 +84,7 @@ namespace AutomationScripts
 			{
 				var LogFolderOutsideOfSandbox = GetLogFolderOutsideOfSandbox();
 				var TempLogFiles = FindFiles_NoExceptions("*", false, LogFolderOutsideOfSandbox);
-				LogInformation("Found {0} temp logs to copy from {1} to {2}", TempLogFiles.Length, LogFolderOutsideOfSandbox, CmdEnv.LogFolder);
+				Logger.LogInformation("Found {Arg0} temp logs to copy from {LogFolderOutsideOfSandbox} to {Arg2}", TempLogFiles.Length, LogFolderOutsideOfSandbox, CmdEnv.LogFolder);
 				foreach (var LogFilename in TempLogFiles)
 				{
 					var DestFilename = CombinePaths(CmdEnv.LogFolder, Path.GetFileName(LogFilename));
@@ -99,7 +101,7 @@ namespace AutomationScripts
 			{
 				if (bFirst)
 				{
-					LogInformation("Waiting for {0} to start logging at: {1}", Name, LogFile);
+					Logger.LogInformation("Waiting for {Name} to start logging at: {LogFile}", Name, LogFile);
 					bFirst = false;
 				}
 				else if (MaxLogWaitTimeInSeconds > 0)
@@ -108,17 +110,17 @@ namespace AutomationScripts
 					var TimeLeft = MaxLogWaitTimeInSeconds - Duration;
 					if (TimeLeft <= 0)
 					{
-						LogWarning("Giving up waiting for {0} to start logging, it may run with logging disabled.", Name);
+						Logger.LogWarning("Giving up waiting for {Name} to start logging, it may run with logging disabled.", Name);
 						return false;
 					}
 					else
 					{
-						LogInformation("Waiting for {0} seconds for {1} to start logging...", TimeLeft, Name);
+						Logger.LogInformation("Waiting for {TimeLeft} seconds for {Name} to start logging...", TimeLeft, Name);
 					}
 				}
 				else
 				{
-					LogInformation("Waiting for {0} to start logging...", Name);
+					Logger.LogInformation("Waiting for {Name} to start logging...", Name);
 				}
 				Thread.Sleep(2000);
 			}
@@ -128,12 +130,12 @@ namespace AutomationScripts
 				throw new AutomationException("{0} exited without creating a log file at: {1}", Name, LogFile);
 			}
 
-			LogInformation("Logging started for {0} at: {1}", Name, LogFile);
+			Logger.LogInformation("Logging started for {Name} at: {LogFile}", Name, LogFile);
 			Thread.Sleep(1000);
 
 			if (ReadyTexts == null)
 			{
-				LogInformation("{0} is ready!", Name);
+				Logger.LogInformation("{Name} is ready!", Name);
 				return true;
 			}
 
@@ -153,13 +155,13 @@ namespace AutomationScripts
 							{
 								if (Output.Contains(ReadyText))
 								{
-									LogInformation("{1} is ready! \"{0}\" was found in log.", ReadyText, Name);
+									Logger.LogInformation("{Name} is ready! \"{ReadyText}\" was found in log.", ReadyText, Name);
 									return true;
 								}
 							}
 						}
 					}
-					LogInformation("Waiting for {0} to get ready...", Name);
+					Logger.LogInformation("Waiting for {Name} to get ready...", Name);
 					Thread.Sleep(2000);
 				}
 			}
@@ -174,7 +176,7 @@ namespace AutomationScripts
 				return;
 			}
 
-			LogInformation("********** RUN COMMAND STARTED **********");
+			Logger.LogInformation("********** RUN COMMAND STARTED **********");
 			var StartTime = DateTime.UtcNow;
 
 			var LogFolderOutsideOfSandbox = GetLogFolderOutsideOfSandbox();
@@ -204,28 +206,26 @@ namespace AutomationScripts
 					{
 						if (!CookServerProcess.HasExited)
 						{
-							LogInformation("Stopping cook server...");
+							Logger.LogInformation("Stopping cook server...");
 							CookServerProcess.StopProcess();
 						}
-						LogInformation("Cook server exited with error code: {0} (see {1} for more info)",
-								CookServerProcess.ExitCode, CookServerLogFile);
+						Logger.LogInformation("Cook server exited with error code: {ExitCode} (see {File} for more info)", CookServerProcess.ExitCode, CookServerLogFile);
 					}
 					if (DedicatedServerProcess != null)
 					{
 						if (!DedicatedServerProcess.HasExited)
 						{
-							LogInformation("Stopping dedicated server...");
+							Logger.LogInformation("Stopping dedicated server...");
 							DedicatedServerProcess.StopProcess();
 						}
-						LogInformation("Dedicated server exited with error code: {0} (see {1} for more info)",
-								DedicatedServerProcess.ExitCode, DedicatedServerLogFile);
+						Logger.LogInformation("Dedicated server exited with error code: {ExitCode} (see {File} for more info)", DedicatedServerProcess.ExitCode, DedicatedServerLogFile);
 					}
 				}
 				CopyLogsBackToLogFolder();
 			}
 
-			LogInformation("Run command time: {0:0.00} s", (DateTime.UtcNow - StartTime).TotalMilliseconds / 1000);
-			LogInformation("********** RUN COMMAND COMPLETED **********");
+			Logger.LogInformation("Run command time: {0:0.00} s", (DateTime.UtcNow - StartTime).TotalMilliseconds / 1000);
+			Logger.LogInformation("********** RUN COMMAND COMPLETED **********");
 		}
 
 		private static void RunInternal(
@@ -324,7 +324,7 @@ namespace AutomationScripts
 				int AllClientOutputLength = 0;
 				int LastAutoFailIndex = -1;
 
-				LogInformation("Starting Client for unattended test....");
+				Logger.LogInformation("Starting Client for unattended test....");
 				ClientProcess = SC.StageTargetPlatform.RunClient(ClientRunFlags, ClientApp, ClientCmdLine, Params);
 
 				if (DedicatedServerProcess != null)
@@ -333,7 +333,7 @@ namespace AutomationScripts
 					{
 						for (int i = 1; i < NumClients; i++)
 						{
-							LogInformation("Starting Extra Client {0} for unattended test....", i);
+							Logger.LogInformation("Starting Extra Client {i} for unattended test....", i);
 							ExtraClients.Add(SC.StageTargetPlatform.RunClient(ExtraClientRunFlags, ClientApp, ClientCmdLine, Params));
 						}
 					}
@@ -348,15 +348,15 @@ namespace AutomationScripts
 					{
 						if ((DateTime.UtcNow - ClientStartTime).TotalSeconds > RunTimeoutSeconds)
 						{
-							LogInformation("The run timed out after {0} seconds. Stopping client...", RunTimeoutSeconds);
+							Logger.LogInformation("The run timed out after {RunTimeoutSeconds} seconds. Stopping client...", RunTimeoutSeconds);
 							ClientProcess.StopProcess();
 						}
 					}
 					if (ClientProcess.HasExited)
 					{
-						LogInformation("Client exited, waiting for stdout...");
+						Logger.LogInformation("Client exited, waiting for stdout...");
 						ClientProcess.WaitForExit();
-						LogInformation("Client exited, logging done! (see {0} for more info)", ClientLogFile);
+						Logger.LogInformation("Client exited, logging done! (see {ClientLogFile} for more info)", ClientLogFile);
 						bKeepReading = false;
 					}
 
@@ -373,11 +373,10 @@ namespace AutomationScripts
 						{
 							if (DedicatedServerProcess != null)
 							{
-								LogInformation("Welcomed by server or client loaded");
+								Logger.LogInformation("Welcomed by server or client loaded");
 							}
-							LogInformation("Test complete");
-							LogInformation("**** UNATTENDED TEST COMPLETE: {0:0.00} seconds ****",
-								(DateTime.UtcNow - ClientStartTime).TotalMilliseconds / 1000);
+							Logger.LogInformation("Test complete");
+							Logger.LogInformation("**** UNATTENDED TEST COMPLETE: {Time} seconds ****", $"{(DateTime.UtcNow - ClientStartTime).TotalMilliseconds / 1000:0.00}");
 							bTestExitTextFound = true;
 							bKeepReading = false;
 						}
@@ -394,7 +393,7 @@ namespace AutomationScripts
 								if (OpenParenIndex >= 0 && CloseParenIndex > OpenParenIndex)
 								{
 									Test = Tail.Substring(OpenParenIndex + 1, CloseParenIndex - OpenParenIndex - 1);
-									LogError("Automated test failed ({0}).", Test);
+									Logger.LogError("Automated test failed ({Test}).", Test);
 									LastAutoFailIndex = FailIndex;
 								}
 							}
@@ -421,44 +420,44 @@ namespace AutomationScripts
 
 								if (FullSummary.Length > 0)
 								{
-									LogError("Commandlet failed, summary:" + Environment.NewLine + FullSummary);
+									Logger.LogError("{Text}", "Commandlet failed, summary:" + Environment.NewLine + FullSummary);
 								}
 								else
 								{
-									LogError("Commandlet failed.");
+									Logger.LogError("Commandlet failed.");
 								}
 							}
 						}
 					}
 					if (DedicatedServerProcess != null && DedicatedServerProcess.HasExited)
 					{
-						LogInformation("Dedicated server exited, stopping client...");
+						Logger.LogInformation("Dedicated server exited, stopping client...");
 						ClientProcess.StopProcess();
 					}
 					else if (CookServerProcess != null && CookServerProcess.HasExited)
 					{
-						LogInformation("Cook server exited, stopping client...");
+						Logger.LogInformation("Cook server exited, stopping client...");
 						ClientProcess.StopProcess();
 					}
 				}
 
 				if (ClientProcess != null && !ClientProcess.HasExited)
 				{
-					LogInformation("Client is supposed to exit, lets wait 20 seconds for it to exit naturally...");
+					Logger.LogInformation("Client is supposed to exit, lets wait 20 seconds for it to exit naturally...");
 					for (int i = 0; i < 20 && !ClientProcess.HasExited; i++)
 					{
 						Thread.Sleep(1000);
 					}
 					if (!ClientProcess.HasExited)
 					{
-						LogInformation("Stopping client...");
+						Logger.LogInformation("Stopping client...");
 						ClientProcess.StopProcess();
 					}
 				}
 			}
 			else
 			{
-				LogInformation("Starting Client....");
+				Logger.LogInformation("Starting Client....");
 				ClientProcess = SC.StageTargetPlatform.RunClient(ClientRunFlags, ClientApp, ClientCmdLine, Params);
 
 				if (DedicatedServerProcess != null)
@@ -467,7 +466,7 @@ namespace AutomationScripts
 					{
 						for (int i = 1; i < NumClients; i++)
 						{
-							LogInformation("Starting Extra Client {0}....", i);
+							Logger.LogInformation("Starting Extra Client {i}....", i);
 							ExtraClients.Add(SC.StageTargetPlatform.RunClient(ExtraClientRunFlags, ClientApp, ClientCmdLine, Params));
 						}
 					}
@@ -493,18 +492,18 @@ namespace AutomationScripts
 						{
 							if ((DateTime.UtcNow - ClientStartTime).TotalSeconds > RunTimeoutSeconds)
 							{
-								LogInformation("The run timed out after {0} seconds. Stopping client...", RunTimeoutSeconds);
+								Logger.LogInformation("The run timed out after {RunTimeoutSeconds} seconds. Stopping client...", RunTimeoutSeconds);
 								ClientProcess.StopProcess();
 							}
 						}
 						if (DedicatedServerProcess != null && DedicatedServerProcess.HasExited)
 						{
-							LogInformation("Dedicated server exited, stopping client...");
+							Logger.LogInformation("Dedicated server exited, stopping client...");
 							ClientProcess.StopProcess();
 						}
 						else if (CookServerProcess != null && CookServerProcess.HasExited)
 						{
-							LogInformation("Cook server exited, stopping client...");
+							Logger.LogInformation("Cook server exited, stopping client...");
 							ClientProcess.StopProcess();
 						}
 					}
@@ -514,7 +513,7 @@ namespace AutomationScripts
 
 			if (ExtraClients.Count > 0)
 			{
-				LogInformation("Client exited, stopping extra clients...");
+				Logger.LogInformation("Client exited, stopping extra clients...");
 				foreach (var OtherClient in ExtraClients)
 				{
 					if (OtherClient != null && !OtherClient.HasExited)
@@ -538,12 +537,12 @@ namespace AutomationScripts
 			{
 				// Any non-zero exit code should propagate an exception. The PostRunClient function above may have
 				// already thrown a more specific exception or given a more specific ErrorCode, but this catches the rest.
-				if (ClientProcess != null && ClientProcess.ExitCode != 0)
+				if (ClientProcess != null && !ClientProcess.bExitCodeSuccess)
 				{
 					throw new AutomationException("Client exited with error code: {0} (see {1} for more info)", ClientProcess.ExitCode, ClientLogFile);
 				}
 			}
-			LogInformation("Client exited with error code: {0} (see {1} for more info)", ClientProcess.ExitCode, ClientLogFile);
+			Logger.LogInformation("Client exited with error code: {Arg0} (see {ClientLogFile} for more info)", ClientProcess.ExitCode, ClientLogFile);
 		}
 
 		private static void SetupClientParams(List<DeploymentContext> DeployContextList, ProjectParams Params, string ClientLogFile, out ERunOptions ClientRunFlags, out string ClientApp, out string ClientCmdLine)
@@ -569,6 +568,13 @@ namespace AutomationScripts
 			// Get client app name and command line.
 			string TempCmdLine = SC.ProjectArgForCommandLines + " ";
 			var PlatformName = TargetPlatform.ToString();
+
+			String FileHostCommandline = GetFileHostCommandline(Params, SC);
+			if (!string.IsNullOrEmpty(FileHostCommandline))
+			{
+				TempCmdLine += FileHostCommandline + " ";
+			}
+
 			if (Params.Cook || Params.CookOnTheFly)
 			{
 				List<FileReference> Exes = SC.StageTargetPlatform.GetExecutableNames(SC);
@@ -585,12 +591,6 @@ namespace AutomationScripts
 
 				if (Params.CookOnTheFly || Params.FileServer)
 				{
-					String FileHostCommandline = GetFileHostCommandline(Params, SC);
-					if (!string.IsNullOrEmpty(FileHostCommandline))
-					{
-						TempCmdLine += FileHostCommandline + " ";
-					}
-
 					if (Params.CookOnTheFlyStreaming)
 					{
 						TempCmdLine += "-streaming ";
@@ -726,8 +726,8 @@ namespace AutomationScripts
 				ClientCmdLine += "-Params=\"" + TempCmdLine + "\"";
 				ClientApp = CombinePaths(CmdEnv.LocalRoot, "Engine/Binaries/Win64/UnrealFrontend.exe");
 
-				LogInformation("Launching via UFE:");
-				LogInformation("\tClientCmdLine: " + ClientCmdLine + "");
+				Logger.LogInformation("Launching via UFE:");
+				Logger.LogInformation("\tClientCmdLine: " + ClientCmdLine + "");
 			}
 			else
 			{
@@ -790,16 +790,72 @@ namespace AutomationScripts
 			return HostAddresses.ToList();
 		}
 
+		private static FileReference FindZenProjectStoreMarker(ProjectParams Params, DeploymentContext SC)
+		{
+			DirectoryReference ProjectStoreDir = null;
+			if (Params.Stage)
+			{
+				if (!SetUpStagingSourceDirectories(Params, SC))
+				{
+					return null;
+				}
+				ProjectStoreDir = SC.PlatformCookDir;
+			}
+			else if (Params.Deploy)
+			{
+				ProjectStoreDir = SC.StageDirectory;
+			}
+			if (ProjectStoreDir == null)
+			{
+				return null;
+			}
+			// Check for stage with zenstore without PAK?
+			FileReference PackageStoreManifestFile = FileReference.Combine(ProjectStoreDir, ".projectstore");
+			System.IO.FileInfo PackageStoreManifestFileInfo = PackageStoreManifestFile.ToFileInfo();
+			if (PackageStoreManifestFileInfo.Exists)
+			{
+				return PackageStoreManifestFile;
+			}
+			return null;
+		}
+
 		private static string GetFileHostCommandline(ProjectParams Params, DeploymentContext SC)
 		{
 			string FileHostParams = "";
-			if (!Params.CookOnTheFly && !Params.FileServer)
+			FileReference ZenStoreMarkerFile = FindZenProjectStoreMarker(Params, SC);
+			bool UseZenServerHost = (ZenStoreMarkerFile != null) && !Params.UsePak(SC.StageTargetPlatform);
+			if (!Params.CookOnTheFly && !Params.FileServer && !UseZenServerHost)
 			{
 				return FileHostParams;
 			}
 
-			List<string> HostAddresses = GetFileHostAddresses(SC);
-			SC.StageTargetPlatform.ModifyFileHostAddresses(HostAddresses);
+			string ProjectId = ProjectUtils.GetProjectPathId(SC.RawProjectPath);
+			ushort ZenHostPort = 1337;
+			List<string> HostAddresses = null;
+			if (ZenStoreMarkerFile != null)
+			{
+				byte[] ProjectStoreData = File.ReadAllBytes(ZenStoreMarkerFile.FullName);
+				CbObject ProjectStoreObject = new CbField(ProjectStoreData).AsObject();
+				CbObject ZenServerObject = ProjectStoreObject["zenserver"].AsObject();
+				if (ZenServerObject != CbObject.Empty)
+				{
+					ZenHostPort = ZenServerObject["hostport"].AsUInt16(ZenHostPort);
+					if (!ZenServerObject["islocalhost"].AsBool())
+					{
+						string HostName = ZenServerObject["hostname"].AsString();
+						if (!string.IsNullOrEmpty(HostName))
+						{
+							HostAddresses = new List<string> { HostName };
+						}
+					}
+					ProjectId = ZenServerObject["projectid"].AsString(ProjectId);
+				}
+			}
+			if (HostAddresses == null)
+			{
+				HostAddresses = GetFileHostAddresses(SC);
+				SC.StageTargetPlatform.ModifyFileHostAddresses(HostAddresses);
+			}
 
 			if (!IsNullOrEmpty(Params.Port))
 			{
@@ -820,13 +876,14 @@ namespace AutomationScripts
 				}
 			}
 
-			if (Params.ZenStore)
+			if (Params.CookOnTheFly)
 			{
-				if (Params.CookOnTheFly)
-				{
-					FileHostParams += "-cookonthefly ";
-				}
-				FileHostParams += "-zenstoreproject=" + ProjectUtils.GetProjectPathId(SC.RawProjectPath) + " ";
+				FileHostParams += "-filehostip=";
+			}
+			else if (Params.ZenStore || ZenStoreMarkerFile != null)
+			{
+				FileHostParams += "-zenstoreproject=" + ProjectId + " ";
+				FileHostParams += "-zenstoreport=" + ZenHostPort + " ";
 				FileHostParams += "-zenstorehost=";
 			}
 			else
@@ -846,7 +903,7 @@ namespace AutomationScripts
 			{
 				if (String.IsNullOrEmpty(Output) == false)
 				{
-					LogInformation(Output);
+					Logger.LogInformation("{Text}", Output);
 				}
 				return true;
 			});
@@ -969,7 +1026,7 @@ namespace AutomationScripts
 			var Result = Run(ServerApp, Args, null, ERunOptions.Default | ERunOptions.NoWaitForExit | ERunOptions.NoStdOutRedirect);
 			PopDir();
 
-			LogInformation("Running DedicatedServer@Process:{0}@{1}", ServerApp, Result.ProcessObject.Id);
+			Logger.LogInformation("Running DedicatedServer@Process:{ServerApp}@{Arg1}", ServerApp, Result.ProcessObject.Id);
 			return Result;
 		}
 
@@ -1000,7 +1057,7 @@ namespace AutomationScripts
 			var Result = Run(ServerApp, Args, null, ERunOptions.Default | ERunOptions.NoWaitForExit | ERunOptions.UseShellExecute);
 			PopDir();
 
-			LogInformation("Running CookServer@Process:{0}@{1}", ServerApp, Result.ProcessObject.Id);
+			Logger.LogInformation("Running CookServer@Process:{ServerApp}@{Arg1}", ServerApp, Result.ProcessObject.Id);
 			return Result;
 		}
 
@@ -1013,13 +1070,13 @@ namespace AutomationScripts
 			}
 			// [/TEMPORARY]
 
-			LogInformation("UnrealTrace: Starting server");
+			Logger.LogInformation("UnrealTrace: Starting server");
 
 			// Locate the UnrealTrace binary
 			var UnrealTracePath = HostPlatform.Current.GetUnrealExePath("UnrealTraceServer.exe");
 			if (!File.Exists(UnrealTracePath))
 			{
-				LogWarning("UnrealTrace: Unable to locate binary at " + UnrealTracePath);
+				Logger.LogWarning("{Text}", "UnrealTrace: Unable to locate binary at " + UnrealTracePath);
 				return false;
 			}
 
@@ -1028,7 +1085,7 @@ namespace AutomationScripts
 			Proc.WaitForExit();
 			if (Proc.ExitCode != 0)
 			{
-				LogWarning("UnrealTrace: Failed to start server; ExitCode=" + Proc.ExitCode);
+				Logger.LogWarning("{Text}", "UnrealTrace: Failed to start server; ExitCode=" + Proc.ExitCode);
 				return false;
 			}
 

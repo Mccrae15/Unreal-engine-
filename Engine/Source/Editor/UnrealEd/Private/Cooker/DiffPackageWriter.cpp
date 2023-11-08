@@ -7,14 +7,15 @@
 #include "CookOnTheSide/CookLog.h"
 #include "CoreGlobals.h"
 #include "Engine/Engine.h"
+#include "Logging/LogMacros.h"
 #include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/CString.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/Parse.h"
 #include "Misc/OutputDevice.h"
+#include "Misc/OutputDeviceHelper.h"
 #include "ProfilingDebugging/CookStats.h"
-#include "Serialization/ArchiveStackTrace.h"
 #include "Serialization/LargeMemoryWriter.h"
 #include "Templates/UniquePtr.h"
 #include "Templates/UnrealTemplate.h"
@@ -24,6 +25,8 @@
 #include "UObject/UObjectGlobals.h"
 #include "UObject/UObjectIterator.h"
 
+DEFINE_LOG_CATEGORY_STATIC(LogDiff, Log, All);
+
 FDiffPackageWriter::FDiffPackageWriter(TUniquePtr<ICookedPackageWriter>&& InInner)
 	: Inner(MoveTemp(InInner))
 {
@@ -32,6 +35,7 @@ FDiffPackageWriter::FDiffPackageWriter(TUniquePtr<ICookedPackageWriter>&& InInne
 	FParse::Value(FCommandLine::Get(), TEXT("MaxDiffstoLog="), MaxDiffsToLog);
 
 	bSaveForDiff = FParse::Param(FCommandLine::Get(), TEXT("SaveForDiff"));
+	bDiffOptional = FParse::Param(FCommandLine::Get(), TEXT("DiffOptional"));
 
 	GConfig->GetBool(TEXT("CookSettings"), TEXT("IgnoreHeaderDiffs"), bIgnoreHeaderDiffs, GEditorIni);
 	// Command line override for IgnoreHeaderDiffs
@@ -45,6 +49,10 @@ FDiffPackageWriter::FDiffPackageWriter(TUniquePtr<ICookedPackageWriter>&& InInne
 	}
 
 	ParseCmds();
+
+	Indent = FCString::Spc(FOutputDeviceHelper::FormatLogLine(ELogVerbosity::Warning,
+		LogDiff.GetCategoryName(), TEXT(""), GPrintLogTimes).Len());
+	NewLine = TEXT("\n"); // OutputDevices are responsible for remapping to LINE_TERMINATOR if desired
 }
 
 void FDiffPackageWriter::ParseCmds()
@@ -116,7 +124,8 @@ void FDiffPackageWriter::BeginPackage(const FBeginPackageInfo& Info)
 	bIsDifferent = false;
 	bDiffCallstack = false;
 	bHasStartedSecondSave = false;
-	DiffMap.Reset();
+	DiffMap[0].Reset();
+	DiffMap[1].Reset();
 
 	BeginInfo = Info;
 	ConditionallyDumpObjList();
@@ -142,13 +151,20 @@ void FDiffPackageWriter::CommitPackage(FCommitPackageInfo&& Info)
 void FDiffPackageWriter::WritePackageData(const FPackageInfo& Info, FLargeMemoryWriter& ExportsArchive,
 	const TArray<FFileRegion>& FileRegions)
 {
-	Inner->CompleteExportsArchiveForDiff(Info, ExportsArchive);
+	FPackageInfo LocalInfo(Info);
+	Inner->CompleteExportsArchiveForDiff(LocalInfo, ExportsArchive);
 
-	FArchiveStackTrace& Writer = static_cast<FArchiveStackTrace&>(ExportsArchive);
+	FDiffWriterArchive& Writer = static_cast<FDiffWriterArchive&>(ExportsArchive);
 	ICookedPackageWriter::FPreviousCookedBytesData PreviousInnerData;
-	Inner->GetPreviousCookedBytes(Info, PreviousInnerData);
+	if (!Inner->GetPreviousCookedBytes(LocalInfo, PreviousInnerData))
+	{
+		PreviousInnerData.Data.Reset();
+		PreviousInnerData.HeaderSize = 0;
+		PreviousInnerData.Size = 0;
+	}
+	check(PreviousInnerData.Data.Get() != nullptr || (PreviousInnerData.Size == 0 && PreviousInnerData.HeaderSize == 0));
 
-	FArchiveStackTrace::FPackageData PreviousPackageData;
+	FDiffWriterArchive::FPackageData PreviousPackageData;
 	PreviousPackageData.Data = PreviousInnerData.Data.Get();
 	PreviousPackageData.Size = PreviousInnerData.Size;
 	PreviousPackageData.HeaderSize = PreviousInnerData.HeaderSize;
@@ -162,67 +178,88 @@ void FDiffPackageWriter::WritePackageData(const FPackageInfo& Info, FLargeMemory
 
 		TMap<FName, FArchiveDiffStats> PackageDiffStats;
 		const TCHAR* CutoffString = TEXT("UEditorEngine::Save()");
-		Writer.CompareWith(PreviousPackageData, *Info.LooseFilePath, Info.HeaderSize, CutoffString,
-			MaxDiffsToLog, PackageDiffStats);
+		Writer.CompareWith(PreviousPackageData, *LocalInfo.LooseFilePath, LocalInfo.HeaderSize, CutoffString,
+			MaxDiffsToLog, PackageDiffStats, Inner->GetCookCapabilities().HeaderFormat);
 
 		//COOK_STAT(FSavePackageStats::NumberOfDifferentPackages++);
 		//COOK_STAT(FSavePackageStats::MergeStats(PackageDiffStats));
 	}
 	else
 	{
-		Writer.GetCallstacks().Append(*ExportsCallstacks, Info.HeaderSize);
-		ExportsDiffMapOffset = Info.HeaderSize;
+		Writer.GetCallstacks().Append(*ExportsCallstacks, LocalInfo.HeaderSize);
+		check(LocalInfo.MultiOutputIndex < 2);
+		ExportsDiffMapOffset[LocalInfo.MultiOutputIndex] = LocalInfo.HeaderSize;
 
-		bIsDifferent = !Writer.GenerateDiffMap(PreviousPackageData, Info.HeaderSize, MaxDiffsToLog, DiffMap);
+		bIsDifferent = !Writer.GenerateDiffMap(PreviousPackageData, LocalInfo.HeaderSize, MaxDiffsToLog, DiffMap[LocalInfo.MultiOutputIndex]);
 	}
 
-	Inner->WritePackageData(Info, ExportsArchive, FileRegions);
+	Inner->WritePackageData(LocalInfo, ExportsArchive, FileRegions);
 }
 
-TUniquePtr<FLargeMemoryWriter> FDiffPackageWriter::CreateLinkerArchive(FName PackageName, UObject* Asset)
+UE::DiffWriterArchive::FMessageCallback FDiffPackageWriter::GetDiffWriterMessageCallback()
+{
+	return UE::DiffWriterArchive::FMessageCallback([this](ELogVerbosity::Type Verbosity, FStringView Message)
+		{
+			this->OnDiffWriterMessage(Verbosity, Message);
+		});
+}
+
+void FDiffPackageWriter::OnDiffWriterMessage(ELogVerbosity::Type Verbosity, FStringView Message)
+{
+	FString ResolvedText(Message);
+	check(this->Indent && this->NewLine);
+	ResolvedText.ReplaceInline(UE::DiffWriterArchive::IndentToken, this->Indent);
+	ResolvedText.ReplaceInline(UE::DiffWriterArchive::NewLineToken, this->NewLine);
+
+	FMsg::Logf(__FILE__, __LINE__, LogDiff.GetCategoryName(), Verbosity, TEXT("%s"), *ResolvedText);
+}
+
+TUniquePtr<FLargeMemoryWriter> FDiffPackageWriter::CreateLinkerArchive(FName PackageName, UObject* Asset, uint16 MultiOutputIndex)
 {
 	// The entire package will be serialized to memory and then compared against package on disk.
 	if (bDiffCallstack)
 	{
+		check(MultiOutputIndex < 2);
 		// Each difference will be logged with its Serialize call stack trace
-		return TUniquePtr<FLargeMemoryWriter>(new FArchiveStackTrace(Asset, *PackageName.ToString(),
-			true /* bInCollectCallstacks */, &DiffMap));
+		return TUniquePtr<FLargeMemoryWriter>(new FDiffWriterArchive(Asset, *PackageName.ToString(),
+			GetDiffWriterMessageCallback(), true /* bInCollectCallstacks */, &DiffMap[MultiOutputIndex]));
 	}
 	else
 	{
-		return TUniquePtr<FLargeMemoryWriter>(new FArchiveStackTrace(Asset, *PackageName.ToString(),
-			false /* bInCollectCallstacks */));
+		return TUniquePtr<FLargeMemoryWriter>(new FDiffWriterArchive(Asset, *PackageName.ToString(),
+			GetDiffWriterMessageCallback(), false /* bInCollectCallstacks */));
 	}
 }
 
-TUniquePtr<FLargeMemoryWriter> FDiffPackageWriter::CreateLinkerExportsArchive(FName PackageName, UObject* Asset)
+TUniquePtr<FLargeMemoryWriter> FDiffPackageWriter::CreateLinkerExportsArchive(FName PackageName, UObject* Asset, uint16 MultiOutputIndex)
 {
 	// When cooking, exports are serialized into a separate archive. The serialization callstack offsets
 	// and stack traces are collected into a separate callstack collection and appended to the overall
 	// callstacks for the entire package. DiffOnly cooks saves a package twice. The first pass collects
-	// the serialization offsets without the stack traces and then creates a FArchiveDiffMap. In the second
+	// the serialization offsets without the stack traces and then creates a FDiffWriterDiffMap. In the second
 	// pass, the diff map is used to collect offsets AND the entire stack trace for mismatching package data.
 	// In the first pass, callstack offsets will be relative to the export archive and adjusted when appending
 	// the callstacks to the overall package callstacks. In the second pass, the offset (ExportsDiffMapOffset) is
 	// known and the callstack will be relative to the beginning of the package.
 	
-	ExportsCallstacks = MakeUnique<FArchiveCallstacks>(Asset);
+	ExportsCallstacks = MakeUnique<FDiffWriterCallstacks>(Asset);
 	const int64 PreAllocateBytes = 0;
 	const bool bIsPersistent = true;
 
+	check(MultiOutputIndex < 2);
 	if (bDiffCallstack)
 	{
-		return MakeUnique<FArchiveStackTraceMemoryWriter>(
+		return MakeUnique<FDiffWriterArchiveMemoryWriter>(
 			*ExportsCallstacks,
-			&DiffMap,
-			ExportsDiffMapOffset,
+			&DiffMap[MultiOutputIndex],
+			ExportsDiffMapOffset[MultiOutputIndex],
 			PreAllocateBytes,
 			bIsPersistent,
 			*PackageName.ToString());
 	}
 	else
 	{
-		return MakeUnique<FArchiveStackTraceMemoryWriter>(
+		return MakeUnique<FDiffWriterArchiveMemoryWriter>(
 			*ExportsCallstacks,
 			nullptr,
 			0,
@@ -231,6 +268,21 @@ TUniquePtr<FLargeMemoryWriter> FDiffPackageWriter::CreateLinkerExportsArchive(FN
 			*PackageName.ToString());
 	}
 }
+
+void FDiffPackageWriter::UpdateSaveArguments(FSavePackageArgs& SaveArgs)
+{
+	// if we are diffing optional data, add it to the save args, otherwise strip it
+	if (bDiffOptional)
+	{
+		SaveArgs.SaveFlags |= SAVE_Optional;
+	}
+	else
+	{
+		SaveArgs.SaveFlags &= ~SAVE_Optional;
+	}
+	Inner->UpdateSaveArguments(SaveArgs);
+}
+
 
 bool FDiffPackageWriter::IsAnotherSaveNeeded(FSavePackageResultStruct& PreviousResult, FSavePackageArgs& SaveArgs)
 {

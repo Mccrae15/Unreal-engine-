@@ -92,6 +92,7 @@
 #include "HAL/PlatformTime.h"
 #include "StudioAnalytics.h"
 #include "DeveloperToolSettingsDelegates.h"
+#include "Cooker/PackageBuildDependencyTracker.h"
 
 #define USE_UNIT_TESTS 0
 
@@ -217,6 +218,14 @@ FUnrealEdMisc::FUnrealEdMisc() :
 	PerformanceAnalyticsStats(new FPerformanceAnalyticsStats()),
 	NavigationBuildingNotificationHandler(NULL)
 {
+	//This is an early entry-point into the UnrealEd module to perform some editor-specific configuration
+#if UE_WITH_PACKAGE_ACCESS_TRACKING
+	const bool bBuildDependencyTrackingNeeded = GIsEditor && (IsRunningCookCommandlet() || !GetDefault<UEditorExperimentalSettings>()->bDisableCookInEditor);
+	if (!bBuildDependencyTrackingNeeded)
+	{
+		FPackageBuildDependencyTracker::Get().Disable();
+	}
+#endif
 }
 
 FUnrealEdMisc::~FUnrealEdMisc()
@@ -315,10 +324,11 @@ void FUnrealEdMisc::OnInit()
 		FPlatformSplash::Show();
 	}
 
-	const double InitialEditorStartupTime = (FStudioAnalytics::GetAnalyticSeconds() - GStartTime);
+	const double InitialEditorStartupTime = (FPlatformTime::Seconds() - GStartTime);
 	UE_LOG(LogUnrealEdMisc, Log, TEXT("Loading editor; pre map load, took %.3f"), InitialEditorStartupTime);
 
-	FStudioAnalytics::FireEvent_Loading(TEXT("InitializeEditor"), InitialEditorStartupTime, { FAnalyticsEventAttribute(TEXT("FirstTime"), true )});
+	FEditorDelegates::OnEditorBoot.Broadcast(InitialEditorStartupTime);
+	
 	// Check for automated build/submit option
 	const bool bDoAutomatedMapBuild = FParse::Param( ParsedCmdLine, TEXT("AutomatedMapBuild") );
 
@@ -532,13 +542,13 @@ void FUnrealEdMisc::OnInit()
 	// Handles "Enable World Composition" option in WorldSettings
 	UWorldComposition::EnableWorldCompositionEvent.BindRaw(this, &FUnrealEdMisc::EnableWorldComposition);
 
-	const double TotalEditorStartupTime = (FStudioAnalytics::GetAnalyticSeconds() - GStartTime);
+	const double TotalEditorStartupTime = (FPlatformTime::Seconds() - GStartTime);
 	UE_LOG(LogUnrealEdMisc, Log, TEXT("Total Editor Startup Time, took %.3f"), TotalEditorStartupTime);
 
 	TRACE_BOOKMARK(TEXT("Editor Startup"));
 
-	FStudioAnalytics::FireEvent_Loading(TEXT("TotalEditorStartup"), TotalEditorStartupTime, { FAnalyticsEventAttribute(TEXT("FirstTime"), true ) } );
-
+	FEditorDelegates::OnEditorInitialized.Broadcast(TotalEditorStartupTime);
+	
 	GShaderCompilingManager->PrintStats(true);
 }
 
@@ -944,15 +954,14 @@ bool FUnrealEdMisc::EnableWorldComposition(UWorld* InWorld, bool bEnable)
 	return true;
 }
 
-/** Build and return the path to the current project (used for relaunching the editor.)	 */
-FString CreateProjectPath()
+FString FUnrealEdMisc::GetProjectEditorBinaryPath()
 {
 #if PLATFORM_WINDOWS
 	return FPlatformProcess::ExecutablePath();
 #elif PLATFORM_MAC
 	@autoreleasepool
 	{
-		return UTF8_TO_TCHAR([[[NSBundle mainBundle] executablePath] fileSystemRepresentation]);
+		return UTF8_TO_TCHAR([[[NSBundle mainBundle]executablePath] fileSystemRepresentation] );
 	}
 #elif PLATFORM_LINUX
 	const TCHAR* PlatformConfig = FPlatformMisc::GetUBTPlatform();
@@ -963,9 +972,19 @@ FString CreateProjectPath()
 #endif
 }
 
-FString FUnrealEdMisc::GetProjectEditorBinaryPath()
+bool FUnrealEdMisc::SpawnEditorInstance(const FString& ProjectName)
 {
-	return CreateProjectPath();
+	// Use the same command line parameters that were used for this editor instance.
+	const FString Cmd = FString::Printf(TEXT("%s %s"), *ProjectName, *PendingCommandLine.Get(FCommandLine::Get()));
+
+	const FString ExeFilename = GetProjectEditorBinaryPath();
+	FProcHandle Handle = FPlatformProcess::CreateProc(*ExeFilename, *Cmd, true, false, false, NULL, 0, NULL, NULL);
+	const bool bSuccess = Handle.IsValid();
+	if (bSuccess)
+	{
+		FPlatformProcess::CloseProc(Handle);
+	}
+	return bSuccess;
 }
 
 void FUnrealEdMisc::OnExit()
@@ -1080,24 +1099,28 @@ void FUnrealEdMisc::OnExit()
 	const FString& PendingProjName = FUnrealEdMisc::Get().GetPendingProjectName();
 	if( PendingProjName.Len() > 0 )
 	{
-		// If there is a pending project switch, spawn that process now and use the same command line parameters that were used for this editor instance.
-		FString Cmd = FString::Printf(TEXT("%s %s"), *PendingProjName, *PendingCommandLine.Get(FCommandLine::Get()));
-
-		FString ExeFilename = CreateProjectPath();
-		FProcHandle Handle = FPlatformProcess::CreateProc( *ExeFilename, *Cmd, true, false, false, NULL, 0, NULL, NULL );
-		if( !Handle.IsValid() )
+		bool bSuccess = false;
+		if (FEditorDelegates::OnRestartRequested.IsBound())
+		{
+			bSuccess = FEditorDelegates::OnRestartRequested.Execute(PendingProjName);
+		}
+		else
+		{
+			bSuccess = SpawnEditorInstance(PendingProjName);
+		}
+		
+		if (!bSuccess)
 		{
 			// We were not able to spawn the new project exe.
 			// Its likely that the exe doesn't exist.
 			// Skip shutting down the editor if this happens
-			UE_LOG(LogUnrealEdMisc, Warning, TEXT("Could not restart the editor") );
+			UE_LOG(LogUnrealEdMisc, Warning, TEXT("Could not restart the editor"));
 
 			// Clear the pending project to ensure the editor can still be shut down normally
-			FUnrealEdMisc::Get().ClearPendingProjectName();
+			ClearPendingProjectName();
 
 			return;
 		}
-		FPlatformProcess::CloseProc(Handle);
 	}
 
 	// Unregister the command executor
@@ -1189,16 +1212,11 @@ void FUnrealEdMisc::CB_MapChange( uint32 InFlags )
 		// Minor things like brush subtraction will set it to "0".
 		if (InFlags != MapChangeEventFlags::Default)
 		{
-			World->ClearWorldComponents();
-
-			// Note: CleanupWorld is being abused here to detach components and some other stuff
-			// CleanupWorld should only be called before destroying the world
-			// So bCleanupResources is being passed as false
-			World->CleanupWorld(true, false);
-
-			// CleanupWorld will have nulled the FXSystem, create a new one or else the dependent
-			// FXSystemComponents will be left unregistered and/or fail to activate.
-			World->CreateFXSystem();
+			if (World->IsInitialized())
+			{
+				// Call CleanupWorld/InitWorld to detach components and some other stuff
+				World->ReInitWorld();
+			}
 		}
 
 		GEditor->EditorUpdateComponents();

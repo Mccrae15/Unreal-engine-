@@ -8,6 +8,7 @@
 #include "WaterBodyActor.generated.h"
 
 class UWaterSplineComponent;
+class UWaterBodyInfoMeshComponent;
 class AWaterBodyIsland;
 class AWaterBodyExclusionVolume;
 class ALandscapeProxy;
@@ -63,6 +64,10 @@ public:
 	virtual void SetIsTemporarilyHiddenInEditor(bool bIsHidden) override;
 	virtual bool SetIsHiddenEdLayer(bool bIsHiddenEdLayer) override;
 	virtual void GetActorDescProperties(FPropertyPairsMap& PropertyPairsMap) const override;
+
+	virtual void PostActorCreated() override;
+
+	virtual void PopulatePIEDuplicationSeed(AActor::FDuplicationSeedInterface& DuplicationSeed) override;
 #endif // WITH_EDITOR
 	
 	/** Returns the type of body */
@@ -112,6 +117,15 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Instanced, Category = Wave, DisplayName = "Waves Source", meta = (Tooltip = ""))
 	TObjectPtr<UWaterWavesBase> WaterWaves = nullptr;
 
+	UPROPERTY(TextExportTransient, NonPIEDuplicateTransient)
+	TObjectPtr<UWaterBodyInfoMeshComponent> WaterInfoMeshComponent;
+
+	UPROPERTY(TextExportTransient, NonPIEDuplicateTransient)
+	TObjectPtr<UWaterBodyInfoMeshComponent> DilatedWaterInfoMeshComponent;
+
+	UPROPERTY(TextExportTransient, NonPIEDuplicateTransient)
+	TArray<TObjectPtr<UWaterBodyStaticMeshComponent>> WaterBodyStaticMeshComponents;
+
 #if WITH_EDITOR
 	virtual void PostEditMove(bool bFinished) override;
 	virtual void PreEditChange(FProperty* PropertyThatWillChange) override;
@@ -121,9 +135,18 @@ protected:
 
 	void SetWaterWavesInternal(UWaterWavesBase* InWaterWaves);
 
+	const TArray<TObjectPtr<UWaterBodyStaticMeshComponent>>& GetWaterBodyStaticMeshComponents() const { return WaterBodyStaticMeshComponents; }
+
+	/** Removes all invalid references in the WaterBodyStaticMeshComponents list. */
+	void CleanupInvalidStaticMeshComponents();
+
+	/** Sets up a new list of water body static mesh components. */
+	void SetWaterBodyStaticMeshComponents(TArrayView<TObjectPtr<UWaterBodyStaticMeshComponent>> NewComponentList, TConstArrayView<TObjectPtr<UWaterBodyStaticMeshComponent>> ComponentsToUnregister = {});
+
 // ----------------------------------------------------------------------------------
 // Deprecated
 
+#pragma region Deprecated
 public:
 	UE_DEPRECATED(4.27, "Moved to WaterBodyComponent")
 	UFUNCTION(BlueprintCallable, Category = Rendering, meta = (DeprecatedFunction))
@@ -250,6 +273,8 @@ protected:
 	UPROPERTY()
 	float ShapeDilation_DEPRECATED = 4096.0f;
 #endif // WITH_EDITORONLY_DATA
+
+#pragma endregion // deprecated
 };
 
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2

@@ -1,16 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.IO;
 using System.Linq;
 using System.Reflection;
-using System.IO;
-using System.Text;
-using System.Threading.Tasks;
 using EpicGames.Core;
-using UnrealBuildTool;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace UnrealBuildTool
 {
@@ -24,7 +23,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="TargetObject">The object containing the field to be modified</param>
 		/// <param name="ValueObject">The value to add</param>
-		delegate void AddElementDelegate(object TargetObject, object? ValueObject); 
+		delegate void AddElementDelegate(object TargetObject, object? ValueObject);
 
 		/// <summary>
 		/// Caches information about a member with a [ConfigFile] attribute in a type
@@ -58,22 +57,22 @@ namespace UnrealBuildTool
 			/// <summary>
 			/// Returns Reflection.MemberInfo describing the target class member.
 			/// </summary>
-			public abstract MemberInfo               MemberInfo { get; }
+			public abstract MemberInfo MemberInfo { get; }
 
 			/// <summary>
 			/// Returns Reflection.Type of the target class member.
 			/// </summary>
-			public abstract Type                     Type       { get; }
+			public abstract Type Type { get; }
 
 			/// <summary>
 			/// Returns the value setter of the target class member.
 			/// </summary>
-			public abstract Action<object?, object?> SetValue   { get; }
+			public abstract Action<object?, object?> SetValue { get; }
 
 			/// <summary>
 			/// Returns the value getter of the target class member.
 			/// </summary>
-			public abstract Func<object?, object?>   GetValue   { get; }
+			public abstract Func<object?, object?> GetValue { get; }
 		}
 
 		/// <summary>
@@ -97,10 +96,10 @@ namespace UnrealBuildTool
 				this.FieldInfo = FieldInfo;
 			}
 
-			public override MemberInfo               MemberInfo => FieldInfo;
-			public override Type                     Type       => FieldInfo.FieldType;
-			public override Action<object?, object?> SetValue   => FieldInfo.SetValue;
-			public override Func<object?, object?>   GetValue   => FieldInfo.GetValue;
+			public override MemberInfo MemberInfo => FieldInfo;
+			public override Type Type => FieldInfo.FieldType;
+			public override Action<object?, object?> SetValue => FieldInfo.SetValue;
+			public override Func<object?, object?> GetValue => FieldInfo.GetValue;
 		}
 
 		/// <summary>
@@ -124,10 +123,10 @@ namespace UnrealBuildTool
 				this.PropertyInfo = PropertyInfo;
 			}
 
-			public override MemberInfo               MemberInfo => PropertyInfo;
-			public override Type                     Type       => PropertyInfo.PropertyType;
-			public override Action<object?, object?> SetValue   => PropertyInfo.SetValue;
-			public override Func<object?, object?>   GetValue   => PropertyInfo.GetValue;
+			public override MemberInfo MemberInfo => PropertyInfo;
+			public override Type Type => PropertyInfo.PropertyType;
+			public override Action<object?, object?> SetValue => PropertyInfo.SetValue;
+			public override Func<object?, object?> GetValue => PropertyInfo.GetValue;
 		}
 
 		/// <summary>
@@ -171,18 +170,25 @@ namespace UnrealBuildTool
 			public string CustomConfig;
 
 			/// <summary>
+			/// Custom override strings
+			/// </summary>
+			public List<string> OverrideStrings;
+
+			/// <summary>
 			/// Constructor
 			/// </summary>
 			/// <param name="Type">The hierarchy type</param>
 			/// <param name="ProjectDir">The project directory to read from</param>
 			/// <param name="Platform">Which platform-specific files to read</param>
 			/// <param name="CustomConfig">Custom config subdirectory to load</param>
-			public ConfigHierarchyKey(ConfigHierarchyType Type, DirectoryReference? ProjectDir, UnrealTargetPlatform Platform, string CustomConfig)
+			/// <param name="OverrideStrings">Custom override strings</param>
+			public ConfigHierarchyKey(ConfigHierarchyType Type, DirectoryReference? ProjectDir, UnrealTargetPlatform Platform, string CustomConfig, List<string> OverrideStrings)
 			{
 				this.Type = Type;
 				this.ProjectDir = ProjectDir;
 				this.Platform = Platform;
 				this.CustomConfig = CustomConfig;
+				this.OverrideStrings = OverrideStrings;
 			}
 
 			/// <summary>
@@ -193,7 +199,12 @@ namespace UnrealBuildTool
 			public override bool Equals(object? Other)
 			{
 				ConfigHierarchyKey? OtherKey = Other as ConfigHierarchyKey;
-				return (OtherKey != null && OtherKey.Type == Type && OtherKey.ProjectDir == ProjectDir && OtherKey.Platform == Platform && OtherKey.CustomConfig == CustomConfig);
+				return OtherKey != null &&
+					OtherKey.Type == Type &&
+					OtherKey.ProjectDir == ProjectDir &&
+					OtherKey.Platform == Platform &&
+					OtherKey.CustomConfig == CustomConfig &&
+					OtherKey.OverrideStrings.SequenceEqual(OverrideStrings);
 			}
 
 			/// <summary>
@@ -202,24 +213,33 @@ namespace UnrealBuildTool
 			/// <returns>Hash value for this object</returns>
 			public override int GetHashCode()
 			{
-				return ((ProjectDir != null) ? ProjectDir.GetHashCode() : 0) + ((int)Type * 123) + (Platform.GetHashCode() * 345) + (CustomConfig.GetHashCode() * 789);
+				int Hash = 17;
+				Hash = (Hash * 31) + Type.GetHashCode();
+				Hash = (Hash * 31) + ((ProjectDir == null) ? 0 : ProjectDir.GetHashCode());
+				Hash = (Hash * 31) + Platform.GetHashCode();
+				Hash = (Hash * 31) + CustomConfig.GetHashCode();
+				foreach (string OverrideString in OverrideStrings)
+				{
+					Hash = (Hash * 31) + OverrideString.GetHashCode();
+				}
+				return Hash;
 			}
 		}
 
 		/// <summary>
 		/// Cache of individual config files
 		/// </summary>
-		static Dictionary<FileReference, ConfigFile> LocationToConfigFile = new Dictionary<FileReference, ConfigFile>();
+		static ConcurrentDictionary<FileReference, ConfigFile?> LocationToConfigFile = new ConcurrentDictionary<FileReference, ConfigFile?>();
 
 		/// <summary>
 		/// Cache of config hierarchies by project
 		/// </summary>
-		static Dictionary<ConfigHierarchyKey, ConfigHierarchy> HierarchyKeyToHierarchy = new Dictionary<ConfigHierarchyKey, ConfigHierarchy>();
+		static ConcurrentDictionary<ConfigHierarchyKey, ConfigHierarchy> HierarchyKeyToHierarchy = new ConcurrentDictionary<ConfigHierarchyKey, ConfigHierarchy>();
 
 		/// <summary>
 		/// Cache of config fields by type
 		/// </summary>
-		static Dictionary<Type, List<ConfigMember>> TypeToConfigMembers = new Dictionary<Type, List<ConfigMember>>();
+		static ConcurrentDictionary<Type, List<ConfigMember>> TypeToConfigMembers = new ConcurrentDictionary<Type, List<ConfigMember>>();
 
 		/// <summary>
 		/// Attempts to read a config file (or retrieve it from the cache)
@@ -229,22 +249,16 @@ namespace UnrealBuildTool
 		/// <returns>True if the file exists and was read, false otherwise</returns>
 		internal static bool TryReadFile(FileReference Location, [NotNullWhen(true)] out ConfigFile? ConfigFile)
 		{
-			lock (LocationToConfigFile)
+			ConfigFile = LocationToConfigFile.GetOrAdd(Location, _ =>
 			{
-				if (!LocationToConfigFile.TryGetValue(Location, out ConfigFile))
+				if (FileReference.Exists(Location))
 				{
-					if (FileReference.Exists(Location))
-					{
-						ConfigFile = new ConfigFile(Location);
-					}
-
-					if (ConfigFile != null)
-					{
-						LocationToConfigFile.Add(Location, ConfigFile);
-					}
+					return new ConfigFile(Location);
 				}
-			}
 
+				// Note: it's important to keep the null value here so we don't keep checking for files that don't exist
+				return null;
+			});
 			return ConfigFile != null;
 		}
 
@@ -255,20 +269,49 @@ namespace UnrealBuildTool
 		/// <param name="ProjectDir">The project directory to read the hierarchy for</param>
 		/// <param name="Platform">Which platform to read platform-specific config files for</param>
 		/// <param name="CustomConfig">Optional override config directory to search, for support of multiple target types</param>
-		/// <param name="CustomArgs">Optional list of command line arguments</param>
+		/// <param name="CustomArgs">Optional list of command line arguments added to the existing command line arguments</param>
 		/// <returns>The requested config hierarchy</returns>
 		public static ConfigHierarchy ReadHierarchy(ConfigHierarchyType Type, DirectoryReference? ProjectDir, UnrealTargetPlatform Platform, string CustomConfig = "", string[]? CustomArgs = null)
 		{
-			// Handle command line overrides
-			List<String> OverrideStrings = new List<String>();
-			string[] CmdLine = Environment.GetCommandLineArgs();
+			CommandLineArguments CombinedArgs = new CommandLineArguments(Environment.GetCommandLineArgs());
+
 			if (CustomArgs != null)
 			{
-				CmdLine = CmdLine.Concat(CustomArgs).ToArray();
+				foreach (string CustomArg in CustomArgs)
+				{
+					if (CustomArg.StartsWith("-", StringComparison.InvariantCultureIgnoreCase))
+					{
+						CombinedArgs.Append(CustomArg);
+					}
+					else
+					{
+						CombinedArgs.Append("-" + CustomArg);
+					}
+				}
 			}
+
+			return ReadHierarchy(Type, ProjectDir, Platform, CustomConfig, CombinedArgs);
+		}
+
+		/// <summary>
+		/// Reads a config hierarchy (or retrieve it from the cache)
+		/// </summary>
+		/// <param name="Type">The type of hierarchy to read</param>
+		/// <param name="ProjectDir">The project directory to read the hierarchy for</param>
+		/// <param name="Platform">Which platform to read platform-specific config files for</param>
+		/// <param name="CustomConfig">Optional override config directory to search, for support of multiple target types</param>
+		/// <param name="CmdLineArgs">The command line arguments to parse</param>
+		/// <returns>The requested config hierarchy</returns>
+		public static ConfigHierarchy ReadHierarchy(ConfigHierarchyType Type, DirectoryReference? ProjectDir, UnrealTargetPlatform Platform,
+			string CustomConfig, CommandLineArguments CmdLineArgs)
+		{
+			// Handle command line overrides
+			List<String> OverrideStrings = new List<String>();
+
 			string IniConfigArgPrefix = "-ini:" + Enum.GetName(typeof(ConfigHierarchyType), Type) + ":";
 			string CustomConfigPrefix = "-CustomConfig=";
-			foreach (string CmdLineArg in CmdLine)
+			bool bDumpIniLoads = false;
+			foreach (string CmdLineArg in CmdLineArgs)
 			{
 				if (CmdLineArg.StartsWith(IniConfigArgPrefix, StringComparison.InvariantCultureIgnoreCase))
 				{
@@ -278,6 +321,10 @@ namespace UnrealBuildTool
 				{
 					CustomConfig = CmdLineArg.Substring(CustomConfigPrefix.Length);
 				}
+				if (CmdLineArg.Equals("-dumpiniloads", StringComparison.InvariantCultureIgnoreCase))
+				{
+					bDumpIniLoads = true;
+				}
 			}
 
 			if (CustomConfig == null)
@@ -286,39 +333,44 @@ namespace UnrealBuildTool
 			}
 
 			// Get the key to use for the cache. It cannot be null, so we use the engine directory if a project directory is not given.
-			ConfigHierarchyKey Key = new ConfigHierarchyKey(Type, ProjectDir, Platform, CustomConfig);
+			ConfigHierarchyKey Key = new ConfigHierarchyKey(Type, ProjectDir, Platform, CustomConfig, OverrideStrings);
+
+			ILogger Logger = NullLogger.Instance;
+
+			if (bDumpIniLoads)
+			{
+				Logger = Log.Logger;
+			};
 
 			// Try to get the cached hierarchy with this key
-			ConfigHierarchy? Hierarchy;
-			lock (HierarchyKeyToHierarchy)
+			Logger.LogInformation($"Requested Hierarchy: {Type},{ProjectDir},{Platform},{CustomConfig}");
+			return HierarchyKeyToHierarchy.GetOrAdd(Key, _ =>
 			{
-				if (!HierarchyKeyToHierarchy.TryGetValue(Key, out Hierarchy))
+				// Find all the input files
+				List<ConfigFile> Files = new List<ConfigFile>();
+				foreach (FileReference IniFileName in ConfigHierarchy.EnumerateConfigFileLocations(Type, ProjectDir, Platform, CustomConfig))
 				{
-					// Find all the input files
-					List<ConfigFile> Files = new List<ConfigFile>();
-					foreach (FileReference IniFileName in ConfigHierarchy.EnumerateConfigFileLocations(Type, ProjectDir, Platform, CustomConfig))
+					ConfigFile? File;
+					Logger.LogInformation($"Trying to load: {IniFileName}");
+					if (TryReadFile(IniFileName, out File))
 					{
-						ConfigFile? File;
-						if (TryReadFile(IniFileName, out File))
-						{
-							Files.Add(File);
-						}
+						Logger.LogInformation($"    Found!");
+						Files.Add(File);
 					}
-
-					foreach (string OverrideString in OverrideStrings)
-					{
-						ConfigFile OverrideFile = new ConfigFile(OverrideString);
-						Files.Add(OverrideFile);
-					}
-
-					// Create the hierarchy
-					Hierarchy = new ConfigHierarchy(Files);
-					HierarchyKeyToHierarchy.Add(Key, Hierarchy);
 				}
-			}
-			return Hierarchy;
+
+				foreach (string OverrideString in OverrideStrings)
+				{
+					ConfigFile OverrideFile = new ConfigFile(OverrideString);
+					Files.Add(OverrideFile);
+					Logger.LogInformation($"Trying to load override: {OverrideFile}");
+				}
+
+				// Create the hierarchy
+				return new ConfigHierarchy(Files);
+			});
 		}
-	
+
 		/// <summary>
 		/// Gets a list of ConfigFields for the given type
 		/// </summary>
@@ -326,28 +378,23 @@ namespace UnrealBuildTool
 		/// <returns>List of config fields for the given type</returns>
 		static List<ConfigMember> FindConfigMembersForType(Type TargetObjectType)
 		{
-			List<ConfigMember>? Members;
-			lock(TypeToConfigMembers)
+			return TypeToConfigMembers.GetOrAdd(TargetObjectType, _ =>
 			{
-				if (!TypeToConfigMembers.TryGetValue(TargetObjectType, out Members))
+				List<ConfigMember> Members = new List<ConfigMember>();
+				if (TargetObjectType.BaseType != null)
 				{
-					Members = new List<ConfigMember>();
-					if(TargetObjectType.BaseType != null)
-					{
-						Members.AddRange(FindConfigMembersForType(TargetObjectType.BaseType));
-					}
-					foreach (FieldInfo FieldInfo in TargetObjectType.GetFields(BindingFlags.Instance | BindingFlags.GetField | BindingFlags.GetProperty | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
-					{
-						ProcessConfigTypeMember<FieldInfo>(TargetObjectType, FieldInfo, Members, (FieldInfo, Attribute) => new ConfigField(FieldInfo, Attribute));
-					}
-					foreach (PropertyInfo PropertyInfo in TargetObjectType.GetProperties(BindingFlags.Instance | BindingFlags.GetField | BindingFlags.GetProperty | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
-					{
-						ProcessConfigTypeMember<PropertyInfo>(TargetObjectType, PropertyInfo, Members, (PropertyInfo, Attribute) => new ConfigProperty(PropertyInfo, Attribute));
-					}
-					TypeToConfigMembers.Add(TargetObjectType, Members);
+					Members.AddRange(FindConfigMembersForType(TargetObjectType.BaseType));
 				}
-			}
-			return Members;
+				foreach (FieldInfo FieldInfo in TargetObjectType.GetFields(BindingFlags.Instance | BindingFlags.GetField | BindingFlags.GetProperty | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+				{
+					ProcessConfigTypeMember<FieldInfo>(TargetObjectType, FieldInfo, Members, (FieldInfo, Attribute) => new ConfigField(FieldInfo, Attribute));
+				}
+				foreach (PropertyInfo PropertyInfo in TargetObjectType.GetProperties(BindingFlags.Instance | BindingFlags.GetField | BindingFlags.GetProperty | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+				{
+					ProcessConfigTypeMember<PropertyInfo>(TargetObjectType, PropertyInfo, Members, (PropertyInfo, Attribute) => new ConfigProperty(PropertyInfo, Attribute));
+				}
+				return Members;
+			});
 		}
 
 		static void ProcessConfigTypeMember<MEMBER>(Type TargetType, MEMBER MemberInfo, List<ConfigMember> Members, Func<MEMBER, ConfigFileAttribute, ConfigMember> CreateConfigMember)
@@ -384,7 +431,7 @@ namespace UnrealBuildTool
 		/// <param name="TargetObject">Object to receive the settings</param>
 		public static void ReadSettings(DirectoryReference? ProjectDir, UnrealTargetPlatform Platform, object TargetObject)
 		{
-			ReadSettings(ProjectDir, Platform, TargetObject, null);
+			ReadSettings(ProjectDir, Platform, TargetObject, null, null);
 		}
 
 		/// <summary>
@@ -394,13 +441,24 @@ namespace UnrealBuildTool
 		/// <param name="Platform">The platform being built</param>
 		/// <param name="TargetObject">Object to receive the settings</param>
 		/// <param name="ConfigValues">Will be populated with config values that were retrieved. May be null.</param>
-		internal static void ReadSettings(DirectoryReference? ProjectDir, UnrealTargetPlatform Platform, object TargetObject, Dictionary<ConfigDependencyKey, IReadOnlyList<string>?>? ConfigValues)
+		/// <param name="CmdLineArgs">Command line arguments, if null the application's command line arguments will be used</param>
+		internal static void ReadSettings(DirectoryReference? ProjectDir, UnrealTargetPlatform Platform, object TargetObject, Dictionary<ConfigDependencyKey, IReadOnlyList<string>?>? ConfigValues, CommandLineArguments? CmdLineArgs)
 		{
 			List<ConfigMember> Members = FindConfigMembersForType(TargetObject.GetType());
-			foreach(ConfigMember Member in Members)
+
+			foreach (ConfigMember Member in Members)
 			{
 				// Read the hierarchy listed
-				ConfigHierarchy Hierarchy = ReadHierarchy(Member.Attribute.ConfigType, ProjectDir, Platform);
+				ConfigHierarchy Hierarchy;
+
+				if (CmdLineArgs == null)
+				{
+					Hierarchy = ReadHierarchy(Member.Attribute.ConfigType, ProjectDir, Platform);
+				}
+				else
+				{
+					Hierarchy = ReadHierarchy(Member.Attribute.ConfigType, ProjectDir, Platform, "", CmdLineArgs);
+				}
 
 				// Get the key name
 				string KeyName = Member.Attribute.KeyName ?? Member.MemberInfo.Name;
@@ -412,10 +470,10 @@ namespace UnrealBuildTool
 				// Parse the values from the config files and update the target object
 				if (Member.AddElement == null)
 				{
-					if(Values != null && Values.Count == 1)
+					if (Values != null && Values.Count == 1)
 					{
 						object? Value;
-						if(TryParseValue(Values[0], Member.Type, out Value))
+						if (TryParseValue(Values[0], Member.Type, out Value))
 						{
 							Member.SetValue(TargetObject, Value);
 						}
@@ -423,12 +481,12 @@ namespace UnrealBuildTool
 				}
 				else
 				{
-					if(Values != null)
+					if (Values != null)
 					{
-						foreach(string Item in Values)
+						foreach (string Item in Values)
 						{
 							object? Value;
-							if(TryParseValue(Item, Member.ElementType!, out Value))
+							if (TryParseValue(Item, Member.ElementType!, out Value))
 							{
 								Member.AddElement(TargetObject, Value);
 							}
@@ -454,15 +512,15 @@ namespace UnrealBuildTool
 		/// <returns>True if the value could be parsed, false otherwise</returns>
 		public static bool TryParseValue(string Text, Type FieldType, out object? Value)
 		{
-			if(FieldType == typeof(string))
+			if (FieldType == typeof(string))
 			{
 				Value = Text;
 				return true;
 			}
-			else if(FieldType == typeof(bool))
+			else if (FieldType == typeof(bool))
 			{
 				bool BoolValue;
-				if(ConfigHierarchy.TryParse(Text, out BoolValue))
+				if (ConfigHierarchy.TryParse(Text, out BoolValue))
 				{
 					Value = BoolValue;
 					return true;
@@ -473,10 +531,10 @@ namespace UnrealBuildTool
 					return false;
 				}
 			}
-			else if(FieldType == typeof(int))
+			else if (FieldType == typeof(int))
 			{
 				int IntValue;
-				if(ConfigHierarchy.TryParse(Text, out IntValue))
+				if (ConfigHierarchy.TryParse(Text, out IntValue))
 				{
 					Value = IntValue;
 					return true;
@@ -487,10 +545,10 @@ namespace UnrealBuildTool
 					return false;
 				}
 			}
-			else if(FieldType == typeof(float))
+			else if (FieldType == typeof(float))
 			{
 				float FloatValue;
-				if(ConfigHierarchy.TryParse(Text, out FloatValue))
+				if (ConfigHierarchy.TryParse(Text, out FloatValue))
 				{
 					Value = FloatValue;
 					return true;
@@ -501,10 +559,10 @@ namespace UnrealBuildTool
 					return false;
 				}
 			}
-			else if(FieldType == typeof(double))
+			else if (FieldType == typeof(double))
 			{
 				double DoubleValue;
-				if(ConfigHierarchy.TryParse(Text, out DoubleValue))
+				if (ConfigHierarchy.TryParse(Text, out DoubleValue))
 				{
 					Value = DoubleValue;
 					return true;
@@ -515,10 +573,10 @@ namespace UnrealBuildTool
 					return false;
 				}
 			}
-			else if(FieldType == typeof(Guid))
+			else if (FieldType == typeof(Guid))
 			{
 				Guid GuidValue;
-				if(ConfigHierarchy.TryParse(Text, out GuidValue))
+				if (ConfigHierarchy.TryParse(Text, out GuidValue))
 				{
 					Value = GuidValue;
 					return true;
@@ -529,7 +587,7 @@ namespace UnrealBuildTool
 					return false;
 				}
 			}
-			else if(FieldType.IsEnum)
+			else if (FieldType.IsEnum)
 			{
 				try
 				{
@@ -542,7 +600,7 @@ namespace UnrealBuildTool
 					return false;
 				}
 			}
-			else if(FieldType.GetGenericTypeDefinition() == typeof(Nullable<>))
+			else if (FieldType.GetGenericTypeDefinition() == typeof(Nullable<>))
 			{
 				return TryParseValue(Text, FieldType.GetGenericArguments()[0], out Value);
 			}
@@ -551,7 +609,6 @@ namespace UnrealBuildTool
 				throw new Exception("Unsupported type for [ConfigFile] attribute");
 			}
 		}
-
 
 		#region Updating Default Config file support
 
@@ -600,7 +657,6 @@ namespace UnrealBuildTool
 			string LineToWrite = (UpdateType == ConfigDefaultUpdateType.AddArrayEntry ? "+" : "");
 			LineToWrite += KeyWithEquals + Value;
 
-
 			// read in all the lines so we can insert or replace one
 			List<string> Lines = File.ReadAllLines(DefaultConfigFile.FullName).ToList();
 
@@ -624,7 +680,6 @@ namespace UnrealBuildTool
 				File.WriteAllLines(DefaultConfigFile.FullName, Lines);
 				return true;
 			}
-
 
 			// find the last line in the section with the prefix
 			int LastIndexOfPrefix = -1;
@@ -662,7 +717,7 @@ namespace UnrealBuildTool
 				}
 
 				// move past blank lines between sections
-				while (string.IsNullOrWhiteSpace(Lines[NextSectionIndex - 1]))
+				while (String.IsNullOrWhiteSpace(Lines[NextSectionIndex - 1]))
 				{
 					NextSectionIndex--;
 				}

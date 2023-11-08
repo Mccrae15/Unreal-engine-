@@ -68,6 +68,8 @@ struct FGraphAppearanceInfo
 	FText ReadOnlyText;
 	/** Text to display if the graph is empty (to guide the user on what to do) */
 	FText InstructionText;
+	/** Bottom left warning text used for instance by Substrate */
+	FText WarningText;
 	/** Allows graphs to nicely fade instruction text (or completely hide it). */
 	TAttribute<float> InstructionFade;
 };
@@ -120,6 +122,10 @@ public:
 
 	DECLARE_DELEGATE( FOnDoubleClicked );
 
+	DECLARE_DELEGATE_OneParam( FOnNodeSingleClicked, UObject* );
+
+	DECLARE_DELEGATE_RetVal_TwoParams( FReply, FOnMouseButtonDown, const FGeometry&, const FPointerEvent& );
+
 	/** Info about events occurring in/on the graph */
 	struct FGraphEditorEvents
 	{
@@ -149,6 +155,10 @@ public:
 		FOnDisallowedPinConnection OnDisallowedPinConnection;
 		/** Called when the graph itself is double clicked */
 		FOnDoubleClicked OnDoubleClicked;
+		/** Called when the graph is clicked */
+		FOnMouseButtonDown OnMouseButtonDown;
+		/** Called when a node is single-clicked without drag */
+		FOnNodeSingleClicked OnNodeSingleClicked;
 	};
 
 
@@ -629,7 +639,7 @@ public:
 
 
 	/** Returns the graph panel used for this graph editor */
-	UNREALED_API virtual SGraphPanel* GetGraphPanel() const
+	virtual SGraphPanel* GetGraphPanel() const
 	{
 		if (Implementation.IsValid())
 		{

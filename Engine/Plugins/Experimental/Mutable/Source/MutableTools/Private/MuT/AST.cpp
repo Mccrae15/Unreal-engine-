@@ -158,7 +158,7 @@ void ASTOp::Assert()
     });
 
     // Validate the children
-    ForEachChild( [=](ASTChild&c)
+	ForEachChild( [this](ASTChild&c)
     {
         if(c)
         {
@@ -243,9 +243,10 @@ mu::Ptr<ASTOp> ASTOp::DeepClone( const Ptr<ASTOp>& root )
 
 
 //-------------------------------------------------------------------------------------------------
-void ASTOp::FullLink( Ptr<ASTOp>& root, FProgram& program, const FLinkerOptions* Options )
+void ASTOp::FullLink( Ptr<ASTOp>& root, FProgram& program, FLinkerOptions* Options )
 {
     MUTABLE_CPUPROFILER_SCOPE(AST_FullLink);
+
     Traverse_BottomUp_Unique( root,
                               [&](Ptr<ASTOp> n){ n->Link(program, Options); },
                               [&](Ptr<const ASTOp> n){ return n->linkedAddress==0; });
@@ -1022,8 +1023,10 @@ void ASTOpFixed::ForEachChild( const TFunctionRef<void(ASTChild&)> f )
 }
 
 
-void ASTOpFixed::Link( FProgram& program, const FLinkerOptions* )
+void ASTOpFixed::Link( FProgram& program, FLinkerOptions* )
 {
+	MUTABLE_CPUPROFILER_SCOPE(ASTOpFixed_Link);
+
     if (!linkedAddress)
     {
         OP lop = op;
@@ -1136,20 +1139,11 @@ FImageDesc ASTOpFixed::GetImageDesc( bool returnBestOption, FGetImageDescContext
         res = GetImageDesc(op.args.ImageInterpolate.targets[0], returnBestOption, context );
         break;
 
-    case OP_TYPE::IM_INTERPOLATE3:
-        res = GetImageDesc( op.args.ImageInterpolate3.target0, returnBestOption, context );
-        break;
-
-    case OP_TYPE::IM_DIFFERENCE:
-        res = GetImageDesc( op.args.ImageDifference.a, returnBestOption, context );
-        res.m_format = EImageFormat::IF_L_UBYTE;
-        break;
-
     case OP_TYPE::IM_PLAINCOLOUR:
         res.m_format = EImageFormat(op.args.ImagePlainColour.format);
         res.m_size[0] = op.args.ImagePlainColour.size[0];
         res.m_size[1] = op.args.ImagePlainColour.size[1];
-        res.m_lods = 1;
+		res.m_lods = op.args.ImagePlainColour.LODs;
         check( res.m_format != EImageFormat::IF_NONE );
         break;
 
@@ -1188,11 +1182,6 @@ FImageDesc ASTOpFixed::GetImageDesc( bool returnBestOption, FGetImageDescContext
         {
             res.m_size = children[op.args.ImageResizeLike.sizeSource]->GetImageDesc( returnBestOption, context ).m_size;
         }
-        break;
-
-    case OP_TYPE::IM_SELECTCOLOUR:
-        res = GetImageDesc( op.args.ImageSelectColour.base, returnBestOption, context );
-        res.m_format = EImageFormat::IF_L_UBYTE;
         break;
 
     case OP_TYPE::IM_GRADIENT:
@@ -1293,6 +1282,12 @@ void ASTOpFixed::GetLayoutBlockSize( int* pBlockX, int* pBlockY )
 	{
 		*pBlockX = 0;
 		*pBlockY = 0;
+		break;
+	}
+
+	case OP_TYPE::IM_CROP:
+	{
+		GetLayoutBlockSize(op.args.ImageCrop.source, pBlockX, pBlockY);
 		break;
 	}
 
@@ -1520,22 +1515,6 @@ bool ASTOpFixed::IsImagePlainConstant(FVector4f& colour) const
         res = children[op.args.ImagePlainColour.colour]->IsColourConstant( colour );
         break;
 
-    case OP_TYPE::IM_INTERPOLATE3:
-        res = children[op.args.ImageInterpolate3.target0]->IsColourConstant( colour );
-        if (res)
-        {
-			FVector4f baseColour;
-            res = children[op.args.ImageInterpolate3.target1]->IsColourConstant( colour );
-            res &= (colour==baseColour);
-        }
-        if (res)
-        {
-			FVector4f baseColour;
-            res = children[op.args.ImageInterpolate3.target2]->IsColourConstant( colour );
-            res &= (colour==baseColour);
-        }
-        break;
-
     default:
         // TODO: Improve this test with more operations
         //check( false );
@@ -1639,24 +1618,10 @@ mu::Ptr<ImageSizeExpression> ASTOpFixed::GetImageSizeExpression() const
         pRes->factor[1] = op.args.ImageBlankLayout.blockSize[1];
         break;
 
-    case OP_TYPE::IM_DIFFERENCE:
-        if ( children[op.args.ImageDifference.a] )
-        {
-            pRes = children[op.args.ImageDifference.a].child()->GetImageSizeExpression();
-        }
-        break;
-
     case OP_TYPE::IM_INTERPOLATE:
         if ( children[op.args.ImageInterpolate.targets[0]] )
         {
             pRes = children[op.args.ImageInterpolate.targets[0]].child()->GetImageSizeExpression();
-        }
-        break;
-
-    case OP_TYPE::IM_INTERPOLATE3:
-        if ( children[op.args.ImageInterpolate3.target0] )
-        {
-            pRes = children[op.args.ImageInterpolate3.target0].child()->GetImageSizeExpression();
         }
         break;
 
@@ -1685,13 +1650,6 @@ mu::Ptr<ImageSizeExpression> ASTOpFixed::GetImageSizeExpression() const
         if ( children[op.args.ImageColourMap.base] )
         {
             pRes = children[op.args.ImageColourMap.base].child()->GetImageSizeExpression();
-        }
-        break;
-
-    case OP_TYPE::IM_SELECTCOLOUR:
-        if ( children[op.args.ImageSelectColour.colour] )
-        {
-            pRes = children[op.args.ImageSelectColour.colour].child()->GetImageSizeExpression();
         }
         break;
 

@@ -17,6 +17,8 @@
 class UAnimSequence;
 class USkeletalMeshComponent;
 struct FLiveLinkCurveElement;
+struct FReferenceSkeleton;
+class FPoseAssetDetails;
 
 /** 
  * Pose data 
@@ -28,7 +30,7 @@ struct FLiveLinkCurveElement;
  */
 
 USTRUCT()
-struct ENGINE_API FPoseData
+struct FPoseData
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -81,15 +83,29 @@ struct FPoseAssetInfluences
 * Contains animation and curve for all poses
 */
 USTRUCT()
-struct ENGINE_API FPoseDataContainer
+struct FPoseDataContainer
 {
 	GENERATED_USTRUCT_BODY()
 
+public:
+	/** For StructOpsTypeTraits */
+	ENGINE_API bool Serialize(FArchive& Ar);
+	ENGINE_API void PostSerialize(const FArchive& Ar);
+	
 private:
+#if WITH_EDITORONLY_DATA
 	// pose names - horizontal data
 	UPROPERTY()
-	TArray<FSmartName>						PoseNames;
+	TArray<FSmartName> PoseNames_DEPRECATED;
+#endif
 
+	// pose names - horizontal data
+	UPROPERTY()
+	TArray<FName> PoseFNames;
+
+	// Sorted curve name indices
+	TArray<int32> SortedCurveIndices;
+	
 	// this is list of tracks - vertical data
 	UPROPERTY()
 	TArray<FName>							Tracks;
@@ -110,42 +126,56 @@ private:
 	UPROPERTY()
 	TArray<FAnimCurveBase>					Curves;
 
-	void Reset();
+	ENGINE_API void Reset();
 
-	FPoseData* FindPoseData(FSmartName PoseName);
-	FPoseData* FindOrAddPoseData(FSmartName PoseName);
+	ENGINE_API FPoseData* FindPoseData(FName PoseName);
+	ENGINE_API FPoseData* FindOrAddPoseData(FName PoseName);
 
 	int32 GetNumPoses() const { return Poses.Num();  }
-	bool Contains(FSmartName PoseName) const { return PoseNames.Contains(PoseName); }
+	bool Contains(FName PoseName) const { return PoseFNames.Contains(PoseName); }
 
-	bool IsValid() const { return PoseNames.Num() == Poses.Num() && Tracks.Num() == TrackBoneIndices.Num(); }
-	void GetPoseCurve(const FPoseData* PoseData, FBlendedCurve& OutCurve) const;
-	void BlendPoseCurve(const FPoseData* PoseData, FBlendedCurve& OutCurve, float Weight) const;
+	bool IsValid() const { return PoseFNames.Num() == Poses.Num() && Tracks.Num() == TrackBoneIndices.Num(); }
+	ENGINE_API void GetPoseCurve(const FPoseData* PoseData, FBlendedCurve& OutCurve) const;
+	ENGINE_API void BlendPoseCurve(const FPoseData* PoseData, FBlendedCurve& OutCurve, float Weight) const;
 
 	// we have to delete tracks if skeleton has modified
 	// usually this may not be issue since once cooked, it should match
-	void DeleteTrack(int32 TrackIndex);
+	ENGINE_API void DeleteTrack(int32 TrackIndex);
 	
 	// get default transform - it considers for retarget source if exists
-	FTransform GetDefaultTransform(const FName& InTrackName, USkeleton* InSkeleton, const TArray<FTransform>& RefPose) const;
-	FTransform GetDefaultTransform(int32 SkeletonIndex, const TArray<FTransform>& RefPose) const;
+	ENGINE_API FTransform GetDefaultTransform(const FName& InTrackName, USkeleton* InSkeleton, const TArray<FTransform>& RefPose) const;
+	ENGINE_API FTransform GetDefaultTransform(int32 SkeletonIndex, const TArray<FTransform>& RefPose) const;
 
 #if WITH_EDITOR
-	void AddOrUpdatePose(const FSmartName& InPoseName, const TArray<FTransform>& InlocalSpacePose, const TArray<float>& InCurveData);
-	void RenamePose(FSmartName OldPoseName, FSmartName NewPoseName);
-	int32 DeletePose(FSmartName PoseName);
-	bool DeleteCurve(FSmartName CurveName);
-	bool InsertTrack(const FName& InTrackName, USkeleton* InSkeleton, const TArray<FTransform>& RefPose);
+	ENGINE_API void AddOrUpdatePose(const FName& InPoseName, const TArray<FTransform>& InlocalSpacePose, const TArray<float>& InCurveData);
+	ENGINE_API void RenamePose(FName OldPoseName, FName NewPoseName);
+	ENGINE_API int32 DeletePose(FName PoseName);
+	ENGINE_API bool DeleteCurve(FName CurveName);
+	ENGINE_API bool InsertTrack(const FName& InTrackName, USkeleton* InSkeleton, const TArray<FTransform>& RefPose);
 	
-	bool FillUpSkeletonPose(FPoseData* PoseData, const USkeleton* InSkeleton);
-	void RetrieveSourcePoseFromExistingPose(bool bAdditive, int32 InBasePoseIndex, const TArray<FTransform>& InBasePose, const TArray<float>& InBaseCurve);
+	ENGINE_API bool FillUpSkeletonPose(FPoseData* PoseData, const USkeleton* InSkeleton);
+	ENGINE_API void RetrieveSourcePoseFromExistingPose(bool bAdditive, int32 InBasePoseIndex, const TArray<FTransform>& InBasePose, const TArray<float>& InBaseCurve);
 
 	// editor features for full pose <-> additive pose
-	void ConvertToFullPose(USkeleton* InSkeleton, const TArray<FTransform>& RefPose);
-	void ConvertToAdditivePose(const TArray<FTransform>& InBasePose, const TArray<float>& InBaseCurve);
+	ENGINE_API void ConvertToFullPose(USkeleton* InSkeleton, const TArray<FTransform>& RefPose);
+	ENGINE_API void ConvertToAdditivePose(const TArray<FTransform>& InBasePose, const TArray<float>& InBaseCurve);
 #endif // WITH_EDITOR
+
+	ENGINE_API void RebuildCurveIndexTable();
+	
 	friend class UPoseAsset;
 };
+
+template<>
+struct TStructOpsTypeTraits<FPoseDataContainer> : public TStructOpsTypeTraitsBase2<FPoseDataContainer>
+{
+	enum
+	{
+		WithSerializer = true,
+		WithPostSerialize = true,
+	};
+};
+
 
 /**
  * Pose Asset that can be blended by weight of curves 
@@ -161,7 +191,7 @@ private:
 	struct FPoseDataContainer PoseContainer;
 
 	/** Whether or not Additive Pose or not - these are property that needs post process, so */
-	UPROPERTY()
+	UPROPERTY(Category = Additive, EditAnywhere)
 	bool bAdditivePose;
 
 	/** if -1, use ref pose */
@@ -232,10 +262,18 @@ public:
 	ENGINE_API int32 GetNumPoses() const;
 	ENGINE_API int32 GetNumCurves() const;
 	ENGINE_API int32 GetNumTracks() const;
+
+	UE_DEPRECATED(5.3, "Please use GetPoseFNames.")
 	ENGINE_API const TArray<FSmartName> GetPoseNames() const;
-	ENGINE_API const TArray<FName>		GetTrackNames() const;
+	
+	ENGINE_API const TArray<FName>& GetPoseFNames() const;
+	ENGINE_API const TArray<FName>& GetTrackNames() const;
+
+	UE_DEPRECATED(5.3, "Please use GetCurveFNames.")
 	ENGINE_API const TArray<FSmartName> GetCurveNames() const;
-	ENGINE_API const TArray<FAnimCurveBase> GetCurveData() const;
+	
+	ENGINE_API const TArray<FName> GetCurveFNames() const;
+	ENGINE_API const TArray<FAnimCurveBase>& GetCurveData() const;
 	ENGINE_API const TArray<float> GetCurveValues(const int32 PoseIndex) const;
 
 	/** Find index of a track with a given bone name. Returns INDEX_NONE if not found. */
@@ -246,8 +284,9 @@ public:
 	 *	@return	Returns true if OutValue is valid, false if not
 	 */
 	ENGINE_API bool GetCurveValue(const int32 PoseIndex, const int32 CurveIndex, float& OutValue) const;
-	 
-	ENGINE_API bool ContainsPose(const FSmartName& InPoseName) const { return PoseContainer.Contains(InPoseName); }
+
+	UE_DEPRECATED(5.3, "Please use ContainsPose that takes a FName.")
+	bool ContainsPose(const FSmartName& InPoseName) const { return PoseContainer.Contains(InPoseName.DisplayName); }
 	ENGINE_API bool ContainsPose(const FName& InPoseName) const;
 
 #if WITH_EDITOR
@@ -258,11 +297,34 @@ public:
 	/** Returns the name of all contained poses */
 	UFUNCTION(BlueprintPure, Category=PoseAsset)
 	void GetPoseNames(TArray<FName>& PoseNames) const;
+
+	/** Returns base pose name, only valid when additive, NAME_None indicates reference pose */
+	UFUNCTION(BlueprintPure, Category=PoseAsset)
+	FName GetBasePoseName() const;
+
+	/** Set base pose index by name, NAME_None indicates reference pose - returns true if set successfully */
+	UFUNCTION(BlueprintCallable, Category=PoseAsset)
+    bool SetBasePoseName(const FName& NewBasePoseName);
+
+	UE_DEPRECATED(5.3, "Please use AddPoseWithUniqueName.")
+	bool AddOrUpdatePoseWithUniqueName(const USkeletalMeshComponent* MeshComponent, FSmartName* OutPoseName = nullptr) { return false; }
 	
-	ENGINE_API bool AddOrUpdatePoseWithUniqueName(const USkeletalMeshComponent* MeshComponent, FSmartName* OutPoseName = nullptr);
-	ENGINE_API void AddOrUpdatePose(const FSmartName& PoseName, const USkeletalMeshComponent* MeshComponent, bool bUpdateCurves = true);
+	ENGINE_API FName AddPoseWithUniqueName(const USkeletalMeshComponent* MeshComponent);
+	
+	UE_DEPRECATED(5.3, "Please use AddOrUpdatePose that takes a FName.")
+	void AddOrUpdatePose(const FSmartName& PoseName, const USkeletalMeshComponent* MeshComponent, bool bUpdateCurves = true) { AddOrUpdatePose(PoseName.DisplayName, MeshComponent, bUpdateCurves); }
+
+	ENGINE_API void AddOrUpdatePose(const FName& PoseName, const USkeletalMeshComponent* MeshComponent, bool bUpdateCurves = true);
+
+	UE_DEPRECATED(5.3, "Please use AddReferencePose that takes a FName.")
 	ENGINE_API void AddReferencePose(const FSmartName& PoseName, const FReferenceSkeleton& ReferenceSkeleton);
-	ENGINE_API void CreatePoseFromAnimation(class UAnimSequence* AnimSequence, const TArray<FSmartName>* InPoseNames = nullptr);
+
+	ENGINE_API void AddReferencePose(const FName& PoseName, const FReferenceSkeleton& ReferenceSkeleton);
+
+	UE_DEPRECATED(5.3, "Please use CreatePoseFromAnimation that takes a ptr to an array of FNames.")
+	void CreatePoseFromAnimation(class UAnimSequence* AnimSequence, const TArray<FSmartName>* InPoseNames) {}
+	
+	ENGINE_API void CreatePoseFromAnimation(class UAnimSequence* AnimSequence, const TArray<FName>* InPoseNames = nullptr);
 
 	/** Contained poses are re-generated from the provided Animation Sequence*/
 	UFUNCTION(BlueprintCallable, Category=PoseAsset)
@@ -273,13 +335,23 @@ public:
 	virtual void ReplaceReferredAnimations(const TMap<UAnimationAsset*, UAnimationAsset*>& ReplacementMap) override;
 	// End AnimationAsset interface
 
-	ENGINE_API bool ModifyPoseName(FName OldPoseName, FName NewPoseName, const SmartName::UID_Type* NewUID);
+	UE_DEPRECATED(5.3, "Please use ModifyPoseName that does not take a UID.")
+	bool ModifyPoseName(FName OldPoseName, FName NewPoseName, const SmartName::UID_Type* NewUID) { return ModifyPoseName(OldPoseName, NewPoseName); }
 
-	// Rename the smart names used by this Pose Asset
+	ENGINE_API bool ModifyPoseName(FName OldPoseName, FName NewPoseName);
+
+	
+	UE_DEPRECATED(5.3, "Please use RenamePoseOrCurveName.")
 	ENGINE_API void RenameSmartName(const FName& InOriginalName, const FName& InNewName);
 
-	// Remove poses or curves using the smart names supplied
+	// Rename poses or curves using the names supplied
+	ENGINE_API void RenamePoseOrCurveName(const FName& InOriginalName, const FName& InNewName);
+
+	UE_DEPRECATED(5.3, "Please use RemovePoseOrCurveNames.")
 	ENGINE_API void RemoveSmartNames(const TArray<FName>& InNamesToRemove);
+
+	// Remove poses or curves using the names supplied
+	ENGINE_API void RemovePoseOrCurveNames(const TArray<FName>& InNamesToRemove);
 
 	// editor interface
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
@@ -292,10 +364,10 @@ public:
 	ENGINE_API int32 DeletePoses(TArray<FName> PoseNamesToDelete);
 	ENGINE_API int32 DeleteCurves(TArray<FName> CurveNamesToDelete);
 	ENGINE_API bool ConvertSpace(bool bNewAdditivePose, int32 NewBasePoseInde);
-	ENGINE_API const FName GetPoseNameByIndex(int32 InBasePoseIndex) const { return PoseContainer.PoseNames.IsValidIndex(InBasePoseIndex) ? PoseContainer.PoseNames[InBasePoseIndex].DisplayName : NAME_None; }
+	const FName GetPoseNameByIndex(int32 InBasePoseIndex) const { return PoseContainer.PoseFNames.IsValidIndex(InBasePoseIndex) ? PoseContainer.PoseFNames[InBasePoseIndex] : NAME_None; }
 #endif // WITH_EDITOR
 
-	ENGINE_API int32 GetBasePoseIndex() const { return BasePoseIndex;  }
+	int32 GetBasePoseIndex() const { return BasePoseIndex;  }
 	ENGINE_API const int32 GetPoseIndexByName(const FName& InBasePoseName) const;
 	ENGINE_API const int32 GetCurveIndexByName(const FName& InCurveName) const;
 
@@ -318,8 +390,12 @@ public:
 		OnPoseListChanged.Remove(Handle);
 	}
 
+	UE_DEPRECATED(5.3, "Please use GetUniquePoseName scoped to this pose asset.")
 	ENGINE_API static FName GetUniquePoseName(const USkeleton* Skeleton);
+	UE_DEPRECATED(5.3, "Please use GetUniquePoseName.")
 	ENGINE_API static FSmartName GetUniquePoseSmartName(USkeleton* Skeleton);
+	
+	ENGINE_API static FName GetUniquePoseName(UPoseAsset* PoseAsset);
 
 protected:
 	virtual void RemapTracksToNewSkeleton(USkeleton* NewSkeleton, bool bConvertSpaces) override;
@@ -334,8 +410,9 @@ private:
 	void Reinitialize();
 
 	// After any update to SourceLocalPoses, this does update runtime data
-	void AddOrUpdatePose(const FSmartName& PoseName, const TArray<FName>& TrackNames, const TArray<FTransform>& LocalTransform, const TArray<float>& CurveValues);
+	void AddOrUpdatePose(const FName& PoseName, const TArray<FName>& TrackNames, const TArray<FTransform>& LocalTransform, const TArray<float>& CurveValues);
 	void PostProcessData();
+	void BreakAnimationSequenceGUIDComparison();
 #endif // WITH_EDITOR	
 
 private:
@@ -347,4 +424,6 @@ private:
 #endif
 	const TArray<FTransform>& GetRetargetTransforms() const;
 	FName GetRetargetTransformsSourceName() const;
+
+	friend class FPoseAssetDetails;
 };

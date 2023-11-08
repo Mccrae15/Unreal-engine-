@@ -11,15 +11,55 @@ class ITextureCompressorModule;
 class IImageWrapperModule;
 struct FTextureSourceData;
 struct FTextureSourceBlockData;
+struct FTextureBuildSettings;
+struct FSlowTask;
+
+struct FVTTileMipPayload
+{
+	EPixelFormat CompressedFormat = EPixelFormat::PF_Unknown;
+	TArray<uint8> Payload;
+};
+
+struct FVTTilePayload
+{
+	TArray<FVTTileMipPayload> Mips;
+};
+
+struct FVTBlockPayload
+{
+	// Block size in pixels (each block can be different size)
+	int32 SizeX = 0;
+	int32 SizeY = 0;
+
+	// Block coordinate (in block units) in texture where block is located
+	int32 BlockX = 0;
+	int32 BlockY = 0;
+
+	// Normally each blocks covers a 1x1 block area in output, but it can cover more.
+	// For example, miptail covers multiple input blocks. Thease are in block units.
+	int32 SizeInBlocksX = 1;
+	int32 SizeInBlocksY = 1;
+
+	int32 MipBias = 0; // First mip level in block that contains actual data (because blocks can be smaller than others)
+	int32 NumMips = 0; // Count of mips (may be less than source texture reqests because of MipBias)
+	int32 NumSlices = 0;
+	TArray<FVTTilePayload> Tiles;
+	TArray<FImage> Mips;
+};
+
+struct FVTLayerPayload
+{
+	TArray<FVTBlockPayload> Blocks;
+};
 
 struct FVTSourceTileEntry
 {
-	int32 BlockIndex;
-	int32 TileIndex;
-	int32 MipIndex;
-	int32 MipIndexInBlock;
-	int32 TileInBlockX;
-	int32 TileInBlockY;
+	int32 BlockIndex = 0;
+	int32 TileIndex = 0;
+	int32 MipIndex = 0;
+	int32 MipIndexInBlock = 0;
+	int32 TileX = 0;
+	int32 TileY = 0;
 };
 
 struct FLayerData
@@ -80,23 +120,23 @@ public:
 	~FVirtualTextureDataBuilder();
 
 	// note: InSourceData is freed by this function
-	void Build(FTextureSourceData& InSourceData, FTextureSourceData& InCompositeSourceData, const FTextureBuildSettings* InSettingsPerLayer, bool bAllowAsync);
+	bool Build(FTextureSourceData& InSourceData, FTextureSourceData& InCompositeSourceData, const FTextureBuildSettings* InSettingsPerLayer, bool bAllowAsync);
 
 private:
 	friend struct FAsyncMacroBlockTask;
 
-	void BuildPagesMacroBlocks(bool bAllowAsync);
-	void BuildPagesForChunk(const TArray<FVTSourceTileEntry>& ActiveTileList, bool bAllowAsync);
-	void BuildTiles(const TArray<FVTSourceTileEntry>& TileList, uint32 layer, FLayerData& GeneratedData, bool bAllowAsync);
-	void PushDataToChunk(const TArray<FVTSourceTileEntry> &Tiles, const TArray<FLayerData>& LayerData);
+	bool BuildPagesForChunk(const TArray<FVTSourceTileEntry>& ActiveTileList);
+	void BuildTiles(const TArray<FVTSourceTileEntry>& TileList, uint32 layer, FLayerData& GeneratedData);
+	bool PushDataToChunk(const TArray<FVTSourceTileEntry>& Tiles, const TArray<FLayerData>& LayerData);
 
-	int32 FindSourceBlockIndex(int32 MipIndex, int32 BlockX, int32 BlockY) const;
+	int32 FindSourceBlockIndex(int32 MipIndex, int32 BlockX, int32 BlockY);
 
-	// Build the source data including mipmaps etc
-	void BuildSourcePixels(const FTextureSourceData& SourceData, const FTextureSourceData& CompositeSourceData);
-	// Release the source pixels
-	void FreeSourcePixels();
-	
+	void BuildLayerBlocks(FSlowTask& BuildTask, uint32 LayerIndex, const FVirtualTextureSourceLayerData& LayerData, FTextureSourceData& SourceData, FTextureSourceData& CompositeSourceData, bool bAllowAsync);
+	void BuildBlockTiles(uint32 LayerIndex, uint32 BlockIndex, FVTBlockPayload& Block, const FVirtualTextureSourceLayerData& LayerData, bool bAllowAsync);
+	bool BuildChunks();
+
+	TArray<FVTLayerPayload> LayerPayload;
+
 	// Cached inside this object
 	TArray<FTextureBuildSettings> SettingsPerLayer;
 	FVirtualTextureBuiltData &OutData;
@@ -104,14 +144,11 @@ private:
 	// Some convenience variables (mostly derived from the passed in build settings)
 	FVirtualTextureBuilderDerivedInfo DerivedInfo;
 
-	TArray<FVirtualTextureSourceLayerData> SourceLayers;
-	TArray<FTextureSourceBlockData> SourceBlocks;
-	//FTextureSourceBlockData SourceMiptailBlock;
-
 	ITextureCompressorModule *Compressor;
 	IImageWrapperModule *ImageWrapper;
 
 	const FString& DebugTexturePathName;
+	int32 ChunkDumpIndex = 0;
 
-	bool DetectAlphaChannel(const FImage &image);
+	static bool DetectAlphaChannel(const FImage &image);
 };

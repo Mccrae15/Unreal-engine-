@@ -6,16 +6,11 @@ public class ContentBrowser : ModuleRules
 {
 	public ContentBrowser(ReadOnlyTargetRules Target) : base(Target)
 	{
+		UnsafeTypeCastWarningLevel = WarningLevel.Error;
+
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
-				"AssetRegistry",
-				"CollectionManager",
-				"EditorWidgets",
-				"GameProjectGeneration",
                 "MainFrame",
-				"PackagesDialog",
-				"SourceControl",
-				"SourceControlWindows"
 			}
 		);
 
@@ -48,6 +43,7 @@ public class ContentBrowser : ModuleRules
 				"ToolMenus",
 				"StatusBar",
 				"ToolWidgets",
+				"TelemetryUtils"
 			}
 		);
 

@@ -85,7 +85,7 @@
 #include "Misc/NamePermissionList.h"
 #include "Modules/ModuleManager.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
-#include "PropertyEditorPermissionList.h"
+#include "PropertyPermissionList.h"
 #include "Templates/Casts.h"
 #include "Templates/ChooseClass.h"
 #include "Templates/SubclassOf.h"
@@ -1294,17 +1294,17 @@ FBlueprintActionDatabase::~FBlueprintActionDatabase()
 void FBlueprintActionDatabase::AddReferencedObjects(FReferenceCollector& Collector)
 {
 	TSet<UBlueprintNodeSpawner*> AllActions;
-	for (const TPair<FObjectKey, FActionList>& ActionListIt : ActionRegistry)
+	for (TPair<FObjectKey, FActionList>& ActionListIt : ActionRegistry)
 	{
-		const FActionList& ActionList = ActionListIt.Value;
+		FActionList& ActionList = ActionListIt.Value;
 		AllActions.Reserve(AllActions.Num() + ActionList.Num());
-		for (UBlueprintNodeSpawner* Action : ActionList)
+		for (auto& Action : ActionList)
 		{
 			// We have some reports of invalid action ptrs during GC - try to catch that case here without crashing the editor while reference gathering.
 			if (!Action || (GIsGarbageCollecting && !Action->IsValidLowLevel()))
 			{
 				const UObject* Key = ActionListIt.Key.ResolveObjectPtr();
-				ensureMsgf(false, TEXT("Invalid action (0x%016llx) registered for object: %s"), (int64)(PTRINT)Action, Key ? *Key->GetName() : TEXT("NULL"));
+				ensureMsgf(false, TEXT("Invalid action (0x%016llx) registered for object: %s"), (int64)(PTRINT)Action.Get(), Key ? *Key->GetName() : TEXT("NULL"));
 				continue;
 			}
 
@@ -1320,16 +1320,16 @@ void FBlueprintActionDatabase::AddReferencedObjects(FReferenceCollector& Collect
 	if (UnloadedActionRegistry.Num() > 0)
 	{
 		TSet<UBlueprintNodeSpawner*> UnloadedActions;
-		for (const TPair<FSoftObjectPath, FActionList>& UnloadedActionListIt : UnloadedActionRegistry)
+		for (TPair<FSoftObjectPath, FActionList>& UnloadedActionListIt : UnloadedActionRegistry)
 		{
-			const FActionList& ActionList = UnloadedActionListIt.Value;
+			FActionList& ActionList = UnloadedActionListIt.Value;
 			UnloadedActions.Reserve(UnloadedActions.Num() + ActionList.Num());
-			for (UBlueprintNodeSpawner* Action : ActionList)
+			for (auto& Action : ActionList)
 			{
 				// Similar to above; however, we don't have any reports of failure here during GC. Nonetheless, we'll try and catch an invalid ptr value just in case.
 				if (!Action || (GIsGarbageCollecting && !Action->IsValidLowLevel()))
 				{
-					ensureMsgf(false, TEXT("Invalid action (0x%016llx) registered for unloaded object path: %s"), (int64)(PTRINT)Action, *UnloadedActionListIt.Key.ToString());
+					ensureMsgf(false, TEXT("Invalid action (0x%016llx) registered for unloaded object path: %s"), (int64)(PTRINT)Action.Get(), *UnloadedActionListIt.Key.ToString());
 					continue;
 				}
 
@@ -1571,15 +1571,10 @@ void FBlueprintActionDatabase::RefreshClassActions(UClass* const Class)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FBlueprintActionDatabase::RefreshClassActions);
 
-	// Early out if the class is filtered
-	if (!IsClassAllowed(Class, EPermissionsContext::Asset))
-	{
-		return;
-	}
-
 	using namespace BlueprintActionDatabaseImpl;
 	check(Class != nullptr);
 
+	bool const bFilterClass      = !IsClassAllowed(Class, EPermissionsContext::Asset);
 	bool const bOutOfDateClass   = Class->HasAnyClassFlags(CLASS_NewerVersionExists);
 	bool const bHiddenClass		 = Class->HasAnyClassFlags(CLASS_Hidden);
 	bool const bIsBlueprintClass = (Cast<UBlueprintGeneratedClass>(Class) != nullptr);
@@ -1592,6 +1587,12 @@ void FBlueprintActionDatabase::RefreshClassActions(UClass* const Class)
 	}
 	else if (bIsBlueprintClass)
 	{
+		// Early out if the class is filtered
+		if (bFilterClass)
+		{
+			return;
+		}
+
 		UBlueprint* Blueprint = Cast<UBlueprint>(Class->ClassGeneratedBy);
 		if ((Blueprint != nullptr) && BlueprintActionDatabaseImpl::IsObjectValidForDatabase(Blueprint))
 		{
@@ -1611,6 +1612,12 @@ void FBlueprintActionDatabase::RefreshClassActions(UClass* const Class)
 	// own actions (presumably ones that would spawn that node)...
 	else if (Class->IsChildOf<UEdGraphNode>())
 	{
+		// Early out if the class is filtered
+		if (bFilterClass)
+		{
+			return;
+		}
+
 		{
 			FActionList& ClassActionList = ActionRegistry.FindOrAdd(Class);
 			if (!bIsInitializing)
@@ -1646,13 +1653,19 @@ void FBlueprintActionDatabase::RefreshClassActions(UClass* const Class)
 	}
 	else if (Class->IsChildOf<UBlueprint>())
 	{
+		// Early out if the class is filtered
+		if (bFilterClass)
+		{
+			return;
+		}
+
 		FBlueprintActionDatabaseRegistrar Registrar(ActionRegistry, UnloadedActionRegistry, ActionPrimingQueue);
 		Cast<UBlueprint>(Class->ClassDefaultObject)->GetTypeActions(Registrar);
 	}
 	else
 	{
 		FActionList& ClassActionList = ActionRegistry.FindOrAdd(Class);
-		if (!bIsInitializing)
+		if (!bIsInitializing && !bFilterClass)
 		{
 			ClassActionList.Empty();
 			// if we're only refreshing this class (and not init'ing the whole 
@@ -1663,6 +1676,7 @@ void FBlueprintActionDatabase::RefreshClassActions(UClass* const Class)
 
 			RegisterAllNodeActions(Registrar);
 		}
+		// Note: We still run this if we're filtering the class, as the class itself may expose properties/functions/etc that derived non-filtered classes need access to
 		GetClassMemberActions(Class, ClassActionList);
 
 		// queue the newly added actions for priming
@@ -1916,7 +1930,7 @@ bool FBlueprintActionDatabase::ClearAssetActions(const FObjectKey& AssetObjectKe
 void FBlueprintActionDatabase::ClearUnloadedAssetActions(const FSoftObjectPath& ObjectPath)
 {
 	// Check if the asset can be found in the unloaded action registry, if it can, we need to remove it
-	if(TArray<UBlueprintNodeSpawner*>* UnloadedActionList = UnloadedActionRegistry.Find(ObjectPath))
+	if(auto* UnloadedActionList = UnloadedActionRegistry.Find(ObjectPath))
 	{
 		for(UBlueprintNodeSpawner* NodeSpawner : *UnloadedActionList)
 		{
@@ -1935,7 +1949,7 @@ void FBlueprintActionDatabase::ClearUnloadedAssetActions(const FSoftObjectPath& 
 void FBlueprintActionDatabase::MoveUnloadedAssetActions(const FSoftObjectPath& SourceObjectPath, const FSoftObjectPath& TargetObjectPath)
 {
 	// Check if the asset can be found in the unloaded action registry, if it can, we need to remove it and re-add under the new name
-	if(TArray<UBlueprintNodeSpawner*>* UnloadedActionList = UnloadedActionRegistry.Find(SourceObjectPath))
+	if(auto* UnloadedActionList = UnloadedActionRegistry.Find(SourceObjectPath))
 	{
 		check(!UnloadedActionRegistry.Find(TargetObjectPath));
 

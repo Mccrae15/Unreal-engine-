@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "MuR/SerialisationPrivate.h"
+#include "MuR/Serialisation.h"
 #include "Containers/Array.h"
 #include "HAL/PlatformMath.h"
 #include "Math/Transform.h"
@@ -10,12 +10,14 @@
 #include "Misc/AssertionMacros.h"
 #include "MuR/Ptr.h"
 #include "MuR/RefCounted.h"
-#include "MuR/Serialisation.h"
+
+#include <string>
 
 
 namespace mu
 {
-
+	typedef std::string string;
+	
 	// Forward references
     class Skeleton;
 
@@ -51,14 +53,21 @@ namespace mu
 		int32 GetBoneCount() const;
         void SetBoneCount(int32 c);
 
-        //! Return the name of one of the bones used by this skeleton
-		//! \param boneIndex goes from 0 to GetBoneCount()-1
-		const char* GetBoneName(int32 boneIndex) const;
-        void SetBoneName( int b, const char* strName );
+		//! DEBUG. Return the FName of the bone at index BoneIndex. Only valid in the editor
+		const FName GetBoneFName(int32 Index) const;
+		void SetBoneFName(const int32 Index, const FName BoneName);
 
         //! Get and set the parent bone of each bone. The parent can be -1 if the bone is a root.
         int32 GetBoneParent(int32 boneIndex) const;
         void SetBoneParent(int32 boneIndex, int32 parentBoneIndex);
+
+		//! Return the BoneIndex of the bone at index from the BoneIndices array
+		uint16 GetBoneId(int32 Index) const;
+		void SetBoneId(int32 Index, uint16 BoneIndex);
+
+		//! Return the index of BoneIndex inside the BoneIndices array.
+		int32 FindBone(const uint16 BoneIndex) const;
+		
 
 	protected:
 
@@ -67,78 +76,34 @@ namespace mu
 
 	public:
 
-		//!
-		TArray<string> m_bones;
+		//! Deprecated
+		TArray<string> m_bones_DEPRECATED;
 		TArray<FTransform3f> m_boneTransforms_DEPRECATED;
+
+
+
+		//! DEBUG. FNames of the bones. Only valid in the editor. Do not serialize.
+		TArray<FName> BoneNames;
+
+		//! Ids of the bones. The Id is the BoneName index in the CO BoneNames array
+		TArray<uint16> BoneIds;
 
 		//! For each bone, index of the parent bone in the bone vectors. -1 means no parent.
 		//! This array must have the same size than the m_bones array.
-		TArray<int16> m_boneParents;
-
-
-		//!
-		inline void Serialise(OutputArchive& arch) const
-		{
-			uint32 ver = 5;
-			arch << ver;
-
-			arch << m_bones;
-			arch << m_boneParents;
-		}
+		TArray<int16> BoneParents;
 
 		//!
-		inline void Unserialise(InputArchive& arch)
-		{
-			uint32 ver;
-			arch >> ver;
-			check(ver >= 3);
+		void Serialise(OutputArchive& arch) const;
 
-			arch >> m_bones;
-
-			if (ver == 3)
-			{
-				arch >> m_boneTransforms_DEPRECATED;
-			}
-
-			arch >> m_boneParents;
-
-			if (ver <= 4)
-			{
-				TArray<int32> boneIds;
-				arch >> boneIds;
-			}
-
-			if (ver == 3)
-			{
-				bool bBoneTransformModified;
-				arch >> bBoneTransformModified;
-			}
-		}
-
+		//!
+		void Unserialise(InputArchive& arch);
 
 		//!
 		inline bool operator==(const Skeleton& o) const
 		{
-			return m_bones == o.m_bones
-				&& m_boneParents == o.m_boneParents;
+			return BoneIds == o.BoneIds
+				&& BoneParents == o.BoneParents;
 		}
-
-
-		//-----------------------------------------------------------------------------------------
-		//! Fins a bone index by name
-		//-----------------------------------------------------------------------------------------
-		int FindBone(const char* strName) const
-		{
-			for (int32 i = 0; i < m_bones.Num(); ++i)
-			{
-				if (m_bones[i] == strName)
-				{
-					return (int)i;
-				}
-			}
-			return -1;
-		}
-
 	};
 
 }

@@ -20,7 +20,7 @@
 
 #define LOCTEXT_NAMESPACE "SMessageLogMessageListRow"
 
-class MESSAGELOG_API SMessageLogMessageListRow
+class SMessageLogMessageListRow
 	: public STableRow<TSharedPtr<FTokenizedMessage>>
 {
 public:
@@ -74,7 +74,12 @@ private:
 
 	EVisibility GetActionLinkVisibility(TSharedRef<FActionToken> ActionToken) const
 	{
-		return ActionToken->CanExecuteAction() ? EVisibility::Visible : EVisibility::Collapsed;
+		return ActionToken->IsValidAction() ? EVisibility::Visible : EVisibility::Collapsed;
+	}
+
+	bool GetActionLinkEnable(TSharedRef<FActionToken> ActionToken) const
+	{
+		return ActionToken->CanExecuteAction();
 	}
 
 	void HandleActionHyperlinkNavigate( TSharedRef<FActionToken> ActionToken )

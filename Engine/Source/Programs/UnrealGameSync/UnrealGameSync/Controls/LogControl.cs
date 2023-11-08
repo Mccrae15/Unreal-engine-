@@ -2,12 +2,10 @@
 
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.Drawing;
 using System.Data;
 using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Runtime.InteropServices;
 using System.Collections.Concurrent;
@@ -21,7 +19,7 @@ namespace UnrealGameSync
 	public class LogControl : UserControl
 	{
 		[Flags]
-		public enum ScrollInfoMask : uint
+		public enum ScrollInfoMask : int
 		{
 			SifRange = 0x1,
 			SifPage = 0x2,
@@ -66,7 +64,7 @@ namespace UnrealGameSync
 		static extern int GetScrollInfo(IntPtr hwnd, ScrollBarType fnBar, Scrollinfo lpsi);
 
 		[DllImport("user32.dll", CharSet = CharSet.Auto)]
-		static extern IntPtr SendMessage(IntPtr hWnd, UInt32 msg, IntPtr wParam, IntPtr lParam);
+		static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
 		struct TextLocation
 		{
@@ -107,7 +105,7 @@ namespace UnrealGameSync
 			}
 		}
 
-		List<string> _lines = new List<string>();
+		readonly List<string> _lines = new List<string>();
 		int _maxLineLength;
 
 		int _scrollLine;
@@ -177,6 +175,12 @@ namespace UnrealGameSync
 				_updateTimer = null;
 			}
 
+			if (_selectionScrollTimer != null)
+			{
+				_selectionScrollTimer.Dispose();
+				_selectionScrollTimer = null;
+			}
+
 			CloseFile();
 		}
 
@@ -195,7 +199,8 @@ namespace UnrealGameSync
 
 			_logFileStream.Seek(0, SeekOrigin.Begin);
 
-			string text = new StreamReader(_logFileStream).ReadToEnd().TrimEnd('\r', '\n');
+			using StreamReader reader = new StreamReader(_logFileStream, leaveOpen: true);
+			string text = reader.ReadToEnd().TrimEnd('\r', '\n');
 			if(text.Length > 0)
 			{
 				AddLinesInternal(text.Split('\n').Select(x => x + "\n").ToList());
@@ -288,7 +293,7 @@ namespace UnrealGameSync
 						}
 						catch(Exception ex)
 						{
-							textToAppend += String.Format("Failed to write to log file ({0}): {1}\n", _logFileStream.Name, ex.ToString());
+							newLines.Add(String.Format("Failed to write to log file ({0}): {1}\n", _logFileStream.Name, ex.ToString()));
 						}
 					}
 
@@ -348,15 +353,6 @@ namespace UnrealGameSync
 			Invalidate();
 		}
 
-		private Scrollinfo GetScrollInfo(ScrollBarType type, ScrollInfoMask mask)
-		{
-			Scrollinfo scrollInfo = new Scrollinfo();
-			scrollInfo.cbSize = Marshal.SizeOf(VerticalScroll);
-			scrollInfo.fMask = mask;
-			GetScrollInfo(Handle, ScrollBarType.SbVert, scrollInfo);
-			return scrollInfo;
-		}
-
 		private bool IsTrackingLastLine()
 		{
 			Scrollinfo verticalScroll = new Scrollinfo();
@@ -392,12 +388,12 @@ namespace UnrealGameSync
 			}
 		}
 
-		protected void ContextMenu_CopySelection(object? sender, EventArgs e)
+		private void ContextMenu_CopySelection(object? sender, EventArgs e)
 		{
 			CopySelection();
 		}
 
-		protected void ContextMenu_SelectAll(object? sender, EventArgs e)
+		private void ContextMenu_SelectAll(object? sender, EventArgs e)
 		{
 			SelectAll();
 		}
@@ -495,7 +491,7 @@ namespace UnrealGameSync
 		{
 			using(Graphics graphics = CreateGraphics())
 			{
-				_fontSize = TextRenderer.MeasureText(graphics, "A", Font, new Size(int.MaxValue, int.MaxValue), TextFormatFlags.NoPadding);
+				_fontSize = TextRenderer.MeasureText(graphics, "A", Font, new Size(Int32.MaxValue, Int32.MaxValue), TextFormatFlags.NoPadding);
 			}
 		}
 
@@ -801,7 +797,7 @@ namespace UnrealGameSync
 			_scrollLine = verticalScroll.nPos;
 		}
 
-		protected void SelectionScrollTimer_TimerElapsed(object? sender, EventArgs args)
+		private void SelectionScrollTimer_TimerElapsed(object? sender, EventArgs args)
 		{
 			if(_autoScrollRate != 0 && _selection != null)
 			{
@@ -924,7 +920,7 @@ namespace UnrealGameSync
 			public void Dispose() { }
 		}
 
-		LogControl _logControl;
+		readonly LogControl _logControl;
 
 		public LogControlTextWriter(LogControl inLogControl)
 		{

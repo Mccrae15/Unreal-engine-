@@ -22,7 +22,6 @@ void UPoseSearchDatabaseReflectionBase::SetSourceLink(
 void UPoseSearchDatabaseSequenceReflection::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
-	check(WeakAssetTreeNode.Pin()->SourceAssetType == ESearchIndexAssetType::Sequence);
 
 	if (const TSharedPtr<UE::PoseSearch::FDatabaseViewModel> ViewModel = WeakAssetTreeNode.Pin()->EditorViewModel.Pin())
 	{
@@ -44,7 +43,6 @@ void UPoseSearchDatabaseSequenceReflection::PostEditChangeProperty(struct FPrope
 void UPoseSearchDatabaseBlendSpaceReflection::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
-	check(WeakAssetTreeNode.Pin()->SourceAssetType == ESearchIndexAssetType::BlendSpace);
 
 	if (const TSharedPtr<UE::PoseSearch::FDatabaseViewModel> ViewModel = WeakAssetTreeNode.Pin()->EditorViewModel.Pin())
 	{
@@ -66,7 +64,6 @@ void UPoseSearchDatabaseBlendSpaceReflection::PostEditChangeProperty(struct FPro
 void UPoseSearchDatabaseAnimCompositeReflection::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
-	check(WeakAssetTreeNode.Pin()->SourceAssetType == ESearchIndexAssetType::AnimComposite);
 
 	if (const TSharedPtr<UE::PoseSearch::FDatabaseViewModel> ViewModel = WeakAssetTreeNode.Pin()->EditorViewModel.Pin())
 	{
@@ -85,6 +82,27 @@ void UPoseSearchDatabaseAnimCompositeReflection::PostEditChangeProperty(struct F
 	}
 }
 
+void UPoseSearchDatabaseAnimMontageReflection::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	if (const TSharedPtr<UE::PoseSearch::FDatabaseViewModel> ViewModel = WeakAssetTreeNode.Pin()->EditorViewModel.Pin())
+	{
+		UPoseSearchDatabase* Database = ViewModel->GetPoseSearchDatabase();
+		if (IsValid(Database))
+		{
+			FInstancedStruct& DatabaseAsset = Database->GetMutableAnimationAssetStruct(WeakAssetTreeNode.Pin()->SourceAssetIdx);
+			if (FPoseSearchDatabaseAnimMontage* DatabaseAnimMontage = DatabaseAsset.GetMutablePtr<FPoseSearchDatabaseAnimMontage>())
+			{
+				*DatabaseAnimMontage = AnimMontage;
+				Database->MarkPackageDirty();
+
+				AssetTreeWidget->FinalizeTreeChanges(true);
+			}
+		}
+	}
+}
+
 #endif // WITH_EDITOR
 
 void UPoseSearchDatabaseStatistics::Initialize(const UPoseSearchDatabase* PoseSearchDatabase)
@@ -93,35 +111,41 @@ void UPoseSearchDatabaseStatistics::Initialize(const UPoseSearchDatabase* PoseSe
 	
 	if (PoseSearchDatabase)
 	{
-		const FPoseSearchIndex& SearchIndex = PoseSearchDatabase->GetSearchIndex();
-		// General information
+		const UE::PoseSearch::FSearchIndex& SearchIndex = PoseSearchDatabase->GetSearchIndex();
+		// General Information
 	
 		AnimationSequences = PoseSearchDatabase->AnimationAssets.Num();
 			
 		const int32 SampleRate = FMath::Max(1, PoseSearchDatabase->Schema->SampleRate);
-		TotalAnimationPosesInFrames = SearchIndex.NumPoses;
-		TotalAnimationPosesInTime = FText::Format(TimeFormat, static_cast<double>(SearchIndex.NumPoses) / SampleRate);
+		TotalAnimationPosesInFrames = SearchIndex.GetNumPoses();
+		TotalAnimationPosesInTime = FText::Format(TimeFormat, static_cast<double>(TotalAnimationPosesInFrames) / SampleRate);
 			
+		uint32 NumOfSearchablePoses = 0;
+		for (const UE::PoseSearch::FPoseMetadata& PoseMetadata : SearchIndex.PoseMetadata)
 		{
-			uint32 NumOfSearchablePoses = 0;
-			for (const FPoseSearchPoseMetadata & PoseMetadata : SearchIndex.PoseMetadata)
+			if (!PoseMetadata.IsBlockTransition())
 			{
-				NumOfSearchablePoses += PoseMetadata.Flags != EPoseSearchPoseFlags::BlockTransition;
+				++NumOfSearchablePoses;
 			}
-				
-			SearchableFrames = NumOfSearchablePoses;
-			SearchableTime = FText::Format(TimeFormat, static_cast<double>(NumOfSearchablePoses) / SampleRate);
 		}
-			
-		// Velocity information
+		SearchableFrames = NumOfSearchablePoses;
+		SearchableTime = FText::Format(TimeFormat, static_cast<double>(NumOfSearchablePoses) / SampleRate);
 	
-		// TODO: Set values once they can be queried from the PoseSearchIndex.
-			
+		ConfigCardinality = PoseSearchDatabase->Schema->SchemaCardinality;
+
+		// Kinematic Information
+	
+		// using FText instead of meta = (ForceUnits = "cm/s") to keep properties consistent
+		AverageSpeed = FText::Format(LOCTEXT("StatsAverageSpeed", "{0} cm/s"), SearchIndex.Stats.AverageSpeed);
+		MaxSpeed = FText::Format(LOCTEXT("StatsMaxSpeed", "{0} cm/s"), SearchIndex.Stats.MaxSpeed);
+		AverageAcceleration = FText::Format(LOCTEXT("StatsAverageAcceleration", "{0} cm/s²"), SearchIndex.Stats.AverageAcceleration);
+		MaxAcceleration = FText::Format(LOCTEXT("StatsMaxAcceleration", "{0} cm/s²"), SearchIndex.Stats.MaxAcceleration);
+
 		// Principal Component Analysis
 			
-		ExplainedVariance = SearchIndex.PCAExplainedVariance;
+		ExplainedVariance = SearchIndex.PCAExplainedVariance * 100.f;
 			
-		// Memory information
+		// Memory Information
 			
 		{
 			const uint32 ValuesBytesSize = SearchIndex.Values.GetAllocatedSize();

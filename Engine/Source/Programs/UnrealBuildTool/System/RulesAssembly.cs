@@ -3,12 +3,9 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
-using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.Serialization;
-using System.Text;
-using System.Threading.Tasks;
 using EpicGames.Core;
 using Microsoft.Extensions.Logging;
 using UnrealBuildBase;
@@ -28,7 +25,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The compiled assembly
 		/// </summary>
-		private Assembly? CompiledAssembly;
+		private readonly Assembly? CompiledAssembly;
 
 		/// <summary>
 		/// Returns the simple name of the assembly e.g. "UE5ProgramRules"
@@ -40,49 +37,52 @@ namespace UnrealBuildTool
 			{
 				return CompiledAssembly.GetName().Name;
 			}
-			else return null;
+			else
+			{
+				return null;
+			}
 		}
 
 		/// <summary>
 		/// The base directories for this assembly
 		/// </summary>
-		private List<DirectoryReference> BaseDirs;
+		private readonly IReadOnlyList<DirectoryReference> BaseDirs;
 
 		/// <summary>
 		/// All the plugins included in this assembly
 		/// </summary>
-		private IReadOnlyList<PluginInfo> Plugins;
+		private readonly IReadOnlyList<PluginInfo> Plugins;
 
 		/// <summary>
 		/// Maps module names to their actual xxx.Module.cs file on disk
 		/// </summary>
-		private Dictionary<string, FileReference> ModuleNameToModuleFile = new Dictionary<string, FileReference>(StringComparer.InvariantCultureIgnoreCase);
+		private readonly IReadOnlyDictionary<string, FileReference> ModuleNameToModuleFile;
 
 		/// <summary>
 		/// Maps target names to their actual xxx.Target.cs file on disk
 		/// </summary>
-		private Dictionary<string, FileReference> TargetNameToTargetFile = new Dictionary<string, FileReference>(StringComparer.InvariantCultureIgnoreCase);
+		private readonly IReadOnlyDictionary<string, FileReference> TargetNameToTargetFile;
 
 		/// <summary>
 		/// Mapping from module file to its context.
 		/// </summary>
-		private Dictionary<FileReference, ModuleRulesContext> ModuleFileToContext;
+		private readonly IReadOnlyDictionary<FileReference, ModuleRulesContext> ModuleFileToContext;
 
 		/// <summary>
 		/// Whether this assembly contains engine modules. Used to set default values for bTreatAsEngineModule.
 		/// </summary>
-		private bool bContainsEngineModules;
+		private readonly bool bContainsEngineModules;
 
 		/// <summary>
 		/// Whether to use backwards compatible default settings for module and target rules. This is enabled by default for game projects to support a simpler migration path, but
 		/// is disabled for engine modules.
 		/// </summary>
-		private BuildSettingsVersion? DefaultBuildSettings;
+		private readonly BuildSettingsVersion? DefaultBuildSettings;
 
 		/// <summary>
 		/// Whether the modules and targets in this assembly are read-only
 		/// </summary>
-		private bool bReadOnly;
+		private readonly bool bReadOnly;
 
 		/// <summary>
 		/// The parent rules assembly that this assembly inherits. Game assemblies inherit the engine assembly, and the engine assembly inherits nothing.
@@ -92,12 +92,12 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The set of files that were compiled to create this assembly
 		/// </summary>
-		public HashSet<FileReference>? AssemblySourceFiles { get; }
+		public IEnumerable<FileReference>? AssemblySourceFiles { get; }
 
 		/// <summary>
 		/// Any preprocessor defines that were set when this assembly was created
 		/// </summary>
-		public List<string>? PreprocessorDefines { get;  }
+		public IEnumerable<string>? PreprocessorDefines { get; }
 
 		/// <summary>
 		/// Constructor. Compiles a rules assembly from the given source files.
@@ -115,7 +115,7 @@ namespace UnrealBuildTool
 		/// <param name="bForceCompile">Whether to always compile this assembly</param>
 		/// <param name="Parent">The parent rules assembly</param>
 		/// <param name="Logger"></param>
-		internal RulesAssembly(RulesScope Scope, List<DirectoryReference> BaseDirs, IReadOnlyList<PluginInfo> Plugins, Dictionary<FileReference, ModuleRulesContext> ModuleFileToContext, List<FileReference> TargetFiles, FileReference AssemblyFileName, bool bContainsEngineModules, BuildSettingsVersion? DefaultBuildSettings, bool bReadOnly, bool bSkipCompile, bool bForceCompile, RulesAssembly? Parent, ILogger Logger)
+		internal RulesAssembly(RulesScope Scope, IReadOnlyList<DirectoryReference> BaseDirs, IReadOnlyList<PluginInfo> Plugins, IReadOnlyDictionary<FileReference, ModuleRulesContext> ModuleFileToContext, IReadOnlyList<FileReference> TargetFiles, FileReference AssemblyFileName, bool bContainsEngineModules, BuildSettingsVersion? DefaultBuildSettings, bool bReadOnly, bool bSkipCompile, bool bForceCompile, RulesAssembly? Parent, ILogger Logger)
 		{
 			this.Scope = Scope;
 			this.BaseDirs = BaseDirs;
@@ -127,16 +127,17 @@ namespace UnrealBuildTool
 			this.Parent = Parent;
 
 			// Find all the source files
-			AssemblySourceFiles = new HashSet<FileReference>();
-			AssemblySourceFiles.UnionWith(ModuleFileToContext.Keys);
-			AssemblySourceFiles.UnionWith(TargetFiles);
+			HashSet<FileReference> AssemblySourceFilesHashSet = new HashSet<FileReference>();
+			AssemblySourceFilesHashSet.UnionWith(ModuleFileToContext.Keys);
+			AssemblySourceFilesHashSet.UnionWith(TargetFiles);
+			AssemblySourceFiles = AssemblySourceFilesHashSet;
 
 			// Compile the assembly
-			if (AssemblySourceFiles.Count > 0)
+			if (AssemblySourceFiles.Any())
 			{
 				// Add the parent assemblies as references so they can be used
 				List<string>? ReferencedAssembies = null;
-				var CurrentParent = Parent;
+				RulesAssembly? CurrentParent = Parent;
 				while (CurrentParent != null && CurrentParent.CompiledAssembly != null)
 				{
 					if (ReferencedAssembies == null)
@@ -153,22 +154,26 @@ namespace UnrealBuildTool
 			}
 
 			// Setup the module map
+			Dictionary<string, FileReference> ModuleNameToModuleFileDict = new Dictionary<string, FileReference>(StringComparer.InvariantCultureIgnoreCase);
+			ModuleNameToModuleFile = ModuleNameToModuleFileDict;
 			foreach (FileReference ModuleFile in ModuleFileToContext.Keys)
 			{
 				string ModuleName = ModuleFile.GetFileNameWithoutAnyExtensions();
 				if (!ModuleNameToModuleFile.ContainsKey(ModuleName))
 				{
-					ModuleNameToModuleFile.Add(ModuleName, ModuleFile);
+					ModuleNameToModuleFileDict.Add(ModuleName, ModuleFile);
 				}
 			}
 
 			// Setup the target map
+			Dictionary<string, FileReference> TargetNameToTargetFileDict = new Dictionary<string, FileReference>(StringComparer.InvariantCultureIgnoreCase);
+			TargetNameToTargetFile = TargetNameToTargetFileDict;
 			foreach (FileReference TargetFile in TargetFiles)
 			{
 				string TargetName = TargetFile.GetFileNameWithoutAnyExtensions();
 				if (!TargetNameToTargetFile.ContainsKey(TargetName))
 				{
-					TargetNameToTargetFile.Add(TargetName, TargetFile);
+					TargetNameToTargetFileDict.Add(TargetName, TargetFile);
 				}
 			}
 
@@ -191,10 +196,10 @@ namespace UnrealBuildTool
 							Logger.LogWarning("{Location}: warning: {AttributeMessage}", Location, Attribute.Message);
 						}
 					}
-					if(CompiledType.BaseType == typeof(ModuleRules))
+					if (CompiledType.BaseType == typeof(ModuleRules))
 					{
 						ConstructorInfo? Constructor = CompiledType.GetConstructor(new Type[] { typeof(TargetInfo) });
-						if(Constructor != null)
+						if (Constructor != null)
 						{
 							FileReference? Location;
 							if (!TryGetFileNameFromType(CompiledType, out Location))
@@ -244,7 +249,7 @@ namespace UnrealBuildTool
 			BuildVersion? Version;
 			if (BuildVersion.TryRead(BuildVersion.GetDefaultFileName(), out Version))
 			{
-				for(int MinorVersion = 17; MinorVersion <= 30; MinorVersion++)
+				for (int MinorVersion = 17; MinorVersion <= 30; MinorVersion++)
 				{
 					PreprocessorDefines.Add(String.Format("UE_4_{0}_OR_LATER", MinorVersion));
 				}
@@ -279,7 +284,7 @@ namespace UnrealBuildTool
 		/// <param name="bIncludeParentAssembly">Whether to include targets in the parent assembly</param>
 		public void GetAllTargetNames(List<string> TargetNames, bool bIncludeParentAssembly)
 		{
-			if(Parent != null && bIncludeParentAssembly)
+			if (Parent != null && bIncludeParentAssembly)
 			{
 				Parent.GetAllTargetNames(TargetNames, true);
 			}
@@ -442,7 +447,7 @@ namespace UnrealBuildTool
 					// we expect only one platform group to be found in the extensions
 					if (GroupRulesObjectType != null && PlatformRulesObjectType != null)
 					{
-						throw new BuildException("Found multiple platform group overrides ({0} and {1}) for module {2} without a platform specific override. Create a platform override with the class hierarchy as needed.", 
+						throw new BuildException("Found multiple platform group overrides ({0} and {1}) for module {2} without a platform specific override. Create a platform override with the class hierarchy as needed.",
 							GroupRulesObjectType.Name, PlatformRulesObjectType.Name, ModuleName);
 					}
 					// remember the platform group if we found it, but keep searching to verify there isn't more than one
@@ -464,10 +469,9 @@ namespace UnrealBuildTool
 					(Target.ProjectFile != null && ModuleFileName.ContainsAnyNames(DisallowedPlatformsAndGroups, Target.ProjectFile.Directory)))
 				{
 					throw new BuildException("Platform module file {0} is not allowed (only platforms '{1}', and their groups, are allowed. This indicates a module reference not being checked with something like IsPlatformAvailableForTarget()).",
-						ModuleFileName, string.Join(",", Target.OptedInModulePlatforms));
+						ModuleFileName, String.Join(",", Target.OptedInModulePlatforms));
 				}
 			}
-
 
 			// Figure out the best rules object to use
 			Type? RulesObjectType = PlatformRulesObjectType != null ? PlatformRulesObjectType : BaseRulesObjectType;
@@ -489,7 +493,7 @@ namespace UnrealBuildTool
 				RulesObject.Context = ModuleFileToContext[RulesObject.File];
 				RulesObject.Plugin = RulesObject.Context.Plugin;
 				RulesObject.bTreatAsEngineModule = bContainsEngineModules;
-				if(DefaultBuildSettings.HasValue)
+				if (DefaultBuildSettings.HasValue)
 				{
 					RulesObject.DefaultBuildSettings = DefaultBuildSettings.Value;
 				}
@@ -522,13 +526,13 @@ namespace UnrealBuildTool
 
 				// Call the constructor
 				ConstructorInfo? Constructor = RulesObjectType.GetConstructor(new Type[] { typeof(ReadOnlyTargetRules) });
-				if(Constructor == null)
+				if (Constructor == null)
 				{
 					throw new BuildException("No valid constructor found for {0}.", ModuleName);
 				}
 
 				// Add the parent assemblies to the assembly cache so the types in them can be used when the constructor is called
-				var CurrentParent = Parent;
+				RulesAssembly? CurrentParent = Parent;
 				while (CurrentParent != null && CurrentParent.CompiledAssembly != null)
 				{
 					EpicGames.Core.AssemblyUtils.AddFileToAssemblyCache(CurrentParent.CompiledAssembly.Location);
@@ -553,7 +557,7 @@ namespace UnrealBuildTool
 			}
 			catch (Exception Ex)
 			{
-				Exception MessageEx = (Ex is TargetInvocationException && Ex.InnerException != null)? Ex.InnerException : Ex;
+				Exception MessageEx = (Ex is TargetInvocationException && Ex.InnerException != null) ? Ex.InnerException : Ex;
 				throw new BuildException(Ex, "Unable to instantiate module '{0}': {1}\n(referenced via {2})", ModuleName, MessageEx.ToString(), ReferenceChain);
 			}
 		}
@@ -591,7 +595,7 @@ namespace UnrealBuildTool
 					// we expect only one platform group to be found in the extensions
 					if (GroupRulesObjectType != null && PlatformRulesType != null)
 					{
-						throw new BuildException("Found multiple platform group overrides ({0} and {1}) for rules {2} without a platform specific override. Create a platform override with the class hierarchy as needed.", 
+						throw new BuildException("Found multiple platform group overrides ({0} and {1}) for rules {2} without a platform specific override. Create a platform override with the class hierarchy as needed.",
 							GroupRulesObjectType.Name, PlatformRulesType.Name, TypeName);
 					}
 					// remember the platform group if we found it, but keep searching to verify there isn't more than one
@@ -617,13 +621,13 @@ namespace UnrealBuildTool
 			Rules.SetOverridesForTargetType();
 
 			// Set the final value for the link type in the target rules
-			if(Rules.LinkType == TargetLinkType.Default)
+			if (Rules.LinkType == TargetLinkType.Default)
 			{
 				throw new BuildException("TargetRules.LinkType should be inferred from TargetType");
 			}
 
 			// Set the default value for whether to use the shared build environment
-			if(Rules.BuildEnvironment == TargetBuildEnvironment.Unique && Unreal.IsEngineInstalled())
+			if (Rules.BuildEnvironment == TargetBuildEnvironment.Unique && Unreal.IsEngineInstalled())
 			{
 				throw new BuildException("Targets with a unique build environment cannot be built with an installed engine.");
 			}
@@ -647,22 +651,15 @@ namespace UnrealBuildTool
 				Rules.bOmitPCDebugInfoInDevelopment = false;
 			}
 
-			// Setup the malloc profiler
-			if (Rules.bUseMallocProfiler)
-			{
-				Rules.bOmitFramePointers = false;
-				Rules.GlobalDefinitions.Add("USE_MALLOC_PROFILER=1");
-			}
-
 			// Setup utrace for Shader Compiler Worker
 			if (Rules.bShaderCompilerWorkerTrace)
-            {
+			{
 				Rules.GlobalDefinitions.Add("USE_SHADER_COMPILER_WORKER_TRACE=1");
 			}
-            else
-            {
+			else
+			{
 				Rules.GlobalDefinitions.Add("USE_SHADER_COMPILER_WORKER_TRACE=0");
-            }
+			}
 
 			// Set a macro if we allow using generated inis
 			if (!Rules.bAllowGeneratedIniWhenCooked)
@@ -730,8 +727,9 @@ namespace UnrealBuildTool
 		/// <param name="Logger"></param>
 		/// <param name="IsTestTarget">If building a low level test target</param>
 		/// <param name="bSkipValidation">If validation should be skipped (QueryTargetMode)</param>
+		/// <param name="IntermediateEnvironment">Intermediate environment to use</param>
 		/// <returns>The build target rules for the specified target</returns>
-		public TargetRules CreateTargetRules(string TargetName, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration, UnrealArchitectures? Architectures, FileReference? ProjectFile, CommandLineArguments? Arguments, ILogger Logger, bool IsTestTarget = false, bool bSkipValidation = false)
+		public TargetRules CreateTargetRules(string TargetName, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration, UnrealArchitectures? Architectures, FileReference? ProjectFile, CommandLineArguments? Arguments, ILogger Logger, bool IsTestTarget = false, bool bSkipValidation = false, UnrealIntermediateEnvironment IntermediateEnvironment = UnrealIntermediateEnvironment.Default)
 		{
 			if (IsTestTarget)
 			{
@@ -767,7 +765,7 @@ namespace UnrealBuildTool
 				}
 				else
 				{
-					return Parent.CreateTargetRules(TargetName, Platform, Configuration, Architectures, ProjectFile, Arguments, Logger, IsTestTarget, bSkipValidation);
+					return Parent.CreateTargetRules(TargetName, Platform, Configuration, Architectures, ProjectFile, Arguments, Logger, IsTestTarget, bSkipValidation, IntermediateEnvironment);
 				}
 			}
 
@@ -775,10 +773,10 @@ namespace UnrealBuildTool
 			string TargetTypeName = TargetName + "Target";
 
 			// The build module must define a type named '<TargetName>Target' that derives from our 'TargetRules' type.  
-			TargetRules? TargetRules = CreateTargetRulesInstance(TargetTypeName, new TargetInfo(TargetName, Platform, Configuration, Architectures, ProjectFile, Arguments), Logger, IsTestTarget, bSkipValidation);
+			TargetRules? TargetRules = CreateTargetRulesInstance(TargetTypeName, new TargetInfo(TargetName, Platform, Configuration, Architectures, ProjectFile, Arguments, IntermediateEnvironment), Logger, IsTestTarget, bSkipValidation);
 
 			if (TargetRules == null)
-            {
+			{
 				throw new BuildException("Expecting to find a type to be declared in a target rules named '{0}'.  This type must derive from the 'TargetRules' type defined by Unreal Build Tool.", TargetTypeName);
 			}
 
@@ -798,19 +796,19 @@ namespace UnrealBuildTool
 		{
 			// Create all the targets in this assembly 
 			List<string> Matches = new List<string>();
-			foreach(KeyValuePair<string, FileReference> TargetPair in TargetNameToTargetFile)
+			foreach (KeyValuePair<string, FileReference> TargetPair in TargetNameToTargetFile)
 			{
 				TargetRules? Rules = CreateTargetRulesInstance(TargetPair.Key + "Target", new TargetInfo(TargetPair.Key, Platform, Configuration, null, ProjectFile, null), Logger);
-				if(Rules != null && Rules.Type == Type)
+				if (Rules != null && Rules.Type == Type)
 				{
 					Matches.Add(TargetPair.Key);
 				}
 			}
 
 			// If we got a result, return it. If there were multiple results, fail.
-			if(Matches.Count == 0)
+			if (Matches.Count == 0)
 			{
-				if(Parent == null)
+				if (Parent == null)
 				{
 					throw new BuildException("Unable to find target of type '{0}' for project '{1}'", Type, ProjectFile);
 				}
@@ -839,7 +837,7 @@ namespace UnrealBuildTool
 						return DefaultTargetName;
 					}
 				}
-				
+
 				throw new BuildException("Found multiple targets with TargetType={0}: {1}.\nSpecify a default with a {2} entry in [/Script/BuildSettings.BuildSettings] section of your DefaultEngine.ini", Type, String.Join(", ", Matches), KeyName);
 			}
 		}
@@ -876,7 +874,7 @@ namespace UnrealBuildTool
 		{
 			for (RulesAssembly? Assembly = this; Assembly != null; Assembly = Assembly.Parent)
 			{
-				if (Assembly.ModuleFileToContext.TryGetValue(ModuleFile, out var Context))
+				if (Assembly.ModuleFileToContext.TryGetValue(ModuleFile, out ModuleRulesContext? Context))
 				{
 					return Context;
 				}

@@ -21,13 +21,13 @@ FRHIRayTracingShader* GetRayTracingDefaultMissShader(const FGlobalShaderMap* Sha
 FRHIRayTracingShader* GetRayTracingDefaultOpaqueShader(const FGlobalShaderMap* ShaderMap);
 FRHIRayTracingShader* GetRayTracingDefaultHiddenShader(const FGlobalShaderMap* ShaderMap);
 
-class RENDERER_API FRayTracingMeshProcessor
+class FRayTracingMeshProcessor
 {
 public:
-	FRayTracingMeshProcessor(FRayTracingMeshCommandContext* InCommandContext, const FScene* InScene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassProcessorRenderState InPassDrawRenderState, ERayTracingMeshCommandsMode InRayTracingMeshCommandsMode);
-	virtual ~FRayTracingMeshProcessor();
+	RENDERER_API FRayTracingMeshProcessor(FRayTracingMeshCommandContext* InCommandContext, const FScene* InScene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassProcessorRenderState InPassDrawRenderState, ERayTracingMeshCommandsMode InRayTracingMeshCommandsMode);
+	RENDERER_API virtual ~FRayTracingMeshProcessor();
 
-	void AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy);
+	RENDERER_API void AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy);
 
 protected:
 	FRayTracingMeshCommandContext* CommandContext;
@@ -37,7 +37,7 @@ protected:
 	FMeshPassProcessorRenderState PassDrawRenderState;
 	ERayTracingMeshCommandsMode RayTracingMeshCommandsMode;
 
-	bool Process(
+	RENDERER_API bool Process(
 		const FMeshBatch& RESTRICT MeshBatch,
 		uint64 BatchElementMask,
 		const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
@@ -71,7 +71,7 @@ protected:
 		}
 
 		FVertexInputStreamArray VertexStreams;
-		VertexFactory->GetStreams(ERHIFeatureLevel::SM5, EVertexInputStreamType::Default, VertexStreams);
+		VertexFactory->GetStreams(FeatureLevel, EVertexInputStreamType::Default, VertexStreams);
 
 		int32 DataOffset = 0;
 		if (PassShaders.RayTracingShader.IsValid())
@@ -104,14 +104,14 @@ protected:
 	}
 
 private:
-	bool ProcessPathTracing(
+	RENDERER_API bool ProcessPathTracing(
 		const FMeshBatch& RESTRICT MeshBatch,
 		uint64 BatchElementMask,
 		const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
 		const FMaterialRenderProxy& RESTRICT MaterialRenderProxy,
 		const FMaterial& RESTRICT MaterialResource);
 
-	bool TryAddMeshBatch(
+	RENDERER_API bool TryAddMeshBatch(
 		const FMeshBatch& RESTRICT MeshBatch,
 		uint64 BatchElementMask,
 		const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
@@ -121,9 +121,9 @@ private:
 	);
 };
 
-class RENDERER_API FHiddenMaterialHitGroup : public FGlobalShader
+class FHiddenMaterialHitGroup : public FGlobalShader
 {
-	DECLARE_GLOBAL_SHADER(FHiddenMaterialHitGroup)
+	DECLARE_EXPORTED_GLOBAL_SHADER(FHiddenMaterialHitGroup, RENDERER_API)
 	SHADER_USE_ROOT_PARAMETER_STRUCT(FHiddenMaterialHitGroup, FGlobalShader)
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -139,9 +139,9 @@ class RENDERER_API FHiddenMaterialHitGroup : public FGlobalShader
 	using FParameters = FEmptyShaderParameters;
 };
 
-class RENDERER_API FOpaqueShadowHitGroup : public FGlobalShader
+class FOpaqueShadowHitGroup : public FGlobalShader
 {
-	DECLARE_GLOBAL_SHADER(FOpaqueShadowHitGroup)
+	DECLARE_EXPORTED_GLOBAL_SHADER(FOpaqueShadowHitGroup, RENDERER_API)
 	SHADER_USE_ROOT_PARAMETER_STRUCT(FOpaqueShadowHitGroup, FGlobalShader)
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -157,9 +157,9 @@ class RENDERER_API FOpaqueShadowHitGroup : public FGlobalShader
 	using FParameters = FEmptyShaderParameters;
 };
 
-class RENDERER_API FDefaultCallableShader : public FGlobalShader
+class FDefaultCallableShader : public FGlobalShader
 {
-	DECLARE_GLOBAL_SHADER(FDefaultCallableShader)
+	DECLARE_EXPORTED_GLOBAL_SHADER(FDefaultCallableShader, RENDERER_API)
 	SHADER_USE_ROOT_PARAMETER_STRUCT(FDefaultCallableShader, FGlobalShader)
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)

@@ -526,6 +526,7 @@ void SObjectPropertyEntryBox::Construct( const FArguments& InArgs )
 				.AllowCreate(InArgs._AllowCreate)
 				.DisplayUseSelected(InArgs._DisplayUseSelected)
 				.DisplayBrowse(InArgs._DisplayBrowse)
+				.OnBrowseOverride(InArgs._OnBrowseOverride)
 				.EnableContentPicker(InArgs._EnableContentPicker)
 				.PropertyHandle(PropertyHandle)
 				.OwnerAssetDataArray(OwnerAssetDataArray)
@@ -544,6 +545,14 @@ void SObjectPropertyEntryBox::GetDesiredWidth(float& OutMinDesiredWidth, float &
 {
 	checkf(PropertyEditorAsset.IsValid(), TEXT("SObjectPropertyEntryBox hasn't been constructed yet."));
 	PropertyEditorAsset->GetDesiredWidth(OutMinDesiredWidth, OutMaxDesiredWidth);
+}
+
+void SObjectPropertyEntryBox::OpenEntryBox()
+{
+	if (PropertyEditorAsset.IsValid())
+	{
+		PropertyEditorAsset->OpenComboButton();
+	}
 }
 
 FString SObjectPropertyEntryBox::OnGetObjectPath() const

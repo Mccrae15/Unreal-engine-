@@ -2,29 +2,32 @@
 
 #include "VirtualizationManager.h"
 
+#include "AnalyticsEventAttribute.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
-#include "IVirtualizationBackend.h"
 #include "Logging/MessageLog.h"
 #include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/MessageDialog.h"
 #include "Misc/PackageName.h"
 #include "Misc/PackagePath.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeLock.h"
-#include "PackageRehydrationProcess.h"
 #include "Misc/ScopedSlowTask.h"
+#include "PackageRehydrationProcess.h"
 #include "PackageVirtualizationProcess.h"
 #include "ProfilingDebugging/CookStats.h"
 #include "VirtualizationFilterSettings.h"
-#include "AnalyticsEventAttribute.h"
 
 #define LOCTEXT_NAMESPACE "Virtualization"
+
 
 namespace UE::Virtualization
 {
 UE_REGISTER_VIRTUALIZATION_SYSTEM(UE::Virtualization::FVirtualizationManager, Default);
+
+ENUM_CLASS_FLAGS(FVirtualizationManager::ECachingPolicy);
 
 // Can be defined as 1 by programs target.cs files force the backend connections
 // to lazy initialize on first use rather than when the system is initialized.
@@ -192,10 +195,10 @@ public:
 		return CurrentRequests;
 	}
 
-	/** Returns if we still have payloads that have not yet been found */
-	bool HasRemainingRequests() const
+	/** Returns if there are still requests that need servicing or not */
+	bool IsWorkComplete() const
 	{
-		return !CurrentRequests.IsEmpty();
+		return CurrentRequests.IsEmpty();
 	}
 
 private:
@@ -205,6 +208,19 @@ private:
 	TArray<FPullRequest, TInlineAllocator<UE_INLINE_ALLOCATION_COUNT>> CurrentRequests;
 };
 
+const TCHAR* LexToString(EPackageFilterMode Value)
+{
+	switch (Value)
+	{
+	case EPackageFilterMode::OptIn:
+		return TEXT("OptIn");
+	case EPackageFilterMode::OptOut:
+		return TEXT("OptOut");
+	default:
+		checkNoEntry();
+		return TEXT("");
+	}
+}
 
 bool LexTryParseString(EPackageFilterMode& OutValue, FStringView Buffer)
 {
@@ -323,6 +339,33 @@ TArray<FString> ParseEntries(const FString& Data)
 }
 
 /** 
+ * FPackagePath has strict requirements on how file paths are formated in order for it to be
+ * able to accept them. In theory the paths that the virtualization system are given are
+ * already in a good shape but as we do not know where they come from we cannot trust them.
+ * This utility will iterate over a list of untrusted filepaths and call various FPaths methods
+ * on them to make sure that they are all correct.
+ */
+TArray<FString> SanitizeFilePaths(TConstArrayView<FString> FilePaths)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(SanitizeFilePaths);
+
+	TArray<FString> SanitizedPaths;
+	SanitizedPaths.Reserve(FilePaths.Num());
+
+	for (const FString& Path : FilePaths)
+	{
+		FString SanitizedPath = Path;
+
+		FPaths::NormalizeFilename(SanitizedPath);
+		FPaths::RemoveDuplicateSlashes(SanitizedPath);
+
+		SanitizedPaths.Emplace(MoveTemp(SanitizedPath));
+	}
+
+	return SanitizedPaths;
+}
+
+/** 
  * Utility to make 'StorageType ==  EStorageType::Cache' checks easier while EStorageType::Local continues to exist.
  * When the deprecated value is removed this can also be removed and code calling it can just check for EStorageType::Cache */
 bool IsCacheType(EStorageType StorageType)
@@ -414,8 +457,8 @@ namespace Profiling
 					for (const auto& Iterator : Stats)
 					{
 						const int64 Count = Iterator.Value.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter);
-						const double Time = Iterator.Value.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Cycles) * FPlatformTime::GetSecondsPerCycle();
-						const double DataSizeMB = Iterator.Value.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Bytes) / (1024.0f * 1024.0f);
+						const double Time = (double)Iterator.Value.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Cycles) * FPlatformTime::GetSecondsPerCycle();
+						const double DataSizeMB = (double)Iterator.Value.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Bytes) / (1024.0f * 1024.0f);
 						const double MBps = Time != 0.0 ? (DataSizeMB / Time) : 0.0;
 
 						UE_LOG(LogVirtualization, Display, TEXT("%-40.40s|%10lld|%17.1f|%12.3f|%14.3f|"),
@@ -437,18 +480,20 @@ namespace Profiling
 #endif // ENABLE_COOK_STATS
 } //namespace Profiling
 
+FString FVirtualizationManager::ConnectionHelpUrl;
+
 FVirtualizationManager::FVirtualizationManager()
 	: bAllowPackageVirtualization(true)
-	, bEnableCacheAfterPull(true)
+	, CachingPolicy(ECachingPolicy::AlwaysCache)
 	, MinPayloadLength(0)
 	, BackendGraphName(TEXT("ContentVirtualizationBackendGraph_None"))
 	, VirtualizationProcessTag(TEXT("#virtualized"))
 	, FilteringMode(EPackageFilterMode::OptOut)
-	, bFilterEngineContent(true)
-	, bFilterEnginePluginContent(true)
 	, bFilterMapContent(true)
 	, bAllowSubmitIfVirtualizationFailed(false)
 	, bLazyInitConnections(false)
+	, bUseLegacyErrorHandling(true)
+	, bForceCachingOnPull(false)
 	, bPendingBackendConnections(false)
 {
 }
@@ -530,7 +575,7 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		case EStorageType::Local:
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		case EStorageType::Cache:
-			return !CacheStorageBackends.IsEmpty();
+			return !CacheStorageBackends.IsEmpty() && EnumHasAllFlags(CachingPolicy, ECachingPolicy::CacheOnPush);
 			break;
 
 		case EStorageType::Persistent:
@@ -688,8 +733,9 @@ bool FVirtualizationManager::PushData(TArrayView<FPushRequest> Requests, EStorag
 		{
 			for (FPushRequest& PushRequest : ValidatedRequests)
 			{
+				FText Errors;
 				FPullRequest PullRequest(PushRequest.GetIdentifier());
-				PullDataFromBackend(*Backend, MakeArrayView(&PullRequest, 1));
+				PullDataFromBackend(*Backend, MakeArrayView(&PullRequest, 1), Errors);
 
 				checkf(PushRequest.GetIdentifier() == PullRequest.GetPayload().GetRawHash(),
 						TEXT("[%s] Failed to pull payload '%s' after it was pushed to backend"),
@@ -846,7 +892,8 @@ FVirtualizationResult FVirtualizationManager::TryVirtualizePackages(TConstArrayV
 
 	if (IsEnabled() && IsPushingEnabled(EStorageType::Persistent))
 	{
-		UE::Virtualization::VirtualizePackages(PackagePaths, Options, Result);
+		const TArray<FString> SanitizedPaths = SanitizeFilePaths(PackagePaths);
+		UE::Virtualization::VirtualizePackages(SanitizedPaths, Options, Result);
 
 		if (Result.WasSuccessful() && !VirtualizationProcessTag.IsEmpty())
 		{
@@ -861,7 +908,8 @@ FRehydrationResult FVirtualizationManager::TryRehydratePackages(TConstArrayView<
 {
 	FRehydrationResult Result;
 
-	UE::Virtualization::RehydratePackages(PackagePaths, Options, Result);
+	const TArray<FString> SanitizedPaths = SanitizeFilePaths(PackagePaths);
+	UE::Virtualization::RehydratePackages(SanitizedPaths, Options, Result);
 
 	return Result;
 }
@@ -953,144 +1001,105 @@ void FVirtualizationManager::ApplySettingsFromConfigFiles(const FConfigFile& Con
 	const TCHAR* LegacyConfigSection = TEXT("Core.ContentVirtualization");
 	const TCHAR* ConfigSection = TEXT("Core.VirtualizationModule");
 
-	// Note that all options are doubled up as we are moving the options for this module from "Core.ContentVirtualization"
+	// Note that many options are doubled up as we are moving the options for this module from "Core.ContentVirtualization"
 	// to it's own specific "Core.VirtualizationModule" section. This duplication can be removed before we ship 5.1
 	
+	// The backend graph is the most important value and so should come first for logging purposes
+	{
+		if (!ConfigFile.GetString(LegacyConfigSection, TEXT("BackendGraph"), BackendGraphName))
+		{
+			ConfigFile.GetString(ConfigSection, TEXT("BackendGraph"), BackendGraphName);
+		}
+
+		UE_LOG(LogVirtualization, Display, TEXT("\tBackendGraphName : %s"), *BackendGraphName);
+	}
+
 	{
 		// This value was moved from Core.ContentVirtualization to Core.VirtualizationModule then renamed from
 		// 'EnablePushToBackend' to 'EnablePayloadVirtualization' so there are a few paths we need to cover here.
 		// This can also be cleaned up for 5.1 shipping.
-		bool bLoadedFromFile = false;
-		bool bEnablePayloadVirtualizationFromIni = false;
-		
-		if (ConfigFile.GetBool(LegacyConfigSection, TEXT("EnablePushToBackend"), bEnablePayloadVirtualizationFromIni))
+		if (ConfigFile.GetBool(LegacyConfigSection, TEXT("EnablePushToBackend"), bAllowPackageVirtualization))
 		{
 			UE_LOG(LogVirtualization, Warning, TEXT("\tFound legacy ini file setting [Core.ContentVirtualization].EnablePushToBackend, rename to [Core.VirtualizationModule].EnablePayloadVirtualization"));
-			bLoadedFromFile = true;
 		}
-		else if (ConfigFile.GetBool(ConfigSection, TEXT("EnablePushToBackend"), bEnablePayloadVirtualizationFromIni))
+		else if (ConfigFile.GetBool(ConfigSection, TEXT("EnablePushToBackend"), bAllowPackageVirtualization))
 		{
 			UE_LOG(LogVirtualization, Warning, TEXT("\tFound legacy ini file setting [Core.VirtualizationModule].EnablePushToBackend, rename to [Core.VirtualizationModule].EnablePayloadVirtualization"));
-			bLoadedFromFile = true;
-		}
-		else if (ConfigFile.GetBool(ConfigSection, TEXT("EnablePayloadVirtualization"), bEnablePayloadVirtualizationFromIni))
-		{
-			bLoadedFromFile = true;
-		}
-
-		if (bLoadedFromFile)
-		{
-			bAllowPackageVirtualization = bEnablePayloadVirtualizationFromIni;
-			UE_LOG(LogVirtualization, Display, TEXT("\tEnablePayloadVirtualization : %s"), bAllowPackageVirtualization ? TEXT("true") : TEXT("false"));
 		}
 		else
 		{
-			UE_LOG(LogVirtualization, Error, TEXT("Failed to load [Core.VirtualizationModule].EnablePayloadVirtualization from config file!"));
+			ConfigFile.GetBool(ConfigSection, TEXT("EnablePayloadVirtualization"), bAllowPackageVirtualization);
 		}
+
+		UE_LOG(LogVirtualization, Display, TEXT("\tEnablePayloadVirtualization : %s"), bAllowPackageVirtualization ? TEXT("true") : TEXT("false"));
 	}
 
-	bool bEnableCacheAfterPullFromIni = false;
-	if (ConfigFile.GetBool(LegacyConfigSection, TEXT("EnableCacheAfterPull"), bEnableCacheAfterPullFromIni) ||
-		ConfigFile.GetBool(ConfigSection, TEXT("EnableCacheAfterPull"), bEnableCacheAfterPullFromIni))
 	{
-		bEnableCacheAfterPull = bEnableCacheAfterPullFromIni;
-		UE_LOG(LogVirtualization, Display, TEXT("\tCachePulledPayloads : %s"), bEnableCacheAfterPull ? TEXT("true") : TEXT("false"));
-	}
-	else
-	{
-		UE_LOG(LogVirtualization, Error, TEXT("Failed to load [Core.VirtualizationModule].EnableCacheAfterPull from config file!"));
+		bool bCacheOnPull = true;
+		if (ConfigFile.GetBool(LegacyConfigSection, TEXT("EnableCacheAfterPull"), bCacheOnPull) ||
+			ConfigFile.GetBool(ConfigSection, TEXT("EnableCacheAfterPull"), bCacheOnPull))
+		{
+			UE_LOG(LogVirtualization, Warning, TEXT("\tEnableCacheAfterPull is deprecated, replace with 'EnableCacheOnPull=True|False'"));
+		}
+		else
+		{
+			ConfigFile.GetBool(ConfigSection, TEXT("EnableCacheOnPull"), bCacheOnPull);
+		}
+
+		if (!bCacheOnPull)
+		{
+			EnumRemoveFlags(CachingPolicy, ECachingPolicy::CacheOnPull);
+		}
+
+		UE_LOG(LogVirtualization, Display, TEXT("\tEnableCacheOnPull : %s"), EnumHasAllFlags(CachingPolicy, ECachingPolicy::CacheOnPull) ? TEXT("true") : TEXT("false"));
 	}
 
-	int64 MinPayloadLengthFromIni = 0;
-	if (ConfigFile.GetInt64(LegacyConfigSection, TEXT("MinPayloadLength"), MinPayloadLengthFromIni) ||
-		ConfigFile.GetInt64(ConfigSection, TEXT("MinPayloadLength"), MinPayloadLengthFromIni))
 	{
-		MinPayloadLength = MinPayloadLengthFromIni;
-		UE_LOG(LogVirtualization, Display, TEXT("\tMinPayloadLength : %" INT64_FMT), MinPayloadLength );
-	}
-	else
-	{
-		UE_LOG(LogVirtualization, Error, TEXT("Failed to load [Core.VirtualizationModule].MinPayloadLength from config file!"));
+		bool bCacheOnPush = true;
+		ConfigFile.GetBool(ConfigSection, TEXT("EnableCacheOnPush"), bCacheOnPush);
+
+		if (!bCacheOnPush)
+		{
+			EnumRemoveFlags(CachingPolicy, ECachingPolicy::CacheOnPush);
+		}
+		
+		UE_LOG(LogVirtualization, Display, TEXT("\tEnableCacheOnPush : %s"),  EnumHasAllFlags(CachingPolicy, ECachingPolicy::CacheOnPush) ? TEXT("true") : TEXT("false"));
 	}
 
-	FString BackendGraphNameFromIni;
-	if (ConfigFile.GetString(LegacyConfigSection, TEXT("BackendGraph"), BackendGraphNameFromIni) ||
-		ConfigFile.GetString(ConfigSection, TEXT("BackendGraph"), BackendGraphNameFromIni))
 	{
-		BackendGraphName = BackendGraphNameFromIni;
-		UE_LOG(LogVirtualization, Display, TEXT("\tBackendGraphName : %s"), *BackendGraphName );
-	}
-	else
-	{
-		UE_LOG(LogVirtualization, Error, TEXT("Failed to load [Core.VirtualizationModule].BackendGraph from config file!"));
+		if (!ConfigFile.GetInt64(LegacyConfigSection, TEXT("MinPayloadLength"), MinPayloadLength))
+		{
+			ConfigFile.GetInt64(ConfigSection, TEXT("MinPayloadLength"), MinPayloadLength);
+		}
+
+		UE_LOG(LogVirtualization, Display, TEXT("\tMinPayloadLength : %" INT64_FMT), MinPayloadLength);
 	}
 
-	FString VirtualizationProcessTagFromIni;
-	if (ConfigFile.GetString(ConfigSection, TEXT("VirtualizationProcessTag"), VirtualizationProcessTagFromIni))
 	{
-		VirtualizationProcessTag = VirtualizationProcessTagFromIni;
+		ConfigFile.GetString(ConfigSection, TEXT("VirtualizationProcessTag"), VirtualizationProcessTag);
 		UE_LOG(LogVirtualization, Display, TEXT("\tVirtualizationProcessTag : %s"), *VirtualizationProcessTag);
 	}
-	else
-	{
-		UE_LOG(LogVirtualization, Error, TEXT("Failed to load [Core.VirtualizationModule].VirtualizationProcessTag from config file!"));
-	}
 
-	FString FilterModeFromIni;
-	if (ConfigFile.GetString(LegacyConfigSection, TEXT("FilterMode"), FilterModeFromIni) ||
-		ConfigFile.GetString(ConfigSection, TEXT("FilterMode"), FilterModeFromIni))
 	{
-		if(LexTryParseString(FilteringMode, FilterModeFromIni))
+		FString FilterModeString;
+		if (ConfigFile.GetString(LegacyConfigSection, TEXT("FilterMode"), FilterModeString) ||
+			ConfigFile.GetString(ConfigSection, TEXT("FilterMode"), FilterModeString))
 		{
-			UE_LOG(LogVirtualization, Display, TEXT("\tFilterMode : %s"), *FilterModeFromIni);
+			if (!LexTryParseString(FilteringMode, FilterModeString))
+			{
+				UE_LOG(LogVirtualization, Error, TEXT("[Core.VirtualizationModule].FilterMode was an invalid value! Allowed: 'OptIn'|'OptOut' Found '%s'"), *FilterModeString);
+			}
 		}
-		else
-		{
-			UE_LOG(LogVirtualization, Error, TEXT("[Core.VirtualizationModule].FilterMode was an invalid value! Allowed: 'OptIn'|'OptOut' Found '%s'"), *FilterModeFromIni);
-		}
-	}
-	else
-	{
-		UE_LOG(LogVirtualization, Error, TEXT("Failed to load [Core.VirtualizationModule]FilterMode from config file!"));
+
+		UE_LOG(LogVirtualization, Display, TEXT("\tFilterMode : %s"), LexToString(FilteringMode));
 	}
 
-	bool bFilterEngineContentFromIni = true;
-	if (ConfigFile.GetBool(LegacyConfigSection, TEXT("FilterEngineContent"), bFilterEngineContentFromIni) ||
-		ConfigFile.GetBool(ConfigSection, TEXT("FilterEngineContent"), bFilterEngineContentFromIni))
 	{
-		bFilterEngineContent = bFilterEngineContentFromIni;
-		UE_LOG(LogVirtualization, Display, TEXT("\tFilterEngineContent : %s"), bFilterEngineContent ? TEXT("true") : TEXT("false"));
-	}
-	else
-	{
-		UE_LOG(LogVirtualization, Error, TEXT("Failed to load [Core.VirtualizationModule].FilterEngineContent from config file!"));
-	}
-	
-	bool bFilterEnginePluginContentFromIni = true;
-	if (ConfigFile.GetBool(LegacyConfigSection, TEXT("FilterEnginePluginContent"), bFilterEnginePluginContentFromIni) ||
-		ConfigFile.GetBool(ConfigSection, TEXT("FilterEnginePluginContent"), bFilterEnginePluginContentFromIni))
-	{
-		bFilterEnginePluginContent = bFilterEnginePluginContentFromIni;
-		UE_LOG(LogVirtualization, Display, TEXT("\tFilterEnginePluginContent : %s"), bFilterEnginePluginContent ? TEXT("true") : TEXT("false"));
-	}
-	else
-	{
-		UE_LOG(LogVirtualization, Error, TEXT("Failed to load [Core.VirtualizationModule].FilterEnginePluginContent from config file!"));
-	}
-
-	// Optional
-	bool bFilterMapContentFromIni = false;
-	if (ConfigFile.GetBool(ConfigSection, TEXT("FilterMapContent"), bFilterMapContentFromIni))
-	{
-		bFilterMapContent = bFilterMapContentFromIni;
+		ConfigFile.GetBool(ConfigSection, TEXT("FilterMapContent"), bFilterMapContent);
 		UE_LOG(LogVirtualization, Display, TEXT("\tFilterMapContent : %s"), bFilterMapContent ? TEXT("true") : TEXT("false"));
 	}
-	else
-	{
-		UE_LOG(LogVirtualization, Error, TEXT("Failed to load [Core.VirtualizationModule].FilterMapContent from config file!"));
-	}
 
-	// Optional
+
 	TArray<FString> DisabledAssetTypesFromIni;
 	if (ConfigFile.GetArray(LegacyConfigSection, TEXT("DisabledAsset"), DisabledAssetTypesFromIni) > 0 ||
 		ConfigFile.GetArray(ConfigSection, TEXT("DisabledAsset"), DisabledAssetTypesFromIni) > 0)
@@ -1104,39 +1113,59 @@ void FVirtualizationManager::ApplySettingsFromConfigFiles(const FConfigFile& Con
 		}	
 	}
 
-	// Optional
-	bool bAllowSubmitIfVirtualizationFailedFromIni = true;
-	if (ConfigFile.GetBool(ConfigSection, TEXT("AllowSubmitIfVirtualizationFailed"), bAllowSubmitIfVirtualizationFailedFromIni))
 	{
-		bAllowSubmitIfVirtualizationFailed = bAllowSubmitIfVirtualizationFailedFromIni;
+		ConfigFile.GetBool(ConfigSection, TEXT("AllowSubmitIfVirtualizationFailed"), bAllowSubmitIfVirtualizationFailed);
 		UE_LOG(LogVirtualization, Display, TEXT("\tAllowSubmitIfVirtualizationFailed : %s"), bAllowSubmitIfVirtualizationFailed ? TEXT("true") : TEXT("false"));
 	}
-	else
-	{
-		UE_LOG(LogVirtualization, Error, TEXT("Failed to load [Core.VirtualizationModule].AllowSubmitIfVirtualizationFailed from config file!"));
-	}
 
-	// Optional
 #if UE_VIRTUALIZATION_CONNECTION_LAZY_INIT == 0
-	bool bLazyInitConnectionsFromIni = true;
-	if (ConfigFile.GetBool(ConfigSection, TEXT("LazyInitConnections"), bLazyInitConnectionsFromIni))
-	{
-		bLazyInitConnections = bLazyInitConnectionsFromIni;
-		UE_LOG(LogVirtualization, Display, TEXT("\tLazyInitConnections : %s"), bLazyInitConnections ? TEXT("true") : TEXT("false"));
-	}
-	else
-	{
-		UE_LOG(LogVirtualization, Error, TEXT("Failed to load [Core.VirtualizationModule].LazyInitConnections from config file!"));
-	}
+	ConfigFile.GetBool(ConfigSection, TEXT("LazyInitConnections"), bLazyInitConnections);
+	UE_LOG(LogVirtualization, Display, TEXT("\tLazyInitConnections : %s"), bLazyInitConnections ? TEXT("true") : TEXT("false"));
 #else
 	bLazyInitConnections = true;
-	UE_LOG(LogVirtualization, Display, TEXT("\tLazyInitConnections : %s (set by code)"), bLazyInitConnections ? TEXT("true") : TEXT("false"));
+	UE_LOG(LogVirtualization, Display, TEXT("\tLazyInitConnections : true (set by code)"));
 #endif //UE_VIRTUALIZATION_CONNECTION_LAZY_INIT
+
+	{
+		ConfigFile.GetBool(ConfigSection, TEXT("UseLegacyErrorHandling"), bUseLegacyErrorHandling);
+		UE_LOG(LogVirtualization, Display, TEXT("\tUseLegacyErrorHandling : %s"), bUseLegacyErrorHandling ? TEXT("true") : TEXT("false"));
+	}
+
+	{
+		ConfigFile.GetString(ConfigSection, TEXT("PullErrorAdditionalMsg"), PullErrorAdditionalMsg);
+		// This value is not echoed to the log file, as seeing an error string there might confuse users
+	}
+	
+	{
+		ConfigFile.GetString(ConfigSection, TEXT("ConnectionHelpUrl"), ConnectionHelpUrl);
+		// This value is not echoed to the log file
+	}
+
+	{
+		ConfigFile.GetBool(ConfigSection, TEXT("ForceCachingOnPull"), bForceCachingOnPull);
+		UE_LOG(LogVirtualization, Display, TEXT("\tForceCachingOnPull : %s"), bForceCachingOnPull ? TEXT("true") : TEXT("false"));
+	}
+
+	// Deprecated
+	{
+		bool bDummyValue = true;
+		if (ConfigFile.GetBool(LegacyConfigSection, TEXT("FilterEngineContent"), bDummyValue) ||
+			ConfigFile.GetBool(ConfigSection, TEXT("FilterEngineContent"), bDummyValue))
+		{
+			UE_LOG(LogVirtualization, Warning, TEXT("\tFilterEngineContent is now deprecated (engine content is never virtualized)"));
+		}
+
+		if (ConfigFile.GetBool(LegacyConfigSection, TEXT("FilterEnginePluginContent"), bDummyValue) ||
+			ConfigFile.GetBool(ConfigSection, TEXT("FilterEnginePluginContent"), bDummyValue))
+		{
+			UE_LOG(LogVirtualization, Warning, TEXT("\tFilterEnginePluginContent is now deprecated (engine content is never virtualized)"));
+		}
+	}
 
 	// Check for any legacy settings and print them out (easier to do this in one block rather than one and time)
 	{
-		// Entries that are allows to be in [Core.ContentVirtualization
-		static const TArray<FString> AllowedEntries = { TEXT("SystemName") , TEXT("LazyInit") };
+		// Entries that are allows to be in [Core.ContentVirtualization]
+		static const TArray<FString> AllowedEntries = { TEXT("SystemName") , TEXT("LazyInit"), TEXT("InitPreSlate") };
 		
 		TArray<FString> LegacyEntries;	
 		if (const FConfigSection* LegacySection = ConfigFile.Find(LegacyConfigSection))
@@ -1691,6 +1720,11 @@ void FVirtualizationManager::AddBackend(TUniquePtr<IVirtualizationBackend> Backe
 	COOK_STAT(Profiling::CreateStats(*BackendRef));
 }
 
+bool FVirtualizationManager::IsPersistentBackend(IVirtualizationBackend& Backend)
+{
+	return PersistentStorageBackends.Contains(&Backend);
+}
+
 void FVirtualizationManager::EnsureBackendConnections()
 {
 	if (bPendingBackendConnections)
@@ -1711,7 +1745,7 @@ void FVirtualizationManager::EnsureBackendConnections()
 	}
 }
 
-void FVirtualizationManager::CachePayloads(TArrayView<FPushRequest> Requests, const IVirtualizationBackend* BackendSource)
+void FVirtualizationManager::CachePayloads(TArrayView<FPushRequest> Requests, const IVirtualizationBackend* BackendSource, IVirtualizationBackend::EPushFlags Flags)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FVirtualizationManager::CachePayload);
 
@@ -1726,7 +1760,7 @@ void FVirtualizationManager::CachePayloads(TArrayView<FPushRequest> Requests, co
 			return;
 		}
 
-		const bool bResult = TryCacheDataToBackend(*BackendToCache, Requests);
+		const bool bResult = TryCacheDataToBackend(*BackendToCache, Requests, Flags);
 
 		if (!bResult)
 		{
@@ -1741,8 +1775,9 @@ void FVirtualizationManager::CachePayloads(TArrayView<FPushRequest> Requests, co
 		{
 			for (const FPushRequest& Request : Requests)
 			{
+				FText Errors;
 				FPullRequest ValidationRequest(Request.GetIdentifier());
-				PullDataFromBackend(*BackendToCache, MakeArrayView(&ValidationRequest, 1));
+				PullDataFromBackend(*BackendToCache, MakeArrayView(&ValidationRequest, 1), Errors);
 
 				checkf(Request.GetPayload().GetRawHash() == ValidationRequest.GetPayload().GetRawHash(),
 					TEXT("[%s] Failed to pull payload '%s' after it was cached to backend"),
@@ -1753,18 +1788,17 @@ void FVirtualizationManager::CachePayloads(TArrayView<FPushRequest> Requests, co
 	}
 }
 
-bool FVirtualizationManager::TryCacheDataToBackend(IVirtualizationBackend& Backend, TArrayView<FPushRequest> Requests)
+bool FVirtualizationManager::TryCacheDataToBackend(IVirtualizationBackend& Backend, TArrayView<FPushRequest> Requests, IVirtualizationBackend::EPushFlags Flags)
 {
 	COOK_STAT(FCookStats::CallStats & Stats = Profiling::GetCacheStats(Backend));
 	COOK_STAT(FCookStats::FScopedStatsCounter Timer(Stats));
 	COOK_STAT(Timer.TrackCyclesOnly());
 	
-	if (Backend.PushData(Requests))
+	if (Backend.PushData(Requests, Flags))
 	{
 #if ENABLE_COOK_STATS
-		Timer.AddHit(0);
-
 		const bool bIsInGameThread = IsInGameThread();
+		bool bWasDataPushed = false;
 
 		for (const FPushRequest& Request : Requests)
 		{
@@ -1772,7 +1806,14 @@ bool FVirtualizationManager::TryCacheDataToBackend(IVirtualizationBackend& Backe
 			{
 				Stats.Accumulate(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter, 1l, bIsInGameThread);
 				Stats.Accumulate(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Bytes, Request.GetPayload().GetCompressedSize(), bIsInGameThread);
+
+				bWasDataPushed = true;
 			}
+		}
+
+		if (bWasDataPushed)
+		{
+			Timer.AddHit(0);
 		}
 #endif // ENABLE_COOK_STATS
 
@@ -1790,7 +1831,7 @@ bool FVirtualizationManager::TryPushDataToBackend(IVirtualizationBackend& Backen
 	COOK_STAT(FCookStats::FScopedStatsCounter Timer(Stats));
 	COOK_STAT(Timer.TrackCyclesOnly());
 
-	const bool bPushResult = Backend.PushData(Requests);
+	const bool bPushResult = Backend.PushData(Requests, IVirtualizationBackend::EPushFlags::None);
 
 #if ENABLE_COOK_STATS
 	if (bPushResult)
@@ -1822,45 +1863,77 @@ void FVirtualizationManager::PullDataFromAllBackends(TArrayView<FPullRequest> Re
 	}
 
 	FPullRequestCollection RequestsCollection(Requests);
-
-	for (IVirtualizationBackend* Backend : PullEnabledBackends)
+	
+	while(true)
 	{
-		check(Backend != nullptr);
+		TStringBuilder<512> BackendErrors;
 
-		if (Backend->IsOperationDebugDisabled(IVirtualizationBackend::EOperations::Pull))
+		for (IVirtualizationBackend* Backend : PullEnabledBackends)
 		{
-			UE_LOG(LogVirtualization, Verbose, TEXT("Pulling from backend '%s' is debug disabled"), *Backend->GetDebugName());
-			continue;
+			check(Backend != nullptr);
+
+			if (Backend->IsOperationDebugDisabled(IVirtualizationBackend::EOperations::Pull))
+			{
+				UE_LOG(LogVirtualization, Verbose, TEXT("Pulling from backend '%s' is debug disabled"), *Backend->GetDebugName());
+				continue;
+			}
+
+			if (Backend->GetConnectionStatus() != IVirtualizationBackend::EConnectionStatus::Connected)
+			{
+				UE_LOG(LogVirtualization, Verbose, TEXT("Cannot pull from backend '%s' as it is not connected"), *Backend->GetDebugName());
+				continue;
+			}
+
+			FText Errors;
+			PullDataFromBackend(*Backend, RequestsCollection.GetRequests(), Errors);
+
+			// We only want to report errors from persistent backends, cached backends are allowed to fail.
+			if (!Errors.IsEmpty() && IsPersistentBackend(*Backend))
+			{
+				if (BackendErrors.Len() != 0)
+				{
+					BackendErrors << LINE_TERMINATOR;
+				}
+
+				BackendErrors << Backend->GetDebugName() << TEXT(": ") << Errors.ToString();
+			}
+
+			const bool bShouldCache = EnumHasAllFlags(CachingPolicy, ECachingPolicy::CacheOnPull);
+
+			TArray<FPushRequest> PayloadsToCache = RequestsCollection.OnPullCompleted(*Backend, bShouldCache);
+			if (!PayloadsToCache.IsEmpty())
+			{
+				const IVirtualizationBackend::EPushFlags CacheOnPullFlags = bForceCachingOnPull	? IVirtualizationBackend::EPushFlags::Force
+																								: IVirtualizationBackend::EPushFlags::None;
+
+				CachePayloads(PayloadsToCache, Backend, CacheOnPullFlags);
+			}
+
+			// We can early out if there is no more requests to make
+			if (RequestsCollection.IsWorkComplete())
+			{
+				break;
+			}
 		}
 
-		if (Backend->GetConnectionStatus() != IVirtualizationBackend::EConnectionStatus::Connected)
+		if (RequestsCollection.IsWorkComplete())
 		{
-			UE_LOG(LogVirtualization, Verbose, TEXT("Cannot pull from backend '%s' as it is not connected"), *Backend->GetDebugName());
-			continue;
+			return; // All payloads pulled
 		}
-
-		PullDataFromBackend(*Backend, RequestsCollection.GetRequests());
-
-		TArray<FPushRequest> PayloadsToCache = RequestsCollection.OnPullCompleted(*Backend, bEnableCacheAfterPull);
-		if (!PayloadsToCache.IsEmpty())
+		else if (OnPayloadPullError(BackendErrors) != ErrorHandlingResult::Retry)
 		{
-			CachePayloads(PayloadsToCache, Backend);
-		}
-
-		if (!RequestsCollection.HasRemainingRequests())
-		{
-			break;
+			return; // Some payloads failed to pull
 		}
 	}
 }
 
-void FVirtualizationManager::PullDataFromBackend(IVirtualizationBackend& Backend, TArrayView<FPullRequest> Requests)
+void FVirtualizationManager::PullDataFromBackend(IVirtualizationBackend& Backend, TArrayView<FPullRequest> Requests, FText& OutErrors)
 {
 	COOK_STAT(FCookStats::CallStats & Stats = Profiling::GetPullStats(Backend));
 	COOK_STAT(FCookStats::FScopedStatsCounter Timer(Stats));
 	COOK_STAT(Timer.TrackCyclesOnly());
 	
-	Backend.PullData(Requests);
+	Backend.PullData(Requests, IVirtualizationBackend::EPullFlags::None, OutErrors);
 	
 #if ENABLE_COOK_STATS
 	const bool bIsInGameThread = IsInGameThread();
@@ -1876,6 +1949,60 @@ void FVirtualizationManager::PullDataFromBackend(IVirtualizationBackend& Backend
 		}
 	}
 #endif //ENABLE_COOK_STATS
+}
+
+FVirtualizationManager::ErrorHandlingResult FVirtualizationManager::OnPayloadPullError(FStringView BackendErrors)
+{
+	if (bUseLegacyErrorHandling)
+	{
+		return ErrorHandlingResult::AcceptFailedPayloads;
+	}
+
+	static FCriticalSection CriticalSection;
+
+	if (CriticalSection.TryLock())
+	{
+		
+		const FText Title(LOCTEXT("VAPullTitle", "Failed to pull virtualized data!"));
+
+		FTextBuilder MsgBuilder;
+		MsgBuilder.AppendLine(LOCTEXT("VAPullMsgHeader", "Failed to pull payload(s) from virtualization storage and allowing the editor to continue could corrupt data!"));
+		
+		if (!BackendErrors.IsEmpty())
+		{
+			MsgBuilder.AppendLine(FString(TEXT("")));
+			MsgBuilder.AppendLine(FString(BackendErrors));
+		}
+
+		if (!PullErrorAdditionalMsg.IsEmpty())
+		{
+			MsgBuilder.AppendLine(FString(TEXT("")));
+			MsgBuilder.AppendLine(PullErrorAdditionalMsg);
+		}
+
+		MsgBuilder.AppendLine(FString(TEXT("")));
+		MsgBuilder.AppendLine(LOCTEXT("VAPullMsgYes", "[Yes] Retry pulling the data"));
+		MsgBuilder.AppendLine(LOCTEXT("VAPullMsgNo", "[No] Quit the editor"));
+
+		const FText Message = MsgBuilder.ToText();
+
+		EAppReturnType::Type Result = FMessageDialog::Open(EAppMsgType::YesNo, EAppReturnType::No, Message, Title);
+
+		if (Result == EAppReturnType::No)
+		{
+			UE_LOG(LogVirtualization, Error, TEXT("Failed to pull payloads from persistent storage and the connection could not be re-established, exiting..."));
+			GIsCriticalError = 1;
+			FPlatformMisc::RequestExit(true);
+		}
+
+		CriticalSection.Unlock();
+	}
+	else
+	{
+		FScopeLock _(&CriticalSection);
+	}
+
+	return ErrorHandlingResult::Retry;
 }
 
 bool FVirtualizationManager::ShouldVirtualizeAsset(const UObject* OwnerObject) const
@@ -1918,22 +2045,10 @@ bool FVirtualizationManager::ShouldVirtualizePackage(const FPackagePath& Package
 		return true;
 	}
 
-	if (bFilterEngineContent)
+	// Do not virtualize engine content
+	if (MountPointName.ToView() == TEXT("/Engine/") || FPaths::IsUnderDirectory(MountPointPath.ToString(), FPaths::EnginePluginsDir()))
 	{
-		// Do not virtualize engine content
-		if (MountPointName.ToView() == TEXT("/Engine/"))
-		{
-			return false;
-		}
-	}
-
-	if (bFilterEnginePluginContent)
-	{
-		// Do not virtualize engine plugin content
-		if (FPaths::IsUnderDirectory(MountPointPath.ToString(), FPaths::EnginePluginsDir()))
-		{
-			return false;
-		}
+		return false;
 	}
 
 	const UVirtualizationFilterSettings* Settings = GetDefault<UVirtualizationFilterSettings>();
@@ -2037,55 +2152,60 @@ void FVirtualizationManager::GatherAnalytics(TArray<FAnalyticsEventAttribute>& A
 		const FString BaseName = TEXT("Virtualization");
 
 		{
-			FString AttrName = BaseName + TEXT(".Enabled");
+			FString AttrName = BaseName + TEXT("_Enabled");
 			Attributes.Emplace(MoveTemp(AttrName), System.IsEnabled());
 		}
 
 		{
-			FString AttrName = BaseName + TEXT(".Cache.TimeSpent");
+			FString AttrName = BaseName + TEXT("_Cache_TimeSpent");
 			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Cache.CyclesSpent * FPlatformTime::GetSecondsPerCycle());
 		}
 
 		{
-			FString AttrName = BaseName + TEXT(".Cache.PayloadCount");
+			FString AttrName = BaseName + TEXT("_Cache_PayloadCount");
 			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Cache.PayloadCount);
 		}
 
 		{
-			FString AttrName = BaseName + TEXT(".Cache.TotalBytes");
+			FString AttrName = BaseName + TEXT("_Cache_TotalBytes");
 			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Cache.TotalBytes);
 		}
 
 		{
-			FString AttrName = BaseName + TEXT(".Push.TimeSpent");
+			FString AttrName = BaseName + TEXT("_Push_TimeSpent");
 			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Push.CyclesSpent * FPlatformTime::GetSecondsPerCycle());
 		}
 
 		{
-			FString AttrName = BaseName + TEXT(".Push.PayloadCount");
+			FString AttrName = BaseName + TEXT("_Push_PayloadCount");
 			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Push.PayloadCount);
 		}
 
 		{
-			FString AttrName = BaseName + TEXT(".Push.TotalBytes");
+			FString AttrName = BaseName + TEXT("_Push_TotalBytes");
 			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Push.TotalBytes);
 		}
 
 		{
-			FString AttrName = BaseName + TEXT(".Pull.TimeSpent");
+			FString AttrName = BaseName + TEXT("_Pull_TimeSpent");
 			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Pull.CyclesSpent * FPlatformTime::GetSecondsPerCycle());
 		}
 
 		{
-			FString AttrName = BaseName + TEXT(".Pull.PayloadCount");
+			FString AttrName = BaseName + TEXT("_Pull_PayloadCount");
 			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Pull.PayloadCount);
 		}
 
 		{
-			FString AttrName = BaseName + TEXT(".Pull.TotalBytes");
+			FString AttrName = BaseName + TEXT("_Pull_TotalBytes");
 			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Pull.TotalBytes);
 		}
 	}
+}
+
+FString FVirtualizationManager::GetConnectionHelpUrl()
+{
+	return ConnectionHelpUrl;
 }
 
 } // namespace UE::Virtualization

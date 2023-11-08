@@ -214,6 +214,8 @@ private:
 
 	TArray<UOptimusNode*> GetSelectedModelNodes() const;
 
+	void StoreCurrentViewLocation();
+
 	void OnDeformerModified(
 		EOptimusGlobalNotifyType InNotifyType, 
 		UObject *InModifiedObject
@@ -223,6 +225,10 @@ private:
 	void OnFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent);
 
 	void OnDataTypeChanged();
+
+
+	FSlateIcon GetCompileStatusIcon() const;
+	FText GetCompileStatusTooltip() const;
 	
 private:
 	// Persona toolkit for the skelmesh preview

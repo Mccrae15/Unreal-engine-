@@ -15,7 +15,7 @@ namespace ETeamAssignmentMethod
 	const FName Manual = FName(TEXT("Manual"));
 }
 
-bool FPartyReservation::IsValid() const
+bool FPartyReservation::IsValid(bool bIsValidationStrRequired) const
 {
 	bool bIsValid = false;
 	if (PartyLeader.IsValid() && PartyMembers.Num() >= 1)
@@ -35,7 +35,8 @@ bool FPartyReservation::IsValid() const
 				break;
 			}
 
-			if (PartyLeader == PlayerRes.UniqueId &&
+			if (bIsValidationStrRequired &&
+				PartyLeader == PlayerRes.UniqueId &&
 				PlayerRes.ValidationStr.IsEmpty())
 			{
 				bIsValid = false;
@@ -120,7 +121,8 @@ UPartyBeaconState::UPartyBeaconState(const FObjectInitializer& ObjectInitializer
 	TeamAssignmentMethod(ETeamAssignmentMethod::Smallest),
 	ReservedHostTeamNum(0),
 	ForceTeamNum(0),
-	bRestrictCrossConsole(false)
+	bRestrictCrossConsole(false),
+	bRespectCompetitiveIntegrity(true)
 {
 }
 
@@ -219,6 +221,11 @@ bool UPartyBeaconState::ReconfigureTeamAndPlayerCount(int32 InNumTeams, int32 In
 	}
 
 	return bSuccess;
+}
+
+void UPartyBeaconState::SetCompetitiveIntegrity(bool bNewCompetitiveIntegrity)
+{
+	bRespectCompetitiveIntegrity = bNewCompetitiveIntegrity;
 }
 
 int32 UPartyBeaconState::GetMaxAvailableTeamSize() const

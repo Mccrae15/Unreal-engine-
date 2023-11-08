@@ -66,7 +66,14 @@ namespace Chaos
 		static constexpr FRealSingle DefaultCollisionMaxPushOutVelocity = 1000.0f;
 		static constexpr int32 DefaultRestitutionThreshold = 1000;
 
-		CHAOS_API FPBDRigidsEvolutionGBF(FPBDRigidsSOAs& InParticles, THandleArray<FChaosPhysicsMaterial>& SolverPhysicsMaterials, const TArray<ISimCallbackObject*>* InMidPhaseModifiers = nullptr, const TArray<ISimCallbackObject*>* InCollisionModifiers = nullptr, bool InIsSingleThreaded = false);
+		CHAOS_API FPBDRigidsEvolutionGBF(
+			FPBDRigidsSOAs& InParticles, 
+			THandleArray<FChaosPhysicsMaterial>& SolverPhysicsMaterials, 
+			const TArray<ISimCallbackObject*>* InMidPhaseModifiers = nullptr,
+			const TArray<ISimCallbackObject*>* InCCDModifiers = nullptr,
+			const TArray<ISimCallbackObject*>* InStrainModifiers = nullptr,
+			const TArray<ISimCallbackObject*>* InCollisionModifiers = nullptr,
+			bool InIsSingleThreaded = false);
 		CHAOS_API ~FPBDRigidsEvolutionGBF();
 
 		FORCEINLINE void SetPostIntegrateCallback(const FPBDRigidsEvolutionCallback& Cb)
@@ -99,6 +106,8 @@ namespace Chaos
 
 		void SetIsDeterministic(const bool bInIsDeterministic);
 
+		void SetShockPropagationIterations(const int32 InPositionIts, const int32 InVelocityIts);
+
 		CHAOS_API void Advance(const FReal Dt, const FReal MaxStepDt, const int32 MaxSteps);
 		CHAOS_API void AdvanceOneTimeStep(const FReal dt, const FSubStepInfo& SubStepInfo = FSubStepInfo());
 
@@ -130,17 +139,21 @@ namespace Chaos
 
 		/**
 		 * User has moved a particle
+		 * Does not change velocity.
+		 * Will wake the particle if this is a move (i.e., bIsTeleport is false)
 		 */
-		CHAOS_API void SetParticleTransform(FGeometryParticleHandle* InParticle, const FVec3& InPos, const FRotation3& InRot, const bool bIsTeleport)
-		{
-			const FVec3 PrevX = InParticle->X();
-			const FRotation3 PrevR = InParticle->R();
+		CHAOS_API void SetParticleTransform(FGeometryParticleHandle* InParticle, const FVec3& InPos, const FRotation3& InRot, const bool bIsTeleport);
 
-			FGenericParticleHandle(InParticle)->SetTransform(InPos, InRot);
+		/**
+		 * Move a particle to a new location with a sweep and stop and the first opposing contact.
+		 * Does not change velocity.
+		 * Will wake the particle if this is a move (i.e., bIsTeleport is false)
+		 */
+		CHAOS_API virtual void SetParticleTransformSwept(FGeometryParticleHandle* InParticle, const FVec3& InPos, const FRotation3& InRot, const bool bIsTeleport);
 
-			OnParticleMoved(InParticle, PrevX, PrevR, bIsTeleport);
-		}
-
+		/**
+		 * Called when a particle is moved. We need to reset some friction properties, sleeping properties, etc
+		 */
 		CHAOS_API void OnParticleMoved(FGeometryParticleHandle* InParticle, const FVec3& PrevX, const FRotation3& PrevR, const bool bIsTeleport);
 
 
@@ -149,19 +162,15 @@ namespace Chaos
 		 */
 		void ReloadParticlesCache();
 
-		/**
-		 * Build the list of disables particles and update the sleeping flag on the island
-		 * @param Island Index of the island in which the cache will be used
-		 * @param DisabledParticles List of islands disabled particles
-		 * @param SleepedIslands List of islands sleeping state 
-		 */
-		void BuildDisabledParticles(const int32 Island, TArray<TArray<FPBDRigidParticleHandle*>>& DisabledParticles, TArray<bool>& SleepedIslands);
-
 		void DestroyParticleCollisionsInAllocator(FGeometryParticleHandle* Particle);
 
 		virtual void DestroyTransientConstraints(FGeometryParticleHandle* Particle) override;
 
-		CHAOS_API inline void EndFrame(FReal Dt)
+		/** Reset the collisions warm starting when resimulate. Ideally we should store
+		  that in the RewindData history but probably too expensive for now */
+		virtual void ResetCollisions() override;
+
+		inline void EndFrame(FReal Dt)
 		{
 			Particles.GetNonDisabledDynamicView().ParallelFor([&](auto& Particle, int32 Index) {
 				Particle.Acceleration() = FVec3(0);
@@ -179,10 +188,18 @@ namespace Chaos
 			CHAOS_SCOPED_TIMER(Integrate);
 
 			const FReal BoundsThickness = GetCollisionConstraints().GetDetectorSettings().BoundsExpansion;
+			const FReal VelocityBoundsMultiplier = GetCollisionConstraints().GetDetectorSettings().BoundsVelocityInflation;
+			const FReal MaxVelocityBoundsExpansion = GetCollisionConstraints().GetDetectorSettings().MaxVelocityBoundsExpansion;
 			const FReal MaxAngularSpeedSq = CVars::HackMaxAngularVelocity * CVars::HackMaxAngularVelocity;
 			const FReal MaxSpeedSq = CVars::HackMaxVelocity * CVars::HackMaxVelocity;
+			
+			FChaosVDContextWrapper CVDContext;
+			CVD_GET_WRAPPED_CURRENT_CONTEXT(CVDContext);
+			
 			InParticles.ParallelFor([&](auto& GeomParticle, int32 Index) 
 			{
+				CVD_SCOPE_CONTEXT(CVDContext.Context);
+
 				//question: can we enforce this at the API layer? Right now islands contain non dynamic which makes this hard
 				auto PBDParticle = GeomParticle.CastToRigidParticle();
 				if (PBDParticle && PBDParticle->ObjectState() == EObjectStateType::Dynamic)
@@ -202,13 +219,11 @@ namespace Chaos
 					Particle.V() += Particle.Acceleration() * Dt;
 					Particle.W() += Particle.AngularAcceleration() * Dt;
 
-
 					//AddImpulsesRule.Apply(Particle, Dt);
 					Particle.V() += Particle.LinearImpulseVelocity();
 					Particle.W() += Particle.AngularImpulseVelocity();
 					Particle.LinearImpulseVelocity() = FVec3(0);
 					Particle.AngularImpulseVelocity() = FVec3(0);
-					
 
 					//EtherDragRule.Apply(Particle, Dt);
 					{
@@ -263,11 +278,23 @@ namespace Chaos
 
 					Particle.SetTransformPQCom(PCoM, QCoM);
 
+					// We need to expand the bounds back along velocity otherwise we can miss collisions when a box
+					// lands on another box, imparting velocity to the lower box and causing the boxes to be
+					// separated by more than Cull Distance at collision detection time.
+					FVec3 VelocityBoundsDelta = FVec3(0);
+					if ((VelocityBoundsMultiplier > 0) && (MaxVelocityBoundsExpansion > 0))
+					{
+						VelocityBoundsDelta = (-VelocityBoundsMultiplier * Dt) * Particle.V();
+						
+						// Box clamp to avoid sqrt
+						VelocityBoundsDelta.BoundToCube(MaxVelocityBoundsExpansion);
+					}
+
 					if (!Particle.CCDEnabled())
 					{
 						// Expand bounds about P/Q by a small amount. This can still result in missed collisions, especially
 						// when we have joints that pull the body back to X/R, if P-X is greater than the BoundsThickness
-						Particle.UpdateWorldSpaceState(FRigidTransform3(Particle.P(), Particle.Q()), FVec3(BoundsThickness));
+						Particle.UpdateWorldSpaceStateSwept(FRigidTransform3(Particle.P(), Particle.Q()), FVec3(BoundsThickness), VelocityBoundsDelta);
 					}
 					else
 					{
@@ -279,7 +306,7 @@ namespace Chaos
 						}
 #endif
 
-						if (CCDHelpers::DeltaExceedsThreshold(Particle.CCDAxisThreshold(), Particle.P() - Particle.X(), Particle.Q()))
+						if (FCCDHelpers::DeltaExceedsThreshold(Particle.CCDAxisThreshold(), Particle.P() - Particle.X(), Particle.Q()))
 						{
 							// We sweep the bounds from P back along the velocity and expand by a small amount.
 							// If not using tight bounds we also expand the bounds in all directions by Velocity. This is necessary only for secondary CCD collisions
@@ -294,9 +321,11 @@ namespace Chaos
 						}
 						else
 						{
-							Particle.UpdateWorldSpaceState(FRigidTransform3(Particle.P(), Particle.Q()), FVec3(BoundsThickness));
+							Particle.UpdateWorldSpaceStateSwept(FRigidTransform3(Particle.P(), Particle.Q()), FVec3(BoundsThickness), VelocityBoundsDelta);
 						}
 					}
+
+					CVD_TRACE_PARTICLE(PBDParticle->Handle())
 				}
 			});
 
@@ -311,7 +340,7 @@ namespace Chaos
 		CHAOS_API TUniquePtr<IResimCacheBase> CreateExternalResimCache() const;
 		CHAOS_API void SetCurrentStepResimCache(IResimCacheBase* InCurrentStepResimCache);
 
-		CHAOS_API FSpatialAccelerationBroadPhase& GetBroadPhase() { return BroadPhase; }
+		FSpatialAccelerationBroadPhase& GetBroadPhase() { return BroadPhase; }
 
 		CHAOS_API void TransferJointConstraintCollisions();
 
@@ -365,7 +394,10 @@ namespace Chaos
 		FPBDRigidsEvolutionCallback PreApplyCallback;
 		FPBDRigidsEvolutionInternalHandleCallback InternalParticleInitilization;
 		FEvolutionResimCache* CurrentStepResimCacheImp;
+
+		// @todo(chaos): evolution and collision constraints should not know about ISimCallbackObject. Fix this.
 		const TArray<ISimCallbackObject*>* MidPhaseModifiers;
+		const TArray<ISimCallbackObject*>* CCDModifiers;
 		const TArray<ISimCallbackObject*>* CollisionModifiers;
 
 		FCCDManager CCDManager;

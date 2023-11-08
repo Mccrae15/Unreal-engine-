@@ -12,6 +12,7 @@ import { ErrorHandler } from "../components/ErrorHandler";
 import { hordeClasses, modeColors } from '../styles/Styles';
 import { useQuery } from './JobDetailCommon';
 import { JobDetailsV2 } from './jobDetailsV2/JobDetailsViewCommon';
+import dashboard from '../backend/Dashboard';
 
 let toolTipId = 0;
 
@@ -788,6 +789,12 @@ export const NewBuild: React.FC<{ streamId: string; show: boolean; onClose: (new
          }
       }
 
+      if (!t) {
+         const pref = dashboard.getLastJobTemplateSettings(stream.id, templates.map(t => t.id));
+         if (pref) {
+            t = templates.find(t => stream.id === pref.streamId && t.id === pref.templateId)
+         }
+      }
       // default to sane template when all are shown
       if (!t && (showAllTemplates) && stream.tabs.length > 0) {
          const stab = stream.tabs[0] as JobsTabData;
@@ -1034,7 +1041,7 @@ export const NewBuild: React.FC<{ streamId: string; show: boolean; onClose: (new
          }
       });
 
-      const groups = Array.from(gset).sort((a, b) => a < b ? - 1 : 1);
+      const groups = Array.from(gset).sort((a, b) => a.localeCompare(b));
 
       const options: IDropdownOption[] = [];
 
@@ -1057,7 +1064,7 @@ export const NewBuild: React.FC<{ streamId: string; show: boolean; onClose: (new
             dupes.set(item.text, !v ? 1 : v + 1);
          });
 
-         param.items.sort((a, b) => a.text < b.text ? -1 : 1).forEach(item => {
+         param.items.forEach(item => {
             if (item.group === group) {
                const key = buildParams.paramKey(param, item);
                const selected = buildParams!.values[buildParams.paramKey(param, item)] ? true : false;
@@ -1390,6 +1397,11 @@ export const NewBuild: React.FC<{ streamId: string; show: boolean; onClose: (new
                console.log("Updating notifications")
                try {
                   await backend.updateNotification({ slack: true }, "job", data.id);
+                  const user = await backend.getCurrentUser();
+                  if (user.jobTemplateSettings) {
+                     dashboard.jobTemplateSettings = user.jobTemplateSettings;
+                  }
+                  
                } catch (reason) {
                   console.log(`Error on updating notifications: ${reason}`);
                }

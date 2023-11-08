@@ -400,3 +400,32 @@ void FCustomVersionContainer::SetVersion(FGuid CustomKey, int32 Version, FName F
 		Versions.Add(FCustomVersion(CustomKey, Version, FriendlyName));
 	}
 }
+
+void FCustomVersionContainer::SetVersionUsingRegistry(FGuid CustomKey, ESetCustomVersionFlags Options)
+{
+	if (CustomKey == UnusedCustomVersionKey)
+	{
+		return;
+	}
+
+	if (FCustomVersion* Found = Versions.FindByKey(CustomKey))
+	{
+		if (EnumHasAnyFlags(Options, ESetCustomVersionFlags::SkipUpdateExistingVersion))
+		{
+			return;
+		}
+
+		TOptional<FCustomVersion> RegisteredVersion = FCurrentCustomVersions::Get(CustomKey);
+		checkf(RegisteredVersion, TEXT("Attempted to set a version that is not registered"));
+
+		Found->Version      = RegisteredVersion->Version;
+		Found->FriendlyName = RegisteredVersion->FriendlyName;
+	}
+	else
+	{
+		TOptional<FCustomVersion> RegisteredVersion = FCurrentCustomVersions::Get(CustomKey);
+		checkf(RegisteredVersion, TEXT("Attempted to set a version that is not registered"));
+
+		Versions.Emplace(FCustomVersion(CustomKey, RegisteredVersion->Version, RegisteredVersion->FriendlyName));
+	}
+}

@@ -47,7 +47,7 @@ void SStaticMeshEditorViewport::Construct(const FArguments& InArgs)
 	UWorld* World = PreviewScene->GetWorld();
 	if (World != nullptr)
 	{
-		World->ChangeFeatureLevel(GWorld->FeatureLevel);
+		World->ChangeFeatureLevel(GWorld->GetFeatureLevel());
 	}
 
 	UEditorEngine* Editor = CastChecked<UEditorEngine>(GEngine);
@@ -227,7 +227,7 @@ bool SStaticMeshEditorViewport::IsShowNaniteFallbackVisible() const
 {
 	const UStaticMesh* PreviewStaticMesh = PreviewMeshComponent ? ToRawPtr(PreviewMeshComponent->GetStaticMesh()) : nullptr;
 
-	return PreviewStaticMesh && PreviewStaticMesh->NaniteSettings.bEnabled ? true : false;
+	return PreviewStaticMesh && PreviewStaticMesh->IsNaniteEnabled() ? true : false;
 }
 
 void SStaticMeshEditorViewport::UpdatePreviewSocketMeshes()

@@ -44,6 +44,7 @@ static TAutoConsoleVariable<int32> CVarControlRigHierarchyTraceAlways(TEXT("Cont
 static TAutoConsoleVariable<int32> CVarControlRigHierarchyTraceCallstack(TEXT("ControlRig.Hierarchy.TraceCallstack"), 0, TEXT("if nonzero we will record the callstack for any trace entry.\nOnly works if(ControlRig.Hierarchy.TraceEnabled != 0)"));
 static TAutoConsoleVariable<int32> CVarControlRigHierarchyTracePrecision(TEXT("ControlRig.Hierarchy.TracePrecision"), 3, TEXT("sets the number digits in a float when tracing hierarchies."));
 static TAutoConsoleVariable<int32> CVarControlRigHierarchyTraceOnSpawn(TEXT("ControlRig.Hierarchy.TraceOnSpawn"), 0, TEXT("sets the number of frames to trace when a new hierarchy is spawned"));
+TAutoConsoleVariable<bool> CVarControlRigHierarchyEnableRotationOrder(TEXT("ControlRig.Hierarchy.EnableRotationOrder"), false, TEXT("enables the rotation order for controls"));
 static int32 sRigHierarchyLastTrace = INDEX_NONE;
 static TCHAR sRigHierarchyTraceFormat[16];
 
@@ -321,23 +322,31 @@ void URigHierarchy::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConst
 void URigHierarchy::Reset()
 {
 	LLM_SCOPE_BYNAME(TEXT("Animation/ControlRig"));
-	
+
+	Reset_Impl(true);
+}
+
+void URigHierarchy::Reset_Impl(bool bResetElements)
+{
 	TopologyVersion = 0;
 	MetadataVersion = 0;
 	bEnableDirtyPropagation = true;
 
-	// walk in reverse since certain elements might not have been allocated themselves
-	for(int32 ElementIndex = Elements.Num() - 1; ElementIndex >= 0; ElementIndex--)
+	if(bResetElements)
 	{
-		DestroyElement(Elements[ElementIndex]);
+		// walk in reverse since certain elements might not have been allocated themselves
+		for(int32 ElementIndex = Elements.Num() - 1; ElementIndex >= 0; ElementIndex--)
+		{
+			DestroyElement(Elements[ElementIndex]);
+		}
+		Elements.Reset();
+		ElementsPerType.Reset();
+		for(int32 TypeIndex=0;TypeIndex<RigElementTypeToFlatIndex(ERigElementType::Last);TypeIndex++)
+		{
+			ElementsPerType.Add(TArray<FRigBaseElement*>());
+		}
+		IndexLookup.Reset();
 	}
-	Elements.Reset();
-	ElementsPerType.Reset();
-	for(int32 TypeIndex=0;TypeIndex<RigElementTypeToFlatIndex(ERigElementType::Last);TypeIndex++)
-	{
-		ElementsPerType.Add(TArray<FRigBaseElement*>());
-	}
-	IndexLookup.Reset();
 
 	ResetPoseHash = INDEX_NONE;
 	ResetPoseIsFilteredOut.Reset();
@@ -378,59 +387,142 @@ void URigHierarchy::CopyHierarchy(URigHierarchy* InHierarchy)
 	LLM_SCOPE_BYNAME(TEXT("Animation/ControlRig"));
 
 	FScopeLock Lock(&ElementsLock);
-	
-	Reset();
-
-	// Allocate the elements in batches to improve performance
-	TArray<uint8*> NewElementsPerType;
-	TArray<int32> StructureSizePerType;
-	for(int32 ElementTypeIndex = 0; ElementTypeIndex < InHierarchy->ElementsPerType.Num(); ElementTypeIndex++)
+	if(Elements.Num() == 0 && InHierarchy->Elements.Num () == 0)
 	{
-		const ERigElementType ElementType = FlatIndexToRigElementType(ElementTypeIndex);
-		int32 StructureSize = 0;
-
-		const int32 Count = InHierarchy->ElementsPerType[ElementTypeIndex].Num();
-		if(Count)
-		{
-			FRigBaseElement* ElementMemory = MakeElement(ElementType, Count, &StructureSize);
-			NewElementsPerType.Add((uint8*)ElementMemory);
-		}
-		else
-		{
-			NewElementsPerType.Add(nullptr);
-		}
-
-		StructureSizePerType.Add(StructureSize);
-		ElementsPerType[ElementTypeIndex].Reserve(Count);
+		return;
 	}
 
-	Elements.Reserve(InHierarchy->Elements.Num());
-	IndexLookup.Reserve(InHierarchy->IndexLookup.Num());
-	
-	for(int32 Index = 0; Index < InHierarchy->Num(); Index++)
+	bool bReallocateElements = false;
+
+	// check if we really need to do a deep copy all over again.
+	// for rigs which contain more elements (likely procedural elements)
+	// we'll assume we can just remove superfluous elements (from the end of the lists).
+	bReallocateElements = Elements.Num() < InHierarchy->Elements.Num();
+	if(!bReallocateElements)
 	{
-		FRigBaseElement* Source = InHierarchy->Get(Index);
-		const FRigElementKey& Key = Source->Key;
+		for(int32 ElementTypeIndex = 0; ElementTypeIndex < RigElementTypeToFlatIndex(ERigElementType::Last); ElementTypeIndex++)
+		{
+			check(ElementsPerType.IsValidIndex(ElementTypeIndex));
+			check(InHierarchy->ElementsPerType.IsValidIndex(ElementTypeIndex));
+			if(ElementsPerType[ElementTypeIndex].Num() < InHierarchy->ElementsPerType[ElementTypeIndex].Num())
+			{
+				bReallocateElements = true;
+				break;
+			}
+		}
 
-		const int32 ElementTypeIndex = RigElementTypeToFlatIndex(Key.Type);
+		// make sure that we have the elements in the right order / type
+		if(!bReallocateElements)
+		{
+			for(int32 Index = 0; Index < InHierarchy->Elements.Num(); Index++)
+			{
+				if((Elements[Index]->GetKey().Type != InHierarchy->Elements[Index]->GetKey().Type) ||
+					(Elements[Index]->SubIndex != InHierarchy->Elements[Index]->SubIndex))
+				{
+					bReallocateElements = true;
+					break;
+				}
+			}
+		}
+	}
+
+	Reset_Impl(bReallocateElements);
+
+	static const TArray<int32> StructureSizePerType = {
+		sizeof(FRigBoneElement),
+		sizeof(FRigNullElement),
+		sizeof(FRigControlElement),
+		sizeof(FRigCurveElement),
+		sizeof(FRigRigidBodyElement),
+		sizeof(FRigReferenceElement),
+	}; 
+
+	if(bReallocateElements)
+	{
+		// Allocate the elements in batches to improve performance
+		TArray<uint8*> NewElementsPerType;
+		for(int32 ElementTypeIndex = 0; ElementTypeIndex < InHierarchy->ElementsPerType.Num(); ElementTypeIndex++)
+		{
+			const ERigElementType ElementType = FlatIndexToRigElementType(ElementTypeIndex);
+			int32 StructureSize = 0;
+
+			const int32 Count = InHierarchy->ElementsPerType[ElementTypeIndex].Num();
+			if(Count)
+			{
+				FRigBaseElement* ElementMemory = MakeElement(ElementType, Count, &StructureSize);
+				verify(StructureSize == StructureSizePerType[ElementTypeIndex]);
+				NewElementsPerType.Add((uint8*)ElementMemory);
+			}
+			else
+			{
+				NewElementsPerType.Add(nullptr);
+			}
+			
+			ElementsPerType[ElementTypeIndex].Reserve(Count);
+		}
+
+		Elements.Reserve(InHierarchy->Elements.Num());
+		IndexLookup.Reserve(InHierarchy->IndexLookup.Num());
+
+		for(int32 Index = 0; Index < InHierarchy->Num(); Index++)
+		{
+			FRigBaseElement* Source = InHierarchy->Get(Index);
+			const FRigElementKey& Key = Source->Key;
+
+			const int32 ElementTypeIndex = RigElementTypeToFlatIndex(Key.Type);
 		
-		const int32 SubIndex = Num(Key.Type);
+			const int32 SubIndex = Num(Key.Type);
 
-		const int32 StructureSize = StructureSizePerType[ElementTypeIndex];
-		check(NewElementsPerType[ElementTypeIndex] != nullptr);
-		FRigBaseElement* Target = (FRigBaseElement*)&NewElementsPerType[ElementTypeIndex][StructureSize * SubIndex];
-		//FRigBaseElement* Target = MakeElement(Key.Type);
+			const int32 StructureSize = StructureSizePerType[ElementTypeIndex];
+			check(NewElementsPerType[ElementTypeIndex] != nullptr);
+			FRigBaseElement* Target = (FRigBaseElement*)&NewElementsPerType[ElementTypeIndex][StructureSize * SubIndex];
 		
-		Target->Key = Key;
-		Target->NameString = Source->NameString;
-		Target->SubIndex = SubIndex;
-		Target->Index = Elements.Add(Target);
+			Target->Key = Key;
+			Target->NameString = Source->NameString;
+			Target->SubIndex = SubIndex;
+			Target->Index = Elements.Add(Target);
+			Target->CreatedAtInstructionIndex = Source->CreatedAtInstructionIndex;
 
-		ElementsPerType[ElementTypeIndex].Add(Target);
-		IndexLookup.Add(Key, Target->Index);
+			ElementsPerType[ElementTypeIndex].Add(Target);
+			IndexLookup.Add(Key, Target->Index);
 
-		check(Source->Index == Index);
-		check(Target->Index == Index);
+			check(Source->Index == Index);
+			check(Target->Index == Index);
+		}
+	}
+	else
+	{
+		// remove the superfluous elements
+		for(int32 ElementIndex = Elements.Num() - 1; ElementIndex >= InHierarchy->Elements.Num(); ElementIndex--)
+		{
+			DestroyElement(Elements[ElementIndex]);
+		}
+
+		// shrink the containers accordingly
+		Elements.SetNum(InHierarchy->Elements.Num());
+		for(int32 ElementTypeIndex = 0; ElementTypeIndex < RigElementTypeToFlatIndex(ERigElementType::Last); ElementTypeIndex++)
+		{
+			ElementsPerType[ElementTypeIndex].SetNum(InHierarchy->ElementsPerType[ElementTypeIndex].Num());
+		}
+
+		for(int32 Index = 0; Index < InHierarchy->Num(); Index++)
+		{
+			const FRigBaseElement* Source = InHierarchy->Get(Index);
+			FRigBaseElement* Target = Elements[Index];
+
+			check(Target->Key.Type == Source->Key.Type);
+            Target->Key = Source->Key;
+            Target->NameString = Source->NameString;
+            Target->SubIndex = Source->SubIndex;
+            Target->Index = Source->Index;
+			Target->CreatedAtInstructionIndex = Source->CreatedAtInstructionIndex;
+			Target->CachedChildren.Reset();
+			Target->bSelected = false;
+
+			Target->TopologyVersion = InHierarchy->GetTopologyVersion();
+		}
+
+		IndexLookup = InHierarchy->IndexLookup;
 	}
 
 	for(int32 Index = 0; Index < InHierarchy->Num(); Index++)
@@ -440,21 +532,31 @@ void URigHierarchy::CopyHierarchy(URigHierarchy* InHierarchy)
 		Target->CopyFrom(this, Source, InHierarchy);
 	}
 
-	for (const TPair<FRigElementKey, FRigElementKey>& NameMapPair : InHierarchy->PreviousNameMap)
-	{
-		PreviousNameMap.FindOrAdd(NameMapPair.Key) = NameMapPair.Value;
-	}
-
-
+	PreviousNameMap.Append(InHierarchy->PreviousNameMap);
 	TopologyVersion = InHierarchy->GetTopologyVersion();
 	MetadataVersion = InHierarchy->GetMetadataVersion();
+
 	UpdateAllCachedChildren();
-	
 	EnsureCacheValidity();
+}
+
+uint32 URigHierarchy::GetNameHash() const
+{
+	FScopeLock Lock(&ElementsLock);
+	
+	uint32 Hash = GetTypeHash(GetTopologyVersion());
+	for (int32 ElementIndex = 0; ElementIndex < Elements.Num(); ElementIndex++)
+	{
+		const FRigBaseElement* Element = Elements[ElementIndex];
+		Hash = HashCombine(Hash, GetTypeHash(Element->GetName()));
+	}
+	return Hash;	
 }
 
 uint32 URigHierarchy::GetTopologyHash(bool bIncludeTopologyVersion, bool bIncludeTransientControls) const
 {
+	FScopeLock Lock(&ElementsLock);
+	
 	uint32 Hash = bIncludeTopologyVersion ? TopologyVersion : 0;
 
 	for (int32 ElementIndex = 0; ElementIndex < Elements.Num(); ElementIndex++)
@@ -774,6 +876,7 @@ void URigHierarchy::ResetPoseToInitial(ERigElementType InTypeFilter)
 		{
 			ControlElement->Offset.Current = ControlElement->Offset.Initial;
 			ControlElement->Shape.Current = ControlElement->Shape.Initial;
+			ControlElement->PreferredEulerAngles.Current = ControlElement->PreferredEulerAngles.Initial;
 		}
 
 		if(FRigTransformElement* TransformElement = Cast<FRigTransformElement>(Elements[ElementIndex]))
@@ -793,6 +896,18 @@ void URigHierarchy::ResetCurveValues()
 		if(FRigCurveElement* CurveElement = Cast<FRigCurveElement>(Elements[ElementIndex]))
 		{
 			SetCurveValue(CurveElement, 0.f);
+		}
+	}
+}
+
+void URigHierarchy::UnsetCurveValues(bool bSetupUndo)
+{
+	LLM_SCOPE_BYNAME(TEXT("Animation/ControlRig"));
+	for(int32 ElementIndex=0; ElementIndex<Elements.Num(); ElementIndex++)
+	{
+		if(FRigCurveElement* CurveElement = Cast<FRigCurveElement>(Elements[ElementIndex]))
+		{
+			UnsetCurveValue(CurveElement, bSetupUndo);
 		}
 	}
 }
@@ -924,7 +1039,7 @@ void URigHierarchy::SanitizeName(FString& InOutName)
 
 		const bool bGoodChar = FChar::IsAlpha(C) ||				// Any letter
 			(C == '_') || (C == '-') || (C == '.') ||			// _  - . anytime
-			((i > 0) && (FChar::IsDigit(C))) ||					// 0-9 after the first character
+			(FChar::IsDigit(C)) ||								// 0-9 anytime
 			((i > 0) && (C== ' '));								// Space after the first character to support virtual bones
 
 		if (!bGoodChar)
@@ -1908,15 +2023,20 @@ bool URigHierarchy::SwitchToParent(FRigBaseElement* InChild, FRigBaseElement* In
 	const TElementDependencyMap* DependencyMapPtr = &InDependencyMap;
 
 #if WITH_EDITOR
+	// Keep this in function scope, since we might be taking a pointer to it.
 	TElementDependencyMap DependencyMapFromVM;
-	if(ExecuteContext != nullptr && DependencyMapPtr->IsEmpty())
 	{
-		if(ExecuteContext->VM)
+		FScopeLock Lock(&ExecuteContextLock);
+		if(ExecuteContext != nullptr && DependencyMapPtr->IsEmpty())
 		{
-			DependencyMapFromVM = GetDependenciesForVM(ExecuteContext->VM);
-			DependencyMapPtr = &DependencyMapFromVM;
+			if(ExecuteContext->VM)
+			{
+				DependencyMapFromVM = GetDependenciesForVM(ExecuteContext->VM);
+				DependencyMapPtr = &DependencyMapFromVM;
+			}
 		}
 	}
+	
 #endif
 	
 	if(InChild && InParent)
@@ -2457,16 +2577,34 @@ void URigHierarchy::Notify(ERigHierarchyNotification InNotifType, const FRigBase
 		return;
 	}
 
-	// if we are running a VM right now
-	if(ExecuteContext != nullptr)
+	if (!IsValid(this))
 	{
-		QueueNotification(InNotifType, InElement);
 		return;
 	}
+
+	// if we are running a VM right now
+	{
+		FScopeLock Lock(&ExecuteContextLock);
+		if(ExecuteContext != nullptr)
+		{
+			QueueNotification(InNotifType, InElement);
+			return;
+		}
+	}
+	
 
 	if(QueuedNotifications.IsEmpty())
 	{
 		ModifiedEvent.Broadcast(InNotifType, this, InElement);
+		if(ModifiedEventDynamic.IsBound())
+		{
+			FRigElementKey Key;
+			if(InElement)
+			{
+				Key = InElement->GetKey();
+			}
+			ModifiedEventDynamic.Broadcast(InNotifType, this, Key);
+		}
 	}
 	else
 	{
@@ -2532,11 +2670,14 @@ void URigHierarchy::SendQueuedNotifications()
 		return;
 	}
 
-	if(ExecuteContext != nullptr)
 	{
-		return;
+		FScopeLock Lock(&ExecuteContextLock);
+    	if(ExecuteContext != nullptr)
+    	{
+    		return;
+    	}
 	}
-
+	
 	// enable access to the controller during this method
 	FRigHierarchyEnableControllerBracket EnableController(this, true);
 
@@ -2639,6 +2780,10 @@ void URigHierarchy::SendQueuedNotifications()
 	}
 
 	ModifiedEvent.Broadcast(ERigHierarchyNotification::InteractionBracketOpened, this, nullptr);
+	if(ModifiedEventDynamic.IsBound())
+	{
+		ModifiedEventDynamic.Broadcast(ERigHierarchyNotification::InteractionBracketOpened, this, FRigElementKey());
+	}
 
 	// finally send all of the notifications
 	// (they have been added in the reverse order to the array)
@@ -2649,10 +2794,18 @@ void URigHierarchy::SendQueuedNotifications()
 		if(Element)
 		{
 			ModifiedEvent.Broadcast(Entry.Type, this, Element);
+			if(ModifiedEventDynamic.IsBound())
+			{
+				ModifiedEventDynamic.Broadcast(Entry.Type, this, Element->GetKey());
+			}
 		}
 	}
 
 	ModifiedEvent.Broadcast(ERigHierarchyNotification::InteractionBracketClosed, this, nullptr);
+	if(ModifiedEventDynamic.IsBound())
+	{
+		ModifiedEventDynamic.Broadcast(ERigHierarchyNotification::InteractionBracketClosed, this, FRigElementKey());
+	}
 }
 
 FTransform URigHierarchy::GetTransform(FRigTransformElement* InTransformElement,
@@ -2665,16 +2818,19 @@ FTransform URigHierarchy::GetTransform(FRigTransformElement* InTransformElement,
 	}
 
 #if WITH_EDITOR
-
-	if(bRecordTransformsAtRuntime && ExecuteContext)
 	{
-		ReadTransformsAtRuntime.Emplace(
-			ExecuteContext->GetPublicData<>().GetInstructionIndex(),
-			ExecuteContext->GetSlice().GetIndex(),
-			InTransformElement->GetIndex(),
-			InTransformType
-		);
+		FScopeLock Lock(&ExecuteContextLock);
+		if(bRecordTransformsAtRuntime && ExecuteContext != nullptr)
+		{
+			ReadTransformsAtRuntime.Emplace(
+				ExecuteContext->GetPublicData<>().GetInstructionIndex(),
+				ExecuteContext->GetSlice().GetIndex(),
+				InTransformElement->GetIndex(),
+				InTransformType
+			);
+		}
 	}
+	
 	TGuardValue<bool> RecordTransformsPerInstructionGuard(bRecordTransformsAtRuntime, false);
 	
 #endif
@@ -2692,6 +2848,7 @@ FTransform URigHierarchy::GetTransform(FRigTransformElement* InTransformElement,
 			{
 				const FTransform NewTransform = ComputeLocalControlValue(ControlElement, ControlElement->Pose.Get(OpposedType), GlobalType);
 				ControlElement->Pose.Set(InTransformType, NewTransform);
+				/** from mikez we do not want geting a pose to set these preferred angles
 				switch(ControlElement->Settings.ControlType)
 				{
 					case ERigControlType::Rotator:
@@ -2706,7 +2863,8 @@ FTransform URigHierarchy::GetTransform(FRigTransformElement* InTransformElement,
 					{
 						break;
 					}
-				}
+					
+				}*/
 			}
 			else if(FRigMultiParentElement* MultiParentElement = Cast<FRigMultiParentElement>(InTransformElement))
 			{
@@ -2786,46 +2944,53 @@ void URigHierarchy::SetTransform(FRigTransformElement* InTransformElement, const
 
 #if WITH_EDITOR
 
-	if(bRecordTransformsAtRuntime && ExecuteContext)
+	// lock execute context scope
 	{
-		WrittenTransformsAtRuntime.Emplace(
-			ExecuteContext->GetPublicData<>().GetInstructionIndex(),
-			ExecuteContext->GetSlice().GetIndex(),
-			InTransformElement->GetIndex(),
-			InTransformType
-		);
-
-		// if we are setting a control / null parent after a child here - let's let the user know
-		if(InTransformElement->IsA<FRigControlElement>() || InTransformElement->IsA<FRigNullElement>())
+		FScopeLock Lock(&ExecuteContextLock);
+	
+		if(bRecordTransformsAtRuntime && ExecuteContext)
 		{
-			if(const UWorld* World = GetWorld())
-			{
-				// only fire these notes if we are inside the asset editor
-				if(World->WorldType == EWorldType::EditorPreview)
-				{
-					const FRigBaseElementChildrenArray& Children = GetChildren(InTransformElement);
-					for (FRigBaseElement* Child : Children)
-					{
-						const bool bChildFound = WrittenTransformsAtRuntime.ContainsByPredicate([Child](const TInstructionSliceElement& Entry) -> bool
-						{
-							return Entry.Get<2>() == Child->GetIndex();
-						});
+			const FRigVMExecuteContext& PublicData = ExecuteContext->GetPublicData<>();
+			const FRigVMSlice& Slice = ExecuteContext->GetSlice();
+			WrittenTransformsAtRuntime.Emplace(
+				PublicData.GetInstructionIndex(),
+				Slice.GetIndex(),
+				InTransformElement->GetIndex(),
+				InTransformType
+			);
 
-						if(bChildFound)
+			// if we are setting a control / null parent after a child here - let's let the user know
+			if(InTransformElement->IsA<FRigControlElement>() || InTransformElement->IsA<FRigNullElement>())
+			{
+				if(const UWorld* World = GetWorld())
+				{
+					// only fire these notes if we are inside the asset editor
+					if(World->WorldType == EWorldType::EditorPreview)
+					{
+						const FRigBaseElementChildrenArray& Children = GetChildren(InTransformElement);
+						for (FRigBaseElement* Child : Children)
 						{
-							const FControlRigExecuteContext& CRContext = ExecuteContext->GetPublicData<FControlRigExecuteContext>();
-							if(CRContext.GetLog())
+							const bool bChildFound = WrittenTransformsAtRuntime.ContainsByPredicate([Child](const TInstructionSliceElement& Entry) -> bool
 							{
-								static constexpr TCHAR MessageFormat[] = TEXT("Setting transform of parent (%s) after setting child (%s).\nThis may lead to unexpected results.");
-								const FString& Message = FString::Printf(
-									MessageFormat,
-									*InTransformElement->GetName().ToString(),
-									*Child->GetName().ToString());
-								CRContext.GetLog()->Report(
-									EMessageSeverity::Info,
-									ExecuteContext->GetPublicData<>().GetFunctionName(),
-									ExecuteContext->GetPublicData<>().GetInstructionIndex(),
-									Message);
+								return Entry.Get<2>() == Child->GetIndex();
+							});
+
+							if(bChildFound)
+							{
+								const FControlRigExecuteContext& CRContext = ExecuteContext->GetPublicData<FControlRigExecuteContext>();
+								if(CRContext.GetLog())
+								{
+									static constexpr TCHAR MessageFormat[] = TEXT("Setting transform of parent (%s) after setting child (%s).\nThis may lead to unexpected results.");
+									const FString& Message = FString::Printf(
+										MessageFormat,
+										*InTransformElement->GetName().ToString(),
+										*Child->GetName().ToString());
+									CRContext.GetLog()->Report(
+										EMessageSeverity::Info,
+										ExecuteContext->GetPublicData<>().GetFunctionName(),
+										ExecuteContext->GetPublicData<>().GetInstructionIndex(),
+										Message);
+								}
 							}
 						}
 					}
@@ -2833,6 +2998,7 @@ void URigHierarchy::SetTransform(FRigTransformElement* InTransformElement, const
 			}
 		}
 	}
+	
 	TGuardValue<bool> RecordTransformsPerInstructionGuard(bRecordTransformsAtRuntime, false);
 	
 #endif
@@ -2958,15 +3124,20 @@ FTransform URigHierarchy::GetControlOffsetTransform(FRigControlElement* InContro
 
 #if WITH_EDITOR
 
-	if(bRecordTransformsAtRuntime && ExecuteContext)
+	// lock execute context scope
 	{
-		ReadTransformsAtRuntime.Emplace(
-			ExecuteContext->GetPublicData<>().GetInstructionIndex(),
-			ExecuteContext->GetSlice().GetIndex(),
-			InControlElement->GetIndex(),
-			InTransformType
-		);
+		FScopeLock Lock(&ExecuteContextLock);
+		if(bRecordTransformsAtRuntime && ExecuteContext)
+		{
+			ReadTransformsAtRuntime.Emplace(
+				ExecuteContext->GetPublicData<>().GetInstructionIndex(),
+				ExecuteContext->GetSlice().GetIndex(),
+				InControlElement->GetIndex(),
+				InTransformType
+			);
+		}
 	}
+	
 	TGuardValue<bool> RecordTransformsPerInstructionGuard(bRecordTransformsAtRuntime, false);
 	
 #endif
@@ -3041,15 +3212,20 @@ void URigHierarchy::SetControlOffsetTransform(FRigControlElement* InControlEleme
 
 #if WITH_EDITOR
 
-	if(bRecordTransformsAtRuntime && ExecuteContext)
+	// lock execute context scope
 	{
-		WrittenTransformsAtRuntime.Emplace(
-			ExecuteContext->GetPublicData<>().GetInstructionIndex(),
-			ExecuteContext->GetSlice().GetIndex(),
-			InControlElement->GetIndex(),
-			InTransformType
-		);
+		FScopeLock Lock(&ExecuteContextLock);
+		if(bRecordTransformsAtRuntime && ExecuteContext)
+		{
+			WrittenTransformsAtRuntime.Emplace(
+				ExecuteContext->GetPublicData<>().GetInstructionIndex(),
+				ExecuteContext->GetSlice().GetIndex(),
+				InControlElement->GetIndex(),
+				InTransformType
+			);
+		}
 	}
+	
 	TGuardValue<bool> RecordTransformsPerInstructionGuard(bRecordTransformsAtRuntime, false);
 	
 #endif
@@ -3471,17 +3647,26 @@ void URigHierarchy::SetControlValue(FRigControlElement* InControlElement, const 
 				}
 				case ERigControlType::EulerTransform:
 				{
-					InControlElement->PreferredEulerAngles.SetRotator(GetEulerTransformFromControlValue(InValue).Rotation, bInitial, bFixEulerFlips);
+					FEulerTransform EulerTransform = GetEulerTransformFromControlValue(InValue);
+					FQuat Quat = EulerTransform.GetRotation();
+					const FVector Angle = GetControlAnglesFromQuat(InControlElement, Quat);
+					InControlElement->PreferredEulerAngles.SetAngles(Angle, bInitial, InControlElement->PreferredEulerAngles.RotationOrder, bFixEulerFlips);
 					break;
 				}
 				case ERigControlType::Transform:
 				{
-					InControlElement->PreferredEulerAngles.SetRotator(GetTransformFromControlValue(InValue).Rotator(), bInitial, bFixEulerFlips);
+					FTransform Transform = GetTransformFromControlValue(InValue);
+					FQuat Quat = Transform.GetRotation();
+					const FVector Angle = GetControlAnglesFromQuat(InControlElement, Quat);
+					InControlElement->PreferredEulerAngles.SetAngles(Angle, bInitial, InControlElement->PreferredEulerAngles.RotationOrder, bFixEulerFlips);
 					break;
 				}
 				case ERigControlType::TransformNoScale:
 				{
-					InControlElement->PreferredEulerAngles.SetRotator(GetTransformNoScaleFromControlValue(InValue).Rotation.Rotator(), bInitial, bFixEulerFlips);
+					FTransform Transform = GetTransformNoScaleFromControlValue(InValue);
+					FQuat Quat = Transform.GetRotation();
+					const FVector Angle = GetControlAnglesFromQuat(InControlElement, Quat);
+					InControlElement->PreferredEulerAngles.SetAngles(Angle, bInitial, InControlElement->PreferredEulerAngles.RotationOrder, bFixEulerFlips);
 					break;
 				}
 				default:
@@ -3511,8 +3696,10 @@ void URigHierarchy::SetControlValue(FRigControlElement* InControlElement, const 
 					bForce,
 					bPrintPythonCommands
 				);
-
-				SetPreferredEulerAnglesFromValue();
+				if (bFixEulerFlips)
+				{
+					SetPreferredEulerAnglesFromValue();
+				}
 				break;
 			}
 			case ERigControlValueType::Initial:
@@ -3534,7 +3721,10 @@ void URigHierarchy::SetControlValue(FRigControlElement* InControlElement, const 
 					bPrintPythonCommands
 				);
 
-				SetPreferredEulerAnglesFromValue();
+				if (bFixEulerFlips)
+				{
+					SetPreferredEulerAnglesFromValue();
+				}
 				break;
 			}
 			case ERigControlValueType::Minimum:
@@ -3999,14 +4189,14 @@ bool URigHierarchy::IsSelected(const FRigBaseElement* InElement) const
 	{
 		return false;
 	}
-	if(URigHierarchy* HierarchyForSelection = HierarchyForSelectionPtr.Get())
+	if(const URigHierarchy* HierarchyForSelection = HierarchyForSelectionPtr.Get())
 	{
 		return HierarchyForSelection->IsSelected(InElement->GetKey());
 	}
 
 	const bool bIsSelected = OrderedSelection.Contains(InElement->GetKey());
 	ensure(bIsSelected == InElement->IsSelected());
-	return OrderedSelection.Contains(InElement->GetKey());
+	return bIsSelected;
 }
 
 void URigHierarchy::ResetCachedChildren()
@@ -4416,9 +4606,9 @@ void URigHierarchy::CleanupInvalidCaches()
 
 	struct Local
 	{
-		static bool NeedsCheck(const FRigLocalAndGlobalTransform& InTransform)
+		static bool NeedsCheck(bool bDirty[FRigLocalAndGlobalTransform::EDirtyMax])
 		{
-			return !InTransform.Local.bDirty && !InTransform.Global.bDirty;
+			return !bDirty[FRigLocalAndGlobalTransform::ELocal] && !bDirty[FRigLocalAndGlobalTransform::EGlobal];
 		}
 	};
 
@@ -4428,17 +4618,17 @@ void URigHierarchy::CleanupInvalidCaches()
 		FRigBaseElement* BaseElement = HierarchyForCacheValidation->Elements[ElementIndex];
 		if(FRigControlElement* ControlElement = Cast<FRigControlElement>(BaseElement))
 		{
-			if(Local::NeedsCheck(ControlElement->Offset.Initial))
+			if(Local::NeedsCheck(ControlElement->Offset.Initial.bDirty))
 			{
 				ControlElement->Offset.MarkDirty(ERigTransformType::InitialGlobal);
 			}
 
-			if(Local::NeedsCheck(ControlElement->Pose.Initial))
+			if(Local::NeedsCheck(ControlElement->Pose.Initial.bDirty))
 			{
 				ControlElement->Pose.MarkDirty(ERigTransformType::InitialGlobal);
 			}
 
-			if(Local::NeedsCheck(ControlElement->Shape.Initial))
+			if(Local::NeedsCheck(ControlElement->Shape.Initial.bDirty))
 			{
 				ControlElement->Shape.MarkDirty(ERigTransformType::InitialGlobal);
 			}
@@ -4447,7 +4637,7 @@ void URigHierarchy::CleanupInvalidCaches()
 
 		if(FRigMultiParentElement* MultiParentElement = Cast<FRigMultiParentElement>(BaseElement))
 		{
-			if(Local::NeedsCheck(MultiParentElement->Pose.Initial))
+			if(Local::NeedsCheck(MultiParentElement->Pose.Initial.bDirty))
 			{
 				MultiParentElement->Pose.MarkDirty(ERigTransformType::InitialLocal);
 			}
@@ -4456,7 +4646,7 @@ void URigHierarchy::CleanupInvalidCaches()
 
 		if(FRigTransformElement* TransformElement = Cast<FRigTransformElement>(BaseElement))
 		{
-			if(Local::NeedsCheck(TransformElement->Pose.Initial))
+			if(Local::NeedsCheck(TransformElement->Pose.Initial.bDirty))
 			{
 				TransformElement->Pose.MarkDirty(ERigTransformType::InitialGlobal);
 			}
@@ -4475,7 +4665,7 @@ void URigHierarchy::CleanupInvalidCaches()
 		{
 			FRigControlElement* OtherControlElement = HierarchyForCacheValidation->FindChecked<FRigControlElement>(ControlElement->GetKey());
 			
-			if(Local::NeedsCheck(ControlElement->Offset.Initial))
+			if(Local::NeedsCheck(ControlElement->Offset.Initial.bDirty))
 			{
 				const FTransform CachedGlobalTransform = OtherControlElement->Offset.Get(ERigTransformType::InitialGlobal);
 				const FTransform ComputedGlobalTransform = HierarchyForCacheValidation->GetControlOffsetTransform(OtherControlElement, ERigTransformType::InitialGlobal);
@@ -4486,7 +4676,7 @@ void URigHierarchy::CleanupInvalidCaches()
 				}
 			}
 
-			if(Local::NeedsCheck(ControlElement->Pose.Initial))
+			if(Local::NeedsCheck(ControlElement->Pose.Initial.bDirty))
 			{
 				const FTransform CachedGlobalTransform = ControlElement->Pose.Get(ERigTransformType::InitialGlobal);
 				const FTransform ComputedGlobalTransform = HierarchyForCacheValidation->GetTransform(OtherControlElement, ERigTransformType::InitialGlobal);
@@ -4497,7 +4687,7 @@ void URigHierarchy::CleanupInvalidCaches()
 				}
 			}
 
-			if(Local::NeedsCheck(ControlElement->Shape.Initial))
+			if(Local::NeedsCheck(ControlElement->Shape.Initial.bDirty))
 			{
 				const FTransform CachedGlobalTransform = ControlElement->Shape.Get(ERigTransformType::InitialGlobal);
 				const FTransform ComputedGlobalTransform = HierarchyForCacheValidation->GetControlShapeTransform(OtherControlElement, ERigTransformType::InitialGlobal);
@@ -4514,7 +4704,7 @@ void URigHierarchy::CleanupInvalidCaches()
 		{
 			FRigMultiParentElement* OtherMultiParentElement = HierarchyForCacheValidation->FindChecked<FRigMultiParentElement>(MultiParentElement->GetKey());
 
-			if(Local::NeedsCheck(MultiParentElement->Pose.Initial))
+			if(Local::NeedsCheck(MultiParentElement->Pose.Initial.bDirty))
 			{
 				const FTransform CachedGlobalTransform = MultiParentElement->Pose.Get(ERigTransformType::InitialGlobal);
 				const FTransform ComputedGlobalTransform = HierarchyForCacheValidation->GetTransform(OtherMultiParentElement, ERigTransformType::InitialGlobal);
@@ -4532,7 +4722,7 @@ void URigHierarchy::CleanupInvalidCaches()
 		{
 			FRigTransformElement* OtherTransformElement = HierarchyForCacheValidation->FindChecked<FRigTransformElement>(TransformElement->GetKey());
 
-			if(Local::NeedsCheck(TransformElement->Pose.Initial))
+			if(Local::NeedsCheck(TransformElement->Pose.Initial.bDirty))
 			{
 				const FTransform CachedGlobalTransform = TransformElement->Pose.Get(ERigTransformType::InitialGlobal);
 				const FTransform ComputedGlobalTransform = HierarchyForCacheValidation->GetTransform(OtherTransformElement, ERigTransformType::InitialGlobal);
@@ -5788,7 +5978,7 @@ FTransform URigHierarchy::LazilyComputeParentConstraint(
 {
 	LLM_SCOPE_BYNAME(TEXT("Animation/ControlRig"));
 	const FRigElementParentConstraint& Constraint = InConstraints[InIndex];
-	if(Constraint.Cache.bDirty)
+	if(Constraint.bCacheIsDirty)
 	{
 		FTransform Transform = GetTransform(Constraint.ParentElement, InTransformType);
 		if(bApplyLocalOffsetTransform)
@@ -5802,7 +5992,7 @@ FTransform URigHierarchy::LazilyComputeParentConstraint(
 
 		Transform.NormalizeRotation();
 		Constraint.Cache.Transform = Transform;
-		Constraint.Cache.bDirty = false;
+		Constraint.bCacheIsDirty = false;
 	}
 	return Constraint.Cache.Transform;
 }
@@ -5821,7 +6011,7 @@ void URigHierarchy::ComputeParentConstraintIndices(
 	for(int32 ConstraintIndex = 0; ConstraintIndex < InConstraints.Num(); ConstraintIndex++)
 	{
 		// this is not relying on the cache whatsoever. we might as well remove it.
-		InConstraints[ConstraintIndex].Cache.bDirty = true;
+		InConstraints[ConstraintIndex].bCacheIsDirty = true;
 		
 		const FRigElementWeight& Weight = InConstraints[ConstraintIndex].GetWeight(bInitial);
 		if(Weight.AffectsLocation())

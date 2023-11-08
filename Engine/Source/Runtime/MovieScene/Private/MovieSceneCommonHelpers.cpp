@@ -34,14 +34,15 @@ bool MovieSceneHelpers::IsSectionKeyable(const UMovieSceneSection* Section)
 	return !Track->IsRowEvalDisabled(Section->GetRowIndex()) && !Track->IsEvalDisabled() && Section->IsActive();
 }
 
-UMovieSceneSection* MovieSceneHelpers::FindSectionAtTime( TArrayView<UMovieSceneSection* const> Sections, FFrameNumber Time )
+UMovieSceneSection* MovieSceneHelpers::FindSectionAtTime( TArrayView<UMovieSceneSection* const> Sections, FFrameNumber Time, int32 RowIndex )
 {
 	for( int32 SectionIndex = 0; SectionIndex < Sections.Num(); ++SectionIndex )
 	{
 		UMovieSceneSection* Section = Sections[SectionIndex];
 
 		//@todo sequencer: There can be multiple sections overlapping in time. Returning instantly does not account for that.
-		if( Section->IsTimeWithinSection( Time ) && IsSectionKeyable(Section) )
+		if( (RowIndex == INDEX_NONE || Section->GetRowIndex() == RowIndex) &&
+				Section->IsTimeWithinSection( Time ) && IsSectionKeyable(Section) )
 		{
 			return Section;
 		}
@@ -50,12 +51,13 @@ UMovieSceneSection* MovieSceneHelpers::FindSectionAtTime( TArrayView<UMovieScene
 	return nullptr;
 }
 
-UMovieSceneSection* MovieSceneHelpers::FindNearestSectionAtTime( TArrayView<UMovieSceneSection* const> Sections, FFrameNumber Time )
+UMovieSceneSection* MovieSceneHelpers::FindNearestSectionAtTime( TArrayView<UMovieSceneSection* const> Sections, FFrameNumber Time, int32 RowIndex )
 {
 	TArray<UMovieSceneSection*> OverlappingSections, NonOverlappingSections;
 	for (UMovieSceneSection* Section : Sections)
 	{
-		if (IsSectionKeyable(Section))
+		if ((RowIndex == INDEX_NONE || Section->GetRowIndex() == RowIndex) &&
+				IsSectionKeyable(Section))
 		{
 			if (Section->GetRange().Contains(Time))
 			{
@@ -78,19 +80,99 @@ UMovieSceneSection* MovieSceneHelpers::FindNearestSectionAtTime( TArrayView<UMov
 	{
 		Algo::SortBy(NonOverlappingSections, [](const UMovieSceneSection* A) { return A->GetRange().GetUpperBound(); }, SortUpperBounds);
 
-		const int32 PreviousIndex = Algo::UpperBoundBy(NonOverlappingSections, TRangeBound<FFrameNumber>(Time), [](const UMovieSceneSection* A){ return A->GetRange().GetUpperBound(); }, SortUpperBounds)-1;
+		const int32 PreviousIndex = Algo::UpperBoundBy(NonOverlappingSections, TRangeBound<FFrameNumber>(Time), [](const UMovieSceneSection* A){ return A ? A->GetRange().GetUpperBound() : FFrameNumber(0); }, SortUpperBounds)-1;
 		if (NonOverlappingSections.IsValidIndex(PreviousIndex))
 		{
 			return NonOverlappingSections[PreviousIndex];
 		}
 		else
 		{
-			Algo::SortBy(NonOverlappingSections, [](const UMovieSceneSection* A) { return A->GetRange().GetLowerBound(); }, SortLowerBounds);
+			Algo::SortBy(NonOverlappingSections, [](const UMovieSceneSection* A) { return A ? A->GetRange().GetLowerBound() : FFrameNumber(0); }, SortLowerBounds);
 			return NonOverlappingSections[0];
 		}
 	}
 
 	return nullptr;
+}
+
+UMovieSceneSection* MovieSceneHelpers::FindNextSection(TArrayView<UMovieSceneSection* const> Sections, FFrameNumber Time)
+{
+	FFrameNumber MinTime = TNumericLimits<FFrameNumber>::Max();
+
+	TMap<FFrameNumber, int32> StartTimeMap;
+	for (int32 SectionIndex = 0; SectionIndex < Sections.Num(); ++SectionIndex)
+	{
+		UMovieSceneSection* ShotSection = Sections[SectionIndex];
+
+		if (ShotSection && ShotSection->HasStartFrame() && !ShotSection->GetRange().Contains(Time))
+		{
+			StartTimeMap.Add(ShotSection->GetInclusiveStartFrame(), SectionIndex);
+		}
+	}
+
+	StartTimeMap.KeySort(TLess<FFrameNumber>());
+
+	int32 NextSectionIndex = -1;
+	for (auto StartTimeIt = StartTimeMap.CreateIterator(); StartTimeIt; ++StartTimeIt)
+	{
+		FFrameNumber StartTime = StartTimeIt->Key;
+		if (StartTime > Time)
+		{
+			FFrameNumber DiffTime = FMath::Abs(StartTime - Time);
+			if (DiffTime < MinTime)
+			{
+				MinTime = DiffTime;
+				NextSectionIndex = StartTimeIt->Value;
+			}
+		}
+	}
+
+	if (NextSectionIndex == -1)
+	{
+		return nullptr;
+	}
+
+	return Sections[NextSectionIndex];
+}
+
+UMovieSceneSection* MovieSceneHelpers::FindPreviousSection(TArrayView<UMovieSceneSection* const> Sections, FFrameNumber Time)
+{
+	FFrameNumber MinTime = TNumericLimits<FFrameNumber>::Max();
+
+	TMap<FFrameNumber, int32> StartTimeMap;
+	for (int32 SectionIndex = 0; SectionIndex < Sections.Num(); ++SectionIndex)
+	{
+		UMovieSceneSection* ShotSection = Sections[SectionIndex];
+
+		if (ShotSection && ShotSection->HasStartFrame() && !ShotSection->GetRange().Contains(Time))
+		{
+			StartTimeMap.Add(ShotSection->GetInclusiveStartFrame(), SectionIndex);
+		}
+	}
+
+	StartTimeMap.KeySort(TLess<FFrameNumber>());
+
+	int32 PreviousSectionIndex = -1;
+	for (auto StartTimeIt = StartTimeMap.CreateIterator(); StartTimeIt; ++StartTimeIt)
+	{
+		FFrameNumber StartTime = StartTimeIt->Key;
+		if (Time >= StartTime)
+		{
+			FFrameNumber DiffTime = FMath::Abs(StartTime - Time);
+			if (DiffTime < MinTime)
+			{
+				MinTime = DiffTime;
+				PreviousSectionIndex = StartTimeIt->Value;
+			}
+		}
+	}
+
+	if (PreviousSectionIndex == -1)
+	{
+		return nullptr;
+	}
+
+	return Sections[PreviousSectionIndex];
 }
 
 bool MovieSceneHelpers::SortOverlappingSections(const UMovieSceneSection* A, const UMovieSceneSection* B)
@@ -102,12 +184,7 @@ bool MovieSceneHelpers::SortOverlappingSections(const UMovieSceneSection* A, con
 
 void MovieSceneHelpers::SortConsecutiveSections(TArray<UMovieSceneSection*>& Sections)
 {
-	Sections.Sort([](const UMovieSceneSection& A, const UMovieSceneSection& B)
-		{
-			TRangeBound<FFrameNumber> LowerBoundA = A.GetRange().GetLowerBound();
-			return TRangeBound<FFrameNumber>::MinLower(LowerBoundA, B.GetRange().GetLowerBound()) == LowerBoundA;
-		}
-	);
+	Algo::SortBy(Sections, [](const UMovieSceneSection* A) { return A ? A->GetRange().GetLowerBound() : FFrameNumber(0); }, SortLowerBounds);
 }
 
 bool MovieSceneHelpers::FixupConsecutiveSections(TArray<UMovieSceneSection*>& Sections, UMovieSceneSection& Section, bool bDelete, bool bCleanUp)

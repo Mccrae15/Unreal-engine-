@@ -95,31 +95,6 @@ constexpr const TCHAR GameProjectUtils::IncludePathFormatString[];
 
 namespace
 {
-	// @todo: This is currently not called from anywhere as this approach does not work for binary builds.
-	/** Set the state of XR plugins in OutProject based on the flags in InProjectInfo. */
-	void SetXRPluginStates(const FProjectInformation& InProjectInfo, FProjectDescriptor& OutProject)
-	{
-		static const FString XRPlugins[] = {
-			TEXT("OculusVR"),
-			TEXT("SteamVR") };
-
-		if (InProjectInfo.bEnableXR.IsSet() && 
-			InProjectInfo.bEnableXR.GetValue() == false)
-		{
-			for (const FString& Plugin : XRPlugins)
-			{
-				int32 Index = OutProject.FindPluginReferenceIndex(Plugin);
-				if (Index == INDEX_NONE)
-				{
-					Index = OutProject.Plugins.AddDefaulted();
-					OutProject.Plugins[Index].Name = Plugin;
-				}
-
-				OutProject.Plugins[Index].bEnabled = false;
-			}
-		}
-	}
-
 	/** Get the configuration values for enabling Lumen by default. */
 	void AddLumenConfigValues(const FProjectInformation& InProjectInfo, TArray<FTemplateConfigValue>& ConfigValues)
 	{
@@ -163,6 +138,20 @@ namespace
 			TEXT("r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange"),
 			TEXT("True"),
 			false /* ShouldReplaceExistingValue */);
+
+		// Enable Local Exposure by default for new projects
+		ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+			TEXT("/Script/Engine.RendererSettings"),
+			TEXT("r.DefaultFeature.LocalExposure.HighlightContrastScale"),
+			TEXT("0.8"),
+			true /* ShouldReplaceExistingValue */);
+
+		// Enable Local Exposure by default for new projects
+		ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+			TEXT("/Script/Engine.RendererSettings"),
+			TEXT("r.DefaultFeature.LocalExposure.ShadowContrastScale"),
+			TEXT("0.8"),
+			true /* ShouldReplaceExistingValue */);
 	}
 
 	/** Get the configuration values for raytracing if enabled. */
@@ -235,6 +224,18 @@ namespace
 				TEXT("/Script/Engine.UserInterfaceSettings"),
 				TEXT("bAuthorizeAutomaticWidgetVariableCreation"),
 				TEXT("False"),
+				true /* ShouldReplaceExistingValue */);
+
+			ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+				TEXT("/Script/Engine.UserInterfaceSettings"),
+				TEXT("FontDPIPreset"),
+				TEXT("Standard"),
+				true /* ShouldReplaceExistingValue */);
+
+			ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+				TEXT("/Script/Engine.UserInterfaceSettings"),
+				TEXT("FontDPI"),
+				TEXT("72"),
 				true /* ShouldReplaceExistingValue */);
 		}
 	}
@@ -2124,6 +2125,12 @@ bool GameProjectUtils::GenerateConfigFiles(const FProjectInformation& InProjectI
 		FileContents += TEXT("[Audio]") LINE_TERMINATOR;
 		FileContents += TEXT("UseAudioMixer=True") LINE_TERMINATOR;
 
+		/** 5.3 OnlineSubsystemEOS logic overrides */
+
+		FileContents += LINE_TERMINATOR;
+		FileContents += TEXT("[OnlineSubsystemEOS]") LINE_TERMINATOR;
+		FileContents += TEXT("bUseSessionPresenceAttribute=True") LINE_TERMINATOR;
+
 		if (InProjectInfo.bCopyStarterContent)
 		{
 			FileContents += LINE_TERMINATOR;
@@ -2962,7 +2969,7 @@ bool GameProjectUtils::UpdateAdditionalPluginDirectory(const FString& InDir, con
 
 const TCHAR* GameProjectUtils::GetDefaultBuildSettingsVersion()
 {
-	return TEXT("BuildSettingsVersion.V2");
+	return TEXT("BuildSettingsVersion.V4");
 }
 
 bool GameProjectUtils::ReadTemplateFile(const FString& TemplateFileName, FString& OutFileContents, FText& OutFailReason)
@@ -3152,13 +3159,16 @@ bool GameProjectUtils::GenerateClassHeaderFile(const FString& NewHeaderFileName,
 	{
 		if (UClassTemplateEditorSubsystem* TemplateSubsystem = GEditor->GetEditorSubsystem<UClassTemplateEditorSubsystem>())
 		{
-			const UClass* BaseClass = ParentClassInfo.BaseClass;
-			if (const UClassTemplate* ClassTemplate = TemplateSubsystem->FindClassTemplate(ParentClassInfo.BaseClass))
+			for (const UClass* BaseClass = ParentClassInfo.BaseClass; BaseClass != nullptr; BaseClass = BaseClass->GetSuperClass())
 			{
-				bTemplateFound = ClassTemplate->ReadHeader(Template, OutFailReason);
-				if (!bTemplateFound)
+				if (const UClassTemplate* ClassTemplate = TemplateSubsystem->FindClassTemplate(BaseClass))
 				{
-					return false;
+					bTemplateFound = ClassTemplate->ReadHeader(Template, OutFailReason);
+					if (!bTemplateFound)
+					{
+						return false;
+					}
+					break;
 				}
 			}
 		}
@@ -3317,13 +3327,16 @@ bool GameProjectUtils::GenerateClassCPPFile(const FString& NewCPPFileName, const
 	{
 		if (UClassTemplateEditorSubsystem* TemplateSubsystem = GEditor->GetEditorSubsystem<UClassTemplateEditorSubsystem>())
 		{
-			const UClass* BaseClass = ParentClassInfo.BaseClass;
-			if (const UClassTemplate* ClassTemplate = TemplateSubsystem->FindClassTemplate(ParentClassInfo.BaseClass))
+			for (const UClass* BaseClass = ParentClassInfo.BaseClass; BaseClass != nullptr; BaseClass = BaseClass->GetSuperClass())
 			{
-				bTemplateFound = ClassTemplate->ReadSource(Template, OutFailReason);
-				if (!bTemplateFound)
+				if (const UClassTemplate* ClassTemplate = TemplateSubsystem->FindClassTemplate(BaseClass))
 				{
-					return false;
+					bTemplateFound = ClassTemplate->ReadSource(Template, OutFailReason);
+					if (!bTemplateFound)
+					{
+						return false;
+					}
+					break;
 				}
 			}
 		}

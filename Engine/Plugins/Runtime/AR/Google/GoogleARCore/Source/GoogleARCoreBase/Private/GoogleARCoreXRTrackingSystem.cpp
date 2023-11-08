@@ -128,7 +128,7 @@ bool FGoogleARCoreXRTrackingSystem::OnStartGameFrame(FWorldContext& WorldContext
 			CurrentPose = ARCoreDeviceInstance->GetLatestPose();
 			CurrentPose *= GetARCompositionComponent()->GetAlignmentTransform();
 			bHasValidPose = true;
-			CachedTrackingToWorld = ComputeTrackingToWorldTransform(WorldContext);
+			RefreshTrackingToWorldTransform(WorldContext);
 		}
 
 		if (bHasValidPose)
@@ -427,8 +427,7 @@ static TSharedPtr<FGoogleARCoreSession> CreateTempARCoreSession(EARSessionType S
 		return nullptr;
 	}
 	
-	const bool bUseFrontCamera = SessionType == EARSessionType::Face;
-	return FGoogleARCoreSession::CreateARCoreSession(bUseFrontCamera);
+	return FGoogleARCoreSession::CreateARCoreSession();
 }
 
 TArray<FARVideoFormat> FGoogleARCoreXRTrackingSystem::OnGetSupportedVideoFormats(EARSessionType SessionType) const
@@ -443,7 +442,7 @@ TArray<FARVideoFormat> FGoogleARCoreXRTrackingSystem::OnGetSupportedVideoFormats
 	auto NewARCoreSession = CreateTempARCoreSession(SessionType);
 	if (NewARCoreSession && NewARCoreSession->GetSessionCreateStatus() == EGoogleARCoreAPIStatus::AR_SUCCESS)
 	{
-		TArray<FGoogleARCoreCameraConfig> SupportedCameraConfig = NewARCoreSession->GetSupportedCameraConfig();
+		TArray<FGoogleARCoreCameraConfig> SupportedCameraConfig = NewARCoreSession->GetSupportedCameraConfig(SessionType == EARSessionType::Face ? EGoogleARCoreCameraFacing::Back : EGoogleARCoreCameraFacing::Front);
 
 		TArray<FARVideoFormat> VideoFormats;
 
@@ -561,7 +560,7 @@ void FGoogleARCoreXRTrackingSystem::OnTrackableAdded(UARTrackedGeometry* InTrack
 {
 	if (ensure(InTrackedGeometry))
 	{
-		UE_LOG(LogGoogleARCoreTrackingSystem, Log, TEXT("OnTrackableAdded: %s"), *InTrackedGeometry->GetName());
+		UE_LOG(LogGoogleARCoreTrackingSystem, Log, TEXT("OnTrackableAdded: %s %s"), *InTrackedGeometry->GetName(), *InTrackedGeometry->GetDebugName().ToString());
 		TriggerOnTrackableAddedDelegates(InTrackedGeometry);
 	}
 }
@@ -578,7 +577,7 @@ void FGoogleARCoreXRTrackingSystem::OnTrackableRemoved(UARTrackedGeometry* InTra
 {
 	if (ensure(InTrackedGeometry))
 	{
-		UE_LOG(LogGoogleARCoreTrackingSystem, Log, TEXT("OnTrackableRemoved: %s"), *InTrackedGeometry->GetName());
+		UE_LOG(LogGoogleARCoreTrackingSystem, Log, TEXT("OnTrackableRemoved: %s %s"), *InTrackedGeometry->GetName(), *InTrackedGeometry->GetDebugName().ToString());
 		TriggerOnTrackableRemovedDelegates(InTrackedGeometry);
 	}
 }

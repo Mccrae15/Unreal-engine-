@@ -3,9 +3,11 @@
 #pragma once
 
 #include "WorldPartition/WorldPartitionBuilder.h"
+#include "WorldPartition/WorldPartitionHandle.h"
 #include "WorldPartitionSmartObjectCollectionBuilder.generated.h"
 
 class ASmartObjectPersistentCollection;
+enum class EEditorBuildResult : uint8;
 
 /**
  * WorldPartitionBuilder dedicated to collect all smart object components from a world and store them in the collection.
@@ -14,6 +16,9 @@ UCLASS()
 class SMARTOBJECTSEDITORMODULE_API UWorldPartitionSmartObjectCollectionBuilder : public UWorldPartitionBuilder
 {
 	GENERATED_UCLASS_BODY()
+
+	static bool CanBuildCollections(const UWorld* InWorld, FName BuildOption);
+	static EEditorBuildResult BuildCollections(UWorld* InWorld, FName BuildOption);
 
 protected:
 	virtual bool RequiresCommandletRendering() const override { return false; }
@@ -27,6 +32,8 @@ protected:
 	uint32 NumSmartObjectsTotal = 0;
 
 	bool bRemoveEmptyCollections = false;
+
+	TArray<FWorldPartitionReference> SmartObjectReferences;
 };
 
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2

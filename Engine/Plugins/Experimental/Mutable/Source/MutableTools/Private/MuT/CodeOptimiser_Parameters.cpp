@@ -250,7 +250,8 @@ namespace mu
             wplainOp->SetChild( wplainOp->op.args.ImagePlainColour.colour, whiteOp );
             wplainOp->op.args.ImagePlainColour.format = EImageFormat::IF_L_UBYTE;
             wplainOp->op.args.ImagePlainColour.size[0] = 4;
-            wplainOp->op.args.ImagePlainColour.size[1] = 4;
+			wplainOp->op.args.ImagePlainColour.size[1] = 4;
+			wplainOp->op.args.ImagePlainColour.LODs = 1;
 
             Ptr<ASTOpFixed> wresizeOp = new ASTOpFixed;
             wresizeOp->op.type = OP_TYPE::IM_RESIZELIKE;
@@ -273,7 +274,7 @@ namespace mu
             )
             : m_stateProps(s)
             , m_modified(false)
-            , m_optimisationOptions(optimisationOptions)
+            , OptimisationOptions(optimisationOptions)
             , m_hasRuntimeParamVisitor(&s)
     {
     }
@@ -475,7 +476,8 @@ namespace mu
                             plainOp->SetChild( plainOp->op.args.ImagePlainColour.colour, blackOp );
                             plainOp->op.args.ImagePlainColour.format = EImageFormat::IF_L_UBYTE;
                             plainOp->op.args.ImagePlainColour.size[0] = 4;
-                            plainOp->op.args.ImagePlainColour.size[1] = 4;
+							plainOp->op.args.ImagePlainColour.size[1] = 4;
+							plainOp->op.args.ImagePlainColour.LODs = 1;
 
                             Ptr<ASTOpFixed> resizeOp = new ASTOpFixed;
                             resizeOp->op.type = OP_TYPE::IM_RESIZELIKE;
@@ -519,6 +521,8 @@ namespace mu
 //							plainOp.type = OP_TYPE::IM_PLAINCOLOUR;
 //							plainOp.args.ImagePlainColour.colour = program.AddOp( blackOp );
 //							plainOp.args.ImagePlainColour.format = IF_L_UBYTE;
+//							plainOp.args.ImagePlainColour.size = ;
+//							plainOp.args.ImagePlainColour.LODs = ;
 
 //							OP resizeOp;
 //							resizeOp.type = OP_TYPE::IM_RESIZELIKE;
@@ -579,7 +583,8 @@ namespace mu
                             plainOp->SetChild( plainOp->op.args.ImagePlainColour.colour, blackOp );
                             plainOp->op.args.ImagePlainColour.format = EImageFormat::IF_L_UBYTE;
                             plainOp->op.args.ImagePlainColour.size[0] = 4;
-                            plainOp->op.args.ImagePlainColour.size[1] = 4;
+							plainOp->op.args.ImagePlainColour.size[1] = 4;
+							plainOp->op.args.ImagePlainColour.LODs = 1;
 
                             Ptr<ASTOpFixed> resizeOp = new ASTOpFixed;
                             resizeOp->op.type = OP_TYPE::IM_RESIZELIKE;
@@ -1046,7 +1051,8 @@ namespace mu
                         plainOp->SetChild( plainOp->op.args.ImagePlainColour.colour, blackOp );
                         plainOp->op.args.ImagePlainColour.format = EImageFormat::IF_L_UBYTE;
                         plainOp->op.args.ImagePlainColour.size[0] = 4;
-                        plainOp->op.args.ImagePlainColour.size[1] = 4;
+						plainOp->op.args.ImagePlainColour.size[1] = 4;
+						plainOp->op.args.ImagePlainColour.LODs = 1;
 
                         Ptr<ASTOpFixed> baseResizeOp = new ASTOpFixed;
                         baseResizeOp->op.type = OP_TYPE::IM_RESIZELIKE;
@@ -1102,7 +1108,8 @@ namespace mu
                         plainOp->SetChild( plainOp->op.args.ImagePlainColour.colour, blackOp );
                         plainOp->op.args.ImagePlainColour.format = EImageFormat::IF_L_UBYTE;
                         plainOp->op.args.ImagePlainColour.size[0] = 4;
-                        plainOp->op.args.ImagePlainColour.size[1] = 4;
+						plainOp->op.args.ImagePlainColour.size[1] = 4;
+						plainOp->op.args.ImagePlainColour.LODs = 1;
 
                         Ptr<ASTOpFixed> baseResizeOp = new ASTOpFixed;
                         baseResizeOp->op.type = OP_TYPE::IM_RESIZELIKE;
@@ -1130,7 +1137,8 @@ namespace mu
                         FImageDesc blendedDesc = baseAt->GetImageDesc();
                         plainOp->op.args.ImagePlainColour.format = blendedDesc.m_format;
                         plainOp->op.args.ImagePlainColour.size[0] = 4;
-                        plainOp->op.args.ImagePlainColour.size[1] = 4;
+						plainOp->op.args.ImagePlainColour.size[1] = 4;
+						plainOp->op.args.ImagePlainColour.LODs = 1;
 
                         Ptr<ASTOpFixed> resizeOp = new ASTOpFixed;
                         resizeOp->op.type = OP_TYPE::IM_RESIZELIKE;
@@ -1213,7 +1221,8 @@ namespace mu
                         plainOp->SetChild( plainOp->op.args.ImagePlainColour.colour, blackOp );
                         plainOp->op.args.ImagePlainColour.format = EImageFormat::IF_L_UBYTE; //TODO: FORMAT_LIKE
                         plainOp->op.args.ImagePlainColour.size[0] = 4;
-                        plainOp->op.args.ImagePlainColour.size[1] = 4;
+						plainOp->op.args.ImagePlainColour.size[1] = 4;
+						plainOp->op.args.ImagePlainColour.LODs = 1;
 
                         Ptr<ASTOpFixed> blockResizeOp = new ASTOpFixed;
                         blockResizeOp->op.type = OP_TYPE::IM_RESIZELIKE;
@@ -1259,7 +1268,8 @@ namespace mu
                         plainOp->SetChild( plainOp->op.args.ImagePlainColour.colour, blackOp );
                         plainOp->op.args.ImagePlainColour.format = EImageFormat::IF_L_UBYTE; //TODO: FORMAT_LIKE
                         plainOp->op.args.ImagePlainColour.size[0] = 4;
-                        plainOp->op.args.ImagePlainColour.size[1] = 4;
+						plainOp->op.args.ImagePlainColour.size[1] = 4;
+						plainOp->op.args.ImagePlainColour.LODs = 1;
 
                         Ptr<ASTOpFixed> blockResizeOp = new ASTOpFixed;
                         blockResizeOp->op.type = OP_TYPE::IM_RESIZELIKE;
@@ -1348,7 +1358,7 @@ namespace mu
                     case OP_TYPE::IM_DODGECOLOUR:
                     case OP_TYPE::IM_MULTIPLYCOLOUR:
                     {
-                        if ( m_optimisationOptions.m_optimiseOverlappedMasks )
+                        if ( OptimisationOptions.m_optimiseOverlappedMasks )
                         {
                             OP::ADDRESS maskAt = op.args.ImageLayer.mask;
                             OP::ADDRESS baseMaskAt =
@@ -1660,7 +1670,7 @@ namespace mu
 					return false;
 				}
 
-                case OP_TYPE::ME_MORPH2:
+                case OP_TYPE::ME_MORPH:
                 {
                     // Manually choose how to recurse this op
 					const ASTOpMeshMorph* pTyped = dynamic_cast<const ASTOpMeshMorph*>( at.get() );
@@ -1678,12 +1688,9 @@ namespace mu
 							pending.Add({ pTyped->Factor.m_child, state });
                         }
 
-                        for (int32 t=0;t<pTyped->Targets.Num(); ++t)
+                        if ( pTyped->Target )
                         {
-                            if ( pTyped->Targets[t] )
-                            {
-								pending.Add({ pTyped->Targets[t].m_child, state });
-                            }
+							pending.Add({ pTyped->Target.m_child, state });
                         }
                     }
 
@@ -1901,9 +1908,11 @@ namespace mu
     //---------------------------------------------------------------------------------------------
     //---------------------------------------------------------------------------------------------
     RuntimeTextureCompressionRemoverAST::RuntimeTextureCompressionRemoverAST(
-            STATE_COMPILATION_DATA* pState
-            )
+		STATE_COMPILATION_DATA* pState,
+		bool bInAlwaysUncompress
+	)
         : m_hasRuntimeParamVisitor(pState)
+		, bAlwaysUncompress(bInAlwaysUncompress)
     {
         Traverse( pState->root );
     }
@@ -1914,7 +1923,7 @@ namespace mu
         OP_TYPE type = at->GetOpType();
         processChildren = GetOpDataType(type)==DT_INSTANCE;
 
-        // TODO: Finer grained: what if the runtime parameter just selectes between compressed
+        // TODO: Finer grained: what if the runtime parameter just selects between compressed
         // textures? We don't want them uncompressed.
         if( type==OP_TYPE::IN_ADDIMAGE )
         {
@@ -1924,7 +1933,7 @@ namespace mu
             // Does it have a runtime parameter in its subtree?
             bool hasRuntimeParameter = m_hasRuntimeParamVisitor.HasAny( imageAt );
 
-            if (hasRuntimeParameter)
+            if (bAlwaysUncompress || hasRuntimeParameter)
             {
                 FImageDesc imageDesc = imageAt->GetImageDesc( true );
 
@@ -1998,21 +2007,35 @@ namespace mu
          for ( size_t s=0; s<m_states.size(); ++s )
          {
             // Remove the unnecessary lods
-            if (m_states[s].optimisationFlags.m_onlyFirstLOD)
+            if (m_states[s].nodeState.m_optimisation.bOnlyFirstLOD)
             {
-                LODCountReducerAST(m_states[s].root, m_states[s].optimisationFlags.m_firstLOD + 1);
+				LODCountReducerAST(m_states[s].root, m_states[s].nodeState.m_optimisation.FirstLOD + 1 + m_states[s].nodeState.m_optimisation.NumExtraLODsToBuildAfterFirstLOD);
             }
+
+			// Apply texture compression strategy
+			switch (m_states[s].nodeState.m_optimisation.TextureCompressionStrategy)
+			{
+			case ETextureCompressionStrategy::DontCompressRuntime:
+			{
+				MUTABLE_CPUPROFILER_SCOPE(RuntimeTextureCompressionRemover);
+				RuntimeTextureCompressionRemoverAST r(&m_states[s], false);
+				break;
+			}
+
+			case ETextureCompressionStrategy::NeverCompress:
+			{
+				MUTABLE_CPUPROFILER_SCOPE(RuntimeTextureCompressionRemover);
+				RuntimeTextureCompressionRemoverAST r(&m_states[s], true);
+				break;
+			}
+
+			default:
+				break;
+			}
 
             // If a state has no runtime parameters, skip its optimisation alltogether
             if (m_states[s].nodeState.m_runtimeParams.Num())
             {
-                // Remove unnecessary image compression
-                if (m_states[s].optimisationFlags.m_avoidRuntimeCompression)
-                {
-                    MUTABLE_CPUPROFILER_SCOPE(RuntimeTextureCompressionRemover);
-                    RuntimeTextureCompressionRemoverAST r(&m_states[s]);
-                }
-
                 // Promote the intructions that depend on runtime parameters, and sink new
                 // format instructions.
                 bool modified = true;
@@ -2028,7 +2051,7 @@ namespace mu
 
                     UE_LOG(LogMutableCore, Verbose, TEXT(" - before parameter optimiser"));
 
-                    ParameterOptimiserAST param( m_states[s], m_options->GetPrivate()->m_optimisationOptions );
+                    ParameterOptimiserAST param( m_states[s], m_options->GetPrivate()->OptimisationOptions );
                     modified = param.Apply();
 
                     TArray<Ptr<ASTOp>> roots;
@@ -2039,12 +2062,12 @@ namespace mu
 
                     // All kind of optimisations that depend on the meaning of each operation
                     UE_LOG(LogMutableCore, Verbose, TEXT(" - semantic optimiser"));
-                    modified |= SemanticOptimiserAST( roots, m_options->GetPrivate()->m_optimisationOptions );
+                    modified |= SemanticOptimiserAST( roots, m_options->GetPrivate()->OptimisationOptions, 1 );
 					UE_LOG(LogMutableCore, Verbose, TEXT("(int) %s : %ld"), TEXT("ast size"), int64(ASTOp::CountNodes(roots)));
 					//ASTOp::LogHistogram(roots);
 
                     UE_LOG(LogMutableCore, Verbose, TEXT(" - sink optimiser"));
-                    modified |= SinkOptimiserAST( roots, m_options->GetPrivate()->m_optimisationOptions );
+                    modified |= SinkOptimiserAST( roots, m_options->GetPrivate()->OptimisationOptions );
 					UE_LOG(LogMutableCore, Verbose, TEXT("(int) %s : %ld"), TEXT("ast size"), int64(ASTOp::CountNodes(roots)));
 					//ASTOp::LogHistogram(roots);
 
@@ -2100,26 +2123,6 @@ namespace mu
             }
         }
 
-        // If we are targetting GPU build, gpuize the code
-//        m_pModelReport->GetPrivate()->m_states.resize( pModel->GetStateCount() );
-
-//        for ( int s=0; s<pModel->GetStateCount(); ++s )
-//        {
-//            if ( m_gpuPlatformProps.type!=GPU_NONE
-//                 &&
-//                 ( m_states[s].optimisationFlags.m_gpu.m_internal || m_states[s].optimisationFlags.m_gpu.m_external ) )
-//            {
-//                MUTABLE_CPUPROFILER_SCOPE(GPUTranslator);
-//                GPUTranslator( program,
-//                               s,
-//                               m_gpuPlatformProps,
-//                               m_states[s].optimisationFlags.m_gpu,
-//                               m_pModelReport );
-//            }
-//        }
-
-        //program.Check();
-
         // Reoptimise because of state cache reformats and gpuization
         {
             MUTABLE_CPUPROFILER_SCOPE(Reoptimise);
@@ -2142,7 +2145,7 @@ namespace mu
 
                 UE_LOG(LogMutableCore, Verbose, TEXT(" - semantic optimiser"));
                 modified |=
-                    SemanticOptimiserAST( roots, m_options->GetPrivate()->m_optimisationOptions );
+                    SemanticOptimiserAST( roots, m_options->GetPrivate()->OptimisationOptions, 1 );
 				UE_LOG(LogMutableCore, Verbose, TEXT("(int) %s : %ld"), TEXT("ast size"), int64(ASTOp::CountNodes(roots)));
 
                 // Image size operations are treated separately
@@ -2184,8 +2187,8 @@ namespace mu
         {
             MUTABLE_CPUPROFILER_SCOPE(DataFormats);
 
-            DataOptimiseAST( m_options->GetPrivate()->m_imageCompressionQuality, roots,
-                             m_options->GetPrivate()->m_optimisationOptions );
+            DataOptimiseAST( m_options->GetPrivate()->ImageCompressionQuality, roots,
+                             m_options->GetPrivate()->OptimisationOptions );
 
             // After optimising the data formats, we may remove more constants
             DuplicatedDataRemoverAST( roots );

@@ -4,6 +4,7 @@
 #include "Audio/ActorSoundParameterInterface.h"
 #include "AudioDevice.h"
 #include "Components/BillboardComponent.h"
+#include "Engine/Engine.h"
 #include "Engine/Texture2D.h"
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
@@ -13,6 +14,8 @@
 #include "Sound/SoundNodeAttenuation.h"
 #include "Stats/StatsTrace.h"
 #include "UObject/FrameworkObjectVersion.h"
+#include "UObject/ICookInfo.h"
+#include "UObject/SoftObjectPath.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AudioComponent)
 
@@ -64,6 +67,10 @@ uint64 UAudioComponent::AudioComponentIDCounter = 0;
 TMap<uint64, UAudioComponent*> UAudioComponent::AudioIDToComponentMap;
 FCriticalSection UAudioComponent::AudioIDToComponentMapLock;
 
+#if WITH_EDITORONLY_DATA
+static const TCHAR* GAudioSpriteAssetNameAutoActivate = TEXT("/Engine/EditorResources/AudioIcons/S_AudioComponent_AutoActivate.S_AudioComponent_AutoActivate");
+static const TCHAR* GAudioSpriteAssetName = TEXT("/Engine/EditorResources/AudioIcons/S_AudioComponent.S_AudioComponent");
+#endif
 
 UInitialActiveSoundParams::UInitialActiveSoundParams(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -190,6 +197,15 @@ void UAudioComponent::Serialize(FArchive& Ar)
 
 		ModulationRouting.VersionModulators();
 	}
+	if (Ar.IsSaving() && Ar.IsObjectReferenceCollector() && !Ar.IsCooking())
+	{
+		FSoftObjectPathSerializationScope EditorOnlyScope(ESoftObjectPathCollectType::EditorOnlyCollect);
+		FSoftObjectPath SpriteAssets[]{ FSoftObjectPath(GAudioSpriteAssetNameAutoActivate), FSoftObjectPath(GAudioSpriteAssetName) };
+		for (FSoftObjectPath& SpriteAsset : SpriteAssets)
+		{
+			Ar << SpriteAsset;
+		}
+	}
 #endif // WITH_EDITORONLY_DATA
 }
 
@@ -292,6 +308,7 @@ void UAudioComponent::OnUnregister()
 void UAudioComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	Super::EndPlay(EndPlayReason);
+	QuartzUnsubscribe();
 }
 
 const UObject* UAudioComponent::AdditionalStatObject() const
@@ -799,6 +816,19 @@ void UAudioComponent::PlayInternal(const PlayInternalRequestData& InPlayRequestD
 
 	NewActiveSound.MaxDistance = MaxDistance;
 
+	// Setup the submix and bus sends that may have been set before playing
+	for (FSoundSubmixSendInfo& SubmixSendInfo : PendingSubmixSends)
+	{
+		NewActiveSound.SetSubmixSend(SubmixSendInfo);
+	}
+	PendingSubmixSends.Reset();
+
+	for (FPendingSourceBusSendInfo& PendingBusSend : PendingBusSends)
+	{
+		NewActiveSound.SetSourceBusSend(PendingBusSend.BusSendType, PendingBusSend.BusSendInfo);
+	}
+	PendingBusSends.Reset();
+
 	Audio::FVolumeFader& Fader = NewActiveSound.ComponentVolumeFader;
 	Fader.SetVolume(0.0f); // Init to 0.0f to fade as default is 1.0f
 	Fader.StartFade(InPlayRequestData.FadeVolumeLevel, InPlayRequestData.FadeInDuration, static_cast<Audio::EFaderCurve>(InPlayRequestData.FadeCurve));
@@ -836,6 +866,8 @@ void UAudioComponent::PlayInternal(const PlayInternalRequestData& InPlayRequestD
 	FAudioParameter::Merge(MoveTemp(InstanceParamsCopy), SoundParams);
 
 	AudioDevice->AddNewActiveSound(NewActiveSound, MoveTemp(SoundParams));
+
+	LastSoundPlayOrder = NewActiveSound.GetPlayOrder();
 
 	// In editor, the audio thread is not run separate from the game thread, and can result in calling PlaybackComplete prior
 	// to bIsActive being set. Therefore, we assign to the current state of ActiveCount as opposed to just setting to true.
@@ -1194,13 +1226,14 @@ void UAudioComponent::UpdateSpriteTexture()
 		SpriteComponent->SpriteInfo.Category = TEXT("Sounds");
 		SpriteComponent->SpriteInfo.DisplayName = NSLOCTEXT("SpriteCategory", "Sounds", "Sounds");
 
+		FCookLoadScope EditorOnlyScope(ECookLoadType::EditorOnly);
 		if (bAutoActivate)
 		{
-			SpriteComponent->SetSprite(LoadObject<UTexture2D>(nullptr, TEXT("/Engine/EditorResources/AudioIcons/S_AudioComponent_AutoActivate.S_AudioComponent_AutoActivate")));
+			SpriteComponent->SetSprite(LoadObject<UTexture2D>(nullptr, GAudioSpriteAssetNameAutoActivate));
 		}
 		else
 		{
-			SpriteComponent->SetSprite(LoadObject<UTexture2D>(nullptr, TEXT("/Engine/EditorResources/AudioIcons/S_AudioComponent.S_AudioComponent")));
+			SpriteComponent->SetSprite(LoadObject<UTexture2D>(nullptr, GAudioSpriteAssetName));
 		}
 	}
 }
@@ -1421,36 +1454,52 @@ void UAudioComponent::AdjustAttenuation(const FSoundAttenuationSettings& InAtten
 
 void UAudioComponent::SetSubmixSend(USoundSubmixBase* Submix, float SendLevel)
 {
-	if (FAudioDevice* AudioDevice = GetAudioDevice())
+	FSoundSubmixSendInfo SendInfo;
+	SendInfo.SoundSubmix = Submix;
+	SendInfo.SendLevel = SendLevel;
+
+	if (IsPlaying())
 	{
-		const uint64 MyAudioComponentID = AudioComponentID;
-
-		FSoundSubmixSendInfo SendInfo;
-		SendInfo.SoundSubmix = Submix;
-		SendInfo.SendLevel = SendLevel;
-
-		DECLARE_CYCLE_STAT(TEXT("FAudioThreadTask.AudioSetSubmixSend"), STAT_SetSubmixSend, STATGROUP_AudioThreadCommands);
-		AudioDevice->SendCommandToActiveSounds(AudioComponentID, [SendInfo](FActiveSound& ActiveSound)
+		if (FAudioDevice* AudioDevice = GetAudioDevice())
 		{
-			ActiveSound.SetSubmixSend(SendInfo);
-		}, GET_STATID(STAT_SetSubmixSend));
+			DECLARE_CYCLE_STAT(TEXT("FAudioThreadTask.AudioSetSubmixSend"), STAT_SetSubmixSend, STATGROUP_AudioThreadCommands);
+			AudioDevice->SendCommandToActiveSounds(AudioComponentID, [SendInfo](FActiveSound& ActiveSound)
+			{
+				ActiveSound.SetSubmixSend(SendInfo);
+			}, GET_STATID(STAT_SetSubmixSend));
+		}
+	}
+	else
+	{
+		PendingSubmixSends.Add(SendInfo);
 	}
 }
 
 void UAudioComponent::SetBusSendEffectInternal(USoundSourceBus* InSourceBus, UAudioBus* InAudioBus, float SendLevel, EBusSendType InBusSendType)
 {
-	if (FAudioDevice* AudioDevice = GetAudioDevice())
+	FSoundSourceBusSendInfo BusSendInfo;
+	BusSendInfo.SoundSourceBus = InSourceBus;
+	BusSendInfo.AudioBus = InAudioBus;
+	BusSendInfo.SendLevel = SendLevel;
+
+	if (IsPlaying())
 	{
-
-		FSoundSourceBusSendInfo SourceBusSendInfo;
-		SourceBusSendInfo.SoundSourceBus = InSourceBus;
-		SourceBusSendInfo.AudioBus = InAudioBus;
-		SourceBusSendInfo.SendLevel = SendLevel;
-
-		AudioDevice->SendCommandToActiveSounds(AudioComponentID, [InBusSendType, SourceBusSendInfo](FActiveSound& ActiveSound)
+		if (FAudioDevice* AudioDevice = GetAudioDevice())
 		{
-			ActiveSound.SetSourceBusSend(InBusSendType, SourceBusSendInfo);
-		});
+			DECLARE_CYCLE_STAT(TEXT("FAudioThreadTask.AudioSetBusSend"), STAT_SetBusSend, STATGROUP_AudioThreadCommands);
+			AudioDevice->SendCommandToActiveSounds(AudioComponentID, [InBusSendType, BusSendInfo](FActiveSound& ActiveSound)
+			{
+				ActiveSound.SetSourceBusSend(InBusSendType, BusSendInfo);
+			}, GET_STATID(STAT_SetBusSend));
+		}
+	}
+	else
+	{
+		FPendingSourceBusSendInfo NewPendingSourceBusInfo;
+		NewPendingSourceBusInfo.BusSendInfo = BusSendInfo;
+		NewPendingSourceBusInfo.BusSendType = InBusSendType;
+
+		PendingBusSends.Add(NewPendingSourceBusInfo);
 	}
 }
 

@@ -73,6 +73,8 @@
 #include "UObject/UObjectGlobalsInternal.h"
 #include "Serialization/AsyncPackageLoader.h"
 #include "Containers/VersePath.h"
+#include "AutoRTFM/AutoRTFM.h"
+#include "UObject/PropertyOptional.h"
 
 #if UE_USE_VERSE_PATHS
 #include "Interfaces/IPluginManager.h"
@@ -81,16 +83,19 @@
 
 DEFINE_LOG_CATEGORY(LogUObjectGlobals);
 
-#if USE_MALLOC_PROFILER
-#include "ProfilingDebugging/MallocProfiler.h"
-#endif
-
 int32 GAllowUnversionedContentInEditor = 0;
-
 static FAutoConsoleVariableRef CVarAllowUnversionedContentInEditor(
 	TEXT("s.AllowUnversionedContentInEditor"),
 	GAllowUnversionedContentInEditor,
 	TEXT("If true, allows unversioned content to be loaded by the editor."),
+	ECVF_Default
+);
+
+bool GAllowParseObjectLoading = true;
+static FAutoConsoleVariableRef CVarAllowParseObjectLoading(
+	TEXT("s.AllowParseObjectLoading"),
+	GAllowParseObjectLoading,
+	TEXT("If true, allows ParseObject to load fully qualified objects if needed and requested."),
 	ECVF_Default
 );
 
@@ -132,7 +137,7 @@ CSV_DEFINE_CATEGORY(UObject, false);
 namespace LoadPackageStats
 {
 	static double LoadPackageTimeSec = 0.0;
-	static int NumPackagesLoaded = 0;
+	int NumPackagesLoaded = 0;
 	static FCookStatsManager::FAutoRegisterCallback RegisterCookStats([](FCookStatsManager::AddStatFuncRef AddStat)
 	{
 		AddStat(TEXT("Package.Load"), FCookStatsManager::CreateKeyValueArray(
@@ -185,6 +190,12 @@ FSimpleMulticastDelegate& FCoreUObjectDelegates::GetPreGarbageCollectDelegate()
 }
 
 FSimpleMulticastDelegate& FCoreUObjectDelegates::GetPostGarbageCollect()
+{
+	static FSimpleMulticastDelegate Delegate;
+	return Delegate;
+}
+
+FSimpleMulticastDelegate& FCoreUObjectDelegates::GetPostPurgeGarbageDelegate()
 {
 	static FSimpleMulticastDelegate Delegate;
 	return Delegate;
@@ -960,11 +971,6 @@ void RemoveMountPointDefaultPackageFlags(const TArrayView<FString> InMountPoints
 }
 #endif //if WITH_EDITOR
 
-UPackage* CreatePackage(UObject* InOuter, const TCHAR* PackageName)
-{
-	return CreatePackage(PackageName);
-}
-
 UPackage* CreatePackage(const TCHAR* PackageName )
 {
 	FString InName;
@@ -1128,8 +1134,10 @@ bool ResolveName(UObject*& InPackage, FString& InOutName, bool Create, bool Thro
 			Create         = false;
 		}
 		
-		int32 DotIndex = DelimiterOrEnd - *InOutName;
-		FString PartialName = InOutName.Left(DotIndex);
+		const int32 DotIndex = static_cast<int32>(DelimiterOrEnd - *InOutName);
+
+		TStringBuilder<FName::StringBufferSize> PartialName;
+		PartialName.Append(*InOutName, DotIndex);
 
 		bool bIsScriptPackage = false;
 		if (!InPackage)
@@ -1140,15 +1148,15 @@ bool ResolveName(UObject*& InPackage, FString& InOutName, bool Create, bool Thro
 				FName* ScriptPackageName = FPackageName::FindScriptPackageName(*PartialName);
 				if (ScriptPackageName)
 				{
-					PartialName = ScriptPackageName->ToString();
+					ScriptPackageName->ToString(PartialName);
 				}
-				bIsScriptPackage = ScriptPackageName || FPackageName::IsScriptPackage(PartialName);
+				bIsScriptPackage = ScriptPackageName || FPackageName::IsScriptPackage(FStringView(PartialName));
 			}
 
 			// Process any package redirects before calling CreatePackage/FindObject
 			{
 				const FCoreRedirectObjectName NewPackageName = FCoreRedirects::GetRedirectedName(ECoreRedirectFlags::Type_Package, FCoreRedirectObjectName(NAME_None, NAME_None, *PartialName));
-				PartialName = NewPackageName.PackageName.ToString();
+				NewPackageName.PackageName.ToString(PartialName);
 			}
 		}
 
@@ -1175,7 +1183,7 @@ bool ResolveName(UObject*& InPackage, FString& InOutName, bool Create, bool Thro
 			}
 			InPackage = NewPackage;
 		}
-		else if (!FPackageName::IsShortPackageName(PartialName))
+		else if (!FPackageName::IsShortPackageName(FStringView(PartialName)))
 		{
 			// Try to find the package in memory first, should be faster than attempting to load or create
 			InPackage = InPackage ? nullptr : StaticFindObjectFast(UPackage::StaticClass(), InPackage, *PartialName);
@@ -1198,64 +1206,90 @@ bool ResolveName(UObject*& InPackage, FString& InOutName, bool Create, bool Thro
 	}
 }
 
-bool ParseObject( const TCHAR* Stream, const TCHAR* Match, UClass* Class, UObject*& DestRes, UObject* InParent, bool* bInvalidObject )
+bool ParseObject( const TCHAR* Stream, const TCHAR* Match, UClass* Class, UObject*& DestRes, UObject* InParent, EParseObjectLoadingPolicy LoadingPolicy, bool* bInvalidObject )
 {
+	if (!GAllowParseObjectLoading)
+	{
+		LoadingPolicy = EParseObjectLoadingPolicy::Find;
+	}
+
 	TCHAR TempStr[1024];
-	if( !FParse::Value( Stream, Match, TempStr, UE_ARRAY_COUNT(TempStr) ) )
+	if (!FParse::Value(Stream, Match, TempStr, UE_ARRAY_COUNT(TempStr)))
 	{
 		// Match not found
-		return 0;
+		return false;
 	}
-	else if( FCString::Stricmp(TempStr,TEXT("NONE"))==0 )
+	else if (FCString::Stricmp(TempStr, TEXT("NONE")) == 0)
 	{
 		// Match found, object explicit set to be None
 		DestRes = nullptr;
-		return 1;
+		return true;
 	}
 	else
 	{
+		auto ResolveObjectImpl = [Class, InParent, LoadingPolicy](const TCHAR* ObjNameOrPathName)
+		{
+			if (FPackageName::IsValidObjectPath(ObjNameOrPathName))
+			{
+				// A fully qualified object path can be resolved with no parent
+				return LoadingPolicy == EParseObjectLoadingPolicy::FindOrLoad
+					? StaticLoadObject(Class, nullptr, ObjNameOrPathName)
+					: StaticFindObject(Class, nullptr, ObjNameOrPathName);
+			}
+			else if (InParent && InParent != ANY_PACKAGE_DEPRECATED)
+			{
+				// Try to find the object within its parent
+				return StaticFindObject(Class, InParent, ObjNameOrPathName);
+			}
+			else
+			{
+				// Try to find first object matching the provided name
+				return StaticFindFirstObject(Class, ObjNameOrPathName, EFindFirstObjectOptions::EnsureIfAmbiguous);
+			}
+		};
+
 		UObject* Res = nullptr;
 		// Look this object up.
-		if ((!InParent || InParent == ANY_PACKAGE_DEPRECATED) && !FPackageName::IsValidObjectPath(TempStr))
-		{
-			// Try to find first object matching the provided name
-			Res = StaticFindFirstObject(Class, TempStr, EFindFirstObjectOptions::EnsureIfAmbiguous);
-		}
-		else
-		{
-			Res = StaticFindObject(Class, InParent, TempStr);
-		}
-		if( !Res )
+		Res = ResolveObjectImpl(TempStr);
+		if (!Res)
 		{
 			if (Class->IsChildOf<UClass>())
 			{
 				FString RedirectedObjectName = FLinkerLoad::FindNewPathNameForClass(TempStr, false);
 				if (!RedirectedObjectName.IsEmpty())
 				{
-					Res = StaticFindObject(Class, InParent, *RedirectedObjectName);
+					Res = ResolveObjectImpl(*RedirectedObjectName);
 				}
 			}
 
 			if (!Res)
-			{ 
+			{
 				// Match found, object not found
 				if (bInvalidObject)
 				{
 					*bInvalidObject = true;
 				}
-				return 0;
+				return false;
 			}
 		}
 
 		// Match found, object found
 		DestRes = Res;
-		return 1;
+		return true;
 	}
 }
 
+UE_TRACE_EVENT_BEGIN(Cpu, LoadObject, NoSync)
+	UE_TRACE_EVENT_FIELD(UE::Trace::WideString, AssetPath)
+UE_TRACE_EVENT_END()
+
 UObject* StaticLoadObjectInternal(UClass* ObjectClass, UObject* InOuter, const TCHAR* InName, const TCHAR* Filename, uint32 LoadFlags, UPackageMap* Sandbox, bool bAllowObjectReconciliation, const FLinkerInstancingContext* InstancingContext)
 {
-	SCOPE_CYCLE_COUNTER(STAT_LoadObject);
+#if CPUPROFILERTRACE_ENABLED
+	UE_TRACE_LOG_SCOPED_T(Cpu, LoadObject, CpuChannel)
+		<< LoadObject.AssetPath(InName);
+#endif // CPUPROFILERTRACE_ENABLED
+	SCOPED_NAMED_EVENT(LoadObject, FColor::Red);
 	check(InName);
 
 	FScopedLoadingState ScopedLoadingState(InName);
@@ -1328,13 +1362,10 @@ UObject* StaticLoadObjectInternal(UClass* ObjectClass, UObject* InOuter, const T
 	return Result;
 }
 
-// Track how many nested loads we're doing by triggering an async load and immediately flushing that request.
-static int32 GSyncLoadUsingAsyncLoaderCount = 0;
-
 UObject* StaticLoadObject(UClass* ObjectClass, UObject* InOuter, const TCHAR* InName, const TCHAR* Filename, uint32 LoadFlags, UPackageMap* Sandbox, bool bAllowObjectReconciliation, const FLinkerInstancingContext* InstancingContext)
 {
 	FUObjectThreadContext& ThreadContext = FUObjectThreadContext::Get();
-	if ((GSyncLoadUsingAsyncLoaderCount == 0) && ThreadContext.IsRoutingPostLoad && IsInAsyncLoadingThread())
+	if ((ThreadContext.SyncLoadUsingAsyncLoaderCount == 0) && ThreadContext.IsRoutingPostLoad && IsInAsyncLoadingThread())
 	{
 		UE_LOG(LogUObjectGlobals, Warning, TEXT("Calling StaticLoadObject(\"%s\", \"%s\", \"%s\") during PostLoad of %s is illegal and will crash in a cooked runtime"), 
 			*GetFullNameSafe(ObjectClass),
@@ -1433,7 +1464,7 @@ public:
 
 		if (DiffArchive && !bDisable)
 		{
-			TArray<uint8> Data;
+			TArray64<uint8> Data;
 			Data.AddUninitialized(Length);
 			DiffArchive->Seek(Pos);
 			DiffArchive->Serialize(Data.GetData(), Length);
@@ -1548,6 +1579,7 @@ UPackage* LoadPackageInternal(UPackage* InOuter, const FPackagePath& PackagePath
 	}
 	checkf(IsInGameThread(), TEXT("Unable to load %s. Objects and Packages can only be loaded from the game thread."), *PackagePath.GetDebugName());
 
+	FUObjectThreadContext& ThreadContext = FUObjectThreadContext::Get();
 	if (ShouldAlwaysLoadPackageAsync(PackagePath))
 	{
 		checkf(!InOuter || !InOuter->GetOuter(), TEXT("Loading into subpackages is not implemented.")); // Subpackages are no longer supported in UE
@@ -1565,24 +1597,48 @@ UPackage* LoadPackageInternal(UPackage* InOuter, const FPackagePath& PackagePath
 			FCoreDelegates::OnSyncLoadPackage.Broadcast(PackageName.ToString());
 		}
 
-		GSyncLoadUsingAsyncLoaderCount++;
+		ThreadContext.SyncLoadUsingAsyncLoaderCount++;
 		EPackageFlags PackageFlags = PKG_None;
+#if WITH_EDITOR
+		// If we are loading a package for diffing, set the package flag
+		if (LoadFlags & LOAD_ForDiff)
+		{
+			PackageFlags |= PKG_ForDiffing;
+		}
 		if ((!FApp::IsGame() || GIsEditor) && (LoadFlags & LOAD_PackageForPIE) != 0)
 		{
 			PackageFlags |= PKG_PlayInEditor;
 		}
+#endif
 		constexpr int32 PIEInstanceID = INDEX_NONE;
 		constexpr int32 Priority = INT32_MAX;
-		int32 RequestID = LoadPackageAsync(PackagePath, PackageName, FLoadPackageAsyncDelegate(), PackageFlags, PIEInstanceID, Priority, InstancingContext);
+		int32 RequestID = LoadPackageAsync(PackagePath, PackageName, FLoadPackageAsyncDelegate(), PackageFlags, PIEInstanceID, Priority, InstancingContext, LoadFlags);
 
 		if (RequestID != INDEX_NONE)
 		{
 			UE_SCOPED_IO_ACTIVITY(*WriteToString<512>(TEXT("Sync "), PackagePath.GetDebugName()));
 			FlushAsyncLoading(RequestID);
 		}
-		GSyncLoadUsingAsyncLoaderCount--;
+		ThreadContext.SyncLoadUsingAsyncLoaderCount--;
 
-		return (InOuter ? InOuter : FindObjectFast<UPackage>(nullptr, PackageName));
+		if (InOuter)
+		{
+			return InOuter;
+		}
+		else
+		{
+			UPackage* Result = FindObjectFast<UPackage>(nullptr, PackageName);
+			if (!Result)
+			{
+				// Might have been redirected
+				const FCoreRedirectObjectName NewPackageName = FCoreRedirects::GetRedirectedName(ECoreRedirectFlags::Type_Package, FCoreRedirectObjectName(NAME_None, NAME_None, PackageName));
+				if (NewPackageName.PackageName != PackageName)
+				{
+					Result = FindObjectFast<UPackage>(nullptr, NewPackageName.PackageName);
+				}
+			}
+			return Result;
+		}
 	}
 
 	UPackage* Result = nullptr;
@@ -1610,7 +1666,7 @@ UPackage* LoadPackageInternal(UPackage* InOuter, const FPackagePath& PackagePath
 	TRACE_LOADTIME_POSTLOAD_SCOPE;
 
 	// Set up a load context
-	TRefCountPtr<FUObjectSerializeContext> LoadContext = FUObjectThreadContext::Get().GetSerializeContext();
+	TRefCountPtr<FUObjectSerializeContext> LoadContext = ThreadContext.GetSerializeContext();
 
 	UE_SCOPED_IO_ACTIVITY(*WriteToString<512>(TEXT("Sync "), PackagePath.GetDebugName()));
 
@@ -2053,7 +2109,7 @@ void EndLoad(FUObjectSerializeContext* LoadContext, TArray<UPackage*>* OutLoaded
 	if (ShouldCreateThrottledSlowTask())
 	{
 		static const FText PostLoadText = NSLOCTEXT("Core", "PerformingPostLoad", "Performing post-load...");
-		SlowTask.Emplace(0, PostLoadText);
+		SlowTask.Emplace(0.0f, PostLoadText);
 	}
 
 	int32 NumObjectsLoaded = 0, NumObjectsFound = 0;
@@ -2125,7 +2181,7 @@ void EndLoad(FUObjectSerializeContext* LoadContext, TArray<UPackage*>* OutLoaded
 			if (SlowTask)
 			{
 				SlowTask->CompletedWork = SlowTask->TotalAmountOfWork;
-				SlowTask->TotalAmountOfWork += ObjLoaded.Num();
+				SlowTask->TotalAmountOfWork += static_cast<float>(ObjLoaded.Num());
 				SlowTask->CurrentFrameScope = 0;
 			}
 #endif
@@ -2459,7 +2515,7 @@ namespace NameReuse
 			Entry->Store(reinterpret_cast<UPTRINT>(Parent), UsedName);
 
 			// Shift this entry to the end of the array as it's now the most recently used
-			int32 Index = Entry - Entries.GetData();
+			int32 Index = UE_PTRDIFF_TO_INT32(Entry - Entries.GetData());
 			if (Index != Entries.Num() - 1)
 			{
 				FEntry Removed = MoveTemp(*Entry);
@@ -3193,7 +3249,7 @@ bool StaticAllocateObjectErrorTests( const UClass* InClass, UObject* InOuter, FN
 * this is only used for classes in the script compiler
 **/
 //@todo UE this is clunky
-static FRestoreForUObjectOverwrite* ObjectRestoreAfterInitProps = NULL;  
+static thread_local FRestoreForUObjectOverwrite* ObjectRestoreAfterInitProps = nullptr;
 
 COREUOBJECT_API bool GOutputCookingWarnings = false;
 
@@ -3392,8 +3448,8 @@ UObject* StaticAllocateObject
 				}
 				if (bPrinted)
 				{
-					float ThisTime = FPlatformTime::Seconds() - StallStart;
-					UE_LOG(LogUObjectGlobals, Warning, TEXT("Gamethread hitch waiting for resource cleanup on a UObject (%s) overwrite took %6.2fms. Fix the higher level code so that this does not happen."), *OldName, ThisTime * 1000.0f);
+					const double ThisTime = FPlatformTime::Seconds() - StallStart;
+					UE_LOG(LogUObjectGlobals, Warning, TEXT("Gamethread hitch waiting for resource cleanup on a UObject (%s) overwrite took %6.2fms. Fix the higher level code so that this does not happen."), *OldName, ThisTime * 1000.0);
 				}
 				// Finish destroying the object.
 				Obj->ConditionalFinishDestroy();
@@ -3783,19 +3839,15 @@ void FObjectInitializer::PostConstructInit()
 		InitProperties(Obj, BaseClass, Defaults, bCopyTransientsFromClassDefaults);
 	}
 
-#if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
-	const bool bAllowInstancing = IsInstancingAllowed() && !bIsDeferredInitializer;
-#else
 	const bool bAllowInstancing = IsInstancingAllowed();
-#endif // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
 	bool bNeedSubobjectInstancing = InitSubobjectProperties(bAllowInstancing);
 
 	// Restore class information if replacing native class.
-	if (ObjectRestoreAfterInitProps != NULL)
+	if (ObjectRestoreAfterInitProps != nullptr)
 	{
 		ObjectRestoreAfterInitProps->Restore();
 		delete ObjectRestoreAfterInitProps;
-		ObjectRestoreAfterInitProps = NULL;
+		ObjectRestoreAfterInitProps = nullptr;
 	}
 
 	bool bNeedInstancing = false;
@@ -3834,7 +3886,19 @@ void FObjectInitializer::PostConstructInit()
 	// Allow custom property initialization to happen before PostInitProperties is called
 	if (PropertyInitCallback)
 	{
-		PropertyInitCallback();
+		// autortfm todo: if this transaction aborts and we are in a transaction's open nest,
+		// we need to have a way of propagating out that abort
+		if(AutoRTFM::IsTransactional())
+		{
+			AutoRTFM::EContextStatus Status = AutoRTFM::Close([&]
+			{
+				PropertyInitCallback();
+			});
+		}
+		else
+		{
+			PropertyInitCallback();
+		}
 	}
 	// After the call to `PropertyInitCallback` to allow the callback to modify the instancing graph
 	if (bNeedInstancing || bNeedSubobjectInstancing)
@@ -4263,25 +4327,23 @@ void CheckIsClassChildOf_Internal(const UClass* Parent, const UClass* Child)
 }
 #endif
 
+UObject* DuplicateObject_Internal(UClass* Class, const UObject* SourceObject, UObject* Outer, FName Name)
+{
+	if (SourceObject != nullptr)
+	{
+		if (Outer == nullptr || Outer == INVALID_OBJECT)
+		{
+			Outer = (UObject*)GetTransientOuterForRename(Class);
+		}
+		return StaticDuplicateObject(SourceObject,Outer,Name);
+	}
+	return nullptr;
+}
+
 FStaticConstructObjectParameters::FStaticConstructObjectParameters(const UClass* InClass)
 	: Class(InClass)
 	, Outer((UObject*)GetTransientPackage())
 {
-}
-
-UObject* StaticConstructObject_Internal(const UClass* Class, UObject* InOuter, FName Name, EObjectFlags SetFlags, EInternalObjectFlags InternalSetFlags, UObject* Template, bool bCopyTransientsFromClassDefaults, FObjectInstancingGraph* InstanceGraph, bool bAssumeTemplateIsArchetype, UPackage* ExternalPackage)
-{
-	FStaticConstructObjectParameters Params(Class);
-	Params.Outer = InOuter;
-	Params.Name = Name;
-	Params.SetFlags = SetFlags;
-	Params.InternalSetFlags = InternalSetFlags;
-	Params.Template = Template;
-	Params.bCopyTransientsFromClassDefaults = bCopyTransientsFromClassDefaults;
-	Params.InstanceGraph = InstanceGraph;
-	Params.bAssumeTemplateIsArchetype = bAssumeTemplateIsArchetype;
-	Params.ExternalPackage = ExternalPackage;
-	return StaticConstructObject_Internal(Params);
 }
 
 UObject* StaticConstructObject_Internal(const FStaticConstructObjectParameters& Params)
@@ -4327,11 +4389,14 @@ UObject* StaticConstructObject_Internal(const FStaticConstructObjectParameters& 
 		(*InClass->ClassConstructor)(FObjectInitializer(Result, Params));
 	}
 	
-	if (GIsEditor && GUndo && 
-		(InFlags & RF_Transactional) && !(InFlags & RF_NeedLoad) && 
-		!InClass->IsChildOf(UField::StaticClass()) &&
+	if (GIsEditor && 
 		// Do not consider object creation in transaction if the object is marked as async or in being async loaded 
-		!Result->HasAnyInternalFlags(EInternalObjectFlags::Async|EInternalObjectFlags::AsyncLoading))
+		!Result->HasAnyInternalFlags(EInternalObjectFlags::Async | EInternalObjectFlags::AsyncLoading) &&
+		// Read GUndo only if not having Async flags set to avoid making TSAN unhappy that we're trying to read an unsynchronized global
+		GUndo &&
+		(InFlags & RF_Transactional) && !(InFlags & RF_NeedLoad) && 
+		!InClass->IsChildOf(UField::StaticClass())
+		)
 	{
 		// Set RF_PendingKill and update the undo buffer so an undo operation will set RF_PendingKill on the newly constructed object.
 		Result->MarkAsGarbage();
@@ -4409,7 +4474,12 @@ void ConstructorHelpers::FailedToFind(const TCHAR* ObjectToFind)
 		(CurrentInitializer && CurrentInitializer->GetClass()) ? *CurrentInitializer->GetClass()->GetName() : TEXT("Unknown"),
 		ObjectToFind);
 	FPlatformMisc::LowLevelOutputDebugString(*Message);
-	UClass::GetDefaultPropertiesFeedbackContext().Log(ELogVerbosity::Error, *Message);
+#if !NO_LOGGING
+	if (UE_LOG_ACTIVE(LogUObjectGlobals, Error))
+	{
+		UClass::GetDefaultPropertiesFeedbackContext().Log(LogUObjectGlobals.GetCategoryName(), ELogVerbosity::Error, *Message);
+	}
+#endif
 }
 
 void ConstructorHelpers::CheckFoundViaRedirect(UObject *Object, const FString& PathName, const TCHAR* ObjectToFind)
@@ -4427,7 +4497,12 @@ void ConstructorHelpers::CheckFoundViaRedirect(UObject *Object, const FString& P
 			ObjectToFind, *NewString);
 
 		FPlatformMisc::LowLevelOutputDebugString(*Message);
-		UClass::GetDefaultPropertiesFeedbackContext().Log(ELogVerbosity::Warning, *Message);
+#if !NO_LOGGING
+		if (UE_LOG_ACTIVE(LogUObjectGlobals, Warning))
+		{
+			UClass::GetDefaultPropertiesFeedbackContext().Log(LogUObjectGlobals.GetCategoryName(), ELogVerbosity::Warning, *Message);
+		}
+#endif
 	}
 }
 
@@ -4479,7 +4554,7 @@ public:
 			FReferenceCollector& CurrentCollector = GetCollector();
 			FProperty* OldCollectorSerializedProperty = CurrentCollector.GetSerializedProperty();
 			CurrentCollector.SetSerializedProperty(GetSerializedProperty());
-			CurrentCollector.AddReferencedObject(Object, GetSerializingObject(), GetSerializedProperty());
+			FReferenceCollector::AROPrivate::AddReferencedObject(CurrentCollector, Object, GetSerializingObject(), GetSerializedProperty());
 			CurrentCollector.SetSerializedProperty(OldCollectorSerializedProperty);
 		}
 		return *this;
@@ -4499,35 +4574,81 @@ public:
 
 };
 
+#if !UE_REFERENCE_COLLECTOR_REQUIRE_OBJECTPTR
 void FReferenceCollector::AddStableReference(UObject** Object)
 {
-	AddReferencedObject(*Object);
+	AROPrivate::AddReferencedObject(*this, *Object);
 }
 
 void FReferenceCollector::AddStableReferenceArray(TArray<UObject*>* Array)
 {
-	AddReferencedObjects(*Array); 
+	AROPrivate::AddReferencedObjects(*this, *Array); 
 }
 
 void FReferenceCollector::AddStableReferenceSet(TSet<UObject*>* Objects)
 {
+	AROPrivate::AddReferencedObjects(*this, *Objects);
+}
+#endif
+
+void FReferenceCollector::AddStableReference(TObjectPtr<UObject>* Object)
+{
+	AddReferencedObject(*Object);
+}
+
+void FReferenceCollector::AddStableReferenceArray(TArray<TObjectPtr<UObject>>* Array)
+{
+	AddReferencedObjects(*Array); 
+}
+
+void FReferenceCollector::AddStableReferenceSet(TSet<TObjectPtr<UObject>>* Objects)
+{
 	AddReferencedObjects(*Objects);
 }
 
+#if !UE_REFERENCE_COLLECTOR_REQUIRE_OBJECTPTR
 void FReferenceCollector::AddReferencedObjects(const UScriptStruct*& ScriptStruct, void* StructMemory, const UObject* ReferencingObject /*= nullptr*/, const FProperty* ReferencingProperty /*= nullptr*/)
+{
+	AROPrivate::AddReferencedObjects(*this, ScriptStruct, StructMemory, ReferencingObject, ReferencingProperty);
+}
+#endif
+
+void FReferenceCollector::AddReferencedObjects(TWeakObjectPtr<const UScriptStruct>& ScriptStruct, void* Instance, const UObject* ReferencingObject, const FProperty* ReferencingProperty)
+{
+	const UScriptStruct* Ptr = ScriptStruct.GetEvenIfUnreachable();
+	AROPrivate::AddReferencedObjects(*this, Ptr, Instance, ReferencingObject, ReferencingProperty);	 
+	ScriptStruct = Ptr;
+}
+
+void FReferenceCollector::AddReferencedObjects(TObjectPtr<const UScriptStruct>& ScriptStruct, void* Instance, const UObject* ReferencingObject, const FProperty* ReferencingProperty)
+{
+	AROPrivate::AddReferencedObjects(*this, UE::Core::Private::Unsafe::Decay(ScriptStruct), Instance, ReferencingObject, ReferencingProperty);
+}
+
+void FReferenceCollector::AddReferencedObject(FWeakObjectPtr& P, const UObject* ReferencingObject, const FProperty* ReferencingProperty)
+{
+	UObject* Ptr = P.GetEvenIfUnreachable();
+	AROPrivate::AddReferencedObject(*this, Ptr, ReferencingObject, ReferencingProperty);
+	P = Ptr;
+}
+
+void FReferenceCollector::AROPrivate::AddReferencedObjects(FReferenceCollector& Coll,
+																													 const UScriptStruct*& ScriptStruct,
+																													 void* StructMemory,
+																													 const UObject* ReferencingObject /*= nullptr*/, const FProperty* ReferencingProperty /*= nullptr*/)
 {
 	check(ScriptStruct != nullptr);
 	check(StructMemory != nullptr);
 
-	AddReferencedObject(ScriptStruct, ReferencingObject, ReferencingProperty);
+	AROPrivate::AddReferencedObject(Coll, ScriptStruct, ReferencingObject, ReferencingProperty);
 
 	// If the script struct explicitly provided an implementation of AddReferencedObjects, make sure to capture its referenced objects
 	if (ScriptStruct->StructFlags & STRUCT_AddStructReferencedObjects)
 	{
-		ScriptStruct->GetCppStructOps()->AddStructReferencedObjects()(StructMemory, *this);
+		ScriptStruct->GetCppStructOps()->AddStructReferencedObjects()(StructMemory, Coll);
 	}
 
-	AddPropertyReferences(ScriptStruct, StructMemory, ReferencingObject);
+	Coll.AddPropertyReferences(ScriptStruct, StructMemory, ReferencingObject);
 }
 
 void FReferenceCollector::HandleObjectReferences(FObjectPtr* InObjects, const int32 ObjectNum, const UObject* InReferencingObject, const FProperty* InReferencingProperty)
@@ -4630,7 +4751,7 @@ static void CollectStructReferences(FReferenceCollector& Collector, const Struct
 
 	FPlatformMisc::PrefetchBlock(Struct->RefLink, PropertyPrefetchBytes);
 	
-	if constexpr (EnumHasAnyFlags(CollectFlags, EPropertyCollectFlags::CallStructARO))
+	if constexpr (EnumHasAnyFlags(CollectFlags, EPropertyCollectFlags::CallStructARO) && std::is_same_v<StructType, UScriptStruct>)
 	{
 		if (Struct->StructFlags & STRUCT_AddStructReferencedObjects)
 		{
@@ -4656,7 +4777,7 @@ void CollectArrayReferences(FReferenceCollector& Collector, FArrayProperty& Prop
 								!EnumHasAnyFlags(Property.ArrayFlags, EArrayPropertyFlags::UsesMemoryImageAllocator);
 		if (bIsReferenceArray && !EnumHasAnyFlags(CollectFlags, EPropertyCollectFlags::NeedsReferencer))
 		{
-			Collector.AddStableReferenceArray(reinterpret_cast<TArray<UObject*>*>(Instance));
+			Collector.AddStableReferenceArray(reinterpret_cast<TArray<TObjectPtr<UObject>>*>(Instance));
 		}
 		else if (FScriptArrayHelper Helper(&Property, Instance); int32 Num = Helper.Num())
 		{
@@ -4668,14 +4789,14 @@ void CollectArrayReferences(FReferenceCollector& Collector, FArrayProperty& Prop
 				}
 				else
 				{
-					Collector.AddReferencedObjects(*reinterpret_cast<TArray<UObject*>*>(Instance), Referencer, &Property);
+					FReferenceCollector::AROPrivate::AddReferencedObjects(Collector, *reinterpret_cast<TArray<UObject*>*>(Instance), Referencer, &Property);
 				}
 			}
 			else if (EnumHasAnyFlags(InnerCastFlags, CASTCLASS_FStructProperty))
 			{
 				for (int32 Idx = 0; Idx < Num; ++Idx)
 				{
-					CollectStructReferences<CollectFlags>(Collector, static_cast<FStructProperty&>(InnerProperty).Struct, Helper.GetRawPtr(Idx), Referencer);
+					CollectStructReferences<CollectFlags>(Collector, static_cast<FStructProperty&>(InnerProperty).Struct.Get(), Helper.GetRawPtr(Idx), Referencer);
 				}
 			}
 			else
@@ -4742,6 +4863,21 @@ void CollectSetReferences(FReferenceCollector& Collector, FSetProperty& Property
 	}
 }
 
+template<EPropertyCollectFlags CollectFlags>
+void CollectOptionalReference(FReferenceCollector& Collector, FOptionalProperty& Property, void* Instance, const UObject* Referencer)
+{
+	FProperty& InnerProperty = *Property.GetValueProperty();
+	EClassCastFlags InnerCastFlags = static_cast<EClassCastFlags>(InnerProperty.GetClass()->GetCastFlags());
+	if (MayContainStrongReference(InnerCastFlags))
+	{
+		if (void* ValueInstance = Property.GetValuePointerForReplaceIfSet(Instance))
+		{
+			CollectPropertyReferences<CollectFlags>(Collector, InnerProperty, ValueInstance, Referencer);			
+		}
+	}
+}
+
+
 // Process FObjectProperty or FObjectPtrProperty reference
 template<EPropertyCollectFlags CollectFlags>
 FORCEINLINE_DEBUGGABLE void CollectObjectReference(FReferenceCollector& Collector, FProperty& Property, void* Value, const UObject* Referencer)
@@ -4752,13 +4888,13 @@ FORCEINLINE_DEBUGGABLE void CollectObjectReference(FReferenceCollector& Collecto
 		// Sync reference processors will inspect Reference immediately so might as well avoid virtual call
 		if ((!!Reference) & IsObjectHandleResolved(*reinterpret_cast<FObjectHandle*>(Value))) //-V792
 		{
-			Collector.AddReferencedObject(Reference, Referencer, &Property);
+			FReferenceCollector::AROPrivate::AddReferencedObject(Collector, Reference, Referencer, &Property);
 		}
 	}
 	else
 	{
 		// Allows batch reference processor to queue up Reference and prefetch before accessing it
-		Collector.AddStableReference(&Reference);
+		Collector.AddStableReference(&ObjectPtrWrap(Reference));
 	}
 }
 
@@ -4767,7 +4903,7 @@ FORCEINLINE_DEBUGGABLE bool CollectStackReference(FReferenceCollector& Collector
 {
 	if (Reference)
 	{
-		Collector.AddReferencedObject(Reference, Referencer, &Property);
+		FReferenceCollector::AROPrivate::AddReferencedObject(Collector, Reference, Referencer, &Property);
 		return !Reference;
 	}
 	return false;
@@ -4776,7 +4912,7 @@ FORCEINLINE_DEBUGGABLE bool CollectStackReference(FReferenceCollector& Collector
 FORCENOINLINE static void CollectInterfaceReference(FReferenceCollector& Collector, FInterfaceProperty& Property, FScriptInterface& Interface, const UObject* Referencer)
 {
 	// Handle reference synchronously and update interface if reference was nulled out
-	UObject*& Ref = Interface.GetObjectRef();
+	UObject*& Ref = UE::Core::Private::Unsafe::Decay(Interface.GetObjectRef());
 	if (CollectStackReference(Collector, Property, Ref, Referencer))
 	{
 		Interface.SetInterface(nullptr);
@@ -4825,7 +4961,7 @@ void CollectPropertyReferences(FReferenceCollector& Collector, FProperty& Proper
 		}
 		else if (EnumHasAnyFlags(CastFlags, CASTCLASS_FStructProperty))
 		{
-			CollectStructReferences<CollectFlags>(Collector, static_cast<FStructProperty&>(Property).Struct, Value, Referencer);
+			CollectStructReferences<CollectFlags>(Collector, static_cast<FStructProperty&>(Property).Struct.Get(), Value, Referencer);
 		}
 		else if (EnumHasAnyFlags(CastFlags, CASTCLASS_FMapProperty))
 		{	
@@ -4842,6 +4978,10 @@ void CollectPropertyReferences(FReferenceCollector& Collector, FProperty& Proper
 		else if (EnumHasAnyFlags(CastFlags, CASTCLASS_FInterfaceProperty))
 		{	
 			CollectInterfaceReference(Collector, static_cast<FInterfaceProperty&>(Property), *reinterpret_cast<FScriptInterface*>(Value), Referencer);
+		}
+		else if (EnumHasAnyFlags(CastFlags, CASTCLASS_FOptionalProperty))
+		{
+			CollectOptionalReference<CollectFlags>(Collector, static_cast<FOptionalProperty&>(Property), Value, Referencer);
 		}
 		else
 		{
@@ -4901,6 +5041,11 @@ void FReferenceCollector::AddPropertyReferencesWithStructARO(const UScriptStruct
 	CallCollectStructReferences<EPropertyCollectFlags::CallStructARO>(*this, Struct, Instance, ReferencingObject);
 }
 
+void FReferenceCollector::AddPropertyReferencesWithStructARO(const UClass* Class, void* Instance, const UObject* ReferencingObject)
+{
+	CallCollectStructReferences<EPropertyCollectFlags::CallStructARO>(*this, Class, Instance, ReferencingObject);
+}
+
 void FReferenceCollector::AddPropertyReferencesLimitedToObjectProperties(const UStruct* Struct, void* Instance, const UObject* ReferencingObject)
 {
 	CallCollectStructReferences<EPropertyCollectFlags::OnlyObjectProperty>(*this, Struct, Instance, ReferencingObject);
@@ -4921,13 +5066,16 @@ void FReferenceCollector::CreateVerySlowReferenceCollectorArchive()
 
 FArchive& FReferenceCollectorArchive::operator<<(UObject*& Object)
 {
-	Collector.AddStableReference(&Object);
+	Collector.AddStableReference(&ObjectPtrWrap(Object));
 	return *this;
 }
 
 FArchive& FReferenceCollectorArchive::operator<<(FObjectPtr& Object)
 {
-	Collector.AddStableReference(reinterpret_cast<UObject**>(&Object));
+	if (Object.IsResolved())
+	{
+		Collector.AddStableReference(reinterpret_cast<TObjectPtr<UObject>*>(&Object));
+	}
 	return *this;
 }
 
@@ -5043,7 +5191,6 @@ private:
 	 */
 	void AddToObjectList( const UObject* ReferencingObject, const FProperty* ReferencingProperty, UObject* Object )
 	{
-#if ENABLE_GC_DEBUG_OUTPUT
 		// this message is to help track down culprits behind "Object in PIE world still referenced" errors
 		if ( GIsEditor && !GIsPlayInEditorWorld && !CurrentObject->HasAnyFlags(RF_Transient) && Object->RootPackageHasAnyFlags(PKG_PlayInEditor) )
 		{
@@ -5055,7 +5202,6 @@ private:
 				UE_LOG(LogGarbage, Warning, TEXT("  NON-PIE object: %s"), *CurrentObject->GetFullName());
 			}
 		}
-#endif
 
 		// Mark it as reachable.
 		Object->ThisThreadAtomicallyClearedRFUnreachable();
@@ -5076,7 +5222,7 @@ private:
 				{
 					if (!CurrentReferenceInfo)
 					{
-						CurrentReferenceInfo = new(FoundReferencesList->ExternalReferences) FReferencerInformation(CurrentObject);
+						CurrentReferenceInfo = &FoundReferencesList->ExternalReferences.Emplace_GetRef(CurrentObject);
 					}
 					if (InReferencingProperty)
 					{
@@ -5161,7 +5307,7 @@ bool IsReferenced(UObject*& Obj, EObjectFlags KeepFlags, EInternalObjectFlags In
 			else if (OldRef->Referencer->IsIn(Obj))
 			{
 				bReferencedByOuters = true;
-				FReferencerInformation *NewRef = new(FoundReferences->InternalReferences) FReferencerInformation(OldRef->Referencer, OldRef->TotalReferences, OldRef->ReferencingProperties);
+				FReferencerInformation& NewRef = FoundReferences->InternalReferences.Emplace_GetRef(OldRef->Referencer, OldRef->TotalReferences, OldRef->ReferencingProperties);
 				FoundReferences->ExternalReferences.RemoveAt(i);
 				i--;
 			}
@@ -5596,7 +5742,7 @@ namespace UECodeGen_Private
 
 			case EPropertyGenFlags::UInt16:
 			{
-				NewProp = NewFProperty<FUInt16Property, FFInt16PropertyParams>(Outer, *PropBase);
+				NewProp = NewFProperty<FUInt16Property, FUInt16PropertyParams>(Outer, *PropBase);
 			}
 			break;
 
@@ -5608,19 +5754,7 @@ namespace UECodeGen_Private
 
 			case EPropertyGenFlags::UInt64:
 			{
-				NewProp = NewFProperty<FUInt64Property, FFInt64PropertyParams>(Outer, *PropBase);
-			}
-			break;
-
-			case EPropertyGenFlags::UnsizedInt:
-			{
-				NewProp = NewFProperty<FUInt64Property, FUnsizedIntPropertyParams>(Outer, *PropBase);
-			}
-			break;
-
-			case EPropertyGenFlags::UnsizedUInt:
-			{
-				NewProp = NewFProperty<FUInt64Property, FUnsizedFIntPropertyParams>(Outer, *PropBase);
+				NewProp = NewFProperty<FUInt64Property, FUInt64PropertyParams>(Outer, *PropBase);
 			}
 			break;
 
@@ -6081,7 +6215,7 @@ namespace UECodeGen_Private
 		if ((NewClass->ClassFlags & CLASS_Intrinsic) != CLASS_Intrinsic)
 		{
 			check((NewClass->ClassFlags & CLASS_TokenStreamAssembled) != CLASS_TokenStreamAssembled);
-			NewClass->ReferenceTokens.Reset();
+			NewClass->ReferenceSchema.Reset();
 		}
 		NewClass->CreateLinkAndAddChildFunctionsToMap(Params.FunctionLinkArray, Params.NumFunctions);
 
@@ -6143,3 +6277,19 @@ EDataValidationResult CombineDataValidationResults(EDataValidationResult Result1
 
 	return EDataValidationResult::NotValidated;
 }
+
+void FReferenceCollector::AddStableReferenceSetFwd(TSet<FObjectPtr>* Objects)
+{
+	AddStableReferenceSet(reinterpret_cast<TSet<TObjectPtr<UObject>>*>(Objects));
+}
+
+void FReferenceCollector::AddStableReferenceArrayFwd(TArray<FObjectPtr>* Objects)
+{
+	AddStableReferenceArray(reinterpret_cast<TArray<TObjectPtr<UObject>>*>(Objects));
+}
+
+void FReferenceCollector::AddStableReferenceFwd(FObjectPtr* Object)
+{
+	AddStableReference(reinterpret_cast<TObjectPtr<UObject>*>(Object));
+}
+

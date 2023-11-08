@@ -10,6 +10,7 @@
 #include "Templates/RemoveReference.h"
 #include "Templates/SharedPointerFwd.h"
 #include "Templates/TypeCompatibleBytes.h"
+#include "AutoRTFM/AutoRTFM.h"
 #include <atomic>
 #include <type_traits>
 
@@ -114,12 +115,24 @@ namespace SharedPointerInternals
 				// in response to the increment, so there's nothing to order with.
 
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
-				// We do a regular SC increment here because it maps to an _InterlockedIncrement (lock inc).
-				// The codegen for a relaxed fetch_add is actually much worse under MSVC (lock xadd).
-				++SharedReferenceCount;
+				UE_AUTORTFM_OPEN(
+				{
+					// We do a regular SC increment here because it maps to an _InterlockedIncrement (lock inc).
+					// The codegen for a relaxed fetch_add is actually much worse under MSVC (lock xadd).
+					++SharedReferenceCount;
+				});
 #else
-				SharedReferenceCount.fetch_add(1, std::memory_order_relaxed);
+				UE_AUTORTFM_OPEN(
+				{
+					SharedReferenceCount.fetch_add(1, std::memory_order_relaxed);
+				});
 #endif
+
+				// If the transaction would abort, we need to undo adding the shared reference.
+				UE_AUTORTFM_OPENABORT(
+				{
+					ReleaseSharedReference();
+				});
 			}
 			else
 			{
@@ -186,21 +199,24 @@ namespace SharedPointerInternals
 		{
 			if constexpr (Mode == ESPMode::ThreadSafe)
 			{
-				// std::memory_order_acq_rel is used here so that, if we do end up executing the destructor, it's not possible
-				// for side effects from executing the destructor end up being visible before we've determined that the shared
-				// reference count is actually zero.
-
-				int32 OldSharedCount = SharedReferenceCount.fetch_sub(1, std::memory_order_acq_rel);
-				checkSlow(OldSharedCount > 0);
-				if (OldSharedCount == 1)
+				UE_AUTORTFM_OPENCOMMIT(
 				{
-					// Last shared reference was released!  Destroy the referenced object.
-					DestroyObject();
+					// std::memory_order_acq_rel is used here so that, if we do end up executing the destructor, it's not possible
+					// for side effects from executing the destructor end up being visible before we've determined that the shared
+					// reference count is actually zero.
 
-					// No more shared referencers, so decrement the weak reference count by one.  When the weak
-					// reference count reaches zero, this object will be deleted.
-					ReleaseWeakReference();
-				}
+					int32 OldSharedCount = SharedReferenceCount.fetch_sub(1, std::memory_order_acq_rel);
+					checkSlow(OldSharedCount > 0);
+					if (OldSharedCount == 1)
+					{
+						// Last shared reference was released!  Destroy the referenced object.
+						DestroyObject();
+
+						// No more shared referencers, so decrement the weak reference count by one.  When the weak
+						// reference count reaches zero, this object will be deleted.
+						ReleaseWeakReference();
+					}
+				});
 			}
 			else
 			{

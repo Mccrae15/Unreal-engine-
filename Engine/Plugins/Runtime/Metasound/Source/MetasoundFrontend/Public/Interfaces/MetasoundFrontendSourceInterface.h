@@ -22,6 +22,7 @@ namespace Metasound
 			}
 
 			METASOUNDFRONTEND_API const FMetasoundFrontendVersion& GetVersion();
+
 			METASOUNDFRONTEND_API Audio::FParameterInterfacePtr CreateInterface(const UClass& InClass);
 		}
 
@@ -47,6 +48,7 @@ namespace Metasound
 			}
 
 			METASOUNDFRONTEND_API const FMetasoundFrontendVersion& GetVersion();
+
 			METASOUNDFRONTEND_API Audio::FParameterInterfacePtr CreateInterface(const UClass& InClass);
 		}
 
@@ -68,6 +70,7 @@ namespace Metasound
 			}
 
 			METASOUNDFRONTEND_API const FMetasoundFrontendVersion& GetVersion();
+
 			METASOUNDFRONTEND_API Audio::FParameterInterfacePtr CreateInterface(const UClass& InClass);
 
 			class METASOUNDFRONTEND_API FUpdateInterface : public Frontend::IDocumentTransform

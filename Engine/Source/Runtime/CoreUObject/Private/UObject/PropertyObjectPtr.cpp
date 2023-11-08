@@ -56,7 +56,7 @@ void FObjectPtrProperty::StaticSerializeItem(const FObjectPropertyBase* ObjectPr
 	FArchive& UnderlyingArchive = Slot.GetUnderlyingArchive();
 	FObjectPtr* ObjectPtr = (FObjectPtr*)GetPropertyValuePtr(Value);
 	const bool IsHandleResolved = IsObjectHandleResolved(ObjectPtr->GetHandle());
-	UObject* CurrentValue = IsHandleResolved ? ObjectPtr->Get() : nullptr;
+	UObject* CurrentValue = IsHandleResolved && *ObjectPtr ? UE::CoreUObject::Private::ReadObjectHandlePointerNoCheck(ObjectPtr->GetHandle()) : nullptr;
 
 	if (UnderlyingArchive.IsObjectReferenceCollector())
 	{
@@ -77,14 +77,17 @@ void FObjectPtrProperty::StaticSerializeItem(const FObjectPropertyBase* ObjectPr
 		FObjectHandle CurrentHandle = ObjectPtr->GetHandle();
 		if ((OriginalHandle != CurrentHandle) && IsObjectHandleResolved(CurrentHandle))
 		{
-			UObject* ResolvedObject = ObjectPtr->Get();
 	#if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
-			if (ULinkerPlaceholderExportObject* PlaceholderVal = Cast<ULinkerPlaceholderExportObject>(ResolvedObject))
+			if (ObjectPtr->IsA<ULinkerPlaceholderExportObject>())
 			{
+				//resolve the handle with no read to avoid trigger a handle read. 
+				ULinkerPlaceholderExportObject* PlaceholderVal = static_cast<ULinkerPlaceholderExportObject*>(UE::CoreUObject::Private::ReadObjectHandlePointerNoCheck(CurrentHandle));
 				PlaceholderVal->AddReferencingPropertyValue(ObjectProperty, Value);
 			}
-			else if (ULinkerPlaceholderClass* PlaceholderClass = Cast<ULinkerPlaceholderClass>(ResolvedObject))
+			else if (ObjectPtr->IsA<ULinkerPlaceholderClass>())
 			{
+				//resolve the handle with no read to avoid trigger a handle read. 
+				ULinkerPlaceholderClass* PlaceholderClass = static_cast<ULinkerPlaceholderClass*>(UE::CoreUObject::Private::ReadObjectHandlePointerNoCheck(CurrentHandle));
 				PlaceholderClass->AddReferencingPropertyValue(ObjectProperty, Value);
 			}
 			// NOTE: we don't remove this from CurrentValue if it is a 
@@ -132,12 +135,28 @@ bool FObjectPtrProperty::Identical(const void* A, const void* B, uint32 PortFlag
 		return true;
 	}
 
-	// Resolve the object handles and run the deep comparison logic 
-	if ((PortFlags & (PPF_DeepCompareInstances | PPF_DeepComparison)) != 0)
+	if (IsObjectHandleNull(ObjectAHandle) || IsObjectHandleNull(ObjectBHandle))
 	{
-		return FObjectPropertyBase::StaticIdentical(ObjectA.Get(), ObjectB.Get(), PortFlags);
+		return false;
 	}
 
+	// If a deep comparison is required, resolve the object handles and run the deep comparison logic
+	// If a deep comparison is not required, avoid resolving the object handles because resolving declares
+	// a cook dependency.
+	if ((PortFlags & (PPF_DeepCompareInstances | PPF_DeepComparison)) != 0)
+	{
+		bool bPerformDeepComparison = true;
+		if ((PortFlags & PPF_DeepCompareDSOsOnly) != 0)
+		{
+			UClass* ClassA = ObjectA.GetClass();
+			UObject* DSO = ClassA ? ClassA->GetDefaultSubobjectByName(ObjectA.GetFName()) : nullptr;
+			bPerformDeepComparison = DSO != nullptr;
+		}
+		if (bPerformDeepComparison && ObjectA.GetClass() == ObjectB.GetClass() && ObjectA.GetFName() == ObjectB.GetFName())
+		{
+			return FObjectPropertyBase::StaticIdentical(ObjectA.Get(), ObjectB.Get(), PortFlags);
+		}
+	}
 	return false;
 }
 
@@ -159,7 +178,7 @@ UObject* FObjectPtrProperty::GetObjectPropertyValue(const void* PropertyValueAdd
 UObject* FObjectPtrProperty::GetObjectPropertyValue_InContainer(const void* ContainerAddress, int32 ArrayIndex) const
 {
 	UObject* Result = nullptr;
-	GetWrappedUObjectPtrValues_InContainer<FObjectPtr>(&Result, ContainerAddress, ArrayIndex, 1);
+	GetWrappedUObjectPtrValues<FObjectPtr>(&Result, ContainerAddress, EPropertyMemoryAccess::InContainer, ArrayIndex, 1);
 	return Result;
 }
 
@@ -179,7 +198,7 @@ void FObjectPtrProperty::SetObjectPropertyValue_InContainer(void* ContainerAddre
 {
 	if (Value || !HasAnyPropertyFlags(CPF_NonNullable))
 	{
-		SetWrappedUObjectPtrValues_InContainer<FObjectPtr>(ContainerAddress, &Value, ArrayIndex, 1);
+		SetWrappedUObjectPtrValues<FObjectPtr>(ContainerAddress, EPropertyMemoryAccess::InContainer, &Value, ArrayIndex, 1);
 	}
 	else
 	{
@@ -197,12 +216,32 @@ uint32 FObjectPtrProperty::GetValueTypeHashInternal(const void* Src) const
 	return GetTypeHash((FObjectPtr&)GetPropertyValue(Src));
 }
 
+void FObjectPtrProperty::CopySingleValueToScriptVM(void* Dest, const void* Src) const
+{
+	*(UObject**)Dest = ((const FObjectPtr*)Src)->Get();
+}
+
+void FObjectPtrProperty::CopySingleValueFromScriptVM(void* Dest, const void* Src) const
+{
+	*(FObjectPtr*)Dest = *(UObject**)Src;
+}
+
+void FObjectPtrProperty::CopyCompleteValueToScriptVM(void* Dest, const void* Src) const
+{
+	GetWrappedUObjectPtrValues<FObjectPtr>((UObject**)Dest, Src, EPropertyMemoryAccess::Direct, 0, ArrayDim);
+}
+
+void FObjectPtrProperty::CopyCompleteValueFromScriptVM(void* Dest, const void* Src) const
+{
+	SetWrappedUObjectPtrValues<FObjectPtr>(Dest, EPropertyMemoryAccess::Direct, (UObject**)Src, 0, ArrayDim);
+}
+
 void FObjectPtrProperty::CopyCompleteValueToScriptVM_InContainer(void* OutValue, void const* InContainer) const
 {
-	GetWrappedUObjectPtrValues_InContainer<FObjectPtr>((UObject**)OutValue, InContainer, 0, ArrayDim);
+	GetWrappedUObjectPtrValues<FObjectPtr>((UObject**)OutValue, InContainer, EPropertyMemoryAccess::InContainer, 0, ArrayDim);
 }
 
 void FObjectPtrProperty::CopyCompleteValueFromScriptVM_InContainer(void* OutContainer, void const* InValue) const
 {
-	SetWrappedUObjectPtrValues_InContainer<FObjectPtr>(OutContainer, (UObject**)InValue, 0, ArrayDim);
+	SetWrappedUObjectPtrValues<FObjectPtr>(OutContainer, EPropertyMemoryAccess::InContainer, (UObject**)InValue, 0, ArrayDim);
 }

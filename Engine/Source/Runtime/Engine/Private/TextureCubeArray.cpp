@@ -106,7 +106,7 @@ public:
 	/**
 	 * Called when the resource is initialized. This is only called by the rendering thread.
 	 */
-	virtual void InitRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		if (ProxiedResource)
 		{
@@ -127,6 +127,7 @@ public:
 		// Create the RHI texture.
 		const ETextureCreateFlags TexCreateFlags = (Owner->SRGB ? ETextureCreateFlags::SRGB : ETextureCreateFlags::None) | (Owner->bNotOfflineProcessed ? ETextureCreateFlags::None : ETextureCreateFlags::OfflineProcessed);
 		const FString Name = Owner->GetPathName();
+		const static FLazyName ClassName(TEXT("FTextureCubeArrayResource"));
 
 		const FRHITextureCreateDesc Desc =
 			FRHITextureCreateDesc::CreateCubeArray(*Name)
@@ -135,7 +136,9 @@ public:
 			.SetFormat(Owner->GetPixelFormat())
 			.SetNumMips(Owner->GetNumMips())
 			.SetFlags(TexCreateFlags)
-			.SetExtData(Owner->GetPlatformData()->GetExtData());
+			.SetExtData(Owner->GetPlatformData()->GetExtData())
+			.SetClassName(ClassName)
+			.SetOwnerName(GetOwnerName());
 
 		TextureCubeRHI = RHICreateTexture(Desc);
 		TextureRHI = TextureCubeRHI;
@@ -170,9 +173,8 @@ public:
 			AM_Clamp
 		);
 		SamplerStateRHI = GetOrCreateSamplerState(SamplerStateInitializer);
-
-		// Set the greyscale format flag appropriately.
-		bGreyScaleFormat = ( Owner->CompressionSettings == TC_Grayscale || Owner->CompressionSettings == TC_Alpha );
+		
+		bGreyScaleFormat = UE::TextureDefines::ShouldUseGreyScaleEditorVisualization( Owner->CompressionSettings );
 	}
 
 	virtual void ReleaseRHI() override
@@ -327,11 +329,8 @@ UTextureCubeArray* UTextureCubeArray::CreateTransient(int32 InSizeX, int32 InSiz
 		// Allocate first mipmap.
 		int32 NumBlocksX = InSizeX / GPixelFormats[InFormat].BlockSizeX;
 		int32 NumBlocksY = InSizeY / GPixelFormats[InFormat].BlockSizeY;
-		FTexture2DMipMap* Mip = new FTexture2DMipMap();
+		FTexture2DMipMap* Mip = new FTexture2DMipMap(InSizeX, InSizeY, InArraySize * 6);
 		NewTexture->GetPlatformData()->Mips.Add(Mip);
-		Mip->SizeX = InSizeX;
-		Mip->SizeY = InSizeY;
-		Mip->SizeZ = InArraySize * 6;
 		Mip->BulkData.Lock(LOCK_READ_WRITE);
 		Mip->BulkData.Realloc((int64)GPixelFormats[InFormat].BlockBytes * NumBlocksX * NumBlocksY * 6 * InArraySize);
 		Mip->BulkData.Unlock();
@@ -601,7 +600,7 @@ ENGINE_API bool UTextureCubeArray::CheckArrayTexturesCompatibility()
 	for (int32 TextureIndex = 0; TextureIndex < SourceTextures.Num(); ++TextureIndex)
 	{
 		// Do not create array till all texture slots are filled.
-		if (!SourceTextures[TextureIndex])
+		if (!SourceTextures[TextureIndex] || ! SourceTextures[TextureIndex]->Source.IsValid())
 		{
 			return false;
 		}
@@ -626,6 +625,8 @@ ENGINE_API bool UTextureCubeArray::CheckArrayTexturesCompatibility()
 		const FTextureSource& TextureSourceCmp = SourceTextures[TextureCmpIndex]->Source;
 		const FString TextureNameCmp = SourceTextures[TextureCmpIndex]->GetName();
 		const ETextureSourceFormat SourceFormatCmp = TextureSourceCmp.GetFormat();
+
+		check( TextureSourceCmp.IsValid() );
 
 		if (TextureSourceCmp.GetSizeX() != SizeX || TextureSourceCmp.GetSizeY() != SizeY)
 		{
@@ -660,6 +661,8 @@ ENGINE_API bool UTextureCubeArray::UpdateSourceFromSourceTextures(bool bCreating
 	Modify();
 
 	const FTextureSource& InitialSource = SourceTextures[0]->Source;
+	check( InitialSource.IsValid() ); // checked by CheckArrayTexturesCompatibility
+
 	// Format and format size.
 	const EPixelFormat PixelFormat = SourceTextures[0]->GetPixelFormat();
 	const ETextureSourceFormat Format = InitialSource.GetFormat();
@@ -709,6 +712,7 @@ ENGINE_API bool UTextureCubeArray::UpdateSourceFromSourceTextures(bool bCreating
 		{
 			const uint64 Size = MipSizeBytes[MipIndex];
 			const uint64 CheckSize = SourceTextures[SourceTexIndex]->Source.CalcMipSize(MipIndex);
+			check( SourceTextures[SourceTexIndex]->Source.IsValid() ); // checked by CheckArrayTexturesCompatibility
 			check(Size == CheckSize);
 
 			RefCubeData.Reset();
@@ -838,6 +842,16 @@ ENGINE_API void UTextureCubeArray::PostEditChangeProperty(FPropertyChangedEvent&
 
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(UTextureCubeArray, SourceTextures))
 	{
+		for (int i=0;i<SourceTextures.Num();i++)
+		{
+			UTextureCube * SourceTexture = SourceTextures[i];
+			if (SourceTexture && !SourceTexture->Source.IsValid())
+			{
+				UE_LOG(LogTexture, Warning, TEXT("Texture has no Source, cannot be used [%s]"), *SourceTexture->GetFullName());
+				SourceTextures[i] = nullptr;
+			}
+		}
+
 		// Empty SourceTextures, remove any resources if present.
 		if (SourceTextures.Num() == 0)
 		{

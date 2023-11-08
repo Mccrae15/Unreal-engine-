@@ -35,7 +35,7 @@ enum EStereoscopicEye : int32
 	eSSE_RIGHT_EYE_SIDE = 3,
 };
 
-class ENGINE_API IStereoRendering
+class IStereoRendering
 {
 public:
 	virtual ~IStereoRendering() { }
@@ -87,7 +87,7 @@ public:
 	/**
 	* Static helper. Return true if this is a stereoscopic view
 	*/
-	static bool IsStereoEyeView(const FSceneView& View);
+	static ENGINE_API bool IsStereoEyeView(const FSceneView& View);
 
 	/**
 	* Static helper. Return true if this pass is for a view we do all the work for (ie this view can't borrow from another)
@@ -100,7 +100,7 @@ public:
 	/**
 	* Static helper. Return true if primary view
 	*/
-	static bool IsAPrimaryView(const FSceneView& View);
+	static ENGINE_API bool IsAPrimaryView(const FSceneView& View);
 
 	/**
 	* Static helper. Return true if this pass is for a view for which we share some work done for eSSP_PRIMARY (ie borrow some intermediate state from that view)
@@ -113,7 +113,7 @@ public:
 	/**
 	* Static helper. Return true if secondary view
 	*/
-	static bool IsASecondaryView(const FSceneView& View);
+	static ENGINE_API bool IsASecondaryView(const FSceneView& View);
 
 	/**
 	 * Return the index of the view that is used for selecting LODs
@@ -153,6 +153,14 @@ public:
 	 */
 	virtual void CalculateStereoViewOffset(const int32 ViewIndex, FRotator& ViewRotation, const float WorldToMeters, FVector& ViewLocation) = 0;
 
+	// BEGIN META SECTION - Multi-View Per View Viewports / Render Areas
+	/**
+	 * Calculates the scissor rect given the view rect. When multi-view per view viewports (MVPVV) are enabled the rect will be smaller than the viewport rect.
+	 * Default case is to pass back the viewport rect as scissor rect. 
+	 */
+	virtual void CalculateScissorRect(const int32 ViewIndex, const FIntRect& ViewRect, FIntRect& OutRect) { OutRect = ViewRect; }
+	// END META SECTION - Multi-View Per View Viewports / Render Areas
+
 	/**
 	 * Gets a projection matrix for the device, given the specified view index
 	 * Specifying eSSE_MONOSCOPIC for the view index returns a center projection matrix encompassing all views
@@ -183,4 +191,8 @@ public:
 	virtual bool OverrideFinalPostprocessSettings(struct FPostProcessSettings* OverridePostProcessingSettings, const enum EStereoscopicPass StereoPassType, const int32 StereoViewIndex, float& BlendWeight) { return false; }
 	virtual void EndFinalPostprocessSettings(struct FPostProcessSettings* FinalPostProcessingSettings, const enum EStereoscopicPass StereoPassType, const int32 StereoViewIndex) {}
 
+	/**
+	* Static helper. Return true if the Start in VR setting is set to true, or if we have the "-vr" commandline argument
+	*/
+	static ENGINE_API bool IsStartInVR();
 };

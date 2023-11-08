@@ -89,6 +89,12 @@ namespace OculusXRHMD
 		virtual void ClearSplashes() override;
 		virtual void AddSplash(const FSplashDesc& Splash) override;
 		virtual bool IsShown() const override { return bIsShown; }
+#if !UE_VERSION_OLDER_THAN(5, 3, 0)
+		virtual bool IsPlayingLoadingMovie() const override
+		{
+			return false;
+		}
+#endif
 
 	protected:
 		void DoShow();

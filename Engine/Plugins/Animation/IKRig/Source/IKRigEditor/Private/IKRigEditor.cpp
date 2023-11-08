@@ -7,18 +7,20 @@
 #include "PropertyEditorModule.h"
 #include "PropertyEditorDelegates.h"
 #include "EditorModeRegistry.h"
-#include "IKRigDefinition.h"
+#include "Rig/IKRigDefinition.h"
 #include "RigEditor/AssetTypeActions_IKRigDefinition.h"
 #include "RetargetEditor/AssetTypeActions_IKRetargeter.h"
 #include "RetargetEditor/IKRetargetCommands.h"
 #include "RetargetEditor/IKRetargetDefaultMode.h"
 #include "RetargetEditor/IKRetargetDetails.h"
 #include "RetargetEditor/IKRetargetEditPoseMode.h"
+#include "RetargetEditor/IKRetargeterThumbnailRenderer.h"
 #include "RigEditor/IKRigCommands.h"
 #include "RigEditor/IKRigEditMode.h"
 #include "RigEditor/IKRigSkeletonCommands.h"
 #include "RigEditor/IKRigDetailCustomizations.h"
 #include "RigEditor/IKRigEditorController.h"
+#include "RigEditor/IKRigThumbnailRenderer.h"
 
 DEFINE_LOG_CATEGORY(LogIKRigEditor);
 
@@ -43,7 +45,9 @@ void FIKRigEditor::StartupModule()
 	ToolsModule.RegisterAssetTypeActions(IKRetargeterAssetAction.ToSharedRef());
 
 	// extend the content browser menu
-	FAssetTypeActions_IKRetargeter::ExtendAnimSequenceToolMenu();
+	FAssetTypeActions_IKRetargeter::ExtendAnimAssetMenusForBatchRetargeting();
+	FAssetTypeActions_IKRetargeter::ExtendIKRigMenuToMakeRetargeter();
+	FAssetTypeActions_IKRigDefinition::ExtendSkeletalMeshMenuToMakeIKRig();
 
 	// register custom editor modes
 	FEditorModeRegistry::Get().RegisterMode<FIKRigEditMode>(FIKRigEditMode::ModeName, LOCTEXT("IKRigEditMode", "IKRig"), FSlateIcon(), false);
@@ -70,6 +74,10 @@ void FIKRigEditor::StartupModule()
 	// custom retargeter global details
 	PropertyEditorModule.RegisterCustomClassLayout(UIKRetargetGlobalSettings::StaticClass()->GetFName(), FOnGetDetailCustomizationInstance::CreateStatic(&FRetargetGlobalSettingsCustomization::MakeInstance));
 	ClassesToUnregisterOnShutdown.Add(UIKRetargetGlobalSettings::StaticClass()->GetFName());
+
+	// register a thumbnail renderer for the assets
+	UThumbnailManager::Get().RegisterCustomRenderer(UIKRigDefinition::StaticClass(), UIKRigThumbnailRenderer::StaticClass());
+	UThumbnailManager::Get().RegisterCustomRenderer(UIKRetargeter::StaticClass(), UIKRetargeterThumbnailRenderer::StaticClass());
 }
 
 void FIKRigEditor::ShutdownModule()
@@ -96,6 +104,12 @@ void FIKRigEditor::ShutdownModule()
 		{
 			ToolsModule.UnregisterAssetTypeActions(IKRetargeterAssetAction.ToSharedRef());
 		}
+	}
+
+	if (UObjectInitialized())
+	{
+		UThumbnailManager::Get().UnregisterCustomRenderer(UIKRigDefinition::StaticClass());
+		UThumbnailManager::Get().UnregisterCustomRenderer(UIKRetargeter::StaticClass());
 	}
 }
 

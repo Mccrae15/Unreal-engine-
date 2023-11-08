@@ -15,32 +15,17 @@ TSharedRef<IDetailCustomization> FNiagaraLightRendererDetails::MakeInstance()
 
 void FNiagaraLightRendererDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 {
-	// Categories to put first
+	static const FName OrderedCategories[] =
 	{
-		static const FName CategoriesToCollapse[] =
-		{
-			FName("Light Rendering"),
-			FName("Bindings"),
-		};
+		FName("Light Rendering"),
+		FName("Bindings"),
+	};
 
-		for (const FName& Category : CategoriesToCollapse)
-		{
-			IDetailCategoryBuilder& CategoryBuilder = DetailBuilder.EditCategory(Category);
-		}
-	}
-
-	// Collapse default categories
+	static const FName CollapsedCategories[] =
 	{
-		static const FName CategoriesToCollapse[] =
-		{
-			FName("Rendering"),
-			FName("Scalability"),
-		};
+		FName("Rendering"),
+		FName("Scalability"),
+	};
 
-		for (const FName& Category : CategoriesToCollapse)
-		{
-			IDetailCategoryBuilder& CategoryBuilder = DetailBuilder.EditCategory(Category);
-			CategoryBuilder.InitiallyCollapsed(true);
-		}
-	}
+	SetupCategories(DetailBuilder, MakeArrayView(OrderedCategories), MakeArrayView(CollapsedCategories));
 }

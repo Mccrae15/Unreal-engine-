@@ -2,22 +2,17 @@
 
 #include "NiagaraDataInterfaceAsyncGpuTrace.h"
 
-#include "GlobalDistanceFieldParameters.h"
 #include "NiagaraAsyncGpuTraceHelper.h"
-#include "NiagaraComponent.h"
+#include "NiagaraCompileHashVisitor.h"
 #include "NiagaraDataInterfaceUtilities.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
-#include "NiagaraGpuComputeDispatch.h"
 #include "NiagaraSimStageData.h"
 #include "NiagaraShaderParametersBuilder.h"
-#include "NiagaraStats.h"
+#include "NiagaraSystem.h"
 #include "NiagaraTypes.h"
-#include "NiagaraWorldManager.h"
-#include "RenderResource.h"
-#include "Shader.h"
-#include "ShaderCore.h"
-#include "ShaderCompilerCore.h"
-#include "ShaderParameterUtils.h"
+#include "NiagaraSystemInstance.h"
+#include "SceneManagement.h"
+#include "RenderGraphBuilder.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceAsyncGpuTrace)
 
@@ -149,7 +144,7 @@ bool UNiagaraDataInterfaceAsyncGpuTrace::InitPerInstanceData(void* PerInstanceDa
 		return true;
 	}
 	
-	FNiagaraDataInterfaceUtilities::ForEachGpuFunction(this, InSystemInstance, [&](const FNiagaraDataInterfaceGeneratedFunction Function)
+	FNiagaraDataInterfaceUtilities::ForEachGpuFunction(this, InSystemInstance, [&](const UNiagaraScript* Script, const FNiagaraDataInterfaceGeneratedFunction& Function)
 	{
 		if (Function.DefinitionName == NDIAsyncGpuTraceLocal::IssueAsyncRayTraceName
 			|| Function.DefinitionName == NDIAsyncGpuTraceLocal::CreateAsyncRayTraceName
@@ -542,6 +537,25 @@ void UNiagaraDataInterfaceAsyncGpuTrace::PostEditChangeProperty(struct FProperty
 		{
 			MarkRenderDataDirty();
 		}
+	}
+}
+
+void UNiagaraDataInterfaceAsyncGpuTrace::GetFeedback(UNiagaraSystem* InAsset, UNiagaraComponent* InComponent, TArray<FNiagaraDataInterfaceError>& OutErrors, TArray<FNiagaraDataInterfaceFeedback>& OutWarnings, TArray<FNiagaraDataInterfaceFeedback>& OutInfo)
+{
+	Super::GetFeedback(InAsset, InComponent, OutErrors, OutWarnings, OutInfo);
+	IConsoleVariable* EnableRayTrace = IConsoleManager::Get().FindConsoleVariable(TEXT("fx.Niagara.AsyncGpuTrace.HWRayTraceEnabled"));
+	IConsoleVariable* EnableDistanceField = IConsoleManager::Get().FindConsoleVariable(TEXT("fx.Niagara.AsyncGpuTrace.GlobalSdfEnabled"));
+	if (TraceProvider == ENDICollisionQuery_AsyncGpuTraceProvider::HWRT && (EnableRayTrace == nullptr || !EnableRayTrace->GetBool() || !IsRayTracingEnabled()))
+	{
+		FText ErrorDescription = LOCTEXT("NiagaraAsyncGpuTraceNoHWRayTraceWarning", "Hardware raytracing is currently disabled");
+		FText ErrorSummary = LOCTEXT("NiagaraAsyncGpuTraceNoHWRayTraceWarningSummary", "The data interface is configured to use hardware raytracing, which is currently disabled.\nThe data interface will NOT work with the current project settings.\n\nTo enable ray tracing support, all of the following must be true:\n* Default RHI is DirectX 12 in the project settings\n* Ray Tracing is enabled in the project settings\n* CVar fx.Niagara.AsyncGpuTrace.HWRayTraceEnabled is set to 1\n* CVar r.Raytracing.Enable is set to 1");
+		OutWarnings.Emplace(ErrorDescription, ErrorSummary, FNiagaraDataInterfaceFix());
+	}
+	if (TraceProvider == ENDICollisionQuery_AsyncGpuTraceProvider::GSDF && (EnableDistanceField == nullptr || !EnableDistanceField->GetBool() || !DoesProjectSupportDistanceFields()))
+	{
+		FText ErrorDescription = LOCTEXT("NiagaraAsyncGpuTraceNoDFTraceWarning", "Distance field tracing is currently disabled");
+		FText ErrorSummary = LOCTEXT("NiagaraAsyncGpuTraceNoDFWarningSummary", "The data interface is configured to use distance fielde tracing, which is currently disabled.\nThe data interface will NOT work with the current project settings.\n\nAside from project settings, check the following cvars:\n* fx.Niagara.AsyncGpuTrace.GlobalSdfEnabled\n* r.GenerateMeshDistanceFields\n* r.DistanceFields.SupportEvenIfHardwareRayTracingSupported (only if ray tracing is disabled)");
+		OutWarnings.Emplace(ErrorDescription, ErrorSummary, FNiagaraDataInterfaceFix());
 	}
 }
 #endif

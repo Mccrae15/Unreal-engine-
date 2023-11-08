@@ -12,7 +12,6 @@
 #include "MuR/MeshBufferSet.h"
 #include "MuR/ModelPrivate.h"
 #include "MuR/MutableTrace.h"
-#include "MuR/OpImagePixelFormat.h"
 #include "MuR/Operations.h"
 #include "MuR/Ptr.h"
 #include "MuR/RefCounted.h"
@@ -27,10 +26,6 @@
 #include "MuT/ASTOpMeshDifference.h"
 #include "MuT/ASTOpMeshMorph.h"
 #include "MuT/ASTOpLayoutFromMesh.h"
-
-#include <cstdint>
-#include <memory>
-#include <utility>
 
 
 namespace mu
@@ -49,7 +44,7 @@ namespace mu
         m_visited.SetNum( program.m_opAddress.Num() );
         if ( m_visited.Num() )
         {
-            memset( &m_visited[0], 0, m_visited.Num() );
+            FMemory::Memset( &m_visited[0], 0, m_visited.Num() );
         }
     }
 
@@ -95,7 +90,7 @@ namespace mu
                     OP_TYPE thisOpType = m_program.GetOpType(item.Value);
                     if ( m_opType == thisOpType )
                     {
-                        auto args = m_program.GetOpArgs<OP::ResourceConstantArgs>(item.Value);
+						OP::ResourceConstantArgs args = m_program.GetOpArgs<OP::ResourceConstantArgs>(item.Value);
                         if ( m_constant == args.value )
                         {
                             found = true;
@@ -178,8 +173,9 @@ namespace mu
                 case OP_TYPE::ME_CONDITIONAL:
                 case OP_TYPE::LA_CONDITIONAL:
                 case OP_TYPE::IN_CONDITIONAL:
+				case OP_TYPE::ED_CONDITIONAL:
                 {
-                    auto args = program.GetOpArgs<OP::ConditionalArgs>(at);
+					OP::ConditionalArgs args = program.GetOpArgs<OP::ConditionalArgs>(at);
 
                     // If the constant is present in only one of the 2 branches
                     bool foundYes = m_constSearch.Run( args.yes  );
@@ -208,6 +204,7 @@ namespace mu
                 case OP_TYPE::IM_SWITCH:
                 case OP_TYPE::ME_SWITCH:
                 case OP_TYPE::LA_SWITCH:
+				case OP_TYPE::ED_SWITCH:
                 {
 					const uint8_t* data = program.GetOpArgsPointer(at);
 					
@@ -235,7 +232,7 @@ namespace mu
                          &&
                          program.GetOpType(at) == m_opType )
                     {
-                        auto args = program.GetOpArgs<OP::MeshConstantArgs>(at);
+						OP::MeshConstantArgs args = program.GetOpArgs<OP::MeshConstantArgs>(at);
                         if ( args.value == m_constant )
                         {
                             // Accumulate the currently relevant parameters
@@ -248,7 +245,7 @@ namespace mu
                     }
                     else if ( program.GetOpType(at) == m_opType )
                     {
-                        auto args = program.GetOpArgs<OP::ResourceConstantArgs>(at);
+						OP::ResourceConstantArgs args = program.GetOpArgs<OP::ResourceConstantArgs>(at);
                         if ( args.value == m_constant )
                         {
                             // Accumulate the currently relevant parameters
@@ -336,7 +333,7 @@ namespace mu
             case OP_TYPE::IM_CONSTANT:
             {
                 // Remove unsupported formats
-                auto op = dynamic_cast<const ASTOpConstantResource*>(node.get());
+				const ASTOpConstantResource* op = dynamic_cast<const ASTOpConstantResource*>(node.get());
                 if (!m_supportedFormats.count(op))
                 {
 					TArray<bool> initial;
@@ -571,14 +568,14 @@ namespace mu
                 uint64_t newState = currentSemantics;
                 newState |= (UINT64_C(1)<<MBS_VERTEXINDEX);
                 RecurseWithState( op->source.child(), newState );
-                for( auto& r: op->removes )
+                for( const TPair<ASTChild, ASTChild>& r: op->removes )
                 {
                     RecurseWithState( r.Value.child(), newState );
                 }
                 break;
              }
 
-            case OP_TYPE::ME_MORPH2:
+            case OP_TYPE::ME_MORPH:
             {
                 recurse = false;
 
@@ -587,13 +584,7 @@ namespace mu
                 uint64_t newState = currentSemantics;
                 newState |= (UINT64_C(1)<<MBS_VERTEXINDEX);
                 RecurseWithState( op->Base.child(), newState );
-                for ( int32 o=0; o<op->Targets.Num(); ++o)
-                {
-                    if (op->Targets[o])
-                    {
-                        RecurseWithState( op->Targets[o].child(), newState );
-                    }
-                }
+                RecurseWithState( op->Target.child(), newState );
                 break;
              }
 
@@ -742,7 +733,6 @@ namespace mu
         AccumulateImageFormatsAST accFormat;
         accFormat.Run( roots );
 
-		// TEMP: Disabled for RLE bug
         // See if we can convert some constants to more efficient formats
         ASTOp::Traverse_BottomUp_Unique_NonReentrant( roots, [&](Ptr<ASTOp>& n)
         {
@@ -750,30 +740,56 @@ namespace mu
             {
 				ASTOpConstantResource* typed = dynamic_cast<ASTOpConstantResource*>(n.get());
                 Ptr<const Image> pOld = static_cast<const Image*>(typed->GetValue().get());
-                if ( accFormat.m_supportedFormats[typed][(size_t)EImageFormat::IF_L_UBIT_RLE] )
+
+				FImageOperator ImOp = FImageOperator::GetDefault();
+
+				// See if there is a better format for this image
+				FVector4f PlainColor;
+				if ( pOld->IsPlainColour(PlainColor) )
+				{
+					// It is more efficient to just have an instruction for it instead, to avoid the overhead
+					// of data loading. 
+					// Warning This eliminates the mips. \TODO: Add support for mips in plaincolour instruction?
+					Ptr<ASTOpFixed> NewColor = new ASTOpFixed;
+					NewColor->op.type = OP_TYPE::CO_CONSTANT;
+					NewColor->op.args.ColourConstant.value[0] = PlainColor[0];
+					NewColor->op.args.ColourConstant.value[1] = PlainColor[1];
+					NewColor->op.args.ColourConstant.value[2] = PlainColor[2];
+					NewColor->op.args.ColourConstant.value[3] = PlainColor[3];
+
+					Ptr<ASTOpFixed> NewPlain = new ASTOpFixed;
+					NewPlain->op.type = OP_TYPE::IM_PLAINCOLOUR;
+					NewPlain->SetChild( NewPlain->op.args.ImagePlainColour.colour, NewColor );
+					NewPlain->op.args.ImagePlainColour.format = pOld->GetFormat();
+					NewPlain->op.args.ImagePlainColour.size[0] = pOld->GetSizeX();
+					NewPlain->op.args.ImagePlainColour.size[1] = pOld->GetSizeY();
+					NewPlain->op.args.ImagePlainColour.LODs = 1;
+
+					ASTOp::Replace(n, NewPlain);
+
+				}
+				else if ( accFormat.m_supportedFormats[typed][(size_t)EImageFormat::IF_L_UBIT_RLE] )
                 {
-                    ImagePtr pNew =
-                        ImagePixelFormat( imageCompressionQuality, pOld.get(), EImageFormat::IF_L_UBIT_RLE );
+                    ImagePtr pNew = ImOp.ImagePixelFormat( imageCompressionQuality, pOld.get(), EImageFormat::IF_L_UBIT_RLE );
 
                     // Only replace if the compression was worth!
                     size_t oldSize = pOld->GetDataSize();
                     size_t newSize = pNew->GetDataSize();
-                    if (float(oldSize) > float(newSize) * options.m_minRLECompressionGain)
+                    if (float(oldSize) > float(newSize) * options.MinRLECompressionGain)
                     {
-                        typed->SetValue(pNew, options.m_useDiskCache);
+                        typed->SetValue(pNew, options.bUseDiskCache);
                     }
                 }
                 else if ( accFormat.m_supportedFormats[typed][(size_t)EImageFormat::IF_L_UBYTE_RLE] )
                 {
-                    ImagePtr pNew =
-                        ImagePixelFormat( imageCompressionQuality, pOld.get(), EImageFormat::IF_L_UBYTE_RLE );
+                    ImagePtr pNew = ImOp.ImagePixelFormat( imageCompressionQuality, pOld.get(), EImageFormat::IF_L_UBYTE_RLE );
 
                     // Only replace if the compression was worth!
                     size_t oldSize = pOld->GetDataSize();
                     size_t newSize = pNew->GetDataSize();
-                    if (float(oldSize) > float(newSize) * options.m_minRLECompressionGain)
+                    if (float(oldSize) > float(newSize) * options.MinRLECompressionGain)
                     {
-                        typed->SetValue(pNew, options.m_useDiskCache);
+                        typed->SetValue(pNew, options.bUseDiskCache);
                     }
                 }
             }
@@ -792,7 +808,7 @@ namespace mu
 				ASTOpConstantResource* typed = dynamic_cast<ASTOpConstantResource*>(n.get());
                 Ptr<Mesh> pMesh = static_cast<const Mesh*>(typed->GetValue().get())->Clone();
                 MeshRemoveUnusedBufferSemantics( pMesh.get(), meshSemanticsVisitor.m_requiredSemantics[typed]);
-                typed->SetValue(pMesh, options.m_useDiskCache);
+                typed->SetValue(pMesh, options.bUseDiskCache);
             }
         });
 

@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "AssetRegistry/PackageReader.h"
 #include "Containers/Map.h"
 #include "Containers/Set.h"
 #include "Containers/UnrealString.h"
@@ -9,6 +10,7 @@
 #include "CookOnTheSide/CookOnTheFlyServer.h" // ECookTickFlags
 #include "DerivedDataRequestOwner.h"
 #include "HAL/LowLevelMemTracker.h"
+#include "HAL/PlatformMath.h"
 #include "HAL/Platform.h"
 #include "Logging/TokenizedMessage.h"
 #include "Misc/AssertionMacros.h"
@@ -26,6 +28,7 @@ namespace UE::Cook { struct FBeginCookConfigSettings; }
 namespace UE::Cook { struct FCookByTheBookOptions; }
 namespace UE::Cook { struct FCookOnTheFlyOptions; }
 namespace UE::Cook { struct FInitializeConfigSettings; }
+namespace UE::Cook { struct FInstigator; }
 
 FCbWriter& operator<<(FCbWriter& Writer, const UE::Cook::FBeginCookConfigSettings& Value);
 bool LoadFromCompactBinary(FCbFieldView Field, UE::Cook::FBeginCookConfigSettings& OutValue);
@@ -40,6 +43,8 @@ bool LoadFromCompactBinary(FCbFieldView Field, UE::Cook::FInitializeConfigSettin
 #define DEBUG_COOKONTHEFLY 0
 
 LLM_DECLARE_TAG(Cooker_CachedPlatformData);
+
+inline constexpr uint32 ExpectedMaxNumPlatforms = 32;
 
 /** A BaseKeyFuncs for Maps and Sets with a quicker hash function for pointers than TDefaultMapKeyFuncs */
 template<typename KeyType>
@@ -102,12 +107,20 @@ namespace UE::Cook
 	};
 
 	/* The Result of a Cook */
-	enum class ECookResult
+	enum class ECookResult : uint8
 	{
-		Unseen,		/* The package has not finished cooking, or if it was previously cooked its result was removed due to e.g. modification of the package. */
-		Succeeded,  /* The package was saved with success. */
-		Failed,     /* The package was processed but failed to load or save. */
-		Skipped     /* For reporting the ECookResults specific to a request: the package was skipped due to e.g. already being cooked or being in NeverCook packages. */
+		/* CookResults have not yet been set */
+		NotAttempted,
+		/* The package was saved with success. */
+		Succeeded,
+		/* The package was processed but SavePackage failed. */
+		Failed,
+		/** The package is a NeverCook package that needs to be added to cookresults for dependency tracking. */
+		NeverCookPlaceholder,
+		/** No information for this platform (used in CookWorker replication) */
+		Invalid,
+		Count,
+		NumBits= FPlatformMath::ConstExprCeilLogTwo(ECookResult::Count),
 	};
 
 	/** Return type for functions called reentrantly that can succeed,fail,or be incomplete */
@@ -134,7 +147,8 @@ namespace UE::Cook
 
 	enum class ESuppressCookReason : uint8
 	{
-		InvalidSuppressCookReason,
+		Invalid, // Used by containers for values not in container, not used in cases for passing between containers
+		NotSuppressed,
 		AlreadyCooked,
 		NeverCook,
 		DoesNotExistInWorkspaceDomain,
@@ -148,7 +162,9 @@ namespace UE::Cook
 		CookCanceled,
 		MultiprocessAssignmentError,
 		RetractedByCookDirector,
+		CookFilter,
 	};
+	const TCHAR* LexToString(UE::Cook::ESuppressCookReason Reason);
 
 	/** The type of callback for External Requests that needs to be executed within the Scheduler's lock. */
 	typedef TUniqueFunction<void()> FSchedulerCallback;
@@ -198,15 +214,28 @@ namespace UE::Cook
 		FCookerTimer(EForever);
 		FCookerTimer(ENoWait);
 
-		double GetTimeTillNow() const;
-		double GetEndTimeSeconds() const;
-		bool IsTimeUp() const;
-		bool IsTimeUp(double CurrentTimeSeconds) const;
-		double GetTimeRemain() const;
+		float GetTickTimeSlice() const;
+		double GetTickEndTimeSeconds() const;
+		bool IsTickTimeUp() const;
+		bool IsTickTimeUp(double CurrentTimeSeconds) const;
+		double GetTickTimeRemain() const;
+		double GetTickTimeTillNow() const;
+
+		float GetActionTimeSlice() const;
+		void SetActionTimeSlice(float InTimeSlice);
+		void SetActionStartTime();
+		void SetActionStartTime(double CurrentTimeSeconds);
+		double GetActionEndTimeSeconds() const;
+		bool IsActionTimeUp() const;
+		bool IsActionTimeUp(double CurrentTimeSeconds) const;
+		double GetActionTimeRemain() const;
+		double GetActionTimeTillNow() const;
 
 	public:
-		const double StartTime;
-		const float TimeSlice;
+		const double TickStartTime;
+		double ActionStartTime;
+		const float TickTimeSlice;
+		float ActionTimeSlice;
 	};
 
 	/** Temporary-lifetime data about the current tick of the cooker. */
@@ -302,7 +331,6 @@ namespace UE::Cook
 		int32 SoftGCDenominator;
 		TArray<FString> ConfigSettingDenyList;
 		TMap<FName, int32> MaxAsyncCacheForType; // max number of objects of a specific type which are allowed to async cache at once
-		bool bHybridIterativeDebug = false;
 		bool bUseSoftGC = false;
 
 		friend FCbWriter& ::operator<<(FCbWriter& Writer, const UE::Cook::FInitializeConfigSettings& Value);
@@ -318,6 +346,7 @@ namespace UE::Cook
 
 		FString CookShowInstigator;
 		bool bHybridIterativeEnabled = true;
+		bool bHybridIterativeAllowAllClasses = false;
 		TArray<FName> NeverCookPackageList;
 		TFastPointerMap<const ITargetPlatform*, TSet<FName>> PlatformSpecificNeverCookPackages;
 
@@ -365,22 +394,6 @@ namespace UE::Cook
 
 bool LexTryParseString(FPlatformMemoryStats::EMemoryPressureStatus& OutValue, FStringView Text);
 FString LexToString(FPlatformMemoryStats::EMemoryPressureStatus Value);
-
-inline void RouteBeginCacheForCookedPlatformData(UObject* Obj, const ITargetPlatform* TargetPlatform)
-{
-	LLM_SCOPE_BYTAG(Cooker_CachedPlatformData);
-	UE_SCOPED_TEXT_COOKTIMER(*WriteToString<128>(GetClassTraceScope(Obj), TEXT("_BeginCacheForCookedPlatformData")));
-	UE_SCOPED_COOK_STAT(Obj->GetPackage()->GetFName(), EPackageEventStatType::BeginCacheForCookedPlatformData);
-	Obj->BeginCacheForCookedPlatformData(TargetPlatform);
-}
-
-inline bool RouteIsCachedCookedPlatformDataLoaded(UObject* Obj, const ITargetPlatform* TargetPlatform)
-{
-	LLM_SCOPE_BYTAG(Cooker_CachedPlatformData);
-	UE_SCOPED_TEXT_COOKTIMER(*WriteToString<128>(GetClassTraceScope(Obj), TEXT("_IsCachedCookedPlatformDataLoaded")));
-	UE_SCOPED_COOK_STAT(Obj->GetPackage()->GetFName(), EPackageEventStatType::IsCachedCookedPlatformDataLoaded);
-	return Obj->IsCachedCookedPlatformDataLoaded(TargetPlatform);
-}
 
 //////////////////////////////////////////////////////////////////////////
 // Cook by the book options
@@ -432,7 +445,6 @@ public:
 	bool							bAllowUncookedAssetReferences = false; // this is a flag for dlc, will allow DLC to be cook when the fixed base might be missing references.
 	bool							bSkipHardReferences = false;
 	bool							bSkipSoftReferences = false;
-	bool							bFullLoadAndSave = false;
 	bool							bCookAgainstFixedBase = false;
 	bool							bDlcLoadMainAssetRegistry = false;
 
@@ -459,6 +471,59 @@ struct FCookOnTheFlyOptions
 
 	friend FCbWriter& ::operator<<(FCbWriter& Writer, const UE::Cook::FCookOnTheFlyOptions& Value);
 	friend bool ::LoadFromCompactBinary(FCbFieldView Field, UE::Cook::FCookOnTheFlyOptions& Value);
+};
+
+/** Enum used by FDiscoveredPlatformSet to specify what source it will use for the set of platforms. */
+enum class EDiscoveredPlatformSet
+{
+	EmbeddedList,
+	EmbeddedBitField,
+	CopyFromInstigator,
+	Count,
+};
+
+/**
+ * A provider of a set of platforms to mark reachable for a discovered package. It might be an embedded list or
+ * it might hold instructions for where to get the platforms from other context data.
+ */
+struct FDiscoveredPlatformSet
+{
+	FDiscoveredPlatformSet(EDiscoveredPlatformSet InSource = EDiscoveredPlatformSet::EmbeddedList);
+	explicit FDiscoveredPlatformSet(TConstArrayView<const ITargetPlatform*> InPlatforms);
+	explicit FDiscoveredPlatformSet(const TBitArray<>& InOrderedPlatformBits);
+	~FDiscoveredPlatformSet();
+	FDiscoveredPlatformSet(const FDiscoveredPlatformSet& Other);
+	FDiscoveredPlatformSet(FDiscoveredPlatformSet&& Other);
+	FDiscoveredPlatformSet& operator=(const FDiscoveredPlatformSet& Other);
+	FDiscoveredPlatformSet& operator=(FDiscoveredPlatformSet&& Other);
+
+	EDiscoveredPlatformSet GetSource() const { return Source; }
+
+	void RemapTargetPlatforms(const TMap<ITargetPlatform*, ITargetPlatform*>& Remap);
+	void OnRemoveSessionPlatform(const ITargetPlatform* Platform, int32 RemovedIndex);
+	void OnPlatformAddedToSession(const ITargetPlatform* Platform);
+	TConstArrayView<const ITargetPlatform*> GetPlatforms(UCookOnTheFlyServer& COTFS,
+		FInstigator* Instigator, TConstArrayView<const ITargetPlatform*> OrderedPlatforms,
+		TArray<const ITargetPlatform*, TInlineAllocator<ExpectedMaxNumPlatforms>>* OutBuffer);
+	/** If the current type is EmbeddedBitField, change it to EmbeddedList. */
+	void ConvertFromBitfield(TConstArrayView<const ITargetPlatform*> OrderedPlatforms);
+	/** If the current type is EmbeddedList, change it to EmbeddedBitfield. Asserts if the type is already EmbeddedBitfield. */
+	void ConvertToBitfield(TConstArrayView<const ITargetPlatform*> OrderedPlatforms);
+
+private:
+	void DestructUnion();
+	void ConstructUnion();
+	friend void WriteToCompactBinary(FCbWriter& Writer, const FDiscoveredPlatformSet& Value,
+		TConstArrayView<const ITargetPlatform*> OrderedSessionPlatforms);
+	friend bool LoadFromCompactBinary(FCbFieldView Field, FDiscoveredPlatformSet& OutValue,
+		TConstArrayView<const ITargetPlatform*> OrderedSessionPlatforms);
+
+	union 
+	{
+		TArray<const ITargetPlatform*> Platforms;
+		TBitArray<> OrderedPlatformBits;
+	};
+	EDiscoveredPlatformSet Source;
 };
 
 }
@@ -529,8 +594,59 @@ bool LoadFromCompactBinary(FCbFieldView Field, FBeginCookContextForWorker& Value
 void LogCookerMessage(const FString& MessageText, EMessageSeverity::Type Severity);
 LLM_DECLARE_TAG(Cooker);
 
-inline constexpr uint32 ExpectedMaxNumPlatforms = 32;
-#define REMAPPED_PLUGINS TEXT("RemappedPlugins")
+#define REMAPPED_PLUGINS TEXTVIEW("RemappedPlugins")
 extern float GCookProgressWarnBusyTime;
 
 inline constexpr float TickCookableObjectsFrameTime = .100f;
+
+/**
+ * Scoped struct to run a function when leaving the scope. The same purpose as ON_SCOPE_EXIT, 
+ * but it can also be triggered early.
+ */
+struct FOnScopeExit
+{
+public:
+	explicit FOnScopeExit(TUniqueFunction<void()>&& InExitFunction)
+		:ExitFunction(MoveTemp(InExitFunction))
+	{
+	}
+	~FOnScopeExit()
+	{
+		ExitEarly();
+	}
+	void ExitEarly()
+	{
+		if (ExitFunction)
+		{
+			ExitFunction();
+			ExitFunction.Reset();
+		}
+	}
+	void Abandon()
+	{
+		ExitFunction.Reset();
+	}
+private:
+	TUniqueFunction<void()> ExitFunction;
+};
+/**
+ * The linker results for a single realm of a package save
+ * (e.g. the main package or the optional package that extends the main package for optionally packaged data)
+ */
+struct FPackageReaderResults
+{
+	TMap<FSoftObjectPath, FPackageReader::FObjectData> Exports;
+	TMap<FSoftObjectPath, FPackageReader::FObjectData> Imports;
+	TMap<FName, bool> SoftPackageReferences;
+	bool bValid = false;
+};
+
+/** The linker results of saving a package. A SavePackage can have multiple outputs (for e.g. optional realm). */
+struct FMultiPackageReaderResults
+{
+	FPackageReaderResults Realms[2];
+	ESavePackageResult Result;
+};
+
+/** Save the package and read the LinkerTables of its saved data. */
+FMultiPackageReaderResults GetSaveExportsAndImports(UPackage* Package, UObject* Asset, FSavePackageArgs SaveArgs);

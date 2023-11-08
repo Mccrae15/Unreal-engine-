@@ -2,9 +2,11 @@
 
 #include "ConversionUtils/VolumeToDynamicMesh.h"
 
+#include "CompGeom/PolygonTriangulation.h"
 #include "ConstrainedDelaunay2.h"
 #include "Polygon2.h"
 #include "DynamicMesh/DynamicMesh3.h"
+#include "DynamicMesh/MeshNormals.h"
 #include "DynamicMesh/MeshTransforms.h"
 #include "GameFramework/Volume.h"
 #include "MeshBoundaryLoops.h"
@@ -21,6 +23,28 @@
 #endif
 
 using namespace UE::Geometry;
+
+namespace VolumeToDynamicMeshLocals
+{
+	/** Attempts to use delaunay triangulation to triangulate the polygon, and falls back to ear clipping if that fails. */
+	TArray<FIndex3i> TriangulatePolygon(const FPolygon2d& ToTriangulate)
+	{
+		// This first part is equivalent to calling  ConstrainedDelaunayTriangulate<double>(ToTriangulate), except
+		// it allows us to properly check for failure.
+		TConstrainedDelaunay2<double> DelaunayTriangulation;
+		DelaunayTriangulation.FillRule = TConstrainedDelaunay2<double>::EFillRule::Positive;
+		DelaunayTriangulation.Add(ToTriangulate);
+		if (DelaunayTriangulation.Triangulate() && DelaunayTriangulation.Triangles.Num() > 0)
+		{
+			return DelaunayTriangulation.Triangles;
+		}
+		
+		// If delaunay triangulation fails, use ear clipping.
+		TArray<FIndex3i> TrianglesOut;
+		PolygonTriangulation::TriangulateSimplePolygon(ToTriangulate.GetVertices(), TrianglesOut);
+		return TrianglesOut;
+	}
+}
 
 namespace UE {
 namespace Conversion {
@@ -65,6 +89,8 @@ void BrushComponentToDynamicMesh(UBrushComponent* Component, UE::Geometry::FDyna
 
 void BrushToDynamicMesh(UModel& BrushModel, UE::Geometry::FDynamicMesh3& Mesh, const FVolumeToMeshOptions& Options)
 {
+	using namespace VolumeToDynamicMeshLocals;
+
 	Mesh.Clear();
 	if (Options.bSetGroups)
 	{
@@ -106,7 +132,7 @@ void BrushToDynamicMesh(UModel& BrushModel, UE::Geometry::FDynamicMesh3& Mesh, c
 		// polygon, but the polygons we get are oriented opposite of what we want (they
 		// are clockwise if the normal is towards us), so this ends up giving us the triangle
 		// orientation that we want.
-		TArray<FIndex3i> PolyTriangles = ConstrainedDelaunayTriangulate<double>(ToTriangulate);
+		TArray<FIndex3i> PolyTriangles = TriangulatePolygon(ToTriangulate);
 
 		int32 GroupID = FDynamicMesh3::InvalidID;
 		if (Options.bSetGroups)
@@ -146,7 +172,7 @@ void BrushToDynamicMesh(UModel& BrushModel, UE::Geometry::FDynamicMesh3& Mesh, c
 			// polygon, but the polygons we get are oriented opposite of what we want (they
 			// are clockwise if the normal is towards us), so this ends up giving us the triangle
 			// orientation that we want.
-			TArray<FIndex3i> PolyTriangles = ConstrainedDelaunayTriangulate<double>(ToTriangulate);
+			TArray<FIndex3i> PolyTriangles = TriangulatePolygon(ToTriangulate);
 
 			int32 GroupID = FDynamicMesh3::InvalidID;
 			if (Options.bSetGroups)
@@ -191,6 +217,14 @@ void BrushToDynamicMesh(UModel& BrushModel, UE::Geometry::FDynamicMesh3& Mesh, c
 		}
 
 		Mesh.CompactInPlace();
+	}
+
+	if (Options.bGenerateNormals)
+	{
+		Mesh.EnableAttributes();
+		FDynamicMeshNormalOverlay* Normals = Mesh.Attributes()->PrimaryNormals();
+		FMeshNormals::InitializeOverlayTopologyFromFaceGroups(&Mesh, Normals);
+		FMeshNormals::QuickRecomputeOverlayNormals(Mesh);
 	}
 }
 

@@ -1,10 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "PipelineCacheUtilities.h"
+
 #if UE_WITH_PIPELINE_CACHE_UTILITIES
+#include "Async/TaskGraphInterfaces.h"
+#include "Misc/Compression.h"
 #include "Misc/SecureHash.h"
 #include "Serialization/NameAsStringIndexProxyArchive.h"
 #include "Serialization/VarInt.h"
-#include "HAL/FileManagerGeneric.h"
 #include "PipelineFileCache.h"
 #include "Serialization/MemoryWriter.h"
 #include "Serialization/MemoryReader.h"
@@ -12,6 +14,7 @@
 #include "Serialization/JsonSerializer.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Misc/FileHelper.h"
+#include "ShaderCodeLibrary.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogPipelineCacheUtilities, Log, All);
 
@@ -455,8 +458,6 @@ bool UE::PipelineCacheUtilities::SaveStableKeysFile(const FStringView& Filename,
 	return true;
 }
 
-extern const RHI_API uint32 FPipelineCacheFileFormatCurrentVersion;
-
 bool UE::PipelineCacheUtilities::SaveStablePipelineCacheFile(const FString& OutputFilename, const TArray<FPermsPerPSO>& StableResults, const TArray<FStableShaderKeyAndValue>& StableShaderKeyIndexTable)
 {
 	TUniquePtr<FArchive> Archive(IFileManager::Get().CreateFileWriter(*OutputFilename));
@@ -592,14 +593,14 @@ bool UE::PipelineCacheUtilities::LoadStablePipelineCacheFile(const FString& File
 
 	if (Header.Magic != SupportedHeader.Magic)
 	{
-		UE_LOG(LogPipelineCacheUtilities, Warning, TEXT("Rejecting %s, wrong magic (0x%llx vs expected 0x%llx)."), *Filename, Header.Magic, SupportedHeader.Magic);
+		UE_LOG(LogPipelineCacheUtilities, Warning, TEXT("Rejecting %s, wrong magic (0x%llx vs expected 0x%llx)."), *Filename, int(Header.Magic), int(SupportedHeader.Magic));
 		return false;
 	}
 
 	// start restrictive, as the format isn't really forward compatible, nor needs to be
 	if (Header.Version != SupportedHeader.Version)
 	{
-		UE_LOG(LogPipelineCacheUtilities, Warning, TEXT("Rejecting %s, old version (%d vs expected %d)."), *Filename, Header.Version, SupportedHeader.Version);
+		UE_LOG(LogPipelineCacheUtilities, Warning, TEXT("Rejecting %s, old version (%d vs expected %d)."), *Filename, int(Header.Version), int(SupportedHeader.Version));
 		return false;
 	}
 
@@ -808,14 +809,12 @@ bool UE::PipelineCacheUtilities::LoadStablePipelineCacheFile(const FString& File
 		}
 		else if (NewPSO.Type == FPipelineCacheFileFormatPSO::DescriptorType::RayTracing)
 		{
-			// not yet supported
-			++OutPSOsRejected;
-
-			static bool bLogged = false;
-			if (!bLogged)
+			for (const UE::PipelineCacheUtilities::FPermutation& Perm : PermGroup.Permutations)
 			{
-				UE_LOG(LogPipelineCacheUtilities, Display, TEXT("Raytracing PSOs aren't yet supported in the PSO stable cache.\nFilename:%s PSO:%s\nNOTE: Only first rejected PSO is reported."), *Filename, *NewPSO.ToStringReadable());
-				bLogged = true;
+				const EShaderFrequency Frequency = NewPSO.RayTracingDesc.Frequency;
+				NewPSO.RayTracingDesc.ShaderHash = HashesForStableKeys[Perm.Slots[Frequency]];
+
+				AddNewPSO(NewPSO);
 			}
 		}
 	}
@@ -929,7 +928,7 @@ bool UE::PipelineCacheUtilities::LoadChunkInfo(const FString& Filename, const FS
 		if (FileVersion != static_cast<int32>(UE::PipelineCacheUtilities::Private::FPSOCacheChunkInfo::EVersion::Current))
 		{
 			UE_LOG(LogPipelineCacheUtilities, Warning, TEXT("Rejecting cache chunk info file %s: expected version %d, got unsupported version %d."),
-				*Filename, UE::PipelineCacheUtilities::Private::FPSOCacheChunkInfo::EVersion::Current, FileVersion);
+						 *Filename, int(UE::PipelineCacheUtilities::Private::FPSOCacheChunkInfo::EVersion::Current), FileVersion);
 			return false;
 		}
 	}

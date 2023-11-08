@@ -11,12 +11,12 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Reflection;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using EpicGames.OIDC;
 using UnrealGameSync.Forms;
+using Microsoft.Extensions.Logging.Abstractions;
 
 #nullable enable
 
@@ -24,55 +24,59 @@ namespace UnrealGameSync
 {
 	class ProgramApplicationContext : ApplicationContext
 	{
-		SynchronizationContext _mainThreadSynchronizationContext;
+		readonly SynchronizationContext _mainThreadSynchronizationContext;
 
-		IPerforceSettings _defaultPerforceSettings;
+		readonly IPerforceSettings _defaultPerforceSettings;
 		UpdateMonitor _updateMonitor;
-		string? _apiUrl;
-		DirectoryReference _dataFolder;
-		DirectoryReference _cacheFolder;
-		bool _restoreState;
-		string? _updateSpawn;
-		bool _preview;
+		readonly string? _apiUrl;
+		readonly DirectoryReference _dataFolder;
+		readonly DirectoryReference _cacheFolder;
+		readonly bool _restoreState;
+		readonly string? _updateSpawn;
+		readonly bool _preview;
 		bool _isClosing;
-		string? _uri;
+		readonly string? _uri;
 
-		IServiceProvider _serviceProvider;
-		ILogger _logger;
-		UserSettings _settings;
+		readonly IServiceProvider _serviceProvider;
+		readonly ILogger _logger;
+		readonly UserSettings _settings;
 		ActivationListener _activationListener;
 
 		Container _components = new Container();
 		NotifyIcon _notifyIcon;
-		ContextMenuStrip _notifyMenu;
-		ToolStripMenuItem _notifyMenuOpenUnrealGameSync;
-		ToolStripSeparator _notifyMenuOpenUnrealGameSyncSeparator;
-		ToolStripMenuItem _notifyMenuSyncNow;
-		ToolStripMenuItem _notifyMenuLaunchEditor;
-		ToolStripSeparator _notifyMenuExitSeparator;
-		ToolStripMenuItem _notifyMenuExit;
+#pragma warning disable CA2213 // warning CA2213: 'ProgramApplicationContext' contains field '_notifyMenuOpenUnrealGameSync' that is of IDisposable type 'ToolStripMenuItem', but it is never disposed. Change the Dispose method on 'ProgramApplicationContext' to call Close or Dispose on this field.
+		// Disposed via _components
+		readonly ContextMenuStrip _notifyMenu;
+		readonly ToolStripMenuItem _notifyMenuOpenUnrealGameSync;
+		readonly ToolStripSeparator _notifyMenuOpenUnrealGameSyncSeparator;
+		readonly ToolStripMenuItem _notifyMenuSyncNow;
+		readonly ToolStripMenuItem _notifyMenuLaunchEditor;
+		readonly ToolStripSeparator _notifyMenuExitSeparator;
+		readonly ToolStripMenuItem _notifyMenuExit;
+#pragma warning restore CA2213
 
 		CancellationTokenSource _startupCancellationSource = new CancellationTokenSource();
-		Task _startupTask;
+		readonly Task _startupTask;
 		ModalTaskWindow? _startupWindow;
+#pragma warning disable CA2213 // warning CA2213: 'ProgramApplicationContext' contains field '_mainWindowInstance' that is of IDisposable type 'MainWindow?', but it is never disposed. Change the Dispose method on 'ProgramApplicationContext' to call Close or Dispose on this field.
 		MainWindow? _mainWindowInstance;
+#pragma warning restore CA2213
 
-		ITokenStore? _tokenStore;
-		OidcTokenManager? _oidcTokenManager;
+		WindowsFormsSynchronizationContext? _synchronizationContext;
 
 		public ProgramApplicationContext(IPerforceSettings defaultPerforceSettings, UpdateMonitor updateMonitor, string? apiUrl, DirectoryReference dataFolder, EventWaitHandle activateEvent, bool restoreState, string? updateSpawn, string? projectFileName, bool preview, IServiceProvider serviceProvider, string? uri)
 		{
-			this._defaultPerforceSettings = defaultPerforceSettings;
-			this._updateMonitor = updateMonitor;
-			this._apiUrl = apiUrl;
-			this._dataFolder = dataFolder;
-			this._cacheFolder = DirectoryReference.Combine(dataFolder, "Cache");
-			this._restoreState = restoreState;
-			this._updateSpawn = updateSpawn;
-			this._preview = preview;
-			this._serviceProvider = serviceProvider;
-			this._logger = serviceProvider.GetRequiredService<ILogger<ProgramApplicationContext>>();
-			this._uri = uri;
+			_defaultPerforceSettings = defaultPerforceSettings;
+			_updateMonitor = updateMonitor;
+			_apiUrl = apiUrl;
+			_dataFolder = dataFolder;
+			_cacheFolder = DirectoryReference.Combine(dataFolder, "Cache");
+			_restoreState = restoreState;
+			_updateSpawn = updateSpawn;
+			_preview = preview;
+			_serviceProvider = serviceProvider;
+			_logger = serviceProvider.GetRequiredService<ILogger<ProgramApplicationContext>>();
+			_uri = uri;
 
 			// Create the directories
 			DirectoryReference.CreateDirectory(dataFolder);
@@ -82,7 +86,8 @@ namespace UnrealGameSync
 			// back to the main thread at any time.
 			if(SynchronizationContext.Current == null)
 			{
-				SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+				_synchronizationContext = new WindowsFormsSynchronizationContext();
+				SynchronizationContext.SetSynchronizationContext(_synchronizationContext);
 			}
 
 			// Capture the main thread's synchronization context for callbacks
@@ -93,7 +98,7 @@ namespace UnrealGameSync
 			if(!String.IsNullOrEmpty(projectFileName))
 			{
 				string fullProjectFileName = Path.GetFullPath(projectFileName);
-				if(!_settings.OpenProjects.Any(x => x.LocalPath != null && String.Compare(x.LocalPath, fullProjectFileName, StringComparison.InvariantCultureIgnoreCase) == 0))
+				if(!_settings.OpenProjects.Any(x => x.LocalPath != null && String.Equals(x.LocalPath, fullProjectFileName, StringComparison.OrdinalIgnoreCase)))
 				{
 					_settings.OpenProjects.Add(new UserSelectedProjectSettings(null, null, UserSelectedProjectType.Local, null, fullProjectFileName));
 				}
@@ -189,9 +194,13 @@ namespace UnrealGameSync
 			List<(UserSelectedProjectSettings, ModalTask<OpenProjectInfo>)> startupTasks = new List<(UserSelectedProjectSettings, ModalTask<OpenProjectInfo>)>();
 			foreach (UserSelectedProjectSettings projectSettings in _settings.OpenProjects)
 			{
-				ILogger<OpenProjectInfo> logger = serviceProvider.GetRequiredService<ILogger<OpenProjectInfo>>();
-				Task<OpenProjectInfo> startupTask = Task.Run(() => OpenProjectInfo.CreateAsync(defaultPerforceSettings, projectSettings, _settings, logger, _startupCancellationSource.Token), _startupCancellationSource.Token);
-				startupTasks.Add((projectSettings, new ModalTask<OpenProjectInfo>(startupTask)));
+				if (IsValidProject(projectSettings, _logger))
+				{
+					ILogger<OpenProjectInfo> logger = serviceProvider.GetRequiredService<ILogger<OpenProjectInfo>>();
+					OidcTokenManager oidcTokenManager = serviceProvider.GetRequiredService<OidcTokenManager>();
+					Task<OpenProjectInfo> startupTask = Task.Run(() => OpenProjectInfo.CreateAsync(defaultPerforceSettings, projectSettings, _settings, oidcTokenManager, logger, _startupCancellationSource.Token), _startupCancellationSource.Token);
+					startupTasks.Add((projectSettings, new ModalTask<OpenProjectInfo>(startupTask)));
+				}
 			}
 			_startupTask = Task.Run(() => WaitForStartupTasks(startupTasks));
 
@@ -211,6 +220,20 @@ namespace UnrealGameSync
 				_startupWindow.Activate();
 			}
 			_startupWindow.FormClosed += (s, e) => OnStartupComplete(startupTasks);
+		}
+
+		static bool IsValidProject(UserSelectedProjectSettings projectSettings, ILogger logger)
+		{
+			try
+			{
+				bool valid = String.IsNullOrEmpty(projectSettings.LocalPath) || File.Exists(projectSettings.LocalPath);
+				return valid;
+			}
+			catch
+			{
+				logger.LogWarning("Invalid project: {Project}", projectSettings);
+				return false;
+			}
 		}
 
 		static async Task WaitForStartupTasks(List<(UserSelectedProjectSettings, ModalTask<OpenProjectInfo>)> startupTasks)
@@ -239,9 +262,9 @@ namespace UnrealGameSync
 
 		private UserSelectedProjectSettings UpgradeSelectedProjectSettings(UserSelectedProjectSettings project)
 		{
-			if (project.ServerAndPort == null || String.Compare(project.ServerAndPort, _defaultPerforceSettings.ServerAndPort, StringComparison.OrdinalIgnoreCase) == 0)
+			if (project.ServerAndPort == null || String.Equals(project.ServerAndPort, _defaultPerforceSettings.ServerAndPort, StringComparison.OrdinalIgnoreCase))
 			{
-				if (project.UserName == null || String.Compare(project.UserName, _defaultPerforceSettings.UserName, StringComparison.OrdinalIgnoreCase) == 0)
+				if (project.UserName == null || String.Equals(project.UserName, _defaultPerforceSettings.UserName, StringComparison.OrdinalIgnoreCase))
 				{
 					project = new UserSelectedProjectSettings(null, null, project.Type, project.ClientPath, project.LocalPath);
 				}
@@ -258,57 +281,6 @@ namespace UnrealGameSync
 			// Clear out the cache folder
 			Utility.ClearPrintCache(_cacheFolder);
 
-			_tokenStore = TokenStoreFactory.CreateTokenStore();
-			List<(DirectoryInfo, DirectoryInfo?)> configurationLocations = new List<(DirectoryInfo, DirectoryInfo?)>();
-			List<string> allowedProviders = new List<string>();
-			foreach ((UserSelectedProjectSettings, ModalTask<OpenProjectInfo>) StartupTask in startupTasks)
-			{
-				try
-				{
-
-					ConfigFile ConfigFile = StartupTask.Item2.Result.LatestProjectConfigFile;
-					if (ConfigFile == null)
-					{
-						continue;
-					}
-
-					ConfigSection ProviderSection = ConfigFile.FindSection("OIDCProvider");
-					if (ProviderSection == null)
-					{
-						continue;
-					}
-
-					string[] oidcAllowedProviders = ProviderSection.GetValues("OidcProviderAllowList", Array.Empty<string>());
-					if (oidcAllowedProviders.Length == 0)
-					{
-						continue;
-					}
-
-					allowedProviders.AddRange(oidcAllowedProviders);
-					
-					ProjectInfo projectInfo = StartupTask.Item2.Result.ProjectInfo;
-					configurationLocations.Add((projectInfo.EngineDir.ToDirectoryInfo(), projectInfo.ProjectDir?.ToDirectoryInfo()));
-				}
-				catch (Exception)
-				{
-					// ignore any projects that failed to load
-				}
-			}
-
-			_oidcTokenManager = OidcTokenManager.CreateTokenManager(
-				ProviderConfigurationFactory.MergeConfiguration(configurationLocations), 
-				_tokenStore,
-				allowedProviders
-			);
-			// Verify that none of the projects we are opening needs a OIDC login, if they do prompt for the login
-			if (_oidcTokenManager?.HasUnfinishedLogin() ?? false)
-			{
-				OidcLoginWindow loginDialog = new OidcLoginWindow(_oidcTokenManager);
-				loginDialog.ShowDialog();
-
-				_tokenStore.Save();
-			}
-
 			// Get the application path
 			string originalExe = Assembly.GetExecutingAssembly().Location;
 			if (Path.GetExtension(originalExe).Equals(".dll", StringComparison.OrdinalIgnoreCase))
@@ -321,8 +293,9 @@ namespace UnrealGameSync
 			}
 
 			// Create the main window 
-			_mainWindowInstance = new MainWindow(_updateMonitor, _apiUrl, _dataFolder, _cacheFolder, _restoreState, _updateSpawn ?? originalExe, _preview, startupTasks, _defaultPerforceSettings, _serviceProvider, _settings, _uri, _oidcTokenManager);
-			if(visible)
+			_mainWindowInstance = new MainWindow(_updateMonitor, _apiUrl, _dataFolder, _updateSpawn ?? originalExe, _preview, startupTasks, _defaultPerforceSettings, _serviceProvider, _settings, _uri);
+			_components.Add(_mainWindowInstance);
+			if (visible)
 			{
 				_mainWindowInstance.Show();
 				if(!_restoreState)
@@ -333,7 +306,7 @@ namespace UnrealGameSync
 			_mainWindowInstance.FormClosed += MainWindowInstance_FormClosed;
 		}
 
-		private void MainWindowInstance_FormClosed(object sender, FormClosedEventArgs e)
+		private void MainWindowInstance_FormClosed(object? sender, FormClosedEventArgs e)
 		{
 			ExitThread();
 		}
@@ -416,9 +389,15 @@ namespace UnrealGameSync
 				_startupCancellationSource.Dispose();
 				_startupCancellationSource = null!;
 			}
+
+			if (_synchronizationContext != null)
+			{
+				_synchronizationContext.Dispose();
+				_synchronizationContext = null;
+			}
 		}
 
-		private void NotifyIcon_MouseDown(object sender, MouseEventArgs e)
+		private void NotifyIcon_MouseDown(object? sender, MouseEventArgs e)
 		{
 			// Have to set up this stuff here, because the menu is laid out before Opening() is called on it after mouse-up.
 			bool canSyncNow = _mainWindowInstance != null && _mainWindowInstance.CanSyncNow();
@@ -428,46 +407,28 @@ namespace UnrealGameSync
 			_notifyMenuExitSeparator.Visible = canSyncNow || canLaunchEditor;
 
 			// Show the startup window, if not already visible
-			if(_startupWindow != null)
-			{
-				_startupWindow.Show();
-			}
+			_startupWindow?.Show();
 		}
 
 		private void NotifyIcon_DoubleClick(object? sender, EventArgs e)
 		{
-			if(_mainWindowInstance != null)
-			{
-				_mainWindowInstance.ShowAndActivate();
-			}
+			_mainWindowInstance?.ShowAndActivate();
 		}
 
 		private void NotifyMenu_OpenUnrealGameSync_Click(object? sender, EventArgs e)
 		{
-			if(_startupWindow != null)
-			{
-				_startupWindow.ShowAndActivate();
-			}
-			if(_mainWindowInstance != null)
-			{
-				_mainWindowInstance.ShowAndActivate();
-			}
+			_startupWindow?.ShowAndActivate();
+			_mainWindowInstance?.ShowAndActivate();
 		}
 
 		private void NotifyMenu_SyncNow_Click(object? sender, EventArgs e)
 		{
-			if(_mainWindowInstance != null)
-			{
-				_mainWindowInstance.SyncLatestChange();
-			}
+			_mainWindowInstance?.SyncLatestChange();
 		}
 
 		private void NotifyMenu_LaunchEditor_Click(object? sender, EventArgs e)
 		{
-			if(_mainWindowInstance != null)
-			{
-				_mainWindowInstance.LaunchEditor();
-			}
+			_mainWindowInstance?.LaunchEditor();
 		}
 
 		private void NotifyMenu_Exit_Click(object? sender, EventArgs e)

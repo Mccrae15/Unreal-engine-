@@ -1,20 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraSpriteRendererProperties.h"
+#include "Materials/Material.h"
 #include "NiagaraRenderer.h"
 #include "NiagaraConstants.h"
+#include "NiagaraGPUSortInfo.h"
 #include "NiagaraRendererSprites.h"
 #include "NiagaraBoundsCalculatorHelper.h"
 #include "NiagaraCustomVersion.h"
 #include "NiagaraEmitterInstance.h"
 #include "NiagaraEmitter.h"
-#include "NiagaraScriptSourceBase.h"
 #include "NiagaraSystem.h"
 
 #include "Engine/Texture2D.h"
 #include "Internationalization/Internationalization.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Modules/ModuleManager.h"
+#include "UObject/UE5MainStreamObjectVersion.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraSpriteRendererProperties)
 
@@ -22,6 +24,7 @@
 #include "DerivedDataCacheInterface.h"
 #include "Materials/MaterialExpressionTextureSample.h"
 #include "Materials/MaterialExpressionTextureSampleParameter.h"
+#include "NiagaraModule.h"
 #include "Widgets/Images/SImage.h"
 #include "Styling/SlateIconFinder.h"
 #include "Widgets/SWidget.h"
@@ -50,57 +53,50 @@ FCookStatsManager::FAutoRegisterCallback NiagaraCutoutCookStats::RegisterCookSta
 
 UNiagaraSpriteRendererProperties::UNiagaraSpriteRendererProperties()
 	: Material(nullptr)
-	, SourceMode(ENiagaraRendererSourceDataMode::Particles)
 	, MaterialUserParamBinding(FNiagaraTypeDefinition(UMaterialInterface::StaticClass()))
-	, Alignment(ENiagaraSpriteAlignment::Unaligned)
-	, FacingMode(ENiagaraSpriteFacingMode::FaceCamera)
-	, PivotInUVSpace(0.5f, 0.5f)
-	, SortMode(ENiagaraSortMode::None)
-	, SubImageSize(1.0f, 1.0f)
 	, bSubImageBlend(false)
 	, bRemoveHMDRollInVR(false)
 	, bSortOnlyWhenTranslucent(true)
-	, MinFacingCameraBlendDistance(0.0f)
-	, MaxFacingCameraBlendDistance(0.0f)
 #if WITH_EDITORONLY_DATA
 	, BoundingMode(BVC_EightVertices)
 	, AlphaThreshold(0.1f)
 #endif // WITH_EDITORONLY_DATA
 {
-	AttributeBindings.Reserve(27);
+	AttributeBindings =
+	{
+		// NOTE: These bindings' indices have to align to their counterpart in ENiagaraSpriteVFLayout
+		&PositionBinding,
+		&ColorBinding,
+		&VelocityBinding,
+		&SpriteRotationBinding,
+		&SpriteSizeBinding,
+		&SpriteFacingBinding,
+		&SpriteAlignmentBinding,
+		&SubImageIndexBinding,
+		&DynamicMaterialBinding,
+		&DynamicMaterial1Binding,
+		&DynamicMaterial2Binding,
+		&DynamicMaterial3Binding,
+		&CameraOffsetBinding,
+		&UVScaleBinding,
+		&PivotOffsetBinding,
+		&MaterialRandomBinding,
+		&CustomSortingBinding,
+		&NormalizedAgeBinding,
 
-	// NOTE: These bindings' indices have to align to their counterpart in ENiagaraSpriteVFLayout
-	AttributeBindings.Add(&PositionBinding);
-	AttributeBindings.Add(&ColorBinding);
-	AttributeBindings.Add(&VelocityBinding);
-	AttributeBindings.Add(&SpriteRotationBinding);
-	AttributeBindings.Add(&SpriteSizeBinding);
-	AttributeBindings.Add(&SpriteFacingBinding);
-	AttributeBindings.Add(&SpriteAlignmentBinding);
-	AttributeBindings.Add(&SubImageIndexBinding);
-	AttributeBindings.Add(&DynamicMaterialBinding);
-	AttributeBindings.Add(&DynamicMaterial1Binding);
-	AttributeBindings.Add(&DynamicMaterial2Binding);
-	AttributeBindings.Add(&DynamicMaterial3Binding);
-	AttributeBindings.Add(&CameraOffsetBinding);
-	AttributeBindings.Add(&UVScaleBinding);
-	AttributeBindings.Add(&PivotOffsetBinding);
-	AttributeBindings.Add(&MaterialRandomBinding);
-	AttributeBindings.Add(&CustomSortingBinding);
-	AttributeBindings.Add(&NormalizedAgeBinding);
+		// These bindings are only actually used with accurate motion vectors (indices still need to align)
+		&PrevPositionBinding,
+		&PrevVelocityBinding,
+		&PrevSpriteRotationBinding,
+		&PrevSpriteSizeBinding,
+		&PrevSpriteFacingBinding,
+		&PrevSpriteAlignmentBinding,
+		&PrevCameraOffsetBinding,
+		&PrevPivotOffsetBinding,
 
-	// These bindings are only actually used with accurate motion vectors (indices still need to align)
-	AttributeBindings.Add(&PrevPositionBinding);
-	AttributeBindings.Add(&PrevVelocityBinding);
-	AttributeBindings.Add(&PrevSpriteRotationBinding);
-	AttributeBindings.Add(&PrevSpriteSizeBinding);
-	AttributeBindings.Add(&PrevSpriteFacingBinding);
-	AttributeBindings.Add(&PrevSpriteAlignmentBinding);
-	AttributeBindings.Add(&PrevCameraOffsetBinding);
-	AttributeBindings.Add(&PrevPivotOffsetBinding);
-
-	// The remaining bindings are not associated with attributes in the VF layout
-	AttributeBindings.Add(&RendererVisibilityTagBinding);
+		// The remaining bindings are not associated with attributes in the VF layout
+		&RendererVisibilityTagBinding,
+	};
 }
 
 FNiagaraRenderer* UNiagaraSpriteRendererProperties::CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const FNiagaraSystemInstanceController& InController)
@@ -133,6 +129,20 @@ void UNiagaraSpriteRendererProperties::GetUsedMaterials(const FNiagaraEmitterIns
 #endif
 
 	OutMaterials.Add(MaterialInterface ? MaterialInterface : ToRawPtr(Material));
+}
+
+void UNiagaraSpriteRendererProperties::CollectPSOPrecacheData(FPSOPrecacheParamsList& OutParams)
+{
+	const FVertexFactoryType* VFType = GetVertexFactoryType();
+	UMaterialInterface* MaterialInterface = ToRawPtr(Material);
+
+	if (MaterialInterface)
+	{
+		FPSOPrecacheParams& PSOPrecacheParams = OutParams.AddDefaulted_GetRef();
+		PSOPrecacheParams.MaterialInterface = MaterialInterface;
+		// Spite VF is the same for MVF and non-MVF cases
+		PSOPrecacheParams.VertexFactoryDataList.Add(FPSOPrecacheVertexFactoryData(VFType));
+	}
 }
 
 const FVertexFactoryType* UNiagaraSpriteRendererProperties::GetVertexFactoryType() const
@@ -199,11 +209,19 @@ void UNiagaraSpriteRendererProperties::Serialize(FStructuredArchive::FRecord Rec
 {
 	FArchive& Ar = Record.GetUnderlyingArchive();
 	Ar.UsingCustomVersion(FNiagaraCustomVersion::GUID);
+	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
 	const int32 NiagaraVersion = Ar.CustomVer(FNiagaraCustomVersion::GUID);
+	const int32 UE5MainVersion = Ar.CustomVer(FUE5MainStreamObjectVersion::GUID);
 
 	if (Ar.IsLoading() && (NiagaraVersion < FNiagaraCustomVersion::DisableSortingByDefault))
 	{
 		SortMode = ENiagaraSortMode::ViewDistance;
+	}
+
+	if (Ar.IsLoading() && (UE5MainVersion < FUE5MainStreamObjectVersion::NiagaraSpriteRendererFacingAlignmentAutoDefault))
+	{
+		Alignment = ENiagaraSpriteAlignment::Unaligned;
+		FacingMode = ENiagaraSpriteFacingMode::FaceCamera;
 	}
 
 	// MIC will replace the main material during serialize
@@ -229,6 +247,14 @@ void UNiagaraSpriteRendererProperties::Serialize(FStructuredArchive::FRecord Rec
 	{
 		DerivedData.Serialize(Record.EnterField(TEXT("DerivedData")));
 	}
+}
+
+void UNiagaraSpriteRendererProperties::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
+{
+	Super::GetResourceSizeEx(CumulativeResourceSize);
+
+	CumulativeResourceSize.AddDedicatedSystemMemoryBytes(RendererLayoutWithCustomSort.GetAllocatedSize());
+	CumulativeResourceSize.AddDedicatedSystemMemoryBytes(RendererLayoutWithoutCustomSort.GetAllocatedSize());
 }
 
 /** The bindings depend on variables that are created during the NiagaraModule startup. However, the CDO's are build prior to this being initialized, so we defer setting these values until later.*/
@@ -293,6 +319,7 @@ void UNiagaraSpriteRendererProperties::CacheFromCompiledData(const FNiagaraDataS
 	UpdateSourceModeDerivates(SourceMode);
 	UpdateMICs();
 
+	// Initialize layout
 	const int32 NumLayoutVars = NeedsPreciseMotionVectors() ? ENiagaraSpriteVFLayout::Num_Max : ENiagaraSpriteVFLayout::Num_Default;
 	RendererLayoutWithCustomSort.Initialize(NumLayoutVars);
 	RendererLayoutWithCustomSort.SetVariableFromBinding(CompiledData, PositionBinding, ENiagaraSpriteVFLayout::Position);
@@ -309,10 +336,10 @@ void UNiagaraSpriteRendererProperties::CacheFromCompiledData(const FNiagaraDataS
 	RendererLayoutWithCustomSort.SetVariableFromBinding(CompiledData, NormalizedAgeBinding, ENiagaraSpriteVFLayout::NormalizedAge);
 	RendererLayoutWithCustomSort.SetVariableFromBinding(CompiledData, MaterialRandomBinding, ENiagaraSpriteVFLayout::MaterialRandom);
 	RendererLayoutWithCustomSort.SetVariableFromBinding(CompiledData, CustomSortingBinding, ENiagaraSpriteVFLayout::CustomSorting);
-	MaterialParamValidMask  = RendererLayoutWithCustomSort.SetVariableFromBinding(CompiledData, DynamicMaterialBinding, ENiagaraSpriteVFLayout::MaterialParam0) ? 0x1 : 0;
-	MaterialParamValidMask |= RendererLayoutWithCustomSort.SetVariableFromBinding(CompiledData, DynamicMaterial1Binding, ENiagaraSpriteVFLayout::MaterialParam1) ? 0x2 : 0;
-	MaterialParamValidMask |= RendererLayoutWithCustomSort.SetVariableFromBinding(CompiledData, DynamicMaterial2Binding, ENiagaraSpriteVFLayout::MaterialParam2) ? 0x4 : 0;
-	MaterialParamValidMask |= RendererLayoutWithCustomSort.SetVariableFromBinding(CompiledData, DynamicMaterial3Binding, ENiagaraSpriteVFLayout::MaterialParam3) ? 0x8 : 0;
+	RendererLayoutWithCustomSort.SetVariableFromBinding(CompiledData, DynamicMaterialBinding, ENiagaraSpriteVFLayout::MaterialParam0);
+	RendererLayoutWithCustomSort.SetVariableFromBinding(CompiledData, DynamicMaterial1Binding, ENiagaraSpriteVFLayout::MaterialParam1);
+	RendererLayoutWithCustomSort.SetVariableFromBinding(CompiledData, DynamicMaterial2Binding, ENiagaraSpriteVFLayout::MaterialParam2);
+	RendererLayoutWithCustomSort.SetVariableFromBinding(CompiledData, DynamicMaterial3Binding, ENiagaraSpriteVFLayout::MaterialParam3);
 	if (NeedsPreciseMotionVectors())
 	{
 		RendererLayoutWithCustomSort.SetVariableFromBinding(CompiledData, PrevPositionBinding, ENiagaraSpriteVFLayout::PrevPosition);
@@ -340,10 +367,10 @@ void UNiagaraSpriteRendererProperties::CacheFromCompiledData(const FNiagaraDataS
 	RendererLayoutWithoutCustomSort.SetVariableFromBinding(CompiledData, PivotOffsetBinding, ENiagaraSpriteVFLayout::PivotOffset);
 	RendererLayoutWithoutCustomSort.SetVariableFromBinding(CompiledData, NormalizedAgeBinding, ENiagaraSpriteVFLayout::NormalizedAge);
 	RendererLayoutWithoutCustomSort.SetVariableFromBinding(CompiledData, MaterialRandomBinding, ENiagaraSpriteVFLayout::MaterialRandom);
-	MaterialParamValidMask = RendererLayoutWithoutCustomSort.SetVariableFromBinding(CompiledData, DynamicMaterialBinding, ENiagaraSpriteVFLayout::MaterialParam0) ? 0x1 : 0;
-	MaterialParamValidMask |= RendererLayoutWithoutCustomSort.SetVariableFromBinding(CompiledData, DynamicMaterial1Binding, ENiagaraSpriteVFLayout::MaterialParam1) ? 0x2 : 0;
-	MaterialParamValidMask |= RendererLayoutWithoutCustomSort.SetVariableFromBinding(CompiledData, DynamicMaterial2Binding, ENiagaraSpriteVFLayout::MaterialParam2) ? 0x4 : 0;
-	MaterialParamValidMask |= RendererLayoutWithoutCustomSort.SetVariableFromBinding(CompiledData, DynamicMaterial3Binding, ENiagaraSpriteVFLayout::MaterialParam3) ? 0x8 : 0;
+	const bool bDynamicParam0Valid = RendererLayoutWithoutCustomSort.SetVariableFromBinding(CompiledData, DynamicMaterialBinding,  ENiagaraSpriteVFLayout::MaterialParam0);
+	const bool bDynamicParam1Valid = RendererLayoutWithoutCustomSort.SetVariableFromBinding(CompiledData, DynamicMaterial1Binding, ENiagaraSpriteVFLayout::MaterialParam1);
+	const bool bDynamicParam2Valid = RendererLayoutWithoutCustomSort.SetVariableFromBinding(CompiledData, DynamicMaterial2Binding, ENiagaraSpriteVFLayout::MaterialParam2);
+	const bool bDynamicParam3Valid = RendererLayoutWithoutCustomSort.SetVariableFromBinding(CompiledData, DynamicMaterial3Binding, ENiagaraSpriteVFLayout::MaterialParam3);
 	if (NeedsPreciseMotionVectors())
 	{
 		RendererLayoutWithoutCustomSort.SetVariableFromBinding(CompiledData, PrevPositionBinding, ENiagaraSpriteVFLayout::PrevPosition);
@@ -356,6 +383,16 @@ void UNiagaraSpriteRendererProperties::CacheFromCompiledData(const FNiagaraDataS
 		RendererLayoutWithoutCustomSort.SetVariableFromBinding(CompiledData, PrevPivotOffsetBinding, ENiagaraSpriteVFLayout::PrevPivotOffset);
 	}
 	RendererLayoutWithoutCustomSort.Finalize();
+
+#if WITH_EDITORONLY_DATA
+	// Build dynamic parameter mask
+	// Serialize in cooked builds
+	const FVersionedNiagaraEmitterData* EmitterData = GetEmitterData();
+	MaterialParamValidMask  = bDynamicParam0Valid ? GetDynamicParameterChannelMask(EmitterData, DynamicMaterialBinding.GetName(),  0xf) <<  0 : 0;
+	MaterialParamValidMask |= bDynamicParam1Valid ? GetDynamicParameterChannelMask(EmitterData, DynamicMaterial1Binding.GetName(), 0xf) <<  4 : 0;
+	MaterialParamValidMask |= bDynamicParam2Valid ? GetDynamicParameterChannelMask(EmitterData, DynamicMaterial2Binding.GetName(), 0xf) <<  8 : 0;
+	MaterialParamValidMask |= bDynamicParam3Valid ? GetDynamicParameterChannelMask(EmitterData, DynamicMaterial3Binding.GetName(), 0xf) << 12 : 0;
+#endif
 }
 
 #if WITH_EDITORONLY_DATA

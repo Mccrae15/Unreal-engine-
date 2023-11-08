@@ -67,10 +67,13 @@ public:
 	/** Retrieves all the Property Actions present in this container */
 	TArray<const URCPropertyAction*> GetPropertyActions() const;
 
+	//~ Begin UObject
 #if WITH_EDITOR
 	/** Called after applying a transaction to the object. Used to broadcast Undo related container changes to UI */
-	virtual void PostEditUndo();
+	virtual void PostEditUndo() override;
 #endif
+	virtual void PostLoad() override;
+	//~ End UObject
 
 	/** Set of child action container */
 	UPROPERTY()
@@ -93,6 +96,8 @@ private:
 	/** Add remote control property function */
 	URCFunctionAction* AddFunctionAction(const TSharedRef<const FRemoteControlFunction> InRemoteControlFunction);
 
+	void ExecuteActionsOnLoad();
+	
 	/** The list of Actions present in this container */
 	UPROPERTY()
 	TSet<TObjectPtr<URCAction>> Actions;

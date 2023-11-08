@@ -142,9 +142,12 @@ void FMovieSceneRootEvaluationTemplateInstance::Initialize(UMovieSceneSequence& 
 
 		Player.State.PersistentEntityData.Reset();
 		Player.State.PersistentSharedData.Reset();
-
+		
 		EntitySystemLinker = ConstructEntityLinker(Player);
-		RootInstanceHandle = EntitySystemLinker->GetInstanceRegistry()->AllocateRootInstance(&Player);
+		if (EntitySystemLinker != nullptr && EntitySystemLinker->GetInstanceRegistry())
+		{
+			RootInstanceHandle = EntitySystemLinker->GetInstanceRegistry()->AllocateRootInstance(&Player);
+		}
 
 		TSharedPtr<FMovieSceneEntitySystemRunner> Runner = WeakRunner.Pin();
 		if (ensure(Runner) && EntitySystemLinker)
@@ -161,6 +164,8 @@ void FMovieSceneRootEvaluationTemplateInstance::Initialize(UMovieSceneSequence& 
 		}
 
 		Player.PreAnimatedState.Initialize(EntitySystemLinker, RootInstanceHandle);
+
+		ResetDirectorInstances();
 	}
 }
 
@@ -350,6 +355,17 @@ void FMovieSceneRootEvaluationTemplateInstance::FindEntitiesFromOwner(UObject* O
 UObject* FMovieSceneRootEvaluationTemplateInstance::GetOrCreateDirectorInstance(FMovieSceneSequenceIDRef SequenceID, IMovieScenePlayer& Player)
 {
 	UObject* ExistingDirectorInstance = DirectorInstances.FindRef(SequenceID);
+#if WITH_EDITOR
+	if (ExistingDirectorInstance)
+	{
+		// Invalidate our cached director instance if it has been recompiled.
+		UClass* DirectorClass = ExistingDirectorInstance->GetClass();
+		if (!DirectorClass || DirectorClass->HasAnyClassFlags(CLASS_NewerVersionExists))
+		{
+			ExistingDirectorInstance = nullptr;
+		}
+	}
+#endif
 	if (ExistingDirectorInstance)
 	{
 		return ExistingDirectorInstance;

@@ -13,7 +13,7 @@ void UMovieSceneTrackInstance::Initialize(UObject* InAnimatedObject, UMovieScene
 {
 	// We make the difference between a root track instance, and a bound track instance that lost its binding,
 	// by remembering if this track instance was initialized with a valid bound object.
-	AnimatedObject = InAnimatedObject;
+	WeakAnimatedObject = InAnimatedObject;
 	bIsRootTrackInstance = (InAnimatedObject == nullptr);
 
 	PrivateLinker = InLinker;
@@ -30,7 +30,7 @@ void UMovieSceneTrackInstance::Destroy()
 {
 	using namespace UE::MovieScene;
 
-	if (bIsRootTrackInstance || !UE::MovieScene::FBuiltInComponentTypes::IsBoundObjectGarbage(AnimatedObject))
+	if (bIsRootTrackInstance || !UE::MovieScene::FBuiltInComponentTypes::IsBoundObjectGarbage(WeakAnimatedObject.Get()))
 	{
 		OnDestroyed();
 	}
@@ -92,6 +92,8 @@ void UMovieSceneTrackInstance::UpdateInputs(TArray<FMovieSceneTrackInstanceInput
 					InputMetaData->StopTrackingCaptureSource(Inputs[OldIndex]);
 				}
 
+				FScopedPreAnimatedCaptureSource CaptureSource(PrivateLinker, InNewInputs[NewIndex]);
+
 				InNewInputs[NewIndex].bInputHasBeenProcessed = true;
 				OnInputAdded(InNewInputs[NewIndex]);
 			}
@@ -139,6 +141,8 @@ void UMovieSceneTrackInstance::UpdateInputs(TArray<FMovieSceneTrackInstanceInput
 		else if (ensure(NewIndex < NewNum))
 		{
 			// and in with the new
+			FScopedPreAnimatedCaptureSource CaptureSource(PrivateLinker, InNewInputs[NewIndex]);
+
 			InNewInputs[NewIndex].bInputHasBeenProcessed = true;
 			OnInputAdded(InNewInputs[NewIndex]);
 			++NewIndex;
@@ -152,6 +156,7 @@ void UMovieSceneTrackInstance::UpdateInputs(TArray<FMovieSceneTrackInstanceInput
 
 UWorld* UMovieSceneTrackInstance::GetWorld() const
 {
+	UObject* AnimatedObject = WeakAnimatedObject.Get();
 	return AnimatedObject ? AnimatedObject->GetWorld() : Super::GetWorld();
 }
 

@@ -139,7 +139,7 @@ namespace mu
 			}
 
 			// Optimise the condition now.
-			//PartialOptimise( c, m_pCompilerOptions->m_optimisationOptions );
+			//PartialOptimise( c, m_pCompilerOptions->OptimisationOptions );
 		}
 
 
@@ -267,9 +267,14 @@ namespace mu
 				negSurf,
 				posTag,
 				negTag);
+
+			if (!tagCondition)
+			{
+				// This tag is unconditionally activated, so there's no condition logic to add
+				continue;
+			}
+
 			// TODO: Optimise the tag condition here
-
-
 
 			// If the tag is a constant ...
 			bool isConstant = false;
@@ -508,7 +513,7 @@ namespace mu
 			}
 		}
 
-		//PartialOptimise( c, m_pCompilerOptions->m_optimisationOptions );
+		//PartialOptimise( c, m_pCompilerOptions->OptimisationOptions );
 
 		return c;
 	}

@@ -2,12 +2,15 @@
 
 #include "MiscTraceAnalysis.h"
 
+#include "Common/ProviderLock.h"
 #include "Common/Utils.h"
 #include "HAL/LowLevelMemTracker.h"
+#include "Logging/MessageLog.h"
 #include "Model/BookmarksPrivate.h"
 #include "Model/Channel.h"
 #include "Model/FramesPrivate.h"
 #include "Model/LogPrivate.h"
+#include "Model/RegionsPrivate.h"
 #include "Model/ScreenshotProviderPrivate.h"
 #include "Model/ThreadsPrivate.h"
 #include "TraceServices/Model/AnalysisSession.h"
@@ -20,13 +23,15 @@ FMiscTraceAnalyzer::FMiscTraceAnalyzer(IAnalysisSession& InSession,
 									   FLogProvider& InLogProvider,
 									   FFrameProvider& InFrameProvider,
 									   FChannelProvider& InChannelProvider,
-									   FScreenshotProvider& InScreenshotProvider)
+									   FScreenshotProvider& InScreenshotProvider,
+									   FRegionProvider& InRegionProvider)
 	: Session(InSession)
 	, ThreadProvider(InThreadProvider)
 	, LogProvider(InLogProvider)
 	, FrameProvider(InFrameProvider)
 	, ChannelProvider(InChannelProvider)
 	, ScreenshotProvider(InScreenshotProvider)
+	, RegionProvider(InRegionProvider)
 {
 	// Todo: update this to use provider locking instead of session locking
 	// FProviderEditScopeLock LogProviderLock (LogProvider);
@@ -45,8 +50,6 @@ void FMiscTraceAnalyzer::OnAnalysisBegin(const FOnAnalysisContext& Context)
 	Builder.RouteEvent(RouteId_SetThreadGroup, "Misc", "SetThreadGroup");
 	Builder.RouteEvent(RouteId_BeginThreadGroupScope, "Misc", "BeginThreadGroupScope");
 	Builder.RouteEvent(RouteId_EndThreadGroupScope, "Misc", "EndThreadGroupScope");
-	Builder.RouteEvent(RouteId_BookmarkSpec, "Misc", "BookmarkSpec");
-	Builder.RouteEvent(RouteId_Bookmark, "Misc", "Bookmark");
 	Builder.RouteEvent(RouteId_BeginFrame, "Misc", "BeginFrame");
 	Builder.RouteEvent(RouteId_EndFrame, "Misc", "EndFrame");
 	Builder.RouteEvent(RouteId_BeginGameFrame, "Misc", "BeginGameFrame");
@@ -57,6 +60,15 @@ void FMiscTraceAnalyzer::OnAnalysisBegin(const FOnAnalysisContext& Context)
 	Builder.RouteEvent(RouteId_ChannelToggle, "Trace", "ChannelToggle");
 	Builder.RouteEvent(RouteId_ScreenshotHeader, "Misc", "ScreenshotHeader");
 	Builder.RouteEvent(RouteId_ScreenshotChunk, "Misc", "ScreenshotChunk");
+
+	Builder.RouteEvent(RouteId_RegionBegin, "Misc", "RegionBegin");
+	Builder.RouteEvent(RouteId_RegionEnd, "Misc", "RegionEnd");
+}
+
+void FMiscTraceAnalyzer::OnAnalysisEnd()
+{
+	FProviderEditScopeLock RegionProviderScopedLock(static_cast<IEditableProvider&>(RegionProvider));
+	RegionProvider.OnAnalysisSessionEnded();
 }
 
 void FMiscTraceAnalyzer::OnThreadInfo(const FThreadInfo& ThreadInfo)
@@ -149,7 +161,7 @@ bool FMiscTraceAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCon
 		Screenshot->Id = Id;
 
 		EventData.GetString("Name", Screenshot->Name);
-		
+
 		uint64 Cycle = EventData.GetValue<uint64>("Cycle");
 		Screenshot->Timestamp = Context.EventTime.AsSeconds(Cycle);
 
@@ -182,6 +194,7 @@ bool FMiscTraceAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCon
 
 		break;
 	}
+
 	// Begin retired events
 	//
 	case RouteId_RegisterGameThread:
@@ -232,6 +245,28 @@ bool FMiscTraceAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCon
 	}
 	//
 	// End retired events
+
+	case RouteId_RegionBegin:
+	{
+		uint64 Cycle = EventData.GetValue<uint64>("Cycle");
+		FString Name;
+		EventData.GetString("RegionName", Name);
+
+		FProviderEditScopeLock RegionProviderScopedLock(RegionProvider);
+		RegionProvider.AppendRegionBegin(*Name, Context.EventTime.AsSeconds(Cycle));
+		break;
+	}
+
+	case RouteId_RegionEnd:
+	{
+		uint64 Cycle = EventData.GetValue<uint64>("Cycle");
+		FString Name = TEXT("Invalid");
+		EventData.GetString("RegionName", Name);
+
+		FProviderEditScopeLock RegionProviderScopedLock(RegionProvider);
+		RegionProvider.AppendRegionEnd(*Name, Context.EventTime.AsSeconds(Cycle));
+		break;
+	}
 	}
 
 	return true;

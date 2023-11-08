@@ -1261,7 +1261,7 @@ void SMemTagTreeView::CreateGroups()
 
 		for (const FMemTagNodePtr& NodePtr : MemTagNodes)
 		{
-			GroupPtr->AddChildAndSetGroupPtr(NodePtr);
+			GroupPtr->AddChildAndSetParent(NodePtr);
 		}
 		TreeView->SetItemExpansion(GroupPtr, true);
 	}
@@ -1278,7 +1278,7 @@ void SMemTagTreeView::CreateGroups()
 				const FName GroupName = *MemTagNodeTypeHelper::ToText(NodeType).ToString();
 				GroupPtr = GroupNodeSet.Add(NodeType, MakeShared<FMemTagNode>(GroupName));
 			}
-			GroupPtr->AddChildAndSetGroupPtr(NodePtr);
+			GroupPtr->AddChildAndSetParent(NodePtr);
 			TreeView->SetItemExpansion(GroupPtr, true);
 		}
 		GroupNodeSet.KeySort([](const EMemTagNodeType& A, const EMemTagNodeType& B) { return A < B; }); // sort groups by type
@@ -1298,7 +1298,7 @@ void SMemTagTreeView::CreateGroups()
 				const FName GroupName(FirstLetterStr);
 				GroupPtr = GroupNodeSet.Add(FirstLetter, MakeShared<FMemTagNode>(GroupName));
 			}
-			GroupPtr->AddChildAndSetGroupPtr(NodePtr);
+			GroupPtr->AddChildAndSetParent(NodePtr);
 		}
 		GroupNodeSet.KeySort([](const TCHAR& A, const TCHAR& B) { return A < B; }); // sort groups alphabetically
 		GroupNodeSet.GenerateValueArray(GroupNodes);
@@ -1316,7 +1316,7 @@ void SMemTagTreeView::CreateGroups()
 				const FName GroupName = *NodePtr->GetTrackerText().ToString();
 				GroupPtr = GroupNodeSet.Add(TrackerId, MakeShared<FMemTagNode>(GroupName));
 			}
-			GroupPtr->AddChildAndSetGroupPtr(NodePtr);
+			GroupPtr->AddChildAndSetParent(NodePtr);
 			TreeView->SetItemExpansion(GroupPtr, true);
 		}
 		GroupNodeSet.GenerateValueArray(GroupNodes);
@@ -1333,7 +1333,7 @@ void SMemTagTreeView::CreateGroups()
 			{
 				GroupPtr = GroupNodeSet.Add(GroupName, MakeShared<FMemTagNode>(GroupName));
 			}
-			GroupPtr->AddChildAndSetGroupPtr(NodePtr);
+			GroupPtr->AddChildAndSetParent(NodePtr);
 			TreeView->SetItemExpansion(GroupPtr, true);
 		}
 		GroupNodeSet.GenerateValueArray(GroupNodes);
@@ -1483,19 +1483,13 @@ void SMemTagTreeView::SortTreeNodes()
 
 void SMemTagTreeView::SortTreeNodesRec(FMemTagNode& Node, const Insights::ITableCellValueSorter& Sorter)
 {
-	if (ColumnSortMode == EColumnSortMode::Type::Descending)
-	{
-		Node.SortChildrenDescending(Sorter);
-	}
-	else // if (ColumnSortMode == EColumnSortMode::Type::Ascending)
-	{
-		Node.SortChildrenAscending(Sorter);
-	}
+	Insights::ESortMode SortMode = (ColumnSortMode == EColumnSortMode::Type::Descending) ? Insights::ESortMode::Descending : Insights::ESortMode::Ascending;
+	Node.SortChildren(Sorter, SortMode);
 
 	for (Insights::FBaseTreeNodePtr ChildPtr : Node.GetChildren())
 	{
 		//if (ChildPtr->IsGroup())
-		if (ChildPtr->GetChildren().Num() > 0)
+		if (ChildPtr->GetChildrenCount() > 0)
 		{
 			SortTreeNodesRec(*StaticCastSharedPtr<FMemTagNode>(ChildPtr), Sorter);
 		}

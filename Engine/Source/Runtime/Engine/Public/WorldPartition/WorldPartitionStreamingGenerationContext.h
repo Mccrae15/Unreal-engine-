@@ -2,25 +2,29 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "WorldPartition/WorldPartitionStreamingGeneration.h"
+#include "OverrideVoidReturnInvoker.h"
 #include "WorldPartition/WorldPartitionActorContainerID.h"
 
+class FActorDescViewMap;
+class FStreamingGenerationActorDescCollection;
+class FWorldPartitionActorDescView;
+class UActorDescContainer;
 class UDataLayerInstance;
 
 #if WITH_EDITOR
-class ENGINE_API IStreamingGenerationContext
+class IStreamingGenerationContext
 {
 public:
-	struct ENGINE_API FActorSet
+	struct FActorSet
 	{
 		TArray<FGuid> Actors;
 	};
 
-	struct ENGINE_API FActorSetContainer
+	struct FActorSetContainer
 	{
 		FActorSetContainer()
 			: ActorDescViewMap(nullptr)
-			, ActorDescContainer(nullptr)
+			, ActorDescCollection(nullptr)
 		{}
 
 		// Non-copyable
@@ -28,11 +32,11 @@ public:
 		FActorSetContainer& operator=(const FActorSetContainer&) = delete;
 
 		const FActorDescViewMap* ActorDescViewMap;
-		const UActorDescContainer* ActorDescContainer;
+		const FStreamingGenerationActorDescCollection* ActorDescCollection;
 		TArray<TUniquePtr<FActorSet>> ActorSets;
 	};
 
-	struct ENGINE_API FActorSetInstance
+	struct FActorSetInstance
 	{
 		FBox Bounds;
 		FName RuntimeGrid;
@@ -43,9 +47,27 @@ public:
 		FActorContainerID ContainerID;
 		FTransform Transform;
 		const FActorSet* ActorSet;
+		const TSet<FGuid>* FilteredActors;
+
+		template <typename Func>
+		void ForEachActor(Func InFunc) const
+		{
+			TOverrideVoidReturnInvoker Invoker(true, InFunc);
+
+			for (const FGuid& ActorGuid : ActorSet->Actors)
+			{
+				if (!FilteredActors || !FilteredActors->Contains(ActorGuid))
+				{
+					if (!Invoker(ActorGuid))
+					{
+						break;
+					}
+				}
+			}
+		}
 	};
 
-	struct ENGINE_API FActorInstance
+	struct FActorInstance
 	{
 		FActorInstance(const FGuid& InActorGuid, const FActorSetInstance* InActorSetInstance)
 			: ActorGuid(InActorGuid)
@@ -55,14 +77,15 @@ public:
 		FGuid ActorGuid;
 		const FActorSetInstance* ActorSetInstance;
 
-		const FWorldPartitionActorDescView& GetActorDescView() const;
-		const FActorContainerID& GetContainerID() const;
-		const FTransform& GetTransform() const;
-		const UActorDescContainer* GetActorDescContainer() const;
+		ENGINE_API const FWorldPartitionActorDescView& GetActorDescView() const;
+		ENGINE_API const FActorContainerID& GetContainerID() const;
+		ENGINE_API const FTransform& GetTransform() const;
+		ENGINE_API const UActorDescContainer* GetActorDescContainer() const;
 	};
 
 	virtual FBox GetWorldBounds() const = 0;
 	virtual const FActorSetContainer* GetMainWorldContainer() const = 0;
 	virtual void ForEachActorSetInstance(TFunctionRef<void(const FActorSetInstance&)> Func) const = 0;
+	virtual void ForEachActorSetContainer(TFunctionRef<void(const FActorSetContainer&)> Func) const = 0;
 };
 #endif

@@ -4,6 +4,7 @@
 
 #include "InstancedStructDetails.h"
 #include "EdGraphSchema_K2.h"
+#include "PropertyBag.h"
 #include "PropertyBagDetails.generated.h"
 
 class FReply;
@@ -26,7 +27,7 @@ public:
 	static TSharedRef<IPropertyTypeCustomization> MakeInstance();
 
 	/** Creates add property widget. */
-	static TSharedPtr<SWidget> MakeAddPropertyWidget(TSharedPtr<IPropertyHandle> InStructProperty, TSharedPtr<IPropertyUtilities> InPropUtils);
+	static TSharedPtr<SWidget> MakeAddPropertyWidget(TSharedPtr<IPropertyHandle> InStructProperty, TSharedPtr<IPropertyUtilities> InPropUtils, EPropertyBagPropertyType DefaultType = EPropertyBagPropertyType::Bool);
 	
 protected:
 	/** IPropertyTypeCustomization interface */
@@ -40,7 +41,9 @@ private:
 	/** Handle to the struct property being edited */
 	TSharedPtr<IPropertyHandle> StructProperty;
 	TSharedPtr<IPropertyUtilities> PropUtils;
-	bool bFixedLayout = false; 
+	EPropertyBagPropertyType DefaultType = EPropertyBagPropertyType::Bool;
+	bool bFixedLayout = false;
+	bool bAllowArrays = true;
 };
 
 /** 
@@ -54,7 +57,7 @@ private:
 class STRUCTUTILSEDITOR_API FPropertyBagInstanceDataDetails : public FInstancedStructDataDetails
 {
 public:
-	FPropertyBagInstanceDataDetails(TSharedPtr<IPropertyHandle> InStructProperty, const TSharedPtr<IPropertyUtilities>& InPropUtils, const bool bInFixedLayout);
+	FPropertyBagInstanceDataDetails(TSharedPtr<IPropertyHandle> InStructProperty, const TSharedPtr<IPropertyUtilities>& InPropUtils, const bool bInFixedLayout, const bool bInAllowArrays = true);
 
 	virtual void OnChildRowAdded(IDetailPropertyRow& ChildRow) override;
 
@@ -64,6 +67,7 @@ protected:
 	TSharedPtr<IPropertyHandle> BagStructProperty;
 	TSharedPtr<IPropertyUtilities> PropUtils;
 	bool bFixedLayout = false;
+	bool bAllowArrays = true;
 };
 
 /**

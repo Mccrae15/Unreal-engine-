@@ -7,6 +7,62 @@
 
 #include "InterchangeAnimationTrackSetNode.generated.h"
 
+UENUM(BlueprintType)
+enum class EInterchangeAnimationPayLoadType : uint8
+{
+	NONE = 0,
+	CURVE,
+	MORPHTARGETCURVE, //handles/generates the same properties as the CURVE variation, but they way it is acquired might be different (depending on the Translator)
+	STEPCURVE,
+	BAKED,
+	MORPHTARGETCURVEWEIGHTINSTANCE	//Handled within UInterchangeAnimSequenceFactory, contrary to the others which are handled in the Translators
+									// Purpose of this type is to generate a 1 frame long Animation with the Instantiated Morph Target Curve Weights.
+									//		This is needed for the special use cases where the imported 3d file format has a concept of MorphTargetWeight usages on StaticMeshes.
+									//		UE5 does not have support for this particular concept, and the workaround is to create a 1 frame long animation with the desired MorphTargetWeight settings.
+									//		This is also needed for the use cases where the import is a Level import and the 3d file format is instantiating a StaticMesh with a particular MorphTargetWeight settings.
+									//			This is done through the AnimSequnce being used on the SkeletalMeshActor's instance.
+									//		Related Ticket: UE-186102
+};
+
+
+USTRUCT(BlueprintType)
+struct INTERCHANGENODES_API FInterchangeAnimationPayLoadKey
+{
+	GENERATED_BODY()
+
+public:
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interchange | Node")
+	FString UniqueId = "";
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interchange | Node")
+	EInterchangeAnimationPayLoadType Type = EInterchangeAnimationPayLoadType::NONE;
+
+	FInterchangeAnimationPayLoadKey() {}
+
+	FInterchangeAnimationPayLoadKey(const FString& InUniqueId, const EInterchangeAnimationPayLoadType& InType)
+		: UniqueId(InUniqueId)
+		, Type(InType)
+	{
+	}
+};
+
+//Interchange namespace
+namespace UE
+{
+	namespace Interchange
+	{
+
+		struct INTERCHANGENODES_API FAnimationStaticData : public FBaseNodeStaticData
+		{
+			static const FAttributeKey& AnimationPayLoadUidKey();
+			static const FAttributeKey& AnimationPayLoadTypeKey();
+			static const FAttributeKey& MorphTargetAnimationPayLoadUidKey();
+			static const FAttributeKey& MorphTargetAnimationPayLoadTypeKey();
+		};
+	}
+}
+
 /**
  * Enumeration specifying which properties of a camera, light or scene node can be animated besides transform.
  */
@@ -270,13 +326,13 @@ public:
 	 * Set the payload key needed to retrieve the animation for this track.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | AnimationTrack")
-	bool SetCustomAnimationPayloadKey(const FString& PayloadKey);
+	bool SetCustomAnimationPayloadKey(const FString& InUniqueId, const EInterchangeAnimationPayLoadType& InType);
 
 	/**
 	 * Get the payload key needed to retrieve the animation for this track.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | AnimationTrack")
-	bool GetCustomAnimationPayloadKey(FString& PayloadKey) const;
+	bool GetCustomAnimationPayloadKey(FInterchangeAnimationPayLoadKey& AnimationPayLoadKey) const;
 
 	/**
 	 * Set the number of frames for the animation of this track.
@@ -292,7 +348,8 @@ public:
 
 private:
 	const UE::Interchange::FAttributeKey Macro_CustomActorDependencyKey = UE::Interchange::FAttributeKey(TEXT("ActorDependency"));
-	const UE::Interchange::FAttributeKey Macro_CustomAnimationPayloadKey = UE::Interchange::FAttributeKey(TEXT("AnimationPayload"));
+	const UE::Interchange::FAttributeKey Macro_CustomAnimationPayloadUidKey = UE::Interchange::FAttributeKey(TEXT("AnimationPayloadUid"));
+	const UE::Interchange::FAttributeKey Macro_CustomAnimationPayloadTypeKey = UE::Interchange::FAttributeKey(TEXT("AnimationPayloadType"));
 	const UE::Interchange::FAttributeKey Macro_CustomFrameCountKey = UE::Interchange::FAttributeKey(TEXT("FrameCount"));
 	const UE::Interchange::FAttributeKey Macro_CustomTargetedPropertyKey = UE::Interchange::FAttributeKey(TEXT("TargetedProperty"));
 };
@@ -374,8 +431,11 @@ public:
 
 		if (Ar.IsLoading() && bIsInitialized)
 		{
-			SceneNodeAnimationPayloadKeyMap.RebuildCache();
-			MorphTargetPayloadKeyMap.RebuildCache();
+			SceneNodeAnimationPayloadKeyUidMap.RebuildCache();
+			SceneNodeAnimationPayloadKeyTypeMap.RebuildCache();
+
+			MorphTargetPayloadKeyUidMap.RebuildCache();
+			MorphTargetPayloadKeyTypeMap.RebuildCache();
 		}
 	}
 
@@ -402,14 +462,6 @@ public:
 	/** Set the skeleton factory node unique id. Return false if the attribute cannot be set. */
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalAnimationTrack")
 	bool SetCustomSkeletonNodeUid(const FString& AttributeValue);
-
-	/** Get the skeletal mesh node unique id. Return false if the attribute is not set. */
-	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalAnimationTrack")
-	bool GetCustomSkeletalMeshNodeUid(FString& AttributeValue) const;
-
-	/** Set the skeletal mesh node unique id. Return false if the attribute cannot be set. */
-	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalAnimationTrack")
-	bool SetCustomSkeletalMeshNodeUid(const FString& AttributeValue);
 
 	/**
 	 * Set the animation sample rate. Return false if the attribute cannot be set.
@@ -448,36 +500,26 @@ public:
 	bool GetCustomAnimationStopTime(double& StopTime) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalAnimationTrack")
-	void GetSceneNodeAnimationPayloadKeys(TMap<FString, FString>& OutSceneNodeAnimationPayloadKeys) const;
+	void GetSceneNodeAnimationPayloadKeys(TMap<FString, FString>& OutSceneNodeAnimationPayloadKeyUids, TMap<FString, uint8>& OutSceneNodeAnimationPayloadKeyTypes) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalAnimationTrack")
-	bool GetAnimationPayloadKeyFromSceneNodeUid(const FString& SceneNodeUid, FString& OutPayloadKey) const;
+	bool SetAnimationPayloadKeyForSceneNodeUid(const FString& SceneNodeUid, const FString& InUniqueId, const EInterchangeAnimationPayLoadType& InType);
 
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalAnimationTrack")
-	bool SetAnimationPayloadKeyForSceneNodeUid(const FString& SceneNodeUid, const FString& PayloadKey);
+	void GetMorphTargetNodeAnimationPayloadKeys(TMap<FString, FString>& OutMorphTargetNodeAnimationPayloadKeyUids, TMap<FString, uint8>& OutMorphTargetNodeAnimationPayloadKeyTypes) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalAnimationTrack")
-	bool RemoveAnimationPayloadKeyForSceneNodeUid(const FString& SceneNodeUid);
-
-	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalAnimationTrack")
-	void GetMorphTargetNodeAnimationPayloadKeys(TMap<FString, FString>& OutMorphTargetNodeAnimationPayloads) const;
-
-	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalAnimationTrack")
-	bool GetAnimationPayloadKeyFromMorphTargetNodeUid(const FString& MorphTargetNodeUid, FString& OutPayloadKey) const;
-
-	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalAnimationTrack")
-	bool SetAnimationPayloadKeyForMorphTargetNodeUid(const FString& MorphTargetNodeUid, const FString& PayloadKey);
-
-	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalAnimationTrack")
-	bool RemoveAnimationPayloadKeyForMorphTargetNodeUid(const FString& MorphTargetNodeUid);
+	bool SetAnimationPayloadKeyForMorphTargetNodeUid(const FString& MorphTargetNodeUid, const FString& InUniqueId, const EInterchangeAnimationPayLoadType& InType);
 
 private:
 	const UE::Interchange::FAttributeKey Macro_CustomSkeletonNodeUidKey = UE::Interchange::FAttributeKey(TEXT("SkeletonNodeUid"));
-	const UE::Interchange::FAttributeKey Macro_CustomSkeletalMeshNodeUidKey = UE::Interchange::FAttributeKey(TEXT("SkeletalMeshNodeUid"));
 	const UE::Interchange::FAttributeKey Macro_CustomAnimationSampleRateKey = UE::Interchange::FAttributeKey(TEXT("AnimationSampleRate"));
 	const UE::Interchange::FAttributeKey Macro_CustomAnimationStartTimeKey = UE::Interchange::FAttributeKey(TEXT("AnimationStartTime"));
 	const UE::Interchange::FAttributeKey Macro_CustomAnimationStopTimeKey = UE::Interchange::FAttributeKey(TEXT("AnimationStopTime"));
 	
-	UE::Interchange::TMapAttributeHelper<FString, FString> SceneNodeAnimationPayloadKeyMap;
-	UE::Interchange::TMapAttributeHelper<FString, FString> MorphTargetPayloadKeyMap;
+	UE::Interchange::TMapAttributeHelper<FString, FString>	SceneNodeAnimationPayloadKeyUidMap;
+	UE::Interchange::TMapAttributeHelper<FString, uint8>	SceneNodeAnimationPayloadKeyTypeMap;
+
+	UE::Interchange::TMapAttributeHelper<FString, FString>	MorphTargetPayloadKeyUidMap;
+	UE::Interchange::TMapAttributeHelper<FString, uint8>	MorphTargetPayloadKeyTypeMap;
 };

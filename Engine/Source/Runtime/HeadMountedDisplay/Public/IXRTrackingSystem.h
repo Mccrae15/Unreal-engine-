@@ -8,13 +8,13 @@
 #include "UObject/ObjectMacros.h"
 #include "Features/IModularFeature.h"
 #include "IXRInput.h"
-#include "XRGestureConfig.h"
 #include "StereoRendering.h"
 
 class IXRCamera;
 class UARPin;
 class FSceneViewFamily;
 struct FWorldContext;
+class FARSupportInterface;
 
 /**
  * Struct representing the properties of an external tracking sensor.
@@ -43,7 +43,7 @@ struct FXRSensorProperties
 /**
  * Main access point to an XR tracking system. Use it to enumerate devices and query their poses.
  */
-class HEADMOUNTEDDISPLAY_API  IXRTrackingSystem : public IModularFeature, public IXRSystemIdentifier
+class  IXRTrackingSystem : public IModularFeature, public IXRSystemIdentifier
 {
 public:
 	static FName GetModularFeatureName()
@@ -67,7 +67,7 @@ public:
 	 * Other devices can have arbitrary ids defined by each system.
 	 * If a tracking system does not support tracking HMDs, device ID zero should be treated as invalid.
 	 */
-	static const int32 HMDDeviceId = 0;
+	static HEADMOUNTEDDISPLAY_API const int32 HMDDeviceId = 0;
 
 	/**
 	 * Whether or not the system supports positional tracking (either via sensor or other means)
@@ -341,6 +341,13 @@ public:
 
 
 	/**
+	* Access optionsal ARCompositionComponent
+	**/
+	virtual TSharedPtr<FARSupportInterface, ESPMode::ThreadSafe> GetARCompositionComponent() { return nullptr; }
+	virtual const TSharedPtr<const FARSupportInterface, ESPMode::ThreadSafe> GetARCompositionComponent() const { return nullptr; }
+
+
+	/**
 	 * Access the loading screen interface associated with this tracking system, if any.
 	 *
 	 * @return an IXRLoadingScreen pointer or a nullptr if this tracking system does not support loading screens.
@@ -358,7 +365,7 @@ public:
 	/**
 	 * Same as IsHeadTrackingAllowed, but returns false if the World is not using VR (such as with the non-VR PIE instances when using VR Preview)
 	 **/
-	virtual bool IsHeadTrackingAllowedForWorld(UWorld & World) const;
+	HEADMOUNTEDDISPLAY_API virtual bool IsHeadTrackingAllowedForWorld(UWorld & World) const;
 
 	/** 
 	* Can be used to enforce tracking even when stereo rendering is disabled. 
@@ -416,7 +423,7 @@ public:
 	/**
 	 * Platform Agnostic Query about HMD details
 	 */
-	virtual void GetHMDData(UObject* WorldContext, FXRHMDData& HMDData);
+	HEADMOUNTEDDISPLAY_API virtual void GetHMDData(UObject* WorldContext, FXRHMDData& HMDData);
 
 	/**
 	 * Platform Agnostic Query about MotionControllers details
@@ -424,7 +431,8 @@ public:
 	virtual void GetMotionControllerData(UObject* WorldContext, const EControllerHand Hand, FXRMotionControllerData& MotionControllerData) = 0;
 	virtual bool GetCurrentInteractionProfile(const EControllerHand Hand, FString& InteractionProfile) = 0;
 
-	virtual bool ConfigureGestures(const FXRGestureConfig& GestureConfig) = 0;
+	UE_DEPRECATED(5.3, "The only implementation for this function was removed many UE releases ago.")
+	virtual bool ConfigureGestures(const struct FXRGestureConfig& GestureConfig) { return false; };
 
 	virtual EXRDeviceConnectionResult::Type ConnectRemoteXRDevice(const FString& IpAddress, const int32 BitRate)
 	{ 

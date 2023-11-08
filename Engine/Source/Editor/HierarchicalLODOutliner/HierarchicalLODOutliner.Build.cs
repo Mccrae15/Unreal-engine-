@@ -21,17 +21,9 @@ public class HierarchicalLODOutliner : ModuleRules
                 "HierarchicalLODUtilities",
 			}
         );
-        
-        PrivateDependencyModuleNames.AddRange(
-             new string[] {
-					"Engine",
-                    "UnrealEd"
-				}
-         );
 
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
-				"LevelEditor"
 				}
 		);
 
@@ -42,9 +34,7 @@ public class HierarchicalLODOutliner : ModuleRules
             PrivateDependencyModuleNames.AddRange(
                 new string[] {
 					"EditorFramework",
-                    "UnrealEd",
     				"SlateCore",
-    				"Slate",
 					"ToolMenus",
                 }
             );

@@ -2,6 +2,7 @@
 
 #include "Formats/DdsImageWrapper.h"
 #include "ImageWrapperPrivate.h"
+#include "ImageCoreUtils.h"
 
 void FDdsImageWrapper::Reset()
 {
@@ -29,7 +30,7 @@ void FDdsImageWrapper::Compress(int32 Quality)
 	EGammaSpace GammaSpace = ERawImageFormat::GetDefaultGammaSpace(RawImageFormat);
 	
 	// some code dupe with IImageWrapper::GetRawImage
-	// @todo Oodle : refactor so this can be shared
+	// todo: refactor so this can be shared
 	//   after someone does SetRaw() , I should be able to get an FImage view of Raw bits
 	//	 for my own writers to use
 	//	(can't just use GetRawImage because that's like a GetRaw after SetCompressed)
@@ -157,6 +158,12 @@ bool FDdsImageWrapper::SetCompressed(const void* InCompressedData, int64 InCompr
 
 	Width = DDS->Width;
 	Height = DDS->Height;
+
+	if ( ! FImageCoreUtils::IsImageImportPossible(Width,Height) )
+	{
+		SetError(TEXT("Image dimensions are not possible to import"));
+		return false;
+	}
 
 	return true;
 }

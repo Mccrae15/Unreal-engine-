@@ -68,12 +68,12 @@ static FAutoConsoleVariableRef CCvarInterchangeEnableTGAImport(
 
 UInterchangeImageWrapperTranslator::UInterchangeImageWrapperTranslator()
 {
-	if (IsTemplate() && GConfig)
-	{
-		ensure(IsInGameThread()); // Reading config values isn't threadsafe
-		bFillPNGZeroAlpha = true;
-		GConfig->GetBool(TEXT("TextureImporter"), TEXT("FillPNGZeroAlpha"), bFillPNGZeroAlpha.GetValue(), GEditorIni);
-	}
+	// construction of CDO is not thread safe,
+	//  so ensure it is done on game thread before using it from threads
+	// that is guaranteed because the module loader inits all CDOs
+
+	PNGInfill = GetDefault<UTextureImportSettings>()->GetPNGInfillMapDefault();
+	check( PNGInfill != ETextureImportPNGInfill::Default );
 }
 
 TArray<FString> UInterchangeImageWrapperTranslator::GetSupportedFormats() const
@@ -122,31 +122,17 @@ bool UInterchangeImageWrapperTranslator::Translate(UInterchangeBaseNodeContainer
 	return UE::Interchange::FTextureTranslatorUtilities::Generic2DTextureTranslate(GetSourceData(), BaseNodeContainer);
 }
 
-TOptional<UE::Interchange::FImportImage> UInterchangeImageWrapperTranslator::GetTexturePayloadData(const UInterchangeSourceData* PayloadSourceData, const FString& PayLoadKey) const
+TOptional<UE::Interchange::FImportImage> UInterchangeImageWrapperTranslator::GetTexturePayloadData(const FString& /*PayloadKey*/, TOptional<FString>& /*AlternateTexturePath*/) const
 {
-	check(PayloadSourceData == GetSourceData());
+	using namespace UE::Interchange;
 
-	if (!GetSourceData())
+	if (!FTextureTranslatorUtilities::IsTranslatorValid(*this, TEXT("ImageWrapper")))
 	{
-		UE_LOG(LogInterchangeImport, Error, TEXT("Failed to import Texture, bad source data."));
-		return TOptional<UE::Interchange::FImportImage>();
+		return {};
 	}
 
 	TArray64<uint8> SourceDataBuffer;
 	FString Filename = GetSourceData()->GetFilename();
-
-	//Make sure the key fit the filename, The key should always be valid
-	if (!Filename.Equals(PayLoadKey))
-	{
-		UE_LOG(LogInterchangeImport, Error, TEXT("Failed to import Texture, wrong payload key. [%s]"), *Filename);
-		return TOptional<UE::Interchange::FImportImage>();
-	}
-
-	if (!FPaths::FileExists(Filename))
-	{
-		UE_LOG(LogInterchangeImport, Error, TEXT("Failed to import Texture, cannot open file. [%s]"), *Filename);
-		return TOptional<UE::Interchange::FImportImage>();
-	}
 
 	if (!FFileHelper::LoadFileToArray(SourceDataBuffer, *Filename))
 	{
@@ -162,7 +148,7 @@ TOptional<UE::Interchange::FImportImage> UInterchangeImageWrapperTranslator::Get
 	const uint8* Buffer = SourceDataBuffer.GetData();
 	const uint8* BufferEnd = Buffer + SourceDataBuffer.Num();
 
-	const int32 Length = BufferEnd - Buffer;
+	const int64 Length = BufferEnd - Buffer;
 
 	IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
 
@@ -207,10 +193,12 @@ TOptional<UE::Interchange::FImportImage> UInterchangeImageWrapperTranslator::Get
 
 			if (ImageFormat == EImageFormat::PNG)
 			{
-				if (GetDefault<UInterchangeImageWrapperTranslator>()->bFillPNGZeroAlpha.GetValue())
+				if (PNGInfill != ETextureImportPNGInfill::Never)
 				{
+					bool bDoOnComplexAlphaNotJustBinaryTransparency = ( PNGInfill == ETextureImportPNGInfill::Always );
+
 					// Replace the pixels with 0.0 alpha with a color value from the nearest neighboring color which has a non-zero alpha
-					UE::TextureUtilitiesCommon::FillZeroAlphaPNGData(PayloadData.SizeX, PayloadData.SizeY, PayloadData.Format, reinterpret_cast<uint8*>(PayloadData.RawData.GetData()));
+					UE::TextureUtilitiesCommon::FillZeroAlphaPNGData(PayloadData.SizeX, PayloadData.SizeY, PayloadData.Format, reinterpret_cast<uint8*>(PayloadData.RawData.GetData()), bDoOnComplexAlphaNotJustBinaryTransparency);
 				}
 			}
 			else if (ImageFormat == EImageFormat::TGA)

@@ -49,6 +49,7 @@
 #define LOCTEXT_NAMESPACE "LevelEditor"
 
 IMPLEMENT_MODULE( FLevelEditorModule, LevelEditor );
+LLM_DEFINE_TAG(LevelEditor);
 
 const FName LevelEditorApp = FName(TEXT("LevelEditorApp"));
 const FName MainFrame("MainFrame");
@@ -195,6 +196,8 @@ private:
 
 TSharedRef<SDockTab> FLevelEditorModule::SpawnLevelEditor( const FSpawnTabArgs& InArgs )
 {
+	LLM_SCOPE_BYTAG(LevelEditor);
+	
 	TSharedRef<SDockTab> LevelEditorTab = SNew(SDockTab)
 		.TabRole(ETabRole::MajorTab)
 		.ContentPadding(FMargin(0))
@@ -266,6 +269,7 @@ void FLevelEditorModule::StartupModule()
 	NotificationBarExtensibilityManager = MakeShared<FExtensibilityManager>();
 
 	// Note this must come before any tab spawning because that can create the SLevelEditor and attempt to map commands
+	FGlobalEditorCommonCommands::Register();
 	FEditorViewportCommands::Register();
 	FLevelViewportCommands::Register();
 	FLevelEditorCommands::Register();
@@ -670,6 +674,7 @@ void FLevelEditorModule::BindGlobalLevelEditorCommands()
 	ActionList.MapAction( Commands.Save, FExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::Save ), FCanExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::CanSaveWorld ) );
 	ActionList.MapAction( Commands.SaveAs, FExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::SaveCurrentAs ), FCanExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::CanSaveCurrentAs), FGetActionCheckState(), FIsActionButtonVisible::CreateStatic( &FLevelEditorActionCallbacks::CanSaveCurrentAs) );
 	ActionList.MapAction( Commands.SaveAllLevels, FExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::SaveAllLevels ), FCanExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::CanSaveUnpartitionedWorld), FGetActionCheckState(), FIsActionButtonVisible::CreateStatic(&FLevelEditorActionCallbacks::CanSaveUnpartitionedWorld) );
+	ActionList.MapAction( Commands.BrowseLevel, FExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::Browse ), FCanExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::CanBrowse ) );
 	ActionList.MapAction( Commands.ToggleFavorite, FExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::ToggleFavorite ), FCanExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::ToggleFavorite_CanExecute ), FIsActionChecked::CreateStatic( &FLevelEditorActionCallbacks::ToggleFavorite_IsChecked ) );
 
 	for( int32 CurRecentIndex = 0; CurRecentIndex < FLevelEditorCommands::MaxRecentFiles; ++CurRecentIndex )
@@ -1511,6 +1516,14 @@ void FLevelEditorModule::BindGlobalLevelEditorCommands()
 	ActionList.MapAction(Commands.BuildAllLandscape,
 		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::BuildAllLandscape_Execute));
 
+	for (int32 Index = 0; Index < FLevelEditorCommands::MaxExternalBuildTypes; ++Index)
+	{
+		ActionList.MapAction(
+			Commands.ExternalBuildTypeCommands[Index],
+			FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::BuildExternalType_Execute, Index),
+			FCanExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::BuildExternalType_CanExecute, Index));
+	}
+
 	ActionList.MapAction( 
 		Commands.LightingQuality_Production, 
 		FExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::SetLightingQuality, (ELightingBuildQuality)Quality_Production ),
@@ -1831,6 +1844,11 @@ void FLevelEditorModule::BindGlobalLevelEditorCommands()
 		Commands.OpenMergeActor,
 		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::OpenMergeActor_Clicked)
 		);
+
+	ActionList.MapAction(
+		Commands.FixupGroupActor,
+		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::FixupGroupActor_Clicked)
+	);
 }
 
 TSharedPtr<FLevelEditorOutlinerSettings> FLevelEditorModule::GetLevelEditorOutlinerSettings() const

@@ -5,6 +5,7 @@
 #include "IOptimusPathResolver.h"
 #include "OptimusComponentSource.h"
 #include "OptimusDeformer.h"
+#include "OptimusHelpers.h"
 
 #include "UObject/Package.h"
 #include "UObject/UObjectGlobals.h" 
@@ -56,9 +57,9 @@ bool FOptimusComponentBindingAction_AddBinding::Do(IOptimusPathResolver* InRoot)
 		return false;
 	}
 
-	if (!Deformer->AddComponentBindingDirect(Binding))
+	if (!Deformer->AddComponentBindingDirect(Binding, INDEX_NONE))
 	{
-		Binding->Rename(nullptr, GetTransientPackage());
+		Optimus::RemoveObject(Binding);
 		return false;
 	}
 
@@ -74,7 +75,7 @@ bool FOptimusComponentBindingAction_AddBinding::Undo(IOptimusPathResolver* InRoo
 	}
 
 	UOptimusDeformer* Deformer = Cast<UOptimusDeformer>(InRoot);
-	return Deformer->RemoveComponentBinding(Binding);
+	return Deformer->RemoveComponentBindingDirect(Binding);
 }
 
 
@@ -88,6 +89,7 @@ FOptimusComponentBindingAction_RemoveBinding::FOptimusComponentBindingAction_Rem
 		ComponentSourceClassPath = InBinding->GetComponentSource()->GetClass()->GetStructPathName();
 		ComponentBindingName = InBinding->BindingName;
 		ComponentTags = InBinding->ComponentTags;
+		ComponentBindingIndex = InBinding->GetIndex();
 
 		SetTitlef(TEXT("Remove component binding '%s'"), *ComponentBindingName.ToString());
 	}
@@ -130,9 +132,9 @@ bool FOptimusComponentBindingAction_RemoveBinding::Undo(IOptimusPathResolver* In
 
 	Binding->ComponentTags = ComponentTags;
 
-	if (!Deformer->AddComponentBindingDirect(Binding))
+	if (!Deformer->AddComponentBindingDirect(Binding, ComponentBindingIndex))
 	{
-		Binding->Rename(nullptr, GetTransientPackage());
+		Optimus::RemoveObject(Binding);
 		return false;
 	}
 

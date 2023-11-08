@@ -29,7 +29,9 @@ public:
 	virtual ~FEOSSDKManager();
 
 	// Begin IEOSSDKManager
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	virtual EOS_EResult Initialize() override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	virtual bool IsInitialized() const override { return bInitialized; }
 
 	virtual const FEOSSDKPlatformConfig* GetPlatformConfig(const FString& PlatformConfigName, bool bLoadIfMissing = false) override;
@@ -57,13 +59,13 @@ public:
 	virtual void AddCallbackObject(TUniquePtr<class FCallbackBase> CallbackObj) override;
 	// End IEOSSDKManager
 
-	// Begin FSelfRegisteringExec
-	virtual bool Exec(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override;
-	// End FSelfRegisteringExec
-
 	void Shutdown();
 
 protected:
+	// Begin FSelfRegisteringExec
+	virtual bool Exec_Runtime(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override;
+	// End FSelfRegisteringExec
+
 	virtual EOS_EResult EOSInitialize(EOS_InitializeOptions& Options);
 	virtual IEOSPlatformHandlePtr CreatePlatform(const FEOSSDKPlatformConfig& PlatformConfig, EOS_Platform_Options& PlatformOptions);
 	virtual bool Tick(float);

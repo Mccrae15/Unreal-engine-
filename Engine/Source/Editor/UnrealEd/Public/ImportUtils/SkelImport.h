@@ -12,6 +12,7 @@
 #include "ReferenceSkeleton.h"
 #include "Engine/SkeletalMesh.h"
 #include "Rendering/SkeletalMeshLODImporterData.h"
+#include "SkeletalMeshTypes.h"
 
 class UAssetImportData;
 class UMorphTarget;
@@ -20,6 +21,7 @@ class USkeletalMeshSocket;
 class USkeleton;
 class UThumbnailInfo;
 class FSkeletalMeshLODModel;
+enum class ESkinVertexColorChannel : uint8;
 
 struct FExistingMeshLodSectionData
 {
@@ -93,11 +95,6 @@ struct FExistingSkelMeshData
 
 	bool									bExistingUseFullPrecisionUVs;
 	bool									bExistingUseHighPrecisionTangentBasis;
-
-	UE_DEPRECATED(5.0, "Please use UMirrorDataTable for mirroring ")
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	TArray<FBoneMirrorExport>				ExistingMirrorTable;
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	TWeakObjectPtr<UAssetImportData>		ExistingAssetImportData;
 	TWeakObjectPtr<UThumbnailInfo>			ExistingThumbnailInfo;

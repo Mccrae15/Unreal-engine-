@@ -69,7 +69,7 @@ bool IsCustomDepthPassWritingStencil()
 	return GetCustomDepthMode() == ECustomDepthMode::EnabledWithStencil;
 }
 
-FCustomDepthTextures FCustomDepthTextures::Create(FRDGBuilder& GraphBuilder, FIntPoint CustomDepthExtent)
+FCustomDepthTextures FCustomDepthTextures::Create(FRDGBuilder& GraphBuilder, FIntPoint CustomDepthExtent, EShaderPlatform ShaderPlatform)
 {
 	const ECustomDepthMode CustomDepthMode = GetCustomDepthMode();
 
@@ -83,15 +83,15 @@ FCustomDepthTextures FCustomDepthTextures::Create(FRDGBuilder& GraphBuilder, FIn
 	FCustomDepthTextures CustomDepthTextures;
 
 	ETextureCreateFlags CreateFlags = GFastVRamConfig.CustomDepth | TexCreate_DepthStencilTargetable | TexCreate_ShaderResource;
-	if (!CVarCustomDepthEnableFastClear.GetValueOnRenderThread())
-	{
-		CreateFlags |= TexCreate_NoFastClear;
-	}
 
-	// For Nanite, check to create the depth texture as a UAV
-	if (UseComputeDepthExport() && Nanite::GetSupportsCustomDepthRendering())
+	// For Nanite, check to create the depth texture as a UAV and force HTILE.
+	if (UseNanite(ShaderPlatform) && UseComputeDepthExport() && Nanite::GetSupportsCustomDepthRendering())
 	{
 		CreateFlags |= TexCreate_UAV;
+	}
+	else if (!CVarCustomDepthEnableFastClear.GetValueOnRenderThread())
+	{
+		CreateFlags |= TexCreate_NoFastClear;
 	}
 
 	const FRDGTextureDesc CustomDepthDesc = FRDGTextureDesc::Create2D(CustomDepthExtent, PF_DepthStencil, FClearValueBinding::DepthFar, CreateFlags);
@@ -173,8 +173,7 @@ bool FSceneRenderer::RenderCustomDepthPass(
 	FCustomDepthTextures& CustomDepthTextures,
 	const FSceneTextureShaderParameters& SceneTextures,
 	TConstArrayView<Nanite::FRasterResults> PrimaryNaniteRasterResults,
-	TConstArrayView<Nanite::FPackedView> PrimaryNaniteViews,
-	bool bNaniteProgrammableRaster)
+	TConstArrayView<Nanite::FPackedView> PrimaryNaniteViews)
 {
 	if (!CustomDepthTextures.IsValid())
 	{
@@ -300,10 +299,13 @@ bool FSceneRenderer::RenderCustomDepthPass(
 			true // bCustomPass
 		);
 
-		Nanite::FCullingContext::FConfiguration CullingConfig = { 0 };
+		Nanite::FCustomDepthContext CustomDepthContext = Nanite::InitCustomDepthStencilContext(
+			GraphBuilder,
+			CustomDepthTextures,
+			bWriteCustomStencil);
+
+		Nanite::FConfiguration CullingConfig = { 0 };
 		CullingConfig.bUpdateStreaming = true;
-		CullingConfig.bForceHWRaster = RasterContext.RasterScheduling == Nanite::ERasterScheduling::HardwareOnly;
-		CullingConfig.bProgrammableRaster = bNaniteProgrammableRaster;
 
 		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
 		{
@@ -316,46 +318,42 @@ bool FSceneRenderer::RenderCustomDepthPass(
 				continue;
 			}
 
-			Nanite::FCullingContext CullingContext{};
+			auto NaniteRenderer = Nanite::IRenderer::Create(
+				GraphBuilder,
+				*Scene,
+				View,
+				GetSceneUniforms(),
+				SharedContext,
+				RasterContext,
+				CullingConfig,
+				View.ViewRect,
+				/* PrevHZB = */ nullptr
+			);
 
-			// Rasterize the view
-			{
-				CullingContext = Nanite::InitCullingContext(
-					GraphBuilder,
-					SharedContext,
-					*Scene,
-					/* PrevHZB = */ nullptr,
-					View.ViewRect,
-					CullingConfig
-				);
+			NaniteRenderer->DrawGeometry(
+				Scene->NaniteRasterPipelines[ENaniteMeshPass::BasePass],
+				PrimaryNaniteRasterResults[ViewIndex].VisibilityResults,
+				*Nanite::FPackedViewArray::Create(GraphBuilder, PrimaryNaniteViews[ViewIndex]),
+				NaniteDrawLists[ViewIndex]
+			);
 
-				Nanite::CullRasterize(
-					GraphBuilder,
-					Scene->NaniteRasterPipelines[ENaniteMeshPass::BasePass],
-					PrimaryNaniteRasterResults[ViewIndex].VisibilityResults,
-					*Scene,
-					View,
-					{ PrimaryNaniteViews[ViewIndex] },
-					SharedContext,
-					CullingContext,
-					RasterContext,
-					&NaniteDrawLists[ViewIndex]
-				);
-			}
+			Nanite::FRasterResults RasterResults;
+			NaniteRenderer->ExtractResults( RasterResults );
 
 			// Emit depth
 			Nanite::EmitCustomDepthStencilTargets(
 				GraphBuilder,
 				*Scene,
 				View,
-				CullingContext.PageConstants,
-				CullingContext.VisibleClustersSWHW,
-				CullingContext.ViewsBuffer,
+				RasterResults.PageConstants,
+				RasterResults.VisibleClustersSWHW,
+				RasterResults.ViewsBuffer,
 				RasterContext.VisBuffer64,
-				bWriteCustomStencil,
-				CustomDepthTextures
+				CustomDepthContext
 			);
 		}
+
+		Nanite::FinalizeCustomDepthStencil(GraphBuilder, CustomDepthContext, CustomDepthTextures);
 	}
 	else
 	{
@@ -409,7 +407,7 @@ private:
 		ERasterizerFillMode MeshFillMode,
 		ERasterizerCullMode MeshCullMode);
 
-	bool UseDefaultMaterial(const FMaterial& Material, bool bMaterialModifiesMeshPosition, bool bSupportPositionOnlyStream, bool& bPositionOnly, bool& bIgnoreThisMaterial);
+	bool UseDefaultMaterial(const FMaterial& Material, bool bMaterialModifiesMeshPosition, bool bSupportPositionOnlyStream, bool bVFTypeSupportsNullPixelShader, bool& bPositionOnly, bool& bIgnoreThisMaterial);
 
 	void CollectDefaultMaterialPSOInitializers(
 		const FSceneTexturesConfig& SceneTexturesConfig,
@@ -482,7 +480,7 @@ FRHIDepthStencilState* GetCustomDepthStencilState(bool bWriteCustomStencilValues
 	}
 }
 
-bool FCustomDepthPassMeshProcessor::UseDefaultMaterial(const FMaterial& Material, bool bMaterialModifiesMeshPosition, bool bSupportPositionOnlyStream, bool& bPositionOnly, bool& bIgnoreThisMaterial)
+bool FCustomDepthPassMeshProcessor::UseDefaultMaterial(const FMaterial& Material, bool bMaterialModifiesMeshPosition, bool bSupportPositionOnlyStream, bool bVFTypeSupportsNullPixelShader, bool& bPositionOnly, bool& bIgnoreThisMaterial)
 {
 	bool bUseDefaultMaterial = false;
 	bIgnoreThisMaterial = false;
@@ -492,14 +490,14 @@ bool FCustomDepthPassMeshProcessor::UseDefaultMaterial(const FMaterial& Material
 	if (bIsOpaque
 		&& bSupportPositionOnlyStream
 		&& !bMaterialModifiesMeshPosition
-		&& Material.WritesEveryPixel())
+		&& Material.WritesEveryPixel(false, bVFTypeSupportsNullPixelShader))
 	{
 		bUseDefaultMaterial = true;
 		bPositionOnly = true;
 	}
 	else if (!bIsTranslucent || Material.IsTranslucencyWritingCustomDepth())
 	{
-		const bool bMaterialMasked = !Material.WritesEveryPixel() || Material.IsTranslucencyWritingCustomDepth();
+		const bool bMaterialMasked = !Material.WritesEveryPixel(false, bVFTypeSupportsNullPixelShader) || Material.IsTranslucencyWritingCustomDepth();
 		if (!bMaterialMasked && !bMaterialModifiesMeshPosition)
 		{
 			bUseDefaultMaterial = true;
@@ -535,7 +533,11 @@ bool FCustomDepthPassMeshProcessor::TryAddMeshBatch(
 	// Using default material?
 	bool bIgnoreThisMaterial = false;
 	bool bPositionOnly = false;
-	bool bUseDefaultMaterial = UseDefaultMaterial(Material, Material.MaterialModifiesMeshPosition_RenderThread(), MeshBatch.VertexFactory->SupportsPositionOnlyStream(), bPositionOnly, bIgnoreThisMaterial);
+	const bool bSupportPositionOnlyStream = MeshBatch.VertexFactory->SupportsPositionOnlyStream();
+	const bool bVFTypeSupportsNullPixelShader = MeshBatch.VertexFactory->SupportsNullPixelShader();
+	const bool bEvaluateWPO = Material.MaterialModifiesMeshPosition_RenderThread()
+		&& (!ShouldOptimizedWPOAffectNonNaniteShaderSelection() || PrimitiveSceneProxy->EvaluateWorldPositionOffset());
+	bool bUseDefaultMaterial = UseDefaultMaterial(Material, bEvaluateWPO, bSupportPositionOnlyStream, bVFTypeSupportsNullPixelShader, bPositionOnly, bIgnoreThisMaterial);
 	if (bIgnoreThisMaterial)
 	{
 		return true;
@@ -633,10 +635,11 @@ void FCustomDepthPassMeshProcessor::CollectPSOInitializers(const FSceneTexturesC
 	}
 
 	// assume we can always do this when collecting PSO's for now (vertex factory instance might actually not support it)
-	bool bSupportPositionOnlyStream = VertexFactoryData.VertexFactoryType->SupportsPositionOnly();
+	const bool bSupportPositionOnlyStream = VertexFactoryData.VertexFactoryType->SupportsPositionOnly();
+	const bool bVFTypeSupportsNullPixelShader = VertexFactoryData.VertexFactoryType->SupportsNullPixelShader();
 	bool bIgnoreThisMaterial = false;
 	bool bPositionOnly = false;
-	bool bUseDefaultMaterial = UseDefaultMaterial(Material, Material.MaterialModifiesMeshPosition_GameThread(), bSupportPositionOnlyStream, bPositionOnly, bIgnoreThisMaterial);
+	bool bUseDefaultMaterial = UseDefaultMaterial(Material, Material.MaterialModifiesMeshPosition_GameThread(), bSupportPositionOnlyStream, bVFTypeSupportsNullPixelShader, bPositionOnly, bIgnoreThisMaterial);
 
 	if (!bIgnoreThisMaterial)
 	{
@@ -742,4 +745,4 @@ FMeshPassProcessor* CreateCustomDepthPassProcessor(ERHIFeatureLevel::Type Featur
 }
 
 REGISTER_MESHPASSPROCESSOR_AND_PSOCOLLECTOR(RegisterCustomDepthPass, CreateCustomDepthPassProcessor, EShadingPath::Deferred, EMeshPass::CustomDepth, EMeshPassFlags::MainView);
-FRegisterPassProcessorCreateFunction RegisterMobileCustomDepthPass(&CreateCustomDepthPassProcessor, EShadingPath::Mobile, EMeshPass::CustomDepth, EMeshPassFlags::MainView);
+REGISTER_MESHPASSPROCESSOR_AND_PSOCOLLECTOR(RegisterMobileCustomDepthPass, CreateCustomDepthPassProcessor, EShadingPath::Mobile, EMeshPass::CustomDepth, EMeshPassFlags::MainView);

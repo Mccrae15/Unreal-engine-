@@ -1,10 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using EpicGames.Core;
 using UnrealBuildBase;
 
@@ -162,7 +160,7 @@ namespace UnrealBuildTool
 		/// The method of linking the target uses
 		/// </summary>
 		public TargetLinkType LinkType;
-		
+
 		/// <summary>
 		/// Whether we should compile using the statically-linked CRT. This is not widely supported for the whole engine, but is required for programs that need to run without dependencies.
 		/// </summary>
@@ -210,6 +208,11 @@ namespace UnrealBuildTool
 		/// The amount of the default stack size to commit initially. Set to 0 to allow the OS to decide.
 		/// </summary>
 		public int DefaultStackSizeCommit = 0;
+
+		/// <summary>
+		/// Wether to link code coverage / tracing libs
+		/// </summary>
+		public bool bCodeCoverage = false;
 
 		/// <summary>
 		/// Whether to omit frame pointers or not. Disabling is useful for e.g. memory profiling on the PC
@@ -277,9 +280,9 @@ namespace UnrealBuildTool
 		public bool bIgnoreUnresolvedSymbols;
 
 		/// <summary>
-		/// Set flags for determinstic compiles (experimental).
+		/// Set flags for determinstic compiles.
 		/// </summary>
-		public bool bDeterministic = false;
+		public bool bDeterministic;
 
 		/// <summary>
 		/// Whether to log detailed timing information
@@ -337,6 +340,11 @@ namespace UnrealBuildTool
 		/// List of functions that should be exported from this module
 		/// </summary>
 		public List<string> IncludeFunctions = new List<string>();
+
+		/// <summary>
+		/// Debugger visualizer files to build into debug info for this binary. 
+		/// </summary>
+		public List<FileItem> DebuggerVisualizerFiles = new List<FileItem>();
 
 		/// <summary>
 		/// Provides a Module Definition File (.def) to the linker to describe various attributes of a DLL.
@@ -397,6 +405,7 @@ namespace UnrealBuildTool
 			bIsBuildingDotNetAssembly = Other.bIsBuildingDotNetAssembly;
 			DefaultStackSize = Other.DefaultStackSize;
 			DefaultStackSizeCommit = Other.DefaultStackSizeCommit;
+			bCodeCoverage = Other.bCodeCoverage;
 			bOmitFramePointers = Other.bOmitFramePointers;
 			bSupportEditAndContinue = Other.bSupportEditAndContinue;
 			bUseIncrementalLinking = Other.bUseIncrementalLinking;
@@ -422,6 +431,7 @@ namespace UnrealBuildTool
 			DefaultResourceFiles.AddRange(Other.DefaultResourceFiles);
 			CommonResourceFiles.AddRange(Other.CommonResourceFiles);
 			IncludeFunctions.AddRange(Other.IncludeFunctions);
+			DebuggerVisualizerFiles.AddRange(Other.DebuggerVisualizerFiles);
 			ModuleDefinitionFile = Other.ModuleDefinitionFile;
 			AdditionalProperties.AddRange(Other.AdditionalProperties);
 
@@ -464,4 +474,3 @@ namespace UnrealBuildTool
 		}
 	}
 }
-	

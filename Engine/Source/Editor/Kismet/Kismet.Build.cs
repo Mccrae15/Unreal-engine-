@@ -6,13 +6,6 @@ public class Kismet : ModuleRules
 {
 	public Kismet(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"Editor/GraphEditor/Private",
-				"Editor/SceneOutliner/Private",
-			}
-		);
-
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] { 
 				"AssetRegistry", 
@@ -20,7 +13,6 @@ public class Kismet : ModuleRules
                 "BlueprintRuntime",
                 "ClassViewer",
 				"Analytics",
-                "DerivedDataCache",
                 "LevelEditor",
 				"GameProjectGeneration",
 				"SourceCodeAccess",
@@ -29,13 +21,14 @@ public class Kismet : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
-                "AppFramework",
+				"AppFramework",
 				"Core",
 				"CoreUObject",
+				"FieldNotification",
 				"ApplicationCore",
 				"Slate",
 				"SlateCore",
-                "EditorStyle",
+				"EditorStyle",
 				"EditorWidgets",
 				"Engine",
 				"Json",
@@ -51,22 +44,22 @@ public class Kismet : ModuleRules
 				"AnimGraph",
 				"PropertyEditor",
 				"SourceControl",
-                "SharedSettingsWidgets",
-                "InputCore",
+				"SharedSettingsWidgets",
+				"InputCore",
 				"EngineSettings",
-                "Projects",
-                "JsonUtilities",
+				"Projects",
+				"JsonUtilities",
 				"DesktopPlatform",
 				"HotReload",
-                "UMGEditor",
-                "UMG", // for SBlueprintDiff
-                "WorkspaceMenuStructure",
+				"UMGEditor",
+				"UMG", // for SBlueprintDiff
+				"WorkspaceMenuStructure",
 				"DeveloperSettings",
 				"ToolMenus",
 				"SubobjectEditor",
 				"SubobjectDataInterface",
 				"ToolWidgets",
-            }
+			}
 			);
 
         DynamicallyLoadedModuleNames.AddRange(

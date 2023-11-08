@@ -183,6 +183,11 @@ FName UFXConverterUtilitiesLibrary::GetCascadeEmitterName(UParticleEmitter* Emit
 	return Emitter->GetEmitterName();
 }
 
+int32 UFXConverterUtilitiesLibrary::GetCascadeEmitterRenderMode(UParticleEmitter* Emitter)
+{
+	return Emitter->EmitterRenderMode;
+}
+
 FAssetData UFXConverterUtilitiesLibrary::CreateAssetData(FString InPath)
 {
 	FAssetData Out;
@@ -1620,6 +1625,8 @@ void UNiagaraSystemConversionContext::Finalize()
 	{
 		EmitterConversionContextIt.Value()->InternalFinalizeStackEntryAddActions();
 	}
+
+	System->RequestCompile(false);
 }
 
 UNiagaraEmitterConversionContext* const* UNiagaraSystemConversionContext::FindEmitterConversionContextByName(const FName& EmitterName)

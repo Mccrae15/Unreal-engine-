@@ -41,31 +41,34 @@ public:
 	FShaderResourceViewRHIRef SRVByteAddress;
 	FBufferRHIRef ByteAddressBufferRHI;
 
-	virtual void InitRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
+		const static FLazyName ClassName(TEXT("FDummyCulledDispatchVertexIdsBuffer"));
 		{
 			FRHIResourceCreateInfo CreateInfo(TEXT("FDummyCulledDispatchVertexIdsBuffer"));
+			CreateInfo.ClassName = ClassName;
 			uint32 NumBytes = sizeof(uint32) * 4;
-			VertexBufferRHI = RHICreateBuffer(NumBytes, BUF_Static | BUF_VertexBuffer | BUF_ShaderResource, 0, ERHIAccess::VertexOrIndexBuffer | ERHIAccess::SRVMask, CreateInfo);
-			uint32* DummyContents = (uint32*)RHILockBuffer(VertexBufferRHI, 0, NumBytes, RLM_WriteOnly);
+			VertexBufferRHI = RHICmdList.CreateBuffer(NumBytes, BUF_Static | BUF_VertexBuffer | BUF_ShaderResource, 0, ERHIAccess::VertexOrIndexBuffer | ERHIAccess::SRVMask, CreateInfo);
+			uint32* DummyContents = (uint32*)RHICmdList.LockBuffer(VertexBufferRHI, 0, NumBytes, RLM_WriteOnly);
 			DummyContents[0] = DummyContents[1] = DummyContents[2] = DummyContents[3] = 0;
-			RHIUnlockBuffer(VertexBufferRHI);
+			RHICmdList.UnlockBuffer(VertexBufferRHI);
 		}
 
 		{
-			FRHIResourceCreateInfo CreateInfo(TEXT("FDummyByteAddressBufferBuffer"));
+			FRHIResourceCreateInfo CreateInfo(TEXT("FDummyByteAddressBuffer"));
+			CreateInfo.ClassName = ClassName;
 			uint32 NumBytes = sizeof(uint32) * 4;
-			ByteAddressBufferRHI = RHICreateBuffer(NumBytes, BUF_Static | BUF_ShaderResource |BUF_ByteAddressBuffer, 0, ERHIAccess::SRVMask, CreateInfo);
-			uint32* DummyContents = (uint32*)RHILockBuffer(ByteAddressBufferRHI, 0, NumBytes, RLM_WriteOnly);
+			ByteAddressBufferRHI = RHICmdList.CreateBuffer(NumBytes, BUF_Static | BUF_ShaderResource |BUF_ByteAddressBuffer, 0, ERHIAccess::SRVMask, CreateInfo);
+			uint32* DummyContents = (uint32*)RHICmdList.LockBuffer(ByteAddressBufferRHI, 0, NumBytes, RLM_WriteOnly);
 			DummyContents[0] = DummyContents[1] = DummyContents[2] = DummyContents[3] = 0;
-			RHIUnlockBuffer(ByteAddressBufferRHI);
+			RHICmdList.UnlockBuffer(ByteAddressBufferRHI);
 		}
 
-		SRVUint = RHICreateShaderResourceView(VertexBufferRHI, sizeof(uint32), PF_R32_UINT);
-		SRVFloat = RHICreateShaderResourceView(VertexBufferRHI, sizeof(uint32), PF_R32_FLOAT);
-		SRVRGBA = RHICreateShaderResourceView(VertexBufferRHI, sizeof(uint32), PF_R8G8B8A8);
-		SRVRGBA_Uint = RHICreateShaderResourceView(VertexBufferRHI, sizeof(uint32), PF_R8G8B8A8_UINT);
-		SRVByteAddress = RHICreateShaderResourceView(ByteAddressBufferRHI, sizeof(uint32), PF_R32_UINT);
+		SRVUint = RHICmdList.CreateShaderResourceView(VertexBufferRHI, sizeof(uint32), PF_R32_UINT);
+		SRVFloat = RHICmdList.CreateShaderResourceView(VertexBufferRHI, sizeof(uint32), PF_R32_FLOAT);
+		SRVRGBA = RHICmdList.CreateShaderResourceView(VertexBufferRHI, sizeof(uint32), PF_R8G8B8A8);
+		SRVRGBA_Uint = RHICmdList.CreateShaderResourceView(VertexBufferRHI, sizeof(uint32), PF_R8G8B8A8_UINT);
+		SRVByteAddress = RHICmdList.CreateShaderResourceView(ByteAddressBufferRHI, sizeof(uint32), PF_R32_UINT);
 	}
 
 	virtual void ReleaseRHI() override
@@ -91,46 +94,41 @@ FHairStrandsVertexFactoryUniformShaderParameters FHairGroupInstance::GetHairStan
 	const FHairGroupPublicData::FVertexFactoryInput VFInput = ComputeHairStrandsVertexInputData(this, ViewMode);
 
 	FHairStrandsVertexFactoryUniformShaderParameters Out = {};
-	Out.GroupIndex					= Debug.GroupIndex;
-	Out.Radius 						= VFInput.Strands.HairRadius;
-	Out.RootScale 					= VFInput.Strands.HairRootScale;
-	Out.TipScale 					= VFInput.Strands.HairTipScale;
-	Out.RaytracingRadiusScale		= VFInput.Strands.HairRaytracingRadiusScale;
-	Out.RaytracingProceduralSplits  = GetHairRaytracingProceduralSplits();
-	Out.Length 						= VFInput.Strands.HairLength;
-	Out.Density 					= VFInput.Strands.HairDensity;
-	Out.StableRasterization			= VFInput.Strands.bUseStableRasterization;
-	Out.ScatterSceneLighing			= VFInput.Strands.bScatterSceneLighting;
-	Out.PositionBuffer				= VFInput.Strands.PositionBufferRHISRV;
-	Out.PreviousPositionBuffer		= VFInput.Strands.PrevPositionBufferRHISRV;
-	Out.AttributeBuffer				= VFInput.Strands.AttributeBufferRHISRV;
-	Out.VertexToCurveBuffer			= VFInput.Strands.VertexToCurveBufferRHISRV;
-	Out.TangentBuffer 				= VFInput.Strands.TangentBufferRHISRV;
-	Out.PositionOffsetBuffer 		= VFInput.Strands.PositionOffsetBufferRHISRV;
-	Out.PreviousPositionOffsetBuffer= VFInput.Strands.PrevPositionOffsetBufferRHISRV;
+	Out.Common = VFInput.Strands.Common;
+
+	Out.Resources.PositionBuffer					= VFInput.Strands.PositionBufferRHISRV;
+	Out.Resources.PositionOffsetBuffer 				= VFInput.Strands.PositionOffsetBufferRHISRV;
+	Out.Resources.PointAttributeBuffer				= VFInput.Strands.PointAttributeBufferRHISRV;
+	Out.Resources.CurveAttributeBuffer				= VFInput.Strands.CurveAttributeBufferRHISRV;
+	Out.Resources.CurveBuffer						= VFInput.Strands.CurveBufferRHISRV;
+	Out.Resources.PointToCurveBuffer				= VFInput.Strands.PointToCurveBufferRHISRV;
+	Out.Resources.TangentBuffer 					= VFInput.Strands.TangentBufferRHISRV;
+	Out.PrevResources.PreviousPositionBuffer		= VFInput.Strands.PrevPositionBufferRHISRV;
+	Out.PrevResources.PreviousPositionOffsetBuffer	= VFInput.Strands.PrevPositionOffsetBufferRHISRV;
 
 	// swap in some default data for those buffers that are not valid yet
-	if (!Out.PositionBuffer) 				{ Out.PositionBuffer = GDummyCulledDispatchVertexIdsBuffer.SRVFloat; }
-	if (!Out.PreviousPositionBuffer) 		{ Out.PreviousPositionBuffer = GDummyCulledDispatchVertexIdsBuffer.SRVFloat; }
-	if (!Out.AttributeBuffer) 				{ Out.AttributeBuffer = GDummyCulledDispatchVertexIdsBuffer.SRVByteAddress; }
-	if (!Out.VertexToCurveBuffer) 			{ Out.VertexToCurveBuffer = GDummyCulledDispatchVertexIdsBuffer.SRVUint; }
-	if (!Out.TangentBuffer) 				{ Out.TangentBuffer = GDummyCulledDispatchVertexIdsBuffer.SRVFloat; }
-	if (!Out.PositionOffsetBuffer) 			{ Out.PositionOffsetBuffer = GDummyCulledDispatchVertexIdsBuffer.SRVFloat; }
-	if (!Out.PreviousPositionOffsetBuffer) 	{ Out.PreviousPositionOffsetBuffer = GDummyCulledDispatchVertexIdsBuffer.SRVFloat; }
+	if (!Out.Resources.PositionBuffer) 						{ Out.Resources.PositionBuffer = GDummyCulledDispatchVertexIdsBuffer.SRVFloat; }
+	if (!Out.Resources.PositionOffsetBuffer) 				{ Out.Resources.PositionOffsetBuffer = GDummyCulledDispatchVertexIdsBuffer.SRVFloat; }
+	if (!Out.Resources.CurveAttributeBuffer) 				{ Out.Resources.CurveAttributeBuffer = GDummyCulledDispatchVertexIdsBuffer.SRVByteAddress; }
+	if (!Out.Resources.PointAttributeBuffer) 				{ Out.Resources.PointAttributeBuffer = GDummyCulledDispatchVertexIdsBuffer.SRVByteAddress; }
+	if (!Out.Resources.CurveBuffer) 						{ Out.Resources.CurveBuffer = GDummyCulledDispatchVertexIdsBuffer.SRVByteAddress; }
+	if (!Out.Resources.PointToCurveBuffer) 					{ Out.Resources.PointToCurveBuffer = GDummyCulledDispatchVertexIdsBuffer.SRVUint; }
+	if (!Out.Resources.TangentBuffer) 						{ Out.Resources.TangentBuffer = GDummyCulledDispatchVertexIdsBuffer.SRVFloat; }
 
-	Out.CullingEnable = HairGroupPublicData->GetCullingResultAvailable();
-	if (Out.CullingEnable)
+	if (!Out.PrevResources.PreviousPositionBuffer) 			{ Out.PrevResources.PreviousPositionBuffer = GDummyCulledDispatchVertexIdsBuffer.SRVFloat; }
+	if (!Out.PrevResources.PreviousPositionOffsetBuffer) 	{ Out.PrevResources.PreviousPositionOffsetBuffer = GDummyCulledDispatchVertexIdsBuffer.SRVFloat; }
+
+	Out.Culling.bCullingEnable = HairGroupPublicData->GetCullingResultAvailable();
+	if (Out.Culling.bCullingEnable)
 	{
-		Out.CulledVertexIdsBuffer = HairGroupPublicData->GetCulledVertexIdBuffer().SRV;
-		Out.CulledVertexRadiusScaleBuffer = HairGroupPublicData->GetCulledVertexRadiusScaleBuffer().SRV;
+		Out.Culling.CullingIndexBuffer = HairGroupPublicData->GetCulledVertexIdBuffer().SRV;
+		Out.Culling.CullingRadiusScaleBuffer = HairGroupPublicData->GetCulledVertexRadiusScaleBuffer().SRV;
 	}
 	else
 	{
-		Out.CulledVertexIdsBuffer = GDummyCulledDispatchVertexIdsBuffer.SRVUint;
-		Out.CulledVertexRadiusScaleBuffer = GDummyCulledDispatchVertexIdsBuffer.SRVFloat;
+		Out.Culling.CullingIndexBuffer = GDummyCulledDispatchVertexIdsBuffer.SRVUint;
+		Out.Culling.CullingRadiusScaleBuffer = GDummyCulledDispatchVertexIdsBuffer.SRVFloat;
 	}
-
-	PACK_HAIR_ATTRIBUTE_OFFSETS(Out.AttributeOffsets, VFInput.Strands.AttributeOffsets);	
 	return Out;
 }
 
@@ -195,7 +193,7 @@ void FHairStrandsVertexFactory::ValidateCompiledResult(const FVertexFactoryType*
 	if (Type->SupportsPrimitiveIdStream()
 		&& UseGPUScene(Platform, GetMaxSupportedFeatureLevel(Platform)) 
 		&& !IsMobilePlatform(Platform) // On mobile VS may use PrimtiveUB while GPUScene is enabled
-		&& ParameterMap.ContainsParameterAllocation(FPrimitiveUniformShaderParameters::StaticStructMetadata.GetShaderVariableName()))
+		&& ParameterMap.ContainsParameterAllocation(FPrimitiveUniformShaderParameters::FTypeInfo::GetStructMetadata()->GetShaderVariableName()))
 	{
 		OutErrors.AddUnique(*FString::Printf(TEXT("Shader attempted to bind the Primitive uniform buffer even though Vertex Factory %s computes a PrimitiveId per-instance.  This will break auto-instancing.  Shaders should use GetPrimitiveData(PrimitiveId).Member instead of Primitive.Member."), Type->GetName()));
 	}
@@ -204,9 +202,8 @@ void FHairStrandsVertexFactory::ValidateCompiledResult(const FVertexFactoryType*
 
 void FHairStrandsVertexFactory::SetData(const FDataType& InData)
 {
-	check(IsInRenderingThread());
 	Data = InData;
-	UpdateRHI();
+	UpdateRHI(FRHICommandListImmediate::Get());
 }
 
 /**
@@ -225,12 +222,12 @@ void FHairStrandsVertexFactory::Copy(const FHairStrandsVertexFactory& Other)
 	BeginUpdateResourceRHI(this);
 }
 
-void FHairStrandsVertexFactory::InitResources()
+void FHairStrandsVertexFactory::InitResources(FRHICommandListBase& RHICmdList)
 {
 	if (bIsInitialized)
 		return;
 
-	FVertexFactory::InitResource(); //Call VertexFactory/RenderResources::InitResource() to mark the resource as initialized();
+	FVertexFactory::InitResource(RHICmdList); //Call VertexFactory/RenderResources::InitResource() to mark the resource as initialized();
 
 	bIsInitialized = true;
 	bNeedsDeclaration = false;
@@ -265,7 +262,7 @@ IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FHairStrandsVertexFactory, SF_Compute,		
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FHairStrandsVertexFactory, SF_RayHitGroup,	FHairStrandsVertexFactoryShaderParameters);
 #endif
 
-void FHairStrandsVertexFactory::InitRHI()
+void FHairStrandsVertexFactory::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	// Nothing as the initialize runs only on first use
 }

@@ -3,7 +3,7 @@
 
 #include "UObject/Object.h"
 #include "Engine/DataAsset.h"
-#include "GameplayTargetingSystem/Types/TargetingSystemTypes.h"
+#include "Types/TargetingSystemTypes.h"
 
 #include "TargetingPreset.generated.h"
 
@@ -22,7 +22,7 @@ struct FTargetingDefaultResultsSet;
 *	and sorting.
 */
 UCLASS(BlueprintType)
-class UTargetingPreset : public UDataAsset
+class TARGETINGSYSTEM_API UTargetingPreset : public UDataAsset
 {
 	GENERATED_BODY()
 
@@ -31,6 +31,7 @@ public:
 
 	/** Get the set of tasks defined for this targeting preset */
 	FORCEINLINE const FTargetingTaskSet* GetTargetingTaskSet() const { return &TargetingTaskSet; }
+	FORCEINLINE FTargetingTaskSet& GetMutableTargetingTaskSet() { return TargetingTaskSet; }
 
 private:
 	/** The tasks that make up this targeting preset */

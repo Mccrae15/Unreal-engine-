@@ -39,15 +39,22 @@ namespace TypedElementQueryBuilder
 	FDependency& FDependency::ReadOnly(const UClass* Target)
 	{
 		checkf(Target, TEXT("The Dependency section in the Typed Elements query builder doesn't support nullptrs as Read-Only input."));
-		Query->Dependencies.Emplace(Target, EAccessType::ReadOnly);
+		Query->DependencyTypes.Emplace(Target);
+		Query->DependencyFlags.Emplace(ITypedElementDataStorageInterface::EQueryDependencyFlags::ReadOnly);
+		Query->CachedDependencies.AddDefaulted();
 		return *this;
 	}
 
-	FDependency& FDependency::ReadOnly(std::initializer_list<const UClass*> Targets)
+	FDependency& FDependency::ReadOnly(TConstArrayView<const UClass*> Targets)
 	{
+		int32 NewSize = Query->CachedDependencies.Num() + Targets.Num();
+		Query->DependencyTypes.Reserve(NewSize);
+		Query->CachedDependencies.Reserve(NewSize);
+		Query->DependencyFlags.Reserve(NewSize);
+		
 		for (const UClass* Target : Targets)
 		{
-			ReadOnly(Targets);
+			ReadOnly(Target);
 		}
 		return *this;
 	}
@@ -55,16 +62,35 @@ namespace TypedElementQueryBuilder
 	FDependency& FDependency::ReadWrite(const UClass* Target)
 	{
 		checkf(Target, TEXT("The Dependency section in the Typed Elements query builder doesn't support nullptrs as Read/Write input."));
-		Query->Dependencies.Emplace(Target, EAccessType::ReadWrite);
+		Query->DependencyTypes.Emplace(Target);
+		Query->DependencyFlags.Emplace(ITypedElementDataStorageInterface::EQueryDependencyFlags::None);
+		Query->CachedDependencies.AddDefaulted();
 		return *this;
 	}
 
-	FDependency& FDependency::ReadWrite(std::initializer_list<const UClass*> Targets)
+	FDependency& FDependency::ReadWrite(TConstArrayView<const UClass*> Targets)
 	{
+		int32 NewSize = Query->CachedDependencies.Num() + Targets.Num();
+		Query->DependencyTypes.Reserve(NewSize);
+		Query->CachedDependencies.Reserve(NewSize);
+		Query->DependencyFlags.Reserve(NewSize);
+		
 		for (const UClass* Target : Targets)
 		{
-			ReadWrite(Targets);
+			ReadWrite(Target);
 		}
+		return *this;
+	}
+
+	FDependency& FDependency::SubQuery(TypedElementQueryHandle Handle)
+	{
+		Query->Subqueries.Add(Handle);
+		return *this;
+	}
+	
+	FDependency& FDependency::SubQuery(TConstArrayView<TypedElementQueryHandle> Handles)
+	{
+		Query->Subqueries.Insert(Handles.GetData(), Handles.Num(), Query->Subqueries.Num());
 		return *this;
 	}
 
@@ -94,8 +120,12 @@ namespace TypedElementQueryBuilder
 		return *this;
 	}
 
-	FSimpleQuery& FSimpleQuery::All(std::initializer_list<const UScriptStruct*> Targets)
+	FSimpleQuery& FSimpleQuery::All(TConstArrayView<const UScriptStruct*> Targets)
 	{
+		int32 NewSize = Query->ConditionTypes.Num() + Targets.Num();
+		Query->ConditionTypes.Reserve(NewSize);
+		Query->ConditionOperators.Reserve(NewSize);
+		
 		for (const UScriptStruct* Target : Targets)
 		{
 			All(Target);
@@ -113,8 +143,12 @@ namespace TypedElementQueryBuilder
 		return *this;
 	}
 
-	FSimpleQuery& FSimpleQuery::Any(std::initializer_list<const UScriptStruct*> Targets)
+	FSimpleQuery& FSimpleQuery::Any(TConstArrayView<const UScriptStruct*> Targets)
 	{
+		int32 NewSize = Query->ConditionTypes.Num() + Targets.Num();
+		Query->ConditionTypes.Reserve(NewSize);
+		Query->ConditionOperators.Reserve(NewSize);
+
 		for (const UScriptStruct* Target : Targets)
 		{
 			Any(Target);
@@ -132,8 +166,12 @@ namespace TypedElementQueryBuilder
 		return *this;
 	}
 
-	FSimpleQuery& FSimpleQuery::None(std::initializer_list<const UScriptStruct*> Targets)
+	FSimpleQuery& FSimpleQuery::None(TConstArrayView<const UScriptStruct*> Targets)
 	{
+		int32 NewSize = Query->ConditionTypes.Num() + Targets.Num();
+		Query->ConditionTypes.Reserve(NewSize);
+		Query->ConditionOperators.Reserve(NewSize);
+
 		for (const UScriptStruct* Target : Targets)
 		{
 			None(Target);
@@ -148,7 +186,112 @@ namespace TypedElementQueryBuilder
 
 	ITypedElementDataStorageInterface::FQueryDescription&& FSimpleQuery::Compile()
 	{
+		Query->Callback.BeforeGroups.Shrink();
+		Query->Callback.AfterGroups.Shrink();
+		Query->SelectionTypes.Shrink();
+		Query->SelectionAccessTypes.Shrink();
+		Query->ConditionTypes.Shrink();
+		Query->ConditionOperators.Shrink();
+		Query->DependencyTypes.Shrink();
+		Query->DependencyFlags.Shrink();
+		Query->CachedDependencies.Shrink();
+		Query->Subqueries.Shrink();
 		return MoveTemp(*Query);
+	}
+
+
+	/**
+	 * FProcessor
+	 */
+	FProcessor::FProcessor(ITypedElementDataStorageInterface::EQueryTickPhase Phase, FName Group)
+		: Phase(Phase)
+		, Group(Group)
+	{}
+
+	FProcessor& FProcessor::SetPhase(ITypedElementDataStorageInterface::EQueryTickPhase NewPhase)
+	{
+		Phase = NewPhase;
+		return *this;
+	}
+
+	FProcessor& FProcessor::SetGroup(FName GroupName)
+	{
+		Group = GroupName;
+		return *this;
+	}
+
+	FProcessor& FProcessor::SetBeforeGroup(FName GroupName)
+	{
+		BeforeGroup = GroupName;
+		return *this;
+	}
+
+	FProcessor& FProcessor::SetAfterGroup(FName GroupName)
+	{
+		AfterGroup = GroupName;
+		return *this;
+	}
+
+	FProcessor& FProcessor::ForceToGameThread(bool bForce)
+	{
+		bForceToGameThread = bForce;
+		return *this;
+	}
+
+
+	/**
+	 * FObserver
+	 */
+	
+	FObserver::FObserver(EEvent MonitorForEvent, const UScriptStruct* MonitoredColumn)
+		: Monitor(MonitoredColumn)
+		, Event(MonitorForEvent)
+	{}
+
+	FObserver& FObserver::SetEvent(EEvent MonitorForEvent)
+	{
+		Event = MonitorForEvent;
+		return *this;
+	}
+
+	FObserver& FObserver::SetMonitoredColumn(const UScriptStruct* MonitoredColumn)
+	{
+		Monitor = MonitoredColumn;
+		return *this;
+	}
+
+	FObserver& FObserver::ForceToGameThread(bool bForce)
+	{
+		bForceToGameThread = bForce;
+		return *this;
+	}
+
+
+	/**
+	 * FPhaseAmble
+	 */
+
+	FPhaseAmble::FPhaseAmble(ELocation InLocation, ITypedElementDataStorageInterface::EQueryTickPhase InPhase)
+		: Phase(InPhase)
+		, Location(InLocation)
+	{}
+
+	FPhaseAmble& FPhaseAmble::SetLocation(ELocation NewLocation)
+	{
+		Location = NewLocation;
+		return *this;
+	}
+
+	FPhaseAmble& FPhaseAmble::SetPhase(ITypedElementDataStorageInterface::EQueryTickPhase NewPhase)
+	{
+		Phase = NewPhase;
+		return *this;
+	}
+
+	FPhaseAmble& FPhaseAmble::ForceToGameThread(bool bForce)
+	{
+		bForceToGameThread = bForce;
+		return *this;
 	}
 
 
@@ -164,7 +307,8 @@ namespace TypedElementQueryBuilder
 	Select& Select::ReadOnly(const UScriptStruct* Target)
 	{
 		checkf(Target, TEXT("The Select section in the Typed Elements query builder doesn't support nullptrs as Read-Only input."));
-		Query.Selection.Emplace(Target, EAccessType::ReadOnly);
+		Query.SelectionTypes.Emplace(Target);
+		Query.SelectionAccessTypes.Emplace(ITypedElementDataStorageInterface::EQueryAccessType::ReadOnly);
 		return *this;
 	}
 
@@ -180,7 +324,8 @@ namespace TypedElementQueryBuilder
 	Select& Select::ReadWrite(const UScriptStruct* Target)
 	{
 		checkf(Target, TEXT("The Select section in the Typed Elements query builder doesn't support nullptrs as Read/Write input."));
-		Query.Selection.Emplace(Target, EAccessType::ReadWrite);
+		Query.SelectionTypes.Emplace(Target);
+		Query.SelectionAccessTypes.Emplace(ITypedElementDataStorageInterface::EQueryAccessType::ReadWrite);
 		return *this;
 	}
 

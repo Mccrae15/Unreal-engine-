@@ -55,17 +55,20 @@
 #include "PrimitiveSceneProxy.h"
 #include "UObject/MetaData.h"
 #include "Engine/DamageEvents.h"
+#include "Engine/SCS_Node.h"
 
 #if WITH_EDITOR
 #include "FoliageHelper.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
 #include "LevelInstance/LevelInstanceInterface.h"
+#include "Misc/LazySingleton.h"
 #endif
 
+#include "WorldPartition/WorldPartitionLog.h"
 #include "WorldPartition/DataLayer/WorldDataLayers.h"
 #include "WorldPartition/WorldPartitionActorDescUtils.h"
 #include "WorldPartition/DataLayer/DataLayerAsset.h"
-#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
+#include "WorldPartition/DataLayer/DataLayerManager.h"
 #include "WorldPartition/ContentBundle/ContentBundlePaths.h"
 
 DEFINE_LOG_CATEGORY(LogActor);
@@ -100,6 +103,41 @@ FCriticalSection CSVActorClassNameToCountMapLock;
 
 #endif // (CSV_PROFILER && !UE_BUILD_SHIPPING)
 
+#if WITH_EDITOR
+void FActorInstanceGuidMapper::RegisterGuidMapper(FName InPackageName, const FGuidMapper& InGuidMapper)
+{
+	check(!GuidMappers.Contains(InPackageName));
+	GuidMappers.Add(InPackageName, InGuidMapper);
+}
+
+void FActorInstanceGuidMapper::UnregisterGuidMapper(FName InPackageName)
+{
+	check(GuidMappers.Contains(InPackageName));
+	GuidMappers.Remove(InPackageName);
+}
+
+FGuid FActorInstanceGuidMapper::MapGuid(FName InPackageName, const FGuid& InGuid)
+{
+	if (FGuidMapper* GuidMapper = GuidMappers.Find(InPackageName))
+	{
+		return (*GuidMapper)(InGuid);
+	}
+	return InGuid;
+}
+
+AActor::FDuplicationSeedInterface::FDuplicationSeedInterface(TMap<UObject*, UObject*>& InDuplicationSeed)
+	: DuplicationSeed(InDuplicationSeed)
+{
+}
+
+void AActor::FDuplicationSeedInterface::AddEntry(UObject* Source, UObject* Destination)
+{	
+	DuplicationSeed.Emplace(Source, Destination);
+}
+
+
+#endif
+
 uint32 AActor::BeginPlayCallDepth = 0;
 
 AActor::AActor()
@@ -130,6 +168,7 @@ void AActor::InitializeDefaults()
 	bCallPreReplication = true;
 	bCallPreReplicationForReplay = true;
 	bReplicateUsingRegisteredSubObjectList = GDefaultUseSubObjectReplicationList;
+	PhysicsReplicationMode = EPhysicsReplicationMode::Default;
 	NetPriority = 1.0f;
 	NetUpdateFrequency = 100.0f;
 	MinNetUpdateFrequency = 2.0f;
@@ -144,10 +183,10 @@ void AActor::InitializeDefaults()
 	bHiddenEdLevel = false;
 	bActorLabelEditable = true;
 	SpriteScale = 1.0f;
-	bEnableAutoLODGeneration = true;
 	bOptimizeBPComponentData = false;
 	bForceExternalActorLevelReferenceForPIE = false;
 #endif // WITH_EDITORONLY_DATA
+	bEnableAutoLODGeneration = true;
 	NetCullDistanceSquared = 225000000.0f;
 	NetDriverName = NAME_GameNetDriver;
 	NetDormancy = DORM_Awake;
@@ -400,7 +439,7 @@ bool AActor::IsAsset() const
 {
 	// External actors are considered assets, to allow using the asset logic for save dialogs, etc.
 	// Also, they return true even if pending kill, in order to show up as deleted in these dialogs.
-	return IsPackageExternal() && !GetPackage()->HasAnyFlags(RF_Transient) && !HasAnyFlags(RF_Transient | RF_ClassDefaultObject) && IsMainPackageActor();
+	return IsPackageExternal() && !GetPackage()->HasAnyFlags(RF_Transient) && !HasAnyFlags(RF_Transient | RF_ClassDefaultObject) && IsMainPackageActor() && !GetPackage()->HasAnyPackageFlags(PKG_PlayInEditor);
 }
 
 bool AActor::PreSaveRoot(const TCHAR* InFilename)
@@ -466,6 +505,7 @@ void AActor::PreSave(FObjectPreSaveContext ObjectSaveContext)
 {
 	Super::PreSave(ObjectSaveContext);
 #if WITH_EDITOR
+	// Always call FixupDataLayers() on PreSave so that DataLayerAssets SoftObjectPtrs internal WeakPtrs get resolved before GIsSavingPackage gets set to true preventing resolving.
 	FixupDataLayers();
 #endif
 }
@@ -860,6 +900,16 @@ void AActor::Serialize(FArchive& Ar)
 			ActorGuid = FGuid::NewGuid();
 		}
 
+		if (!IsTemplate())
+		{
+			const FGuid NewActorInstanceGuid = TLazySingleton<FActorInstanceGuidMapper>::Get().MapGuid(GetOuter()->GetPackage()->GetFName(), ActorGuid);
+			if (NewActorInstanceGuid != ActorGuid)
+			{
+				check(!ActorInstanceGuid.IsValid());
+				ActorInstanceGuid = NewActorInstanceGuid;
+			}
+		}
+
 		if (!CanChangeIsSpatiallyLoadedFlag() && (Ar.CustomVer(FUE5ReleaseStreamObjectVersion::GUID) < FUE5ReleaseStreamObjectVersion::ActorGridPlacementDeprecateDefaultValueFixup))
 		{
 			bIsSpatiallyLoaded = GetClass()->GetDefaultObject<AActor>()->bIsSpatiallyLoaded;
@@ -878,7 +928,6 @@ void AActor::Serialize(FArchive& Ar)
 				ContentBundleGuid = FixupContentBundleGuid;
 			}
 		}
-
 	}
 #endif
 }
@@ -976,6 +1025,24 @@ void AActor::PostLoadSubobjects(FObjectInstancingGraph* OuterInstanceGraph)
 
 	ResetOwnedComponents();
 
+	// If a constructor changed the component hierarchy of a serialized actor, it's possible to end up with a circular
+	// attachment in the hierarchy. Fix that using the archetype as a guideline.
+	if (GetAttachParentActor() == this)
+	{
+		// detected circular attachment. Fixup using archetype
+		const USceneComponent* ArchetypeRoot = CastChecked<AActor>(GetArchetype())->GetRootComponent();
+		TInlineComponentArray<USceneComponent*> Applicants;
+		GetComponents(ArchetypeRoot->GetClass(), Applicants);
+		for (USceneComponent* Applicant : Applicants)
+		{
+			if (Applicant->GetFName() == ArchetypeRoot->GetFName())
+			{
+				SetRootComponent(Applicant);
+				break;
+			}
+		}
+	}
+
 	// Redirect the root component away from a Blueprint-added instance if the native ctor now constructs a default subobject as the root.
 	if (RootComponent && !RootComponent->HasAnyFlags(RF_DefaultSubObject))
 	{
@@ -1071,11 +1138,13 @@ static bool IsComponentStreamingRelevant(const AActor* InActor, const UActorComp
 		return false;
 	}
 
-	if (InComponent->HasAnyFlags(RF_Transient))
+	// Transient components shoudn't be part of the streeaming bounds, unless the actor itself is transient.
+	if (!InActor->HasAnyFlags(RF_Transient) && InComponent->HasAnyFlags(RF_Transient))
 	{
 		return false;
 	}
 
+	// Editor-only components shoudn't be part of the streeaming bounds, unless the actor itself is editor-only.
 	if (!InActor->IsEditorOnly() && InComponent->IsEditorOnly())
 	{
 		return false;
@@ -1505,14 +1574,6 @@ void AActor::PreReplication(IRepChangedPropertyTracker & ChangedPropertyTracker)
 		MARK_PROPERTY_DIRTY_FROM_NAME(AActor, AttachmentReplication, this);
 	}
 #endif
-
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	UBlueprintGeneratedClass* BPClass = Cast<UBlueprintGeneratedClass>(GetClass());
-	if (BPClass != nullptr)
-	{
-		BPClass->InstancePreReplication(this, ChangedPropertyTracker);
-	}
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void AActor::CallPreReplication(UNetDriver* NetDriver)
@@ -3396,11 +3457,11 @@ void AActor::ClearInstanceComponents(const bool bDestroyComponents)
 		TArray<UActorComponent*> CachedComponents(InstanceComponents);
 
 		// Run in reverse to reduce memory churn when the components are removed from InstanceComponents
-		for (int32 Index=CachedComponents.Num()-1; Index >= 0; --Index)
+		for (UActorComponent* CachedComponent : ReverseIterate(CachedComponents))
 		{
-			if (CachedComponents[Index])
+			if (CachedComponent)
 			{
-				CachedComponents[Index]->DestroyComponent();
+				CachedComponent->DestroyComponent();
 			}
 		}
 	}
@@ -3439,6 +3500,19 @@ TArray<UActorComponent*> AActor::K2_GetComponentsByClass(TSubclassOf<UActorCompo
 	TArray<UActorComponent*> Components;
 	GetComponents(ComponentClass, Components);
 	return MoveTemp(Components);
+}
+
+UActorComponent* AActor::FindComponentByTag(TSubclassOf<UActorComponent> ComponentClass, FName Tag) const
+{
+	for (UActorComponent* Component : GetComponents())
+	{
+		if (Component && Component->IsA(ComponentClass) && Component->ComponentHasTag(Tag))
+		{
+			return Component;
+		}
+	}
+
+	return nullptr;
 }
 
 TArray<UActorComponent*> AActor::GetComponentsByTag(TSubclassOf<UActorComponent> ComponentClass, FName Tag) const
@@ -5406,15 +5480,15 @@ bool AActor::HasValidRootComponent()
 	return (RootComponent != nullptr && RootComponent->IsRegistered()); 
 }
 
-void AActor::MarkComponentsAsPendingKill()
+void AActor::MarkComponentsAsGarbage(bool bModify)
 {
-	// Iterate components and mark them all as pending kill.
+	// Iterate components and mark them all as garbage.
 	TInlineComponentArray<UActorComponent*> Components(this);
 
 	for (UActorComponent* Component : Components)
 	{
 		// Modify component so undo/ redo works in the editor.
-		if (GIsEditor)
+		if (bModify && GIsEditor)
 		{
 			Component->Modify();
 		}
@@ -5505,6 +5579,8 @@ void AActor::HandleRegisterComponentWithWorld(UActorComponent* Component)
 	{
 		Component->InitializeComponent();
 
+		// The component was finally initialized, it can now be replicated
+		// Note that if this component does not ask to be initialized, it would have started to be replicated inside AddOwnedComponent.
 		if (bOwnerBeginPlayStarted)
 		{
 			AddComponentForReplication(Component);
@@ -5517,13 +5593,6 @@ void AActor::HandleRegisterComponentWithWorld(UActorComponent* Component)
 
 		if (!Component->HasBegunPlay())
 		{
-#if UE_WITH_IRIS
-		    if (Component->GetIsReplicated())
-		    {
-		    	UpdateReplicatedComponent(Component);
-		    }
-#endif // UE_WITH_IRIS
-
 			Component->BeginPlay();
 			ensureMsgf(Component->HasBegunPlay(), TEXT("Failed to route BeginPlay (%s)"), *Component->GetFullName());
 		}
@@ -5896,7 +5965,12 @@ void AActor::PostRename(UObject* OldOuter, const FName OldName)
 
 bool AActor::IsHLODRelevant() const
 {
-	if (IsHidden())
+	if (!IsValidChecked(this))
+	{
+		return false;
+	}
+
+	if (HasAnyFlags(RF_Transient))
 	{
 		return false;
 	}
@@ -5906,7 +5980,7 @@ bool AActor::IsHLODRelevant() const
 		return false;
 	}
 
-	if (!IsValidChecked(this))
+	if (IsHidden())
 	{
 		return false;
 	}
@@ -5923,7 +5997,21 @@ bool AActor::IsHLODRelevant() const
 		return false;
 	}
 
-	return Algo::AnyOf(GetComponents(), [](const UActorComponent* Component) { return Component->IsHLODRelevant(); });
+	return HasHLODRelevantComponents();
+}
+
+bool AActor::HasHLODRelevantComponents() const
+{
+	return Algo::AnyOf(GetComponents(), [](const UActorComponent* Component) { return Component && Component->IsHLODRelevant(); });
+}
+
+TArray<UActorComponent*> AActor::GetHLODRelevantComponents() const
+{
+	TArray<UActorComponent*> HLODRelevantComponents;
+	auto IsHLODRelevant = [](UActorComponent* Component) { return Component && Component->IsHLODRelevant(); };
+	auto GetComponent = [](UActorComponent* Component) { return Component; };
+	Algo::TransformIf(GetComponents(), HLODRelevantComponents, IsHLODRelevant, GetComponent);
+	return HLODRelevantComponents;
 }
 
 void AActor::SetLODParent(UPrimitiveComponent* InLODParent, float InParentDrawDistance)
@@ -6135,8 +6223,8 @@ TArray<const UDataLayerInstance*> AActor::GetDataLayerInstances() const
 }
 
 // Returns all valid DataLayerInstances for this actor including those inherited from their parent level instance actor.
-// If bUseLevelContext is true, the actor level will be passed down to the DataLayerSubsystem which will use it 
-// to narrow down the resolving of valid datalayers for this particular level.
+// If bUseLevelContext is true, the actor level will be used to find the associated DataLayerManager which will be used 
+// to resolve valid datalayers for this particular level.
 TArray<const UDataLayerInstance*> AActor::GetDataLayerInstancesInternal(bool bUseLevelContext, bool bIncludeParentDataLayers) const
 {
 	if (UseWorldPartitionRuntimeCellDataLayers())
@@ -6146,16 +6234,15 @@ TArray<const UDataLayerInstance*> AActor::GetDataLayerInstancesInternal(bool bUs
 	}
 
 #if WITH_EDITOR
-	if (SupportsDataLayer())
+	if (SupportsDataLayerType(UDataLayerInstance::StaticClass()))
 	{
 		TArray<const UDataLayerInstance*> DataLayerInstances;
-		ULevel* OuterLevel = bUseLevelContext ? GetLevel() : nullptr;
-		if (UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(GetWorld()))
+		if (UDataLayerManager* DataLayerManager = bUseLevelContext ? UDataLayerManager::GetDataLayerManager(this) : UDataLayerManager::GetDataLayerManager(GetWorld()))
 		{
-			DataLayerInstances += DataLayerSubsystem->GetDataLayerInstances(DataLayerAssets, OuterLevel);
+			DataLayerInstances += DataLayerManager->GetDataLayerInstances(GetDataLayerAssets());
 
 			PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			DataLayerInstances += DataLayerSubsystem->GetDataLayerInstances(DataLayers, OuterLevel);
+			DataLayerInstances += DataLayerManager->GetDataLayerInstances(DataLayers);
 			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 
@@ -6246,5 +6333,111 @@ bool AActor::UseWorldPartitionRuntimeCellDataLayers() const
 // DataLayers (end)
 //---------------------------------------------------------------------------
 
-#undef LOCTEXT_NAMESPACE
 
+void AActor::GetActorClassDefaultComponents(const TSubclassOf<AActor>& InActorClass, const TSubclassOf<UActorComponent>& InComponentClass, TArray<const UActorComponent*>& OutComponents)
+{
+	OutComponents.Reset();
+
+	ForEachComponentOfActorClassDefault(InActorClass, InComponentClass, [&](const UActorComponent* TemplateComponent)
+	{
+		OutComponents.Add(TemplateComponent);
+		return true;
+	});
+}
+
+const UActorComponent* AActor::GetActorClassDefaultComponentByName(const TSubclassOf<AActor>& InActorClass, const TSubclassOf<UActorComponent>& InComponentClass, FName InComponentName)
+{
+	const UActorComponent* Result = nullptr;
+
+	ForEachComponentOfActorClassDefault(InActorClass, InComponentClass, [&Result, InComponentName](const UActorComponent* TemplateComponent)
+	{
+		// Try to strip suffix used to identify template component instances
+		FString StrippedName = TemplateComponent->GetName();
+		if (StrippedName.RemoveFromEnd(UActorComponent::ComponentTemplateNameSuffix))
+		{
+			if (StrippedName == InComponentName.ToString())
+			{
+				Result = TemplateComponent;
+				return false;
+			}
+		}
+		else if (TemplateComponent->GetFName() == InComponentName)
+		{
+			Result = TemplateComponent;
+			return false;
+		}
+
+		return true;
+	});
+
+	return Result;
+}
+
+const UActorComponent* AActor::GetActorClassDefaultComponent(const TSubclassOf<AActor>& InActorClass, const TSubclassOf<UActorComponent>& InComponentClass)
+{
+	const UActorComponent* Result = nullptr;
+
+	ForEachComponentOfActorClassDefault(InActorClass, InComponentClass, [&Result](const UActorComponent* TemplateComponent)
+	{
+		Result = TemplateComponent;
+		return false;
+	});
+
+	return Result;
+}
+
+void AActor::ForEachComponentOfActorClassDefault(const TSubclassOf<AActor>& ActorClass, const TSubclassOf<UActorComponent>& InComponentClass, TFunctionRef<bool(const UActorComponent*)> InFunc)
+{
+	if (!ActorClass.Get())
+	{
+		return;
+	}
+
+	auto FilterFunc = [&](const UActorComponent* TemplateComponent)
+	{
+		if (!TemplateComponent)
+		{
+			return true;
+		}
+		
+		if (!InComponentClass.Get() || TemplateComponent->IsA(InComponentClass))
+		{
+			return InFunc(TemplateComponent);
+		}
+
+		return true;
+	};
+
+	// Process native components
+	const AActor* CDO = ActorClass->GetDefaultObject<AActor>();
+	for (const UActorComponent* Component : CDO->GetComponents())
+	{
+		if (!FilterFunc(Component))
+		{
+			return;
+		}
+	}
+
+	// Process blueprint components
+	if (UBlueprintGeneratedClass* ActorBlueprintGeneratedClass = Cast<UBlueprintGeneratedClass>(ActorClass))
+	{
+		UBlueprintGeneratedClass::ForEachGeneratedClassInHierarchy(ActorClass, [&](const UBlueprintGeneratedClass* CurrentBPGC)
+		{
+			if (const USimpleConstructionScript* const ConstructionScript = CurrentBPGC->SimpleConstructionScript)
+			{
+				// Gets all BP added components
+				for (const USCS_Node* const Node : ConstructionScript->GetAllNodes())
+				{
+					if (!FilterFunc(Node->GetActualComponentTemplate(ActorBlueprintGeneratedClass)))
+					{
+						return false;
+					}
+				}
+			}
+			return true;
+		});
+	}
+}
+
+
+#undef LOCTEXT_NAMESPACE

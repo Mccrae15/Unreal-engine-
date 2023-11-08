@@ -52,6 +52,7 @@ void FMsg::LogfImpl(const ANSICHAR* File, int32 Line, const FLogCategoryName& Ca
 void FMsg::LogV(const ANSICHAR* File, int32 Line, const FLogCategoryName& Category, ELogVerbosity::Type Verbosity, const TCHAR* Fmt, va_list Args)
 {
 #if !NO_LOGGING
+	LLM_SCOPE_BYNAME("EngineMisc/FMsgLogf")
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FMsgLogf);
 	CSV_CUSTOM_STAT(FMsgLogf, FMsgLogfCount, 1, ECsvCustomStatOp::Accumulate);
 
@@ -72,7 +73,12 @@ void FMsg::LogV(const ANSICHAR* File, int32 Line, const FLogCategoryName& Catego
 		default:
 			break;
 		}
-		(OutputDevice ? OutputDevice : GLog)->Serialize(Message, Verbosity, Category);
+
+		// Logging is always done in the open as we want logs even with transactionalized code.
+		AutoRTFM::Open([OutputDevice, Message, Verbosity, Category]
+		{
+			(OutputDevice ? OutputDevice : GLog)->Serialize(Message, Verbosity, Category);
+		});
 	}
 	else
 	{

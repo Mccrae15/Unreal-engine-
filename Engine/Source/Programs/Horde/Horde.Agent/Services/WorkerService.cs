@@ -6,8 +6,8 @@ using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using EpicGames.Core;
 using Horde.Agent.Leases;
-using Horde.Agent.Utility;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -22,19 +22,32 @@ namespace Horde.Agent.Services
 	{
 		readonly ILogger _logger;
 		readonly IOptions<AgentSettings> _settings;
-		readonly SessionFactoryService _sessionFactoryService;
+		readonly ISessionFactory _sessionFactory;
 		readonly CapabilitiesService _capabilitiesService;
+		readonly StatusService _statusService;
 		readonly LeaseHandler[] _leaseHandlers;
 		readonly IServiceProvider _serviceProvider;
+		LeaseManager? _currentLeaseManager;
+
+		public IReadOnlyList<string> PoolIds => _currentLeaseManager?.PoolIds ?? Array.Empty<string>();
+
+		static readonly TimeSpan[] s_sessionBackOffTime =
+		{
+			TimeSpan.FromSeconds(5),
+			TimeSpan.FromSeconds(30),
+			TimeSpan.FromMinutes(1),
+			TimeSpan.FromMinutes(5)
+		};
 
 		/// <summary>
 		/// Constructor. Registers with the server and starts accepting connections.
 		/// </summary>
-		public WorkerService(IOptions<AgentSettings> settings, SessionFactoryService sessionFactoryService, CapabilitiesService capabilitiesService, IEnumerable<LeaseHandler> leaseHandlers, IServiceProvider serviceProvider, ILogger<WorkerService> logger)
+		public WorkerService(IOptions<AgentSettings> settings, ISessionFactory sessionFactory, CapabilitiesService capabilitiesService, StatusService statusService, IEnumerable<LeaseHandler> leaseHandlers, IServiceProvider serviceProvider, ILogger<WorkerService> logger)
 		{
 			_settings = settings;
-			_sessionFactoryService = sessionFactoryService;
+			_sessionFactory = sessionFactory;
 			_capabilitiesService = capabilitiesService;
+			_statusService = statusService;
 			_logger = logger;
 			_leaseHandlers = leaseHandlers.ToArray();
 			_serviceProvider = serviceProvider;
@@ -69,24 +82,38 @@ namespace Horde.Agent.Services
 			// Print the server info
 			_logger.LogInformation("Arguments: {Arguments}", Environment.CommandLine);
 
+			await TelemetryService.LogProblematicFilterDrivers(_logger, stoppingToken);
+
 			// Keep trying to start an agent session with the server
+			int failureCount = 0;
 			while (!stoppingToken.IsCancellationRequested)
 			{
-				SessionResult result = SessionResult.Continue;
+				SessionResult? result = null;
+				_statusService.Set(AgentStatusMessage.Starting);
 
 				Stopwatch sessionTime = Stopwatch.StartNew();
+
 				await using (AsyncServiceScope scope = _serviceProvider.CreateAsyncScope())
 				{
 					try
 					{
-						using Mutex singleInstanceMutex = new(false, "Global\\HordeAgent-DB828ACB-0AA5-4D32-A62A-21D4429B1014");
-						await WaitForMutexAsync(singleInstanceMutex, stoppingToken);
+						Task<IDisposable> mutexTask = SingleInstanceMutex.AcquireAsync("Global\\HordeAgent-DB828ACB-0AA5-4D32-A62A-21D4429B1014", stoppingToken);
 
-						await using (ISession session = await _sessionFactoryService.CreateAsync(stoppingToken))
+						Task delayTask = Task.Delay(TimeSpan.FromSeconds(1.0), stoppingToken);
+						if (Task.WhenAny(mutexTask, delayTask) == delayTask)
 						{
-							LeaseManager leaseManager = new LeaseManager(session, _capabilitiesService, _leaseHandlers, _settings, _logger);
-							result = await leaseManager.RunAsync(false, stoppingToken);
+							_logger.LogInformation("Another agent instance is already running. Waiting for it to terminate.");
 						}
+
+						using IDisposable mutex = await mutexTask;
+
+						await using (ISession session = await _sessionFactory.CreateAsync(stoppingToken))
+						{
+							_currentLeaseManager = new LeaseManager(session, _capabilitiesService, _statusService, _leaseHandlers, _settings, _logger);
+							result = await _currentLeaseManager.RunAsync(false, stoppingToken);
+						}
+
+						failureCount = 0;
 					}
 					catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
 					{
@@ -94,38 +121,38 @@ namespace Horde.Agent.Services
 					}
 					catch (Exception ex)
 					{
-						_logger.LogError(ex, "Exception while executing session. Restarting. ({Message})", ex.Message);
-					}
-				}
-
-				if (result == SessionResult.Terminate)
-				{
-					break;
-				}
-				else if (result == SessionResult.Shutdown || result == SessionResult.Restart)
-				{
-					bool restart = (result == SessionResult.Restart);
-					_logger.LogInformation("Initiating shutdown (restart={Restart})", restart);
-
-					if (Shutdown.InitiateShutdown(restart, _logger))
-					{
-						for (int idx = 10; idx > 0; idx--)
+						if (sessionTime.Elapsed < TimeSpan.FromMinutes(5.0))
 						{
-							_logger.LogInformation("Waiting for shutdown ({Count})", idx);
-							try
-							{
-								await Task.Delay(TimeSpan.FromSeconds(60.0), stoppingToken);
-								_logger.LogInformation("Shutdown aborted.");
-							}
-							catch (OperationCanceledException)
-							{
-								_logger.LogInformation("Agent is shutting down.");
-								return;
-							}
+							failureCount++;
 						}
+						else
+						{
+							failureCount = 1;
+						}
+
+						TimeSpan backOffTime = s_sessionBackOffTime[Math.Min(failureCount - 1, s_sessionBackOffTime.Length - 1)];
+						_logger.LogInformation("Session failure #{FailureNum}. Waiting {Time} and restarting. ({Message})", failureCount, backOffTime, ex.Message);
+						_statusService.Set(false, 0, $"Unable to start session: {ex.Message}");
+						await Task.Delay(backOffTime, stoppingToken);
 					}
 				}
-				
+
+				if (result != null)
+				{
+					if (result.Outcome == SessionOutcome.BackOff)
+					{
+						await Task.Delay(TimeSpan.FromSeconds(30.0), stoppingToken);
+					}
+					else if (result.Outcome == SessionOutcome.Terminate)
+					{
+						break;
+					}
+					else if (result.Outcome == SessionOutcome.RunCallback)
+					{
+						await result.CallbackAsync!(_logger, stoppingToken);
+					}
+				}
+
 				if (sessionTime.Elapsed < TimeSpan.FromSeconds(2.0))
 				{
 					_logger.LogInformation("Waiting 5 seconds before restarting session...");

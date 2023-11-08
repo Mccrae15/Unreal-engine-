@@ -124,6 +124,8 @@ protected:
 	/** Network serialized data cache */
 	UPROPERTY(Transient)
 	TArray<uint8> ReplicationBytes;
+	
+	static bool ShouldExportTextItemAsQuotedString(const FString& NetIdStr);
 };
 
 /** Specify type trait support for various low level UPROPERTY overrides */
@@ -147,6 +149,7 @@ struct TStructOpsTypeTraits<FUniqueNetIdRepl> : public TStructOpsTypeTraitsBase2
 		// Import string contents as a unique id
 		WithImportTextItem = true
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 
 /** Test harness for Unique Id replication */

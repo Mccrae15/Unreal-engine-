@@ -1,9 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WorldPartition/WorldPartitionHandle.h"
-#include "Engine/Level.h"
 #include "WorldPartition/ActorDescContainerCollection.h"
-
+#include "Engine/Level.h"
+#include "Engine/World.h"
 
 #if WITH_EDITOR
 /**
@@ -24,11 +24,6 @@ UActorDescContainer* FWorldPartitionImplBase::GetActorDescContainer(TUniquePtr<F
 	return ActorDesc ? ActorDesc->Get()->GetContainer() : nullptr;
 }
 
-UActorDescContainer* FWorldPartitionImplBase::GetActorDescContainer(FActorDescContainerCollection* ContainerCollection, const FGuid& ActorGuid)
-{
-	return ContainerCollection ? ContainerCollection->GetActorDescContainer(ActorGuid) : nullptr;
-}
-
 bool FWorldPartitionImplBase::IsActorDescLoaded(FWorldPartitionActorDesc* ActorDesc)
 {
 	return ActorDesc->IsLoaded();
@@ -42,11 +37,19 @@ FWorldPartitionLoadingContext::IContext* FWorldPartitionLoadingContext::ActiveCo
 
 void FWorldPartitionLoadingContext::LoadAndRegisterActor(FWorldPartitionActorDesc* ActorDesc)
 {
+#if DO_CHECK
+	FWorldPartitionActorDesc::FRegisteringUnregisteringGuard Guard(ActorDesc);
+#endif
+
 	ActiveContext->RegisterActor(ActorDesc);
 }
 
 void FWorldPartitionLoadingContext::UnloadAndUnregisterActor(FWorldPartitionActorDesc* ActorDesc)
 {
+#if DO_CHECK
+	FWorldPartitionActorDesc::FRegisteringUnregisteringGuard Guard(ActorDesc);
+#endif
+
 	ActiveContext->UnregisterActor(ActorDesc);
 }
 
@@ -86,6 +89,9 @@ void FWorldPartitionLoadingContext::FImmediate::RegisterActor(FWorldPartitionAct
 
 void FWorldPartitionLoadingContext::FImmediate::UnregisterActor(FWorldPartitionActorDesc* ActorDesc)
 {
+	// Set GIsEditorLoadingPackage to avoid dirtying the Actor package if Modify() is called during the unload sequence
+	TGuardValue<bool> IsEditorLoadingPackageGuard(GIsEditorLoadingPackage, true);
+
 	// When cleaning up worlds, actors are already marked as garbage at this point, so no need to remove them from the world
 	if (AActor* Actor = ActorDesc->GetActor(); IsValid(Actor))
 	{
@@ -149,6 +155,9 @@ FWorldPartitionLoadingContext::FDeferred::~FDeferred()
 
 			if (ContainerOp.Unregistrations.Num())
 			{
+				// Set GIsEditorLoadingPackage to avoid dirtying the Actor package if Modify() is called during the unload sequence
+				TGuardValue<bool> IsEditorLoadingPackageGuard(GIsEditorLoadingPackage, true);
+
 				TArray<AActor*> ActorList;
 				if (ULevel* Level = CreateActorList(ActorList, ContainerOp.Unregistrations))
 				{
@@ -200,6 +209,8 @@ void FWorldPartitionLoadingContext::FDeferred::UnregisterActor(FWorldPartitionAc
 		NumUnregistrations++;
 
 		check(!ContainerOps.FindChecked(Container).Registrations.Contains(ActorDesc));
+
+		bNeedsClearTransactions |= Actor->GetTypedOuter<UWorld>()->HasAnyFlags(RF_Transactional);
 	}
 }
 

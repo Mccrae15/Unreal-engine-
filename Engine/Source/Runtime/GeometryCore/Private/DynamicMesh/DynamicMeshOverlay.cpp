@@ -1226,94 +1226,75 @@ void TDynamicMeshOverlay<RealType, ElementSize>::OnCollapseEdge(const FDynamicMe
 		checkSlow(removed_elemid[1] != FDynamicMesh3::InvalidID);
 		
 	}
-	if (!bT0Set && !bT1Set)
+
+	// update value of kept elements
+	for (int i = 0; i < 2; ++i)
 	{
-		// if neither triangle was set, still need to check surrounding triangles; one or both elements may still be used
-		checkSlow(!bFoundRemovedElement[0] && !bFoundRemovedElement[1]);
-		
-		// note this may do the wrong thing in the case that at least one of the verts has split elements.
-		// higher-level code should make sure this doesn't happen.
-		
-		for (int onering_tid : ParentMesh->VtxTrianglesItr(vid_base_kept))
+		if (kept_elemid[i] == FDynamicMesh3::InvalidID || removed_elemid[i] == FDynamicMesh3::InvalidID)
 		{
-			if (!IsSetTriangle(onering_tid))
+			continue;
+		}
+
+		SetElementFromLerp(kept_elemid[i], kept_elemid[i], removed_elemid[i], (double)collapseInfo.CollapseT);
+	}
+
+	// Helper for detaching from elements further below. Technically, the freeing gets done for us if the 
+	// triangle unset call is the last detachment (which it should be as long as only elements on a removed 
+	// overlay edge are ones that are removed), but it is saner to have it.
+	auto DecrementAndFreeIfLast = [this](int32 elem_id)
+	{
+		ElementsRefCounts.Decrement(elem_id);
+		if (ElementsRefCounts.GetRefCount(elem_id) == 1)
+		{
+			ElementsRefCounts.Decrement(elem_id);
+			ParentVertices[elem_id] = FDynamicMesh3::InvalidID;
+		}
+	};
+
+
+	// Look for still-existing triangles that have elements linked to the removed vertex and update them.
+	// Note that this has to happen even if both triangles were unset, as the removed vertex may have had
+	// other elements associated with it, so we need to look at its triangles (which are now attached to
+	// vid_base_kept).
+	for (int onering_tid : ParentMesh->VtxTrianglesItr(vid_base_kept))
+	{
+		if (!IsSetTriangle(onering_tid))
+		{
+			continue;
+		}
+		FIndex3i elem_tri = GetTriangle(onering_tid);
+		for (int j = 0; j < 3; ++j)
+		{
+			int elem_id = elem_tri[j];
+			if (ParentVertices[elem_id] == vid_base_removed)
 			{
-				continue;
-			}
-			FIndex3i elem_tri = GetTriangle(onering_tid);
-			for (int j = 0; j < 3; ++j) 
-			{
-				int elem_id = elem_tri[j];
-				int vid_base = ParentVertices[elem_id];
-				if (vid_base == vid_base_removed)
+				if (elem_id == removed_elemid[0])
 				{
-					bFoundRemovedElement[0] = true;
-					removed_elemid[0] = elem_id;
+					ElementTriangles[3 * onering_tid + j] = kept_elemid[0];
+					if (bFoundKeptElement[0])
+					{
+						ElementsRefCounts.Increment(kept_elemid[0]);
+					}
+					DecrementAndFreeIfLast(elem_id);
 				}
-				if (vid_base == vid_base_kept)
+				else if (elem_id == removed_elemid[1])
 				{
-					bFoundKeptElement[0] = true;
-					kept_elemid[0] = elem_id;
+					ElementTriangles[3 * onering_tid + j] = kept_elemid[1];
+					if (bFoundKeptElement[1])
+					{
+						ElementsRefCounts.Increment(kept_elemid[1]);
+					}
+					DecrementAndFreeIfLast(elem_id);
+				}
+				else
+				{
+					// this could happen if a split edge is adjacent to the edge we collapse
+					ParentVertices[elem_id] = vid_base_kept;
 				}
 			}
 		}
 	}
 
-	// look for still-existing triangles that have elements linked to the removed vertex.
-	// in that case, replace with the element we found
-
-	if (bFoundRemovedElement[0] || bFoundRemovedElement[1])
-	{
-		for (int onering_tid : ParentMesh->VtxTrianglesItr(vid_base_kept))
-		{
-			if (!IsSetTriangle(onering_tid))
-			{
-				continue;
-			}
-			FIndex3i elem_tri = GetTriangle(onering_tid);
-			for (int j = 0; j < 3; ++j)
-			{
-				int elem_id = elem_tri[j];
-				if (ParentVertices[elem_id] == vid_base_removed)
-				{
-					if (elem_id == removed_elemid[0])
-					{
-						ElementsRefCounts.Decrement(elem_id);
-						ElementTriangles[3 * onering_tid + j] = kept_elemid[0];
-						if (bFoundKeptElement[0])
-						{
-							ElementsRefCounts.Increment(kept_elemid[0]);
-						}
-					}
-					else if (elem_id == removed_elemid[1])
-					{
-						ElementsRefCounts.Decrement(elem_id);
-						ElementTriangles[3 * onering_tid + j] = kept_elemid[1];
-						if (bFoundKeptElement[1])
-						{
-							ElementsRefCounts.Increment(kept_elemid[1]);
-						}
-					}
-					else
-					{
-						// this could happen if a split edge is adjacent to the edge we collapse
-						ParentVertices[elem_id] = vid_base_kept;
-					}
-				}
-			}
-		}
-
-		for (int i = 0; i < 2; ++i)
-		{
-			if (kept_elemid[i] == FDynamicMesh3::InvalidID || removed_elemid[i] == FDynamicMesh3::InvalidID)
-			{
-				continue;
-			}
-
-			// update value of kept element
-			SetElementFromLerp(kept_elemid[i], kept_elemid[i], removed_elemid[i], (double)collapseInfo.CollapseT);
-		}
-	}
 
 	// clear the two triangles we removed
 	if (bT0Set)
@@ -1331,12 +1312,12 @@ void TDynamicMeshOverlay<RealType, ElementSize>::OnCollapseEdge(const FDynamicMe
 		removed_elemid[1] = FDynamicMesh3::InvalidID;
 	}
 
-	// Note: the elements associated with the removed vertex should already have been removed when the triangles were un-set above
+	// Note: the elements associated with the removed vertex should have been removed in the iteration or triangle unsetting above
 #if UE_BUILD_DEBUG
 	for (int k = 0; k < 2; ++k)
 	{
 		if (removed_elemid[k] != FDynamicMesh3::InvalidID)
-	{
+		{
 			int rc = ElementsRefCounts.GetRefCount(removed_elemid[k]);
 			checkSlow(rc == 0);
 		}
@@ -1473,6 +1454,52 @@ void TDynamicMeshOverlay<RealType, ElementSize>::SetElementFromBary(int SetEleme
 		Elements[IndexSet + i] = (RealType)BaryValue;			
 	}
 }
+
+
+
+template<typename RealType, int ElementSize, typename VectorType>
+bool TDynamicMeshVectorOverlay<RealType, ElementSize, VectorType>::EnumerateVertexElements(
+	int VertexID,
+	TFunctionRef<bool(int TriangleID, int ElementID, const VectorType& Value)> ProcessFunc,
+	bool bFindUniqueElements) const
+{
+	if (this->ParentMesh->IsVertex(VertexID) == false) return false;
+
+	TArray<int32, TInlineAllocator<16>> UniqueElements;
+
+	int32 Count = 0;
+	for (int tid : this->ParentMesh->VtxTrianglesItr(VertexID))
+	{
+		int32 BaseElemIdx = 3 * tid;
+		bool bIsSetTriangle = (this->ElementTriangles[BaseElemIdx] >= 0);
+		if (bIsSetTriangle)
+		{
+			Count++;
+
+			for (int j = 0; j < 3; ++j)
+			{
+				int32 ElementIdx = this->ElementTriangles[BaseElemIdx + j];
+				if (this->ParentVertices[ElementIdx] == VertexID)
+				{
+					int32 NumUnique = UniqueElements.Num();
+					if (bFindUniqueElements == false || (UniqueElements.AddUnique(ElementIdx) == NumUnique) )
+					{
+						bool bContinue = ProcessFunc(tid, ElementIdx, this->GetElement(ElementIdx));
+						if (!bContinue)
+						{
+							return true;
+						}
+					}
+				}
+			}
+
+		}
+	}
+	return (Count > 0);
+}
+
+
+
 
 
 
@@ -1847,14 +1874,14 @@ template class GEOMETRYCORE_API TDynamicMeshOverlay<int, 3>;
 template class GEOMETRYCORE_API TDynamicMeshOverlay<float, 4>;
 template class GEOMETRYCORE_API TDynamicMeshOverlay<double, 4>;
 
-template class TDynamicMeshVectorOverlay<float, 2, FVector2f>;
-template class TDynamicMeshVectorOverlay<double, 2, FVector2d>;
-template class TDynamicMeshVectorOverlay<int, 2, FVector2i>;
-template class TDynamicMeshVectorOverlay<float, 3, FVector3f>;
-template class TDynamicMeshVectorOverlay<double, 3, FVector3d>;
-template class TDynamicMeshVectorOverlay<int, 3, FVector3i>;
-template class TDynamicMeshVectorOverlay<float, 4, FVector4f>;
-template class TDynamicMeshVectorOverlay<double, 4, FVector4d>;
+template class GEOMETRYCORE_API TDynamicMeshVectorOverlay<float, 2, FVector2f>;
+template class GEOMETRYCORE_API TDynamicMeshVectorOverlay<double, 2, FVector2d>;
+template class GEOMETRYCORE_API TDynamicMeshVectorOverlay<int, 2, FVector2i>;
+template class GEOMETRYCORE_API TDynamicMeshVectorOverlay<float, 3, FVector3f>;
+template class GEOMETRYCORE_API TDynamicMeshVectorOverlay<double, 3, FVector3d>;
+template class GEOMETRYCORE_API TDynamicMeshVectorOverlay<int, 3, FVector3i>;
+template class GEOMETRYCORE_API TDynamicMeshVectorOverlay<float, 4, FVector4f>;
+template class GEOMETRYCORE_API TDynamicMeshVectorOverlay<double, 4, FVector4d>;
 
 } // end namespace UE::Geometry
 } // end namespace UE

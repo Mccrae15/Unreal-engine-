@@ -1,8 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved. 
 #include "Scene/InterchangeSkeletalMeshActorFactory.h"
 
-#include "InterchangeActorFactoryNode.h"
 #include "InterchangeMeshActorFactoryNode.h"
+#include "InterchangeAnimSequenceFactoryNode.h"
 #include "Scene/InterchangeActorHelper.h"
 #include "InterchangeSceneNode.h"
 #include "InterchangeSkeletalMeshFactoryNode.h"
@@ -15,24 +15,23 @@
 #include UE_INLINE_GENERATED_CPP_BY_NAME(InterchangeSkeletalMeshActorFactory)
 
 
-UObject* UInterchangeSkeletalMeshActorFactory::ImportSceneObject_GameThread(const UInterchangeFactoryBase::FImportSceneObjectsParams& CreateSceneObjectsParams)
+UObject* UInterchangeSkeletalMeshActorFactory::ProcessActor(AActor& SpawnedActor, const UInterchangeActorFactoryNode& /*FactoryNode*/, const UInterchangeBaseNodeContainer& /*NodeContainer*/)
 {
-	ASkeletalMeshActor* SpawnedActor = Cast<ASkeletalMeshActor>(UE::Interchange::ActorHelper::SpawnFactoryActor(CreateSceneObjectsParams));
+	ASkeletalMeshActor* SkeletalMeshActor = Cast<ASkeletalMeshActor>(&SpawnedActor);
 
-	if (!SpawnedActor)
+	if (!SkeletalMeshActor)
 	{
 		return nullptr;
 	}
 
-	UInterchangeFactoryBaseNode* FactoryNode = CreateSceneObjectsParams.FactoryNode;
-	SetupSkeletalMeshActor(CreateSceneObjectsParams.NodeContainer, FactoryNode, SpawnedActor);
-
-	if (USkeletalMeshComponent* SkeletalMeshComponent = SpawnedActor->GetSkeletalMeshComponent())
+	if (USkeletalMeshComponent* SkeletalMeshComponent = SkeletalMeshActor->GetSkeletalMeshComponent())
 	{
-		FactoryNode->ApplyAllCustomAttributeToObject(SkeletalMeshComponent);
+		SkeletalMeshComponent->UnregisterComponent();
+
+		return SkeletalMeshComponent;
 	}
 
-	return SpawnedActor;
+	return nullptr;
 };
 
 UClass* UInterchangeSkeletalMeshActorFactory::GetFactoryClass() const
@@ -40,35 +39,47 @@ UClass* UInterchangeSkeletalMeshActorFactory::GetFactoryClass() const
 	return ASkeletalMeshActor::StaticClass();
 }
 
-void UInterchangeSkeletalMeshActorFactory::SetupSkeletalMeshActor(const UInterchangeBaseNodeContainer* NodeContainer, const UInterchangeFactoryBaseNode* ActorFactoryNode, ASkeletalMeshActor* SkeletalMeshActor)
+void UInterchangeSkeletalMeshActorFactory::SetupObject_GameThread(const FSetupObjectParams& Arguments)
 {
-	USkeletalMeshComponent* SkeletalMeshComponent = SkeletalMeshActor->GetSkeletalMeshComponent();
-	SkeletalMeshComponent->UnregisterComponent();
-}
-
-void UInterchangeSkeletalMeshActorFactory::FinalizeObject_GameThread(const FSetupObjectParams& Arguments)
-{
-	// Set the skeletal mesh on the component in the post import callback, once the skeletal mesh has been fully imported.
-
 	if (ASkeletalMeshActor* SkeletalMeshActor = Cast<ASkeletalMeshActor>(Arguments.ImportedObject))
 	{
-		if (USkeletalMeshComponent * SkeletalMeshComponent = SkeletalMeshActor->GetSkeletalMeshComponent())
+		if (USkeletalMeshComponent* SkeletalMeshComponent = SkeletalMeshActor->GetSkeletalMeshComponent())
 		{
+			TArray<FString> TargetNodeUids;
+			Arguments.FactoryNode->GetTargetNodeUids(TargetNodeUids);
+			const UInterchangeSkeletalMeshFactoryNode* SkeletalMeshFactoryNode = TargetNodeUids.IsEmpty() ? nullptr : Cast<UInterchangeSkeletalMeshFactoryNode>(Arguments.NodeContainer->GetFactoryNode(TargetNodeUids[0]));
+			if (SkeletalMeshFactoryNode)
 			{
-				TArray<FString> TargetNodeUids;
-				Arguments.FactoryNode->GetTargetNodeUids(TargetNodeUids);
-				const UInterchangeSkeletalMeshFactoryNode* SkeletalMeshFactoryNode = TargetNodeUids.IsEmpty() ? nullptr : Cast<UInterchangeSkeletalMeshFactoryNode>(Arguments.NodeContainer->GetFactoryNode(TargetNodeUids[0]));
-				if (SkeletalMeshFactoryNode)
+				FSoftObjectPath ReferenceObject;
+				SkeletalMeshFactoryNode->GetCustomReferenceObject(ReferenceObject);
+				if (USkeletalMesh* SkeletalMesh = Cast<USkeletalMesh>(ReferenceObject.TryLoad()))
 				{
-					FSoftObjectPath ReferenceObject;
-					SkeletalMeshFactoryNode->GetCustomReferenceObject(ReferenceObject);
-					if (USkeletalMesh* SkeletalMesh = Cast<USkeletalMesh>(ReferenceObject.TryLoad()))
-					{
-						SkeletalMeshComponent->SetSkeletalMesh(SkeletalMesh);
+					SkeletalMeshComponent->SetSkeletalMesh(SkeletalMesh);
 
-						if (const UInterchangeMeshActorFactoryNode* MeshActorFactoryNode = Cast<UInterchangeMeshActorFactoryNode>(Arguments.FactoryNode))
+					if (const UInterchangeMeshActorFactoryNode* MeshActorFactoryNode = Cast<UInterchangeMeshActorFactoryNode>(Arguments.FactoryNode))
+					{
+						UE::Interchange::ActorHelper::ApplySlotMaterialDependencies(*Arguments.NodeContainer, *MeshActorFactoryNode, *SkeletalMeshComponent);
+
+						FString AnimationAssetUidToPlay;
+						if (MeshActorFactoryNode->GetCustomAnimationAssetUidToPlay(AnimationAssetUidToPlay))
 						{
-							UE::Interchange::ActorHelper::ApplySlotMaterialDependencies(*Arguments.NodeContainer, *MeshActorFactoryNode, *SkeletalMeshComponent);
+							const FString AnimSequenceFactoryNodeUid = TEXT("\\AnimSequence") + AnimationAssetUidToPlay;
+							if (const UInterchangeAnimSequenceFactoryNode* AnimSequenceFactoryNode = Cast<UInterchangeAnimSequenceFactoryNode>(Arguments.NodeContainer->GetFactoryNode(AnimSequenceFactoryNodeUid)))
+							{
+								FSoftObjectPath AnimSequenceObject;
+								if (AnimSequenceFactoryNode->GetCustomReferenceObject(AnimSequenceObject))
+								{
+									if (UAnimSequence* AnimSequence = Cast<UAnimSequence>(AnimSequenceObject.TryLoad()))
+									{
+										SkeletalMeshComponent->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+										SkeletalMeshComponent->AnimationData.AnimToPlay = AnimSequence;
+										SkeletalMeshComponent->AnimationData.bSavedLooping = false;
+										SkeletalMeshComponent->AnimationData.bSavedPlaying = false;
+										SkeletalMeshComponent->SetAnimation(AnimSequence);
+										
+									}
+								}
+							}
 						}
 					}
 				}

@@ -33,7 +33,7 @@ void FAnimationBudgetAllocatorModule::ShutdownModule()
 
 void FAnimationBudgetAllocatorModule::AddReferencedObjects(FReferenceCollector& Collector)
 {
-	for (TPair<UWorld*, FAnimationBudgetAllocator*>& WorldAnimationBudgetAllocatorPair : WorldAnimationBudgetAllocators)
+	for (auto& WorldAnimationBudgetAllocatorPair : WorldAnimationBudgetAllocators)
 	{
 		Collector.AddReferencedObject(WorldAnimationBudgetAllocatorPair.Key);
 	}
@@ -49,6 +49,9 @@ void FAnimationBudgetAllocatorModule::HandleWorldCleanup(UWorld* World, bool bSe
 	FAnimationBudgetAllocator* Budgeter = WorldAnimationBudgetAllocators.FindRef(World);
 	if(Budgeter)
 	{
+		//Cleanup components, as this can cause a crash in some conditions during seamless travel as actors can be pulled in
+		//to the travel world.
+		Budgeter->SetEnabled(false);
 		delete Budgeter;
 		WorldAnimationBudgetAllocators.Remove(World);
 	}

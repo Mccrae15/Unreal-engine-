@@ -2,15 +2,14 @@
 
 using System;
 using System.Collections.Generic;
-using System.Text;
-using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
-using EpicGames.Core;
 using System.Reflection;
-using System.Diagnostics.CodeAnalysis;
-using OpenTracing.Util;
+using System.Text;
+using EpicGames.Core;
 using Microsoft.Extensions.Logging;
+using OpenTracing.Util;
 
 namespace UnrealBuildTool
 {
@@ -65,7 +64,6 @@ namespace UnrealBuildTool
 			return UnrealTargetPlatform.GetValidPlatforms().Where(x => UEBuildPlatform.TryGetBuildPlatform(x, out _)).Select(x => UEBuildPlatform.GetBuildPlatform(x).ArchitectureConfig);
 		}
 
-
 		/// <summary>
 		/// The multi-architecture mode for this platform (potentially single-architecture)
 		/// </summary>
@@ -102,7 +100,6 @@ namespace UnrealBuildTool
 			return ActiveArchitectures(ProjectFile, TargetName);
 		}
 
-	
 		/// <summary>
 		/// Returns the set all architectures potentially supported by this project. Can be used by project file gnenerators to restrict IDE architecture options
 		/// Defaults to AllSupportedArchitectures
@@ -154,7 +151,19 @@ namespace UnrealBuildTool
 			return Architectures.GetFolderNameForPlatform(this);
 		}
 
+		/// <summary>
+		/// Returns the architecture of the currently running OS (only used for desktop platforms, so will throw an exception in the general case)
+		/// </summary>
+		/// <returns></returns>
+		public virtual UnrealArch GetHostArchitecture()
+		{
+			if (AllSupportedArchitectures.bIsMultiArch)
+			{
+				throw new BuildException($"Asking for Host architecture from {GetType()} which supports multiple architectures, but did not override GetHostArchitecture()");
+			}
 
+			return AllSupportedArchitectures.SingleArchitecture;
+		}
 
 		/// <summary>
 		/// Simple constructor for platforms with a single architecture
@@ -162,8 +171,8 @@ namespace UnrealBuildTool
 		/// <param name="SingleArchitecture"></param>
 		public UnrealArchitectureConfig(UnrealArch SingleArchitecture)
 		{
-			this.Mode = UnrealArchitectureMode.SingleArchitecture;
-			this.AllSupportedArchitectures = new UnrealArchitectures(SingleArchitecture);
+			Mode = UnrealArchitectureMode.SingleArchitecture;
+			AllSupportedArchitectures = new UnrealArchitectures(SingleArchitecture);
 		}
 
 		/// <summary>
@@ -174,14 +183,9 @@ namespace UnrealBuildTool
 		protected UnrealArchitectureConfig(UnrealArchitectureMode Mode, IEnumerable<UnrealArch> SupportedArchitectures)
 		{
 			this.Mode = Mode;
-			this.AllSupportedArchitectures = new UnrealArchitectures(SupportedArchitectures);
+			AllSupportedArchitectures = new UnrealArchitectures(SupportedArchitectures);
 		}
-
-
 	}
-
-
-
 
 	abstract class UEBuildPlatform
 	{
@@ -213,12 +217,12 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Cached copy of the list of folders to include for this platform
 		/// </summary>
-		private ReadOnlyHashSet<string>? CachedIncludedFolderNames;
+		private IReadOnlySet<string>? CachedIncludedFolderNames;
 
 		/// <summary>
 		/// Cached copy of the list of folders to exclude for this platform
 		/// </summary>
-		private ReadOnlyHashSet<string>? CachedExcludedFolderNames;
+		private IReadOnlySet<string>? CachedExcludedFolderNames;
 
 		/// <summary>
 		/// Constructor.
@@ -245,19 +249,121 @@ namespace UnrealBuildTool
 			}
 		}
 
+		private static string[] UATProjectParams = { "-project=", "-scriptsforproject=" };
+		// Before we setup AutoSDK, we check to see if any projects need to override the Main version so that AutoSDK
+		// will set up an alternate SDK
+		private static void InitializePerPlatformSDKs(string[] Args, bool bArgumentsAreForUBT, ILogger Logger)
+		{
+			Dictionary<string, string> PlatformToVersionMap = new();
+			HashSet<string> PlatformsThatNeedDefaultSDK = new();
+
+			IEnumerable<FileReference?> ProjectFiles;
+
+			if (bArgumentsAreForUBT == false)
+			{
+				ProjectFiles = Args
+						// find arguments that start with one of the hard-coded parameters
+						.Where(x => UATProjectParams.Any(y => x.StartsWith(y, StringComparison.OrdinalIgnoreCase)))
+						// treat the part after the = as a path to a uproject, and ask the NativeProjects class to find a .uproject
+						.Select(x => NativeProjects.FindProjectFile(x.Substring(x.IndexOf('=') + 1), Logger))
+						// only use existant projects
+						.Where(x => x != null && FileReference.Exists(x));
+			}
+			else
+			{
+				CommandLineArguments CommandLine = new(Args);
+				BuildConfiguration BuildConfiguration = new();
+				XmlConfig.ApplyTo(BuildConfiguration);
+				CommandLine.ApplyTo(BuildConfiguration);
+
+				// get the project files for all targets - we allow null uproject files which means to use the defaults
+				// (same as a uproject that has no override SDK versions set)
+				List<TargetDescriptor> AllTargets = TargetDescriptor.ParseCommandLine(CommandLine, BuildConfiguration.bUsePrecompiled, bSkipRulesCompile: true, bForceRulesCompile: false, Logger);
+				ProjectFiles = AllTargets.Select(x => x.ProjectFile);
+			}
+
+			foreach (FileReference? ProjectFile in ProjectFiles)
+			{
+				// because we can't safely tell, at this point, if any platform SDKs will be used for a given target, we have to check all of them
+				foreach (UnrealTargetPlatform Platform in UnrealTargetPlatform.GetValidPlatforms())
+				{
+					string PlatformName = Platform.ToString();
+					string? OverrideSDKVersion = null;
+
+					if (ProjectFile != null)
+					{
+						ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, ProjectFile.Directory, Platform);
+						if (Ini.TryGetValue("OverrideSDK", "SDKVersion", out OverrideSDKVersion))
+						{
+							Logger.LogWarning("Project {Project} is overriding the active main SDK for {Platform} to {Override}", ProjectFile.GetFileNameWithoutAnyExtensions(), Platform, OverrideSDKVersion);
+
+							if (PlatformToVersionMap.ContainsKey(PlatformName) && PlatformToVersionMap[PlatformName] != OverrideSDKVersion)
+							{
+								throw new BuildException("Attempting to build with mismatching SDK versions! [MORE INFO HERE, BUT ALSO CHECK THAT ALL PROJECTS USE SAME VERSION]");
+							}
+						}
+					}
+					
+					// if we have a null version here, that means to use the default, later when the PlatformSDK is created
+					if (OverrideSDKVersion == null)
+					{
+						// mark _something_ in the map so we can detect mismatches
+						PlatformsThatNeedDefaultSDK.Add(PlatformName);
+					}
+					else
+					{
+						PlatformToVersionMap[PlatformName] = OverrideSDKVersion;
+					}
+				}
+			}
+
+			UEBuildPlatformSDK.InitializePerProjectSDKVersions(PlatformToVersionMap, PlatformsThatNeedDefaultSDK);
+		}
+
 		/// <summary>
-		/// Finds all the UEBuildPlatformFactory types in this assembly and uses them to register all the available platforms
+		/// Finds all the UEBuildPlatformFactory types in this assembly and uses them to register all the available platforms, and uses a UBT commandline to check for per-project SDKs
 		/// </summary>
 		/// <param name="bIncludeNonInstalledPlatforms">Whether to register platforms that are not installed</param>
 		/// <param name="bHostPlatformOnly">Only register the host platform</param>
+		/// <param name="ArgumentsForPerPlatform">Commandline args to look through for finding uprojects, to look up per-project SDK versions</param>
+		/// <param name="UBTModeType">The UBT mode (usually Build, but </param>
 		/// <param name="Logger">Logger for output</param>
-		public static void RegisterPlatforms(bool bIncludeNonInstalledPlatforms, bool bHostPlatformOnly, ILogger Logger)
+		internal static void RegisterPlatforms(bool bIncludeNonInstalledPlatforms, bool bHostPlatformOnly, Type UBTModeType, string[] ArgumentsForPerPlatform, ILogger Logger)
+		{
+			bool bUseTargetTripleParams = false;
+			// @todo : add a ToolModeOptions.UseTargetTripleCommandLine or something
+			if (UBTModeType.Name == "BuildMode")
+			{
+				bUseTargetTripleParams = true;
+			}
+			RegisterPlatforms(bIncludeNonInstalledPlatforms, bHostPlatformOnly, ArgumentsForPerPlatform, bArgumentsAreForUBT: bUseTargetTripleParams, Logger);
+		}
+
+		/// <summary>
+		/// Finds all the UEBuildPlatformFactory types in this assembly and uses them to register all the available platforms, and uses a UAT commandline to check for per-project SDKs
+		/// </summary>
+		/// <param name="bIncludeNonInstalledPlatforms">Whether to register platforms that are not installed</param>
+		/// <param name="bHostPlatformOnly">Only register the host platform</param>
+		/// <param name="ArgumentsForPerPlatform">Commandline args to look through for finding uprojects, to look up per-project SDK versions</param>
+		/// <param name="Logger">Logger for output</param>
+		internal static void RegisterPlatforms(bool bIncludeNonInstalledPlatforms, bool bHostPlatformOnly, string[] ArgumentsForPerPlatform, ILogger Logger)
+		{
+			RegisterPlatforms(bIncludeNonInstalledPlatforms, bHostPlatformOnly, ArgumentsForPerPlatform, bArgumentsAreForUBT:false, Logger);
+		}
+
+		private static void RegisterPlatforms(bool bIncludeNonInstalledPlatforms, bool bHostPlatformOnly, string[] ArgumentsForPerPlatform, bool bArgumentsAreForUBT, ILogger Logger)
 		{
 			// Initialize the installed platform info
 			using (GlobalTracer.Instance.BuildSpan("Initializing InstalledPlatformInfo").StartActive())
 			{
 				InstalledPlatformInfo.Initialize();
 			}
+
+// disabling _for now_ as it is causing issues when using -TargetType param, causing too much stuff to be created early
+//			using (GlobalTracer.Instance.BuildSpan("Initializing PerPlatformSDKs").StartActive())
+//			{
+//				InitializePerPlatformSDKs(ArgumentsForPerPlatform, bArgumentsAreForUBT, Logger);
+//			}
 
 			// Find and register all tool chains and build platforms that are present
 			Type[] AllTypes;
@@ -277,12 +383,11 @@ namespace UnrealBuildTool
 						using (GlobalTracer.Instance.BuildSpan(CheckType.Name).StartActive())
 						{
 							UEBuildPlatformFactory TempInst = (UEBuildPlatformFactory)Activator.CreateInstance(CheckType)!;
-							
-							if(bHostPlatformOnly && TempInst.TargetPlatform != BuildHostPlatform.Current.Platform)
+
+							if (bHostPlatformOnly && TempInst.TargetPlatform != BuildHostPlatform.Current.Platform)
 							{
 								continue;
 							}
-
 
 							// We need all platforms to be registered when we run -validateplatform command to check SDK status of each
 							if (bIncludeNonInstalledPlatforms || InstalledPlatformInfo.IsValidPlatform(TempInst.TargetPlatform))
@@ -301,7 +406,7 @@ namespace UnrealBuildTool
 		/// <returns>Array of platform folders</returns>
 		public static string[] GetPlatformFolderNames()
 		{
-			if(CachedPlatformFolderNames == null)
+			if (CachedPlatformFolderNames == null)
 			{
 				List<string> PlatformFolderNames = new List<string>();
 
@@ -320,19 +425,19 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Finds a list of folder names to include when building for this platform
 		/// </summary>
-		public ReadOnlyHashSet<string> GetIncludedFolderNames()
+		public IReadOnlySet<string> GetIncludedFolderNames()
 		{
-			if(CachedIncludedFolderNames == null)
+			if (CachedIncludedFolderNames == null)
 			{
 				HashSet<string> Names = new HashSet<string>(DirectoryReference.Comparer);
 
 				Names.Add(Platform.ToString());
-				foreach(UnrealPlatformGroup Group in UEBuildPlatform.GetPlatformGroups(Platform))
+				foreach (UnrealPlatformGroup Group in UEBuildPlatform.GetPlatformGroups(Platform))
 				{
 					Names.Add(Group.ToString());
 				}
 
-				CachedIncludedFolderNames = new ReadOnlyHashSet<string>(Names, DirectoryReference.Comparer);
+				CachedIncludedFolderNames = Names;
 			}
 			return CachedIncludedFolderNames;
 		}
@@ -340,11 +445,11 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Finds a list of folder names to exclude when building for this platform
 		/// </summary>
-		public ReadOnlyHashSet<string> GetExcludedFolderNames()
+		public IReadOnlySet<string> GetExcludedFolderNames()
 		{
-			if(CachedExcludedFolderNames == null)
+			if (CachedExcludedFolderNames == null)
 			{
-				CachedExcludedFolderNames = new ReadOnlyHashSet<string>(GetPlatformFolderNames().Except(GetIncludedFolderNames()), DirectoryReference.Comparer);
+				CachedExcludedFolderNames = new HashSet<string>(GetPlatformFolderNames().Except(GetIncludedFolderNames()), DirectoryReference.Comparer);
 			}
 			return CachedExcludedFolderNames;
 		}
@@ -584,7 +689,7 @@ namespace UnrealBuildTool
 		{
 			// find or add the list of groups for this platform
 			List<UnrealTargetPlatform>? Platforms;
-			if(!PlatformGroupDictionary.TryGetValue(InGroup, out Platforms))
+			if (!PlatformGroupDictionary.TryGetValue(InGroup, out Platforms))
 			{
 				Platforms = new List<UnrealTargetPlatform>();
 				PlatformGroupDictionary.Add(InGroup, Platforms);
@@ -623,12 +728,12 @@ namespace UnrealBuildTool
 		public static UEBuildPlatform GetBuildPlatform(UnrealTargetPlatform InPlatform)
 		{
 			UEBuildPlatform? Platform;
-			if(!TryGetBuildPlatform(InPlatform, out Platform))
+			if (!TryGetBuildPlatform(InPlatform, out Platform))
 			{
 				throw new BuildException("GetBuildPlatform: No BuildPlatform found for {0}", InPlatform.ToString());
 			}
 			return Platform;
-			}
+		}
 
 		/// <summary>
 		/// Retrieve the IUEBuildPlatform instance for the given TargetPlatform
@@ -660,19 +765,10 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Returns the delimiter used to separate paths in the PATH environment variable for the platform we are executing on.
 		/// </summary>
-		public static String GetPathVarDelimiter()
+		[Obsolete("Replace with System.IO.Path.PathSeparator")]
+		public static string GetPathVarDelimiter()
 		{
-			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Linux || BuildHostPlatform.Current.Platform == UnrealTargetPlatform.LinuxArm64 ||
-				BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac)
-			{
-				return ":";
-			}
-			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64)
-			{
-				return ";";
-			}
-
-			throw new InvalidOperationException($"PATH variable delimiter unknown for platform {BuildHostPlatform.Current.Platform}");
+			return Path.PathSeparator.ToString();
 		}
 
 		/// <summary>
@@ -689,14 +785,6 @@ namespace UnrealBuildTool
 		public virtual bool CanUseXGE()
 		{
 			return true;
-		}
-
-		/// <summary>
-		/// If this platform can be compiled with the parallel executor
-		/// </summary>
-		public virtual bool CanUseParallelExecutor()
-		{
-			return CanUseXGE();
 		}
 
 		/// <summary>
@@ -739,6 +827,232 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
+		/// Validate a UEBuildModule's include paths before it's processed
+		/// </summary>
+		/// <param name="Module">The UEBuildModule that needs to be validated</param>
+		/// <param name="Target">Options for the target being built</param>
+		/// <param name="AllModules">Other modules to validate against, if needed</param>
+		public virtual bool ValidateModuleIncludePaths(UEBuildModule Module, ReadOnlyTargetRules Target, IEnumerable<UEBuildModule> AllModules)
+		{
+			if (Module.Rules.ModuleIncludePathWarningLevel <= WarningLevel.Off
+				&& Module.Rules.ModuleIncludePrivateWarningLevel <= WarningLevel.Off
+				&& Module.Rules.ModuleIncludeSubdirectoryWarningLevel <= WarningLevel.Off)
+			{
+				return false;
+			}
+
+			bool AnyErrors = false;
+			void LoggerFunc(string? message, params object?[] args)
+			{
+				if (Module.Rules.ModuleIncludePathWarningLevel == WarningLevel.Warning)
+				{
+					Logger.LogWarning($"Warning: {message}", args);
+				}
+				else if (Module.Rules.ModuleIncludePathWarningLevel == WarningLevel.Error)
+				{
+					Logger.LogError($"Error: {message}", args);
+					AnyErrors = true;
+				}
+			}
+
+			void LoggerFuncPrivate(string? message, params object?[] args)
+			{
+				if (Module.Rules.ModuleIncludePrivateWarningLevel == WarningLevel.Warning)
+				{
+					Logger.LogWarning($"Warning: {message}", args);
+				}
+				else if (Module.Rules.ModuleIncludePrivateWarningLevel == WarningLevel.Error)
+				{
+					Logger.LogError($"Error: {message}", args);
+					AnyErrors = true;
+				}
+			}
+
+			void LoggerFuncSubDir(string? message, params object?[] args)
+			{
+				if (Module.Rules.ModuleIncludeSubdirectoryWarningLevel == WarningLevel.Warning)
+				{
+					Logger.LogWarning($"Warning: {message}", args);
+				}
+				else if (Module.Rules.ModuleIncludeSubdirectoryWarningLevel == WarningLevel.Error)
+				{
+					Logger.LogError($"Error: {message}", args);
+					AnyErrors = true;
+				}
+			}
+
+			IOrderedEnumerable<DirectoryReference> PublicIncludePaths = Module.Rules.PublicIncludePaths.Select(x => DirectoryReference.FromString(x)!).OrderBy(x => x.FullName);
+			IOrderedEnumerable<DirectoryReference> PrivateIncludePaths = Module.Rules.PrivateIncludePaths.Select(x => DirectoryReference.FromString(x)!).OrderBy(x => x.FullName);
+			IOrderedEnumerable<DirectoryReference> InternalncludePaths = Module.Rules.InternalncludePaths.Select(x => DirectoryReference.FromString(x)!).OrderBy(x => x.FullName);
+			IOrderedEnumerable<DirectoryReference> PublicSystemIncludePaths = Module.Rules.PublicSystemIncludePaths.Select(x => DirectoryReference.FromString(x)!).OrderBy(x => x.FullName);
+			IOrderedEnumerable<UEBuildModule> OtherModules = AllModules.Where(x => x != Module).OrderBy(x => x.Name);
+
+			if (Module is UEBuildModuleExternal)
+			{
+				foreach (DirectoryReference Path in PublicIncludePaths)
+				{
+					LoggerFunc("External module '{Name}' is adding '{Path}' to PublicIncludePaths. This path should be added to PublicSystemIncludePaths.", Module.Name, Path.MakeRelativeTo(Module.ModuleDirectory));
+				}
+
+				foreach (DirectoryReference Path in PublicSystemIncludePaths.Where(x => !x.IsUnderDirectory(Module.ModuleDirectory)))
+				{
+					UEBuildModule? OtherModule = OtherModules.FirstOrDefault(x => Path.IsUnderDirectory(x.ModuleDirectory));
+					if (OtherModule is UEBuildModuleExternal)
+					{
+						LoggerFunc("External module '{Name}' is adding '{Path}' from external module '{OtherModule}' to PublicSystemIncludePaths. Did you intend to add a public reference?", Module.Name, Path, OtherModule.Name);
+					}
+					else if (OtherModule is UEBuildModuleCPP)
+					{
+						LoggerFunc("External module '{Name}' is adding '{Path}' from module '{OtherModule}' to PublicSystemIncludePaths. This is not allowed.", Module.Name, Path, OtherModule.Name);
+					}
+				}
+
+				foreach (DirectoryReference Path in PrivateIncludePaths)
+				{
+					LoggerFunc("External module '{Name}' is adding '{Path}' to PrivateIncludePaths. This path is unused.", Module.Name, Path);
+				}
+
+				foreach (DirectoryReference Path in InternalncludePaths)
+				{
+					LoggerFunc("External module '{Name}' is adding '{Path}' to InternalncludePaths. This path is unused.", Module.Name, Path);
+				}
+			}
+			else if (Module is UEBuildModuleCPP)
+			{
+				foreach (DirectoryReference Path in PublicIncludePaths)
+				{
+					if (Path.IsUnderDirectory(Module.ModuleDirectory))
+					{
+						if (Path == Module.ModuleDirectory)
+						{
+							LoggerFunc("Module '{Name}' is adding root directory to PublicIncludePaths. This is not allowed.", Module.Name);
+						}
+						else if (Path.IsUnderDirectory(DirectoryReference.Combine(Module.ModuleDirectory, "Private"))
+							|| Path.IsUnderDirectory(DirectoryReference.Combine(Module.ModuleDirectory, "Internal")))
+						{
+							LoggerFuncPrivate("Module '{Name}' is adding subdirectory '{Path}' to PublicIncludePaths. This is not allowed.", Module.Name, Path.MakeRelativeTo(Module.ModuleDirectory));
+						}
+						else if (Path.IsUnderDirectory(DirectoryReference.Combine(Module.ModuleDirectory, "Public"))
+							|| Path.IsUnderDirectory(DirectoryReference.Combine(Module.ModuleDirectory, "Classes")))
+						{
+							LoggerFuncSubDir("Module '{Name}' is adding subdirectory '{Path}' to PublicIncludePaths. This is not necessary.", Module.Name, Path.MakeRelativeTo(Module.ModuleDirectory));
+						}
+					}
+
+					UEBuildModule? OtherModule = OtherModules.FirstOrDefault(x => Path.IsUnderDirectory(x.ModuleDirectory));
+					if (OtherModule is UEBuildModuleExternal)
+					{
+						LoggerFunc("Module '{Name}' is adding '{Path}' from external module '{OtherModule}' to PublicIncludePaths. Did you intend to add a public reference?", Module.Name, Path, OtherModule.Name);
+					}
+					else if (OtherModule is UEBuildModuleCPP)
+					{
+						if (Path == OtherModule.ModuleDirectory)
+						{
+							LoggerFuncPrivate("Module '{Name}' is adding root directory from '{OtherModule}' to PublicIncludePaths. This is not allowed.", Module.Name, OtherModule.Name);
+						}
+						else if (Path.IsUnderDirectory(DirectoryReference.Combine(OtherModule.ModuleDirectory, "Private"))
+							| Path.IsUnderDirectory(DirectoryReference.Combine(OtherModule.ModuleDirectory, "Internal")))
+						{
+							LoggerFuncPrivate("Module '{Name}' is adding '{Path}' from module '{OtherModule}' to PublicIncludePaths. This is not allowed.", Module.Name, Path, OtherModule.Name);
+						}
+						else if (Path.IsUnderDirectory(DirectoryReference.Combine(OtherModule.ModuleDirectory, "Public"))
+							|| Path.IsUnderDirectory(DirectoryReference.Combine(OtherModule.ModuleDirectory, "Classes")))
+						{
+							LoggerFunc("Module '{Name}' is adding '{Path}' from module '{OtherModule}' to PublicIncludePaths. Did you intend to add a public reference?", Module.Name, Path, OtherModule.Name);
+						}
+					}
+				}
+
+				foreach (DirectoryReference Path in PrivateIncludePaths)
+				{
+					if (Path.IsUnderDirectory(Module.ModuleDirectory))
+					{
+						if (Path == Module.ModuleDirectory)
+						{
+							LoggerFunc("Module '{Name}' is adding root directory to PrivateIncludePaths. This is not recommended.", Module.Name);
+						}
+						else if (Path.IsUnderDirectory(DirectoryReference.Combine(Module.ModuleDirectory, "Private"))
+							|| Path.IsUnderDirectory(DirectoryReference.Combine(Module.ModuleDirectory, "Internal"))
+							|| Path.IsUnderDirectory(DirectoryReference.Combine(Module.ModuleDirectory, "Public"))
+							|| Path.IsUnderDirectory(DirectoryReference.Combine(Module.ModuleDirectory, "Classes")))
+						{
+							LoggerFuncSubDir("Module '{Name}' is adding subdirectory '{Path}' to PrivateIncludePaths. This is not necessary.", Module.Name, Path.MakeRelativeTo(Module.ModuleDirectory));
+						}
+					}
+
+					UEBuildModule? OtherModule = OtherModules.FirstOrDefault(x => Path.IsUnderDirectory(x.ModuleDirectory));
+					if (OtherModule is UEBuildModuleExternal)
+					{
+						LoggerFunc("Module '{Name}' is adding '{Path}' from external module '{OtherModule}' to PrivateIncludePaths. Did you intend to add a private reference?", Module.Name, Path, OtherModule.Name);
+					}
+					else if (OtherModule is UEBuildModuleCPP)
+					{
+						if (Path == OtherModule.ModuleDirectory)
+						{
+							LoggerFuncPrivate("Module '{Name}' is adding root directory from '{OtherModule}' to PrivateIncludePaths. This is not allowed.", Module.Name, OtherModule.Name);
+						}
+						else if (Path.IsUnderDirectory(DirectoryReference.Combine(OtherModule.ModuleDirectory, "Private"))
+							| Path.IsUnderDirectory(DirectoryReference.Combine(OtherModule.ModuleDirectory, "Internal")))
+						{
+							LoggerFuncPrivate("Module '{Name}' is adding '{Path}' from module '{OtherModule}' to PrivateIncludePaths. This is not allowed.", Module.Name, Path, OtherModule.Name);
+						}
+						else if (Path.IsUnderDirectory(DirectoryReference.Combine(OtherModule.ModuleDirectory, "Public"))
+							|| Path.IsUnderDirectory(DirectoryReference.Combine(OtherModule.ModuleDirectory, "Classes")))
+						{
+							LoggerFunc("Module '{Name}' is adding '{Path}' from module '{OtherModule}' to PrivateIncludePaths. Did you intend to add a private reference?", Module.Name, Path, OtherModule.Name);
+						}
+					}
+				}
+
+				foreach (DirectoryReference Path in InternalncludePaths)
+				{
+					if (Path.IsUnderDirectory(Module.ModuleDirectory))
+					{
+						if (Path == Module.ModuleDirectory)
+						{
+							LoggerFunc("Module '{Name}' is adding root directory to InternalncludePaths. This is not allowed.", Module.Name);
+						}
+						else if (Path.IsUnderDirectory(DirectoryReference.Combine(Module.ModuleDirectory, "Private"))
+						|| Path.IsUnderDirectory(DirectoryReference.Combine(Module.ModuleDirectory, "Internal")))
+						{
+							LoggerFunc("Module '{Name}' is adding subdirectory '{Path}' to InternalncludePaths. This is not allowed.", Module.Name, Path.MakeRelativeTo(Module.ModuleDirectory));
+						}
+						else if (Path.IsUnderDirectory(DirectoryReference.Combine(Module.ModuleDirectory, "Public"))
+							|| Path.IsUnderDirectory(DirectoryReference.Combine(Module.ModuleDirectory, "Classes")))
+						{
+							LoggerFuncSubDir("Module '{Name}' is adding subdirectory '{Path}' to InternalncludePaths. This is not necessary.", Module.Name, Path.MakeRelativeTo(Module.ModuleDirectory));
+						}
+					}
+
+					UEBuildModule? OtherModule = OtherModules.FirstOrDefault(x => Path.IsUnderDirectory(x.ModuleDirectory));
+					if (OtherModule is UEBuildModuleExternal)
+					{
+						LoggerFunc("Module '{Name}' is adding '{Path}' from external module '{OtherModule}' to InternalncludePaths. Did you intend to add a public reference?", Module.Name, Path, OtherModule.Name);
+					}
+					else if (OtherModule is UEBuildModuleCPP)
+					{
+						if (Path == OtherModule.ModuleDirectory)
+						{
+							LoggerFunc("Module '{Name}' is adding root directory from '{OtherModule}' to InternalncludePaths. This is not allowed.", Module.Name, OtherModule.Name);
+						}
+						else if (Path.IsUnderDirectory(DirectoryReference.Combine(OtherModule.ModuleDirectory, "Private"))
+							| Path.IsUnderDirectory(DirectoryReference.Combine(OtherModule.ModuleDirectory, "Internal")))
+						{
+							LoggerFunc("Module '{Name}' is adding '{Path}' from module '{OtherModule}' to InternalncludePaths. This is not allowed.", Module.Name, Path, OtherModule.Name);
+						}
+						else if (Path.IsUnderDirectory(DirectoryReference.Combine(OtherModule.ModuleDirectory, "Public"))
+							|| Path.IsUnderDirectory(DirectoryReference.Combine(OtherModule.ModuleDirectory, "Classes")))
+						{
+							LoggerFunc("Module '{Name}' is adding '{Path}' from module '{OtherModule}' to InternalncludePaths. Did you intend to add a public reference?", Module.Name, Path, OtherModule.Name);
+						}
+					}
+				}
+			}
+
+			return AnyErrors;
+		}
+
+		/// <summary>
 		/// Return whether the given platform requires a monolithic build
 		/// </summary>
 		/// <param name="InPlatform">The platform of interest</param>
@@ -764,7 +1078,7 @@ namespace UnrealBuildTool
 		/// <returns>string    The binary extension (i.e. 'exe' or 'dll')</returns>
 		public virtual string GetBinaryExtension(UEBuildBinaryType InBinaryType)
 		{
-			throw new BuildException("GetBinaryExtensiton for {0} not handled in {1}", InBinaryType.ToString(), this.ToString());
+			throw new BuildException("GetBinaryExtensiton for {0} not handled in {1}", InBinaryType.ToString(), ToString());
 		}
 
 		/// <summary>
@@ -775,7 +1089,7 @@ namespace UnrealBuildTool
 		/// <returns>string[]    The debug info extensions (i.e. 'pdb')</returns>
 		public virtual string[] GetDebugInfoExtensions(ReadOnlyTargetRules InTarget, UEBuildBinaryType InBinaryType)
 		{
-			throw new BuildException("GetDebugInfoExtensions for {0} not handled in {1}", InBinaryType.ToString(), this.ToString());
+			throw new BuildException("GetDebugInfoExtensions for {0} not handled in {1}", InBinaryType.ToString(), ToString());
 		}
 
 		/// <summary>
@@ -832,7 +1146,9 @@ namespace UnrealBuildTool
 			ConfigHierarchy DefaultIni = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, (DirectoryReference?)null, Platform);
 
 			// look at all bool values
-			if (BoolKeys != null) foreach (string Key in BoolKeys)
+			if (BoolKeys != null)
+			{
+				foreach (string Key in BoolKeys)
 				{
 					bool Default = false, Project = false;
 					DefaultIni.GetBool(Section, Key, out Default);
@@ -843,9 +1159,12 @@ namespace UnrealBuildTool
 						return false;
 					}
 				}
+			}
 
 			// look at all int values
-			if (IntKeys != null) foreach (string Key in IntKeys)
+			if (IntKeys != null)
+			{
+				foreach (string Key in IntKeys)
 				{
 					int Default = 0, Project = 0;
 					DefaultIni.GetInt32(Section, Key, out Default);
@@ -856,9 +1175,12 @@ namespace UnrealBuildTool
 						return false;
 					}
 				}
+			}
 
 			// look for all string values
-			if (StringKeys != null) foreach (string Key in StringKeys)
+			if (StringKeys != null)
+			{
+				foreach (string Key in StringKeys)
 				{
 					string? Default = "", Project = "";
 					DefaultIni.GetString(Section, Key, out Default);
@@ -869,6 +1191,7 @@ namespace UnrealBuildTool
 						return false;
 					}
 				}
+			}
 
 			// if we get here, we match all important settings
 			return true;
@@ -992,7 +1315,6 @@ namespace UnrealBuildTool
 		{
 		}
 
-
 		/// <summary>
 		/// Allows the platform to modify the binary link environment before the binary is built
 		/// </summary>
@@ -1001,7 +1323,7 @@ namespace UnrealBuildTool
 		/// <param name="Target">The target rules in use</param>
 		/// <param name="ToolChain">The toolchain being used</param>
 		/// <param name="Graph">Action graph that is used to build the binary</param>
-		public virtual void ModifyBinaryLinkEnvironment( LinkEnvironment BinaryLinkEnvironment, CppCompileEnvironment BinaryCompileEnvironment, ReadOnlyTargetRules Target, UEToolChain ToolChain, IActionGraphBuilder Graph)
+		public virtual void ModifyBinaryLinkEnvironment(LinkEnvironment BinaryLinkEnvironment, CppCompileEnvironment BinaryCompileEnvironment, ReadOnlyTargetRules Target, UEToolChain ToolChain, IActionGraphBuilder Graph)
 		{
 		}
 
@@ -1018,7 +1340,6 @@ namespace UnrealBuildTool
 		{
 			return false;
 		}
-
 
 		/// <summary>
 		/// Checks if platform is part of a given platform group

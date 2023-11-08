@@ -11,23 +11,27 @@
 class  UDataflow;
 struct FDataflowNode;
 struct FDataflowOutput;
+struct FDataflowConnection;
+
+#define DATAFLOW_EDITOR_EVALUATION WITH_EDITOR
 
 namespace Dataflow
 {
-	struct DATAFLOWCORE_API FTimestamp
+	struct FTimestamp
 	{
 		typedef uint64 Type;
 		Type Value = Type(0);
 
 		FTimestamp(Type InValue) : Value(InValue) {}
 		bool operator>=(const FTimestamp& InTimestamp) const { return Value >= InTimestamp.Value; }
+		bool operator<(const FTimestamp& InTimestamp) const { return Value < InTimestamp.Value; }
 		bool IsInvalid() { return Value == Invalid; }
 
-		static Type Current();
-		static Type Invalid; // 0
+		static DATAFLOWCORE_API Type Current();
+		static DATAFLOWCORE_API Type Invalid; // 0
 	};
 
-	struct DATAFLOWCORE_API FRenderingParameter {
+	struct FRenderingParameter {
 		FRenderingParameter() {}
 		FRenderingParameter(FName InTypeName, const TArray<FName>& InOutputs)
 			: Type(InTypeName), Outputs(InOutputs) {}
@@ -40,7 +44,7 @@ namespace Dataflow
 
 	struct FContextCacheElementBase 
 	{
-		FContextCacheElementBase(FProperty* InProperty = nullptr, FTimestamp InTimestamp = FTimestamp::Invalid)
+		FContextCacheElementBase(const FProperty* InProperty = nullptr, FTimestamp InTimestamp = FTimestamp::Invalid)
 			: Property(InProperty)
 			, Timestamp(InTimestamp)
 		{}
@@ -49,24 +53,20 @@ namespace Dataflow
 		template<typename T>
 		const T& GetTypedData(const FProperty* PropertyIn) const;
 		
-		FProperty* Property = nullptr;
+		const FProperty* Property = nullptr;
 		FTimestamp Timestamp = FTimestamp::Invalid;
 	};
 
 	template<class T>
 	struct FContextCacheElement : public FContextCacheElementBase 
 	{
-		FContextCacheElement(FProperty* InProperty, const T& InData, FTimestamp Timestamp)
+		FContextCacheElement(const FProperty* InProperty, T&& InData, FTimestamp Timestamp)
 			: FContextCacheElementBase(InProperty, Timestamp)
-			, Data(InData)
-		{}
-
-		FContextCacheElement(FProperty* InProperty, T&& InData, FTimestamp Timestamp)
-			: FContextCacheElementBase(InProperty, Timestamp)
-			, Data(InData)
+			, Data(Forward<T>(InData))
 		{}
 		
-		const T Data;
+		typedef typename TDecay<T>::Type FDataType;  // Using universal references here means T could be either const& or an rvalue reference
+		const FDataType Data;                        // Decaying T removes any reference and gets the correct underlying storage data type
 	};
 
 	template<class T>
@@ -83,7 +83,7 @@ namespace Dataflow
 		// @todo(dataflow) make an API for FContextCache
 	};
 
-	class DATAFLOWCORE_API FContext
+	class FContext
 	{
 	protected:
 		FContext(FContext&&) = default;
@@ -121,16 +121,7 @@ namespace Dataflow
 		virtual void SetDataImpl(int64 Key, TUniquePtr<FContextCacheElementBase>&& DataStoreEntry) = 0;
 		
 		template<typename T>
-		void SetData(size_t Key, FProperty* Property, const T& Value)
-		{
-			int64 IntKey = (int64)Key;
-			TUniquePtr<FContextCacheElement<T>> DataStoreEntry = MakeUnique<FContextCacheElement<T>>(Property, Value, FTimestamp::Current());
-
-			SetDataImpl(IntKey, MoveTemp(DataStoreEntry));
-		}
-
-		template<typename T>
-		void SetData(size_t Key, FProperty* Property, T&& Value)
+		void SetData(size_t Key, const FProperty* Property, T&& Value)
 		{
 			int64 IntKey = (int64)Key;
 			TUniquePtr<FContextCacheElement<T>> DataStoreEntry = MakeUnique<FContextCacheElement<T>>(Property, Forward<T>(Value), FTimestamp::Current());
@@ -142,7 +133,7 @@ namespace Dataflow
 		virtual TUniquePtr<FContextCacheElementBase>* GetDataImpl(int64 Key) = 0;
 
 		template<class T>
-		const T& GetData(size_t Key, FProperty* Property, const T& Default = T())
+		const T& GetData(size_t Key, const FProperty* Property, const T& Default = T())
 		{
 			if (TUniquePtr<FContextCacheElementBase>* Cache = GetDataImpl(Key))
 			{
@@ -171,6 +162,29 @@ namespace Dataflow
 		FTimestamp GetTimestamp() const { return Timestamp; }
 		virtual void Evaluate(const FDataflowNode* Node, const FDataflowOutput* Output) = 0;
 		virtual bool Evaluate(const FDataflowOutput& Connection) = 0;
+
+		DATAFLOWCORE_API void PushToCallstack(const FDataflowConnection* Connection);
+		DATAFLOWCORE_API void PopFromCallstack(const FDataflowConnection* Connection);
+		DATAFLOWCORE_API bool IsInCallstack(const FDataflowConnection* Connection) const;
+
+	private:
+#if DATAFLOW_EDITOR_EVALUATION
+		TArray<const FDataflowConnection*> Callstack;
+#endif
+	};
+
+	struct FContextScopedCallstack
+	{
+	public:
+		DATAFLOWCORE_API FContextScopedCallstack(FContext& InContext, const FDataflowConnection* InConnection);
+		DATAFLOWCORE_API ~FContextScopedCallstack();
+
+		bool IsLoopDetected() const { return bLoopDetected; }
+
+	private:
+		bool bLoopDetected;
+		FContext& Context;
+		const FDataflowConnection* Connection;
 	};
 
 #define DATAFLOW_CONTEXT_INTERNAL(PARENTTYPE, TYPENAME)														\
@@ -179,7 +193,7 @@ namespace Dataflow
 	virtual bool IsA(FName InType) const override { return InType==StaticType() || Super::IsA(InType); }	\
 	virtual FName GetType() const override { return StaticType(); }
 
-	class DATAFLOWCORE_API FContextSingle : public FContext
+	class FContextSingle : public FContext
 	{
 		FContextCache DataStore;
 
@@ -210,11 +224,11 @@ namespace Dataflow
 			return DataStore.IsEmpty();
 		}
 
-		virtual void Evaluate(const FDataflowNode* Node, const FDataflowOutput* Output) override;
-		virtual bool Evaluate(const FDataflowOutput& Connection) override;
+		DATAFLOWCORE_API virtual void Evaluate(const FDataflowNode* Node, const FDataflowOutput* Output) override;
+		DATAFLOWCORE_API virtual bool Evaluate(const FDataflowOutput& Connection) override;
 	};
 	
-	class DATAFLOWCORE_API FContextThreaded : public FContext
+	class FContextThreaded : public FContext
 	{
 		FContextCache DataStore;
 		TSharedPtr<FCriticalSection> CacheLock;
@@ -255,8 +269,8 @@ namespace Dataflow
 			return DataStore.IsEmpty();
 		}
 
-		virtual void Evaluate(const FDataflowNode* Node, const FDataflowOutput* Output) override;
-		virtual bool Evaluate(const FDataflowOutput& Connection) override;
+		DATAFLOWCORE_API virtual void Evaluate(const FDataflowNode* Node, const FDataflowOutput* Output) override;
+		DATAFLOWCORE_API virtual bool Evaluate(const FDataflowOutput& Connection) override;
 	};
 
 }

@@ -14,6 +14,9 @@
 
 #include "../ShadingCommon.ush"
 #include "../OctahedralCommon.ush"
+#include "../SceneData.ush"
+#include "../Common.ush"
+
 #include "/Engine/Shared/RayTracingDefinitions.h"
 #include "/Engine/Shared/RayTracingPayloadType.h"
 #include "RayTracingRayCone.ush"
@@ -109,6 +112,31 @@
 [shader("callable")] void name(inout params_type params_name)
 #endif //RAY_TRACING_ENTRY_CALLABLE
 
+// Helper macro to set common entry point for passes that have both inline (CS) and non-inline (RGS) version.
+// Given "name" it will create "nameCS" entry point for compute and "nameRGS" for raygen shader.
+#ifndef RAY_TRACING_ENTRY_RAYGEN_OR_INLINE
+
+#if COMPUTESHADER && PLATFORM_SUPPORTS_INLINE_RAY_TRACING
+
+#define RAY_TRACING_ENTRY_RAYGEN_OR_INLINE(name)\
+void name##_INTERNAL(uint3 DispatchThreadIndex);\
+[numthreads(INLINE_RAY_TRACING_THREAD_GROUP_SIZE_X, INLINE_RAY_TRACING_THREAD_GROUP_SIZE_Y, 1)]\
+void name##CS(uint3 DispatchThreadIndex : SV_DispatchThreadID) {\
+	name##_INTERNAL(DispatchThreadIndex);}\
+void name##_INTERNAL(uint3 DispatchThreadIndex)
+
+#else // COMPUTESHADER && PLATFORM_SUPPORTS_INLINE_RAY_TRACING
+
+#define RAY_TRACING_ENTRY_RAYGEN_OR_INLINE(name)\
+void name##_INTERNAL(uint3 DispatchThreadIndex);\
+RAY_TRACING_ENTRY_RAYGEN(name##RGS){\
+name##_INTERNAL(DispatchRaysIndex());}\
+void name##_INTERNAL(uint3 DispatchThreadIndex)
+
+#endif // COMPUTESHADER && PLATFORM_SUPPORTS_INLINE_RAY_TRACING
+
+#endif // RAY_TRACING_ENTRY_RAYGEN_OR_INLINE
+
 #ifndef OVERRIDE_PLATFORM_RAYTRACING_INSTANCE_DESCRITOR
 
 // Must match D3D12_RAYTRACING_INSTANCE_FLAGS / VkGeometryInstanceFlagBitsKHR
@@ -134,7 +162,7 @@
 #define RAY_TRACING_BLEND_MODE_MODULATE				4
 #define RAY_TRACING_BLEND_MODE_ALPHA_HOLDOUT		5
 
-// Check how Flags are packed in the FPackedMaterialClosestHitPayload before adding to ensure bits are free
+// Check how Flags are packed in the FPackedMaterialClosestHitPayload before adding to ensure bits are free (current packing gives us 6 bits for input and output)
 // There are two sets of flags:
 //   - "inputs" are set before calling TraceRay
 //   - "outputs" are set during execution of the CHS and are valid after TraceRay returns
@@ -152,7 +180,7 @@
 #define RAY_TRACING_PAYLOAD_INPUT_FLAG_ENABLE_SKY_LIGHT_CONTRIBUTION (1 << 1) // Indicates that hit shaders should add in the Sky Light contribution in their output. Set by RayGen shader, before TraceRay().
 #define RAY_TRACING_PAYLOAD_INPUT_FLAG_LUMEN_PAYLOAD		         (1 << 2) // Indicates that closest hit shader should evaluate geometry normal and instanceid.
 #define RAY_TRACING_PAYLOAD_INPUT_FLAG_IGNORE_TRANSLUCENT            (1 << 3) // Indicates that translucent materials should be ignored by IgnoreHit() in anyhit shaders.
-#define RAY_TRACING_PAYLOAD_INPUT_FLAG_UNUSED4                       (1 << 4) // Free for future use
+#define RAY_TRACING_PAYLOAD_INPUT_FLAG_SHADOW_RAY                    (1 << 4) // Indicates this ray is being traced as part of a raytraced shadow calculation (see TraceVisibilityRay).
 #define RAY_TRACING_PAYLOAD_INPUT_FLAG_UNUSED5                       (1 << 5) // Free for future use
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -437,10 +465,6 @@ struct FRayDesc
 	}
 };
 
-#endif // !COMPUTESHADER || PLATFORM_SUPPORTS_INLINE_RAY_TRACING
-
-#if !COMPUTESHADER
-
 float3 TranslatedWorldRayOrigin()
 {
 	return TLASWorldToTranslatedWorld(WorldRayOrigin());
@@ -455,10 +479,6 @@ void ApplyCameraRelativeDepthBias(inout FRayDesc Ray, uint2 PixelCoord, float De
 {
 	ApplyCameraRelativeDepthBias(Ray.Origin, Ray.Direction, PixelCoord, DeviceZ, WorldNormal, AbsoluteNormalBias);
 }
-
-#endif // !COMPUTESHADER
-
-#if !COMPUTESHADER || PLATFORM_SUPPORTS_INLINE_RAY_TRACING
 
 FRayDesc CreatePrimaryRay(float2 UV)
 {
@@ -511,15 +531,13 @@ uint TranslateRayTracingInstanceFlags(uint InFlags)
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Material payload
 
-#if !COMPUTESHADER
+#if !COMPUTESHADER || PLATFORM_SUPPORTS_INLINE_RAY_TRACING
 
 #if STRATA_ENABLED
 
 struct FMaterialClosestHitPayload : FMinimalPayload
 {
-	// Unpacked  Packed
-	// offset    bytes
-	// float FMinimalPayload::HitT
+	// float FMinimalPay	// float FMinimalPayload::HitT
 	FRayCone RayCone;
 	float3 Radiance;
 	float3 WorldNormal; // Top Layer Normal
@@ -560,9 +578,9 @@ struct FPackedMaterialClosestHitPayload : FMinimalPayload
 	uint Radiance;										 // 4  bytes
 	uint PackedGeometryNormal;							 // 4  bytes
 	uint SceneInstanceIndex;                             // 4  bytes - GPUSceneInstanceIndex
-														 //=28 bytes - must be in sync with HeaderPayload in InternalGetRayTracingMaterialPayloadSizeInBytes()
-	FStrataRaytracingPayload StrataData;				 // 44 bytes
-														 //=68 bytes total
+														 //=24 bytes - must be in sync with InternalGetRayTracingMaterialPayloadSizeInBytes()
+	FStrataRaytracingPayload StrataData;				 //  ? bytes - must be in sync with GetRaytracingMaterialPayloadSize (see FStrataRaytracingPayload)
+														 //=24+? bytes total
 
 	void SetMinimalPayloadMode()			{ Flags |= RAY_TRACING_PAYLOAD_INPUT_FLAG_MINIMAL_PAYLOAD; }
 	bool IsMinimalPayloadMode()				{ return (Flags & RAY_TRACING_PAYLOAD_INPUT_FLAG_MINIMAL_PAYLOAD) != 0; }
@@ -835,6 +853,7 @@ struct FPackedMaterialClosestHitPayload : FMinimalPayload
 	uint GetShadingModelID() { return (IorAndShadingModelIDAndBlendingModeAndFlagsAndPrimitiveLightingChannelMask >> 16) & 0xF; }
 	uint GetBlendingMode()   { return (IorAndShadingModelIDAndBlendingModeAndFlagsAndPrimitiveLightingChannelMask >> 20) & 0x7; }
 	uint GetFlags()          { return (IorAndShadingModelIDAndBlendingModeAndFlagsAndPrimitiveLightingChannelMask >> 23) & 0x3F; }
+	void SetFlags(uint Flags) { IorAndShadingModelIDAndBlendingModeAndFlagsAndPrimitiveLightingChannelMask |= (Flags & 0x3F) << 23; }
 	bool IsTwoSided()		 { return (GetFlags() & RAY_TRACING_PAYLOAD_OUTPUT_FLAG_TWO_SIDED) != 0; }
 	bool IsFrontFace()		 { return (GetFlags() & RAY_TRACING_PAYLOAD_OUTPUT_FLAG_FRONT_FACE) != 0; }
 	uint GetPrimitiveLightingChannelMask() { return (IorAndShadingModelIDAndBlendingModeAndFlagsAndPrimitiveLightingChannelMask >> 29) & 0x7; }
@@ -936,7 +955,7 @@ FMaterialClosestHitPayload UnpackRayTracingPayload(FPackedMaterialClosestHitPayl
 CHECK_RT_PAYLOAD_SIZE(FPackedMaterialClosestHitPayload)
 #endif
 
-#endif // !COMPUTESHADER
+#endif // !COMPUTESHADER || PLATFORM_SUPPORTS_INLINE_RAY_TRACING
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Decal parameters
@@ -1007,7 +1026,11 @@ CHECK_RT_PAYLOAD_SIZE(FDecalShaderPayload)
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Tracing util functions
 
-#if !COMPUTESHADER
+#if !COMPUTESHADER || PLATFORM_SUPPORTS_INLINE_RAY_TRACING
+
+#if COMPUTESHADER
+#include "TraceRayInline.ush"
+#endif // COMPUTESHADER
 
 void TraceVisibilityRayPacked(
 	inout FPackedMaterialClosestHitPayload PackedPayload,
@@ -1026,6 +1049,21 @@ void TraceVisibilityRayPacked(
 
 	// Trace the ray
 
+#if COMPUTESHADER
+
+	FTraceRayInlineContext TraceRayInlineContext = CreateTraceRayInlineContext();
+
+	FTraceRayInlineResult TraceRayResult = TraceRayInline(
+		TLAS,
+		RayFlags,
+		InstanceInclusionMask,
+		Ray.GetNativeDesc(),
+		TraceRayInlineContext
+	);
+	PackedPayload.HitT = TraceRayResult.HitT;
+
+#else
+
 	TraceRay(
 		TLAS,
 		RayFlags,
@@ -1035,21 +1073,19 @@ void TraceVisibilityRayPacked(
 		MissShaderIndex,
 		Ray.GetNativeDesc(),
 		PackedPayload);
+
+#endif // COMPUTESHADER
 }
 
 FMinimalPayload TraceVisibilityRay(
 	in RaytracingAccelerationStructure TLAS,
 	in uint RayFlags,
-	in uint PayloadFlags,
 	in uint InstanceInclusionMask,
 	in FRayDesc Ray)
 {
 	FPackedMaterialClosestHitPayload PackedPayload = (FPackedMaterialClosestHitPayload)0;
 	
-	if ((PayloadFlags & RAY_TRACING_PAYLOAD_INPUT_FLAG_IGNORE_TRANSLUCENT) != 0)
-	{
-		PackedPayload.SetIgnoreTranslucentMaterials();
-	}
+	PackedPayload.SetFlags(RAY_TRACING_PAYLOAD_INPUT_FLAG_SHADOW_RAY);
 
 	TraceVisibilityRayPacked(PackedPayload, TLAS, RayFlags, InstanceInclusionMask, Ray);
 
@@ -1065,19 +1101,7 @@ FMinimalPayload TraceVisibilityRay(
 	return MinimalPayload;
 }
 
-FMinimalPayload TraceVisibilityRay(
-	in RaytracingAccelerationStructure TLAS,
-	in uint RayFlags,
-	in uint InstanceInclusionMask,
-	in FRayDesc Ray)
-{
-	return TraceVisibilityRay(
-		TLAS,
-		RayFlags,
-		RAY_TRACING_PAYLOAD_INPUT_FLAG_NONE,
-		InstanceInclusionMask,
-		Ray);
-}
+#if !COMPUTESHADER
 
 void TraceMaterialRayPacked(
 	inout FPackedMaterialClosestHitPayload Payload,
@@ -1173,5 +1197,24 @@ FMaterialClosestHitPayload TraceMaterialRay(
 }
 
 #endif // !COMPUTESHADER
+
+#endif // !COMPUTESHADER || PLATFORM_SUPPORTS_INLINE_RAY_TRACING
+
+uint GetGPUSceneInstanceIndex(uint PrimitiveIndex, uint InstanceIndex)
+{
+#if VF_USE_PRIMITIVE_SCENE_DATA
+	FPrimitiveSceneData PrimData = GetPrimitiveData(PrimitiveIndex);
+	// Handle ray tracing auto instancing which can cause PrimitiveInstanceIndex to be above 0 for meshes with a single instance
+	if (PrimData.NumInstanceSceneDataEntries == 1)
+	{
+		InstanceIndex = 0;
+	}
+
+	return PrimData.InstanceSceneDataOffset + InstanceIndex;
+#else
+
+	return 0;
+#endif
+}
 
 #endif // RAYTRACINGCOMMON_USH_INCLUDED // Workarround for UE-66460

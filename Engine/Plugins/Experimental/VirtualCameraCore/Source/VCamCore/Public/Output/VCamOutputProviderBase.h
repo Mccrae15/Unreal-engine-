@@ -4,8 +4,8 @@
 
 #include "CineCameraComponent.h"
 #include "EVCamTargetViewportID.h"
-#include "VPFullScreenUserWidget.h"
 #include "UI/WidgetSnapshots.h"
+#include "Widgets/VPFullScreenUserWidget.h"
 #include "VCamOutputProviderBase.generated.h"
 
 DECLARE_LOG_CATEGORY_EXTERN(LogVCamOutputProvider, Log, All);
@@ -19,7 +19,10 @@ class UVCamWidget;
 class UVPFullScreenUserWidget;
 
 #if WITH_EDITOR
+struct FEditorViewportViewModifierParams;
+struct FSceneViewExtensionContext;
 class FLevelEditorViewportClient;
+class ISceneViewExtension;
 #endif
 
 UCLASS(Abstract, BlueprintType, EditInlineNew)
@@ -56,12 +59,15 @@ public:
 	virtual void Initialize();
 	/** Called when the provider is being shutdown such as before changing level or on exit */
 	virtual void Deinitialize();
-
+	
 	/** Called when the provider is Activated */
-	virtual void Activate();
+	virtual void OnActivate();
 	/** Called when the provider is Deactivated */
-	virtual void Deactivate();
-
+	virtual void OnDeactivate();
+	
+	/** Called to create the UMG overlay widget. */
+	virtual void CreateUMG();
+	
 	virtual void Tick(const float DeltaTime);
 	
 	/** @return Whether this output provider should require the viewport to be locked to the camera in order to function correctly. */
@@ -73,7 +79,7 @@ public:
 	void RestoreOutput();
 	
 	/** Calls the VCamModifierInterface on the widget if it exists and also requests any child VCam Widgets to reconnect */
-	void NotifyWidgetOfComponentChange() const;
+	void NotifyAboutComponentChange();
 
 	/** Called to turn on or off this output provider */
 	UFUNCTION(BlueprintCallable, Category = "Output")
@@ -101,6 +107,21 @@ public:
 
 	UVPFullScreenUserWidget* GetUMGWidget() { return UMGWidget; };
 
+	/** Utility that gets the owning VCam component and gets another output provider by its index. */
+	UVCamOutputProviderBase* GetOtherOutputProviderByIndex(int32 Index) const;
+
+	/** Gets the index of this output provider in the owning UVCamComponent::OutputProviders array. */
+	int32 FindOwnIndexInOwner() const;
+
+	/** Reapplies the override resolution or restores back to the viewport settings. */
+	void ReapplyOverrideResolution();
+
+	/** Gets the scene viewport identified by the currently configured TargetViewport. */
+	TSharedPtr<FSceneViewport> GetTargetSceneViewport() const { return GetSceneViewport(TargetViewport); }
+	/** Gets the viewport identified by the passed in parameters. */
+	TSharedPtr<FSceneViewport> GetSceneViewport(EVCamTargetViewportID InTargetViewport) const;
+	TWeakPtr<SWindow> GetTargetInputWindow() const;
+
 	//~ Begin UObject Interface
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostLoad() override;
@@ -108,6 +129,8 @@ public:
 
 #if WITH_EDITOR
 	//~ Begin UObject Interface
+	virtual void PreEditUndo() override;
+	virtual void PostEditUndo() override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	//~ End UObject Interface
 #endif
@@ -118,7 +141,7 @@ public:
 
 protected:
 	
-	/** Defines how the overlay widget should be added to the viewport. This should as early as possible: in  the constructor. */
+	/** Defines how the overlay widget should be added to the viewport. This should set as early as possible: in the constructor. */
 	UPROPERTY(Transient)
 	EVPWidgetDisplayType DisplayType = EVPWidgetDisplayType::Inactive;
 	
@@ -131,38 +154,19 @@ protected:
 	 */
 	UPROPERTY(EditAnywhere, Instanced, Category = "Output", meta = (DisplayPriority = "99"))
 	TObjectPtr<UGameplayViewTargetPolicy> GameplayViewTargetPolicy;
-
-	/** Called to create the UMG overlay widget. */
-	virtual void CreateUMG();
-
-	/** Whether this subclass supports override resolutions. */
-	virtual bool ShouldOverrideResolutionOnActivationEvents() const { return false; }
 	
 	/** Removes the override resolution from the given viewport. */
 	void RestoreOverrideResolutionForViewport(EVCamTargetViewportID ViewportToRestore);
 	/** Applies OverrideResolution to the passed in viewport - bUseOverrideResolution was already checked. */
 	void ApplyOverrideResolutionForViewport(EVCamTargetViewportID Viewport);
-	void ReapplyOverrideResolution(EVCamTargetViewportID Viewport);
-
 	void DisplayUMG();
 	void DestroyUMG();
-
-	UVCamOutputProviderBase* GetOtherOutputProviderByIndex(int32 Index) const;
-
-	/** Gets the scene viewport identified by the currently configured TargetViewport. */
-	TSharedPtr<FSceneViewport> GetTargetSceneViewport() const { return GetSceneViewport(TargetViewport); }
-	/** Gets the viewport identified by the passed in parameters. */
-	TSharedPtr<FSceneViewport> GetSceneViewport(EVCamTargetViewportID InTargetViewport) const;
-	TWeakPtr<SWindow> GetTargetInputWindow() const;
 
 #if WITH_EDITOR
 	FLevelEditorViewportClient* GetTargetLevelViewportClient() const;
 	TSharedPtr<SLevelViewport> GetTargetLevelViewport() const;
 #endif
-
-	/** Util to call in subclasses for initing GameplayViewTargetPolicy to have a good default value. */
-	void InitViewTargetPolicyInSubclass();
-
+	
 	UVPFullScreenUserWidget* GetUMGWidget() const { return UMGWidget; }
 	
 private:
@@ -189,6 +193,14 @@ private:
 	/** Valid when active and if UMGClass is valid. */
 	UPROPERTY(Transient)
 	TObjectPtr<UVPFullScreenUserWidget> UMGWidget = nullptr;
+
+#if WITH_EDITORONLY_DATA
+	/** We call UVPFullScreenUserWidget::SetCustomPostProcessSettingsSource(this), which will cause these settings to be discovered. They are later passed down to FEditorViewportViewModifierDelegate. */
+	UPROPERTY(Transient)
+	FPostProcessSettings PostProcessSettingsForWidget;
+	/** Handle to ModifyViewportPostProcessSettings */
+	FDelegateHandle ModifyViewportPostProcessSettingsDelegateHandle;
+#endif
 	
 	UPROPERTY(Transient)
 	TSoftObjectPtr<UCineCameraComponent> TargetCamera;
@@ -200,10 +212,16 @@ private:
 	/** If in a game world, these player controllers must have their view targets reverted when this output provider is deactivated. */
 	UPROPERTY(Transient)
 	TSet<TWeakObjectPtr<APlayerController>> PlayersWhoseViewTargetsWereSet; 
-	
+
+	bool IsActiveAndOuterComponentEnabled() const { return bIsActive && IsOuterComponentEnabled(); }
 	bool IsOuterComponentEnabled() const;
 
 #if WITH_EDITOR
+	/** Passed to FEditorViewportClient::ViewModifiers whenever DisplayType == EVPWidgetDisplayType::PostProcessWithBlendMaterial. */
+	void ModifyViewportPostProcessSettings(FEditorViewportViewModifierParams& EditorViewportViewModifierParams);
+	/** Callback when DisplayType == EVPWidgetDisplayType::PostProcessSceneViewExtension that decides whether a given viewport should be rendered to. */
+	TOptional<bool> GetRenderWidgetStateInContext(const ISceneViewExtension* SceneViewExtension, const FSceneViewExtensionContext& Context);
+	
 	void StartDetectAndSnapshotWhenConnectionsChange();
 	void StopDetectAndSnapshotWhenConnectionsChange();
 	void OnConnectionReinitialized(TWeakObjectPtr<UVCamWidget> Widget);

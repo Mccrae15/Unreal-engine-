@@ -110,6 +110,8 @@ public:
 		SLATE_EVENT( FOnUpdateGraphPanel, OnUpdateGraphPanel )
 		SLATE_EVENT( SGraphEditor::FOnDisallowedPinConnection, OnDisallowedPinConnection )
 		SLATE_EVENT( SGraphEditor::FOnDoubleClicked, OnDoubleClicked )
+		SLATE_EVENT( SGraphEditor::FOnMouseButtonDown, OnMouseButtonDown )
+		SLATE_EVENT( SGraphEditor::FOnNodeSingleClicked, OnNodeSingleClicked )
 		//SLATE_ATTRIBUTE( FGraphAppearanceInfo, Appearance )
 	SLATE_END_ARGS()
 
@@ -263,7 +265,7 @@ private:
 	TArray<FConnectionDrawingPolicy::FRelinkConnection> RelinkConnections;
 
 protected:
-	UEdGraph* GraphObj;
+	TObjectPtr<UEdGraph> GraphObj;
 	
 	// if this graph is displaying the results of a diff, this will provide info
 	// on how to display the nodes
@@ -286,6 +288,7 @@ protected:
 	/** Sometimes the panel draws a preview connector; e.g. when the user is connecting pins */
 	TArray< FGraphPinHandle > PreviewConnectorFromPins;
 	FVector2D PreviewConnectorEndpoint;
+	mutable bool bIsDrawStateCached = false;
 
 	/** Last mouse position seen, used for paint-centric highlighting */
 	FVector2D SavedMousePosForOnPaintEventLocalSpace;
@@ -331,6 +334,9 @@ protected:
 	/** Called when the graph itself is double clicked */
 	SGraphEditor::FOnDoubleClicked OnDoubleClicked;
 
+	/** Called when the graph itself is clicked */
+	SGraphEditor::FOnMouseButtonDown OnClicked;
+	
 	/** Whether to draw the overlay indicating we're in PIE */
 	bool bShowPIENotification;
 
@@ -376,6 +382,12 @@ private:
 
 	/** Returns a pin that is under the mouse, given a specified node. Returns nullptr if no valid node is given or no pin found */
 	UEdGraphPin* GetPinUnderMouse(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent, TSharedPtr<SGraphNode> GraphNode) const;
+
+	/** If the spawned nodes were auto-wired from any of the dragged pins, then this will try to make the newly connected pin end up at SpawnGraphPosition */
+	void AdjustNewlySpawnedNodePositions(TArrayView<UEdGraphNode*> SpawnedNodes, TArrayView<UEdGraphPin*> DraggedFromPins, FVector2D SpawnGraphPosition);
+
+	/** Will move a group of nodes by the amount needed for an anchor pin to be at a certain position */
+	void MoveNodesToAnchorPinAtGraphPosition(TArrayView<UEdGraphNode*> NodesToMove, FGraphPinHandle PinToAnchor, FVector2D DesiredPinGraphPosition);
 
 	/** Handle to timer callback that allows the UI to refresh it's arrangement each tick, allows animations to occur within the UI */
 	TWeakPtr<FActiveTimerHandle> ActiveTimerHandleInvalidatePerTick;

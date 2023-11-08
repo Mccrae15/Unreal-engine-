@@ -12,7 +12,6 @@ enum class EOSSValue : uint8
 	Null,
 	Steam,
 	PS4,
-	XboxLive,
 	Switch,
 	Apple
 };
@@ -27,12 +26,6 @@ static inline EOSSValue ToEOSSValue(FName OSSName)
 	{
 		return EOSSValue::PS4;
 	}
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	else if (OSSName == LIVE_SUBSYSTEM)
-	{
-		return EOSSValue::XboxLive;
-	}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	else if (OSSName == SWITCH_SUBSYSTEM)
 	{
 		return EOSSValue::Switch;
@@ -54,12 +47,6 @@ static inline FName ToOSSName(EOSSValue OSSValue)
 	{
 		return PS4_SUBSYSTEM;
 	}
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	else if (OSSValue == EOSSValue::XboxLive)
-	{
-		return LIVE_SUBSYSTEM;
-	}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	else if (OSSValue == EOSSValue::Switch)
 	{
 		return SWITCH_SUBSYSTEM;
@@ -71,19 +58,8 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	return NULL_SUBSYSTEM;
 }
 
-inline FString BuildEOSPlusStringId(FUniqueNetIdPtr InBaseUniqueNetId, FUniqueNetIdPtr InEOSUniqueNetId)
-{
-	FString StrId = InBaseUniqueNetId.IsValid() ? InBaseUniqueNetId->ToString() : TEXT("");
-	StrId += EOSPLUS_ID_SEPARATOR;
-	StrId += InEOSUniqueNetId.IsValid() ? InEOSUniqueNetId->ToString() : TEXT("");
-	return StrId;
-}
-
 FUniqueNetIdEOSPlus::FUniqueNetIdEOSPlus(FUniqueNetIdPtr InBaseUniqueNetId, FUniqueNetIdPtr InEOSUniqueNetId)
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	: FUniqueNetIdString(BuildEOSPlusStringId(InBaseUniqueNetId, InEOSUniqueNetId), FName("EOSPlus"))
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	, BaseUniqueNetId(InBaseUniqueNetId)
+	: BaseUniqueNetId(InBaseUniqueNetId)
 	, EOSUniqueNetId(InEOSUniqueNetId)
 {
 	int32 TotalBytes = GetSize();
@@ -112,6 +88,12 @@ FUniqueNetIdEOSPlus::FUniqueNetIdEOSPlus(FUniqueNetIdPtr InBaseUniqueNetId, FUni
 	}
 }
 
+FName FUniqueNetIdEOSPlus::GetType() const
+{
+	static FName Type(TEXT("EOSPlus"));
+	return Type;
+}
+
 const uint8* FUniqueNetIdEOSPlus::GetBytes() const
 {
 	return RawBytes.GetData();
@@ -131,6 +113,20 @@ int32 FUniqueNetIdEOSPlus::GetSize() const
 bool FUniqueNetIdEOSPlus::IsValid() const
 {
 	return BaseUniqueNetId.IsValid() || EOSUniqueNetId.IsValid();
+}
+
+FString FUniqueNetIdEOSPlus::ToString() const
+{
+	const FString BaseStr = BaseUniqueNetId.IsValid() ? BaseUniqueNetId->ToString() : FString();
+	const FString EosStr = EOSUniqueNetId.IsValid() ? EOSUniqueNetId->ToString() : FString();
+	return BaseStr + EOSPLUS_ID_SEPARATOR + EosStr;
+}
+
+FString FUniqueNetIdEOSPlus::ToDebugString() const
+{
+	const FString BaseStr = BaseUniqueNetId.IsValid() ? BaseUniqueNetId->ToDebugString() : TEXT("INVALID");
+	const FString EosStr = EOSUniqueNetId.IsValid() ? EOSUniqueNetId->ToDebugString() : TEXT("INVALID");
+	return BaseStr + EOSPLUS_ID_SEPARATOR + EosStr;
 }
 
 FOnlineUserEOSPlus::FOnlineUserEOSPlus(FOnlineSubsystemEOSPlus* InSubsystem)

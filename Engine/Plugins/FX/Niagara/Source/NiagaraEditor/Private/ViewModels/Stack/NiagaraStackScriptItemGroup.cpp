@@ -12,7 +12,7 @@
 #include "NiagaraNodeAssignment.h"
 #include "NiagaraNodeFunctionCall.h"
 #include "NiagaraNodeOutput.h"
-#include "NiagaraScriptGraphViewModel.h"
+#include "ViewModels/NiagaraScriptGraphViewModel.h"
 #include "NiagaraStackEditorData.h"
 #include "ScopedTransaction.h"
 #include "DragAndDrop/AssetDragDropOp.h"
@@ -113,14 +113,14 @@ public:
 	{
 		FText DisplayName = LOCTEXT("NewScratchModuleName", "New Scratch Pad Module");
 		FText Description = LOCTEXT("NewScratchModuleDescription", "Description: Create a new scratch pad module.");
-		return MakeShareable(new FScriptGroupAddAction( DisplayName, {}, Description, FText(), false, true, FNiagaraVariable(), false, FAssetData(), nullptr, true, false));
+		return MakeShareable(new FScriptGroupAddAction( DisplayName, {}, Description, FText(), true, true, FNiagaraVariable(), false, FAssetData(), nullptr, true, false));
 	}
 
 	static TSharedRef<FScriptGroupAddAction> CreateNewSetSpecificModuleAction()
 	{
 		FText DisplayName = LOCTEXT("NewSetSpecificModuleName", "Set new or existing parameter directly");
 		FText Description = LOCTEXT("NewSetSpecificModuleDescription", "Description: Create a new module that can set new or existing parameters directly.");
-		return MakeShareable(new FScriptGroupAddAction( DisplayName, {}, Description, FText(), false, true, FNiagaraVariable(), false, FAssetData(), nullptr, false, true));
+		return MakeShareable(new FScriptGroupAddAction( DisplayName, {}, Description, FText(), true, true, FNiagaraVariable(), false, FAssetData(), nullptr, false, true));
 	}
 
 	virtual TArray<FString> GetCategories() const override
@@ -315,6 +315,7 @@ public:
 			{
 				NewModuleNode = FNiagaraStackGraphUtilities::AddScriptModuleToStack(ScratchPadScriptViewModel->GetOriginalScript(), *OutputNode, TargetIndex);
 				SystemViewModel.Pin()->GetScriptScratchPadViewModel()->FocusScratchPadScriptViewModel(ScratchPadScriptViewModel.ToSharedRef());
+				SystemViewModel.Pin()->FocusTab(FNiagaraSystemToolkitModeBase::ScratchPadScriptsTabID);
 				ScratchPadScriptViewModel->SetIsPendingRename(true);
 			}
 		}
@@ -348,13 +349,6 @@ private:
 		{
 			Vars.Add(ParameterVariable);
 			DefaultVals.Add(FNiagaraConstants::GetAttributeDefaultValue(ParameterVariable));
-
-			FNiagaraTypeDefinition Type = ParameterVariable.GetType();
-			if (Type.IsUObject() && Type.IsDataInterface() == false)
-			{
-				// we currently don't support setting uobjects in the stack (except for data interfaces)
-				return nullptr;
-			}
 		}
 
 		UNiagaraNodeAssignment* NewAssignmentModule = FNiagaraStackGraphUtilities::AddParameterModuleToStack(Vars, *OutputNode, TargetIndex,DefaultVals );
@@ -598,7 +592,7 @@ void UNiagaraStackScriptItemGroup::RefreshIssues(TArray<FStackIssue>& NewIssues)
 		FText FixDescription = LOCTEXT("FixStackGraph", "Fix invalid stack graph");
 		FStackIssueFix ResetStackFix(
 			FixDescription,
-			FStackIssueFixDelegate::CreateLambda([=]()
+			FStackIssueFixDelegate::CreateLambda([this, FixDescription, Graph]()
 		{
 			FScopedTransaction ScopedTransaction(FixDescription);
 			FNiagaraStackGraphUtilities::ResetGraphForOutput(*Graph, ScriptUsage, ScriptUsageId);
@@ -1326,7 +1320,7 @@ void RenameInputsFromClipboard(TMap<FName, FName> OldModuleOutputNameToNewModule
 		else if (SourceInput->ValueMode == ENiagaraClipboardFunctionInputValueMode::Dynamic)
 		{
 			const UNiagaraClipboardFunctionInput* RenamedDynamicInput = UNiagaraClipboardFunctionInput::CreateDynamicValue(InOuter, SourceInput->InputName, SourceInput->InputType, bEditConditionValue, SourceInput->Dynamic->FunctionName, SourceInput->Dynamic->Script.Get(), SourceInput->Dynamic->ScriptVersion);
-			RenameInputsFromClipboard(OldModuleOutputNameToNewModuleOutputNameMap, RenamedDynamicInput->Dynamic, SourceInput->Dynamic->Inputs, RenamedDynamicInput->Dynamic->Inputs);
+			RenameInputsFromClipboard(OldModuleOutputNameToNewModuleOutputNameMap, RenamedDynamicInput->Dynamic, SourceInput->Dynamic->Inputs, MutableView(RenamedDynamicInput->Dynamic->Inputs));
 			OutRenamedInputs.Add(RenamedDynamicInput);
 		}
 		else
@@ -1467,4 +1461,3 @@ void UNiagaraStackScriptItemGroup::PasteModules(const UNiagaraClipboardContent* 
 }
 
 #undef LOCTEXT_NAMESPACE
-

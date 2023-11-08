@@ -16,12 +16,13 @@
 #include "DepthRendering.h"
 #include "TranslucentRendering.h"
 #include "ScreenSpaceDenoise.h"
-#include "Lumen/LumenSceneRendering.h"
+#include "Lumen/LumenSceneCardCapture.h"
 #include "Lumen/LumenTracingUtils.h"
 #include "RayTracing/RayTracingLighting.h"
 #include "IndirectLightRendering.h"
 #include "ScreenSpaceRayTracing.h"
 #include "RenderGraphUtils.h"
+#include "SceneCulling/SceneCullingRenderer.h"
 
 enum class ERayTracingPrimaryRaysFlag : uint32;
 
@@ -42,6 +43,8 @@ namespace LumenRadianceCache
 }
 class FRenderLightParameters;
 class FRayTracingScene;
+class FNaniteVisibility;
+struct FNaniteVisibilityQuery;
 
 struct FSceneWithoutWaterTextures;
 struct FRayTracingReflectionOptions;
@@ -55,20 +58,22 @@ struct FForwardBasePassTextures;
 struct FTranslucentLightInjectionCollector;
 struct FRayTracingPickingFeedback;
 struct FDBufferTextures;
+struct FILCUpdatePrimTaskData;
+struct FLumenDirectLightingTaskData;
+
+class IVisibilityTaskData;
 
 #if RHI_RAYTRACING
 struct FRayTracingRelevantPrimitiveTaskData;
 #endif
 
 /**   
- * Data for rendering meshes into Lumen Lighting Cards.
+ * Data for rendering meshes into Surface Cache
  */
 class FLumenCardRenderer
 {
 public:
 	TArray<FCardPageRenderData, SceneRenderingAllocator> CardPagesToRender;
-
-	TArray<const FPrimitiveSceneInfo*, SceneRenderingAllocator> LandscapePrimitivesInRange;
 
 	int32 NumCardTexelsToCapture;
 	FMeshCommandOneFrameArray MeshDrawCommands;
@@ -122,10 +127,10 @@ struct FAsyncLumenIndirectLightingOutputs
 	{
 		check(StepsLeft == ELumenIndirectLightingSteps::All);
 
-		EnumRemoveFlags(StepsLeft, ELumenIndirectLightingSteps::ScreenProbeGather | ELumenIndirectLightingSteps::StoreDepthHistory);
+		EnumRemoveFlags(StepsLeft, ELumenIndirectLightingSteps::ScreenProbeGather);
 		if (bAsyncReflections)
 		{
-			EnumRemoveFlags(StepsLeft, ELumenIndirectLightingSteps::Reflections);
+			EnumRemoveFlags(StepsLeft, ELumenIndirectLightingSteps::Reflections | ELumenIndirectLightingSteps::StoreDepthHistory);
 		}
 	}
 
@@ -232,7 +237,7 @@ private:
 /**
  * Encapsulates the resources and render targets used by global illumination plugins.
  */
-class RENDERER_API FGlobalIlluminationPluginResources : public FRenderResource
+class FGlobalIlluminationPluginResources : public FRenderResource
 
 {
 public:
@@ -247,20 +252,20 @@ public:
 /**
  * Delegate callback used by global illumination plugins
  */
-class RENDERER_API FGlobalIlluminationPluginDelegates
+class FGlobalIlluminationPluginDelegates
 {
 public:
 	DECLARE_MULTICAST_DELEGATE_OneParam(FAnyRayTracingPassEnabled, bool& /*bAnyRayTracingPassEnabled*/);
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FPrepareRayTracing, const FViewInfo& /*View*/, TArray<FRHIRayTracingShader*>& /*OutRayGenShaders*/);
 	DECLARE_MULTICAST_DELEGATE_FourParams(FRenderDiffuseIndirectLight, const FScene& /*Scene*/, const FViewInfo& /*View*/, FRDGBuilder& /*GraphBuilder*/, FGlobalIlluminationPluginResources& /*Resources*/);
 
-	static FAnyRayTracingPassEnabled& AnyRayTracingPassEnabled();
-	static FPrepareRayTracing& PrepareRayTracing();
-	static FRenderDiffuseIndirectLight& RenderDiffuseIndirectLight();
+	static RENDERER_API FAnyRayTracingPassEnabled& AnyRayTracingPassEnabled();
+	static RENDERER_API FPrepareRayTracing& PrepareRayTracing();
+	static RENDERER_API FRenderDiffuseIndirectLight& RenderDiffuseIndirectLight();
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	DECLARE_MULTICAST_DELEGATE_FourParams(FRenderDiffuseIndirectVisualizations, const FScene& /*Scene*/, const FViewInfo& /*View*/, FRDGBuilder& /*GraphBuilder*/, FGlobalIlluminationPluginResources& /*Resources*/);
-	static FRenderDiffuseIndirectVisualizations& RenderDiffuseIndirectVisualizations();
+	static RENDERER_API FRenderDiffuseIndirectVisualizations& RenderDiffuseIndirectVisualizations();
 #endif //!(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 };
 
@@ -306,12 +311,19 @@ public:
 	FDepthPassInfo DepthPass;
 
 	FLumenCardRenderer LumenCardRenderer;
+	FSceneCullingRenderer SceneCullingRenderer;
 
 #if RHI_RAYTRACING
 	bool bShouldUpdateRayTracingScene =  false;
 
 	void InitializeRayTracingFlags_RenderThread();
 #endif
+
+	enum class ERendererOutput
+	{
+		DepthPrepassOnly,	// Only render depth prepass and its related code paths
+		FinalSceneColor		// Render the whole pipeline
+	};
 
 	FDeferredShadingSceneRenderer(const FSceneViewFamily* InViewFamily, FHitProxyConsumer* HitProxyConsumer);
 
@@ -491,6 +503,11 @@ private:
 		return (GetViewPipelineState(View).DiffuseIndirectMethod == EDiffuseIndirectMethod::Lumen || GetViewPipelineState(View).ReflectionsMethod == EReflectionsMethod::Lumen);
 	}
 
+	virtual bool IsLumenGIEnabled(const FViewInfo& View) const override
+	{
+		return GetViewPipelineState(View).DiffuseIndirectMethod == EDiffuseIndirectMethod::Lumen;
+	}
+
 	virtual bool AnyViewHasGIMethodSupportingDFAO() const override
 	{
 		bool bAnyViewHasGIMethodSupportingDFAO = false;
@@ -524,23 +541,55 @@ private:
 		const TArray<FProjectedShadowInfo*, SceneRenderingAllocator>& ViewDependentWholeSceneShadows,
 		TArray<FProjectedShadowInfo*, SceneRenderingAllocator>& OutPreShadows);
 
-	void PreGatherDynamicMeshElements() override final;
+	struct FInitViewTaskDatas
+	{
+		FInitViewTaskDatas(IVisibilityTaskData* InVisibilityTaskData)
+			: VisibilityTaskData(InVisibilityTaskData)
+		{}
 
-	void PreVisibilityFrameSetup(FRDGBuilder& GraphBuilder, const FSceneTexturesConfig& SceneTexturesConfig);
+		IVisibilityTaskData* VisibilityTaskData;
+		FILCUpdatePrimTaskData* ILCUpdatePrim = nullptr;
+	#if RHI_RAYTRACING
+		FRayTracingRelevantPrimitiveTaskData* RayTracingRelevantPrimitives = nullptr;
+	#endif
+		FDynamicShadowsTaskData* DynamicShadows = nullptr;
+		FLumenDirectLightingTaskData* LumenDirectLighting = nullptr;
+		FLumenSceneFrameTemporaries* LumenFrameTemporaries = nullptr;
+	};
+
+	void PreVisibilityFrameSetup(FRDGBuilder& GraphBuilder);
+
+	void BeginInitDynamicShadows(FInitViewTaskDatas& TaskDatas);
+	void FinishInitDynamicShadows(FRDGBuilder& GraphBuilder, FDynamicShadowsTaskData*& TaskData, FInstanceCullingManager& InstanceCullingManager, FRDGExternalAccessQueue& ExternalAccessQueue);
 
 	void ComputeLightVisibility();
 
 	/** Determines which primitives are visible for each view. */
-	void BeginInitViews(FRDGBuilder& GraphBuilder, const FSceneTexturesConfig& SceneTexturesConfig, FExclusiveDepthStencil::Type BasePassDepthStencilAccess, struct FILCUpdatePrimTaskData& ILCTaskData, FInstanceCullingManager& InstanceCullingManager);
-	void EndInitViews(FRDGBuilder& GraphBuilder, FLumenSceneFrameTemporaries& FrameTemporaries, struct FILCUpdatePrimTaskData& ILCTaskData, FInstanceCullingManager& InstanceCullingManager, FRDGExternalAccessQueue& ExternalAccessQueue);
+	void BeginInitViews(
+		FRDGBuilder& GraphBuilder,
+		const FSceneTexturesConfig& SceneTexturesConfig,
+		FExclusiveDepthStencil::Type BasePassDepthStencilAccess,
+		FInstanceCullingManager& InstanceCullingManager,
+		FVirtualTextureUpdater* VirtualTextureUpdater,
+		FInitViewTaskDatas& TaskDatas);
+
+	void EndInitViews(
+		FRDGBuilder& GraphBuilder,
+		FLumenSceneFrameTemporaries& FrameTemporaries,
+		FInstanceCullingManager& InstanceCullingManager,
+		FRDGExternalAccessQueue& ExternalAccessQueue,
+		FInitViewTaskDatas& TaskDatas);
 
 	void BeginUpdateLumenSceneTasks(FRDGBuilder& GraphBuilder, FLumenSceneFrameTemporaries& FrameTemporaries);
 	void UpdateLumenScene(FRDGBuilder& GraphBuilder, FLumenSceneFrameTemporaries& FrameTemporaries);
-	void RenderLumenSceneLighting(FRDGBuilder& GraphBuilder, const FLumenSceneFrameTemporaries& FrameTemporaries);
+	void RenderLumenSceneLighting(FRDGBuilder& GraphBuilder, const FLumenSceneFrameTemporaries& FrameTemporaries, const FLumenDirectLightingTaskData* DirectLightingTaskData);
+
+	void BeginGatherLumenLights(FLumenDirectLightingTaskData*& TaskData, IVisibilityTaskData* VisibilityTaskData);
 
 	void RenderDirectLightingForLumenScene(
 		FRDGBuilder& GraphBuilder,
 		const FLumenSceneFrameTemporaries& FrameTemporaries,
+		const FLumenDirectLightingTaskData* DirectLightingTaskData,
 		const FLumenCardUpdateContext& CardUpdateContext,
 		ERDGPassFlags ComputePassFlags);
 	
@@ -581,7 +630,7 @@ private:
 
 	void CreateIndirectCapsuleShadows();
 
-	void RenderPrePass(FRDGBuilder& GraphBuilder, FRDGTextureRef SceneDepthTexture, FInstanceCullingManager& InstanceCullingManager);
+	void RenderPrePass(FRDGBuilder& GraphBuilder, FRDGTextureRef SceneDepthTexture, FInstanceCullingManager& InstanceCullingManager, FRDGTextureRef* FirstStageDepthBuffer);
 	void RenderPrePassHMD(FRDGBuilder& GraphBuilder, FRDGTextureRef SceneDepthTexture);
 
 	void RenderFog(
@@ -631,6 +680,7 @@ private:
 	void RenderDeferredReflectionsAndSkyLighting(
 		FRDGBuilder& GraphBuilder,
 		const FSceneTextures& SceneTextures,
+		const FLumenSceneFrameTemporaries& LumenFrameTemporaries,
 		FRDGTextureRef DynamicBentNormalAOTexture);
 
 	void RenderDeferredReflectionsAndSkyLightingHair(FRDGBuilder& GraphBuilder);
@@ -927,44 +977,6 @@ private:
 		FRDGTextureSRVRef SceneStencilTexture,
 		const TArrayView<FRDGTextureRef> NaniteResolveTextures);
 
-	bool ShouldRenderVolumetricFog() const;
-
-	void SetupVolumetricFog();
-
-	void RenderLocalLightsForVolumetricFog(
-		FRDGBuilder& GraphBuilder,
-		FViewInfo& View,
-		bool bUseTemporalReprojection,
-		const struct FVolumetricFogIntegrationParameterData& IntegrationData,
-		const FExponentialHeightFogSceneInfo& FogInfo,
-		FIntVector VolumetricFogGridSize,
-		FVector GridZParams,
-		const FRDGTextureDesc& VolumeDesc,
-		FRDGTexture*& OutLocalShadowedLightScattering,
-		FRDGTextureRef ConservativeDepthTexture);
-
-	void RenderLightFunctionForVolumetricFog(
-		FRDGBuilder& GraphBuilder,
-		FViewInfo& View,
-		const FSceneTextures& SceneTextures,
-		FIntVector VolumetricFogGridSize,
-		float VolumetricFogMaxDistance,
-		FMatrix44f& OutLightFunctionTranslatedWorldToShadow,
-		FRDGTexture*& OutLightFunctionTexture,
-		bool& bOutUseDirectionalLightShadowing);
-
-	void VoxelizeFogVolumePrimitives(
-		FRDGBuilder& GraphBuilder,
-		const FViewInfo& View,
-		const FVolumetricFogIntegrationParameterData& IntegrationData,
-		FIntVector VolumetricFogGridSize,
-		FVector GridZParams,
-		float VolumetricFogDistance,
-		bool bVoxelizeEmissive);
-
-	void ComputeVolumetricFog(FRDGBuilder& GraphBuilder,
-		const FSceneTextures& SceneTextures);
-
 	void RenderHeterogeneousVolumes(FRDGBuilder& GraphBuilder, const FSceneTextures& SceneTextures);
 	void CompositeHeterogeneousVolumes(FRDGBuilder& GraphBuilder, const FSceneTextures& SceneTextures);
 
@@ -975,8 +987,7 @@ private:
 
 	bool HasDeferredPlanarReflections(const FViewInfo& View) const;
 	void RenderDeferredPlanarReflections(FRDGBuilder& GraphBuilder, const FSceneTextureParameters& SceneTextures, const FViewInfo& View, FRDGTextureRef& ReflectionsOutput);
-	
-	bool ShouldRenderDistanceFieldAO() const;
+
 
 	bool IsNaniteEnabled() const;
 
@@ -1059,6 +1070,7 @@ private:
 		const FSceneTextureParameters& SceneTextures,
 		FRDGTextureRef* OutAmbientOcclusionTexture);
 	
+	ERendererOutput GetRendererOutput() const;
 
 #if RHI_RAYTRACING
 	template <int TextureImportanceSampling>
@@ -1113,7 +1125,9 @@ private:
 		FRDGBuilder& GraphBuilder,
 		const FViewInfo& View,
 		TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTexturesUniformBuffer,
-		FRDGTextureRef SceneColorOutputTexture);
+		FRDGTextureRef SceneColorOutputTexture,
+		FRDGTextureRef SceneDepthOutputTexture,
+		struct FPathTracingResources& PathTracingResources);
 
 	void ComputePathCompaction(FRHICommandListImmediate& RHICmdList, const FViewInfo& View, FRHITexture* RadianceTexture, FRHITexture* SampleCountTexture, FRHITexture* PixelPositionTexture,
 		FRHIUnorderedAccessView* RadianceSortedRedUAV, FRHIUnorderedAccessView* RadianceSortedGreenUAV, FRHIUnorderedAccessView* RadianceSortedBlueUAV, FRHIUnorderedAccessView* RadianceSortedAlphaUAV, FRHIUnorderedAccessView* SampleCountSortedUAV);
@@ -1126,25 +1140,26 @@ private:
 	void RayTracingDisplayPicking(const FRayTracingPickingFeedback& PickingFeedback, FScreenMessageWriter& Writer);
 
 	/** Fills RayTracingScene instance list for the given View and adds relevant ray tracing data to the view. Does not reset previous scene contents. */
-	bool GatherRayTracingWorldInstancesForView(FRDGBuilder& GraphBuilder, FViewInfo& View, FRayTracingScene& RayTracingScene, struct FRayTracingRelevantPrimitiveList& RelevantPrimitiveList);
+	bool GatherRayTracingWorldInstancesForView(FRDGBuilder& GraphBuilder, FViewInfo& View, FRayTracingScene& RayTracingScene, FRayTracingRelevantPrimitiveTaskData* RayTracingRelevantPrimitiveTaskData);
 
 	bool SetupRayTracingPipelineStates(FRDGBuilder& GraphBuilder);
 	void SetupRayTracingLightDataForViews(FRDGBuilder& GraphBuilder);
 	bool DispatchRayTracingWorldUpdates(FRDGBuilder& GraphBuilder, FRDGBufferRef& OutDynamicGeometryScratchBuffer);
 
 	/** Functions to create ray tracing pipeline state objects for various effects */
-	FRayTracingPipelineState* CreateRayTracingMaterialPipeline(FRHICommandList& RHICmdList, FViewInfo& View, const TArrayView<FRHIRayTracingShader*>& RayGenShaderTable);
+	FRayTracingPipelineState* CreateRayTracingMaterialPipeline(FRDGBuilder& GraphBuilder, FViewInfo& View, const TArrayView<FRHIRayTracingShader*>& RayGenShaderTable);
 	FRayTracingPipelineState* CreateRayTracingDeferredMaterialGatherPipeline(FRHICommandList& RHICmdList, const FViewInfo& View, const TArrayView<FRHIRayTracingShader*>& RayGenShaderTable);
 	FRayTracingPipelineState* CreateLumenHardwareRayTracingMaterialPipeline(FRHICommandList& RHICmdList, const FViewInfo& View, const TArrayView<FRHIRayTracingShader*>& RayGenShaderTable);
 
 	/** Functions to bind parameters to the ray tracing scene (fill the shader binding tables, etc.) */
 	void BindRayTracingMaterialPipeline(FRHICommandListImmediate& RHICmdList, FViewInfo& View, FRayTracingPipelineState* PipelineState);
 	void BindRayTracingDeferredMaterialGatherPipeline(FRHICommandListImmediate& RHICmdList, const FViewInfo& View, FRayTracingPipelineState* PipelineState);
-	void BindLumenHardwareRayTracingMaterialPipeline(FRHICommandListImmediate& RHICmdList, FRayTracingLocalShaderBindings* Bindings, const FViewInfo& View, FRayTracingPipelineState* PipelineState, FRDGBufferRef OutHitGroupDataBuffer);
+	void BindLumenHardwareRayTracingMaterialPipeline(FRHICommandListImmediate& RHICmdList, const FViewInfo& View, FRHIUniformBuffer* SceneUniformBuffer, FRayTracingPipelineState* PipelineState);
 
-	FRayTracingLocalShaderBindings* BuildLumenHardwareRayTracingMaterialBindings(FRHICommandList& RHICmdList, const FViewInfo& View, FRDGBufferRef OutHitGroupDataBuffer, bool bInlineOnly);
+	void BuildLumenHardwareRayTracingHitGroupData(FRHICommandListBase& RHICmdList, FRayTracingScene& RayTracingScene, const FViewInfo& View, FRDGBufferRef OutHitGroupDataBuffer);
+	FRayTracingLocalShaderBindings* BuildLumenHardwareRayTracingMaterialBindings(FRHICommandList& RHICmdList, const FViewInfo& View, FRHIUniformBuffer* SceneUniformBuffer);
 	void SetupLumenHardwareRayTracingHitGroupBuffer(FRDGBuilder& GraphBuilder, FViewInfo& View);
-
+	void SetupLumenHardwareRayTracingUniformBuffer(FRDGBuilder& GraphBuilder, FViewInfo& View);
 	// #dxr_todo: UE-72565: refactor ray tracing effects to not be member functions of DeferredShadingRenderer. Register each effect at startup and just loop over them automatically
 	static void PrepareRayTracingReflections(const FViewInfo& View, const FScene& Scene, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
 	static void PrepareRayTracingDeferredReflections(const FViewInfo& View, const FScene& Scene, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
@@ -1155,16 +1170,17 @@ private:
 	static void PrepareRayTracingGlobalIllumination(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
 	static void PrepareRayTracingGlobalIlluminationPlugin(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
 	static void PrepareRayTracingTranslucency(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
+	static void PrepareRayTracingVolumetricFogShadows(const FViewInfo& View, const FScene& Scene, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
 	static void PrepareRayTracingDebug(const FSceneViewFamily& ViewFamily, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
-	static void PreparePathTracing(const FSceneViewFamily& ViewFamily, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
+	static void PreparePathTracing(const FSceneViewFamily& ViewFamily, const FScene& Scene, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
 	static void PrepareLumenHardwareRayTracingScreenProbeGather(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
 	static void PrepareLumenHardwareRayTracingShortRangeAO(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
 	static void PrepareLumenHardwareRayTracingScreenProbeGatherDeferredMaterial(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
 	static void PrepareLumenHardwareRayTracingRadianceCache(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
 	static void PrepareLumenHardwareRayTracingRadianceCacheDeferredMaterial(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
-	static void PrepareLumenHardwareRayTracingReflections(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
+	void PrepareLumenHardwareRayTracingReflections(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
 	static void PrepareLumenHardwareRayTracingReflectionsDeferredMaterial(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
-	static void PrepareLumenHardwareRayTracingVisualize(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
+	void PrepareLumenHardwareRayTracingVisualize(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
 	static void PrepareLumenHardwareRayTracingVisualizeDeferredMaterial(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
 
 	// Versions for setting up the deferred material pipeline
@@ -1174,24 +1190,24 @@ private:
 
 	// Versions for setting up the lumen material pipeline
 	static void PrepareLumenHardwareRayTracingTranslucencyVolumeLumenMaterial(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
-	static void PrepareLumenHardwareRayTracingVisualizeLumenMaterial(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
-	static void PrepareLumenHardwareRayTracingReflectionsLumenMaterial(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
+	void PrepareLumenHardwareRayTracingVisualizeLumenMaterial(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
+	void PrepareLumenHardwareRayTracingReflectionsLumenMaterial(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
 	static void PrepareLumenHardwareRayTracingScreenProbeGatherLumenMaterial(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
 	static void PrepareLumenHardwareRayTracingRadianceCacheLumenMaterial(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
 	static void PrepareLumenHardwareRayTracingRadiosityLumenMaterial(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
 	static void PrepareLumenHardwareRayTracingDirectLightingLumenMaterial(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders);
-
-	const FRHITransition* RayTracingDynamicGeometryUpdateEndTransition = nullptr; // Signaled when all AS for this frame are built
 #endif // RHI_RAYTRACING
+
+
+	struct FNaniteBasePassVisibility
+	{
+		FNaniteVisibilityQuery* Query = nullptr;
+		FNaniteVisibility* Visibility = nullptr;
+
+	} NaniteBasePassVisibility;
 
 	/** Set to true if lights were injected into the light grid (this controlled by somewhat complex logic, this flag is used to cross-check). */
 	bool bAreLightsInLightGrid;
-
-	FDynamicShadowsTaskData* CurrentDynamicShadowsTaskData{};
-
-#if RHI_RAYTRACING
-	FRayTracingRelevantPrimitiveTaskData* RayTracingRelevantPrimitiveTaskData = nullptr;
-#endif
 };
 
 DECLARE_CYCLE_STAT_EXTERN(TEXT("PrePass"), STAT_CLM_PrePass, STATGROUP_CommandListMarkers, );

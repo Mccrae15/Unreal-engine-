@@ -9,6 +9,7 @@
 
 
 class FOpenColorIODisplayManager;
+class FOpenColorIONativeInterchangeConfiguration;
 
 /**
  * Interface for the OpenColorIO module.
@@ -43,4 +44,7 @@ public:
 	 * Returns the collections of ocio display look currently in play
 	 */
 	virtual FOpenColorIODisplayManager& GetDisplayManager() = 0;
+
+	UE_DEPRECATED(5.3, "This function is deprecated and has been replaced by FOpenColorIOWrapperConfig class in the OpenColorIOWrapper module.")
+	FOpenColorIONativeInterchangeConfiguration* GetNativeInterchangeConfig_Internal() { return nullptr; };
 };

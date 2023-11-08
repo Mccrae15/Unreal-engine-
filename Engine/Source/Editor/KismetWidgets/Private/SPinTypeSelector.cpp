@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "SPinTypeSelector.h"
 
+#include "Algo/LevenshteinDistance.h"
 #include "BlueprintEditorSettings.h"
 #include "Containers/UnrealString.h"
 #include "EdGraph/EdGraphSchema.h"
@@ -844,7 +845,38 @@ void SPinTypeSelector::OnObjectReferenceSelectionChanged(FObjectReferenceListIte
 
 TSharedRef< SWidget > SPinTypeSelector::GetAllowedObjectTypes(FPinTypeTreeItem InItem, bool bForSecondaryType)
 {
-	AllowedObjectReferenceTypes.Reset();
+	GenerateAllowedObjectTypesList(AllowedObjectReferenceTypes, InItem, bForSecondaryType);
+
+	TSharedRef<SListView<FObjectReferenceListItem>> ListView = SNew(SListView<FObjectReferenceListItem>)
+		.ListItemsSource(&AllowedObjectReferenceTypes)
+		.SelectionMode(ESelectionMode::Single)
+		.OnGenerateRow(this, &SPinTypeSelector::GenerateObjectReferenceTreeRow)
+		.OnSelectionChanged(this, &SPinTypeSelector::OnObjectReferenceSelectionChanged, bForSecondaryType);
+
+	WeakListView = ListView;
+
+	if (AllowedObjectReferenceTypes.Num())
+	{
+		ListView->SetSelection(AllowedObjectReferenceTypes[0], ESelectInfo::OnNavigation);
+	}
+
+	return 
+		SNew(SBorder)
+		.BorderImage(FAppStyle::GetBrush("Menu.Background"))
+		[
+			SNew(SObjectReferenceWidget, PinTypeSelectorMenuOwner)
+			[
+				SNew(SListViewSelectorDropdownMenu<FObjectReferenceListItem>, nullptr, ListView)
+				[
+					ListView
+				]
+			]
+		];
+}
+
+void SPinTypeSelector::GenerateAllowedObjectTypesList(TArray<FObjectReferenceListItem>& OutList, FPinTypeTreeItem InItem, bool bForSecondaryType) const
+{
+	OutList.Reset();
 
 	// Do not force the pin type here, that causes a load of the Blueprint (if unloaded)
 	FEdGraphPinType PinType = InItem->GetPinType(false);
@@ -868,7 +900,7 @@ TSharedRef< SWidget > SPinTypeSelector::GetAllowedObjectTypes(FPinTypeTreeItem I
 		PinType.PinCategory = UEdGraphSchema_K2::PC_Object;
 		TSharedRef<SWidget> Widget = CreateObjectReferenceWidget(InItem, PinType, IconBrush, FText::Format(LOCTEXT("ObjectTooltip", "Reference an instanced object of type \'{TypeName}\'"), Args));
 		FObjectReferenceListItem ObjectReferenceType = MakeShareable(new FObjectReferenceType(InItem, Widget, PinType.PinCategory));
-		AllowedObjectReferenceTypes.Add(ObjectReferenceType);
+		OutList.Add(ObjectReferenceType);
 	}
 
 	if (PossibleObjectReferenceTypes & static_cast<uint8>(EObjectReferenceType::ClassReference))
@@ -876,7 +908,7 @@ TSharedRef< SWidget > SPinTypeSelector::GetAllowedObjectTypes(FPinTypeTreeItem I
 		PinType.PinCategory = UEdGraphSchema_K2::PC_Class;
 		TSharedRef<SWidget> Widget = CreateObjectReferenceWidget(InItem, PinType, IconBrush, FText::Format(LOCTEXT("ClassTooltip", "Reference a class inheriting from type \'{TypeName}\'"), Args));
 		FObjectReferenceListItem ObjectReferenceType = MakeShareable(new FObjectReferenceType(InItem, Widget, PinType.PinCategory));
-		AllowedObjectReferenceTypes.Add(ObjectReferenceType);
+		OutList.Add(ObjectReferenceType);
 	}
 
 	if (PossibleObjectReferenceTypes & static_cast<uint8>(EObjectReferenceType::SoftObject))
@@ -890,7 +922,7 @@ TSharedRef< SWidget > SPinTypeSelector::GetAllowedObjectTypes(FPinTypeTreeItem I
 		PinType.PinCategory = UEdGraphSchema_K2::PC_SoftObject;
 		TSharedRef<SWidget> Widget = CreateObjectReferenceWidget(InItem, PinType, IconBrush, FText::Format(FormatString, Args));
 		FObjectReferenceListItem ObjectReferenceType = MakeShareable(new FObjectReferenceType(InItem, Widget, PinType.PinCategory));
-		AllowedObjectReferenceTypes.Add(ObjectReferenceType);
+		OutList.Add(ObjectReferenceType);
 	}
 
 	if (PossibleObjectReferenceTypes & static_cast<uint8>(EObjectReferenceType::SoftClass))
@@ -904,34 +936,8 @@ TSharedRef< SWidget > SPinTypeSelector::GetAllowedObjectTypes(FPinTypeTreeItem I
 		PinType.PinCategory = UEdGraphSchema_K2::PC_SoftClass;
 		TSharedRef<SWidget> Widget = CreateObjectReferenceWidget(InItem, PinType, IconBrush, FText::Format(FormatString, Args));
 		FObjectReferenceListItem ObjectReferenceType = MakeShareable(new FObjectReferenceType(InItem, Widget, PinType.PinCategory));
-		AllowedObjectReferenceTypes.Add(ObjectReferenceType);
+		OutList.Add(ObjectReferenceType);
 	}
-
-	TSharedPtr<SListView<FObjectReferenceListItem>> ListView;
-	SAssignNew(ListView, SListView<FObjectReferenceListItem>)
-		.ListItemsSource(&AllowedObjectReferenceTypes)
-		.SelectionMode(ESelectionMode::Single)
-		.OnGenerateRow(this, &SPinTypeSelector::GenerateObjectReferenceTreeRow)
-		.OnSelectionChanged(this, &SPinTypeSelector::OnObjectReferenceSelectionChanged, bForSecondaryType);
-
-	WeakListView = ListView;
-	if (AllowedObjectReferenceTypes.Num())
-	{
-		ListView->SetSelection(AllowedObjectReferenceTypes[0], ESelectInfo::OnNavigation);
-	}
-
-	return 
-		SNew(SBorder)
-		.BorderImage(FAppStyle::GetBrush("Menu.Background"))
-		[
-			SNew(SObjectReferenceWidget, PinTypeSelectorMenuOwner)
-			[
-				SNew(SListViewSelectorDropdownMenu<FObjectReferenceListItem>, nullptr, ListView)
-				[
-					ListView.ToSharedRef()
-				]
-			]
-		];
 }
 
 void SPinTypeSelector::OnSelectPinType(FPinTypeTreeItem InItem, FName InPinCategory, bool bForSecondaryType)
@@ -1083,7 +1089,8 @@ TSharedRef<SWidget>	SPinTypeSelector::GetMenuContent(bool bForSecondaryType)
 		NumFilteredPinTypeItems = 0;
 		FilteredTypeTreeRoot.Empty();
 
-		GetChildrenMatchingSearch(FText::GetEmpty(), TypeTreeRoot, FilteredTypeTreeRoot);
+		FTopLevenshteinResult<FPinTypeTreeItem> TopLevenshteinResult;
+		GetChildrenMatchingSearch(FText::GetEmpty(), TypeTreeRoot, FilteredTypeTreeRoot, TopLevenshteinResult);
 	}
 	else
 	{
@@ -1119,49 +1126,137 @@ TSharedRef<SWidget>	SPinTypeSelector::GetMenuContent(bool bForSecondaryType)
 		}
 
 		TSharedPtr<SHorizontalBox> CustomWidgetContainer;
-		
+		TSharedPtr<SVerticalBox> TreeWrapper;
+
 		MenuContent = SAssignNew(PinTypeSelectorMenuOwner, SMenuOwner)
 			[
-				SNew(SListViewSelectorDropdownMenu<FPinTypeTreeItem>, FilterTextBox, TypeTreeView)
+				SAssignNew(TreeWrapper, SVerticalBox)
+				+SVerticalBox::Slot()
+				.FillHeight(1.f)
 				[
-					SNew( SVerticalBox )
-					+SVerticalBox::Slot()
-					.AutoHeight()
-					.Padding(4.f, 4.f, 4.f, 4.f)
+					SNew(SListViewSelectorDropdownMenu<FPinTypeTreeItem>, FilterTextBox, TypeTreeView)
 					[
-						FilterTextBox.ToSharedRef()
-					]
-					+SVerticalBox::Slot()
+						SNew( SVerticalBox )
+						+SVerticalBox::Slot()
 						.AutoHeight()
 						.Padding(4.f, 4.f, 4.f, 4.f)
 						[
-							SNew(SBox)
-							.HeightOverride(TreeViewHeight)
-							.WidthOverride(TreeViewWidth)
-							[
-								TypeTreeView.ToSharedRef()
-							]
+							FilterTextBox.ToSharedRef()
 						]
-					+SVerticalBox::Slot()
-					.AutoHeight()
-					.Padding(8.f, 0.f, 8.f, 4.f)
-					[
-						SNew(SBox)
-						.Visibility(CustomFilterOptionsWidgets.Num() > 0 ? EVisibility::Visible : EVisibility::Collapsed)
-						[
-							SAssignNew(CustomWidgetContainer, SHorizontalBox)
-							+SHorizontalBox::Slot()
-							.VAlign(VAlign_Center)
-							.FillWidth(1.f)
+						+SVerticalBox::Slot()
+							.AutoHeight()
+							.Padding(4.f, 4.f, 4.f, 4.f)
 							[
-								SNew(STextBlock)
-								.Text(this, &SPinTypeSelector::GetPinTypeItemCountText)
+								SNew(SBox)
+								.HeightOverride(TreeViewHeight)
+								.WidthOverride(TreeViewWidth)
+								[
+									TypeTreeView.ToSharedRef()
+								]
 							]
-							
+						+SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(8.f, 0.f, 8.f, 4.f)
+						[
+							SNew(SBox)
+							.Visibility(CustomFilterOptionsWidgets.Num() > 0 ? EVisibility::Visible : EVisibility::Collapsed)
+							[
+								SAssignNew(CustomWidgetContainer, SHorizontalBox)
+								+SHorizontalBox::Slot()
+								.VAlign(VAlign_Center)
+								.FillWidth(1.f)
+								[
+									SNew(STextBlock)
+									.Text(this, &SPinTypeSelector::GetPinTypeItemCountText)
+								]
+							]
 						]
 					]
 				]
 			];
+
+		static auto FindTreeItemForSubCategoryObject = [](const TArray<FPinTypeTreeItem>& TreeItems, const UObject* SubCategoryObject) -> FPinTypeTreeItem
+		{
+			if (!SubCategoryObject)
+			{
+				return nullptr;
+			}
+
+			for (const FPinTypeTreeItem& TreeItemCategory : TreeItems)
+			{
+				if (TreeItemCategory->GetPinType(false).PinCategory == UEdGraphSchema_K2::AllObjectTypes)
+				{
+					for (const FPinTypeTreeItem& TreeItem : TreeItemCategory->Children)
+					{
+						// Don't force load subcategory object, since the current pin's class
+						// should already have been loaded if we get to this point anyway
+						const bool bForceLoadedSubCategoryObject = false;
+						if (TreeItem->GetPinType(bForceLoadedSubCategoryObject).PinSubCategoryObject == SubCategoryObject)
+						{
+							return TreeItem;
+						}
+					}
+
+					// Objects should only be under the AllObjectTypes category, so once we've found that no need to keep looking
+					break;
+				}
+			}
+
+			return nullptr;
+		};
+
+		// If this pin type is an object type, then try to find its tree item (i.e. one with the same SubCategoryObject),
+		// since we need a tree item to know which available reference types it has, to then build the list from
+		const UObject* CurrentSubObject = bForSecondaryType ? TargetPinType.Get().PinValueType.TerminalSubCategoryObject.Get() : TargetPinType.Get().PinSubCategoryObject.Get();
+		FPinTypeTreeItem CurrentPinInfo = FindTreeItemForSubCategoryObject(TypeTreeRoot, CurrentSubObject);
+
+		// Note: Don't allow changing the reference type from compact selectors if it's a map type,
+		// since it's a bit ambiguous whether you're changing the key or value type
+		if (CurrentPinInfo && !(SelectorType == ESelectorType::Compact && CurrentPinInfo->GetPinType(false).IsMap()))
+		{
+			GenerateAllowedObjectTypesList(CurrentPinAllowedObjectReferenceTypes, CurrentPinInfo, bForSecondaryType);
+			if (CurrentPinAllowedObjectReferenceTypes.Num() > 0)
+			{
+				TSharedRef<SListView<FObjectReferenceListItem>> ListView = SNew(SListView<FObjectReferenceListItem>)
+					.ListItemsSource(&CurrentPinAllowedObjectReferenceTypes)
+					.SelectionMode(ESelectionMode::Single)
+					.OnGenerateRow(this, &SPinTypeSelector::GenerateObjectReferenceTreeRow)
+					.OnSelectionChanged(this, &SPinTypeSelector::OnObjectReferenceSelectionChanged, bForSecondaryType);
+
+				TreeWrapper->AddSlot()
+				.AutoHeight()
+				[
+					SNew(SVerticalBox)
+					.Visibility_Lambda([this](){ return SearchText.IsEmpty() ? EVisibility::Visible : EVisibility::Collapsed; })
+					+SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(6.f, 4.f, 4.f, 2.f)
+					[
+						SNew(STextBlock)
+							.Text(LOCTEXT("PinTypeSelector_ChangeReferenceTypeHeading", "Change to:"))
+							.Font(FAppStyle::GetFontStyle(TEXT("Kismet.TypePicker.CategoryFont")))
+							.ColorAndOpacity(FSlateColor::UseForeground())
+					]
+					+SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(4.f, 0.f, 4.f, 4.f)
+					[
+						// This is the same setup/styling as GetAllowedObjectTypes()
+						SNew(SBorder)
+						.BorderImage(FAppStyle::GetBrush("Menu.Background"))
+						[
+							SNew(SObjectReferenceWidget, PinTypeSelectorMenuOwner)
+							[
+								SNew(SListViewSelectorDropdownMenu<FObjectReferenceListItem>, nullptr, ListView)
+								[
+									ListView
+								]
+							]
+						]
+					]
+				];
+			}
+		}
 
 		if(CustomWidgetContainer.IsValid())
 		{
@@ -1257,6 +1352,48 @@ TSharedRef<SWidget> SPinTypeSelector::GetPinContainerTypeMenuContent()
 	return MenuBuilder.MakeWidget();
 }
 
+template<typename T>
+TOptional<T> FindBestMatch(FStringView SearchText, TArrayView<T> Container, TFunctionRef<FString(const T& ContainerItem)> ContainerElementTextExtractor)
+{
+	if (SearchText.IsEmpty())
+	{
+		return TOptional<T>();
+	}
+
+	if (Container.Num() == 0)
+	{
+		return TOptional<T>();
+	}
+
+	// Multiple candidates, pick one that is closest match.
+	auto CalculateScore = [](FStringView SearchValue, FStringView CandidateValue)
+	{
+		if (CandidateValue.IsEmpty())
+		{
+			return 0.0f;
+		}
+		const float WorstCase = static_cast<float>(SearchValue.Len() + CandidateValue.Len());
+		return 1.0f - (Algo::LevenshteinDistance(SearchValue, CandidateValue) / WorstCase);
+	};
+
+	const FString ObjectNameLowerCase = FString(SearchText).ToLower();
+
+	int32 HighestScoreIndex = 0;
+	float HighestScore = CalculateScore(ObjectNameLowerCase, ContainerElementTextExtractor(Container[0]).ToLower());
+
+	for (int32 Index = 1; Index < Container.Num(); Index++)
+	{
+		const float Score = CalculateScore(ObjectNameLowerCase, ContainerElementTextExtractor(Container[Index]).ToLower());
+		if (Score > HighestScore)
+		{
+			HighestScore = Score;
+			HighestScoreIndex = Index;
+		}
+	}
+
+	return Container[HighestScoreIndex];
+}
+
 //=======================================================================
 // Search Support
 void SPinTypeSelector::OnFilterTextChanged(const FText& NewText)
@@ -1265,31 +1402,23 @@ void SPinTypeSelector::OnFilterTextChanged(const FText& NewText)
 	NumFilteredPinTypeItems = 0;
 	FilteredTypeTreeRoot.Empty();
 
-	GetChildrenMatchingSearch(NewText, TypeTreeRoot, FilteredTypeTreeRoot);
+	FTopLevenshteinResult<FPinTypeTreeItem> TopLevenshteinResult;
+	GetChildrenMatchingSearch(NewText, TypeTreeRoot, FilteredTypeTreeRoot, TopLevenshteinResult);
 	TypeTreeView->RequestTreeRefresh();
-
-	// Select the first non-category item
-	auto SelectedItems = TypeTreeView->GetSelectedItems();
-	if(FilteredTypeTreeRoot.Num() > 0)
+	
+	if (TopLevenshteinResult.IsSet())
 	{
-		// Categories have children, we don't want to select categories
-		if(FilteredTypeTreeRoot[0]->Children.Num() > 0)
-		{
-			TypeTreeView->SetSelection(FilteredTypeTreeRoot[0]->Children[0], ESelectInfo::OnNavigation);
-		}
-		else
-		{
-			TypeTreeView->SetSelection(FilteredTypeTreeRoot[0], ESelectInfo::OnNavigation);
-		}
+		TypeTreeView->SetSelection(TopLevenshteinResult.Item, ESelectInfo::OnNavigation);
+		TypeTreeView->RequestScrollIntoView(TopLevenshteinResult.Item);
 	}
 }
 
 void SPinTypeSelector::OnFilterTextCommitted(const FText& NewText, ETextCommit::Type CommitInfo)
 {
-	if(CommitInfo == ETextCommit::OnEnter)
+	if (CommitInfo == ETextCommit::OnEnter)
 	{
 		auto SelectedItems = TypeTreeView->GetSelectedItems();
-		if(SelectedItems.Num() > 0)
+		if (SelectedItems.Num() > 0)
 		{
 			TypeTreeView->SetSelection(SelectedItems[0]);
 		}
@@ -1332,8 +1461,9 @@ bool SPinTypeSelector::GetChildrenWithSupportedTypes(const TArray<FPinTypeTreeIt
 	return bReturnVal;
 }
 
-bool SPinTypeSelector::GetChildrenMatchingSearch(const FText& InSearchText, const TArray<FPinTypeTreeItem>& UnfilteredList, TArray<FPinTypeTreeItem>& OutFilteredList)
+bool SPinTypeSelector::GetChildrenMatchingSearch(const FText& InSearchText, const TArray<FPinTypeTreeItem>& UnfilteredList, TArray<FPinTypeTreeItem>& OutFilteredList, FTopLevenshteinResult<FPinTypeTreeItem>& OutTopLevenshteinResult)
 {
+	FString TrimmedFilterString;
 	TArray<FString> FilterTerms;
 	TArray<FString> SanitizedFilterTerms;
 
@@ -1341,7 +1471,7 @@ bool SPinTypeSelector::GetChildrenMatchingSearch(const FText& InSearchText, cons
 	if (!bIsEmptySearch)
 	{
 		// Trim and sanitized the filter text (so that it more likely matches the action descriptions)
-		FString TrimmedFilterString = FText::TrimPrecedingAndTrailing(InSearchText).ToString();
+		TrimmedFilterString = FText::TrimPrecedingAndTrailing(InSearchText).ToString();
 
 		// Tokenize the search box text into a set of terms; all of them must be present to pass the filter
 		TrimmedFilterString.ParseIntoArray(FilterTerms, TEXT(" "), true);
@@ -1366,7 +1496,7 @@ bool SPinTypeSelector::GetChildrenMatchingSearch(const FText& InSearchText, cons
 		FPinTypeTreeItem NewInfo = MakeShareable( new UEdGraphSchema_K2::FPinTypeTreeInfo(Item) );
 		TArray<FPinTypeTreeItem> ValidChildren;
 
-		const bool bHasChildrenMatchingSearch = GetChildrenMatchingSearch(InSearchText, Item->Children, ValidChildren);
+		const bool bHasChildrenMatchingSearch = GetChildrenMatchingSearch(InSearchText, Item->Children, ValidChildren, OutTopLevenshteinResult);
 		bool bFilterMatches = bIsEmptySearch;
 
 		// If children match the search filter, there's no need to do any additional checks
@@ -1410,6 +1540,12 @@ bool SPinTypeSelector::GetChildrenMatchingSearch(const FText& InSearchText, cons
 		{
 			NewInfo->Children = ValidChildren;
 			OutFilteredList.Add(NewInfo);
+
+			// Skip anything with children, those are categories and we don't care about those.
+			if (Item->Children.Num() == 0)
+			{
+				OutTopLevenshteinResult.CompareAndUpdate(TrimmedFilterString, NewInfo, Item->GetDescription().ToString());
+			}
 
 			if (TypeTreeView.IsValid())
 			{
@@ -1573,7 +1709,9 @@ void SPinTypeSelector::OnCustomFilterChanged()
 {
 	NumFilteredPinTypeItems = 0;
 	FilteredTypeTreeRoot.Empty();
-	GetChildrenMatchingSearch(SearchText, TypeTreeRoot, FilteredTypeTreeRoot);
+
+	FTopLevenshteinResult<FPinTypeTreeItem> TopLevenshteinResult;
+	GetChildrenMatchingSearch(SearchText, TypeTreeRoot, FilteredTypeTreeRoot, TopLevenshteinResult);
 
 	if (TypeTreeView.IsValid())
 	{

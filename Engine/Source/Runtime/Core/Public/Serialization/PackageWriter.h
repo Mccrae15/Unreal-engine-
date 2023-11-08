@@ -25,6 +25,13 @@ struct FPackageStoreEntryResource;
 struct FSavePackageArgs;
 struct FSavePackageResultStruct;
 
+enum class EPackageWriterResult : uint8
+{
+	Success,
+	Error,
+	Timeout,
+};
+
 /** Interface for SavePackage to write packages to storage. */
 class IPackageWriter
 {
@@ -173,10 +180,10 @@ public:
 	virtual void WritePackageTrailer(const FPackageTrailerInfo& Info, const FIoBuffer& Data) = 0;
 
 	/** Create the FLargeMemoryWriter to which the Header and Exports are written during the save. */
-	COREUOBJECT_API virtual TUniquePtr<FLargeMemoryWriter> CreateLinkerArchive(FName PackageName, UObject* Asset);
+	COREUOBJECT_API virtual TUniquePtr<FLargeMemoryWriter> CreateLinkerArchive(FName PackageName, UObject* Asset, uint16 MultiOutputIndex);
 
 	/** Returns an archive to be used when serializing exports. */
-	COREUOBJECT_API virtual TUniquePtr<FLargeMemoryWriter> CreateLinkerExportsArchive(FName PackageName, UObject* Asset);
+	COREUOBJECT_API virtual TUniquePtr<FLargeMemoryWriter> CreateLinkerExportsArchive(FName PackageName, UObject* Asset, uint16 MultiOutputIndex);
 
 	/** Report whether PreSave was already called by the PackageWriter before the current UPackage::Save call. */
 	virtual bool IsPreSaveCompleted() const
@@ -216,10 +223,19 @@ class ICookedPackageWriter : public IPackageWriter
 public:
 	virtual ~ICookedPackageWriter() = default;
 
+	enum class EPackageHeaderFormat
+	{
+		PackageFileSummary,
+		ZenPackageSummary
+	};
+
 	struct FCookCapabilities
 	{
 		/** Whether this writer implements -diffonly and -linkerdiff. */
 		bool bDiffModeSupported = false;
+
+		/** What header format is produced as output by this writer. */
+		EPackageHeaderFormat HeaderFormat = EPackageHeaderFormat::PackageFileSummary;
 	};
 
 	/** Return cook capabilities/settings this PackageWriter has/requires
@@ -269,14 +285,6 @@ public:
 	  */
 	virtual void EndCook(const FCookInfo& Info) = 0;
 
-	struct FCookedPackageInfo
-	{
-		FName PackageName;
-		FMD5Hash Hash;
-		FGuid PackageGuid;
-		int64 DiskSize = -1;
-	};
-
 	/**
 	 * Returns an AssetRegistry describing the previous cook results. This doesn't mean a cook saved off
 	 * to another directory - it means the AssetRegistry that's living in the directory we are about
@@ -320,11 +328,28 @@ public:
 		return false;
 	}
 	/** Append all data to the Exports archive that would normally be done in CommitPackage, used for diffing. */
-	virtual void CompleteExportsArchiveForDiff(const FPackageInfo& Info, FLargeMemoryWriter& ExportsArchive)
+	virtual void CompleteExportsArchiveForDiff(FPackageInfo& Info, FLargeMemoryWriter& ExportsArchive)
 	{
 		// The subclass must override this method if it returns bDiffModeSupported=true in GetCookCapabilities
 		unimplemented();
 	}
+
+	struct FBeginCacheForCookedPlatformDataInfo
+	{
+		FName PackageName;
+		const ITargetPlatform* TargetPlatform;
+		TConstArrayView<UObject*> SaveableObjects;
+		uint32 SaveFlags;
+	};
+	// Helper callback type for Writers that need to send the message on to UCookOnTheFlyServer
+	using FBeginCacheCallback = TUniqueFunction<EPackageWriterResult(FBeginCacheForCookedPlatformDataInfo& Info)>;
+
+	virtual EPackageWriterResult BeginCacheForCookedPlatformData(FBeginCacheForCookedPlatformDataInfo& Info)
+	{
+		unimplemented();
+		return EPackageWriterResult::Error;
+	}
+
 	/** Modify the SaveArgs if required before the first Save. Used for diffing. */
 	virtual void UpdateSaveArguments(FSavePackageArgs& SaveArgs)
 	{

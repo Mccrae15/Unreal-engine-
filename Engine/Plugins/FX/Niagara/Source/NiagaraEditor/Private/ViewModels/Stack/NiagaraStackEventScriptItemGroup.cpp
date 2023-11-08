@@ -5,7 +5,7 @@
 #include "ViewModels/Stack/NiagaraStackObject.h"
 #include "ViewModels/Stack/NiagaraStackModuleItem.h"
 #include "ViewModels/NiagaraScriptViewModel.h"
-#include "NiagaraScriptGraphViewModel.h"
+#include "ViewModels/NiagaraScriptGraphViewModel.h"
 #include "ViewModels/NiagaraEmitterViewModel.h"
 #include "NiagaraGraph.h"
 #include "NiagaraNodeOutput.h"
@@ -162,6 +162,15 @@ void UNiagaraStackEventHandlerPropertiesItem::RefreshChildrenInternal(const TArr
 	Super::RefreshChildrenInternal(CurrentChildren, NewChildren, NewIssues);
 }
 
+FNiagaraHierarchyIdentity UNiagaraStackEventHandlerPropertiesItem::DetermineSummaryIdentity() const
+{
+	FNiagaraHierarchyIdentity Identity;
+	Identity.Guids.Add(GetEventScriptUsageId());
+	Identity.Names.Add("Category");
+	Identity.Names.Add("Properties");
+	return Identity;
+}
+
 void UNiagaraStackEventHandlerPropertiesItem::EventHandlerPropertiesChanged()
 {
 	bCanResetToBaseCache.Reset();
@@ -262,7 +271,7 @@ void UNiagaraStackEventScriptItemGroup::RefreshChildrenInternal(const TArray<UNi
 	FVersionedNiagaraEmitterData* EmitterData = GetEmitterViewModel()->GetEmitter().GetEmitterData();
 
 	const FNiagaraEventScriptProperties* EventScriptProperties = EmitterData->GetEventHandlers().FindByPredicate(
-		[=](const FNiagaraEventScriptProperties& InEventScriptProperties) { return InEventScriptProperties.Script->GetUsageId() == GetScriptUsageId(); });
+		[this](const FNiagaraEventScriptProperties& InEventScriptProperties) { return InEventScriptProperties.Script->GetUsageId() == GetScriptUsageId(); });
 
 	if (EventScriptProperties != nullptr)
 	{
@@ -350,6 +359,13 @@ bool UNiagaraStackEventScriptItemGroup::GetIsInherited() const
 FText UNiagaraStackEventScriptItemGroup::GetInheritanceMessage() const
 {
 	return LOCTEXT("EventGroupInheritanceMessage", "This event handler is inherited from a parent emitter.  Inherited\nevent handlers can only be deleted while editing the parent emitter.");
+}
+
+FNiagaraHierarchyIdentity UNiagaraStackEventScriptItemGroup::DetermineSummaryIdentity() const
+{
+	FNiagaraHierarchyIdentity Identity;
+	Identity.Guids.Add(GetScriptUsageId());
+	return Identity;
 }
 
 bool UNiagaraStackEventScriptItemGroup::HasBaseEventHandler() const

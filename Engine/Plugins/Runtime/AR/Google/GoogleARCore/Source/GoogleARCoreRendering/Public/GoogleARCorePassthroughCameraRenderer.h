@@ -68,7 +68,7 @@ public:
 
 	void InitializeRenderer_RenderThread(FSceneViewFamily& InViewFamily);
 
-	void RenderVideoOverlay_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView);
+	void RenderVideoOverlay_RenderThread(FRHICommandList& RHICmdList, FSceneView& InView);
 	
 	void UpdateCameraTextures(UTexture* NewCameraTexture, UTexture* DepthTexture, bool bEnableOcclusion);
 	
@@ -79,16 +79,16 @@ public:
 	}
 
 private:
-	void RenderVideoOverlayWithMaterial(FRHICommandListImmediate& RHICmdList, FSceneView& InView, UMaterialInstanceDynamic* OverlayMaterialToUse, bool bRenderingOcclusion);
+	void RenderVideoOverlayWithMaterial(FRHICommandList& RHICmdList, FSceneView& InView, UMaterialInstanceDynamic* OverlayMaterialToUse, bool bRenderingOcclusion);
 
 private:
 	FBufferRHIRef OverlayIndexBufferRHI;
 	FBufferRHIRef OverlayVertexBufferRHI;
 	
-	UMaterialInstanceDynamic* RegularOverlayMaterial = nullptr;
-	UMaterialInstanceDynamic* DebugOverlayMaterial = nullptr;
-	UMaterialInstanceDynamic* DepthColorationMaterial = nullptr;
-	UMaterialInstanceDynamic* DepthOcclusionMaterial = nullptr;
+	TObjectPtr<UMaterialInstanceDynamic> RegularOverlayMaterial = nullptr;
+	TObjectPtr<UMaterialInstanceDynamic> DebugOverlayMaterial = nullptr;
+	TObjectPtr<UMaterialInstanceDynamic> DepthColorationMaterial = nullptr;
+	TObjectPtr<UMaterialInstanceDynamic> DepthOcclusionMaterial = nullptr;
 	
 	bool bEnableOcclusionRendering = false;
 };

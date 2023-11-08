@@ -52,8 +52,6 @@ ONLINESERVICESINTERFACE_API void LexFromString(ELobbyMemberLeaveReason& OutLeave
 struct FLobbyMember
 {
 	FAccountId AccountId;
-	FAccountId PlatformAccountId;
-	FString PlatformDisplayName;
 	TMap<FSchemaAttributeId, FSchemaVariant> Attributes;
 	bool bIsLocalMember = false;
 };
@@ -99,6 +97,9 @@ struct FCreateLobby
 
 		/** The schema which will be applied to the lobby. */
 		FSchemaId SchemaId;
+
+		/** Whether this lobby should be set as the user's new presence lobby. False by default */
+		bool bPresenceEnabled = false;
 
 		/** The maximum number of members who can fit in the lobby. */
 		int32 MaxMembers = 0;
@@ -184,6 +185,9 @@ struct FJoinLobby
 
 		/** The id of the lobby to be joined. */
 		FLobbyId LobbyId;
+
+		/** Whether this lobby should be set as the user's new presence lobby. False by default */
+		bool bPresenceEnabled = false;
 
 		/** Initial user attributes. */
 		TMap<FSchemaAttributeId, FSchemaVariant> UserAttributes;
@@ -393,6 +397,43 @@ struct FModifyLobbyMemberAttributes
 	/** Output struct for Lobbies::ModifyLobbyMemberAttributes */
 	struct Result
 	{
+	};
+};
+
+struct FGetPresenceLobby
+{
+	static constexpr TCHAR Name[] = TEXT("GetPresenceLobby");
+
+	struct Params
+	{
+		/** Id handle for the local user which will perform the action */
+		FAccountId LocalAccountId;
+	};
+
+	struct Result
+	{
+		/** Reference to the lobby set as presence lobby for the given user */
+		TSharedRef<const FLobby> Lobby;
+	};
+};
+
+struct FIsPresenceLobby
+{
+	static constexpr TCHAR Name[] = TEXT("IsPresenceLobby");
+
+	struct Params
+	{
+		/** Id handle for the local user which will perform the action */
+		FAccountId LocalAccountId;
+
+		/** Id handle for the lobby to be compared */
+		FLobbyId LobbyId;
+	};
+
+	struct Result
+	{
+		/** Whether the lobby mapped to the given id is set as the presence lobby for the given user */
+		bool bIsPresenceLobby;
 	};
 };
 
@@ -701,6 +742,22 @@ public:
 	// Accessors
 
 	/**
+	 * Retrieve the presence Lobby for the given user, if any is set
+	 * 
+	 * @params Params for the GetPresenceLobby call
+	 * @return
+	 */
+	virtual TOnlineResult<FGetPresenceLobby> GetPresenceLobby(FGetPresenceLobby::Params&& Params) = 0;
+
+	/**
+	 * Return whether the Lobby with the given id is set as presence lobby for the given user
+	 * 
+	 * @params Params for the IsPresenceLobby call
+	 * @return
+	 */
+	virtual TOnlineResult<FIsPresenceLobby> IsPresenceLobby(FIsPresenceLobby::Params&& Params) = 0;
+
+	/**
 	 * Retrieve the list of joined lobbies for the target local user.
 	 *
 	 * @param Params for the GetJoinedLobbies call
@@ -804,8 +861,6 @@ namespace Meta {
 
 BEGIN_ONLINE_STRUCT_META(FLobbyMember)
 	ONLINE_STRUCT_FIELD(FLobbyMember, AccountId),
-	ONLINE_STRUCT_FIELD(FLobbyMember, PlatformAccountId),
-	ONLINE_STRUCT_FIELD(FLobbyMember, PlatformDisplayName),
 	ONLINE_STRUCT_FIELD(FLobbyMember, Attributes)
 END_ONLINE_STRUCT_META()
 
@@ -830,6 +885,7 @@ BEGIN_ONLINE_STRUCT_META(FCreateLobby::Params)
 	ONLINE_STRUCT_FIELD(FCreateLobby::Params, LocalAccountId),
 	ONLINE_STRUCT_FIELD(FCreateLobby::Params, LocalName),
 	ONLINE_STRUCT_FIELD(FCreateLobby::Params, SchemaId),
+	ONLINE_STRUCT_FIELD(FCreateLobby::Params, bPresenceEnabled),
 	ONLINE_STRUCT_FIELD(FCreateLobby::Params, MaxMembers),
 	ONLINE_STRUCT_FIELD(FCreateLobby::Params, JoinPolicy),
 	ONLINE_STRUCT_FIELD(FCreateLobby::Params, Attributes),
@@ -862,6 +918,7 @@ BEGIN_ONLINE_STRUCT_META(FJoinLobby::Params)
 	ONLINE_STRUCT_FIELD(FJoinLobby::Params, LocalAccountId),
 	ONLINE_STRUCT_FIELD(FJoinLobby::Params, LocalName),
 	ONLINE_STRUCT_FIELD(FJoinLobby::Params, LobbyId),
+	ONLINE_STRUCT_FIELD(FJoinLobby::Params, bPresenceEnabled),
 	ONLINE_STRUCT_FIELD(FJoinLobby::Params, UserAttributes)
 END_ONLINE_STRUCT_META()
 
@@ -945,6 +1002,23 @@ BEGIN_ONLINE_STRUCT_META(FModifyLobbyMemberAttributes::Params)
 END_ONLINE_STRUCT_META()
 
 BEGIN_ONLINE_STRUCT_META(FModifyLobbyMemberAttributes::Result)
+END_ONLINE_STRUCT_META()
+
+BEGIN_ONLINE_STRUCT_META(FGetPresenceLobby::Params)
+	ONLINE_STRUCT_FIELD(FGetPresenceLobby::Params, LocalAccountId)
+END_ONLINE_STRUCT_META()
+
+BEGIN_ONLINE_STRUCT_META(FGetPresenceLobby::Result)
+	ONLINE_STRUCT_FIELD(FGetPresenceLobby::Result, Lobby)
+END_ONLINE_STRUCT_META()
+
+BEGIN_ONLINE_STRUCT_META(FIsPresenceLobby::Params)
+	ONLINE_STRUCT_FIELD(FIsPresenceLobby::Params, LocalAccountId),
+	ONLINE_STRUCT_FIELD(FIsPresenceLobby::Params, LobbyId)
+END_ONLINE_STRUCT_META()
+
+BEGIN_ONLINE_STRUCT_META(FIsPresenceLobby::Result)
+	ONLINE_STRUCT_FIELD(FIsPresenceLobby::Result, bIsPresenceLobby)
 END_ONLINE_STRUCT_META()
 
 BEGIN_ONLINE_STRUCT_META(FGetJoinedLobbies::Params)

@@ -22,7 +22,8 @@ namespace Electra
 		Unknown,
 		ISOBMFF,					// mp4
 		HLS,						// Apple HLS (HTTP Live Streaming)
-		DASH						// MPEG DASH
+		DASH,						// MPEG DASH
+		MKV							// Matroska / WebM
 	};
 
 
@@ -318,11 +319,17 @@ namespace Electra
 
 		virtual FTimeValue GetDesiredLiveLatency() const = 0;
 
+		enum class EPlayRateType
+		{
+			UnthinnedRate,
+			ThinnedRate
+		};
+		virtual TRangeSet<double> GetPossiblePlaybackRates(EPlayRateType InForType) const = 0;
+
 		//! Needs to be called when the user has explicitly triggered a seek, including a programmatic loop back to the beginning.
 		//! For presentations with dynamic content changes (eg. DASH xlink:onRequest Periods) the content may need to be updated
 		//! again. This is different to internal seeking for retry purposes where content will not be re-resolved.
 		virtual void UpdateDynamicRefetchCounter() = 0;
-
 
 		enum class EClockSyncType
 		{
@@ -406,7 +413,7 @@ namespace Electra
 			 * @param AdaptationSetID
 			 * @param RepresentationID
 			 */
-			virtual void SelectStream(const FString& AdaptationSetID, const FString& RepresentationID) = 0;
+			virtual void SelectStream(const FString& AdaptationSetID, const FString& RepresentationID, int32 QualityIndex, int32 MaxQualityIndex) = 0;
 
 			struct FInitSegmentPreload
 			{

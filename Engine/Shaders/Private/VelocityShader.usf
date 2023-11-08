@@ -69,7 +69,7 @@ void MainVertexShader(
 	
 	FVertexFactoryIntermediates VFIntermediates = GetVertexFactoryIntermediates(Input);
 	float4 TranslatedWorldPosition = VertexFactoryGetWorldPosition( Input, VFIntermediates );
-	float3x3 TangentToLocal = VertexFactoryGetTangentToLocal( Input, VFIntermediates );
+	half3x3 TangentToLocal = VertexFactoryGetTangentToLocal( Input, VFIntermediates );
 
 	FMaterialVertexParameters VertexParameters = GetMaterialVertexParameters(Input, VFIntermediates, TranslatedWorldPosition.xyz, TangentToLocal);
 	// Isolate instructions used for world position offset on xbox 360, 
@@ -159,26 +159,25 @@ void MainPixelShader(
 
 #if STRATA_ENABLED
 	const bool bThinTranslucentMaterial = false;
-
-	FStrataData StrataData = PixelMaterialInputs.FrontMaterial;
 	FStrataAddressing NullStrataAddressing = (FStrataAddressing)0;	// Fake unused in StrataCreateBSDFContext when using Forward inline shading
 
-	FStrataPixelHeader StrataPixelHeader = InitialiseStrataPixelHeader();
-	StrataPixelHeader.StrataTree = MaterialParameters.StrataTree;
-	StrataPixelHeader.BSDFCount = MaterialParameters.StrataTree.BSDFCount;
-	StrataPixelHeader.SharedLocalBases = MaterialParameters.SharedLocalBases;
+	FStrataData StrataData = PixelMaterialInputs.GetFrontStrataData();
+	FStrataPixelHeader StrataPixelHeader = MaterialParameters.GetFrontStrataHeader();
 
 	float MaterialOpacity = 1.0f;
-	FStrataTree StrataTree = StrataPixelHeader.StrataTree;
-	if (StrataTree.BSDFCount > 0)
+	if (StrataPixelHeader.BSDFCount > 0)
 	{
 		// Update tree (coverage/transmittance/luminace weights)
 		const FStrataIntegrationSettings Settings = InitStrataIntegrationSettings();
 		const float3 V = MaterialParameters.CameraVector;
-		StrataUpdateTree(NullStrataAddressing, StrataPixelHeader, StrataTree, V, Settings);
+		StrataPixelHeader.StrataUpdateTree(NullStrataAddressing, V, Settings);
 
-		MaterialOpacity = StrataTree.Operators[StrataData.OperatorIndex].Coverage;
+		MaterialOpacity = StrataPixelHeader.StrataTree.Operators[StrataData.OperatorIndex].Coverage;
 	}
+
+#if STRATA_USE_PREMULTALPHA_OVERRIDE // AlphaComposite - Premultiplied alpha blending
+	MaterialOpacity = GetMaterialOpacity(PixelMaterialInputs);
+#endif
 
 #else
 	const bool bThinTranslucentMaterial = VELOCITY_THIN_TRANSLUCENT_MODE > 0;

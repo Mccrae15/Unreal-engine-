@@ -8,6 +8,7 @@
 #include "IteratorAdapter.h"
 #include "Math/UnrealMathUtility.h"
 #include "Misc/AssertionMacros.h"
+#include "Serialization/StructuredArchive.h"
 #include "Templates/UnrealTemplate.h"  // For GetData, GetNum
 
 #include <cstring>
@@ -17,7 +18,7 @@
 template <typename InElementType, int32 InPageSizeInBytes = 16384, typename InAllocatorType = FDefaultAllocator>
 class TPagedArray;
 
-namespace UE::PagedArray::Private
+namespace UE::Core::PagedArray::Private
 {
 
 /**
@@ -85,7 +86,63 @@ private:
 template <typename InElementType, typename InPageType, typename InPageTraits>
 using TIterator = TIteratorAdapter<TIteratorBase<InElementType, InPageType, InPageTraits>>;
 
-}  // namespace UE::PagedArray::Private
+/** Serializer. */
+template <typename ElementType, int32 PageSizeInBytes, typename AllocatorType>
+FArchive& Serialize(FArchive& Ar, TPagedArray<ElementType, PageSizeInBytes, AllocatorType>& InOutPagedArray)
+{
+	using SizeType = typename AllocatorType::SizeType;
+
+	InOutPagedArray.CountBytes(Ar);
+
+	SizeType NumElements = InOutPagedArray.Num();
+	Ar << NumElements;
+
+	if (Ar.IsLoading())
+	{
+		InOutPagedArray.Empty(NumElements);
+
+		for (SizeType ElementIndex = 0; ElementIndex < NumElements; ++ElementIndex)
+		{
+			Ar << InOutPagedArray.Emplace_GetRef();
+		}
+	}
+	else
+	{
+		for (ElementType& Element : InOutPagedArray)
+		{
+			Ar << Element;
+		}
+	}
+	return Ar;
+}
+
+/** Structured archive serializer. */
+template <typename ElementType, int32 PageSizeInBytes, typename AllocatorType>
+void SerializeStructured(FStructuredArchive::FSlot Slot, TPagedArray<ElementType, PageSizeInBytes, AllocatorType>& InOutPagedArray)
+{
+	int32 NumElements = InOutPagedArray.Num();
+	FStructuredArchive::FArray Array = Slot.EnterArray(NumElements);
+	if (Slot.GetUnderlyingArchive().IsLoading())
+	{
+		InOutPagedArray.Empty(NumElements);
+
+		for (int32 ElementIndex = 0; ElementIndex < NumElements; ++ElementIndex)
+		{
+			FStructuredArchive::FSlot ElementSlot = Array.EnterElement();
+			ElementSlot << InOutPagedArray.Emplace_GetRef();
+		}
+	}
+	else
+	{
+		for (ElementType& Element : InOutPagedArray)
+		{
+			FStructuredArchive::FSlot ElementSlot = Array.EnterElement();
+			ElementSlot << Element;
+		}
+	}
+}
+
+}  // namespace UE::Core::PagedArray::Private
 
 /**
  * Fixed size block allocated container class.
@@ -104,7 +161,7 @@ class TPagedArray
 	friend class TPagedArray;
 
 	using PageType = TArray<InElementType, InAllocatorType>;
-	using PageTraits = UE::PagedArray::Private::TPageTraits<InElementType, InPageSizeInBytes>;
+	using PageTraits = UE::Core::PagedArray::Private::TPageTraits<InElementType, InPageSizeInBytes>;
 
 public:
 	using AllocatorType = InAllocatorType;
@@ -133,8 +190,8 @@ private:
 	}
 
 public:
-	using ConstIteratorType = UE::PagedArray::Private::TIterator<const ElementType, const PageType, PageTraits>;
-	using IteratorType = UE::PagedArray::Private::TIterator<ElementType, PageType, PageTraits>;
+	using ConstIteratorType = UE::Core::PagedArray::Private::TIterator<const ElementType, const PageType, PageTraits>;
+	using IteratorType = UE::Core::PagedArray::Private::TIterator<ElementType, PageType, PageTraits>;
 
 	static constexpr SizeType MaxPerPage()
 	{
@@ -200,7 +257,7 @@ public:
 	 *
 	 * @returns Number of bytes allocated by this container.
 	 */
-	FORCEINLINE SIZE_T GetAllocatedSize() const
+	[[nodiscard]] FORCEINLINE SIZE_T GetAllocatedSize() const
 	{
 		SIZE_T Size = 0;
 		Size += Pages.GetAllocatedSize();
@@ -211,34 +268,44 @@ public:
 		return Size;
 	}
 
-	FORCEINLINE SizeType Max() const
+	/**
+	 * Count bytes needed to serialize this paged array.
+	 *
+	 * @param Ar Archive to count for.
+	 */
+	void CountBytes(FArchive& Ar) const
+	{
+		Ar.CountBytes(Num() * sizeof(ElementType), Max() * sizeof(ElementType));
+	}
+
+	[[nodiscard]] FORCEINLINE SizeType Max() const
 	{
 		return Pages.Num() * PageTraits::Capacity;
 	}
 
-	FORCEINLINE SizeType Num() const
+	[[nodiscard]] FORCEINLINE SizeType Num() const
 	{
 		return Count;
 	}
 
-	FORCEINLINE SizeType NumPages() const
+	[[nodiscard]] FORCEINLINE SizeType NumPages() const
 	{
 		return Pages.Num();
 	}
 
-	FORCEINLINE bool IsEmpty() const
+	[[nodiscard]] FORCEINLINE bool IsEmpty() const
 	{
 		return !Count;
 	}
 
-	FORCEINLINE const ElementType& Last() const
+	[[nodiscard]] FORCEINLINE const ElementType& Last() const
 	{
 		CheckValidIndex(0);
 		const SizeType LastIndex = Num() - 1;
 		return Pages[GetPageIndex(LastIndex)][GetPageOffset(LastIndex)];
 	}
 
-	FORCEINLINE ElementType& Last()
+	[[nodiscard]] FORCEINLINE ElementType& Last()
 	{
 		CheckValidIndex(0);
 		const SizeType LastIndex = Num() - 1;
@@ -380,10 +447,26 @@ public:
 	 * This method returns a reference to the constructed element.
 	 */
 	template <typename... ArgsType>
-	ElementType& Emplace(ArgsType&&... Args)
+	SizeType Emplace(ArgsType&&... Args)
 	{
 		GrowIfRequired();
-		ElementType& Result = Pages.Last().Emplace_GetRef(Forward<ArgsType>(Args)...);
+		const SizeType ElementIndex = Num();
+		const SizeType PageIndex = GetPageIndex(ElementIndex);
+		Pages[PageIndex].Emplace(Forward<ArgsType>(Args)...);
+		++Count;
+		return ElementIndex;
+	}
+
+	/*
+	 * Constructs an element in place using the parameter arguments and adds it at the back of the container.
+	 * This method returns a reference to the constructed element.
+	 */
+	template <typename... ArgsType>
+	[[nodiscard]] ElementType& Emplace_GetRef(ArgsType&&... Args)
+	{
+		GrowIfRequired();
+		const SizeType PageIndex = GetPageIndex(Num());
+		ElementType& Result = Pages[PageIndex].Emplace_GetRef(Forward<ArgsType>(Args)...);
 		++Count;
 		return Result;
 	}
@@ -391,14 +474,24 @@ public:
 	/*
 	 * Adds the parameter element at the back of the container.
 	 */
-	FORCEINLINE void Add(const ElementType& Element)
+	FORCEINLINE SizeType Add(const ElementType& Element)
 	{
-		Emplace(Element);
+		return Emplace(Element);
 	}
 
-	FORCEINLINE void Add(ElementType&& Element)
+	FORCEINLINE SizeType Add(ElementType&& Element)
 	{
-		Emplace(MoveTempIfPossible(Element));
+		return Emplace(MoveTempIfPossible(Element));
+	}
+
+	[[nodiscard]] FORCEINLINE ElementType& Add_GetRef(const ElementType& Element)
+	{
+		return Emplace_GetRef(Element);
+	}
+
+	[[nodiscard]] FORCEINLINE ElementType& Add_GetRef(ElementType&& Element)
+	{
+		return Emplace_GetRef(MoveTempIfPossible(Element));
 	}
 
 	FORCEINLINE void Push(const ElementType& Element)
@@ -467,6 +560,23 @@ public:
 	}
 
 	/*
+	 * Empties the container effectively destroying all contained elements and ensures storage for the parameter
+	 * capacity. Storage is adjusted to meet the parameter capacity value.
+	 */
+	void Empty(SizeType InCapacity)
+	{
+		Reset();
+
+		const SizeType PageCount = Pages.Num();
+		const SizeType RequiredPageCount = NumRequiredPages(InCapacity);
+		Pages.SetNum(RequiredPageCount);
+		for (SizeType Index = PageCount; Index < RequiredPageCount; ++Index)
+		{
+			Pages[Index].Reserve(PageTraits::Capacity);
+		}
+	}
+
+	/*
 	 * Destroys all contained elements but doesn't release the container's storage.
 	 */
 	void Reset()
@@ -476,6 +586,16 @@ public:
 			Page.Reset();
 		}
 		Count = 0;
+	}
+
+	/*
+	 * Destroys all contained elements and ensures storage for the parameter capacity. Storage is only acquired
+	 * if the current container's storage cannot meet the parameter capacity value.
+	 */
+	void Reset(SizeType InCapacity)
+	{
+		Reset();
+		Reserve(InCapacity);
 	}
 
 	/*
@@ -678,3 +798,17 @@ private:
 		checkf((Index >= 0) & (Index < Count), TEXT("Parameter index %d exceeds container size %d"), Index, Count);
 	}
 };
+
+/** Serializer. */
+template <typename ElementType, int32 PageSizeInBytes, typename AllocatorType>
+FORCEINLINE FArchive& operator<<(FArchive& Ar, TPagedArray<ElementType, PageSizeInBytes, AllocatorType>& InOutPagedArray)
+{
+	return UE::Core::PagedArray::Private::Serialize(Ar, InOutPagedArray);
+}
+
+/** Structured archive serializer. */
+template <typename ElementType, int32 PageSizeInBytes, typename AllocatorType>
+FORCEINLINE void operator<<(FStructuredArchive::FSlot Slot, TPagedArray<ElementType, PageSizeInBytes, AllocatorType>& InOutPagedArray)
+{
+	UE::Core::PagedArray::Private::SerializeStructured(Slot, InOutPagedArray);
+}

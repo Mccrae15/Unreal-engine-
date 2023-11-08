@@ -66,11 +66,6 @@ public:
 	// Goto fixup requests (each statement (key) wants to goto the first statement attached to the exec out-pin (value))
 	TMap<FBlueprintCompiledStatement*, UEdGraphPin*> GotoFixupRequestMap;
 
-	// @todo: BP2CPP_remove
-	// Used to split uber graph into subfunctions by C++ backend
-	UE_DEPRECATED(5.0, "This member is no longer in use and will be removed.")
-	TArray<TSet<UEdGraphNode*>> UnsortedSeparateExecutionGroups;
-
 	TIndirectArray<FBPTerminal> Parameters;
 	TIndirectArray<FBPTerminal> Results;
 	TIndirectArray<FBPTerminal> VariableReferences;
@@ -104,11 +99,6 @@ public:
 	// Map from a name to the number of times it's been 'created' (same nodes create the same local variable names, so they need something appended)
 	struct FNetNameMapping* NetNameMap;
 	bool bAllocatedNetNameMap;
-
-	// @todo: BP2CPP_remove
-	//Skip some optimization. C++ code will be generated in this pass. 
-	UE_DEPRECATED(5.0, "This member is no longer in use and will be removed.")
-	bool bGeneratingCpp;
 
 	//Does this function use requires FlowStack ?
 	bool bUseFlowStack;

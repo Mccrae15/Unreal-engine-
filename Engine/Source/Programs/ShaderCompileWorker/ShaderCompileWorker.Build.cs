@@ -23,10 +23,7 @@ public class ShaderCompileWorker : ModuleRules
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
 				"Launch",
-				"TargetPlatform",
 			});
-
-		PrivateIncludePaths.Add("Runtime/Launch/Private");      // For LaunchEngineLoop.cpp include
 
 		// Include D3D compiler binaries
 		if (Target.Platform == UnrealTargetPlatform.Win64)

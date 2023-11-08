@@ -3,9 +3,12 @@
 #include "NiagaraAsyncGpuTraceHelper.h"
 
 #include "Components/PrimitiveComponent.h"
+#include "NiagaraDataInterface.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraStats.h"
+#include "PrimitiveSceneInfo.h"
 #include "PrimitiveSceneProxy.h"
+#include "RenderingThread.h"
 
 int32 GNiagaraAsyncTraceScratchBucketSize = 1024;
 static FAutoConsoleVariableRef CVarNiagaraAsyncTraceScratchBucketSize(
@@ -116,23 +119,23 @@ void FNiagaraAsyncGpuTraceHelper::BeginFrame(FRHICommandList& RHICmdList, FNiaga
 	}
 }
 
-void FNiagaraAsyncGpuTraceHelper::PostRenderOpaque(FRHICommandList& RHICmdList, FNiagaraGpuComputeDispatchInterface* Dispatcher, TConstArrayView<FViewInfo> Views)
+void FNiagaraAsyncGpuTraceHelper::PostRenderOpaque(FRHICommandList& RHICmdList, FNiagaraGpuComputeDispatchInterface* Dispatcher, TConstStridedView<FSceneView> Views, TUniformBufferRef<FSceneUniformParameters> SceneUniformBufferRHI)
 {
 #if NIAGARA_ASYNC_GPU_TRACE_COLLISION_GROUPS
 	if (bCollisionGroupMapDirty)
 	{
-		FNiagaraAsyncGpuTraceProvider::BuildCollisionGroupHashMap(RHICmdList, FeatureLevel, Dispatcher->GetScene(), CollisionGroupMap, CollisionGroupHashMapBuffer);
+		FNiagaraAsyncGpuTraceProvider::BuildCollisionGroupHashMap(RHICmdList, FeatureLevel, Dispatcher->GetSceneInterface(), CollisionGroupMap, CollisionGroupHashMapBuffer);
 		bCollisionGroupMapDirty = false;
 	}
 #endif
 
 	FNiagaraAsyncGpuTraceProvider::FCollisionGroupHashMap* CollisionHashMap = GetCollisionGroupHashMap();
 
-	for (const auto& TraceProvider : TraceProviders)
+	for (const TUniquePtr<FNiagaraAsyncGpuTraceProvider>& TraceProvider : TraceProviders)
 	{
 		if (TraceProvider->IsAvailable())
 		{
-			TraceProvider->PostRenderOpaque(RHICmdList, Views, CollisionHashMap);
+			TraceProvider->PostRenderOpaque(RHICmdList, Views, SceneUniformBufferRHI, CollisionHashMap);
 		}
 	}
 }
@@ -154,7 +157,7 @@ FNiagaraAsyncGpuTraceProvider* FNiagaraAsyncGpuTraceHelper::GetTraceProvider(END
 	return nullptr;
 }
 
-void FNiagaraAsyncGpuTraceHelper::EndFrame(FRHICommandList& RHICmdList, FNiagaraGpuComputeDispatchInterface* Dispatcher)
+void FNiagaraAsyncGpuTraceHelper::EndFrame(FRHICommandList& RHICmdList, FNiagaraGpuComputeDispatchInterface* Dispatcher, TUniformBufferRef<FSceneUniformParameters> SceneUniformBufferRHI)
 {
 	if (!Dispatches.Num())
 	{
@@ -184,7 +187,7 @@ void FNiagaraAsyncGpuTraceHelper::EndFrame(FRHICommandList& RHICmdList, FNiagara
 
 			if (FNiagaraAsyncGpuTraceProvider* TraceProvider = GetTraceProvider(DispatchInfo.ProviderType))
 			{
-				TraceProvider->IssueTraces(RHICmdList, Request, CollisionHashMap);
+				TraceProvider->IssueTraces(RHICmdList, Request, SceneUniformBufferRHI, CollisionHashMap);
 			}
 			else
 			{
@@ -218,8 +221,8 @@ void FNiagaraAsyncGpuTraceHelper::BuildDispatch(FRHICommandList& RHICmdList, FNi
  		DEC_MEMORY_STAT_BY(STAT_NiagaraGPUDataInterfaceMemory, TraceResults.AllocatedBytes());
  		DEC_MEMORY_STAT_BY(STAT_NiagaraGPUDataInterfaceMemory, TraceCounts.AllocatedBytes());
 
-		Dispatch.TraceRequests = TraceRequests.Alloc(Dispatch.MaxTraces);
-		Dispatch.TraceResults = TraceResults.Alloc(Dispatch.MaxTraces);
+		Dispatch.TraceRequests = TraceRequests.Alloc(RHICmdList, Dispatch.MaxTraces);
+		Dispatch.TraceResults = TraceResults.Alloc(RHICmdList, Dispatch.MaxTraces);
 		Dispatch.TraceCounts = TraceCounts.Alloc<uint32>(3, RHICmdList, true);
 
  		INC_MEMORY_STAT_BY(STAT_NiagaraGPUDataInterfaceMemory, TraceRequests.AllocatedBytes());
@@ -249,8 +252,8 @@ void FNiagaraAsyncGpuTraceHelper::BuildDummyDispatch(FRHICommandList& RHICmdList
  		DEC_MEMORY_STAT_BY(STAT_NiagaraGPUDataInterfaceMemory, TraceResults.AllocatedBytes());
  		DEC_MEMORY_STAT_BY(STAT_NiagaraGPUDataInterfaceMemory, TraceCounts.AllocatedBytes());
 
-		DummyDispatch.TraceRequests = TraceRequests.Alloc(1);
-		DummyDispatch.TraceResults = TraceResults.Alloc(1);
+		DummyDispatch.TraceRequests = TraceRequests.Alloc(RHICmdList, 1);
+		DummyDispatch.TraceResults = TraceResults.Alloc(RHICmdList, 1);
 		DummyDispatch.LastFrameTraceResults = DummyDispatch.TraceResults;
 		DummyDispatch.TraceCounts = TraceCounts.Alloc<uint32>(3, RHICmdList, true);
 		

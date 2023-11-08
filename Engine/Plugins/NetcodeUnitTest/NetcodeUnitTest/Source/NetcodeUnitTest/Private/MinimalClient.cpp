@@ -282,7 +282,9 @@ bool UMinimalClient::SendRawBunch(FOutBunch& Bunch, bool bAllowPartial/*=false*/
 				NewBunch->bOpen = Bunch.bOpen;
 				NewBunch->bClose = Bunch.bClose;
 				NewBunch->CloseReason = Bunch.CloseReason;
+				PRAGMA_DISABLE_DEPRECATION_WARNINGS
 				NewBunch->bIsReplicationPaused = Bunch.bIsReplicationPaused;
+				PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				NewBunch->ChIndex = Bunch.ChIndex;
 				NewBunch->ChName = Bunch.ChName;
 
@@ -857,6 +859,13 @@ void UMinimalClient::SendInitialJoin()
 		FString EncryptionToken = TEXT("");
 
 		*ControlChanBunch << EncryptionToken;
+
+		EEngineNetworkRuntimeFeatures LocalNetworkFeatures = EEngineNetworkRuntimeFeatures::None;
+		if (UNetDriver* NetDriver = UnitNetDriver.Get())
+		{
+			LocalNetworkFeatures = NetDriver->GetNetworkRuntimeFeatures();
+		}
+		*ControlChanBunch << LocalNetworkFeatures;
 
 		bool bSkipControlJoin = !!(MinClientFlags & EMinClientFlags::SkipControlJoin);
 		bool bBeaconConnect = !!(MinClientFlags & EMinClientFlags::BeaconConnect);

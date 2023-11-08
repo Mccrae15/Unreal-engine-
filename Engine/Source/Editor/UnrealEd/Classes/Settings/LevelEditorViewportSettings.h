@@ -8,6 +8,7 @@
 #include "UObject/SoftObjectPath.h"
 #include "Engine/EngineTypes.h"
 #include "Engine/EngineBaseTypes.h"
+#include "Engine/World.h"
 #include "Viewports.h"
 #include "Editor/UnrealEdTypes.h"
 #include "LevelEditorViewportSettings.generated.h"
@@ -85,7 +86,7 @@ enum class EMaterialKind : uint8
  * Implements the Level Editor's per-instance view port settings.
  */
 USTRUCT()
-struct UNREALED_API FLevelEditorViewportInstanceSettings
+struct FLevelEditorViewportInstanceSettings
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -208,7 +209,7 @@ struct UNREALED_API FLevelEditorViewportInstanceSettings
  * Implements a key -> value pair for the per-instance view port settings
  */
 USTRUCT()
-struct UNREALED_API FLevelEditorViewportInstanceSettingsKeyValuePair
+struct FLevelEditorViewportInstanceSettingsKeyValuePair
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -226,7 +227,7 @@ struct UNREALED_API FLevelEditorViewportInstanceSettingsKeyValuePair
  * Settings that control the behavior of the "snap to surface" feature
  */
 USTRUCT()
-struct UNREALED_API FSnapToSurfaceSettings
+struct FSnapToSurfaceSettings
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -249,11 +250,20 @@ struct UNREALED_API FSnapToSurfaceSettings
 	bool bSnapRotation;
 };
 
+USTRUCT()
+struct FLevelEditorViewporEditorViews
+{
+	GENERATED_USTRUCT_BODY()
+
+	UPROPERTY()
+	TArray<FLevelViewportInfo> LevelViewportsInfo;
+};
+
 /**
  * Implements the Level Editor's view port settings.
  */
-UCLASS(config=EditorPerProjectUserSettings)
-class UNREALED_API ULevelEditorViewportSettings
+UCLASS(config=EditorPerProjectUserSettings, MinimalAPI)
+class ULevelEditorViewportSettings
 	: public UObject
 {
 	GENERATED_UCLASS_BODY()
@@ -321,6 +331,10 @@ class UNREALED_API ULevelEditorViewportSettings
 	/** The sensitivity of mouse movement when rotating the camera. */
 	UPROPERTY(EditAnywhere, config, Category=Controls, meta=(DisplayName="Mouse Sensitivity", ClampMin="0.01",ClampMax="1.0") )
 	float MouseSensitivty;
+
+	/** Camera movement notification toggle to switch back to the behavior that caused camera notifications to be sent during gizmo movement. */
+	UPROPERTY(EditAnywhere, config, Category = Controls)
+	uint32 bUseLegacyCameraMovementNotifications : 1;
 	
 	/** Whether or not to invert mouse on the y axis in free look mode */
 	UPROPERTY(EditAnywhere, config, Category = Controls, meta = (DisplayName = "Invert Mouse Look Y Axis"))
@@ -570,6 +584,10 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = Behavior)
 	TMap<EMaterialKind, FName> MaterialParamsForDroppedTextures;
 
+	/** Store the last camera settings for all the viewport of each world loaded in the editor. */
+	UPROPERTY(config)
+	TMap<TSoftObjectPtr<UWorld>, FLevelEditorViewporEditorViews> EditorViews;
+
 private:
 
 	// Per-instance viewport settings.
@@ -649,8 +667,8 @@ protected:
 
 	// UObject overrides
 
-	virtual void PostInitProperties() override;
-	virtual void PostEditChangeProperty( struct FPropertyChangedEvent& PropertyChangedEvent ) override;
+	UNREALED_API virtual void PostInitProperties() override;
+	UNREALED_API virtual void PostEditChangeProperty( struct FPropertyChangedEvent& PropertyChangedEvent ) override;
 
 private:
 

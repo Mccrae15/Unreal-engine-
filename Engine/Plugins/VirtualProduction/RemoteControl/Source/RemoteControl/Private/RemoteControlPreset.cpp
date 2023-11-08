@@ -27,6 +27,7 @@
 #include "RemoteControlEntityFactory.h"
 #include "RemoteControlObjectVersion.h"
 #include "RemoteControlPresetRebindingManager.h"
+#include "RemoteControlTransactionListenerHelper.h"
 
 #include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
@@ -216,7 +217,15 @@ FRemoteControlPresetGroup& FRemoteControlPresetLayout::CreateGroup(FName GroupNa
 	FRemoteControlPresetGroup& Group = Groups.Emplace_GetRef(GroupName, GroupId);
 	Owner->CacheLayoutData();
 	OnGroupAddedDelegate.Broadcast(Group);
+
+	FRCTransactionListenerHelper<FRemoteControlPresetGroup>(ERCTransaction::Undo, Owner->GetPresetId(), OnGroupDeleted(), Group);
+	FRCTransactionListenerHelper<const FRemoteControlPresetGroup&>(ERCTransaction::Redo, Owner->GetPresetId(), OnGroupAdded(), Group);
+
 	Owner->OnPresetLayoutModified().Broadcast(Owner.Get());
+
+	FRCTransactionListenerHelper<URemoteControlPreset*>(ERCTransaction::Undo, Owner->GetPresetId(), Owner->OnPresetLayoutModified(), Owner.Get());
+	FRCTransactionListenerHelper<URemoteControlPreset*>(ERCTransaction::Redo, Owner->GetPresetId(), Owner->OnPresetLayoutModified(), Owner.Get());
+
 	return Group;
 }
 
@@ -275,6 +284,11 @@ void FRemoteControlPresetLayout::SwapGroups(FGuid OriginGroupId, FGuid TargetGro
 			OriginGroupIndex += 1;
 		}
 
+		TArray<FGuid> GroupIdsBeforeTransaction;
+		GroupIdsBeforeTransaction.Reserve(Groups.Num());
+		Algo::Transform(Groups, GroupIdsBeforeTransaction, &FRemoteControlPresetGroup::Id);
+		FRCTransactionListenerHelper<const TArray<FGuid>&>(ERCTransaction::Undo, Owner->GetPresetId(), OnGroupOrderChanged(), GroupIdsBeforeTransaction);
+
 		Groups.Insert(FRemoteControlPresetGroup{ *OriginGroup }, TargetGroupIndex);
 		Groups.Swap(TargetGroupIndex, OriginGroupIndex);
 		Groups.RemoveAt(OriginGroupIndex);
@@ -283,7 +297,13 @@ void FRemoteControlPresetLayout::SwapGroups(FGuid OriginGroupId, FGuid TargetGro
 		GroupIds.Reserve(Groups.Num());
 		Algo::Transform(Groups, GroupIds, &FRemoteControlPresetGroup::Id);
 		OnGroupOrderChangedDelegate.Broadcast(GroupIds);
+
+		FRCTransactionListenerHelper<const TArray<FGuid>&>(ERCTransaction::Redo, Owner->GetPresetId(), OnGroupOrderChanged(), GroupIds);
+
 		Owner->OnPresetLayoutModified().Broadcast(Owner.Get());
+
+		FRCTransactionListenerHelper<URemoteControlPreset*>(ERCTransaction::Undo, Owner->GetPresetId(), Owner->OnPresetLayoutModified(), Owner.Get());
+		FRCTransactionListenerHelper<URemoteControlPreset*>(ERCTransaction::Redo, Owner->GetPresetId(), Owner->OnPresetLayoutModified(), Owner.Get());
 	}
 }
 
@@ -318,6 +338,9 @@ void FRemoteControlPresetLayout::SwapFields(const FFieldSwapArgs& FieldSwapArgs)
 
 		// Here we don't want to trigger add/delete delegates since the fields just get moved around.
 		TArray<FGuid>& Fields = DragTargetGroup->AccessFields();
+
+		FRCTransactionListenerHelper<const FGuid&, const TArray<FGuid>&>(ERCTransaction::Undo, Owner->GetPresetId(), OnFieldOrderChanged(), FieldSwapArgs.TargetGroupId, Fields);
+
 		Fields.Insert(FieldSwapArgs.DraggedFieldId, DragTargetFieldIndex);
 		Fields.Swap(DragTargetFieldIndex, DragOriginFieldIndex);
 		Fields.RemoveAt(DragOriginFieldIndex);
@@ -325,6 +348,11 @@ void FRemoteControlPresetLayout::SwapFields(const FFieldSwapArgs& FieldSwapArgs)
 		Owner->CacheLayoutData();
 		OnFieldOrderChangedDelegate.Broadcast(FieldSwapArgs.TargetGroupId, Fields);
 		Owner->OnPresetLayoutModified().Broadcast(Owner.Get());
+
+		FRCTransactionListenerHelper<const FGuid&, const TArray<FGuid>&>(ERCTransaction::Redo, Owner->GetPresetId(), OnFieldOrderChanged(), FieldSwapArgs.TargetGroupId, Fields);
+
+		FRCTransactionListenerHelper<URemoteControlPreset*>(ERCTransaction::Undo, Owner->GetPresetId(), Owner->OnPresetLayoutModified(), Owner.Get());
+		FRCTransactionListenerHelper<URemoteControlPreset*>(ERCTransaction::Redo, Owner->GetPresetId(), Owner->OnPresetLayoutModified(), Owner.Get());
 	}
 	else
 	{
@@ -333,10 +361,19 @@ void FRemoteControlPresetLayout::SwapFields(const FFieldSwapArgs& FieldSwapArgs)
 		DragTargetFieldIndex = DragTargetFieldIndex == INDEX_NONE ? 0 : DragTargetFieldIndex;
 		DragTargetGroup->AccessFields().Insert(FieldSwapArgs.DraggedFieldId, DragTargetFieldIndex);
 
+		FRCTransactionListenerHelper<const FGuid&, const FGuid&, int32>(ERCTransaction::Undo, Owner->GetPresetId(), OnFieldDeleted(), FieldSwapArgs.TargetGroupId, FieldSwapArgs.DraggedFieldId, DragTargetFieldIndex);
+		FRCTransactionListenerHelper<const FGuid&, const FGuid&, int32>(ERCTransaction::Undo, Owner->GetPresetId(), OnFieldAdded(), FieldSwapArgs.OriginGroupId, FieldSwapArgs.DraggedFieldId, DragOriginFieldIndex);
+
+		FRCTransactionListenerHelper<const FGuid&, const FGuid&, int32>(ERCTransaction::Redo, Owner->GetPresetId(), OnFieldDeleted(), FieldSwapArgs.OriginGroupId, FieldSwapArgs.DraggedFieldId, DragOriginFieldIndex);
+		FRCTransactionListenerHelper<const FGuid&, const FGuid&, int32>(ERCTransaction::Redo, Owner->GetPresetId(), OnFieldAdded(), FieldSwapArgs.TargetGroupId, FieldSwapArgs.DraggedFieldId, DragTargetFieldIndex);
+
 		Owner->CacheLayoutData();
 		OnFieldDeletedDelegate.Broadcast(FieldSwapArgs.OriginGroupId, FieldSwapArgs.DraggedFieldId, DragOriginFieldIndex);
 		OnFieldAddedDelegate.Broadcast(FieldSwapArgs.TargetGroupId, FieldSwapArgs.DraggedFieldId, DragTargetFieldIndex);
 		Owner->OnPresetLayoutModified().Broadcast(Owner.Get());
+
+		FRCTransactionListenerHelper<URemoteControlPreset*>(ERCTransaction::Undo, Owner->GetPresetId(), Owner->OnPresetLayoutModified(), Owner.Get());
+		FRCTransactionListenerHelper<URemoteControlPreset*>(ERCTransaction::Redo, Owner->GetPresetId(), Owner->OnPresetLayoutModified(), Owner.Get());
 	}
 }
 
@@ -356,8 +393,14 @@ void FRemoteControlPresetLayout::DeleteGroup(FGuid GroupId)
 		
 		Owner->CacheLayoutData();
 
+		FRCTransactionListenerHelper<const FRemoteControlPresetGroup&>(ERCTransaction::Undo, Owner->GetPresetId(), OnGroupAdded(), CopyTemp(DeletedGroup));
+		FRCTransactionListenerHelper<FRemoteControlPresetGroup>(ERCTransaction::Redo, Owner->GetPresetId(), OnGroupDeleted(), CopyTemp(DeletedGroup));
+
 		OnGroupDeletedDelegate.Broadcast(MoveTemp(DeletedGroup));
 		Owner->OnPresetLayoutModified().Broadcast(Owner.Get());
+
+		FRCTransactionListenerHelper<URemoteControlPreset*>(ERCTransaction::Undo, Owner->GetPresetId(), Owner->OnPresetLayoutModified(), Owner.Get());
+		FRCTransactionListenerHelper<URemoteControlPreset*>(ERCTransaction::Redo, Owner->GetPresetId(), Owner->OnPresetLayoutModified(), Owner.Get());
 	}
 }
 
@@ -365,9 +408,15 @@ void FRemoteControlPresetLayout::RenameGroup(FGuid GroupId, FName NewGroupName)
 {
 	if (FRemoteControlPresetGroup* Group = GetGroup(GroupId))
 	{
+		FRCTransactionListenerHelper<const FGuid&, FName>(ERCTransaction::Undo, Owner->GetPresetId(), OnGroupRenamed(), GroupId, Group->Name);
+		FRCTransactionListenerHelper<const FGuid&, FName>(ERCTransaction::Redo, Owner->GetPresetId(), OnGroupRenamed(), GroupId, NewGroupName);
+
 		Group->Name = NewGroupName;
 		OnGroupRenamedDelegate.Broadcast(GroupId, NewGroupName);
 		Owner->OnPresetLayoutModified().Broadcast(Owner.Get());
+
+		FRCTransactionListenerHelper<URemoteControlPreset*>(ERCTransaction::Undo, Owner->GetPresetId(), Owner->OnPresetLayoutModified(), Owner.Get());
+		FRCTransactionListenerHelper<URemoteControlPreset*>(ERCTransaction::Redo, Owner->GetPresetId(), Owner->OnPresetLayoutModified(), Owner.Get());
 	}
 }
 
@@ -387,7 +436,14 @@ void FRemoteControlPresetLayout::AddField(FGuid GroupId, FGuid FieldId)
 	{
 		Group->AccessFields().Add(FieldId);
 		OnFieldAddedDelegate.Broadcast(GroupId, FieldId, Group->AccessFields().Num() - 1);
+
+		FRCTransactionListenerHelper<const FGuid&, const FGuid&, int32>(ERCTransaction::Undo, Owner->GetPresetId(), OnFieldDeleted(), GroupId, FieldId, Group->AccessFields().Num() - 1);
+		FRCTransactionListenerHelper<const FGuid&, const FGuid&, int32>(ERCTransaction::Redo, Owner->GetPresetId(), OnFieldAdded(), GroupId, FieldId, Group->AccessFields().Num() - 1);
+
 		Owner->OnPresetLayoutModified().Broadcast(Owner.Get());
+
+		FRCTransactionListenerHelper<URemoteControlPreset*>(ERCTransaction::Undo, Owner->GetPresetId(), Owner->OnPresetLayoutModified(), Owner.Get());
+		FRCTransactionListenerHelper<URemoteControlPreset*>(ERCTransaction::Redo, Owner->GetPresetId(), Owner->OnPresetLayoutModified(), Owner.Get());
 	}
 }
 
@@ -397,7 +453,14 @@ void FRemoteControlPresetLayout::InsertFieldAt(FGuid GroupId, FGuid FieldId, int
 	{
 		Group->AccessFields().Insert(FieldId, Index);
 		OnFieldAddedDelegate.Broadcast(GroupId, FieldId, Index);
+
+		FRCTransactionListenerHelper<const FGuid&, const FGuid&, int32>(ERCTransaction::Undo, Owner->GetPresetId(), OnFieldDeleted(), GroupId, FieldId, Index);
+		FRCTransactionListenerHelper<const FGuid&, const FGuid&, int32>(ERCTransaction::Redo, Owner->GetPresetId(), OnFieldAdded(), GroupId, FieldId, Index);
+
 		Owner->OnPresetLayoutModified().Broadcast(Owner.Get());
+
+		FRCTransactionListenerHelper<URemoteControlPreset*>(ERCTransaction::Undo, Owner->GetPresetId(), Owner->OnPresetLayoutModified(), Owner.Get());
+		FRCTransactionListenerHelper<URemoteControlPreset*>(ERCTransaction::Redo, Owner->GetPresetId(), Owner->OnPresetLayoutModified(), Owner.Get());
 	}
 }
 
@@ -425,7 +488,14 @@ void FRemoteControlPresetLayout::RemoveFieldAt(FGuid GroupId, int32 Index)
 		Fields.RemoveAt(Index);
 
 		OnFieldDeletedDelegate.Broadcast(GroupId, FieldId, Index);
+
+		FRCTransactionListenerHelper<const FGuid&, const FGuid&, int32>(ERCTransaction::Undo, Owner->GetPresetId(), OnFieldAdded(), GroupId, FieldId, Index);
+		FRCTransactionListenerHelper<const FGuid&, const FGuid&, int32>(ERCTransaction::Redo, Owner->GetPresetId(), OnFieldDeleted(), GroupId, FieldId, Index);
+
 		Owner->OnPresetLayoutModified().Broadcast(Owner.Get());
+
+		FRCTransactionListenerHelper<URemoteControlPreset*>(ERCTransaction::Undo, Owner->GetPresetId(), Owner->OnPresetLayoutModified(), Owner.Get());
+		FRCTransactionListenerHelper<URemoteControlPreset*>(ERCTransaction::Redo, Owner->GetPresetId(), Owner->OnPresetLayoutModified(), Owner.Get());
 	}
 }
 
@@ -575,6 +645,51 @@ URCVirtualPropertyBase* URemoteControlPreset::GetControllerByDisplayName(const F
 	return ControllerContainer->GetVirtualPropertyByDisplayName(InDisplayName);
 }
 
+URCVirtualPropertyBase* URemoteControlPreset::GetControllerByFieldId(const FName InFieldId) const
+{
+	if (!ensure(ControllerContainer))
+	{
+		return nullptr;
+	}
+
+	return ControllerContainer->GetVirtualPropertyByFieldId(InFieldId);
+}
+
+URCVirtualPropertyBase* URemoteControlPreset::GetControllerByFieldId(const FName InFieldId,	const EPropertyBagPropertyType InType) const
+{
+	if (!ensure(ControllerContainer))
+	{
+		return nullptr;
+	}
+
+	return ControllerContainer->GetVirtualPropertyByFieldId(InFieldId, InType);
+}
+
+TArray<URCVirtualPropertyBase*> URemoteControlPreset::GetControllersByFieldId(const FName InFieldId) const
+{
+	if (!ensure(ControllerContainer))
+	{
+		return {};
+	}
+
+	return ControllerContainer->GetVirtualPropertiesByFieldId(InFieldId);
+}
+
+TArray<EPropertyBagPropertyType> URemoteControlPreset::GetControllersTypesByFieldId(const FName InFieldId) const
+{	
+	TArray<EPropertyBagPropertyType> ValueTypes;
+	
+	for (const URCVirtualPropertyBase* Controller : GetControllersByFieldId(InFieldId))
+	{
+		if (Controller)
+		{
+			ValueTypes.Add(Controller->GetValueType());
+		}
+	}
+
+	return ValueTypes;
+}
+
 URCVirtualPropertyInContainer* URemoteControlPreset::AddController(TSubclassOf<URCVirtualPropertyInContainer> InPropertyClass, const EPropertyBagPropertyType InValueType, UObject* InValueTypeObject /*= nullptr*/, const FName InPropertyName /*= NAME_None*/)
 {
 	if (!ensure(ControllerContainer))
@@ -597,6 +712,10 @@ URCVirtualPropertyInContainer* URemoteControlPreset::AddController(TSubclassOf<U
 	if (NewController)
 	{
 		OnControllerAdded().Broadcast(this, NewPropertyName, NewController->Id);
+
+		FRCTransactionListenerHelper<URemoteControlPreset*, const FGuid&>(ERCTransaction::Undo, GetPresetId(), OnControllerRemoved(), this, NewController->Id);
+		FRCTransactionListenerHelper<URemoteControlPreset*, const FName, const FGuid&>(ERCTransaction::Redo, GetPresetId(), OnControllerAdded(), this, NewPropertyName, NewController->Id);
+
 		InitializeEntityMetadata(NewController);
 	}
 	
@@ -615,6 +734,10 @@ bool URemoteControlPreset::RemoveController(const FName& InPropertyName)
 		{
 			OnControllerRemoved().Broadcast(this, ControllerToDelete->Id);
 			ControllerContainer->RemoveProperty(ControllerToDelete->GetPropertyName());
+
+			FRCTransactionListenerHelper<URemoteControlPreset*, const FName, const FGuid&>(ERCTransaction::Undo, GetPresetId(), OnControllerAdded(), this, ControllerToDelete->DisplayName, ControllerToDelete->Id);
+			FRCTransactionListenerHelper<URemoteControlPreset*, const FGuid&>(ERCTransaction::Redo, GetPresetId(), OnControllerRemoved(), this, ControllerToDelete->Id);
+
 			return true;
 		}
 	}
@@ -645,6 +768,9 @@ void URemoteControlPreset::ResetControllers()
 		for (TObjectPtr<URCVirtualPropertyBase> Controller : ControllerContainer->VirtualProperties)
 		{
 			OnControllerRemoved().Broadcast(this, Controller->Id);
+
+			FRCTransactionListenerHelper<URemoteControlPreset*, const FName, const FGuid&>(ERCTransaction::Undo, GetPresetId(), OnControllerAdded(), this, Controller->DisplayName, Controller->Id);
+			FRCTransactionListenerHelper<URemoteControlPreset*, const FGuid&>(ERCTransaction::Redo, GetPresetId(), OnControllerRemoved(), this, Controller->Id);
 		}
 		ControllerContainer->Reset();
 	}
@@ -700,6 +826,9 @@ void URemoteControlPreset::OnModifyController(const FPropertyChangedEvent& Prope
 		{
 			ControllerContainer->OnModifyPropertyValue(PropertyChangedEvent);
 			OnControllerModified().Broadcast(this, {ModifiedController->Id});
+
+			FRCTransactionListenerHelper<URemoteControlPreset*, const TSet<FGuid>&>(ERCTransaction::Undo, GetPresetId(), OnControllerModified(), this, {ModifiedController->Id});
+			FRCTransactionListenerHelper<URemoteControlPreset*, const TSet<FGuid>&>(ERCTransaction::Redo, GetPresetId(), OnControllerModified(), this, {ModifiedController->Id});
 		}
 	}	
 } 
@@ -746,7 +875,22 @@ TWeakPtr<FRemoteControlProperty> URemoteControlPreset::ExposeProperty(UObject* O
 
 		const FName FieldName = GetEntityName(*Args.Label, Object, FieldPath);
 
-		FRemoteControlProperty RCProperty{ this, Registry->GenerateUniqueLabel(FieldName), MoveTemp(FieldPath), { FindOrAddBinding(Object) } };
+		URemoteControlBinding* Binding = FindOrAddBinding(Object);
+		if (!Binding->Resolve())
+		{
+			// The binding exists, and the object exists at this path, but the binding can't resolve to it.
+			// Due to a bug (UE-187216), this can happen if:
+			// 1. The object was created, but not saved
+			// 2. The property was bound
+			// 3. The object was destroyed
+			// 4. Another object was created at the same path
+			// This can all happen without FSoftObjectPath::CurrentTag being invalidated (usually only done when assets load), meaning the binding's
+			// pointer cache won't update to the new object at that path.
+			// But we know the new object here, so just replace the bound object and use it going forward.
+			Binding->SetBoundObject(Object);
+		}
+
+		FRemoteControlProperty RCProperty{ this, Registry->GenerateUniqueLabel(FieldName), MoveTemp(FieldPath), { Binding } };
 
 		RCPropertyPtr = StaticCastSharedPtr<FRemoteControlProperty>(Expose(MoveTemp(RCProperty), FRemoteControlProperty::StaticStruct(), Args.GroupId));
 	}
@@ -840,6 +984,9 @@ TSharedPtr<FRemoteControlEntity> URemoteControlPreset::Expose(FRemoteControlEnti
 	Layout.AddField(Group->Id, RCEntity->GetId());
 	
 	OnEntityExposed().Broadcast(this, RCEntity->GetId());
+
+	FRCTransactionListenerHelper<URemoteControlPreset*, const FGuid&>(ERCTransaction::Undo, GetPresetId(), OnEntityUnexposed(), this, RCEntity->GetId());
+	FRCTransactionListenerHelper<URemoteControlPreset*, const FGuid&>(ERCTransaction::Redo, GetPresetId(), OnEntityExposed(), this, RCEntity->GetId());
 
 	return RCEntity;
 }
@@ -1390,6 +1537,9 @@ void URemoteControlPreset::Unexpose(const FGuid& EntityId)
 {
 	if (EntityId.IsValid() && Registry->GetExposedEntity(EntityId).IsValid())
 	{
+		FRCTransactionListenerHelper<URemoteControlPreset*, const FGuid&>(ERCTransaction::Undo, GetPresetId(), OnEntityExposed(), this, EntityId);
+		FRCTransactionListenerHelper<URemoteControlPreset*, const FGuid&>(ERCTransaction::Redo, GetPresetId(), OnEntityUnexposed(), this, EntityId);
+
 		OnEntityUnexposedDelegate.Broadcast(this, EntityId);
 
 		Registry->Modify();
@@ -1556,11 +1706,17 @@ void URemoteControlPreset::OnExpose(const FExposeInfo& Info)
 		NameToGuidMap.Add(Field->GetLabel(), Info.FieldId);
 		Layout.AddField(FieldGroupId, Info.FieldId);
 		OnEntityExposed().Broadcast(this, Info.FieldId);
+
+		FRCTransactionListenerHelper<URemoteControlPreset*, const FGuid&>(ERCTransaction::Undo, GetPresetId(), OnEntityUnexposed(), this, Info.FieldId);
+		FRCTransactionListenerHelper<URemoteControlPreset*, const FGuid&>(ERCTransaction::Redo, GetPresetId(), OnEntityExposed(), this, Info.FieldId);
 	}
 }
 
 void URemoteControlPreset::OnUnexpose(FGuid UnexposedFieldId)
  {
+	FRCTransactionListenerHelper<URemoteControlPreset*, const FGuid&>(ERCTransaction::Undo, GetPresetId(), OnEntityExposed(), this, UnexposedFieldId);
+	FRCTransactionListenerHelper<URemoteControlPreset*, const FGuid&>(ERCTransaction::Redo, GetPresetId(), OnEntityUnexposed(), this, UnexposedFieldId);
+
 	OnEntityUnexposed().Broadcast(this, UnexposedFieldId);
 	
 	FRCCachedFieldData CachedData = FieldCache.FindChecked(UnexposedFieldId);
@@ -1949,6 +2105,8 @@ void URemoteControlPreset::RegisterDelegates()
 
 	FCoreUObjectDelegates::OnPackageReloaded.AddUObject(this, &URemoteControlPreset::OnPackageReloaded);
 #endif
+	
+	FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(this, &URemoteControlPreset::OnMapLoadFinished);
 
 	FCoreDelegates::OnBeginFrame.AddUObject(this, &URemoteControlPreset::OnBeginFrame);
 	FCoreDelegates::OnEndFrame.AddUObject(this, &URemoteControlPreset::OnEndFrame);
@@ -1958,6 +2116,8 @@ void URemoteControlPreset::UnregisterDelegates()
 {
 	FCoreDelegates::OnBeginFrame.RemoveAll(this);
 	FCoreDelegates::OnEndFrame.RemoveAll(this);
+
+	FCoreUObjectDelegates::PostLoadMapWithWorld.RemoveAll(this);
 
 #if WITH_EDITOR
 	FCoreUObjectDelegates::OnPackageReloaded.RemoveAll(this);
@@ -2018,6 +2178,11 @@ void URemoteControlPreset::OnPieEvent(bool)
 		{
 			for (TSharedPtr<FRemoteControlEntity> Entity : PresetPtr->Registry->GetExposedEntities<FRemoteControlEntity>())
 			{
+				if (Entity->GetStruct() == FRemoteControlProperty::StaticStruct())
+				{
+					StaticCastSharedPtr<FRemoteControlProperty>(Entity)->FieldPathInfo.Resolve(Entity->GetBoundObject());
+				}
+
 				PresetPtr->PerFrameUpdatedEntities.Add(Entity->GetId());
 			}
 		}
@@ -2178,6 +2343,15 @@ void URemoteControlPreset::CleanUpBindings()
 	PerFrameBindingsToClean.Reset();
 }
 #endif
+
+void URemoteControlPreset::OnMapLoadFinished(UWorld* LoadedWorld)
+{
+	if (Registry)
+	{
+		Algo::Transform(Registry->GetExposedEntities(), PerFrameUpdatedEntities, [](const TSharedPtr<FRemoteControlEntity>& Entity) { return Entity->GetId(); });
+		Algo::Transform(Registry->GetExposedEntities<FRemoteControlProperty>(), PerFrameModifiedProperties, [](const TSharedPtr<FRemoteControlProperty>& RCProp) { return RCProp->GetId(); });
+	}
+}
 
 void URemoteControlPreset::OnBeginFrame()
 {

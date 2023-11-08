@@ -19,9 +19,6 @@
 #endif
 #endif
 
-#if !defined(CPUPROFILERTRACE_FILE_AND_LINE_ENABLED)
-#define CPUPROFILERTRACE_FILE_AND_LINE_ENABLED 1
-#endif
 
 #if CPUPROFILERTRACE_ENABLED
 
@@ -86,7 +83,17 @@ struct FCpuProfilerTrace
 	 * @param File Source filename
 	 * @param Line Line number in source file
 	 */
-	CORE_API static void OutputBeginDynamicEvent(const FName& Name, const ANSICHAR* File = nullptr, uint32 Line = 0);
+	FORCENOINLINE CORE_API static void OutputBeginDynamicEvent(const FName Name, const ANSICHAR* File = nullptr, uint32 Line = 0);
+	/*
+	 * Output begin event marker for a dynamic event identified by an FName. This is more expensive than
+	 * statically known event names using \ref OutputBeginEvent, but it is faster than \ref OutputBeginDynamicEvent
+	 * that receives ANSICHAR* / TCHAR* name. Must always be matched with an end event.
+	 * @param Id Id of event
+	 * @param Name Name of event
+	 * @param File Source filename
+	 * @param Line Line number in source file
+	 */
+	CORE_API static void OutputBeginDynamicEventWithId(const FName Id, const TCHAR* Name, const ANSICHAR* File = nullptr, uint32 Line = 0);
 	/*
 	 * Output end event marker for static or dynamic event for the currently open scope.
 	 */

@@ -337,7 +337,6 @@ int32 GetOSVersionsHelper( TCHAR* OutOSVersionLabel, int32 OSVersionLabelLength,
 	return ErrorCode;
 }
 
-#if WINDOWS_USE_DEFAULT_OSVERSIONHELPER
 int32 FWindowsOSVersionHelper::GetOSVersions( FString& OutOSVersionLabel, FString& OutOSSubVersionLabel )
 {
 	TCHAR OSVersionLabel[128];
@@ -353,7 +352,6 @@ int32 FWindowsOSVersionHelper::GetOSVersions( FString& OutOSVersionLabel, FStrin
 
 	return Result;
 }
-#endif //WINDOWS_USE_DEFAULT_OSVERSIONHELPER
 
 namespace
 {
@@ -442,7 +440,7 @@ static void PureCallHandler()
 	}
 }
 
-#if ENABLE_PGO_PROFILE
+#if ENABLE_PGO_PROFILE && !defined(__INTEL_LLVM_COMPILER)
 void PGO_WriteFile()
 {
 	// NB. Using pgosweep.exe means the PGC file will be writable as soon as the title exits & we can control where it is written.
@@ -485,7 +483,7 @@ void PGO_WriteFile()
 		UE_LOG(LogWindows, Log, TEXT("pgosweep.exe exit code %d"), ExitCode);
 	}
 }
-#endif //ENABLE_PGO_PROFILE
+#endif //ENABLE_PGO_PROFILE && !__INTEL_LLVM_COMPILER
 
 
 /*-----------------------------------------------------------------------------
@@ -584,7 +582,7 @@ void FWindowsPlatformMisc::PlatformPreInit()
 	if ( ::GetSystemMetrics(SM_CXSCREEN) < MinResolution[0] || ::GetSystemMetrics(SM_CYSCREEN) < MinResolution[1] )
 	{
 		FMessageDialog::Open( EAppMsgType::Ok, NSLOCTEXT("Launch", "Error_ResolutionTooLow", "The current resolution is too low to run this game.") );
-		FPlatformMisc::RequestExit( false );
+		FPlatformMisc::RequestExit( false, TEXT("FWindowsPlatformMisc::PlatformPreInit.ResolutionTooLow"));
 	}
 
 	// initialize the file SHA hash mapping
@@ -637,7 +635,13 @@ static BOOL WINAPI ConsoleCtrlHandler(DWORD CtrlType)
 	if (!AppTermDelegateBroadcast)
 	{
 		RequestEngineExit(TEXT("ConsoleCtrl RequestExit"));
+
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		FCoreDelegates::ApplicationWillTerminateDelegate.Broadcast();
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+		FCoreDelegates::GetApplicationWillTerminateDelegate().Broadcast();
+
 		AppTermDelegateBroadcast = true;
 	}
 
@@ -993,26 +997,28 @@ bool FWindowsPlatformMisc::IsLowLevelOutputDebugStringStructured()
 	return !!Mutex || FGenericPlatformMisc::IsLowLevelOutputDebugStringStructured();
 }
 
-void FWindowsPlatformMisc::RequestExit( bool Force )
+void FWindowsPlatformMisc::RequestExit( bool Force, const TCHAR* CallSite )
 {
-	UE_LOG(LogWindows, Log,  TEXT("FPlatformMisc::RequestExit(%i)"), Force );
+	UE_LOG(LogWindows, Log,  TEXT("FPlatformMisc::RequestExit(%i, %s)"),
+		Force, CallSite ? CallSite : TEXT("<NoCallSiteInfo>"));
 
 	// Legacy behavior that now calls through to RequestExitWithStatus
 	if( Force )
 	{
-		RequestExitWithStatus(Force, GIsCriticalError ? 3 : 0);
+		RequestExitWithStatus(Force, GIsCriticalError ? 3 : 0, CallSite);
 	}
 	else
 	{
-		RequestExitWithStatus(false, 0);
+		RequestExitWithStatus(false, 0, CallSite);
 	}
 }
 
-void FWindowsPlatformMisc::RequestExitWithStatus(bool Force, uint8 ReturnCode)
+void FWindowsPlatformMisc::RequestExitWithStatus(bool Force, uint8 ReturnCode, const TCHAR* CallSite)
 {
-	UE_LOG(LogWindows, Log, TEXT("FPlatformMisc::RequestExitWithStatus(%i, %i)"), Force, ReturnCode);
+	UE_LOG(LogWindows, Log, TEXT("FPlatformMisc::RequestExitWithStatus(%i, %i, %s)"), Force, ReturnCode,
+		CallSite ? CallSite : TEXT("<NoCallSiteInfo>"));
 
-#if ENABLE_PGO_PROFILE
+#if ENABLE_PGO_PROFILE && !defined(__INTEL_LLVM_COMPILER)
 	// save current PGO profiling data and terminate immediately
 	PGO_WriteFile();
 	TerminateProcess(GetCurrentProcess(), 0);
@@ -1020,7 +1026,12 @@ void FWindowsPlatformMisc::RequestExitWithStatus(bool Force, uint8 ReturnCode)
 #endif
 
 	RequestEngineExit(TEXT("Win RequestExit"));
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FCoreDelegates::ApplicationWillTerminateDelegate.Broadcast();
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	FCoreDelegates::GetApplicationWillTerminateDelegate().Broadcast();
 
 	if (Force)
 	{
@@ -2188,18 +2199,27 @@ int32 FWindowsPlatformMisc::NumberOfCoresIncludingHyperthreads()
 
 const TCHAR* FWindowsPlatformMisc::GetPlatformFeaturesModuleName()
 {
-	bool bModuleExists = FModuleManager::Get().ModuleExists(TEXT("WindowsPlatformFeatures"));
 	// If running a dedicated server then we use the default PlatformFeatures
-	if (bModuleExists && !IsRunningDedicatedServer())
+	if (!IsRunningDedicatedServer())
 	{
-		UE_LOG(LogWindows, Log, TEXT("WindowsPlatformFeatures enabled"));
-		return TEXT("WindowsPlatformFeatures");
+		static FString PlatformFeaturesName = TEXT("WindowsPlatformFeatures");
+		static bool bIniChecked = false;
+		if (!bIniChecked && !GEngineIni.IsEmpty())
+		{
+			GConfig->GetString(TEXT("PlatformFeatures"), TEXT("PlatformFeaturesModule"), PlatformFeaturesName, GEngineIni);
+			bIniChecked = true;
+		}
+
+		bool bModuleExists = FModuleManager::Get().ModuleExists(*PlatformFeaturesName);
+		if (bModuleExists && !PlatformFeaturesName.IsEmpty())
+		{
+			UE_LOG(LogWindows, Log, TEXT("%s enabled"), *PlatformFeaturesName);
+			return *PlatformFeaturesName;
+		}
 	}
-	else
-	{
-		UE_LOG(LogWindows, Log, TEXT("WindowsPlatformFeatures disabled or dedicated server build"));
-		return nullptr;
-	}
+
+	UE_LOG(LogWindows, Log, TEXT("WindowsPlatformFeatures disabled or dedicated server build"));
+	return nullptr;
 }
 
 int32 FWindowsPlatformMisc::NumberOfWorkerThreadsToSpawn()
@@ -3627,9 +3647,9 @@ IPlatformChunkInstall* FWindowsPlatformMisc::GetPlatformChunkInstall()
 		{
 			FString InstallModule;
 			GConfig->GetString(TEXT("StreamingInstall"), TEXT("DefaultProviderName"), InstallModule, GEngineIni);
-			FModuleStatus Status;
-			if (FModuleManager::Get().QueryModule(*InstallModule, Status))
-			{
+
+			if (!InstallModule.IsEmpty())
+			{			
 				PlatformChunkInstallModule = FModuleManager::LoadModulePtr<IPlatformChunkInstallModule>(*InstallModule);
 				if (PlatformChunkInstallModule != nullptr)
 				{

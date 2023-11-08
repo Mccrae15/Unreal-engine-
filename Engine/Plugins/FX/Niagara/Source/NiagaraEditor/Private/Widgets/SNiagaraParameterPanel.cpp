@@ -102,11 +102,7 @@ void SNiagaraParameterPanel::Construct(const FArguments& InArgs, const TSharedPt
 	.CategoryBorderBackgroundPadding(FMargin(0.0f, 3.0f))
 	.OnGetKeyForItem(this, &SNiagaraParameterPanel::OnGetKeyForItem)
 	.OnGetKeyForCategory(this, &SNiagaraParameterPanel::OnGetKeyForCategory)
-	.ExpandInitially(false)
-	.SearchBoxAdjacentContent()
-	[
-		ParameterPanelViewModel->GenerateAdjacentWidget()
-	];
+	.ExpandInitially(false);
 
 	// Finalize the widget
 	ChildSlot
@@ -615,7 +611,8 @@ void SNiagaraParameterPanel::RequestRenameSelectedItem() const
 bool SNiagaraParameterPanel::CanRequestRenameSelectedItem() const
 {
 	const TArray<FNiagaraParameterPanelItem>& SelectedItems = ItemSelector->GetSelectedItems();
-	if (SelectedItems.Num() == 1)
+	// it's possible the request rename delegate has not been bound yet as the widget for it might not have been created at this point
+	if (SelectedItems.Num() == 1 && SelectedItems[0].GetOnRequestRename().IsBound())
 	{
 		FText Unused;
 		bool bCheckEmptyNameText = false;

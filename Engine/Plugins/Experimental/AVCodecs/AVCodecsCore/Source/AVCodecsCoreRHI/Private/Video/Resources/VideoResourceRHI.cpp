@@ -20,6 +20,8 @@
 #include "RHIStaticStates.h"
 #include "MediaShaders.h"
 #include "PipelineStateCache.h"
+#include "ColorManagementDefines.h"
+#include "ColorSpace.h"
 
 REGISTER_TYPEID(FVideoContextRHI);
 REGISTER_TYPEID(FVideoResourceRHI);
@@ -306,12 +308,16 @@ TSharedPtr<FVideoResourceRHI> FVideoResourceRHI::TransformResource(FVideoDescrip
 						GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 
 						// TODO (aidan.possemiers) do we need get the not scaled version of this matrix
-						FMatrix YUVToRGBMatrix = MediaShaders::YuvToRgbRec709Scaled;
+						FMatrix PreMtx = FMatrix::Identity;
+						PreMtx.M[0][3] = -MediaShaders::YUVOffset8bits.X;
+						PreMtx.M[1][3] = -MediaShaders::YUVOffset8bits.Y;
+						PreMtx.M[2][3] = -MediaShaders::YUVOffset8bits.Z;
+						auto YUVToRGBMatrix = FMatrix44f(MediaShaders::YuvToRgbRec709Scaled * PreMtx);
 
 						TShaderMapRef<FNV12ConvertAsBytesPS> ConvertShader(ShaderMap);
 						GraphicsPSOInit.BoundShaderState.PixelShaderRHI = ConvertShader.GetPixelShader();
 						SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
-						ConvertShader->SetParameters(RHICmdList, Source, OutputDim, YUVToRGBMatrix, MediaShaders::YUVOffset8bits, true);
+						SetShaderParametersLegacyPS(RHICmdList, ConvertShader, Source, OutputDim, YUVToRGBMatrix, UE::Color::EEncoding::sRGB, FMatrix44f::Identity, false);
 
 						// draw full size quad into render target
 						FBufferRHIRef VertexBuffer = CreateTempMediaVertexBuffer();
@@ -372,12 +378,16 @@ void FVideoResourceRHI::TransformResourceTo(FRHICommandListImmediate& RHICmdList
 					GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 
 					// TODO (aidan.possemiers) do we need get the not scaled version of this matrix
-					FMatrix YUVToRGBMatrix = MediaShaders::YuvToRgbRec709Scaled;
+					FMatrix PreMtx = FMatrix::Identity;
+					PreMtx.M[0][3] = -MediaShaders::YUVOffset8bits.X;
+					PreMtx.M[1][3] = -MediaShaders::YUVOffset8bits.Y;
+					PreMtx.M[2][3] = -MediaShaders::YUVOffset8bits.Z;
+					auto YUVToRGBMatrix = FMatrix44f(MediaShaders::YuvToRgbRec709Scaled * PreMtx);
 
 					TShaderMapRef<FNV12ConvertAsBytesPS> ConvertShader(ShaderMap);
 					GraphicsPSOInit.BoundShaderState.PixelShaderRHI = ConvertShader.GetPixelShader();
 					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
-					ConvertShader->SetParameters(RHICmdList, Raw.Texture, OutputDim, YUVToRGBMatrix, MediaShaders::YUVOffset8bits, true);
+					SetShaderParametersLegacyPS(RHICmdList, ConvertShader, Raw.Texture, OutputDim, YUVToRGBMatrix, UE::Color::EEncoding::sRGB, FMatrix44f::Identity, false);
 
 					// draw full size quad into render target
 					FBufferRHIRef VertexBuffer = CreateTempMediaVertexBuffer();

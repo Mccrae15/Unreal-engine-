@@ -17,11 +17,12 @@
 #include "Misc/MessageDialog.h"
 #include "HAL/PlatformFileManager.h"
 
-#if PLATFORM_WINDOWS
+#if PLATFORM_WINDOWS || PLATFORM_LINUX
 #include "Framework/Docking/TabManager.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #endif
 
 /** The editor object. */
@@ -87,7 +88,6 @@ URendererSettings::URendererSettings(const FObjectInitializer& ObjectInitializer
 	bEnableRayTracing = 0;
 	bUseHardwareRayTracingForLumen = 0;
 	bEnableRayTracingShadows = 0;
-	bEnableRayTracingSkylight = 0;
 	bEnablePathTracing = 0;
 	bEnableRayTracingTextureLOD = 0;
 	DefaultBoneInfluenceLimit = 0;
@@ -233,6 +233,16 @@ void URendererSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyCh
 			}
 		}
 
+		if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, StrataDebugAdvancedVisualizationShaders)
+			&& StrataDebugAdvancedVisualizationShaders)
+		{
+			if (FMessageDialog::Open(EAppMsgType::YesNo, LOCTEXT("Substrate advanced visualization shaders", "This will make the rendering slower and allocate more memory.\nPlease do not check-in.\nInstead you could add `r.Substrate.Debug.AdvancedVisualizationShaders=1` to your ConsoleVariables.ini.\nAre you sure you want to enable that feature now?")) == EAppReturnType::No)
+			{
+				StrataDebugAdvancedVisualizationShaders = false;
+				UpdateDependentPropertyInConfigFile(this, GET_MEMBER_NAME_CHECKED(URendererSettings, StrataDebugAdvancedVisualizationShaders));
+			}
+		}
+
 		if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, VirtualTextureTileSize))
 		{
 			VirtualTextureTileSize = FMath::RoundUpToPowerOfTwo(VirtualTextureTileSize);
@@ -251,6 +261,14 @@ void URendererSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyCh
 			}
 		}
 
+		if ((PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, MobileShadingPath)))
+		{
+			if (MobileShadingPath.GetValue() == 0)
+			{
+				bMobileSupportDeferredOnOpenGL = 0;
+			}
+		}
+
 		if ((PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, bEnableStrata)))
 		{
 			if (bEnableStrata)
@@ -266,7 +284,7 @@ void URendererSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyCh
 		{
 			if (GEditor != nullptr)
 			{
-				if (GWorld != nullptr && GWorld->FeatureLevel == ERHIFeatureLevel::ES3_1)
+				if (GWorld != nullptr && GWorld->GetFeatureLevel() == ERHIFeatureLevel::ES3_1)
 				{
 					// When we feature change from SM5 to ES31 we call BuildReflectionCapture if we have Unbuilt Reflection Components, so no reason to call it again here
 					// This is to make sure that we have valid data for Mobile Preview.
@@ -347,6 +365,11 @@ bool URendererSettings::CanEditChange(const FProperty* InProperty) const
 		return !bForwardShading;
 	}
 
+	if ((InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, bMobileSupportDeferredOnOpenGL)))
+	{
+		return MobileShadingPath.GetValue() > 0;
+	}
+
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	// only allow changing ExtendDefaultLuminanceRange if it was disabled.
 	// we don't want new projects disabling this setting but still allow existing projects to enable it.
@@ -363,27 +386,62 @@ bool URendererSettings::CanEditChange(const FProperty* InProperty) const
 
 void URendererSettings::CheckForMissingShaderModels()
 {
-	// Don't show the SM6 toasts on non-Windows platforms to avoid confusion around platform requirements.
-#if PLATFORM_WINDOWS
+	// Don't show the SM6 toasts on non-Windows/Linux platforms to avoid confusion around platform requirements.
+#if PLATFORM_WINDOWS || PLATFORM_LINUX
 	if (GIsEditor && ShadowMapMethod == EShadowMapMethod::VirtualShadowMaps)
 	{
-		TArray<FString> D3D11TargetedShaderFormats;
-		GConfig->GetArray(TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"), TEXT("D3D11TargetedShaderFormats"), D3D11TargetedShaderFormats, GEngineIni);
-
-		TArray<FString> D3D12TargetedShaderFormats;
-		GConfig->GetArray(TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"), TEXT("D3D12TargetedShaderFormats"), D3D12TargetedShaderFormats, GEngineIni);
-
-		TArray<FString> TargetedRHIs;
-		GConfig->GetArray(TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"), TEXT("TargetedRHIs"), TargetedRHIs, GEngineIni);
-
-		if (TargetedRHIs.Contains(TEXT("PCD3D_SM6")))
+		auto CopySM6Format = [](const TCHAR* ShaderFormatName, const TArray<FString>& SrcArray, TArray<FString>& DstArray)
 		{
-			D3D12TargetedShaderFormats.AddUnique(TEXT("PCD3D_SM6"));
+			if (SrcArray.Contains(ShaderFormatName))
+			{
+				DstArray.AddUnique(ShaderFormatName);
+			}
+		};
+
+		TArray<FString> D3D11TargetedShaderFormats;
+		TArray<FString> D3D12TargetedShaderFormats;
+		TArray<FString> WindowsVulkanTargetedShaderFormats;
+		TArray<FString> WindowsTargetedRHIs;
+		TArray<FString> LinuxVulkanTargetedShaderFormats;
+		TArray<FString> LinuxTargetedRHIs;
+
+#if PLATFORM_WINDOWS
+		// Gather all Windows shader format settings
+		{
+			GConfig->GetArray(TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"), TEXT("TargetedRHIs"), WindowsTargetedRHIs, GEngineIni);
+
+			// If using Vulkan in Windows, warn about Vulkan settings
+			if (IsVulkanPlatform(GMaxRHIShaderPlatform))
+			{
+				GConfig->GetArray(TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"), TEXT("VulkanTargetedShaderFormats"), WindowsVulkanTargetedShaderFormats, GEngineIni);
+				CopySM6Format(TEXT("SF_VULKAN_SM6"), WindowsTargetedRHIs, WindowsVulkanTargetedShaderFormats);
+			}
+			else
+			{
+				GConfig->GetArray(TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"), TEXT("D3D11TargetedShaderFormats"), D3D11TargetedShaderFormats, GEngineIni);
+				GConfig->GetArray(TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"), TEXT("D3D12TargetedShaderFormats"), D3D12TargetedShaderFormats, GEngineIni);
+				CopySM6Format(TEXT("PCD3D_SM6"), WindowsTargetedRHIs, D3D12TargetedShaderFormats);
+			}
 		}
+#elif PLATFORM_LINUX
+		// Gather all Linux shader format settings
+		GConfig->GetArray(TEXT("/Script/LinuxTargetPlatform.LinuxTargetSettings"), TEXT("VulkanTargetedShaderFormats"), LinuxVulkanTargetedShaderFormats, GEngineIni);
+		GConfig->GetArray(TEXT("/Script/LinuxTargetPlatform.LinuxTargetSettings"), TEXT("TargetedRHIs"), LinuxTargetedRHIs, GEngineIni);
+		CopySM6Format(TEXT("SF_VULKAN_SM6"), LinuxTargetedRHIs, LinuxVulkanTargetedShaderFormats);
+#elif PLATFORM_MAC
+		// TODO: Gather all Mac shader format settings
+#endif
 
 		const bool bProjectUsesD3D = (D3D11TargetedShaderFormats.Num() + D3D12TargetedShaderFormats.Num()) > 0;
+		const bool bProjectMissingD3DSM6 = (bProjectUsesD3D && !D3D12TargetedShaderFormats.Contains(TEXT("PCD3D_SM6")));
 
-		if (bProjectUsesD3D && !D3D12TargetedShaderFormats.Contains(TEXT("PCD3D_SM6")))
+		const bool bProjectUsesWindowsVulkan = (WindowsVulkanTargetedShaderFormats.Num() > 0);
+		const bool bProjectMissingWindowsVulkanSM6 = (bProjectUsesWindowsVulkan && !WindowsVulkanTargetedShaderFormats.Contains(TEXT("SF_VULKAN_SM6")));
+
+		const bool bProjectUsesLinuxVulkan = (LinuxTargetedRHIs.Num() > 0) || (LinuxVulkanTargetedShaderFormats.Num() > 0);
+		const bool bProjectMissingLinuxVulkanSM6 = (bProjectUsesLinuxVulkan && !LinuxVulkanTargetedShaderFormats.Contains(TEXT("SF_VULKAN_SM6")));
+
+		if (bProjectMissingD3DSM6 || bProjectMissingWindowsVulkanSM6 || bProjectMissingLinuxVulkanSM6)
 		{
 			auto DismissNotification = [this]()
 			{
@@ -413,14 +471,26 @@ void URendererSettings::CheckForMissingShaderModels()
 				SNotificationItem::CS_None));
 
 			Info.Text = LOCTEXT("NeedProjectSettings", "Missing Project Settings!");
-			Info.SubText = LOCTEXT("VirtualShadowMapsNeedsSM6Setting", "Shader Model 6 (SM6) is required to use Virtual Shadow Maps. Please enable this in:\n  Project Settings -> Platforms -> Windows -> D3D12 Targeted Shader Formats\nVirtual shadow maps will not work until this is enabled.");
 			Info.HyperlinkText = LOCTEXT("ProjectSettingsHyperlinkText", "Open Project Settings");
 			Info.Hyperlink = FSimpleDelegate::CreateLambda(OpenProjectSettings);
+
+			if (bProjectMissingD3DSM6)
+			{
+				Info.SubText = LOCTEXT("VirtualShadowMapsNeedsSM6Setting", "Shader Model 6 (SM6) is required to use Virtual Shadow Maps. Please enable this in:\n  Project Settings -> Platforms -> Windows -> D3D12 Targeted Shader Formats\nVirtual shadow maps will not work until this is enabled.");
+			}
+			else if (bProjectMissingWindowsVulkanSM6)
+			{
+				Info.SubText = LOCTEXT("VirtualShadowMapsNeedsVulkanSM6WindowsSetting", "Shader Model 6 (SM6) is required to use Virtual Shadow Maps. Please enable this in:\n  Project Settings -> Platforms -> Windows -> Vulkan Targeted Shader Formats\nVirtual shadow maps will not work in Vulkan on Windows until this is enabled.");
+			}
+			else if (bProjectMissingLinuxVulkanSM6)
+			{
+				Info.SubText = LOCTEXT("VirtualShadowMapsNeedsVulkanSM6LinuxSetting", "Shader Model 6 (SM6) is required to use Virtual Shadow Maps. Please enable this in:\n  Project Settings -> Platforms -> Linux -> Targeted RHIs\nVirtual shadow maps will not work in Vulkan on Linux until this is enabled.");
+			}
 
 			ShaderModelNotificationPtr = FSlateNotificationManager::Get().AddNotification(Info);
 		}
 	}
-#endif // PLATFORM_WINDOWS
+#endif // PLATFORM_WINDOWS || PLATFORM_LINUX
 }
 #endif // #if WITH_EDITOR
 

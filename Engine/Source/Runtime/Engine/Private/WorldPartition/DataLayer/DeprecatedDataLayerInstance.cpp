@@ -30,7 +30,7 @@ void UDeprecatedDataLayerInstance::OnCreated()
 
 	Modify(/*bAlwaysMarkDirty*/false);
 
-	RelabelDataLayer(TEXT("DataLayer"));
+	FDataLayerUtils::SetDataLayerShortName(this, TEXT("DataLayer"));
 
 	DeprecatedDataLayerFName = TEXT("");
 
@@ -72,29 +72,24 @@ void UDeprecatedDataLayerInstance::OnCreated(const UDEPRECATED_DataLayer* Deprec
 	InitialRuntimeState = DeprecatedDataLayer->InitialRuntimeState;
 }
 
-bool UDeprecatedDataLayerInstance::AddActor(AActor* Actor) const
+FActorDataLayer UDeprecatedDataLayerInstance::GetActorDataLayer() const
 {
-	return Actor->AddDataLayer(FActorDataLayer(GetDataLayerFName()));
+	return FActorDataLayer(GetDataLayerFName());
 }
 
-bool UDeprecatedDataLayerInstance::RemoveActor(AActor* Actor) const
+bool UDeprecatedDataLayerInstance::PerformAddActor(AActor* InActor) const
 {
-	return Actor->RemoveDataLayer(FActorDataLayer(GetDataLayerFName()));
+	return InActor->AddDataLayer(GetActorDataLayer());
+}
+
+bool UDeprecatedDataLayerInstance::PerformRemoveActor(AActor* InActor) const
+{
+	return InActor->RemoveDataLayer(GetActorDataLayer());
 }
 
 bool UDeprecatedDataLayerInstance::RelabelDataLayer(FName InDataLayerLabel)
 {
-	FName SanitizedLabel = FDataLayerUtils::GetSanitizedDataLayerLabel(InDataLayerLabel);
-	FName UniqueNewDataLayerLabel = GetOuterAWorldDataLayers()->GenerateUniqueDataLayerLabel(SanitizedLabel);
-	if (Label != UniqueNewDataLayerLabel)
-	{
-		Modify();
-		check(!GetOuterAWorldDataLayers()->GetDataLayerFromLabel(UniqueNewDataLayerLabel));
-		Label = UniqueNewDataLayerLabel;
-		return true;
-	}
-
-	return false;
+	return FDataLayerUtils::SetDataLayerShortName(this, InDataLayerLabel.ToString());
 }
 
 #endif // WITH_EDITOR

@@ -25,6 +25,17 @@ namespace mu
 
 	MUTABLE_IMPLEMENT_NODE( NodeColourConstant, EType::Constant, Node, Node::EType::Colour)
 
+	NodeColourConstantPtr NodeColourConstant::OldStaticUnserialise(InputArchive& arch)
+	{
+		NodeColourConstantPtr pResult = new NodeColourConstant();
+		vec3<float> Value;
+
+		arch >> Value;
+		pResult->GetPrivate()->m_value = FVector4f(Value[0], Value[1], Value[2], 1.0f);
+
+		return pResult;
+	}
+
 
 	//---------------------------------------------------------------------------------------------
 	// Node Interface
@@ -53,29 +64,16 @@ namespace mu
 	//---------------------------------------------------------------------------------------------
 	// Own Interface
 	//---------------------------------------------------------------------------------------------
-	void NodeColourConstant::GetValue( float* pR, float *pG, float* pB ) const
+	FVector4f NodeColourConstant::GetValue() const
 	{
-		if (pR)
-		{
-			*pR = m_pD->m_value[0];
-		}
-
-		if (pG)
-		{
-			*pG = m_pD->m_value[1];
-		}
-
-		if (pB)
-		{
-			*pB = m_pD->m_value[2];
-		}
+		return m_pD->m_value;
 	}
 
 
 	//---------------------------------------------------------------------------------------------
-	void NodeColourConstant::SetValue( float r, float g, float b )
+	void NodeColourConstant::SetValue(FVector4f Value)
 	{
-		m_pD->m_value = vec3<float>(r,g,b);
+		m_pD->m_value = Value;
 	}
 
 

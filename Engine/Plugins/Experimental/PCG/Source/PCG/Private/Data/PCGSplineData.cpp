@@ -16,7 +16,6 @@
 void UPCGSplineData::Initialize(USplineComponent* InSpline)
 {
 	check(InSpline);
-	TargetActor = InSpline->GetOwner();
 
 	SplineStruct.Initialize(InSpline);
 
@@ -34,11 +33,8 @@ void UPCGSplineData::Initialize(USplineComponent* InSpline)
 	CachedBounds = CachedBounds.ExpandBy(SplinePointsRadius, SplinePointsRadius);
 }
 
-void UPCGSplineData::Initialize(const TArray<FSplinePoint>& InSplinePoints, bool bIsClosedLoop, AActor* InTargetActor, const FTransform& InTransform)
+void UPCGSplineData::Initialize(const TArray<FSplinePoint>& InSplinePoints, bool bIsClosedLoop, const FTransform& InTransform)
 {
-	check(InTargetActor);
-	TargetActor = InTargetActor;
-
 	SplineStruct.Initialize(InSplinePoints, bIsClosedLoop, InTransform);
 
 	CachedBounds = SplineStruct.GetBounds();
@@ -229,12 +225,16 @@ bool UPCGSplineProjectionData::SamplePoint(const FTransform& InTransform, const 
 	const FVector NearestPointOnSpline = Spline.GetLocationAtSplineInputKey(NearestInputKey, ESplineCoordinateSpace::World);
 	const FVector PointOnLine = FMath::ClosestPointOnInfiniteLine(InPosition, InPosition + SurfaceNormal, NearestPointOnSpline);
 
+	// In the following statements we check if point lies in projection of spline onto landscape, which is true if:
+	//  * When we hoist the point up to the nearest point on the unprojected spline, it overlaps the spline
+	//  * The point is on the landscape
+	
 	// TODO: this is super inefficient, could be done in 2D if we duplicate the sampling code
 	FPCGPoint SplinePoint;
 	if (GetSpline()->SamplePoint(FTransform(PointOnLine), InBounds, SplinePoint, OutMetadata))
 	{
 		FPCGPoint SurfacePoint;
-		if (GetSurface()->SamplePoint(SplinePoint.Transform, InBounds, SurfacePoint, OutMetadata))
+		if (GetSurface()->SamplePoint(InTransform, InBounds, SurfacePoint, OutMetadata))
 		{
 			OutPoint = SplinePoint;
 
@@ -268,7 +268,6 @@ FVector2D UPCGSplineProjectionData::Project(const FVector& InVector) const
 	// Find the largest coordinate of the normal and use as the projection axis
 	int BiggestCoordinateAxis = 0;
 	FVector::FReal BiggestCoordinate = FMath::Abs(SurfaceNormal[BiggestCoordinateAxis]);
-
 	for (int Axis = 1; Axis < 3; ++Axis)
 	{
 		FVector::FReal AbsoluteCoordinateValue = FMath::Abs(SurfaceNormal[Axis]);

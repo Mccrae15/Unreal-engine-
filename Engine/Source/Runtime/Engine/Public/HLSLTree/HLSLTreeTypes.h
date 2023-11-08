@@ -80,7 +80,9 @@ enum class EOperation : uint8
 	Rcp,
 	Sqrt,
 	Rsqrt,
+	Log,
 	Log2,
+	Exp,
 	Exp2,
 	Frac,
 	Floor,
@@ -110,6 +112,7 @@ enum class EOperation : uint8
 	Mul,
 	Div,
 	Fmod,
+	Step,
 	PowPositiveClamped,
 	Atan2,
 	Atan2Fast,
@@ -124,6 +127,9 @@ enum class EOperation : uint8
 	VecMulMatrix4,
 	Matrix3MulVec,
 	Matrix4MulVec,
+
+	// Ternary Ops
+	SmoothStep,
 };
 
 struct FOperationDescription

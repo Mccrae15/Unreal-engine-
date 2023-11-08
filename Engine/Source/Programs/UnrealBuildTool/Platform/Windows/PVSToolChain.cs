@@ -7,9 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
-using System.Threading;
 using System.Threading.Tasks;
-using System.Xml;
 using System.Xml.Serialization;
 using EpicGames.Core;
 using Microsoft.Extensions.Logging;
@@ -48,7 +46,7 @@ namespace UnrealBuildTool
 		MISRA = 32,
 	}
 
-  	/// <summary>
+	/// <summary>
 	/// Flags for the PVS analyzer timeout
 	/// </summary>
 	public enum AnalysisTimeoutFlags
@@ -117,7 +115,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		public bool DisableMISRAAnalysis;
 
-    		/// <summary>
+		/// <summary>
 		/// File analysis timeout
 		/// </summary>
 		public AnalysisTimeoutFlags AnalysisTimeout;
@@ -131,7 +129,7 @@ namespace UnrealBuildTool
 		/// Enable the display of analyzer rules exceptions which can be specified by comments and .pvsconfig files.
 		/// </summary>
 		public bool ReportDisabledRules;
-    
+
 		/// <summary>
 		/// Gets the analysis mode flags from the settings
 		/// </summary>
@@ -209,7 +207,7 @@ namespace UnrealBuildTool
 		public PVSAnalysisModeFlags ModeFlags
 		{
 			get
- 			{
+			{
 				if (ModePrivate.HasValue)
 				{
 					return ModePrivate.Value;
@@ -223,18 +221,15 @@ namespace UnrealBuildTool
 					return PVSAnalysisModeFlags.GeneralAnalysis;
 				}
 			}
-			set
-			{
-				ModePrivate = value;
-			}
+			set => ModePrivate = value;
 		}
 
 		/// <summary>
 		/// Private storage for the mode flags
 		/// </summary>
 		PVSAnalysisModeFlags? ModePrivate;
-    
-    		/// <summary>
+
+		/// <summary>
 		/// Override for the analysis timeoutFlag to use
 		/// </summary>
 		public AnalysisTimeoutFlags AnalysisTimeoutFlag
@@ -254,10 +249,7 @@ namespace UnrealBuildTool
 					return AnalysisTimeoutFlags.After_30_minutes;
 				}
 			}
-			set
-			{
-				TimeoutPrivate = value;
-			}
+			set => TimeoutPrivate = value;
 		}
 
 		/// <summary>
@@ -285,10 +277,7 @@ namespace UnrealBuildTool
 					return false;
 				}
 			}
-			set
-			{
-				EnableNoNoisePrivate = value;
-			}
+			set => EnableNoNoisePrivate = value;
 		}
 
 		/// <summary>
@@ -316,10 +305,7 @@ namespace UnrealBuildTool
 					return false;
 				}
 			}
-			set
-			{
-				EnableReportDisabledRulesPrivate = value;
-			}
+			set => EnableReportDisabledRulesPrivate = value;
 		}
 
 		/// <summary>
@@ -350,50 +336,32 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Accessor for the Application settings
 		/// </summary>
-		internal PVSApplicationSettings? ApplicationSettings
-		{
-			get { return Inner.ApplicationSettings.Value; }
-		}
+		internal PVSApplicationSettings? ApplicationSettings => Inner.ApplicationSettings.Value;
 
 		/// <summary>
 		/// Whether to use the application settings for the mode
 		/// </summary>
-		public bool UseApplicationSettings
-		{
-			get { return Inner.UseApplicationSettings; }
-		}
+		public bool UseApplicationSettings => Inner.UseApplicationSettings;
 
 		/// <summary>
 		/// Override for the analysis mode to use
 		/// </summary>
-		public PVSAnalysisModeFlags ModeFlags
-		{
-			get { return Inner.ModeFlags; }
-		}
-    
+		public PVSAnalysisModeFlags ModeFlags => Inner.ModeFlags;
+
 		/// <summary>
 		/// Override for the analysis timeout to use
 		/// </summary>
-		public AnalysisTimeoutFlags AnalysisTimeoutFlag
-		{
-			get { return Inner.AnalysisTimeoutFlag; }
-		}
+		public AnalysisTimeoutFlags AnalysisTimeoutFlag => Inner.AnalysisTimeoutFlag;
 
 		/// <summary>
 		/// Override NoNoise analysis setting to use
 		/// </summary>
-		public bool EnableNoNoise
-		{
-			get { return Inner.EnableNoNoise; }
-		}
+		public bool EnableNoNoise => Inner.EnableNoNoise;
 
 		/// <summary>
 		/// Override EnableReportDisabledRules analysis setting to use
 		/// </summary>
-		public bool EnableReportDisabledRules
-		{
-			get { return Inner.EnableReportDisabledRules; }
-		}
+		public bool EnableReportDisabledRules => Inner.EnableReportDisabledRules;
 	}
 
 	/// <summary>
@@ -420,7 +388,7 @@ namespace UnrealBuildTool
 		/// <param name="Arguments">List of command line arguments</param>
 		/// <returns>Always zero, or throws an exception</returns>
 		/// <param name="Logger"></param>
-		public override int Execute(CommandLineArguments Arguments, ILogger Logger)
+		public override Task<int> ExecuteAsync(CommandLineArguments Arguments, ILogger Logger)
 		{
 			Arguments.ApplyTo(this);
 			Arguments.CheckAllArgumentsUsed();
@@ -440,7 +408,7 @@ namespace UnrealBuildTool
 				foreach (FileReference InputFile in InputFiles)
 				{
 					string[] Lines = File.ReadAllLines(InputFile.FullName);
-					for(int LineIdx = 0; LineIdx < Lines.Length; LineIdx++)
+					for (int LineIdx = 0; LineIdx < Lines.Length; LineIdx++)
 					{
 						string Line = Lines[LineIdx];
 						if (!String.IsNullOrWhiteSpace(Line) && UniqueItems.Add(Line))
@@ -448,7 +416,7 @@ namespace UnrealBuildTool
 							bool bCanParse = false;
 
 							string[] Tokens = Line.Split(new string[] { "<#~>" }, StringSplitOptions.None);
-							if(Tokens.Length >= 9)
+							if (Tokens.Length >= 9)
 							{
 								//string Trial = Tokens[1];
 								string LineNumberStr = Tokens[2];
@@ -461,12 +429,12 @@ namespace UnrealBuildTool
 								int LineNumber;
 								bool bFalseAlarm;
 								int Level;
-								if(int.TryParse(LineNumberStr, out LineNumber) && bool.TryParse(FalseAlarmStr, out bFalseAlarm) && int.TryParse(LevelStr, out Level))
+								if (Int32.TryParse(LineNumberStr, out LineNumber) && Boolean.TryParse(FalseAlarmStr, out bFalseAlarm) && Int32.TryParse(LevelStr, out Level))
 								{
 									bCanParse = true;
 
 									// Ignore anything in ThirdParty folders
-									if(FileName.Replace('/', '\\').IndexOf("\\ThirdParty\\", StringComparison.InvariantCultureIgnoreCase) == -1)
+									if (FileName.Replace('/', '\\').IndexOf("\\ThirdParty\\", StringComparison.InvariantCultureIgnoreCase) == -1)
 									{
 										// Output the line to the raw output file
 										RawWriter.WriteLine(Line);
@@ -480,7 +448,7 @@ namespace UnrealBuildTool
 								}
 							}
 
-							if(!bCanParse)
+							if (!bCanParse)
 							{
 								Log.WriteLine(LogEventType.Warning, LogFormatOptions.NoSeverityPrefix, "{0}({1}): warning: Unable to parse PVS output line '{2}' (tokens=|{3}|)", InputFile, LineIdx + 1, Line, String.Join("|", Tokens));
 							}
@@ -488,8 +456,8 @@ namespace UnrealBuildTool
 					}
 				}
 			}
-			Logger.LogInformation("Written {NumItems} {Noun} to {File}.", UniqueItems.Count, (UniqueItems.Count == 1)? "diagnostic" : "diagnostics", OutputFile.FullName);
-			return 0;
+			Logger.LogInformation("Written {NumItems} {Noun} to {File}.", UniqueItems.Count, (UniqueItems.Count == 1) ? "diagnostic" : "diagnostics", OutputFile.FullName);
+			return Task.FromResult(0);
 		}
 	}
 
@@ -529,7 +497,7 @@ namespace UnrealBuildTool
 			Settings = Target.WindowsPlatform.PVS;
 			ApplicationSettings = Settings.ApplicationSettings;
 
-			if(ApplicationSettings != null)
+			if (ApplicationSettings != null)
 			{
 				if (Settings.ModeFlags == 0)
 				{
@@ -545,7 +513,7 @@ namespace UnrealBuildTool
 			else
 			{
 				FileReference DefaultLicenseFile = AnalyzerFile.ChangeExtension(".lic");
-				if(FileReference.Exists(DefaultLicenseFile))
+				if (FileReference.Exists(DefaultLicenseFile))
 				{
 					LicenseFile = DefaultLicenseFile;
 				}
@@ -595,7 +563,9 @@ namespace UnrealBuildTool
 			catch (Exception Ex)
 			{
 				if (Ex is BuildException)
+				{
 					throw;
+				}
 
 				throw new BuildException(Ex, "Failed to obtain PVS-Studio version.");
 			}
@@ -635,7 +605,7 @@ namespace UnrealBuildTool
 				case CppStandardVersion.Cpp17:
 					cppCfgStandard = CPP_17;
 					break;
-        			case CppStandardVersion.Cpp20:
+				case CppStandardVersion.Cpp20:
 					cppCfgStandard = CPP_20;
 					break;
 				case CppStandardVersion.Latest:
@@ -659,12 +629,22 @@ namespace UnrealBuildTool
 
 			bool compileAsCCode;
 			if (CFlagLastPosition == CppFlagLastPosition)
+			{
 				//ни один флаг, определяющий язык, не задан. Определяем по расширению файла
 				compileAsCCode = Path.GetExtension(sourceFileName).Equals(".c", StringComparison.InvariantCultureIgnoreCase);
+			}
 			else
+			{
 				compileAsCCode = CFlagLastPosition > CppFlagLastPosition;
+			}
 
 			return compileAsCCode;
+		}
+
+		public override CppCompileEnvironment CreateSharedResponseFile(CppCompileEnvironment CompileEnvironment, FileReference OutResponseFile, IActionGraphBuilder Graph)
+		{
+			// Temporarily turn of shared response files since current hololens toolchain does not support it
+			return CompileEnvironment;
 		}
 
 		protected override CPPOutput CompileCPPFiles(CppCompileEnvironment CompileEnvironment, List<FileItem> InputFiles, DirectoryReference OutputDir, string ModuleName, IActionGraphBuilder Graph)
@@ -694,7 +674,7 @@ namespace UnrealBuildTool
 			CPPOutput Result = InnerToolChain.CompileAllCPPFiles(PreprocessCompileEnvironment, InputFiles, OutputDir, ModuleName, new ActionGraphCapture(Graph, PreprocessActions));
 
 			// Run the source files through PVS-Studio
-			for(int Idx = 0; Idx < PreprocessActions.Count; Idx++)
+			for (int Idx = 0; Idx < PreprocessActions.Count; Idx++)
 			{
 				VCCompileAction? PreprocessAction = PreprocessActions[Idx] as VCCompileAction;
 				if (PreprocessAction == null)
@@ -718,17 +698,17 @@ namespace UnrealBuildTool
 
 				// Write the PVS studio config file
 				StringBuilder ConfigFileContents = new StringBuilder();
-				foreach(DirectoryReference IncludePath in Target.WindowsPlatform.Environment!.IncludePaths)
+				foreach (DirectoryReference IncludePath in Target.WindowsPlatform.Environment!.IncludePaths)
 				{
 					ConfigFileContents.AppendFormat("exclude-path={0}\n", IncludePath.FullName);
 				}
-				if(ApplicationSettings != null && ApplicationSettings.PathMasks != null)
+				if (ApplicationSettings != null && ApplicationSettings.PathMasks != null)
 				{
-					foreach(string PathMask in ApplicationSettings.PathMasks)
+					foreach (string PathMask in ApplicationSettings.PathMasks)
 					{
-						if (PathMask.Contains(":") || PathMask.Contains("\\") || PathMask.Contains("/"))
+						if (PathMask.Contains(':') || PathMask.Contains('\\') || PathMask.Contains('/'))
 						{
-							if(Path.IsPathRooted(PathMask) && !PathMask.Contains(":"))
+							if (Path.IsPathRooted(PathMask) && !PathMask.Contains(':'))
 							{
 								ConfigFileContents.AppendFormat("exclude-path=*{0}*\n", PathMask);
 							}
@@ -739,7 +719,7 @@ namespace UnrealBuildTool
 						}
 					}
 				}
-        			if (Platform == UnrealTargetPlatform.Win64)
+				if (Platform == UnrealTargetPlatform.Win64)
 				{
 					ConfigFileContents.Append("platform=x64\n");
 				}
@@ -747,7 +727,7 @@ namespace UnrealBuildTool
 				{
 					throw new BuildException("PVS-Studio does not support this platform");
 				}
-        		ConfigFileContents.Append("preprocessor=visualcpp\n");
+				ConfigFileContents.Append("preprocessor=visualcpp\n");
 
 				bool shouldCompileAsC = ShouldCompileAsC(String.Join(" ", PreprocessAction.Arguments), SourceFileItem.AbsolutePath);
 				ConfigFileContents.AppendFormat("language={0}\n", shouldCompileAsC ? "C" : "C++");
@@ -762,8 +742,8 @@ namespace UnrealBuildTool
 					string languageStandardForCfg = GetLangStandForCfgFile(PreprocessCompileEnvironment.CppStandard, compilerVersion);
 
 					ConfigFileContents.AppendFormat("std={0}\n", languageStandardForCfg);
-          
-          			bool disableMsExtentinsFromArgs = PreprocessAction.Arguments.Any(arg => arg.Equals("/Za") || arg.Equals("-Za") || arg.Equals("/permissive-"));
+
+					bool disableMsExtentinsFromArgs = PreprocessAction.Arguments.Any(arg => arg.Equals("/Za") || arg.Equals("-Za") || arg.Equals("/permissive-"));
 					bool disableMsExtentions = isVisualCppCompiler && (languageStandardForCfg == CPP_20 || disableMsExtentinsFromArgs);
 					ConfigFileContents.AppendFormat("disable-ms-extensions={0}\n", disableMsExtentions ? "yes" : "no");
 				}
@@ -783,7 +763,7 @@ namespace UnrealBuildTool
 					ConfigFileContents.Append("report-disabled-rules=yes\n");
 				}
 
-        		int Timeout = (int)(Settings.AnalysisTimeoutFlag == AnalysisTimeoutFlags.No_timeout ? 0 : Settings.AnalysisTimeoutFlag);
+				int Timeout = (int)(Settings.AnalysisTimeoutFlag == AnalysisTimeoutFlags.No_timeout ? 0 : Settings.AnalysisTimeoutFlag);
 				ConfigFileContents.AppendFormat("timeout={0}\n", Timeout);
 
 				string BaseFileName = PreprocessedFileItem.Location.GetFileName();

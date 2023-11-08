@@ -2,6 +2,7 @@
 
 #pragma once
 #include "CoreMinimal.h"
+#include "Misc/EngineVersionComparison.h"
 #include "IOculusXROpenXRHMDPlugin.h"
 
 DECLARE_LOG_CATEGORY_EXTERN(LogOculusOpenXRPlugin, Log, All);
@@ -49,7 +50,11 @@ public:
 	virtual const void* OnBeginProjectionView(XrSession InSession, int32 InLayerIndex, int32 InViewIndex, const void* InNext) override;
 	virtual const void* OnBeginDepthInfo(XrSession InSession, int32 InLayerIndex, int32 InViewIndex, const void* InNext) override;
 	virtual const void* OnEndProjectionLayer(XrSession InSession, int32 InLayerIndex, const void* InNext, XrCompositionLayerFlags& OutFlags) override;
+#if UE_VERSION_OLDER_THAN(5, 3, 0)
 	virtual const void* OnEndFrame(XrSession InSession, XrTime DisplayTime, const TArray<XrSwapchainSubImage> InColorImages, const TArray<XrSwapchainSubImage> InDepthImages, const void* InNext) override;
+#else
+	virtual const void* OnEndFrame(XrSession InSession, XrTime DisplayTime, const void* InNext) override;
+#endif
 	virtual const void* OnSyncActions(XrSession InSession, const void* InNext) override;
 	virtual void PostSyncActions(XrSession InSession) override;
 };

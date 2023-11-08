@@ -16,6 +16,7 @@
 #include "WorldPartition/WorldPartitionConvertOptions.h"
 #include "WorldPartition/WorldPartitionEditorSettings.h"
 #include "WorldPartition/HLOD/SWorldPartitionBuildHLODsDialog.h"
+#include "WorldPartition/WorldPartitionClassDescRegistry.h"
 
 #include "LevelEditor.h"
 #include "Framework/Application/SlateApplication.h"
@@ -23,6 +24,7 @@
 
 #include "Engine/Level.h"
 
+#include "Misc/FileHelper.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/StringBuilder.h"
 #include "Misc/ScopedSlowTask.h"
@@ -144,15 +146,20 @@ void FWorldPartitionEditorModule::StartupModule()
 	PropertyEditor.RegisterCustomClassLayout("WorldPartition", FOnGetDetailCustomizationInstance::CreateStatic(&FWorldPartitionDetails::MakeInstance));
 	PropertyEditor.RegisterCustomClassLayout("WorldPartitionRuntimeSpatialHash", FOnGetDetailCustomizationInstance::CreateStatic(&FWorldPartitionRuntimeSpatialHashDetails::MakeInstance));
 	PropertyEditor.RegisterCustomClassLayout("WorldPartitionHLOD", FOnGetDetailCustomizationInstance::CreateStatic(&FWorldPartitionHLODDetailsCustomization::MakeInstance));
+
+	FWorldPartitionClassDescRegistry().Get().Initialize();
 }
 
 void FWorldPartitionEditorModule::ShutdownModule()
 {
+	FWorldPartitionClassDescRegistry().Get().Uninitialize();
+	FWorldPartitionClassDescRegistry().Get().TearDown();
+
 	if (!IsRunningGame())
 	{
 		if (FLevelEditorModule* LevelEditorModule = FModuleManager::Get().GetModulePtr<FLevelEditorModule>("LevelEditor"))
 		{
-			LevelEditorModule->GetAllLevelViewportContextMenuExtenders().RemoveAll([=](const FLevelEditorModule::FLevelViewportMenuExtender_SelectedActors& In) { return In.GetHandle() == LevelEditorExtenderDelegateHandle; });
+			LevelEditorModule->GetAllLevelViewportContextMenuExtenders().RemoveAll([this](const FLevelEditorModule::FLevelViewportMenuExtender_SelectedActors& In) { return In.GetHandle() == LevelEditorExtenderDelegateHandle; });
 
 			LevelEditorModule->OnRegisterTabs().RemoveAll(this);
 			LevelEditorModule->OnRegisterLayoutExtensions().RemoveAll(this);
@@ -281,6 +288,16 @@ void FWorldPartitionEditorModule::SetDisableBugIt(bool bInDisableBugIt)
 	GetMutableDefault<UWorldPartitionEditorSettings>()->bDisableBugIt = bInDisableBugIt;
 }
 
+bool FWorldPartitionEditorModule::GetAdvancedMode() const
+{
+	return GetDefault<UWorldPartitionEditorSettings>()->bAdvancedMode;
+}
+
+void FWorldPartitionEditorModule::SetAdvancedMode(bool bInAdvancedMode)
+{
+	GetMutableDefault<UWorldPartitionEditorSettings>()->bAdvancedMode = bInAdvancedMode;
+}
+
 void FWorldPartitionEditorModule::OnConvertMap()
 {
 	IContentBrowserSingleton& ContentBrowserSingleton = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser").Get();
@@ -358,11 +375,10 @@ static void LoadMap(const FString& MapToLoad)
 	}
 }
 
-void FWorldPartitionEditorModule::RunCommandletAsExternalProcess(const FString& InCommandletArgs, const FText& InOperationDescription, int32& OutResult, bool& bOutCancelled, FString& OutCommandletOutput)
+void FWorldPartitionEditorModule::RunCommandletAsExternalProcess(const FString& InCommandletArgs, const FText& InOperationDescription, int32& OutResult, bool& bOutCancelled)
 {
 	OutResult = 0;
 	bOutCancelled = false;
-	OutCommandletOutput.Empty();
 
 	FProcHandle ProcessHandle;
 
@@ -377,12 +393,23 @@ void FWorldPartitionEditorModule::RunCommandletAsExternalProcess(const FString& 
 
 	// Try to provide complete Path, if we can't try with project name
 	FString ProjectPath = FPaths::IsProjectFilePathSet() ? FPaths::GetProjectFilePath() : FApp::GetProjectName();
+
+	// Obtain the log file path that will be used by the commandlet
+	FString LogFilePrefix = TEXT("Commandlet");
+	if (!FParse::Value(*InCommandletArgs, TEXT("Builder="), LogFilePrefix))
+	{
+		FParse::Value(*InCommandletArgs, TEXT("Run="), LogFilePrefix);
+	}
+	const FString TimeStamp = FString::Printf(TEXT("-%08x-%s"), FPlatformProcess::GetCurrentProcessId(), *FDateTime::Now().ToIso8601().Replace(TEXT(":"), TEXT(".")));
+	const FString RelLogFilePath = FPaths::ProjectLogDir() / TEXT("WorldPartition") / LogFilePrefix + TimeStamp + TEXT(".log");
+	const FString AbsLogFilePath = FPaths::ConvertRelativePathToFull(RelLogFilePath);
 		
 	TArray<FString> CommandletArgsArray;
 	CommandletArgsArray.Add(TEXT("\"") + ProjectPath + TEXT('"'));
 	CommandletArgsArray.Add(TEXT("-BaseDir=\"") + FString(FPlatformProcess::BaseDir()) + TEXT('"'));
 	CommandletArgsArray.Add(TEXT("-Unattended"));
 	CommandletArgsArray.Add(TEXT("-RunningFromUnrealEd"));
+	CommandletArgsArray.Add(TEXT("-AbsLog=\"") + AbsLogFilePath + TEXT('"'));
 	CommandletArgsArray.Add(InCommandletArgs);
 
 	OnExecuteCommandletEvent.Broadcast(CommandletArgsArray);
@@ -397,10 +424,10 @@ void FWorldPartitionEditorModule::RunCommandletAsExternalProcess(const FString& 
 	UE_LOG(LogWorldPartitionEditor, Display, TEXT("Running commandlet: %s %s"), *CurrentExecutableName, *Arguments);
 
 	uint32 ProcessID;
-	const bool bLaunchDetached = true;
+	const bool bLaunchDetached = false;
 	const bool bLaunchHidden = true;
 	const bool bLaunchReallyHidden = true;
-	ProcessHandle = FPlatformProcess::CreateProc(*CurrentExecutableName, *Arguments, bLaunchDetached, bLaunchHidden, bLaunchReallyHidden, &ProcessID, 0, nullptr, WritePipe, ReadPipe);
+	ProcessHandle = FPlatformProcess::CreateProc(*CurrentExecutableName, *Arguments, bLaunchDetached, bLaunchHidden, bLaunchReallyHidden, &ProcessID, 0, nullptr, WritePipe);
 
 	while (FPlatformProcess::IsProcRunning(ProcessHandle))
 	{
@@ -411,11 +438,7 @@ void FWorldPartitionEditorModule::RunCommandletAsExternalProcess(const FString& 
 			break;
 		}
 
-		const FString LogString = FPlatformProcess::ReadPipe(ReadPipe);
-		if (!LogString.IsEmpty())
-		{
-			OutCommandletOutput.Append(LogString);
-		}
+		FString LogString = FPlatformProcess::ReadPipe(ReadPipe);
 
 		// Parse output, look for progress indicator in the log (in the form "Display: [i / N] Msg...\n")
 		const FRegexPattern LogProgressPattern(TEXT("Display:\\s\\[([0-9]+)\\s\\/\\s([0-9]+)\\]\\s(.+)?(?=\\.{3}$)"));
@@ -432,22 +455,44 @@ void FWorldPartitionEditorModule::RunCommandletAsExternalProcess(const FString& 
 		FPlatformProcess::Sleep(0.1);
 	}
 
-
 	FPlatformProcess::GetProcReturnCode(ProcessHandle, &OutResult);
-
-	UE_LOG(LogWorldPartitionEditor, Display, TEXT("#### Begin commandlet output ####\n%s"), *OutCommandletOutput);
-
 	FPlatformProcess::ClosePipe(ReadPipe, WritePipe);
 
 	if (OutResult == 0)
 	{
-		UE_LOG(LogWorldPartitionEditor, Display, TEXT("#### Commandlet Succeeded ####"));
+		UE_LOG(LogWorldPartitionEditor, Display, TEXT("Commandlet executed successfully."));
+		UE_LOG(LogWorldPartitionEditor, Display, TEXT("Detailed output can be found in %s"), *AbsLogFilePath);
 	}
 	else
 	{
 		UE_LOG(LogWorldPartitionEditor, Error, TEXT("#### Commandlet Failed ####"));
 		UE_LOG(LogWorldPartitionEditor, Error, TEXT("%s %s"), *CurrentExecutableName, *Arguments);
 		UE_LOG(LogWorldPartitionEditor, Error, TEXT("Return Code: %i"), OutResult);
+
+		UE_LOG(LogWorldPartitionEditor, Error, TEXT("#### BEGIN COMMANDLET OUTPUT (from %s) ####"), *AbsLogFilePath);
+
+		TArray<FString> OutputLines;
+		FFileHelper::LoadFileToStringArray(OutputLines, *AbsLogFilePath);
+		for (const FString& OutputLine : OutputLines)
+		{
+			const FRegexPattern LogCategoryVerbosityPattern(TEXT("^(?:\\[.*\\])?\\w*:\\s(\\w*):\\s"));
+			FRegexMatcher Regex(LogCategoryVerbosityPattern, *OutputLine);
+			if (Regex.FindNext())
+			{
+				FString VerbosityString = Regex.GetCaptureGroup(1);
+				ELogVerbosity::Type Verbosity = ParseLogVerbosityFromString(VerbosityString);
+				switch (Verbosity)
+				{
+				case ELogVerbosity::Display: UE_LOG(LogWorldPartitionEditor, Display, TEXT("#### COMMANDLET OUTPUT >> %s"), *OutputLine); break;
+				case ELogVerbosity::Warning: UE_LOG(LogWorldPartitionEditor, Warning, TEXT("#### COMMANDLET OUTPUT >> %s"), *OutputLine); break;
+				case ELogVerbosity::Error:	 UE_LOG(LogWorldPartitionEditor, Error, TEXT("  #### COMMANDLET OUTPUT >> %s"), *OutputLine); break;
+				case ELogVerbosity::Fatal:	 UE_LOG(LogWorldPartitionEditor, Error, TEXT("  #### COMMANDLET OUTPUT >> %s"), *OutputLine); break; // Do not output as FATAL as it would crash the editor
+				default: break;	// Ignore the non displayable log lines, they can be found in the log file
+				}
+			}
+		}		
+
+		UE_LOG(LogWorldPartitionEditor, Error, TEXT("#### END COMMANDLET OUTPUT ####"));
 	}
 }
 
@@ -502,8 +547,7 @@ bool FWorldPartitionEditorModule::ConvertMap(const FString& InLongPackageName)
 		
 		int32 Result;
 		bool bCancelled;
-		FString CommandletOutput;
-		RunCommandletAsExternalProcess(CommandletArgs, OperationDescription, Result, bCancelled, CommandletOutput);
+		RunCommandletAsExternalProcess(CommandletArgs, OperationDescription, Result, bCancelled);
 		if (!bCancelled && Result == 0)
 		{	
 #if	PLATFORM_DESKTOP
@@ -644,10 +688,9 @@ bool FWorldPartitionEditorModule::Build(const FRunBuilderParams& InParams)
 
 	int32 Result;
 	bool bCancelled;
-	FString CommandletOutput;
 
 	FString CommandletArgs(CommandletArgsBuilder.ToString());
-	RunCommandletAsExternalProcess(CommandletArgs, OperationDescription, Result, bCancelled, CommandletOutput);
+	RunCommandletAsExternalProcess(CommandletArgs, OperationDescription, Result, bCancelled);
 
 	RescanAssets(MapPackage);
 
@@ -749,6 +792,7 @@ UWorldPartitionEditorSettings::UWorldPartitionEditorSettings()
 	bDisableLoadingInEditor = false;
 	bDisablePIE = false;
 	bDisableBugIt = false;
+	bAdvancedMode = true;
 }
 
 FString UWorldPartitionConvertOptions::ToCommandletArgs() const

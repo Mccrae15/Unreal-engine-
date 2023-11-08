@@ -30,6 +30,7 @@ namespace UnrealBuildTool.Rules
 				"BlueprintGraph",
 				"PropertyAccessEditor",
 				"StructUtils",
+				"StructUtilsEngine",
 				"StructUtilsEditor",
 				"GameplayTags",
 			}
@@ -37,15 +38,16 @@ namespace UnrealBuildTool.Rules
 
 			PrivateDependencyModuleNames.AddRange(
 			new string[] {
+				"AssetDefinition",
 				"RenderCore",
 				"GraphEditor",
 				"KismetWidgets",
 				"PropertyPath",
-				"PropertyEditor",
 				"ToolMenus",
 				"ToolWidgets",
 				"ApplicationCore",
-				"DeveloperSettings"
+				"DeveloperSettings",
+				"RewindDebuggerInterface"
 			}
 			);
 
@@ -56,6 +58,15 @@ namespace UnrealBuildTool.Rules
 			PrivateIncludePaths.AddRange(new string[] {
 				System.IO.Path.Combine(GetModuleDirectory("PropertyEditor"), "Private"),
 			});
+		
+			if (Target.Platform == UnrealTargetPlatform.Win64)
+			{
+				PublicDefinitions.Add("WITH_STATETREE_DEBUGGER=1");
+			}
+			else
+			{
+				PublicDefinitions.Add("WITH_STATETREE_DEBUGGER=0");
+			}
 		}
 	}
 }

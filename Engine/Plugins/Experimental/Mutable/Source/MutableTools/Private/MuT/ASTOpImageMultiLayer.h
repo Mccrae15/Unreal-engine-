@@ -32,6 +32,9 @@ namespace mu
 		/** Blend type used for the alpha channel if any. */
 		EBlendType blendTypeAlpha = EBlendType::BT_NONE;
 
+		/** Channel to use from the source color argument to apply blendTypeAlpha, if any. */
+		uint8 BlendAlphaSourceChannel = 0;
+
 		/** If true, use the alpha channel of the blended image as mask. Mask should be null.*/
 		bool bUseMaskFromBlended = false;
 
@@ -46,7 +49,7 @@ namespace mu
 		bool IsEqual(const ASTOp& otherUntyped) const override;
 		Ptr<ASTOp> Clone(MapChildFuncRef mapChild) const override;
 		void ForEachChild(const TFunctionRef<void(ASTChild&)>) override;
-		void Link(FProgram& program, const FLinkerOptions* Options) override;
+		void Link(FProgram& program, FLinkerOptions* Options) override;
 		FImageDesc GetImageDesc(bool returnBestOption, FGetImageDescContext* context) const override;
 		void GetLayoutBlockSize(int* pBlockX, int* pBlockY) override;
 		Ptr<ImageSizeExpression> GetImageSizeExpression() const override;

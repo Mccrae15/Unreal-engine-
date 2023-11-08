@@ -3,22 +3,15 @@
 #pragma once
 #include "MuR/Ptr.h"
 #include "MuR/RefCounted.h"
+#include "MuR/System.h"
 #include "MuT/Node.h"
 #include "MuT/NodeObject.h"
+#include "MuT/NodeExtensionData.h"
 
 
 namespace mu
 {
-
-	// Forward definitions
-	class NodeObjectNew;
-	typedef Ptr<NodeObjectNew> NodeObjectNewPtr;
-	typedef Ptr<const NodeObjectNew> NodeObjectNewPtrConst;
-
 	class NodeLOD;
-	typedef Ptr<NodeLOD> NodeLODPtr;
-	typedef Ptr<const NodeLOD> NodeLODPtrConst;
-
 
 	//! Node that creates a new object by setting its levels-of-detail and its children.
 	//! \ingroup model
@@ -34,7 +27,7 @@ namespace mu
 
 		void SerialiseWrapper(OutputArchive& arch) const override;
 		static void Serialise( const NodeObjectNew* pNode, OutputArchive& arch );
-		static NodeObjectNewPtr StaticUnserialise( InputArchive& arch );
+		static Ptr<NodeObjectNew> StaticUnserialise( InputArchive& arch );
 
 
 		//-----------------------------------------------------------------------------------------
@@ -67,8 +60,8 @@ namespace mu
 		void SetLODCount( int );
 
 		//! Get a level of detail node from the object.
-		NodeLODPtr GetLOD( int index ) const;
-		void SetLOD( int index, NodeLODPtr );
+		Ptr<NodeLOD> GetLOD( int index ) const;
+		void SetLOD( int index, Ptr<NodeLOD>);
 
 		//! Get the number of child objects
 		int GetChildCount() const;
@@ -102,7 +95,14 @@ namespace mu
 		void RemoveStateParam( int s, const char* param );
 
         //! Set the optimisation properties of a state
-        void SetStateProperties( int s, bool avoidRuntimeCompression, bool onlyFirstLOD, int firstLOD );
+		void SetStateProperties(int32 StateIndex,
+			ETextureCompressionStrategy TextureCompressionStrategy,
+			bool bOnlyFirstLOD,
+			uint8 FirstLOD,
+			uint8 NumExtraLODsToBuildAfterFirstLOD);
+
+		//! Connect a node that produces ExtensionData to be added to the final Instance, and provide a name to associate with the data
+		void AddExtensionDataNode(NodeExtensionDataPtr Node, const char* Name);
 
 		//-----------------------------------------------------------------------------------------
 		// Interface pattern

@@ -11,17 +11,27 @@
 
 
 TAutoConsoleVariable<int32> CVarEditorViewportDefaultScreenPercentageMode(
-	TEXT("r.Editor.Viewport.ScreenPercentageMode.RealTime"), 1,
-	TEXT("Controls the default screen percentage mode for realtime editor viewports."),
+	TEXT("r.Editor.Viewport.ScreenPercentageMode.RealTime"), int32(EScreenPercentageMode::BasedOnDisplayResolution),
+	TEXT("Controls the default screen percentage mode for realtime editor viewports using desktop renderer."),
+	ECVF_Default);
+
+TAutoConsoleVariable<int32> CVarEditorViewportDefaultMobileScreenPercentageMode(
+	TEXT("r.Editor.Viewport.ScreenPercentageMode.Mobile"), int32(EScreenPercentageMode::BasedOnDPIScale),
+	TEXT("Controls the default screen percentage mode for realtime editor viewports using mobile renderer."),
+	ECVF_Default);
+
+TAutoConsoleVariable<int32> CVarEditorViewportDefaultVRScreenPercentageMode(
+	TEXT("r.Editor.Viewport.ScreenPercentageMode.VR"), int32(EScreenPercentageMode::Manual),
+	TEXT("Controls the default screen percentage mode for VR editor viewports."),
 	ECVF_Default);
 
 TAutoConsoleVariable<int32> CVarEditorViewportDefaultPathTracerScreenPercentageMode(
-	TEXT("r.Editor.Viewport.ScreenPercentageMode.PathTracer"), 0,
+	TEXT("r.Editor.Viewport.ScreenPercentageMode.PathTracer"), int32(EScreenPercentageMode::Manual),
 	TEXT("Controls the default screen percentage mode for path-traced viewports."),
 	ECVF_Default);
 
 TAutoConsoleVariable<int32> CVarEditorViewportNonRealtimeDefaultScreenPercentageMode(
-	TEXT("r.Editor.Viewport.ScreenPercentageMode.NonRealTime"), 2,
+	TEXT("r.Editor.Viewport.ScreenPercentageMode.NonRealTime"), int32(EScreenPercentageMode::BasedOnDPIScale),
 	TEXT("Controls the default screen percentage mode for non-realtime editor viewports."),
 	ECVF_Default);
 
@@ -103,6 +113,10 @@ void UEditorProjectAppearanceSettings::PostEditChangeProperty( struct FPropertyC
 	{
 		Settings.SetDisplayUnits(EUnitType::Force, ForceUnits);
 	}
+	else if (Name == GET_MEMBER_NAME_CHECKED(UEditorProjectAppearanceSettings, TorqueUnits))
+	{
+		Settings.SetDisplayUnits(EUnitType::Torque, TorqueUnits);
+	}
 	else if (Name == GET_MEMBER_NAME_CHECKED(UEditorProjectAppearanceSettings, bDisplayUnits))
 	{
 		Settings.SetShouldDisplayUnits(bDisplayUnits);
@@ -177,6 +191,34 @@ void ULevelEditor2DSettings::PostEditChangeProperty(struct FPropertyChangedEvent
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
 
+/* ULevelEditorProjectSettings
+*****************************************************************************/
+
+ULevelEditorProjectSettings::ULevelEditorProjectSettings( const FObjectInitializer& ObjectInitializer )
+	: Super(ObjectInitializer)
+	, bEnableViewportSMInstanceSelection(true)
+{
+}
+
+void ULevelEditorProjectSettings::PostInitProperties()
+{
+	Super::PostInitProperties();
+	if (FProperty* EnableSMInstanceSelectionProperty = GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(ULevelEditorProjectSettings, bEnableViewportSMInstanceSelection)))
+	{
+		ExportValuesToConsoleVariables(EnableSMInstanceSelectionProperty);
+	}
+}
+
+void ULevelEditorProjectSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+	if (!PropertyChangedEvent.Property)
+	{
+		return;
+	}
+	ExportValuesToConsoleVariables(PropertyChangedEvent.Property);
+}
+
 
 /* UEditorPerformanceProjectSettings
 *****************************************************************************/
@@ -184,6 +226,8 @@ void ULevelEditor2DSettings::PostEditChangeProperty(struct FPropertyChangedEvent
 UEditorPerformanceProjectSettings::UEditorPerformanceProjectSettings(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, RealtimeScreenPercentageMode(EScreenPercentageMode::BasedOnDisplayResolution)
+	, MobileScreenPercentageMode(EScreenPercentageMode::BasedOnDPIScale)
+	, VRScreenPercentageMode(EScreenPercentageMode::Manual)
 	, PathTracerScreenPercentageMode(EScreenPercentageMode::Manual)
 	, NonRealtimeScreenPercentageMode(EScreenPercentageMode::BasedOnDPIScale)
 	, ManualScreenPercentage(100.0f)
@@ -207,6 +251,9 @@ void UEditorPerformanceProjectSettings::PostEditChangeProperty(struct FPropertyC
 	}
 
 	if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UEditorPerformanceProjectSettings, RealtimeScreenPercentageMode) ||
+		PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UEditorPerformanceProjectSettings, MobileScreenPercentageMode) ||
+		PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UEditorPerformanceProjectSettings, VRScreenPercentageMode) ||
+		PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UEditorPerformanceProjectSettings, PathTracerScreenPercentageMode) ||
 		PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UEditorPerformanceProjectSettings, NonRealtimeScreenPercentageMode) ||
 		PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UEditorPerformanceProjectSettings, ManualScreenPercentage) ||
 		PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UEditorPerformanceProjectSettings, MinViewportRenderingResolution) ||
@@ -228,6 +275,8 @@ void UEditorPerformanceProjectSettings::ExportResolutionValuesToConsoleVariables
 		const UEditorPerformanceProjectSettings* EditorProjectSettings = GetDefault<UEditorPerformanceProjectSettings>();
 
 		CVarEditorViewportDefaultScreenPercentageMode->Set(int32(EditorProjectSettings->RealtimeScreenPercentageMode), ECVF_SetByProjectSetting);
+		CVarEditorViewportDefaultMobileScreenPercentageMode->Set(int32(EditorProjectSettings->MobileScreenPercentageMode), ECVF_SetByProjectSetting);
+		CVarEditorViewportDefaultVRScreenPercentageMode->Set(int32(EditorProjectSettings->VRScreenPercentageMode), ECVF_SetByProjectSetting);
 		CVarEditorViewportDefaultPathTracerScreenPercentageMode->Set(int32(EditorProjectSettings->PathTracerScreenPercentageMode), ECVF_SetByProjectSetting);
 		CVarEditorViewportNonRealtimeDefaultScreenPercentageMode->Set(int32(EditorProjectSettings->NonRealtimeScreenPercentageMode), ECVF_SetByProjectSetting);
 		CVarEditorViewportDefaultScreenPercentage->Set(EditorProjectSettings->ManualScreenPercentage, ECVF_SetByProjectSetting);
@@ -241,52 +290,27 @@ void UEditorPerformanceProjectSettings::ExportResolutionValuesToConsoleVariables
 		const UEditorPerformanceSettings* EditorUserSettings = GetDefault<UEditorPerformanceSettings>();
 
 		// Real-time viewports
+		auto OverrideCVarModeWithEditorUserSettings = [](TAutoConsoleVariable<int32>& CVar, EEditorUserScreenPercentageModeOverride EditorUserSettings)
 		{
-			if (EditorUserSettings->RealtimeScreenPercentageMode == EEditorUserScreenPercentageModeOverride::Manual)
+			if (EditorUserSettings == EEditorUserScreenPercentageModeOverride::Manual)
 			{
-				CVarEditorViewportDefaultScreenPercentageMode->Set(int32(EScreenPercentageMode::Manual), ECVF_SetByProjectSetting);
+				CVar->Set(int32(EScreenPercentageMode::Manual), ECVF_SetByProjectSetting);
 			}
-			else if (EditorUserSettings->RealtimeScreenPercentageMode == EEditorUserScreenPercentageModeOverride::BasedOnDisplayResolution)
+			else if (EditorUserSettings == EEditorUserScreenPercentageModeOverride::BasedOnDisplayResolution)
 			{
-				CVarEditorViewportDefaultScreenPercentageMode->Set(int32(EScreenPercentageMode::BasedOnDisplayResolution), ECVF_SetByProjectSetting);
+				CVar->Set(int32(EScreenPercentageMode::BasedOnDisplayResolution), ECVF_SetByProjectSetting);
 			}
-			else if (EditorUserSettings->RealtimeScreenPercentageMode == EEditorUserScreenPercentageModeOverride::BasedOnDPIScale)
+			else if (EditorUserSettings == EEditorUserScreenPercentageModeOverride::BasedOnDPIScale)
 			{
-				CVarEditorViewportDefaultScreenPercentageMode->Set(int32(EScreenPercentageMode::BasedOnDPIScale), ECVF_SetByProjectSetting);
+				CVar->Set(int32(EScreenPercentageMode::BasedOnDPIScale), ECVF_SetByProjectSetting);
 			}
-		}
+		};
 
-		// Path traced viewports
-		{
-			if (EditorUserSettings->PathTracerScreenPercentageMode == EEditorUserScreenPercentageModeOverride::Manual)
-			{
-				CVarEditorViewportDefaultPathTracerScreenPercentageMode->Set(int32(EScreenPercentageMode::Manual), ECVF_SetByProjectSetting);
-			}
-			else if (EditorUserSettings->PathTracerScreenPercentageMode == EEditorUserScreenPercentageModeOverride::BasedOnDisplayResolution)
-			{
-				CVarEditorViewportDefaultPathTracerScreenPercentageMode->Set(int32(EScreenPercentageMode::BasedOnDisplayResolution), ECVF_SetByProjectSetting);
-			}
-			else if (EditorUserSettings->PathTracerScreenPercentageMode == EEditorUserScreenPercentageModeOverride::BasedOnDPIScale)
-			{
-				CVarEditorViewportDefaultPathTracerScreenPercentageMode->Set(int32(EScreenPercentageMode::BasedOnDPIScale), ECVF_SetByProjectSetting);
-			}
-		}
-
-		// Non-realtime viewports
-		{
-			if (EditorUserSettings->NonRealtimeScreenPercentageMode == EEditorUserScreenPercentageModeOverride::Manual)
-			{
-				CVarEditorViewportNonRealtimeDefaultScreenPercentageMode->Set(int32(EScreenPercentageMode::Manual), ECVF_SetByProjectSetting);
-			}
-			else if (EditorUserSettings->NonRealtimeScreenPercentageMode == EEditorUserScreenPercentageModeOverride::BasedOnDisplayResolution)
-			{
-				CVarEditorViewportNonRealtimeDefaultScreenPercentageMode->Set(int32(EScreenPercentageMode::BasedOnDisplayResolution), ECVF_SetByProjectSetting);
-			}
-			else if (EditorUserSettings->NonRealtimeScreenPercentageMode == EEditorUserScreenPercentageModeOverride::BasedOnDPIScale)
-			{
-				CVarEditorViewportNonRealtimeDefaultScreenPercentageMode->Set(int32(EScreenPercentageMode::BasedOnDPIScale), ECVF_SetByProjectSetting);
-			}
-		}
+		OverrideCVarModeWithEditorUserSettings(CVarEditorViewportDefaultScreenPercentageMode, EditorUserSettings->RealtimeScreenPercentageMode);
+		OverrideCVarModeWithEditorUserSettings(CVarEditorViewportDefaultMobileScreenPercentageMode, EditorUserSettings->MobileScreenPercentageMode);
+		OverrideCVarModeWithEditorUserSettings(CVarEditorViewportDefaultVRScreenPercentageMode, EditorUserSettings->VRScreenPercentageMode);
+		OverrideCVarModeWithEditorUserSettings(CVarEditorViewportDefaultPathTracerScreenPercentageMode, EditorUserSettings->PathTracerScreenPercentageMode);
+		OverrideCVarModeWithEditorUserSettings(CVarEditorViewportNonRealtimeDefaultScreenPercentageMode, EditorUserSettings->NonRealtimeScreenPercentageMode);
 
 		if (EditorUserSettings->bOverrideManualScreenPercentage)
 		{

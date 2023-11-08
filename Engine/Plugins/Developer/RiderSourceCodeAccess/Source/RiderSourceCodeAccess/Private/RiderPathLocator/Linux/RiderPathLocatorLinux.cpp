@@ -1,14 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+#include "HAL/Platform.h"
+
+#if PLATFORM_LINUX
+
 #include "RiderPathLocator/RiderPathLocator.h"
 
 #include "Internationalization/Regex.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
+#include "Misc/Paths.h"
 
 #include "Runtime/Launch/Resources/Version.h"
 
-#if PLATFORM_LINUX
+FString FRiderPathLocator::GetDefaultIDEInstallLocationForToolboxV2()
+{
+	// V2 and V1 have the same path on Linux, we don't need to process it extra
+	return {};
+}
 
 TOptional<FInstallInfo> FRiderPathLocator::GetInstallInfoFromRiderPath(const FString& Path, FInstallInfo::EInstallType InstallType)
 {
@@ -16,7 +25,7 @@ TOptional<FInstallInfo> FRiderPathLocator::GetInstallInfoFromRiderPath(const FSt
 	{
 		return {};
 	}
-
+	
 	const FString PatternString(TEXT("(.*)(?:\\\\|/)bin"));
 	const FRegexPattern Pattern(PatternString);
 	FRegexMatcher RiderPathMatcher(Pattern, Path);
@@ -31,7 +40,7 @@ TOptional<FInstallInfo> FRiderPathLocator::GetInstallInfoFromRiderPath(const FSt
 	{
 		return {};
 	}
-
+	
 	FInstallInfo Info;
 	Info.Path = Path;
 	Info.InstallType = InstallType;
@@ -64,60 +73,42 @@ static FString GetHomePath()
 	return FHomePath;
 }
 
-// Installing the standalone version of Rider does not set up path variables, and it puts Rider in /opt
-static TArray<FInstallInfo> GetStandaloneInstalledRiders()
+static TArray<FInstallInfo> GetManuallyInstalledRiders()
 {
-	TArray<FInstallInfo> Results;
+	TArray<FInstallInfo> Result;
+	TArray<FString> RiderPaths;
 
-	const FString OptPath = TEXT("/opt");
-	const FString OptPathMask = FPaths::Combine(OptPath, TEXT("*rider*"));
+	const TArray RiderLookupPaths = {
+		GetHomePath(),
+		FString(TEXT("/opt")),
+		FPaths::Combine(TEXT("/usr"), TEXT("local"), TEXT("bin"))
+	};
 
-	TArray<FString> FolderPaths;
-	IFileManager::Get().FindFiles(FolderPaths, *OptPathMask, false, true);
-
-	for (const FString& RiderPath : FolderPaths)
+	for(const FString& RiderLookupPath: RiderLookupPaths)
 	{
-		const FString FolderPath = FPaths::Combine(OptPath, RiderPath);
+		FString RiderLookupPathMask = FPaths::Combine(RiderLookupPath,TEXT("*Rider*"));
+		IFileManager::Get().FindFiles(RiderPaths, *RiderLookupPathMask, false, true);
 
-		TArray<FString> FullPaths;
-		IFileManager::Get().FindFilesRecursive(FullPaths, *FolderPath, TEXT("rider.sh"), true, false, false);
-
-		for (const FString& FullPath : FullPaths)
+		for(const FString& RiderPath: RiderPaths)
 		{
+			FString FullPath = FPaths::Combine(RiderLookupPath, RiderPath, TEXT("bin"), TEXT("rider.sh"));
 			TOptional<FInstallInfo> InstallInfo = FRiderPathLocator::GetInstallInfoFromRiderPath(FullPath, FInstallInfo::EInstallType::Installed);
 			if(InstallInfo.IsSet())
 			{
-				Results.Add(InstallInfo.GetValue());
+				Result.Add(InstallInfo.GetValue());
 			}
 		}
+		RiderPaths.Empty();
 	}
 
-	return Results;
-}
-
-// Find any Rider installations on the PATH
-static TArray<FInstallInfo> GetInstalledRidersFromPath()
-{
-	TArray<FInstallInfo> Results;
-
-	// Search each folder on the PATH
-	TArray<FString> Paths;
-	FPlatformMisc::GetEnvironmentVariable(TEXT("PATH")).ParseIntoArray(Paths, FPlatformMisc::GetPathVarDelimiter());
-
-	for (const FString& Path : Paths)
+	FString FullPath = TEXT("/snap/rider/current/bin/rider.sh");
+	TOptional<FInstallInfo> InstallInfo = FRiderPathLocator::GetInstallInfoFromRiderPath(FullPath, FInstallInfo::EInstallType::Installed);
+	if(InstallInfo.IsSet())
 	{
-		FString RiderPath = FPaths::Combine(Path, TEXT("rider.sh"));
-		if (FPaths::FileExists(RiderPath))
-		{
-			TOptional<FInstallInfo> InstallInfo = FRiderPathLocator::GetInstallInfoFromRiderPath(RiderPath, FInstallInfo::EInstallType::Installed);
-			if(InstallInfo.IsSet())
-			{
-				Results.Add(InstallInfo.GetValue());
-			}
-		}
+		Result.Add(InstallInfo.GetValue());
 	}
 
-	return Results;
+	return Result;
 }
 
 static FString GetToolboxPath()
@@ -128,19 +119,17 @@ static FString GetToolboxPath()
 	return FPaths::Combine(LocalAppData, TEXT("JetBrains"), TEXT("Toolbox"));
 }
 
-static TArray<FInstallInfo> GetInstalledRidersWithMdfind()
+static TArray<FInstallInfo> GetInstalledRidersWithLocate()
 {
 	int32 ReturnCode;
 	FString OutResults;
 	FString OutErrors;
-
-	// avoid trying to run mdfind if it doesnt exists
-	if (!FPaths::FileExists(TEXT("/usr/bin/mdfind")))
+	if (!FPaths::FileExists(TEXT("/usr/bin/locate")))
 	{
 		return {};
 	}
 
-	FPlatformProcess::ExecProcess(TEXT("/usr/bin/mdfind"), TEXT("\"kMDItemKind == Application\""), &ReturnCode, &OutResults, &OutErrors);
+	FPlatformProcess::ExecProcess(TEXT("/usr/bin/locate"), TEXT("-e bin/rider.sh"), &ReturnCode, &OutResults, &OutErrors);
 	if (ReturnCode != 0)
 	{
 		return {};
@@ -150,11 +139,13 @@ static TArray<FInstallInfo> GetInstalledRidersWithMdfind()
 	FString TmpString;
 	while(OutResults.Split(TEXT("\n"), &TmpString, &OutResults))
 	{
-		if(TmpString.Contains(TEXT("Rider")))
+		if(TmpString.Contains(TEXT("snapd")) || TmpString.Contains(TEXT(".local")) || TmpString.Contains(TEXT("/opt")))
 		{
-			RiderPaths.Add(TmpString);
+			continue;
 		}
+		RiderPaths.Add(TmpString);
 	}
+
 	TArray<FInstallInfo> Result;
 	for(const FString& RiderPath: RiderPaths)
 	{
@@ -170,9 +161,8 @@ static TArray<FInstallInfo> GetInstalledRidersWithMdfind()
 TSet<FInstallInfo> FRiderPathLocator::CollectAllPaths()
 {
 	TSet<FInstallInfo> InstallInfos;
-	InstallInfos.Append(GetInstalledRidersWithMdfind());
-	InstallInfos.Append(GetStandaloneInstalledRiders());
-	InstallInfos.Append(GetInstalledRidersFromPath());
+	InstallInfos.Append(GetInstalledRidersWithLocate());
+	InstallInfos.Append(GetManuallyInstalledRiders());
 	InstallInfos.Append(GetInstallInfosFromToolbox(GetToolboxPath(), "Rider.sh"));
 	InstallInfos.Append(GetInstallInfosFromResourceFile());
 	return InstallInfos;

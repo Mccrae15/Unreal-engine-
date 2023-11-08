@@ -17,15 +17,6 @@
 
 #define DEBUG_ARRAY_SIZE 8
 
-/** Size of the entire group loaded into memory including overscan. */
-#define GROUP_TILE_SIZE 16
-
-/** Size of the overscan. */
-#define TILE_OVERSCAN_PADDING 2
-
-/** Size of of the output tile. */
-#define TILE_SIZE (GROUP_TILE_SIZE - 2 * TILE_OVERSCAN_PADDING)
-
 /** Whether should remove firefliers from input and history before comparison to improve stability. */
 #define CONFIG_FIREFLY_REMOVAL 1
 
@@ -35,56 +26,76 @@
 /** Whether to detect flickering. */
 #define CONFIG_MOIRE_DETECTION (DIM_FLICKERING_DETECTION)
 
-#if DIM_WAVE_SIZE == 0
-	#define CONFIG_OPTIMIZED_LDS_ACCESS 1
-#else
-	#define CONFIG_OPTIMIZED_LDS_ACCESS 0
-#endif
-
 #define CONFIG_MANUAL_LDS_SPILL 0
 
 
 //------------------------------------------------------- DERIVED
 
 /** Pixel coordinate stride between each lane in the GROUP_TILE_SIZE. */
-#if DIM_WAVE_SIZE == 64
-	#define LANE_COUNT 64
+#if DIM_WAVE_SIZE == 32 && PLATFORM_GPU_ARCH == PLATFORM_GPU_ARCH_AMD_RDNA_2
+	/** Load an entire 16x16 tile in a single wave32 with 4x2 worth of data per lane and just 100% waveops all communications. */
+	#define GROUP_TILE_SIZE 16
+
+	#define WAVE_COUNT_X 1
+	#define WAVE_COUNT_Y 1
+
+	#define LANE_COUNT_X 4
+	#define LANE_COUNT_Y 8
+
+	#define LANE_STRIDE_X 4
+	#define LANE_STRIDE_Y 2
+	
+#elif DIM_WAVE_SIZE == 64 || DIM_WAVE_SIZE == 32
+	/** Layouts wave in row major so an entire row of pixels fits within a single wave, and waveops horizontally, but LDS vertically.
+	 * Each lane worth of a 2x2 of data per lane to minimise to trade VGPR pressure for both number of wave ops and LDS.
+	 */
+	#define GROUP_TILE_SIZE 16
+
+	#define WAVE_COUNT_X 1
+	#define WAVE_COUNT_Y 8
+
+	#define LANE_COUNT_X 8
+	#define LANE_COUNT_Y 1
+
 	#define LANE_STRIDE_X 2
 	#define LANE_STRIDE_Y 2
 
-#elif DIM_WAVE_SIZE == 32
-	#define LANE_COUNT 32
-	#define LANE_STRIDE_X 4
-	#define LANE_STRIDE_Y 2
+	// Each wave needs to output top and bottom rows of pixels into LDS;
+	#define LDS_SIZE (2 * (LANE_STRIDE_X * LANE_COUNT_X) * (WAVE_COUNT_X * WAVE_COUNT_Y))
 
-#elif DIM_WAVE_SIZE == 0 && 0
-	#define LANE_COUNT 32
-	#define LANE_STRIDE_X 4
-	#define LANE_STRIDE_Y 2
+#elif DIM_WAVE_SIZE == 0
+	/** Load an entire 16x16 with 1x1 worth of data by lane, only using LDS. */
+	#define GROUP_TILE_SIZE 16
 
-#elif DIM_WAVE_SIZE == 0 && 1
-	#define LANE_COUNT (GROUP_TILE_SIZE * GROUP_TILE_SIZE)
+	#define WAVE_COUNT_X 16
+	#define WAVE_COUNT_Y 16
+
+	#define LANE_COUNT_X 1
+	#define LANE_COUNT_Y 1
+
 	#define LANE_STRIDE_X 1
 	#define LANE_STRIDE_Y 1
+
+	#define LDS_SIZE (WAVE_COUNT_X * WAVE_COUNT_Y)
 
 #else
 	#error Unknown wave size
 #endif
 
-/** Number of lane the GROUP_TILE_SIZE. */
-#define LANE_COUNT_X (GROUP_TILE_SIZE / LANE_STRIDE_X)
-#define LANE_COUNT_Y (GROUP_TILE_SIZE / LANE_STRIDE_Y)
-
 /** Size of the SIMD per lane that also number of input pixel loaded into each individual lanes. */
 #define SIMD_SIZE (LANE_STRIDE_X * LANE_STRIDE_Y)
+
+//------------------------------------------------------- INCLUDE CONVOLUTION NETWORK
+
+#include "TSRConvolutionNetwork.ush"
 
 
 //------------------------------------------------------- TYPEDEFS
 
-#define tsr_simd_half  TLaneVector<tsr_half, 1, SIMD_SIZE>
-#define tsr_simd_half4 TLaneVector<tsr_half, 4, SIMD_SIZE>
-#define tsr_simd_halfC TLaneVector<tsr_half, CONFIG_CHANNEL_COUNT, SIMD_SIZE>
-#define tsr_simd_bool  TLaneVector<bool, 1, SIMD_SIZE>
+#define tsr_simd_half  TLaneVector2D<tsr_half, 1, LANE_STRIDE_X, LANE_STRIDE_Y>
+#define tsr_simd_half4 TLaneVector2D<tsr_half, 4, LANE_STRIDE_X, LANE_STRIDE_Y>
+#define tsr_simd_halfC TLaneVector2D<tsr_half, CONFIG_CHANNEL_COUNT, LANE_STRIDE_X, LANE_STRIDE_Y>
+#define tsr_simd_bool  TLaneVector2D<bool, 1, LANE_STRIDE_X, LANE_STRIDE_Y>
 
 #ifndef PLATFORM_SPECIFIC_ISOLATE
 	#define PLATFORM_SPECIFIC_ISOLATE ISOLATE
@@ -99,6 +110,8 @@ float2 TranslucencyTextureUVMax;
 float3 HistoryGuideQuantizationError;
 float FlickeringFramePeriod;
 float TheoricBlendFactor;
+uint TileOverscan;
+float PerceptionAdd;
 
 
 Texture2D<tsr_halfC> InputTexture;
@@ -109,490 +122,43 @@ Texture2D<tsr_half4> ReprojectedHistoryMoireTexture;
 Texture2D<tsr_half> ParallaxRejectionMaskTexture;
 Texture2D<tsr_ushort> IsMovingMaskTexture;
 
-RWTexture2D<tsr_halfC> HistoryGuideOutput;
+RWTexture2D<tsr_half4> HistoryGuideOutput;
 RWTexture2D<tsr_half4> HistoryMoireOutput;
 RWTexture2D<tsr_half2> HistoryRejectionOutput;
 RWTexture2D<tsr_half> InputSceneColorLdrLumaOutput;
 
 
-//------------------------------------------------------- GENERAL TEXEL SWIZZLING & NEIGHBOR ACCESS
-
-CALL_SITE_DEBUGLOC
-tsr_short2 GetSimdIndexPixelCoordinateInLane(const uint SimdIndex)
-{
-	return tsr_short2(SimdIndex % uint(LANE_STRIDE_X), SimdIndex / uint(LANE_STRIDE_X));
-}
-
-CALL_SITE_DEBUGLOC
-tsr_short2 GetLaneSimdPixelOffset(const uint LaneIndex, const uint SimdIndex)
-{
-	return (
-		tsr_short2(LaneIndex % uint(LANE_COUNT_X), LaneIndex / uint(LANE_COUNT_X)) * tsr_short2(LANE_STRIDE_X, LANE_STRIDE_Y) +
-		GetSimdIndexPixelCoordinateInLane(SimdIndex)
-	);
-}
-
-
-//------------------------------------------------------- GENERAL TEXEL SWIZZLING & NEIGHBOR ACCESS
-
-#if CONFIG_OPTIMIZED_LDS_ACCESS
-
-groupshared tsr_half4 SharedData[GROUP_TILE_SIZE * GROUP_TILE_SIZE];
-
-void WriteAllElementToLDS(uint GroupThreadIndex, TLaneVector<tsr_half, 1, SIMD_SIZE> X)
-{
-	GroupMemoryBarrierWithGroupSync();
-	UNROLL_N(SIMD_SIZE)
-	for (uint SimdIndex = 0; SimdIndex < SIMD_SIZE; SimdIndex++)
-	{
-		SharedData[GroupThreadIndex + SimdIndex * LANE_COUNT] = tsr_half4(X.GetElement(SimdIndex), 0.0, 0.0, 0.0);
-	}
-	GroupMemoryBarrierWithGroupSync();
-}
-
-void WriteAllElementToLDS(uint GroupThreadIndex, TLaneVector<tsr_half, 3, SIMD_SIZE> X)
-{
-	GroupMemoryBarrierWithGroupSync();
-	UNROLL_N(SIMD_SIZE)
-	for (uint SimdIndex = 0; SimdIndex < SIMD_SIZE; SimdIndex++)
-	{
-		SharedData[GroupThreadIndex + SimdIndex * LANE_COUNT] = tsr_half4(X.GetElement(SimdIndex), 0.0);
-	}
-	GroupMemoryBarrierWithGroupSync();
-}
-
-void WriteAllElementToLDS(uint GroupThreadIndex, TLaneVector<tsr_half, 4, SIMD_SIZE> X)
-{
-	GroupMemoryBarrierWithGroupSync();
-	UNROLL_N(SIMD_SIZE)
-	for (uint SimdIndex = 0; SimdIndex < SIMD_SIZE; SimdIndex++)
-	{
-		SharedData[GroupThreadIndex + SimdIndex * LANE_COUNT] = tsr_half4(X.GetElement(SimdIndex));
-	}
-	GroupMemoryBarrierWithGroupSync();
-}
-
-uint GetElementLDSIndex(uint GroupThreadIndex, const uint NeigborSimdIndex, const uint LaneRotation)
-{
-	return ((GroupThreadIndex + LaneRotation) % uint(LANE_COUNT)) + NeigborSimdIndex * LANE_COUNT;
-}
-
-void ReadElementFromLDS(uint GroupThreadIndex, const uint NeigborSimdIndex, const uint LaneRotation, out tsr_half X)
-{
-	X = SharedData[GetElementLDSIndex(GroupThreadIndex, NeigborSimdIndex, LaneRotation)].x;
-}
-
-void ReadElementFromLDS(uint GroupThreadIndex, const uint NeigborSimdIndex, const uint LaneRotation, out tsr_half3 X)
-{
-	X = SharedData[GetElementLDSIndex(GroupThreadIndex, NeigborSimdIndex, LaneRotation)].xyz;
-}
-
-void ReadElementFromLDS(uint GroupThreadIndex, const uint NeigborSimdIndex, const uint LaneRotation, out tsr_half4 X)
-{
-	X = SharedData[GetElementLDSIndex(GroupThreadIndex, NeigborSimdIndex, LaneRotation)].xyzw;
-}
-
-template<typename ScalarType, uint VectorSize, uint SimdSize>
-void WriteToLDSForAccessNeighborTexel(TLaneVector<ScalarType, VectorSize, SimdSize> Input, uint GroupThreadIndex)
-{
-	WriteAllElementToLDS(GroupThreadIndex, Input);
-}
-
-#else // !CONFIG_OPTIMIZED_LDS_ACCESS
-
-template<typename ScalarType, uint VectorSize, uint SimdSize>
-void WriteToLDSForAccessNeighborTexel(TLaneVector<ScalarType, VectorSize, SimdSize> Input, uint GroupThreadIndex)
-{
-	// NOP
-}
-
-#endif // !CONFIG_OPTIMIZED_LDS_ACCESS
-
-
-CALL_SITE_DEBUGLOC
-template<typename ScalarType, uint VectorSize, uint SimdSize>
-TLaneVector<ScalarType, VectorSize, SimdSize> AccessNeighborTexel(TLaneVector<ScalarType, VectorSize, SimdSize> Input, const tsr_short2 Offset, uint GroupThreadIndex)
-{
-	TLaneVector<ScalarType, VectorSize, SimdSize> Return;
-	
-	UNROLL_N(SIMD_SIZE)
-	for (uint SimdIndex = 0; SimdIndex < SIMD_SIZE; SimdIndex++)
-	{
-		const uint2 SimdPixelCoord = uint2(GetSimdIndexPixelCoordinateInLane(SimdIndex));
-
-		// Compute the simd index of the neighbor.
-		const uint2 NeigborSimdPixelCoord = (SimdPixelCoord + uint2(Offset)) % uint2(LANE_STRIDE_X, LANE_STRIDE_Y);
-		const uint NeigborSimdIndex = dot(NeigborSimdPixelCoord, uint2(1, LANE_STRIDE_X));
-
-		// Compute the lane rotaton of the neighbor.
-		const bool2 bNeedsLaneRotation = (SimdPixelCoord + uint2(Offset)) >= uint2(LANE_STRIDE_X, LANE_STRIDE_Y);
-		const int LaneRotation = dot(select(bNeedsLaneRotation, int2(Offset), 0), int2(1, LANE_COUNT_X));
-		
-		// Access the lement.
-		vector<ScalarType, VectorSize> SimdElement = Input.GetElement(NeigborSimdIndex);
-		vector<ScalarType, VectorSize> ReturnSimdElement = SimdElement;
-		if (LaneRotation != 0)
-		#if CONFIG_OPTIMIZED_LDS_ACCESS
-		{
-			ReadElementFromLDS(GroupThreadIndex, NeigborSimdIndex, LaneRotation, /* out */ ReturnSimdElement);
-		}
-		#else
-		{
-			// Only uses wave intrinsics on platforms that provides RDNA's ds_swizzle because we know the wave size of this platforms. 
-			#if DIM_WAVE_SIZE != 0
-				#if !PLATFORM_SUPPORTS_WAVE_ROTATE
-					//#error InitWaveRotateLaneGroup() isn't supported.
-				#endif
-				const FWaveBroadcastSettings BroadcastSettings = InitWaveRotateLaneGroup(/* LaneGroupSize = */ LANE_COUNT, LaneRotation);
-			#else
-				const FWaveBroadcastSettings BroadcastSettings = ConvertWaveBroadcastToLDS(InitWaveRotateLaneGroup(/* LaneGroupSize = */ LANE_COUNT, LaneRotation), GroupThreadIndex);
-			#endif
-			ReturnSimdElement = WaveBroadcast(BroadcastSettings, SimdElement);
-		}
-		#endif
-
-		Return.SetElement(SimdIndex, ReturnSimdElement);
-	}
-
-	return Return;
-}
-
-
-//------------------------------------------------------- CONVOLUTION ACCUMULATORS
-
-template<typename Type>
-struct TAccumulatorAvg
-{
-	Type Value;
-	tsr_simd_half Weight;
-	
-	CALL_SITE_DEBUGLOC
-	static bool NeedWeightInAccumulate()
-	{
-		return true;
-	}
-
-	CALL_SITE_DEBUGLOC
-	void Start(Type CenterSample)
-	{
-		Value = CenterSample;
-		Weight = tsr_simd_half::Const(1.0);
-	}
-	
-	CALL_SITE_DEBUGLOC
-	static Type PreprocessNeighborSample(Type Sample, tsr_simd_half InWeight)
-	{
-		return Sample;
-	}
-	
-	CALL_SITE_DEBUGLOC
-	void Accumulate(const tsr_short2 Offset, Type Sample, tsr_simd_half InWeight)
-	{
-		const tsr_half SampleSpatialWeight = tsr_half(rcp(abs(tsr_half(Offset.x)) + 1.0) * rcp(abs(tsr_half(Offset.y)) + 1.0));
-		
-		Value = Value + Sample * Type::Vectorize(InWeight * SampleSpatialWeight);
-		Weight = Weight + InWeight * tsr_simd_half::Const(SampleSpatialWeight);
-	}
-	
-	CALL_SITE_DEBUGLOC
-	void Finish(const uint SampleCount)
-	{
-		Value = Value * Type::Vectorize(rcp(Weight));
-	}
-};
-
-template<typename Type>
-struct TAccumulatorMin
-{
-	Type Value;
-	
-	CALL_SITE_DEBUGLOC
-	static bool NeedWeightInAccumulate()
-	{
-		return false;
-	}
-
-	CALL_SITE_DEBUGLOC
-	void Start(Type CenterSample)
-	{
-		Value = CenterSample;
-	}
-	
-	CALL_SITE_DEBUGLOC
-	static Type PreprocessNeighborSample(Type Sample, tsr_simd_half InWeight)
-	{
-		return Sample;
-	}
-	
-	CALL_SITE_DEBUGLOC
-	void Accumulate(const tsr_short2 Offset, Type Sample, tsr_simd_half Weight)
-	{
-		Value = min(Value, Sample);
-	}
-	
-	CALL_SITE_DEBUGLOC
-	void Finish(const uint SampleCount)
-	{
-		// NOP
-	}
-};
-
-template<typename Type>
-struct TAccumulatorMax
-{
-	Type Value;
-	
-	CALL_SITE_DEBUGLOC
-	static bool NeedWeightInAccumulate()
-	{
-		return false;
-	}
-
-	CALL_SITE_DEBUGLOC
-	void Start(Type CenterSample)
-	{
-		Value = CenterSample;
-	}
-	
-	CALL_SITE_DEBUGLOC
-	static Type PreprocessNeighborSample(Type Sample, tsr_simd_half InWeight)
-	{
-		return Sample;
-	}
-	
-	CALL_SITE_DEBUGLOC
-	void Accumulate(const tsr_short2 Offset, Type Sample, tsr_simd_half Weight)
-	{
-		Value = max(Value, Sample);
-	}
-	
-	CALL_SITE_DEBUGLOC
-	void Finish(const uint SampleCount)
-	{
-		// NOP
-	}
-};
-
-
-//------------------------------------------------------- CONVOLUTIONS
-
-CALL_SITE_DEBUGLOC
-template<class FAccumulator, typename FSampleType>
-FAccumulator Convole3x1(FSampleType Color, tsr_simd_half Weight, const tsr_short2 Offset, uint GroupThreadIndex)
-#if CONFIG_OPTIMIZED_LDS_ACCESS
-{
-	const tsr_short2 OffsetN = tsr_short2(-int2(Offset)); // work arround a shader compiler bug
-	
-	FSampleType PreprocessedNeighborColor = FAccumulator::PreprocessNeighborSample(Color, Weight);
-
-	WriteToLDSForAccessNeighborTexel(PreprocessedNeighborColor, GroupThreadIndex);
-	FSampleType Sample0 = AccessNeighborTexel(PreprocessedNeighborColor, Offset, GroupThreadIndex);
-	FSampleType Sample1 = AccessNeighborTexel(PreprocessedNeighborColor, OffsetN, GroupThreadIndex);
-	
-	tsr_simd_half Weight0 = tsr_simd_half::Const(tsr_half(1.0));
-	tsr_simd_half Weight1 = tsr_simd_half::Const(tsr_half(1.0));
-	if (FAccumulator::NeedWeightInAccumulate())
-	{
-		WriteToLDSForAccessNeighborTexel(Weight, GroupThreadIndex);
-		Weight0 = AccessNeighborTexel(Weight, Offset, GroupThreadIndex);
-		Weight1 = AccessNeighborTexel(Weight, OffsetN, GroupThreadIndex);
-	}
-	
-	FAccumulator Accumulator;
-	Accumulator.Start(Color);
-	Accumulator.Accumulate(+Offset, Sample0, Weight0);
-	Accumulator.Accumulate(OffsetN, Sample1, Weight1);
-	Accumulator.Finish(3);
-	return Accumulator;
-}
-#else // !CONFIG_OPTIMIZED_LDS_ACCESS
-{
-	FAccumulator Accumulator;
-	Accumulator.Start(Color);
-	
-	FSampleType PreprocessedNeighborColor = FAccumulator::PreprocessNeighborSample(Color, Weight);
-
-	FSampleType Sample0 = AccessNeighborTexel(PreprocessedNeighborColor, Offset, GroupThreadIndex);
-	tsr_simd_half Weight0 = tsr_simd_half::Const(tsr_half(1.0));
-	if (FAccumulator::NeedWeightInAccumulate())
-	{
-		Weight0 = AccessNeighborTexel(Weight, Offset, GroupThreadIndex);
-	}
-	Accumulator.Accumulate(+Offset, Sample0, Weight0);
-	
-	const tsr_short2 OffsetN = tsr_short2(-int2(Offset)); // work arround a shader compiler bug
-	FSampleType Sample1 = AccessNeighborTexel(PreprocessedNeighborColor, OffsetN, GroupThreadIndex);
-	tsr_simd_half Weight1 = tsr_simd_half::Const(tsr_half(1.0));
-	if (FAccumulator::NeedWeightInAccumulate())
-	{
-		Weight1 = AccessNeighborTexel(Weight, OffsetN, GroupThreadIndex);
-	}
-	Accumulator.Accumulate(OffsetN, Sample1, Weight1);
-
-	Accumulator.Finish(3);
-	return Accumulator;
-}
-#endif // !CONFIG_OPTIMIZED_LDS_ACCESS
-
-CALL_SITE_DEBUGLOC
-template<class FAccumulator, typename FSampleType>
-FSampleType Convolve3x3HV(FSampleType Color, tsr_simd_half Weight, uint GroupThreadIndex)
-{
-	FSampleType HorizontalColor = Convole3x1<FAccumulator, FSampleType>(Color, Weight, tsr_short2(1, 0), GroupThreadIndex).Value;
-	return Convole3x1<FAccumulator, FSampleType>(HorizontalColor, Weight, tsr_short2(0, 1), GroupThreadIndex).Value;
-}
-
-
 //------------------------------------------------------- GENERAL OPERATIONS
 
 CALL_SITE_DEBUGLOC
-template<typename FSampleType>
-FSampleType Min3x3(FSampleType Center, uint GroupThreadIndex)
+tsr_simd_halfC ClampFireFliersWithGuide(tsr_simd_halfC ToClamp, tsr_simd_halfC Guide)
 {
-	return Convolve3x3HV<TAccumulatorMin<FSampleType>, FSampleType>(Center, tsr_simd_half::Const(1.0), GroupThreadIndex);
+	tsr_simd_halfC ToClampMin;
+	tsr_simd_halfC ToClampMax;
+	MinMax3x3(ToClamp, /* out */ ToClampMin, /* out */ ToClampMax);
+
+	tsr_simd_halfC ClampedGuide = fastClamp(Guide, ToClampMin, ToClampMax);
+	
+	tsr_simd_halfC ClampedGuideMin;
+	tsr_simd_halfC ClampedGuideMax;
+	MinMax3x3(ClampedGuide, /* out */ ClampedGuideMin, /* out */ ClampedGuideMax);
+	
+	return fastClamp(ToClamp, ClampedGuideMin, ClampedGuideMax);
 }
-
-CALL_SITE_DEBUGLOC
-template<typename FSampleType>
-FSampleType Max3x3(FSampleType Center, uint GroupThreadIndex)
-{
-	return Convolve3x3HV<TAccumulatorMax<FSampleType>, FSampleType>(Center, tsr_simd_half::Const(1.0), GroupThreadIndex);
-}
-
-CALL_SITE_DEBUGLOC
-tsr_simd_halfC ClampFireFliersWithGuide(tsr_simd_halfC ToClamp, tsr_simd_halfC Guide, uint GroupThreadIndex)
-{
-	tsr_simd_halfC ToClampMin = Min3x3(ToClamp, GroupThreadIndex);
-	tsr_simd_halfC ToClampMax = Max3x3(ToClamp, GroupThreadIndex);
-
-	tsr_simd_halfC ClampedGuide = clamp(Guide, ToClampMin, ToClampMax);
-	
-	tsr_simd_halfC ClampedGuideMin = Min3x3(ClampedGuide, GroupThreadIndex);
-	tsr_simd_halfC ClampedGuideMax = Max3x3(ClampedGuide, GroupThreadIndex);
-	
-	return clamp(ToClamp, ClampedGuideMin, ClampedGuideMax);
-}
-
-
-//------------------------------------------------------- GENERAL OPERATIONS
-
-// Operator that output, lowest, median and highest values from 3 input values.
-CALL_SITE_DEBUGLOC
-template<typename FSampleType>
-void LMHOperator(FSampleType A, FSampleType B, FSampleType C, out FSampleType L, out FSampleType M, out FSampleType H)
-{
-	// TODO: min3, max3, med3.
-	FSampleType X = min(B, C);
-	FSampleType Y = max(B, C);
-	
-	L = min(A, X);
-	FSampleType Z = max(A, X);
-
-	M = min(Z, Y);
-	H = max(Z, Y);
-}
-
-// 3 samples median.
-CALL_SITE_DEBUGLOC
-template<typename FSampleType>
-FSampleType Median(FSampleType A, FSampleType B, FSampleType C)
-{
-	// TODO: med3.
-	FSampleType L, M, H;
-	LMHOperator(A, B, C, L, M, H);
-	return M;
-}
-
-// 9 samples median using Smith1996.
-CALL_SITE_DEBUGLOC
-template<typename FSampleType>
-FSampleType Median9(FSampleType In[9])
-{
-	// First layer.
-	FSampleType L0[3];
-	FSampleType M0[3];
-	FSampleType H0[3];
-	for (uint j = 0; j < 3; j++)
-	{
-		LMHOperator(In[j * 3 + 0], In[j * 3 + 1], In[j * 3 + 2], L0[j], M0[j], H0[j]);
-	}
-	
-	// Second layer.
-	// TODO: min3, max3.
-	FSampleType M1[3];
-	M1[0] = max(max(L0[0], L0[1]), L0[2]);
-	M1[1] = Median(M0[0], M0[1], M0[2]);
-	M1[2] = min(min(H0[0], H0[1]), H0[2]);
-	
-	// Third layer.
-	return Median(M1[0], M1[1], M1[2]);
-}
-
-CALL_SITE_DEBUGLOC
-template<typename FSampleType>
-FSampleType Median3x3(FSampleType Center, uint GroupThreadIndex)
-#if 1
-{
-	WriteToLDSForAccessNeighborTexel(Center, GroupThreadIndex);
-	
-	FSampleType C0 = Center;
-	FSampleType C1 = AccessNeighborTexel(Center, tsr_short2( 1, 0), GroupThreadIndex);
-	FSampleType C2 = AccessNeighborTexel(Center, tsr_short2(-1, 0), GroupThreadIndex);
-	
-	FSampleType M0L0;
-	FSampleType M0M0;
-	FSampleType M0H0;
-	LMHOperator(C0, C1, C2, M0L0, M0M0, M0H0);
-	
-	WriteToLDSForAccessNeighborTexel(M0L0, GroupThreadIndex);
-	FSampleType M0L1 = AccessNeighborTexel(M0L0, tsr_short2(0,  1), GroupThreadIndex);
-	FSampleType M0L2 = AccessNeighborTexel(M0L0, tsr_short2(0, -1), GroupThreadIndex);
-	
-	WriteToLDSForAccessNeighborTexel(M0M0, GroupThreadIndex);
-	FSampleType M0M1 = AccessNeighborTexel(M0M0, tsr_short2(0,  1), GroupThreadIndex);
-	FSampleType M0M2 = AccessNeighborTexel(M0M0, tsr_short2(0, -1), GroupThreadIndex);
-	
-	WriteToLDSForAccessNeighborTexel(M0H0, GroupThreadIndex);
-	FSampleType M0H1 = AccessNeighborTexel(M0H0, tsr_short2(0,  1), GroupThreadIndex);
-	FSampleType M0H2 = AccessNeighborTexel(M0H0, tsr_short2(0, -1), GroupThreadIndex);
-	
-	// Second layer.
-	// TODO: min3, max3.
-	FSampleType M1[3];
-	M1[0] = max(max(M0L0, M0L1), M0L2);
-	M1[1] = Median(M0M0, M0M1, M0M2);
-	M1[2] = min(min(M0H0, M0H1), M0H2);
-	
-	// Third layer.
-	return Median(M1[0], M1[1], M1[2]);
-}
-#else
-{
-	WriteToLDSForAccessNeighborTexel(Center, GroupThreadIndex);
-	
-	FSampleType InSamples[9];
-	UNROLL
-	for (uint i = 0; i < 9; i++)
-	{
-		FSampleType Sample = AccessNeighborTexel(Center, tsr_short2(kOffsets3x3[i]), GroupThreadIndex);
-		InSamples[i] = Sample;
-	}
-
-	return Median9(InSamples);
-}
-#endif
 
 
 //------------------------------------------------------- ENTRY POINT
 
 #if COMPILER_SUPPORTS_WAVE_SIZE && DIM_WAVE_SIZE > 0
-	WAVESIZE(LANE_COUNT)
+WAVESIZE(DIM_WAVE_SIZE)
 #endif
-[numthreads(LANE_COUNT, 1, 1)]
+[numthreads(LANE_COUNT * WAVE_COUNT, 1, 1)]
 void MainCS(
 	uint2 GroupId : SV_GroupID,
 	uint GroupThreadIndex : SV_GroupIndex)
 {
+	GGroupThreadIndex = GroupThreadIndex;
+
 	tsr_simd_halfC Debug[DEBUG_ARRAY_SIZE];
 	UNROLL_N(DEBUG_ARRAY_SIZE)
 	for (uint DebugId = 0; DebugId < DEBUG_ARRAY_SIZE; DebugId++)
@@ -603,8 +169,8 @@ void MainCS(
 	const uint LaneIndex = GroupThreadIndex;
 	const tsr_short2 GroupPixelOffset = (
 		tsr_short2(InputPixelPosMin) +
-		tsr_short2(GroupId) * tsr_short2(TILE_SIZE, TILE_SIZE) +
-		tsr_short(-TILE_OVERSCAN_PADDING).xx);
+		tsr_short2(GroupId) * tsr_short(GROUP_TILE_SIZE - 2 * TileOverscan).xx +
+		tsr_short(-TileOverscan).xx);
 		
 	// Load
 	tsr_simd_halfC OriginalOpaqueInput;
@@ -623,11 +189,11 @@ void MainCS(
 		UNROLL_N(SIMD_SIZE)
 		for (uint SimdIndex = 0; SimdIndex < SIMD_SIZE; SimdIndex++)
 		{
-			tsr_short2 ClampedFetchPixelPos = GroupPixelOffset + GetLaneSimdPixelOffset(LaneIndex, SimdIndex);
+			tsr_short2 ClampedFetchPixelPos = GroupPixelOffset + GetLaneSimdPixelOffset<LANE_STRIDE_X, LANE_STRIDE_Y>(LaneIndex, SimdIndex);
 			float2 TranslucencyTextureUV = ApplyScreenTransform(float2(ClampedFetchPixelPos), InputPixelPosToTranslucencyTextureUV);
 
 			ClampedFetchPixelPos = ClampPixelOffset(ClampedFetchPixelPos, InputPixelPosMin, InputPixelPosMax);
-			TranslucencyTextureUV = clamp(TranslucencyTextureUV, TranslucencyTextureUVMin, TranslucencyTextureUVMax);
+			TranslucencyTextureUV = fastClamp(TranslucencyTextureUV, TranslucencyTextureUVMin, TranslucencyTextureUVMax);
 
 			OriginalOpaqueInput.SetElement(SimdIndex, InputTexture[ClampedFetchPixelPos]);
 			#if CONFIG_COMPOSE_TRANSLUCENCY
@@ -666,7 +232,7 @@ void MainCS(
 
 	#if CONFIG_COMPOSE_TRANSLUCENCY
 	{
-		tsr_simd_half4 FilteredTranslucencyInput = Convolve3x3HV<TAccumulatorAvg<tsr_simd_half4>, tsr_simd_half4>(OriginalTranslucencyInput, bIsValid, GroupThreadIndex);
+		tsr_simd_half4 FilteredTranslucencyInput = Blur3x3(OriginalTranslucencyInput);
 
 		UNROLL_N(SIMD_SIZE)
 		for (uint SimdIndex = 0; SimdIndex < SIMD_SIZE; SimdIndex++)
@@ -690,14 +256,8 @@ void MainCS(
 		OriginalInput = min(OriginalInput, tsr_simd_halfC::Const(LargestSceneColorRGB));
 	#endif
 
-	// Convert input to LDR
-	OriginalOpaqueInput = OriginalOpaqueInput * rcp(OriginalOpaqueInput + tsr_simd_halfC::Const(1.0));
-	OriginalInput = OriginalInput * rcp(OriginalInput + tsr_simd_halfC::Const(1.0));
-	
 	// Analyses the moire pattern overtime.
 	#if CONFIG_MOIRE_DETECTION
-	const tsr_half MoireLumaToChannel = tsr_half(3.0);
-
 	tsr_simd_half4 FinalMoire = tsr_simd_half4::Const(0.0);
 	tsr_simd_half MoireError = tsr_simd_half::Const(0.0);
 	{
@@ -708,26 +268,30 @@ void MainCS(
 		// Compute the threshold at which the variation count should quick in
 		const tsr_half TotalVariationCountThreshold = tsr_half(1.0 / (1.0 - pow(1.0 - BlendFinal, tsr_half(FlickeringFramePeriod))));
 
+		// Input luminance to monitor flickering from.
+		tsr_simd_half InputLuma = MoireInput;
 
-		tsr_simd_half InputLuma;
-		#if 1
+		// How much input luminance from the TSRComputeMoireLuma.usf measurement has been modified since for instance with fog, water.
+		tsr_simd_half InputLumaModification;
 		{
-			InputLuma = MoireInput;
-		}
-		#else
-		{
+			const tsr_half InputLumaEncodingError = tsr_half(0.5 / 255.0);
+			
+			OriginalOpaqueInput = OriginalOpaqueInput * rcp(OriginalOpaqueInput + tsr_simd_halfC::Const(tsr_half(PerceptionAdd)));
+
+
+			tsr_simd_half SceneColorLuma;
 			UNROLL_N(SIMD_SIZE)
 			for (uint SimdIndex = 0; SimdIndex < SIMD_SIZE; SimdIndex++)
 			{
-				const tsr_half3 LumaWeights = rcp(MoireLumaToChannel.xxx);
-				
-				InputLuma.SetElement(SimdIndex, dot(OriginalOpaqueInput.GetElement(SimdIndex).rgb, LumaWeights));
+				SceneColorLuma.SetElement(SimdIndex, dot(OriginalOpaqueInput.GetElement(SimdIndex).rgb, kMoireLumaWeights));
 			}
+
+			InputLumaModification = max(abs(InputLuma - SceneColorLuma) - tsr_simd_half::Const(InputLumaEncodingError), tsr_simd_half::Const(0.0));
 		}
-		#endif
 		
 		// Convolve the input luma to have the exact same moire pattern as FilteredInput below.
-		InputLuma = Convolve3x3HV<TAccumulatorAvg<tsr_simd_half>, tsr_simd_half>(InputLuma, bIsValid, GroupThreadIndex);
+		InputLuma = Blur3x3(InputLuma);
+		InputLumaModification = Blur3x3(InputLumaModification);
 
 		// Unpack history
 		tsr_simd_half PrevFlickeringHistory = PrevMoire[0];
@@ -742,17 +306,27 @@ void MainCS(
 
 
 		// Compute clamping box of the limance.
-		tsr_simd_half InputLumaMin = Min3x3(InputLuma, GroupThreadIndex);
-		tsr_simd_half InputLumaMax = Max3x3(InputLuma, GroupThreadIndex);
+		tsr_simd_half InputLumaMin;
+		tsr_simd_half InputLumaMax;
+		MinMax3x3(InputLuma, /* out */ InputLumaMin, /* out */ InputLumaMax);
 
 		// Clamp and contribue the history.		
-		tsr_simd_half ClampedPrevFlickeringHistory = clamp(PrevFlickeringHistory, InputLumaMin, InputLumaMax);
+		tsr_simd_half ClampedPrevFlickeringHistory = fastClamp(PrevFlickeringHistory, InputLumaMin, InputLumaMax);
 		tsr_simd_half FinalFlickeringHistory = InputLuma * tsr_simd_half::Const(BlendFinal) - ClampedPrevFlickeringHistory * tsr_simd_half::Const(BlendFinal - tsr_half(1.0));
 	
 		// Measure the flickering gradient of the current frame.
 		//tsr_simd_half CurrentGradient = FinalFlickeringHistory - PrevFlickeringHistory;
 		tsr_simd_half CurrentGradient = ClampedPrevFlickeringHistory - PrevFlickeringHistory;
 		
+		// Remove how much luma has changed from luma measurement to final scene color from the gradient.
+		for (uint SimdIndex = 0; SimdIndex < SIMD_SIZE; SimdIndex++)
+		{
+			tsr_half LocalCurrentGradient = CurrentGradient.GetElement(SimdIndex);
+			tsr_half LocalInputLumaModification = InputLumaModification.GetElement(SimdIndex);
+			
+			CurrentGradient.SetElement(SimdIndex, clamp(LocalCurrentGradient * tsr_half(POSITIVE_INFINITY), tsr_half(-1.0), tsr_half(1.0)) * max(abs(LocalCurrentGradient) - LocalInputLumaModification, tsr_half(0.0)));
+		}
+
 		#if 0
 			tsr_simd_half InputBoxSize = InputLumaMax - InputLumaMin;
 			CurrentGradient = sign(CurrentGradient) * max(abs(CurrentGradient) - tsr_simd_half::Const(0.5) * InputBoxSize, tsr_simd_half::Const(0.0));
@@ -783,8 +357,8 @@ void MainCS(
 
 		// Dilates the total variation and contribution to keep stability despite inacuracies in the history reprojection
 		// of these need a nearest filter which isn't precise at all.
-		tsr_simd_half TotalVariationContribution = Max3x3(GradientVariation, GroupThreadIndex);
-		tsr_simd_half TotalVariationCountContribution = Max3x3(IsFlicker, GroupThreadIndex);
+		tsr_simd_half TotalVariationContribution = Max3x3(GradientVariation);
+		tsr_simd_half TotalVariationCountContribution = Max3x3(IsFlicker);
 
 		UNROLL_N(SIMD_SIZE)
 		for (uint SimdIndex = 0; SimdIndex < SIMD_SIZE; SimdIndex++)
@@ -846,33 +420,45 @@ void MainCS(
 	}
 	#endif
 
-	// Top secret sauce with paper and salt.
-	tsr_simd_halfC ClampedInput = OriginalInput;
-	tsr_simd_halfC ClampedHistory = OriginalHistory;
-	#if CONFIG_FIREFLY_REMOVAL
-	{
-		ClampedInput   = ClampFireFliersWithGuide(OriginalInput  , /* Guide = */ OriginalHistory, GroupThreadIndex);
-		ClampedHistory = ClampFireFliersWithGuide(OriginalHistory, /* Guide = */ OriginalInput  , GroupThreadIndex);
-	}
-	#endif
-
-	// Filter clamped input and history to increase quantization of the rejection detection
-	tsr_simd_halfC FilteredInput   = Convolve3x3HV<TAccumulatorAvg<tsr_simd_halfC>, tsr_simd_halfC>(ClampedInput  , bIsValid, GroupThreadIndex);
-	tsr_simd_halfC FilteredHistory = Convolve3x3HV<TAccumulatorAvg<tsr_simd_halfC>, tsr_simd_halfC>(ClampedHistory, bIsValid, GroupThreadIndex);
-	
 	// Measure rejection
 	tsr_simd_half RejectionBlendFinal = tsr_simd_half::Const(1.0);
 	tsr_simd_half RejectionClampBlend = tsr_simd_half::Const(1.0);
 	#if 1
 	{
 		const tsr_half FilteringWeight = rcp(tsr_half(1.0 + 4 * 0.5 + 4 * 0.25));
-
-		tsr_simd_halfC BackbufferError = tsr_simd_halfC::Const(MeasureBackbufferLDRQuantizationError());
-
-		tsr_simd_halfC FilteredBoxMin = Min3x3(FilteredInput, GroupThreadIndex) - BackbufferError;
-		tsr_simd_halfC FilteredBoxMax = Max3x3(FilteredInput, GroupThreadIndex) + BackbufferError;
+		tsr_simd_halfC BackbufferQuantizationErrorVector = tsr_simd_halfC::Const(MeasureBackbufferLDRQuantizationError());
 		
-		tsr_simd_halfC FlickeringClampedFilteredHistory = clamp(FilteredHistory, FilteredBoxMin, FilteredBoxMax);
+		// Convert input to LDR
+		tsr_simd_halfC ExposedInput = OriginalInput * rcp(OriginalInput + tsr_simd_halfC::Const(tsr_half(PerceptionAdd)));
+	
+		// Change the exposure of history for the shading rejection
+		tsr_simd_halfC ExposedHistory = OriginalHistory;
+		{
+			ExposedHistory = ExposedHistory * rcp(tsr_simd_halfC::Const(1.0) - ExposedHistory);
+			ExposedHistory = ExposedHistory * rcp(ExposedHistory + tsr_simd_halfC::Const(tsr_half(PerceptionAdd)));
+		}
+
+		// Top secret sauce with paper and salt.
+		tsr_simd_halfC ClampedInput = ExposedInput;
+		tsr_simd_halfC ClampedHistory = ExposedHistory;
+		#if CONFIG_FIREFLY_REMOVAL
+		{
+			ClampedInput   = ClampFireFliersWithGuide(ClampedInput  , /* Guide = */ ExposedHistory);
+			ClampedHistory = ClampFireFliersWithGuide(ClampedHistory, /* Guide = */ ExposedInput);
+		}
+		#endif
+
+		// Filter clamped input and history to increase quantization of the rejection detection
+		tsr_simd_halfC FilteredInput   = Blur3x3(ClampedInput);
+		tsr_simd_halfC FilteredHistory = Blur3x3(ClampedHistory);
+	
+		tsr_simd_halfC FilteredBoxMin;
+		tsr_simd_halfC FilteredBoxMax;
+		MinMax3x3(FilteredInput, /* out */ FilteredBoxMin, /* out */ FilteredBoxMax);
+		FilteredBoxMin = FilteredBoxMin - BackbufferQuantizationErrorVector;
+		FilteredBoxMax = FilteredBoxMax + BackbufferQuantizationErrorVector;
+		
+		tsr_simd_halfC FlickeringClampedFilteredHistory = fastClamp(FilteredHistory, FilteredBoxMin, FilteredBoxMax);
 
 		tsr_simd_halfC ClampedFilteredHistory;
 		#if CONFIG_MOIRE_DETECTION
@@ -887,34 +473,34 @@ void MainCS(
 				tsr_halfC ClampedEnergyAmount = ClampedEnergy * SafeRcp(ClampedEnergy[0] + ClampedEnergy[1] + ClampedEnergy[2]);
 
 				// Apply the moire error on each individual channel based on how much they need to clamp.
-				MoireErrorSize.SetElement(SimdIndex, ClampedEnergyAmount * (MoireLumaToChannel * MoireError.GetElement(SimdIndex)));
+				MoireErrorSize.SetElement(SimdIndex, ClampedEnergyAmount * (kMoireLumaToChannel * MoireError.GetElement(SimdIndex)));
 			}
 			#else
 			{
-				MoireErrorSize.SetElement(SimdIndex, MoireLumaToChannel * MoireError.GetElement(SimdIndex));
+				MoireErrorSize.SetElement(SimdIndex, kMoireLumaToChannel * MoireError.GetElement(SimdIndex));
 			}
 			#endif
 
 			tsr_simd_halfC StableFilteredBoxMin = min(FilteredBoxMin, FilteredBoxMax - MoireErrorSize);
 			tsr_simd_halfC StableFilteredBoxMax = max(FilteredBoxMax, FilteredBoxMin + MoireErrorSize);
 			
-			ClampedFilteredHistory = clamp(FilteredHistory, StableFilteredBoxMin, StableFilteredBoxMax);
+			ClampedFilteredHistory = fastClamp(FilteredHistory, StableFilteredBoxMin, StableFilteredBoxMax);
 		}
 		#else
 			ClampedFilteredHistory = FlickeringClampedFilteredHistory;
 		#endif
 		
-		tsr_simd_halfC OriginalBoxMin = Min3x3(OriginalInput, GroupThreadIndex);
-		tsr_simd_halfC OriginalBoxMax = Max3x3(OriginalInput, GroupThreadIndex);
-		tsr_simd_halfC BoxSize = (OriginalBoxMax - OriginalBoxMin + (BackbufferError + BackbufferError)) * FilteringWeight;
+		tsr_simd_halfC OriginalBoxMin;
+		tsr_simd_halfC OriginalBoxMax;
+		MinMax3x3(ExposedInput, /* out */ OriginalBoxMin, /* out */ OriginalBoxMax);
+		tsr_simd_halfC BoxSize = (OriginalBoxMax - OriginalBoxMin + (BackbufferQuantizationErrorVector + BackbufferQuantizationErrorVector)) * FilteringWeight;
 		
-		const tsr_simd_halfC BackbufferQuantizationErrorVector = tsr_simd_halfC::Const(MeasureBackbufferLDRQuantizationError());
 		tsr_simd_halfC RawClampedEnergy = abs(ClampedFilteredHistory - FilteredHistory);
 
 		tsr_simd_halfC FilteredClampedEnergy;
 		{
-			FilteredClampedEnergy = Median3x3(RawClampedEnergy, GroupThreadIndex);
-			FilteredClampedEnergy = Max3x3(FilteredClampedEnergy, GroupThreadIndex);
+			FilteredClampedEnergy = Median3x3(RawClampedEnergy);
+			FilteredClampedEnergy = Max3x3(FilteredClampedEnergy);
 		}
 
 		#if CONFIG_MOIRE_DETECTION
@@ -939,20 +525,25 @@ void MainCS(
 		tsr_simd_halfC RawFactor      = saturate(tsr_simd_halfC::Const(1.0) - max(RawClampedEnergy - ClampError, tsr_simd_halfC::Const(0.0)) * rcp(max(Delta, BoxSize)));
 		tsr_simd_halfC FilteredFactor = saturate(tsr_simd_halfC::Const(1.0) - max(FilteredClampedEnergy - ClampError, tsr_simd_halfC::Const(0.0)) * rcp(max(Delta, BoxSize)));
 		
-		tsr_simd_half RawRejection      = min(RawFactor[0], min(RawFactor[1], RawFactor[2]));
-		tsr_simd_half FilteredRejection = min(FilteredFactor[0], min(FilteredFactor[1], FilteredFactor[2]));
+		tsr_simd_half RawRejection      = min3(RawFactor[0], RawFactor[1], RawFactor[2]);
+		tsr_simd_half FilteredRejection = min3(FilteredFactor[0], FilteredFactor[1], FilteredFactor[2]);
 		
 		RejectionBlendFinal = saturate(FilteredRejection + tsr_simd_half::Const(1.0) - bIsValid);
 		
-		RejectionClampBlend = Median3x3(RawRejection, GroupThreadIndex);
+		RejectionClampBlend = Median3x3(RawRejection);
 		RejectionClampBlend = saturate(RejectionClampBlend + tsr_simd_half::Const(1.0) - bIsValid);
-		RejectionClampBlend = Min3x3(RejectionClampBlend, GroupThreadIndex);
+		RejectionClampBlend = Min3x3(RejectionClampBlend);
 	}
 	#endif
 	
 	// Update the guide for next frame.
 	tsr_simd_halfC FinalGuide;
 	{
+		
+		// Convert input to LDR
+		tsr_simd_halfC ExposedInput = OriginalInput * rcp(OriginalInput + tsr_simd_halfC::Const(tsr_half(1.0)));
+	
+
 		tsr_simd_half BlendFinal;
 		// Completely discard the history
 		UNROLL_N(SIMD_SIZE)
@@ -969,12 +560,12 @@ void MainCS(
 			BlendFinal.SetElement(SimdIndex, max(RejectedBlendFactor, TotalBlend));
 		}
 		
-		FinalGuide = OriginalInput * tsr_simd_halfC::Vectorize(BlendFinal) - OriginalHistory * tsr_simd_halfC::Vectorize(BlendFinal - 1.0);
+		FinalGuide = ExposedInput * tsr_simd_halfC::Vectorize(BlendFinal) - OriginalHistory * tsr_simd_halfC::Vectorize(BlendFinal - 1.0);
 	}
 
 	// Mark the top left corner of the tile for debugging purposes.
 	#if DEBUG_OUTPUT
-	if (GroupThreadIndex == 0)
+	if (GGroupThreadIndex == 0)
 	{
 		UNROLL_N(DEBUG_ARRAY_SIZE)
 		for (uint DebugId = 0; DebugId < DEBUG_ARRAY_SIZE; DebugId++)
@@ -990,8 +581,8 @@ void MainCS(
 		UNROLL_N(SIMD_SIZE)
 		for (uint SimdIndex = 0; SimdIndex < SIMD_SIZE; SimdIndex++)
 		{
-			tsr_short2 LaneSimdPixelOffset = GetLaneSimdPixelOffset(LaneIndex, SimdIndex);
-			bool bIsNonOverscanPixel = all(and(LaneSimdPixelOffset >= TILE_OVERSCAN_PADDING, LaneSimdPixelOffset < TILE_SIZE + TILE_OVERSCAN_PADDING));
+			tsr_short2 LaneSimdPixelOffset = GetLaneSimdPixelOffset<LANE_STRIDE_X, LANE_STRIDE_Y>(LaneIndex, SimdIndex);
+			bool bIsNonOverscanPixel = all(and(LaneSimdPixelOffset >= TileOverscan, LaneSimdPixelOffset < (GROUP_TILE_SIZE - TileOverscan)));
 
 			tsr_short2 OutputPixelPos = InvalidateOutputPixelPos(GroupPixelOffset + LaneSimdPixelOffset, InputInfo_ViewportMax);
 			OutputPixelPos.x = select(bIsNonOverscanPixel, OutputPixelPos.x, ~tsr_short(0));
@@ -1011,7 +602,12 @@ void MainCS(
 			}
 			#endif
 
-			HistoryGuideOutput[OutputPixelPos] = FinalGuideColor;
+			#if CONFIG_SCENE_COLOR_ALPHA
+				HistoryGuideOutput[OutputPixelPos] = FinalGuideColor;
+			#else
+				HistoryGuideOutput[OutputPixelPos] = tsr_half4(FinalGuideColor.xyz, tsr_half(1.0));
+			#endif
+
 			#if CONFIG_MOIRE_DETECTION
 				HistoryMoireOutput[OutputPixelPos] = FinalMoire.GetElement(SimdIndex);
 			#endif

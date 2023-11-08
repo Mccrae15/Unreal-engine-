@@ -196,41 +196,46 @@ FGlobalComponentReregisterContext::FGlobalComponentReregisterContext()
 
 FGlobalComponentReregisterContext::FGlobalComponentReregisterContext(const TArray<UClass*>& ExcludeComponents)
 {
-	ActiveGlobalReregisterContextCount++;
-
-	// wait until resources are released
-	FlushRenderingCommands();
-
-	// Detach only actor components that are not in the excluded list
-	for (UActorComponent* Component : TObjectRange<UActorComponent>())
+	// Check if this is the first active context
+	if (++ActiveGlobalReregisterContextCount == 1)
 	{
-		bool bShouldReregister=true;
-		for (UClass* ExcludeClass : ExcludeComponents)
+		// wait until resources are released
+		FlushRenderingCommands();
+		
+		// Detach only actor components that are not in the excluded list
+		for (UActorComponent* Component : TObjectRange<UActorComponent>())
 		{
-			if( ExcludeClass &&
-				Component->IsA(ExcludeClass) )
+			bool bShouldReregister=true;
+			for (UClass* ExcludeClass : ExcludeComponents)
 			{
-				bShouldReregister = false;
-				break;
+				if( ExcludeClass &&
+					Component->IsA(ExcludeClass) )
+				{
+					bShouldReregister = false;
+					break;
+				}
+			}
+			if( bShouldReregister )
+			{
+				ComponentContexts.Add(new FComponentReregisterContext(Component, &ScenesToUpdateAllPrimitiveSceneInfos));
 			}
 		}
-		if( bShouldReregister )
-		{
-			ComponentContexts.Add(new FComponentReregisterContext(Component, &ScenesToUpdateAllPrimitiveSceneInfos));
-		}
+		
+		UpdateAllPrimitiveSceneInfos();
 	}
-
-	UpdateAllPrimitiveSceneInfos();
 }
 
 FGlobalComponentReregisterContext::~FGlobalComponentReregisterContext()
 {
 	check(ActiveGlobalReregisterContextCount > 0);
-	// We empty the array now, to ensure that the FComponentReregisterContext destructors are called while ActiveGlobalReregisterContextCount still indicates activity
-	ComponentContexts.Empty();
-	ActiveGlobalReregisterContextCount--;
 
-	UpdateAllPrimitiveSceneInfos();
+	// Check if this is the last active context
+	if (--ActiveGlobalReregisterContextCount == 0)
+	{
+		ComponentContexts.Empty();
+		
+		UpdateAllPrimitiveSceneInfos();
+	}
 }
 
 void FGlobalComponentReregisterContext::UpdateAllPrimitiveSceneInfos()
@@ -354,36 +359,7 @@ void UActorComponent::PostInitProperties()
 	// Instance components will be added during the owner's initialization
 	if (OwnerPrivate && CreationMethod != EComponentCreationMethod::Instance)
 	{
-		if (!FPlatformProperties::RequiresCookedData() && !OwnerPrivate->GetClass()->bCooked && CreationMethod == EComponentCreationMethod::Native && HasAllFlags(RF_NeedLoad|RF_DefaultSubObject))
-		{
-			UObject* MyArchetype = GetArchetype();
-			if (IsValid(MyArchetype) && MyArchetype != GetClass()->ClassDefaultObject)
-			{
-				OwnerPrivate->AddOwnedComponent(this);
-			}
-			else
-			{
-				// else: this is a natively created component that thinks its archetype is the CDO of
-				// this class, rather than a template component and this isn't the template component.
-				// Delete this stale component
-#if WITH_EDITOR
-				if (HasAnyInternalFlags(EInternalObjectFlags::AsyncLoading))
-				{
-					// Async loading components cannot be pending kill, or the async loading code will assert when trying to postload them.
-					// Instead, wait until the postload and mark pending kill at that time
-					bMarkPendingKillOnPostLoad = true;
-				}
-				else
-#endif // WITH_EDITOR
-				{
-					MarkAsGarbage();
-				}
-			}
-		}
-		else
-		{
-			OwnerPrivate->AddOwnedComponent(this);
-		}
+		OwnerPrivate->AddOwnedComponent(this);
 	}
 }
 
@@ -825,6 +801,8 @@ bool UActorComponent::Modify( bool bAlwaysMarkDirty/*=true*/ )
 	return Super::Modify(bAlwaysMarkDirty);
 }
 
+ENGINE_API bool GFlushRenderingCommandsOnPreEditChange = true;
+
 void UActorComponent::PreEditChange(FProperty* PropertyThatWillChange)
 {
 	Super::PreEditChange(PropertyThatWillChange);
@@ -849,9 +827,11 @@ void UActorComponent::PreEditChange(FProperty* PropertyThatWillChange)
 			WorldPrivate = nullptr;
 		}
 	}
-
 	// Flush rendering commands to ensure the rendering thread processes the component detachment before it is modified.
-	FlushRenderingCommands();
+	if (GFlushRenderingCommandsOnPreEditChange)
+	{
+		FlushRenderingCommands();
+	}
 }
 
 void UActorComponent::PreEditUndo()
@@ -1260,6 +1240,20 @@ void UActorComponent::SetAsyncPhysicsTickEnabled(bool bEnable)
 	}
 	
 	bAsyncPhysicsTickEnabled = bEnable;
+}
+
+void UActorComponent::DeferRemoveAsyncPhysicsTick()
+{
+	if (FPhysScene_Chaos* Scene = static_cast<FPhysScene_Chaos*>(WorldPrivate->GetPhysicsScene()))
+	{
+		// Set 0 for the step so that it gets run immediately on the next async tick.
+		Scene->EnqueueAsyncPhysicsCommand(0, this,
+			[this]()
+			{
+				SetAsyncPhysicsTickEnabled(false);
+			}
+		,false);
+	}
 }
 
 void UActorComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction)
@@ -2135,30 +2129,7 @@ void UActorComponent::DestroyReplicatedSubObjectOnRemotePeers(UObject* SubObject
 {
 	if (AActor* MyOwner = GetOwner())
 	{
-		if (!MyOwner->HasAuthority())
-		{
-			// Only the authority can call this.
-			return;
-		}
-
-		UE_LOG(LogNetSubObject, Verbose, TEXT("%s::%s (0x%p) requested to Delete replicated subobject on clients %s (0x%p)"), *MyOwner->GetName(), *GetName(), this, *SubObject->GetName(), SubObject);
-
-		if (FWorldContext* const Context = GEngine->GetWorldContextFromWorld(GetWorld()))
-		{
-			for (const FNamedNetDriver& Driver : Context->ActiveNetDrivers)
-			{
-				if (Driver.NetDriver)
-				{
-					Driver.NetDriver->DeleteSubObjectOnClients(MyOwner, SubObject);
-				}
-			}
-		}
-
-
-		if (IsUsingRegisteredSubObjectList())
-		{
-			MyOwner->RemoveActorComponentReplicatedSubObject(this, SubObject);
-		}
+		MyOwner->DestroyReplicatedSubObjectOnRemotePeers(this, SubObject);
 	}
 }
 
@@ -2166,29 +2137,7 @@ void UActorComponent::TearOffReplicatedSubObjectOnRemotePeers(UObject* SubObject
 {
 	if (AActor* MyOwner=GetOwner())
 	{
-		if (!MyOwner->HasAuthority())
-		{
-			// Only the authority can call this.
-			return;
-		}
-
-		UE_LOG(LogNetSubObject, Verbose, TEXT("%s::%s (0x%p) requested to TearOff replicated subobject on clients %s (0x%p)"), *MyOwner->GetName(), *GetName(), this, *SubObject->GetName(), SubObject);
-	
-		if (FWorldContext* const Context = GEngine->GetWorldContextFromWorld(GetWorld()))
-		{
-			for (const FNamedNetDriver& Driver : Context->ActiveNetDrivers)
-			{
-				if (Driver.NetDriver)
-				{
-					Driver.NetDriver->TearOffSubObjectOnClients(MyOwner, SubObject);
-				}
-			}
-		}
-
-		if (IsUsingRegisteredSubObjectList())
-		{
-			MyOwner->RemoveActorComponentReplicatedSubObject(this, SubObject);
-		}
+		MyOwner->TearOffReplicatedSubObjectOnRemotePeers(this, SubObject);
 	}
 }
 
@@ -2206,17 +2155,6 @@ bool UActorComponent::ReplicateSubobjects(UActorChannel* Channel, FOutBunch* Bun
 {
 	UActorChannel::SetCurrentSubObjectOwner(this);
 	return false;
-}
-
-void UActorComponent::PreReplication(IRepChangedPropertyTracker & ChangedPropertyTracker)
-{
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	UBlueprintGeneratedClass* BPClass = Cast<UBlueprintGeneratedClass>(GetClass());
-	if (BPClass != NULL)
-	{
-		BPClass->InstancePreReplication(this, ChangedPropertyTracker);
-	}
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 bool UActorComponent::GetComponentClassCanReplicate() const
@@ -2275,8 +2213,6 @@ bool UActorComponent::CanEditChange(const FProperty* InProperty) const
 #if UE_WITH_IRIS
 void UActorComponent::RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext& Context, UE::Net::EFragmentRegistrationFlags RegistrationFlags)
 {
-	Super::RegisterReplicationFragments(Context, RegistrationFlags);
-
 	// Build descriptors and allocate PropertyReplicationFragments for this object
 	UE::Net::FReplicationFragmentUtil::CreateAndRegisterFragmentsForObject(this, Context, RegistrationFlags);
 }

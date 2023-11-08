@@ -17,6 +17,7 @@
 #include "PlatformInfo.h"
 #include "Misc/DataDrivenPlatformInfoRegistry.h"
 #include "ScreenShotComparisonSettings.h"
+#include "ILauncherServicesModule.h"
 
 
 DEFINE_LOG_CATEGORY(LogScreenShotManager);
@@ -44,9 +45,8 @@ FScreenShotManager::FScreenShotManager()
 
 	// the automation controller owns the screenshot manager so we don't have to worry about outliving it
 	//AutomationController->OnTestsAvailable().AddRaw(this, &FScreenShotManager::OnTestAvailableCallback);
-	// #agrant todo - we don't want this dependency and higher level code should clear the folders before running new tests
 
-	BuildFallbackPlatformsListFromConfig(ScreenshotSettings);
+	BuildFallbackPlatformsListFromConfig();
 }
 
 FScreenShotManager::~FScreenShotManager()
@@ -95,6 +95,15 @@ FString FScreenShotManager::GetApprovedFolderForImageWithOptions(const FAutomati
 	FString TestFolder = GetPathComponentForTestImages(MetaData);
 
 	FString OutPath = FPaths::ProjectDir();
+
+	// Project path would be different if project is started from Unreal Frontend (uses LauncherServices)
+	if (FModuleManager::Get().IsModuleLoaded("LauncherServices"))
+	{
+		ILauncherServicesModule& LauncherServicesModule = FModuleManager::LoadModuleChecked<ILauncherServicesModule>("LauncherServices");
+		FString ProjectPath = FPaths::GetPath(LauncherServicesModule.GetProfileManager()->GetProjectPath());
+		FPaths::MakePathRelativeTo(ProjectPath, *FPaths::ProjectDir());
+		OutPath = FPaths::DirectoryExists(ProjectPath) ? ProjectPath : OutPath;
+	}
 
 	if (bUsePlatformPath)
 	{
@@ -178,8 +187,17 @@ TArray<FString> FScreenShotManager::FindApprovedImages(const FAutomationScreensh
 
 				FAutomationScreenshotMetadata CopiedMetaData = IncomingMetaData;
 				CopiedMetaData.Platform = Components[0];
-				CopiedMetaData.Rhi = FeatureLevels[0];
-				CopiedMetaData.FeatureLevel = FeatureLevels[1];
+				if (FeatureLevels.Num() > 1)
+				{
+					CopiedMetaData.Rhi = FeatureLevels[0];
+					CopiedMetaData.FeatureLevel = FeatureLevels[1];
+				}
+				else
+				{
+					// We don't need to do RHI_FL, just FL
+					CopiedMetaData.Rhi = TEXT("");
+					CopiedMetaData.FeatureLevel = FeatureLevels[0];
+				}
 
 				ApprovedPath = FPaths::GetPath(GetIdealApprovedFolderForImage(CopiedMetaData));
 				IFileManager::Get().FindFilesRecursive(ApprovedImages, *ApprovedPath, TEXT("*.png"), true, false);
@@ -211,7 +229,7 @@ TArray<FString> FScreenShotManager::FindApprovedImages(const FAutomationScreensh
 
 TFuture<FImageComparisonResult> FScreenShotManager::CompareScreenshotAsync(const FString& IncomingPath, const FAutomationScreenshotMetadata& MetaData, const EScreenShotCompareOptions Options)
 {
-	return Async(EAsyncExecution::Thread, [=] () { return CompareScreenshot(IncomingPath, MetaData, Options); });
+	return Async(EAsyncExecution::Thread, [this, IncomingPath, MetaData, Options] () { return CompareScreenshot(IncomingPath, MetaData, Options); });
 }
 
 
@@ -275,8 +293,6 @@ FImageComparisonResult FScreenShotManager::CompareScreenshot(const FString& InUn
 		}
 
 		FString NearestExistingApprovedImage;
-		
-
 		if ( ExistingMetadata.IsSet() )
 		{
 			int32 MatchScore = -1;
@@ -365,8 +381,6 @@ FImageComparisonResult FScreenShotManager::CompareScreenshot(const FString& InUn
 	// to the data remaining intact
 	FString ReportPathOnDisk = FPaths::Combine(ScreenshotResultsFolder, ResultsSubFolder, IncomingMetaData.Platform, GetPathComponentForRHI(IncomingMetaData), TEXT("/"));
 
-	FString ProjectDir = FPaths::GetPath(FPaths::GetProjectFilePath());
-
 	/*
 		Now create copies of all three images for the report. We use copies (a move in the case of the delta image) so that the report folders
 		can be moved around without any external references. This is vital for CIS where we want the results to be served up via HTTP or just 
@@ -386,6 +400,8 @@ FImageComparisonResult FScreenShotManager::CompareScreenshot(const FString& InUn
 		ComparisonResult.ReportApprovedFilePath = FPaths::Combine(ReportPathOnDisk, ApprovedName);
 	}
 
+	const FString ProjectDir = FPaths::GetPath(FPaths::IsProjectFilePathSet() ? FPaths::GetProjectFilePath() : FPaths::ProjectDir());
+
 	/*
 		First we need the incoming file in the report. If the calling code wants to keep the image then do a copy, 
 		otherwise move it
@@ -396,7 +412,7 @@ FImageComparisonResult FScreenShotManager::CompareScreenshot(const FString& InUn
 //	if (CanMoveImage == false)
 	{
 		// copy the incoming file to the report path 
-		FString IncomingFileFullPath = *FPaths::Combine(ProjectDir, ComparisonResult.IncomingFilePath);
+		const FString IncomingFileFullPath = *FPaths::Combine(ProjectDir, ComparisonResult.IncomingFilePath);
 
 		if (IFileManager::Get().Copy(*ComparisonResult.ReportIncomingFilePath, *IncomingFileFullPath, true, true) == COPY_OK)
 		{
@@ -574,13 +590,19 @@ void FScreenShotManager::CopyDirectory(const FString& DestDir, const FString& Sr
 		});
 }
 
-void FScreenShotManager::BuildFallbackPlatformsListFromConfig(const UScreenShotComparisonSettings* InSettings)
+void FScreenShotManager::BuildFallbackPlatformsListFromConfig()
 {
 	FallbackPlatforms.Empty();
 
-	if (InSettings->ScreenshotFallbackPlatforms.Num() > 0)
+	const UScreenShotComparisonSettings* ScreenshotSettings = GetDefault<UScreenShotComparisonSettings>();
+	TSet<FScreenshotFallbackEntry> ScreenshotFallbackPlatforms(ScreenshotSettings->ScreenshotFallbackPlatforms);
+#if WITH_EDITOR
+	ScreenshotFallbackPlatforms.Append(UScreenShotComparisonSettings::GetAllPlatformSettings());
+#endif // WITH_EDITOR
+
+	if (ScreenshotFallbackPlatforms.Num() > 0)
 	{
-		for (const FScreenshotFallbackEntry& Entry : InSettings->ScreenshotFallbackPlatforms)
+		for (const FScreenshotFallbackEntry& Entry : ScreenshotFallbackPlatforms)
 		{
 			FString Parent = Entry.Parent;
 			FString Child = Entry.Child;

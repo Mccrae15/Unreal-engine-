@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "IKRigSolver.h"
+#include "Rig/Solvers/IKRigSolver.h"
 #include "SIKRigRetargetChainList.h"
 #include "Templates/SubclassOf.h"
 #include "Animation/AnimationAsset.h"
@@ -142,7 +142,7 @@ public:
 	void ClearOutputLog() const;
 
 	// return list of those solvers in the stack that are selected by user 
-	void GetSelectedSolvers(TArray<TSharedPtr<FSolverStackElement> >& OutSelectedSolvers);
+	void GetSelectedSolvers(TArray<TSharedPtr<FSolverStackElement> >& OutSelectedSolvers) const;
 	// get index of the first selected solver, return INDEX_None if nothing selected 
 	int32 GetSelectedSolverIndex();
 	// get names of all goals that are selected 
@@ -205,7 +205,7 @@ public:
 	
 	// all modifications to the data model should go through this controller
 	UPROPERTY(transient)
-	UIKRigController* AssetController;
+	TObjectPtr<UIKRigController> AssetController;
 
 	// viewport skeletal mesh 
 	UDebugSkelMeshComponent* SkelMeshComponent;

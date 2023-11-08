@@ -63,7 +63,7 @@ static FAutoConsoleVariableRef CVarUnlimitedBoneInfluencesThreshold(
 static TAutoConsoleVariable<bool> CVarMobileEnableCloth(
 	TEXT("r.Mobile.EnableCloth"),
 	true,
-	TEXT("If enabled, compile cloth shader permutations and render simulated cloth on mobile platforms and Windows ES3.1. Cannot be changed at runtime"),
+	TEXT("If enabled, compile cloth shader permutations and render simulated cloth on mobile platforms and Mobile mode on PC. Cannot be changed at runtime"),
 	ECVF_ReadOnly);
 
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FAPEXClothUniformShaderParameters,"APEXClothParam");
@@ -180,13 +180,14 @@ uint32 FSharedPoolPolicyData::BucketSizes[NumPoolBucketSizes] = {
  -----------------------------------------------------------------------------*/
 FVertexBufferAndSRV FBoneBufferPoolPolicy::CreateResource(CreationArguments Args)
 {
+	FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
 	uint32 BufferSize = GetPoolBucketSize(GetPoolBucketIndex(Args));
 	// in VisualStudio the copy constructor call on the return argument can be optimized out
 	// see https://msdn.microsoft.com/en-us/library/ms364057.aspx#nrvo_cpp05_topic3
 	FVertexBufferAndSRV Buffer;
 	FRHIResourceCreateInfo CreateInfo(TEXT("FBoneBufferPoolPolicy"));
-	Buffer.VertexBufferRHI = RHICreateVertexBuffer( BufferSize, (BUF_Dynamic | BUF_ShaderResource), CreateInfo );
-	Buffer.VertexBufferSRV = RHICreateShaderResourceView( Buffer.VertexBufferRHI, sizeof(FVector4f), PF_A32B32G32R32F );
+	Buffer.VertexBufferRHI = RHICmdList.CreateVertexBuffer( BufferSize, (BUF_Dynamic | BUF_ShaderResource), CreateInfo );
+	Buffer.VertexBufferSRV = RHICmdList.CreateShaderResourceView( Buffer.VertexBufferRHI, sizeof(FVector4f), PF_A32B32G32R32F );
 	return Buffer;
 }
 
@@ -201,13 +202,14 @@ void FBoneBufferPoolPolicy::FreeResource(FVertexBufferAndSRV Resource)
 
 FVertexBufferAndSRV FClothBufferPoolPolicy::CreateResource(CreationArguments Args)
 {
+	FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
 	uint32 BufferSize = GetPoolBucketSize(GetPoolBucketIndex(Args));
 	// in VisualStudio the copy constructor call on the return argument can be optimized out
 	// see https://msdn.microsoft.com/en-us/library/ms364057.aspx#nrvo_cpp05_topic3
 	FVertexBufferAndSRV Buffer;
 	FRHIResourceCreateInfo CreateInfo(TEXT("FClothBufferPoolPolicy"));
-	Buffer.VertexBufferRHI = RHICreateVertexBuffer( BufferSize, (BUF_Dynamic | BUF_ShaderResource), CreateInfo );
-	Buffer.VertexBufferSRV = RHICreateShaderResourceView( Buffer.VertexBufferRHI, sizeof(FVector2f), PF_G32R32F );
+	Buffer.VertexBufferRHI = RHICmdList.CreateVertexBuffer( BufferSize, (BUF_Dynamic | BUF_ShaderResource), CreateInfo );
+	Buffer.VertexBufferSRV = RHICmdList.CreateShaderResourceView( Buffer.VertexBufferRHI, sizeof(FVector2f), PF_G32R32F );
 	return Buffer;
 }
 
@@ -316,7 +318,7 @@ bool FGPUBaseSkinVertexFactory::FShaderDataType::UpdateBoneData(FRHICommandListI
 
 				return true;
 			}
-			ChunkMatrices = (FMatrix3x4*)RHILockBuffer(CurrentBoneBuffer->VertexBufferRHI, 0, VectorArraySize, RLM_WriteOnly);
+			ChunkMatrices = (FMatrix3x4*)RHICmdList.LockBuffer(CurrentBoneBuffer->VertexBufferRHI, 0, VectorArraySize, RLM_WriteOnly);
 		}
 	}
 	else
@@ -365,12 +367,12 @@ bool FGPUBaseSkinVertexFactory::FShaderDataType::UpdateBoneData(FRHICommandListI
 		if (NumBones)
 		{
 			check(CurrentBoneBuffer);
-			RHIUnlockBuffer(CurrentBoneBuffer->VertexBufferRHI);
+			RHICmdList.UnlockBuffer(CurrentBoneBuffer->VertexBufferRHI);
 		}
 	}
 	else
 	{
-		UniformBuffer = RHICreateUniformBuffer(&GBoneUniformStruct, FBoneMatricesUniformShaderParameters::StaticStructMetadata.GetLayoutPtr(), UniformBuffer_MultiFrame);
+		UniformBuffer = RHICreateUniformBuffer(&GBoneUniformStruct, FBoneMatricesUniformShaderParameters::FTypeInfo::GetStructMetadata()->GetLayoutPtr(), UniformBuffer_MultiFrame);
 	}
 	return false;
 }
@@ -531,7 +533,7 @@ void FGPUBaseSkinVertexFactory::SetData(const FGPUSkinDataType* InData)
 	}
 
 	*Data = *InData;
-	UpdateRHI();
+	UpdateRHI(FRHICommandListImmediate::Get());
 }
 
 void FGPUBaseSkinVertexFactory::CopyDataTypeForLocalVertexFactory(FLocalVertexFactory::FDataType& OutDestData) const
@@ -745,9 +747,12 @@ void TGPUSkinVertexFactory<BoneInfluenceType>::GetVertexElements(ERHIFeatureLeve
 	int32 MorphDeltaStreamIndex;
 	GetVertexElements(FeatureLevel, InputStreamType, GPUSkinData, OutElements, VertexStreams, MorphDeltaStreamIndex);
 
-	// For ES3.1 attribute ID needs to be done differently
-	check(FeatureLevel > ERHIFeatureLevel::ES3_1);
-	OutElements.Add(FVertexElement(VertexStreams.Num(), 0, VET_UInt, 16, 0, true));
+	if (UseGPUScene(GMaxRHIShaderPlatform, GMaxRHIFeatureLevel))
+	{
+		// For ES3.1 attribute ID needs to be done differently
+		check(FeatureLevel > ERHIFeatureLevel::ES3_1);
+		OutElements.Add(FVertexElement(VertexStreams.Num(), 0, VET_UInt, 16, 0, true));
+	}
 }
 
 /**
@@ -769,7 +774,7 @@ void TGPUSkinVertexFactory<BoneInfluenceType>::AddVertexElements(FVertexDeclarat
 * initializes the device resource
 */
 template <GPUSkinBoneInfluenceType BoneInfluenceType>
-void TGPUSkinVertexFactory<BoneInfluenceType>::InitRHI()
+void TGPUSkinVertexFactory<BoneInfluenceType>::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	// list of declaration items
 	FVertexDeclarationElementList Elements;
@@ -780,16 +785,9 @@ void TGPUSkinVertexFactory<BoneInfluenceType>::InitRHI()
 }
 
 template <GPUSkinBoneInfluenceType BoneInfluenceType>
-void TGPUSkinVertexFactory<BoneInfluenceType>::InitDynamicRHI()
+void TGPUSkinVertexFactory<BoneInfluenceType>::ReleaseRHI()
 {
-	FVertexFactory::InitDynamicRHI();
-	//ShaderData.UpdateBoneData(GetFeatureLevel());
-}
-
-template <GPUSkinBoneInfluenceType BoneInfluenceType>
-void TGPUSkinVertexFactory<BoneInfluenceType>::ReleaseDynamicRHI()
-{
-	FVertexFactory::ReleaseDynamicRHI();
+	FVertexFactory::ReleaseRHI();
 	ShaderData.ReleaseBoneData();
 }
 
@@ -809,14 +807,21 @@ const FMorphVertexBuffer* TGPUSkinVertexFactory<BoneInfluenceType>::GetMorphVert
 	return Data->MorphVertexBufferPool ? &Data->MorphVertexBufferPool->GetMorphVertexBufferForReading(bPrevious) : nullptr;
 }
 
+template <GPUSkinBoneInfluenceType BoneInfluenceType>
+uint32 TGPUSkinVertexFactory<BoneInfluenceType>::GetMorphVertexBufferUpdatedFrameNumber() const
+{
+	check(Data.IsValid());
+	return Data->MorphVertexBufferPool ? Data->MorphVertexBufferPool->GetUpdatedFrameNumber() : 0;
+}
+
 /*-----------------------------------------------------------------------------
 TGPUSkinAPEXClothVertexFactory
 -----------------------------------------------------------------------------*/
 
 template <GPUSkinBoneInfluenceType BoneInfluenceType>
-void TGPUSkinAPEXClothVertexFactory<BoneInfluenceType>::ReleaseDynamicRHI()
+void TGPUSkinAPEXClothVertexFactory<BoneInfluenceType>::ReleaseRHI()
 {
-	Super::ReleaseDynamicRHI();
+	Super::ReleaseRHI();
 	ClothShaderData.ReleaseClothSimulData();
 
 	// Release the RHIResource reference held in FGPUSkinAPEXClothDataType
@@ -881,7 +886,7 @@ public:
 
 				// Bone data is updated whenever animation triggers a dynamic update, animation can skip frames hence the frequency is not necessary every frame.
 				// So check if bone data is updated this frame, if not then the previous frame data is stale and not suitable for motion blur.
-				bool bBoneDataUpdatedThisFrame = View->Family->FrameNumber == ShaderData.UpdatedFrameNumber;
+				bool bBoneDataUpdatedThisFrame = View->Family->FrameCounter == ShaderData.UpdatedFrameNumber;
 				// If world is paused, use current frame bone matrices, so velocity is canceled and skeletal mesh isn't blurred from motion.
 				bool bPrevious = !View->Family->bWorldIsPaused && bBoneDataUpdatedThisFrame;
 				FRHIShaderResourceView* PreviousData = ShaderData.GetBoneBufferForReading(bPrevious).VertexBufferSRV;
@@ -915,9 +920,10 @@ public:
 		const bool bIsMobile = IsMobilePlatform(ShaderPlatform);
 		if (!bIsMobile)
 		{
-			const FMorphVertexBuffer* MorphVertexBuffer = nullptr;
 			const auto* GPUSkinVertexFactory = (const FGPUBaseSkinVertexFactory*)VertexFactory;
-			MorphVertexBuffer = GPUSkinVertexFactory->GetMorphVertexBuffer(!View->Family->bWorldIsPaused);
+			bool bMorphUpdatedThisFrame = (View->Family->FrameCounter == GPUSkinVertexFactory->GetMorphVertexBufferUpdatedFrameNumber());
+			bool bPrevious = !View->Family->bWorldIsPaused && bMorphUpdatedThisFrame;
+			const FMorphVertexBuffer* MorphVertexBuffer = GPUSkinVertexFactory->GetMorphVertexBuffer(bPrevious);
 			ShaderBindings.Add(PreviousMorphBufferParameter, MorphVertexBuffer ? MorphVertexBuffer->GetSRV() : GNullVertexBuffer.VertexBufferSRV.GetReference());
 		}
 	}
@@ -1103,7 +1109,7 @@ bool FGPUBaseSkinAPEXClothVertexFactory::ClothShaderType::UpdateClothSimulData(F
 
 			return true;
 		}
-		float* RESTRICT Data = (float* RESTRICT)RHILockBuffer(CurrentClothBuffer->VertexBufferRHI, 0, VectorArraySize, RLM_WriteOnly);
+		float* RESTRICT Data = (float* RESTRICT)RHICmdList.LockBuffer(CurrentClothBuffer->VertexBufferRHI, 0, VectorArraySize, RLM_WriteOnly);
 		{
 			QUICK_SCOPE_CYCLE_COUNTER(STAT_FGPUBaseSkinAPEXClothVertexFactory_UpdateClothSimulData_CopyData);
 			float* RESTRICT Pos = (float* RESTRICT) &InSimulPositions[0].X;
@@ -1120,7 +1126,7 @@ bool FGPUBaseSkinAPEXClothVertexFactory::ClothShaderType::UpdateClothSimulData(F
 				Normal += 3;
 			}
 		}
-		RHIUnlockBuffer(CurrentClothBuffer->VertexBufferRHI);
+		RHICmdList.UnlockBuffer(CurrentClothBuffer->VertexBufferRHI);
 	}
 	
 	return false;
@@ -1251,7 +1257,7 @@ void TGPUSkinAPEXClothVertexFactory<BoneInfluenceType>::SetData(const FGPUSkinDa
 	}
 
 	*ClothDataPtr = *InClothData;
-	FGPUBaseSkinVertexFactory::UpdateRHI();
+	FGPUBaseSkinVertexFactory::UpdateRHI(FRHICommandListImmediate::Get());
 }
 
 /**
@@ -1259,7 +1265,7 @@ void TGPUSkinAPEXClothVertexFactory<BoneInfluenceType>::SetData(const FGPUSkinDa
 * initializes the device resource
 */
 template <GPUSkinBoneInfluenceType BoneInfluenceType>
-void TGPUSkinAPEXClothVertexFactory<BoneInfluenceType>::InitRHI()
+void TGPUSkinAPEXClothVertexFactory<BoneInfluenceType>::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	// list of declaration items
 	FVertexDeclarationElementList Elements;	
@@ -1421,7 +1427,7 @@ void FGPUSkinPassthroughVertexFactory::CreateUniformBuffer()
 	}
 }
 
-void FGPUSkinPassthroughVertexFactory::CreateLooseUniformBuffer(FGPUBaseSkinVertexFactory const* InSourceVertexFactory, uint32 InFrameNumber)
+void FGPUSkinPassthroughVertexFactory::CreateLooseUniformBuffer(FRHICommandListBase& RHICmdList, FGPUBaseSkinVertexFactory const* InSourceVertexFactory, uint32 InFrameNumber)
 {
 	FRHIShaderResourceView* PositionSRV = SRVs[EShaderResource::Position] != nullptr ? SRVs[EShaderResource::Position] : (FRHIShaderResourceView*)InSourceVertexFactory->GetPositionsSRV();
 	FRHIShaderResourceView* PrevPositionSRV = SRVs[EShaderResource::PreviousPosition] != nullptr ? SRVs[EShaderResource::PreviousPosition] : PositionSRV;
@@ -1430,11 +1436,13 @@ void FGPUSkinPassthroughVertexFactory::CreateLooseUniformBuffer(FGPUBaseSkinVert
 	Parameters.FrameNumber = InFrameNumber;
 	Parameters.GPUSkinPassThroughPositionBuffer = PositionSRV;
 	Parameters.GPUSkinPassThroughPreviousPositionBuffer = PrevPositionSRV;
-	LooseParametersUniformBuffer.UpdateUniformBufferImmediate(Parameters);
+	LooseParametersUniformBuffer.UpdateUniformBufferImmediate(RHICmdList, Parameters);
 }
 
 void FGPUSkinPassthroughVertexFactory::SetVertexAttributes(FGPUBaseSkinVertexFactory const* InSourceVertexFactory, FAddVertexAttributeDesc const& InDesc)
 {
+	FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
+
 	// Check for new vertex attributes.
 	bool bNeedFullUpdate = false;
 	for (int32 Index = 0; Index < InDesc.VertexAttributes.Num(); ++Index)
@@ -1487,7 +1495,7 @@ void FGPUSkinPassthroughVertexFactory::SetVertexAttributes(FGPUBaseSkinVertexFac
 
 		// Rebuild the vertex declaration.
 		// This will also update the uniform buffer.
-		UpdateRHI();
+		UpdateRHI(RHICmdList);
 
 		// Rebuild the vertex stream indices.
 		BuildStreamIndices();
@@ -1504,7 +1512,7 @@ void FGPUSkinPassthroughVertexFactory::SetVertexAttributes(FGPUBaseSkinVertexFac
 	if (bNeedLooseUniformBufferUpdate)
 	{
 		// Update the loose uniform buffer.
-		CreateLooseUniformBuffer(InSourceVertexFactory, InDesc.FrameNumber);
+		CreateLooseUniformBuffer(RHICmdList, InSourceVertexFactory, InDesc.FrameNumber);
 	}
 }
 

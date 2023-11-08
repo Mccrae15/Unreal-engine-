@@ -77,9 +77,9 @@ enum class ERayTracingDisabledReason : int32
 typedef TBitArray<TInlineAllocator<EShaderPlatform::SP_NumPlatforms / 8>> ShaderPlatformMaskType;
 extern RENDERCORE_API ShaderPlatformMaskType GRayTracingPlatformMask;
 
-ERayTracingDisabledReason GetRayTracingDisabledReason()
+ERayTracingDisabledReason GetRayTracingDisabledReason(EShaderPlatform ShaderPlatform)
 {
-	if (IsRayTracingEnabled())
+	if (IsRayTracingEnabled(ShaderPlatform))
 	{
 		return ERayTracingDisabledReason::OK;
 	}
@@ -90,12 +90,12 @@ ERayTracingDisabledReason GetRayTracingDisabledReason()
 		return ERayTracingDisabledReason::DISABLED_BY_PROJECT_SETTINGS;
 	}
 
-	if (!RHISupportsRayTracing(GMaxRHIShaderPlatform))
+	if (!RHISupportsRayTracing(ShaderPlatform))
 	{
 		return ERayTracingDisabledReason::INCOMPATIBLE_SHADER_PLATFORM;
 	}
 	// Shader platform statically supports ray tracing, but disabled by target platform at runtime
-	else if (RHISupportsRayTracing(GMaxRHIShaderPlatform) && (GRayTracingPlatformMask[(int)GMaxRHIShaderPlatform]) == 0)
+	else if (RHISupportsRayTracing(ShaderPlatform) && (GRayTracingPlatformMask[(int)ShaderPlatform]) == 0)
 	{
 		return ERayTracingDisabledReason::DISABLED_BY_TARGET_PLATFORM;
 	}
@@ -112,6 +112,19 @@ ERayTracingDisabledReason GetRayTracingDisabledReason()
 
 	// TODO: better determination of reasons instead of pouring everything into this bucket 
 	return ERayTracingDisabledReason::INCAPABLE_HARDWARE;
+}
+
+ERayTracingDisabledReason GetRayTracingDisabledReason()
+{
+	ERayTracingDisabledReason RayTracingStatus = ERayTracingDisabledReason::INCAPABLE_HARDWARE;
+	if (UWorld* World = GEditor->GetEditorWorldContext().World())
+	{
+		if (World->Scene)
+		{
+			RayTracingStatus = GetRayTracingDisabledReason(World->Scene->GetShaderPlatform());
+		}
+	}
+	return RayTracingStatus;
 }
 
 static FText GenerateRayTracingDisabledReasonMessage(ERayTracingDisabledReason Reason)
@@ -226,7 +239,9 @@ TSharedRef<SDockTab> FGPULightmassEditorModule::SpawnSettingsTab(const FSpawnTab
 					SNew(SButton)
 					.HAlign(HAlign_Center)
 					.ButtonStyle(FAppStyle::Get(), "FlatButton.Success")
-					.IsEnabled(IsRayTracingEnabled() && IsStaticLightingAllowed() && IsPathTracingEnabled())
+					.IsEnabled_Lambda( []() {
+						return (GetRayTracingDisabledReason() == ERayTracingDisabledReason::OK) && IsStaticLightingAllowed() && IsPathTracingEnabled();
+					}) 
 					.Visibility_Lambda([](){ return IsRunning() ? EVisibility::Collapsed : EVisibility::Visible; })
 					.OnClicked_Raw(this, &FGPULightmassEditorModule::OnStartClicked)
 					[
@@ -343,9 +358,10 @@ TSharedRef<SDockTab> FGPULightmassEditorModule::SpawnSettingsTab(const FSpawnTab
 				.AutoWrapText(true)
 				.Text_Lambda( []() -> FText
 				{
-					if (!IsRayTracingEnabled())
+					ERayTracingDisabledReason RayTracingStatus = GetRayTracingDisabledReason();
+					if (RayTracingStatus != ERayTracingDisabledReason::OK)
 					{
-						return GenerateRayTracingDisabledReasonMessage(GetRayTracingDisabledReason());
+						return GenerateRayTracingDisabledReasonMessage(RayTracingStatus);
 					}
 					else if (!IsStaticLightingAllowed())
 					{

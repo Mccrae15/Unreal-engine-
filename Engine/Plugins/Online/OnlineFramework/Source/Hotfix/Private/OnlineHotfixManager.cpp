@@ -1,14 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OnlineHotfixManager.h"
-#include "HttpModule.h"
 #include "Online.h"
 #include "OnlineSubsystemUtils.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/Package.h"
-
-#include "Logging/LogSuppressionInterface.h"
-
 
 #include "Misc/PackageName.h"
 #include "Misc/EngineVersion.h"
@@ -435,6 +431,11 @@ void UOnlineHotfixManager::OnEnumerateFilesComplete(bool bWasSuccessful, const F
 							// Perform any undo operations needed
 							RestoreBackupIniFiles();
 							UnmountHotfixFiles();
+
+							for (const FCloudFileHeader& FileHeader : RemovedHotfixFileList)
+							{
+								TriggerOnHotfixRemovedFileDelegates(FileHeader.FileName);
+							}
 							
 							TriggerHotfixComplete(EHotfixResult::SuccessNoChange);
 						}));
@@ -448,7 +449,7 @@ void UOnlineHotfixManager::OnEnumerateFilesComplete(bool bWasSuccessful, const F
 	}
 	else
 	{
-		UE_LOG(LogHotfixManager, Error, TEXT("Enumeration of hotfix files failed"));
+		UE_LOG(LogHotfixManager, Warning, TEXT("Enumeration of hotfix files failed"));
 		TriggerHotfixComplete(EHotfixResult::Failed);
 	}
 }
@@ -543,7 +544,7 @@ void UOnlineHotfixManager::OnEnumerateFilesForAvailabilityComplete(bool bWasSucc
 	}
 	else
 	{
-		UE_LOG(LogHotfixManager, Error, TEXT("Enumeration of hotfix files failed"));
+		UE_LOG(LogHotfixManager, Warning, TEXT("Enumeration of hotfix files failed"));
 	}
 
 	OnlineTitleFile = nullptr;
@@ -613,6 +614,10 @@ void UOnlineHotfixManager::BuildHotfixFileListDeltas()
 			}
 		}
 	}
+
+	UE_LOG(LogHotfixManager, Log, TEXT("Hotfix deltas: updated:[%s], removed:[%s]"),
+		*FString::JoinBy(ChangedHotfixFileList, TEXT(", "), &FCloudFileHeader::FileName),
+		*FString::JoinBy(RemovedHotfixFileList, TEXT(", "), &FCloudFileHeader::FileName));
 }
 
 void UOnlineHotfixManager::FilterHotfixFiles()
@@ -701,6 +706,11 @@ EHotfixResult UOnlineHotfixManager::ApplyHotfix()
 	RestoreBackupIniFiles();
 	UnmountHotfixFiles();
 
+	for (const FCloudFileHeader& FileHeader : RemovedHotfixFileList)
+	{
+		TriggerOnHotfixRemovedFileDelegates(FileHeader.FileName);
+	}
+
 	for (const FCloudFileHeader& FileHeader : ChangedHotfixFileList)
 	{
 		if (!ApplyHotfixProcessing(FileHeader))
@@ -711,6 +721,7 @@ EHotfixResult UOnlineHotfixManager::ApplyHotfix()
 		// Let anyone listening know we just processed this file
 		TriggerOnHotfixProcessedFileDelegates(FileHeader.FileName, GetCachedDirectory() / FileHeader.DLName);
 	}
+
 	UE_LOG(LogHotfixManager, Display, TEXT("Hotfix data has been successfully applied"));
 	EHotfixResult Result = EHotfixResult::Success;
 	if (ChangedOrRemovedPakCount > 0)
@@ -790,20 +801,29 @@ bool UOnlineHotfixManager::ApplyHotfixProcessing(const FCloudFileHeader& FileHea
 
 	bool bSuccess = false;
 	const FString Extension = FPaths::GetExtension(FileHeader.FileName);
-	if (Extension == TEXT("INI"))
+	if (Extension == TEXT("PAK"))
+	{
+		bSuccess = HotfixPakFile(FileHeader);
+	}
+	else
 	{
 		TArray<uint8> FileData;
 		if (OnlineTitleFile->GetFileContents(FileHeader.DLName, FileData))
 		{
-			UE_LOG(LogHotfixManager, Log, TEXT("Applying hotfix %s"), *FileHeader.FileName);
-
-			if (PreProcessDownloadedFileData(FileData))
+			if (PreProcessDownloadedFileData(FileHeader, FileData))
 			{
-				// Convert to a FString
-				FileData.Add(0);
-				FString HotfixStr;
-				FFileHelper::BufferToString(HotfixStr, FileData.GetData(), FileData.Num());
-				bSuccess = HotfixIniFile(FileHeader.FileName, HotfixStr);
+				TriggerOnHotfixUpdatedFileDelegates(FileHeader.FileName, FileData);
+
+				if (Extension == TEXT("INI"))
+				{
+					UE_LOG(LogHotfixManager, Log, TEXT("Applying hotfix %s"), *FileHeader.FileName);
+
+					// Convert to a FString
+					FileData.Add(0);
+					FString HotfixStr;
+					FFileHelper::BufferToString(HotfixStr, FileData.GetData(), FileData.Num());
+					bSuccess = HotfixIniFile(FileHeader.FileName, HotfixStr);
+				}
 			}
 			else
 			{
@@ -814,10 +834,6 @@ bool UOnlineHotfixManager::ApplyHotfixProcessing(const FCloudFileHeader& FileHea
 		{
 			UE_LOG(LogHotfixManager, Warning, TEXT("Failed to get contents of %s"), *FileHeader.FileName);
 		}
-	}
-	else if (Extension == TEXT("PAK"))
-	{
-		bSuccess = HotfixPakFile(FileHeader);
 	}
 	OnlineTitleFile->ClearFile(FileHeader.FileName);
 	return bSuccess;
@@ -899,8 +915,6 @@ FConfigFile* UOnlineHotfixManager::GetConfigFile(const FString& IniName)
 
 bool UOnlineHotfixManager::HotfixIniFile(const FString& FileName, const FString& IniData)
 {
-	const bool bIsEngineIni = FileName.Contains(TEXT("Engine.ini"));
-
 	// Flush async loading before modifying GConfig.
 	FlushAsyncLoading();
 
@@ -913,10 +927,6 @@ bool UOnlineHotfixManager::HotfixIniFile(const FString& FileName, const FString&
 	TArray<UObject*> PerObjectConfigObjects;
 	int32 StartIndex = 0;
 	int32 EndIndex = 0;
-	bool bUpdateLogSuppression = false;
-	bool bUpdateConsoleVariables = false;
-	bool bUpdateHttpConfigs = false;
-	TSet<FString> OnlineSubSections;
 	TSet<FString> UpdatedSectionNames;
 	// Find the set of object classes that were affected
 	while (StartIndex >= 0 && StartIndex < IniData.Len() && EndIndex >= StartIndex)
@@ -968,32 +978,6 @@ bool UOnlineHotfixManager::HotfixIniFile(const FString& FileName, const FString&
 				{
 					// HACK - Make AssetHotfix the last element in the ini file so that this parsing isn't affected by it for now
 					break;
-				}
-
-				if (bIsEngineIni)
-				{
-					// TODO replace all of this with bindees to FCoreDelegates::TSOnConfigSectionsChanged()
-					const TCHAR* LogConfigSection = TEXT("[Core.Log]");
-					const TCHAR* ConsoleVariableSection = TEXT("[ConsoleVariables]");
-					const TCHAR* HttpSection = TEXT("[HTTP"); // note "]" omitted on purpose since we want a partial match
-					const TCHAR* OnlineSubSectionKey = TEXT("[OnlineSubsystem"); // note "]" omitted on purpose since we want a partial match
-					if (!bUpdateLogSuppression && FCString::Strnicmp(*IniData + StartIndex, LogConfigSection, FCString::Strlen(LogConfigSection)) == 0)
-					{
-						bUpdateLogSuppression = true;
-					}
-					else if (!bUpdateConsoleVariables && FCString::Strnicmp(*IniData + StartIndex, ConsoleVariableSection, FCString::Strlen(ConsoleVariableSection)) == 0)
-					{
-						bUpdateConsoleVariables = true;
-					}
-					else if (!bUpdateHttpConfigs &&	FCString::Strnicmp(*IniData + StartIndex, HttpSection, FCString::Strlen(HttpSection)) == 0)
-					{
-						bUpdateHttpConfigs = true;
-					}
-					else if (FCString::Strnicmp(*IniData + StartIndex, OnlineSubSectionKey, FCString::Strlen(OnlineSubSectionKey)) == 0)
-					{
-						FString SectionStr = IniData.Mid(StartIndex, EndIndex - StartIndex + 1);
-						OnlineSubSections.Emplace(MoveTemp(SectionStr));
-					}
 				}
 
 				// Per object config entries will have a space in the name, but classes won't
@@ -1093,34 +1077,6 @@ bool UOnlineHotfixManager::HotfixIniFile(const FString& FileName, const FString&
 
 	const FString ConfigFileName = ConfigFile->Name.ToString();
 	FCoreDelegates::TSOnConfigSectionsChanged().Broadcast(ConfigFileName, UpdatedSectionNames);
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	FCoreDelegates::OnConfigSectionsChanged.Broadcast(ConfigFileName, UpdatedSectionNames);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
-	// Reload log suppression if configs changed
-	if (bUpdateLogSuppression)
-	{
-		FLogSuppressionInterface::Get().ProcessConfigAndCommandLine();
-	}
-
-	// Reload console variables if configs changed
-	if (bUpdateConsoleVariables)
-	{
-		FConfigCacheIni::LoadConsoleVariablesFromINI();
-	}
-
-	// Reload configs relevant to the HTTP module
-	if (bUpdateHttpConfigs)
-	{
-		FHttpModule::Get().UpdateConfigs();
-	}
-
-	// Reload configs relevant to OSS config sections that were updated
-	IOnlineSubsystem* OnlineSub = IOnlineSubsystem::Get(OSSName.Len() ? FName(*OSSName, FNAME_Find) : NAME_None);
-	if (OnlineSub != nullptr)
-	{
-		OnlineSub->ReloadConfigs(OnlineSubSections);
-	}
 
 	UE_LOG(LogHotfixManager, Log, TEXT("Updating config from %s took %f seconds and reloaded %d objects"),
 		*FileName, FPlatformTime::Seconds() - StartTime, NumObjectsReloaded);
@@ -1938,7 +1894,8 @@ UWorld* UOnlineHotfixManager::GetWorld() const
 struct FHotfixManagerExec :
 	public FSelfRegisteringExec
 {
-	virtual bool Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override
+protected:
+	virtual bool Exec_Runtime(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override
 	{
 		if (FParse::Command(&Cmd, TEXT("HOTFIX")))
 		{

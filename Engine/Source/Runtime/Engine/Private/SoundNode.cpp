@@ -18,6 +18,13 @@ FAutoConsoleVariableRef CVarBypassRetainInSoundNodes(
 	TEXT("When set to 1, we ignore the loading behavior of sound classes set on a Sound Cue directly.\n"),
 	ECVF_Default);
 
+static int32 ManuallyPrimeChildNodesCVar = 1;
+FAutoConsoleVariableRef CVarManuallyPrimeChildNodes(			
+	TEXT("au.streamcache.priming.ManuallyPrimeChildNodes"),
+	ManuallyPrimeChildNodesCVar,			
+	TEXT("When set to 1, we ignore the loading behavior of sound classes set on a Sound Cue directly.\n"),
+	ECVF_Default);
+
 /*-----------------------------------------------------------------------------
 	USoundNode implementation.
 -----------------------------------------------------------------------------*/
@@ -58,14 +65,13 @@ bool USoundNode::CanBeClusterRoot() const
 
 bool USoundNode::CanBeInCluster() const
 {
-	return false;
+	return true;
 }
 
 #if WITH_EDITOR
 void USoundNode::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
 {
 	USoundNode* This = CastChecked<USoundNode>(InThis);
-
 	Collector.AddReferencedObject(This->GraphNode, This);
 
 	Super::AddReferencedObjects(InThis, Collector);
@@ -101,7 +107,48 @@ UPTRINT USoundNode::GetNodeWaveInstanceHash(const UPTRINT ParentWaveInstanceHash
 
 void USoundNode::PrimeChildWavePlayers(bool bRecurse)
 {
-	OverrideLoadingBehaviorOnChildWaves(bRecurse, ESoundWaveLoadingBehavior::PrimeOnLoad);
+	if (!FPlatformCompressionUtilities::IsCurrentPlatformUsingStreamCaching())
+	{
+		return;
+	}
+
+	// Note: it is not safe to call IAudioStreamingManager::RequestChunk from the game thread
+	// if there is no async loading thread.  This can deadlock:
+
+	// The call will try to obtain a lock held by another thread, that thread may be waiting for
+	// any pending async loads to complete, which will never happen if WE are the (non)"async loading thread"
+	// for now, in the synchronous loading case, we fallback to the old behavior.
+	if(!BypassRetainInSoundNodesCVar && ManuallyPrimeChildNodesCVar && IsAsyncLoadingMultithreaded())
+	{	
+		// Search child nodes for wave players, then prime each soundwave
+		IAudioStreamingManager &Mgr = IStreamingManager::Get().GetAudioStreamingManager();
+		for (USoundNode* ChildNode : ChildNodes)
+		{
+			if (ChildNode)
+			{
+				ChildNode->ConditionalPostLoad();
+				if (bRecurse)
+				{
+					ChildNode->PrimeChildWavePlayers(true);
+				}
+
+				if (USoundNodeWavePlayer* WavePlayer = Cast<USoundNodeWavePlayer>(ChildNode))
+				{
+					if (USoundWave* SoundWave = WavePlayer->GetSoundWave())
+					{
+						if (SoundWave->IsStreaming() && SoundWave->GetNumChunks() > 1)
+						{
+							Mgr.RequestChunk(SoundWave->CreateSoundWaveProxy(), 1, [](EAudioChunkLoadResult) {});
+						}
+					}
+				}
+			}
+		}
+	}
+	else
+	{
+		OverrideLoadingBehaviorOnChildWaves(bRecurse, ESoundWaveLoadingBehavior::PrimeOnLoad);
+	}
 }
 
 void USoundNode::RetainChildWavePlayers(bool bRecurse)
@@ -124,8 +171,7 @@ void USoundNode::OverrideLoadingBehaviorOnChildWaves(const bool bRecurse, const 
 					ChildNode->OverrideLoadingBehaviorOnChildWaves(true, InLoadingBehavior);
 				}
 
-				USoundNodeWavePlayer* WavePlayer = Cast<USoundNodeWavePlayer>(ChildNode);
-				if (WavePlayer != nullptr)
+				if (USoundNodeWavePlayer* WavePlayer = Cast<USoundNodeWavePlayer>(ChildNode))
 				{
 					USoundWave* SoundWave = WavePlayer->GetSoundWave();
 					if (SoundWave)

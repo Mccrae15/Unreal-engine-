@@ -52,10 +52,10 @@ namespace BuildPatchServices
 			return FString();
 		}
 
-		virtual int32 GetContentLength() const override
+		virtual uint64 GetContentLength() const override
 		{
 			MOCK_FUNC_NOT_IMPLEMENTED("FMockHttpRequest::GetContentLength");
-			return int32();
+			return uint64();
 		}
 
 		virtual const TArray<uint8>& GetContent() const override
@@ -105,6 +105,12 @@ namespace BuildPatchServices
 		virtual bool SetContentFromStream(TSharedRef<FArchive, ESPMode::ThreadSafe> Stream) override
 		{
 			MOCK_FUNC_NOT_IMPLEMENTED("FMockHttpRequest::SetContentFromStream");
+			return false;
+		}
+
+		virtual bool SetResponseBodyReceiveStream(TSharedRef<FArchive> Stream) override
+		{
+			MOCK_FUNC_NOT_IMPLEMENTED("FMockHttpRequest::SetResponseBodyReceiveStream");
 			return false;
 		}
 
@@ -181,6 +187,17 @@ namespace BuildPatchServices
 		{
 			MOCK_FUNC_NOT_IMPLEMENTED("FMockHttpRequest::GetElapsedTime");
 			return float();
+		}
+
+		virtual void SetDelegateThreadPolicy(EHttpRequestDelegateThreadPolicy InThreadPolicy) override
+		{
+			MOCK_FUNC_NOT_IMPLEMENTED("FMockHttpRequest::SetDelegateThreadPolicy");
+		}
+
+		virtual EHttpRequestDelegateThreadPolicy GetDelegateThreadPolicy() const override
+		{
+			MOCK_FUNC_NOT_IMPLEMENTED("FMockHttpRequest::GetDelegateThreadPolicy");
+			return EHttpRequestDelegateThreadPolicy::CompleteOnGameThread;
 		}
 
 	public:

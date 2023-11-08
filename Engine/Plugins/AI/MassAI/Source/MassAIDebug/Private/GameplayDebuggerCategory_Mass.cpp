@@ -102,6 +102,7 @@ FGameplayDebuggerCategory_Mass::FGameplayDebuggerCategory_Mass()
 	bShowNearEntityAvoidance = false;
 	bShowNearEntityPath = false;
 	bMarkEntityBeingDebugged = true;
+	bDebugLocalEntityManager = false;
 
 	BindKeyPress(EKeys::A.GetFName(), FGameplayDebuggerInputModifier::Shift, this, &FGameplayDebuggerCategory_Mass::OnToggleArchetypes, EGameplayDebuggerInputMode::Replicated);
 	BindKeyPress(EKeys::S.GetFName(), FGameplayDebuggerInputModifier::Shift, this, &FGameplayDebuggerCategory_Mass::OnToggleShapes, EGameplayDebuggerInputMode::Replicated);
@@ -111,6 +112,17 @@ FGameplayDebuggerCategory_Mass::FGameplayDebuggerCategory_Mass()
 	BindKeyPress(EKeys::O.GetFName(), FGameplayDebuggerInputModifier::Shift, this, &FGameplayDebuggerCategory_Mass::OnToggleNearEntityOverview, EGameplayDebuggerInputMode::Replicated);
 	BindKeyPress(EKeys::V.GetFName(), FGameplayDebuggerInputModifier::Shift, this, &FGameplayDebuggerCategory_Mass::OnToggleNearEntityAvoidance, EGameplayDebuggerInputMode::Replicated);
 	BindKeyPress(EKeys::C.GetFName(), FGameplayDebuggerInputModifier::Shift, this, &FGameplayDebuggerCategory_Mass::OnToggleNearEntityPath, EGameplayDebuggerInputMode::Replicated);
+	ToggleDebugLocalEntityManagerInputIndex = GetNumInputHandlers();
+	BindKeyPress(EKeys::L.GetFName(), FGameplayDebuggerInputModifier::Shift, this, &FGameplayDebuggerCategory_Mass::OnToggleDebugLocalEntityManager, EGameplayDebuggerInputMode::Local);
+
+	ConsoleCommands.Emplace(TEXT("gdt.mass.ToggleArchetypes"), TEXT(""), FConsoleCommandDelegate::CreateLambda([this]() { OnToggleArchetypes(); }));
+	ConsoleCommands.Emplace(TEXT("gdt.mass.ToggleShapes"), TEXT(""), FConsoleCommandDelegate::CreateLambda([this]() { OnToggleShapes(); }));
+	ConsoleCommands.Emplace(TEXT("gdt.mass.ToggleAgentFragments"), TEXT(""), FConsoleCommandDelegate::CreateLambda([this]() { OnToggleAgentFragments(); }));
+	ConsoleCommands.Emplace(TEXT("gdt.mass.PickEntity"), TEXT(""), FConsoleCommandDelegate::CreateLambda([this]() { OnPickEntity(); }));
+	ConsoleCommands.Emplace(TEXT("gdt.mass.ToggleEntityDetails"), TEXT(""), FConsoleCommandDelegate::CreateLambda([this]() { OnToggleEntityDetails(); }));
+	ConsoleCommands.Emplace(TEXT("gdt.mass.ToggleNearEntityOverview"), TEXT(""), FConsoleCommandDelegate::CreateLambda([this]() { OnToggleNearEntityOverview(); }));
+	ConsoleCommands.Emplace(TEXT("gdt.mass.ToggleNearEntityAvoidance"), TEXT(""), FConsoleCommandDelegate::CreateLambda([this]() { OnToggleNearEntityAvoidance(); }));
+	ConsoleCommands.Emplace(TEXT("gdt.mass.ToggleNearEntityPath"), TEXT(""), FConsoleCommandDelegate::CreateLambda([this]() { OnToggleNearEntityPath(); }));
 }
 
 void FGameplayDebuggerCategory_Mass::SetCachedEntity(const FMassEntityHandle Entity, const FMassEntityManager& EntityManager)
@@ -122,12 +134,8 @@ void FGameplayDebuggerCategory_Mass::SetCachedEntity(const FMassEntityHandle Ent
 	}
 }
 
-void FGameplayDebuggerCategory_Mass::PickEntity(const APlayerController& OwnerPC, const UWorld& World, FMassEntityManager& EntityManager, const bool bLimitAngle)
+void FGameplayDebuggerCategory_Mass::PickEntity(const FVector& ViewLocation, const FVector& ViewDirection, const UWorld& World, FMassEntityManager& EntityManager, const bool bLimitAngle)
 {
-	FVector ViewLocation = FVector::ZeroVector;
-	FVector ViewDirection = FVector::ForwardVector;
-	ensureMsgf(GetViewPoint(&OwnerPC, ViewLocation, ViewDirection), TEXT("GetViewPoint is expected to always succeed when passing a valid controller."));
-
 	FMassEntityHandle BestEntity;
 	// entities indicated by UE::Mass::Debug take precedence 
     if (UE::Mass::Debug::HasDebugEntities())
@@ -179,6 +187,17 @@ TSharedRef<FGameplayDebuggerCategory> FGameplayDebuggerCategory_Mass::MakeInstan
 
 void FGameplayDebuggerCategory_Mass::CollectData(APlayerController* OwnerPC, AActor* DebugActor)
 {
+	if (bAllowLocalDataCollection)
+	{
+		ResetReplicatedData();
+	}
+
+	// we only want to display this if there are local/remote roles in play
+	if (IsCategoryAuth() != IsCategoryLocal())
+	{
+		AddTextLine(FString::Printf(TEXT("Source: {yellow}%s{white}"), bDebugLocalEntityManager ? TEXT("LOCAL") : TEXT("REMOTE")));
+	}
+
 	UWorld* World = GetDataWorld(OwnerPC, DebugActor);
 	check(World);
 
@@ -192,6 +211,12 @@ void FGameplayDebuggerCategory_Mass::CollectData(APlayerController* OwnerPC, AAc
 	UMassDebuggerSubsystem* Debugger = World->GetSubsystem<UMassDebuggerSubsystem>();
 
 	const UMassAgentComponent* AgentComp = nullptr;
+	
+	if (bAllowLocalDataCollection)
+	{
+		DebugActor = CachedDebugActor;
+	}
+
 	if (DebugActor)
 	{
 		const FMassEntityHandle EntityHandle = UE::Mass::Debug::GetEntityFromActor(*DebugActor, AgentComp);	
@@ -204,20 +229,22 @@ void FGameplayDebuggerCategory_Mass::CollectData(APlayerController* OwnerPC, AAc
 		CachedDebugActor = nullptr;
 	}
 
-	if (OwnerPC)
+	FVector ViewLocation = FVector::ZeroVector;
+	FVector ViewDirection = FVector::ForwardVector;
+	if (GetViewPoint(OwnerPC, ViewLocation, ViewDirection))
 	{
 		// Ideally we would have a way to register in the main picking flow but that would require more changes to
 		// also support client-server picking. For now, we handle explicit mass picking requests on the authority
 		if (bPickEntity)
 		{
-			PickEntity(*OwnerPC, *World, EntityManager);
+			PickEntity(ViewLocation, ViewDirection, *World, EntityManager);
 			bPickEntity = false;
 		}
 		// if we're debugging based on UE::Mass::Debug and the range changed
 		else if (CachedDebugActor == nullptr && UE::Mass::Debug::HasDebugEntities() && UE::Mass::Debug::IsDebuggingEntity(CachedEntity) == false)
 		{
 			// using bLimitAngle = false to not limit the selection to only the things in from of the player
-			PickEntity(*OwnerPC, *World, EntityManager, /*bLimitAngle=*/false);
+			PickEntity(ViewLocation, ViewDirection, *World, EntityManager, /*bLimitAngle=*/false);
 		}
 	}
 
@@ -362,10 +389,6 @@ void FGameplayDebuggerCategory_Mass::CollectData(APlayerController* OwnerPC, AAc
 	NearEntityDescriptions.Reset();
 	if (bShowNearEntityOverview && OwnerPC)
 	{
-		FVector ViewLocation = FVector::ZeroVector;
-		FVector ViewDirection = FVector::ForwardVector;
-		ensureMsgf(GetViewPoint(OwnerPC, ViewLocation, ViewDirection), TEXT("GetViewPoint is expected to always succeed when passing a valid controller."));
-
 		FMassEntityQuery EntityQuery;
 		EntityQuery.AddRequirement<FMassStateTreeInstanceFragment>(EMassFragmentAccess::ReadOnly);
 		EntityQuery.AddConstSharedRequirement<FMassStateTreeSharedFragment>();
@@ -702,6 +725,12 @@ void FGameplayDebuggerCategory_Mass::DrawData(APlayerController* OwnerPC, FGamep
 	CanvasContext.Printf(TEXT("[{yellow}%s{white}] %s Entity avoidance"), *GetInputHandlerDescription(6), bShowNearEntityAvoidance ? TEXT("Hide") : TEXT("Show"));
 	CanvasContext.Printf(TEXT("[{yellow}%s{white}] %s Entity path"), *GetInputHandlerDescription(7), bShowNearEntityPath ? TEXT("Hide") : TEXT("Show"));
 
+	if (IsCategoryLocal() && !IsCategoryAuth())
+	{
+		// we want to display this line only on clients in client-server environment.
+		CanvasContext.Printf(TEXT("[{yellow}%s{white}] Toggle Local/Remote debugging"), *GetInputHandlerDescription(ToggleDebugLocalEntityManagerInputIndex));
+	}
+
 	struct FEntityLayoutRect
 	{
 		FVector2D Min = FVector2D::ZeroVector;
@@ -780,5 +809,43 @@ void FGameplayDebuggerCategory_Mass::DrawData(APlayerController* OwnerPC, FGamep
 
 	FGameplayDebuggerCategory::DrawData(OwnerPC, CanvasContext);
 }
+
+void FGameplayDebuggerCategory_Mass::OnToggleDebugLocalEntityManager()
+{
+	// this code will only execute on locally-controlled categories (as per BindKeyPress's EGameplayDebuggerInputMode::Local
+	// parameter). In such a case we don't want to toggle if we're also Auth (there's no client-server relationship here).
+	if (IsCategoryAuth())
+	{
+		return;
+	}
+
+	ResetReplicatedData();
+	bDebugLocalEntityManager = !bDebugLocalEntityManager;
+	bAllowLocalDataCollection = bDebugLocalEntityManager;
+
+	const EGameplayDebuggerInputMode NewInputMode = bDebugLocalEntityManager ? EGameplayDebuggerInputMode::Local : EGameplayDebuggerInputMode::Replicated;
+	for (int32 HandlerIndex = 0; HandlerIndex < GetNumInputHandlers(); ++HandlerIndex)
+	{
+		if (HandlerIndex != ToggleDebugLocalEntityManagerInputIndex)
+		{
+			GetInputHandler(HandlerIndex).Mode = NewInputMode;
+		}
+	}
+
+	CachedEntity.Reset();
+}
+
+//-----------------------------------------------------------------------------
+// DEPRECATED
+//-----------------------------------------------------------------------------
+void FGameplayDebuggerCategory_Mass::PickEntity(const APlayerController& OwnerPC, const UWorld& World, FMassEntityManager& EntityManager, const bool bLimitAngle)
+{
+	FVector ViewLocation = FVector::ZeroVector;
+	FVector ViewDirection = FVector::ForwardVector;
+	ensureMsgf(GetViewPoint(&OwnerPC, ViewLocation, ViewDirection), TEXT("GetViewPoint is expected to always succeed when passing a valid controller."));
+
+	PickEntity(ViewLocation, ViewDirection, World, EntityManager, bLimitAngle);
+}
+
 #endif // WITH_GAMEPLAY_DEBUGGER && WITH_MASSGAMEPLAY_DEBUG
 

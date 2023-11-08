@@ -21,6 +21,20 @@ enum PixelStreamingToClientMessage: UInt8, Codable {
     case FileExtension = 8
     case FileMimeType = 9
     case FileContents = 10
+    case GamepadResponse = 13
 }
 
 
+// Represents the command json received as part of the 'Command' PixelStreamingToClientMessage
+struct PixelStreamingToClientCommand: Decodable {
+    let command: String
+}
+
+struct PixelStreamingToClientShowOnScreenKeyboardCommand: Decodable {
+    let showOnScreenKeyboard: Bool
+    let contents: String?
+}
+
+struct PixelStreamingToClientGamepadResponse: Decodable {
+    let controllerId: UInt8
+}

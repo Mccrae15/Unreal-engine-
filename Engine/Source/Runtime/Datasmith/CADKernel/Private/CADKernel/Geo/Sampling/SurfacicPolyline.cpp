@@ -2,7 +2,6 @@
 
 #include "CADKernel/Geo/Sampling/SurfacicPolyline.h"
 
-#include "CADKernel/Core/KernelParameters.h"
 #include "CADKernel/Core/System.h"
 #include "CADKernel/Geo/Curves/Curve.h"
 #include "CADKernel/Geo/Surfaces/Surface.h"
@@ -160,7 +159,7 @@ void FSurfacicPolyline::ComputeIntersectionsWithIsos(const FLinearBoundary& InBo
 			IsoCoordinate = IsoCoordinates[IsoCoordinateIndex];
 		}
 
-		while (IsoCoordinates[IsoCoordinateIndex] < UMin && IsoCoordinateIndex < IsoCoordinates.Num())
+		while (IsoCoordinateIndex < IsoCoordinates.Num() - 1 && IsoCoordinates[IsoCoordinateIndex] < UMin)
 		{
 			IsoCoordinateIndex++;
 		}

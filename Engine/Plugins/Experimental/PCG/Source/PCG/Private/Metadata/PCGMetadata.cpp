@@ -2,8 +2,10 @@
 
 #include "Metadata/PCGMetadata.h"
 
-#include "Helpers/PCGPropertyHelpers.h"
+#include "PCGData.h"
 #include "PCGPoint.h"
+#include "Helpers/PCGPropertyHelpers.h"
+#include "Metadata/PCGAttributePropertySelector.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PCGMetadata)
 
@@ -328,6 +330,9 @@ FPCGMetadataAttributeBase* UPCGMetadata::GetMutableAttribute(FName AttributeName
 	if (FPCGMetadataAttributeBase** FoundAttribute = Attributes.Find(AttributeName))
 	{
 		Attribute = *FoundAttribute;
+
+		// Also when accessing an attribute, notify the PCG Data owner that the latest attribute manipulated is this one.
+		SetLastCachedSelectorOnOwner(AttributeName);
 	}
 	AttributeLock.ReadUnlock();
 
@@ -503,6 +508,11 @@ void UPCGMetadata::CreateStringAttribute(FName AttributeName, FString DefaultVal
 	CreateAttribute<FString>(AttributeName, DefaultValue, bAllowsInterpolation, bOverrideParent);
 }
 
+void UPCGMetadata::CreateNameAttribute(FName AttributeName, FName DefaultValue, bool bAllowsInterpolation, bool bOverrideParent)
+{
+	CreateAttribute<FName>(AttributeName, DefaultValue, bAllowsInterpolation, bOverrideParent);
+}
+
 void UPCGMetadata::CreateBoolAttribute(FName AttributeName, bool DefaultValue, bool bAllowsInterpolation, bool bOverrideParent)
 {
 	CreateAttribute<bool>(AttributeName, DefaultValue, bAllowsInterpolation, bOverrideParent);
@@ -510,6 +520,25 @@ void UPCGMetadata::CreateBoolAttribute(FName AttributeName, bool DefaultValue, b
 
 namespace PCGMetadata
 {
+	template<typename DataType>
+	bool CreateAttributeFromPropertyHelper(UPCGMetadata* Metadata, FName AttributeName, const DataType* DataPtr, const FProperty* InProperty)
+	{
+		if (!InProperty || !DataPtr || !Metadata)
+		{
+			return false;
+		}
+
+		auto CreateAttribute = [AttributeName, Metadata](auto&& PropertyValue) -> bool
+		{
+			using PropertyType = std::decay_t<decltype(PropertyValue)>;
+			FPCGMetadataAttributeBase* BaseAttribute = Metadata->FindOrCreateAttribute<PropertyType>(AttributeName, PropertyValue, /*bAllowsInterpolation=*/false, /*bOverrideParent=*/false, /*bOverwriteIfTypeMismatch=*/true);
+			
+			return (BaseAttribute != nullptr);
+		};
+
+		return PCGPropertyHelpers::GetPropertyValueWithCallback(DataPtr, InProperty, CreateAttribute);
+	}
+
 	template<typename DataType>
 	bool SetAttributeFromPropertyHelper(UPCGMetadata* Metadata, FName AttributeName, PCGMetadataEntryKey& EntryKey, const DataType* DataPtr, const FProperty* InProperty, bool bCreate)
 	{
@@ -570,6 +599,16 @@ namespace PCGMetadata
 	}
 }
 
+bool UPCGMetadata::CreateAttributeFromProperty(FName AttributeName, const UObject* Object, const FProperty* InProperty)
+{
+	return PCGMetadata::CreateAttributeFromPropertyHelper<UObject>(this, AttributeName, Object, InProperty);
+}
+
+bool UPCGMetadata::CreateAttributeFromDataProperty(FName AttributeName, const void* Data, const FProperty* InProperty)
+{
+	return PCGMetadata::CreateAttributeFromPropertyHelper<void>(this, AttributeName, Data, InProperty);
+}
+
 bool UPCGMetadata::SetAttributeFromProperty(FName AttributeName, PCGMetadataEntryKey& EntryKey, const UObject* Object, const FProperty* InProperty, bool bCreate)
 {
 	return PCGMetadata::SetAttributeFromPropertyHelper<UObject>(this, AttributeName, EntryKey, Object, InProperty, bCreate);
@@ -621,6 +660,10 @@ FPCGMetadataAttributeBase* UPCGMetadata::CopyAttribute(const FPCGMetadataAttribu
 		AttributeLock.WriteLock();
 		NewAttribute->AttributeId = NextAttributeId++;
 		AddAttributeInternal(NewAttributeName, NewAttribute);
+
+		// Also when creating an attribute, notify the PCG Data owner that the latest attribute manipulated is this one.
+		SetLastCachedSelectorOnOwner(NewAttributeName);
+
 		AttributeLock.WriteUnlock();
 	}
 
@@ -1112,3 +1155,12 @@ void UPCGMetadata::AccumulatePointWeightedAttributes(const FPCGPoint& InPoint, c
 	AccumulateWeightedAttributes(InPoint.MetadataEntry, InMetadata, Weight, bSetNonInterpolableAttributes, OutPoint.MetadataEntry);
 }
 
+void UPCGMetadata::SetLastCachedSelectorOnOwner(FName AttributeName)
+{
+	if (UPCGData* OwnerData = Cast<UPCGData>(GetOuter()))
+	{
+		FPCGAttributePropertyInputSelector Selector;
+		Selector.SetAttributeName(AttributeName);
+		OwnerData->SetLastSelector(Selector);
+	}
+}

@@ -13,6 +13,9 @@ using EpicGames.Core;
 using UnrealBuildBase;
 using EpicGames.BuildGraph;
 using AutomationTool.Tasks;
+using Microsoft.Extensions.Logging;
+
+using static AutomationTool.CommandUtils;
 
 namespace AutomationTool.Tasks
 {
@@ -101,6 +104,14 @@ namespace AutomationTool.Tasks
 					CommandLine.Append("-nosubmit ");
 				}
 			}
+			if (Parameters.Arguments == null || !Parameters.Arguments.CaseInsensitiveContains("-uselocalbuildstorage"))
+			{
+				if (GlobalCommandLine.UseLocalBuildStorage)
+				{
+					CommandLine.Append("-uselocalbuildstorage ");
+				}
+			}
+
 			CommandLine.Append("-NoCompile ");
 			CommandLine.Append(Parameters.Name);
 			if (!String.IsNullOrEmpty(Parameters.Arguments))
@@ -116,7 +127,7 @@ namespace AutomationTool.Tasks
 			// Merge in any new telemetry data that was produced
 			if (TelemetryFile != null && FileReference.Exists(TelemetryFile))
 			{
-				Log.TraceLog("Merging telemetry from {0}", TelemetryFile);
+				Logger.LogDebug("Merging telemetry from {TelemetryFile}", TelemetryFile);
 
 				TelemetryData NewTelemetry;
 				if (TelemetryData.TryRead(TelemetryFile, out NewTelemetry))
@@ -125,7 +136,7 @@ namespace AutomationTool.Tasks
 				}
 				else
 				{
-					Log.TraceWarning("Unable to read UAT telemetry file from {0}", TelemetryFile);
+					Logger.LogWarning("Unable to read UAT telemetry file from {TelemetryFile}", TelemetryFile);
 				}
 			}
 			return Task.CompletedTask;

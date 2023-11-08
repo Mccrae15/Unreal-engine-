@@ -11,8 +11,15 @@
 #include "Units/Execution/RigUnit_BeginExecution.h"
 #include "Units/Execution/RigUnit_PrepareForExecution.h"
 #include "Algo/Transform.h"
+#include "Animation/AnimCurveUtils.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_ControlRigBase)
+
+
+DECLARE_CYCLE_STAT(TEXT("ControlRig_UpdateInput"), STAT_ControlRig_UpdateInput, STATGROUP_Anim);
+DECLARE_CYCLE_STAT(TEXT("ControlRig_Evaluate"), STAT_ControlRig_Evaluate, STATGROUP_Anim);
+DECLARE_CYCLE_STAT(TEXT("ControlRig_UpdateOutput"), STAT_ControlRig_UpdateOutput, STATGROUP_Anim);
+
 
 #if ENABLE_ANIM_DEBUG
 TAutoConsoleVariable<int32> CVarAnimNodeControlRigDebug(TEXT("a.AnimNode.ControlRig.Debug"), 0, TEXT("Set to 1 to turn on debug drawing for AnimNode_ControlRigBase"));
@@ -124,7 +131,7 @@ bool FAnimNode_ControlRigBase::CanExecute()
 
 void FAnimNode_ControlRigBase::UpdateInput(UControlRig* ControlRig, const FPoseContext& InOutput)
 {
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_ControlRig_UpdateInput);
+	SCOPE_CYCLE_COUNTER(STAT_ControlRig_UpdateInput);
 
 
 	if(!CanExecute())
@@ -241,45 +248,12 @@ void FAnimNode_ControlRigBase::UpdateInput(UControlRig* ControlRig, const FPoseC
 
 	if (InputSettings.bUpdateCurves && bTransferInputCurves)
 	{
-		if(!ControlRigCurveMappingByIndex.IsEmpty())
+		Hierarchy->UnsetCurveValues();
+		InOutput.Curve.ForEachElement([Hierarchy](const UE::Anim::FCurveElement& InCurveElement)
 		{
-			for (const TPair<uint16, uint16>& Pair : ControlRigCurveMappingByIndex)
-			{
-				const uint16 ControlRigIndex = Pair.Key;
-				const uint16 SkeletonIndex = Pair.Value;
-
-				bool bIsValid;
-				const float Value = InOutput.Curve.Get(SkeletonIndex, bIsValid);
-				if (bIsValid)
-				{
-					Hierarchy->SetCurveValueByIndex(ControlRigIndex, Value);
-				}
-				else
-				{
-					Hierarchy->UnsetCurveValueByIndex(ControlRigIndex);
-				}
-			}
-		}
-		else
-		{
-			for (auto Iter = ControlRigCurveMappingByName.CreateConstIterator(); Iter; ++Iter)
-			{
-				const FName& Name = Iter.Key();
-				const uint16 SkeletonIndex = Iter.Value();
-				const FRigElementKey Key(Name, ERigElementType::Curve);
-
-				bool bIsValid;
-				const float Value = InOutput.Curve.Get(SkeletonIndex, bIsValid);
-				if (bIsValid)
-				{
-					Hierarchy->SetCurveValue(Key, Value);
-				}
-				else
-				{
-					Hierarchy->UnsetCurveValue(Key);
-				}
-			}
-		}
+			const FRigElementKey Key(InCurveElement.Name, ERigElementType::Curve);
+			Hierarchy->SetCurveValue(Key, InCurveElement.Value);
+		});
 	}
 
 #if WITH_EDITOR
@@ -292,7 +266,7 @@ void FAnimNode_ControlRigBase::UpdateInput(UControlRig* ControlRig, const FPoseC
 
 void FAnimNode_ControlRigBase::UpdateOutput(UControlRig* ControlRig, FPoseContext& InOutput)
 {
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_ControlRig_UpdateOutput);
+	SCOPE_CYCLE_COUNTER(STAT_ControlRig_UpdateOutput);
 
 	if(!CanExecute())
 	{
@@ -394,49 +368,25 @@ void FAnimNode_ControlRigBase::UpdateOutput(UControlRig* ControlRig, FPoseContex
 
 	if (OutputSettings.bUpdateCurves)
 	{
-		if(!ControlRigCurveMappingByIndex.IsEmpty())
+		const TArray<FRigCurveElement*> Curves = Hierarchy->GetCurves();
+		auto GetNameFromIndex = [&Curves](int32 InCurveIndex)
 		{
-			for (const TPair<uint16, uint16>& Pair : ControlRigCurveMappingByIndex)
-			{
-				const uint16 ControlRigIndex = Pair.Key;
-				const uint16 SkeletonIndex = Pair.Value;
+			return Curves[InCurveIndex]->GetName();
+		};
 
-				if (Hierarchy->IsCurveValueSetByIndex(ControlRigIndex))
-				{
-					InOutput.Curve.Set(SkeletonIndex, Hierarchy->GetCurveValueByIndex(ControlRigIndex));
-				}
-				else
-				{
-					const int32 WeightIndex = InOutput.Curve.GetArrayIndexByUID(SkeletonIndex);
-					if (WeightIndex != INDEX_NONE)
-					{
-						InOutput.Curve.ValidCurveWeights[WeightIndex] = false;
-					}
-				}
-			}
-		}
-		else
+		auto GetValueFromIndex = [&Curves](int32 InCurveIndex)
 		{
-			for (auto Iter = ControlRigCurveMappingByName.CreateConstIterator(); Iter; ++Iter)
-			{
-				const FName& Name = Iter.Key();
-				const uint16 Index = Iter.Value();
-				const FRigElementKey Key(Name, ERigElementType::Curve);
+			 return Curves[InCurveIndex]->Value;
+		};
+		
+		auto GetIsValidCurveFromIndex = [&Curves](int32 InCurveIndex)
+        {
+            return Curves[InCurveIndex]->bIsValueSet;
+        };
 
-				if (Hierarchy->IsCurveValueSet(Key))
-				{
-					InOutput.Curve.Set(Index, Hierarchy->GetCurveValue(Key));
-				}
-				else
-				{
-					const int32 WeightIndex = InOutput.Curve.GetArrayIndexByUID(Index);
-					if (WeightIndex != INDEX_NONE)
-					{
-						InOutput.Curve.ValidCurveWeights[WeightIndex] = false;
-					}
-				}
-			}
-		}
+		FBlendedCurve ControlRigCurves;
+		UE::Anim::FCurveUtils::BuildUnsortedValidated(ControlRigCurves, Curves.Num(), GetNameFromIndex, GetValueFromIndex, GetIsValidCurveFromIndex);
+		InOutput.Curve.Combine(ControlRigCurves);
 	}
 
 #if WITH_EDITOR
@@ -500,6 +450,8 @@ void FAnimNode_ControlRigBase::Evaluate_AnyThread(FPoseContext& Output)
 
 void FAnimNode_ControlRigBase::ExecuteControlRig(FPoseContext& InOutput)
 {
+	SCOPE_CYCLE_COUNTER(STAT_ControlRig_Evaluate);
+
 	if (UControlRig* ControlRig = GetControlRig())
 	{
 		// temporarily give control rig access to the stack allocated attribute container
@@ -682,28 +634,33 @@ void FAnimNode_ControlRigBase::CacheBones_AnyThread(const FAnimationCacheBonesCo
 				}
 			}
 
-			if(!InputBonesToTransfer.IsEmpty())
-			{
-				ControlRigBoneOutputMappingByName = ControlRigBoneInputMappingByName;
-				ControlRigBoneInputMappingByName.Reset();
+			auto UpdatingMappingFromSpecificTransferList = [] (
+				TArray<FBoneReference>& InTransferList,
+				const TWeakObjectPtr<UNodeMappingContainer>& InMappingContainer,
+				FBoneContainer& InRequiredBones,
+				const FReferenceSkeleton& InRefSkeleton,
+				const TArray<FBoneIndexType>& InRequiredBonesArray,
+				const UControlRig* InControlRig,
+				TMap<FName, uint16>& OutMapping
+			) {
+				OutMapping.Reset();
 				
-				if (NodeMappingContainer.IsValid())
+				if (InMappingContainer.IsValid())
 				{
 					// get target to source mapping table - this is reversed mapping table
 					TMap<FName, FName> TargetToSourceMappingTable;
-					NodeMappingContainer->GetTargetToSourceMappingTable(TargetToSourceMappingTable);
+					InMappingContainer->GetTargetToSourceMappingTable(TargetToSourceMappingTable);
 
-					for(FBoneReference& InputBoneToTransfer : InputBonesToTransfer)
+					for(FBoneReference& InputBoneToTransfer : InTransferList)
 					{
-						if(!InputBoneToTransfer.Initialize(RequiredBones))
+						if(!InputBoneToTransfer.Initialize(InRequiredBones))
 						{
 							continue;
 						}
-						FName TargetNodeName = RefSkeleton.GetBoneName(InputBoneToTransfer.BoneIndex);
-						FName* SourceName = TargetToSourceMappingTable.Find(TargetNodeName);
-						if (SourceName)
+						const FName TargetNodeName = InRefSkeleton.GetBoneName(InputBoneToTransfer.BoneIndex);
+						if (const FName* SourceName = TargetToSourceMappingTable.Find(TargetNodeName))
 						{
-							ControlRigBoneInputMappingByName.Add(*SourceName, InputBoneToTransfer.BoneIndex);
+							OutMapping.Add(*SourceName, InputBoneToTransfer.BoneIndex);
 						}
 					}
 				}
@@ -711,40 +668,47 @@ void FAnimNode_ControlRigBase::CacheBones_AnyThread(const FAnimationCacheBonesCo
 				{
 					TArray<FName> NodeNames;
 					TArray<FNodeItem> NodeItems;
-					ControlRig->GetMappableNodeData(NodeNames, NodeItems);
+					InControlRig->GetMappableNodeData(NodeNames, NodeItems);
 
-					for(FBoneReference& InputBoneToTransfer : InputBonesToTransfer)
+					for(FBoneReference& InputBoneToTransfer : InTransferList)
 					{
-						if(!InputBoneToTransfer.Initialize(RequiredBones))
+						if(!InputBoneToTransfer.Initialize(InRequiredBones))
 						{
 							continue;
 						}
-						const FName& BoneName = RefSkeleton.GetBoneName(RequiredBonesArray[InputBoneToTransfer.BoneIndex]);
+						const FName& BoneName = InRefSkeleton.GetBoneName(InRequiredBonesArray[InputBoneToTransfer.BoneIndex]);
 						if (NodeNames.Contains(BoneName))
 						{
-							ControlRigBoneInputMappingByName.Add(BoneName, InputBoneToTransfer.BoneIndex);
+							OutMapping.Add(BoneName, InputBoneToTransfer.BoneIndex);
 						}
 					}
 				}
-			}
+			};
 			
-			// we just support curves by name only
+			if(!InputBonesToTransfer.IsEmpty())
 			{
-				const FSmartNameMapping* CurveMapping = RequiredBones.GetSkeletonAsset()->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
-				CurveMapping->Iterate([Hierarchy, this](const FSmartNameMappingIterator& Iterator)
-				{
-					// see if the curve name exists in the control rig
-					FName CurveName;
-					if (Iterator.GetName(CurveName))
-					{
-						if (Hierarchy->GetIndex(FRigElementKey(CurveName, ERigElementType::Curve)) != INDEX_NONE)
-						{
-							ControlRigCurveMappingByName.Add(CurveName, Iterator.GetIndex());
-						}
-					}
-				});
-				
-					
+				ControlRigBoneOutputMappingByName = ControlRigBoneInputMappingByName;
+
+				UpdatingMappingFromSpecificTransferList(
+					InputBonesToTransfer,
+					NodeMappingContainer,
+					RequiredBones,
+					RefSkeleton,
+					RequiredBonesArray,
+					ControlRig,
+					ControlRigBoneInputMappingByName);
+			}
+
+			if(!OutputBonesToTransfer.IsEmpty())
+			{
+				UpdatingMappingFromSpecificTransferList(
+					OutputBonesToTransfer,
+					NodeMappingContainer,
+					RequiredBones,
+					RefSkeleton,
+					RequiredBonesArray,
+					ControlRig,
+					ControlRigBoneOutputMappingByName);
 			}
 
 			// check if we can switch the bones to an index based mapping.
@@ -785,32 +749,6 @@ void FAnimNode_ControlRigBase::CacheBones_AnyThread(const FAnimationCacheBonesCo
 						IndexBasedMapping.Reset();
 					}
 				}
-			}
-
-			bool bIsCurveMappingByIndex = true;
-			
-			// check if we can switch the curves to a index based mapping as well
-			for (auto Iter = ControlRigCurveMappingByName.CreateConstIterator(); Iter; ++Iter)
-			{
-				const uint16 SkeletonIndex = Iter.Value();
-				const int32 ControlRigIndex = Hierarchy->GetIndex(FRigElementKey(Iter.Key(), ERigElementType::Curve));
-				if(ControlRigIndex != INDEX_NONE)
-				{
-					ControlRigCurveMappingByIndex.Add(TPair<uint16, uint16>((uint16)ControlRigIndex, SkeletonIndex));
-				}
-				else
-				{
-					bIsCurveMappingByIndex = false;
-				}
-			}
-
-			if(bIsCurveMappingByIndex)
-			{
-				ControlRigCurveMappingByName.Reset();
-			}
-			else
-			{
-				ControlRigCurveMappingByIndex.Reset();
 			}
 		}
 

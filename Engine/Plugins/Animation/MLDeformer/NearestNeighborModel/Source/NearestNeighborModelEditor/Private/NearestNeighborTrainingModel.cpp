@@ -2,6 +2,7 @@
 
 #include "NearestNeighborTrainingModel.h"
 #include "NearestNeighborModel.h"
+#include "NearestNeighborModelInstance.h"
 #include "NearestNeighborEditorModel.h"
 #include "NearestNeighborGeomCacheSampler.h"
 #include "Animation/AnimSequence.h"
@@ -31,15 +32,6 @@ const TArray<int32> UNearestNeighborTrainingModel::GetPartVertexMap(const int32 
 {
 	const TArray<uint32>& VertexMap = NearestNeighborModel->PartVertexMap(PartId);
 	return TArray<int32>((int32*)VertexMap.GetData(), VertexMap.Num());
-}
-
-int32 UNearestNeighborTrainingModel::SamplePart(int32 PartId, int32 Index)
-{
-	FNearestNeighborGeomCacheSampler* Sampler = static_cast<FNearestNeighborGeomCacheSampler*>(EditorModel->GetSampler());
-	int32 Result = Sampler->SamplePart(Index, PartId);
-	PartSampleDeltas = Sampler->GetPartVertexDeltas();
-	SampleBoneRotations = Sampler->GetBoneRotations();
-	return Result;
 }
 
 int32 UNearestNeighborTrainingModel::SetSamplerPartData(const int32 PartId)
@@ -110,5 +102,20 @@ const TArray<int32> UNearestNeighborTrainingModel::GetMeshIndexBuffer() const
 	TArray<uint32> UIndexBuffer = Sampler->GetMeshIndexBuffer();
 	return TArray<int32>((int32*)UIndexBuffer.GetData(), UIndexBuffer.Num());
 }
+
+UNearestNeighborModelInstance* UNearestNeighborTrainingModel::CreateModelInstance()
+{
+	UNearestNeighborModelInstance* ModelInstance = NewObject<UNearestNeighborModelInstance>(this);
+	ModelInstance->SetModel(GetNearestNeighborModel());
+	ModelInstance->Init(nullptr);
+	ModelInstance->PostMLDeformerComponentInit();
+	return ModelInstance;
+}
+
+void UNearestNeighborTrainingModel::DestroyModelInstance(UNearestNeighborModelInstance* ModelInstance)
+{
+	ModelInstance->ConditionalBeginDestroy();
+}
+
 
 #undef LOCTEXT_NAMESPACE

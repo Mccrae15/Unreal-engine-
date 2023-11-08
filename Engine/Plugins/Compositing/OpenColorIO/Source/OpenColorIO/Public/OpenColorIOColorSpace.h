@@ -13,7 +13,7 @@ class UOpenColorIOConfiguration;
  * Structure to identify a ColorSpace as described in an OCIO configuration file. 
  * Members are populated by data coming from a config file.
  */
-USTRUCT(BlueprintType)
+USTRUCT(BlueprintType, meta = (DisplayName = "OpenColorIO Color Space"))
 struct OPENCOLORIO_API FOpenColorIOColorSpace
 {
 	GENERATED_BODY()
@@ -73,7 +73,7 @@ public:
 /**
  * Transformation direction type for display-view transformations.
  */
-UENUM(BlueprintType)
+UENUM(BlueprintType, meta = (DisplayName = "OpenColorIO View Transform Direction"))
 enum class EOpenColorIOViewTransformDirection : uint8
 {
 	Forward = 0     UMETA(DisplayName = "Forward"),
@@ -81,7 +81,7 @@ enum class EOpenColorIOViewTransformDirection : uint8
 };
 
 
-USTRUCT(BlueprintType)
+USTRUCT(BlueprintType, meta = (DisplayName = "OpenColorIO Display View"))
 struct OPENCOLORIO_API FOpenColorIODisplayView
 {
 	GENERATED_BODY()
@@ -117,7 +117,7 @@ public:
 /**
  * Identifies a OCIO ColorSpace conversion.
  */
-USTRUCT(BlueprintType)
+USTRUCT(BlueprintType, meta = (DisplayName = "OpenColorIO Color Conversion Settings"))
 struct OPENCOLORIO_API FOpenColorIOColorConversionSettings
 {
 	GENERATED_BODY()
@@ -149,8 +149,11 @@ public:
 	EOpenColorIOViewTransformDirection DisplayViewDirection = EOpenColorIOViewTransformDirection::Forward;
 
 	/** Delegate triggered upon changes to the settings. */
+	UE_DEPRECATED(5.3, "This delegate is deprecated.")
 	FOnConversionSettingsChange& OnConversionSettingsChanged() { return ConversionSettingsChanged; }
 public:
+
+	void PostSerialize(const FArchive& Ar);
 
 	/**
 	 * Get a string representation of this conversion.
@@ -162,6 +165,18 @@ public:
 	 * Returns true if the source and destination color spaces are found in the configuration file
 	 */
 	bool IsValid() const;
+
+	/** Returns a string representing the settings' source */
+	FString GetSourceString() const;
+
+	/** Returns a string representing the settings' destination */
+	FString GetDestinationString() const;
+
+	/**
+	* Reset members to default/empty values.
+	* @param InDepth Desired depth in the family string. 0 == First layer. 
+	*/
+	void Reset(bool bResetConfigurationSource = false);
 
 	/**
 	* Ensure that the selected source and destination color spaces are valid, resets them otherwise.
@@ -189,10 +204,18 @@ private:
 	FOnConversionSettingsChange ConversionSettingsChanged;
 };
 
+template<> struct TStructOpsTypeTraits<FOpenColorIOColorConversionSettings> : public TStructOpsTypeTraitsBase2<FOpenColorIOColorConversionSettings>
+{
+	enum
+	{
+		WithPostSerialize = true,
+	};
+};
+
 /**
  * Identifies an OCIO Display look configuration 
  */
-USTRUCT(BlueprintType)
+USTRUCT(BlueprintType, meta = (DisplayName = "OpenColorIO Display Configuration"))
 struct OPENCOLORIO_API FOpenColorIODisplayConfiguration
 {
 	GENERATED_BODY()
@@ -203,10 +226,22 @@ public:
 	 * dictate whether it's applied or not to it
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = ColorSpace)
-	bool bIsEnabled = true;
+	bool bIsEnabled = false;
 	
 	/** Conversion to apply when this display is enabled */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = ColorSpace)
 	FOpenColorIOColorConversionSettings ColorConfiguration;
+
+	bool Serialize(FArchive& Ar);
+	void PostSerialize(const FArchive& Ar);
+};
+
+template<> struct TStructOpsTypeTraits<FOpenColorIODisplayConfiguration> : public TStructOpsTypeTraitsBase2<FOpenColorIODisplayConfiguration>
+{
+	enum
+	{
+		WithSerializer = true,
+		WithPostSerialize = true,
+	};
 };
 

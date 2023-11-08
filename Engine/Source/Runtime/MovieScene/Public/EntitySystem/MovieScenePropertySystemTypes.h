@@ -8,6 +8,7 @@
 #include "UObject/NameTypes.h"
 #include "Templates/SharedPointer.h"
 #include "Templates/UnrealTypeTraits.h"
+#include "Containers/StringView.h"
 #include "EntitySystem/MovieSceneComponentAccessors.h"
 
 class UClass;
@@ -217,6 +218,13 @@ struct ICustomPropertyRegistration
 	virtual FCustomAccessorView GetAccessors() const = 0;
 };
 
+#if WITH_EDITOR
+MOVIESCENE_API void AddGlobalCustomAccessor(const UClass* ClassType, FName PropertyPath);
+MOVIESCENE_API void RemoveGlobalCustomAccessor(const UClass* ClassType, FName PropertyPath);
+MOVIESCENE_API bool GlobalCustomAccessorExists(const UClass* ClassType, TStringView<WIDECHAR> PropertyPath);
+MOVIESCENE_API bool GlobalCustomAccessorExists(const UClass* ClassType, TStringView<ANSICHAR> PropertyPath);
+#endif // WITH_EDITOR
+
 /** Generally static collection of accessors for a given type of property */
 template<typename PropertyTraits, int InlineSize = 8>
 struct TCustomPropertyRegistration : ICustomPropertyRegistration
@@ -232,22 +240,43 @@ struct TCustomPropertyRegistration : ICustomPropertyRegistration
 	void Add(UClass* ClassType, FName PropertyName, GetterFunc Getter, SetterFunc Setter)
 	{
 		CustomAccessors.Add(TCustomPropertyAccessor<PropertyTraits>{ ClassType, PropertyName, { Getter, Setter } });
+#if WITH_EDITOR
+		AddGlobalCustomAccessor(ClassType, PropertyName);
+#endif
 	}
 
 	void Remove(UClass* ClassType, FName PropertyName)
 	{
-		CustomAccessors.RemoveAll([=](const TCustomPropertyAccessor<PropertyTraits>& Accessor)
-				{
-					return Accessor.Class == ClassType && Accessor.PropertyPath == PropertyName;
-				});
+		for (int32 Index = CustomAccessors.Num()-1; Index >= 0; --Index)
+		{
+			TCustomPropertyAccessor<PropertyTraits>& Accessor = CustomAccessors[Index];
+			if (Accessor.Class == ClassType && Accessor.PropertyPath == PropertyName)
+			{
+#if WITH_EDITOR
+				RemoveGlobalCustomAccessor(Accessor.Class, Accessor.PropertyPath);
+#endif
+				// Null out the entry rather than remove it because we don't want to invalidate any cached array indices
+				Accessor.Class = nullptr;
+				Accessor.PropertyPath = NAME_None;
+			}
+		}
 	}
 
 	void RemoveAll(UClass* ClassType)
 	{
-		CustomAccessors.RemoveAll([=](const TCustomPropertyAccessor<PropertyTraits>& Accessor)
-				{
-					return Accessor.Class == ClassType;
-				});
+		for (int32 Index = CustomAccessors.Num()-1; Index >= 0; --Index)
+		{
+			TCustomPropertyAccessor<PropertyTraits>& Accessor = CustomAccessors[Index];
+			if (Accessor.Class == ClassType)
+			{
+#if WITH_EDITOR
+				RemoveGlobalCustomAccessor(Accessor.Class, Accessor.PropertyPath);
+#endif
+				// Null out the entry rather than remove it because we don't want to invalidate any cached array indices
+				Accessor.Class = nullptr;
+				Accessor.PropertyPath = NAME_None;
+			}
+		}
 	}
 
 private:
@@ -296,13 +325,12 @@ struct TSetPropertyValuesImpl<PropertyTraits, TPropertyMetaData<MetaDataTypes...
 
 	explicit TSetPropertyValuesImpl(ICustomPropertyRegistration* InCustomProperties)
 		: CustomProperties(InCustomProperties)
-	{}
-
-	/**
-	 * Run before this task executes any logic over entities and components
-	 */
-	void PreTask();
-
+	{
+		if (CustomProperties)
+		{
+			CustomAccessors = CustomProperties->GetAccessors();
+		}
+	}
 
 	/**
 	 * Task callback that applies a value to an object property via a custom native setter function
@@ -314,7 +342,7 @@ struct TSetPropertyValuesImpl<PropertyTraits, TPropertyMetaData<MetaDataTypes...
 	 *     .Read( TComponentTypeID<PropertyType>(...) )
 	 *     .Dispatch_PerEntity<TSetPropertyValues<PropertyType>>(...);
 	 */
-	void ForEachEntity(UObject* InObject, FCustomPropertyIndex CustomIndex, typename TCallTraits<MetaDataTypes>::ParamType... MetaData, InParamType ValueToSet);
+	void ForEachEntity(UObject* InObject, FCustomPropertyIndex CustomIndex, typename TCallTraits<MetaDataTypes>::ParamType... MetaData, InParamType ValueToSet) const;
 
 	/**
 	 * Task callback that applies a value to an object property via a fast pointer offset
@@ -356,7 +384,7 @@ public:
 	 *     .Read(      TComponentTypeID<PropertyType>(...) )
 	 *     .Dispatch_PerAllocation<TSetPropertyValues<PropertyType>>(...);
 	 */
-	void ForEachAllocation(const FEntityAllocation* Allocation, TRead<UObject*> BoundObjectComponents, FThreeWayAccessor ResolvedPropertyComponents, TRead<MetaDataTypes>... MetaDataComponents, TRead<StorageType> PropertyValueComponents);
+	void ForEachAllocation(const FEntityAllocation* Allocation, TRead<UObject*> BoundObjectComponents, FThreeWayAccessor ResolvedPropertyComponents, TRead<MetaDataTypes>... MetaDataComponents, TRead<StorageType> PropertyValueComponents) const;
 
 
 	/**
@@ -369,7 +397,7 @@ public:
 	 *     .Read(      TComponentTypeID<PropertyType>(...) )
 	 *     .Dispatch_PerAllocation<TSetPropertyValues<PropertyType>>(...);
 	 */
-	void ForEachAllocation(const FEntityAllocation* Allocation, TRead<UObject*> BoundObjectComponents, FTwoWayAccessor ResolvedPropertyComponents, TRead<MetaDataTypes>... MetaDataComponents, TRead<StorageType> PropertyValueComponents);
+	void ForEachAllocation(const FEntityAllocation* Allocation, TRead<UObject*> BoundObjectComponents, FTwoWayAccessor ResolvedPropertyComponents, TRead<MetaDataTypes>... MetaDataComponents, TRead<StorageType> PropertyValueComponents) const;
 
 private:
 
@@ -429,9 +457,12 @@ struct TGetPropertyValuesImpl<PropertyTraits, TPropertyMetaData<MetaDataTypes...
 
 	explicit TGetPropertyValuesImpl(ICustomPropertyRegistration* InCustomProperties)
 		: CustomProperties(InCustomProperties)
-	{}
-
-	void PreTask();
+	{
+		if (CustomProperties)
+		{
+			CustomAccessors = CustomProperties->GetAccessors();
+		}
+	}
 
 	/**
 	 * Task callback that retrieves the object's current value via a custom native setter function, and writes it to the specified output variable
@@ -443,7 +474,7 @@ struct TGetPropertyValuesImpl<PropertyTraits, TPropertyMetaData<MetaDataTypes...
 	 *     .Write( TComponentTypeID<StorageType>(...) )
 	 *     .Dispatch_PerEntity<TGetPropertyValues<PropertyType, StorageType>>(...);
 	 */
-	void ForEachEntity(UObject* InObject, FCustomPropertyIndex CustomPropertyIndex, typename TCallTraits<MetaDataTypes>::ParamType... MetaData, StorageType& OutValue);
+	void ForEachEntity(UObject* InObject, FCustomPropertyIndex CustomPropertyIndex, typename TCallTraits<MetaDataTypes>::ParamType... MetaData, StorageType& OutValue) const;
 
 	/**
 	 * Task callback that retrieves the object's current value via a fast pointer offset, and writes it to the specified output variable
@@ -456,7 +487,7 @@ struct TGetPropertyValuesImpl<PropertyTraits, TPropertyMetaData<MetaDataTypes...
 	 *     .Read( TComponentTypeID<StorageType>(...) )
 	 *     .Dispatch_PerEntity<TGetPropertyValues<PropertyType, StorageType>>(...);
 	 */
-	void ForEachEntity(UObject* InObject, uint16 PropertyOffset, typename TCallTraits<MetaDataTypes>::ParamType... MetaData, StorageType& OutValue);
+	void ForEachEntity(UObject* InObject, uint16 PropertyOffset, typename TCallTraits<MetaDataTypes>::ParamType... MetaData, StorageType& OutValue) const;
 
 	/**
 	 * Task callback that retrieves the object's current value via a slow (legacy) track instance binding, and writes it to the specified output variable
@@ -469,7 +500,7 @@ struct TGetPropertyValuesImpl<PropertyTraits, TPropertyMetaData<MetaDataTypes...
 	 *     .Read( TComponentTypeID<StorageType>(...) )
 	 *     .Dispatch_PerEntity<TGetPropertyValues<PropertyType, StorageType>>(...);
 	 */
-	void ForEachEntity(UObject* InObject, const TSharedPtr<FTrackInstancePropertyBindings>& PropertyBindings, typename TCallTraits<MetaDataTypes>::ParamType... MetaData, StorageType& OutValue);
+	void ForEachEntity(UObject* InObject, const TSharedPtr<FTrackInstancePropertyBindings>& PropertyBindings, typename TCallTraits<MetaDataTypes>::ParamType... MetaData, StorageType& OutValue) const;
 
 public:
 
@@ -488,7 +519,7 @@ public:
 	 *     .Write(     TComponentTypeID<StorageType>(...) )
 	 *     .Dispatch_PerAllocation<TGetPropertyValues<PropertyType, StorageType>>(...);
 	 */
-	void ForEachAllocation(const FEntityAllocation* Allocation, TRead<UObject*> BoundObjectComponents, FThreeWayAccessor ResolvedPropertyComponents, TRead<MetaDataTypes>... MetaDataComponents, TWrite<StorageType> OutValueComponents);
+	void ForEachAllocation(const FEntityAllocation* Allocation, TRead<UObject*> BoundObjectComponents, FThreeWayAccessor ResolvedPropertyComponents, TRead<MetaDataTypes>... MetaDataComponents, TWrite<StorageType> OutValueComponents) const;
 
 
 	/**
@@ -502,7 +533,7 @@ public:
 	 *     .Write(     TComponentTypeID<StorageType>(...) )
 	 *     .Dispatch_PerAllocation<TGetPropertyValues<PropertyType ,StorageType>>(...);
 	 */
-	void ForEachAllocation(const FEntityAllocation* Allocation, TRead<UObject*> BoundObjectComponents, FTwoWayAccessor ResolvedPropertyComponents, TRead<MetaDataTypes>... MetaDataComponents, TWrite<StorageType> OutValueComponents);
+	void ForEachAllocation(const FEntityAllocation* Allocation, TRead<UObject*> BoundObjectComponents, FTwoWayAccessor ResolvedPropertyComponents, TRead<MetaDataTypes>... MetaDataComponents, TWrite<StorageType> OutValueComponents) const;
 
 private:
 
@@ -561,12 +592,12 @@ struct TSetCompositePropertyValuesImpl<PropertyTraits, TPropertyMetaData<MetaDat
 
 	explicit TSetCompositePropertyValuesImpl(ICustomPropertyRegistration* InCustomProperties)
 		: CustomProperties(InCustomProperties)
-	{}
-
-	/**
-	 * Run before this task executes any logic over entities and components
-	 */
-	void PreTask();
+	{
+		if (CustomProperties)
+		{
+			CustomAccessors = CustomProperties->GetAccessors();
+		}
+	}
 
 	/**
 	 * Task callback that applies a value to an object property via a custom native setter function
@@ -580,7 +611,7 @@ struct TSetCompositePropertyValuesImpl<PropertyTraits, TPropertyMetaData<MetaDat
 	 *     .Read( TComponentTypeID<CompositeType[N-1]>(...) )
 	 *     .Dispatch_PerEntity<TSetCompositePropertyValues<PropertyType, CompositeTypes...>>(...);
 	 */
-	void ForEachEntity(UObject* InObject, FCustomPropertyIndex CustomPropertyIndex, typename TCallTraits<MetaDataTypes>::ParamType... MetaData, typename TCallTraits<CompositeTypes>::ParamType... CompositeResults);
+	void ForEachEntity(UObject* InObject, FCustomPropertyIndex CustomPropertyIndex, typename TCallTraits<MetaDataTypes>::ParamType... MetaData, typename TCallTraits<CompositeTypes>::ParamType... CompositeResults) const;
 
 
 	/**
@@ -595,7 +626,7 @@ struct TSetCompositePropertyValuesImpl<PropertyTraits, TPropertyMetaData<MetaDat
 	 *     .Read( TComponentTypeID<CompositeType[N-1]>(...) )
 	 *     .Dispatch_PerEntity<TSetCompositePropertyValues<PropertyType, CompositeTypes...>>(...);
 	 */
-	void ForEachEntity(UObject* InObject, uint16 PropertyOffset, typename TCallTraits<MetaDataTypes>::ParamType... MetaData, typename TCallTraits<CompositeTypes>::ParamType... CompositeResults);
+	void ForEachEntity(UObject* InObject, uint16 PropertyOffset, typename TCallTraits<MetaDataTypes>::ParamType... MetaData, typename TCallTraits<CompositeTypes>::ParamType... CompositeResults) const;
 
 
 	/**
@@ -610,7 +641,7 @@ struct TSetCompositePropertyValuesImpl<PropertyTraits, TPropertyMetaData<MetaDat
 	 *     .Read( TComponentTypeID<CompositeType[N-1]>(...) )
 	 *     .Dispatch_PerEntity<TSetCompositePropertyValues<PropertyType, CompositeTypes...>>(...);
 	 */
-	void ForEachEntity(UObject* InObject, const TSharedPtr<FTrackInstancePropertyBindings>& PropertyBindings, typename TCallTraits<MetaDataTypes>::ParamType... MetaData, typename TCallTraits<CompositeTypes>::ParamType... CompositeResults);
+	void ForEachEntity(UObject* InObject, const TSharedPtr<FTrackInstancePropertyBindings>& PropertyBindings, typename TCallTraits<MetaDataTypes>::ParamType... MetaData, typename TCallTraits<CompositeTypes>::ParamType... CompositeResults) const;
 
 public:
 
@@ -630,7 +661,7 @@ public:
 	 *     .Read( TComponentTypeID<CompositeType[N-1]>(...) )
 	 *     .Dispatch_PerAllocation<TSetCompositePropertyValues<PropertyType, CompositeTypes...>>(...);
 	 */
-	void ForEachAllocation(const FEntityAllocation* Allocation, TRead<UObject*> BoundObjectComponents, FThreeWayAccessor ResolvedPropertyComponents, TRead<MetaDataTypes>... InMetaData, TRead<CompositeTypes>... VariadicComponents);
+	void ForEachAllocation(const FEntityAllocation* Allocation, TRead<UObject*> BoundObjectComponents, FThreeWayAccessor ResolvedPropertyComponents, TRead<MetaDataTypes>... InMetaData, TRead<CompositeTypes>... VariadicComponents) const;
 
 
 	/**
@@ -645,7 +676,7 @@ public:
 	 *     .Read( TComponentTypeID<CompositeType[N-1]>(...) )
 	 *     .Dispatch_PerAllocation<TSetCompositePropertyValues<PropertyType, CompositeTypes...>>(...);
 	 */
-	void ForEachAllocation(const FEntityAllocation* Allocation, TRead<UObject*> BoundObjectComponents, FTwoWayAccessor ResolvedPropertyComponents, TRead<MetaDataTypes>... InMetaData, TRead<CompositeTypes>... VariadicComponents);
+	void ForEachAllocation(const FEntityAllocation* Allocation, TRead<UObject*> BoundObjectComponents, FTwoWayAccessor ResolvedPropertyComponents, TRead<MetaDataTypes>... InMetaData, TRead<CompositeTypes>... VariadicComponents) const;
 
 private:
 

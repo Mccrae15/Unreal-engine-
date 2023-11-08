@@ -4,8 +4,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace UnrealGameSync
 {
@@ -28,17 +26,17 @@ namespace UnrealGameSync
 		/// <summary>
 		/// Root node for the tree.
 		/// </summary>
-		FileFilterNode _rootNode;
+		readonly FileFilterNode _rootNode;
 
 		/// <summary>
 		/// The default node, which will match any path
 		/// </summary>
-		FileFilterNode _defaultNode;
+		readonly FileFilterNode _defaultNode;
 
 		/// <summary>
 		/// Terminating nodes for each rule added to the filter
 		/// </summary>
-		List<FileFilterNode> _rules = new List<FileFilterNode>();
+		readonly List<FileFilterNode> _rules = new List<FileFilterNode>();
 
 		/// <summary>
 		/// Default constructor
@@ -83,7 +81,7 @@ namespace UnrealGameSync
 		/// <param name="Pattern">Pattern to match. See CreateRegex() for details.</param>
 		public void AddRule(string rule)
 		{
-			if (rule.StartsWith("-"))
+			if (rule.StartsWith("-", StringComparison.Ordinal))
 			{
 				Exclude(rule.Substring(1).TrimStart());
 			}
@@ -100,10 +98,10 @@ namespace UnrealGameSync
 		public void AddRule(string rule, params string[] allowTags)
 		{
 			string cleanRule = rule.Trim();
-			if(cleanRule.StartsWith("{"))
+			if(cleanRule.StartsWith("{", StringComparison.Ordinal))
 			{
 				// Find the end of the condition
-				int conditionEnd = cleanRule.IndexOf('}');
+				int conditionEnd = cleanRule.IndexOf('}', StringComparison.Ordinal);
 				if(conditionEnd == -1)
 				{
 					throw new Exception(String.Format("Missing closing parenthesis in rule: {0}", cleanRule));
@@ -160,9 +158,9 @@ namespace UnrealGameSync
 			foreach(string line in File.ReadAllLines(fileName))
 			{
 				string trimLine = line.Trim();
-				if(!trimLine.StartsWith(";") && trimLine.Length > 0)
+				if(!trimLine.StartsWith(";", StringComparison.Ordinal) && trimLine.Length > 0)
 				{
-					if(trimLine.StartsWith("["))
+					if(trimLine.StartsWith("[", StringComparison.Ordinal))
 					{
 						inSection = (trimLine == "[" + sectionName + "]");
 					}
@@ -226,23 +224,23 @@ namespace UnrealGameSync
 			string normalizedPattern = pattern.Replace('\\', '/');
 
 			// We don't want a slash at the start, but if there was not one specified, it's not anchored to the root of the tree.
-			if (normalizedPattern.StartsWith("/"))
+			if (normalizedPattern.StartsWith("/", StringComparison.Ordinal))
 			{
 				normalizedPattern = normalizedPattern.Substring(1);
 			}
-			else if(!normalizedPattern.StartsWith("..."))
+			else if(!normalizedPattern.StartsWith("...", StringComparison.Ordinal))
 			{
 				normalizedPattern = ".../" + normalizedPattern;
 			}
 
 			// All directories indicate a wildcard match
-			if (normalizedPattern.EndsWith("/"))
+			if (normalizedPattern.EndsWith("/", StringComparison.Ordinal))
 			{
 				normalizedPattern += "...";
 			}
 
 			// Replace any directory wildcards mid-string
-			for (int idx = normalizedPattern.IndexOf("..."); idx != -1; idx = normalizedPattern.IndexOf("...", idx))
+			for (int idx = normalizedPattern.IndexOf("...", StringComparison.Ordinal); idx != -1; idx = normalizedPattern.IndexOf("...", idx, StringComparison.Ordinal))
 			{
 				if (idx > 0 && normalizedPattern[idx - 1] != '/')
 				{
@@ -266,7 +264,7 @@ namespace UnrealGameSync
 			FileFilterNode lastNode = _rootNode;
 			foreach (string branchPattern in branchPatterns)
 			{
-				FileFilterNode nextNode = lastNode.Branches.FirstOrDefault(x => x.Pattern == branchPattern);
+				FileFilterNode? nextNode = lastNode.Branches.FirstOrDefault(x => x.Pattern == branchPattern);
 				if (nextNode == null)
 				{
 					nextNode = new FileFilterNode(lastNode, branchPattern);
@@ -485,9 +483,9 @@ namespace UnrealGameSync
 		/// </summary>
 		public bool IsMatch(string token)
 		{
-			if(Pattern.EndsWith("."))
+			if(Pattern.EndsWith(".", StringComparison.Ordinal))
 			{
-				return !token.Contains('.') && IsMatch(token, 0, Pattern.Substring(0, Pattern.Length - 1), 0);
+				return !token.Contains('.', StringComparison.Ordinal) && IsMatch(token, 0, Pattern.Substring(0, Pattern.Length - 1), 0);
 			}
 			else
 			{

@@ -22,6 +22,7 @@ class USkinnedMeshComponent;
 class USkeletalMesh;
 class FSkeletalMeshRenderData;
 class FSkeletalMeshLODRenderData;
+class USkinnedAsset;
 
 /** Flags used when building vertex buffers. */
 enum class ESkeletalMeshVertexFlags : uint8
@@ -133,21 +134,21 @@ struct FClothingSectionData
 };
 
 
-/** Used to recreate all skinned mesh components for a given skeletal mesh */
-class ENGINE_API FSkinnedMeshComponentRecreateRenderStateContext
+/** Used to recreate all skinned mesh components for a given skinned asset. */
+class FSkinnedMeshComponentRecreateRenderStateContext
 {
 public:
 
 	/** Initialization constructor. */
-	FSkinnedMeshComponentRecreateRenderStateContext(USkeletalMesh* InSkeletalMesh, bool InRefreshBounds = false);
+	ENGINE_API FSkinnedMeshComponentRecreateRenderStateContext(USkinnedAsset* InSkinnedAsset, bool InRefreshBounds = false);
 
 	/** Destructor: recreates render state for all components that had their render states destroyed in the constructor. */
-	~FSkinnedMeshComponentRecreateRenderStateContext();
+	ENGINE_API ~FSkinnedMeshComponentRecreateRenderStateContext();
 	
 private:
 
 	/** List of components to reset */
-	TArray< TWeakObjectPtr<USkinnedMeshComponent>> MeshComponents;
+	TArray<TWeakObjectPtr<USkinnedMeshComponent>> MeshComponents;
 
 	/** Whether we'll refresh the component bounds as we reset */
 	bool bRefreshBounds;
@@ -156,7 +157,7 @@ private:
 #if WITH_EDITOR
 
 //Helper to scope skeletal mesh post edit change.
-class ENGINE_API FScopedSkeletalMeshPostEditChange
+class FScopedSkeletalMeshPostEditChange
 {
 public:
 	/*
@@ -166,15 +167,15 @@ public:
 	 * @param InbCallPostEditChange - if we are the first scope PostEditChange will be called.
 	 * @param InbReregisterComponents - if we are the first scope we will re register component from world and also component render data.
 	 */
-	FScopedSkeletalMeshPostEditChange(USkeletalMesh* InSkeletalMesh, bool InbCallPostEditChange = true, bool InbReregisterComponents = true);
+	ENGINE_API FScopedSkeletalMeshPostEditChange(USkeletalMesh* InSkeletalMesh, bool InbCallPostEditChange = true, bool InbReregisterComponents = true);
 
 	/*
 	 * This destructor decrement the skeletal mesh PostEditChangeStackCounter. If the stack counter is zero after the decrement,
 	 * the skeletal mesh PostEditChange will be call. The component will also be register to the world and there render data resources will be rebuild.
 	 */
-	~FScopedSkeletalMeshPostEditChange();
+	ENGINE_API ~FScopedSkeletalMeshPostEditChange();
 
-	void SetSkeletalMesh(USkeletalMesh* InSkeletalMesh);
+	ENGINE_API void SetSkeletalMesh(USkeletalMesh* InSkeletalMesh);
 
 private:
 	USkeletalMesh* SkeletalMesh;

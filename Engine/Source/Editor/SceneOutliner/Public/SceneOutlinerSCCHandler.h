@@ -6,10 +6,13 @@
 #include "SceneOutlinerPublicTypes.h"
 #include "ToolMenu.h"
 #include "SceneOutlinerTreeItemSCC.h"
+#include "UnrealEdMisc.h"
 
 class FSceneOutlinerSCCHandler : public TSharedFromThis<class FSceneOutlinerSCCHandler>
 {
 public:
+	FSceneOutlinerSCCHandler();
+	~FSceneOutlinerSCCHandler();
 
 	bool AddSourceControlMenuOptions(UToolMenu* Menu, TArray<FSceneOutlinerTreeItemPtr> InSelectedItems);
 
@@ -17,6 +20,8 @@ public:
 
 private:
 
+	bool AllowExecuteSourceControlRevert() const;
+	bool AllowExecuteSourceControlRevertUnsaved() const;
 	bool CanExecuteSourceControlActions() const;
 	void CacheCanExecuteVars();
 	bool CanExecuteSCC() const;
@@ -35,6 +40,8 @@ private:
 	void ExecuteSCCRevert();
 	void ExecuteSCCHistory();
 	void ExecuteSCCShowInChangelist();
+
+	void OnMapChanged(UWorld* InWorld, EMapChangeType MapChangedType);
 
 	TArray<FSceneOutlinerTreeItemPtr> SelectedItems;
 

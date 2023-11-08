@@ -3,11 +3,66 @@
 #include "TypedElementDatabase.h"
 
 #include "Editor.h"
+#include "Elements/Framework/TypedElementRegistry.h"
 #include "Engine/World.h"
+#include "MassCommonTypes.h"
 #include "MassEntityEditorSubsystem.h"
+#include "MassEntityTypes.h"
+#include "MassProcessor.h"
+#include "MassSimulationSubsystem.h"
+#include "MassSubsystemAccess.h"
+#include "Processors/TypedElementProcessorAdaptors.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Stats/Stats2.h"
 #include "TickTaskManagerInterface.h"
-#include "MassSubsystemAccess.h"
+#include "UObject/UObjectIterator.h"
+
+const FName UTypedElementDatabase::TickGroupName_SyncWidget(TEXT("SyncWidgets"));
+
+FAutoConsoleCommandWithOutputDevice PrintQueryCallbacksConsoleCommand(
+	TEXT("TEDS.PrintQueryCallbacks"),
+	TEXT("Prints out a list of all processors."),
+	FConsoleCommandWithOutputDeviceDelegate::CreateLambda([](FOutputDevice& Output)
+		{
+			if (UTypedElementRegistry* Registry = UTypedElementRegistry::GetInstance())
+			{
+				if (UTypedElementDatabase* DataStorage = Cast<UTypedElementDatabase>(Registry->GetMutableDataStorage()))
+				{
+					DataStorage->DebugPrintQueryCallbacks(Output);
+				}
+			}
+		}));
+
+FAutoConsoleCommandWithOutputDevice PrintSupportedColumnsConsoleCommand(
+	TEXT("TEDS.PrintSupportedColumns"),
+	TEXT("Prints out a list of available Data Storage columns."),
+	FConsoleCommandWithOutputDeviceDelegate::CreateLambda([](FOutputDevice& Output)
+		{
+			Output.Log(TEXT("The Typed Elements Data Storage supports the following columns:"));
+			
+			UScriptStruct* FragmentTypeInfo = FMassFragment::StaticStruct();
+			UScriptStruct* TagTypeInfo = FMassTag::StaticStruct();
+			for (TObjectIterator<UScriptStruct> It; It; ++It)
+			{
+				if (It->IsChildOf(FragmentTypeInfo) || It->IsChildOf(TagTypeInfo))
+				{
+					int32 StructureSize = It->GetStructureSize();
+					if (StructureSize >= 1024 * 1024)
+					{
+						Output.Logf(TEXT("    [%6.2f mib] %s"), StructureSize / (1024.0f * 1024.0f), *It->GetFullName());
+					}
+					else if (StructureSize >= 1024)
+					{
+						Output.Logf(TEXT("    [%6.2f kib] %s"), StructureSize / 1024.0f, *It->GetFullName());
+					}
+					else
+					{
+						Output.Logf(TEXT("    [%6i b  ] %s"), StructureSize, *It->GetFullName());
+					}
+				}
+			}
+			Output.Log(TEXT("End of Typed Elements Data Storage supported column list."));
+		}));
 
 void UTypedElementDatabase::Initialize()
 {
@@ -16,7 +71,34 @@ void UTypedElementDatabase::Initialize()
 	check(Mass);
 	Mass->GetOnPreTickDelegate().AddUObject(this, &UTypedElementDatabase::OnPreMassTick);
 
-	ActiveEditorEntityManager = Mass->GetMutableEntityManager().AsShared();
+	ActiveEditorEntityManager = Mass->GetMutableEntityManager();
+	ActiveEditorPhaseManager = Mass->GetMutablePhaseManager();
+
+	using PhaseType = std::underlying_type_t<EQueryTickPhase>;
+	for (PhaseType PhaseId = 0; PhaseId < static_cast<PhaseType>(EQueryTickPhase::Max); ++PhaseId)
+	{
+		EQueryTickPhase Phase = static_cast<EQueryTickPhase>(PhaseId);
+		EMassProcessingPhase MassPhase = FTypedElementQueryProcessorData::MapToMassProcessingPhase(Phase);
+		
+		ActiveEditorPhaseManager->GetOnPhaseStart(MassPhase).AddLambda(
+			[this, Phase](float DeltaTime)
+			{
+				PreparePhase(Phase, DeltaTime);
+			});
+
+		ActiveEditorPhaseManager->GetOnPhaseEnd(MassPhase).AddLambda(
+			[this, Phase](float DeltaTime)
+			{
+				FinalizePhase(Phase, DeltaTime);
+			});
+
+		// Guarantee that syncing to the data storage always happens before syncing to external.
+		RegisterTickGroup(GetQueryTickGroupName(EQueryTickGroups::SyncExternalToDataStorage), 
+			Phase, GetQueryTickGroupName(EQueryTickGroups::SyncDataStorageToExternal), {}, false);
+		// Guarantee that widgets syncs happen after external data has been updated to the data storage.
+		RegisterTickGroup(GetQueryTickGroupName(EQueryTickGroups::SyncWidgets),
+			Phase, {}, GetQueryTickGroupName(EQueryTickGroups::SyncExternalToDataStorage), false);
+	}
 }
 
 void UTypedElementDatabase::Deinitialize()
@@ -40,14 +122,9 @@ TSharedPtr<const FMassEntityManager> UTypedElementDatabase::GetActiveEditorEntit
 	return ActiveEditorEntityManager;
 }
 
-TypedElementTableHandle UTypedElementDatabase::RegisterTable(TConstArrayView<const UScriptStruct*> ColumnList)
-{
-	return RegisterTable(ColumnList, {});
-}
-
 TypedElementTableHandle UTypedElementDatabase::RegisterTable(TConstArrayView<const UScriptStruct*> ColumnList, const FName Name)
 {
-	if (ActiveEditorEntityManager && (!Name.IsValid() || !TableNameLookup.Contains(Name)))
+	if (ActiveEditorEntityManager && !TableNameLookup.Contains(Name))
 	{
 		TypedElementTableHandle Result = Tables.Num();
 		Tables.Add(ActiveEditorEntityManager->CreateArchetype(ColumnList, Name));
@@ -60,16 +137,10 @@ TypedElementTableHandle UTypedElementDatabase::RegisterTable(TConstArrayView<con
 	return TypedElementInvalidTableHandle;
 }
 
-TypedElementTableHandle UTypedElementDatabase::RegisterTable(TypedElementTableHandle SourceTable,
-	TConstArrayView<const UScriptStruct*> ColumnList)
-{
-	return RegisterTable(SourceTable, ColumnList, {});
-}
-
 TypedElementTableHandle UTypedElementDatabase::RegisterTable(TypedElementTableHandle SourceTable, 
 	TConstArrayView<const UScriptStruct*> ColumnList, const FName Name)
 {
-	if (ActiveEditorEntityManager && (!Name.IsValid() || !TableNameLookup.Contains(Name)) && SourceTable < Tables.Num())
+	if (ActiveEditorEntityManager && SourceTable < Tables.Num() && !TableNameLookup.Contains(Name))
 	{
 		TypedElementTableHandle Result = Tables.Num();
 		Tables.Add(ActiveEditorEntityManager->CreateArchetype(Tables[SourceTable], ColumnList, Name));
@@ -88,6 +159,11 @@ TypedElementTableHandle UTypedElementDatabase::FindTable(const FName Name)
 	return TableHandle ? *TableHandle : TypedElementInvalidTableHandle;
 }
 
+TypedElementRowHandle UTypedElementDatabase::ReserveRow()
+{
+	return ActiveEditorEntityManager ? ActiveEditorEntityManager->ReserveEntity().AsNumber(): TypedElementInvalidRowHandle;
+}
+
 TypedElementRowHandle UTypedElementDatabase::AddRow(TypedElementTableHandle Table)
 {
 	checkf(Table < Tables.Num(), TEXT("Attempting to add a row to a non-existing table."));
@@ -96,10 +172,19 @@ TypedElementRowHandle UTypedElementDatabase::AddRow(TypedElementTableHandle Tabl
 		TypedElementInvalidRowHandle;
 }
 
-TypedElementRowHandle UTypedElementDatabase::AddRow(FName TableName)
+bool UTypedElementDatabase::AddRow(TypedElementRowHandle ReservedRow, TypedElementTableHandle Table)
 {
-	TypedElementTableHandle* Table = TableNameLookup.Find(TableName);
-	return Table ? AddRow(*Table) : TypedElementInvalidRowHandle;
+	checkf(!HasRowBeenAssigned(ReservedRow), TEXT("Attempting to assign a table to row that already has a table assigned."));
+	checkf(Table < Tables.Num(), TEXT("Attempting to add a row to a non-existing table."));
+	if (ActiveEditorEntityManager)
+	{
+		ActiveEditorEntityManager->BuildEntity(FMassEntityHandle::FromNumber(ReservedRow), Tables[Table]);
+		return true;
+	}
+	else
+	{
+		return false;
+	}
 }
 
 bool UTypedElementDatabase::BatchAddRow(TypedElementTableHandle Table, int32 Count, TypedElementDataStorageCreationCallbackRef OnCreated)
@@ -123,59 +208,131 @@ bool UTypedElementDatabase::BatchAddRow(TypedElementTableHandle Table, int32 Cou
 	return false;
 }
 
-bool UTypedElementDatabase::BatchAddRow(FName TableName, int32 Count, TypedElementDataStorageCreationCallbackRef OnCreated)
+bool UTypedElementDatabase::BatchAddRow(TypedElementTableHandle Table, TConstArrayView<TypedElementRowHandle> ReservedHandles,
+	TypedElementDataStorageCreationCallbackRef OnCreated)
 {
-	TypedElementTableHandle* Table = TableNameLookup.Find(TableName);
-	return Table ? BatchAddRow(*Table, Count, OnCreated) : false;
+	OnCreated.CheckCallable();
+	checkf(Table < Tables.Num(), TEXT("Attempting to add multiple rows to a non-existing table."));
+	if (ActiveEditorEntityManager)
+	{
+		TArray<FMassEntityHandle> Entities;
+		Entities.Reserve(ReservedHandles.Num());
+		FMassEntityHandle* CurrentEntityHandle = Entities.GetData();
+		for (TypedElementRowHandle RowHandle : ReservedHandles)
+		{
+			checkf(!HasRowBeenAssigned(RowHandle), TEXT("Attempting to assign a table to row that already has a table assigned."));
+			Entities.Add(FMassEntityHandle::FromNumber(RowHandle));
+		}
+		
+		TSharedRef<FMassEntityManager::FEntityCreationContext> Context =
+			ActiveEditorEntityManager->BatchCreateReservedEntities(Tables[Table], Entities);
+
+		for (FMassEntityHandle Entity : Entities)
+		{
+			OnCreated(Entity.AsNumber());
+		}
+
+		return true;
+	}
+	return false;
 }
+
 
 void UTypedElementDatabase::RemoveRow(TypedElementRowHandle Row)
 {
 	if (ActiveEditorEntityManager)
 	{
-		ActiveEditorEntityManager->DestroyEntity(FMassEntityHandle::FromNumber(Row));
+		if (ActiveEditorEntityManager->IsEntityActive(FMassEntityHandle::FromNumber(Row)))
+		{
+			ActiveEditorEntityManager->DestroyEntity(FMassEntityHandle::FromNumber(Row));
+		}
+		else
+		{
+			ActiveEditorEntityManager->ReleaseReservedEntity(FMassEntityHandle::FromNumber(Row));
+		}
 	}
 }
 
-void UTypedElementDatabase::AddTag(TypedElementRowHandle Row, const UScriptStruct* TagType)
+bool UTypedElementDatabase::IsRowAvailable(TypedElementRowHandle Row) const
 {
-	checkf(TagType && TagType->IsChildOf(FMassTag::StaticStruct()),
-		TEXT("Tag type '%s' is invalid as it needs to be set or derived from FMassTag."), *GetPathNameSafe(TagType));
+	return ActiveEditorEntityManager ? ActiveEditorEntityManager->IsEntityValid(FMassEntityHandle::FromNumber(Row)) : false;
+}
 
+bool UTypedElementDatabase::HasRowBeenAssigned(TypedElementRowHandle Row) const
+{
+	return ActiveEditorEntityManager ? ActiveEditorEntityManager->IsEntityActive(FMassEntityHandle::FromNumber(Row)) : false;
+}
+
+bool UTypedElementDatabase::AddColumn(TypedElementRowHandle Row, const UScriptStruct* ColumnType)
+{
 	FMassEntityHandle Entity = FMassEntityHandle::FromNumber(Row);
 	if (ActiveEditorEntityManager && ActiveEditorEntityManager->IsEntityValid(Entity))
 	{
-		ActiveEditorEntityManager->AddTagToEntity(Entity, TagType);
+		if (ColumnType->IsChildOf(FMassTag::StaticStruct()))
+		{
+			ActiveEditorEntityManager->AddTagToEntity(Entity, ColumnType);
+			return true;
+		}
+		else if (ColumnType->IsChildOf(FMassFragment::StaticStruct()))
+		{
+			FStructView Column = ActiveEditorEntityManager->GetFragmentDataStruct(Entity, ColumnType);
+			if (!Column.IsValid())
+			{
+				ActiveEditorEntityManager->AddFragmentToEntity(Entity, ColumnType);
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+bool UTypedElementDatabase::AddColumn(TypedElementRowHandle Row, FTopLevelAssetPath ColumnName)
+{
+	bool bExactMatch = true;
+	UScriptStruct* ColumnStructInfo = Cast<UScriptStruct>(StaticFindObject(UScriptStruct::StaticClass(), ColumnName, bExactMatch));
+	return ColumnStructInfo ? AddColumn(Row, ColumnStructInfo) : false;
+}
+
+void UTypedElementDatabase::RemoveColumn(TypedElementRowHandle Row, const UScriptStruct* ColumnType)
+{
+	FMassEntityHandle Entity = FMassEntityHandle::FromNumber(Row);
+	if (ActiveEditorEntityManager && ActiveEditorEntityManager->IsEntityValid(Entity))
+	{
+		if (ColumnType->IsChildOf(FMassTag::StaticStruct()))
+		{
+			ActiveEditorEntityManager->RemoveTagFromEntity(Entity, ColumnType);
+		}
+		else if (ColumnType->IsChildOf(FMassFragment::StaticStruct()))
+		{
+			ActiveEditorEntityManager->RemoveFragmentFromEntity(Entity, ColumnType);
+		}
 	}
 }
 
-void UTypedElementDatabase::AddTag(TypedElementRowHandle Row, FTopLevelAssetPath TagName)
+void UTypedElementDatabase::RemoveColumn(TypedElementRowHandle Row, FTopLevelAssetPath ColumnName)
 {
 	bool bExactMatch = true;
-	UScriptStruct* TagStructInfo = Cast<UScriptStruct>(StaticFindObject(UScriptStruct::StaticClass(), TagName, bExactMatch));
-	if (TagStructInfo)
+	if (UScriptStruct* ColumnStructInfo = Cast<UScriptStruct>(StaticFindObject(UScriptStruct::StaticClass(), ColumnName, bExactMatch)))
 	{
-		AddTag(Row, TagStructInfo);
+		RemoveColumn(Row, ColumnStructInfo);
 	}
 }
 
 void* UTypedElementDatabase::AddOrGetColumnData(TypedElementRowHandle Row, const UScriptStruct* ColumnType)
 {
-	checkf(ColumnType && ColumnType->IsChildOf(FMassFragment::StaticStruct()), 
-		TEXT("Colum type '%s' is invalid as it needs to be set or derived from FMassFragment."), *GetPathNameSafe(ColumnType));
-
 	FMassEntityHandle Entity = FMassEntityHandle::FromNumber(Row);
-	if (ActiveEditorEntityManager && ActiveEditorEntityManager->IsEntityValid(Entity))
+	if (ActiveEditorEntityManager && ActiveEditorEntityManager->IsEntityValid(Entity) &&
+		ColumnType && ColumnType->IsChildOf(FMassFragment::StaticStruct()))
 	{
 		FStructView Column = ActiveEditorEntityManager->GetFragmentDataStruct(Entity, ColumnType);
 		if (!Column.IsValid())
 		{
 			ActiveEditorEntityManager->AddFragmentToEntity(Entity, ColumnType);
 			Column = ActiveEditorEntityManager->GetFragmentDataStruct(Entity, ColumnType);
-			checkf(Column.IsValid(), TEXT("Added a new column to the Typed Element's data storae, but it couldn't be retrieved."));
+			checkf(Column.IsValid(), TEXT("Added a new column to the Typed Element's data store, but it couldn't be retrieved."));
 
 		}
-		return Column.GetMutableMemory();
+		return Column.GetMemory();
 	}
 	return nullptr;
 }
@@ -206,16 +363,14 @@ ColumnDataResult UTypedElementDatabase::AddOrGetColumnData(TypedElementRowHandle
 
 void* UTypedElementDatabase::GetColumnData(TypedElementRowHandle Row, const UScriptStruct* ColumnType)
 {
-	checkf(ColumnType && ColumnType->IsChildOf(FMassFragment::StaticStruct()),
-		TEXT("Colum type '%s' is invalid as it needs to be set or derived from FMassFragment."), *GetPathNameSafe(ColumnType));
-
 	FMassEntityHandle Entity = FMassEntityHandle::FromNumber(Row);
-	if (ActiveEditorEntityManager && ActiveEditorEntityManager->IsEntityValid(Entity))
+	if (ActiveEditorEntityManager && ActiveEditorEntityManager->IsEntityValid(Entity) &&
+		ColumnType && ColumnType->IsChildOf(FMassFragment::StaticStruct()))
 	{
 		FStructView Column = ActiveEditorEntityManager->GetFragmentDataStruct(Entity, ColumnType);
 		if (Column.IsValid())
 		{
-			return Column.GetMutableMemory();
+			return Column.GetMemory();
 		}
 	}
 	return nullptr;
@@ -237,163 +392,292 @@ ColumnDataResult UTypedElementDatabase::GetColumnData(TypedElementRowHandle Row,
 				}
 			});
 
-		if (FragmentType != nullptr)
+		if (FragmentType && FragmentType->IsChildOf(FMassFragment::StaticStruct()))
 		{
 			FStructView Column = ActiveEditorEntityManager->GetFragmentDataStruct(Entity, FragmentType);
 			if (Column.IsValid())
 			{
-				return ColumnDataResult{ FragmentType, Column.GetMutableMemory() };
+				return ColumnDataResult{ FragmentType, Column.GetMemory() };
 			}
 		}
 	}
 	return ColumnDataResult{ nullptr, nullptr };
 }
 
-TypedElementQueryHandle UTypedElementDatabase::RegisterQuery(const FQueryDescription& Query)
+bool UTypedElementDatabase::AddColumns(TypedElementRowHandle Row, TConstArrayView<const UScriptStruct*> Columns)
 {
-	auto LocalToNativeAccess = [](FQueryDescription::EAccessType Access) -> EMassFragmentAccess
+	FMassEntityHandle Entity = FMassEntityHandle::FromNumber(Row);
+	if (ActiveEditorEntityManager && ActiveEditorEntityManager->IsEntityValid(Entity))
 	{
-		switch (Access)
+		FMassArchetypeHandle Archetype = ActiveEditorEntityManager->GetArchetypeForEntity(Entity);
+
+		FMassFragmentBitSet FragmentsToAdd;
+		FMassTagBitSet TagsToAdd;
+		if (ColumnsToBitSets(Columns, FragmentsToAdd, TagsToAdd))
 		{
-		case FQueryDescription::EAccessType::ReadOnly:
-			return EMassFragmentAccess::ReadOnly;
-		case FQueryDescription::EAccessType::ReadWrite:
-			return EMassFragmentAccess::ReadWrite;
-		default:
-			checkf(false, TEXT("Invalid query access type: %i."), static_cast<uint32>(Access));
-			return EMassFragmentAccess::MAX;
-		}
-	};
-
-	QueryStore::Handle Result = Queries.Emplace();
-	FExtendedQuery& StoredQuery = Queries.GetMutable(Result);
-	StoredQuery.Action = Query.Action;
-	StoredQuery.bSimpleQuery = Query.bSimpleQuery;
-
-	FMassEntityQuery& NativeQuery = StoredQuery.NativeQuery;
-
-	if (Query.Action == FQueryDescription::EActionType::Count)
-	{
-		checkf(Query.Selection.IsEmpty(), TEXT("Count queries for the Typed Elements Data Storage can't have entries for selection."));
-	}
-	else
-	{
-		for (const FQueryDescription::FAccessControlledStruct& SelectEntry : Query.Selection)
-		{
-			checkf(SelectEntry.Type, TEXT("Provided query selection type can not be null."));
-			checkf(SelectEntry.Type->IsChildOf(FTypedElementDataStorageColumn::StaticStruct()),
-				TEXT("Provided query selection type '%s' is not based on FTypedElementDataStorageColumn."), *SelectEntry.Type->GetStructPathName().ToString());
-			NativeQuery.AddRequirement(SelectEntry.Type, LocalToNativeAccess(SelectEntry.Access));
+			FMassArchetypeCompositionDescriptor AddComposition(
+				MoveTemp(FragmentsToAdd), MoveTemp(TagsToAdd), FMassChunkFragmentBitSet(), FMassSharedFragmentBitSet());
+			ActiveEditorEntityManager->AddCompositionToEntity_GetDelta(Entity, AddComposition);
+			return true;
 		}
 	}
+	return false;
+}
 
-	if (Query.bSimpleQuery) // This backend currently only supports simple queries.
+void UTypedElementDatabase::RemoveColumns(TypedElementRowHandle Row, TConstArrayView<const UScriptStruct*> Columns)
+{
+	FMassEntityHandle Entity = FMassEntityHandle::FromNumber(Row);
+	if (ActiveEditorEntityManager && ActiveEditorEntityManager->IsEntityValid(Entity))
 	{
-		checkf(Query.ConditionTypes.Num() == Query.ConditionOperators.Num(),
-			TEXT("The types and operators for a typed element query have gone out of sync."));
+		FMassArchetypeHandle Archetype = ActiveEditorEntityManager->GetArchetypeForEntity(Entity);
+
+		FMassFragmentBitSet FragmentsToRemove;
+		FMassTagBitSet TagsToRemove;
+		if (ColumnsToBitSets(Columns, FragmentsToRemove, TagsToRemove))
+		{
+			FMassArchetypeCompositionDescriptor RemoveComposition(
+				MoveTemp(FragmentsToRemove), MoveTemp(TagsToRemove), FMassChunkFragmentBitSet(), FMassSharedFragmentBitSet());
+			ActiveEditorEntityManager->RemoveCompositionFromEntity(Entity, RemoveComposition);
+		}
+	}
+}
+
+bool UTypedElementDatabase::AddRemoveColumns(TypedElementRowHandle Row,
+	TConstArrayView<const UScriptStruct*> ColumnsToAdd, TConstArrayView<const UScriptStruct*> ColumnsToRemove)
+{
+	bool bResult = false;
+	FMassEntityHandle Entity = FMassEntityHandle::FromNumber(Row);
+	if (ActiveEditorEntityManager && ActiveEditorEntityManager->IsEntityValid(Entity))
+	{
+		FMassArchetypeHandle Archetype = ActiveEditorEntityManager->GetArchetypeForEntity(Entity);
+
+		FMassFragmentBitSet FragmentsToAdd;
+		FMassTagBitSet TagsToAdd;
+		if (ColumnsToBitSets(ColumnsToAdd, FragmentsToAdd, TagsToAdd))
+		{
+			FMassArchetypeCompositionDescriptor AddComposition(
+				MoveTemp(FragmentsToAdd), MoveTemp(TagsToAdd), FMassChunkFragmentBitSet(), FMassSharedFragmentBitSet());
+			ActiveEditorEntityManager->AddCompositionToEntity_GetDelta(Entity, AddComposition);
+			bResult = true;
+		}
+
+		FMassTagBitSet TagsToRemove;
+		FMassFragmentBitSet FragmentsToRemove;
+		if (ColumnsToBitSets(ColumnsToRemove, FragmentsToRemove, TagsToRemove))
+		{
+			FMassArchetypeCompositionDescriptor RemoveComposition(
+				MoveTemp(FragmentsToRemove), MoveTemp(TagsToRemove), FMassChunkFragmentBitSet(), FMassSharedFragmentBitSet());
+			ActiveEditorEntityManager->RemoveCompositionFromEntity(Entity, RemoveComposition);
+			bResult = true;
+		}
+	}
+	return bResult;
+}
+
+bool UTypedElementDatabase::BatchAddRemoveColumns(TConstArrayView<TypedElementRowHandle> Rows, 
+	TConstArrayView<const UScriptStruct*> ColumnsToAdd, TConstArrayView<const UScriptStruct*> ColumnsToRemove)
+{
+	if (ActiveEditorEntityManager)
+	{
+		FMassFragmentBitSet FragmentsToAdd;
+		FMassFragmentBitSet FragmentsToRemove;
+
+		FMassTagBitSet TagsToAdd;
+		FMassTagBitSet TagsToRemove;
+
+		bool bMustUpdateFragments = ColumnsToBitSets(ColumnsToAdd, FragmentsToAdd, TagsToAdd);
+		bool bMustUpdateTags = ColumnsToBitSets(ColumnsToRemove, FragmentsToRemove, TagsToRemove);
 		
-		const FQueryDescription::FOperator* Operand = Query.ConditionOperators.GetData();
-		for (FQueryDescription::EOperatorType Type : Query.ConditionTypes)
+		if (bMustUpdateFragments || bMustUpdateTags)
 		{
-			EMassFragmentPresence Presence;
-			switch (Type)
+			using EntityHandleArray = TArray<FMassEntityHandle, TInlineAllocator<32>>;
+			using EntityArchetypeLookup = TMap<FMassArchetypeHandle, EntityHandleArray, TInlineSetAllocator<32>>;
+			using ArchetypeEntityArray = TArray<FMassArchetypeEntityCollection, TInlineAllocator<32>>;
+
+			// Sort rows (entities) into to matching table (archetype) bucket.
+			EntityArchetypeLookup LookupTable;
+			for (TypedElementRowHandle EntityId : Rows)
 			{
-			case FQueryDescription::EOperatorType::SimpleAll:
-				Presence = EMassFragmentPresence::All;
-				break;
-			case FQueryDescription::EOperatorType::SimpleAny:
-				Presence = EMassFragmentPresence::Any;
-				break;
-			case FQueryDescription::EOperatorType::SimpleNone:
-				Presence = EMassFragmentPresence::None;
-				break;
-			default:
-				continue;
+				FMassEntityHandle Entity = FMassEntityHandle::FromNumber(EntityId);
+				if (ActiveEditorEntityManager->IsEntityValid(Entity))
+				{
+					FMassArchetypeHandle Archetype = ActiveEditorEntityManager->GetArchetypeForEntity(Entity);
+					EntityHandleArray& EntityCollection = LookupTable.FindOrAdd(Archetype);
+					EntityCollection.Add(Entity);
+				}
+			}
+			
+			// Construct table (archetype) specific row (entity) collections.
+			ArchetypeEntityArray EntityCollections;
+			EntityCollections.Reserve(LookupTable.Num());
+			for (auto It = LookupTable.CreateConstIterator(); It; ++It)
+			{
+				EntityCollections.Emplace(It.Key(), It.Value(), FMassArchetypeEntityCollection::EDuplicatesHandling::FoldDuplicates);
 			}
 
-			if (Operand->Type->IsChildOf(FMassTag::StaticStruct()))
+			// Batch update usint the appropriate fragment/bit sets.
+			if (bMustUpdateFragments)
 			{
-				NativeQuery.AddTagRequirement(*(Operand->Type), Presence);
+				ActiveEditorEntityManager->BatchChangeFragmentCompositionForEntities(EntityCollections, FragmentsToAdd, FragmentsToRemove);
 			}
-			else if (Operand->Type->IsChildOf(FMassFragment::StaticStruct()))
+			if (bMustUpdateTags)
 			{
-				NativeQuery.AddRequirement(Operand->Type, EMassFragmentAccess::None, Presence);
+				ActiveEditorEntityManager->BatchChangeTagsForEntities(EntityCollections, TagsToAdd, TagsToRemove);
 			}
-
-			++Operand;
+			return true;
 		}
 	}
+	return false;
+}
 
-	for (const FQueryDescription::FAccessControlledClass& DependencyEntry : Query.Dependencies)
+bool UTypedElementDatabase::HasColumns(TypedElementRowHandle Row, TConstArrayView<const UScriptStruct*> ColumnTypes) const
+{
+	FMassEntityHandle Entity = FMassEntityHandle::FromNumber(Row);
+	if (ActiveEditorEntityManager && ActiveEditorEntityManager->IsEntityValid(Entity))
 	{
-		checkf(DependencyEntry.Type, TEXT("Provided query dependcy type can not be null."));
-		checkf(DependencyEntry.Type->IsChildOf<UWorldSubsystem>(),
-			TEXT("Provided query dependency type '%s' is not based on UWorldSubSystem."), *DependencyEntry.Type->GetStructPathName().ToString());
-		
-		constexpr bool bGameThreadOnly = true;
-		NativeQuery.AddSubsystemRequirement(const_cast<UClass*>(DependencyEntry.Type), LocalToNativeAccess(DependencyEntry.Access), bGameThreadOnly);
-	}
+		FMassArchetypeHandle Archetype = ActiveEditorEntityManager->GetArchetypeForEntity(Entity);
+		const FMassArchetypeCompositionDescriptor& Composition = ActiveEditorEntityManager->GetArchetypeComposition(Archetype);
 
-	return Result.Handle;
+		bool bHasAllColumns = true;
+		const UScriptStruct* const* ColumnTypesEnd = ColumnTypes.end();
+		for (const UScriptStruct* const* ColumnType = ColumnTypes.begin(); ColumnType != ColumnTypesEnd && bHasAllColumns; ++ColumnType)
+		{
+			if ((*ColumnType)->IsChildOf(FMassFragment::StaticStruct()))
+			{
+				bHasAllColumns = Composition.Fragments.Contains(**ColumnType);
+			}
+			else if ((*ColumnType)->IsChildOf(FMassTag::StaticStruct()))
+			{
+				bHasAllColumns = Composition.Tags.Contains(**ColumnType);
+			}
+			else
+			{
+				return false;
+			}
+		}
+
+		return bHasAllColumns;
+	}
+	return false;
+}
+
+bool UTypedElementDatabase::HasColumns(TypedElementRowHandle Row, TConstArrayView<TWeakObjectPtr<const UScriptStruct>> ColumnTypes) const
+{
+	FMassEntityHandle Entity = FMassEntityHandle::FromNumber(Row);
+	if (ActiveEditorEntityManager && ActiveEditorEntityManager->IsEntityValid(Entity))
+	{
+		FMassArchetypeHandle Archetype = ActiveEditorEntityManager->GetArchetypeForEntity(Entity);
+		const FMassArchetypeCompositionDescriptor& Composition = ActiveEditorEntityManager->GetArchetypeComposition(Archetype);
+
+		bool bHasAllColumns = true;
+		const TWeakObjectPtr<const UScriptStruct>* ColumnTypesEnd = ColumnTypes.end();
+		for (const TWeakObjectPtr<const UScriptStruct>* ColumnType = ColumnTypes.begin(); ColumnType != ColumnTypesEnd && bHasAllColumns; ++ColumnType)
+		{
+			if (ColumnType->IsValid())
+			{
+				if ((*ColumnType)->IsChildOf(FMassFragment::StaticStruct()))
+				{
+					bHasAllColumns = Composition.Fragments.Contains(**ColumnType);
+					continue;
+				}
+				else if ((*ColumnType)->IsChildOf(FMassTag::StaticStruct()))
+				{
+					bHasAllColumns = Composition.Tags.Contains(**ColumnType);
+					continue;
+				}
+			}
+			return false;
+		}
+
+		return bHasAllColumns;
+	}
+	return false;
+}
+
+void UTypedElementDatabase::RegisterTickGroup(
+	FName GroupName, EQueryTickPhase Phase, FName BeforeGroup, FName AfterGroup, bool bRequiresMainThread)
+{
+	Queries.RegisterTickGroup(GroupName, Phase, BeforeGroup, AfterGroup, bRequiresMainThread);
+}
+
+void UTypedElementDatabase::UnregisterTickGroup(FName GroupName, EQueryTickPhase Phase)
+{
+	Queries.UnregisterTickGroup(GroupName, Phase);
+}
+
+TypedElementQueryHandle UTypedElementDatabase::RegisterQuery(FQueryDescription&& Query)
+{
+	return (ActiveEditorEntityManager && ActiveEditorPhaseManager)
+		? Queries.RegisterQuery(MoveTemp(Query), *ActiveEditorEntityManager, *ActiveEditorPhaseManager).Handle
+		: TypedElementInvalidQueryHandle;
 }
 
 void UTypedElementDatabase::UnregisterQuery(TypedElementQueryHandle Query)
 {
-	QueryStore::Handle Handle;
-	Handle.Handle = Query;
-
-	if (Queries.IsAlive(Handle))
+	if (ActiveEditorPhaseManager)
 	{
-		Queries.Get(Handle).NativeQuery.Clear();
+		FTypedElementExtendedQueryStore::Handle Handle;
+		Handle.Handle = Query;
+		Queries.UnregisterQuery(Handle, *ActiveEditorPhaseManager);
 	}
+}
 
-	Queries.Remove(Handle);
+const ITypedElementDataStorageInterface::FQueryDescription& UTypedElementDatabase::GetQueryDescription(TypedElementQueryHandle Query) const
+{
+	FTypedElementExtendedQueryStore::Handle Handle;
+	Handle.Handle = Query;
+	return Queries.GetQueryDescription(Handle);
+}
+
+FName UTypedElementDatabase::GetQueryTickGroupName(EQueryTickGroups Group) const
+{
+	switch (Group)
+	{
+		case EQueryTickGroups::Default:
+			return NAME_None;
+		case EQueryTickGroups::SyncExternalToDataStorage:
+			return UE::Mass::ProcessorGroupNames::SyncWorldToMass;
+		case EQueryTickGroups::SyncDataStorageToExternal:
+			return UE::Mass::ProcessorGroupNames::UpdateWorldFromMass;
+		case EQueryTickGroups::SyncWidgets:
+			return TickGroupName_SyncWidget;
+		default:
+			checkf(false, TEXT("EQueryTickGroups value %i can't be translated to a group name by this Data Storage backend."), static_cast<int>(Group));
+			return NAME_None;
+	}
 }
 
 ITypedElementDataStorageInterface::FQueryResult UTypedElementDatabase::RunQuery(TypedElementQueryHandle Query)
 {
-	FQueryResult Result;
+	TRACE_CPUPROFILER_EVENT_SCOPE(TEDS.RunQuery);
 
-	QueryStore::Handle Handle;
-	Handle.Handle = Query;
-
-	if (Queries.IsAlive(Handle))
+	if (ActiveEditorEntityManager)
 	{
-		FExtendedQuery& QueryData = Queries.Get(Handle);
-		if (QueryData.bSimpleQuery)
-		{
-			switch (QueryData.Action)
-			{
-			case FQueryDescription::EActionType::None:
-				Result.Completed = FQueryResult::ECompletion::Fully;
-				break;
-			case FQueryDescription::EActionType::Select:
-				checkf(false, TEXT("Support for this option will be coming in a future update."));
-				Result.Completed = FQueryResult::ECompletion::Unsupported;
-				break;
-			case FQueryDescription::EActionType::Count:
-				checkf(ActiveEditorEntityManager, 
-					TEXT("Unable to run Typed Element Data Storage query before a MASS Entity Manager has been assigned."));
-				Result.Count = QueryData.NativeQuery.GetNumMatchingEntities(*ActiveEditorEntityManager);
-				Result.Completed = FQueryResult::ECompletion::Fully;
-				break;
-			default:
-				Result.Completed = FQueryResult::ECompletion::Unsupported;
-				break;
-			}
-		}
-		else
-		{
-			checkf(false, TEXT("Support for this option will be coming in a future update."));
-			Result.Completed = FQueryResult::ECompletion::Unsupported;
-		}
+		FTypedElementExtendedQueryStore::Handle Handle;
+		Handle.Handle = Query;
+		return Queries.RunQuery(*ActiveEditorEntityManager, Handle);
 	}
 	else
 	{
-		Result.Completed = FQueryResult::ECompletion::Unavailable;
+		return FQueryResult();
 	}
+}
 
-	return Result;
+ITypedElementDataStorageInterface::FQueryResult UTypedElementDatabase::RunQuery(
+	TypedElementQueryHandle Query, ITypedElementDataStorageInterface::DirectQueryCallbackRef Callback)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(TEDS.RunQuery);
+
+	if (ActiveEditorEntityManager)
+	{
+		FTypedElementExtendedQueryStore::Handle Handle;
+		Handle.Handle = Query;
+		return Queries.RunQuery(*ActiveEditorEntityManager, Handle, Callback);
+	}
+	else
+	{
+		return FQueryResult();
+	}
 }
 
 FTypedElementOnDataStorageUpdate& UTypedElementDatabase::OnUpdate()
@@ -415,9 +699,49 @@ void* UTypedElementDatabase::GetExternalSystemAddress(UClass* Target)
 	return nullptr;
 }
 
+bool UTypedElementDatabase::ColumnsToBitSets(TConstArrayView<const UScriptStruct*> Columns, FMassFragmentBitSet& Fragments, FMassTagBitSet& Tags)
+{
+	bool bResult = false;
+	for (const UScriptStruct* ColumnType : Columns)
+	{
+		if (ColumnType->IsChildOf(FMassFragment::StaticStruct()))
+		{
+			Fragments.Add(*ColumnType);
+			bResult = true;
+		}
+		else if (ColumnType->IsChildOf(FMassTag::StaticStruct()))
+		{
+			Tags.Add(*ColumnType);
+			bResult = true;
+		}
+	}
+	return bResult;
+}
+
+void UTypedElementDatabase::PreparePhase(EQueryTickPhase Phase, float DeltaTime)
+{
+	if (ActiveEditorEntityManager)
+	{
+		Queries.RunPhasePreambleQueries(*ActiveEditorEntityManager, Phase, DeltaTime);
+	}
+}
+
+void UTypedElementDatabase::FinalizePhase(EQueryTickPhase Phase, float DeltaTime)
+{
+	if (ActiveEditorEntityManager)
+	{
+		Queries.RunPhasePostambleQueries(*ActiveEditorEntityManager, Phase, DeltaTime);
+	}
+}
+
 void UTypedElementDatabase::Reset()
 {
 	Tables.Reset();
 	TableNameLookup.Reset();
 	ActiveEditorEntityManager.Reset();
+}
+
+void UTypedElementDatabase::DebugPrintQueryCallbacks(FOutputDevice& Output)
+{
+	Queries.DebugPrintQueryCallbacks(Output);
 }

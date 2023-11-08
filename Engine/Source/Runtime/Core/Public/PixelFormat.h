@@ -101,7 +101,12 @@ enum EPixelFormat : uint8
 	PF_R64_UINT				=84,
 	PF_R9G9B9EXP5			=85,
 	PF_P010					=86,
-	PF_MAX					=87,
+	PF_ASTC_4x4_NORM_RG		=87, // RG format stored in LA endpoints for better precision (requires RHI support for texture swizzle)
+	PF_ASTC_6x6_NORM_RG		=88,	
+	PF_ASTC_8x8_NORM_RG		=89,	
+	PF_ASTC_10x10_NORM_RG	=90,	
+	PF_ASTC_12x12_NORM_RG	=91,	
+	PF_MAX					=92,
 };
 #define FOREACH_ENUM_EPIXELFORMAT(op) \
 	op(PF_Unknown) \
@@ -188,7 +193,14 @@ enum EPixelFormat : uint8
 	op(PF_R32G32B32_SINT) \
 	op(PF_R32G32B32F) \
 	op(PF_R8_SINT) \
-	op(PF_R64_UINT)
+	op(PF_R64_UINT) \
+	op(PF_R9G9B9EXP5) \
+	op(PF_P010) \
+	op(PF_ASTC_4x4_NORM_RG) \
+	op(PF_ASTC_6x6_NORM_RG) \
+	op(PF_ASTC_8x8_NORM_RG) \
+	op(PF_ASTC_10x10_NORM_RG) \
+	op(PF_ASTC_12x12_NORM_RG)
 
 // Defines which channel is valid for each pixel format
 enum class EPixelFormatChannelFlags : uint8
@@ -250,9 +262,51 @@ ENUM_CLASS_FLAGS(EPixelFormatCapabilities);
 // type conversion warnings
 #define UE_PIXELFORMAT_TO_UINT8(argument) static_cast<uint8>(argument)
 
+FORCEINLINE bool IsASTCBlockCompressedTextureFormat(EPixelFormat PixelFormat)
+{
+	switch (PixelFormat)
+	{
+	case PF_ASTC_4x4:
+	case PF_ASTC_6x6:
+	case PF_ASTC_8x8:
+	case PF_ASTC_10x10:
+	case PF_ASTC_12x12:
+	case PF_ASTC_4x4_HDR:
+	case PF_ASTC_6x6_HDR:
+	case PF_ASTC_8x8_HDR:
+	case PF_ASTC_10x10_HDR:
+	case PF_ASTC_12x12_HDR:
+	case PF_ASTC_4x4_NORM_RG:
+	case PF_ASTC_6x6_NORM_RG:
+	case PF_ASTC_8x8_NORM_RG:
+	case PF_ASTC_10x10_NORM_RG:
+	case PF_ASTC_12x12_NORM_RG:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static inline bool IsBlockCompressedFormat(EPixelFormat Format)
+{
+	switch (Format)
+	{
+	case PF_DXT1:
+	case PF_DXT3:
+	case PF_DXT5:
+	case PF_BC4:
+	case PF_BC5:
+	case PF_BC6H:
+	case PF_BC7:
+		return true;
+	}
+	return false;
+}
+
 FORCEINLINE bool IsHDR(EPixelFormat PixelFormat)
 {
-	return PixelFormat == PF_FloatRGBA || PixelFormat == PF_BC6H || PixelFormat == PF_R16F || PixelFormat == PF_R32_FLOAT || PixelFormat == PF_A32B32G32R32F;
+	return PixelFormat == PF_FloatRGBA || PixelFormat == PF_BC6H || PixelFormat == PF_R16F || PixelFormat == PF_R32_FLOAT || PixelFormat == PF_A32B32G32R32F
+		|| PixelFormat == PF_ASTC_4x4_HDR || PixelFormat == PF_ASTC_6x6_HDR || PixelFormat == PF_ASTC_8x8_HDR || PixelFormat == PF_ASTC_10x10_HDR || PixelFormat == PF_ASTC_12x12_HDR;
 }
 
 FORCEINLINE bool IsInteger(EPixelFormat PixelFormat)
@@ -275,6 +329,50 @@ FORCEINLINE bool IsInteger(EPixelFormat PixelFormat)
 	case PF_R32G32B32_SINT:
 	case PF_R8_SINT:
 	case PF_R64_UINT:
+		return true;
+	}
+	return false;
+}
+
+static bool IsFloatFormat(EPixelFormat Format)
+{
+	switch (Format)
+	{
+	case PF_A32B32G32R32F:
+	case PF_FloatRGB:
+	case PF_FloatRGBA:
+	case PF_R32_FLOAT:
+	case PF_G16R16F:
+	case PF_G16R16F_FILTER:
+	case PF_G32R32F:
+	case PF_R16F:
+	case PF_R16F_FILTER:
+	case PF_FloatR11G11B10:
+		return true;
+	}
+	return false;
+}
+
+FORCEINLINE bool IsDepthOrStencilFormat(EPixelFormat Format)
+{
+	switch (Format)
+	{
+	case PF_D24:
+	case PF_DepthStencil:
+	case PF_X24_G8:
+	case PF_ShadowDepth:
+	case PF_R32_FLOAT:
+		return true;
+	}
+	return false;
+}
+
+FORCEINLINE bool IsStencilFormat(EPixelFormat Format)
+{
+	switch (Format)
+	{
+	case PF_DepthStencil:
+	case PF_X24_G8:
 		return true;
 	}
 	return false;

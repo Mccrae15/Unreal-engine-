@@ -1,13 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PoseSearchFeatureChannel_Phase.h"
-#include "DrawDebugHelpers.h"
 #include "PoseSearch/PoseSearchAssetIndexer.h"
 #include "PoseSearch/PoseSearchAssetSampler.h"
 #include "PoseSearch/PoseSearchContext.h"
 #include "PoseSearch/PoseSearchDatabase.h"
 #include "PoseSearch/PoseSearchSchema.h"
+#include "PoseSearchFeatureChannel_Position.h"
 
+#if WITH_EDITOR
 namespace UE::PoseSearch
 {
 	struct LocalMinMax
@@ -40,21 +41,16 @@ namespace UE::PoseSearch
 		return (Values[Num - 1] - Values[Num - 2]) * (Sample - (Num - 1)) + Values[Num - 1];
 	}
 
-	static void CollectBonePositions(TArray<FVector>& BonePositions, IAssetIndexer& Indexer, int8 SchemaBoneIdx)
+	static void CollectBonePositions(TArray<FVector>& BonePositions, FAssetIndexer& Indexer, int8 SchemaBoneIdx)
 	{
-		const FAssetIndexingContext& IndexingContext = Indexer.GetIndexingContext();
-		const float FiniteDelta = IndexingContext.Schema->GetSamplingInterval();
-		const float SampleTimeStart = FMath::Min(IndexingContext.BeginSampleIdx * FiniteDelta, IndexingContext.AssetSampler->GetPlayLength());
-		const int32 NumSamples = IndexingContext.EndSampleIdx - IndexingContext.BeginSampleIdx;
+		const int32 NumSamples = Indexer.GetEndSampleIdx() - Indexer.GetBeginSampleIdx();
 
 		// collecting all the bone transforms
 		BonePositions.Reset();
 		BonePositions.AddDefaulted(NumSamples);
 		for (int32 SampleIdx = 0; SampleIdx != NumSamples; ++SampleIdx)
 		{
-			const float SampleTime = SampleTimeStart + SampleIdx * FiniteDelta;
-			bool bUnused;
-			BonePositions[SampleIdx] = Indexer.GetTransformAndCacheResults(SampleTime, SampleTimeStart, SchemaBoneIdx, bUnused).GetTranslation();
+			BonePositions[SampleIdx] = Indexer.GetSamplePosition(0.f, SampleIdx, SchemaBoneIdx);
 		}
 	}
 
@@ -282,26 +278,86 @@ namespace UE::PoseSearch
 	}
 
 } // namespace UE::PoseSearch
+#endif // WITH_EDITOR
 
 void UPoseSearchFeatureChannel_Phase::Finalize(UPoseSearchSchema* Schema)
 {
 	ChannelDataOffset = Schema->SchemaCardinality;
-	ChannelCardinality = UE::PoseSearch::FFeatureVectorHelper::EncodeVector2DCardinality;
+	ChannelCardinality = 2;
 	Schema->SchemaCardinality += ChannelCardinality;
 	SchemaBoneIdx = Schema->AddBoneReference(Bone);
 }
 
-void UPoseSearchFeatureChannel_Phase::FillWeights(TArray<float>& Weights) const
+void UPoseSearchFeatureChannel_Phase::AddDependentChannels(UPoseSearchSchema* Schema) const
+{
+	if (Schema->bInjectAdditionalDebugChannels)
+	{
+		UPoseSearchFeatureChannel_Position::FindOrAddToSchema(Schema, 0.f, Bone.BoneName);
+	}
+}
+
+void UPoseSearchFeatureChannel_Phase::BuildQuery(UE::PoseSearch::FSearchContext& SearchContext, UE::PoseSearch::FFeatureVectorBuilder& InOutQuery) const
 {
 	using namespace UE::PoseSearch;
 
-	for (int32 i = 0; i != FFeatureVectorHelper::EncodeVector2DCardinality; ++i)
+	const bool bIsCurrentResultValid = SearchContext.GetCurrentResult().IsValid() && SearchContext.GetCurrentResult().Database->Schema == InOutQuery.GetSchema();
+	const bool bSkip = InputQueryPose != EInputQueryPose::UseCharacterPose && bIsCurrentResultValid;
+	if (bSkip || !SearchContext.IsHistoryValid())
+	{
+		if (bIsCurrentResultValid)
+		{
+			FFeatureVectorHelper::Copy(InOutQuery.EditValues(), ChannelDataOffset, ChannelCardinality, SearchContext.GetCurrentResultPoseVector());
+		}
+		else
+		{
+			// we leave the InOutQuery set to zero since the SearchContext.History is invalid and it'll fail if we continue
+			UE_LOG(LogPoseSearch, Error, TEXT("UPoseSearchFeatureChannel_Phase::BuildQuery - Failed because Pose History Node is missing."));
+		}
+	}
+	else
+	{
+		// @todo: Support phase in BuildQuery
+		// FFeatureVectorHelper::EncodeVector2D(InOutQuery.EditValues(), DataOffset, ???);
+	}
+}
+
+#if ENABLE_DRAW_DEBUG
+void UPoseSearchFeatureChannel_Phase::DebugDraw(const UE::PoseSearch::FDebugDrawParams& DrawParams, TConstArrayView<float> PoseVector) const
+{
+	using namespace UE::PoseSearch;
+
+	static float ScaleFactor = 1.f;
+
+
+	const FColor Color = DebugColor.ToFColor(true);
+
+	const FVector2D Phase = FFeatureVectorHelper::DecodeVector2D(PoseVector, ChannelDataOffset);
+	const FVector BonePos = DrawParams.ExtractPosition(PoseVector, 0.f, SchemaBoneIdx);
+
+	const FVector TransformXAxisVector = DrawParams.GetRootTransform().TransformVector(FVector::XAxisVector);
+	const FVector TransformYAxisVector = DrawParams.GetRootTransform().TransformVector(FVector::YAxisVector);
+	const FVector TransformZAxisVector = DrawParams.GetRootTransform().TransformVector(FVector::ZAxisVector);
+
+	const FVector PhaseVector = (TransformZAxisVector * Phase.X + TransformYAxisVector * Phase.Y) * ScaleFactor;
+	DrawParams.DrawLine(BonePos, BonePos + PhaseVector, Color);
+
+	static int32 Segments = 32;
+	FMatrix CircleTransform;
+	CircleTransform.SetAxes(&TransformXAxisVector, &TransformYAxisVector, &TransformZAxisVector, &BonePos);
+	DrawParams.DrawCircle(CircleTransform, PhaseVector.Length(), Segments, Color);
+}
+#endif // ENABLE_DRAW_DEBUG
+
+#if WITH_EDITOR
+void UPoseSearchFeatureChannel_Phase::FillWeights(TArrayView<float> Weights) const
+{
+	for (int32 i = 0; i < ChannelCardinality; ++i)
 	{
 		Weights[ChannelDataOffset + i] = Weight;
 	}
 }
 
-void UPoseSearchFeatureChannel_Phase::IndexAsset(UE::PoseSearch::IAssetIndexer& Indexer, TArrayView<float> FeatureVectorTable) const
+void UPoseSearchFeatureChannel_Phase::IndexAsset(UE::PoseSearch::FAssetIndexer& Indexer) const
 {
 	using namespace UE::PoseSearch;
 
@@ -310,24 +366,21 @@ void UPoseSearchFeatureChannel_Phase::IndexAsset(UE::PoseSearch::IAssetIndexer& 
 	static float BoneSamplingCentralDifferencesTime = 0.2f; // seconds
 	static float SmoothingWindowTime = 0.3f; // seconds
 
+	const UPoseSearchSchema* Schema = Indexer.GetSchema();
 
-	const FAssetIndexingContext& IndexingContext = Indexer.GetIndexingContext();
-	const UPoseSearchSchema* Schema = IndexingContext.Schema;
-	const float FiniteDelta = Schema->GetSamplingInterval();
-	
 	TArray<FVector2D> Phases;
 	TArray<float> Signal;
 	TArray<float> SmoothedSignal;
 	TArray<LocalMinMax> LocalMinMax;
 	TArray<FVector> BonePositions;
-	
+
 	CollectBonePositions(BonePositions, Indexer, SchemaBoneIdx);
 
 	// @todo: have different way of calculating signals, for example: height of the bone transform, acceleration, etc?
-	const int32 BoneSamplingCentralDifferencesOffset = FMath::Max(FMath::CeilToInt(BoneSamplingCentralDifferencesTime / FiniteDelta), 1);
+	const int32 BoneSamplingCentralDifferencesOffset = FMath::Max(FMath::CeilToInt(BoneSamplingCentralDifferencesTime * Schema->SampleRate), 1);
 	CalculateSignal(BonePositions, Signal, BoneSamplingCentralDifferencesOffset);
 
-	const int32 SmoothingWindowOffset = FMath::Max(FMath::CeilToInt(SmoothingWindowTime / FiniteDelta), 1);
+	const int32 SmoothingWindowOffset = FMath::Max(FMath::CeilToInt(SmoothingWindowTime * Schema->SampleRate), 1);
 	SmoothSignal(Signal, SmoothedSignal, SmoothingWindowOffset);
 
 	FindLocalMinMax(SmoothedSignal, LocalMinMax);
@@ -337,67 +390,12 @@ void UPoseSearchFeatureChannel_Phase::IndexAsset(UE::PoseSearch::IAssetIndexer& 
 	ValidateLocalMinMax(LocalMinMax);
 	CalculatePhasesFromLocalMinMax(LocalMinMax, Phases, SmoothedSignal.Num());
 
-	for (int32 SampleIdx = IndexingContext.BeginSampleIdx; SampleIdx != IndexingContext.EndSampleIdx; ++SampleIdx)
+	for (int32 SampleIdx = Indexer.GetBeginSampleIdx(); SampleIdx != Indexer.GetEndSampleIdx(); ++SampleIdx)
 	{
-		const int32 VectorIdx = SampleIdx - IndexingContext.BeginSampleIdx;
-		int32 DataOffset = ChannelDataOffset;
-		FFeatureVectorHelper::EncodeVector2D(IndexingContext.GetPoseVector(VectorIdx, FeatureVectorTable), DataOffset, Phases[VectorIdx]);
+		FFeatureVectorHelper::EncodeVector2D(Indexer.GetPoseVector(SampleIdx), ChannelDataOffset, Phases[SampleIdx - Indexer.GetBeginSampleIdx()]);
 	}
 }
 
-void UPoseSearchFeatureChannel_Phase::BuildQuery(UE::PoseSearch::FSearchContext& SearchContext, FPoseSearchFeatureVectorBuilder& InOutQuery) const
-{
-	using namespace UE::PoseSearch;
-
-	const bool bIsCurrentResultValid = SearchContext.CurrentResult.IsValid();
-	const bool bSkip = InputQueryPose != EInputQueryPose::UseCharacterPose && bIsCurrentResultValid && SearchContext.CurrentResult.Database->Schema == InOutQuery.GetSchema();
-	if (bSkip || !SearchContext.History)
-	{
-		if (bIsCurrentResultValid)
-		{
-			const float LerpValue = InputQueryPose == EInputQueryPose::UseInterpolatedContinuingPose ? SearchContext.CurrentResult.LerpValue : 0.f;
-			int32 DataOffset = ChannelDataOffset;
-			FFeatureVectorHelper::EncodeVector2D(InOutQuery.EditValues(), DataOffset, SearchContext.GetCurrentResultPrevPoseVector(), SearchContext.GetCurrentResultPoseVector(), SearchContext.GetCurrentResultNextPoseVector(), LerpValue);
-		}
-		// else leave the InOutQuery set to zero since the SearchContext.History is invalid and it'll fail if we continue
-	}
-	else
-	{
-		// @todo: Support phase in BuildQuery
-		// FFeatureVectorHelper::EncodeVector2D(InOutQuery.EditValues(), DataOffset, ???);
-	}
-}
-
-void UPoseSearchFeatureChannel_Phase::DebugDraw(const UE::PoseSearch::FDebugDrawParams& DrawParams, TConstArrayView<float> PoseVector) const
-{
-#if ENABLE_DRAW_DEBUG
-	using namespace UE::PoseSearch;
-
-	static float ScaleFactor = 1.f;
-
-	const float LifeTime = DrawParams.DefaultLifeTime;
-	const uint8 DepthPriority = ESceneDepthPriorityGroup::SDPG_Foreground + 2;
-	const bool bPersistent = EnumHasAnyFlags(DrawParams.Flags, EDebugDrawFlags::Persistent);
-	const FColor Color = DrawParams.GetColor(ColorPresetIndex);
-
-	const FVector2D Phase = FFeatureVectorHelper::DecodeVector2DAtOffset(PoseVector, ChannelDataOffset);
-	const FVector BonePos = DrawParams.GetCachedPosition(0.f, SchemaBoneIdx);
-
-	const FVector TransformXAxisVector = DrawParams.RootTransform.TransformVector(FVector::XAxisVector);
-	const FVector TransformYAxisVector = DrawParams.RootTransform.TransformVector(FVector::YAxisVector);
-	const FVector TransformZAxisVector = DrawParams.RootTransform.TransformVector(FVector::ZAxisVector);
-
-	const FVector PhaseVector = (TransformZAxisVector * Phase.X + TransformYAxisVector * Phase.Y) * ScaleFactor;
-	DrawDebugLine(DrawParams.World, BonePos, BonePos + PhaseVector, Color, bPersistent, LifeTime, DepthPriority, 0.f);
-
-	static int32 Segments = 32;
-	FMatrix CircleTransform;
-	CircleTransform.SetAxes(&TransformXAxisVector, &TransformYAxisVector, &TransformZAxisVector, &BonePos);
-	DrawDebugCircle(DrawParams.World, CircleTransform, PhaseVector.Length(), Segments, Color, bPersistent, LifeTime, DepthPriority, 0.f, false);
-#endif // ENABLE_DRAW_DEBUG
-}
-
-#if WITH_EDITOR
 FString UPoseSearchFeatureChannel_Phase::GetLabel() const
 {
 	TStringBuilder<256> Label;
@@ -408,11 +406,13 @@ FString UPoseSearchFeatureChannel_Phase::GetLabel() const
 	}
 
 	Label.Append(TEXT("Pha"));
-	const FBoneReference& BoneReference = GetSchema()->BoneReferences[SchemaBoneIdx];
-	if (BoneReference.HasValidSetup())
+
+	const UPoseSearchSchema* Schema = GetSchema();
+	check(Schema);
+	if (!Schema->IsRootBone(SchemaBoneIdx))
 	{
 		Label.Append(TEXT("_"));
-		Label.Append(BoneReference.BoneName.ToString());
+		Label.Append(Schema->BoneReferences[SchemaBoneIdx].BoneName.ToString());
 	}
 
 	return Label.ToString();

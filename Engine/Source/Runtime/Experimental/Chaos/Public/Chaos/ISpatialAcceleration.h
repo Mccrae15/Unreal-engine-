@@ -9,7 +9,7 @@
 namespace Chaos
 {
 
-struct CHAOS_API FQueryFastData
+struct FQueryFastData
 {
 	FQueryFastData(const FVec3& InDir, const FReal InLength)
 		: Dir(InDir)
@@ -59,7 +59,7 @@ protected:
 };
 
 //dummy struct for templatized paths
-struct CHAOS_API FQueryFastDataVoid : public FQueryFastData
+struct FQueryFastDataVoid : public FQueryFastData
 {
 	FQueryFastDataVoid() : FQueryFastData(DummyDir) {}
 	
@@ -94,7 +94,7 @@ public:
 	In production, this class will only contain a payload.
 */
 template <typename TPayloadType>
-struct CHAOS_API TSpatialVisitorData
+struct TSpatialVisitorData
 {
 	TPayloadType Payload;
 	TSpatialVisitorData(const TPayloadType& InPayload, const bool bInHasBounds = false, const FAABB3& InBounds = FAABB3::ZeroAABB())
@@ -115,9 +115,10 @@ struct CHAOS_API TSpatialVisitorData
 	This class determines whether the acceleration structure should continue to iterate through potential instances
 */
 template <typename TPayloadType, typename T = FReal>
-class CHAOS_API ISpatialVisitor
+class ISpatialVisitor
 {
 public:
+
 	virtual ~ISpatialVisitor() = default;
 
 	/** Called whenever an instance in the acceleration structure may overlap
@@ -251,10 +252,22 @@ FChaosArchive& operator<<(FChaosArchive& Ar, TPayloadBoundsElement<TPayloadType,
 	return Ar;
 }
 
+template<typename TPayloadType, typename T, int d>
+class ISpatialAcceleration;
+
+template<ESpatialAcceleration SpatialType, typename TPayloadType, typename T, int d>
+struct TSpatialAccelerationSerializationFactory
+{
+	static ISpatialAcceleration<TPayloadType, T, d>* Create();
+};
+
 template <typename TPayloadType, typename T, int d>
-class CHAOS_API ISpatialAcceleration
+class ISpatialAcceleration
 {
 public:
+	UE_NONCOPYABLE(ISpatialAcceleration)
+
+	using TPayload = TPayloadType;
 
 	ISpatialAcceleration(SpatialAccelerationType InType = static_cast<SpatialAccelerationType>(ESpatialAcceleration::Unknown))
 		: Type(InType), SyncTimestamp(0), AsyncTimeSlicingComplete(true)
@@ -288,24 +301,27 @@ public:
 		check(false);
 	}
 
-	virtual void RemoveElement(const TPayloadType& Payload)
+	// Returns true if element was removed successfully
+	virtual bool RemoveElement(const TPayloadType& Payload)
 	{
 		check(false);	//not implemented
+		return true;
 	}
 
-	virtual void UpdateElement(const TPayloadType& Payload, const TAABB<T, d>& NewBounds, bool bHasBounds)
+	virtual bool UpdateElement(const TPayloadType& Payload, const TAABB<T, d>& NewBounds, bool bHasBounds)
 	{
 		check(false);
+		return true;
 	}
 
-	virtual void RemoveElementFrom(const TPayloadType& Payload, FSpatialAccelerationIdx Idx)
+	virtual bool RemoveElementFrom(const TPayloadType& Payload, FSpatialAccelerationIdx Idx)
 	{
-		RemoveElement(Payload);
+		return RemoveElement(Payload);
 	}
 
-	virtual void UpdateElementIn(const TPayloadType& Payload, const TAABB<T, d>& NewBounds, bool bHasBounds, FSpatialAccelerationIdx Idx)
+	virtual bool UpdateElementIn(const TPayloadType& Payload, const TAABB<T, d>& NewBounds, bool bHasBounds, FSpatialAccelerationIdx Idx)
 	{
-		UpdateElement(Payload, NewBounds, bHasBounds);
+		return UpdateElement(Payload, NewBounds, bHasBounds);
 	}
 
 	virtual TUniquePtr<ISpatialAcceleration<TPayloadType, T, d>> Copy() const
@@ -314,12 +330,11 @@ public:
 		return nullptr;
 	}
 
-	virtual ISpatialAcceleration<TPayloadType, T, d>& operator=(const ISpatialAcceleration<TPayloadType, T, d>& Other)
+	virtual void DeepAssign(const ISpatialAcceleration<TPayloadType, T, d>& Other)
 	{
 		Type = Other.Type;
 		SyncTimestamp = Other.SyncTimestamp;
 		AsyncTimeSlicingComplete = Other.AsyncTimeSlicingComplete;
-		return *this;
 	}
 
 #if !UE_BUILD_SHIPPING
@@ -328,7 +343,26 @@ public:
 	virtual void DumpStats() const {}
 #endif
 
-	static ISpatialAcceleration<TPayloadType, T, d>* SerializationFactory(FChaosArchive& Ar, ISpatialAcceleration<TPayloadType, T, d>* Accel);
+	static ISpatialAcceleration<TPayloadType, T, d>* SerializationFactory(FChaosArchive& Ar, ISpatialAcceleration<TPayloadType, T, d>* Accel)
+	{
+		if (Ar.CustomVer(FExternalPhysicsCustomObjectVersion::GUID) < FExternalPhysicsCustomObjectVersion::SerializeEvolutionGenericAcceleration)
+		{
+			return TSpatialAccelerationSerializationFactory<ESpatialAcceleration::BoundingVolume, TPayloadType, T, d>::Create();
+		}
+
+		int8 AccelType = Ar.IsLoading() ? 0 : (int8)Accel->Type;
+		Ar << AccelType;
+		switch ((ESpatialAcceleration)AccelType)
+		{
+		case ESpatialAcceleration::BoundingVolume: return Ar.IsLoading() ? TSpatialAccelerationSerializationFactory<ESpatialAcceleration::BoundingVolume, TPayloadType, T, d>::Create() : nullptr;
+		case ESpatialAcceleration::AABBTree: return Ar.IsLoading() ? TSpatialAccelerationSerializationFactory<ESpatialAcceleration::AABBTree, TPayloadType, T, d>::Create() : nullptr;
+		case ESpatialAcceleration::AABBTreeBV: return Ar.IsLoading() ? TSpatialAccelerationSerializationFactory<ESpatialAcceleration::AABBTreeBV, TPayloadType, T, d>::Create() : nullptr;
+		case ESpatialAcceleration::Collection: check(false);	//Collections must be serialized directly since they are variadic
+		default: check(false); return nullptr;
+		}
+		return nullptr;
+	}
+
 	virtual void Serialize(FChaosArchive& Ar)
 	{
 		check(false);
@@ -682,5 +716,12 @@ FORCEINLINE bool PrePreFilterHelper(const int32 Payload, const TVisitor& Visitor
 	return false;
 }
 
+#if PLATFORM_MAC || PLATFORM_LINUX
+extern template class CHAOS_API ISpatialAcceleration<int32, FReal, 3>;
+extern template class CHAOS_API ISpatialVisitor<int32, FReal>;
+#else
+extern template class ISpatialAcceleration<int32, FReal, 3>;
+extern template class ISpatialVisitor<int32, FReal>;
+#endif
 
 }

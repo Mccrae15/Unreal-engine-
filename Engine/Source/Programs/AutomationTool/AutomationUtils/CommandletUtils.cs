@@ -8,6 +8,9 @@ using System.Threading;
 using UnrealBuildTool;
 using EpicGames.Core;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
+
+using static AutomationTool.CommandUtils;
 
 namespace AutomationTool
 {
@@ -238,7 +241,7 @@ namespace AutomationTool
 		/// <param name="Commandlet">Commandlet name.</param>
 		/// <param name="Parameters">Command line parameters (without -run=)</param>
 		/// <param name="ErrorLevel">The minimum exit code, which is treated as an error.</param>
-		public static void RunCommandlet(FileReference ProjectName, string UnrealExe, string Commandlet, string Parameters = null, int ErrorLevel = 1)
+		public static void RunCommandlet(FileReference ProjectName, string UnrealExe, string Commandlet, string Parameters = null, uint ErrorLevel = 1)
 		{
 			string LogFile;
 			RunCommandlet(ProjectName, UnrealExe, Commandlet, Parameters, out LogFile, ErrorLevel);
@@ -251,9 +254,23 @@ namespace AutomationTool
 		/// <param name="UnrealExe">The name of the Unreal Editor executable to use.</param>
 		/// <param name="Commandlet">Commandlet name.</param>
 		/// <param name="Parameters">Command line parameters (without -run=)</param>
+		/// <param name="ErrorLevel">The minimum exit code, which is treated as an error.</param>
+		public static void RunCommandlet(FileReference ProjectName, string UnrealExe, string Commandlet, string Parameters, int ErrorLevel)
+		{
+			string LogFile;
+			RunCommandlet(ProjectName, UnrealExe, Commandlet, Parameters, out LogFile, (uint)ErrorLevel);
+		}
+
+		/// <summary>
+		/// Runs a commandlet using Engine/Binaries/Win64/UnrealEditor-Cmd.exe.
+		/// </summary>
+		/// <param name="ProjectName">Project name.</param>
+		/// <param name="UnrealExe">The name of the Unreal Editor executable to use.</param>
+		/// <param name="Commandlet">Commandlet name.</param>
+		/// <param name="Parameters">Command line parameters (without -run=)</param>
 		/// <param name="DestLogFile">Log file after completion</param>
 		/// <param name="ErrorLevel">The minimum exit code, which is treated as an error.</param>
-		public static void RunCommandlet(FileReference ProjectName, string UnrealExe, string Commandlet, string Parameters, out string DestLogFile, int ErrorLevel = 1)
+		public static void RunCommandlet(FileReference ProjectName, string UnrealExe, string Commandlet, string Parameters, out string DestLogFile, uint ErrorLevel = 1)
 		{
 			string LocalLogFile;
 			IProcessResult RunResult;
@@ -261,12 +278,26 @@ namespace AutomationTool
 			DateTime StartTime = DateTime.UtcNow;
 
 			StartRunCommandlet(ProjectName, UnrealExe, Commandlet, Parameters, ERunOptions.Default, out LocalLogFile, out RunResult);
-			FinishRunCommandlet(ProjectName, Commandlet, StartTime, RunResult, LocalLogFile, out DestLogFile);
+			FinishRunCommandlet(ProjectName, Commandlet, StartTime, RunResult, LocalLogFile, out DestLogFile, ErrorLevel);
+		}
+
+		/// <summary>
+		/// Runs a commandlet using Engine/Binaries/Win64/UnrealEditor-Cmd.exe.
+		/// </summary>
+		/// <param name="ProjectName">Project name.</param>
+		/// <param name="UnrealExe">The name of the Unreal Editor executable to use.</param>
+		/// <param name="Commandlet">Commandlet name.</param>
+		/// <param name="Parameters">Command line parameters (without -run=)</param>
+		/// <param name="DestLogFile">Log file after completion</param>
+		/// <param name="ErrorLevel">The minimum exit code, which is treated as an error.</param>
+		public static void RunCommandlet(FileReference ProjectName, string UnrealExe, string Commandlet, string Parameters, out string DestLogFile, int ErrorLevel)
+		{
+			RunCommandlet(ProjectName, UnrealExe, Commandlet, Parameters, out DestLogFile, (uint)ErrorLevel);
 		}
 
 		public static void StartRunCommandlet(FileReference ProjectName, string UnrealExe, string Commandlet, string Parameters, ERunOptions RunOptions, out string LocalLogFile, out IProcessResult RunResult, ProcessResult.SpewFilterCallbackType SpewFilterCallback=null)
 		{
-			LogInformation("Running UnrealEditor {0} for project {1}", Commandlet, ProjectName);
+			Logger.LogInformation("Running UnrealEditor {Commandlet} for project {ProjectName}", Commandlet, ProjectName);
 
 			var CWD = Path.GetDirectoryName(UnrealExe);
 
@@ -281,7 +312,7 @@ namespace AutomationTool
 			PushDir(CWD);
 
 			LocalLogFile = LogUtils.GetUniqueLogName(CombinePaths(CmdEnv.EngineSavedFolder, Commandlet));
-			LogInformation("Commandlet log file is {0}", LocalLogFile);
+			Logger.LogInformation("Commandlet log file is {LocalLogFile}", LocalLogFile);
 			string Args = String.Format(
 				"{0} -run={1} {2} -abslog={3} -stdout -CrashForUAT -unattended -NoLogTimes {5}{4}",
 				(ProjectName == null) ? "" : CommandUtils.MakePathSafeToUseWithCommandLine(ProjectName.FullName),
@@ -300,12 +331,12 @@ namespace AutomationTool
 			PopDir();
 		}
 
-		public static void FinishRunCommandlet(FileReference ProjectName, string Commandlet, DateTime StartTime, IProcessResult RunResult, string LocalLogFile, out string DestLogFile, int ErrorLevel = 1)
-		{ 
+		public static void FinishRunCommandlet(FileReference ProjectName, string Commandlet, DateTime StartTime, IProcessResult RunResult, string LocalLogFile, out string DestLogFile, uint ErrorLevel = 1)
+		{
 			// If we're running on a Windows build machine, copy any crash dumps into the log folder
 			if(HostPlatform.Current.HostEditorPlatform == UnrealTargetPlatform.Win64 && IsBuildMachine)
 			{
-				DirectoryInfo CrashesDir = new DirectoryInfo(DirectoryReference.Combine(DirectoryReference.FromFile(ProjectName) ?? Unreal.EngineDirectory, "Saved", "Crashes").FullName);
+				DirectoryInfo CrashesDir = new DirectoryInfo(GetCrashesDirectory(ProjectName).FullName);
 				if(CrashesDir.Exists)
 				{
 					foreach(DirectoryInfo CrashDir in CrashesDir.EnumerateDirectories())
@@ -315,7 +346,7 @@ namespace AutomationTool
 							DirectoryInfo OutputCrashesDir = new DirectoryInfo(Path.Combine(CmdEnv.LogFolder, "Crashes", CrashDir.Name));
 							try
 							{
-								CommandUtils.LogInformation("Copying crash data to {0}...", OutputCrashesDir.FullName);
+								Logger.LogInformation("Copying crash data to {Arg0}...", OutputCrashesDir.FullName);
 								OutputCrashesDir.Create();
 
 								foreach(FileInfo CrashFile in CrashDir.EnumerateFiles())
@@ -325,8 +356,8 @@ namespace AutomationTool
 							}
 							catch(Exception Ex)
 							{
-								CommandUtils.LogWarning("Unable to copy crash data; skipping. See log for exception details.");
-								CommandUtils.LogVerbose(EpicGames.Core.ExceptionUtils.FormatExceptionDetails(Ex));
+								Logger.LogWarning("Unable to copy crash data; skipping. See log for exception details.");
+								Logger.LogDebug("{Text}", EpicGames.Core.ExceptionUtils.FormatExceptionDetails(Ex));
 							}
 						}
 					}
@@ -340,14 +371,14 @@ namespace AutomationTool
 				// If we exited normally, still check without waiting in case SCW or some other child process crashed.
 				if(RunResult.ExitCode > 128)
 				{
-					CommandUtils.LogInformation("Pausing before checking for crash logs...");
+					Logger.LogInformation("Pausing before checking for crash logs...");
 					Thread.Sleep(10 * 1000);
 				}
-				
+
 				// Create a list of directories containing crash logs, and add the system log folder
 				List<string> CrashDirs = new List<string>();
 				CrashDirs.Add("/Library/Logs/DiagnosticReports");
-					
+
 				// Add the user's log directory too
 				string HomeDir = Environment.GetEnvironmentVariable("HOME");
 				if(!String.IsNullOrEmpty(HomeDir))
@@ -372,7 +403,7 @@ namespace AutomationTool
 						// Not all account types can access /Library/Logs/DiagnosticReports
 					}
 				}
-				
+
 				// Dump them all to the log
 				foreach(FileInfo CrashFileInfo in CrashFileInfos)
 				{
@@ -380,18 +411,18 @@ namespace AutomationTool
 					// also ignore spotlight crash with the excel plugin
 					if(!CrashFileInfo.Name.StartsWith("snmpd_") && !CrashFileInfo.Name.StartsWith("mdworker32_") && !CrashFileInfo.Name.StartsWith("Dock_"))
 					{
-						CommandUtils.LogInformation("Found crash log - {0}", CrashFileInfo.FullName);
+						Logger.LogInformation("Found crash log - {Arg0}", CrashFileInfo.FullName);
 						try
 						{
 							string[] Lines = File.ReadAllLines(CrashFileInfo.FullName);
 							foreach(string Line in Lines)
 							{
-								CommandUtils.LogInformation("Crash: {0}", Line);
+								Logger.LogInformation("Crash: {Line}", Line);
 							}
 						}
 						catch(Exception Ex)
 						{
-							CommandUtils.LogWarning("Failed to read file ({0})", Ex.Message);
+							Logger.LogWarning("Failed to read file ({Arg0})", Ex.Message);
 						}
 					}
 				}
@@ -401,7 +432,7 @@ namespace AutomationTool
 			DestLogFile = LogUtils.GetUniqueLogName(CombinePaths(CmdEnv.LogFolder, Commandlet));
 			if (!CommandUtils.CopyFile_NoExceptions(LocalLogFile, DestLogFile))
 			{
-				CommandUtils.LogWarning("Commandlet {0} failed to copy the local log file from {1} to {2}. The log file will be lost.", Commandlet, LocalLogFile, DestLogFile);
+				Logger.LogWarning("Commandlet {Commandlet} failed to copy the local log file from {LocalLogFile} to {DestLogFile}. The log file will be lost.", Commandlet, LocalLogFile, DestLogFile);
 			}
             string ProjectStatsDirectory = CombinePaths((ProjectName == null)? CombinePaths(CmdEnv.LocalRoot, "Engine") : Path.GetDirectoryName(ProjectName.FullName), "Saved", "Stats");
             if (Directory.Exists(ProjectStatsDirectory))
@@ -411,7 +442,7 @@ namespace AutomationTool
                 {
                     if (!CommandUtils.CopyFile_NoExceptions(StatsFile, CombinePaths(DestCookerStats, Path.GetFileName(StatsFile))))
                     {
-						CommandUtils.LogWarning("Commandlet {0} failed to copy the local log file from {1} to {2}. The log file will be lost.", Commandlet, StatsFile, CombinePaths(DestCookerStats, Path.GetFileName(StatsFile)));
+						Logger.LogWarning("Commandlet {Commandlet} failed to copy the local log file from {StatsFile} to {Arg2}. The log file will be lost.", Commandlet, StatsFile, CombinePaths(DestCookerStats, Path.GetFileName(StatsFile)));
                     }
                 }
             }
@@ -420,11 +451,11 @@ namespace AutomationTool
 //				CommandUtils.LogWarning("Failed to find directory {0} will not save stats", ProjectStatsDirectory);
 //			}
 
-			// Whether it was copied correctly or not, delete the local log as it was only a temporary file. 
+			// Whether it was copied correctly or not, delete the local log as it was only a temporary file.
 			CommandUtils.DeleteFile_NoExceptions(LocalLogFile);
 
 			// Throw an exception if the execution failed. Draw attention to signal exit codes on Posix systems, rather than just printing the exit code
-			if (RunResult.ExitCode != 0 && (uint)RunResult.ExitCode >= (uint)ErrorLevel)
+			if (RunResult.ExitCode != 0 && (uint)RunResult.ExitCode >= ErrorLevel)
 			{
 				string ExitCodeDesc = "";
 				if(RunResult.ExitCode > 128 && RunResult.ExitCode < 128 + 32)
@@ -442,6 +473,11 @@ namespace AutomationTool
 			}
 		}
 		
+		public static void FinishRunCommandlet(FileReference ProjectName, string Commandlet, DateTime StartTime, IProcessResult RunResult, string LocalLogFile, out string DestLogFile, int ErrorLevel)
+		{
+			FinishRunCommandlet(ProjectName, Commandlet, StartTime, RunResult, LocalLogFile, out DestLogFile, (uint)ErrorLevel);
+		}
+
 		/// <summary>
 		/// Returns the default path of the editor executable to use for running commandlets.
 		/// </summary>
@@ -534,6 +570,17 @@ namespace AutomationTool
 				}
 			}
 			return ProjectFullPath;
+		}
+
+		/// <summary>
+		/// Get the crashes directory for the given project file
+		/// </summary>
+		/// <param name="ProjectFullPath">Path to a project file</param>
+		/// <returns>DirectoryReference for the directory where crashes are stored for this project</returns>
+		public static DirectoryReference GetCrashesDirectory(FileReference ProjectFullPath)
+		{
+			DirectoryReference CrashesDir = DirectoryReference.Combine(DirectoryReference.FromFile(ProjectFullPath) ?? Unreal.EngineDirectory, "Saved", "Crashes");
+			return CrashesDir;
 		}
 	}
 }

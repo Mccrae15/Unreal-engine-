@@ -16,6 +16,12 @@ class UMassRepresentationSubsystem;
 class UMassRepresentationActorManagement;
 
 USTRUCT()
+struct MASSREPRESENTATION_API FMassStaticRepresentationTag : public FMassTag
+{
+	GENERATED_BODY(); 
+};
+
+USTRUCT()
 struct MASSREPRESENTATION_API FMassRepresentationLODFragment : public FMassFragment
 {
 	GENERATED_BODY()
@@ -82,7 +88,7 @@ struct FMassRepresentationParameters : public FMassSharedFragment
 	FMassRepresentationParameters() = default;
 
 	/** Allow subclasses to override the representation actor management behavior */
-	UPROPERTY(EditAnywhere, Category = "Mass|Visual")
+	UPROPERTY(EditAnywhere, Category = "Mass|Visual", meta = (EditCondition = "bCanModifyRepresentationActorManagementClass"))
 	TSubclassOf<UMassRepresentationActorManagement> RepresentationActorManagementClass;
 
 	/** What should be the representation of this entity for each specific LOD */
@@ -117,6 +123,12 @@ struct FMassRepresentationParameters : public FMassSharedFragment
 
 	UPROPERTY(Transient)
 	mutable TObjectPtr<UMassRepresentationActorManagement> CachedRepresentationActorManagement = nullptr;
+
+#if WITH_EDITORONLY_DATA
+	/** the property is marked like this to ensure it won't show up in UI */
+	UPROPERTY(EditDefaultsOnly, Category = "Mass|Visual")
+	bool bCanModifyRepresentationActorManagementClass = true;
+#endif // WITH_EDITORONLY_DATA
 };
 
 template<>

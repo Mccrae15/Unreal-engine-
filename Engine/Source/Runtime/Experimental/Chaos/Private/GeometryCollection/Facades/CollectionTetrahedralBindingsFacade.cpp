@@ -111,10 +111,10 @@ namespace GeometryCollection::Facades
 		const int32 Idx = MeshIdAttribute.AddElements(1);
 		MeshIdAttribute.Modify()[Idx] = GroupName.ToString();
 
-		Parents.Release();
-		Weights.Release();
-		Offsets.Release();
-		Mask.Release();
+		Parents.Reset();
+		Weights.Reset();
+		Offsets.Reset();
+		Mask.Reset();
 		FManagedArrayCollection& Collection = *MeshIdAttribute.GetCollection();
 		Parents.Reset(new TManagedArrayAccessor<FIntVector4>(Collection, ParentsAttributeName, GroupName));
 		Weights.Reset(new TManagedArrayAccessor<FVector4f>(Collection, WeightsAttributeName, GroupName));
@@ -134,10 +134,10 @@ namespace GeometryCollection::Facades
 	bool FTetrahedralBindings::ReadBindingsGroup(const FName& GroupName)
 	{
 		check(MeshIdAttribute.IsValid());
-		Parents.Release();
-		Weights.Release();
-		Offsets.Release();
-		Mask.Release();
+		Parents.Reset();
+		Weights.Reset();
+		Offsets.Reset();
+		Mask.Reset();
 		if (!MeshIdAttribute.Find()->Contains(GroupName.ToString()))
 		{
 			return false;
@@ -183,22 +183,22 @@ namespace GeometryCollection::Facades
 		if (Parents)
 		{
 			Parents->Remove();
-			Parents.Release();
+			Parents.Reset();
 		}
 		if (Weights)
 		{
 			Weights->Remove();
-			Weights.Release();
+			Weights.Reset();
 		}
 		if (Offsets)
 		{
 			Offsets->Remove();
-			Offsets.Release();
+			Offsets.Reset();
 		}
 		if (Mask)
 		{
 			Mask->Remove();
-			Mask.Release();
+			Mask.Reset();
 		}
 		// Only drop the group if it's empty at this point?
 		if (Collection.NumAttributes(GroupName) == 0)

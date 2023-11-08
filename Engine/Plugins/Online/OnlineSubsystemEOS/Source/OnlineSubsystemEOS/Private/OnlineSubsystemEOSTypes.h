@@ -79,9 +79,15 @@ private:
 class FUniqueNetIdEOSRegistry
 {
 public:
-	static FUniqueNetIdEOSPtr FindOrAdd(const FString& NetIdStr) { return Get().FindOrAddImpl(NetIdStr); }
-	static FUniqueNetIdEOSPtr FindOrAdd(const uint8* Bytes, int32 Size) { return Get().FindOrAddImpl(Bytes, Size); }
-	static FUniqueNetIdEOSPtr FindOrAdd(EOS_EpicAccountId EpicAccountId, EOS_ProductUserId ProductUserId) { return Get().FindOrAddImpl(EpicAccountId, ProductUserId); }
+	static FUniqueNetIdEOSRef FindOrAdd(const FString& NetIdStr) { return Get().FindOrAddImpl(NetIdStr); }
+	static FUniqueNetIdEOSRef FindOrAdd(const uint8* Bytes, int32 Size) { return Get().FindOrAddImpl(Bytes, Size); }
+	static FUniqueNetIdEOSRef FindOrAdd(EOS_EpicAccountId EpicAccountId, EOS_ProductUserId ProductUserId) { return Get().FindOrAddImpl(EpicAccountId, ProductUserId); }
+
+	static FUniqueNetIdEOSPtr Find(EOS_EpicAccountId EpicAccountId) { return Get().FindImpl(EpicAccountId); }
+	static FUniqueNetIdEOSPtr Find(EOS_ProductUserId ProductUserId) { return Get().FindImpl(ProductUserId); }
+
+	static FUniqueNetIdEOSRef FindChecked(EOS_EpicAccountId EpicAccountId) { return Get().FindCheckedImpl(EpicAccountId); }
+	static FUniqueNetIdEOSRef FindChecked(EOS_ProductUserId ProductUserId) { return Get().FindCheckedImpl(ProductUserId); }
 
 private:
 	FRWLock Lock;
@@ -90,9 +96,15 @@ private:
 
 	static FUniqueNetIdEOSRegistry& Get();
 
-	FUniqueNetIdEOSPtr FindOrAddImpl(const FString& NetIdStr);
-	FUniqueNetIdEOSPtr FindOrAddImpl(const uint8* Bytes, int32 Size);
-	FUniqueNetIdEOSPtr FindOrAddImpl(EOS_EpicAccountId EpicAccountId, EOS_ProductUserId ProductUserId);
+	FUniqueNetIdEOSRef FindOrAddImpl(const FString& NetIdStr);
+	FUniqueNetIdEOSRef FindOrAddImpl(const uint8* Bytes, int32 Size);
+	FUniqueNetIdEOSRef FindOrAddImpl(EOS_EpicAccountId EpicAccountId, EOS_ProductUserId ProductUserId);
+
+	FUniqueNetIdEOSPtr FindImpl(EOS_EpicAccountId EpicAccountId);
+	FUniqueNetIdEOSPtr FindImpl(EOS_ProductUserId ProductUserId);
+
+	FUniqueNetIdEOSRef FindCheckedImpl(EOS_EpicAccountId EpicAccountId);
+	FUniqueNetIdEOSRef FindCheckedImpl(EOS_ProductUserId ProductUserId);
 };
 
 #ifndef AUTH_ATTR_REFRESH_TOKEN
@@ -115,6 +127,15 @@ private:
 class IAttributeAccessInterface
 {
 public:
+	virtual TMap<FString, FString> GetInternalAttributes() const
+	{
+		return TMap<FString, FString>();
+	}
+
+	virtual void UpdateInternalAttributes(const TMap<FString, FString>& InternalAttributes)
+	{
+	}
+
 	virtual void SetInternalAttribute(const FString& AttrName, const FString& AttrValue)
 	{
 	}
@@ -137,6 +158,8 @@ class TOnlineUserEOS
 	, public AttributeAccessClass
 {
 public:
+	friend class FUserManagerEOS;
+
 	TOnlineUserEOS(const FUniqueNetIdEOSRef& InNetIdRef)
 		: UserIdRef(InNetIdRef)
 	{
@@ -175,6 +198,15 @@ public:
 		return false;
 	}
 //~FOnlineUser
+	virtual TMap<FString, FString> GetInternalAttributes() const override
+	{
+		return UserAttributes;
+	}
+
+	virtual void UpdateInternalAttributes(const TMap<FString, FString>& InternalAttributes) override
+	{
+		UserAttributes.Append(InternalAttributes);
+	}
 
 	virtual void SetInternalAttribute(const FString& AttrName, const FString& AttrValue)
 	{
@@ -294,58 +326,6 @@ public:
 protected:
 	FOnlineUserPresence Presence;
 	EInviteStatus::Type InviteStatus;
-};
-
-/** Class to handle all callbacks generically using a lambda to process callback results */
-template<typename CallbackFuncType, typename CallbackType, typename OwningType>
-class TEOSCallback :
-	public FCallbackBase
-{
-public:
-	TFunction<void(const CallbackType*)> CallbackLambda;
-
-	TEOSCallback(TWeakPtr<OwningType> InOwner)
-		: FCallbackBase()
-		, Owner(InOwner)
-	{
-	}
-	TEOSCallback(TWeakPtr<const OwningType> InOwner)
-		: FCallbackBase()
-		, Owner(InOwner)
-	{
-	}
-	virtual ~TEOSCallback() = default;
-
-
-	CallbackFuncType GetCallbackPtr()
-	{
-		return &CallbackImpl;
-	}
-
-protected:
-	/** The object that needs to be checked for lifetime before calling the callback */
-	TWeakPtr<const OwningType> Owner;
-
-private:
-	static void EOS_CALL CallbackImpl(const CallbackType* Data)
-	{
-		if (EOS_EResult_IsOperationComplete(Data->ResultCode) == EOS_FALSE)
-		{
-			// Ignore
-			return;
-		}
-		check(IsInGameThread());
-
-		TEOSCallback* CallbackThis = (TEOSCallback*)Data->ClientData;
-		check(CallbackThis);
-
-		if (CallbackThis->Owner.IsValid())
-		{
-			check(CallbackThis->CallbackLambda);
-			CallbackThis->CallbackLambda(Data);
-		}
-		delete CallbackThis;
-	}
 };
 
 namespace OSSInternalCallback

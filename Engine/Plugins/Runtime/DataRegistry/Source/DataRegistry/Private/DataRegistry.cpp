@@ -931,7 +931,7 @@ void UDataRegistry::RefreshRuntimeSources()
 			}
 
 			Source->RefreshRuntimeSources();
-			Source->AddRuntimeSources(RuntimeSources);
+			Source->AddRuntimeSources(MutableView(RuntimeSources));
 		}
 	}
 
@@ -1129,7 +1129,7 @@ void UDataRegistry::AddReferencedObjects(UObject* InThis, FReferenceCollector& C
 
 			if (Item && Item->ItemMemory)
 			{
-				Collector.AddPropertyReferences(ItemStruct, Item->ItemMemory, This);
+				Collector.AddPropertyReferencesWithStructARO(ItemStruct, Item->ItemMemory, This);
 			}
 		}
 	}
@@ -1176,7 +1176,7 @@ void UDataRegistry::HandleAcquireResult(const FDataRegistrySourceAcquireRequest&
 		}
 		else
 		{
-			UE_LOG(LogDataRegistry, Error, TEXT("HandleAcquireResult called for %s in invalid state %d!"), *Request.Lookup.ToString(), FoundCache->AcquireStatus);
+			UE_LOG(LogDataRegistry, Error, TEXT("HandleAcquireResult called for %s in invalid state %d!"), *Request.Lookup.ToString(), int(FoundCache->AcquireStatus));
 		}
 	}
 	else 
@@ -1188,15 +1188,8 @@ void UDataRegistry::HandleAcquireResult(const FDataRegistrySourceAcquireRequest&
 
 class FTimerManager* UDataRegistry::GetTimerManager()
 {
-	UAssetManager* AssetManager = UAssetManager::GetIfValid();
-
-	if (AssetManager)
-	{
-		return AssetManager->GetTimerManager();
-	}
-
-	return nullptr;
+	check(UAssetManager::IsInitialized());
+	return UAssetManager::Get().GetTimerManager();
 }
 
 #undef LOCTEXT_NAMESPACE
-

@@ -1,5 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "NiagaraDataSetDebugAccessor.h"
+#include "NiagaraDataSet.h"
 
 bool FNiagaraDataSetDebugAccessor::Init(const FNiagaraDataSetCompiledData& CompiledData, FName InVariableName)
 {
@@ -15,7 +16,7 @@ bool FNiagaraDataSetDebugAccessor::Init(const FNiagaraDataSetCompiledData& Compi
 
 	for (int32 i = 0; i < CompiledData.Variables.Num(); ++i)
 	{
-		const FNiagaraVariable& Variable = CompiledData.Variables[i];
+		const FNiagaraVariableBase& Variable = CompiledData.Variables[i];
 		if (Variable.GetName() != VariableName)
 		{
 			continue;
@@ -25,9 +26,9 @@ bool FNiagaraDataSetDebugAccessor::Init(const FNiagaraDataSetCompiledData& Compi
 		NumComponentsInt32 = VariableLayout.GetNumInt32Components();
 		NumComponentsFloat = VariableLayout.GetNumFloatComponents();
 		NumComponentsHalf = VariableLayout.GetNumHalfComponents();
-		ComponentIndexInt32 = VariableLayout.Int32ComponentStart; 
-		ComponentIndexFloat = VariableLayout.FloatComponentStart;
-		ComponentIndexHalf = VariableLayout.HalfComponentStart;
+		ComponentIndexInt32 = VariableLayout.GetInt32ComponentStart();
+		ComponentIndexFloat = VariableLayout.GetFloatComponentStart();
+		ComponentIndexHalf = VariableLayout.GetHalfComponentStart();
 		NiagaraType = Variable.GetType();
 
 		bIsBool = Variable.GetType().IsSameBaseDefinition(FNiagaraTypeDefinition::GetBoolDef());
@@ -67,7 +68,7 @@ int32 FNiagaraDataSetDebugAccessor::ReadInt(const FNiagaraDataBuffer* DataBuffer
 	return 0;
 }
 
-bool FNiagaraDataSetDebugAccessor::ValidateDataBuffer(const FNiagaraDataSetCompiledData& CompiledData, const FNiagaraDataBuffer* DataBuffer, uint32 iInstance, TFunction<void(const FNiagaraVariable&, int32)> ErrorCallback)
+bool FNiagaraDataSetDebugAccessor::ValidateDataBuffer(const FNiagaraDataSetCompiledData& CompiledData, const FNiagaraDataBuffer* DataBuffer, uint32 iInstance, TFunction<void(const FNiagaraVariableBase&, int32)> ErrorCallback)
 {
 	bool bIsValid = true;
 
@@ -83,7 +84,7 @@ bool FNiagaraDataSetDebugAccessor::ValidateDataBuffer(const FNiagaraDataSetCompi
 		// Look over float data
 		if (CompiledData.VariableLayouts[iVariable].GetNumFloatComponents() > 0)
 		{
-			const int32 ComponentIndex = CompiledData.VariableLayouts[iVariable].FloatComponentStart;
+			const int32 ComponentIndex = CompiledData.VariableLayouts[iVariable].GetFloatComponentStart();
 			const int32 NumComponents = CompiledData.VariableLayouts[iVariable].GetNumFloatComponents();
 
 			for (int32 iComponent = 0; iComponent < NumComponents; ++iComponent)
@@ -100,7 +101,7 @@ bool FNiagaraDataSetDebugAccessor::ValidateDataBuffer(const FNiagaraDataSetCompi
 		}
 		else if (CompiledData.VariableLayouts[iVariable].GetNumHalfComponents() > 0)
 		{
-			const int32 ComponentIndex = CompiledData.VariableLayouts[iVariable].HalfComponentStart;
+			const int32 ComponentIndex = CompiledData.VariableLayouts[iVariable].GetHalfComponentStart();
 			const int32 NumComponents = CompiledData.VariableLayouts[iVariable].GetNumHalfComponents();
 
 			for (int32 iComponent = 0; iComponent < NumComponents; ++iComponent)
@@ -121,7 +122,7 @@ bool FNiagaraDataSetDebugAccessor::ValidateDataBuffer(const FNiagaraDataSetCompi
 	return bIsValid;
 }
 
-bool FNiagaraDataSetDebugAccessor::ValidateDataBuffer(const FNiagaraDataSetCompiledData& CompiledData, const FNiagaraDataBuffer* DataBuffer, TFunction<void(const FNiagaraVariable&, uint32, int32)> ErrorCallback)
+bool FNiagaraDataSetDebugAccessor::ValidateDataBuffer(const FNiagaraDataSetCompiledData& CompiledData, const FNiagaraDataBuffer* DataBuffer, TFunction<void(const FNiagaraVariableBase&, uint32, int32)> ErrorCallback)
 {
 	bool bIsValid = true;
 
@@ -131,7 +132,7 @@ bool FNiagaraDataSetDebugAccessor::ValidateDataBuffer(const FNiagaraDataSetCompi
 		// Look over float data
 		if (CompiledData.VariableLayouts[iVariable].GetNumFloatComponents() > 0)
 		{
-			const int32 ComponentIndex = CompiledData.VariableLayouts[iVariable].FloatComponentStart;
+			const int32 ComponentIndex = CompiledData.VariableLayouts[iVariable].GetFloatComponentStart();
 			const int32 NumComponents = CompiledData.VariableLayouts[iVariable].GetNumFloatComponents();
 
 			for ( int32 iComponent=0; iComponent < NumComponents; ++iComponent )
@@ -151,7 +152,7 @@ bool FNiagaraDataSetDebugAccessor::ValidateDataBuffer(const FNiagaraDataSetCompi
 		}
 		else if (CompiledData.VariableLayouts[iVariable].GetNumHalfComponents() > 0)
 		{
-			const int32 ComponentIndex = CompiledData.VariableLayouts[iVariable].HalfComponentStart;
+			const int32 ComponentIndex = CompiledData.VariableLayouts[iVariable].GetHalfComponentStart();
 			const int32 NumComponents = CompiledData.VariableLayouts[iVariable].GetNumHalfComponents();
 
 			for (int32 iComponent = 0; iComponent < NumComponents; ++iComponent)

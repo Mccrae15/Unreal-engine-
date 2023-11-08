@@ -1,17 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraDataInterfaceGBuffer.h"
+#include "Containers/StridedView.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
-#include "NiagaraGpuComputeDispatch.h"
+#include "NiagaraCompileHashVisitor.h"
 #include "NiagaraTypes.h"
 #include "NiagaraShaderParametersBuilder.h"
-#include "NiagaraSystemInstance.h"
-#include "NiagaraWorldManager.h"
 
 #include "Internationalization/Internationalization.h"
-#include "ShaderParameterUtils.h"
-#include "SceneRendering.h"
-#include "SceneTextures.h"
+#include "FXRenderingUtils.h"
+#include "RHIStaticStates.h"
+#include "RenderGraphResources.h"
+#include "SceneView.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceGBuffer)
 
@@ -180,13 +180,10 @@ void UNiagaraDataInterfaceGBuffer::SetShaderParameters(const FNiagaraDataInterfa
 	NiagaraDataInterfaceGBufferLocal::FShaderParameters* Parameters = Context.GetParameterNestedStruct<NiagaraDataInterfaceGBufferLocal::FShaderParameters>();
 	if (Context.IsResourceBound(&Parameters->VelocityTexture))
 	{
-		TConstArrayView<FViewInfo> ViewInfos = Context.GetComputeDispatchInterface().GetSimulationViewInfos();
-		if (ViewInfos.Num() > 0)
+		TConstStridedView<FSceneView> SimulationSceneViews = Context.GetComputeDispatchInterface().GetSimulationSceneViews();
+		if (SimulationSceneViews.Num() > 0)
 		{
-			if ( const FSceneTextures* SceneTextures = GetViewFamilyInfo(ViewInfos).GetSceneTexturesChecked() )
-			{
-				VelocityTexture = SceneTextures->Velocity;
-			}
+			VelocityTexture = UE::FXRenderingUtils::GetSceneVelocityTexture(SimulationSceneViews[0]);
 		}
 		
 		if (VelocityTexture == nullptr)

@@ -161,6 +161,7 @@ struct FCacheEvaluationContext
 		, bEvaluateTransform(false)
 		, bEvaluateCurves(false)
 		, bEvaluateEvents(false)
+		, bEvaluateNamedTransforms(false)
 	{
 	}
 
@@ -170,6 +171,7 @@ struct FCacheEvaluationContext
 	bool                 bEvaluateEvents;
 	TArray<int32>        EvaluationIndices;
 	bool                 bEvaluateChannels;
+	bool                 bEvaluateNamedTransforms;
 };
 
 struct FCacheEvaluationResult
@@ -181,6 +183,7 @@ public:
 	TArray<TMap<FName, float>>             Curves;
 	TMap<FName, TArray<FCacheEventHandle>> Events;
 	TMap<FName, TArray<float>>             Channels;
+	TMap<FName, FTransform>                NamedTransforms;
 };
 
 struct FPendingParticleWrite
@@ -200,6 +203,15 @@ struct FRichCurves
 	TArray<FRichCurve> RichCurves;
 };
 
+USTRUCT()
+struct FCompressedRichCurves
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<FCompressedRichCurve> CompressedRichCurves;
+};
+
 struct FPendingFrameWrite
 {
 	float                         Time;
@@ -209,6 +221,8 @@ struct FPendingFrameWrite
 
 	TArray<int32>				  PendingChannelsIndices;
 	TMap<FName, TArray<float>>	  PendingChannelsData;
+
+	TMap<FName, FTransform>       PendingNamedTransformData;
 
 	template<typename T>
 	FCacheEventTrack& FindOrAddEventTrack(FName InName)
@@ -273,17 +287,17 @@ private:
 	FCacheUserToken& operator=(FCacheUserToken&&) = delete;
 };
 
-UCLASS(Experimental)
-class CHAOSCACHING_API UChaosCache : public UObject
+UCLASS(Experimental, MinimalAPI)
+class UChaosCache : public UObject
 {
 	GENERATED_BODY()
 public:
 
-	UChaosCache();
+	CHAOSCACHING_API UChaosCache();
 
 	//~ UObject interface
-	virtual void Serialize(FArchive& Ar) override;
-	virtual void PostLoad() override;
+	CHAOSCACHING_API virtual void Serialize(FArchive& Ar) override;
+	CHAOSCACHING_API virtual void PostLoad() override;
 	//~ UObject interface END
 
 	/**
@@ -291,13 +305,13 @@ public:
 	 * Because of this we can't directly write into the cache, but instead into a pending frame queue that needs to be
 	 * flushed on the main thread to write the pending data into the final storage.
 	 */
-	void FlushPendingFrames();
+	CHAOSCACHING_API void FlushPendingFrames();
 
 	/**
 	 * Reset and initialize a cache to make it ready to record the specified component
 	 * @param InComponent Component to prepare the cache for
 	 */
-	FCacheUserToken BeginRecord(UPrimitiveComponent* InComponent, FGuid InAdapterId, const FTransform& SpaceTransform);
+	CHAOSCACHING_API FCacheUserToken BeginRecord(const UPrimitiveComponent* InComponent, FGuid InAdapterId, const FTransform& SpaceTransform);
 
 	/**
 	 * End the recording session for the cache. At this point the cache is deemed to now contain
@@ -305,13 +319,13 @@ public:
 	 * optimized which may involve key elimination and compression into a final format for runtime
 	 * @param InOutToken The token that was given by BeginRecord
 	 */
-	void EndRecord(FCacheUserToken& InOutToken);
+	CHAOSCACHING_API void EndRecord(FCacheUserToken& InOutToken);
 
 	/**
 	 * Initialise the cache for playback, may not take any actual action on the cache but
 	 * will provide the caller with a valid cache user token if it is safe to continue with playback
 	 */
-	FCacheUserToken BeginPlayback();
+	CHAOSCACHING_API FCacheUserToken BeginPlayback();
 
 	/**
 	 * End a playback session for the cache. There can be multiple playback sessions open for a
@@ -319,18 +333,18 @@ public:
 	 * token will decrease the session count.
 	 * @param InOutToken The token that was given by BeginRecord
 	 */
-	void EndPlayback(FCacheUserToken& InOutToken);
+	CHAOSCACHING_API void EndPlayback(FCacheUserToken& InOutToken);
 
 	/**
 	 * Adds a new frame to process to a threadsafe queue for later processing in FlushPendingFrames
 	 * @param InFrame New frame to accept, moved into the internal threadsafe queue
 	 */
-	void AddFrame_Concurrent(FPendingFrameWrite&& InFrame);
+	CHAOSCACHING_API void AddFrame_Concurrent(FPendingFrameWrite&& InFrame);
 
 	/**
 	 * Gets the recorded duration of the cache
 	 */
-	float GetDuration() const;
+	CHAOSCACHING_API float GetDuration() const;
 
 	/**
 	 * Evaluate the cache with the specified parameters, returning the evaluated results
@@ -338,19 +352,19 @@ public:
 	 * @param MassToLocalTransforms MassToLocal trasnform if available ( geometry collection are using them )
 	 * @see FCacheEvaluationContext
 	 */
-	FCacheEvaluationResult Evaluate(const FCacheEvaluationContext& InContext, const TArray<FTransform>* MassToLocalTransforms);
+	CHAOSCACHING_API FCacheEvaluationResult Evaluate(const FCacheEvaluationContext& InContext, const TArray<FTransform>* MassToLocalTransforms);
 
 	/**
 	 * Initializes the spawnable template from a currently existing component so it can be spawned by the editor
 	 * when a cache is dragged into the scene.
 	 * @param InComponent Component to build the spawnable template from
 	 */
-	void BuildSpawnableFromComponent(UPrimitiveComponent* InComponent, const FTransform& SpaceTransform);
+	CHAOSCACHING_API void BuildSpawnableFromComponent(const UPrimitiveComponent* InComponent, const FTransform& SpaceTransform);
 
 	/**
 	 * Read access to the spawnable template stored in the cache
 	 */
-	const FCacheSpawnableTemplate& GetSpawnableTemplate() const;
+	CHAOSCACHING_API const FCacheSpawnableTemplate& GetSpawnableTemplate() const;
 
 	/**
 	 * Evaluates a single particle from the tracks array
@@ -360,11 +374,13 @@ public:
 	 * @param OutOptTransform Transform to fill, skipped if null
 	 * @param OutOptCurves Curves to fill, skipped if null
 	 */
-	void EvaluateSingle(int32 InIndex, FPlaybackTickRecord& InTickRecord, const FTransform* MassToLocal, FTransform* OutOptTransform, TMap<FName, float>* OutOptCurves);
+	CHAOSCACHING_API void EvaluateSingle(int32 InIndex, FPlaybackTickRecord& InTickRecord, const FTransform* MassToLocal, FTransform* OutOptTransform, TMap<FName, float>* OutOptCurves);
 
-	void EvaluateTransform(const FPerParticleCacheData& InData, float InTime, const FTransform* MassToLocal, FTransform& OutTransform);
-	void EvaluateCurves(const FPerParticleCacheData& InData, float InTime, TMap<FName, float>& OutCurves);
-	void EvaluateEvents(FPlaybackTickRecord& InTickRecord, TMap<FName, TArray<FCacheEventHandle>>& OutEvents);
+	CHAOSCACHING_API void EvaluateTransform(const FPerParticleCacheData& InData, float InTime, const FTransform* MassToLocal, FTransform& OutTransform);
+	CHAOSCACHING_API void EvaluateCurves(const FPerParticleCacheData& InData, float InTime, TMap<FName, float>& OutCurves);
+	CHAOSCACHING_API void EvaluateEvents(FPlaybackTickRecord& InTickRecord, TMap<FName, TArray<FCacheEventHandle>>& OutEvents);
+
+	CHAOSCACHING_API void CompressChannelsData(float ErrorThreshold, float SampleRate);
 
 	UPROPERTY(VisibleAnywhere, Category = "Caching")
 	float RecordedDuration;
@@ -380,13 +396,34 @@ public:
 	UPROPERTY()
 	TArray<FPerParticleCacheData> ParticleTracks;
 
-	/** Per-particle data, includes transforms, velocities and other per-particle, per-frame data */
+	/** Map a curve index in the cache to the original particle index specified when recording */
+	UPROPERTY()
+	TArray<int32> ChannelCurveToParticle;
+
+	/** Per-particle data,  continuous per-frame data */
 	UPROPERTY()
 	TMap<FName,FRichCurves> ChannelsTracks;
+
+	UPROPERTY()
+	TMap<FName, FCompressedRichCurves> CompressedChannelsTracks;
 
 	/** Per component/cache curve data, any continuous data that isn't per-particle can be stored here */
 	UPROPERTY()
 	TMap<FName, FRichCurve> CurveData;
+
+	/** Per component/cache transform data.*/
+	typedef FParticleTransformTrack FNamedTransformTrack;
+	UPROPERTY()
+	TMap<FName, FParticleTransformTrack> NamedTransformTracks;
+
+	UPROPERTY()
+	bool bCompressChannels = false;
+
+	UPROPERTY()
+	float ChannelsCompressionErrorThreshold = 1e-5;
+
+	UPROPERTY()
+	float ChannelsCompressionSampleRate = 1.f / 30.f;
 
 	template<typename T>
 	FCacheEventTrack& FindOrAddEventTrack(FName InName)
@@ -400,6 +437,13 @@ public:
 	}
 
 private:
+	CHAOSCACHING_API void FlushPendingFrames_ChannelOnlyReservePass(TQueue<FPendingFrameWrite, EQueueMode::Spsc>& LocalPendingWrites,
+		bool& bCanSimpleCopyChannelData);
+
+	// @return Whether or not any particle data was written
+	template<EQueueMode Mode>
+	bool FlushPendingFrames_MainPass(TQueue<FPendingFrameWrite, Mode>& InPendingWrites, bool bCanSimpleCopyChannelData);
+
 	friend class AChaosCacheManager;
 
 	/** Timestamped generic event tracks */
@@ -431,4 +475,7 @@ private:
 
 	/** Indicates that we need to strip MassToLocal before playing the cache. */
 	bool bStripMassToLocal;
+
+	/** Reverse Lookup for ChannelCurveToParticle. Rebuilt on load.*/
+	TMap<int32,int32> ParticleToChannelCurve;
 };

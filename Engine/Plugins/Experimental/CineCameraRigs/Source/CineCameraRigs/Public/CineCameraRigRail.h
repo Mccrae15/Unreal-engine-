@@ -2,12 +2,29 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/TimerHandle.h"
 #include "UObject/ObjectMacros.h"
 
 #include "CameraRig_Rail.h"
 #include "CineSplineComponent.h"
 
 #include "CineCameraRigRail.generated.h"
+
+class UMovieSceneSequence;
+class UMovieSceneFloatTrack;
+
+UENUM(BlueprintType)
+enum class ECineCameraRigRailDriveMode : uint8
+{
+	/** Manual Mode*/
+	Manual,
+
+	/** Duration Mode. AbsolutePostionOnRail is updated based on the spline duration */
+	Duration,
+
+	/** Speed Mode. AbsolutePositionOnRail is updated based on the specified speed*/
+	Speed,
+};
 
 UCLASS(Blueprintable, Category = "VirtualProduction")
 class CINECAMERARIGS_API ACineCameraRigRail : public ACameraRig_Rail
@@ -16,6 +33,9 @@ class CINECAMERARIGS_API ACineCameraRigRail : public ACameraRig_Rail
 
 public:
 	ACineCameraRigRail(const FObjectInitializer& ObjectInitializer);
+
+	virtual void Tick(float DeltaTime) override;
+	virtual void PostLoad() override;
 
 	/* Returns CineSplineComponent*/
 	UFUNCTION(BlueprintPure, Category = "Rail Components")
@@ -30,11 +50,11 @@ public:
 	float AbsolutePositionOnRail = 1.0f;
 
 	/* Use PointRotation metadata for attachment orientation. If false, attachment orientation is based on the spline curvature*/
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = "Rail Controls", meta = (EditCondition = "bLockOrientationToRail"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rail Controls", meta = (EditCondition = "bLockOrientationToRail"))
 	bool bUsePointRotation = true;
 
 	/* Material assigned to spline component mesh*/
-	UPROPERTY(EditAnywhere, BlueprintSetter=SetSplineMeshMaterial, Category = "SplineVisualization")
+	UPROPERTY(BlueprintSetter=SetSplineMeshMaterial, Category = "SplineVisualization")
 	TObjectPtr<UMaterialInterface> SplineMeshMaterial;
 
 	/* Material Instance Dynamic created for the spline mesh */
@@ -42,8 +62,16 @@ public:
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> SplineMeshMIDs;
 
 	/* Texture that can be set to SplineMeshMIDs */
-	UPROPERTY(EditAnywhere, BlueprintSetter=SetSplineMeshTexture, Category = "SplineVisualization")
+	UPROPERTY(BlueprintSetter=SetSplineMeshTexture, Category = "SplineVisualization")
 	TObjectPtr<UTexture2D> SplineMeshTexture;
+
+	/* Enable speed visualization. Automatically disabled when position property is driven in Sequencer*/
+	UPROPERTY(EditAnywhere, BlueprintSetter=SetDisplaySpeedHeatmap, Category = "SplineVisualization", meta=(EditCondition="!IsSequencerDriven()"))
+	bool bDisplaySpeedHeatmap = true;
+
+	/* Number of speed samples per spline segment*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SplineVisualization", meta=(ClampMin=1, EditCondition="bDisplaySpeedHeatmap"))
+	int32 SpeedSampleCountPerSegment = 4;
 
 	/* Determines if camera mount inherits LocationX*/
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Attachment|Location")
@@ -81,6 +109,18 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Attachment|Camera")
 	bool bInheritFocusDistance = true;
 
+	/* Drive Mode to update position in tick*/
+	UPROPERTY(EditAnywhere, BlueprintSetter=SetDriveMode, Category = "DriveMode")
+	ECineCameraRigRailDriveMode DriveMode = ECineCameraRigRailDriveMode::Manual;
+
+	/* Specifies the drive speed of the rig rail in centimeter per second */
+	UPROPERTY(EditAnywhere, Interp, Category = "DriveMode")
+	float Speed = 100;
+
+	/* Enable loop in speed or duration mode */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DriveMode")
+	bool bLoop = true;
+
 	/* Set spline mesh material*/
 	UFUNCTION(BlueprintSetter)
 	void SetSplineMeshMaterial(UMaterialInterface* InMaterial);
@@ -93,17 +133,52 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "CineCameraRigRail")
 	FVector GetVelocityAtPosition(const float InPosition, const float delta = 0.001) const;
 
+	/* Set drive mode*/
+	UFUNCTION(BlueprintSetter)
+	void SetDriveMode(ECineCameraRigRailDriveMode InMode);
+
+	/* Enable display speed heatmap*/
+	UFUNCTION(BlueprintSetter)
+	void SetDisplaySpeedHeatmap(bool bEnable);
+
+	/* Returns true if the rig rail is driven by Sequencer */
+	UFUNCTION()
+	bool IsSequencerDriven();
+
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 
 protected:
-	class UCineSplineComponent* CineSplineComponent;
+	UPROPERTY(Category = "CineSpline", VisibleAnywhere, BlueprintReadOnly)
+	TObjectPtr<class UCineSplineComponent> CineSplineComponent;
 
 	virtual void UpdateRailComponents() override;
 
 	void UpdateSplineMeshMID();
 	void SetMIDParameters();
+	void UpdateSpeedHeatmap();
 
 	void OnSplineEdited();
+
+	void DriveByParam(float DeltaTime);
+	void DriveBySpeed(float DeltaTime);
+	float StartPositionValue() const;
+	float LastPositionValue() const;
+	float SpeedProgress = 0.0f;
+	void UpdateSpeedProgress();
+
+
+#if WITH_EDITOR
+	UMovieSceneFloatTrack* FindPositionTrack(const UMovieSceneSequence* InSequence);
+
+	FTimerHandle SequencerCheckHandle;
+
+	/* Check if the rig rail is driven by Sequencer*/
+	UFUNCTION()
+	void OnSequencerCheck();
+
+	bool bSequencerDriven = false;
+#endif
+
 };

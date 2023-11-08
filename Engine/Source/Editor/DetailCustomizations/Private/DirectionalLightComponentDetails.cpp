@@ -2,6 +2,7 @@
 
 #include "DirectionalLightComponentDetails.h"
 
+#include "Components/DirectionalLightComponent.h"
 #include "Components/LightComponentBase.h"
 #include "Components/SceneComponent.h"
 #include "Delegates/Delegate.h"
@@ -26,23 +27,20 @@ TSharedRef<IDetailCustomization> FDirectionalLightComponentDetails::MakeInstance
 
 void FDirectionalLightComponentDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBuilder )
 {
-	// Grab the Mobility property from SceneComponent
-	MobilityProperty = DetailBuilder.GetProperty("Mobility", USceneComponent::StaticClass());
+	TSharedPtr<IPropertyHandle> MovableShadowRadiusPropertyHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UDirectionalLightComponent, DynamicShadowDistanceMovableLight));
+	TSharedPtr<IPropertyHandle> StationaryShadowRadiusPropertyHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UDirectionalLightComponent, DynamicShadowDistanceStationaryLight));
 
-	// Get cascaded shadow map category
-	IDetailCategoryBuilder& ShadowMapCategory = DetailBuilder.EditCategory("CascadedShadowMaps", FText::GetEmpty(), ECategoryPriority::Default );
+	static const auto AllowStaticLightingVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.AllowStaticLighting"));
+	const bool bAllowStaticLighting = (!AllowStaticLightingVar || AllowStaticLightingVar->GetValueOnGameThread() != 0);
 
-	// Add DynamicShadowDistanceMovableLight
-	TSharedPtr<IPropertyHandle> MovableShadowRadiusProperty = DetailBuilder.GetProperty("DynamicShadowDistanceMovableLight");
-	ShadowMapCategory.AddProperty( MovableShadowRadiusProperty)
-		.IsEnabled( TAttribute<bool>( this, &FDirectionalLightComponentDetails::IsLightMovable ) );
+	if(!bAllowStaticLighting)
+	{
+		// If static lighting is not allowed, hide DynamicShadowDistanceStationaryLight and rename DynamicShadowDistanceMovableLight to "Dynamic Shadow Distance"
+		MovableShadowRadiusPropertyHandle->SetPropertyDisplayName(LOCTEXT("DynamicShadowDistanceDisplayName", "Dynamic Shadow Distance"));
+		StationaryShadowRadiusPropertyHandle->MarkHiddenByCustomization();
+	}
 
-	// Add DynamicShadowDistanceStationaryLight
-	TSharedPtr<IPropertyHandle> StationaryShadowRadiusProperty = DetailBuilder.GetProperty("DynamicShadowDistanceStationaryLight");
-	ShadowMapCategory.AddProperty( StationaryShadowRadiusProperty)
-		.IsEnabled( TAttribute<bool>( this, &FDirectionalLightComponentDetails::IsLightStationary ) );
-
-	TSharedPtr<IPropertyHandle> LightIntensityProperty = DetailBuilder.GetProperty("Intensity", ULightComponentBase::StaticClass());
+	TSharedPtr<IPropertyHandle> LightIntensityProperty = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(ULightComponentBase, Intensity), ULightComponentBase::StaticClass());
 	// Point lights need to override the ui min and max for units of lumens, so we have to undo that
 	LightIntensityProperty->SetInstanceMetaData("UIMin",TEXT("0.0f"));
 	LightIntensityProperty->SetInstanceMetaData("UIMax",TEXT("150.0f"));
@@ -50,20 +48,6 @@ void FDirectionalLightComponentDetails::CustomizeDetails( IDetailLayoutBuilder& 
 	LightIntensityProperty->SetInstanceMetaData("Units", TEXT("lux"));
 	LightIntensityProperty->SetToolTipText(LOCTEXT("DirectionalLightIntensityToolTipText", "Maximum illumination from the light in lux"));
 
-}
-
-bool FDirectionalLightComponentDetails::IsLightMovable() const
-{
-	uint8 Mobility;
-	MobilityProperty->GetValue(Mobility);
-	return (Mobility == EComponentMobility::Movable);
-}
-
-bool FDirectionalLightComponentDetails::IsLightStationary() const
-{
-	uint8 Mobility;
-	MobilityProperty->GetValue(Mobility);
-	return (Mobility == EComponentMobility::Stationary);
 }
 
 #undef LOCTEXT_NAMESPACE

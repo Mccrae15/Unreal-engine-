@@ -5,8 +5,9 @@
 #include "Chaos/PBDRigidsEvolutionGBF.h"
 #include "Chaos/CollisionResolution.h"
 #include "Chaos/ChaosDebugDraw.h"
+#include "Chaos/DebugDrawQueue.h"
 
-//PRAGMA_DISABLE_OPTIMIZATION
+//UE_DISABLE_OPTIMIZATION
 
 namespace Chaos
 {
@@ -84,7 +85,7 @@ namespace Chaos
 			const TPBDRigidParticleHandle<FReal, 3>* Rigid = Constraint->GetParticle(i)->CastToRigidParticle();
 			if (Rigid && Rigid->ObjectState() == EObjectStateType::Kinematic)
 			{
-				if (CCDHelpers::DeltaExceedsThreshold(Rigid->CCDAxisThreshold(), Displacements[i], Rigid->Q()))
+				if (FCCDHelpers::DeltaExceedsThreshold(Rigid->CCDAxisThreshold(), Displacements[i], Rigid->Q()))
 				{
 					return i;
 				}
@@ -200,7 +201,7 @@ namespace Chaos
 			// Determine if this particle pair should trigger CCD
 			const auto Particle0 = Constraint->GetParticle(0);
 			const auto Particle1 = Constraint->GetParticle(1);
-			bNeedCCDSolve = CCDHelpers::DeltaExceedsThreshold(*Particle0, *Particle1, Dt);
+			bNeedCCDSolve = FCCDHelpers::DeltaExceedsThreshold(*Particle0, *Particle1, Dt);
 
 			// make sure we ignore pairs that don't include any dynamics
 			if (CCDParticlePair[0] != nullptr || CCDParticlePair[1] != nullptr)
@@ -409,17 +410,17 @@ namespace Chaos
 			// Debugdraw the shape at the current TOI
 			if (CVars::ChaosSolverDrawCCDInteractions)
 			{
-				if (CCDParticle0)
+				const DebugDraw::FChaosDebugDrawSettings& DebugDrawSettings = CVars::ChaosSolverDebugDebugDrawSettings;
+				for (int32 ManifoldPointIndex = 0; ManifoldPointIndex < CCDConstraint->SweptConstraint->NumManifoldPoints(); ++ManifoldPointIndex)
 				{
-					const FRigidTransform3 SweepWorldTransform0 = FRigidTransform3(FConstGenericParticleHandle(CCDParticle0->Particle)->X(), FConstGenericParticleHandle(CCDParticle0->Particle)->Q());
-					const FRigidTransform3 ShapeWorldTransformXQ0 = CCDConstraint->SweptConstraint->GetShapeRelativeTransform0() * SweepWorldTransform0;
-					DebugDraw::DrawShape(ShapeWorldTransformXQ0, CCDConstraint->SweptConstraint->GetShape0()->GetLeafGeometry(), CCDConstraint->SweptConstraint->GetShape0(), FColor::Magenta, &CVars::ChaosSolverDebugDebugDrawSettings);
-				}
-				if (CCDParticle1)
-				{
-					const FRigidTransform3 SweepWorldTransform1 = FRigidTransform3(FConstGenericParticleHandle(CCDParticle1->Particle)->X(), FConstGenericParticleHandle(CCDParticle1->Particle)->Q());
-					const FRigidTransform3 ShapeWorldTransformXR1 = CCDConstraint->SweptConstraint->GetShapeRelativeTransform1() * SweepWorldTransform1;
-					DebugDraw::DrawShape(ShapeWorldTransformXR1, CCDConstraint->SweptConstraint->GetShape1()->GetLeafGeometry(), CCDConstraint->SweptConstraint->GetShape1(), FColor::Magenta, &CVars::ChaosSolverDebugDebugDrawSettings);
+					const FManifoldPoint& ManifoldPoint = CCDConstraint->SweptConstraint->GetManifoldPoint(ManifoldPointIndex);
+					if (ManifoldPoint.Flags.bDisabled)
+					{
+						continue;
+					}
+					const FVec3 ContactPos = CCDConstraint->SweptConstraint->GetShapeWorldTransform1().TransformPositionNoScale(FVec3(ManifoldPoint.ContactPoint.ShapeContactPoints[1]));
+					const FVec3 ContactNormal = CCDConstraint->SweptConstraint->GetShapeWorldTransform1().TransformVectorNoScale(FVec3(ManifoldPoint.ContactPoint.ShapeContactNormal));
+					FDebugDrawQueue::GetInstance().DrawDebugLine(ContactPos, ContactPos + DebugDrawSettings.DrawScale * 50 * ContactNormal, FColor::Red, false, UE_KINDA_SMALL_NUMBER, uint8(DebugDrawSettings.DrawPriority), DebugDrawSettings.LineThickness);
 				}
 			}
 #endif
@@ -482,20 +483,10 @@ namespace Chaos
 		// Debugdraw the shapes at the final position
 		if (CVars::ChaosSolverDrawCCDInteractions)
 		{
-			for (FCCDConstraint* CCDConstraint : SortedCCDConstraints)
+			for (int32 ParticleIndex = ParticleStart; ParticleIndex < ParticleStart + ParticleNum; ParticleIndex++)
 			{
-				FCCDParticle* CCDParticle0 = CCDConstraint->Particle[0];
-				FCCDParticle* CCDParticle1 = CCDConstraint->Particle[1];
-				if (CCDParticle0)
-				{
-					const FRigidTransform3 ShapeWorldTransformPQ0 = CCDConstraint->SweptConstraint->GetShapeRelativeTransform0() * FConstGenericParticleHandle(CCDParticle0->Particle)->GetTransformPQ();
-					DebugDraw::DrawShape(ShapeWorldTransformPQ0, CCDConstraint->SweptConstraint->GetShape0()->GetLeafGeometry(), CCDConstraint->SweptConstraint->GetShape0(), FColor::Green, &CVars::ChaosSolverDebugDebugDrawSettings);
-				}
-				if (CCDParticle1)
-				{
-					const FRigidTransform3 ShapeWorldTransformPQ1 = CCDConstraint->SweptConstraint->GetShapeRelativeTransform1() * FConstGenericParticleHandle(CCDParticle1->Particle)->GetTransformPQ();
-					DebugDraw::DrawShape(ShapeWorldTransformPQ1, CCDConstraint->SweptConstraint->GetShape1()->GetLeafGeometry(), CCDConstraint->SweptConstraint->GetShape1(), FColor::Green, &CVars::ChaosSolverDebugDebugDrawSettings);
-				}
+				const FGeometryParticleHandle* Particle = GroupedCCDParticles[ParticleIndex]->Particle;
+				DebugDraw::DrawParticleShapes(FRigidTransform3::Identity, Particle, FColor::Green, &CVars::ChaosSolverDebugDebugDrawSettings);
 			}
 		}
 #endif
@@ -767,7 +758,10 @@ namespace Chaos
 		
 		for (FCCDConstraint* CCDConstraint : SortedCCDConstraints)
 		{ 
-			CCDConstraint->SweptConstraint->SetCCDResults(CCDConstraint->NetImpulse);
+			if (CCDConstraint && CCDConstraint->SweptConstraint)
+			{
+				CCDConstraint->SweptConstraint->SetCCDResults(CCDConstraint->NetImpulse);
+			}
 		}
 		
 		return HasResweptConstraint;
@@ -906,10 +900,14 @@ namespace Chaos
 			const FConstGenericParticleHandle P0 = FConstGenericParticleHandle(Collision->GetParticle0());
 			const FConstGenericParticleHandle P1 = FConstGenericParticleHandle(Collision->GetParticle1());
 
+			const FRigidTransform3 ShapeWorldTransform0 = Collision->GetShapeRelativeTransform0() * P0->GetTransformPQ();
+			const FRigidTransform3 ShapeWorldTransform1 = Collision->GetShapeRelativeTransform1() * P1->GetTransformPQ();
+			Collision->SetShapeWorldTransforms(ShapeWorldTransform0, ShapeWorldTransform1);
+
 			// NOTE: ResetManifold also reset friction anchors. If CCD sweep was run, static friction probably will not hold
 			// We could potentially call ResetActiveManifold here instead and then AssignSavedManifoldPoints if we want static friction
 			Collision->ResetManifold();
-			Collisions::UpdateConstraintFromGeometry<ECollisionUpdateType::Deepest>(*Collision, P0->GetTransformPQ(), P1->GetTransformPQ(), Dt);
+			Collisions::UpdateConstraint(*Collision, ShapeWorldTransform0, ShapeWorldTransform1, Dt);
 		}
 	}
 
@@ -1063,13 +1061,34 @@ namespace Chaos
 		}
 	}
 
-	bool CCDHelpers::DeltaExceedsThreshold(const FVec3& AxisThreshold, const FVec3& DeltaX, const FQuat& R)
+
+	//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+	FRigidTransform3 FCCDHelpers::GetParticleTransformAtTOI(const FGeometryParticleHandle* InParticle, const FReal TOI, const FReal Dt)
+	{
+		// Particles are swept using their latest rotation. We interpolate using velocity rather that Lerp(X,P,TOI)
+		// to handle the case where the center of mass is offset from the particle position.
+		const FConstGenericParticleHandle Particle = InParticle;
+		if (Particle->CCDEnabled())
+		{
+			const FReal InvClampedTOI = FMath::Clamp(FReal(1) - TOI, FReal(0), FReal(1));
+			return FRigidTransform3(
+				Particle->P() - (InvClampedTOI * Dt) * Particle->V(),
+				Particle->Q());
+		}
+		return Particle->GetTransformXR();
+	}
+
+	bool FCCDHelpers::DeltaExceedsThreshold(const FVec3& AxisThreshold, const FVec3& DeltaX, const FQuat& R)
 	{
 		FVec3 AbsLocalDelta, AxisThresholdScaled, AxisThresholdDiff;
 		return DeltaExceedsThreshold(AxisThreshold, DeltaX, R, AbsLocalDelta, AxisThresholdScaled, AxisThresholdDiff);
 	}
 
-	bool CCDHelpers::DeltaExceedsThreshold(const FVec3& AxisThreshold, const FVec3& DeltaX, const FQuat& R, FVec3& OutAbsLocalDelta, FVec3& OutAxisThresholdScaled, FVec3& OutAxisThresholdDiff)
+	bool FCCDHelpers::DeltaExceedsThreshold(const FVec3& AxisThreshold, const FVec3& DeltaX, const FQuat& R, FVec3& OutAbsLocalDelta, FVec3& OutAxisThresholdScaled, FVec3& OutAxisThresholdDiff)
 	{
 		if (CVars::CCDEnableThresholdBoundsScale < 0.f) { return false; }
 		if (CVars::CCDEnableThresholdBoundsScale == 0.f) { return true; }
@@ -1091,11 +1110,11 @@ namespace Chaos
 		return OutAxisThresholdDiff.GetMax() > 0.f;
 	}
 
-	bool CCDHelpers::DeltaExceedsThreshold(
+	bool FCCDHelpers::DeltaExceedsThreshold(
 		const FVec3& AxisThreshold0, const FVec3& DeltaX0, const FQuat& R0,
 		const FVec3& AxisThreshold1, const FVec3& DeltaX1, const FQuat& R1)
 	{
-		return CCDHelpers::DeltaExceedsThreshold(
+		return FCCDHelpers::DeltaExceedsThreshold(
 
 			// To combine axis thresholds:
 			// * transform particle1's threshold into particle0's local space
@@ -1121,7 +1140,7 @@ namespace Chaos
 			R0);
 	}
 
-	bool CCDHelpers::DeltaExceedsThreshold(const FGeometryParticleHandle& Particle0, const FGeometryParticleHandle& Particle1)
+	bool FCCDHelpers::DeltaExceedsThreshold(const FGeometryParticleHandle& Particle0, const FGeometryParticleHandle& Particle1)
 	{
 		// For rigids, compute DeltaX from the X - P diff and use Q for the rotation.
 		// For non-rigids, DeltaX is zero and use R for rotation.
@@ -1136,7 +1155,7 @@ namespace Chaos
 			Particle1.CCDAxisThreshold(), DeltaX1, R1);
 	}
 
-	bool CCDHelpers::DeltaExceedsThreshold(const FGeometryParticleHandle& Particle0, const FGeometryParticleHandle& Particle1, const FReal Dt)
+	bool FCCDHelpers::DeltaExceedsThreshold(const FGeometryParticleHandle& Particle0, const FGeometryParticleHandle& Particle1, const FReal Dt)
 	{
 		// For rigids, compute DeltaX from the V * Dt and use Q for the rotation.
 		// For non-rigids, DeltaX is zero and use R for rotation.

@@ -111,14 +111,13 @@ public:
 		: IMappedFileHandle(InSize)
 		, SharedMappedFileHandle(InSharedMappedFileHandle)
 	{
-		check(InSharedMappedFileHandle != nullptr);
 	}
 
 	virtual ~FMappedFileProxy() { }
 
 	virtual IMappedFileRegion* MapRegion(int64 Offset = 0, int64 BytesToMap = MAX_int64, bool bPreloadHint = false) override
 	{
-		return SharedMappedFileHandle->MapRegion(Offset, BytesToMap, bPreloadHint);
+		return SharedMappedFileHandle != nullptr ? SharedMappedFileHandle->MapRegion(Offset, BytesToMap, bPreloadHint) : nullptr;
 	}
 private:
 	IMappedFileHandle* SharedMappedFileHandle;
@@ -846,7 +845,9 @@ IMappedFileHandle* FFileIoStoreReader::GetMappedContainerFileHandle(uint64 TocOf
 	check(!bClosed);
 	int32 PartitionIndex = int32(TocOffset / ContainerFile.PartitionSize);
 	FFileIoStoreContainerFilePartition& Partition = ContainerFile.Partitions[PartitionIndex];
-	if (!Partition.MappedFileHandle)
+	if (!Partition.MappedFileHandle &&
+		// Can't map encrypted files, compression should be disabled for bulk data when memory mapping is required
+		!EnumHasAnyFlags(ContainerFile.ContainerFlags, EIoContainerFlags::Encrypted))
 	{
 		IPlatformFile& Ipf = FPlatformFileManager::Get().GetPlatformFile();
 		Partition.MappedFileHandle.Reset(Ipf.OpenMapped(*Partition.FilePath));
@@ -958,11 +959,13 @@ FFileIoStoreResolvedRequest::FFileIoStoreResolvedRequest(
 	FIoRequestImpl& InDispatcherRequest,
 	FFileIoStoreContainerFile* InContainerFile,
 	uint64 InResolvedOffset,
-	uint64 InResolvedSize)
+	uint64 InResolvedSize,
+	int32 InPriority)
 	: DispatcherRequest(&InDispatcherRequest)
 	, ContainerFile(InContainerFile)
 	, ResolvedOffset(InResolvedOffset)
 	, ResolvedSize(InResolvedSize)
+	, Priority(InPriority)
 {
 
 }
@@ -1243,12 +1246,13 @@ void FFileIoStore::Initialize(TSharedRef<const FIoDispatcherBackendContext> InCo
 		&Stats
 	});
 
-	uint64 DecompressionContextCount = uint64(GIoDispatcherDecompressionWorkerCount > 0 ? GIoDispatcherDecompressionWorkerCount : 4);
-	for (uint64 ContextIndex = 0; ContextIndex < DecompressionContextCount; ++ContextIndex)
+	int32 DecompressionContextCount = int32(GIoDispatcherDecompressionWorkerCount > 0 ? GIoDispatcherDecompressionWorkerCount : 4);
+	CompressionContexts.SetNum(DecompressionContextCount);
+	for (TUniquePtr<FFileIoStoreCompressionContext>& CompressionContext : CompressionContexts)
 	{
-		FFileIoStoreCompressionContext* Context = new FFileIoStoreCompressionContext();
-		Context->Next = FirstFreeCompressionContext;
-		FirstFreeCompressionContext = Context;
+		CompressionContext = MakeUnique<FFileIoStoreCompressionContext>();
+		CompressionContext->Next = FirstFreeCompressionContext;
+		FirstFreeCompressionContext = CompressionContext.Get();
 	}
 
 	Thread = FRunnableThread::Create(this, TEXT("IoService"), 0, TPri_AboveNormal);
@@ -1385,7 +1389,8 @@ bool FFileIoStore::Resolve(FIoRequestImpl* Request)
 				*Request,
 				Reader->GetContainerFile(),
 				ResolvedOffset,
-				ResolvedSize);
+				ResolvedSize,
+				Request->Priority);
 			Request->BackendData = ResolvedRequest;
 
 			if (ResolvedSize > 0)
@@ -1444,6 +1449,7 @@ void FFileIoStore::UpdatePriorityForIoRequest(FIoRequestImpl* Request)
 	if (Request->BackendData)
 	{
 		FFileIoStoreResolvedRequest* ResolvedRequest = static_cast<FFileIoStoreResolvedRequest*>(Request->BackendData);
+		ResolvedRequest->Priority = Request->Priority;
 		RequestTracker.UpdatePriorityForIoRequest(*ResolvedRequest);
 	}
 }
@@ -1854,8 +1860,6 @@ TIoStatusOr<FIoMappedRegion> FFileIoStore::OpenMapped(const FIoChunkId& ChunkId,
 	{
 		return FIoStatus(EIoErrorCode::InvalidParameter, TEXT("Invalid read options"));
 	}
-
-	IPlatformFile& Ipf = FPlatformFileManager::Get().GetPlatformFile();
 
 	FReadScopeLock _(IoStoreReadersLock);
 	for (TUniquePtr<FFileIoStoreReader>& Reader : IoStoreReaders)

@@ -27,48 +27,26 @@ struct HAIRSTRANDSCORE_API FGroomHairGroupPreview
 {
 	GENERATED_USTRUCT_BODY()
 
-	FGroomHairGroupPreview()
-	: GroupID(0)
-	, CurveCount(0)
-	, GuideCount(0)
-	, bHasRootUV(false)
-	, bHasClumpID(false)
-	, bHasColor(false)
-	, bHasRoughness(false)
-	, bHasAO(false)
-	, bHasPrecomputedWeights(false)
-	, InterpolationSettings()
-	{}
-
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = Preview)
 	FName GroupName;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = Preview)
-	int32 GroupID;
+	int32 GroupID = 0;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = Preview)
-	int32 CurveCount;
+	int32 CurveCount = 0;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = Preview)
-	int32 GuideCount;
+	int32 GuideCount = 0;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = Preview)
-	bool bHasRootUV;
+	UPROPERTY()
+	uint32 Attributes = 0;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = Preview)
-	bool bHasClumpID;
+	UPROPERTY()
+	uint32 AttributeFlags = 0;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = Preview)
-	bool bHasColor;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = Preview)
-	bool bHasRoughness;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = Preview)
-	bool bHasAO;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = Preview)
-	bool bHasPrecomputedWeights;
+	UPROPERTY()
+	uint32 Flags = 0;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Preview)
 	FHairGroupsInterpolation InterpolationSettings;

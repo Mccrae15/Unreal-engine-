@@ -12,6 +12,13 @@
 /**
  * Interface for image wrapper modules.
  * 
+ * If you have "Engine" module, then just use FImageUtils::CompressImage/DecompressImage
+ *
+ * The easiest way to load/save an image is FImageUtils::LoadImage/SaveImageByExtension
+ *
+ * NOTE: Please prefer to work with images through ImageCore FImage/FImageView 
+ * (not TextureSource/TextureSourceFormat or raw arrays of bytes)
+ * 
  * 
  * note on SRGB/Gamma handling :
  * it is assumed that non-U8 data is always Linear
@@ -59,12 +66,13 @@ public:
 	 * Create an IImageWrapper helper of a specific type 
 	 *
 	 * @param InFormat - The type of image we want to deal with
-	 * @return The helper base class to manage the data
+	 * @param InOptionalDebugImageName - An optional string to be displayed with any errors or warnings
 	 * 
-	 * EImageFormat is a compressor / file format , not a pixel format
+	 * @return The helper base class to manage the data
+	 * EImageFormat is a compressor / file format, not a pixel format
 	 * Deprecated.  Prefer CompressImage/DecompressImage.
 	 */
-	virtual TSharedPtr<IImageWrapper> CreateImageWrapper(const EImageFormat InFormat) = 0;
+	virtual TSharedPtr<IImageWrapper> CreateImageWrapper(const EImageFormat InFormat, const TCHAR* InOptionalDebugImageName = nullptr) = 0;
 
 	/**
 	 * Detect image format by looking at the first few bytes of the compressed image data.

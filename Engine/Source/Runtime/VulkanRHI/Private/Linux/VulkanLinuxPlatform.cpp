@@ -51,11 +51,52 @@ bool FVulkanLinuxPlatform::LoadVulkanLibrary()
 	}
 	bAttemptedLoad = true;
 
+#if VULKAN_HAS_DEBUGGING_ENABLED
+	const FString VulkanSDK = FPlatformMisc::GetEnvironmentVariable(TEXT("VULKAN_SDK"));
+	UE_LOG(LogVulkanRHI, Display, TEXT("Found VULKAN_SDK=%s"), *VulkanSDK);
+	const bool bHasVulkanSDK = !VulkanSDK.IsEmpty();
+
+	UE_LOG(LogVulkanRHI, Display, TEXT("Registering provided Vulkan validation layers"));
+
+	// if vulkan SDK is installed, we'll append our built-in validation layers to VK_ADD_LAYER_PATH,
+	// otherwise we append to VK_LAYER_PATH (which is probably empty)
+
+	// Change behavior of loading Vulkan layers by setting environment variable "VarToUse" to UE specific directory
+	FString VarToUse = (bHasVulkanSDK)?TEXT("VK_ADD_LAYER_PATH"):TEXT("VK_LAYER_PATH");
+	FString PreviousEnvVar = FPlatformMisc::GetEnvironmentVariable(*VarToUse);
+	FString UELayerPath = FPaths::EngineDir();
+	UELayerPath.Append(TEXT("Binaries/ThirdParty/Vulkan/Linux"));
+	
+	if(!PreviousEnvVar.IsEmpty())
+	{
+		PreviousEnvVar.Append(TEXT(":"));
+	}
+
+	PreviousEnvVar.Append(*UELayerPath);
+	FPlatformMisc::SetEnvironmentVar(*VarToUse, *PreviousEnvVar);
+	UE_LOG(LogVulkanRHI, Display, TEXT("Updated %s=%s"), *VarToUse, *PreviousEnvVar);
+
+	FString PreviousLibPath = FPlatformMisc::GetEnvironmentVariable(TEXT("LD_LIBRARY_PATH"));
+	if (!PreviousLibPath.IsEmpty())
+	{
+		PreviousLibPath.Append(TEXT(":"));
+	}
+
+	PreviousLibPath.Append(*UELayerPath);
+	FPlatformMisc::SetEnvironmentVar(TEXT("LD_LIBRARY_PATH"), *PreviousLibPath);
+	UE_LOG(LogVulkanRHI, Display, TEXT("Updated LD_LIBRARY_PATH=%s"), *PreviousLibPath);
+#endif // VULKAN_HAS_DEBUGGING_ENABLED
+
 	// try to load libvulkan.so
 	VulkanLib = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
 
 	if (VulkanLib == nullptr)
 	{
+		// be more verbose on Linux
+		FPlatformMisc::MessageBoxExt(EAppMsgType::Ok, 
+			TEXT("Unable to load Vulkan library and/or acquire the necessary function pointers. Make sure an up-to-date libvulkan.so.1 is installed."),
+			TEXT("Unable to initialize Vulkan."));
+
 		return false;
 	}
 
@@ -197,7 +238,7 @@ void FVulkanLinuxPlatform::GetInstanceExtensions(FVulkanInstanceExtensionArray& 
 void FVulkanLinuxPlatform::GetDeviceExtensions(FVulkanDevice* Device, FVulkanDeviceExtensionArray& OutExtensions)
 {
 	// Manually activated extensions
-	OutExtensions.Add(MakeUnique<FVulkanDeviceExtension>(Device, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, VULKAN_SUPPORTS_EXTERNAL_MEMORY, VULKAN_EXTENSION_NOT_PROMOTED, nullptr, FVulkanExtensionBase::ManuallyActivate));
+	OutExtensions.Add(MakeUnique<FVulkanDeviceExtension>(Device, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED, VULKAN_EXTENSION_NOT_PROMOTED, nullptr, FVulkanExtensionBase::ManuallyActivate));
 }
 
 void FVulkanLinuxPlatform::CreateSurface(void* WindowHandle, VkInstance Instance, VkSurfaceKHR* OutSurface)
@@ -206,7 +247,7 @@ void FVulkanLinuxPlatform::CreateSurface(void* WindowHandle, VkInstance Instance
 
 	if (SDL_Vulkan_CreateSurface((SDL_Window*)WindowHandle, Instance, OutSurface) == SDL_FALSE)
 	{
-		UE_LOG(LogInit, Error, TEXT("Error initializing SDL Vulkan Surface: %s"), SDL_GetError());
+		UE_LOG(LogInit, Error, TEXT("Error initializing SDL Vulkan Surface: %hs"), SDL_GetError());
 		check(0);
 	}
 }
@@ -226,7 +267,8 @@ void FVulkanLinuxPlatform::WriteCrashMarker(const FOptionalVulkanDeviceExtension
 			VulkanDynamicAPI::vkCmdWriteBufferMarkerAMD(CmdBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, DestBuffer, (1 + LastIndex) * sizeof(uint32), Entries[LastIndex]);
 		}
 	}
-	else if (OptionalExtensions.HasNVDiagnosticCheckpoints)
+
+	if (OptionalExtensions.HasNVDiagnosticCheckpoints)
 	{
 		if (bAdding)
 		{

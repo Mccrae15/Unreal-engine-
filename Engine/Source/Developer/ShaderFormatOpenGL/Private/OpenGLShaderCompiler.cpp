@@ -2,14 +2,15 @@
 // ..
 
 #include "CoreMinimal.h"
+#include "CrossCompiler.h"
 #include "HAL/FileManager.h"
+#include "HlslccHeaderWriter.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Serialization/MemoryWriter.h"
 #include "ShaderFormatOpenGL.h"
-#include "HlslccHeaderWriter.h"
-#include "SpirvReflectCommon.h"
 #include "ShaderParameterParser.h"
+#include "SpirvReflectCommon.h"
 #include <algorithm>
 #include <regex>
 
@@ -516,8 +517,8 @@ void ParseGlslError(TArray<FShaderCompilerError>& OutErrors, const FString& InLi
 		{
 			// Note that no mapping exists from the GLSL source to the original
 			// HLSL source.
-			FShaderCompilerError* CompilerError = new(OutErrors) FShaderCompilerError;
-			CompilerError->StrippedErrorMessage = FString::Printf(
+			FShaderCompilerError& CompilerError = OutErrors.AddDefaulted_GetRef();
+			CompilerError.StrippedErrorMessage = FString::Printf(
 				TEXT("driver compile error(%d): %s"),
 				LineNumber,
 				*ErrorMsg
@@ -948,8 +949,8 @@ void FOpenGLFrontend::BuildShaderOutput(
 	if (Header.Bindings.NumSamplers > MaxSamplers)
 	{
 		ShaderOutput.bSucceeded = false;
-		FShaderCompilerError* NewError = new(ShaderOutput.Errors) FShaderCompilerError();
-		NewError->StrippedErrorMessage =
+		FShaderCompilerError& NewError = ShaderOutput.Errors.AddDefaulted_GetRef();
+		NewError.StrippedErrorMessage =
 			FString::Printf(TEXT("shader uses %d samplers exceeding the limit of %d"),
 				Header.Bindings.NumSamplers, MaxSamplers);
 	}
@@ -1028,8 +1029,8 @@ void FOpenGLFrontend::PrecompileShader(FShaderCompilerOutput& ShaderOutput, cons
 	if (GLFrequency == GL_NONE)
 	{
 		ShaderOutput.bSucceeded = false;
-		FShaderCompilerError* NewError = new(ShaderOutput.Errors) FShaderCompilerError();
-		NewError->StrippedErrorMessage = FString::Printf(TEXT("%s shaders not supported for use in OpenGL."), CrossCompiler::GetFrequencyName((EShaderFrequency)ShaderInput.Target.Frequency));
+		FShaderCompilerError& NewError = ShaderOutput.Errors.AddDefaulted_GetRef();
+		NewError.StrippedErrorMessage = FString::Printf(TEXT("%s shaders not supported for use in OpenGL."), CrossCompiler::GetFrequencyName((EShaderFrequency)ShaderInput.Target.Frequency));
 		return;
 	}
 
@@ -1088,8 +1089,8 @@ void FOpenGLFrontend::PrecompileShader(FShaderCompilerOutput& ShaderOutput, cons
 
 				if (ShaderOutput.Errors.Num() == 0)
 				{
-					FShaderCompilerError* NewError = new(ShaderOutput.Errors) FShaderCompilerError();
-					NewError->StrippedErrorMessage = FString::Printf(
+					FShaderCompilerError& NewError = ShaderOutput.Errors.AddDefaulted_GetRef();
+					NewError.StrippedErrorMessage = FString::Printf(
 						TEXT("GLSL source:\n%sGL compile log: %s\n"),
 						ANSI_TO_TCHAR(ShaderSource),
 						ANSI_TO_TCHAR(RawCompileLog.GetData())
@@ -1098,8 +1099,8 @@ void FOpenGLFrontend::PrecompileShader(FShaderCompilerOutput& ShaderOutput, cons
 			}
 			else
 			{
-				FShaderCompilerError* NewError = new(ShaderOutput.Errors) FShaderCompilerError();
-				NewError->StrippedErrorMessage = TEXT("Shader compile failed without errors.");
+				FShaderCompilerError& NewError = ShaderOutput.Errors.AddDefaulted_GetRef();
+				NewError.StrippedErrorMessage = TEXT("Shader compile failed without errors.");
 			}
 
 			ShaderOutput.bSucceeded = false;
@@ -2085,7 +2086,9 @@ static void ConvertToEmulatedUBs(std::string& GlslSource, const ReflectionData& 
 
 						for (std::string const& SearchString : ReflectData.PackedUBArrays[PackedUBNamePair.Key])
 						{
-							if (!GlslSource.compare(UBVarPos, SearchString.length(), SearchString))
+							// This is done in case the current SearchString is a substring of another
+							std::string SearchStringWithBraces = SearchString + "[";
+							if (!GlslSource.compare(UBVarPos, SearchStringWithBraces.length(), SearchStringWithBraces))
 							{
 								GlslSource.replace(UBVarPos + SearchString.length(), 1, "(");
 
@@ -2408,7 +2411,9 @@ bool GenerateGlslShader(std::string& OutString, GLSLCompileParameters& GLSLCompi
 						OutString.replace(GlobalVarPos, GlobalVarString.length(), "_Globals_");
 						for (std::string const& SearchString : ReflectData.GlobalArrays)
 						{
-							if (!OutString.compare(GlobalVarPos, SearchString.length(), SearchString))
+							// This is done in case the current SearchString is a substring of another
+							std::string SearchStringWithBraces = SearchString + "[";
+							if (!OutString.compare(GlobalVarPos, SearchStringWithBraces.length(), SearchStringWithBraces))
 							{
 								OutString.replace(GlobalVarPos + SearchString.length(), 1, "(");
 
@@ -2670,35 +2675,23 @@ enum EDecalBlendFlags
 	Modulate		= 1 << 6,
 };
 
-bool EnvironmentHasMatchingKeyValue(const TMap<FString, FString>& Definitions, const FString& Key, const FString& Value)
-{
-	const FString* MatchedKey = Definitions.Find(Key);
-	if (MatchedKey)
-	{
-		return *MatchedKey == Value;
-	}
-	return false;
-}
-
 uint32_t GetDecalBlendFlags(const FShaderCompilerInput& Input)
 {
 	uint32_t Flags = 0;
 
-	const TMap<FString, FString>& Definitions = Input.Environment.GetDefinitions();
-	
-	if (EnvironmentHasMatchingKeyValue(Definitions, TEXT("DECAL_OUT_MRT0"), TEXT("1")))
+	if (Input.Environment.GetCompileArgument(TEXT("DECAL_OUT_MRT0"), false))
 	{
 		Flags |= EDecalBlendFlags::DecalOut_MRT0;
 	}
-	if (EnvironmentHasMatchingKeyValue(Definitions, TEXT("DECAL_OUT_MRT1"), TEXT("1")))
+	if (Input.Environment.GetCompileArgument(TEXT("DECAL_OUT_MRT1"), false))
 	{
 		Flags |= EDecalBlendFlags::DecalOut_MRT1;
 	}
-	if (EnvironmentHasMatchingKeyValue(Definitions, TEXT("DECAL_OUT_MRT2"), TEXT("1")))
+	if (Input.Environment.GetCompileArgument(TEXT("DECAL_OUT_MRT2"), false))
 	{
 		Flags |= EDecalBlendFlags::DecalOut_MRT2;
 	}
-	if (EnvironmentHasMatchingKeyValue(Definitions, TEXT("DECAL_OUT_MRT3"), TEXT("1")))
+	if (Input.Environment.GetCompileArgument(TEXT("DECAL_OUT_MRT3"), false))
 	{
 		Flags |= EDecalBlendFlags::DecalOut_MRT3;
 	}
@@ -2708,15 +2701,15 @@ uint32_t GetDecalBlendFlags(const FShaderCompilerInput& Input)
 		return 0;
 	}
 
-	if (EnvironmentHasMatchingKeyValue(Definitions, TEXT("MATERIALBLENDING_ALPHACOMPOSITE"), TEXT("1")))
+	if (Input.Environment.GetCompileArgument(TEXT("MATERIALBLENDING_ALPHACOMPOSITE"), false))
 	{
 		Flags |= EDecalBlendFlags::AlphaComposite;
 	}
-	else if (EnvironmentHasMatchingKeyValue(Definitions, TEXT("MATERIALBLENDING_MODULATE"), TEXT("1")))
+	else if (Input.Environment.GetCompileArgument(TEXT("MATERIALBLENDING_MODULATE"), false))
 	{
 		Flags |= EDecalBlendFlags::Modulate;
 	}
-	else if (EnvironmentHasMatchingKeyValue(Definitions, TEXT("MATERIALBLENDING_TRANSLUCENT"), TEXT("1")))
+	else if (Input.Environment.GetCompileArgument(TEXT("MATERIALBLENDING_TRANSLUCENT"), false))
 	{
 		Flags |= EDecalBlendFlags::Translucent;
 	}
@@ -2999,6 +2992,7 @@ static bool CompileToGlslWithShaderConductor(
 	Options.bDisableScalarBlockLayout = true;
 	Options.bRemapAttributeLocations = true;
 	Options.bPreserveStorageInput = true;
+    Options.bForceStorageImageFormat = true;
 	
 	// Enable HLSL 2021 if specified
 	if (Input.Environment.CompilerFlags.Contains(CFLAG_HLSL2021))
@@ -3152,8 +3146,8 @@ static bool CompileToGlslWithShaderConductor(
 			//TargetDesc.CompileFlags.SetDefine(TEXT("force_temporary"), 1);
 
 			// If we have mobile multiview define set then set the view count and enable extension
-			const FString* MultiViewDefine = Input.Environment.GetDefinitions().Find(TEXT("MOBILE_MULTI_VIEW"));
-			if (Frequency == SF_Vertex && MultiViewDefine && *MultiViewDefine == "1")
+			const bool bMultiView = Input.Environment.GetCompileArgument(TEXT("MOBILE_MULTI_VIEW"), false);
+			if (Frequency == SF_Vertex && bMultiView)
 			{
 				TargetDesc.CompileFlags.SetDefine(TEXT("ovr_multiview_view_count"), 2);
 			}
@@ -3228,8 +3222,8 @@ static bool CompileToGlslWithShaderConductor(
 
 		// Handle PLS and FBF in OpenGL
 
-		if (EnvironmentHasMatchingKeyValue(Input.Environment.GetDefinitions(), TEXT("SHADING_PATH_MOBILE"), TEXT("1")) &&
-			EnvironmentHasMatchingKeyValue(Input.Environment.GetDefinitions(), TEXT("MOBILE_DEFERRED_SHADING"), TEXT("1")) &&
+		if (Input.Environment.GetCompileArgument(TEXT("SHADING_PATH_MOBILE"), false) &&
+			Input.Environment.GetCompileArgument(TEXT("MOBILE_DEFERRED_SHADING"), false) &&
 			Version == GLSL_ES3_1_ANDROID)
 		{
 			bCompilationFailed = !GenerateDeferredMobileShaders(GlslSource, GLSLCompileParams, SourceData, ReflectData, true, false, bEmulatedUBs, BlendFlags);
@@ -3240,7 +3234,7 @@ static bool CompileToGlslWithShaderConductor(
 		}
 
 		// Generate meta data for CCHeader
-		CCHeaderWriter.WriteSourceInfo(*Input.GetSourceFilename(), *Input.EntryPointName, *Input.DebugGroupName);
+		CCHeaderWriter.WriteSourceInfo(*Input.VirtualSourceFilePath, *Input.EntryPointName);
 		CCHeaderWriter.WriteCompilerInfo();
 
 		if (GlslSource.length() > 0)
@@ -3369,16 +3363,16 @@ void FOpenGLFrontend::CompileShader(const FShaderCompilerInput& Input, FShaderCo
 	if (HlslFrequency == HSF_InvalidFrequency)
 	{
 		Output.bSucceeded = false;
-		FShaderCompilerError* NewError = new(Output.Errors) FShaderCompilerError();
-		NewError->StrippedErrorMessage = FString::Printf(
+		FShaderCompilerError& NewError = Output.Errors.AddDefaulted_GetRef();
+		NewError.StrippedErrorMessage = FString::Printf(
 			TEXT("%s shaders not supported for use in OpenGL."),
 			CrossCompiler::GetFrequencyName(Frequency)
 			);
 		return;
 	}
 
-	FShaderParameterParser ShaderParameterParser;
-	if (!ShaderParameterParser.ParseAndModify(Input, Output, PreprocessedShader))
+	FShaderParameterParser ShaderParameterParser(Input.Environment.CompilerFlags);
+	if (!ShaderParameterParser.ParseAndModify(Input, Output.Errors, PreprocessedShader))
 	{
 		// The FShaderParameterParser will add any relevant errors.
 		return;
@@ -3423,18 +3417,20 @@ void FOpenGLFrontend::CompileShader(const FShaderCompilerInput& Input, FShaderCo
 		bool bDefaultPrecisionIsHalf = (CCFlags & HLSLCC_UseFullPrecisionInPS) == 0;
 		FGlslLanguageSpec* LanguageSpec = CreateLanguageSpec(Version, bDefaultPrecisionIsHalf);
 
-		FHlslCrossCompilerContext CrossCompilerContext(CCFlags, HlslFrequency, HlslCompilerTarget);
-		if (CrossCompilerContext.Init(TCHAR_TO_ANSI(*Input.VirtualSourceFilePath), LanguageSpec))
 		{
-			bCompilationSucceeded = CrossCompilerContext.Run(
-				TCHAR_TO_ANSI(*PreprocessedShader),
-				TCHAR_TO_ANSI(*Input.EntryPointName),
-				BackEnd,
-				&GlslShaderSource,
-				&ErrorLog
-			);
+			FScopeLock HlslCcLock(CrossCompiler::GetCrossCompilerLock());
+			FHlslCrossCompilerContext CrossCompilerContext(CCFlags, HlslFrequency, HlslCompilerTarget);
+			if (CrossCompilerContext.Init(TCHAR_TO_ANSI(*Input.VirtualSourceFilePath), LanguageSpec))
+			{
+				bCompilationSucceeded = CrossCompilerContext.Run(
+					TCHAR_TO_ANSI(*PreprocessedShader),
+					TCHAR_TO_ANSI(*Input.EntryPointName),
+					BackEnd,
+					&GlslShaderSource,
+					&ErrorLog
+				);
+			}
 		}
-
 		delete BackEnd;
 		delete LanguageSpec;
 

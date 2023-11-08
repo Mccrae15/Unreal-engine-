@@ -23,9 +23,10 @@ class FRayTracingBarycentricsRGS : public FGlobalShader
 	SHADER_USE_ROOT_PARAMETER_STRUCT(FRayTracingBarycentricsRGS, FGlobalShader)
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_SRV(RaytracingAccelerationStructure, TLAS)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(RaytracingAccelerationStructure, TLAS)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, Output)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, Scene)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -73,9 +74,10 @@ class FRayTracingBarycentricsCS : public FGlobalShader
 	SHADER_USE_PARAMETER_STRUCT(FRayTracingBarycentricsCS, FGlobalShader)
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_SRV(RaytracingAccelerationStructure, TLAS)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(RaytracingAccelerationStructure, TLAS)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, Output)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, Scene)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FNaniteUniformParameters, NaniteUniformBuffer)
 
 		SHADER_PARAMETER(float, RTDebugVisualizationNaniteCutError)
@@ -114,6 +116,7 @@ void RenderRayTracingBarycentricsCS(FRDGBuilder& GraphBuilder, const FScene& Sce
 	PassParameters->TLAS = View.GetRayTracingSceneLayerViewChecked(ERayTracingSceneLayer::Base);
 	PassParameters->Output = GraphBuilder.CreateUAV(SceneColor);
 	PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
+	PassParameters->Scene = View.GetSceneUniforms().GetBuffer(GraphBuilder);
 	PassParameters->NaniteUniformBuffer = CreateDebugNaniteUniformBuffer(GraphBuilder, Scene.GPUScene.InstanceSceneDataSOAStride);
 
 	PassParameters->RTDebugVisualizationNaniteCutError = 0.0f;
@@ -154,6 +157,7 @@ void RenderRayTracingBarycentricsRGS(FRDGBuilder& GraphBuilder, const FViewInfo&
 
 	RayGenParameters->TLAS = View.GetRayTracingSceneLayerViewChecked(ERayTracingSceneLayer::Base);
 	RayGenParameters->ViewUniformBuffer = View.ViewUniformBuffer;
+	RayGenParameters->Scene = View.GetSceneUniforms().GetBuffer(GraphBuilder);
 	RayGenParameters->Output = GraphBuilder.CreateUAV(SceneColor);
 
 	FIntRect ViewRect = View.ViewRect;

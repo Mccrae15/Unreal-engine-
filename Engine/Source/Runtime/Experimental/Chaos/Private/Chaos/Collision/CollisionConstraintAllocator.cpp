@@ -49,11 +49,11 @@ namespace Chaos
 				Particle0->ParticleCollisions().AddMidPhase(Particle0, MidPhase);
 				Particle1->ParticleCollisions().AddMidPhase(Particle1, MidPhase);
 
-	#if CHAOS_COLLISION_OBJECTPOOL_ENABLED 
+#if CHAOS_MIDPHASE_OBJECTPOOL_ENABLED 
 				Allocator->AddMidPhase(FParticlePairMidPhasePtr(MidPhase, FParticlePairMidPhaseDeleter(MidPhasePool)));
-	#else
+#else
 				Allocator->AddMidPhase(FParticlePairMidPhasePtr(MidPhase));
-	#endif
+#endif
 			}
 			NewMidPhases.Reset();
 		}
@@ -99,6 +99,56 @@ namespace Chaos
 					ParticlePairMidPhases.RemoveAtSwap(Index, 1, bAllowShrink);
 				}
 			}
+		}
+
+		void FCollisionConstraintAllocator::RemoveActiveConstraint(FPBDCollisionConstraint& Constraint)
+		{
+			FPBDCollisionConstraintContainerCookie& Cookie = Constraint.GetContainerCookie();
+
+			// ConstraintIndex is only valid for one frame, so make sure we
+			// were actually activated during the most recent tick
+			if (Cookie.LastUsedEpoch != CurrentEpoch)
+			{
+				return;
+			}
+
+			// Remove from the active list
+			if (Cookie.ConstraintIndex != INDEX_NONE)
+			{
+				check(ActiveConstraints[Cookie.ConstraintIndex] == &Constraint);
+				ActiveConstraints[Cookie.ConstraintIndex] = nullptr;
+				Cookie.ConstraintIndex = INDEX_NONE;
+			}
+
+			// Remove from the active CCD list
+			if (Cookie.CCDConstraintIndex != INDEX_NONE)
+			{
+				check(ActiveCCDConstraints[Cookie.CCDConstraintIndex] == &Constraint);
+				ActiveCCDConstraints[Cookie.CCDConstraintIndex] = nullptr;
+				Cookie.CCDConstraintIndex = INDEX_NONE;
+			}
+		}
+
+		void FCollisionConstraintAllocator::RemoveParticle(FGeometryParticleHandle* Particle)
+		{
+			// Removal not supported during the (parallel) collision detection phase
+			check(!bInCollisionDetectionPhase);
+
+			// Loop over all particle pairs involving this particle and tell each MidPhase 
+			// that one of its particles is gone. It will get pruned at the next collision detection phase.
+			// Also remove its collisions from the Active lists.
+			Particle->ParticleCollisions().VisitMidPhases([this, Particle](FParticlePairMidPhase& MidPhase)
+				{
+					MidPhase.VisitCollisions([this](FPBDCollisionConstraint& Constraint)
+						{
+							RemoveActiveConstraint(Constraint);
+							return ECollisionVisitorResult::Continue;
+						});
+
+					MidPhase.DetachParticle(Particle);
+
+					return ECollisionVisitorResult::Continue;
+				});
 		}
 
 	}	// namespace Private

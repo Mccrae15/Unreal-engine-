@@ -26,7 +26,7 @@ enum EMaterialParameterAssociation : int
 };
 
 USTRUCT(BlueprintType)
-struct ENGINE_API FMaterialParameterInfo
+struct FMaterialParameterInfo
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -54,7 +54,7 @@ struct ENGINE_API FMaterialParameterInfo
 	{
 	}
 
-	explicit FMaterialParameterInfo(const struct FMemoryImageMaterialParameterInfo& Rhs);
+	ENGINE_API explicit FMaterialParameterInfo(const struct FMemoryImageMaterialParameterInfo& Rhs);
 
 	void AppendString(FString& Out) const
 	{
@@ -75,7 +75,7 @@ struct ENGINE_API FMaterialParameterInfo
 		return Ar;
 	}
 
-	bool RemapLayerIndex(TArrayView<const int32> IndexRemap, FMaterialParameterInfo& OutResult) const;
+	ENGINE_API bool RemapLayerIndex(TArrayView<const int32> IndexRemap, FMaterialParameterInfo& OutResult) const;
 
 	friend FORCEINLINE bool operator==(const FMaterialParameterInfo& Lhs, const FMaterialParameterInfo& Rhs)
 	{
@@ -120,8 +120,6 @@ public:
 		, Index(Rhs.Index)
 		, Association(Rhs.Association)
 	{}
-
-	FMemoryImageMaterialParameterInfo(const FMemoryImageMaterialParameterInfo& Rhs) = default;
 
 	FORCEINLINE FName GetName() const { return ScriptNameToName(Name); }
 
@@ -467,6 +465,7 @@ class FSHA1;
 struct FStrataCompilationConfig
 {
 	bool bFullSimplify = false;
+	int16 BytesPerPixelOverride = -1;
 
 	FString GetShaderMapKeyString() const;
 
@@ -476,7 +475,7 @@ struct FStrataCompilationConfig
 
 	friend inline bool operator==(const FStrataCompilationConfig& Lhs, const FStrataCompilationConfig& Rhs)
 	{
-		return Lhs.bFullSimplify == Rhs.bFullSimplify;
+		return Lhs.bFullSimplify == Rhs.bFullSimplify && Lhs.BytesPerPixelOverride == Rhs.BytesPerPixelOverride;
 	}
 
 	friend inline bool operator!=(const FStrataCompilationConfig& Lhs, const FStrataCompilationConfig& Rhs)

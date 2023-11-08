@@ -127,7 +127,7 @@ void FNiagaraParameterCollectionAssetViewModel::AddParameter(TSharedPtr<FNiagara
 	int32 ParamIdx = Collection->AddParameter(NewName, Type);
 
 	//TODO: It'd be nice to be able to get a default value for types in runtime code and do this inside the parameter store itself.
-	if (!Type.IsDataInterface())
+	if (!Type.IsDataInterface() && !Type.IsUObject())
 	{
 		TArray<uint8> DefaultData;
 		FNiagaraEditorUtilities::GetTypeDefaultValue(Type, DefaultData);
@@ -164,6 +164,29 @@ void FNiagaraParameterCollectionAssetViewModel::UpdateOpenInstances()
 	}
 }
 
+void FNiagaraParameterCollectionAssetViewModel::UpdateParameterSelectionFromSearch(const FText& InSearchText)
+{
+	GetSelection().ClearSelectedObjects();
+
+	SearchText = InSearchText;
+
+	RefreshParameterViewModels();
+	
+	if(!SearchText.IsEmpty())
+	{
+		TArray<TSharedRef<INiagaraParameterViewModel>> MatchingParameters;
+		for(TSharedRef<INiagaraParameterViewModel> Parameter : ParameterViewModels)
+		{
+			if(Parameter->GetName().ToString().Contains(SearchText.ToString()))
+			{
+				MatchingParameters.Add(Parameter);
+			}
+		}
+
+		GetSelection().SetSelectedObjects(MatchingParameters);
+	}
+}
+
 void FNiagaraParameterCollectionAssetViewModel::RemoveParameter(FNiagaraVariable& Parameter)
 {
 	FScopedTransaction ScopedTransaction(LOCTEXT("RemoveNPCParameter", "Remove Parameter"));
@@ -190,20 +213,33 @@ void FNiagaraParameterCollectionAssetViewModel::DeleteSelectedParameters()
 		TSet<FNiagaraVariable> VarsToDelete;
 		for (TSharedRef<INiagaraParameterViewModel> Parameter : GetSelection().GetSelectedObjects())
 		{
-			FNiagaraVariable ToDelete(*Parameter->GetType().Get(), *Collection->ParameterNameFromFriendlyName(Parameter->GetName().ToString()));
-			VarsToDelete.Add(ToDelete);
+			VarsToDelete.Add(Parameter->GetVariable());
 		}
 		GetSelection().ClearSelectedObjects();
 
-		FScopedTransaction ScopedTransaction(LOCTEXT("DeleteNPCParameter", "Delete Parameter"));
-		for (FNiagaraVariable ParamToDelete : VarsToDelete)
-		{
-			Collection->RemoveParameter(ParamToDelete);
-		}
-
-		CollectionChanged(true);
-		RefreshParameterViewModels();
+		DeleteParameters(VarsToDelete.Array());
 	}
+}
+
+void FNiagaraParameterCollectionAssetViewModel::DeleteParameters(TArray<FNiagaraVariable> ParametersToDelete)
+{
+	check(Collection && Instance);
+
+	TSet<FNiagaraVariableBase> ResolvedParametersToDelete;
+	for(const FNiagaraVariableBase& Parameter : ParametersToDelete)
+	{
+		FNiagaraVariableBase ToDelete(Parameter.GetType(), *Collection->ParameterNameFromFriendlyName(Parameter.GetName().ToString()));
+		ResolvedParametersToDelete.Add(ToDelete);
+	}
+
+	FScopedTransaction ScopedTransaction(LOCTEXT("DeleteNPCParameter", "Delete Parameter"));
+	for (FNiagaraVariable ParamToDelete : ResolvedParametersToDelete)
+	{
+		Collection->RemoveParameter(ParamToDelete);
+	}
+
+	CollectionChanged(true);
+	RefreshParameterViewModels();
 }
 
 const TArray<TSharedRef<INiagaraParameterViewModel>>& FNiagaraParameterCollectionAssetViewModel::GetParameters()
@@ -264,10 +300,35 @@ void FNiagaraParameterCollectionAssetViewModel::RefreshParameterViewModels()
 
 	ParameterViewModels.Empty();
 
+	bool bSearchTextIsEmpty = SearchText.IsEmpty();
+
+	TArray<FString> SearchTerms;
+	if(bSearchTextIsEmpty == false)
+	{
+		SearchText.ToString().ParseIntoArray(SearchTerms, TEXT(" "));
+	}
 	for (int32 i = 0; i < Collection->GetParameters().Num(); ++i)
 	{
 		FNiagaraVariable& Var = Collection->GetParameters()[i];
 
+		if(bSearchTextIsEmpty == false)
+		{
+			bool bMatchFound = false;
+			for(const FString& SearchTerm : SearchTerms)
+			{
+				if(Var.GetName().ToString().Contains(SearchTerm))
+				{
+					bMatchFound = true;
+					break;
+				}
+			}
+
+			if(!bMatchFound)
+			{
+				continue;
+			}
+		}
+		
 		TSharedPtr<FNiagaraCollectionParameterViewModel> ParameterViewModel = MakeShareable(new FNiagaraCollectionParameterViewModel(Var, Instance, ParameterEditMode));
 
 		ParameterViewModel->OnNameChanged().AddRaw(this, &FNiagaraParameterCollectionAssetViewModel::OnParameterNameChanged, Var);
@@ -337,13 +398,13 @@ void FNiagaraParameterCollectionAssetViewModel::OnParameterTypeChanged(FNiagaraV
 
 	Collection->GetDefaultInstance()->RemoveParameter(ParameterVariable);
 
-	FNiagaraTypeDefinition Type = *ParameterViewModels[Index]->GetType();
+	FNiagaraTypeDefinition Type = ParameterViewModels[Index]->GetType();
 	Collection->GetParameters()[Index].SetType(Type);
 
 	Collection->GetDefaultInstance()->AddParameter(Collection->GetParameters()[Index]);
 	
 	//TODO: It'd be nice to be able to get a default value for types in runtime code and do this inside the parameter store itself.
-	if (!Type.IsDataInterface())
+	if (!Type.IsDataInterface() && !Type.IsUObject())
 	{
 		TArray<uint8> DefaultData;
 		FNiagaraEditorUtilities::GetTypeDefaultValue(Type, DefaultData);

@@ -19,6 +19,9 @@ struct FVirtualFileCacheSettings
 	uint64 NumBlockFiles = 1;
 	FString OverrideDefaultDirectory;
 	bool bMultiThreaded = true;
+
+	// Memory Cache behavior
+	uint64 RecentWriteLRUSize = 0;
 };
 
 struct IVirtualFileCache
@@ -33,7 +36,11 @@ struct IVirtualFileCache
 	virtual TIoStatusOr<uint64> GetSizeForChunk(const VFCKey& Id) const = 0;
 	virtual double CurrentFragmentation() const = 0;
 	virtual void Defragment() = 0;
+	virtual int64 GetTotalSize() const = 0;
+	virtual int64 GetUsedSize() const = 0;
+	virtual uint64 GetTotalMemCacheHits() const = 0;
+	virtual uint64 GetTotalMemCacheMisses() const = 0;
 
-	static VIRTUALFILECACHE_API TSharedRef<IVirtualFileCache> CreateVirtualFileCache();
+	static VIRTUALFILECACHE_API TSharedRef<IVirtualFileCache, ESPMode::ThreadSafe> CreateVirtualFileCache();
 };
 

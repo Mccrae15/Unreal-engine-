@@ -67,6 +67,9 @@ public:
 
 	virtual TSubclassOf<UUserWidget> GetDefaultEntryClass() const = 0;
 
+	DECLARE_DELEGATE_RetVal_OneParam(bool, FOnIsItemSelectableOrNavigable, ItemType);
+	virtual FOnIsItemSelectableOrNavigable& OnIsItemSelectableOrNavigable() const = 0;
+
 protected:
 	virtual SListView<ItemType>* GetMyListView() const = 0;
 	virtual uint32 GetOwningUserIndex() const = 0;
@@ -107,7 +110,7 @@ public:
 				return SelectedItems[0];
 			}
 		}
-		return nullptr;
+		return TListTypeTraits<ItemType>::MakeNullPtr();
 	}
 
 	const ItemType* ItemFromEntryWidget(const UUserWidget& EntryWidget) const
@@ -374,7 +377,7 @@ protected:
 	virtual void OnItemClickedInternal(ItemType Item) {}
 	virtual void OnItemDoubleClickedInternal(ItemType Item) {}
 	virtual void OnSelectionChangedInternal(NullableItemType FirstSelectedItem) {}
-	virtual bool OnIsSelectableOrNavigableInternal(ItemType FirstSelectedItem) { return true; }
+	virtual bool OnIsSelectableOrNavigableInternal(ItemType FirstSelectedItem) { return OnIsItemSelectableOrNavigable().IsBound() ? OnIsItemSelectableOrNavigable().Execute(FirstSelectedItem) : true; }
 	virtual void OnItemScrolledIntoViewInternal(ItemType Item, UUserWidget& EntryWidget) {}
 	virtual void OnListViewScrolledInternal(float ItemOffset, float DistanceRemaining) {}
 	virtual void OnItemExpansionChangedInternal(ItemType Item, bool bIsExpanded) {}
@@ -486,53 +489,53 @@ private:
  * }
  *
  */
-UCLASS(Abstract, NotBlueprintable, hidedropdown, meta = (EntryInterface = UserListEntry))
-class UMG_API UListViewBase : public UWidget
+UCLASS(Abstract, NotBlueprintable, hidedropdown, meta = (EntryInterface = UserListEntry), MinimalAPI)
+class UListViewBase : public UWidget
 {
 	GENERATED_BODY()
 
 public:
-	UListViewBase(const FObjectInitializer& ObjectInitializer);
+	UMG_API UListViewBase(const FObjectInitializer& ObjectInitializer);
 
 #if WITH_EDITOR
-	virtual const FText GetPaletteCategory() override;
-	virtual void ValidateCompiledDefaults(IWidgetCompilerLog& CompileLog) const override;
+	UMG_API virtual const FText GetPaletteCategory() override;
+	UMG_API virtual void ValidateCompiledDefaults(IWidgetCompilerLog& CompileLog) const override;
 #endif
 
 	TSubclassOf<UUserWidget> GetEntryWidgetClass() const { return EntryWidgetClass; }
 
 	/** Gets all of the list entry widgets currently being displayed by the list */
 	UFUNCTION(BlueprintCallable, Category = ListViewBase)
-	const TArray<UUserWidget*>& GetDisplayedEntryWidgets() const;
+	UMG_API const TArray<UUserWidget*>& GetDisplayedEntryWidgets() const;
 
 	/** Get the scroll offset of this view (in items) */
 	UFUNCTION(BlueprintCallable, Category = ListViewBase)
-	float GetScrollOffset() const;
+	UMG_API float GetScrollOffset() const;
 
 	/**
 	 * Full regeneration of all entries in the list. Note that the entry UWidget instances will not be destroyed, but they will be released and re-generated.
 	 * In other words, entry widgets will not receive Destruct/Construct events. They will receive OnEntryReleased and IUserObjectListEntry implementations will receive OnListItemObjectSet.
 	 */
 	UFUNCTION(BlueprintCallable, Category = ListViewBase)
-	void RegenerateAllEntries();
+	UMG_API void RegenerateAllEntries();
 
 	/** Scroll the entire list up to the first item */
 	UFUNCTION(BlueprintCallable, Category = ListViewBase)
-	void ScrollToTop();
+	UMG_API void ScrollToTop();
 
 	/** Scroll the entire list down to the bottom-most item */
 	UFUNCTION(BlueprintCallable, Category = ListViewBase)
-	void ScrollToBottom();
+	UMG_API void ScrollToBottom();
 
 	/** Set the scroll offset of this view (in items) */
 	UFUNCTION(BlueprintCallable, Category = ListView)
-	void SetScrollOffset(const float InScrollOffset);
+	UMG_API void SetScrollOffset(const float InScrollOffset);
 
 	UFUNCTION(BlueprintCallable, Category = ListViewBase)
-	void SetWheelScrollMultiplier(float NewWheelScrollMultiplier);
+	UMG_API void SetWheelScrollMultiplier(float NewWheelScrollMultiplier);
 
 	UFUNCTION(BlueprintCallable, Category = ListViewBase)
-	void SetScrollbarVisibility(ESlateVisibility InVisibility);
+	UMG_API void SetScrollbarVisibility(ESlateVisibility InVisibility);
 
 	/**
 	 * Sets the list to refresh on the next tick.
@@ -544,7 +547,7 @@ public:
 	 * This can be onerous to set up for simple cases, so it's also reasonable (though not ideal) to call RegenerateAllEntries when changes within N list items need to be reflected.
 	 */
 	UFUNCTION(BlueprintCallable, Category = ListViewBase)
-	void RequestRefresh();
+	UMG_API void RequestRefresh();
 
 	DECLARE_EVENT_OneParam(UListView, FOnListEntryGenerated, UUserWidget&);
 	FOnListEntryGenerated& OnEntryWidgetGenerated() { return OnListEntryGeneratedEvent; }
@@ -553,21 +556,22 @@ public:
 	FOnEntryWidgetReleased& OnEntryWidgetReleased() { return OnEntryWidgetReleasedEvent; }
 
 protected:
-	virtual TSharedRef<SWidget> RebuildWidget() override final;
-	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
-	virtual void SynchronizeProperties() override;
+	UMG_API virtual TSharedRef<SWidget> RebuildWidget() override final;
+	UMG_API virtual void ReleaseSlateResources(bool bReleaseChildren) override;
+	UMG_API virtual void SynchronizeProperties() override;
 
 	/** Implement in child classes to construct the actual ListView Slate widget */
-	virtual TSharedRef<STableViewBase> RebuildListWidget();
+	UMG_API virtual TSharedRef<STableViewBase> RebuildListWidget();
 
 	//@todo DanH: Should probably have the events for native & BP built in up here - need to update existing binds to UListView's version
 	virtual void HandleListEntryHovered(UUserWidget& EntryWidget) {}
 	virtual void HandleListEntryUnhovered(UUserWidget& EntryWidget) {}
-	virtual	void FinishGeneratingEntry(UUserWidget& GeneratedEntry);
+	UMG_API virtual	void FinishGeneratingEntry(UUserWidget& GeneratedEntry);
    
     /** Called when a row widget is generated for a list item */
     UPROPERTY(BlueprintAssignable, Category = Events, meta = (DisplayName = "On Entry Generated"))
     FOnListEntryGeneratedDynamic BP_OnEntryGenerated;
+	virtual void NativeOnEntryGenerated(UUserWidget* EntryWidget) {};
 
 	/**
 	* Normally these are processed by UListViewBase::FinishGeneratingEntry which uses World->GetTimerManager() to generate entries next frame
@@ -650,7 +654,7 @@ protected:
 #endif
 
 	/** Expected to be bound to the actual ListView widget created by a child class (automatically taken care of via the construction helpers within ITypedUMGListView) */
-	void HandleRowReleased(const TSharedRef<ITableRow>& Row);
+	UMG_API void HandleRowReleased(const TSharedRef<ITableRow>& Row);
 
 	// Note: Options for this property can be configured via class and property metadata. See class declaration comment above.
 	/** The type of widget to create for each entry displayed in the list. */
@@ -688,12 +692,13 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input)
 	bool bAllowDragging = true;
 
-private:
-	virtual void HandleAnnounceGeneratedEntries();
-
 	/** Called when a row widget is released by the list (i.e. when it no longer represents a list item) */
 	UPROPERTY(BlueprintAssignable, Category = Events, meta = (DisplayName = "On Entry Released"))
 	FOnListEntryReleasedDynamic BP_OnEntryReleased;
+	virtual void NativeOnEntryReleased(UUserWidget* EntryWidget) {};
+
+private:
+	UMG_API virtual void HandleAnnounceGeneratedEntries();
 
 #if WITH_EDITORONLY_DATA
 	bool bNeedsToCallRefreshDesignerItems = false;;
@@ -738,6 +743,7 @@ private:	\
 	mutable FOnFinishedScrolling OnFinishedScrollingEvent;	\
 	mutable FOnItemExpansionChanged OnItemExpansionChangedEvent;	\
 	mutable FOnGetEntryClassForItem OnGetEntryClassForItemDelegate;	\
+	mutable FOnIsItemSelectableOrNavigable OnIsItemSelectableOrNavigableDelegate; \
 public:	\
 	virtual TSubclassOf<UUserWidget> GetDefaultEntryClass() const override { return EntryWidgetClass; }	\
 	virtual FSimpleListItemEvent& OnItemClicked() const override { return OnItemClickedEvent; }	\
@@ -748,4 +754,5 @@ public:	\
 	virtual FOnListViewScrolled& OnListViewScrolled() const override { return OnListViewScrolledEvent; }	\
 	virtual FOnFinishedScrolling& OnFinishedScrolling() const override { return OnFinishedScrollingEvent; }	\
 	virtual FOnItemExpansionChanged& OnItemExpansionChanged() const override { return OnItemExpansionChangedEvent; }	\
-	virtual FOnGetEntryClassForItem& OnGetEntryClassForItem() const override { return OnGetEntryClassForItemDelegate; }
+	virtual FOnGetEntryClassForItem& OnGetEntryClassForItem() const override { return OnGetEntryClassForItemDelegate; } \
+	virtual FOnIsItemSelectableOrNavigable& OnIsItemSelectableOrNavigable() const override { return OnIsItemSelectableOrNavigableDelegate; }

@@ -139,6 +139,11 @@ FBehaviorTreeEditor::FBehaviorTreeEditor()
 	BlackboardData = nullptr;
 
 	bCheckDirtyOnAssetSave = true;
+
+	GraphClass = UBehaviorTreeGraph::StaticClass();
+	GraphName = "Behavior Tree";
+	CornerText = LOCTEXT("AppearanceCornerText", "BEHAVIOR TREE");
+	TitleText = LOCTEXT("BehaviorTreeGraphLabel", "Behavior Tree");
 }
 
 FBehaviorTreeEditor::~FBehaviorTreeEditor()
@@ -282,6 +287,7 @@ void FBehaviorTreeEditor::InitBehaviorTreeEditor( const EToolkitMode::Type Mode,
 
 		FBehaviorTreeEditorModule& BehaviorTreeEditorModule = FModuleManager::LoadModuleChecked<FBehaviorTreeEditorModule>( "BehaviorTreeEditor" );
 		AddMenuExtender(BehaviorTreeEditorModule.GetMenuExtensibilityManager()->GetAllExtenders(GetToolkitCommands(), GetEditingObjects()));
+		AddToolbarExtender(BehaviorTreeEditorModule.GetToolBarExtensibilityManager()->GetAllExtenders(GetToolkitCommands(), GetEditingObjects()));
 
 		AddApplicationMode(BehaviorTreeMode, MakeShareable(new FBehaviorTreeEditorApplicationMode(SharedThis(this))));
 		AddApplicationMode(BlackboardMode, MakeShareable(new FBlackboardEditorApplicationMode(SharedThis(this))));
@@ -337,7 +343,9 @@ void FBehaviorTreeEditor::RestoreBehaviorTree()
 	const bool bNewGraph = MyGraph == NULL;
 	if (MyGraph == NULL)
 	{
-		BehaviorTree->BTGraph = FBlueprintEditorUtils::CreateNewGraph(BehaviorTree, TEXT("Behavior Tree"), UBehaviorTreeGraph::StaticClass(), UEdGraphSchema_BehaviorTree::StaticClass());
+		const TSubclassOf<UEdGraphSchema> SchemaClass = GetDefault<UBehaviorTreeGraph>(GraphClass)->Schema;
+		check(SchemaClass);
+		BehaviorTree->BTGraph = FBlueprintEditorUtils::CreateNewGraph(BehaviorTree, GraphName, GraphClass, SchemaClass);
 		MyGraph = Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph);
 
 		// Initialize the behavior tree graph
@@ -516,7 +524,7 @@ EVisibility FBehaviorTreeEditor::GetRootLevelNodeVisibility() const
 FGraphAppearanceInfo FBehaviorTreeEditor::GetGraphAppearance() const
 {
 	FGraphAppearanceInfo AppearanceInfo;
-	AppearanceInfo.CornerText = LOCTEXT("AppearanceCornerText", "BEHAVIOR TREE");
+	AppearanceInfo.CornerText = CornerText;
 
 	const int32 StepIdx = Debugger.IsValid() ? Debugger->GetShownStateIndex() : 0;
 	if (Debugger.IsValid() && !Debugger->IsDebuggerRunning())
@@ -630,7 +638,7 @@ TSharedRef<SGraphEditor> FBehaviorTreeEditor::CreateGraphEditorWidget(UEdGraph* 
 			.FillWidth(1.f)
 			[
 				SNew(STextBlock)
-				.Text(LOCTEXT("BehaviorTreeGraphLabel", "Behavior Tree"))
+				.Text(TitleText)
 				.TextStyle( FAppStyle::Get(), TEXT("GraphBreadcrumbButtonText") )
 			]
 		];
@@ -643,7 +651,8 @@ TSharedRef<SGraphEditor> FBehaviorTreeEditor::CreateGraphEditorWidget(UEdGraph* 
 		.Appearance(this, &FBehaviorTreeEditor::GetGraphAppearance)
 		.TitleBar(TitleBarWidget)
 		.GraphToEdit(InGraph)
-		.GraphEvents(InEvents);
+		.GraphEvents(InEvents)
+		.AutoExpandActionMenu(true);
 }
 
 bool FBehaviorTreeEditor::InEditingMode(bool bGraphIsEditable) const
@@ -1395,6 +1404,11 @@ void FBehaviorTreeEditor::SaveAsset_Execute()
 	IBehaviorTreeEditor::SaveAsset_Execute();
 }
 
+void FBehaviorTreeEditor::SetToolbarCreateActionsEnabled(const bool bActionsEnabled)
+{
+	ToolbarBuilder->SetCreateActionsEnabled(bActionsEnabled);
+}
+
 void FBehaviorTreeEditor::OnEnableBreakpoint()
 {
 	const FGraphPanelSelectionSet SelectedNodes = GetSelectedNodes();
@@ -1602,7 +1616,13 @@ UEdGraphNode* FBehaviorTreeEditor::FindInjectedNode(int32 Index) const
 	return BTGraph ? BTGraph->FindInjectedNode(Index) : NULL;
 }
 
-void FBehaviorTreeEditor::DoubleClickNode(class UEdGraphNode* Node)
+void FBehaviorTreeEditor::DoubleClickNode(UEdGraphNode* Node)
+{
+	FocusAttentionOnNode(Node);
+	OnNodeDoubleClicked(Node);
+}
+
+void FBehaviorTreeEditor::FocusAttentionOnNode(UEdGraphNode* Node)
 {
 	TSharedPtr<SGraphEditor> CurrentGraphEditor = UpdateGraphEdPtr.Pin();
 	if (CurrentGraphEditor.IsValid())
@@ -1610,9 +1630,7 @@ void FBehaviorTreeEditor::DoubleClickNode(class UEdGraphNode* Node)
 		CurrentGraphEditor->ClearSelectionSet();
 		CurrentGraphEditor->SetNodeSelection(Node, true);
 	}
-
 	JumpToNode(Node);
-	OnNodeDoubleClicked(Node);
 }
 
 void FBehaviorTreeEditor::FocusWindow(UObject* ObjectToFocusOn)

@@ -26,6 +26,8 @@
 #define LEVELEDITOR_MODULE_NAME TEXT("LevelEditor")
 #define CONTENTBROWSER_MODULE_NAME TEXT("ContentBrowser")
 
+//#define ENABLE_BROWSER_DEV_TOOLS
+
 TSharedPtr<FBridgeUIManagerImpl> FBridgeUIManager::Instance;
 UBrowserBinding* FBridgeUIManager::BrowserBinding;
 
@@ -167,8 +169,7 @@ void FBridgeUIManagerImpl::CreateWindow()
 // 	{
 // 		if (!WebBrowserPlugin->IsEnabled())
 // 		{
-// 			const FText Title = FText::FromString(TEXT("Enable Web Browser Plugin"));
-// 			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(TEXT("Quixel Bridge requires the “Web Browser” plugin, which is disabled. Go to Edit > Plugins and search for “Web Browser” to enable it.")), &Title);
+// 			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(TEXT("Quixel Bridge requires the “Web Browser” plugin, which is disabled. Go to Edit > Plugins and search for “Web Browser” to enable it.")), FText::FromString(TEXT("Enable Web Browser Plugin")));
 // 			return;
 // 		}
 // 	}
@@ -286,11 +287,33 @@ TSharedRef<SDockTab> FBridgeUIManagerImpl::CreateBridgeTab(const FSpawnTabArgs& 
 		PluginWebBrowser = SAssignNew(WebBrowserWidget, SWebBrowser, Browser)
 			.ShowAddressBar(false)
 			.ShowControls(false);
+#ifdef ENABLE_BROWSER_DEV_TOOLS
+		WebBrowserSingleton->SetDevToolsShortcutEnabled(true);
+		Browser->OnCreateWindow().BindLambda([](const TWeakPtr<IWebBrowserWindow>& NewBrowserWindow, const TWeakPtr<IWebBrowserPopupFeatures>& PopupFeatures)
+		{
+			// Initialize a dialog
+			auto DialogMainWindow = SNew(SWindow)
+				.Title(FText::FromString(TEXT("Chrome Debugging Tools")))
+				.ClientSize(FVector2D(700, 700))
+				.SupportsMaximize(true)
+				.SupportsMinimize(true)
+				[
+					SNew(SVerticalBox) +
+					SVerticalBox::Slot()
+						.HAlign(HAlign_Fill)
+						.VAlign(VAlign_Fill)
+						[
+							SNew(SWebBrowser, NewBrowserWindow.Pin())
+						]
+				];
+			FSlateApplication::Get().AddWindow(DialogMainWindow);
+			return true;
+		});
+#endif
 	}
 	else
 	{
-		const FText Title = FText::FromString(TEXT("Enable Web Browser Plugin"));
-		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(TEXT("Quixel Bridge requires the “Web Browser” plugin, which is disabled. Go to Edit > Plugins and search for “Web Browser” to enable it.")), &Title);
+		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(TEXT("Quixel Bridge requires the “Web Browser” plugin, which is disabled. Go to Edit > Plugins and search for “Web Browser” to enable it.")), FText::FromString(TEXT("Enable Web Browser Plugin")));
 
 		return SAssignNew(LocalBrowserDock, SDockTab)
 			.TabRole(ETabRole::NomadTab);

@@ -8,6 +8,8 @@
 #include "GameFramework/Actor.h"
 #include "Animation/NodeMappingContainer.h"
 #include "AnimationRuntime.h"
+#include "Animation/AnimCurveUtils.h"
+#include "Animation/AnimStats.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_ControlRig)
 
@@ -130,19 +132,16 @@ void FAnimNode_ControlRig::CacheBones_AnyThread(const FAnimationCacheBonesContex
 	FAnimNode_ControlRigBase::CacheBones_AnyThread(Context);
 
 	FBoneContainer& RequiredBones = Context.AnimInstanceProxy->GetRequiredBones();
-	InputToCurveMappingUIDs.Reset();
 	InputToControlIndex.Reset();
 
 	if(RequiredBones.IsValid())
 	{
 		RefPoseSetterHash.Reset();
 
-		const FSmartNameMapping* CurveMapping = RequiredBones.GetSkeletonAsset()->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
-
-		auto CacheMapping = [&](const TMap<FName, FName>& Mapping, const FSmartNameMapping* CurveNameMapping, 
+		auto CacheMapping = [&](const TMap<FName, FName>& InMapping, FCurveMappings& InCurveMappings,
 			const FAnimationCacheBonesContext& InContext, URigHierarchy* InHierarchy)
 		{
-			for (auto Iter = Mapping.CreateConstIterator(); Iter; ++Iter)
+			for (auto Iter = InMapping.CreateConstIterator(); Iter; ++Iter)
 			{
 				// we need to have list of variables using pin
 				const FName SourcePath = Iter.Key();
@@ -150,14 +149,9 @@ void FAnimNode_ControlRig::CacheBones_AnyThread(const FAnimationCacheBonesContex
 
 				if (SourcePath != NAME_None && TargetPath != NAME_None)
 				{
-					const SmartName::UID_Type Found = CurveNameMapping->FindUID(TargetPath);
-					if (Found != SmartName::MaxUID)
-					{
-						// set value - sound should be UID
-						InputToCurveMappingUIDs.Add(Iter.Value()) = Found;
-						continue;
-					}
-					else if(InHierarchy)
+					InCurveMappings.Add(SourcePath, TargetPath);
+
+					if(InHierarchy)
 					{
 						const FRigElementKey Key(TargetPath, ERigElementType::Control);
 						if(const FRigControlElement* ControlElement = InHierarchy->Find<FRigControlElement>(Key))
@@ -166,9 +160,6 @@ void FAnimNode_ControlRig::CacheBones_AnyThread(const FAnimationCacheBonesContex
 							continue;
 						}
 					}
-
-					UE_LOG(LogAnimation, Warning, TEXT("Curve %s Not Found from the Skeleton %s"), 
-						*TargetPath.ToString(), *GetNameSafe(InContext.AnimInstanceProxy->GetSkeleton()));
 				}
 
 				// @todo: should we clear the item if not found?
@@ -181,14 +172,15 @@ void FAnimNode_ControlRig::CacheBones_AnyThread(const FAnimationCacheBonesContex
 			Hierarchy = CurrentControlRig->GetHierarchy();
 		}
 
-		CacheMapping(InputMapping, CurveMapping, Context, Hierarchy);
-		CacheMapping(OutputMapping, CurveMapping, Context, Hierarchy);
+		CacheMapping(InputMapping, InputCurveMappings, Context, Hierarchy);
+		CacheMapping(OutputMapping, OutputCurveMappings, Context, Hierarchy);
 	}
 }
 
 void FAnimNode_ControlRig::Evaluate_AnyThread(FPoseContext & Output)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+	ANIM_MT_SCOPE_CYCLE_COUNTER_VERBOSE(ControlRig, !IsInGameThread());
 
 	// evaluate 
 	FAnimNode_ControlRigBase::Evaluate_AnyThread(Output);
@@ -198,6 +190,7 @@ void FAnimNode_ControlRig::PostSerialize(const FArchive& Ar)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 
+	// TODO : Investigate if this can be removed, as it calls multiple times (> 10) to ControlRig->Initialize when we open or compile a Rig (and each call it is a slow operation)
 	// after compile, we have to reinitialize
 	// because it needs new execution code
 	// since memory has changed
@@ -219,31 +212,19 @@ void FAnimNode_ControlRig::UpdateInput(UControlRig* InControlRig, const FPoseCon
 	// now go through variable mapping table and see if anything is mapping through input
 	if (InputMapping.Num() > 0 && InControlRig)
 	{
-		for (auto Iter = InputMapping.CreateConstIterator(); Iter; ++Iter)
-		{
-			// we need to have list of variables using pin
-			const FName SourcePath = Iter.Key();
-			if (SourcePath != NAME_None)
+		UE::Anim::FCurveUtils::BulkGet(InOutput.Curve, InputCurveMappings, 
+			[&InControlRig](const FControlRigCurveMapping& InBulkElement, float InValue)
 			{
-				const FName CurveName = Iter.Value();
-
-				SmartName::UID_Type UID = *InputToCurveMappingUIDs.Find(CurveName);
-				if (UID != SmartName::MaxUID)
+				FRigVMExternalVariable Variable = InControlRig->GetPublicVariableByName(InBulkElement.SourceName);
+				if (!Variable.bIsReadOnly && Variable.TypeName == TEXT("float"))
 				{
-					const float Value = InOutput.Curve.Get(UID);
-
-					FRigVMExternalVariable Variable = InControlRig->GetPublicVariableByName(SourcePath);
-					if (!Variable.bIsReadOnly && Variable.TypeName == TEXT("float"))
-					{
-						Variable.SetValue<float>(Value);
-					}
-					else
-					{
-						UE_LOG(LogAnimation, Warning, TEXT("[%s] Missing Input Variable [%s]"), *GetNameSafe(InControlRig->GetClass()), *SourcePath.ToString());
-					}
+					Variable.SetValue<float>(InValue);
 				}
-			}
-		} 
+				else
+				{
+					UE_LOG(LogAnimation, Warning, TEXT("[%s] Missing Input Variable [%s]"), *GetNameSafe(InControlRig->GetClass()), *InBulkElement.SourceName.ToString());
+				}
+			});
 	}
 }
 
@@ -255,30 +236,21 @@ void FAnimNode_ControlRig::UpdateOutput(UControlRig* InControlRig, FPoseContext&
 
 	if (OutputMapping.Num() > 0 && InControlRig)
 	{
-		for (auto Iter = OutputMapping.CreateConstIterator(); Iter; ++Iter)
-		{
-			// we need to have list of variables using pin
-			const FName SourcePath = Iter.Key();
-			const FName CurveName = Iter.Value();
-
-			if (SourcePath != NAME_None)
+		UE::Anim::FCurveUtils::BulkSet(InOutput.Curve, OutputCurveMappings, 
+			[&InControlRig](const FControlRigCurveMapping& InBulkElement) -> float
 			{
-				FRigVMExternalVariable Variable = InControlRig->GetPublicVariableByName(SourcePath);
+				FRigVMExternalVariable Variable = InControlRig->GetPublicVariableByName(InBulkElement.SourceName);
 				if (Variable.TypeName == TEXT("float"))
 				{
-					float Value = Variable.GetValue<float>();
-					SmartName::UID_Type* UID = InputToCurveMappingUIDs.Find(Iter.Value());
-					if (UID)
-					{
-						InOutput.Curve.Set(*UID, Value);
-					}
+					return Variable.GetValue<float>();
 				}
 				else
 				{
-					UE_LOG(LogAnimation, Warning, TEXT("[%s] Missing Output Variable [%s]"), *GetNameSafe(ControlRig->GetClass()), *SourcePath.ToString());
+					UE_LOG(LogAnimation, Warning, TEXT("[%s] Missing Output Variable [%s]"), *GetNameSafe(InControlRig->GetClass()), *InBulkElement.SourceName.ToString());
 				}
-			}
-		}
+				
+				return 0.0f;
+			});
 	}
 }
 
@@ -559,32 +531,46 @@ void FAnimNode_ControlRig::PropagateInputProperties(const UObject* InSourceInsta
 
 				const uint8* SrcPtr = CallerProperty->ContainerPtrToValuePtr<uint8>(InSourceInstance);
 
-				if (CastField<FBoolProperty>(CallerProperty) != nullptr && Variable.TypeName == TEXT("bool"))
+				if (CastField<FBoolProperty>(CallerProperty) != nullptr && Variable.TypeName == RigVMTypeUtils::BoolTypeName)
 				{
 					const bool Value = *(const bool*)SrcPtr;
 					Variable.SetValue<bool>(Value);
 				}
-				else if (CastField<FFloatProperty>(CallerProperty) != nullptr && Variable.TypeName == TEXT("float"))
+				else if (CastField<FFloatProperty>(CallerProperty) != nullptr && (Variable.TypeName == RigVMTypeUtils::FloatTypeName ||  Variable.TypeName == RigVMTypeUtils::DoubleTypeName))
 				{
 					const float Value = *(const float*)SrcPtr;
-					Variable.SetValue<float>(Value);
+					if(Variable.TypeName == RigVMTypeUtils::FloatTypeName)
+					{
+						Variable.SetValue<float>(Value);
+					}
+					else
+					{
+						Variable.SetValue<double>(Value);
+					}
 				}
-				else if (CastField<FDoubleProperty>(CallerProperty) != nullptr && Variable.TypeName == TEXT("double"))
+				else if (CastField<FDoubleProperty>(CallerProperty) != nullptr && (Variable.TypeName == RigVMTypeUtils::FloatTypeName ||  Variable.TypeName == RigVMTypeUtils::DoubleTypeName))
 				{
 					const double Value = *(const double*)SrcPtr;
-					Variable.SetValue<double>(Value);
+					if(Variable.TypeName == RigVMTypeUtils::FloatTypeName)
+					{
+						Variable.SetValue<float>((float)Value);
+					}
+					else
+					{
+						Variable.SetValue<double>(Value);
+					}
 				}
-				else if (CastField<FIntProperty>(CallerProperty) != nullptr && Variable.TypeName == TEXT("int32"))
+				else if (CastField<FIntProperty>(CallerProperty) != nullptr && Variable.TypeName == RigVMTypeUtils::Int32TypeName)
 				{
 					const int32 Value = *(const int32*)SrcPtr;
 					Variable.SetValue<int32>(Value);
 				}
-				else if (CastField<FNameProperty>(CallerProperty) != nullptr && Variable.TypeName == TEXT("FName"))
+				else if (CastField<FNameProperty>(CallerProperty) != nullptr && Variable.TypeName == RigVMTypeUtils::FNameTypeName)
 				{
 					const FName Value = *(const FName*)SrcPtr;
 					Variable.SetValue<FName>(Value);
 				}
-				else if (CastField<FNameProperty>(CallerProperty) != nullptr && Variable.TypeName == TEXT("FString"))
+				else if (CastField<FNameProperty>(CallerProperty) != nullptr && Variable.TypeName == RigVMTypeUtils::FStringTypeName)
 				{
 					const FString Value = *(const FString*)SrcPtr;
 					Variable.SetValue<FString>(Value);

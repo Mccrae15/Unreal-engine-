@@ -298,7 +298,7 @@ void UMeshSculptToolBase::InitializeSculptMeshComponent(UBaseDynamicMeshComponen
 	Component->RegisterComponent();
 
 	// initialize from LOD-0 MeshDescription
-	Component->SetMesh(UE::ToolTarget::GetDynamicMeshCopy(Target));
+	Component->SetMesh(UE::ToolTarget::GetDynamicMeshCopy(Target, true));
 	double MaxDimension = Component->GetMesh()->GetBounds(true).MaxDim();
 
 	// bake rotation and scaling into mesh because handling these inside sculpting is a mess
@@ -736,22 +736,28 @@ void UMeshSculptToolBase::UpdateHoverStamp(const FFrame3d& StampFrameWorld)
 	HoverStamp.LocalFrame.Transform(CurTargetTransform.InverseUnsafe());
 }
 
+float UMeshSculptToolBase::GetStampTemporalFlowRate() const
+{
+	return BrushProperties->FlowRate;
+}
+
 void UMeshSculptToolBase::UpdateStampPendingState()
 {
 	if (InStroke() == false) return;
 
 	bool bFlowStampPending = false;
-	if (BrushProperties->FlowRate >= 1.0)
+	float UseStampFlowRate = GetStampTemporalFlowRate();
+	if (UseStampFlowRate >= 1.0)
 	{
 		bFlowStampPending = true;
 	}
-	else if (BrushProperties->FlowRate == 0.0)
+	else if (UseStampFlowRate == 0.0)
 	{
 		bFlowStampPending = (LastFlowTimeStamp++ == 0);
 	}
 	else
 	{
-		double dt = (1.0 - BrushProperties->FlowRate);
+		double dt = (1.0 - UseStampFlowRate);
 		int FlowTimestamp = (int)(ActiveStrokeTime / dt);
 		if (FlowTimestamp > LastFlowTimeStamp)
 		{

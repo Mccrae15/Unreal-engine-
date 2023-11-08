@@ -18,6 +18,8 @@ void SetUpObservers(FMassEntityManager& EntityManager, const TMap<TPointerType, 
 	ObservedBitSet.Reset();
 	UObject* Owner = EntityManager.GetOwner();
 	check(Owner);
+	const UWorld* World = Owner->GetWorld();
+	const EProcessorExecutionFlags WorldExecutionFlags = World ? UE::Mass::Utils::GetProcessorExecutionFlagsForWorld(*World) : EProcessorExecutionFlags::All;
 
 	for (auto It : RegisteredObserverTypes)
 	{
@@ -31,7 +33,10 @@ void SetUpObservers(FMassEntityManager& EntityManager, const TMap<TPointerType, 
 
 		for (const TSubclassOf<UMassProcessor>& ProcessorClass : It.Value.ClassCollection)
 		{
-			Pipeline.AppendProcessor(ProcessorClass, *Owner);
+			if (ProcessorClass->GetDefaultObject<UMassProcessor>()->ShouldExecute(WorldExecutionFlags))
+			{
+				Pipeline.AppendProcessor(ProcessorClass, *Owner);
+			}
 		}
 		Pipeline.Initialize(*Owner);
 	}
@@ -126,6 +131,12 @@ bool FMassObserverManager::OnPreEntitiesDestroyed(FMassProcessingContext& Proces
 	const FMassArchetypeCompositionDescriptor& ArchetypeComposition = ProcessingContext.EntityManager->GetArchetypeComposition(EntityCollection.GetArchetype());
 	
 	return OnCompositionChanged(EntityCollection, ArchetypeComposition, EMassObservedOperation::Remove, &ProcessingContext);
+}
+
+bool FMassObserverManager::OnPreEntityDestroyed(const FMassArchetypeCompositionDescriptor& ArchetypeComposition, const FMassEntityHandle Entity)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE_STR("OnPreEntityDestroyed")
+	return OnCompositionChanged(Entity, ArchetypeComposition, EMassObservedOperation::Remove);
 }
 
 bool FMassObserverManager::OnCompositionChanged(const FMassArchetypeEntityCollection& EntityCollection, const FMassArchetypeCompositionDescriptor& CompositionDelta, const EMassObservedOperation Operation, FMassProcessingContext* InProcessingContext)

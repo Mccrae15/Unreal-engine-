@@ -11,6 +11,8 @@
 #include "Widgets/Layout/SSplitter.h"
 #include "IDetailCustomization.h"
 
+#include "FractureEditorModeToolkit.generated.h"
+
 class IDetailsView;
 class IPropertyHandle;
 class SScrollBox;
@@ -85,6 +87,16 @@ struct FTextAndSlateColor
 	FSlateColor Color;
 };
 
+UENUM(BlueprintType)
+enum class EOutlinerColumnMode : uint8
+{
+	State = 0				UMETA(DisplayName = "State"),
+	Damage = 1				UMETA(DisplayName = "Damage"),
+	Removal = 2				UMETA(DisplayName = "Removal"),
+	Collision = 3			UMETA(DisplayName = "Collision"),
+	Size = 4				UMETA(DisplayName = "Size"),
+};
+
 class FRACTUREEDITOR_API FFractureEditorModeToolkit : public FModeToolkit, public FGCObject
 {
 public:
@@ -100,7 +112,7 @@ public:
 	virtual FName GetToolkitFName() const override;
 	virtual FText GetBaseToolkitName() const override;
 	virtual class FEdMode* GetEditorMode() const override;
-	virtual TSharedPtr<class SWidget> GetInlineContent() const override { return ToolkitWidget; }
+	virtual TSharedPtr<class SWidget> GetInlineContent() const override;
 
 	/** FGCObject interface */
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
@@ -188,6 +200,8 @@ public:
 	TSharedPtr<SWidget> LevelViewWidget;
 	TSharedPtr<SWidget> ShowBoneColorsWidget;
 
+	void SetOutlinerColumnMode(EOutlinerColumnMode ColumnMode);
+
 protected:
 	/** FModeToolkit interface */
 	virtual void RequestModeUITabs() override;
@@ -216,12 +230,21 @@ private:
 	void HandleMapChanged(UWorld* NewWorld, EMapChangeType MapChangeType);
 
 	FReply OnRefreshOutlinerButtonClicked();
+
+	TSharedRef<SWidget> MakeMenu_FractureModeConfigSettings();
+	void UpdateAssetLocationMode(TSharedPtr<FString> NewString);
+	void UpdateAssetPanelFromSettings();
+	void OnProjectSettingsModified();
+
+	void UpdateOutlinerHeader();
 	
 private:
-	UFractureModalTool* ActiveTool;
+	TObjectPtr<UFractureModalTool> ActiveTool;
 
 	// called when PIE is about to start, shuts down active tools
 	FDelegateHandle BeginPIEDelegateHandle;
+	// calls with the project settings are modified; used to keep the quick settings up to date
+	FDelegateHandle ProjectSettingsModifiedHandle;
 
 	TSharedPtr<IDetailsView> DetailsView;
 	TSharedPtr<IDetailsView> ViewSettingsDetailsView;
@@ -235,5 +258,7 @@ private:
 	TWeakPtr<SDockTab> StatisticsTab;
 	FMinorTabConfig StatisticsTabInfo;
 	TSharedPtr<SGeometryCollectionStatistics> StatisticsView;
+	TArray<TSharedPtr<FString>> AssetLocationModes;
+	TSharedPtr<STextComboBox> AssetLocationMode;
 
 };

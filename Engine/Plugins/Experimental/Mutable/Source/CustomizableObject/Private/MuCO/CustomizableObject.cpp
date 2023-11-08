@@ -7,20 +7,24 @@
 #include "Async/AsyncFileHandle.h"
 #include "EdGraph/EdGraph.h"
 #include "Engine/SkeletalMesh.h"
+#include "Animation/Skeleton.h"
+#include "Engine/AssetUserData.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFileManager.h"
 #include "Input/Reply.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Materials/MaterialInterface.h"
+#include "Misc/DataValidation.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
-#include "Misc/DataValidation.h"
 #include "MuCO/CustomizableObjectInstance.h"
 #include "MuCO/CustomizableObjectPrivate.h"
 #include "MuCO/CustomizableObjectSystem.h"
 #include "MuCO/ICustomizableObjectModule.h"
+#include "MuCO/MutableProjectorTypeUtils.h"
 #include "MuCO/UnrealMutableModelDiskStreamer.h"
-#include "MuR/ModelPrivate.h"
+#include "MuCO/UnrealPortabilityHelpers.h"
+#include "MuR/Model.h"
 #include "PhysicsEngine/PhysicsAsset.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
@@ -32,11 +36,6 @@
 
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(CustomizableObject)
-
-class UMaterialInterface;
-class UPhysicsAsset;
-class USkeletalMesh;
-class USkeleton;
 
 #define LOCTEXT_NAMESPACE "CustomizableObject"
 
@@ -111,11 +110,6 @@ void UCustomizableObject::PreSave(FObjectPreSaveContext ObjectSaveContext)
 		}
 	}
 
-	if (!Identifier.IsValid())
-	{
-		Identifier = FGuid::NewGuid();
-	}
-
 #if WITH_EDITORONLY_DATA
 	if (ObjectSaveContext.IsCooking() && !bIsChildObject)
 	{
@@ -162,6 +156,21 @@ void UCustomizableObject::PostLoad()
 		ReferenceSkeletalMesh_DEPRECATED = nullptr;
 	}
 #endif
+}
+
+
+void UCustomizableObject::BeginDestroy()
+{
+#if !WITH_EDITORONLY_DATA
+	if (RefSkeletalMeshStreamingHandle.IsValid() && RefSkeletalMeshStreamingHandle->IsActive())
+	{
+		RefSkeletalMeshStreamingHandle->CancelHandle();
+	}
+	
+	RefSkeletalMeshStreamingHandle = nullptr;
+#endif
+
+	Super::BeginDestroy();
 }
 
 
@@ -229,9 +238,6 @@ void UCustomizableObject::PostDuplicate(EDuplicateMode::Type DuplicateMode)
 
 	if (DuplicateMode == EDuplicateMode::Normal)
 	{
-		// The only place where we can change the identifier
-		Identifier = FGuid::NewGuid();
-
 		// Create a new Private Data or it will use the same as the original Customizable Object
 		PrivateData = TSharedPtr<FCustomizableObjectPrivateData>(new FCustomizableObjectPrivateData());
 	}
@@ -272,7 +278,7 @@ void UCustomizableObject::BeginCacheForCookedPlatformData(const ITargetPlatform*
 	else
 	{
 		ClearCompiledData();
-		PrivateData->SetModel(nullptr); // Discard compilation
+		PrivateData->SetModel(nullptr, FGuid()); // Discard compilation
 		if (TargetPlatform)
 		{
 			PrivateData->CachedPlatformNames.Add(TargetPlatform->PlatformName());
@@ -327,6 +333,8 @@ void UCustomizableObject::ClearCompiledData()
 	ContributingClothingAssetsData.Empty();
 	ClothSharedConfigsData.Empty();
 	SkinWeightProfilesInfo.Empty();
+	AnimBpOverridePhysiscAssetsInfo.Empty();
+	BoneNames.Empty();
 
 #if WITH_EDITORONLY_DATA
 	CustomizableObjectPathMap.Empty();
@@ -343,19 +351,17 @@ void UCustomizableObject::UpdateCompiledDataFromModel()
 	TSharedPtr<mu::Model, ESPMode::ThreadSafe> Model = PrivateData->GetModel();
 
 	// Generate a map that using the resource id tells the offset and size of the resource inside the bulk data
-	if(Model)
+	if (Model)
 	{
-		uint64_t Offset = 0;
-		uint32_t ResourceId = 0;
-		uint32_t ResourceSize = 0;
+		uint64 Offset = 0;
 
-		int32 NumStreamingFiles = Model->GetPrivate()->m_program.m_roms.Num();
+		const int32 NumStreamingFiles = Model->GetRomCount();
 		HashToStreamableBlock.Empty(NumStreamingFiles);
 
 		for (size_t FileIndex = 0; FileIndex < NumStreamingFiles; ++FileIndex)
 		{
-			ResourceId = Model->GetPrivate()->m_program.m_roms[FileIndex].Id;
-			ResourceSize = Model->GetPrivate()->m_program.m_roms[FileIndex].Size;
+			const uint32 ResourceId = Model->GetRomId(FileIndex);
+			const uint32 ResourceSize = Model->GetRomSize(FileIndex);
 
 			HashToStreamableBlock.Add(ResourceId, FMutableStreamableBlock({0, Offset, ResourceSize }));
 			Offset += ResourceSize;
@@ -424,6 +430,10 @@ void UCustomizableObject::SaveCompiledData(FArchive& MemoryWriter, bool bSkipEdi
 	
 	MemoryWriter << SkinWeightProfilesInfo;
 
+	MemoryWriter << AnimBpOverridePhysiscAssetsInfo;
+
+	MemoryWriter << BoneNames;
+
 	MemoryWriter << HashToStreamableBlock;
 
 	// All Editor Only data must be serialized here
@@ -444,7 +454,7 @@ void UCustomizableObject::SaveCompiledData(FArchive& MemoryWriter, bool bSkipEdi
 
 void UCustomizableObject::LoadCompiledData(FArchive& MemoryReader, bool bSkipEditorOnlyData)
 {
-	PrivateData->SetModel(nullptr);
+	PrivateData->SetModel(nullptr, FGuid());
 	ClearCompiledData();
 
 	MutableCompiledDataStreamHeader Header;
@@ -456,7 +466,13 @@ void UCustomizableObject::LoadCompiledData(FArchive& MemoryReader, bool bSkipEdi
 		UCustomizableObjectSystem::GetInstance();
 
 		MemoryReader << ReferenceSkeletalMeshesData;
-		
+
+		// Initialize resources. 
+		for(FMutableRefSkeletalMeshData& ReferenceSkeletalMeshData : ReferenceSkeletalMeshesData)
+		{
+			ReferenceSkeletalMeshData.InitResources(this);
+		}
+
 		// We can load
 		int32 NumReferencedMaterials = 0;
 		MemoryReader << NumReferencedMaterials;
@@ -515,6 +531,17 @@ void UCustomizableObject::LoadCompiledData(FArchive& MemoryReader, bool bSkipEdi
 
 		MemoryReader << SkinWeightProfilesInfo;
 
+		MemoryReader << AnimBpOverridePhysiscAssetsInfo;
+
+		TArray<FString> StringBoneNames;
+		MemoryReader << StringBoneNames;
+
+		BoneNames.Reserve(StringBoneNames.Num());
+		for (const FString& BoneName : StringBoneNames)
+		{
+			BoneNames.Add(FName(*BoneName));
+		}
+
 		MemoryReader << HashToStreamableBlock;
 
 		// All Editor Only data must be loaded here
@@ -541,7 +568,7 @@ void UCustomizableObject::LoadCompiledData(FArchive& MemoryReader, bool bSkipEdi
 			mu::InputArchive arch(&stream);
 			TSharedPtr<mu::Model, ESPMode::ThreadSafe> Model = mu::Model::StaticUnserialise( arch );
 
-			PrivateData->SetModel(Model);
+			PrivateData->SetModel(Model, Identifier);
 		}
 	}
 
@@ -552,15 +579,7 @@ void UCustomizableObject::LoadCompiledDataFromDisk(bool bIsEditorData, const ITa
 {
 	FString PlatformName = InTargetPlatform ? InTargetPlatform->PlatformName() : FPlatformProperties::PlatformName();
 
-	if (bIsEditorData)
-	{
-		// Customizable Object outdated
-		if (!Identifier.IsValid())
-		{
-			return;
-		}
-	}
-	else // Loading cooked data
+	if (!bIsEditorData) // Loading cooked data
 	{
 		// If we don't use OnCookStart there's nothing to be loaded. Same case for child objects.
 		if (!bUsesOnCookStart || bIsChildObject) return;
@@ -678,7 +697,7 @@ void UCustomizableObject::CompileForTargetPlatform(const ITargetPlatform* Target
 		(TargetPlatform && Relevancy == ECustomizableObjectRelevancy::ClientOnly && !TargetPlatform->IsServerOnly());
 
 	// Discard any older compilation
-	PrivateData->SetModel(nullptr);
+	PrivateData->SetModel(nullptr, FGuid());
 
 	if (bIsRootObject && bIsRelevantForThisTarget)
 	{
@@ -689,10 +708,7 @@ void UCustomizableObject::CompileForTargetPlatform(const ITargetPlatform* Target
 		Options.bIsCooking = true;
 		Options.bSaveCookedDataToDisk = bUsesOnCookStart;
 		Options.TargetPlatform = TargetPlatform;
-		Options.bExtraBoneInfluencesEnabled = ICustomizableObjectModule::Get().AreExtraBoneInfluencesEnabled();
-
-		// If this is enabled, there are determinism problems. Disable it for packaging.
-		Options.bUseParallelCompilation = false;
+		Options.CustomizableObjectNumBoneInfluences = ICustomizableObjectModule::Get().GetNumBoneInfluences();
 
 		Compiler->Compile(*this, Options, false);
 	}
@@ -723,15 +739,28 @@ bool UCustomizableObject::ConditionalAutoCompile()
 		return false;
 	}
 
+	// Don't re-compile objects if they failed to compile. 
+	if (CompilationState == ECustomizableObjectCompilationState::Failed)
+	{
+		return false;
+	}
+
+	// Don't compile if the cook commandlet is running. Do not add a warning/error. Otherwise, we could end up
+	// invalidating the cook for no reason.
+	if (IsRunningCookCommandlet())
+	{
+		return false;
+	}
+
 	// Don't compile if we're running game, Compile and/or if AutoCompile is disabled
 	if (IsRunningGame() || System->IsCompilationDisabled() || !System->IsAutoCompileEnabled())
 	{
-		System->AddUncompiledCOWarning(this);
+		System->AddUncompiledCOWarning(*this);
 		return false;
 	}
 
 	// Discard any older compilation
-	PrivateData->SetModel(nullptr);
+	PrivateData->SetModel(nullptr, FGuid());
 
 	// Sync/Async compilation
 	if (System->IsAutoCompilationSync())
@@ -743,7 +772,7 @@ bool UCustomizableObject::ConditionalAutoCompile()
 	else
 	{
 		const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
-		const FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(GetPathName()));
+		const FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(UE_MUTABLE_OBJECTPATH(GetPathName()));
 		System->RecompileCustomizableObjectAsync(AssetData, this);
 	}
 
@@ -787,16 +816,6 @@ FReply UCustomizableObject::AddNewParameterProfile(FString Name, UCustomizableOb
 }
 
 
-void UCustomizableObject::InitializeIdentifier()
-{
-	if (!Identifier.IsValid())
-	{
-		Identifier = FGuid::NewGuid();
-		MarkPackageDirty();
-	}
-}
-
-
 FString UCustomizableObject::GetCompiledDataFolderPath(bool bIsEditorData) const
 {	
 	const FString FolderName = bIsEditorData ? TEXT("MutableStreamedDataEditor/") : TEXT("MutableStreamedData/");
@@ -804,10 +823,19 @@ FString UCustomizableObject::GetCompiledDataFolderPath(bool bIsEditorData) const
 }
 
 
-FString UCustomizableObject::GetCompiledDataFileName(bool bIsModel, const ITargetPlatform* InTargetPlatform) const
+FString UCustomizableObject::GetCompiledDataFileName(bool bIsModel, const ITargetPlatform* InTargetPlatform, bool bIsDiskStreamer)
 {
+	// Generate the Identifier using the path and name of the asset
+	if (!bIsDiskStreamer)
+	{
+		uint32 FullPathHash = GetTypeHash(GetFullName());
+		uint32 OutermostHash = GetTypeHash(GetNameSafe(GetOutermost()));
+		uint32 OuterHash = GetTypeHash(GetName());
+		Identifier = FGuid(0, FullPathHash, OutermostHash, OuterHash);
+	}
+
 	const FString PlatformName = InTargetPlatform ? InTargetPlatform->PlatformName() : FPlatformProperties::PlatformName();
-	const FString FileIdentifier = Identifier.IsValid() ? Identifier.ToString() : VersionId.ToString();
+	const FString FileIdentifier = bIsDiskStreamer ? GetPrivate()->Identifier.ToString() : Identifier.ToString();
 	const FString Extension = bIsModel ? TEXT("_M.mut") : TEXT("_S.mut");
 	return PlatformName + FileIdentifier + Extension;
 }
@@ -823,18 +851,13 @@ FString UCustomizableObject::GetDesc()
 
 void UCustomizableObject::SaveEmbeddedData(FArchive& Ar)
 {
-	UE_LOG(LogMutable, Log, TEXT("Saving embedded data for Customizable Object [%s] now at position %d."), *GetName(), int(Ar.Tell()));
+	UE_LOG(LogMutable, Verbose, TEXT("Saving embedded data for Customizable Object [%s] now at position %d."), *GetName(), int(Ar.Tell()));
 
 	int32 InternalVersion = PrivateData->GetModel() ? CurrentSupportedVersion : -1;
 	Ar << InternalVersion;
 
 	if (PrivateData->GetModel())
 	{
-		// Serialize RefSkeletalMeshesData
-		{
-			Ar << ReferenceSkeletalMeshesData;
-		}
-		
 		// Serialize morph data
 		{
 			Ar << ContributingMorphTargetsInfo;
@@ -856,7 +879,7 @@ void UCustomizableObject::SaveEmbeddedData(FArchive& Ar)
 			mu::Model::Serialise(PrivateData->GetModel().Get(), arch);
 		}
 
-		UE_LOG(LogMutable, Log, TEXT("Saved embedded data for Customizable Object [%s] now at position %d."), *GetName(), int(Ar.Tell()));
+		UE_LOG(LogMutable, Verbose, TEXT("Saved embedded data for Customizable Object [%s] now at position %d."), *GetName(), int(Ar.Tell()));
 	}
 }
 
@@ -875,11 +898,6 @@ void UCustomizableObject::LoadEmbeddedData(FArchive& Ar)
 
 	if(CurrentSupportedVersion == InternalVersion)
 	{
-		// Load RefSkeletalMeshesData
-		{
-			Ar << ReferenceSkeletalMeshesData;
-		}
-	
 		// Load morph data
 		{
 			Ar << ContributingMorphTargetsInfo;
@@ -896,12 +914,20 @@ void UCustomizableObject::LoadEmbeddedData(FArchive& Ar)
 		UnrealMutableInputStream stream(Ar);
 		mu::InputArchive arch(&stream);
 		TSharedPtr<mu::Model, ESPMode::ThreadSafe> Model = mu::Model::StaticUnserialise( arch );
-		PrivateData->SetModel( Model );
+		PrivateData->SetModel( Model, FGuid());
 
 		// Create parameter properties
 		UpdateParameterPropertiesFromModel();
 	}
 }
+
+
+FCustomizableObjectPrivateData* UCustomizableObject::GetPrivate() const
+{
+	check(PrivateData)
+	return PrivateData.Get();
+}
+
 
 bool UCustomizableObject::IsCompiled() const
 {
@@ -911,13 +937,33 @@ bool UCustomizableObject::IsCompiled() const
 }
 
 
+void UCustomizableObject::AddUncompiledCOWarning(const FString& AdditionalLoggingInfo)
+{
+	// Send a warning (on-screen notification, log error, and in-editor notification)
+	UCustomizableObjectSystem* System = UCustomizableObjectSystem::GetInstance();
+	if (!System || !System->IsValidLowLevel() || System->HasAnyFlags(RF_BeginDestroyed))
+	{
+		return;
+	}
+
+	System->AddUncompiledCOWarning(*this, &AdditionalLoggingInfo);
+}
+
+
 USkeletalMesh* UCustomizableObject::GetRefSkeletalMesh(int32 ComponentIndex)
 {
+#if WITH_EDITORONLY_DATA
 	if (ReferenceSkeletalMeshes.IsValidIndex(ComponentIndex))
 	{
 		return ReferenceSkeletalMeshes[ComponentIndex];
 	}
-
+#else
+	if (ReferenceSkeletalMeshesData.IsValidIndex(ComponentIndex))
+	{
+		// Can be nullptr if RefSkeletalMeshes are not loaded yet.
+		return ReferenceSkeletalMeshesData[ComponentIndex].SkeletalMesh;
+	}
+#endif
 	return nullptr;
 }
 
@@ -965,12 +1011,103 @@ TSoftObjectPtr<USkeleton> UCustomizableObject::GetReferencedSkeletonAssetPtr( ui
 }
 
 
+void UCustomizableObject::LoadReferenceSkeletalMeshesAsync()
+{
+#if !WITH_EDITORONLY_DATA
+	if (!RefSkeletalMeshStreamingHandle)
+	{
+		TArray<FSoftObjectPath> MeshesToStream;
+
+		for (const FMutableRefSkeletalMeshData& RefSkeletalMeshData : ReferenceSkeletalMeshesData)
+		{
+			MeshesToStream.Add(RefSkeletalMeshData.SkeletalMeshAssetPath);
+		}
+
+		if (!MeshesToStream.IsEmpty())
+		{
+			TWeakObjectPtr<UCustomizableObject> WeakCO(this);
+
+			FStreamableManager& StreamableManager = UCustomizableObjectSystem::GetInstance()->GetStreamableManager();
+			RefSkeletalMeshStreamingHandle = StreamableManager.RequestAsyncLoad(MeshesToStream, FStreamableDelegate::CreateUObject(this, &UCustomizableObject::OnReferenceSkeletalMeshesAsyncLoaded),
+				FStreamableManager::AsyncLoadHighPriority);
+		}
+
+	}
+#endif
+}
+
+
+void UCustomizableObject::UnloadReferenceSkeletalMeshes()
+{
+#if !WITH_EDITORONLY_DATA
+	for (FMutableRefSkeletalMeshData& Data : ReferenceSkeletalMeshesData)
+	{
+		Data.SkeletalMesh = nullptr;
+	}
+#endif
+}
+
+
+void UCustomizableObject::OnReferenceSkeletalMeshesAsyncLoaded()
+{
+#if !WITH_EDITORONLY_DATA
+	if (RefSkeletalMeshStreamingHandle)
+	{
+		for (FMutableRefSkeletalMeshData& Data : ReferenceSkeletalMeshesData)
+		{
+			Data.SkeletalMesh = TSoftObjectPtr<USkeletalMesh>(Data.SkeletalMeshAssetPath).Get();
+			check(Data.SkeletalMesh);
+		}
+
+		RefSkeletalMeshStreamingHandle.Reset();
+	}
+#endif
+}
+
+
+TObjectPtr<USkeleton> UCustomizableObject::GetCachedMergedSkeleton(const int32 ComponentIndex, const TArray<uint16>& SkeletonIds) const
+{
+	const FMergedSkeleton* MergedSkeleton = MergedSkeletons.FindByPredicate([&ComponentIndex, &SkeletonIds](const FMergedSkeleton& MergedSkeleton) 
+		{ return MergedSkeleton.ComponentIndex == ComponentIndex && MergedSkeleton.SkeletonIds == SkeletonIds; });
+
+	if (MergedSkeleton && MergedSkeleton->Skeleton.IsValid())
+	{
+		return MergedSkeleton->Skeleton.Get();
+	}
+
+	return nullptr;
+}
+
+
+void UCustomizableObject::CacheMergedSkeleton(const int32 ComponentIndex, const TArray<uint16>& SkeletonIds, TObjectPtr<USkeleton> Skeleton)
+{
+	if (Skeleton)
+	{
+		MergedSkeletons.AddUnique({ Skeleton, ComponentIndex, SkeletonIds });
+	}
+}
+
+
+void UCustomizableObject::UnCacheInvalidSkeletons()
+{
+	for (int32 SkeletonIndex = MergedSkeletons.Num() - 1; SkeletonIndex >= 0; --SkeletonIndex)
+	{
+		FMergedSkeleton& MergedSkeleton = MergedSkeletons[SkeletonIndex];
+		if (!MergedSkeleton.Skeleton.IsValid())
+		{
+			MergedSkeletons.RemoveSingleSwap(MergedSkeleton);
+		}
+	}
+}
+
+
+
 int32 UCustomizableObject::FindState( const FString& Name ) const
 {
 	int32 Result = -1;
 	if (PrivateData->GetModel())
 	{
-		Result = PrivateData->GetModel()->FindState( TCHAR_TO_ANSI(*Name) );
+		Result = PrivateData->GetModel()->FindState( StringCast<ANSICHAR>(*Name).Get() );
 	}
 
 	return Result;
@@ -996,7 +1133,7 @@ FString UCustomizableObject::GetStateName(int32 StateIndex) const
 
 	if (PrivateData->GetModel())
 	{
-		Result = ANSI_TO_TCHAR( PrivateData->GetModel()->GetStateName(StateIndex) );
+		Result = StringCast<TCHAR>( PrivateData->GetModel()->GetStateName(StateIndex) ).Get();
 	}
 
 	return Result;
@@ -1067,7 +1204,7 @@ UCustomizableObjectInstance* UCustomizableObject::CreateInstance()
 	PreviewInstance->SetObject(this);
 	PreviewInstance->bShowOnlyRuntimeParameters = false;
 
-	UE_LOG(LogMutable, Log, TEXT("Created Customizable Object Instance."));
+	UE_LOG(LogMutable, Verbose, TEXT("Created Customizable Object Instance."));
 
 	return PreviewInstance;
 }
@@ -1081,9 +1218,14 @@ TSharedPtr<mu::Model, ESPMode::ThreadSafe> UCustomizableObject::GetModel() const
 #if WITH_EDITOR
 void UCustomizableObject::SetModel(TSharedPtr<mu::Model, ESPMode::ThreadSafe> Model)
 {
-	PrivateData->SetModel(Model);
+	PrivateData->SetModel(Model, Identifier);
 	
 	UpdateCompiledDataFromModel();
+}
+
+void UCustomizableObject::SetBoneNamesArray(const TArray<FName>& InBoneNames)
+{
+	BoneNames = InBoneNames;
 }
 
 #endif // End WITH_EDITOR
@@ -1096,16 +1238,7 @@ int32 UCustomizableObject::GetNumLODs() const
 
 int32 UCustomizableObject::GetComponentCount() const
 {
-	if (!IsCompiled())
-	{
-		UE_LOG(LogMutable, Warning,
-		       TEXT(
-			       "You are trying to get the component count of a non compiled CO. This will always return 0 as value."
-		       ));
-		return 0;
-	}
-	
-	return NumMeshComponentsInRoot;
+	return IsCompiled() ? NumMeshComponentsInRoot : 0;
 }
 
 int UCustomizableObject::GetParameterCount() const
@@ -1139,7 +1272,7 @@ EMutableParameterType UCustomizableObject::GetParameterTypeByName(const FString&
 		return ParameterProperties[Index].Type;
 	}
 
-	UE_LOG(LogMutable, Warning, TEXT("Name '%s' does not exist in ParameterProperties lookup table at GetParameterTypeByName."), *Name);
+	UE_LOG(LogMutable, Warning, TEXT("Name '%s' does not exist in ParameterProperties lookup table at GetParameterTypeByName at CO %s."), *Name, *GetName());
 
 	for (int32 ParamIndex = 0; ParamIndex < ParameterProperties.Num(); ++ParamIndex)
 	{
@@ -1149,7 +1282,7 @@ EMutableParameterType UCustomizableObject::GetParameterTypeByName(const FString&
 		}
 	}
 
-	UE_LOG(LogMutable, Warning, TEXT("Name '%s' does not exist in ParameterProperties at GetParameterTypeByName."), *Name);
+	UE_LOG(LogMutable, Warning, TEXT("Name '%s' does not exist in ParameterProperties at GetParameterTypeByName at CO %s."), *Name, *GetName());
 
 	return EMutableParameterType::None;
 }
@@ -1165,7 +1298,7 @@ const FString & UCustomizableObject::GetParameterName(int32 ParamIndex) const
 	}
 	else
 	{
-		UE_LOG(LogMutable, Warning, TEXT("Index [%d] out of ParameterProperties bounds at GetParameterName."), ParamIndex);
+		UE_LOG(LogMutable, Warning, TEXT("Index [%d] out of ParameterProperties bounds at GetParameterName at CO %s."), ParamIndex, *GetName());
 	}
 
 	return s_EmptyString;
@@ -1187,7 +1320,6 @@ void UCustomizableObject::UpdateParameterPropertiesFromModel()
 
 			Data.Name = MutableParameters->GetName(paramIndex);
 			Data.Type = EMutableParameterType::None;
-			Data.ImageDescriptionCount = MutableParameters->GetAdditionalImageCount(paramIndex);
 
 			mu::PARAMETER_TYPE mutableType = MutableParameters->GetType(paramIndex);
 			switch (mutableType)
@@ -1249,30 +1381,15 @@ void UCustomizableObject::UpdateParameterPropertiesFromModel()
 	}
 	else
 	{
-		ParameterProperties.Reset();
-		ParameterPropertiesLookupTable.Reset();
+		ParameterProperties.Empty();
+		ParameterPropertiesLookupTable.Empty();
 	}
-}
-
-
-int UCustomizableObject::GetParameterDescriptionCount(int32 ParamIndex) const
-{
-	if (ParamIndex >= 0 && ParamIndex < ParameterProperties.Num())
-	{
-		return ParameterProperties[ParamIndex].ImageDescriptionCount;
-	}
-	else
-	{
-		UE_LOG(LogMutable, Warning, TEXT("Index [%d] out of ParameterProperties bounds at GetParameterDescriptionCount."), ParamIndex);
-	}
-
-	return 0;
 }
 
 
 int32 UCustomizableObject::GetParameterDescriptionCount(const FString& ParamName) const
 {
-	return GetParameterDescriptionCount(FindParameter(ParamName));
+	return 0;
 }
 
 
@@ -1284,7 +1401,7 @@ int32 UCustomizableObject::GetIntParameterNumOptions(int32 ParamIndex) const
 	}
 	else
 	{
-		UE_LOG(LogMutable, Warning, TEXT("Index [%d] out of ParameterProperties bounds at GetIntParameterNumOptions."), ParamIndex);
+		UE_LOG(LogMutable, Warning, TEXT("Index [%d] out of ParameterProperties bounds at GetIntParameterNumOptions at CO %s."), ParamIndex, *GetName());
 	}
 
 	return 0;
@@ -1301,12 +1418,12 @@ const FString& UCustomizableObject::GetIntParameterAvailableOption(int32 ParamIn
 		}
 		else
 		{
-			UE_LOG(LogMutable, Warning, TEXT("Index [%d] out of IntParameterNumOptions bounds at GetIntParameterAvailableOption."), K);
+			UE_LOG(LogMutable, Warning, TEXT("Index [%d] out of IntParameterNumOptions bounds at GetIntParameterAvailableOption at CO %s."), K, *GetName());
 		}
 	}
 	else
 	{
-		UE_LOG(LogMutable, Warning, TEXT("Index [%d] out of ParameterProperties bounds at GetIntParameterAvailableOption."), ParamIndex);
+		UE_LOG(LogMutable, Warning, TEXT("Index [%d] out of ParameterProperties bounds at GetIntParameterAvailableOption at CO %s."), ParamIndex, *GetName());
 	}
 
 	return s_EmptyString;
@@ -1348,12 +1465,12 @@ int32 UCustomizableObject::FindIntParameterValue(int32 ParamIndex, const FString
 		}
 		else
 		{
-			UE_LOG(LogMutable, Warning, TEXT("No possible values for parameter with index [%d] at FindIntParameterValue."), ParamIndex);
+			UE_LOG(LogMutable, Warning, TEXT("No possible values for parameter with index [%d] at FindIntParameterValue at CO %s."), ParamIndex, *GetName());
 		}
 	}
 	else
 	{
-		UE_LOG(LogMutable, Warning, TEXT("Index [%d] out of ParameterProperties bounds at FindIntParameterValue."), ParamIndex);
+		UE_LOG(LogMutable, Warning, TEXT("Index [%d] out of ParameterProperties bounds at FindIntParameterValue at CO %s."), ParamIndex, *GetName());
 	}
 	return MinValueIndex;
 }
@@ -1375,7 +1492,7 @@ FString UCustomizableObject::FindIntParameterValueName(int32 ParamIndex, int32 P
 	}
 	else
 	{
-		UE_LOG(LogMutable, Warning, TEXT("Index [%d] out of ParameterProperties bounds at FindIntParameterValueName."), ParamIndex);
+		UE_LOG(LogMutable, Warning, TEXT("Index [%d] out of ParameterProperties bounds at FindIntParameterValueName at CO %s."), ParamIndex, *GetName());
 	}
 
 	return FString();
@@ -1422,6 +1539,174 @@ void UCustomizableObject::UnloadMaskOutCache()
 }
 
 
+float UCustomizableObject::GetFloatParameterDefaultValue(const FString& InParameterName) const
+{
+	const int32 ParameterIndex = FindParameter(InParameterName);
+	if (ParameterIndex == INDEX_NONE)
+	{
+		checkNoEntry();
+		return FCustomizableObjectFloatParameterValue::DEFAULT_PARAMETER_VALUE;
+	}
+
+	const TSharedPtr<mu::Model> Model = GetModel();
+	if (!Model)
+	{
+		checkNoEntry();
+		return FCustomizableObjectFloatParameterValue::DEFAULT_PARAMETER_VALUE;
+	}
+
+	return Model->GetFloatDefaultValue(ParameterIndex);
+}
+
+
+int32 UCustomizableObject::GetIntParameterDefaultValue(const FString& InParameterName) const
+{
+	const int32 ParameterIndex = FindParameter(InParameterName);
+	if (ParameterIndex == INDEX_NONE)
+	{
+		checkNoEntry();
+		return FCustomizableObjectIntParameterValue::DEFAULT_PARAMETER_VALUE;
+	}
+
+	const TSharedPtr<mu::Model> Model = GetModel();
+	if (!Model)
+	{
+		checkNoEntry();
+		return FCustomizableObjectIntParameterValue::DEFAULT_PARAMETER_VALUE;
+	}
+	
+	return Model->GetIntDefaultValue(ParameterIndex);
+}
+
+
+bool UCustomizableObject::GetBoolParameterDefaultValue(const FString& InParameterName) const
+{
+	const int32 ParameterIndex = FindParameter(InParameterName);
+	if (ParameterIndex == INDEX_NONE)
+	{
+		checkNoEntry();
+		return FCustomizableObjectBoolParameterValue::DEFAULT_PARAMETER_VALUE;
+	}
+
+	const TSharedPtr<mu::Model> Model = GetModel();
+	if (!Model)
+	{
+		checkNoEntry();
+		return FCustomizableObjectBoolParameterValue::DEFAULT_PARAMETER_VALUE;;
+	}
+	
+	return Model->GetBoolDefaultValue(ParameterIndex);
+}
+
+
+FLinearColor UCustomizableObject::GetColorParameterDefaultValue(const FString& InParameterName) const
+{
+	const int32 ParameterIndex = FindParameter(InParameterName);
+	if (ParameterIndex == INDEX_NONE)
+	{
+		checkNoEntry();
+		return FCustomizableObjectVectorParameterValue::DEFAULT_PARAMETER_VALUE;;
+	}
+
+	const TSharedPtr<mu::Model> Model = GetModel();
+	if (!Model)
+	{
+		checkNoEntry();
+		return FCustomizableObjectVectorParameterValue::DEFAULT_PARAMETER_VALUE;
+	}
+	
+	FLinearColor Value;
+	Model->GetColourDefaultValue(ParameterIndex, &Value.R, &Value.G, &Value.B);
+
+	return Value;
+}
+
+
+void UCustomizableObject::GetProjectorParameterDefaultValue(const FString& InParameterName, FVector3f& OutPos,
+	FVector3f& OutDirection, FVector3f& OutUp, FVector3f& OutScale, float& OutAngle,
+	ECustomizableObjectProjectorType& OutType) const
+{
+	const FCustomizableObjectProjector Projector = GetProjectorParameterDefaultValue(InParameterName);
+		
+	OutType = Projector.ProjectionType;
+	OutPos = Projector.Position;
+	OutDirection = Projector.Direction;
+	OutUp = Projector.Up;
+	OutScale = Projector.Scale;
+	OutAngle = Projector.Angle;
+}
+
+
+FCustomizableObjectProjector UCustomizableObject::GetProjectorParameterDefaultValue(const FString& InParameterName) const 
+{
+	const int32 ParameterIndex = FindParameter(InParameterName);
+	if (ParameterIndex == INDEX_NONE)
+	{
+		checkNoEntry();
+		return FCustomizableObjectProjectorParameterValue::DEFAULT_PARAMETER_VALUE;
+	}
+
+	const TSharedPtr<mu::Model> Model = GetModel();
+	if (!Model)
+	{
+		checkNoEntry();
+		return FCustomizableObjectProjectorParameterValue::DEFAULT_PARAMETER_VALUE;
+	}
+
+	FCustomizableObjectProjector Value;
+	mu::PROJECTOR_TYPE Type;
+	Model->GetProjectorDefaultValue(ParameterIndex, &Type, &Value.Position, &Value.Direction, &Value.Up, &Value.Scale, &Value.Angle);
+	Value.ProjectionType = ProjectorUtils::GetEquivalentProjectorType(Type);
+	
+	return Value;
+}
+
+
+FName UCustomizableObject::GetTextureParameterDefaultValue(const FString& InParameterName) const
+{
+	const int32 ParameterIndex = FindParameter(InParameterName);
+	if (ParameterIndex == INDEX_NONE)
+	{
+		checkNoEntry();
+		return FName();
+	}
+
+	const TSharedPtr<mu::Model> Model = GetModel();
+	if (!Model)
+	{
+		checkNoEntry();
+		return FName();
+	}
+	
+	return Model->GetImageDefaultValue(ParameterIndex);
+}
+
+
+bool UCustomizableObject::IsParameterMultidimensional(const FString& InParameterName) const
+{
+	const int32 ParameterIndex = FindParameter(InParameterName);
+	if (ParameterIndex == INDEX_NONE)
+	{
+		checkNoEntry();
+		return {};
+	}
+
+	return IsParameterMultidimensional(ParameterIndex);
+}
+
+
+bool UCustomizableObject::IsParameterMultidimensional(const int32& InParamIndex) const
+{
+	check(InParamIndex != INDEX_NONE);
+	if (PrivateData->GetModel())
+	{
+		return PrivateData->GetModel()->IsParameterMultidimensional(InParamIndex);
+	}
+
+	return false;
+}
+
+
 void UCustomizableObject::ApplyStateForcedValuesToParameters( int32 State, mu::Parameters* Parameters)
 {
 	FParameterUIData StateMetaData = GetStateUIMetadataFromIndex(State);
@@ -1459,7 +1744,7 @@ void UCustomizableObject::ApplyStateForcedValuesToParameters( int32 State, mu::P
 			}
 			default:
 			{
-				UE_LOG(LogMutable, Log, TEXT("Forced parameter type not supported."));
+				UE_LOG(LogMutable, Warning, TEXT("Forced parameter type not supported."));
 				break;
 			}
 			}
@@ -1468,176 +1753,29 @@ void UCustomizableObject::ApplyStateForcedValuesToParameters( int32 State, mu::P
 
 }
 
-#if WITH_EDITOR
-void UCustomizableObject::PreSaveRoot(FObjectPreSaveRootContext ObjectSaveContext)
+
+void UCustomizableObject::GetLowPriorityTextureNames(TArray<FString>& OutTextureNames)
 {
-	UObject::PreSaveRoot(ObjectSaveContext);
+	OutTextureNames.Reset(LowPriorityTextures.Num());
 
-	// Tell the validation system on this object that the validation that is going to be next invoked is due to
-	// this asset being saved.
-	// This value will be set to false by the validation method on this object so subsequent validation attempts
-	// get treated as expected.
-	bIsValidationTriggeredBySave = true;
-}
-
-
-EDataValidationResult UCustomizableObject::IsDataValid(FDataValidationContext& Context)
-{
-	// This method seems to be designed to check data errors (like variables with unexpected values).
-	// Currently it does not check if the root that we are compiling has already been compiled during another validation.
-	
-	EDataValidationResult Result = EDataValidationResult::NotValidated;
-
-	// If validation is invoked by the saving of the asset just skip it. It is too expensive.
-	if (bIsValidationTriggeredBySave)
-    {
-		// Reenable the validation for this object after running the saving process and skipping this validation run
-		bIsValidationTriggeredBySave = false;
-    	return Result;
-    }
-
-	// Skip validation when cooking the assets. The validation of the CO is designed to be used explicitly by the user
-	// and not during automated operations like saving or cooking or any other automated action.
-	if (IsRunningCommandlet())
+	if (!LowPriorityTextures.IsEmpty())
 	{
-		return Result;
-	}
-
-	UE_LOG(LogMutable,Display,TEXT("Running data validation checks for %s CO."),*this->GetName());
-
-	// Bind the post validation method to the post validation delegate if not bound already to be able to know when the validation
-	// operation (for all assets) concludes
-	if (!UCustomizableObject::OnPostCOValidationHandle.IsValid())
-	{
-		UCustomizableObject::OnPostCOValidationHandle = FEditorDelegates::OnPostAssetValidation.AddStatic(OnPostCOsValidation);	
-	}
-	
-	// Request a compiler to be able to locate the root and to compile it
-	const TUniquePtr<FCustomizableObjectCompilerBase> Compiler =
-		TUniquePtr<FCustomizableObjectCompilerBase>(UCustomizableObjectSystem::GetInstance()->GetNewCompiler());
-	
-	// Find out witch is the root for this CO (it may be itself but that is OK)
-	UCustomizableObject* RootObject = Compiler->GetRootObject(this);
-	check (RootObject);
-	
-	// Check that the object to be compiled has not already been compiled
-	if (UCustomizableObject::AlreadyValidatedRootObjects.Contains(RootObject))
-	{
-		return Result;
-	}
-
-	// Root Object not yet tested -> Proceed with the testing
-	
-	// Collection of configurations to be tested with the located root object
-	constexpr int32 MaxBias = 15;
-	TArray<FCompilationOptions> CompilationOptionsToTest;
-	for (int32 LodBias = 0; LodBias < MaxBias; LodBias++)
-	{
-		FCompilationOptions ModifiedCompilationOptions = this->CompileOptions;
-		ModifiedCompilationOptions.bForceLargeLODBias = true;	
-		ModifiedCompilationOptions.DebugBias = LodBias;	
-
-		// Add one configuration object for each bias setting
-		CompilationOptionsToTest.Add(ModifiedCompilationOptions);
-	}
-	
-	// Add current configuration to be tested as well.
-	CompilationOptionsToTest.Add(this->CompileOptions);
-
-	
-	// Caches with all the data produced by the subsequent compilations of the root of this CO
-	TArray<FText> CachedValidationErrors;
-	TArray<FText> CachedValidationWarnings;
-	TArray<ECustomizableObjectCompilationState> CachedCompilationEndStates;
-	
-	// Iterate over the compilation options that we want to test and perform the compilation
-	for	(const FCompilationOptions& Options : CompilationOptionsToTest)
-	{
-		// Run Sync compilation -> Warning : Potentially long operation -------------
-		Compiler->Compile(*RootObject, Options, false);
-		// --------------------------------------------------------------------------
-		
-		// Get compilation errors and warnings
-		TArray<FText> CompilationErrors;
-		TArray<FText> CompilationWarnings;
-		Compiler->GetCompilationMessages(CompilationWarnings, CompilationErrors);
-		
-		// Cache the messages returned by the compiler
-		for ( const FText& FoundError : CompilationErrors)
+		const int32 ImageCount = ImageProperties.Num();
+		for (int32 ImageIndex = 0; ImageIndex < ImageCount; ++ImageIndex)
 		{
-			// Add message if not already present
-			if (!CachedValidationErrors.ContainsByPredicate([&FoundError](const FText& ArrayEntry)
-				{ return FoundError.EqualTo(ArrayEntry);}))
+			if (LowPriorityTextures.Find(FName(ImageProperties[ImageIndex].TextureParameterName)) != INDEX_NONE)
 			{
-				CachedValidationErrors.Add(FoundError);
+				OutTextureNames.Add(FString::FromInt(ImageIndex));
 			}
 		}
-		for ( const FText& FoundWarning : CompilationWarnings)
-		{
-			if (!CachedValidationWarnings.ContainsByPredicate([&FoundWarning](const FText& ArrayEntry)
-				{ return FoundWarning.EqualTo(ArrayEntry);}))
-			{
-				CachedValidationWarnings.Add(FoundWarning);
-			}
-		}
-	
-		CachedCompilationEndStates.Add(Compiler->GetCompilationState());
 	}
-	
-	// Cache root object to avoid processing it again when processing another CO related with the same root CO
-	AlreadyValidatedRootObjects.Add(RootObject);
-	
-	// Wrapping up : Fill message output caches and determine if the compilation was successful or not
-
-	// Provide the warning and log messages to the context object (so it can later notify the user using the UI)
-	for (const FText& ValidationError : CachedValidationErrors)
-	{
-		Context.AddError(ValidationError);
-	}
-	for (const FText& ValidationWarning : CachedValidationWarnings)
-	{
-		Context.AddWarning(ValidationWarning);
-	}
-	
-	// Return informed guess about what the validation state of this object should be
-
-	// If one or more tests failed to ran then the result must be invalid
-	if (CachedCompilationEndStates.Contains(ECustomizableObjectCompilationState::Failed))
-	{
-		// Early CO compilation error (before starting mutable compilation) -> Output is invalid
-		Result = EDataValidationResult::Invalid;
-		UE_LOG(LogMutable, Error,
-			   TEXT("Compilation of %s failed : Check previous log messages to get more information."),
-			   *this->GetName())
-	}
-	// If it contains invalid states then notify about it too:
-	// ECustomizableObjectCompilationState::None would mean the resource is locked (and should not be)
-	// ECustomizableObjectCompilationState::InProgress should not be possible since we are compiling synchronously.
-	else if (CachedCompilationEndStates.Contains(ECustomizableObjectCompilationState::InProgress) ||
-		CachedCompilationEndStates.Contains(ECustomizableObjectCompilationState::None))
-	{
-		checkNoEntry();
-	}
-	// All compilations completed successfully
-	else 
-	{
-		// If a warning or error was found then this object failed the validation process
-		Result = (CachedValidationWarnings.IsEmpty() && CachedValidationErrors.IsEmpty()) ? EDataValidationResult::Valid : EDataValidationResult::Invalid;
-	}
-	
-	return Result;
 }
 
-void UCustomizableObject::OnPostCOsValidation()
+
+const TArray<FName>& UCustomizableObject::GetBoneNamesArray() const
 {
-	// Unbound this method from the validation end delegate
-	UCustomizableObject::OnPostCOValidationHandle.Reset();
-
-	// Clear collection with the already processed COs once the validation system has completed its operation
-	UCustomizableObject::AlreadyValidatedRootObjects.Empty();
+	return BoneNames;
 }
-
-#endif
 
 
 FGuid UCustomizableObject::GetCompilationGuid() const
@@ -1650,9 +1788,13 @@ FGuid UCustomizableObject::GetCompilationGuid() const
 //-------------------------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------------------------
 
-void FCustomizableObjectPrivateData::SetModel(const TSharedPtr<mu::Model, ESPMode::ThreadSafe>& Model)
+void FCustomizableObjectPrivateData::SetModel(const TSharedPtr<mu::Model, ESPMode::ThreadSafe>& Model, const FGuid Id)
 {
 	MutableModel = Model;
+
+#if WITH_EDITOR
+	Identifier = Id;
+#endif
 }
 
 
@@ -1666,6 +1808,19 @@ TSharedPtr<const mu::Model, ESPMode::ThreadSafe> FCustomizableObjectPrivateData:
 {
 	return MutableModel;
 }
+
+
+//-------------------------------------------------------------------------------------------------
+//-------------------------------------------------------------------------------------------------
+//-------------------------------------------------------------------------------------------------
+FMergedSkeleton::FMergedSkeleton(TObjectPtr<USkeleton> InSkeleton, const int32 InComponentIndex, const TArray<uint16>& InSkeletonIds)
+{
+	check(InSkeleton);
+	Skeleton = InSkeleton;
+	ComponentIndex = InComponentIndex;
+	SkeletonIds = InSkeletonIds;
+}
+
 
 //-------------------------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------------------------
@@ -1686,14 +1841,14 @@ void UCustomizableObjectBulk::PostLoad()
 }
 
 
-TArray<IAsyncReadFileHandle*> UCustomizableObjectBulk::GetAsyncReadFileHandles() const
+TArray<TSharedPtr<IAsyncReadFileHandle>> UCustomizableObjectBulk::GetAsyncReadFileHandles() const
 {
-	TArray<IAsyncReadFileHandle*> ReadFileHandles;
+	TArray<TSharedPtr<IAsyncReadFileHandle>> ReadFileHandles;
 	ReadFileHandles.Reserve(BulkDataFileNames.Num());
 
 	for (const FString& FilePath : BulkDataFileNames)
 	{
-		IAsyncReadFileHandle* ReadFileHandle = FPlatformFileManager::Get().GetPlatformFile().OpenAsyncRead(*FilePath);
+		TSharedPtr<IAsyncReadFileHandle> ReadFileHandle = MakeShareable(FPlatformFileManager::Get().GetPlatformFile().OpenAsyncRead(*FilePath));
 		
 		if (!ReadFileHandle)
 		{
@@ -1706,11 +1861,6 @@ TArray<IAsyncReadFileHandle*> UCustomizableObjectBulk::GetAsyncReadFileHandles()
 
 	if (ReadFileHandles.Num() != BulkDataFileNames.Num())
 	{
-		for (IAsyncReadFileHandle* ReadFileHandle : ReadFileHandles)
-		{
-			delete ReadFileHandle;
-		}
-
 		ReadFileHandles.Empty();
 	}
 
@@ -1724,6 +1874,12 @@ void UCustomizableObjectBulk::CookAdditionalFilesOverride(const TCHAR* PackageFi
 	const ITargetPlatform* TargetPlatform,
 	TFunctionRef<void(const TCHAR* Filename, void* Data, int64 Size)> WriteAdditionalFile)
 {
+	// Don't save streamed data on server builds since it won't be used anyway.
+	if (TargetPlatform->IsServerOnly())
+	{
+		return;
+	}
+	
 	check(CustomizableObject);
 	
 	FMutableCachedPlatformData* PlatformData = CustomizableObject->CachedPlatformsData.Find(TargetPlatform->PlatformName());
@@ -1756,7 +1912,7 @@ void UCustomizableObjectBulk::PrepareBulkData(UCustomizableObject* InOuter, cons
 	BulkDataFileNames.Empty();
 	
 	// Split the Streamable data into several separate files and fix up FileIndex and Offset of each StreamableBlock
-	if(TSharedPtr<const mu::Model, ESPMode::ThreadSafe> Model = CustomizableObject->GetModel())
+	if (TSharedPtr<const mu::Model, ESPMode::ThreadSafe> Model = CustomizableObject->GetModel())
 	{
 		const uint64 MaxChunkSize = UCustomizableObjectSystem::GetInstance()->GetMaxChunkSizeForPlatform(TargetPlatform);
 
@@ -1765,10 +1921,10 @@ void UCustomizableObjectBulk::PrepareBulkData(UCustomizableObject* InOuter, cons
 		uint16 CurrentFileIndex = 0;
 		uint64 CurrentChunkSize = 0;
 
-		const int32 NumStreamingFiles = Model->GetPrivate()->m_program.m_roms.Num();
+		const int32 NumStreamingFiles = Model->GetRomCount();
 		for (size_t FileIndex = 0; FileIndex < NumStreamingFiles; ++FileIndex)
 		{
-			const uint32 ResourceId = Model->GetPrivate()->m_program.m_roms[FileIndex].Id;
+			const uint32 ResourceId = Model->GetRomId(FileIndex);
 
 			FMutableStreamableBlock& StreamableBlock = CustomizableObject->HashToStreamableBlock[ResourceId];
 
@@ -1800,6 +1956,129 @@ void UCustomizableObjectBulk::PrepareBulkData(UCustomizableObject* InOuter, cons
 		BulkDataFileNames.Add(BulkFileName + FString::Printf(TEXT("%d.mut"), CurrentFileIndex));
 	}
 }
+
+#if WITH_EDITORONLY_DATA
+
+//-------------------------------------------------------------------------------------------------
+//-------------------------------------------------------------------------------------------------
+//-------------------------------------------------------------------------------------------------
+void FMutableRefAssetUserData::InitResources(UCustomizableObject* InOuter)
+{
+	UClass* AssetUserDataClass = FindObject<UClass>(nullptr, *ClassPath);
+	if (AssetUserDataClass)
+	{
+		AssetUserData = NewObject<UAssetUserData>(InOuter, AssetUserDataClass);
+		if (AssetUserData)
+		{
+			FMemoryReaderView MemoryReader(Bytes);
+			AssetUserData->Serialize(MemoryReader);
+
+			ClassPath.Empty();
+			Bytes.Empty();
+		}
+	}
+}
+
+
+FArchive& operator<<(FArchive& Ar, FMutableRefAssetUserData& Data)
+{
+	if (Ar.IsSaving())
+	{
+		if (Data.AssetUserData)
+		{
+			Data.ClassPath = Data.AssetUserData->GetClass()->GetPathName();
+
+			FMemoryWriter MemoryWriter(Data.Bytes);
+			Data.AssetUserData->Serialize(MemoryWriter);
+		}
+
+		Ar << Data.ClassPath;
+		Ar << Data.Bytes;
+
+		Data.ClassPath.Empty();
+		Data.Bytes.Empty();
+	}
+	else
+	{
+		Ar << Data.ClassPath;
+		Ar << Data.Bytes;
+	}
+
+	return Ar;
+}
+
+
+FArchive& operator<<(FArchive& Ar, FMutableRefSkeletalMeshData& Data)
+{
+	Ar << Data.LODData;
+	Ar << Data.Sockets;
+	Ar << Data.Bounds;
+	Ar << Data.Settings;
+
+	if (Ar.IsSaving())
+	{
+		FString AssetPath = Data.SkeletalMeshAssetPath.ToString();
+		Ar << AssetPath;
+
+		AssetPath = Data.Skeleton.ToSoftObjectPath().ToString();
+		Ar << AssetPath;
+
+		AssetPath = Data.PhysicsAsset.ToSoftObjectPath().ToString();
+		Ar << AssetPath;
+
+		AssetPath = Data.PostProcessAnimInst.ToSoftObjectPath().ToString();
+		Ar << AssetPath;
+
+		AssetPath = Data.ShadowPhysicsAsset.ToSoftObjectPath().ToString();
+		Ar << AssetPath;
+
+	}
+	else
+	{
+		FString SkeletalMeshAssetPath;
+		Ar << SkeletalMeshAssetPath;
+		Data.SkeletalMeshAssetPath = SkeletalMeshAssetPath;
+
+		FString SkeletonAssetPath;
+		Ar << SkeletonAssetPath;
+		Data.Skeleton = TSoftObjectPtr<USkeleton>(FSoftObjectPath(SkeletonAssetPath));
+
+		FString PhysicsAssetPath;
+		Ar << PhysicsAssetPath;
+		Data.PhysicsAsset = TSoftObjectPtr<UPhysicsAsset>(FSoftObjectPath(PhysicsAssetPath));
+
+		FString PostProcessAnimInstAssetPath;
+		Ar << PostProcessAnimInstAssetPath;
+		Data.PostProcessAnimInst = TSoftClassPtr<UAnimInstance>(FSoftObjectPath(PostProcessAnimInstAssetPath));
+
+		FString ShadowPhysicsAssetPath;
+		Ar << ShadowPhysicsAssetPath;
+		Data.ShadowPhysicsAsset = TSoftObjectPtr<UPhysicsAsset>(FSoftObjectPath(ShadowPhysicsAssetPath));
+	}
+
+	Ar << Data.AssetUserData;
+
+	return Ar;
+}
+
+
+void FMutableRefSkeletalMeshData::InitResources(UCustomizableObject* InOuter)
+{
+	check(InOuter);
+	if (InOuter->bEnableUseRefSkeletalMeshAsPlaceholder)
+	{
+		SkeletalMesh = TSoftObjectPtr<USkeletalMesh>(SkeletalMeshAssetPath).LoadSynchronous();
+	}
+
+	// Initialize AssetUserData
+	for (FMutableRefAssetUserData& Data : AssetUserData)
+	{
+		Data.InitResources(InOuter);
+	}
+}
+
+
+#endif
 
 #endif
 

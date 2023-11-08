@@ -14,7 +14,8 @@
 APartyBeaconHost::APartyBeaconHost(const FObjectInitializer& ObjectInitializer) :
 	Super(ObjectInitializer),
 	State(NULL),
-	bLogoutOnSessionTimeout(true)
+	bLogoutOnSessionTimeout(true),
+	bIsValidationStrRequired(true)
 {
 	ClientBeaconActorClass = APartyBeaconClient::StaticClass();
 	BeaconTypeName = ClientBeaconActorClass->GetName();
@@ -78,6 +79,11 @@ bool APartyBeaconHost::ReconfigureTeamAndPlayerCount(int32 InNumTeams, int32 InN
 	}
 
 	return bSuccess;
+}
+
+void APartyBeaconHost::SetCompetitiveIntegrity(bool bNewCompetitiveIntegrity)
+{
+	State->SetCompetitiveIntegrity(bNewCompetitiveIntegrity);
 }
 
 void APartyBeaconHost::SetTeamAssignmentMethod(FName NewAssignmentMethod)
@@ -503,7 +509,7 @@ EPartyReservationResult::Type APartyBeaconHost::AddPartyReservation(const FParty
 		return EPartyReservationResult::ReservationDenied;
 	}
 
-	if (ReservationRequest.IsValid())
+	if (ReservationRequest.IsValid(bIsValidationStrRequired))
 	{
 		TArray<FPartyReservation>& Reservations = State->GetReservations();
 		const int32 ExistingReservationIdx = State->GetExistingReservation(ReservationRequest.PartyLeader);
@@ -629,12 +635,15 @@ EPartyReservationResult::Type APartyBeaconHost::AddPartyReservation(const FParty
 			}	
 			if (TeamIdx != -1)
 			{	
-				// Will the part members not currently on the team fit in it, and fit within the server
-				const int32 NumTeamMembers = GetNumPlayersOnTeam(TeamIdx);
-				const int32 NumAvailableSlotsOnTeam = FMath::Max<int32>(0, (GetMaxPlayersPerTeam() - NumTeamMembers) + NumTeamPlayersWithExistingReservation);
-				if ((NumAvailableSlotsOnTeam < ReservationRequest.PartyMembers.Num()) || (State->GetRemainingReservations() < (ReservationRequest.PartyMembers.Num() - NumTeamPlayersWithExistingReservation)))
+				if (ShouldRespectCompetitiveIntegrity())
 				{
-					bContainsIncompatibleExistingMembers = true;
+					// Will the party members not currently on the team fit in it, and fit within the server
+					const int32 NumTeamMembers = GetNumPlayersOnTeam(TeamIdx);
+					const int32 NumAvailableSlotsOnTeam = FMath::Max<int32>(0, (GetMaxPlayersPerTeam() - NumTeamMembers) + NumTeamPlayersWithExistingReservation);
+					if ((NumAvailableSlotsOnTeam < ReservationRequest.PartyMembers.Num()) || (State->GetRemainingReservations() < (ReservationRequest.PartyMembers.Num() - NumTeamPlayersWithExistingReservation)))
+					{
+						bContainsIncompatibleExistingMembers = true;
+					}
 				}
 			}
 			// if this party reservation included players who already had reservations, but is not incompatible based on teams then remove those players previous reservations
@@ -746,7 +755,7 @@ EPartyReservationResult::Type APartyBeaconHost::UpdatePartyReservation(const FPa
 		return EPartyReservationResult::ReservationDenied;
 	}
 
-	if (ReservationUpdateRequest.IsValid() || bIsRemovingMembers)
+	if (ReservationUpdateRequest.IsValid(bIsValidationStrRequired) || bIsRemovingMembers)
 	{
 		if (bIsRemovingMembers)
 		{
@@ -888,7 +897,7 @@ EPartyReservationResult::Type APartyBeaconHost::UpdatePartyReservation(const FPa
 				if ((State->GetRemainingReservations() - NewPlayers.Num()) >= 0)
 				{
 					// Validate that adding the new party members to this reservation entry still fits within the team size
-					if ((NewPlayers.Num() - NumPlayersWithExistingReservation) <= NumAvailableSlotsOnTeam)
+					if (!ShouldRespectCompetitiveIntegrity() || (NewPlayers.Num() - NumPlayersWithExistingReservation) <= NumAvailableSlotsOnTeam)
 					{
 						bool bPlayerRemovedFromReservation = false;
 						if (NewPlayers.Num() > 0)

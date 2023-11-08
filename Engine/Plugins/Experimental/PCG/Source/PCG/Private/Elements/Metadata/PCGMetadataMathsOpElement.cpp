@@ -2,6 +2,7 @@
 
 #include "Elements/Metadata/PCGMetadataMathsOpElement.h"
 
+#include "Elements/Metadata/PCGMetadataElementCommon.h"
 #include "Metadata/PCGMetadataAttributeTpl.h"
 
 #include "Elements/Metadata/PCGMetadataMaths.inl"
@@ -100,6 +101,8 @@ namespace PCGMetadataMathsSettings
 			return PCGMetadataMaths::Floor(Value);
 		case EPCGMedadataMathsOperation::Ceil:
 			return PCGMetadataMaths::Ceil(Value);
+		case EPCGMedadataMathsOperation::OneMinus:
+			return T{ 1 } - Value;
 		default:
 			return T{};
 		}
@@ -130,6 +133,8 @@ namespace PCGMetadataMathsSettings
 			return PCGMetadataMaths::Pow(Value1, Value2);
 		case EPCGMedadataMathsOperation::Modulo:
 			return PCGMetadataMaths::Modulo(Value1, Value2);
+		case EPCGMedadataMathsOperation::Set:
+			return Value2;
 		default:
 			return T{};
 		}
@@ -217,7 +222,7 @@ bool UPCGMetadataMathsSettings::IsSupportedInputType(uint16 TypeId, uint32 Input
 	return PCG::Private::IsOfTypes<float, double, int32, int64, FVector2D, FVector, FVector4>(TypeId);
 }
 
-FPCGAttributePropertySelector UPCGMetadataMathsSettings::GetInputSource(uint32 Index) const
+FPCGAttributePropertyInputSelector UPCGMetadataMathsSettings::GetInputSource(uint32 Index) const
 {
 	switch (Index)
 	{
@@ -228,7 +233,7 @@ FPCGAttributePropertySelector UPCGMetadataMathsSettings::GetInputSource(uint32 I
 	case 2:
 		return InputSource3;
 	default:
-		return FPCGAttributePropertySelector();
+		return FPCGAttributePropertyInputSelector();
 	}
 }
 
@@ -254,7 +259,23 @@ FText UPCGMetadataMathsSettings::GetDefaultNodeTitle() const
 {
 	return NSLOCTEXT("PCGMetadataMathsSettings", "NodeTitle", "Attribute Maths Op");
 }
+
+TArray<FPCGPreConfiguredSettingsInfo> UPCGMetadataMathsSettings::GetPreconfiguredInfo() const
+{
+	return PCGMetadataElementCommon::FillPreconfiguredSettingsInfoFromEnum<EPCGMedadataMathsOperation>({ EPCGMedadataMathsOperation::UnaryOp, EPCGMedadataMathsOperation::BinaryOp, EPCGMedadataMathsOperation::TernaryOp });
+}
 #endif // WITH_EDITOR
+
+void UPCGMetadataMathsSettings::ApplyPreconfiguredSettings(const FPCGPreConfiguredSettingsInfo& PreconfiguredInfo)
+{
+	if (const UEnum* EnumPtr = StaticEnum<EPCGMedadataMathsOperation>())
+	{
+		if (EnumPtr->IsValidEnumValue(PreconfiguredInfo.PreconfiguredIndex))
+		{
+			Operation = EPCGMedadataMathsOperation(PreconfiguredInfo.PreconfiguredIndex);
+		}
+	}
+}
 
 FPCGElementPtr UPCGMetadataMathsSettings::CreateElement() const
 {

@@ -24,15 +24,15 @@ public:
 	bool bIsEnabled = false;
 
 	// Apply postprocess for one frame
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NDisplay Viewport", meta = (EditCondition = "bIsEnabled"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NDisplay Viewport")
 	bool bIsOneFrame = false;
 
 	// Custom postprocess settings
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NDisplay Viewport", meta = (EditCondition = "bIsEnabled"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NDisplay Viewport")
 	FPostProcessSettings PostProcessSettings;
 
 	// Override blend weight
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NDisplay Viewport", meta = (EditCondition = "bIsEnabled"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NDisplay Viewport")
 	float BlendWeight = 1;
 };
 
@@ -249,7 +249,7 @@ struct FDisplayClusterConfigurationViewport_EntireClusterColorGrading
 	bool bEnableEntireClusterColorGrading = true;
 
 	/** Entire Cluster Color Grading */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Viewport Settings", meta = (DisplayName = "Color Grading", EditCondition = "bEnableEntireClusterColorGrading"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Viewport Settings", meta = (DisplayName = "Color Grading"))
 	FDisplayClusterConfigurationViewport_ColorGradingRenderingSettings ColorGradingSettings;
 };
 
@@ -272,7 +272,7 @@ struct FDisplayClusterConfigurationViewport_PerViewportColorGrading
 	bool bIsEntireClusterEnabled = true;
 
 	/** Color Grading */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Viewport Settings", meta = (DisplayName = "Color Grading", EditCondition = "bIsEnabled"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Viewport Settings", meta = (DisplayName = "Color Grading"))
 	FDisplayClusterConfigurationViewport_ColorGradingRenderingSettings ColorGradingSettings;
 
 	/** Specify the viewports to apply these color grading settings. */
@@ -290,11 +290,11 @@ struct FDisplayClusterConfigurationViewport_AllNodesColorGrading
 	bool bEnableInnerFrustumAllNodesColorGrading = true;
 
 	/** Optionally include Entire Cluster Color Grading settings specified on the root actor in nDisplay's color grading stack for the inner frustum. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Viewport Color Grading", meta = (DisplayName = "Include Entire Cluster Color Grading", EditCondition = "bEnableInnerFrustumAllNodesColorGrading"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Viewport Color Grading", meta = (DisplayName = "Include Entire Cluster Color Grading"))
 	bool bEnableEntireClusterColorGrading = true;
 
 	/** Color Grading */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Viewport Settings", meta = (DisplayName = "Color Grading", EditCondition = "bEnableInnerFrustumAllNodesColorGrading"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Viewport Settings", meta = (DisplayName = "Color Grading"))
 	FDisplayClusterConfigurationViewport_ColorGradingRenderingSettings ColorGradingSettings;
 };
 
@@ -321,7 +321,7 @@ struct FDisplayClusterConfigurationViewport_PerNodeColorGrading
 	bool bAllNodesColorGrading = true;
 
 	/** Color Grading */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Viewport Settings", meta = (DisplayName = "Color Grading", EditCondition = "bIsEnabled"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Viewport Settings", meta = (DisplayName = "Color Grading"))
 	FDisplayClusterConfigurationViewport_ColorGradingRenderingSettings ColorGradingSettings;
 
 	/** Specify the nodes to apply these color grading settings. */

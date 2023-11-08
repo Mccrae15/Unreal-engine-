@@ -13,6 +13,7 @@
 #include "Misc/OutputDeviceRedirector.h"
 #include "RHIContext.h"
 #include "RHIStrings.h"
+#include "Algo/BinarySearch.h"
 
 #if ENABLE_RHI_VALIDATION
 
@@ -187,6 +188,123 @@ namespace RHIValidation
 
 		return Identity;
 	}
+
+	RHI_API FViewIdentity::FViewIdentity(FRHIViewableResource* InResource, FRHIViewDesc const& InViewDesc)
+	{
+		if (InViewDesc.IsBuffer())
+		{
+			FRHIBuffer* Buffer = static_cast<FRHIBuffer*>(InResource);
+			Resource = Buffer;
+
+			if (InViewDesc.IsUAV())
+			{
+				auto const Info = InViewDesc.Buffer.UAV.GetViewInfo(Buffer);
+				if (ensureMsgf(!Info.bNullView, TEXT("Attempt to use a null buffer UAV.")))
+				{
+					SubresourceRange = Resource->GetWholeResourceRange();
+					Stride = Info.StrideInBytes;
+				}
+			}
+			else
+			{
+				auto const Info = InViewDesc.Buffer.SRV.GetViewInfo(Buffer);
+				if (ensureMsgf(!Info.bNullView, TEXT("Attempt to use a null buffer SRV.")))
+				{
+					SubresourceRange = Resource->GetWholeResourceRange();
+					Stride = Info.StrideInBytes;
+				}
+			}
+		}
+		else
+		{
+			FRHITexture* Texture = static_cast<FRHITexture*>(InResource);
+			Resource = Texture->GetTrackerResource();
+			
+			auto GetPlaneIndex = [](ERHITexturePlane Plane)
+			{
+				switch (Plane)
+				{
+				default: checkNoEntry(); [[fallthrough]];
+				case ERHITexturePlane::Primary:
+				case ERHITexturePlane::PrimaryCompressed:
+				case ERHITexturePlane::Depth:
+					return EResourcePlane::Common;
+				
+				case ERHITexturePlane::Stencil:
+					return EResourcePlane::Stencil;
+
+				case ERHITexturePlane::HTile:
+					return EResourcePlane::Htile;
+
+				case ERHITexturePlane::FMask:
+					return EResourcePlane::Cmask;
+
+				case ERHITexturePlane::CMask:
+					return EResourcePlane::Fmask;
+				}
+			};
+
+			if (InViewDesc.IsUAV())
+			{
+				auto const Info = InViewDesc.Texture.UAV.GetViewInfo(Texture);
+
+				SubresourceRange.MipIndex       = Info.MipLevel;
+				SubresourceRange.NumMips        = 1;
+				SubresourceRange.ArraySlice     = Info.ArrayRange.First;
+				SubresourceRange.NumArraySlices = Info.ArrayRange.Num;
+				SubresourceRange.PlaneIndex     = uint32(GetPlaneIndex(Info.Plane));
+				SubresourceRange.NumPlanes      = 1;
+
+				Stride = GPixelFormats[Info.Format].BlockBytes;
+			}
+			else
+			{
+				auto const Info = InViewDesc.Texture.SRV.GetViewInfo(Texture);
+
+				SubresourceRange.MipIndex       = Info.MipRange.First;
+				SubresourceRange.NumMips        = Info.MipRange.Num;
+				SubresourceRange.ArraySlice     = Info.ArrayRange.First;
+				SubresourceRange.NumArraySlices = Info.ArrayRange.Num;
+				SubresourceRange.PlaneIndex     = uint32(GetPlaneIndex(Info.Plane));
+				SubresourceRange.NumPlanes      = 1;
+
+				Stride = GPixelFormats[Info.Format].BlockBytes;
+			}
+		}
+	}
+
+	void FTracker::FUAVTracker::DrawOrDispatch(FTracker* BarrierTracker, const FState& RequiredState)
+	{
+		// The barrier tracking expects us to call Assert() only once per unique resource.
+		// However, multiple UAVs may be bound, all referencing the same resource.
+		// Find the unique resources to ensure we only do the tracking once per resource.
+		uint32 NumUniqueIdentities = 0;
+		FResourceIdentity UniqueIdentities[MaxSimultaneousUAVs];
+
+		for (int32 UAVIndex = 0; UAVIndex < UAVs.Num(); ++UAVIndex)
+		{
+			if (UAVs[UAVIndex])
+			{
+				const FResourceIdentity& Identity = UAVs[UAVIndex]->GetViewIdentity();
+
+				// Check if we've already seen this resource.
+				bool bFound = false;
+				for (uint32 Index = 0; !bFound && Index < NumUniqueIdentities; ++Index)
+				{
+					bFound = UniqueIdentities[Index] == Identity;
+				}
+
+				if (!bFound)
+				{
+					check(NumUniqueIdentities < UE_ARRAY_COUNT(UniqueIdentities));
+					UniqueIdentities[NumUniqueIdentities++] = Identity;
+
+					// Assert unique resources have the required state.
+					BarrierTracker->AddOp(FOperation::Assert(Identity, RequiredState));
+				}
+			}
+		}
+	}
 }
 
 TSet<uint32> FValidationRHI::SeenFailureHashes;
@@ -314,7 +432,7 @@ IRHIPlatformCommandList* FValidationRHI::RHIFinalizeContext(IRHIComputeContext* 
 	return OuterCommandList;
 }
 
-void FValidationRHI::RHISubmitCommandLists(TArrayView<IRHIPlatformCommandList*> OuterCommandLists)
+void FValidationRHI::RHISubmitCommandLists(TArrayView<IRHIPlatformCommandList*> OuterCommandLists, bool bFlushResources)
 {
 	FMemMark Mark(FMemStack::Get());
 	TArray<IRHIPlatformCommandList*, TMemStackAllocator<>> InnerCommandLists;
@@ -335,9 +453,9 @@ void FValidationRHI::RHISubmitCommandLists(TArrayView<IRHIPlatformCommandList*> 
 		delete OuterCommandList;
 	}
 
-	if (InnerCommandLists.Num())
+	if (InnerCommandLists.Num() || bFlushResources)
 	{
-		RHI->RHISubmitCommandLists(InnerCommandLists);
+		RHI->RHISubmitCommandLists(InnerCommandLists, bFlushResources);
 	}
 }
 
@@ -518,7 +636,7 @@ void FValidationRHI::RHICreateTransition(FRHITransition* Transition, const FRHIT
 			break;
 
 		case FRHITransitionInfo::EType::UAV:
-			Identity = Info.UAV->ViewIdentity;
+			Identity = Info.UAV->GetViewIdentity();
 			break;
 
 		case FRHITransitionInfo::EType::BVH:
@@ -637,15 +755,7 @@ thread_local TConstArrayView<const TCHAR*> FRHIValidationBreadcrumbScope::Breadc
 
 static FString GetBreadcrumbPath()
 {
-	FString BreadcrumbMessage;
-
-	for (int32 Index = 0; Index < FRHIValidationBreadcrumbScope::Breadcrumbs.Num() - 1; ++Index)
-	{
-		BreadcrumbMessage += (FRHIValidationBreadcrumbScope::Breadcrumbs[Index] + FString(TEXT("/")));
-	}
-
-	BreadcrumbMessage += FRHIValidationBreadcrumbScope::Breadcrumbs.Last();
-	return BreadcrumbMessage;
+	return FString::Join(FRHIValidationBreadcrumbScope::Breadcrumbs, TEXT("/"));
 }
 
 // FlushType: Thread safe
@@ -677,12 +787,12 @@ void FValidationRHI::RHIBindDebugLabelName(FRHIBuffer* Buffer, const TCHAR* Name
 
 void FValidationRHI::RHIBindDebugLabelName(FRHIUnorderedAccessView* UnorderedAccessViewRHI, const TCHAR* Name)
 {
-	RHIValidation::FResource* Resource = UnorderedAccessViewRHI->ViewIdentity.Resource;
+	RHIValidation::FResource* Resource = UnorderedAccessViewRHI->GetViewIdentity().Resource;
 	FString NameCopyRT = Name;
 	FRHICommandListExecutor::GetImmediateCommandList().EnqueueLambda([Resource, NameCopyRHIT = MoveTemp(NameCopyRT)](FRHICommandListImmediate& RHICmdList)
-		{
-			((FValidationContext&)RHICmdList.GetContext()).Tracker->Rename(Resource, *NameCopyRHIT);
-		});
+	{
+		((FValidationContext&)RHICmdList.GetContext()).Tracker->Rename(Resource, *NameCopyRHIT);
+	});
 
 	RHI->RHIBindDebugLabelName(UnorderedAccessViewRHI, Name);
 }
@@ -709,19 +819,11 @@ void FValidationRHI::ReportValidationFailure(const TCHAR* InMessage)
 
 	if (!FRHIValidationBreadcrumbScope::Breadcrumbs.IsEmpty())
 	{
-		FString BreadcrumbMessage;
-
-		for (int32 Index = 0; Index < FRHIValidationBreadcrumbScope::Breadcrumbs.Num() - 1; ++Index)
-		{
-			BreadcrumbMessage += (FRHIValidationBreadcrumbScope::Breadcrumbs[Index] + FString(TEXT("/")));
-		}
-
-		BreadcrumbMessage += FRHIValidationBreadcrumbScope::Breadcrumbs.Last();
 		Message = FString::Printf(
 			TEXT("%s")
 			TEXT("Breadcrumbs: %s\n")
 			TEXT("--------------------------------------------------------------------\n"),
-			InMessage, *BreadcrumbMessage);
+			InMessage, *GetBreadcrumbPath());
 	}
 	else
 	{
@@ -1354,23 +1456,27 @@ namespace RHIValidation
 	{
 		void* Trace = CaptureBacktrace();
 
+		FString BreadcrumbMessage = GetBreadcrumbPath();
+
 		if (CreateTrace)
 		{
-			FPlatformMisc::LowLevelOutputDebugStringf(TEXT("\n%s: Type: %s, %s, CreateTrace: 0x%p, %sTrace: 0x%p\n"),
+			FPlatformMisc::LowLevelOutputDebugStringf(TEXT("\n%s: Type: %s, %s, CreateTrace: 0x%p, %sTrace: 0x%p, %s\n"),
 				*GetResourceDebugName(Resource, SubresourceIndex),
 				Type,
 				LogStr,
 				CreateTrace,
 				TracePrefix,
-				Trace);
+				Trace,
+				*BreadcrumbMessage);
 		}
 		else
 		{
-			FPlatformMisc::LowLevelOutputDebugStringf(TEXT("\n%s: Type: %s, %s, Trace: 0x%p\n"),
+			FPlatformMisc::LowLevelOutputDebugStringf(TEXT("\n%s: Type: %s, %s, Trace: 0x%p, %s\n"),
 				*GetResourceDebugName(Resource, SubresourceIndex),
 				Type,
 				LogStr,
-				Trace);
+				Trace,
+				*BreadcrumbMessage);
 		}
 
 		return Trace;
@@ -1685,7 +1791,7 @@ namespace RHIValidation
 		}
 	}
 
-	RHI_API EReplayStatus FOperation::Replay(ERHIPipeline Pipeline, bool& bAllowAllUAVsOverlap, FBreadcrumbStack& Breadcrumbs) const
+	EReplayStatus FOperation::Replay(ERHIPipeline Pipeline, bool& bAllowAllUAVsOverlap, FBreadcrumbStack& Breadcrumbs) const
 	{
 		switch (Type)
 		{
@@ -1940,7 +2046,7 @@ namespace RHIValidation
 	
 	FTracker::FOpQueueState FTracker::OpQueues[int32(ERHIPipeline::Num)] = {};
 
-	RHI_API void* CaptureBacktrace()
+	void* CaptureBacktrace()
 	{
 		// Back traces will leak. Don't leave this turned on.
 		const uint32 MaxDepth = 32;
@@ -1948,6 +2054,43 @@ namespace RHIValidation
 		FPlatformStackWalk::CaptureStackBackTrace(Backtrace, MaxDepth);
 
 		return Backtrace;
+	}
+
+	/** Validates that the SRV is conform to what the shader expects */
+	void ValidateShaderResourceView(const FRHIShader* RHIShaderBase, uint32 BindIndex, FRHIShaderResourceView* SRV)
+	{
+#if RHI_INCLUDE_SHADER_DEBUG_DATA
+		if (SRV)
+		{
+			// DebugStrideValidationData is supposed to be already sorted
+			static const auto ShaderCodeValidationStridePredicate = [](const FShaderCodeValidationStride& lhs, const FShaderCodeValidationStride& rhs) -> bool { return lhs.BindPoint < rhs.BindPoint; };
+
+			auto const ViewIdentity = SRV->GetViewIdentity();
+
+			FShaderCodeValidationStride SRVValidationStride = { BindIndex , ViewIdentity.Stride };
+			const int32 FoundIndex =  Algo::BinarySearch(RHIShaderBase->DebugStrideValidationData, SRVValidationStride, ShaderCodeValidationStridePredicate);
+			if (FoundIndex != INDEX_NONE)
+			{
+				uint16 ExpectedStride = RHIShaderBase->DebugStrideValidationData[FoundIndex].Stride;
+				if (ExpectedStride != SRVValidationStride.Stride)
+				{
+					FString SRVName;
+					// It seems that owner name is usually unknown. Instead try to rely on the tracked buffer
+					if (ViewIdentity.Resource)
+					{
+						SRVName = ViewIdentity.Resource->GetDebugName();
+					}
+					if (SRVName.IsEmpty())
+					{
+						SRVName = SRV->GetOwnerName().ToString();
+					}
+					FString ErrorMessage = FString::Printf(TEXT("Shader %s: Buffer stride for \"%s\" must match structure size declared in the shader"), RHIShaderBase->GetShaderName(), *SRVName);
+					ErrorMessage += FString::Printf(TEXT("\nBind point: %d, HLSL size: %d, Buffer Size: %d"), BindIndex, ExpectedStride, SRVValidationStride.Stride);
+					RHI_VALIDATION_CHECK(false, *ErrorMessage);
+				}
+			}
+		}
+#endif
 	}
 }
 

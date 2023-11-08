@@ -3,7 +3,9 @@
 #pragma once
 
 #include "Engine/DataTable.h"
+#include "Engine/Texture2DArray.h"
 #include "MuCOE/Nodes/CustomizableObjectNode.h"
+#include "MuCOE/RemapPins/CustomizableObjectNodeRemapPinsByName.h"
 
 #include "CustomizableObjectNodeTable.generated.h"
 
@@ -11,11 +13,31 @@ namespace ENodeTitleType { enum Type : int; }
 
 class UCustomizableObjectLayout;
 class UCustomizableObjectNodeRemapPins;
+class UCustomizableObjectNodeRemapPinsByName;
 class UEdGraphPin;
 class UObject;
 class USkeletalMesh;
 class UTexture2D;
+class UTexture2DArray;
 struct FGuid;
+
+
+/** Enum class for the different types of image pins */
+UENUM()
+enum class ETableTextureType : uint8
+{
+	PASSTHROUGH_TEXTURE = 0 UMETA(DisplayName = "Passthrough"),
+	MUTABLE_TEXTURE = 1 UMETA(DisplayName = "Mutable")
+};
+
+
+/** Enum class for the different types of pin meshes */
+enum class ETableMeshPinType : uint8
+{
+	NONE = 0,
+	SKELETAL_MESH = 1,
+	STATIC_MESH = 2
+};
 
 
 /** Base class for all Table Pins. */
@@ -33,7 +55,36 @@ public:
 };
 
 
-/** Additional data for a Mesh pins. */
+/** Additional data for Image pins. */
+UCLASS()
+class CUSTOMIZABLEOBJECTEDITOR_API UCustomizableObjectNodeTableImagePinData : public UCustomizableObjectNodeTableObjectPinData
+{
+	GENERATED_BODY()
+
+public:
+
+	bool IsDefaultImageMode() { return bIsDefault; }
+	void SetDefaultImageMode(bool bValue) { bIsDefault = bValue; }
+
+	bool IsArrayTexture() { return bIsArrayTexture; }
+	void SetIsArrayTexture(bool bValue) { bIsArrayTexture = bValue; }
+
+	// Pin Type
+	UPROPERTY()
+	ETableTextureType ImageMode = ETableTextureType::MUTABLE_TEXTURE;
+
+private:
+
+	UPROPERTY()
+	bool bIsDefault = true;
+
+	UPROPERTY()
+	bool bIsArrayTexture = false;
+
+};
+
+
+/** Additional data for Mesh pins. */
 UCLASS()
 class CUSTOMIZABLEOBJECTEDITOR_API UCustomizableObjectNodeTableMeshPinData : public UCustomizableObjectNodeTableObjectPinData
 {
@@ -60,13 +111,27 @@ public:
 	UPROPERTY()
 	int32 LOD = 0;
 
-	/** Material Index (Surface Index) of the mesh related to this Mesh pin */
+	/** Section Index (Surface Index) of the mesh related to this Mesh pin */
 	UPROPERTY()
 	int32 Material = 0;
 
 	/** Layouts related to this Mesh pin */
 	UPROPERTY()
 	TArray< TObjectPtr<UCustomizableObjectLayout> > Layouts;
+};
+
+
+UCLASS()
+class UCustomizableObjectNodeTableRemapPins : public UCustomizableObjectNodeRemapPinsByName
+{
+	GENERATED_BODY()
+public:
+
+	// Specific method to decide when two pins are equal
+	virtual bool Equal(const UCustomizableObjectNode& Node, const UEdGraphPin& OldPin, const UEdGraphPin& NewPin) const override;
+
+	// Method to use in the RemapPins step of the node reconstruction process
+	virtual void RemapPins(const UCustomizableObjectNode& Node, const TArray<UEdGraphPin*>& OldPins, const TArray<UEdGraphPin*>& NewPins, TMap<UEdGraphPin*, UEdGraphPin*>& PinsToRemap, TArray<UEdGraphPin*>& PinsToOrphan) override;
 };
 
 
@@ -92,7 +157,13 @@ public:
 	/** If there is a bool column in the table, checked rows will not be compiled */
 	UPROPERTY(EditAnywhere, Category = TableProperties)
 	bool bDisableCheckedRows = true;
-	
+
+	/** Decides the default type of the texture pins (passtrhough or mutable)
+	*   Right click on a non-linked image pin to customize its image mode
+	*/
+	UPROPERTY(EditAnywhere, Category = TableProperties)
+	ETableTextureType DefaultImageMode = ETableTextureType::MUTABLE_TEXTURE;
+
 	UPROPERTY(EditAnywhere, Category = UI, meta = (DisplayName = "Parameter UI Metadata"))
 	FMutableParamUIMetadata ParamUIMetadata;
 
@@ -105,22 +176,22 @@ public:
 	FText GetNodeTitle(ENodeTitleType::Type TitleType) const override;
 	FLinearColor GetNodeTitleColor() const override;
 	FText GetTooltipText() const override;
+	virtual void PinConnectionListChanged(UEdGraphPin* Pin) override;
 	
 	// UCustomizableObjectNode interface
 	virtual void PostBackwardsCompatibleFixup() override;
+	virtual void BackwardsCompatibleFixup() override;
 	void AllocateDefaultPins(UCustomizableObjectNodeRemapPins* RemapPins) override;
 	bool IsNodeOutDatedAndNeedsRefresh() override;
 	FString GetRefreshMessage() const override;
 	virtual bool ProvidesCustomPinRelevancyTest() const override;
 	virtual bool IsPinRelevant(const UEdGraphPin* Pin) const override;
+	UCustomizableObjectNodeTableRemapPins* CreateRemapPinsDefault() const;
 
 	/*** Allows to perform work when remapping the pin data. */
 	virtual void RemapPinsData(const TMap<UEdGraphPin*, UEdGraphPin*>& PinsToRemap) override;
 	
-	// Own interface
-	/** Given an Image pin, return the PinMode. */
-	bool ForceImageMutableMode(const UEdGraphPin* Pin, FGuid ParameterId) const;
-	
+	// Own interface	
 	// Returns the reference Texture parameter from a Material
 	UTexture2D* FindReferenceTextureParameter(const UEdGraphPin* Pin, FString ParameterImageName) const;
 
@@ -139,7 +210,7 @@ public:
 	FString GetMutableColumnName(const UEdGraphPin* Pin, const int32& LOD) const;
 
 	// Returns the LOD of the mesh associated to the input pin
-	void GetPinLODAndMaterial(const UEdGraphPin* Pin, int32& LOD, int32& Material) const;
+	void GetPinLODAndSection(const UEdGraphPin* Pin, int32& LODIndex, int32& SectionIndex) const;
 
 	// Get the anim blueprint and anim slot columns related to a mesh
 	void GetAnimationColumns(const FString& ColumnName, FString& AnimBPColumnName, FString& AnimSlotColumnName, FString& AnimTagColumnName) const;
@@ -217,12 +288,35 @@ public:
 		return nullptr;
 	}
 
+
 	// We should do this in a template!
 	USkeletalMesh* GetSkeletalMeshAt(const UEdGraphPin* Pin, const FName& RowName) const;
+	TSoftClassPtr<UAnimInstance> GetAnimInstanceAt(const UEdGraphPin* Pin, const FName& RowName) const;
+
 
 	// Return the name of the enabled rows in the data table.
 	// Returns the name if the row has a bool column set as false (true == disabled)
 	TArray<FName> GetRowNames() const;
+
+	// Changes the image mode of a pin
+	// bSetDefault param: if true sets the pin to be equal to the default mode (same as node)
+	void ChangeImagePinMode(UEdGraphPin* Pin, bool bSetDefault = false);
+
+	// Returns true if the pin is in the default mode (same as node)
+	bool IsImagePinDefault(UEdGraphPin* Pin);
+
+	// Returns true if the pin is a texture array pin
+	bool IsImageArrayPin(UEdGraphPin* Pin);
+
+	// Returns the image mode of the column
+	ETableTextureType GetColumnImageMode(const FString& ColumnName) const;
+
+	// Returns the mesh type of the Pin
+	ETableMeshPinType GetPinMeshType(const UEdGraphPin* Pin) const;
+
+	// Functions to generate the names of a mutable table's column
+	FString GenerateSkeletalMeshMutableColumName(const FString& PinName, int32 LODIndex, int32 MaterialIndex) const;
+	FString GenerateStaticMeshMutableColumName(const FString& PinName, int32 MaterialIndex) const;
 
 private:
 
@@ -233,8 +327,10 @@ private:
 	FDelegateHandle OnTableChangedDelegateHandle;
 	
 	// Generates a mesh pin for each LOD and Material Surface of the reference SkeletalMesh
-	void GenerateMeshPins(UObject* Mesh, FString Name);
+	void GenerateMeshPins(UObject* Mesh, const FString& Name);
 
 	// Checks if a pin already exists and if it has the same type as before the node refresh
 	bool CheckPinUpdated(const FString& PinName, const FName& PinType) const;
+
+
 };

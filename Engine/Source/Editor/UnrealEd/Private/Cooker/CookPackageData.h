@@ -11,13 +11,16 @@
 #include "Containers/SortedMap.h"
 #include "Containers/StringFwd.h"
 #include "Containers/UnrealString.h"
-#include "Engine/ICookInfo.h"
 #include "HAL/CriticalSection.h"
 #include "HAL/Platform.h"
 #include "Misc/EnumClassFlags.h"
 #include "Misc/Optional.h"
+#include "Misc/ScopeRWLock.h"
 #include "Templates/SharedPointer.h"
+#include "Templates/UniquePtr.h"
+#include "TypedBlockAllocator.h"
 #include "UObject/GCObject.h"
+#include "UObject/ICookInfo.h"
 #include "UObject/NameTypes.h"
 #include "UObject/PackageResourceManager.h"
 #include "UObject/WeakObjectPtr.h"
@@ -33,7 +36,10 @@ class FCbWriter;
 class UCookOnTheFlyServer;
 class UObject;
 class UPackage;
+namespace UE::Cook { class FCookWorkerClient; }
+namespace UE::Cook { class FRequestCluster; }
 namespace UE::Cook { struct FConstructPackageData; }
+namespace UE::Cook { struct FDiscoveredPlatformSet; }
 
 FCbWriter& operator<<(FCbWriter& Writer, const UE::Cook::FConstructPackageData& PackageData);
 bool LoadFromCompactBinary(FCbFieldView Field, UE::Cook::FConstructPackageData& PackageData);
@@ -44,10 +50,44 @@ namespace UE::Cook
 class FPackageDataQueue;
 class FRequestCluster;
 struct FGeneratorPackage;
+struct FPackageData;
 struct FPackageDataMonitor;
 struct FPendingCookedPlatformDataCancelManager;
 
 extern const TCHAR* GeneratedPackageSubPath;
+
+/**
+ * Events in the lifetime of an object related to BeginCacheForCookedPlatformData. Used by the cooker
+ * to track which calls have been made and still need to be made.
+ */
+enum class ECachedCookedPlatformDataEvent : uint8
+{
+	None,
+	BeginCacheForCookedPlatformDataCalled,
+	IsCachedCookedPlatformDataLoadedCalled,
+	IsCachedCookedPlatformDataLoadedReturnedTrue,
+	ClearCachedCookedPlatformDataCalled,
+	ClearAllCachedCookedPlatformDataCalled,
+};
+const TCHAR* LexToString(ECachedCookedPlatformDataEvent);
+/**
+ * BeginCachedForCookedPlatformData state about an object - which packages owned it (not always the same
+ * one when PackageGenerators are involved) and the per-platform state for ECachedCookedPlatformDataEvent.
+ */
+struct FCachedCookedPlatformDataState
+{
+	void AddRefFrom(FPackageData* PackageData);
+	void ReleaseFrom(FPackageData* PackageData);
+	bool IsReferenced() const;
+
+	/**
+	 * The packages that have called any of the BeginCacheForCookedPlatformData family of function
+	 * on this object. Usually only a single 1, sometimes 2, see comment in AddPackageData.
+	 */
+	TArray<FPackageData*, TInlineAllocator<2>> PackageDatas;
+	/** The per-platform state of which BeginCacheForCookedPlatformData events have been passed. */
+	TMap<const ITargetPlatform*, ECachedCookedPlatformDataEvent> PlatformStates;
+};
 
 /** Flags specifying the behavior of FPackageData::SendToState */
 enum class ESendFlags : uint8
@@ -85,24 +125,109 @@ struct FConstructPackageData
 	FName NormalizedFileName;
 };
 
+// This should be a constexpr, but some compilers give an error that 0x1 is an unevaluable pointer value
+#define CookerLoadingPlatformKey ((ITargetPlatform*)0x1)
+
+/** Data about a platform that has been interacted with (marked reachable, etc) by a PackageData. */
+struct FPackagePlatformData
+{
+	FPackagePlatformData();
+
+	/** Requested from StartCookByTheBook or CookOnTheFly, or is a transitive dependency of those requests. */
+	bool IsReachable() const { return bReachable != 0; }
+	void SetReachable(bool bValue) { bReachable = (uint32)bValue; }
+
+	/** The package has passed through a RequestCluster and its transitive dependencies were added. */
+	bool IsVisitedByCluster() const { return bVisitedByCluster != 0; }
+	void SetVisitedByCluster(bool bValue) { bVisitedByCluster = (uint32)bValue; }
+
+	/** UPackage::Save was called on the package, but timedout and needs to be retried. */
+	bool IsSaveTimedOut() const { return bSaveTimedOut != 0; }
+	void SetSaveTimedOut(bool bValue) { bSaveTimedOut = (uint32)bValue; }
+
+	/** Whether the package is allowed to cook. Initially true, may be set false during Cluster search. */
+	bool IsCookable() const { return bCookable != 0; }
+	void SetCookable(bool bValue) { bCookable = (uint32)bValue; }
+
+	/**
+	 * Whether the package is searchable for transitive dependencies during Cluster evaluation.
+	 * This can be true even if the package is not cookable. Initially true, may be set false during Cluster search
+	 */
+	bool IsExplorable() const { return bExplorable != 0; }
+	void SetExplorable(bool bValue) { bExplorable = (uint32)bValue; }
+
+	/**
+	 * Whether the package, which might be set as not explorable from IsRequestCookable, is set to explorable
+	 * based on conditions discovered during the cook.
+	 */
+	bool IsExplorableOverride() const { return bExplorableOverride != 0; }
+	void SetExplorableOverride(bool bValue) { bExplorableOverride = (uint32)bValue; }
+
+	/** All flags modified by reachability calculations are returned to default. */
+	void ResetReachable();
+	/**
+	 * Mark the platform as ExplorableOverride=true and reset all data necessary to reexplore it, including reachability.
+	 * Caller is responsbile for marking it again as reachable.
+	 */
+	void MarkAsExplorable();
+
+	/** Called on CookWorkers to indicate reachable,cookable,etc for packages sent from Director. */
+	void MarkCookableForWorker(FCookWorkerClient& CookWorkerClient);
+
+	/** The package was found to be unmodified in the current iterative cook. */
+	bool IsIterativelySkipped() const { return bIterativelySkipped != 0; }
+	void SetIterativelySkipped(bool bValue) { bIterativelySkipped = (uint32)bValue; }
+
+	ECookResult GetCookResults() const { return (ECookResult)CookResults; }
+	bool IsCookAttempted() const { return CookResults != (uint32)ECookResult::NotAttempted; }
+	bool IsCookSucceeded() const { return CookResults == (uint32)ECookResult::Succeeded; }
+	void SetCookResults(ECookResult Value)
+	{
+		// ECookResult::Invalid is only used in replication and is not allowed in FPackagePlatformData
+		check(Value != ECookResult::Invalid);
+		CookResults = (uint32)Value;
+		SetReportedToDirector(false);
+	}
+
+	/** Return if we need to call SavePackage on it (reachable, cookable, not yet cooked) */
+	bool NeedsCooking(const ITargetPlatform* PlatformItBelongsTo) const;
+
+	bool IsRegisteredForCachedObjectsInOuter() const { return bRegisteredForCachedObjectsInOuter != 0; }
+	void SetRegisteredForCachedObjectsInOuter(bool bValue) { bRegisteredForCachedObjectsInOuter = bValue; }
+
+	/** Only read/written on CookWorkers */
+	bool IsReportedToDirector() { return bReportedToDirector != 0; }
+	void SetReportedToDirector(bool bValue) { bReportedToDirector = (uint32)bValue; }
+
+private:
+	uint32 bReachable : 1;
+	uint32 bVisitedByCluster : 1;
+	uint32 bSaveTimedOut : 1;
+	uint32 bCookable : 1;
+	uint32 bExplorable : 1;
+	uint32 bExplorableOverride : 1;
+	uint32 bIterativelySkipped : 1;
+	uint32 bRegisteredForCachedObjectsInOuter : 1;
+	uint32 bReportedToDirector : 1;
+	uint32 CookResults : (int)ECookResult::NumBits;
+};
+
 /**
  * Contains all the information the cooker uses for a package, during request, load, or save.  Once allocated, this
  * structure is never deallocated or moved for a given package; it is deallocated only when the CookOnTheFlyServer
  * is destroyed.
  *
- * Requested platforms - Requested platforms are the Platforms that will be Saved during cooking.
- *   Platforms are only requested on the PackageData when the Package is InProgress (e.g. is in the RequestQueue,
- *   LoadReadyQueue, or other state containers). Once a Package finishes cooking, the platforms are set to
- *   unrequested, and may be set again later if the Package is requested for another platform. If multiple requests
- *   occur at the same time, their requested platforms are merged. Since modifying the requested platforms can put
- *   an InProgress package into an invalid state, direct write access is private; use UpdateRequestData or
- *   SetRequestData to write.
+ * PlatformDatas - Per-platform information about the package's cook state. Whether it has been marked reachable,
+ *   whether it has been cooked and what the result was, etc.
+ *   Direct write access to the platformdata is pseudo-private: it's available for convenience of the RequestCluster,
+*    but when modifiying it the package may need to change state, so calling code should either update the state itself
+*    or should call the functions on FPackageData that take a TargetPlatform and handle modifying the state.
 
- * Cooked platforms - Cooked platforms are the platforms that have already been saved in the lifetime of the 
- *   CookOnTheFlyServer; note this extends outside of the current CookOnTheFlyServer session.
- *   Cooked platforms also store a flag indicating whether the cook for the given platform was successful or not.
- *   Cooked platforms can be added to a PackageData for reasons other than normal Save, such as when a Package is
- *   detected as not applicable for a Platform and its "Cooked" operation is therefore a noop.
+ * Cooked platforms - Platforms are marked cooked if they have been saved in the lifetime of the 
+ *   CookOnTheFlyServer; note this extends outside of the current CookOnTheFlyServer session for in-editor cooks.
+ *   Cooked platforms also store the CookResults - success,error,other.
+ *   Other: cooked platforms can be added to a PackageData for reasons other than normal Save, such as when a Package
+ *   is marked not cookable for a Platform and its "Cooked" operation is therefore a noop.
  *   Cooked platforms can be cleared for a PackageData if the Package is modified, e.g. during editor operations
  *   when the CookOnTheFlyServer is run from the editor.
  *
@@ -124,33 +249,30 @@ struct FConstructPackageData
  *   The lifetime of this counter extends for the lifetime of the PackageData; it is shared across
  *   CookOnTheFlyServer sessions.
  *
- * CookedPlatformDataNextIndex - Index for the next (Object, RequestedPlatform) pair that needs to have
- *   BeginCacheForCookedPlatformData called on it for the current PackageSave. This field is only non-zero during
- *   the save state; it is cleared when successfully or unsucessfully leaving the save state. The field is an
- *   object-major index into the two-dimensional array given by
- *       {Each Object in GetCachedObjectsInOuter} x {each Platform that is requested}
- *   e.g. the index into GetCachedObjectsInOuter is GetCookedPlatformDataNextIndex() / GetNumRequestedPlatforms()
- *   and the index into GetRequestedPlatforms() is GetCookedPlatformDataNextIndex() % GetNumRequestedPlatforms()
+ * CookedPlatformDataNextIndex - Index for the next Object in CachedObjectsInOuter that needs to have
+ *   BeginCacheForCookedPlatformData called on it for the current PackageSave. This field is only >= 0 during
+ *   the save state; it is cleared to -1 when successfully or unsucessfully leaving the save state. 
  *
  * Other fields with explanation inline
 */
 struct FPackageData
 {
 public:
-	/** Data about a platform that has been interacted with (requested, etc) by the cook of a PackageData. */
-	struct FPlatformData
-	{
-		FPlatformData();
-		bool bRequested : 1;
-		bool bCookAttempted : 1;
-		bool bCookSucceeded : 1;
-		bool bExplored : 1;
-		bool bSaveTimedOut : 1;
-		bool bCookable : 1;
-	};
-
 	FPackageData(FPackageDatas& PackageDatas, const FName& InPackageName, const FName& InFileName);
 	~FPackageData();
+	static void* operator new(size_t Size)
+	{
+		checkf(false, TEXT("PackageDatas should be allocated using FPackageDatas.Allocator"));
+		return FMemory::Malloc(Size);
+	}
+	static void* operator new(size_t Size, void* PlacementNewPtr)
+	{
+		return PlacementNewPtr;
+	}
+	static void operator delete(void* Ptr, size_t Size)
+	{
+		checkf(false, TEXT("PackageDatas should be freed using FPackageDatas.Allocator"));
+	}
 
 	/**
 	 * ClearReferences is called on every PackageData before any packageDatas are deleted,
@@ -163,6 +285,8 @@ public:
 	FPackageData& operator=(const FPackageData& other) = delete;
 	FPackageData& operator=(FPackageData&& other) = delete;
 
+	FPackageDatas& GetPackageDatas() const { return PackageDatas; }
+
 	/** Return a copy of Package->GetName(). It is derived from the FileName if necessary, and is never modified. */
 	const FName& GetPackageName() const;
 	/**
@@ -172,71 +296,47 @@ public:
 	 */
 	const FName& GetFileName() const;
 
-	/** Reset OutPlatforms and copy current set of requested platforms into it. */
+	/** Reset OutPlatforms and copy current set of reachable & cookable & not yet cooked platforms into it. */
 	template <typename ArrayType>
-	void GetRequestedPlatforms(ArrayType& OutPlatforms) const
-	{
-		OutPlatforms.Reset(PlatformDatas.Num());
-		for (const TPair<const ITargetPlatform*, FPlatformData>& Pair : PlatformDatas)
-		{
-			if (Pair.Value.bRequested)
-			{
-				OutPlatforms.Add(Pair.Key);
-			}
-		}
-	}
+	void GetPlatformsNeedingCooking(ArrayType& OutPlatforms) const;
+	/** Number of platforms that would be returned by GetPlatformsNeedingCooking. */
+	int32 GetPlatformsNeedingCookingNum() const;
 
-	/** Get the number of currently requested platforms. */
-	int32 GetNumRequestedPlatforms() const;
+	/** Reset OutPlatforms and copy current set of reachable platforms into it. */
+	template <typename ArrayType>
+	void GetReachablePlatforms(ArrayType& OutPlatforms) const;
+
+	/** Return true if and only if the Platform has been visited by a cluster (and hence is reachable and explored). */
+	bool IsPlatformVisitedByCluster(const ITargetPlatform* Platform) const;
 
 	/**
-	 * Return true if and only if every element of Platforms is currently requested.
+	 * Return true if and only if every element of Platforms is currently reachable.
 	 * Returns true if Platforms is empty.
 	 */
-	bool HasAllRequestedPlatforms(const TArrayView<const ITargetPlatform* const>& Platforms) const;
+	bool HasReachablePlatforms(const TArrayView<const ITargetPlatform* const>& Platforms) const;
 
-	/**
-	 * Return whether all Platforms requested have also been cooked.
-	 * 
-	 * @param bAllowFailedCooks Iff false, failed cooks cause function to return false.
-	 */
-	bool AreAllRequestedPlatformsCooked(bool bAllowFailedCooks) const;
-
-	/** Return whether all Platforms requested have also been explored for transitive references. */
-	bool AreAllRequestedPlatformsExplored() const;
-
-	/** Return true if and only if every element of Platforms has been explored. Returns true if Platforms is empty. */
-	bool HasAllExploredPlatforms(const TArrayView<const ITargetPlatform* const>& Platforms) const;
-
-	/**
-	 * Return true if this package is cookable for at least one of the platforms.
-	 * If this package has not been explored will return true
-	 */
-	bool CanCookForPlatforms() const;
+	/** Return whether all Platforms that have been marked reachable have also been explored in an FRequestCluster. */
+	bool AreAllReachablePlatformsVisitedByCluster() const;
 
 	/**
 	 * Get the flag for whether this InProgress PackageData has been marked as an urgent request
 	 * (e.g. because it has been requested from the game client during cookonthefly.).
 	 * Always false for PackageDatas that are not InProgress.
-	 * Since modifying the urgency can put an InProgress package into an invalid state, direct write access is
-	 * private; use UpdateRequestData or SetRequestData to write.
 	 */
 	bool GetIsUrgent() const { return static_cast<bool>(bIsUrgent); }
 	/**
-	 * Add the given request data onto the existing request data.
-	 * If the PackageData is not in progress, just calls SetRequestData; skipped if InRequestedPlatforms is empty.
-	 * If the PackageData is in progress it is demoted back to an earlier state if necessary.
-	 * RequestData is set to the union of the previous and new values.
+	 * Mark this PackageData as urgent if bUrgent is true. Noop if bUrgent is false.
+	 * Move it to front of its current container if bAllowUpdateState.
 	 */
-	void UpdateRequestData(const TConstArrayView<const ITargetPlatform*> InRequestedPlatforms, bool bInIsUrgent,
-		FCompletionCallback&& InCompletionCallback, FInstigator&& Instigator, bool bAllowUpdateUrgency=true);
-	/*
-	 * Set the given data onto the existing request data.
-	 * It is invalid to call with empty InRequestedPlatforms.
-	 * It is invalid to call on a PackageData that is already InProgress. 
-	 */
-	void SetRequestData(const TArrayView<const ITargetPlatform* const>& InRequestedPlatforms, bool bInIsUrgent,
-		FCompletionCallback&& InCompletionCallback, FInstigator&& Instigator);
+	void AddUrgency(bool bUrgent, bool bAllowUpdateState);
+
+	/** Accessor for RequestClusters to add reachable platforms directly without modifying dependent data. */
+	void AddReachablePlatforms(FRequestCluster& RequestCluster, TConstArrayView<const ITargetPlatform*> Platforms,
+		FInstigator&& InInstigator);
+
+	/** Add the given reachable platforms to this PackageData and send it back to Request state for exploration. */
+	void QueueAsDiscovered(FInstigator&& InInstigator, FDiscoveredPlatformSet&& ReachablePlatforms, bool bUrgent);
+
 	/**
 	 * Clear all the inprogress variables from the current PackageData. It is invalid to call this except when
 	 * the PackageData is transitioning out of InProgress.
@@ -247,29 +347,31 @@ public:
 	 * FindOrAdd each TargetPlatform and set its flags: CookAttempted=true, Succeeded=<given>.
 	 * In version that takes two arrays, TargetPlatforms and Succeeded must be the same length.
 	 */
-	void SetPlatformsCooked(const TConstArrayView<const ITargetPlatform*> TargetPlatforms,
-		const TConstArrayView<bool> Succeeded);
-	void SetPlatformsCooked(const TConstArrayView<const ITargetPlatform*> TargetPlatforms, bool bSucceeded);
-	void SetPlatformCooked(const ITargetPlatform* TargetPlatform, bool bSucceeded);
+	void SetPlatformsCooked(const TConstArrayView<const ITargetPlatform*> TargetPlatforms, const TConstArrayView<ECookResult> Succeeded, bool bInWasCookedThisSession = true);
+	void SetPlatformsCooked(const TConstArrayView<const ITargetPlatform*> TargetPlatforms, ECookResult Result, bool bInWasCookedThisSession = true);
+	void SetPlatformCooked(const ITargetPlatform* TargetPlatform, ECookResult Result, bool bInWasCookedThisSession = true);
 	/**
 	 * FindOrAdd each TargetPlatform and set its flags: CookAttempted=false.
 	 * In Version that takes no TargetPlatform, CookAttempted is cleared from all existing platforms.
 	 */
-	void ClearCookProgress(const TConstArrayView<const ITargetPlatform*> TargetPlatforms);
-	void ClearCookProgress();
-	void ClearCookProgress(const ITargetPlatform* TargetPlatform);
+	void ClearCookResults(const TConstArrayView<const ITargetPlatform*> TargetPlatforms);
+	void ClearCookResults();
+	void ClearCookResults(const ITargetPlatform* TargetPlatform);
+	/** Clear reachable and related fields from all platforms. */
+	void ResetReachable();
 
 	/** Access the information about platforms interacted with by *this. */
-	const TSortedMap<const ITargetPlatform*, FPlatformData>& GetPlatformDatas() const;
+	const TSortedMap<const ITargetPlatform*, FPackagePlatformData, TInlineAllocator<1>>& GetPlatformDatas() const;
+	TSortedMap<const ITargetPlatform*, FPackagePlatformData, TInlineAllocator<1>>& GetPlatformDatasConstKeysMutableValues();
 
 	/** Add a platform if not already existing and return a writable pointer to its flags. */
-	FPlatformData& FindOrAddPlatformData(const ITargetPlatform* TargetPlatform);
+	FPackagePlatformData& FindOrAddPlatformData(const ITargetPlatform* TargetPlatform);
 
 	/** Find a platform if it exists and return a writable pointer to its flags. */
-	FPlatformData* FindPlatformData(const ITargetPlatform* TargetPlatform);
+	FPackagePlatformData* FindPlatformData(const ITargetPlatform* TargetPlatform);
 
 	/** Find a platform if it exists and return a writable pointer to its flags. */
-	const FPlatformData* FindPlatformData(const ITargetPlatform* TargetPlatform) const;
+	const FPackagePlatformData* FindPlatformData(const ITargetPlatform* TargetPlatform) const;
 
 	/** Return true if and only if at least one platform has been cooked. */
 	bool HasAnyCookedPlatform() const;
@@ -290,23 +392,9 @@ public:
 	bool HasCookedPlatform(const ITargetPlatform* Platform, bool bIncludeFailed) const;
 	/**
 	 * Return the CookResult for the given platform.  If the platform has not been cooked,
-	 * returns ECookResult::Unseen, otherwise returns Succeeded or Failed depending on its success flag.
+	 * returns ECookResult::NotAttempted, otherwise returns whatever result has been set.
 	 */
 	ECookResult GetCookResults(const ITargetPlatform* Platform) const;
-
-	/** Empties and then sets OutPlatforms to contain all platforms that have been requested and not cook-attempted. */
-	template <typename ArrayType>
-	void GetUncookedPlatforms(ArrayType& OutPlatforms)
-	{
-		OutPlatforms.Reset(PlatformDatas.Num());
-		for (const TPair<const ITargetPlatform*, FPlatformData>& Pair : PlatformDatas)
-		{
-			if (Pair.Value.bRequested && !Pair.Value.bCookAttempted)
-			{
-				OutPlatforms.Add(Pair.Key);
-			}
-		}
-	}
 
 	/**
 	 * Return the package pointer. By contract it will be non-null if and only if the PackageData's state is
@@ -351,7 +439,8 @@ public:
 	 * Add the given callback into this PackageData's callback field. It is invalid to call this function with a
 	 * non-empty callback if this PackageData already has a CompletionCallback.
 	 */
-	void AddCompletionCallback(FCompletionCallback&& InCompletionCallback);
+	void AddCompletionCallback(TConstArrayView<const ITargetPlatform*> TargetPlatforms,
+		FCompletionCallback&& InCompletionCallback);
 
 	/**
 	 * Get/Set a visited flag used when searching graphs of PackageData. User of the graph is responsible for 
@@ -378,6 +467,10 @@ public:
 	 * TryCreateObjectCache and is cleared when leaving the save state.
 	 */
 	TArray<FWeakObjectPtr>& GetCachedObjectsInOuter();
+	template <typename ArrayType>
+	/** The list of platforms that were recorded as needscooking when CachedObjeObjectsInOuter was recorded. */
+	void GetCachedObjectsInOuterPlatforms(ArrayType& OutPlatforms) const;
+
 	/** Validate that the CachedObjectsInOuter-dependent variables are empty, when entering save. */
 	void CheckObjectCacheEmpty() const;
 	/** Populate CachedObjectsInOuter if not already populated. Invalid to call except when in the save state. */
@@ -440,11 +533,11 @@ public:
 	 */
 	void ClearCookedPlatformData();
 
-	/** Get/Set the PackageDataMonitor flag that counts whether this PackageData has finished cooking. */
-	bool GetMonitorIsCooked() const { return static_cast<bool>(bMonitorIsCooked); }
-	void SetMonitorIsCooked(bool Value) { bMonitorIsCooked = Value != 0; }
+	/** Get/Set the PackageDataMonitor flag that counts whether this PackageData has finished cooking and with what result. */
+	ECookResult GetMonitorCookResult() const { return (ECookResult)MonitorCookResult; }
+	void SetMonitorCookResult(ECookResult Value) { MonitorCookResult = (uint8) Value; }
 
-	/** Remove all request data about the given platform from all fields in this PackageData. */
+	/** Remove all data about the given platform from all fields in this PackageData. */
 	void OnRemoveSessionPlatform(const ITargetPlatform* Platform);
 
 	/** Report whether this PackageData holds references to UObjects and would be affected by GarbageCollection. */
@@ -454,12 +547,12 @@ public:
 	void RemapTargetPlatforms(const TMap<ITargetPlatform*, ITargetPlatform*>& Remap);
 
 	/** Create and return a GeneratorPackage helper object for a given CookPackageSplitter. */
-	FGeneratorPackage* CreateGeneratorPackage(const UObject* InSplitDataObject,
+	FGeneratorPackage& CreateGeneratorPackage(const UObject* InSplitDataObject,
 		ICookPackageSplitter* InCookPackageSplitterInstance);
 	/** Destroy GeneratorPackage helper object. */
 	void DestroyGeneratorPackage() { GeneratorPackage.Reset(); }
 	/** Get GeneratorPackage helper object. */
-	FGeneratorPackage* GetGeneratorPackage() const { return GeneratorPackage.Get(); }
+	FGeneratorPackage* GetGeneratorPackage() const;
 	/** Get whether the PackageData has done any necessary Generator steps and is ready for BeginCache calls. */
 	bool HasCompletedGeneration() const { return static_cast<bool>(bCompletedGeneration); }
 	/** Set whether the PackageData has done any necessary Generator steps and is ready for BeginCache calls. */
@@ -482,11 +575,19 @@ public:
 	 * referencing package that causes the package to enter the requested state.
 	 */
 	const FInstigator& GetInstigator() const { return Instigator; }
+	bool HasInstigator() const { return Instigator.Category != EInstigator::NotYetRequested; }
+	/** Setting the instigator is mostly private - it should only be done during clustering. */
+	void SetInstigator(FRequestCluster& Cluster, FInstigator&& InInstigator);
+	void SetInstigator(FCookWorkerClient& Cluster, FInstigator&& InInstigator);
+	void SetInstigator(FGeneratorPackage& Cluster, FInstigator&& InInstigator);
 
 	/** Get whether COTFS is keeping this package referenced referenced during GC. */
 	bool IsKeepReferencedDuringGC() const { return static_cast<bool>(bKeepReferencedDuringGC); }
 	/** Set whether COTFS is keeping this package referenced referenced during GC. */
 	void SetKeepReferencedDuringGC(bool Value) { bKeepReferencedDuringGC = Value != 0; }
+
+	/** Return whether the package was cooked during this session */
+	bool GetWasCookedThisSession() const { return static_cast<bool>(bWasCookedThisSession); }
 
 	/** For MultiProcessCooks, Get the id of the worker this Package is assigned to; InvalidId means owned by local. */
 	FWorkerId GetWorkerAssignment() const { return WorkerAssignment; }
@@ -502,14 +603,29 @@ public:
 
 	/** Marshall this PackageData to a ConstructData that can be used later or on a remote machine to reconstruct it. */
 	FConstructPackageData CreateConstructData();
+
+	/** Only used When IsDebugRecordUnsolicited: storage for the list of unsolicited packages for this package */
+	TMap<FPackageData*, EInstigator>& CreateOrGetUnsolicited();
+	TMap<FPackageData*, EInstigator> DetachUnsolicited();
+	void ClearUnsolicited();
+
+	/**
+	 * Return the platforms for which the given Package has been marked reachable.
+	 * If the package does not exist, return the COTFS's list of Session platforms
+	 */
+	static void GetReachablePlatformsForInstigator(UCookOnTheFlyServer& COTFS, FPackageData* InInstigator,
+		TArray<const ITargetPlatform*>& Platforms);
+	static void GetReachablePlatformsForInstigator(UCookOnTheFlyServer& COTFS, FName InInstigator,
+		TArray<const ITargetPlatform*>& Platforms);
 private:
 	friend struct UE::Cook::FPackageDatas;
 
-	/** FindOrAdd each TargetPlatform and set its bRequested value. */
-	void SetPlatformsRequested(const TConstArrayView<const ITargetPlatform*> TargetPlatforms, bool bRequested);
-	/** Set all platforms to not requested. */
-	void ClearRequestedPlatforms();
 	void SetIsUrgent(bool Value);
+	void SetInstigatorInternal(FInstigator&& InInstigator);
+	static void AddReachablePlatformsInternal(FPackageData& PackageData, TConstArrayView<const ITargetPlatform*> Platforms,
+		FInstigator&& InInstigator);
+	static void QueueAsDiscoveredInternal(FPackageData& PackageData, FInstigator&& InInstigator,
+		FDiscoveredPlatformSet&& ReachablePlatforms, bool bUrgent);
 
 	/**
 	 * Set the FileName of the file that contains the package. This member is private because FPackageDatas
@@ -569,14 +685,15 @@ private:
 	void OnExitHasPackage();
 	void OnEnterHasPackage();
 
-	void OnPackageDataFirstRequested(FInstigator&& InInstigator);
+	void OnPackageDataFirstMarkedReachable(FInstigator&& InInstigator);
 
 	TUniquePtr<FGeneratorPackage> GeneratorPackage;
 	FGeneratorPackage* GeneratedOwner;
 	/** Data for each platform that has been interacted with by *this. */
-	TSortedMap<const ITargetPlatform*, FPlatformData> PlatformDatas;
+	TSortedMap<const ITargetPlatform*, FPackagePlatformData, TInlineAllocator<1>> PlatformDatas;
 	TArray<FWeakObjectPtr> CachedObjectsInOuter;
 	FCompletionCallback CompletionCallback;
+	TUniquePtr<TMap<FPackageData*, EInstigator>> Unsolicited;
 	FName PackageName;
 	FName FileName;
 
@@ -604,7 +721,7 @@ private:
 	};
 	FTrackedPreloadableFilePtr PreloadableFile;
 	int32 NumPendingCookedPlatformData = 0;
-	int32 CookedPlatformDataNextIndex = 0;
+	int32 CookedPlatformDataNextIndex = -1;
 	int32 NumRetriesBeginCacheOnObject = 0;
 	FOpenPackageResult PreloadableFileOpenResult;
 	FInstigator Instigator;
@@ -622,35 +739,12 @@ private:
 	uint32 bCookedPlatformDataStarted : 1;
 	uint32 bCookedPlatformDataCalled : 1;
 	uint32 bCookedPlatformDataComplete : 1;
-	uint32 bMonitorIsCooked : 1;
+	uint32 MonitorCookResult : (int) ECookResult::NumBits;
 	uint32 bInitializedGeneratorSave : 1;
 	uint32 bCompletedGeneration : 1;
 	uint32 bGenerated : 1;
 	uint32 bKeepReferencedDuringGC : 1;
-};
-
-/** A single object in athe save of a package that might have had BeginCacheForCookedPlatformData called already */
-struct FBeginCacheObject
-{
-	FWeakObjectPtr Object;
-	bool bHasFinishedRound = false;
-	bool bIsRootMovedObject = false;
-};
-
-/**
- * Collection of the known objects in the save of a package that might have had BeginCacheForCookedPlatformData called already
- * and will have it called on them in the next round of calls if not.
- */
-struct FBeginCacheObjects
-{
-	TArray<FBeginCacheObject> Objects;
-	TArray<FWeakObjectPtr> ObjectsInRound;
-	int32 NextIndexInRound = 0;
-
-	void Reset();
-
-	void StartRound();
-	void EndRound(int32 NumPlatforms);
+	uint32 bWasCookedThisSession : 1;
 };
 
 /**
@@ -722,13 +816,28 @@ public:
 		KeepReferencedPackages.Append(InKeepReferencedPackages);
 	}
 
+	/** Create the Guid for this generated package, based on dependencies and GenerationHash. */
+	void CreateGuid();
+
+	/**
+	 * If the package has iterative results from a previous cook that were not invalidated by dependency changes,
+	 * test whether they need to be invalidated now and clear the results if so. Only called in legacy iterative;
+	 * incremental cooks handle invalidation by querying the TargetDomainDigest during the RequestCluster.
+	 */
+	void IterativeCookValidateOrClear(FGeneratorPackage& Generator,
+		TConstArrayView<const ITargetPlatform*> RequestedPlatforms, const FGuid& PreviousGuid, bool& bOutIdentical);
+
+	TConstArrayView<FAssetDependency> GetDependencies() const { return PackageDependencies; }
+
 public:
-	FBeginCacheObjects BeginCacheObjects;
+	FGuid Guid;
 	FString RelativePath;
 	FString GeneratedRootPath;
-	TArray<FName> Dependencies;
+	FBlake3Hash GenerationHash;
+	TArray<FAssetDependency> PackageDependencies;
 	FPackageData* PackageData = nullptr;
 	TArray<UPackage*> KeepReferencedPackages;
+	TSet<UObject*> RootMovedObjects;
 private:
 	ESaveState GeneratorSaveState = ESaveState::StartGenerate;
 	bool bCreateAsMap : 1;
@@ -750,16 +859,20 @@ public:
 	FGeneratorPackage(UE::Cook::FPackageData& InOwner, const UObject* InSplitDataObject,
 		ICookPackageSplitter* InCookPackageSplitterInstance);
 	~FGeneratorPackage();
+	void InitializeSave(const UObject* InSplitDataObject, ICookPackageSplitter* InCookPackageSplitterInstance);
+	bool IsInitialized() const { return CookPackageSplitterInstance.IsValid(); }
 	/** Clear references to owned generated packages, and mark those packages as orphaned */
 	void ClearGeneratedPackages();
 
 	/** Call the Splitter's GetGenerateList and create the PackageDatas */
 	bool TryGenerateList(UObject* OwnerObject, FPackageDatas& PackageDatas);
+	/** Record all dependencies from the Generator that are ExternalActor dependencies and store them on this. */
+	void FetchExternalActorDependencies();
 
 	/** Accessor for the packages to generate */
-	TArrayView<UE::Cook::FCookGenerationInfo> GetPackagesToGenerate() { return PackagesToGenerate; }
+	TArrayView<UE::Cook::FCookGenerationInfo> GetPackagesToGenerate() { check(IsInitialized()); return PackagesToGenerate; }
 	/** Return the GenerationInfo used to save the Generator's UPackage */
-	UE::Cook::FCookGenerationInfo& GetOwnerInfo() { return OwnerInfo; }
+	UE::Cook::FCookGenerationInfo& GetOwnerInfo() { check(IsInitialized()); return OwnerInfo; }
 	/** Return owner FPackageData. */
 	UE::Cook::FPackageData& GetOwner() { return *OwnerInfo.PackageData; }
 	/** Return the GenerationInfo for the given PackageData, or null if not found. */
@@ -769,7 +882,7 @@ public:
 	/** Return CookPackageSplitter. */
 	ICookPackageSplitter* GetCookPackageSplitterInstance() const { return CookPackageSplitterInstance.Get(); }
 	/** Return the SplitDataObject's FullObjectPath. */
-	const FName GetSplitDataObjectName() const { return SplitDataObjectName; }
+	const FName GetSplitDataObjectName() const { check(IsInitialized()); return SplitDataObjectName; }
 	/**
 	 * Find again the split object from its name, or return null if no longer in memory.
 	 * It may have been GC'd and reloaded since the last time we used it.
@@ -778,10 +891,10 @@ public:
 
 	void ResetSaveState(FCookGenerationInfo& Info, UPackage* Package, UE::Cook::EReleaseSaveReason ReleaseSaveReason);
 
-	int32& GetNextPopulateIndex() { return NextPopulateIndex; }
+	int32& GetNextPopulateIndex() { check(IsInitialized()); return NextPopulateIndex; }
 
 	/** Callbacks during garbage collection */
-	void PreGarbageCollect(FCookGenerationInfo& Info, TArray<UObject*>& GCKeepObjects,
+	void PreGarbageCollect(FCookGenerationInfo& Info, TArray<TObjectPtr<UObject>>& GCKeepObjects,
 		TArray<UPackage*>& GCKeepPackages, TArray<FPackageData*>& GCKeepPackageDatas, bool& bOutShouldDemote);
 	void PostGarbageCollect();
 
@@ -797,6 +910,10 @@ public:
 
 	UPackage* GetOwnerPackage() const { return OwnerPackage.Get(); };
 	void SetOwnerPackage(UPackage* InPackage) { OwnerPackage = InPackage; }
+	void SetPreviousGeneratedPackages(TMap<FName, FGuid>&& Packages) { PreviousGeneratedPackages = MoveTemp(Packages); }
+
+	TConstArrayView<FName> GetExternalActorDependencies() { check(IsInitialized()); return ExternalActorDependencies; }
+	TArray<FName> ReleaseExternalActorDependencies() { TArray<FName> Result = MoveTemp(ExternalActorDependencies); return Result; }
 
 private:
 	void ConditionalNotifyCompletion(ICookPackageSplitter::ETeardown Status);
@@ -810,6 +927,8 @@ private:
 	/** Recorded list of packages to generate from the splitter, and data we need about them */
 	TArray<FCookGenerationInfo> PackagesToGenerate;
 	TWeakObjectPtr<UPackage> OwnerPackage;
+	TMap<FName, FGuid> PreviousGeneratedPackages;
+	TArray<FName> ExternalActorDependencies;
 
 	int32 NextPopulateIndex = 0;
 	int32 RemainingToPopulate = 0;
@@ -834,6 +953,9 @@ struct FPendingCookedPlatformData
 	~FPendingCookedPlatformData();
 	FPendingCookedPlatformData& operator=(const FPendingCookedPlatformData& Other) = delete;
 	FPendingCookedPlatformData& operator=(const FPendingCookedPlatformData&& Other) = delete;
+
+	/** Helper for both pending and synchronous; call ClearCachedCookedPlatformData and related teardowns. */
+	static void ClearCachedCookedPlatformData(UObject* Object, FPackageData& PackageData, bool bCompletedSuccesfully);
 
 	/**
 	 * Call IsCachedCookedPlatformDataLoaded on the object if it has not already returned true.
@@ -908,7 +1030,7 @@ public:
 	int32 GetNumInProgress() const;
 	int32 GetNumPreloadAllocated() const;
 	/** Report the number of packages that have cooked any platform. Used by CookCommandlet progress reporting. */
-	int32 GetNumCooked() const;
+	int32 GetNumCooked(ECookResult CookResult) const;
 	/**
 	 * Report the number of FPackageData that are currently marked as urgent.
 	 * Used to check if a Pump function needs to exit to handle urgent PackageData in other states.
@@ -925,7 +1047,7 @@ public:
 	void OnInProgressChanged(FPackageData& PackageData, bool bInProgress);
 	void OnPreloadAllocatedChanged(FPackageData& PackageData, bool bPreloadAllocated);
 	/** Callback called from FPackageData when it has set a platform to CookAttempted=true and it does not have any others cooked. */
-	void OnFirstCookedPlatformAdded(FPackageData& PackageData);
+	void OnFirstCookedPlatformAdded(FPackageData& PackageData, ECookResult CookResult);
 	/** Callback called from FPackageData when it has set a platform to CookAttempted=false and it does not have any others cooked. */
 	void OnLastCookedPlatformRemoved(FPackageData& PackageData);
 	/** Callback called from FPackageData when it has changed its urgency. */
@@ -938,11 +1060,18 @@ private:
 	void TrackUrgentRequests(EPackageState State, int32 Delta);
 
 	int32 NumInProgress = 0;
-	int32 NumCooked = 0;
+	int32 NumCooked[(uint8)ECookResult::Count]{};
 	int32 NumPreloadAllocated = 0;
 	int32 NumUrgentInState[static_cast<uint32>(EPackageState::Count)];
 };
 
+struct FDiscoveryQueueElement
+{
+	FPackageData* PackageData;
+	FInstigator Instigator;
+	FDiscoveredPlatformSet ReachablePlatforms;
+	bool bUrgent;
+};
 
 /**
  * A container for FPackageDatas in the Request state. This container needs to support fast find and remove,
@@ -956,22 +1085,32 @@ public:
 	uint32 Num() const;
 	uint32 Remove(FPackageData* PackageData);
 	bool Contains(const FPackageData* PackageData) const;
+	bool DiscoveryQueueContains(FPackageData* PackageData) const;
 	void Empty();
 
 	void AddRequest(FPackageData* PackageData, bool bForceUrgent=false);
 
+	bool HasRequestsToExplore() const;
 	uint32 ReadyRequestsNum() const;
 	bool IsReadyRequestsEmpty() const;
 	FPackageData* PopReadyRequest();
 	void AddReadyRequest(FPackageData* PackageData, bool bForceUrgent = false);
 	uint32 RemoveRequest(FPackageData* PackageData);
+	uint32 RemoveRequestExceptFromCluster(FPackageData* PackageData, FRequestCluster* ExceptFromCluster);
 
-	FPackageDataSet& GetUnclusteredRequests() { return UnclusteredRequests; }
+	FPackageDataSet& GetRestartedRequests() { return RestartedRequests; }
+	/**
+	 * Unlike other containers on PackageData, GetDiscoveryQueue is not an ownership container.
+	 * PackageDatas in the DiscoveryQueue are PackageDatas we need to look at - in the right order during PumpRequests -
+	 * they can be in any state and are owned by another container (or are in the idle state).
+	 */
+	TRingBuffer<FDiscoveryQueueElement>& GetDiscoveryQueue() { return DiscoveryQueue; }
 	TRingBuffer<FRequestCluster>& GetRequestClusters() { return RequestClusters; }
 	FPackageDataSet& GetReadyRequestsUrgent() { return UrgentRequests; }
 	FPackageDataSet& GetReadyRequestsNormal() { return NormalRequests; }
 private:
-	FPackageDataSet UnclusteredRequests;
+	FPackageDataSet RestartedRequests;
+	TRingBuffer<FDiscoveryQueueElement> DiscoveryQueue;
 	TRingBuffer<FRequestCluster> RequestClusters;
 	FPackageDataSet UrgentRequests;
 	FPackageDataSet NormalRequests;
@@ -995,11 +1134,23 @@ public:
 	FPackageDataQueue EntryQueue;
 };
 
+/** Data duplicated from FPackageData that is stored separately for read/write from any thread. */
+struct FThreadsafePackageData
+{
+	FInstigator Instigator;
+	FName Generator;
+	bool bInitialized : 1;
+	bool bHasLoggedDiscoveryWarning : 1;
+	bool bHasLoggedDependencyWarning : 1;
+
+	FThreadsafePackageData();
+};
+
 typedef TArray<FPendingCookedPlatformData> FPendingCookedPlatformDataContainer;
 
 /*
  * Class that manages the list of all PackageDatas for a CookOnTheFlyServer. PackageDatas is an associative
- * array for extra data about a package (e.g. the requested platforms) that is needed by the CookOnTheFlyServer.
+ * array for extra data about a package (e.g. the cook results) that is needed by the CookOnTheFlyServer.
  * FPackageData are allocated once and never destroyed or moved until the CookOnTheFlyServer is destroyed.
  * Memory on the FPackageData is allocated and deallocated as necessary for its current state.
  * FPackageData are mapped by PackageName and by FileName.
@@ -1090,6 +1241,11 @@ public:
 	FPackageData& AddPackageDataByPackageNameChecked(const FName& PackageName, bool bRequireExists = true,
 		bool bCreateAsMap = false);
 
+	void UpdateThreadsafePackageData(const FPackageData& PackageData);
+	/** Callback == void (*Callback)(FThreadsafePackageData& Value, bool bNew) */
+	template<typename CallbackType>
+	void UpdateThreadsafePackageData(FName PackageName, CallbackType&& Callback);
+	TOptional<FThreadsafePackageData> FindThreadsafePackageData(FName PackageName);
 	/**
 	 * Return the PackageData with the given FileName if one exists, otherwise return nullptr.
 	 */
@@ -1164,7 +1320,7 @@ public:
 
 	/** Create and mark-cooked a batch of PackageDatas, used by DLC for cooked-in-earlier-release packages. */
 	void AddExistingPackageDatasForPlatform(TConstArrayView<FConstructPackageData> ExistingPackages,
-		const ITargetPlatform* TargetPlatform);
+		const ITargetPlatform* TargetPlatform, bool bExpectPackageDatasAreNew, int32& OutPackageDataFromBaseGameNum);
 
 	/**
 	 * Try to find the PackageData for the given PackageName.
@@ -1177,12 +1333,14 @@ public:
 
 	/** Report the number of packages that have cooked any platform. Used by cook commandlet progress reporting. */
 	int32 GetNumCooked();
+	int32 GetNumCooked(ECookResult CookResult);
 	/**
-	 * Append to CookedPackages all packages that have cooked any platform, either successfully if
-	 * bGetSuccessfulCookedPackages is true and/or unsuccessfully if bGetFailedCookedPackages is true.
+	 * Append to SucceededPackages all packages that have cooked any platform with success, and to
+	 * FailedPackages all packages that have cooked any platform with other results. The output variables are permitted
+	 * to point to the same array.
 	 */
-	void GetCookedPackagesForPlatform(const ITargetPlatform* Platform, TArray<FPackageData*>& CookedPackages,
-		bool bGetFailedCookedPackages, bool bGetSuccessfulCookedPackages);
+	void GetCookedPackagesForPlatform(const ITargetPlatform* Platform, TArray<FPackageData*>& SucceededPackages,
+		TArray<FPackageData*>& FailedPackages);
 
 	/**
 	 * Delete all PackageDatas and free all other memory used by this FPackageDatas.
@@ -1191,7 +1349,7 @@ public:
 	void Clear();
 	/** Set all platforms to not cooked in all PackageDatas. Used to e.g. invalidate previous cooks. */
 	void ClearCookedPlatforms();
-	/** Remove all request data about the given platform from all PackageDatas and other memory used by *this. */
+	/** Remove all data about the given platform from all PackageDatas and other memory used by *this. */
 	void OnRemoveSessionPlatform(const ITargetPlatform* TargetPlatform);
 
 	/** Enumerate PendingPlatformDatas: the list of pending calls to BeginCacheForCookedPlatformData. */
@@ -1214,37 +1372,49 @@ public:
 	 * releasing their resources and pending count if so.
 	 */
 	void PollPendingCookedPlatformDatas(bool bForce, double& LastCookableObjectTickTime);
-
-	/** RangedFor methods for iterating over all FPackageData managed by this FPackageDatas */
-	TArray<FPackageData*>::RangedForIteratorType begin();
-	TArray<FPackageData*>::RangedForIteratorType end();
+	void ClearCancelManager(FPackageData& PackageData);
 
 	/** Swap all ITargetPlatform* stored on this instance according to the mapping in @param Remap. */
 	void RemapTargetPlatforms(const TMap<ITargetPlatform*, ITargetPlatform*>& Remap);
 
-	/** Get/Set whether to log newly discovered packages to debug missing transitive references. */
-	void SetLogDiscoveredPackages(bool bLog) { bLogDiscoveredPackages = bLog; }
-	bool GetLogDiscoveredPackages() const { return bLogDiscoveredPackages; }
-
 	/** Called when a PackageData assigns its instigator, for debugging. */
 	void DebugInstigator(FPackageData& PackageData);
+
+	/** Enter the required locks and enumerate all created PackageDatas. */
+	template <typename CallbackType>
+	void LockAndEnumeratePackageDatas(CallbackType&& Callback);
+
+	TMap<UObject*, FCachedCookedPlatformDataState>& GetCachedCookedPlatformDataObjects()
+	{
+		return CachedCookedPlatformDataObjects;
+	}
+	void CachedCookedPlatformDataObjectsPostGarbageCollect(const TSet<UObject*>& SaveQueueObjectsThatStillExist);
+
 private:
 	/**
 	 * Construct a new FPackageData with the given PackageName and FileName and store references to it in the maps.
 	 * New FPackageData are always created in the Idle state.
 	 */
 	FPackageData& CreatePackageData(FName PackageName, FName FileName);
+	/** Called from within ExistenceLock, enumerate all created PackageDatas. */
+	template <typename CallbackType>
+	void EnumeratePackageDatasWithinLock(CallbackType&& Callback);
 	/** Return whether a filename exists for the package on disk, and return it, unnormalized. */
 	static bool TryLookupFileNameOnDisk(FName PackageName, FString& OutFileName);
 	/** Return the corresponding PackageName if the normalized filename exists on disk. */
 	static FName LookupPackageNameOnDisk(FName NormalizedFileName, bool bExactMatchRequired, FName& FoundFileName);
 
-	/** Collection of pointers to all FPackageData that have been constructed by *this. */
-	TArray<FPackageData*> PackageDatas;
+	/** Allocator for PackageDatas Guarded by ExistenceLock. */
+	TTypedBlockAllocatorFreeList<FPackageData> Allocator;
 	FPackageDataMonitor Monitor;
+	/** Guarded by ExistenceLock */
 	TMap<FName, FPackageData*> PackageNameToPackageData;
+	/** Guarded by ExistenceLock */
 	TMap<FName, FPackageData*> FileNameToPackageData;
+	/* Guarded by ExistenceLock. Duplicates information on FPackageData, but can be read/write from any thread. */
+	TMap<FName, FThreadsafePackageData> ThreadsafePackageDatas;
 	TRingBuffer<FPendingCookedPlatformDataContainer> PendingCookedPlatformDataLists;
+	TMap<UObject*, FCachedCookedPlatformDataState> CachedCookedPlatformDataObjects;
 	int32 PendingCookedPlatformDataNum = 0;
 	FRequestQueue RequestQueue;
 	TFastPointerSet<FPackageData*> AssignedToWorkerSet;
@@ -1252,13 +1422,25 @@ private:
 	FPackageDataQueue LoadReadyQueue;
 	FPackageDataQueue SaveQueue;
 	UCookOnTheFlyServer& CookOnTheFlyServer;
-	FRWLock ExistenceLock;
+	mutable FRWLock ExistenceLock;
 	FPackageData* ShowInstigatorPackageData = nullptr;
 	double LastPollAsyncTime;
-	bool bLogDiscoveredPackages = false;
 
 	static IAssetRegistry* AssetRegistry;
 };
+
+template <typename CallbackType>
+inline void FPackageDatas::LockAndEnumeratePackageDatas(CallbackType&& Callback)
+{
+	FReadScopeLock ExistenceReadLock(ExistenceLock);
+	EnumeratePackageDatasWithinLock(Forward<CallbackType>(Callback));
+}
+
+template <typename CallbackType>
+inline void FPackageDatas::EnumeratePackageDatasWithinLock(CallbackType&& Callback)
+{
+	Allocator.EnumerateAllocations(Forward<CallbackType>(Callback));
+}
 
 /**
  * A debug-only scope class to confirm that each FPackageData removed from a container during a Pump function
@@ -1274,5 +1456,65 @@ struct FPoppedPackageDataScope
 	FPackageData& PackageData;
 #endif
 };
+
+template<typename CallbackType>
+inline void FPackageDatas::UpdateThreadsafePackageData(FName PackageName, CallbackType&& Callback)
+{
+	FWriteScopeLock ExistenceWriteLock(ExistenceLock);
+	FThreadsafePackageData& Value = ThreadsafePackageDatas.FindOrAdd(PackageName);
+	bool bNew = false;
+	if (!Value.bInitialized)
+	{
+		Value.bInitialized = true;
+		bNew = true;
+	}
+	Callback(Value, bNew);
+}
+
+inline TOptional<FThreadsafePackageData> FPackageDatas::FindThreadsafePackageData(FName PackageName)
+{
+	FReadScopeLock ExistenceReadLock(ExistenceLock);
+	FThreadsafePackageData* Value = ThreadsafePackageDatas.Find(PackageName);
+	return Value ? TOptional<FThreadsafePackageData>(*Value) : TOptional<FThreadsafePackageData>();
+}
+
+template <typename ArrayType>
+inline void FPackageData::GetPlatformsNeedingCooking(ArrayType& OutPlatforms) const
+{
+	OutPlatforms.Reset(PlatformDatas.Num());
+	for (const TPair<const ITargetPlatform*, FPackagePlatformData>& Pair : PlatformDatas)
+	{
+		if (Pair.Value.NeedsCooking(Pair.Key))
+		{
+			OutPlatforms.Add(Pair.Key);
+		}
+	}
+}
+
+template <typename ArrayType>
+inline void FPackageData::GetCachedObjectsInOuterPlatforms(ArrayType& OutPlatforms) const
+{
+	OutPlatforms.Reset(PlatformDatas.Num());
+	for (const TPair<const ITargetPlatform*, FPackagePlatformData>& Pair : PlatformDatas)
+	{
+		if (Pair.Value.IsRegisteredForCachedObjectsInOuter())
+		{
+			OutPlatforms.Add(Pair.Key);
+		}
+	}
+}
+
+template <typename ArrayType>
+inline void FPackageData::GetReachablePlatforms(ArrayType& OutPlatforms) const
+{
+	OutPlatforms.Reset(PlatformDatas.Num());
+	for (const TPair<const ITargetPlatform*, FPackagePlatformData>& Pair : PlatformDatas)
+	{
+		if (Pair.Value.IsReachable())
+		{
+			OutPlatforms.Add(Pair.Key);
+		}
+	}
+}
 
 } // namespace UE::Cook

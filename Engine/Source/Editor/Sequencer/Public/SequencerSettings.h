@@ -28,7 +28,7 @@ enum ESequencerSpawnPosition : int
 UENUM()
 enum ESequencerZoomPosition : int
 {
-	/** Current Time. */
+	/** Playhead. */
 	SZP_CurrentTime UMETA(DisplayName="Playhead"),
 
 	/** Mouse Position. */
@@ -93,6 +93,7 @@ public:
 	DECLARE_MULTICAST_DELEGATE( FOnShowSelectedNodesOnlyChanged );
 	DECLARE_MULTICAST_DELEGATE_OneParam( FOnAllowEditsModeChanged, EAllowEditsMode );
 	DECLARE_MULTICAST_DELEGATE(FOnLoopStateChanged);
+	DECLARE_MULTICAST_DELEGATE(FOnTimeDisplayFormatChanged);
 
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 
@@ -392,6 +393,8 @@ public:
 
 	FOnLoopStateChanged& GetOnLoopStateChanged();
 
+	FOnTimeDisplayFormatChanged& GetOnTimeDisplayFormatChanged();
+
 	/** What format should we display the UI controls in when representing time in a sequence? */
 	EFrameNumberDisplayFormats GetTimeDisplayFormat() const { return FrameNumberDisplayFormat; }
 	/** Sets the time display format to the specified type. */
@@ -411,6 +414,11 @@ public:
 	float GetTreeViewWidth() const { return TreeViewWidth; }
 	/** Sets the tree view width percentage */
 	void SetTreeViewWidth(float InTreeViewWidth);
+
+	/** Gets whether the given track filter is enabled */
+	bool IsTrackFilterEnabled(const FString& TrackFilter) const;
+	/** Sets whether the track filter should be enabled/disabled */
+	void SetTrackFilterEnabled(const FString& TrackFilter, bool bEnabled);
 
 protected:
 
@@ -660,8 +668,13 @@ protected:
 	UPROPERTY(config, EditAnywhere, Category = General)
 	float TreeViewWidth;
 
+	/** The track filters that are enabled */
+	UPROPERTY(config, EditAnywhere, Category = General)
+	TArray<FString> TrackFilters;
+
 	FOnEvaluateSubSequencesInIsolationChanged OnEvaluateSubSequencesInIsolationChangedEvent;
 	FOnShowSelectedNodesOnlyChanged OnShowSelectedNodesOnlyChangedEvent;
 	FOnAllowEditsModeChanged OnAllowEditsModeChangedEvent;
 	FOnLoopStateChanged OnLoopStateChangedEvent;
+	FOnTimeDisplayFormatChanged OnTimeDisplayFormatChangedEvent;
 };

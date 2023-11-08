@@ -10,6 +10,7 @@ class FDisplayClusterClusterSyncService;
 class FDisplayClusterRenderSyncService;
 class FDisplayClusterClusterEventsJsonService;
 class FDisplayClusterClusterEventsBinaryService;
+class FDisplayClusterGenericBarrierService;
 class FDisplayClusterTcpListener;
 
 
@@ -41,6 +42,7 @@ public:
 		return EDisplayClusterNodeRole::Primary;
 	}
 
+	virtual FDisplayClusterService* GetGenericBarriersServer() const override;
 	virtual bool DropClusterNode(const FString& NodeId) override;
 
 protected:
@@ -63,6 +65,7 @@ private:
 	// Node servers
 	TUniquePtr<FDisplayClusterClusterSyncService>         ClusterSyncServer;
 	TUniquePtr<FDisplayClusterRenderSyncService>          RenderSyncServer;
+	TUniquePtr<FDisplayClusterGenericBarrierService>      GenericBarriersServer;
 	TUniquePtr<FDisplayClusterClusterEventsJsonService>   ClusterEventsJsonServer;
 	TUniquePtr<FDisplayClusterClusterEventsBinaryService> ClusterEventsBinaryServer;
 

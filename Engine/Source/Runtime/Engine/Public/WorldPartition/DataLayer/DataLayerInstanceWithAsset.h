@@ -6,8 +6,8 @@
 
 #include "DataLayerInstanceWithAsset.generated.h"
 
-UCLASS(Config = Engine, PerObjectConfig, Within = WorldDataLayers, AutoCollapseCategories = ("Data Layer|Advanced"), AutoExpandCategories = ("Data Layer|Editor", "Data Layer|Advanced|Runtime"))
-class ENGINE_API UDataLayerInstanceWithAsset : public UDataLayerInstance
+UCLASS(Config = Engine, PerObjectConfig, AutoCollapseCategories = ("Data Layer|Advanced"), AutoExpandCategories = ("Data Layer|Editor", "Data Layer|Advanced|Runtime"), MinimalAPI)
+class UDataLayerInstanceWithAsset : public UDataLayerInstance
 {
 	GENERATED_UCLASS_BODY()
 
@@ -15,21 +15,26 @@ class ENGINE_API UDataLayerInstanceWithAsset : public UDataLayerInstance
 
 public:
 #if WITH_EDITOR
-	static FName MakeName(const UDataLayerAsset* DeprecatedDataLayer);
-	void OnCreated(const UDataLayerAsset* Asset);
+	static ENGINE_API FName MakeName(const UDataLayerAsset* DeprecatedDataLayer);
+	static ENGINE_API TSubclassOf<UDataLayerInstanceWithAsset> GetDataLayerInstanceClass();
+	ENGINE_API void OnCreated(const UDataLayerAsset* Asset);
 
-	virtual void PreEditUndo() override;
-	virtual void PostEditUndo() override;
-	virtual bool IsLocked() const override;
-	virtual bool IsReadOnly() const override;
-	virtual bool AddActor(AActor* Actor) const override;
-	virtual bool RemoveActor(AActor* Actor) const override;
+	ENGINE_API virtual bool CanEditChange(const FProperty* InProperty) const;
+	ENGINE_API virtual void PreEditUndo() override;
+	ENGINE_API virtual void PostEditUndo() override;
+	ENGINE_API virtual bool IsLocked() const override;
+	ENGINE_API virtual bool IsReadOnly() const override;
+	ENGINE_API virtual bool CanAddActor(AActor* InActor) const override;
+	ENGINE_API virtual bool CanRemoveActor(AActor* InActor) const override;
 
-	virtual bool Validate(IStreamingGenerationErrorHandler* ErrorHandler) const override;
-	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	ENGINE_API virtual bool Validate(IStreamingGenerationErrorHandler* ErrorHandler) const override;
+	ENGINE_API virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+
+	ENGINE_API bool SupportsActorFilters() const;
+	ENGINE_API bool IsIncludedInActorFilterDefault() const;
 #endif
 
-	const UDataLayerAsset* GetAsset() const { return DataLayerAsset; }
+	const UDataLayerAsset* GetAsset() const override { return DataLayerAsset; }
 
 	virtual EDataLayerType GetType() const override { return DataLayerAsset != nullptr ? DataLayerAsset->GetType() : EDataLayerType::Unknown; }
 
@@ -40,9 +45,20 @@ public:
 	virtual FString GetDataLayerShortName() const override { return DataLayerAsset != nullptr ? DataLayerAsset->GetName() : GetDataLayerFName().ToString(); }
 	virtual FString GetDataLayerFullName() const override { return DataLayerAsset != nullptr ? DataLayerAsset->GetPathName() : GetDataLayerFName().ToString(); }
 
+protected:
+#if WITH_EDITOR
+	ENGINE_API virtual bool PerformAddActor(AActor* InActor) const;
+	ENGINE_API virtual bool PerformRemoveActor(AActor* InActor) const;
+#endif
+
 private:
 	UPROPERTY(Category = "Data Layer", EditAnywhere)
 	TObjectPtr<const UDataLayerAsset> DataLayerAsset;
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY(Category = "Data Layer|Actor Filter", EditAnywhere, meta = (DisplayName = "Is Included", ToolTip = "Whether actors assigned to this DataLayer are included by default when used in a filter"))
+	bool bIsIncludedInActorFilterDefault;
+#endif
 
 #if WITH_EDITOR
 	// Used to compare state pre/post undo

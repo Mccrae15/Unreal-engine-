@@ -17,6 +17,7 @@
 #include "WorldPartition/Cook/WorldPartitionCookPackageGenerator.h"
 
 #if WITH_EDITOR
+#include "WorldPartition/WorldPartitionStreamingGeneration.h"
 #include "WorldPartition/WorldPartitionActorLoaderInterface.h"
 #include "WorldPartition/WorldPartitionEditorLoaderAdapter.h"
 #include "PackageSourceControlHelper.h"
@@ -30,8 +31,10 @@ class UActorDescContainer;
 class UWorldPartitionEditorHash;
 class UWorldPartitionRuntimeCell;
 class UWorldPartitionRuntimeHash;
+class URuntimeHashExternalStreamingObjectBase;
 class UWorldPartitionStreamingPolicy;
 class IWorldPartitionCell;
+class UDataLayerManager;
 class IStreamingGenerationErrorHandler;
 class FLoaderAdapterAlwaysLoadedActors;
 class FLoaderAdapterActorList;
@@ -40,6 +43,8 @@ class UHLODLayer;
 class UCanvas;
 class ULevel;
 class FAutoConsoleVariableRef;
+class FWorldPartitionDraw2DContext;
+class FContentBundleEditor;
 
 struct IWorldPartitionStreamingSourceProvider;
 
@@ -54,18 +59,35 @@ enum class EWorldPartitionInitState
 	Uninitializing
 };
 
+UENUM()
+enum class EWorldPartitionServerStreamingMode : uint8
+{
+	ProjectDefault = 0 UMETA(ToolTip = "Use project default (wp.Runtime.EnableServerStreaming)"),
+	Disabled = 1 UMETA(ToolTip = "Server streaming is disabled"),
+	Enabled = 2 UMETA(ToolTip = "Server streaming is enabled"),
+	EnabledInPIE = 3 UMETA(ToolTip = "Server streaming is only enabled in PIE"),
+};
+
+UENUM()
+enum class EWorldPartitionServerStreamingOutMode : uint8
+{
+	ProjectDefault = 0 UMETA(ToolTip = "Use project default (wp.Runtime.EnableServerStreamingOut)"),
+	Disabled = 1 UMETA(ToolTip = "Server streaming out is disabled"),
+	Enabled = 2 UMETA(ToolTip = "Server streaming out is enabled"),
+};
+
 #if WITH_EDITOR
 /**
  * Interface for the world partition editor
  */
-struct ENGINE_API IWorldPartitionEditor
+struct IWorldPartitionEditor
 {
 	virtual void Refresh() {}
 	virtual void Reconstruct() {}
 	virtual void FocusBox(const FBox& Box) const {}
 };
 
-class ENGINE_API ISourceControlHelper
+class ISourceControlHelper
 {
 public:
 	virtual FString GetFilename(const FString& PackageName) const =0;
@@ -76,10 +98,46 @@ public:
 	virtual bool Delete(UPackage* Package) const =0;
 	virtual bool Save(UPackage* Package) const =0;
 };
+
+struct ENGINE_API FDirtyActor
+{
+	FDirtyActor()
+		: ActorPtr(nullptr)
+	{}
+
+	FDirtyActor(AActor* InActor)
+		: ActorPtr(InActor)
+	{
+	}
+
+	FDirtyActor(const FWorldPartitionReference& InWorldPartitionRef, AActor* InActor)
+		: WorldPartitionRef(InWorldPartitionRef)
+		, ActorPtr(InActor)
+	{
+	}
+
+	TOptional<FWorldPartitionReference> WorldPartitionRef;
+	TWeakObjectPtr<AActor>	ActorPtr;		// TWeakObjectPtr is for undo support.
+
+	bool operator == (const FDirtyActor& InDirtyActor) const
+	{
+		return WorldPartitionRef == InDirtyActor.WorldPartitionRef && ActorPtr == InDirtyActor.ActorPtr;
+	}
+
+	friend uint32 GetTypeHash(const FDirtyActor& InDirtyActor)
+	{
+		uint32 Hash = GetTypeHash(InDirtyActor.ActorPtr);
+		if (InDirtyActor.WorldPartitionRef.IsSet())
+		{
+			Hash = HashCombine(Hash, GetTypeHash(InDirtyActor.WorldPartitionRef.GetValue()));
+		}
+		return Hash;
+	}
+};
 #endif
 
-UCLASS(AutoExpandCategories=(WorldPartition))
-class ENGINE_API UWorldPartition final : public UObject, public FActorDescContainerCollection, public IWorldPartitionCookPackageGenerator
+UCLASS(AutoExpandCategories=(WorldPartition), MinimalAPI)
+class UWorldPartition final : public UObject, public FActorDescContainerCollection, public IWorldPartitionCookPackageGenerator
 {
 	GENERATED_UCLASS_BODY()
 
@@ -93,116 +151,156 @@ class ENGINE_API UWorldPartition final : public UObject, public FActorDescContai
 
 public:
 #if WITH_EDITOR
-	static UWorldPartition* CreateOrRepairWorldPartition(AWorldSettings* WorldSettings, TSubclassOf<UWorldPartitionEditorHash> EditorHashClass = nullptr, TSubclassOf<UWorldPartitionRuntimeHash> RuntimeHashClass = nullptr);
-	static bool RemoveWorldPartition(AWorldSettings* WorldSettings);
+	static ENGINE_API UWorldPartition* CreateOrRepairWorldPartition(AWorldSettings* WorldSettings, TSubclassOf<UWorldPartitionEditorHash> EditorHashClass = nullptr, TSubclassOf<UWorldPartitionRuntimeHash> RuntimeHashClass = nullptr);
+	static ENGINE_API bool RemoveWorldPartition(AWorldSettings* WorldSettings);
 #endif
-
-	DECLARE_MULTICAST_DELEGATE_OneParam(FWorldPartitionInitializeDelegate, UWorldPartition*);
-	
-	UE_DEPRECATED(5.1, "Please use FWorldPartitionInitializedEvent& UWorld::OnWorldPartitionInitialized() instead.")
-	FWorldPartitionInitializeDelegate OnWorldPartitionInitialized;
-
-	UE_DEPRECATED(5.1, "Please use FWorldPartitionInitializedEvent& UWorld::OnWorldPartitionUninitialized() instead.")
-	FWorldPartitionInitializeDelegate OnWorldPartitionUninitialized;
 
 #if WITH_EDITOR
-	TArray<FBox> GetUserLoadedEditorRegions() const;
+	ENGINE_API TArray<FBox> GetUserLoadedEditorRegions() const;
 
 public:
-	void SetEnableStreaming(bool bInEnableStreaming);
-	bool CanBeUsedByLevelInstance() const;
-	void SetCanBeUsedByLevelInstance(bool bInCanBeUsedByLevelInstance);
-	void OnEnableStreamingChanged();
+	ENGINE_API void SetEnableStreaming(bool bInEnableStreaming);
+
+	UE_DEPRECATED(5.3, "CanBeUsedByLevelInstance is deprecated.")
+	bool CanBeUsedByLevelInstance() const { return true; }
+	UE_DEPRECATED(5.3, "SetCanBeUsedByLevelInstance is deprecated.")
+	void SetCanBeUsedByLevelInstance(bool bInCanBeUsedByLevelInstance) {}
+
+	ENGINE_API void OnEnableStreamingChanged();
 
 private:
-	void SavePerUserSettings();
+	ENGINE_API void SavePerUserSettings();
 		
-	void OnGCPostReachabilityAnalysis();
-	void OnPackageDirtyStateChanged(UPackage* Package);
+	ENGINE_API void OnGCPostReachabilityAnalysis();
+	ENGINE_API void OnPackageDirtyStateChanged(UPackage* Package);
 
 	// PIE/Game
-	void OnPreBeginPIE(bool bStartSimulate);
-	void OnPrePIEEnded(bool bWasSimulatingInEditor);
-	void OnCancelPIE();
-	void OnBeginPlay();
-	void OnEndPlay();
+	ENGINE_API void OnPreBeginPIE(bool bStartSimulate);
+	ENGINE_API void OnPrePIEEnded(bool bWasSimulatingInEditor);
+	ENGINE_API void OnCancelPIE();
+	ENGINE_API void OnBeginPlay();
+	ENGINE_API void OnEndPlay();
 
 	// WorldDeletegates Events
-	void OnWorldRenamed(UWorld* RenamedWorld);
+	ENGINE_API void OnWorldRenamed(UWorld* RenamedWorld);
 
 	// ActorDescContainer Events
-	void OnActorDescAdded(FWorldPartitionActorDesc* NewActorDesc);
-	void OnActorDescRemoved(FWorldPartitionActorDesc* ActorDesc);
-	void OnActorDescUpdating(FWorldPartitionActorDesc* ActorDesc);
-	void OnActorDescUpdated(FWorldPartitionActorDesc* ActorDesc);
+	ENGINE_API void OnActorDescAdded(FWorldPartitionActorDesc* NewActorDesc);
+	ENGINE_API void OnActorDescRemoved(FWorldPartitionActorDesc* ActorDesc);
+	ENGINE_API void OnActorDescUpdating(FWorldPartitionActorDesc* ActorDesc);
+	ENGINE_API void OnActorDescUpdated(FWorldPartitionActorDesc* ActorDesc);
 
-	bool GetInstancingContext(const FLinkerInstancingContext*& OutInstancingContext) const;
+	ENGINE_API bool GetInstancingContext(const FLinkerInstancingContext*& OutInstancingContext) const;
 #endif
 
 public:
-	const FTransform& GetInstanceTransform() const;
+	ENGINE_API const FTransform& GetInstanceTransform() const;
 	//~ End UActorDescContainer Interface
 
 	//~ Begin UObject Interface
-	virtual void Serialize(FArchive& Ar) override;
-	virtual UWorld* GetWorld() const override;
-	virtual bool ResolveSubobject(const TCHAR* SubObjectPath, UObject*& OutObject, bool bLoadIfExists) override;
-	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
+#if WITH_EDITOR
+	ENGINE_API virtual bool CanEditChange(const FProperty* InProperty) const override;
+#endif //WITH_EDITOR
+	ENGINE_API virtual void Serialize(FArchive& Ar) override;
+	ENGINE_API virtual UWorld* GetWorld() const override;
+	ENGINE_API virtual bool ResolveSubobject(const TCHAR* SubObjectPath, UObject*& OutObject, bool bLoadIfExists) override;
+	ENGINE_API virtual void BeginDestroy() override;
+	static ENGINE_API void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 	//~ End UObject Interface
+
+	// Editor/Runtime conversions
+	ENGINE_API bool ConvertEditorPathToRuntimePath(const FSoftObjectPath& InPath, FSoftObjectPath& OutPath) const;
 
 #if WITH_EDITOR
 	void SetInstanceTransform(const FTransform& InInstanceTransform) { InstanceTransform = InInstanceTransform; }
-	FName GetWorldPartitionEditorName() const;
+	ENGINE_API FName GetWorldPartitionEditorName() const;
 
 	// Streaming generation
 	bool CanGenerateStreaming() const { return !StreamingPolicy; }
-	bool GenerateStreaming(TArray<FString>* OutPackagesToGenerate = nullptr);
-	bool GenerateContainerStreaming(const UActorDescContainer* ActorDescContainer, TArray<FString>* OutPackagesToGenerate = nullptr);
-	void FlushStreaming();
+
+	UE_DEPRECATED(5.3, "GenerateStreaming is deprecated, use GenerateStreaming with a param struct instead")
+	ENGINE_API bool GenerateStreaming(TArray<FString>* OutPackagesToGenerate = nullptr);
+
+	UE_DEPRECATED(5.3, "GenerateContainerStreaming is deprecated, use GenerateContainerStreaming with a param struct instead")
+	ENGINE_API bool GenerateContainerStreaming(const UActorDescContainer* ActorDescContainer, TArray<FString>* OutPackagesToGenerate = nullptr);
+
+	struct FGenerateStreamingParams
+	{
+		FGenerateStreamingParams()
+		{}
+
+		FStreamingGenerationActorDescCollection ActorDescCollection;
+		TOptional<const FString> OutputLogPath;
+
+		FGenerateStreamingParams& SetActorDescContainer(const UActorDescContainer* InActorDescContainer) 
+		{ 
+			ActorDescCollection.AddContainer(InActorDescContainer);
+			return *this;
+		}
+		FGenerateStreamingParams& SetOutputLogPath(const FString& InOutputLogPath) { OutputLogPath = InOutputLogPath; return *this; }
+	};
+
+	struct FGenerateStreamingContext
+	{
+		FGenerateStreamingContext()
+		{}
+
+		 TArray<FString>* PackagesToGenerate = nullptr;
+		 TOptional<FString> OutputLogFilename;
+
+		FGenerateStreamingContext& SetPackagesToGenerate(TArray<FString>* InPackagesToGenerate) { PackagesToGenerate = InPackagesToGenerate; return *this; }
+	};
+
+	ENGINE_API bool GenerateStreaming(const FGenerateStreamingParams& InParams, FGenerateStreamingContext& InContext);
+	ENGINE_API bool GenerateContainerStreaming(const FGenerateStreamingParams& InParams, FGenerateStreamingContext& InContext);
+
+	ENGINE_API void FlushStreaming();
+	ENGINE_API URuntimeHashExternalStreamingObjectBase* FlushStreamingToExternalStreamingObject(const FString& ExternalStreamingObjectName);
+
+	// Event when world partition was enabled/disabled in the world
+	DECLARE_MULTICAST_DELEGATE_OneParam(FWorldPartitionChangedEvent, UWorld*);
+	static ENGINE_API FWorldPartitionChangedEvent WorldPartitionChangedEvent;
 
 	DECLARE_MULTICAST_DELEGATE_OneParam(FWorldPartitionGenerateStreamingDelegate, TArray<FString>*);
 	FWorldPartitionGenerateStreamingDelegate OnPreGenerateStreaming;
 
-	void RemapSoftObjectPath(FSoftObjectPath& ObjectPath);
-	bool IsValidPackageName(const FString& InPackageName);
-
-	// Editor/Runtime conversions
-	bool ConvertEditorPathToRuntimePath(const FSoftObjectPath& InPath, FSoftObjectPath& OutPath) const;
+	ENGINE_API void RemapSoftObjectPath(FSoftObjectPath& ObjectPath) const;
+	ENGINE_API bool IsValidPackageName(const FString& InPackageName);
 
 	// Begin Cooking
-	void BeginCook(IWorldPartitionCookPackageContext& CookContext);
+	ENGINE_API void BeginCook(IWorldPartitionCookPackageContext& CookContext);
 	DECLARE_MULTICAST_DELEGATE_OneParam(FWorldPartitionBeginCookDelegate, IWorldPartitionCookPackageContext&);
 	FWorldPartitionBeginCookDelegate OnBeginCook;
 
 	//~ Begin IWorldPartitionCookPackageGenerator Interface 
-	virtual bool GatherPackagesToCook(IWorldPartitionCookPackageContext& CookContext) override;
-	virtual bool PrepareGeneratorPackageForCook(IWorldPartitionCookPackageContext& CookContext, TArray<UPackage*>& OutModifiedPackages) override;
-	virtual bool PopulateGeneratorPackageForCook(IWorldPartitionCookPackageContext& CookContext, const TArray<FWorldPartitionCookPackage*>& InPackagesToCook, TArray<UPackage*>& OutModifiedPackages) override;
-	virtual bool PopulateGeneratedPackageForCook(IWorldPartitionCookPackageContext& CookContext, const FWorldPartitionCookPackage& InPackagesToCool, TArray<UPackage*>& OutModifiedPackages) override;
-	virtual UWorldPartitionRuntimeCell* GetCellForPackage(const FWorldPartitionCookPackage& PackageToCook) const override;
+	ENGINE_API virtual bool GatherPackagesToCook(IWorldPartitionCookPackageContext& CookContext) override;
+	ENGINE_API virtual bool PrepareGeneratorPackageForCook(IWorldPartitionCookPackageContext& CookContext, TArray<UPackage*>& OutModifiedPackages) override;
+	ENGINE_API virtual bool PopulateGeneratorPackageForCook(IWorldPartitionCookPackageContext& CookContext, const TArray<FWorldPartitionCookPackage*>& InPackagesToCook, TArray<UPackage*>& OutModifiedPackages) override;
+	ENGINE_API virtual bool PopulateGeneratedPackageForCook(IWorldPartitionCookPackageContext& CookContext, const FWorldPartitionCookPackage& InPackagesToCool, TArray<UPackage*>& OutModifiedPackages) override;
+	ENGINE_API virtual UWorldPartitionRuntimeCell* GetCellForPackage(const FWorldPartitionCookPackage& PackageToCook) const override;
 	//~ End IWorldPartitionCookPackageGenerator Interface 
 	// End Cooking
 
 	UE_DEPRECATED(5.1, "GetWorldBounds is deprecated, use GetEditorWorldBounds or GetRuntimeWorldBounds instead.")
 	FBox GetWorldBounds() const { return GetRuntimeWorldBounds(); }
 
-	FBox GetEditorWorldBounds() const;
-	FBox GetRuntimeWorldBounds() const;
+	ENGINE_API FBox GetEditorWorldBounds() const;
+	ENGINE_API FBox GetRuntimeWorldBounds() const;
 	
 	UHLODLayer* GetDefaultHLODLayer() const { return DefaultHLODLayer; }
 	void SetDefaultHLODLayer(UHLODLayer* InDefaultHLODLayer) { DefaultHLODLayer = InDefaultHLODLayer; }
-	void GenerateHLOD(ISourceControlHelper* SourceControlHelper, bool bCreateActorsOnly);
+	ENGINE_API void GenerateHLOD(ISourceControlHelper* SourceControlHelper, bool bCreateActorsOnly);
 
 	// Debugging
-	void DrawRuntimeHashPreview();
-	void DumpActorDescs(const FString& Path);
+	ENGINE_API void DrawRuntimeHashPreview();
+	ENGINE_API void DumpActorDescs(const FString& Path);
 
-	void CheckForErrors(IStreamingGenerationErrorHandler* ErrorHandler) const;
+	ENGINE_API void CheckForErrors(IStreamingGenerationErrorHandler* ErrorHandler) const;
 
 	/* Struct of optional parameters passed to check for errors function. */
-	struct ENGINE_API FCheckForErrorsParams
+	struct FCheckForErrorsParams
 	{
-		FCheckForErrorsParams();
+		ENGINE_API FCheckForErrorsParams();
 
 		IStreamingGenerationErrorHandler* ErrorHandler;
 		const UActorDescContainer* ActorDescContainer;
@@ -211,26 +309,45 @@ public:
 	};
 
 	UE_DEPRECATED(5.2, "CheckForErrors is deprecated, CheckForErrors with FCheckForErrorsParams should be used instead.")
-	static void CheckForErrors(IStreamingGenerationErrorHandler* ErrorHandler, const UActorDescContainer* ActorDescContainer, bool bEnableStreaming, bool bIsChangelistValidation);
+	static ENGINE_API void CheckForErrors(IStreamingGenerationErrorHandler* ErrorHandler, const UActorDescContainer* ActorDescContainer, bool bEnableStreaming, bool bIsChangelistValidation);
 
-	static void CheckForErrors(const FCheckForErrorsParams& Params);
+	static ENGINE_API void CheckForErrors(const FCheckForErrorsParams& Params);
 
-	void AppendAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const;
+	using FStreamingGenerationErrorHandlerOverride = TFunction<IStreamingGenerationErrorHandler*(IStreamingGenerationErrorHandler* InErrorHandler)>;
+	ENGINE_API inline static TOptional<FStreamingGenerationErrorHandlerOverride> StreamingGenerationErrorHandlerOverride;
+
+	ENGINE_API void AppendAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const;
+
+	struct FContainerRegistrationParams
+	{
+		FContainerRegistrationParams(FName InPackageName)
+			: PackageName(InPackageName)
+		{}
+
+		/* The long package name of the container package on disk. */
+		FName PackageName;
+
+		/* Custom filter function used to filter actors descriptors. */
+		TUniqueFunction<bool(const FWorldPartitionActorDesc*)> FilterActorDescFunc;
+	};
+	ENGINE_API UActorDescContainer* RegisterActorDescContainer(const FContainerRegistrationParams& InRegistrationParameters);
+	ENGINE_API bool UnregisterActorDescContainer(UActorDescContainer* Container);
+	ENGINE_API void UninitializeActorDescContainers();
 
 	DECLARE_MULTICAST_DELEGATE_OneParam(FActorDescContainerRegistrationDelegate, UActorDescContainer*);
 	FActorDescContainerRegistrationDelegate OnActorDescContainerRegistered;
 	FActorDescContainerRegistrationDelegate OnActorDescContainerUnregistered;
-	UActorDescContainer* RegisterActorDescContainer(const FName& ContainerPackage);
-	bool UnregisterActorDescContainer(UActorDescContainer* Container);
-	void UninitializeActorDescContainers();
+
+	UE_DEPRECATED(5.3, "Use RegisterActorDescContainer with FContainerRegistrationParams instead.")
+	UActorDescContainer* RegisterActorDescContainer(const FName& ContainerPackage) { return RegisterActorDescContainer(FContainerRegistrationParams(ContainerPackage)); }
 
 	// Actors pinning
-	void PinActors(const TArray<FGuid>& ActorGuids);
-	void UnpinActors(const TArray<FGuid>& ActorGuids);
-	bool IsActorPinned(const FGuid& ActorGuid) const;
+	ENGINE_API void PinActors(const TArray<FGuid>& ActorGuids);
+	ENGINE_API void UnpinActors(const TArray<FGuid>& ActorGuids);
+	ENGINE_API bool IsActorPinned(const FGuid& ActorGuid) const;
 
-	void LoadLastLoadedRegions(const TArray<FBox>& EditorLastLoadedRegions);
-	void LoadLastLoadedRegions();
+	ENGINE_API void LoadLastLoadedRegions(const TArray<FBox>& EditorLastLoadedRegions);
+	ENGINE_API void LoadLastLoadedRegions();
 
 	bool HasLoadedUserCreatedRegions() const { return !!NumUserCreatedLoadedRegions; }
 	void OnUserCreatedRegionLoaded() { NumUserCreatedLoadedRegions++; }
@@ -238,52 +355,61 @@ public:
 
 	bool IsEnablingStreamingJustified() const { return bEnablingStreamingJustified; }
 
-	const TMap<FWorldPartitionReference, AActor*>& GetDirtyActors() const { return DirtyActors; }
+	const TSet<FDirtyActor>& GetDirtyActors() const { return DirtyActors; }
 #endif
 
 public:
-	static bool IsSimulating(bool bIncludeTestEnableSimulationStreamingSource = true);
+	static ENGINE_API bool IsSimulating(bool bIncludeTestEnableSimulationStreamingSource = true);
+	int32 GetStreamingStateEpoch() const { return StreamingStateEpoch; }
 
-	void Initialize(UWorld* World, const FTransform& InTransform);
-	bool IsInitialized() const;
-	void Update();
-	void Uninitialize();
+	ENGINE_API bool CanInitialize(UWorld* InWorld) const;
+	ENGINE_API void Initialize(UWorld* World, const FTransform& InTransform);
+	ENGINE_API bool IsInitialized() const;
+	ENGINE_API void Update();
+	ENGINE_API void Uninitialize();
 
-	bool SupportsStreaming() const;
-	bool IsStreamingEnabled() const;
-	bool CanStream() const;
-	bool IsServer() const;
-	bool IsServerStreamingEnabled() const;
-	bool IsServerStreamingOutEnabled() const;
-	bool UseMakingVisibleTransactionRequests() const;
-	bool UseMakingInvisibleTransactionRequests() const;
+	ENGINE_API bool SupportsStreaming() const;
+	ENGINE_API bool IsStreamingEnabled() const;
+	ENGINE_API bool CanStream() const;
+	ENGINE_API bool IsServer() const;
+	ENGINE_API bool IsServerStreamingEnabled() const;
+	ENGINE_API bool IsServerStreamingOutEnabled() const;
+	ENGINE_API bool UseMakingVisibleTransactionRequests() const;
+	ENGINE_API bool UseMakingInvisibleTransactionRequests() const;
 
-	bool IsMainWorldPartition() const;
+	ENGINE_API bool IsMainWorldPartition() const;
 
-	void Tick(float DeltaSeconds);
-	void UpdateStreamingState();
-	bool CanAddLoadedLevelToWorld(ULevel* InLevel) const;
-	bool IsStreamingCompleted(const TArray<FWorldPartitionStreamingSource>* InStreamingSources) const;
-	bool IsStreamingCompleted(EWorldPartitionRuntimeCellState QueryState, const TArray<FWorldPartitionStreamingQuerySource>& QuerySources, bool bExactState) const;
-	bool GetIntersectingCells(const TArray<FWorldPartitionStreamingQuerySource>& InSources, TArray<const IWorldPartitionCell*>& OutCells) const;
+	ENGINE_API void Tick(float DeltaSeconds);
+	ENGINE_API bool CanAddCellToWorld(const IWorldPartitionCell* InCell) const;
+	ENGINE_API bool IsStreamingCompleted(const TArray<FWorldPartitionStreamingSource>* InStreamingSources) const;
+	ENGINE_API bool IsStreamingCompleted(EWorldPartitionRuntimeCellState QueryState, const TArray<FWorldPartitionStreamingQuerySource>& QuerySources, bool bExactState) const;
+	ENGINE_API bool GetIntersectingCells(const TArray<FWorldPartitionStreamingQuerySource>& InSources, TArray<const IWorldPartitionCell*>& OutCells) const;
 
-	const TArray<FWorldPartitionStreamingSource>& GetStreamingSources() const;
+	ENGINE_API bool InjectExternalStreamingObject(URuntimeHashExternalStreamingObjectBase* ExternalStreamingObject);
+	ENGINE_API bool RemoveExternalStreamingObject(URuntimeHashExternalStreamingObjectBase* ExternalStreamingObject);
+
+	ENGINE_API const TArray<FWorldPartitionStreamingSource>& GetStreamingSources() const;
 
 	// Debugging
-	bool CanDebugDraw() const;
-	bool DrawRuntimeHash2D(UCanvas* Canvas, const FVector2D& PartitionCanvasSize, const FVector2D& Offset, FVector2D& OutUsedCanvasSize);
-	void DrawRuntimeHash3D();
-	void DrawRuntimeCellsDetails(UCanvas* Canvas, FVector2D& Offset);
-	void DrawStreamingStatusLegend(UCanvas* Canvas, FVector2D& Offset);
+	ENGINE_API bool DrawRuntimeHash2D(FWorldPartitionDraw2DContext& DrawContext);
+	ENGINE_API void DrawRuntimeHash3D();
+	ENGINE_API void DrawRuntimeCellsDetails(UCanvas* Canvas, FVector2D& Offset);
 
-	void OnCellShown(const UWorldPartitionRuntimeCell* InCell);
-	void OnCellHidden(const UWorldPartitionRuntimeCell* InCell);
+	ENGINE_API void OnCellShown(const UWorldPartitionRuntimeCell* InCell);
+	ENGINE_API void OnCellHidden(const UWorldPartitionRuntimeCell* InCell);
 
-	EWorldPartitionStreamingPerformance GetStreamingPerformance() const;
+	ENGINE_API EWorldPartitionStreamingPerformance GetStreamingPerformance() const;
 
-	bool IsStreamingInEnabled() const;
-	void DisableStreamingIn();
-	void EnableStreamingIn();
+	ENGINE_API bool IsStreamingInEnabled() const;
+	ENGINE_API void DisableStreamingIn();
+	ENGINE_API void EnableStreamingIn();
+
+	ENGINE_API UDataLayerManager* GetDataLayerManager() const;
+
+	UE_DEPRECATED(5.3, "UpdateStreamingState is deprecated, use UWorldPartitionSubsystem::UpdateStreamingState instead.")
+	void UpdateStreamingState() {}
+	UE_DEPRECATED(5.3, "CanAddLoadedLevelToWorld is deprecated, use CanAddCellToWorld instead.")
+	bool CanAddLoadedLevelToWorld(ULevel* InLevel) const { return true; }
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(DuplicateTransient)
@@ -306,10 +432,6 @@ private:
 
 	/** Used to know if we need to recheck if the user should enable streaming based on world size. */
 	bool bShouldCheckEnableStreamingWarning;
-
-	/** Whether Level Instance can reference this partition. */
-	UPROPERTY(EditAnywhere, Category = "WorldPartitionSetup", AdvancedDisplay, meta = (EditConditionHides, HideEditConditionToggle, EditCondition = "!bEnableStreaming"))
-	bool bCanBeUsedByLevelInstance;
 #endif
 
 public:
@@ -321,14 +443,19 @@ public:
 	UPROPERTY()
 	TObjectPtr<UWorldPartitionRuntimeHash> RuntimeHash;
 
-	UPROPERTY(Transient)
-	TObjectPtr<UWorld> World;
-
 	/** Enables streaming for this world. */
 	UPROPERTY()
 	bool bEnableStreaming;
 
+	UPROPERTY(EditAnywhere, Category = WorldPartitionSetup, AdvancedDisplay, meta = (EditConditionHides, EditCondition = "bEnableStreaming", HideEditConditionToggle))
+	EWorldPartitionServerStreamingMode ServerStreamingMode;
+
+	UPROPERTY(EditAnywhere, Category = WorldPartitionSetup, AdvancedDisplay, meta = (EditConditionHides, EditCondition = "bEnableStreaming", HideEditConditionToggle))
+	EWorldPartitionServerStreamingOutMode ServerStreamingOutMode;
+
 private:
+	TObjectPtr<UWorld> World;
+
 #if WITH_EDITOR
 	bool bForceGarbageCollection;
 	bool bForceGarbageCollectionPurge;
@@ -344,9 +471,14 @@ private:
 
 	TArray<FWorldPartitionReference> LoadedSubobjects;
 
-	TMap<FWorldPartitionReference, AActor*> DirtyActors;
+	TSet<FDirtyActor> DirtyActors;
 
 	TSet<FString> GeneratedStreamingPackageNames;
+
+public:
+	TOptional<bool> bOverrideEnableStreamingInEditor;
+
+private:
 #endif
 
 	EWorldPartitionInitState InitState;
@@ -361,47 +493,48 @@ private:
 	mutable TOptional<bool> bCachedIsServerStreamingOutEnabled;
 
 	UPROPERTY(Transient)
+	TObjectPtr<UDataLayerManager> DataLayerManager;
+
+	UPROPERTY(Transient)
 	mutable TObjectPtr<UWorldPartitionStreamingPolicy> StreamingPolicy;
 
 #if WITH_EDITORONLY_DATA
 	FLinkerInstancingContext InstancingContext;
-
-	FWorldPartitionReference WorldDataLayersActor;
 #endif
 
 #if WITH_EDITOR
-	static int32 LoadingRangeBugItGo;
-	static int32 EnableSimulationStreamingSource;
-	static int32 WorldExtentToEnableStreaming;
-	static bool DebugDedicatedServerStreaming;
-	static FAutoConsoleVariableRef CVarLoadingRangeBugItGo;
-	static FAutoConsoleVariableRef CVarEnableSimulationStreamingSource;
-	static FAutoConsoleVariableRef CVarWorldExtentToEnableStreaming;
-	static FAutoConsoleVariableRef CVarDebugDedicatedServerStreaming;
+	static ENGINE_API int32 LoadingRangeBugItGo;
+	static ENGINE_API int32 EnableSimulationStreamingSource;
+	static ENGINE_API int32 WorldExtentToEnableStreaming;
+	static ENGINE_API bool DebugDedicatedServerStreaming;
+	static ENGINE_API FAutoConsoleVariableRef CVarLoadingRangeBugItGo;
+	static ENGINE_API FAutoConsoleVariableRef CVarEnableSimulationStreamingSource;
+	static ENGINE_API FAutoConsoleVariableRef CVarWorldExtentToEnableStreaming;
+	static ENGINE_API FAutoConsoleVariableRef CVarDebugDedicatedServerStreaming;
 #endif
 
-	static int32 EnableServerStreaming;
-	static bool bEnableServerStreamingOut;
-	static bool bUseMakingVisibleTransactionRequests;
-	static bool bUseMakingInvisibleTransactionRequests;
-	static FAutoConsoleVariableRef CVarEnableServerStreaming;
-	static FAutoConsoleVariableRef CVarEnableServerStreamingOut;
-	static FAutoConsoleVariableRef CVarUseMakingVisibleTransactionRequests;
-	static FAutoConsoleVariableRef CVarUseMakingInvisibleTransactionRequests;
+	int32 StreamingStateEpoch;
+	static ENGINE_API int32 GlobalEnableServerStreaming;
+	static ENGINE_API bool bGlobalEnableServerStreamingOut;
+	static ENGINE_API bool bUseMakingVisibleTransactionRequests;
+	static ENGINE_API bool bUseMakingInvisibleTransactionRequests;
+	static ENGINE_API FAutoConsoleVariableRef CVarEnableServerStreaming;
+	static ENGINE_API FAutoConsoleVariableRef CVarEnableServerStreamingOut;
+	static ENGINE_API FAutoConsoleVariableRef CVarUseMakingVisibleTransactionRequests;
+	static ENGINE_API FAutoConsoleVariableRef CVarUseMakingInvisibleTransactionRequests;
 
-	void OnWorldMatchStarting();
-	void OnLevelRemovedFromWorld(ULevel* InLevel, UWorld* InWorld);
-	void OnPostBugItGoCalled(const FVector& Loc, const FRotator& Rot);
+	ENGINE_API void OnWorldMatchStarting();
+	ENGINE_API void OnPostBugItGoCalled(const FVector& Loc, const FRotator& Rot);
 
 	// Delegates registration
-	void RegisterDelegates();
-	void UnregisterDelegates();	
+	ENGINE_API void RegisterDelegates();
+	ENGINE_API void UnregisterDelegates();	
 
 #if WITH_EDITOR
-	void HashActorDesc(FWorldPartitionActorDesc* ActorDesc);
-	void UnhashActorDesc(FWorldPartitionActorDesc* ActorDesc);
-	void HashActorDescContainer(UActorDescContainer* ActorDescContainer);
-	void UnhashActorDescContainer(UActorDescContainer* ActorDescContainer);
+	ENGINE_API void HashActorDesc(FWorldPartitionActorDesc* ActorDesc);
+	ENGINE_API void UnhashActorDesc(FWorldPartitionActorDesc* ActorDesc);
+	void OnContentBundleRemovedContent(const FContentBundleEditor* ContentBundle);
+	bool IsStreamingEnabledInEditor() const;
 
 public:
 	// Editor loader adapters management
@@ -424,9 +557,9 @@ public:
 	{
 		return RegisteredEditorLoaderAdapters;
 	}
+#endif
 
 private:
-#endif
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(transient, NonTransactional)
@@ -434,10 +567,10 @@ private:
 #endif
 
 #if !UE_BUILD_SHIPPING
-	void GetOnScreenMessages(FCoreDelegates::FSeverityMessageMap& OutMessages);
+	ENGINE_API void GetOnScreenMessages(FCoreDelegates::FSeverityMessageMap& OutMessages);
 #endif
 	class AWorldPartitionReplay* Replay;
 
 	friend class AWorldPartitionReplay;
-	friend class UWorldPartitionStreamingPolicy;
+	friend class UWorldPartitionSubsystem;
 };

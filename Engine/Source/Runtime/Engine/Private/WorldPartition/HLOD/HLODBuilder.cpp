@@ -10,7 +10,9 @@
 #include "ISMPartition/ISMComponentBatcher.h"
 #include "ISMPartition/ISMComponentDescriptor.h"
 #include "Materials/MaterialInterface.h"
+#include "Misc/ConfigCacheIni.h"
 #include "UObject/Package.h"
+#include "WorldPartition/HLOD/HLODTemplatedInstancedStaticMeshComponent.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(HLODBuilder)
 
@@ -20,6 +22,9 @@ DEFINE_LOG_CATEGORY(LogHLODBuilder);
 
 UHLODBuilder::UHLODBuilder(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
+#if WITH_EDITORONLY_DATA
+	, HLODInstancedStaticMeshComponentClass(UInstancedStaticMeshComponent::StaticClass())
+#endif
 {
 }
 
@@ -49,29 +54,6 @@ void UHLODBuilder::SetHLODBuilderSettings(const UHLODBuilderSettings* InHLODBuil
 bool UHLODBuilder::RequiresWarmup() const
 {
 	return true;
-}
-
-static TArray<UActorComponent*> GatherHLODRelevantComponents(const TArray<AActor*>& InSourceActors)
-{
-	TArray<UActorComponent*> HLODRelevantComponents;
-
-	for (AActor* Actor : InSourceActors)
-	{
-		if (!Actor || !Actor->IsHLODRelevant())
-		{
-			continue;
-		}
-
-		for (UActorComponent* SubComponent : Actor->GetComponents())
-		{
-			if (SubComponent && SubComponent->IsHLODRelevant())
-			{
-				HLODRelevantComponents.Add(SubComponent);
-			}
-		}
-	}
-
-	return HLODRelevantComponents;
 }
 
 uint32 UHLODBuilder::ComputeHLODHash(const UActorComponent* InSourceComponent) const
@@ -111,6 +93,20 @@ uint32 UHLODBuilder::ComputeHLODHash(const UActorComponent* InSourceComponent) c
 					UE_LOG(LogHLODBuilder, VeryVerbose, TEXT("     - Texture (%s) = %x"), *Texture->GetName(), ComponentCRC);
 				}
 			}
+			UMaterialInterface* NaniteOverride = MaterialInterface ? MaterialInterface->GetNaniteOverride() : nullptr;
+			if (NaniteOverride)
+			{
+				ComponentCRC = UHLODProxy::GetCRC(NaniteOverride, ComponentCRC);
+				UE_LOG(LogHLODBuilder, VeryVerbose, TEXT("     - Material (%s) = %x"), *NaniteOverride->GetName(), ComponentCRC);
+
+				TArray<UTexture*> Textures;
+				NaniteOverride->GetUsedTextures(Textures, EMaterialQualityLevel::High, true, ERHIFeatureLevel::SM5, true);
+				for (UTexture* Texture : Textures)
+				{
+					ComponentCRC = UHLODProxy::GetCRC(Texture, ComponentCRC);
+					UE_LOG(LogHLODBuilder, VeryVerbose, TEXT("     - Texture (%s) = %x"), *Texture->GetName(), ComponentCRC);
+				}
+			}
 		}
 	}
 	else
@@ -123,12 +119,12 @@ uint32 UHLODBuilder::ComputeHLODHash(const UActorComponent* InSourceComponent) c
 	return ComponentCRC;
 }
 
-uint32 UHLODBuilder::ComputeHLODHash(const TArray<AActor*>& InSourceActors)
+uint32 UHLODBuilder::ComputeHLODHash(const TArray<UActorComponent*>& InSourceComponents)
 {
 	// We get the CRC of each component
 	TArray<uint32> ComponentsCRCs;
 
-	for (UActorComponent* SourceComponent : GatherHLODRelevantComponents(InSourceActors))
+	for (UActorComponent* SourceComponent : InSourceComponents)
 	{
 		TSubclassOf<UHLODBuilder> HLODBuilderClass = SourceComponent->GetCustomHLODBuilderClass();
 		if (!HLODBuilderClass)
@@ -146,17 +142,43 @@ uint32 UHLODBuilder::ComputeHLODHash(const TArray<AActor*>& InSourceActors)
 	return FCrc::MemCrc32(ComponentsCRCs.GetData(), ComponentsCRCs.Num() * ComponentsCRCs.GetTypeSize());
 }
 
+TSubclassOf<UInstancedStaticMeshComponent> UHLODBuilder::GetInstancedStaticMeshComponentClass()
+{
+	TSubclassOf<UInstancedStaticMeshComponent> ISMClass = StaticClass()->GetDefaultObject<UHLODBuilder>()->HLODInstancedStaticMeshComponentClass;
+	if (!ISMClass)
+	{
+		FString ConfigValue;
+		GConfig->GetString(TEXT("/Script/Engine.HLODBuilder"), TEXT("HLODInstancedStaticMeshComponentClass"), ConfigValue, GEditorIni);
+		UE_LOG(LogHLODBuilder, Error, TEXT("Could not resolve the class specified for HLODInstancedStaticMeshComponentClass. Config value was %s"), *ConfigValue);
+
+		// Fallback to standard ISMC
+		ISMClass = UInstancedStaticMeshComponent::StaticClass();
+	}
+	return ISMClass;
+}
+
 namespace
 {
 	// Instance batcher class based on FISMComponentDescriptor
 	struct FCustomISMComponentDescriptor : public FISMComponentDescriptor
 	{
+		TSubclassOf<AActor> TemplateActorClass;
+		FName				TemplateComponentName;
+
 		FCustomISMComponentDescriptor(UStaticMeshComponent* SMC)
 		{
 			InitFrom(SMC, false);
 
 			// We'll always want to spawn ISMC, even if our source components are all SMC
-			ComponentClass = UInstancedStaticMeshComponent::StaticClass();
+			ComponentClass = UHLODBuilder::GetInstancedStaticMeshComponentClass();
+
+			// Extra work for templated ISMC
+			// This code should be reorganized
+			if (ComponentClass->IsChildOf<UHLODTemplatedInstancedStaticMeshComponent>())
+			{
+				TemplateActorClass = SMC->GetOwner()->GetClass();
+				TemplateComponentName = SMC->GetFName();
+			}			
 
 			// Stationnary can be considered as static for the purpose of HLODs
 			if (Mobility == EComponentMobility::Stationary)
@@ -165,6 +187,14 @@ namespace
 			}
 
 			ComputeHash();
+
+			// Extra work for templated ISMC
+			// This code should be reorganized
+			if (ComponentClass->IsChildOf<UHLODTemplatedInstancedStaticMeshComponent>())
+			{
+				Hash = HashCombine(Hash, GetTypeHash(TemplateActorClass));
+				Hash = HashCombine(Hash, GetTypeHash(TemplateComponentName));
+			}
 		}
 	};
 }
@@ -176,7 +206,7 @@ TArray<UActorComponent*> UHLODBuilder::BatchInstances(const TArray<UActorCompone
 	TArray<UStaticMeshComponent*> SourceStaticMeshComponents = FilterComponents<UStaticMeshComponent>(InSourceComponents);
 
 	// Prepare instance batches
-	TMap<FISMComponentDescriptor, FISMComponentBatcher> InstancesData;
+	TMap<FCustomISMComponentDescriptor, FISMComponentBatcher> InstancesData;
 	for (UStaticMeshComponent* SMC : SourceStaticMeshComponents)
 	{
 		FCustomISMComponentDescriptor ISMComponentDescriptor(SMC);
@@ -188,11 +218,19 @@ TArray<UActorComponent*> UHLODBuilder::BatchInstances(const TArray<UActorCompone
 	TArray<UActorComponent*> HLODComponents;
 	for (auto& Entry : InstancesData)
 	{
-		const FISMComponentDescriptor& ISMComponentDescriptor = Entry.Key;
+		const FCustomISMComponentDescriptor& ISMComponentDescriptor = Entry.Key;
 		const FISMComponentBatcher& ISMComponentBatcher = Entry.Value;
 
 		UInstancedStaticMeshComponent* ISMComponent = ISMComponentDescriptor.CreateComponent(GetTransientPackage());
 		ISMComponentBatcher.InitComponent(ISMComponent);
+		
+		// Extra work for templated ISMC
+		// This code should be reorganized
+		if (UHLODTemplatedInstancedStaticMeshComponent* TemplatedISMC = Cast<UHLODTemplatedInstancedStaticMeshComponent>(ISMComponent))
+		{
+			TemplatedISMC->SetTemplateActorClass(ISMComponentDescriptor.TemplateActorClass);
+			TemplatedISMC->SetTemplateComponentName(ISMComponentDescriptor.TemplateComponentName);
+		}
 
 		ISMComponent->SetForcedLodModel(ISMComponent->GetStaticMesh()->GetNumLODs());
 
@@ -216,9 +254,16 @@ static bool ShouldBatchComponent(UActorComponent* ActorComponent)
 			bShouldBatch = true;
 			break;
 		case EHLODBatchingPolicy::MeshSection:
+		{
 			bShouldBatch = true;
-			UE_LOG(LogHLODBuilder, Warning, TEXT("EHLODBatchingPolicy::MeshSection is not yet supported by the HLOD builder, falling back to EHLODBatchingPolicy::Instancing for component %s (from actor %s)."), *ActorComponent->GetName(), *ActorComponent->GetOwner()->GetActorLabel());
+			FString LogDetails = FString::Printf(TEXT("%s %s (from actor %s)"), *PrimitiveComponent->GetClass()->GetName(), *ActorComponent->GetName(), *ActorComponent->GetOwner()->GetActorLabel());
+			if (UStaticMeshComponent* SMComponent = Cast<UStaticMeshComponent>(PrimitiveComponent))
+			{
+				LogDetails += FString::Printf(TEXT(" using static mesh %s"), SMComponent->GetStaticMesh() ? *SMComponent->GetStaticMesh()->GetName() : TEXT("<null>"));
+			}
+			UE_LOG(LogHLODBuilder, Display, TEXT("EHLODBatchingPolicy::MeshSection is not yet supported by the HLOD builder, falling back to EHLODBatchingPolicy::Instancing for %s."), *LogDetails);
 			break;
+		}
 		default:
 			checkNoEntry();
 		}
@@ -229,19 +274,13 @@ static bool ShouldBatchComponent(UActorComponent* ActorComponent)
 
 TArray<UActorComponent*> UHLODBuilder::Build(const FHLODBuildContext& InHLODBuildContext) const
 {
-	TArray<UActorComponent*> HLODRelevantComponents = GatherHLODRelevantComponents(InHLODBuildContext.SourceActors);
-	if (HLODRelevantComponents.IsEmpty())
-	{
-		return {};
-	}
-
 	// Handle components using a batching policy separately
 	TArray<UActorComponent*> InputComponents;
 	TArray<UActorComponent*> ComponentsToBatch;
 
 	if (!ShouldIgnoreBatchingPolicy())
 	{				
-		for (UActorComponent* SourceComponent : HLODRelevantComponents)
+		for (UActorComponent* SourceComponent : InHLODBuildContext.SourceComponents)
 		{
 			if (ShouldBatchComponent(SourceComponent))
 			{
@@ -255,7 +294,7 @@ TArray<UActorComponent*> UHLODBuilder::Build(const FHLODBuildContext& InHLODBuil
 	}
 	else
 	{
-		InputComponents = MoveTemp(HLODRelevantComponents);
+		InputComponents = InHLODBuildContext.SourceComponents;
 	}
 
 	TMap<TSubclassOf<UHLODBuilder>, TArray<UActorComponent*>> HLODBuildersForComponents;

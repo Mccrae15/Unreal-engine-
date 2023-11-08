@@ -35,14 +35,9 @@ namespace EpicGames.Horde.Logs
 	/// <summary>
 	/// Represents an entire log
 	/// </summary>
-	[TreeNode("{274DF8F7-9E87-4B4F-8AD5-318CDB25AD33}", 1)]
-	public class LogNode : TreeNode
+	[NodeType("{274DF8F7-9E87-4B4F-8AD5-318CDB25AD33}", 1)]
+	public class LogNode : Node
 	{
-		/// <summary>
-		/// Default value for an empty log file
-		/// </summary>
-		public static LogNode Empty { get; } = new LogNode(LogFormat.Json, 0, 0, Array.Empty<LogChunkRef>(), new TreeNodeRef<LogIndexNode>(LogIndexNode.Empty), false);
-
 		/// <summary>
 		/// Format for this log file
 		/// </summary>
@@ -66,7 +61,7 @@ namespace EpicGames.Horde.Logs
 		/// <summary>
 		/// Index for this log
 		/// </summary>
-		public TreeNodeRef<LogIndexNode> IndexRef { get; }
+		public NodeRef<LogIndexNode> IndexRef { get; }
 
 		/// <summary>
 		/// Whether this log is complete
@@ -76,7 +71,7 @@ namespace EpicGames.Horde.Logs
 		/// <summary>
 		/// Deserializing constructor
 		/// </summary>
-		public LogNode(LogFormat format, int lineCount, long length, IReadOnlyList<LogChunkRef> textChunkRefs, TreeNodeRef<LogIndexNode> indexRef, bool complete)
+		public LogNode(LogFormat format, int lineCount, long length, IReadOnlyList<LogChunkRef> textChunkRefs, NodeRef<LogIndexNode> indexRef, bool complete)
 		{
 			Format = format;
 			LineCount = lineCount;
@@ -90,36 +85,25 @@ namespace EpicGames.Horde.Logs
 		/// Deserializing constructor
 		/// </summary>
 		/// <param name="reader">Reader to draw data from</param>
-		public LogNode(ITreeNodeReader reader)
+		public LogNode(NodeReader reader)
 		{
 			Format = (LogFormat)reader.ReadUInt8();
 			LineCount = (int)reader.ReadUnsignedVarInt();
 			Length = (long)reader.ReadUnsignedVarInt();
-			IndexRef = reader.ReadRef<LogIndexNode>();
+			IndexRef = reader.ReadNodeRef<LogIndexNode>();
 			TextChunkRefs = reader.ReadList(() => new LogChunkRef(reader));
 			Complete = reader.ReadBoolean();
 		}
 
 		/// <inheritdoc/>
-		public override void Serialize(ITreeNodeWriter writer)
+		public override void Serialize(NodeWriter writer)
 		{
 			writer.WriteUInt8((byte)Format);
 			writer.WriteUnsignedVarInt(LineCount);
 			writer.WriteUnsignedVarInt((ulong)Length);
-			writer.WriteRef(IndexRef);
-			writer.WriteList(TextChunkRefs, x => writer.WriteRef(x));
+			writer.WriteNodeRef(IndexRef);
+			writer.WriteList(TextChunkRefs, x => writer.WriteNodeRef(x));
 			writer.WriteBoolean(Complete);
-		}
-
-		/// <inheritdoc/>
-		public override IEnumerable<TreeNodeRef> EnumerateRefs()
-		{
-			yield return IndexRef;
-
-			foreach (TreeNodeRef<LogChunkNode> textChunkRef in TextChunkRefs)
-			{
-				yield return textChunkRef;
-			}
 		}
 	}
 
@@ -141,17 +125,17 @@ namespace EpicGames.Horde.Logs
 		/// <summary>
 		/// Number of lines written to the log
 		/// </summary>
-		public int LineCount => _root.LineCount + _textBuilder.LineCount;
+		public int LineCount => FlushedLineCount + _textBuilder.LineCount;
 
 		/// <summary>
 		/// Number of lines flushed to storage
 		/// </summary>
-		public int FlushedLineCount => _root.LineCount;
+		public int FlushedLineCount => _root?.LineCount ?? 0;
 
 		readonly LogFormat _format;
 
 		// Data for the log file which has been flushed to disk so far
-		LogNode _root = LogNode.Empty;
+		LogNode? _root;
 		LogIndexNode _index = LogIndexNode.Empty;
 
 		// Json data read but not flushed
@@ -269,7 +253,7 @@ namespace EpicGames.Horde.Logs
 		/// <param name="writer">Writer for the output nodes</param>
 		/// <param name="complete">Whether the log is complete</param>
 		/// <param name="cancellationToken">Cancellation token for the operation</param>
-		public async Task<NodeHandle> FlushAsync(TreeWriter writer, bool complete, CancellationToken cancellationToken)
+		public async Task<NodeRef<LogNode>> FlushAsync(IStorageWriter writer, bool complete, CancellationToken cancellationToken)
 		{
 			// Capture the new data that needs to be written
 			IReadOnlyList<LogChunkNode> writeTextChunks;
@@ -285,21 +269,24 @@ namespace EpicGames.Horde.Logs
 			}
 
 			// Flush any complete chunks to storage
-			LogIndexNode newIndex = _index.Append(writeIndexTextChunks);
+			LogIndexNode newIndex = await _index.AppendAsync(writer, writeIndexTextChunks, cancellationToken);
+			NodeRef<LogIndexNode> newIndexRef = await writer.WriteNodeAsync(newIndex, cancellationToken);
 
-			List<LogChunkRef> newJsonChunkRefs = new List<LogChunkRef>(_root.TextChunkRefs);
-			int lineCount = _root.LineCount;
-			long length = _root.Length;
+			List<LogChunkRef> newJsonChunkRefs = new List<LogChunkRef>(_root?.TextChunkRefs ?? Array.Empty<LogChunkRef>());
+			int lineCount = _root?.LineCount ?? 0;
+			long length = _root?.Length ?? 0;
 			foreach (LogChunkNode writeTextChunk in writeTextChunks)
 			{
-				newJsonChunkRefs.Add(new LogChunkRef(lineCount, length, writeTextChunk));
+				NodeRef<LogChunkNode> writeTextChunkRef = await writer.WriteNodeAsync(writeTextChunk, cancellationToken);
+				newJsonChunkRefs.Add(new LogChunkRef(lineCount, writeTextChunk.LineCount, length, writeTextChunk.Length, writeTextChunkRef));
 				lineCount += writeTextChunk.LineCount;
 				length += writeTextChunk.Length;
 			}
 
-			LogNode newRoot = new LogNode(_format, lineCount, length, newJsonChunkRefs, new TreeNodeRef<LogIndexNode>(newIndex), complete);
+			LogNode newRoot = new LogNode(_format, lineCount, length, newJsonChunkRefs, newIndexRef, complete);
+			NodeRef<LogNode> newRootRef = await writer.WriteNodeAsync(newRoot, cancellationToken);
 
-			NodeHandle newRootHandle = await writer.FlushAsync(newRoot, cancellationToken);
+			await writer.FlushAsync(cancellationToken);
 
 			// Update the new state
 			lock (_lockObject)
@@ -310,7 +297,7 @@ namespace EpicGames.Horde.Logs
 				_indexTextBuilder.Remove(writeIndexTextChunks.Count);
 			}
 
-			return newRootHandle;
+			return newRootRef;
 		}
 	}
 
@@ -326,11 +313,11 @@ namespace EpicGames.Horde.Logs
 		/// <param name="reader">Reader to pull nodes from</param>
 		/// <param name="cancellationToken">Cancellation token</param>
 		/// <returns>Sequence of line buffers</returns>
-		public static async IAsyncEnumerable<ReadOnlyMemory<byte>> ReadLogAsync(this LogNode logNode, TreeReader reader, [EnumeratorCancellation] CancellationToken cancellationToken)
+		public static async IAsyncEnumerable<ReadOnlyMemory<byte>> ReadLogAsync(this LogNode logNode, BundleReader reader, [EnumeratorCancellation] CancellationToken cancellationToken)
 		{
 			foreach (LogChunkRef textChunkRef in logNode.TextChunkRefs)
 			{
-				LogChunkNode textChunk = await textChunkRef.ExpandAsync(reader, cancellationToken);
+				LogChunkNode textChunk = await textChunkRef.ExpandAsync(cancellationToken);
 				yield return textChunk.Data;
 			}
 		}
@@ -339,18 +326,17 @@ namespace EpicGames.Horde.Logs
 		/// Reads lines from a line
 		/// </summary>
 		/// <param name="logNode">Log to read from</param>
-		/// <param name="reader">Reader to pull nodes from</param>
 		/// <param name="index">Zero-based index of the first line to read from</param>
 		/// <param name="cancellationToken">Cancellation token</param>
 		/// <returns>Sequence of line buffers</returns>
-		public static async IAsyncEnumerable<ReadOnlyMemory<byte>> ReadLogLinesAsync(this LogNode logNode, TreeReader reader, int index, [EnumeratorCancellation] CancellationToken cancellationToken)
+		public static async IAsyncEnumerable<ReadOnlyMemory<byte>> ReadLogLinesAsync(this LogNode logNode, int index, [EnumeratorCancellation] CancellationToken cancellationToken)
 		{
 			foreach (LogChunkRef textChunkRef in logNode.TextChunkRefs)
 			{
 				int lineIdx = Math.Max(index - textChunkRef.LineIndex, 0);
 				if (lineIdx < textChunkRef.LineCount)
 				{
-					LogChunkNode textChunk = await textChunkRef.ExpandAsync(reader, cancellationToken);
+					LogChunkNode textChunk = await textChunkRef.ExpandAsync(cancellationToken);
 
 					int offset = textChunk.LineOffsets[lineIdx];
 					for (; lineIdx < textChunk.LineCount; lineIdx++)

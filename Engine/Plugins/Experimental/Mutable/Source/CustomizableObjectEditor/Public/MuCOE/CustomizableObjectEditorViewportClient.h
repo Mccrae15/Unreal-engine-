@@ -148,7 +148,7 @@ public:
 
 
 /** Viewport Client for the preview viewport */
-class FCustomizableObjectEditorViewportClient : public FEditorViewportClient
+class FCustomizableObjectEditorViewportClient : public FEditorViewportClient, public TSharedFromThis<FCustomizableObjectEditorViewportClient>
 {
 public:
 	FCustomizableObjectEditorViewportClient(TWeakPtr<class ICustomizableObjectInstanceEditor> InCustomizableObjectEditor, FPreviewScene* InPreviewScene);
@@ -182,7 +182,7 @@ public:
 
 	/** */
 	void SetPreviewComponent(UStaticMeshComponent* InPreviewStaticMeshComponent);
-	void SetPreviewComponents(TArray<UDebugSkelMeshComponent*>& InPreviewSkeletalMeshComponents);
+	void SetPreviewComponents(const TArray<UDebugSkelMeshComponent*>& InPreviewSkeletalMeshComponents);
 
 	/** Sets an informative message in the viewport warning the user that the CustomizableObject has no reference mesh */
 	void SetReferenceMeshMissingWarningMessage(bool bVisible);
@@ -196,8 +196,9 @@ public:
 	 */
 	void DrawUVs(FViewport* InViewport, FCanvas* InCanvas, int32 InTextYPos, const FString& MaterialName);
 
-	// Callback for baking the current instance.
+	// Callback for baking the current instance. If nullptr is passed, the instance in the editor will be taken.
 	void BakeInstance();
+	void BakeInstance(class UCustomizableObjectInstance* Instance);
 	
 	// Returns false if the resource has already been duplicated, otherwise, returns true and an unique ResourceName.
 	bool GetUniqueResourceName(UObject* InResource, FString& InOutResourceName, TArray<UObject*>& InCachedObjects, TArray<FString>& InCachedObjectNames);
@@ -397,12 +398,6 @@ public:
 	/** Sets camera mode */
 	void SetCameraMode(bool Value);
 
-	/** Getter of the Material name being drawn in the UV viewer */
-	FString GetMaterialToDrawInUVs()
-	{
-		return FullNameMaterialToDrawInUVs;
-	}
-
 	/** Sets the skeletal mesh bones visibility */
 	void SetShowBones();
 
@@ -445,7 +440,6 @@ private:
 
 	// Material index to draw in the uv preview.
 	FString MaterialToDrawInUVs;
-	FString FullNameMaterialToDrawInUVs;
 	int32 MaterialToDrawInUVsLOD;
 	int32 MaterialToDrawInUVsIndex;
 	int32 UVChannelToDrawInUVs;
@@ -454,7 +448,7 @@ private:
 	bool bReferenceMeshMissingWarningMessageVisible;
 
 	UCustomizableObjectNodeMeshClipMorph* ClipMorphNode;
-	UMaterial* ClipMorphMaterial;
+	TObjectPtr<UMaterial> ClipMorphMaterial;
 	bool bClipMorphVisible;
 	bool bClipMorphLocalStartOffset;
 	FVector ClipMorphOrigin;
@@ -490,7 +484,7 @@ private:
 	bool IsPlayingAnimation;
 
 	/** Animation being played by the Customizable Object, if any */
-	UAnimationAsset* AnimationBeingPlayed;
+	TObjectPtr<UAnimationAsset> AnimationBeingPlayed;
 
 	/** Customizable object being used */
 	UCustomizableObject* CustomizableObject;
@@ -508,13 +502,17 @@ private:
 	bool bActivateOrbitalCamera;
 
 	/** Material for cylinder arc solid render */
-	UMaterialInterface* TransparentPlaneMaterialXY;
+	TObjectPtr<UMaterialInterface> TransparentPlaneMaterialXY;
 
 	/** bool to return the Camera mode to Orbital when changing the Camera view to Perspective */
 	bool bSetOrbitalOnPerspectiveMode;
 
 	/** Flag to control the bones visibility in the viewport */
 	bool bShowBones;
+
+	// Temp Instance used in the bake process if a new instance is needed because mutable texture streaming is enabled so the viewport 
+	// instance does not have the high quality mips in the texture's platform data
+	TObjectPtr<UCustomizableObjectInstance> BakeTempInstance = nullptr;
 };
 
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2

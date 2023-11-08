@@ -6,12 +6,13 @@
 #include "ViewModels/Stack/NiagaraStackFunctionInputCollection.h"
 #include "ViewModels/NiagaraParameterPanelViewModel.h"
 #include "NiagaraNodeFunctionCall.h"
-#include "NiagaraSystem.h"
 #include "NiagaraEmitter.h"
 #include "NiagaraEditorUtilities.h"
 #include "NiagaraEditorModule.h"
 #include "NiagaraObjectSelection.h"
 #include "NiagaraParameterDefinitions.h"
+#include "NiagaraScriptSource.h"
+#include "NiagaraSystem.h"
 #include "ViewModels/NiagaraScratchPadUtilities.h"
 #include "ViewModels/NiagaraScriptGraphViewModel.h"
 #include "ViewModels/NiagaraSystemViewModel.h"
@@ -79,6 +80,11 @@ void FNiagaraScratchPadScriptViewModel::Initialize(UNiagaraScript* Script, UNiag
 		FSimpleDelegate::CreateSP(GetVariableSelection(), &FNiagaraObjectSelection::Refresh)
 	);
 	ParameterPaneViewModel->Init(UIContext);
+}
+
+bool FNiagaraScratchPadScriptViewModel::IsValid() const
+{
+	return EditScript.Script != nullptr && GraphViewModel->GetScriptSource() != nullptr;
 }
 
 void FNiagaraScratchPadScriptViewModel::OnGraphSubObjectSelectionChanged(const UObject* Obj)

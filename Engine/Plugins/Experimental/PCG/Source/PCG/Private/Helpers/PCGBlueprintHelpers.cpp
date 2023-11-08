@@ -82,6 +82,11 @@ UPCGComponent* UPCGBlueprintHelpers::GetOriginalComponent(FPCGContext& Context)
 	}
 }
 
+AActor* UPCGBlueprintHelpers::GetTargetActor(FPCGContext& Context, UPCGSpatialData* SpatialData)
+{
+	return Context.GetTargetActor(SpatialData);
+}
+
 void UPCGBlueprintHelpers::SetExtents(FPCGPoint& InPoint, const FVector& InExtents)
 {
 	InPoint.SetExtents(InExtents);
@@ -167,7 +172,7 @@ TArray<FPCGLandscapeLayerWeight> UPCGBlueprintHelpers::GetInterpolatedPCGLandsca
 	ULandscapeComponent* LandscapeComponent = LandscapeInfo->XYtoComponentMap.FindRef(ComponentMapKey);
 	const FPCGLandscapeCacheEntry* CacheEntry = LandscapeCache->GetCacheEntry(LandscapeComponent, ComponentMapKey);
 #else
-	const FPCGLandscapeCacheEntry* CacheEntry = LandscapeCache->GetCacheEntry(Landscape->GetLandscapeGuid(), ComponentMapKey);
+	const FPCGLandscapeCacheEntry* CacheEntry = LandscapeCache->GetCacheEntry(Landscape->GetOriginalLandscapeGuid(), ComponentMapKey);
 #endif
 
 	if (!CacheEntry)

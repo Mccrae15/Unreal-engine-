@@ -15,6 +15,7 @@
 #include "OpenColorIOColorTransform.generated.h"
 
 
+struct FImageView;
 class UOpenColorIOConfiguration;
 
 
@@ -32,27 +33,28 @@ public:
 	virtual ~UOpenColorIOColorTransform() {};
 
 public:
+	UE_DEPRECATED(5.3, "This method is deprecated, please use Initialize without the owner argument.")
 	bool Initialize(UOpenColorIOConfiguration* InOwner, const FString& InSourceColorSpace, const FString& InDestinationColorSpace, const TMap<FString, FString>& InContextKeyValues = {});
+	UE_DEPRECATED(5.3, "This method is deprecated, please use Initialize without the owner argument.")
 	bool Initialize(UOpenColorIOConfiguration* InOwner, const FString& InSourceColorSpace, const FString& InDisplay, const FString& InView, EOpenColorIOViewTransformDirection InDirection, const TMap<FString, FString>& InContextKeyValues = {});
 
+#if WITH_EDITOR
 	/**
-	 * Cache resource shaders for cooking on the given shader platform.
-	 * If a matching shader map is not found in memory or the DDC, a new one will be compiled.
-	 * This does not apply completed results to the renderer scenes.
-	 * Caller is responsible for deleting OutCachedResource.
-	 */
-	void CacheResourceShadersForCooking(EShaderPlatform InShaderPlatform, const ITargetPlatform* TargetPlatform, const FString& InShaderHash, const FString& InShaderCode, const FString& InRawConfigHash, TArray<FOpenColorIOTransformResource*>& OutCachedResources);
+	 * Initialize resources for color space transform. */
+	bool Initialize(const FString& InSourceColorSpace, const FString& InDestinationColorSpace, const TMap<FString, FString>& InContextKeyValues = {});
+	
+	/** Initialize resources for display-view transform. */
+	bool Initialize(const FString& InSourceColorSpace, const FString& InDisplay, const FString& InView, EOpenColorIOViewTransformDirection InDirection, const TMap<FString, FString>& InContextKeyValues = {});
+#endif
 
 	/**
 	 * Serialize LUT data. This will effectively serialize the LUT only when cooking
 	 */
-	void SerializeLuts(FArchive& Ar);
+	UE_DEPRECATED(5.3, "This method is deprecated.")
+	void SerializeLuts(FArchive& Ar) { }
 
-	/**
-	 * Cache resource LUT for rendering/cooking on the given shader platform.
-	 * If a matching texture is not found in DDC, a new one will be generated from raw data.
-	 */
-	void CacheResourceTextures();
+	UE_DEPRECATED(5.3, "This method is deprecated.")
+	void CacheResourceTextures() { }
 
 	/**
 	 * Cache resource shaders for rendering.
@@ -61,6 +63,7 @@ public:
 	void CacheResourceShadersForRendering(bool bRegenerateId);
 	void CacheShadersForResources(EShaderPlatform InShaderPlatform, FOpenColorIOTransformResource* InResourcesToCache, bool bApplyCompletedShaderMapForRendering, bool bIsCooking, const ITargetPlatform* TargetPlatform = nullptr);
 
+	UE_DEPRECATED(5.3, "This method is deprecated.")
 	FOpenColorIOTransformResource* AllocateResource();
 
 	/**
@@ -73,11 +76,16 @@ public:
 	 */
 	bool AreRenderResourcesReady() const;
 
-	UE_DEPRECATED(5.1, "GetShaderAndLUTResouces is deprecated, please use GetRenderResources instead.")
-	bool GetShaderAndLUTResouces(ERHIFeatureLevel::Type InFeatureLevel, FOpenColorIOTransformResource*& OutShaderResource, FTextureResource*& OutLUT3dResource);
-
 	bool IsTransform(const FString& InSourceColorSpace, const FString& InDestinationColorSpace) const;
 	bool IsTransform(const FString& InSourceColorSpace, const FString& InDisplay, const FString& InView, EOpenColorIOViewTransformDirection InDirection) const;
+
+#if WITH_EDITOR
+	/** Apply the color transform in-place to the specified image. */
+	bool TransformImage(const FImageView& InOutImage) const;
+	
+	/** Apply the color transform from the source image to the destination image. (The destination FImageView is const but what it points at is not.) */
+	bool TransformImage(const FImageView& SrcImage, const FImageView& DestImage) const;
+#endif
 
 	/**
 	 * Get the display view direction type, when applicable.
@@ -90,7 +98,9 @@ public:
 	// For all ColorTransforms, UOpenColorIOColorTransform::CacheResourceShadersForRendering
 	static void AllColorTransformsCacheResourceShadersForRendering();
 
-	
+	// Get the context key-values.
+	const TMap<FString, FString>& GetContextKeyValues() const { return ContextKeyValues; }
+
 
 protected:
 
@@ -109,26 +119,21 @@ protected:
 	 */
 	static void GetOpenColorIOLUTKeyGuid(const FString& InProcessorIdentifier, const FName& InName, FGuid& OutLutGuid );
 
-	UE_DEPRECATED(5.1, "This version of GetOpenColorIOLUTKeyGuid is deprecated. Please use the version that takes InName instead.")
-	static void GetOpenColorIOLUTKeyGuid(const FString& InLutIdentifier, FGuid& OutLutGuid);
+	UE_DEPRECATED(5.3, "This method is deprecated.")
+	bool GenerateColorTransformData(const FString& InSourceColorSpace, const FString& InDestinationColorSpace) { return false; }
 
-	/**
-	 * Generate the LUT and shader associated to the desired color space transform.
-	 * @note: Only in editor
-	 * @return true if parameters are valid.
-	 */
-	bool GenerateColorTransformData(const FString& InSourceColorSpace, const FString& InDestinationColorSpace);
-	bool GenerateColorTransformData(const FString& InSourceColorSpace, const FString& InDisplay, const FString& InView, EOpenColorIOViewTransformDirection InDirection);
+	UE_DEPRECATED(5.3, "This method is deprecated.")
+	bool GenerateColorTransformData(const FString& InSourceColorSpace, const FString& InDisplay, const FString& InView, EOpenColorIOViewTransformDirection InDirection) { return false; }
 
 	/**
 	 * Helper function returning the color space transform name based on source and destination color spaces.
 	 */
-	FString GetTransformFriendlyName();
+	FString GetTransformFriendlyName() const;
 
+#if WITH_EDITOR
 	/**
 	 * Fetch shader code and hash from the OCIO library
-	 * @note: Uses library only in editor. 
-	 * @return: true if not in editor (shader has been serialized during cooking), true if shader could be generated from the library otherwise
+	 * @return: true if shader could be generated from the library
 	 */
 	bool UpdateShaderInfo(FString& OutShaderCodeHash, FString& OutShaderCode, FString& OutRawConfigHash);
 
@@ -137,15 +142,20 @@ protected:
 	 */
 	TObjectPtr<UTexture> CreateTexture3DLUT(const FString& InProcessorIdentifier, const FName& InName, uint32 InLutLength, TextureFilter InFilter, const float* InSourceData);
 
-	UE_DEPRECATED(5.1, "Update3dLutTexture is deprecated, please use CreateTexture3DLUT instead.")
-	void Update3dLutTexture(const FString& InLutIdentifier, const float* InSourceData);
-
 	/**
 	 * Helper function taking raw 1D LUT data coming from the library and initializing a UTexture with it.
 	 */
 	TObjectPtr<UTexture> CreateTexture1DLUT(const FString& InProcessorIdentifier, const FName& InName, uint32 InTextureWidth, uint32 InTextureHeight, TextureFilter InFilter, bool bRedChannelOnly, const float* InSourceData );
+#endif //WITH_EDITOR
 
 private:
+#if WITH_EDITOR
+	/**
+	 * Create the transform processor(s) and generate its resources.
+	 */
+	void ProcessTransform();
+#endif //WITH_EDITOR
+
 	void FlushResourceShaderMaps();
 
 public:
@@ -162,6 +172,14 @@ public:
 	virtual void FinishDestroy() override;
 
 #if WITH_EDITOR
+	/**
+	 * Cache resource shaders for cooking on the given shader platform.
+	 * If a matching shader map is not found in memory or the DDC, a new one will be compiled.
+	 * This does not apply completed results to the renderer scenes.
+	 * Caller is responsible for deleting OutCachedResource.
+	 */
+	void CacheResourceShadersForCooking(EShaderPlatform InShaderPlatform, const ITargetPlatform* TargetPlatform, const FString& InShaderHash, const FString& InShaderCode, const FString& InRawConfigHash, TArray<FOpenColorIOTransformResource*>& OutCachedResources);
+
 	virtual void BeginCacheForCookedPlatformData(const ITargetPlatform* TargetPlatform) override;
 	virtual bool IsCachedCookedPlatformDataLoaded(const ITargetPlatform* TargetPlatform) override;
 	virtual void ClearCachedCookedPlatformData(const ITargetPlatform *TargetPlatform) override;
@@ -179,8 +197,11 @@ public:
 
 public:
 
-	UPROPERTY()
-	TObjectPtr<UOpenColorIOConfiguration> ConfigurationOwner;
+#if WITH_EDITORONLY_DATA
+	UE_DEPRECATED(5.3, "ConfigurationOwner is deprecated, use GetOuter() instead.")
+	UPROPERTY(Transient, meta = (DeprecatedProperty))
+	TObjectPtr<UOpenColorIOConfiguration> ConfigurationOwner_DEPRECATED;
+#endif
 
 	UPROPERTY(VisibleAnywhere, Category = "ColorSpace")
 	bool bIsDisplayViewType = false;
@@ -202,9 +223,18 @@ public:
 private:
 
 	/** If the color space requires textures, this will contains the data to do the transform */
-	/** Note: This will be serialized when cooking. Otherwhise, it relies on raw data of the library and what's on DDC */
-	UPROPERTY(Transient)
+	UPROPERTY()
 	TMap<int32, TObjectPtr<UTexture>> Textures;
+
+#if WITH_EDITORONLY_DATA
+	/** Generated transform shader hash. */
+	UPROPERTY()
+	FString GeneratedShaderHash;
+
+	/** Generated transform shader function. */
+	UPROPERTY()
+	FString GeneratedShader;
+#endif
 	
 	/** Inline ColorTransform resources serialized from disk. To be processed on game thread in PostLoad. */
 	TArray<FOpenColorIOTransformResource> LoadedTransformResources;
@@ -213,6 +243,9 @@ private:
 
 	/** Key-value string pairs used to define the processor's context. */
 	TMap<FString, FString> ContextKeyValues;
+
+	/** Enum used to indicate whether the working color space should be used as a source or destination. */
+	EOpenColorIOWorkingColorSpaceTransform WorkingColorSpaceTransformType;
 
 	FRenderCommandFence ReleaseFence;
 

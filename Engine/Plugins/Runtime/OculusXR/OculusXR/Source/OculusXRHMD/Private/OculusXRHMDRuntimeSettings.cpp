@@ -40,7 +40,10 @@ UOculusXRHMDRuntimeSettings::UOculusXRHMDRuntimeSettings(const FObjectInitialize
 	bFaceTrackingEnabled = DefaultSettings.Flags.bFaceTrackingEnabled;
 	bSupportExperimentalFeatures = DefaultSettings.bSupportExperimentalFeatures;
 	bAnchorSupportEnabled = DefaultSettings.Flags.bAnchorSupportEnabled;
+	bAnchorSharingEnabled = DefaultSettings.Flags.bAnchorSharingEnabled;
 	bSceneSupportEnabled = DefaultSettings.Flags.bSceneSupportEnabled;
+	ProcessorFavor = DefaultSettings.ProcessorFavor;
+
 
 	// Default this to false, FSettings doesn't have a separate composite depth flag for mobile
 	bCompositeDepthMobile = false;
@@ -75,7 +78,9 @@ UOculusXRHMDRuntimeSettings::UOculusXRHMDRuntimeSettings(const FObjectInitialize
 	bEyeTrackingEnabled = false;
 	bFaceTrackingEnabled = false;
 	bAnchorSupportEnabled = false;
+	bAnchorSharingEnabled = false;
 	bSceneSupportEnabled = false;
+	ProcessorFavor = EProcessorFavor::FavorEqually;
 #endif
 
 	LoadFromIni();
@@ -89,6 +94,11 @@ bool UOculusXRHMDRuntimeSettings::CanEditChange(const FProperty* InProperty) con
 	if (bIsEditable && InProperty)
 	{
 		const FName PropertyName = InProperty->GetFName();
+
+		if (PropertyName == GET_MEMBER_NAME_CHECKED(UOculusXRHMDRuntimeSettings, XrApi) && !FModuleManager::Get().IsModuleLoaded("OpenXRHMD"))
+		{
+			bIsEditable = false;
+		}
 
 // Disable settings for marketplace release that are only compatible with the Oculus engine fork
 #ifndef WITH_OCULUS_BRANCH
@@ -151,6 +161,13 @@ void UOculusXRHMDRuntimeSettings::PostInitProperties()
 {
 	Super::PostInitProperties();
 	RenameProperties();
+
+	const TCHAR* OculusSettings = TEXT("/Script/OculusXRHMD.OculusXRHMDRuntimeSettings");
+	if (!FModuleManager::Get().IsModuleLoaded("OpenXRHMD"))
+	{
+		XrApi = EOculusXRXrApi::OVRPluginOpenXR;
+		UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UOculusXRHMDRuntimeSettings, XrApi)), GetDefaultConfigFilename());
+	}
 }
 
 void UOculusXRHMDRuntimeSettings::LoadFromIni()

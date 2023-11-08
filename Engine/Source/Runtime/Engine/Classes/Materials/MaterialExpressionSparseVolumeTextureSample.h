@@ -6,6 +6,7 @@
 #include "Materials/MaterialExpression.h"
 #include "UObject/ObjectMacros.h"
 #include "MaterialTypes.h"
+#include "Materials/MaterialExpressionSparseVolumeTextureBase.h"
 
 #include "MaterialExpressionSparseVolumeTextureSample.generated.h"
 
@@ -13,8 +14,8 @@ class USparseVolumeTexture;
 struct FMaterialParameterMetadata;
 
 /** Material expression for sampling from a runtime virtual texture. */
-UCLASS(collapsecategories, hidecategories=Object)
-class ENGINE_API UMaterialExpressionSparseVolumeTextureSample : public UMaterialExpression
+UCLASS(collapsecategories, hidecategories=Object, MinimalAPI)
+class UMaterialExpressionSparseVolumeTextureSample : public UMaterialExpressionSparseVolumeTextureBase
 {
 	GENERATED_UCLASS_BODY()
 
@@ -22,24 +23,31 @@ class ENGINE_API UMaterialExpressionSparseVolumeTextureSample : public UMaterial
 	UPROPERTY(meta = (RequiredInput = "false"))
 	FExpressionInput Coordinates;
 
-	/** The Sparse Virtual Texture to sample. */
-	UPROPERTY(EditAnywhere, Category = SparseVolumeTexture)
-	TObjectPtr<class USparseVolumeTexture> SparseVolumeTexture;
+	UPROPERTY(meta = (RequiredInput = "false", ToolTip = "Defaults to 'SparseVolumeTexture' if not specified"))
+	FExpressionInput TextureObject;
+
+	UPROPERTY(meta = (RequiredInput = "false", ToolTip = "Defaults to 0 if not specified"))
+	FExpressionInput MipLevel;
+
+	/**
+	 * Controls where the sampler for this texture lookup will come from.
+	 * Choose 'from texture asset' to make use of the USparseVolumeTexture addressing settings,
+	 * Otherwise use one of the global samplers, which will not consume a sampler slot.
+	 * This allows materials to use more than 16 unique textures on SM5 platforms.
+	 */
+	UPROPERTY(EditAnywhere, Category = MaterialExpressionTextureSample, Meta = (ShowAsInputPin = "Advanced"))
+	TEnumAsByte<ESamplerSourceMode> SamplerSource;
 
 protected:
 
-	//~ Begin UMaterialExpression Interface
-	virtual UObject* GetReferencedTexture() const override;
-	virtual bool CanReferenceTexture() const { return true; }
-
 #if WITH_EDITOR
-	virtual void PostLoad() override;
-	virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
-	virtual void GetCaption(TArray<FString>& OutCaptions) const override;
-	virtual uint32 GetOutputType(int32 OutputIndex) override;
-	virtual uint32 GetInputType(int32 InputIndex) override;
+	ENGINE_API virtual void PostLoad() override;
+	ENGINE_API virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
+	ENGINE_API virtual void GetCaption(TArray<FString>& OutCaptions) const override;
+	ENGINE_API virtual uint32 GetOutputType(int32 OutputIndex) override;
+	ENGINE_API virtual uint32 GetInputType(int32 InputIndex) override;
 public:
-	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	ENGINE_API virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 	//~ End UMaterialExpression Interface
 };

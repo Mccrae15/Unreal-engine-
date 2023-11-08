@@ -24,7 +24,7 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialInstance.h"
 #include "Materials/MaterialInterface.h"
-#include "Mesh/InterchangeStaticMeshPayloadInterface.h"
+#include "Mesh/InterchangeMeshPayloadInterface.h"
 #include "MeshBudgetProjectSettings.h"
 #include "Model.h"
 #include "Nodes/InterchangeBaseNode.h"
@@ -36,6 +36,7 @@
 #include "PhysicsEngine/SphereElem.h"
 #include "PhysicsEngine/SphylElem.h"
 #include "StaticMeshAttributes.h"
+#include "StaticMeshCompiler.h"
 #include "StaticMeshOperations.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(InterchangeStaticMeshFactory)
@@ -44,36 +45,137 @@
 #include "EditorFramework/AssetImportData.h"
 #endif //WITH_EDITORONLY_DATA
 
+static bool GInterchangeStaticMeshReorderMaterialSlots = true;
+static FAutoConsoleVariableRef CCvarInterchangeStaticMeshReorderMaterialSlots(
+	TEXT("Interchange.FeatureFlags.Import.StaticMesh.ReorderMaterialSlots"),
+	GInterchangeStaticMeshReorderMaterialSlots,
+	TEXT("Whether Re-importing a static mesh should reorder the material slots."),
+	ECVF_Default);
 
 UClass* UInterchangeStaticMeshFactory::GetFactoryClass() const
 {
 	return UStaticMesh::StaticClass();
 }
 
-
-UObject* UInterchangeStaticMeshFactory::ImportAssetObject_GameThread(const FImportAssetObjectParams& Arguments)
+namespace UE::Interchange::Private::StaticMesh
 {
+	void ReorderMaterialSlotToBaseLod(UStaticMesh* StaticMesh)
+	{
+#if WITH_EDITOR
+		if (!StaticMesh || !StaticMesh->IsMeshDescriptionValid(0))
+		{
+			return;
+		}
+
+		TArray<FStaticMaterial>& Materials = StaticMesh->GetStaticMaterials();
+		if (Materials.Num() < 2)
+		{
+			return;
+		}
+
+		const FMeshDescription& BaseMeshDescription = *StaticMesh->GetMeshDescription(0);
+		if (!ensure(!BaseMeshDescription.NeedsCompact()))
+		{
+			return;
+		}
+		
+		FStaticMeshConstAttributes StaticMeshAttributes(BaseMeshDescription);
+		TPolygonGroupAttributesRef<const FName> SlotNames = StaticMeshAttributes.GetPolygonGroupMaterialSlotNames();
+
+		TArray<int32> RemapMaterialIndexes;
+		RemapMaterialIndexes.Reserve(Materials.Num());
+		for (int32 MaterialIndex = 0; MaterialIndex < Materials.Num(); ++MaterialIndex)
+		{
+			RemapMaterialIndexes.Add(INDEX_NONE);
+		}
+		TArray<FStaticMaterial> ReorderMaterialArray;
+		ReorderMaterialArray.Reserve(Materials.Num());
+		for (FPolygonGroupID PolygonGroupID : BaseMeshDescription.PolygonGroups().GetElementIDs())
+		{
+			FName ImportMaterialName = SlotNames[PolygonGroupID];
+			bool bFoundMatch = false;
+			for (int32 MaterialIndex = 0; MaterialIndex < Materials.Num(); ++MaterialIndex)
+			{
+				if (RemapMaterialIndexes[MaterialIndex] != INDEX_NONE)
+				{
+					//This material was already matched
+					continue;
+				}
+				int32& RemapIndex = RemapMaterialIndexes[MaterialIndex];
+				FName MaterialName = Materials[MaterialIndex].ImportedMaterialSlotName;
+				if (MaterialName == ImportMaterialName)
+				{
+					RemapIndex = ReorderMaterialArray.Add(Materials[MaterialIndex]);
+					bFoundMatch = true;
+					break;
+				}
+			}
+			//All mesh description polygon group should have a match
+			ensure(bFoundMatch);
+		}
+
+		//Custom LOD can add materials, so we add them at the end of the material slots
+		for (int32 MaterialIndex = 0; MaterialIndex < Materials.Num(); ++MaterialIndex)
+		{
+			if (RemapMaterialIndexes[MaterialIndex] == INDEX_NONE)
+			{
+				RemapMaterialIndexes[MaterialIndex] = ReorderMaterialArray.Add(Materials[MaterialIndex]);
+			}
+		}
+
+		check(ReorderMaterialArray.Num() == Materials.Num());
+
+		//Reorder the static mesh material slot array
+		Materials = ReorderMaterialArray;
+
+		//Fix all the section info map MaterialIndex with the RemapMaterialIndexes
+		FMeshSectionInfoMap& SectionInfoMap = StaticMesh->GetSectionInfoMap();
+		const int32 LodCount = StaticMesh->GetNumSourceModels();
+		for (int32 LodIndex = 0; LodIndex < LodCount; ++LodIndex)
+		{
+			const int32 SectionCount = SectionInfoMap.GetSectionNumber(LodIndex);
+			for (int32 SectionIndex = 0; SectionIndex < SectionCount; ++SectionIndex)
+			{
+				FMeshSectionInfo SectionInfo = SectionInfoMap.Get(LodIndex, SectionIndex);
+				SectionInfo.MaterialIndex = RemapMaterialIndexes[SectionInfo.MaterialIndex];
+				SectionInfoMap.Set(LodIndex, SectionIndex, SectionInfo);
+			}
+		}
+#endif // WITH_EDITOR
+	}
+} //ns UE::Interchange::Private::StaticMesh
+
+UInterchangeFactoryBase::FImportAssetResult UInterchangeStaticMeshFactory::BeginImportAsset_GameThread(const FImportAssetObjectParams& Arguments)
+{
+	FImportAssetResult ImportAssetResult;
 	UStaticMesh* StaticMesh = nullptr;
 	if (!Arguments.AssetNode || !Arguments.AssetNode->GetObjectClass()->IsChildOf(GetFactoryClass()))
 	{
-		return nullptr;
+		return ImportAssetResult;
 	}
 
 	const UInterchangeStaticMeshFactoryNode* StaticMeshFactoryNode = Cast<UInterchangeStaticMeshFactoryNode>(Arguments.AssetNode);
 	if (StaticMeshFactoryNode == nullptr)
 	{
-		return nullptr;
+		return ImportAssetResult;
 	}
 
-	// create an asset if it doesn't exist
-	UObject* ExistingAsset = (Arguments.ReimportObject != nullptr) ? Arguments.ReimportObject : StaticFindObject(nullptr, Arguments.Parent, *Arguments.AssetName);
+	UObject* ExistingAsset = Arguments.ReimportObject;
+	if (!ExistingAsset)
+	{
+		FSoftObjectPath ReferenceObject;
+		if (StaticMeshFactoryNode->GetCustomReferenceObject(ReferenceObject))
+		{
+			ExistingAsset = ReferenceObject.TryLoad();
+		}
+	}
 
 	// create a new static mesh or overwrite existing asset, if possible
 	if (!ExistingAsset)
 	{
 		StaticMesh = NewObject<UStaticMesh>(Arguments.Parent, *Arguments.AssetName, RF_Public | RF_Standalone);
 	}
-	else if (ExistingAsset->GetClass()->IsChildOf(UStaticMesh::StaticClass()))
+	else
 	{
 		//This is a reimport, we are just re-updating the source data
 		StaticMesh = Cast<UStaticMesh>(ExistingAsset);
@@ -97,7 +199,7 @@ UObject* UInterchangeStaticMeshFactory::ImportAssetObject_GameThread(const FImpo
 		{
 			UE_LOG(LogInterchangeImport, Warning, TEXT("Could not create StaticMesh asset %s"), *Arguments.AssetName);
 		}
-		return nullptr;
+		return ImportAssetResult;
 	}
 
 	// create the BodySetup on the game thread
@@ -107,75 +209,51 @@ UObject* UInterchangeStaticMeshFactory::ImportAssetObject_GameThread(const FImpo
 	StaticMesh->PreEditChange(nullptr);	
 #endif // WITH_EDITOR
 
-	return StaticMesh;
+	ImportAssetResult.ImportedObject = StaticMesh;
+	return ImportAssetResult;
 }
 
-UObject* UInterchangeStaticMeshFactory::ImportAssetObject_Async(const FImportAssetObjectParams& Arguments)
+UInterchangeFactoryBase::FImportAssetResult UInterchangeStaticMeshFactory::ImportAsset_Async(const FImportAssetObjectParams& Arguments)
 {
+	FImportAssetResult ImportAssetResult;
 	if (!Arguments.AssetNode || !Arguments.AssetNode->GetObjectClass()->IsChildOf(GetFactoryClass()))
 	{
-		return nullptr;
+		return ImportAssetResult;
 	}
 
 	UInterchangeStaticMeshFactoryNode* StaticMeshFactoryNode = Cast<UInterchangeStaticMeshFactoryNode>(Arguments.AssetNode);
 	if (StaticMeshFactoryNode == nullptr)
 	{
-		return nullptr;
+		return ImportAssetResult;
 	}
 
-	const UClass* StaticMeshClass = StaticMeshFactoryNode->GetObjectClass();
-	check(StaticMeshClass && StaticMeshClass->IsChildOf(GetFactoryClass()));
-
-	// create an asset if it doesn't exist
-	UObject* ExistingAsset = StaticFindObject(nullptr, Arguments.Parent, *Arguments.AssetName);
-
-	const bool bReimport = Arguments.ReimportObject&& ExistingAsset;
-	UObject* StaticMeshObject = nullptr;
-
-	// create a new static mesh or overwrite existing asset, if possible
-	if (!ExistingAsset)
-	{
-		// NewObject is not thread safe, the asset registry directory watcher tick on the main thread can trig before we finish initializing the UObject and will crash
-		// The UObject should have been created by calling CreateEmptyAsset on the main thread.
-		if (IsInGameThread())
-		{
-			StaticMeshObject = NewObject<UObject>(Arguments.Parent, StaticMeshClass, *Arguments.AssetName, RF_Public | RF_Standalone);
-		}
-		else
-		{
-			UE_LOG(LogInterchangeImport, Error, TEXT("Could not create StaticMesh asset [%s] outside of the game thread"), *Arguments.AssetName);
-			return nullptr;
-		}
-	}
-	else if(ExistingAsset->GetClass()->IsChildOf(StaticMeshClass))
-	{
-		//This is a reimport, we are just re-updating the source data
-		StaticMeshObject = ExistingAsset;
-	}
+	UObject* StaticMeshObject = UE::Interchange::FFactoryCommon::AsyncFindObject(StaticMeshFactoryNode, GetFactoryClass(), Arguments.Parent, Arguments.AssetName);
+	const bool bReimport = Arguments.ReimportObject && StaticMeshObject;
 
 	if (!StaticMeshObject)
 	{
-		if (!Arguments.ReimportObject)
-		{
-			UE_LOG(LogInterchangeImport, Error, TEXT("Could not create StaticMesh asset %s"), *Arguments.AssetName);
-		}
-		return nullptr;
+		UE_LOG(LogInterchangeImport, Error, TEXT("Could not import the StaticMesh asset %s, because the asset do not exist."), *Arguments.AssetName);
+		return ImportAssetResult;
 	}
 
 	UStaticMesh* StaticMesh = Cast<UStaticMesh>(StaticMeshObject);
 	if (!ensure(StaticMesh))
 	{
-		UE_LOG(LogInterchangeImport, Error, TEXT("Could not create StaticMesh asset %s"), *Arguments.AssetName);
-		return nullptr;
+		UE_LOG(LogInterchangeImport, Error, TEXT("Could not cast to StaticMesh asset %s"), *Arguments.AssetName);
+		return ImportAssetResult;
 	}
 
 	ensure(!StaticMesh->AreRenderingResourcesInitialized());
 
-	const int32 LodCount = StaticMeshFactoryNode->GetLodDataCount();
-	const int32 PrevLodCount = StaticMesh->GetNumLODs();
-	const int32 FinalLodCount = FMath::Max(PrevLodCount, LodCount);
-
+	const int32 LodCount = FMath::Min(StaticMeshFactoryNode->GetLodDataCount(), MAX_STATIC_MESH_LODS);
+	if (LodCount != StaticMeshFactoryNode->GetLodDataCount())
+	{
+		const int32 LodCountDiff = StaticMeshFactoryNode->GetLodDataCount() - MAX_STATIC_MESH_LODS;
+		UE_LOG(LogInterchangeImport, Warning, TEXT("Reached the maximum number of LODs for a Static Mesh(%d) - discarding %d LOD meshes."), MAX_STATIC_MESH_LODS, LodCountDiff);
+	}
 #if WITH_EDITOR
+	const int32 PrevLodCount = StaticMesh->GetNumSourceModels();
+	const int32 FinalLodCount = FMath::Max(PrevLodCount, LodCount);
 	StaticMesh->SetNumSourceModels(FinalLodCount);
 #endif // WITH_EDITOR
 
@@ -237,11 +315,12 @@ UObject* UInterchangeStaticMeshFactory::ImportAssetObject_Async(const FImportAss
 	// Now import geometry for each LOD
 	TArray<FString> LodDataUniqueIds;
 	StaticMeshFactoryNode->GetLodDataUniqueIds(LodDataUniqueIds);
-	ensure(LodDataUniqueIds.Num() == LodCount);
+	ensure(LodDataUniqueIds.Num() >= LodCount);
 
-	TArray<FMeshDescription> LodMeshDescriptions;
+	TArray<FMeshDescription>& LodMeshDescriptions = ImportAssetObjectData.LodMeshDescriptions;
 	LodMeshDescriptions.SetNum(LodCount);
 
+	bool bImportCollision = false;
 	bool bImportedCustomCollision = false;
 	int32 CurrentLodIndex = 0;
 	for (int32 LodIndex = 0; LodIndex < LodCount; ++LodIndex)
@@ -274,7 +353,7 @@ UObject* UInterchangeStaticMeshFactory::ImportAssetObject_Async(const FImportAss
 		bool bFirstValidMoved = false;
 		for (FMeshPayload& MeshPayload : MeshPayloads)
 		{
-			const TOptional<UE::Interchange::FStaticMeshPayloadData>& LodMeshPayload = MeshPayload.PayloadData.Get();
+			const TOptional<UE::Interchange::FMeshPayloadData>& LodMeshPayload = MeshPayload.PayloadData.Get();
 			if (!LodMeshPayload.IsSet())
 			{
 				UE_LOG(LogInterchangeImport, Warning, TEXT("Invalid static mesh payload key, StaticMesh asset %s"), *Arguments.AssetName);
@@ -290,12 +369,6 @@ UObject* UInterchangeStaticMeshFactory::ImportAssetObject_Async(const FImportAss
 				}
 				LodMeshDescription = MoveTemp(MeshDescription);
 				bFirstValidMoved = true;
-
-				// Bake the payload mesh, with the provided transform
-				if (!MeshPayload.Transform.Equals(FTransform::Identity))
-				{
-					FStaticMeshOperations::ApplyTransform(LodMeshDescription, MeshPayload.Transform);
-				}
 			}
 			else
 			{
@@ -303,8 +376,6 @@ UObject* UInterchangeStaticMeshFactory::ImportAssetObject_Async(const FImportAss
 				{
 					continue;
 				}
-				// Bake the payload mesh, with the provided transform
-				AppendSettings.MeshTransform = MeshPayload.Transform;
 				FStaticMeshOperations::AppendMeshDescription(LodMeshPayload->MeshDescription, LodMeshDescription, AppendSettings);
 			}
 		}
@@ -364,40 +435,17 @@ UObject* UInterchangeStaticMeshFactory::ImportAssetObject_Async(const FImportAss
 			}
 		}
 
-		// Build section info map from materials
-		FStaticMeshConstAttributes StaticMeshAttributes(LodMeshDescription);
-		TPolygonGroupAttributesRef<const FName> SlotNames = StaticMeshAttributes.GetPolygonGroupMaterialSlotNames();
-		int32 SectionIndex = 0;
-		for (FPolygonGroupID PolygonGroupID : LodMeshDescription.PolygonGroups().GetElementIDs())
-		{
-			int32 MaterialSlotIndex = StaticMesh->GetMaterialIndexFromImportedMaterialSlotName(SlotNames[PolygonGroupID]);
-					
-			// If no material was found with this slot name, fill out a blank slot instead.
-			if (MaterialSlotIndex == INDEX_NONE)
-			{
-				MaterialSlotIndex = StaticMesh->GetStaticMaterials().Emplace(UMaterial::GetDefaultMaterial(MD_Surface), SlotNames[PolygonGroupID]);
-#if !WITH_EDITOR
-				StaticMesh->GetStaticMaterials()[MaterialSlotIndex].UVChannelData = FMeshUVChannelInfo(1.f);
-#endif
-			}
-
-#if WITH_EDITOR
-			FMeshSectionInfo Info = StaticMesh->GetSectionInfoMap().Get(CurrentLodIndex, SectionIndex);
-			Info.MaterialIndex = MaterialSlotIndex;
-			StaticMesh->GetSectionInfoMap().Remove(CurrentLodIndex, SectionIndex);
-			StaticMesh->GetSectionInfoMap().Set(CurrentLodIndex, SectionIndex, Info);
-#endif
-
-			SectionIndex++;
-		}
-
 		// Import collision geometry
 		if (CurrentLodIndex == 0)
 		{
-			bImportedCustomCollision |= ImportBoxCollision(Arguments, StaticMesh, LodDataNode);
-			bImportedCustomCollision |= ImportCapsuleCollision(Arguments, StaticMesh, LodDataNode);
-			bImportedCustomCollision |= ImportSphereCollision(Arguments, StaticMesh, LodDataNode);
-			bImportedCustomCollision |= ImportConvexCollision(Arguments, StaticMesh, LodDataNode);
+			LodDataNode->GetImportCollision(bImportCollision);
+			if(bImportCollision)
+			{
+				bImportedCustomCollision |= ImportBoxCollision(Arguments, StaticMesh, LodDataNode);
+				bImportedCustomCollision |= ImportCapsuleCollision(Arguments, StaticMesh, LodDataNode);
+				bImportedCustomCollision |= ImportSphereCollision(Arguments, StaticMesh, LodDataNode);
+				bImportedCustomCollision |= ImportConvexCollision(Arguments, StaticMesh, LodDataNode);
+			}
 		}
 
 		CurrentLodIndex++;
@@ -419,7 +467,143 @@ UObject* UInterchangeStaticMeshFactory::ImportAssetObject_Async(const FImportAss
 	}
 #endif // WITH_EDITOR
 
-	CommitMeshDescriptions(*StaticMesh, MoveTemp(LodMeshDescriptions));
+	ImportAssetObjectData.bImportCollision = bImportCollision;
+	ImportAssetObjectData.bImportedCustomCollision = bImportedCustomCollision;
+
+	// Getting the file Hash will cache it into the source data
+	Arguments.SourceData->GetFileContentHash();
+
+	ImportAssetResult.ImportedObject = StaticMeshObject;
+	return ImportAssetResult;
+}
+
+UInterchangeFactoryBase::FImportAssetResult UInterchangeStaticMeshFactory::EndImportAsset_GameThread(const FImportAssetObjectParams& Arguments)
+{
+	FImportAssetResult ImportAssetResult;
+	if (!Arguments.AssetNode || !Arguments.AssetNode->GetObjectClass()->IsChildOf(GetFactoryClass()))
+	{
+		return ImportAssetResult;
+	}
+
+	UInterchangeStaticMeshFactoryNode* StaticMeshFactoryNode = Cast<UInterchangeStaticMeshFactoryNode>(Arguments.AssetNode);
+	if (StaticMeshFactoryNode == nullptr)
+	{
+		return ImportAssetResult;
+	}
+
+	const UClass* StaticMeshClass = StaticMeshFactoryNode->GetObjectClass();
+	check(StaticMeshClass && StaticMeshClass->IsChildOf(GetFactoryClass()));
+
+	// create an asset if it doesn't exist
+	UObject* ExistingAsset = StaticFindObject(nullptr, Arguments.Parent, *Arguments.AssetName);
+
+	const bool bReimport = Arguments.ReimportObject && ExistingAsset;
+
+	UStaticMesh* StaticMesh = Cast<UStaticMesh>(ExistingAsset);
+	if (!ensure(StaticMesh))
+	{
+		UE_LOG(LogInterchangeImport, Error, TEXT("Could not create StaticMesh asset %s"), *Arguments.AssetName);
+		return ImportAssetResult;
+	}
+
+	for (int32 LodIndex = 0; LodIndex < ImportAssetObjectData.LodMeshDescriptions.Num(); ++LodIndex)
+	{
+		// Add the lod mesh data to the static mesh
+		FMeshDescription& LodMeshDescription = ImportAssetObjectData.LodMeshDescriptions[LodIndex];
+		if (LodMeshDescription.IsEmpty())
+		{
+			//All the valid Mesh description are at the beginning of the array
+			break;
+		}
+
+		// Build section info map from materials
+		FStaticMeshConstAttributes StaticMeshAttributes(LodMeshDescription);
+		TPolygonGroupAttributesRef<const FName> SlotNames = StaticMeshAttributes.GetPolygonGroupMaterialSlotNames();
+#if WITH_EDITOR
+		if (bReimport)
+		{
+			//Match the existing section info map data
+
+			//First find the old mesh description polygon groups name that match with the imported mesh description polygon groups name.
+			const int32 PreviousSectionCount = StaticMesh->GetSectionInfoMap().GetSectionNumber(LodIndex);
+			TMap<FPolygonGroupID, FPolygonGroupID> ImportedToOldPolygonGroupMatch;
+			ImportedToOldPolygonGroupMatch.Reserve(LodMeshDescription.PolygonGroups().Num());
+			if (StaticMesh->IsMeshDescriptionValid(LodIndex))
+			{
+				//Match incoming mesh description with the old mesh description
+				FMeshDescription& OldMeshDescription = *StaticMesh->GetMeshDescription(LodIndex);
+				FStaticMeshConstAttributes OldStaticMeshAttributes(OldMeshDescription);
+				TPolygonGroupAttributesRef<const FName> OldSlotNames = OldStaticMeshAttributes.GetPolygonGroupMaterialSlotNames();
+				for (FPolygonGroupID PolygonGroupID : LodMeshDescription.PolygonGroups().GetElementIDs())
+				{
+					for (FPolygonGroupID OldPolygonGroupID : OldMeshDescription.PolygonGroups().GetElementIDs())
+					{
+						if (SlotNames[PolygonGroupID] == OldSlotNames[OldPolygonGroupID])
+						{
+							ImportedToOldPolygonGroupMatch.FindOrAdd(PolygonGroupID) = OldPolygonGroupID;
+							break;
+						}
+					}
+				}
+			}
+			//Create a new set of mesh section info for this lod
+			TArray<FMeshSectionInfo> NewSectionInfoMapData;
+			NewSectionInfoMapData.Reserve(LodMeshDescription.PolygonGroups().Num());
+			for (FPolygonGroupID PolygonGroupID : LodMeshDescription.PolygonGroups().GetElementIDs())
+			{
+				if (FPolygonGroupID* OldPolygonGroupID = ImportedToOldPolygonGroupMatch.Find(PolygonGroupID))
+				{
+					if (StaticMesh->GetSectionInfoMap().IsValidSection(LodIndex, OldPolygonGroupID->GetValue()))
+					{
+						NewSectionInfoMapData.Add(StaticMesh->GetSectionInfoMap().Get(LodIndex, OldPolygonGroupID->GetValue()));
+					}
+				}
+				else
+				{
+					//This is an unmatched section, its either added or we did not recover the name
+					int32 MaterialSlotIndex = StaticMesh->GetMaterialIndexFromImportedMaterialSlotName(SlotNames[PolygonGroupID]);
+					//Missing material slot should have been added before
+					ensure(MaterialSlotIndex != INDEX_NONE);
+					NewSectionInfoMapData.Add(FMeshSectionInfo(MaterialSlotIndex));
+				}
+			}
+			//Recreate the section info map
+			for (int32 NewSectionIndex = 0; NewSectionIndex < NewSectionInfoMapData.Num(); ++NewSectionIndex)
+			{
+				StaticMesh->GetSectionInfoMap().Remove(LodIndex, NewSectionIndex);
+				StaticMesh->GetSectionInfoMap().Set(LodIndex, NewSectionIndex, NewSectionInfoMapData[NewSectionIndex]);
+			}
+		}
+		else
+#endif // WITH_EDITOR
+		{
+			int32 SectionIndex = 0;
+			for (FPolygonGroupID PolygonGroupID : LodMeshDescription.PolygonGroups().GetElementIDs())
+			{
+				int32 MaterialSlotIndex = StaticMesh->GetMaterialIndexFromImportedMaterialSlotName(SlotNames[PolygonGroupID]);
+
+				// If no material was found with this slot name, fill out a blank slot instead.
+				if (MaterialSlotIndex == INDEX_NONE)
+				{
+					MaterialSlotIndex = StaticMesh->GetStaticMaterials().Emplace(UMaterial::GetDefaultMaterial(MD_Surface), SlotNames[PolygonGroupID]);
+#if !WITH_EDITOR
+					StaticMesh->GetStaticMaterials()[MaterialSlotIndex].UVChannelData = FMeshUVChannelInfo(1.f);
+#endif
+				}
+
+#if WITH_EDITOR
+				FMeshSectionInfo Info = StaticMesh->GetSectionInfoMap().Get(LodIndex, SectionIndex);
+				Info.MaterialIndex = MaterialSlotIndex;
+				StaticMesh->GetSectionInfoMap().Remove(LodIndex, SectionIndex);
+				StaticMesh->GetSectionInfoMap().Set(LodIndex, SectionIndex, Info);
+#endif
+
+				SectionIndex++;
+			}
+		}
+	}
+
+	CommitMeshDescriptions(*StaticMesh, MoveTemp(ImportAssetObjectData.LodMeshDescriptions));
 
 	ImportSockets(Arguments, StaticMesh, StaticMeshFactoryNode);
 
@@ -436,34 +620,65 @@ UObject* UInterchangeStaticMeshFactory::ImportAssetObject_Async(const FImportAss
 		UInterchangeFactoryBaseNode* PreviousNode = nullptr;
 		if (InterchangeAssetImportData)
 		{
-			PreviousNode = InterchangeAssetImportData->NodeContainer->GetFactoryNode(InterchangeAssetImportData->NodeUniqueID);
+			PreviousNode = InterchangeAssetImportData->GetStoredFactoryNode(InterchangeAssetImportData->NodeUniqueID);
 		}
 		UInterchangeFactoryBaseNode* CurrentNode = NewObject<UInterchangeStaticMeshFactoryNode>(GetTransientPackage());
 		UInterchangeBaseNode::CopyStorage(StaticMeshFactoryNode, CurrentNode);
 		CurrentNode->FillAllCustomAttributeFromObject(StaticMesh);
 		UE::Interchange::FFactoryCommon::ApplyReimportStrategyToAsset(StaticMesh, PreviousNode, CurrentNode, StaticMeshFactoryNode);
+
+		//Reorder the Hires mesh description in the same order has the lod 0 mesh description
+		if (StaticMesh->IsHiResMeshDescriptionValid())
+		{
+			FMeshDescription* HiresMeshDescription = StaticMesh->GetHiResMeshDescription();
+			FMeshDescription* Lod0MeshDescription = StaticMesh->GetMeshDescription(0);
+			if (HiresMeshDescription && Lod0MeshDescription)
+			{
+				StaticMesh->ModifyHiResMeshDescription();
+				FString MaterialNameConflictMsg = TEXT("[Asset ") + StaticMesh->GetPathName() + TEXT("] Nanite hi - res import have some material name that differ from the LOD 0 material name.Your nanite hi - res should use the same material names the LOD 0 use to ensure we can remap the section in the same order.");
+				FString MaterialCountConflictMsg = TEXT("[Asset ") + StaticMesh->GetPathName() + TEXT("] Nanite hi-res import dont have the same material count then LOD 0. Your nanite hi-res should have equal number of material.");
+				FStaticMeshOperations::ReorderMeshDescriptionPolygonGroups(*Lod0MeshDescription, *HiresMeshDescription, MaterialNameConflictMsg, MaterialCountConflictMsg);
+				StaticMesh->CommitHiResMeshDescription();
+			}
+		}
 	}
 #endif // WITH_EDITOR
 
-	if (!bImportedCustomCollision)
+	if(ImportAssetObjectData.bImportCollision)
 	{
-		GenerateKDopCollision(Arguments, StaticMesh);
-	}
+		if (!ImportAssetObjectData.bImportedCustomCollision)
+		{
+			GenerateKDopCollision(Arguments, StaticMesh);
+		}
 #if WITH_EDITORONLY_DATA
-	else
-	{
-		StaticMesh->bCustomizedCollision = true;
-	}
+		else
+		{
+			StaticMesh->bCustomizedCollision = true;
+		}
 #endif // WITH_EDITORONLY_DATA
-
-	// Getting the file Hash will cache it into the source data
-	Arguments.SourceData->GetFileContentHash();
-
+	}
 #if WITH_EDITOR
+	//Lod group need to use the static mesh API and cannot use the apply delegate
+	if (!Arguments.ReimportObject)
+	{
+		FName LodGroup = NAME_None;
+		if (StaticMeshFactoryNode->GetCustomLODGroup(LodGroup) && LodGroup != NAME_None)
+		{
+			constexpr bool bRebuildImmediately = false;
+			constexpr bool bAllowModify = false;
+			StaticMesh->SetLODGroup(LodGroup, bRebuildImmediately, bAllowModify);
+		}
+	}
 	FMeshBudgetProjectSettingsUtils::SetLodGroupForStaticMesh(StaticMesh);
 #endif
 
-	return StaticMeshObject;
+	if (bReimport && GInterchangeStaticMeshReorderMaterialSlots)
+	{
+		UE::Interchange::Private::StaticMesh::ReorderMaterialSlotToBaseLod(StaticMesh);
+	}
+
+	ImportAssetResult.ImportedObject = StaticMesh;
+	return ImportAssetResult;
 }
 
 void UInterchangeStaticMeshFactory::CommitMeshDescriptions(UStaticMesh& StaticMesh, TArray<FMeshDescription>&& LodMeshDescriptions)
@@ -558,10 +773,10 @@ TArray<UInterchangeStaticMeshFactory::FMeshPayload> UInterchangeStaticMeshFactor
 	TArray<FMeshPayload> Payloads;
 	Payloads.Reserve(MeshUids.Num());
 
-	const IInterchangeStaticMeshPayloadInterface* StaticMeshTranslatorPayloadInterface = Cast<IInterchangeStaticMeshPayloadInterface>(Arguments.Translator);
-	if (!StaticMeshTranslatorPayloadInterface)
+	const IInterchangeMeshPayloadInterface* MeshTranslatorPayloadInterface = Cast<IInterchangeMeshPayloadInterface>(Arguments.Translator);
+	if (!MeshTranslatorPayloadInterface)
 	{
-		UE_LOG(LogInterchangeImport, Error, TEXT("Cannot import static mesh, the translator does not implement the IInterchangeStaticMeshPayloadInterface."));
+		UE_LOG(LogInterchangeImport, Error, TEXT("Cannot import static mesh, the translator does not implement the IInterchangeMeshPayloadInterface."));
 		return Payloads;
 	}
 
@@ -619,15 +834,17 @@ TArray<UInterchangeStaticMeshFactory::FMeshPayload> UInterchangeStaticMeshFactor
 			continue;
 		}
 
-		TOptional<FString> MeshPayloadKey = MeshNode->GetPayLoadKey();
-		if (!ensure(MeshPayloadKey.IsSet()))
+		TOptional<FInterchangeMeshPayLoadKey> OptionalPayLoadKey = MeshNode->GetPayLoadKey();
+		if (!ensure(OptionalPayLoadKey.IsSet()))
 		{
 			UE_LOG(LogInterchangeImport, Warning, TEXT("Empty LOD mesh reference payload when importing StaticMesh asset %s"), *Arguments.AssetName);
 			continue;
 		}
 
-		Payload.MeshName = *MeshPayloadKey;
-		Payload.PayloadData = StaticMeshTranslatorPayloadInterface->GetStaticMeshPayloadData(*MeshPayloadKey);
+		FInterchangeMeshPayLoadKey& PayLoadKey = OptionalPayLoadKey.GetValue();
+
+		Payload.MeshName = PayLoadKey.UniqueId;
+		Payload.PayloadData = MeshTranslatorPayloadInterface->GetMeshPayloadData(PayLoadKey, Payload.Transform);
 
 		Payloads.Emplace(MoveTemp(Payload));
 	}
@@ -841,7 +1058,7 @@ bool UInterchangeStaticMeshFactory::AddBoxGeomFromTris(const FImportAssetObjectP
 					Planes[PlaneIndex].DistCount = 2;
 				}
 				// if we have a second distance, and its not that either, something is wrong.
-				else if (Planes[PlaneIndex].DistCount == 2 && !AreEqual(Dist, Planes[PlaneIndex].PlaneDist[1]))
+				else if (Planes[PlaneIndex].DistCount == 2 && !AreEqual(Dist, Planes[PlaneIndex].PlaneDist[0]) && !AreEqual(Dist, Planes[PlaneIndex].PlaneDist[1]))
 				{
 					// Error
 //					UE_LOG(LogStaticMeshImportUtils, Log, TEXT("AddBoxGeomFromTris (%s): Found more than 2 planes with different distances."), ObjName);
@@ -894,12 +1111,37 @@ bool UInterchangeStaticMeshFactory::AddBoxGeomFromTris(const FImportAssetObjectP
 
 	// Allocate box in array
 	FKBoxElem BoxElem;
-	BoxElem.SetTransform(FTransform(FVector(Planes[0].Normal), FVector(Planes[1].Normal), FVector(Planes[2].Normal), Box.GetCenter()));
+
+	//In case we have a box oriented with the world axis system we want to reorder the plane to not introduce axis swap.
+	//If the box was turned, the order of the planes will be arbitrary and the box rotation will make the collision
+	//not playing well if the asset is built or place in a level with a non uniform scale.
+	FVector3f Axis[3] = { FVector3f::XAxisVector, FVector3f::YAxisVector, FVector3f::ZAxisVector };
+	int32 Reorder[3] = { INDEX_NONE, INDEX_NONE, INDEX_NONE };
+	for (int32 PlaneIndex = 0; PlaneIndex < 3; ++PlaneIndex)
+	{
+		for (int32 AxisIndex = 0; AxisIndex < 3; ++AxisIndex)
+		{
+			if (AreParallel(Planes[PlaneIndex].Normal, Axis[AxisIndex]))
+			{
+				Reorder[PlaneIndex] = AxisIndex;
+				break;
+			}
+		}
+	}
+
+	if (Reorder[0] == INDEX_NONE || Reorder[1] == INDEX_NONE || Reorder[2] == INDEX_NONE)
+	{
+		Reorder[0] = 0;
+		Reorder[1] = 1;
+		Reorder[2] = 2;
+	}
+
+	BoxElem.SetTransform(FTransform(FVector(Planes[Reorder[0]].Normal), FVector(Planes[Reorder[1]].Normal), FVector(Planes[Reorder[2]].Normal), Box.GetCenter()));
 
 	// distance between parallel planes is box edge lengths.
-	BoxElem.X = FMath::Abs(Planes[0].PlaneDist[0] - Planes[0].PlaneDist[1]);
-	BoxElem.Y = FMath::Abs(Planes[1].PlaneDist[0] - Planes[1].PlaneDist[1]);
-	BoxElem.Z = FMath::Abs(Planes[2].PlaneDist[0] - Planes[2].PlaneDist[1]);
+	BoxElem.X = FMath::Abs(Planes[Reorder[0]].PlaneDist[0] - Planes[Reorder[0]].PlaneDist[1]);
+	BoxElem.Y = FMath::Abs(Planes[Reorder[1]].PlaneDist[0] - Planes[Reorder[1]].PlaneDist[1]);
+	BoxElem.Z = FMath::Abs(Planes[Reorder[2]].PlaneDist[0] - Planes[Reorder[2]].PlaneDist[1]);
 
 	AggGeom.BoxElems.Add(BoxElem);
 
@@ -1061,8 +1303,8 @@ bool UInterchangeStaticMeshFactory::ImportBoxCollision(const FImportAssetObjectP
 	TArray<FMeshPayload> MeshPayloads = GetMeshPayloads(Arguments, BoxCollisionMeshUids);
 	for (const FMeshPayload& MeshPayload : MeshPayloads)
 	{
-		const FTransform& Transform = MeshPayload.Transform;
-		const TOptional<FStaticMeshPayloadData>& PayloadData = MeshPayload.PayloadData.Get();
+		const FTransform Transform = FTransform::Identity;
+		const TOptional<FMeshPayloadData>& PayloadData = MeshPayload.PayloadData.Get();
 
 		if (!PayloadData.IsSet())
 		{
@@ -1109,8 +1351,8 @@ bool UInterchangeStaticMeshFactory::ImportCapsuleCollision(const FImportAssetObj
 	TArray<FMeshPayload> MeshPayloads = GetMeshPayloads(Arguments, CapsuleCollisionMeshUids);
 	for (const FMeshPayload& MeshPayload : MeshPayloads)
 	{
-		const FTransform& Transform = MeshPayload.Transform;
-		const TOptional<FStaticMeshPayloadData>& PayloadData = MeshPayload.PayloadData.Get();
+		const FTransform& Transform = FTransform::Identity;
+		const TOptional<FMeshPayloadData>& PayloadData = MeshPayload.PayloadData.Get();
 
 		if (!PayloadData.IsSet())
 		{
@@ -1157,8 +1399,8 @@ bool UInterchangeStaticMeshFactory::ImportSphereCollision(const FImportAssetObje
 	TArray<FMeshPayload> MeshPayloads = GetMeshPayloads(Arguments, SphereCollisionMeshUids);
 	for (const FMeshPayload& MeshPayload : MeshPayloads)
 	{
-		const FTransform& Transform = MeshPayload.Transform;
-		const TOptional<FStaticMeshPayloadData>& PayloadData = MeshPayload.PayloadData.Get();
+		const FTransform& Transform = FTransform::Identity;
+		const TOptional<FMeshPayloadData>& PayloadData = MeshPayload.PayloadData.Get();
 
 		if (!PayloadData.IsSet())
 		{
@@ -1208,8 +1450,8 @@ bool UInterchangeStaticMeshFactory::ImportConvexCollision(const FImportAssetObje
 	{
 		for (const FMeshPayload& MeshPayload : MeshPayloads)
 		{
-			const FTransform& Transform = MeshPayload.Transform;
-			const TOptional<FStaticMeshPayloadData>& PayloadData = MeshPayload.PayloadData.Get();
+			const FTransform& Transform = FTransform::Identity;
+			const TOptional<FMeshPayloadData>& PayloadData = MeshPayload.PayloadData.Get();
 
 			if (!PayloadData.IsSet())
 			{
@@ -1233,8 +1475,8 @@ bool UInterchangeStaticMeshFactory::ImportConvexCollision(const FImportAssetObje
 
 		for (const FMeshPayload& MeshPayload : MeshPayloads)
 		{
-			const FTransform& Transform = MeshPayload.Transform;
-			TOptional<FStaticMeshPayloadData> PayloadData = MeshPayload.PayloadData.Get();
+			const FTransform& Transform = FTransform::Identity;
+			TOptional<FMeshPayloadData> PayloadData = MeshPayload.PayloadData.Get();
 
 			if (!PayloadData.IsSet())
 			{

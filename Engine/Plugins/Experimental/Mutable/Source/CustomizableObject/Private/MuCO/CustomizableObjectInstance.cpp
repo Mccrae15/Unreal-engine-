@@ -2,35 +2,38 @@
 
 #include "MuCO/CustomizableObjectInstance.h"
 
+#include "Algo/Find.h"
 #include "Algo/MaxElement.h"
+#include "Animation/AnimClassInterface.h"
+#include "Animation/AnimBlueprintGeneratedClass.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/Skeleton.h"
+#include "BoneControllers/AnimNode_RigidBody.h"
 #include "ClothConfig.h"
 #include "ClothingAsset.h"
 #include "Engine/SkeletalMeshSocket.h"
+#include "Engine/Texture2DArray.h"
 #include "MaterialDomain.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Modules/ModuleManager.h"
 #include "MuCO/CustomizableInstanceLODManagement.h"
 #include "MuCO/CustomizableInstancePrivateData.h"
+#include "MuCO/CustomizableObjectExtension.h"
 #include "MuCO/CustomizableObjectMipDataProvider.h"
 #include "MuCO/CustomizableObjectPrivate.h"
 #include "MuCO/CustomizableSkeletalComponent.h"
 #include "MuCO/DefaultImageProvider.h"
+#include "MuCO/ICustomizableObjectModule.h"
 #include "MuCO/UnrealConversionUtils.h"
-#include "MuR/OpImagePixelFormat.h"
+#include "MuCO/UnrealPortabilityHelpers.h"
+#include "MuR/Model.h"
 #include "PhysicsEngine/PhysicsAsset.h"
 #include "Rendering/Texture2DResource.h"
 #include "RenderingThread.h"
 #include "SkeletalMergingLibrary.h"
 #include "UObject/UObjectIterator.h"
 #include "Widgets/Notifications/SNotificationList.h"
-
-// Required for engine branch preprocessor defines.
-#include "MuCO/UnrealPortabilityHelpers.h"
-#include "MuR/OpImagePixelFormat.h"
-#include "MuR/OpImageSwizzle.h"
 #include "PhysicsEngine/PhysicsConstraintTemplate.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(CustomizableObjectInstance)
@@ -54,7 +57,7 @@ UTexture2D* UCustomizableInstancePrivateData::CreateTexture()
 }
 
 
-int32 UCustomizableInstancePrivateData::GetLastMeshId(int32 ComponentIndex, int32 LODIndex) const
+mu::FResourceID UCustomizableInstancePrivateData::GetLastMeshId(int32 ComponentIndex, int32 LODIndex) const
 {
 	const FCustomizableInstanceComponentData* ComponentData = GetComponentData(ComponentIndex);
 	check(ComponentData);
@@ -64,7 +67,7 @@ int32 UCustomizableInstancePrivateData::GetLastMeshId(int32 ComponentIndex, int3
 }
 
 
-void UCustomizableInstancePrivateData::SetLastMeshId(int32 ComponentIndex, int32 LODIndex, int32 MeshId)
+void UCustomizableInstancePrivateData::SetLastMeshId(int32 ComponentIndex, int32 LODIndex, mu::FResourceID MeshId)
 {
 	FCustomizableInstanceComponentData* ComponentData = GetComponentData(ComponentIndex);
 	check(ComponentData);
@@ -112,7 +115,7 @@ void UCustomizableInstancePrivateData::InvalidateGeneratedData()
 {
 	for (FCustomizableInstanceComponentData& ComponentData : ComponentsData)
 	{
-		ComponentData.LastMeshIdPerLOD.Init(INDEX_NONE, NumLODsAvailable);
+		ComponentData.LastMeshIdPerLOD.Init(MAX_uint64, NumLODsAvailable);
 	}
 
 	LastUpdateData.Clear();
@@ -151,8 +154,9 @@ const FCustomizableObjectInstanceDescriptor& UCustomizableObjectInstance::GetDes
 
 void UCustomizableObjectInstance::SetDescriptor(const FCustomizableObjectInstanceDescriptor& InDescriptor)
 {
+	const bool bInvalidatePreviousData = GetCustomizableObject() != InDescriptor.CustomizableObject;
 	Descriptor = InDescriptor;
-	PrivateData->ReloadParameters(this);
+	PrivateData->ReloadParameters(this, bInvalidatePreviousData);
 }
 
 
@@ -187,8 +191,8 @@ void UCustomizableInstancePrivateData::PrepareForUpdate(const TSharedPtr<FMutabl
 #if WITH_EDITORONLY_DATA
 				ComponentData->MeshPartPaths.Empty();
 #endif
-
-				ComponentData->Skeletons.SkeletonsToLoad.Empty();
+				ComponentData->Skeletons.Skeleton = nullptr;
+				ComponentData->Skeletons.SkeletonIds.Empty();
 				ComponentData->Skeletons.SkeletonsToMerge.Empty();
 				ComponentData->PhysicsAssets.PhysicsAssetToLoad.Empty();
 				ComponentData->PhysicsAssets.PhysicsAssetsToMerge.Empty();
@@ -199,7 +203,7 @@ void UCustomizableInstancePrivateData::PrepareForUpdate(const TSharedPtr<FMutabl
 
 			FCustomizableInstanceComponentData& NewComponentData = ComponentsData.AddDefaulted_GetRef();
 			NewComponentData.ComponentIndex = Component.Id;
-			NewComponentData.LastMeshIdPerLOD.Init(INDEX_NONE, NumLODsAvailable);
+			NewComponentData.LastMeshIdPerLOD.Init(MAX_uint64, NumLODsAvailable);
 		}
 	}
 
@@ -236,11 +240,7 @@ void UCustomizableObjectInstance::PreEditChange(FProperty* PropertyAboutToChange
 		
 		for (TObjectPtr<UTexture2D> Texture : TextureParameterDeclarations)
 		{
-			if (Texture)
-			{
-				const int32 TextureId = DefaultImageProvider.Get(Texture);
-				DefaultImageProvider.Keep(TextureId, false);
-			}
+			DefaultImageProvider.Remove(Texture);
 		}
 	}
 }
@@ -260,11 +260,7 @@ void UCustomizableObjectInstance::PostEditChangeProperty(FPropertyChangedEvent& 
 		
 		for (TObjectPtr<UTexture2D> Texture : TextureParameterDeclarations)
 		{
-			if (Texture)
-			{
-				const int32 TextureId = DefaultImageProvider.GetOrAdd(Texture);
-				DefaultImageProvider.Keep(TextureId, true);
-			}
+			DefaultImageProvider.Add(Texture);
 		}
 
 		UpdateSkeletalMeshAsync(true, true);
@@ -310,6 +306,25 @@ void UCustomizableObjectInstance::BeginDestroy()
 	BeginDestroyNativeDelegate.Broadcast(this);
 
 	// Release the Live Instance ID if there it hadn't been released before
+	DestroyLiveUpdateInstance();
+
+	if (PrivateData)
+	{
+		if (PrivateData->StreamingHandle.IsValid() && PrivateData->StreamingHandle->IsActive())
+		{
+			PrivateData->StreamingHandle->CancelHandle();
+		}
+		PrivateData->StreamingHandle = nullptr;
+	}
+	
+	ReleaseMutableResources(true);
+	
+	Super::BeginDestroy();
+}
+
+
+void UCustomizableObjectInstance::DestroyLiveUpdateInstance()
+{
 	if (PrivateData && PrivateData->LiveUpdateModeInstanceID)
 	{
 		// If FCustomizableObjectSystemPrivate::SSystem is nullptr it means it has already been destroyed, no point in registering an instanceID release
@@ -321,16 +336,6 @@ void UCustomizableObjectInstance::BeginDestroy()
 			PrivateData->LiveUpdateModeInstanceID = 0;
 		}
 	}
-
-	if (PrivateData && PrivateData->StreamingHandle)
-	{
-		PrivateData->StreamingHandle->CancelHandle();
-		PrivateData->StreamingHandle = nullptr;
-	}
-	
-	Super::BeginDestroy();
-
-	ReleaseMutableResources(true);
 }
 
 
@@ -346,14 +351,25 @@ void UCustomizableObjectInstance::ReleaseMutableResources(bool bCalledFromBeginD
 
 		for (FGeneratedTexture& Texture : PrivateData->GeneratedTextures)
 		{
-			if (CustomizableObjectSystem->RemoveTextureReference(Texture.Id))
+			if (CustomizableObjectSystem->RemoveTextureReference(Texture.Key))
 			{
 				// Do not release textures when called from BeginDestroy, it would produce a texture artifact in the
 				// instance's remaining sk meshes and GC is being performed anyway so it will free the textures if needed
 				if (!bCalledFromBeginDestroy && CustomizableObjectSystem->bReleaseTexturesImmediately)
 				{
-					UCustomizableInstancePrivateData::ReleaseMutableTexture(Texture.Id, Texture.Texture, Cache);
+					UCustomizableInstancePrivateData::ReleaseMutableTexture(Texture.Key, Cast<UTexture2D>(Texture.Texture), Cache);
 				}
+			}
+		}
+
+		// Remove all references to cached Texture Parameters. Only if we're destroying the COI.
+		if (bCalledFromBeginDestroy)
+		{
+			FUnrealMutableImageProvider* ImageProvider = UCustomizableObjectSystem::GetInstance()->GetPrivateChecked()->GetImageProviderChecked();
+
+			for (const FName& TextureParameter : PrivateData->UpdateTextureParameters)
+			{
+				ImageProvider->UnCacheImage(TextureParameter, false);
 			}
 		}
 	}
@@ -433,11 +449,6 @@ void UCustomizableObjectInstance::Serialize(FArchive& Ar)
 		Descriptor.VectorParameters = VectorParameters_DEPRECATED;
 		Descriptor.ProjectorParameters = ProjectorParameters_DEPRECATED;
 	}
-	
-	if (CustomizableObjectCustomVersion < FCustomizableObjectCustomVersion::DescriptorBuildParameterDecorations)
-	{
-		Descriptor.bBuildParameterDecorations = bBuildParameterDecorations_DEPRECATED;
-	}
 
 	if (CustomizableObjectCustomVersion < FCustomizableObjectCustomVersion::DescriptorMultilayerProjectors)
 	{
@@ -454,7 +465,6 @@ void UCustomizableObjectInstance::PostLoad()
 	Super::PostLoad();
 
 	Descriptor.ReloadParameters();
-	SetRequestedLODs(Descriptor.MinLOD, Descriptor.MaxLOD, Descriptor.RequestedLODLevels);
 }
 
 
@@ -470,28 +480,40 @@ FString UCustomizableObjectInstance::GetDesc()
 }
 
 
-bool UCustomizableObjectInstance::IsParamMultidimensional(const FString& ParamName) const
-{
-	return Descriptor.IsParamMultidimensional(ParamName);
-}
-
-
 int32 UCustomizableObjectInstance::GetProjectorValueRange(const FString& ParamName) const
 {
 	return Descriptor.GetProjectorValueRange(ParamName);
 }
 
 
-bool UCustomizableObjectInstance::IsParamMultidimensional(int32 ParamIndex) const
+int32 UCustomizableObjectInstance::GetIntValueRange(const FString& ParamName) const
 {
-	return Descriptor.IsParamMultidimensional(ParamIndex);
+	return Descriptor.GetIntValueRange(ParamName);
+}
+
+
+int32 UCustomizableObjectInstance::GetFloatValueRange(const FString& ParamName) const
+{
+	return Descriptor.GetFloatValueRange(ParamName);
+}
+
+
+int32 UCustomizableObjectInstance::GetTextureValueRange(const FString& ParamName) const
+{
+	return Descriptor.GetTextureValueRange(ParamName);
+}
+
+
+bool UCustomizableObjectInstance::IsParamMultidimensional(const FString& ParamName) const
+{
+	return GetCustomizableObject()->IsParameterMultidimensional(ParamName);
 }
 
 
 // Only safe to call if the Mutable texture ref count system returns 0 and absolutely sure nobody holds a reference to the texture
-void UCustomizableInstancePrivateData::ReleaseMutableTexture(int32 MutableTextureId, UTexture2D* Texture, FMutableResourceCache& Cache)
+void UCustomizableInstancePrivateData::ReleaseMutableTexture(const FMutableImageCacheKey& MutableTextureKey, UTexture2D* Texture, FMutableResourceCache& Cache)
 {
-	if (Texture && Texture->IsValidLowLevel())
+	if (ensure(Texture) && Texture->IsValidLowLevel())
 	{
 		Texture->ConditionalBeginDestroy();
 
@@ -502,20 +524,7 @@ void UCustomizableInstancePrivateData::ReleaseMutableTexture(int32 MutableTextur
 	}
 
 	// Must remove texture from cache since it has been released
-	for (TPair<FMutableImageCacheKey, TWeakObjectPtr<UTexture2D> >& CachedTexture : Cache.Images)
-	{
-		if (CachedTexture.Key.Resource == MutableTextureId)
-		{
-			Cache.Images.Remove(CachedTexture.Key);
-			break;
-		}
-	}
-}
-
-
-FCustomizableObjectProjector UCustomizableObjectInstance::GetProjectorDefaultValue(const int32 ParamIndex) const
-{
-	return Descriptor.GetProjectorDefaultValue(ParamIndex);
+	Cache.Images.Remove(MutableTextureKey);
 }
 
 
@@ -541,27 +550,7 @@ void UCustomizableInstancePrivateData::InstanceUpdateFlags(const UCustomizableOb
 }
 
 
-mu::ParametersPtr UCustomizableInstancePrivateData::GetParameters(UCustomizableObjectInstance* Public) 
-{
-	const UCustomizableObject* CustomizableObject = Public->GetCustomizableObject();
-	if (!CustomizableObject)
-	{
-		// May happen when deleting assets in editor, while they are still open.
-		return nullptr;
-	}
-
-	if (!CustomizableObject->IsCompiled())
-	{	
-		return nullptr;
-	}
-
-	InstanceUpdateFlags(*Public); // TODO Move somewhere else.
-		
-	return Public->GetDescriptor().GetParameters();
-}
-
-
-void UCustomizableInstancePrivateData::ReloadParameters(UCustomizableObjectInstance* Public)
+void UCustomizableInstancePrivateData::ReloadParameters(UCustomizableObjectInstance* Public, bool bInvalidatePreviousData)
 {
 	const UCustomizableObject* CustomizableObject = Public->GetCustomizableObject();
 	if (!CustomizableObject)
@@ -584,8 +573,17 @@ void UCustomizableInstancePrivateData::ReloadParameters(UCustomizableObjectInsta
 		ProjectorStates.Reset();
 	}
 	
-	InvalidateGeneratedData();
-	
+
+	if (bInvalidatePreviousData)
+	{
+		InvalidateGeneratedData();
+
+#if WITH_EDITOR
+		// Clear the Generated flag to trigger a new update after changing or compiling the CO,
+		ClearCOInstanceFlags(Generated);
+#endif
+	}
+
 	Public->GetDescriptor().ReloadParameters();
 }
 
@@ -593,8 +591,8 @@ void UCustomizableInstancePrivateData::ReloadParameters(UCustomizableObjectInsta
 void UCustomizableObjectInstance::SetObject(UCustomizableObject* InObject)
 {
 	Descriptor.SetCustomizableObject(*InObject);
-	PrivateData->ReloadParameters(this);
-	SetRequestedLODs(Descriptor.MinLOD, Descriptor.MaxLOD, Descriptor.RequestedLODLevels);
+	PrivateData->ReloadParameters(this, true);
+	//SetRequestedLODs(Descriptor.MinLOD, Descriptor.MaxLOD, Descriptor.RequestedLODLevels);
 }
 
 
@@ -604,15 +602,31 @@ UCustomizableObject* UCustomizableObjectInstance::GetCustomizableObject() const
 }
 
 
+// Marked as deprecated. Will be removed in future versions.
 bool UCustomizableObjectInstance::GetBuildParameterDecorations() const
 {
-	return Descriptor.GetBuildParameterDecorations();
+	return false;
 }
 
 
+// Marked as deprecated. Will be removed in future versions.
 void UCustomizableObjectInstance::SetBuildParameterDecorations(const bool Value)
 {
-	Descriptor.SetBuildParameterDecorations(Value);
+}
+
+
+bool UCustomizableObjectInstance::GetBuildParameterRelevancy() const
+{
+#if WITH_EDITOR
+	return true;
+#endif
+	return Descriptor.bBuildParameterRelevancy;
+}
+
+
+void UCustomizableObjectInstance::SetBuildParameterRelevancy(bool Value)
+{
+	Descriptor.SetBuildParameterRelevancy(Value);
 }
 
 
@@ -676,39 +690,10 @@ EProjectorState::Type UCustomizableObjectInstance::GetProjectorState(const FStri
 }
 
 
-UTexture2D* UCustomizableObjectInstance::GetParameterDescription(int32 ParamIndex, int32 DescIndex)
-{
-	const UCustomizableObject* CustomizableObject = GetCustomizableObject();
-    if (!CustomizableObject)
-    {
-    	return nullptr;
-    }
-	
-	if (CustomizableObject->GetPrivate()->GetModel())
-	{
-		return nullptr;
-	}
-
-	// TODO, make sure the lines below aren't actually needed. They were commented because they made SDetailsViewBase::UpdatePropertyMaps() crash
-	// Make sure this instance is updated
-	//UCustomizableObjectSystem* CustomizableObjectSystem = UCustomizableObjectSystem::GetInstance();
-	//CustomizableObjectSystem->WaitForInstance(this);
-
-	if (GetPrivate()->ParameterDecorations.IsValidIndex(ParamIndex)
-		&&
-		GetPrivate()->ParameterDecorations[ParamIndex].Images.IsValidIndex(DescIndex))
-	{
-		return GetPrivate()->ParameterDecorations[ParamIndex].Images[DescIndex];
-	}
-
-	//UE_LOG(LogMutable, Warning, TEXT("Expected parameter decoration not found in instance [%s]."), *GetName());
-	return nullptr;
-}
-
-
+// Marked as deprecated. Will be removed in future versions.
 UTexture2D* UCustomizableObjectInstance::GetParameterDescription(const FString& ParamName, int32 DescIndex)
 {
-	return GetParameterDescription(GetCustomizableObject()->FindParameter(ParamName), DescIndex);
+	return nullptr;
 }
 
 
@@ -733,7 +718,7 @@ void UCustomizableInstancePrivateData::PostEditChangePropertyWithoutEditor(USkel
 
 	if (!InSkeletalMesh) return;
 
-	FSkeletalMeshRenderData* Resource = Helper_GetResourceForRendering(InSkeletalMesh);
+	FSkeletalMeshRenderData* Resource = InSkeletalMesh->GetResourceForRendering();
 	if (!Resource) return;
 
 	{
@@ -744,196 +729,420 @@ void UCustomizableInstancePrivateData::PostEditChangePropertyWithoutEditor(USkel
 }
 
 
-void UCustomizableObjectInstance::UpdateSkeletalMeshAsync(bool bIgnoreCloseDist, bool bForceHighPriority)
+bool UCustomizableObjectInstance::CanUpdateInstance() const
 {
-	PrivateData->DoUpdateSkeletalMesh(*this, false, false, bIgnoreCloseDist, bForceHighPriority);
+	UCustomizableObject* CustomizableObject = GetCustomizableObject();
+	if (!CustomizableObject)
+	{
+		return false;
+	}
+
+#if WITH_EDITOR
+	return CustomizableObject->ConditionalAutoCompile();
+#else
+	return CustomizableObject->IsCompiled();
+#endif
 }
 
 
-void UCustomizableInstancePrivateData::DoUpdateSkeletalMesh(UCustomizableObjectInstance& CustomizableInstance, bool bIsCloseDistTick, bool bOnlyUpdateIfNotGenerated, bool bIgnoreCloseDist, bool bForceHighPriority)
+void UCustomizableObjectInstance::UpdateSkeletalMeshAsync(bool bIgnoreCloseDist, bool bForceHighPriority)
 {
-	MUTABLE_CPUPROFILER_SCOPE(UCustomizableInstancePrivateData::DoUpdateSkeletalMesh);
-	check(IsInGameThread());
+	DoUpdateSkeletalMesh( false, false, bIgnoreCloseDist, bForceHighPriority, nullptr, nullptr);
+}
 
-	if (!CustomizableInstance.IsValidLowLevel())
-	{
-		return;
-	}
-	
+
+void UCustomizableObjectInstance::UpdateSkeletalMeshAsyncResult(FInstanceUpdateDelegate Callback, bool bIgnoreCloseDist, bool bForceHighPriority)
+{
+	DoUpdateSkeletalMesh(false, false, bIgnoreCloseDist, bForceHighPriority, nullptr, &Callback);
+}
+
+
+EUpdateRequired UCustomizableObjectInstance::IsUpdateRequired(bool bIsCloseDistTick, bool bOnlyUpdateIfNotGenerated, bool bIgnoreCloseDist) const
+{
 	UCustomizableObjectSystem* System = UCustomizableObjectSystem::GetInstance();
+	const UCustomizableInstancePrivateData* const Private = GetPrivate();
 	
-	UCustomizableObject* CustomizableObject = CustomizableInstance.GetCustomizableObject();
-
-	if (CustomizableObject && !CustomizableObject->IsCompiled())
+	UCustomizableObject* CustomizableObject = GetCustomizableObject();
+	if (!CanUpdateInstance() || CustomizableObject->IsLocked())
 	{
-#if WITH_EDITOR
-		if(!CustomizableObject->ConditionalAutoCompile())
-		{
-			return;
-		}
-#else
-		System->AddUncompiledCOWarning(CustomizableObject);
-		return;
-#endif
-
+		return EUpdateRequired::NoUpdate;
 	}
 
-	const bool bIsGenerated = HasCOInstanceFlags(Generated);
-
+	const bool bIsGenerated = Private->HasCOInstanceFlags(Generated);
 	const int32 NumGeneratedInstancesLimit = System->GetInstanceLODManagement()->GetNumGeneratedInstancesLimitFullLODs();
 	const int32 NumGeneratedInstancesLimitLOD1 = System->GetInstanceLODManagement()->GetNumGeneratedInstancesLimitLOD1();
 	const int32 NumGeneratedInstancesLimitLOD2 = System->GetInstanceLODManagement()->GetNumGeneratedInstancesLimitLOD2();
 
-	if (NumGeneratedInstancesLimit > 0 && System->GetPrivate()->GetCountAllocatedSkeletalMesh() > NumGeneratedInstancesLimit + NumGeneratedInstancesLimitLOD1 + NumGeneratedInstancesLimitLOD2)
+	if (!bIsGenerated && // Prevent generating more instances than the limit, but let updates to existing instances run normally
+		NumGeneratedInstancesLimit > 0 &&
+		System->GetPrivate()->GetCountAllocatedSkeletalMesh() > NumGeneratedInstancesLimit + NumGeneratedInstancesLimitLOD1 + NumGeneratedInstancesLimitLOD2)
 	{
-		if (!bIsGenerated) // Prevent generating more instances than the limit, but let updates to existing instances run normally
+		return EUpdateRequired::NoUpdate;
+	}
+
+	const bool bShouldUpdateLODs = Private->HasCOInstanceFlags(PendingLODsUpdate);
+
+	const bool bDiscardByDistance = Private->LastMinSquareDistFromComponentToPlayer > FMath::Square(System->GetInstanceLODManagement()->GetOnlyUpdateCloseCustomizableObjectsDist());
+	const bool bLODManagementDiscard = System->GetInstanceLODManagement()->IsOnlyUpdateCloseCustomizableObjectsEnabled() &&
+			bDiscardByDistance &&
+			!bIgnoreCloseDist;
+	
+	if (Private->HasCOInstanceFlags(DiscardedByNumInstancesLimit) ||
+		bLODManagementDiscard)
+	{
+		if (bIsGenerated && !Private->HasCOInstanceFlags(Updating))
 		{
-			return;
+			return EUpdateRequired::Discard;		
+		}
+		else
+		{
+			return EUpdateRequired::NoUpdate;
 		}
 	}
 
-	const bool bShouldUpdateLODs = HasCOInstanceFlags(PendingLODsUpdate);
-
-	if (
-		!HasCOInstanceFlags(DiscardedByNumInstancesLimit)
-		&&
-		CustomizableObject && !CustomizableObject->IsLocked()
-		&&
-		(
-			!System->GetInstanceLODManagement()->IsOnlyUpdateCloseCustomizableObjectsEnabled() 
-			|| LastMinSquareDistFromComponentToPlayer <= FMath::Square(System->GetInstanceLODManagement()->GetOnlyUpdateCloseCustomizableObjectsDist())
-			|| bIgnoreCloseDist 
-			|| bShouldUpdateLODs
-			)
-		)
+	if (bIsGenerated &&
+		!bShouldUpdateLODs &&
+		(bOnlyUpdateIfNotGenerated || bIsCloseDistTick))
 	{
-		if (bShouldUpdateLODs)
-		{
-			UE_LOG(LogMutable, Verbose, TEXT("LOD change: %d, %d -> %d, %d"), CustomizableInstance.GetCurrentMinLOD(), CustomizableInstance.GetCurrentMaxLOD(), CustomizableInstance.GetMinLODToLoad(), CustomizableInstance.GetMinLODToLoad());
-		}
+		return EUpdateRequired::NoUpdate;
+	}
 
-		if ((!(bIsGenerated && bOnlyUpdateIfNotGenerated) && !(bIsCloseDistTick && bIsGenerated)) || bShouldUpdateLODs)
-		{
-			FMutableQueueElem::EQueuePriorityType Priority = FMutableQueueElem::EQueuePriorityType::Low;
+	return EUpdateRequired::Update;
+}
 
-			const bool bIsDowngradeLODUpdate = HasCOInstanceFlags(PendingLODsDowngrade);
-			const bool bIsPlayerOrNearIt = HasCOInstanceFlags(UsedByPlayerOrNearIt);
 
-			if (bForceHighPriority)
-			{
-				Priority = FMutableQueueElem::EQueuePriorityType::High;
-			}
-			else if (!bIsGenerated || !CustomizableInstance.HasAnySkeletalMesh())
-			{
-				Priority = FMutableQueueElem::EQueuePriorityType::Med;
-			}
-			else if (bShouldUpdateLODs && bIsDowngradeLODUpdate)
-			{
-				Priority = FMutableQueueElem::EQueuePriorityType::Med_Low;
-			}
-			else if (bIsPlayerOrNearIt && bShouldUpdateLODs && !bIsDowngradeLODUpdate)
-			{
-				Priority = FMutableQueueElem::EQueuePriorityType::High;
-			}
-			else if (bShouldUpdateLODs && !bIsDowngradeLODUpdate)
-			{
-				Priority = FMutableQueueElem::EQueuePriorityType::Med;
-			}
-			else if (bIsPlayerOrNearIt)
-			{
-				Priority = FMutableQueueElem::EQueuePriorityType::High;
-			}
+EQueuePriorityType UCustomizableObjectInstance::GetUpdatePriority(bool bIsCloseDistTick, bool bOnlyUpdateIfNotGenerated, bool bIgnoreCloseDist, bool bForceHighPriority) const
+{
+	const bool bIsGenerated = GetPrivate()->HasCOInstanceFlags(Generated);
+	const bool bShouldUpdateLODs = GetPrivate()->HasCOInstanceFlags(PendingLODsUpdate);
+	const bool bIsDowngradeLODUpdate = GetPrivate()->HasCOInstanceFlags(PendingLODsDowngrade);
+	const bool bIsPlayerOrNearIt = GetPrivate()->HasCOInstanceFlags(UsedByPlayerOrNearIt);
 
-			{
-				const uint32 InstanceId = CustomizableInstance.GetUniqueID();
-				const float Distance = FMath::Sqrt(CustomizableInstance.GetPrivate()->LastMinSquareDistFromComponentToPlayer);
-				UE_LOG(LogMutable, Verbose, TEXT("Started UpdateSkeletalMesh Async. of Instance %d with priority %d at dist %f bIsPlayerOrNearIt=%d, frame=%d"), InstanceId, static_cast<int32>(Priority), Distance, bIsPlayerOrNearIt, GFrameNumber);				
-			}
+	EQueuePriorityType Priority = EQueuePriorityType::Low;
+	if (bForceHighPriority)
+	{
+		Priority = EQueuePriorityType::High;
+	}
+	else if (!bIsGenerated || !HasAnySkeletalMesh())
+	{
+		Priority = EQueuePriorityType::Med;
+	}
+	else if (bShouldUpdateLODs && bIsDowngradeLODUpdate)
+	{
+		Priority = EQueuePriorityType::Med_Low;
+	}
+	else if (bIsPlayerOrNearIt && bShouldUpdateLODs && !bIsDowngradeLODUpdate)
+	{
+		Priority = EQueuePriorityType::High;
+	}
+	else if (bShouldUpdateLODs && !bIsDowngradeLODUpdate)
+	{
+		Priority = EQueuePriorityType::Med;
+	}
+	else if (bIsPlayerOrNearIt)
+	{
+		Priority = EQueuePriorityType::High;
+	}
 
-			CustomizableInstance.UpdateDescriptorRuntimeHash = FDescriptorRuntimeHash(CustomizableInstance.Descriptor);
+	return Priority;
+}
+
+
+void UCustomizableObjectInstance::DoUpdateSkeletalMesh(bool bIsCloseDistTick, bool bOnlyUpdateIfNotGenerated, bool bIgnoreCloseDist, bool bForceHighPriority, const EUpdateRequired* OptionalUpdateRequired, FInstanceUpdateDelegate* UpdateCallback)
+{
+	MUTABLE_CPUPROFILER_SCOPE(UCustomizableInstancePrivateData::DoUpdateSkeletalMesh);
+	check(IsInGameThread());
+	check(!OptionalUpdateRequired || *OptionalUpdateRequired != EUpdateRequired::NoUpdate); // If no update is required this functions must not be called.
+
+	UCustomizableObjectSystem* System = UCustomizableObjectSystem::GetInstance();
+
+	if (!CanUpdateInstance())
+	{
+		FinishUpdateGlobal(this, EUpdateResult::ErrorDiscarded, UpdateCallback);
+		return;
+	}
+	
+	const EUpdateRequired UpdateRequired = OptionalUpdateRequired ? *OptionalUpdateRequired : IsUpdateRequired(bIsCloseDistTick, bOnlyUpdateIfNotGenerated, bIgnoreCloseDist);
+	switch (UpdateRequired)
+	{
+	case EUpdateRequired::NoUpdate:
+	{	
+		FinishUpdateGlobal(this, EUpdateResult::ErrorDiscarded, UpdateCallback);
+		break;
+	}		
+	case EUpdateRequired::Update:
+	{
+		EQueuePriorityType Priority = GetUpdatePriority(bIsCloseDistTick, bOnlyUpdateIfNotGenerated, bIgnoreCloseDist, bForceHighPriority);
+
+		const uint32 InstanceId = GetUniqueID();
+		const float Distance = FMath::Sqrt(GetPrivate()->LastMinSquareDistFromComponentToPlayer);
+		const bool bIsPlayerOrNearIt = GetPrivate()->HasCOInstanceFlags(UsedByPlayerOrNearIt);
+		UE_LOG(LogMutable, Verbose, TEXT("Started UpdateSkeletalMesh Async. of Instance %d with priority %d at dist %f bIsPlayerOrNearIt=%d, frame=%d"), InstanceId, static_cast<int32>(Priority), Distance, bIsPlayerOrNearIt, GFrameNumber);				
+
+		UpdateDescriptorRuntimeHash = FDescriptorRuntimeHash(Descriptor);
 
 #if WITH_EDITOR
-			if (!UCustomizableObjectSystem::GetInstance()->IsCompilationDisabled())
+		if (!UCustomizableObjectSystem::GetInstance()->IsCompilationDisabled())
+		{
+			if (SkeletalMeshStatus != ESkeletalMeshState::AsyncUpdatePending)
 			{
-				if (CustomizableInstance.SkeletalMeshStatus != ESkeletalMeshState::AsyncUpdatePending)
-				{
-					CustomizableInstance.PreUpdateSkeletalMeshStatus = CustomizableInstance.SkeletalMeshStatus;
-				}
+				PreUpdateSkeletalMeshStatus = SkeletalMeshStatus;
 			}
+		}
 #endif
 
-			SetCOInstanceFlags(Generated); // Will be done in UpdateSkeletalMesh_PostBeginUpdate
-			
-			// Do not do work after calling InitUpdateSkeletalMesh. This function can optimize an update and fully complete it before even exiting its scope.
-			System->GetPrivate()->InitUpdateSkeletalMesh(CustomizableInstance, Priority);
+		if (GetPrivate()->HasCOInstanceFlags(PendingLODsUpdate))
+		{
+			UE_LOG(LogMutable, Verbose, TEXT("LOD change: %d, %d -> %d, %d"), GetCurrentMinLOD(), GetCurrentMaxLOD(), GetMinLODToLoad(), GetMinLODToLoad());
 		}
+		
+		GetPrivate()->SetCOInstanceFlags(Generated); // Will be done in UpdateSkeletalMesh_PostBeginUpdate
 
-		ClearCOInstanceFlags(PendingLODsUpdate);
+		// Do not do work after calling InitUpdateSkeletalMesh. This function can optimize an update and fully complete it before even exiting its scope.
+		System->GetPrivate()->InitUpdateSkeletalMesh(*this, Priority, bIsCloseDistTick, UpdateCallback);
+		break;
+	}
+
+	case EUpdateRequired::Discard:
+	{
+		System->GetPrivate()->InitDiscardResourcesSkeletalMesh(this);
+		
+		FinishUpdateGlobal(this, EUpdateResult::ErrorDiscarded, UpdateCallback);
+		break;
+	}
+
+	default:
+		check(false); // Case not implemented.
+	}
+}
+
+
+void UCustomizableInstancePrivateData::TickUpdateCloseCustomizableObjects(UCustomizableObjectInstance& Public, FMutableInstanceUpdateMap& InOutRequestedUpdates)
+{
+	if (!Public.CanUpdateInstance())
+	{
+		return;
+	}
+
+	const EUpdateRequired UpdateRequired = Public.IsUpdateRequired(true, true, false);
+	if (UpdateRequired != EUpdateRequired::NoUpdate) // Since this is done in the tick, avoid starting an update that we know for sure that would not be performed. Once started it has some performance implications that we want to avoid.
+	{
+		if (UpdateRequired == EUpdateRequired::Discard)
+		{
+			Public.DoUpdateSkeletalMesh(true, true, false, false, &UpdateRequired, nullptr);
+			InOutRequestedUpdates.Remove(&Public);
+		}
+		else if (UpdateRequired == EUpdateRequired::Update)
+		{
+			EQueuePriorityType Priority = Public.GetUpdatePriority(true, true, false, false);
+
+			FMutableUpdateCandidate* UpdateCandidate = InOutRequestedUpdates.Find(&Public);
+
+			if (UpdateCandidate)
+			{
+				ensure(HasCOInstanceFlags(PendingLODsUpdate | PendingLODsDowngrade));
+
+				UpdateCandidate->Priority = Priority;
+				UpdateCandidate->Issue();
+			}
+			else
+			{
+				FMutableUpdateCandidate Candidate(&Public);
+				Candidate.Priority = Priority;
+				Candidate.Issue();
+				InOutRequestedUpdates.Add(&Public, Candidate);
+			}
+		}
+		else
+		{
+			check(false);
+		}
 	}
 	else
 	{
-		if (HasCOInstanceFlags(Generated) && !HasCOInstanceFlags(Updating))
+		InOutRequestedUpdates.Remove(&Public);
+	}
+
+	ClearCOInstanceFlags(PendingLODsUpdate | PendingLODsDowngrade);
+}
+
+
+void UCustomizableInstancePrivateData::UpdateInstanceIfNotGenerated(UCustomizableObjectInstance& Public, FMutableInstanceUpdateMap& InOutRequestedUpdates)
+{
+	if (HasCOInstanceFlags(Generated))
+	{
+		return;
+	}
+
+	if (!Public.CanUpdateInstance())
+	{
+		return;
+	}
+
+	Public.DoUpdateSkeletalMesh(false, true, false, false, nullptr, nullptr);
+
+	EQueuePriorityType Priority = Public.GetUpdatePriority(true, true, false, false);
+	FMutableUpdateCandidate* UpdateCandidate = InOutRequestedUpdates.Find(&Public);
+
+	if (UpdateCandidate)
+	{
+		UpdateCandidate->Priority = Priority;
+		UpdateCandidate->Issue();
+	}
+	else
+	{
+		FMutableUpdateCandidate Candidate(&Public);
+		Candidate.Priority = Priority;
+		Candidate.Issue();
+		InOutRequestedUpdates.Add(&Public, Candidate);
+	}
+}
+
+
+#if !UE_BUILD_SHIPPING
+bool AreSkeletonsCompatible(const TArray<TObjectPtr<USkeleton>>& InSkeletons)
+{
+	MUTABLE_CPUPROFILER_SCOPE(AreSkeletonsCompatible);
+	bool bCompatible = true;
+
+	struct FBoneToMergeInfo
+	{
+		FBoneToMergeInfo(const uint32 InBonePathHash, const uint32 InSkeletonIndex, const uint32 InParentBoneSkeletonIndex) :
+		BonePathHash(InBonePathHash), SkeletonIndex(InSkeletonIndex), ParentBoneSkeletonIndex(InParentBoneSkeletonIndex)
+		{}
+
+		uint32 BonePathHash = 0;
+		uint32 SkeletonIndex = 0;
+		uint32 ParentBoneSkeletonIndex = 0;
+	};
+
+	// Accumulated hierarchy hash from parent-bone to root bone
+	TMap<FName, FBoneToMergeInfo> BoneNamesToBoneInfo;
+	BoneNamesToBoneInfo.Reserve(InSkeletons[0] ? InSkeletons[0]->GetReferenceSkeleton().GetNum() : 0);
+	
+	for (int32 SkeletonIndex = 0; SkeletonIndex < InSkeletons.Num(); ++SkeletonIndex)
+	{
+		const TObjectPtr<USkeleton> Skeleton = InSkeletons[SkeletonIndex];
+		check(Skeleton);
+
+		const FReferenceSkeleton& ReferenceSkeleton = Skeleton->GetReferenceSkeleton();
+		const TArray<FMeshBoneInfo>& Bones = ReferenceSkeleton.GetRawRefBoneInfo();
+		const TArray<FTransform>& BonePoses = ReferenceSkeleton.GetRawRefBonePose();
+
+		const int32 NumBones = Bones.Num();
+		for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
 		{
-			System->GetPrivate()->InitDiscardResourcesSkeletalMesh(&CustomizableInstance);
-			ClearCOInstanceFlags(PendingLODsUpdate);
+			const FMeshBoneInfo& Bone = Bones[BoneIndex];
+
+			// Retrieve parent bone name and respective hash, root-bone is assumed to have a parent hash of 0
+			const FName ParentName = Bone.ParentIndex != INDEX_NONE ? Bones[Bone.ParentIndex].Name : NAME_None;
+			const uint32 ParentHash = Bone.ParentIndex != INDEX_NONE ? GetTypeHash(ParentName) : 0;
+
+			// Look-up the path-hash from root to the parent bone
+			const FBoneToMergeInfo* ParentBoneInfo = BoneNamesToBoneInfo.Find(ParentName);
+			const uint32 ParentBonePathHash = ParentBoneInfo ? ParentBoneInfo->BonePathHash : 0;
+			const uint32 ParentBoneSkeletonIndex = ParentBoneInfo ? ParentBoneInfo->SkeletonIndex : 0;
+
+			// Append parent hash to path to give full path hash to current bone
+			const uint32 BonePathHash = HashCombine(ParentBonePathHash, ParentHash);
+
+			// Check if the bone exists in the hierarchy 
+			const FBoneToMergeInfo* ExistingBoneInfo = BoneNamesToBoneInfo.Find(Bone.Name);
+
+			// If the hash differs from the existing one it means skeletons are incompatible
+			if (!ExistingBoneInfo)
+			{
+				// Add path hash to current bone
+				BoneNamesToBoneInfo.Add(Bone.Name, FBoneToMergeInfo(BonePathHash, SkeletonIndex, ParentBoneSkeletonIndex));
+			}
+			else if (ExistingBoneInfo->BonePathHash != BonePathHash)
+			{
+				if (bCompatible)
+				{
+					// Print the skeletons to merge
+					FString Msg = TEXT("Failed to merge skeletons. Skeletons to merge: ");
+					for (int32 AuxSkeletonIndex = 0; AuxSkeletonIndex < InSkeletons.Num(); ++AuxSkeletonIndex)
+					{
+						if (InSkeletons[AuxSkeletonIndex] != nullptr)
+						{
+							Msg += FString::Printf(TEXT("\n\t- %s"), *InSkeletons[AuxSkeletonIndex].GetName());
+						}
+					}
+
+					UE_LOG(LogMutable, Error, TEXT("%s"), *Msg);
+
+#if WITH_EDITOR
+					FNotificationInfo Info(FText::FromString(TEXT("Mutable: Failed to merge skeletons. Invalid parent chain detected. Please check the output log for more information.")));
+					Info.bFireAndForget = true;
+					Info.FadeOutDuration = 1.0f;
+					Info.ExpireDuration = 10.0f;
+					FSlateNotificationManager::Get().AddNotification(Info);
+#endif
+
+					bCompatible = false;
+				}
+				
+				// Print the first non compatible bone in the bone chain, since all child bones will be incompatible too.
+				if (ExistingBoneInfo->ParentBoneSkeletonIndex != SkeletonIndex)
+				{
+					// Different skeletons can't be used if they are incompatible with the reference skeleton.
+					UE_LOG(LogMutable, Error, TEXT("[%s] parent bone is different in skeletons [%s] and [%s]."),
+						*Bone.Name.ToString(),
+						*InSkeletons[SkeletonIndex]->GetName(),
+						*InSkeletons[ExistingBoneInfo->ParentBoneSkeletonIndex]->GetName());
+				}
+			}
 		}
 	}
+
+	return bCompatible;
 }
+#endif
 
 
-void UCustomizableInstancePrivateData::TickUpdateCloseCustomizableObjects( UCustomizableObjectInstance& Public )
-{
-	DoUpdateSkeletalMesh(Public, true, true, false);
-}
-
-
-void UCustomizableInstancePrivateData::UpdateInstanceIfNotGenerated(UCustomizableObjectInstance& Public)
-{
-	if (!HasCOInstanceFlags(Generated))
-	{
-		DoUpdateSkeletalMesh(Public, false, true);
-	}
-}
-
-
-USkeleton* UCustomizableInstancePrivateData::MergeSkeletons(UCustomizableObjectInstance* Public, const FMutableRefSkeletalMeshData* RefSkeletalMeshData, int32 ComponentIndex)
+USkeleton* UCustomizableInstancePrivateData::MergeSkeletons(UCustomizableObject& CustomizableObject, const FMutableRefSkeletalMeshData& RefSkeletalMeshData, int32 ComponentIndex)
 {
 	MUTABLE_CPUPROFILER_SCOPE(BuildSkeletonData_MergeSkeletons);
 
-	const UCustomizableObject* CustomizableObject = Public->GetCustomizableObject();
-
-	check(CustomizableObject);
-	check(RefSkeletalMeshData);
-	
 	FCustomizableInstanceComponentData* ComponentData = GetComponentData(ComponentIndex);
 	check(ComponentData);
 
 	FReferencedSkeletons& ReferencedSkeletons = ComponentData->Skeletons;
 	
+	// Merged skeleton found in the cache
+	if (ReferencedSkeletons.Skeleton)
+	{
+		USkeleton* MergedSkeleton = ReferencedSkeletons.Skeleton;
+		ReferencedSkeletons.Skeleton = nullptr;
+		return MergedSkeleton;
+	}
+
 	// No need to merge skeletons
 	if(ReferencedSkeletons.SkeletonsToMerge.Num() == 1)
 	{
 		const TObjectPtr<USkeleton> RefSkeleton = ReferencedSkeletons.SkeletonsToMerge[0];
+		ReferencedSkeletons.SkeletonIds.Empty();
 		ReferencedSkeletons.SkeletonsToMerge.Empty();
-
 		return RefSkeleton;
 	}
 
+#if !UE_BUILD_SHIPPING
+	// Test Skeleton compatibility before attempting the merge to avoid a crash.
+	if (!AreSkeletonsCompatible(ReferencedSkeletons.SkeletonsToMerge))
+	{
+		return nullptr;
+	}
+#endif
+
 	FSkeletonMergeParams Params;
 	Exchange(Params.SkeletonsToMerge, ReferencedSkeletons.SkeletonsToMerge);
-
-#if !UE_BUILD_SHIPPING
-#if !MUTABLE_CLEAN_ENGINE_BRANCH
-	Params.bCheckSkeletonsCompatibility = true;
-#endif
-#endif
 
 	USkeleton* FinalSkeleton = USkeletalMergingLibrary::MergeSkeletons(Params);
 	if (!FinalSkeleton)
 	{
 		FString Msg = FString::Printf(TEXT("MergeSkeletons failed for Customizable Object [%s], Instance [%s]. Skeletons involved: "),
-			*CustomizableObject->GetName(),
-			*Public->GetName());
+			*CustomizableObject.GetName(),
+			*GetOuter()->GetName());
 		
 		const int32 SkeletonCount = Params.SkeletonsToMerge.Num();
 		for (int32 SkeletonIndex = 0; SkeletonIndex < SkeletonCount; ++SkeletonIndex)
@@ -945,16 +1154,304 @@ USkeleton* UCustomizableInstancePrivateData::MergeSkeletons(UCustomizableObjectI
 	}
 	else
 	{
-		// The reference skeleton may be used by AnimBp as a target skeleton, add it as a compatible skeleton.
-		FinalSkeleton->AddCompatibleSkeleton(RefSkeletalMeshData->Skeleton.Get());
+		// Make the final skeleton compatible with all the merged skeletons and their compatible skeletons.
+		for (USkeleton* Skeleton : Params.SkeletonsToMerge)
+		{
+			if (Skeleton)
+			{
+				FinalSkeleton->AddCompatibleSkeleton(Skeleton);
+
+				const TArray<TSoftObjectPtr<USkeleton>>& CompatibleSkeletons = Skeleton->GetCompatibleSkeletons();
+				for (const TSoftObjectPtr<USkeleton>& CompatibleSkeleton : CompatibleSkeletons)
+				{
+					FinalSkeleton->AddCompatibleSkeletonSoft(CompatibleSkeleton);
+				}
+			}
+		}
+
+		// Add Skeleton to the cache
+		CustomizableObject.CacheMergedSkeleton(ComponentIndex, ReferencedSkeletons.SkeletonIds, FinalSkeleton);
+		ReferencedSkeletons.SkeletonIds.Empty();
 	}
 	
 	return FinalSkeleton;
 }
 
-UPhysicsAsset* UCustomizableInstancePrivateData::GetOrBuildPhysicsAsset(
+namespace
+{
+	FKAggregateGeom MakeAggGeomFromMutablePhysics(int32 BodyIndex, const mu::PhysicsBody* MutablePhysicsBody)
+	{
+		FKAggregateGeom BodyAggGeom;
+
+		auto GetCollisionEnabledFormFlags = [](uint32 Flags) -> ECollisionEnabled::Type
+		{
+			return ECollisionEnabled::Type(Flags & 0xFF);
+		};
+
+		auto GetContributeToMassFromFlags = [](uint32 Flags) -> bool
+		{
+			return static_cast<bool>((Flags >> 8) & 1);
+		};
+
+		const int32 NumSpheres = MutablePhysicsBody->GetSphereCount(BodyIndex);
+		TArray<FKSphereElem>& AggSpheres = BodyAggGeom.SphereElems;
+		AggSpheres.Empty(NumSpheres);
+		for (int32 I = 0; I < NumSpheres; ++I)
+		{
+			uint32 Flags = MutablePhysicsBody->GetSphereFlags(BodyIndex, I);
+			FString Name = MutablePhysicsBody->GetSphereName(BodyIndex, I);
+
+			FVector3f Position;
+			float Radius;
+
+			MutablePhysicsBody->GetSphere(BodyIndex, I, Position, Radius);
+			FKSphereElem& NewElem = AggSpheres.AddDefaulted_GetRef();
+			
+			NewElem.Center = FVector(Position);
+			NewElem.Radius = Radius;
+			NewElem.SetContributeToMass(GetContributeToMassFromFlags(Flags));
+			NewElem.SetCollisionEnabled(GetCollisionEnabledFormFlags(Flags));
+			NewElem.SetName(FName(*Name));
+		}
+		
+		const int32 NumBoxes = MutablePhysicsBody->GetBoxCount(BodyIndex);
+		TArray<FKBoxElem>& AggBoxes = BodyAggGeom.BoxElems;
+		AggBoxes.Empty(NumBoxes);
+		for (int32 I = 0; I < NumBoxes; ++I)
+		{
+			uint32 Flags = MutablePhysicsBody->GetBoxFlags(BodyIndex, I);
+			FString Name = MutablePhysicsBody->GetBoxName(BodyIndex, I);
+
+			FVector3f Position;
+			FQuat4f Orientation
+				;
+			FVector3f Size;
+			MutablePhysicsBody->GetBox(BodyIndex, I, Position, Orientation, Size);
+
+			FKBoxElem& NewElem = AggBoxes.AddDefaulted_GetRef();
+			
+			NewElem.Center = FVector(Position);
+			NewElem.Rotation = FRotator(Orientation.Rotator());
+			NewElem.X = Size.X;
+			NewElem.Y = Size.Y;
+			NewElem.Z = Size.Z;
+			NewElem.SetContributeToMass(GetContributeToMassFromFlags(Flags));
+			NewElem.SetCollisionEnabled(GetCollisionEnabledFormFlags(Flags));
+			NewElem.SetName(FName(*Name));
+		}
+
+		//const int32 NumConvexes = MutablePhysicsBody->GetConvexCount( BodyIndex );
+		//TArray<FKConvexElem>& AggConvexes = BodyAggGeom.ConvexElems;
+		//AggConvexes.Empty();
+		//for (int32 I = 0; I < NumConvexes; ++I)
+		//{
+		//	uint32 Flags = MutablePhysicsBody->GetConvexFlags( BodyIndex, I );
+		//	FString Name = MutablePhysicsBody->GetConvexName( BodyIndex, I );
+
+		//	const FVector3f* Vertices;
+		//	const int32* Indices;
+		//	int32 NumVertices;
+		//	int32 NumIndices;
+		//	FTransform3f Transform;
+
+		//	MutablePhysicsBody->GetConvex( BodyIndex, I, Vertices, NumVertices, Indices, NumIndices, Transform );
+		//	
+		//	TArrayView<const FVector3f> VerticesView( Vertices, NumVertices );
+		//	TArrayView<const int32> IndicesView( Indices, NumIndices );
+		//}
+
+		TArray<FKSphylElem>& AggSphyls = BodyAggGeom.SphylElems;
+		const int32 NumSphyls = MutablePhysicsBody->GetSphylCount(BodyIndex);
+		AggSphyls.Empty(NumSphyls);
+
+		for (int32 I = 0; I < NumSphyls; ++I)
+		{
+			uint32 Flags = MutablePhysicsBody->GetSphylFlags(BodyIndex, I);
+			FString Name = MutablePhysicsBody->GetSphylName(BodyIndex, I);
+
+			FVector3f Position;
+			FQuat4f Orientation;
+			float Radius;
+			float Length;
+
+			MutablePhysicsBody->GetSphyl(BodyIndex, I, Position, Orientation, Radius, Length);
+
+			FKSphylElem& NewElem = AggSphyls.AddDefaulted_GetRef();
+			
+			NewElem.Center = FVector(Position);
+			NewElem.Rotation = FRotator(Orientation.Rotator());
+			NewElem.Radius = Radius;
+			NewElem.Length = Length;
+			
+			NewElem.SetContributeToMass(GetContributeToMassFromFlags(Flags));
+			NewElem.SetCollisionEnabled(GetCollisionEnabledFormFlags(Flags));
+			NewElem.SetName(FName(*Name));
+		}	
+
+		TArray<FKTaperedCapsuleElem>& AggTaperedCapsules = BodyAggGeom.TaperedCapsuleElems;
+		const int32 NumTaperedCapsules = MutablePhysicsBody->GetTaperedCapsuleCount(BodyIndex);
+		AggTaperedCapsules.Empty(NumTaperedCapsules);
+
+		for (int32 I = 0; I < NumTaperedCapsules; ++I)
+		{
+			uint32 Flags = MutablePhysicsBody->GetTaperedCapsuleFlags(BodyIndex, I);
+			FString Name = MutablePhysicsBody->GetTaperedCapsuleName(BodyIndex, I);
+
+			FVector3f Position;
+			FQuat4f Orientation;
+			float Radius0;
+			float Radius1;
+			float Length;
+
+			MutablePhysicsBody->GetTaperedCapsule(BodyIndex, I, Position, Orientation, Radius0, Radius1, Length);
+
+			FKTaperedCapsuleElem& NewElem = AggTaperedCapsules.AddDefaulted_GetRef();
+			
+			NewElem.Center = FVector(Position);
+			NewElem.Rotation = FRotator(Orientation.Rotator());
+			NewElem.Radius0 = Radius0;
+			NewElem.Radius1 = Radius1;
+			NewElem.Length = Length;
+			
+			NewElem.SetContributeToMass(GetContributeToMassFromFlags(Flags));
+			NewElem.SetCollisionEnabled(GetCollisionEnabledFormFlags(Flags));
+			NewElem.SetName(FName(*Name));
+		}	
+
+		return BodyAggGeom;
+	};
+
+	TObjectPtr<UPhysicsAsset> MakePhysicsAssetFromTemplateAndMutableBody(
+		TObjectPtr<UPhysicsAsset> TemplateAsset, const mu::PhysicsBody* MutablePhysics, const UCustomizableObject& CustomizableObject) 
+	{
+		check(TemplateAsset);
+		TObjectPtr<UPhysicsAsset> Result = NewObject<UPhysicsAsset>();
+
+		if (!Result)
+		{
+			return nullptr;
+		}
+
+		Result->SolverSettings = TemplateAsset->SolverSettings;
+		Result->SolverType = TemplateAsset->SolverType;
+
+		Result->bNotForDedicatedServer = TemplateAsset->bNotForDedicatedServer;
+
+		const TArray<FName>& BoneNames = CustomizableObject.GetBoneNamesArray();
+		TMap<FName, int32> BonesInUse;
+
+		const int32 MutablePhysicsBodyCount = MutablePhysics->GetBodyCount();
+		BonesInUse.Reserve(MutablePhysicsBodyCount);
+		for ( int32 I = 0; I < MutablePhysicsBodyCount; ++I )
+		{
+			const uint16 BoneNameId = MutablePhysics->GetBodyBoneId(I);
+			if (BoneNames.IsValidIndex(BoneNameId))
+			{
+				FName BoneName = BoneNames[BoneNameId];
+				BonesInUse.Add(BoneName, I);
+			}
+		}
+
+		const int32 PhysicsAssetBodySetupNum = TemplateAsset->SkeletalBodySetups.Num();
+		bool bTemplateBodyNotUsedFound = false;
+
+		TArray<uint8> UsageMap;
+		UsageMap.Init(1, PhysicsAssetBodySetupNum);
+
+		for (int32 BodySetupIndex = 0; BodySetupIndex < PhysicsAssetBodySetupNum; ++BodySetupIndex)
+		{
+			const TObjectPtr<USkeletalBodySetup>& BodySetup = TemplateAsset->SkeletalBodySetups[BodySetupIndex];
+
+			int32* MutableBodyIndex = BonesInUse.Find(BodySetup->BoneName);
+			if (!MutableBodyIndex)
+			{
+				bTemplateBodyNotUsedFound = true;
+				UsageMap[BodySetupIndex] = 0;
+				continue;
+			}
+
+			TObjectPtr<USkeletalBodySetup> NewBodySetup = NewObject<USkeletalBodySetup>(Result);
+			NewBodySetup->BodySetupGuid = FGuid::NewGuid();
+
+			// Copy Body properties 	
+			NewBodySetup->BoneName = BodySetup->BoneName;
+			NewBodySetup->PhysicsType = BodySetup->PhysicsType;
+			NewBodySetup->bConsiderForBounds = BodySetup->bConsiderForBounds;
+			NewBodySetup->bMeshCollideAll = BodySetup->bMeshCollideAll;
+			NewBodySetup->bDoubleSidedGeometry = BodySetup->bDoubleSidedGeometry;
+			NewBodySetup->bGenerateNonMirroredCollision = BodySetup->bGenerateNonMirroredCollision;
+			NewBodySetup->bSharedCookedData = BodySetup->bSharedCookedData;
+			NewBodySetup->bGenerateMirroredCollision = BodySetup->bGenerateMirroredCollision;
+			NewBodySetup->PhysMaterial = BodySetup->PhysMaterial;
+			NewBodySetup->CollisionReponse = BodySetup->CollisionReponse;
+			NewBodySetup->CollisionTraceFlag = BodySetup->CollisionTraceFlag;
+			NewBodySetup->DefaultInstance = BodySetup->DefaultInstance;
+			NewBodySetup->WalkableSlopeOverride = BodySetup->WalkableSlopeOverride;
+			NewBodySetup->BuildScale3D = BodySetup->BuildScale3D;
+			NewBodySetup->bSkipScaleFromAnimation = BodySetup->bSkipScaleFromAnimation;
+
+			// PhysicalAnimationProfiles can't be added with the current UPhysicsAsset API outside the editor.
+			// Don't pouplate them for now.	
+			//NewBodySetup->PhysicalAnimationData = BodySetup->PhysicalAnimationData;
+
+			NewBodySetup->AggGeom = MakeAggGeomFromMutablePhysics(*MutableBodyIndex, MutablePhysics);
+
+			Result->SkeletalBodySetups.Add(NewBodySetup);
+		}
+
+		if (!bTemplateBodyNotUsedFound)
+		{
+			Result->CollisionDisableTable = TemplateAsset->CollisionDisableTable;
+			Result->ConstraintSetup = TemplateAsset->ConstraintSetup;
+		}
+		else
+		{
+			// Recreate the collision disable entry
+			Result->CollisionDisableTable.Reserve(TemplateAsset->CollisionDisableTable.Num());
+			for (const TPair<FRigidBodyIndexPair, bool>& CollisionDisableEntry : TemplateAsset->CollisionDisableTable)
+			{
+				const bool bIndex0Used = UsageMap[CollisionDisableEntry.Key.Indices[0]] > 0;
+				const bool bIndex1Used = UsageMap[CollisionDisableEntry.Key.Indices[1]] > 0;
+
+				if (bIndex0Used && bIndex1Used)
+				{
+					Result->CollisionDisableTable.Add(CollisionDisableEntry);
+				}
+			}
+
+			// Only add constraints that are part of the bones used for the mutable physics volumes description.
+			for (const TObjectPtr<UPhysicsConstraintTemplate>& Constrain : TemplateAsset->ConstraintSetup)
+			{
+				const FName BoneA = Constrain->DefaultInstance.ConstraintBone1;
+				const FName BoneB = Constrain->DefaultInstance.ConstraintBone2;
+
+				if (BonesInUse.Find(BoneA) && BonesInUse.Find(BoneB))
+				{
+					Result->ConstraintSetup.Add(Constrain);
+				}	
+			}
+		}
+		
+		Result->ConstraintSetup = TemplateAsset->ConstraintSetup;
+		
+		Result->UpdateBodySetupIndexMap();
+		Result->UpdateBoundsBodiesArray();
+
+
+
+	#if WITH_EDITORONLY_DATA
+		Result->ConstraintProfiles = TemplateAsset->ConstraintProfiles;
+	#endif
+
+		return Result;
+	}
+}
+
+UPhysicsAsset* UCustomizableInstancePrivateData::GetOrBuildMainPhysicsAsset(
 	TObjectPtr<UPhysicsAsset> TemplateAsset,
-	const mu::PhysicsBody* MutablePhysics, int32 ComponentId,
+	const mu::PhysicsBody* MutablePhysics,
+	const UCustomizableObject& CustomizableObject,
+	int32 ComponentId,
 	bool bDisableCollisionsBetweenDifferentAssets)
 {
 
@@ -1008,155 +1505,19 @@ UPhysicsAsset* UCustomizableInstancePrivateData::GetOrBuildPhysicsAsset(
 
 	Result->bNotForDedicatedServer = TemplateAsset->bNotForDedicatedServer;
 
-
-	auto MakeAggGeomFromMutablePhysics = [](int32 BodyIndex, const mu::PhysicsBody* MutablePhysicsBody) -> FKAggregateGeom
-	{
-		FKAggregateGeom BodyAggGeom;
-
-		auto GetCollisionEnabledFormFlags = [](uint32 Flags) -> ECollisionEnabled::Type
-		{
-			return ECollisionEnabled::Type( Flags & 0xFF ); 
-		};
-
-		auto GetContributeToMassFromFlags = [](uint32 Flags) -> bool
-		{
-			return static_cast<bool>( (Flags >> 8 ) & 1 );
-		};
-
-		const int32 NumSpheres = MutablePhysicsBody->GetSphereCount( BodyIndex );
-		TArray<FKSphereElem>& AggSpheres = BodyAggGeom.SphereElems;
-		AggSpheres.Empty(NumSpheres);
-		for (int32 I = 0; I < NumSpheres; ++I)
-		{
-			uint32 Flags = MutablePhysicsBody->GetSphereFlags( BodyIndex, I );
-			FString Name = MutablePhysicsBody->GetSphereName( BodyIndex, I );
-
-			FVector3f Position;
-			float Radius;
-
-			MutablePhysicsBody->GetSphere( BodyIndex, I, Position, Radius );
-			FKSphereElem& NewElem = AggSpheres.AddDefaulted_GetRef();
-			
-			NewElem.Center = FVector(Position);
-			NewElem.Radius = Radius;
-			NewElem.SetContributeToMass( GetContributeToMassFromFlags( Flags ) );
-			NewElem.SetCollisionEnabled( GetCollisionEnabledFormFlags( Flags ) );
-			NewElem.SetName(FName(*Name));
-		}
-		
-		const int32 NumBoxes = MutablePhysicsBody->GetBoxCount( BodyIndex );
-		TArray<FKBoxElem>& AggBoxes = BodyAggGeom.BoxElems;
-		AggBoxes.Empty(NumBoxes);
-		for (int32 I = 0; I < NumBoxes; ++I)
-		{
-			uint32 Flags = MutablePhysicsBody->GetBoxFlags( BodyIndex, I );
-			FString Name = MutablePhysicsBody->GetBoxName( BodyIndex, I );
-
-			FVector3f Position;
-			FQuat4f Orientation;
-			FVector3f Size;
-			MutablePhysicsBody->GetBox( BodyIndex, I, Position, Orientation, Size );
-
-			FKBoxElem& NewElem = AggBoxes.AddDefaulted_GetRef();
-			
-			NewElem.Center = FVector( Position );
-			NewElem.Rotation = FRotator( Orientation.Rotator() );
-			NewElem.X = Size.X;
-			NewElem.Y = Size.Y;
-			NewElem.Z = Size.Z;
-			NewElem.SetContributeToMass( GetContributeToMassFromFlags( Flags ) );
-			NewElem.SetCollisionEnabled( GetCollisionEnabledFormFlags( Flags ) );
-			NewElem.SetName( FName(*Name) );
-		}
-
-		//const int32 NumConvexes = MutablePhysicsBody->GetConvexCount( BodyIndex );
-		//TArray<FKConvexElem>& AggConvexes = BodyAggGeom.ConvexElems;
-		//AggConvexes.Empty();
-		//for (int32 I = 0; I < NumConvexes; ++I)
-		//{
-		//	uint32 Flags = MutablePhysicsBody->GetConvexFlags( BodyIndex, I );
-		//	FString Name = MutablePhysicsBody->GetConvexName( BodyIndex, I );
-
-		//	const FVector3f* Vertices;
-		//	const int32* Indices;
-		//	int32 NumVertices;
-		//	int32 NumIndices;
-		//	FTransform3f Transform;
-
-		//	MutablePhysicsBody->GetConvex( BodyIndex, I, Vertices, NumVertices, Indices, NumIndices, Transform );
-		//	
-		//	TArrayView<const FVector3f> VerticesView( Vertices, NumVertices );
-		//	TArrayView<const int32> IndicesView( Indices, NumIndices );
-		//}
-
-		TArray<FKSphylElem>& AggSphyls = BodyAggGeom.SphylElems;
-		const int32 NumSphyls = MutablePhysicsBody->GetSphylCount( BodyIndex );
-		AggSphyls.Empty(NumSphyls);
-
-		for (int32 I = 0; I < NumSphyls; ++I)
-		{
-			uint32 Flags = MutablePhysicsBody->GetSphylFlags( BodyIndex, I );
-			FString Name = MutablePhysicsBody->GetSphylName( BodyIndex, I );
-
-			FVector3f Position;
-			FQuat4f Orientation;
-			float Radius;
-			float Length;
-
-			MutablePhysicsBody->GetSphyl( BodyIndex, I, Position, Orientation, Radius, Length );
-
-			FKSphylElem& NewElem = AggSphyls.AddDefaulted_GetRef();
-			
-			NewElem.Center = FVector( Position );
-			NewElem.Rotation = FRotator( Orientation.Rotator() );
-			NewElem.Radius = Radius;
-			NewElem.Length = Length;
-			
-			NewElem.SetContributeToMass( GetContributeToMassFromFlags( Flags ) );
-			NewElem.SetCollisionEnabled( GetCollisionEnabledFormFlags( Flags ) );
-			NewElem.SetName( FName(*Name) );
-		}	
-
-		TArray<FKTaperedCapsuleElem>& AggTaperedCapsules = BodyAggGeom.TaperedCapsuleElems;
-		const int32 NumTaperedCapsules = MutablePhysicsBody->GetTaperedCapsuleCount( BodyIndex );
-		AggTaperedCapsules.Empty(NumTaperedCapsules);
-
-		for (int32 I = 0; I < NumTaperedCapsules; ++I)
-		{
-			uint32 Flags = MutablePhysicsBody->GetTaperedCapsuleFlags( BodyIndex, I );
-			FString Name = MutablePhysicsBody->GetTaperedCapsuleName( BodyIndex, I );
-
-			FVector3f Position;
-			FQuat4f Orientation;
-			float Radius0;
-			float Radius1;
-			float Length;
-
-			MutablePhysicsBody->GetTaperedCapsule( BodyIndex, I, Position, Orientation, Radius0, Radius1, Length );
-
-			FKTaperedCapsuleElem& NewElem = AggTaperedCapsules.AddDefaulted_GetRef();
-			
-			NewElem.Center = FVector( Position );
-			NewElem.Rotation = FRotator( Orientation.Rotator() );
-			NewElem.Radius0 = Radius0;
-			NewElem.Radius1 = Radius1;
-			NewElem.Length = Length;
-			
-			NewElem.SetContributeToMass( GetContributeToMassFromFlags( Flags ) );
-			NewElem.SetCollisionEnabled( GetCollisionEnabledFormFlags( Flags ) );
-			NewElem.SetName( FName(*Name) );	
-		}	
-
-		return BodyAggGeom;
-	};
-
+	const TArray<FName>& BoneNames = CustomizableObject.GetBoneNamesArray();
 	TMap<FName, int32> BonesInUse;
 
 	const int32 MutablePhysicsBodyCount = MutablePhysics->GetBodyCount();
 	BonesInUse.Reserve(MutablePhysicsBodyCount);
 	for ( int32 I = 0; I < MutablePhysicsBodyCount; ++I )
 	{
-		BonesInUse.Add(FName(MutablePhysics->GetBodyBoneName(I)), I);
+		const uint16 BoneNameId = MutablePhysics->GetBodyBoneId(I);
+		if (BoneNames.IsValidIndex(BoneNameId))
+		{
+			FName BoneName = BoneNames[BoneNameId];
+			BonesInUse.Add(BoneName, I);
+		}
 	}
 
 	// Each array is a set of elements that can collide  
@@ -1379,9 +1740,17 @@ UPhysicsAsset* UCustomizableInstancePrivateData::GetOrBuildPhysicsAsset(
 }
 
 
+static float MutableMeshesMinUVChannelDensity = 100.f;
+FAutoConsoleVariableRef CVarMutableMeshesMinUVChannelDensity(
+	TEXT("Mutable.MinUVChannelDensity"),
+	MutableMeshesMinUVChannelDensity,
+	TEXT("Min UV density to set on generated meshes. This value will influence the requested texture mip to stream in. Higher values will result in higher quality mips being streamed in earlier."));
+
+
 void SetMeshUVChannelDensity(FMeshUVChannelInfo& UVChannelInfo, float Density = 0.f)
 {
 	Density = Density > 0.f ? Density : 150.f;
+	Density = FMath::Max(MutableMeshesMinUVChannelDensity, Density);
 
 	UVChannelInfo.bInitialized = true;
 	UVChannelInfo.bOverrideDensities = false;
@@ -1425,7 +1794,7 @@ bool UCustomizableInstancePrivateData::DoComponentsNeedUpdate(UCustomizableObjec
 			{
 				// Check if an LOD is generated and it shouldn't
 				const bool LODCanBeGenerated = LODIndex >= OperationData->CurrentMinLOD && LODIndex <= OperationData->CurrentMaxLOD;
-				bMeshNeedsUpdate = !LODCanBeGenerated && ComponentData->LastMeshIdPerLOD[LODIndex] != INDEX_NONE;
+				bMeshNeedsUpdate = !LODCanBeGenerated && ComponentData->LastMeshIdPerLOD[LODIndex] != MAX_uint64;
 			}
 		}
 
@@ -1448,7 +1817,7 @@ bool UCustomizableInstancePrivateData::DoComponentsNeedUpdate(UCustomizableObjec
 		{
 			const FInstanceUpdateData::FComponent& Component = OperationData->InstanceUpdateData.Components[LOD.FirstComponent + ComponentIndex];
 
-			const int32 LastMeshID = GetLastMeshId(Component.Id, LODIndex);
+			const mu::FResourceID LastMeshID = GetLastMeshId(Component.Id, LODIndex);
 
 			if (Component.bGenerated)
 			{
@@ -1469,7 +1838,7 @@ bool UCustomizableInstancePrivateData::DoComponentsNeedUpdate(UCustomizableObjec
 				else if (Component.bReuseMesh)
 				{
 					bFoundNonEmptyMesh = true;
-					check(LastMeshID != INDEX_NONE);
+					check(LastMeshID != MAX_uint64);
 				}
 				else
 				{
@@ -1478,7 +1847,7 @@ bool UCustomizableInstancePrivateData::DoComponentsNeedUpdate(UCustomizableObjec
 			}
 			else
 			{
-				OutComponentNeedsUpdate[Component.Id] = OutComponentNeedsUpdate[Component.Id] || LastMeshID != INDEX_NONE;
+				OutComponentNeedsUpdate[Component.Id] = OutComponentNeedsUpdate[Component.Id] || LastMeshID != MAX_uint64;
 			}
 
 			bUpdateMeshes = bUpdateMeshes || OutComponentNeedsUpdate[Component.Id];
@@ -1490,13 +1859,12 @@ bool UCustomizableInstancePrivateData::DoComponentsNeedUpdate(UCustomizableObjec
 	{
 		bFoundEmptyLOD = true;
 		bUpdateMeshes = true;
-		UE_LOG(LogMutable, Warning, TEXT("Building instance: an LOD has no mesh geometry. This cannot be handled by Unreal."));
+		UE_LOG(LogMutable, Warning, TEXT("Building instance: An LOD has no mesh geometry. This cannot be handled by Unreal."));
 	}
 
 	bOutEmptyMesh = bFoundEmptyLOD || bFoundEmptyMesh;
 	return bUpdateMeshes;
 }
-
 
 
 bool UCustomizableInstancePrivateData::UpdateSkeletalMesh_PostBeginUpdate0(UCustomizableObjectInstance* Public, const TSharedPtr<FMutableOperationData>& OperationData)
@@ -1512,7 +1880,7 @@ bool UCustomizableInstancePrivateData::UpdateSkeletalMesh_PostBeginUpdate0(UCust
 	if (bEmptyMesh)
 	{
 		Public->SkeletalMeshStatus = ESkeletalMeshState::UpdateError;
-		UE_LOG(LogMutable, Warning, TEXT("Updating skeletal mesh error for mesh %s"), *Public->GetName());
+		UE_LOG(LogMutable, Warning, TEXT("Updating skeletal mesh error for CO Instance %s"), *Public->GetName());
 
 		Public->SkeletalMeshes.Reset(); // What about all the references
 
@@ -1593,27 +1961,68 @@ bool UCustomizableInstancePrivateData::UpdateSkeletalMesh_PostBeginUpdate0(UCust
 		if (Component.Mesh)
 		{
 			// Construct a new skeleton, fix up ActiveBones and Bonemap arrays and recompute the RefInvMatrices
-			bSuccess = BuildSkeletonData(OperationData, SkeletalMesh, RefSkeletalMeshData, Public, Component.Id);
+			bSuccess = BuildSkeletonData(OperationData, *SkeletalMesh, *RefSkeletalMeshData, *CustomizableObject, Component.Id);
 
 			if (!bSuccess)
 			{
 				break;
 			}
 
-			// Build PhysicsAsset Merge Physics Assets coming from SubMeshes of the newly generated Mesh
+			// Build PhysicsAsset merging physics assets coming from SubMeshes of the newly generated Mesh
 			if (mu::Ptr<const mu::PhysicsBody> MutablePhysics = Component.Mesh->GetPhysicsBody())
 			{
 				constexpr bool bDisallowCollisionBetweenAssets = true;
-				UPhysicsAsset* PhysicsAssetResult = GetOrBuildPhysicsAsset(
-					RefSkeletalMeshData->PhysicsAsset.Get(), MutablePhysics.get(), Component.Id, bDisallowCollisionBetweenAssets);
+				UPhysicsAsset* PhysicsAssetResult = GetOrBuildMainPhysicsAsset(
+					RefSkeletalMeshData->PhysicsAsset.Get(), MutablePhysics.get(), *CustomizableObject, Component.Id, bDisallowCollisionBetweenAssets);
 
 				SkeletalMesh->SetPhysicsAsset(PhysicsAssetResult);
 
 				if (PhysicsAssetResult)
 				{
+					// We are setting the physics asset mesh preview to the generated skeletal mesh.
+					// this is fine if the phyiscs asset is also generated, but not sure about referenced assets.
+					// In any case, don't mark the asset as modified.
+
 					// This is only called in editor, no need to add editor guards.	
-					PhysicsAssetResult->SetPreviewMesh(SkeletalMesh);
+					constexpr bool bMarkAsDirty = false;
+					PhysicsAssetResult->SetPreviewMesh(SkeletalMesh, bMarkAsDirty);
 				}
+				}
+
+			const int32 NumAdditionalPhysicsNum = Component.Mesh->AdditionalPhysicsBodies.Num();
+			for (int32 I = 0; I < NumAdditionalPhysicsNum; ++I)
+			{
+				mu::Ptr<const mu::PhysicsBody> AdditionalPhysiscBody = Component.Mesh->AdditionalPhysicsBodies[I];
+				
+				check(AdditionalPhysiscBody);
+				if (!AdditionalPhysiscBody->bBodiesModified)
+				{
+					continue;
+				}
+
+				const int32 PhysicsBodyExternalId = Component.Mesh->AdditionalPhysicsBodies[I]->CustomId;
+				
+				const FAnimBpOverridePhysicsAssetsInfo& Info = CustomizableObject->AnimBpOverridePhysiscAssetsInfo[PhysicsBodyExternalId];
+
+				// Make sure the AnimInstance class is loaded. It is expected to be already loaded at this point though. 
+				UClass* AnimInstanceClassLoaded = Info.AnimInstanceClass.LoadSynchronous();
+				TSubclassOf<UAnimInstance> AnimInstanceClass = TSubclassOf<UAnimInstance>(AnimInstanceClassLoaded);
+				if (!ensureAlways(AnimInstanceClass))
+				{
+					continue;
+				}
+
+				FAnimBpGeneratedPhysicsAssets& PhysicsAssetsUsedByAnimBp = AnimBpPhysicsAssets.FindOrAdd(AnimInstanceClass);
+
+				TObjectPtr<UPhysicsAsset> PhysicsAssetTemplate = TObjectPtr<UPhysicsAsset>(Info.SourceAsset.Get());
+
+				check(PhysicsAssetTemplate);
+
+				FAnimInstanceOverridePhysicsAsset& Entry =
+					PhysicsAssetsUsedByAnimBp.AnimInstancePropertyIndexAndPhysicsAssets.Emplace_GetRef();
+
+				Entry.PropertyIndex = Info.PropertyIndex;
+				Entry.PhysicsAsset = MakePhysicsAssetFromTemplateAndMutableBody(PhysicsAssetTemplate, AdditionalPhysiscBody.get(), *CustomizableObject);
 			}
 
 			// Add sockets from the SkeletalMesh of reference and from the MutableMesh
@@ -1626,7 +2035,7 @@ bool UCustomizableInstancePrivateData::UpdateSkeletalMesh_PostBeginUpdate0(UCust
 			check(SrcSkeletalMesh);
 
 			// Set the Skeleton from the previously generated mesh and fix up ActiveBones and Bonemap arrays from new components
-			bSuccess = CopySkeletonData(OperationData, SrcSkeletalMesh, SkeletalMesh, Component.Id);
+			bSuccess = CopySkeletonData(OperationData, SrcSkeletalMesh, SkeletalMesh, *CustomizableObject, Component.Id);
 
 			if (!bSuccess)
 			{
@@ -1643,6 +2052,95 @@ bool UCustomizableInstancePrivateData::UpdateSkeletalMesh_PostBeginUpdate0(UCust
 		{
 			bSuccess = false;
 			break;
+		}
+
+		// Collate the extension data on the instance into groups based on the extension that
+		// produced it, so that we only need to call OnSkeletalMeshCreated once for each extension.
+		{
+			TMap<const UCustomizableObjectExtension*, TArray<FInputPinDataContainer>> ExtensionToExtensionData;
+
+			const TArrayView<const FRegisteredObjectNodeInputPin> ExtensionPins = ICustomizableObjectModule::Get().GetAdditionalObjectNodePins();
+
+			for (FInstanceUpdateData::FNamedExtensionData& ExtensionOutput : OperationData->InstanceUpdateData.ExtendedInputPins)
+			{
+				const FRegisteredObjectNodeInputPin* FoundPin =
+					Algo::FindBy(ExtensionPins, ExtensionOutput.Name, &FRegisteredObjectNodeInputPin::GlobalPinName);
+
+				if (!FoundPin)
+				{
+					// Failed to find the corresponding pin for this output
+					// 
+					// This may indicate that a plugin has been removed or renamed since the CO was compiled
+					UE_LOG(LogMutable, Error, TEXT("Failed to find Object node input pin with name %s"), *ExtensionOutput.Name.ToString());
+					continue;
+				}
+
+				const UCustomizableObjectExtension* Extension = FoundPin->Extension.Get();
+				if (!Extension)
+				{
+					// Extension is not loaded or not found
+					UE_LOG(LogMutable, Error, TEXT("Extension for Object node input pin %s is no longer valid"), *ExtensionOutput.Name.ToString());
+					continue;
+				}
+
+				if (ExtensionOutput.Data->Origin == mu::ExtensionData::EOrigin::Invalid)
+				{
+					// Null data was produced
+					//
+					// This can happen if a node produces an ExtensionData but doesn't initialize it
+					UE_LOG(LogMutable, Error, TEXT("Invalid data sent to Object node input pin %s"), *ExtensionOutput.Name.ToString());
+					continue;
+				}
+
+				TArray<FInputPinDataContainer>& ContainerArray = ExtensionToExtensionData.FindOrAdd(Extension);
+
+				const FCustomizableObjectExtensionData* ReferencedExtensionData = nullptr;
+				switch (ExtensionOutput.Data->Origin)
+				{
+					case mu::ExtensionData::EOrigin::ConstantAlwaysLoaded:
+					{
+						check(CustomizableObject->AlwaysLoadedExtensionData.IsValidIndex(ExtensionOutput.Data->Index));
+						ReferencedExtensionData = &CustomizableObject->AlwaysLoadedExtensionData[ExtensionOutput.Data->Index];
+					}
+					break;
+
+					case mu::ExtensionData::EOrigin::ConstantStreamed:
+					{
+						check(CustomizableObject->StreamedExtensionData.IsValidIndex(ExtensionOutput.Data->Index));
+						
+						const FCustomizableObjectStreamedExtensionData& StreamedData =
+							CustomizableObject->StreamedExtensionData[ExtensionOutput.Data->Index];
+
+						if (!StreamedData.IsLoaded())
+						{
+							// The data should have been loaded as part of executing the CO program.
+							//
+							// This could indicate a bug in the streaming logic.
+							UE_LOG(LogMutable, Error, TEXT("Customizable Object produced a streamed extension data that is not loaded: %s"),
+								*StreamedData.GetPath().ToString());
+
+							continue;
+						}
+
+						ReferencedExtensionData = &StreamedData.GetLoadedData();
+					}
+					break;
+
+					default:
+						unimplemented();
+				}
+
+				check(ReferencedExtensionData);
+		
+				ContainerArray.Emplace(FoundPin->InputPin, ReferencedExtensionData->Data);
+			}
+
+			// Now that we have an array of extension data for each extension, go through the extensions and
+			// give each one its data.
+			for (const TPair<const UCustomizableObjectExtension*, TArray<FInputPinDataContainer>>& Pair : ExtensionToExtensionData)
+			{
+				Pair.Key->OnSkeletalMeshCreated(Pair.Value, ComponentIndex, SkeletalMesh);
+			}
 		}
 
 		bHasSkeletalMesh = true;
@@ -1681,8 +2179,8 @@ bool UCustomizableInstancePrivateData::UpdateSkeletalMesh_PostBeginUpdate0(UCust
 				BuildOrCopyMorphTargetsData(OperationData, SkeletalMesh, OldSkeletalMesh, Public, ComponentIndex);
 				BuildOrCopyClothingData(OperationData, SkeletalMesh, OldSkeletalMesh, Public, ComponentIndex);
 
-				ensure(Helper_GetLODData(SkeletalMesh).Num() > 0);
-				ensure(Helper_GetLODInfoArray(SkeletalMesh).Num() > 0);
+				ensure(SkeletalMesh->GetResourceForRendering()->LODRenderData.Num() > 0);
+				ensure(SkeletalMesh->GetLODInfoArray().Num() > 0);
 			}
 		}
 	}
@@ -1888,9 +2386,9 @@ void UCustomizableObjectInstance::MultilayerProjectorUpdateVirtualLayer(const FN
 }
 
 
-void UCustomizableObjectInstance::SaveDescriptor(FArchive &Ar)
+void UCustomizableObjectInstance::SaveDescriptor(FArchive &Ar, bool bUseCompactDescriptor)
 {
-	Descriptor.SaveDescriptor(Ar);
+	Descriptor.SaveDescriptor(Ar, bUseCompactDescriptor);
 }
 
 
@@ -1930,19 +2428,13 @@ void UCustomizableObjectInstance::SetFloatParameterSelectedOption(const FString&
 }
 
 
-uint64 UCustomizableObjectInstance::GetTextureParameterSelectedOption(const FString& TextureParamName, const int32 RangeIndex) const
+FName UCustomizableObjectInstance::GetTextureParameterSelectedOption(const FString& TextureParamName, const int32 RangeIndex) const
 {
 	return Descriptor.GetTextureParameterSelectedOption(TextureParamName, RangeIndex);
 }
 
 
-UTexture2D* UCustomizableObjectInstance::GetTextureParameterSelectedOptionT(const FString& TextureParamName, const int32 RangeIndex) const
-{
-	return Descriptor.GetTextureParameterSelectedOptionT(TextureParamName, RangeIndex);
-}
-
-
-void UCustomizableObjectInstance::SetTextureParameterSelectedOption(const FString& TextureParamName, const uint64 TextureValue, const int32 RangeIndex)
+void UCustomizableObjectInstance::SetTextureParameterSelectedOption(const FString& TextureParamName, const FString& TextureValue, const int32 RangeIndex)
 {
 	Descriptor.SetTextureParameterSelectedOption(TextureParamName, TextureValue, RangeIndex);
 }
@@ -2088,11 +2580,14 @@ int32 UCustomizableObjectInstance::FindProjectorParameterNameIndex(const FString
 	return Descriptor.FindProjectorParameterNameIndex(ParamName);
 }
 
-
 void UCustomizableObjectInstance::SetRandomValues()
 {
-	Descriptor.SetRandomValues();
+	Descriptor.SetRandomValues(FMath::Rand());
+}
 
+void UCustomizableObjectInstance::SetRandomValues(const int32 InRandomizationSeed)
+{
+	Descriptor.SetRandomValues(InRandomizationSeed);
 }
 
 
@@ -2415,30 +2910,19 @@ void SetTexturePropertiesFromMutableImageProps(UTexture2D* Texture, const FMutab
 }
 
 
-void UCustomizableObjectInstance::Updated(EUpdateResult Result, const FDescriptorRuntimeHash& InUpdatedHash)
+void UCustomizableObjectInstance::FinishUpdate(EUpdateResult UpdateResult, const FDescriptorRuntimeHash& InUpdatedHash)
 {
-	if (Result == EUpdateResult::Success)
+	if (UpdateResult == EUpdateResult::Success)
 	{
 		DescriptorRuntimeHash = InUpdatedHash;
 	}
 
-	// Call Customizable Skeletal Components updated callbacks.
-	for (TObjectIterator<UCustomizableSkeletalComponent> It; It; ++It)
-	{
-		if (const UCustomizableSkeletalComponent* CustomizableSkeletalComponent = *It;
-			CustomizableSkeletalComponent &&
-			CustomizableSkeletalComponent->CustomizableObjectInstance == this)
-		{
-			CustomizableSkeletalComponent->Updated(Result);
-		}
-	}
-
-	if (Result == EUpdateResult::Success)
+	if (UpdateResult == EUpdateResult::Success)
 	{
 		// Call Instance updated (this) callbacks.
 		UpdatedDelegate.Broadcast(this);
 		UpdatedNativeDelegate.Broadcast(this);
-	}	
+	}
 }
 
 
@@ -2451,6 +2935,13 @@ FDescriptorRuntimeHash UCustomizableObjectInstance::GetDescriptorRuntimeHash() c
 FDescriptorRuntimeHash UCustomizableObjectInstance::GetUpdateDescriptorRuntimeHash() const
 {
 	return UpdateDescriptorRuntimeHash;
+}
+
+
+UCustomizableInstancePrivateData* UCustomizableObjectInstance::GetPrivate() const
+{ 
+	check(PrivateData); // Currently this is initialized in the constructor so we expect it always to exist.
+	return PrivateData; 
 }
 
 
@@ -2486,12 +2977,12 @@ void CopyTextureProperties(UTexture2D* Texture, const UTexture2D* SourceTexture)
 // If assigned to a UTexture2D, it will be freed by that UTexture2D
 FTexturePlatformData* UCustomizableInstancePrivateData::MutableCreateImagePlatformData(mu::Ptr<const mu::Image> MutableImage, int32 OnlyLOD, uint16 FullSizeX, uint16 FullSizeY)
 {
-	int32 SizeX = FMath::Max(MutableImage->GetSize().x(), FullSizeX);
-	int32 SizeY = FMath::Max(MutableImage->GetSize().y(), FullSizeY);
+	int32 SizeX = FMath::Max(MutableImage->GetSize()[0], FullSizeX);
+	int32 SizeY = FMath::Max(MutableImage->GetSize()[1], FullSizeY);
 
 	if (SizeX <= 0 || SizeY <= 0)
 	{
-		UE_LOG(LogMutable, Verbose, TEXT("Invalid parameters specified for UCustomizableInstancePrivateData::MutableCreateImagePlatformData()"));
+		UE_LOG(LogMutable, Warning, TEXT("Invalid parameters specified for UCustomizableInstancePrivateData::MutableCreateImagePlatformData()"));
 		return nullptr;
 	}
 
@@ -2518,6 +3009,33 @@ FTexturePlatformData* UCustomizableInstancePrivateData::MutableCreateImagePlatfo
 		check(MipsToSkip >= 0);
 	}
 
+	// Reduce final texture size if we surpass the max size we can generate.
+	UCustomizableObjectSystem* System = UCustomizableObjectSystem::GetInstance();
+	FCustomizableObjectSystemPrivate* SystemPrivate = System ? System->GetPrivate() : nullptr;
+
+	int32 MaxTextureSizeToGenerate = SystemPrivate ? SystemPrivate->MaxTextureSizeToGenerate : 0;
+
+	if (MaxTextureSizeToGenerate > 0)
+	{
+		// Skip mips only if texture streaming is disabled 
+		const bool bIsStreamingEnabled = MipsToSkip > 0;
+
+		// Skip mips if the texture surpasses a certain size
+		if (MaxSize > MaxTextureSizeToGenerate && !bIsStreamingEnabled && OnlyLOD < 0)
+		{
+			// Skip mips until MaxSize is equal or less than MaxTextureSizeToGenerate or there aren't more mips to skip
+			while (MaxSize > MaxTextureSizeToGenerate && FirstLOD < (FullLODCount - 1))
+			{
+				MaxSize = MaxSize >> 1;
+				FirstLOD++;
+			}
+
+			// Update SizeX and SizeY
+			SizeX = SizeX >> FirstLOD;
+			SizeY = SizeY >> FirstLOD;
+		}
+	}
+
 	if (MutableImage->GetLODCount() == 1)
 	{
 		MipsToSkip = 0;
@@ -2529,8 +3047,17 @@ FTexturePlatformData* UCustomizableInstancePrivateData::MutableCreateImagePlatfo
 	
 	mu::EImageFormat MutableFormat = MutableImage->GetFormat();
 
-	int32 MaxPossibleSize = int32(FMath::Pow(2.f, float(FullLODCount - 1)));
-	
+	int32 MaxPossibleSize = 0;
+		
+	if (MaxTextureSizeToGenerate > 0)
+	{
+		MaxPossibleSize = int32(FMath::Pow(2.f, float(FullLODCount - FirstLOD - 1)));
+	}
+	else
+	{
+		MaxPossibleSize = int32(FMath::Pow(2.f, float(FullLODCount - 1)));
+	}
+
 	// This could happen with non-power-of-two images.
 	//check(SizeX == MaxPossibleSize || SizeY == MaxPossibleSize || FullLODCount == 1);
 	if (!(SizeX == MaxPossibleSize || SizeY == MaxPossibleSize || FullLODCount == 1))
@@ -2538,6 +3065,8 @@ FTexturePlatformData* UCustomizableInstancePrivateData::MutableCreateImagePlatfo
 		UE_LOG(LogMutable, Warning, TEXT("Building instance: unsupported texture size %d x %d."), SizeX, SizeY);
 		//return nullptr;
 	}
+
+	mu::FImageOperator ImOp = mu::FImageOperator::GetDefault();
 
 	EPixelFormat PlatformFormat = PF_Unknown;
 	switch (MutableFormat)
@@ -2569,17 +3098,17 @@ FTexturePlatformData* UCustomizableInstancePrivateData::MutableCreateImagePlatfo
 		// Cannot prepare texture if it's not in the right format, this can happen if mutable is in debug mode or in case of bugs
 		UE_LOG(LogMutable, Warning, TEXT("Building instance: a texture was generated in an unsupported format, it will be converted to Unreal with a performance penalty."));
 
-		switch (mu::GetImageFormatData(MutableFormat).m_channels)
+		switch (mu::GetImageFormatData(MutableFormat).Channels)
 		{
 		case 1:
 			PlatformFormat = PF_R8;
-			MutableImage = ImagePixelFormat(0, MutableImage.get(), mu::EImageFormat::IF_L_UBYTE);
+			MutableImage = ImOp.ImagePixelFormat(0, MutableImage.get(), mu::EImageFormat::IF_L_UBYTE);
 			break;
 		case 2:
 		case 3:
 		case 4:
 			PlatformFormat = PF_R8G8B8A8;
-			MutableImage = ImagePixelFormat(0, MutableImage.get(), mu::EImageFormat::IF_RGBA_UBYTE);
+			MutableImage = ImOp.ImagePixelFormat(0, MutableImage.get(), mu::EImageFormat::IF_RGBA_UBYTE);
 			break;
 		default: 
 			// Absolutely worst case
@@ -2606,11 +3135,6 @@ FTexturePlatformData* UCustomizableInstancePrivateData::MutableCreateImagePlatfo
 	{
 		int32 MipLevelMutable = MipLevelUE - MipsToSkip;		
 
-		PlatformData->Mips.Add(new FTexture2DMipMap());
-		FTexture2DMipMap* Mip = &PlatformData->Mips.Last(); //new(Texture->PlatformData->Mips) FTexture2DMipMap();
-		Mip->SizeX = SizeX;
-		Mip->SizeY = SizeY;
-
 		// Unlike Mutable, UE expects MIPs sizes to be at least the size of the compression block.
 		// For example, a 8x8 PF_DXT1 texture will have the following MIPs:
 		// Mutable    Unreal Engine
@@ -2620,9 +3144,10 @@ FTexturePlatformData* UCustomizableInstancePrivateData::MutableCreateImagePlatfo
 		// 1x1        4x4
 		//
 		// Notice that even though Mutable reports MIP smaller than the block size, the actual data contains at least a block.
-		Mip->SizeX = FMath::Max(Mip->SizeX, GPixelFormats[PlatformFormat].BlockSizeX);
-		Mip->SizeY = FMath::Max(Mip->SizeY, GPixelFormats[PlatformFormat].BlockSizeY);
+		FTexture2DMipMap* Mip = new FTexture2DMipMap( FMath::Max(SizeX, GPixelFormats[PlatformFormat].BlockSizeX)
+													, FMath::Max(SizeY, GPixelFormats[PlatformFormat].BlockSizeY));
 
+		PlatformData->Mips.Add(Mip);
 		if(MipLevelUE >= MipsToSkip || OnlyLOD>=0)
 		{
 			check(MipLevelMutable >= 0);
@@ -2710,11 +3235,19 @@ FTexturePlatformData* UCustomizableInstancePrivateData::MutableCreateImagePlatfo
 		}
 	}
 
-	check( FullLODCount==1 || OnlyLOD >= 0 || (BulkDataCount == MutableImage->GetLODCount()));
+	if (MaxTextureSizeToGenerate > 0)
+	{
+		check(FullLODCount == 1 || OnlyLOD >= 0 || (BulkDataCount == (MutableImage->GetLODCount() - FirstLOD)));
+	}
+	else
+	{
+		check(FullLODCount == 1 || OnlyLOD >= 0 || (BulkDataCount == MutableImage->GetLODCount()));
+	}
 #endif
 
 	return PlatformData;
 }
+
 
 
 void UCustomizableInstancePrivateData::ConvertImage(UTexture2D* Texture, mu::ImagePtrConst MutableImage, const FMutableModelImageProperties& Props, int OnlyLOD, int32 ExtractChannel )
@@ -2728,10 +3261,12 @@ void UCustomizableInstancePrivateData::ConvertImage(UTexture2D* Texture, mu::Ima
 	// Extract a single channel, if requested.
 	if (ExtractChannel >= 0)
 	{
-		MutableImage = mu::ImagePixelFormat( 4, MutableImage.get(), mu::EImageFormat::IF_RGBA_UBYTE );
+		mu::FImageOperator ImOp = mu::FImageOperator::GetDefault();
+
+		MutableImage = ImOp.ImagePixelFormat( 4, MutableImage.get(), mu::EImageFormat::IF_RGBA_UBYTE );
 
 		uint8_t Channel = uint8_t( FMath::Clamp(ExtractChannel,0,3) );
-		MutableImage = mu::ImageSwizzle( mu::EImageFormat::IF_L_UBYTE, &MutableImage, &Channel );
+		MutableImage = ImOp.ImageSwizzle( mu::EImageFormat::IF_L_UBYTE, &MutableImage, &Channel );
 		MutableFormat = mu::EImageFormat::IF_L_UBYTE;
 	}
 
@@ -2741,7 +3276,7 @@ void UCustomizableInstancePrivateData::ConvertImage(UTexture2D* Texture, mu::Ima
 		UE_LOG(LogMutable, Warning, TEXT("Building instance: a texture was generated in RGB format, which is slow to convert to Unreal."));
 
 		// Expand the image.
-		mu::ImagePtr Converted = new mu::Image(MutableImage->GetSizeX(), MutableImage->GetSizeY(), MutableImage->GetLODCount(), mu::EImageFormat::IF_RGBA_UBYTE);
+		mu::ImagePtr Converted = new mu::Image(MutableImage->GetSizeX(), MutableImage->GetSizeY(), MutableImage->GetLODCount(), mu::EImageFormat::IF_RGBA_UBYTE, mu::EInitializationType::NotInitialized);
 
 		for (int LODIndex = 0; LODIndex < Converted->GetLODCount(); ++LODIndex)
 		{
@@ -2767,7 +3302,7 @@ void UCustomizableInstancePrivateData::ConvertImage(UTexture2D* Texture, mu::Ima
 		MUTABLE_CPUPROFILER_SCOPE(Swizzle);
 		// Swizzle the image.
 		// \TODO: Raise a warning?
-		mu::ImagePtr Converted = new mu::Image(MutableImage->GetSizeX(), MutableImage->GetSizeY(), 1, mu::EImageFormat::IF_RGBA_UBYTE);
+		mu::ImagePtr Converted = new mu::Image(MutableImage->GetSizeX(), MutableImage->GetSizeY(), 1, mu::EImageFormat::IF_RGBA_UBYTE, mu::EInitializationType::NotInitialized);
 		int32 pixelCount = MutableImage->GetSizeX() * MutableImage->GetSizeY();
 
 		const uint8_t* pSource = MutableImage->GetData();
@@ -2819,7 +3354,14 @@ void UCustomizableInstancePrivateData::InitSkeletalMeshData(const TSharedPtr<FMu
 	SkeletalMesh->SetPhysicsAsset(RefSkeletalMeshData->PhysicsAsset.Get());
 	SkeletalMesh->SetEnablePerPolyCollision(RefSkeletalMeshData->Settings.bEnablePerPolyCollision);
 
-
+	// Asset User Data
+	for (const FMutableRefAssetUserData& MutAssetUserData : RefSkeletalMeshData->AssetUserData)
+	{
+		if (MutAssetUserData.AssetUserData)
+		{
+			SkeletalMesh->AddAssetUserData(MutAssetUserData.AssetUserData);
+		}
+	}
 
 	// Allocate resources for rendering and add LOD Info
 	{
@@ -2829,7 +3371,7 @@ void UCustomizableInstancePrivateData::InitSkeletalMeshData(const TSharedPtr<FMu
 		FSkeletalMeshRenderData* RenderData = SkeletalMesh->GetResourceForRendering();
 		for (int32 LODIndex = 0; LODIndex <= OperationData->CurrentMaxLOD; ++LODIndex)
 		{
-			RenderData->LODRenderData.Add(new Helper_LODDataType());
+			RenderData->LODRenderData.Add(new FSkeletalMeshLODRenderData());
 
 			const FMutableRefLODData& LODData = RefSkeletalMeshData->LODData[LODIndex];
 
@@ -2864,58 +3406,53 @@ void UCustomizableInstancePrivateData::InitSkeletalMeshData(const TSharedPtr<FMu
 }
 
 
-bool UCustomizableInstancePrivateData::BuildSkeletonData(const TSharedPtr<FMutableOperationData>& OperationData, USkeletalMesh* SkeletalMesh, const FMutableRefSkeletalMeshData* RefSkeletalMeshData, UCustomizableObjectInstance* Public, int32 ComponentIndex)
+bool UCustomizableInstancePrivateData::BuildSkeletonData(const TSharedPtr<FMutableOperationData>& OperationData, USkeletalMesh& SkeletalMesh, const FMutableRefSkeletalMeshData& RefSkeletalMeshData, UCustomizableObject& CustomizableObject, int32 ComponentIndex)
 {
 	MUTABLE_CPUPROFILER_SCOPE(UCustomizableInstancePrivateData::BuildSkeletonData);
 
-	check(SkeletalMesh);
-	check(RefSkeletalMeshData);
-
-	const TObjectPtr<USkeleton> Skeleton = MergeSkeletons(Public, RefSkeletalMeshData, ComponentIndex);
+	const TObjectPtr<USkeleton> Skeleton = MergeSkeletons(CustomizableObject, RefSkeletalMeshData, ComponentIndex);
 	if (!Skeleton)
 	{
 		return false;
 	}
 
-	SkeletalMesh->SetSkeleton(Skeleton);
+	SkeletalMesh.SetSkeleton(Skeleton);
 
-	SkeletalMesh->SetRefSkeleton(Skeleton->GetReferenceSkeleton());
-	FReferenceSkeleton& ReferenceSkeleton = SkeletalMesh->GetRefSkeleton();
+	SkeletalMesh.SetRefSkeleton(Skeleton->GetReferenceSkeleton());
+	FReferenceSkeleton& ReferenceSkeleton = SkeletalMesh.GetRefSkeleton();
 
 	// Check that the bones we need are present in the current Skeleton
 	FInstanceUpdateData::FSkeletonData& MutSkeletonData = OperationData->InstanceUpdateData.Skeletons[ComponentIndex];
-	const int32 MutBoneCount = MutSkeletonData.BoneNames.Num();
+	const int32 MutBoneCount = MutSkeletonData.BoneIds.Num();
 	
-	TMap<FName, uint16> BoneToFinalBoneIndexMap;
+	TMap<uint16, uint16> BoneToFinalBoneIndexMap;
 	BoneToFinalBoneIndexMap.Reserve(MutBoneCount);
 
 	{
 		MUTABLE_CPUPROFILER_SCOPE(BuildSkeletonData_EnsureBonesExist);
 
+		const TArray<FName>& BoneNames = CustomizableObject.GetBoneNamesArray();
+
 		// Ensure all the required bones are present in the skeleton
 		for (int32 BoneIndex = 0; BoneIndex < MutBoneCount; ++BoneIndex)
 		{
-			FName BoneName = MutSkeletonData.BoneNames[BoneIndex];
+			const uint16 BoneId = MutSkeletonData.BoneIds[BoneIndex];
+			check(BoneNames.IsValidIndex(BoneId));
+
+			const FName BoneName = BoneNames[BoneId]; 
 			check(BoneName != NAME_None);
 
-			int32 SourceBoneIndex = ReferenceSkeleton.FindRawBoneIndex(BoneName);
-			
+			const int32 SourceBoneIndex = ReferenceSkeleton.FindRawBoneIndex(BoneName);
 			if (SourceBoneIndex == INDEX_NONE)
 			{
-				if (MutSkeletonData.BoneMatricesWithScale.Find(BoneName))
-				{
-					// Merged skeleton is missing some bones! This happens if one of the skeletons involved in the merge is discarded due to being incompatible with the rest
-					// or if the source mesh is not in sync with the skeleton. 
-					UE_LOG(LogMutable, Warning, TEXT("Building instance: generated mesh has a bone [%s] not present in the reference mesh [%s]. Failing to generate mesh. "),
-						*BoneName.ToString(), *SkeletalMesh->GetName());
-					return false;
-				}
-
-				// The bone is missing but it's not required. Fix the SourceBoneIndex and continue.
-				SourceBoneIndex = 0;
+				// Merged skeleton is missing some bones! This happens if one of the skeletons involved in the merge is discarded due to being incompatible with the rest
+				// or if the source mesh is not in sync with the skeleton. 
+				UE_LOG(LogMutable, Warning, TEXT("Building instance: generated mesh has a bone [%s] not present in the reference mesh [%s]. Failing to generate mesh. "),
+					*BoneName.ToString(), *SkeletalMesh.GetName());
+				return false;
 			}
 
-			BoneToFinalBoneIndexMap.Add(BoneName, SourceBoneIndex);
+			BoneToFinalBoneIndexMap.Add(BoneId, SourceBoneIndex);
 		}
 	}
 
@@ -2930,14 +3467,15 @@ bool UCustomizableInstancePrivateData::BuildSkeletonData(const TSharedPtr<FMutab
 				continue;
 			}
 
-			for (uint16& BoneIndex : Component.BoneMap)
+			for (uint32 BoneMapIndex = Component.FirstBoneMap; BoneMapIndex < Component.FirstBoneMap + Component.BoneMapCount; ++BoneMapIndex)
 			{
-				BoneIndex = BoneToFinalBoneIndexMap[MutSkeletonData.BoneNames[BoneIndex]];
+				const int32 BoneId = OperationData->InstanceUpdateData.BoneMaps[BoneMapIndex];
+				OperationData->InstanceUpdateData.BoneMaps[BoneMapIndex] = BoneToFinalBoneIndexMap[BoneId];
 			}
 
-			for (uint16& BoneIndex : Component.ActiveBones)
+			for (uint16& BoneId : Component.ActiveBones)
 			{
-				BoneIndex = BoneToFinalBoneIndexMap[MutSkeletonData.BoneNames[BoneIndex]];
+				BoneId = BoneToFinalBoneIndexMap[BoneId];
 			}
 			Component.ActiveBones.Sort();
 		}
@@ -2947,28 +3485,27 @@ bool UCustomizableInstancePrivateData::BuildSkeletonData(const TSharedPtr<FMutab
 		MUTABLE_CPUPROFILER_SCOPE(BuildSkeletonData_ApplyPose);
 		
 		const int32 RefRawBoneCount = ReferenceSkeleton.GetRawBoneNum();
-		const int32 MutBonePoseCount = MutSkeletonData.BoneMatricesWithScale.Num();
 
-		TArray<FMatrix44f>& RefBasesInvMatrix = SkeletalMesh->GetRefBasesInvMatrix();
+		TArray<FMatrix44f>& RefBasesInvMatrix = SkeletalMesh.GetRefBasesInvMatrix();
 		RefBasesInvMatrix.Empty(RefRawBoneCount);
 
 		// Initialize the base matrices
-		if (RefRawBoneCount == MutBonePoseCount)
+		if (RefRawBoneCount == MutBoneCount)
 		{
-			RefBasesInvMatrix.AddUninitialized(MutBonePoseCount);
+			RefBasesInvMatrix.AddUninitialized(MutBoneCount);
 		}
 		else
 		{
 			// Bad case, some bone poses are missing, calculate the InvRefMatrices to ensure all transforms are there for the second step 
 			MUTABLE_CPUPROFILER_SCOPE(BuildSkeletonData_CalcInvRefMatrices0);
-			SkeletalMesh->CalculateInvRefMatrices();
+			SkeletalMesh.CalculateInvRefMatrices();
 		}
 
 		// First step is to update the RefBasesInvMatrix for the bones.
-		for (const TPair<FName, FMatrix44f>& BoneMatrix : MutSkeletonData.BoneMatricesWithScale)
+		for (int32 BoneIndex = 0; BoneIndex < MutBoneCount; ++BoneIndex)
 		{
-			const int32 RefSkelBoneIndex = BoneToFinalBoneIndexMap[BoneMatrix.Key];
-			RefBasesInvMatrix[RefSkelBoneIndex] = BoneMatrix.Value;
+			const int32 RefSkelBoneIndex = BoneToFinalBoneIndexMap[MutSkeletonData.BoneIds[BoneIndex]];
+			RefBasesInvMatrix[RefSkelBoneIndex] = MutSkeletonData.BoneMatricesWithScale[BoneIndex];
 		}
 
 		// The second step is to update the pose transforms in the ref skeleton from the BasesInvMatrix
@@ -2991,15 +3528,14 @@ bool UCustomizableInstancePrivateData::BuildSkeletonData(const TSharedPtr<FMutab
 
 	{
 		MUTABLE_CPUPROFILER_SCOPE(BuildSkeletonData_CalcInvRefMatrices);
-		SkeletalMesh->CalculateInvRefMatrices();
+		SkeletalMesh.CalculateInvRefMatrices();
 	}
-
 
 	return true;
 }
 
 
-bool UCustomizableInstancePrivateData::CopySkeletonData(const TSharedPtr<FMutableOperationData>& OperationData, USkeletalMesh* SrcSkeletalMesh, USkeletalMesh* DestSkeletalMesh, int32 ComponentIndex)
+bool UCustomizableInstancePrivateData::CopySkeletonData(const TSharedPtr<FMutableOperationData>& OperationData, USkeletalMesh* SrcSkeletalMesh, USkeletalMesh* DestSkeletalMesh, const UCustomizableObject& CustomizableObject, int32 ComponentIndex)
 {
 	MUTABLE_CPUPROFILER_SCOPE(UCustomizableInstancePrivateData::CopySkeletonData);
 
@@ -3020,38 +3556,37 @@ bool UCustomizableInstancePrivateData::CopySkeletonData(const TSharedPtr<FMutabl
 
 	// Check that the bones we need are present in the current Skeleton
 	FInstanceUpdateData::FSkeletonData& MutSkeletonData = OperationData->InstanceUpdateData.Skeletons[ComponentIndex];
-	const int32 MutBoneCount = MutSkeletonData.BoneNames.Num();
+	const int32 MutBoneCount = MutSkeletonData.BoneIds.Num();
 	
-	TMap<FName, uint16> BoneToFinalBoneIndexMap;
+	TMap<uint16, uint16> BoneToFinalBoneIndexMap;
 	BoneToFinalBoneIndexMap.Reserve(MutBoneCount);
 
 	{
 		MUTABLE_CPUPROFILER_SCOPE(CopySkeletonData_CheckForMissingBones);
 
+		const TArray<FName>& BoneNames = CustomizableObject.GetBoneNamesArray();
+
 		// Ensure all the required bones are present in the skeleton
 		for (int32 BoneIndex = 0; BoneIndex < MutBoneCount; ++BoneIndex)
 		{
-			FName BoneName = MutSkeletonData.BoneNames[BoneIndex];
+			const uint16 BoneId = MutSkeletonData.BoneIds[BoneIndex];
+			check(BoneNames.IsValidIndex(BoneId));
+
+			const FName BoneName = BoneNames[BoneId];
 			check(BoneName != NAME_None);
 
-			int32 SourceBoneIndex = RefSkeleton.FindRawBoneIndex(BoneName);
+			const int32 SourceBoneIndex = RefSkeleton.FindRawBoneIndex(BoneName);
 			
 			if (SourceBoneIndex == INDEX_NONE)
 			{
-				if (MutSkeletonData.BoneMatricesWithScale.Find(BoneName))
-				{
-					// Merged skeleton is missing some bones! This happens if one of the skeletons involved in the merge is discarded due to being incompatible with the rest
-					// or if the source mesh is not in sync with the skeleton. 
-					UE_LOG(LogMutable, Warning, TEXT("Building instance: generated mesh has a bone [%s] not present in the reference mesh [%s]. Failing to generate mesh. "),
-						*BoneName.ToString(), *DestSkeletalMesh->GetName());
-					return false;
-				}
-
-				// The bone is missing but it's not required. Fix the SourceBoneIndex and continue.
-				SourceBoneIndex = 0;
+				// Merged skeleton is missing some bones! This happens if one of the skeletons involved in the merge is discarded due to being incompatible with the rest
+				// or if the source mesh is not in sync with the skeleton. 
+				UE_LOG(LogMutable, Warning, TEXT("Building instance: generated mesh has a bone [%s] not present in the reference mesh [%s]. Failing to generate mesh. "),
+					*BoneName.ToString(), *DestSkeletalMesh->GetName());
+				return false;
 			}
 
-			BoneToFinalBoneIndexMap.Add(BoneName, SourceBoneIndex);
+			BoneToFinalBoneIndexMap.Add(BoneId, SourceBoneIndex);
 		}
 	}
 
@@ -3066,15 +3601,16 @@ bool UCustomizableInstancePrivateData::CopySkeletonData(const TSharedPtr<FMutabl
 				continue;
 			}
 
-			for (uint16& BoneIndex : Component.BoneMap)
+			for (uint32 BoneMapIndex = Component.FirstBoneMap; BoneMapIndex < Component.FirstBoneMap + Component.BoneMapCount; ++BoneMapIndex)
 			{
-				BoneIndex = BoneToFinalBoneIndexMap[MutSkeletonData.BoneNames[BoneIndex]];
+				const uint16 BoneId = OperationData->InstanceUpdateData.BoneMaps[BoneMapIndex];
+				OperationData->InstanceUpdateData.BoneMaps[BoneMapIndex] = BoneToFinalBoneIndexMap[BoneId];
 			}
 
 			TArray<uint16> UniqueActiveBones;
-			for (const uint16 BoneIndex : Component.ActiveBones)
+			for (const uint16 BoneId : Component.ActiveBones)
 			{
-				UniqueActiveBones.AddUnique(BoneToFinalBoneIndexMap[MutSkeletonData.BoneNames[BoneIndex]]);
+				UniqueActiveBones.AddUnique(BoneToFinalBoneIndexMap[BoneId]);
 			}
 
 			Exchange(Component.ActiveBones, UniqueActiveBones);
@@ -3097,7 +3633,7 @@ void UCustomizableInstancePrivateData::BuildMeshSockets(const TSharedPtr<FMutabl
 
 	const uint32 SocketCount = RefSkeletalMeshData->Sockets.Num();
 
-	TArray<USkeletalMeshSocket*>& Sockets = SkeletalMesh->GetMeshOnlySocketList();
+	TArray<TObjectPtr<USkeletalMeshSocket>>& Sockets = SkeletalMesh->GetMeshOnlySocketList();
 	Sockets.Empty(SocketCount);
 	TMap<FName, TTuple<int32, int32>> SocketMap; // Maps Socket name to Sockets Array index and priority
 	
@@ -3195,7 +3731,7 @@ void UCustomizableInstancePrivateData::CopyMeshSockets(USkeletalMesh* SrcSkeleta
 	check(DestSkeletalMesh);
 
 	const TArray<USkeletalMeshSocket*>& SrcSockets = SrcSkeletalMesh->GetMeshOnlySocketList();
-	TArray<USkeletalMeshSocket*>& DestSockets = DestSkeletalMesh->GetMeshOnlySocketList();
+	TArray<TObjectPtr<USkeletalMeshSocket>>& DestSockets = DestSkeletalMesh->GetMeshOnlySocketList();
 	DestSockets.Empty(SrcSockets.Num());
 
 	for (const USkeletalMeshSocket* SrcSocket : SrcSockets)
@@ -3242,7 +3778,7 @@ void UCustomizableInstancePrivateData::BuildOrCopyElementData(const TSharedPtr<F
 
 		for (int32 SurfaceIndex = 0; SurfaceIndex < Component.SurfaceCount; ++SurfaceIndex)
 		{
-			new(Helper_GetLODRenderSections(SkeletalMesh, LODIndex)) Helper_SkelMeshRenderSection();
+			new(SkeletalMesh->GetResourceForRendering()->LODRenderData[LODIndex].RenderSections) FSkelMeshRenderSection();
 		}
 	}
 }
@@ -3326,7 +3862,7 @@ void UCustomizableInstancePrivateData::BuildOrCopyMorphTargetsData(const TShared
 				}
 
 				int FirstVertex, VerticesCount, FirstIndex, IndiciesCount;
-				Component.Mesh->GetSurface(Section, &FirstVertex, &VerticesCount, &FirstIndex, &IndiciesCount);
+				Component.Mesh->GetSurface(Section, &FirstVertex, &VerticesCount, &FirstIndex, &IndiciesCount, nullptr, nullptr);
 
 				for (int32 VertexIdx = FirstVertex; VertexIdx < FirstVertex + VerticesCount; ++VertexIdx)
 				{
@@ -3508,7 +4044,7 @@ void UCustomizableInstancePrivateData::BuildOrCopyClothingData(const TSharedPtr<
 				for (int32 Section = 0; Section < SurfaceCount; ++Section)
 				{
 					int FirstVertex, VerticesCount, FirstIndex, IndicesCount;
-					MutableMesh->GetSurface(Section, &FirstVertex, &VerticesCount, &FirstIndex, &IndicesCount);
+					MutableMesh->GetSurface(Section, &FirstVertex, &VerticesCount, &FirstIndex, &IndicesCount, nullptr, nullptr);
 
 					if (VerticesCount == 0 || IndicesCount == 0)
 					{
@@ -4152,7 +4688,7 @@ void UCustomizableInstancePrivateData::BuildOrCopyClothingData(const TSharedPtr<
 				{
 					// Check that is a valid surface.
 					int32 FirstVertex, VerticesCount, FirstIndex, IndicesCount;
-					MutableMesh->GetSurface(Section, &FirstVertex, &VerticesCount, &FirstIndex, &IndicesCount);
+					MutableMesh->GetSurface(Section, &FirstVertex, &VerticesCount, &FirstIndex, &IndicesCount, nullptr, nullptr);
 
 					if (VerticesCount == 0 || IndicesCount == 0 )
 					{
@@ -4380,20 +4916,21 @@ bool UCustomizableInstancePrivateData::BuildOrCopyRenderData(const TSharedPtr<FM
 
 		TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("BuildOrCopyRenderData_BuildData: LOD %d"), LODIndex));
 
-		SetLastMeshId(Component.Id, LODIndex, Component.Mesh->GetId());
+		SetLastMeshId(Component.Id, LODIndex, Component.MeshID);
 
 		UnrealConversionUtils::SetupRenderSections(
 			SkeletalMesh,
 			Component.Mesh,
 			LODIndex,
-			Component.BoneMap);
+			OperationData->InstanceUpdateData.BoneMaps,
+			Component.FirstBoneMap);
 
 		UnrealConversionUtils::CopyMutableVertexBuffers(
 			SkeletalMesh,
 			Component.Mesh,
 			LODIndex);
 
-		FSkeletalMeshLODRenderData& LODModel = Helper_GetLODData(SkeletalMesh)[LODIndex];
+		FSkeletalMeshLODRenderData& LODModel = SkeletalMesh->GetResourceForRendering()->LODRenderData[LODIndex];
 
 		if (LODModel.DoesVertexBufferUse16BitBoneIndex() && !UCustomizableObjectSystem::GetInstance()->IsSupport16BitBoneIndexEnabled())
 		{
@@ -4423,7 +4960,8 @@ bool UCustomizableInstancePrivateData::BuildOrCopyRenderData(const TSharedPtr<FM
 
 			const mu::FMeshBufferSet& MutableMeshVertexBuffers = Component.Mesh->GetVertexBuffers();
 
-			for (int32 ProfileIndex = 0; ProfileIndex < SkinWeightProfilesInfo.Num(); ++ProfileIndex)
+			const int32 SkinWeightProfilesCount = CustomizableObject->SkinWeightProfilesInfo.Num();
+			for (int32 ProfileIndex = 0; ProfileIndex < SkinWeightProfilesCount; ++ProfileIndex)
 			{
 				const int32 ProfileSemanticsIndex = ProfileIndex + 10;
 				int32 BoneIndicesBufferIndex, BoneIndicesBufferChannelIndex;
@@ -4443,7 +4981,7 @@ bool UCustomizableInstancePrivateData::BuildOrCopyRenderData(const TSharedPtr<FM
 					bHasSkinWeightProfiles = true;
 				}
 
-				const FMutableSkinWeightProfileInfo& Profile = SkinWeightProfilesInfo[ProfileIndex];
+				const FMutableSkinWeightProfileInfo& Profile = CustomizableObject->SkinWeightProfilesInfo[ProfileIndex];
 
 				const FSkinWeightProfileInfo* ExistingProfile = SkeletalMesh->GetSkinWeightProfiles().FindByPredicate(
 					[&Profile](const FSkinWeightProfileInfo& P) { return P.Name == Profile.Name; });
@@ -4484,6 +5022,11 @@ bool UCustomizableInstancePrivateData::BuildOrCopyRenderData(const TSharedPtr<FM
 	return true;
 }
 
+static bool bEnableHighPriorityLoading = true;
+FAutoConsoleVariableRef CVarMutableHighPriorityLoading(
+	TEXT("Mutable.EnableLoadingAssetsWithHighPriority"),
+	bEnableHighPriorityLoading,
+	TEXT("If enabled, the request to load additional assets will have high priority."));
 
 FGraphEventRef UCustomizableInstancePrivateData::LoadAdditionalAssetsAsync(const TSharedPtr<FMutableOperationData>& OperationData, UCustomizableObjectInstance* Public, FStreamableManager& StreamableManager)
 {
@@ -4507,6 +5050,7 @@ FGraphEventRef UCustomizableInstancePrivateData::LoadAdditionalAssetsAsync(const
 
 	GatheredAnimBPs.Empty();
 	AnimBPGameplayTags.Reset();
+	AnimBpPhysicsAssets.Reset();
 
 	for (const FInstanceUpdateData::FSurface& Surface : OperationData->InstanceUpdateData.Surfaces)
 	{
@@ -4533,6 +5077,9 @@ FGraphEventRef UCustomizableInstancePrivateData::LoadAdditionalAssetsAsync(const
 		}
 	}
 
+	// Clear invalid skeletons from the MergedSkeletons cache
+	CustomizableObject->UnCacheInvalidSkeletons();
+
 	const int32 ComponentCount = OperationData->InstanceUpdateData.Skeletons.Num();
 
 	// Load Skeletons required by the SubMeshes of the newly generated Mesh, will be merged later
@@ -4543,6 +5090,14 @@ FGraphEventRef UCustomizableInstancePrivateData::LoadAdditionalAssetsAsync(const
 		FInstanceUpdateData::FSkeletonData* SkeletonData = OperationData->InstanceUpdateData.Skeletons.FindByPredicate(
 			[&ComponentIndex](FInstanceUpdateData::FSkeletonData& S) { return S.ComponentIndex == ComponentIndex; });
 		check(SkeletonData);
+
+		ComponentData.Skeletons.Skeleton = CustomizableObject->GetCachedMergedSkeleton(ComponentIndex, SkeletonData->SkeletonIds);
+		if (ComponentData.Skeletons.Skeleton)
+		{
+			ComponentData.Skeletons.SkeletonIds.Empty();
+			ComponentData.Skeletons.SkeletonsToMerge.Empty();
+			continue;
+		}
 
 		for (const uint32 SkeletonId : SkeletonData->SkeletonIds)
 		{
@@ -4564,14 +5119,15 @@ FGraphEventRef UCustomizableInstancePrivateData::LoadAdditionalAssetsAsync(const
 				continue;
 			}
 
+			// Add referenced skeletons to the assets to stream
+			ComponentData.Skeletons.SkeletonIds.Add(SkeletonId);
+
 			if (USkeleton* Skeleton = AssetPtr.Get())
 			{
 				ComponentData.Skeletons.SkeletonsToMerge.Add(Skeleton);
 			}
 			else
 			{
-				// Add referenced skeletons to the assets to stream
-				ComponentData.Skeletons.SkeletonsToLoad.Add(SkeletonId);
 				AssetsToStream.Add(AssetPtr.ToSoftObjectPath());
 			}
 
@@ -4653,9 +5209,9 @@ FGraphEventRef UCustomizableInstancePrivateData::LoadAdditionalAssetsAsync(const
 
 					if (Tag.Split(TEXT("_Slot_"), &SlotIndexString, &AssetPath))
 					{
-						if (SlotIndexString.IsNumeric())
+						if (!SlotIndexString.IsEmpty())
 						{
-							int32 SlotIndex = FCString::Atoi(*SlotIndexString);
+							FName SlotIndex = *SlotIndexString;
 
 							TSoftClassPtr<UAnimInstance>* AnimBPAsset = CustomizableObject->AnimBPAssetsMap.Find(AssetPath);
 
@@ -4677,7 +5233,7 @@ FGraphEventRef UCustomizableInstancePrivateData::LoadAdditionalAssetsAsync(const
 								else
 								{
 									// Two submeshes should not have the same animation slot index
-									FString ErrorMsg = FString::Printf(TEXT("Two submeshes have the same anim slot index [%d] in a Mutable Instance."), SlotIndex);
+									FString ErrorMsg = FString::Printf(TEXT("Two submeshes have the same anim slot index [%s] in a Mutable Instance."), *SlotIndex.ToString());
 									UE_LOG(LogMutable, Error, TEXT("%s"), *ErrorMsg);
 #if WITH_EDITOR
 									FMessageLogModule& MessageLogModule = FModuleManager::LoadModuleChecked<FMessageLogModule>("MessageLog");
@@ -4702,6 +5258,15 @@ FGraphEventRef UCustomizableInstancePrivateData::LoadAdditionalAssetsAsync(const
 				}
 #endif
 			}
+
+			const int32 AdditionalPhysicsNum = MutableMesh->AdditionalPhysicsBodies.Num();
+			for (int32 I = 0; I < AdditionalPhysicsNum; ++I)
+			{
+				const int32 ExternalId = MutableMesh->AdditionalPhysicsBodies[I]->CustomId;
+				
+				ComponentData->PhysicsAssets.AdditionalPhysicsAssetsToLoad.Add(ExternalId);
+				AssetsToStream.Add(CustomizableObject->AnimBpOverridePhysiscAssetsInfo[ExternalId].SourceAsset.ToSoftObjectPath());
+			}
 		}
 	}
 
@@ -4710,7 +5275,8 @@ FGraphEventRef UCustomizableInstancePrivateData::LoadAdditionalAssetsAsync(const
 		check(!StreamingHandle);
 
 		Result = FGraphEvent::CreateGraphEvent();
-		StreamingHandle = StreamableManager.RequestAsyncLoad(AssetsToStream, FStreamableDelegate::CreateUObject(Public, &UCustomizableObjectInstance::AdditionalAssetsAsyncLoaded, Result));
+		StreamingHandle = StreamableManager.RequestAsyncLoad(AssetsToStream, FStreamableDelegate::CreateUObject(Public, &UCustomizableObjectInstance::AdditionalAssetsAsyncLoaded, Result),
+			bEnableHighPriorityLoading ? FStreamableManager::AsyncLoadHighPriority : FStreamableManager::DefaultAsyncLoadPriority);
 	}
 
 	return Result;
@@ -4771,11 +5337,10 @@ void UCustomizableInstancePrivateData::AdditionalAssetsAsyncLoaded(UCustomizable
 	{
 		// Loaded Skeletons
 		FReferencedSkeletons& Skeletons = ComponentData.Skeletons;
-		for (const int32& SkeletonIndex : Skeletons.SkeletonsToLoad)
+		for (int32 SkeletonIndex : Skeletons.SkeletonIds)
 		{
-			Skeletons.SkeletonsToMerge.Add(CustomizableObject->GetReferencedSkeletonAssetPtr(SkeletonIndex).Get());
+			Skeletons.SkeletonsToMerge.AddUnique(CustomizableObject->GetReferencedSkeletonAssetPtr(SkeletonIndex).Get());
 		}
-		Skeletons.SkeletonsToLoad.Empty();
 
 		// Loaded PhysicsAssets
 		FReferencedPhysicsAssets& PhysicsAssets = ComponentData.PhysicsAssets;
@@ -4822,7 +5387,7 @@ void UCustomizableInstancePrivateData::AdditionalAssetsAsyncLoaded(UCustomizable
 		ComponentData.ClothingPhysicsAssetsToStream.Empty();
 
 		// Loaded anim BPs
-		for (TPair<int32, TSoftClassPtr<UAnimInstance>>& SlotAnimBP : ComponentData.AnimSlotToBP)
+		for (TPair<FName, TSoftClassPtr<UAnimInstance>>& SlotAnimBP : ComponentData.AnimSlotToBP)
 		{
 			if (TSubclassOf<UAnimInstance> AnimBP = SlotAnimBP.Value.Get())
 			{
@@ -4844,6 +5409,17 @@ void UCustomizableInstancePrivateData::AdditionalAssetsAsyncLoaded(UCustomizable
 			}
 #endif
 		}
+
+		const int32 AdditionalPhysicsNum = ComponentData.PhysicsAssets.AdditionalPhysicsAssetsToLoad.Num();
+		ComponentData.PhysicsAssets.AdditionalPhysicsAssets.Reserve(AdditionalPhysicsNum);
+		for (int32 I = 0; I < AdditionalPhysicsNum; ++I)
+		{
+			// Make the loaded assets references strong.
+			const int32 AnimBpPhysicsOverrideIndex = ComponentData.PhysicsAssets.AdditionalPhysicsAssetsToLoad[I];
+			ComponentData.PhysicsAssets.AdditionalPhysicsAssets.Add( 
+					CustomizableObject->AnimBpOverridePhysiscAssetsInfo[AnimBpPhysicsOverrideIndex].SourceAsset.Get());
+		}
+		ComponentData.PhysicsAssets.AdditionalPhysicsAssetsToLoad.Empty();
 	}
 }
 
@@ -4938,21 +5514,22 @@ void UCustomizableInstancePrivateData::BuildMaterials(const TSharedPtr<FMutableO
 {
 	MUTABLE_CPUPROFILER_SCOPE(UCustomizableInstancePrivateData::BuildMaterials)
 
-		UCustomizableObject* CustomizableObject = Public->GetCustomizableObject();
+	UCustomizableObject* CustomizableObject = Public->GetCustomizableObject();
 
-	const int32 LODCount = OperationData->InstanceUpdateData.LODs.Num();
+	// Find skipped LODs. The following valid LOD will be copied into them. 
+	TArray<bool> LODsSkipped;
+	LODsSkipped.SetNum(OperationData->NumLODsAvailable);
 
 	TArray<FGeneratedTexture> NewGeneratedTextures;
 
 	GeneratedMaterials.Reset();
 
 	// Prepare the data to store in order to regenerate resources for this instance (usually texture mips).
-	TSharedPtr<FMutableUpdateContext> UpdateContext = MakeShared<FMutableUpdateContext>();
-	UpdateContext->System = UCustomizableObjectSystem::GetInstance()->GetPrivate()->MutableSystem;
-	UpdateContext->Model = CustomizableObject->GetModel();
-	UpdateContext->Parameters = OperationData->MutableParameters;
-	UpdateContext->State = OperationData->State;
-
+	TSharedPtr<FMutableUpdateContext> UpdateContext = MakeShared<FMutableUpdateContext>(UCustomizableObjectSystem::GetInstance()->GetPrivate()->MutableSystem,
+		CustomizableObject->GetModel(),
+		OperationData->MutableParameters,
+	    OperationData->State);
+	
 	const bool bReuseTextures = OperationData->bReuseInstanceTextures;
 
 	const FInstanceUpdateData::FLOD& FirstLOD = OperationData->InstanceUpdateData.LODs[OperationData->CurrentMinLOD];
@@ -4970,27 +5547,29 @@ void UCustomizableInstancePrivateData::BuildMaterials(const TSharedPtr<FMutableO
 		SkeletalMesh->GetMaterials().Reset();
 
 		// Maps serializations of FMutableMaterialPlaceholder to Created Dynamic Material instances, used to reuse materials across LODs
-		TMap<FString, FMutableMaterialPlaceholder*> ReuseMaterialCache;
-		// Stores the FMutableMaterialPlaceholders and keeps them in memory while the component's LODs are being processed
-		TArray<TSharedPtr<FMutableMaterialPlaceholder>> MutableMaterialPlaceholderArray;
+		TMap<FString, TSharedPtr<FMutableMaterialPlaceholder>> ReuseMaterialCache;
+
+		// Map of SharedSurfaceId to FMutableMaterialPlaceholder serialization key 
+		TMap<int32, FString> SharedSurfacesCache;
 
 		MUTABLE_CPUPROFILER_SCOPE(BuildMaterials_LODLoop);
 
-		int32 LastValidLODIndex = OperationData->CurrentMaxLOD;
-		for (int32 LODIndex = OperationData->CurrentMaxLOD; LODIndex >= FirstLODAvailable; --LODIndex)
+		for (int32 LODIndex = FirstLODAvailable; LODIndex <= OperationData->CurrentMaxLOD; LODIndex++)
 		{
-			if (Helper_GetLODInfoArray(SkeletalMesh).Num() != 0)
-			{
-				Helper_GetLODInfoArray(SkeletalMesh)[LODIndex].LODMaterialMap.Reset();
-			}
-
-			if (LODIndex >= OperationData->CurrentMinLOD && OperationData->InstanceUpdateData.Components[OperationData->InstanceUpdateData.LODs[LODIndex].FirstComponent + ComponentIndex].bGenerated)
-			{
-				LastValidLODIndex = LODIndex;
-			}
-
-			const FInstanceUpdateData::FLOD& LOD = OperationData->InstanceUpdateData.LODs[LastValidLODIndex];
+			const FInstanceUpdateData::FLOD& LOD = OperationData->InstanceUpdateData.LODs[LODIndex];
 			const FInstanceUpdateData::FComponent& Component = OperationData->InstanceUpdateData.Components[LOD.FirstComponent + ComponentIndex];
+
+			if (!Component.bGenerated)
+			{
+				LODsSkipped[LODIndex] = true;
+				continue;
+			}
+
+			if (SkeletalMesh->GetLODInfoArray().Num() != 0)
+			{
+				SkeletalMesh->GetLODInfoArray()[LODIndex].LODMaterialMap.Reset();
+			}
+
 			check(Component.bGenerated);
 
 			const FMutableRefSkeletalMeshData* RefSkeletalMeshData = CustomizableObject->GetRefSkeletalMeshData(Component.Id);
@@ -5000,16 +5579,30 @@ void UCustomizableInstancePrivateData::BuildMaterials(const TSharedPtr<FMutableO
 			{
 				const FInstanceUpdateData::FSurface& Surface = OperationData->InstanceUpdateData.Surfaces[Component.FirstSurface + SurfaceIndex];
 
-				MutableMaterialPlaceholderArray.Add(TSharedPtr<FMutableMaterialPlaceholder>(new FMutableMaterialPlaceholder));
-				FMutableMaterialPlaceholder& MutableMaterialPlaceholder = *MutableMaterialPlaceholderArray.Last();
-
-				if (LastValidLODIndex != LODIndex)
+				const uint32 ReferencedMaterialIndex = ObjectToInstanceIndexMap[Surface.MaterialIndex];
+				UMaterialInterface* MaterialTemplate = ReferencedMaterials[ReferencedMaterialIndex];
+				if (!MaterialTemplate)
 				{
-					// Copy information from the LastValidLODIndex
-					Helper_GetLODInfoArray(SkeletalMesh)[LODIndex].LODMaterialMap = Helper_GetLODInfoArray(SkeletalMesh)[LastValidLODIndex].LODMaterialMap;
-					Helper_GetLODRenderSections(SkeletalMesh, LODIndex)[SurfaceIndex].MaterialIndex = Helper_GetLODRenderSections(SkeletalMesh, LastValidLODIndex)[SurfaceIndex].MaterialIndex;
+					UE_LOG(LogMutable, Error, TEXT("Build Materials: Missing referenced template to use as parent material on CustomizableObject [%s]."), *CustomizableObject->GetName());
 					continue;
 				}
+
+				// Reuse surface between LODs when using AutomaticLODs from mesh.
+				if (const FString* SharedSurfaceSerialization = SharedSurfacesCache.Find(Surface.SurfaceId))
+				{
+					TSharedPtr<FMutableMaterialPlaceholder>* FoundMaterialPlaceholder = ReuseMaterialCache.Find(*SharedSurfaceSerialization);
+					check(FoundMaterialPlaceholder);
+
+					const int32 MaterialIndex = (*FoundMaterialPlaceholder)->MatIndex;
+					check(MaterialIndex >= 0);
+
+					int32 LODMaterialIndex = SkeletalMesh->GetLODInfoArray()[LODIndex].LODMaterialMap.Add(MaterialIndex);
+					SkeletalMesh->GetResourceForRendering()->LODRenderData[LODIndex].RenderSections[SurfaceIndex].MaterialIndex = LODMaterialIndex;
+					continue;
+				}
+
+				TSharedPtr<FMutableMaterialPlaceholder> MutableMaterialPlaceholderPtr(new FMutableMaterialPlaceholder);
+				FMutableMaterialPlaceholder& MutableMaterialPlaceholder = *MutableMaterialPlaceholderPtr;
 
 				{
 					MUTABLE_CPUPROFILER_SCOPE(ParamLoop);
@@ -5097,10 +5690,11 @@ void UCustomizableInstancePrivateData::BuildMaterials(const TSharedPtr<FMutableO
 						FString KeyName = Image.Name;
 						mu::ImagePtrConst MutableImage = Image.Image;
 
-						UTexture2D* Texture = nullptr;
+						UTexture2D* MutableTexture = nullptr; // Texture generated by mutable
+						UTexture* PassThroughTexture = nullptr; // Texture not generated by mutable
 
 						// \TODO: Change this key to a struct.
-						FString TextureReuseCacheRef = bReuseTextures ? FString::Printf(TEXT("%d-%d-%d-%d"), LastValidLODIndex, ComponentIndex, Surface.SurfaceId, ImageIndex) : FString();
+						FString TextureReuseCacheRef = bReuseTextures ? FString::Printf(TEXT("%d-%d-%d-%d"), Image.BaseLOD, ComponentIndex, Surface.SurfaceId, ImageIndex) : FString();
 
 						// If the mutable image is null, it must be in the cache
 						FMutableImageCacheKey ImageCacheKey = { Image.ImageID, OperationData->MipsToSkip };
@@ -5110,10 +5704,28 @@ void UCustomizableInstancePrivateData::BuildMaterials(const TSharedPtr<FMutableO
 							if (CachedPointerPtr)
 							{
 								ensure(!CachedPointerPtr->IsStale());
-								Texture = CachedPointerPtr->Get();
+								MutableTexture = CachedPointerPtr->Get();
 							}
 
-							check(Texture);
+							check(MutableTexture);
+						}
+
+						// Check if the image is a reference to an engine texture
+						if (MutableImage && MutableImage->IsReference())
+						{
+							uint32 ReferenceID = MutableImage->GetReferencedTexture();
+							if (CustomizableObject->ReferencedPassThroughTextures.IsValidIndex(ReferenceID))
+							{
+								TSoftObjectPtr<UTexture> Ref = CustomizableObject->ReferencedPassThroughTextures[ReferenceID];
+
+								// \TODO: This will force the load of the reference texture, potentially causing a hich. 
+								PassThroughTexture = Ref.Get();
+							}
+							else
+							{
+								// internal error.
+								UE_LOG(LogMutable, Error, TEXT("Referenced image [%d] was not dtored in the resource array."), ReferenceID);
+							}
 						}
 
 						// Find the additional information for this image
@@ -5122,7 +5734,7 @@ void UCustomizableInstancePrivateData::BuildMaterials(const TSharedPtr<FMutableO
 						{
 							const FMutableModelImageProperties& Props = CustomizableObject->ImageProperties[ImageKey];
 
-							if (MutableImage)
+							if (!MutableTexture && !PassThroughTexture && MutableImage)
 							{
 								TWeakObjectPtr<UTexture2D>* ReusedTexture = bReuseTextures ? TextureReuseCache.Find(TextureReuseCacheRef) : nullptr;
 
@@ -5135,48 +5747,48 @@ void UCustomizableInstancePrivateData::BuildMaterials(const TSharedPtr<FMutableO
 
 									if (PixelFormat == EPixelFormat::PF_R8G8B8A8)
 									{
-										Texture = (*ReusedTexture).Get();
-										check(Texture != nullptr);
+										MutableTexture = (*ReusedTexture).Get();
+										check(MutableTexture != nullptr);
 									}
 									else
 									{
 										ReusedTexture = nullptr;
-										Texture = CreateTexture();
+										MutableTexture = CreateTexture();
 
 #if WITH_EDITOR
 										UE_LOG(LogMutable, Warning,
 											TEXT("Tried to reuse an uncompressed texture with name %s. Make sure the selected Mutable state disables texture compression/streaming, that one of the state's runtime parameters affects the texture and that the CO is compiled with max. optimization settings."),
-											*Texture->GetName());
+											*MutableTexture->GetName());
 #endif
 									}
 								}
 								else
 								{
 									ReusedTexture = nullptr;
-									Texture = CreateTexture();
+									MutableTexture = CreateTexture();
 								}
 
-								if (Texture)
+								if (MutableTexture)
 								{
 									if (OperationData->ImageToPlatformDataMap.Contains(Image.ImageID))
 									{
-										SetTexturePropertiesFromMutableImageProps(Texture, Props, bNeverStream);
+										SetTexturePropertiesFromMutableImageProps(MutableTexture, Props, bNeverStream);
 
 										FTexturePlatformData* PlatformData = OperationData->ImageToPlatformDataMap[Image.ImageID];
 
 										if (ReusedTexture)
 										{
-											check(PlatformData->Mips.Num() == Texture->GetPlatformData()->Mips.Num());
-											check(PlatformData->Mips[0].SizeX == Texture->GetPlatformData()->Mips[0].SizeX);
-											check(PlatformData->Mips[0].SizeY == Texture->GetPlatformData()->Mips[0].SizeY);
+											check(PlatformData->Mips.Num() == MutableTexture->GetPlatformData()->Mips.Num());
+											check(PlatformData->Mips[0].SizeX == MutableTexture->GetPlatformData()->Mips[0].SizeX);
+											check(PlatformData->Mips[0].SizeY == MutableTexture->GetPlatformData()->Mips[0].SizeY);
 										}
 
-										if (Texture->GetPlatformData())
+										if (MutableTexture->GetPlatformData())
 										{
-											delete Texture->GetPlatformData();
+											delete MutableTexture->GetPlatformData();
 										}
 
-										Texture->SetPlatformData(PlatformData);
+										MutableTexture->SetPlatformData(PlatformData);
 										OperationData->ImageToPlatformDataMap.Remove(Image.ImageID);
 									}
 									else
@@ -5187,19 +5799,19 @@ void UCustomizableInstancePrivateData::BuildMaterials(const TSharedPtr<FMutableO
 									if (bNeverStream)
 									{
 										// To prevent LogTexture Error "Loading non-streamed mips from an external bulk file."
-										for (int32 i = 0; i < Texture->GetPlatformData()->Mips.Num(); ++i)
+										for (int32 i = 0; i < MutableTexture->GetPlatformData()->Mips.Num(); ++i)
 										{
-											Texture->GetPlatformData()->Mips[i].BulkData.ClearBulkDataFlags(BULKDATA_PayloadInSeperateFile);
+											MutableTexture->GetPlatformData()->Mips[i].BulkData.ClearBulkDataFlags(BULKDATA_PayloadInSeperateFile);
 										}
 									}
 
 									{
 										MUTABLE_CPUPROFILER_SCOPE(UpdateResource);
 #if !PLATFORM_DESKTOP && !PLATFORM_SWITCH // Switch does this in FTexture2DResource::InitRHI()
-										for (int32 i = 0; i < Texture->GetPlatformData()->Mips.Num(); ++i)
+										for (int32 i = 0; i < MutableTexture->GetPlatformData()->Mips.Num(); ++i)
 										{
-											uint32 DataFlags = Texture->GetPlatformData()->Mips[i].BulkData.GetBulkDataFlags();
-											Texture->GetPlatformData()->Mips[i].BulkData.SetBulkDataFlags(DataFlags | BULKDATA_SingleUse);
+											uint32 DataFlags = MutableTexture->GetPlatformData()->Mips[i].BulkData.GetBulkDataFlags();
+											MutableTexture->GetPlatformData()->Mips[i].BulkData.SetBulkDataFlags(DataFlags | BULKDATA_SingleUse);
 										}
 #endif
 
@@ -5208,21 +5820,21 @@ void UCustomizableInstancePrivateData::BuildMaterials(const TSharedPtr<FMutableO
 											// Must remove texture from cache since it will be reused with a different ImageID
 											for (TPair<FMutableImageCacheKey, TWeakObjectPtr<UTexture2D>>& CachedTexture : Cache.Images)
 											{
-												if (CachedTexture.Value == Texture)
+												if (CachedTexture.Value == MutableTexture)
 												{
 													Cache.Images.Remove(CachedTexture.Key);
 													break;
 												}
 											}
 
-											ReuseTexture(Texture);
+											ReuseTexture(MutableTexture);
 										}
-										else if (Texture)
-										{
+										else if (MutableTexture)
+										{	
 											//if (!bNeverStream) // No need to check bNeverStream. In that case, the texture won't use 
 											// the MutableMipDataProviderFactory anyway and it's needed for detecting Mutable textures elsewhere
 											{
-												UMutableTextureMipDataProviderFactory* MutableMipDataProviderFactory = Cast<UMutableTextureMipDataProviderFactory>(Texture->GetAssetUserDataOfClass(UMutableTextureMipDataProviderFactory::StaticClass()));
+												UMutableTextureMipDataProviderFactory* MutableMipDataProviderFactory = Cast<UMutableTextureMipDataProviderFactory>(MutableTexture->GetAssetUserDataOfClass(UMutableTextureMipDataProviderFactory::StaticClass()));
 												if (!MutableMipDataProviderFactory)
 												{
 													MutableMipDataProviderFactory = NewObject<UMutableTextureMipDataProviderFactory>();
@@ -5230,24 +5842,23 @@ void UCustomizableInstancePrivateData::BuildMaterials(const TSharedPtr<FMutableO
 													if (MutableMipDataProviderFactory)
 													{
 														MutableMipDataProviderFactory->CustomizableObjectInstance = Public;
-														check(LastValidLODIndex < 256 && ComponentIndex < 256 && ImageIndex < 256);
+														check(LODIndex < 256 && ComponentIndex < 256 && ImageIndex < 256);
 														MutableMipDataProviderFactory->ImageRef.ImageID = Image.ImageID;
 														MutableMipDataProviderFactory->ImageRef.SurfaceId = Surface.SurfaceId;
-														MutableMipDataProviderFactory->ImageRef.LOD = uint8(LastValidLODIndex);
+														MutableMipDataProviderFactory->ImageRef.LOD = uint8(Image.BaseLOD);
 														MutableMipDataProviderFactory->ImageRef.Component = uint8(ComponentIndex);
 														MutableMipDataProviderFactory->ImageRef.Image = uint8(ImageIndex);
 														MutableMipDataProviderFactory->UpdateContext = UpdateContext;
-														Texture->AddAssetUserData(MutableMipDataProviderFactory);
+														MutableTexture->AddAssetUserData(MutableMipDataProviderFactory);
 													}
 												}
 											}
 
-											Texture->UpdateResource();
+											MutableTexture->UpdateResource();
 										}
 									}
 
-									// update the model resources cache
-									Cache.Images.Add(ImageCacheKey, Texture);
+									Cache.Images.Add(ImageCacheKey, MutableTexture);						
 								}
 								else
 								{
@@ -5256,10 +5867,15 @@ void UCustomizableInstancePrivateData::BuildMaterials(const TSharedPtr<FMutableO
 							}
 
 							FGeneratedTexture TextureData;
-							TextureData.Id = Image.ImageID;
+							TextureData.Key = ImageCacheKey;
 							TextureData.Name = Props.TextureParameterName;
-							TextureData.Texture = Texture;
-							NewGeneratedTextures.Add(TextureData);
+							TextureData.Texture = MutableTexture ? MutableTexture : PassThroughTexture;
+							
+							// Only add textures generated by mutable to the cache
+							if (MutableTexture)
+							{
+								NewGeneratedTextures.Add(TextureData);
+							}
 
 							// Decoding Material Layer from Mutable parameter name
 							FString ImageName = Image.Name;
@@ -5292,9 +5908,9 @@ void UCustomizableInstancePrivateData::BuildMaterials(const TSharedPtr<FMutableO
 
 						if (bReuseTextures)
 						{
-							if (Texture)
+							if (MutableTexture)
 							{
-								TextureReuseCache.Add(TextureReuseCacheRef, Texture);
+								TextureReuseCache.Add(TextureReuseCacheRef, MutableTexture);
 							}
 							else
 							{
@@ -5304,138 +5920,157 @@ void UCustomizableInstancePrivateData::BuildMaterials(const TSharedPtr<FMutableO
 					}
 				}
 
-				const uint32 ReferencedMaterialIndex = ObjectToInstanceIndexMap[Surface.MaterialIndex];
-				UMaterialInterface* MaterialTemplate = ReferencedMaterials[ReferencedMaterialIndex];
 				MutableMaterialPlaceholder.ParentMaterial = MaterialTemplate;
 
-				FString MaterialPlaceholderSerialization = MutableMaterialPlaceholder.GetSerialization();
-				FMutableMaterialPlaceholder** FoundMaterialPlaceholder = ReuseMaterialCache.Find(MaterialPlaceholderSerialization);
+				const FString MaterialPlaceholderSerialization = MutableMaterialPlaceholder.GetSerialization();
+				check(MaterialPlaceholderSerialization != FString("null"));
 
-				if (FoundMaterialPlaceholder)
+				int32 MatIndex = INDEX_NONE;
+				
+				if (TSharedPtr<FMutableMaterialPlaceholder>* FoundMaterialPlaceholder = ReuseMaterialCache.Find(MaterialPlaceholderSerialization))
 				{
-					int32 MatIndex = (*FoundMaterialPlaceholder)->MatIndex;
-					check(MatIndex >= 0);
-					int32 LODMaterialIndex = Helper_GetLODInfoArray(SkeletalMesh)[LODIndex].LODMaterialMap.Add(MatIndex);
-					Helper_GetLODRenderSections(SkeletalMesh, LODIndex)[SurfaceIndex].MaterialIndex = LODMaterialIndex;
+					MatIndex = (*FoundMaterialPlaceholder)->MatIndex;
 				}
-				else
+				else // Material not cached, create a new one
 				{
-					if (MutableMaterialPlaceholder.ParentMaterial)
-					{
-						check(MaterialPlaceholderSerialization != FString("null"));
-						ReuseMaterialCache.Add(MaterialPlaceholderSerialization, &MutableMaterialPlaceholder);
-					}
+					MUTABLE_CPUPROFILER_SCOPE(BuildMaterials_CreateMaterial);
+
+					ReuseMaterialCache.Add(MaterialPlaceholderSerialization, MutableMaterialPlaceholderPtr);
+
+					SharedSurfacesCache.Add(Surface.SurfaceId, MaterialPlaceholderSerialization);
 
 					FGeneratedMaterial Material;
 					UMaterialInstanceDynamic* MaterialInstance = nullptr;
+					UMaterialInterface* ActualMaterialInterface = MaterialTemplate;
 
-					if (MaterialTemplate)
+					if (MutableMaterialPlaceholder.Params.Num() != 0)
 					{
-						MUTABLE_CPUPROFILER_SCOPE(BuildMaterials_CreateMaterial);
+						MaterialInstance = UMaterialInstanceDynamic::Create(MaterialTemplate, GetTransientPackage());
+						ActualMaterialInterface = MaterialInstance;
+					}
 
-						UMaterialInterface* ActualMaterialInterface = MaterialTemplate;
+					if (SkeletalMesh)
+					{
+						MatIndex = SkeletalMesh->GetMaterials().Num();
+						MutableMaterialPlaceholder.MatIndex = MatIndex;
 
-						if (MutableMaterialPlaceholder.Params.Num() != 0)
+						// Set up SkeletalMaterial data
+						FSkeletalMaterial& SkeletalMaterial = SkeletalMesh->GetMaterials().Add_GetRef(ActualMaterialInterface);
+						SkeletalMaterial.MaterialSlotName = CustomizableObject->ReferencedMaterialSlotNames[Surface.MaterialIndex];
+						SetMeshUVChannelDensity(SkeletalMaterial.UVChannelData, RefSkeletalMeshData->Settings.DefaultUVChannelDensity);
+					}
+
+					if (MaterialInstance)
+					{
+						for (const FMutableMaterialPlaceholder::FMutableMaterialPlaceHolderParam& Param : MutableMaterialPlaceholder.Params)
 						{
-							MaterialInstance = UMaterialInstanceDynamic::Create(MaterialTemplate, GetTransientPackage());
-							ActualMaterialInterface = MaterialInstance;
-						}
-
-						if (SkeletalMesh)
-						{
-							const int32 MatIndex = SkeletalMesh->GetMaterials().Num();
-							MutableMaterialPlaceholder.MatIndex = MatIndex;
-
-							// Set up SkeletalMaterial data
-							FSkeletalMaterial& SkeletalMaterial = SkeletalMesh->GetMaterials().Add_GetRef(ActualMaterialInterface);
-							SkeletalMaterial.MaterialSlotName = CustomizableObject->ReferencedMaterialSlotNames[Surface.MaterialIndex];
-							SetMeshUVChannelDensity(SkeletalMaterial.UVChannelData, RefSkeletalMeshData->Settings.DefaultUVChannelDensity);
-
-							const int32 LODMaterialIndex = Helper_GetLODInfoArray(SkeletalMesh)[LODIndex].LODMaterialMap.Add(MatIndex);
-							Helper_GetLODRenderSections(SkeletalMesh, LODIndex)[SurfaceIndex].MaterialIndex = LODMaterialIndex;
-						}
-
-						if (MaterialInstance)
-						{
-							for (const FMutableMaterialPlaceholder::FMutableMaterialPlaceHolderParam& Param : MutableMaterialPlaceholder.Params)
+							switch (Param.Type)
 							{
-								switch (Param.Type)
+							case FMutableMaterialPlaceholder::EPlaceHolderParamType::Vector:
+								if (Param.LayerIndex < 0)
 								{
-								case FMutableMaterialPlaceholder::EPlaceHolderParamType::Vector:
-									if (Param.LayerIndex < 0)
-									{
-										MaterialInstance->SetVectorParameterValue(Param.ParamName, Param.Vector);
-									}
-									else
-									{
-										FMaterialParameterInfo ParameterInfo = FMaterialParameterInfo(Param.ParamName, EMaterialParameterAssociation::LayerParameter, Param.LayerIndex);
-										MaterialInstance->SetVectorParameterValueByInfo(ParameterInfo, Param.Vector);
-									}
-
-									break;
-
-								case FMutableMaterialPlaceholder::EPlaceHolderParamType::Scalar:
-									if (Param.LayerIndex < 0)
-									{
-										MaterialInstance->SetScalarParameterValue(FName(Param.ParamName), Param.Scalar);
-									}
-									else
-									{
-										FMaterialParameterInfo ParameterInfo = FMaterialParameterInfo(Param.ParamName, EMaterialParameterAssociation::LayerParameter, Param.LayerIndex);
-										MaterialInstance->SetScalarParameterValueByInfo(ParameterInfo, Param.Scalar);
-									}
-
-									break;
-
-								case FMutableMaterialPlaceholder::EPlaceHolderParamType::Texture:
-									if (Param.LayerIndex < 0)
-									{
-										MaterialInstance->SetTextureParameterValue(Param.ParamName, Param.Texture.Texture);
-									}
-									else
-									{
-										FMaterialParameterInfo ParameterInfo = FMaterialParameterInfo(Param.ParamName, EMaterialParameterAssociation::LayerParameter, Param.LayerIndex);
-										MaterialInstance->SetTextureParameterValueByInfo(ParameterInfo, Param.Texture.Texture);
-									}
-
-									Material.Textures.Add(Param.Texture);
-
-									break;
+									MaterialInstance->SetVectorParameterValue(Param.ParamName, Param.Vector);
 								}
+								else
+								{
+									FMaterialParameterInfo ParameterInfo = FMaterialParameterInfo(Param.ParamName, EMaterialParameterAssociation::LayerParameter, Param.LayerIndex);
+									MaterialInstance->SetVectorParameterValueByInfo(ParameterInfo, Param.Vector);
+								}
+
+								break;
+
+							case FMutableMaterialPlaceholder::EPlaceHolderParamType::Scalar:
+								if (Param.LayerIndex < 0)
+								{
+									MaterialInstance->SetScalarParameterValue(FName(Param.ParamName), Param.Scalar);
+								}
+								else
+								{
+									FMaterialParameterInfo ParameterInfo = FMaterialParameterInfo(Param.ParamName, EMaterialParameterAssociation::LayerParameter, Param.LayerIndex);
+									MaterialInstance->SetScalarParameterValueByInfo(ParameterInfo, Param.Scalar);
+								}
+
+								break;
+
+							case FMutableMaterialPlaceholder::EPlaceHolderParamType::Texture:
+								if (Param.LayerIndex < 0)
+								{
+									MaterialInstance->SetTextureParameterValue(Param.ParamName, Param.Texture.Texture);
+								}
+								else
+								{
+									FMaterialParameterInfo ParameterInfo = FMaterialParameterInfo(Param.ParamName, EMaterialParameterAssociation::LayerParameter, Param.LayerIndex);
+									MaterialInstance->SetTextureParameterValueByInfo(ParameterInfo, Param.Texture.Texture);
+								}
+
+								Material.Textures.Add(Param.Texture);
+
+								break;
 							}
 						}
-
-						GeneratedMaterials.Add(Material);
 					}
+
+					GeneratedMaterials.Add(Material);
+				}
+
+				int32 LODMaterialIndex = SkeletalMesh->GetLODInfoArray()[LODIndex].LODMaterialMap.Add(MatIndex);
+				SkeletalMesh->GetResourceForRendering()->LODRenderData[LODIndex].RenderSections[SurfaceIndex].MaterialIndex = LODMaterialIndex;
+
+			}
+		}
+
+		{
+			// Copy data from valid LODs into the skipped ones.
+			int32 LastValidLODIndex = OperationData->CurrentMaxLOD;
+			for (int32 LODIndex = OperationData->CurrentMaxLOD; LODIndex >= FirstLODAvailable; --LODIndex)
+			{
+				// Copy information from the LastValidLODIndex
+				if (LODsSkipped[LODIndex])
+				{
+					SkeletalMesh->GetLODInfoArray()[LODIndex].LODMaterialMap = SkeletalMesh->GetLODInfoArray()[LastValidLODIndex].LODMaterialMap;
+
+					TIndirectArray<FSkeletalMeshLODRenderData>& LODRenderData = SkeletalMesh->GetResourceForRendering()->LODRenderData;
+
+					const int32 NumRenderSections = LODRenderData[LODIndex].RenderSections.Num();
+					check(NumRenderSections == LODRenderData[LastValidLODIndex].RenderSections.Num());
+
+					if (NumRenderSections == LODRenderData[LastValidLODIndex].RenderSections.Num())
+					{
+						for (int32 RenderSectionIndex = 0; RenderSectionIndex < NumRenderSections; ++RenderSectionIndex)
+						{
+							const int32 MaterialIndex = LODRenderData[LastValidLODIndex].RenderSections[RenderSectionIndex].MaterialIndex;
+							LODRenderData[LODIndex].RenderSections[RenderSectionIndex].MaterialIndex = MaterialIndex;
+						}
+					}
+				}
+				else
+				{
+					LastValidLODIndex = LODIndex;
 				}
 			}
 		}
 	}
 
+	
 	{
 		MUTABLE_CPUPROFILER_SCOPE(BuildMaterials_Exchange);
 
 		FCustomizableObjectSystemPrivate* CustomizableObjectSystem = UCustomizableObjectSystem::GetInstance()->GetPrivate();
 		TexturesToRelease.Empty();
 
-		for (FGeneratedTexture& Texture : GeneratedTextures)
+		for (const FGeneratedTexture& Texture : NewGeneratedTextures)
 		{
-			if (CustomizableObjectSystem->RemoveTextureReference(Texture.Id))
+			CustomizableObjectSystem->AddTextureReference(Texture.Key);
+		}
+
+		for (const FGeneratedTexture& Texture : GeneratedTextures)
+		{
+			if (CustomizableObjectSystem->RemoveTextureReference(Texture.Key))
 			{
 				if (CustomizableObjectSystem->bReleaseTexturesImmediately)
 				{
-					TexturesToRelease.Add(Texture.Id, Texture); // Texture count is zero, so prepare to release it
+					TexturesToRelease.Add(Texture); // Texture count is zero, so prepare to release it
 				}
-			}
-		}
-
-		for (FGeneratedTexture& Texture : NewGeneratedTextures)
-		{
-			CustomizableObjectSystem->AddTextureReference(Texture.Id);
-
-			if (CustomizableObjectSystem->bReleaseTexturesImmediately)
-			{
-				TexturesToRelease.Remove(Texture.Id); // Texture count in the end is not zero, so do not release it
 			}
 		}
 
@@ -5519,53 +6154,6 @@ void UCustomizableInstancePrivateData::ProcessTextureCoverageQueries(const TShar
 }
 
 
-void UCustomizableInstancePrivateData::UpdateParameterDecorationsEngineResources(const TSharedPtr<FMutableOperationData>& OperationData)
-{
-	// This should run in the unreal thread.
-	ParameterDecorations.SetNum(OperationData->ParametersUpdateData.Parameters.Num());
-	for (int32 ParamIndex = 0; ParamIndex < OperationData->ParametersUpdateData.Parameters.Num(); ++ParamIndex)
-	{
-		int32 DescCount = OperationData->ParametersUpdateData.Parameters[ParamIndex].Images.Num();
-		ParameterDecorations[ParamIndex].Images.SetNum(DescCount);
-		for (int32 DescIndex = 0; DescIndex < DescCount; ++DescIndex)
-		{
-			UTexture2D* Tex = nullptr;
-
-			auto Image = OperationData->ParametersUpdateData.Parameters[ParamIndex].Images[DescIndex];
-			if (Image)
-			{
-				check(Image->GetSizeX()>0 && Image->GetSizeY()>0);
-
-				Tex = NewObject<UTexture2D>(UTexture2D::StaticClass());
-				FMutableModelImageProperties Props;
-				Props.Filter = TF_Bilinear;
-				Props.SRGB = true;
-				Props.LODBias = 0;
-
-				ConvertImage(Tex, Image, Props);
-
-#if !PLATFORM_DESKTOP
-				for (int32 i = 0; i < Tex->GetPlatformData()->Mips.Num(); ++i)
-				{
-					uint32 DataFlags = Tex->GetPlatformData()->Mips[i].BulkData.GetBulkDataFlags();
-					Tex->GetPlatformData()->Mips[i].BulkData.SetBulkDataFlags(DataFlags | BULKDATA_SingleUse);
-				}
-#endif
-
-				Tex->UpdateResource();
-			}
-
-			ParameterDecorations[ParamIndex].Images[DescIndex] = Tex;
-		}
-	}
-
-	OperationData->ParametersUpdateData.Clear();
-
-	// Relevancy
-	RelevantParameters = OperationData->RelevantParametersInProgress;
-}
-
-
 void UCustomizableObjectInstance::SetReplacePhysicsAssets(bool bReplaceEnabled)
 {
 	bReplaceEnabled ? GetPrivate()->SetCOInstanceFlags(ReplacePhysicsAssets) : GetPrivate()->ClearCOInstanceFlags(ReplacePhysicsAssets);
@@ -5575,6 +6163,12 @@ void UCustomizableObjectInstance::SetReplacePhysicsAssets(bool bReplaceEnabled)
 void UCustomizableObjectInstance::SetReuseInstanceTextures(bool bTextureReuseEnabled)
 {
 	bTextureReuseEnabled ? GetPrivate()->SetCOInstanceFlags(ReuseTextures) : GetPrivate()->ClearCOInstanceFlags(ReuseTextures);
+}
+
+
+void UCustomizableObjectInstance::SetForceGenerateResidentMips(bool bForceGenerateResidentMips)
+{
+	bForceGenerateResidentMips ? GetPrivate()->SetCOInstanceFlags(ForceGenerateMipTail) : GetPrivate()->ClearCOInstanceFlags(ForceGenerateMipTail);
 }
 
 
@@ -5652,9 +6246,9 @@ void UCustomizableObjectInstance::SetMinSquareDistToPlayer(float NewValue)
 }
 
 
-void UCustomizableObjectInstance::SetMinMaxLODToLoad(int32 NewMinLOD, int32 NewMaxLOD, bool bLimitLODUpgrades)
+void UCustomizableObjectInstance::SetMinMaxLODToLoad(FMutableInstanceUpdateMap& InOutRequestedUpdates, int32 NewMinLOD, int32 NewMaxLOD, bool bLimitLODUpgrades)
 {
-	SetRequestedLODs(NewMinLOD, NewMaxLOD, Descriptor.RequestedLODLevels);
+	SetRequestedLODs(NewMinLOD, NewMaxLOD, Descriptor.RequestedLODLevels, InOutRequestedUpdates);
 }
 
 
@@ -5693,8 +6287,17 @@ int32 UCustomizableObjectInstance::GetCurrentMaxLOD() const
 	return CurrentMaxLOD;
 }
 
+#if !UE_BUILD_SHIPPING
+static bool bIgnoreMinMaxLOD = false;
+FAutoConsoleVariableRef CVarMutableIgnoreMinMaxLOD(
+	TEXT("Mutable.IgnoreMinMaxLOD"),
+	bIgnoreMinMaxLOD,
+	TEXT("The limits on the number of LODs to generate will be ignored."));
+#endif
 
-void UCustomizableObjectInstance::SetRequestedLODs(int32 InMinLOD, int32 InMaxLOD, const TArray<uint16>& InRequestedLODsPerComponent)
+
+void UCustomizableObjectInstance::SetRequestedLODs(int32 InMinLOD, int32 InMaxLOD, const TArray<uint16>& InRequestedLODsPerComponent, 
+	                                               FMutableInstanceUpdateMap& InOutRequestedUpdates)
 {
 	check(PrivateData);
 	if (!PrivateData->HasCOInstanceFlags(LODsStreamingEnabled))
@@ -5702,11 +6305,27 @@ void UCustomizableObjectInstance::SetRequestedLODs(int32 InMinLOD, int32 InMaxLO
 		return;
 	}
 
+	if (!CanUpdateInstance())
+	{
+		return;
+	}
+
+#if !UE_BUILD_SHIPPING
+	// Ignore Min/Max LOD limits. Mainly used for debug
+	if (!bIgnoreMinMaxLOD)
+	{
+		InMinLOD = 0;
+		InMaxLOD = MAX_MESH_LOD_COUNT;
+	}
+#endif
+
+	FMutableUpdateCandidate MutableUpdateCandidate(this);
+
 	// Clamp Min LOD
 	InMinLOD = FMath::Min(FMath::Max(InMinLOD, static_cast<int32>(PrivateData->FirstLODAvailable)), PrivateData->FirstLODAvailable + PrivateData->NumMaxLODsToStream);
 
 	// Clamp Max LOD
-	InMaxLOD = FMath::Max(FMath::Min(InMaxLOD, PrivateData->NumLODsAvailable - 1), InMinLOD);
+	InMaxLOD = FMath::Max(FMath::Min3(InMaxLOD, PrivateData->NumLODsAvailable - 1, (int32)MAX_MESH_LOD_COUNT), InMinLOD);
 
 	const bool bMinMaxLODChanged = Descriptor.MaxLOD != InMaxLOD || Descriptor.MinLOD != InMinLOD;
 
@@ -5714,15 +6333,16 @@ void UCustomizableObjectInstance::SetRequestedLODs(int32 InMinLOD, int32 InMaxLO
 	PrivateData->SetCOInstanceFlags(bIsDowngradeLODUpdate ? PendingLODsDowngrade : ECONone);
 
 	// Save the new LODs
-	Descriptor.MinLOD = InMinLOD;
-	Descriptor.MaxLOD = InMaxLOD;
+	MutableUpdateCandidate.MinLOD = InMinLOD;
+	MutableUpdateCandidate.MaxLOD = InMaxLOD;
+	MutableUpdateCandidate.RequestedLODLevels = Descriptor.GetRequestedLODLevels();
 
 	bool bUpdateRequestedLODs = false;
 	if (UCustomizableObjectSystem::GetInstance()->IsOnlyGenerateRequestedLODsEnabled())
 	{
-		// TODO Pere: With Requested LODs We could skip updates by increasing the lower limit of LODs mutable can generate if only MinLOD have changed.
-
 		const int32 ComponentCount = GetNumComponents();
+		MutableUpdateCandidate.RequestedLODLevels.SetNum(ComponentCount);
+
 		const TArray<uint16>& GeneratedLODsPerComponent = DescriptorRuntimeHash.GetRequestedLODs();
 
 		const bool bIgnoreGeneratedLODs = DescriptorRuntimeHash != UpdateDescriptorRuntimeHash || GeneratedLODsPerComponent.Num() != ComponentCount;
@@ -5734,56 +6354,43 @@ void UCustomizableObjectInstance::SetRequestedLODs(int32 InMinLOD, int32 InMaxLO
 			bUpdateRequestedLODs = bIgnoreGeneratedLODs;
 			for (int32 ComponentIndex = 0; ComponentIndex < ComponentCount; ++ComponentIndex)
 			{
-				// Generate at least the MaxLOD
-				int32 RequestedLODs = 1 << Descriptor.MaxLOD;
-
-				for (int32 LODIndex = 0; LODIndex < Descriptor.MaxLOD; ++LODIndex)
+				// Find the first requested LOD. We'll generate [FirstRequestedLOD ... MaxLOD].
+				int32 FirstRequestedLOD = MutableUpdateCandidate.MaxLOD;
+				for (int32 LODIndex = 0; LODIndex < MutableUpdateCandidate.MaxLOD; ++LODIndex)
 				{
-					// Add previously generated LODs if the descriptor have not changed
-					if (!bIgnoreGeneratedLODs && GeneratedLODsPerComponent[ComponentIndex] & (1 << LODIndex))
+					if ((!bIgnoreGeneratedLODs && GeneratedLODsPerComponent[ComponentIndex] & (1 << LODIndex))
+						||
+						InRequestedLODsPerComponent[ComponentIndex] & (1 << LODIndex))
 					{
-						RequestedLODs |= (1 << LODIndex);
-					}
-
-					// Add new requested LODs that fall within the range
-					if (InRequestedLODsPerComponent[ComponentIndex] & (1 << LODIndex))
-					{
-						if (LODIndex >= Descriptor.MinLOD)
-						{
-							RequestedLODs |= (1 << LODIndex);
-						}
-						else
-						{
-							// RequestedLOD is out of range, generate the MinLOD instead;
-							RequestedLODs |= (1 << Descriptor.MinLOD);
-						}
+						// First RequestedLOD that fall within the range
+						FirstRequestedLOD = LODIndex >= MutableUpdateCandidate.MinLOD ? LODIndex : MutableUpdateCandidate.MinLOD;
+						break;
 					}
 				}
 
-				bUpdateRequestedLODs |= RequestedLODs != Descriptor.RequestedLODLevels[ComponentIndex];
+				// Generate at least the MaxLOD
+				int32 RequestedLODs = 1 << MutableUpdateCandidate.MaxLOD;
+
+				// Mark all LODs up until MAX_MESH_LOD_COUNT since MaxLOD can be set to Max_int32
+				for (int32 LODIndex = FirstRequestedLOD; LODIndex < MAX_MESH_LOD_COUNT; ++LODIndex)
+				{
+					RequestedLODs |= (1 << LODIndex);
+				}
+				
+				bUpdateRequestedLODs |= (RequestedLODs != Descriptor.RequestedLODLevels[ComponentIndex]);
 
 				// Save new RequestedLODs
-				Descriptor.RequestedLODLevels[ComponentIndex] = RequestedLODs;
+				MutableUpdateCandidate.RequestedLODLevels[ComponentIndex] = RequestedLODs;
 			}
 		}
 	}
 
 	if (bMinMaxLODChanged || bUpdateRequestedLODs)
 	{
-		UpdateDescriptorRuntimeHash.UpdateMinMaxLOD(InMinLOD, InMaxLOD);
-		UpdateDescriptorRuntimeHash.UpdateRequestedLODs(Descriptor.RequestedLODLevels);
+		// TODO: Remove this flag as it will become redundant with the new InOutRequestedUpdates system
+		PrivateData->SetCOInstanceFlags(PendingLODsUpdate);
 
-		// Update the Queued operation data or request a new update
-		const FMutableQueueElem* QueueElem = UCustomizableObjectSystem::GetInstance()->GetPrivate()->MutableOperationQueue.Get(this);
-		if (QueueElem && QueueElem->Operation && QueueElem->Operation->Type == FMutableOperation::EOperationType::Update)
-		{
-			QueueElem->Operation->InstanceDescriptorRuntimeHash.UpdateMinMaxLOD(InMinLOD, InMaxLOD);
-			QueueElem->Operation->InstanceDescriptorRuntimeHash.UpdateRequestedLODs(Descriptor.RequestedLODLevels);
-		}
-		else
-		{
-			PrivateData->SetCOInstanceFlags(PendingLODsUpdate);
-		}
+		InOutRequestedUpdates.Add(this, MutableUpdateCandidate);
 	}
 }
 
@@ -5891,7 +6498,7 @@ bool UCustomizableObjectInstance::HasAnyParameters() const
 }
 
 
-TSubclassOf<UAnimInstance> UCustomizableObjectInstance::GetAnimBP(int32 ComponentIndex, int32 SlotIndex) const
+TSubclassOf<UAnimInstance> UCustomizableObjectInstance::GetAnimBP(int32 ComponentIndex, const FName& SlotName) const
 {
 	FCustomizableInstanceComponentData* ComponentData =	GetPrivate()->GetComponentData(ComponentIndex);
 	
@@ -5910,7 +6517,7 @@ TSubclassOf<UAnimInstance> UCustomizableObjectInstance::GetAnimBP(int32 Componen
 		return nullptr;
 	}
 
-	TSoftClassPtr<UAnimInstance>* Result = ComponentData->AnimSlotToBP.Find(SlotIndex);
+	TSoftClassPtr<UAnimInstance>* Result = ComponentData->AnimSlotToBP.Find(SlotName);
 
 	return Result ? Result->Get() : nullptr;
 }
@@ -5961,9 +6568,9 @@ void UCustomizableObjectInstance::ForEachAnimInstance(int32 ComponentIndex, FEac
 		return;
 	}
 
-	for (const TPair<int32, TSoftClassPtr<UAnimInstance>>& MapElem : ComponentData->AnimSlotToBP)
+	for (const TPair<FName, TSoftClassPtr<UAnimInstance>>& MapElem : ComponentData->AnimSlotToBP)
 	{
-		const int32 Index = MapElem.Key;
+		const FName& Index = MapElem.Key;
 		const TSoftClassPtr<UAnimInstance>& AnimBP = MapElem.Value;
 
 		// if this _can_ resolve to a real AnimBP
@@ -5977,6 +6584,94 @@ void UCustomizableObjectInstance::ForEachAnimInstance(int32 ComponentIndex, FEac
 			}
 		}
 	}
+}
+
+bool UCustomizableObjectInstance::AnimInstanceNeedsFixup(TSubclassOf<UAnimInstance> AnimInstanceClass) const
+{
+	return PrivateData->AnimBpPhysicsAssets.Contains(AnimInstanceClass);
+}
+
+void UCustomizableObjectInstance::AnimInstanceFixup(UAnimInstance* InAnimInstance) const
+{
+	if (!InAnimInstance)
+	{
+		return;
+	}
+
+	TSubclassOf<UAnimInstance> AnimInstanceClass = InAnimInstance->GetClass();
+
+	const TArray<FAnimInstanceOverridePhysicsAsset>* AnimInstanceOverridePhysicsAssets = 
+			PrivateData->GetGeneratedPhysicsAssetsForAnimInstance(AnimInstanceClass);
+	
+	if (!AnimInstanceOverridePhysicsAssets)
+	{
+		return;
+	}
+
+	// Swap RigidBody anim nodes override physics assets with mutable generated ones.
+	if (UAnimBlueprintGeneratedClass* AnimClass = Cast<UAnimBlueprintGeneratedClass>(AnimInstanceClass))
+	{
+		bool bPropertyMismatchFound = false;
+		const int32 AnimNodePropertiesNum = AnimClass->AnimNodeProperties.Num();
+
+		for (const FAnimInstanceOverridePhysicsAsset& PropIndexAndAsset : *AnimInstanceOverridePhysicsAssets)
+		{
+			check(PropIndexAndAsset.PropertyIndex >= 0);
+			if (PropIndexAndAsset.PropertyIndex >= AnimNodePropertiesNum)
+			{
+				bPropertyMismatchFound = true;
+				continue;
+			}
+
+			const int32 AnimNodePropIndex = PropIndexAndAsset.PropertyIndex;
+
+			FStructProperty* StructProperty = AnimClass->AnimNodeProperties[AnimNodePropIndex];
+
+			if (!ensure(StructProperty))
+			{
+				bPropertyMismatchFound = true;
+				continue;
+			}
+
+			const bool bIsRigidBodyNode = StructProperty->Struct->IsChildOf(FAnimNode_RigidBody::StaticStruct());
+
+			if (!bIsRigidBodyNode)
+			{
+				bPropertyMismatchFound = true;
+				continue;
+			}
+
+			FAnimNode_RigidBody* RbanNode = StructProperty->ContainerPtrToValuePtr<FAnimNode_RigidBody>(InAnimInstance);
+
+			if (!ensure(RbanNode))
+			{
+				bPropertyMismatchFound = true;
+				continue;
+			}
+
+			RbanNode->OverridePhysicsAsset = PropIndexAndAsset.PhysicsAsset;
+		}
+#if WITH_EDITOR
+		if (bPropertyMismatchFound)
+		{
+			UE_LOG(LogMutable, Warning, TEXT("AnimBp %s is not in sync with the data stored in the CO %s. A CO recompilation may be needed."),
+				*AnimInstanceClass.Get()->GetName(), 
+				*GetCustomizableObject()->GetName());
+		}
+#endif
+	}
+}
+
+const TArray<FAnimInstanceOverridePhysicsAsset>* UCustomizableInstancePrivateData::GetGeneratedPhysicsAssetsForAnimInstance(TSubclassOf<UAnimInstance> AnimInstanceClass) const
+{
+	const FAnimBpGeneratedPhysicsAssets* Found = AnimBpPhysicsAssets.Find(AnimInstanceClass);
+
+	if (!Found)
+	{
+		return nullptr;
+	}
+
+	return &Found->AnimInstancePropertyIndexAndPhysicsAssets;
 }
 
 void UCustomizableObjectInstance::ForEachAnimInstance(int32 ComponentIndex, FEachComponentAnimInstanceClassNativeDelegate Delegate) const
@@ -6020,9 +6715,9 @@ void UCustomizableObjectInstance::ForEachAnimInstance(int32 ComponentIndex, FEac
 		return;
 	}
 
-	for (const TPair<int32, TSoftClassPtr<UAnimInstance>>& MapElem : ComponentData->AnimSlotToBP)
+	for (const TPair<FName, TSoftClassPtr<UAnimInstance>>& MapElem : ComponentData->AnimSlotToBP)
 	{
-		const int32 Index = MapElem.Key;
+		const FName& Index = MapElem.Key;
 		const TSoftClassPtr<UAnimInstance>& AnimBP = MapElem.Value;
 
 		// if this _can_ resolve to a real AnimBP

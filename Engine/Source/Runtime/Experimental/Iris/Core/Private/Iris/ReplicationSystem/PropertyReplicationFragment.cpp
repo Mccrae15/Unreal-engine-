@@ -11,13 +11,12 @@
 namespace UE::Net
 {
 
-static bool bUsePrevReceivedStateForOnReps = true;
+static bool bUsePrevReceivedStateForOnReps = false;
 static FAutoConsoleVariableRef CVarUsePrevReceivedStateForOnReps(
 		TEXT("net.Iris.UsePrevReceivedStateForOnReps"),
 		bUsePrevReceivedStateForOnReps,
 		TEXT("If true OnReps will use the previous received state when doing onreps and not do any compares, if set to false we will copy the local state and do a compare before issuing onreps"
 		));
-
 
 FPropertyReplicationFragment::FPropertyReplicationFragment(EReplicationFragmentTraits InTraits, UObject* InOwner, const FReplicationStateDescriptor* InDescriptor)
 : FReplicationFragment(InTraits)
@@ -39,7 +38,7 @@ FPropertyReplicationFragment::FPropertyReplicationFragment(EReplicationFragmentT
 				PrevReplicationState = MakeUnique<FPropertyReplicationState>(InDescriptor);
 
 				// Poll to get instance default for our previous state
-				PrevReplicationState->PollPropertyReplicationState(InOwner);
+				PrevReplicationState->PollPropertyReplicationStateForRepNotifies(InOwner);
 
 				Traits |= EReplicationFragmentTraits::KeepPreviousState;
 			}
@@ -53,8 +52,12 @@ FPropertyReplicationFragment::FPropertyReplicationFragment(EReplicationFragmentT
 	
 	if (EnumHasAnyFlags(InTraits, EReplicationFragmentTraits::CanReplicate))
 	{
-		// For PropertyReplicationStates we need to poll properties from our owner in order to detect state changes.
-		Traits |= EReplicationFragmentTraits::NeedsPoll;
+		// For PropertyReplicationStates, except for pure function states, we need to poll properties from our owner in order to detect state changes.
+		if (InDescriptor->FunctionCount == 0)
+		{
+			// In theory we wouldn't need CanReplicate/CanReceive but there's a lot of logic that would then have to check whether the fragment has the appropriate buffers.
+			Traits |= EReplicationFragmentTraits::NeedsPoll;
+		}
 	}
 
 	// Propagate push based dirtiness.
@@ -122,8 +125,7 @@ void FPropertyReplicationFragment::ApplyReplicatedState(FReplicationStateApplyCo
 	// If we do not rely on received data to issue rep notifies we need to store a copy of the local state before we apply the new received state.
 	if (!bUsePrevReceivedStateForOnReps && PrevReplicationState)
 	{
-		// This could use a partial poll instead only polling RepNotify properties.
-		PrevReplicationState->PollPropertyReplicationState(Owner);
+		PrevReplicationState->PollPropertyReplicationStateForRepNotifies(Owner);
 	}
 
 	// Create a wrapping property replication state, cheap as we are simply injecting the already constructed state

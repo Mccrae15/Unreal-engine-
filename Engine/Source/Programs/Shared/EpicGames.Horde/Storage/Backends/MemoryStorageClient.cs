@@ -11,15 +11,16 @@ using System.Threading.Tasks;
 using EpicGames.Core;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace EpicGames.Horde.Storage.Backends
 {
 	/// <summary>
 	/// Implementation of <see cref="IStorageClient"/> which stores data in memory. Not intended for production use.
 	/// </summary>
-	public class MemoryStorageClient : StorageClientBase
+	public class MemoryStorageClient : BundleStorageClient
 	{
-		record class ExportEntry(NodeHandle Handle, ExportEntry? Next);
+		record class ExportEntry(BlobHandle Handle, ExportEntry? Next);
 
 		/// <summary>
 		/// Map of blob id to blob data
@@ -29,7 +30,7 @@ namespace EpicGames.Horde.Storage.Backends
 		/// <summary>
 		/// Map of ref name to ref data
 		/// </summary>
-		readonly ConcurrentDictionary<RefName, NodeHandle> _refs = new ConcurrentDictionary<RefName, NodeHandle>();
+		readonly ConcurrentDictionary<RefName, NodeLocator> _refs = new ConcurrentDictionary<RefName, NodeLocator>();
 
 		/// <summary>
 		/// Content addressed data lookup
@@ -40,12 +41,13 @@ namespace EpicGames.Horde.Storage.Backends
 		public IReadOnlyDictionary<BlobLocator, Bundle> Blobs => _blobs;
 
 		/// <inheritdoc cref="_refs"/>
-		public IReadOnlyDictionary<RefName, NodeHandle> Refs => _refs;
+		public IReadOnlyDictionary<RefName, NodeLocator> Refs => _refs;
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
 		public MemoryStorageClient() 
+			: base(new MemoryCache(new MemoryCacheOptions()), NullLogger.Instance)
 		{
 		}
 
@@ -72,25 +74,28 @@ namespace EpicGames.Horde.Storage.Backends
 			Bundle bundle = await Bundle.FromStreamAsync(stream, cancellationToken);
 			_blobs[locator] = bundle;
 
-			for (int idx = 0; idx < bundle.Header.Exports.Count; idx++)
-			{
-				BundleExport export = bundle.Header.Exports[idx];
-				if(!export.Alias.IsEmpty)
-				{
-					NodeHandle handle = new NodeHandle(export.Hash, locator, idx);
-					_exports.AddOrUpdate(export.Alias, _ => new ExportEntry(handle, null), (_, entry) => new ExportEntry(handle, entry));
-				}
-			}
-
 			return locator;
 		}
 
 		#endregion
 
-		#region Nodes
+		#region Aliases
 
 		/// <inheritdoc/>
-		public override async IAsyncEnumerable<NodeHandle> FindNodesAsync(Utf8String alias, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+		public override Task AddAliasAsync(Utf8String name, BlobHandle handle, CancellationToken cancellationToken = default)
+		{
+			_exports.AddOrUpdate(name, _ => new ExportEntry(handle, null), (_, entry) => new ExportEntry(handle, entry));
+			return Task.CompletedTask;
+		}
+
+		/// <inheritdoc/>
+		public override Task RemoveAliasAsync(Utf8String name, BlobHandle handle, CancellationToken cancellationToken = default)
+		{
+			throw new NotSupportedException();
+		}
+
+		/// <inheritdoc/>
+		public override async IAsyncEnumerable<BlobHandle> FindNodesAsync(Utf8String alias, [EnumeratorCancellation] CancellationToken cancellationToken = default)
 		{
 			if(_exports.TryGetValue(alias, out ExportEntry? entry))
 			{
@@ -111,18 +116,23 @@ namespace EpicGames.Horde.Storage.Backends
 		public override Task DeleteRefAsync(RefName name, CancellationToken cancellationToken) => Task.FromResult(_refs.TryRemove(name, out _));
 
 		/// <inheritdoc/>
-		public override Task<NodeHandle?> TryReadRefTargetAsync(RefName name, DateTime cacheTime = default, CancellationToken cancellationToken = default)
+		public override Task<BlobHandle?> TryReadRefTargetAsync(RefName name, RefCacheTime cacheTime = default, CancellationToken cancellationToken = default)
 		{
-			NodeHandle? refTarget;
-			_refs.TryGetValue(name, out refTarget);
-			return Task.FromResult(refTarget);
+			NodeLocator hashedLocator;
+			if (_refs.TryGetValue(name, out hashedLocator))
+			{
+				return Task.FromResult<BlobHandle?>(new FlushedNodeHandle(TreeReader, hashedLocator)); 
+			}
+			else
+			{
+				return Task.FromResult<BlobHandle?>(null);
+			}
 		}
 
 		/// <inheritdoc/>
-		public override Task WriteRefTargetAsync(RefName name, NodeHandle target, RefOptions? options = null, CancellationToken cancellationToken = default)
+		public override async Task WriteRefTargetAsync(RefName name, BlobHandle target, RefOptions? options = null, CancellationToken cancellationToken = default)
 		{
-			_refs[name] = target;
-			return Task.CompletedTask;
+			_refs[name] = await target.FlushAsync(cancellationToken);
 		}
 
 		#endregion

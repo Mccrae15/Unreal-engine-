@@ -5,6 +5,7 @@
 #include "HAL/PlatformFileManager.h"
 #include "Misc/MessageDialog.h"
 #include "HAL/FileManager.h"
+#include "Algo/Copy.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Paths.h"
 #include "Misc/ConfigCacheIni.h"
@@ -70,7 +71,6 @@
 #include "AutoSaveUtils.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Misc/NamePermissionList.h"
-#include "StudioAnalytics.h"
 #include "AnalyticsEventAttribute.h"
 #include "HierarchicalLOD.h"
 #include "WorldPartition/IWorldPartitionEditorModule.h"
@@ -95,7 +95,13 @@ bool FEditorFileUtils::bIsPromptingForCheckoutAndSave = false;
 bool FEditorFileUtils::bSkipExternalObjectSave = false;
 TSet<FString> FEditorFileUtils::PackagesNotSavedDuringSaveAll;
 TSet<FString> FEditorFileUtils::PackagesNotToPromptAnyMore;
+FEditorFileUtils::FOnLoadMapStart FEditorFileUtils::OnLoadMapStart;
+FEditorFileUtils::FOnLoadMapEnd FEditorFileUtils::OnLoadMapEnd;
 
+namespace EditorFileUtils
+{
+	static bool bIsExplicitSave = false;
+}
 
 static TAutoConsoleVariable<int32> CVarSkipSourceControlCheckForEditablePackages(
 	TEXT("r.Editor.SkipSourceControlCheckForEditablePackages"),
@@ -226,6 +232,18 @@ namespace FileDialogHelpers
 }
 
 /**
+* Checks if the alternate checkout workflow should be used
+* In this workflow:
+* - the checkout dialog is not used but checkout is automatic.
+* - if any checkout fails, a dialog is shown with the option to revert or save.
+* - if SourceControl is unavailable, a warning is shown about making changes while offline, followed by a save.
+*/
+static bool UseAlternateCheckoutWorkflow()
+{
+	return ISourceControlModule::Get().GetProvider().GetName() == TEXT("Unreal Revision Control");
+}
+
+/**
 * Prompts user with a confirmation dialog if there are checkouts or modifications in other branches
 *
 * @return true if checkout should proceed
@@ -315,7 +333,7 @@ static bool ConfirmPackageBranchCheckOutStatus(const TArray<UPackage*>& Packages
 
 				const FText Title = SourceControlState->IsModifiedInOtherBranch() ? FText::FromString("Package Branch Modifications") : FText::FromString("Package Branch Checkouts");
 
-				return FMessageDialog::Open(EAppMsgType::YesNo, Message, &Title) == EAppReturnType::Yes;
+				return FMessageDialog::Open(EAppMsgType::YesNo, Message, Title) == EAppReturnType::Yes;
 			}
 		}
 	}
@@ -492,7 +510,7 @@ FString FEditorFileUtils::GetFilterString(EFileInteraction Interaction)
 				FString FileTypes;
 				FString AllExtensions;
 				TMultiMap<uint32, UFactory*> FilterIndexToFactory;
-
+				IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools")).Get();
 				ObjectTools::GenerateFactoryFileExtensions(Factories, FileTypes, AllExtensions, FilterIndexToFactory);
 
 				if (UInterchangeManager::IsInterchangeImportEnabled())
@@ -801,7 +819,7 @@ static bool SaveWorld(UWorld* World,
 							while (CurrentHLODLayer)
 							{
 								PackagesToSave.Add(CurrentHLODLayer->GetPackage());
-								CurrentHLODLayer = Cast<UHLODLayer>(CurrentHLODLayer->GetParentLayer().Get());
+								CurrentHLODLayer = CurrentHLODLayer->GetParentLayer();
 							}
 						}
 					}
@@ -878,7 +896,20 @@ static bool SaveWorld(UWorld* World,
 		// This makes UEditorEngine::Save's own call to InitializePhysicsSceneForSaveIfNecessary redundant but wasn't removed to avoid breaking other code paths
 		const bool bInitializedPhysicsSceneForSave = GEditor->InitializePhysicsSceneForSaveIfNecessary(SaveWorld, bForceInitializedWorld);
 				
-		if(!bAutosaving && !FEditorFileUtils::ShouldSkipExternalObjectSave())
+		// Save actual map
+		if (bSuccess)
+		{
+			const FString AutoSavingString = (bAutosaving || bPIESaving) ? TEXT("true") : TEXT("false");
+			const FString KeepDirtyString = bPIESaving ? TEXT("true") : TEXT("false");
+			FSaveErrorOutputDevice SaveErrors;
+
+			bSuccess = GEditor->Exec(NULL, *FString::Printf(TEXT("OBJ SAVEPACKAGE PACKAGE=\"%s\" FILE=\"%s\" SILENT=true AUTOSAVING=%s KEEPDIRTY=%s"), *Package->GetName(), *FinalFilename, *AutoSavingString, *KeepDirtyString), SaveErrors);
+			SaveErrors.Flush();
+		}
+
+		SlowTask.EnterProgressFrame(50);
+
+		if (!bAutosaving && !FEditorFileUtils::ShouldSkipExternalObjectSave())
 		{
 			if (bSuccess)
 			{
@@ -893,7 +924,7 @@ static bool SaveWorld(UWorld* World,
 
 				if (PackagesToSave.Num())
 				{
-					if (!UEditorLoadingAndSavingUtils::SavePackages(PackagesToSave, /*bCheckDirty*/!bNewlyCreated))
+					if (!UEditorLoadingAndSavingUtils::SavePackages(PackagesToSave, /*bCheckDirty=*/ !bNewlyCreated))
 					{
 						FMessageDialog::Open(EAppMsgType::Ok, NSLOCTEXT("UnrealEd", "Error_FailedToSaveHLODLayersPackages", "Failed to save dependant map packages"));
 						bSuccess = false;
@@ -901,20 +932,7 @@ static bool SaveWorld(UWorld* World,
 				}
 			}
 		}
-				
-		SlowTask.EnterProgressFrame(50);
 
-		// Save actual map
-		if (bSuccess)
-		{
-			const FString AutoSavingString = (bAutosaving || bPIESaving) ? TEXT("true") : TEXT("false");
-			const FString KeepDirtyString = bPIESaving ? TEXT("true") : TEXT("false");
-			FSaveErrorOutputDevice SaveErrors;
-
-			bSuccess = GEditor->Exec(NULL, *FString::Printf(TEXT("OBJ SAVEPACKAGE PACKAGE=\"%s\" FILE=\"%s\" SILENT=true AUTOSAVING=%s KEEPDIRTY=%s"), *Package->GetName(), *FinalFilename, *AutoSavingString, *KeepDirtyString), SaveErrors);
-			SaveErrors.Flush();
-		}
-		
 		if (bSuccess)
 		{
 			// Force update before initializing World Partition
@@ -940,10 +958,12 @@ static bool SaveWorld(UWorld* World,
 				}
 				else if (bIsTempPackage)
 				{
-					const FBox WorldBounds = RenamedWorldPartition->GetRuntimeWorldBounds();
-					UWorldPartitionEditorLoaderAdapter* EditorLoaderAdapter = RenamedWorldPartition->CreateEditorLoaderAdapter<FLoaderAdapterShape>(World, WorldBounds, TEXT("Loaded Region"));
-					EditorLoaderAdapter->GetLoaderAdapter()->SetUserCreated(true);
-					EditorLoaderAdapter->GetLoaderAdapter()->Load();
+					if (const FBox WorldBounds = RenamedWorldPartition->GetRuntimeWorldBounds(); WorldBounds.IsValid)
+					{
+						UWorldPartitionEditorLoaderAdapter* EditorLoaderAdapter = RenamedWorldPartition->CreateEditorLoaderAdapter<FLoaderAdapterShape>(World, WorldBounds, TEXT("Loaded Region"));
+						EditorLoaderAdapter->GetLoaderAdapter()->SetUserCreated(true);
+						EditorLoaderAdapter->GetLoaderAdapter()->Load();
+					}
 				}
 			}
 		}
@@ -1433,7 +1453,10 @@ void FEditorFileUtils::SaveAssetsAs(const TArray<UObject*>& Assets, TArray<UObje
 		PackagesToSave.Add(Asset->GetOutermost());
 	}
 
-	FEditorFileUtils::PromptForCheckoutAndSave(PackagesToSave, true, false);
+	FEditorFileUtils::FPromptForCheckoutAndSaveParams SaveParams;
+	SaveParams.bCheckDirty = true;
+	SaveParams.bPromptToSave = false;
+	FEditorFileUtils::PromptForCheckoutAndSave(PackagesToSave, SaveParams);
 }
 
 
@@ -1787,7 +1810,15 @@ bool FEditorFileUtils::PromptToCheckoutPackages(bool bCheckDirty, const TArray<U
 	// Prevent re-entrance into this function by setting up a guard value (also used by FEditorFileUtils::PromptForCheckoutAndSave)
 	TGuardValue<bool> PromptForCheckoutAndSaveGuard(bIsPromptingForCheckoutAndSave, true);
 
-	return PromptToCheckoutPackagesInternal(bCheckDirty, PackagesToCheckOut, OutPackagesCheckedOutOrMadeWritable, OutPackagesNotNeedingCheckout, bPromptingAfterModify, bAllowSkip);
+	bool bAutomaticCheckout = UseAlternateCheckoutWorkflow();
+	if (bAutomaticCheckout)
+	{
+		return FEditorFileUtils::AutomaticCheckoutOrPromptToRevertPackages(PackagesToCheckOut, OutPackagesCheckedOutOrMadeWritable, OutPackagesNotNeedingCheckout, nullptr);
+	}
+	else
+	{
+		return PromptToCheckoutPackagesInternal(bCheckDirty, PackagesToCheckOut, OutPackagesCheckedOutOrMadeWritable, OutPackagesNotNeedingCheckout, bPromptingAfterModify, bAllowSkip);
+	}
 }
 
 bool FEditorFileUtils::PromptToCheckoutPackagesInternal(bool bCheckDirty, const TArray<UPackage*>& PackagesToCheckOut, TArray<UPackage*>* OutPackagesCheckedOutOrMadeWritable, TArray<UPackage*>* OutPackagesNotNeedingCheckout, const bool bPromptingAfterModify, const bool bAllowSkip )
@@ -1894,62 +1925,7 @@ bool FEditorFileUtils::PromptToCheckoutPackagesInternal(bool bCheckDirty, const 
 				CheckoutPackagesDialogModule.GetResults( PkgsToMakeWritable, ECheckBoxState::Undetermined );
 				CheckoutPackagesDialogModule.GetResults( PkgsToMakeWritable, ECheckBoxState::Checked);
 
-				bool bPackageFailedWritable = false;
-				FString PkgsWhichFailedWritable;
-
-				// Attempt to make writable each package the user checked
-				for( TArray<UPackage*>::TIterator PkgsToMakeWritableIter( PkgsToMakeWritable ); PkgsToMakeWritableIter; ++PkgsToMakeWritableIter )
-				{
-					UPackage* PackageToMakeWritable = *PkgsToMakeWritableIter;
-					FString Filename;
-
-					bool bFoundFile = FPackageName::DoesPackageExist( PackageToMakeWritable->GetName(), &Filename );
-					if( bFoundFile )
-					{
-						// If we're ignoring the package due to the user ignoring it for saving, remove it from the ignore list
-						// as getting here means we've explicitly decided to save the asset.
-						PackagesNotSavedDuringSaveAll.Remove( PackageToMakeWritable->GetName() );
-
-						// Get the fully qualified filename.
-						const FString FullFilename = FPaths::ConvertRelativePathToFull(Filename);
-
-						// Knock off the read only flag from the current file attributes
-						if (FPlatformFileManager::Get().GetPlatformFile().SetReadOnly(*Filename, false))
-						{
-							// Add to PackagesNotToPromptAnyMore only if not added to Uncontrolled Changelist.
-							// If added to Uncontrolled Changelist, we want the checkout prompt to be displayed again if the file is reverted
-							if (!UncontrolledChangelistModule.OnMakeWritable(Filename))
-							{
-								PackagesNotToPromptAnyMore.Add(PackageToMakeWritable->GetName());
-							}
-
-							if (OutPackagesCheckedOutOrMadeWritable)
-							{
-								OutPackagesCheckedOutOrMadeWritable->Add(PackageToMakeWritable);
-							}
-						}
-						else
-						{
-							bPackageFailedWritable = true;
-							PkgsWhichFailedWritable += FString::Printf( TEXT("\n%s"), *PackageToMakeWritable->GetName() );
-						}
-					}
-					else if (OutPackagesCheckedOutOrMadeWritable)
-					{
-						OutPackagesCheckedOutOrMadeWritable->Append(PackagesToCheckOut);
-					}
-				}
-
-				if ( bPackageFailedWritable ) 
-				{
-					FFormatNamedArguments Arguments;
-					Arguments.Add(TEXT("Packages"), FText::FromString( PkgsWhichFailedWritable ));
-					FText MessageFormatting = NSLOCTEXT("FileHelper", "FailedMakingWritableDlgMessageFormatting", "The following assets could not be made writable:{Packages}");
-					FText Message = FText::Format( MessageFormatting, Arguments );
-
-					FText Title = NSLOCTEXT("FileHelper", "FailedMakingWritableDlg_Title", "Unable to make assets writable");
-					FMessageDialog::Open(EAppMsgType::Ok, Message, &Title);
-				}
+				MakePackagesWritable(PkgsToMakeWritable, OutPackagesCheckedOutOrMadeWritable, nullptr);
 
 				bPerformedOperation = true;
 			}
@@ -1985,6 +1961,79 @@ bool FEditorFileUtils::PromptToCheckoutPackagesInternal(bool bCheckDirty, const 
 	}
 
 	return bResult;
+}
+
+void FEditorFileUtils::MakePackagesWritable(const TArray<UPackage*>& PackagesToMakeWritable, TArray<UPackage*>* OutPackagesMadeWritable, TArray<UPackage*>* OutPackagesMadeWritableFailed)
+{
+	TArray<UPackage*> PackagesMadeWritableSuccess;
+	TArray<UPackage*> PackagesMadeWritableFailure;
+	PackagesMadeWritableSuccess.Reserve(PackagesToMakeWritable.Num());
+	PackagesMadeWritableFailure.Reserve(PackagesToMakeWritable.Num());
+
+	// Attempt to make writable each package the user checked
+	FUncontrolledChangelistsModule& UncontrolledChangelistModule = FUncontrolledChangelistsModule::Get();
+	for (UPackage* PackageToMakeWritable : PackagesToMakeWritable)
+	{
+		FString Filename;
+
+		bool bFoundFile = FPackageName::DoesPackageExist(PackageToMakeWritable->GetName(), &Filename);
+		if (bFoundFile)
+		{
+			// If we're ignoring the package due to the user ignoring it for saving, remove it from the ignore list
+			// as getting here means we've explicitly decided to save the asset.
+			PackagesNotSavedDuringSaveAll.Remove(PackageToMakeWritable->GetName());
+
+			// Get the fully qualified filename.
+			const FString FullFilename = FPaths::ConvertRelativePathToFull(Filename);
+
+			// Knock off the read only flag from the current file attributes
+			if (FPlatformFileManager::Get().GetPlatformFile().SetReadOnly(*Filename, false))
+			{
+				// Add to PackagesNotToPromptAnyMore only if not added to Uncontrolled Changelist.
+				// If added to Uncontrolled Changelist, we want the checkout prompt to be displayed again if the file is reverted
+				if (!UncontrolledChangelistModule.OnMakeWritable(Filename))
+				{
+					PackagesNotToPromptAnyMore.Add(PackageToMakeWritable->GetName());
+				}
+
+				PackagesMadeWritableSuccess.Add(PackageToMakeWritable);
+			}
+			else
+			{
+				PackagesMadeWritableFailure.Add(PackageToMakeWritable);
+			}
+		}
+		else
+		{
+			PackagesMadeWritableSuccess.Add(PackageToMakeWritable);
+		}
+	}
+
+	if (PackagesMadeWritableFailure.Num() > 0)
+	{
+		FString PkgsWhichFailedWritable;
+		for (UPackage* Package : PackagesMadeWritableFailure)
+		{
+			PkgsWhichFailedWritable += FString::Printf(TEXT("\n%s"), *Package->GetName());
+		}
+
+		FFormatNamedArguments Arguments;
+		Arguments.Add(TEXT("Packages"), FText::FromString(PkgsWhichFailedWritable));
+		FText MessageFormatting = NSLOCTEXT("FileHelper", "FailedMakingWritableDlgMessageFormatting", "The following assets could not be made writable:{Packages}");
+		FText Message = FText::Format(MessageFormatting, Arguments);
+		FText Title = NSLOCTEXT("FileHelper", "FailedMakingWritableDlg_Title", "Unable to make assets writable");
+
+		FMessageDialog::Open(EAppMsgType::Ok, Message, Title);
+	}
+
+	if (OutPackagesMadeWritable)
+	{
+		OutPackagesMadeWritable->Append(PackagesMadeWritableSuccess);
+	}
+	if (OutPackagesMadeWritableFailed)
+	{
+		OutPackagesMadeWritableFailed->Append(PackagesMadeWritableFailure);
+	}
 }
 
 ECommandResult::Type FEditorFileUtils::CheckoutPackages(const TArray<UPackage*>& PkgsToCheckOut, TArray<UPackage*>* OutPackagesCheckedOut, const bool bErrorIfAlreadyCheckedOut, const bool bConfirmPackageBranchCheckOutStatus)
@@ -2178,7 +2227,7 @@ ECommandResult::Type FEditorFileUtils::CheckoutPackages(const TArray<UPackage*>&
 		FText Message = FText::Format( MessageFormat, Arguments );
 
 		FText Title = NSLOCTEXT("FileHelper", "FailedCheckoutDlg_Title", "Unable to Check Out From Revision Control!");
-		FMessageDialog::Open(EAppMsgType::Ok, Message, &Title);
+		FMessageDialog::Open(EAppMsgType::Ok, Message, Title);
 	}
 
 	return CheckOutResult;
@@ -2359,7 +2408,7 @@ ECommandResult::Type FEditorFileUtils::CheckoutPackages(const TArray<FString>& P
 		FText Message = FText::Format( MessageFormat, Arguments );
 
 		FText Title = NSLOCTEXT("FileHelper", "FailedCheckoutDlg_Title", "Unable to Check Out From Revision Control!");
-		FMessageDialog::Open(EAppMsgType::Ok, Message, &Title);
+		FMessageDialog::Open(EAppMsgType::Ok, Message, Title);
 	}
 
 	return CheckOutResult;
@@ -2786,8 +2835,16 @@ bool FEditorFileUtils::LoadMap(const FString& InFilename, bool LoadAsTemplate, b
 {
 	UE_SCOPED_ENGINE_ACTIVITY(TEXT("Loading Map %s"), *InFilename);
 
-	double LoadStartTime = FStudioAnalytics::GetAnalyticSeconds();
-	
+	OnLoadMapStart.Broadcast();
+		
+	// Fire delegate when a map is about to be loaded in, with an out-value to report failures from external dependencies which can prevent the map from loading
+	FCanLoadMap OutCanLoadMap;
+	FEditorDelegates::OnMapLoad.Broadcast(InFilename, OutCanLoadMap);
+	if (!OutCanLoadMap.Get())
+	{
+		return false;
+	}
+
 	if (GEditor->WarnIfLightingBuildIsCurrentlyRunning())
 	{
 		return false;
@@ -2897,20 +2954,9 @@ bool FEditorFileUtils::LoadMap(const FString& InFilename, bool LoadAsTemplate, b
 		FMessageLog("MapCheck").Open( EMessageSeverity::Warning );
 	}
 
-	// Track time spent loading map.
-	const double MapLoadTime = FStudioAnalytics::GetAnalyticSeconds() - LoadStartTime;
-	UE_LOG(LogFileHelpers, Log, TEXT("Loading map '%s' took %.3f"), *FPaths::GetBaseFilename(Filename), MapLoadTime);
-
 	TRACE_BOOKMARK(TEXT("LoadMap"));
 
-	static bool bReportFirstTime = true;
-
-	FStudioAnalytics::FireEvent_Loading(TEXT("LoadMap"), MapLoadTime, {
-		FAnalyticsEventAttribute(TEXT("MapName"), FPaths::GetBaseFilename(Filename)),
-		FAnalyticsEventAttribute(TEXT("FirstTime"), bReportFirstTime)
-	});
-
-	bReportFirstTime = false;
+	OnLoadMapEnd.Broadcast(FPaths::GetBaseFilename(Filename));
 
 	if (GUnrealEd)
 	{
@@ -3209,9 +3255,54 @@ enum class InternalSavePackageResult : int8
 	Error,
 };
 
+static void PrepareWorldsForExplicitSave(const TArray<UPackage*>& PackagesToPrepare)
+{
+	if (EditorFileUtils::bIsExplicitSave)
+	{
+		// In a given set of packages it can contain at least one World Package (map) and/or at least one Actor package.
+		// If an external actor is being saved but not its world we still want to collect its owning world to pass to PrepareWorldsForExplicitSave
+		// In case there is any validation/extra steps needed for that world based on the add/edit of that Actor
+		// We use a set here to dedupe in case both the actor and its world are included in the dirty packages
+		bool bFoundActorWorld = false;
+		TSet<UWorld*> WorldsToSave;
+		for (UPackage* Package : PackagesToPrepare)
+		{
+			if (UWorld* WorldToSave = UWorld::FindWorldInPackage(Package))
+			{
+				WorldsToSave.Add(WorldToSave);
+			}
+			else if (!bFoundActorWorld)
+			{
+				// Currently there is only one world associated with saving actors as actors from multiple worlds can't be opened
+				// We can skip checking any further Actor packages once we grab the world off the first discovered
+				if (AActor* ActorToSave = AActor::FindActorInPackage(Package))
+				{
+					WorldsToSave.Add(ActorToSave->GetWorld());
+					bFoundActorWorld = true;
+				}
+			}
+		}
+
+		if (!WorldsToSave.IsEmpty())
+		{
+			FEditorFileUtils::PrepareWorldsForExplicitSave(WorldsToSave.Array());
+		}
+	}
+}
+
 static void PrepareSavePackages(const TArray<UPackage*>& PackagesToSave)
 {
-	ResetLoaders(MakeArrayView<UObject*>((UObject**)PackagesToSave.GetData(), PackagesToSave.Num()));
+	// Don't call ResetLoaders on newly created world packages as this will prevent future loading of external actor packages to work propertly
+	// Linker will fail to resolve SourceLinker of external actor's world package import (see GetPackageLinker test for PKG_InMemoryOnly on TargetPackage's Package Flag)
+	TArray<UPackage*> PackagesToResetLoaders;
+	PackagesToResetLoaders.Reserve(PackagesToSave.Num());
+	Algo::CopyIf(PackagesToSave, PackagesToResetLoaders, [&](UPackage* Package)
+	{
+		const bool bIsNewlyCreatedWorldPackage = Package->HasAnyPackageFlags(PKG_NewlyCreated) && UWorld::FindWorldInPackage(Package);
+		return !bIsNewlyCreatedWorldPackage;
+	});
+
+	ResetLoaders(MakeArrayView<UObject*>((UObject**)PackagesToResetLoaders.GetData(), PackagesToResetLoaders.Num()));
 }
 
 /**
@@ -3538,7 +3629,7 @@ static void InternalWarnUserAboutFailedSave( const TArray<UPackage*>& InFailedPa
 
 		// Display warning
 		FText Title = NSLOCTEXT("FileHelper", "FailedSavePrompt_Title", "Packages Failed To Save");
-		FMessageDialog::Open(EAppMsgType::Ok, Message, &Title);
+		FMessageDialog::Open(EAppMsgType::Ok, Message, Title);
 	}
 }
 
@@ -3570,8 +3661,7 @@ static void InternalNotifyNoPackagesSaved(const bool bUseDialog)
 {
 	if (bUseDialog)
 	{
-		FNotificationInfo NotificationInfo(LOCTEXT("NoAssetsToSave", "No new changes to save!"));
-		NotificationInfo.Image = FAppStyle::GetBrush(FTokenizedMessage::GetSeverityIconName(EMessageSeverity::Info));
+		FNotificationInfo NotificationInfo(LOCTEXT("NoAssetsToSave", "All files are already saved."));
 		NotificationInfo.bFireAndForget = true;
 		NotificationInfo.ExpireDuration = 4.0f; // Need this message to last a little longer than normal since the user may have expected there to be modified files.
 		NotificationInfo.bUseThrobber = true;
@@ -3579,7 +3669,7 @@ static void InternalNotifyNoPackagesSaved(const bool bUseDialog)
 	}
 	else
 	{
-		UE_LOG(LogFileHelpers, Log, TEXT("%s"), *LOCTEXT("NoAssetsToSave", "No new changes to save!").ToString());
+		UE_LOG(LogFileHelpers, Log, TEXT("%s"), *LOCTEXT("NoAssetsToSave", "All files are already saved.").ToString());
 	}
 }
 
@@ -3707,7 +3797,14 @@ static bool InternalSavePackages(const TArray<UPackage*>& PackagesToSave, bool b
 	if (!bFastSave)
 	{
 		const bool bAlreadyCheckedOut = false;
-		const FEditorFileUtils::EPromptReturnCode Return = FEditorFileUtils::PromptForCheckoutAndSave(PackagesToSave, bCheckDirty, bPromptUserToSave, nullptr, bAlreadyCheckedOut, bCanBeDeclined);
+		FEditorFileUtils::FPromptForCheckoutAndSaveParams SaveParams;
+		SaveParams.bCheckDirty = bCheckDirty;
+		SaveParams.bPromptToSave = bPromptUserToSave;
+		SaveParams.bAlreadyCheckedOut = bAlreadyCheckedOut;
+		SaveParams.bCanBeDeclined = bCanBeDeclined;
+		SaveParams.bIsExplicitSave = EditorFileUtils::bIsExplicitSave;
+
+		const FEditorFileUtils::EPromptReturnCode Return = FEditorFileUtils::PromptForCheckoutAndSave(PackagesToSave, SaveParams);
 		if (Return == FEditorFileUtils::EPromptReturnCode::PR_Cancelled)
 		{
 			// Only cancel should return false and stop whatever we were doing before.(like closing the editor)
@@ -3833,41 +3930,7 @@ bool FEditorFileUtils::SaveDirtyPackages(const bool bPromptUserToSave, const boo
 
 	TArray<UPackage*> PackagesToSave = InternalGetDirtyPackages(bSaveMapPackages, bSaveContentPackages, ShouldIgnorePackageFunction);
 
-	if (bPromptUserToSave)
-	{
-		// In a given set of packages it can contain at least one World Package (map) and/or at least one Actor package.
-		// If an external actor is being saved but not its world we still want to collect its owning world to pass to PrepareWorldsForExplicitSave
-		// In case there is any validation/extra steps needed for that world based on the add/edit of that Actor
-		// We use a set here to dedupe in case both the actor and its world are included in the dirty packages
-		bool bFoundActorWorld = false;
-		TSet<UWorld*> WorldsToSave;
-		for (UPackage* Package : PackagesToSave)
-		{
-			if (UWorld* WorldToSave = UWorld::FindWorldInPackage(Package))
-			{
-				WorldsToSave.Add(WorldToSave);
-			}
-			else if (!bFoundActorWorld)
-			{
-				// Currently there is only one world associated with saving actors as actors from multiple worlds can't be opened
-				// We can skip checking any further Actor packages once we grab the world off the first discovered
-				if (AActor* ActorToSave = AActor::FindActorInPackage(Package))
-				{
-					WorldsToSave.Add(ActorToSave->GetWorld());
-					bFoundActorWorld = true;
-				}
-			}
-		}
-
-		if (!WorldsToSave.IsEmpty())
-		{
-			PrepareWorldsForExplicitSave(WorldsToSave.Array());
-
-			// PrepareWorldsForExplicitSave could have dirtied further packages so refresh our list
-			// We do not go looking for further dirtied worlds however
-			PackagesToSave = InternalGetDirtyPackages(bSaveMapPackages, bSaveContentPackages, ShouldIgnorePackageFunction);
-		}
-	}
+	TGuardValue<bool> IsExplicitSaveGuard(EditorFileUtils::bIsExplicitSave, bPromptUserToSave);
 
 	// Need to track the number of packages we're not ignoring for save.
 	int32 NumPackagesNotIgnored = 0;
@@ -3989,13 +4052,6 @@ bool FEditorFileUtils::SaveCurrentLevel()
 		
 		UPackage* LevelPackage = Level->GetPackage();
 
-		if (UWorld* World = UWorld::FindWorldInPackage(LevelPackage))
-		{
-			// Regardless of if the LevelPackage is dirty or if we are only saving external objects
-			// we still give an opportunity to validate/run extra steps on the world involved in this save before continuing
-			PrepareWorldsForExplicitSave({ World });
-		}
-
 		// Get Packages to save
 		if (!bCheckDirty || LevelPackage->IsDirty() || LevelPackage->HasAnyPackageFlags(PKG_NewlyCreated))
 		{
@@ -4017,8 +4073,11 @@ bool FEditorFileUtils::SaveCurrentLevel()
 
 		if (PackagesToSave.Num())
 		{
+			TGuardValue<bool> IsExplicitSaveGuard(EditorFileUtils::bIsExplicitSave, true);
+
 			// If Level gets saved we don't want it to save its external packages because we've already filtered out the ones that need saving and they are part of the PackagesToSave array (unless level is PKG_NewlyCreated then we should save all actors)
 			TGuardValue<bool> GuardValue(bSkipExternalObjectSave, !LevelPackage->HasAnyPackageFlags(PKG_NewlyCreated));
+
 			const bool bPromptUserToSave = false;
 			const bool bFastSave = false;
 			const bool bCanBeDeclined = false;
@@ -4087,6 +4146,8 @@ FEditorFileUtils::EPromptReturnCode InternalPromptForCheckoutAndSave(const TArra
 				PackagesToSave.Add(Package);
 			}
 		}
+
+		PrepareWorldsForExplicitSave(FinalSaveList);
 
 		// Cleanup packages before saving packages in case we are saving worlds with external packages we could end up with packages being cleaned up by a world package save
 		if (PackagesToClean.Num() > 0)
@@ -4208,7 +4269,7 @@ FEditorFileUtils::EPromptReturnCode InternalPromptForCheckoutAndSave(const TArra
  *				Save" option on the dialog, the return code will indicate the user has declined out of the prompt. This way calling code can distinguish between a decline and a cancel
  *				and then proceed as planned, or abort its operation accordingly.
  */
-FEditorFileUtils::EPromptReturnCode FEditorFileUtils::PromptForCheckoutAndSave( const TArray<UPackage*>& InPackages, bool bCheckDirty, bool bPromptToSave, const FText& Title, const FText& Message, TArray<UPackage*>* OutFailedPackages, bool bAlreadyCheckedOut, bool bCanBeDeclined)
+FEditorFileUtils::EPromptReturnCode FEditorFileUtils::PromptForCheckoutAndSave(const TArray<UPackage*>& InPackages, FPromptForCheckoutAndSaveParams& InOutParams)
 {
 	// Check for re-entrance into this function
 	if ( bIsPromptingForCheckoutAndSave )
@@ -4221,7 +4282,7 @@ FEditorFileUtils::EPromptReturnCode FEditorFileUtils::PromptForCheckoutAndSave( 
 
 	// When saving a package which owns other packages, add those to the prompt as well,
 	// if we do not check dirty, we aren't already checked out and we prompt
-	if (!bAlreadyCheckedOut && !bCheckDirty && bPromptToSave)
+	if (!InOutParams.bAlreadyCheckedOut && !InOutParams.bCheckDirty && InOutParams.bPromptToSave)
 	{
 		for (UPackage* Package : InPackages)
 		{
@@ -4234,16 +4295,18 @@ FEditorFileUtils::EPromptReturnCode FEditorFileUtils::PromptForCheckoutAndSave( 
 
 	if (GIsRunningUnattendedScript)
 	{
-		return UEditorLoadingAndSavingUtils::SavePackages(PackagesToSave, bCheckDirty) ? PR_Success : PR_Failure;
+		return UEditorLoadingAndSavingUtils::SavePackages(PackagesToSave, InOutParams.bCheckDirty) ? PR_Success : PR_Failure;
 	}
 
-	if ( FApp::IsUnattended() && !bAlreadyCheckedOut )
+	if ( FApp::IsUnattended() && !InOutParams.bAlreadyCheckedOut )
 	{
 		return PR_Cancelled;
 	}
 
 	// Prevent re-entrance into this function by setting up a guard value (also used by FEditorFileUtils::PromptToCheckoutPackages)
 	TGuardValue<bool> PromptForCheckoutAndSaveGuard(bIsPromptingForCheckoutAndSave, true);
+
+	TGuardValue<bool> IsExplicitSaveGuard(EditorFileUtils::bIsExplicitSave, InOutParams.bIsExplicitSave);
 
 	// Initialize the value we will return to indicate success
 	FEditorFileUtils::EPromptReturnCode ReturnResponse = PR_Success;
@@ -4256,13 +4319,13 @@ FEditorFileUtils::EPromptReturnCode FEditorFileUtils::PromptForCheckoutAndSave( 
 	TArray<UPackage*> FilteredPackages;
 
 	// Prompt the user for which packages they would like to save
-	if( bPromptToSave )
+	if(InOutParams.bPromptToSave )
 	{
 		// Set up the save package dialog
 		FPackagesDialogModule& PackagesDialogModule = FModuleManager::LoadModuleChecked<FPackagesDialogModule>( TEXT("PackagesDialog") );
-		PackagesDialogModule.CreatePackagesDialog(Title, Message);
+		PackagesDialogModule.CreatePackagesDialog(InOutParams.Title, InOutParams.Message);
 		PackagesDialogModule.AddButton(DRT_Save, NSLOCTEXT("PackagesDialogModule", "SaveSelectedButton", "Save Selected"), NSLOCTEXT("PackagesDialogModule", "SaveSelectedButtonTip", "Attempt to save the selected content"));
-		if (bCanBeDeclined)
+		if (InOutParams.bCanBeDeclined)
 		{
 			PackagesDialogModule.AddButton(DRT_DontSave, NSLOCTEXT("PackagesDialogModule", "DontSaveSelectedButton", "Don't Save"), NSLOCTEXT("PackagesDialogModule", "DontSaveSelectedButtonTip", "Do not save any content"));
 		}
@@ -4276,7 +4339,7 @@ FEditorFileUtils::EPromptReturnCode FEditorFileUtils::PromptForCheckoutAndSave( 
 			check( CurPackage );
 
 			// If the caller set bCheckDirty to true, only consider dirty packages
-			if ( !bCheckDirty || ( bCheckDirty && CurPackage->IsDirty() ) )
+			if ( !InOutParams.bCheckDirty || (InOutParams.bCheckDirty && CurPackage->IsDirty() ) )
 			{
 				// Never save the transient package
 				if ( CurPackage != GetTransientPackage() )
@@ -4389,7 +4452,7 @@ FEditorFileUtils::EPromptReturnCode FEditorFileUtils::PromptForCheckoutAndSave( 
 			check( CurPackage );
 
 			// (Don't consider non-dirty packages if the caller has specified bCheckDirty as true)
-			if ( !bCheckDirty || CurPackage->IsDirty() )
+			if ( !InOutParams.bCheckDirty || CurPackage->IsDirty() )
 			{
 				// Never save the transient package
 				if ( CurPackage != GetTransientPackage() )
@@ -4449,22 +4512,31 @@ FEditorFileUtils::EPromptReturnCode FEditorFileUtils::PromptForCheckoutAndSave( 
 
 		TArray<UPackage*> PackagesCheckedOutOrMadeWritable;
 		TArray<UPackage*> PackagesNotNeedingCheckout;
+		TArray<UPackage*> PackagesToRevert;
 
 		// Prompt to check-out any packages under source control
 		bool bUserResponse = true;
+		bool bAutomaticCheckout = UseAlternateCheckoutWorkflow();
 
-		if (!bAlreadyCheckedOut)
+		if (!InOutParams.bAlreadyCheckedOut)
 		{
-			const bool bPromptingAfterModify = false;
-			const bool bAllowSkip = true;
-			bUserResponse = FEditorFileUtils::PromptToCheckoutPackagesInternal(false, PackagesToSave, &PackagesCheckedOutOrMadeWritable, &PackagesNotNeedingCheckout, bPromptingAfterModify, bAllowSkip);
+			if (bAutomaticCheckout)
+			{
+				bUserResponse = FEditorFileUtils::AutomaticCheckoutOrPromptToRevertPackages(PackagesToSave, &PackagesCheckedOutOrMadeWritable, &PackagesNotNeedingCheckout, &PackagesToRevert);
+			}
+			else
+			{
+				const bool bPromptingAfterModify = false;
+				const bool bAllowSkip = true;
+				bUserResponse = FEditorFileUtils::PromptToCheckoutPackagesInternal(false, PackagesToSave, &PackagesCheckedOutOrMadeWritable, &PackagesNotNeedingCheckout, bPromptingAfterModify, bAllowSkip);
+			}
 		}
 
-		if( bAlreadyCheckedOut || (bUserResponse && (PackagesCheckedOutOrMadeWritable.Num() > 0 || PackagesNotNeedingCheckout.Num() > 0)) )
+		if(InOutParams.bAlreadyCheckedOut || (bUserResponse && (PackagesCheckedOutOrMadeWritable.Num() > 0 || PackagesNotNeedingCheckout.Num() > 0)) )
 		{
 			TArray<UPackage*> FinalSaveList;
 			
-			if (bAlreadyCheckedOut)
+			if (InOutParams.bAlreadyCheckedOut)
 			{
 				FinalSaveList = PackagesToSave;
 			}
@@ -4481,9 +4553,9 @@ FEditorFileUtils::EPromptReturnCode FEditorFileUtils::PromptForCheckoutAndSave( 
 
 			// Set the failure array to have the same contents as the local one.
 			// The local one is required so we can always display the error, even if an array is not provided.
-			if (OutFailedPackages)
+			if (InOutParams.OutFailedPackages)
 			{
-				*OutFailedPackages = FailedPackages;
+				*InOutParams.OutFailedPackages = FailedPackages;
 			}
 		}
 		else
@@ -4491,22 +4563,328 @@ FEditorFileUtils::EPromptReturnCode FEditorFileUtils::PromptForCheckoutAndSave( 
 			// The user cancelled the checkout dialog, so set the return response accordingly  
 			ReturnResponse = PR_Cancelled;
 		}
+
+		if (PackagesToRevert.Num() > 0)
+		{
+			// Check if the world should be reloaded after the revert.
+			bool bReloadWorld = false;
+			if (UWorld* EditorWorld = GEditor->GetEditorWorldContext().World())
+			{
+				UPackage* EditorWorldPackage = EditorWorld->GetPackage();
+				if (PackagesToRevert.Contains(EditorWorldPackage))
+				{
+					// If the world file is reverted, the world should be reloaded.
+					bReloadWorld = true;
+				}
+				else
+				{
+					// If one of the external files is reverted, the world should be reloaded.
+					for (UPackage* Package : PackagesToRevert)
+					{
+						FString PackageName = Package->GetName();
+						if (PackageName.Contains(FPackagePath::GetExternalActorsFolderName()) ||
+							PackageName.Contains(FPackagePath::GetExternalObjectsFolderName()))
+						{
+							bReloadWorld = true;
+							break;
+						}
+					}
+				}
+			}
+
+			// Save the packages that need to be reverted, so the SourceControl can act on them.
+			TArray<UPackage*> PackagesSaveFailed;
+			InternalPromptForCheckoutAndSave(PackagesToRevert, /*bUseDialog=*/false, PackagesSaveFailed);
+
+			// Revert packages that could not be checked out.
+			USourceControlHelpers::RevertAndReloadPackages(USourceControlHelpers::PackageFilenames(PackagesToRevert), /*bRevertAll=*/false, /*bReloadWorld=*/bReloadWorld);
+		}
 	}
 
 	return ReturnResponse;
 }
 
+FEditorFileUtils::EPromptReturnCode FEditorFileUtils::PromptForCheckoutAndSave(const TArray<UPackage*>& PackagesToSave, bool bCheckDirty, bool bPromptToSave, const FText& Title, const FText& Message, TArray<UPackage*>* OutFailedPackages, bool bAlreadyCheckedOut, bool bCanBeDeclined)
+{
+	FPromptForCheckoutAndSaveParams SaveParams;
+	SaveParams.bCheckDirty = bCheckDirty;
+	SaveParams.bPromptToSave = bPromptToSave;
+	SaveParams.Title = Title;
+	SaveParams.Message = Message;
+	SaveParams.OutFailedPackages = OutFailedPackages;
+	SaveParams.bAlreadyCheckedOut = bAlreadyCheckedOut;
+	SaveParams.bCanBeDeclined = bCanBeDeclined;
+
+	return PromptForCheckoutAndSave(PackagesToSave, SaveParams);
+}
+
 FEditorFileUtils::EPromptReturnCode FEditorFileUtils::PromptForCheckoutAndSave(const TArray<UPackage*>& InPackages, bool bCheckDirty, bool bPromptToSave, TArray<UPackage*>* OutFailedPackages, bool bAlreadyCheckedOut, bool bCanBeDeclined)
 {
-	return PromptForCheckoutAndSave(
-		InPackages,
-		bCheckDirty,
-		bPromptToSave,
-		NSLOCTEXT("PackagesDialogModule", "PackagesDialogTitle", "Save Content"),
-		NSLOCTEXT("PackagesDialogModule", "PackagesDialogMessage", "Select Content to Save"),
-		OutFailedPackages,
-		bAlreadyCheckedOut,
-		bCanBeDeclined);
+	FPromptForCheckoutAndSaveParams SaveParams;
+	SaveParams.bCheckDirty = bCheckDirty;
+	SaveParams.bPromptToSave = bPromptToSave;
+	SaveParams.OutFailedPackages = OutFailedPackages;
+	SaveParams.bAlreadyCheckedOut = bAlreadyCheckedOut;
+	SaveParams.bCanBeDeclined = bCanBeDeclined;
+
+	return PromptForCheckoutAndSave(InPackages, SaveParams);
+}
+
+/* Return 'true' to indicate that the packages (in OutPackagesCheckedOutOrMadeWritable) should be saved, or 'false' to cancel saving. */
+bool FEditorFileUtils::AutomaticCheckoutOrPromptToRevertPackages(const TArray<UPackage*>& PackagesToCheckOut, TArray<UPackage*>* OutPackagesCheckedOutOrMadeWritable, TArray<UPackage*>* OutPackagesNotNeedingCheckout, TArray<UPackage*>* OutPackagesToRevert)
+{
+	ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
+
+	// Is there anything to work with?
+	int32 NumPackages = PackagesToCheckOut.Num();
+	if (NumPackages == 0)
+	{
+		return true;
+	}
+
+	// Build map from PackageFileName -> Package.
+	TMap<FString, UPackage*> PackageMap;
+	for (UPackage* Package : PackagesToCheckOut)
+	{
+		PackageMap.Add(USourceControlHelpers::PackageFilename(Package), Package);
+	}
+
+	// Determine initial states.
+	SourceControlProvider.Execute(ISourceControlOperation::Create<FUpdateStatus>(), PackagesToCheckOut);
+
+	TArray<FSourceControlStateRef> InitialStates;
+	SourceControlProvider.GetState(PackagesToCheckOut, InitialStates, EStateCacheUsage::Use);
+
+	TArray<UPackage*> PackagesCheckOutNeeded;
+	TArray<UPackage*> PackagesCheckOutImpossible;
+	TArray<UPackage*> PackagesCheckedOutAlready;
+	PackagesCheckOutNeeded.Reserve(PackagesToCheckOut.Num());
+	PackagesCheckOutImpossible.Reserve(PackagesToCheckOut.Num());
+	PackagesCheckedOutAlready.Reserve(PackagesToCheckOut.Num());
+
+	for (const FSourceControlStateRef& State : InitialStates)
+	{
+		const FString& PackageFilename = State->GetFilename();
+
+		if (State->IsCheckedOut())
+		{
+			// No need to check it out.
+			PackagesCheckedOutAlready.Add(PackageMap[PackageFilename]);
+		}
+		else if (State->IsCheckedOutOther() || !State->IsCurrent())
+		{
+			// Can't check it out.
+			PackagesCheckOutImpossible.Add(PackageMap[PackageFilename]);
+		}
+		else
+		{
+			// Try to check it out.
+			PackagesCheckOutNeeded.Add(PackageMap[PackageFilename]);
+		}
+	}
+
+	// Result value indicates whether to continue with saving.
+	bool bResult = false;
+
+	// Is SourceControl online?
+	bool bSourceControlEnabled = SourceControlProvider.IsEnabled();
+	bool bSourceControlAvailable = SourceControlProvider.IsAvailable();
+	if (bSourceControlAvailable)
+	{
+		// Yes, SourceControl is online.
+		// Try to check out the packages.
+
+		TArray<UPackage*> PackagesCheckOutSuccess;
+		TArray<UPackage*> PackagesCheckOutFailure;
+		PackagesCheckOutSuccess.Reserve(PackagesCheckOutNeeded.Num());
+		PackagesCheckOutFailure.Reserve(PackagesCheckOutNeeded.Num());
+
+		TArray<UPackage*> PackagesWritableSuccess;
+		TArray<UPackage*> PackagesWritableFailure;
+		TArray<UPackage*> PackagesToRevert;
+
+		if (PackagesCheckOutNeeded.Num() > 0)
+		{
+			FScopedSlowTask SlowTask(static_cast<float>(PackagesCheckOutNeeded.Num()), LOCTEXT("CheckingOutPackages", "Checking out packages..."));
+			SlowTask.MakeDialog();
+
+			int32 NumCheckOutImpossible = 0;
+
+			// Loop while attempting to check-out the packages.
+			// If succeeds, then break out of the loop.
+			// If failed, inspect the state of the files again and see if somebody just checked out or submitted the file. Then retry with the remaining files.
+			do
+			{
+				NumCheckOutImpossible = PackagesCheckOutImpossible.Num();
+
+				ECommandResult::Type Result = SourceControlProvider.Execute(ISourceControlOperation::Create<FCheckOut>(), PackagesCheckOutNeeded);
+				if (Result == ECommandResult::Succeeded)
+				{
+					PackagesCheckOutSuccess.Append(PackagesCheckOutNeeded);
+					PackagesCheckOutNeeded.Empty();
+				}
+				else
+				{
+					TArray<FSourceControlStateRef> States;
+					if (SourceControlProvider.GetState(PackagesCheckOutNeeded, States, EStateCacheUsage::ForceUpdate) == ECommandResult::Succeeded)
+					{
+						for (const FSourceControlStateRef& State : States)
+						{
+							const FString& PackageFilename = State->GetFilename();
+
+							if (State->IsCheckedOut())
+							{
+								// If provider supports partial checkout this could happen.
+								UPackage* Package = PackageMap[PackageFilename];
+								PackagesCheckOutNeeded.Remove(Package);
+								PackagesCheckOutSuccess.Add(Package);
+							}
+							else if (State->IsCheckedOutOther() || !State->IsCurrent())
+							{
+								// Somebody just beat us to it.
+								UPackage* Package = PackageMap[PackageFilename];
+								PackagesCheckOutNeeded.Remove(Package);
+								PackagesCheckOutImpossible.Add(Package);
+							}
+						}
+					}
+				}
+			} while (NumCheckOutImpossible != PackagesCheckOutImpossible.Num() && PackagesCheckOutNeeded.Num() > 0);
+
+			SlowTask.EnterProgressFrame(static_cast<float>(PackagesCheckOutNeeded.Num()));
+		}
+
+		// Any remaining packages have failed for unknown reasons.
+		PackagesCheckOutFailure = PackagesCheckOutNeeded;
+
+		// Were we able to check out all packages?
+		if (PackagesCheckOutImpossible.Num() > 0 || PackagesCheckOutFailure.Num() > 0)
+		{
+			// No.
+			// Show dialog with assets that weren't checked out.
+
+			const FText DialogTitle = NSLOCTEXT("PackagesDialogModule", "CheckoutPackagesFailedDialogTitle", "Check-out failed");
+			const FText DialogHeading = NSLOCTEXT("PackagesDialogModule", "CheckoutPackagesFailedDialogMessage",
+				"While saving, check-out failed for the following assets. Revert your changes to these assets and sync to the latest snapshot to avoid conflicts with your teammates.\r\n\r\n"
+				"If necessary, you may also proceed by saving locally only, but you will likely run into conflicts later when trying to check in these changes.\r\n\r\n"
+				"Tip: Turn on automatic checkout and automatic undo in your Unreal Revision Control settings to avoid future conflicts with your teammates and conflict warnings."
+			);
+
+			FPackagesDialogModule& CheckoutPackagesDialogModule = FModuleManager::LoadModuleChecked<FPackagesDialogModule>(TEXT("PackagesDialog"));
+			CheckoutPackagesDialogModule.CreatePackagesDialog(
+				DialogTitle,
+				DialogHeading,
+				/*InReadOnly=*/true,
+				/*InAllowSourceControlConnection*/true
+			);
+
+			TArray<UPackage*> PackagesNotCheckedOut;
+			PackagesNotCheckedOut.Append(PackagesCheckOutFailure);
+			PackagesNotCheckedOut.Append(PackagesCheckOutImpossible);
+
+			for (UPackage* Package : PackagesNotCheckedOut)
+			{
+				FSourceControlStatePtr State = SourceControlProvider.GetState(Package, EStateCacheUsage::Use);
+				if (!State->IsCurrent())
+				{
+					CheckoutPackagesDialogModule.AddPackageItem(Package, ECheckBoxState::Unchecked, true, TEXT("SavePackages.SCC_DlgNotCurrent"), State->GetDisplayTooltip().ToString());
+				}
+				else if (State->IsCheckedOutOther())
+				{
+					CheckoutPackagesDialogModule.AddPackageItem(Package, ECheckBoxState::Unchecked, true, TEXT("SavePackages.SCC_DlgCheckedOutOther"), State->GetDisplayTooltip().ToString());
+				}
+				else
+				{
+					CheckoutPackagesDialogModule.AddPackageItem(Package, ECheckBoxState::Unchecked, true, TEXT("SavePackages.SCC_DlgNoIcon"), State->GetDisplayTooltip().ToString());
+				}
+			}
+
+			// The Revert button will allow the user to undo changes to those assets.
+			CheckoutPackagesDialogModule.AddButton(DRT_Revert, DBS_Primary, NSLOCTEXT("PackagesDialogModule", "Dlg_RevertButton", "Revert My Changes"), NSLOCTEXT("PackagesDialogModule", "Dlg_RevertButtonTooltip", "Revert changes to files that could not be checked out (recommended)."));
+
+			// The Save button will allow the user to proceed with saving those assets anyway, thereby risking conflicts.
+			CheckoutPackagesDialogModule.AddButton(DRT_Save, DBS_Normal, NSLOCTEXT("PackagesDialogModule", "Dlg_SaveButton", "Save Locally Only"), NSLOCTEXT("PackagesDialogModule", "Dlg_SaveButtonTooltip", "Save changes to files that could not be checked out anyway. You will likely be unable to check-in these changes."));
+
+			EDialogReturnType UserResponse = CheckoutPackagesDialogModule.ShowPackagesDialog();
+			if (UserResponse == DRT_Revert)
+			{
+				PackagesToRevert = PackagesNotCheckedOut;
+			}
+			if (UserResponse == DRT_Save)
+			{
+				// Make the packages writable and proceed to save.
+				MakePackagesWritable(PackagesNotCheckedOut, &PackagesWritableSuccess, &PackagesWritableFailure);
+			}
+		}
+		else
+		{
+			// Yes.
+			// All packages were checked out.
+		}
+
+		// Populate output values.
+		if (OutPackagesCheckedOutOrMadeWritable)
+		{
+			OutPackagesCheckedOutOrMadeWritable->Append(PackagesCheckOutSuccess);
+			OutPackagesCheckedOutOrMadeWritable->Append(PackagesWritableSuccess);
+		}
+		if (OutPackagesNotNeedingCheckout)
+		{
+			OutPackagesNotNeedingCheckout->Append(PackagesCheckedOutAlready);
+		}
+		if (OutPackagesToRevert)
+		{
+			OutPackagesToRevert->Append(PackagesToRevert);
+		}
+
+		// Save if anything was checked out or made writable.
+		bResult = (PackagesCheckOutSuccess.Num() > 0) || (PackagesWritableSuccess.Num() > 0) || (PackagesCheckedOutAlready.Num() > 0);
+	}
+	else if (bSourceControlEnabled)
+	{
+		// No, SourceControl is offline.
+		// Warn the user that they're working in offline mode.
+
+		FText OfflineTitle = NSLOCTEXT("FileHelper", "OfflineDialogTitle", "Warning - Offline, Conflicts may occur");
+		FText OfflineMessage = NSLOCTEXT("FileHelper", "OfflineDialogMessage",
+			"You've made changes while offline. These and any further changes made offline could conflict with your teammates' work when you reconnect.\r\n\r\n"
+			"Reconnect as soon as possible to minimize conflicts and continue making changes.");
+
+		FSuppressableWarningDialog::FSetupInfo Info(OfflineMessage, OfflineTitle, TEXT("ShowOfflineModeWarning"), GEditorPerProjectIni);
+		Info.ConfirmText = NSLOCTEXT("FileHelper", "OfflineDialog_ConfirmText", "Ok");
+		Info.CheckBoxText = NSLOCTEXT("FileHelper", "OfflineDialog_CheckBoxText", "Don't show this again");
+		Info.bDefaultToSuppressInTheFuture = true;
+		FSuppressableWarningDialog OfflineModeWarningDialog(Info);
+
+		TArray<UPackage*> PackagesWritableSuccess;
+		TArray<UPackage*> PackagesWritableFailure;
+
+		// Show the warning and if the user doesn't cancel, make the files writable and proceed with the save.
+		bool bMakeWritable = (OfflineModeWarningDialog.ShowModal() != FSuppressableWarningDialog::EResult::Cancel);
+		if (bMakeWritable)
+		{
+			TArray<UPackage*> PackagesToMakeWritable;
+			PackagesToMakeWritable.Append(PackagesCheckOutNeeded);
+			PackagesToMakeWritable.Append(PackagesCheckOutImpossible);
+
+			MakePackagesWritable(PackagesToMakeWritable, &PackagesWritableSuccess, &PackagesWritableFailure);
+		}
+
+		// Populate output values.
+		if (OutPackagesCheckedOutOrMadeWritable)
+		{
+			OutPackagesCheckedOutOrMadeWritable->Append(PackagesWritableSuccess);
+		}
+		if (OutPackagesNotNeedingCheckout)
+		{
+			OutPackagesNotNeedingCheckout->Append(PackagesCheckedOutAlready);
+		}
+
+		// Save if anything was made writable.
+		bResult = (PackagesWritableSuccess.Num() > 0) || (PackagesCheckedOutAlready.Num() > 0);
+	}
+
+	return bResult;
 }
 
 bool FEditorFileUtils::SaveWorlds(UWorld* InWorld, const FString& RootPath, const TCHAR* Prefix, TArray<FString>& OutFilenames)
@@ -4757,11 +5135,15 @@ bool FEditorFileUtils::IsMapPackageAsset(const FString& ObjectPath, FString& Map
 				MapFilePath = PackagePath;
 				return true;
 			}
-			const FString ExternalPackagePath = FString(TEXT("/Game")) / FPackagePath::GetExternalActorsFolderName();
-			if ( FPackageName::FilenameToLongPackageName(PackagePath).StartsWith(ExternalPackagePath) )
+
+			TArray<FString> ObjectPathParts;
+			if (ObjectPath.ParseIntoArray(ObjectPathParts, TEXT("/")) > 1)
 			{
-				MapFilePath = PackagePath;
-				return true;
+				if (ObjectPathParts[1] == FPackagePath::GetExternalActorsFolderName())
+				{
+					MapFilePath = PackagePath;
+					return true;
+				}
 			}
 		}
 	}
@@ -4973,6 +5355,16 @@ void FEditorFileUtils::GetDirtyPackages(TArray<UPackage*>& OutDirtyPackages, con
 {
 	GetDirtyWorldPackages(OutDirtyPackages, ShouldIgnorePackageFunction);
 	GetDirtyContentPackages(OutDirtyPackages, ShouldIgnorePackageFunction);
+}
+
+FEditorFileUtils::FOnLoadMapStart& FEditorFileUtils::GetOnLoadMapStartDelegate()
+{
+	return OnLoadMapStart;
+}
+
+FEditorFileUtils::FOnLoadMapEnd& FEditorFileUtils::GetOnLoadMapEndDelegate()
+{
+	return OnLoadMapEnd;
 }
 
 UWorld* UEditorLoadingAndSavingUtils::LoadMap(const FString& Filename)

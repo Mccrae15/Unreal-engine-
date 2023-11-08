@@ -5,6 +5,7 @@
 #include "Chaos/Serializable.h"
 #include "Chaos/Core.h"
 #include "Chaos/ImplicitFwd.h"
+#include "Chaos/ImplicitObjectType.h"
 #include "Chaos/AABB.h"
 
 #ifndef TRACK_CHAOS_GEOMETRY
@@ -29,66 +30,6 @@ class FImplicitObject;
 using FAABB3 = TAABB<FReal, 3>;
 using FParticles = TParticles<FReal, 3>;
 using FSphere = TSphere<FReal, 3>; // warning: code assumes that FImplicitObjects with type ImplicitObjectType::Sphere are FSpheres, but all TSpheres will think they have ImplicitObjectType::Sphere.
-
-namespace ImplicitObjectType
-{
-	enum
-	{
-		//Note: add entries in order to avoid serialization issues (but before IsInstanced)
-		Sphere = 0, // warning: code assumes that this is an FSphere, but all TSpheres will think this is their type.
-		Box,
-		Plane,
-		Capsule,
-		Transformed,
-		Union,
-		LevelSet,
-		Unknown,
-		Convex,
-		TaperedCylinder,
-		Cylinder,
-		TriangleMesh,
-		HeightField,
-		DEPRECATED_Scaled,	//needed for serialization of existing data
-		Triangle,
-		UnionClustered,
-		TaperedCapsule,
-
-		//Add entries above this line for serialization
-		IsInstanced = 1 << 6,
-		IsScaled = 1 << 7
-	};
-}
-
-using EImplicitObjectType = uint8;	//see ImplicitObjectType
-
-FORCEINLINE bool IsInstanced(EImplicitObjectType Type)
-{
-	return (Type & ImplicitObjectType::IsInstanced) != 0;
-}
-
-FORCEINLINE bool IsScaled(EImplicitObjectType Type)
-{
-	return (Type & ImplicitObjectType::IsScaled) != 0;
-}
-
-FORCEINLINE EImplicitObjectType GetInnerType(EImplicitObjectType Type)
-{
-	return Type & (~(ImplicitObjectType::IsScaled | ImplicitObjectType::IsInstanced));
-}
-
-
-namespace EImplicitObject
-{
-	enum Flags
-	{
-		IsConvex = 1,
-		HasBoundingBox = 1 << 1,
-		DisableCollisions = 1 << 2
-	};
-
-	inline const int32 FiniteConvex = IsConvex | HasBoundingBox;
-}
-
 
 
 template<class T, int d, bool bSerializable>
@@ -118,6 +59,31 @@ struct TImplicitObjectPtrStorage<T, d, true>
 	}
 };
 
+/**
+* A visitor for use in FImplicitObject hierarchy visiting functions.
+* @param Implicit The geometry we are currently visiting
+* @param Transform The net transform relative to the hierarchy root (the originating visit call)
+* @param RootObjectIndex The index of our ancestor in the root union. Will be INDEX_NONE if no Union at the root. Used to index into a Particle's ShapeInstances or get our ancenstor.
+* @param ObjectIndex A counter tracking the current implicit object index in the flattened hierarchy (pre-order, depth first)
+* @param LeafObjectIndex A counter tracking the current leaf index in the flattened hierarchy (pre-order, depth first). Used to differentiate between geometry when duplicated in the hierarchy. INDEX_NONE if not visiting a leaf.
+*/
+using FImplicitHierarchyVisitor = TFunctionRef<void(const FImplicitObject* Implicit, const FRigidTransform3& Transform, const int32 RootObjectIndex, const int32 ObjectIndex, const int32 LeafObjectIndex)>;
+using FImplicitHierarchyVisitorBool = TFunctionRef<bool(const FImplicitObject* Implicit, const FRigidTransform3& Transform, const int32 RootObjectIndex, const int32 ObjectIndex, const int32 LeafObjectIndex)>;
+
+
+// Specialized for derived classes so that we can downcast to non-leaf types in the class hierarchy
+// @see TImplicitTypeInfo<FImplicitObjectUnion>
+template<typename T>
+struct TImplicitTypeInfo
+{
+	// Return true if implicits of type InType can be cast to T.
+	// I.e., is T a base class (or the class) of InType.
+	static bool IsBaseOf(const EImplicitObjectType InType)
+	{
+		return (T::StaticType() == InType);
+	}
+};
+
 /*
  * Base class for implicit collision geometry such as spheres, capsules, boxes, etc.
  * 
@@ -131,17 +97,75 @@ struct TImplicitObjectPtrStorage<T, d, true>
  * so we do not need a margin on triangles. We would need a margin on every type
  * that can be tested against a triangle though.
  */
-class CHAOS_API FImplicitObject
+// Some collision ispc code requires that no tail padding in FImplicitObject is reused by derived class members. 
+// This is a compiler-dependent behavior, so if you are not seeing any other compile time errors about sizeof(FImplicitObject) + offsetof(...) with this disabled,
+// you should be OK.
+#define DISALLOW_FIMPLICIT_OBJECT_TAIL_PADDING INTEL_ISPC
+
+#if DISALLOW_FIMPLICIT_OBJECT_TAIL_PADDING
+// This enables errors if any padding is added by the compiler. You can fix the errors by rearranging fields and/or adding explicit padding.
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic error "-Wpadded"
+#elif defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(error : 4820)
+#endif
+#endif // #if DISALLOW_FIMPLICIT_OBJECT_TAIL_PADDING
+class FImplicitObject
 {
 public:
 	using TType = FReal;
 	static constexpr int D = 3;
-	static FImplicitObject* SerializationFactory(FChaosArchive& Ar, FImplicitObject* Obj);
+	static CHAOS_API FImplicitObject* SerializationFactory(FChaosArchive& Ar, FImplicitObject* Obj);
 
-	FImplicitObject(int32 Flags, EImplicitObjectType InType = ImplicitObjectType::Unknown);
+	CHAOS_API FImplicitObject(int32 Flags, EImplicitObjectType InType = ImplicitObjectType::Unknown);
 	FImplicitObject(const FImplicitObject&) = delete;
 	FImplicitObject(FImplicitObject&&) = delete;
-	virtual ~FImplicitObject();
+	CHAOS_API virtual ~FImplicitObject();
+
+	// Can this object be cast to type T_DERIVED?
+	template<typename TargetType>
+	bool IsA() const
+	{
+		return TImplicitTypeInfo<TargetType>::IsBaseOf(GetType());
+	}
+
+	// Dynamic cast to type T_DERIVED. Returns null if T_DERIVED is not a valid cast for this object.
+	template<typename TargetType>
+	const TargetType* AsA() const
+	{
+		if (IsA<TargetType>())
+		{
+			return static_cast<const TargetType*>(this);
+		}
+		return nullptr;
+	}
+
+	template<typename TargetType>
+	TargetType* AsA()
+	{
+		if (IsA<TargetType>())
+		{
+			return static_cast<TargetType*>(this);
+		}
+		return nullptr;
+	}
+
+	template<typename TargetType>
+	const TargetType* AsAChecked() const
+	{
+		check(IsA<TargetType>());
+		return static_cast<const TargetType*>(this);
+	}
+
+	template<typename TargetType>
+	TargetType* AsAChecked()
+	{
+		check(IsA<TargetType>());
+		return static_cast<TargetType*>(this);
+	}
+
 
 	template<class T_DERIVED>
 	T_DERIVED* GetObject()
@@ -180,30 +204,31 @@ public:
 	//Not all implicit objects can be duplicated, up to user code to use this in cases that make sense
 	virtual FImplicitObject* Duplicate() const { check(false); return nullptr; }
 
-	EImplicitObjectType GetType() const;
+	virtual EImplicitObjectType GetNestedType() const { return GetType(); }
+	CHAOS_API EImplicitObjectType GetType() const;
 	static int32 GetOffsetOfType() { return offsetof(FImplicitObject, Type); }
 
-	EImplicitObjectType GetCollisionType() const;
+	CHAOS_API EImplicitObjectType GetCollisionType() const;
 	void SetCollisionType(EImplicitObjectType InCollisionType) { CollisionType = InCollisionType; }
 
 	FReal GetMargin() const { return Margin; }
 	static int32 GetOffsetOfMargin() { return offsetof(FImplicitObject, Margin); }
 
-	virtual bool IsValidGeometry() const;
+	CHAOS_API virtual bool IsValidGeometry() const;
 
-	virtual TUniquePtr<FImplicitObject> Copy() const;
-	virtual TUniquePtr<FImplicitObject> CopyWithScale(const FVec3& Scale) const;
+	CHAOS_API virtual TUniquePtr<FImplicitObject> Copy() const;
+	CHAOS_API virtual TUniquePtr<FImplicitObject> CopyWithScale(const FVec3& Scale) const;
 	virtual TUniquePtr<FImplicitObject> DeepCopy() const { return Copy(); }
 	virtual TUniquePtr<FImplicitObject> DeepCopyWithScale(const FVec3& Scale) const { return CopyWithScale(Scale); }
 
 	//This is strictly used for optimization purposes
-	bool IsUnderlyingUnion() const;
+	CHAOS_API bool IsUnderlyingUnion() const;
 
 	// Explicitly non-virtual.  Must cast to derived types to target their implementation.
-	FReal SignedDistance(const FVec3& x) const;
+	CHAOS_API FReal SignedDistance(const FVec3& x) const;
 
 	// Explicitly non-virtual.  Must cast to derived types to target their implementation.
-	FVec3 Normal(const FVec3& x) const;
+	CHAOS_API FVec3 Normal(const FVec3& x) const;
 
 	// Find the closest point on the surface, and return the separating distance and axis
 	virtual FReal PhiWithNormal(const FVec3& x, FVec3& Normal) const = 0;
@@ -221,7 +246,7 @@ public:
 		return ScaledPhi;
 	}
 
-	virtual const FAABB3 BoundingBox() const;
+	CHAOS_API virtual const FAABB3 BoundingBox() const;
 
 	// Calculate the tight-fitting world-space bounding box
 	virtual FAABB3 CalculateTransformedBounds(const FRigidTransform3& Transform) const
@@ -240,7 +265,7 @@ public:
 	
 #if TRACK_CHAOS_GEOMETRY
 	//Turn on memory tracking. Must pass object itself as a serializable ptr so we can save it out
-	void Track(TSerializablePtr<FImplicitObject> This, const FString& DebugInfo);
+	CHAOS_API void Track(TSerializablePtr<FImplicitObject> This, const FString& DebugInfo);
 #endif
 
 	virtual bool IsPerformanceWarning() const { return false; }
@@ -249,9 +274,9 @@ public:
 		return FString::Printf(TEXT("ImplicitObject - No Performance String"));
 	};
 
-	Pair<FVec3, bool> FindDeepestIntersection(const FImplicitObject* Other, const FBVHParticles* Particles, const FMatrix33& OtherToLocalTransform, const FReal Thickness) const;
-	Pair<FVec3, bool> FindDeepestIntersection(const FImplicitObject* Other, const FParticles* Particles, const FMatrix33& OtherToLocalTransform, const FReal Thickness) const;
-	Pair<FVec3, bool> FindClosestIntersection(const FVec3& StartPoint, const FVec3& EndPoint, const FReal Thickness) const;
+	CHAOS_API Pair<FVec3, bool> FindDeepestIntersection(const FImplicitObject* Other, const FBVHParticles* Particles, const FMatrix33& OtherToLocalTransform, const FReal Thickness) const;
+	CHAOS_API Pair<FVec3, bool> FindDeepestIntersection(const FImplicitObject* Other, const FParticles* Particles, const FMatrix33& OtherToLocalTransform, const FReal Thickness) const;
+	CHAOS_API Pair<FVec3, bool> FindClosestIntersection(const FVec3& StartPoint, const FVec3& EndPoint, const FReal Thickness) const;
 
 	//This gives derived types a way to avoid calling PhiWithNormal todo: this api is confusing
 	virtual bool Raycast(const FVec3& StartPoint, const FVec3& Dir, const FReal Length, const FReal Thickness, FReal& OutTime, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex) const
@@ -342,14 +367,14 @@ public:
 		Out.Add(MakePair(This, ParentTM));
 	}
 
-	virtual void FindAllIntersectingObjects(TArray < Pair<const FImplicitObject*, FRigidTransform3>>& Out, const FAABB3& LocalBounds) const;
+	CHAOS_API virtual void FindAllIntersectingObjects(TArray < Pair<const FImplicitObject*, FRigidTransform3>>& Out, const FAABB3& LocalBounds) const;
 
 	virtual FString ToString() const
 	{
 		return FString::Printf(TEXT("ImplicitObject bIsConvex:%d, bDoCollide:%d, bHasBoundingBox:%d"), bIsConvex, bDoCollide, bHasBoundingBox);
 	}
 
-	void SerializeImp(FArchive& Ar);
+	CHAOS_API void SerializeImp(FArchive& Ar);
 
 	constexpr static EImplicitObjectType StaticType()
 	{
@@ -361,17 +386,115 @@ public:
 		check(false);	//Aggregate implicits require FChaosArchive - check false by default
 	}
 
-	virtual void Serialize(FChaosArchive& Ar);
+	CHAOS_API virtual void Serialize(FChaosArchive& Ar);
 	
-	static FArchive& SerializeLegacyHelper(FArchive& Ar, TUniquePtr<FImplicitObject>& Value);
+	static CHAOS_API FArchive& SerializeLegacyHelper(FArchive& Ar, TUniquePtr<FImplicitObject>& Value);
 
 	virtual uint32 GetTypeHash() const = 0;
 
 	virtual FName GetTypeName() const { return GetTypeName(GetType()); }
 
-	static const FName GetTypeName(const EImplicitObjectType InType);
+	static CHAOS_API const FName GetTypeName(const EImplicitObjectType InType);
 
 	virtual uint16 GetMaterialIndex(uint32 HintIndex) const { return 0; }
+
+	/**
+	* Visit all the leaf objects in the hierarchy that overlap the specified local-space bounds.
+	* NOTE: Templated decorators like Instanced and Scaled cound as leafs, but object decorators like Transformed do not.
+	* @see FImplicitHierarchyVisitor for visitor notes
+	*/
+	void VisitOverlappingLeafObjects(const FAABB3& LocalBounds, const FImplicitHierarchyVisitor& Visitor) const
+	{
+		int32 LeafObjectIndex = 0;
+		int32 ObjectIndex = 0;
+		const int32 RootObjectIndex = INDEX_NONE;
+		VisitOverlappingLeafObjectsImpl(LocalBounds, FRigidTransform3::Identity, RootObjectIndex, ObjectIndex, LeafObjectIndex, Visitor);
+	}
+
+	/**
+	* Visit all the leaf objects in the hierarchy
+	* @see FImplicitHierarchyVisitor for visitor notes
+	*/
+	void VisitLeafObjects(const FImplicitHierarchyVisitor& Visitor) const
+	{
+		int32 LeafObjectIndex = 0;
+		int32 ObjectIndex = 0;
+		const int32 RootObjectIndex = INDEX_NONE;
+		VisitLeafObjectsImpl(FRigidTransform3::Identity, RootObjectIndex, ObjectIndex, LeafObjectIndex, Visitor);
+	}
+
+	/**
+	* Visit all the objects in the hierarchy, including inner nodes like Union and Transform
+	* @see FImplicitHierarchyVisitor for visitor notes
+	*/
+	void VisitObjects(const FImplicitHierarchyVisitorBool& Visitor) const
+	{
+		int32 LeafObjectIndex = 0;
+		int32 ObjectIndex = 0;
+		const int32 RootObjectIndex = INDEX_NONE;
+		VisitObjectsImpl(FRigidTransform3::Identity, RootObjectIndex, ObjectIndex, LeafObjectIndex, Visitor);
+	}
+
+	/**
+	* Whether this implicit (possibly a hierarchy) overlaps the bounds. This is a deeper, more
+	* accurate test than simply checking BoundingBox() because it will query the BVH in Unions,
+	* Heightfields and Triangle Meshes, and only return true if we overlap the bounds of a leaf 
+	* node that contains some elements.
+	*/
+	bool IsOverlappingBounds(const FAABB3& LocalBounds) const
+	{
+		return IsOverlappingBoundsImpl(LocalBounds);
+	}
+
+//protected:
+	// This should not be public, but it needs to be callable by derived classes on another instance
+	virtual void VisitOverlappingLeafObjectsImpl(
+		const FAABB3& LocalBounds,
+		const FRigidTransform3& ObjectTransform,
+		const int32 RootObjectIndex,
+		int32& ObjectIndex,
+		int32& LeafObjectIndex,
+		const FImplicitHierarchyVisitor& VisitorFunc) const
+	{
+		if (!HasBoundingBox() || LocalBounds.Intersects(BoundingBox()))
+		{
+			VisitorFunc(this, ObjectTransform, RootObjectIndex, ObjectIndex, LeafObjectIndex);
+		}
+		++ObjectIndex;
+		++LeafObjectIndex;
+	}
+
+	// This should not be public, but it needs to be callable by derived classes on another instance
+	virtual void VisitLeafObjectsImpl(
+		const FRigidTransform3& ObjectTransform,
+		const int32 RootObjectIndex,
+		int32& ObjectIndex,
+		int32& LeafObjectIndex,
+		const FImplicitHierarchyVisitor& VisitorFunc) const
+	{
+		VisitorFunc(this, ObjectTransform, RootObjectIndex, ObjectIndex, LeafObjectIndex);
+		++ObjectIndex;
+		++LeafObjectIndex;
+	}
+
+	// This should not be public, but it needs to be callable by derived classes on another instance
+	virtual bool VisitObjectsImpl(
+		const FRigidTransform3& ObjectTransform,
+		const int32 RootObjectIndex,
+		int32& ObjectIndex,
+		int32& LeafObjectIndex,
+		const FImplicitHierarchyVisitorBool& VisitorFunc) const
+	{
+		return VisitorFunc(this, ObjectTransform, RootObjectIndex, ObjectIndex, LeafObjectIndex);
+		++ObjectIndex;
+		++LeafObjectIndex;
+	}
+
+	// This should not be public, but it needs to be callable by derived classes on another instance
+	virtual bool IsOverlappingBoundsImpl(const FAABB3& LocalBounds) const
+	{
+		return (!HasBoundingBox() || LocalBounds.Intersects(BoundingBox()));
+	}
 
 protected:
 
@@ -403,8 +526,7 @@ protected:
 	// in a derived class if at all (and it may want to change the size of the core shape as well)
 	void SetMargin(FReal InMargin) { Margin = InMargin; }
 
-	EImplicitObjectType Type;
-	EImplicitObjectType CollisionType;
+	// Note: if you change the size of FImplicitObject or add fields, you will likely need to update the calculation of PadBytes below.
 	FReal Margin;
 	bool bIsConvex;
 	bool bDoCollide;
@@ -412,11 +534,38 @@ protected:
 
 #if TRACK_CHAOS_GEOMETRY
 	bool bIsTracked;
+#else
+#if DISALLOW_FIMPLICIT_OBJECT_TAIL_PADDING
+	// The purpose of this padding is just to make it easier to calculate PadBytes below.
+	bool bPad;
+#endif // DISALLOW_FIMPLICIT_OBJECT_TAIL_PADDING
 #endif
 
+	EImplicitObjectType Type;
+	EImplicitObjectType CollisionType;
+
+#if DISALLOW_FIMPLICIT_OBJECT_TAIL_PADDING
+	// the following assumptions are made when calculating PadBytes and inserting any explicit padding between fields:
+	static_assert(alignof(bool) <= sizeof(FReal)); // Otherwise, padding would be added between Margin the first bool field
+	static_assert(alignof(EImplicitObjectType) <= 4 * sizeof(bool));  // Otherwise, padding would be added between last bool field and first EImplicitObjectType field
+
+	static constexpr int AlignOfFImplicitObject = (int)FMath::Max(alignof(FReal), FMath::Max(alignof(bool), alignof(EImplicitObjectType)));
+	static constexpr int PadBytes =
+		AlignOfFImplicitObject - (sizeof(FReal) + 4 * sizeof(bool) + 2 * sizeof(EImplicitObjectType)) % AlignOfFImplicitObject;
+	static_assert(PadBytes > 0);
+	char Pad[PadBytes];
+#endif // DISALLOW_FIMPLICIT_OBJECT_TAIL_PADDING
+
 private:
-	virtual Pair<FVec3, bool> FindClosestIntersectionImp(const FVec3& StartPoint, const FVec3& EndPoint, const FReal Thickness) const;
+	CHAOS_API virtual Pair<FVec3, bool> FindClosestIntersectionImp(const FVec3& StartPoint, const FVec3& EndPoint, const FReal Thickness) const;
 };
+#if DISALLOW_FIMPLICIT_OBJECT_TAIL_PADDING
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic pop
+#elif defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+#endif // DISALLOW_FIMPLICIT_OBJECT_TAIL_PADDING
 
 FORCEINLINE FChaosArchive& operator<<(FChaosArchive& Ar, FImplicitObject& Value)
 {

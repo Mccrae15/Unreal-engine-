@@ -101,10 +101,23 @@ UDMXPixelMappingRendererComponent* UDMXPixelMappingRootComponent::FindRendererCo
 	return nullptr;
 }
 
-void UDMXPixelMappingRootComponent::OnComponentRenamed(UDMXPixelMapping* PixelMapping, UDMXPixelMappingBaseComponent* RenamedComponent, UObject* OldOuter, const FName OldName)
+void UDMXPixelMappingRootComponent::OnComponentRenamed(UDMXPixelMappingBaseComponent* RenamedComponent)
 {
+	CachedRendererComponentsByName.Reset();
 	ForEachChildOfClass<UDMXPixelMappingRendererComponent>([this](UDMXPixelMappingRendererComponent* RendererComponent)
 		{
 			CachedRendererComponentsByName.Add(RendererComponent->GetFName(), RendererComponent);
 		}, false);
+}
+
+FString UDMXPixelMappingRootComponent::GetUserName() const
+{
+	if (UserName.IsEmpty())
+	{
+		return GetOuter()->GetName();
+	}
+	else
+	{
+		return UserName;
+	}
 }

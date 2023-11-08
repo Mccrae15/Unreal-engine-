@@ -2,6 +2,7 @@
 
 #include "LandscapeProxyUIDetails.h"
 
+#include "Algo/AnyOf.h"
 #include "Algo/Count.h"
 #include "Algo/Find.h"
 #include "Algo/Transform.h"
@@ -40,6 +41,9 @@
 #include "VT/RuntimeVirtualTextureVolume.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/IToolTip.h"
+#include "Widgets/Layout/SBox.h"
 #include "Widgets/Text/STextBlock.h"
 
 class IPropertyHandle;
@@ -48,6 +52,12 @@ class UObject;
 class URuntimeVirtualTexture;
 
 #define LOCTEXT_NAMESPACE "FLandscapeProxyUIDetails"
+
+static TAutoConsoleVariable<int32> CVarShowCompressWeightMapsOption(
+	TEXT("landscape.ShowCompressHeightMapsOption"),
+	0,
+	TEXT("Enable editing of the compressed height map option on landscape proxies (experimental)."),
+	ECVF_Default);
 
 FLandscapeProxyUIDetails::FLandscapeProxyUIDetails()
 {
@@ -74,6 +84,7 @@ void FLandscapeProxyUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 	Algo::Transform(EditingObjects, EditingProxies, [](TWeakObjectPtr<UObject> InObject) { return TWeakObjectPtr<ALandscapeProxy>(Cast<ALandscapeProxy>(InObject.Get())); });
 
 	TArray<TWeakObjectPtr<ALandscape>> LandscapeActors;
+	TArray<TWeakObjectPtr<ALandscapeStreamingProxy>> EditingStreamingProxies;
 	for (TWeakObjectPtr<ALandscapeProxy> EditingProxy : EditingProxies)
 	{
 		if (EditingProxy.IsValid())
@@ -82,7 +93,29 @@ void FLandscapeProxyUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 			{
 				LandscapeActors.AddUnique(LandscapeActor);
 			}
+
+			if (ALandscapeStreamingProxy* LandscapeStreamingProxy = Cast<ALandscapeStreamingProxy>(EditingProxy.Get()))
+			{
+				EditingStreamingProxies.Add(LandscapeStreamingProxy);
+			}
 		}
+	}
+
+	// Hide World Partition specific properties in non WP levels
+	const bool bShouldDisplayWorldPartitionProperties = Algo::AnyOf(EditingProxies, [](const TWeakObjectPtr<ALandscapeProxy> InProxy)
+	{
+		UWorld* World = InProxy.IsValid() ? InProxy->GetTypedOuter<UWorld>() : nullptr;
+		return UWorld::IsPartitionedWorld(World);
+	});
+
+	if (!bShouldDisplayWorldPartitionProperties)
+	{
+		DetailBuilder.HideProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(ALandscape, bAreNewLandscapeActorsSpatiallyLoaded), ALandscape::StaticClass()));
+	}
+
+	if (CVarShowCompressWeightMapsOption->GetInt() == 0)
+	{
+		DetailBuilder.HideProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(ALandscapeProxy, bUseCompressedHeightmapStorage), ALandscapeProxy::StaticClass()));
 	}
 
 	if (LandscapeActors.Num() == 1)
@@ -107,6 +140,16 @@ void FLandscapeProxyUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 			];
 
 			RowDisplayText = LOCTEXT("LandscapeComponentCount", "Component Count");
+			int32 NumComponents = LandscapeActor->LandscapeComponents.Num();
+			// If displaying streaming proxies, don't show the main landscape actor's component count, which is always 0 : 
+			if (!EditingStreamingProxies.IsEmpty())
+			{
+				NumComponents = EditingStreamingProxies[0]->LandscapeComponents.Num();
+				if (Algo::AnyOf(EditingStreamingProxies, [NumComponents](const TWeakObjectPtr<ALandscapeStreamingProxy> InStreamingProxy) { return InStreamingProxy.Get()->LandscapeComponents.Num() != NumComponents; }))
+				{
+					NumComponents = -1;
+				}
+			}
 			CategoryBuilder.AddCustomRow(RowDisplayText)
 			.RowTag(TEXT("LandscapeComponentCount"))
 			.NameContent()
@@ -115,7 +158,7 @@ void FLandscapeProxyUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 			]
 			.ValueContent()
 			[
-				GenerateTextWidget(FText::Format(LOCTEXT("LandscapeComponentCountValue", "{0}"), LandscapeActor->LandscapeComponents.Num()), true)
+				GenerateTextWidget((NumComponents == -1) ? LOCTEXT("MultipleValues", "Multiple Values") : FText::Format(LOCTEXT("LandscapeComponentCountValue", "{0}"), NumComponents), true)
 			];
 
 			RowDisplayText = LOCTEXT("LandscapeComponentSubsections", "Component Subsections");
@@ -145,7 +188,7 @@ void FLandscapeProxyUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 			];
 
 			int32 LandscapeCount = LandscapeInfo->StreamingProxies.Num() + (LandscapeInfo->LandscapeActor.Get() ? 1 : 0);
-			RowDisplayText = LOCTEXT("LandscapeCount", "Landscape Count");
+			RowDisplayText = LOCTEXT("LandscapeCount", "Landscape Proxy Count");
 			CategoryBuilder.AddCustomRow(RowDisplayText)
 			.RowTag(TEXT("LandscapeCount"))
 			.NameContent()
@@ -154,7 +197,7 @@ void FLandscapeProxyUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 			]
 			.ValueContent()
 			[
-				GenerateTextWidget(FText::Format(LOCTEXT("LandscapeCountValue", "{0}"), LandscapeCount), true)
+				GenerateTextWidget(FText::Format(LOCTEXT("LandscapeProxyCountValue", "{0}"), LandscapeCount), true)
 			];
 
 			int32 TotalComponentCount = LandscapeInfo->XYtoComponentMap.Num();
@@ -266,8 +309,8 @@ void FLandscapeProxyUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 		};
 
 		IDetailCategoryBuilder& CategoryBuilder = DetailBuilder.EditCategory("Nanite", FText::GetEmpty(), ECategoryPriority::Default);
-		TSharedRef<IPropertyHandle> EnableNaniteProperty = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(ALandscape, bEnableNanite));
 		CategoryBuilder.AddCustomRow(FText::FromString(TEXT("Rebuild Nanite Data")))
+		.RowTag("RebuildNaniteData")
 		[
 			SNew(SHorizontalBox)
 			.IsEnabled_Lambda([HasAtLeastOneNaniteLandscape] { return HasAtLeastOneNaniteLandscape(); })
@@ -299,6 +342,125 @@ void FLandscapeProxyUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 				.OnClicked_Lambda([BuildNaniteData]() { return BuildNaniteData(/*bInForceRebuild = */true); })
 			]
 		];
+	}
+
+	ALandscapeStreamingProxy* LandscapeStreamingProxy = EditingStreamingProxies.IsEmpty() ? nullptr : EditingStreamingProxies[0].Get();
+
+	if (LandscapeStreamingProxy != nullptr)
+	{
+		for (TFieldIterator<FProperty> PropertyIterator(LandscapeStreamingProxy->GetClass()); PropertyIterator; ++PropertyIterator)
+		{
+			FProperty* Property = *PropertyIterator;
+
+			if (Property == nullptr)
+			{
+				continue;
+			}
+
+			if (LandscapeStreamingProxy->IsPropertyInherited(Property))
+			{
+				TSharedPtr<IPropertyHandle> PropertyHandle = DetailBuilder.GetProperty(Property->GetFName());
+				
+				if (PropertyHandle->IsValidHandle())
+				{
+					IDetailPropertyRow* DetailRow = DetailBuilder.EditDefaultProperty(PropertyHandle);
+
+					if (DetailRow != nullptr)
+					{
+						// Extend the tool tip to indicate this property is inherited
+						FText ToolTipText = PropertyHandle->GetToolTipText();
+						DetailRow->ToolTip(FText::Format(NSLOCTEXT("Landscape", "InheritedProperty", "{0} This property is inherited from the parent Landscape proxy."), ToolTipText));
+
+						// Disable the property editing
+						DetailRow->IsEnabled(false);
+					}
+				}
+			}
+			else if (LandscapeStreamingProxy->IsPropertyOverridable(Property))
+			{
+				TSharedPtr<IPropertyHandle> PropertyHandle = DetailBuilder.GetProperty(Property->GetFName());
+
+				if (PropertyHandle->IsValidHandle())
+				{
+					const FText TooltipText = NSLOCTEXT("Landscape", "OverriddenProperty", "Check this box to override the parent landscape's property.");
+					FString PropertyName = Property->GetName();
+					IDetailPropertyRow* DetailRow = DetailBuilder.EditDefaultProperty(PropertyHandle);
+					TSharedPtr<SWidget> NameWidget = nullptr;
+					TSharedPtr<SWidget> ValueWidget = nullptr;
+
+					DetailRow->GetDefaultWidgets(NameWidget, ValueWidget);
+
+					DetailRow->CustomWidget()
+					.NameContent()
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						[
+							SNew(SCheckBox)
+							.ToolTipText(TooltipText)
+							.IsChecked_Lambda([EditingStreamingProxies, PropertyName]() -> ECheckBoxState
+							{
+								bool bContainsOverriddenProperty = false;
+								bool bContainsDefaultProperty = false;
+
+								for (const TWeakObjectPtr<ALandscapeStreamingProxy> StreamingProxy : EditingStreamingProxies)
+								{
+									if (!StreamingProxy.IsValid())
+									{
+										continue;
+									}
+
+									const bool bIsPropertyOverridden = StreamingProxy->IsSharedPropertyOverridden(PropertyName);
+
+									bContainsOverriddenProperty |= bIsPropertyOverridden;
+									bContainsDefaultProperty |= !bIsPropertyOverridden;
+								}
+
+								if (bContainsOverriddenProperty && bContainsDefaultProperty)
+								{
+									return ECheckBoxState::Undetermined;
+								}
+
+								return bContainsOverriddenProperty ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+							})
+							.OnCheckStateChanged_Lambda([EditingStreamingProxies, PropertyName](ECheckBoxState NewState)
+							{
+								if (NewState == ECheckBoxState::Undetermined)
+								{
+									return;
+								}
+
+								const bool bChecked = NewState == ECheckBoxState::Checked;
+
+								for (const TWeakObjectPtr<ALandscapeStreamingProxy> StreamingProxy : EditingStreamingProxies)
+								{
+									if (!StreamingProxy.IsValid())
+									{
+										continue;
+									}
+
+									StreamingProxy->SetSharedPropertyOverride(PropertyName, bChecked);
+								}
+							})
+						]
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						[
+							NameWidget->AsShared()
+						]
+					]
+					.ValueContent()
+					[
+						SNew(SBox)
+						.IsEnabled_Lambda([LandscapeStreamingProxy, PropertyName]() { return LandscapeStreamingProxy->IsSharedPropertyOverridden(PropertyName); })
+						[
+							ValueWidget->AsShared()
+						]
+					];
+				}
+			}
+		}
 	}
 }
 

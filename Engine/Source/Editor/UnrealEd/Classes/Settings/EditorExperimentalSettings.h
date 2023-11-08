@@ -13,8 +13,8 @@
 /**
  * Implements Editor settings for experimental features.
  */
-UCLASS(config=EditorPerProjectUserSettings)
-class UNREALED_API UEditorExperimentalSettings
+UCLASS(config=EditorPerProjectUserSettings, MinimalAPI)
+class UEditorExperimentalSettings
 	: public UObject
 {
 	GENERATED_UCLASS_BODY()
@@ -84,9 +84,6 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = Cooking, meta = (DisplayName = "Use shared cooked builds in launch on", ConfigRestartRequired = true))
 	bool bSharedCookedBuilds;
 
-	UPROPERTY()
-	int32 MultiProcessCooking_DEPRECATED;
-
 	/** Enable late joining in PIE */
 	UPROPERTY(EditAnywhere, config, Category = PIE, meta = (DisplayName = "Allow late joining"))
 	bool bAllowLateJoinInPIE;
@@ -143,6 +140,9 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = Level)
 	bool bLevelInstance;
 
+	UPROPERTY(EditAnywhere, config, Category = WorldPartition)
+	bool bEnableWorldPartitionActorFilters;
+
 	/**
 	 * Returns an event delegate that is executed when a setting has changed.
 	 *
@@ -157,8 +157,8 @@ public:
 protected:
 
 	// UObject overrides
-	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
-	virtual void PostInitProperties() override;
+	UNREALED_API virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+	UNREALED_API virtual void PostInitProperties() override;
 
 private:
 

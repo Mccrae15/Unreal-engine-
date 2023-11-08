@@ -78,7 +78,12 @@ void UPCGMatchAndSetByAttribute::MatchAndSet_Implementation(
 		return;
 	}
 
-	const FPCGAttributePropertySelector& SetTarget = InSettings->SetTarget;
+	FPCGAttributePropertyInputSelector InputSource;
+	InputSource.SetAttributeName(MatchSourceAttribute);
+	InputSource = InputSource.CopyAndFixLast(InPointData);
+
+	// Deprecation old behavior, if SetTarget was None, we took last created in OutPointData
+	FPCGAttributePropertyOutputSelector SetTarget = InSettings->SetTarget.CopyAndFixSource(&InputSource, OutPointData);
 
 	// Create attribute if needed
 	if (!CreateAttributeIfNeeded(Context, SetTarget, Entries[0].Value, OutPointData, InSettings))
@@ -112,10 +117,6 @@ void UPCGMatchAndSetByAttribute::MatchAndSet_Implementation(
 	}
 
 	//TODO: implement async loop?
-	FPCGAttributePropertySelector InputSource;
-	InputSource.Selection = EPCGAttributePropertySelection::Attribute;
-	InputSource.AttributeName = ((MatchSourceAttribute == NAME_None) ? InPointData->Metadata->GetLatestAttributeNameOrNone() : MatchSourceAttribute);
-
 	TUniquePtr<const IPCGAttributeAccessor> InputAccessor = PCGAttributeAccessorHelpers::CreateConstAccessor(InPointData, InputSource);
 	TUniquePtr<const IPCGAttributeAccessorKeys> InputKeys = PCGAttributeAccessorHelpers::CreateConstKeys(InPointData, InputSource);
 
@@ -128,6 +129,18 @@ void UPCGMatchAndSetByAttribute::MatchAndSet_Implementation(
 	// TODO: this should be more complex type - see what's done in the compare element
 	TUniquePtr<IPCGAttributeAccessor> SetTargetAccessor = PCGAttributeAccessorHelpers::CreateAccessor(OutPointData, SetTarget);
 	TUniquePtr<IPCGAttributeAccessorKeys> SetTargetKeys = PCGAttributeAccessorHelpers::CreateKeys(OutPointData, SetTarget);
+
+	if (!SetTargetAccessor.IsValid() || !SetTargetKeys.IsValid())
+	{
+		PCGE_LOG_C(Warning, GraphAndLog, &Context, LOCTEXT("FailedToCreateTargetAccessor", "Failed to create output accessor or iterator"));
+		return;
+	}
+
+	if (SetTargetAccessor->IsReadOnly())
+	{
+		PCGE_LOG_C(Warning, GraphAndLog, &Context, FText::Format(LOCTEXT("SetTargetAccessorIsReadOnly", "Attribute/Property '{0}' is read only."), SetTarget.GetDisplayText()));
+		return;
+	}
 
 	auto MatchAndSetOperation = [&InputAccessor, &InputKeys, &EntryMatchSourceAccessors, &EntrySetValueAccessors, &EntryKeys, &SetTargetAccessor, &SetTargetKeys](auto MatchDummy)
 	{

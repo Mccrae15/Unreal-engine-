@@ -166,7 +166,7 @@ bool FMeshApproximationTool::RunMerge(const FString& PackageName, const TArray<T
 	{
 		FText Message = NSLOCTEXT("UnrealEd", "FailedToMergeActorsSublevels_Msg", "The selected actors should be in the same level");
 		const FText Title = NSLOCTEXT("UnrealEd", "FailedToMergeActors_Title", "Unable to merge actors");
-		FMessageDialog::Open(EAppMsgType::Ok, Message, &Title);
+		FMessageDialog::Open(EAppMsgType::Ok, Message, Title);
 		return false;
 	}
 
@@ -182,7 +182,7 @@ bool FMeshApproximationTool::RunMerge(const FString& PackageName, const TArray<T
 	IGeometryProcessing_ApproximateActors::FOptions Options = ApproxActorsAPI->ConstructOptions(UseSettings);
 
 	TArray<UPrimitiveComponent*> PrimitiveComponents;
-	auto IsValidPrimitiveComponent = [](const TSharedPtr<FMergeComponentData>& Component) { return Component.IsValid() && !Component.Get()->bShouldIncorporate; };
+	auto IsValidPrimitiveComponent = [](const TSharedPtr<FMergeComponentData>& Component) { return Component.IsValid() && Component.Get()->bShouldIncorporate; };
 	auto GetPrimitiveComponent = [](const TSharedPtr<FMergeComponentData>& Component) { return Component.Get()->PrimComponent.Get(); };
 	Algo::TransformIf(SelectedComponents, PrimitiveComponents, IsValidPrimitiveComponent, GetPrimitiveComponent);
 
@@ -259,7 +259,7 @@ bool FMeshApproximationTool::RunMerge(const FString& PackageName, const TArray<T
 			break;
 		}		
 		
-		FMessageDialog::Open(EAppMsgType::Ok, Message, &Title);
+		FMessageDialog::Open(EAppMsgType::Ok, Message, Title);
 		return false;
 	}
 

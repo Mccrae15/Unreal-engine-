@@ -6,12 +6,6 @@ public class GameProjectGeneration : ModuleRules
 {
 	public GameProjectGeneration(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"Editor/AddContentDialog/Private",
-			}
-		);
-
 		PublicDependencyModuleNames.AddRange(
 			new string[] {
 				"HardwareTargeting",
@@ -22,11 +16,7 @@ public class GameProjectGeneration : ModuleRules
 			new string[] {
 				"AssetRegistry",
 				"ContentBrowser",
-				"DesktopPlatform",
-				"LauncherPlatform",
 				"MainFrame",
-				"AddContentDialog",
-				"HardwareTargeting",
 			}
 		);
 
@@ -54,7 +44,6 @@ public class GameProjectGeneration : ModuleRules
 				"UnrealEd",
 				"DesktopPlatform",
 				"LauncherPlatform",
-				"HardwareTargeting",
 				"AddContentDialog",
 				"AudioMixer",
 				"AudioMixerCore"

@@ -155,18 +155,18 @@ void FVulkanQueue::FillSupportedStageBits()
 			VK_PIPELINE_STAGE_TRANSFER_BIT |
 			VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
 
-		if (Device->GetPhysicalFeatures().geometryShader)
+		if (Device->GetPhysicalDeviceFeatures().Core_1_0.geometryShader)
 		{
 			SupportedStages |= VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT;
 		}
-
-#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
-		SupportedStages |= VK_PIPELINE_STAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR;
-#endif
-
-#if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP
-		SupportedStages |= VK_PIPELINE_STAGE_FRAGMENT_DENSITY_PROCESS_BIT_EXT;
-#endif
+		if (Device->GetOptionalExtensions().HasKHRFragmentShadingRate)
+		{
+			SupportedStages |= VK_PIPELINE_STAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR;
+		}
+		if (Device->GetOptionalExtensions().HasEXTFragmentDensityMap)
+		{
+			SupportedStages |= VK_PIPELINE_STAGE_FRAGMENT_DENSITY_PROCESS_BIT_EXT;
+		}
 	}
 
 	if (VKHasAnyFlags(QueueProps.queueFlags, VK_QUEUE_COMPUTE_BIT))

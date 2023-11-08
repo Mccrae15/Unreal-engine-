@@ -26,7 +26,7 @@ UWorld* UConversationInstance::GetWorld() const
 
 #if WITH_SERVER_CODE
 
-void UConversationInstance::ServerRemoveParticipant(FGameplayTag ParticipantID)
+void UConversationInstance::ServerRemoveParticipant(FGameplayTag ParticipantID, const FConversationParticipants& PreservedParticipants)
 {
 	for (auto It = Participants.List.CreateIterator(); It; ++It)
 	{
@@ -36,7 +36,7 @@ void UConversationInstance::ServerRemoveParticipant(FGameplayTag ParticipantID)
 			{
 				if (bConversationStarted)
 				{
-					OldParticipant->ServerNotifyConversationEnded(this);
+					OldParticipant->ServerNotifyConversationEnded(this, PreservedParticipants);
 				}
 			}
 			It.RemoveCurrent();
@@ -54,7 +54,7 @@ void UConversationInstance::ServerAssignParticipant(FGameplayTag ParticipantID, 
 		return;
 	}
 
-	ServerRemoveParticipant(ParticipantID);
+	ServerRemoveParticipant(ParticipantID, Participants);
 
 	FConversationParticipantEntry NewEntry;
 	NewEntry.ParticipantID = ParticipantID;
@@ -179,6 +179,8 @@ void UConversationInstance::TryStartingConversation()
 			}
 		}
 
+		ConversationRNG.Initialize(NAME_None);
+
 		OnStarted();
 
 		OnCurrentConversationNodeModified();
@@ -193,6 +195,9 @@ void UConversationInstance::ServerAdvanceConversation(const FAdvanceConversation
 
 		TArray<FConversationBranchPoint> CandidateDestinations;
 
+		const FConversationContext ServerContext = FConversationContext::CreateServerContext(this, nullptr);
+		const UConversationChoiceNode* ChoiceNodePicked = nullptr;
+
 		if (InChoicePicked.Choice != FConversationChoiceReference::Empty)
 		{
 			if (const FConversationBranchPoint* BranchPoint = FindBranchPointFromClientChoice(InChoicePicked.Choice))
@@ -200,14 +205,14 @@ void UConversationInstance::ServerAdvanceConversation(const FAdvanceConversation
 				UE_LOG(LogCommonConversationRuntime, Verbose, TEXT("User picked option %s, going to try that"), *BranchPoint->ClientChoice.ChoiceReference.ToString());
 				CandidateDestinations = { *BranchPoint };
 
-				FConversationContext Context = FConversationContext::CreateServerContext(this, nullptr);
-				if (const UConversationTaskNode* TaskNode = BranchPoint->ClientChoice.TryToResolveChoiceNode<UConversationTaskNode>(Context))
+				if (const UConversationTaskNode* TaskNode = BranchPoint->ClientChoice.TryToResolveChoiceNode<UConversationTaskNode>(ServerContext))
 				{
 					for (const UConversationNode* SubNode : TaskNode->SubNodes)
 					{
 						if (const UConversationChoiceNode* ChoiceNode = Cast<UConversationChoiceNode>(SubNode))
 						{
-							ChoiceNode->NotifyChoicePickedByUser(Context, BranchPoint->ClientChoice);
+							ChoiceNodePicked = ChoiceNode;
+							ChoiceNode->NotifyChoicePickedByUser(ServerContext, BranchPoint->ClientChoice);
 							break;
 						}
 					}
@@ -257,6 +262,12 @@ void UConversationInstance::ServerAdvanceConversation(const FAdvanceConversation
 			}
 		}
 
+		// Allow derived conversation instances a chance to respond to a choice being picked
+		if (ChoiceNodePicked)
+		{ 
+			OnChoiceNodePickedByUser(ServerContext, ChoiceNodePicked, ValidDestinations);
+		}
+
 		if (ValidDestinations.Num() == 0)
 		{
 			UE_LOG(LogCommonConversationRuntime, Verbose, TEXT("No available destinations from %s, ending the conversation"), *GetCurrentChoiceReference().ToString());
@@ -295,10 +306,10 @@ void UConversationInstance::ServerAbortConversation()
 
 		OnEnded();
 
-		TArray<FConversationParticipantEntry> ListCopy = Participants.List;
-		for (const FConversationParticipantEntry& ParticipantEntry : ListCopy)
+		const FConversationParticipants ParticipantsCopy = Participants;
+		for (const FConversationParticipantEntry& ParticipantEntry : ParticipantsCopy.List)
 		{
-			ServerRemoveParticipant(ParticipantEntry.ParticipantID);
+			ServerRemoveParticipant(ParticipantEntry.ParticipantID, ParticipantsCopy);
 		}
 		check(Participants.List.Num() == 0);
 	}
@@ -435,11 +446,10 @@ void UConversationInstance::UpdateNextChoices(const FConversationContext& Contex
 	if (const UConversationTaskNode* TaskNode = Cast<UConversationTaskNode>(GetCurrentChoiceReference().NodeReference.TryToResolve(Context)))
 	{
 		FConversationContext ChoiceContext = Context.CreateChildContext(TaskNode);
-
-		const TArray<FGuid> CandidateDestinations = ChoiceContext.GetConversationRegistry().GetOutputLinkGUIDs({ GetCurrentChoiceReference().NodeReference.NodeGUID });
-		
 		FConversationBranchPointBuilder BranchBuilder;
-		UConversationTaskNode::GenerateChoicesForDestinations(BranchBuilder, ChoiceContext, CandidateDestinations);
+
+		TaskNode->GenerateNextChoices(BranchBuilder, ChoiceContext);
+
 		AllChoices = BranchBuilder.GetBranches();
 	}
 

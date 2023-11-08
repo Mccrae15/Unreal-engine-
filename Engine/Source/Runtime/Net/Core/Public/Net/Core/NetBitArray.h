@@ -7,9 +7,19 @@
 #include "HAL/PlatformMath.h"
 #include "HAL/PlatformMemory.h"
 #include "Misc/AssertionMacros.h"
+#include <type_traits>
 
-namespace UE { namespace Net { class FNetBitArray; } }
-namespace UE { namespace Net { class FNetBitArrayView; } }
+namespace UE::Net
+{
+	class FNetBitArray;
+	class FNetBitArrayView;
+
+	namespace Private
+	{
+		class FNetBitArrayRangedForConstIterator;
+	}
+}
+
 
 /* NetBitArray validation support. */
 #ifndef UE_NETBITARRAY_VALIDATE
@@ -26,8 +36,7 @@ namespace UE { namespace Net { class FNetBitArrayView; } }
 #	define UE_NETBITARRAY_CHECK(...)
 #endif
 
-#define UE_NETBITARRAY_VALIDATE_COMPATIBLE(x) UE_NETBITARRAY_CHECK(this != &(x) && BitCount == (x).BitCount)
-#define UE_NETBITARRAYVIEW_VALIDATE_COMPATIBLE(x) UE_NETBITARRAY_CHECK((Storage != (x).Storage) && (BitCount == (x).BitCount))
+#define UE_NETBITARRAY_VALIDATE_BOTH_COMPATIBLE(lhs,rhs) UE_NETBITARRAY_CHECK((lhs).GetData() != (rhs).GetData() && (lhs).GetNumBits() == (rhs).GetNumBits())
 
 namespace UE::Net
 {
@@ -35,6 +44,9 @@ namespace UE::Net
 class FNetBitArrayBase
 {
 public:
+	enum ENoResetNoValidateType { NoResetNoValidate };
+	enum EResetOnInitType { ResetOnInit };
+
 	typedef uint32 StorageWordType;
 	static constexpr uint32 WordBitCount = sizeof(StorageWordType)*8U;
 
@@ -61,6 +73,9 @@ public:
 	/**  Creates an array with size BitCount bits. */
 	explicit FNetBitArray(uint32 BitCount);
 
+	/** Construct NetBitArray with the given BitCount but doesn't zero the allocated memory. Useful when the entire bit array will be overwritten before being read.*/
+	explicit FNetBitArray(uint32 BitCountIn, const ENoResetNoValidateType);
+
 	/** Return true if equal including BitCount and padding bits */
 	bool operator==(const FNetBitArray& Other) const;
 
@@ -70,6 +85,11 @@ public:
 	 */
 	void Init(uint32 BitCount);
 
+	/**
+	 * Initialize a bit array with another array.
+	 */
+	void InitAndCopy(const FNetBitArray& Source);
+	void InitAndCopy(const FNetBitArrayView& Source);
 	/**
 	 * Release all memory and set capacity to 0 bits
 	 */
@@ -108,6 +128,9 @@ public:
 
 	/** Sets all bits in the array, but clears padding bits. */
 	void SetAllBits();
+
+	/** Return if a specified bit is set or not */
+	bool IsBitSet(uint32 Index) const { return GetBit(Index); }
 
 	/** Returns true if any bit is set in the bitset. Note: Padding bits in storage are expected to be zero. */
 	bool IsAnyBitSet() const;
@@ -154,6 +177,9 @@ public:
 	/** Find last set bit. Returns InvalidIndex if no set bit was found. */
 	uint32 FindLastOne() const;
 
+	/** Only prints the amount of set bits in the array. @see FNetBitArrayPrinter for more print options */
+	NETCORE_API FString ToString() const;
+
 	/**
 	 * Retrieves set bits in the provided range and returns how many indices were written to OutIndices.
 	 * If OutIndices is filled to its capacity the search for set bits will end. OutIndices may be modified
@@ -172,6 +198,17 @@ public:
 
 	/** Copy bits from other bit array. The other array must have the same bit count. */
 	void Copy(const FNetBitArray& Other);
+	void Copy(const FNetBitArrayView& Other);
+
+	/**
+	 * Overwrite this bit array with the result of a word operation from two other arrays
+	 * 
+	 * @param First The first bit array to pass in the word operation
+	 * @param WordOp The operation to perform on the two bit arrays
+	 * @param Second The second bit array to pass in the word operation
+	 * @see FNetBitArrayHelper::AndOp, FNetBitArrayHelper::AndNotOp, FNetBitArrayHelper::OrOp, FNetBitArrayHelper::XorOp
+	 */
+	template<typename WordOpFunctor> void Set(const FNetBitArray& First, WordOpFunctor&& WordOp, const FNetBitArray& Second);
 
 	/**
 	 * Combine this array with another array using a word operation functor. Bit counts need to match.
@@ -181,6 +218,18 @@ public:
 	 * @see FNetBitArrayHelper::AndOp, FNetBitArrayHelper::AndNotOp, FNetBitArrayHelper::OrOp, FNetBitArrayHelper::XorOp
 	 */
 	template<typename WordOpFunctor> void Combine(const FNetBitArray& Other, WordOpFunctor&& WordOp);
+
+	/**
+	 * Combine this array with the result of a bitwise operation of two other arrays.
+	 * eg: ThisArray = ThisArray Op (ArrayA Op2 ArrayB)
+	 *
+	 * @param Op Operation to execute on the word of this array and the result of the operation on the two other arrays
+	 * @param ArrayA The first bit array to execute the other operation on
+	 * @param Op2 The operation to execute on the word of the read-only array passed in parameter
+	 * @param ArrayB The second bit array to execute the other operation on
+	 * @see FNetBitArrayHelper::AndOp, FNetBitArrayHelper::AndNotOp, FNetBitArrayHelper::OrOp, FNetBitArrayHelper::XorOp
+	 */
+	template<typename WordOpFunctor1, typename WordOpFunctor2> void CombineMultiple(WordOpFunctor1&& Op, const FNetBitArray& ArrayA, WordOpFunctor2&& Op2, const FNetBitArray& ArrayB);
 
 	/** Iterate over all set bits and invoke functor with signature void(uint32 BitIndex). */
 	template<typename T>
@@ -194,9 +243,19 @@ public:
 	template<typename T, typename V>
 	static void ForAllExclusiveBits(const FNetBitArray& A, const FNetBitArray& B, T&& FunctorA, V&& FunctorB);
 
+	/**
+	 * DO NOT USE DIRECTLY
+	 * Range-based for loop support iterating over set bits and returning the index to the set bit.
+	 */
+	Private::FNetBitArrayRangedForConstIterator begin() const;
+	Private::FNetBitArrayRangedForConstIterator end() const;
+
 private:
 	StorageWordType GetLastWordMask() const { return (~StorageWordType(0) >> (uint32(-int32(BitCount)) & (WordBitCount - 1))); }
 	void ClearPaddingBits();
+
+	/** Sets a new size but doesn't initialize the contents with zero'd memory. */
+	void Reserve(uint32 BitCount);
 
 	TArray<StorageWordType> Storage;
 	uint32 BitCount;
@@ -211,8 +270,6 @@ private:
 class FNetBitArrayView : public FNetBitArrayBase
 {
 public:
-	enum ENoResetNoValidateType { NoResetNoValidate };
-	enum EResetOnInitType { ResetOnInit };
 
 	/** Constructor will produce a valid but empty bitarray. */
 	inline FNetBitArrayView();
@@ -226,6 +283,9 @@ public:
 
 	/** Return true if equal including BitCount and padding bits */
 	bool operator==(const FNetBitArrayView& Other) const;
+
+	/** Return if a specified bit is set or not */
+	inline bool IsBitSet(uint32 Index) const { return GetBit(Index); }
 
 	/** Returns true if any bit is set in the bitset Note: Padding bits in storage are expected to be zero. */
 	inline bool IsAnyBitSet() const;
@@ -293,6 +353,9 @@ public:
 	/** Returns a pointer to the internal storage. */
 	StorageWordType* GetData() { return Storage; }
 
+	/** Only prints the amount of set bits in the array. @see FNetBitArrayPrinter for more print options */
+	NETCORE_API FString ToString() const;
+
 	/**
 	 * Retrieves set bits in the provided range and returns how many indices were written to OutIndices.
 	 * If OutIndices is filled to its capacity the search for set bits will end. OutIndices may be modified
@@ -311,6 +374,17 @@ public:
 
 	/** Copy bits from other bit array. The other array must have the same bit count. */
 	inline void Copy(const FNetBitArrayView& Other);
+	inline void Copy(const FNetBitArray& Other);
+
+	/**
+	 * Overwrite this bit array with the result of a word operation from two other arrays
+	 *
+	 * @param First The first bit array to pass in the word operation
+	 * @param WordOp The operation to perform on the two bit arrays
+	 * @param Second The second bit array to pass in the word operation
+	 * @see FNetBitArrayHelper::AndOp, FNetBitArrayHelper::AndNotOp, FNetBitArrayHelper::OrOp, FNetBitArrayHelper::XorOp
+	 */
+	template<typename WordOpFunctor> void Set(const FNetBitArrayView& First, WordOpFunctor&& WordOp, const FNetBitArrayView& Second);
 
 	/**
 	 * Combine this array with another array using a word operation functor. Bit counts need to match.
@@ -319,7 +393,19 @@ public:
 	 * @param WordOpFunctor The operation to perform for each word to combine. Signature is StorageWordType(StorageWordType ThisWord, StorageWordType OtherWord).
 	 * @see FNetBitArrayHelper::AndOp, FNetBitArrayHelper::AndNotOp, FNetBitArrayHelper::OrOp, FNetBitArrayHelper::XorOp
 	 */
-	template<typename Functor> void Combine(const FNetBitArrayView& Other, Functor&& WordOp);
+	template<typename WordOpFunctor> void Combine(const FNetBitArrayView& Other, WordOpFunctor&& WordOp);
+	
+	/**
+	 * Combine this array with the result of a bitwise operation of two other arrays.
+	 * eg: ThisArray = ThisArray Op (ArrayA Op2 ArrayB)
+	 *
+	 * @param Op Operation to execute on the word of this array and the result of the operation on the two other arrays
+	 * @param ArrayA The first bit array to execute the other operation on
+	 * @param Op2 The operation to execute on the word of the read-only array passed in parameter
+	 * @param ArrayB The second bit array to execute the other operation on
+	 * @see FNetBitArrayHelper::AndOp, FNetBitArrayHelper::AndNotOp, FNetBitArrayHelper::OrOp, FNetBitArrayHelper::XorOp
+	 */
+	template<typename WordOpFunctor1, typename WordOpFunctor2> void CombineMultiple(WordOpFunctor1&& Op, const FNetBitArrayView& ArrayA, WordOpFunctor2&& Op2, const FNetBitArrayView& ArrayB);
 
 	/** Iterate over all set bits and invoke functor with signature void(uint32 BitIndex). */
 	template <typename T>
@@ -335,6 +421,13 @@ public:
 
 	static constexpr inline uint32 CalculateRequiredWordCount(uint32 BitCount);
 
+	/**
+	 * DO NOT USE DIRECTLY
+	 * Range-based for loop support iterating over set bits and returning the index to the set bit.
+	 */
+	Private::FNetBitArrayRangedForConstIterator begin() const;
+	Private::FNetBitArrayRangedForConstIterator end() const;
+
 private:
 	inline StorageWordType GetLastWordMask() const { return (~StorageWordType(0) >> (uint32(-int32(BitCount)) & (WordBitCount - 1))); }
 
@@ -343,8 +436,11 @@ private:
 	uint32 BitCount;
 };
 
-
+//*************************************************************************************************
+// FNetBitArrayHelper 
 // Implementation helper
+//*************************************************************************************************
+
 class FNetBitArrayHelper final
 {
 private:
@@ -572,8 +668,9 @@ private:
 			if (Word != WordMask)
 			{
 				const uint32 BitOffset = WordIt*WordBitCount;
-				const uint32 Index = BitOffset + WordBitCount - 1U - FPlatformMath::CountLeadingZeros(~Word);
-				return Index;
+				const uint32 Index = BitOffset + WordBitCount - 1U - FPlatformMath::CountLeadingZeros(~Word & WordMask);
+				// Need to make sure the index is not out of bounds
+				return (Index < BitCount ? Index : FNetBitArrayBase::InvalidIndex);
 			}
 
 			WordMask = StorageWordType(~StorageWordType(0));
@@ -603,11 +700,27 @@ private:
 	
 	NETCORE_API static uint32 CountSetBits(const StorageWordType* Storage, const uint32 BitCount, const uint32 StartIndex, const uint32 Count);
 
+	template<typename WordOpFunctor> static void Set(StorageWordType* Storage, const StorageWordType* FirstSource, const StorageWordType* SecondSource, const uint32 WordCount, WordOpFunctor&& WordOp)
+	{
+		for (uint32 WordIt = 0; WordIt < WordCount; ++WordIt)
+		{
+			Storage[WordIt] = WordOp(FirstSource[WordIt], SecondSource[WordIt]);
+		}
+	}
+
 	template<typename Functor> static void Combine(StorageWordType* Storage, const StorageWordType* OtherStorage, const uint32 WordCount, Functor&& WordOp)
 	{
 		for (uint32 WordIt = 0; WordIt < WordCount; ++WordIt)
 		{
 			Storage[WordIt] = WordOp(Storage[WordIt], OtherStorage[WordIt]);
+		}
+	}
+
+	template<typename WordOpFunctor1, typename WordOpFunctor2> static void CombineMultiple(StorageWordType* WriteStorage, const StorageWordType* const ReadStorageA, const StorageWordType* const ReadStorageB, const uint32 WordCount, WordOpFunctor1&& WordOpWrite, WordOpFunctor2&& WordOpRead)
+	{
+		for (uint32 WordIt = 0; WordIt < WordCount; ++WordIt)
+		{
+			WriteStorage[WordIt] = WordOpWrite(WriteStorage[WordIt], WordOpRead(ReadStorageA[WordIt], ReadStorageB[WordIt]));
 		}
 	}
 
@@ -707,8 +820,50 @@ private:
 
 };
 
+namespace Private
+{
 
-// NetBitArray Implementation
+//*************************************************************************************************
+// FNetBitArrayRangedForConstIterator
+//*************************************************************************************************
+class FNetBitArrayRangedForConstIterator
+{
+public:
+	FNetBitArrayRangedForConstIterator();
+
+	FNetBitArrayRangedForConstIterator& operator++();
+
+	bool operator!=(const FNetBitArrayRangedForConstIterator& It) const;
+
+	/** Returns the bit index the iterator is pointing at. */
+	uint32 operator*() const;
+
+private:
+	friend FNetBitArray;
+	friend FNetBitArrayView;
+
+	enum class ERangeStart : unsigned
+	{
+		Begin,
+		End
+	};
+
+	FNetBitArrayRangedForConstIterator(const FNetBitArrayBase::StorageWordType* InData UE_LIFETIMEBOUND, uint32 BitCount, ERangeStart RangeStart);
+
+	void AdvanceToNextSetBit();
+
+	const FNetBitArrayBase::StorageWordType* Data = nullptr;
+	uint32 BitCount = 0;
+	uint32 WordCount = 0;
+	uint32 CurrentBitIndex = 0;
+	uint32 CurrentWord = 0;
+};
+
+} // end namespace Private
+
+//*************************************************************************************************
+// FNetBitArray Implementation
+//*************************************************************************************************
 inline FNetBitArray::FNetBitArray()
 : BitCount(0)
 {
@@ -730,6 +885,12 @@ inline FNetBitArray::FNetBitArray(uint32 InBitCount)
 	Init(InBitCount);
 }
 
+inline FNetBitArray::FNetBitArray(uint32 InBitCount, const FNetBitArrayBase::ENoResetNoValidateType)
+: BitCount(InBitCount)
+{
+	Reserve(BitCount);
+}
+
 inline void FNetBitArray::Init(uint32 InBitCount)
 {
 	BitCount = InBitCount;
@@ -739,11 +900,34 @@ inline void FNetBitArray::Init(uint32 InBitCount)
 	Storage.AddZeroed(WordCount);
 }
 
+inline void FNetBitArray::Reserve(uint32 InBitCount)
+{
+	BitCount = InBitCount;
+
+	const uint32 WordCount = (InBitCount + WordBitCount - 1U) / WordBitCount;
+	Storage.Reset(WordCount);
+	Storage.AddUninitialized(WordCount);
+}
+
+inline void FNetBitArray::InitAndCopy(const FNetBitArray& Source)
+{
+	Reserve(Source.GetNumBits());
+
+	Copy(Source);
+}
+
+inline void FNetBitArray::InitAndCopy(const FNetBitArrayView& Source)
+{
+	Reserve(Source.GetNumBits());
+
+	Copy(Source);
+}
+
 inline void FNetBitArray::Empty()
 {
 	BitCount = 0U;
 	Storage.Empty();
-};
+}
 
 inline void FNetBitArray::SetNumBits(uint32 InBitCount)
 {
@@ -788,7 +972,7 @@ inline bool FNetBitArray::IsAnyBitSet() const
 
 inline bool FNetBitArray::IsAnyBitSet(uint32 StartIndex, uint32 Count) const
 {
-	return FNetBitArrayHelper::IsAnyBitSet(Storage.GetData(), BitCount, StartIndex, Count);
+	return ((Count == 1U) ? GetBit(StartIndex) : FNetBitArrayHelper::IsAnyBitSet(Storage.GetData(), BitCount, StartIndex, Count));
 }
 
 inline bool FNetBitArray::IsNoBitSet() const
@@ -868,15 +1052,42 @@ inline uint32 FNetBitArray::CountSetBits(uint32 StartIndex, uint32 Count) const
 
 inline void FNetBitArray::Copy(const FNetBitArray& Other)
 {
-	UE_NETBITARRAY_VALIDATE_COMPATIBLE(Other);
-	// Intentionally doing a memory copy instead of using assignment operator as we know the bit counts are the same and don't need extra checks.
-	FPlatformMemory::Memcpy(GetData(), Other.GetData(), GetNumWords()*sizeof(StorageWordType));
+	UE_NETBITARRAY_VALIDATE_BOTH_COMPATIBLE(*this, Other);
+	if (GetNumWords() > 0 && Other.GetNumWords() > 0)
+	{
+		// Intentionally doing a memory copy instead of using assignment operator as we know the bit counts are the same and don't need extra checks.
+		FPlatformMemory::Memcpy(GetData(), Other.GetData(), GetNumWords() * sizeof(StorageWordType));
+	}
 }
 
-template<typename Functor> inline void FNetBitArray::Combine(const FNetBitArray& Other, Functor&& WordOp)
+inline void FNetBitArray::Copy(const FNetBitArrayView& Other)
 {
-	UE_NETBITARRAY_VALIDATE_COMPATIBLE(Other);
+	UE_NETBITARRAY_VALIDATE_BOTH_COMPATIBLE(*this, Other);
+	if (GetNumWords() > 0 && Other.GetNumWords() > 0)
+	{
+		// Intentionally doing a memory copy instead of using assignment operator as we know the bit counts are the same and don't need extra checks.
+		FPlatformMemory::Memcpy(GetData(), Other.GetData(), GetNumWords() * sizeof(StorageWordType));
+	}
+}
+
+template<typename WordOpFunctor> inline void FNetBitArray::Set(const FNetBitArray& First, WordOpFunctor&& WordOp, const FNetBitArray& Second)
+{
+	UE_NETBITARRAY_VALIDATE_BOTH_COMPATIBLE(*this, First);
+	UE_NETBITARRAY_VALIDATE_BOTH_COMPATIBLE(*this, Second);
+	FNetBitArrayHelper::Set(GetData(), First.GetData(), Second.GetData(), GetNumWords(), WordOp);
+}
+
+template<typename WordOpFunctor> inline void FNetBitArray::Combine(const FNetBitArray& Other, WordOpFunctor&& WordOp)
+{
+	UE_NETBITARRAY_VALIDATE_BOTH_COMPATIBLE(*this, Other);
 	FNetBitArrayHelper::Combine(Storage.GetData(), Other.Storage.GetData(), Storage.Num(), WordOp);
+}
+
+template<typename WordOpFunctor1, typename WordOpFunctor2> inline void FNetBitArray::CombineMultiple(WordOpFunctor1&& Op, const FNetBitArray& ArrayA, WordOpFunctor2&& Op2, const FNetBitArray& ArrayB)
+{
+	UE_NETBITARRAY_VALIDATE_BOTH_COMPATIBLE(*this, ArrayA);
+	UE_NETBITARRAY_VALIDATE_BOTH_COMPATIBLE(*this, ArrayB);
+	FNetBitArrayHelper::CombineMultiple(Storage.GetData(), ArrayA.Storage.GetData(), ArrayB.Storage.GetData(), Storage.Num(), Op, Op2);
 }
 
 template<typename T> inline void FNetBitArray::ForAllSetBits(T&& Functor) const
@@ -905,7 +1116,23 @@ inline void FNetBitArray::ClearPaddingBits()
 	}
 }
 
+//*************************************************************************************************
+// FNetBitArrayRangedForConstIterator implementation
+//*************************************************************************************************
+inline Private::FNetBitArrayRangedForConstIterator FNetBitArray::begin() const
+{
+	return Private::FNetBitArrayRangedForConstIterator(Storage.GetData(), BitCount, Private::FNetBitArrayRangedForConstIterator::ERangeStart::Begin);
+}
+
+inline Private::FNetBitArrayRangedForConstIterator FNetBitArray::end() const
+{
+	return Private::FNetBitArrayRangedForConstIterator(Storage.GetData(), BitCount, Private::FNetBitArrayRangedForConstIterator::ERangeStart::End);
+}
+
+
+//*************************************************************************************************
 // NetBitArrayView implementation
+//*************************************************************************************************
 constexpr uint32 FNetBitArrayView::CalculateRequiredWordCount(uint32 BitCount)
 { 
 	return (BitCount + WordBitCount - 1) / WordBitCount; 
@@ -959,7 +1186,7 @@ bool FNetBitArrayView::IsAnyBitSet() const
 
 bool FNetBitArrayView::IsAnyBitSet(uint32 StartIndex, uint32 Count) const
 {
-	return FNetBitArrayHelper::IsAnyBitSet(Storage, BitCount, StartIndex, Count);
+	return ((Count == 1U) ? GetBit(StartIndex) : FNetBitArrayHelper::IsAnyBitSet(GetData(), BitCount, StartIndex, Count));
 }
 
 bool FNetBitArrayView::IsNoBitSet() const
@@ -986,11 +1213,22 @@ void FNetBitArrayView::SetAllBits()
 	ClearPaddingBits();
 }
 
-/** Copy bits from other bit array */
 void FNetBitArrayView::Copy(const FNetBitArrayView& Other)
 {
-	UE_NETBITARRAYVIEW_VALIDATE_COMPATIBLE(Other);
-	FPlatformMemory::Memcpy(&Storage[0], &Other.Storage[0], WordCount * sizeof(StorageWordType));
+	UE_NETBITARRAY_VALIDATE_BOTH_COMPATIBLE(*this, Other);
+	if (GetNumWords() > 0 && Other.GetNumWords() > 0 )
+	{
+		FPlatformMemory::Memcpy(&Storage[0], &Other.Storage[0], WordCount * sizeof(StorageWordType));
+	}
+}
+
+void FNetBitArrayView::Copy(const FNetBitArray& Other)
+{
+	UE_NETBITARRAY_VALIDATE_BOTH_COMPATIBLE(*this, Other);
+	if (GetNumWords() > 0 && Other.GetNumWords() > 0)
+	{
+		FPlatformMemory::Memcpy(&Storage[0], Other.GetData(), WordCount * sizeof(StorageWordType));
+	}
 }
 
 void FNetBitArrayView::SetBit(uint32 Index)
@@ -1073,10 +1311,24 @@ inline uint32 FNetBitArrayView::CountSetBits(uint32 StartIndex, uint32 Count) co
 	return FNetBitArrayHelper::CountSetBits(Storage, BitCount, StartIndex, Count);
 }
 
-template<typename Functor> inline void FNetBitArrayView::Combine(const FNetBitArrayView& Other, Functor&& WordOp)
+template<typename WordOpFunctor> inline void FNetBitArrayView::Set(const FNetBitArrayView& First, WordOpFunctor&& WordOp, const FNetBitArrayView& Second)
 {
-	UE_NETBITARRAYVIEW_VALIDATE_COMPATIBLE(Other);
+	UE_NETBITARRAY_VALIDATE_BOTH_COMPATIBLE(*this, First);
+	UE_NETBITARRAY_VALIDATE_BOTH_COMPATIBLE(*this, Second);
+	FNetBitArrayHelper::Set(GetData(), First.GetData(), Second.GetData(), GetNumWords(), WordOp);
+}
+
+template<typename WordOpFunctor> inline void FNetBitArrayView::Combine(const FNetBitArrayView& Other, WordOpFunctor&& WordOp)
+{
+	UE_NETBITARRAY_VALIDATE_BOTH_COMPATIBLE(*this, Other);
 	FNetBitArrayHelper::Combine(Storage, Other.Storage, WordCount, WordOp);
+}
+
+template<typename WordOpFunctor1, typename WordOpFunctor2> inline void FNetBitArrayView::CombineMultiple(WordOpFunctor1&& Op, const FNetBitArrayView& ArrayA, WordOpFunctor2&& Op2, const FNetBitArrayView& ArrayB)
+{
+	UE_NETBITARRAY_VALIDATE_BOTH_COMPATIBLE(*this, ArrayA);
+	UE_NETBITARRAY_VALIDATE_BOTH_COMPATIBLE(*this, ArrayB);
+	FNetBitArrayHelper::CombineMultiple(Storage, ArrayA.Storage, ArrayB.Storage, WordCount, Op, Op2);
 }
 
 template<typename T> inline void FNetBitArrayView::ForAllSetBits(T&& Functor) const
@@ -1098,14 +1350,103 @@ void FNetBitArrayView::ForAllExclusiveBits(const FNetBitArrayView& A, const FNet
 	FNetBitArrayHelper::ForAllExclusiveBits(A.Storage, B.Storage, A.WordCount, A.BitCount, FunctorA, FunctorB);
 }
 
+inline Private::FNetBitArrayRangedForConstIterator FNetBitArrayView::begin() const
+{
+	return Private::FNetBitArrayRangedForConstIterator(Storage, BitCount, Private::FNetBitArrayRangedForConstIterator::ERangeStart::Begin);
+}
+
+inline Private::FNetBitArrayRangedForConstIterator FNetBitArrayView::end() const
+{
+	return Private::FNetBitArrayRangedForConstIterator(Storage, BitCount, Private::FNetBitArrayRangedForConstIterator::ERangeStart::End);
+}
+
+/** Transform any raw buffer into a FNetBitArrayView */
 inline FNetBitArrayView MakeNetBitArrayView(const FNetBitArrayView::StorageWordType* Storage, uint32 BitCount)
 {
 	return FNetBitArrayView(const_cast<FNetBitArrayView::StorageWordType*>(Storage), BitCount);
 }
 
+/** Transform a FNetBitArray into a FNetBitArrayView */
 inline FNetBitArrayView MakeNetBitArrayView(const FNetBitArray& BitArray)
 {
 	return FNetBitArrayView(const_cast<FNetBitArrayView::StorageWordType*>(BitArray.GetData()), BitArray.GetNumBits());
 }
 
+/** Transform a FNetBitArray into a FNetBitArrayView without validating the contents of the bit array received */
+inline FNetBitArrayView MakeNetBitArrayView(FNetBitArray& BitArray, const FNetBitArrayBase::ENoResetNoValidateType)
+{
+	return FNetBitArrayView(const_cast<FNetBitArrayView::StorageWordType*>(BitArray.GetData()), BitArray.GetNumBits(), FNetBitArrayBase::NoResetNoValidate);
+}
+
+
 } // end namespace UE::Net
+
+namespace UE::Net::Private
+{
+
+
+//*************************************************************************************************
+// FNetBitArrayRangedForConstIterator 
+// Implementation
+//*************************************************************************************************
+
+inline FNetBitArrayRangedForConstIterator::FNetBitArrayRangedForConstIterator()
+{
+}
+
+inline FNetBitArrayRangedForConstIterator::FNetBitArrayRangedForConstIterator(const FNetBitArrayBase::StorageWordType* InData UE_LIFETIMEBOUND, uint32 InBitCount, FNetBitArrayRangedForConstIterator::ERangeStart RangeStart)
+: Data(InData)
+, BitCount(InBitCount)
+, WordCount(FNetBitArrayView::CalculateRequiredWordCount(BitCount))
+, CurrentBitIndex(RangeStart == ERangeStart::Begin ? 0 : BitCount)
+{
+	UE_NETBITARRAY_CHECK(InData != nullptr || InBitCount == 0);
+	CurrentWord = (CurrentBitIndex < BitCount ? Data[0] : FNetBitArrayBase::StorageWordType(0));
+	AdvanceToNextSetBit();
+}
+
+inline FNetBitArrayRangedForConstIterator& FNetBitArrayRangedForConstIterator::operator++()
+{
+	AdvanceToNextSetBit();
+	return *this;
+}
+
+inline uint32 FNetBitArrayRangedForConstIterator::operator*() const
+{
+	return CurrentBitIndex;
+}
+
+inline bool FNetBitArrayRangedForConstIterator::operator!=(const FNetBitArrayRangedForConstIterator& It) const
+{
+	UE_NETBITARRAY_CHECK(this->Data == It.Data);
+	return this->CurrentBitIndex != It.CurrentBitIndex;
+}
+
+inline void FNetBitArrayRangedForConstIterator::AdvanceToNextSetBit()
+{
+	using SignedWordType = typename std::make_signed<FNetBitArrayBase::StorageWordType>::type;
+
+	uint32 WordIt = CurrentBitIndex/FNetBitArrayBase::WordBitCount;
+	while (CurrentWord == 0U)
+	{
+		++WordIt;
+		if (WordIt >= WordCount)
+		{
+			CurrentBitIndex = BitCount;
+			return;
+		}
+
+		CurrentWord = Data[WordIt];
+		// It's ok to not adjust the bit index to start on a word boundary. It's handled outside the loop.
+		CurrentBitIndex += FNetBitArrayBase::WordBitCount;
+	}
+
+	const uint32 NewBitIndex = (CurrentBitIndex & ~(FNetBitArrayBase::WordBitCount - 1U)) + FPlatformMath::CountTrailingZeros(CurrentWord);
+	CurrentBitIndex = FPlatformMath::Min(NewBitIndex, BitCount);
+
+	// Clear least significant bit from CurrentWord. It doesn't matter if we're at the end if the bit array as the CurrentWord will be ignored in that case.
+	const FNetBitArrayBase::StorageWordType LeastSignificantBit = CurrentWord & FNetBitArrayBase::StorageWordType(-SignedWordType(CurrentWord));
+	CurrentWord ^= LeastSignificantBit;
+}
+
+} // end namespace UE::Net::Private

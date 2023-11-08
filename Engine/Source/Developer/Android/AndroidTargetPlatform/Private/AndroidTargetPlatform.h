@@ -22,7 +22,7 @@
 #include "AndroidTargetDevice.h"
 
 #if WITH_ENGINE
-#include "Engine/TextureCube.h"
+#include "Engine/Texture.h"
 #include "Internationalization/Text.h"
 #include "StaticMeshResources.h"
 #endif // WITH_ENGINE
@@ -153,6 +153,14 @@ public:
 		InBoolKeys.Add(TEXT("bBuildForArm64"));	InBoolKeys.Add(TEXT("bBuildForX8664"));
 		InBoolKeys.Add(TEXT("bBuildForES31")); InBoolKeys.Add(TEXT("bBuildWithHiddenSymbolVisibility"));
 		InBoolKeys.Add(TEXT("bSaveSymbols")); InStringKeys.Add(TEXT("NDKAPILevel"));
+	}
+
+	virtual bool UsesRayTracing() const override
+	{
+		bool bEnableRayTracing = false;
+		GConfig->GetBool(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("bEnableRayTracing"), bEnableRayTracing, GEngineIni);
+
+		return bEnableRayTracing;
 	}
 
 	virtual bool ShouldExpandTo32Bit(const uint16* Indices, const int32 NumIndices) const override;
@@ -383,33 +391,8 @@ public:
 	}
 
 #if WITH_ENGINE
-	virtual void GetTextureFormats(const UTexture* Texture, TArray< TArray<FName> >& OutFormats) const
-	{
-		// Ask each platform variant to choose texture formats
-		for (ITargetPlatform* Platform : FormatTargetPlatforms)
-		{
-			TArray< TArray<FName> > PlatformFormats;
-			Platform->GetTextureFormats(Texture, PlatformFormats);
-			for (const TArray<FName>& FormatPerLayer : PlatformFormats)
-			{
-				OutFormats.AddUnique(FormatPerLayer);
-			}
-		}
-	}
-
-	virtual void GetAllTextureFormats(TArray<FName>& OutFormats) const override
-	{
-		// Ask each platform variant to choose texture formats
-		for (ITargetPlatform* Platform : FormatTargetPlatforms)
-		{
-			TArray<FName> PlatformFormats;
-			Platform->GetAllTextureFormats(PlatformFormats);
-			for (FName Format : PlatformFormats)
-			{
-				OutFormats.AddUnique(Format);
-			}
-		}
-	}
+	virtual void GetTextureFormats(const UTexture* Texture, TArray< TArray<FName> >& OutFormats) const;
+	virtual void GetAllTextureFormats(TArray<FName>& OutFormats) const override;
 #endif	
 
 	virtual float GetVariantPriority() const override

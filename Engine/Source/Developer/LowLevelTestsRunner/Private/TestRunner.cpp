@@ -8,9 +8,11 @@
 #include "Logging/LogSuppressionInterface.h"
 #include "Misc/ScopeExit.h"
 #include "Misc/StringBuilder.h"
+#include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 #include "String/Find.h"
 #include "String/LexFromString.h"
+#include "Containers/UnrealString.h"
 #include "TestCommon/CoreUtilities.h"
 #include "TestRunnerOutputDeviceError.h"
 
@@ -64,6 +66,8 @@ public:
 	bool HasLogOutput() const final { return bLogOutput || bDebugMode; }
 	bool IsDebugMode() const final { return bDebugMode; }
 
+	int32 GetTimeoutMinutes() const final { return TimeoutMinutes; }
+
 private:
 	TArray<const ANSICHAR*> CatchArgs;
 	FStringBuilderBase ExtraArgs;
@@ -75,6 +79,7 @@ private:
 	bool bWaitForInputToTerminate = false;
 	bool bAttachToDebugger = false;
 	int32 SleepOnInitSeconds = 0;
+	int32 TimeoutMinutes = 0;
 };
 
 FTestRunner::FTestRunner()
@@ -87,6 +92,7 @@ FTestRunner::FTestRunner()
 void FTestRunner::ParseCommandLine(TConstArrayView<const ANSICHAR*> Args)
 {
 	bool bExtraArg = false;
+
 	for (FAnsiStringView Arg : Args)
 	{
 		if (bExtraArg)
@@ -105,13 +111,18 @@ void FTestRunner::ParseCommandLine(TConstArrayView<const ANSICHAR*> Args)
 				ExtraArgs.Append(Arg).AppendChar(' ');
 			}
 		}
-		else if (Arg == ANSITEXTVIEW("--"))
+		else if (Arg == ANSITEXTVIEW("--extra-args"))
 		{
 			bExtraArg = true;
 		}
+
 		else if (Arg.StartsWith(ANSITEXTVIEW("--sleep=")))
 		{
 			LexFromString(SleepOnInitSeconds, WriteToString<16>(Arg.RightChop(8)).ToView());
+		}
+		else if (Arg.StartsWith(ANSITEXTVIEW("--timeout=")))
+		{
+			LexFromString(TimeoutMinutes, WriteToString<16>(Arg.RightChop(10)).ToView());
 		}
 		else if (Arg == ANSITEXTVIEW("--global-setup"))
 		{
@@ -147,18 +158,25 @@ void FTestRunner::ParseCommandLine(TConstArrayView<const ANSICHAR*> Args)
 		}
 		else if (Arg == ANSITEXTVIEW("--no-wait"))
 		{
-			bWaitForInputToTerminate = true;
+			bWaitForInputToTerminate = false;
 		}
 		else if (Arg == ANSITEXTVIEW("--attach-to-debugger"))
 		{
 			bAttachToDebugger = true;
+		}
+		else if (Arg == ANSITEXTVIEW("--waitfordebugger"))
+		{
+			bAttachToDebugger = true;
+		}
+		else if (Arg == ANSITEXTVIEW("--buildmachine"))
+		{
+			GIsBuildMachine = true;
 		}
 		else
 		{
 			CatchArgs.Add(Arg.GetData());
 		}
 	}
-
 	// Break in the debugger on failed assertions when attached.
 	CatchArgs.Add("--break");
 }
@@ -214,25 +232,21 @@ void FTestRunner::GlobalSetup()
 			Catch::getResultCapture().handleMessage(info, Catch::ResultWas::ExplicitFailure, StringCast<ANSICHAR>(*Error).Get(), reaction);
 		});
 
+	// Set up GWarn to handle Error, Warning, Display; but only when log output is enabled.
+#if WITH_APPLICATION_CORE
+	GWarn = FPlatformApplicationMisc::GetFeedbackContext();
+#else
+	GWarn = FPlatformOutputDevices::GetFeedbackContext();
+#endif
 	if (bLogOutput || bDebugMode)
 	{
-		// Set up GWarn to handle Error, Warning, Display; but only when log output is enabled.
-#if WITH_APPLICATION_CORE
-		GWarn = FPlatformApplicationMisc::GetFeedbackContext();
-#else
-		GWarn = FPlatformOutputDevices::GetFeedbackContext();
-#endif
-
 		// Set up default output devices to handle Log, Verbose, VeryVerbose.
 		FPlatformOutputDevices::SetupOutputDevices();
 
 		FLogSuppressionInterface::Get().ProcessConfigAndCommandLine();
 	}
 
-	if (FTestDelegates::GlobalSetup.Get()->IsBound())
-	{
-		FTestDelegates::GlobalSetup.Get()->Execute();
-	}
+	FTestDelegates::GetGlobalSetup().ExecuteIfBound();
 }
 
 void FTestRunner::GlobalTeardown() const
@@ -248,10 +262,7 @@ void FTestRunner::GlobalTeardown() const
 		GError = ErrorOutputDevice.GetDeviceError();
 	}
 
-	if (FTestDelegates::GlobalTeardown.Get()->IsBound())
-	{
-		FTestDelegates::GlobalTeardown.Get()->Execute();
-	}
+	FTestDelegates::GetGlobalTeardown().ExecuteIfBound();
 
 	CleanupPlatform();
 }

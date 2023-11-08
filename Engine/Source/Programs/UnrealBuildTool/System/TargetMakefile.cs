@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Threading.Tasks;
 using EpicGames.Core;
 using EpicGames.UHT.Utils;
 using Microsoft.Extensions.Logging;
@@ -16,7 +17,7 @@ namespace UnrealBuildTool
 	class TargetMakefileSourceFileInfo
 	{
 		public FileItem? SourceFileItem;
-		
+
 		/// <summary>
 		/// Hash of all the gen.cpp files being inlined in this source file
 		/// </summary>
@@ -44,7 +45,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="InlinedGenCppNames">Gen.cpp file names</param>
 		/// <returns>Hash of file names</returns>
-		static public int CalculateInlineGenCppHash(IEnumerable<string> InlinedGenCppNames)
+		public static int CalculateInlineGenCppHash(IEnumerable<string> InlinedGenCppNames)
 		{
 			int InlineHash = 0;
 			foreach (string FileName in InlinedGenCppNames)
@@ -68,12 +69,13 @@ namespace UnrealBuildTool
 		private readonly ILogger Logger;
 		public TargetMakefile Makefile { get; }
 
+		private List<Task> WriteTasks = new();
+
 		public TargetMakefileBuilder(TargetMakefile InMakefile, ILogger InLogger)
 		{
 			Logger = InLogger;
 			Makefile = InMakefile;
 		}
-
 
 		/// <inheritdoc/>
 		public void AddAction(IExternalAction Action)
@@ -82,25 +84,39 @@ namespace UnrealBuildTool
 		}
 
 		/// <inheritdoc/>
-		public void CreateIntermediateTextFile(FileItem FileItem, string Contents)
+		public void CreateIntermediateTextFile(FileItem FileItem, string Contents, bool AllowAsync = true)
 		{
-			// Write the file
-			Utils.WriteFileIfChanged(FileItem.Location, Contents, Logger);
+			if (AllowAsync)
+			{
+				WriteTasks.Add(Task.Run(() =>
+				{
+					Utils.WriteFileIfChanged(FileItem.Location, Contents, Logger);
+				}));
+			}
+			else
+			{
+				Utils.WriteFileIfChanged(FileItem.Location, Contents, Logger);
+			}
 
-			// Reset the file info, in case it already knows about the old file
 			Makefile.InternalDependencies.Add(FileItem);
-			FileItem.ResetCachedInfo();
 		}
 
 		/// <inheritdoc/>
-		public void CreateIntermediateTextFile(FileItem FileItem, IEnumerable<string> ContentLines)
+		public void CreateIntermediateTextFile(FileItem FileItem, IEnumerable<string> ContentLines, bool AllowAsync = true)
 		{
-			// Write the file
-			Utils.WriteFileIfChanged(FileItem, ContentLines, Logger);
-
+			if (AllowAsync)
+			{
+				WriteTasks.Add(Task.Run(() =>
+				{
+					Utils.WriteFileIfChanged(FileItem, ContentLines, Logger);
+				}));
+			}
+			else
+			{
+				Utils.WriteFileIfChanged(FileItem.Location, ContentLines, Logger);
+			}
 			// Reset the file info, in case it already knows about the old file
 			Makefile.InternalDependencies.Add(FileItem);
-			FileItem.ResetCachedInfo();
 		}
 
 		/// <inheritdoc/>
@@ -113,6 +129,12 @@ namespace UnrealBuildTool
 		public void AddSourceFiles(DirectoryItem SourceDir, FileItem[] SourceFiles)
 		{
 			Makefile.DirectoryToSourceFiles[SourceDir] = SourceFiles.Select(fi => new TargetMakefileSourceFileInfo(fi)).ToArray();
+		}
+
+		/// <inheritdoc/>
+		public virtual void AddHeaderFiles(FileItem[] HeaderFiles)
+		{
+			Makefile.HeaderFiles.UnionWith(HeaderFiles);
 		}
 
 		/// <inheritdoc/>
@@ -141,6 +163,11 @@ namespace UnrealBuildTool
 		{
 			Makefile.ModuleNameToOutputItems[ModuleName] = OutputItems;
 		}
+
+		internal void WaitOnWriteTasks()
+		{
+			Task.WaitAll(WriteTasks.ToArray());
+		}
 	}
 
 	/// <summary>
@@ -151,7 +178,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The version number to write
 		/// </summary>
-		public const int CurrentVersion = 34;
+		public const int CurrentVersion = 35;
 
 		/// <summary>
 		/// The time at which the makefile was created
@@ -285,6 +312,11 @@ namespace UnrealBuildTool
 		public Dictionary<DirectoryItem, TargetMakefileSourceFileInfo[]> DirectoryToSourceFiles;
 
 		/// <summary>
+		/// Set of all known header files, changes will not invalidate the makefile but are used to determine if a header is included in the target.
+		/// </summary>
+		public HashSet<FileItem> HeaderFiles;
+
+		/// <summary>
 		/// The set of source files that UnrealBuildTool determined to be part of the programmer's "working set". Used for adaptive non-unity builds.
 		/// </summary>
 		public HashSet<FileItem> WorkingSet = new HashSet<FileItem>();
@@ -337,6 +369,28 @@ namespace UnrealBuildTool
 		public double MemoryPerActionGB = 0.0;
 
 		/// <summary>
+		/// Enumerable of all source and header files tracked by this makefile.
+		/// </summary>
+		public IEnumerable<FileItem> SourceAndHeaderFiles
+		{
+			get
+			{
+				foreach (KeyValuePair<DirectoryItem, TargetMakefileSourceFileInfo[]> Item in DirectoryToSourceFiles)
+				{
+					foreach (TargetMakefileSourceFileInfo File in Item.Value.Where(x => x.SourceFileItem != null))
+					{
+						yield return File.SourceFileItem!;
+					}
+				}
+
+				foreach (FileItem File in HeaderFiles)
+				{
+					yield return File;
+				}
+			}
+		}
+
+		/// <summary>
 		/// Constructor
 		/// </summary>
 		/// <param name="ExternalMetadata">External build metadata from the platform</param>
@@ -350,14 +404,14 @@ namespace UnrealBuildTool
 		/// <param name="UbtPlugins">Collection of UBT plugins</param>
 		/// <param name="EnabledUbtPlugins">Collection of UBT plugins</param>
 		/// <param name="EnabledUhtPlugins">Collection of UBT plugins for UHT</param>
-		public TargetMakefile(string ExternalMetadata, FileReference ExecutableFile, FileReference ReceiptFile, 
+		public TargetMakefile(string ExternalMetadata, FileReference ExecutableFile, FileReference ReceiptFile,
 			DirectoryReference ProjectIntermediateDirectory, DirectoryReference ProjectIntermediateDirectoryNoArch,
-			TargetType TargetType, ConfigValueTracker ConfigValueTracker, bool bDeployAfterCompile, 
+			TargetType TargetType, ConfigValueTracker ConfigValueTracker, bool bDeployAfterCompile,
 			FileReference[]? UbtPlugins, FileReference[]? EnabledUbtPlugins, FileReference[]? EnabledUhtPlugins)
 		{
-			this.CreateTimeUtc = UnrealBuildTool.StartTimeUtc;
-			this.ModifiedTimeUtc = CreateTimeUtc;
-			this.Diagnostics = new List<string>();
+			CreateTimeUtc = UnrealBuildTool.StartTimeUtc;
+			ModifiedTimeUtc = CreateTimeUtc;
+			Diagnostics = new List<string>();
 			this.ExternalMetadata = ExternalMetadata;
 			this.ExecutableFile = ExecutableFile;
 			this.ReceiptFile = ReceiptFile;
@@ -369,22 +423,23 @@ namespace UnrealBuildTool
 			this.UbtPlugins = UbtPlugins;
 			this.EnabledUbtPlugins = EnabledUbtPlugins;
 			this.EnabledUhtPlugins = EnabledUhtPlugins;
-			this.Actions = new List<IExternalAction>();
-			this.OutputItems = new List<FileItem>();
-			this.ModuleNameToOutputItems = new Dictionary<string, FileItem[]>(StringComparer.OrdinalIgnoreCase);
-			this.HotReloadModuleNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-			this.SourceDirectories = new List<DirectoryItem>();
-			this.DirectoryToSourceFiles = new();
-			this.WorkingSet = new HashSet<FileItem>();
-			this.CandidatesForWorkingSet = new HashSet<FileItem>();
-			this.UObjectModules = new List<UHTModuleInfo>();
-			this.UObjectModuleHeaders = new List<UHTModuleHeaderInfo>();
+			Actions = new List<IExternalAction>();
+			OutputItems = new List<FileItem>();
+			ModuleNameToOutputItems = new Dictionary<string, FileItem[]>(StringComparer.OrdinalIgnoreCase);
+			HotReloadModuleNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			SourceDirectories = new List<DirectoryItem>();
+			DirectoryToSourceFiles = new();
+			HeaderFiles = new();
+			WorkingSet = new HashSet<FileItem>();
+			CandidatesForWorkingSet = new HashSet<FileItem>();
+			UObjectModules = new List<UHTModuleInfo>();
+			UObjectModuleHeaders = new List<UHTModuleHeaderInfo>();
 #if __VPROJECT_AVAILABLE__
-			this.VNIModules = new List<VNIModuleInfo>();
+			VNIModules = new List<VNIModuleInfo>();
 #endif
-			this.PluginFiles = new HashSet<FileItem>();
-			this.ExternalDependencies = new HashSet<FileItem>();
-			this.InternalDependencies = new HashSet<FileItem>();
+			PluginFiles = new HashSet<FileItem>();
+			ExternalDependencies = new HashSet<FileItem>();
+			InternalDependencies = new HashSet<FileItem>();
 		}
 
 		/// <summary>
@@ -419,7 +474,8 @@ namespace UnrealBuildTool
 			ModuleNameToOutputItems = Reader.ReadDictionary(() => Reader.ReadString()!, () => Reader.ReadArray(() => Reader.ReadFileItem()), StringComparer.OrdinalIgnoreCase)!;
 			HotReloadModuleNames = Reader.ReadHashSet(() => Reader.ReadString(), StringComparer.OrdinalIgnoreCase)!;
 			SourceDirectories = Reader.ReadList(() => Reader.ReadDirectoryItem())!;
-			DirectoryToSourceFiles = Reader.ReadDictionary(() => Reader.ReadDirectoryItem()!, () => Reader.ReadArray(() =>  new TargetMakefileSourceFileInfo(Reader)))!;
+			DirectoryToSourceFiles = Reader.ReadDictionary(() => Reader.ReadDirectoryItem()!, () => Reader.ReadArray(() => new TargetMakefileSourceFileInfo(Reader)))!;
+			HeaderFiles = Reader.ReadHashSet(() => Reader.ReadFileItem())!;
 			WorkingSet = Reader.ReadHashSet(() => Reader.ReadFileItem())!;
 			CandidatesForWorkingSet = Reader.ReadHashSet(() => Reader.ReadFileItem())!;
 			UObjectModules = Reader.ReadList(() => new UHTModuleInfo(Reader))!;
@@ -464,6 +520,7 @@ namespace UnrealBuildTool
 			Writer.WriteHashSet(HotReloadModuleNames, x => Writer.WriteString(x));
 			Writer.WriteList(SourceDirectories, x => Writer.WriteDirectoryItem(x));
 			Writer.WriteDictionary(DirectoryToSourceFiles, k => Writer.WriteDirectoryItem(k), v => Writer.WriteArray(v, e => e.Write(Writer)));
+			Writer.WriteHashSet(HeaderFiles, x => Writer.WriteFileItem(x));
 			Writer.WriteHashSet(WorkingSet, x => Writer.WriteFileItem(x));
 			Writer.WriteHashSet(CandidatesForWorkingSet, x => Writer.WriteFileItem(x));
 			Writer.WriteList(UObjectModules, e => e.Write(Writer));
@@ -484,7 +541,7 @@ namespace UnrealBuildTool
 		public void Save(FileReference Location)
 		{
 			DirectoryReference.CreateDirectory(Location.Directory);
-			using(BinaryArchiveWriter Writer = new BinaryArchiveWriter(Location))
+			using (BinaryArchiveWriter Writer = new BinaryArchiveWriter(Location))
 			{
 				Writer.WriteInt(CurrentVersion);
 #if __VPROJECT_AVAILABLE__
@@ -576,15 +633,21 @@ namespace UnrealBuildTool
 				}
 			}
 
+			// Run task that parse file system and find plugin files etc. (this can run in parallel with make file creation)
+			Task<FileReference[]> EnumPluginsTask = Task.Run(() =>
+			{
+				return PluginsBase.EnumerateUbtPlugins(ProjectFile).ToArray();
+			});
+
 			TargetMakefile Makefile;
 			using (GlobalTracer.Instance.BuildSpan("Loading makefile").StartActive())
 			{
 				try
 				{
-					using(BinaryArchiveReader Reader = new BinaryArchiveReader(MakefilePath))
+					using (BinaryArchiveReader Reader = new BinaryArchiveReader(MakefilePath))
 					{
 						int Version = Reader.ReadInt();
-						if(Version != CurrentVersion)
+						if (Version != CurrentVersion)
 						{
 							ReasonNotLoaded = "makefile version does not match";
 							return null;
@@ -614,16 +677,34 @@ namespace UnrealBuildTool
 			using (GlobalTracer.Instance.BuildSpan("Checking makefile validity").StartActive())
 			{
 				// Check if the arguments are different
-				if(!Enumerable.SequenceEqual(Makefile.AdditionalArguments!, Arguments))
+				if (!Enumerable.SequenceEqual(Makefile.AdditionalArguments!, Arguments))
 				{
-					Logger.LogDebug("Old command line arguments:\n", string.Join(' ', Makefile.AdditionalArguments!));
-					Logger.LogDebug("New command line arguments:\n", string.Join(' ', Arguments));
+					Logger.LogDebug("Old command line arguments:\n", String.Join(' ', Makefile.AdditionalArguments!));
+					Logger.LogDebug("New command line arguments:\n", String.Join(' ', Arguments));
 					ReasonNotLoaded = "command line arguments changed";
 					return null;
 				}
 
+				// Check if any manifests are out of date
+				foreach (FileReference Manifest in Makefile.AdditionalArguments!
+					.Where(x => x.StartsWith("-Manifest=", StringComparison.OrdinalIgnoreCase))
+					.Select(x => FileReference.FromString(x.Substring("-Manifest=".Length).Trim('"').Trim('\'')))
+					.Where(x => x != null))
+				{
+					if (!FileReference.Exists(Manifest))
+					{
+						ReasonNotLoaded = $"manifest '{Manifest}' not found";
+						return null;
+					}
+					else if (FileReference.GetLastWriteTimeUtc(Manifest) < Makefile.CreateTimeUtc)
+					{
+						ReasonNotLoaded = $"manifest '{Manifest}' not found";
+						return null;
+					}
+				}
+
 				// Check if any config settings have changed. Ini files contain build settings too.
-				if(!Makefile.ConfigValueTracker.IsValid())
+				if (!Makefile.ConfigValueTracker.IsValid())
 				{
 					ReasonNotLoaded = "config setting changed";
 					return null;
@@ -631,7 +712,7 @@ namespace UnrealBuildTool
 
 				// Get the current build metadata from the platform
 				string CurrentExternalMetadata = UEBuildPlatform.GetBuildPlatform(Platform).GetExternalBuildMetadata(ProjectFile);
-				if(String.Compare(CurrentExternalMetadata, Makefile.ExternalMetadata, StringComparison.Ordinal) != 0)
+				if (String.Compare(CurrentExternalMetadata, Makefile.ExternalMetadata, StringComparison.Ordinal) != 0)
 				{
 					Logger.LogDebug("Old metadata:\n", Makefile.ExternalMetadata);
 					Logger.LogDebug("New metadata:\n", CurrentExternalMetadata);
@@ -641,7 +722,7 @@ namespace UnrealBuildTool
 
 				// Check to see if the number of plugins changed
 				{
-					FileReference[]? Plugins = PluginsBase.EnumerateUbtPlugins(ProjectFile)?.ToArray();
+					FileReference[] Plugins = EnumPluginsTask.Result;
 
 					if ((Plugins != null) != (Makefile.UbtPlugins != null) ||
 						(Plugins != null && !Enumerable.SequenceEqual(Plugins, Makefile.UbtPlugins!)))
@@ -691,7 +772,7 @@ namespace UnrealBuildTool
 			using (GlobalTracer.Instance.BuildSpan("TargetMakefile.IsValidForSourceFiles()").StartActive())
 			{
 				// Get the list of excluded folder names for this platform
-				ReadOnlyHashSet<string> ExcludedFolderNames = UEBuildPlatform.GetBuildPlatform(Platform).GetExcludedFolderNames();
+				IReadOnlySet<string> ExcludedFolderNames = UEBuildPlatform.GetBuildPlatform(Platform).GetExcludedFolderNames();
 
 				// Load the metadata cache
 				SourceFileMetadataCache MetadataCache = SourceFileMetadataCache.CreateHierarchy(ProjectFile, Logger);
@@ -699,28 +780,28 @@ namespace UnrealBuildTool
 				// Check if any source files have been added or removed
 				foreach ((DirectoryItem InputDirectory, TargetMakefileSourceFileInfo[] SourceFileInfos) in Makefile.DirectoryToSourceFiles)
 				{
-					if(!InputDirectory.Exists || InputDirectory.LastWriteTimeUtc > Makefile.CreateTimeUtc)
+					if (!InputDirectory.Exists || InputDirectory.LastWriteTimeUtc > Makefile.CreateTimeUtc)
 					{
-						FileItem[] SourceFiles = UEBuildModuleCPP.GetSourceFiles(InputDirectory);
-						if(SourceFiles.Length < SourceFileInfos.Length)
+						FileItem[] SourceFiles = UEBuildModuleCPP.GetSourceFiles(InputDirectory, Logger);
+						if (SourceFiles.Length < SourceFileInfos.Length)
 						{
 							ReasonNotLoaded = "source file removed";
 							return false;
 						}
-						else if(SourceFiles.Length > SourceFileInfos.Length)
+						else if (SourceFiles.Length > SourceFileInfos.Length)
 						{
 							ReasonNotLoaded = "source file added";
 							return false;
 						}
-						else if(SourceFiles.Intersect(SourceFileInfos.Select((sfi) => sfi.SourceFileItem)).Count() != SourceFiles.Length)
+						else if (SourceFiles.Intersect(SourceFileInfos.Select((sfi) => sfi.SourceFileItem)).Count() != SourceFiles.Length)
 						{
 							ReasonNotLoaded = "source file modified";
 							return false;
 						}
 
-						foreach(DirectoryItem Directory in InputDirectory.EnumerateDirectories())
+						foreach (DirectoryItem Directory in InputDirectory.EnumerateDirectories())
 						{
-							if(!Makefile.DirectoryToSourceFiles.ContainsKey(Directory) && ContainsSourceFiles(Directory, ExcludedFolderNames))
+							if (!Makefile.DirectoryToSourceFiles.ContainsKey(Directory) && ContainsSourceFiles(Directory, ExcludedFolderNames, Logger))
 							{
 								ReasonNotLoaded = "directory added";
 								return false;
@@ -741,18 +822,18 @@ namespace UnrealBuildTool
 				}
 
 				// Check if any external dependencies have changed. These comparisons are done against the makefile creation time.
-				foreach(FileItem ExternalDependency in Makefile.ExternalDependencies)
+				foreach (FileItem ExternalDependency in Makefile.ExternalDependencies)
 				{
 					if (!ExternalDependency.Exists)
 					{
 						Logger.LogDebug("{File} has been deleted since makefile was built.", ExternalDependency.Location);
-						ReasonNotLoaded = string.Format("{0} deleted", ExternalDependency.Location.GetFileName());
+						ReasonNotLoaded = String.Format("{0} deleted", ExternalDependency.Location.GetFileName());
 						return false;
 					}
-					if(ExternalDependency.LastWriteTimeUtc > Makefile.CreateTimeUtc)
+					if (ExternalDependency.LastWriteTimeUtc > Makefile.CreateTimeUtc)
 					{
 						Logger.LogDebug("{File} has been modified since makefile was built.", ExternalDependency.Location);
-						ReasonNotLoaded = string.Format("{0} modified", ExternalDependency.Location.GetFileName());
+						ReasonNotLoaded = String.Format("{0} modified", ExternalDependency.Location.GetFileName());
 						return false;
 					}
 				}
@@ -763,13 +844,13 @@ namespace UnrealBuildTool
 					if (!InternalDependency.Exists)
 					{
 						Logger.LogDebug("{File} has been deleted since makefile was written.", InternalDependency.Location);
-						ReasonNotLoaded = string.Format("{0} deleted", InternalDependency.Location.GetFileName());
+						ReasonNotLoaded = String.Format("{0} deleted", InternalDependency.Location.GetFileName());
 						return false;
 					}
 					if (InternalDependency.LastWriteTimeUtc > Makefile.ModifiedTimeUtc)
 					{
 						Logger.LogDebug("{File} has been modified since makefile was written.", InternalDependency.Location);
-						ReasonNotLoaded = string.Format("{0} modified", InternalDependency.Location.GetFileName());
+						ReasonNotLoaded = String.Format("{0} modified", InternalDependency.Location.GetFileName());
 						return false;
 					}
 				}
@@ -778,10 +859,10 @@ namespace UnrealBuildTool
 				foreach (FileReference PluginFile in PluginsBase.EnumeratePlugins(ProjectFile))
 				{
 					FileItem PluginFileItem = FileItem.GetItemByFileReference(PluginFile);
-					if(!Makefile.PluginFiles.Contains(PluginFileItem))
+					if (!Makefile.PluginFiles.Contains(PluginFileItem))
 					{
 						Logger.LogDebug("{File} has been added", PluginFile.GetFileName());
-						ReasonNotLoaded = string.Format("{0} has been added", PluginFile.GetFileName());
+						ReasonNotLoaded = String.Format("{0} has been added", PluginFile.GetFileName());
 						return false;
 					}
 				}
@@ -790,7 +871,7 @@ namespace UnrealBuildTool
 				ConcurrentBag<FileItem> NewFilesWithMarkupBag = new ConcurrentBag<FileItem>();
 				using (ThreadPoolWorkQueue Queue = new ThreadPoolWorkQueue())
 				{
-					foreach(DirectoryItem SourceDirectory in Makefile.SourceDirectories)
+					foreach (DirectoryItem SourceDirectory in Makefile.SourceDirectories)
 					{
 						Queue.Enqueue(() => FindFilesWithMarkup(SourceDirectory, MetadataCache, ExcludedFolderNames, NewFilesWithMarkupBag, Queue));
 					}
@@ -817,7 +898,7 @@ namespace UnrealBuildTool
 					if (!WorkingSet.Contains(SourceFile) && SourceFile.LastWriteTimeUtc > Makefile.CreateTimeUtc)
 					{
 						Logger.LogDebug("{File} was part of source working set and now is not; invalidating makefile", SourceFile.Location);
-						ReasonNotLoaded = string.Format("working set of source files changed");
+						ReasonNotLoaded = String.Format("working set of source files changed");
 						return false;
 					}
 				}
@@ -827,8 +908,8 @@ namespace UnrealBuildTool
 				{
 					if (WorkingSet.Contains(SourceFile) && SourceFile.LastWriteTimeUtc > Makefile.CreateTimeUtc)
 					{
-						Logger.LogDebug("{File} was part of source working set and now is not", SourceFile.Location);
-						ReasonNotLoaded = string.Format("working set of source files changed");
+						Logger.LogDebug("{File} was not part of source working set and should be", SourceFile.Location);
+						ReasonNotLoaded = String.Format("working set of source files changed");
 						return false;
 					}
 				}
@@ -843,23 +924,24 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="Directory">Directory to search through</param>
 		/// <param name="ExcludedFolderNames">Set of directory names to exclude</param>
+		/// <param name="Logger">Logger for output diagnostics</param>
 		/// <returns>True if the directory contains any source files</returns>
-		static bool ContainsSourceFiles(DirectoryItem Directory, ReadOnlyHashSet<string> ExcludedFolderNames)
+		static bool ContainsSourceFiles(DirectoryItem Directory, IReadOnlySet<string> ExcludedFolderNames, ILogger Logger)
 		{
 			// Check this directory isn't ignored
-			if(!ExcludedFolderNames.Contains(Directory.Name))
+			if (!ExcludedFolderNames.Contains(Directory.Name))
 			{
 				// Check for any source files in this actual directory
-				FileItem[] SourceFiles = UEBuildModuleCPP.GetSourceFiles(Directory);
-				if(SourceFiles.Length > 0)
+				FileItem[] SourceFiles = UEBuildModuleCPP.GetSourceFiles(Directory, Logger);
+				if (SourceFiles.Length > 0)
 				{
 					return true;
 				}
 
 				// Check for any source files in a subdirectory
-				foreach(DirectoryItem SubDirectory in Directory.EnumerateDirectories())
+				foreach (DirectoryItem SubDirectory in Directory.EnumerateDirectories())
 				{
-					if(ContainsSourceFiles(SubDirectory, ExcludedFolderNames))
+					if (ContainsSourceFiles(SubDirectory, ExcludedFolderNames, Logger))
 					{
 						return true;
 					}
@@ -876,7 +958,7 @@ namespace UnrealBuildTool
 		/// <param name="ExcludedFolderNames">Set of folder names to ignore when recursing the directory tree</param>
 		/// <param name="FilesWithMarkup">Receives the set of files which contain reflection markup</param>
 		/// <param name="Queue">Queue to add sub-tasks to</param>
-		static void FindFilesWithMarkup(DirectoryItem Directory, SourceFileMetadataCache MetadataCache, ReadOnlyHashSet<string> ExcludedFolderNames, ConcurrentBag<FileItem> FilesWithMarkup, ThreadPoolWorkQueue Queue)
+		static void FindFilesWithMarkup(DirectoryItem Directory, SourceFileMetadataCache MetadataCache, IReadOnlySet<string> ExcludedFolderNames, ConcurrentBag<FileItem> FilesWithMarkup, ThreadPoolWorkQueue Queue)
 		{
 			if (Directory.TryGetFile(".ubtignore", out FileItem? OutFile))
 			{
@@ -892,7 +974,7 @@ namespace UnrealBuildTool
 			// Search through all the subfolders
 			foreach (DirectoryItem SubDirectory in Directory.EnumerateDirectories())
 			{
-				if(!ExcludedFolderNames.Contains(SubDirectory.Name))
+				if (!ExcludedFolderNames.Contains(SubDirectory.Name))
 				{
 					Queue.Enqueue(() => FindFilesWithMarkup(SubDirectory, MetadataCache, ExcludedFolderNames, FilesWithMarkup, Queue));
 				}
@@ -907,8 +989,9 @@ namespace UnrealBuildTool
 		/// <param name="Platform">The platform that the target is being built for</param>
 		/// <param name="Architectures">The architectures the target is being built for (can be blank to signify a default)</param>
 		/// <param name="Configuration">The configuration being built</param>
+		/// <param name="IntermediateEnvironment">Intermediate environment to use</param>
 		/// <returns>Path to the makefile</returns>
-		public static FileReference GetLocation(FileReference? ProjectFile, string TargetName, UnrealTargetPlatform Platform, UnrealArchitectures Architectures, UnrealTargetConfiguration Configuration)
+		public static FileReference GetLocation(FileReference? ProjectFile, string TargetName, UnrealTargetPlatform Platform, UnrealArchitectures Architectures, UnrealTargetConfiguration Configuration, UnrealIntermediateEnvironment IntermediateEnvironment)
 		{
 			DirectoryReference BaseDirectory = Unreal.EngineDirectory;
 			// Programs with .uprojects still want the Intermediate under Engine (see UEBuildTarget constructor for similar code) 
@@ -916,7 +999,9 @@ namespace UnrealBuildTool
 			{
 				BaseDirectory = ProjectFile.Directory;
 			}
-			return FileReference.Combine(BaseDirectory, UEBuildTarget.GetPlatformIntermediateFolder(Platform, Architectures, false), TargetName, Configuration.ToString(), "Makefile.bin");
+			string IntermediateFolder = UEBuildTarget.GetPlatformIntermediateFolder(Platform, Architectures, false);
+			string TargetFolderName = UEBuildTarget.GetTargetIntermediateFolderName(TargetName, IntermediateEnvironment);
+			return FileReference.Combine(BaseDirectory, IntermediateFolder, TargetFolderName, Configuration.ToString(), "Makefile.bin");
 		}
 	}
 }

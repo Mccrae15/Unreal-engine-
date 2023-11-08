@@ -18,8 +18,8 @@
  * 
  * @see https://docs.unrealengine.com/latest/INT/Gameplay/Input/index.html
  */
-UCLASS(config=Input, defaultconfig)
-class ENGINE_API UInputSettings
+UCLASS(config=Input, defaultconfig, MinimalAPI)
+class UInputSettings
 	: public UObject
 {
 	GENERATED_UCLASS_BODY()
@@ -187,108 +187,214 @@ public:
 
 	// UObject interface
 #if WITH_EDITOR
-	virtual void PostEditChangeChainProperty(struct FPropertyChangedChainEvent& PropertyChangedEvent) override;
-	virtual void PostReloadConfig( class FProperty* PropertyThatWasLoaded ) override;
+	ENGINE_API virtual void PostEditChangeChainProperty(struct FPropertyChangedChainEvent& PropertyChangedEvent) override;
 #endif
 
-	void RemoveInvalidKeys();
+	ENGINE_API virtual void PostReloadConfig(class FProperty* PropertyThatWasLoaded) override;
 
-	virtual void PostInitProperties() override;
+	ENGINE_API void RemoveInvalidKeys();
+
+	ENGINE_API virtual void PostInitProperties() override;
 	// End of UObject interface
 
 	/** Returns the game local input settings (action mappings, axis mappings, etc...) */
 	UFUNCTION(BlueprintPure, Category = Settings)
-	static UInputSettings* GetInputSettings();
+	static ENGINE_API UInputSettings* GetInputSettings();
 
 	/** Programmatically add an action mapping to the project defaults */
 	UFUNCTION(BlueprintCallable, Category = Settings)
-	void AddActionMapping(const FInputActionKeyMapping& KeyMapping, bool bForceRebuildKeymaps = true);
+	ENGINE_API void AddActionMapping(const FInputActionKeyMapping& KeyMapping, bool bForceRebuildKeymaps = true);
 
 	UFUNCTION(BlueprintPure, Category = Settings)
-	void GetActionMappingByName(const FName InActionName, TArray<FInputActionKeyMapping>& OutMappings) const;
+	ENGINE_API void GetActionMappingByName(const FName InActionName, TArray<FInputActionKeyMapping>& OutMappings) const;
 
 	/** Programmatically remove an action mapping to the project defaults */
 	UFUNCTION(BlueprintCallable, Category = Settings)
-	void RemoveActionMapping(const FInputActionKeyMapping& KeyMapping, bool bForceRebuildKeymaps = true);
+	ENGINE_API void RemoveActionMapping(const FInputActionKeyMapping& KeyMapping, bool bForceRebuildKeymaps = true);
 
 	/** Programmatically add an axis mapping to the project defaults */
 	UFUNCTION(BlueprintCallable, Category = Settings)
-	void AddAxisMapping(const FInputAxisKeyMapping& KeyMapping, bool bForceRebuildKeymaps = true);
+	ENGINE_API void AddAxisMapping(const FInputAxisKeyMapping& KeyMapping, bool bForceRebuildKeymaps = true);
 
 	/** Retrieve all axis mappings by a certain name. */
 	UFUNCTION(BlueprintPure, Category = Settings)
-	void GetAxisMappingByName(const FName InAxisName, TArray<FInputAxisKeyMapping>& OutMappings) const;
+	ENGINE_API void GetAxisMappingByName(const FName InAxisName, TArray<FInputAxisKeyMapping>& OutMappings) const;
 
 	/** Programmatically remove an axis mapping to the project defaults */
 	UFUNCTION(BlueprintCallable, Category = Settings)
-	void RemoveAxisMapping(const FInputAxisKeyMapping& KeyMapping, bool bForceRebuildKeymaps = true);
+	ENGINE_API void RemoveAxisMapping(const FInputAxisKeyMapping& KeyMapping, bool bForceRebuildKeymaps = true);
+
+#if WITH_EDITOR	
+	/**
+	 * Returns all known legacy action and axis names that is useful for
+	 * properties that you want a drop down selection of the available names
+	 * on a UPROPERTY
+	 * i.e.
+	 *
+	 * meta=(GetOptions="Engine.InputSettings.GetAllActionAndAxisNames")
+	 */
+	UFUNCTION()
+	static ENGINE_API const TArray<FName>& GetAllActionAndAxisNames();
+#endif// WITH_EDITOR
 
 	/** Flush the current mapping values to the config file */
 	UFUNCTION(BlueprintCallable, Category=Settings)
-	void SaveKeyMappings();
+	ENGINE_API void SaveKeyMappings();
 
 	/** Populate a list of all defined action names */
 	UFUNCTION(BlueprintCallable, Category = Settings)
-	void GetActionNames(TArray<FName>& ActionNames) const;
+	ENGINE_API void GetActionNames(TArray<FName>& ActionNames) const;
 
 	/** Populate a list of all defined axis names */
 	UFUNCTION(BlueprintCallable, Category = Settings)
-	void GetAxisNames(TArray<FName>& AxisNames) const;
+	ENGINE_API void GetAxisNames(TArray<FName>& AxisNames) const;
 
 	/** When changes are made to the default mappings, push those changes out to PlayerInput key maps */
 	UFUNCTION(BlueprintCallable, Category = Settings)
-	void ForceRebuildKeymaps();
+	ENGINE_API void ForceRebuildKeymaps();
 
 	/** Finds unique action name based on existing action names */
-	FName GetUniqueActionName(const FName BaseActionMappingName);
+	ENGINE_API FName GetUniqueActionName(const FName BaseActionMappingName);
 	/** Finds unique axis name based on existing action names */
-	FName GetUniqueAxisName(const FName BaseAxisMappingName);
+	ENGINE_API FName GetUniqueAxisName(const FName BaseAxisMappingName);
 
 	/** Append new mapping to existing list */
-	void AddActionMapping(FInputActionKeyMapping& NewMapping);
+	ENGINE_API void AddActionMapping(FInputActionKeyMapping& NewMapping);
 	/** Append new mapping to existing list */
-	void AddAxisMapping(FInputAxisKeyMapping& NewMapping);
+	ENGINE_API void AddAxisMapping(FInputAxisKeyMapping& NewMapping);
 
 	/** Ask for all the action mappings */
-	const TArray <FInputActionKeyMapping>& GetActionMappings() const;
+	ENGINE_API const TArray <FInputActionKeyMapping>& GetActionMappings() const;
 	/** Ask for all the axis mappings */
-	const TArray <FInputAxisKeyMapping>& GetAxisMappings() const;
+	ENGINE_API const TArray <FInputAxisKeyMapping>& GetAxisMappings() const;
 	/** Ask for all the speech mappings */
-	const TArray <FInputActionSpeechMapping>& GetSpeechMappings() const;
+	ENGINE_API const TArray <FInputActionSpeechMapping>& GetSpeechMappings() const;
 
 	/** Finds unique action name based on existing action names */
-	bool DoesActionExist(const FName InActionName);
+	ENGINE_API bool DoesActionExist(const FName InActionName);
 	/** Finds unique axis name based on existing action names */
-	bool DoesAxisExist(const FName InAxisName);
+	ENGINE_API bool DoesAxisExist(const FName InAxisName);
 	/** Finds unique speech name based on existing speech names */
-	bool DoesSpeechExist(const FName InSpeechName);
+	ENGINE_API bool DoesSpeechExist(const FName InSpeechName);
 
 
 	/** Get the member name for the details panel */
-	static const FName GetActionMappingsPropertyName();
+	static ENGINE_API const FName GetActionMappingsPropertyName();
 	/** Get the member name for the details panel */
-	static const FName GetAxisMappingsPropertyName();
+	static ENGINE_API const FName GetAxisMappingsPropertyName();
 
 	// Class accessors
-	static UClass* GetDefaultPlayerInputClass();
-	static UClass* GetDefaultInputComponentClass();
+	static ENGINE_API UClass* GetDefaultPlayerInputClass();
+	static ENGINE_API UClass* GetDefaultInputComponentClass();
 	
 	/**
 	 * Set the default player input class.
 	 *
 	 * @param NewDefaultPlayerInputClass The new class to use.
 	 */
-	static void SetDefaultPlayerInputClass(TSubclassOf<UPlayerInput> NewDefaultPlayerInputClass);
+	static ENGINE_API void SetDefaultPlayerInputClass(TSubclassOf<UPlayerInput> NewDefaultPlayerInputClass);
 
 	/**
 	 * Set the default input component class.
 	 *
 	 * @param NewDefaultInputComponentClass The new class to use.
 	 */
-	static void SetDefaultInputComponentClass(TSubclassOf<UInputComponent> NewDefaultInputComponentClass);
+	static ENGINE_API void SetDefaultInputComponentClass(TSubclassOf<UInputComponent> NewDefaultInputComponentClass);
 	
 private:
 	void PopulateAxisConfigs();
+	void AddInternationalConsoleKey();
+};
+
+
+/**
+ * A bitmask of supported features that a hardware device has. 
+ */
+UENUM(BlueprintType, Meta = (Bitflags, UseEnumValuesAsMaskValuesInEditor = "true"))
+namespace EHardwareDeviceSupportedFeatures
+{
+	enum Type : int32
+	{
+		/** A device that has not specified the type  */
+		Unspecified			= 0x00000000,
+
+		/** This device can support basic key presses */
+		Keypress			= 0x00000001,
+
+		/** This device can handle basic pointer behavior, such as a mouse */
+		Pointer				= 0x00000002,
+
+		/** This device has basic gamepad support */
+		Gamepad				= 0x00000004,
+
+		/** This device supports touch in some capactiy (tablet, controller with a touch pad, etc) */
+		Touch				= 0x00000008,
+
+		/** Does this device have a camera on it that we can access? */
+		Camera				= 0x00000010,
+
+		/** Can this device track motion in a 3D space? (VR controllers, headset, etc) */
+		MotionTracking		= 0x00000020,
+
+		/** This hardware supports setting a light color (such as an LED light bar) */
+		Lights				= 0x00000040,
+
+		/** Does this device have trigger haptics available? */
+		TriggerHaptics		= 0x00000080,
+
+		/** Flagged true if this device supports force feedback */
+		ForceFeedback		= 0x00000100,
+
+		/** Does this device support vibrations sourced from an audio file? */
+		AudioBasedVibrations= 0x00000200,
+
+		/** This device can track acceleration in the users physical space */
+		Acceleration		= 0x00000400,
+
+		/** This is a virtual device simulating input, not a physical device */
+		Virtual				= 0x00000800,
+
+		/** This device has a microphone on it that you can get audio from */
+		Microphone			= 0x00001000,
+
+		/** This device can track the orientation in world space, such as a gyroscope */
+		Orientation			= 0x00002000,
+
+		/** Some custom flags that can be used in your game if you have custom hardware! */
+		CustomA				= 0x01000000,
+		CustomB				= 0x02000000,
+		CustomC				= 0x04000000,
+		CustomD				= 0x08000000,
+
+		/** A flag for ALL supported device flags */
+		All = 0x7FFFFFFF UMETA(Hidden),
+	};
+}
+
+ENUM_CLASS_FLAGS(EHardwareDeviceSupportedFeatures::Type);
+
+/**
+ * What is the primary use of an input device type? 
+ * Each hardware device can only be one primary type.
+ */
+UENUM(BlueprintType)
+enum class EHardwareDevicePrimaryType : uint8
+{
+	Unspecified,
+	KeyboardAndMouse,
+	Gamepad,
+	Touch,
+	MotionTracking,
+	RacingWheel,
+	FlightStick,
+	Camera,
+	Instrument,
+
+	// Some custom devices that can be used for your game specific hardware if desired
+	CustomTypeA,
+	CustomTypeB,
+	CustomTypeC,
+	CustomTypeD,
 };
 
 /**
@@ -296,12 +402,17 @@ private:
 * These mappings should match a FInputDeviceScope that is used by an IInputDevice
 */
 USTRUCT(BlueprintType)
-struct ENGINE_API FHardwareDeviceIdentifier
+struct FHardwareDeviceIdentifier
 {
 	GENERATED_BODY()
 
-	FHardwareDeviceIdentifier();
-	FHardwareDeviceIdentifier(const FName InClassName, const FName InHardwareDeviceIdentifier);
+	ENGINE_API FHardwareDeviceIdentifier();
+	
+	ENGINE_API FHardwareDeviceIdentifier(
+		const FName InClassName,
+		const FName InHardwareDeviceIdentifier,
+		EHardwareDevicePrimaryType InPrimaryType = EHardwareDevicePrimaryType::Unspecified,
+		EHardwareDeviceSupportedFeatures::Type Flags = EHardwareDeviceSupportedFeatures::Unspecified);
 	
 	/** 
 	* The name of the Input Class that uses this hardware device.
@@ -317,32 +428,59 @@ struct ENGINE_API FHardwareDeviceIdentifier
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hardware")
 	FName HardwareDeviceIdentifier;
 
+	/** The generic type that this hardware identifies as. This can be used to easily determine behaviors  */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hardware")
+	EHardwareDevicePrimaryType PrimaryDeviceType;
+	
+	/** Flags that represent this hardware device's traits */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hardware", meta=(Bitmask, BitmaskEnum="/Script/Engine.EHardwareDeviceSupportedFeatures"))
+	int32 SupportedFeaturesMask;
+
+	/** Returns true if this hardware device has ANY of the given supported feature flags */
+	ENGINE_API bool HasAnySupportedFeatures(const EHardwareDeviceSupportedFeatures::Type FlagsToCheck) const;
+
+	/** Returns true if this hardware device has ALL of the given supported feature flags */
+	ENGINE_API bool HasAllSupportedFeatures(const EHardwareDeviceSupportedFeatures::Type FlagsToCheck) const;
+
 	/** Returns true if this hardware device Identifier has valid names */
-	bool IsValid() const;
+	ENGINE_API bool IsValid() const;
+
+	/**
+	 * Returns a string containing the Input Class Name and HardwareDeviceIdentifier properties
+	 * concatenated together.
+	 */
+	ENGINE_API FString ToString() const;
 	
 	/** An Invalid Hardware Device Identifier. */
-	static FHardwareDeviceIdentifier Invalid;
+	static ENGINE_API FHardwareDeviceIdentifier Invalid;
 
 	/** Hardware device ID that represents a keyboard and mouse. This is what will be set when an Input Event's FKey is not a gamepad key. */
-	static FHardwareDeviceIdentifier DefaultKeyboardAndMouse;
+	static ENGINE_API FHardwareDeviceIdentifier DefaultKeyboardAndMouse;
 
-	bool operator==(const FHardwareDeviceIdentifier& Other) const
-	{
-		return Other.InputClassName == InputClassName && Other.HardwareDeviceIdentifier == HardwareDeviceIdentifier;
-	}
+	/** Hardware device ID that represents a default, generic, gamepad. */
+	static ENGINE_API FHardwareDeviceIdentifier DefaultGamepad;
+
+	/** Hardware device id that represents a default, generic, mobile touch input (tablet, phone, etc) */
+	static ENGINE_API FHardwareDeviceIdentifier DefaultMobileTouch;
+
+	ENGINE_API bool operator==(const FHardwareDeviceIdentifier& Other) const;
+	ENGINE_API bool operator!=(const FHardwareDeviceIdentifier& Other) const;
+
+	ENGINE_API friend uint32 GetTypeHash(const FHardwareDeviceIdentifier& InDevice);
+	ENGINE_API friend FArchive& operator<<(FArchive& Ar, FHardwareDeviceIdentifier& InDevice);
 };
 
 /** Per-Platform input options */
-UCLASS(config=Input, defaultconfig)
-class ENGINE_API UInputPlatformSettings : public UPlatformSettings
+UCLASS(config=Input, defaultconfig, MinimalAPI)
+class UInputPlatformSettings : public UPlatformSettings
 {
 	GENERATED_BODY()
 
 public:
 
-	UInputPlatformSettings();
+	ENGINE_API UInputPlatformSettings();
 	
-	static UInputPlatformSettings* Get();
+	static ENGINE_API UInputPlatformSettings* Get();
 
 #if WITH_EDITOR
 	/**
@@ -357,14 +495,18 @@ public:
 	* and the editor will make a nice drop down for you with all the current options that are in the settings.
 	*/
 	UFUNCTION()
-	static const TArray<FName>& GetAllHardwareDeviceNames();
+	static ENGINE_API const TArray<FName>& GetAllHardwareDeviceNames();
 #endif	// WITH_EDITOR
 
+
+	/** Returns the first matching FHardwareDeviceIdentifier that has the given HardwareDeviceIdentifier.  */
+	ENGINE_API const FHardwareDeviceIdentifier* GetHardwareDeviceForClassName(const FName InHardwareDeviceIdentifier) const;
+	
 	/** Add the given hardware device identifier to this platform's settings. */
-	void AddHardwareDeviceIdentifier(const FHardwareDeviceIdentifier& InHardwareDevice);
+	ENGINE_API void AddHardwareDeviceIdentifier(const FHardwareDeviceIdentifier& InHardwareDevice);
 
 	/** Returns an array of all Hardware Device Identifiers known to this platform */
-	const TArray<FHardwareDeviceIdentifier>& GetHardwareDevices() const;
+	ENGINE_API const TArray<FHardwareDeviceIdentifier>& GetHardwareDevices() const;
 
 	////////////////////////////////////////////////////
 	// Trigger Feedback

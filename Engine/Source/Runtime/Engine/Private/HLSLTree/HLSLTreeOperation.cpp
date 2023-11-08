@@ -13,7 +13,7 @@ class FExpressionOperation : public FExpression
 public:
 	FExpressionOperation(EOperation InOp, TConstArrayView<const FExpression*> InInputs);
 
-	static constexpr int8 MaxInputs = 2;
+	static constexpr int8 MaxInputs = 3;
 
 	EOperation Op;
 	const FExpression* Inputs[MaxInputs];
@@ -46,8 +46,10 @@ FOperationDescription GetOperationDescription(EOperation Op)
 	case EOperation::Rcp: return FOperationDescription(TEXT("Rcp"), TEXT("/"), 1, Shader::EPreshaderOpcode::Rcp); break;
 	case EOperation::Sqrt: return FOperationDescription(TEXT("Sqrt"), TEXT("sqrt"), 1, Shader::EPreshaderOpcode::Sqrt); break;
 	case EOperation::Rsqrt: return FOperationDescription(TEXT("Rsqrt"), TEXT("rsqrt"), 1, Shader::EPreshaderOpcode::Nop); break; // TODO
+	case EOperation::Log: return FOperationDescription(TEXT("Log"), TEXT("log"), 1, Shader::EPreshaderOpcode::Log); break;
 	case EOperation::Log2: return FOperationDescription(TEXT("Log2"), TEXT("log2"), 1, Shader::EPreshaderOpcode::Log2); break;
-	case EOperation::Exp2: return FOperationDescription(TEXT("Exp2"), TEXT("exp2"), 1, Shader::EPreshaderOpcode::Nop); break; // TODO
+	case EOperation::Exp: return FOperationDescription(TEXT("Exp"), TEXT("exp"), 1, Shader::EPreshaderOpcode::Exp); break;
+	case EOperation::Exp2: return FOperationDescription(TEXT("Exp2"), TEXT("exp2"), 1, Shader::EPreshaderOpcode::Exp2); break; // TODO
 	case EOperation::Frac: return FOperationDescription(TEXT("Frac"), TEXT("frac"), 1, Shader::EPreshaderOpcode::Frac); break;
 	case EOperation::Floor: return FOperationDescription(TEXT("Floor"), TEXT("floor"), 1, Shader::EPreshaderOpcode::Floor); break;
 	case EOperation::Ceil: return FOperationDescription(TEXT("Ceil"), TEXT("ceil"), 1, Shader::EPreshaderOpcode::Ceil); break;
@@ -74,6 +76,7 @@ FOperationDescription GetOperationDescription(EOperation Op)
 	case EOperation::Mul: return FOperationDescription(TEXT("Multiply"), TEXT("*"), 2, Shader::EPreshaderOpcode::Mul); break;
 	case EOperation::Div: return FOperationDescription(TEXT("Divide"), TEXT("/"), 2, Shader::EPreshaderOpcode::Div); break;
 	case EOperation::Fmod: return FOperationDescription(TEXT("Fmod"), TEXT("%"), 2, Shader::EPreshaderOpcode::Fmod); break;
+	case EOperation::Step: return FOperationDescription(TEXT("Step"), TEXT("step"), 2, Shader::EPreshaderOpcode::Nop); break;
 	case EOperation::PowPositiveClamped: return FOperationDescription(TEXT("PowPositiveClamped"), TEXT("PowPositiveClamped"), 2, Shader::EPreshaderOpcode::Nop); break;
 	case EOperation::Atan2: return FOperationDescription(TEXT("Atan2"), TEXT("atan2"), 2, Shader::EPreshaderOpcode::Atan2); break;
 	case EOperation::Atan2Fast: return FOperationDescription(TEXT("Atan2Fast"), TEXT("atan2Fast"), 2, Shader::EPreshaderOpcode::Atan2); break;
@@ -87,6 +90,10 @@ FOperationDescription GetOperationDescription(EOperation Op)
 	case EOperation::VecMulMatrix4: return FOperationDescription(TEXT("VecMulMatrix4"), TEXT("mul"), 2, Shader::EPreshaderOpcode::Nop); break;
 	case EOperation::Matrix3MulVec: return FOperationDescription(TEXT("Matrix3MulVec"), TEXT("mul"), 2, Shader::EPreshaderOpcode::Nop); break;
 	case EOperation::Matrix4MulVec: return FOperationDescription(TEXT("Matrix4MulVec"), TEXT("mul"), 2, Shader::EPreshaderOpcode::Nop); break;
+
+	// Ternary
+	case EOperation::SmoothStep: return FOperationDescription(TEXT("SmoothStep"), TEXT("smoothstep"), 3, Shader::EPreshaderOpcode::Nop); break;
+
 	default: checkNoEntry(); return FOperationDescription();
 	}
 }
@@ -100,6 +107,12 @@ const FExpression* FTree::NewUnaryOp(EOperation Op, const FExpression* Input)
 const FExpression* FTree::NewBinaryOp(EOperation Op, const FExpression* Lhs, const FExpression* Rhs)
 {
 	const FExpression* Inputs[2] = { Lhs, Rhs };
+	return NewExpression<FExpressionOperation>(Op, Inputs);
+}
+
+const FExpression* FTree::NewTernaryOp(EOperation Op, const FExpression* Input0, const FExpression* Input1, const FExpression* Input2)
+{
+	const FExpression* Inputs[3] = { Input0, Input1, Input2 };
 	return NewExpression<FExpressionOperation>(Op, Inputs);
 }
 
@@ -302,6 +315,8 @@ FOperationTypes GetOperationTypes(EOperation Op, TConstArrayView<FPreparedType> 
 			break;
 		case EOperation::Saturate:
 		case EOperation::Frac:
+		case EOperation::Step:
+		case EOperation::SmoothStep:
 			for (int32 Index = 0; Index < Types.ResultType.PreparedComponents.Num(); ++Index)
 			{
 				Types.ResultType.SetComponentBounds(Index, Shader::FComponentBounds(Shader::EComponentBound::Zero, Shader::EComponentBound::One));
@@ -316,7 +331,9 @@ FOperationTypes GetOperationTypes(EOperation Op, TConstArrayView<FPreparedType> 
 			}
 			Types.ResultType = MakeNonLWCType(IntermediateType);
 			break;
+		case EOperation::Log:
 		case EOperation::Log2:
+		case EOperation::Exp:
 		case EOperation::Exp2:
 			// No LWC support yet
 			Types.InputType[0] = Shader::MakeNonLWCType(Types.InputType[0]);
@@ -374,6 +391,7 @@ void FExpressionOperation::ComputeAnalyticDerivatives(FTree& Tree, FExpressionDe
 	case EOperation::Round:
 	case EOperation::Trunc:
 	case EOperation::Sign:
+	case EOperation::Step:
 		OutResult.ExpressionDdx = OutResult.ExpressionDdy = Tree.NewConstant(0.0f);
 		break;
 	default:
@@ -486,15 +504,79 @@ void FExpressionOperation::ComputeAnalyticDerivatives(FTree& Tree, FExpressionDe
 		OutResult.ExpressionDdy = Tree.NewAdd(Tree.NewMul(dFdA, InputDerivatives[0].ExpressionDdy), Tree.NewMul(dFdB, InputDerivatives[1].ExpressionDdy));
 		break;
 	}
-	case EOperation::Length:
-	case EOperation::Normalize:
 	case EOperation::Abs:
-	case EOperation::Saturate:
-	case EOperation::PowPositiveClamped:
-	case EOperation::Log2:
-	case EOperation::Exp2:
-		// TODO
+	{
+		const FExpression* ConstantZero = Tree.NewConstant(0.f);
+		const FExpression* ConstantOne = Tree.NewConstant(1.f);
+		const FExpression* Cond = Tree.NewGreaterEqual(Inputs[0], ConstantZero);
+		const FExpression* Sign = Tree.NewExpression<FExpressionSelect>(Cond, ConstantOne, Tree.NewNeg(ConstantOne));
+		OutResult.ExpressionDdx = Tree.NewMul(Sign, InputDerivatives[0].ExpressionDdx);
+		OutResult.ExpressionDdy = Tree.NewMul(Sign, InputDerivatives[0].ExpressionDdy);
 		break;
+	}
+	case EOperation::Saturate:
+	{
+		const FExpression* ConstantZero = Tree.NewConstant(0.f);
+		const FExpression* ConstantOne = Tree.NewConstant(1.f);
+		const FExpression* Cond0 = Tree.NewGreater(Inputs[0], ConstantZero);
+		const FExpression* Cond1 = Tree.NewLess(Inputs[0], ConstantOne);
+		OutResult.ExpressionDdx = Tree.NewExpression<FExpressionSelect>(Cond0, Tree.NewExpression<FExpressionSelect>(Cond1, InputDerivatives[0].ExpressionDdx, ConstantOne), ConstantZero);
+		OutResult.ExpressionDdy = Tree.NewExpression<FExpressionSelect>(Cond0, Tree.NewExpression<FExpressionSelect>(Cond1, InputDerivatives[0].ExpressionDdy, ConstantOne), ConstantZero);
+		break;
+	}
+	case EOperation::Log:
+	{
+		const FExpression* dFdA = Tree.NewRcp(Inputs[0]);
+		OutResult.ExpressionDdx = Tree.NewMul(dFdA, InputDerivatives[0].ExpressionDdx);
+		OutResult.ExpressionDdy = Tree.NewMul(dFdA, InputDerivatives[0].ExpressionDdy);
+		break;
+	}
+	case EOperation::Log2:
+	{
+		const FExpression* dFdA = Tree.NewMul(Tree.NewRcp(Inputs[0]), Tree.NewConstant(1.442695f));
+		OutResult.ExpressionDdx = Tree.NewMul(dFdA, InputDerivatives[0].ExpressionDdx);
+		OutResult.ExpressionDdy = Tree.NewMul(dFdA, InputDerivatives[0].ExpressionDdy);
+		break;
+	}
+	case EOperation::Exp:
+	{
+		const FExpression* dFdA = Tree.NewExp(Inputs[0]);
+		OutResult.ExpressionDdx = Tree.NewMul(dFdA, InputDerivatives[0].ExpressionDdx);
+		OutResult.ExpressionDdy = Tree.NewMul(dFdA, InputDerivatives[0].ExpressionDdy);
+		break;
+	}
+	case EOperation::Exp2:
+	{
+		const FExpression* dFdA = Tree.NewMul(Tree.NewExp2(Inputs[0]), Tree.NewConstant(0.693147f));
+		OutResult.ExpressionDdx = Tree.NewMul(dFdA, InputDerivatives[0].ExpressionDdx);
+		OutResult.ExpressionDdy = Tree.NewMul(dFdA, InputDerivatives[0].ExpressionDdy);
+		break;
+	}
+	case EOperation::Length:
+	{
+		const FExpression* LengthExpression = Tree.NewSqrt(Tree.NewSum(Tree.NewMul(Inputs[0], Inputs[0])));
+		LengthExpression->ComputeAnalyticDerivatives(Tree, OutResult);
+		break;
+	}
+	case EOperation::Normalize:
+	{
+		const FExpression* NormalizeExpression = Tree.NewMul(Inputs[0], Tree.NewRsqrt(Tree.NewSum(Tree.NewMul(Inputs[0], Inputs[0]))));
+		NormalizeExpression->ComputeAnalyticDerivatives(Tree, OutResult);
+		break;
+	}
+	case EOperation::PowPositiveClamped:
+	{
+		const FExpression* ConstantZero = Tree.NewConstant(0.f);
+		const FExpression* Cond = Tree.NewLess(ConstantZero, Inputs[1]); // should we check for A as well?
+		const FExpression* F = Tree.NewPowClamped(Inputs[0], Inputs[1]);
+		const FExpression* LnA = Tree.NewLog(Inputs[0]);
+		const FExpression* BByA = Tree.NewDiv(Inputs[1], Inputs[0]);
+		const FExpression* InRangeDdx = Tree.NewMul(F, Tree.NewAdd(Tree.NewMul(InputDerivatives[1].ExpressionDdx, LnA), Tree.NewMul(BByA, InputDerivatives[0].ExpressionDdx)));
+		const FExpression* InRangeDdy = Tree.NewMul(F, Tree.NewAdd(Tree.NewMul(InputDerivatives[1].ExpressionDdy, LnA), Tree.NewMul(BByA, InputDerivatives[0].ExpressionDdy)));
+		OutResult.ExpressionDdx = Tree.NewExpression<FExpressionSelect>(Cond, InRangeDdx, ConstantZero);
+		OutResult.ExpressionDdy = Tree.NewExpression<FExpressionSelect>(Cond, InRangeDdy, ConstantZero);
+		break;
+	}
 	case EOperation::Add:
 		OutResult.ExpressionDdx = Tree.NewAdd(InputDerivatives[0].ExpressionDdx, InputDerivatives[1].ExpressionDdx);
 		OutResult.ExpressionDdy = Tree.NewAdd(InputDerivatives[0].ExpressionDdy, InputDerivatives[1].ExpressionDdy);
@@ -541,6 +623,9 @@ void FExpressionOperation::ComputeAnalyticDerivatives(FTree& Tree, FExpressionDe
 	case EOperation::Matrix4MulVec:
 		// TODO
 		OutResult.ExpressionDdx = OutResult.ExpressionDdy = Tree.NewConstant(FVector3f(0.0f, 0.0f, 0.0f));
+		break;
+	case EOperation::SmoothStep:
+		// TODO
 		break;
 	default:
 		checkNoEntry();
@@ -686,7 +771,9 @@ void FExpressionOperation::EmitValueShader(FEmitContext& Context, FEmitScope& Sc
 	case EOperation::Rcp: OutResult.Code = Context.EmitExpression(Scope, ResultType, Types.bIsLWC ? TEXT("LWCRcp(%)") : TEXT("rcp(%)"), InputValue[0]); break;
 	case EOperation::Sqrt: OutResult.Code = Context.EmitExpression(Scope, ResultType, Types.bIsLWC ? TEXT("LWCSqrt(%)") : TEXT("sqrt(%)"), InputValue[0]); break;
 	case EOperation::Rsqrt: OutResult.Code = Context.EmitExpression(Scope, ResultType, Types.bIsLWC ? TEXT("LWCRsqrt(%)") : TEXT("rsqrt(%)"), InputValue[0]); break;
+	case EOperation::Log: OutResult.Code = Context.EmitExpression(Scope, ResultType, TEXT("log(%)"), InputValue[0]); break;
 	case EOperation::Log2: OutResult.Code = Context.EmitExpression(Scope, ResultType, TEXT("log2(%)"), InputValue[0]); break;
+	case EOperation::Exp: OutResult.Code = Context.EmitExpression(Scope, ResultType, TEXT("exp(%)"), InputValue[0]); break;
 	case EOperation::Exp2: OutResult.Code = Context.EmitExpression(Scope, ResultType, TEXT("exp2(%)"), InputValue[0]); break;
 	case EOperation::Frac: OutResult.Code = Context.EmitExpression(Scope, ResultType, Types.bIsLWC ? TEXT("LWCFrac(%)") : TEXT("frac(%)"), InputValue[0]); break;
 	case EOperation::Floor: OutResult.Code = Context.EmitExpression(Scope, ResultType, Types.bIsLWC ? TEXT("LWCFloor(%)") : TEXT("floor(%)"), InputValue[0]); break;
@@ -714,6 +801,7 @@ void FExpressionOperation::EmitValueShader(FEmitContext& Context, FEmitScope& Sc
 	case EOperation::Mul: OutResult.Code = Context.EmitExpression(Scope, ResultType, Types.bIsLWC ? TEXT("LWCMultiply(%, %)") : TEXT("(% * %)"), InputValue[0], InputValue[1]); break;
 	case EOperation::Div: OutResult.Code = Context.EmitExpression(Scope, ResultType, Types.bIsLWC ? TEXT("LWCDivide(%, %)") : TEXT("(% / %)"), InputValue[0], InputValue[1]); break;
 	case EOperation::Fmod: OutResult.Code = Context.EmitExpression(Scope, ResultType, Types.bIsLWC ? TEXT("LWCFmod(%, %)") : TEXT("fmod(%, %)"), InputValue[0], InputValue[1]); break;
+	case EOperation::Step: OutResult.Code = Context.EmitExpression(Scope, ResultType, Types.bIsLWC ? TEXT("LWCStep(%, %)") : TEXT("step(%, %)"), InputValue[0], InputValue[1]); break;
 	case EOperation::PowPositiveClamped: OutResult.Code = Context.EmitExpression(Scope, ResultType, TEXT("PositiveClampedPow(%, %)"), InputValue[0], InputValue[1]); break;
 	case EOperation::Atan2: OutResult.Code = Context.EmitExpression(Scope, ResultType, TEXT("atan2(%, %)"), InputValue[0], InputValue[1]); break;
 	case EOperation::Atan2Fast: OutResult.Code = Context.EmitExpression(Scope, ResultType, TEXT("atan2Fast(%, %)"), InputValue[0], InputValue[1]); break;
@@ -749,6 +837,10 @@ void FExpressionOperation::EmitValueShader(FEmitContext& Context, FEmitScope& Sc
 	case EOperation::Matrix4MulVec:
 		OutResult.Code = Context.EmitExpression(Scope, ResultType, TEXT("mul(%, %)"), InputValue[0], InputValue[1]);
 		break;
+
+	// Ternary Ops
+	case EOperation::SmoothStep: OutResult.Code = Context.EmitExpression(Scope, ResultType, Types.bIsLWC ? TEXT("LWCSmoothStep(%, %, %)") : TEXT("smoothstep(%, %, %)"), InputValue[0], InputValue[1], InputValue[2]); break;
+
 	default:
 		checkNoEntry();
 		break;

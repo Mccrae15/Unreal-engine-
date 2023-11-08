@@ -137,7 +137,42 @@ struct FNiagaraGraphFunctionAliasContext
 
 	// the usage as defined in the current translation stage
 	ENiagaraScriptUsage ScriptUsage;
-	TArray<UEdGraphPin*> StaticSwitchValues;
+	TArray<const UEdGraphPin*> StaticSwitchValues;
+};
+
+/** Options for the FindInputNodes function */
+struct FNiagaraFindInputNodeOptions
+{
+	FNiagaraFindInputNodeOptions()
+		: bSort(false)
+		, bIncludeParameters(true)
+		, bIncludeAttributes(true)
+		, bIncludeSystemConstants(true)
+		, bIncludeTranslatorConstants(false)
+		, bFilterDuplicates(false)
+		, bFilterByScriptUsage(false)
+		, TargetScriptUsage(ENiagaraScriptUsage::Function)
+	{
+	}
+
+	/** Whether or not to sort the nodes, defaults to false. */
+	bool bSort;
+	/** Whether or not to include parameters, defaults to true. */
+	bool bIncludeParameters;
+	/** Whether or not to include attributes, defaults to true. */
+	bool bIncludeAttributes;
+	/** Whether or not to include system parameters, defaults to true. */
+	bool bIncludeSystemConstants;
+	/** Whether or not to include translator parameters, defaults to false. */
+	bool bIncludeTranslatorConstants;
+	/** Whether of not to filter out duplicate nodes, defaults to false. */
+	bool bFilterDuplicates;
+	/** Whether or not to limit to nodes connected to an output node of the specified script type.*/
+	bool bFilterByScriptUsage;
+	/** The specified script usage required for an input.*/
+	ENiagaraScriptUsage TargetScriptUsage;
+	/** The specified id within the graph of the script usage*/
+	FGuid TargetScriptUsageId;
 };
 
 UCLASS(MinimalAPI)
@@ -167,6 +202,9 @@ class UNiagaraGraph : public UEdGraph
 	/** Creates a transient copy of this graph for compilation purposes. */
 	UNiagaraGraph* CreateCompilationCopy(const TArray<ENiagaraScriptUsage>& CompileUsages);
 	void ReleaseCompilationCopy();
+
+	/** Returns if this graph is for compilation purposes only. **/
+	bool IsCompilationCopy() const { return bIsForCompilationOnly; };
 			
 	/** Find the first output node bound to the target usage type.*/
 	class UNiagaraNodeOutput* FindOutputNode(ENiagaraScriptUsage TargetUsageType, FGuid TargetUsageId = FGuid()) const;
@@ -177,40 +215,7 @@ class UNiagaraGraph : public UEdGraph
 	void FindOutputNodes(ENiagaraScriptUsage TargetUsageType, TArray<UNiagaraNodeOutput*>& OutputNodes) const;
 	void FindEquivalentOutputNodes(ENiagaraScriptUsage TargetUsageType, TArray<UNiagaraNodeOutput*>& OutputNodes) const;
 
-	/** Options for the FindInputNodes function */
-	struct FFindInputNodeOptions
-	{
-		FFindInputNodeOptions()
-			: bSort(false)
-			, bIncludeParameters(true)
-			, bIncludeAttributes(true)
-			, bIncludeSystemConstants(true)
-			, bIncludeTranslatorConstants(false)
-			, bFilterDuplicates(false)
-			, bFilterByScriptUsage(false)
-			, TargetScriptUsage(ENiagaraScriptUsage::Function)
-		{
-		}
-
-		/** Whether or not to sort the nodes, defaults to false. */
-		bool bSort;
-		/** Whether or not to include parameters, defaults to true. */
-		bool bIncludeParameters;
-		/** Whether or not to include attributes, defaults to true. */
-		bool bIncludeAttributes;
-		/** Whether or not to include system parameters, defaults to true. */
-		bool bIncludeSystemConstants;
-		/** Whether or not to include translator parameters, defaults to false. */
-		bool bIncludeTranslatorConstants;
-		/** Whether of not to filter out duplicate nodes, defaults to false. */
-		bool bFilterDuplicates;
-		/** Whether or not to limit to nodes connected to an output node of the specified script type.*/
-		bool bFilterByScriptUsage;
-		/** The specified script usage required for an input.*/
-		ENiagaraScriptUsage TargetScriptUsage;
-		/** The specified id within the graph of the script usage*/
-		FGuid TargetScriptUsageId;
-	};
+	using FFindInputNodeOptions = FNiagaraFindInputNodeOptions;
 
 	/** Finds input nodes in the graph with. */
 	void FindInputNodes(TArray<class UNiagaraNodeInput*>& OutInputNodes, FFindInputNodeOptions Options = FFindInputNodeOptions()) const;
@@ -288,7 +293,7 @@ class UNiagaraGraph : public UEdGraph
 	const TMap<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection>& GetParameterReferenceMap() const; // NOTE: The const is a lie! (This indirectly calls RefreshParameterReferences, which can recreate the entire map)
 
 	/** Gets the meta-data associated with this variable, if it exists.*/
-	TOptional<FNiagaraVariableMetaData> GetMetaData(const FNiagaraVariable& InVar) const;
+	NIAGARAEDITOR_API TOptional<FNiagaraVariableMetaData> GetMetaData(const FNiagaraVariable& InVar) const;
 
 	/** Sets the meta-data associated with this variable. Creates a new UNiagaraScriptVariable if the target variable cannot be found. Illegal to call on FNiagaraVariables that are Niagara Constants. */
 	void SetMetaData(const FNiagaraVariable& InVar, const FNiagaraVariableMetaData& MetaData);
@@ -301,6 +306,9 @@ class UNiagaraGraph : public UEdGraph
 
 	UNiagaraScriptVariable* GetScriptVariable(FNiagaraVariable Parameter) const;
 	NIAGARAEDITOR_API UNiagaraScriptVariable* GetScriptVariable(FName ParameterName) const;
+	NIAGARAEDITOR_API UNiagaraScriptVariable* GetScriptVariable(FGuid VariableGuid) const;
+	NIAGARAEDITOR_API TArray<UNiagaraScriptVariable*> GetChildScriptVariablesForInput(FGuid VariableGuid) const;
+	NIAGARAEDITOR_API TArray<FGuid> GetChildScriptVariableGuidsForInput(FGuid VariableGuid) const;
 
 	/** Adds parameter to the VariableToScriptVariable map.*/
 	UNiagaraScriptVariable* AddParameter(const FNiagaraVariable& Parameter, bool bIsStaticSwitch = false);
@@ -363,7 +371,7 @@ class UNiagaraGraph : public UEdGraph
 	  * function calls to the same graph. For example, if the graph contains static switches and two functions call it with
 	  * different switch parameters, the final function names in the hlsl must be different.
 	  */
-	FString GetFunctionAliasByContext(const FNiagaraGraphFunctionAliasContext& FunctionAliasContext);
+	FString GetFunctionAliasByContext(const FNiagaraGraphFunctionAliasContext& FunctionAliasContext) const;
 
 	/** In order to support reducing the number of times we need to fully generate the CompileId this function is introduced
 	  * to work with LastBuiltScriptVersionId & bHasValidLastBuiltScriptVersionId.

@@ -4,6 +4,8 @@
 #include "TestNetSerializerFixture.h"
 #include "Iris/ReplicationState/ReplicationStateDescriptorBuilder.h"
 #include "Iris/Serialization/InternalNetSerializers.h"
+#include "Iris/Serialization/InternalNetSerializationContext.h"
+#include "Iris/Serialization/IrisObjectReferencePackageMap.h"
 
 namespace UE::Net
 {
@@ -47,6 +49,7 @@ protected:
 	static const FText TestValues[];
 	static const SIZE_T TestValueCount;
 
+	Private::FInternalNetSerializationContext InternalContext;
 	TRefCountPtr<const FReplicationStateDescriptor> ReplicationStateDescriptor;
 	FLastResortPropertyNetSerializerConfig* SerializerConfig;
 };
@@ -60,14 +63,6 @@ const FText FTestLastResortPropertyNetSerializer::TestValues[] =
 
 const SIZE_T FTestLastResortPropertyNetSerializer::TestValueCount = sizeof(TestValues)/sizeof(TestValues[0]);
 
-// Having some issues with localization files not being present on most platforms
-
-#if !PLATFORM_WINDOWS
-UE_NET_TEST_FIXTURE(FTestLastResortPropertyNetSerializer, WarnNotTested)
-{
-	UE_NET_WARN("LastResortPropertyNetSerializer cannot be tested without localization files.");
-}
-#else
 UE_NET_TEST_FIXTURE(FTestLastResortPropertyNetSerializer, TestQuantize)
 {
 	TestQuantize();
@@ -87,14 +82,16 @@ UE_NET_TEST_FIXTURE(FTestLastResortPropertyNetSerializer, TestCloneDynamicState)
 {
 	TestCloneDynamicState();
 }
-#endif
 
 void FTestLastResortPropertyNetSerializer::SetUp()
 {
 	Super::SetUp();
 
+	InternalContext.PackageMap = NewObject<UIrisObjectReferencePackageMap>();
+	Context.SetInternalContext(&InternalContext);
+
 	ReplicationStateDescriptor = FReplicationStateDescriptorBuilder::CreateDescriptorForStruct(StaticStruct<FStructForLastResortPropertyNetSerializerTest>());
-	UE_NET_ASSERT_EQ(ReplicationStateDescriptor->MemberCount, uint16(1)) << "Expected FStructForLastResortPropertyNetSerializerTest to contain exactly one member";
+	UE_NET_ASSERT_EQ_MSG(ReplicationStateDescriptor->MemberCount, uint16(1), "Expected FStructForLastResortPropertyNetSerializerTest to contain exactly one member");
 
 
 	SerializerConfig = const_cast<FLastResortPropertyNetSerializerConfig*>(static_cast<const FLastResortPropertyNetSerializerConfig*>(ReplicationStateDescriptor->MemberSerializerDescriptors[0].SerializerConfig));

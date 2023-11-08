@@ -4,11 +4,14 @@
 
 #include "EnhancedInputModule.h"
 #include "EnhancedInputPlatformSettings.h"
+#include "UserSettings/EnhancedInputUserSettings.h"
+#include "EnhancedInputDeveloperSettings.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/IConsoleManager.h"
 #include "InputMappingContext.h"
 #include "InputMappingQuery.h"
 #include "PlayerMappableInputConfig.h"
+#include "PlayerMappableKeySettings.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(EnhancedInputSubsystemInterface)
 
@@ -27,6 +30,50 @@ static FAutoConsoleVariableRef GCVarGlobalAxisConfigMode(
 	TEXT("Whether or not to apply Global Axis Config settings. 0 = Default (Mouse Only), 1 = All, 2 = None")
 );
 
+void IEnhancedInputSubsystemInterface::InitalizeUserSettings()
+{
+	// Not every implementer of the EI subsystem wants user settings, so leave it up to them to determine if they want it or not
+}
+
+UEnhancedInputUserSettings* IEnhancedInputSubsystemInterface::GetUserSettings() const
+{
+	// Not every implementer of the EI subsystem wants user settings, so leave it up to them to determine if they want it or not
+	return nullptr;
+}
+
+void IEnhancedInputSubsystemInterface::BindUserSettingDelegates()
+{
+	UEnhancedInputUserSettings* Settings = GetUserSettings();
+	if (!Settings)
+	{
+		UE_LOG(LogEnhancedInput, Error, TEXT("Unable to get the user settings object!"));
+		return;
+	}
+
+	// There is no need to bind to any delegates if the setting is turned off. We shouldn't even get here,
+	// but do this in case someone implements this interface
+	if (!GetDefault<UEnhancedInputDeveloperSettings>()->bEnableUserSettings)
+	{
+		UE_LOG(LogEnhancedInput, Error, TEXT("Attempting to bind to user settings delegates but they are disabled in UEnhancedInputDeveloperSettings!"));
+		return;
+	}
+
+	Settings->OnSettingsChanged.AddUniqueDynamic(this, &IEnhancedInputSubsystemInterface::OnUserSettingsChanged);
+	Settings->OnKeyProfileChanged.AddUniqueDynamic(this, &IEnhancedInputSubsystemInterface::OnUserKeyProfileChanged);
+}
+
+void IEnhancedInputSubsystemInterface::OnUserSettingsChanged(UEnhancedInputUserSettings* Settings)
+{
+	// We want to rebuild our control mappings whenever a setting has changed
+	RequestRebuildControlMappings();
+}
+
+void IEnhancedInputSubsystemInterface::OnUserKeyProfileChanged(const UEnhancedPlayerMappableKeyProfile* InNewProfile)
+{
+	// We want to rebuild our control mappings whenever a setting has changed
+	RequestRebuildControlMappings();
+}
+
 void IEnhancedInputSubsystemInterface::InjectInputForAction(const UInputAction* Action, FInputActionValue RawValue, const TArray<UInputModifier*>& Modifiers, const TArray<UInputTrigger*>& Triggers)
 {
 	if(UEnhancedPlayerInput* PlayerInput = GetPlayerInput())
@@ -39,6 +86,83 @@ void IEnhancedInputSubsystemInterface::InjectInputVectorForAction(const UInputAc
 {
 	FInputActionValue RawValue((Action != nullptr) ? Action->ValueType : EInputActionValueType::Boolean, Value);
 	InjectInputForAction(Action, RawValue, Modifiers, Triggers);
+}
+
+void IEnhancedInputSubsystemInterface::InjectInputForPlayerMapping(const FName MappingName, FInputActionValue RawValue, const TArray<UInputModifier*>& Modifiers, const TArray<UInputTrigger*>& Triggers)
+{
+	InjectInputVectorForPlayerMapping(MappingName, RawValue.Get<FVector>(), Modifiers, Triggers);
+}
+
+void IEnhancedInputSubsystemInterface::StartContinuousInputInjectionForAction(const UInputAction* Action, FInputActionValue RawValue, const TArray<UInputModifier*>& Modifiers, const TArray<UInputTrigger*>& Triggers)
+{
+	FInjectedInput& Injection = ContinuouslyInjectedInputs.FindOrAdd(Action);
+	
+	Injection.RawValue = RawValue;
+	Injection.Modifiers = Modifiers;
+	Injection.Triggers = Triggers;
+}
+
+void IEnhancedInputSubsystemInterface::StartContinuousInputInjectionForPlayerMapping(const FName MappingName, FInputActionValue RawValue, const TArray<UInputModifier*>& Modifiers, const TArray<UInputTrigger*>& Triggers)
+{
+	if (const UEnhancedInputUserSettings* UserSettings = GetUserSettings())
+	{
+		if (const UInputAction* Action = UserSettings->FindInputActionForMapping(MappingName))
+		{
+			StartContinuousInputInjectionForAction(Action, RawValue, Modifiers, Triggers);
+		}
+		else
+		{
+			UE_LOG(LogEnhancedInput, Warning, TEXT("Could not find a Input Action for mapping name '%s'"), *MappingName.ToString());
+		}
+	}
+	else
+	{
+		UE_LOG(LogEnhancedInput, Warning, TEXT("Could not find a valid UEnhancedInputUserSettings object, is it enabled in the project settings?"));
+	}
+}
+
+void IEnhancedInputSubsystemInterface::StopContinuousInputInjectionForAction(const UInputAction* Action)
+{
+	ContinuouslyInjectedInputs.Remove(Action);
+}
+
+void IEnhancedInputSubsystemInterface::StopContinuousInputInjectionForPlayerMapping(const FName MappingName)
+{
+	if (const UEnhancedInputUserSettings* UserSettings = GetUserSettings())
+	{
+		if (const UInputAction* Action = UserSettings->FindInputActionForMapping(MappingName))
+		{
+			StopContinuousInputInjectionForAction(Action);
+		}
+		else
+		{
+			UE_LOG(LogEnhancedInput, Warning, TEXT("Could not find a Input Action for mapping name '%s'"), *MappingName.ToString());
+		}
+	}
+	else
+	{
+		UE_LOG(LogEnhancedInput, Warning, TEXT("Could not find a valid UEnhancedInputUserSettings object, is it enabled in the project settings?"));
+	}
+}
+
+void IEnhancedInputSubsystemInterface::InjectInputVectorForPlayerMapping(const FName MappingName, FVector Value, const TArray<UInputModifier*>& Modifiers, const TArray<UInputTrigger*>& Triggers)
+{
+	if (const UEnhancedInputUserSettings* UserSettings = GetUserSettings())
+	{
+		if (const UInputAction* Action = UserSettings->FindInputActionForMapping(MappingName))
+		{
+			FInputActionValue RawValue(Action->ValueType, Value);
+			InjectInputForAction(Action, RawValue, Modifiers, Triggers);
+		}
+		else
+		{
+			UE_LOG(LogEnhancedInput, Warning, TEXT("Could not find a Input Action for mapping name '%s'"), *MappingName.ToString());
+		}
+	}
+	else
+	{
+		UE_LOG(LogEnhancedInput, Warning, TEXT("Could not find a valid UEnhancedInputUserSettings object, is it enabled in the project settings?"));
+	}
 }
 
 void IEnhancedInputSubsystemInterface::ClearAllMappings()
@@ -60,6 +184,14 @@ void IEnhancedInputSubsystemInterface::AddMappingContext(const UInputMappingCont
 			PlayerInput->AppliedInputContexts.Add(MappingContext, Priority);
 			RequestRebuildControlMappings(Options);
 		}
+
+		if (Options.bNotifyUserSettings)
+		{
+			if (UEnhancedInputUserSettings* Settings = GetUserSettings())
+			{
+				Settings->RegisterInputMappingContext(MappingContext);
+			}
+		}
 	}
 	else
 	{
@@ -75,6 +207,14 @@ void IEnhancedInputSubsystemInterface::RemoveMappingContext(const UInputMappingC
 		{
 			PlayerInput->AppliedInputContexts.Remove(MappingContext);
 			RequestRebuildControlMappings(Options);
+		}
+
+		if (Options.bNotifyUserSettings)
+		{
+			if (UEnhancedInputUserSettings* Settings = GetUserSettings())
+			{
+				Settings->UnregisterInputMappingContext(MappingContext);
+			}
 		}
 	}
 }
@@ -287,7 +427,7 @@ void IEnhancedInputSubsystemInterface::ApplyAxisPropertyModifiers(UEnhancedPlaye
 	FInputAxisProperties AxisProperties;
 	if (PlayerInput->GetAxisProperties(Mapping.Key, AxisProperties))
 	{
-		TArray<UInputModifier*> Modifiers;
+		TArray<TObjectPtr<UInputModifier>> Modifiers;
 
 		// If a modifier already exists it should override axis properties.
 		auto HasExistingModifier = [&Mapping](UClass* OfType)
@@ -399,6 +539,8 @@ TArray<FEnhancedActionKeyMapping> IEnhancedInputSubsystemInterface::GetAllPlayer
 	return PlayerMappableMappings;
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 int32 IEnhancedInputSubsystemInterface::AddPlayerMappedKey(const FName MappingName, const FKey NewKey, const FModifyContextOptions& Options /*= FModifyContextOptions()*/)
 {
 	return AddPlayerMappedKeyInSlot(MappingName, NewKey, FPlayerMappableKeySlot::FirstKeySlot, Options);
@@ -411,24 +553,25 @@ int32 IEnhancedInputSubsystemInterface::K2_AddPlayerMappedKeyInSlot(const FName 
 
 int32 IEnhancedInputSubsystemInterface::AddPlayerMappedKeyInSlot(const FName MappingName, const FKey NewKey, const FPlayerMappableKeySlot& KeySlot /*= FPlayerMappableKeySlot::FirstKeySlot*/, const FModifyContextOptions& Options /*= FModifyContextOptions()*/)
 {
-	int32 NumMappingsApplied = 0;
-	if (MappingName != NAME_None)
+	if (UEnhancedInputUserSettings* Settings = GetUserSettings())
 	{
-		if (UEnhancedPlayerInput* const PlayerInput = GetPlayerInput())
-		{
-			TMap<FPlayerMappableKeySlot, FKey>& PlayerMappedKeySlots = PlayerMappedSettings.FindOrAdd(MappingName);
-			FKey& KeyInSlot = PlayerMappedKeySlots.FindOrAdd(KeySlot);
-			KeyInSlot = NewKey;
-			++NumMappingsApplied;
-		}
+		FMapPlayerKeyArgs Args = {};
+		Args.MappingName = MappingName;
+		Args.NewKey = NewKey;
+		Args.Slot = static_cast<EPlayerMappableKeySlot>(KeySlot.GetSlotNumber());
 
-		RequestRebuildControlMappings(Options);
+		FGameplayTagContainer FailureReason;
+		Settings->MapPlayerKey(Args, FailureReason);
+
+		if (!FailureReason.IsEmpty())
+		{
+			UE_LOG(LogEnhancedInput, Warning, TEXT("IEnhancedInputSubsystemInterface::AddPlayerMappedKeyInSlot Failed! Reasoning: %s"), *FailureReason.ToString());
+			return 0;
+		}
 	}
-	else
-	{
-		UE_LOG(LogEnhancedInput, Warning, TEXT("Attempted to AddPlayerMappedKeyInSlot with an invalid MappingName! Mapping has not been applied."));
-	}
-	return NumMappingsApplied;
+
+	RequestRebuildControlMappings(Options);
+	return 1;
 }
 
 int32 IEnhancedInputSubsystemInterface::RemovePlayerMappedKey(const FName MappingName, const FModifyContextOptions& Options /*= FModifyContextOptions()*/)
@@ -443,38 +586,55 @@ int32 IEnhancedInputSubsystemInterface::K2_RemovePlayerMappedKeyInSlot(const FNa
 
 int32 IEnhancedInputSubsystemInterface::RemovePlayerMappedKeyInSlot(const FName MappingName, const FPlayerMappableKeySlot& KeySlot /*= FPlayerMappableKeySlot::FirstKeySlot*/, const FModifyContextOptions& Options /*= FModifyContextOptions()*/)
 {
-	int32 NumMappingsRemoved = 0;
-	if (UEnhancedPlayerInput* const PlayerInput = GetPlayerInput())
+	if (UEnhancedInputUserSettings* Settings = GetUserSettings())
 	{
-		if (TMap<FPlayerMappableKeySlot, FKey>* PlayerMappedKeySlots = PlayerMappedSettings.Find(MappingName))
+		FMapPlayerKeyArgs Args = {};
+		Args.MappingName = MappingName;
+		Args.Slot = static_cast<EPlayerMappableKeySlot>(KeySlot.GetSlotNumber());
+		
+		FGameplayTagContainer FailureReason;
+		Settings->UnMapPlayerKey(Args, FailureReason);
+
+		if (!FailureReason.IsEmpty())
 		{
-			NumMappingsRemoved = PlayerMappedKeySlots->Remove(KeySlot);
+			UE_LOG(LogEnhancedInput, Warning, TEXT("IEnhancedInputSubsystemInterface::RemovePlayerMappedKeyInSlot Failed! Reasoning: %s"), *FailureReason.ToString());
+			return 0;
+		}
+	}
+	
+	RequestRebuildControlMappings(Options);
+
+	return 1;
+}
+
+int32 IEnhancedInputSubsystemInterface::RemoveAllPlayerMappedKeysForMapping(const FName MappingName, const FModifyContextOptions& Options /*= FModifyContextOptions()*/)
+{
+	if (UEnhancedInputUserSettings* Settings = GetUserSettings())
+	{
+		FMapPlayerKeyArgs Args = {};
+		Args.MappingName = MappingName;
+
+		FGameplayTagContainer FailureReason;
+		Settings->ResetAllPlayerKeysInRow(Args, FailureReason);
+		
+		if (!FailureReason.IsEmpty())
+		{
+			UE_LOG(LogEnhancedInput, Warning, TEXT("IEnhancedInputSubsystemInterface::RemovePlayerMappedKeyInSlot Failed! Reasoning: %s"), *FailureReason.ToString());
+			return 0;
 		}
 	}
 
 	RequestRebuildControlMappings(Options);
 
-	return NumMappingsRemoved;
-}
-
-int32 IEnhancedInputSubsystemInterface::RemoveAllPlayerMappedKeysForMapping(const FName MappingName, const FModifyContextOptions& Options /*= FModifyContextOptions()*/)
-{
-	int32 NumMappingsRemoved = 0;
-	if (UEnhancedPlayerInput* const PlayerInput = GetPlayerInput())
-	{
-		NumMappingsRemoved = PlayerMappedSettings.Remove(MappingName);
-	}
-
-	RequestRebuildControlMappings(Options);
-
-	return NumMappingsRemoved;
+	return 1;
 }
 
 void IEnhancedInputSubsystemInterface::RemoveAllPlayerMappedKeys(const FModifyContextOptions& Options)
 {
-	if (UEnhancedPlayerInput* const PlayerInput = GetPlayerInput())
+	if (UEnhancedInputUserSettings* Settings = GetUserSettings())
 	{
-		PlayerMappedSettings.Empty();
+		FGameplayTagContainer FailureReason;
+		Settings->ResetKeyProfileToDefault(Settings->GetCurrentKeyProfileIdentifier(), FailureReason);
 	}
 
 	RequestRebuildControlMappings(Options);
@@ -492,32 +652,55 @@ FKey IEnhancedInputSubsystemInterface::K2_GetPlayerMappedKeyInSlot(const FName M
 
 FKey IEnhancedInputSubsystemInterface::GetPlayerMappedKeyInSlot(const FName MappingName, const FPlayerMappableKeySlot& KeySlot /*= FPlayerMappableKeySlot()*/) const
 {
-	if (const TMap<FPlayerMappableKeySlot, FKey>* PlayerMappedKeySlots = PlayerMappedSettings.Find(MappingName))
+	if (const UEnhancedInputUserSettings* Settings = GetUserSettings())
 	{
-		if (const FKey* PlayerMappedKey = PlayerMappedKeySlots->Find(KeySlot))
+		if (const UEnhancedPlayerMappableKeyProfile* KeyProfile = Settings->GetCurrentKeyProfile())
 		{
-			return *PlayerMappedKey;
+			FPlayerMappableKeyQueryOptions Opts = {};
+			Opts.MappingName = MappingName;
+			Opts.SlotToMatch = static_cast<EPlayerMappableKeySlot>(KeySlot.GetSlotNumber());
+
+			TArray<FKey> Keys;
+			KeyProfile->QueryPlayerMappedKeys(Opts, OUT Keys);
+			
+			if (!Keys.IsEmpty())
+			{
+				return Keys[0];
+			}
 		}
 	}
+	
 	return EKeys::Invalid;
 }
 
 TArray<FKey> IEnhancedInputSubsystemInterface::GetAllPlayerMappedKeys(const FName MappingName) const
 {
 	TArray<FKey> PlayerMappedKeys;
-	if (const TMap<FPlayerMappableKeySlot, FKey>* PlayerMappedKeySlots = PlayerMappedSettings.Find(MappingName))
+	
+	if (const UEnhancedInputUserSettings* Settings = GetUserSettings())
 	{
-		PlayerMappedKeySlots->GenerateValueArray(PlayerMappedKeys);
-		return PlayerMappedKeys;
+		if (const UEnhancedPlayerMappableKeyProfile* KeyProfile = Settings->GetCurrentKeyProfile())
+		{
+			FPlayerMappableKeyQueryOptions Opts = {};
+			Opts.MappingName = MappingName;
+			
+			KeyProfile->QueryPlayerMappedKeys(Opts, OUT PlayerMappedKeys);
+		}
 	}
+	
 	return PlayerMappedKeys;
 }
 
 void IEnhancedInputSubsystemInterface::AddPlayerMappableConfig(const UPlayerMappableInputConfig* Config, const FModifyContextOptions& Options)
 {
-	if(Config)
+	if (Config)
 	{
-		for(TPair<TObjectPtr<UInputMappingContext>, int32> Pair : Config->GetMappingContexts())
+		if (GetDefault<UEnhancedInputDeveloperSettings>()->bLogOnDeprecatedConfigUsed && Config->IsDeprecated())
+		{
+			UE_LOG(LogEnhancedInput, Warning, TEXT("The Player Mappable Input Config '%s' is marked as deprecated, but is still being added!"), *Config->GetFName().ToString());
+		}
+
+		for (TPair<TObjectPtr<UInputMappingContext>, int32> Pair : Config->GetMappingContexts())
 		{
 			AddMappingContext(Pair.Key, Pair.Value, Options);
 		}	
@@ -526,14 +709,21 @@ void IEnhancedInputSubsystemInterface::AddPlayerMappableConfig(const UPlayerMapp
 
 void IEnhancedInputSubsystemInterface::RemovePlayerMappableConfig(const UPlayerMappableInputConfig* Config, const FModifyContextOptions& Options)
 {
-	if(Config)
+	if (Config)
 	{
+		if (GetDefault<UEnhancedInputDeveloperSettings>()->bLogOnDeprecatedConfigUsed && Config->IsDeprecated())
+		{
+			UE_LOG(LogEnhancedInput, Warning, TEXT("The Player Mappable Input Config '%s' is marked as deprecated, but is still being removed!"), *Config->GetFName().ToString());
+		}
+
 		for(TPair<TObjectPtr<UInputMappingContext>, int32> Pair : Config->GetMappingContexts())
 		{
 			RemoveMappingContext(Pair.Key, Options);
 		}	
 	}
 }
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 template<typename T>
 void DeepCopyPtrArray(const TArray<T*>& From, TArray<T*>& To)
@@ -653,6 +843,7 @@ void IEnhancedInputSubsystemInterface::RebuildControlMappings()
 	// Clear existing mappings, but retain the mapping array for later processing
 	TArray<FEnhancedActionKeyMapping> OldMappings(MoveTemp(PlayerInput->EnhancedActionMappings));
 	PlayerInput->ClearAllMappings();
+	PlayerInput->KeyConsumptionData.Reset();
 	AppliedContextRedirects.Reset();
 
 	// Order contexts by priority
@@ -702,26 +893,61 @@ void IEnhancedInputSubsystemInterface::RebuildControlMappings()
 	// Reset the tracking of dependant chord actions on the player input
 	PlayerInput->DependentChordActions.Reset();
 
+	UEnhancedInputUserSettings* CurrentUserSettings = GetUserSettings();
+	UEnhancedPlayerMappableKeyProfile* PlayerKeyProfile = CurrentUserSettings ? CurrentUserSettings->GetCurrentKeyProfile() : nullptr;
+
+	// An array of keys that are mapped to a given Action.
+	// This is populated by any player mapped keys if they exist, or the default mapping from
+	// an input mapping context.
+	TArray<FKey> MappedKeysToActionName;
+	
 	for (const TPair<TObjectPtr<const UInputMappingContext>, int32>& ContextPair : OrderedInputContexts)
 	{
 		// Don't apply context specific keys immediately, allowing multiple mappings to the same key within the same context if required.
 		TArray<FKey> ContextAppliedKeys;
-
 		const UInputMappingContext* MappingContext = ContextPair.Key;
 		TArray<FEnhancedActionKeyMapping> OrderedMappings = ReorderMappings(MappingContext->GetMappings(), PlayerInput->DependentChordActions);
 
 		for (FEnhancedActionKeyMapping& Mapping : OrderedMappings)
 		{
-			TArray<FKey> PlayerMappedKeys = GetAllPlayerMappedKeys(Mapping.GetMappingName());
-			if (PlayerMappedKeys.IsEmpty())
+			// Clear out mappings from the previous iteration
+			MappedKeysToActionName.Reset();
+			
+			const UPlayerMappableKeySettings* KeySettings = Mapping.GetPlayerMappableKeySettings();
+
+			// If this mapping has specified a specific key profile, and the current profile isn't it, then don't add this key mapping
+			if (KeySettings && PlayerKeyProfile && !KeySettings->SupportedKeyProfiles.IsEmpty() && !KeySettings->SupportedKeyProfiles.HasTag(PlayerKeyProfile->GetProfileIdentifer()))
 			{
-				//If we didn't find any player mapped keys use the default key from the mapping.
-				PlayerMappedKeys.Add(Mapping.Key);
+				continue;			
+			}
+			
+			// See if there are any player mapped keys to this action
+			if (PlayerKeyProfile && GetDefault<UEnhancedInputDeveloperSettings>()->bEnableUserSettings)
+			{
+				PlayerKeyProfile->GetPlayerMappedKeysForRebuildControlMappings(Mapping, MappedKeysToActionName);
 			}
 
-			for (const FKey& PlayerMappedKey : PlayerMappedKeys)
+			// True if there were any player mapped keys to this mapping and we are using those instead.
+			const bool bIsPlayerMapping = !MappedKeysToActionName.IsEmpty();
+
+			// If there aren't, then just use the default mapping for this action
+			if (!bIsPlayerMapping)
+			{
+				MappedKeysToActionName.Add(Mapping.Key);
+			}
+			
+			for (const FKey& PlayerMappedKey : MappedKeysToActionName)
 			{
 				Mapping.Key = PlayerMappedKey;
+
+				// If this Input Action is flagged to consume input, then mark it's key state as being consumed every tick.
+				// This has the affect where the base UPlayerInput class will not fire any legacy bindings
+				if (Mapping.Action->bConsumesActionAndAxisMappings)
+				{
+					FKeyConsumptionOptions& Opts = PlayerInput->KeyConsumptionData.FindOrAdd(Mapping.Action);
+					Opts.KeysToConsume.AddUnique(Mapping.Key);
+					Opts.EventsToCauseConsumption |= static_cast<ETriggerEvent>(Mapping.Action->TriggerEventsThatConsumeLegacyKeys);
+				}
 
 				bool bToApply = (Mapping.Action != nullptr);
 				if (bToApply && AppliedKeys.Contains(Mapping.Key)) {
@@ -736,7 +962,7 @@ void IEnhancedInputSubsystemInterface::RebuildControlMappings()
 						return Cast<const UInputTriggerChordAction>(Trigger) != nullptr;
 					};
 					bool bHasActionChords = HasTriggerWith(IsChord, Mapping.Action->Triggers);
-					bool bHasChords = HasTriggerWith(IsChord, Mapping.Triggers) || bHasActionChords;
+					bool bHasChords = bHasActionChords || HasTriggerWith(IsChord, Mapping.Triggers);
 
 					// Chorded actions can't consume input or they would hide the action they are chording.
 					if (!bHasChords && Mapping.Action->bConsumeInput)
@@ -748,12 +974,12 @@ void IEnhancedInputSubsystemInterface::RebuildControlMappings()
 					FEnhancedActionKeyMapping& NewMapping = PlayerInput->EnhancedActionMappings[NewMappingIndex];
 
 					// Re-instance modifiers
-					DeepCopyPtrArray<UInputModifier>(Mapping.Modifiers, NewMapping.Modifiers);
+					DeepCopyPtrArray<UInputModifier>(Mapping.Modifiers, MutableView(NewMapping.Modifiers));
 
 					ApplyAxisPropertyModifiers(PlayerInput, NewMapping);
 
 					// Re-instance triggers
-					DeepCopyPtrArray<UInputTrigger>(Mapping.Triggers, NewMapping.Triggers);
+					DeepCopyPtrArray<UInputTrigger>(Mapping.Triggers, MutableView(NewMapping.Triggers));
 
 					if (bHasChords)
 					{
@@ -814,10 +1040,11 @@ void IEnhancedInputSubsystemInterface::RebuildControlMappings()
 		{
 			RemovedActions.Remove(Mapping.Action);
 
-			// Was this key pressed last frame? If so, then we need to mark it to be ignored by the PlayerInput
-			// until it is released to avoid re-processing a triggered event when it. This is only a problem if
-			// the key was in the old mapping and the new one
-			if(bIgnoreAllPressedKeysUntilReleaseOnRebuild && Mapping.Action->ValueType == EInputActionValueType::Boolean && WasInOldMapping(Mapping.Key))
+			// Was this key pressed last frame? If so, then we need to mark it to be ignored by PlayerInput
+			// until it is released to avoid re-processing a triggered event.
+			// This also prevents actions from triggering if the key is being held whilst the IMC is added and bIgnoreAllPressedKeysUntilReleaseOnRebuild
+			// has been set by the user.
+			if (bIgnoreAllPressedKeysUntilReleaseOnRebuild && Mapping.Action->ValueType == EInputActionValueType::Boolean)
 			{				
 				const FKeyState* KeyState = PlayerInput->GetKeyState(Mapping.Key);
 				if(KeyState && KeyState->bDown)
@@ -827,7 +1054,16 @@ void IEnhancedInputSubsystemInterface::RebuildControlMappings()
 			}
 
 			// Retain old mapping trigger/modifier state for identical key -> action mappings.
-			TArray<FEnhancedActionKeyMapping>::SizeType Idx = OldMappings.IndexOfByPredicate([&Mapping](const FEnhancedActionKeyMapping& Other) {return Mapping == Other; });
+			TArray<FEnhancedActionKeyMapping>::SizeType Idx = OldMappings.IndexOfByPredicate(
+				[&Mapping](const FEnhancedActionKeyMapping& Other)
+				{
+					// Use Equals() to ignore Triggers' values. We want to keep their values from before remapping to
+					// prevent resets. Otherwise, triggers like UInputTriggerPressed re-trigger when their value is
+					// reset to 0; and time counting triggers, like UInputTriggerHold, restart their time.
+					// But don't ignore Modifier and Trigger types and their order in the comparison. If we did, we'd
+					// replace new mappings for old ones with different Trigger and Modifier settings.
+					return Mapping.Equals(Other);
+				});
 			if (Idx != INDEX_NONE)
 			{
 				Mapping = MoveTemp(OldMappings[Idx]);
@@ -874,6 +1110,16 @@ void IEnhancedInputSubsystemInterface::TickForcedInput(float DeltaTime)
 	if (!PlayerInput)
 	{
 		return;
+	}
+
+	// Any continuous input injection needs to be added each frame until its stopped
+	for (TPair<TObjectPtr<const UInputAction>, FInjectedInput>& ContinuousInjection : ContinuouslyInjectedInputs)
+	{
+		TObjectPtr<const UInputAction>& Action = ContinuousInjection.Key;
+		if (const UInputAction* InputAction = Action.Get())
+		{
+			PlayerInput->InjectInputForAction(InputAction, ContinuousInjection.Value.RawValue, ContinuousInjection.Value.Modifiers, ContinuousInjection.Value.Triggers);
+		}
 	}
 
 	// Forced action triggering

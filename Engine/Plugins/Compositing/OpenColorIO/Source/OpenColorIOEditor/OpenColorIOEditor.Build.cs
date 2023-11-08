@@ -8,14 +8,16 @@ namespace UnrealBuildTool.Rules
 		{
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
+					"AssetDefinition",
 					"Core",
 					"CoreUObject",
 					"DesktopWidgets",
 					"EditorFramework",
 					"Engine",
+					"ImageCore",
 					"LevelEditor",
+					"OpenColorIOWrapper",
 					"OpenColorIO",
-					"OpenColorIOLib",
 					"Projects",
 					"PropertyEditor",
 					"Renderer",

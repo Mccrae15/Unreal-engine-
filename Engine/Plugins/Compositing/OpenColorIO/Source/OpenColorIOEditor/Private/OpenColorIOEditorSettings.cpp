@@ -5,6 +5,7 @@
 #include "IOpenColorIOEditorModule.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/Paths.h"
+#include "OpenColorIOSettings.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(OpenColorIOEditorSettings)
 
@@ -40,6 +41,24 @@ void UOpenColorIOLevelViewportSettings::PostInitProperties()
 			GConfig->EmptySection(SectionName, *GEditorPerProjectIni);
 
 			UE_LOG(LogOpenColorIOEditor, Warning, TEXT("Migrated EditorPerProjectUserSettings OpenColorIO settings to plugin-specific config file: %s."), *GetClass()->GetConfigName());
+		}
+	}
+
+	const bool bEnforceForwardViewDirectionOnly = !GetDefault<UOpenColorIOSettings>()->bSupportInverseViewTransforms;
+
+	for (FPerViewportDisplaySettingPair& ViewportSetting : ViewportsSettings)
+	{
+		if (bEnforceForwardViewDirectionOnly)
+		{
+			ViewportSetting.DisplayConfiguration.ColorConfiguration.DisplayViewDirection = EOpenColorIOViewTransformDirection::Forward;
+		}
+
+		// Note: Ideally the following wouldn't be necessary but it is required since the previous default behavior was enabled with invalid settings.
+		if (!ViewportSetting.DisplayConfiguration.ColorConfiguration.IsValid())
+		{
+			UE_LOG(LogOpenColorIOEditor, Display, TEXT("Force-disable invalid viewport transform settings."));
+
+			ViewportSetting.DisplayConfiguration.bIsEnabled = false;
 		}
 	}
 }

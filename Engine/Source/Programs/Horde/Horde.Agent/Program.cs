@@ -4,14 +4,21 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Net;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Threading;
 using System.Threading.Tasks;
 using Datadog.Trace;
 using Datadog.Trace.Configuration;
 using Datadog.Trace.OpenTracing;
 using EpicGames.Core;
+using EpicGames.Horde.Compute;
+using EpicGames.Horde.Compute.Buffers;
 using EpicGames.Horde.Storage;
 using EpicGames.Horde.Storage.Backends;
 using Horde.Agent.Execution;
@@ -85,6 +92,11 @@ namespace Horde.Agent
 		public static string Version { get; } = GetVersion();
 
 		/// <summary>
+		/// Default settings for json serialization
+		/// </summary>
+		public static JsonSerializerOptions DefaultJsonSerializerOptions { get; } = new JsonSerializerOptions { AllowTrailingCommas = true, PropertyNameCaseInsensitive = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
+
+		/// <summary>
 		/// Entry point
 		/// </summary>
 		/// <param name="args">Command-line arguments</param>
@@ -92,8 +104,6 @@ namespace Horde.Agent
 		public static async Task<int> Main(string[] args)
 		{
 			Program.Args = args;
-
-			using Logging.HordeLoggerProvider loggerProvider = new Logging.HordeLoggerProvider();
 
 			string? environment = Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
 			if (String.IsNullOrEmpty(environment))
@@ -113,7 +123,7 @@ namespace Horde.Agent
 				configOverrides.Add($"{AgentSettings.SectionName}:{nameof(AgentSettings.WorkingDir)}", workingDirOverride);
 			}
 
-			IConfiguration config = new ConfigurationBuilder()
+			IConfiguration configuration = new ConfigurationBuilder()
 				.SetBasePath(AppDir.FullName)
 				.AddJsonFile("appsettings.json", optional: false)
 				.AddJsonFile("appsettings.Build.json", optional: true) // specific settings for builds (installer/dockerfile)
@@ -123,12 +133,11 @@ namespace Horde.Agent
 				.AddEnvironmentVariables()
 				.Build();
 
+			using ILoggerFactory loggerFactory = Logging.CreateLoggerFactory(configuration);
+
 			IServiceCollection services = new ServiceCollection();
 			services.AddCommandsFromAssembly(Assembly.GetExecutingAssembly());
-			services.AddLogging(builder => builder.AddProvider(loggerProvider));
-
-			// Enable unencrypted HTTP/2 for gRPC channel without TLS
-			AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
+			services.AddSingleton(loggerFactory);
 
 			if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
 			{
@@ -142,7 +151,7 @@ namespace Horde.Agent
 			}
 
 			// Add all the default 
-			IConfigurationSection configSection = config.GetSection(AgentSettings.SectionName);
+			IConfigurationSection configSection = configuration.GetSection(AgentSettings.SectionName);
 			services.AddOptions<AgentSettings>().Configure(options => configSection.Bind(options)).ValidateDataAnnotations();
 
 			AgentSettings settings = new AgentSettings();
@@ -153,7 +162,7 @@ namespace Horde.Agent
 
 			Logging.SetEnv(serverProfile.Environment);
 
-			ILogger certificateLogger = loggerProvider.CreateLogger(typeof(CertificateHelper).FullName!);
+			ILogger certificateLogger = loggerFactory.CreateLogger(typeof(CertificateHelper).FullName!);
 			services.AddHttpClient(Program.HordeServerClientName, config =>
 			{
 				config.BaseAddress = serverProfile.Url;
@@ -177,31 +186,44 @@ namespace Horde.Agent
 					return builder.WaitAndRetryAsync(new[] { TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(10) });
 				});
 
-			services.AddHordeStorage(settings => configSection.GetCurrentServerProfile().GetSection(nameof(serverProfile.Storage)).Bind(settings));
-
 			services.AddSingleton<GrpcService>();
+			services.AddSingleton<TelemetryService>();
+			services.AddHostedService(sp => sp.GetRequiredService<TelemetryService>());
 
-			services.AddSingleton<JobExecutorFactory, PerforceExecutorFactory>();
-			services.AddSingleton<JobExecutorFactory, LocalExecutorFactory>();
-			services.AddSingleton<JobExecutorFactory, TestExecutorFactory>();
+			services.AddSingleton<IJobExecutorFactory, PerforceExecutorFactory>();
+			services.AddSingleton<IJobExecutorFactory, WorkspaceExecutorFactory>();
+			services.AddSingleton<IJobExecutorFactory, LocalExecutorFactory>();
+			services.AddSingleton<IJobExecutorFactory, TestExecutorFactory>();
+			
+			services.AddSingleton<IWorkspaceMaterializerFactory, WorkspaceMaterializerFactory>();
+
+			services.AddSingleton<JobHandler>();
+			services.AddSingleton<StatusService>();
+			services.AddHostedService<StatusService>(sp => sp.GetRequiredService<StatusService>());
 
 			services.AddSingleton<LeaseHandler, ComputeHandler>();
-			services.AddSingleton<LeaseHandler, ComputeHandlerV2>();
 			services.AddSingleton<LeaseHandler, ConformHandler>();
-			services.AddSingleton<LeaseHandler, JobHandler>();
+			services.AddSingleton<LeaseHandler, JobHandler>(x => x.GetRequiredService<JobHandler>());
 			services.AddSingleton<LeaseHandler, RestartHandler>();
 			services.AddSingleton<LeaseHandler, ShutdownHandler>();
 			services.AddSingleton<LeaseHandler, UpgradeHandler>();
 
 			services.AddSingleton<CapabilitiesService>();
-			services.AddSingleton<SessionFactoryService>();
+			services.AddSingleton<ISessionFactory, SessionFactory>();
 			services.AddSingleton<IServerLoggerFactory, ServerLoggerFactory>();
-			services.AddHostedService<WorkerService>();
+			services.AddSingleton<IServerStorageFactory, HttpServerStorageFactory>();
+			services.AddSingleton<WorkerService>();
+			services.AddHostedService(sp => sp.GetRequiredService<WorkerService>());
 
 			services.AddSingleton<IStorageClientFactory, StorageClientFactory>();
 
+			services.AddSingleton<ComputeListenerService>();
+			services.AddHostedService(sp => sp.GetRequiredService<ComputeListenerService>());
+
+			services.AddMemoryCache();
+
 			// Allow commands to augment the service collection for their own DI service providers
-			services.AddSingleton<DefaultServices>(x => new DefaultServices(config, services));
+			services.AddSingleton<DefaultServices>(x => new DefaultServices(configuration, services));
 
 			// Execute all the commands
 			IServiceProvider serviceProvider = services.BuildServiceProvider();

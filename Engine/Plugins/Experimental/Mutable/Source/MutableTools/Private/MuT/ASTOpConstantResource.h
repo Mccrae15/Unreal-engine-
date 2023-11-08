@@ -12,8 +12,8 @@
 
 namespace mu
 {
-struct FProgram;
-template <class SCALAR> class vec4;
+	struct FProgram;
+	template <class SCALAR> class vec4;
 
 
 	//---------------------------------------------------------------------------------------------
@@ -22,10 +22,6 @@ template <class SCALAR> class vec4;
 	class ASTOpConstantResource : public ASTOp
 	{
 	private:
-
-		//!
-		//std::FILE* resourceFile = nullptr;
-		//size_t fileSize = 0;
 
 		//!
 		Ptr<const RefCounted> loadedValue;
@@ -64,7 +60,7 @@ template <class SCALAR> class vec4;
 		bool IsEqual(const ASTOp& otherUntyped) const override;
 		Ptr<ASTOp> Clone(MapChildFuncRef mapChild) const override;
 		uint64 Hash() const override;
-		void Link(FProgram& program, const FLinkerOptions*) override;
+		void Link(FProgram& program, FLinkerOptions*) override;
 		FImageDesc GetImageDesc(bool, class FGetImageDescContext*) const override;
 		void GetBlockLayoutSize(int blockIndex, int* pBlockX, int* pBlockY,
 			FBlockLayoutSizeCache* cache) override;

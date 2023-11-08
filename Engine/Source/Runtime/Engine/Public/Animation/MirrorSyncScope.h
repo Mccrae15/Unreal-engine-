@@ -10,7 +10,7 @@ namespace UE { namespace Anim {
 
 class FAnimSyncGroupScope;
 
-class ENGINE_API FAnimNotifyMirrorContext : public IAnimNotifyEventContextDataInterface
+class FAnimNotifyMirrorContext : public IAnimNotifyEventContextDataInterface
 {
 	DECLARE_NOTIFY_CONTEXT_INTERFACE(FAnimNotifyMirrorContext)
 	public:
@@ -22,19 +22,19 @@ class ENGINE_API FAnimNotifyMirrorContext : public IAnimNotifyEventContextDataIn
 };
 	
 // Scoped graph message used to synchronize mirroring 
-class ENGINE_API FMirrorSyncScope : public IGraphMessage
+class FMirrorSyncScope : public IGraphMessage
 {
-	DECLARE_ANIMGRAPH_MESSAGE(FMirrorSyncScope);
+	DECLARE_ANIMGRAPH_MESSAGE_API(FMirrorSyncScope, ENGINE_API);
 public:
-	FMirrorSyncScope(const FAnimationBaseContext& InContext, const UMirrorDataTable* InMirrorDataTable);
-	virtual ~FMirrorSyncScope();
-	int32 GetMirrorScopeDepth() const;
-	virtual TUniquePtr<const IAnimNotifyEventContextDataInterface> MakeUniqueEventContextData() const override;
+	ENGINE_API FMirrorSyncScope(const FAnimationBaseContext& InContext, const UMirrorDataTable* InMirrorDataTable);
+	ENGINE_API virtual ~FMirrorSyncScope();
+	ENGINE_API int32 GetMirrorScopeDepth() const;
+	ENGINE_API virtual TUniquePtr<const IAnimNotifyEventContextDataInterface> MakeUniqueEventContextData() const override;
 private:
 	const UMirrorDataTable* MirrorDataTable = nullptr;
-	int32 MirrorScopeDepth = 1; 
+	int32 MirrorScopeDepth = 1;
 	const UMirrorDataTable* OuterScopeMirrorDataTable = nullptr;
-	FAnimSyncGroupScope* AnimSyncGroupScope = nullptr; 
+	TWeakPtr<FAnimSyncGroupScope> AnimSyncGroupScope;
 };
 
 }}	// namespace UE::Anim

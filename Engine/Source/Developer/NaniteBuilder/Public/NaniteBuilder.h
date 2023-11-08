@@ -6,18 +6,22 @@
 #include "Modules/ModuleInterface.h"
 #include "Modules/ModuleManager.h"
 #include "StaticMeshResources.h"
+#include "Math/Bounds.h"
 
-struct FStaticMeshBuildVertex;
+struct FMeshBuildVertexView;
 struct FMeshNaniteSettings;
 
 namespace Nanite
 {
+
+const int32 MaxSectionArraySize = 64;
 
 struct FResources;
 
 class IBuilderModule : public IModuleInterface
 {
 public:
+	typedef TDelegate<void(bool bFallbackIsReduced)> FOnFreeInputMeshData;
 
 	/**
 	 * Singleton-like access to this module's interface.  This is just for convenience!
@@ -42,21 +46,22 @@ public:
 
 	virtual const FString& GetVersionString() const = 0;
 
-	virtual bool Build(
-		FResources& Resources,
-		TArray<FStaticMeshBuildVertex>& Vertices, // TODO: Do not require this vertex type for all users of Nanite
-		TArray<uint32>& TriangleIndices,
-		TArray<int32>& MaterialIndices,
-		TArray<uint32>& MeshTriangleCounts,			// Split into multiple triangle ranges with separate hierarchy roots.
-		uint32 NumTexCoords,
-		const FMeshNaniteSettings& Settings)
+	struct FInputMeshData
 	{
-		return false;
-	}
+		FMeshBuildVertexData Vertices;
+		TArray<uint32> TriangleIndices;
+		TArray<uint32> TriangleCounts;
+		TArray<int32>  MaterialIndices;
+		FStaticMeshSectionArray Sections;
+		FBounds3f VertexBounds;
+		uint32 NumTexCoords;
+		float PercentTriangles;
+		float MaxDeviation;
+	};
 
-	struct FVertexMeshData
+	struct FOutputMeshData
 	{
-		TArray<FStaticMeshBuildVertex> Vertices;
+		FMeshBuildVertexData Vertices;
 		TArray<uint32> TriangleIndices;
 		FStaticMeshSectionArray Sections;
 		float PercentTriangles;
@@ -65,10 +70,18 @@ public:
 
 	virtual bool Build(
 		FResources& Resources,
-		FVertexMeshData& InputMeshData,
-		TArrayView< FVertexMeshData > OutputLODMeshData,
-		uint32 NumTexCoords,
-		const FMeshNaniteSettings& Settings)
+		FInputMeshData& InputMeshData,
+		TArrayView<FOutputMeshData> OutputLODMeshData,
+		const FMeshNaniteSettings& Settings,
+		FOnFreeInputMeshData OnFreeInputMeshData)
+	{
+		return false;
+	}
+
+	virtual bool BuildMaterialIndices(
+		const FStaticMeshSectionArray& SectionArray,
+		const uint32 TriangleCount,
+		TArray<int32>& OutMaterialIndices)
 	{
 		return false;
 	}

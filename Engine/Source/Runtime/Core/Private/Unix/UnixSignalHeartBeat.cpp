@@ -53,11 +53,26 @@ namespace
 	// 1ms for the lowest amount allowed for hitch detection. Anything less we wont try to detect hitches
 	double MinimalHitchThreashold = 0.001;
 
-	void SignalHitchHandler(int Signal)
+	void SignalHitchHandler(int Signal, siginfo_t* info, void* context)
 	{
 #if USE_HITCH_DETECTION
+		UE_LOG(LogUnixHeartBeat, Verbose, TEXT("SignalHitchHandler"));
 		GHitchDetected = true;
 #endif
+	}
+
+	timespec TimerGetTime(timer_t TimerId)
+	{
+		struct itimerspec HeartBeatTime;
+		FMemory::Memzero(HeartBeatTime);
+
+		if (timer_gettime(TimerId, &HeartBeatTime) == -1)
+		{
+			int Errno = errno;
+			UE_LOG(LogUnixHeartBeat, Warning, TEXT("Failed to timer_gettime() errno=%d (%s)"), Errno, UTF8_TO_TCHAR(strerror(Errno)));
+		}
+
+		return HeartBeatTime.it_value;
 	}
 }
 
@@ -68,10 +83,11 @@ FUnixSignalGameHitchHeartBeat::FUnixSignalGameHitchHeartBeat()
 
 FUnixSignalGameHitchHeartBeat::~FUnixSignalGameHitchHeartBeat()
 {
-	if (TimerId)
+	if (bTimerCreated)
 	{
 		timer_delete(TimerId);
-		TimerId = nullptr;
+		bTimerCreated = false;
+		TimerId = 0;
 	}
 }
 
@@ -82,21 +98,25 @@ void FUnixSignalGameHitchHeartBeat::Init()
 	struct sigaction SigAction;
 	FMemory::Memzero(SigAction);
 	SigAction.sa_flags = SA_SIGINFO;
-	SigAction.sa_handler = SignalHitchHandler;
+	SigAction.sa_sigaction = SignalHitchHandler;
 
-	sigaction(HEART_BEAT_SIGNAL, &SigAction, nullptr);
+	const bool bActionCreated = sigaction(HEART_BEAT_SIGNAL, &SigAction, nullptr) == 0;
+	if (!bActionCreated)
+	{
+		const int Errno = errno;
+		UE_LOG(LogUnixHeartBeat, Warning, TEXT("Failed to sigaction() errno=%d (%s)"), Errno, UTF8_TO_TCHAR(strerror(Errno)));
+	}
 
 	struct sigevent SignalEvent;
 	FMemory::Memzero(SignalEvent);
 	SignalEvent.sigev_notify = SIGEV_SIGNAL;
 	SignalEvent.sigev_signo = HEART_BEAT_SIGNAL;
 
-	if (timer_create(CLOCK_REALTIME, &SignalEvent, &TimerId) == -1)
+	bTimerCreated = timer_create(CLOCK_REALTIME, &SignalEvent, &TimerId) == 0;
+	if (!bTimerCreated)
 	{
-		int Errno = errno;
+		const int Errno = errno;
 		UE_LOG(LogUnixHeartBeat, Warning, TEXT("Failed to timer_create() errno=%d (%s)"), Errno, UTF8_TO_TCHAR(strerror(Errno)));
-
-		TimerId = nullptr;
 	}
 
 	float CmdLine_HitchDurationS = 0.0;
@@ -150,6 +170,8 @@ void FUnixSignalGameHitchHeartBeat::InitSettings()
 			SuspendCount = 1;
 		}
 	}
+
+	UE_LOG(LogUnixHeartBeat, Verbose, TEXT("HitchThresholdS:%f"), HitchThresholdS);
 }
 
 void FUnixSignalGameHitchHeartBeat::FrameStart(bool bSkipThisFrame)
@@ -157,8 +179,18 @@ void FUnixSignalGameHitchHeartBeat::FrameStart(bool bSkipThisFrame)
 #if USE_HITCH_DETECTION
 	check(IsInGameThread());
 
-	if (!bDisabled && SuspendCount == 0 && TimerId)
+	UE_LOG(LogUnixHeartBeat, VeryVerbose, TEXT("bDisabled:%s SuspendCount:%d bTimerCreated:%s TimerId:%d timer:%d"),
+		bDisabled ? TEXT("true") : TEXT("false"), 
+		SuspendCount, 
+		bTimerCreated ? TEXT("true") : TEXT("false"),
+		TimerId, 
+		bTimerCreated ? TimerGetTime(TimerId).tv_nsec : 0);
+
+	if (!bDisabled && SuspendCount == 0 && bTimerCreated)
 	{
+		UE_LOG(LogUnixHeartBeat, VeryVerbose, TEXT("HitchThresholdS:%f MinimalHitchThreashold:%f"),
+			HitchThresholdS, MinimalHitchThreashold);
+
 		if (HitchThresholdS > MinimalHitchThreashold)
 		{
 			struct itimerspec HeartBeatTime;
@@ -208,8 +240,9 @@ void FUnixSignalGameHitchHeartBeat::SuspendHeartBeat()
 	}
 
 	SuspendCount++;
+	UE_LOG(LogUnixHeartBeat, Verbose, TEXT("SuspendCount:%d"), SuspendCount);
 
-	if (TimerId)
+	if (bTimerCreated)
 	{
 		struct itimerspec DisarmTime;
 		FMemory::Memzero(DisarmTime);
@@ -234,6 +267,7 @@ void FUnixSignalGameHitchHeartBeat::ResumeHeartBeat()
 	if( SuspendCount > 0)
 	{
 		SuspendCount--;
+		UE_LOG(LogUnixHeartBeat, Verbose, TEXT("SuspendCount:%d"), SuspendCount);
 
 		FrameStart(true);
 	}
@@ -242,13 +276,15 @@ void FUnixSignalGameHitchHeartBeat::ResumeHeartBeat()
 
 void FUnixSignalGameHitchHeartBeat::Restart()
 {
+	UE_LOG(LogUnixHeartBeat, Verbose, TEXT("Restart"));
 	bDisabled = false;
 
 	// If we still have a valid handle on the timer_t clean it up
-	if (TimerId)
+	if (bTimerCreated)
 	{
 		timer_delete(TimerId);
-		TimerId = nullptr;
+		bTimerCreated = false;
+		TimerId = 0;
 	}
 
 	Init();
@@ -256,6 +292,15 @@ void FUnixSignalGameHitchHeartBeat::Restart()
 
 void FUnixSignalGameHitchHeartBeat::Stop()
 {
+	UE_LOG(LogUnixHeartBeat, Verbose, TEXT("Stop"));
 	SuspendHeartBeat();
 	bDisabled = true;
+}
+
+void FUnixSignalGameHitchHeartBeat::PostFork()
+{
+	UE_LOG(LogUnixHeartBeat, Verbose, TEXT("PostFork"));
+	// timers aren't inherited by child processes
+	bTimerCreated = false;
+	TimerId = 0;
 }

@@ -2,11 +2,13 @@
 
 #include "Quartz/QuartzSubsystem.h"
 
+#include "Engine/World.h"
 #include "Quartz/AudioMixerClockHandle.h"
 #include "Quartz/QuartzMetronome.h"
 #include "Quartz/AudioMixerClockManager.h"
 #include "Sound/QuartzQuantizationUtilities.h"
 #include "ProfilingDebugging/CountersTrace.h"
+#include "ProfilingDebugging/CsvProfiler.h"
 #include "Stats/Stats.h"
 
 #include "AudioDevice.h"
@@ -38,7 +40,7 @@ static Audio::FMixerDevice* GetAudioMixerDevice(const UWorld* InWorld)
 	}
 
 	FAudioDevice* AudioDevicePtr = InWorld->GetAudioDeviceRaw();
-	if(AudioDevicePtr && AudioDevicePtr->IsAudioMixerEnabled())
+	if(AudioDevicePtr)
 	{
 		return static_cast<Audio::FMixerDevice*>(AudioDevicePtr);
 	}
@@ -53,7 +55,7 @@ static TUniquePtr<FScopeLock> GetPersistentStateScopeLock(const UWorld* InWorld)
 		return MakeUnique<FScopeLock>(&MixerDevicePtr->QuartzPersistentStateCritSec);
 	}
 
-	return {}; // Empty lock for AudioMixer-less runtimes (server)
+	return {};
 }
 
 
@@ -193,6 +195,7 @@ bool UQuartzSubsystem::DoesSupportWorldType(EWorldType::Type WorldType) const
 
 void UQuartzSubsystem::Tick(float DeltaTime)
 {
+	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(Audio);
 	Super::Tick(DeltaTime);
 	TRACE_CPUPROFILER_EVENT_SCOPE(QuartzSubsystem::Tick);
 
@@ -386,6 +389,31 @@ Audio::FQuartzQuantizedRequestData UQuartzSubsystem::CreateRequestDataForStartOt
 	return CommandInitInfo;
 }
 
+Audio::FQuartzQuantizedRequestData UQuartzSubsystem::CreateRequestDataForQuantizedNotify(UQuartzClockHandle* InClockHandle, const FQuartzQuantizationBoundary& InQuantizationBoundary, const FOnQuartzCommandEventBP& InDelegate, float InMsOffset)
+{
+	if (!ensure(InClockHandle))
+	{
+		return { };
+	}
+
+	const TSharedPtr<Audio::FQuantizedNotify> NotifyCommandPtr = MakeShared<Audio::FQuantizedNotify>(InMsOffset);
+
+	Audio::FQuartzQuantizedRequestData CommandInitInfo;
+
+	CommandInitInfo.ClockName = InClockHandle->GetClockName();
+	CommandInitInfo.QuantizationBoundary = InQuantizationBoundary;
+	CommandInitInfo.QuantizedCommandPtr = NotifyCommandPtr;
+	CommandInitInfo.GameThreadSubscribers.Append(InQuantizationBoundary.GameThreadSubscribers);
+	CommandInitInfo.GameThreadSubscribers.Add(InClockHandle->GetQuartzSubscriber());
+
+	if (InDelegate.IsBound())
+	{
+		CommandInitInfo.GameThreadDelegateID = InClockHandle->AddCommandDelegate(InDelegate);
+	}
+
+	return CommandInitInfo;
+}
+
 Audio::FQuartzClockManager* UQuartzSubsystem::GetClockManager(const UObject* WorldContextObject, bool bUseAudioEngineClockManager)
 {
 	// decide if the clock should be managed by the AudioDevice (audio engine) or the Subsystem (this object)
@@ -439,15 +467,25 @@ UQuartzClockHandle* UQuartzSubsystem::CreateNewClock(const UObject* WorldContext
 
 void UQuartzSubsystem::DeleteClockByName(const UObject* WorldContextObject, FName ClockName)
 {
-	Audio::FQuartzClockManager* ClockManager = GetClockManager(WorldContextObject);
+	// first look for the clock on the audio device's clock manager
+	bool bShouldDeleteSynchronous = false;
+	Audio::FQuartzClockManager* ClockManager = GetClockManager(WorldContextObject, /*bUseAudioEngineClockManager*/ true);
 
-	if (!ClockManager)
+	if (ClockManager && !ClockManager->DoesClockExist(ClockName))
 	{
-		return;
+		// if we didn't find it, assume the clock is on the subsystem's clock manager
+		ClockManager = GetClockManager(WorldContextObject, /*bUseAudioEngineClockManager*/ false);
+		bShouldDeleteSynchronous = true;
 	}
 
-	ClockManager->RemoveClock(ClockName);
-	PruneStaleProxies();
+	// if the clock is managed by the audio mixer device,
+	// bShouldDeleteSynchronous is false, and it will be deleted on the correct thread.
+	// if its managed by the subsystem, bShouldDeleteSynchronous will be true
+	if(ClockManager)
+	{
+		ClockManager->RemoveClock(ClockName, bShouldDeleteSynchronous);
+		PruneStaleProxies();
+	}
 }
 
 void UQuartzSubsystem::DeleteClockByHandle(const UObject* WorldContextObject, UQuartzClockHandle*& InClockHandle)

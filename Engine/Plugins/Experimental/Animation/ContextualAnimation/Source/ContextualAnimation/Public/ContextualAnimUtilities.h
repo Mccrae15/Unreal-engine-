@@ -6,13 +6,16 @@
 #include "ContextualAnimUtilities.generated.h"
 
 class UContextualAnimSceneAsset;
+class UMeshComponent;
 class USkeletalMeshComponent;
+class UStaticMeshComponent;
 class UAnimInstance;
 class AActor;
 class FPrimitiveDrawInterface;
 struct FAnimMontageInstance;
 struct FCompactPose;
 struct FContextualAnimSet;
+struct FAnimNotifyEvent;
 template<class PoseType> struct FCSPose;
 
 UCLASS()
@@ -52,6 +55,10 @@ public:
 	
 	static void DrawDebugAnimSet(const UWorld* World, const UContextualAnimSceneAsset& SceneAsset, const FContextualAnimSet& AnimSet, float Time, const FTransform& ToWorldTransform, const FColor& Color, float LifeTime, float Thickness);
 
+	static const FAnimNotifyEvent* FindFirstWarpingWindowForWarpTarget(const UAnimSequenceBase* Animation, FName WarpTargetName);
+
+	static UMeshComponent* TryGetMeshComponentWithSocket(const AActor* Actor, FName SocketName);
+
 	static USkeletalMeshComponent* TryGetSkeletalMeshComponent(const AActor* Actor);
 
 	static UAnimInstance* TryGetAnimInstance(const AActor* Actor);
@@ -81,8 +88,8 @@ public:
 	// SceneBindings Blueprint Interface
 	//------------------------------------------------------------------------------------------
 
-	UFUNCTION(BlueprintCallable, Category = "Contextual Anim|Scene Bindings", meta = (DisplayName = "Calculate pivots For Bindings"))
-	static void BP_SceneBindings_CalculateAnimSetPivots(const FContextualAnimSceneBindings& Bindings, TArray<FContextualAnimSetPivot>& OutPivots);
+	UFUNCTION(BlueprintCallable, Category = "Contextual Anim|Scene Bindings", meta = (DisplayName = "Calculate Warp Points For Bindings"))
+	static void BP_SceneBindings_CalculateWarpPoints(const FContextualAnimSceneBindings& Bindings, TArray<FContextualAnimWarpPoint>& OutWarpPoints);
 
 	UFUNCTION(BlueprintCallable, Category = "Contextual Anim|Scene Bindings", meta = (DisplayName = "Add Or Update Warp Targets For Bindings"))
 	static void BP_SceneBindings_AddOrUpdateWarpTargetsForBindings(const FContextualAnimSceneBindings& Bindings);
@@ -111,11 +118,11 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Contextual Anim|Scene Bindings", meta = (DisplayName = "Get Alignment Transform For Role Relative To Other Role"))
 	static FTransform BP_SceneBindings_GetAlignmentTransformForRoleRelativeToOtherRole(const FContextualAnimSceneBindings& Bindings, FName Role, FName RelativeToRole, float Time);
 
-	UFUNCTION(BlueprintPure, Category = "Contextual Anim|Scene Bindings", meta = (DisplayName = "Get Alignment Transform For Role Relative To Pivot"))
-	static FTransform BP_SceneBindings_GetAlignmentTransformForRoleRelativeToPivot(const FContextualAnimSceneBindings& Bindings, FName Role, const FContextualAnimSetPivot& Pivot, float Time);
+	UFUNCTION(BlueprintPure, Category = "Contextual Anim|Scene Bindings", meta = (DisplayName = "Get Alignment Transform For Role Relative To Warp Point"))
+	static FTransform BP_SceneBindings_GetAlignmentTransformForRoleRelativeToWarpPoint(const FContextualAnimSceneBindings& Bindings, FName Role, const FContextualAnimWarpPoint& WarpPoint, float Time);
 
 	UFUNCTION(BlueprintPure, Category = "Contextual Anim|Scene Bindings", meta = (DisplayName = "Get Alignment Transform From Binding"))
-	static FTransform BP_SceneBindings_GetAlignmentTransformFromBinding(const FContextualAnimSceneBindings& Bindings, const FContextualAnimSceneBinding& Binding, const FContextualAnimSetPivot& Pivot);
+	static FTransform BP_SceneBindings_GetAlignmentTransformFromBinding(const FContextualAnimSceneBindings& Bindings, const FContextualAnimSceneBinding& Binding, const FContextualAnimWarpPoint& WarpPoint);
 
 	// FContextualAnimSceneBindingContext Blueprint Interface
 	//------------------------------------------------------------------------------------------
@@ -134,6 +141,19 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Contextual Anim|Scene Binding Context", meta = (DisplayName = "Get Velocity"))
 	static FVector BP_SceneBindingContext_GetVelocity(const FContextualAnimSceneBindingContext& BindingContext) { return BindingContext.GetVelocity(); }
+
+	UFUNCTION(BlueprintPure, Category = "Contextual Anim|Scene Binding Context", meta = (DisplayName = "Get GameplayTags"))
+	static const FGameplayTagContainer& BP_SceneBindingContext_GetGameplayTags(const FContextualAnimSceneBindingContext& BindingContext) { return BindingContext.GetGameplayTags(); }
+
+	UFUNCTION(BlueprintPure, Category = "Contextual Anim|Scene Binding Context", meta = (DisplayName = "Has Matching GameplayTag"))
+	static bool BP_SceneBindingContext_HasMatchingGameplayTag(const FContextualAnimSceneBindingContext& BindingContext, const FGameplayTag& TagToCheck) { return BindingContext.HasMatchingGameplayTag(TagToCheck); }
+
+	UFUNCTION(BlueprintPure, Category = "Contextual Anim|Scene Binding Context", meta = (DisplayName = "Has All Matching GameplayTags"))
+	static bool BP_SceneBindingContext_HasAllMatchingGameplayTags(const FContextualAnimSceneBindingContext& BindingContext, const FGameplayTagContainer& TagContainer) { return BindingContext.HasAllMatchingGameplayTags(TagContainer); }
+
+	UFUNCTION(BlueprintPure, Category = "Contextual Anim|Scene Binding Context", meta = (DisplayName = "Has Any Matching GameplayTags"))
+	static bool BP_SceneBindingContext_HasAnyMatchingGameplayTags(const FContextualAnimSceneBindingContext& BindingContext, const FGameplayTagContainer& TagContainer) { return BindingContext.HasAnyMatchingGameplayTags(TagContainer); }
+
 
 	// FContextualAnimSceneBinding Blueprint Interface
 	//------------------------------------------------------------------------------------------

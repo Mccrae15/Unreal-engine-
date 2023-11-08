@@ -25,12 +25,13 @@
 #include "WorldTreeItem.h"
 #include "WorldPartition/ActorDescContainer.h"
 #include "WorldPartition/DataLayer/DataLayerInstance.h"
-#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
+#include "WorldPartition/DataLayer/DataLayerManager.h"
 #include "WorldPartition/ContentBundle/ContentBundleEngineSubsystem.h"
 #include "WorldPartition/ContentBundle/ContentBundleDescriptor.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
 #include "LevelInstance/LevelInstanceInterface.h"
 #include "Editor.h"
+#include "ISourceControlModule.h"
 #include "EditorModeManager.h"
 #include "LevelEditor.h"
 
@@ -170,28 +171,38 @@ TSharedRef< ISceneOutliner > FSceneOutlinerModule::CreateActorBrowser(const FSce
 		InitOptions.UseDefaultColumns();
 		InitOptions.ColumnMap.Add(FSceneOutlinerBuiltInColumnTypes::Gutter(), FSceneOutlinerColumnInfo(ESceneOutlinerColumnVisibility::Visible, 0, FCreateSceneOutlinerColumn(), true, TOptional<float>(), FSceneOutlinerBuiltInColumnTypes::Gutter_Localized()));
 		InitOptions.ColumnMap.Add(FSceneOutlinerBuiltInColumnTypes::ActorInfo(), FSceneOutlinerColumnInfo(ESceneOutlinerColumnVisibility::Visible, 20, FCreateSceneOutlinerColumn(), true, TOptional<float>(), FSceneOutlinerBuiltInColumnTypes::ActorInfo_Localized()));
-		InitOptions.ColumnMap.Add(FSceneOutlinerBuiltInColumnTypes::SourceControl(), FSceneOutlinerColumnInfo(ESceneOutlinerColumnVisibility::Invisible, 30, FCreateSceneOutlinerColumn(), true, TOptional<float>(), FSceneOutlinerBuiltInColumnTypes::SourceControl_Localized()));
+
+		ESceneOutlinerColumnVisibility SourceControlColumnVisibility = ESceneOutlinerColumnVisibility::Invisible;
+		
+		UWorld* WorldPtr = nullptr;
+		// Query the Level Editor to get the correct world based on context
+		TWeakPtr<ILevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
+		if (TSharedPtr<ILevelEditor> LevelEditorPin = LevelEditor.Pin())
+		{
+			WorldPtr = LevelEditorPin->GetEditorModeManager().GetWorld();
+		}
+		ISourceControlModule& SourceControlModule = ISourceControlModule::Get();
+		if (SourceControlModule.IsEnabled())
+		{
+			if (WorldPtr && WorldPtr->PersistentLevel->IsUsingExternalActors())
+			{
+				// The source control column should be visible by default in source-controlled levels using external actors
+				SourceControlColumnVisibility = ESceneOutlinerColumnVisibility::Visible;
+			}
+		}
+		InitOptions.ColumnMap.Add(FSceneOutlinerBuiltInColumnTypes::SourceControl(), FSceneOutlinerColumnInfo(SourceControlColumnVisibility, 30, FCreateSceneOutlinerColumn(), true, TOptional<float>(), FSceneOutlinerBuiltInColumnTypes::SourceControl_Localized()));
 
 		ESceneOutlinerColumnVisibility UnsavedColumnVisibility = ESceneOutlinerColumnVisibility::Invisible;
 		
-		// Query the Level Editor to get the correct world based on context
-		TWeakPtr<ILevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
-
-		if (TSharedPtr<ILevelEditor> LevelEditorPin = LevelEditor.Pin())
+		if (WorldPtr && WorldPtr->IsPartitionedWorld())
 		{
-			if (UWorld* WorldPtr = LevelEditorPin->GetEditorModeManager().GetWorld())
-			{
-				if (WorldPtr->IsPartitionedWorld())
-				{
-					// We don't want the pinned column in non wp levels
-					InitOptions.ColumnMap.Add(FSceneOutlinerBuiltInColumnTypes::Pinned(), FSceneOutlinerColumnInfo(ESceneOutlinerColumnVisibility::Visible, 5, FCreateSceneOutlinerColumn(), true, TOptional<float>(), FSceneOutlinerBuiltInColumnTypes::Pinned_Localized()));
+			// We don't want the pinned column in non wp levels
+			InitOptions.ColumnMap.Add(FSceneOutlinerBuiltInColumnTypes::Pinned(), FSceneOutlinerColumnInfo(ESceneOutlinerColumnVisibility::Visible, 5, FCreateSceneOutlinerColumn(), true, TOptional<float>(), FSceneOutlinerBuiltInColumnTypes::Pinned_Localized()));
 
-					// We want the unsaved column to be visible by default in partitioned levels
-					UnsavedColumnVisibility = ESceneOutlinerColumnVisibility::Visible;
-				}
-				CreateActorInfoColumns(InitOptions, WorldPtr);
-			}
+			// We want the unsaved column to be visible by default in partitioned levels
+			UnsavedColumnVisibility = ESceneOutlinerColumnVisibility::Visible;
 		}
+		CreateActorInfoColumns(InitOptions, WorldPtr);
 
 		InitOptions.ColumnMap.Add(FSceneOutlinerBuiltInColumnTypes::Unsaved(), FSceneOutlinerColumnInfo(UnsavedColumnVisibility, 1, FCreateSceneOutlinerColumn(), true, TOptional<float>(), FSceneOutlinerBuiltInColumnTypes::Unsaved_Localized()));
 		
@@ -302,12 +313,12 @@ void FSceneOutlinerModule::CreateActorInfoColumns(FSceneOutlinerInitializationOp
 				{
 					if (const UActorDescContainer* ActorDescContainer = ActorDescItem->ActorDescHandle.Container.Get())
 					{
-						const UWorld* World = ActorDescContainer->GetWorld();
-						if (const UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(World))
+						const UWorld* OwningWorld = ActorDescContainer->GetWorldPartition()->GetWorld();
+						if (const UDataLayerManager* DataLayerManager = UDataLayerManager::GetDataLayerManager(OwningWorld))
 						{
 							TSet<const UDataLayerInstance*> DataLayerInstances;
-							DataLayerInstances.Append(DataLayerSubsystem->GetDataLayerInstances(ActorDesc->GetDataLayerInstanceNames()));
-							if (ULevelInstanceSubsystem* LevelInstanceSubsystem = UWorld::GetSubsystem<ULevelInstanceSubsystem>(World))
+							DataLayerInstances.Append(DataLayerManager->GetDataLayerInstances(ActorDesc->GetDataLayerInstanceNames()));
+							if (ULevelInstanceSubsystem* LevelInstanceSubsystem = UWorld::GetSubsystem<ULevelInstanceSubsystem>(OwningWorld))
 							{
 								UWorld* OuterWorld = ActorDescContainer->GetTypedOuter<UWorld>();
 								// Add parent container Data Layer Instances
@@ -375,9 +386,9 @@ void FSceneOutlinerModule::CreateActorInfoColumns(FSceneOutlinerInitializationOp
 		{
 			if (const FWorldPartitionActorDesc* ActorDesc = ActorDescItem->ActorDescHandle.Get())
 			{
-				if (FName LevelPackage = ActorDesc->GetLevelPackage(); !LevelPackage.IsNone())
+				if (FName LevelPackage = ActorDesc->GetContainerPackage(); !LevelPackage.IsNone())
 				{
-					return ActorDesc->GetLevelPackage().ToString();
+					return ActorDesc->GetContainerPackage().ToString();
 				}
 			}
 		}
@@ -494,7 +505,7 @@ void FSceneOutlinerModule::CreateActorInfoColumns(FSceneOutlinerInitializationOp
 	// The "Level" column should be named "Package Short Name" in wp enabled levels
 	auto LevelColumnName = TAttribute<FText>::CreateLambda([WorldPtr]() -> FText
 	{
-		if (WorldPtr && WorldPtr->IsPartitionedWorld())
+		if (WorldPtr && WorldPtr->PersistentLevel->IsUsingExternalActors())
 		{
 			return FSceneOutlinerBuiltInColumnTypes::PackageShortName_Localized();
 		}

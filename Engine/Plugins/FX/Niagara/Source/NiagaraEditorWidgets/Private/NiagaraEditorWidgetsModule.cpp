@@ -12,6 +12,7 @@
 #include "DetailCustomizations/NiagaraDataInterfaceStaticMeshDetails.h"
 #include "DetailCustomizations/NiagaraDataInterfaceMeshRendererInfoDetails.h"
 #include "DetailCustomizations/NiagaraDataInterfaceSpriteRendererInfoDetails.h"
+#include "DetailCustomizations/NiagaraDecalRendererDetails.h"
 #include "DetailCustomizations/NiagaraLightRendererDetails.h"
 #include "DetailCustomizations/NiagaraMeshRendererDetails.h"
 #include "DetailCustomizations/NiagaraRibbonRendererDetails.h"
@@ -30,6 +31,7 @@
 #include "NiagaraEditorCommands.h"
 
 #include "NiagaraDataChannelCommon.h"
+#include "NiagaraDataChannel_Islands.h"
 
 IMPLEMENT_MODULE(FNiagaraEditorWidgetsModule, NiagaraEditorWidgets);
 
@@ -141,10 +143,13 @@ void FNiagaraEditorWidgetsModule::StartupModule()
 	PropertyModule.RegisterCustomClassLayout("NiagaraMeshRendererProperties", FOnGetDetailCustomizationInstance::CreateStatic(&FNiagaraMeshRendererDetails::MakeInstance));
 	PropertyModule.RegisterCustomClassLayout("NiagaraRibbonRendererProperties", FOnGetDetailCustomizationInstance::CreateStatic(&FNiagaraRibbonRendererDetails::MakeInstance));
 	PropertyModule.RegisterCustomClassLayout("NiagaraSpriteRendererProperties", FOnGetDetailCustomizationInstance::CreateStatic(&FNiagaraSpriteRendererDetails::MakeInstance));
+	PropertyModule.RegisterCustomClassLayout("NiagaraDecalRendererProperties", FOnGetDetailCustomizationInstance::CreateStatic(&FNiagaraDecalRendererDetails::MakeInstance));
 
-	PropertyModule.RegisterCustomPropertyTypeLayout(
-		FNiagaraDataChannelReference::StaticStruct()->GetFName(),
-		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FNiagaraDataChannelReferenceDetailsCustomization::MakeInstance));
+	PropertyModule.RegisterCustomClassLayout("NiagaraDataInterfaceDataChannelRead", FOnGetDetailCustomizationInstance::CreateStatic(&FNiagaraDataInterfaceDataChannelReadDetails::MakeInstance));
+
+	PropertyModule.RegisterCustomClassLayout(
+		UNiagaraDataChannel_Islands::StaticClass()->GetFName(),
+		FOnGetDetailCustomizationInstance::CreateStatic(&FNiagaraDataChannelIslandsDetails::MakeInstance));
 
 	ReinitializeStyleCommand = IConsoleManager::Get().RegisterConsoleCommand(
 		TEXT("fx.NiagaraEditorWidgets.ReinitializeStyle"),

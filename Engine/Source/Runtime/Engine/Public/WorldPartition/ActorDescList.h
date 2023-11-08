@@ -6,10 +6,20 @@
 #include "WorldPartition/WorldPartitionActorDesc.h"
 #include "WorldPartition/WorldPartitionActorDescType.h"
 
-class ENGINE_API FActorDescList
+class FActorDescList
 {
 #if WITH_EDITOR
 	friend struct FWorldPartitionImplBase;
+
+	struct FActorGuidKeyFuncs : TDefaultMapKeyFuncs<FGuid, TUniquePtr<FWorldPartitionActorDesc>*, false>
+	{
+		static FORCEINLINE uint32 GetKeyHash(const FGuid& Key)
+		{
+			return HashCombineFast(HashCombineFast(Key.A, Key.B), HashCombineFast(Key.C, Key.D));
+		}
+	};
+
+	using FGuidActorDescMap = TMap<FGuid, TUniquePtr<FWorldPartitionActorDesc>*, FDefaultSetAllocator, FActorGuidKeyFuncs>;
 
 public:
 	FActorDescList() {}
@@ -19,21 +29,18 @@ public:
 	FActorDescList(const FActorDescList&) = delete;
 	FActorDescList& operator=(const FActorDescList&) = delete;
 
-	FWorldPartitionActorDesc* AddActor(const AActor* InActor);
+	ENGINE_API FWorldPartitionActorDesc* AddActor(const AActor* InActor);
 
-	FWorldPartitionActorDesc* GetActorDesc(const FGuid& Guid);
-	const FWorldPartitionActorDesc* GetActorDesc(const FGuid& Guid) const;
+	ENGINE_API FWorldPartitionActorDesc* GetActorDesc(const FGuid& Guid);
+	ENGINE_API const FWorldPartitionActorDesc* GetActorDesc(const FGuid& Guid) const;
 
-	FWorldPartitionActorDesc& GetActorDescChecked(const FGuid& Guid);
-	const FWorldPartitionActorDesc& GetActorDescChecked(const FGuid& Guid) const;
-
-	const FWorldPartitionActorDesc* GetActorDesc(const FString& PackageName) const;
-	const FWorldPartitionActorDesc* GetActorDesc(const FSoftObjectPath& InActorPath) const;
+	ENGINE_API FWorldPartitionActorDesc& GetActorDescChecked(const FGuid& Guid);
+	ENGINE_API const FWorldPartitionActorDesc& GetActorDescChecked(const FGuid& Guid) const;
 
 	int32 GetActorDescCount() const { return ActorsByGuid.Num(); }
 
 	bool IsEmpty() const { return GetActorDescCount() == 0; }
-	void Empty();
+	ENGINE_API void Empty();
 
 	template<bool bConst, class ActorType>
 	class TBaseIterator
@@ -41,11 +48,11 @@ public:
 		static_assert(TIsDerivedFrom<ActorType, AActor>::IsDerived, "Type is not derived from AActor.");
 
 	protected:
-		typedef TMap<FGuid, TUniquePtr<FWorldPartitionActorDesc>*> MapType;
-		typedef typename FWorldPartitionActorDescType<ActorType>::Type ValueType;
-		typedef typename TChooseClass<bConst, MapType::TConstIterator, MapType::TIterator>::Result IteratorType;
-		typedef typename TChooseClass<bConst, const FActorDescList*, FActorDescList*>::Result ListType;		
-		typedef typename TChooseClass<bConst, const ValueType*, ValueType*>::Result ReturnType;
+		using MapType = FGuidActorDescMap;
+		using ValueType = typename FWorldPartitionActorDescType<ActorType>::Type;
+		using IteratorType = typename TChooseClass<bConst, MapType::TConstIterator, MapType::TIterator>::Result;
+		using ListType = typename TChooseClass<bConst, const FActorDescList*, FActorDescList*>::Result;
+		using ReturnType = typename TChooseClass<bConst, const ValueType*, ValueType*>::Result;
 
 	public:
 		TBaseIterator(ListType InActorDescList, UClass* InActorClass)
@@ -91,6 +98,7 @@ public:
 		{
 			return StaticCast<ReturnType>(ActorsIterator->Value->Get());
 		}
+
 		/**
 		 * Returns whether the iterator has reached the end and no longer points
 		 * to a suitable actor desc.
@@ -131,7 +139,7 @@ public:
 	template <class ActorType = AActor>
 	class TIterator : public TBaseIterator<false, ActorType>
 	{
-		typedef TBaseIterator<false, ActorType> BaseType;
+		using BaseType = TBaseIterator<false, ActorType>;
 
 	public:
 		TIterator(typename BaseType::ListType InActorDescList, UClass* InActorClass = nullptr)
@@ -142,7 +150,7 @@ public:
 	template <class ActorType = AActor>
 	class TConstIterator : public TBaseIterator<true, ActorType>
 	{
-		typedef TBaseIterator<true, ActorType> BaseType;
+		using BaseType = TBaseIterator<true, ActorType>;
 
 	public:
 		TConstIterator(typename BaseType::ListType InActorDescList, UClass* InActorClass = nullptr)
@@ -150,15 +158,15 @@ public:
 		{}
 	};
 
+	ENGINE_API void AddActorDescriptor(FWorldPartitionActorDesc* ActorDesc);
+	ENGINE_API void RemoveActorDescriptor(FWorldPartitionActorDesc* ActorDesc);
+
 protected:
-	virtual void AddActorDescriptor(FWorldPartitionActorDesc* ActorDesc);
-	virtual void RemoveActorDescriptor(FWorldPartitionActorDesc* ActorDesc);
-	TUniquePtr<FWorldPartitionActorDesc>* GetActorDescriptor(const FGuid& ActorGuid);
+
+	ENGINE_API TUniquePtr<FWorldPartitionActorDesc>* GetActorDescriptor(const FGuid& ActorGuid);
 
 	TChunkedArray<TUniquePtr<FWorldPartitionActorDesc>> ActorDescList;
 
-private:
-	TMap<FGuid, TUniquePtr<FWorldPartitionActorDesc>*> ActorsByGuid;
-	TMap<FName, TUniquePtr<FWorldPartitionActorDesc>*> ActorsByName;
+	FGuidActorDescMap ActorsByGuid;
 #endif
 };

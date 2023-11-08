@@ -59,6 +59,7 @@ public:
 		alignas(16) uint8 PacketBuffer[MaxPacketSize];
 		uint32 BitCount;
 		uint32 PacketId;
+		FString Desc;
 	};
 
 	struct FConnectionInfo
@@ -114,11 +115,13 @@ public:
 		return static_cast<T*>(ReplicationBridge->GetReplicatedObject(Handle));
 	}
 
+	UTestReplicatedIrisObject* CreateObject(const UObjectReplicationBridge::FCreateNetRefHandleParams& Params);
 	UTestReplicatedIrisObject* CreateObject(uint32 NumComponents, uint32 NumIrisComponents);
 	UTestReplicatedIrisObject* CreateSubObject(FNetRefHandle Owner, uint32 NumComponents, uint32 NumIrisComponents);
 	UTestReplicatedIrisObject* CreateObject(const UTestReplicatedIrisObject::FComponents& Components);
 	UTestReplicatedIrisObject* CreateSubObject(FNetRefHandle Owner, const UTestReplicatedIrisObject::FComponents& Components);
 	UTestReplicatedIrisObject* CreateObjectWithDynamicState(uint32 NumComponents, uint32 NumIrisComponents, uint32 NumDynamicStateComponents);
+
 	void DestroyObject(UReplicatedTestObject*, EEndReplicationFlags EndReplicationFlags = EEndReplicationFlags::Destroy);
 
 	// Connection
@@ -129,8 +132,8 @@ public:
 	void PostSendUpdate();
 
 	// Update methods for server connections
-	bool SendUpdate(uint32 ConnectionId);
-	bool SendUpdate() { return SendUpdate(1); }
+	bool SendUpdate(uint32 ConnectionId, const TCHAR* Desc = nullptr);
+	bool SendUpdate(const TCHAR* Desc = nullptr) { return SendUpdate(1, Desc); }
 
 	void DeliverTo(FReplicationSystemTestNode& Dest, uint32 LocalConnectionId, uint32 RemoteConnectionId, bool bDeliver);
 	void RecvUpdate(uint32 ConnectionId, FNetSerializationContext& Context);
@@ -145,6 +148,8 @@ public:
 	FConnectionInfo& GetConnectionInfo(uint32 ConnectionId) { return Connections[ConnectionId - 1]; }
 
 	uint32 GetNetTraceId() const;
+
+	float ConvertPollPeriodIntoFrequency(uint32 PollPeriod) const;
 
 public:
 	UReplicationSystem* ReplicationSystem;
@@ -171,13 +176,16 @@ public:
 	explicit FReplicationSystemTestServer(const TCHAR* Name);
 
 	// Send data and deliver to the client if bDeliver is true
-	bool SendAndDeliverTo(FReplicationSystemTestClient* Client, bool bDeliver);
+	bool SendAndDeliverTo(FReplicationSystemTestClient* Client, bool bDeliver, const TCHAR* Desc = nullptr);
 
 	// Send data, return true if data was written
-	bool SendTo(FReplicationSystemTestClient* Client);
+	bool SendTo(FReplicationSystemTestClient* Client, const TCHAR* Desc = nullptr);
 
 	// Explicitly set delivery status
 	void DeliverTo(FReplicationSystemTestClient* Client, bool bDeliver);
+
+	// Tick and send packets to one or all clients
+	bool UpdateAndSend(const TArray<FReplicationSystemTestClient*>& Clients, bool bDeliver=true);
 };
 
 class FReplicationSystemServerClientTestFixture : public FNetworkAutomationTestSuiteFixture

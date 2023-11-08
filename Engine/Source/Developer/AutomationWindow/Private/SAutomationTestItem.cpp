@@ -6,11 +6,14 @@
 #include "IAutomationControllerModule.h"
 #include "SlateOptMacros.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Images/SSpinningImage.h"
 #include "Widgets/Notifications/SProgressBar.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "SSimpleComboButton.h"
 #include "AutomationWindowStyle.h"
 #include "AutomationTestExcludelist.h"
 #include "SAutomationWindow.h"
@@ -47,7 +50,56 @@ void SAutomationTestItem::Construct( const FArguments& InArgs, const TSharedRef<
 BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 TSharedRef<SWidget> SAutomationTestItem::GenerateWidgetForColumn( const FName& ColumnName )
 {
-	if( ColumnName == AutomationTestWindowConstants::Title)
+	if (ColumnName == AutomationTestWindowConstants::Checked)
+	{
+		return SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.HAlign(HAlign_Center)
+			.Padding(4.0f, 0.0f)
+			[
+				//enabled/disabled check box
+				SNew(SCheckBox)
+				.IsChecked(this, &SAutomationTestItem::IsTestEnabled)
+			.OnCheckStateChanged(this, &SAutomationTestItem::HandleTestingCheckbox_Click)
+			];
+	}
+	else if (ColumnName == AutomationTestWindowConstants::Skipped)
+	{
+		return SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.HAlign(HAlign_Center)
+			.AutoWidth()
+			[
+				SNew(SButton)
+				.ButtonStyle(FAutomationWindowStyle::Get(), "NoBorder")
+				.ToolTipText(this, &SAutomationTestItem::GetExcludeReason)
+				.OnClicked(FOnClicked::CreateSP(this, &SAutomationTestItem::SetSkipFlag))
+				[
+					SNew(SImage)
+					.Image(FAutomationWindowStyle::Get().GetBrush("AutomationWindow.ExcludedTestsFilter"))
+					.Visibility(this, &SAutomationTestItem::IsToBeSkipped_GetVisibility)
+				]
+			];
+	}
+	else if (ColumnName == AutomationTestWindowConstants::SkippedOptions)
+	{
+		return SNew(SHorizontalBox)
+			+SHorizontalBox::Slot()
+#if WITH_EDITOR
+			.HAlign(HAlign_Center)
+			.AutoWidth()
+			[
+				SNew(SSimpleButton)
+				.Icon(FAutomationWindowStyle::Get().GetBrush("Icons.Edit"))
+				.Visibility(this, &SAutomationTestItem::IsDirectlyExcluded_GetVisibility)
+				.ToolTipText(LOCTEXT("EditExcludeOptions", "Edit exclude options"))
+				.OnClicked(FOnClicked::CreateSP(this, &SAutomationTestItem::OnEditExcludeOptionsClicked))
+			]
+#endif
+			;
+	}
+	else if( ColumnName == AutomationTestWindowConstants::Title)
 	{
 		TSharedRef<SWidget> TestNameWidget = SNullWidget::NullWidget;
 
@@ -57,7 +109,7 @@ TSharedRef<SWidget> SAutomationTestItem::GenerateWidgetForColumn( const FName& C
 #if WITH_EDITOR
 			TestNameWidget = SNew(SHyperlink)
 				.Style(FAutomationWindowStyle::Get(), "Common.GotoNativeCodeHyperlink")
-				.OnNavigate_Lambda([=] {
+				.OnNavigate_Lambda([this] {
 					GEngine->Exec(nullptr, *TestStatus->GetOpenCommand());
 				})
 				.Text(FText::FromString(TestStatus->GetDisplayNameWithDecoration()));
@@ -68,7 +120,7 @@ TSharedRef<SWidget> SAutomationTestItem::GenerateWidgetForColumn( const FName& C
 #if WITH_EDITOR
 			TestNameWidget = SNew(SHyperlink)
 				.Style(FAutomationWindowStyle::Get(), "Common.GotoNativeCodeHyperlink")
-				.OnNavigate_Lambda([=] {
+				.OnNavigate_Lambda([this] {
 					FString AssetPath = TestStatus->GetAssetPath();
 					FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 
@@ -91,7 +143,7 @@ TSharedRef<SWidget> SAutomationTestItem::GenerateWidgetForColumn( const FName& C
 		{
 			TestNameWidget = SNew(SHyperlink)
 				.Style(FAutomationWindowStyle::Get(), "Common.GotoNativeCodeHyperlink")
-				.OnNavigate_Lambda([=] { FSlateApplication::Get().GotoLineInSource(TestStatus->GetSourceFile(), TestStatus->GetSourceFileLine()); })
+				.OnNavigate_Lambda([this] { FSlateApplication::Get().GotoLineInSource(TestStatus->GetSourceFile(), TestStatus->GetSourceFileLine()); })
 				.Text(FText::FromString(TestStatus->GetDisplayNameWithDecoration()));
 		}
 		else
@@ -102,16 +154,6 @@ TSharedRef<SWidget> SAutomationTestItem::GenerateWidgetForColumn( const FName& C
 		}
 
 		return SNew(SHorizontalBox)
-			+SHorizontalBox::Slot()
-			.AutoWidth()
-			.HAlign(HAlign_Center)
-			.Padding(4.0f, 0.0f)
-			[
-				//enabled/disabled check box
-				SNew( SCheckBox )
-				.IsChecked(this, &SAutomationTestItem::IsTestEnabled)
-				.OnCheckStateChanged(this, &SAutomationTestItem::HandleTestingCheckbox_Click)
-			]
 			+SHorizontalBox::Slot()
 			.AutoWidth()
 			.VAlign(VAlign_Center)
@@ -273,32 +315,6 @@ TSharedRef<SWidget> SAutomationTestItem::GenerateWidgetForColumn( const FName& C
 		return SNew( STextBlock )
 		.Text( this, &SAutomationTestItem::ItemStatus_DurationText);
 	}
-	else if (ColumnName == AutomationTestWindowConstants::IsToBeSkipped)
-	{
-		return SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot()
-			.HAlign(HAlign_Center)
-			.AutoWidth()
-			[
-				SNew(SCheckBox)
-				.IsChecked(this, &SAutomationTestItem::IsToBeSkipped)
-				.IsEnabled(this, &SAutomationTestItem::IsDirectlyExcluded)
-				.OnCheckStateChanged(this, &SAutomationTestItem::SetSkipFlag)
-				.ToolTipText(this, &SAutomationTestItem::GetExcludeReason)
-#if WITH_EDITOR
-			]
-		+ SHorizontalBox::Slot()
-			.HAlign(HAlign_Center)
-			.AutoWidth()
-			[
-				SNew(SSimpleButton)
-				.Icon(FAutomationWindowStyle::Get().GetBrush("Icons.Edit"))
-				.Visibility(this, &SAutomationTestItem::IsDirectlyExcluded_GetVisibility)
-				.ToolTipText(LOCTEXT("EditExcludeOptions", "Edit exclude options"))
-				.OnClicked(FOnClicked::CreateSP(this, &SAutomationTestItem::OnEditExcludeOptionsClicked))
-#endif
-			];
-	}
 
 
 	return SNullWidget::NullWidget;
@@ -367,14 +383,14 @@ ECheckBoxState SAutomationTestItem::IsTestEnabled() const
 	return TestStatus->IsEnabled() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 }
 
-ECheckBoxState SAutomationTestItem::IsToBeSkipped() const
+EVisibility SAutomationTestItem::IsToBeSkipped_GetVisibility() const
 {
-	return TestStatus->IsToBeSkipped() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	return TestStatus->IsToBeSkipped() ? EVisibility::Visible : EVisibility::Hidden;
 }
 
 bool SAutomationTestItem::IsDirectlyExcluded() const
 {
-	return WITH_EDITOR && IsLocalSession && !TestStatus->IsToBeSkippedByPropagation();
+	return WITH_EDITOR && IsLocalSession && TestStatus->IsToBeSkipped() && !TestStatus->IsToBeSkippedByPropagation();
 }
 
 EVisibility SAutomationTestItem::IsDirectlyExcluded_GetVisibility() const
@@ -390,10 +406,10 @@ FText SAutomationTestItem::GetExcludeReason() const
 	return IsToBeSkipped ? FText::FromName(Reason) : FText();
 }
 
-void SAutomationTestItem::SetSkipFlag(ECheckBoxState Enable)
+FReply SAutomationTestItem::SetSkipFlag()
 {
 #if WITH_EDITOR
-	if (Enable == ECheckBoxState::Checked)
+	if (!TestStatus->IsToBeSkipped())
 	{
 		OnEditExcludeOptionsClicked();
 	}
@@ -402,16 +418,178 @@ void SAutomationTestItem::SetSkipFlag(ECheckBoxState Enable)
 		TestStatus->SetSkipFlag(false);
 	}
 #endif
+	return FReply::Handled();
+}
+
+template<typename EnumType>
+void GenerateRHIMenuContentFromExcludeOptions(TSharedPtr<FAutomationTestExcludeOptions> Options, FMenuBuilder* MenuBuilder)
+{
+	static const TSet<FName> AllRHI_OptionNames = FAutomationTestExcludeOptions::GetAllRHIOptionNames<EnumType>();
+	for (auto& Item : AllRHI_OptionNames)
+	{
+		TSharedRef<SWidget> FlagWidget =
+			SNew(SCheckBox)
+			.IsChecked(Options->RHIs.Contains(Item))
+			.OnCheckStateChanged_Lambda([Options, Item](ECheckBoxState NewState)
+				{
+					if (NewState == ECheckBoxState::Checked)
+					{
+						Options->RHIs.Add(Item);
+					}
+					else
+					{
+						Options->RHIs.Remove(Item);
+					}
+				})
+			.Padding(FMargin(4.0f, 0.0f))
+			.Content()
+			[
+				SNew(STextBlock)
+				.Text(FText::FromName(Item))
+			];
+
+		MenuBuilder->AddWidget(FlagWidget, FText::GetEmpty());
+	}
+}
+
+TSharedRef<SWidget> GenerateRHIMenuContentFromExcludeOptions(TSharedPtr<FAutomationTestExcludeOptions> Options)
+{
+	FMenuBuilder MenuBuilder(false, nullptr);
+
+	MenuBuilder.BeginSection("AutomationWindow_ExcludeOptions_RHI", LOCTEXT("ExcludeOptions_RHI_Section", "Interfaces"));
+	GenerateRHIMenuContentFromExcludeOptions<ETEST_RHI_Options>(Options, &MenuBuilder);
+	MenuBuilder.EndSection();
+
+	MenuBuilder.BeginSection("AutomationWindow_ExcludeOptions_RHI_FeatureLevel", LOCTEXT("ExcludeOptions_RHI_FeatureLevel_Section", "Feature Levels"));
+	GenerateRHIMenuContentFromExcludeOptions<ETEST_RHI_FeatureLevel_Options>(Options, &MenuBuilder);
+	MenuBuilder.EndSection();
+
+	return MenuBuilder.MakeWidget();
+}
+
+FText GenerateRHITextFromExcludeOptions(TSharedPtr<FAutomationTestExcludeOptions> Options)
+{
+	if (Options->RHIs.Num() == 0)
+	{
+		return LOCTEXT("ExcludeOptions_RHI_All", "All Interfaces");
+	}
+
+	TArray<FString> RHIs;
+	for (auto& Item : Options->RHIs)
+	{
+		RHIs.Add(Item.ToString());
+	}
+
+	return FText::FromString(FString::Join(RHIs, TEXT(", ")));
 }
 
 FReply SAutomationTestItem::OnEditExcludeOptionsClicked()
 {
 #if WITH_EDITOR
 	TSharedPtr<FAutomationTestExcludeOptions> Options = TestStatus->GetExcludeOptions();
-	TSharedPtr<FStructOnScope> StructToDisplay = MakeShareable(new FStructOnScope(FAutomationTestExcludeOptions::StaticStruct(), (uint8*)Options.Get()));
 
-	TSharedRef<SKismetInspector> KismetInspector = SNew(SKismetInspector);
-	KismetInspector->ShowSingleStruct(StructToDisplay);
+	// Define the dialog form.
+	TSharedRef<SWidget> Form = SNew(SBox)
+		.WidthOverride(350)
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(5.0f)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.MaxWidth(50)
+				.HAlign(HAlign_Right)
+				.VAlign(VAlign_Center)
+				.Padding(5, 0)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("ExcludeOptions_TestLabel", "Test"))
+				]
+				+ SHorizontalBox::Slot()
+				.FillWidth(3)
+				[
+					SNew(SEditableTextBox)
+					.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+					.Text(FText::FromName(Options->Test))
+					.ToolTipText(FText::FromName(Options->Test))
+					.IsReadOnly(true)
+				]
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(5.0f)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.MaxWidth(50)
+				.HAlign(HAlign_Right)
+				.VAlign(VAlign_Center)
+				.Padding(5, 0)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("ExcludeOptions_Reason", "Reason"))
+				]
+				+ SHorizontalBox::Slot()
+				.FillWidth(3)
+				[
+					SNew(SEditableTextBox)
+					.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+					.Text(FText::FromName(Options->Reason))
+					.OnTextCommitted_Lambda([this, Options](const FText& NewReason, const ETextCommit::Type&) { Options->Reason = FName(NewReason.ToString()); })
+					.ToolTipText(LOCTEXT("ExcludeOptions_Reason_ToolTip", "The reason as to why the test is excluded"))
+				]
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(5.0f)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.MaxWidth(50)
+				.HAlign(HAlign_Right)
+				.VAlign(VAlign_Center)
+				.Padding(5, 0)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("ExcludeOptions_RHI", "RHIs"))
+				]
+				+ SHorizontalBox::Slot()
+				.MaxWidth(120)
+				.HAlign(HAlign_Left)
+				.VAlign(VAlign_Center)
+				[
+					SNew(SSimpleComboButton)
+					.OnGetMenuContent_Lambda([Options]() { return GenerateRHIMenuContentFromExcludeOptions(Options); })
+					.Text_Lambda([Options]() { return GenerateRHITextFromExcludeOptions(Options); })
+					.ToolTipText_Lambda([Options]() { return GenerateRHITextFromExcludeOptions(Options); })
+					.HasDownArrow(true)
+				]
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(5.0f)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.MaxWidth(50)
+				.HAlign(HAlign_Right)
+				.VAlign(VAlign_Center)
+				.Padding(5, 0)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("ExcludeOptions_Warn", "Warn"))
+				]
+				+ SHorizontalBox::Slot()
+				[
+					SNew(SCheckBox)
+					.ToolTipText(LOCTEXT("ExcludeOptions_Warn_ToolTip", "Raise a warning when skipping this test"))
+					.IsChecked(Options->Warn)
+					.OnCheckStateChanged_Lambda([this, Options](ECheckBoxState NewState) { Options->Warn = NewState == ECheckBoxState::Checked; })
+				]
+			]
+		];
 
 	SGenericDialogWidget::FArguments DialogArguments;
 	DialogArguments.OnOkPressed_Lambda([Options, this]()
@@ -420,7 +598,7 @@ FReply SAutomationTestItem::OnEditExcludeOptionsClicked()
 			TestStatus->SetSkipFlag(true, &Entry, false);
 		});
 
-	SGenericDialogWidget::OpenDialog(LOCTEXT("ExcludeTestOptions", "Exclude Test Options"), KismetInspector, DialogArguments, true);
+	SGenericDialogWidget::OpenDialog(LOCTEXT("ExcludeTestOptions", "Exclude Test Options"), Form, DialogArguments, true);
 #endif
 	return FReply::Handled();
 }

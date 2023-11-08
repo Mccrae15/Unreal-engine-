@@ -57,6 +57,10 @@ void UInterchangeGenericMeshPipeline::AdjustSettingsForContext(EInterchangePipel
 			CommonSkeletalMeshesAndAnimationsProperties->Skeleton = SkeletalMesh->GetSkeleton();
 			bImportStaticMeshes = false;
 			HideCategories.Add(StaticMeshesCategory);
+			if(SkeletalMeshImportContentType == EInterchangeSkeletalMeshContentType::Geometry)
+			{
+				CommonMeshesProperties->ForceAllMeshAsType = EInterchangeForceMeshType::IFMT_SkeletalMesh;
+			}
 		}
 		else if (UStaticMesh* StaticMesh = Cast<UStaticMesh>(ReimportAsset))
 		{
@@ -104,6 +108,30 @@ void UInterchangeGenericMeshPipeline::PreDialogCleanup(const FName PipelineStack
 	PhysicsAsset = nullptr;
 }
 
+#if WITH_EDITOR
+bool UInterchangeGenericMeshPipeline::GetPropertyPossibleValues(const FName PropertyPath, TArray<FString>& PossibleValues)
+{
+	FString PropertyPathString = PropertyPath.ToString();
+	int32 PropertyNameIndex = INDEX_NONE;
+	if (PropertyPathString.FindLastChar(':', PropertyNameIndex))
+	{
+		PropertyPathString = PropertyPathString.RightChop(PropertyNameIndex+1);
+	}
+	if (PropertyPathString.Equals(GET_MEMBER_NAME_STRING_CHECKED(UInterchangeGenericMeshPipeline, LodGroup)))
+	{
+		TArray<FName> LODGroupNames;
+		UStaticMesh::GetLODGroups(LODGroupNames);
+		for (int32 GroupIndex = 0; GroupIndex < LODGroupNames.Num(); ++GroupIndex)
+		{
+			PossibleValues.Add(LODGroupNames[GroupIndex].GetPlainNameString());
+		}
+		return true;
+	}
+	//If we did not find any property call the super implementation
+	return Super::GetPropertyPossibleValues(PropertyPath, PossibleValues);
+}
+#endif
+
 void UInterchangeGenericMeshPipeline::ExecutePipeline(UInterchangeBaseNodeContainer* InBaseNodeContainer, const TArray<UInterchangeSourceData*>& InSourceDatas)
 {
 	if (!InBaseNodeContainer)
@@ -111,15 +139,23 @@ void UInterchangeGenericMeshPipeline::ExecutePipeline(UInterchangeBaseNodeContai
 		UE_LOG(LogInterchangePipeline, Warning, TEXT("UInterchangeGenericMeshPipeline: Cannot execute pre-import pipeline because InBaseNodeContrainer is null"));
 		return;
 	}
-
+	
 	BaseNodeContainer = InBaseNodeContainer;
 	SourceDatas.Empty(InSourceDatas.Num());
 	for (const UInterchangeSourceData* SourceData : InSourceDatas)
 	{
 		SourceDatas.Add(SourceData);
 	}
-
 	PipelineMeshesUtilities = UInterchangePipelineMeshesUtilities::CreateInterchangePipelineMeshesUtilities(BaseNodeContainer);
+
+	//Set the context option to use when querying the pipeline mesh utilities
+	FInterchangePipelineMeshesUtilitiesContext DataContext;
+	DataContext.bConvertStaticMeshToSkeletalMesh = (CommonMeshesProperties->ForceAllMeshAsType == EInterchangeForceMeshType::IFMT_SkeletalMesh);
+	DataContext.bConvertSkeletalMeshToStaticMesh = (CommonMeshesProperties->ForceAllMeshAsType == EInterchangeForceMeshType::IFMT_StaticMesh);
+	DataContext.bConvertStaticsWithMorphTargetsToSkeletals = CommonSkeletalMeshesAndAnimationsProperties->bConvertStaticsWithMorphTargetsToSkeletals;
+	DataContext.bImportMeshesInBoneHierarchy = CommonSkeletalMeshesAndAnimationsProperties->bImportMeshesInBoneHierarchy;
+	DataContext.bQueryGeometryOnlyIfNoInstance = CommonMeshesProperties->bBakeMeshes;
+	PipelineMeshesUtilities->SetContext(DataContext);
 
 	//Create skeletalmesh factory nodes
 	ExecutePreImportPipelineSkeletalMesh();
@@ -191,6 +227,9 @@ void UInterchangeGenericMeshPipeline::SetReimportSourceIndex(UClass* ReimportObj
 #if WITH_EDITOR
 bool UInterchangeGenericMeshPipeline::DoClassesIncludeAllEditableStructProperties(const TArray<const UClass*>& Classes, const UStruct* Struct)
 {
+	check(IsInGameThread());
+
+	bool bResult = true;
 	const FName CategoryKey("Category");
 	for (const FProperty* Property = Struct->PropertyLink; Property; Property = Property->PropertyLinkNext)
 	{
@@ -224,10 +263,11 @@ bool UInterchangeGenericMeshPipeline::DoClassesIncludeAllEditableStructPropertie
 			//Ensure to notify
 			if (!bFindProperty)
 			{
-				return false;
+				UE_LOG(LogInterchangePipeline, Log, TEXT("Interchange mesh pipeline do not include build property %s"), *PropertyName.ToString());
+				bResult = false;
 			}
 		}
 	}
-	return true;
+	return bResult;
 }
 #endif

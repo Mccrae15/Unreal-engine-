@@ -88,10 +88,13 @@ void FIKRetargetEditor::InitAssetEditor(
 
 	ExtendToolbar();
 	RegenerateMenusAndToolbars();
-	
+
+	// DISABLED: MAY 2023 - These modal dialogs cause an editor crash when closing the main UE editor. Not clear why this happens,
+	// and it's not clear that we want to keep this creation flow. It was a compromise for UEFN, but we will likely do
+	// something better once we revisit UEFN integration.
 	// initial setup, ignored if IK Rig is already assigned
-	EditorController->PromptUserToAssignIKRig(ERetargetSourceOrTarget::Source);
-	EditorController->PromptUserToAssignIKRig(ERetargetSourceOrTarget::Target);
+	//EditorController->PromptUserToAssignIKRig(ERetargetSourceOrTarget::Source);
+	//EditorController->PromptUserToAssignIKRig(ERetargetSourceOrTarget::Target);
 
 	// run retarget by default
 	EditorController->SetRetargeterMode(ERetargeterOutputMode::RunRetarget);
@@ -119,14 +122,46 @@ void FIKRetargetEditor::UnregisterTabSpawners(const TSharedRef<FTabManager>& InT
 void FIKRetargetEditor::BindCommands()
 {
 	const FIKRetargetCommands& Commands = FIKRetargetCommands::Get();
-	
-	ToolkitCommands->MapAction(
-        Commands.EditRetargetPose,
-        FExecuteAction::CreateSP(EditorController, &FIKRetargetEditorController::HandleEditPose),
-        FCanExecuteAction::CreateSP(EditorController, &FIKRetargetEditorController::CanEditPose),
-        FIsActionChecked::CreateSP(EditorController,  &FIKRetargetEditorController::IsEditingPose),
-		EUIActionRepeatMode::RepeatDisabled);
 
+	//
+	// Retarget output modes
+	//
+	ToolkitCommands->MapAction(
+		Commands.RunRetargeter,
+		FExecuteAction::CreateSP(EditorController, &FIKRetargetEditorController::SetRetargeterMode, ERetargeterOutputMode::RunRetarget),
+		FCanExecuteAction::CreateSP(EditorController, &FIKRetargetEditorController::IsReadyToRetarget));
+
+	ToolkitCommands->MapAction(
+		Commands.ShowRetargetPose,
+		FExecuteAction::CreateSP(EditorController, &FIKRetargetEditorController::SetRetargeterMode, ERetargeterOutputMode::ShowRetargetPose),
+		FCanExecuteAction::CreateSP(EditorController, &FIKRetargetEditorController::IsCurrentMeshLoaded),
+		FIsActionChecked());
+
+	ToolkitCommands->MapAction(
+		Commands.EditRetargetPose,
+		FExecuteAction::CreateSP(EditorController, &FIKRetargetEditorController::SetRetargeterMode, ERetargeterOutputMode::EditRetargetPose),
+		FCanExecuteAction::CreateSP(EditorController, &FIKRetargetEditorController::IsCurrentMeshLoaded),
+		FIsActionChecked());
+
+
+	//
+	// Show global / root settings in details panel
+	//
+	ToolkitCommands->MapAction(
+		Commands.ShowGlobalSettings,
+		FExecuteAction::CreateSP(EditorController, &FIKRetargetEditorController::ShowGlobalSettings),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateSP(EditorController,  &FIKRetargetEditorController::IsShowingGlobalSettings));
+	ToolkitCommands->MapAction(
+		Commands.ShowRootSettings,
+		FExecuteAction::CreateSP(EditorController, &FIKRetargetEditorController::ShowRootSettings),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateSP(EditorController,  &FIKRetargetEditorController::IsShowingRootSettings));
+
+	//
+	// Edit pose commands
+	//
+	
 	ToolkitCommands->MapAction(
 		Commands.ResetAllBones,
 		FExecuteAction::CreateSP(EditorController, &FIKRetargetEditorController::HandleResetAllBones),
@@ -215,10 +250,146 @@ void FIKRetargetEditor::FillToolbar(FToolBarBuilder& ToolbarBuilder)
 {
 	ToolbarBuilder.BeginSection("Show Retarget Pose");
 	{
-		// TODO debug section
+		ToolbarBuilder.AddToolBarButton(
+			FExecuteAction::CreateLambda([this]{ EditorController->SetRetargetModeToPreviousMode(); }),
+			NAME_None, 
+			TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(EditorController, &FIKRetargetEditorController::GetRetargeterModeLabel)),
+			TAttribute<FText>(), 
+			TAttribute<FSlateIcon>::Create(TAttribute<FSlateIcon>::FGetter::CreateSP(EditorController, &FIKRetargetEditorController::GetCurrentRetargetModeIcon))
+		);
+		
+		ToolbarBuilder.AddComboButton(
+			FUIAction(),
+			FOnGetContent::CreateSP(this, &FIKRetargetEditor::GenerateRetargetModesMenu),
+			LOCTEXT("RetargetMode_Label", "UI Modes"),
+			LOCTEXT("RetargetMode_ToolTip", "Choose which mode to display in the viewport."),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Recompile"),
+			true);
 	}
-	
 	ToolbarBuilder.EndSection();
+
+	ToolbarBuilder.AddSeparator();
+	ToolbarBuilder.AddWidget(SNew(SSpacer), NAME_None, true, HAlign_Right);
+
+	ToolbarBuilder.BeginSection("Show Settings");
+	{
+		ToolbarBuilder.AddToolBarButton(
+		FIKRetargetCommands::Get().ShowGlobalSettings,
+		NAME_None,
+		TAttribute<FText>(),
+		TAttribute<FText>(),
+		FSlateIcon(FIKRetargetEditorStyle::Get().GetStyleSetName(),"IKRetarget.GlobalSettings"));
+
+		ToolbarBuilder.AddToolBarButton(
+		FIKRetargetCommands::Get().ShowRootSettings,
+		NAME_None,
+		TAttribute<FText>(),
+		TAttribute<FText>(),
+		FSlateIcon(FIKRetargetEditorStyle::Get().GetStyleSetName(),"IKRetarget.RootSettings"));
+	}
+	ToolbarBuilder.EndSection();
+
+	ToolbarBuilder.AddSeparator();
+
+	FLinearColor OffColor = FLinearColor::White;
+	FLinearColor OnColor = FLinearColor(.32f, .66f, .32f, 1.f);
+	
+	TSharedPtr<SVerticalBox> Box = SNew(SVerticalBox)
+	+ SVerticalBox::Slot()
+	.VAlign(VAlign_Center)
+	.HAlign(HAlign_Center)
+	.AutoHeight()
+	[
+		SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.FillWidth(1.f)
+		.HAlign(HAlign_Center)
+		[
+			SNew(STextBlock)
+			.Font(FCoreStyle::Get().GetFontStyle("SmallFont"))
+			.Text(FText::FromString("Toggle Retarget Phases"))
+		]
+	]
+	+ SVerticalBox::Slot()
+	.AutoHeight()
+	[
+		SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.HAlign(HAlign_Center)
+		[
+			SNew(SButton)
+			.OnClicked_Lambda([this]()
+			{
+				EditorController->ToggleRootRetargetPass();
+				return FReply::Handled();
+			})
+			.ButtonColorAndOpacity_Lambda([this, OffColor, OnColor]() -> FLinearColor
+			{
+				return EditorController->IsRootRetargetOn() ? OnColor : OffColor;
+			})
+			[
+				SNew(STextBlock).Text(FText::FromString("Root"))
+			]
+		]
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.HAlign(HAlign_Center)
+		[
+			SNew(SButton)
+			.OnClicked_Lambda([this]()
+			{
+				EditorController->ToggleFKRetargetPass();
+				return FReply::Handled();
+			})
+			.ButtonColorAndOpacity_Lambda([this, OffColor, OnColor]() -> FLinearColor
+			{
+				return EditorController->IsFKRetargetOn() ? OnColor : OffColor;
+			})
+			[
+				SNew(STextBlock).Text(FText::FromString("FK"))
+			]
+		]
+		
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.HAlign(HAlign_Center)
+		[
+			SNew(SButton)
+			.OnClicked_Lambda([this]()
+			{
+				EditorController->ToggleIKRetargetPass();
+				return FReply::Handled();
+			})
+			.ButtonColorAndOpacity_Lambda([this, OffColor, OnColor]() -> FLinearColor
+			{
+				return EditorController->IsIKRetargetOn() ? OnColor : OffColor;
+			})
+			[
+				SNew(STextBlock).Text(FText::FromString("IK"))
+			]
+		]
+	];
+
+	ToolbarBuilder.BeginSection("Toggle Retarget Passes");
+	{
+		ToolbarBuilder.AddWidget(Box.ToSharedRef());
+	}
+	ToolbarBuilder.EndSection();
+}
+
+TSharedRef<SWidget> FIKRetargetEditor::GenerateRetargetModesMenu()
+{
+	FMenuBuilder MenuBuilder(true, GetToolkitCommands());
+	
+	MenuBuilder.BeginSection(TEXT("Retarget Modes"));
+	MenuBuilder.AddMenuEntry(FIKRetargetCommands::Get().RunRetargeter, TEXT("Run Retargeter"), TAttribute<FText>(), TAttribute<FText>(),  EditorController->GetRetargeterModeIcon(ERetargeterOutputMode::RunRetarget));
+	MenuBuilder.AddMenuEntry(FIKRetargetCommands::Get().EditRetargetPose, TEXT("Edit Retarget Pose"), TAttribute<FText>(), TAttribute<FText>(), EditorController->GetRetargeterModeIcon(ERetargeterOutputMode::EditRetargetPose));
+	MenuBuilder.AddMenuEntry(FIKRetargetCommands::Get().ShowRetargetPose, TEXT("Show Retarget Pose"), TAttribute<FText>(), TAttribute<FText>(), EditorController->GetRetargeterModeIcon(ERetargeterOutputMode::ShowRetargetPose));
+	MenuBuilder.EndSection();
+	
+	return MenuBuilder.MakeWidget();
 }
 
 FName FIKRetargetEditor::GetToolkitFName() const
@@ -249,8 +420,7 @@ FString FIKRetargetEditor::GetWorldCentricTabPrefix() const
 void FIKRetargetEditor::AddReferencedObjects(FReferenceCollector& Collector)
 {
 	// hold the asset we are working on
-	const UIKRetargeter* Retargeter = EditorController->AssetController->GetAsset();
-	Collector.AddReferencedObject(Retargeter);
+	Collector.AddReferencedObject(EditorController->AssetController->GetAssetPtr());
 }
 
 void FIKRetargetEditor::Tick(float DeltaTime)
@@ -276,12 +446,14 @@ TStatId FIKRetargetEditor::GetStatId() const
 
 void FIKRetargetEditor::PostUndo(bool bSuccess)
 {
+	EditorController->AssetController->CleanAsset();
 	EditorController->HandlePreviewMeshReplaced(ERetargetSourceOrTarget::Source);
 	EditorController->HandleRetargeterNeedsInitialized();
 }
 
 void FIKRetargetEditor::PostRedo(bool bSuccess)
 {
+	EditorController->AssetController->CleanAsset();
 	EditorController->HandlePreviewMeshReplaced(ERetargetSourceOrTarget::Source);
 	EditorController->HandleRetargeterNeedsInitialized();
 }
@@ -358,25 +530,31 @@ void FIKRetargetEditor::HandlePreviewSceneCreated(const TSharedRef<IPersonaPrevi
 	EditorController->SourceSkelMeshComponent->bSelectable = false;
 	EditorController->TargetSkelMeshComponent->bSelectable = false;
 	
-	// setup an apply an anim instance to the skeletal mesh component
+	// setup and apply an anim instance to the skeletal mesh component
 	EditorController->SourceAnimInstance = NewObject<UIKRetargetAnimInstance>(EditorController->SourceSkelMeshComponent, TEXT("IKRetargetSourceAnimScriptInstance"));
 	EditorController->TargetAnimInstance = NewObject<UIKRetargetAnimInstance>(EditorController->TargetSkelMeshComponent, TEXT("IKRetargetTargetAnimScriptInstance"));
 	SetupAnimInstance();
 	
-	// set the source and target skeletal meshes on the component
-	// NOTE: this must be done AFTER setting the AnimInstance so that the correct root anim node is loaded
-	USkeletalMesh* SourceMesh = EditorController->GetSkeletalMesh(ERetargetSourceOrTarget::Source);
-	USkeletalMesh* TargetMesh = EditorController->GetSkeletalMesh(ERetargetSourceOrTarget::Target);
-	EditorController->SourceSkelMeshComponent->SetSkeletalMesh(SourceMesh);
-	EditorController->TargetSkelMeshComponent->SetSkeletalMesh(TargetMesh);
-
-	// apply mesh to the preview scene
-	InPersonaPreviewScene->SetPreviewMeshComponent(EditorController->SourceSkelMeshComponent);
-	InPersonaPreviewScene->SetPreviewMesh(SourceMesh);
-	InPersonaPreviewScene->SetAdditionalMeshesSelectable(false);
+	// set components to use custom animation mode
+	EditorController->SourceSkelMeshComponent->SetAnimationMode(EAnimationMode::AnimationCustomMode);
+	EditorController->TargetSkelMeshComponent->SetAnimationMode(EAnimationMode::AnimationCustomMode);
 	
+	// must call AddComponent() BEFORE assigning the mesh to prevent auto-assignment of a default anim instance
 	InPersonaPreviewScene->AddComponent(EditorController->SourceSkelMeshComponent, FTransform::Identity);
-	InPersonaPreviewScene->AddComponent(EditorController->TargetSkelMeshComponent, FTransform::Identity);
+    InPersonaPreviewScene->AddComponent(EditorController->TargetSkelMeshComponent, FTransform::Identity);
+    
+    // apply component to the preview scene (must be done BEFORE setting mesh)
+    InPersonaPreviewScene->SetPreviewMeshComponent(EditorController->SourceSkelMeshComponent);
+    InPersonaPreviewScene->SetAdditionalMeshesSelectable(false);
+    
+    // assign source mesh to the preview scene (applies the mesh to the source component)
+	// (must be done AFTER adding the component to prevent InitAnim() from overriding anim instance)
+    USkeletalMesh* SourceMesh = EditorController->GetSkeletalMesh(ERetargetSourceOrTarget::Source);
+    InPersonaPreviewScene->SetPreviewMesh(SourceMesh);
+    
+    // assign target mesh directly to the target component
+    USkeletalMesh* TargetMesh = EditorController->GetSkeletalMesh(ERetargetSourceOrTarget::Target);
+    EditorController->TargetSkelMeshComponent->SetSkeletalMesh(TargetMesh);
 	
 	EditorController->FixZeroHeightRetargetRoot(ERetargetSourceOrTarget::Source);
 	EditorController->FixZeroHeightRetargetRoot(ERetargetSourceOrTarget::Target);
@@ -393,9 +571,6 @@ void FIKRetargetEditor::SetupAnimInstance()
 
 	EditorController->SourceSkelMeshComponent->PreviewInstance = EditorController->SourceAnimInstance.Get();
 	EditorController->TargetSkelMeshComponent->PreviewInstance = EditorController->TargetAnimInstance.Get();
-
-	EditorController->SourceAnimInstance->InitializeAnimation();
-	EditorController->TargetAnimInstance->InitializeAnimation();
 }
 
 void FIKRetargetEditor::HandleOnPreviewSceneSettingsCustomized(IDetailLayoutBuilder& DetailBuilder) const

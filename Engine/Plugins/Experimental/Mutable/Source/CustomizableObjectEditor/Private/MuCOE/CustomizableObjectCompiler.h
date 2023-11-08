@@ -5,6 +5,7 @@
 #include "AssetRegistry/AssetData.h"
 #include "MuCOE/CompilationMessageCache.h"
 #include "MuCOE/GenerateMutableSource/GenerateMutableSource.h"
+#include "MuCOE/CustomizableObjectEditorLogger.h"
 #include "UObject/GCObject.h"
 
 class FCustomizableObjectCompileRunnable;
@@ -44,8 +45,8 @@ public:
 	/** Generate the Mutable Graph from the Unreal Graph. */
 	mu::NodePtr Export(UCustomizableObject* Object, const FCompilationOptions& Options);
 
-	void CompilerLog(const FText& Message, const TArray<const UCustomizableObjectNode*>& ArrayNode, EMessageSeverity::Type MessageSeverity = EMessageSeverity::Warning, bool bAddBaseObjectInfo = true);
-	void CompilerLog(const FText& Message, const UCustomizableObjectNode* Node = nullptr, EMessageSeverity::Type MessageSeverity = EMessageSeverity::Warning, bool bAddBaseObjectInfo = true);
+	void CompilerLog(const FText& Message, const TArray<const UCustomizableObjectNode*>& ArrayNode, const EMessageSeverity::Type MessageSeverity = EMessageSeverity::Warning, const bool bAddBaseObjectInfo = true, const ELoggerSpamBin SpamBin = ELoggerSpamBin::ShowAll);
+	void CompilerLog(const FText& Message, const UCustomizableObjectNode* Node = nullptr, const EMessageSeverity::Type MessageSeverity = EMessageSeverity::Warning, const bool bAddBaseObjectInfo = true, const ELoggerSpamBin SpamBin = ELoggerSpamBin::ShowAll);
 	void NotifyCompilationErrors() const;
 
 	void FinishCompilation();
@@ -99,6 +100,8 @@ private:
 	FCompilationMessageCache CompilationLogsContainer;
 	
 private:
+	void SetCompilationState(ECustomizableObjectCompilationState InState);
+
 	ECustomizableObjectCompilationState State = ECustomizableObjectCompilationState::None;
 	
 	void CompileInternal(UCustomizableObject* Object, const FCompilationOptions& Options, bool bAsync = false);
@@ -123,9 +126,9 @@ private:
 	TSharedPtr< FRunnableThread > SaveDDThread;
 
 	// Cache configuration settings from ini files 
-	bool bAreExtraBoneInfluencesEnabled = false;
+	ECustomizableObjectNumBoneInfluences CustomizableObjectNumBoneInfluences = ECustomizableObjectNumBoneInfluences::Four;
 
-	// TODO: add references
+	// Protected from GC with FCustomizableObjectCompiler::AddReferencedObjects
 	UCustomizableObject* CurrentObject = nullptr;
 
 	/** Array where to put the names of the already processed child in ProcessChildObjectsRecursively */
@@ -165,15 +168,15 @@ private:
 	void AddCachedReferencers(const FName& PathName, TArray<FName>& ArrayReferenceNames);
 
 	/** Launches the compile task in another thread when compiling a CO in the editor
-	* param ShowNotification [in] whether to show the compiling CO notification or not
+	* @param bShowNotification [in] whether to show the compiling CO notification or not
 	* @return nothing */
-	void LaunchMutableCompile(bool ShowNotification);
+	void LaunchMutableCompile(bool bShowNotification);
 
 	/** Launches the save derived data task in another thread after compiling a CO in the
 	* editor
-	* param ShowNotification [in] whether to show the saving DD notification or not
+	* @param bShowNotification [in] whether to show the saving DD notification or not
 	* @return nothing */
-	void SaveCODerivedData(bool ShowNotification);
+	void SaveCODerivedData(bool bShowNotification);
 
 	/** When compiling a CO in the editor, flag to know when the Unreal textures have been converted to Mutable textures */
 	bool PendingTexturesToLoad;
@@ -216,7 +219,7 @@ private:
 	TArray<FAssetData> ArrayAssetData;
 
 	/** Array used to protect from garbage collection those COs loaded asynchronously */
-	TArray<UCustomizableObject*> ArrayGCProtect;
+	TArray<TObjectPtr<UCustomizableObject>> ArrayGCProtect;
 
 	/** Flag to know when asynchronous asset loading is being performed */
 	bool PreloadingReferencerAssets;
@@ -243,4 +246,3 @@ private:
 	TSharedPtr<struct FStreamableHandle> AsynchronousStreamableHandlePtr;
 	
 };
-

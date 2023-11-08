@@ -2,15 +2,19 @@
 
 #pragma once
 
+#include "AudioDeviceHandle.h"
 #include "DSP/BufferVectorOperations.h"
+#include "DSP/MultithreadedPatching.h"
 #include "ISubmixBufferListener.h"
 #include "Math/NumericLimits.h"
+#include "Misc/FrameRate.h"
 
 #if WITH_MEDIA_IO_AUDIO_DEBUGGING
 #include "MediaIOAudioDebug.h"
 #endif
 
 class FAudioDevice;
+
 class FAudioDeviceHandle;
 
 DECLARE_DELEGATE_TwoParams(FOnBufferReceived, uint8* Buffer, int32 BufferSize);
@@ -177,7 +181,6 @@ protected:
 	void RegisterBufferListener(FAudioDevice* AudioDevice);
 	void UnregisterBufferListener(FAudioDevice* AudioDevice);
 
-private:
 	void RegisterAudioDevice(const FAudioDeviceHandle& InAudioDeviceHandle);
 	void UnregisterAudioDevice();
 
@@ -211,7 +214,7 @@ class FMainMediaIOAudioCapture : public FMediaIOAudioCapture
 {
 public:
 	FMainMediaIOAudioCapture();
-	virtual ~FMainMediaIOAudioCapture();
+	virtual ~FMainMediaIOAudioCapture() override;
 
 private:
 #if WITH_EDITOR
@@ -220,5 +223,5 @@ private:
 #endif
 
 	void RegisterMainAudioDevice();
-	void UnregisterMainAudioDevice();
+	void RegisterCurrentAudioDevice();
 };

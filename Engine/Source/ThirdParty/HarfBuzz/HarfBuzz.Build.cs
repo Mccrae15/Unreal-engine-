@@ -10,7 +10,7 @@ public class HarfBuzz : ModuleRules
 		{
 			if (Target.Platform == UnrealTargetPlatform.IOS ||
 				Target.Platform == UnrealTargetPlatform.Mac ||
-				Target.Platform == UnrealTargetPlatform.Win64 ||
+				Target.IsInPlatformGroup(UnrealPlatformGroup.Windows) ||
 				Target.IsInPlatformGroup(UnrealPlatformGroup.Android) ||
 				Target.IsInPlatformGroup(UnrealPlatformGroup.Unix)
 				)
@@ -61,8 +61,8 @@ public class HarfBuzz : ModuleRules
 		{
 			PublicDefinitions.Add("WITH_HARFBUZZ=0");
 		}
-
-		string HarfBuzzLibPath = Path.Combine(LibHarfBuzzRootPath, Target.Platform.ToString());
+		string HarfBuzzPlatform = Target.IsInPlatformGroup(UnrealPlatformGroup.Windows) ? "Win64" : Target.Platform.ToString();
+		string HarfBuzzLibPath = Path.Combine(LibHarfBuzzRootPath, HarfBuzzPlatform);
 		string BuildTypeFolderName = (Target.Configuration == UnrealTargetConfiguration.Debug && Target.bDebugBuildsActuallyUseDebugCRT)
 				? "Debug"
 				: "Release";
@@ -72,13 +72,16 @@ public class HarfBuzz : ModuleRules
 		PublicSystemIncludePaths.Add(IncHarfBuzzRootPath);
 
 		// Libs
-		if (Target.Platform == UnrealTargetPlatform.Win64)
+		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows))
 		{
-			string VSVersionFolderName = "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName();
+			LibPath = Path.Combine(HarfBuzzLibPath, "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName());
 
-			//BuildTypeFolderName = "RelWithDebInfo";
+			if (Target.WindowsPlatform.Architecture == UnrealArch.Arm64)
+			{
+				LibPath = Path.Combine(LibPath, Target.Architecture.WindowsLibDir);
+			}
 
-			PublicAdditionalLibraries.Add(Path.Combine(HarfBuzzLibPath, VSVersionFolderName, BuildTypeFolderName, "harfbuzz.lib"));
+			PublicAdditionalLibraries.Add(Path.Combine(LibPath, BuildTypeFolderName, "harfbuzz.lib"));
 		}
 		else if (Target.Platform == UnrealTargetPlatform.Mac)
 		{
@@ -89,6 +92,10 @@ public class HarfBuzz : ModuleRules
 		}
 		else if (Target.Platform == UnrealTargetPlatform.IOS)
 		{
+			if (Target.Architecture == UnrealArch.IOSSimulator)
+			{
+				BuildTypeFolderName = "Simulator";
+			}
 			PublicAdditionalLibraries.Add(Path.Combine(HarfBuzzLibPath, BuildTypeFolderName, "libharfbuzz.a"));
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Android))

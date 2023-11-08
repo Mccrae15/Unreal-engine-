@@ -187,8 +187,10 @@ public:
 	uint8 bIsUploadOnly					: 1;
 	uint8 bIsUniformBufferBarrierAdded	: 1;
 
+	// BEGIN META SECTION - Multi-View Per View Viewports / Render Areas
 	// You never want to call Begin/EndRenderPass directly as it will mess up the layout manager.
-	void BeginRenderPass(const FVulkanRenderTargetLayout& Layout, class FVulkanRenderPass* RenderPass, class FVulkanFramebuffer* Framebuffer, const VkClearValue* AttachmentClearValues, const VkRect2D& RenderArea);
+	void BeginRenderPass(const FVulkanRenderTargetLayout& Layout, class FVulkanRenderPass* RenderPass, class FVulkanFramebuffer* Framebuffer, const VkClearValue* AttachmentClearValues, const VkRect2D* RenderAreas, const uint32 NumRenderAreas);
+	// END META SECTION - Multi-View Per View Viewports / Render Areas
 	void EndRenderPass();
 
 
@@ -258,6 +260,14 @@ private:
 
 	// Various properties of a render pass that need to be tracked until the renderpass ends
 	FRenderPassProperties RenderPassProperties;
+
+	// BEGIN META SECTION - Multi-View Per View Viewports / Render Areas
+#if VULKAN_SUPPORTS_MULTIVIEW_PER_VIEW_RENDER_AREAS
+	VkMultiviewPerViewRenderAreasRenderPassBeginInfoQCOM RenderAreaInfo;
+	TArray<VkRect2D> RenderAreaRects;
+#endif
+	// END META SECTION - Multi-View Per View Viewports / Render Areas
+
 public:
 	//#todo-rco: Hide this
 	TMap<uint32, class FVulkanTypedDescriptorPoolSet*> TypedDescriptorPoolSets;

@@ -44,12 +44,7 @@ namespace UnrealBuildTool.Rules
 					"ContentBrowserData",
 					"PlacementMode",
 					"MegascansPlugin",
-					"ApplicationCore",
-					});
-
-			PrivateIncludePaths.AddRange(
-				new string[] {
-					Path.Combine(ModuleDirectory, "Private"),
+					"ApplicationCore"
 					});
 			}
 		}

@@ -25,14 +25,15 @@ struct POSESEARCH_API FPoseSearchBone
 	UPROPERTY(EditAnywhere, Category = Config)
 	FBoneReference Reference;
 
+	// This allows the user to define what information from the channel you want to compare to.
 	UPROPERTY(EditAnywhere, meta = (Bitmask, BitmaskEnum = "/Script/PoseSearch.EPoseSearchBoneFlags"), Category = Config)
 	int32 Flags = int32(EPoseSearchBoneFlags::Position);
 
 	UPROPERTY(EditAnywhere, Category = Config)
 	float Weight = 1.f;
 
-	UPROPERTY(EditAnywhere, Category = Config, meta=(ExcludeFromHash))
-	int32 ColorPresetIndex = 0;
+	UPROPERTY(EditAnywhere, Category = Config, meta=(ExcludeFromHash, DisplayPriority = 0))
+	FLinearColor DebugColor = FLinearColor::Green;
 };
 
 // UPoseSearchFeatureChannel_Pose
@@ -45,6 +46,7 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Settings")
 	float Weight = 1.f;
 
+	// List of skeletal joints and associated Flags (Velocity, Position, etc) to sample.
 	UPROPERTY(EditAnywhere, Category = "Settings")
 	TArray<FPoseSearchBone> SampledBones;
 
@@ -61,6 +63,8 @@ public:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UPoseSearchFeatureChannel>> SubChannels;
 
+	UPoseSearchFeatureChannel_Pose();
+
 	// UPoseSearchFeatureChannel_GroupBase interface
 	virtual TArrayView<TObjectPtr<UPoseSearchFeatureChannel>> GetSubChannels() override { return SubChannels; }
 	virtual TConstArrayView<TObjectPtr<UPoseSearchFeatureChannel>> GetSubChannels() const override { return SubChannels; }
@@ -69,7 +73,7 @@ public:
 	virtual void Finalize(UPoseSearchSchema* Schema) override;
 
 #if WITH_EDITOR
-	virtual FString GetLabel() const;
+	virtual FString GetLabel() const override;
 #endif
 };
 

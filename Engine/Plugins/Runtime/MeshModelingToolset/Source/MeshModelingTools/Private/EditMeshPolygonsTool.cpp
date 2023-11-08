@@ -29,6 +29,7 @@
 #include "Operations/MinimalHoleFiller.h"
 #include "Operations/PolygroupRemesh.h"
 #include "Operations/WeldEdgeSequence.h"
+#include "Operations/LocalPlanarSimplify.h"
 #include "Selection/StoredMeshSelectionUtil.h"
 #include "Selection/PolygonSelectionMechanic.h"
 #include "Selections/MeshConnectedComponents.h"
@@ -50,6 +51,7 @@
 #include "TransformTypes.h"
 #include "Util/CompactMaps.h"
 #include "Selections/GeometrySelection.h"
+#include "Selection/GeometrySelectionManager.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(EditMeshPolygonsTool)
 
@@ -133,6 +135,42 @@ void UEditMeshPolygonsToolBuilder::InitializeNewTool(USingleTargetWithSelectionT
 }
 
 
+bool UEditMeshPolygonsActionModeToolBuilder::CanBuildTool(const FToolBuilderState& SceneState) const
+{
+	if (UEditMeshPolygonsToolBuilder::CanBuildTool(SceneState))
+	{
+		if ( StartupAction == EEditMeshPolygonsToolActions::SimplifyByGroups
+			 || StartupAction == EEditMeshPolygonsToolActions::InsertEdge
+			 || StartupAction == EEditMeshPolygonsToolActions::InsertEdgeLoop )
+		{
+			return true;
+		}
+
+		if ( UGeometrySelectionManager* SelectionManager = SceneState.ToolManager->GetContextObjectStore()->FindContext<UGeometrySelectionManager>() )
+		{
+			EGeometryTopologyType TopologyType = EGeometryTopologyType::Triangle;
+			EGeometryElementType ElementType = EGeometryElementType::Face;
+			int NumTargets;
+			bool bIsEmpty = false;
+			SelectionManager->GetActiveSelectionInfo(TopologyType, ElementType, NumTargets, bIsEmpty);
+			if (StartupAction == EEditMeshPolygonsToolActions::Extrude
+				|| StartupAction == EEditMeshPolygonsToolActions::PushPull
+				|| StartupAction == EEditMeshPolygonsToolActions::Offset
+				|| StartupAction == EEditMeshPolygonsToolActions::Inset
+				|| StartupAction == EEditMeshPolygonsToolActions::Outset
+				|| StartupAction == EEditMeshPolygonsToolActions::CutFaces)
+			{
+				return (TopologyType == EGeometryTopologyType::Polygroup && ElementType == EGeometryElementType::Face && bIsEmpty == false);
+			}
+			else if (StartupAction == EEditMeshPolygonsToolActions::BevelAuto)
+			{
+				return (TopologyType == EGeometryTopologyType::Polygroup && ElementType != EGeometryElementType::Vertex && bIsEmpty == false);
+			}
+		}
+	}
+	return false;
+}
+
 
 void UEditMeshPolygonsActionModeToolBuilder::InitializeNewTool(USingleTargetWithSelectionTool* Tool, const FToolBuilderState& SceneState) const
 {
@@ -149,46 +187,101 @@ void UEditMeshPolygonsActionModeToolBuilder::InitializeNewTool(USingleTargetWith
 
 
 
+bool UEditMeshPolygonsSelectionModeToolBuilder::CanBuildTool(const FToolBuilderState& SceneState) const
+{
+	if (UEditMeshPolygonsToolBuilder::CanBuildTool(SceneState))
+	{
+		if ( UGeometrySelectionManager* SelectionManager = SceneState.ToolManager->GetContextObjectStore()->FindContext<UGeometrySelectionManager>() )
+		{
+			// if not actively selecting mesh components, tool can be started in 'standard' full-PolyEd mode
+			if (SelectionManager->GetMeshTopologyMode() == UGeometrySelectionManager::EMeshTopologyMode::None)
+			{
+				return true;
+			}
+			// otherwise can only start tool in sub-modes
+			EGeometryTopologyType TopologyType = EGeometryTopologyType::Triangle;
+			EGeometryElementType ElementType = EGeometryElementType::Face;
+			int NumTargets;
+			bool bIsEmpty = false;
+			SelectionManager->GetActiveSelectionInfo(TopologyType, ElementType, NumTargets, bIsEmpty);
+			if (TopologyType == EGeometryTopologyType::Polygroup)
+			{
+				return ElementType != EGeometryElementType::Vertex;
+			}
+		}
+	}
+	return false;
+}
+
 void UEditMeshPolygonsSelectionModeToolBuilder::InitializeNewTool(USingleTargetWithSelectionTool* Tool, const FToolBuilderState& SceneState) const
 {
 	UEditMeshPolygonsToolBuilder::InitializeNewTool(Tool, SceneState);
 	UEditMeshPolygonsTool* EditPolygonsTool = CastChecked<UEditMeshPolygonsTool>(Tool);
 
-	EEditMeshPolygonsToolSelectionMode UseMode = SelectionMode;
-	EditPolygonsTool->PostSetupFunction = [UseMode](UEditMeshPolygonsTool* PolyTool)
+	// if not actively selecting mesh components, start in full-PolyEd mode
+	if (UGeometrySelectionManager* SelectionManager = SceneState.ToolManager->GetContextObjectStore()->FindContext<UGeometrySelectionManager>())
 	{
-		PolyTool->SetToSelectionModeInterface();
-
-		UPolygonSelectionMechanic* SelectionMechanic = PolyTool->SelectionMechanic;
-		UMeshTopologySelectionMechanicProperties* SelectionProps = SelectionMechanic->Properties;
-		SelectionProps->bSelectFaces = SelectionProps->bSelectEdges = SelectionProps->bSelectVertices = false;
-		SelectionProps->bSelectEdgeLoops = SelectionProps->bSelectEdgeRings = false;
-
-		switch (UseMode)
+		if (SelectionManager->GetMeshTopologyMode() == UGeometrySelectionManager::EMeshTopologyMode::None)
 		{
-		default:
-		case EEditMeshPolygonsToolSelectionMode::Faces:
-			SelectionProps->bSelectFaces = true;
-			break;
-		case EEditMeshPolygonsToolSelectionMode::Edges:
-			SelectionProps->bSelectEdges = true;
-			break;
-		case EEditMeshPolygonsToolSelectionMode::Vertices:
-			SelectionProps->bSelectVertices = true;
-			break;
-		case EEditMeshPolygonsToolSelectionMode::Loops:
-			SelectionProps->bSelectEdges = true;
-			SelectionProps->bSelectEdgeLoops = true;
-			break;
-		case EEditMeshPolygonsToolSelectionMode::Rings:
-			SelectionProps->bSelectEdges = true;
-			SelectionProps->bSelectEdgeRings = true;
-			break;
-		case EEditMeshPolygonsToolSelectionMode::FacesEdgesVertices:
-			SelectionProps->bSelectFaces = SelectionProps->bSelectEdges = SelectionProps->bSelectVertices = true;
-			break;
+			return;
 		}
-	};
+
+		// otherwise can only start tool in sub-modes
+		EGeometryTopologyType TopologyType = EGeometryTopologyType::Triangle;
+		EGeometryElementType ElementType = EGeometryElementType::Face;
+		int NumTargets;
+		bool bIsEmpty = false;
+		SelectionManager->GetActiveSelectionInfo(TopologyType, ElementType, NumTargets, bIsEmpty);
+		if (TopologyType != EGeometryTopologyType::Polygroup)
+		{
+			return;		// should not happen...
+		}
+
+		EEditMeshPolygonsToolSelectionMode UseMode = EEditMeshPolygonsToolSelectionMode::Faces;
+		bool bIsEdgeSelection = false;
+		if (ElementType == EGeometryElementType::Edge)
+		{
+			bIsEdgeSelection = true;
+			UseMode = EEditMeshPolygonsToolSelectionMode::Edges;
+		}
+		else if (ElementType == EGeometryElementType::Vertex)
+		{
+			UseMode = EEditMeshPolygonsToolSelectionMode::Vertices;
+		}
+
+		EditPolygonsTool->PostSetupFunction = [UseMode, bIsEdgeSelection](UEditMeshPolygonsTool* PolyTool)
+		{
+			PolyTool->SetToolPropertySourceEnabled(PolyTool->EditActions, !bIsEdgeSelection);
+			PolyTool->SetToolPropertySourceEnabled(PolyTool->EditEdgeActions, bIsEdgeSelection);
+			PolyTool->SetToolPropertySourceEnabled(PolyTool->EditUVActions, !bIsEdgeSelection);
+			
+			PolyTool->SetToolPropertySourceEnabled(PolyTool->TopologyProperties, false);
+
+			UPolygonSelectionMechanic* SelectionMechanic = PolyTool->SelectionMechanic;
+			UMeshTopologySelectionMechanicProperties* SelectionProps = SelectionMechanic->Properties;
+			SelectionProps->bSelectFaces = SelectionProps->bSelectEdges = SelectionProps->bSelectVertices = false;
+			SelectionProps->bSelectEdgeLoops = SelectionProps->bSelectEdgeRings = false;
+
+			switch (UseMode)
+			{
+			default:
+			case EEditMeshPolygonsToolSelectionMode::Faces:
+				SelectionProps->bSelectFaces = true;
+				break;
+			case EEditMeshPolygonsToolSelectionMode::Edges:
+				SelectionProps->bSelectEdges = true;
+				break;
+			case EEditMeshPolygonsToolSelectionMode::Vertices:
+				SelectionProps->bSelectVertices = true;
+				break;
+			}
+
+			PolyTool->SetToolPropertySourceEnabled(SelectionProps, false);
+		};
+	}
+
+
+
 }
 
 
@@ -265,43 +358,11 @@ void UEditMeshPolygonsTool::Setup()
 		Topology->ShouldAddExtraCornerAtVert = 
 			[this](const FGroupTopology& GroupTopology, int32 Vid, const FIndex2i& AttachedGroupEdgeEids)
 		{
-			if (!TopologyProperties->bAddExtraCorners)
-			{
-				return false;
-			}
-
 			// Note: it's important that we don't use CurrentMesh here. It's possible that an activity might create a copy of 
 			// the topology that uses the same corner forcing function but points to a different mesh, so we want to use
 			// whatever mesh the passed-in topology uses.
-			const FDynamicMesh3* Mesh = GroupTopology.GetMesh();
-			
-			if (!ensure(Mesh->IsEdge(AttachedGroupEdgeEids.A) && Mesh->IsEdge(AttachedGroupEdgeEids.B)))
-			{
-				return false;
-			}
-
-			// Gets vector pointing from the Vid along the edge.
-			auto GetEdgeUnitVector = [Mesh, Vid](int32 Eid, FVector3d& VectorOut)->bool
-			{
-				FIndex2i EdgeVids = Mesh->GetEdgeV(Eid);
-				// Make sure that the Vid is at EdgeVids.A
-				if (EdgeVids.B == Vid)
-				{
-					Swap(EdgeVids.A, EdgeVids.B);
-				}
-				VectorOut = Mesh->GetVertex(EdgeVids.B) - Mesh->GetVertex(EdgeVids.A);
-				return VectorOut.Normalize(KINDA_SMALL_NUMBER);
-			};
-
-			FVector Edge1, Edge2;
-			if (!GetEdgeUnitVector(AttachedGroupEdgeEids.A, Edge1) || !GetEdgeUnitVector(AttachedGroupEdgeEids.B, Edge2))
-			{
-				// If either edge was degenerate, we won't consider this a corner because otherwise we will end up
-				// with two corners connected by the degenerate edge, which is not ideal.
-				return false;
-			}
-
-			return Edge1.Dot(Edge2) >= ExtraCornerDotProductThreshold;
+			return TopologyProperties->bAddExtraCorners 
+				&& FGroupTopology::IsEdgeAngleSharp(GroupTopology.GetMesh(), Vid, AttachedGroupEdgeEids, ExtraCornerDotProductThreshold);
 		};
 	}
 
@@ -312,6 +373,10 @@ void UEditMeshPolygonsTool::Setup()
 	auto UpdateExtraCornerThreshold = [this]() { ExtraCornerDotProductThreshold = FMathd::Cos(TopologyProperties->ExtraCornerAngleThresholdDegrees * FMathd::DegToRad); };
 	UpdateExtraCornerThreshold();
 	TopologyProperties->WatchProperty(TopologyProperties->ExtraCornerAngleThresholdDegrees,
+		// Note: it may seem tempting to auto-rebuild the topology as the user drags the threshold slider (rather than waiting for
+		// the button click or next topology rebuild), but we have to transact corner additions/removals so that selection events in the 
+		// undo stack are able to refer to the same edges/corners (this is also why we store the current extra corners in FEditMeshPolygonsToolMeshChange).
+		// In an ideal world, we would know the end of a slider drag and only transact at that point, but we don't have that.
 		[this, UpdateExtraCornerThreshold](double) { UpdateExtraCornerThreshold(); });
 
 	Topology->RebuildTopology();
@@ -1229,6 +1294,9 @@ void UEditMeshPolygonsTool::OnTick(float DeltaTime)
 		case EEditMeshPolygonsToolActions::BridgeEdges:
 			ApplyBridgeEdges();
 			break;
+		case EEditMeshPolygonsToolActions::SimplifyAlongEdges:
+			ApplySimplifyAlongEdges();
+			break;
 		case EEditMeshPolygonsToolActions::Retriangulate:
 			ApplyRetriangulate();
 			break;
@@ -2018,6 +2086,50 @@ void UEditMeshPolygonsTool::ApplyStraightenEdges()
 		ChangeTracker.EndChange(), NewSelection);
 }
 
+
+void UEditMeshPolygonsTool::ApplySimplifyAlongEdges()
+{
+	if (BeginMeshEdgeEditChange() == false)
+	{
+		GetToolManager()->DisplayMessage(LOCTEXT("OnSimplifyAlongEdgesFailed", "Cannot Simplify current selection"), EToolMessageLevel::UserWarning);
+		return;
+	}
+
+	FDynamicMesh3* Mesh = CurrentMesh.Get();
+
+	FDynamicMeshChangeTracker ChangeTracker(Mesh);
+	ChangeTracker.BeginChange();
+
+	// Storage for edge sets is re-used for each selected polygon edge path
+	TSet<int32> SimplifyEdgeSet;
+
+	// Pre-save vertices and triangles along selected edges
+	for (const FSelectedEdge& Edge : ActiveEdgeSelection)
+	{
+		if (Edge.EdgeIDs.Num() > 1)
+		{
+			const TArray<int32>& EdgeVerts = Topology->GetGroupEdgeVertices(Edge.EdgeTopoID);
+			ChangeTracker.SaveVertexOneRingTriangles(EdgeVerts, true);
+		}
+	}
+	
+	// Attempt simplification along edges
+	for (const FSelectedEdge& Edge : ActiveEdgeSelection)
+	{
+		if (Edge.EdgeIDs.Num() > 1)
+		{
+			SimplifyEdgeSet.Reset();
+			SimplifyEdgeSet.Append(Edge.EdgeIDs);
+			FLocalPlanarSimplify LocalSimplify;
+			LocalSimplify.bPreserveVertexNormals = false;
+			LocalSimplify.SimplifyAlongEdges(*Mesh, SimplifyEdgeSet);
+		}
+	}
+
+	FGroupTopologySelection NewSelection;
+	EmitCurrentMeshChangeAndUpdate(LOCTEXT("PolyMeshSimplifyAlongEdgesChange", "Simplify Along Edges"),
+		ChangeTracker.EndChange(), NewSelection);
+}
 
 
 void UEditMeshPolygonsTool::ApplyFillHole()

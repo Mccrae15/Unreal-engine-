@@ -5,7 +5,6 @@
 =============================================================================*/
 
 #include "DynamicRHI.h"
-#include "Containers/ClosableMpscQueue.h"
 #include "Misc/MessageDialog.h"
 #include "Experimental/Containers/HazardPointer.h"
 #include "Misc/OutputDeviceRedirector.h"
@@ -15,15 +14,15 @@
 #include "GenericPlatform/GenericPlatformDriver.h"
 #include "GenericPlatform/GenericPlatformCrashContext.h"
 #include "PipelineStateCache.h"
+#include "RHI.h"
 #include "RHIFwd.h"
 #include "TextureProfiler.h"
 #include "DataDrivenShaderPlatformInfo.h"
+#include "RHICommandList.h"
 #include "RHIImmutableSamplerState.h"
 #include "RHIStrings.h"
+#include "RHITextureReference.h"
 #include "Serialization/MemoryImage.h"
-
-IMPLEMENT_TYPE_LAYOUT(FRayTracingGeometryInitializer);
-IMPLEMENT_TYPE_LAYOUT(FRayTracingGeometrySegment);
 
 static_assert(sizeof(FRayTracingGeometryInstance) <= 104,
 	"Ray tracing instance descriptor is expected to be no more than 104 bytes, as there may be a very large number of them.");
@@ -73,7 +72,7 @@ void InitNullRHI()
 	if ((DynamicRHIModule == 0) || !DynamicRHIModule->IsSupported())
 	{
 		FMessageDialog::Open( EAppMsgType::Ok, NSLOCTEXT("DynamicRHI", "NullDrvFailure", "NullDrv failure?"));
-		FPlatformMisc::RequestExit(1);
+		FPlatformMisc::RequestExit(true, TEXT("InitNullRHI"));
 	}
 
 	GDynamicRHI = DynamicRHIModule->CreateRHI();
@@ -250,7 +249,7 @@ static void RHIDetectAndWarnOfBadDrivers(bool bHasEditorToken)
 			}
 
 			FText Title = NSLOCTEXT("MessageDialog", "TitleVideoCardDriverIssue", "WARNING: Known issues with graphics driver");
-			EAppReturnType::Type Response = FMessageDialog::Open(EAppMsgType::YesNo, LocalizedMsg, &Title);
+			EAppReturnType::Type Response = FMessageDialog::Open(EAppMsgType::YesNo, LocalizedMsg, Title);
 			if (Response == EAppReturnType::Yes)
 			{
 				FPlatformProcess::LaunchURL(*HyperlinkText.ToString(), nullptr, nullptr);
@@ -363,7 +362,7 @@ void RHIInit(bool bHasEditorToken)
 					FString ShaderPlatformString = LegacyShaderPlatformToShaderFormat(GetFeatureLevelShaderPlatform(GMaxRHIFeatureLevel)).ToString();
 					FString Error = FString::Printf(TEXT("A Feature Level 5 video card is required to run the editor.\nAvailableFeatureLevel = %s, ShaderPlatform = %s"), *FeatureLevelString, *ShaderPlatformString);
 					FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(Error));
-					FPlatformMisc::RequestExit(1);
+					FPlatformMisc::RequestExit(true, TEXT("RHIInit"));
 				}
 
 				// Update the crash context analytics
@@ -394,6 +393,45 @@ void RHIInit(bool bHasEditorToken)
 
 #if WITH_EDITOR
 	FGenericDataDrivenShaderPlatformInfo::UpdatePreviewPlatforms();
+
+	// add an ability to override the shader platform, intended for preview platforms only
+	FString ShaderPlatformName;
+	if (FParse::Value(FCommandLine::Get(), TEXT("OverrideSP"), ShaderPlatformName) && !ShaderPlatformName.IsEmpty())
+	{
+		EShaderPlatform OverrideShaderPlatform = FDataDrivenShaderPlatformInfo::GetShaderPlatformFromName(*ShaderPlatformName);
+		if (OverrideShaderPlatform != SP_NumPlatforms)
+		{
+			// only allow to override to preview shader platform (to avoid complications), and make sure the SP matches current feature level
+			if (FDataDrivenShaderPlatformInfo::GetIsPreviewPlatform(OverrideShaderPlatform))
+			{
+				if (GetMaxSupportedFeatureLevel(OverrideShaderPlatform) == GMaxRHIFeatureLevel)
+				{
+					UE_LOG(LogRHI, Log, TEXT("Overriding shader platform to use from %s to %s"),
+						*LexToString(GMaxRHIShaderPlatform, false),
+						*LexToString(OverrideShaderPlatform, false));
+
+					GShaderPlatformForFeatureLevel[GMaxRHIFeatureLevel] = OverrideShaderPlatform;
+					GMaxRHIShaderPlatform = OverrideShaderPlatform;
+				}
+				else
+				{
+					UE_LOG(LogRHI, Log, TEXT("Cannot override to use shaderplatform %s, its max feature level %s does not match current max feature level %s"),
+						*LexToString(OverrideShaderPlatform, false),
+						*LexToString(GetMaxSupportedFeatureLevel(OverrideShaderPlatform)),
+						*LexToString(GMaxRHIFeatureLevel)
+						);
+				}
+			}
+			else
+			{
+				UE_LOG(LogRHI, Log, TEXT("Cannot override to use shader platform %s, it is not a preview platform"), *LexToString(OverrideShaderPlatform, false));
+			}
+		}
+		else
+		{
+			UE_LOG(LogRHI, Log, TEXT("Shader platform %s is not a valid platform, cannot use it."), *LexToString(OverrideShaderPlatform, false));
+		}
+	}
 #endif
 }
 
@@ -432,28 +470,6 @@ void RHIExit()
 
 	FRHICommandListImmediate::CleanupGraphEvents();
 }
-
-
-static void BaseRHISetGPUCaptureOptions(const TArray<FString>& Args, UWorld* World)
-{
-	if (Args.Num() > 0)
-	{
-		const bool bEnabled = Args[0].ToBool();
-		GDynamicRHI->EnableIdealGPUCaptureOptions(bEnabled);
-	}
-	else
-	{
-		UE_LOG(LogRHI, Display, TEXT("Usage: r.RHISetGPUCaptureOptions 0 or r.RHISetGPUCaptureOptions 1"));
-	}
-}
-
-static FAutoConsoleCommandWithWorldAndArgs GBaseRHISetGPUCaptureOptions(
-	TEXT("r.RHISetGPUCaptureOptions"),
-	TEXT("Utility function to change multiple CVARs useful when profiling or debugging GPU rendering. Setting to 1 or 0 will guarantee all options are in the appropriate state.\n")
-	TEXT("r.rhithread.enable, r.rhicmdbypass, r.showmaterialdrawevents, toggledrawevents\n")
-	TEXT("Platform RHI's may implement more feature toggles."),
-	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&BaseRHISetGPUCaptureOptions)
-	);
 
 // Default fallback; will not work for non-8-bit surfaces and it's extremely slow.
 void FDynamicRHI::RHIReadSurfaceData(FRHITexture* Texture, FIntRect Rect, TArray<FLinearColor>& OutData, FReadSurfaceDataFlags InFlags)
@@ -542,36 +558,133 @@ void FDynamicRHI::RHITransferBufferUnderlyingResource(FRHIBuffer* DestBuffer, FR
 	UE_LOG(LogRHI, Fatal, TEXT("RHITransferBufferUnderlyingResource isn't implemented for the current RHI"));
 }
 
-FUnorderedAccessViewRHIRef FDynamicRHI::RHICreateUnorderedAccessView(FRHITexture* Texture, uint32 MipLevel, uint8 Format, uint16 FirstArraySlice, uint16 NumArraySlices)
+void FDynamicRHI::RHIUpdateTextureReference(FRHICommandListBase& RHICmdList, FRHITextureReference* TextureRef, FRHITexture* InReferencedTexture)
 {
-	UE_LOG(LogRHI, Fatal, TEXT("RHICreateUnorderedAccessView with Format parameter isn't implemented for the current RHI"));
-	return RHICreateUnorderedAccessView(Texture, MipLevel, FirstArraySlice, NumArraySlices);
+	FRHITexture* ReferencedTexture = InReferencedTexture ? InReferencedTexture : FRHITextureReference::GetDefaultTexture();
+	TextureRef->SetReferencedTexture(ReferencedTexture);
 }
 
-void FDynamicRHI::RHIUpdateShaderResourceView(FRHIShaderResourceView* SRV, FRHIBuffer* Buffer, uint32 Stride, uint8 Format)
+void FDynamicRHI::RHIVirtualTextureSetFirstMipInMemory(FRHICommandListImmediate& RHICmdList, FRHITexture2D* TextureRHI, uint32 FirstMip)
 {
-	UE_LOG(LogRHI, Fatal, TEXT("RHIUpdateShaderResourceView isn't implemented for the current RHI"));
+	UE_LOG(LogRHI, Fatal, TEXT("The current RHI does not implement support for virtually allocated textures."));
 }
 
-void FDynamicRHI::RHIUpdateShaderResourceView(FRHIShaderResourceView* SRV, FRHIBuffer* Buffer)
+void FDynamicRHI::RHIVirtualTextureSetFirstMipVisible(FRHICommandListImmediate& RHICmdList, FRHITexture2D* TextureRHI, uint32 FirstMip)
 {
-	UE_LOG(LogRHI, Fatal, TEXT("RHIUpdateShaderResourceView isn't implemented for the current RHI"));
-}
-
-void FDynamicRHI::RHIUpdateTextureReference(FRHITextureReference* TextureRef, FRHITexture* NewTexture)
-{
-	TextureRef->SetReferencedTexture(NewTexture);
+	UE_LOG(LogRHI, Fatal, TEXT("The current RHI does not implement support for virtually allocated textures."));
 }
 
 uint64 FDynamicRHI::RHIGetMinimumAlignmentForBufferBackedSRV(EPixelFormat Format)
 {
-	return 1;
+	return GPixelFormats[Format].BlockBytes;
+}
+
+FTextureRHIRef FDynamicRHI::RHIAsyncCreateTexture2D(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, void** InitialMipData, uint32 NumInitialMips)
+{
+	FGraphEventRef CompletionEvent;
+	FTextureRHIRef Result = this->RHIAsyncCreateTexture2D(SizeX, SizeY, Format, NumMips, Flags, InResourceState, InitialMipData, NumInitialMips, CompletionEvent);
+	if (CompletionEvent)
+	{
+		CompletionEvent->Wait();
+	}
+	return Result;
+}
+
+FTextureReferenceRHIRef FDynamicRHI::RHICreateTextureReference(FRHITexture* InReferencedTexture)
+{
+	FRHITexture* ReferencedTexture = InReferencedTexture ? InReferencedTexture : FRHITextureReference::GetDefaultTexture();
+
+	FShaderResourceViewRHIRef ShaderResourceView;
+
+#if PLATFORM_SUPPORTS_BINDLESS_RENDERING
+	// If the referenced texture is configured for bindless, make sure we also create an SRV to use for bindless.
+	if (ReferencedTexture && ReferencedTexture->GetDefaultBindlessHandle().IsValid())
+	{
+		ShaderResourceView = FRHICommandListImmediate::Get().CreateShaderResourceView(ReferencedTexture, 0u);
+	}
+#endif
+
+	return new FRHITextureReference(ReferencedTexture, ShaderResourceView);
+}
+
+
+uint64 FDynamicRHI::RHIComputeStatePrecachePSOHash(const FGraphicsPipelineStateInitializer& Initializer)
+{
+	struct FHashKey
+	{
+		uint32 VertexDeclaration;
+		uint32 VertexShader;
+		uint32 PixelShader;
+#if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
+		uint32 GeometryShader;
+#endif // PLATFORM_SUPPORTS_GEOMETRY_SHADERS
+#if PLATFORM_SUPPORTS_MESH_SHADERS
+		uint32 MeshShader;
+#endif // PLATFORM_SUPPORTS_MESH_SHADERS
+		uint32 BlendState;
+		uint32 RasterizerState;
+		uint32 DepthStencilState;
+		uint32 ImmutableSamplerState;
+
+		uint32 MultiViewCount : 8;
+		uint32 DrawShadingRate : 8;
+		uint32 PrimitiveType : 8;
+		uint32 bDepthBounds : 1;
+		uint32 bHasFragmentDensityAttachment : 1;
+		uint32 Unused : 6;
+	} HashKey;
+
+	FMemory::Memzero(&HashKey, sizeof(FHashKey));
+
+	HashKey.VertexDeclaration = Initializer.BoundShaderState.VertexDeclarationRHI ? Initializer.BoundShaderState.VertexDeclarationRHI->GetPrecachePSOHash() : 0;
+	HashKey.VertexShader = Initializer.BoundShaderState.GetVertexShader() ? GetTypeHash(Initializer.BoundShaderState.GetVertexShader()->GetHash()) : 0;
+	HashKey.PixelShader = Initializer.BoundShaderState.GetPixelShader() ? GetTypeHash(Initializer.BoundShaderState.GetPixelShader()->GetHash()) : 0;
+#if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
+	HashKey.GeometryShader = Initializer.BoundShaderState.GetGeometryShader() ? GetTypeHash(Initializer.BoundShaderState.GetGeometryShader()->GetHash()) : 0;
+#endif
+#if PLATFORM_SUPPORTS_MESH_SHADERS
+	HashKey.MeshShader = Initializer.BoundShaderState.GetMeshShader() ? GetTypeHash(Initializer.BoundShaderState.GetMeshShader()->GetHash()) : 0;
+#endif
+
+	FBlendStateInitializerRHI BlendStateInitializerRHI;
+	if (Initializer.BlendState && Initializer.BlendState->GetInitializer(BlendStateInitializerRHI))
+	{
+		HashKey.BlendState = GetTypeHash(BlendStateInitializerRHI);
+	}
+	FRasterizerStateInitializerRHI RasterizerStateInitializerRHI;
+	if (Initializer.RasterizerState && Initializer.RasterizerState->GetInitializer(RasterizerStateInitializerRHI))
+	{
+		HashKey.RasterizerState = GetTypeHash(RasterizerStateInitializerRHI);
+	}
+	FDepthStencilStateInitializerRHI DepthStencilStateInitializerRHI;
+	if (Initializer.DepthStencilState && Initializer.DepthStencilState->GetInitializer(DepthStencilStateInitializerRHI))
+	{
+		HashKey.DepthStencilState = GetTypeHash(DepthStencilStateInitializerRHI);
+	}
+
+	// Ignore immutable samplers for now
+	//HashKey.ImmutableSamplerState = GetTypeHash(ImmutableSamplerState);
+
+	HashKey.MultiViewCount = Initializer.MultiViewCount;
+	HashKey.DrawShadingRate = Initializer.ShadingRate;
+	HashKey.PrimitiveType = Initializer.PrimitiveType;
+	HashKey.bDepthBounds = Initializer.bDepthBounds;
+	HashKey.bHasFragmentDensityAttachment = Initializer.bHasFragmentDensityAttachment;
+
+	uint64 PrecachePSOHash = CityHash64((const char*)&HashKey, sizeof(FHashKey));
+
+	return PrecachePSOHash;
 }
 
 uint64 FDynamicRHI::RHIComputePrecachePSOHash(const FGraphicsPipelineStateInitializer& Initializer)
 {
-	// When compute precache PSO hash we assume a valid state precache PSO hash is already provided
-	checkf(Initializer.StatePrecachePSOHash != 0, TEXT("Initializer should have a valid state precache PSO hash set when computing the full initializer PSO hash"));
+	uint64 StatePrecachePSOHash = Initializer.StatePrecachePSOHash;
+	if (StatePrecachePSOHash == 0)
+	{
+		StatePrecachePSOHash = RHIComputeStatePrecachePSOHash(Initializer);
+	}
+
+	checkf(StatePrecachePSOHash != 0, TEXT("Initializer should have a valid state precache PSO hash set when computing the full initializer PSO hash"));
 	
 	// All members which are not part of the state objects
 	struct FNonStateHashKey
@@ -601,7 +714,7 @@ uint64 FDynamicRHI::RHIComputePrecachePSOHash(const FGraphicsPipelineStateInitia
 
 	FMemory::Memzero(&HashKey, sizeof(FNonStateHashKey));
 
-	HashKey.StatePrecachePSOHash		= Initializer.StatePrecachePSOHash;
+	HashKey.StatePrecachePSOHash		= StatePrecachePSOHash;
 
 	HashKey.PrimitiveType				= Initializer.PrimitiveType;
 	HashKey.RenderTargetsEnabled		= Initializer.RenderTargetsEnabled;
@@ -644,7 +757,7 @@ bool FDynamicRHI::RHIMatchPrecachePSOInitializers(const FGraphicsPipelineStateIn
 		LHS.RenderTargetFormats != RHS.RenderTargetFormats ||
 		!FGraphicsPipelineStateInitializer::RelevantRenderTargetFlagsEqual(LHS.RenderTargetFlags, RHS.RenderTargetFlags) ||
 		LHS.DepthStencilTargetFormat != RHS.DepthStencilTargetFormat ||
-		LHS.DepthStencilTargetFlag != RHS.DepthStencilTargetFlag ||
+		!FGraphicsPipelineStateInitializer::RelevantDepthStencilFlagsEqual(LHS.DepthStencilTargetFlag, RHS.DepthStencilTargetFlag) ||
 		LHS.DepthTargetLoadAction != RHS.DepthTargetLoadAction ||
 		LHS.DepthTargetStoreAction != RHS.DepthTargetStoreAction ||
 		LHS.StencilTargetLoadAction != RHS.StencilTargetLoadAction ||
@@ -773,80 +886,55 @@ void FDynamicRHI::RHIUnlockBufferMGPU(FRHICommandListBase& RHICmdList, FRHIBuffe
 	RHIUnlockBuffer(RHICmdList, Buffer);
 }
 
-FShaderResourceViewInitializer::FShaderResourceViewInitializer(FRHIBuffer* InBuffer, EPixelFormat InFormat, uint32 InStartOffsetBytes, uint32 InNumElements)
-	: BufferInitializer({ InBuffer, InStartOffsetBytes, InNumElements, InFormat }), Type(EType::VertexBufferSRV)
+// Provided for back-compat.
+RHI_API FShaderResourceViewInitializer::FShaderResourceViewInitializer(FRHIBuffer* InBuffer, EPixelFormat InFormat, uint32 InStartOffsetBytes, uint32 InNumElements)
+	: FRHIViewDesc::FBufferSRV::FInitializer()
+	, Buffer(InBuffer)
 {
-	check(InStartOffsetBytes % RHIGetMinimumAlignmentForBufferBackedSRV(InFormat) == 0);
-	/*if (!BufferInitializer.IsWholeResource())
+	if (EnumHasAnyFlags(Buffer->GetUsage(), BUF_ByteAddressBuffer))
 	{
-		const uint32 Stride = GPixelFormats[InFormat].BlockBytes;
-		check((BufferInitializer.NumElements * Stride + BufferInitializer.StartOffsetBytes) <= BufferInitializer.Buffer->GetSize());
-	}*/
-
-	InitType();
-}
-
-FShaderResourceViewInitializer::FShaderResourceViewInitializer(FRHIBuffer* InBuffer, EPixelFormat InFormat)
-	: BufferInitializer({ InBuffer, 0, UINT32_MAX, InFormat }), Type(EType::VertexBufferSRV) 
-{
-	InitType();
-}
-
-FShaderResourceViewInitializer::FShaderResourceViewInitializer(FRHIBuffer* InBuffer, uint32 InStartOffsetBytes, uint32 InNumElements)
-	: BufferInitializer({ InBuffer, InStartOffsetBytes, InNumElements, PF_Unknown }), Type(EType::StructuredBufferSRV)
-{
-	const uint32 Stride = EnumHasAnyFlags(InBuffer->GetUsage(), BUF_AccelerationStructure) 
-		? 1 // Acceleration structure buffers don't have a stride as they are opaque and not indexable
-		: InBuffer->GetStride();
-
-	check(InStartOffsetBytes % Stride == 0);
-	if (!BufferInitializer.IsWholeResource())
+		SetType(FRHIViewDesc::EBufferType::Raw);
+	}
+	else
 	{
-		check((BufferInitializer.NumElements * Stride + BufferInitializer.StartOffsetBytes) <= BufferInitializer.Buffer->GetSize());
+		SetType(FRHIViewDesc::EBufferType::Typed);
+		SetFormat(InFormat);
 	}
 
-	InitType();
+	SetOffsetInBytes(InStartOffsetBytes);
+	SetNumElements(InNumElements);
 }
 
-FShaderResourceViewInitializer::FShaderResourceViewInitializer(FRHIBuffer* InBuffer)
-	: BufferInitializer({ InBuffer, 0, UINT32_MAX }), Type(EType::StructuredBufferSRV)
+// Provided for back-compat.
+RHI_API FShaderResourceViewInitializer::FShaderResourceViewInitializer(FRHIBuffer* InBuffer, EPixelFormat InFormat)
+	: FRHIViewDesc::FBufferSRV::FInitializer()
+	, Buffer(InBuffer)
 {
-	InitType();
-}
-
-FRawBufferShaderResourceViewInitializer::FRawBufferShaderResourceViewInitializer(FRHIBuffer* InBuffer)
-	: FShaderResourceViewInitializer(nullptr)
-{
-	check(GRHISupportsRawViewsForAnyBuffer);
-
-	Type = EType::RawBufferSRV;
-
-	BufferInitializer.Buffer = InBuffer;
-	BufferInitializer.Format = PF_Unknown;
-	BufferInitializer.StartOffsetBytes = 0;
-	BufferInitializer.NumElements = UINT32_MAX; // Whole resource
-}
-
-void FShaderResourceViewInitializer::InitType()
-{
-	if (BufferInitializer.Buffer)
+	if (EnumHasAnyFlags(Buffer->GetUsage(), BUF_ByteAddressBuffer))
 	{
-		EBufferUsageFlags Usage = BufferInitializer.Buffer->GetUsage();
-		if (EnumHasAnyFlags(Usage, BUF_VertexBuffer))
-		{
-			Type = EType::VertexBufferSRV;
-		}
-		else if (EnumHasAnyFlags(Usage, BUF_IndexBuffer))
-		{
-			Type = EType::IndexBufferSRV;
-		}
-		else if (EnumHasAnyFlags(Usage, BUF_AccelerationStructure))
-		{
-			Type = EType::AccelerationStructureSRV;
-		}
-		else
-		{
-			Type = EType::StructuredBufferSRV;
-		}
+		SetType(FRHIViewDesc::EBufferType::Raw);
 	}
+	else
+	{
+		SetType(FRHIViewDesc::EBufferType::Typed);
+		SetFormat(InFormat);
+	}
+}
+
+// Provided for back-compat.
+RHI_API FShaderResourceViewInitializer::FShaderResourceViewInitializer(FRHIBuffer* InBuffer, uint32 InStartOffsetBytes, uint32 InNumElements)
+	: FRHIViewDesc::FBufferSRV::FInitializer()
+	, Buffer(InBuffer)
+{
+	SetOffsetInBytes(InStartOffsetBytes);
+	SetNumElements(InNumElements);
+	SetTypeFromBuffer(Buffer);
+}
+
+// Provided for back-compat.
+RHI_API FShaderResourceViewInitializer::FShaderResourceViewInitializer(FRHIBuffer* InBuffer)
+	: FRHIViewDesc::FBufferSRV::FInitializer()
+	, Buffer(InBuffer)
+{
+	SetTypeFromBuffer(InBuffer);
 }

@@ -157,6 +157,11 @@ bool FStructProperty::UseBinaryOrNativeSerialization(const FArchive& Ar) const
 	return bUseBinarySerialization || bUseNativeSerialization;
 }
 
+bool FStructProperty::FindInnerPropertyInstance(FName PropertyName, const void* Data, const FProperty*& OutProp, const void*& OutData) const
+{
+	return Struct->FindInnerPropertyInstance(PropertyName, Data, OutProp, OutData);
+}
+
 uint32 FStructProperty::GetValueTypeHashInternal(const void* Src) const
 {
 	check(Struct);
@@ -386,7 +391,7 @@ bool FStructProperty::SameType(const FProperty* Other) const
 	return Super::SameType(Other) && (Struct == ((FStructProperty*)Other)->Struct);
 }
 
-EConvertFromTypeResult FStructProperty::ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct)
+EConvertFromTypeResult FStructProperty::ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, const uint8* Defaults)
 {
 	FArchive& UnderlyingArchive = Slot.GetUnderlyingArchive();
 

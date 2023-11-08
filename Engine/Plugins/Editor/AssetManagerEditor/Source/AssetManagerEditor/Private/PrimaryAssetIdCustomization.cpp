@@ -18,23 +18,7 @@
 
 void FPrimaryAssetIdCustomization::CustomizeHeader(TSharedRef<class IPropertyHandle> InStructPropertyHandle, class FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& StructCustomizationUtils)
 {
-	if (!UAssetManager::IsValid())
-	{
-		HeaderRow
-		.NameContent()
-		[
-			InStructPropertyHandle->CreatePropertyNameWidget()
-		]
-		.ValueContent()
-		.MinDesiredWidth(250.0f)
-		.MaxDesiredWidth(0.0f)
-		[
-			SNew(STextBlock)
-			.Text(LOCTEXT("NoAssetManager", "Enable Asset Manager to edit Primary Asset Ids"))
-		];
-
-		return;
-	}
+	check(UAssetManager::IsInitialized());
 
 	StructPropertyHandle = InStructPropertyHandle;
 
@@ -276,6 +260,23 @@ TSharedRef<SWidget>	SPrimaryAssetIdGraphPin::GetDefaultValueWidget()
 {
 	FString DefaultString = GraphPinObj->GetDefaultAsString();
 	CurrentId = FPrimaryAssetId(DefaultString);
+	
+	TArray<FPrimaryAssetType> AllowedTypes;
+	if (UEdGraphNode* OwningNode = GraphPinObj->GetOwningNode())
+	{
+		const FString TypeFilterString = OwningNode->GetPinMetaData(GraphPinObj->GetFName(), TEXT("AllowedTypes"));
+		if( !TypeFilterString.IsEmpty() )
+		{
+			TArray<FString> CustomTypeFilterNames;
+			TypeFilterString.ParseIntoArray(CustomTypeFilterNames, TEXT(","), true);
+
+			for(auto It = CustomTypeFilterNames.CreateConstIterator(); It; ++It)
+			{
+				const FString& TypeName = *It;
+				AllowedTypes.Add(*TypeName);
+			}
+		}
+	}
 
 	return SNew(SHorizontalBox)
 		.Visibility(this, &SGraphPin::GetDefaultValueVisibility)
@@ -285,7 +286,7 @@ TSharedRef<SWidget>	SPrimaryAssetIdGraphPin::GetDefaultValueWidget()
 			IAssetManagerEditorModule::MakePrimaryAssetIdSelector(
 				FOnGetPrimaryAssetDisplayText::CreateSP(this, &SPrimaryAssetIdGraphPin::GetDisplayText),
 				FOnSetPrimaryAssetId::CreateSP(this, &SPrimaryAssetIdGraphPin::OnIdSelected),
-				true)
+				true, AllowedTypes)
 		]
 		+ SHorizontalBox::Slot()
 		.AutoWidth()

@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "Common.ush"
 
-#if SHADING_PATH_MOBILE
+#if SHADING_PATH_MOBILE 
 	#define OcclusionBuffer MobileBasePass.RWOcclusionBufferUAV
 #else
 	#define OcclusionBuffer DummyBuffer
@@ -30,7 +30,7 @@ void MainPS(
 	out float4 OutColor : SV_Target0
 )
 {
-	// TODO: write only some pixels?
+	// TODO: write only some pixels? 
 	OcclusionBuffer[PrimitiveIdx] = 1u;
 
 #if PERMUTATION_PIXEL_DISCARD

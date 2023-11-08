@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Misc/Guid.h"
 #include "Templates/SubclassOf.h"
+#include "WorldPartition/WorldPartitionActorContainerID.h"
 #include "LevelInstanceTypes.generated.h"
 
 // FLevelInstanceID is a runtime unique id that is computed from the Hash of LevelInstance Actor Guid and all its ancestor LevelInstance Actor Guids.
@@ -26,17 +27,29 @@ struct FLevelInstanceID
 
 	inline bool operator==(const FLevelInstanceID& Other) const
 	{
-		return Hash == Other.Hash && Guids == Other.Guids && ActorName == Other.ActorName;
+		return Hash == Other.Hash && ContainerID == Other.ContainerID && ActorName == Other.ActorName && PackageShortName == Other.PackageShortName;
 	}
 
-	inline bool IsValid() const { return !Guids.IsEmpty(); }
+	inline bool IsValid() const { return !ContainerID.IsMainContainer(); }
 
 	inline uint64 GetHash() const { return Hash; }
 
+	inline const FActorContainerID& GetContainerID() const { return ContainerID; }
+
 private:
 	uint64 Hash = 0;
-	TArray<FGuid> Guids;
+	FActorContainerID ContainerID;
+	
+	// Hashed only for Loaded LevelInstances 
+	// Spawned LevelInstances have a unique Guid which is enough.
+	
+	// Name allows distinguishing between LevelInstances with embedded parent LevelInstances because embedded actors have a guaranteed unique name (ContainerID suffix)
 	FName ActorName;
+	// PackageShortName allows distinguising between instanced LevelInstances of the same source level.
+	// - Loading /Game/Path/WorldA.WorldA as /Game/Path/WorldA_LevelInstance1.WorldA & /Game/Path/WorldA_LevelInstance".WorldA
+	//   with the source WorldA containing one of many LevelInstance actors. 
+	//   Those actors would end up with the same hash. We use PackageShortName (WorldA_LevelInstance1 & WorldA_LevelInstance2) to distinguish them.
+	FString PackageShortName;
 };
 
 UENUM()
@@ -95,6 +108,9 @@ struct FNewLevelInstanceParams
 
 	UPROPERTY()
 	TSubclassOf<AActor> LevelInstanceClass;
+
+	UPROPERTY()
+	bool bEnableStreaming = false;
 
 private:
 	UPROPERTY(EditAnywhere, Category = Default, meta = (EditCondition = "!bForceExternalActors", EditConditionHides, HideEditConditionToggle))

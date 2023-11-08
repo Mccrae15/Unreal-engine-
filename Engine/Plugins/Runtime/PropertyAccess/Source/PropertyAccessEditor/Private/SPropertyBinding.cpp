@@ -17,6 +17,8 @@
 #include "Widgets/Layout/SSpacer.h"
 #include "UObject/UObjectIterator.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
+#include "BlueprintActionDatabase.h"
+#include "Preferences/PersonaOptions.h"
 
 #define LOCTEXT_NAMESPACE "PropertyBinding"
 
@@ -39,6 +41,7 @@ void SPropertyBinding::Construct(const FArguments& InArgs, UBlueprint* InBluepri
 		.FillWidth(1.0f)
 		[
 			SNew(SComboButton)
+			.ButtonStyle(Args.BindButtonStyle)
 			.ToolTipText(this, &SPropertyBinding::GetCurrentBindingToolTipText)
 			.OnGetMenuContent(this, &SPropertyBinding::OnGenerateDelegateMenu)
 			.ContentPadding(1)
@@ -65,6 +68,7 @@ void SPropertyBinding::Construct(const FArguments& InArgs, UBlueprint* InBluepri
 				[
 					SNew(STextBlock)
 					.Text(this, &SPropertyBinding::GetCurrentBindingText)
+					.ColorAndOpacity(FSlateColor::UseForeground())
 					.Font(IDetailLayoutBuilder::GetDetailFont())
 				]
 			]
@@ -109,8 +113,14 @@ void SPropertyBinding::ForEachBindableFunction(UClass* FromClass, Predicate Pred
 	{
 		auto CheckBindableClass = [this, &Pred](UClass* InBindableClass)
 		{
+			// Early exit if this class is excluded by permissions
+			if ( !FBlueprintActionDatabase::IsClassAllowed(InBindableClass, FBlueprintActionDatabase::EPermissionsContext::Property) )
+			{
+				return;
+			}
+		
 			// Walk up class hierarchy for native functions and properties
-			for ( TFieldIterator<UFunction> FuncIt(InBindableClass, EFieldIteratorFlags::IncludeSuper); FuncIt; ++FuncIt )
+			for ( TFieldIterator<UFunction> FuncIt(InBindableClass, EFieldIteratorFlags::IncludeSuper, EFieldIteratorFlags::ExcludeDeprecated, EFieldIteratorFlags::IncludeInterfaces); FuncIt; ++FuncIt )
 			{
 				UFunction* Function = *FuncIt;
 
@@ -128,6 +138,12 @@ void SPropertyBinding::ForEachBindableFunction(UClass* FromClass, Predicate Pred
 
 				// Only bind to functions that are callable from blueprints
 				if ( !UEdGraphSchema_K2::CanUserKismetCallFunction(Function) )
+				{
+					continue;
+				}
+
+				// Only bind to functions that are allowed by permissions
+				if ( !FBlueprintActionDatabase::IsFunctionAllowed(Function, FBlueprintActionDatabase::EPermissionsContext::Property) )
 				{
 					continue;
 				}
@@ -152,7 +168,13 @@ void SPropertyBinding::ForEachBindableFunction(UClass* FromClass, Predicate Pred
 					}
 				}
 
-				if(bValidObjectFunction || bValidStructFunction || Args.OnCanBindFunction.Execute(Function))
+				bool bValidThreadSafety = true;
+				if (Args.bAllowOnlyThreadSafeFunctions)
+				{
+					bValidThreadSafety = FBlueprintEditorUtils::HasFunctionBlueprintThreadSafeMetaData(Function);
+				}
+
+				if(bValidThreadSafety && (bValidObjectFunction || bValidStructFunction || Args.OnCanBindFunction.Execute(Function)))
 				{
 					Pred(FFunctionInfo(Function));
 				}
@@ -212,18 +234,24 @@ void SPropertyBinding::ForEachBindableProperty(UStruct* InStruct, Predicate Pred
 				continue;
 			}
 
+			// Exit if this property is excluded by permissions
+			if (!GetMutableDefault<UPersonaOptions>()->IsAllowedProperty(Property))
+			{
+				continue;
+			}
+
 			Pred(Property);
 		}
 	}
 }
 
-bool SPropertyBinding::HasBindableProperties(UStruct* InStruct) const
+bool SPropertyBinding::HasBindableProperties(UStruct* InStruct, TArray<TSharedPtr<FBindingChainElement>>& BindingChain) const
 {
 	TSet<UStruct*> VisitedStructs;
-	return HasBindablePropertiesRecursive(InStruct, VisitedStructs, 0);
+	return HasBindablePropertiesRecursive(InStruct, VisitedStructs, BindingChain);
 }
 
-bool SPropertyBinding::HasBindablePropertiesRecursive(UStruct* InStruct, TSet<UStruct*>& VisitedStructs, const int32 RecursionDepth) const
+bool SPropertyBinding::HasBindablePropertiesRecursive(UStruct* InStruct, TSet<UStruct*>& VisitedStructs, TArray<TSharedPtr<FBindingChainElement>>& BindingChain) const
 {
 	if (VisitedStructs.Contains(InStruct))
 	{
@@ -234,14 +262,17 @@ bool SPropertyBinding::HasBindablePropertiesRecursive(UStruct* InStruct, TSet<US
 	VisitedStructs.Add(InStruct);
 	
 	// Arbitrary cut off to avoid infinite loops.
-	if (RecursionDepth > 10)
+	if (BindingChain.Num() > 10)
 	{
 		return false;
 	}
 	
 	int32 BindableCount = 0;
-	ForEachBindableProperty(InStruct, [this, &BindableCount, &VisitedStructs, RecursionDepth] (FProperty* Property)
+	ForEachBindableProperty(InStruct, [this, &BindableCount, &VisitedStructs, &BindingChain] (FProperty* Property)
 	{
+		BindingChain.Emplace(MakeShared<FBindingChainElement>(Property));
+		ON_SCOPE_EXIT{ BindingChain.Pop(); };
+
 		FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property);
 
 		if(Args.OnCanBindProperty.Execute(Property))
@@ -277,34 +308,45 @@ bool SPropertyBinding::HasBindablePropertiesRecursive(UStruct* InStruct, TSet<US
 			Struct = StructProperty->Struct;
 		}
 
-		// Recurse into a struct, except if it is the same type as the one we're binding.
-		if (Struct && HasBindablePropertiesRecursive(Struct, VisitedStructs, RecursionDepth + 1))
+		if (Struct)
 		{
-			if (Class)
+			if (UStruct* ResolvedStruct = ResolveIndirection(BindingChain))
 			{
-				// Ignore any subobject properties that are not bindable.
-				// Also ignore any class that is explicitly on the deny list.
-				if ( IsClassDenied(Class) || (Args.OnCanBindToSubObjectClass.IsBound() && Args.OnCanBindToSubObjectClass.Execute(Class)))
-				{
-					return;
-				}
+				Struct = ResolvedStruct;
 			}
 
-			if (Args.bAllowArrayElementBindings && ArrayProperty != nullptr)
+			// Recurse into a struct, except if it is the same type as the one we're binding.
+			if (HasBindablePropertiesRecursive(Struct, VisitedStructs, BindingChain))
 			{
-				BindableCount++;
-			}
-			else if (Args.bAllowStructMemberBindings)
-			{
-				BindableCount++;
+				if (Class)
+				{
+					// Ignore any subobject properties that are not bindable.
+					// Also ignore any class that is explicitly on the deny list.
+					if (IsClassDenied(Class) || (Args.OnCanBindToSubObjectClass.IsBound() && Args.OnCanBindToSubObjectClass.Execute(Class)))
+					{
+						return;
+					}
+				}
+
+				if (Args.bAllowArrayElementBindings && ArrayProperty != nullptr)
+				{
+					BindableCount++;
+				}
+				else if (Args.bAllowStructMemberBindings)
+				{
+					BindableCount++;
+				}
 			}
 		}
 	});
 
 	if(UClass* Class = Cast<UClass>(InStruct))
 	{
-		ForEachBindableFunction(Class, [this, &BindableCount, &VisitedStructs, RecursionDepth](const FFunctionInfo& Info)
+		ForEachBindableFunction(Class, [this, &BindableCount, &VisitedStructs, &BindingChain](const FFunctionInfo& Info)
 		{
+			BindingChain.Emplace(MakeShared<FBindingChainElement>(Info.Function));
+			ON_SCOPE_EXIT{ BindingChain.Pop(); };
+
 			FProperty* ReturnProperty = Info.Function->GetReturnProperty();
 			
 			// We can get here if we accept non-leaf UObject functions, so if so we need to check the return value for compatibility
@@ -318,11 +360,11 @@ bool SPropertyBinding::HasBindablePropertiesRecursive(UStruct* InStruct, TSet<US
 			{
 				if(FObjectPropertyBase* ObjectPropertyBase = CastField<FObjectPropertyBase>(ReturnProperty))
 				{
-					HasBindablePropertiesRecursive(ObjectPropertyBase->PropertyClass, VisitedStructs, RecursionDepth + 1);
+					HasBindablePropertiesRecursive(ObjectPropertyBase->PropertyClass, VisitedStructs, BindingChain);
 				}
 				else if(FStructProperty* StructProperty = CastField<FStructProperty>(ReturnProperty))
 				{
-					HasBindablePropertiesRecursive(StructProperty->Struct, VisitedStructs, RecursionDepth + 1);
+					HasBindablePropertiesRecursive(StructProperty->Struct, VisitedStructs, BindingChain);
 				}
 			}
 		});
@@ -468,7 +510,7 @@ TSharedRef<SWidget> SPropertyBinding::OnGenerateDelegateMenu()
 					FUIAction(FExecuteAction::CreateSP(this, &SPropertyBinding::HandleAddBinding, BindingChain)),
 					MakeContextStructWidget(ContextStruct));
 			}
-			else if (HasBindableProperties(ContextStruct.Struct))
+			if (HasBindableProperties(ContextStruct.Struct, BindingChain))
 			{
 				// Show struct properties.
 				MenuBuilder.AddSubMenu(
@@ -694,7 +736,7 @@ void SPropertyBinding::FillPropertyMenu(FMenuBuilder& MenuBuilder, UStruct* InOw
 					{
 						if(FObjectPropertyBase* ObjectPropertyBase = CastField<FObjectPropertyBase>(ReturnProperty))
 						{
-							if (HasBindableProperties(ObjectPropertyBase->PropertyClass))
+							if (HasBindableProperties(ObjectPropertyBase->PropertyClass, NewBindingChain))
 							{
 								MenuBuilder.AddSubMenu(
 									MakeFunctionWidget(Info),
@@ -703,7 +745,7 @@ void SPropertyBinding::FillPropertyMenu(FMenuBuilder& MenuBuilder, UStruct* InOw
 						}
 						else if(FStructProperty* StructProperty = CastField<FStructProperty>(ReturnProperty))
 						{
-							if (HasBindableProperties(StructProperty->Struct))
+							if (HasBindableProperties(StructProperty->Struct, NewBindingChain))
 							{
 								MenuBuilder.AddSubMenu(
 									MakeFunctionWidget(Info),
@@ -796,6 +838,11 @@ void SPropertyBinding::FillPropertyMenu(FMenuBuilder& MenuBuilder, UStruct* InOw
 					// Recurse into a struct if it has some properties we can bind to.
 					if (Struct)
 					{
+						if (UStruct* ResolvedStruct = ResolveIndirection(NewBindingChain))
+						{
+							Struct = ResolvedStruct;
+						}
+
 						if (Class)
 						{
 							// Ignore any subobject properties that are not bindable.
@@ -806,11 +853,11 @@ void SPropertyBinding::FillPropertyMenu(FMenuBuilder& MenuBuilder, UStruct* InOw
 							}
 						}
 
-						if (HasBindableProperties(Struct))
+						if (HasBindableProperties(Struct, NewBindingChain))
 						{
 							if (Args.bAllowArrayElementBindings && ArrayProperty != nullptr)
 							{
-								TArray<TSharedPtr<FBindingChainElement>> NewArrayElementBindingChain(InBindingChain);
+								TArray<TSharedPtr<FBindingChainElement>> NewArrayElementBindingChain(NewBindingChain);
 								NewArrayElementBindingChain.Emplace(MakeShared<FBindingChainElement>(Property));
 								NewArrayElementBindingChain.Last()->ArrayIndex = 0;
 
@@ -983,6 +1030,24 @@ void SPropertyBinding::HandleCreateAndAddBinding()
 	HandleGotoBindingClicked();
 }
 
+UStruct* SPropertyBinding::ResolveIndirection(const TArray<TSharedPtr<FBindingChainElement>>& BindingChain) const
+{
+	UStruct* ResolvedStruct = nullptr;
+
+	if (Args.OnResolveIndirection.IsBound())
+	{
+		TArray<FBindingChainElement> RawBindingChain;
+		Algo::Transform(BindingChain, RawBindingChain, [](TSharedPtr<FBindingChainElement> InElement)
+		{
+			return *InElement.Get();
+		});
+
+		ResolvedStruct = Args.OnResolveIndirection.Execute(RawBindingChain);
+	}
+
+	return ResolvedStruct;
+}
+
 EVisibility SPropertyBinding::GetGotoBindingVisibility() const
 {
 	if(Args.OnCanGotoBinding.IsBound())
@@ -1004,6 +1069,16 @@ FReply SPropertyBinding::HandleGotoBindingClicked()
 		{
 			return FReply::Handled();
 		}
+	}
+
+	return FReply::Unhandled();
+}
+
+FReply SPropertyBinding::OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)
+{
+	if (Args.OnDrop.IsBound())
+	{
+		return Args.OnDrop.Execute(MyGeometry, DragDropEvent);
 	}
 
 	return FReply::Unhandled();

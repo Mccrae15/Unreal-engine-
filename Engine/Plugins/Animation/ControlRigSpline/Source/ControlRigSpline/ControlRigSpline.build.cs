@@ -17,9 +17,6 @@ namespace UnrealBuildTool.Rules
 				"RigVM",
 				"ControlRig",
 			});
-
-			// TODO: Should not be including private headers in public code
-			PublicIncludePaths.Add(Path.Combine(GetModuleDirectory("ControlRig"), "Private/Units/Highlevel/Hierarchy")); // For RigUnit_FitChainToCurve.h
 		}
 	}
 }

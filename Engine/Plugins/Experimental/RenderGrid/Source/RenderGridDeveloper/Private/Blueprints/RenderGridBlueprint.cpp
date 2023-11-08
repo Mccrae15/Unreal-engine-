@@ -54,6 +54,8 @@ void URenderGridBlueprint::PostLoad()
 		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(this);
 		FBlueprintEditorUtils::AddUbergraphPage(this, NewGraph);
 		LastEditedDocuments.AddUnique(NewGraph);
+
+		FKismetEditorUtilities::CompileBlueprint(this, EBlueprintCompileOptions::SkipGarbageCollection);
 	}
 
 	OnChanged().RemoveAll(this);
@@ -62,7 +64,7 @@ void URenderGridBlueprint::PostLoad()
 	OnPostVariablesChange(this);
 }
 
-void URenderGridBlueprint::RunOnInstances(const UE::RenderGrid::FRenderGridBlueprintRunOnInstancesCallback& Callback)
+void URenderGridBlueprint::RunOnInstances(const FRenderGridBlueprintRunOnInstancesCallback& Callback)
 {
 	if (UClass* MyRenderGridClass = GeneratedClass; IsValid(MyRenderGridClass))
 	{
@@ -107,7 +109,7 @@ void URenderGridBlueprint::Save()
 
 void URenderGridBlueprint::PropagateJobsToInstances()
 {
-	RunOnInstances(UE::RenderGrid::FRenderGridBlueprintRunOnInstancesCallback::CreateLambda([this](URenderGrid* Instance)
+	RunOnInstances(FRenderGridBlueprintRunOnInstancesCallback::CreateLambda([this](URenderGrid* Instance)
 	{
 		Instance->CopyJobs(RenderGrid);
 	}));
@@ -115,42 +117,63 @@ void URenderGridBlueprint::PropagateJobsToInstances()
 
 void URenderGridBlueprint::PropagateAllPropertiesExceptJobsToInstances()
 {
-	RunOnInstances(UE::RenderGrid::FRenderGridBlueprintRunOnInstancesCallback::CreateLambda([this](URenderGrid* Instance)
+	URenderGrid* CDO = GetRenderGridClassDefaultObject();
+	RunOnInstances(FRenderGridBlueprintRunOnInstancesCallback::CreateLambda([this, CDO](URenderGrid* Instance)
 	{
 		Instance->CopyAllPropertiesExceptJobs(RenderGrid);
+		if (IsValid(CDO))
+		{
+			Instance->CopyAllUserVariables(CDO);
+		}
 	}));
 }
 
 void URenderGridBlueprint::PropagateAllPropertiesToInstances()
 {
-	RunOnInstances(UE::RenderGrid::FRenderGridBlueprintRunOnInstancesCallback::CreateLambda([this](URenderGrid* Instance)
+	URenderGrid* CDO = GetRenderGridClassDefaultObject();
+	RunOnInstances(FRenderGridBlueprintRunOnInstancesCallback::CreateLambda([this, CDO](URenderGrid* Instance)
 	{
 		Instance->CopyAllProperties(RenderGrid);
+		if (IsValid(CDO))
+		{
+			Instance->CopyAllUserVariables(CDO);
+		}
 	}));
 }
 
 void URenderGridBlueprint::PropagateJobsToAsset(URenderGrid* Instance)
 {
 	check(IsValid(Instance));
+
 	RenderGrid->CopyJobs(Instance);
 }
 
 void URenderGridBlueprint::PropagateAllPropertiesExceptJobsToAsset(URenderGrid* Instance)
 {
 	check(IsValid(Instance));
+
 	RenderGrid->CopyAllPropertiesExceptJobs(Instance);
+	if (URenderGrid* CDO = GetRenderGridClassDefaultObject(); IsValid(CDO))
+	{
+		CDO->CopyAllUserVariables(Instance);
+	}
 }
 
 void URenderGridBlueprint::PropagateAllPropertiesToAsset(URenderGrid* Instance)
 {
 	check(IsValid(Instance));
+
 	RenderGrid->CopyAllProperties(Instance);
+	if (URenderGrid* CDO = GetRenderGridClassDefaultObject(); IsValid(CDO))
+	{
+		CDO->CopyAllUserVariables(Instance);
+	}
 }
 
 URenderGrid* URenderGridBlueprint::GetRenderGridWithBlueprintGraph() const
 {
 	URenderGrid* Result = GetRenderGrid();
-	const_cast<URenderGridBlueprint*>(this)->RunOnInstances(UE::RenderGrid::FRenderGridBlueprintRunOnInstancesCallback::CreateLambda([&Result](URenderGrid* Instance)
+	const_cast<URenderGridBlueprint*>(this)->RunOnInstances(FRenderGridBlueprintRunOnInstancesCallback::CreateLambda([&Result](URenderGrid* Instance)
 	{
 		if (!IsValid(Result) || Result->HasAnyFlags(RF_ClassDefaultObject | RF_DefaultSubObject))
 		{
@@ -185,10 +208,10 @@ void URenderGridBlueprint::OnPostVariablesChange(UBlueprint* InBlueprint)
 		uint64 PreviousPropertyFlags = NewVariable.PropertyFlags;
 		bFoundChange = bFoundChange || NewVariable.HasMetaData(FBlueprintMetadata::MD_ExposeOnSpawn);
 
-		// fix that's required for the way of saving/loading the render grid,
-		//  the render grid instance (in the blueprint class) isn't of the generated class (but instead it's of the URenderGrid class itself), and so variables can't be saved or load,
-		//  meaning that every variable has to be transient no matter what, otherwise saving or loading the render grid asset will cause a crash
-		NewVariable.PropertyFlags |= CPF_DisableEditOnInstance;
+		if ((NewVariable.PropertyFlags & CPF_DisableEditOnInstance) == 0)// if [Instance Editable]
+		{
+			NewVariable.PropertyFlags |= CPF_BlueprintReadOnly;// set [Blueprint Read Only] to true
+		}
 		NewVariable.PropertyFlags &= ~CPF_ExposeOnSpawn;
 		NewVariable.PropertyFlags |= CPF_Transient;
 		NewVariable.RemoveMetaData(FBlueprintMetadata::MD_ExposeOnSpawn);

@@ -15,17 +15,8 @@ public class CustomizableObjectPopulationEditor : ModuleRules
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
 				"AssetRegistry",
-				"Kismet",
-				"EditorWidgets",
-				"MeshUtilities",
-				"ContentBrowser",
-				"SkeletonEditor",
-				"Persona",
 				"WorkspaceMenuStructure",
-				"AdvancedPreviewScene",
 
-				"MessageLog",
-				"KismetWidgets",
 			}
 		);
 
@@ -42,7 +33,6 @@ public class CustomizableObjectPopulationEditor : ModuleRules
 				"UnrealEd",
 				"TargetPlatform",
 				"RawMesh",
-				"PropertyEditor",
 				"LevelEditor",
 				"AssetTools",
 				"GraphEditor",
@@ -55,6 +45,10 @@ public class CustomizableObjectPopulationEditor : ModuleRules
 
 				"MutableRuntime",
 				"MutableTools",
+				
+				"ContentBrowser",
+				"AssetDefinition",
+				"ToolMenus"
 			}
 		);
 
@@ -64,7 +58,6 @@ public class CustomizableObjectPopulationEditor : ModuleRules
 				"MainFrame",
 				"SceneOutliner",
 				"ClassViewer",
-				"ContentBrowser",
 				"WorkspaceMenuStructure",
 			}
 		);

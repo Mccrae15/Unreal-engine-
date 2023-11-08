@@ -43,7 +43,7 @@ UWorldPartitionLandscapeSplineMeshesBuilder::UWorldPartitionLandscapeSplineMeshe
 	: Super(ObjectInitializer)
 	, NewGridSize(0)
 {
-	FParse::Value(FCommandLine::Get(), TEXT("NewGridSize="), NewGridSize);
+	GetParamValue("NewGridSize=", NewGridSize);
 
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> ConstructorStatics(TEXT("/Engine/EditorLandscapeResources/SplineEditorMesh"));
 	SplineEditorMesh = ConstructorStatics.Object;
@@ -118,7 +118,10 @@ int32 UWorldPartitionLandscapeSplineMeshesBuilder::HashStaticMeshComponent(const
 	// Hash used materials
 	for (int32 i = 0; i < InComponent->GetNumMaterials(); ++i)
 	{
-		HashValue = HashCombine(HashValue, GetTypeHash(InComponent->GetMaterial(i)->GetFName()));
+		if (UMaterialInterface* Material = InComponent->GetMaterial(i))
+		{
+			HashValue = HashCombine(HashValue, GetTypeHash(Material->GetFName()));
+		}
 	}
 
 	// Hash spline mesh component params
@@ -523,7 +526,7 @@ bool UWorldPartitionLandscapeSplineMeshesBuilder::RunInternal(UWorld* InWorld, c
 		Algo::Transform(PackagesToSave, ModifiedFiles, GetPackageFilename);
 
 		const FString ChangeDescription = FString::Printf(TEXT("Rebuilt landscape splines for %s"), *InWorld->GetName());
-		if (!AutoSubmitFiles(ModifiedFiles, ChangeDescription))
+		if (!OnFilesModified(ModifiedFiles, ChangeDescription))
 		{
 			return false;
 		}

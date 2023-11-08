@@ -21,6 +21,7 @@
 #include "PipelineStateCache.h"
 #include "RHICoreShader.h"
 #include "RHIShaderParametersShared.h"
+#include "RHIUtilities.h"
 
 static const bool GUsesInvertedZ = true;
 
@@ -29,7 +30,7 @@ class FVector4VertexDeclaration : public FRenderResource
 {
 public:
 	FVertexDeclarationRHIRef VertexDeclarationRHI;
-	virtual void InitRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		FVertexDeclarationElementList Elements;
 		Elements.Add(FVertexElement(0, 0, VET_Float4, 0, sizeof(FVector4f)));
@@ -75,7 +76,7 @@ static FORCEINLINE EMetalShaderStages GetShaderStage(FRHIGraphicsShader* ShaderR
 void FMetalRHICommandContext::RHISetStreamSource(uint32 StreamIndex, FRHIBuffer* VertexBufferRHI,uint32 Offset)
 {
 	@autoreleasepool {
-		FMetalVertexBuffer* VertexBuffer = ResourceCast(VertexBufferRHI);
+		FMetalRHIBuffer* VertexBuffer = ResourceCast(VertexBufferRHI);
 		
 		FMetalBuffer TheBuffer = nil;
 		if(VertexBuffer && !VertexBuffer->Data)
@@ -125,7 +126,7 @@ void FMetalRHICommandContext::RHIDispatchIndirectComputeShader(FRHIBuffer* Argum
 	@autoreleasepool {
 	if (GetMetalDeviceContext().SupportsFeature(EMetalFeaturesIndirectBuffer))
 	{
-		FMetalVertexBuffer* VertexBuffer = ResourceCast(ArgumentBufferRHI);
+		FMetalRHIBuffer* VertexBuffer = ResourceCast(ArgumentBufferRHI);
 		
 		Context->DispatchIndirect(VertexBuffer, ArgumentOffset);
 	}
@@ -319,15 +320,15 @@ void FMetalRHICommandContext::RHISetShaderResourceViewParameter(FRHIGraphicsShad
 	@autoreleasepool {
 	FMetalShaderResourceView* SRV = ResourceCast(SRVRHI);
 	EMetalShaderStages Stage = GetShaderStage(ShaderRHI);
-	Context->GetCurrentState().SetShaderResourceView(Context, Stage, TextureIndex, SRV);
+	Context->GetCurrentState().SetShaderResourceView(Stage, TextureIndex, SRV);
 	}
 }
 
-void FMetalRHICommandContext::RHISetShaderResourceViewParameter(FRHIComputeShader* ComputeShaderRHI,uint32 TextureIndex, FRHIShaderResourceView* SRVRHI)
+void FMetalRHICommandContext::RHISetShaderResourceViewParameter(FRHIComputeShader* ComputeShaderRHI, uint32 TextureIndex, FRHIShaderResourceView* SRVRHI)
 {
 	@autoreleasepool {
 	FMetalShaderResourceView* SRV = ResourceCast(SRVRHI);
-	Context->GetCurrentState().SetShaderResourceView(Context, EMetalShaderStages::Compute, TextureIndex, SRV);
+	Context->GetCurrentState().SetShaderResourceView(EMetalShaderStages::Compute, TextureIndex, SRV);
 	}
 }
 
@@ -387,6 +388,16 @@ void FMetalRHICommandContext::RHISetShaderParameters(FRHIComputeShader* Shader, 
 		, InResourceParameters
 		, InBindlessParameters
 	);
+}
+
+void FMetalRHICommandContext::RHISetShaderUnbinds(FRHIComputeShader* Shader, TConstArrayView<FRHIShaderParameterUnbind> InUnbinds)
+{
+	UE::RHICore::RHISetShaderUnbindsShared(*this, Shader, InUnbinds);
+}
+
+void FMetalRHICommandContext::RHISetShaderUnbinds(FRHIGraphicsShader* Shader, TConstArrayView<FRHIShaderParameterUnbind> InUnbinds)
+{
+	UE::RHICore::RHISetShaderUnbindsShared(*this, Shader, InUnbinds);
 }
 
 void FMetalRHICommandContext::RHISetStencilRef(uint32 StencilRef)
@@ -502,7 +513,7 @@ void FMetalRHICommandContext::RHIDrawPrimitiveIndirect(FRHIBuffer* ArgumentBuffe
             
             
             RHI_DRAW_CALL_STATS(PrimitiveType,1);
-            FMetalResourceMultiBuffer* ArgumentBuffer = ResourceCast(ArgumentBufferRHI);
+            FMetalRHIBuffer* ArgumentBuffer = ResourceCast(ArgumentBufferRHI);
             
             Context->DrawPrimitiveIndirect(PrimitiveType, ArgumentBuffer, ArgumentOffset);
         }
@@ -526,8 +537,8 @@ void FMetalRHICommandContext::RHIDrawIndexedPrimitive(FRHIBuffer* IndexBufferRHI
 		
 	RHI_DRAW_CALL_STATS(PrimitiveType,FMath::Max(NumInstances,1u)*NumPrimitives);
 
-	FMetalResourceMultiBuffer* IndexBuffer = ResourceCast(IndexBufferRHI);
-	Context->DrawIndexedPrimitive(IndexBuffer->GetCurrentBuffer(), IndexBuffer->GetStride(), IndexBuffer->IndexType, PrimitiveType, BaseVertexIndex, FirstInstance, NumVertices, StartIndex, NumPrimitives, NumInstances);
+	FMetalRHIBuffer* IndexBuffer = ResourceCast(IndexBufferRHI);
+	Context->DrawIndexedPrimitive(IndexBuffer->GetCurrentBuffer(), IndexBuffer->GetStride(), IndexBuffer->GetIndexType(), PrimitiveType, BaseVertexIndex, FirstInstance, NumVertices, StartIndex, NumPrimitives, NumInstances);
 	}
 }
 
@@ -544,8 +555,8 @@ void FMetalRHICommandContext::RHIDrawIndexedIndirect(FRHIBuffer* IndexBufferRHI,
 		
 
 		RHI_DRAW_CALL_STATS(PrimitiveType,1);
-		FMetalResourceMultiBuffer* IndexBuffer = ResourceCast(IndexBufferRHI);
-		FMetalResourceMultiBuffer* ArgumentsBuffer = ResourceCast(ArgumentsBufferRHI);
+		FMetalRHIBuffer* IndexBuffer = ResourceCast(IndexBufferRHI);
+		FMetalRHIBuffer* ArgumentsBuffer = ResourceCast(ArgumentsBufferRHI);
 		
 		Context->DrawIndexedIndirect(IndexBuffer, PrimitiveType, ArgumentsBuffer, DrawArgumentsIndex, NumInstances);
 	}
@@ -567,8 +578,8 @@ void FMetalRHICommandContext::RHIDrawIndexedPrimitiveIndirect(FRHIBuffer* IndexB
 		
 
 		RHI_DRAW_CALL_STATS(PrimitiveType,1);
-		FMetalResourceMultiBuffer* IndexBuffer = ResourceCast(IndexBufferRHI);
-		FMetalResourceMultiBuffer* ArgumentsBuffer = ResourceCast(ArgumentBufferRHI);
+		FMetalRHIBuffer* IndexBuffer = ResourceCast(IndexBufferRHI);
+		FMetalRHIBuffer* ArgumentsBuffer = ResourceCast(ArgumentBufferRHI);
 		
 		Context->DrawIndexedPrimitiveIndirect(PrimitiveType, IndexBuffer, ArgumentsBuffer, ArgumentOffset);
 	}

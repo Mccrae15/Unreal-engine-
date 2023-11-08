@@ -107,6 +107,16 @@ void IEnhancedInputSubsystemInterface::ShowMappingContextDebugInfo(UCanvas* Canv
 		{
 			const UInputMappingContext* AppliedContext = ContextPair.Key.Get();
 
+			// If you for some reason choose to not use IMC assets and instead dynamically spawn them at runtime, they could be
+			// garbage collected. This is NOT a recommended approach to using Enhanced Input, but we will put this error here
+			// just in case.
+			if (!AppliedContext)
+			{
+				DisplayDebugManager.SetDrawColor(FColor::Red);
+				DisplayDebugManager.DrawString(TEXT("Null Input Mapping Context!"));
+				continue;
+			}
+
 			DisplayDebugManager.SetDrawColor(FColor::Yellow);
 			
 			// If this context was redirected via platform settings, then add some debug info about it here
@@ -136,17 +146,27 @@ void IEnhancedInputSubsystemInterface::ShowMappingContextDebugInfo(UCanvas* Canv
 				}
 			}
 
+			// Some mappings may have been added to the player via the Player Mappable Key system, and thus would not be in any of the 
+			// IMC assets. We can determine that here :) 
 			const TArray<FEnhancedActionKeyMapping>& EnhancedActionMappings = PlayerInput->GetEnhancedActionMappings();
 			for (const FEnhancedActionKeyMapping& EnhancedActionMapping : EnhancedActionMappings)
 			{
+				// Player Mappable keys would have to have an Input Action asset already, so we can filter our search down to that
 				if (TArray<FEnhancedActionKeyMapping>* Mappings = ActionMappings.Find(EnhancedActionMapping.Action))
 				{
-					//Add any mapping that might have been added as player mappable keys.
-					Mappings->AddUnique(EnhancedActionMapping);
+					const bool bMappingExistsAlready = Mappings->ContainsByPredicate([&EnhancedActionMapping](const FEnhancedActionKeyMapping& ExistingMapping)
+						{ 
+							return ExistingMapping.Key == EnhancedActionMapping.Key && ExistingMapping.Action == EnhancedActionMapping.Action;
+						});
+
+					if (!bMappingExistsAlready)
+					{
+						Mappings->Add(EnhancedActionMapping);
+					}					
 				}
 			}
 
-			Sort(OrderedActions.GetData(), OrderedActions.Num(), [](const UInputAction& A, const UInputAction& B) { return A.GetFName().LexicalLess(B.GetFName()); });
+			Algo::SortBy(OrderedActions, &UInputAction::GetFName, FNameLexicalLess());
 
 			for (const UInputAction* Action : OrderedActions)
 			{
@@ -245,7 +265,11 @@ void IEnhancedInputSubsystemInterface::ShowMappingContextDebugInfo(UCanvas* Canv
 				}
 				DisplayDebugManager.DrawString(ActionStr);
 
+				// The drawing of these debug textures only works in the editor and causes some serious perf hitches 
+				// when you try to call it in a cooked game build.
+#if WITH_EDITOR
 				ShowDebugActionModifiers(Canvas, Action);
+#endif	// WITH_EDITOR
 
 				for (const FDisplayLine& DisplayLine : MappingDisplayLine)
 				{
@@ -296,6 +320,27 @@ void IEnhancedInputSubsystemInterface::ShowDebugInfo(UCanvas* Canvas)
 	ShowMappingContextDebugInfo(Canvas, PlayerInput);
 }
 
+
+void IEnhancedInputSubsystemInterface::GetAllRelevantInputModifiersForDebug(const UEnhancedPlayerInput* PlayerInput, const FInputActionInstance* InstanceData, OUT TArray<UInputModifier*>& OutModifiers)
+{
+	OutModifiers.Reset();
+
+	// Start with the modifiers from the instance data, these will be from the Input Action asset
+	OutModifiers.Append(InstanceData->GetModifiers());	
+	
+	// We also need to check the mappings that have been added via the Input Mapping Context
+	for (const FEnhancedActionKeyMapping& Mapping : PlayerInput->GetEnhancedActionMappings())
+	{
+		if (Mapping.Action == InstanceData->GetSourceAction())
+		{
+			for (const TObjectPtr<UInputModifier>& Modifier : Mapping.Modifiers)
+			{
+				OutModifiers.AddUnique(Modifier.Get());
+			}
+		}
+	}
+}
+
 void IEnhancedInputSubsystemInterface::ShowDebugActionModifiers(UCanvas* Canvas, const UInputAction* Action)
 {
 	FDisplayDebugManager& DisplayDebugManager = Canvas->DisplayDebugManager;
@@ -311,7 +356,10 @@ void IEnhancedInputSubsystemInterface::ShowDebugActionModifiers(UCanvas* Canvas,
 	// TODO: Display colored dots to show current sampling locations of valid mappings?
 	// TODO: Invalidate and recalculate textures if sample hash changes? (Rebuild sample data every frame)
 
-	const TArray<UInputModifier*>& Modifiers = ActionData->GetModifiers();
+	static TArray<UInputModifier*> Modifiers;
+
+	IEnhancedInputSubsystemInterface::GetAllRelevantInputModifiersForDebug(PlayerInput, ActionData, OUT Modifiers);
+	
 	if (Modifiers.Num() > 0)
 	{
 		const bool bIs1D = ActionData->GetValue().GetValueType() == EInputActionValueType::Axis1D || ActionData->GetValue().GetValueType() == EInputActionValueType::Boolean;
@@ -439,8 +487,7 @@ void IEnhancedInputSubsystemInterface::ShowDebugActionModifiers(UCanvas* Canvas,
 
 					}
 				}
-
-				UE_LOG(LogTemp, Warning, TEXT("Building visualization for %s:%s (of %d)"), *PlayerInput->GetName(), *Modifier->GetName(), CachedModifierVisualizations.Num());
+				
 				Visualization = CachedModifierVisualizations.Add((uint64)Modifier, FVisualizationTexture(BuildVisualizationTexture(Modifier, SampleData))).Texture;
 				bBuiltAtLeastOneModifier = true;
 			}

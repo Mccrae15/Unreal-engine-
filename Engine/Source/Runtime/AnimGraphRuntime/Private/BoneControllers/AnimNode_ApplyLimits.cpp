@@ -3,6 +3,7 @@
 #include "BoneControllers/AnimNode_ApplyLimits.h"
 #include "AnimationCoreLibrary.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "Animation/AnimStats.h"
 #include "AnimationRuntime.h"
 #include "AngularLimit.h"
 
@@ -32,6 +33,8 @@ void FAnimNode_ApplyLimits::GatherDebugData(FNodeDebugData& DebugData)
 void FAnimNode_ApplyLimits::EvaluateSkeletalControl_AnyThread(FComponentSpacePoseContext& Output, TArray<FBoneTransform>& OutBoneTransforms)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(EvaluateSkeletalControl_AnyThread)
+	ANIM_MT_SCOPE_CYCLE_COUNTER_VERBOSE(ApplyLimits, !IsInGameThread());
+
 	checkSlow(OutBoneTransforms.Num() == 0);
 
 	FPoseContext LocalPose0(Output.AnimInstanceProxy);

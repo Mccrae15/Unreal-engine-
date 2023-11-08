@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
 	"Version": 1,
-	"VersionName": "1.87.0",
+	"VersionName": "1.91.0",
 	"FriendlyName": "Meta XR",
 	"Description": "Support for Meta Quest headsets and controllers",
 	"Category": "Virtual Reality",
@@ -85,7 +85,7 @@
 		{
 			"Name": "OculusXREyeTracker",
 			"Type": "Runtime",
-			"LoadingPhase": "PostEngineInit",
+			"LoadingPhase": "Default",
 			"WhitelistPlatforms": [
 				"Win64",
 				"Android"
@@ -111,11 +111,16 @@
 	],
 	"Plugins": [
 		{
-			"Name": "ProceduralMeshComponent",
+			"Name": "XRBase",
+			"Enabled": true,
+			"Optional": true
+		},
+		{
+			"Name": "EnhancedInput",
 			"Enabled": true
 		},
 		{
-			"Name": "OpenXR",
+			"Name": "ProceduralMeshComponent",
 			"Enabled": true
 		},
 		{
@@ -125,6 +130,11 @@
 		{
 			"Name": "LiveLink",
 			"Enabled": true
+		},
+		{
+			"Name": "OpenXR",
+			"Enabled": false,
+			"Optional": true
 		}
 	]
 }

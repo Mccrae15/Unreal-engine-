@@ -10,13 +10,13 @@
 #include "Net/Core/Trace/NetTrace.h"
 #include "Net/Core/Trace/Private/NetTraceInternal.h"
 
-const int32 MAX_BUNCH_SIZE = 1024 * 1024; 
-
+const int32 MAX_BUNCH_SIZE = 1024 * 1024;
 
 /*-----------------------------------------------------------------------------
 	FInBunch implementation.
 -----------------------------------------------------------------------------*/
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FInBunch::FInBunch( UNetConnection* InConnection, uint8* Src, int64 CountBits )
 :	FNetBitReader	(InConnection->PackageMap, Src, CountBits)
 ,	PacketId	( 0 )
@@ -27,6 +27,7 @@ FInBunch::FInBunch( UNetConnection* InConnection, uint8* Src, int64 CountBits )
 ,	ChSequence ( 0 )
 ,	bOpen ( 0 )
 ,	bClose ( 0 )
+,	bIsReplicationPaused( 0 )
 ,	bReliable ( 0 )
 ,	bPartial ( 0 )
 ,	bPartialInitial ( 0 )
@@ -39,9 +40,6 @@ FInBunch::FInBunch( UNetConnection* InConnection, uint8* Src, int64 CountBits )
 	check(Connection);
 	// Match the byte swapping settings of the connection
 	SetByteSwapping(Connection->bNeedsByteSwapping);
-
-	// Copy network version info
-	Connection->SetNetVersionsOnArchive(*this);
 }
 
 /** Copy constructor but with optional parameter to not copy buffer */
@@ -64,10 +62,6 @@ FInBunch::FInBunch( FInBunch &InBunch, bool CopyBuffer )
 	bHasMustBeMappedGUIDs =	InBunch.bHasMustBeMappedGUIDs;
 	bIgnoreRPCs = InBunch.bIgnoreRPCs;
 	CloseReason = InBunch.CloseReason;
-
-	// Copy network version info
-	SetNetVersionsFromArchive(InBunch);
-
 	PackageMap = InBunch.PackageMap;
 
 	if (CopyBuffer)
@@ -77,6 +71,7 @@ FInBunch::FInBunch( FInBunch &InBunch, bool CopyBuffer )
 
 	Pos = 0;
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void FInBunch::CountMemory(FArchive& Ar) const
 {
@@ -86,6 +81,26 @@ void FInBunch::CountMemory(FArchive& Ar) const
 		const SIZE_T MemberSize = sizeof(*this) - sizeof(FNetBitReader);
 		Ar.CountBytes(MemberSize, MemberSize);
 	}
+}
+
+uint32 FInBunch::EngineNetVer() const
+{
+	return Connection->GetNetworkCustomVersion(FEngineNetworkCustomVersion::Guid);
+}
+
+uint32 FInBunch::GameNetVer() const
+{
+	return Connection->GetNetworkCustomVersion(FGameNetworkCustomVersion::Guid);
+}
+
+void FInBunch::SetEngineNetVer(const uint32 InEngineNetVer)
+{
+	//ensureMsgf(false, TEXT("SetEngineNetVer should not be called on FInBunch"));
+}
+
+void FInBunch::SetGameNetVer(const uint32 InGameNetVer)
+{
+	//ensureMsgf(false, TEXT("SetGameNetVer should not be called on FInBunch"));
 }
 
 /*-----------------------------------------------------------------------------
@@ -99,6 +114,8 @@ void FInBunch::CountMemory(FArchive& Ar) const
 FOutBunch::FOutBunch()
 : FNetBitWriter( 0 )
 {}
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FOutBunch::FOutBunch( UChannel* InChannel, bool bInClose )
 :	FNetBitWriter	( InChannel->Connection->PackageMap, InChannel->Connection->GetMaxSingleBunchSizeBits())
 ,	Next		( nullptr )
@@ -155,6 +172,7 @@ FOutBunch::FOutBunch( UPackageMap *InPackageMap, int64 MaxBits )
 ,	CloseReason( EChannelCloseReason::Destroyed )
 {
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 FOutBunch::FOutBunch(int64 InMaxBits)
 : FOutBunch(static_cast<UPackageMap*>(nullptr), InMaxBits)

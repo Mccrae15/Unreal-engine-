@@ -33,7 +33,7 @@ public:
 	{
 		return TEXT("FLevelVariantSetsEditorToolkit");
 	}
-	virtual bool OnRequestClose() override;
+	virtual bool OnRequestClose(EAssetEditorCloseReason InCloseReason) override;
 	virtual bool CanFindInContentBrowser() const override;
 	virtual void FocusWindow(UObject* ObjectToFocusOn = nullptr) override;
 
@@ -53,7 +53,7 @@ private:
 	static TSharedRef<SDockTab> HandleTabManagerSpawnTab(const FSpawnTabArgs& Args);
 
 	/** Level sequence for our edit operation. */
-	ULevelVariantSets* LevelVariantSets;
+	TObjectPtr<ULevelVariantSets> LevelVariantSets;
 
 	/** The VariantManager used by this editor. */
 	TSharedPtr<FVariantManager> VariantManager;

@@ -16,12 +16,6 @@ public:
 	{
 	}
 
-	FPerforceSourceControlChangelist(const FPerforceSourceControlChangelist& InOther)
-		: ChangelistNumber(InOther.ChangelistNumber)
-		, bInitialized(InOther.bInitialized)
-	{
-	}
-
 	virtual bool CanDelete() const override
 	{
 		return !IsDefault();
@@ -37,7 +31,7 @@ public:
 		return ChangelistNumber != InOther.ChangelistNumber;
 	}
 
-	bool IsDefault() const
+	virtual bool IsDefault() const override
 	{
 		return ChangelistNumber == DefaultChangelist.ChangelistNumber;
 	}
@@ -66,6 +60,11 @@ public:
 	int32 ToInt() const
 	{
 		return ChangelistNumber;
+	}
+
+	virtual FString GetIdentifier() const override
+	{
+		return ToString();
 	}
 
 public:

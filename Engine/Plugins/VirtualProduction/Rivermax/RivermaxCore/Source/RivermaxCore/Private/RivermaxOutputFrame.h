@@ -14,8 +14,7 @@ namespace UE::RivermaxCore::Private
 	 */
 	struct FRivermaxOutputFrame
 	{
-		FRivermaxOutputFrame(uint32 InFrameIndex, TFunction<void(void*)> InDeallocationFunction);
-		~FRivermaxOutputFrame();
+		FRivermaxOutputFrame(uint32 InFrameIndex);
 		FRivermaxOutputFrame(const FRivermaxOutputFrame&) = delete;
 		FRivermaxOutputFrame& operator=(const FRivermaxOutputFrame&) = delete;
 
@@ -54,20 +53,29 @@ namespace UE::RivermaxCore::Private
 		uint32 ChunkNumber = 0;
 		uint32 BytesSent = 0;
 
-		/** Timestamp of this frame  */
-		double TimestampTicks = 0.0;
+		/** Timestamp of this frame used for RTP headers  */
+		uint32 MediaTimestamp = 0;
 
-		/** Pointers retrieved from Rivermax for the next chunk */
+		/** Payload (data) pointer retrieved from Rivermax for the next chunk */
 		void* PayloadPtr = nullptr;
+		
+		/** Header pointer retrieved from Rivermax for the next chunk */
 		void* HeaderPtr = nullptr;
+		
+		/** Cached address of beginning of frame in Rivermax's memblock. Used when using intermediate buffer/ */
+		void* FrameStartPtr = nullptr;
+		
+		/** Offset in the frame where we are at to copy next block of data */
+		uint32 Offset = 0;
+		
+		/** Time covered by memcopies. Not used for now but it could be used to detect if memory will be used before it's actually copied. */
+		uint64 ScheduleTimeCopied = 0;
 
 		/** Time at which this frame was made available to be sent */
 		uint64 ReadyTimestamp = 0;
 
-	private:
-
-		/** Method called to deallocate memory. */
-		TFunction<void(void*)> DeallocationFunc;
+		/** Whether timing issues were detected while sending frame out. If yes, we skip the next frame boundary */
+		bool bCaughtTimingIssue = false;
 	};
 }
 

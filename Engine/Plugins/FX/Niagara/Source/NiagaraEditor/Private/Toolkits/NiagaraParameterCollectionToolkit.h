@@ -46,15 +46,17 @@ private:
 
 	TSharedRef<SDockTab> SpawnTab_Main(const FSpawnTabArgs& Args);
 
+	void OnSearchTextChanged(const FText& InSearchText);
+	
 	/** Builds the toolbar widget */
 	void ExtendToolbar();
 	void SetupCommands();
 
 	/** The Collection being edited. */
-	UNiagaraParameterCollection* Collection;
+	TObjectPtr<UNiagaraParameterCollection> Collection;
 
 	/** The Instance being edited. */
-	UNiagaraParameterCollectionInstance* Instance;
+	TObjectPtr<UNiagaraParameterCollectionInstance> Instance;
 
 	/** Widget for editing parameter collection. */
 	TSharedPtr<SNiagaraParameterCollection>	ParameterCollection;
@@ -68,5 +70,3 @@ private:
 	/**	Main tab */
 	static const FName MainTabID;
 };
-
-

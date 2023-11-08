@@ -5,23 +5,20 @@ using EpicGames.Perforce;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.Diagnostics;
-using System.IO;
-using System.Reflection;
 using System.Runtime.InteropServices;
-using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Windows;
 using System.Linq;
+using System.IO;
+using System.Text.RegularExpressions;
+using System.Security.Policy;
 
 namespace P4VUtils.Commands
 {
+	[Command("preflight", CommandCategory.Horde, 1)]
 	class PreflightCommand : Command
 	{
-
 		static public string StripReviewFyiHashTags(string InString)
 		{
 			return InString.Replace("#review", "-review", StringComparison.Ordinal).Replace("#codereview", "-codereview", StringComparison.Ordinal).Replace("#fyi", "-fyi", StringComparison.Ordinal);
@@ -36,11 +33,26 @@ namespace P4VUtils.Commands
 			if (Args.Length < 2)
 			{
 				Logger.LogError("Missing changelist number");
+				UserInterface.ShowSimpleDialog(
+					"This option requires a changelist number to be provided\r\n" +
+					"\r\n" +
+					"Please ensure the tool is properly installed and try again \r\n",
+
+					"Invalid Tool Installation?",
+					Logger);
 				return 1;
 			}
 			else if (!int.TryParse(Args[1], out Change))
 			{
 				Logger.LogError("'{Argument}' is not a numbered changelist", Args[1]);
+				UserInterface.ShowSimpleDialog(
+					"This option doesn't currently support using the default changelist\r\n" +
+					"\r\n" +
+					"Please manually move the files into a non-default \r\n" +
+					"changelist on Perforce and try the operation again\r\n",
+
+					"This changelist requires manual fixes",
+					Logger);
 				return 1;
 			}
 
@@ -113,30 +125,32 @@ namespace P4VUtils.Commands
 
 				if (OpenedRecords.Count > 0 && IsSubmit())
 				{
-					MessageBoxResult result= MessageBox.Show(
-						"Your CL was just shelved however it still has files checked out\r\n" +
-						"If the files remain in the CL your preflight will fail to submit\r\n" +
-						"\r\n" +
-						"Click:\r\n" +
-						"[YES] - To revert local files and submit the preflight,\r\n" +
-						"[NO] - To start the preflight, and move the files manually\r\n" +
-						"[CANCEL] - To cancel the request", 
+					string Prompt = "Your CL was just shelved however it still has files checked out\r\n" +
+							"If the files remain in the CL your preflight will fail to submit\r\n" +
+							"\r\n" +
+							"Click:\r\n" +
+							"[YES] - To revert local files and submit the preflight,\r\n" +
+							"[NO] - To start the preflight, and move the files manually\r\n" +
+							"[CANCEL] - To cancel the request";
+					string Caption = "Your CL will fail to auto-submit unless fixed";
 
-						"Your CL will fail to auto-submit unless fixed", 
-						MessageBoxButton.YesNoCancel);
+					UserInterface.Button Response = UserInterface.ShowDialog(Prompt, Caption, UserInterface.YesNoCancel, UserInterface.Button.Yes, Logger);
 
-					if (result == MessageBoxResult.Cancel)
+
+
+					if (Response == UserInterface.Button.No)
 					{
-						Logger.LogInformation("User Opted to cancel");
-						return 0;
+						// do nothing - user has been warned.
 					}
-					else if(result == MessageBoxResult.Yes)
+					else if (Response == UserInterface.Button.Yes)
 					{
 						await Perforce.RevertAsync(Change, null, RevertOptions.None, OpenedRecords.Select(x => x.ClientFile!).ToArray(), CancellationToken.None);
 					}
+					// any other reply is Cancel (like on Mac, hitting Escape will return a weird string, not Cancel)
 					else
 					{
-						// do nothing - user has been warned.
+						Logger.LogInformation("User Opted to cancel");
+						return 0;
 					}
 				}
 			}
@@ -144,7 +158,7 @@ namespace P4VUtils.Commands
 
 			string Url = GetUrl(Stream.Stream, Change, ConfigValues);
 			Logger.LogInformation("Opening {Url}", Url);
-			OpenUrl(Url);
+			ProcessUtils.OpenInNewProcess(Url);
 
 			return 0;
 		}
@@ -172,23 +186,9 @@ namespace P4VUtils.Commands
 
 			return BaseUrl.TrimEnd('/');
 		}
-		public static void OpenUrl(string Url)
-		{
-			if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-			{
-				Process.Start(new ProcessStartInfo(Url) { UseShellExecute = true });
-			}
-			else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-			{
-				Process.Start("xdg-open", Url);
-			}
-			else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-			{
-				Process.Start("open", Url);
-			}
-		}
 	}
 
+	[Command("preflightandsubmit", CommandCategory.Horde, 2)]
 	class PreflightAndSubmitCommand : PreflightCommand
 	{
 		public override string Description => "Runs a preflight of the given changelist on Horde and submits it";
@@ -203,6 +203,7 @@ namespace P4VUtils.Commands
 		public override bool IsSubmit() { return true; }
 	}
 
+	[Command("movewriteablepreflightandsubmit", CommandCategory.Horde, 3)]
 	class MoveWriteableFilesthenPreflightAndSubmitCommand : PreflightAndSubmitCommand
 	{
 		public override string Description => "Moves the writeable files to a new CL, then runs a preflight of the current changelist on Horde and submits it";
@@ -215,6 +216,7 @@ namespace P4VUtils.Commands
 		}
 	}
 
+	[Command("openpreflight", CommandCategory.Browser, 1)]
 	class OpenPreflightCommand : Command
 	{
 		public override string Description => "If the changelist has been tagged with #preflight, open the preflight Horde page in the browser";
@@ -260,8 +262,8 @@ namespace P4VUtils.Commands
 			{
 				string message = $"Description for {changeNumber} does not contain any valid preflight tags";
 
-				logger.LogInformation("{Message}", message);			
-				MessageBoxResult result = MessageBox.Show(message, "No Preflights Found", MessageBoxButton.OK, MessageBoxImage.Information);
+				logger.LogInformation("{Message}", message);
+				UserInterface.ShowSimpleDialog(message, "No Preflights Found", logger);
 
 				return 0;
 			}
@@ -274,7 +276,7 @@ namespace P4VUtils.Commands
 				string preflightURL = GetUrl(match!.Groups[1].Value, configValues);
 
 				logger.LogInformation("Opening URL '{URL}' in browser", preflightURL);
-				PreflightCommand.OpenUrl(preflightURL);
+				ProcessUtils.OpenInNewProcess(preflightURL);
 			}
 
 			return 0;

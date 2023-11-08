@@ -38,6 +38,16 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FOptimusGraphCompileMessageDelegate, FOptimu
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOptimusConstantValueUpdate, FString const&, TArray<uint8> const&);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOptimusSetAllInstancesCanbeActive, bool);
 
+UENUM()
+enum class EOptimusDeformerStatus : int32
+{
+	Compiled,					// Compiled, no warnings, no errors
+	CompiledWithWarnings,		// Compiled, has warnings
+	Modified,					// Graph has been modified, needs recompilation
+	HasErrors					// Graph produced errors at the last compile
+};
+
+
 USTRUCT()
 struct FOptimusComputeGraphInfo
 {
@@ -114,7 +124,14 @@ class OPTIMUSCORE_API UOptimusDeformer :
 public:
 	UOptimusDeformer();
 
+	/** Get the action stack for this deformer graph */
 	UOptimusActionStack *GetActionStack();
+
+	/** Returns the current compilation/error status of the deformer */
+	EOptimusDeformerStatus GetStatus() const
+	{
+		return Status;
+	}
 
 	/** Returns the global delegate used to notify on global operations (e.g. graph, variable,
 	 *  resource lifecycle events).
@@ -162,6 +179,10 @@ public:
 		bool bInForceChange = false
 		);
 
+	TArray<UOptimusNode*> GetNodesUsingVariable(
+	    const UOptimusVariableDescription* InVariableDesc
+		) const;
+
 	UFUNCTION(BlueprintGetter)
 	const TArray<UOptimusVariableDescription*>& GetVariables() const { return Variables->Descriptions; }
 
@@ -197,6 +218,10 @@ public:
 		bool bInForceChange = false
 		);
 	
+	TArray<UOptimusNode*> GetNodesUsingResource(
+		const UOptimusResourceDescription* InResourceDesc
+		) const;
+	
 	UFUNCTION(BlueprintGetter)
 	const TArray<UOptimusResourceDescription*>& GetResources() const { return Resources->Descriptions; }
 
@@ -225,6 +250,10 @@ public:
 		const UOptimusComponentSource *InComponentSource,
 		bool bInForceChange = false
 		);
+
+	TArray<UOptimusNode*> GetNodesUsingComponentBinding(
+		const UOptimusComponentSourceBinding* InBinding
+		) const;
 	
 	UFUNCTION(BlueprintGetter)
 	const TArray<UOptimusComponentSourceBinding*>& GetComponentBindings() const { return Bindings->Bindings; }
@@ -245,6 +274,9 @@ public:
 	FOptimusGraphCompileMessageDelegate& GetCompileMessageDelegate() { return CompileMessageDelegate; }
 
 	void SetAllInstancesCanbeActive(bool bInCanBeActive) const;
+
+	// Mark the deformer as modified.
+	void MarkModified();
 	
 	/// UObject overrides
 	void Serialize(FArchive& Ar) override;
@@ -295,23 +327,28 @@ public:
 	UOptimusNodeGraph* CreateGraph(
 	    EOptimusNodeGraphType InType,
 	    FName InName,
-	    TOptional<int32> InInsertBefore) override;
+	    TOptional<int32> InInsertBefore
+	    ) override;
 	
 	bool AddGraph(
 	    UOptimusNodeGraph* InGraph,
-		int32 InInsertBefore) override;
+		int32 InInsertBefore
+		) override;
 	
 	bool RemoveGraph(
 	    UOptimusNodeGraph* InGraph,
-		bool bDeleteGraph) override;
+		bool bDeleteGraph
+		) override;
 
 	bool MoveGraph(
 	    UOptimusNodeGraph* InGraph,
-	    int32 InInsertBefore) override;
+	    int32 InInsertBefore
+	    ) override;
 
 	bool RenameGraph(
 	    UOptimusNodeGraph* InGraph,
-	    const FString& InNewName) override;
+	    const FString& InNewName
+	    ) override;
 	
 	UPROPERTY(EditAnywhere, Category=Preview)
 	TObjectPtr<USkeletalMesh> Mesh = nullptr;
@@ -344,7 +381,8 @@ protected:
 
 	/** Adds a resource that was created by this deformer and is owned by it. */
 	bool AddResourceDirect(
-		UOptimusResourceDescription* InResourceDesc
+		UOptimusResourceDescription* InResourceDesc,
+		const int32 InIndex
 		);
 
 	bool RemoveResourceDirect(
@@ -375,7 +413,8 @@ protected:
 
 	/** Adds a resource that was created by this deformer and is owned by it. */
 	bool AddVariableDirect(
-		UOptimusVariableDescription* InVariableDesc
+		UOptimusVariableDescription* InVariableDesc,
+		const int32 InIndex
 		);
 
 	bool RemoveVariableDirect(
@@ -398,7 +437,8 @@ protected:
 		);
 
 	bool AddComponentBindingDirect(
-		UOptimusComponentSourceBinding* InComponentBinding
+		UOptimusComponentSourceBinding* InComponentBinding,
+		const int32 InIndex
 		);
 
 	bool RemoveComponentBindingDirect(
@@ -414,6 +454,7 @@ protected:
 		const UOptimusComponentSource *InComponentSource
 		);
 
+	void SetStatusFromDiagnostic(EOptimusDiagnosticLevel InDiagnosticLevel);
 	
 	void Notify(EOptimusGlobalNotifyType InNotifyType, UObject *InObject) const;
 
@@ -424,6 +465,7 @@ protected:
 private:
 	void PostLoadFixupMissingComponentBindingsCompat();
 	void PostLoadFixupMismatchedResourceDataDomains();
+	void PostLoadRemoveDeprecatedExecutionNodes();
 
 	/** Find a compatible binding with the given data interface. Returns nullptr if no such binding exists */
 	UOptimusComponentSourceBinding* FindCompatibleBindingWithInterface(
@@ -443,9 +485,12 @@ private:
 		);
 
 	void OnDataTypeChanged(FName InTypeName);
-	
+
 	UPROPERTY(transient)
 	TObjectPtr<UOptimusActionStack> ActionStack = nullptr;
+
+	UPROPERTY()
+	EOptimusDeformerStatus Status = EOptimusDeformerStatus::Modified;
 
 	UPROPERTY()
 	TArray<TObjectPtr<UOptimusNodeGraph>> Graphs;

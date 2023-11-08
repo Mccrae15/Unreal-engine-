@@ -152,6 +152,48 @@ void FBezierChannelCurveModel<ChannelType, ChannelValue, KeyType>::GetKeyDrawInf
 	}
 }
 
+template <class ChannelType, class ChannelValue, class KeyType>
+TPair<ERichCurveInterpMode, ERichCurveTangentMode> FBezierChannelCurveModel<ChannelType, ChannelValue, KeyType>::GetInterpolationMode(const double& InTime, ERichCurveInterpMode DefaultInterpolationMode, ERichCurveTangentMode DefaultTangentMode) const
+{
+	ChannelType* Channel = this->GetChannelHandle().Get();
+	UMovieSceneSection* Section = Cast<UMovieSceneSection>(this->GetOwningObject());
+	if (Channel && Section)
+	{
+		FFrameRate TickResolution = Section->GetTypedOuter<UMovieScene>()->GetTickResolution();
+
+		TMovieSceneChannelData<ChannelValue> ChannelData = Channel->GetData();
+		TArrayView<const FFrameNumber> Times = ChannelData.GetTimes();
+		TArrayView<const ChannelValue> Values = ChannelData.GetValues();
+
+		const FFrameNumber InFrame = (InTime * TickResolution).RoundToFrame();
+
+		if (Times.Num() > 0)
+		{
+			int32 InterpolationIndex = Algo::LowerBound(Times, InFrame) - 1;
+			if (InterpolationIndex < 0)
+			{
+				InterpolationIndex = 0;
+			}
+			const FKeyHandle KeyHandle = ChannelData.GetHandle(InterpolationIndex);
+			TArrayView<const FKeyHandle> InKey(&KeyHandle, 1);
+			TArray<FKeyAttributes> KeyAttributes;
+			KeyAttributes.SetNum(1);
+			GetKeyAttributes(InKey, KeyAttributes);
+			ERichCurveInterpMode InterpMode = KeyAttributes[0].GetInterpMode();
+			ERichCurveTangentMode TangentMode = KeyAttributes[0].HasTangentMode() ? KeyAttributes[0].GetTangentMode() : DefaultTangentMode;
+			//if we are cubic, with anything but auto tangents we use the default instead, since they will give us flat tangents which aren't good
+			if (InterpMode == ERichCurveInterpMode::RCIM_Cubic &&
+				(TangentMode != ERichCurveTangentMode::RCTM_Auto && TangentMode != ERichCurveTangentMode::RCTM_SmartAuto))
+			{
+				TangentMode = DefaultTangentMode;
+			}
+			return TPair<ERichCurveInterpMode, ERichCurveTangentMode>(InterpMode, TangentMode);
+		}
+	}
+
+	return TPair<ERichCurveInterpMode, ERichCurveTangentMode>(DefaultInterpolationMode, DefaultTangentMode);
+}
+
 template<typename ChannelType, typename ChannelValue, typename KeyType> 
 void FBezierChannelCurveModel<ChannelType, ChannelValue, KeyType>::GetKeyAttributes(TArrayView<const FKeyHandle> InKeys, TArrayView<FKeyAttributes> OutAttributes) const
 {
@@ -201,6 +243,10 @@ void FBezierChannelCurveModel<ChannelType, ChannelValue, KeyType>::GetKeyAttribu
 		}
 	}
 }
+static bool IsAuto(ERichCurveTangentMode TangentMode)
+{
+	return (TangentMode == RCTM_Auto || TangentMode == RCTM_SmartAuto);
+}
 
 template<typename ChannelType, typename ChannelValue, typename KeyType> 
 void FBezierChannelCurveModel<ChannelType, ChannelValue, KeyType>::SetKeyAttributes(TArrayView<const FKeyHandle> InKeys, TArrayView<const FKeyAttributes> InAttributes, EPropertyChangeType::Type ChangeType)
@@ -229,7 +275,7 @@ void FBezierChannelCurveModel<ChannelType, ChannelValue, KeyType>::SetKeyAttribu
 				if (Attributes.HasTangentMode())
 				{
 					KeyValue.TangentMode = Attributes.GetTangentMode();
-					if (KeyValue.TangentMode == RCTM_Auto)
+					if (IsAuto(KeyValue.TangentMode))
 					{
 						KeyValue.Tangent.TangentWeightMode = RCTWM_WeightedNone;
 					}
@@ -269,11 +315,12 @@ void FBezierChannelCurveModel<ChannelType, ChannelValue, KeyType>::SetKeyAttribu
 							KeyValue.TangentMode = RCTM_User;
 						}
 					}
+					bAutoSetTangents = true;
 				}
 
 				if (Attributes.HasArriveTangent())
 				{
-					if (KeyValue.TangentMode == RCTM_Auto)
+					if (IsAuto(KeyValue.TangentMode))
 					{
 						KeyValue.TangentMode = RCTM_User;
 						KeyValue.Tangent.TangentWeightMode = RCTWM_WeightedNone;
@@ -284,11 +331,12 @@ void FBezierChannelCurveModel<ChannelType, ChannelValue, KeyType>::SetKeyAttribu
 					{
 						KeyValue.Tangent.LeaveTangent = KeyValue.Tangent.ArriveTangent;
 					}
+					bAutoSetTangents = true;
 				}
 
 				if (Attributes.HasLeaveTangent())
 				{
-					if (KeyValue.TangentMode == RCTM_Auto)
+					if (IsAuto(KeyValue.TangentMode))
 					{
 						KeyValue.TangentMode = RCTM_User;
 						KeyValue.Tangent.TangentWeightMode = RCTWM_WeightedNone;
@@ -299,11 +347,12 @@ void FBezierChannelCurveModel<ChannelType, ChannelValue, KeyType>::SetKeyAttribu
 					{
 						KeyValue.Tangent.ArriveTangent = KeyValue.Tangent.LeaveTangent;
 					}
+					bAutoSetTangents = true;
 				}
 
 				if (Attributes.HasArriveTangentWeight())
 				{
-					if (KeyValue.TangentMode == RCTM_Auto)
+					if (IsAuto(KeyValue.TangentMode))
 					{
 						KeyValue.TangentMode = RCTM_User;
 						KeyValue.Tangent.TangentWeightMode = RCTWM_WeightedNone;
@@ -314,12 +363,12 @@ void FBezierChannelCurveModel<ChannelType, ChannelValue, KeyType>::SetKeyAttribu
 					{
 						KeyValue.Tangent.LeaveTangentWeight = KeyValue.Tangent.ArriveTangentWeight;
 					}
+					bAutoSetTangents = true;
 				}
 
 				if (Attributes.HasLeaveTangentWeight())
 				{
-				
-					if (KeyValue.TangentMode == RCTM_Auto)
+					if (IsAuto(KeyValue.TangentMode))
 					{
 						KeyValue.TangentMode = RCTM_User;
 						KeyValue.Tangent.TangentWeightMode = RCTWM_WeightedNone;
@@ -330,6 +379,7 @@ void FBezierChannelCurveModel<ChannelType, ChannelValue, KeyType>::SetKeyAttribu
 					{
 						KeyValue.Tangent.ArriveTangentWeight = KeyValue.Tangent.LeaveTangentWeight;
 					}
+					bAutoSetTangents = true;
 				}
 			}
 		}
@@ -414,10 +464,10 @@ void FBezierChannelCurveModel<ChannelType, ChannelValue, KeyType>::FeaturePointM
 	}
 }
 
-template<typename ChannelType, typename ChannelValue, typename KeyType> 
-void FBezierChannelCurveModel<ChannelType, ChannelValue, KeyType>::GetValueRange(double& MinValue, double& MaxValue) const
+template<typename ChannelType, typename ChannelValue, typename KeyType>
+void FBezierChannelCurveModel<ChannelType, ChannelValue, KeyType>::GetValueRange(double InMinTime, double InMaxTime, double& MinValue, double& MaxValue) const
 {
-	ChannelType* Channel    	= this->GetChannelHandle().Get();
+	ChannelType* Channel = this->GetChannelHandle().Get();
 	UMovieSceneSection* Section = Cast<UMovieSceneSection>(this->GetOwningObject());
 
 	if (Channel && Section && Section->GetTypedOuter<UMovieScene>())
@@ -435,26 +485,53 @@ void FBezierChannelCurveModel<ChannelType, ChannelValue, KeyType>::GetValueRange
 			FFrameRate TickResolution = Section->GetTypedOuter<UMovieScene>()->GetTickResolution();
 			double ToTime = TickResolution.AsInterval();
 			int32 LastKeyIndex = Values.Num() - 1;
-			MinValue = MaxValue = Values[0].Value;
+			MinValue = DBL_MAX;
+			MaxValue = DBL_MIN;
 
 			for (int32 i = 0; i < Values.Num(); i++)
 			{
+				double KeyTime = static_cast<double>(Times[i].Value) * ToTime;
+				if (KeyTime < InMinTime)
+				{
+					continue;
+				}
+				else if (KeyTime > InMaxTime)
+				{
+					break;
+				}
 				const ChannelValue& Key = Values[i];
 
-				MinValue = FMath::Min(MinValue,(double) Key.Value);
+				MinValue = FMath::Min(MinValue, (double)Key.Value);
 				MaxValue = FMath::Max(MaxValue, (double)Key.Value);
 
 				if (Key.InterpMode == RCIM_Cubic && i != LastKeyIndex)
 				{
 					const ChannelValue& NextKey = Values[i + 1];
-					double KeyTime = static_cast<double>(Times[i].Value) *ToTime;
-					double NextTime = static_cast<double>(Times[i +1].Value) *ToTime;
+					double NextTime = static_cast<double>(Times[i + 1].Value) * ToTime;
 					double TimeStep = (NextTime - KeyTime) * 0.2f;
 					FeaturePointMethod(KeyTime, NextTime, Key.Value, TimeStep, 0, 3, MaxValue, MinValue);
 				}
 			}
 		}
 	}
+	//if nothing found just set to zero
+	if (MinValue == DBL_MAX)
+	{
+		MinValue = 0.0;
+	}
+	if (MaxValue == DBL_MIN)
+	{
+		MaxValue = 0.0;
+	}
+}
+
+
+template<typename ChannelType, typename ChannelValue, typename KeyType> 
+void FBezierChannelCurveModel<ChannelType, ChannelValue, KeyType>::GetValueRange(double& MinValue, double& MaxValue) const
+{
+	const double InMinTime = DBL_MIN;
+	const double InMaxtime = DBL_MAX;
+	GetValueRange(InMinTime, InMaxtime, MinValue, MaxValue);
 }
 
 template<typename ChannelType, typename ChannelValue, typename KeyType> 

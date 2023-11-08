@@ -10,6 +10,7 @@
 #include "AudioDevice.h"
 #include "AudioPluginUtilities.h"
 #include "Components/SynthComponent.h"
+#include "Engine/Engine.h"
 #include "EngineAnalytics.h"
 #include "IAnalyticsProviderET.h"
 #include "Misc/Paths.h"
@@ -373,7 +374,7 @@ void FSoundSource::SetFilterFrequency()
 		{
 			// compensate for filter coefficient calculation error for occlusion
 			float OcclusionFilterScale = 1.0f;
-			if (AudioDevice->IsAudioMixerEnabled() && OcclusionFilterScaleEnabledCVar == 1 && !FMath::IsNearlyEqual(WaveInstance->OcclusionFilterFrequency, MAX_FILTER_FREQUENCY))
+			if (OcclusionFilterScaleEnabledCVar == 1 && !FMath::IsNearlyEqual(WaveInstance->OcclusionFilterFrequency, MAX_FILTER_FREQUENCY))
 			{
 				OcclusionFilterScale = 0.25f;
 			}
@@ -530,21 +531,47 @@ FSpatializationParams FSoundSource::GetSpatializationParams()
 		// Independently retrieve the attenuation used for distance in case it was overridden
 		Params.AttenuationDistance = AudioDevice->GetDistanceToNearestListener(WaveInstance->Location);
 		
-		// If we are using the OmniRadius feature
-		if (WaveInstance->OmniRadius > 0.0f)
+		// If we are using the Non-spatialized radius feature
+		if (WaveInstance->NonSpatializedRadiusStart > 0.0f)
 		{
-			// Initialize to full omni-directionality (bigger value, more omni)
-			static const float MaxNormalizedRadius = 1000000.0f;
-			Params.NormalizedOmniRadius = MaxNormalizedRadius;
+			float NonSpatializedRadiusEnd = FMath::Min(WaveInstance->NonSpatializedRadiusStart, WaveInstance->NonSpatializedRadiusEnd);
 
-			if (Params.Distance > 0)
+			if (Params.Distance > 0.0f)
 			{
-				Params.NormalizedOmniRadius = FMath::Clamp(WaveInstance->OmniRadius / Params.Distance, 0.0f, MaxNormalizedRadius);
+				// If the user specified a distance below which to be fully 2D
+				if (NonSpatializedRadiusEnd > 0.0f)
+				{
+					// We're in the non-spatialized domain
+					if (Params.Distance < WaveInstance->NonSpatializedRadiusStart)
+					{
+						float NonSpatializationRange = WaveInstance->NonSpatializedRadiusStart - NonSpatializedRadiusEnd;
+						NonSpatializationRange = FMath::Max(NonSpatializationRange, 1.0f);
+						Params.NonSpatializedAmount = FMath::Clamp((WaveInstance->NonSpatializedRadiusStart - Params.Distance)/ NonSpatializationRange, 0.0f, 1.0f);
+					}					
+				}
+				else
+				{
+					// Initialize to full omni-directionality (bigger value, more omni)
+					static const float MaxNormalizedRadius = 1000000.0f;
+					float NormalizedOmniRadus = FMath::Clamp(WaveInstance->NonSpatializedRadiusStart / Params.Distance, 0.0f, MaxNormalizedRadius);
+					if (NormalizedOmniRadus > 1.0f)
+					{
+						float NormalizedOmniRadusSquared = NormalizedOmniRadus * NormalizedOmniRadus;
+						Params.NonSpatializedAmount = 1.0f - 1.0f / NormalizedOmniRadusSquared;
+					}
+					else
+					{
+						Params.NonSpatializedAmount = 0.0f;
+					}
+				}
+
+				//UE_LOG(LogTemp, Log, TEXT("Distance: %.2f, NonSpatializedRadiusStart: %.2f, NonSpatializedRadiusEnd: %.2f, NonSpatializedAmount: %.2f"), Params.Distance, WaveInstance->NonSpatializedRadiusStart, WaveInstance->NonSpatializedRadiusEnd, Params.NonSpatializedAmount);
+
 			}
 		}
 		else
 		{
-			Params.NormalizedOmniRadius = 0.0f;
+			Params.NonSpatializedAmount = 0.0f;
 		}
 
 		Params.EmitterPosition = EmitterPosition;
@@ -559,6 +586,7 @@ FSpatializationParams FSoundSource::GetSpatializationParams()
 	else
 	{
 		Params.NormalizedOmniRadius = 0.0f;
+		Params.NonSpatializedAmount = 0.0f;
 		Params.Distance = 0.0f;
 		Params.EmitterPosition = FVector::ZeroVector;
 	}
@@ -825,7 +853,9 @@ FWaveInstance::FWaveInstance(const UPTRINT InWaveInstanceHash, FActiveSound& InA
 	, AttenuationHighpassFilterFrequency(MIN_FILTER_FREQUENCY)
 	, Pitch(0.0f)
 	, Location(FVector::ZeroVector)
-	, OmniRadius(0.0f)
+	, NonSpatializedRadiusStart(0.0f)
+	, NonSpatializedRadiusEnd(0.0f)
+	, NonSpatializedRadiusMode(ENonSpatializedRadiusSpeakerMapMode::OmniDirectional)
 	, StereoSpread(0.0f)
 	, AttenuationDistance(0.0f)
 	, ListenerToSoundDistance(0.0f)
@@ -935,10 +965,7 @@ void FWaveInstance::AddReferencedObjects( FReferenceCollector& Collector )
 
 	if (USynthSound* SynthSound = Cast<USynthSound>(WaveData))
 	{
-		if (USynthComponent* SynthComponent = SynthSound->GetOwningSynthComponent())
-		{
-			Collector.AddReferencedObject(SynthComponent);
-		}
+		Collector.AddReferencedObject(SynthSound->GetOwningSynthComponentPtr());
 	}
 
 	for (FAttenuationSubmixSendSettings& SubmixSend : SubmixSendSettings)
@@ -1166,6 +1193,34 @@ struct FRiffCuePointChunk
 	uint32 SampleOffset;	// Byte offset to sample byte of first channel
 };
 
+// ChunkID: 'smpl'
+// The sample chunk allows a MIDI sampler to use the Wave file as a collection of samples.
+// The 'smpl' chunk is optional and if included, a single 'smple' chunk should specify all Sample Loops
+struct FRiffSampleChunk
+{
+	uint32 ChunkID;				// 'smpl'
+	uint32 ChunkDataSize;		// Depends on the number of sample loops
+	uint32 ManufacturerCode;	// The MIDI Manufacturers Association manufacturer code
+	uint32 Product;				// The Product / Model ID of the target device, specific to the manufacturer
+	uint32 SamplePeriod;		// The period of one sample in nanoseconds.
+	uint32 MidiUnityNote;		// The MIDI note that will play when this sample is played at its current pitch
+	uint32 MidiPitchFraction;	// The fraction of a semitone up from the specified note. 
+	uint32 SmpteFormat;			// The SMPTE format. Possible values: 0, 24, 25, 29, 30
+	uint32 SmpteOffset;			// Specifies a time offset for the sample, if the sample should start at a later time and not immediately.
+	uint32 NumSampleLoops;		// Number of sample loops contained in this chunks data
+	uint32 NumSampleDataBytes;	// Number of bytes of optional sampler specific data that follows the sample loops. zero if there is no such data.
+};
+
+struct FRiffSampleLoopChunk
+{
+	uint32 LoopID;			// A unique ID of the loop, which could be a cue point
+	uint32 LoopType;		// The loop type. 0: Forward Looping, 1: Ping-Pong, 2: Backward, 3-31: future standard types. >=32: manufacturer specific types
+	uint32 StartFrame;		// Start point of the loop in samples
+	uint32 EndFrame;		// End point of the loop in samples. The end sample is also played.
+	uint32 Fraction;		// The resolution at which this loop should be fine tuned.
+	uint32 NumPlayTimes;	// The number of times to play the loop. A value of zero means inifity. In a Midi sampler, that may mean infinite sustain.
+};
+
 struct FRiffListChunk
 {
 	uint32 ChunkID;			// 'list'
@@ -1274,16 +1329,25 @@ struct FExtendedFormatChunk
 #pragma pack(pop)
 #endif
 
-bool IsKnownChunkId(uint32 ChunkId)
+const TArray<uint32>& FWaveModInfo::GetRequiredWaveChunkIds()
 {
-	uint32 KnownIds[] =
+	static TArray<uint32> RequiredChunkIds =
 	{
 		UE_mmioFOURCC('f', 'm', 't', ' '),
-		UE_mmioFOURCC('d', 'a', 't', 'a'),
+		UE_mmioFOURCC('d', 'a', 't', 'a')
+	};
+	
+	return RequiredChunkIds;
+}
+
+const TArray<uint32>& FWaveModInfo::GetOptionalWaveChunkIds()
+{
+	static TArray<uint32> OptionalChunkIds =
+	{
 		UE_mmioFOURCC('f', 'a', 'c', 't'),
 		UE_mmioFOURCC('c', 'u', 'e', ' '),
 		UE_mmioFOURCC('p', 'l', 's', 't'),
-		UE_mmioFOURCC('l', 'i', 's', 't'),
+		UE_mmioFOURCC('L', 'I', 'S', 'T'),
 		UE_mmioFOURCC('l', 'a', 'b', 'l'),
 		UE_mmioFOURCC('l', 't', 'x', 't'),
 		UE_mmioFOURCC('n', 'o', 't', 'e'),
@@ -1291,10 +1355,18 @@ bool IsKnownChunkId(uint32 ChunkId)
 		UE_mmioFOURCC('i', 'n', 's', 't'),
 		UE_mmioFOURCC('a', 'c', 'i', 'd'),
 		UE_mmioFOURCC('b', 'e', 'x', 't'),
-		UE_mmioFOURCC('i', 'X', 'M', 'L'),
+		UE_mmioFOURCC('i', 'X', 'M', 'L')
 	};
 
-	return Algo::Find(KnownIds, ChunkId) != nullptr;
+	return OptionalChunkIds;
+}
+
+bool IsKnownChunkId(uint32 ChunkId)
+{
+	bool bIsKnown = FWaveModInfo::GetRequiredWaveChunkIds().Contains(ChunkId) ||
+					FWaveModInfo::GetOptionalWaveChunkIds().Contains(ChunkId);
+
+	return bIsKnown;
 }
 
 FRiffChunkOld* FindRiffChunk(FRiffChunkOld* RiffChunkStart, const uint8* RiffChunkEnd, uint32 ChunkId)
@@ -1540,16 +1612,6 @@ bool FWaveModInfo::ReadWaveInfo( const uint8* WaveData, int32 WaveDataSize, FStr
 	SampleDataSize = INTEL_ORDER32( RiffChunk->ChunkLen );
 	SampleDataEnd = SampleDataStart + SampleDataSize;
 
-	if (!InHeaderDataOnly && (uint8*)SampleDataEnd > (uint8*)WaveDataEnd)
-	{
-		UE_LOG(LogAudio, Warning, TEXT( "Wave data chunk is too big!" ) );
-
-		// Fix it up by clamping data chunk.
-		SampleDataEnd = (uint8*)WaveDataEnd;
-		SampleDataSize = SampleDataEnd - SampleDataStart;
-		RiffChunk->ChunkLen = INTEL_ORDER32( SampleDataSize );
-	}
-
 	if (*pFormatTag != 0x0001 // WAVE_FORMAT_PCM
 		&& *pFormatTag != 0x0002 // WAVE_FORMAT_ADPCM
 		&& *pFormatTag != 0x0011 // WAVE_FORMAT_DVI_ADPCM
@@ -1564,7 +1626,7 @@ bool FWaveModInfo::ReadWaveInfo( const uint8* WaveData, int32 WaveDataSize, FStr
 	{
 		if ((uint8*)SampleDataEnd > (uint8*)WaveDataEnd)
 		{
-			UE_LOG(LogAudio, Warning, TEXT("Wave data chunk is too big!" ));
+			UE_LOG(LogAudio, Warning, TEXT("Wave data chunk exceeds end of wave file by %d bytes, truncating"), (SampleDataEnd - WaveDataEnd));
 
 			// Fix it up by clamping data chunk.
 			SampleDataEnd = (uint8*)WaveDataEnd;
@@ -1758,6 +1820,44 @@ bool FWaveModInfo::ReadWaveInfo( const uint8* WaveData, int32 WaveDataSize, FStr
 		}
 	}
 
+	// Look for smpl chunk
+	RiffChunk = FindRiffChunk(RiffChunkStart, WaveDataEnd, UE_mmioFOURCC('s', 'm', 'p', 'l'));
+
+	if (RiffChunk != nullptr)
+	{
+		const FRiffSampleChunk* SampleChunk = (const FRiffSampleChunk*)(RiffChunk);
+
+		// only swap the members that we care about
+#if !PLATFORM_LITTLE_ENDIAN
+		if (!AlreadySwapped)
+		{
+			SampleChunk->NumSampleLoops = INTEL_ORDER32(SampleChunk->NumSampleLoops);
+		}
+#endif
+		WaveSampleLoops.Reset(SampleChunk->NumSampleLoops);
+
+		// use the RiffSampleChunk size to offset into the chunk data and get the list of SampleLoops
+		FRiffSampleLoopChunk* SampleLoopChunks = (FRiffSampleLoopChunk*)((uint8*)RiffChunk + sizeof(FRiffSampleChunk));
+		for (uint32 LoopIdx = 0; LoopIdx < SampleChunk->NumSampleLoops; ++LoopIdx)
+		{
+			FRiffSampleLoopChunk& SampleLoopChunk = SampleLoopChunks[LoopIdx];
+
+#if !PLATFORM_LITTLE_ENDIAN
+			if (!AlreadySwapped)
+			{
+				SampleLoopChunk.LoopID = INTEL_ORDER32(SampleLoopChunk.LoopID);
+				SampleLoopChunk.StartFrame = INTEL_ORDER32(SampleLoopChunk.StartFrame);
+				SampleLoopChunk.EndFrame = INTEL_ORDER32(SampleLoopChunk.EndFrame);
+			}
+#endif
+			FWaveSampleLoop NewSampleLoop;
+			NewSampleLoop.LoopID = SampleLoopChunk.LoopID;
+			NewSampleLoop.StartFrame = SampleLoopChunk.StartFrame;
+			NewSampleLoop.EndFrame = SampleLoopChunk.EndFrame;
+			WaveSampleLoops.Add(NewSampleLoop);
+		}
+	}
+
 	return true;
 }
 
@@ -1794,6 +1894,16 @@ void FWaveModInfo::ReportImportFailure() const
 
 		FEngineAnalytics::GetProvider().RecordEvent(FString("Editor.Usage.WaveImportFailure"), WaveImportFailureAttributes);
 	}
+}
+
+uint32 FWaveModInfo::GetNumSamples() const
+{
+	if (*pBitsPerSample != 0)
+	{
+		return SampleDataSize / (*pBitsPerSample / 8);
+	}
+
+	return 0;
 }
 
 static void WriteUInt32ToByteArrayLE(TArray<uint8>& InByteArray, int32& Index, const uint32 Value)

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "Modules/ModuleManager.h"
+#include "EngineModule.h"
 #include "RHIGPUReadback.h"
 #include "RenderGraphBuilder.h"
 #include "RenderGraphUtils.h"
@@ -11,7 +12,7 @@
 #include "Utils.h"
 #include "MediaShaders.h"
 #include "RHI.h"
-#include "Runtime/Renderer/Private/ScreenPass.h"
+#include "ScreenPass.h"
 
 namespace UE::PixelStreaming
 {
@@ -83,7 +84,7 @@ namespace UE::PixelStreaming
 				GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
-				PixelShader->SetParameters(RHICmdList, TStaticSamplerState<SF_Point>::GetRHI(), SourceTexture);
+				SetShaderParametersLegacyPS(RHICmdList, PixelShader, TStaticSamplerState<SF_Point>::GetRHI(), SourceTexture);
 
 				FIntPoint TargetBufferSize(DestTexture->GetDesc().Extent.X, DestTexture->GetDesc().Extent.Y);
 				RendererModule->DrawRectangle(RHICmdList, 0, 0, // Dest X, Y
@@ -150,7 +151,7 @@ namespace UE::PixelStreaming
 			const FIntRect ViewRect(FIntPoint(0, 0), InputTexture->Desc.Extent);
 
 			//Dummy ViewFamily/ViewInfo created to use built in Draw Screen/Texture Pass
-			FSceneViewFamily ViewFamily(FSceneViewFamily::ConstructionValues(nullptr, nullptr, FEngineShowFlags(ESFIM_Game))
+			FSceneViewFamilyContext ViewFamily(FSceneViewFamily::ConstructionValues(nullptr, nullptr, FEngineShowFlags(ESFIM_Game))
 				.SetTime(FGameTime())
 				.SetGammaCorrection(1.0f));
 			FSceneViewInitOptions ViewInitOptions;
@@ -159,103 +160,14 @@ namespace UE::PixelStreaming
 			ViewInitOptions.ViewOrigin = FVector::ZeroVector;
 			ViewInitOptions.ViewRotationMatrix = FMatrix::Identity;
 			ViewInitOptions.ProjectionMatrix = FMatrix::Identity;
-			FViewInfo ViewInfo = FViewInfo(ViewInitOptions);
+
+			GetRendererModule().CreateAndInitSingleView(RHICmdList, &ViewFamily, &ViewInitOptions);
+			const FSceneView& View = *ViewFamily.Views[0];
 
 			TShaderMapRef<FModifyAlphaSwizzleRgbaPS> PixelShader(GlobalShaderMap, PermutationVector);
 			FModifyAlphaSwizzleRgbaPS::FParameters* Parameters = PixelShader->AllocateAndSetParameters(GraphBuilder, InputTexture, OutputTexture);
-			AddDrawScreenPass(GraphBuilder, RDG_EVENT_NAME("PixelCapturerSwizzle"), ViewInfo, OutputViewport, InputViewport, VertexShader, PixelShader, Parameters);
+			AddDrawScreenPass(GraphBuilder, RDG_EVENT_NAME("PixelCapturerSwizzle"), View, OutputViewport, InputViewport, VertexShader, PixelShader, Parameters);
 		}
 		GraphBuilder.Execute();
-	}
-
-
-
-	inline void CopyTextureToReadbackTexture(FTextureRHIRef SourceTexture, TSharedPtr<FRHIGPUTextureReadback> GPUTextureReadback, void* OutBuffer)
-	{
-		FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
-		FRDGBuilder GraphBuilder(RHICmdList);
-
-		FRDGTextureRef RDGSourceTexture = RegisterExternalTexture(GraphBuilder, SourceTexture, TEXT("SourceCopyTextureToReadbackTexture"));
-		FRDGTextureRef RDGStagingTexture = nullptr;
-
-		if (RDGSourceTexture->Desc.Format != EPixelFormat::PF_B8G8R8A8)
-		{
-			// We need the pixel format to be BGRA8 so we first draw it to a staging texture
-			{
-				const FRDGTextureDesc Desc(FRDGTextureDesc::Create2D(RDGSourceTexture->Desc.Extent, PF_B8G8R8A8, FClearValueBinding::None, TexCreate_ShaderResource | TexCreate_RenderTargetable));
-				RDGStagingTexture = GraphBuilder.CreateTexture(Desc, TEXT("StagingCopyTextureToReadbackTexture"));
-			}
-
-			FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
-
-			TShaderMapRef<FScreenPassVS> VertexShader(ShaderMap);
-
-			// Setup the pixel shader
-			TShaderMapRef<FCopyRectPS> PixelShader(ShaderMap);
-
-			FCopyRectPS::FParameters* PixelShaderParameters = GraphBuilder.AllocParameters<FCopyRectPS::FParameters>();
-			PixelShaderParameters->InputTexture = RDGSourceTexture;
-			PixelShaderParameters->InputSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-			PixelShaderParameters->RenderTargets[0] = FRenderTargetBinding(RDGStagingTexture, ERenderTargetLoadAction::ELoad);
-
-			ClearUnusedGraphResources(PixelShader, PixelShaderParameters);
-
-			// We are not doing any clever blending stuff so we just use defaults here
-			FRHIBlendState* BlendState = FScreenPassPipelineState::FDefaultBlendState::GetRHI();
-			FRHIDepthStencilState* DepthStencilState = FScreenPassPipelineState::FDefaultDepthStencilState::GetRHI();
-
-			// Create the pipline state that will execute
-			const FScreenPassPipelineState PipelineState(VertexShader, PixelShader, BlendState, DepthStencilState);
-
-			// Add the pass the the graph builder
-			GraphBuilder.AddPass(
-				RDG_EVENT_NAME("PixelStreamingChangePixelFormat"),
-				PixelShaderParameters,
-				ERDGPassFlags::Raster,
-				[PipelineState, Extent = RDGSourceTexture->Desc.Extent, PixelShader, PixelShaderParameters](FRHICommandList& RHICmdList) {
-					PipelineState.Validate();
-
-					RHICmdList.SetViewport(0.0f, 0.0f, 0.0f, Extent.X, Extent.Y, 1.0f);
-
-					SetScreenPassPipelineState(RHICmdList, PipelineState);
-
-					SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), *PixelShaderParameters);
-
-					DrawRectangle(
-						RHICmdList,
-						0, 0, Extent.X, Extent.Y,
-						0, 0, Extent.X, Extent.Y,
-						Extent,
-						Extent,
-						PipelineState.VertexShader,
-						EDRF_UseTriangleOptimization);
-				});
-		}
-		else
-		{
-			// Otherwise if the PixelFormat is already BGRA8 we can just use the SourceTexture as the staging texture
-			RDGStagingTexture = RDGSourceTexture;
-		}
-
-		// Do the copy from staging RBGA8 texture into the readback
-		AddEnqueueCopyPass(GraphBuilder, GPUTextureReadback.Get(), RDGStagingTexture);
-
-		GraphBuilder.Execute();
-
-		// Lock and copy out the content of the TextureReadback to the CPU
-		int32 OutRowPitchInPixels;
-		int32 BlockSize = GPixelFormats[RDGStagingTexture->Desc.Format].BlockBytes;
-		void* ResultsBuffer = GPUTextureReadback->Lock(OutRowPitchInPixels);
-		if (RDGSourceTexture->Desc.Extent.X == OutRowPitchInPixels)
-		{
-			// Source pixel width is the same as the stride of the result buffer (ie no padding), we can do a plain memcpy
-			FPlatformMemory::Memcpy(OutBuffer, ResultsBuffer, (RDGSourceTexture->Desc.Extent.X * RDGSourceTexture->Desc.Extent.Y * BlockSize));
-		}
-		else
-		{
-			// Source pixel width differs from the stride of the result buffer (ie padding), do a memcpy that accounts for this
-			MemCpyStride(OutBuffer, ResultsBuffer, RDGSourceTexture->Desc.Extent.X * BlockSize, OutRowPitchInPixels * BlockSize, RDGSourceTexture->Desc.Extent.Y);
-		}
-		GPUTextureReadback->Unlock();
 	}
 } // namespace UE::PixelStreaming

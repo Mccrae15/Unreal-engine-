@@ -4,6 +4,7 @@
 
 #include "CoreTypes.h"
 
+#include "Engine/EngineTypes.h"
 #include "Modules/ModuleInterface.h"
 #include "Templates/Tuple.h"
 #include "UObject/ObjectMacros.h"
@@ -20,6 +21,12 @@
 	#include "pxr/pxr.h"
 #include "USDIncludesEnd.h"
 #endif // #if USE_USD_SDK
+
+#include "UnrealUSDWrapper.generated.h"
+
+// We are capped to 4 because the geometry cache and skeletal mesh + morph target shaders have a hard-coded limit of 4 texture coordinates, so our
+// material instances can't cross that limit or else they wouldn't compile when assigned to those meshes
+#define USD_PREVIEW_SURFACE_MAX_UV_SETS 4
 
 #if USE_USD_SDK
 PXR_NAMESPACE_OPEN_SCOPE
@@ -94,6 +101,14 @@ enum class EUsdDefaultKind : int32
 };
 ENUM_CLASS_FLAGS( EUsdDefaultKind );
 
+/** Corresponds to pxr::UsdLoadPolicy, refer to the USD SDK documentation */
+UENUM()
+enum class EUsdLoadPolicy : uint8
+{
+	UsdLoadWithDescendants,    // Load a prim plus all its descendants.
+	UsdLoadWithoutDescendants  // Load a prim by itself with no descendants.
+};
+
 UENUM()
 enum class EUsdInitialLoadSet : uint8
 {
@@ -124,6 +139,35 @@ enum class EUsdRootMotionHandling
 	UseMotionFromSkeleton
 };
 
+/** Corresponds to pxr::UsdListPosition, refer to the USD SDK documentation */
+UENUM()
+enum class EUsdListPosition : uint8
+{
+	// The position at the front of the prepend list.
+	// An item added at this position will, after composition is applied,
+	// be stronger than other items prepended in this layer, and stronger
+	// than items added by weaker layers.
+	FrontOfPrependList,
+
+	// The position at the back of the prepend list.
+	// An item added at this position will, after composition is applied,
+	// be weaker than other items prepended in this layer, but stronger
+	// than items added by weaker layers.
+	BackOfPrependList,
+
+	// The position at the front of the append list.
+	// An item added at this position will, after composition is applied,
+	// be stronger than other items appended in this layer, and stronger
+	// than items added by weaker layers.
+	FrontOfAppendList,
+
+	// The position at the back of the append list.
+	// An item added at this position will, after composition is applied,
+	// be weaker than other items appended in this layer, but stronger
+	// than items added by weaker layers.
+	BackOfAppendList
+};
+
 class IUnrealUSDWrapperModule : public IModuleInterface
 {
 };
@@ -134,6 +178,18 @@ public:
 #if USE_USD_SDK
 	UNREALUSDWRAPPER_API static double GetDefaultTimeCode();
 #endif  // #if USE_USD_SDK
+
+	/**
+	 * Registers all USD plug-ins discovered at PathToPlugInfo.
+	 * @return An array containing the names of any newly registered plugins.
+	 */
+	UNREALUSDWRAPPER_API static TArray<FString> RegisterPlugins(const FString& PathToPlugInfo);
+
+	/**
+	 * Registers all USD plug-ins discovered in any of PathsToPlugInfo.
+	 * @return An array containing the names of any newly registered plugins.
+	 */
+	UNREALUSDWRAPPER_API static TArray<FString> RegisterPlugins(const TArray<FString>& PathsToPlugInfo);
 
 	/**
 	 * Returns the file extensions of all file formats supported by USD.
@@ -213,6 +269,16 @@ public:
 
 	/** Removes the stage from the stage cache. See UsdStageCache::Erase. */
 	UNREALUSDWRAPPER_API static void EraseStageFromCache( const UE::FUsdStage& Stage );
+
+	/**
+	 * Set the directories that will be used as the default search path by USD's default resolver during asset resolution.
+	 *
+	 * Each directory in the search path should be an absolute path. If it is not, it will be anchored to the current working directory.
+	 *
+	 * Note that the default search path must be set before the first invocation of USD's resolver system, so this function
+	 * must be called before that to have any effect.
+	 */
+	UNREALUSDWRAPPER_API static void SetDefaultResolverDefaultSearchPath( const TArray<FDirectoryPath>& SearchPath );
 
 	/** Starts listening to error/warning/log messages emitted by USD */
 	UNREALUSDWRAPPER_API static void SetupDiagnosticDelegate();
@@ -294,6 +360,10 @@ namespace UnrealIdentifiers
 	extern UNREALUSDWRAPPER_API const pxr::TfToken Surface;
 	extern UNREALUSDWRAPPER_API const pxr::TfToken St;
 	extern UNREALUSDWRAPPER_API const pxr::TfToken Varname;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken Scale;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken Rotation;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken Translation;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken In;
 	extern UNREALUSDWRAPPER_API const pxr::TfToken Result;
 	extern UNREALUSDWRAPPER_API const pxr::TfToken File;
 	extern UNREALUSDWRAPPER_API const pxr::TfToken WrapS;
@@ -310,6 +380,7 @@ namespace UnrealIdentifiers
 
 	// Tokens copied from usdImaging, because at the moment it's all we need from it
 	extern UNREALUSDWRAPPER_API const pxr::TfToken UsdPreviewSurface;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken UsdTransform2d;
 	extern UNREALUSDWRAPPER_API const pxr::TfToken UsdPrimvarReader_float2;
 	extern UNREALUSDWRAPPER_API const pxr::TfToken UsdPrimvarReader_float3;
 	extern UNREALUSDWRAPPER_API const pxr::TfToken UsdUVTexture;
@@ -374,6 +445,10 @@ namespace UnrealIdentifiers
 	extern UNREALUSDWRAPPER_API FString MaterialAllPurposeText; // Text to show on UI for "allPurpose", as its value is actually the empty string
 	extern UNREALUSDWRAPPER_API FString MaterialPreviewPurpose;
 	extern UNREALUSDWRAPPER_API FString MaterialFullPurpose;
+
+	extern UNREALUSDWRAPPER_API FString PrimvarsDisplayColor;
+	extern UNREALUSDWRAPPER_API FString PrimvarsDisplayOpacity;
+	extern UNREALUSDWRAPPER_API FString DoubleSided;
 }
 
 struct UNREALUSDWRAPPER_API FUsdDelegates

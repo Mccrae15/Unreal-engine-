@@ -91,6 +91,14 @@ void FDMXPixelMappingGroupChildDragDropHelper::LayoutAligned(const FVector2D& Gr
 			{
 				if (UDMXPixelMappingOutputComponent* ChildComponent = WeakChildComponent.Get())
 				{
+					ChildComponent->PreEditChange(nullptr);
+
+					constexpr bool bModifyChildrenRecursive = true;
+					ChildComponent->ForEachChild([](UDMXPixelMappingBaseComponent* Component)
+						{
+							Component->Modify();
+						}, bModifyChildrenRecursive);
+
 					if (GroupComponent->IsOverPosition(NextPosition) && 
 						GroupComponent->IsOverPosition(NextPosition + ChildComponent->GetSize()))
 					{
@@ -120,6 +128,8 @@ void FDMXPixelMappingGroupChildDragDropHelper::LayoutAligned(const FVector2D& Gr
 							NextPosition = FVector2D(NextPosition.X + ChildComponent->GetSize().X, NextPosition.Y);
 						}
 					}
+
+					ChildComponent->PostEditChange();
 				}
 			}
 		}
@@ -141,10 +151,20 @@ void FDMXPixelMappingGroupChildDragDropHelper::LayoutUnaligned(const FVector2D& 
 				{
 					if (UDMXPixelMappingOutputComponent* ChildComponent = WeakOutputComponent.Get())
 					{
+						ChildComponent->PreEditChange(nullptr);
+
+						constexpr bool bModifyChildrenRecursive = true;
+						ChildComponent->ForEachChild([](UDMXPixelMappingBaseComponent* Component)
+							{
+								Component->Modify();
+							}, bModifyChildrenRecursive);
+
 						FVector2D AnchorOffset = Anchor - ChildComponent->GetPosition();
 
 						FVector2D NewPosition = GraphSpacePosition - AnchorOffset - PinnedDragDropOp->GraphSpaceDragOffset;
 						SetPosition(ChildComponent, NewPosition);
+
+						ChildComponent->PostEditChange();
 					}
 				}
 			}

@@ -9,6 +9,8 @@
 #include "Channels/MovieSceneChannelProxy.h"
 #include "MovieSceneSection.h"
 #include "Algo/Unique.h"
+#include "Containers/SortedMap.h"
+#include "KeyParams.h"
 
 template<typename ChannelType>
 void FMovieSceneConstraintChannelHelper::GetFramesToCompensate(
@@ -259,6 +261,137 @@ void FMovieSceneConstraintChannelHelper::DeleteTransformKeys(
 			Data.RemoveKey(KeyIndex);
 		}
 	}
+}
+
+
+template< typename ChannelType >
+void FMovieSceneConstraintChannelHelper::ChangeKeyInterpolation(
+	const TArrayView<ChannelType*>& InChannels,
+	const FFrameNumber& InTime,
+	EMovieSceneKeyInterpolation KeyInterpolation)
+{
+	using ChannelValueType = typename ChannelType::ChannelValueType;
+	TEnumAsByte<ERichCurveInterpMode> InterpMode = RCIM_Cubic;
+	TEnumAsByte<ERichCurveTangentMode> TangentMode = RCTM_Auto;
+	
+	switch (KeyInterpolation)
+	{
+		case EMovieSceneKeyInterpolation::SmartAuto:
+		{
+			InterpMode = RCIM_Cubic;
+			TangentMode = RCTM_SmartAuto;
+			break;
+		}
+		case EMovieSceneKeyInterpolation::Auto:
+		{
+			InterpMode = RCIM_Cubic;
+			TangentMode = RCTM_Auto;
+			break;
+		}
+		case EMovieSceneKeyInterpolation::User:
+		{
+			InterpMode = RCIM_Cubic;
+			TangentMode = RCTM_User;
+			break;
+		}
+		case EMovieSceneKeyInterpolation::Break:
+		{
+			InterpMode = RCIM_Cubic;
+			TangentMode = RCTM_Break;
+			break;
+		}
+		case EMovieSceneKeyInterpolation::Linear:
+		{
+			InterpMode = RCIM_Linear;
+			break;
+		}
+		case EMovieSceneKeyInterpolation::Constant:
+		{
+			InterpMode = RCIM_Constant;
+			break;
+		}
+	};
+	for (ChannelType* Channel : InChannels)
+	{
+		TMovieSceneChannelData<ChannelValueType> ChannelInterface = Channel->GetData();
+		const TArrayView<const FFrameNumber> Times = ChannelInterface.GetTimes();
+		const int32 KeyIndex = Algo::LowerBound(Times, InTime);
+		TArrayView<ChannelValueType> Values = ChannelInterface.GetValues();
+		if (Times.IsValidIndex(KeyIndex) && Times[KeyIndex] == InTime && Values.IsValidIndex(KeyIndex))
+		{
+			Values[KeyIndex].InterpMode = InterpMode;
+			Values[KeyIndex].TangentMode = TangentMode;
+		}
+	}
+}
+
+template< typename ChannelType >
+TArray<FFrameNumber> FMovieSceneConstraintChannelHelper::GetTransformTimes(
+	const TArrayView<ChannelType*>& InChannels,
+	const FFrameNumber& StartTime,
+	const FFrameNumber& EndTime)
+{
+	TSortedMap<FFrameNumber, FFrameNumber> FrameSet;
+	TRange<FFrameNumber> WithinRange(0, 0);
+	WithinRange.SetLowerBoundValue(StartTime);
+	WithinRange.SetUpperBoundValue(EndTime);
+	TArray<FFrameNumber> KeyTimes;
+	TArray<FKeyHandle> KeyHandles;
+	for (ChannelType* Channel : InChannels)
+	{
+		TMovieSceneChannelData<typename ChannelType::ChannelValueType> Data = Channel->GetData();
+		KeyTimes.SetNum(0);
+		KeyHandles.SetNum(0);
+		Data.GetKeys(WithinRange, &KeyTimes,&KeyHandles);
+		for (const FFrameNumber& FrameNumber : KeyTimes)
+		{
+			FrameSet.Add(FrameNumber,FrameNumber);
+		}
+	}
+	TArray<FFrameNumber> Frames;
+	FrameSet.GenerateKeyArray(Frames);
+	return Frames;
+}
+
+template< typename ChannelType >
+ void FMovieSceneConstraintChannelHelper::DeleteTransformTimes(
+	 const TArrayView<ChannelType*>& InChannels,
+	 const FFrameNumber& StartTime,
+	 const FFrameNumber& EndTime,
+	 EMovieSceneTransformChannel InChannelsToKey)
+{
+	 TRange<FFrameNumber> WithinRange(0, 0);
+	 WithinRange.SetLowerBoundValue(StartTime);
+	 WithinRange.SetUpperBoundValue(EndTime);
+	 TArray<FFrameNumber> KeyTimes;
+	 TArray<FKeyHandle> KeyHandles;
+
+	 const bool bKeyTranslation = EnumHasAllFlags(InChannelsToKey, EMovieSceneTransformChannel::Translation);
+	 const bool bKeyRotation = EnumHasAllFlags(InChannelsToKey, EMovieSceneTransformChannel::Rotation);
+	 const bool bKeyScale = EnumHasAllFlags(InChannelsToKey, EMovieSceneTransformChannel::Scale);
+
+	 TArray<uint32> ChannelsIndexToKey;
+	 if (bKeyTranslation)
+	 {
+		 ChannelsIndexToKey.Append({ 0,1,2 });
+	 }
+	 if (bKeyRotation)
+	 {
+		 ChannelsIndexToKey.Append({ 3,4,5 });
+	 }
+	 if (bKeyScale)
+	 {
+		 ChannelsIndexToKey.Append({ 6,7,8 });
+	 }
+	 for (const int32 ChannelIndex : ChannelsIndexToKey)
+	 {
+		 ChannelType* Channel = InChannels[ChannelIndex];
+		 TMovieSceneChannelData<typename ChannelType::ChannelValueType> Data = Channel->GetData();
+		 KeyTimes.SetNum(0);
+		 KeyHandles.SetNum(0);
+		 Data.GetKeys(WithinRange, &KeyTimes, &KeyHandles);
+		 Data.DeleteKeys(KeyHandles);
+	 }
 }
 
 template<typename ChannelType>

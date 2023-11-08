@@ -4,27 +4,7 @@
 
 #include "ScreenPass.h"
 
-// LuminanceMax is the amount of light that will cause the sensor to saturate at EV100.
-//  See also https://en.wikipedia.org/wiki/Film_speed and https://en.wikipedia.org/wiki/Exposure_value for more info.
-FORCEINLINE float EV100ToLuminance(float LuminanceMax, float EV100)
-{
-	return LuminanceMax * FMath::Pow(2.0f, EV100);
-}
-
-FORCEINLINE float EV100ToLog2(float LuminanceMax, float EV100)
-{
-	return EV100 + FMath::Log2(LuminanceMax);
-}
-
-FORCEINLINE float LuminanceToEV100(float LuminanceMax, float Luminance)
-{
-	return FMath::Log2(Luminance / LuminanceMax);
-}
-
-FORCEINLINE float Log2ToEV100(float LuminanceMax, float Log2)
-{
-	return Log2 - FMath::Log2(LuminanceMax);
-}
+class FLocalExposureParameters;
 
 namespace AutoExposurePermutation
 {
@@ -81,11 +61,6 @@ BEGIN_SHADER_PARAMETER_STRUCT(FEyeAdaptationParameters, )
 	SHADER_PARAMETER(float, HistogramScale)
 	SHADER_PARAMETER(float, HistogramBias)
 	SHADER_PARAMETER(float, LuminanceMin)
-	SHADER_PARAMETER(float, LocalExposureHighlightContrastScale)
-	SHADER_PARAMETER(float, LocalExposureShadowContrastScale)
-	SHADER_PARAMETER(float, LocalExposureDetailStrength)
-	SHADER_PARAMETER(float, LocalExposureBlurredLuminanceBlend)
-	SHADER_PARAMETER(float, LocalExposureMiddleGreyExposureCompensation)
 	SHADER_PARAMETER(float, BlackHistogramBucketInfluence)
 	SHADER_PARAMETER(float, GreyMult)
 	SHADER_PARAMETER(float, ExponentialUpM)
@@ -124,7 +99,9 @@ FRDGBufferRef AddHistogramEyeAdaptationPass(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View,
 	const FEyeAdaptationParameters& EyeAdaptationParameters,
-	FRDGTextureRef HistogramTexture);
+	const FLocalExposureParameters& LocalExposureParameters,
+	FRDGTextureRef HistogramTexture,
+	bool bComputeAverageLocalExposure);
 
 // Computes luma of scene color stores in Alpha.
 FScreenPassTexture AddBasicEyeAdaptationSetupPass(
@@ -138,8 +115,10 @@ FRDGBufferRef AddBasicEyeAdaptationPass(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View,
 	const FEyeAdaptationParameters& EyeAdaptationParameters,
+	const FLocalExposureParameters& LocalExposureParameters,
 	FScreenPassTexture SceneColor,
-	FRDGBufferRef EyeAdaptationBuffer);
+	FRDGBufferRef EyeAdaptationBuffer,
+	bool bComputeAverageLocalExposure);
 
 /**
 * Helper function to get current eye adaptation in a texture.

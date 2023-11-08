@@ -309,6 +309,11 @@ FAutoConsoleCommandWithWorld ListMeshDistanceFieldsMemoryConsoleCommand(
 	FConsoleCommandWithWorldDelegate::CreateStatic(OnListMeshDistanceFields)
 	);
 
+bool ShouldCompileDFNormalShaders(EShaderPlatform ShaderPlatform)
+{
+	return ShouldCompileDistanceFieldShaders(ShaderPlatform) && !IsMobilePlatform(ShaderPlatform);
+}
+
 class FComputeDistanceFieldNormalPS : public FGlobalShader
 {
 public:
@@ -325,7 +330,7 @@ public:
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return ShouldCompileDistanceFieldShaders(Parameters.Platform);
+		return ShouldCompileDFNormalShaders(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -354,7 +359,7 @@ public:
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return ShouldCompileDistanceFieldShaders(Parameters.Platform);
+		return ShouldCompileDFNormalShaders(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -672,7 +677,6 @@ bool SupportsDistanceFieldAO(ERHIFeatureLevel::Type FeatureLevel, EShaderPlatfor
 		&& !GRHIDeviceIsAMDPreGCNArchitecture
 		// Intel HD 4000 hangs in the RHICreateTexture3D call to allocate the large distance field atlas, and virtually no Intel cards can afford it anyway
 		&& !GRHIDeviceIsIntegrated
-		&& FeatureLevel >= ERHIFeatureLevel::SM5
 		&& DoesPlatformSupportDistanceFieldAO(ShaderPlatform)
 		&& IsUsingDistanceFields(ShaderPlatform);
 }
@@ -749,10 +753,7 @@ bool FSceneRenderer::ShouldPrepareGlobalDistanceField() const
 		return false;
 	}
 
-	bool bShouldPrepareForAO = SupportsDistanceFieldAO(Scene->GetFeatureLevel(), Scene->GetShaderPlatform())
-		&& (ShouldPrepareForDistanceFieldAO()
-			|| ((Views.Num() > 0) && Views[0].bUsesGlobalDistanceField)
-			|| ((FXSystem != nullptr) && FXSystem->UsesGlobalDistanceField()));
+	bool bShouldPrepareForAO = SupportsDistanceFieldAO(Scene->GetFeatureLevel(), Scene->GetShaderPlatform());
 
 	bShouldPrepareForAO = bShouldPrepareForAO || (IsLumenEnabled(Views[0]) && Lumen::UseGlobalSDFObjectGrid(*Views[0].Family));
 
@@ -843,7 +844,7 @@ void FDeferredShadingSceneRenderer::RenderDistanceFieldLighting(
 			ObjectIndirectArguments,
 			CulledObjectBufferParameters);
 
-		CullObjectsToView(GraphBuilder, Scene, View, Parameters, CulledObjectBufferParameters);
+		CullObjectsToView(GraphBuilder, *Scene, View, Parameters, CulledObjectBufferParameters);
 	}
 
 	ComputeDistanceFieldNormal(GraphBuilder, Views, SceneTextures.UniformBuffer, DistanceFieldNormal, Parameters);
@@ -852,7 +853,7 @@ void FDeferredShadingSceneRenderer::RenderDistanceFieldLighting(
 	if (UseAOObjectDistanceField())
 	{
 		//@todo - support multiple views - should pass one TileIntersectionParameters per view
-		BuildTileObjectLists(GraphBuilder, Scene, Views, ObjectIndirectArguments, CulledObjectBufferParameters, TileIntersectionParameters, DistanceFieldNormal, Parameters);
+		BuildTileObjectLists(GraphBuilder, *Scene, Views, ObjectIndirectArguments, CulledObjectBufferParameters, TileIntersectionParameters, DistanceFieldNormal, Parameters);
 	}
 
 	FRDGTextureRef BentNormalOutput = nullptr;
@@ -879,7 +880,7 @@ void FDeferredShadingSceneRenderer::RenderDistanceFieldLighting(
 	OutDynamicBentNormalAO = BentNormalOutput;
 }
 
-bool FDeferredShadingSceneRenderer::ShouldRenderDistanceFieldAO() const
+bool FSceneRenderer::ShouldRenderDistanceFieldAO() const
 {
 	bool bShouldRenderRTAO = false;
 	for (int ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)

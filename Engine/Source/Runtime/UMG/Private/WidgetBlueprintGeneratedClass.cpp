@@ -103,6 +103,8 @@ FAutoConsoleCommand GDumpTemplateSizesCommand(
 int32 TemplatePreviewInEditor = 0;
 static FAutoConsoleVariableRef CVarTemplatePreviewInEditor(TEXT("Widget.TemplatePreviewInEditor"), TemplatePreviewInEditor, TEXT("Should a dynamic template be generated at runtime for the editor for widgets?  Useful for debugging templates."), ECVF_Default);
 
+FWidgetBlueprintGeneratedClassDelegates::FGetAssetTags FWidgetBlueprintGeneratedClassDelegates::GetAssetTags;
+
 #endif
 
 #if WITH_EDITORONLY_DATA
@@ -120,7 +122,6 @@ namespace
 // UWidgetBlueprintGeneratedClass
 
 UWidgetBlueprintGeneratedClass::UWidgetBlueprintGeneratedClass()
-	: FieldNotifyStartBitNumber(INDEX_NONE)
 {
 #if WITH_EDITORONLY_DATA
 	{
@@ -367,12 +368,6 @@ void UWidgetBlueprintGeneratedClass::PostLoad()
 #endif
 }
 
-void UWidgetBlueprintGeneratedClass::PostLoadDefaultObject(UObject* Object)
-{
-	Super::PostLoadDefaultObject(Object);
-	InitializeFieldNotification(Cast<UUserWidget>(Object));
-}
-
 void UWidgetBlueprintGeneratedClass::PurgeClass(bool bRecompilingOnLoad)
 {
 	Super::PurgeClass(bRecompilingOnLoad);
@@ -396,7 +391,6 @@ void UWidgetBlueprintGeneratedClass::PurgeClass(bool bRecompilingOnLoad)
 
 	Animations.Empty();
 	Bindings.Empty();
-	FieldNotifyNames.Empty();
 }
 
 bool UWidgetBlueprintGeneratedClass::NeedsLoadForServer() const
@@ -489,41 +483,6 @@ UWidgetBlueprintGeneratedClass* UWidgetBlueprintGeneratedClass::FindWidgetTreeOw
 	return nullptr;
 }
 
-void UWidgetBlueprintGeneratedClass::InitializeFieldNotification(const UUserWidget* UserWidget)
-{
-	FieldNotifyStartBitNumber = 0;
-	if (UserWidget && FieldNotifyNames.Num())
-	{
-		int32 NumberOfField = 0;
-		UserWidget->GetFieldNotificationDescriptor().ForEachField(this, [&NumberOfField](::UE::FieldNotification::FFieldId FielId)
-			{
-				++NumberOfField;
-				return true;
-			});
-		FieldNotifyStartBitNumber = NumberOfField - FieldNotifyNames.Num();
-		ensureMsgf(FieldNotifyStartBitNumber >= 0, TEXT("The FieldNotifyStartIndex is negative. The number of field should be positive."));
-	}
-}
-
-void UWidgetBlueprintGeneratedClass::ForEachField(TFunctionRef<bool(::UE::FieldNotification::FFieldId FielId)> Callback, bool bIncludeSuper) const
-{
-	ensureMsgf(FieldNotifyStartBitNumber >= 0, TEXT("The FieldNotifyStartIndex is negative. The number of field should be positive."));
-	for (int32 Index = 0; Index < FieldNotifyNames.Num(); ++Index)
-	{
-		if (!Callback(UE::FieldNotification::FFieldId(FieldNotifyNames[Index].GetFieldName(), Index + FieldNotifyStartBitNumber)))
-		{
-			break;
-		}
-	}
-	if (bIncludeSuper)
-	{
-		if (UWidgetBlueprintGeneratedClass* ParentClass = Cast<UWidgetBlueprintGeneratedClass>(GetSuperClass()))
-		{
-			ParentClass->ForEachField(Callback);
-		}
-	}
-}
-
 UWidgetBlueprintGeneratedClassExtension* UWidgetBlueprintGeneratedClass::GetExtension(TSubclassOf<UWidgetBlueprintGeneratedClassExtension> InExtensionType, bool bIncludeSuper)
 {
 	for (UWidgetBlueprintGeneratedClassExtension* Extension : Extensions)
@@ -567,6 +526,15 @@ void UWidgetBlueprintGeneratedClass::GetExtensions(TArray<UWidgetBlueprintGenera
 		}
 	}
 }
+
+#if WITH_EDITOR
+void UWidgetBlueprintGeneratedClass::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
+{
+	Super::GetAssetRegistryTags(OutTags);
+
+	FWidgetBlueprintGeneratedClassDelegates::GetAssetTags.Broadcast(this, OutTags);
+}
+#endif
 
 #undef LOCTEXT_NAMESPACE
 

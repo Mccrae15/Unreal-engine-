@@ -4,6 +4,8 @@
 
 #include "Containers/Queue.h"
 #include "MuCO/CustomizableObject.h"
+#include "MuCO/CustomizableObjectInstance.h"
+#include "MuCO/CustomizableObjectExtension.h"
 #include "Containers/Ticker.h"
 
 #include "MuCO/CustomizableObjectInstanceDescriptor.h"
@@ -13,6 +15,7 @@
 #include "MuR/Image.h"
 #include "UObject/GCObject.h"
 #include "WorldCollision.h"
+#include "MuCO/FMutableTaskGraph.h"
 
 // This define could come from MuR/System.h
 #ifdef MUTABLE_USE_NEW_TASKGRAPH
@@ -32,7 +35,9 @@ class FMutableOperation
 	/** Instance parameters at the time of the operation request. */
 	mu::ParametersPtr Parameters; 
 	
-	bool bBuildParameterDecorations = false;
+	TArray<FName> TextureParameters;
+
+	bool bBuildParameterRelevancy = false;
 	bool bMeshNeedsUpdate = false;
 
 	/** Protected constructor. */
@@ -40,32 +45,18 @@ class FMutableOperation
 
 public:
 
+	FMutableOperation(const FMutableOperation&);
+	FMutableOperation(FMutableOperation&&) = default;
+	FMutableOperation& operator=(const FMutableOperation&);
+	FMutableOperation& operator=(FMutableOperation&&) = default;
 
-	static FMutableOperation CreateInstanceUpdate(UCustomizableObjectInstance* COInstance, bool bInNeverStream, int32 MipsToSkip);
-	static FMutableOperation CreateInstanceDiscard(UCustomizableObjectInstance* COInstance);
-	static FMutableOperation CreateInstanceIDRelease(mu::Instance::ID);
+	~FMutableOperation();
 
-
-	enum class EOperationType
-	{
-		// Create mutable resources for a new instance or to update an exiting one.
-		Update,
-
-		// Discard the resources of an instance.
-		Discard,
-
-		// Release the instance ID and all the temp data associated with it. Usually used with the LiveUpdateMode
-		IDRelease
-
-		// Attention! If any new operation type is added, make sure to review FMutableQueue::Enqueue in CustomizableObjectSystem.cpp and
-		// modify it if new operations of this type should override older ones to the same instance. The default behavior is to enqueue 
-		// the new ones so that they are executed after the old ones.
-	};
-
-	// Type of the operation
-	EOperationType Type;
+	static FMutableOperation CreateInstanceUpdate(UCustomizableObjectInstance* COInstance, bool bInNeverStream, int32 MipsToSkip, const FInstanceUpdateDelegate* UpdateCallback);
 
 	bool bStarted = false;
+
+	bool bForceGenerateAllLODs = false;
 
 	bool bNeverStream = false;
 
@@ -90,15 +81,12 @@ public:
 	/** Only used in the IDRelease operation type */
 	mu::Instance::ID IDToRelease;
 
-	//!
-	bool IsBuildParameterDecorations() const
+	FInstanceUpdateDelegate UpdateCallback;
+	
+	bool IsBuildParameterRelevancy() const
 	{
-		return bBuildParameterDecorations;
+		return bBuildParameterRelevancy;
 	}
-
-	// \TODO: This should be intercepted earlier.
-	// In case Mutable Compilation has been disabled, do all the corresponding steps to assign the reference mesh of the customizable object
-	void MutableIsDisabledCase();
 
 	/** Read-only access to the mutable instance parameters for this operation. */
 	mu::ParametersPtrConst GetParameters() const
@@ -108,31 +96,49 @@ public:
 };
 
 
-
-struct FMutableQueueElem
+struct FMutablePendingInstanceUpdate
 {
-	// Priority for mutable update queue, Low is the normal distance-based priority, High is normally used for discards and Mid for LOD downgrades
-	enum EQueuePriorityType { High, Med, Med_Low, Low };
+	EQueuePriorityType PriorityType = EQueuePriorityType::Low;
 
-	EQueuePriorityType PriorityType;
-	float Priority;
-	TSharedPtr<FMutableOperation> Operation;
-	bool bIsDiscardResources;
+	TWeakObjectPtr<UCustomizableObjectInstance> CustomizableObjectInstance;
+	FCustomizableObjectInstanceDescriptor InstanceDescriptor;
 
-	static FMutableQueueElem Create(TSharedPtr<FMutableOperation> InOperation, EQueuePriorityType NewPriorityType, double NewPriority)
+	double SecondsAtUpdate = 0;
+	FInstanceUpdateDelegate* Callback = nullptr;
+	bool bNeverStream = false;
+
+	/** If this is non-zero, the instance images will be generated with a certain amount of mips starting from the smallest. Otherwise, the full images will be generated.
+	 * This is used for both Update and UpdateImage operations.
+	 */
+	int32 MipsToSkip = 0;
+
+	FMutablePendingInstanceUpdate(UCustomizableObjectInstance* InCustomizableObjectInstance)
 	{
-		FMutableQueueElem MutableQueueElem;
-
-		MutableQueueElem.PriorityType = NewPriorityType;
-		MutableQueueElem.Priority = NewPriority;
-		check(InOperation);
-		MutableQueueElem.Operation = InOperation;
-		MutableQueueElem.bIsDiscardResources = (InOperation->Type==FMutableOperation::EOperationType::Discard);
-
-		return MutableQueueElem;
+		check(InCustomizableObjectInstance);
+		CustomizableObjectInstance = InCustomizableObjectInstance;
 	}
 
-	friend bool operator <(const FMutableQueueElem& A, const FMutableQueueElem& B)
+	FMutablePendingInstanceUpdate(UCustomizableObjectInstance* InCustomizableObjectInstance, EQueuePriorityType NewPriorityType, 
+		                          FInstanceUpdateDelegate* InCallback, bool bInNeverStream, int32 InMipsToSkip)
+	{
+		PriorityType = NewPriorityType;
+
+		check(InCustomizableObjectInstance);
+		CustomizableObjectInstance = InCustomizableObjectInstance;
+		InstanceDescriptor = CustomizableObjectInstance->GetDescriptor();
+
+		SecondsAtUpdate = FPlatformTime::Seconds();
+		Callback = InCallback;
+		bNeverStream = bInNeverStream;
+		MipsToSkip = InMipsToSkip;
+	}
+
+	friend bool operator ==(const FMutablePendingInstanceUpdate& A, const FMutablePendingInstanceUpdate& B)
+	{
+		return A.CustomizableObjectInstance.HasSameIndexAndSerialNumber(B.CustomizableObjectInstance);
+	}
+
+	friend bool operator <(const FMutablePendingInstanceUpdate& A, const FMutablePendingInstanceUpdate& B)
 	{
 		if (A.PriorityType < B.PriorityType)
 		{
@@ -144,54 +150,139 @@ struct FMutableQueueElem
 		}
 		else
 		{
-			if (A.bIsDiscardResources && !B.bIsDiscardResources)
-			{
-				return true;
-			}
-			else if (!A.bIsDiscardResources && B.bIsDiscardResources)
-			{
-				return false;
-			}
-
-			return A.Priority < B.Priority;
+			return A.SecondsAtUpdate < B.SecondsAtUpdate;
 		}
 	}
 };
 
 
-/** Instances operations queue.
- *
- * The queue will only contain a single operation per UCustomizableObjectInstance.
- * If there is already an operation it will be replaced. */
-class FMutableQueue
+inline uint32 GetTypeHash(const FMutablePendingInstanceUpdate& Update)
 {
-	TArray<FMutableQueueElem> Array;
+	return GetTypeHash(Update.CustomizableObjectInstance.GetWeakPtrTypeHash());
+}
+
+
+struct FPendingInstanceUpdateKeyFuncs : BaseKeyFuncs<FMutablePendingInstanceUpdate, TWeakObjectPtr<UCustomizableObjectInstance>>
+{
+	FORCEINLINE static const TWeakObjectPtr<UCustomizableObjectInstance>& GetSetKey(const FMutablePendingInstanceUpdate& PendingUpdate)
+	{
+		return PendingUpdate.CustomizableObjectInstance;
+	}
+
+	FORCEINLINE static bool Matches(const TWeakObjectPtr<UCustomizableObjectInstance>& A, const TWeakObjectPtr<UCustomizableObjectInstance>& B)
+	{
+		return A.HasSameIndexAndSerialNumber(B);
+	}
+
+	FORCEINLINE static uint32 GetKeyHash(const TWeakObjectPtr<UCustomizableObjectInstance>& Identifier)
+	{
+		return GetTypeHash(Identifier.GetWeakPtrTypeHash());
+	}
+};
+
+
+struct FMutablePendingInstanceDiscard
+{
+	TWeakObjectPtr<UCustomizableObjectInstance> CustomizableObjectInstance;
+
+	FMutablePendingInstanceDiscard(UCustomizableObjectInstance* InCustomizableObjectInstance)
+	{
+		CustomizableObjectInstance = InCustomizableObjectInstance;
+	}
+
+	friend bool operator ==(const FMutablePendingInstanceDiscard& A, const FMutablePendingInstanceDiscard& B)
+	{
+		return A.CustomizableObjectInstance.HasSameIndexAndSerialNumber(B.CustomizableObjectInstance);
+	}
+};
+
+
+inline uint32 GetTypeHash(const FMutablePendingInstanceDiscard& Discard)
+{
+	return GetTypeHash(Discard.CustomizableObjectInstance.GetWeakPtrTypeHash());
+}
+
+
+struct FPendingInstanceDiscardKeyFuncs : BaseKeyFuncs<FMutablePendingInstanceUpdate, TWeakObjectPtr<UCustomizableObjectInstance>>
+{
+	FORCEINLINE static const TWeakObjectPtr<UCustomizableObjectInstance>& GetSetKey(const FMutablePendingInstanceDiscard& PendingDiscard)
+	{
+		return PendingDiscard.CustomizableObjectInstance;
+	}
+
+	FORCEINLINE static bool Matches(const TWeakObjectPtr<UCustomizableObjectInstance>& A, const TWeakObjectPtr<UCustomizableObjectInstance>& B)
+	{
+		return A.HasSameIndexAndSerialNumber(B);
+	}
+
+	FORCEINLINE static uint32 GetKeyHash(const TWeakObjectPtr<UCustomizableObjectInstance>& Identifier)
+	{
+		return GetTypeHash(Identifier.GetWeakPtrTypeHash());
+	}
+};
+
+
+/** Instance updates queue.
+ *
+ * The queues will only contain a single operation per UCustomizableObjectInstance.
+ * If there is already an operation it will be replaced. */
+class FMutablePendingInstanceWork
+{
+	TSet<FMutablePendingInstanceUpdate, FPendingInstanceUpdateKeyFuncs> PendingInstanceUpdates;
+
+	TSet<FMutablePendingInstanceDiscard, FPendingInstanceDiscardKeyFuncs> PendingInstanceDiscards;
+
+	TSet<mu::Instance::ID> PendingIDsToRelease;
+
+	int32 NumLODUpdatesLastTick = 0;
 
 public:
-	bool IsEmpty() const;
+	// Returns true if there are no pending instance updates. Doesn't take into account discards.
+	bool ArePendingUpdatesEmpty() const;
 
-	int Num() const;
+	// Returns the number of pending instance updates, LOD Updates, discards and releases last tick.
+	int32 Num() const;
 
-	void Enqueue(const FMutableQueueElem& TaskToEnqueue);
+	void SetLODUpdatesLastTick(int32 NumLODUpdates);
 
-	void Dequeue(FMutableQueueElem* DequeuedTask);
+	// Adds a new instance update
+	void AddUpdate(const FMutablePendingInstanceUpdate& UpdateToAdd);
 
-	void ChangePriorities();
+	// Removes an instance update
+	void RemoveUpdate(const TWeakObjectPtr<UCustomizableObjectInstance>& Instance);
 
-	void UpdatePriority(const UCustomizableObjectInstance* Instance);
+	const FMutablePendingInstanceUpdate* GetUpdate(const TWeakObjectPtr<UCustomizableObjectInstance>& Instance) const;
 
-	const FMutableQueueElem* Get(const UCustomizableObjectInstance* Instance) const;
-	
-	void Sort();
+	TSet<FMutablePendingInstanceUpdate, FPendingInstanceUpdateKeyFuncs>::TIterator GetUpdateIterator()
+	{
+		return PendingInstanceUpdates.CreateIterator();
+	}
+
+	TSet<FMutablePendingInstanceDiscard, FPendingInstanceDiscardKeyFuncs>::TIterator GetDiscardIterator()
+	{
+		return PendingInstanceDiscards.CreateIterator();
+	}
+
+	TSet<mu::Instance::ID>::TIterator GetIDsToReleaseIterator()
+	{
+		return PendingIDsToRelease.CreateIterator();
+	}
+
+	void AddDiscard(const FMutablePendingInstanceDiscard& TaskToEnqueue);
+	void AddIDRelease(mu::Instance::ID IDToRelease);
+
+	void RemoveAllUpdatesAndDiscardsAndReleases();
 };
 
 
 struct FMutableImageCacheKey
 {
-	mu::RESOURCE_ID Resource = 0;
+	mu::FResourceID Resource = 0;
 	int32 SkippedMips = 0;
 
-	FMutableImageCacheKey(mu::RESOURCE_ID InResource, int32 InSkippedMips)
+	FMutableImageCacheKey() {};
+
+	FMutableImageCacheKey(mu::FResourceID InResource, int32 InSkippedMips)
 		: Resource(InResource), SkippedMips(InSkippedMips) {}
 
 	inline bool operator==(const FMutableImageCacheKey& Other) const
@@ -211,7 +302,7 @@ inline uint32 GetTypeHash(const FMutableImageCacheKey& Key)
 struct FMutableResourceCache
 {
 	TWeakObjectPtr<const UCustomizableObject> Object;
-	TMap<mu::RESOURCE_ID, TWeakObjectPtr<USkeletalMesh> > Meshes;
+	TMap<mu::FResourceID, TWeakObjectPtr<USkeletalMesh> > Meshes;
 	TMap<FMutableImageCacheKey, TWeakObjectPtr<UTexture2D> > Images;
 
 	void Clear()
@@ -236,7 +327,12 @@ struct FMutableTask
 
 	/** From the traditional event graph system, still used to wait for async loads. */
 	FGraphEventRef GraphDependency0;
+	
+#ifdef MUTABLE_USE_NEW_TASKGRAPH
+	UE::Tasks::FTask GraphDependency1;
+#else
 	FGraphEventRef GraphDependency1;
+#endif
 
 	/** Check if all the dependencies of this task have been completed. */
 	inline bool AreDependenciesComplete() const
@@ -246,7 +342,7 @@ struct FMutableTask
 			&&
 			(!GraphDependency0 || GraphDependency0->IsComplete())
 			&&
-			(!GraphDependency1 || GraphDependency1->IsComplete());
+			(GraphDependency1.IsCompleted());
 #else
 		return 
 			(!GraphDependency0 || GraphDependency0->IsComplete())
@@ -262,7 +358,12 @@ struct FMutableTask
 		Dependency = {};
 #endif
 		GraphDependency0 = nullptr;
+
+#ifdef MUTABLE_USE_NEW_TASKGRAPH
+		GraphDependency1 = {};
+#else
 		GraphDependency1 = nullptr;
+#endif
 	}
 };
 
@@ -277,7 +378,7 @@ struct FInstanceGeneratedData
 		/** True if it can be reused */
 		bool bGenerated = false;
 
-		mu::RESOURCE_ID MeshID;
+		mu::FResourceID MeshID;
 
 		/** Range in the Surfaces array */
 		uint16 FirstSurface = 0;
@@ -307,15 +408,18 @@ struct FInstanceGeneratedData
 
 // Mutable data generated during the update steps.
 // We keep it from begin to end update, and it is used in several steps.
-// TODO: Flatten this structure into 4 arrays and use indices in fixed-size structs instead of subarrays
 struct FInstanceUpdateData
 {
 	struct FImage
 	{
 		FString Name;
-		mu::RESOURCE_ID ImageID;
+		mu::FResourceID ImageID;
+		
+		// LOD of the ImageId. If the texture is shared between LOD, first LOD where this image can be found. 
+		int32 BaseLOD;
+		
 		uint16 FullImageSizeX, FullImageSizeY;
-		mu::ImagePtrConst Image;
+		mu::Ptr<const mu::Image> Image;
 		TWeakObjectPtr<UTexture2D> Cached;
 	};
 
@@ -361,7 +465,7 @@ struct FInstanceUpdateData
 		// Reuse component from a previously generated SkeletalMesh
 		bool bReuseMesh = false;
 
-		mu::RESOURCE_ID MeshID;
+		mu::FResourceID MeshID;
 		mu::MeshPtrConst Mesh;
 
 		/** Range in the Surfaces array */
@@ -374,11 +478,9 @@ struct FInstanceUpdateData
 		//uint32 FirstActiveBone;
 		//uint32 ActiveBoneCount;
 
-		// \TODO: Flatten
-		TArray<uint16> BoneMap;
 		/** Range in the external Bones array */
-		//uint32 FirstBoneMap;
-		//uint32 BoneMapCount;
+		uint32 FirstBoneMap = 0;
+		uint32 BoneMapCount = 0;
 	};
 
 	struct FLOD
@@ -395,17 +497,26 @@ struct FInstanceUpdateData
 	TArray<FVector> Vectors;
 	TArray<FScalar> Scalars;
 
+	TArray<uint16> BoneMaps;
+
 	struct FSkeletonData
 	{
 		int16 ComponentIndex = INDEX_NONE;
 
-		TArray<uint32> SkeletonIds;
+		TArray<uint16> SkeletonIds;
 
-		TArray<FName> BoneNames;
-		TMap<FName, FMatrix44f> BoneMatricesWithScale;
+		TArray<uint16> BoneIds;
+		TArray<FMatrix44f> BoneMatricesWithScale;
 	};
 
 	TArray<FSkeletonData> Skeletons;
+
+	struct FNamedExtensionData
+	{
+		mu::ExtensionDataPtrConst Data;
+		FName Name;
+	};
+	TArray<FNamedExtensionData> ExtendedInputPins;
 
 	/** */
 	void Clear()
@@ -417,24 +528,7 @@ struct FInstanceUpdateData
 		Scalars.Empty();
 		Vectors.Empty();
 		Skeletons.Empty();
-	}
-};
-
-
-// Mutable data generated during the update steps.
-struct FParameterDecorationsUpdateData
-{
-	struct FParameterDesc
-	{
-		TArray<mu::ImagePtrConst> Images;
-	};
-
-	//! Information about additional images used for parameter UI decoration
-	TArray<FParameterDesc> Parameters;
-
-	void Clear()
-	{
-		Parameters.Empty();
+		ExtendedInputPins.Empty();
 	}
 };
 
@@ -468,8 +562,9 @@ struct FMutableOperationData
 	FInstanceGeneratedData LastUpdateData;
 
 	FInstanceUpdateData InstanceUpdateData;
-	FParameterDecorationsUpdateData ParametersUpdateData;
 	TArray<int> RelevantParametersInProgress;
+
+	TArray<FString> LowPriorityTextures;
 
 	/** This option comes from the operation request */
 	bool bNeverStream = false;
@@ -498,6 +593,9 @@ struct FMutableOperationData
 	mu::Ptr<const mu::Parameters> MutableParameters;
 	int32 State = 0;
 
+	EUpdateResult UpdateResult;
+	FInstanceUpdateDelegate UpdateCallback;
+
 #if WITH_EDITOR
 	/** Used for profiling in the editor. */
 	uint32 MutableRuntimeCycles = 0;
@@ -520,20 +618,22 @@ public:
 	static UCustomizableObjectSystem* SSystem;
 
 	// Pointer to the lower level mutable system that actually does the work.
-	mu::SystemPtr MutableSystem;
+	mu::Ptr<mu::System> MutableSystem;
 
-	// Store the last streaming memory size in bytes, to change it when it is safe.
-	uint64_t LastStreamingMemorySize = 0;
+	/** Store the last streaming memory size in bytes, to change it when it is safe. */
+	uint64 LastWorkingMemoryBytes = 0;
+	uint32 LastGeneratedResourceCacheSize = 0;
 
 	// This object is responsible for streaming data to the MutableSystem.
-	// Non-owned reference
-	class FUnrealMutableModelBulkStreamer* Streamer = nullptr;
+	TSharedPtr<class FUnrealMutableModelBulkReader> Streamer;
+
+	// 
+	TSharedPtr<class FUnrealExtensionDataStreamer> ExtensionDataStreamer;
 
 	// This object is responsible for providing custom images to mutable models (for image parameters)
 	// This object is called from the mutable thread, and it should only access data already safely submitted from
 	// the game thread and stored in FUnrealMutableImageProvider::GlobalExternalImages.
-	// Non-owned reference
-	class FUnrealMutableImageProvider* ImageProvider = nullptr;
+	TSharedPtr<class FUnrealMutableImageProvider> ImageProvider;
 
 	// Cache of weak references to generated resources to see if they can be reused.
 	TArray<FMutableResourceCache> ModelResourcesCache;
@@ -541,9 +641,10 @@ public:
 	// List of textures currently cached and valid for the current object that we are operating on.
 	// This array gets generated when the object cached resources are protected in SetResourceCacheProtected
 	// from the game thread, and it is read from the Mutable thread only while updating the instance.
-	TArray<mu::RESOURCE_ID> ProtectedObjectCachedImages;
+	TArray<mu::FResourceID> ProtectedObjectCachedImages;
 
-	FMutableQueue MutableOperationQueue;
+	// The pending instance updates, discards or releases
+	FMutablePendingInstanceWork MutablePendingInstanceWork;
 
 	// Queue of game-thread tasks that need to be executed for the current operation
 	TQueue<FMutableTask> PendingTasks;
@@ -552,109 +653,17 @@ public:
 	static int32 EnableMutableLiveUpdate;
 	static int32 EnableReuseInstanceTextures;
 	static int32 EnableMutableAnimInfoDebugging;
+	static int32 EnableSkipGenerateResidentMips;
 	static int32 EnableOnlyGenerateRequestedLODs;
+	static int32 MaxTextureSizeToGenerate;
 	static bool bEnableMutableReusePreviousUpdateData;
 
 	/** */
 	inline void AddGameThreadTask(const FMutableTask& Task)
 	{
+		check(IsInGameThread())
 		PendingTasks.Enqueue(Task);
 	}
-
-	/** */
-#ifdef MUTABLE_USE_NEW_TASKGRAPH
-	template<typename TaskBodyType>
-	inline UE::Tasks::FTask AddMutableThreadTask(const TCHAR* DebugName, TaskBodyType&& TaskBody, UE::Tasks::ETaskPriority Priority)
-	{
-		// This could be called from the game thread or from a worker thread for the texture streaming system
-		//check(IsInGameThread());
-		FScopeLock Lock(&MutableTaskLock);
-
-		if (LastMutableTask.IsValid())
-		{
-			LastMutableTask = UE::Tasks::Launch(DebugName, MoveTemp(TaskBody), LastMutableTask, Priority);
-		}
-		else
-		{
-			LastMutableTask = UE::Tasks::Launch(DebugName, MoveTemp(TaskBody), Priority);
-		}
-		return LastMutableTask;
-	}
-#else
-	template<typename TaskBodyType>
-	inline FGraphEventRef AddMutableThreadTask(const TCHAR* DebugName, TaskBodyType&& TaskBody, UE::Tasks::ETaskPriority Priority)
-	{
-		// This could be called from the game thread or from a worker thread for the texture streaming system
-		//check(IsInGameThread());
-		FScopeLock Lock(&MutableTaskLock);
-
-		// Chain to pending tasks of the mutable thread if any. This ensures exclusive access to mutable.
-		FGraphEventArray Prerequisites;
-		if (LastMutableTask)
-		{
-			Prerequisites.Add(LastMutableTask);
-		}
-
-		LastMutableTask = FFunctionGraphTask::CreateAndDispatchWhenReady(
-			MoveTemp(TaskBody),
-			TStatId{},
-			&Prerequisites, 
-			ENamedThreads::AnyThread);
-		LastMutableTask->SetDebugName(DebugName);
-
-		return LastMutableTask;
-	}
-
-	/** This should only be used when shutting down. */
-	inline void WaitForMutableTasks()
-	{
-		FScopeLock Lock(&MutableTaskLock);
-
-		if (LastMutableTask.IsValid())
-		{
-#ifdef MUTABLE_USE_NEW_TASKGRAPH
-			LastMutableTask.Wait();
-#else
-			LastMutableTask->Wait();
-#endif
-			LastMutableTask = {};
-		}
-	}
-
-	inline void ClearMutableTaskIfDone()
-	{
-		FScopeLock Lock(&MutableTaskLock);
-
-#ifdef MUTABLE_USE_NEW_TASKGRAPH
-		if (LastMutableTask.IsValid() && LastMutableTask.IsCompleted())
-		{
-			LastMutableTask = {};
-		}
-#else
-		if (LastMutableTask.IsValid() && LastMutableTask->IsComplete())
-		{
-			LastMutableTask = nullptr;
-		}
-#endif
-	}
-
-
-	template<typename TaskBodyType>
-	inline void AddAnyThreadTask(const TCHAR* DebugName, TaskBodyType&& TaskBody, UE::Tasks::ETaskPriority Priority)
-	{
-		check(IsInGameThread());
-
-		FGraphEventRef Task = FFunctionGraphTask::CreateAndDispatchWhenReady(
-			MoveTemp(TaskBody),
-			TStatId{},
-			nullptr,
-			ENamedThreads::AnyThread);
-		Task->SetDebugName(TEXT("Mutable_Anythread"));
-	}
-#endif
-
-	//
-	//TSharedPtr<FMutableOperationData> CurrentOperationData;
 
 
 	/** FSerializableObject interface */
@@ -709,7 +718,7 @@ public:
 	}
 
 
-	void AddTextureReference(uint32 TextureId)
+	void AddTextureReference(const FMutableImageCacheKey& TextureId)
 	{
 		uint32& CountRef = TextureReferenceCount.FindOrAdd(TextureId);
 
@@ -718,7 +727,7 @@ public:
 
 	
 	// Returns true if the texture's references become zero
-	bool RemoveTextureReference(uint32 TextureId)
+	bool RemoveTextureReference(const FMutableImageCacheKey& TextureId)
 	{
 		uint32* CountPtr = TextureReferenceCount.Find(TextureId);
 
@@ -743,7 +752,7 @@ public:
 	}
 
 
-	bool TextureHasReferences(uint32 TextureId) const
+	bool TextureHasReferences(const FMutableImageCacheKey& TextureId) const
 	{
 		const uint32* CountPtr = TextureReferenceCount.Find(TextureId);
 
@@ -757,20 +766,20 @@ public:
 
 
 	// Init the async Skeletal Mesh creation/update
-	void InitUpdateSkeletalMesh(UCustomizableObjectInstance& Public, FMutableQueueElem::EQueuePriorityType Priority);
+	void InitUpdateSkeletalMesh(UCustomizableObjectInstance& Public, EQueuePriorityType Priority, bool bIsCloseDistTick, FInstanceUpdateDelegate* UpdateCallback = nullptr);
 		
 	// Init an async and safe release of the UE and Mutable resources used by the instance without actually destroying the instance, for example if it's very far away
 	void InitDiscardResourcesSkeletalMesh(UCustomizableObjectInstance* InCustomizableObjectInstance);
 
 	// Init the async release of a Mutable Core Instance ID and all the temp resources associated with it
 	void InitInstanceIDRelease(mu::Instance::ID IDToRelease);
+
+	void GetMipStreamingConfig(const UCustomizableObjectInstance& Instance, bool& bOutNeverStream, int32& OutMipsToSkip) const;
 	
 	bool IsReplaceDiscardedWithReferenceMeshEnabled() const { return bReplaceDiscardedWithReferenceMesh; }
 	void SetReplaceDiscardedWithReferenceMeshEnabled(bool bIsEnabled) { bReplaceDiscardedWithReferenceMesh = bIsEnabled; }
 
 	int32 GetCountAllocatedSkeletalMesh() { return CountAllocatedSkeletalMesh; }
-
-	bool bCompactSerialization = true;
 
 	bool bReplaceDiscardedWithReferenceMesh = false;
 	bool bReleaseTexturesImmediately = false;
@@ -803,10 +812,10 @@ public:
 
 	// \TODO: Remove this array if we are not gathering stats!
 	TArray<TWeakObjectPtr<class UTexture2D>> TextureTrackerArray;
-	TMap<uint32, uint32> TextureReferenceCount; // Keeps a count of texture usage to decide if they have to be blocked from GC during an update
+	TMap<FMutableImageCacheKey, uint32> TextureReferenceCount; // Keeps a count of texture usage to decide if they have to be blocked from GC during an update
 
 	// This is protected from GC by AddReferencedObjects
-	UCustomizableObjectInstance* CurrentInstanceBeingUpdated = nullptr;
+	TObjectPtr<UCustomizableObjectInstance> CurrentInstanceBeingUpdated = nullptr;
 
 	TSharedPtr<FMutableOperation> CurrentMutableOperation = nullptr;
 
@@ -820,27 +829,14 @@ public:
 	// Important!!! Never call when there's a Begin Update thread running!
 	void ReleasePendingMutableInstances();
 
-	// Check and update the streaming memory limit. Only safe from game thread and when the mutable thread is idle.
-	void UpdateStreamingLimit();
+	/** Update the last set amount of internal memory Mutable can use to build objects. */
+	void UpdateMemoryLimit();
 
 	bool IsMutableAnimInfoDebuggingEnabled() const;
 
-private:
-
-	/** Access to this must be protected with this. */
-	mutable FCriticalSection MutableTaskLock;
-
-#ifdef MUTABLE_USE_NEW_TASKGRAPH
-	UE::Tasks::FTask LastMutableTask;
-#else
-	FGraphEventRef LastMutableTask = nullptr;
-#endif
-
-
+	FUnrealMutableImageProvider* GetImageProviderChecked() const;
+	
+	/** Mutable TaskGraph system (Mutable Thread). */
+	FMutableTaskGraph MutableTaskGraph;
 };
-
-
-void ConvertImage(UTexture2D* Texture, mu::ImagePtrConst MutableImage, const struct FMutableModelImageProperties& Props);
-
-
 

@@ -24,7 +24,8 @@ public:
 	UMassEntityEditorSubsystem();
 	~UMassEntityEditorSubsystem();
 
-	FMassEntityManager& GetMutableEntityManager() { return EntityManager.Get(); }
+	TSharedRef<FMassEntityManager> GetMutableEntityManager() { return EntityManager; }
+	TSharedRef<FMassProcessingPhaseManager> GetMutablePhaseManager() { return PhaseManager; }
 
 	FOnPreTick& GetOnPreTickDelegate() { return OnPreTickDelegate; }
 
@@ -48,7 +49,6 @@ protected:
 	TSharedRef<FMassEntityManager> EntityManager;
 
 	TSharedRef<FMassProcessingPhaseManager> PhaseManager;
-	FGraphEventRef CompletionEvent;
 
 	FMassProcessingPhaseConfig ProcessingPhasesConfig[(uint8)EMassProcessingPhase::MAX];
 

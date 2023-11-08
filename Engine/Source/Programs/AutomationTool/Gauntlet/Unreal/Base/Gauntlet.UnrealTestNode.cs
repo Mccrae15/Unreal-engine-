@@ -423,7 +423,18 @@ namespace Gauntlet
 				return Name;
 			}
 
-			return string.Format("{0} ({1})", Name, Context);
+			return string.Format("{0} ({1})", Name, GetMainRoleContextString());
+		}
+		public string GetMainRoleContextString()
+		{
+			if (Context == null)
+			{
+				return string.Empty;
+			}
+			// Using CachedConfiguration so GetConfiguration does not get looped over. If it has not been cached
+			// yet, will call test's GetConfiguration method.
+			var Config = GetCachedConfiguration();
+			return (Config is UnrealTestConfiguration) ? Context.GetRoleContext(Config.GetMainRequiredRole().Type).ToString() : Context.ToString();
 		}
 
 		/// <summary>
@@ -505,7 +516,7 @@ namespace Gauntlet
 				// nothing missing, keep going.
 				return true;
 			}
-			
+
 			// if all roles are gone, we're done
 			if (MissingRoles.Count == TestInstance.RunningRoles.Count())
 			{
@@ -605,8 +616,21 @@ namespace Gauntlet
 					// important, use the type from the ContextRolke because Server may have been mapped to EditorServer etc
 					UnrealTargetPlatform SessionPlatform = TestRole.PlatformOverride ?? RoleContext.Platform;
 
+					// Apply all role configurations
+					foreach(IUnrealRoleConfiguration RoleConfiguration in TestRole.RoleConfigurations)
+					{
+						RoleConfiguration.ApplyConfigToRole(TestRole);
+					}
+
+					// Verify all role configurations
+					foreach (IUnrealRoleConfiguration RoleConfiguration in TestRole.RoleConfigurations)
+					{
+						RoleConfiguration.VerifyRoleConfig(TestRole);
+					}
+
 					UnrealSessionRole SessionRole = new UnrealSessionRole(RoleContext.Type, SessionPlatform, RoleContext.Configuration, TestRole.CommandLine);
 					SessionRole.InstallOnly = TestRole.InstallOnly;
+					SessionRole.DeferredLaunch = TestRole.DeferredLaunch;
 					SessionRole.CommandLineParams = TestRole.CommandLineParams;
  					SessionRole.RoleModifier = TestRole.RoleType;
 					SessionRole.Constraint = UseContextConstraint ? Context.Constraint : new UnrealDeviceTargetConstraint(SessionPlatform);
@@ -1088,6 +1112,12 @@ namespace Gauntlet
 		{
 			base.StopTest(InReason);
 
+			// Warn if there are still deferred roles that have not been launched when the test is finished
+			foreach (UnrealSessionInstance.RoleInstance DeferredRole in TestInstance.DeferredRoles)
+			{
+				Log.Warning("Deferred role {Role} was not started before the test was stopped", DeferredRole);
+			}
+
 			// Shutdown the instance so we can access all files, but do not null it or shutdown the UnrealApp because we still need
 			// access to these objects and their resources! Final cleanup is done in CleanupTest()
 			TestInstance.Shutdown();
@@ -1326,6 +1356,22 @@ namespace Gauntlet
 		}
 
 		/// <summary>
+		/// Optional override for the test report name, useful when a single test node has different testing modes
+		/// </summary>
+		protected virtual string HordeReportTestName { 
+			get 
+			{
+				string ReportName = Name;
+				if (ReportName.Split('.').Length > 1)
+				{
+					ReportName = ReportName.Split('.').Last();
+				}
+
+				return ReportName;				
+			}
+		}
+
+		/// <summary>
 		/// Generate a Simple Test Report from the results of this test
 		/// </summary>
 		/// <param name="Result"></param>
@@ -1333,20 +1379,14 @@ namespace Gauntlet
 		{
 			if (string.IsNullOrEmpty(GetCachedConfiguration().HordeTestDataKey))
 			{
-				GetCachedConfiguration().HordeTestDataKey = Name + " " + Context.ToString();
-			}
-
-			string TestName = Name;
-			if (TestName.Split('.').Length > 1)
-			{
-				TestName = TestName.Split('.').Last();
+				GetCachedConfiguration().HordeTestDataKey = Name + " " + GetMainRoleContextString();
 			}
 
 			HordeReport.SimpleTestReport HordeTestReport = new HordeReport.SimpleTestReport(UnrealTestResult, Context, GetCachedConfiguration());
-			HordeTestReport.TestName = TestName;
+			HordeTestReport.TestName = HordeReportTestName;
 			HordeTestReport.ReportCreatedOn = DateTime.Now.ToString();
 			HordeTestReport.TotalDurationSeconds = (float) (DateTime.Now - SessionStartTime).TotalSeconds;
-			HordeTestReport.Description = Context.ToString();
+			HordeTestReport.Description = GetMainRoleContextString();
 			HordeTestReport.URLLink = GetURLLink();
 			HordeTestReport.Errors.AddRange(GetErrorsAndAbnornalExits());
 			if (!string.IsNullOrEmpty(CancellationReason))
@@ -1403,7 +1443,7 @@ namespace Gauntlet
 				Log.Verbose("Reading json Unreal Automated test report from {Path}", JsonReportPath);
 				UnrealAutomatedTestPassResults JsonTestPassResults = UnrealAutomatedTestPassResults.LoadFromJson(JsonReportPath);
 				var MainRole = GetCachedConfiguration().GetMainRequiredRole();
-				string HordeTestDataKey = string.IsNullOrEmpty(GetCachedConfiguration().HordeTestDataKey) ? Name + " " + Context.ToString() : GetCachedConfiguration().HordeTestDataKey;
+				string HordeTestDataKey = string.IsNullOrEmpty(GetCachedConfiguration().HordeTestDataKey) ? Name + " " + GetMainRoleContextString() : GetCachedConfiguration().HordeTestDataKey;
 				GetCachedConfiguration().HordeTestDataKey = HordeTestDataKey;
 				// Convert test results for Horde
 				HordeReport.AutomatedTestSessionData HordeTestPassResults = HordeReport.AutomatedTestSessionData.FromUnrealAutomatedTests(
@@ -1438,8 +1478,8 @@ namespace Gauntlet
 			}
 			else
 			{
-				Log.Warning("Could not find Unreal Automated test report at {FilePath}. Reverting to base report.", JsonReportPath);
-				return CreateSimpleReportForHorde(GetTestResult());
+				Log.Warning("Could not find Unreal Automated test report at {FilePath}. No Test report will be generated for Horde.", JsonReportPath);
+				return null;
 			}
 		}
 
@@ -1479,7 +1519,7 @@ namespace Gauntlet
 			);
 			HordeReport.TestDataCollection HordeTestDataCollection = new HordeReport.TestDataCollection();
 			HordeTestDataCollection.AddNewTestReport(Report, GetCachedConfiguration().HordeTestDataKey);
-			HordeTestDataCollection.WriteToJson(HordeTestDataFilePath, true);
+			HordeTestDataCollection.WriteToJson(HordeTestDataFilePath, !AutomationTool.Automation.IsBuildMachine);
 		}
 
 		/// <summary>
@@ -1656,7 +1696,7 @@ namespace Gauntlet
 		/// <param name="InRoleArtifacts"></param>
 		/// <param name="InLog"></param>
 		/// <returns></returns>
-		protected virtual IEnumerable<UnrealTestEvent> CreateEventListFromArtifact(StopReason InReason, UnrealRoleArtifacts InRoleArtifacts, UnrealLog InLog)
+		protected virtual IEnumerable<UnrealTestEvent> CreateEventListFromArtifact(StopReason InReason, UnrealRoleArtifacts InRoleArtifacts, UnrealLog InLog, UnrealProcessResult ProcessResult)
 		{
 			List<UnrealTestEvent> EventList = new List<UnrealTestEvent>();
 
@@ -1682,7 +1722,10 @@ namespace Gauntlet
 			}
 
 			bool TrackAllWarnings = GetCachedConfiguration().ShowWarningsInSummary || Flags.HasFlag(BehaviorFlags.PromoteWarnings);
-			bool TrackAllErrors = GetCachedConfiguration().ShowErrorsInSummary || Flags.HasFlag(BehaviorFlags.PromoteErrors);
+			// if we are getting an initialization failure it is still not clear what the reason was, may differ from one case to another,
+			// so we would like to enforce all-error tracking in this situation, even if it is disabled in the config
+			bool TrackAllErrors = GetCachedConfiguration().ShowErrorsInSummary || Flags.HasFlag(BehaviorFlags.PromoteErrors)
+				|| ProcessResult == UnrealProcessResult.InitializationFailure;
 
 			// now look at the log. Add events for warnings/errors if the category is monitored or if this test is flagged to 
 			// promote all warnings/errors
@@ -1722,7 +1765,7 @@ namespace Gauntlet
 			// Give ourselves (and derived classes) a chance to analyze what happened
 			UnrealProcessResult ProcessResult = GetExitCodeAndReason(InReason, LogSummary, InRoleArtifacts, out ExitReason, out ExitCode);
 
-			IEnumerable<UnrealTestEvent> EventList = CreateEventListFromArtifact(InReason, InRoleArtifacts, LogSummary);
+			IEnumerable<UnrealTestEvent> EventList = CreateEventListFromArtifact(InReason, InRoleArtifacts, LogSummary, ProcessResult);
 
 			// if the test is stopping for a reason other than completion, mark this as failing incase derived classes
 			// don't do the right thing
@@ -1885,14 +1928,7 @@ namespace Gauntlet
 			bool HasFailed = InRoleResult.ExitCode != 0 && InRoleResult.LogSummary.HasAbnormalExit;
 			string RoleState = HasFailed ? "failed:" : "completed:";
 			string StatusMessage = string.Format(" #### {0} {1} {2} ({3}, ExitCode={4})", RoleArtifacts.SessionRole.RoleType, RoleState, InRoleResult.Summary, InRoleResult.ProcessResult, InRoleResult.ExitCode);
-			if(HasFailed)
-			{
-				Log.Error(KnownLogEvents.Gauntlet_TestEvent, StatusMessage);
-			}
-			else
-			{
-				Log.Info(StatusMessage);
-			}
+			Log.Info(StatusMessage);
 
 			// log command line up here for visibility
 
@@ -2238,15 +2274,8 @@ namespace Gauntlet
 			// Good/Bad news upfront
 			string Prefix = TestFailed ? "Error: " : "";
 			string WarningStatement = (HasWarnings && !TestFailed)  ? " With Warnings" : "";
-			string ResultString = string.Format(" ### {0}{1} {2}{3} ***", Prefix, this.Name, GetTestResult(), WarningStatement);
-			if(TestFailed)
-			{
-				Log.Error(KnownLogEvents.Gauntlet_TestEvent, ResultString);
-			}
-			else
-			{
-				Log.Info(ResultString);
-			}
+			string ResultString = string.Format(" ### {0}{1} {2}{3} ***\n", Prefix, this.Name, GetTestResult(), WarningStatement);
+			Log.Info(ResultString);
 
 			IEnumerable<UnrealRoleResult> SortedRoles = RoleResults.OrderBy(R => R.ProcessResult == UnrealProcessResult.ExitOk);
 
@@ -2255,8 +2284,15 @@ namespace Gauntlet
 			foreach (var RoleResult in SortedRoles)
 			{
 				string RoleName = RoleResult.Artifacts.SessionRole.RoleType.ToString();
-
-				Log.Info(string.Format("\n {0} Role: {1} ({2}, ExitCode {3})\n", RoleName, RoleResult.Summary, RoleResult.ProcessResult, RoleResult.ExitCode));
+				string LogMessage = string.Format(" {0} Role: {1} ({2}, ExitCode={3})", RoleName, RoleResult.Summary, RoleResult.ProcessResult, RoleResult.ExitCode);
+				if (RoleResult.ExitCode != 0)
+				{
+					Log.Error(KnownLogEvents.Gauntlet_TestEvent, LogMessage);
+				}
+				else
+				{
+					Log.Info(LogMessage);
+				}
 
 				FatalErrors += RoleResult.LogSummary.FatalError != null ? 1 : 0;
 				Ensures += RoleResult.LogSummary.Ensures.Count();
@@ -2264,14 +2300,15 @@ namespace Gauntlet
 				Warnings += RoleResult.LogSummary.Warnings.Count();
 			}
 
+			Log.Info("");
 			Log.Info(string.Join("\n", new string[] {
-				string.Format("Context: {0}", Context.ToString()),
-				FatalErrors > 0 ? string.Format("FatalErrors: {0}", FatalErrors) : null,
-				Ensures > 0 ? string.Format("Ensures: {0}", Ensures) : null,
-				Errors > 0 ? string.Format("Log Errors: {0}", Errors) : null,
-				Warnings > 0 ? string.Format("Log Warnings: {0}", Warnings) : null,
-				string.Format("Result: {0}", GetTestResult())
-			}.Where(L=>!string.IsNullOrEmpty(L)).Select(L=>" * "+L)));
+				string.Format(" * Main Context: {0}", GetMainRoleContextString()),
+				FatalErrors > 0 ? string.Format(" * FatalErrors: {0}", FatalErrors) : null,
+				Ensures > 0 ? string.Format(" * Ensures: {0}", Ensures) : null,
+				Errors > 0 ? string.Format(" * Log Errors: {0}", Errors) : null,
+				Warnings > 0 ? string.Format(" * Log Warnings: {0}", Warnings) : null,
+				string.Format(" * Result: {0}", GetTestResult())
+			}.Where(L=>!string.IsNullOrEmpty(L))));
 
 			if (TestFailed && GetRolesThatFailed().Where(R => R.ProcessResult == UnrealProcessResult.Unknown).Any())
 			{

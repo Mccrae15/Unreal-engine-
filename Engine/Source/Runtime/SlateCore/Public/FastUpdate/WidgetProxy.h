@@ -158,7 +158,8 @@ public:
 	}
 #else
 	SWidget* GetWidget() const { return Widget; }
-	TSharedPtr<SWidget> GetWidgetAsShared() const;
+	// ForceNoInline to workaround PGO FastGen issue
+	FORCENOINLINE TSharedPtr<SWidget> GetWidgetAsShared() const;
 	void ResetWidget() { Widget = nullptr; }
 	bool IsSameWidget(const SWidget* InWidget) const { return InWidget == Widget; }
 #endif
@@ -243,6 +244,7 @@ struct FSlateWidgetPersistentState
 		, OutgoingLayerId(0)
 		, IncomingUserIndex(INDEX_NONE)
 		, IncomingFlowDirection(EFlowDirection::LeftToRight)
+		, InitialPixelSnappingMethod(EWidgetPixelSnapping::Inherit)
 		, bParentEnabled(true)
 		, bInheritedHittestability(false)
 		, bDeferredPainting(false)
@@ -261,6 +263,7 @@ struct FSlateWidgetPersistentState
 	int32 OutgoingLayerId;
 	int8 IncomingUserIndex;
 	EFlowDirection IncomingFlowDirection;
+	EWidgetPixelSnapping InitialPixelSnappingMethod;
 	uint8 bParentEnabled : 1;
 	uint8 bInheritedHittestability : 1;
 	uint8 bDeferredPainting : 1;

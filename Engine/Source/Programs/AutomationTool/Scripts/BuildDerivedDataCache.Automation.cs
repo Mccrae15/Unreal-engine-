@@ -10,6 +10,9 @@ using System.Threading.Tasks;
 using System.IO;
 using EpicGames.Core;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
+
+using static AutomationTool.CommandUtils;
 
 public class BuildDerivedDataCache : BuildCommand
 {
@@ -77,12 +80,12 @@ public class BuildDerivedDataCache : BuildCommand
 				}
 				if (FilteredPlatforms.Count == 0)
 				{
-					LogInformation("Did not find any project specific platforms for FeaturePack {0} out of supplied TargetPlatforms {1}, skipping it!", GameName, ProjectSpecificPlatforms);
+					Logger.LogInformation("Did not find any project specific platforms for FeaturePack {GameName} out of supplied TargetPlatforms {ProjectSpecificPlatforms}, skipping it!", GameName, ProjectSpecificPlatforms);
 					continue;
 				}
 				ProjectSpecificPlatforms = CommandUtils.CombineCommandletParams(FilteredPlatforms.Distinct().ToArray());
 			}
-			CommandUtils.LogInformation("Generating DDC data for {0} on {1}", GameName, ProjectSpecificPlatforms);
+			Logger.LogInformation("Generating DDC data for {GameName} on {ProjectSpecificPlatforms}", GameName, ProjectSpecificPlatforms);
 			CommandUtils.DDCCommandlet(FileRef, EditorExe, null, ProjectSpecificPlatforms, String.Format("-fill -DDC={0} -ProjectOnly", BackendName));
 
 			string ProjectPakFile = CommandUtils.CombinePaths(Path.GetDirectoryName(OutputPakFile), String.Format("Compressed-{0}.ddp", GameName));
@@ -119,7 +122,7 @@ public class BuildDerivedDataCache : BuildCommand
 			EngineContentArgs.Add("-projectonly");
 		}
 
-		CommandUtils.LogInformation("Generating DDC data for engine content on {0}", TargetPlatforms);
+		Logger.LogInformation("Generating DDC data for engine content on {TargetPlatforms}", TargetPlatforms);
 		CommandUtils.DDCCommandlet(null, EditorExe, null, TargetPlatforms, String.Join(" ", EngineContentArgs));
 
 		string SavedPakFile = CommandUtils.CombinePaths(SavedDir, RelativePakPath);

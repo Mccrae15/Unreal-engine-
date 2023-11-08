@@ -61,7 +61,7 @@ public:
 	void QueryTarget_OnSelectionChanged(TSharedPtr<Insights::FQueryTargetWindowSpec> InRule, ESelectInfo::Type SelectInfo);
 
 private:
-	FText GetSymbolPathsText() const;
+	void UpdateSymbolPathsText() const;
 	TSharedRef<SWidget> ConstructInvestigationWidgetArea();
 	TSharedRef<SWidget> ConstructTimeMarkerWidget(uint32 TimeMarkerIndex);
 
@@ -97,6 +97,8 @@ private:
 	TSharedPtr<const TraceServices::IAnalysisSession> Session;
 
 	TSharedPtr<SComboBox<TSharedPtr<Insights::FMemoryRuleSpec>>> QueryRuleComboBox;
+
+	bool bIncludeHeapAllocs;
 
 	TSharedPtr<SComboBox<TSharedPtr<Insights::FQueryTargetWindowSpec>>> QueryTargetComboBox;
 	

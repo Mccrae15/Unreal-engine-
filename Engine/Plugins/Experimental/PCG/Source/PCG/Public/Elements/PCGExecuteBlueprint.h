@@ -81,11 +81,34 @@ public:
 	UFUNCTION(BlueprintNativeEvent, Category = "PCG|Node Customization")
 	EPCGSettingsType NodeTypeOverride() const;
 
-	UFUNCTION(BlueprintCallable, Category = "PCG|Input & Output")
-	TSet<FName> InputLabels() const;
+	/** Override for the IsCacheable node property when it depends on the settings in your node */
+	UFUNCTION(BlueprintNativeEvent, Category = "PCG|Execution")
+	bool IsCacheableOverride() const;
 
+	UFUNCTION(BlueprintImplementableEvent, Category = "PCG|Preconfigure Settings", meta = (ForceAsFunction))
+	void ApplyPreconfiguredSettings(UPARAM(ref) const FPCGPreConfiguredSettingsInfo& InPreconfigureInfo);
+
+	// Returns the labels of custom input pins only
 	UFUNCTION(BlueprintCallable, Category = "PCG|Input & Output")
-	TSet<FName> OutputLabels() const;
+	TSet<FName> CustomInputLabels() const;
+
+	// Returns the labels of custom output pins only
+	UFUNCTION(BlueprintCallable, Category = "PCG|Input & Output")
+	TSet<FName> CustomOutputLabels() const;
+
+	UFUNCTION(BlueprintCallable, Category = "PCG|Input & Output", meta = (HideSelfPin = "true"))
+	TArray<FPCGPinProperties> GetInputPins() const;
+
+	UFUNCTION(BlueprintCallable, Category = "PCG|Input & Output", meta = (HideSelfPin = "true"))
+	TArray<FPCGPinProperties> GetOutputPins() const;
+
+	/** Returns true if there is an input pin with the matching label. If found, will copy the pin properties in OutFoundPin */
+	UFUNCTION(BlueprintCallable, Category = "PCG|Input & Output", meta = (HideSelfPin = "true"))
+	bool GetInputPinByLabel(FName InPinLabel, FPCGPinProperties& OutFoundPin) const;
+
+	/** Returns true if there is an output pin with the matching label. If found, will copy the pin properties in OutFoundPin */
+	UFUNCTION(BlueprintCallable, Category = "PCG|Input & Output", meta = (HideSelfPin = "true"))
+	bool GetOutputPinByLabel(FName InPinLabel, FPCGPinProperties& OutFoundPin) const;
 
 	/** Gets the seed from the associated settings & source component */
 	UFUNCTION(BlueprintCallable, Category = "PCG|Random")
@@ -97,6 +120,13 @@ public:
 
 	/** Called after object creation to setup the object callbacks */
 	void Initialize();
+
+	/** Retrieves the execution context - note that this will not be valid outside of the Execute functions */
+	UFUNCTION(BlueprintCallable, Category = "PCG|Advanced", meta = (HideSelfPin = "true"))
+	FPCGContext& GetContext() const;
+
+	/** Called after the element duplication during execution to be able to get the context easily - internal call only */
+	void SetCurrentContext(FPCGContext* InCurrentContext);
 
 #if WITH_EDITOR
 	// ~Begin UObject interface
@@ -118,21 +148,27 @@ public:
 	FOnPCGBlueprintChanged OnBlueprintChangedDelegate;
 #endif
 
-	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category = Settings)
-	bool bCreatesArtifacts = false;
-
-	/** Not yet hooked up, currently work in progress. True if output data can be cached and reused if inputs do not change, false if blueprint should be executed every time. */
+	/** Controls whether results can be cached so we can bypass execution if the inputs & settings are the same in a subsequent execution.
+	* If you have implemented the IsCacheableOverride function, then this value is ignored.
+	* Note that if your node relies on data that is not directly tracked by PCG or creates any kind of artifact (adds components, creates actors, etc.) then it should not be cacheable.
+	*/
 	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, AdvancedDisplay, Category = Settings)
-	bool bCacheable = false;
+	bool bIsCacheable = false;
 
+	/** In cases where your node is non-cacheable but is likely to yield the same results on subsequent executions, this controls whether we will do a deep & computationally intensive CRC computation (true), 
+	* which will allow cache usage in downstream nodes in your graph, or, by default (false), a shallow but quick crc computation which will not be cache-friendly. */
+	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, AdvancedDisplay, Category = Settings)
+	bool bComputeFullDataCrc = false;
+
+	/** Controls whether this node execution can be run from a non-game thread. This is not related to the Loop functions provided/implemented in this class, which should always run on any thread. */
 	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category = Settings)
 	bool bCanBeMultithreaded = false;
 
 #if WITH_EDITORONLY_DATA
-	UPROPERTY(BlueprintGetter=InputLabels, Category = "Settings|Input & Output", meta = (DeprecatedProperty, DeprecatedMessage = "Input Pin Labels are deprecated - use Input Labels instead."))
+	UPROPERTY(BlueprintGetter=CustomInputLabels, Category = "Settings|Input & Output", meta = (DeprecatedProperty, DeprecatedMessage = "Input Pin Labels are deprecated - use Input Labels instead."))
 	TSet<FName> InputPinLabels_DEPRECATED;
 
-	UPROPERTY(BlueprintGetter=OutputLabels, Category = "Settings|Input & Output")
+	UPROPERTY(BlueprintGetter=CustomOutputLabels, Category = "Settings|Input & Output")
 	TSet<FName> OutputPinLabels_DEPRECATED;
 #endif
 
@@ -152,13 +188,22 @@ public:
 	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category = AssetInfo, AssetRegistrySearchable)
 	bool bExposeToLibrary = false;
 
+	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category = "AssetInfo|Preconfigured Settings", AssetRegistrySearchable)
+	bool bEnablePreconfiguredSettings = false;
+
+	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category = "AssetInfo|Preconfigured Settings", AssetRegistrySearchable, meta = (EditCondition = bEnablePreconfiguredSettings, EditConditionHides))
+	bool bOnlyExposePreconfiguredSettings = false;
+
+	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category = "AssetInfo|Preconfigured Settings", meta = (EditCondition = bEnablePreconfiguredSettings, EditConditionHides))
+	TArray<FPCGPreConfiguredSettingsInfo> PreconfiguredInfo;
+
 	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category = AssetInfo, AssetRegistrySearchable)
 	FText Category;
 
 	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category = AssetInfo, AssetRegistrySearchable)
 	FText Description;
 
-	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category = "Settings|Advanced")
+	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, AdvancedDisplay, Category = "Settings")
 	int32 DependencyParsingDepth = 1;
 #endif
 
@@ -171,6 +216,10 @@ protected:
 #if !WITH_EDITORONLY_DATA
 	UWorld* InstanceWorld = nullptr;
 #endif
+
+	// Since we duplicate the blueprint elements prior to execution, they will be unique
+	// and have a 1:1 match with their context, which allows us to store it here
+	FPCGContext* CurrentContext = nullptr;
 };
 
 UCLASS(BlueprintType, ClassGroup = (Procedural))
@@ -189,11 +238,14 @@ public:
 	virtual FText GetDefaultNodeTitle() const override { return NSLOCTEXT("PCGBlueprintSettings", "NodeTitle", "Execute Blueprint"); }
 	virtual FLinearColor GetNodeTitleColor() const override;
 	virtual EPCGSettingsType GetType() const override;
-	virtual void GetTrackedActorTags(FPCGTagToSettingsMap& OutTagToSettings, TArray<TObjectPtr<const UPCGGraph>>& OutVisitedGraphs) const override;
+	virtual void GetTrackedActorKeys(FPCGActorSelectionKeyToSettingsMap& OutKeysToSettings, TArray<TObjectPtr<const UPCGGraph>>& OutVisitedGraphs) const override;
 	virtual UObject* GetJumpTargetForDoubleClick() const override;
 	virtual void ApplyDeprecationBeforeUpdatePins(UPCGNode* InOutNode, TArray<TObjectPtr<UPCGPin>>& InputPins, TArray<TObjectPtr<UPCGPin>>& OutputPins) override;
+	virtual TArray<FPCGPreConfiguredSettingsInfo> GetPreconfiguredInfo() const override;
+	virtual bool OnlyExposePreconfiguredSettings() const override;
 #endif
 
+	virtual void ApplyPreconfiguredSettings(const FPCGPreConfiguredSettingsInfo& InPreconfiguredsInfo) override;
 	virtual FName AdditionalTaskName() const override;
 	virtual TArray<FPCGPinProperties> InputPinProperties() const override;
 	virtual TArray<FPCGPinProperties> OutputPinProperties() const override;
@@ -249,9 +301,6 @@ protected:
 	bool bTrackActorsOnlyWithinBounds = false;
 
 	UPROPERTY()
-	bool bCreatesArtifacts_DEPRECATED = false;
-
-	UPROPERTY()
 	bool bCanBeMultithreaded_DEPRECATED = false;
 #endif
 
@@ -283,6 +332,7 @@ class FPCGExecuteBlueprintElement : public IPCGElement
 public:
 	virtual bool CanExecuteOnlyOnMainThread(FPCGContext* Context) const override;
 	virtual bool IsCacheable(const UPCGSettings* InSettings) const override;
+	virtual bool ShouldComputeFullOutputDataCrc(FPCGContext* Context) const override;
 
 protected:
 	virtual bool ExecuteInternal(FPCGContext* Context) const override;

@@ -2,14 +2,9 @@
 
 #pragma once
 
+#include "D3D12ThirdParty.h"
 #include "RHI.h"
 #include "Templates/Function.h"
-
-#if PLATFORM_WINDOWS
-	#include "Windows/D3D12ThirdParty.h"
-#else
-	#include "D3D12ThirdParty.h"
-#endif
 
 struct FD3D12MinimalAdapterDesc
 {
@@ -48,10 +43,10 @@ struct ID3D12DynamicRHI : public FDynamicRHI
 	virtual void                  RHIFinishExternalComputeWork(uint32 InDeviceIndex, ID3D12GraphicsCommandList* InCommandList) = 0;
 	virtual void                  RHITransitionResource(FRHICommandList& RHICmdList, FRHITexture* InTexture, D3D12_RESOURCE_STATES InState, uint32 InSubResource) = 0;
 
-	virtual void						RHISignalManualFence(FRHICommandList& RHICmdList, ID3D12Fence* Fence, uint64 Value) = 0;
-	virtual void						RHIWaitManualFence(FRHICommandList& RHICmdList, ID3D12Fence* Fence, uint64 Value) = 0;
+	virtual void                  RHISignalManualFence(FRHICommandList& RHICmdList, ID3D12Fence* Fence, uint64 Value) = 0;
+	virtual void                  RHIWaitManualFence(FRHICommandList& RHICmdList, ID3D12Fence* Fence, uint64 Value) = 0;
 
-	static D3D12RHI_API bool      IsD3DDebugEnabled();
+	virtual void                  RHIVerifyResult(ID3D12Device* Device, HRESULT Result, const ANSICHAR* Code, const ANSICHAR* Filename, uint32 Line, FString Message = FString()) const = 0;
 };
 
 inline bool IsRHID3D12()

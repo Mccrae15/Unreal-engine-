@@ -12,6 +12,7 @@ LICENSE file in the root directory of this source tree.
 #include "LiveLinkRetargetAsset.h"
 #include "Containers/StaticArray.h"
 #include "OculusXRMovementTypes.h"
+#include "Misc/EngineVersionComparison.h"
 
 #include "OculusXRLiveLinkRetargetFaceAsset.generated.h"
 
@@ -53,7 +54,11 @@ private:
 	FGuid LastSkeletonGuid;
 
 	// Remapping used for latest used skeleton
+#if UE_VERSION_OLDER_THAN(5, 3, 0)
 	TStaticArray<TArray<SmartName::UID_Type>, static_cast<uint8>(EOculusXRFaceExpression::COUNT)> RemappingForLastSkeleton;
+#else
+	TStaticArray<TArray<FName>, static_cast<uint8>(EOculusXRFaceExpression::COUNT)> RemappingForLastSkeleton;
+#endif
 
 	// Recalculate skeleton dependent mappings
 	void OnSkeletonChanged(const USkeleton* Skeleton);

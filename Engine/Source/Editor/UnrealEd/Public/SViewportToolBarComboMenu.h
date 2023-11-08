@@ -29,7 +29,7 @@ struct FSlateIcon;
  * | Toggle | Menu button |
  * +--------+-------------+
  */
-class UNREALED_API SViewportToolBarComboMenu : public SCompoundWidget 
+class SViewportToolBarComboMenu : public SCompoundWidget 
 {
 public:
 	SLATE_BEGIN_ARGS(SViewportToolBarComboMenu) : _BlockLocation(EMultiBlockLocation::None), _MinDesiredButtonWidth(-1.0f) {}
@@ -53,7 +53,7 @@ public:
 		SLATE_ATTRIBUTE( FText, Label )
 
 		/** Overall style */
-		SLATE_ATTRIBUTE( FName, Style )
+		SLATE_ATTRIBUTE_DEPRECATED( FName, Style, 5.3, "The Style attribute is deprecated, styles are specified through stylesheets now" )
 
 		/** ToolTip shown on the menu button */
 		SLATE_ATTRIBUTE( FText, MenuButtonToolTip )
@@ -62,7 +62,7 @@ public:
 		SLATE_ATTRIBUTE( FText, ToggleButtonToolTip )
 
 		/** The button location */
-		SLATE_ARGUMENT( EMultiBlockLocation::Type, BlockLocation )
+		SLATE_ARGUMENT_DEPRECATED( EMultiBlockLocation::Type, BlockLocation, 5.3, "The BlockLocation argument is deprecated and not in use anymore" )
 
 		/** The minimum desired width of the menu button contents */
 		SLATE_ARGUMENT( float, MinDesiredButtonWidth )
@@ -74,7 +74,7 @@ public:
 	 *
 	 * @param	InArgs	The declaration data for this widget
 	 */
-	void Construct( const FArguments& InArgs );
+	UNREALED_API void Construct( const FArguments& InArgs );
 
 protected:
 	/**
@@ -85,7 +85,7 @@ protected:
 	 *
 	 * @return	Tool tip text, or an empty text if filtered out
 	 */
-	FText GetFilteredToolTipText(TAttribute<FText> ToolTipText) const;
+	UNREALED_API FText GetFilteredToolTipText(TAttribute<FText> ToolTipText) const;
 
 private:
 	/**
@@ -97,7 +97,7 @@ private:
 	 * Called when the mouse enters a menu button.  If there was a menu previously opened
 	 * we open this menu automatically
 	 */
-	void OnMouseEnter( const FGeometry& MyGeometry, const FPointerEvent& MouseEvent );
+	UNREALED_API void OnMouseEnter( const FGeometry& MyGeometry, const FPointerEvent& MouseEvent );
 
 private:
 	/** Our menus anchor */

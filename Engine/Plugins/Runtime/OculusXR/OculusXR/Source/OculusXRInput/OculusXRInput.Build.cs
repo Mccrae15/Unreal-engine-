@@ -6,6 +6,8 @@ namespace UnrealBuildTool.Rules
 	{
 		public OculusXRInput(ReadOnlyTargetRules Target) : base(Target)
 		{
+			bUseUnity = true;
+
 			PrivateIncludePathModuleNames.AddRange(
 				new string[]
 				{
@@ -27,6 +29,15 @@ namespace UnrealBuildTool.Rules
 					"OculusXRMR",
 					"OVRPluginXR",
 				});
+
+			if (Target.Version.MajorVersion > 5 || (Target.Version.MajorVersion == 5 && Target.Version.MinorVersion >= 3))
+			{
+				PrivateDependencyModuleNames.AddRange(
+					new string[]
+					{
+						"XRBase",
+					});
+			}
 
 			PrivateIncludePaths.AddRange(
 				new string[] {

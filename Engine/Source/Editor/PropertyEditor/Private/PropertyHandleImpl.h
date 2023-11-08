@@ -171,7 +171,12 @@ public:
 	/**
 	 * Sets a delegate to call when children of the property node must be rebuilt
 	 */
-	void SetOnRebuildChildren( const FSimpleDelegate& InOnRebuildChildren );
+	FDelegateHandle SetOnRebuildChildren( const FSimpleDelegate& InOnRebuildChildren );
+
+	/**
+	 * Unregisters a delegate called when children of the property node must be rebuilt
+	 */
+	void UnregisterOnRebuildChildren(FDelegateHandle Handle);
 
 	/**
 	 * Get the value of a property as a formatted string.
@@ -410,6 +415,7 @@ public:
 
 	/** IPropertyHandle interface */
 	virtual bool IsValidHandle() const override;
+	virtual bool IsSamePropertyNode(TSharedPtr<IPropertyHandle> OtherHandle) const override;
 	virtual FText GetPropertyDisplayName() const override;
 	virtual void SetPropertyDisplayName(FText InDisplayName) override;
 	virtual void ResetToDefault() override;
@@ -459,6 +465,7 @@ public:
 	virtual TSharedPtr<IPropertyHandleArray> AsArray() override { return nullptr; }
 	virtual TSharedPtr<IPropertyHandleSet> AsSet() override { return nullptr; }
 	virtual TSharedPtr<IPropertyHandleMap> AsMap() override { return nullptr; }
+	virtual TSharedPtr<IPropertyHandleStruct> AsStruct() override { return nullptr; }
 	virtual const FFieldClass* GetPropertyClass() const override;
 	virtual FProperty* GetProperty() const override;
 	virtual FProperty* GetMetaDataProperty() const override;
@@ -498,12 +505,17 @@ public:
 	virtual bool GenerateRestrictionToolTip(const FString& Value, FText& OutTooltip) const override;
 	virtual void SetIgnoreValidation(bool bInIgnore) override;
 	virtual TArray<TSharedPtr<IPropertyHandle>> AddChildStructure(TSharedRef<FStructOnScope> ChildStructure) override;
+	virtual TArray<TSharedPtr<IPropertyHandle>> AddChildStructure(TSharedRef<IStructureDataProvider> ChildStructProvider) override;
 	virtual bool CanResetToDefault() const override;
 	virtual void ExecuteCustomResetToDefault(const FResetToDefaultOverride& InOnCustomResetToDefault) override;
 	virtual FName GetDefaultCategoryName() const override;
 	virtual FText GetDefaultCategoryText() const override;
+	virtual FStringView GetPropertyPath() const override;
+	virtual int32 GetArrayIndex() const override;
+	virtual void RequestRebuildChildren() override;
+	virtual bool IsFavorite() const override;
 
-	TSharedPtr<FPropertyNode> GetPropertyNode() const;
+	PROPERTYEDITOR_API TSharedPtr<FPropertyNode> GetPropertyNode() const;
 	void OnCustomResetToDefault(const FResetToDefaultOverride& OnCustomResetToDefault);
 
 private:
@@ -619,7 +631,16 @@ public:
 	virtual FPropertyAccess::Result SetValue(const double& InValue, EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::DefaultFlags) override;
 };
 
-class FPropertyHandleVector : public FPropertyHandleBase
+class FPropertyHandleStruct : public FPropertyHandleBase, public IPropertyHandleStruct
+{
+public:
+	FPropertyHandleStruct(TSharedRef<FPropertyNode> PropertyNode, FNotifyHook* NotifyHook, TSharedPtr<IPropertyUtilities> PropertyUtilities);
+	static bool Supports(TSharedRef<FPropertyNode> PropertyNode);
+	virtual TSharedPtr<IPropertyHandleStruct> AsStruct() override;
+	virtual TSharedPtr<FStructOnScope> GetStructData() const override;
+};
+
+class FPropertyHandleVector : public FPropertyHandleStruct
 {
 public:
 	FPropertyHandleVector( TSharedRef<FPropertyNode> PropertyNode, FNotifyHook* NotifyHook, TSharedPtr<IPropertyUtilities> PropertyUtilities );
@@ -644,7 +665,7 @@ private:
 	TArray< TSharedPtr<FPropertyHandleMixed> > VectorComponents;	
 };
 
-class FPropertyHandleRotator : public FPropertyHandleBase
+class FPropertyHandleRotator : public FPropertyHandleStruct
 {
 public:
 	FPropertyHandleRotator( TSharedRef<FPropertyNode> PropertyNode, FNotifyHook* NotifyHook, TSharedPtr<IPropertyUtilities> PropertyUtilities  );
@@ -661,7 +682,7 @@ private:
 	TSharedPtr<FPropertyHandleMixed> YawValue;
 };
 
-class FPropertyHandleColor : public FPropertyHandleBase
+class FPropertyHandleColor : public FPropertyHandleStruct
 {
 public:
 	FPropertyHandleColor( TSharedRef<FPropertyNode> PropertyNode, FNotifyHook* NotifyHook, TSharedPtr<IPropertyUtilities> PropertyUtilities );
@@ -683,7 +704,8 @@ public:
 	virtual FPropertyAccess::Result DeleteItem( int32 Index ) override;
 	virtual FPropertyAccess::Result SwapItems(int32 FirstIndex, int32 SecondIndex) override;
 	virtual FPropertyAccess::Result GetNumElements( uint32& OutNumItems ) const override;
-	virtual void SetOnNumElementsChanged( FSimpleDelegate& InOnNumElementsChanged ) override;
+	virtual FDelegateHandle SetOnNumElementsChanged( const FSimpleDelegate& InOnNumElementsChanged ) override;
+	virtual void UnregisterOnNumElementsChanged(FDelegateHandle Handle) override;
 	virtual TSharedPtr<IPropertyHandleArray> AsArray() override;
 	virtual TSharedRef<IPropertyHandle> GetElement( int32 Index ) const override;
 	virtual FPropertyAccess::Result MoveElementTo(int32 OriginalIndex, int32 NewIndex) override;
@@ -717,7 +739,8 @@ public:
 	virtual FPropertyAccess::Result GetNumElements(uint32& OutNumElements) override;
 	virtual TSharedRef<IPropertyHandle> GetElement(int32 Index) const override;
 
-	virtual void SetOnNumElementsChanged(FSimpleDelegate& InOnNumElementsChanged) override;
+	virtual FDelegateHandle SetOnNumElementsChanged( const FSimpleDelegate& InOnNumElementsChanged ) override;
+	virtual void UnregisterOnNumElementsChanged(FDelegateHandle Handle) override;
 	virtual bool HasDocumentation() override { return true; }
 	virtual FString GetDocumentationLink() override { return FString("Engine/UI/LevelEditor/Details/Properties/Set/"); }
 	virtual FString GetDocumentationExcerptName() override { return FString("Sets"); }
@@ -737,7 +760,8 @@ public:
 	virtual FPropertyAccess::Result Empty() override;
 	virtual FPropertyAccess::Result DeleteItem(int32 Index) override;
 	virtual FPropertyAccess::Result GetNumElements(uint32& OutNumElements) override;
-	virtual void SetOnNumElementsChanged(FSimpleDelegate& InOnNumElementsChanged) override;
+	virtual FDelegateHandle SetOnNumElementsChanged( const FSimpleDelegate& InOnNumElementsChanged ) override;
+	virtual void UnregisterOnNumElementsChanged(FDelegateHandle Handle) override;
 	virtual bool HasDocumentation() override { return true; }
 	virtual FString GetDocumentationLink() override { return FString("Engine/UI/LevelEditor/Details/Properties/Map/"); }
 	virtual FString GetDocumentationExcerptName() override { return FString("Maps"); }

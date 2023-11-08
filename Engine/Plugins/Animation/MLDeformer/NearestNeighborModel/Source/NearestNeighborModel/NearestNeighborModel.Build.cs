@@ -38,7 +38,6 @@ public class NearestNeighborModel : ModuleRules
 				"CoreUObject",
 				"Engine",
 				"GeometryCache",
-				"NeuralNetworkInference",
 				"OptimusCore",
 				"Projects",
 				"RenderCore",

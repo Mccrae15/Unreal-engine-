@@ -501,7 +501,7 @@ namespace ChaosTest {
 
 				auto& Particle = Proxy->GetGameThreadAPI();
 				Particle.SetGravityEnabled(true);
-				Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1));
+				Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1), 0);
 
 				Particle.SetV(FVec3(0, 0, 0));
 
@@ -549,7 +549,7 @@ namespace ChaosTest {
 						}
 
 
-					if (!bHasResimmed || Time < 4.5)
+						if (!bHasResimmed || Time < 4.5)
 						{
 							//simply movement without hitting floor because it's spawned too late
 							EXPECT_NEAR(Proxy->GetPhysicsThreadAPI()->X()[2], 14.5 - Time, 1e-2);
@@ -1458,7 +1458,7 @@ namespace ChaosTest {
 					{
 						if (PhysicsStep == 3)
 						{
-							Proxy->GetPhysicsThreadAPI()->SetAcceleration(FVec3(0, 0, 10) + Proxy->GetPhysicsThreadAPI()->Acceleration());
+							Proxy->GetPhysicsThreadAPI()->SetAcceleration(FVec3(0, 0, 10) + Proxy->GetPhysicsThreadAPI()->Acceleration(), 0);
 							Proxy->GetPhysicsThreadAPI()->SetAngularAcceleration(FVec3(0, 0, 10) + Proxy->GetPhysicsThreadAPI()->AngularAcceleration());
 						}
 
@@ -1684,7 +1684,7 @@ namespace ChaosTest {
 		TRewindHelper::TestDynamicSphere([](auto* Solver, FReal SimDt, int32 Optimization, auto Proxy, auto Sphere)
 		{
 				auto& Particle = Proxy->GetGameThreadAPI();
-				Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1));
+				Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1), 0);
 				Particle.SetGravityEnabled(true);
 				Particle.SetX(FVec3(0, 0, 100));
 
@@ -1829,7 +1829,7 @@ namespace ChaosTest {
 
 				{
 					auto& Particle = Proxy->GetGameThreadAPI();
-					Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1));
+					Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1), 0);
 					Particle.SetGravityEnabled(true);
 					Particle.SetX(FVec3(0, 0, 100));
 
@@ -1989,7 +1989,7 @@ namespace ChaosTest {
 
 				{
 					auto& Particle = Proxy->GetGameThreadAPI();
-					Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1));
+					Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1), 0);
 					Particle.SetGravityEnabled(true);
 					Particle.SetX(FVec3(0, 0, 100));
 
@@ -2108,12 +2108,13 @@ namespace ChaosTest {
 				FReal Time = 0;
 				FReal ZStart = 0;
 				const FReal ZVel = -1;
+				FReal LastCorrectionStep = 0;
 
 				Solver->SetRewindCallback(MoveTemp(UniqueRewindCallback));
 
 				{
 					auto& Particle = Proxy->GetGameThreadAPI();
-					Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1));
+					Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1), 0);
 					Particle.SetGravityEnabled(false);
 					Particle.SetX(FVec3(0, 0, 0));
 					Particle.SetV(FVec3(0, 0, -1));
@@ -2154,17 +2155,32 @@ namespace ChaosTest {
 						const int32 NextSimStep = FMath::CeilToInt(InterpolatedTime / SimDt);
 						const FReal NextSimStepTime = NextSimStep * SimDt;
 						const FReal ExpectedValue = ZStart + ZVel * InterpolatedTime;
-						const FReal TargetValue = ZStart + ZVel * NextSimStepTime;
+					//	const FReal TargetValue = ZStart + ZVel * NextSimStepTime;
 
-						if(!Proxy->GetInterpolationData().IsResimSmoothing())
+						if (Proxy->GetInterpolationData().IsErrorSmoothing())
 						{
-							//no resim interpolation, just simple value interpolation
-							EXPECT_NEAR(Particle.X()[2], ExpectedValue, 1e-2);
+#if !RENDERINTERP_ERRORVELOCITYSMOOTHING
+							const FReal CorrectionStep = Particle.X()[2] - PrevZ;
+							if (LastCorrectionStep != 0)
+							{
+								// Make sure we have a linear correction
+								EXPECT_NEAR(LastCorrectionStep, CorrectionStep, 1e-2);
+							}
+
+							LastCorrectionStep = CorrectionStep;
+#endif
 						}
 						else
 						{
-							//exponential decay from current state to target
-							EXPECT_NEAR(Particle.X()[2], FMath::Lerp(PrevZ, ExpectedValue, Chaos::ResimInterpStrength), 1e-2);
+							if (!!LastCorrectionStep)
+							{
+								// Correction is now done, check if the object arrived at the current position by the correction or if it was snapped into place via not doing correction anymore
+								EXPECT_NEAR(PrevZ, Particle.X()[2] - LastCorrectionStep, 1e-2);
+								LastCorrectionStep = 0;
+							}
+
+							//no resim interpolation, just simple value interpolation
+							EXPECT_NEAR(Particle.X()[2], ExpectedValue, 1e-2);
 						}
 					}
 				}
@@ -2217,7 +2233,7 @@ namespace ChaosTest {
 
 			{
 				auto& Particle = Proxy->GetGameThreadAPI();
-				Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1));
+				Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1), 0);
 				Particle.SetGravityEnabled(true);
 				Particle.SetX(FVec3(0, 0, 100));
 
@@ -2253,7 +2269,7 @@ namespace ChaosTest {
 
 			{
 				auto& Particle = Proxy->GetGameThreadAPI();
-				Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1));
+				Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1), 0);
 				Particle.SetGravityEnabled(true);
 				Particle.SetX(FVec3(0, 0, 100));
 				Particle.SetResimType(EResimType::ResimAsFollower);
@@ -3488,7 +3504,7 @@ namespace ChaosTest {
 				Dynamic.SetGeometry(Sphere);
 				Dynamic.SetGravityEnabled(true);
 				Solver->RegisterObject(DynamicProxy);
-				Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1));
+				Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1), 0);
 
 				Kinematic.SetGeometry(Box);
 				Solver->RegisterObject(KinematicProxy);
@@ -3596,7 +3612,7 @@ namespace ChaosTest {
 			Dynamic.SetGeometry(Sphere);
 			Dynamic.SetGravityEnabled(true);
 			Solver->RegisterObject(DynamicProxy);
-			Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1));
+			Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1), 0);
 
 			Kinematic.SetGeometry(Box);
 			Solver->RegisterObject(KinematicProxy);
@@ -3710,7 +3726,7 @@ namespace ChaosTest {
 			Dynamic.SetGeometry(Sphere);
 			Dynamic.SetGravityEnabled(true);
 			Solver->RegisterObject(DynamicProxy);
-			Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1));
+			Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1), 0);
 
 			Kinematic.SetGeometry(Box);
 			Solver->RegisterObject(KinematicProxy);
@@ -3964,7 +3980,7 @@ namespace ChaosTest {
 			Dynamic.SetGeometry(Box);
 			Dynamic.SetGravityEnabled(true);
 			Solver->RegisterObject(DynamicProxy);
-			Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1));
+			Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1), 0);
 			Dynamic.SetObjectState(EObjectStateType::Dynamic);
 
 			Storage.Add(DynamicProxy);
@@ -3999,7 +4015,7 @@ namespace ChaosTest {
 			Dynamic.SetGeometry(Box);
 			Dynamic.SetGravityEnabled(true);
 			Solver->RegisterObject(DynamicProxy);
-			Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1));
+			Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1), 0);
 			Dynamic.SetObjectState(EObjectStateType::Dynamic);
 			Dynamic.SetX(StartPos);
 			Dynamic.SetR(StartRotation);
@@ -4084,7 +4100,7 @@ namespace ChaosTest {
 			Dynamic.SetGeometry(Box);
 			Dynamic.SetGravityEnabled(true);
 			Solver->RegisterObject(DynamicProxy);
-			Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, Gravity));
+			Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, Gravity), 0);
 			Dynamic.SetObjectState(EObjectStateType::Dynamic);
 
 			Storage.Add(DynamicProxy);
@@ -4178,7 +4194,7 @@ namespace ChaosTest {
 
 		const auto InitLambda = [&SmallBox, &Box](auto& Solver, auto)
 		{
-			Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -980));
+			Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -980), 0);
 			TArray<FPhysicsActorHandle> Storage;
 			for (int Idx = 0; Idx < 5; ++Idx)
 			{
@@ -4245,7 +4261,7 @@ namespace ChaosTest {
 		const auto InitLambda = [&SmallBox, &Box, NumParticles](auto& Solver, const TArray<int32>* Mapping)
 		{
 			auto MappingHelper = [Mapping](const int32 Idx) { return Mapping ? (*Mapping)[Idx] : Idx; };
-			Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -980));
+			Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -980), 0);
 			TArray<FPhysicsActorHandle> Storage;
 			for (int Idx = 0; Idx < NumParticles; ++Idx)
 			{

@@ -24,12 +24,14 @@
 #include "Render/Device/DisplayClusterRenderDeviceFactoryInternal.h"
 
 #include "Render/Device/IDisplayClusterRenderDeviceFactory.h"
+#include "Render/Monitoring/DisplayClusterVblankMonitor.h"
 #include "Render/PostProcess/IDisplayClusterPostProcess.h"
 #include "Render/Projection/IDisplayClusterProjectionPolicyFactory.h"
 #include "Render/Projection/IDisplayClusterProjectionPolicy.h"
 #include "Render/Synchronization/IDisplayClusterRenderSyncPolicyFactory.h"
 
 #include "Render/Containers/DisplayClusterRender_MeshComponent.h"
+#include "Render/Containers/DisplayClusterRender_Texture.h"
 
 #include "Render/Presentation/DisplayClusterPresentationNative.h"
 
@@ -53,6 +55,46 @@
 #endif
 
 
+static TAutoConsoleVariable<int32> CVarSyncDiagnosticsVBlankMonitoring(
+	TEXT("nDisplay.sync.diag.VBlankMonitoring"),
+	0,
+	TEXT("Sync diagnostics: V-blank monitoring\n")
+	TEXT("0 : disabled\n")
+	TEXT("1 : enabled (if policy supports only)\n")
+	,
+	ECVF_ReadOnly
+);
+
+#include "Misc/DisplayClusterDataCache.h"
+
+/**
+ * The cache for DC texture objects. (Singleton)
+ * Allows you to reuse textures with the same unique name.
+ */
+class FDisplayClusterRenderTextureCache
+	: public TDisplayClusterDataCache<FDisplayClusterRender_Texture>
+{
+public:
+	static TSharedPtr<FDisplayClusterRender_Texture, ESPMode::ThreadSafe> GetOrCreateRenderTexture(const FString& InTextureName)
+	{
+		static FDisplayClusterRenderTextureCache TextureCacheSingleton;
+
+		const FString UniqueName = HashString(InTextureName);
+
+		TSharedPtr<FDisplayClusterRender_Texture, ESPMode::ThreadSafe> TextureRef = TextureCacheSingleton.Find(UniqueName);
+		if (!TextureRef.IsValid())
+		{
+			TextureRef = MakeShared<FDisplayClusterRender_Texture, ESPMode::ThreadSafe>(UniqueName);
+			TextureCacheSingleton.Add(TextureRef);
+		}
+
+		return TextureRef;
+	}
+};
+
+//---------------------------------------------------
+// FDisplayClusterRenderManager
+//---------------------------------------------------
 FDisplayClusterRenderManager::FDisplayClusterRenderManager()
 {
 	// Instantiate and register internal render device factory
@@ -68,6 +110,9 @@ FDisplayClusterRenderManager::FDisplayClusterRenderManager()
 	RegisterSynchronizationPolicyFactory(DisplayClusterConfigurationStrings::config::cluster::render_sync::Ethernet,        NewSyncPolicyFactory); // Ethernet
 	RegisterSynchronizationPolicyFactory(DisplayClusterConfigurationStrings::config::cluster::render_sync::EthernetBarrier, NewSyncPolicyFactory); // Ethernet_Simple
 	RegisterSynchronizationPolicyFactory(DisplayClusterConfigurationStrings::config::cluster::render_sync::Nvidia,          NewSyncPolicyFactory); // NVIDIA
+
+	// Instantiate V-blank monitor (it won't auto-start polling)
+	VBlankMonitor = MakeShared<FDisplayClusterVBlankMonitor, ESPMode::ThreadSafe>();
 }
 
 FDisplayClusterRenderManager::~FDisplayClusterRenderManager()
@@ -119,6 +164,12 @@ bool FDisplayClusterRenderManager::StartSession(UDisplayClusterConfigurationData
 	{
 		GEngine->StereoRenderingDevice = StaticCastSharedPtr<IStereoRendering>(NewRenderDevice);
 		RenderDevicePtr = NewRenderDevice.Get();
+	}
+
+	// Start v-blank monitoring if requested
+	if (!!CVarSyncDiagnosticsVBlankMonitoring.GetValueOnGameThread())
+	{
+		VBlankMonitor->StartMonitoring();
 	}
 
 	// When session is starting in Editor the device won't be initialized so we avoid nullptr access here.
@@ -345,6 +396,9 @@ TSharedPtr<IDisplayClusterRenderSyncPolicy> FDisplayClusterRenderManager::GetCur
 	return SyncPolicy;
 }
 
+//------------------------------------------------------------------------------------------------------------------------------
+// Projection Policy
+//------------------------------------------------------------------------------------------------------------------------------
 bool FDisplayClusterRenderManager::RegisterProjectionPolicyFactory(const FString& InProjectionType, TSharedPtr<IDisplayClusterProjectionPolicyFactory>& InFactory)
 {
 	UE_LOG(LogDisplayClusterRender, Log, TEXT("Registering factory for projection type: %s"), *InProjectionType);
@@ -411,7 +465,9 @@ void FDisplayClusterRenderManager::GetRegisteredProjectionPolicies(TArray<FStrin
 	ProjectionPolicyFactories.GetKeys(OutPolicyIDs);
 }
 
-
+//------------------------------------------------------------------------------------------------------------------------------
+// PostProcess
+//------------------------------------------------------------------------------------------------------------------------------
 bool FDisplayClusterRenderManager::RegisterPostProcessFactory(const FString& InPostProcessType, TSharedPtr<IDisplayClusterPostProcessFactory>& InFactory)
 {
 	UE_LOG(LogDisplayClusterRender, Log, TEXT("Registering factory for postprocess type: %s"), *InPostProcessType);
@@ -478,9 +534,86 @@ void FDisplayClusterRenderManager::GetRegisteredPostProcess(TArray<FString>& Out
 	PostProcessFactories.GetKeys(OutPostProcessIDs);
 }
 
+//------------------------------------------------------------------------------------------------------------------------------
+// Warp Policy
+//------------------------------------------------------------------------------------------------------------------------------
+bool FDisplayClusterRenderManager::RegisterWarpPolicyFactory(const FString& InWarpPolicyType, TSharedPtr<IDisplayClusterWarpPolicyFactory>& InFactory)
+{
+	UE_LOG(LogDisplayClusterRender, Log, TEXT("Registering factory for warp policy type: %s"), *InWarpPolicyType);
+
+	if (!InFactory.IsValid())
+	{
+		UE_LOG(LogDisplayClusterRender, Warning, TEXT("Invalid factory object"));
+		return false;
+	}
+
+	{
+		FScopeLock Lock(&CritSecInternals);
+
+		if (WarpPolicyFactories.Contains(InWarpPolicyType))
+		{
+			UE_LOG(LogDisplayClusterRender, Warning, TEXT("A new factory for '%s' warp policy was set"), *InWarpPolicyType);
+		}
+
+		WarpPolicyFactories.Emplace(InWarpPolicyType, InFactory);
+	}
+
+	UE_LOG(LogDisplayClusterRender, Log, TEXT("Registered factory for warp policy type: %s"), *InWarpPolicyType);
+
+	return true;
+}
+
+bool FDisplayClusterRenderManager::UnregisterWarpPolicyFactory(const FString& InWarpPolicyType)
+{
+	UE_LOG(LogDisplayClusterRender, Log, TEXT("Unregistering factory for warp policy: %s"), *InWarpPolicyType);
+
+	{
+		FScopeLock Lock(&CritSecInternals);
+
+		if (!WarpPolicyFactories.Contains(InWarpPolicyType))
+		{
+			UE_LOG(LogDisplayClusterRender, Warning, TEXT("A handler for '%s' warp policy type not found"), *InWarpPolicyType);
+			return false;
+		}
+
+		WarpPolicyFactories.Remove(InWarpPolicyType);
+	}
+
+	UE_LOG(LogDisplayClusterRender, Log, TEXT("Unregistered factory for warp policy: %s"), *InWarpPolicyType);
+
+	return true;
+}
+
+TSharedPtr<IDisplayClusterWarpPolicyFactory> FDisplayClusterRenderManager::GetWarpPolicyFactory(const FString& InWarpPolicyType)
+{
+	FScopeLock Lock(&CritSecInternals);
+
+	TSharedPtr<IDisplayClusterWarpPolicyFactory> Factory;
+	if (!DisplayClusterHelpers::map::template ExtractValue(WarpPolicyFactories, InWarpPolicyType, Factory))
+	{
+		UE_LOG(LogDisplayClusterRender, Warning, TEXT("No factory found for warp policy: %s"), *InWarpPolicyType);
+	}
+
+	return Factory;
+}
+
+void FDisplayClusterRenderManager::GetRegisteredWarpPolicies(TArray<FString>& OutWarpPolicyIDs) const
+{
+	FScopeLock Lock(&CritSecInternals);
+	WarpPolicyFactories.GetKeys(OutWarpPolicyIDs);
+}
+
+//------------------------------------------------------------------------------------------------------------------------------
+// Resources
+//------------------------------------------------------------------------------------------------------------------------------
 TSharedPtr<IDisplayClusterRender_MeshComponent, ESPMode::ThreadSafe> FDisplayClusterRenderManager::CreateMeshComponent() const
 {
 	return MakeShared<FDisplayClusterRender_MeshComponent, ESPMode::ThreadSafe>();
+}
+
+TSharedPtr<IDisplayClusterRender_Texture, ESPMode::ThreadSafe> FDisplayClusterRenderManager::GetOrCreateCachedTexture(const FString& InUniqueTextureName) const
+{
+	return FDisplayClusterRenderTextureCache::GetOrCreateRenderTexture(InUniqueTextureName);
 }
 
 IDisplayClusterViewportManager* FDisplayClusterRenderManager::GetViewportManager() const

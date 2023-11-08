@@ -3,6 +3,7 @@
 #include "Views/SInteractiveCurveEditorView.h"
 
 #include "Algo/Sort.h"
+#include "AnimatedRange.h"
 #include "Containers/ArrayView.h"
 #include "Containers/Map.h"
 #include "Containers/SortedMap.h"
@@ -151,6 +152,8 @@ void SInteractiveCurveEditorView::Construct(const FArguments& InArgs, TWeakPtr<F
 
 FText SInteractiveCurveEditorView::GetCurveCaption() const
 {
+	FText CurveCaption;
+
 	TSharedPtr<FCurveEditor> CurveEditor = WeakCurveEditor.Pin();
 	if (CurveEditor && CurveInfoByID.Num() == 1)
 	{
@@ -158,16 +161,25 @@ FText SInteractiveCurveEditorView::GetCurveCaption() const
 		{
 			if (const FCurveModel* Curve = CurveEditor->FindCurve(Pair.Key))
 			{
-				return Curve->GetLongDisplayName();
+				CurveCaption = Curve->GetLongDisplayName();
+				break;
 			}
 		}
 	}
 
-	return FText::GetEmpty();
+	if (!CurveCaption.IdenticalTo(CachedCurveCaption))
+	{
+		CachedCurveCaption = CurveCaption;
+		const_cast<SInteractiveCurveEditorView*>(this)->RefreshRetainer();
+	}
+
+	return CurveCaption;
 }
 
 FSlateColor SInteractiveCurveEditorView::GetCurveCaptionColor() const
 {
+	FSlateColor CurveCaptionColor = BackgroundTint.CopyWithNewOpacity(1.f);
+
 	TSharedPtr<FCurveEditor> CurveEditor = WeakCurveEditor.Pin();
 	if (CurveEditor && CurveInfoByID.Num() == 1)
 	{
@@ -175,12 +187,19 @@ FSlateColor SInteractiveCurveEditorView::GetCurveCaptionColor() const
 		{
 			if (const FCurveModel* Curve = CurveEditor->FindCurve(Pair.Key))
 			{
-				return Curve->GetColor();
+				CurveCaptionColor = Curve->GetColor();
+				break;
 			}
 		}
 	}
 
-	return BackgroundTint.CopyWithNewOpacity(1.f);
+	if (CurveCaptionColor != CachedCurveCaptionColor)
+	{
+		CachedCurveCaptionColor = CurveCaptionColor;
+		const_cast<SInteractiveCurveEditorView*>(this)->RefreshRetainer();
+	}
+
+	return CurveCaptionColor;
 }
 
 void SInteractiveCurveEditorView::GetGridLinesX(TSharedRef<const FCurveEditor> CurveEditor, TArray<float>& MajorGridLines, TArray<float>& MinorGridLines, TArray<FText>* MajorGridLabels) const
@@ -664,11 +683,6 @@ bool SInteractiveCurveEditorView::GetCurveWithinWidgetRange(const FSlateRect& Wi
 
 void SInteractiveCurveEditorView::UpdateCurveProximities(FVector2D MousePixel)
 {
-	if (DragOperation.IsSet())
-	{
-		return;
-	}
-
 	CurveProximities.Reset();
 	CachedToolTipData.Reset();
 
@@ -720,7 +734,8 @@ void SInteractiveCurveEditorView::UpdateCurveProximities(FVector2D MousePixel)
 
 	Algo::SortBy(CurveProximities, [](TTuple<FCurveModelID, float> In) { return In.Get<1>(); });
 
-	if (CurveProximities.Num() > 0 && CurveProximities[0].Get<1>() < CurveViewConstants::HoverProximityThresholdPx)
+	// Also, set the cached tooltips if dragging because the curve proximity might not be updated during the drag
+	if (CurveProximities.Num() > 0 && (CurveProximities[0].Get<1>() < CurveViewConstants::HoverProximityThresholdPx || DragOperation.IsSet()))
 	{
 		const FCurveModel* HoveredCurve = CurveEditor->FindCurve(CurveProximities[0].Get<0>());
 		if (HoveredCurve)
@@ -733,13 +748,28 @@ void SInteractiveCurveEditorView::UpdateCurveProximities(FVector2D MousePixel)
 			HoveredCurve->Evaluate(EvaluatedTime, EvaluatedValue);
 
 			FCachedToolTipData ToolTipData;
-			ToolTipData.Text = FText::Format(LOCTEXT("CurveEditorTooltipName", "Name: {0}"), HoveredCurve->GetLongDisplayName());
-			ToolTipData.EvaluatedTime = FText::Format(LOCTEXT("CurveEditorTime", "Time: {0}"), EvaluatedTime);
-			ToolTipData.EvaluatedValue = FText::Format(LOCTEXT("CurveEditorValue", "Value: {0}"), EvaluatedValue);
+			ToolTipData.Text = FormatToolTipCurveName(*HoveredCurve);
+			ToolTipData.EvaluatedTime = FormatToolTipTime(*HoveredCurve, EvaluatedTime);
+			ToolTipData.EvaluatedValue = FormatToolTipValue(*HoveredCurve, EvaluatedValue);
 			
 			CachedToolTipData = ToolTipData;
 		}
 	}
+}
+
+FText SInteractiveCurveEditorView::FormatToolTipCurveName(const FCurveModel& CurveModel) const
+{
+	return FText::Format(LOCTEXT("CurveEditorTooltipName", "Name: {0}"), CurveModel.GetLongDisplayName());
+}
+
+FText SInteractiveCurveEditorView::FormatToolTipTime(const FCurveModel& CurveModel, double EvaluatedTime) const
+{
+	return FText::Format(LOCTEXT("CurveEditorTime", "Time: {0}"), EvaluatedTime);
+}
+
+FText SInteractiveCurveEditorView::FormatToolTipValue(const FCurveModel& CurveModel, double EvaluatedValue) const
+{
+	return FText::Format(LOCTEXT("CurveEditorValue", "Value: {0}"), EvaluatedValue);
 }
 
 void SInteractiveCurveEditorView::OnMouseEnter(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
@@ -1071,9 +1101,17 @@ FReply SInteractiveCurveEditorView::OnMouseButtonDown(const FGeometry& MyGeometr
 					FScopedTransaction Transaction(LOCTEXT("InsertKey", "Insert Key"));
 
 					FCurveEditorScreenSpace CurveSpace = GetCurveSpace(HoveredCurve.GetValue());
-					FKeyAttributes KeyAttributes = CurveEditor->GetDefaultKeyAttributes().Get();
 					double MouseTime = CurveSpace.ScreenToSeconds(MousePixel.X);
 					double MouseValue = CurveSpace.ScreenToValue(MousePixel.Y);
+
+					FKeyAttributes KeyAttributes = CurveEditor->GetDefaultKeyAttributes().Get();
+					if (KeyAttributes.HasInterpMode())
+					{
+						// Set interpolation and tangent mode based on surrounding keys, if any
+						TPair<ERichCurveInterpMode, ERichCurveTangentMode> Modes = CurveToAddTo->GetInterpolationMode(MouseTime, KeyAttributes.GetInterpMode(), KeyAttributes.GetTangentMode());
+						KeyAttributes.SetInterpMode(Modes.Key);
+						KeyAttributes.SetTangentMode(Modes.Value);
+					}
 
 					FCurveSnapMetrics SnapMetrics = CurveEditor->GetCurveSnapMetrics(HoveredCurve.GetValue());
 					MouseTime = SnapMetrics.SnapInputSeconds(MouseTime);
@@ -1513,8 +1551,6 @@ void SInteractiveCurveEditorView::AddKeyAtTime(const TSet<FCurveModelID>& ToCurv
 	FScopedTransaction Transaction(LOCTEXT("AddKeyAtTime", "Add Key"));
 	bool bAddedKey = false;
 
-	FKeyAttributes DefaultAttributes = CurveEditor->GetDefaultKeyAttribute().Get();
-
 	// Clear the selection set as we will be selecting all the new keys created.
 	CurveEditor->GetSelection().Clear();
 
@@ -1556,8 +1592,17 @@ void SInteractiveCurveEditorView::AddKeyAtTime(const TSet<FCurveModelID>& ToCurv
 			}
 			else
 			{
+				FKeyAttributes KeyAttributes = CurveEditor->GetDefaultKeyAttribute().Get();
+				if (KeyAttributes.HasInterpMode())
+				{
+					// Set interpolation and tangent mode based on surrounding keys, if any
+					TPair<ERichCurveInterpMode, ERichCurveTangentMode> Modes = CurveModel->GetInterpolationMode(EvalTime, KeyAttributes.GetInterpMode(), KeyAttributes.GetTangentMode());
+					KeyAttributes.SetInterpMode(Modes.Key);
+					KeyAttributes.SetTangentMode(Modes.Value);
+				}
+
 				// Add a key on this curve
-				NewKey = CurveModel->AddKey(FKeyPosition(EvalTime, CurveValue), DefaultAttributes);
+				NewKey = CurveModel->AddKey(FKeyPosition(EvalTime, CurveValue), KeyAttributes);
 			}
 
 			// Add the key to the selection set.

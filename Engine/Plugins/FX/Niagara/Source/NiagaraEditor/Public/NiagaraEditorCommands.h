@@ -41,6 +41,7 @@ public:
 	TSharedPtr<FUICommandInfo> ToggleParticleCounts;
 	TSharedPtr<FUICommandInfo> ToggleEmitterExecutionOrder;
 	TSharedPtr<FUICommandInfo> ToggleGpuTickInformation;
+	TSharedPtr<FUICommandInfo> ToggleMemoryInfo;
 
 	/** Toggles the preview pane's background */
 	TSharedPtr< FUICommandInfo > TogglePreviewBackground;
@@ -53,6 +54,8 @@ public:
 	TSharedPtr<FUICommandInfo> ToggleBounds_SetFixedBounds_SelectedEmitters;
 	TSharedPtr<FUICommandInfo> ToggleBounds_SetFixedBounds_System;
 	TSharedPtr<FUICommandInfo> SaveThumbnailImage;
+
+	TSharedPtr<FUICommandInfo> ToggleMotion;
 
 	TSharedPtr<FUICommandInfo> ToggleStatPerformance;
 	TSharedPtr<FUICommandInfo> ToggleStatPerformanceGPU;

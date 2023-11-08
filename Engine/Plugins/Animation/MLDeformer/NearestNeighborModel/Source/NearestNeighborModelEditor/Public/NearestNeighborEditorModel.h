@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "CoreTypes.h"
 #include "MLDeformerMorphModelEditorModel.h"
 #include "MLDeformerEditorActor.h"
 
@@ -81,14 +81,12 @@ namespace UE::NearestNeighborModel
 
 		int32 GetNumParts();
 
-		UNeuralNetwork* LoadNeuralNetworkFromOnnx(const FString& Filename) const;
 		void OnMorphTargetUpdate();
 		uint8 GetMorphTargetUpdateResult() { return MorphTargetUpdateResult; }
 		UMLDeformerComponent* GetTestMLDeformerComponent() const;
 		UMLDeformerModelInstance* GetTestMLDeformerModelInstance() const;
 		void InitTestMLDeformerPreviousWeights();
 		uint8 WarnIfNetworkInvalid();
-		bool IsNeuralNetworkLoaded();
 
 		virtual void CreateNearestNeighborActors(UWorld* World, int32 StartIndex = 0);
 

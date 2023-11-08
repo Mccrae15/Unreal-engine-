@@ -7,7 +7,6 @@ RHIUtilities.cpp:
 #include "RHIUtilities.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "HAL/PlatformStackWalk.h"
-#include "Containers/ClosableMpscQueue.h"
 #include "RHI.h"
 #include "GenericPlatform/GenericPlatformFramePacer.h"
 #include "HAL/Runnable.h"
@@ -26,8 +25,6 @@ TAutoConsoleVariable<FString> FDumpTransitionsHelper::CVarDumpTransitionsForReso
 	TEXT("Prints callstack when the given resource is transitioned. Only implemented for DX11 at the moment.")
 	TEXT("Name of the resource to dump"),
 	ECVF_Default);
-
-RHI_API FRHILockTracker GRHILockTracker;
 
 FName FDumpTransitionsHelper::DumpTransitionForResource = NAME_None;
 void FDumpTransitionsHelper::DumpTransitionForResourceHandler()
@@ -520,12 +517,12 @@ FRHIFrameFlipTrackingRunnable FRHIFrameFlipTrackingRunnable::Singleton;
 bool FRHIFrameFlipTrackingRunnable::bInitialized = false;
 bool FRHIFrameFlipTrackingRunnable::bRun = false;
 
-RHI_API uint32 RHIGetSyncInterval()
+uint32 RHIGetSyncInterval()
 {
 	return FMath::Max(CVarRHISyncInterval.GetValueOnAnyThread(), 0);
 }
 
-RHI_API float RHIGetSyncSlackMS()
+float RHIGetSyncSlackMS()
 {
 #if USE_FRAME_OFFSET_THREAD
 	const float SyncSlackMS = CVarRHISyncSlackMS.GetValueOnAnyThread();
@@ -535,30 +532,30 @@ RHI_API float RHIGetSyncSlackMS()
 	return SyncSlackMS;
 }
 
-RHI_API bool RHIGetSyncAllowVariable()
+bool RHIGetSyncAllowVariable()
 {
 	return CVarRHISyncAllowVariable.GetValueOnAnyThread() != 0;
 }
 
-RHI_API void RHIGetPresentThresholds(float& OutTopPercent, float& OutBottomPercent)
+void RHIGetPresentThresholds(float& OutTopPercent, float& OutBottomPercent)
 {
 	OutTopPercent = FMath::Clamp(CVarRHIPresentThresholdTop.GetValueOnAnyThread(), 0.0f, 1.0f);
 	OutBottomPercent = FMath::Clamp(CVarRHIPresentThresholdBottom.GetValueOnAnyThread(), 0.0f, 1.0f);
 }
 
-RHI_API void RHICompleteGraphEventOnFlip(uint64 PresentIndex, FGraphEventRef Event)
+void RHICompleteGraphEventOnFlip(uint64 PresentIndex, FGraphEventRef Event)
 {
 	FRHIFrameFlipTrackingRunnable::CompleteGraphEventOnFlip(PresentIndex, Event);
 }
 
-RHI_API void RHISetFrameDebugInfo(uint64 PresentIndex, uint64 FrameIndex, uint64 InputTime)
+void RHISetFrameDebugInfo(uint64 PresentIndex, uint64 FrameIndex, uint64 InputTime)
 {
 #if USE_FRAME_OFFSET_THREAD
 	FRHIFrameOffsetThread::SetFrameDebugInfo(PresentIndex, FrameIndex, InputTime);
 #endif
 }
 
-RHI_API void RHIInitializeFlipTracking()
+void RHIInitializeFlipTracking()
 {
 #if USE_FRAME_OFFSET_THREAD
 	FRHIFrameOffsetThread::Initialize();
@@ -566,19 +563,19 @@ RHI_API void RHIInitializeFlipTracking()
 	FRHIFrameFlipTrackingRunnable::Initialize();
 }
 
-RHI_API void RHICalculateFrameTime()
+void RHICalculateFrameTime()
 {
 	double CurrentTimeInSeconds = FPlatformTime::Seconds();
 	GRHIFrameTimeMS = (float)((CurrentTimeInSeconds - GLastRHITimeInSeconds) * 1000.0);
 	GLastRHITimeInSeconds = CurrentTimeInSeconds;
 }
 
-RHI_API float RHIGetFrameTime()
+float RHIGetFrameTime()
 {
 	return GRHIFrameTimeMS;
 }
 
-RHI_API void RHIShutdownFlipTracking()
+void RHIShutdownFlipTracking()
 {
 	FRHIFrameFlipTrackingRunnable::Shutdown();
 #if USE_FRAME_OFFSET_THREAD
@@ -586,7 +583,7 @@ RHI_API void RHIShutdownFlipTracking()
 #endif
 }
 
-RHI_API ERHIAccess RHIGetDefaultResourceState(ETextureCreateFlags InUsage, bool bInHasInitialData)
+ERHIAccess RHIGetDefaultResourceState(ETextureCreateFlags InUsage, bool bInHasInitialData)
 {
 	// By default assume it can be bound for reading
 	ERHIAccess ResourceState = ERHIAccess::SRVMask;
@@ -613,12 +610,16 @@ RHI_API ERHIAccess RHIGetDefaultResourceState(ETextureCreateFlags InUsage, bool 
 		{
 			ResourceState = ERHIAccess::SRVMask;
 		}
+		else if (EnumHasAnyFlags(InUsage, TexCreate_Foveation))
+		{
+			ResourceState = ERHIAccess::ShadingRateSource;
+		}
 	}
 
 	return ResourceState;
 }
 
-RHI_API ERHIAccess RHIGetDefaultResourceState(EBufferUsageFlags InUsage, bool bInHasInitialData)
+ERHIAccess RHIGetDefaultResourceState(EBufferUsageFlags InUsage, bool bInHasInitialData)
 {
 	// Default reading state is different per buffer type
 	ERHIAccess DefaultReadingState = ERHIAccess::Unknown;
@@ -737,265 +738,27 @@ void DecodeRenderTargetMode(ESimpleRenderTargetMode Mode, ERenderTargetLoadActio
 	}
 }
 
-void RHICreateTargetableShaderResource(
-	const FRHITextureCreateDesc& BaseDesc,
-	ETextureCreateFlags TargetableTextureFlags,
-	FTextureRHIRef& OutTargetableTexture)
+EGpuVendorId RHIGetPreferredAdapterVendor()
 {
-	// Ensure none of the usage flags are passed in.
-	check(!EnumHasAnyFlags(BaseDesc.Flags, ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ResolveTargetable));
-
-	// Ensure that the targetable texture is either render or depth-stencil targetable.
-	check(EnumHasAnyFlags(TargetableTextureFlags, ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::DepthStencilTargetable | ETextureCreateFlags::UAV));
-
-	FRHITextureCreateDesc Desc =
-		FRHITextureCreateDesc(BaseDesc)
-		.AddFlags(TargetableTextureFlags | ETextureCreateFlags::ShaderResource)
-		.SetInitialState(ERHIAccess::SRVMask);
-
-	OutTargetableTexture = RHICreateTexture(Desc);
-}
-
-void RHICreateTargetableShaderResource(
-	const FRHITextureCreateDesc& BaseDesc,
-	ETextureCreateFlags TargetableTextureFlags,
-	bool bForceSeparateTargetAndShaderResource,
-	bool bForceSharedTargetAndShaderResource,
-	FTextureRHIRef& OutTargetableTexture,
-	FTextureRHIRef& OutShaderResourceTexture
-	)
-{
-	// Ensure none of the usage flags are passed in.
-	check(!EnumHasAnyFlags(BaseDesc.Flags, ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ResolveTargetable));
-
-	// Ensure we aren't forcing separate and shared textures at the same time.
-	check(!(bForceSeparateTargetAndShaderResource && bForceSharedTargetAndShaderResource));
-
-	// Ensure that the targetable texture is either render or depth-stencil targetable.
-	check(EnumHasAnyFlags(TargetableTextureFlags, ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::DepthStencilTargetable | ETextureCreateFlags::UAV));
-
-	if (BaseDesc.NumSamples > 1 && !bForceSharedTargetAndShaderResource)
+	if (FParse::Param(FCommandLine::Get(), TEXT("preferAMD")))
 	{
-		bForceSeparateTargetAndShaderResource = RHISupportsSeparateMSAAAndResolveTextures(GMaxRHIShaderPlatform);
+		return EGpuVendorId::Amd;
 	}
 
-	if (!bForceSeparateTargetAndShaderResource)
+	if (FParse::Param(FCommandLine::Get(), TEXT("preferIntel")))
 	{
-		FRHITextureCreateDesc Desc =
-			FRHITextureCreateDesc(BaseDesc)
-			.AddFlags(TargetableTextureFlags | ETextureCreateFlags::ShaderResource)
-			.SetInitialState(ERHIAccess::SRVMask);
-
-		// Create a single texture that has both TargetableTextureFlags and ETextureCreateFlags::ShaderResource set.
-		OutTargetableTexture = OutShaderResourceTexture = RHICreateTexture(Desc);
+		return EGpuVendorId::Intel;
 	}
-	else
+
+	if (FParse::Param(FCommandLine::Get(), TEXT("preferNvidia")))
 	{
-		ETextureCreateFlags ResolveTargetableTextureFlags = ETextureCreateFlags::ResolveTargetable;
-		if (EnumHasAnyFlags(TargetableTextureFlags, ETextureCreateFlags::DepthStencilTargetable))
-		{
-			ResolveTargetableTextureFlags |= ETextureCreateFlags::DepthStencilResolveTarget;
-		}
-
-		FRHITextureCreateDesc TargetableDesc =
-			FRHITextureCreateDesc(BaseDesc)
-			.AddFlags(TargetableTextureFlags)
-			.SetInitialState(ERHIAccess::SRVMask);
-
-		FRHITextureCreateDesc ResourceDesc =
-			FRHITextureCreateDesc(BaseDesc)
-			.AddFlags(ResolveTargetableTextureFlags | ETextureCreateFlags::ShaderResource)
-			.SetInitialState(ERHIAccess::SRVMask)
-			.SetNumSamples(1);
-
-		// Create a texture that has TargetableTextureFlags set, and a second texture that has ETextureCreateFlags::ResolveTargetable and ETextureCreateFlags::ShaderResource set.
-		OutTargetableTexture = RHICreateTexture(TargetableDesc);
-		OutShaderResourceTexture = RHICreateTexture(ResourceDesc);
+		return EGpuVendorId::Nvidia;
 	}
-}
 
-void RHICreateTargetableShaderResource2D(
-	uint32 SizeX,
-	uint32 SizeY,
-	uint8 Format,
-	uint32 NumMips,
-	ETextureCreateFlags Flags,
-	ETextureCreateFlags TargetableTextureFlags,
-	bool bForceSeparateTargetAndShaderResource,
-	bool bForceSharedTargetAndShaderResource,
-	const FRHIResourceCreateInfo& CreateInfo,
-	FTextureRHIRef& OutTargetableTexture,
-	FTextureRHIRef& OutShaderResourceTexture,
-	uint32 NumSamples
-)
-{
-	FRHITextureCreateDesc Desc =
-		FRHITextureCreateDesc::Create2D(CreateInfo.DebugName)
-		.SetExtent(SizeX, SizeY)
-		.SetFormat((EPixelFormat)Format)
-		.SetNumMips(NumMips)
-		.SetNumSamples(NumSamples)
-		.SetFlags(Flags)
-		.SetBulkData(CreateInfo.BulkData)
-		.SetClearValue(CreateInfo.ClearValueBinding)
-		.SetExtData(CreateInfo.ExtData)
-		.SetGPUMask(CreateInfo.GPUMask);
+	if (FParse::Param(FCommandLine::Get(), TEXT("preferMS")) || FParse::Param(FCommandLine::Get(), TEXT("preferMicrosoft")))
+	{
+		return EGpuVendorId::Microsoft;
+	}
 
-	RHICreateTargetableShaderResource(Desc, TargetableTextureFlags, bForceSeparateTargetAndShaderResource, bForceSharedTargetAndShaderResource, OutTargetableTexture, OutShaderResourceTexture);
-}
-
-void RHICreateTargetableShaderResource2D(
-	uint32 SizeX,
-	uint32 SizeY,
-	uint8 Format,
-	uint32 NumMips,
-	ETextureCreateFlags Flags,
-	ETextureCreateFlags TargetableTextureFlags,
-	bool bForceSeparateTargetAndShaderResource,
-	const FRHIResourceCreateInfo& CreateInfo,
-	FTexture2DRHIRef& OutTargetableTexture,
-	FTexture2DRHIRef& OutShaderResourceTexture,
-	uint32 NumSamples)
-{
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	RHICreateTargetableShaderResource2D(SizeX, SizeY, Format, NumMips, Flags, TargetableTextureFlags, bForceSeparateTargetAndShaderResource, false, CreateInfo, OutTargetableTexture, OutShaderResourceTexture, NumSamples);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-}
-
-void RHICreateTargetableShaderResource2DArray(
-	uint32 SizeX,
-	uint32 SizeY,
-	uint32 SizeZ,
-	uint8 Format,
-	uint32 NumMips,
-	ETextureCreateFlags Flags,
-	ETextureCreateFlags TargetableTextureFlags,
-	bool bForceSeparateTargetAndShaderResource,
-	bool bForceSharedTargetAndShaderResource,
-	const FRHIResourceCreateInfo& CreateInfo,
-	FTextureRHIRef& OutTargetableTexture,
-	FTextureRHIRef& OutShaderResourceTexture,
-	uint32 NumSamples
-)
-{
-	FRHITextureCreateDesc Desc =
-		FRHITextureCreateDesc::Create2DArray(CreateInfo.DebugName)
-		.SetExtent(SizeX, SizeY)
-		.SetArraySize(SizeZ)
-		.SetFormat((EPixelFormat)Format)
-		.SetNumMips(NumMips)
-		.SetNumSamples(NumSamples)
-		.SetFlags(Flags)
-		.SetBulkData(CreateInfo.BulkData)
-		.SetClearValue(CreateInfo.ClearValueBinding)
-		.SetExtData(CreateInfo.ExtData)
-		.SetGPUMask(CreateInfo.GPUMask);
-
-	RHICreateTargetableShaderResource(Desc, TargetableTextureFlags, bForceSeparateTargetAndShaderResource, bForceSharedTargetAndShaderResource, OutTargetableTexture, OutShaderResourceTexture);
-}
-
-void RHICreateTargetableShaderResource2DArray(
-	uint32 SizeX,
-	uint32 SizeY,
-	uint32 SizeZ,
-	uint8 Format,
-	uint32 NumMips,
-	ETextureCreateFlags Flags,
-	ETextureCreateFlags TargetableTextureFlags,
-	const FRHIResourceCreateInfo& CreateInfo,
-	FTextureRHIRef& OutTargetableTexture,
-	FTextureRHIRef& OutShaderResourceTexture,
-	uint32 NumSamples)
-{
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	RHICreateTargetableShaderResource2DArray(SizeX, SizeY, SizeZ, Format, NumMips, Flags, TargetableTextureFlags, false, false, CreateInfo, OutTargetableTexture, OutShaderResourceTexture, NumSamples);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-}
-
-void RHICreateTargetableShaderResourceCube(
-	uint32 LinearSize,
-	uint8 Format,
-	uint32 NumMips,
-	ETextureCreateFlags Flags,
-	ETextureCreateFlags TargetableTextureFlags,
-	bool bForceSeparateTargetAndShaderResource,
-	const FRHIResourceCreateInfo& CreateInfo,
-	FTextureRHIRef& OutTargetableTexture,
-	FTextureRHIRef& OutShaderResourceTexture
-)
-{
-	FRHITextureCreateDesc Desc =
-		FRHITextureCreateDesc::CreateCube(CreateInfo.DebugName)
-		.SetExtent(LinearSize)
-		.SetFormat((EPixelFormat)Format)
-		.SetNumMips(NumMips)
-		.SetFlags(Flags)
-		.SetBulkData(CreateInfo.BulkData)
-		.SetClearValue(CreateInfo.ClearValueBinding)
-		.SetExtData(CreateInfo.ExtData)
-		.SetGPUMask(CreateInfo.GPUMask);
-
-	RHICreateTargetableShaderResource(Desc, TargetableTextureFlags, bForceSeparateTargetAndShaderResource, false, OutTargetableTexture, OutShaderResourceTexture);
-}
-
-void RHICreateTargetableShaderResourceCubeArray(
-	uint32 LinearSize,
-	uint32 ArraySize,
-	uint8 Format,
-	uint32 NumMips,
-	ETextureCreateFlags Flags,
-	ETextureCreateFlags TargetableTextureFlags,
-	bool bForceSeparateTargetAndShaderResource,
-	const FRHIResourceCreateInfo& CreateInfo,
-	FTextureRHIRef& OutTargetableTexture,
-	FTextureRHIRef& OutShaderResourceTexture
-)
-{
-	FRHITextureCreateDesc Desc =
-		FRHITextureCreateDesc::CreateCubeArray(CreateInfo.DebugName)
-		.SetExtent(LinearSize)
-		.SetArraySize(ArraySize)
-		.SetFormat((EPixelFormat)Format)
-		.SetNumMips(NumMips)
-		.SetFlags(Flags)
-		.SetBulkData(CreateInfo.BulkData)
-		.SetClearValue(CreateInfo.ClearValueBinding)
-		.SetExtData(CreateInfo.ExtData)
-		.SetGPUMask(CreateInfo.GPUMask);
-
-	RHICreateTargetableShaderResource(Desc, TargetableTextureFlags, bForceSeparateTargetAndShaderResource, false, OutTargetableTexture, OutShaderResourceTexture);
-}
-
-void RHICreateTargetableShaderResource3D(
-	uint32 SizeX,
-	uint32 SizeY,
-	uint32 SizeZ,
-	uint8 Format,
-	uint32 NumMips,
-	ETextureCreateFlags Flags,
-	ETextureCreateFlags TargetableTextureFlags,
-	bool bForceSeparateTargetAndShaderResource,
-	const FRHIResourceCreateInfo& CreateInfo,
-	FTextureRHIRef& OutTargetableTexture,
-	FTextureRHIRef& OutShaderResourceTexture
-)
-{
-	FRHITextureCreateDesc Desc =
-		FRHITextureCreateDesc::Create3D(CreateInfo.DebugName)
-		.SetExtent(SizeX, SizeY)
-		.SetDepth(SizeZ)
-		.SetFormat((EPixelFormat)Format)
-		.SetNumMips(NumMips)
-		.SetFlags(Flags)
-		.SetBulkData(CreateInfo.BulkData)
-		.SetClearValue(CreateInfo.ClearValueBinding)
-		.SetExtData(CreateInfo.ExtData)
-		.SetGPUMask(CreateInfo.GPUMask);
-
-	RHICreateTargetableShaderResource(Desc, TargetableTextureFlags, bForceSeparateTargetAndShaderResource, false, OutTargetableTexture, OutShaderResourceTexture);
-}
-
-void FRHILockTracker::RaiseMismatchError()
-{
-	UE_LOG(LogRHI, Fatal, TEXT("Mismatched RHI buffer locks."));
+	return EGpuVendorId::Unknown;
 }

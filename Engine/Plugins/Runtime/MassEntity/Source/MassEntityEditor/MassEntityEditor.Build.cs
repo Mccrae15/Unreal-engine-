@@ -28,7 +28,8 @@ namespace UnrealBuildTool.Rules
 				"DetailCustomizations",
 				"ComponentVisualizers",
 				"Projects",
-				"EditorSubsystem"
+				"EditorSubsystem",
+				"StructUtils"
 			}
 			);
 
@@ -37,7 +38,6 @@ namespace UnrealBuildTool.Rules
 				"RenderCore",
 				"GraphEditor",
 				"KismetWidgets",
-				"PropertyEditor",
 				"AIGraph",
 				"ToolMenus",
 			}

@@ -261,6 +261,26 @@ public:
 	virtual bool IsInputActive(const FEmitContext& Context, int32 Index) const override;
 };
 
+class FExpressionQualitySwitch : public FExpressionSwitchBase
+{
+public:
+	FExpressionQualitySwitch(TConstArrayView<const FExpression*> InInputs);
+
+	virtual const FExpression* NewSwitch(FTree& Tree, TConstArrayView<const FExpression*> InInputs) const override { return Tree.NewExpression<FExpressionQualitySwitch>(InInputs); }
+	virtual bool IsInputActive(const FEmitContext& Context, int32 Index) const override;
+
+	virtual bool PrepareValue(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FPrepareValueResult& OutResult) const override;
+};
+
+class FExpressionShaderStageSwitch : public FExpressionSwitchBase
+{
+public:
+	FExpressionShaderStageSwitch(TConstArrayView<const FExpression*> InInputs);
+
+	virtual const FExpression* NewSwitch(FTree& Tree, TConstArrayView<const FExpression*> InInputs) const override { return Tree.NewExpression<FExpressionShaderStageSwitch>(InInputs); }
+	virtual bool IsInputActive(const FEmitContext& Context, int32 Index) const override;
+};
+
 /** Can be used to emit HLSL chunks with no inputs, where it's not worth the trouble of defining a new expression type */
 class FExpressionInlineCustomHLSL : public FExpression
 {

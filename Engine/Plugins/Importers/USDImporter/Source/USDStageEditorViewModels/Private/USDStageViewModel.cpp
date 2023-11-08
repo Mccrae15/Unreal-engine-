@@ -124,10 +124,33 @@ void FUsdStageViewModel::ReloadStage()
 		UsdUtils::StartMonitoringErrors();
 		{
 			FScopedUsdAllocs Allocs;
+
+			TSet<FString> NativeLayerExtensions{UnrealUSDWrapper::GetNativeFileFormats()};
+
+			std::set<pxr::SdfLayerHandle> LayersToRefresh;
+
 			const std::vector<pxr::SdfLayerHandle>& HandleVec = UsdStage->GetUsedLayers();
 
+			// We should only reload the native layers, because things like .mtlx files can show up in this list, if
+			// USD plugins allow interpreting them as "layers". We won't show these on our UI though, and not
+			// necessarily these are equipped to be modified/reloaded from USD (like how the .mtlx ones aren't).
+			for (const pxr::SdfLayerHandle& Handle : HandleVec)
+			{
+				std::string LayerPath;
+				std::map<std::string, std::string> Arguments;
+				if (pxr::SdfLayer::SplitIdentifier(Handle->GetIdentifier(), &LayerPath, &Arguments))
+				{
+					FString UELayerPath = UsdToUnreal::ConvertString(LayerPath);
+					FString UELayerExtension = FPaths::GetExtension(UELayerPath);
+					if (NativeLayerExtensions.Contains(UELayerExtension))
+					{
+						LayersToRefresh.insert(Handle);
+					}
+				}
+			}
+
 			const bool bForce = true;
-			pxr::SdfLayer::ReloadLayers( { HandleVec.begin(), HandleVec.end() }, bForce );
+			pxr::SdfLayer::ReloadLayers(LayersToRefresh, bForce);
 
 			// When reloading our UEState layer is closed but there is nothing on the root layer
 			// that would automatically pull the UEState session layer and cause it to be reloaded, so we need to try
@@ -312,9 +335,7 @@ void FUsdStageViewModel::ImportStage( const TCHAR* TargetContentFolder, UUsdStag
 
 		const bool bIsAutomated = TargetContentFolder && Options;
 
-		// Even when importing we still want to first create these assets as transient. Only the publishing process
-		// itself will remove the transient flag if everything succeeded
-		if ( ImportContext.Init( StageName, RootPath, TEXT("/Game/"), RF_Public | RF_Transactional | RF_Transient, bIsAutomated ) )
+		if (ImportContext.Init(StageName, RootPath, TEXT("/Game/"), RF_Public | RF_Transactional | RF_Standalone, bIsAutomated))
 		{
 			FScopedTransaction Transaction( FText::Format(LOCTEXT("ImportTransaction", "Import USD stage '{0}'"), FText::FromString(StageName)));
 
@@ -328,9 +349,6 @@ void FUsdStageViewModel::ImportStage( const TCHAR* TargetContentFolder, UUsdStag
 			// Let the importer reuse our assets, but force it to spawn new actors and components always
 			// This allows a different setting for asset/component collapsing, and doesn't require modifying the PrimTwins
 			ImportContext.AssetCache = StageActor->UsdAssetCache;
-			ImportContext.InfoCache = StageActor->GetInfoCache();
-			ImportContext.LevelSequenceHelper.SetInfoCache(StageActor->GetInfoCache());
-			ImportContext.MaterialToPrimvarToUVIndex = StageActor->GetMaterialToPrimvarToUVIndex();
 
 			ImportContext.TargetSceneActorAttachParent = StageActor->GetRootComponent()->GetAttachParent();
 			ImportContext.TargetSceneActorTargetTransform = StageActor->GetActorTransform();

@@ -1,15 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MetasoundGraphAlgo.h"
+#include "MetasoundGraphAlgoPrivate.h"
 
 #include "DSP/DirectedGraphAlgo.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "MetasoundLog.h"
+#include "MetasoundNodeInterface.h"
+#include "MetasoundVertexData.h"
+#include "Templates/Tuple.h"
 
 namespace Metasound
 {
 	// The core graph algorithms utilize integers to represent vertices
 	// and pairs of vertices to represent edges. This class provides 
 	// convenience functions for converting back and forth between 
-	// metasound types and the core graph algorithm types.
+	// MetaSound types and the core graph algorithm types.
 	class FDirectedGraphAlgoAdapter
 	{
 		using FNodePair = TTuple<const INode*, const INode*>;
@@ -227,173 +235,258 @@ namespace Metasound
 			mutable FLazyCache Lazy;
 	};
 
+	
 	TPimplPtr<FDirectedGraphAlgoAdapter> FDirectedGraphAlgo::CreateDirectedGraphAlgoAdapter(const IGraph& InGraph)
 	{
-		return MakePimpl<FDirectedGraphAlgoAdapter>(InGraph);
+		return DirectedGraphAlgo::CreateDirectedGraphAlgoAdapter(InGraph);
 	}
 
 	bool FDirectedGraphAlgo::DepthFirstTopologicalSort(const IGraph& InGraph, TArray<const INode*>& OutNodeOrder)
 	{
-		return DepthFirstTopologicalSort(FDirectedGraphAlgoAdapter(InGraph), OutNodeOrder);
+		return DirectedGraphAlgo::DepthFirstTopologicalSort(InGraph, OutNodeOrder);
 	}
 
 	bool FDirectedGraphAlgo::DepthFirstTopologicalSort(const FDirectedGraphAlgoAdapter& InAdapter, TArray<const INode*>& OutNodeOrder)
 	{
-		using namespace Audio;
-
-		TArray<int32> VertexOrder;
-
-		// Call algo implementation
-		bool bResult = Audio::FDirectedGraphAlgo::DepthFirstTopologicalSort(InAdapter.GetUniqueVertices(), InAdapter.GetUniqueEdges(), VertexOrder);
-
-		if (!bResult)
-		{
-			return false;
-		}
-
-		// Convert back to Metasound types.
-		OutNodeOrder.Reserve(OutNodeOrder.Num() + VertexOrder.Num());
-
-		for (int32 Vertex : VertexOrder)
-		{
-			OutNodeOrder.Add(InAdapter.GetNode(Vertex));
-		}
-
-		return bResult;
+		return DirectedGraphAlgo::DepthFirstTopologicalSort(InAdapter, OutNodeOrder);
 	}
 
 	bool FDirectedGraphAlgo::KahnTopologicalSort(const IGraph& InGraph, TArray<const INode*>& OutNodeOrder)
 	{
-		return KahnTopologicalSort(FDirectedGraphAlgoAdapter(InGraph), OutNodeOrder);
+		return DirectedGraphAlgo::KahnTopologicalSort(InGraph, OutNodeOrder);
 	}
 
 	bool FDirectedGraphAlgo::KahnTopologicalSort(const FDirectedGraphAlgoAdapter& InAdapter, TArray<const INode*>& OutNodeOrder)
 	{
-		using namespace Audio;
-
-		TArray<int32> VertexOrder;
-
-		// Call algo implementation
-		bool bResult = Audio::FDirectedGraphAlgo::KahnTopologicalSort(InAdapter.GetUniqueVertices(), InAdapter.GetUniqueEdges(), VertexOrder);
-
-		if (!bResult)
-		{
-			return false;
-		}
-
-		// Convert back to Metasound types.
-		OutNodeOrder.Reserve(OutNodeOrder.Num() + VertexOrder.Num());
-
-		for (int32 Vertex : VertexOrder)
-		{
-			OutNodeOrder.Add(InAdapter.GetNode(Vertex));
-		}
-
-		return bResult;
+		return DirectedGraphAlgo::KahnTopologicalSort(InAdapter, OutNodeOrder);
 	}
 
-	bool FDirectedGraphAlgo::TarjanStronglyConnectedComponents(const IGraph& InGraph, TArray<FStronglyConnectedComponent>& OutComponents, bool bExcludeSingleVertex)
+	bool FDirectedGraphAlgo::TarjanStronglyConnectedComponents(const IGraph& InGraph, TArray<DirectedGraphAlgo::FStronglyConnectedComponent>& OutComponents, bool bExcludeSingleVertex)
 	{
-		return TarjanStronglyConnectedComponents(FDirectedGraphAlgoAdapter(InGraph), OutComponents, bExcludeSingleVertex);
+		return DirectedGraphAlgo::TarjanStronglyConnectedComponents(InGraph, OutComponents, bExcludeSingleVertex);
 	}
 
-	bool FDirectedGraphAlgo::TarjanStronglyConnectedComponents(const FDirectedGraphAlgoAdapter& InAdapter, TArray<FStronglyConnectedComponent>& OutComponents, bool bExcludeSingleVertex)
+	bool FDirectedGraphAlgo::TarjanStronglyConnectedComponents(const FDirectedGraphAlgoAdapter& InAdapter, TArray<DirectedGraphAlgo::FStronglyConnectedComponent>& OutComponents, bool bExcludeSingleVertex)
 	{
-		TArray<Audio::FStronglyConnectedComponent> StronglyConnectedComponents;
-
-		// Run tarjan on metasound derived graph edges 
-		if (Audio::FDirectedGraphAlgo::TarjanStronglyConnectedComponents(InAdapter.GetEdgeSet(), StronglyConnectedComponents, bExcludeSingleVertex))
-		{
-			// If strongly connected components are found, they must be converted
-			// back into metasound types. 
-			for (const Audio::FStronglyConnectedComponent& Component : StronglyConnectedComponents)
-			{
-				FStronglyConnectedComponent& MetasoundGraphComponent = OutComponents.AddDefaulted_GetRef();
-
-				for (int32 Vertex : Component.Vertices)
-				{
-					MetasoundGraphComponent.Nodes.Add(InAdapter.GetNode(Vertex));
-				}
-
-				for (const Audio::FDirectedEdge& Edge : Component.Edges)
-				{
-					TArray<FDataEdge> MetasoundComponentEdges;
-
-					InAdapter.GetDataEdges(Edge, MetasoundComponentEdges);
-
-					MetasoundGraphComponent.Edges.Append(MetasoundComponentEdges);
-				}
-			}
-
-			return true;
-		}
-
-		// No strongly connected components found.
-		return false;
+		return DirectedGraphAlgo::TarjanStronglyConnectedComponents(InAdapter, OutComponents, bExcludeSingleVertex);
 	}
 
 
 	void FDirectedGraphAlgo::FindReachableNodesFromInput(const IGraph& InGraph, TSet<const INode*>& OutNodes)
 	{
-		FindReachableNodesFromInput(FDirectedGraphAlgoAdapter(InGraph), OutNodes);
+		DirectedGraphAlgo::FindReachableNodesFromInput(InGraph, OutNodes);
 	}
 
 	void FDirectedGraphAlgo::FindReachableNodesFromInput(const FDirectedGraphAlgoAdapter& InAdapter, TSet<const INode*>& OutNodes)
 	{
-		TSet<int32> VisitedVertices;
-
-		for (int32 Vertex : InAdapter.GetUniqueInputVertices())
-		{
-			Audio::FDirectedGraphAlgo::DepthFirstTraversal(Vertex, InAdapter.GetTree(), [&](int32 InVertexBeingVisited) -> bool 
-				{
-					bool bIsAlreadyInSet = false;
-					VisitedVertices.Add(InVertexBeingVisited, &bIsAlreadyInSet);
-
-					return !bIsAlreadyInSet;
-				}
-			);
-		}
-
-		InAdapter.GetNodeSet(VisitedVertices, OutNodes);
+		DirectedGraphAlgo::FindReachableNodesFromInput(InAdapter, OutNodes);
 	}
 
 	void FDirectedGraphAlgo::FindReachableNodesFromOutput(const IGraph& InGraph, TSet<const INode*>& OutNodes)
 	{
-		FindReachableNodesFromOutput(FDirectedGraphAlgoAdapter(InGraph), OutNodes);
+		DirectedGraphAlgo::FindReachableNodesFromOutput(InGraph, OutNodes);
 	}
 
 	void FDirectedGraphAlgo::FindReachableNodesFromOutput(const FDirectedGraphAlgoAdapter& InAdapter, TSet<const INode*>& OutNodes)
 	{
-		TSet<int32> VisitedVertices;
-
-		for (int32 Vertex : InAdapter.GetUniqueOutputVertices())
-		{ 
-			Audio::FDirectedGraphAlgo::DepthFirstTraversal(Vertex, InAdapter.GetTransposeTree(), [&](int32 InVertexBeingVisited) -> bool 
-				{
-					bool bIsAlreadyInSet = false;
-					VisitedVertices.Add(InVertexBeingVisited, &bIsAlreadyInSet);
-
-					return !bIsAlreadyInSet;
-				}
-			);
-		}
-
-		InAdapter.GetNodeSet(VisitedVertices, OutNodes);
+		DirectedGraphAlgo::FindReachableNodesFromOutput(InAdapter, OutNodes);
 	}
 
 	void FDirectedGraphAlgo::FindReachableNodes(const IGraph& InGraph, TSet<const INode*>& OutNodes)
 	{
-		FindReachableNodes(FDirectedGraphAlgoAdapter(InGraph), OutNodes);
+		DirectedGraphAlgo::FindReachableNodes(InGraph, OutNodes);
 	}
 
 	void FDirectedGraphAlgo::FindReachableNodes(const FDirectedGraphAlgoAdapter& InAdapter, TSet<const INode*>& OutNodes)
 	{
-		TSet<const INode*> NodesFromInput;
-		FindReachableNodesFromInput(InAdapter, NodesFromInput);
+		DirectedGraphAlgo::FindReachableNodes(InAdapter, OutNodes);
+	}
 
-		TSet<const INode*> NodesFromOutput;
-		FindReachableNodesFromOutput(InAdapter, NodesFromOutput);
+	namespace DirectedGraphAlgo
+	{
+		TPimplPtr<FDirectedGraphAlgoAdapter> CreateDirectedGraphAlgoAdapter(const IGraph& InGraph)
+		{
+			return MakePimpl<FDirectedGraphAlgoAdapter>(InGraph);
+		}
 
-		OutNodes = NodesFromInput.Union(NodesFromOutput);
+		bool DepthFirstTopologicalSort(const IGraph& InGraph, TArray<const INode*>& OutNodeOrder)
+		{
+			return DepthFirstTopologicalSort(FDirectedGraphAlgoAdapter(InGraph), OutNodeOrder);
+		}
+
+		bool DepthFirstTopologicalSort(const FDirectedGraphAlgoAdapter& InAdapter, TArray<const INode*>& OutNodeOrder)
+		{
+			using namespace Audio;
+
+			TArray<int32> VertexOrder;
+
+			// Call algo implementation
+			bool bResult = Audio::FDirectedGraphAlgo::DepthFirstTopologicalSort(InAdapter.GetUniqueVertices(), InAdapter.GetUniqueEdges(), VertexOrder);
+
+			if (!bResult)
+			{
+				return false;
+			}
+
+			// Convert back to Metasound types.
+			OutNodeOrder.Reserve(OutNodeOrder.Num() + VertexOrder.Num());
+
+			for (int32 Vertex : VertexOrder)
+			{
+				OutNodeOrder.Add(InAdapter.GetNode(Vertex));
+			}
+
+			return bResult;
+		}
+
+		bool KahnTopologicalSort(const IGraph& InGraph, TArray<const INode*>& OutNodeOrder)
+		{
+			return KahnTopologicalSort(FDirectedGraphAlgoAdapter(InGraph), OutNodeOrder);
+		}
+
+		bool KahnTopologicalSort(const FDirectedGraphAlgoAdapter& InAdapter, TArray<const INode*>& OutNodeOrder)
+		{
+			using namespace Audio;
+
+			TArray<int32> VertexOrder;
+
+			// Call algo implementation
+			bool bResult = Audio::FDirectedGraphAlgo::KahnTopologicalSort(InAdapter.GetUniqueVertices(), InAdapter.GetUniqueEdges(), VertexOrder);
+
+			if (!bResult)
+			{
+				return false;
+			}
+
+			// Convert back to Metasound types.
+			OutNodeOrder.Reserve(OutNodeOrder.Num() + VertexOrder.Num());
+
+			for (int32 Vertex : VertexOrder)
+			{
+				OutNodeOrder.Add(InAdapter.GetNode(Vertex));
+			}
+
+			return bResult;
+		}
+
+		bool TarjanStronglyConnectedComponents(const IGraph& InGraph, TArray<FStronglyConnectedComponent>& OutComponents, bool bExcludeSingleVertex)
+		{
+			return TarjanStronglyConnectedComponents(FDirectedGraphAlgoAdapter(InGraph), OutComponents, bExcludeSingleVertex);
+		}
+
+		bool TarjanStronglyConnectedComponents(const FDirectedGraphAlgoAdapter& InAdapter, TArray<FStronglyConnectedComponent>& OutComponents, bool bExcludeSingleVertex)
+		{
+			TArray<Audio::FStronglyConnectedComponent> StronglyConnectedComponents;
+
+			// Run tarjan on metasound derived graph edges 
+			if (Audio::FDirectedGraphAlgo::TarjanStronglyConnectedComponents(InAdapter.GetEdgeSet(), StronglyConnectedComponents, bExcludeSingleVertex))
+			{
+				// If strongly connected components are found, they must be converted
+				// back into metasound types. 
+				for (const Audio::FStronglyConnectedComponent& Component : StronglyConnectedComponents)
+				{
+					FStronglyConnectedComponent& MetasoundGraphComponent = OutComponents.AddDefaulted_GetRef();
+
+					for (int32 Vertex : Component.Vertices)
+					{
+						MetasoundGraphComponent.Nodes.Add(InAdapter.GetNode(Vertex));
+					}
+
+					for (const Audio::FDirectedEdge& Edge : Component.Edges)
+					{
+						TArray<FDataEdge> MetasoundComponentEdges;
+
+						InAdapter.GetDataEdges(Edge, MetasoundComponentEdges);
+
+						MetasoundGraphComponent.Edges.Append(MetasoundComponentEdges);
+					}
+				}
+
+				return true;
+			}
+
+			// No strongly connected components found.
+			return false;
+		}
+
+
+		void FindReachableNodesFromInput(const IGraph& InGraph, TSet<const INode*>& OutNodes)
+		{
+			FindReachableNodesFromInput(FDirectedGraphAlgoAdapter(InGraph), OutNodes);
+		}
+
+		void FindReachableNodesFromInput(const FDirectedGraphAlgoAdapter& InAdapter, TSet<const INode*>& OutNodes)
+		{
+			TSet<int32> VisitedVertices;
+
+			for (int32 Vertex : InAdapter.GetUniqueInputVertices())
+			{
+				Audio::FDirectedGraphAlgo::DepthFirstTraversal(Vertex, InAdapter.GetTree(), [&](int32 InVertexBeingVisited) -> bool 
+					{
+						bool bIsAlreadyInSet = false;
+						VisitedVertices.Add(InVertexBeingVisited, &bIsAlreadyInSet);
+
+						return !bIsAlreadyInSet;
+					}
+				);
+			}
+
+			InAdapter.GetNodeSet(VisitedVertices, OutNodes);
+		}
+
+		void FindReachableNodesFromOutput(const IGraph& InGraph, TSet<const INode*>& OutNodes)
+		{
+			FindReachableNodesFromOutput(FDirectedGraphAlgoAdapter(InGraph), OutNodes);
+		}
+
+		void FindReachableNodesFromOutput(const FDirectedGraphAlgoAdapter& InAdapter, TSet<const INode*>& OutNodes)
+		{
+			TSet<int32> VisitedVertices;
+
+			for (int32 Vertex : InAdapter.GetUniqueOutputVertices())
+			{ 
+				Audio::FDirectedGraphAlgo::DepthFirstTraversal(Vertex, InAdapter.GetTransposeTree(), [&](int32 InVertexBeingVisited) -> bool 
+					{
+						bool bIsAlreadyInSet = false;
+						VisitedVertices.Add(InVertexBeingVisited, &bIsAlreadyInSet);
+
+						return !bIsAlreadyInSet;
+					}
+				);
+			}
+
+			InAdapter.GetNodeSet(VisitedVertices, OutNodes);
+		}
+
+		void FindReachableNodes(const IGraph& InGraph, TSet<const INode*>& OutNodes)
+		{
+			FindReachableNodes(FDirectedGraphAlgoAdapter(InGraph), OutNodes);
+		}
+
+		void FindReachableNodes(const FDirectedGraphAlgoAdapter& InAdapter, TSet<const INode*>& OutNodes)
+		{
+			TSet<const INode*> NodesFromInput;
+			FindReachableNodesFromInput(InAdapter, NodesFromInput);
+
+			TSet<const INode*> NodesFromOutput;
+			FindReachableNodesFromOutput(InAdapter, NodesFromOutput);
+
+			OutNodes = NodesFromInput.Union(NodesFromOutput);
+		}
+
+		FOperatorID GetOperatorID(const INode& InNode)
+		{
+			return GetOperatorID(&InNode);
+		}
+
+		FOperatorID GetOperatorID(const INode* InNode)
+		{
+			return reinterpret_cast<FOperatorID>(InNode);
+		}
+		
+		FGraphOperatorData::FGraphOperatorData(const FOperatorSettings& InOperatorSettings)
+		: OperatorSettings(InOperatorSettings)
+		{
+		}
 	}
 }

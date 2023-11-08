@@ -1,15 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 // Background on switch-and-ramp: http://msp.ucsd.edu/techniques/v0.11/book-html/node63.html
 
+#include "DSP/BufferVectorOperations.h"
 #include "Internationalization/Text.h"
 #include "MetasoundFacade.h"
 #include "MetasoundExecutableOperator.h"
 #include "MetasoundNodeRegistrationMacro.h"
+#include "MetasoundParamHelper.h"
 #include "MetasoundPrimitives.h"
 #include "MetasoundStandardNodesNames.h"
 #include "MetasoundStandardNodesCategories.h"
-#include "DSP/BufferVectorOperations.h"
-#include "MetasoundParamHelper.h"
 
 #define LOCTEXT_NAMESPACE "MetasoundStandardNodes_SwitchAndRampNode"
 
@@ -43,6 +43,7 @@ namespace Metasound
 				Info.DisplayName = NodeDisplayName;
 				Info.Description = NodeDescription;
 				Info.Author = PluginAuthor;
+				Info.CategoryHierarchy = { NodeCategories::Filters };
 				Info.PromptIfMissing = PluginNodeMissingPrompt;
 				Info.DefaultInterface = GetVertexInterface();
 
@@ -98,25 +99,37 @@ namespace Metasound
 		{
 		}
 
-		FDataReferenceCollection GetInputs() const
+
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
 		{
 			using namespace SwitchAndRampVertexNames;
 
-			FDataReferenceCollection InputDataReferences;
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputTrigger), TriggerIn);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputAudio), AudioIn);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputSmoothTime), SmoothTime);
-
-			return InputDataReferences;
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputTrigger), TriggerIn);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputAudio), AudioIn);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputSmoothTime), SmoothTime);
 		}
 
-		virtual FDataReferenceCollection GetOutputs() const
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
 		{
 			using namespace SwitchAndRampVertexNames;
 
-			FDataReferenceCollection OutputDataReferences;
-			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputAudio), AudioOut);
-			return OutputDataReferences;
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputAudio), AudioOut);
+		}
+
+		virtual FDataReferenceCollection GetInputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
+		}
+
+		virtual FDataReferenceCollection GetOutputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		void Execute()
@@ -166,6 +179,15 @@ namespace Metasound
 					RunRampLambda(StartFrame, EndFrame);
 				}
 			);
+		}
+
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			AudioOut->Zero();
+			MostRecentOutputValue = 0.0f;
+			DiscontinuityAmount = 0.0f;
+			NumRampSamples = 0;
+			RampSampleIndex = 0;
 		}
 
 	private:

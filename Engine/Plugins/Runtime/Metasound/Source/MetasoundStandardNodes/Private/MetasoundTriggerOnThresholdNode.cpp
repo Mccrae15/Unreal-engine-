@@ -94,7 +94,7 @@ namespace Metasound
 				FInputVertexInterface(
 					TInputDataVertex<ValueType>(METASOUND_GET_PARAM_NAME_AND_METADATA(InPin), 0),
 					TInputDataVertex<ThresholdType>(METASOUND_GET_PARAM_NAME_AND_METADATA(InThresholdPin), DefaultThreshold),
-					TInputDataVertex<FEnumBufferTriggerType>(METASOUND_GET_PARAM_NAME_AND_METADATA(InTriggerType))
+					TInputDataVertex<FEnumBufferTriggerType>(METASOUND_GET_PARAM_NAME_AND_METADATA(InTriggerType), (int32)EBufferTriggerType::RisingEdge)
 				),
 				FOutputVertexInterface(
 					TOutputDataVertex<FTrigger>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutPin))
@@ -235,24 +235,41 @@ namespace Metasound
 			}
 		}
 
-		FDataReferenceCollection GetInputs() const
+		void Reset(const IOperator::FResetParams& InParams)
 		{
-			using namespace TriggerOnThresholdVertexNames;
-
-			FDataReferenceCollection InputDataReferences;
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InThresholdPin), Threshold);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InPin), In);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InTriggerType), TriggerType);
-			return InputDataReferences;
+			Out->Reset();
+			bTriggered = false;
+			LastSample = 0;
 		}
 
-		FDataReferenceCollection GetOutputs() const
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
 		{
 			using namespace TriggerOnThresholdVertexNames;
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InThresholdPin), Threshold);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InPin), In);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InTriggerType), TriggerType);
+		}
 
-			FDataReferenceCollection OutputDataReferences;
-			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutPin), FTriggerWriteRef(Out));
-			return OutputDataReferences;
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+		{
+			using namespace TriggerOnThresholdVertexNames;
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutPin), FTriggerWriteRef(Out));
+		}
+
+		virtual FDataReferenceCollection GetInputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
+		}
+
+		virtual FDataReferenceCollection GetOutputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		static const FVertexInterface DeclareVertexInterface()
@@ -291,7 +308,7 @@ namespace Metasound
 			const FOperatorSettings& Settings = InParams.OperatorSettings;
 			const FInputVertexInterface& InputInterface = InParams.Node.GetVertexInterface().GetInputInterface();
 
-			FBufferTriggerTypeReadRef Type = InputCol.GetDataReadReferenceOrConstruct<FEnumBufferTriggerType>(METASOUND_GET_PARAM_NAME(InTriggerType));
+			FBufferTriggerTypeReadRef Type = InputCol.GetDataReadReferenceOrConstructWithVertexDefault<FEnumBufferTriggerType>(InputInterface, METASOUND_GET_PARAM_NAME(InTriggerType), Settings);
 			TDataReadReference<ValueType> Input = TTriggerOnThresholdHelper<ValueType>::CreateInput(InParams);
 			TDataReadReference<ThresholdType> Threshold = InputCol.GetDataReadReferenceOrConstructWithVertexDefault<ThresholdType>(InputInterface, METASOUND_GET_PARAM_NAME(InThresholdPin), Settings);
 

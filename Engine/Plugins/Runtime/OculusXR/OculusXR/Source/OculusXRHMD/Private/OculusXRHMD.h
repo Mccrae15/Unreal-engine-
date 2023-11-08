@@ -28,6 +28,8 @@
 #include "Engine/StaticMeshActor.h"
 #include "XRThreadUtils.h"
 #include "ProceduralMeshComponent.h"
+#include "Misc/EngineVersionComparison.h"
+#include "OculusXRHMD_FoveatedRendering.h"
 
 namespace OculusXRHMD
 {
@@ -183,6 +185,9 @@ namespace OculusXRHMD
 		//virtual bool GetUseImplicitHmdPosition() override;
 		virtual bool IsStandaloneStereoOnlyDevice() const override { return bIsStandaloneStereoOnlyDevice; }
 		bool SupportsSpaceWarp() const;
+#ifdef WITH_OCULUS_BRANCH
+		virtual void CalculateScissorRect(const int32 ViewIndex, const FIntRect& ViewRect, FIntRect& OutRect) override;
+#endif // WITH_OCULUS_BRANCH
 
 		// FHeadMountedDisplayBase interface
 		virtual FVector2D GetEyeCenterPoint_RenderThread(int32 ViewIndex) const override;
@@ -204,8 +209,8 @@ namespace OculusXRHMD
 		virtual bool AllocateShadingRateTexture(uint32 Index, uint32 RenderSizeX, uint32 RenderSizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags InTexFlags, ETextureCreateFlags InTargetableTextureFlags, FTexture2DRHIRef& OutTexture, FIntPoint& OutTextureSize) override;
 #ifdef WITH_OCULUS_BRANCH
 		virtual bool AllocateMotionVectorTexture(uint32 Index, uint8 Format, uint32 NumMips, ETextureCreateFlags InTexFlags, ETextureCreateFlags InTargetableTextureFlags, FTexture2DRHIRef& OutTexture, FIntPoint& OutTextureSize, FTexture2DRHIRef& OutDepthTexture, FIntPoint& OutDepthTextureSize) override;
+		virtual bool FindEnvironmentDepthTexture_RenderThread(FTextureRHIRef& OutTexture, FVector2f& OutDepthFactors, FMatrix44f OutScreenToDepthMatrices[2]) override;
 #endif // WITH_OCULUS_BRANCH
-
 
 		virtual void UpdateViewportWidget(bool bUseSeparateRenderTarget, const class FViewport& Viewport, class SViewport* ViewportWidget) override;
 		virtual FXRRenderBridge* GetActiveRenderBridge_GameThread(bool bUseSeparateRenderTarget);
@@ -234,9 +239,16 @@ namespace OculusXRHMD
 		virtual void PreRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily) override;
 		virtual void PreRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView) override;
 		virtual void PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily) override;
+#if UE_VERSION_OLDER_THAN(5, 3, 0)
 		virtual void PostRenderBasePassMobile_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView) override;
 #ifdef WITH_OCULUS_BRANCH
 		virtual void PostSceneColorRenderingMobile_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView) override;
+#endif
+#else
+		virtual void PostRenderBasePassMobile_RenderThread(FRHICommandList& RHICmdList, FSceneView& InView) override;
+#ifdef WITH_OCULUS_BRANCH
+		virtual void PostSceneColorRenderingMobile_RenderThread(FRHICommandList& RHICmdList, FSceneView& InView) override;
+#endif
 #endif
 		virtual int32 GetPriority() const override;
 #ifdef WITH_OCULUS_LATE_LATCHING
@@ -267,6 +279,7 @@ namespace OculusXRHMD
 		bool OnOculusStateChange(bool bIsEnabledNow);
 		bool ShouldDisableHiddenAndVisibileAreaMeshForSpectatorScreen_RenderThread() const;
 		void Recenter(FRecenterTypes RecenterType, float Yaw);
+		FIntRect GetAsymmetricViewRect(const int32 ViewIndex, const FIntRect& ViewRect);
 #if !UE_BUILD_SHIPPING
 		void DrawDebug(UCanvas* InCanvas, APlayerController* InPlayerController);
 #endif
@@ -338,6 +351,12 @@ namespace OculusXRHMD
 		bool DoEnableStereo(bool bStereo);
 		void ResetControlRotation() const;
 		void UpdateFoveationOffsets_RenderThread();
+		bool ComputeEnvironmentDepthParameters_RenderThread(FVector2f& DepthFactors, FMatrix44f ScreenToDepth[ovrpEye_Count], int& SwapchainIndex);
+#if UE_VERSION_OLDER_THAN(5, 3, 0)
+		void RenderHardOcclusions_RenderThread(FRHICommandListImmediate& RHICmdList, const FSceneView& InView);
+#else
+		void RenderHardOcclusions_RenderThread(FRHICommandList& RHICmdList, const FSceneView& InView);
+#endif
 
 		FSettingsPtr CreateNewSettings() const;
 		FGameFramePtr CreateNewGameFrame() const;
@@ -431,7 +450,10 @@ namespace OculusXRHMD
 		void SetFoveatedRenderingMethod(EOculusXRFoveatedRenderingMethod InFoveationMethod);
 		void SetFoveatedRenderingLevel(EOculusXRFoveatedRenderingLevel InFoveationLevel, bool isDynamic);
 		void SetColorScaleAndOffset(FLinearColor ColorScale, FLinearColor ColorOffset, bool bApplyToAllLayers);
+		void StartEnvironmentDepth(int CreateFlags);
+		void StopEnvironmentDepth();
 
+		void EnableHardOcclusions(bool bEnable);
 
 		OCULUSXRHMD_API void UpdateRTPoses();
 
@@ -514,6 +536,7 @@ namespace OculusXRHMD
 		bool bIsStandaloneStereoOnlyDevice;
 		// Stores TrackingToWorld from previous frame
 		FTransform LastTrackingToWorld;
+		std::atomic<bool> bHardOcclusionsEnabled;
 
 		// These three properties indicate the current state of foveated rendering, which may differ from what's in Settings
 		// due to cases such as falling back to FFR when eye tracked foveated rendering isn't enabled. Will allow us to resume
@@ -541,6 +564,9 @@ namespace OculusXRHMD
 		bool bNeedReAllocateDepthTexture_RenderThread;
 		bool bNeedReAllocateFoveationTexture_RenderThread;
 		bool bNeedReAllocateMotionVectorTexture_RenderThread;
+#if !UE_VERSION_OLDER_THAN(5, 3, 0)
+		TSharedPtr<FOculusXRFoveatedRenderingImageGenerator, ESPMode::ThreadSafe> FoveationImageGenerator;
+#endif // !UE_VERSION_OLDER_THAN(5, 3, 0)
 
 		// RHI thread
 		FSettingsPtr Settings_RHIThread;
@@ -554,6 +580,7 @@ namespace OculusXRHMD
 
 		FRotator SplashRotation; // rotation applied to all splash screens (dependent on HMD orientation as the splash is shown)
 
+		TArray<FTextureRHIRef> EnvironmentDepthSwapchain;
 
 #if !UE_BUILD_SHIPPING
 		FDelegateHandle DrawDebugDelegateHandle;

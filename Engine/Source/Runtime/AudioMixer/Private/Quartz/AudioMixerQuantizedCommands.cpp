@@ -189,7 +189,10 @@ namespace Audio
 
 	void FQuantizedTransportReset::OnFinalCallbackCustom(int32 InNumFramesLeft)
 	{
-		OwningClockPtr->ResetTransport();
+		// todo: guard against multiple reset commands executing in the same clock tick
+		// OwningClockPtr->ResetTransport(InNumFramesLeft - 1); // - 1 to triggering events w/o double trigger of events on the last frame
+		OwningClockPtr->ResetTransport(0);
+		OwningClockPtr->AddToTickDelay(InNumFramesLeft); // next metronome tick will be less by InNumFramesLeft
 	}
 
 	static const FName TransportResetCommandName("Transport Reset Command");
@@ -245,6 +248,33 @@ namespace Audio
 	FName FQuantizedOtherClockStart::GetCommandName() const
 	{
 		return StartOtherClockName;
+	}
+
+
+	FQuantizedNotify::FQuantizedNotify(float InMsOffset)  : OffsetInMs(InMsOffset)
+	{
+	}
+
+	int32 FQuantizedNotify::OverrideFramesUntilExec(int32 NumFramesUntilExec)
+	{
+		constexpr float MsToSec = 1000.f;
+		return FMath::Max(0, NumFramesUntilExec + (OffsetInMs / MsToSec) * SampleRate);
+	}
+
+	void FQuantizedNotify::OnQueuedCustom(const FQuartzQuantizedCommandInitInfo& InCommandInitInfo)
+	{
+		SampleRate = InCommandInitInfo.SampleRate;
+	}
+
+	TSharedPtr<IQuartzQuantizedCommand> FQuantizedNotify::GetDeepCopyOfDerivedObject() const
+	{
+		return MakeShared<FQuantizedNotify>();
+	}
+
+	static const FName FQuantizedNotifyName("Notify Command");
+	FName FQuantizedNotify::GetCommandName() const
+	{
+		return FQuantizedNotifyName;
 	}
 
 } // namespace Audio

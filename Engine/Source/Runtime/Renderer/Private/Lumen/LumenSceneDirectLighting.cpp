@@ -12,13 +12,11 @@
 #include "VolumetricCloudRendering.h"
 #include "LumenTracingUtils.h"
 
-int32 GLumenDirectLighting = 1;
-FAutoConsoleVariableRef CVarLumenDirectLighting(
+static TAutoConsoleVariable<int32> CVarLumenLumenSceneDirectLighting(
 	TEXT("r.LumenScene.DirectLighting"),
-	GLumenDirectLighting,
-	TEXT(""),
-	ECVF_Scalability | ECVF_RenderThreadSafe
-	);
+	1,
+	TEXT("Whether to compute direct ligshting for surface cache."),
+	ECVF_Scalability | ECVF_RenderThreadSafe);
 
 int32 GLumenDirectLightingOffscreenShadowingTraceMeshSDFs = 1;
 FAutoConsoleVariableRef CVarLumenDirectLightingOffscreenShadowingTraceMeshSDFs(
@@ -102,12 +100,13 @@ float LumenSceneDirectLighting::GetHardwareRayTracingShadowRayBias()
 class FLumenGatheredLight
 {
 public:
-	FLumenGatheredLight(const FScene* Scene, const FViewInfo& View, const FLightSceneInfo* InLightSceneInfo, uint32 InLightIndex)
+	FLumenGatheredLight(const FScene* Scene, TConstArrayView<FViewInfo> Views, const FLightSceneInfo* InLightSceneInfo, uint32 InLightIndex, bool bUseHardwareRayTracing)
 	{
 		LightIndex = InLightIndex;
 		LightSceneInfo = InLightSceneInfo;
 		bHasShadows = InLightSceneInfo->Proxy->CastsDynamicShadow();
 
+		const FViewInfo& View = Views[0];
 		const FLightSceneProxy* Proxy = LightSceneInfo->Proxy;
 
 		Type = ELumenLightType::MAX;
@@ -139,6 +138,23 @@ public:
 		}
 
 		FSceneRenderer::GetLightNameForDrawEvent(Proxy, Name);
+
+		// Non-raytraced and distance field shadows require the light uniform buffer struct for each view.
+		if ((!bUseHardwareRayTracing && bHasShadows) || NeedsShadowMask())
+		{
+			DeferredLightUniformBuffers.SetNum(Views.Num());
+
+			for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
+			{
+				FDeferredLightUniformStruct DeferredLightUniforms = GetDeferredLightParameters(Views[ViewIndex], *LightSceneInfo);
+				if (LightSceneInfo->Proxy->IsInverseSquared())
+				{
+					DeferredLightUniforms.LightParameters.FalloffExponent = 0;
+				}
+				DeferredLightUniforms.LightParameters.Color *= LightSceneInfo->Proxy->GetIndirectLightingScale();
+				DeferredLightUniformBuffers[ViewIndex] = CreateUniformBufferImmediate(DeferredLightUniforms, UniformBuffer_SingleFrame);
+			}
+		}
 	}
 
 	bool NeedsShadowMask() const
@@ -157,6 +173,7 @@ public:
 	bool bHasShadows = false;
 	bool bHasCloudTransmittance = false;
 	FString Name;
+	TArray<TUniformBufferRef<FDeferredLightUniformStruct>, TInlineAllocator<4>> DeferredLightUniformBuffers;
 };
 
 BEGIN_SHADER_PARAMETER_STRUCT(FLumenLightTileScatterParameters, )
@@ -336,8 +353,8 @@ class FBuildLightTilesCS : public FGlobalShader
 		SHADER_PARAMETER(uint32, MaxLightsPerTile)
 		SHADER_PARAMETER(uint32, NumLights)
 		SHADER_PARAMETER(uint32, NumViews)
-		SHADER_PARAMETER_ARRAY(FMatrix44f, WorldToClip, [MaxLumenViews])
-		SHADER_PARAMETER_ARRAY(FVector4f, PreViewTranslation, [MaxLumenViews])
+		SHADER_PARAMETER_ARRAY(FMatrix44f, WorldToClip, [Lumen::MaxViews])
+		SHADER_PARAMETER_ARRAY(FVector4f, PreViewTranslation, [Lumen::MaxViews])
 	END_SHADER_PARAMETER_STRUCT()
 
 	class FMaxLightSamples : SHADER_PERMUTATION_SPARSE_INT("MAX_LIGHT_SAMPLES", 1, 2, 4, 8, 16, 32);
@@ -517,21 +534,6 @@ void ClearLumenSceneDirectLighting(
 	});
 }
 
-void Lumen::SetDirectLightingDeferredLightUniformBuffer(
-	const FViewInfo& View,
-	const FLightSceneInfo* LightSceneInfo,
-	TUniformBufferBinding<FDeferredLightUniformStruct>& UniformBuffer)
-{
-	FDeferredLightUniformStruct DeferredLightUniforms = GetDeferredLightParameters(View, *LightSceneInfo);
-	if (LightSceneInfo->Proxy->IsInverseSquared())
-	{
-		DeferredLightUniforms.LightParameters.FalloffExponent = 0;
-	}
-	DeferredLightUniforms.LightParameters.Color *= LightSceneInfo->Proxy->GetIndirectLightingScale();
-
-	UniformBuffer = CreateUniformBufferImmediate(DeferredLightUniforms, UniformBuffer_SingleDraw);
-}
-
 class FLumenCardBatchDirectLightingCS : public FGlobalShader
 {
 	DECLARE_GLOBAL_SHADER(FLumenCardBatchDirectLightingCS)
@@ -548,7 +550,7 @@ class FLumenCardBatchDirectLightingCS : public FGlobalShader
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint>, LightTileOffsetNumPerCardTile)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint2>, LightTilesPerCardTile)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float3>, RWDirectLightingAtlas)
-		SHADER_PARAMETER_ARRAY(FVector4f, PreViewTranslation, [MaxLumenViews])
+		SHADER_PARAMETER_ARRAY(FVector4f, PreViewTranslation, [Lumen::MaxViews])
 	END_SHADER_PARAMETER_STRUCT()
 
 	class FMultiView : SHADER_PERMUTATION_BOOL("HAS_MULTIPLE_VIEWS");
@@ -750,10 +752,11 @@ class FLumenSceneDirectLightingTraceDistanceFieldShadowsCS : public FGlobalShade
 	class FThreadGroupSize32 : SHADER_PERMUTATION_BOOL("THREADGROUP_SIZE_32");
 	class FLightType : SHADER_PERMUTATION_ENUM_CLASS("LIGHT_TYPE", ELumenLightType);
 	class FTraceGlobalSDF : SHADER_PERMUTATION_BOOL("OFFSCREEN_SHADOWING_TRACE_GLOBAL_SDF");
+	class FSimpleCoverageBasedExpand : SHADER_PERMUTATION_BOOL("GLOBALSDF_SIMPLE_COVERAGE_BASED_EXPAND");
 	class FTraceMeshSDFs : SHADER_PERMUTATION_BOOL("OFFSCREEN_SHADOWING_TRACE_MESH_SDF");
 	class FTraceHeightfields : SHADER_PERMUTATION_BOOL("OFFSCREEN_SHADOWING_TRACE_HEIGHTFIELDS");
 	class FOffsetDataStructure : SHADER_PERMUTATION_INT("OFFSET_DATA_STRUCT", 3);
-	using FPermutationDomain = TShaderPermutationDomain<FThreadGroupSize32, FLightType, FTraceGlobalSDF, FTraceMeshSDFs, FTraceHeightfields, FOffsetDataStructure>;
+	using FPermutationDomain = TShaderPermutationDomain<FThreadGroupSize32, FLightType, FTraceGlobalSDF, FSimpleCoverageBasedExpand, FTraceMeshSDFs, FTraceHeightfields, FOffsetDataStructure>;
 
 	static FPermutationDomain RemapPermutation(FPermutationDomain PermutationVector)
 	{
@@ -774,6 +777,11 @@ class FLumenSceneDirectLightingTraceDistanceFieldShadowsCS : public FGlobalShade
 		if (!PermutationVector.Get<FTraceMeshSDFs>())
 		{
 			PermutationVector.Set<FOffsetDataStructure>(0);
+		}
+
+		if (!PermutationVector.Get<FTraceGlobalSDF>())
+		{
+			PermutationVector.Set<FSimpleCoverageBasedExpand>(false);
 		}
 
 		return PermutationVector;
@@ -896,7 +904,7 @@ void CullMeshObjectsForLightCards(
 	FLightTileIntersectionParameters& LightTileIntersectionParameters)
 {
 	const FVector LumenSceneViewOrigin = Lumen::GetLumenSceneViewOrigin(View, Lumen::GetNumGlobalDFClipmaps(View) - 1);
-	const FVector LumenSceneExtent = FVector(ComputeMaxCardUpdateDistanceFromCamera(View));
+	const FVector LumenSceneExtent = FVector(LumenScene::GetCardMaxDistance(View));
 	const FBox LumenSceneBounds(LumenSceneViewOrigin - LumenSceneExtent, LumenSceneViewOrigin + LumenSceneExtent);
 
 	FSphere MeshSDFShadowBounds;
@@ -998,7 +1006,7 @@ void ComputeNonRayTracedShadows(
 	const FScene* Scene,
 	const FViewInfo& View,
 	TRDGUniformBufferRef<FLumenCardScene> LumenCardSceneUniformBuffer,
-	TArray<FVisibleLightInfo, SceneRenderingAllocator>& VisibleLightInfos,
+	TArrayView<FVisibleLightInfo> VisibleLightInfos,
 	const FLumenGatheredLight& Light,
 	const FLumenLightTileScatterParameters& LightTileScatterParameters,
 	int32 ViewIndex,
@@ -1029,7 +1037,7 @@ void ComputeNonRayTracedShadows(
 		CommonParameters.ViewIndex = ViewIndex;
 		CommonParameters.NumViews = NumViews;
 		CommonParameters.DummyZeroForFixingShaderCompilerBug = 0;
-		Lumen::SetDirectLightingDeferredLightUniformBuffer(View, Light.LightSceneInfo, CommonParameters.DeferredLightUniforms);
+		CommonParameters.DeferredLightUniforms = Light.DeferredLightUniformBuffers[ViewIndex];
 		CommonParameters.ForwardLightData = View.ForwardLightingResources.ForwardLightUniformBuffer;
 		CommonParameters.TanLightSourceAngle = FMath::Tan(Light.LightSceneInfo->Proxy->GetLightSourceAngle());
 		CommonParameters.MaxTraceDistance = Lumen::GetMaxTraceDistance(View);
@@ -1122,6 +1130,7 @@ void TraceDistanceFieldShadows(
 	TRDGUniformBufferRef<FLumenCardScene> LumenCardSceneUniformBuffer,
 	const FLumenGatheredLight& Light,
 	const FLumenLightTileScatterParameters& LightTileScatterParameters,
+	const FDistanceFieldObjectBufferParameters& ObjectBufferParameters,
 	int32 ViewIndex,
 	int32 NumViews,
 	FRDGBufferUAVRef ShadowMaskTilesUAV,
@@ -1129,13 +1138,6 @@ void TraceDistanceFieldShadows(
 {
 	const FLumenSceneData& LumenSceneData = *Scene->GetLumenSceneData(View);
 	check(Light.bHasShadows);
-
-	FDistanceFieldObjectBufferParameters ObjectBufferParameters = DistanceField::SetupObjectBufferParameters(GraphBuilder, Scene->DistanceFieldSceneData);
-
-	// Patch DF heightfields with Lumen heightfields
-	ObjectBufferParameters.SceneHeightfieldObjectBounds = GraphBuilder.CreateSRV(GraphBuilder.RegisterExternalBuffer(LumenSceneData.HeightfieldBuffer));
-	ObjectBufferParameters.SceneHeightfieldObjectData = nullptr;
-	ObjectBufferParameters.NumSceneHeightfieldObjects = LumenSceneData.Heightfields.Num();
 
 	FLightTileIntersectionParameters LightTileIntersectionParameters;
 	FMatrix WorldToMeshSDFShadowValue = FMatrix::Identity;
@@ -1203,7 +1205,7 @@ void TraceDistanceFieldShadows(
 		PassParameters->ViewIndex = ViewIndex;
 		PassParameters->NumViews = NumViews;
 		PassParameters->DummyZeroForFixingShaderCompilerBug = 0;
-		Lumen::SetDirectLightingDeferredLightUniformBuffer(View, Light.LightSceneInfo, PassParameters->DeferredLightUniforms);
+		PassParameters->DeferredLightUniforms = Light.DeferredLightUniformBuffers[ViewIndex];
 
 		PassParameters->ObjectBufferParameters = ObjectBufferParameters;
 		PassParameters->LightTileIntersectionParameters = LightTileIntersectionParameters;
@@ -1228,6 +1230,7 @@ void TraceDistanceFieldShadows(
 	PermutationVector.Set<FLumenSceneDirectLightingTraceDistanceFieldShadowsCS::FThreadGroupSize32>(Lumen::UseThreadGroupSize32());
 	PermutationVector.Set<FLumenSceneDirectLightingTraceDistanceFieldShadowsCS::FLightType>(Light.Type);
 	PermutationVector.Set<FLumenSceneDirectLightingTraceDistanceFieldShadowsCS::FTraceGlobalSDF>(Lumen::UseGlobalSDFTracing(*View.Family));
+	PermutationVector.Set<FLumenSceneDirectLightingTraceDistanceFieldShadowsCS::FSimpleCoverageBasedExpand>(Lumen::UseGlobalSDFTracing(*View.Family) && Lumen::UseGlobalSDFSimpleCoverageBasedExpand());
 	PermutationVector.Set<FLumenSceneDirectLightingTraceDistanceFieldShadowsCS::FTraceMeshSDFs>(bTraceMeshSDFs);
 	PermutationVector.Set<FLumenSceneDirectLightingTraceDistanceFieldShadowsCS::FTraceHeightfields>(bTraceHeighfieldObjects);
 	extern int32 GDistanceFieldOffsetDataStructure;
@@ -1289,76 +1292,6 @@ struct FLumenPackedLight
 	uint32 Padding;
 };
 
-FRDGBufferRef CreateLumenLightDataBuffer(FRDGBuilder& GraphBuilder, const TArray<FLumenGatheredLight, TInlineAllocator<64>>& GatheredLights, float Exposure)
-{
-	TArray<FLumenPackedLight, TInlineAllocator<16>> PackedLightData;
-	PackedLightData.SetNum(FMath::RoundUpToPowerOfTwo(FMath::Max(GatheredLights.Num(), 16)));
-
-	for (int32 LightIndex = 0; LightIndex < GatheredLights.Num(); ++LightIndex)
-	{
-		const FLumenGatheredLight& LumenLight = GatheredLights[LightIndex];
-		const FLightSceneInfo* LightSceneInfo = LumenLight.LightSceneInfo;
-		const FSphere LightBounds = LightSceneInfo->Proxy->GetBoundingSphere();
-
-		FLightRenderParameters ShaderParameters;
-		LightSceneInfo->Proxy->GetLightShaderParameters(ShaderParameters);
-
-		if (LightSceneInfo->Proxy->IsInverseSquared())
-		{
-			ShaderParameters.FalloffExponent = 0;
-		}
-		ShaderParameters.Color *= LightSceneInfo->Proxy->GetIndirectLightingScale();
-
-		ShaderParameters.Color *= ShaderParameters.GetLightExposureScale(Exposure);
-
-		FLumenPackedLight& LightData = PackedLightData[LightIndex];
-		LightData.WorldPosition = FVector3f(ShaderParameters.WorldPosition);
-		LightData.InvRadius = ShaderParameters.InvRadius;
-
-		LightData.Color = FVector3f(ShaderParameters.Color);
-		LightData.FalloffExponent = ShaderParameters.FalloffExponent;
-
-		LightData.Direction = ShaderParameters.Direction;
-		LightData.SpecularScale = ShaderParameters.SpecularScale;
-
-		LightData.Tangent = ShaderParameters.Tangent;
-		LightData.SourceRadius = ShaderParameters.SourceRadius;
-
-		LightData.SpotAngles = ShaderParameters.SpotAngles;
-		LightData.SoftSourceRadius = ShaderParameters.SoftSourceRadius;
-		LightData.SourceLength = ShaderParameters.SourceLength;
-
-		LightData.RectLightBarnCosAngle = ShaderParameters.RectLightBarnCosAngle;
-		LightData.RectLightBarnLength = ShaderParameters.RectLightBarnLength;
-		LightData.LightType = LightSceneInfo->Proxy->GetLightType();
-		LightData.VirtualShadowMapId = 0;
-
-		LightData.InfluenceSphere = FVector4f((FVector3f)LightBounds.Center, LightBounds.W);
-
-		LightData.ProxyPosition = FVector4f(LightSceneInfo->Proxy->GetPosition()); // LUMEN_LWC_TODO
-		LightData.ProxyRadius = LightSceneInfo->Proxy->GetRadius();
-
-		LightData.ProxyDirection = (FVector3f)LightSceneInfo->Proxy->GetDirection();
-		LightData.RectLightAtlasMaxLevel = ShaderParameters.RectLightAtlasMaxLevel > 0.0f ? ShaderParameters.RectLightAtlasMaxLevel : 0.0f;
-
-		if (LightData.LightType == LightType_Rect)
-		{
-			LightData.SinCosConeAngleOrRectLightAtlasUVScale = ShaderParameters.RectLightAtlasUVScale;
-		}
-		else
-		{
-			LightData.SinCosConeAngleOrRectLightAtlasUVScale = FVector2f(FMath::Sin(LightSceneInfo->Proxy->GetOuterConeAngle()), FMath::Cos(LightSceneInfo->Proxy->GetOuterConeAngle()));
-		}
-		LightData.RectLightAtlasUVOffset = ShaderParameters.RectLightAtlasUVOffset;
-		LightData.IESAtlasIndex = ShaderParameters.IESAtlasIndex;
-		LightData.LightingChannelMask = LightSceneInfo->Proxy->GetLightingChannelMask();
-		LightData.bHasShadowMask = LumenLight.NeedsShadowMask() ? 1 : 0;
-	}
-
-	FRDGBufferRef LightDataBuffer = CreateStructuredBuffer(GraphBuilder, TEXT("Lumen.DirectLighting.Lights"), PackedLightData);
-	return LightDataBuffer;
-}
-
 struct FLightTileCullContext
 {
 	FLumenLightTileScatterParameters LightTileScatterParameters;
@@ -1377,7 +1310,7 @@ void CullDirectLightingTiles(
 	FRDGBuilder& GraphBuilder,
 	const FLumenCardUpdateContext& CardUpdateContext,
 	TRDGUniformBufferRef<FLumenCardScene> LumenCardSceneUniformBuffer,
-	const TArray<FLumenGatheredLight, TInlineAllocator<64>>& GatheredLights,
+	TConstArrayView<FLumenGatheredLight> GatheredLights,
 	FRDGBufferRef LumenPackedLights,
 	FLightTileCullContext& CullContext,
 	FLumenCardTileUpdateContext& CardTileUpdateCotnext,
@@ -1386,7 +1319,7 @@ void CullDirectLightingTiles(
 	RDG_EVENT_SCOPE(GraphBuilder, "CullTiles %d lights", GatheredLights.Num());
 	const FGlobalShaderMap* GlobalShaderMap = Views[0].ShaderMap;
 
-	const uint32 MaxLightTiles = CardUpdateContext.MaxUpdateTiles;;
+	const uint32 MaxLightTiles = CardUpdateContext.MaxUpdateTiles;
 	const uint32 NumLightsRoundedUp = FMath::RoundUpToPowerOfTwo(FMath::Max(GatheredLights.Num(), 1)) * Views.Num();
 	const uint32 MaxLightsPerTile = FMath::RoundUpToPowerOfTwo(FMath::Clamp(CVarLumenDirectLightingMaxLightsPerTile.GetValueOnRenderThread(), 1, 32));
 	const uint32 MaxCulledCardTiles = MaxLightsPerTile * MaxLightTiles;
@@ -1557,26 +1490,36 @@ void CullDirectLightingTiles(
 	CullContext.MaxCulledCardTiles = MaxCulledCardTiles;
 }
 
-void FDeferredShadingSceneRenderer::RenderDirectLightingForLumenScene(
-	FRDGBuilder& GraphBuilder,
-	const FLumenSceneFrameTemporaries& FrameTemporaries,
-	const FLumenCardUpdateContext& CardUpdateContext,
-	ERDGPassFlags ComputePassFlags)
+struct FLumenDirectLightingTaskData
 {
-	LLM_SCOPE_BYTAG(Lumen);
+	mutable UE::Tasks::FTask Task;
+	TArray<FLumenGatheredLight, TInlineAllocator<64>> GatheredLights;
+	TArray<FLumenPackedLight, TInlineAllocator<16>> PackedLightData;
+	bool bHasRectLights = false;
+};
 
-	if (GLumenDirectLighting && CardUpdateContext.MaxUpdateTiles > 0)
+void FDeferredShadingSceneRenderer::BeginGatherLumenLights(FLumenDirectLightingTaskData*& TaskData, IVisibilityTaskData* VisibilityTaskData)
+{
+	bool bAnyLumenActive = false;
+
+	for (const FViewInfo& View : Views)
 	{
-		RDG_EVENT_SCOPE(GraphBuilder, "DirectLighting");
-		QUICK_SCOPE_CYCLE_COUNTER(RenderDirectLightingForLumenScene);
+		const FPerViewPipelineState& ViewPipelineState = GetViewPipelineState(View);
+		bAnyLumenActive |= ViewPipelineState.DiffuseIndirectMethod == EDiffuseIndirectMethod::Lumen;
+	}
 
-		const FViewInfo& MainView = Views[0];
-		FLumenSceneData& LumenSceneData = *Scene->GetLumenSceneData(Views[0]);
+	if (!bAnyLumenActive || CVarLumenLumenSceneDirectLighting.GetValueOnRenderThread() == 0)
+	{
+		return;
+	}
 
-		TRDGUniformBufferRef<FLumenCardScene> LumenCardSceneUniformBuffer = FrameTemporaries.LumenCardSceneUniformBuffer;
+	TaskData = Allocator.Create<FLumenDirectLightingTaskData>();
 
-		TArray<FLumenGatheredLight, TInlineAllocator<64>> GatheredLights;
-		bool bHasRectLights = false;
+	TaskData->Task = LaunchSceneRenderTask(TEXT("GatherLumenLights"), [TaskData, Scene = this->Scene, &Views = this->Views, &ViewFamily = this->ViewFamily]
+	{
+		SCOPED_NAMED_EVENT_TEXT("GatherLumenLights", FColor::Green);
+
+		const bool bUseHardwareRayTracing = Lumen::UseHardwareRayTracedDirectLighting(ViewFamily);
 
 		for (auto LightIt = Scene->Lights.CreateConstIterator(); LightIt; ++LightIt)
 		{
@@ -1590,16 +1533,108 @@ void FDeferredShadingSceneRenderer::RenderDirectLightingForLumenScene(
 				{
 					if (LightSceneInfo->ShouldRenderLight(View, true))
 					{
-						const FLumenGatheredLight GatheredLight(Scene, View, LightSceneInfo, /*LightIndex*/ GatheredLights.Num());
-						bHasRectLights = bHasRectLights || GatheredLight.Type == ELumenLightType::Rect;
-						GatheredLights.Add(GatheredLight);
+						const FLumenGatheredLight GatheredLight(Scene, Views, LightSceneInfo, /*LightIndex*/ TaskData->GatheredLights.Num(), bUseHardwareRayTracing);
+						TaskData->bHasRectLights |= GatheredLight.Type == ELumenLightType::Rect;
+						TaskData->GatheredLights.Add(GatheredLight);
 						break;
 					}
 				}
 			}
 		}
 
-		FRDGBufferRef LumenPackedLights = CreateLumenLightDataBuffer(GraphBuilder, GatheredLights, MainView.GetLastEyeAdaptationExposure()); // TODO View
+		const float Exposure = Views[0].GetLastEyeAdaptationExposure();
+
+		TaskData->PackedLightData.SetNum(FMath::RoundUpToPowerOfTwo(FMath::Max(TaskData->GatheredLights.Num(), 16)));
+
+		for (int32 LightIndex = 0; LightIndex < TaskData->GatheredLights.Num(); ++LightIndex)
+		{
+			const FLumenGatheredLight& LumenLight = TaskData->GatheredLights[LightIndex];
+			const FLightSceneInfo* LightSceneInfo = LumenLight.LightSceneInfo;
+			const FSphere LightBounds = LightSceneInfo->Proxy->GetBoundingSphere();
+
+			FLightRenderParameters ShaderParameters;
+			LightSceneInfo->Proxy->GetLightShaderParameters(ShaderParameters);
+
+			if (LightSceneInfo->Proxy->IsInverseSquared())
+			{
+				ShaderParameters.FalloffExponent = 0;
+			}
+			ShaderParameters.Color *= LightSceneInfo->Proxy->GetIndirectLightingScale();
+			ShaderParameters.Color *= ShaderParameters.GetLightExposureScale(Exposure);
+
+			FLumenPackedLight& LightData = TaskData->PackedLightData[LightIndex];
+			LightData.WorldPosition = FVector3f(ShaderParameters.WorldPosition);
+			LightData.InvRadius = ShaderParameters.InvRadius;
+
+			LightData.Color = FVector3f(ShaderParameters.Color);
+			LightData.FalloffExponent = ShaderParameters.FalloffExponent;
+
+			LightData.Direction = ShaderParameters.Direction;
+			LightData.SpecularScale = ShaderParameters.SpecularScale;
+
+			LightData.Tangent = ShaderParameters.Tangent;
+			LightData.SourceRadius = ShaderParameters.SourceRadius;
+
+			LightData.SpotAngles = ShaderParameters.SpotAngles;
+			LightData.SoftSourceRadius = ShaderParameters.SoftSourceRadius;
+			LightData.SourceLength = ShaderParameters.SourceLength;
+
+			LightData.RectLightBarnCosAngle = ShaderParameters.RectLightBarnCosAngle;
+			LightData.RectLightBarnLength = ShaderParameters.RectLightBarnLength;
+			LightData.LightType = LightSceneInfo->Proxy->GetLightType();
+			LightData.VirtualShadowMapId = 0;
+
+			LightData.InfluenceSphere = FVector4f((FVector3f)LightBounds.Center, LightBounds.W);
+
+			LightData.ProxyPosition = FVector4f(LightSceneInfo->Proxy->GetPosition()); // LUMEN_LWC_TODO
+			LightData.ProxyRadius = LightSceneInfo->Proxy->GetRadius();
+
+			LightData.ProxyDirection = (FVector3f)LightSceneInfo->Proxy->GetDirection();
+			LightData.RectLightAtlasMaxLevel = ShaderParameters.RectLightAtlasMaxLevel > 0.0f ? ShaderParameters.RectLightAtlasMaxLevel : 0.0f;
+
+			if (LightData.LightType == LightType_Rect)
+			{
+				LightData.SinCosConeAngleOrRectLightAtlasUVScale = ShaderParameters.RectLightAtlasUVScale;
+			}
+			else
+			{
+				LightData.SinCosConeAngleOrRectLightAtlasUVScale = FVector2f(FMath::Sin(LightSceneInfo->Proxy->GetOuterConeAngle()), FMath::Cos(LightSceneInfo->Proxy->GetOuterConeAngle()));
+			}
+			LightData.RectLightAtlasUVOffset = ShaderParameters.RectLightAtlasUVOffset;
+			LightData.IESAtlasIndex = ShaderParameters.IESAtlasIndex;
+			LightData.LightingChannelMask = LightSceneInfo->Proxy->GetLightingChannelMask();
+			LightData.bHasShadowMask = LumenLight.NeedsShadowMask() ? 1 : 0;
+		}
+
+	}, VisibilityTaskData->GetLightVisibilityTask());
+}
+
+void FDeferredShadingSceneRenderer::RenderDirectLightingForLumenScene(
+	FRDGBuilder& GraphBuilder,
+	const FLumenSceneFrameTemporaries& FrameTemporaries,
+	const FLumenDirectLightingTaskData* LightingTaskData,
+	const FLumenCardUpdateContext& CardUpdateContext,
+	ERDGPassFlags ComputePassFlags)
+{
+	LLM_SCOPE_BYTAG(Lumen);
+
+	if (CVarLumenLumenSceneDirectLighting.GetValueOnRenderThread() != 0 && CardUpdateContext.MaxUpdateTiles > 0)
+	{
+		RDG_EVENT_SCOPE(GraphBuilder, "DirectLighting");
+		QUICK_SCOPE_CYCLE_COUNTER(RenderDirectLightingForLumenScene);
+
+		check(LightingTaskData);
+		LightingTaskData->Task.Wait();
+
+		const FViewInfo& MainView = Views[0];
+		FLumenSceneData& LumenSceneData = *Scene->GetLumenSceneData(Views[0]);
+
+		TRDGUniformBufferRef<FLumenCardScene> LumenCardSceneUniformBuffer = FrameTemporaries.LumenCardSceneUniformBuffer;
+
+		TConstArrayView<FLumenGatheredLight> GatheredLights = LightingTaskData->GatheredLights;
+		const bool bHasRectLights = LightingTaskData->bHasRectLights;
+
+		FRDGBufferRef LumenPackedLights = CreateStructuredBuffer(GraphBuilder, TEXT("Lumen.DirectLighting.Lights"), LightingTaskData->PackedLightData, ERDGInitialDataFlags::NoCopy);
 
 		FLightTileCullContext CullContext;
 		FLumenCardTileUpdateContext CardTileUpdateContext;
@@ -1623,6 +1658,7 @@ void FDeferredShadingSceneRenderer::RenderDirectLightingForLumenScene(
 
 		// Apply shadow map
 		{
+			SCOPED_NAMED_EVENT_TEXT("Non raytraced shadows", FColor::Green);
 			RDG_EVENT_SCOPE_FINAL(GraphBuilder, "Non raytraced shadows");
 
 			FRDGBufferUAVRef ShadowMaskTilesUAV = GraphBuilder.CreateUAV(ShadowMaskTiles, ERDGUnorderedAccessViewFlags::SkipBarrier);
@@ -1686,15 +1722,30 @@ void FDeferredShadingSceneRenderer::RenderDirectLightingForLumenScene(
 
 		// Offscreen shadowing
 		{
+			SCOPED_NAMED_EVENT_TEXT("Offscreen shadows", FColor::Green);
 			RDG_EVENT_SCOPE_FINAL(GraphBuilder, "Offscreen shadows");
 
 			FRDGBufferUAVRef ShadowMaskTilesUAV = GraphBuilder.CreateUAV(ShadowMaskTiles, ERDGUnorderedAccessViewFlags::SkipBarrier);
+
+			FDistanceFieldObjectBufferParameters ObjectBufferParameters;
+
+			const bool bUseHardwareRayTracedDirectLighting = Lumen::UseHardwareRayTracedDirectLighting(ViewFamily);
+
+			if (!bUseHardwareRayTracedDirectLighting)
+			{
+				ObjectBufferParameters = DistanceField::SetupObjectBufferParameters(GraphBuilder, Scene->DistanceFieldSceneData);
+
+				// Patch DF heightfields with Lumen heightfields
+				ObjectBufferParameters.SceneHeightfieldObjectBounds = GraphBuilder.CreateSRV(GraphBuilder.RegisterExternalBuffer(LumenSceneData.HeightfieldBuffer));
+				ObjectBufferParameters.SceneHeightfieldObjectData = nullptr;
+				ObjectBufferParameters.NumSceneHeightfieldObjects = LumenSceneData.Heightfields.Num();
+			}
 
 			for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 			{
 				const FViewInfo& View = Views[ViewIndex];
 
-				if (Lumen::UseHardwareRayTracedDirectLighting(ViewFamily))
+				if (bUseHardwareRayTracedDirectLighting)
 				{
 					TraceLumenHardwareRayTracedDirectLightingShadows(
 						GraphBuilder,
@@ -1725,6 +1776,7 @@ void FDeferredShadingSceneRenderer::RenderDirectLightingForLumenScene(
 								LumenCardSceneUniformBuffer,
 								GatheredLight,
 								CullContext.LightTileScatterParameters,
+								ObjectBufferParameters,
 								ViewIndex,
 								Views.Num(),
 								ShadowMaskTilesUAV,
@@ -1770,5 +1822,9 @@ void FDeferredShadingSceneRenderer::RenderDirectLightingForLumenScene(
 			CardUpdateContext,
 			CardTileUpdateContext,
 			ComputePassFlags);
+	}
+	else if (CVarLumenLumenSceneDirectLighting.GetValueOnRenderThread() == 0)
+	{
+		AddClearRenderTargetPass(GraphBuilder, FrameTemporaries.DirectLightingAtlas);
 	}
 }

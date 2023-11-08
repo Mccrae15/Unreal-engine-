@@ -13,6 +13,26 @@ IMPLEMENT_MODULE(FDefaultModuleImpl, ImageCore);
 
 /* Local helper functions
  *****************************************************************************/
+ 
+static uint8 Requantize16to8(const uint16 In)
+{
+	// same as QuantizeRound(In/65535.f);
+    uint32 Ret = ( (uint32)In * 255 + 32768 + 127 )>>16;
+	checkSlow( Ret <= 255 );
+	return (uint8)Ret;
+}
+
+static const TCHAR * GammaSpaceGetName(EGammaSpace GammaSpace)
+{
+	switch(GammaSpace)
+	{
+	case EGammaSpace::Linear: return TEXT("Linear");
+	case EGammaSpace::Pow22: return TEXT("Pow22");
+	case EGammaSpace::sRGB: return TEXT("sRGB");
+	default: return TEXT("Invalid");
+	}
+}
+
 
 /**
  * Initializes storage for an image.
@@ -21,6 +41,8 @@ IMPLEMENT_MODULE(FDefaultModuleImpl, ImageCore);
  */
 static void InitImageStorage(FImage& Image)
 {
+	//TRACE_CPUPROFILER_EVENT_SCOPE(Texture.InitImageStorage);
+
 	check( Image.IsImageInfoValid() );
 
 	int64 NumBytes = Image.GetImageSizeBytes();
@@ -45,14 +67,42 @@ static inline int32 ParallelForComputeNumJobs(int64 & OutNumItemsPerJob,int64 Nu
 		return 1;
 	}
 	
-	// ParallelFor will actually make 6*NumWorkers batches and then make NumWorkers tasks that pop the batches
-	//	this helps with mismatched thread runtime
-	//	here we only make NumWorkers batches max
-	//	but this is rarely a problem in image cook because it is parallelized already at a the higher level
+	// Always use ParallelFor with "Unbalanced"  so it does not do weird things to your job count
 
 	const int32 NumWorkers = FMath::Max(1, FTaskGraphInterface::Get().GetNumWorkerThreads());
-	int32 NumJobs = (int32)(NumItems / MinNumItemsPerJob); // round down
-	NumJobs = FMath::Clamp(NumJobs, int32(1), NumWorkers); 
+	int32 NumJobs = IntCastChecked<int32>(NumItems / MinNumItemsPerJob); // round down
+
+	// NumJobs is now the maximum number of jobs we would want to do
+	//	(eg. one for each small packet of MinNumItemsPerJob)
+	//	but that's often way too many
+
+	// Assign 1,2, or 3 jobs per worker
+	// never make jobs that will be smaller than MinNumItemsPerJob (eg. NumJobs is only adjusted downward)
+	// more jobs per worker provides load balancing, if one worker stalls others can pick up the jobs he didn't do
+
+	if ( NumJobs >= NumWorkers*3 )
+	{
+		// enough jobs to evenly distribute 3 per worker
+		// reduce job count to provide some slack for stalling workers
+		NumJobs = NumWorkers*3 - 1;
+	}
+	else if ( NumJobs >= NumWorkers*2 )
+	{
+		// enough jobs to evenly distribute 2 per worker
+		NumJobs = NumWorkers*2 - 1;
+	}
+	else
+	{
+		// not enough jobs to evenly distribute more than 1 per worker
+		NumJobs = FMath::Clamp(NumJobs, int32(1), NumWorkers); 
+	}
+
+	if ( NumJobs > 16 )
+	{
+		// add some slack; assume one thread will not be available
+		//	slightly under-subscribing reduces the chance of a much higher latency
+		NumJobs--;
+	}
 
 	OutNumItemsPerJob = (NumItems + NumJobs-1) / NumJobs; // round up
 	check( NumJobs*OutNumItemsPerJob >= NumItems );
@@ -63,19 +113,47 @@ static inline int32 ParallelForComputeNumJobs(int64 & OutNumItemsPerJob,int64 Nu
 static constexpr int64 MinPixelsPerJob = 16384;
 // Surfaces of VT tile size or smaller will not parallelize at all :
 static constexpr int64 MinPixelsForAnyJob = 136*136;
+// Jobs split on pixel count (not rows) are aligned to PixelsPerJobAlignment :
+static constexpr int64 PixelsPerJobAlignment = 64; // must be power of 2
 
 IMAGECORE_API int32 ImageParallelForComputeNumJobsForPixels(int64 & OutNumPixelsPerJob,int64 NumPixels)
 {
-	return ParallelForComputeNumJobs(OutNumPixelsPerJob,NumPixels,MinPixelsPerJob,MinPixelsForAnyJob);
+	check( NumPixels > 0 );
+
+	int32 NumJobs = ParallelForComputeNumJobs(OutNumPixelsPerJob,NumPixels,MinPixelsPerJob,MinPixelsForAnyJob);
+	
+	if ( NumJobs > 1 )
+	{
+		// align up to PixelsPerJobAlignment :
+		//	(PixelsPerJobAlignment should be power of 2)
+		OutNumPixelsPerJob = (OutNumPixelsPerJob + PixelsPerJobAlignment-1) & (~ (PixelsPerJobAlignment-1) );
+		// recompute NumJobs :
+		NumJobs = (NumPixels + OutNumPixelsPerJob-1) / OutNumPixelsPerJob;
+	}
+
+	check( NumJobs*OutNumPixelsPerJob >= NumPixels );
+	check( (NumJobs-1)*OutNumPixelsPerJob < NumPixels );
+
+	return NumJobs;
 }
 
-IMAGECORE_API int32 ImageParallelForComputeNumJobsForRows(int32 & OutNumItemsPerJob,int32 SizeX,int32 SizeY)
+IMAGECORE_API int32 ImageParallelForComputeNumJobsForRows(int32 & OutNumItemsPerJob,int64 SizeX,int64 SizeY)
 {
-	int64 NumPixels = int64(SizeX)*SizeY;
+	check( SizeX > 0 && SizeY > 0 );
+
+	int64 NumPixels = SizeX*SizeY;
 	int64 OutNumPixelsPerJob;
-	int32 NumJobs = ParallelForComputeNumJobs(OutNumPixelsPerJob,NumPixels,MinPixelsPerJob,MinPixelsForAnyJob);
-	OutNumItemsPerJob = (SizeY + NumJobs-1) / NumJobs; // round up;
-	return NumJobs;
+	int64 NumJobs1 = ParallelForComputeNumJobs(OutNumPixelsPerJob,NumPixels,MinPixelsPerJob,MinPixelsForAnyJob);
+	int64 OutNumItemsPerJob64 = (SizeY + NumJobs1-1) / NumJobs1;
+	
+	// recompute NumJobs :
+	int64 NumJobs = (SizeY + OutNumItemsPerJob64-1) / OutNumItemsPerJob64;
+
+	check( OutNumItemsPerJob64*NumJobs >= SizeY );
+	check( OutNumItemsPerJob64*(NumJobs-1) < SizeY );
+
+	OutNumItemsPerJob = IntCastChecked<int32>(OutNumItemsPerJob64);
+	return IntCastChecked<int32>(NumJobs);
 }
 
 template <typename Lambda>
@@ -89,7 +167,35 @@ static void ParallelLoop(const TCHAR* DebugName, int32 NumJobs, int64 TexelsPerJ
 		{
 			Func(TexelIndex);
 		}
-	});
+	}, EParallelForFlags::Unbalanced);
+}
+
+// ParallelOr : call Func() on all texels ; returns true if Func is true for any texel
+template <typename Lambda>
+static bool ParallelOr(const TCHAR* DebugName, int32 NumJobs, int64 TexelsPerJob, int64 NumTexels, const Lambda& Func)
+{
+	// merged_bool starts false, is set to true if any thread sees a true
+	std::atomic<bool> merged_bool(false);
+
+	ParallelFor(DebugName, NumJobs, 1, [&](int64 JobIndex)
+	{
+		const int64 StartIndex = JobIndex * TexelsPerJob;
+		const int64 EndIndex = FMath::Min(StartIndex + TexelsPerJob, NumTexels);
+		for (int64 TexelIndex = StartIndex; TexelIndex < EndIndex; ++TexelIndex)
+		{
+			if ( Func(TexelIndex) )
+			{
+				merged_bool.store(true,std::memory_order_release);
+				return;
+			}
+		}
+		// if Func was really slow, you might want to check if merged_bool was set to true on some other thread
+		//	and terminate our loop when that is true
+		//  but that causes cache traffic for the shared variable, so should not be done in tight loops
+	}, EParallelForFlags::Unbalanced);
+
+	bool ret = merged_bool.load(std::memory_order_acquire);
+	return ret;
 }
 
 template <int64 TexelsPerVec, typename LambdaVec, typename Lambda>
@@ -116,9 +222,71 @@ static void ParallelLoop(const TCHAR* DebugName, int32 NumJobs, int64 TexelsPerJ
 			Func(TexelIndex);
 			++TexelIndex;
 		}
-	});
+	}, EParallelForFlags::Unbalanced);
 }
 
+// 2xU16 is not a proper supported Image format
+//	DestImage should be BGRA8 so it's the correct 4 bytes per pel
+//	we write 2xU16 to it
+IMAGECORE_API void FImageCore::CopyImageTo2U16(const FImageView & SrcImage,const FImageView & DestImage)
+{
+	check( SrcImage.GetNumPixels() == DestImage.GetNumPixels() );
+	check( DestImage.Format == ERawImageFormat::BGRA8 );
+	check(SrcImage.IsImageInfoValid());
+	check(DestImage.IsImageInfoValid());
+
+	TRACE_CPUPROFILER_EVENT_SCOPE(Texture.CopyImageTo2U16);
+			
+	UE_LOG(LogImageCore,Verbose,TEXT("CopyImageTo2U16: %s %s -> %s %s %dx%d"),
+		ERawImageFormat::GetName(SrcImage.Format),
+		GammaSpaceGetName(SrcImage.GammaSpace),
+		ERawImageFormat::GetName(DestImage.Format),
+		GammaSpaceGetName(DestImage.GammaSpace),
+		SrcImage.SizeX,SrcImage.SizeY);
+
+	const int64 NumTexels = SrcImage.GetNumPixels();
+	int64 TexelsPerJob;
+	int32 NumJobs = ImageParallelForComputeNumJobsForPixels(TexelsPerJob,NumTexels);
+
+	if (SrcImage.Format == ERawImageFormat::RGBA32F)
+	{
+		// Convert from 32-bit linear floating point.
+		const FLinearColor* SrcColors = (const FLinearColor*) SrcImage.RawData;
+		uint16* DestColors = (uint16 *) DestImage.RawData;
+
+		ParallelLoop(TEXT("Texture.CopyImageTo2U16.PF"), NumJobs, TexelsPerJob, NumTexels, [DestColors, SrcColors](int64 TexelIndex)
+		{
+			FLinearColor Src = SrcColors[TexelIndex];
+			uint16* Dst = DestColors + TexelIndex * 2;
+			Dst[0] = FColor::QuantizeUNormFloatTo16(Src.R);
+			Dst[1] = FColor::QuantizeUNormFloatTo16(Src.G);
+		});
+	}
+	else if (SrcImage.Format == ERawImageFormat::BGRA8 && SrcImage.GammaSpace == EGammaSpace::Linear )
+	{
+		const FColor* SrcColors = (const FColor*) SrcImage.RawData;
+		uint16* DestColors = (uint16*) DestImage.RawData;
+		
+		ParallelLoop(TEXT("Texture.CopyImageTo2U16.PF"), NumJobs, TexelsPerJob, NumTexels, [DestColors, SrcColors](int64 TexelIndex)
+		{
+			FColor Src = SrcColors[TexelIndex];
+			uint16* Dst = DestColors + TexelIndex * 2;
+			Dst[0] = (Src.R << 8) | Src.R;
+			Dst[1] = (Src.G << 8) | Src.G;
+		});
+	}
+	else
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(Texture.CopyImageTo2U16.TempLinear);
+
+		// Arbitrary conversion, use 32-bit linear float as an intermediate format.
+		// this is unnecessarily expensive to do something like G8 to R16F, but rare
+		// if this shows up as a hot spot, identify the formats using this path and add direct conversions between them
+		FImage TempImage(SrcImage.SizeX, SrcImage.SizeY, SrcImage.NumSlices, ERawImageFormat::RGBA32F, EGammaSpace::Linear);
+		FImageCore::CopyImage(SrcImage, TempImage);
+		FImageCore::CopyImageTo2U16(TempImage, DestImage);
+	}
+}
 
 // Copy Image, swapping RB, SrcImage must be BGRA8 or RGBA16
 // Src == Dest is okay
@@ -174,25 +342,6 @@ IMAGECORE_API void FImageCore::TransposeImageRGBABGRA(const FImageView & Image)
 	CopyImageRGBABGRA(Image,Image);
 }
 
-static uint8 Requantize16to8(const uint16 In)
-{
-	// same as QuantizeRound(In/65535.f);
-    uint32 Ret = ( (uint32)In * 255 + 32768 + 127 )>>16;
-	checkSlow( Ret <= 255 );
-	return (uint8)Ret;
-}
-
-static const TCHAR * GammaSpaceGetName(EGammaSpace GammaSpace)
-{
-	switch(GammaSpace)
-	{
-	case EGammaSpace::Linear: return TEXT("Linear");
-	case EGammaSpace::Pow22: return TEXT("Pow22");
-	case EGammaSpace::sRGB: return TEXT("sRGB");
-	default: return TEXT("Invalid");
-	}
-}
-
 /**
  * Copies an image accounting for format differences. Sizes must match.
  *
@@ -239,6 +388,8 @@ IMAGECORE_API void FImageCore::CopyImage(const FImageView & SrcImage,const FImag
 	if ( SrcImage.Format == DestImage.Format &&
 		SrcImage.GammaSpace == DestImage.GammaSpace )
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(Texture.CopyImage.memcpy);
+
 		int64 Bytes = SrcImage.GetImageSizeBytes();
 		check( DestImage.GetImageSizeBytes() == Bytes );
 		memcpy(DestImage.RawData,SrcImage.RawData,Bytes);
@@ -319,7 +470,7 @@ IMAGECORE_API void FImageCore::CopyImage(const FImageView & SrcImage,const FImag
 							const int64 Count = FMath::Min(TexelsPerJob, NumTexels - StartIndex);
 							ConvertFLinearColorsToFColorSRGB(&SrcColors[StartIndex], &DestColors[StartIndex], Count);
 						}
-					);
+					, EParallelForFlags::Unbalanced);
 				}
 				else
 				{
@@ -729,33 +880,7 @@ FORCEINLINE static FLinearColor SaturateToHalfFloat(const FLinearColor& LinearCo
 
 void FImage::TransformToWorkingColorSpace(const FVector2d& SourceRedChromaticity, const FVector2d& SourceGreenChromaticity, const FVector2d& SourceBlueChromaticity, const FVector2d& SourceWhiteChromaticity, UE::Color::EChromaticAdaptationMethod Method, double EqualityTolerance)
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(Texture.TransformToWorkingColorSpace);
-
-	check(GammaSpace == EGammaSpace::Linear);
-
-	const UE::Color::FColorSpace Source(SourceRedChromaticity, SourceGreenChromaticity, SourceBlueChromaticity, SourceWhiteChromaticity);
-	const UE::Color::FColorSpace& Target = UE::Color::FColorSpace::GetWorking();
-
-	if (Source.Equals(Target, EqualityTolerance))
-	{
-		UE_LOG(LogImageCore, VeryVerbose, TEXT("Source and working color spaces are equal within tolerance, bypass color space transformation."));
-		return;
-	}
-
-	UE::Color::FColorSpaceTransform Transform(Source, Target, Method);
-
-	FLinearColor* ImageColors = AsRGBA32F().GetData();
-
-	const int64 NumTexels = int64(SizeX) * SizeY * NumSlices;
-	int64 TexelsPerJob;
-	int32 NumJobs = ImageParallelForComputeNumJobsForPixels(TexelsPerJob,NumTexels);
-
-	ParallelLoop(TEXT("Texture.TransformToWorkingColorSpace.PF"), NumJobs, TexelsPerJob, NumTexels, [Transform, ImageColors](int64 TexelIndex)
-	{
-		FLinearColor Color = ImageColors[TexelIndex];
-		Color = Transform.Apply(Color);
-		ImageColors[TexelIndex] = SaturateToHalfFloat(Color);
-	});
+	return FImageCore::TransformToWorkingColorSpace(*this, SourceRedChromaticity, SourceGreenChromaticity, SourceBlueChromaticity, SourceWhiteChromaticity, Method, EqualityTolerance);
 }
 
 static FLinearColor SampleImage(const FLinearColor* Pixels, int Width, int Height, float X, float Y)
@@ -792,7 +917,8 @@ static void ResizeImage(const FImageView & SrcImage, const FImageView & DestImag
 	const float DestToSrcScaleX = (float)SrcImage.SizeX / (float)DestImage.SizeX;
 	const float DestToSrcScaleY = (float)SrcImage.SizeY / (float)DestImage.SizeY;
 
-	// @todo Oodle : not a correct bilinear Resize?  missing 0.5 pixel center shift
+	// @todo OodleImageResize : not a correct bilinear Resize?  missing 0.5 pixel center shift
+	//		deprecate this and redirect to new resizer
 	for (int64 DestY = 0; DestY < DestImage.SizeY; ++DestY)
 	{
 		const float SrcY = (float)DestY * DestToSrcScaleY;
@@ -1203,9 +1329,9 @@ IMAGECORE_API const TCHAR * ERawImageFormat::GetName(Type Format)
 	}
 }
 
-IMAGECORE_API int32 ERawImageFormat::GetBytesPerPixel(Type Format)
+IMAGECORE_API int64 ERawImageFormat::GetBytesPerPixel(Type Format)
 {
-	int32 BytesPerPixel = 0;
+	int64 BytesPerPixel = 0;
 	switch (Format)
 	{
 	case ERawImageFormat::G8:
@@ -1245,7 +1371,7 @@ IMAGECORE_API bool ERawImageFormat::IsHDR(Type Format)
 	return Format == RGBA16F || Format == RGBA32F || Format == R16F || Format == R32F || Format == BGRE8;
 }
 
-IMAGECORE_API FLinearColor ERawImageFormat::GetOnePixelLinear(const void * PixelData,Type Format,bool bSRGB)
+IMAGECORE_API const FLinearColor ERawImageFormat::GetOnePixelLinear(const void * PixelData,ERawImageFormat::Type Format,EGammaSpace Gamma)
 {
 	switch(Format)
 	{
@@ -1253,22 +1379,26 @@ IMAGECORE_API FLinearColor ERawImageFormat::GetOnePixelLinear(const void * Pixel
 	{
 		uint8 Gray = ((const uint8 *)PixelData)[0];
 		FColor Color(Gray,Gray,Gray);
-		if ( bSRGB )
+		if ( Gamma == EGammaSpace::sRGB )
 			return FLinearColor::FromSRGBColor(Color);
+		else if ( Gamma == EGammaSpace::Pow22 )
+			return FLinearColor::FromPow22Color(Color);
 		else
 			return Color.ReinterpretAsLinear();
 	}
 	case G16:
 	{
 		const uint16 * Samples = (const uint16 *)PixelData;
-		float Gray = Samples[0]/65535.f;
+		float Gray = Samples[0]*(1.f/65535.f);
 		return FLinearColor(Gray,Gray,Gray,1.f);
 	}
 	case BGRA8:
 	{
 		FColor Color = *((const FColor *)PixelData);
-		if ( bSRGB )
+		if ( Gamma == EGammaSpace::sRGB )
 			return FLinearColor::FromSRGBColor(Color);
+		else if ( Gamma == EGammaSpace::Pow22 )
+			return FLinearColor::FromPow22Color(Color);
 		else
 			return Color.ReinterpretAsLinear();
 	}
@@ -1281,10 +1411,10 @@ IMAGECORE_API FLinearColor ERawImageFormat::GetOnePixelLinear(const void * Pixel
 	{
 		const uint16 * Samples = (const uint16 *)PixelData;
 		return FLinearColor(
-			Samples[0]/65535.f, 
-			Samples[1]/65535.f, 
-			Samples[2]/65535.f, 
-			Samples[3]/65535.f);
+			Samples[0]*(1.f/65535.f), 
+			Samples[1]*(1.f/65535.f), 
+			Samples[2]*(1.f/65535.f), 
+			Samples[3]*(1.f/65535.f));
 	}
 	case RGBA16F:
 	{
@@ -1333,7 +1463,6 @@ void FImageCore::SanitizeFloat16AndSetAlphaOpaqueForBC6H(const FImageView & InOu
 	}
 }
 
-
 bool FImageCore::DetectAlphaChannel(const FImageView & InImage)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(Texture.DetectAlphaChannel);
@@ -1347,75 +1476,61 @@ bool FImageCore::DetectAlphaChannel(const FImageView & InImage)
 	//  images with only alpha larger than this are treated as opaque
 	const float FloatNonOpaqueAlpha = 254.5f / 255.f; // the U8 alpha threshold
 
-	int64 NumPixels = (int64)InImage.SizeX * InImage.SizeY * InImage.NumSlices;
+	int64 NumTexels = InImage.GetNumPixels();
+	int64 TexelsPerJob;
+	int32 NumJobs = ImageParallelForComputeNumJobsForPixels(TexelsPerJob,NumTexels);
 
 	if (InImage.Format == ERawImageFormat::BGRA8)
 	{
 		TArrayView64<const FColor> SrcColorArray = InImage.AsBGRA8();
-		check(SrcColorArray.Num() == NumPixels);
+		check(SrcColorArray.Num() == NumTexels);
 
 		const FColor* ColorPtr = &SrcColorArray[0];
-		const FColor* EndPtr = ColorPtr + SrcColorArray.Num();
-
-		for (; ColorPtr < EndPtr; ++ColorPtr)
+		
+		return ParallelOr(TEXT("Texture.DetectAlphaChannel.PF"), NumJobs, TexelsPerJob, NumTexels, [&](int64 TexelIndex)
 		{
-			if (ColorPtr->A != 255)
-			{
-				return true;
-			}
-		}
+			return (ColorPtr[TexelIndex].A != 255);
+		});
 	}
 	else if (InImage.Format == ERawImageFormat::RGBA32F)
 	{
 		TArrayView64<const FLinearColor> SrcColorArray = InImage.AsRGBA32F();
-		check(SrcColorArray.Num() == NumPixels);
+		check(SrcColorArray.Num() == NumTexels);
 
 		const FLinearColor* ColorPtr = &SrcColorArray[0];
-		const FLinearColor* EndPtr = ColorPtr + SrcColorArray.Num();
-
-		for (; ColorPtr < EndPtr; ++ColorPtr)
+		
+		return ParallelOr(TEXT("Texture.DetectAlphaChannel.PF"), NumJobs, TexelsPerJob, NumTexels, [&](int64 TexelIndex)
 		{
-			if (ColorPtr->A <= FloatNonOpaqueAlpha)
-			{
-				return true;
-			}
-		}
+			return (ColorPtr[TexelIndex].A <= FloatNonOpaqueAlpha);
+		});
 	}
 	else if (InImage.Format == ERawImageFormat::RGBA16)
 	{
 		TArrayView64<const uint16> SrcChannelArray = InImage.AsRGBA16();
-		check(SrcChannelArray.Num() == NumPixels * 4);
+		check(SrcChannelArray.Num() == NumTexels * 4);
 
 		const uint16* ChannelPtr = &SrcChannelArray[0];
-		const uint16* EndPtr = ChannelPtr + SrcChannelArray.Num();
-
-		for (; ChannelPtr < EndPtr; ChannelPtr += 4)
+		
+		return ParallelOr(TEXT("Texture.DetectAlphaChannel.PF"), NumJobs, TexelsPerJob, NumTexels, [&](int64 TexelIndex)
 		{
-			if (ChannelPtr[3] != 0xFFFF)
-			{
-				return true;
-			}
-		}
+			return (ChannelPtr[TexelIndex*4+3] != 0xFFFF);
+		});
 	}
 	else if (InImage.Format == ERawImageFormat::RGBA16F)
 	{
 		TArrayView64<const FFloat16Color> SrcColorArray = InImage.AsRGBA16F();
-		check(SrcColorArray.Num() == NumPixels);
+		check(SrcColorArray.Num() == NumTexels);
 
 		const FFloat16Color* ColorPtr = &SrcColorArray[0];
-		const FFloat16Color* EndPtr = ColorPtr + SrcColorArray.Num();
+		
+		// 16F closest to 1.0 is 0.99951172
+		// use the float tolerance here? or check exactly ?
+		// use the same FloatNonOpaqueAlpha tolerance for consistency ?
 
-		for (; ColorPtr < EndPtr; ++ColorPtr)
+		return ParallelOr(TEXT("Texture.DetectAlphaChannel.PF"), NumJobs, TexelsPerJob, NumTexels, [&](int64 TexelIndex)
 		{
-			// 16F closest to 1.0 is 0.99951172
-			// use the float tolerance here? or check exactly ?
-			//if ( ColorPtr->A.GetFloat() < 1.f )
-			// use the same FloatNonOpaqueAlpha tolerance for consistency ?
-			if (ColorPtr->A.GetFloat() < FloatNonOpaqueAlpha)
-			{
-				return true;
-			}
-		}
+			return (ColorPtr[TexelIndex].A.GetFloat() <= FloatNonOpaqueAlpha);
+		});
 	}
 	else if (InImage.Format == ERawImageFormat::G8 ||
 		InImage.Format == ERawImageFormat::BGRE8 ||
@@ -1433,7 +1548,6 @@ bool FImageCore::DetectAlphaChannel(const FImageView & InImage)
 
 	return false;
 }
-
 
 void FImageCore::SetAlphaOpaque(const FImageView & InImage)
 {
@@ -1509,7 +1623,7 @@ void FImageCore::SetAlphaOpaque(const FImageView & InImage)
 }
 
 
-void FImageCore::ComputeChannelLinearMinMax(const FImage & InImage, FLinearColor & OutMin, FLinearColor & OutMax)
+void FImageCore::ComputeChannelLinearMinMax(const FImageView & InImage, FLinearColor & OutMin, FLinearColor & OutMax)
 {
 	// @todo Oodle : for speed, we should ideally scan the image for min/max in its native pixel format
 	//	then only convert the min/max colors to float linear after the scan
@@ -1539,4 +1653,35 @@ void FImageCore::ComputeChannelLinearMinMax(const FImage & InImage, FLinearColor
 
 	VectorStore(VMin,&OutMin.Component(0));
 	VectorStore(VMax,&OutMax.Component(0));
+}
+
+void FImageCore::TransformToWorkingColorSpace(const FImageView& InLinearImage, const FVector2d& SourceRedChromaticity, const FVector2d& SourceGreenChromaticity, const FVector2d& SourceBlueChromaticity, const FVector2d& SourceWhiteChromaticity, UE::Color::EChromaticAdaptationMethod Method, double EqualityTolerance)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(Texture.TransformToWorkingColorSpace);
+
+	check(InLinearImage.GammaSpace == EGammaSpace::Linear);
+
+	const UE::Color::FColorSpace Source(SourceRedChromaticity, SourceGreenChromaticity, SourceBlueChromaticity, SourceWhiteChromaticity);
+	const UE::Color::FColorSpace& Target = UE::Color::FColorSpace::GetWorking();
+
+	if (Source.Equals(Target, EqualityTolerance))
+	{
+		UE_LOG(LogImageCore, VeryVerbose, TEXT("Source and working color spaces are equal within tolerance, bypass color space transformation."));
+		return;
+	}
+
+	UE::Color::FColorSpaceTransform Transform(Source, Target, Method);
+
+	FLinearColor* ImageColors = InLinearImage.AsRGBA32F().GetData();
+
+	const int64 NumTexels = int64(InLinearImage.SizeX) * InLinearImage.SizeY * InLinearImage.NumSlices;
+	int64 TexelsPerJob;
+	int32 NumJobs = ImageParallelForComputeNumJobsForPixels(TexelsPerJob, NumTexels);
+
+	ParallelLoop(TEXT("Texture.TransformToWorkingColorSpace.PF"), NumJobs, TexelsPerJob, NumTexels, [Transform, ImageColors](int64 TexelIndex)
+		{
+			FLinearColor Color = ImageColors[TexelIndex];
+			Color = Transform.Apply(Color);
+			ImageColors[TexelIndex] = SaturateToHalfFloat(Color);
+		});
 }

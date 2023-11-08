@@ -12,6 +12,20 @@ namespace CADLibrary
 {
 	CADTOOLS_API extern int32 GMaxImportThreads;
 
+	enum class EMesher
+	{
+		CADKernel,
+		TechSoft,
+		None
+	};
+
+	enum class EFailureReason : uint8
+	{
+		Curve3D,
+		Unknown,
+		None
+	};
+
 	enum EStitchingTechnique
 	{
 		StitchingNone = 0,
@@ -32,31 +46,34 @@ namespace CADLibrary
 
 	ENUM_CLASS_FLAGS(ESewOption);
 
-	class FImportParameters
+	class CADTOOLS_API FImportParameters
 	{
 	private:
 		double ChordTolerance;
 		double MaxEdgeLength;
 		double MaxNormalAngle;
 		EStitchingTechnique StitchingTechnique;
+		EMesher Mesher;
 		FDatasmithUtils::EModelCoordSystem ModelCoordSys;
 		
 	public:
-		CADTOOLS_API static bool bGDisableCADKernelTessellation;
-		CADTOOLS_API static bool bGEnableCADCache;
-		CADTOOLS_API static bool bGEnableTimeControl;
-		CADTOOLS_API static bool bGOverwriteCache;
-		CADTOOLS_API static bool bGPreferJtFileEmbeddedTessellation;
-		CADTOOLS_API static bool bGSewMeshIfNeeded;
-		CADTOOLS_API static bool bGRemoveDuplicatedTriangle;
-		CADTOOLS_API static float GStitchingTolerance;
-		CADTOOLS_API static bool bGStitchingForceSew;
-		CADTOOLS_API static bool bGStitchingRemoveThinFaces;
-		CADTOOLS_API static bool bGStitchingRemoveDuplicatedFaces;
-		CADTOOLS_API static float GStitchingForceFactor;
-		CADTOOLS_API static float GUnitScale;
-		CADTOOLS_API static float GMeshingParameterFactor;
-		CADTOOLS_API static int32 GMaxMaterialCountPerMesh;
+		static bool bGDisableCADKernelTessellation;
+		static bool bGEnableCADCache;
+		static bool bGEnableTimeControl;
+		static bool bGOverwriteCache;
+		static bool bGPreferJtFileEmbeddedTessellation;
+		static bool bGSewMeshIfNeeded;
+		static bool bGRemoveDuplicatedTriangle;
+		static float GStitchingTolerance;
+		static bool bGStitchingForceSew;
+		static bool bGStitchingRemoveThinFaces;
+		static bool bGStitchingRemoveDuplicatedFaces;
+		static bool bGActivateThinZoneMeshing;
+		static float GStitchingForceFactor;
+		static float GUnitScale;
+		static float GMeshingParameterFactor;
+		static int32 GMaxMaterialCountPerMesh;
+		static bool bValidationProcess;
 
 	public:
 		FImportParameters(FDatasmithUtils::EModelCoordSystem NewCoordinateSystem = FDatasmithUtils::EModelCoordSystem::ZUp_RightHanded)
@@ -64,16 +81,34 @@ namespace CADLibrary
 			, MaxEdgeLength(0.0)
 			, MaxNormalAngle(20.0)
 			, StitchingTechnique(EStitchingTechnique::StitchingNone)
+			, Mesher(EMesher::TechSoft)
 			, ModelCoordSys(NewCoordinateSystem)
 		{
 		}
 	
-		void SetTesselationParameters(double InChordTolerance, double InMaxEdgeLength, double InMaxNormalAngle, CADLibrary::EStitchingTechnique InStitchingTechnique)
+		FImportParameters(const FImportParameters& InParamneters, EMesher InMesher)
+			: ChordTolerance(InParamneters.ChordTolerance)
+			, MaxEdgeLength(InParamneters.MaxEdgeLength)
+			, MaxNormalAngle(InParamneters.MaxNormalAngle)
+			, StitchingTechnique(InParamneters.StitchingTechnique)
+			, Mesher(InMesher)
+			, ModelCoordSys(InParamneters.ModelCoordSys)
+		{
+		}
+
+		void SetTesselationParameters(double InChordTolerance, double InMaxEdgeLength, double InMaxNormalAngle, EStitchingTechnique InStitchingTechnique)
 		{
 			ChordTolerance = InChordTolerance * GMeshingParameterFactor;
 			MaxEdgeLength = InMaxEdgeLength * GMeshingParameterFactor;
 			MaxNormalAngle = InMaxNormalAngle;
 			StitchingTechnique = InStitchingTechnique;
+			Mesher = FImportParameters::bGDisableCADKernelTessellation ? EMesher::TechSoft : EMesher::CADKernel;
+		}
+
+		void SetTesselationParameters(double InChordTolerance, double InMaxEdgeLength, double InMaxNormalAngle, EStitchingTechnique InStitchingTechnique, EMesher InMesher)
+		{
+			SetTesselationParameters(InChordTolerance, InMaxEdgeLength, InMaxNormalAngle, InStitchingTechnique);
+			Mesher = InMesher;
 		}
 
 		uint32 GetHash() const
@@ -83,11 +118,11 @@ namespace CADLibrary
 			{
 				Hash = HashCombine(Hash, ::GetTypeHash(Param));
 			}
-			for (uint32 Param : {uint32(StitchingTechnique), uint32(ModelCoordSys)})
+			for (uint32 Param : {uint32(StitchingTechnique), uint32(Mesher), uint32(ModelCoordSys)})
 			{
 				Hash = HashCombine(Hash, ::GetTypeHash(Param));
 			}
-			for (bool Param : {bGStitchingForceSew, bGStitchingRemoveThinFaces, bGStitchingRemoveDuplicatedFaces, bGDisableCADKernelTessellation, bGPreferJtFileEmbeddedTessellation})
+			for (bool Param : {bGStitchingForceSew, bGStitchingRemoveThinFaces, bGStitchingRemoveDuplicatedFaces, bGDisableCADKernelTessellation, bGActivateThinZoneMeshing, bGPreferJtFileEmbeddedTessellation})
 			{
 				Hash = HashCombine(Hash, ::GetTypeHash(Param));
 			}
@@ -100,21 +135,29 @@ namespace CADLibrary
 			Ar << ImportParameters.MaxEdgeLength;
 			Ar << ImportParameters.MaxNormalAngle;
 			Ar << (uint32&) ImportParameters.StitchingTechnique;
+			Ar << (uint8&) ImportParameters.Mesher;
 			Ar << (uint8&) ImportParameters.ModelCoordSys;
 
 			// these static variables have to be serialized to be transmitted to CADWorkers
 			// because CADWorker has not access to CVars
-			Ar << ImportParameters.bGOverwriteCache;
 			Ar << ImportParameters.bGDisableCADKernelTessellation;
-			Ar << ImportParameters.bGEnableTimeControl;
 			Ar << ImportParameters.bGEnableCADCache;
+			Ar << ImportParameters.bGEnableTimeControl;
+			Ar << ImportParameters.bGOverwriteCache;
 			Ar << ImportParameters.bGPreferJtFileEmbeddedTessellation;
-			Ar << ImportParameters.GStitchingTolerance;
+			Ar << ImportParameters.bGRemoveDuplicatedTriangle;
+			Ar << ImportParameters.bGSewMeshIfNeeded;
 			Ar << ImportParameters.bGStitchingForceSew;
-			Ar << ImportParameters.bGStitchingRemoveThinFaces;
 			Ar << ImportParameters.bGStitchingRemoveDuplicatedFaces;
-			Ar << ImportParameters.GStitchingForceFactor;
+			Ar << ImportParameters.bGStitchingRemoveThinFaces;
+			Ar << ImportParameters.bGActivateThinZoneMeshing;
+			Ar << ImportParameters.bValidationProcess;
 			Ar << ImportParameters.GMaxMaterialCountPerMesh;
+			Ar << ImportParameters.GMeshingParameterFactor;
+			Ar << ImportParameters.GStitchingForceFactor;
+			Ar << ImportParameters.GStitchingTolerance;
+			Ar << ImportParameters.GUnitScale;
+
 			return Ar;
 		}
 
@@ -136,6 +179,11 @@ namespace CADLibrary
 		EStitchingTechnique GetStitchingTechnique() const
 		{
 			return StitchingTechnique;
+		}
+
+		EMesher GetMesher() const
+		{
+			return Mesher;
 		}
 
 		FDatasmithUtils::EModelCoordSystem GetModelCoordSys() const
@@ -184,18 +232,18 @@ namespace CADLibrary
 		return FPaths::Combine(CachePath, TEXT("cad"), FileName);
 	}
 
-	inline FString BuildCacheFilePath(const TCHAR* CachePath, const TCHAR* Folder, uint32 BodyHash)
+	inline FString BuildCacheFilePath(const TCHAR* CachePath, const TCHAR* Folder, uint32 BodyHash, const EMesher Mesher)
 	{
 		FString BodyFileName = FString::Printf(TEXT("UEx%08x"), BodyHash);
 		FString OutFileName = FPaths::Combine(CachePath, Folder, BodyFileName);
 
-		if (FImportParameters::bGDisableCADKernelTessellation)
+		if (Mesher == EMesher::CADKernel)
 		{
-			OutFileName += TEXT(".prc");
+			OutFileName += TEXT(".ugeom");
 		}
 		else
 		{
-			OutFileName += TEXT(".ugeom");
+			OutFileName += TEXT(".prc");
 		}
 		return OutFileName;
 	}

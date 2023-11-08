@@ -40,7 +40,7 @@ public:
 	virtual bool CanBeMovedTo(const UDMXPixelMappingBaseComponent* Component) const override;
 	virtual void ResetDMX() override;
 	virtual void SendDMX() override;
-	virtual FString GetUserFriendlyName() const override;
+	virtual FString GetUserName() const override;
 	//~ End UDMXPixelMappingBaseComponent implementation
 
 	//~ Begin UDMXPixelMappingOutputComponent implementation
@@ -48,10 +48,15 @@ public:
 	virtual bool IsExposedToTemplate() { return true; }
 	virtual const FText GetPaletteCategory() override;
 #endif // WITH_EDITOR
-	virtual void QueueDownsample() override;
 	virtual void SetPosition(const FVector2D& NewPosition) override;
 	virtual void SetSize(const FVector2D& NewSize) override;
 	//~ End UDMXPixelMappingOutputComponent implementation
+
+	/** Returns a delegate broadcasted when the DMX Library changed */
+	FSimpleMulticastDelegate& GetOnDMXLibraryChanged() { return OnDMXLibraryChangedDelegate; }
+
+	UE_DEPRECATED(5.3, "Please use UDMXPixelMappingPixelMapRenderer to render the pixel map")
+	virtual void QueueDownsample() override;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Fixture List")
 	TObjectPtr<UDMXLibrary> DMXLibrary;
@@ -66,6 +71,9 @@ private:
 
 	/** Holds the last set size */
 	FVector2D LastPosition;
+
+	/** Returns a delegate broadcasted when the DMX Library changed */
+	FSimpleMulticastDelegate OnDMXLibraryChangedDelegate;
 
 	static const FVector2D MinGroupSize;
 };

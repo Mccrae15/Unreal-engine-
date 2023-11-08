@@ -16,8 +16,9 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/PathViews.h"
+#include "Misc/StringBuilder.h"
 #include "NameTableArchive.h"
-#include "PackageReader.h"
+#include "AssetRegistry/PackageReader.h"
 #include "Serialization/ArrayReader.h"
 #include "Serialization/LargeMemoryReader.h"
 #include "Serialization/MemoryWriter.h"
@@ -211,7 +212,7 @@ void FAssetRegistryState::InitializeFromExistingAndPrune(const FAssetRegistrySta
 			bRemoveAssetData = true;
 		}
 		else if (Options.bFilterAssetDataWithNoTags && AssetData->TagsAndValues.Num() == 0 &&
-			!FPackageName::IsLocalizedPackage(AssetData->PackageName.ToString()))
+			!FPackageName::IsLocalizedPackage(WriteToString<256>(AssetData->PackageName)))
 		{
 			bRemoveAssetData = true;
 			bRemoveDependencyData = Options.bFilterDependenciesWithNoTags;
@@ -245,7 +246,7 @@ void FAssetRegistryState::InitializeFromExistingAndPrune(const FAssetRegistrySta
 		{
 			// Only add if also in asset data map, or script package
 			if (CachedAssetsByPackageName.Find(Pair.Key) ||
-				FPackageName::IsScriptPackage(Pair.Key.ToString()))
+				FPackageName::IsScriptPackage(WriteToString<256>(Pair.Key)))
 			{
 				FAssetPackageData* NewData = CreateOrGetAssetPackageData(Pair.Key);
 				*NewData = *Pair.Value;
@@ -269,7 +270,7 @@ void FAssetRegistryState::InitializeFromExistingAndPrune(const FAssetRegistrySta
 		else if (Id.IsPackage() &&
 			!CachedAssetsByPackageName.Contains(Id.PackageName) &&
 			!RequiredDependNodePackages.Contains(Id.PackageName) &&
-			!FPackageName::IsScriptPackage(Id.PackageName.ToString()))
+			!FPackageName::IsScriptPackage(WriteToString<256>(Id.PackageName)))
 		{
 			bRemoveDependsNode = true;
 		}
@@ -383,7 +384,7 @@ void FAssetRegistryState::InitializeFromExisting(const FAssetDataMap& AssetDataM
 	{
 		for (const TPair<FName, FAssetPackageData*>& Pair : AssetPackageDataMap)
 		{
-			bool bIsScriptPackage = FPackageName::IsScriptPackage(Pair.Key.ToString());
+			bool bIsScriptPackage = FPackageName::IsScriptPackage(WriteToString<256>(Pair.Key));
 			if (InInitializationMode == EInitializationMode::OnlyUpdateNew && CachedPackageData.Find(Pair.Key))
 			{
 				continue;
@@ -451,7 +452,7 @@ void FAssetRegistryState::InitializeFromExisting(const FAssetDataMap& AssetDataM
 					TargetNode->SetIsDependencyListSorted(InCategory, false);
 					TargetNode->AddDependency(TargetDependency, InCategory, InFlags);
 					TargetDependency->SetIsReferencersSorted(false);
-					TargetDependency->AddReferencer(TargetDependency);
+					TargetDependency->AddReferencer(TargetNode);
 				}
 			});
 			TargetNode->SetIsDependenciesInitialized(true);
@@ -474,6 +475,21 @@ void FAssetRegistryState::PruneAssetData(const TSet<FName>& RequiredPackages, co
 
 void FAssetRegistryState::PruneAssetData(const TSet<FName>& RequiredPackages, const TSet<FName>& RemovePackages, const TSet<int32> ChunksToKeep, const FAssetRegistrySerializationOptions& Options)
 {
+	FAssetRegistryPruneOptions PruneOptions;
+	PruneOptions.RequiredPackages = RequiredPackages;
+	PruneOptions.RemovePackages = RemovePackages;
+	PruneOptions.ChunksToKeep = ChunksToKeep;
+	PruneOptions.Options = Options;
+	Prune(PruneOptions);
+}
+
+void FAssetRegistryState::Prune(const FAssetRegistryPruneOptions& PruneOptions)
+{
+	const TSet<FName>& RequiredPackages = PruneOptions.RequiredPackages;
+	const TSet<FName>& RemovePackages = PruneOptions.RemovePackages;
+	const TSet<int32>& ChunksToKeep = PruneOptions.ChunksToKeep;
+	const FAssetRegistrySerializationOptions& Options = PruneOptions.Options;
+
 	const bool bIsFilteredByChunkId = ChunksToKeep.Num() != 0;
 	const bool bIsFilteredByRequiredPackages = RequiredPackages.Num() != 0;
 	const bool bIsFilteredByRemovedPackages = RemovePackages.Num() != 0;
@@ -483,6 +499,8 @@ void FAssetRegistryState::PruneAssetData(const TSet<FName>& RequiredPackages, co
 	// Generate list up front as the maps will get cleaned up
 	TArray<FAssetData*> AllAssetData = CachedAssets.Array();
 	TSet<FDependsNode*> RemoveDependsNodes;
+
+	TSet<FPrimaryAssetId> KnownPrimaryAssetIds;
 
 	// Remove assets and mark-for-removal any dependencynodes for assets removed due to having no tags
 	for (FAssetData* AssetData : AllAssetData)
@@ -504,7 +522,9 @@ void FAssetRegistryState::PruneAssetData(const TSet<FName>& RequiredPackages, co
 			bRemoveAssetData = true;
 		}
 		else if (Options.bFilterAssetDataWithNoTags && AssetData->TagsAndValues.Num() == 0 &&
-			!FPackageName::IsLocalizedPackage(AssetData->PackageName.ToString()))
+			!FPackageName::IsLocalizedPackage(WriteToString<256>(AssetData->PackageName)) &&
+			// TODO: Add a package flag for PKG_CookGenerator and check that here as well.
+			!(AssetData->PackageFlags & PKG_CookGenerated))
 		{
 			bRemoveAssetData = true;
 			bRemoveDependencyData = Options.bFilterDependenciesWithNoTags;
@@ -529,6 +549,14 @@ void FAssetRegistryState::PruneAssetData(const TSet<FName>& RequiredPackages, co
 				}
 			}
 		}
+		else if (PruneOptions.bRemoveDependenciesWithoutPackages)
+		{
+			FPrimaryAssetId PrimaryAssetId = AssetData->GetPrimaryAssetId();
+			if (PrimaryAssetId.IsValid())
+			{
+				KnownPrimaryAssetIds.Add(PrimaryAssetId);
+			}
+		}
 	}
 
 	TArray<FDependsNode*> AllDependsNodes;
@@ -551,9 +579,23 @@ void FAssetRegistryState::PruneAssetData(const TSet<FName>& RequiredPackages, co
 		else if (Id.IsPackage() &&
 			!CachedAssetsByPackageName.Contains(Id.PackageName) &&
 			!RequiredDependNodePackages.Contains(Id.PackageName) &&
-			!FPackageName::IsScriptPackage(Id.PackageName.ToString()))
+			!FPackageName::IsScriptPackage(WriteToString<256>(Id.PackageName)))
 		{
 			bRemoveDependsNode = true;
+		}
+		else if (PruneOptions.bRemoveDependenciesWithoutPackages)
+		{
+			const FPrimaryAssetId PrimaryAssetId = Id.GetPrimaryAssetId();
+			if (PrimaryAssetId.IsValid() && Id.IsObject())
+			{
+				if (!KnownPrimaryAssetIds.Contains(PrimaryAssetId))
+				{
+					if (!PruneOptions.RemoveDependenciesWithoutPackagesKeepPrimaryAssetTypes.Contains(PrimaryAssetId.PrimaryAssetType))
+					{
+						bRemoveDependsNode = true;
+					}
+				}
+			}
 		}
 		
 		if (bRemoveDependsNode)
@@ -806,6 +848,7 @@ bool FAssetRegistryState::EnumerateAssets(const FARCompiledFilter& Filter, const
 
 bool FAssetRegistryState::GetAllAssets(const TSet<FName>& PackageNamesToSkip, TArray<FAssetData>& OutAssetData, bool bSkipARFilteredAssets) const
 {
+	OutAssetData.Reserve(OutAssetData.Num() + CachedAssets.Num() - PackageNamesToSkip.Num());
 	return EnumerateAllAssets(PackageNamesToSkip, [&OutAssetData](const FAssetData& AssetData)
 	{
 		OutAssetData.Emplace(AssetData);
@@ -890,29 +933,6 @@ FName FAssetRegistryState::GetFirstPackageByName(FStringView PackageName) const
 
 bool FAssetRegistryState::GetDependencies(const FAssetIdentifier& AssetIdentifier,
 										  TArray<FAssetIdentifier>& OutDependencies,
-										  EAssetRegistryDependencyType::Type InDependencyType) const
-{
-	bool bResult = false;
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	UE::AssetRegistry::FDependencyQuery Flags(InDependencyType);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	if (!!(InDependencyType & EAssetRegistryDependencyType::Packages))
-	{
-		bResult = GetDependencies(AssetIdentifier, OutDependencies, UE::AssetRegistry::EDependencyCategory::Package, Flags) || bResult;
-	}
-	if (!!(InDependencyType & EAssetRegistryDependencyType::SearchableName))
-	{
-		bResult = GetDependencies(AssetIdentifier, OutDependencies, UE::AssetRegistry::EDependencyCategory::SearchableName) || bResult;
-	}
-	if (!!(InDependencyType & EAssetRegistryDependencyType::Manage))
-	{
-		bResult = GetDependencies(AssetIdentifier, OutDependencies, UE::AssetRegistry::EDependencyCategory::Manage, Flags) || bResult;
-	}
-	return bResult;
-}
-
-bool FAssetRegistryState::GetDependencies(const FAssetIdentifier& AssetIdentifier,
-										  TArray<FAssetIdentifier>& OutDependencies,
 										  UE::AssetRegistry::EDependencyCategory Category, const UE::AssetRegistry::FDependencyQuery& Flags) const
 {
 	const FDependsNode* const* NodePtr = CachedDependsNodes.Find(AssetIdentifier);
@@ -957,29 +977,6 @@ bool FAssetRegistryState::GetDependencies(const FAssetIdentifier& AssetIdentifie
 
 bool FAssetRegistryState::GetReferencers(const FAssetIdentifier& AssetIdentifier,
 										 TArray<FAssetIdentifier>& OutReferencers,
-										 EAssetRegistryDependencyType::Type InReferenceType) const
-{
-	bool bResult = false;
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	UE::AssetRegistry::FDependencyQuery Flags(InReferenceType);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	if (!!(InReferenceType & EAssetRegistryDependencyType::Packages))
-	{
-		bResult = GetReferencers(AssetIdentifier, OutReferencers, UE::AssetRegistry::EDependencyCategory::Package, Flags) || bResult;
-	}
-	if (!!(InReferenceType & EAssetRegistryDependencyType::SearchableName))
-	{
-		bResult = GetReferencers(AssetIdentifier, OutReferencers, UE::AssetRegistry::EDependencyCategory::SearchableName) || bResult;
-	}
-	if (!!(InReferenceType & EAssetRegistryDependencyType::Manage))
-	{
-		bResult = GetReferencers(AssetIdentifier, OutReferencers, UE::AssetRegistry::EDependencyCategory::Manage, Flags) || bResult;
-	}
-	return bResult;
-}
-
-bool FAssetRegistryState::GetReferencers(const FAssetIdentifier& AssetIdentifier,
-										 TArray<FAssetIdentifier>& OutReferencers,
 										 UE::AssetRegistry::EDependencyCategory Category, const UE::AssetRegistry::FDependencyQuery& Flags) const
 {
 	const FDependsNode* const* NodePtr = CachedDependsNodes.Find(AssetIdentifier);
@@ -995,7 +992,7 @@ bool FAssetRegistryState::GetReferencers(const FAssetIdentifier& AssetIdentifier
 		TArray<FDependsNode*> DependencyNodes;
 		Node->GetReferencers(DependencyNodes, Category, Flags);
 
-		OutReferencers.Reserve(DependencyNodes.Num());
+		OutReferencers.Reserve(OutReferencers.Num() + DependencyNodes.Num());
 		for (FDependsNode* DependencyNode : DependencyNodes)
 		{
 			OutReferencers.Add(DependencyNode->GetIdentifier());
@@ -1032,6 +1029,107 @@ bool FAssetRegistryState::GetReferencers(const FAssetIdentifier& AssetIdentifier
 	}
 }
 
+void FAssetRegistryState::ClearDependencies(const FAssetIdentifier& AssetIdentifier,
+	UE::AssetRegistry::EDependencyCategory Category)
+{
+	FDependsNode* ReferencerNode = FindDependsNode(AssetIdentifier);
+	if (!ReferencerNode)
+	{
+		return;
+	}
+
+	TArray<FDependsNode*> OldDependencies;
+	ReferencerNode->GetDependencies(OldDependencies);
+	ReferencerNode->ClearDependencies(Category);
+
+	for (FDependsNode* DependencyNode : OldDependencies)
+	{
+		if (!ReferencerNode->ContainsDependency(DependencyNode))
+		{
+			DependencyNode->RemoveReferencer(ReferencerNode);
+		}
+	}
+}
+
+void FAssetRegistryState::AddDependencies(const FAssetIdentifier& AssetIdentifier,
+	TConstArrayView<FAssetDependency> Dependencies)
+{
+	if (Dependencies.IsEmpty())
+	{
+		return;
+	}
+	FDependsNode* ReferencerNode = CreateOrFindDependsNode(AssetIdentifier);
+	for (const FAssetDependency& Dependency : Dependencies)
+	{
+		FDependsNode* DependencyNode = CreateOrFindDependsNode(Dependency.AssetId);
+		ReferencerNode->AddDependency(DependencyNode, Dependency.Category, Dependency.Properties);
+		DependencyNode->AddReferencer(ReferencerNode);
+	}
+}
+
+void FAssetRegistryState::SetDependencies(const FAssetIdentifier& AssetIdentifier,
+	TConstArrayView<FAssetDependency> Dependencies, UE::AssetRegistry::EDependencyCategory Category)
+{
+	for (const FAssetDependency& Dependency : Dependencies)
+	{
+		checkf(!(Dependency.Category & ~Category), TEXT("Input dependency has category %d which is outside of the requested categories %d."),
+			(int32)Dependency.Category, (int32)Category);
+	}
+
+	ClearDependencies(AssetIdentifier, Category);
+	AddDependencies(AssetIdentifier, Dependencies);
+}
+
+void FAssetRegistryState::ClearReferencers(const FAssetIdentifier& AssetIdentifier,
+	UE::AssetRegistry::EDependencyCategory Category)
+{
+	FDependsNode* DependencyNode = FindDependsNode(AssetIdentifier);
+	if (!DependencyNode)
+	{
+		return;
+	}
+
+	TArray<FDependsNode*> OldExisting;
+	DependencyNode->GetReferencers(OldExisting, Category);
+	for (FDependsNode* ReferencerNode : OldExisting)
+	{
+		ReferencerNode->RemoveDependency(DependencyNode, Category);
+		if (!ReferencerNode->ContainsDependency(DependencyNode))
+		{
+			DependencyNode->RemoveReferencer(ReferencerNode);
+		}
+	}
+}
+
+void FAssetRegistryState::AddReferencers(const FAssetIdentifier& AssetIdentifier,
+	TConstArrayView<FAssetDependency> Referencers)
+{
+	if (Referencers.IsEmpty())
+	{
+		return;
+	}
+	FDependsNode* DependencyNode = CreateOrFindDependsNode(AssetIdentifier);
+	for (const FAssetDependency& Referencer : Referencers)
+	{
+		FDependsNode* ReferencerNode = CreateOrFindDependsNode(Referencer.AssetId);
+		ReferencerNode->AddDependency(DependencyNode, Referencer.Category, Referencer.Properties);
+		DependencyNode->AddReferencer(ReferencerNode);
+	}
+}
+
+void FAssetRegistryState::SetReferencers(const FAssetIdentifier& AssetIdentifier,
+	TConstArrayView<FAssetDependency> Referencers, UE::AssetRegistry::EDependencyCategory Category)
+{
+	for (const FAssetDependency& Referencer : Referencers)
+	{
+		checkf(!(Referencer.Category & ~Category), TEXT("Input referencer has category %d which is outside of the requested categories %d."),
+			(int32)Referencer.Category, (int32)Category);
+	}
+
+	ClearReferencers(AssetIdentifier, Category);
+	AddReferencers(AssetIdentifier, Referencers);
+}
+
 bool FAssetRegistryState::Serialize(FArchive& Ar, const FAssetRegistrySerializationOptions& Options)
 {
 	return Ar.IsSaving() ? Save(Ar, Options) : Load(Ar, FAssetRegistryLoadOptions(Options));
@@ -1061,12 +1159,22 @@ bool FAssetRegistryState::Save(FArchive& OriginalAr, const FAssetRegistrySeriali
 	Ar << AssetCount;
 
 	// Write asset data first
-	TArray<FAssetData*> SortedAssetsByObjectPath = CachedAssets.Array();
-	Algo::Sort(SortedAssetsByObjectPath, [](const FAssetData* A, const FAssetData* B) { return A->GetSoftObjectPath().LexicalLess(B->GetSoftObjectPath()); });
-	for (FAssetData* AssetData : SortedAssetsByObjectPath)
 	{
-		// Hardcoding FAssetRegistryVersion::LatestVersion here so that branches can get optimized out in the forceinlined SerializeForCache
-		AssetData->SerializeForCache(Ar);
+		TArray<TPair<FAssetData*, FSoftObjectPath>> SortedAssetsByObjectPath;
+		SortedAssetsByObjectPath.Reserve(AssetCount);
+		for (FAssetData* AssetData : CachedAssets)
+		{
+			SortedAssetsByObjectPath.Add({ AssetData, AssetData->GetSoftObjectPath() });
+		}
+		Algo::Sort(SortedAssetsByObjectPath, [](const TPair<FAssetData*, FSoftObjectPath>& A, const TPair<FAssetData*, FSoftObjectPath>& B) {
+			return A.Value.LexicalLess(B.Value);
+		});
+
+		for (TPair<FAssetData*, FSoftObjectPath>& Asset : SortedAssetsByObjectPath)
+		{
+			// Hardcoding FAssetRegistryVersion::LatestVersion here so that branches can get optimized out in the forceinlined SerializeForCache
+			Asset.Key->SerializeForCache(Ar);
+		}
 	}
 
 	// Serialize Dependencies
@@ -1730,7 +1838,7 @@ void FAssetRegistryState::AddTagsToAssetData(const FSoftObjectPath& InObjectPath
 	FSetElementId Id = CachedAssets.FindId(FCachedAssetKey(InObjectPath));
 	if (!Id.IsValidId())
 	{
-		UE_LOG(LogAssetRegistry, Error, TEXT("AddTagsToAssetData called with asset data that doesn't exist! Tags not added. ObjectPath: %s"), *InObjectPath.ToString());
+		UE_LOG(LogAssetRegistry, Warning, TEXT("AddTagsToAssetData called with asset data that doesn't exist! Tags not added. ObjectPath: %s"), *InObjectPath.ToString());
 		return;
 	}
 	FAssetData* AssetData = CachedAssets[Id];
@@ -2096,14 +2204,13 @@ void FAssetRegistryState::GetPrimaryAssetsIds(TSet<FPrimaryAssetId>& OutPrimaryA
 const FAssetPackageData* FAssetRegistryState::GetAssetPackageData(FName PackageName) const
 {
 	FAssetPackageData* const* FoundData = CachedPackageData.Find(PackageName);
-	if (FoundData)
-	{
-		return *FoundData;
-	}
-	else
-	{
-		return nullptr;
-	}
+	return FoundData ? *FoundData : nullptr;
+}
+
+ FAssetPackageData* FAssetRegistryState::GetAssetPackageData(FName PackageName)
+{
+	FAssetPackageData** FoundData = CachedPackageData.Find(PackageName);
+	return FoundData ? *FoundData : nullptr;
 }
 
 FAssetPackageData* FAssetRegistryState::CreateOrGetAssetPackageData(FName PackageName)

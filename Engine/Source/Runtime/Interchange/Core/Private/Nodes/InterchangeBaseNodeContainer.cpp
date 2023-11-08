@@ -11,6 +11,7 @@
 #include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/UObjectIterator.h"
+#include "UObject/CoreRedirects.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(InterchangeBaseNodeContainer)
 
@@ -48,6 +49,15 @@ FString UInterchangeBaseNodeContainer::AddNode(UInterchangeBaseNode* Node)
 	//Copy the node
 	Nodes.Add(NodeUniqueID, Node);
 	return NodeUniqueID;
+}
+
+void UInterchangeBaseNodeContainer::ReplaceNode(const FString& NodeUniqueID, UInterchangeFactoryBaseNode* NewNode)
+{
+	if (GetFactoryNode(NodeUniqueID)) //Check existance and confirm it is FactoryNode
+	{
+		Nodes.Remove(NodeUniqueID);
+		AddNode(NewNode);
+	}
 }
 
 bool UInterchangeBaseNodeContainer::IsNodeUidValid(const FString& NodeUniqueID) const
@@ -228,6 +238,13 @@ void UInterchangeBaseNodeContainer::SerializeNodeContainerData(FArchive& Ar)
 		{
 			FString ClassFullName;
 			Ar << ClassFullName;
+
+			FCoreRedirectObjectName RedirectedObjectName = FCoreRedirects::GetRedirectedName(ECoreRedirectFlags::Type_Class, FCoreRedirectObjectName(ClassFullName));
+			if (RedirectedObjectName.IsValid())
+			{
+				ClassFullName = RedirectedObjectName.ToString();
+			}
+
 			//This cannot fail to make sure we have a healty serialization
 			if (!ensure(ClassPerName.Contains(ClassFullName)))
 			{

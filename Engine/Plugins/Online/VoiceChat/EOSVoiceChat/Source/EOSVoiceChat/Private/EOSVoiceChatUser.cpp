@@ -26,10 +26,7 @@
 #include "eos_rtc_audio.h"
 #include "eos_sdk.h"
 
-
 #define EOS_VOICE_TODO 0
-
-#define CHECKPIN() FEOSVoiceChatUserPtr StrongThis = WeakThis.Pin(); if(!StrongThis) return
 
 namespace
 {
@@ -84,6 +81,7 @@ namespace
 	}
 
 	using FAudioBeforeSendCallback = TEOSGlobalCallback<EOS_RTCAudio_OnAudioBeforeSendCallback, EOS_RTCAudio_AudioBeforeSendCallbackInfo, FEOSVoiceChatUser>;
+	using FUpdateSendingAudioCallback = TEOSCallback<EOS_RTCAudio_OnUpdateSendingCallback, EOS_RTCAudio_UpdateSendingCallbackInfo, FEOSVoiceChatUser>;
 }
 
 static TAutoConsoleVariable<bool> CVarFakeAudioInputEnabled(
@@ -329,7 +327,7 @@ FVoiceChatDeviceInfo FEOSVoiceChatUser::GetDefaultOutputDeviceInfo() const
 	{
 		DefaultDeviceInfo = EOSVoiceChat.InitSession.EosAudioDevicePool->GetCachedOutputDeviceInfos()[EOSVoiceChat.InitSession.EosAudioDevicePool->GetDefaultOutputDeviceInfoIdx()];
 	}
-	 
+
 	return DefaultDeviceInfo;
 }
 
@@ -636,7 +634,7 @@ void FEOSVoiceChatUser::LeaveChannel(const FString& ChannelName, const FOnVoiceC
 		}
 		else if (ChannelSession.IsLobbySession())
 		{
-			EOSVOICECHATUSER_LOG(Error, TEXT("LeaveChannel ChannelName:%s lobby rooms can only be removed with RemoveLobbyRoom."));
+			EOSVOICECHATUSER_LOG(Error, TEXT("LeaveChannel ChannelName: lobby rooms can only be removed with RemoveLobbyRoom."));
 			Result = VoiceChat::Errors::NotPermitted();
 		}
 	}
@@ -802,13 +800,14 @@ void FEOSVoiceChatUser::TransmitToNoChannels()
 	}
 }
 
-void FEOSVoiceChatUser::TransmitToSpecificChannel(const FString& Channel)
+void FEOSVoiceChatUser::TransmitToSpecificChannels(const TSet<FString>& ChannelNames)
 {
-	if (TransmitState.Mode != EVoiceChatTransmitMode::Channel ||
-		TransmitState.ChannelName != Channel)
+	if (TransmitState.Mode != EVoiceChatTransmitMode::SpecificChannels || 
+		!TransmitState.SpecificChannels.Difference(ChannelNames).IsEmpty() || 
+		!ChannelNames.Difference(TransmitState.SpecificChannels).IsEmpty())
 	{
-		TransmitState.Mode = EVoiceChatTransmitMode::Channel;
-		TransmitState.ChannelName = Channel;
+		TransmitState.Mode = EVoiceChatTransmitMode::SpecificChannels;
+		TransmitState.SpecificChannels = ChannelNames;
 		ApplySendingOptions();
 	}
 }
@@ -818,14 +817,13 @@ EVoiceChatTransmitMode FEOSVoiceChatUser::GetTransmitMode() const
 	return TransmitState.Mode;
 }
 
-FString FEOSVoiceChatUser::GetTransmitChannel() const
+TSet<FString> FEOSVoiceChatUser::GetTransmitChannels() const
 {
-	FString TransmitChannel;
-	if (TransmitState.Mode == EVoiceChatTransmitMode::Channel)
+	if (TransmitState.Mode == EVoiceChatTransmitMode::SpecificChannels)
 	{
-		TransmitChannel = TransmitState.ChannelName;
+		return TransmitState.SpecificChannels;
 	}
-	return TransmitChannel;
+	return TSet<FString>();
 }
 
 FDelegateHandle FEOSVoiceChatUser::StartRecording(const FOnVoiceChatRecordSamplesAvailableDelegate::FDelegate& Delegate)
@@ -1310,8 +1308,8 @@ void FEOSVoiceChatUser::ApplySendingOptions()
 
 void FEOSVoiceChatUser::ApplySendingOptions(FChannelSession& ChannelSession)
 {
-	const bool bCanTransmitToChannel = TransmitState.Mode == EVoiceChatTransmitMode::All ||
-		(TransmitState.Mode == EVoiceChatTransmitMode::Channel && TransmitState.ChannelName == ChannelSession.ChannelName);
+	const bool bCanTransmitToChannel = TransmitState.Mode == EVoiceChatTransmitMode::All
+	|| (TransmitState.Mode == EVoiceChatTransmitMode::SpecificChannels && TransmitState.SpecificChannels.Contains(ChannelSession.ChannelName));
 
 	ChannelSession.DesiredSendingState.bAudioEnabled = bCanTransmitToChannel && !AudioInputOptions.bMuted && !ChannelSession.bIsNotListening;
 
@@ -1328,9 +1326,13 @@ void FEOSVoiceChatUser::ApplySendingOptions(FChannelSession& ChannelSession)
 		? EOS_ERTCAudioStatus::EOS_RTCAS_Enabled
 		: EOS_ERTCAudioStatus::EOS_RTCAS_Disabled;
 
+	// Protect against the callback firing after this object is destroyed.
+	FUpdateSendingAudioCallback* Callback = new FUpdateSendingAudioCallback(AsWeak());
+	Callback->CallbackLambda = [this](const EOS_RTCAudio_UpdateSendingCallbackInfo* Data) { OnUpdateSendingAudio(Data); };
+
 	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(EOSVoiceChat);
 	QUICK_SCOPE_CYCLE_COUNTER(EOS_RTCAudio_UpdateSending);
-	EOS_RTCAudio_UpdateSending(EOS_RTC_GetAudioInterface(GetRtcInterface()), &UpdateSendingOptions, this, &FEOSVoiceChatUser::OnUpdateSendingAudioStatic);
+	EOS_RTCAudio_UpdateSending(EOS_RTC_GetAudioInterface(GetRtcInterface()), &UpdateSendingOptions, Callback, Callback->GetCallbackPtr());
 }
 
 void FEOSVoiceChatUser::BindLoginCallbacks()
@@ -1945,62 +1947,44 @@ void FEOSVoiceChatUser::OnUpdateReceivingAudio(const EOS_RTCAudio_UpdateReceivin
 	}
 }
 
-void EOS_CALL FEOSVoiceChatUser::OnUpdateSendingAudioStatic(const EOS_RTCAudio_UpdateSendingCallbackInfo* CallbackInfo)
-{
-	if (CallbackInfo)
-	{
-		if (FEOSVoiceChatUser* EosVoiceChatPtr = static_cast<FEOSVoiceChatUser*>(CallbackInfo->ClientData))
-		{
-			EosVoiceChatPtr->OnUpdateSendingAudio(CallbackInfo);
-		}
-		else
-		{
-			UE_LOG(LogEOSVoiceChat, Warning, TEXT("OnUpdateSendingStatic Error EosVoiceChatPtr=nullptr"));
-		}
-	}
-	else
-	{
-		UE_LOG(LogEOSVoiceChat, Warning, TEXT("OnUpdateSendingStatic Error CallbackInfo=nullptr"));
-	}
-}
-
 void FEOSVoiceChatUser::OnUpdateSendingAudio(const EOS_RTCAudio_UpdateSendingCallbackInfo* CallbackInfo)
 {
-	check(IsInitialized());
-
-	FString ChannelName = UTF8_TO_TCHAR(CallbackInfo->RoomName);
-	const bool bAudioEnabled = EOS_TRUE;//CallbackInfo->AudioStatus == EOS_ERTCAudioStatus::EOS_RTCAS_Enabled;
+	const FString ChannelName = UTF8_TO_TCHAR(CallbackInfo->RoomName);
+	const bool bAudioEnabled = CallbackInfo->AudioStatus == EOS_ERTCAudioStatus::EOS_RTCAS_Enabled;
 
 	if (CallbackInfo->ResultCode == EOS_EResult::EOS_Success)
 	{
 		EOSVOICECHATUSER_LOG(Log, TEXT("OnUpdateSending ChannelName=[%s] Success"), *ChannelName);
 
-		if (FChannelSession* ChannelSession = LoginSession.ChannelSessions.Find(ChannelName))
+		if (IsLoggedIn())
 		{
-			if (bAudioEnabled != ChannelSession->ActiveSendingState.bAudioEnabled)
+			if (FChannelSession* ChannelSession = LoginSession.ChannelSessions.Find(ChannelName))
 			{
-				ChannelSession->ActiveSendingState.bAudioEnabled = bAudioEnabled;
-
-				if (FChannelParticipant* LocalChannelParticipant = ChannelSession->Participants.Find(ChannelSession->PlayerName))
+				if (bAudioEnabled != ChannelSession->ActiveSendingState.bAudioEnabled)
 				{
-					// The "Talking" state exposed via IVoiceChat is bTalking && bAudioEnabled. If bTalking == false there is no change.
-					if (LocalChannelParticipant->bTalking)
+					ChannelSession->ActiveSendingState.bAudioEnabled = bAudioEnabled;
+
+					if (FChannelParticipant* LocalChannelParticipant = ChannelSession->Participants.Find(ChannelSession->PlayerName))
 					{
-						FGlobalParticipant& LocalGlobalParticipant = GetGlobalParticipant(LocalChannelParticipant->PlayerName);
-						LocalGlobalParticipant.bTalking = bAudioEnabled;
-						OnVoiceChatPlayerTalkingUpdatedDelegate.Broadcast(ChannelSession->ChannelName, ChannelSession->PlayerName, LocalGlobalParticipant.bTalking);
+						// The "Talking" state exposed via IVoiceChat is bTalking && bAudioEnabled. If bTalking == false there is no change.
+						if (LocalChannelParticipant->bTalking)
+						{
+							FGlobalParticipant& LocalGlobalParticipant = GetGlobalParticipant(LocalChannelParticipant->PlayerName);
+							LocalGlobalParticipant.bTalking = bAudioEnabled;
+							OnVoiceChatPlayerTalkingUpdatedDelegate.Broadcast(ChannelSession->ChannelName, ChannelSession->PlayerName, LocalGlobalParticipant.bTalking);
+						}
+					}
+					else
+					{
+						// Not a warning as the first call to UpdateSending is before JoinRoom, so before the local participant is added...
+						EOSVOICECHATUSER_LOG(Verbose, TEXT("OnUpdateSending ChannelName=[%s] PlayerName=[%s] not found"), *ChannelName, *ChannelSession->PlayerName);
 					}
 				}
-				else
-				{
-					// Not a warning as the first call to UpdateSending is before JoinRoom, so before the local participant is added...
-					EOSVOICECHATUSER_LOG(Verbose, TEXT("OnUpdateSending ChannelName=[%s] PlayerName=[%s] not found"), *ChannelName);
-				}
 			}
-		}
-		else
-		{
-			EOSVOICECHATUSER_LOG(Warning, TEXT("OnUpdateSending ChannelName=[%s] not found"), *ChannelName);
+			else
+			{
+				EOSVOICECHATUSER_LOG(Warning, TEXT("OnUpdateSending ChannelName=[%s] not found"), *ChannelName);
+			}
 		}
 	}
 	else
@@ -2432,8 +2416,8 @@ bool FEOSVoiceChatUser::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& A
 					case EVoiceChatTransmitMode::None:
 						TransmitString = TEXT("NONE");
 						break;
-					case EVoiceChatTransmitMode::Channel:
-						TransmitString = FString::Printf(TEXT("CHANNEL:%s"), *GetTransmitChannel());
+					case EVoiceChatTransmitMode::SpecificChannels:
+						TransmitString = FString::Printf(TEXT("CHANNELS:[%s]"), *FString::Join(GetTransmitChannels(), TEXT(", ")));
 						break;
 					}
 					EOS_EXEC_LOG(TEXT("    Channels: transmitting:%s"), *TransmitString);
@@ -2627,7 +2611,7 @@ bool FEOSVoiceChatUser::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& A
 			FString ChannelName;
 			if (FParse::Value(Cmd, TEXT("ChannelName="), ChannelName))
 			{
-				TransmitToSpecificChannel(ChannelName);
+				TransmitToSpecificChannels({ ChannelName });
 				return true;
 			}
 		}
@@ -2753,7 +2737,5 @@ const TCHAR* LexToString(FEOSVoiceChatUser::EChannelJoinState State)
 		return TEXT("Unknown");
 	}
 }
-
-#undef CHECKPIN
 
 #endif // WITH_EOS_RTC

@@ -52,7 +52,7 @@
 #include "PreviewScene.h"
 #include "ProceduralMeshComponent.h"
 #include "RayTracingDebugVisualizationMenuCommands.h"
-#include "Runtime/Renderer/Private/SceneRendering.h"
+#include "RenderResource.h"
 #include "ScopedTransaction.h"
 #include "Settings/LevelEditorViewportSettings.h"
 #include "Slate/SceneViewport.h"
@@ -73,13 +73,6 @@ static TAutoConsoleVariable<bool> CVarICVFXPanelAutoPan(
 	true,
 	TEXT("When true, the stage view will automatically tilt and pan on supported map projections as you drag objects near the edges of the screen."));
 
-int32 GICVFXPanelDisplayNormalMapVisualization = 0;
-static FAutoConsoleVariableRef CVarICVFXPanelDisplayNormalMapVisualization(
-	TEXT("nDisplay.panel.DisplayNormalMapVisualization"),
-	GICVFXPanelDisplayNormalMapVisualization,
-	TEXT("Displays the normal map visualization of the stage's geometry map, which is used to determine physical stage geometry"),
-	ECVF_RenderThreadSafe
-);
 //////////////////////////////////////////////////////////////////////////
 // FDisplayClusterLightCardEditorViewportClient
 
@@ -380,20 +373,6 @@ void FDisplayClusterLightCardEditorViewportClient::Draw(FViewport* InViewport, F
 	if (View)
 	{
 		DrawCanvas(*Viewport, *View, *Canvas);
-	}
-
-	if (bDisplayNormalMapVisualization || GICVFXPanelDisplayNormalMapVisualization)
-	{
-		auto DrawNormalMap = [Canvas, this](bool bShowNorthMap, FVector2D Position)
-		{
-			if (const UTexture* NormalMapTexture = ProjectionHelper->GetNormalMapTexture(bShowNorthMap))
-			{
-				Canvas->DrawTile(Position.X, Position.Y, 512, 512, 0, 0, 1, 1, FLinearColor::White, NormalMapTexture->GetResource());
-			}
-		};
-
-		DrawNormalMap(true, FVector2D(0.0f, 0.0f));
-		DrawNormalMap(false, FVector2D(0.0f, 512.0f));
 	}
 
 	// Remove temporary debug lines.
@@ -1419,7 +1398,7 @@ EMouseCursor::Type FDisplayClusterLightCardEditorViewportClient::GetCursor(FView
 		HHitProxy* HitProxy = InViewport->GetHitProxy(X,Y);
 		if (HitProxy)
 		{
-			bShouldCheckHitProxy = true;
+			TrySetShouldCheckHitProxy();
 
 			if (HitProxy->IsA(HActor::StaticGetType()))
 			{
@@ -1607,7 +1586,7 @@ void FDisplayClusterLightCardEditorViewportClient::UpdatePreviewActor(ADisplayCl
 	auto Finalize = [this, ProxyType, StageActor]()
 	{
 		Viewport->InvalidateHitProxy();
-		bShouldCheckHitProxy = true;
+		TrySetShouldCheckHitProxy();
 
 		if (!StageActor)
 		{
@@ -1637,7 +1616,7 @@ void FDisplayClusterLightCardEditorViewportClient::UpdatePreviewActor(ADisplayCl
 		TWeakObjectPtr<AActor> StageActorWeakPtr(StageActor);
 		// Schedule for the next tick so CDO changes get propagated first in the event of config editor skeleton
 		// regeneration & compiles. nDisplay's custom propagation may have issues if the archetype isn't correct.
-		PreviewWorld->GetTimerManager().SetTimerForNextTick([=]()
+		PreviewWorld->GetTimerManager().SetTimerForNextTick([=, this]()
 		{
 			DECLARE_SCOPE_CYCLE_COUNTER(TEXT("FDisplayClusterLightCardEditorViewportClient::UpdatePreviewActorImpl"), STAT_UpdatePreviewActorImpl, STATGROUP_NDisplayLightCardEditor);
 			
@@ -1967,7 +1946,7 @@ void FDisplayClusterLightCardEditorViewportClient::SetProjectionMode(EDisplayClu
 		Viewport->InvalidateHitProxy();
 	}
 
-	bShouldCheckHitProxy = true;
+	TrySetShouldCheckHitProxy();
 }
 
 float FDisplayClusterLightCardEditorViewportClient::GetProjectionModeFOV(EDisplayClusterMeshProjectionType InProjectionMode) const
@@ -2007,7 +1986,7 @@ void FDisplayClusterLightCardEditorViewportClient::SetProjectionModeFOV(EDisplay
 	}
 
 	Viewport->InvalidateHitProxy();
-	bShouldCheckHitProxy = true;
+	TrySetShouldCheckHitProxy();
 }
 
 void FDisplayClusterLightCardEditorViewportClient::ResetCamera(bool bLocationOnly)
@@ -3071,6 +3050,17 @@ void FDisplayClusterLightCardEditorViewportClient::ResetProjectionViewConfigurat
 	ProjectionViewConfigurations[static_cast<int32>(EDisplayClusterMeshProjectionType::UV)].OrthographicFOV = 45.0f;
 
 	RestoreProjectionCameraTransform();
+}
+
+void FDisplayClusterLightCardEditorViewportClient::TrySetShouldCheckHitProxy()
+{
+	if (GetEditorViewportWidget().IsValid() && GetEditorViewportWidget()->GetSceneViewport().IsValid() &&
+		((FRenderResource*)GetEditorViewportWidget()->GetSceneViewport().Get())->IsInitialized())
+	{
+		// If this is set before the SceneViewport is initialized it's possible the client will tick first,
+		// attempt to check hit proxies, and crash because RHI is assumed to be initialized at this point.
+		bShouldCheckHitProxy = true;
+	}
 }
 
 void FDisplayClusterLightCardEditorViewportClient::EnterDrawingLightCardMode()

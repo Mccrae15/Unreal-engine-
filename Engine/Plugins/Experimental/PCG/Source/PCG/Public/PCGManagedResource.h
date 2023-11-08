@@ -32,11 +32,13 @@ public:
 	virtual bool ReleaseIfUnused(TSet<TSoftObjectPtr<AActor>>& OutActorsToDelete);
 
 	virtual void MarkAsUsed() { bIsMarkedUnused = false; }
+	// Ensure may fire if multiple executions of the graph are happening in parallel/overlapping
 	virtual void MarkAsReused() { ensure(bIsMarkedUnused); bIsMarkedUnused = false; }
 	bool IsMarkedUnused() const { return bIsMarkedUnused; }
 
 	/** Move the given resource to a new actor. Return true if it has succeeded */
 	virtual bool MoveResourceToNewActor(AActor* NewActor) { return false; };
+	virtual bool MoveResourceToNewActor(AActor* NewActor, const AActor* ExpectedPreviousOwner) { return MoveResourceToNewActor(NewActor); }
 
 	static bool DebugForcePurgeAllResourcesOnGenerate();
 
@@ -87,7 +89,7 @@ public:
 	//~Begin UPCGManagedResource interface
 	virtual bool Release(bool bHardRelease, TSet<TSoftObjectPtr<AActor>>& OutActorsToDelete) override;
 	virtual bool ReleaseIfUnused(TSet<TSoftObjectPtr<AActor>>& OutActorsToDelete) override;
-	virtual bool MoveResourceToNewActor(AActor* NewActor) override;
+	virtual bool MoveResourceToNewActor(AActor* NewActor, const AActor* ExpectedPreviousOwner) override;
 	//~End UPCGManagedResource interface
 
 	virtual void ResetComponent() { check(0); }
@@ -118,6 +120,8 @@ public:
 	//~Begin UPCGManagedComponents interface
 	virtual void ResetComponent() override;
 	virtual bool SupportsComponentReset() const override{ return true; }
+	virtual void MarkAsUsed() override;
+	virtual void MarkAsReused() override;
 	virtual void ForgetComponent() override;
 	//~End UPCGManagedComponents interface
 
@@ -126,6 +130,8 @@ public:
 
 	void SetDescriptor(const FISMComponentDescriptor& InDescriptor);
 	const FISMComponentDescriptor& GetDescriptor() const { return Descriptor; }
+
+	void SetRootLocation(const FVector& InRootLocation);
 
 	uint64 GetSettingsUID() const { return SettingsUID; }
 	void SetSettingsUID(uint64 InSettingsUID) { SettingsUID = InSettingsUID; }
@@ -136,6 +142,12 @@ protected:
 
 	UPROPERTY()
 	FISMComponentDescriptor Descriptor;
+
+	UPROPERTY()
+	bool bHasRootLocation = false;
+
+	UPROPERTY()
+	FVector RootLocation = FVector::ZeroVector;
 
 	UPROPERTY(Transient)
 	uint64 SettingsUID = -1; // purposefully a value that will never happen in data

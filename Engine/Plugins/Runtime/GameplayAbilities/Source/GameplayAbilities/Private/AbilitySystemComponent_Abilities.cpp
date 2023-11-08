@@ -46,6 +46,8 @@ DECLARE_CYCLE_STAT(TEXT("AbilitySystemComp ServerEndAbility"), STAT_AbilitySyste
 CSV_DECLARE_CATEGORY_MODULE_EXTERN(CORE_API, Basic);
 
 static TAutoConsoleVariable<float> CVarReplayMontageErrorThreshold(TEXT("replay.MontageErrorThreshold"), 0.5f, TEXT("Tolerance level for when montage playback position correction occurs in replays"));
+static TAutoConsoleVariable<bool> CVarAbilitySystemSetActivationInfoMultipleTimes(TEXT("AbilitySystem.SetActivationInfoMultipleTimes"), false, TEXT("Set this to true if some replicated Gameplay Abilities aren't setting their owning actors correctly"));
+static TAutoConsoleVariable<bool> CVarGasFixClientSideMontageBlendOutTime(TEXT("AbilitySystem.Fix.ClientSideMontageBlendOutTime"), true, TEXT("Enable a fix to replicate the Montage BlendOutTime for (recently) stopped Montages"));
 
 void UAbilitySystemComponent::InitializeComponent()
 {
@@ -73,7 +75,6 @@ void UAbilitySystemComponent::InitializeComponent()
 		if (Set)  
 		{
 			SpawnedAttributes.AddUnique(Set);
-			bIsNetDirty = true;
 		}
 	}
 
@@ -124,7 +125,7 @@ void UAbilitySystemComponent::TickComponent(float DeltaTime, enum ELevelTick Tic
 	for (UAttributeSet* AttributeSet : GetSpawnedAttributes())
 	{
 		ITickableAttributeSetInterface* TickableSet = Cast<ITickableAttributeSetInterface>(AttributeSet);
-		if (TickableSet)
+		if (TickableSet && TickableSet->ShouldTick())
 		{
 			TickableSet->Tick(DeltaTime);
 		}
@@ -159,7 +160,19 @@ void UAbilitySystemComponent::InitAbilityActorInfo(AActor* InOwnerActor, AActor*
 		{
 			if (Spec.Ability)
 			{
-				Spec.Ability->OnAvatarSet(AbilityActorInfo.Get(), Spec);
+				if (Spec.Ability->GetInstancingPolicy() == EGameplayAbilityInstancingPolicy::InstancedPerActor)
+				{
+					UGameplayAbility* AbilityInstance = Spec.GetPrimaryInstance();
+					// If we don't have the ability instance, it was either already destroyed or will get called on creation
+					if (AbilityInstance)
+					{
+						AbilityInstance->OnAvatarSet(AbilityActorInfo.Get(), Spec);
+					}
+				}
+				else
+				{
+					Spec.Ability->OnAvatarSet(AbilityActorInfo.Get(), Spec);
+				}
 			}
 		}
 	}
@@ -326,6 +339,15 @@ FGameplayAbilitySpecHandle UAbilitySystemComponent::GiveAbilityAndActivateOnce(F
 			return FGameplayAbilitySpecHandle();
 		}
 	}
+	else if (GameplayEventData)
+	{
+		// Cache the GameplayEventData in the pending spec (if it was correctly queued)
+		FGameplayAbilitySpec& PendingSpec = AbilityPendingAdds.Last();
+		if (PendingSpec.Handle == AddedAbilityHandle)
+		{
+			PendingSpec.GameplayEventData = MakeShared<FGameplayEventData>(*GameplayEventData);
+		}
+	}
 
 	return AddedAbilityHandle;
 }
@@ -399,7 +421,6 @@ void UAbilitySystemComponent::ClearAllAbilities()
 
 	ActivatableAbilities.Items.Empty(ActivatableAbilities.Items.Num());
 	ActivatableAbilities.MarkArrayDirty();
-	bIsNetDirty = true;
 
 	CheckForClearedAbilities();
 }
@@ -427,7 +448,6 @@ void UAbilitySystemComponent::ClearAbility(const FGameplayAbilitySpecHandle& Han
 		return;
 	}
 
-	bIsNetDirty = true;
 	for (int Idx = 0; Idx < AbilityPendingAdds.Num(); ++Idx)
 	{
 		if (AbilityPendingAdds[Idx].Handle == Handle)
@@ -480,6 +500,22 @@ void UAbilitySystemComponent::OnGiveAbility(FGameplayAbilitySpec& Spec)
 		if (Spec.NonReplicatedInstances.Num() == 0)
 		{
 			CreateNewInstanceOfAbility(Spec, SpecAbility);
+		}
+	}
+
+	// If this Ability Spec specified that it was created from an Active Gameplay Effect, then link the handle to the Active Gameplay Effect.
+	if (Spec.GameplayEffectHandle.IsValid())
+	{
+		UAbilitySystemComponent* SourceASC = Spec.GameplayEffectHandle.GetOwningAbilitySystemComponent();
+		UE_CLOG(!SourceASC, LogAbilitySystem, Error, TEXT("OnGiveAbility Spec '%s' GameplayEffectHandle had invalid Owning Ability System Component"), *Spec.GetDebugString());
+		if (SourceASC)
+		{
+			FActiveGameplayEffect* SourceActiveGE = SourceASC->ActiveGameplayEffects.GetActiveGameplayEffect(Spec.GameplayEffectHandle);
+			UE_CLOG(!SourceActiveGE, LogAbilitySystem, Error, TEXT("OnGiveAbility Spec '%s' GameplayEffectHandle was not active on Owning Ability System Component '%s'"), *Spec.GetDebugString(), *SourceASC->GetName());
+			if (SourceActiveGE)
+			{
+				SourceActiveGE->GrantedAbilityHandles.AddUnique(Spec.Handle);
+			}
 		}
 	}
 
@@ -587,6 +623,22 @@ void UAbilitySystemComponent::OnRemoveAbility(FGameplayAbilitySpec& Spec)
 		Spec.Ability->OnRemoveAbility(AbilityActorInfo.Get(), Spec);
 	}
 
+	// If this Ability Spec specified that it was created from an Active Gameplay Effect, then unlink the handle to the Active Gameplay Effect.
+	// Note: It's possible (maybe even likely) that the ActiveGE is no longer considered active by this point.
+	if (Spec.GameplayEffectHandle.IsValid())
+	{
+		UAbilitySystemComponent* SourceASC = Spec.GameplayEffectHandle.GetOwningAbilitySystemComponent();
+		UE_CLOG(!SourceASC, LogAbilitySystem, Error, TEXT("OnRemoveAbility Spec '%s' GameplayEffectHandle had invalid Owning Ability System Component"), *Spec.GetDebugString());
+		if (SourceASC)
+		{
+			FActiveGameplayEffect* SourceActiveGE = SourceASC->ActiveGameplayEffects.GetActiveGameplayEffect(Spec.GameplayEffectHandle);
+			if (SourceActiveGE)
+			{
+				SourceActiveGE->GrantedAbilityHandles.Remove(Spec.Handle);
+			}
+		}
+	}
+
 	Spec.ReplicatedInstances.Empty();
 	Spec.NonReplicatedInstances.Empty();
 }
@@ -640,7 +692,7 @@ void UAbilitySystemComponent::CheckForClearedAbilities()
 		// We leave around the empty trigger stub, it's likely to be added again
 	}
 
-	TArray<UGameplayAbility*>& ReplicatedAbilities = GetReplicatedInstancedAbilities_Mutable();
+	TArray<TObjectPtr<UGameplayAbility>>& ReplicatedAbilities = GetReplicatedInstancedAbilities_Mutable();
 	for (int32 i = 0; i < ReplicatedAbilities.Num(); i++)
 	{
 		UGameplayAbility* Ability = ReplicatedAbilities[i];
@@ -660,7 +712,9 @@ void UAbilitySystemComponent::CheckForClearedAbilities()
 	// Clear any out of date ability spec handles on active gameplay effects
 	for (FActiveGameplayEffect& ActiveGE : &ActiveGameplayEffects)
 	{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		for (FGameplayAbilitySpecDef& AbilitySpec : ActiveGE.Spec.GrantedAbilitySpecs)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		{
 			if (AbilitySpec.AssignedHandle.IsValid() && FindAbilitySpecFromHandle(AbilitySpec.AssignedHandle) == nullptr)
 			{
@@ -719,7 +773,7 @@ void UAbilitySystemComponent::DecrementAbilityListLock()
 		{
 			if (Spec.bActivateOnce)
 			{
-				GiveAbilityAndActivateOnce(Spec);
+				GiveAbilityAndActivateOnce(Spec, Spec.GameplayEventData.Get());
 			}
 			else
 			{
@@ -734,42 +788,40 @@ void UAbilitySystemComponent::DecrementAbilityListLock()
 	}
 }
 
-FGameplayAbilitySpec* UAbilitySystemComponent::FindAbilitySpecFromHandle(FGameplayAbilitySpecHandle Handle)
+FGameplayAbilitySpec* UAbilitySystemComponent::FindAbilitySpecFromHandle(FGameplayAbilitySpecHandle Handle) const
 {
 	SCOPE_CYCLE_COUNTER(STAT_FindAbilitySpecFromHandle);
 
-	for (FGameplayAbilitySpec& Spec : ActivatableAbilities.Items)
+	for (const FGameplayAbilitySpec& Spec : ActivatableAbilities.Items)
 	{
 		if (Spec.Handle == Handle)
 		{
-			return &Spec;
+			return const_cast<FGameplayAbilitySpec*>(&Spec);
 		}
 	}
 
 	return nullptr;
 }
 
-FGameplayAbilitySpec* UAbilitySystemComponent::FindAbilitySpecFromGEHandle(FActiveGameplayEffectHandle Handle)
+FGameplayAbilitySpec* UAbilitySystemComponent::FindAbilitySpecFromGEHandle(FActiveGameplayEffectHandle Handle) const
 {
-	for (FGameplayAbilitySpec& Spec : ActivatableAbilities.Items)
-	{
-		if (Spec.GameplayEffectHandle == Handle)
-		{
-			return &Spec;
-		}
-	}
 	return nullptr;
 }
 
-FGameplayAbilitySpec* UAbilitySystemComponent::FindAbilitySpecFromClass(TSubclassOf<UGameplayAbility> InAbilityClass)
+FGameplayAbilitySpec* UAbilitySystemComponent::FindAbilitySpecFromClass(TSubclassOf<UGameplayAbility> InAbilityClass) const
 {
 	SCOPE_CYCLE_COUNTER(STAT_FindAbilitySpecFromHandle);
 
-	for (FGameplayAbilitySpec& Spec : ActivatableAbilities.Items)
+	for (const FGameplayAbilitySpec& Spec : ActivatableAbilities.Items)
 	{
+		if (Spec.Ability == nullptr)
+		{
+			continue;
+		}
+
 		if (Spec.Ability->GetClass() == InAbilityClass)
 		{
-			return &Spec;
+			return const_cast<FGameplayAbilitySpec*>(&Spec);
 		}
 	}
 
@@ -783,7 +835,6 @@ void UAbilitySystemComponent::MarkAbilitySpecDirty(FGameplayAbilitySpec& Spec, b
 		// Don't mark dirty for specs that are server only unless it was an add/remove
 		if (!(Spec.Ability && Spec.Ability->NetExecutionPolicy == EGameplayAbilityNetExecutionPolicy::ServerOnly && !WasAddOrRemove))
 		{
-			bIsNetDirty = true;
 			ActivatableAbilities.MarkItemDirty(Spec);
 		}
 		AbilitySpecDirtiedCallbacks.Broadcast(Spec);
@@ -795,15 +846,15 @@ void UAbilitySystemComponent::MarkAbilitySpecDirty(FGameplayAbilitySpec& Spec, b
 	}
 }
 
-FGameplayAbilitySpec* UAbilitySystemComponent::FindAbilitySpecFromInputID(int32 InputID)
+FGameplayAbilitySpec* UAbilitySystemComponent::FindAbilitySpecFromInputID(int32 InputID) const
 {
 	if (InputID != INDEX_NONE)
 	{
-		for (FGameplayAbilitySpec& Spec : ActivatableAbilities.Items)
+		for (const FGameplayAbilitySpec& Spec : ActivatableAbilities.Items)
 		{
 			if (Spec.InputID == InputID)
 			{
-				return &Spec;
+				return const_cast<FGameplayAbilitySpec*>(&Spec);
 			}
 		}
 	}
@@ -1217,7 +1268,6 @@ void UAbilitySystemComponent::UnBlockAbilitiesWithTags(const FGameplayTagContain
 
 void UAbilitySystemComponent::BlockAbilityByInputID(int32 InputID)
 {
-	bIsNetDirty = true;
 	const TArray<uint8>& ConstBlockedAbilityBindings = GetBlockedAbilityBindings();
 	if (InputID >= 0 && InputID < ConstBlockedAbilityBindings.Num())
 	{
@@ -1227,7 +1277,6 @@ void UAbilitySystemComponent::BlockAbilityByInputID(int32 InputID)
 
 void UAbilitySystemComponent::UnBlockAbilityByInputID(int32 InputID)
 {
-	bIsNetDirty = true;
 	const TArray<uint8>& ConstBlockedAbilityBindings = GetBlockedAbilityBindings();
 	if (InputID >= 0 && InputID < ConstBlockedAbilityBindings.Num() && ConstBlockedAbilityBindings[InputID] > 0)
 	{
@@ -1523,18 +1572,23 @@ bool UAbilitySystemComponent::InternalTryActivateAbility(FGameplayAbilitySpecHan
 		return false;
 	}
 
-	// If it's instance once the instanced ability will be set, otherwise it will be null
+	// If it's an instanced one, the instanced ability will be set, otherwise it will be null
 	UGameplayAbility* InstancedAbility = Spec->GetPrimaryInstance();
 
-	const FGameplayTagContainer* SourceTags = nullptr;
-	const FGameplayTagContainer* TargetTags = nullptr;
-	if (TriggerEventData != nullptr)
+	if (TriggerEventData)
 	{
-		SourceTags = &TriggerEventData->InstigatorTags;
-		TargetTags = &TriggerEventData->TargetTags;
+		UGameplayAbility* AbilitySource = InstancedAbility ? InstancedAbility : Ability;
+		if (!AbilitySource->ShouldAbilityRespondToEvent(ActorInfo, TriggerEventData))
+		{
+			NotifyAbilityFailed(Handle, AbilitySource, InternalTryActivateAbilityFailureTags);
+			return false;
+		}
 	}
 
 	{
+		const FGameplayTagContainer* SourceTags = TriggerEventData ? &TriggerEventData->InstigatorTags : nullptr;
+		const FGameplayTagContainer* TargetTags = TriggerEventData ? &TriggerEventData->TargetTags : nullptr;
+
 		// If we have an instanced ability, call CanActivateAbility on it.
 		// Otherwise we always do a non instanced CanActivateAbility check using the CDO of the Ability.
 		UGameplayAbility* const CanActivateAbilitySource = InstancedAbility ? InstancedAbility : Ability;
@@ -1703,7 +1757,11 @@ bool UAbilitySystemComponent::InternalTryActivateAbility(FGameplayAbilitySpecHan
 			*OutInstancedAbility = InstancedAbility;
 		}
 
-		InstancedAbility->SetCurrentActivationInfo(ActivationInfo);	// Need to push this to the ability if it was instanced.
+		// UGameplayAbility::PreActivate actually sets this internally (via SetCurrentInfo) which happens after replication (this is only set locally).  Let's cautiously remove this code.
+		if (CVarAbilitySystemSetActivationInfoMultipleTimes.GetValueOnGameThread())
+		{
+			InstancedAbility->SetCurrentActivationInfo(ActivationInfo);	// Need to push this to the ability if it was instanced.
+		}
 	}
 
 	MarkAbilitySpecDirty(*Spec);
@@ -2190,14 +2248,7 @@ bool UAbilitySystemComponent::TriggerAbilityFromGameplayEvent(FGameplayAbilitySp
 	TempEventData.EventTag = EventTag;
 
 	// Run on the non-instanced ability
-	if (Ability->ShouldAbilityRespondToEvent(ActorInfo, &TempEventData))
-	{
-		if (InternalTryActivateAbility(Handle, ScopedPredictionKey, nullptr, nullptr, &TempEventData))
-		{
-			return true;
-		}
-	}
-	return false;
+	return InternalTryActivateAbility(Handle, ScopedPredictionKey, nullptr, nullptr, &TempEventData);
 }
 
 bool UAbilitySystemComponent::GetUserAbilityActivationInhibited() const
@@ -2459,7 +2510,6 @@ void UAbilitySystemComponent::BindAbilityActivationToInputComponent(UInputCompon
 void UAbilitySystemComponent::SetBlockAbilityBindingsArray(FGameplayAbilityInputBinds BindInfo)
 {
 	UEnum* EnumBinds = BindInfo.GetBindEnum();
-	bIsNetDirty = true;
 	GetBlockedAbilityBindings_Mutable().SetNumZeroed(EnumBinds->NumEnums());
 }
 
@@ -2823,6 +2873,25 @@ void UAbilitySystemComponent::AnimMontage_UpdateReplicatedData(FGameplayAbilityR
 		{
 			// Set this prior to calling UpdateShouldTick, so we start ticking if we are playing a Montage
 			OutRepAnimMontageInfo.IsStopped = bIsStopped;
+
+			if (bIsStopped)
+			{
+				// Use AnyThread because GetValueOnGameThread will fail check() when doing replays
+				constexpr bool bForceGameThreadValue = true;
+				if (CVarGasFixClientSideMontageBlendOutTime.GetValueOnAnyThread(bForceGameThreadValue))
+				{
+					// Replicate blend out time. This requires a manual search since Montage_GetBlendTime will fail
+					// in GetActiveInstanceForMontage for Montages that are stopped.
+					for (const FAnimMontageInstance* MontageInstance : AnimInstance->MontageInstances)
+					{
+						if (MontageInstance->Montage == LocalAnimMontageInfo.AnimMontage)
+						{
+							OutRepAnimMontageInfo.BlendTime = MontageInstance->GetBlendTime();
+							break;
+						}
+					}
+				}
+			}
 
 			// When we start or stop an animation, update the clients right away for the Avatar Actor
 			if (AbilityActorInfo->AvatarActor != nullptr)

@@ -60,11 +60,9 @@ void FGeometryCollectionVertexFactory::ModifyCompilationEnvironment(const FVerte
 
 	OutEnvironment.SetDefine(TEXT("VF_SUPPORTS_PRIMITIVE_SCENE_DATA"), bSupportsPrimitiveIdStream && bUseGPUScene);
 
-	bool ContainsManualVertexFetch = OutEnvironment.GetDefinitions().Contains("MANUAL_VERTEX_FETCH");
-	if (!ContainsManualVertexFetch && RHISupportsManualVertexFetch(Parameters.Platform))
+	if (RHISupportsManualVertexFetch(Parameters.Platform))
 	{
-		OutEnvironment.SetDefine(TEXT("MANUAL_VERTEX_FETCH"), TEXT("1"));
-		ContainsManualVertexFetch = true;
+		OutEnvironment.SetDefineIfUnset(TEXT("MANUAL_VERTEX_FETCH"), TEXT("1"));
 	}
 
 	// Geometry collections use a custom hit proxy per bone
@@ -78,7 +76,7 @@ void FGeometryCollectionVertexFactory::ValidateCompiledResult(const FVertexFacto
 	if (Type->SupportsPrimitiveIdStream()
 		&& UseGPUScene(Platform, GetMaxSupportedFeatureLevel(Platform))
 		&& !IsMobilePlatform(Platform) // On mobile VS may use PrimtiveUB while GPUScene is enabled
-		&& ParameterMap.ContainsParameterAllocation(FPrimitiveUniformShaderParameters::StaticStructMetadata.GetShaderVariableName()))
+		&& ParameterMap.ContainsParameterAllocation(FPrimitiveUniformShaderParameters::FTypeInfo::GetStructMetadata()->GetShaderVariableName()))
 	{
 		OutErrors.AddUnique(*FString::Printf(TEXT("Shader attempted to bind the Primitive uniform buffer even though Vertex Factory %s computes a PrimitiveId per-instance.  This will break auto-instancing.  Shaders should use GetPrimitiveData(Parameters).Member instead of Primitive.Member."), Type->GetName()));
 	}
@@ -111,7 +109,7 @@ void FGeometryCollectionVertexFactory::GetPSOPrecacheVertexFetchElements(EVertex
 	}
 }
 
-void FGeometryCollectionVertexFactory::InitRHI()
+void FGeometryCollectionVertexFactory::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	SCOPED_LOADTIMER(FGeometryCollectionVertexFactory_InitRHI);
 
@@ -120,7 +118,8 @@ void FGeometryCollectionVertexFactory::InitRHI()
 
 	// VertexFactory needs to be able to support max possible shader platform and feature level
 	// in case if we switch feature level at runtime.
-	const bool bCanUseGPUScene = UseGPUScene(GMaxRHIShaderPlatform, GMaxRHIFeatureLevel);
+	const bool bCanUseGPUScene = UseGPUScene(GMaxRHIShaderPlatform, GetFeatureLevel());
+	const bool bUseManualVertexFetch = SupportsManualVertexFetch(GetFeatureLevel());
 
 	// If the vertex buffer containing position is not the same vertex buffer containing the rest of the data,
 	// then initialize PositionStream and PositionDeclaration.
@@ -222,7 +221,7 @@ void FGeometryCollectionVertexFactory::InitRHI()
 	const int32 DefaultBaseVertexIndex = 0;
 	const int32 DefaultPreSkinBaseVertexIndex = 0;
 
-	if (RHISupportsManualVertexFetch(GMaxRHIShaderPlatform) || bCanUseGPUScene)
+	if (bUseManualVertexFetch || bCanUseGPUScene)
 	{
 		SCOPED_LOADTIMER(FGeometryCollectionVertexFactory_InitRHI_CreateLocalVFUniformBuffer);
 
@@ -231,7 +230,7 @@ void FGeometryCollectionVertexFactory::InitRHI()
 		UniformParameters.LODLightmapDataIndex = Data.LODLightmapDataIndex;
 		int32 ColorIndexMask = 0;
 
-		if (RHISupportsManualVertexFetch(GMaxRHIShaderPlatform))
+		if (bUseManualVertexFetch)
 		{
 			UniformParameters.VertexFetch_PositionBuffer = GetPositionsSRV();
 			UniformParameters.VertexFetch_PackedTangentsBuffer = GetTangentsSRV();

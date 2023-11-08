@@ -5,6 +5,7 @@
 #include "Engine/Texture.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
 #include "RenderingThread.h"
+#include "RHIUtilities.h"
 
 FSlateTexture2DRHIRef::FSlateTexture2DRHIRef( FTexture2DRHIRef InRef, uint32 InWidth, uint32 InHeight )
 	: TSlateTexture( InRef )
@@ -38,7 +39,7 @@ void FSlateTexture2DRHIRef::Cleanup()
 	BeginCleanup(this);
 }
 
-void FSlateTexture2DRHIRef::InitDynamicRHI()
+void FSlateTexture2DRHIRef::InitRHI(FRHICommandListBase&)
 {
 	SCOPED_LOADTIMER(FSlateTexture2DRHIRef_InitDynamicRHI);
 
@@ -52,7 +53,8 @@ void FSlateTexture2DRHIRef::InitDynamicRHI()
 
 			const FRHITextureCreateDesc Desc =
 				FRHITextureCreateDesc::Create2D(TEXT("FSlateTexture2DRHIRef"), Width, Height, PixelFormat)
-				.SetFlags(TexCreateFlags);
+				.SetFlags(TexCreateFlags)
+				.SetClassName(TEXT("FSlateTexture2DRHIRef"));
 
 			ShaderResource = RHICreateTexture(Desc);
 			check( IsValidRef( ShaderResource ) );
@@ -95,7 +97,7 @@ void FSlateTexture2DRHIRef::InitDynamicRHI()
 	}
 }
 
-void FSlateTexture2DRHIRef::ReleaseDynamicRHI()
+void FSlateTexture2DRHIRef::ReleaseRHI()
 {
 	check( IsInRenderingThread() );
 
@@ -110,10 +112,9 @@ void FSlateTexture2DRHIRef::ReleaseDynamicRHI()
 
 void FSlateTexture2DRHIRef::Resize( uint32 InWidth, uint32 InHeight )
 {
-	check( IsInRenderingThread() );
 	Width = InWidth;
 	Height = InHeight;
-	UpdateRHI();
+	UpdateRHI(FRHICommandListImmediate::Get());
 }
 
 void FSlateTexture2DRHIRef::SetRHIRef( FTexture2DRHIRef InRHIRef, uint32 InWidth, uint32 InHeight )
@@ -286,21 +287,17 @@ FSlateTextureRenderTarget2DResource::FSlateTextureRenderTarget2DResource(const F
 
 void FSlateTextureRenderTarget2DResource::SetSize(int32 InSizeX,int32 InSizeY)
 {
-	check(IsInRenderingThread());
-
 	if (InSizeX != TargetSizeX || InSizeY != TargetSizeY)
 	{
 		TargetSizeX = InSizeX;
 		TargetSizeY = InSizeY;
 		// reinit the resource with new TargetSizeX,TargetSizeY
-		UpdateRHI();
+		UpdateRHI(FRHICommandListImmediate::Get());
 	}	
 }
 
 void FSlateTextureRenderTarget2DResource::ClampSize(int32 MaxSizeX,int32 MaxSizeY)
 {
-	check(IsInRenderingThread());
-
 	// upsize to go back to original or downsize to clamp to max
 	int32 NewSizeX = FMath::Min<int32>(TargetSizeX,MaxSizeX);
 	int32 NewSizeY = FMath::Min<int32>(TargetSizeY,MaxSizeY);
@@ -309,11 +306,11 @@ void FSlateTextureRenderTarget2DResource::ClampSize(int32 MaxSizeX,int32 MaxSize
 		TargetSizeX = NewSizeX;
 		TargetSizeY = NewSizeY;
 		// reinit the resource with new TargetSizeX,TargetSizeY
-		UpdateRHI();
+		UpdateRHI(FRHICommandListImmediate::Get());
 	}	
 }
 
-void FSlateTextureRenderTarget2DResource::InitDynamicRHI()
+void FSlateTextureRenderTarget2DResource::InitRHI(FRHICommandListBase&)
 {
 	SCOPED_LOADTIMER(FSlateTextureRenderTarget2DResource_InitDynamicRHI);
 
@@ -321,6 +318,8 @@ void FSlateTextureRenderTarget2DResource::InitDynamicRHI()
 
 	if( TargetSizeX > 0 && TargetSizeY > 0 )
 	{
+		const static FLazyName ClassName(TEXT("FSlateTextureRenderTarget2DResource"));
+
 		// Create the RHI texture. Only one mip is used and the texture is targetable for resolve.
 		const FRHITextureCreateDesc Desc =
 			FRHITextureCreateDesc::Create2D(TEXT("FSlateTextureRenderTarget2DResource"))
@@ -328,7 +327,8 @@ void FSlateTextureRenderTarget2DResource::InitDynamicRHI()
 			.SetFormat((EPixelFormat)Format)
 			.SetClearValue(FClearValueBinding(ClearColor))
 			.SetFlags(ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource)
-			.SetInitialState(ERHIAccess::SRVMask);
+			.SetInitialState(ERHIAccess::SRVMask)
+			.SetClassName(ClassName);
 
 		RenderTargetTextureRHI = TextureRHI = RHICreateTexture(Desc);
 	}
@@ -344,12 +344,12 @@ void FSlateTextureRenderTarget2DResource::InitDynamicRHI()
 	SamplerStateRHI = GetOrCreateSamplerState( SamplerStateInitializer );
 }
 
-void FSlateTextureRenderTarget2DResource::ReleaseDynamicRHI()
+void FSlateTextureRenderTarget2DResource::ReleaseRHI()
 {
 	check(IsInRenderingThread());
 
 	// Release the FTexture RHI resources here as well
-	ReleaseRHI();
+	FTexture::ReleaseRHI();
 
 	RenderTargetTextureRHI.SafeRelease();
 

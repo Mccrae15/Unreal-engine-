@@ -842,7 +842,7 @@ FReply SProjectBrowser::FindProjects()
 	const TArray<FString>& NativeProjectFiles = DefaultProjectDictionary.GetProjectPaths();
 	for(const FString& ProjectFile : NativeProjectFiles)
 	{
-		if (!ProjectFile.Contains(TEXT("/Templates/")))
+		if (!ProjectFile.Contains(TEXT("/Templates/")) && !ProjectFile.Contains(TEXT("/Programs/")))
 		{
 			AllFoundProjectFiles.Add(ProjectFile);
 		}
@@ -957,7 +957,7 @@ bool SProjectBrowser::OpenProject( const FString& InProjectFile )
 				{
 					const FText ErrorText = FText::Format(LOCTEXT("WouldYouLikeToDownloadAndInstallCompiler", "To open this project you must first install {0}.\n\nWould you like to download and install it now?"), FSourceCodeNavigation::GetSuggestedSourceCodeIDE());
 
-					EAppReturnType::Type InstallCompilerResult = FMessageDialog::Open(EAppMsgType::YesNo, ErrorText, &TitleText);
+					EAppReturnType::Type InstallCompilerResult = FMessageDialog::Open(EAppMsgType::YesNo, ErrorText, TitleText);
 					if ( InstallCompilerResult == EAppReturnType::No )
 					{
 						return false;
@@ -999,7 +999,7 @@ bool SProjectBrowser::OpenProject( const FString& InProjectFile )
 				else
 				{
 					const FText ErrorText = FText::Format(LOCTEXT("WouldYouLikeToInstallCompiler", "To open this project you must first install {0}.\n\nWould you like to install it now?"), FSourceCodeNavigation::GetSuggestedSourceCodeIDE());
-					EAppReturnType::Type InstallCompilerResult = FMessageDialog::Open(EAppMsgType::YesNo, ErrorText, &TitleText);
+					EAppReturnType::Type InstallCompilerResult = FMessageDialog::Open(EAppMsgType::YesNo, ErrorText, TitleText);
 					if ( InstallCompilerResult == EAppReturnType::No )
 					{
 						return false;

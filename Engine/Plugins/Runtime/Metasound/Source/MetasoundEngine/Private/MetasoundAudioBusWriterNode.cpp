@@ -1,5 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+#include "AudioMixerDevice.h"
 #include "AudioBusSubsystem.h"
 #include "AudioDevice.h"
 #include "Internationalization/Text.h"
@@ -14,9 +15,6 @@
 #include "MetasoundStandardNodesCategories.h"
 
 #define LOCTEXT_NAMESPACE "MetasoundAudioBusWriterNode"
-
-// MetaSound Audio Bus writer node disabled in UE 5.2 due to existing issues (UE-170575).
-#define ENABLE_METASOUND_AUDIOBUS_WRITER_NODE 0
 
 namespace Metasound
 {
@@ -80,30 +78,41 @@ namespace Metasound
 		static TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors)
 		{
 			using namespace Frontend;
-
 			using namespace AudioBusWriterNode;
+
 			const FDataReferenceCollection& InputCollection = InParams.InputDataReferences;
 
-			Audio::FDeviceId AudioDeviceId = InParams.Environment.GetValue<Audio::FDeviceId>(SourceInterface::Environment::DeviceID);
-			int32 AudioMixerOutputFrames = InParams.Environment.GetValue<int32>(SourceInterface::Environment::AudioMixerNumOutputFrames);
+			bool bHasEnvironmentVars = InParams.Environment.Contains<Audio::FDeviceId>(SourceInterface::Environment::DeviceID);
+			bHasEnvironmentVars &= InParams.Environment.Contains<int32>(SourceInterface::Environment::AudioMixerNumOutputFrames);
 
-			FAudioBusAssetReadRef AudioBusIn = InputCollection.GetDataReadReferenceOrConstruct<FAudioBusAsset>(METASOUND_GET_PARAM_NAME(InParamAudioBusOutput));
-
-			TArray<FAudioBufferReadRef> AudioInputs;
-			for (int32 ChannelIndex = 0; ChannelIndex < NumChannels; ++ChannelIndex)
+			if (bHasEnvironmentVars)
 			{
-				AudioInputs.Add(InputCollection.GetDataReadReferenceOrConstruct<FAudioBuffer>(METASOUND_GET_PARAM_NAME_WITH_INDEX(InParamAudio, ChannelIndex), InParams.OperatorSettings));
-			}
+				FAudioBusAssetReadRef AudioBusIn = InputCollection.GetDataReadReferenceOrConstruct<FAudioBusAsset>(METASOUND_GET_PARAM_NAME(InParamAudioBusOutput));
 
-			return MakeUnique<TAudioBusWriterOperator<NumChannels>>(InParams, AudioMixerOutputFrames, AudioDeviceId, MoveTemp(AudioBusIn), MoveTemp(AudioInputs));
+				TArray<FAudioBufferReadRef> AudioInputs;
+				for (int32 ChannelIndex = 0; ChannelIndex < NumChannels; ++ChannelIndex)
+				{
+					AudioInputs.Add(InputCollection.GetDataReadReferenceOrConstruct<FAudioBuffer>(METASOUND_GET_PARAM_NAME_WITH_INDEX(InParamAudio, ChannelIndex), InParams.OperatorSettings));
+				}
+
+				return MakeUnique<TAudioBusWriterOperator<NumChannels>>(InParams, MoveTemp(AudioBusIn), MoveTemp(AudioInputs));
+			}
+			else
+			{
+				UE_LOG(LogMetaSound, Warning, TEXT("Audio bus writer node requires audio device ID '%s' and audio mixer num output frames '%s' environment variables")
+					, *SourceInterface::Environment::DeviceID.ToString(), *SourceInterface::Environment::AudioMixerNumOutputFrames.ToString());
+				return nullptr;
+			}
 		}
 
-		TAudioBusWriterOperator(const FCreateOperatorParams& InParams, int32 InAudioMixerOutputFrames, Audio::FDeviceId InAudioDeviceId, FAudioBusAssetReadRef InAudioBusAsset, TArray<FAudioBufferReadRef> InAudioInputs) :
-			AudioBusAsset(MoveTemp(InAudioBusAsset)),
-			AudioInputs(MoveTemp(InAudioInputs)),
-			AudioMixerOutputFrames(InAudioMixerOutputFrames),
-			AudioDeviceId(InAudioDeviceId),
-			SampleRate(InParams.OperatorSettings.GetSampleRate())
+		TAudioBusWriterOperator(const FCreateOperatorParams& InParams, FAudioBusAssetReadRef InAudioBusAsset, TArray<FAudioBufferReadRef> InAudioInputs)
+			: AudioBusAsset(MoveTemp(InAudioBusAsset))
+			, AudioInputs(MoveTemp(InAudioInputs))
+		{
+			Reset(InParams);
+		}
+
+		void CreatePatchInput()
 		{
 			const FAudioBusProxyPtr& AudioBusProxy = AudioBusAsset->GetAudioBusProxy();
 			if (AudioBusProxy.IsValid())
@@ -114,12 +123,15 @@ namespace Metasound
 					{
 						UAudioBusSubsystem* AudioBusSubsystem = AudioDevice->GetSubsystem<UAudioBusSubsystem>();
 						check(AudioBusSubsystem);
-						Audio::FAudioBusKey AudioBusKey = Audio::FAudioBusKey(AudioBusProxy->AudioBusId);	
+						
+						AudioBusId = AudioBusProxy->AudioBusId;
+						const Audio::FAudioBusKey AudioBusKey = Audio::FAudioBusKey(AudioBusId);
+						
 						// Start the audio bus in case it's not already started					
 						AudioBusChannels = AudioBusProxy->NumChannels;
 						AudioBusSubsystem->StartAudioBus(AudioBusKey, AudioBusChannels, false);
 
-						BlockSizeFrames = InParams.OperatorSettings.GetNumFramesPerBlock();
+						InterleavedBuffer.Reset();
 						InterleavedBuffer.AddZeroed(BlockSizeFrames * AudioBusChannels);
 
 						// Create a bus patch input with enough room for the number of samples we expect and some buffering
@@ -128,37 +140,87 @@ namespace Metasound
 				}
 			}
 		}
+		
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			using namespace Frontend;
+			using namespace AudioBusWriterNode;
 
-		virtual ~TAudioBusWriterOperator()
+			bool bHasEnvironmentVars = InParams.Environment.Contains<Audio::FDeviceId>(SourceInterface::Environment::DeviceID);
+			bHasEnvironmentVars &= InParams.Environment.Contains<int32>(SourceInterface::Environment::AudioMixerNumOutputFrames);
+
+			if (bHasEnvironmentVars)
+			{
+				SampleRate = InParams.OperatorSettings.GetSampleRate();
+				AudioDeviceId = InParams.Environment.GetValue<Audio::FDeviceId>(SourceInterface::Environment::DeviceID);
+				AudioMixerOutputFrames = InParams.Environment.GetValue<int32>(SourceInterface::Environment::AudioMixerNumOutputFrames);
+			}
+			else
+			{
+				UE_LOG(LogMetaSound, Warning, TEXT("Audio bus writer node requires audio device ID '%s' and audio mixer num output frames '%s' environment variables")
+					, *SourceInterface::Environment::DeviceID.ToString(), *SourceInterface::Environment::AudioMixerNumOutputFrames.ToString());
+			}
+			
+			BlockSizeFrames = InParams.OperatorSettings.GetNumFramesPerBlock();
+
+			CreatePatchInput();
+			bFirstBlock = true;
+		}
+
+
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
+		{
+			using namespace AudioBusWriterNode;
+
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InParamAudioBusOutput), AudioBusAsset);
+
+			for (int32 ChannelIndex = 0; ChannelIndex < NumChannels; ++ChannelIndex)
+			{
+				InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME_WITH_INDEX(InParamAudio, ChannelIndex), AudioInputs[ChannelIndex]);
+			}
+		}
+
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
 		{
 		}
 
 		virtual FDataReferenceCollection GetInputs() const override
 		{
-			using namespace AudioBusWriterNode;
-
-			FDataReferenceCollection InputDataReferences;
-
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InParamAudioBusOutput), AudioBusAsset);
-
-			for (int32 ChannelIndex = 0; ChannelIndex < NumChannels; ++ChannelIndex)
-			{
-				InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME_WITH_INDEX(InParamAudio, ChannelIndex), FAudioBufferReadRef(AudioInputs[ChannelIndex]));
-			}
-
-			return InputDataReferences;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		virtual FDataReferenceCollection GetOutputs() const override
 		{
-			using namespace AudioBusWriterNode;
-
-			FDataReferenceCollection OutputDataReferences;
-			return OutputDataReferences;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		void Execute()
 		{
+			const FAudioBusProxyPtr& BusProxy = AudioBusAsset->GetAudioBusProxy();
+			if (BusProxy.IsValid() && BusProxy->AudioBusId != AudioBusId)
+			{
+				AudioBusPatchInput.Reset();
+			}
+			
+			if (!AudioBusPatchInput.IsValid())
+			{
+				// if environment vars & a valid audio bus have been set since starting, try to create the patch now
+				if (SampleRate > 0.f && BusProxy.IsValid())
+				{
+					CreatePatchInput();
+				}
+				else
+				{
+					return;
+				}
+			}
+
 			if (!AudioBusPatchInput.IsOutputStillActive())
 			{
 				return;
@@ -194,6 +256,16 @@ namespace Metasound
 				}
 			}
 
+			if (bFirstBlock)
+			{
+				bFirstBlock = false;
+				if (AudioMixerOutputFrames != BlockSizeFrames)
+				{
+					// Ensure there will be enough samples in the patch input to support the maximum metasound executions the mixer requires to fill its output frames after the next push.
+					AudioBusPatchInput.PushAudio(nullptr, (FMath::DivideAndRoundUp(FMath::Max(AudioMixerOutputFrames, BlockSizeFrames), FMath::Min(AudioMixerOutputFrames, BlockSizeFrames)) - 1) * BlockSizeFrames * AudioBusChannels);
+				}
+			}
+
 			// Pushes the interleaved data to the audio bus
 			int32 SamplesPushed = AudioBusPatchInput.PushAudio(InterleavedBuffer.GetData(), InterleavedBuffer.Num());
 			if (SamplesPushed < InterleavedBuffer.Num())
@@ -212,7 +284,9 @@ namespace Metasound
 		float SampleRate = 0.0f;
 		Audio::FPatchInput AudioBusPatchInput;
 		uint32 AudioBusChannels = INDEX_NONE;
+		uint32 AudioBusId = 0;
 		int32 BlockSizeFrames = 0;
+		bool bFirstBlock = true;
 	};
 
 	template<uint32 NumChannels>
@@ -229,14 +303,11 @@ namespace Metasound
 	using FAudioBusWriterNode_##ChannelCount = TAudioBusWriterNode<ChannelCount>; \
 	METASOUND_REGISTER_NODE(FAudioBusWriterNode_##ChannelCount) \
 
-#if ENABLE_METASOUND_AUDIOBUS_WRITER_NODE
 	REGISTER_AUDIO_BUS_WRITER_NODE(1);
 	REGISTER_AUDIO_BUS_WRITER_NODE(2);
 	REGISTER_AUDIO_BUS_WRITER_NODE(4);
 	REGISTER_AUDIO_BUS_WRITER_NODE(6);
 	REGISTER_AUDIO_BUS_WRITER_NODE(8);
-#endif // #if ENABLE_METASOUND_AUDIOBUS_WRITER_NODE
-
 }
 
 #undef LOCTEXT_NAMESPACE

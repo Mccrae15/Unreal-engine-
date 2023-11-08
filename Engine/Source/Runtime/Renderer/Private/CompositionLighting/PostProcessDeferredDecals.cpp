@@ -7,6 +7,7 @@
 #include "DBufferTextures.h"
 #include "DecalRenderingShared.h"
 #include "PipelineStateCache.h"
+#include "PostProcess/SceneRenderTargets.h"
 #include "RendererUtils.h"
 #include "SceneUtils.h"
 #include "ScenePrivate.h"
@@ -145,6 +146,7 @@ void GetDeferredDecalPassParameters(
 	FDeferredDecalPassParameters& PassParameters)
 {
 	PassParameters.View = View.GetShaderParameters();
+	PassParameters.Scene = View.GetSceneUniforms().GetBuffer(GraphBuilder);
 	PassParameters.DeferredDecal = CreateDeferredDecalUniformBuffer(View);
 	PassParameters.DecalPass = Textures.DecalPassUniformBuffer;
 	
@@ -154,7 +156,7 @@ void GetDeferredDecalPassParameters(
 	FRDGTextureRef DepthTexture = Textures.Depth.Target;
 
 	FRenderTargetBindingSlots& RenderTargets = PassParameters.RenderTargets;
-	PassParameters.RenderTargets.ShadingRateTexture = GVRSImageManager.GetVariableRateShadingImage(GraphBuilder, View, FVariableRateShadingImageManager::EVRSPassType::Decals, nullptr);
+	PassParameters.RenderTargets.ShadingRateTexture = GVRSImageManager.GetVariableRateShadingImage(GraphBuilder, View, FVariableRateShadingImageManager::EVRSPassType::Decals);
 
 	uint32 ColorTargetIndex = 0;
 

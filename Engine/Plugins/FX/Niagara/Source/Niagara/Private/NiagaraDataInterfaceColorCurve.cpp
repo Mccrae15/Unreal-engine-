@@ -1,15 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraDataInterfaceColorCurve.h"
-#include "Curves/CurveVector.h"
-#include "Curves/CurveLinearColor.h"
-#include "Curves/CurveFloat.h"
 #include "NiagaraTypes.h"
 #include "UObject/Package.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceColorCurve)
 
 #if WITH_EDITORONLY_DATA
+#include "Curves/CurveLinearColor.h"
+#include "Curves/CurveVector.h"
+#include "Curves/CurveFloat.h"
 #include "Interfaces/ITargetPlatform.h"
 #endif
 
@@ -182,6 +182,32 @@ void UNiagaraDataInterfaceColorCurve::GetFunctions(TArray<FNiagaraFunctionSignat
 // TODO: need a way to identify each specific function here
 // 
 #if WITH_EDITORONLY_DATA
+void UNiagaraDataInterfaceColorCurve::SyncCurvesToAsset()
+{
+	if (UCurveLinearColor* ColorCurve = Cast<UCurveLinearColor>(CurveAsset))
+	{
+		RedCurve = ColorCurve->FloatCurves[0];
+		GreenCurve = ColorCurve->FloatCurves[1];
+		BlueCurve = ColorCurve->FloatCurves[2];
+		AlphaCurve = ColorCurve->FloatCurves[3];
+	}
+	else if (UCurveVector* VecCurve = Cast<UCurveVector>(CurveAsset))
+	{
+		RedCurve = VecCurve->FloatCurves[0];
+		GreenCurve = VecCurve->FloatCurves[1];
+		BlueCurve = VecCurve->FloatCurves[2];
+		AlphaCurve.Reset();
+		AlphaCurve.AddKey(0, 1);
+	}
+	else if (UCurveFloat* FloatCurve = Cast<UCurveFloat>(CurveAsset))
+	{
+		RedCurve = FloatCurve->FloatCurve;
+		GreenCurve = FloatCurve->FloatCurve;
+		BlueCurve = FloatCurve->FloatCurve;
+		AlphaCurve = FloatCurve->FloatCurve;
+	}
+}
+
 bool UNiagaraDataInterfaceColorCurve::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)
 {
 	if (FunctionInfo.DefinitionName == SampleCurveName)

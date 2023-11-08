@@ -19,17 +19,24 @@ class USDSTAGEEDITOR_API UUsdStageEditorBlueprintLibrary : public UBlueprintFunc
 public:
 	/**
 	 * Opens the the USD Stage Editor window, or focus it in case it is already open.
-	 * @return True if a stage is now opened and available.
+	 * @return True if a stage editor window is now opened and available.
 	 */
 	UFUNCTION( BlueprintCallable, Category = "USD|Stage Editor" )
 	static bool OpenStageEditor();
 
 	/**
 	 * Closes the USD Stage Editor window if it is opened. Does nothing in case it is already closed.
-	 * @return True if a stage was closed by this action.
+	 * @return True if a stage editor window was closed by this action.
 	 */
 	UFUNCTION( BlueprintCallable, Category = "USD|Stage Editor" )
 	static bool CloseStageEditor();
+
+	/**
+	 * Checks to see if an USD Stage Editor window is currently opened.
+	 * @return True if a stage editor window is now opened and available.
+	 */
+	UFUNCTION( BlueprintCallable, Category = "USD|Stage Editor" )
+	static bool IsStageEditorOpened();
 
 	/**
 	 * Gets which actor is currently attached to the USD Stage Editor, if any.
@@ -93,6 +100,22 @@ public:
 	 */
 	UFUNCTION( BlueprintCallable, Category = "USD|Selection" )
 	static void SetSelectedPropertyNames( const TArray<FString>& NewSelection );
+
+	/**
+	 * Returns the names of the currently selected property metadata entries on the right panel of the USD Stage
+	 * Editor.
+	 * @return The names of selected metadata (e.g. ["documentation", "typeName"])
+	 */
+	UFUNCTION( BlueprintCallable, Category = "USD|Selection" )
+	static TArray<FString> GetSelectedPropertyMetadataNames();
+
+	/**
+	 * Sets the USD Stage Editor property metadata selection to the entries with names contained in NewSelection.
+	 * Provide an empty array to clear the selection.
+	 * @param NewSelection - The list of property names to select (e.g. ["documentation", "typeName"])
+	 */
+	UFUNCTION( BlueprintCallable, Category = "USD|Selection" )
+	static void SetSelectedPropertyMetadataNames( const TArray<FString>& NewSelection );
 
     /**
 	 * Creates a new memory-only layer and opens an USD Stage with that layer as its root.

@@ -19,6 +19,7 @@
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "Containers/Ticker.h"
 #include "IO/IoDispatcherBackend.h"
+#include "Templates/Greater.h"
 
 DEFINE_LOG_CATEGORY(LogIoDispatcher);
 
@@ -134,8 +135,8 @@ private:
 	{
 		FRequestCategory(const TCHAR* Name)
 #if COUNTERSTRACE_ENABLED
-			: TotalLoadedCounter(*FString::Printf(TEXT("IoDispatcher/TotalLoaded (%s)"), Name), TraceCounterDisplayHint_Memory)
-			, AverageDurationCounter(*FString::Printf(TEXT("IoDispatcher/AverageDuration (%s)"), Name), TraceCounterDisplayHint_None)
+			: TotalLoadedCounter(TraceCounterNameType_Dynamic, *FString::Printf(TEXT("IoDispatcher/TotalLoaded (%s)"), Name), TraceCounterDisplayHint_Memory)
+			, AverageDurationCounter(TraceCounterNameType_Dynamic, *FString::Printf(TEXT("IoDispatcher/AverageDuration (%s)"), Name), TraceCounterDisplayHint_None)
 #endif
 		{
 
@@ -345,15 +346,13 @@ public:
 
 	~FIoDispatcherImpl()
 	{
-		for (const TSharedRef<IIoDispatcherBackend>& Backend : Backends)
+		delete Thread;
+		for (const FBackendAndPriority& Backend : Backends)
 		{
-			Backend->Shutdown();
+			Backend.Value->Shutdown();
 		}
 		FCoreDelegates::GetMemoryTrimDelegate().Remove(MemoryTrimDelegateHandle);
 		BackendContext->WakeUpDispatcherThreadDelegate.Unbind();
-		// when all mounted backends have been shutdown and the delegates have been cleared,
-		// then we can go ahead and delete the resolve thread
-		delete Thread;
 		FPlatformProcess::ReturnSynchEventToPool(DispatcherEvent);
 		RequestAllocator->ReleaseRef();
 	}
@@ -367,9 +366,9 @@ public:
 		bIsInitialized = true;
 		if (!Backends.IsEmpty())
 		{
-			for (const TSharedRef<IIoDispatcherBackend>& Backend : Backends)
+			for (const FBackendAndPriority& Backend : Backends)
 			{
-				Backend->Initialize(BackendContext);
+				Backend.Value->Initialize(BackendContext);
 			}
 			// If there are no mounted backends the resolve thread is not needed
 			StartThread();
@@ -424,9 +423,9 @@ public:
 	{
 		if (ChunkId.IsValid())
 		{
-			for (const TSharedRef<IIoDispatcherBackend>& Backend : Backends)
+			for (const FBackendAndPriority& Backend : Backends)
 			{
-				TIoStatusOr<FIoMappedRegion> Result = Backend->OpenMapped(ChunkId, Options);
+				TIoStatusOr<FIoMappedRegion> Result = Backend.Value->OpenMapped(ChunkId, Options);
 				if (Result.IsOk())
 				{
 					return Result;
@@ -440,10 +439,12 @@ public:
 		}
 	}
 
-	void Mount(TSharedRef<IIoDispatcherBackend> Backend)
+	void Mount(TSharedRef<IIoDispatcherBackend> Backend, int32 Priority)
 	{
 		check(IsInGameThread());
-		Backends.Add(Backend);
+
+		int32 Index = Algo::LowerBoundBy(Backends, Priority, &FBackendAndPriority::Key, TGreater<>());
+		Backends.Insert(MakeTuple(Priority, Backend), Index);
 		if (bIsInitialized)
 		{
 			Backend->Initialize(BackendContext);
@@ -456,9 +457,9 @@ public:
 
 	bool DoesChunkExist(const FIoChunkId& ChunkId) const
 	{
-		for (const TSharedRef<IIoDispatcherBackend>& Backend : Backends)
+		for (const FBackendAndPriority& Backend : Backends)
 		{
-			if (Backend->DoesChunkExist(ChunkId))
+			if (Backend.Value->DoesChunkExist(ChunkId))
 			{
 				return true;
 			}
@@ -471,9 +472,9 @@ public:
 		// Only attempt to find the size if the FIoChunkId is valid
 		if (ChunkId.IsValid())
 		{
-			for (const TSharedRef<IIoDispatcherBackend>& Backend : Backends)
+			for (const FBackendAndPriority& Backend : Backends)
 			{
-				TIoStatusOr<uint64> Result = Backend->GetSizeForChunk(ChunkId);
+				TIoStatusOr<uint64> Result = Backend.Value->GetSizeForChunk(ChunkId);
 				if (Result.IsOk())
 				{
 					return Result;
@@ -587,7 +588,7 @@ public:
 	void IssueBatchAndDispatchSubsequents(FIoBatch& Batch, FGraphEventRef GraphEvent)
 	{
 		FIoBatchImpl* Impl = AllocBatch();
-		Impl->GraphEvent = GraphEvent;
+		Impl->GraphEvent = MoveTemp(GraphEvent);
 		IssueBatchInternal(Batch, Impl);
 	}
 
@@ -615,9 +616,9 @@ private:
 	{
 		//TRACE_CPUPROFILER_EVENT_SCOPE(ProcessCompletedRequests);
 
-		for (const TSharedRef<IIoDispatcherBackend>& Backend : Backends)
+		for (const FBackendAndPriority& Backend : Backends)
 		{
-			FIoRequestImpl* CompletedRequestsHead = Backend->GetCompletedRequests();
+			FIoRequestImpl* CompletedRequestsHead = Backend.Value->GetCompletedRequests();
 			while (CompletedRequestsHead)
 			{
 				FIoRequestImpl* NextRequest = CompletedRequestsHead->NextRequest;
@@ -775,12 +776,12 @@ private:
 			{
 				TRACE_CPUPROFILER_EVENT_SCOPE(ResolveRequest);
 				bool bResolved = false;
-				for (const TSharedRef<IIoDispatcherBackend>& Backend : Backends)
+				for (const FBackendAndPriority& Backend : Backends)
 				{
-					if (Backend->Resolve(Request))
+					if (Backend.Value->Resolve(Request))
 					{
 						bResolved = true;
-						Request->Backend = &Backend.Get();
+						Request->Backend = &Backend.Value.Get();
 						break;
 					}
 				}
@@ -826,6 +827,12 @@ private:
 			ProcessIncomingRequests();
 			ProcessCompletedRequests();
 		}
+
+		ProcessIncomingRequests();
+		while (PendingIoRequestsCount > 0)
+		{
+			ProcessCompletedRequests();
+		}
 		return 0;
 	}
 
@@ -836,10 +843,11 @@ private:
 	}
 
 	using FBatchAllocator = TBlockAllocator<FIoBatchImpl, 4096>;
+	using FBackendAndPriority = TTuple<int32, TSharedRef<IIoDispatcherBackend>>;
 
 	TSharedRef<FIoDispatcherBackendContext> BackendContext;
 	FDelegateHandle MemoryTrimDelegateHandle;
-	TArray<TSharedRef<IIoDispatcherBackend>> Backends;
+	TArray<FBackendAndPriority> Backends;
 	FIoRequestAllocator* RequestAllocator = nullptr;
 	FBatchAllocator BatchAllocator;
 	FRunnableThread* Thread = nullptr;
@@ -869,9 +877,9 @@ FIoDispatcher::~FIoDispatcher()
 }
 
 void
-FIoDispatcher::Mount(TSharedRef<IIoDispatcherBackend> Backend)
+FIoDispatcher::Mount(TSharedRef<IIoDispatcherBackend> Backend, int32 Priority)
 {
-	Impl->Mount(Backend);
+	Impl->Mount(Backend, Priority);
 }
 
 FIoBatch
@@ -957,7 +965,7 @@ FIoDispatcher::InitializePostSettings()
 void
 FIoDispatcher::Shutdown()
 {
-	GIoDispatcher.Reset();
+	TUniquePtr<FIoDispatcher> LocalIoDispatcher(MoveTemp(GIoDispatcher));
 }
 
 FIoDispatcher&
@@ -1077,7 +1085,7 @@ FIoBatch::IssueAndTriggerEvent(FEvent* Event)
 void
 FIoBatch::IssueAndDispatchSubsequents(FGraphEventRef Event)
 {
-	Dispatcher->IssueBatchAndDispatchSubsequents(*this, Event);
+	Dispatcher->IssueBatchAndDispatchSubsequents(*this, MoveTemp(Event));
 }
 
 //////////////////////////////////////////////////////////////////////////

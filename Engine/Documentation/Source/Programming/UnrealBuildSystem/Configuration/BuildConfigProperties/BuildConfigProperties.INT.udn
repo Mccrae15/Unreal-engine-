@@ -2,7 +2,7 @@ Availability: NoPublish
 Title: Build Configuration Properties Page
 Crumbs:
 Description: This is a procedurally generated markdown page.
-Version: 5.2
+Version: 5.3
 
 ### BuildConfiguration
 
@@ -11,8 +11,6 @@ $ bIgnoreOutdatedImportLibraries : Whether to ignore import library files that a
 $ bPrintDebugInfo : Whether debug info should be written to the console.
 
 $ bAllowHybridExecutor : Whether the hybrid executor will be used (a remote executor and local executor).
-
-$ bAllowHordeCompute : Whether Horde remote compute may be used. Highly experimental, disabled by default.
 
 $ bAllowXGE : Whether XGE may be used.
 
@@ -36,21 +34,31 @@ $ bAllCores : Consider logical cores when determining how many total cpu cores a
 
 $ bCompactOutput : Instruct the executor to write compact output e.g. only errors, if supported by the executor. This field is used to hold the value when specified from the command line or XML
 
+$ bArtifactRead : If set, artifacts will be read
+
+$ bArtifactWrites : If set, artifacts will be written
+
+$ bLogArtifactCacheMisses : If true, log all artifact cache misses as informational messages
+
+$ ArtifactDirectory : Location to store the artifacts.
+
+$ bUseUnityBuild : Whether to unify C++ code into larger files for faster compilation.
+
+$ bForceUnityBuild : Whether to force C++ source files to be combined into larger files for faster compilation.
+
 $ bDebugBuildsActuallyUseDebugCRT : Enables the debug C++ runtime (CRT) for debug builds. By default we always use the release runtime, since the debug version isn't particularly useful when debugging Unreal Engine projects, and linking against the debug CRT libraries forces our third party library dependencies to also be compiled using the debug CRT (and often perform more slowly). Often it can be inconvenient to require a separate copy of the debug versions of third party static libraries simply so that you can debug your program's code.
 
 $ bLegalToDistributeBinary : Whether the output from this target can be publicly distributed, even if it has dependencies on modules that are in folders with special restrictions (eg. CarefullyRedist, NotForLicensees, NoRedist).
 
 $ bUseVerse : Whether to use the verse script interface.
 
+$ bUseAutoRTFMCompiler : Whether to use the AutoRTFM Clang compiler.
+
 $ bUseInlining : Enable inlining for all modules.
 
 $ bUseDebugLiveCodingConsole : Whether to enable support for live coding
 
 $ bUseXGEController : Whether the XGE controller worker and modules should be included in the engine build. These are required for distributed shader compilation using the XGE interception interface.
-
-$ bUseUnityBuild : Whether to unify C++ code into larger files for faster compilation.
-
-$ bForceUnityBuild : Whether to force C++ source files to be combined into larger files for faster compilation.
 
 $ bMergeModuleAndGeneratedUnityFiles : Whether to merge module and generated unity files for faster compilation.
 
@@ -80,6 +88,14 @@ $ UnsafeTypeCastWarningLevel : Indicates what warning/error level to treat unsaf
 
 $ bUndefinedIdentifierErrors : Forces the use of undefined identifiers in conditional expressions to be treated as errors.
 
+$ PCHPerformanceIssueWarningLevel : Indicates what warning/error level to treat potential PCH performance issues.
+
+$ ModuleIncludePathWarningLevel : How to treat general module include path validation messages
+
+$ ModuleIncludePrivateWarningLevel : How to treat private module include path validation messages, where a module is adding an include path that exposes private headers
+
+$ ModuleIncludeSubdirectoryWarningLevel : How to treat unnecessary module sub-directory include path validation messages
+
 $ bRetainFramePointers : Forces frame pointers to be retained this is usually required when you want reliable callstacks e.g. mallocframeprofiler
 
 $ bUseFastMonoCalls : New Monolithic Graphics drivers have optional "fast calls" replacing various D3d functions
@@ -90,7 +106,7 @@ $ bDisableModuleNumIncludedBytesPerUnityCPPOverride : Disables overrides that ar
 
 $ bStressTestUnity : Whether to stress test the C++ unity build robustness by including all C++ files files in a project from a single unified file.
 
-$ bDetailedUnityFiles : Whether to add additional information to the unity files, such as '_of_X' in the file name.
+$ bDetailedUnityFiles : Whether to add additional information to the unity files, such as '_of_X' in the file name. Not recommended.
 
 $ bDisableDebugInfo : Whether to globally disable debug info generation; see DebugInfoHeuristics.cs for per-config and per-platform options.
 
@@ -102,11 +118,7 @@ $ bUsePDBFiles : Whether PDB files should be used for Visual C++ builds.
 
 $ bUsePCHFiles : Whether PCH files should be used.
 
-$ bDeterministic : Set flags require for determinstic linking (experimental, may not be fully supported). Deterministic compiling is controlled via ModuleRules.
-
-$ bForceDeterministic : Force set flags require for determinstic compiling and linking (experimental, may not be fully supported). This setting is only recommended for testing, instead:
-        * Set bDeterministic on a per module basis in ModuleRules to control deterministic compiling.
-        * Set bDeterministic on a per target basis in TargetRules to control deterministic linking.
+$ bChainPCHs : Whether PCHs should be chained when compiling with clang.
 
 $ bForceIncludePCHHeadersForGenCppFilesWhenPCHIsDisabled : Whether PCH headers should be force included for gen.cpp files when PCH is disabled.
 
@@ -135,6 +147,8 @@ $ ThinLTOCachePruningArguments : Arguments that will be applied to prune the Thi
 $ bPGOProfile : Whether to enable Profile Guided Optimization (PGO) instrumentation in this build.
 
 $ bPGOOptimize : Whether to optimize this build with Profile Guided Optimization (PGO).
+
+$ bCodeCoverage : Whether the target requires code coverage compilation and linking.
 
 $ bSupportEditAndContinue : Whether to support edit and continue.
 
@@ -174,9 +188,19 @@ $ bParseTimingInfoForTracing : Whether to parse timing data into a tracing file 
 
 $ bPublicSymbolsByDefault : Whether to expose all symbols as public by default on POSIX platforms
 
-$ CppStandard : Which C++ stanard to use for compiling this target
+$ MSVCCompileActionWeight : The weight(cpu/memory utilization) of a MSVC compile action
+
+$ ClangCompileActionWeight : The weight(cpu/memory utilization) of a clang compile action
 
 $ CStandard : Which C standard to use for compiling this target
+
+$ MinCpuArchX64 : Direct the compiler to generate AVX instructions wherever SSE or AVX intrinsics are used, on the x64 platforms that support it. Note that by enabling this you are changing the minspec for the PC platform, and the resultant executable will crash on machines without AVX support.
+
+$ bDeterministic : Set flags require for deterministic compiling and linking. Enabling deterministic mode for msvc disables codegen multithreading so compiling will be slower
+
+$ CppStandardEngine : Which C++ standard to use for compiling this target (for engine modules)
+
+$ CppStandard : Which C++ standard to use for compiling this target (for non-engine modules)
 
 $ bStopSNDBSCompilationAfterErrors : When enabled, SN-DBS will stop compiling targets after a compile error occurs.  Recommended, as it saves computing resources for others.
 
@@ -194,6 +218,8 @@ $ bSkipClangValidation : Disables clang build verification checks on static libr
 
 $ bEnableAddressSanitizer : Enables address sanitizer (ASan). Only supported for Visual Studio 2019 16.7.0 and up.
 
+$ bEnableLibFuzzer : Enables LibFuzzer. Only supported for Visual Studio 2022 17.0.0 and up.
+
 $ bEnableThreadSanitizer : Enables thread sanitizer (TSan).
 
 $ bEnableUndefinedBehaviorSanitizer : Enables undefined behavior sanitizer (UBSan).
@@ -202,7 +228,11 @@ $ bEnableMemorySanitizer : Enables memory sanitizer (MSan)
 
 $ bTuneDebugInfoForLLDB : Turns on tuning of debug info for LLDB
 
+$ bDisableDumpSyms : Whether to globally disable calling dump_syms
+
 $ bUseDSYMFiles : Enables the generation of .dsym files. This can be disabled to enable faster iteration times during development.
+
+$ bWriteSarif : Whether .sarif files containing errors and warnings are written alongside each .obj, if supported
 
 $ bWriteSolutionOptionFile : Whether to write a solution option (suo) file for the sln.
 
@@ -213,6 +243,10 @@ $ bAddFastPDBToProjects : Whether to add the -FastPDB option to build command li
 $ bUsePerFileIntellisense : Whether to generate per-file intellisense data.
 
 $ bEditorDependsOnShaderCompileWorker : Whether to include a dependency on ShaderCompileWorker when generating project files for the editor.
+
+$ TempDirectory : If set TMP\TEMP will be overidden to this directory, each process will create a unique subdirectory in this folder.
+
+$ bDeleteTempDirectory : If set the application temp directory will be deleted on exit, only when running with a single instance mutex.
 
 ### UEBuildConfiguration
 
@@ -236,19 +270,23 @@ $ MaxRootPathLength : Maximum recommended root path length.
 
 $ MaxNestedPathLength : Maximum length of a path relative to the root directory. Used on Windows to ensure paths are portable between machines. Defaults to off.
 
+$ bIgnoreStalePGOData : If -PGOOptimize is specified but the linker flags have changed since the last -PGOProfile, this will emit a warning and build without PGO instead of failing during link with LNK1268.
+
+$ bUseFastGenProfile : If specified along with -PGOProfile, then /FASTGENPROFILE will be used instead of /GENPROFILE. This usually means that the PGO data is generated faster, but the resulting data may not yield as efficient optimizations during -PGOOptimize
+
+$ bPGONoExtraCounters : If specified along with -PGOProfile, prevent the usage of extra counters. Please note that by default /FASTGENPROFILE doesnt use extra counters
+
 $ Compiler : Version of the compiler toolchain to use on Windows platform. A value of "default" will be changed to a specific version at UBT start up.
 
-$ CompilerVersion : The specific toolchain version to use. This may be a specific version number (for example, "14.13.26128"), the string "Latest" to select the newest available version, or the string "Preview" to select the newest available preview version. By default, and if it is available, we use the toolchain version indicated by WindowsPlatform.DefaultToolChainVersion (otherwise, we use the latest version).
+$ CompilerVersion : The specific compiler version to use. This may be a specific version number (for example, "14.13.26128"), the string "Latest" to select the newest available version, or the string "Preview" to select the newest available preview version. By default, and if it is available, we use the toolchain version indicated by WindowsPlatform.DefaultToolChainVersion (otherwise, we use the latest version).
+
+$ ToolchainVersion : The specific msvc toolchain version to use if the compiler is not msvc. This may be a specific version number (for example, "14.13.26128"), the string "Latest" to select the newest available version, or the string "Preview" to select the newest available preview version. By default, and if it is available, we use the toolchain version indicated by WindowsPlatform.DefaultToolChainVersion (otherwise, we use the latest version).
+
+$ bVCFastFail : True if /fastfail should be passed to the msvc compiler and linker
 
 $ bAllowClangLinker : True if we should use the Clang linker (LLD) when we are compiling with Clang, or Intel linker (xilink\xilib) when we are compiling with Intel oneAPI, otherwise we use the MSVC linker.
 
 $ WindowsSdkVersion : The specific Windows SDK version to use. This may be a specific version number (for example, "8.1", "10.0" or "10.0.10150.0"), or the string "Latest", to select the newest available version. By default, and if it is available, we use the Windows SDK version indicated by WindowsPlatform.DefaultWindowsSdkVersion (otherwise, we use the latest version).
-
-$ StaticAnalyzer : The static analyzer to use.
-
-$ StaticAnalyzerOutputType : The output type to use for the static analyzer.
-
-$ bStrictConformanceMode : Enables strict standard conformance mode (/permissive-).
 
 $ bUpdatedCPPMacro : Enables updated __cplusplus macro (/Zc:__cplusplus).
 
@@ -262,19 +300,27 @@ $ PCHMemoryAllocationFactor : Determines the amount of memory that the compiler 
 
 $ AdditionalLinkerOptions : Allow the target to specify extra options for linking that aren't otherwise noted here
 
-$ bUseFastGenProfile : If specified along with -PGOProfile, then /FASTGENPROFILE will be used instead of /GENPROFILE. This usually means that the PGO data is generated faster, but the resulting data may not yield as efficient optimizations during -PGOOptimize
-
 $ bClangTimeTrace : (Experimental) Appends the -ftime-trace argument to the command line for Clang to output a JSON file containing a timeline for the compile. See http://aras-p.info/blog/2019/01/16/time-trace-timeline-flame-chart-profiler-for-Clang/ for more info.
 
 $ bCompilerTrace : Outputs compile timing information so that it can be analyzed.
 
 $ bShowIncludes : Print out files that are included by each source file
 
+$ InlineFunctionExpansionLevel : Which level to use for Inline Function Expansion when TargetRules.bUseInlining is enabled
+
+$ ToolChain : Version of the toolchain to use on Windows platform when a non-msvc Compiler is in use, to locate include paths etc.
+
+$ bStrictConformanceMode : Enables strict standard conformance mode (/permissive-).
+
 ### TargetRules
+
+$ bCompileChaosVisualDebuggerSupport : Whether to compile in Chaos Visual Debugger (CVD) support features to record the state of the physics simulation
 
 $ bDisableInliningGenCpps : Disable supports for inlining gen.cpps
 
 ### ModuleConfiguration
+
+$ DisableMergingModuleAndGeneratedFilesInUnityFiles : List of modules that disables merging module and generated cpp files in the same unity files.
 
 $ DisableUnityBuild : List of modules to disable unity builds for
 
@@ -282,7 +328,13 @@ $ EnableOptimizeCode : List of modules to enable optimizations for
 
 $ DisableOptimizeCode : List of modules to disable optimizations for
 
+$ OptimizeForSize : List of modules to optimize for size. This allows the target to override module optimization level Note that this may disable PCH usage if a private PCH is not provided
+
+$ OptimizeForSizeAndSpeed : List of modules to optimize for size and speed. This allows the target to override module optimization level Note that this may disable PCH usage if a private PCH is not provided
+
 ### TestTargetRules
+
+$ bCompileChaosVisualDebuggerSupport : Whether to compile in Chaos Visual Debugger (CVD) support features to record the state of the physics simulation
 
 $ bDisableInliningGenCpps : Disable supports for inlining gen.cpps
 
@@ -308,13 +360,7 @@ $ bStopOnError : Whether to stop on error
 
 $ MsvcCRTRedistVersion : Which MSVC CRT Redist version to use
 
-### HordeExecutor
-
-$ NumRemoteParallelProcesses : How many processes that will be executed in parallel remotely
-
-$ RemoteProcessOnly : Only run work remotely, for testing
-
-$ RetryFailedRemote : Retry actions locally when failed remotely.
+$ CompilerVersion : Which MSVC Compiler version to use
 
 ### ParallelExecutor
 
@@ -335,6 +381,10 @@ $ bShowPerActionCompilationTimes : Whether to show compilation times for each ex
 $ bLogActionCommandLines : Whether to log command lines for actions being executed
 
 $ bPrintActionTargetNames : Add target names for each action executed
+
+$ bUseActionWeights : Whether to take into account the Action's weight when determining to do more work or not.
+
+$ bShowCPUUtilization : Whether to show CPU utilization after the work is complete.
 
 ### SNDBS
 
@@ -399,6 +449,8 @@ $ bKeepSourceSubDirectories : True if we should reflect "Source" sub-directories
 $ Platforms : Names of platforms to include in the generated project files
 
 $ Configurations : Names of configurations to include in the generated project files. See UnrealTargetConfiguration for valid entries
+
+$ bGatherThirdPartySource : If true, we'll parse subdirectories of third-party projects to locate source and header files to include in the generated projects.  This can make the generated projects quite a bit bigger, but makes it easier to open files directly from the IDE.
 
 $ PrimaryProjectName : Name of the primary project file -- for example, the base file name for the Visual Studio solution file, or the Xcode project file on Mac.
 
@@ -640,6 +692,8 @@ $ AddDebugCoreConfig : Whether VS Code project generation should include debug c
 
 $ NoCompileCommands : Do not create compile commands json files with compiler arguments for each file; works better with VS Code extension using UBT server mode.
 
+$ UseVSCodeExtension : Create a workspace file for use with VS Code extension that communicates directly with UBT.
+
 $ bIncludeDocumentation : True if we should include documentation in the generated projects.
 
 $ bUsePrecompiled : True if build targets should pass the -useprecompiled argument.
@@ -773,10 +827,6 @@ $ SshPrivateKey : If set, instead of looking for RemoteToolChainPrivate.key in t
 $ RsyncAuthentication : The authentication used for Rsync (for the -e rsync flag).
 
 $ SshAuthentication : The authentication used for SSH (probably similar to RsyncAuthentication).
-
-### HoloLensPlatform
-
-$ Compiler : Version of the compiler toolchain to use on HoloLens. A value of "default" will be changed to a specific version at UBT startup.
 
 ### Log
 

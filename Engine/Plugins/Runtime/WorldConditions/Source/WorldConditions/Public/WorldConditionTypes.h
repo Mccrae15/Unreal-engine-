@@ -82,6 +82,15 @@ namespace UE::WorldCondition
 		return ((InResult == EWorldConditionResultValue::IsTrue) ^ bInvert) ? EWorldConditionResultValue::IsTrue : EWorldConditionResultValue::IsFalse;
 	}
 
+	inline EWorldConditionResultValue FromOptional(const TOptional<bool>& InOptionalBool)
+	{
+		if (!InOptionalBool.IsSet())
+		{
+			return EWorldConditionResultValue::Invalid;
+		}
+		return InOptionalBool.GetValue() ? EWorldConditionResultValue::IsTrue : EWorldConditionResultValue::IsFalse;
+	}
+
 } // UE::WorldCondition
 
 /**
@@ -218,7 +227,7 @@ struct FWorldConditionDataView
 
 	/** @return Pointer to object stored in the view. */
 	template <typename T>
-	typename TEnableIf<TIsDerivedFrom<T, UObject>::IsDerived, const T*>::Type GetPtr() const
+	typename TEnableIf<TIsDerivedFrom<T, UObject>::IsDerived, T*>::Type GetPtr() const
 	{
 		// If Memory is set, expect Struct too. Otherwise, let nulls pass through.
 		check(!Memory || (Memory && Struct));
@@ -228,7 +237,7 @@ struct FWorldConditionDataView
 
 	/** @return Pointer to struct stored in the view. */
 	template <typename T>
-    typename TEnableIf<!TIsDerivedFrom<T, UObject>::IsDerived, const T*>::Type GetPtr() const
+    typename TEnableIf<!TIsDerivedFrom<T, UObject>::IsDerived, T*>::Type GetPtr() const
 	{
 		// If Memory is set, expect Struct too. Otherwise, let nulls pass through.
 		check(!Memory || (Memory && Struct));

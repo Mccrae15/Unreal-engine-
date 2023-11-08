@@ -22,6 +22,7 @@
 #include "UObject/UnrealNames.h"
 #include "UObject/WeakObjectPtr.h"
 #include "UObject/WeakObjectPtrTemplates.h"
+#include "WorldPartition/WorldPartitionHandle.h"
 #include "WorldPartition/DataLayer/ActorDataLayer.h"
 #include "WorldPartition/DataLayer/DataLayerInstance.h"
 #include "WorldPartition/DataLayer/WorldDataLayers.h"
@@ -58,6 +59,9 @@ struct DATALAYEREDITOR_API FDataLayerCreationParameters
 	// Optional. Will default at the level WorldDataLayers if unset.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Data Layer")
 	TObjectPtr<AWorldDataLayers> WorldDataLayers;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Data Layer")
+	bool bIsPrivate;
 };
 
 UCLASS()
@@ -109,9 +113,6 @@ public:
 	//~ End IActorEditorContextClient interface
 	void AddToActorEditorContext(UDataLayerInstance* InDataLayerInstance);
 	void RemoveFromActorEditorContext(UDataLayerInstance* InDataLayerInstance);
-
-	void OnWorldDataLayersPostRegister(AWorldDataLayers* WorldDataLayers);
-	void OnWorldDataLayersPreUnregister(AWorldDataLayers* WorldDataLayers);
 
 	TArray<const UDataLayerInstance*> GetDataLayerInstances(const TArray<const UDataLayerAsset*> DataLayerAssets) const;
 
@@ -617,6 +618,11 @@ public:
 	*/
 	bool HasDeprecatedDataLayers() const;
 
+	/**
+	 * Assign new unique short name to DataLayerInstance if it supports it. 
+	 */
+	bool SetDataLayerShortName(UDataLayerInstance* InDataLayerInstance, const FString& InNewShortName);
+
 	//~ Begin Deprecated
 
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
@@ -634,10 +640,7 @@ public:
 	UE_DEPRECATED(5.0, "Per-view Data Layer visibility was removed.")
 	UFUNCTION(BlueprintCallable, Category = DataLayers, meta = (DeprecatedFunction, DeprecationMessage = "Per-view Data Layer visibility was removed."))
 	void UpdateActorAllViewsVisibility(AActor* Actor) {}
-
-	UE_DEPRECATED(5.0, "Per-view Data Layer visibility was removed.")
-	void RemoveViewFromActorViewVisibility(FLevelEditorViewportClient* ViewportClient);
-
+		
 	UE_DEPRECATED(5.0, "Use SetDataLayerIsLoadedInEditor() instead.")
 	UFUNCTION(BlueprintCallable, Category = DataLayers, meta = (DeprecatedFunction, DeprecationMessage = "Use SetDataLayerIsLoadedInEditor instead"))
 	bool SetDataLayerIsDynamicallyLoadedInEditor(UDEPRECATED_DataLayer* DataLayer, const bool bIsLoadedInEditor, const bool bIsFromUserChange) { return false; }
@@ -655,10 +658,7 @@ public:
 	bool ToggleDataLayersIsDynamicallyLoadedInEditor(const TArray<UDEPRECATED_DataLayer*>& DataLayers, const bool bIsFromUserChange) { return false; }
 
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
-	UE_DEPRECATED(5.1, "Use GetDataLayerInstance instead")
-	bool TryGetDataLayerFromLabel(const FName& DataLayerLabel, UDataLayerInstance*& OutDataLayer) const;
-
+			
 	UE_DEPRECATED(5.1, "Use GetDataLayerInstance instead")
 	UFUNCTION(BlueprintCallable, Category = DataLayers)
 	UDataLayerInstance* GetDataLayer(const FActorDataLayer& ActorDataLayer) const;
@@ -716,12 +716,16 @@ private:
 
 	bool SetDataLayerIsLoadedInEditorInternal(UDataLayerInstance* DataLayer, const bool bIsLoadedInEditor, const bool bIsFromUserChange);
 
+	bool PassDataLayersFilter(UWorld* World, const FWorldPartitionHandle& ActorHandle);
+
 	void BroadcastActorDataLayersChanged(const TWeakObjectPtr<AActor>& ChangedActor);
 	void BroadcastDataLayerChanged(const EDataLayerAction Action, const TWeakObjectPtr<const UDataLayerInstance>& ChangedDataLayer, const FName& ChangedProperty);
 	void BroadcastDataLayerEditorLoadingStateChanged(bool bIsFromUserChange);
 	void OnSelectionChanged();
 	void RebuildSelectedDataLayersFromEditorSelection();
 	const TSet<TWeakObjectPtr<const UDataLayerInstance>>& GetSelectedDataLayersFromEditorSelection() const;
+
+	bool UpdateAllActorsVisibility(const bool bNotifySelectionChange, const bool bRedrawViewports, ULevel* InLevel);
 
 	/** Contains Data Layers that contain actors that are part of the editor selection */
 	mutable TSet<TWeakObjectPtr<const UDataLayerInstance>> SelectedDataLayersFromEditorSelection;

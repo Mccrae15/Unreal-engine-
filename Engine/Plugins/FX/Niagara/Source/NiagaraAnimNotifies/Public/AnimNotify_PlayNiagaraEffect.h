@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "Animation/AnimNotifies/AnimNotify.h"
 
@@ -13,34 +12,33 @@
 class UAnimSequenceBase;
 class UNiagaraSystem;
 class USkeletalMeshComponent;
-class UNiagaraSystemComponent;
 class UNiagaraSystem;
 class UFXSystemComponent;
 
-UCLASS(const, hidecategories = Object, collapsecategories, meta = (DisplayName = "Play Niagara Particle Effect"))
-class NIAGARAANIMNOTIFIES_API UAnimNotify_PlayNiagaraEffect : public UAnimNotify
+UCLASS(const, hidecategories = Object, collapsecategories, meta = (DisplayName = "Play Niagara Particle Effect"), MinimalAPI)
+class UAnimNotify_PlayNiagaraEffect : public UAnimNotify
 {
 	GENERATED_BODY()
 
 public:
 
-	UAnimNotify_PlayNiagaraEffect();
+	NIAGARAANIMNOTIFIES_API UAnimNotify_PlayNiagaraEffect();
 
 	// Begin UObject interface
-	virtual void PostLoad() override;
+	NIAGARAANIMNOTIFIES_API virtual void PostLoad() override;
 #if WITH_EDITOR
-	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+	NIAGARAANIMNOTIFIES_API virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 	// End UObject interface
 
 	// Begin UAnimNotify interface
-	virtual FString GetNotifyName_Implementation() const override;
+	NIAGARAANIMNOTIFIES_API virtual FString GetNotifyName_Implementation() const override;
 	
 	UE_DEPRECATED(5.0, "Please use the other Notify function instead")
-	virtual void Notify(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation) override;
-	virtual void Notify(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation, const FAnimNotifyEventReference& EventReference) override;
+	NIAGARAANIMNOTIFIES_API virtual void Notify(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation) override;
+	NIAGARAANIMNOTIFIES_API virtual void Notify(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation, const FAnimNotifyEventReference& EventReference) override;
 #if WITH_EDITOR
-	virtual void ValidateAssociatedAssets() override;
+	NIAGARAANIMNOTIFIES_API virtual void ValidateAssociatedAssets() override;
 #endif
 	// End UAnimNotify interface
 
@@ -66,7 +64,7 @@ public:
 
 	// Return FXSystemComponent created from SpawnEffect
 	UFUNCTION(BlueprintCallable, Category = "AnimNotify")
-	UFXSystemComponent* GetSpawnedEffect();
+	NIAGARAANIMNOTIFIES_API UFXSystemComponent* GetSpawnedEffect();
 
 protected:
 
@@ -77,7 +75,7 @@ protected:
 	FQuat RotationOffsetQuat;
 
 	// Spawns the NiagaraSystemComponent. Called from Notify.
-	virtual UFXSystemComponent* SpawnEffect(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation);
+	NIAGARAANIMNOTIFIES_API virtual UFXSystemComponent* SpawnEffect(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation);
 
 
 public:
@@ -93,3 +91,7 @@ public:
 
 
 
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_3
+#include "CoreMinimal.h"
+#endif

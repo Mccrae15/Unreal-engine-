@@ -283,6 +283,15 @@ void UEdGraph::NotifyGraphChanged()
 	OnGraphChanged.Broadcast(Action);
 }
 
+void UEdGraph::NotifyNodeChanged(const UEdGraphNode* Node)
+{
+	FEdGraphEditAction Action;
+	Action.Graph = this;
+	Action.Action = GRAPHACTION_EditNode;
+	Action.Nodes.Add(Node);
+	NotifyGraphChanged(Action);
+}
+
 void UEdGraph::NotifyGraphChanged(const FEdGraphEditAction& InAction)
 {
 	OnGraphChanged.Broadcast(InAction);

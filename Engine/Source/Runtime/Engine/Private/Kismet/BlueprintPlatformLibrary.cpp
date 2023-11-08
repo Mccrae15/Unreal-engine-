@@ -18,7 +18,7 @@ void UPlatformGameInstance::PostInitProperties()
     FCoreDelegates::ApplicationHasReactivatedDelegate.AddUObject(this, &UPlatformGameInstance::ApplicationHasReactivatedDelegate_Handler);
     FCoreDelegates::ApplicationWillEnterBackgroundDelegate.AddUObject(this, &UPlatformGameInstance::ApplicationWillEnterBackgroundDelegate_Handler);
     FCoreDelegates::ApplicationHasEnteredForegroundDelegate.AddUObject(this, &UPlatformGameInstance::ApplicationHasEnteredForegroundDelegate_Handler);
-    FCoreDelegates::ApplicationWillTerminateDelegate.AddUObject(this, &UPlatformGameInstance::ApplicationWillTerminateDelegate_Handler);
+    FCoreDelegates::GetApplicationWillTerminateDelegate().AddUObject(this, &UPlatformGameInstance::ApplicationWillTerminateDelegate_Handler);
 	FCoreDelegates::ApplicationShouldUnloadResourcesDelegate.AddUObject(this, &UPlatformGameInstance::ApplicationShouldUnloadResourcesDelegate_Handler);
 	FCoreDelegates::ApplicationReceivedStartupArgumentsDelegate.AddUObject(this, &UPlatformGameInstance::ApplicationReceivedStartupArgumentsDelegate_Handler);
     FCoreDelegates::ApplicationRegisteredForRemoteNotificationsDelegate.AddUObject(this, &UPlatformGameInstance::ApplicationRegisteredForRemoteNotificationsDelegate_Handler);
@@ -36,7 +36,7 @@ void UPlatformGameInstance::BeginDestroy()
 	FCoreDelegates::ApplicationHasReactivatedDelegate.RemoveAll(this);
 	FCoreDelegates::ApplicationWillEnterBackgroundDelegate.RemoveAll(this);
 	FCoreDelegates::ApplicationHasEnteredForegroundDelegate.RemoveAll(this);
-	FCoreDelegates::ApplicationWillTerminateDelegate.RemoveAll(this);
+	FCoreDelegates::GetApplicationWillTerminateDelegate().RemoveAll(this);
  	FCoreDelegates::ApplicationShouldUnloadResourcesDelegate.RemoveAll(this);
  	FCoreDelegates::ApplicationReceivedStartupArgumentsDelegate.RemoveAll(this);
 	FCoreDelegates::ApplicationRegisteredForRemoteNotificationsDelegate.RemoveAll(this);
@@ -163,7 +163,7 @@ void UBlueprintPlatformLibrary::CancelLocalNotificationById(int32 NotificationId
 		return;
 	}
 	
-	UE_LOG(LogBlueprintUserMessages, Log, TEXT("Canceling notification %f"), NotificationId);
+	UE_LOG(LogBlueprintUserMessages, Log, TEXT("Canceling notification %d"), NotificationId);
 	
 	platformService->CancelLocalNotification(NotificationId);
 }

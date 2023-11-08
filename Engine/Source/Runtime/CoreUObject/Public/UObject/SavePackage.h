@@ -11,6 +11,7 @@
 #include "Delegates/Delegate.h"
 #include "Logging/LogMacros.h"
 #include "Misc/DateTime.h"
+#include "Misc/EnumClassFlags.h"
 #include "Misc/Optional.h"
 #include "Misc/OutputDeviceError.h"
 #include "ObjectMacros.h"
@@ -30,7 +31,6 @@ class UObject;
 #endif
 
 class FArchive;
-class FArchiveDiffMap;
 class FCbFieldView;
 class FCbWriter;
 class FIoBuffer;
@@ -88,8 +88,6 @@ struct FSavePackageArgs
 	FOutputDevice* Error = GError;
 	/** Structure to hold longer-lifetime parameters that apply to multiple saves */
 	FSavePackageContext* SavePackageContext = nullptr;
-	UE_DEPRECATED(5.0, "FArchiveDiffMap is no longer used; it is now implemented by DiffPackageWriter.")
-	FArchiveDiffMap* DiffMap = nullptr;
 	UE_DEPRECATED(4.27, "UPackage::Guid has not been used by the engine for a long time and it will be removed.")
 	TOptional<FGuid> OutputPackageGuid;
 
@@ -136,37 +134,47 @@ public:
 	{
 	}
 
-	virtual ESavePackageResult ValidateImports(const UPackage* Package, const TSet<UObject*>& Imports) = 0;
+	virtual ESavePackageResult ValidateImports(const UPackage* Package, const TSet<TObjectPtr<UObject>>& Imports) = 0;
 };
 
 
 /** Param struct for external import validation functions */
 struct FImportsValidationContext
 {
-	FImportsValidationContext(const UPackage* InPackage, const TSet<UObject*>& InImports, FOutputDevice* InOutputDevice)
+	FImportsValidationContext(const UPackage* InPackage, const TSet<TObjectPtr<UObject>>& InImports, FOutputDevice* InOutputDevice)
 		: Package(InPackage)
 		, Imports(InImports)
 		, OutputDevice(InOutputDevice)
 	{}
 
 	const UPackage* Package;
-	const TSet<UObject*>& Imports;
+	const TSet<TObjectPtr<UObject>>& Imports;
 	FOutputDevice* OutputDevice;
 };
 
 /** Param struct for external export validation functions */
 struct FExportsValidationContext
 {
-	FExportsValidationContext(const UPackage* InPackage, const TSet<UObject*>& InExports, FOutputDevice* InOutputDevice)
+	enum class EFlags
+	{
+		None		= 0,
+		IsCooking	= 1 << 0,
+	};
+
+	FExportsValidationContext(const UPackage* InPackage, const TSet<UObject*>& InExports, EFlags InFlags,
+		FOutputDevice* InOutputDevice)
 		: Package(InPackage)
 		, Exports(InExports)
+		, Flags(InFlags)
 		, OutputDevice(InOutputDevice)
 	{}
 
 	const UPackage* Package;
 	const TSet<UObject*>& Exports;
+	const EFlags Flags;
 	FOutputDevice* OutputDevice;
 };
+ENUM_CLASS_FLAGS(FExportsValidationContext::EFlags)
 
 /** struct persistent settings used by all save unless overridden. @see FSavePackageContext */
 class FSavePackageSettings
@@ -180,25 +188,25 @@ public:
 	/** Get the default settings by save when none are specified. */
 	COREUOBJECT_API static FSavePackageSettings& GetDefaultSettings();
 
-	COREUOBJECT_API bool IsDefault() const
+	bool IsDefault() const
 	{
 		return ExternalImportValidations.Num() == 0 && ExternalExportValidations.Num() == 0;
 	}
 
-	COREUOBJECT_API const TArray<TFunction<ExternalImportValidationFunc>>& GetExternalImportValidations() const
+	const TArray<TFunction<ExternalImportValidationFunc>>& GetExternalImportValidations() const
 	{
 		return ExternalImportValidations;
 	}
-	COREUOBJECT_API const TArray<TFunction<ExternalExportValidationFunc>>& GetExternalExportValidations() const
+	const TArray<TFunction<ExternalExportValidationFunc>>& GetExternalExportValidations() const
 	{
 		return ExternalExportValidations;
 	}
 
-	COREUOBJECT_API void AddExternalImportValidation(TFunction<ExternalImportValidationFunc> InValidation)
+	void AddExternalImportValidation(TFunction<ExternalImportValidationFunc> InValidation)
 	{
 		ExternalImportValidations.Add(MoveTemp(InValidation));
 	}
-	COREUOBJECT_API void AddExternalExportValidation(TFunction<ExternalExportValidationFunc> InValidation)
+	void AddExternalExportValidation(TFunction<ExternalExportValidationFunc> InValidation)
 	{
 		ExternalExportValidations.Add(MoveTemp(InValidation));
 	}
@@ -236,18 +244,18 @@ public:
 	{
 		return Validator.Get();	
 	}
-	COREUOBJECT_API void SetValidator(TUniquePtr<ISavePackageValidator>&& InValidator)
+	void SetValidator(TUniquePtr<ISavePackageValidator>&& InValidator)
 	{
 		Validator = MoveTemp(InValidator);
 	}
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
-	COREUOBJECT_API const TArray<TFunction<FSavePackageSettings::ExternalImportValidationFunc>>& GetExternalImportValidations() const
+	const TArray<TFunction<FSavePackageSettings::ExternalImportValidationFunc>>& GetExternalImportValidations() const
 	{
 		return SavePackageSettings.GetExternalImportValidations();
 	}
 
-	COREUOBJECT_API const TArray<TFunction<FSavePackageSettings::ExternalExportValidationFunc>>& GetExternalExportValidations() const
+	const TArray<TFunction<FSavePackageSettings::ExternalExportValidationFunc>>& GetExternalExportValidations() const
 	{
 		return SavePackageSettings.GetExternalExportValidations();
 	}
@@ -304,7 +312,9 @@ namespace UE::SavePackageUtilities
 	COREUOBJECT_API void VerifyEDLCookInfo(bool bFullReferencesExpected = true);
 	COREUOBJECT_API void EDLCookInfoAddIterativelySkippedPackage(FName LongPackageName);
 	COREUOBJECT_API void EDLCookInfoMoveToCompactBinaryAndClear(FCbWriter& Writer, bool& bOutHasData);
+	COREUOBJECT_API void EDLCookInfoMoveToCompactBinaryAndClear(FCbWriter& Writer, bool& bOutHasData, FName PackageName);
 	COREUOBJECT_API bool EDLCookInfoAppendFromCompactBinary(FCbFieldView Field);
+	COREUOBJECT_API bool CanSkipEditorReferencedPackagesWhenCooking();
 
 
 #if WITH_EDITOR

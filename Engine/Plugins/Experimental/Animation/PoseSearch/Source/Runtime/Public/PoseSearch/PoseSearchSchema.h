@@ -5,39 +5,26 @@
 #include "BoneContainer.h"
 #include "Engine/DataAsset.h"
 #include "Interfaces/Interface_BoneReferenceSkeletonProvider.h"
+#include "PoseSearch/PoseSearchFeatureChannel.h"
 #include "PoseSearchSchema.generated.h"
 
 struct FBoneReference;
-struct FPoseSearchFeatureVectorBuilder;
 class UMirrorDataTable;
-class UPoseSearchFeatureChannel;
-
-namespace UE::PoseSearch
-{
-	struct FSearchContext;
-} // namespace UE::PoseSearch
 
 UENUM()
 enum class EPoseSearchDataPreprocessor : int32
 {
+	// The data will be left untouched.
 	None,
+
+	// The data will be normalized against its deviation, and the user weights will be normalized to be a unitary vector.
 	Normalize,
+
+	// The data will be normalized against its deviation
 	NormalizeOnlyByDeviation,
 
 	Num UMETA(Hidden),
 	Invalid = Num UMETA(Hidden)
-};
-
-USTRUCT()
-struct FPoseSearchSchemaColorPreset
-{
-	GENERATED_BODY()
-
-	UPROPERTY(EditAnywhere, Category = "Colors", meta = (ExcludeFromHash))
-	FLinearColor Query = FLinearColor::Blue;
-
-	UPROPERTY(EditAnywhere, Category = "Colors", meta = (ExcludeFromHash))
-	FLinearColor Result = FLinearColor::Yellow;
 };
 
 /**
@@ -49,71 +36,104 @@ class POSESEARCH_API UPoseSearchSchema : public UDataAsset, public IBoneReferenc
 	GENERATED_BODY()
 
 public:
-	// @todo: used only for indexing: cache it somewhere else
-	UPROPERTY(EditAnywhere, Category = "Schema")
+	// Skeleton Reference for Motion Matching Database assets. Must be set to a compatible skeleton to the animation data in the database.
+	UPROPERTY(EditAnywhere, Category = "Schema", meta = (DisplayPriority = 0))
 	TObjectPtr<USkeleton> Skeleton;
 
-	UPROPERTY(EditAnywhere, meta = (ClampMin = "1", ClampMax = "240"), Category = "Schema")
+	// The update rate at which we sample the animation data in the database. The higher the SampleRate the more refined your searches will be, but the more memory will be required
+	UPROPERTY(EditAnywhere, Category = "Schema", meta = (DisplayPriority = 3, ClampMin = "1", ClampMax = "240"))
 	int32 SampleRate = 30;
 
-	UPROPERTY(EditAnywhere, Instanced, BlueprintReadWrite, Category = "Schema")
+private:
+	// Channels itemize the cost breakdown of the config in simpler parts such as position or velocity of a bones, or phase of limbs. The total cost of a query against an indexed database pose will be the sum of the combined channel costs
+	UPROPERTY(EditAnywhere, Instanced, Category = "Schema")
 	TArray<TObjectPtr<UPoseSearchFeatureChannel>> Channels;
 
-	// If set, this schema will support mirroring pose search databases
-	UPROPERTY(EditAnywhere, Category = "Schema")
+	// FinalizedChannels gets populated with UPoseSearchFeatureChannel(s) from Channels and additional injected ones during the Finalize.
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UPoseSearchFeatureChannel>> FinalizedChannels;
+
+public:
+	// Setting up and assigning a mirror data table will allow all your assets in your database to access the mirrored version of the data. This is required for mirroring to work with Motion Matching.
+	UPROPERTY(EditAnywhere, Category = "Schema", meta = (DisplayPriority = 1))
 	TObjectPtr<UMirrorDataTable> MirrorDataTable;
 
-	UPROPERTY(EditAnywhere, Category = "Schema")
+	// Type of operation performed to the full pose features dataset
+	UPROPERTY(EditAnywhere, Category = "Schema", meta = (DisplayPriority = 2))
 	EPoseSearchDataPreprocessor DataPreprocessor = EPoseSearchDataPreprocessor::Normalize;
 
 	UPROPERTY(Transient)
 	int32 SchemaCardinality = 0;
 
-	// @todo: used only for indexing: cache it somewhere else
 	UPROPERTY(Transient)
 	TArray<FBoneReference> BoneReferences;
 
 	UPROPERTY(Transient)
 	TArray<uint16> BoneIndicesWithParents;
 
-	// cost added to the continuing pose from databases that uses this schema
-	UPROPERTY(EditAnywhere, Category = "Schema")
-	float ContinuingPoseCostBias = 0.f;
+	// Cost added to the continuing pose from databases that uses this config. This allows users to apply a cost bias (positive or negative) to the continuing pose.
+	// This is useful to help the system stay in one animation segment longer, or shorter depending on how you set this bias.
+	// Negative values make it more likely to be picked, or stayed in, positive values make it less likely to be picked or stay in.
+	UPROPERTY(EditAnywhere, Category = "Bias")
+	float ContinuingPoseCostBias = -0.01f;
 
-	// base cost added to all poses from databases that uses this schema. it can be overridden by UAnimNotifyState_PoseSearchModifyCost
-	UPROPERTY(EditAnywhere, Category = "Schema")
+	// Base Cost added or removed to all poses from databases that use this config. It can be overridden by Anim Notify: Pose Search Modify Cost at the frame level of animation data.
+	// Negative values make it more likely to be picked, or stayed in, Positive values make it less likely to be picked or stay in.
+	UPROPERTY(EditAnywhere, Category = "Bias")
 	float BaseCostBias = 0.f;
 
-	// If there's a mirroring mismatch between the currently playing asset and a search candidate, this cost will be 
-	// added to the candidate, making it less likely to be selected
-	UPROPERTY(EditAnywhere, Category = "Schema")
-	float MirrorMismatchCostBias = 0.f;
+	// Cost added to all looping animation assets in a database that uses this config. This allows users to make it more or less likely to pick the looping animation segments.
+	// Negative values make it more likely to be picked, or stayed in, Positive values make it less likely to be picked or stay in.
+	UPROPERTY(EditAnywhere, Category = "Bias")
+	float LoopingCostBias = -0.005f;
 
-	UPROPERTY(EditAnywhere, Category = "Schema", meta = (ExcludeFromHash))
-	TArray<FPoseSearchSchemaColorPreset> ColorPresets;
-	
+	// How many times the animation assets of the database using this schema will be indexed.
+	UPROPERTY(EditAnywhere, Category = "Permutations", meta = (ClampMin = "1"))
+	int32 NumberOfPermutations = 1;
+
+	// Delta time between every permutation indexing.
+	UPROPERTY(EditAnywhere, Category = "Permutations", meta = (ClampMin = "1", ClampMax = "240", EditCondition = "NumberOfPermutations > 1", EditConditionHides))
+	int32 PermutationsSampleRate = 30;
+
+	// Starting offset of the "PermutationTime" from the "SamplingTime" of the first permutation.
+	// subsequent permutations will have PermutationTime = SamplingTime + PermutationsTimeOffset + PermutationIndex / PermutationsSampleRate.
+	UPROPERTY(EditAnywhere, Category = "Permutations")
+	float PermutationsTimeOffset = 0.f;
+
+	// if true a padding channel will be added to make sure the data is 16 bytes (aligned) and padded, to facilitate performance improvements at cost of eventual additional memory
+	UPROPERTY(EditAnywhere, Category = "Performance")
+	bool bAddDataPadding = false;
+
+	// If bInjectAdditionalDebugChannels is true, channels will be asked to inject additional channels into this schema.
+	// the original intent is to add UPoseSearchFeatureChannel_Position(s) to help with the complexity of the debug drawing
+	// (the database will have all the necessary positions to draw lines at the right location and time).
+	UPROPERTY(EditAnywhere, Category = "Debug")
+	bool bInjectAdditionalDebugChannels;
+
 	bool IsValid () const;
 
-	float GetSamplingInterval() const { return 1.0f / SampleRate; }
+	TConstArrayView<TObjectPtr<UPoseSearchFeatureChannel>> GetChannels() const { return FinalizedChannels; }
+
+	void AddChannel(UPoseSearchFeatureChannel* Channel);
+	void AddTemporaryChannel(UPoseSearchFeatureChannel* DependentChannel);
+
+	template <typename FindPredicateType>
+	const UPoseSearchFeatureChannel* FindChannel(FindPredicateType FindPredicate) const
+	{
+		return FindChannelRecursive(GetChannels(), FindPredicate);
+	}
 
 	template<typename ChannelType>
 	const ChannelType* FindFirstChannelOfType() const
 	{
-		for (const TObjectPtr<UPoseSearchFeatureChannel>& ChannelPtr : Channels)
-		{
-			if (const ChannelType* Channel = Cast<const ChannelType>(ChannelPtr.Get()))
-			{
-				return Channel;
-			}
-		}
-		return nullptr;
+		return static_cast<const ChannelType*>(FindChannel([this](const UPoseSearchFeatureChannel* Channel) -> const UPoseSearchFeatureChannel* { return Cast<ChannelType>(Channel); }));
 	}
 
 	// UObject
 	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 	virtual void PostLoad() override;
 
-	int32 AddBoneReference(const FBoneReference& BoneReference);
+	int8 AddBoneReference(const FBoneReference& BoneReference);
 
 	// IBoneReferenceSkeletonProvider
 	USkeleton* GetSkeleton(bool& bInvalidSkeletonIsError, const IPropertyHandle* PropertyHandle) override;
@@ -122,12 +142,33 @@ public:
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 
-	void BuildQuery(UE::PoseSearch::FSearchContext& SearchContext, FPoseSearchFeatureVectorBuilder& InOutQuery) const;
+	void BuildQuery(UE::PoseSearch::FSearchContext& SearchContext, UE::PoseSearch::FFeatureVectorBuilder& InOutQuery) const;
 
-	static constexpr FBoneIndexType RootBoneIdx = 0xFFFF;
 	FBoneIndexType GetBoneIndexType(int8 SchemaBoneIdx) const;
 
+	bool IsRootBone(int8 SchemaBoneIdx) const;
+	
 private:
+	template <typename FindPredicateType>
+	static const UPoseSearchFeatureChannel* FindChannelRecursive(TConstArrayView<TObjectPtr<UPoseSearchFeatureChannel>> Channels, FindPredicateType FindPredicate)
+	{
+		for (const TObjectPtr<UPoseSearchFeatureChannel>& ChannelPtr : Channels)
+		{
+			if (ChannelPtr)
+			{
+				if (const UPoseSearchFeatureChannel* Channel = FindPredicate(ChannelPtr))
+				{
+					return Channel;
+				}
+
+				if (const UPoseSearchFeatureChannel* Channel = FindChannelRecursive(ChannelPtr->GetSubChannels(), FindPredicate))
+				{
+					return Channel;
+				}
+			}
+		}
+		return nullptr;
+	}
+
 	void Finalize();
-	void ResolveBoneReferences();
 };

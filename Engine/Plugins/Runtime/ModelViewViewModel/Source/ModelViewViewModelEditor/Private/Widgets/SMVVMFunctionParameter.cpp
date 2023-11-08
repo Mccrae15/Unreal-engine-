@@ -3,17 +3,19 @@
 #include "SMVVMFunctionParameter.h" 
 #include "EdGraphSchema_K2.h"
 #include "Editor.h"
-#include "MVVMBlueprintViewBinding.h"
+#include "MVVMBlueprintView.h"
 #include "MVVMEditorSubsystem.h"
 #include "NodeFactory.h"
 #include "SGraphPin.h"
 #include "Styling/MVVMEditorStyle.h"
+#include "Types/MVVMBindingMode.h"
 #include "WidgetBlueprint.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/SMVVMFieldSelector.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SWidgetSwitcher.h"
 #include "Widgets/SOverlay.h"
 #include "Widgets/Text/STextBlock.h"
 
@@ -22,13 +24,13 @@
 namespace UE::MVVM
 {
 
-void SFunctionParameter::Construct(const FArguments& InArgs)
+void SFunctionParameter::Construct(const FArguments& InArgs, UWidgetBlueprint* InWidgetBlueprint)
 {
-	WidgetBlueprint = InArgs._WidgetBlueprint;
-	check(InArgs._WidgetBlueprint != nullptr);
+	WidgetBlueprint = InWidgetBlueprint;
+	check(InWidgetBlueprint != nullptr);
 
-	Binding = InArgs._Binding;
-	check(Binding != nullptr);
+	BindingId = InArgs._BindingId;
+	check(BindingId.IsValid());
 
 	ParameterName = InArgs._ParameterName;
 	check(!ParameterName.IsNone());
@@ -36,28 +38,29 @@ void SFunctionParameter::Construct(const FArguments& InArgs)
 	bSourceToDestination = InArgs._SourceToDestination;
 	bAllowDefault = InArgs._AllowDefault;
 
-	GetBindingModeDelegate = InArgs._OnGetBindingMode;
-	check(GetBindingModeDelegate.IsBound());
-
 	UMVVMEditorSubsystem* EditorSubsystem = GEditor->GetEditorSubsystem<UMVVMEditorSubsystem>();
-	const UFunction* ConversionFunction = EditorSubsystem->GetConversionFunction(InArgs._WidgetBlueprint, *Binding, bSourceToDestination);
+	UMVVMBlueprintView* View = EditorSubsystem->GetView(InWidgetBlueprint);
+	check(View);
+
+	const FMVVMBlueprintViewBinding* Binding = View->GetBinding(BindingId);
+	check(Binding);
+
+	const UFunction* ConversionFunction = EditorSubsystem->GetConversionFunction(InWidgetBlueprint, *Binding, bSourceToDestination);
 	const FProperty* Property = ConversionFunction->FindPropertyByName(ParameterName);
 	check(Property);
 
 	TSharedRef<SWidget> ValueWidget = SNullWidget::NullWidget;
+	bool bIsBooleanPin = CastField<const FBoolProperty>(Property) != nullptr;
 
-	bool bIsBooleanPin = false;
-	UEdGraphPin* Pin = EditorSubsystem->GetConversionFunctionArgumentPin(InArgs._WidgetBlueprint, *Binding, ParameterName, bSourceToDestination);
-	if (Pin != nullptr)
+	if (UEdGraphPin* Pin = EditorSubsystem->GetConversionFunctionArgumentPin(InWidgetBlueprint, *Binding, ParameterName, bSourceToDestination))
 	{
+		bIsBooleanPin = Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Boolean;
 		// create a new pin widget so that we can get the default value widget out of it
-		if (TSharedPtr<SGraphPin> PinWidget = FNodeFactory::CreateK2PinWidget(Pin))
+		if (TSharedPtr<SGraphPin> PinWidget = FNodeFactory::CreatePinWidget(Pin))
 		{
 			GraphPin = PinWidget;
 			ValueWidget = PinWidget->GetDefaultValueWidget();
 		}
-
-		bIsBooleanPin = Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Boolean;
 	}
 
 	if (ValueWidget == SNullWidget::NullWidget)
@@ -70,7 +73,7 @@ void SFunctionParameter::Construct(const FArguments& InArgs)
 	else if (!bIsBooleanPin)
 	{
 		ValueWidget = SNew(SBorder)
-			.Padding(0)
+			.Padding(0.0f)
 			.BorderImage(FMVVMEditorStyle::Get().GetBrush("FunctionParameter.Border"))
 			[
 				ValueWidget
@@ -79,8 +82,6 @@ void SFunctionParameter::Construct(const FArguments& InArgs)
 
 	FMVVMBlueprintPropertyPath Path = OnGetSelectedField();
 	bDefaultValueVisible = Path.IsEmpty();
-
-	ValueWidget->SetVisibility(TAttribute<EVisibility>::CreateSP(this, &SFunctionParameter::OnGetVisibility, true));
 
 	bool bFromViewModel = UE::MVVM::IsForwardBinding(Binding->BindingType);
 	TSharedPtr<SHorizontalBox> HBox;
@@ -92,22 +93,21 @@ void SFunctionParameter::Construct(const FArguments& InArgs)
 		[
 			SAssignNew(HBox, SHorizontalBox)
 			+ SHorizontalBox::Slot()
-			.Padding(0, 2)
+			.Padding(0.0f, 2.0f)
 			.VAlign(VAlign_Center)
 			[
-				SNew(SOverlay)
-				+ SOverlay::Slot()
+				SNew(SWidgetSwitcher)
+				.WidgetIndex(this, &SFunctionParameter::GetCurrentWidgetIndex)
+				+ SWidgetSwitcher::Slot()
 				[
 					ValueWidget
 				]
-				+ SOverlay::Slot()
+				+ SWidgetSwitcher::Slot()
 				[
-					SAssignNew(FieldSelector, UE::MVVM::SFieldSelector, WidgetBlueprint.Get(), bFromViewModel)
-					.Visibility(this, &SFunctionParameter::OnGetVisibility, false)
-					.SelectedField(this, &SFunctionParameter::OnGetSelectedField)
-					.BindingMode_Lambda([this]() { return GetBindingModeDelegate.Execute(); })
-					.OnFieldSelectionChanged(this, &SFunctionParameter::OnFieldSelectionChanged)
-					.AssignableTo(Property)
+					SNew(SFieldSelector, WidgetBlueprint.Get())
+					.OnGetPropertyPath(this, &SFunctionParameter::OnGetSelectedField)
+					.OnFieldSelectionChanged(this, &SFunctionParameter::HandleFieldSelectionChanged)
+					.OnGetSelectionContext(this, &SFunctionParameter::GetSelectedSelectionContext)
 				]
 			]
 		]
@@ -140,15 +140,9 @@ void SFunctionParameter::Construct(const FArguments& InArgs)
 	}
 }
 
-EVisibility SFunctionParameter::OnGetVisibility(bool bDefaultValue) const
+int32 SFunctionParameter::GetCurrentWidgetIndex() const
 {
-	if (!bAllowDefault)
-	{
-		return bDefaultValue ? EVisibility::Collapsed : EVisibility::Visible;
-	}
-
-	// if we're not bound then show the default value widget, otherwise show the binding widget
-	return bDefaultValue == bDefaultValueVisible ? EVisibility::Visible : EVisibility::Collapsed;
+	return bDefaultValueVisible && bAllowDefault ? 0 : 1;
 }
 
 ECheckBoxState SFunctionParameter::OnGetIsBindArgumentChecked() const 
@@ -175,20 +169,75 @@ void SFunctionParameter::OnBindArgumentChecked(ECheckBoxState Checked)
 
 FMVVMBlueprintPropertyPath SFunctionParameter::OnGetSelectedField() const
 {
-	UMVVMEditorSubsystem* EditorSubsystem = GEditor->GetEditorSubsystem<UMVVMEditorSubsystem>();
-	return EditorSubsystem->GetPathForConversionFunctionArgument(WidgetBlueprint.Get(), *Binding, ParameterName, bSourceToDestination);
+	if (const UWidgetBlueprint* WidgetBlueprintPtr = WidgetBlueprint.Get())
+	{
+		const UMVVMEditorSubsystem* Subsystem = GEditor->GetEditorSubsystem<UMVVMEditorSubsystem>();
+		if (const UMVVMBlueprintView* View = Subsystem->GetView(WidgetBlueprintPtr))
+		{
+			if (const FMVVMBlueprintViewBinding* Binding = View->GetBinding(BindingId))
+			{
+				return Subsystem->GetPathForConversionFunctionArgument(WidgetBlueprint.Get(), *Binding, ParameterName, bSourceToDestination);
+			}
+		}
+	}
+	return FMVVMBlueprintPropertyPath();
 }
 
 void SFunctionParameter::SetSelectedField(const FMVVMBlueprintPropertyPath& Path)
 {
-	UMVVMEditorSubsystem* EditorSubsystem = GEditor->GetEditorSubsystem<UMVVMEditorSubsystem>();
-	EditorSubsystem->SetPathForConversionFunctionArgument(WidgetBlueprint.Get(), *Binding, ParameterName, Path, bSourceToDestination);
+	if (const UWidgetBlueprint* WidgetBlueprintPtr = WidgetBlueprint.Get())
+	{
+		const UMVVMEditorSubsystem* Subsystem = GEditor->GetEditorSubsystem<UMVVMEditorSubsystem>();
+		if (UMVVMBlueprintView* View = Subsystem->GetView(WidgetBlueprintPtr))
+		{
+			if (FMVVMBlueprintViewBinding* Binding = View->GetBinding(BindingId))
+			{
+				Subsystem->SetPathForConversionFunctionArgument(WidgetBlueprint.Get(), *Binding, ParameterName, Path, bSourceToDestination);
+			}
+		}
+	}
 }
 
-void SFunctionParameter::OnFieldSelectionChanged(FMVVMBlueprintPropertyPath Selected)
+void SFunctionParameter::HandleFieldSelectionChanged(FMVVMBlueprintPropertyPath SelectedField, const UFunction* Function)
 {
-	SetSelectedField(Selected);
+	SetSelectedField(SelectedField);
 }
 
+FFieldSelectionContext SFunctionParameter::GetSelectedSelectionContext() const
+{
+	FFieldSelectionContext Result;
+
+	UWidgetBlueprint* WidgetBlueprintPtr = WidgetBlueprint.Get();
+	if (WidgetBlueprintPtr == nullptr)
+	{
+		return Result;
+	}
+
+	UMVVMBlueprintView* View = GEditor->GetEditorSubsystem<UMVVMEditorSubsystem>()->GetView(WidgetBlueprintPtr);
+	check(View);
+
+	const FMVVMBlueprintViewBinding* Binding = View->GetBinding(BindingId);
+	if (Binding == nullptr)
+	{
+		return Result;
+	}
+
+	const UFunction* ConversionFunction = GEditor->GetEditorSubsystem<UMVVMEditorSubsystem>()->GetConversionFunction(WidgetBlueprintPtr, *Binding, bSourceToDestination);
+	if (ConversionFunction == nullptr)
+	{
+		return Result;
+	}
+
+	Result.BindingMode = EMVVMBindingMode::OneWayToDestination;
+	Result.AssignableTo = ConversionFunction->FindPropertyByName(ParameterName);
+	Result.bAllowWidgets = true;
+	Result.bAllowViewModels = true;
+	Result.bAllowConversionFunctions = false;
+	Result.bReadable = true;
+	Result.bWritable = false;
+
+	return Result;
 }
+
+}//namespace
 #undef LOCTEXT_NAMESPACE

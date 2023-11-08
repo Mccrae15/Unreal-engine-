@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "NiagaraDataInterfaceDataChannelCommon.h"
+#include "DataInterface/NiagaraDataInterfaceDataChannelCommon.h"
+#include "Misc/LazySingleton.h"
 #include "NiagaraDataInterfaceUtilities.h"
 #include "NiagaraScript.h"
 
@@ -19,7 +20,7 @@ FAutoConsoleCommandWithWorldAndArgs ResetDataChannelLayouts(
 );
 
 
-FNDIDataChannel_FunctionToDataSetBinding::FNDIDataChannel_FunctionToDataSetBinding(const FNDIDataChannelFunctionInfo& FunctionInfo, const FNiagaraDataSetCompiledData& DataSetLayout)
+FNDIDataChannel_FunctionToDataSetBinding::FNDIDataChannel_FunctionToDataSetBinding(const FNDIDataChannelFunctionInfo& FunctionInfo, const FNiagaraDataSetCompiledData& DataSetLayout, TArray<FNiagaraVariableBase>& OutMissingParams)
 {
 #if DEBUG_NDI_DATACHANNEL
 	DebugFunctionInfo = FunctionInfo;
@@ -37,19 +38,25 @@ FNDIDataChannel_FunctionToDataSetBinding::FNDIDataChannel_FunctionToDataSetBindi
 			const FNiagaraVariableBase& Param = Parameters[ParamIdx];
 			if (const FNiagaraVariableLayoutInfo* DataSetVariableLayout = DataSetLayout.FindVariableLayoutInfo(Param))
 			{
-				uint32 DataSetFloatRegister = DataSetVariableLayout->FloatComponentStart;
-				uint32 DataSetIntRegister = DataSetVariableLayout->Int32ComponentStart;
-				uint32 DataSetHalfRegister = DataSetVariableLayout->HalfComponentStart;
+				uint32 DataSetFloatRegister = DataSetVariableLayout->GetFloatComponentStart();
+				uint32 DataSetIntRegister = DataSetVariableLayout->GetInt32ComponentStart();
+				uint32 DataSetHalfRegister = DataSetVariableLayout->GetHalfComponentStart();
 
 				GenVMBindings(Param, Param.GetType().GetStruct(), NumFloatComponents, NumInt32Components, NumHalfComponents, DataSetFloatRegister, DataSetIntRegister, DataSetHalfRegister);
 			}
 			else
 			{
 				DataSetLayoutHash = 0;
+
+				#if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
+				OutMissingParams.Emplace(Param);
+				#else
 				return;
+				#endif
 			}
 		}
 	};
+
 	DoGenVMBindings(FunctionInfo.Inputs);
 	DoGenVMBindings(FunctionInfo.Outputs);
 }
@@ -144,7 +151,7 @@ void FNDIDataChannelLayoutManager::Reset()
 	FunctionToDataSetLayoutMap.Reset();
 }
 
-FNDIDataChannel_FuncToDataSetBindingPtr FNDIDataChannelLayoutManager::GetLayoutInfo(const FNDIDataChannelFunctionInfo& FunctionInfo, const FNiagaraDataSetCompiledData& DataSetLayout)
+FNDIDataChannel_FuncToDataSetBindingPtr FNDIDataChannelLayoutManager::GetLayoutInfo(const FNDIDataChannelFunctionInfo& FunctionInfo, const FNiagaraDataSetCompiledData& DataSetLayout, TArray<FNiagaraVariableBase>& OutMissingParams)
 {
 	uint32 Key = GetLayoutKey(FunctionInfo, DataSetLayout);
 	
@@ -160,10 +167,10 @@ FNDIDataChannel_FuncToDataSetBindingPtr FNDIDataChannelLayoutManager::GetLayoutI
 
 	//No valid existing layout so generate a new one.
 	FRWScopeLock WriteLock(FunctionToDataSetMapLock, SLT_Write);
-	FNDIDataChannel_FuncToDataSetBindingPtr& FuncLayout = FunctionToDataSetLayoutMap.FindOrAdd(Key);
+	FNDIDataChannel_FuncToDataSetBindingPtr FuncLayout = MakeShared<FNDIDataChannel_FunctionToDataSetBinding, ESPMode::ThreadSafe>(FunctionInfo, DataSetLayout, OutMissingParams);
 	if (FuncLayout.IsValid() == false)
 	{
-		FuncLayout = MakeShared<FNDIDataChannel_FunctionToDataSetBinding, ESPMode::ThreadSafe>(FunctionInfo, DataSetLayout);
+		FunctionToDataSetLayoutMap.Add(Key) = FuncLayout;
 	}
 #if DEBUG_NDI_DATACHANNEL
 	else
@@ -201,7 +208,7 @@ void FNDIDataChannelCompiledData::GatherAccessInfo(UNiagaraSystem* System, UNiag
 		bUsedByCPU = true;
 		return true;
 	};
-	FNiagaraDataInterfaceUtilities::ForEachVMFunctionEquals(Owner, System, HandleVMFunc);
+	FNiagaraDataInterfaceUtilities::ForEachVMFunction(Owner, System, HandleVMFunc);
 
 
 	//For every GPU script we iterate over the functions it calls and add each of them to the mapping.
@@ -227,7 +234,7 @@ void FNDIDataChannelCompiledData::GatherAccessInfo(UNiagaraSystem* System, UNiag
 		bUsedByGPU = true;
 		return true;
 	};
-	FNiagaraDataInterfaceUtilities::ForEachGpuFunctionEquals(Owner, System, HandleGpuFunc);
+	FNiagaraDataInterfaceUtilities::ForEachGpuFunction(Owner, System, HandleGpuFunc);
 
 	//Now we've generated the complete set of parameters accessed by each GPU script, we sort them to ensure identical access between the hlsl and the table we generate.
 	for (auto& Pair : GPUScriptParameterInfos)

@@ -26,6 +26,8 @@
 #include "Input/Events.h"
 #include "Input/HittestGrid.h"
 #include "HAL/PlatformApplicationMisc.h"
+#include "HAL/PlatformStackWalk.h"
+#include "Null/NullPlatformApplicationMisc.h"
 #include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 
 #if WITH_ACCESSIBILITY
@@ -84,7 +86,21 @@ namespace UE::Slate::Private
 	void VerifyParentChildrenRelationship(const TSharedRef<SWindow>& WindowToDraw);
 	void VerifyWidgetLayerId(const TSharedRef<SWindow>& WindowToDraw);
 }
+
+bool GSlateTraceNavigationConfig = false;
+static FAutoConsoleVariableRef CVarSlateTraceNavigationConfig(
+	TEXT("Slate.Debug.TraceNavigationConfig"),
+	GSlateTraceNavigationConfig,
+	TEXT("True enables tracing of navigation config & callstack to log.")
+);
 #endif //WITH_SLATE_DEBUGGING
+
+bool GSlateInputMotionFiresUserInteractionEvents = true;
+static FAutoConsoleVariableRef CVarSlateInputMotionFiresUserInteractionEvents(
+	TEXT("Slate.Input.MotionFiresUserInteractionEvents"),
+	GSlateInputMotionFiresUserInteractionEvents,
+	TEXT("If this is false, LastUserInteractionTimeUpdateEvent events won't be fired based on motion input, and LastInteractionTime won't be updated\n")
+	TEXT("Some motion devices report small tiny changes constantly without filtering, so motion input is unhelpful for determining user activity"));
 
 //////////////////////////////////////////////////////////////////////////
 
@@ -95,6 +111,12 @@ static FAutoConsoleVariableRef CVarSlateEnableGamepadEditorNavigation(
 	TEXT("True implies we allow gamepad navigation outside of the game viewport.")
 );
 
+static bool GSlateUseFixedDeltaTime = false;
+static FAutoConsoleVariableRef CVarSlateUseFixedDeltaTime(
+	TEXT("Slate.UseFixedDeltaTime"),
+	GSlateUseFixedDeltaTime,
+	TEXT("True means we use a constant delta time on every widget tick.")
+);
 //////////////////////////////////////////////////////////////////////////
 
 /** 
@@ -761,6 +783,7 @@ void FSlateApplication::Shutdown(bool bShutdownPlatform)
 }
 
 TSharedPtr<FSlateApplication> FSlateApplication::CurrentApplication = nullptr;
+double FSlateApplication::FixedDeltaTime = 1 / 60.0;
 
 FSlateApplication::FSlateApplication()
 	: bAppIsActive(true)
@@ -781,7 +804,6 @@ FSlateApplication::FSlateApplication()
 	, bRequestLeaveDebugMode( false )
 	, bLeaveDebugForSingleStep( false )
 	, bIsExternalUIOpened( false )
-	, SlateTextField( nullptr )
 	, bIsFakingTouch(FParse::Param(FCommandLine::Get(), TEXT("simmobile")) || FParse::Param(FCommandLine::Get(), TEXT("faketouches")))
 	, bIsGameFakingTouch( false )
 	, bIsFakingTouched( false )
@@ -855,12 +877,6 @@ FSlateApplication::~FSlateApplication()
 {
 	FTabCommands::Unregister();
 	FGenericCommands::Unregister();
-	
-	if (SlateTextField != nullptr)
-	{
-		delete SlateTextField;
-		SlateTextField = nullptr;
-	}
 
 #if WITH_EDITOR
 	OnDebugSafeZoneChanged.RemoveAll(this);
@@ -983,6 +999,11 @@ UE::Slate::FDeprecateVector2DResult FSlateApplication::GetLastCursorPos() const
 void FSlateApplication::SetCursorPos(const FVector2D& MouseCoordinate)
 {
 	GetCursorUser()->SetCursorPosition(UE::Slate::CastToVector2f(MouseCoordinate));
+}
+
+void FSlateApplication::OverridePlatformTextField(TUniquePtr<IPlatformTextField> PlatformTextField)
+{
+	SlateTextField = MoveTemp(PlatformTextField);
 }
 
 void FSlateApplication::UsePlatformCursorForCursorUser(bool bUsePlatformCursor)
@@ -1490,7 +1511,7 @@ void FSlateApplication::Tick(ESlateTickType TickType)
 	{
 		SCOPE_CYCLE_COUNTER(STAT_SlateTickTime);
 
-		const float DeltaTime = GetDeltaTime();
+		float DeltaTime = GetDeltaTime();
 
 		// IMPORTANT
 		// Do not add code to these different if-statements, if you need to add additional logic to
@@ -1506,6 +1527,12 @@ void FSlateApplication::Tick(ESlateTickType TickType)
 		if (EnumHasAnyFlags(TickType, ESlateTickType::Time))
 		{
 			TickTime();
+		}
+
+		if (GSlateUseFixedDeltaTime)
+		{
+			DeltaTime = GetFixedDeltaTime();
+
 		}
 
 		if (EnumHasAnyFlags(TickType, ESlateTickType::Widgets))
@@ -1561,7 +1588,7 @@ void FSlateApplication::TickPlatform(float DeltaTime)
 	{
 		SCOPE_CYCLE_COUNTER(STAT_SlateApplicationInput);
 
-		const bool bCanSpawnNewTooltip = true;
+		const bool bCanSpawnNewTooltip = PlatformApplication->IsCursorDirectlyOverSlateWindow();
 		ForEachUser([this, bCanSpawnNewTooltip](FSlateUser& User) {
 			User.UpdateCursor();
 			User.UpdateTooltip(MenuStack, bCanSpawnNewTooltip);
@@ -1811,12 +1838,11 @@ TSharedRef<SWindow> FSlateApplication::AddWindow( TSharedRef<SWindow> InSlateWin
 
 TSharedRef< FGenericWindow > FSlateApplication::MakeWindow( TSharedRef<SWindow> InSlateWindow, const bool bShowImmediately )
 {
-	// When rendering off-screen don't render to screen, create a dummy generic window
-	if (bRenderOffScreen)
+	// When rendering off-screen without the null platform, don't render to screen. Create a dummy generic window instead
+	if (bRenderOffScreen && !FNullPlatformApplicationMisc::IsUsingNullApplication())
 	{
 		TSharedRef< FGenericWindow > NewWindow = MakeShareable(new FGenericWindow());
 		InSlateWindow->SetNativeWindow(NewWindow);
-
 		FSlateApplicationBase::Get().GetRenderer()->CreateViewport(InSlateWindow);
 		return NewWindow;
 	}
@@ -2004,8 +2030,15 @@ void FSlateApplication::AddModalWindow( TSharedRef<SWindow> InSlateWindow, const
 	{
 		// Find the window of the parent widget
 		FWidgetPath WidgetPath;
-		GeneratePathToWidgetChecked( InParentWidget.ToSharedRef(), WidgetPath );
-		AddWindowAsNativeChild( InSlateWindow, WidgetPath.GetWindow(), bShowWindow );
+		if (GeneratePathToWidgetUnchecked( InParentWidget.ToSharedRef(), WidgetPath ))
+		{
+			AddWindowAsNativeChild( InSlateWindow, WidgetPath.GetWindow(), bShowWindow );
+		}
+		else
+		{
+			UE_LOG(LogSlate, Warning, TEXT("Modal Window fail to open as a native child. The path to the parent widget (%s) could not be found"), *InParentWidget->ToString());
+			AddWindow( InSlateWindow, bShowWindow );
+		}
 	}
 	else
 	{
@@ -2526,6 +2559,24 @@ bool FSlateApplication::GetTransformFullscreenMouseInput() const
 {
 	return TransformFullscreenMouseInput;
 }
+
+#if WITH_SLATE_DEBUGGING
+void FSlateApplication::TryDumpNavigationConfig(TSharedPtr<FNavigationConfig> InNavigationConfig) const
+{
+	if (GSlateTraceNavigationConfig && InNavigationConfig)
+	{
+		UE_LOG(LogSlate, Log, TEXT("Navigation Config Change:\n%s"), *InNavigationConfig->ToString());
+
+		const uint32 DumpCallstackSize = 65535;
+		ANSICHAR DumpCallstack[DumpCallstackSize] = { 0 };
+		FString ScriptStack = FFrame::GetScriptCallstack(true /* bReturnEmpty */);
+		FPlatformStackWalk::StackWalkAndDump(DumpCallstack, DumpCallstackSize, 0);
+		UE_LOG(LogSlate, Log, TEXT("--- Navigation Config Changing Callstack ---"));
+		UE_LOG(LogSlate, Log, TEXT("Script Stack:\n%s"), *ScriptStack);
+		UE_LOG(LogSlate, Log, TEXT("Callstack:\n%s"), ANSI_TO_TCHAR(DumpCallstack));
+	}
+}
+#endif // WITH_SLATE_DEBUGGING
 
 bool FSlateApplication::SetUserFocus(uint32 UserIndex, const TSharedPtr<SWidget>& WidgetToFocus, EFocusCause ReasonFocusIsChanging /* = EFocusCause::SetDirectly*/)
 {
@@ -3301,6 +3352,42 @@ void FSlateApplication::ProcessReply( const FWidgetPath& CurrentEventPath, const
 							}
 						}
 					}
+					// Need to handle the case where the mouse has moved onto a new widget before the drag was detected by also calling MouseLeave on the newly hovered widgets
+					if (WidgetsUnderMouse && WidgetsUnderMouse->IsValid() && LastWidgetsUnderCursor.Widgets.Last().Pin() != WidgetsUnderMouse->Widgets.Last().Widget)
+					{
+						for (int32 WidgetIndex = WidgetsUnderMouse->Widgets.Num() - 1; WidgetIndex >= 0; --WidgetIndex)
+						{
+							TSharedPtr<SWidget> WidgetNowUnderCursor = WidgetsUnderMouse->Widgets[WidgetIndex].Widget;
+
+							if (WidgetNowUnderCursor.IsValid())
+							{
+								if (WidgetNowUnderCursor != RequestedMouseCaptor && !LastWidgetsUnderCursor.ContainsWidget(WidgetNowUnderCursor.Get()))
+								{
+									// It's possible for mouse event to be null if we end up here from a keyboard event. If so, we should synthesize an event.
+									if (InMouseEvent)
+									{
+										FPointerEvent TransformedPointerEvent = TransformPointerEvent(*InMouseEvent, WidgetsUnderMouse->GetWindow());
+
+										// Note that the event's pointer position is not translated.
+										WidgetNowUnderCursor->OnMouseLeave(TransformedPointerEvent);
+									}
+									else
+									{
+										const FPointerEvent& SimulatedPointer = FPointerEvent();
+										WidgetNowUnderCursor->OnMouseLeave(SimulatedPointer);
+									}
+#if WITH_SLATE_DEBUGGING
+									FSlateDebugging::BroadcastInputEvent(ESlateDebuggingInputEvent::MouseLeave, InMouseEvent, WidgetNowUnderCursor);
+#endif
+								}
+								else
+								{
+									// Done routing mouse leave
+									break;
+								}
+							}
+						}
+					}
 				}
 			}
 			else
@@ -3885,9 +3972,9 @@ void FSlateApplication::ShowVirtualKeyboard( bool bShow, int32 UserIndex, TShare
 {
 	SCOPE_CYCLE_COUNTER(STAT_ShowVirtualKeyboard);
 
-	if(SlateTextField == nullptr)
+	if (!SlateTextField.IsValid())
 	{
-		SlateTextField = new FPlatformTextField();
+		SlateTextField = MakeUnique<FPlatformTextField>();
 	}
 
 	SlateTextField->ShowVirtualKeyboard(bShow, UserIndex, TextEntryWidget);
@@ -3895,9 +3982,9 @@ void FSlateApplication::ShowVirtualKeyboard( bool bShow, int32 UserIndex, TShare
 
 bool FSlateApplication::AllowMoveCursor()
 {
-	if (SlateTextField == nullptr)
+	if (!SlateTextField.IsValid())
 	{
-		SlateTextField = new FPlatformTextField();
+		SlateTextField = MakeUnique<FPlatformTextField>();
 	}
 
 	return SlateTextField->AllowMoveCursor();
@@ -4233,6 +4320,10 @@ void FSlateApplication::ForEachUser(TFunctionRef<void(FSlateUser*)> InPredicate,
 		}, bIncludeVirtualUsers);
 }
 
+void FSlateApplication::SetFixedDeltaTime(double InSeconds)
+{
+	FixedDeltaTime = InSeconds;
+}
 /* FSlateApplicationBase interface
  *****************************************************************************/
 
@@ -5900,6 +5991,12 @@ bool FSlateApplication::ProcessMouseMoveEvent( const FPointerEvent& MouseEvent, 
 {
 	SCOPE_CYCLE_COUNTER(STAT_ProcessMouseMove);
 
+	if (IsFakingTouchEvents() && !MouseEvent.IsMouseButtonDown(EKeys::LeftMouseButton))
+	{
+		// If we're faking touch events and the left mouse button is not down, do not process the mouse move event
+		return false;
+	}
+   
 #if WITH_SLATE_DEBUGGING
 	FSlateDebugging::FScopeProcessInputEvent Scope(ESlateDebuggingInputEvent::MouseMove, MouseEvent);
 #endif
@@ -5980,11 +6077,36 @@ bool FSlateApplication::AttemptNavigation(const FWidgetPath& NavigationSource, c
 	EUINavigation NavigationType = NavigationEvent.GetNavigationType();
 	if ( NavigationReply.GetBoundaryRule() == EUINavigationRule::Explicit )
 	{
-		DestinationWidget = NavigationReply.GetFocusRecipient();
-		bAlwaysHandleNavigationAttempt = true;
+		const SWidget* FocusRecipient = NavigationReply.GetFocusRecipient().Get();
+		if ( FocusRecipient && FocusRecipient->IsEnabled() && FocusRecipient->SupportsKeyboardFocus() )
+		{
+			DestinationWidget = NavigationReply.GetFocusRecipient();
+			bAlwaysHandleNavigationAttempt = true;
 
 #if WITH_SLATE_DEBUGGING
-		NavigationMethod = ESlateDebuggingNavigationMethod::Explicit;
+			NavigationMethod = ESlateDebuggingNavigationMethod::Explicit;
+#endif
+		}
+#if WITH_SLATE_DEBUGGING
+		else
+		{
+			const TCHAR* Reason = TEXT("Unknown");
+			if (!FocusRecipient)
+			{
+				Reason = TEXT("Widget is a nullptr");
+			}
+			else if (!FocusRecipient->IsEnabled())
+			{
+				Reason = TEXT("Widget disabled");
+			}
+			else
+			{
+				ensure(!FocusRecipient->SupportsKeyboardFocus());
+				Reason = TEXT("Widget does not support keyboard focus");
+			}
+
+			UE_LOG(LogSlate, VeryVerbose, TEXT("Could not Explicitly navigate to widget '%s' because '%s'"), *FReflectionMetaData::GetWidgetDebugInfo(FocusRecipient), Reason);
+		}
 #endif
 	}
 	else if ( NavigationReply.GetBoundaryRule() == EUINavigationRule::Custom )
@@ -6168,7 +6290,7 @@ bool FSlateApplication::OnTouchStarted( const TSharedPtr< FGenericWindow >& Plat
 	// Don't process touches that overlap or surpass with the cursor pointer index.
 	if (TouchIndex >= (int32)ETouchIndex::CursorPointerIndex)
 	{
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#if WITH_SLATE_DEBUGGING
 		// Only log when the touch starts, we don't want to spam the logs.
 		UE_LOG(LogSlate, Warning, TEXT("Maximum Touch Index Exceeded, %d, the maximum index allowed is %d"), TouchIndex, (((int32)ETouchIndex::CursorPointerIndex) - 1));
 #endif
@@ -6326,7 +6448,10 @@ void FSlateApplication::ProcessMotionDetectedEvent( const FMotionEvent& MotionEv
 	FSlateDebugging::FScopeProcessInputEvent Scope(ESlateDebuggingInputEvent::MotionDetected, MotionEvent);
 #endif
 
-	SetLastUserInteractionTime(this->GetCurrentTime());
+	if (GSlateInputMotionFiresUserInteractionEvents)
+	{
+		SetLastUserInteractionTime(this->GetCurrentTime());
+	}
 	
 	if (!InputPreProcessors.HandleMotionDetectedEvent(*this, MotionEvent))
 	{
@@ -6700,6 +6825,10 @@ void FSlateApplication::SetNavigationConfig(TSharedRef<FNavigationConfig> InNavi
 	NavigationConfig->OnUnregister();
 	NavigationConfig = InNavigationConfig;
 	NavigationConfig->OnRegister();
+
+#if WITH_SLATE_DEBUGGING
+	TryDumpNavigationConfig(NavigationConfig);
+#endif // WITH_SLATE_DEBUGGING
 }
 
 bool FSlateApplication::OnConvertibleLaptopModeChanged()

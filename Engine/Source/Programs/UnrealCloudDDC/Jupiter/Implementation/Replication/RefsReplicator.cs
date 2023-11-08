@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.Metrics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -9,15 +10,14 @@ using System.Net;
 using System.Net.Http;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using EpicGames.Horde.Storage;
 using Jupiter.Controllers;
 using Jupiter.Implementation.TransactionLog;
-using Jupiter.Common;
 using Jupiter.Common.Implementation;
 using Microsoft.AspNetCore.Mvc;
-using Newtonsoft.Json;
 using OpenTelemetry.Trace;
 using Microsoft.Extensions.Logging;
 
@@ -42,7 +42,9 @@ namespace Jupiter.Implementation
         private bool _replicationRunning;
         private bool _disposed = false;
 
-        public RefsReplicator(ReplicatorSettings replicatorSettings, IBlobService blobService, IHttpClientFactory httpClientFactory, IReplicationLog replicationLog, IServiceCredentials serviceCredentials, Tracer tracer, BufferedPayloadFactory bufferedPayloadFactory, ReplicationLogFactory replicationLogFactory, ILogger<RefsReplicator> logger)
+        private static Histogram<long>? s_replicatedCounter;
+        private static JsonSerializerOptions DefaultSerializerSettings = ConfigureJsonOptions();
+        public RefsReplicator(ReplicatorSettings replicatorSettings, IBlobService blobService, IHttpClientFactory httpClientFactory, IReplicationLog replicationLog, IServiceCredentials serviceCredentials, Tracer tracer, BufferedPayloadFactory bufferedPayloadFactory, ReplicationLogFactory replicationLogFactory, ILogger<RefsReplicator> logger, Meter meter)
         {
             _name = replicatorSettings.ReplicatorName;
             _namespace = new NamespaceId(replicatorSettings.NamespaceToReplicate);
@@ -73,6 +75,18 @@ namespace Jupiter.Implementation
             }
 
             Info = new ReplicatorInfo(replicatorSettings.ReplicatorName, _namespace, _refsState);
+
+            if (s_replicatedCounter == null)
+            {
+                s_replicatedCounter = meter.CreateHistogram<long>("replication.active");
+            }
+        }
+
+        private static JsonSerializerOptions ConfigureJsonOptions()
+        {
+            JsonSerializerOptions options = new JsonSerializerOptions();
+            BaseStartup.ConfigureJsonOptions(options);
+            return options;
         }
 
         public void Dispose()
@@ -230,7 +244,7 @@ namespace Jupiter.Implementation
                             continue;
                         }
 
-                        (string eventBucket, Guid eventId, int countOfEventsReplicated) = await ReplicateFromSnapshot(ns, replicationToken, useSnapshotException.SnapshotBlob, INamespacePolicyResolver.JupiterInternalNamespace);
+                        (string eventBucket, Guid eventId, int countOfEventsReplicated) = await ReplicateFromSnapshot(ns, replicationToken, useSnapshotException.SnapshotBlob, useSnapshotException.BlobNamespace);
                         countOfReplicationsDone += countOfEventsReplicated;
 
                         // resume from these new events instead
@@ -266,7 +280,7 @@ namespace Jupiter.Implementation
                 snapshotResponse.EnsureSuccessStatusCode();
 
                 string s = await snapshotResponse.Content.ReadAsStringAsync(cancellationToken);
-                ReplicationLogSnapshots? snapshots = JsonConvert.DeserializeObject<ReplicationLogSnapshots>(s);
+                ReplicationLogSnapshots? snapshots = JsonSerializer.Deserialize<ReplicationLogSnapshots>(s);
                 if (snapshots == null)
                 {
                     throw new NotImplementedException();
@@ -385,7 +399,7 @@ namespace Jupiter.Implementation
                         .SetAttribute("resource.name", $"{ns}.{@event.Bucket}.{@event.Key}")
                         .SetAttribute("time-bucket", @event.Timestamp.ToString(CultureInfo.InvariantCulture));
 
-                    _logger.LogInformation("{Name} New transaction to replicate found. Ref: {Namespace} {Bucket} {Key} in {TimeBucket} ({TimeDate}) with id {EventId}. Count of running replications: {CurrentReplications}", _name, @event.Namespace, @event.Bucket, @event.Key, @event.TimeBucket, @event.Timestamp, @event.EventId, replicationTasks.Count);
+                    _logger.LogDebug("{Name} New transaction to replicate found. Ref: {Namespace} {Bucket} {Key} in {TimeBucket} ({TimeDate}) with id {EventId}. Count of running replications: {CurrentReplications}", _name, @event.Namespace, @event.Bucket, @event.Key, @event.TimeBucket, @event.Timestamp, @event.EventId, replicationTasks.Count);
                 
                     Info.CountOfRunningReplications = replicationTasks.Count;
                     LogReplicationHeartbeat(replicationTasks.Count);
@@ -471,8 +485,36 @@ namespace Jupiter.Implementation
             //if (await _blobService.Exists(ns, blob))
             //    return currentOffset;
 
-            using HttpRequestMessage referencesRequest = await BuildHttpRequest(HttpMethod.Get, new Uri($"api/v1/objects/{ns}/{objectToReplicate}/references", UriKind.Relative));
-            HttpResponseMessage referencesResponse = await _httpClient.SendAsync(referencesRequest, cancellationToken);
+            HttpResponseMessage? referencesResponse = null;
+            Exception? lastException = null;
+            const int RetryAttempts = 3;
+            for (int i = 0; i < RetryAttempts; i++)
+            {
+                using HttpRequestMessage referencesRequest = await BuildHttpRequest(HttpMethod.Get, new Uri($"api/v1/objects/{ns}/{objectToReplicate}/references", UriKind.Relative));
+
+                try
+                {
+                    referencesResponse = await _httpClient.SendAsync(referencesRequest, cancellationToken);
+                    break;
+                }
+                catch (HttpRequestException e)
+                {
+                    referencesResponse = null;
+                    // rethrow unknown exceptions
+                    if (e.InnerException is not IOException)
+                    {
+                        throw;
+                    }
+
+                    lastException = e;
+                }
+            }
+
+            if (referencesResponse == null)
+            {
+                throw new Exception("Reference response never set", lastException);
+            }
+
             string body = await referencesResponse.Content.ReadAsStringAsync(cancellationToken);
 
             if (referencesResponse.StatusCode == HttpStatusCode.BadRequest)
@@ -488,7 +530,7 @@ namespace Jupiter.Implementation
             }
             referencesResponse.EnsureSuccessStatusCode();
 
-            ResolvedReferencesResult? refs = JsonConvert.DeserializeObject<ResolvedReferencesResult>(body);
+            ResolvedReferencesResult? refs = JsonSerializer.Deserialize<ResolvedReferencesResult>(body, DefaultSerializerSettings);
             if (refs == null)
             {
                 throw new Exception($"Unable to resolve references for object {objectToReplicate} in namespace {ns}");
@@ -505,10 +547,35 @@ namespace Jupiter.Implementation
                 BlobIdentifier blobToReplicate = missingBlobs[i];
                 blobReplicationTasks[i] = Task.Run(async () =>
                 {
-                    HttpRequestMessage blobRequest = await BuildHttpRequest(HttpMethod.Get, new Uri($"api/v1/blobs/{ns}/{blobToReplicate}", UriKind.Relative));
-                    HttpResponseMessage blobResponse = await _httpClient.SendAsync(blobRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-
                     _logger.LogInformation("Attempting to replicate blob {Blob} in {Namespace}.", blobToReplicate, ns);
+
+                    HttpResponseMessage? blobResponse = null;
+                    for (int i = 0; i < RetryAttempts; i++)
+                    {
+                        using HttpRequestMessage blobRequest = await BuildHttpRequest(HttpMethod.Get, new Uri($"api/v1/blobs/{ns}/{blobToReplicate}", UriKind.Relative));
+                        try
+                        {
+                            blobResponse = await _httpClient.SendAsync(blobRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                            break;
+                        }
+                        catch (HttpRequestException e)
+                        {
+                            blobResponse = null;
+                            // rethrow unknown exceptions
+                            if (e.InnerException is not IOException)
+                            {
+                                throw;
+                            }
+
+                            lastException = e;
+                        }
+                    }
+                    
+                    
+                    if (blobResponse == null)
+                    {
+                        throw new Exception("Blob response never set", lastException);
+                    }
 
                     if (blobResponse.StatusCode == HttpStatusCode.NotFound)
                     {
@@ -568,12 +635,41 @@ namespace Jupiter.Implementation
                 }
 
                 hasRunOnce = true;
-                using HttpRequestMessage request = await BuildHttpRequest(HttpMethod.Get, new Uri(url.ToString(), UriKind.Relative));
-                HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken);
+
+                HttpResponseMessage? response = null;
+                Exception? lastException = null;
+                const int RetryAttempts = 3;
+                for (int i = 0; i < RetryAttempts; i++)
+                {
+                    using HttpRequestMessage request = await BuildHttpRequest(HttpMethod.Get, new Uri(url.ToString(), UriKind.Relative));
+
+                    try
+                    {
+                        response = await _httpClient.SendAsync(request, cancellationToken);
+                        break;
+                    }
+                    catch (HttpRequestException e)
+                    {
+                        response = null;
+                        // rethrow unknown exceptions
+                        if (e.InnerException is not IOException)
+                        {
+                            throw;
+                        }
+
+                        lastException = e;
+                    }
+                }
+
+                if (response == null)
+                {
+                    throw new Exception("Ref response never set", lastException);
+                }
+
                 string body = await response.Content.ReadAsStringAsync(cancellationToken);
                 if (response.StatusCode == HttpStatusCode.BadRequest)
                 {
-                    ProblemDetails? problemDetails = JsonConvert.DeserializeObject<ProblemDetails>(body);
+                    ProblemDetails? problemDetails = JsonSerializer.Deserialize<ProblemDetails>(body);
                     if (problemDetails == null)
                     {
                         throw new Exception($"Unknown bad request body when reading incremental replication log. Body: {body}");
@@ -581,7 +677,7 @@ namespace Jupiter.Implementation
 
                     if (problemDetails.Type == ProblemTypes.UseSnapshot)
                     {
-                        ProblemDetailsWithSnapshots? problemDetailsWithSnapshots = JsonConvert.DeserializeObject<ProblemDetailsWithSnapshots>(body);
+                        ProblemDetailsWithSnapshots? problemDetailsWithSnapshots = JsonSerializer.Deserialize<ProblemDetailsWithSnapshots>(body);
 
                         if (problemDetailsWithSnapshots == null)
                         {
@@ -589,18 +685,24 @@ namespace Jupiter.Implementation
                         }
 
                         BlobIdentifier snapshotBlob = problemDetailsWithSnapshots.SnapshotId;
-                        throw new UseSnapshotException(snapshotBlob);
+                        NamespaceId? blobNamespace = problemDetailsWithSnapshots.BlobNamespace;
+                        throw new UseSnapshotException(snapshotBlob, blobNamespace!.Value);
                     }
                 }
 
                 response.EnsureSuccessStatusCode();
-                ReplicationLogEvents? e = JsonConvert.DeserializeObject<ReplicationLogEvents>(body);
-                if (e == null)
+                ReplicationLogEvents? replicationLogEvents = JsonSerializer.Deserialize<ReplicationLogEvents>(body, DefaultSerializerSettings);
+                if (replicationLogEvents == null)
                 {
                     throw new Exception($"Unknown error when deserializing replication log events {ns} {lastBucket} {lastEvent}");
                 }
 
-                logEvents = e;
+                if (replicationLogEvents.Events == null)
+                {
+                    throw new Exception($"Unknown error when deserializing replication log events {ns} {lastBucket} {lastEvent} as events were empty. Body was: {body}");
+                }
+
+                logEvents = replicationLogEvents;
                 foreach (ReplicationLogEvent logEvent in logEvents.Events)
                 {
                     yield return logEvent;
@@ -613,11 +715,10 @@ namespace Jupiter.Implementation
 
         private void LogReplicationHeartbeat(int countOfCurrentReplications)
         {
-            // log message used to generate metric for how many replications are currently running
-            _logger.LogInformation("{Name} replication has run . Count of running replications: {CurrentReplications}", _name, countOfCurrentReplications);
+            s_replicatedCounter?.Record(countOfCurrentReplications, new KeyValuePair<string, object?>("replicator", _name), new KeyValuePair<string, object?>("namespace", _namespace));
 
             // log message used to verify replicators are actually running
-            _logger.LogInformation("{Name} starting replication. Last transaction was {TransactionId} {Generation}", _name, State.ReplicatorOffset.GetValueOrDefault(0L), State.ReplicatingGeneration.GetValueOrDefault(Guid.Empty) );
+            _logger.LogDebug("{Name} starting replication. Last transaction was {TransactionId} {Generation}. Count Of running replications: {CurrentReplications}", _name, State.ReplicatorOffset.GetValueOrDefault(0L), State.ReplicatingGeneration.GetValueOrDefault(Guid.Empty), countOfCurrentReplications);
         }
 
         private async Task AddToReplicationLog(NamespaceId ns, BucketId bucket, IoHashKey key, BlobIdentifier blob)
@@ -664,10 +765,12 @@ namespace Jupiter.Implementation
     public class UseSnapshotException : Exception
     {
         public BlobIdentifier SnapshotBlob { get; }
+        public NamespaceId BlobNamespace { get; }
 
-        public UseSnapshotException(BlobIdentifier snapshotBlob)
+        public UseSnapshotException(BlobIdentifier snapshotBlob, NamespaceId blobNamespace)
         {
             SnapshotBlob = snapshotBlob;
+            BlobNamespace = blobNamespace;
         }
     }
 
@@ -693,5 +796,6 @@ namespace Jupiter.Implementation
     public class ProblemDetailsWithSnapshots : ProblemDetails
     {
         public BlobIdentifier SnapshotId { get; set; } = null!;
+        public NamespaceId? BlobNamespace { get; set; } = null;
     }
 }

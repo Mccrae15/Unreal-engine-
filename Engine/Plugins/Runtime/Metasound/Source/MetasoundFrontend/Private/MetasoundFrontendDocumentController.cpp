@@ -157,7 +157,7 @@ namespace Metasound
 			if (FMetasoundFrontendDocument* Doc = DocumentPtr.Get())
 			{
 #if WITH_EDITOR
-				Doc->Metadata.ModifyContext.AddInterfaceModified({ InVersion.Name });
+				Doc->Metadata.ModifyContext.AddInterfaceModified(InVersion.Name);
 #endif // WITH_EDITOR
 				Doc->Interfaces.Add(InVersion);
 			}
@@ -168,7 +168,7 @@ namespace Metasound
 			if (FMetasoundFrontendDocument* Doc = DocumentPtr.Get())
 			{
 #if WITH_EDITOR
-				Doc->Metadata.ModifyContext.AddInterfaceModified({ InVersion.Name });
+				Doc->Metadata.ModifyContext.AddInterfaceModified(InVersion.Name);
 #endif // WITH_EDITOR
 				Doc->Interfaces.Remove(InVersion);
 			}
@@ -278,7 +278,7 @@ namespace Metasound
 			{
 				FClassAccessPtr ClassPtr = DocumentPtr.GetClassWithRegistryKey(InKey);
 
-				auto AddClass = [=](FMetasoundFrontendClass&& NewClassDescription, const FGuid& NewClassID)
+				auto AddClass = [this, InKey, Document](FMetasoundFrontendClass&& NewClassDescription, const FGuid& NewClassID)
 				{
 					FConstClassAccessPtr NewClassPtr;
 

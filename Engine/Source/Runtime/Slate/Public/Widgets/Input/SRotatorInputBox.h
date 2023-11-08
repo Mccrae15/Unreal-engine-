@@ -90,10 +90,28 @@ public:
 		SLATE_EVENT( FOnNumericValueCommitted, OnRollCommitted )
 
 		/** Called when the slider begins to move on any axis */
-		SLATE_EVENT( FSimpleDelegate, OnBeginSliderMovement )
+		SLATE_EVENT(FSimpleDelegate, OnBeginSliderMovement)
 
 		/** Called when the slider for any axis is released */
-		SLATE_EVENT( FOnNumericValueChanged, OnEndSliderMovement )
+		SLATE_EVENT(FOnNumericValueChanged, OnEndSliderMovement)
+	
+		/** Called when the slider begins to move on pitch */
+		SLATE_EVENT( FSimpleDelegate, OnPitchBeginSliderMovement )
+
+		/** Called when the slider begins to move on yaw */
+		SLATE_EVENT( FSimpleDelegate, OnYawBeginSliderMovement )
+
+		/** Called when the slider begins to move on roll */
+		SLATE_EVENT( FSimpleDelegate, OnRollBeginSliderMovement )
+
+		/** Called when the slider for pitch is released */
+		SLATE_EVENT( FOnNumericValueChanged, OnPitchEndSliderMovement )
+
+		/** Called when the slider for yaw is released */
+		SLATE_EVENT( FOnNumericValueChanged, OnYawEndSliderMovement )
+
+		/** Called when the slider for roll is released */
+		SLATE_EVENT( FOnNumericValueChanged, OnRollEndSliderMovement )
 
 		/** Provide custom type functionality for the rotator */
 		SLATE_ARGUMENT( TSharedPtr< INumericTypeInterface<NumericType> >, TypeInterface )
@@ -150,8 +168,8 @@ public:
 				.Value( InArgs._Roll )
 				.OnValueChanged( InArgs._OnRollChanged )
 				.OnValueCommitted( InArgs._OnRollCommitted )
-				.OnBeginSliderMovement( InArgs._OnBeginSliderMovement )
-				.OnEndSliderMovement( InArgs._OnEndSliderMovement )
+				.OnBeginSliderMovement( InArgs._OnRollBeginSliderMovement )
+				.OnEndSliderMovement( InArgs._OnRollEndSliderMovement )
 				.UndeterminedString( NSLOCTEXT("SRotatorInputBox", "MultipleValues", "Multiple Values") )
 				.ToolTipText_Lambda([RollAttr = InArgs._Roll]
 				{
@@ -182,8 +200,8 @@ public:
 				.Value( InArgs._Pitch )
 				.OnValueChanged( InArgs._OnPitchChanged )
 				.OnValueCommitted( InArgs._OnPitchCommitted )
-				.OnBeginSliderMovement( InArgs._OnBeginSliderMovement )
-				.OnEndSliderMovement( InArgs._OnEndSliderMovement )
+				.OnBeginSliderMovement( CreatePerComponentSliderMovementEvent( InArgs._OnBeginSliderMovement, InArgs._OnPitchBeginSliderMovement ) )
+				.OnEndSliderMovement( CreatePerComponentSliderMovementEvent< FOnNumericValueChanged, NumericType >( InArgs._OnEndSliderMovement, InArgs._OnPitchEndSliderMovement ) )
 				.UndeterminedString( NSLOCTEXT("SRotatorInputBox", "MultipleValues", "Multiple Values") )
 				.ToolTipText_Lambda([PitchAttr = InArgs._Pitch]
 				{
@@ -214,8 +232,8 @@ public:
 				.Value( InArgs._Yaw )
 				.OnValueChanged( InArgs._OnYawChanged )
 				.OnValueCommitted( InArgs._OnYawCommitted )
-				.OnBeginSliderMovement( InArgs._OnBeginSliderMovement )
-				.OnEndSliderMovement( InArgs._OnEndSliderMovement )
+				.OnBeginSliderMovement( InArgs._OnYawBeginSliderMovement )
+				.OnEndSliderMovement( InArgs._OnYawEndSliderMovement )
 				.UndeterminedString( NSLOCTEXT("SRotatorInputBox", "MultipleValues", "Multiple Values") )
 				.ToolTipText_Lambda([YawAttr = InArgs._Yaw]
 				{
@@ -232,7 +250,27 @@ public:
 			]
 		];
 
-	}	
+	}
+
+	/**
+	 * Creates a lambda to react to a begin/end slider movement event
+	 */
+	template<typename EventType, typename... ArgsType>
+	EventType CreatePerComponentSliderMovementEvent(
+		const EventType OnSliderMovement,
+		const EventType OnComponentSliderMovement)
+	{
+		if(OnSliderMovement.IsBound())
+		{
+			return EventType::CreateLambda(
+				[OnSliderMovement, OnComponentSliderMovement](ArgsType... Args)
+				{
+					OnSliderMovement.ExecuteIfBound(Args...);
+					OnComponentSliderMovement.ExecuteIfBound(Args...);
+				});
+		}
+		return OnComponentSliderMovement;
+	}
 };
 
 /**

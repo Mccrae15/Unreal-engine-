@@ -12,6 +12,8 @@
 #include "MVVM/Views/STrackLane.h"
 #include "MVVM/Views/SChannelView.h"
 #include "MVVM/Extensions/IObjectBindingExtension.h"
+#include "MVVM/Selection/Selection.h"
+#include "AnimatedRange.h"
 #include "Rendering/DrawElements.h"
 #include "Styling/AppStyle.h"
 #include "Styling/StyleColors.h"
@@ -72,20 +74,21 @@ FTimeToPixel ConstructTimeConverterForSection(const FGeometry& InSectionGeometry
 
 struct FSequencerSectionPainterImpl : FSequencerSectionPainter
 {
-	FSequencerSectionPainterImpl(FSequencer& InSequencer, TSharedPtr<FSectionModel> InSection, FSlateWindowElementList& _OutDrawElements, const FGeometry& InSectionGeometry, const SSequencerSection& InSectionWidget)
+	FSequencerSectionPainterImpl(FSequencer& InSequencer, TSharedPtr<FTrackAreaViewModel> InTrackAreaViewModel, TSharedPtr<FSectionModel> InSection, FSlateWindowElementList& _OutDrawElements, const FGeometry& InSectionGeometry, const SSequencerSection& InSectionWidget)
 		: FSequencerSectionPainter(_OutDrawElements, InSectionGeometry, InSection)
 		, Sequencer(InSequencer)
 		, SectionWidget(InSectionWidget)
 		, TimeToPixelConverter(ConstructTimeConverterForSection(SectionGeometry, *InSection->GetSection(), Sequencer))
+		, TrackAreaViewModel(InTrackAreaViewModel)
 		, bClipRectEnabled(false)
 	{
 		CalculateSelectionColor();
 
-		const ISequencerEditTool* EditTool = InSequencer.GetViewModel()->GetTrackArea()->GetEditTool();
+		const ISequencerEditTool* EditTool = TrackAreaViewModel->GetEditTool();
 		Hotspot = EditTool ? EditTool->GetDragHotspot() : nullptr;
 		if (!Hotspot)
 		{
-			Hotspot = InSequencer.GetViewModel()->GetTrackArea()->GetHotspot();
+			Hotspot = TrackAreaViewModel->GetHotspot();
 		}
 	}
 
@@ -329,7 +332,7 @@ struct FSequencerSectionPainterImpl : FSequencerSectionPainter
 
 	void CalculateSelectionColor()
 	{
-		FSequencerSelection& Selection = Sequencer.GetSelection();
+		FSequencerSelection& Selection = *Sequencer.GetViewModel()->GetSelection();
 		FSequencerSelectionPreview& SelectionPreview = Sequencer.GetSelectionPreview();
 
 		ESelectionPreviewState SelectionPreviewState = SelectionPreview.GetSelectionState(SectionWidget.WeakSectionModel);
@@ -340,7 +343,7 @@ struct FSequencerSectionPainterImpl : FSequencerSectionPainter
 			return;
 		}
 		
-		if (SelectionPreviewState == ESelectionPreviewState::Undefined && !Selection.IsSelected(SectionModel))
+		if (SelectionPreviewState == ESelectionPreviewState::Undefined && !Selection.TrackArea.IsSelected(SectionModel))
 		{
 			// No preview selection for this section, and it's not selected
 			return;
@@ -822,6 +825,7 @@ struct FSequencerSectionPainterImpl : FSequencerSectionPainter
 	FSequencer& Sequencer;
 	const SSequencerSection& SectionWidget;
 	FTimeToPixel TimeToPixelConverter;
+	TSharedPtr<FTrackAreaViewModel> TrackAreaViewModel;
 	TSharedPtr<ITrackAreaHotspot> Hotspot;
 
 	/** The clipping rectangle of the parent widget */
@@ -861,9 +865,10 @@ void SSequencerSection::Construct( const FArguments& InArgs, TSharedPtr<FSequenc
 		[
 			SAssignNew(ChildLaneWidgets, SCompoundTrackLaneView)
 			.TimeToPixel(FGetTimeToPixel::CreateLambda([this](const FGeometry& AllottedGeometry){
-				FGeometry SectionGeometry = MakeSectionGeometryWithoutHandles( AllottedGeometry, SectionInterface );
+				// The given allotted geometry already has the handle padding removed, since it's inside
+				// our child slot (see padding above). We can therefore build the time converter directly.
 				UMovieSceneSection& Section = *SectionInterface->GetSectionObject();
-				return ConstructTimeConverterForSection(SectionGeometry, Section, GetSequencer());
+				return ConstructTimeConverterForSection(AllottedGeometry, Section, GetSequencer());
 			}))
 		]
 
@@ -883,9 +888,10 @@ void SSequencerSection::Construct( const FArguments& InArgs, TSharedPtr<FSequenc
 
 SSequencerSection::~SSequencerSection()
 {
-	if (Sequencer.IsValid() && GetSequencer().GetViewModel() && GetSequencer().GetViewModel()->GetTrackArea())
+	TSharedPtr<FTrackAreaViewModel> TrackAreaViewModel = GetTrackAreaViewModel();
+	if (TrackAreaViewModel.IsValid())
 	{
-		GetSequencer().GetViewModel()->GetTrackArea()->SetHotspot(nullptr);
+		TrackAreaViewModel->SetHotspot(nullptr);
 	}
 }
 
@@ -1051,7 +1057,7 @@ int32 SSequencerSection::GetOverlapPriority() const
 	return 0;
 }
 
-bool SSequencerSection::CheckForEasingHandleInteraction( const FPointerEvent& MouseEvent, const FGeometry& SectionGeometry )
+bool SSequencerSection::CheckForEasingHandleInteraction( const FPointerEvent& MouseEvent, const FGeometry& AllottedGeometry )
 {
 	UMovieSceneSection* ThisSection = SectionInterface->GetSectionObject();
 	if (!ThisSection)
@@ -1072,15 +1078,18 @@ bool SSequencerSection::CheckForEasingHandleInteraction( const FPointerEvent& Mo
 		return false;
 	}
 
-	FTimeToPixel TimeToPixelConverter = ConstructTimeConverterForSection(MakeSectionGeometryWithoutHandles(SectionGeometry, SectionInterface), *ThisSection, GetSequencer());
+	FGeometry SectionGeometry = MakeSectionGeometryWithoutHandles(AllottedGeometry);
+	FTimeToPixel TimeToPixelConverter = ConstructTimeConverterForSection(SectionGeometry, *ThisSection, GetSequencer());
 
-	const double MouseTime = TimeToPixelConverter.PixelToSeconds(SectionGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition()).X);
-	// We intentionally give the handles a little more hit-test area than is visible as they are quite small
-	const double HalfHandleSizeX = TimeToPixelConverter.PixelToSeconds(8.f) - TimeToPixelConverter.PixelToSeconds(0.f);
+	const double MousePositionX = SectionGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition()).X;
+
+	// Easing handle is a square in the top corner of the grip handle.
+	const double GripSizePx = SectionInterface->GetSectionGripSize();
+	const double GripHalfSizePx = GripSizePx / 2.f;
 
 	// Now test individual easing handles if we're at the correct vertical position
 	float LocalMouseY = SectionGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition()).Y;
-	if (LocalMouseY < 0.f || LocalMouseY > 5.f)
+	if (LocalMouseY < 0.f || LocalMouseY > GripSizePx)
 	{
 		return false;
 	}
@@ -1096,30 +1105,35 @@ bool SSequencerSection::CheckForEasingHandleInteraction( const FPointerEvent& Mo
 		}
 	}
 
+	TSharedPtr<FTrackAreaViewModel> TrackAreaViewModel = GetTrackAreaViewModel();
 	for (const TSharedPtr<FSectionModel>& SectionModel : AllUnderlappingSections)
 	{
 		UMovieSceneSection* EasingSectionObj = SectionModel->GetSection();
 
 		if (EasingSectionObj->HasStartFrame() && EnumHasAllFlags(EasingFlags, EMovieSceneTrackEasingSupportFlags::ManualEaseIn))
 		{
-			TRange<FFrameNumber> EaseInRange      = EasingSectionObj->GetEaseInRange();
-			double               HandlePositionIn = ( EaseInRange.IsEmpty() ? EasingSectionObj->GetInclusiveStartFrame() : EaseInRange.GetUpperBoundValue() ) / TimeToPixelConverter.GetTickResolution();
+			// Compute the ease-in handle screen position.
+			const TRange<FFrameNumber> EaseInRange = EasingSectionObj->GetEaseInRange();
+			const FFrameNumber HandleTime = EaseInRange.IsEmpty() ? EasingSectionObj->GetInclusiveStartFrame() : EaseInRange.GetUpperBoundValue();
+			const double HandlePosition = TimeToPixelConverter.FrameToPixel(HandleTime) - HandleOffsetPx;
 
-			if (FMath::IsNearlyEqual(MouseTime, HandlePositionIn, HalfHandleSizeX))
+			if (FMath::IsNearlyEqual(MousePositionX, HandlePosition + GripHalfSizePx, GripHalfSizePx))
 			{
-				GetSequencer().GetViewModel()->GetTrackArea()->SetHotspot(MakeShared<FSectionEasingHandleHotspot>(ESequencerEasingType::In, SectionModel, Sequencer));
+				TrackAreaViewModel->SetHotspot(MakeShared<FSectionEasingHandleHotspot>(ESequencerEasingType::In, SectionModel, Sequencer));
 				return true;
 			}
 		}
 
 		if (EasingSectionObj->HasEndFrame() && EnumHasAllFlags(EasingFlags, EMovieSceneTrackEasingSupportFlags::ManualEaseOut))
 		{
-			TRange<FFrameNumber> EaseOutRange      = EasingSectionObj->GetEaseOutRange();
-			double               HandlePositionOut = (EaseOutRange.IsEmpty() ? EasingSectionObj->GetExclusiveEndFrame() : EaseOutRange.GetLowerBoundValue() ) / TimeToPixelConverter.GetTickResolution();
+			// Compute the ease-out handle screen position.
+			TRange<FFrameNumber> EaseOutRange = EasingSectionObj->GetEaseOutRange();
+			const FFrameNumber HandleTime = EaseOutRange.IsEmpty() ? EasingSectionObj->GetExclusiveEndFrame() : EaseOutRange.GetLowerBoundValue();
+			const double HandlePosition = TimeToPixelConverter.FrameToPixel(HandleTime) + HandleOffsetPx;
 
-			if (FMath::IsNearlyEqual(MouseTime, HandlePositionOut, HalfHandleSizeX))
+			if (FMath::IsNearlyEqual(MousePositionX, HandlePosition - GripHalfSizePx, GripHalfSizePx))
 			{
-				GetSequencer().GetViewModel()->GetTrackArea()->SetHotspot(MakeShared<FSectionEasingHandleHotspot>(ESequencerEasingType::Out, SectionModel, Sequencer));
+				TrackAreaViewModel->SetHotspot(MakeShared<FSectionEasingHandleHotspot>(ESequencerEasingType::Out, SectionModel, Sequencer));
 				return true;
 			}
 		}
@@ -1129,7 +1143,7 @@ bool SSequencerSection::CheckForEasingHandleInteraction( const FPointerEvent& Mo
 }
 
 
-bool SSequencerSection::CheckForEdgeInteraction( const FPointerEvent& MouseEvent, const FGeometry& SectionGeometry )
+bool SSequencerSection::CheckForEdgeInteraction( const FPointerEvent& MouseEvent, const FGeometry& AllottedGeometry )
 {
 	UMovieSceneSection* ThisSection = SectionInterface->GetSectionObject();
 	if (!ThisSection)
@@ -1137,11 +1151,12 @@ bool SSequencerSection::CheckForEdgeInteraction( const FPointerEvent& MouseEvent
 		return false;
 	}
 
-	const ISequencerEditTool* EditTool = GetSequencer().GetViewModel()->GetTrackArea()->GetEditTool();
+	TSharedPtr<FTrackAreaViewModel> TrackAreaViewModel = GetTrackAreaViewModel();
+	const ISequencerEditTool* EditTool = TrackAreaViewModel->GetEditTool();
 	TSharedPtr<ITrackAreaHotspot> Hotspot = EditTool ? EditTool->GetDragHotspot() : nullptr;
 	if (!Hotspot)
 	{
-		Hotspot = GetSequencer().GetViewModel()->GetTrackArea()->GetHotspot();
+		Hotspot = TrackAreaViewModel->GetHotspot();
 	}
 
 	if (Hotspot && !Hotspot->IsA<FSectionHotspotBase>())
@@ -1159,8 +1174,8 @@ bool SSequencerSection::CheckForEdgeInteraction( const FPointerEvent& MouseEvent
 		}
 	}
 
-	FGeometry SectionGeometryWithoutHandles = MakeSectionGeometryWithoutHandles(SectionGeometry, SectionInterface);
-	FTimeToPixel TimeToPixelConverter       = ConstructTimeConverterForSection(SectionGeometryWithoutHandles, *ThisSection, GetSequencer());
+	FGeometry SectionGeometry = MakeSectionGeometryWithoutHandles(AllottedGeometry);
+	FTimeToPixel TimeToPixelConverter = ConstructTimeConverterForSection(SectionGeometry, *ThisSection, GetSequencer());
 
 	for (const TSharedPtr<FSectionModel>& UnderlappingSection : AllUnderlappingSections)
 	{
@@ -1172,33 +1187,33 @@ bool SSequencerSection::CheckForEdgeInteraction( const FPointerEvent& MouseEvent
 		}
 
 		const float ThisHandleOffset = UnderlappingSectionObj == ThisSection ? HandleOffsetPx : 0.f;
-		FVector2D GripSize( UnderlappingSectionInterface->GetSectionGripSize(), SectionGeometry.Size.Y );
+		const FVector2D GripSize( UnderlappingSectionInterface->GetSectionGripSize(), SectionGeometry.Size.Y );
 
 		if (UnderlappingSectionObj->HasStartFrame())
 		{
 			// Make areas to the left and right of the geometry.  We will use these areas to determine if someone dragged the left or right edge of a section
-			FGeometry SectionRectLeft = SectionGeometryWithoutHandles.MakeChild(
+			FGeometry SectionRectLeft = SectionGeometry.MakeChild(
 				GripSize,
 				FSlateLayoutTransform(FVector2D( TimeToPixelConverter.FrameToPixel(UnderlappingSectionObj->GetInclusiveStartFrame()) - ThisHandleOffset, 0.f ))
 			);
 
 			if( SectionRectLeft.IsUnderLocation( MouseEvent.GetScreenSpacePosition() ) )
 			{
-				GetSequencer().GetViewModel()->GetTrackArea()->SetHotspot(MakeShareable( new FSectionResizeHotspot(FSectionResizeHotspot::Left, UnderlappingSection, Sequencer)) );
+				TrackAreaViewModel->SetHotspot(MakeShareable( new FSectionResizeHotspot(FSectionResizeHotspot::Left, UnderlappingSection, Sequencer)) );
 				return true;
 			}
 		}
 
 		if (UnderlappingSectionObj->HasEndFrame())
 		{
-			FGeometry SectionRectRight = SectionGeometryWithoutHandles.MakeChild(
+			FGeometry SectionRectRight = SectionGeometry.MakeChild(
 				GripSize,
 				FSlateLayoutTransform(FVector2D( TimeToPixelConverter.FrameToPixel(UnderlappingSectionObj->GetExclusiveEndFrame()) - UnderlappingSectionInterface->GetSectionGripSize() + ThisHandleOffset, 0 ))
 			);
 
 			if( SectionRectRight.IsUnderLocation( MouseEvent.GetScreenSpacePosition() ) )
 			{
-				GetSequencer().GetViewModel()->GetTrackArea()->SetHotspot(MakeShareable( new FSectionResizeHotspot(FSectionResizeHotspot::Right, UnderlappingSection, Sequencer)) );
+				TrackAreaViewModel->SetHotspot(MakeShareable( new FSectionResizeHotspot(FSectionResizeHotspot::Right, UnderlappingSection, Sequencer)) );
 				return true;
 			}
 		}
@@ -1206,7 +1221,7 @@ bool SSequencerSection::CheckForEdgeInteraction( const FPointerEvent& MouseEvent
 	return false;
 }
 
-bool SSequencerSection::CheckForEasingAreaInteraction( const FPointerEvent& MouseEvent, const FGeometry& SectionGeometry )
+bool SSequencerSection::CheckForEasingAreaInteraction( const FPointerEvent& MouseEvent, const FGeometry& AllottedGeometry )
 {
 	TSharedPtr<FSectionModel> ThisSectionModel = WeakSectionModel.Pin();
 	if (!ThisSectionModel)
@@ -1214,10 +1229,10 @@ bool SSequencerSection::CheckForEasingAreaInteraction( const FPointerEvent& Mous
 		return false;
 	}
 
-	FVector2D LocalMousePos = SectionGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
+	FVector2D LocalMousePos = AllottedGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
 
 	TViewModelPtr<IGeometryExtension> HeaderGeometry = ThisSectionModel->FindAncestorOfType<IOutlinerExtension>().ImplicitCast();
-	const float EasingHeight = HeaderGeometry ? HeaderGeometry->GetVirtualGeometry().GetHeight() : SectionGeometry.GetLocalSize().Y;
+	const float EasingHeight = HeaderGeometry ? HeaderGeometry->GetVirtualGeometry().GetHeight() : AllottedGeometry.GetLocalSize().Y;
 
 	if (LocalMousePos.Y < 0 || LocalMousePos.Y > EasingHeight)
 	{
@@ -1225,10 +1240,12 @@ bool SSequencerSection::CheckForEasingAreaInteraction( const FPointerEvent& Mous
 	}
 
 	UMovieSceneSection* ThisSection = SectionInterface->GetSectionObject();
-	FTimeToPixel TimeToPixelConverter = ConstructTimeConverterForSection(MakeSectionGeometryWithoutHandles(SectionGeometry, SectionInterface), *ThisSection, GetSequencer());
+	FGeometry SectionGeometry = MakeSectionGeometryWithoutHandles(AllottedGeometry);
+	FTimeToPixel TimeToPixelConverter = ConstructTimeConverterForSection(SectionGeometry, *ThisSection, GetSequencer());
 	const FFrameNumber MouseTime = TimeToPixelConverter.PixelToFrame(LocalMousePos.X).FrameNumber;
 
 	// First off, set the hotspot to an easing area if necessary
+	TSharedPtr<FTrackAreaViewModel> TrackAreaViewModel = GetTrackAreaViewModel();
 	for (const FOverlappingSections& Segment : UnderlappingEasingSegments)
 	{
 		if (!Segment.Range.Contains(MouseTime))
@@ -1252,16 +1269,47 @@ bool SSequencerSection::CheckForEasingAreaInteraction( const FPointerEvent& Mous
 
 		if (EasingAreas.Num())
 		{
-			GetSequencer().GetViewModel()->GetTrackArea()->SetHotspot(MakeShared<FSectionEasingAreaHotspot>(EasingAreas, WeakSectionModel, Sequencer));
+			TrackAreaViewModel->SetHotspot(MakeShared<FSectionEasingAreaHotspot>(EasingAreas, WeakSectionModel, Sequencer));
 			return true;
 		}
 	}
 	return false;
 }
 
+bool SSequencerSection::CheckForSectionInteraction( const FPointerEvent& MouseEvent, const FGeometry& AllottedGeometry )
+{
+	FGeometry SectionGeometry = MakeSectionGeometryWithoutHandles(AllottedGeometry);
+	if (SectionGeometry.IsUnderLocation(MouseEvent.GetScreenSpacePosition()))
+	{
+		TSharedPtr<FTrackAreaViewModel> TrackAreaViewModel = GetTrackAreaViewModel();
+		TrackAreaViewModel->SetHotspot( MakeShareable( new FSectionHotspot(WeakSectionModel, Sequencer)) );
+		return true;
+	}
+
+	return false;
+}
+
 FSequencer& SSequencerSection::GetSequencer() const
 {
 	return *Sequencer.Pin().Get();
+}
+
+TSharedPtr<STrackAreaView> SSequencerSection::GetTrackAreaView() const
+{
+	if (TSharedPtr<STrackLane> OwningTrackLane = WeakOwningTrackLane.Pin())
+	{
+		return OwningTrackLane->GetTrackAreaView();
+	}
+	return nullptr;
+}
+
+TSharedPtr<FTrackAreaViewModel> SSequencerSection::GetTrackAreaViewModel() const
+{
+	if (TSharedPtr<STrackAreaView> TrackAreaView = GetTrackAreaView())
+	{
+		return TrackAreaView->GetViewModel();
+	}
+	return nullptr;
 }
 
 int32 SSequencerSection::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled ) const
@@ -1273,11 +1321,12 @@ int32 SSequencerSection::OnPaint( const FPaintArgs& Args, const FGeometry& Allot
 		return LayerId;
 	}
 
-	const ISequencerEditTool* EditTool = GetSequencer().GetViewModel()->GetTrackArea()->GetEditTool();
+	TSharedPtr<FTrackAreaViewModel> TrackAreaViewModel = GetTrackAreaViewModel();
+	const ISequencerEditTool* EditTool = TrackAreaViewModel->GetEditTool();
 	TSharedPtr<ITrackAreaHotspot> Hotspot = EditTool ? EditTool->GetDragHotspot() : nullptr;
 	if (!Hotspot)
 	{
-		Hotspot = GetSequencer().GetViewModel()->GetTrackArea()->GetHotspot();
+		Hotspot = TrackAreaViewModel->GetHotspot();
 	}
 
 	UMovieSceneTrack* Track = SectionObject->GetTypedOuter<UMovieSceneTrack>();
@@ -1286,9 +1335,9 @@ int32 SSequencerSection::OnPaint( const FPaintArgs& Args, const FGeometry& Allot
 
 	const ESlateDrawEffect DrawEffects = bEnabled ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect;
 
-	FGeometry SectionGeometry = MakeSectionGeometryWithoutHandles( AllottedGeometry, SectionInterface );
+	FGeometry SectionGeometry = MakeSectionGeometryWithoutHandles(AllottedGeometry);
 
-	FSequencerSectionPainterImpl Painter(GetSequencer(), SectionModel, OutDrawElements, SectionGeometry, *this);
+	FSequencerSectionPainterImpl Painter(GetSequencer(), TrackAreaViewModel, SectionModel, OutDrawElements, SectionGeometry, *this);
 
 	FGeometry PaintSpaceParentGeometry = ParentGeometry;
 	PaintSpaceParentGeometry.AppendTransform(FSlateLayoutTransform(Inverse(Args.GetWindowToDesktopTransform())));
@@ -1312,7 +1361,7 @@ int32 SSequencerSection::OnPaint( const FPaintArgs& Args, const FGeometry& Allot
 		}
 	}
 
-	Painter.bIsSelected = GetSequencer().GetSelection().IsSelected(SectionModel);
+	Painter.bIsSelected = GetSequencer().GetSelection().TrackArea.IsSelected(SectionModel);
 
 	// Ask the interface to draw the section
 	LayerId = SectionInterface->OnPaintSection(Painter);
@@ -1325,7 +1374,7 @@ int32 SSequencerSection::OnPaint( const FPaintArgs& Args, const FGeometry& Allot
 	// reported. This enables us to still draw and interact with keys that overlap section handles, even if we drew the handles chronologically later
 	DrawSectionHandles(AllottedGeometry, OutDrawElements, LayerId, DrawEffects, SelectionColor, Hotspot);
 
-	Painter.LayerId = LayerId;
+	Painter.LayerId = (++LayerId);
 	PaintEasingHandles( Painter, SelectionColor, Hotspot );
 
 	// Artificially increase the layer now to ensure that we are now painting above keys now
@@ -1334,7 +1383,7 @@ int32 SSequencerSection::OnPaint( const FPaintArgs& Args, const FGeometry& Allot
 	// --------------------------------------------
 	// Draw section selection tint
 	const float SectionThrobValue = GetSectionSelectionThrobValue();
-	if (SectionThrobValue != 0.f && GetSequencer().GetSelection().IsSelected(SectionModel))
+	if (SectionThrobValue != 0.f && GetSequencer().GetSelection().TrackArea.IsSelected(SectionModel))
 	{
 		static const FName BackgroundTrackTintBrushName("Sequencer.Section.BackgroundTint");
 
@@ -1396,11 +1445,14 @@ int32 SSequencerSection::OnPaint( const FPaintArgs& Args, const FGeometry& Allot
 		OutDrawElements.PopClip();
 	}
 
+	++LayerId;
+
 	if (Painter.bClipRectEnabled)
 	{
 		OutDrawElements.PopClip();
 	}
-	return LayerId + 1;
+
+	return LayerId;
 }
 
 
@@ -1489,52 +1541,102 @@ void SSequencerSection::PaintEasingHandles( FSequencerSectionPainter& InPainter,
 			continue;
 		}
 
-		const ESlateDrawEffect DrawEffects = InPainter.bParentEnabled ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect;
+		// We only draw the corner radius for the easing handle when it's at the same place as the grip. Otherwise we
+		// draw a straight triangle.
+		const float HandleCornerRadius = 2.f;
+		const float MinHandleSize = 8.f;
 
-		const FSlateBrush* EasingHandle = FAppStyle::GetBrush("Sequencer.Section.EasingHandle");
-		FVector2D HandleSize(10.f, 10.f);
+		const ESlateDrawEffect DrawEffects = InPainter.bParentEnabled ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect;
+		const bool bIsSectionToKey = Track && Track->GetAllSections().Num() > 1 && Track->GetSectionToKey() == UnderlappingSectionObj;
+
+		// If this is the section to key, we draw the easing handle in the same bright green color as the border
+		// outline. We also make the handle a bit bigger, otherwise that border being drawn on top makes it look
+		// smaller.
+		// If there isn't any "section to key" border, we just draw the handle white.
+		const FLinearColor InactiveHandleColor = bIsSectionToKey ? FStyleColors::Success.GetColor(FWidgetStyle()) : FStyleColors::AccentYellow.GetColor(FWidgetStyle());
+		const float HalfSectionHeight = SectionInterface->GetSectionHeight() / 2.f;
+		const float HandleSize = FMath::Max(MinHandleSize, FMath::Min(HalfSectionHeight, SectionInterface->GetSectionGripSize())) + (bIsSectionToKey ? 3.f : 0.f);
+
+		const FSlateBrush* HandleBrush = FAppStyle::GetBrush("Sequencer.Section.EasingHandle");
+		FSlateResourceHandle HandleResource = FSlateApplication::Get().GetRenderer()->GetResourceHandle(*HandleBrush);
+
+		const FSlateRenderTransform& HandleRenderTransform = InPainter.SectionGeometry.GetAccumulatedRenderTransform();
 
 		if (UnderlappingSectionObj->HasStartFrame() && EnumHasAllFlags(EasingSupportFlags, EMovieSceneTrackEasingSupportFlags::ManualEaseIn))
 		{
 			TRange<FFrameNumber> EaseInRange = UnderlappingSectionObj->GetEaseInRange();
-			// Always draw handles if the section is highlighted, even if there is no range (to allow manual adjustment)
-			FFrameNumber HandleFrame = EaseInRange.IsEmpty() ? UnderlappingSectionObj->GetInclusiveStartFrame() : UE::MovieScene::DiscreteExclusiveUpper(EaseInRange);
-			FVector2f HandlePos(TimeToPixelConverter.FrameToPixel(HandleFrame), 0.f);
-			FSlateDrawElement::MakeBox(
+			const bool bHasEaseIn = !EaseInRange.IsEmpty();
+			FFrameNumber HandleFrame = bHasEaseIn ? UE::MovieScene::DiscreteExclusiveUpper(EaseInRange) : UnderlappingSectionObj->GetInclusiveStartFrame();
+			const float HandlePos(TimeToPixelConverter.FrameToPixel(HandleFrame) - HandleOffsetPx);
+			FColor HandleColor = (bLeftHandleActive ? SelectionColor : InactiveHandleColor).ToFColorSRGB();
+
+			TArray<FSlateVertex> Verts;
+			Verts.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(HandleRenderTransform, FVector2f(HandlePos, 0.f), FVector2f(0.f, 0.f), HandleColor));
+			Verts.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(HandleRenderTransform, FVector2f(HandlePos, HandleCornerRadius), FVector2f(0.f, 0.1f), HandleColor));
+			Verts.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(HandleRenderTransform, FVector2f(HandlePos + HandleCornerRadius, 0.f), FVector2f(0.1f, 0.f), HandleColor));
+			Verts.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(HandleRenderTransform, FVector2f(HandlePos + HandleSize, 0.f), FVector2f(1.f, 0.f), HandleColor));
+			Verts.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(HandleRenderTransform, FVector2f(HandlePos, HandleSize), FVector2f(0.f, 1.f), HandleColor));
+
+			TArray<SlateIndex> Indices;
+			if (bHasEaseIn)
+			{
+				Indices.Add(0); Indices.Add(3); Indices.Add(4);
+			}
+			else
+			{
+				Indices.Add(1); Indices.Add(2); Indices.Add(3);
+				Indices.Add(1); Indices.Add(3); Indices.Add(4);
+			}
+
+			FSlateDrawElement::MakeCustomVerts(
 				InPainter.DrawElements,
-				// always draw selected keys on top of other keys
 				InPainter.LayerId,
-				// Center the key along X.  Ensure the middle of the key is at the actual key time
-				InPainter.SectionGeometry.ToPaintGeometry(
-					HandleSize,
-					FSlateLayoutTransform(HandlePos - FVector2f(HandleSize.X*0.5f, 0.f))
-				),
-				EasingHandle,
-				DrawEffects,
-				(bLeftHandleActive ? SelectionColor : EasingHandle->GetTint(FWidgetStyle()))
+				HandleResource,
+				Verts,
+				Indices,
+				nullptr,
+				0,
+				0,
+				DrawEffects | ESlateDrawEffect::PreMultipliedAlpha
 			);
 		}
 
 		if (UnderlappingSectionObj->HasEndFrame() && EnumHasAllFlags(EasingSupportFlags, EMovieSceneTrackEasingSupportFlags::ManualEaseOut))
 		{
 			TRange<FFrameNumber> EaseOutRange = UnderlappingSectionObj->GetEaseOutRange();
+			const bool bHasEaseOut = !EaseOutRange.IsEmpty();
+			FFrameNumber HandleFrame = bHasEaseOut ? UE::MovieScene::DiscreteInclusiveLower(EaseOutRange) : UnderlappingSectionObj->GetExclusiveEndFrame();
+			const float HandlePos(TimeToPixelConverter.FrameToPixel(HandleFrame) + HandleOffsetPx);
+			const FColor HandleColor = (bRightHandleActive ? SelectionColor : InactiveHandleColor).ToFColorSRGB();
 
-			// Always draw handles if the section is highlighted, even if there is no range (to allow manual adjustment)
-			FFrameNumber HandleFrame = EaseOutRange.IsEmpty() ? UnderlappingSectionObj->GetExclusiveEndFrame() : UE::MovieScene::DiscreteInclusiveLower(EaseOutRange);
-			FVector2f    HandlePos   = FVector2f(TimeToPixelConverter.FrameToPixel(HandleFrame), 0.f);
+			TArray<FSlateVertex> Verts;
+			Verts.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(HandleRenderTransform, FVector2f(HandlePos, 0.f), FVector2f(1.f, 0.f), HandleColor));
+			Verts.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(HandleRenderTransform, FVector2f(HandlePos - HandleCornerRadius, 0.f), FVector2f(0.9f, 0.f), HandleColor));
+			Verts.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(HandleRenderTransform, FVector2f(HandlePos, HandleCornerRadius), FVector2f(1.f, 0.1f), HandleColor));
+			Verts.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(HandleRenderTransform, FVector2f(HandlePos, HandleSize), FVector2f(1.f, 1.f), HandleColor));
+			Verts.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(HandleRenderTransform, FVector2f(HandlePos - HandleSize, 0.f), FVector2f(0.f, 0.f), HandleColor));
 
-			FSlateDrawElement::MakeBox(
+			TArray<SlateIndex> Indices;
+			if (bHasEaseOut)
+			{
+				Indices.Add(0); Indices.Add(3); Indices.Add(4);
+			}
+			else
+			{
+				Indices.Add(4); Indices.Add(1); Indices.Add(2);
+				Indices.Add(4); Indices.Add(2); Indices.Add(3);
+			}
+
+			FSlateDrawElement::MakeCustomVerts(
 				InPainter.DrawElements,
-				// always draw selected keys on top of other keys
 				InPainter.LayerId,
-				// Center the key along X.  Ensure the middle of the key is at the actual key time
-				InPainter.SectionGeometry.ToPaintGeometry(
-					HandleSize,
-					FSlateLayoutTransform(HandlePos - FVector2f(HandleSize.X*0.5f, 0.f))
-				),
-				EasingHandle,
-				DrawEffects,
-				(bRightHandleActive ? SelectionColor : EasingHandle->GetTint(FWidgetStyle()))
+				HandleResource,
+				Verts,
+				Indices,
+				nullptr,
+				0,
+				0,
+				DrawEffects | ESlateDrawEffect::PreMultipliedAlpha
 			);
 		}
 	}
@@ -1580,8 +1682,8 @@ void SSequencerSection::DrawSectionHandles( const FGeometry& AllottedGeometry, F
 		}
 	}
 
-	FGeometry SectionGeometryWithoutHandles = MakeSectionGeometryWithoutHandles(AllottedGeometry, SectionInterface);
-	FTimeToPixel TimeToPixelConverter = ConstructTimeConverterForSection(SectionGeometryWithoutHandles, *ThisSection, GetSequencer());
+	FGeometry SectionGeometry = MakeSectionGeometryWithoutHandles(AllottedGeometry);
+	FTimeToPixel TimeToPixelConverter = ConstructTimeConverterForSection(SectionGeometry, *ThisSection, GetSequencer());
 
 	for (TSharedPtr<FSectionModel> SectionModel : AllUnderlappingSections)
 	{
@@ -1631,7 +1733,7 @@ void SSequencerSection::DrawSectionHandles( const FGeometry& AllottedGeometry, F
 		// Left Grip
 		if (UnderlappingSectionObj->HasStartFrame())
 		{
-			FGeometry SectionRectLeft = SectionGeometryWithoutHandles.MakeChild(
+			FGeometry SectionRectLeft = SectionGeometry.MakeChild(
 				GripSize,
 				FSlateLayoutTransform(FVector2D( TimeToPixelConverter.FrameToPixel(UnderlappingSectionObj->GetInclusiveStartFrame()) - ThisHandleOffset, 0.f ))
 			);
@@ -1649,7 +1751,7 @@ void SSequencerSection::DrawSectionHandles( const FGeometry& AllottedGeometry, F
 		// Right Grip
 		if (UnderlappingSectionObj->HasEndFrame())
 		{
-			FGeometry SectionRectRight = SectionGeometryWithoutHandles.MakeChild(
+			FGeometry SectionRectRight = SectionGeometry.MakeChild(
 				GripSize,
 				FSlateLayoutTransform(FVector2D( TimeToPixelConverter.FrameToPixel(UnderlappingSectionObj->GetExclusiveEndFrame()) - UnderlappingSection->GetSectionGripSize() + ThisHandleOffset, 0 ))
 			);
@@ -1674,28 +1776,27 @@ void SSequencerSection::DrawSectionHandles( const FGeometry& AllottedGeometry, F
 
 void SSequencerSection::Tick( const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime )
 {
-	if( GetVisibility() == EVisibility::Visible )
+	if (GetVisibility() == EVisibility::Visible)
 	{
 		UMovieSceneSection* Section = SectionInterface->GetSectionObject();
 		if (Section && Section->HasStartFrame() && Section->HasEndFrame())
 		{
+			constexpr float MinSectionWidth = 1.f;
+
 			FTimeToPixel TimeToPixelConverter(ParentGeometry, GetSequencer().GetViewRange(), Section->GetTypedOuter<UMovieScene>()->GetTickResolution());
+			const FFrameNumber SectionLength = UE::MovieScene::DiscreteSize(Section->ComputeEffectiveRange());
+			const float SectionWidth = TimeToPixelConverter.FrameDeltaToPixel(SectionLength);
 
-			const int32 SectionLengthPx = FMath::Max(0,
-				FMath::RoundToInt(
-					TimeToPixelConverter.FrameToPixel(Section->GetExclusiveEndFrame())) - FMath::RoundToInt(TimeToPixelConverter.FrameToPixel(Section->GetInclusiveStartFrame())
-				)
-			);
-
-			const float SectionGripSize = SectionInterface->GetSectionGripSize();
-			HandleOffsetPx = FMath::Max(FMath::RoundToFloat((2*SectionGripSize - SectionLengthPx) * .5f), 0.f);
+			const float GripSize = SectionInterface->GetSectionGripSize();
+			const float FinalSectionWidth = FMath::Max(MinSectionWidth + GripSize * 2.f, SectionWidth);
+			HandleOffsetPx = FMath::RoundToFloat((FinalSectionWidth - SectionWidth) * 0.5f);
 		}
 		else
 		{
 			HandleOffsetPx = 0;
 		}
 
-		FGeometry SectionGeometry = MakeSectionGeometryWithoutHandles( AllottedGeometry, SectionInterface );
+		FGeometry SectionGeometry = MakeSectionGeometryWithoutHandles(AllottedGeometry);
 		SectionInterface->Tick(SectionGeometry, ParentGeometry, InCurrentTime, InDeltaTime);
 	}
 }
@@ -1713,16 +1814,21 @@ void SSequencerSection::OnModifiedIndirectly(UMovieSceneSignedObject* Object)
 	}
 }
 
-FReply SSequencerSection::OnMouseButtonDown( const FGeometry& MyGeometry, const FPointerEvent& MouseEvent )
+FReply SSequencerSection::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
 	return FReply::Unhandled();
 }
 
-FGeometry SSequencerSection::MakeSectionGeometryWithoutHandles( const FGeometry& AllottedGeometry, const TSharedPtr<ISequencerSection>& InSectionInterface ) const
+FGeometry SSequencerSection::MakeSectionGeometryWithoutHandles(const FGeometry& AllottedGeometry) const
 {
+	const FVector2f LocalSize = AllottedGeometry.GetLocalSize();
+
+	FVector2f SectionSizeWithoutHandles = LocalSize - FVector2f(HandleOffsetPx * 2.f, 0.0f);
+	SectionSizeWithoutHandles.X = FMath::Max(1.f, SectionSizeWithoutHandles.X);
+
 	return AllottedGeometry.MakeChild(
-		AllottedGeometry.GetLocalSize() - FVector2D( HandleOffsetPx*2, 0.0f ),
-		FSlateLayoutTransform(FVector2D(HandleOffsetPx, 0 ))
+		SectionSizeWithoutHandles,
+		FSlateLayoutTransform(FVector2D(HandleOffsetPx, 0))
 	);
 }
 
@@ -1778,17 +1884,20 @@ FReply SSequencerSection::OnMouseButtonDoubleClick( const FGeometry& MyGeometry,
 }
 
 
-FReply SSequencerSection::OnMouseMove( const FGeometry& MyGeometry, const FPointerEvent& MouseEvent )
+FReply SSequencerSection::OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
-	if ( MouseEvent.GetCursorDelta().Size() > 0 &&
-		!CheckForEasingHandleInteraction(MouseEvent, MyGeometry) &&
-		!CheckForEdgeInteraction(MouseEvent, MyGeometry) &&
-		!CheckForEasingAreaInteraction(MouseEvent, MyGeometry))
+	if (MouseEvent.GetCursorDelta().Size() > 0)
 	{
-		// If nothing was hit, we just hit the section
-		GetSequencer().GetViewModel()->GetTrackArea()->SetHotspot( MakeShareable( new FSectionHotspot(WeakSectionModel, Sequencer)) );
+		if (CheckForEasingHandleInteraction(MouseEvent, MyGeometry) ||
+			CheckForEdgeInteraction(MouseEvent, MyGeometry) ||
+			CheckForEasingAreaInteraction(MouseEvent, MyGeometry) ||
+			CheckForSectionInteraction(MouseEvent, MyGeometry))
+		{
+			// Do nothing: we always want to return FReply::Unhandled because we're just setting up
+			// hotspots here. STrackAreaView will actually handle the mouse movement event, including
+			// calling it on the active hotspot, doing panning, and more.
+		}
 	}
-
 	return FReply::Unhandled();
 }
 
@@ -1801,7 +1910,8 @@ void SSequencerSection::OnMouseLeave( const FPointerEvent& MouseEvent )
 {
 	SCompoundWidget::OnMouseLeave( MouseEvent );
 
-	GetSequencer().GetViewModel()->GetTrackArea()->SetHotspot(nullptr);
+	TSharedPtr<FTrackAreaViewModel> TrackAreaViewModel = GetTrackAreaViewModel();
+	TrackAreaViewModel->SetHotspot(nullptr);
 }
 
 static float SectionThrobDurationSeconds = 1.f;

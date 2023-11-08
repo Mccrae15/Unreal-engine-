@@ -24,11 +24,11 @@ public class XRCreative : ModuleRules
 				"Engine",
 				"EnhancedInput",
 				"HeadMountedDisplay",
+				"XRBase",
 				"InputCore",
 				"InteractiveToolsFramework",
 				"LevelSequence",
 				"RenderCore", // TODO: Kill this? Only for FlushRenderingCommands
-				"Settings",
 				"Slate",
 				"SlateCore",
 				"TypedElementFramework",

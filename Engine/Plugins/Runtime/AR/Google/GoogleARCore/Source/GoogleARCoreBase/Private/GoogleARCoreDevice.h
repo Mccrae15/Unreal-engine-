@@ -88,9 +88,6 @@ public:
 	FGoogleARCoreLightEstimate GetLatestLightEstimate() const;
 	EGoogleARCoreFunctionStatus GetLatestPointCloud(UGoogleARCorePointCloud*& OutLatestPointCloud) const;
 	EGoogleARCoreFunctionStatus AcquireLatestPointCloud(UGoogleARCorePointCloud*& OutLatestPointCloud) const;
-#if PLATFORM_ANDROID
-	EGoogleARCoreFunctionStatus GetLatestCameraMetadata(const ACameraMetadata*& OutCameraMetadata) const;
-#endif
 	EGoogleARCoreFunctionStatus AcquireCameraImage(UGoogleARCoreCameraImage *&OutLatestCameraImage);
 
 	void TransformARCoordinates2D(EGoogleARCoreCoordinates2DType InputCoordinatesType, const TArray<FVector2D>& InputCoordinates,
@@ -173,7 +170,7 @@ private:
 	void OnModuleLoaded();
 	void OnModuleUnloaded();
 
-	TSharedPtr<FGoogleARCoreSession> CreateSession(bool bUseFrontCamera);
+	TSharedPtr<FGoogleARCoreSession> CreateSession();
 	void StartSession();
 
 	friend class FGoogleARCoreAndroidHelper;
@@ -186,9 +183,9 @@ private:
 	TSharedPtr<FGoogleARCoreSession> FrontCameraARCoreSession;
 	TSharedPtr<FGoogleARCoreSession> BackCameraARCoreSession;
 	
-	TMap<uint32, UARCoreCameraTexture*> PassthroughCameraTextures;
+	TMap<uint32, TObjectPtr<UARCoreCameraTexture>> PassthroughCameraTextures;
 	
-	UARCoreDepthTexture* DepthTexture;
+	TObjectPtr<UARCoreDepthTexture> DepthTexture;
 	
 	FTextureRHIRef LastCameraTexture;
 	
@@ -205,7 +202,7 @@ private:
 	bool bARCoreInstallRequested;
 	bool bARCoreInstalled;
 	float WorldToMeterScale;
-	class UARCoreAndroidPermissionHandler* PermissionHandler;
+	TObjectPtr<class UARCoreAndroidPermissionHandler> PermissionHandler;
 	FThreadSafeBool bDisplayOrientationChanged;
 
 	FARSessionStatus CurrentSessionStatus;

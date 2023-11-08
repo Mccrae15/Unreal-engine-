@@ -24,10 +24,13 @@
 #include "Templates/RefCounting.h"
 #include "OpenColorIOShaderCompilationManager.h"
 
+enum class EOpenColorIOWorkingColorSpaceTransform : uint8;
+
 class FOpenColorIOTransformResource;
 class FOpenColorIOShaderMap;
 class FOpenColorIOPixelShader;
 class FOpenColorIOShaderMapId;
+
 
 /** Stores outputs from the color transform compile that need to be saved. */
 class FOpenColorIOCompilationOutput
@@ -312,13 +315,7 @@ public:
 	/**
 	 * Minimal initialization constructor.
 	 */
-	FOpenColorIOTransformResource() 
-		: GameThreadShaderMap(nullptr)
-		, RenderingThreadShaderMap(nullptr)
-		, FeatureLevel(ERHIFeatureLevel::SM5)
-		, bContainsInlineShaders(false)
-		, bLoadedCookedShaderMapId(false)
-	{}
+	FOpenColorIOTransformResource();
 
 	/**
 	 * Destructor
@@ -392,11 +389,21 @@ public:
 		return GameThreadShaderMap;
 	}
 
+	/** Returns owner name for tracking */
+	FName GetOwnerFName() const
+	{
+		return AssetPath;
+	}
+
 	/** Note: SetRenderingThreadShaderMap must also be called with the same value, but from the rendering thread. */
 	void SetGameThreadShaderMap(FOpenColorIOShaderMap* InShaderMap)
 	{
 		checkSlow(IsInGameThread() || IsInAsyncLoadingThread());
 		GameThreadShaderMap = InShaderMap;
+		if (LIKELY(GameThreadShaderMap))
+		{
+			GameThreadShaderMap->GetResource()->SetOwnerName(GetOwnerFName());
+		}
 	}
 
 	/** Note: SetGameThreadShaderMap must also be called with the same value, but from the game thread. */
@@ -413,6 +420,10 @@ public:
 	{
 		checkSlow(IsInGameThread() || IsInAsyncLoadingThread());
 		GameThreadShaderMap = InShaderMap;
+		if (LIKELY(GameThreadShaderMap))
+		{
+			GameThreadShaderMap->GetResource()->SetOwnerName(GetOwnerFName());
+		}
 		bContainsInlineShaders = true;
 		bLoadedCookedShaderMapId = true;
 		CookedShaderMapId = InShaderMap->GetShaderMapId();
@@ -436,7 +447,15 @@ public:
 	const FString& GetFriendlyName()	const { return FriendlyName; }
 
 
-	void SetupResource(ERHIFeatureLevel::Type InFeatureLevel, const FString& InShaderCodeHash, const FString& InShadercode, const FString& InRawConfigHash, const FString& InFriendlyName, const FName& InAssetPath);
+	void SetupResource(
+		ERHIFeatureLevel::Type InFeatureLevel,
+		const FString& InShaderCodeHash,
+		const FString& InShadercode,
+		const FString& InRawConfigHash,
+		const FString& InFriendlyName,
+		const FName& InAssetPath,
+		EOpenColorIOWorkingColorSpaceTransform InWorkingColorSpaceTransformType
+	);
 
 	void SetCompileErrors(TArray<FString> &InErrors)
 	{
@@ -470,6 +489,7 @@ public:
 
 	
 	bool IsSame(const FOpenColorIOShaderMapId& InId) const;
+	EOpenColorIOWorkingColorSpaceTransform GetWorkingColorSpaceTransformType() const { return WorkingColorSpaceTransformType; }
 protected:
 #if WITH_EDITOR
 	/**
@@ -526,6 +546,7 @@ private:
 	uint32 bContainsInlineShaders : 1;
 	uint32 bLoadedCookedShaderMapId : 1;
 	FOpenColorIOShaderMapId CookedShaderMapId;
+	EOpenColorIOWorkingColorSpaceTransform WorkingColorSpaceTransformType;
 
 #if WITH_EDITOR
 	/**
@@ -547,10 +568,8 @@ private:
 
 	FString FriendlyName;
 
-#if WITH_EDITOR
 	/** Asset using this resource */
 	FName AssetPath;
-#endif // WITH_EDITOR
 
 	friend class FOpenColorIOShaderMap;
 	friend class FShaderCompilingManager;

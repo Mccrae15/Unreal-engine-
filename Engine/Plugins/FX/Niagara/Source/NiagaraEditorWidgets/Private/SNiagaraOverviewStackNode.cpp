@@ -806,9 +806,9 @@ FReply SNiagaraOverviewStackNode::OnToggleIsolateButtonClicked()
 	TSharedPtr<FNiagaraEmitterHandleViewModel> EmitterHandleViewModel = EmitterHandleViewModelWeak.Pin();
 	if (EmitterHandleViewModel.IsValid())
 	{
-		bool bShouldBeIsolated = !EmitterHandleViewModel->GetIsIsolated();
-		EmitterHandleViewModel->SetIsIsolated(bShouldBeIsolated);
+		EmitterHandleViewModel->GetOwningSystemViewModel()->ToggleIsolateEmitterAndSelectedEmitters(EmitterHandleViewModel->GetId());
 	}
+
 	return FReply::Handled();
 }
 
@@ -1003,7 +1003,7 @@ FText SNiagaraOverviewStackNode::GetSummaryViewCollapseTooltipText() const
 
 FReply SNiagaraOverviewStackNode::ExpandSummaryViewClicked()
 {
-	if (UNiagaraEmitterEditorData* EditorData = EmitterHandleViewModelWeak.IsValid()? &EmitterHandleViewModelWeak.Pin()->GetEmitterViewModel()->GetOrCreateEditorData() : nullptr)
+	if (UNiagaraEmitterEditorData* EditorData = EmitterHandleViewModelWeak.IsValid()? &EmitterHandleViewModelWeak.Pin()->GetEmitterViewModel()->GetEditorData() : nullptr)
 	{
 		EditorData->ToggleShowSummaryView();
 	}

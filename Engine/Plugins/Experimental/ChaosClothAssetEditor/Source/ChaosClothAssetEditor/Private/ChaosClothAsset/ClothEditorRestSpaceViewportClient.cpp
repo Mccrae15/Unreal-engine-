@@ -2,48 +2,125 @@
 
 #include "ChaosClothAsset/ClothEditorRestSpaceViewportClient.h"
 
+#include "BaseBehaviors/ClickDragBehavior.h"
+#include "BaseBehaviors/MouseWheelBehavior.h"
 #include "EngineUtils.h"
 #include "EditorModeManager.h"
 #include "Engine/Selection.h"
+#include "Behaviors/2DViewportBehaviorTargets.h"
 #include "EdModeInteractiveToolsContext.h"
 #include "CameraController.h"
 #include "Components/DynamicMeshComponent.h"
 #include "Framework/Application/SlateApplication.h"
+#include "SceneView.h"
+#include "PreviewScene.h"
+#include "Components/PointLightComponent.h"
+
+namespace UE::Chaos::ClothAsset
+{
 
 FChaosClothEditorRestSpaceViewportClient::FChaosClothEditorRestSpaceViewportClient(FEditorModeTools* InModeTools,
 	FPreviewScene* InPreviewScene,
 	const TWeakPtr<SEditorViewport>& InEditorViewportWidget) :
 	FEditorViewportClient(InModeTools, InPreviewScene, InEditorViewportWidget)
 {
-	EngineShowFlags.Grid = true;
-	DrawHelper.bDrawGrid = true;
+	OverrideNearClipPlane(UE_KINDA_SMALL_NUMBER);
+	OverrideFarClipPlane(0);
 
-	bDrawAxes = false;
+	BehaviorSet = NewObject<UInputBehaviorSet>();
 
-	// Don't automatically switch to wireframe rendering in ortho mode
-	SetViewModes(EViewModeIndex::VMI_Lit, EViewModeIndex::VMI_Lit);
+	// We'll have the priority of our viewport manipulation behaviors be lower (i.e. higher
+	// numerically) than both the gizmo default and the tool default.
+	constexpr int ViewportBehaviorPriority = 150;
 
-	EngineShowFlags.SetSelectionOutline(true);
+	ScrollBehaviorTarget = MakeUnique<FEditor2DScrollBehaviorTarget>(this);
+	UClickDragInputBehavior* const ScrollBehavior = NewObject<UClickDragInputBehavior>();
+	ScrollBehavior->Initialize(ScrollBehaviorTarget.Get());
+	ScrollBehavior->SetDefaultPriority(ViewportBehaviorPriority);
+	ScrollBehavior->SetUseRightMouseButton();
+	BehaviorSet->Add(ScrollBehavior);
+	BehaviorsFor2DMode.Add(ScrollBehavior);
+
+	ZoomBehaviorTarget = MakeUnique<FEditor2DMouseWheelZoomBehaviorTarget>(this);
+	constexpr float CameraFarPlaneWorldZ = -10.0f;
+	constexpr float CameraNearPlaneProportionZ = 0.8f;
+	ZoomBehaviorTarget->SetCameraFarPlaneWorldZ(CameraFarPlaneWorldZ);
+	ZoomBehaviorTarget->SetCameraNearPlaneProportionZ(CameraNearPlaneProportionZ);
+	ZoomBehaviorTarget->SetZoomLimits(0.001, 100000);
+	UMouseWheelInputBehavior* const ZoomBehavior = NewObject<UMouseWheelInputBehavior>();
+	ZoomBehavior->Initialize(ZoomBehaviorTarget.Get());
+	ZoomBehavior->SetDefaultPriority(ViewportBehaviorPriority);
+	BehaviorSet->Add(ZoomBehavior);
+	BehaviorsFor2DMode.Add(ZoomBehavior);
+
+	EngineShowFlags.SetSelectionOutline(false);
+	ModeTools->GetInteractiveToolsContext()->InputRouter->RegisterSource(this);
+
+	CameraPointLight = NewObject<UPointLightComponent>();
+	CameraPointLight->bUseInverseSquaredFalloff = false;
+	CameraPointLight->LightFalloffExponent = 2.0f;
+	CameraPointLight->SetIntensity(3.0f);
+	CameraPointLight->SetCastShadows(false);
+	PreviewScene->AddComponent(CameraPointLight, FTransform());
 }
 
-void FChaosClothEditorRestSpaceViewportClient::Set2DMode(bool In2DMode)
+void FChaosClothEditorRestSpaceViewportClient::SetConstructionViewMode(EClothPatternVertexType InViewMode)
 {
-	b2DMode = In2DMode;
-
-	if (b2DMode)
+	const bool bSwitching2D3D = (ConstructionViewMode == UE::Chaos::ClothAsset::EClothPatternVertexType::Sim2D) != (InViewMode == UE::Chaos::ClothAsset::EClothPatternVertexType::Sim2D);
+	if (bSwitching2D3D)
 	{
-		SetViewportType(ELevelViewportType::LVT_OrthoXY);
+		Swap(SavedInactiveViewTransform, ViewTransformPerspective);
+	}
+
+	ConstructionViewMode = InViewMode;
+
+	BehaviorSet->RemoveAll();
+
+	if (ConstructionViewMode == EClothPatternVertexType::Sim2D)
+	{
+		for (UInputBehavior* const Behavior : BehaviorsFor2DMode)
+		{
+			BehaviorSet->Add(Behavior);
+		}
+
+		const double AbsZ = FMath::Abs(ViewTransformPerspective.GetLocation().Z);
+		constexpr double CameraFarPlaneWorldZ = -10.0;
+		constexpr double CameraNearPlaneProportionZ = 0.8;
+		OverrideFarClipPlane(static_cast<float>(AbsZ - CameraFarPlaneWorldZ));
+		OverrideNearClipPlane(static_cast<float>(AbsZ * (1.0 - CameraNearPlaneProportionZ)));
 	}
 	else
 	{
-		SetViewportType(ELevelViewportType::LVT_Perspective);
+		OverrideFarClipPlane(0);
+		OverrideNearClipPlane(UE_KINDA_SMALL_NUMBER);
 	}
+
+	ModeTools->GetInteractiveToolsContext()->InputRouter->DeregisterSource(this);
+	ModeTools->GetInteractiveToolsContext()->InputRouter->RegisterSource(this);
 }
 
 
+EClothPatternVertexType FChaosClothEditorRestSpaceViewportClient::GetConstructionViewMode() const
+{
+	return ConstructionViewMode;
+}
+
+const UInputBehaviorSet* FChaosClothEditorRestSpaceViewportClient::GetInputBehaviors() const
+{
+	return BehaviorSet;
+}
+
+// Collects UObjects that we don't want the garbage collecter to clean up
+void FChaosClothEditorRestSpaceViewportClient::AddReferencedObjects(FReferenceCollector& Collector)
+{
+	FEditorViewportClient::AddReferencedObjects(Collector);
+	Collector.AddReferencedObject(BehaviorSet);
+	Collector.AddReferencedObjects(BehaviorsFor2DMode);
+}
+
 bool FChaosClothEditorRestSpaceViewportClient::ShouldOrbitCamera() const
 {
-	if (b2DMode)
+	if (ConstructionViewMode == EClothPatternVertexType::Sim2D)
 	{
 		return false;
 	}
@@ -52,6 +129,15 @@ bool FChaosClothEditorRestSpaceViewportClient::ShouldOrbitCamera() const
 		return FEditorViewportClient::ShouldOrbitCamera();
 	}
 }
+
+void FChaosClothEditorRestSpaceViewportClient::Tick(float DeltaSeconds)
+{
+	FViewportCameraTransform ViewTransform = GetViewTransform();
+	CameraPointLight->SetRelativeLocation(ViewTransform.GetLocation());
+
+	FEditorViewportClient::Tick(DeltaSeconds);
+}
+
 
 bool FChaosClothEditorRestSpaceViewportClient::InputKey(const FInputKeyEventArgs& EventArgs)
 {
@@ -66,48 +152,19 @@ bool FChaosClothEditorRestSpaceViewportClient::InputKey(const FInputKeyEventArgs
 		}
 	}
 
-	return FEditorViewportClient::InputKey(EventArgs);
-}
-
-
-void FChaosClothEditorRestSpaceViewportClient::ProcessClick(FSceneView& View, HHitProxy* HitProxy, FKey Key, EInputEvent Event, uint32 HitX, uint32 HitY)
-{
-	FEditorViewportClient::ProcessClick(View, HitProxy, Key, Event, HitX, HitY);
-
-	// TODO: Add/modify selection if modifier keys are pressed
-	USelection* SelectedComponents = ModeTools->GetSelectedComponents();
-	SelectedComponents->Modify();
-	SelectedComponents->BeginBatchSelectOperation();
-
-	TArray<UDynamicMeshComponent*> PreviouslySelectedComponents;
-	SelectedComponents->GetSelectedObjects<UDynamicMeshComponent>(PreviouslySelectedComponents);
-	SelectedComponents->DeselectAll(UDynamicMeshComponent::StaticClass());
-
-	if (HitProxy && HitProxy->IsA(HActor::StaticGetType()))
+	if (ConstructionViewMode != EClothPatternVertexType::Sim2D)
 	{
-		const HActor* ActorProxy = static_cast<HActor*>(HitProxy);
-		if (ActorProxy && ActorProxy->Actor )
-		{
-			const AActor* Actor = ActorProxy->Actor;
-			const TSet<UActorComponent*>& OwnedComponents = Actor->GetComponents();
-			for (UActorComponent* Component : OwnedComponents)
-			{
-				if (UDynamicMeshComponent* DynamicMeshComp = Cast<UDynamicMeshComponent>(Component))
-				{
-					SelectedComponents->Select(DynamicMeshComp);
-					DynamicMeshComp->PushSelectionToProxy();
-				}
-			}
-		}
+		return FEditorViewportClient::InputKey(EventArgs);
 	}
 
-	SelectedComponents->EndBatchSelectOperation();
-
-	for (UDynamicMeshComponent* Component : PreviouslySelectedComponents)
+	// We'll support disabling input like our base class, even if it does not end up being used.
+	if (bDisableInput)
 	{
-		Component->PushSelectionToProxy();
+		return true;
 	}
 
+	// Our viewport manipulation is placed in the input router that ModeTools manages
+	return ModeTools->InputKey(this, EventArgs.Viewport, EventArgs.Key, EventArgs.Event);
 }
 
 void FChaosClothEditorRestSpaceViewportClient::SetEditorViewportWidget(TWeakPtr<SEditorViewport> InEditorViewportWidget)
@@ -119,3 +176,16 @@ void FChaosClothEditorRestSpaceViewportClient::SetToolCommandList(TWeakPtr<FUICo
 {
 	ToolCommandList = InToolCommandList;
 }
+
+float FChaosClothEditorRestSpaceViewportClient::GetCameraPointLightIntensity() const
+{
+	return CameraPointLight->Intensity;
+}
+
+void FChaosClothEditorRestSpaceViewportClient::SetCameraPointLightIntensity(float Intensity)
+{
+	CameraPointLight->SetIntensity(Intensity);
+}
+
+
+} // namespace UE::Chaos::ClothAsset

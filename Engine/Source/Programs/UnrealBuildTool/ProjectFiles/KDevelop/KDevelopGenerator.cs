@@ -2,12 +2,12 @@
 
 using System;
 using System.Collections.Generic;
-using System.Text;
 using System.IO;
 using System.Linq;
+using System.Text;
 using EpicGames.Core;
-using UnrealBuildBase;
 using Microsoft.Extensions.Logging;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -30,13 +30,7 @@ namespace UnrealBuildTool
 		}
 
 		/// File extension for project files we'll be generating (e.g. ".vcxproj")
-		override public string ProjectFileExtension
-		{
-			get
-			{
-				return ".kdev4";
-			}
-		}
+		public override string ProjectFileExtension => ".kdev4";
 
 		protected override bool WritePrimaryProjectFile(ProjectFile? UBTProject, PlatformProjectGeneratorCollection PlatformProjectGenerators, ILogger Logger)
 		{
@@ -83,7 +77,6 @@ namespace UnrealBuildTool
 				{
 					ProjectCmdArg = " -makefile -kdevelopfile " + ProjectCmdArg + " -game -engine ";
 				}
-
 			}
 			else if (TargetName == (GameProjectName + "Editor"))
 			{
@@ -93,7 +86,6 @@ namespace UnrealBuildTool
 				{
 					ProjectCmdArg = " -makefile -kdevelopfile " + ProjectCmdArg + " -game -engine ";
 				}
-
 			}
 			else
 			{
@@ -290,7 +282,6 @@ namespace UnrealBuildTool
 						SystemIncludeDirectories.Add(String.Format("{0}", FullPath));
 						IncludeIndex++;
 					}
-
 				}
 
 				foreach (string CurPath in KDevelopProject.IntelliSenseSystemIncludeSearchPaths)
@@ -389,9 +380,9 @@ namespace UnrealBuildTool
 				foreach (string CurDefine in KDevelopProject.IntelliSensePreprocessorDefinitions)
 				{
 					SplitDefinitionAndValue(CurDefine, out Key, out Value);
-					if (string.IsNullOrEmpty(Value))
+					if (String.IsNullOrEmpty(Value))
 					{
-						DefineHolder.Add (String.Format ("{0} \\\n", Key));
+						DefineHolder.Add(String.Format("{0} \\\n", Key));
 					}
 					else
 					{
@@ -399,7 +390,6 @@ namespace UnrealBuildTool
 					}
 				}
 			}
-
 
 			// Remove duplicates if they are present.
 			List<string> Tmp = new List<string>();

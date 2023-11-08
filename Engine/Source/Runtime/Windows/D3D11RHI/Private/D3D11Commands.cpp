@@ -5,7 +5,7 @@
 =============================================================================*/
 
 #include "D3D11RHIPrivate.h"
-#include "D3D11RHIPrivateUtil.h"
+#include "Windows/D3D11RHIPrivateUtil.h"
 #include "StaticBoundShaderState.h"
 #include "GlobalShader.h"
 #include "OneColorShader.h"
@@ -295,9 +295,7 @@ void FD3D11DynamicRHI::RHISetBoundShaderState(FRHIBoundShaderState* BoundShaderS
 		}
 	}
 
-	extern bool D3D11RHI_ShouldCreateWithD3DDebug();
-	static bool bHasD3DDebug = D3D11RHI_ShouldCreateWithD3DDebug();
-	if (GUnbindResourcesBetweenDrawsInDX11 || bHasD3DDebug)
+	if (GUnbindResourcesBetweenDrawsInDX11 || GRHIGlobals.IsDebugLayerEnabled)
 	{
 		ClearAllShaderResources();
 	}
@@ -352,7 +350,7 @@ void FD3D11DynamicRHI::RHISetUAVParameter(FRHIPixelShader* ComputeShaderRHI, uin
 
 	if (UAV)
 	{
-		ConditionalClearShaderResource(UAV->Resource, true);
+		ConditionalClearShaderResource(UAV->GetBaseResource(), true);
 		for (uint32 i = 0; i < D3D11_PS_CS_UAV_REGISTER_COUNT; i++)
 		{
 			if (i != UAVIndex && CurrentUAVs[i] == UAV)
@@ -377,7 +375,7 @@ void FD3D11DynamicRHI::RHISetUAVParameter(FRHIComputeShader* ComputeShaderRHI,ui
 
 	if(UAV)
 	{
-		ConditionalClearShaderResource(UAV->Resource, true);		
+		ConditionalClearShaderResource(UAV->GetBaseResource(), true);
 	}
 
 	ID3D11UnorderedAccessView* D3D11UAV = UAV ? UAV->View : NULL;
@@ -394,7 +392,7 @@ void FD3D11DynamicRHI::RHISetUAVParameter(FRHIComputeShader* ComputeShaderRHI,ui
 	
 	if(UAV)
 	{
-		ConditionalClearShaderResource(UAV->Resource, true);
+		ConditionalClearShaderResource(UAV->GetBaseResource(), true);
 	}
 
 	ID3D11UnorderedAccessView* D3D11UAV = UAV ? UAV->View : NULL;
@@ -404,13 +402,14 @@ void FD3D11DynamicRHI::RHISetUAVParameter(FRHIComputeShader* ComputeShaderRHI,ui
 void FD3D11DynamicRHI::RHISetShaderResourceViewParameter(FRHIGraphicsShader* ShaderRHI,uint32 TextureIndex, FRHIShaderResourceView* SRVRHI)
 {
 	FD3D11ShaderResourceView* SRV = ResourceCast(SRVRHI);
-	FD3D11BaseShaderResource* Resource = nullptr;
+	FD3D11ViewableResource* Resource = nullptr;
 	ID3D11ShaderResourceView* D3D11SRV = nullptr;
 	if (SRV)
 	{
-		Resource = SRV->Resource;
+		Resource = SRV->GetBaseResource();
 		D3D11SRV = SRV->View;
 	}
+
 	switch (ShaderRHI->GetFrequency())
 	{
 	case SF_Vertex:
@@ -445,12 +444,12 @@ void FD3D11DynamicRHI::RHISetShaderResourceViewParameter(FRHIComputeShader* Comp
 
 	FD3D11ShaderResourceView* SRV = ResourceCast(SRVRHI);
 
-	FD3D11BaseShaderResource* Resource = nullptr;
+	FD3D11ViewableResource* Resource = nullptr;
 	ID3D11ShaderResourceView* D3D11SRV = nullptr;
 	
 	if (SRV)
 	{
-		Resource = SRV->Resource;
+		Resource = SRV->GetBaseResource();
 		D3D11SRV = SRV->View;
 	}
 
@@ -566,30 +565,32 @@ void FD3D11DynamicRHI::RHISetShaderUniformBuffer(FRHIComputeShader* ComputeShade
 
 void FD3D11DynamicRHI::RHISetShaderParameter(FRHIGraphicsShader* ShaderRHI,uint32 BufferIndex,uint32 BaseIndex,uint32 NumBytes,const void* NewValue)
 {
+	check(BufferIndex == 0);
+
 	switch (ShaderRHI->GetFrequency())
 	{
 	case SF_Vertex:
 	{
 		FD3D11VertexShader* VertexShader = static_cast<FD3D11VertexShader*>(ShaderRHI);
 		VALIDATE_BOUND_SHADER(VertexShader);
-		checkSlow(VSConstantBuffers[BufferIndex]);
-		VSConstantBuffers[BufferIndex]->UpdateConstant((const uint8*)NewValue, BaseIndex, NumBytes);
+		checkSlow(VSConstantBuffer);
+		VSConstantBuffer->UpdateConstant((const uint8*)NewValue, BaseIndex, NumBytes);
 	}
 	break;
 	case SF_Geometry:
 	{
 		FD3D11GeometryShader* GeometryShader = static_cast<FD3D11GeometryShader*>(ShaderRHI);
 		VALIDATE_BOUND_SHADER(GeometryShader);
-		checkSlow(GSConstantBuffers[BufferIndex]);
-		GSConstantBuffers[BufferIndex]->UpdateConstant((const uint8*)NewValue, BaseIndex, NumBytes);
+		checkSlow(GSConstantBuffer);
+		GSConstantBuffer->UpdateConstant((const uint8*)NewValue, BaseIndex, NumBytes);
 	}
 	break;
 	case SF_Pixel:
 	{
 		FD3D11PixelShader* PixelShader = static_cast<FD3D11PixelShader*>(ShaderRHI);
 		VALIDATE_BOUND_SHADER(PixelShader);
-		checkSlow(PSConstantBuffers[BufferIndex]);
-		PSConstantBuffers[BufferIndex]->UpdateConstant((const uint8*)NewValue, BaseIndex, NumBytes);
+		checkSlow(PSConstantBuffer);
+		PSConstantBuffer->UpdateConstant((const uint8*)NewValue, BaseIndex, NumBytes);
 	}
 	break;
 	default:
@@ -600,8 +601,8 @@ void FD3D11DynamicRHI::RHISetShaderParameter(FRHIGraphicsShader* ShaderRHI,uint3
 void FD3D11DynamicRHI::RHISetShaderParameter(FRHIComputeShader* ComputeShaderRHI,uint32 BufferIndex,uint32 BaseIndex,uint32 NumBytes,const void* NewValue)
 {
 	//VALIDATE_BOUND_SHADER(ComputeShaderRHI);
-	checkSlow(CSConstantBuffers[BufferIndex]);
-	CSConstantBuffers[BufferIndex]->UpdateConstant((const uint8*)NewValue,BaseIndex,NumBytes);
+	checkSlow(CSConstantBuffer);
+	CSConstantBuffer->UpdateConstant((const uint8*)NewValue,BaseIndex,NumBytes);
 }
 
 void FD3D11DynamicRHI::RHISetShaderParameters(FRHIComputeShader* Shader, TConstArrayView<uint8> InParametersData, TConstArrayView<FRHIShaderParameter> InParameters, TConstArrayView<FRHIShaderParameterResource> InResourceParameters, TConstArrayView<FRHIShaderParameterResource> InBindlessParameters)
@@ -628,6 +629,16 @@ void FD3D11DynamicRHI::RHISetShaderParameters(FRHIGraphicsShader* Shader, TConst
 		, InBindlessParameters
 		, true /*bBindUAVsFirst*/
 	);
+}
+
+void FD3D11DynamicRHI::RHISetShaderUnbinds(FRHIComputeShader* Shader, TConstArrayView<FRHIShaderParameterUnbind> InUnbinds)
+{
+	UE::RHICore::RHISetShaderUnbindsShared(*this, Shader, InUnbinds);
+}
+
+void FD3D11DynamicRHI::RHISetShaderUnbinds(FRHIGraphicsShader* Shader, TConstArrayView<FRHIShaderParameterUnbind> InUnbinds)
+{
+	UE::RHICore::RHISetShaderUnbindsShared(*this, Shader, InUnbinds);
 }
 
 void FD3D11DynamicRHI::ValidateExclusiveDepthStencilAccess(FExclusiveDepthStencil RequestedAccess) const
@@ -732,7 +743,7 @@ void FD3D11DynamicRHI::InternalSetUAVPS(uint32 BindIndex, FD3D11UnorderedAccessV
 		CurrentUAVs[BindIndex] = UnorderedAccessViewRHI;
 		UAVSChanged = 1;
 	}
-	ConditionalClearShaderResource(UnorderedAccessViewRHI->Resource, true);
+	ConditionalClearShaderResource(UnorderedAccessViewRHI->GetBaseResource(), true);
 	for (uint32 i = 0; i < D3D11_PS_CS_UAV_REGISTER_COUNT; i++)
 	{
 		if (i != BindIndex && CurrentUAVs[i] == UnorderedAccessViewRHI)
@@ -785,7 +796,7 @@ void FD3D11DynamicRHI::CommitUAVs()
 					ID3D11UnorderedAccessView* UAV = UAVs[i];
 
 					// Unbind any shader views of the UAV's resource.
-					ConditionalClearShaderResource(RHIUAV->Resource, true);
+					ConditionalClearShaderResource(RHIUAV->GetBaseResource(), true);
 					UAVBound[i] = UAV;
 				}
 			}
@@ -1045,6 +1056,20 @@ static D3D11_PRIMITIVE_TOPOLOGY GetD3D11PrimitiveType(EPrimitiveType PrimitiveTy
 	return D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 }
 
+namespace FD3DRHIUtil
+{
+	template <EShaderFrequency ShaderFrequencyT>
+	inline void CommitConstants(FD3D11ConstantBuffer* InConstantBuffer, FD3D11StateCache& StateCache, bool bDiscardSharedConstants)
+	{
+		FWinD3D11ConstantBuffer* ConstantBuffer = static_cast<FWinD3D11ConstantBuffer*>(InConstantBuffer);
+		// Array may contain NULL entries to pad out to proper 
+		if (ConstantBuffer && ConstantBuffer->CommitConstantsToDevice(bDiscardSharedConstants))
+		{
+			ID3D11Buffer* DeviceBuffer = ConstantBuffer->GetConstantBuffer();
+			StateCache.SetConstantBuffer<ShaderFrequencyT>(DeviceBuffer, GLOBAL_CONSTANT_BUFFER_INDEX);
+		}
+	}
+};
 
 void FD3D11DynamicRHI::CommitNonComputeShaderConstants()
 {
@@ -1056,31 +1081,19 @@ void FD3D11DynamicRHI::CommitNonComputeShaderConstants()
 	if (CurrentBoundShaderState->bShaderNeedsGlobalConstantBuffer[SF_Vertex])
 	{
 		// Commit and bind vertex shader constants
-		for(uint32 i=0;i<MAX_CONSTANT_BUFFER_SLOTS; i++)
-		{
-			FD3D11ConstantBuffer* ConstantBuffer = VSConstantBuffers[i];
-			FD3DRHIUtil::CommitConstants<SF_Vertex>(ConstantBuffer, StateCache, i, bDiscardSharedConstants);
-		}
+		FD3DRHIUtil::CommitConstants<SF_Vertex>(VSConstantBuffer, StateCache, bDiscardSharedConstants);
 	}
 
 	if (CurrentBoundShaderState->bShaderNeedsGlobalConstantBuffer[SF_Geometry])
 	{
 		// Commit and bind geometry shader constants
-		for(uint32 i=0;i<MAX_CONSTANT_BUFFER_SLOTS; i++)
-		{
-			FD3D11ConstantBuffer* ConstantBuffer = GSConstantBuffers[i];
-			FD3DRHIUtil::CommitConstants<SF_Geometry>(ConstantBuffer, StateCache, i, bDiscardSharedConstants);
-		}
+		FD3DRHIUtil::CommitConstants<SF_Geometry>(GSConstantBuffer, StateCache, bDiscardSharedConstants);
 	}
 
 	if (CurrentBoundShaderState->bShaderNeedsGlobalConstantBuffer[SF_Pixel])
 	{
 		// Commit and bind pixel shader constants
-		for(uint32 i=0;i<MAX_CONSTANT_BUFFER_SLOTS; i++)
-		{
-			FD3D11ConstantBuffer* ConstantBuffer = PSConstantBuffers[i];
-			FD3DRHIUtil::CommitConstants<SF_Pixel>(ConstantBuffer, StateCache, i, bDiscardSharedConstants);
-		}
+		FD3DRHIUtil::CommitConstants<SF_Pixel>(PSConstantBuffer, StateCache, bDiscardSharedConstants);
 	}
 
 	bDiscardSharedConstants = false;
@@ -1088,14 +1101,8 @@ void FD3D11DynamicRHI::CommitNonComputeShaderConstants()
 
 void FD3D11DynamicRHI::CommitComputeShaderConstants()
 {
-	bool bLocalDiscardSharedConstants = true;
-
 	// Commit and bind compute shader constants
-	for(uint32 i=0;i<MAX_CONSTANT_BUFFER_SLOTS; i++)
-	{
-		FD3D11ConstantBuffer* ConstantBuffer = CSConstantBuffers[i];
-		FD3DRHIUtil::CommitConstants<SF_Compute>(ConstantBuffer, StateCache, i, bDiscardSharedConstants);
-	}
+	FD3DRHIUtil::CommitConstants<SF_Compute>(CSConstantBuffer, StateCache, bDiscardSharedConstants);
 }
 
 template <class ShaderType>
@@ -1117,7 +1124,7 @@ void FD3D11DynamicRHI::SetResourcesFromTables(const ShaderType* RESTRICT Shader)
 		{
 			FD3D11ShaderResourceView* SRVRHI = ResourceCast(SRV);
 			RHI.SetShaderResourceView<Frequency>(
-				SRVRHI->Resource,
+				SRVRHI->GetBaseResource(),
 				SRVRHI->View,
 				Index
 			);
@@ -1556,9 +1563,8 @@ IRHIPlatformCommandList* FD3D11DynamicRHI::RHIFinalizeContext(IRHIComputeContext
 	return nullptr;
 }
 
-void FD3D11DynamicRHI::RHISubmitCommandLists(TArrayView<IRHIPlatformCommandList*> CommandLists)
+void FD3D11DynamicRHI::RHISubmitCommandLists(TArrayView<IRHIPlatformCommandList*> CommandLists, bool bFlushResources)
 {
-	UE_LOG(LogRHI, Fatal, TEXT("FD3D11DynamicRHI::RHISubmitCommandLists should never be called. D3D11 RHI does not implement parallel command list execution."));
 }
 
 void FD3D11DynamicRHI::EnableUAVOverlap()
@@ -1574,7 +1580,6 @@ void FD3D11DynamicRHI::EnableUAVOverlap()
 
 	bUAVOverlapEnabled = true;
 
-#if !PLATFORM_HOLOLENS
 	if (IsRHIDeviceNVIDIA())
 	{
 #if WITH_NVAPI
@@ -1596,7 +1601,6 @@ void FD3D11DynamicRHI::EnableUAVOverlap()
 		}
 #endif
 	}
-#endif
 }
 
 void FD3D11DynamicRHI::DisableUAVOverlap()
@@ -1608,7 +1612,6 @@ void FD3D11DynamicRHI::DisableUAVOverlap()
 		return;
 	}
 
-#if !PLATFORM_HOLOLENS
 	if (IsRHIDeviceNVIDIA())
 	{
 #if WITH_NVAPI
@@ -1630,7 +1633,6 @@ void FD3D11DynamicRHI::DisableUAVOverlap()
 		}
 #endif
 	}
-#endif
 
 	bUAVOverlapEnabled = false;
 }
@@ -1696,6 +1698,42 @@ void FD3D11DynamicRHI::RHIEndUAVOverlap()
 FStagingBufferRHIRef FD3D11DynamicRHI::RHICreateStagingBuffer()
 {
 	return new FD3D11StagingBuffer();
+}
+
+FD3D11StagingBuffer::~FD3D11StagingBuffer()
+{
+	if (StagedRead)
+	{
+		StagedRead.SafeRelease();
+	}
+}
+
+void* FD3D11StagingBuffer::Lock(uint32 Offset, uint32 NumBytes)
+{
+	check(!bIsLocked);
+	bIsLocked = true;
+	if (StagedRead)
+	{
+		// Map the staging buffer's memory for reading.
+		D3D11_MAPPED_SUBRESOURCE MappedSubresource;
+		VERIFYD3D11RESULT(Context->Map(StagedRead, 0, D3D11_MAP_READ, 0, &MappedSubresource));
+
+		return (void*)((uint8*)MappedSubresource.pData + Offset);
+	}
+	else
+	{
+		return nullptr;
+	}
+}
+
+void FD3D11StagingBuffer::Unlock()
+{
+	check(bIsLocked);
+	bIsLocked = false;
+	if (StagedRead)
+	{
+		Context->Unmap(StagedRead, 0);
+	}
 }
 
 void FD3D11DynamicRHI::RHICopyToStagingBuffer(FRHIBuffer* SourceBufferRHI, FRHIStagingBuffer* StagingBufferRHI, uint32 Offset, uint32 NumBytes)

@@ -7,14 +7,41 @@
 #include "UObject/Package.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/UObjectGlobals.h"
+#include "UnrealEngine.h"
 #include "MovieSceneFwd.h"
 #include "Misc/PackageName.h"
 #include "Engine/World.h"
 #include "Animation/AnimInstance.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/LevelStreamingDynamic.h"
+#include "WorldPartition/IWorldPartitionObjectResolver.h"
+#include "IMovieSceneBoundObjectProxy.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(LevelSequenceBindingReference)
+
+namespace UE::MovieScene
+{
+
+UObject* FindBoundObjectProxy(UObject* BoundObject)
+{
+	if (!BoundObject)
+	{
+		return nullptr;
+	}
+
+	IMovieSceneBoundObjectProxy* RawInterface = Cast<IMovieSceneBoundObjectProxy>(BoundObject);
+	if (RawInterface)
+	{
+		return RawInterface->NativeGetBoundObjectForSequencer(BoundObject);
+	}
+	else if (BoundObject->GetClass()->ImplementsInterface(UMovieSceneBoundObjectProxy::StaticClass()))
+	{
+		return IMovieSceneBoundObjectProxy::Execute_BP_GetBoundObjectForSequencer(BoundObject, BoundObject);
+	}
+	return BoundObject;
+}
+
+} // namespace UE::MovieScene
 
 FLevelSequenceBindingReference::FLevelSequenceBindingReference(UObject* InObject, UObject* InContext)
 {
@@ -46,8 +73,11 @@ FLevelSequenceBindingReference::FLevelSequenceBindingReference(UObject* InObject
 	}
 }
 
-UObject* FLevelSequenceBindingReference::Resolve(UObject* InContext, const FTopLevelAssetPath& StreamedLevelAssetPath) const
+UObject* FLevelSequenceBindingReference::Resolve(UObject* InContext, const FResolveBindingParams& InResolveBindingParams) const
 {
+	// tidy up todo: StreamedLevelAsset path and WorldPartitionResolveData code paths could probably share most their code
+	//				 InContext could be reverted back to always be the UWorld in both paths and instead StreamedLevelAsset code path could use the StreamingWorld to resolve
+
 	if (InContext && InContext->IsA<AActor>())
 	{
 		if (ExternalObjectPath.IsNull())
@@ -60,7 +90,7 @@ UObject* FLevelSequenceBindingReference::Resolve(UObject* InContext, const FTopL
 			return FindObject<UObject>(InContext, *ObjectPath, false);
 		}
 	}
-	else if (InContext && InContext->IsA<ULevel>() && StreamedLevelAssetPath.IsValid() && ExternalObjectPath.GetAssetPath() == StreamedLevelAssetPath)
+	else if (InContext && InContext->IsA<ULevel>() && InResolveBindingParams.StreamedLevelAssetPath.IsValid() && ExternalObjectPath.GetAssetPath() == InResolveBindingParams.StreamedLevelAssetPath)
 	{
 		if (UE::IsSavingPackage(nullptr) || IsGarbageCollecting())
 		{
@@ -72,6 +102,10 @@ UObject* FLevelSequenceBindingReference::Resolve(UObject* InContext, const FTopL
 		UObject* ContextOuter = InContext->GetOuter();
 		check(ContextOuter);
 		ContextOuter->ResolveSubobject(*ExternalObjectPath.GetSubPathString(), ResolvedObject, /*bLoadIfExists*/false);
+		return ResolvedObject;
+	} 
+	else if (UObject* ResolvedObject = nullptr; ExternalObjectPath.IsValid() && InResolveBindingParams.WorldPartitionResolveData && InResolveBindingParams.WorldPartitionResolveData->ResolveObject(InResolveBindingParams.StreamingWorld, ExternalObjectPath, ResolvedObject))
+	{
 		return ResolvedObject;
 	}
 	else
@@ -89,7 +123,7 @@ UObject* FLevelSequenceBindingReference::Resolve(UObject* InContext, const FTopL
 		// scope. Since ResolveObject will always call FixupForPIE in editor based on GPlayInEditorID, we always override the current
 		// GPlayInEditorID to be the current PIE instance of the provided context.
 		const int32 ContextPlayInEditorID = InContext ? InContext->GetOutermost()->GetPIEInstanceID() : INDEX_NONE;
-		TGuardValue<int32> PIEGuard(GPlayInEditorID, ContextPlayInEditorID);
+		FTemporaryPlayInEditorIDOverride PIEGuard(ContextPlayInEditorID);
 	#endif
 
 		return TempPath.ResolveObject();
@@ -265,7 +299,8 @@ void FLevelSequenceBindingReferences::RemoveObjects(const FGuid& ObjectId, const
 
 	for (int32 ReferenceIndex = 0; ReferenceIndex < ReferenceArray->References.Num(); )
 	{
-		UObject* ResolvedObject = ReferenceArray->References[ReferenceIndex].Resolve(InContext, FTopLevelAssetPath());
+		UObject* ResolvedObject = ReferenceArray->References[ReferenceIndex].Resolve(InContext, FLevelSequenceBindingReference::FResolveBindingParams());
+		ResolvedObject = UE::MovieScene::FindBoundObjectProxy(ResolvedObject);
 
 		if (InObjects.Contains(ResolvedObject))
 		{
@@ -288,7 +323,8 @@ void FLevelSequenceBindingReferences::RemoveInvalidObjects(const FGuid& ObjectId
 
 	for (int32 ReferenceIndex = 0; ReferenceIndex < ReferenceArray->References.Num(); )
 	{
-		UObject* ResolvedObject = ReferenceArray->References[ReferenceIndex].Resolve(InContext, FTopLevelAssetPath());
+		UObject* ResolvedObject = ReferenceArray->References[ReferenceIndex].Resolve(InContext, FLevelSequenceBindingReference::FResolveBindingParams());
+		ResolvedObject = UE::MovieScene::FindBoundObjectProxy(ResolvedObject);
 
 		if (!IsValid(ResolvedObject))
 		{
@@ -301,13 +337,14 @@ void FLevelSequenceBindingReferences::RemoveInvalidObjects(const FGuid& ObjectId
 	}
 }
 
-void FLevelSequenceBindingReferences::ResolveBinding(const FGuid& ObjectId, UObject* InContext, const FTopLevelAssetPath& StreamedLevelAssetPath, TArray<UObject*, TInlineAllocator<1>>& OutObjects) const
+void FLevelSequenceBindingReferences::ResolveBinding(const FGuid& ObjectId, UObject* InContext, const FLevelSequenceBindingReference::FResolveBindingParams& InResolveBindingParams, TArray<UObject*, TInlineAllocator<1>>& OutObjects) const
 {
 	if (const FLevelSequenceBindingReferenceArray* ReferenceArray = BindingIdToReferences.Find(ObjectId))
 	{
 		for (const FLevelSequenceBindingReference& Reference : ReferenceArray->References)
 		{
-			UObject* ResolvedObject = Reference.Resolve(InContext, StreamedLevelAssetPath);
+			UObject* ResolvedObject = Reference.Resolve(InContext, InResolveBindingParams);
+			ResolvedObject = UE::MovieScene::FindBoundObjectProxy(ResolvedObject);
 			if (ResolvedObject && ResolvedObject->GetWorld())
 			{
 				OutObjects.Add(ResolvedObject);
@@ -362,6 +399,8 @@ UObject* FLevelSequenceObjectReferenceMap::ResolveBinding(const FGuid& ObjectId,
 {
 	const FLevelSequenceLegacyObjectReference* Reference = Map.Find(ObjectId);
 	UObject* ResolvedObject = Reference ? Reference->Resolve(InContext) : nullptr;
+	ResolvedObject = UE::MovieScene::FindBoundObjectProxy(ResolvedObject);
+
 	if (ResolvedObject != nullptr)
 	{
 		// if the resolved object does not have a valid world (e.g. world is being torn down), dont resolve

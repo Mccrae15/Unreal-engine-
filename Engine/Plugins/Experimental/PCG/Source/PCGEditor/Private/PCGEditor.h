@@ -2,9 +2,10 @@
 
 #pragma once
 
+#include "PCGContext.h"
+#include "Graph/PCGStackContext.h"
 
 #include "EditorUndoClient.h"
-#include "PCGContext.h"
 #include "Toolkits/AssetEditorToolkit.h"
 
 class FSpawnTabArgs;
@@ -16,11 +17,13 @@ class FUICommandList;
 class IDetailsView;
 class SGraphEditor;
 class SPCGEditorGraphAttributeListView;
+class SPCGEditorGraphDebugObjectWidget;
+class SPCGEditorGraphDebugObjectTree;
 class SPCGEditorGraphDeterminismListView;
 class SPCGEditorGraphFind;
+class SPCGEditorGraphLogView;
 class SPCGEditorGraphNodePalette;
 class SPCGEditorGraphProfilingView;
-class SPCGEditorGraphLogView;
 class UEdGraphNode;
 class UPCGComponent;
 class UPCGEditorGraph;
@@ -28,7 +31,8 @@ class UPCGEditorGraphNodeBase;
 class UPCGGraph;
 class UPCGNode;
 
-DECLARE_MULTICAST_DELEGATE_OneParam(FOnDebugObjectChanged, UPCGComponent*);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnInspectedComponentChanged, UPCGComponent*);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnInspectedStackChanged, const FPCGStack&);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnInspectedNodeChanged, UPCGEditorGraphNodeBase*);
 
 class FPCGEditor : public FAssetEditorToolkit, public FGCObject, public FSelfRegisteringEditorUndoClient
@@ -40,11 +44,14 @@ public:
 	/** Get the PCG graph being edited */
 	UPCGEditorGraph* GetPCGEditorGraph();
 
-	/** Sets the PCG component we want to debug */
-	void SetPCGComponentBeingDebugged(UPCGComponent* InPCGComponent);
+	/** Sets the PCG component and stack that we want to inspect */
+	void SetComponentAndStackBeingInspected(UPCGComponent* InPCGComponent, const FPCGStack& InPCGStack);
 
 	/** Gets the PCG component we are debugging */
-	UPCGComponent* GetPCGComponentBeingDebugged() const { return PCGComponentBeingDebugged.Get(); }
+	UPCGComponent* GetPCGComponentBeingInspected() const { return PCGComponentBeingInspected.Get(); }
+	
+	/** Gets the PCG stack we are inspecting */
+	const FPCGStack& GetStackBeingInspected() const { return StackBeingInspected; }
 
 	/** Focus the graph view on a specific node */
 	void JumpToNode(const UEdGraphNode* InNode);
@@ -77,10 +84,8 @@ public:
 	virtual void InitToolMenuContext(FToolMenuContext& MenuContext) override;
 	// ~End FAssetEditorToolkit interface
 
-	// Methods used by schema actions
-	UEdGraphNode* AddNode(UPCGSettings* InSettings, bool bIsInstance, const FVector2D& InLocation);
-
-	FOnDebugObjectChanged OnDebugObjectChangedDelegate;
+	FOnInspectedComponentChanged OnInspectedComponentChangedDelegate;
+	FOnInspectedStackChanged OnInspectedStackChangedDelegate;
 	FOnInspectedNodeChanged OnInspectedNodeChangedDelegate;
 
 protected:
@@ -200,6 +205,11 @@ private:
 	/** Whether we can collapse nodes in a subgraph */
 	bool CanCollapseNodesInSubgraph() const;
 
+	/** User is attempting to add a dynamic source pin to a node */
+	void OnAddDynamicInputPin();
+	/** Whether the user can add a dynamic source pin to a node */
+	bool CanAddDynamicInputPin() const;
+
 	void OnAlignTop();
 	void OnAlignMiddle();
 	void OnAlignBottom();
@@ -216,6 +226,12 @@ private:
 
 	/** Create new palette widget */
 	TSharedRef<SPCGEditorGraphNodePalette> CreatePaletteWidget();
+
+	/** Create debug object combo box */
+	TSharedRef<SPCGEditorGraphDebugObjectWidget> CreateDebugObjectWidget();
+
+	/** Create new debug object tree widget */
+	TSharedRef<SPCGEditorGraphDebugObjectTree> CreateDebugObjectTreeWidget();
 
 	/** Create new find widget */
 	TSharedRef<SPCGEditorGraphFind> CreateFindWidget();
@@ -261,12 +277,22 @@ private:
 	/** Returns whether a property should be visible (used for instance vs. settings properties) */
 	bool IsVisibleProperty(const FPropertyAndParent& InPropertyAndParent, IDetailsView* InDetailsView) const;
 
+	void OnGraphGridSizesChanged(UPCGGraphInterface* InGraph);
+	void OnGraphDynamicallyExecuted(UPCGGraphInterface* InGraphInterface, const TWeakObjectPtr<UPCGComponent> InSourceComponent, FPCGStack InvocationStack);
+
+	/** Trigger any generation required to ensure debug display is up to date. */
+	void UpdateDebugAfterComponentSelection(UPCGComponent* InOldComponent, UPCGComponent* InNewComponent, bool bNewComponentStartedInspecting);
+
 	/** Helper to get to the subsystem. */
 	static class UPCGSubsystem* GetSubsystem();
+
+	void OnMapChanged(UWorld* InWorld, EMapChangeType InMapChangedType);
+	void OnLevelActorDeleted(AActor* InActor);
 
 	TSharedRef<SDockTab> SpawnTab_GraphEditor(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_PropertyDetails(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_Palette(const FSpawnTabArgs& Args);
+	TSharedRef<SDockTab> SpawnTab_DebugObject(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_Attributes(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_Find(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_Determinism(const FSpawnTabArgs& Args);
@@ -276,6 +302,8 @@ private:
 	TSharedPtr<SGraphEditor> GraphEditorWidget;
 	TSharedPtr<IDetailsView> PropertyDetailsWidget;
 	TSharedPtr<SPCGEditorGraphNodePalette> PaletteWidget;
+	TSharedPtr<SPCGEditorGraphDebugObjectWidget> DebugObjectWidget;
+	TSharedPtr<SPCGEditorGraphDebugObjectTree> DebugObjectTreeWidget;
 	TSharedPtr<SPCGEditorGraphFind> FindWidget;
 	TSharedPtr<SPCGEditorGraphAttributeListView> AttributesWidget;
 	TSharedPtr<SPCGEditorGraphDeterminismListView> DeterminismWidget;
@@ -284,9 +312,10 @@ private:
 
 	TSharedPtr<FUICommandList> GraphEditorCommands;
 
-	UPCGGraph* PCGGraphBeingEdited = nullptr;
+	TObjectPtr<UPCGGraph> PCGGraphBeingEdited = nullptr;
 	UPCGEditorGraph* PCGEditorGraph = nullptr;
 
-	TWeakObjectPtr<UPCGComponent> PCGComponentBeingDebugged;
+	TWeakObjectPtr<UPCGComponent> PCGComponentBeingInspected;
+	FPCGStack StackBeingInspected;
 	UPCGEditorGraphNodeBase* PCGGraphNodeBeingInspected = nullptr;
 };

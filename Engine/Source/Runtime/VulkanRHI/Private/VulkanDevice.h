@@ -52,6 +52,7 @@ struct FOptionalVulkanDeviceExtensions
 			uint64 HasDeferredHostOperations : 1;
 			uint64 HasEXTCalibratedTimestamps : 1;
 			uint64 HasEXTDescriptorBuffer : 1;
+			uint64 HasEXTDeviceFault : 1;
 
 			// Vendor specific
 			uint64 HasAMDBufferMarker : 1;
@@ -59,12 +60,15 @@ struct FOptionalVulkanDeviceExtensions
 			uint64 HasNVDeviceDiagnosticConfig : 1;
 			uint64 HasQcomRenderPassTransform : 1;
 			uint64 HasQcomFragmentDensityMapOffset : 1;
+			uint64 HasQcomRenderPassShaderResolve : 1;
+			// BEGIN META SECTION - Multi-View Per View Viewports / Render Areas
+			uint64 HasQcomMultiviewPerViewViewports : 1;
+			uint64 HasQcomMultiviewPerViewRenderAreas : 1;
+			// END META SECTION - Multi-View Per View Viewports / Render Areas
 
 			// Promoted to 1.1
-			uint64 HasKHRMaintenance1 : 1;
-			uint64 HasKHRMaintenance2 : 1;
-			uint64 HasKHRDedicatedAllocation : 1;
 			uint64 HasKHRMultiview : 1;
+			uint64 HasKHR16bitStorage : 1;
 
 			// Promoted to 1.2
 			uint64 HasKHRRenderPass2 : 1;
@@ -74,11 +78,12 @@ struct FOptionalVulkanDeviceExtensions
 			uint64 HasBufferDeviceAddress : 1;
 			uint64 HasSPIRV_14 : 1;
 			uint64 HasShaderFloatControls : 1;
+			uint64 HasKHRShaderFloat16 : 1;
 			uint64 HasEXTDescriptorIndexing : 1;
 			uint64 HasEXTShaderViewportIndexLayer : 1;
 			uint64 HasSeparateDepthStencilLayouts : 1;
 			uint64 HasEXTHostQueryReset : 1;
-			uint64 HasQcomRenderPassShaderResolve : 1;
+			uint64 HasKHRDepthStencilResolve : 1;
 
 			// Promoted to 1.3
 			uint64 HasEXTTextureCompressionASTCHDR : 1;
@@ -130,7 +135,30 @@ struct FOptionalVulkanDeviceExtensionProperties
 	VkPhysicalDeviceAccelerationStructurePropertiesKHR AccelerationStructureProps;
 	VkPhysicalDeviceRayTracingPipelinePropertiesKHR RayTracingPipelineProps;
 #endif // VULKAN_RHI_RAYTRACING
+
+	VkPhysicalDeviceFragmentShadingRateFeaturesKHR FragmentShadingRateFeatures;
 };
+
+class FVulkanPhysicalDeviceFeatures
+{
+public:
+	FVulkanPhysicalDeviceFeatures()
+	{
+		FMemory::Memzero(*this);
+	}
+
+	void Query(VkPhysicalDevice PhysicalDevice, uint32 APIVersion);
+
+	VkPhysicalDeviceFeatures	     Core_1_0;
+	VkPhysicalDeviceVulkan11Features Core_1_1;
+private:
+	// Anything above Core 1.1 cannot be assumed, they should only be used by the device at init time
+	VkPhysicalDeviceVulkan12Features Core_1_2;
+	VkPhysicalDeviceVulkan13Features Core_1_3;
+
+	friend class FVulkanDevice;
+};
+
 
 namespace VulkanRHI
 {
@@ -284,12 +312,10 @@ public:
 		return GpuProps;
 	}
 
-#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 	inline VkExtent2D GetBestMatchedFragmentSize(EVRSShadingRate Rate) const
 	{
 		return FragmentSizeMap[Rate];
 	}
-#endif
 
 	inline const VkPhysicalDeviceLimits& GetLimits() const
 	{
@@ -298,13 +324,11 @@ public:
 
 	inline const VkPhysicalDeviceIDPropertiesKHR& GetDeviceIdProperties() const
 	{
-		check(RHI->GetOptionalExtensions().HasKHRGetPhysicalDeviceProperties2);
 		return GpuIdProps;
 	}
 
 	inline const VkPhysicalDeviceSubgroupProperties& GetDeviceSubgroupProperties() const
 	{
-		check(RHI->GetOptionalExtensions().HasKHRGetPhysicalDeviceProperties2);
 		return GpuSubgroupProps;
 	}
 
@@ -322,9 +346,9 @@ public:
 	}
 #endif
 
-	inline const VkPhysicalDeviceFeatures& GetPhysicalFeatures() const
+	inline const FVulkanPhysicalDeviceFeatures& GetPhysicalDeviceFeatures() const
 	{
-		return PhysicalFeatures;
+		return PhysicalDeviceFeatures;
 	}
 
 	inline bool HasUnifiedMemory() const
@@ -351,9 +375,9 @@ public:
 		return *DefaultSampler;
 	}
 
-	inline const FVulkanTextureView& GetDefaultImageView() const
+	inline const FVulkanView::FTextureView& GetDefaultImageView() const
 	{
-		return DefaultTexture->DefaultView;
+		return DefaultTexture->DefaultView->GetTextureView();
 	}
 
 	const VkFormatProperties& GetFormatProperties(VkFormat InFormat) const;
@@ -569,10 +593,8 @@ private:
 	VkPhysicalDevice Gpu;
 	VkPhysicalDeviceProperties GpuProps;
 
-#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 	TArray<VkPhysicalDeviceFragmentShadingRateKHR> FragmentShadingRates;
 	TStaticArray<VkExtent2D, (EVRSShadingRate::VRSSR_Last+1)> FragmentSizeMap;
-#endif
 
 	// Extension specific properties
 	VkPhysicalDeviceIDPropertiesKHR GpuIdProps;
@@ -582,7 +604,7 @@ private:
 	FVulkanRayTracingCompactionRequestHandler* RayTracingCompactionRequestHandler = nullptr;
 #endif // VULKAN_RHI_RAYTRACING
 
-	VkPhysicalDeviceFeatures PhysicalFeatures;
+	FVulkanPhysicalDeviceFeatures PhysicalDeviceFeatures;
 
 	TArray<VkQueueFamilyProperties> QueueFamilyProps;
 	VkFormatProperties FormatProperties[VK_FORMAT_RANGE_SIZE];

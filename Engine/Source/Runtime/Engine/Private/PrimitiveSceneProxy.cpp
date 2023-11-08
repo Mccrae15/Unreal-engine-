@@ -22,6 +22,7 @@
 #include "ComponentRecreateRenderStateContext.h"
 #include "DataDrivenShaderPlatformInfo.h"
 #include "SceneInterface.h"
+#include "PrimitiveUniformShaderParametersBuilder.h"
 
 #if WITH_EDITOR
 #include "FoliageHelper.h"
@@ -41,6 +42,18 @@ static TAutoConsoleVariable<bool> CVarOptimizedWPO(
 	TEXT("Special mode where primitives can explicitly indicate if WPO should be evaluated or not as an optimization.\n")
 	TEXT(" False ( 0): Ignore WPO evaluation flag, and always evaluate WPO.\n")
 	TEXT(" True  ( 1): Only evaluate WPO on primitives with explicit activation."),
+	FConsoleVariableDelegate::CreateLambda([](IConsoleVariable* InVariable)
+	{
+		FGlobalComponentRecreateRenderStateContext Context;
+	}),
+	ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<bool> CVarOptimizedWPOAffectNonNaniteShaderSelection(
+	TEXT("r.OptimizedWPO.AffectNonNaniteShaderSelection"),
+	false,
+	TEXT("Whether the per primitive WPO flag should affect shader selection for non-nanite primitives. It increase the chance of selecting the position only depth VS ")
+	TEXT("at the cost of updating cached draw commands whenever the WPO flag changes."),
 	FConsoleVariableDelegate::CreateLambda([](IConsoleVariable* InVariable)
 	{
 		FGlobalComponentRecreateRenderStateContext Context;
@@ -101,6 +114,11 @@ bool IsOptimizedWPO()
 	return CVarOptimizedWPO.GetValueOnAnyThread() != 0;
 }
 
+bool ShouldOptimizedWPOAffectNonNaniteShaderSelection()
+{
+	return CVarOptimizedWPOAffectNonNaniteShaderSelection.GetValueOnAnyThread() != 0;
+}
+
 bool CacheShadowDepthsFromPrimitivesUsingWPO()
 {
 	return CVarCacheWPOPrimitives.GetValueOnAnyThread(true) != 0;
@@ -111,6 +129,9 @@ bool SupportsCachingMeshDrawCommands(const FMeshBatch& MeshBatch)
 	return
 		// Cached mesh commands only allow for a single mesh element per batch.
 		(MeshBatch.Elements.Num() == 1) &&
+
+		// View dependent arguments can't be cached
+		(MeshBatch.bViewDependentArguments == 0) &&
 
 		// Vertex factory needs to support caching.
 		MeshBatch.VertexFactory->GetType()->SupportsCachingMeshDrawCommands();
@@ -154,8 +175,7 @@ bool SupportsNaniteRendering(const FVertexFactory* RESTRICT VertexFactory, const
 
 		return (Material.IsUsedWithNanite() || Material.IsSpecialEngineMaterial()) &&
 			Nanite::IsSupportedBlendMode(Material) &&
-			Nanite::IsSupportedMaterialDomain(Material.GetMaterialDomain()) &&
-			(Nanite::IsWorldPositionOffsetSupported() || !ShaderMap->UsesWorldPositionOffset());
+			Nanite::IsSupportedMaterialDomain(Material.GetMaterialDomain());
 	}
 
 	return false;
@@ -169,8 +189,7 @@ bool SupportsNaniteRendering(const FVertexFactoryType* RESTRICT VertexFactoryTyp
 		const FMaterialShaderMap* ShaderMap = Material.GetGameThreadShaderMap();
 		return (Material.IsUsedWithNanite() || Material.IsSpecialEngineMaterial()) &&
 			Nanite::IsSupportedBlendMode(Material) &&
-			Nanite::IsSupportedMaterialDomain(Material.GetMaterialDomain()) &&
-			(Nanite::IsWorldPositionOffsetSupported() || !ShaderMap->UsesWorldPositionOffset());
+			Nanite::IsSupportedMaterialDomain(Material.GetMaterialDomain());
 	}
 
 	return false;
@@ -282,6 +301,7 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 ,	bAffectIndirectLightingWhileHidden(InComponent->bAffectDynamicIndirectLighting && InComponent->bAffectIndirectLightingWhileHidden)
 ,   bAffectDistanceFieldLighting(InComponent->bAffectDistanceFieldLighting)
 ,	bCastStaticShadow(InComponent->CastShadow && InComponent->bCastStaticShadow)
+,	ShadowCacheInvalidationBehavior(InComponent->ShadowCacheInvalidationBehavior)
 ,	bCastVolumetricTranslucentShadow(InComponent->bCastDynamicShadow && InComponent->CastShadow && InComponent->bCastVolumetricTranslucentShadow)
 ,	bCastContactShadow(InComponent->CastShadow && InComponent->bCastContactShadow)
 ,	bCastDeepShadow(false)
@@ -308,6 +328,7 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 ,	bEvaluateWorldPositionOffset(true)
 ,	bHasWorldPositionOffsetVelocity(false)
 ,	bAnyMaterialHasWorldPositionOffset(false)
+,	bAnyMaterialAlwaysEvaluatesWorldPositionOffset(false)
 ,	bSupportsDistanceFieldRepresentation(false)
 ,	bSupportsHeightfieldRepresentation(false)
 ,	bSupportsSortedTriangles(false)
@@ -320,11 +341,13 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 ,	bHasPerInstanceLMSMUVBias(false)
 ,	bHasPerInstanceLocalBounds(false)
 ,	bHasPerInstanceHierarchyOffset(false)
+,	bHasPerInstancePayloadExtension(false)
 #if WITH_EDITOR
 ,	bHasPerInstanceEditorData(false)
 #endif
 ,	bAllowApproximateOcclusion(InComponent->Mobility != EComponentMobility::Movable)
 ,   bHoldout(InComponent->bHoldout)
+,	bSplineMesh(false)
 ,	bUseAsOccluder(InComponent->bUseAsOccluder)
 ,	bSelectable(InComponent->bSelectable)
 ,	bHasPerInstanceHitProxies(InComponent->bHasPerInstanceHitProxies)
@@ -346,7 +369,8 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 ,	VirtualTextureMinCoverage(InComponent->VirtualTextureMinCoverage)
 ,	DynamicIndirectShadowMinVisibility(0)
 ,	DistanceFieldSelfShadowBias(0.0f)
-,	MaxWPODisplacement(0.0f)
+,	MaxWPOExtent(0.0f)
+,	MinMaxMaterialDisplacement(0.0f, 0.0f)
 ,	PrimitiveComponentId(InComponent->ComponentId)
 ,	Scene(InComponent->GetScene())
 ,	PrimitiveSceneInfo(nullptr)
@@ -356,16 +380,17 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 #if WITH_EDITOR
 // by default we are always drawn
 ,	HiddenEditorViews(0)
+,   SelectionOutlineColorIndex(0)
 ,	DrawInAnyEditMode(0)
 ,   bIsFoliage(false)
 #endif
 ,	VisibilityId(InComponent->VisibilityId)
-,	MaxDrawDistance(InComponent->CachedMaxDrawDistance > 0 ? InComponent->CachedMaxDrawDistance : FLT_MAX)
-,	MinDrawDistance(InComponent->MinDrawDistance)
 ,	ComponentForDebuggingOnly(InComponent)
 #if WITH_EDITOR
 ,	NumUncachedStaticLightingInteractions(0)
 #endif
+,	MaxDrawDistance(InComponent->CachedMaxDrawDistance > 0 ? InComponent->CachedMaxDrawDistance : FLT_MAX)
+,	MinDrawDistance(InComponent->MinDrawDistance)
 {
 	check(Scene);
 
@@ -543,7 +568,15 @@ FPrimitiveViewRelevance FPrimitiveSceneProxy::GetViewRelevance(const FSceneView*
 	return FPrimitiveViewRelevance();
 }
 
-void FPrimitiveSceneProxy::UpdateUniformBuffer()
+void FPrimitiveSceneProxy::CreateUniformBuffer()
+{
+	if (!UniformBuffer && DoesVFRequirePrimitiveUniformBuffer())
+	{
+		UniformBuffer = TUniformBufferRef<FPrimitiveUniformShaderParameters>::CreateEmptyUniformBufferImmediate(UniformBuffer_MultiFrame);
+	}
+}
+
+void FPrimitiveSceneProxy::UpdateUniformBuffer(FRHICommandList& RHICmdList)
 {
 	// stat disabled by default due to low-value/high-frequency
 	//QUICK_SCOPE_CYCLE_COUNTER(STAT_FPrimitiveSceneProxy_UpdateUniformBuffer);
@@ -551,89 +584,131 @@ void FPrimitiveSceneProxy::UpdateUniformBuffer()
 	// Skip expensive primitive uniform buffer creation for proxies whose vertex factories only use GPUScene for primitive data
 	if (DoesVFRequirePrimitiveUniformBuffer())
 	{
-		bool bHasPrecomputedVolumetricLightmap;
-		FMatrix PreviousLocalToWorld;
-		int32 SingleCaptureIndex;
-		bool bOutputVelocity;
-
-		Scene->GetPrimitiveUniformShaderParameters_RenderThread(
-			PrimitiveSceneInfo,
-			bHasPrecomputedVolumetricLightmap,
-			PreviousLocalToWorld,
-			SingleCaptureIndex,
-			bOutputVelocity
-		);
-
-		bOutputVelocity |= AlwaysHasVelocity();
-
-		FBoxSphereBounds PreSkinnedLocalBounds;
-		GetPreSkinnedLocalBounds(PreSkinnedLocalBounds);
-
 		// Update the uniform shader parameters.
-		FPrimitiveUniformShaderParametersBuilder Builder = FPrimitiveUniformShaderParametersBuilder{}
-			.Defaults()
-				.LocalToWorld(LocalToWorld)
-				.PreviousLocalToWorld(PreviousLocalToWorld)
-				.ActorWorldPosition(ActorPosition)
-				.WorldBounds(Bounds)
-				.LocalBounds(LocalBounds)
-				.PreSkinnedLocalBounds(PreSkinnedLocalBounds)
-				.ReceivesDecals(bReceivesDecals)
-				.CacheShadowAsStatic(PrimitiveSceneInfo ? PrimitiveSceneInfo->ShouldCacheShadowAsStatic() : false)
-				.OutputVelocity(bOutputVelocity)
-				.EvaluateWorldPositionOffset(EvaluateWorldPositionOffset() && AnyMaterialHasWorldPositionOffset())
-				.MaxWorldPositionOffsetDisplacement(GetMaxWorldPositionOffsetDisplacement())
-				.LightingChannelMask(GetLightingChannelMask())
-				.LightmapDataIndex(PrimitiveSceneInfo ? PrimitiveSceneInfo->GetLightmapDataOffset() : 0)
-				.LightmapUVIndex(GetLightMapCoordinateIndex())
-				.SingleCaptureIndex(SingleCaptureIndex)
-				.CustomPrimitiveData(GetCustomPrimitiveData())
-				.HasDistanceFieldRepresentation(HasDistanceFieldRepresentation())
-				.HasCapsuleRepresentation(HasDynamicIndirectShadowCasterRepresentation())
-				.UseSingleSampleShadowFromStationaryLights(UseSingleSampleShadowFromStationaryLights())
-				.UseVolumetricLightmap(bHasPrecomputedVolumetricLightmap)
-				.CastContactShadow(CastsContactShadow())
-				.CastHiddenShadow(CastsHiddenShadow())
-				.CastShadow(CastsDynamicShadow())
-				.Holdout(Holdout())
-				.InstanceSceneDataOffset(PrimitiveSceneInfo ? PrimitiveSceneInfo->GetInstanceSceneDataOffset() : INDEX_NONE)
-				.NumInstanceSceneDataEntries(PrimitiveSceneInfo ? PrimitiveSceneInfo->GetNumInstanceSceneDataEntries() : 0)
-				.InstancePayloadDataOffset(PrimitiveSceneInfo ? PrimitiveSceneInfo->GetInstancePayloadDataOffset() : INDEX_NONE)
-				.InstancePayloadDataStride(PrimitiveSceneInfo ? PrimitiveSceneInfo->GetInstancePayloadDataStride() : 0);				
-
-		FVector2f InstanceDrawDistanceMinMax;
-		if (GetInstanceDrawDistanceMinMax(InstanceDrawDistanceMinMax))
-		{
-			Builder.InstanceDrawDistance(InstanceDrawDistanceMinMax);
-		}
-
-		float WPODisableDistance;
-		if (GetInstanceWorldPositionOffsetDisableDistance(WPODisableDistance))
-		{
-			Builder.InstanceWorldPositionOffsetDisableDistance(WPODisableDistance);
-		}
-
-		const TConstArrayView<FRenderBounds> InstanceBounds = GetInstanceLocalBounds();
-		if (InstanceBounds.Num() > 0)
-		{
-			Builder.InstanceLocalBounds(InstanceBounds[0]);
-		}
+		FPrimitiveUniformShaderParametersBuilder Builder = FPrimitiveUniformShaderParametersBuilder{};
+		BuildUniformShaderParameters(Builder);
 
 		FPrimitiveUniformShaderParameters PrimitiveParams = Builder.Build();
 
-		if (UniformBuffer.GetReference())
+		check(UniformBuffer);
+		UniformBuffer.UpdateUniformBufferImmediate(RHICmdList, PrimitiveParams);
+	}
+}
+
+void FPrimitiveSceneProxy::BuildUniformShaderParameters(FPrimitiveUniformShaderParametersBuilder &Builder) const
+{
+	bool bHasPrecomputedVolumetricLightmap;
+	FMatrix PreviousLocalToWorld;
+	int32 SingleCaptureIndex;
+	bool bOutputVelocity;
+
+	Scene->GetPrimitiveUniformShaderParameters_RenderThread(
+		PrimitiveSceneInfo,
+		bHasPrecomputedVolumetricLightmap,
+		PreviousLocalToWorld,
+		SingleCaptureIndex,
+		bOutputVelocity
+	);
+
+	bOutputVelocity |= AlwaysHasVelocity();
+
+	FBoxSphereBounds PreSkinnedLocalBounds;
+	GetPreSkinnedLocalBounds(PreSkinnedLocalBounds);
+
+	// Update the uniform shader parameters.
+	Builder = FPrimitiveUniformShaderParametersBuilder{}
+		.Defaults()
+			.LocalToWorld(LocalToWorld)
+			.PreviousLocalToWorld(PreviousLocalToWorld)
+			.ActorWorldPosition(ActorPosition)
+			.WorldBounds(Bounds)
+			.LocalBounds(LocalBounds)
+			.PreSkinnedLocalBounds(PreSkinnedLocalBounds)
+			.ReceivesDecals(bReceivesDecals)
+			.OutputVelocity(bOutputVelocity)
+			.EvaluateWorldPositionOffset(EvaluateWorldPositionOffset() && AnyMaterialHasWorldPositionOffset())
+			.MaxWorldPositionOffsetExtent(GetMaxWorldPositionOffsetExtent())
+			.HasAlwaysEvaluateWPOMaterials(AnyMaterialAlwaysEvaluatesWorldPositionOffset())
+			.MinMaxMaterialDisplacement(GetMinMaxMaterialDisplacement())
+			.LightingChannelMask(GetLightingChannelMask())
+			.LightmapUVIndex(GetLightMapCoordinateIndex())
+			.SingleCaptureIndex(SingleCaptureIndex)
+			.CustomPrimitiveData(GetCustomPrimitiveData())
+			.HasDistanceFieldRepresentation(HasDistanceFieldRepresentation())
+			.HasCapsuleRepresentation(HasDynamicIndirectShadowCasterRepresentation())
+			.UseSingleSampleShadowFromStationaryLights(UseSingleSampleShadowFromStationaryLights())
+			.UseVolumetricLightmap(bHasPrecomputedVolumetricLightmap)
+			.CastContactShadow(CastsContactShadow())
+			.CastHiddenShadow(CastsHiddenShadow())
+			.CastShadow(CastsDynamicShadow())
+			.Holdout(Holdout())
+			.DisableMaterialInvalidations(ShadowCacheInvalidationBehavior == EShadowCacheInvalidationBehavior::Rigid || ShadowCacheInvalidationBehavior == EShadowCacheInvalidationBehavior::Static)
+			.VisibleInGame(IsDrawnInGame())
+			.VisibleInEditor(IsDrawnInEditor())
+			.VisibleInReflectionCaptures(IsVisibleInReflectionCaptures())
+			.VisibleInRealTimeSkyCaptures(IsVisibleInRealTimeSkyCaptures())
+			.VisibleInRayTracing(IsVisibleInRayTracing())
+			.VisibleInLumenScene(IsVisibleInLumenScene())
+			.VisibleInSceneCaptureOnly(IsVisibleInSceneCaptureOnly())
+			.HiddenInSceneCapture(IsHiddenInSceneCapture())
+			.ForceHidden(IsForceHidden())
+			.PrimitiveComponentId(GetPrimitiveComponentId().PrimIDValue)
+			.EditorColors(GetWireframeColor(), GetLevelColor())
+			.SplineMesh(IsSplineMesh());
+
+		if (PrimitiveSceneInfo != nullptr)
 		{
-			UniformBuffer.UpdateUniformBufferImmediate(PrimitiveParams);
+			Builder.LightmapDataIndex(PrimitiveSceneInfo->GetLightmapDataOffset())
+			.CacheShadowAsStatic(PrimitiveSceneInfo->ShouldCacheShadowAsStatic())
+			.InstanceSceneDataOffset(PrimitiveSceneInfo->GetInstanceSceneDataOffset())
+			.NumInstanceSceneDataEntries(PrimitiveSceneInfo->GetNumInstanceSceneDataEntries())
+			.InstancePayloadDataOffset(PrimitiveSceneInfo->GetInstancePayloadDataOffset())
+			.InstancePayloadDataStride(PrimitiveSceneInfo->GetInstancePayloadDataStride())
+			.PersistentPrimitiveIndex(PrimitiveSceneInfo->GetPersistentIndex().Index);
 		}
-		else
-		{
-			UniformBuffer = TUniformBufferRef<FPrimitiveUniformShaderParameters>::CreateUniformBufferImmediate(PrimitiveParams, UniformBuffer_MultiFrame);
-		}
+
+	if (IsNaniteMesh())
+	{
+		const Nanite::FSceneProxyBase* NaniteProxy = static_cast<const Nanite::FSceneProxyBase*>(this);
+
+		uint32 NaniteResourceID = INDEX_NONE;
+		uint32 NaniteHierarchyOffset = INDEX_NONE;
+		uint32 NaniteImposterIndex = INDEX_NONE;
+		NaniteProxy->GetNaniteResourceInfo(NaniteResourceID, NaniteHierarchyOffset, NaniteImposterIndex);
+		uint32 NaniteFilterFlags = uint32(NaniteProxy->GetFilterFlags());
+		uint32 NaniteRayTracingDataOffset = NaniteProxy->GetRayTracingDataOffset();
+		bool bReverseCulling = NaniteProxy->IsCullingReversedByComponent(); // needed because Nanite doesn't use raster state
+		
+		Builder.NaniteResourceID(NaniteResourceID)
+			.NaniteHierarchyOffset(NaniteHierarchyOffset)
+			.NaniteImposterIndex(NaniteImposterIndex)
+			.NaniteFilterFlags(NaniteFilterFlags)
+			.NaniteRayTracingDataOffset(NaniteRayTracingDataOffset)
+			.ReverseCulling(bReverseCulling);
 	}
 
-	if (PrimitiveSceneInfo)
+
+	FVector2f InstanceDrawDistanceMinMax;
+	if (GetInstanceDrawDistanceMinMax(InstanceDrawDistanceMinMax))
 	{
-		PrimitiveSceneInfo->SetNeedsUniformBufferUpdate(false);
+		Builder.InstanceDrawDistance(InstanceDrawDistanceMinMax);
+	}
+
+	float WPODisableDistance;
+	if (GetInstanceWorldPositionOffsetDisableDistance(WPODisableDistance))
+	{
+		Builder.InstanceWorldPositionOffsetDisableDistance(WPODisableDistance);
+	}
+
+	const TConstArrayView<FRenderBounds> InstanceBounds = GetInstanceLocalBounds();
+	if (InstanceBounds.Num() > 0)
+	{
+		Builder.InstanceLocalBounds(InstanceBounds[0]);
+	}
+
+	if (ShouldRenderCustomDepth())
+	{
+		Builder.CustomDepthStencil(GetCustomDepthStencilValue(), GetStencilWriteMask());
 	}
 }
 
@@ -667,6 +742,16 @@ uint32 FPrimitiveSceneProxy::GetPayloadDataStride() const
 
 	PayloadDataCount += HasPerInstanceLMSMUVBias() ? 1 : 0; // FVector4
 
+	if (HasPerInstancePayloadExtension())
+	{
+		const uint32 InstanceCount   = InstanceSceneData.Num();
+		const uint32 ExtensionCount = InstancePayloadExtension.Num();
+		if (InstanceCount > 0)
+		{
+			PayloadDataCount += ExtensionCount / InstanceCount;
+		}
+	}
+
 	if (HasPerInstanceCustomData())
 	{
 		const uint32 InstanceCount   = InstanceSceneData.Num();
@@ -688,8 +773,9 @@ void FPrimitiveSceneProxy::SetTransform(const FMatrix& InLocalToWorld, const FBo
 	LocalToWorld = InLocalToWorld;
 	bIsLocalToWorldDeterminantNegative = LocalToWorld.Determinant() < 0.0f;
 
-	// Update the cached bounds. Pad them to account for max WPO
-	const float PadAmount = GetMaxWorldPositionOffsetDisplacement();
+	// Update the cached bounds. Pad them to account for max WPO and material displacement
+	// TODO: DISP - Fix me
+	const float PadAmount = GetAbsMaxDisplacement();
 	Bounds = PadBounds(InBounds, PadAmount);
 	LocalBounds = PadLocalBounds(InLocalBounds, LocalToWorld, PadAmount);
 	ActorPosition = InActorPosition;
@@ -698,14 +784,11 @@ void FPrimitiveSceneProxy::SetTransform(const FMatrix& InLocalToWorld, const FBo
 	if (PrimitiveSceneInfo)
 	{
 		PrimitiveSceneInfo->bNeedsCachedReflectionCaptureUpdate = true;
+		Scene->RequestUniformBufferUpdate(*PrimitiveSceneInfo);
 	}
 
 	// Notify the proxy's implementation of the change.
 	OnTransformChanged();
-	
-	// Need to update the uniform buffer after calling OnTransformChanged because
-	// OnTransformChanged could change values used in the uniform buffer.
-	UpdateUniformBuffer();
 }
 
 void FPrimitiveSceneProxy::UpdateInstances_RenderThread(const FInstanceUpdateCmdBuffer& CmdBuffer, const FBoxSphereBounds& InBounds, const FBoxSphereBounds& InLocalBounds, const FBoxSphereBounds& InStaticMeshBounds)
@@ -718,8 +801,11 @@ void FPrimitiveSceneProxy::UpdateInstances_RenderThread(const FInstanceUpdateCmd
 	Bounds = InBounds;
 	LocalBounds = InLocalBounds;
 
-	UpdateUniformBuffer();
-	
+	if (PrimitiveSceneInfo)
+	{
+		Scene->RequestUniformBufferUpdate(*PrimitiveSceneInfo);
+	}
+
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	// JIT initialize only when we go through UpdateInstances.
 	// This will also clear the bits so we can reset the state for this frame.
@@ -892,13 +978,14 @@ bool FPrimitiveSceneProxy::WouldSetTransformBeRedundant_AnyThread(const FMatrix&
 
 	// Can be called by any thread, so be careful about modifying this.
 
-	// Account for padding that will be added to the bounds in SetTransform
-	const float PadAmount = GetMaxWorldPositionOffsetDisplacement();
-
 	if (ActorPosition != InActorPosition)
 	{
 		return false;
 	}
+
+	// Account for padding that will be added to the bounds in SetTransform
+	// TODO: DISP - Fix me
+	const float PadAmount = GetAbsMaxDisplacement();
 
 	if (LocalBounds != PadLocalBounds(InLocalBounds, InLocalToWorld, PadAmount))
 	{
@@ -1033,14 +1120,17 @@ void FPrimitiveSceneProxy::SetCustomDepthEnabled_RenderThread(const bool bInRend
 	if (bRenderCustomDepth != bInRenderCustomDepth)
 	{
 		bRenderCustomDepth = bInRenderCustomDepth;
-		PrimitiveSceneInfo->SetNeedsUniformBufferUpdate(true);
-		Scene->RequestGPUSceneUpdate(*PrimitiveSceneInfo, EPrimitiveDirtyState::ChangedOther);
-		
-		if (IsNaniteMesh())
+
+		if (PrimitiveSceneInfo)
 		{
-			// We have to invalidate the primitive scene info's Nanite raster bins to refresh
-			// whether or not they should render custom depth.
-			Scene->RefreshNaniteRasterBins(*PrimitiveSceneInfo);
+			Scene->RequestUniformBufferUpdate(*PrimitiveSceneInfo);
+
+			if (IsNaniteMesh())
+			{
+				// We have to invalidate the primitive scene info's Nanite raster bins to refresh
+				// whether or not they should render custom depth.
+				Scene->RefreshNaniteRasterBins(*PrimitiveSceneInfo);
+			}
 		}
 	}
 }
@@ -1072,8 +1162,12 @@ void FPrimitiveSceneProxy::SetCustomDepthStencilValue_RenderThread(const int32 I
 	if (CustomDepthStencilValue != InCustomDepthStencilValue)
 	{
 		CustomDepthStencilValue = InCustomDepthStencilValue;
-		PrimitiveSceneInfo->SetNeedsUniformBufferUpdate(true);
-		Scene->RequestGPUSceneUpdate(*PrimitiveSceneInfo, EPrimitiveDirtyState::ChangedOther);	
+
+		if (PrimitiveSceneInfo)
+		{
+			Scene->RequestUniformBufferUpdate(*PrimitiveSceneInfo);
+			Scene->RequestGPUSceneUpdate(*PrimitiveSceneInfo, EPrimitiveDirtyState::ChangedOther);	
+		}
 	}
 }
 
@@ -1086,7 +1180,8 @@ void FPrimitiveSceneProxy::GetPreSkinnedLocalBounds(FBoxSphereBounds& OutBounds)
 {
 	// if we padded the local bounds for WPO, un-pad them for the "pre-skinned" bounds
 	// (the idea being that WPO is a form of deformation, similar to skinning)
-	OutBounds = PadLocalBounds(LocalBounds, GetLocalToWorld(), -GetMaxWorldPositionOffsetDisplacement());
+	// TODO: DISP - Fix me
+	OutBounds = PadLocalBounds(LocalBounds, GetLocalToWorld(), -GetAbsMaxDisplacement());
 }
 
 /**
@@ -1124,18 +1219,23 @@ void FPrimitiveSceneProxy::SetLightingChannels_GameThread(FLightingChannels Ligh
 	FPrimitiveSceneProxy* PrimitiveSceneProxy = this;
 	const uint8 LocalLightingChannelMask = GetLightingChannelMaskForStruct(LightingChannels);
 	ENQUEUE_RENDER_COMMAND(SetLightingChannelsCmd)(
-		[PrimitiveSceneProxy, LocalLightingChannelMask](FRHICommandListImmediate& RHICmdList)
+		[PrimitiveSceneProxy, LocalLightingChannelMask, Scene = Scene, PrimitiveSceneInfo = PrimitiveSceneInfo](FRHICommandListImmediate& RHICmdList)
 	{
 		PrimitiveSceneProxy->LightingChannelMask = LocalLightingChannelMask;
-		PrimitiveSceneProxy->GetPrimitiveSceneInfo()->SetNeedsUniformBufferUpdate(true);
-		PrimitiveSceneProxy->GetScene().RequestGPUSceneUpdate(*PrimitiveSceneProxy->GetPrimitiveSceneInfo(), EPrimitiveDirtyState::ChangedOther);
+
+		if (PrimitiveSceneInfo)
+		{
+			Scene->RequestUniformBufferUpdate(*PrimitiveSceneInfo);
+			Scene->RequestGPUSceneUpdate(*PrimitiveSceneInfo, EPrimitiveDirtyState::ChangedOther);
+		}
 	});
 }
 
 void FPrimitiveSceneProxy::SetInstanceLocalBounds(uint32 InstanceIndex, const FRenderBounds& InBounds, bool bPadForWPO)
 {
+	// TODO: DISP - Fix me
 	InstanceLocalBounds[InstanceIndex] = bPadForWPO ? 
-		PadLocalRenderBounds(InBounds, GetLocalToWorld(), GetMaxWorldPositionOffsetDisplacement()) : InBounds;
+		PadLocalRenderBounds(InBounds, GetLocalToWorld(), GetAbsMaxDisplacement()) : InBounds;
 }
 
 #if ENABLE_DRAW_DEBUG
@@ -1246,7 +1346,34 @@ void FPrimitiveSceneProxy::SetIsBeingMovedByEditor_GameThread(bool bIsBeingMoved
 			PrimitiveSceneProxy->GetScene().UpdatePrimitiveVelocityState_RenderThread(PrimitiveSceneProxy->GetPrimitiveSceneInfo(), bIsBeingMoved);
 		});
 }
+
+void FPrimitiveSceneProxy::SetSelectionOutlineColorIndex_GameThread(uint8 ColorIndex)
+{
+	check(IsInGameThread());
+	constexpr int IndexBits = 3;
+	constexpr int MaxIndex = (1 << IndexBits) - 1;
+	check(ColorIndex <= MaxIndex);
+
+	ENQUEUE_RENDER_COMMAND(SetSelectionOutlineColorIndex)(
+		[this, ColorIndex](FRHICommandListImmediate&)
+		{
+			SelectionOutlineColorIndex = ColorIndex;
+		});
+}
+
 #endif
+
+void FPrimitiveSceneProxy::ResetSceneVelocity_GameThread()
+{
+	check(IsInGameThread());
+
+	FPrimitiveSceneProxy* PrimitiveSceneProxy = this;
+	ENQUEUE_RENDER_COMMAND(ResetSceneVelocity)(
+		[PrimitiveSceneProxy](FRHICommandListImmediate& RHICmdList)
+		{
+			PrimitiveSceneProxy->GetScene().UpdatePrimitiveVelocityState_RenderThread(PrimitiveSceneProxy->GetPrimitiveSceneInfo(), false);
+		});
+}
 
 void FPrimitiveSceneProxy::SetEvaluateWorldPositionOffset_GameThread(bool bEvaluate)
 {
@@ -1254,7 +1381,7 @@ void FPrimitiveSceneProxy::SetEvaluateWorldPositionOffset_GameThread(bool bEvalu
 
 	FPrimitiveSceneProxy* PrimitiveSceneProxy = this;
 	ENQUEUE_RENDER_COMMAND(SetEvaluateWorldPositionOffset)
-		([PrimitiveSceneProxy, bEvaluate](FRHICommandList& RHICmdList)
+		([PrimitiveSceneProxy, bEvaluate, Scene = Scene, PrimitiveSceneInfo = PrimitiveSceneInfo](FRHICommandList& RHICmdList)
 	{
 		const bool bOptimizedWPO = CVarOptimizedWPO.GetValueOnRenderThread();
 		const bool bWPOEvaluate = !bOptimizedWPO || bEvaluate;
@@ -1262,8 +1389,13 @@ void FPrimitiveSceneProxy::SetEvaluateWorldPositionOffset_GameThread(bool bEvalu
 		if (PrimitiveSceneProxy->bEvaluateWorldPositionOffset != bWPOEvaluate)
 		{
 			PrimitiveSceneProxy->bEvaluateWorldPositionOffset = bWPOEvaluate;
-			PrimitiveSceneProxy->GetPrimitiveSceneInfo()->SetNeedsUniformBufferUpdate(true);
-			PrimitiveSceneProxy->GetScene().RequestGPUSceneUpdate(*PrimitiveSceneProxy->GetPrimitiveSceneInfo(), EPrimitiveDirtyState::ChangedOther);
+
+			if (PrimitiveSceneInfo)
+			{
+				Scene->RequestUniformBufferUpdate(*PrimitiveSceneInfo);
+				Scene->RequestGPUSceneUpdate(*PrimitiveSceneInfo, EPrimitiveDirtyState::ChangedOther);
+			}
+
 			PrimitiveSceneProxy->OnEvaluateWorldPositionOffsetChanged_RenderThread();
 		}
 	});

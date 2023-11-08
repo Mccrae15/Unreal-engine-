@@ -548,6 +548,7 @@ void USequencerSettings::SetZeroPadFrames(uint8 InZeroPadFrames)
 	{
 		ZeroPadFrames = InZeroPadFrames;
 		SaveConfig();
+		OnTimeDisplayFormatChangedEvent.Broadcast();
 	}
 }
 
@@ -926,6 +927,10 @@ USequencerSettings::FOnLoopStateChanged& USequencerSettings::GetOnLoopStateChang
 	return OnLoopStateChangedEvent;
 }
 
+USequencerSettings::FOnTimeDisplayFormatChanged& USequencerSettings::GetOnTimeDisplayFormatChanged()
+{
+	return OnTimeDisplayFormatChangedEvent;
+}
 
 void USequencerSettings::SetTimeDisplayFormat(EFrameNumberDisplayFormats InFormat)
 {
@@ -933,6 +938,7 @@ void USequencerSettings::SetTimeDisplayFormat(EFrameNumberDisplayFormats InForma
 	{
 		FrameNumberDisplayFormat = InFormat;
 		SaveConfig();
+		OnTimeDisplayFormatChangedEvent.Broadcast();
 	}
 }
 
@@ -960,5 +966,30 @@ void USequencerSettings::SetTreeViewWidth(float InTreeViewWidth)
 	{
 		TreeViewWidth = InTreeViewWidth;
 		SaveConfig();
+	}
+}
+
+bool USequencerSettings::IsTrackFilterEnabled(const FString& TrackFilter) const
+{
+	return TrackFilters.Contains(TrackFilter);
+}
+
+void USequencerSettings::SetTrackFilterEnabled(const FString & TrackFilter, bool bEnabled)
+{
+	if (bEnabled)
+	{
+		if (!TrackFilters.Contains(TrackFilter))
+		{
+			TrackFilters.Add(TrackFilter);
+			SaveConfig();
+		}
+	}
+	else
+	{
+		if (TrackFilters.Contains(TrackFilter))
+		{
+			TrackFilters.Remove(TrackFilter);
+			SaveConfig();
+		}
 	}
 }

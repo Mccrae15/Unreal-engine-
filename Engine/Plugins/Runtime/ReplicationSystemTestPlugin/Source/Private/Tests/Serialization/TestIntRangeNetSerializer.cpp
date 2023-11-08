@@ -3,6 +3,7 @@
 #include "TestNetSerializerFixture.h"
 #include "Iris/Core/BitTwiddling.h"
 #include "Iris/Serialization/IntRangeNetSerializers.h"
+#include <limits>
 
 namespace UE::Net::Private
 {
@@ -50,12 +51,12 @@ public:
 
 UE_NET_TEST_FIXTURE(FTestInt8RangeNetSerializer, HasTestValues)
 {
-	UE_NET_ASSERT_GT(ValueCount, SIZE_T(0)) << "No test values found";
+	UE_NET_ASSERT_GT_MSG(ValueCount, SIZE_T(0), "No test values found");
 }
 
 UE_NET_TEST_FIXTURE(FTestInt8RangeNetSerializer, HasTestConfigs)
 {
-	UE_NET_ASSERT_GT(ConfigCount, SIZE_T(0)) << "No configs found";
+	UE_NET_ASSERT_GT_MSG(ConfigCount, SIZE_T(0), "No configs found");
 }
 
 UE_NET_TEST_FIXTURE(FTestInt8RangeNetSerializer, TestIsEqual)
@@ -92,12 +93,12 @@ public:
 
 UE_NET_TEST_FIXTURE(FTestInt16RangeNetSerializer, HasTestValues)
 {
-	UE_NET_ASSERT_GT(ValueCount, SIZE_T(0)) << "No test values found";
+	UE_NET_ASSERT_GT_MSG(ValueCount, SIZE_T(0), "No test values found");
 }
 
 UE_NET_TEST_FIXTURE(FTestInt16RangeNetSerializer, HasTestConfigs)
 {
-	UE_NET_ASSERT_GT(ConfigCount, SIZE_T(0)) << "No configs found";
+	UE_NET_ASSERT_GT_MSG(ConfigCount, SIZE_T(0), "No configs found");
 }
 
 UE_NET_TEST_FIXTURE(FTestInt16RangeNetSerializer, TestIsEqual)
@@ -134,12 +135,12 @@ public:
 
 UE_NET_TEST_FIXTURE(FTestInt32RangeNetSerializer, HasTestValues)
 {
-	UE_NET_ASSERT_GT(ValueCount, SIZE_T(0)) << "No test values found";
+	UE_NET_ASSERT_GT_MSG(ValueCount, SIZE_T(0), "No test values found");
 }
 
 UE_NET_TEST_FIXTURE(FTestInt32RangeNetSerializer, HasTestConfigs)
 {
-	UE_NET_ASSERT_GT(ConfigCount, SIZE_T(0)) << "No configs found";
+	UE_NET_ASSERT_GT_MSG(ConfigCount, SIZE_T(0), "No configs found");
 }
 
 UE_NET_TEST_FIXTURE(FTestInt32RangeNetSerializer, TestIsEqual)
@@ -176,12 +177,12 @@ public:
 
 UE_NET_TEST_FIXTURE(FTestInt64RangeNetSerializer, HasTestValues)
 {
-	UE_NET_ASSERT_GT(ValueCount, SIZE_T(0)) << "No test values found";
+	UE_NET_ASSERT_GT_MSG(ValueCount, SIZE_T(0), "No test values found");
 }
 
 UE_NET_TEST_FIXTURE(FTestInt64RangeNetSerializer, HasTestConfigs)
 {
-	UE_NET_ASSERT_GT(ConfigCount, SIZE_T(0)) << "No configs found";
+	UE_NET_ASSERT_GT_MSG(ConfigCount, SIZE_T(0), "No configs found");
 }
 
 UE_NET_TEST_FIXTURE(FTestInt64RangeNetSerializer, TestIsEqual)
@@ -212,7 +213,7 @@ UE_NET_TEST_FIXTURE(FTestInt64RangeNetSerializer, TestSerializeDelta)
 //
 template<typename SerializerConfig, typename SourceType> const SourceType FTestIntRangeNetSerializer<SerializerConfig, SourceType>::Values[] =
 {
-	TNumericLimits<SourceType>::Lowest(), TNumericLimits<SourceType>::Max(), SourceType(0), SourceType(-1), SourceType(-16), SourceType(2048458 % TNumericLimits<SourceType>::Max())
+	std::numeric_limits<SourceType>::min(), std::numeric_limits<SourceType>::max(), SourceType(0), SourceType(-1), SourceType(-16), SourceType(2048458 % std::numeric_limits<SourceType>::max())
 };
 template<typename SerializerConfig, typename SourceType> const SIZE_T FTestIntRangeNetSerializer<SerializerConfig, SourceType>::ValueCount = sizeof(Values)/sizeof(Values[0]);
 template<typename SerializerConfig, typename SourceType> const SIZE_T FTestIntRangeNetSerializer<SerializerConfig, SourceType>::ConfigCount = sizeof(Configs)/sizeof(Configs[0]);
@@ -224,8 +225,8 @@ void FTestIntRangeNetSerializer<SerializerConfig, SourceType>::SetupConfigs()
 	{
 		static_assert(FullRangeConfigIndex == 0, "Incorrect NetSerializerConfig setup");
 		SerializerConfig& Config = Configs[0];
-		Config.LowerBound = TNumericLimits<SourceType>::Lowest();
-		Config.UpperBound = TNumericLimits<SourceType>::Max();
+		Config.LowerBound = std::numeric_limits<SourceType>::min();
+		Config.UpperBound = std::numeric_limits<SourceType>::max();
 		Config.BitCount = GetBitsNeededForRange(Config.LowerBound, Config.UpperBound);
 	}
 
@@ -240,15 +241,15 @@ void FTestIntRangeNetSerializer<SerializerConfig, SourceType>::SetupConfigs()
 	// Arbitrary ranges
 	{
 		SerializerConfig& Config = Configs[2];
-		Config.LowerBound = TNumericLimits<SourceType>::Lowest()/2;
-		Config.UpperBound = TNumericLimits<SourceType>::Max()/4;
+		Config.LowerBound = std::numeric_limits<SourceType>::min()/2;
+		Config.UpperBound = std::numeric_limits<SourceType>::max()/4;
 		Config.BitCount = GetBitsNeededForRange(Config.LowerBound, Config.UpperBound);
 	}
 
 	{
 		SerializerConfig& Config = Configs[3];
-		Config.LowerBound = TNumericLimits<SourceType>::Max()/4;
-		Config.UpperBound = TNumericLimits<SourceType>::Max()/2;
+		Config.LowerBound = std::numeric_limits<SourceType>::max()/4;
+		Config.UpperBound = std::numeric_limits<SourceType>::max()/2;
 		Config.BitCount = GetBitsNeededForRange(Config.LowerBound, Config.UpperBound);
 	}
 }
@@ -300,7 +301,7 @@ void FTestIntRangeNetSerializer<SerializerConfig, SourceType>::TestValidate()
 			ExpectedResults[ValueIt] = (FMath::Clamp(Value, Config.LowerBound, Config.UpperBound) == Value);
 			if (ConfigIt == FullRangeConfigIndex)
 			{
-				UE_NET_ASSERT_TRUE(ExpectedResults[ValueIt]) << "Clamping of value with full bit precision resulted in value being clamped. This is unexpected. Make sure no undefined behavior is used in code.";
+				UE_NET_ASSERT_TRUE_MSG(ExpectedResults[ValueIt], "Clamping of value with full bit precision resulted in value being clamped. This is unexpected. Make sure no undefined behavior is used in code.");
 			}
 		}
 

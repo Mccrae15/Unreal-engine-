@@ -50,12 +50,15 @@ namespace Metasound
 		static const FNodeClassMetadata& GetNodeInfo();
 		static FVertexInterface DeclareVertexInterface();
 
-		FNoiseOperator(const FOperatorSettings& InSettings, FInt32ReadRef&& InReadRef);
-		virtual FDataReferenceCollection GetInputs() const override;
-		virtual FDataReferenceCollection GetOutputs() const override;
+		FNoiseOperator(const FOperatorSettings& InSettings, FInt32ReadRef&& InSeedReadRef, FEnumNoiseTypeReadRef&& InNoiseTypeReadRef);
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override;
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override;
+
+		virtual IOperator::FPostExecuteFunction GetPostExecuteFunction() override { return nullptr; }
 
 	protected:
 		FInt32ReadRef Seed;
+		FEnumNoiseTypeReadRef NoiseType;
 		FAudioBufferWriteRef Out;
 		int32 OldSeed;
 
@@ -71,6 +74,13 @@ namespace Metasound
 			{
 				return T{ InSeed };
 			}
+		}
+
+		template<typename T>
+		void ResetNoiseOperator(T& InOutGenerator)
+		{
+			InOutGenerator = MakeGenerator<T>(*Seed);
+			OldSeed = *Seed;
 		}
 
 		template<typename T>
@@ -102,10 +112,16 @@ namespace Metasound
 	{
 		Audio::FWhiteNoise Generator;
 
-		FNoiseOperator_White(const FOperatorSettings& InSettings, FInt32ReadRef&& InSeed)
-			: FNoiseOperator{ InSettings, MoveTemp(InSeed) }
+		FNoiseOperator_White(const FOperatorSettings& InSettings, FInt32ReadRef&& InSeed, FEnumNoiseTypeReadRef&& InNoiseTypeReadRef)
+			: FNoiseOperator{ InSettings, MoveTemp(InSeed), MoveTemp(InNoiseTypeReadRef) }
 			, Generator{ MakeGenerator<Audio::FWhiteNoise>(*Seed) }
 		{}
+
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			ResetNoiseOperator(Generator);
+			Out->Zero();
+		}
 
 		void Execute()
 		{
@@ -115,8 +131,13 @@ namespace Metasound
 			// Generate a block.
 			Generate(Generator);
 		}
+
+		virtual FResetFunction GetResetFunction() override { return &FNoiseOperator_White::ResetFunction; }
+		static void ResetFunction(IOperator* InOperator, const IOperator::FResetParams& InParams) { static_cast<FNoiseOperator_White*>(InOperator)->Reset(InParams); }
+
 		static void ExecuteFunction(IOperator* InOperator) { static_cast<FNoiseOperator_White*>(InOperator)->Execute(); }
 		FExecuteFunction GetExecuteFunction() override { return &FNoiseOperator_White::ExecuteFunction; }
+
 	};
 
 	struct FNoiseOperator_Pink final : public FNoiseOperator
@@ -124,13 +145,22 @@ namespace Metasound
 		using FNoiseOperator::FNoiseOperator;
 		Audio::FPinkNoise Generator;
 
-		FNoiseOperator_Pink(const FOperatorSettings& InSettings, FInt32ReadRef&& InSeed)
-			: FNoiseOperator{ InSettings, MoveTemp(InSeed) }
+		FNoiseOperator_Pink(const FOperatorSettings& InSettings, FInt32ReadRef&& InSeed, FEnumNoiseTypeReadRef&& InNoiseTypeReadRef)
+			: FNoiseOperator{ InSettings, MoveTemp(InSeed), MoveTemp(InNoiseTypeReadRef) }
 			, Generator{ MakeGenerator<Audio::FPinkNoise>(*Seed) }
 		{}
 
 		static void ExecuteFunction(IOperator* InOperator) { static_cast<FNoiseOperator_Pink*>(InOperator)->Execute(); }
 		FExecuteFunction GetExecuteFunction() override { return &FNoiseOperator_Pink::ExecuteFunction; }
+
+		virtual FResetFunction GetResetFunction() override { return &FNoiseOperator_Pink::ResetFunction; }
+		static void ResetFunction(IOperator* InOperator, const IOperator::FResetParams& InParams) { static_cast<FNoiseOperator_Pink*>(InOperator)->Reset(InParams); }
+
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			ResetNoiseOperator(Generator);
+			Out->Zero();
+		}
 
 		void Execute()
 		{
@@ -142,28 +172,25 @@ namespace Metasound
 		}
 	};
 	
-	FNoiseOperator::FNoiseOperator(const FOperatorSettings& InSettings, FInt32ReadRef&& InReadRef)
-		: Seed{ MoveTemp(InReadRef) }
+	FNoiseOperator::FNoiseOperator(const FOperatorSettings& InSettings, FInt32ReadRef&& InSeedReadRef, FEnumNoiseTypeReadRef&& InNoiseTypeReadRef)
+		: Seed{ MoveTemp(InSeedReadRef) }
+		, NoiseType{ MoveTemp(InNoiseTypeReadRef) }
 		, Out{ FAudioBufferWriteRef::CreateNew(InSettings) }
 		, OldSeed(*Seed)
 	{}
 
-	FDataReferenceCollection FNoiseOperator::GetInputs() const
+
+	void FNoiseOperator::BindInputs(FInputVertexInterfaceData& InOutVertexData)
 	{
 		using namespace NoiseGeneratorVertexNames;
-
-		FDataReferenceCollection InputDataReferences;
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputSeed), FInt32ReadRef(Seed));
-		return InputDataReferences;
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputSeed), Seed);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputType), NoiseType);
 	}
 
-	FDataReferenceCollection FNoiseOperator::GetOutputs() const
+	void FNoiseOperator::BindOutputs(FOutputVertexInterfaceData& InOutVertexData)
 	{
 		using namespace NoiseGeneratorVertexNames;
-
-		FDataReferenceCollection OutputDataReferences;
-		OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutAudio), FAudioBufferReadRef(Out));
-		return OutputDataReferences;
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutAudio), Out);
 	}
 
 	FVertexInterface FNoiseOperator::DeclareVertexInterface()
@@ -173,7 +200,7 @@ namespace Metasound
 		static const FVertexInterface Interface(
 			FInputVertexInterface(
 				TInputDataVertex<int32>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputSeed), FNoiseOperator::DefaultSeed),
-				TInputDataVertex<FEnumNoiseType>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputType))
+				TInputDataVertex<FEnumNoiseType>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputType), (int32)ENoiseType::Pink)
 			),
 			FOutputVertexInterface(
 				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutAudio))
@@ -218,20 +245,21 @@ namespace Metasound
 		const FNoiseNode& Node = static_cast<const FNoiseNode&>(InParams.Node);
 		const FDataReferenceCollection& InputCol = InParams.InputDataReferences;
 		const FOperatorSettings& Settings = InParams.OperatorSettings;
+		const FInputVertexInterface& InputInterface = InParams.Node.GetVertexInterface().GetInputInterface();
 
 		// Static property pin, only used for factory.
-		FEnumNoiseTypeReadRef Type = InputCol.GetDataReadReferenceOrConstruct<FEnumNoiseType>(METASOUND_GET_PARAM_NAME(InputType));
+		FEnumNoiseTypeReadRef Type = InputCol.GetDataReadReferenceOrConstructWithVertexDefault<FEnumNoiseType>(InputInterface, METASOUND_GET_PARAM_NAME(InputType), Settings);
 
 		// Seed.
-		FInt32ReadRef Seed = InputCol.GetDataReadReferenceOrConstruct<int32>(METASOUND_GET_PARAM_NAME(InputSeed), Node.GetDefaultSeed());
+		FInt32ReadRef Seed = InputCol.GetDataReadReferenceOrConstructWithVertexDefault<int32>(InputInterface, METASOUND_GET_PARAM_NAME(InputSeed), Settings);
 
 		switch (*Type)
 		{
 		default:
 		case ENoiseType::White:
-			return MakeUnique<FNoiseOperator_White>(InParams.OperatorSettings, MoveTemp(Seed));
+			return MakeUnique<FNoiseOperator_White>(InParams.OperatorSettings, MoveTemp(Seed), MoveTemp(Type));
 		case ENoiseType::Pink:
-			return MakeUnique<FNoiseOperator_Pink>(InParams.OperatorSettings, MoveTemp(Seed));
+			return MakeUnique<FNoiseOperator_Pink>(InParams.OperatorSettings, MoveTemp(Seed), MoveTemp(Type));
 		}
 		checkNoEntry();
 		return nullptr;

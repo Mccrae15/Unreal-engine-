@@ -92,13 +92,13 @@
 
 #if HAS_SCENE_DEPTH_AUX_OUTPUT
 	#if DEFERRED_SHADING_PATH && MOBILE_EXTENDED_GBUFFER
-		#define SV_TargetDepthAux SV_Target5	
+	#define SV_TargetDepthAux SV_Target5	
 	#elif DEFERRED_SHADING_PATH
-		#define SV_TargetDepthAux SV_Target4	
+	#define SV_TargetDepthAux SV_Target4	
 	#elif TONEMAP_SUBPASS_EMULATION
 		#define SV_TargetDepthAux SV_Target2
 	#else
-		#define SV_TargetDepthAux SV_Target1
+	#define SV_TargetDepthAux SV_Target1
 	#endif
 #endif
 
@@ -117,6 +117,12 @@
 #if MATERIAL_SHADINGMODEL_SINGLELAYERWATER
 	#include "SingleLayerWaterShading.ush"
 #endif
+
+// BEGIN META SECTION - XR Soft Occlusions
+#if ENABLE_SOFT_OCCLUSIONS
+	#include "EnvironmentDepthOcclusion.ush"
+#endif
+// END META SECTION - XR Soft Occlusions
 
 // STRATA_TODO: Shared with BasePassPixelShader.usf
 #define MATERIAL_STRATA_OPAQUE_PRECOMPUTED_LIGHTING 0
@@ -168,14 +174,15 @@ void ApplyPixelDepthOffsetForMobileBasePass(inout FMaterialPixelParameters Mater
     float PixelDepthOffset = ApplyPixelDepthOffsetToMaterialParameters(MaterialParameters, PixelMaterialInputs, OutDepth);
 }
 
-// Force early depth_stencil for non-masked material that use VT feedback
-#if (NUM_VIRTUALTEXTURE_SAMPLES || LIGHTMAP_VT_ENABLED) && !(MATERIALBLENDING_MASKED || USE_DITHERED_LOD_TRANSITION || OUTPUT_PIXEL_DEPTH_OFFSET)
+#define USES_PIXEL_DISCARD ((MATERIALBLENDING_MASKED || USE_DITHERED_LOD_TRANSITION) && !EARLY_Z_PASS_ONLY_MATERIAL_MASKING)
+// Force early depth_stencil for materials that use VT feedback and don't use pixel discard or modify the pixel depth
+#if (MATERIAL_VIRTUALTEXTURE_FEEDBACK || LIGHTMAP_VT_ENABLED) && !(OUTPUT_PIXEL_DEPTH_OFFSET || USES_PIXEL_DISCARD)
 	#define PIXELSHADER_EARLYDEPTHSTENCIL EARLYDEPTHSTENCIL	
 #else
 	#define PIXELSHADER_EARLYDEPTHSTENCIL 	
 #endif
 
-void GetSkyLighting(half3 SkyLightColor, half3 WorldNormal, bool bEvaluateBackface, inout half IndirectIrradiance, out half3 OutSkyDiffuseLighting, out half3 OutSkySubsurfaceLighting, out half3 OutWaterDiffuseIndirectLuminance)
+void GetSkyLighting(half3 SkyLightColor, half3 WorldNormal, bool bEvaluateBackface, out half3 OutSkyDiffuseLighting, out half3 OutSkySubsurfaceLighting, out half3 OutWaterDiffuseIndirectLuminance)
 {
 	OutSkyDiffuseLighting = 0;
 	OutSkySubsurfaceLighting = 0;
@@ -185,7 +192,6 @@ void GetSkyLighting(half3 SkyLightColor, half3 WorldNormal, bool bEvaluateBackfa
 	{
 		half3 SkyDiffuse = GetSkySHDiffuseSimple(WorldNormal);
 		OutSkyDiffuseLighting = SkyDiffuse * SkyLightColor;
-		IndirectIrradiance += Luminance(OutSkyDiffuseLighting);
 
 	#if MATERIAL_SHADINGMODEL_SINGLELAYERWATER
 		OutWaterDiffuseIndirectLuminance += OutSkyDiffuseLighting;
@@ -214,7 +220,7 @@ void GetPrecomputedIndirectLightingAndSkyLight(VTPageTableResult LightmapVTPageT
 	uint LightmapDataIndex;
 	GetLightMapCoordinates(Interpolants, LightmapUV0, LightmapUV1, LightmapDataIndex);
 
-	GetLightMapColorLQ(LightmapVTPageTableResult, LightmapUV0, LightmapUV1, LightmapDataIndex, DiffuseDir, bEvaluateBackface, OutDiffuseIndirectLighting, OutSubsurfaceIndirectLighting, OutIndirectIrradiance);
+	GetLightMapColorLQ(LightmapVTPageTableResult, LightmapUV0, LightmapUV1, LightmapDataIndex, DiffuseDir, bEvaluateBackface, OutDiffuseIndirectLighting, OutSubsurfaceIndirectLighting);
 #elif CACHED_POINT_INDIRECT_LIGHTING
 	#if MATERIALBLENDING_MASKED || MATERIALBLENDING_SOLID
 		// Take the normal into account for opaque
@@ -256,16 +262,22 @@ void GetPrecomputedIndirectLightingAndSkyLight(VTPageTableResult LightmapVTPageT
 		}
 		#endif
 	#endif
-
-	OutIndirectIrradiance = Luminance(OutDiffuseIndirectLighting);
 #endif
+
+	// Apply indirect lighting scale while we have only accumulated lightmaps
+	OutDiffuseIndirectLighting *= View.PrecomputedIndirectLightingColorScale;
+	OutSubsurfaceIndirectLighting *= View.PrecomputedIndirectLightingColorScale;
 
 	half3 SkyDiffuseLighting;
 	half3 SkySubsurfaceLighting;
-	GetSkyLighting(SkyLightColor, DiffuseDir, bEvaluateBackface, OutIndirectIrradiance, SkyDiffuseLighting, SkySubsurfaceLighting, OutWaterDiffuseIndirectLuminance);
+	GetSkyLighting(SkyLightColor, DiffuseDir, bEvaluateBackface, SkyDiffuseLighting, SkySubsurfaceLighting, OutWaterDiffuseIndirectLuminance);
 
 	OutDiffuseIndirectLighting += SkyDiffuseLighting;
 	OutSubsurfaceIndirectLighting += SkySubsurfaceLighting;
+
+#if LQ_TEXTURE_LIGHTMAP || CACHED_POINT_INDIRECT_LIGHTING
+	OutIndirectIrradiance = Luminance(OutDiffuseIndirectLighting);
+#endif
 }
 
 PIXELSHADER_EARLYDEPTHSTENCIL
@@ -337,6 +349,15 @@ void Main(
 	FMaterialPixelParameters MaterialParameters = GetMaterialPixelParameters(Interpolants, SvPosition);
 	FPixelMaterialInputs PixelMaterialInputs;
 	{
+// BEGIN META SECTION - XR Soft Occlusions
+#if USE_MULTI_VIEW_ID_SV
+		MaterialParameters.ViewId = MultiViewId;
+#elif USE_MULTI_VIEW_ID_INTERPOLANT
+		MaterialParameters.ViewId = BasePassInterpolants.MultiViewId;
+#else
+		MaterialParameters.ViewId = 0;
+#endif
+// END META SECTION - XR Soft Occlusions
 		float4 ScreenPosition = SvPositionToResolvedScreenPosition(SvPosition);
 		float3 WorldPosition = BasePassInterpolants.PixelPosition.xyz;
 		float3 WorldPositionExcludingWPO = BasePassInterpolants.PixelPosition.xyz;
@@ -413,25 +434,20 @@ void Main(
 
 
 #if STRATA_ENABLED && !STRATA_OPTIMIZED_UNLIT
-	FStrataData StrataData = PixelMaterialInputs.FrontMaterial;
-
 	// Initialise a Strata header with normal in registers
-	FStrataPixelHeader StrataPixelHeader = InitialiseStrataPixelHeader();
-	StrataPixelHeader.StrataTree = MaterialParameters.StrataTree;
-	StrataPixelHeader.BSDFCount = MaterialParameters.StrataTree.BSDFCount;
-	StrataPixelHeader.SharedLocalBases = MaterialParameters.SharedLocalBases;
-	StrataPixelHeader.IrradianceAO = InitIrradianceAndOcclusion();
+	FStrataData StrataData = PixelMaterialInputs.GetFrontStrataData();
+	FStrataPixelHeader StrataPixelHeader = MaterialParameters.GetFrontStrataHeader();
 	StrataPixelHeader.IrradianceAO.MaterialAO = MaterialAO;
-	SetCastContactShadow(StrataPixelHeader, GetPrimitiveData(MaterialParameters).Flags & PRIMITIVE_SCENE_DATA_FLAG_HAS_CAST_CONTACT_SHADOW);
-	SetDynamicIndirectShadowCasterRepresentation(StrataPixelHeader, GetPrimitiveData(MaterialParameters).Flags & PRIMITIVE_SCENE_DATA_FLAG_HAS_CAPSULE_REPRESENTATION);
+	StrataPixelHeader.SetCastContactShadow(GetPrimitiveData(MaterialParameters).Flags & PRIMITIVE_SCENE_DATA_FLAG_HAS_CAST_CONTACT_SHADOW);
+	StrataPixelHeader.SetDynamicIndirectShadowCasterRepresentation(GetPrimitiveData(MaterialParameters).Flags & PRIMITIVE_SCENE_DATA_FLAG_HAS_CAPSULE_REPRESENTATION);
 #endif
 
 #if STRATA_ENABLED && STRATA_INLINE_SINGLELAYERWATER
-	SetMaterialMode(StrataPixelHeader, HEADER_MATERIALMODE_SLWATER);
+	StrataPixelHeader.SetMaterialMode(HEADER_MATERIALMODE_SLWATER);
 
 	// Override GBuffer data with Strata SLW water BSDF to run forward shadfing code.
 	// STRATA_TODO: run the shading through a strata path? (by adding a special BSDF?)
-	SanitizeStrataSingleLayerWater(StrataPixelHeader.StrataTree.BSDFs[0]);
+	StrataPixelHeader.StrataTree.BSDFs[0].StrataSanitizeBSDF();
 	FStrataBSDF SLWBSDF = StrataPixelHeader.StrataTree.BSDFs[0];
 
 	half3 BaseColor = SLW_BASECOLOR(SLWBSDF);
@@ -573,26 +589,26 @@ void Main(
 	{
 		// Encode shadow mask only if the shadow mask is entirely non-zero and non-one
 	#if WRITES_PRECSHADOWFACTOR_ZERO
-		SetHasPrecShadowMask(StrataPixelHeader, false);
-		SetZeroPrecShadowMask(StrataPixelHeader, true);
+		StrataPixelHeader.SetHasPrecShadowMask(false);
+		StrataPixelHeader.SetZeroPrecShadowMask(true);
 	#else
 	  #if ALLOW_STATIC_LIGHTING
 		const bool bAllZero = all(GBuffer.PrecomputedShadowFactors == 0);
 		const bool bAllOne  = all(GBuffer.PrecomputedShadowFactors == 1);
 		if (!bAllZero && !bAllOne)
 		{
-			SetHasPrecShadowMask(StrataPixelHeader, true);
+			StrataPixelHeader.SetHasPrecShadowMask(true);
 		}
 		else if (bAllZero)
 		{
-			SetHasPrecShadowMask(StrataPixelHeader, false);
-			SetZeroPrecShadowMask(StrataPixelHeader, true);
+			StrataPixelHeader.SetHasPrecShadowMask(false);
+			StrataPixelHeader.SetZeroPrecShadowMask(true);
 		}
 		else if (bAllOne)
 	  #endif
 		{
-			SetHasPrecShadowMask(StrataPixelHeader, false);
-			SetZeroPrecShadowMask(StrataPixelHeader, false);
+			StrataPixelHeader.SetHasPrecShadowMask(false);
+			StrataPixelHeader.SetZeroPrecShadowMask(false);
 		}
 	#endif
 	}
@@ -673,7 +689,7 @@ void Main(
 
 	// Unlit forces a single BSDF
 	FStrataBSDF UnlitBSDF = PixelMaterialInputs.FrontMaterial.InlinedBSDF;
-	SanitizeStrataUnlit(UnlitBSDF);
+	UnlitBSDF.StrataSanitizeBSDF();
 
 	DualBlendSurfaceLuminancePostCoverage = BSDF_GETEMISSIVE(UnlitBSDF);
 	DualBlendSurfaceTransmittancePreCoverage = UNLIT_TRANSMITTANCE(UnlitBSDF);
@@ -703,11 +719,10 @@ void Main(
 	#endif
 
 	#if STRATA_TRANSLUCENT_MATERIAL
-			
-	#if STRATA_LEGACY_PREMULT_ALPHA_OVERRIDE && !STRATA_OPTIMIZED_UNLIT
-		// This data patching is working because DualBlendSurfaceCoverage is always 1 when converting material from legacy to Strata with premultiplied alpha blending.
-		DualBlendSurfaceTransmittancePreCoverage= StrataData.PreMultipliedAlphaOverrideCoverage >= 0.0f ? 0.0f											: DualBlendSurfaceTransmittancePreCoverage;
-		DualBlendSurfaceCoverage				= StrataData.PreMultipliedAlphaOverrideCoverage >= 0.0f ? StrataData.PreMultipliedAlphaOverrideCoverage	: DualBlendSurfaceCoverage;
+
+	#if STRATA_USE_PREMULTALPHA_OVERRIDE // AlphaComposite - Premultiplied alpha blending
+		DualBlendSurfaceTransmittancePreCoverage= 0.0;
+		DualBlendSurfaceCoverage = GetMaterialOpacity(PixelMaterialInputs);
 	#endif
 
 		// Add fog luminance according to surfacecoverage and reduce surface luminance according to fog coverage.
@@ -811,7 +826,7 @@ void Main(
 	float2 LocalPosition = SvPosition.xy - ResolvedView.ViewRectMin.xy;
 	uint GridIndex = ComputeLightGridCellIndex(uint2(LocalPosition.x, LocalPosition.y), SvPosition.w);
 
-#if MATERIALBLENDING_MASKED || MATERIALBLENDING_SOLID || TRANSLUCENCY_LIGHTING_SURFACE_FORWARDSHADING || MATERIAL_SHADINGMODEL_SINGLELAYERWATER
+#if MATERIALBLENDING_MASKED || MATERIALBLENDING_SOLID || TRANSLUCENCY_LIGHTING_SURFACE_FORWARDSHADING || TRANSLUCENCY_LIGHTING_SURFACE_LIGHTINGVOLUME || MATERIAL_SHADINGMODEL_SINGLELAYERWATER
 	// Reflection IBL
 	AccumulateReflection(GBuffer
 		, CameraVector
@@ -823,9 +838,32 @@ void Main(
 #endif
 
 	// Local lights
-#if  !MATERIAL_SHADINGMODEL_SINGLELAYERWATER && ENABLE_CLUSTERED_LIGHTS
+#if  PREPASS_LOCAL_LIGHTS_MOBILE
 	{
+		FDeferredLightData MergedLightData = (FDeferredLightData)0;
+		half3 LocalLightA = MobileSceneTextures.LocalLightTextureA.Load(int3(SvPosition.xy, 0)).xyz; 
+		half4 LocalLightB = MobileSceneTextures.LocalLightTextureB.Load(int3(SvPosition.xy, 0));
 
+		MergedLightData.SourceRadius	= 0;
+		MergedLightData.SourceLength	= 0;
+		MergedLightData.Tangent			= 0;
+		MergedLightData.SoftSourceRadius= 0;
+		MergedLightData.SpecularScale	= 1.0f;
+		MergedLightData.bSpotLight		= false;
+		MergedLightData.bRectLight		= false;
+		MergedLightData.Color = LocalLightA.rgb;
+		MergedLightData.bRadialLight = false;
+
+		half4 LightAttenuation = half4(1, 1, 1, 1); 
+		float SurfaceShadow = 0;
+
+		MergedLightData.Direction = LocalLightB.rgb * 2 - 1;
+
+		FLightAccumulator NewLighting = AccumulateDynamicLighting(MaterialParameters.WorldPosition_CamRelative, CameraVector, GBuffer, 1, GBuffer.ShadingModelID, MergedLightData, LightAttenuation, 0, uint2(0, 0), SurfaceShadow);
+		DirectLighting = LightAccumulator_Add(DirectLighting, NewLighting);
+	}
+#elif  (!MATERIAL_SHADINGMODEL_SINGLELAYERWATER && ENABLE_CLUSTERED_LIGHTS)
+	{
 #if USE_MULTI_VIEW_ID_INTERPOLANT
 		const uint EyeIndex = BasePassInterpolants.MultiViewId;
 #else
@@ -982,6 +1020,18 @@ void Main(
 	OutColor.rgb = SafeGetOutColor(OutColor.rgb);
 #endif
 
+// BEGIN META SECTION - XR Soft Occlusions
+#if ENABLE_SOFT_OCCLUSIONS
+	uint ViewId = 0;
+#if USE_MULTI_VIEW_ID_SV
+	ViewId = MultiViewId;
+#elif USE_MULTI_VIEW_ID_INTERPOLANT
+	ViewId = BasePassInterpolants.MultiViewId;
+#endif
+	OutColor = EnvironmentDepthOcclusion(OutColor, SvPosition, ViewId);
+#endif
+// END META SECTION - XR Soft Occlusions
+
 #if USE_EDITOR_COMPOSITING && (MOBILE_EMULATION)
 	// Editor primitive depth testing
 	OutColor.a = 1.0;
@@ -996,7 +1046,7 @@ void Main(
 	#endif
 #endif
 
-#if NUM_VIRTUALTEXTURE_SAMPLES || LIGHTMAP_VT_ENABLED
+#if MATERIAL_VIRTUALTEXTURE_FEEDBACK || LIGHTMAP_VT_ENABLED
 	FinalizeVirtualTextureFeedback(
 		MaterialParameters.VirtualTextureFeedback,
 		MaterialParameters.SvPosition,

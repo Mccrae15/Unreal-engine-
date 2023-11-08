@@ -35,11 +35,18 @@ static TAutoConsoleVariable<int32> CVarLumenHardwareRayTracingLightingMode(
 	ECVF_RenderThreadSafe | ECVF_Scalability
 );
 
+static TAutoConsoleVariable<int32> CVarLumenHardwareRayTracingHitLightingReflectionCaptures(
+	TEXT("r.Lumen.HardwareRayTracing.HitLighting.ReflectionCaptures"),
+	0,
+	TEXT("Whether to apply Reflection Captures to ray hits when using Hit Lighting."),
+	ECVF_RenderThreadSafe | ECVF_Scalability
+);
+
 static TAutoConsoleVariable<int32> CVarLumenUseHardwareRayTracingInline(
 	TEXT("r.Lumen.HardwareRayTracing.Inline"),
 	1,
 	TEXT("Uses Hardware Inline Ray Tracing for selected Lumen passes, when available.\n"),
-	ECVF_RenderThreadSafe
+	ECVF_RenderThreadSafe | ECVF_Scalability
 );
 
 static TAutoConsoleVariable<float> CVarLumenHardwareRayTracingPullbackBias(
@@ -65,13 +72,6 @@ static TAutoConsoleVariable<int32> CVarLumenHardwareRayTracingMaxIterations(
 	ECVF_RenderThreadSafe
 );
 
-static TAutoConsoleVariable<int32> CVarLumenHardwareRayTracingMaxTranslucentSkipCount(
-	TEXT("r.Lumen.HardwareRayTracing.MaxTranslucentSkipCount"),
-	2,
-	TEXT("Determines the maximum number of translucent surfaces skipped during ray traversal (Default = 2)"),
-	ECVF_RenderThreadSafe
-);
-
 TAutoConsoleVariable<float> CVarLumenHardwareRayTracingMinTraceDistanceToSampleSurfaceCache(
 	TEXT("r.Lumen.HardwareRayTracing.MinTraceDistanceToSampleSurfaceCache"),
 	10.0f,
@@ -79,22 +79,28 @@ TAutoConsoleVariable<float> CVarLumenHardwareRayTracingMinTraceDistanceToSampleS
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
+bool LumenHardwareRayTracing::IsInlineSupported()
+{
+	return GRHISupportsInlineRayTracing;
+}
+
+bool LumenHardwareRayTracing::IsRayGenSupported()
+{
+	// Indirect RayGen dispatch is required for Lumen RayGen shaders
+	return GRHISupportsRayTracingShaders && GRHISupportsRayTracingDispatchIndirect;
+}
+
 bool Lumen::UseHardwareRayTracing(const FSceneViewFamily& ViewFamily)
 {
 #if RHI_RAYTRACING
 	return IsRayTracingEnabled()
-		&& (GRHISupportsRayTracingShaders || GRHISupportsInlineRayTracing)
+		&& (LumenHardwareRayTracing::IsInlineSupported() || LumenHardwareRayTracing::IsRayGenSupported())
 		&& CVarLumenUseHardwareRayTracing.GetValueOnAnyThread() != 0
-		// Ray Tracing does not support split screen yet, but stereo views can be allowed
+		// Lumen HWRT does not support split screen yet, but stereo views can be allowed
 		&& (ViewFamily.Views.Num() == 1 || (ViewFamily.Views.Num() == 2 && IStereoRendering::IsStereoEyeView(*ViewFamily.Views[0])));
 #else
 	return false;
 #endif
-}
-
-int32 Lumen::GetMaxTranslucentSkipCount()
-{
-	return CVarLumenHardwareRayTracingMaxTranslucentSkipCount.GetValueOnRenderThread();
 }
 
 float LumenHardwareRayTracing::GetMinTraceDistanceToSampleSurfaceCache()
@@ -102,14 +108,22 @@ float LumenHardwareRayTracing::GetMinTraceDistanceToSampleSurfaceCache()
 	return CVarLumenHardwareRayTracingMinTraceDistanceToSampleSurfaceCache.GetValueOnRenderThread();
 }
 
-Lumen::EHardwareRayTracingLightingMode Lumen::GetHardwareRayTracingLightingMode(const FViewInfo& View)
+Lumen::EHardwareRayTracingLightingMode Lumen::GetHardwareRayTracingLightingMode(const FViewInfo& View, bool bLumenGIEnabled)
 {
 #if RHI_RAYTRACING
-		
-	int32 LightingModeInt = CVarLumenHardwareRayTracingLightingMode.GetValueOnRenderThread();
+	
+	if (!bLumenGIEnabled)
+	{
+		// ShouldRenderLumenReflections should have prevented this
+		check(GRHISupportsRayTracingShaders);
+		// Force hit lighting and no surface cache when using standalone Lumen Reflections
+		return Lumen::EHardwareRayTracingLightingMode::EvaluateMaterialAndDirectLightingAndSkyLighting;
+	}
 
-	// Without ray tracing shaders support we can only use Surface Cache mode.
-	if (View.FinalPostProcessSettings.LumenRayLightingMode == ELumenRayLightingModeOverride::SurfaceCache || !GRHISupportsRayTracingShaders)
+	int32 LightingModeInt = CVarLumenHardwareRayTracingLightingMode.GetValueOnAnyThread();
+
+	// Without ray tracing shaders (RayGen) support we can only use Surface Cache mode.
+	if (View.FinalPostProcessSettings.LumenRayLightingMode == ELumenRayLightingModeOverride::SurfaceCache || !LumenHardwareRayTracing::IsRayGenSupported())
 	{
 		LightingModeInt = static_cast<int32>(Lumen::EHardwareRayTracingLightingMode::LightingFromSurfaceCache);
 	}
@@ -125,31 +139,25 @@ Lumen::EHardwareRayTracingLightingMode Lumen::GetHardwareRayTracingLightingMode(
 #endif
 }
 
-const TCHAR* Lumen::GetRayTracedLightingModeName(Lumen::EHardwareRayTracingLightingMode LightingMode)
+bool Lumen::UseReflectionCapturesForHitLighting()
 {
-	switch (LightingMode)
-	{
-	case Lumen::EHardwareRayTracingLightingMode::LightingFromSurfaceCache:
-		return TEXT("LightingFromSurfaceCache");
-	case Lumen::EHardwareRayTracingLightingMode::EvaluateMaterial:
-		return TEXT("EvaluateMaterial");
-	case Lumen::EHardwareRayTracingLightingMode::EvaluateMaterialAndDirectLighting:
-		return TEXT("EvaluateMaterialAndDirectLighting");
-	case Lumen::EHardwareRayTracingLightingMode::EvaluateMaterialAndDirectLightingAndSkyLighting:
-		return TEXT("EvaluateMaterialAndDirectLightingAndSkyLighting");
-	default:
-		checkf(0, TEXT("Unhandled EHardwareRayTracingLightingMode"));
-	}
-	return nullptr;
+	int32 UseReflectionCaptures = CVarLumenHardwareRayTracingHitLightingReflectionCaptures.GetValueOnRenderThread();
+	return UseReflectionCaptures != 0;
 }
 
 bool Lumen::UseHardwareInlineRayTracing(const FSceneViewFamily& ViewFamily)
 {
 #if RHI_RAYTRACING
-	return (Lumen::UseHardwareRayTracing(ViewFamily) && CVarLumenUseHardwareRayTracingInline.GetValueOnRenderThread() != 0 && GRHISupportsInlineRayTracing);
-#else
-	return false;
+	if (Lumen::UseHardwareRayTracing(ViewFamily)
+		&& LumenHardwareRayTracing::IsInlineSupported()
+		// Can't disable inline tracing if RayGen isn't supported
+		&& (CVarLumenUseHardwareRayTracingInline.GetValueOnRenderThread() != 0 || !LumenHardwareRayTracing::IsRayGenSupported()))
+	{
+		return true;
+	}
 #endif
+
+	return false;
 }
 
 float LumenHardwareRayTracing::GetFarFieldBias()
@@ -178,7 +186,6 @@ void FLumenHardwareRayTracingShaderBase::ModifyCompilationEnvironment(const FGlo
 
 	// GPU Scene definitions
 	OutEnvironment.SetDefine(TEXT("VF_SUPPORTS_PRIMITIVE_SCENE_DATA"), 1);
-	OutEnvironment.SetDefine(TEXT("USE_GLOBAL_GPU_SCENE_DATA"), 1);
 
 	// Inline
 	const bool bInlineRayTracing = ShaderDispatchType == Lumen::ERayTracingShaderDispatchType::Inline;
@@ -265,265 +272,17 @@ void SetLumenHardwareRayTracingSharedParameters(
 
 	// Lighting data
 	SharedParameters->LightDataPacked = View.RayTracingLightDataUniformBuffer;
+	SharedParameters->ReflectionCapture = View.ReflectionCaptureUniformBuffer;
+	SharedParameters->Forward = View.ForwardLightingResources.ForwardLightUniformBuffer;
 
 	// Inline
-	SharedParameters->HitGroupData = View.LumenHardwareRayTracingHitDataBuffer ? GraphBuilder.CreateSRV(View.LumenHardwareRayTracingHitDataBuffer) : nullptr;
-	SharedParameters->RayTracingSceneMetadata = View.GetRayTracingSceneChecked()->GetMetadataBufferSRV();
+	SharedParameters->HitGroupData = View.GetPrimaryView()->LumenHardwareRayTracingHitDataBuffer ? GraphBuilder.CreateSRV(View.GetPrimaryView()->LumenHardwareRayTracingHitDataBuffer) : nullptr;
+	SharedParameters->LumenHardwareRayTracingUniformBuffer = View.GetPrimaryView()->LumenHardwareRayTracingUniformBuffer ? View.GetPrimaryView()->LumenHardwareRayTracingUniformBuffer : nullptr;
+	checkf(View.RayTracingSceneInitTask == nullptr, TEXT("RayTracingSceneInitTask must be completed before creating SRV for RayTracingSceneMetadata."));
+	SharedParameters->RayTracingSceneMetadata = View.GetRayTracingSceneChecked()->GetOrCreateMetadataBufferSRV(GraphBuilder.RHICmdList);
 
 	// Use surface cache, instead
 	SharedParameters->TracingParameters = TracingParameters;
-}
-
-class FLumenHWRTCompactRaysIndirectArgsCS : public FGlobalShader
-{
-	DECLARE_GLOBAL_SHADER(FLumenHWRTCompactRaysIndirectArgsCS)
-	SHADER_USE_PARAMETER_STRUCT(FLumenHWRTCompactRaysIndirectArgsCS, FGlobalShader)
-
-		BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, RayAllocator)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<uint>, RWCompactRaysIndirectArgs)
-		END_SHADER_PARAMETER_STRUCT()
-
-		static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return DoesPlatformSupportLumenGI(Parameters.Platform);
-	}
-
-	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE_1D"), GetThreadGroupSize1D());
-		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE_2D"), GetThreadGroupSize2D());
-	}
-
-	static int32 GetThreadGroupSize1D() { return GetThreadGroupSize2D() * GetThreadGroupSize2D(); }
-	static int32 GetThreadGroupSize2D() { return 8; }
-};
-
-IMPLEMENT_GLOBAL_SHADER(FLumenHWRTCompactRaysIndirectArgsCS, "/Engine/Private/Lumen/LumenHardwareRayTracingPipeline.usf", "FLumenHWRTCompactRaysIndirectArgsCS", SF_Compute);
-
-class FLumenHWRTCompactRaysCS : public FGlobalShader
-{
-	DECLARE_GLOBAL_SHADER(FLumenHWRTCompactRaysCS)
-	SHADER_USE_PARAMETER_STRUCT(FLumenHWRTCompactRaysCS, FGlobalShader);
-
-	class FCompactModeDim : SHADER_PERMUTATION_ENUM_CLASS("DIM_COMPACT_MODE", LumenHWRTPipeline::ECompactMode);
-	using FPermutationDomain = TShaderPermutationDomain<FCompactModeDim>;
-
-	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		// Input
-		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, RayAllocator)
-		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<LumenHWRTPipeline::FTraceDataPacked>, TraceDataPacked)
-
-		// Output
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<uint>, RWRayAllocator)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<LumenHWRTPipeline::FTraceDataPacked>, RWTraceDataPacked)
-
-		// Indirect args
-		RDG_BUFFER_ACCESS(CompactRaysIndirectArgs, ERHIAccess::IndirectArgs)
-		END_SHADER_PARAMETER_STRUCT()
-
-		static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return DoesPlatformSupportLumenGI(Parameters.Platform);
-	}
-
-	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE_1D"), GetThreadGroupSize1D());
-		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE_2D"), GetThreadGroupSize2D());
-	}
-
-	static int32 GetThreadGroupSize1D() { return GetThreadGroupSize2D() * GetThreadGroupSize2D(); }
-	static int32 GetThreadGroupSize2D() { return 8; }
-};
-
-IMPLEMENT_GLOBAL_SHADER(FLumenHWRTCompactRaysCS, "/Engine/Private/Lumen/LumenHardwareRayTracingPipeline.usf", "FLumenHWRTCompactRaysCS", SF_Compute);
-
-
-class FLumenHWRTBucketRaysByMaterialIdIndirectArgsCS : public FGlobalShader
-{
-	DECLARE_GLOBAL_SHADER(FLumenHWRTBucketRaysByMaterialIdIndirectArgsCS)
-	SHADER_USE_PARAMETER_STRUCT(FLumenHWRTBucketRaysByMaterialIdIndirectArgsCS, FGlobalShader)
-
-		BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, RayAllocator)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<uint>, RWBucketRaysByMaterialIdIndirectArgs)
-		END_SHADER_PARAMETER_STRUCT()
-
-		static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return DoesPlatformSupportLumenGI(Parameters.Platform);
-	}
-
-	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE_1D"), GetThreadGroupSize1D());
-		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE_2D"), GetThreadGroupSize2D());
-	}
-
-	static int32 GetThreadGroupSize1D() { return GetThreadGroupSize2D() * GetThreadGroupSize2D(); }
-	static int32 GetThreadGroupSize2D() { return 16; }
-};
-
-IMPLEMENT_GLOBAL_SHADER(FLumenHWRTBucketRaysByMaterialIdIndirectArgsCS, "/Engine/Private/Lumen/LumenHardwareRayTracingPipeline.usf", "FLumenHWRTBucketRaysByMaterialIdIndirectArgsCS", SF_Compute);
-
-class FLumenHWRTBucketRaysByMaterialIdCS : public FGlobalShader
-{
-	DECLARE_GLOBAL_SHADER(FLumenHWRTBucketRaysByMaterialIdCS)
-	SHADER_USE_PARAMETER_STRUCT(FLumenHWRTBucketRaysByMaterialIdCS, FGlobalShader);
-
-	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		// Input
-		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, RayAllocator)
-		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<LumenHWRTPipeline::FTraceDataPacked>, TraceDataPacked)
-
-		SHADER_PARAMETER(int, MaxRayAllocationCount)
-
-		// Output
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<LumenHWRTPipeline::FTraceDataPacked>, RWTraceDataPacked)
-
-		// Indirect args
-		RDG_BUFFER_ACCESS(BucketRaysByMaterialIdIndirectArgs, ERHIAccess::IndirectArgs)
-		END_SHADER_PARAMETER_STRUCT()
-
-		static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return DoesPlatformSupportLumenGI(Parameters.Platform);
-	}
-
-	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE_1D"), GetThreadGroupSize1D());
-		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE_2D"), GetThreadGroupSize2D());
-	}
-
-	static int32 GetThreadGroupSize1D() { return GetThreadGroupSize2D() * GetThreadGroupSize2D(); }
-	static int32 GetThreadGroupSize2D() { return 16; }
-};
-
-IMPLEMENT_GLOBAL_SHADER(FLumenHWRTBucketRaysByMaterialIdCS, "/Engine/Private/Lumen/LumenHardwareRayTracingPipeline.usf", "FLumenHWRTBucketRaysByMaterialIdCS", SF_Compute);
-
-void LumenHWRTCompactRays(
-	FRDGBuilder& GraphBuilder,
-	const FScene* Scene,
-	const FViewInfo& View,
-	int32 RayCount,
-	LumenHWRTPipeline::ECompactMode CompactMode,
-	const FRDGBufferRef& RayAllocatorBuffer,
-	const FRDGBufferRef& TraceDataPackedBuffer,
-	FRDGBufferRef& OutputRayAllocatorBuffer,
-	FRDGBufferRef& OutputTraceDataPackedBuffer,
-	ERDGPassFlags ComputePassFlags
-)
-{
-	FRDGBufferRef CompactRaysIndirectArgsBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc<FRHIDispatchIndirectParameters>(1), TEXT("Lumen.HWRT.CompactTracingIndirectArgs"));
-	{
-		FLumenHWRTCompactRaysIndirectArgsCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FLumenHWRTCompactRaysIndirectArgsCS::FParameters>();
-		{
-			PassParameters->RayAllocator = GraphBuilder.CreateSRV(RayAllocatorBuffer, PF_R32_UINT);
-			PassParameters->RWCompactRaysIndirectArgs = GraphBuilder.CreateUAV(CompactRaysIndirectArgsBuffer, PF_R32_UINT);
-		}
-
-		TShaderRef<FLumenHWRTCompactRaysIndirectArgsCS> ComputeShader = View.ShaderMap->GetShader<FLumenHWRTCompactRaysIndirectArgsCS>();
-		FComputeShaderUtils::AddPass(
-			GraphBuilder,
-			RDG_EVENT_NAME("CompactRaysIndirectArgs"),
-			ComputePassFlags,
-			ComputeShader,
-			PassParameters,
-			FIntVector(1, 1, 1));
-	}
-
-	{
-		FLumenHWRTCompactRaysCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FLumenHWRTCompactRaysCS::FParameters>();
-		{
-			// Input
-			PassParameters->RayAllocator = GraphBuilder.CreateSRV(RayAllocatorBuffer, PF_R32_UINT);
-			PassParameters->TraceDataPacked = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(TraceDataPackedBuffer));
-
-			// Output
-			PassParameters->RWRayAllocator = GraphBuilder.CreateUAV(OutputRayAllocatorBuffer, PF_R32_UINT);
-			PassParameters->RWTraceDataPacked = GraphBuilder.CreateUAV(FRDGBufferUAVDesc(OutputTraceDataPackedBuffer));
-
-			// Indirect args
-			PassParameters->CompactRaysIndirectArgs = CompactRaysIndirectArgsBuffer;
-		}
-
-		FLumenHWRTCompactRaysCS::FPermutationDomain PermutationVector;
-		PermutationVector.Set<FLumenHWRTCompactRaysCS::FCompactModeDim>(CompactMode);
-		TShaderRef<FLumenHWRTCompactRaysCS> ComputeShader = View.ShaderMap->GetShader<FLumenHWRTCompactRaysCS>(PermutationVector);
-		FComputeShaderUtils::AddPass(
-			GraphBuilder,
-			RDG_EVENT_NAME("CompactRays"),
-			ComputePassFlags,
-			ComputeShader,
-			PassParameters,
-			PassParameters->CompactRaysIndirectArgs,
-			0);
-	}
-}
-
-void LumenHWRTBucketRaysByMaterialID(
-	FRDGBuilder& GraphBuilder,
-	const FScene* Scene,
-	const FViewInfo& View,
-	int32 RayCount,
-	FRDGBufferRef& RayAllocatorBuffer,
-	FRDGBufferRef& TraceDataPackedBuffer,
-	ERDGPassFlags ComputePassFlags
-)
-{
-	FRDGBufferRef BucketRaysByMaterialIdIndirectArgsBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc<FRHIDispatchIndirectParameters>(1), TEXT("Lumen.HWRT.BucketRaysByMaterialIdIndirectArgsBuffer"));
-	{
-		FLumenHWRTBucketRaysByMaterialIdIndirectArgsCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FLumenHWRTBucketRaysByMaterialIdIndirectArgsCS::FParameters>();
-		{
-			PassParameters->RayAllocator = GraphBuilder.CreateSRV(RayAllocatorBuffer, PF_R32_UINT);
-			PassParameters->RWBucketRaysByMaterialIdIndirectArgs = GraphBuilder.CreateUAV(BucketRaysByMaterialIdIndirectArgsBuffer, PF_R32_UINT);
-		}
-
-		TShaderRef<FLumenHWRTBucketRaysByMaterialIdIndirectArgsCS> ComputeShader = View.ShaderMap->GetShader<FLumenHWRTBucketRaysByMaterialIdIndirectArgsCS>();
-		FComputeShaderUtils::AddPass(
-			GraphBuilder,
-			RDG_EVENT_NAME("BucketRaysByMaterialIdIndirectArgs"),
-			ComputePassFlags,
-			ComputeShader,
-			PassParameters,
-			FIntVector(1, 1, 1));
-	}
-
-	FRDGBufferRef BucketedTexelTraceDataPackedBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(uint32) * 2, RayCount), TEXT("Lumen.HWRT.BucketedTexelTraceDataPackedBuffer"));
-	FRDGBufferRef BucketedTraceDataPackedBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(LumenHWRTPipeline::FTraceDataPacked), RayCount), TEXT("Lumen.HWRT.BucketedTraceDataPacked"));
-	{
-		FLumenHWRTBucketRaysByMaterialIdCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FLumenHWRTBucketRaysByMaterialIdCS::FParameters>();
-		{
-			// Input
-			PassParameters->RayAllocator = GraphBuilder.CreateSRV(RayAllocatorBuffer, PF_R32_UINT);
-			PassParameters->TraceDataPacked = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(TraceDataPackedBuffer));
-			PassParameters->MaxRayAllocationCount = RayCount;
-
-			// Output
-			PassParameters->RWTraceDataPacked = GraphBuilder.CreateUAV(FRDGBufferUAVDesc(BucketedTraceDataPackedBuffer));
-
-			// Indirect args
-			PassParameters->BucketRaysByMaterialIdIndirectArgs = BucketRaysByMaterialIdIndirectArgsBuffer;
-		}
-
-		TShaderRef<FLumenHWRTBucketRaysByMaterialIdCS> ComputeShader = View.ShaderMap->GetShader<FLumenHWRTBucketRaysByMaterialIdCS>();
-		FComputeShaderUtils::AddPass(
-			GraphBuilder,
-			RDG_EVENT_NAME("BucketRaysByMaterialId"),
-			ComputePassFlags,
-			ComputeShader,
-			PassParameters,
-			PassParameters->BucketRaysByMaterialIdIndirectArgs,
-			0);
-
-		TraceDataPackedBuffer = BucketedTraceDataPackedBuffer;
-	}
 }
 
 #endif // RHI_RAYTRACING

@@ -158,33 +158,7 @@ public:
 };
 
 
-/**
- *
- * Description for this node
- *
- */
-USTRUCT()
-struct FMakeLiteralStringDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FMakeLiteralStringDataflowNode, "MakeLiteralString", "Utilities|String", "")
 
-public:
-	UPROPERTY(EditAnywhere, Category = "String");
-	FString Value = FString("");
-
-	UPROPERTY(meta = (DataflowOutput))
-	FString String;
-
-	FMakeLiteralStringDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterOutputConnection(&String);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
 
 
 /**
@@ -216,6 +190,73 @@ public:
 	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
 
 };
+
+UENUM()
+enum class EBoxLengthMeasurementMethod : uint8
+{
+	XAxis,
+	YAxis,
+	ZAxis,
+	ShortestAxis,
+	LongestAxis,
+	Diagonal
+};
+
+/**
+ *
+ * Create an array of lengths of bounding boxes (measured along an axis, diagonal, or the max/min axes) from an array of bounding boxes
+ *
+ */
+USTRUCT(meta = (DataflowGeometryCollection))
+struct FGetBoxLengthsDataflowNode : public FDataflowNode
+{
+	GENERATED_USTRUCT_BODY()
+	DATAFLOW_NODE_DEFINE_INTERNAL(FGetBoxLengthsDataflowNode, "GetBoxLengths", "Utilities|Box", "")
+
+public:
+	
+	UPROPERTY(meta = (DataflowInput))
+	TArray<FBox> Boxes;
+
+	UPROPERTY(meta = (DataflowOutput))
+	TArray<float> Lengths;
+
+	UPROPERTY(EditAnywhere, Category = Options)
+	EBoxLengthMeasurementMethod MeasurementMethod = EBoxLengthMeasurementMethod::Diagonal;
+
+	inline double BoxToMeasurement(const FBox& Box) const
+	{
+		FVector Size = Box.GetSize();
+		switch (MeasurementMethod)
+		{
+		case EBoxLengthMeasurementMethod::XAxis:
+			return Size.X;
+		case EBoxLengthMeasurementMethod::YAxis:
+			return Size.Y;
+		case EBoxLengthMeasurementMethod::ZAxis:
+			return Size.Z;
+		case EBoxLengthMeasurementMethod::ShortestAxis:
+			return Size.GetMin();
+		case EBoxLengthMeasurementMethod::LongestAxis:
+			return Size.GetMax();
+		case EBoxLengthMeasurementMethod::Diagonal:
+			return Size.Length();
+		}
+		checkNoEntry(); // switch above should handle all cases
+		return Size.X;
+	}
+
+	FGetBoxLengthsDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
+		: FDataflowNode(InParam, InGuid)
+	{
+		RegisterInputConnection(&Boxes);
+		RegisterOutputConnection(&Lengths);
+	}
+
+	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
+
+};
+
 
 
 /**
@@ -264,367 +305,6 @@ public:
 };
 
 
-/**
- *
- * Description for this node
- *
- */
-USTRUCT()
-struct FVectorToStringDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FVectorToStringDataflowNode, "VectorToString", "Utilities|String", "")
-
-public:
-	UPROPERTY(EditAnywhere, Category = "Vector", meta = (DataflowInput))
-	FVector Vector = FVector(0.0);
-
-	UPROPERTY(meta = (DataflowOutput))
-	FString String = FString("");
-
-	FVectorToStringDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterInputConnection(&Vector);
-		RegisterOutputConnection(&String);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-
-/**
- *
- * Description for this node
- *
- */
-USTRUCT()
-struct FFloatToStringDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FFloatToStringDataflowNode, "FloatToString", "Utilities|String", "")
-
-public:
-	UPROPERTY(EditAnywhere, Category = "Float", meta = (DataflowInput))
-	float Float = 0.f;
-
-	UPROPERTY(meta = (DataflowOutput))
-	FString String = FString("");
-
-	FFloatToStringDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterInputConnection(&Float);
-		RegisterOutputConnection(&String);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-
-/**
- *
- * Description for this node
- *
- */
-USTRUCT()
-struct FMakePointsDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FMakePointsDataflowNode, "MakePoints", "Generators|Point", "")
-
-public:
-	UPROPERTY(EditAnywhere, Category = "Point")
-	TArray<FVector> Point;
-
-	UPROPERTY(meta = (DataflowOutput))
-	TArray<FVector> Points;
-
-	FMakePointsDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterOutputConnection(&Points);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-
-UENUM(BlueprintType)
-enum class EMakeBoxDataTypeEnum : uint8
-{
-	Dataflow_MakeBox_DataType_MinMax UMETA(DisplayName = "Min/Max"),
-	Dataflow_MakeBox_DataType_CenterSize UMETA(DisplayName = "Center/Size"),
-	//~~~
-	//256th entry
-	Dataflow_Max                UMETA(Hidden)
-};
-
-/**
- *
- * Description for this node
- *
- */
-USTRUCT()
-struct FMakeBoxDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FMakeBoxDataflowNode, "MakeBox", "Generators|Box", "")
-	DATAFLOW_NODE_RENDER_TYPE(FName("FBox"), "Box")
-
-public:
-	UPROPERTY(EditAnywhere, Category = "Box", meta = (DisplayName = "Input Data Type"));
-	EMakeBoxDataTypeEnum DataType = EMakeBoxDataTypeEnum::Dataflow_MakeBox_DataType_MinMax;
-
-	UPROPERTY(EditAnywhere, Category = "Box", meta = (DataflowInput, EditCondition = "DataType == EMakeBoxDataTypeEnum::Dataflow_MakeBox_DataType_MinMax", EditConditionHides));
-	FVector Min = FVector(0.0);
-
-	UPROPERTY(EditAnywhere, Category = "Box", meta = (DataflowInput, EditCondition = "DataType == EMakeBoxDataTypeEnum::Dataflow_MakeBox_DataType_MinMax", EditConditionHides));
-	FVector Max = FVector(10.0);
-
-	UPROPERTY(EditAnywhere, Category = "Box", meta = (DataflowInput, EditCondition = "DataType == EMakeBoxDataTypeEnum::Dataflow_MakeBox_DataType_CenterSize", EditConditionHides));
-	FVector Center = FVector(0.0);
-
-	UPROPERTY(EditAnywhere, Category = "Box", meta = (DataflowInput, EditCondition = "DataType == EMakeBoxDataTypeEnum::Dataflow_MakeBox_DataType_CenterSize", EditConditionHides));
-	FVector Size = FVector(10.0);
-
-	UPROPERTY(meta = (DataflowOutput));
-	FBox Box = FBox(ForceInit);
-
-	FMakeBoxDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterInputConnection(&Min);
-		RegisterInputConnection(&Max);
-		RegisterInputConnection(&Center);
-		RegisterInputConnection(&Size);
-		RegisterOutputConnection(&Box);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-
-/**
- *
- * Description for this node
- *
- */
-USTRUCT()
-struct FMakeSphereDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FMakeSphereDataflowNode, "MakeSphere", "Generators|Sphere", "")
-
-public:
-	UPROPERTY(EditAnywhere, Category = "Sphere", meta = (DataflowInput));
-	FVector Center = FVector(0.f);
-
-	UPROPERTY(EditAnywhere, Category = "Sphere", meta = (DataflowInput));
-	float Radius = 10.f;
-
-	UPROPERTY(meta = (DataflowOutput));
-	FSphere Sphere = FSphere(ForceInit);
-
-	FMakeSphereDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterInputConnection(&Center);
-		RegisterInputConnection(&Radius);
-		RegisterOutputConnection(&Sphere);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-
-/**
- *
- * Description for this node
- *
- */
-USTRUCT()
-struct FMakeLiteralFloatDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FMakeLiteralFloatDataflowNode, "MakeLiteralFloat", "Math|Float", "")
-
-public:
-	UPROPERTY(EditAnywhere, Category = "Float");
-	float Value = 0.f;
-
-	UPROPERTY(meta = (DataflowOutput))
-	float Float = 0.f;
-
-	FMakeLiteralFloatDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterOutputConnection(&Float);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-
-/**
- *
- * Description for this node
- *
- */
-USTRUCT()
-struct FMakeLiteralIntDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FMakeLiteralIntDataflowNode, "MakeLiteralInt", "Math|Int", "")
-
-public:
-	UPROPERTY(EditAnywhere, Category = "Int");
-	int32 Value = 0;
-
-	UPROPERTY(meta = (DataflowOutput, DisplayName = "Int"))
-	int32 Int = 0;
-
-	FMakeLiteralIntDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterOutputConnection(&Int);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-/**
- *
- * Description for this node
- *
- */
-USTRUCT()
-struct FMakeLiteralBoolDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FMakeLiteralBoolDataflowNode, "MakeLiteralBool", "Math|Boolean", "")
-
-public:
-	UPROPERTY(EditAnywhere, Category = "Bool");
-	bool Value = false;
-
-	UPROPERTY(meta = (DataflowOutput))
-	bool Bool = false;
-
-	FMakeLiteralBoolDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterOutputConnection(&Bool);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-
-/**
- *
- * 
- *
- */
-USTRUCT()
-struct FMakeLiteralVectorDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FMakeLiteralVectorDataflowNode, "MakeLiteralVector", "Math|Vector", "")
-
-public:
-	UPROPERTY(EditAnywhere, Category = "Vector", meta = (DataflowInput));
-	float X = float(0.0);
-
-	UPROPERTY(EditAnywhere, Category = "Vector", meta = (DataflowInput));
-	float Y = float(0.0);
-
-	UPROPERTY(EditAnywhere, Category = "Vector", meta = (DataflowInput));
-	float Z = float(0.0);
-
-	UPROPERTY(meta = (DataflowOutput, DisplayName = "Vector"))
-	FVector Vector = FVector(0.0);
-
-	FMakeLiteralVectorDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterInputConnection(&X);
-		RegisterInputConnection(&Y);
-		RegisterInputConnection(&Z);
-		RegisterOutputConnection(&Vector);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-
-/**
- *
- * Converts an Int to a String
- *
- */
-USTRUCT()
-struct FIntToStringDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FIntToStringDataflowNode, "IntToString", "Utilities|String", "")
-
-public:
-	UPROPERTY(EditAnywhere, Category = "Int", meta = (DataflowInput))
-	int32 Int = 0;
-
-	UPROPERTY(meta = (DataflowOutput))
-	FString String = FString("");
-
-	FIntToStringDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterInputConnection(&Int);
-		RegisterOutputConnection(&String);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-
-/**
- *
- * Converts a Bool to a String in a form of ("true", "false")
- *
- */
-USTRUCT()
-struct FBoolToStringDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FBoolToStringDataflowNode, "BoolToString", "Utilities|String", "")
-
-public:
-	UPROPERTY(EditAnywhere, Category = "Bool", meta = (DataflowInput))
-	bool Bool = false;
-
-	UPROPERTY(meta = (DataflowOutput))
-	FString String = FString("");
-
-	FBoolToStringDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterInputConnection(&Bool);
-		RegisterOutputConnection(&String);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
 
 
 /**
@@ -665,37 +345,6 @@ public:
 
 };
 
-
-/**
- *
- * Converts an Int to a Float
- *
- */
-USTRUCT()
-struct FIntToFloatDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FIntToFloatDataflowNode, "IntToFloat", "Math|Conversions", "")
-
-public:
-	UPROPERTY(EditAnywhere, Category = "Int", meta = (DataflowInput))
-	int32 Int = 0;
-
-	UPROPERTY(meta = (DataflowOutput))
-	float Float = 0.f;
-
-	FIntToFloatDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterInputConnection(&Int);
-		RegisterOutputConnection(&Float);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-
 /**
  *
  * Concatenates two strings together to make a new string
@@ -728,220 +377,6 @@ public:
 	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
 
 };
-
-
-/**
- *
- * Generates a random float
- *
- */
-USTRUCT()
-struct FRandomFloatDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FRandomFloatDataflowNode, "RandomFloat", "Math|Random", "")
-
-public:
-	UPROPERTY(EditAnywhere, Category = "Seed")
-	bool bDeterministic = false;
-
-	UPROPERTY(EditAnywhere, Category = "Seed", meta = (DataflowInput, EditCondition = "Deterministic"))
-	float RandomSeed = 0.f;
-
-	UPROPERTY(meta = (DataflowOutput))
-	float Float = 0.f;
-
-	FRandomFloatDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RandomSeed = FMath::FRandRange(-1e5, 1e5);
-		RegisterInputConnection(&RandomSeed);
-		RegisterOutputConnection(&Float);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-/**
- *
- * Generates a random float between Min and Max
- *
- */
-USTRUCT()
-struct FRandomFloatInRangeDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FRandomFloatInRangeDataflowNode, "RandomFloatInRange", "Math|Random", "")
-
-public:
-	UPROPERTY(EditAnywhere, Category = "Seed")
-	bool bDeterministic = false;
-
-	UPROPERTY(EditAnywhere, Category = "Seed", meta = (DataflowInput, EditCondition = "Deterministic"))
-	float RandomSeed = 0.f;
-	
-	UPROPERTY(EditAnywhere, Category = "Random", meta = (DataflowInput))
-	float Min = 0.f;
-
-	UPROPERTY(EditAnywhere, Category = "Random", meta = (DataflowInput))
-	float Max = 1.f;
-
-	UPROPERTY(meta = (DataflowOutput))
-	float Float = 0.f;
-
-	FRandomFloatInRangeDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RandomSeed = FMath::FRandRange(-1e5, 1e5);
-		RegisterInputConnection(&RandomSeed);
-		RegisterInputConnection(&Min);
-		RegisterInputConnection(&Max);
-		RegisterOutputConnection(&Float);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-
-/**
- *
- * Returns a random vector with length of 1
- *
- */
-USTRUCT()
-struct FRandomUnitVectorDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FRandomUnitVectorDataflowNode, "RandomUnitVector", "Math|Random", "")
-
-public:
-	UPROPERTY(EditAnywhere, Category = "Seed")
-	bool bDeterministic = false;
-
-	UPROPERTY(EditAnywhere, Category = "Seed", meta = (DataflowInput, EditCondition = "Deterministic"))
-	float RandomSeed = 0.f;
-	
-	UPROPERTY(meta = (DataflowOutput))
-	FVector Vector = FVector(0.0);
-
-	FRandomUnitVectorDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RandomSeed = FMath::FRandRange(-1e5, 1e5);
-		RegisterInputConnection(&RandomSeed);
-		RegisterOutputConnection(&Vector);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-
-/**
- *
- * Returns a random vector with length of 1, within the specified cone, with uniform random distribution 
- *
- */
-USTRUCT()
-struct FRandomUnitVectorInConeDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FRandomUnitVectorInConeDataflowNode, "RandomUnitVectorInCone", "Math|Random", "")
-
-public:
-	UPROPERTY(EditAnywhere, Category = "Seed")
-	bool bDeterministic = false;
-
-	UPROPERTY(EditAnywhere, Category = "Seed", meta = (DataflowInput, EditCondition = "Deterministic"))
-	float RandomSeed = 0.f;
-
-	/** The base "center" direction of the cone */
-	UPROPERTY(EditAnywhere, Category = "Random", meta = (DataflowInput))
-	FVector ConeDirection = FVector(0.0, 0.0, 1.0);
-
-	/** The half-angle of the cone (from ConeDir to edge), in degrees */
-	UPROPERTY(EditAnywhere, Category = "Random", meta = (DataflowInput))
-	float ConeHalfAngle = PI / 4.f;
-
-	UPROPERTY(meta = (DataflowOutput))
-	FVector Vector = FVector(0.0);
-
-	FRandomUnitVectorInConeDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RandomSeed = FMath::FRandRange(-1e5, 1e5);
-		RegisterInputConnection(&RandomSeed);
-		RegisterInputConnection(&ConeDirection);
-		RegisterInputConnection(&ConeHalfAngle);
-		RegisterOutputConnection(&Vector);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-
-/**
- *
- * Converts radians to degrees
- *
- */
-USTRUCT()
-struct FRadiansToDegreesDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FRadiansToDegreesDataflowNode, "RadiansToDegrees", "Math|Trigonometry", "")
-
-public:
-	UPROPERTY(EditAnywhere, Category = "Radians", meta = (DataflowInput))
-	float Radians = 0.f;
-
-	UPROPERTY(meta = (DataflowOutput))
-	float Degrees = 0.f;
-
-	FRadiansToDegreesDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterInputConnection(&Radians);
-		RegisterOutputConnection(&Degrees);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-
-/**
- *
- * Converts degrees to radians
- *
- */
-USTRUCT()
-struct FDegreesToRadiansDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FDegreesToRadiansDataflowNode, "DegreesToRadians", "Math|Trigonometry", "")
-
-public:
-	UPROPERTY(EditAnywhere, Category = "Degrees", meta = (DataflowInput))
-	float Degrees = 0.f;
-
-	UPROPERTY(meta = (DataflowOutput))
-	float Radians = 0.f;
-
-	FDegreesToRadiansDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterInputConnection(&Degrees);
-		RegisterOutputConnection(&Radians);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
 
 /**
  *
@@ -1007,236 +442,6 @@ public:
 };
 
 
-UENUM(BlueprintType)
-enum class EFloatToIntFunctionEnum : uint8
-{
-	Dataflow_FloatToInt_Function_Floor UMETA(DisplayName = "Floor()"),
-	Dataflow_FloatToInt_Function_Ceil UMETA(DisplayName = "Ceil()"),
-	Dataflow_FloatToInt_Function_Round UMETA(DisplayName = "Round()"),
-	Dataflow_FloatToInt_Function_Truncate UMETA(DisplayName = "Truncate()"),
-	//~~~
-	//256th entry
-	Dataflow_Max                UMETA(Hidden)
-};
-
-/**
- *
- * Converts a Float to Int using the specified method
- *
- */
-USTRUCT()
-struct FFloatToIntDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FFloatToIntDataflowNode, "FloatToInt", "Math|Conversions", "")
-
-public:
-	/** Method to convert */
-	UPROPERTY(EditAnywhere, Category = "Float");
-	EFloatToIntFunctionEnum Function = EFloatToIntFunctionEnum::Dataflow_FloatToInt_Function_Round;
-
-	/** Float value to convert */
-	UPROPERTY(EditAnywhere, Category = "Float", meta = (DataflowInput))
-	float Float = 0.f;
-
-	/** Int output */
-	UPROPERTY(meta = (DataflowOutput))
-	int32 Int = 0;
-
-	FFloatToIntDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterInputConnection(&Float);
-		RegisterOutputConnection(&Int);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-UENUM(BlueprintType)
-enum class EFloatArrayToIntArrayFunctionEnum : uint8
-{
-	Dataflow_FloatToInt_Function_Floor UMETA(DisplayName = "Floor()"),
-	Dataflow_FloatToInt_Function_Ceil UMETA(DisplayName = "Ceil()"),
-	Dataflow_FloatToInt_Function_Round UMETA(DisplayName = "Round()"),
-	Dataflow_FloatToInt_Function_Truncate UMETA(DisplayName = "Truncate()"),
-	Dataflow_FloatToInt_NonZeroToIndex UMETA(DisplayName = "Non-zero to Index"),
-	Dataflow_FloatToInt_ZeroToIndex UMETA(DisplayName = "Zero to Index"),
-	//~~~
-	//256th entry
-	Dataflow_Max                UMETA(Hidden)
-};
-
-/**
- *
- * Converts a Float array to Int array using the specified method.
- *
- */
-USTRUCT()
-struct FFloatArrayToIntArrayDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-		DATAFLOW_NODE_DEFINE_INTERNAL(FFloatArrayToIntArrayDataflowNode, "FloatArrayToIntArray", "Math|Conversions", "")
-
-public:
-	/** Conversion method:
-	* Floor takes the floor of each input float value - 1.1 turns into 1.
-	* Ceil takes the ceil - 1.1 turns into 2.
-	* Round rounds to the nearest integer - 1.1 turns into 1.
-	* Tuncate trucates like a type cast - 1.1 turns into 1.
-	* Non-zero to Index appends the index of all non-zero values to the output array.
-	* Zero to Index appends the index of all zero values to the output array.
-	*/
-	UPROPERTY(EditAnywhere, Category = "Float");
-	EFloatArrayToIntArrayFunctionEnum Function = EFloatArrayToIntArrayFunctionEnum::Dataflow_FloatToInt_NonZeroToIndex;
-
-	/** Float array value to convert */
-	UPROPERTY(EditAnywhere, Category = "Float", meta = (DataflowInput))
-	TArray<float> FloatArray;
-
-	/** Int array output */
-	UPROPERTY(meta = (DataflowOutput))
-	TArray<int32> IntArray;
-
-	FFloatArrayToIntArrayDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterInputConnection(&FloatArray);
-		RegisterOutputConnection(&IntArray);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-UENUM(BlueprintType)
-enum class EMathConstantsEnum : uint8
-{
-	Dataflow_MathConstants_Pi UMETA(DisplayName = "Pi"),
-	Dataflow_MathConstants_HalfPi UMETA(DisplayName = "HalfPi"),
-	Dataflow_MathConstants_TwoPi UMETA(DisplayName = "TwoPi"),
-	Dataflow_MathConstants_FourPi UMETA(DisplayName = "FourPi"),
-	Dataflow_MathConstants_InvPi UMETA(DisplayName = "InvPi"),
-	Dataflow_MathConstants_InvTwoPi UMETA(DisplayName = "InvTwoPi"),
-	Dataflow_MathConstants_Sqrt2 UMETA(DisplayName = "Sqrt2"),
-	Dataflow_MathConstants_InvSqrt2 UMETA(DisplayName = "InvSqrt2"),
-	Dataflow_MathConstants_Sqrt3 UMETA(DisplayName = "Sqrt3"),
-	Dataflow_MathConstants_InvSqrt3 UMETA(DisplayName = "InvSqrt3"),
-	Dataflow_FloatToInt_Function_E UMETA(DisplayName = "e"),
-	Dataflow_FloatToInt_Function_Gamma UMETA(DisplayName = "Gamma"),
-	Dataflow_FloatToInt_Function_GoldenRatio UMETA(DisplayName = "GoldenRatio"),
-	Dataflow_FloatToInt_Function_ZeroTolerance UMETA(DisplayName = "ZeroTolerance"),
-	//~~~
-	//256th entry
-	Dataflow_Max                UMETA(Hidden)
-};
-
-/**
- *
- * Offers a selection of Math constants
- *
- */
-USTRUCT()
-struct FMathConstantsDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FMathConstantsDataflowNode, "MathConstants", "Math|Utilities", "")
-
-public:
-	/** Math constant to output */
-	UPROPERTY(EditAnywhere, Category = "Constants");
-	EMathConstantsEnum Constant = EMathConstantsEnum::Dataflow_MathConstants_Pi;
-
-	/** Selected Math constant */
-	UPROPERTY(meta = (DataflowOutput))
-	float Float = 0;
-
-	FMathConstantsDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterOutputConnection(&Float);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-
-/**
- *
- * Returns the specified element from an array
- *
- */
-USTRUCT()
-struct FGetArrayElementDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FGetArrayElementDataflowNode, "GetArrayElement", "Utilities|Array", "")
-
-public:
-	/** Element index */
-	UPROPERTY(EditAnywhere, Category = "Index");
-	int32 Index = 0;
-
-	/** Array to get the element from */
-	UPROPERTY(meta = (DataflowInput))
-	TArray<FVector> Points;
-
-	/** Specified element */
-	UPROPERTY(meta = (DataflowOutput))
-	FVector Point = FVector(0.0);
-
-	FGetArrayElementDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterInputConnection(&Points);
-		RegisterInputConnection(&Index);
-		RegisterOutputConnection(&Point);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-
-/**
- *
- * Returns the number of elements in an array
- *
- */
-USTRUCT()
-struct FGetNumArrayElementsDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FGetNumArrayElementsDataflowNode, "GetNumArrayElements", "Utilities|Array", "")
-
-public:
-	/** FVector array input */
-	UPROPERTY(meta = (DataflowInput, DisplayName = "VectorArray"))
-	TArray<FVector> Points;
-
-	/** FVector3f array input */
-	UPROPERTY(meta = (DataflowInput, DisplayName = "Vector3fArray"))
-	TArray<FVector3f> Vector3fArray;
-
-	/** Number of elements in the array */
-	UPROPERTY(meta = (DataflowOutput))
-	int32 NumElements = 0;
-
-	FGetNumArrayElementsDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterInputConnection(&Points);
-		RegisterInputConnection(&Vector3fArray);
-		RegisterOutputConnection(&NumElements);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-
 /**
  *
  * Gets BoundingBoxes of pieces from a Collection
@@ -1272,6 +477,37 @@ public:
 	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
 
 };
+
+
+/**
+ *
+ * Get the root node index
+ *
+ */
+USTRUCT(meta = (DataflowGeometryCollection))
+struct FGetRootIndexFromCollectionDataflowNode : public FDataflowNode
+{
+	GENERATED_USTRUCT_BODY()
+	DATAFLOW_NODE_DEFINE_INTERNAL(FGetRootIndexFromCollectionDataflowNode, "GetRootIndexFromCollection", "GeometryCollection|Utilities", "")
+
+public:
+	UPROPERTY(meta = (DataflowInput))
+	FManagedArrayCollection Collection;
+
+	UPROPERTY(meta = (DataflowOutput))
+	int32 RootIndex = INDEX_NONE;
+
+	FGetRootIndexFromCollectionDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
+		: FDataflowNode(InParam, InGuid)
+	{
+		RegisterInputConnection(&Collection);
+		RegisterOutputConnection(&RootIndex);
+	}
+
+	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
+
+};
+
 
 
 /**
@@ -1506,7 +742,7 @@ USTRUCT()
 struct FCompareIntDataflowNode : public FDataflowNode
 {
 	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FCompareIntDataflowNode, "CompareInt", "Math|Int", "")
+	DATAFLOW_NODE_DEFINE_INTERNAL(FCompareIntDataflowNode, "CompareInt", "Math|Compare", "")
 
 public:
 	/** Comparison operation */
@@ -1536,6 +772,49 @@ public:
 	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
 
 };
+
+
+/**
+ *
+ * Comparison between floats
+ *
+ */
+USTRUCT()
+struct FCompareFloatDataflowNode : public FDataflowNode
+{
+	GENERATED_USTRUCT_BODY()
+		DATAFLOW_NODE_DEFINE_INTERNAL(FCompareFloatDataflowNode, "CompareFloat", "Math|Compare", "")
+
+public:
+	/** Comparison operation */
+	UPROPERTY(EditAnywhere, Category = "Compare");
+	ECompareOperationEnum Operation = ECompareOperationEnum::Dataflow_Compare_Equal;
+
+	/** Float input */
+	UPROPERTY(EditAnywhere, Category = "Compare");
+	float FloatA = 0;
+
+	/** Float input */
+	UPROPERTY(EditAnywhere, Category = "Compare");
+	float FloatB = 0;
+
+	/** Boolean result of the comparison */
+	UPROPERTY(meta = (DataflowOutput));
+	bool Result = false;
+
+	FCompareFloatDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
+		: FDataflowNode(InParam, InGuid)
+	{
+		RegisterInputConnection(&FloatA);
+		RegisterInputConnection(&FloatB);
+		RegisterOutputConnection(&Result);
+	}
+
+	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
+
+};
+
+
 
 
 /**
@@ -1582,7 +861,50 @@ public:
 
 /**
  *
- * Collects grooup and attribute information from the Collection and outputs it into a formatted string
+ * Branch between two Managed Array Collections based on Boolean condition
+ *
+ */
+USTRUCT()
+struct FBranchCollectionDataflowNode : public FDataflowNode
+{
+	GENERATED_USTRUCT_BODY()
+	DATAFLOW_NODE_DEFINE_INTERNAL(FBranchCollectionDataflowNode, "BranchCollection", "Utilities|FlowControl", "")
+
+public:
+	/** Collection input for the 'true' case */
+	UPROPERTY(meta = (DataflowInput))
+	FManagedArrayCollection TrueCollection;
+
+	/** Collection input for the 'false' case */
+	UPROPERTY(meta = (DataflowInput))
+	FManagedArrayCollection FalseCollection;
+
+	/** Condition to select which Collection is chosen as ChosenCollection */
+	UPROPERTY(EditAnywhere, Category = "Branch");
+	bool bCondition = false;
+
+	/** Output Collection */
+	UPROPERTY(meta = (DataflowOutput))
+	FManagedArrayCollection ChosenCollection;
+
+	FBranchCollectionDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
+		: FDataflowNode(InParam, InGuid)
+	{
+		RegisterInputConnection(&TrueCollection);
+		RegisterInputConnection(&FalseCollection);
+		RegisterInputConnection(&bCondition);
+		RegisterOutputConnection(&ChosenCollection);
+	}
+
+	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
+
+};
+
+
+
+/**
+ *
+ * Collects group and attribute information from the Collection and outputs it into a formatted string
  *
  */
 USTRUCT(meta = (DataflowGeometryCollection))
@@ -1723,6 +1045,33 @@ enum class EProximityMethodEnum : uint8
 	Dataflow_Max                UMETA(Hidden)
 };
 
+UENUM(BlueprintType)
+enum class EProximityContactFilteringMethodEnum : uint8
+{
+	/** Rejects proximity if the bounding boxes do not overlap by more than Contact Threshold centimeters in any major axis direction (or at least half the max possible). This can filter out corner connections of box-like shapes. */
+	Dataflow_ProximityContactFilteringMethod_ProjectedBoundsOverlap UMETA(DisplayName = "Projected Bounds Overlap"),
+	/** Rejects proximity if the intersection of convex hulls (allowing for optional offset) follows a sharp, thin region which is not wider than Contact Threshold centimeters (or at least half the max possible). */
+	Dataflow_ProximityContactFilteringMethod_ConvexHullSharp UMETA(DisplayName = "Convex Hull Sharp Contact"),
+	/** Rejects proximity if the surface area of the intersection of convex hulls (allowing for optional offset) is smaller than Contact Threshold squared (or at least half the max possible). */
+	Dataflow_ProximityContactFilteringMethod_ConvexHullArea UMETA(DisplayName = "Convex Hull Area Contact"),
+	//~~~
+	//256th entry
+	Dataflow_Max                UMETA(Hidden)
+};
+
+UENUM(BlueprintType)
+enum class EConnectionContactAreaMethodEnum : uint8
+{
+	/** Do not compute contact areas */
+	Dataflow_ConnectionContactAreaMethod_None UMETA(DisplayName = "None"),
+	/** Compute approximate contact surface area via the intersection of convex hulls (allowing for optional offset) */
+	Dataflow_ProximityContactFilteringMethod_ConvexHullArea UMETA(DisplayName = "Convex Hull Area Contact"),
+	//~~~
+	//256th entry
+	Dataflow_Max                UMETA(Hidden)
+};
+
+
 /**
  *
  * Update the proximity (contact) graph for the bones in a Collection
@@ -1740,16 +1089,25 @@ public:
 	EProximityMethodEnum ProximityMethod = EProximityMethodEnum::Dataflow_ProximityMethod_Precise;
 
 	/** If hull-based proximity detection is enabled, amount to expand hulls when searching for overlapping neighbors */
-	UPROPERTY(EditAnywhere, Category = "Proximity", meta = (ClampMin = "0", EditCondition = "ProximityMethod == EProximityMethodEnum::Dataflow_ProximityMethod_ConvexHull"))
+	UPROPERTY(EditAnywhere, Category = "Proximity", meta = (ClampMin = "0", 
+		EditCondition = "ProximityMethod == EProximityMethodEnum::Dataflow_ProximityMethod_ConvexHull || FilterContactMethod == EProximityContactFilteringMethodEnum::Dataflow_ProximityContactFilteringMethod_ConvexHullSharp || FilterContactMethod == EProximityContactFilteringMethodEnum::Dataflow_ProximityContactFilteringMethod_ConvexHullArea || ContactAreaMethod = EConnectionContactAreaMethodEnum::Dataflow_ProximityContactFilteringMethod_ConvexHullArea"))
 	float DistanceThreshold = 1;
 
 	// If greater than zero, proximity will be additionally filtered by a 'contact' threshold, in cm, to exclude grazing / corner proximity
 	UPROPERTY(EditAnywhere, Category = "Proximity", meta = (ClampMin = "0"))
 	float ContactThreshold = 0;
 
+	/** How to use the Contact Threshold (if > 0) to filter out unwanted small or corner contacts from the proximity graph. If contact threshold is zero, no filtering is applied. */
+	UPROPERTY(EditAnywhere, Category = "Proximity");
+	EProximityContactFilteringMethodEnum FilterContactMethod = EProximityContactFilteringMethodEnum::Dataflow_ProximityContactFilteringMethod_ProjectedBoundsOverlap;
+
 	/** Whether to automatically transform the proximity graph into a connection graph to be used for simulation */
 	UPROPERTY(EditAnywhere, Category = "Proximity")
 	bool bUseAsConnectionGraph = false;
+
+	/** The method used to compute contact areas for simulation purposes (only when 'Use As Connection Graph' is enabled) */
+	UPROPERTY(EditAnywhere, Category = "Proximity")
+	EConnectionContactAreaMethodEnum ContactAreaMethod = EConnectionContactAreaMethodEnum::Dataflow_ConnectionContactAreaMethod_None;
 
 	/** GeometryCollection to update the proximity graph on */
 	UPROPERTY(meta = (DataflowInput, DataflowOutput, DataflowPassthrough = "Collection", DataflowIntrinsic))
@@ -2088,76 +1446,6 @@ public:
 
 /**
  *
- * Converts a TArray<bool> to a FDataflowFaceSelection
- *
- */
-USTRUCT()
-struct FBoolArrayToFaceSelectionDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FBoolArrayToFaceSelectionDataflowNode, "BoolArrayToFaceSelection", "Utilities|Array", "")
-
-public:
-	/** TArray<bool> data */
-	UPROPERTY(meta = (DataflowInput, DataflowIntrinsic));
-	TArray<bool> BoolAttributeData;
-
-	UPROPERTY(meta = (DataflowOutput, DisplayName = "FaceSelection"))
-	FDataflowFaceSelection FaceSelection;
-
-	FBoolArrayToFaceSelectionDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterInputConnection(&BoolAttributeData);
-		RegisterOutputConnection(&FaceSelection);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-
-/**
- *
- * Converts a TArray<float> to a FDataflowVertexSelection
- *
- */
-USTRUCT()
-struct FFloatArrayToVertexSelectionDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FFloatArrayToVertexSelectionDataflowNode, "FloatArrayToVertexSelection", "Utilities|Array", "")
-
-public:
-	/** TArray<floatl> array */
-	UPROPERTY(meta = (DataflowInput, DataflowIntrinsic));
-	TArray<float> FloatArray;
-
-	/** Comparison operation */
-	UPROPERTY(EditAnywhere, Category = "Compare");
-	ECompareOperationEnum Operation = ECompareOperationEnum::Dataflow_Compare_Greater;
-
-	/**  */
-	UPROPERTY(EditAnywhere, Category = "Compare")
-	float Threshold = 0.f;
-
-	UPROPERTY(meta = (DataflowOutput, DisplayName = "VertexSelection"))
-	FDataflowVertexSelection VertexSelection;
-
-	FFloatArrayToVertexSelectionDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterInputConnection(&FloatArray);
-		RegisterOutputConnection(&VertexSelection);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-
-/**
- *
  * 
  *
  */
@@ -2231,45 +1519,6 @@ public:
 
 /**
  *
- * Description for this node
- *
- */
-USTRUCT()
-struct FMakeTransformDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FMakeTransformDataflowNode, "MakeTransform", "Generators|Transform", "")
-
-public:
-
-	UPROPERTY(EditAnywhere, Category = "Transform", meta = (DataflowInput, DisplayName = "Translation"));
-	FVector InTranslation = FVector(0, 0, 0);
-
-	UPROPERTY(EditAnywhere, Category = "Transform", meta = (DataflowInput, DisplayName = "Rotation"));
-	FVector InRotation = FVector(0, 0, 0);
-
-	UPROPERTY(EditAnywhere, Category = "Transform", meta = (DataflowInput, DisplayName = "Scale"));
-	FVector InScale = FVector(1, 1, 1);
-
-	UPROPERTY(meta = (DataflowOutput, DisplayName = "Transform"));
-	FTransform OutTransform = FTransform::Identity;
-
-	FMakeTransformDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterInputConnection(&InTranslation);
-		RegisterInputConnection(&InRotation);
-		RegisterInputConnection(&InScale);
-		RegisterOutputConnection(&OutTransform);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-
-/**
- *
  *
  *
  */
@@ -2304,94 +1553,6 @@ public:
 
 };
 
-
-/**
- *
- * Normalize the selected float data in a FloatArray
- *
- */
-USTRUCT()
-struct FFloatArrayNormalizeDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FFloatArrayNormalizeDataflowNode, "FloatArrayNormalize", "Math|Float", "")
-
-public:
-	/** Input VectorArray */
-	UPROPERTY(meta = (DataflowInput, DataflowIntrinsic))
-	TArray<float> InFloatArray;
-
-	/** Selection for the operation */
-	UPROPERTY(meta = (DataflowInput))
-	FDataflowVertexSelection Selection;
-
-	/**  */
-	UPROPERTY(EditAnywhere, Category = "Field", meta = (DataflowInput))
-	float MinRange = 0.f;
-
-	/**  */
-	UPROPERTY(EditAnywhere, Category = "Field", meta = (DataflowInput))
-	float MaxRange = 1.f;
-
-	/**  */
-	UPROPERTY(meta = (DataflowOutput))
-	TArray<float> OutFloatArray;
-
-	FFloatArrayNormalizeDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterInputConnection(&InFloatArray);
-		RegisterInputConnection(&Selection);
-		RegisterInputConnection(&MinRange);
-		RegisterInputConnection(&MaxRange);
-		RegisterOutputConnection(&OutFloatArray);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
-
-
-/**
- *
- * Normalize all the selected vectors in a VectorArray
- *
- */
-USTRUCT()
-struct FVectorArrayNormalizeDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FVectorArrayNormalizeDataflowNode, "VectorArrayNormalize", "Math|Vector", "")
-
-public:
-	/** Input VectorArray */
-	UPROPERTY(meta = (DataflowInput, DataflowIntrinsic))
-	TArray<FVector> InVectorArray;
-
-	/** Selection for the operation */
-	UPROPERTY(meta = (DataflowInput))
-	FDataflowVertexSelection Selection;
-
-	/**  */
-	UPROPERTY(EditAnywhere, Category = "Field", meta = (DataflowInput))
-	float Magnitude = 1.f;
-
-	/**  */
-	UPROPERTY(meta = (DataflowOutput))
-	TArray<FVector> OutVectorArray;
-
-	FVectorArrayNormalizeDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterInputConnection(&InVectorArray);
-		RegisterInputConnection(&Selection);
-		RegisterInputConnection(&Magnitude);
-		RegisterOutputConnection(&OutVectorArray);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
-};
 
 /**
  *
@@ -2452,74 +1613,6 @@ public:
 	}
 
 	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-};
-
-USTRUCT()
-struct FUnionIntArraysDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-		DATAFLOW_NODE_DEFINE_INTERNAL(FUnionIntArraysDataflowNode, "UnionIntArrays", "Utilities", "")
-
-public:
-	UPROPERTY(meta = (DataflowInput, DisplayName = "InArray1"));
-	TArray<int32> InArray1;
-
-	UPROPERTY(meta = (DataflowInput, DisplayName = "InArray2"));
-	TArray<int32> InArray2;
-
-	UPROPERTY(meta = (DataflowOutput, DisplayName = "OutArray", DataflowPassthrough = "InArray1"));
-	TArray<int32> OutArray;
-
-	FUnionIntArraysDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterInputConnection(&InArray1);
-		RegisterInputConnection(&InArray2);
-		RegisterOutputConnection(&OutArray, &InArray1);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-};
-
-/**
- *
- *
- *
- */
-USTRUCT()
-struct FMakeQuaternionDataflowNode : public FDataflowNode
-{
-	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FMakeQuaternionDataflowNode, "MakeQuaternion", "Math|Vector", "")
-
-public:
-	UPROPERTY(EditAnywhere, Category = "Quaternion ", meta = (DataflowInput));
-	float X = float(0.0);
-
-	UPROPERTY(EditAnywhere, Category = "Quaternion", meta = (DataflowInput));
-	float Y = float(0.0);
-
-	UPROPERTY(EditAnywhere, Category = "Quaternion", meta = (DataflowInput));
-	float Z = float(0.0);
-
-	UPROPERTY(EditAnywhere, Category = "Quaternion", meta = (DataflowInput));
-	float W = float(0.0);
-
-	UPROPERTY(meta = (DataflowOutput, DisplayName = "Quaternion"))
-	FQuat Quaternion = FQuat(ForceInitToZero);
-
-	FMakeQuaternionDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
-		: FDataflowNode(InParam, InGuid)
-	{
-		RegisterInputConnection(&X);
-		RegisterInputConnection(&Y);
-		RegisterInputConnection(&Z);
-		RegisterInputConnection(&W);
-		RegisterOutputConnection(&Quaternion);
-	}
-
-	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
-
 };
 
 

@@ -9,16 +9,29 @@ namespace UnrealBuildTool.Rules
 			PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 
 			PublicDependencyModuleNames.AddRange(
-				new string[] {
-					"Core",
-					"Projects",
-					"Engine",
-					"CoreUObject",
-				});
+			new string[] {
+			"Core",
+			"Projects",
+			"Engine",
+			"CoreUObject",
+			"PlacementMode",
+		});
+
+			if (Target.WithAutomationTests)
+			{
+
+				PublicDependencyModuleNames.AddRange(
+					new string[]
+					{
+						"LevelEditor"
+					}
+				);
+			}
 
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
-				{					
+				{
+				
 				}
 			);
 
@@ -27,6 +40,7 @@ namespace UnrealBuildTool.Rules
 					"AppFramework",
 					"ApplicationCore",
 					"AssetTools",
+					"AssetRegistry",
 					"BlueprintGraph",
 					"DesktopWidgets",
 					"DetailCustomizations",
@@ -40,12 +54,14 @@ namespace UnrealBuildTool.Rules
 					"KismetWidgets",
 					"PCG",
 					"PropertyEditor",
-					"StructUtils",
-					"StructUtilsEditor",
 					"Slate",
 					"SlateCore",
 					"SourceControl",
+					"StructUtils",
+					"StructUtilsEditor",
 					"ToolMenus",
+					"TypedElementFramework",
+					"TypedElementRuntime",
 					"UnrealEd",
 				}
 			);
@@ -54,5 +70,6 @@ namespace UnrealBuildTool.Rules
 				new string[] {
 				});
 		}
+
 	}
 }

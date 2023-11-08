@@ -2,12 +2,14 @@
 
 #pragma once
 
+#include "Components/DisplayClusterLabelConfiguration.h"
 #include "StageActor/IDisplayClusterStageActor.h"
 
 #include "GameFramework/Actor.h"
 
 #include "DisplayClusterLightCardActor.generated.h"
 
+enum class EDisplayClusterLabelFlags : uint8;
 class ADisplayClusterRootActor;
 class UActorComponent;
 class UDisplayClusterLabelComponent;
@@ -39,15 +41,15 @@ struct FLightCardAlphaGradientSettings
 	bool bEnableAlphaGradient = false;
 
 	/** Starting alpha value in the gradient */
-	UPROPERTY(EditAnywhere, Interp, BlueprintReadWrite, Category = "Appearance", meta = (EditCondition = "bEnableAlphaGradient"))
+	UPROPERTY(EditAnywhere, Interp, BlueprintReadWrite, Category = "Appearance")
 	float StartingAlpha = 0;
 
 	/** Ending alpha value in the gradient */
-	UPROPERTY(EditAnywhere, Interp, BlueprintReadWrite, Category = "Appearance", meta = (EditCondition = "bEnableAlphaGradient"))
+	UPROPERTY(EditAnywhere, Interp, BlueprintReadWrite, Category = "Appearance")
 	float EndingAlpha = 1;
 
 	/** The angle (degrees) determines the gradient direction. */
-	UPROPERTY(EditAnywhere, Interp, BlueprintReadWrite, Category = "Appearance", meta = (EditCondition = "bEnableAlphaGradient"))
+	UPROPERTY(EditAnywhere, Interp, BlueprintReadWrite, Category = "Appearance")
 	float Angle = 0;
 };
 
@@ -73,6 +75,7 @@ public:
 	virtual void PostLoad() override;
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void Tick(float DeltaSeconds) override;
+	virtual void Destroyed() override;
 
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
@@ -119,7 +122,11 @@ public:
 	/** Configures this light card as a UV actor */
 	void SetIsUVActor(bool bNewUVValue);
 
+	/** Configure light card labels */
+	void ShowLightCardLabel(const FDisplayClusterLabelConfiguration& InLabelConfiguration);
+	
 	/** Show or hide the light card label  */
+	UE_DEPRECATED(5.3, "Use the ShowLightCardLabel function which accepts FDisplayClusterLabelConfiguration arguments.")
 	void ShowLightCardLabel(bool bValue, float ScaleValue, ADisplayClusterRootActor* InRootActor);
 
 	/** Set a weak root actor owner. This should be used on legacy light cards that don't have StageActorComponent->RootActor set */
@@ -295,6 +302,9 @@ protected:
 
 	/** Removes components that were added by IDisplayClusterLightCardActorExtender */
 	void CleanUpComponentsForExtenders();
+
+	/** Removes this actor from a root actor's ShowOnlyList.Actors, if possible. */
+	void RemoveFromRootActorList(ADisplayClusterRootActor* RootActor);
 
 #if WITH_EDITOR
 	/** Called when a level actor is deleted */

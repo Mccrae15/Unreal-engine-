@@ -7,13 +7,13 @@
 #include "MediaIOCoreModule.h"
 #include "ImagePixelData.h"
 #include "PostProcess/PostProcessing.h"
-#include "PostProcess/PostProcessMaterial.h"
 #include "RenderGraphUtils.h"
 #include "RHI.h"
 #include "RHICommandList.h"
 #include "RHIResources.h"
 #include "SceneView.h"
 #include "ScreenPass.h"
+#include "PostProcess/PostProcessMaterialInputs.h"
 
 class FRDGTexture;
 
@@ -24,14 +24,21 @@ class FMediaCaptureSceneViewExtension : public FSceneViewExtensionBase
 {
 public:
 	
-	FMediaCaptureSceneViewExtension(const FAutoRegister& InAutoRegister, UMediaCapture* InMediaCapture, EMediaCapturePhase InCapturePhase)
+	FMediaCaptureSceneViewExtension(const FAutoRegister& InAutoRegister, UMediaCapture* InMediaCapture, EMediaCapturePhase InCapturePhase, int32 InPriority)
 		: FSceneViewExtensionBase(InAutoRegister)
 		, WeakCapture(InMediaCapture)
 		, CapturePhase(InCapturePhase)
+		, Priority(InPriority)
 	{
+		
 	}
 
 	//~ Begin FSceneViewExtensionBase Interface
+	virtual int32 GetPriority() const override
+	{
+		return Priority;
+	}
+
 	virtual void SetupViewFamily(FSceneViewFamily& InViewFamily) override {};
 	virtual void SetupView(FSceneViewFamily& InViewFamily, FSceneView& InView) override 
 	{
@@ -81,13 +88,14 @@ public:
 	{
 		return true;
 	}
+	//~ End FSceneViewExtensionBase Interface
 
 	FScreenPassTexture PostProcessCallback_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& InOutInputs)
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(MediaCaptureExtensionCallback);
 
 		FScreenPassTexture SceneColor = InOutInputs.GetInput(EPostProcessMaterialInput::SceneColor);
-		InOutInputs.Validate();
+		check(SceneColor.IsValid());
 
 		if (FRDGTextureRef TextureRef = SceneColor.Texture)
 		{
@@ -129,6 +137,6 @@ private:
 	bool bPostProcessingEnabled = true;
 	bool bValidPhase = true;
 	FString LastErrorMessage;
-	//~ End FSceneViewExtensionBase Interface
+	int32 Priority = 0;
 };
 

@@ -2,12 +2,12 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "RHI.h"
-#include "RenderGraphBuilder.h"
-#include "RenderGraphResources.h"
-#include "RenderGraphUtils.h"
+#include "HAL/Platform.h"
+#include "RenderGraphDefinitions.h"
+#include "RendererInterface.h"
+#include "ShaderParameterMacros.h"
 
+struct FShaderCompilerEnvironment;
 
 namespace InstanceCullingImplementationDetails
 {
@@ -83,6 +83,12 @@ public:
 		SHADER_PARAMETER(uint32, NumItems)
 	END_SHADER_PARAMETER_STRUCT()
 
+	/*
+	* Publish constants to a shader implementing a kernel using the load balancer.
+	* Call from ModifyCompilationEnvironment
+	*/
+	static void SetShaderDefines(FShaderCompilerEnvironment& OutEnvironment);
+
 	struct FGPUData
 	{
 		int32 NumBatches = 0;
@@ -90,14 +96,12 @@ public:
 		FRDGBufferRef BatchBuffer = nullptr;
 		FRDGBufferRef ItemBuffer = nullptr;
 
-		void GetShaderParameters(FRDGBuilder& GraphBuilder, FShaderParameters& ShaderParameters)
-		{
-			ShaderParameters.BatchBuffer = GraphBuilder.CreateSRV(BatchBuffer);
-			ShaderParameters.ItemBuffer = GraphBuilder.CreateSRV(ItemBuffer);
-			ShaderParameters.NumBatches = NumBatches;
-			ShaderParameters.NumItems = NumItems;
-		}
+		void GetShaderParameters(FRDGBuilder& GraphBuilder, FShaderParameters& ShaderParameters);
 	};
+
+	FGPUData Upload(FRDGBuilder& GraphBuilder, TConstArrayView<FPackedBatch> Batches, TConstArrayView<FPackedItem> Items, ERDGInitialDataFlags RDGInitialDataFlags) const;
+
+	FIntVector GetWrappedCsGroupCount(TConstArrayView<FPackedBatch> Batches) const;
 };
 
 /*
@@ -109,20 +113,6 @@ class TInstanceCullingLoadBalancer : public FInstanceCullingLoadBalancerBase
 public:
 	using AllocatorType = InAllocatorType;
 	static constexpr ERDGInitialDataFlags DefaultRDGInitialDataFlags = InstanceCullingImplementationDetails::AllocatorTypeRDGInitialDataFlags<AllocatorType>::Flags;
-
-
-	/*
-	 * Publish constants to a shader implementing a kernel using the load balancer.
-	 * Call from ModifyCompilationEnvironment
-	 */
-	static void SetShaderDefines(FShaderCompilerEnvironment& OutEnvironment)
-	{
-		OutEnvironment.SetDefine(TEXT("NUM_THREADS_PER_GROUP"), ThreadGroupSize);
-		OutEnvironment.SetDefine(TEXT("NUM_INSTANCES_ITEM_BITS"), NumInstancesItemBits);
-		OutEnvironment.SetDefine(TEXT("NUM_INSTANCES_ITEM_MASK"), NumInstancesItemMask);
-		OutEnvironment.SetDefine(TEXT("PREFIX_BITS"), PrefixBits);
-		OutEnvironment.SetDefine(TEXT("PREFIX_BIT_MASK"), PrefixBitMask);
-	}
 
 	void ReserveStorage(int32 NumBatches, int32 NumItems)
 	{
@@ -177,14 +167,14 @@ public:
 	{
 		FinalizeBatches();
 
-		FGPUData Result;
-		// TODO: Several of these load balancers are being created on the stack and the memory is going out of scope before RDG execution. Always making a copy for now.
-		Result.BatchBuffer = CreateStructuredBuffer(GraphBuilder, TEXT("InstanceCullingLoadBalancer.Batches"), Batches, /* RDGInitialDataFlags */ ERDGInitialDataFlags::None);
-		Result.ItemBuffer = CreateStructuredBuffer(GraphBuilder, TEXT("InstanceCullingLoadBalancer.Items"), Items, /* RDGInitialDataFlags */ ERDGInitialDataFlags::None);
-		Result.NumBatches = Batches.Num();
-		Result.NumItems = Items.Num();
+		return FInstanceCullingLoadBalancerBase::Upload(GraphBuilder, Batches, Items, RDGInitialDataFlags);
+	}
 
-		return Result;
+	/* Const variant that assumes the batches have already been finalized */
+	FGPUData UploadFinalized(FRDGBuilder& GraphBuilder, ERDGInitialDataFlags RDGInitialDataFlags = DefaultRDGInitialDataFlags) const
+	{
+		check(CurrentBatchNumItems == 0);
+		return FInstanceCullingLoadBalancerBase::Upload(GraphBuilder, Batches, Items, RDGInitialDataFlags);
 	}
 
 	/**
@@ -205,7 +195,7 @@ public:
 	 */
 	FIntVector GetWrappedCsGroupCount() const
 	{
-		return FComputeShaderUtils::GetGroupCountWrapped(Batches.Num());
+		return FInstanceCullingLoadBalancerBase::GetWrappedCsGroupCount(Batches);
 	}
 
 	const TArray<FPackedBatch, AllocatorType> &GetBatches() const

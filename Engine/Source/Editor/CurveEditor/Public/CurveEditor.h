@@ -58,6 +58,19 @@ DECLARE_DELEGATE_OneParam(FOnSetBoolean, bool)
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnActiveToolChanged, FCurveEditorToolID)
 DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnCurveArrayChanged, FCurveModel*, bool /*displayed*/,const FCurveEditor*);
 
+/** Enums to describe supported tangent types, by default support all but smart auto*/
+enum class ECurveEditorTangentTypes : int32
+{
+	InterpolationConstant = 0x1,
+	InterpolationLinear = 0x2,
+	InterpolationCubicAuto = 0x4,
+
+	InterpolationCubicUser = 0x8,
+	InterpolationCubicBreak = 0x10,
+	InterpolationCubicWeighted = 0x20,
+	InterpolationCubicSmartAuto = 0x40,
+
+};
 
 class CURVEEDITOR_API FCurveEditor 
 	: public FEditorUndoClient
@@ -121,6 +134,8 @@ public:
 
 	void InitCurveEditor(const FCurveEditorInitParams& InInitParams);
 
+	virtual int32 GetSupportedTangentTypes();
+
 public:
 
 	void SetPanel(TSharedPtr<SCurveEditorPanel> InPanel);
@@ -132,6 +147,8 @@ public:
 	TSharedPtr<SCurveEditorView> GetView() const;
 
 	FCurveEditorScreenSpaceH GetPanelInputSpace() const;
+
+	void ResetMinMaxes();
 
 public:
 	/**
@@ -317,6 +334,7 @@ public:
 
 	// FEditorUndoClient
 	virtual void PostUndo(bool bSuccess) override;
+	virtual void PostRedo(bool bSuccess) override;
 	// ~FEditorUndoClient
 
 	const TArray<TSharedRef<ICurveEditorExtension>> GetEditorExtensions() const
@@ -511,12 +529,6 @@ public:
 	bool CanFlattenOrStraightenSelection() const;
 
 public:
-	/**
-	 * Populate the specified array with curve painting parameters
-	 *
-	 * @param OutDrawParams    An array to populate with curve painting parameters, one per visible curve
-	 */
-	void GetCurveDrawParams(TArray<FCurveDrawParams>& OutDrawParams) const;
 
 	/**
 	 * Called by SCurveEditorPanel to update the allocated geometry for this curve editor.

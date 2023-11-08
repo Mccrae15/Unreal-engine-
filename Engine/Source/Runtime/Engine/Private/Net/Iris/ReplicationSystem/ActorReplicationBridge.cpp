@@ -53,18 +53,6 @@ bool ShouldUseIrisReplication(const UObject* Object)
 
 namespace UE::Net::Private
 {
-// This is not pretty but the alternative is exposing the PollFrequencyMultiplier in a public header file.
-// It's really only useful for this particular class and in order to ensure
-// NetUpdateFrequencies are ok.
-extern IRISCORE_API float PollFrequencyMultiplier;
-extern IRISCORE_API const int MaxPollFramePeriod;
-
-static bool bIrisEnableLowNetUpdateFrequencyEnsure = true;
-static FAutoConsoleVariableRef CVarEnableLowNetUpdateFrequencyEnsure(
-		TEXT("net.Iris.EnableLowNetUpdateFrequencyEnsure"),
-		bIrisEnableLowNetUpdateFrequencyEnsure,
-		TEXT("Whether to ensure when NetUpdateFrequency is so low that the poll frame period is clamped. Default is true.")
-		);
 
 bool IsActorValidForIrisReplication(const AActor* Actor)
 {
@@ -85,26 +73,25 @@ void ActorReplicationBridgePreUpdateFunction(FNetRefHandle Handle, UObject* Inst
 	}
 }
 
-FVector ActorReplicationBridgeGetActorWorldLocation(FNetRefHandle Handle, const UObject* Instance)
+void ActorReplicationBridgeGetActorWorldObjectInfo(FNetRefHandle Handle, const UObject* Instance, FVector& OutWorldLocation, float& OutCullDistance)
 {
 	if (const AActor* Actor = Cast<AActor>(Instance))
 	{
-		return Actor->GetActorLocation();
+		OutWorldLocation = Actor->GetActorLocation();
+		OutCullDistance = Actor->NetCullDistanceSquared > 0.0f ? FMath::Sqrt(Actor->NetCullDistanceSquared) : 0.0f;
 	}
-
-	return FVector::Zero();
 }
 
-}
+} // end namespace UE::Net::Private
 
 UActorReplicationBridge::UActorReplicationBridge()
 : UObjectReplicationBridge()
 , NetDriver(nullptr)
-, MaxPollFrequency(0.0f)
 , ObjectReferencePackageMap(nullptr)
+, SpawnInfoFlags(0U)
 {
 	SetInstancePreUpdateFunction(UE::Net::Private::ActorReplicationBridgePreUpdateFunction);
-	SetInstanceGetWorldLocationFunction(UE::Net::Private::ActorReplicationBridgeGetActorWorldLocation);
+	SetInstanceGetWorldObjectInfoFunction(UE::Net::Private::ActorReplicationBridgeGetActorWorldObjectInfo);
 }
 
 void UActorReplicationBridge::Initialize(UReplicationSystem* InReplicationSystem)
@@ -153,6 +140,9 @@ void UActorReplicationBridge::Initialize(UReplicationSystem* InReplicationSystem
 
 	ObjectReferencePackageMap = NewObject<UIrisObjectReferencePackageMap>();
 	ObjectReferencePackageMap->AddToRoot();
+
+	// Get spawn info flags from cvars
+	SpawnInfoFlags = UE::Net::Private::GetActorReplicationBridgeSpawnInfoFlags();
 }
 
 UActorReplicationBridge::~UActorReplicationBridge()
@@ -254,12 +244,10 @@ UE::Net::FNetRefHandle UActorReplicationBridge::BeginReplication(AActor* Actor, 
 	CreateNetRefHandleParams.bNeedsPreUpdate = 1U;
 	CreateNetRefHandleParams.bNeedsWorldLocationUpdate = 1U;
 	CreateNetRefHandleParams.StaticPriority = (Actor->bAlwaysRelevant || Actor->bOnlyRelevantToOwner) ? Actor->NetPriority : 0.0f;
-	const uint32 UnclampedPollPeriod = GetPollFramePeriod(Actor->NetUpdateFrequency);
-	const uint32 ClampedPollPeriod = FMath::Clamp<uint32>(UnclampedPollPeriod, 1U, static_cast<uint32>(std::numeric_limits<uint8>::max()) + 1U);
-	CreateNetRefHandleParams.PollFramePeriod = (ClampedPollPeriod - 1U) & 255U;
+	CreateNetRefHandleParams.PollFrequency = Actor->NetUpdateFrequency;
+
 #if !UE_BUILD_SHIPPING
-	ensureAlwaysMsgf(!UE::Net::Private::bIrisEnableLowNetUpdateFrequencyEnsure || (ClampedPollPeriod >= UnclampedPollPeriod), TEXT("Very low NetUpdateFrequency %f for Actor %s. Suggest setting it to %f or higher."), Actor->NetUpdateFrequency, ToCStr(Actor->GetName()), GetMinSupportedNetUpdateFrequency());
-	ensureAlwaysMsgf(!(Actor->bAlwaysRelevant || Actor->bOnlyRelevantToOwner) || CreateNetRefHandleParams.StaticPriority >= 1.0f, TEXT("Very low NetPriority %.02f for always relevant or owner relevant Actor %s. Set it to 1.0f or higher."), Actor->NetPriority, ToCStr(Actor->GetName()));
+	ensureMsgf(!(Actor->bAlwaysRelevant || Actor->bOnlyRelevantToOwner) || CreateNetRefHandleParams.StaticPriority >= 1.0f, TEXT("Very low NetPriority %.02f for always relevant or owner relevant Actor %s. Set it to 1.0f or higher."), Actor->NetPriority, ToCStr(Actor->GetName()));
 #endif
 
 	FNetRefHandle ActorRefHandle = Super::BeginReplication(Actor, CreateNetRefHandleParams);
@@ -476,7 +464,7 @@ bool UActorReplicationBridge::WriteCreationHeader(UE::Net::FNetSerializationCont
 	using namespace UE::Net::Private;
 
 	FNetBitStreamWriter* Writer = Context.GetBitStreamWriter();
-	ensureAlways(IsReplicatedHandle(Handle));
+	ensure(IsReplicatedHandle(Handle));
 	const UObject* Object = GetReplicatedObject(Handle);
 	if (const AActor* Actor = Cast<AActor>(Object))
 	{
@@ -487,7 +475,7 @@ bool UActorReplicationBridge::WriteCreationHeader(UE::Net::FNetSerializationCont
 		// Serialize the data
 		// Indicate that this is an actor
 		Writer->WriteBool(true);
-		WriteActorCreationHeader(Context, Header);
+		WriteActorCreationHeader(Context, Header, SpawnInfoFlags);
 
 		return !Writer->IsOverflown();
 	}
@@ -505,7 +493,7 @@ bool UActorReplicationBridge::WriteCreationHeader(UE::Net::FNetSerializationCont
 		return !Writer->IsOverflown();
 	}
 
-	ensureAlwaysMsgf(false, TEXT("UActorReplicationBridge::WriteCreationHeader Failed to write creationHeader for NetRefHandle (Id=%u)"), Handle.GetId());
+	ensureMsgf(false, TEXT("UActorReplicationBridge::WriteCreationHeader Failed to write creationHeader for NetRefHandle (Id=%u)"), Handle.GetId());
 
 	return false;
 }
@@ -605,7 +593,7 @@ FObjectReplicationBridgeInstantiateResult UActorReplicationBridge::BeginInstanti
 					// Set Scale if it differs from Default
 					if (!Header->SpawnInfo.Scale.Equals(DefaultSpawnInfo.Scale, Epsilon))
 					{
-						Actor->SetActorScale3D(Header->SpawnInfo.Scale);
+						Actor->SetActorRelativeScale3D(Header->SpawnInfo.Scale);
 					}
 
 					UE_LOG_ACTORREPLICATIONBRIDGE(Verbose, TEXT("OnBeginInstantiateFromRemote Spawned Actor %s"), *Actor->GetPathName());
@@ -805,7 +793,7 @@ void UActorReplicationBridge::DestroyInstanceFromRemote(UObject* Instance, ERepl
 		}
 
 		AActor* Owner = Cast<AActor>(Instance->GetOuter());
-		if (ensureAlwaysMsgf(IsValid(Owner) && !Owner->IsUnreachable(), TEXT("UActorReplicationBridge::DestroyInstanceFromRemote Destroyed subobject after owner %s"), *Instance->GetPathName()))
+		if (ensureMsgf(IsValid(Owner) && !Owner->IsUnreachable(), TEXT("UActorReplicationBridge::DestroyInstanceFromRemote Destroyed subobject after owner %s"), *Instance->GetPathName()))
 		{
 			Owner->OnSubobjectDestroyFromReplication(Instance);
 		}
@@ -886,10 +874,17 @@ void UActorReplicationBridge::SetNetDriver(UNetDriver* const InNetDriver)
 {
 	Super::SetNetDriver(InNetDriver);
 
+	if (NetDriver)
+	{
+		NetDriver->OnNetServerMaxTickRateChanged.RemoveAll(this);
+	}
+
 	NetDriver = InNetDriver;
 	if (InNetDriver != nullptr)
 	{
-		MaxPollFrequency = static_cast<float>(FPlatformMath::Max(InNetDriver->NetServerMaxTickRate, 0));
+		SetMaxTickRate(static_cast<float>(FPlatformMath::Max(InNetDriver->GetNetServerMaxTickRate(), 0)));
+
+		InNetDriver->OnNetServerMaxTickRateChanged.AddUObject(this, &UActorReplicationBridge::OnMaxTickRateChanged);
 
 		const FName RequiredChannelName = UObjectReplicationBridgeConfig::GetConfig()->GetRequiredNetDriverChannelClassName();
 		
@@ -903,6 +898,13 @@ void UActorReplicationBridge::SetNetDriver(UNetDriver* const InNetDriver)
 			checkf(bRequiredChannelIsConfigured, TEXT("ObjectReplication needs the netdriver channel %s to work. Add this channel to the netdriver channel definitions config"), *RequiredChannelName.ToString());
 		}
 	}
+}
+
+void UActorReplicationBridge::OnMaxTickRateChanged(UNetDriver* InNetDriver, int32 NewMaxTickRate, int32 OldMaxTickRate)
+{
+	SetMaxTickRate(static_cast<float>(FPlatformMath::Max(InNetDriver->GetNetServerMaxTickRate(), 0)));
+
+	ReinitPollFrequency();
 }
 
 void UActorReplicationBridge::GetActorCreationHeader(const AActor* Actor, UE::Net::Private::FActorCreationHeader& Header) const
@@ -951,6 +953,19 @@ void UActorReplicationBridge::GetActorCreationHeader(const AActor* Actor, UE::Ne
 			Header.SpawnInfo.Location = FRepMovement::RebaseOntoZeroOrigin(Actor->GetActorLocation(), Actor);
 			Header.SpawnInfo.Rotation = Actor->GetActorRotation();
 			Header.SpawnInfo.Scale = Actor->GetActorScale();
+			FVector Scale = Actor->GetActorScale();
+
+			if (USceneComponent* AttachParent = RootComponent->GetAttachParent())
+			{
+				// If this actor is attached, when the scale is serialized on the client, the attach parent property won't be set yet.
+				// USceneComponent::SetWorldScale3D (which got called by AActor::SetActorScale3D, which we used to do but no longer).
+				// would perform this transformation so that what is sent is relative to the parent. If we don't do this, we will
+				// apply the world scale on the client, which will then get applied a second time when the attach parent property is received.
+				FTransform ParentToWorld = AttachParent->GetSocketTransform(RootComponent->GetAttachSocketName());
+				Scale = Scale * ParentToWorld.GetSafeScaleReciprocal(ParentToWorld.GetScale3D());
+			}
+
+			Header.SpawnInfo.Scale = Scale;
 			Header.SpawnInfo.Velocity = Actor->GetVelocity();
 		}
 		else
@@ -1052,17 +1067,17 @@ UActorReplicationBridge* UActorReplicationBridge::Create(UNetDriver* NetDriver)
 	return Bridge;
 }
 
-uint32 UActorReplicationBridge::GetPollFramePeriod(float PollFrequency) const
+float UActorReplicationBridge::GetPollFrequencyOfRootObject(const UObject* ReplicatedObject) const
 {
-	const uint32 FramesBetweenUpdatesForObject = static_cast<uint32>(MaxPollFrequency/FPlatformMath::Max(0.001f, UE::Net::Private::PollFrequencyMultiplier*PollFrequency));
-	return FramesBetweenUpdatesForObject;
+	const AActor* ReplicatedActor = CastChecked<AActor>(ReplicatedObject);
+	float PollFrequency = ReplicatedActor->NetUpdateFrequency;
+	GetClassPollFrequency(ReplicatedActor->GetClass(), PollFrequency);
+	return PollFrequency;
 }
 
-float UActorReplicationBridge::GetMinSupportedNetUpdateFrequency() const
-{
-	return MaxPollFrequency/(UE::Net::Private::MaxPollFramePeriod*UE::Net::Private::PollFrequencyMultiplier);
-}
-#else
+#else //!UE_WITH_IRIS
+
 UActorReplicationBridge::UActorReplicationBridge() = default;
 UActorReplicationBridge::~UActorReplicationBridge() = default;
+
 #endif

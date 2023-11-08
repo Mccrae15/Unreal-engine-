@@ -3,14 +3,21 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "GenericPlatform/HttpRequestImpl.h"
+#include "IHttpThreadedRequest.h"
 #include "Interfaces/IHttpResponse.h"
 #include "PlatformHttp.h"
+
+
+/**
+ * Delegate invoked when in progress NSUrlSessionTask completes. It is invoked in an out of our control thread
+ *
+ */
+DECLARE_DELEGATE(FTaskCompleteDelegate);
 
 /**
  * Apple implementation of an Http request
  */
-class FAppleHttpNSUrlSessionRequest : public FHttpRequestImpl
+class FAppleHttpNSUrlSessionRequest : public IHttpThreadedRequest
 {
 public:
 	// implementation friends
@@ -23,7 +30,7 @@ public:
 	virtual FString GetHeader(const FString& HeaderName) const override;
 	virtual TArray<FString> GetAllHeaders() const override;	
 	virtual FString GetContentType() const override;
-	virtual int32 GetContentLength() const override;
+	virtual uint64 GetContentLength() const override;
 	virtual const TArray<uint8>& GetContent() const override;
 	//~ End IHttpBase Interface
 
@@ -36,6 +43,7 @@ public:
 	virtual void SetContentAsString(const FString& ContentString) override;
     virtual bool SetContentAsStreamedFile(const FString& Filename) override;
 	virtual bool SetContentFromStream(TSharedRef<FArchive, ESPMode::ThreadSafe> Stream) override;
+	virtual bool SetResponseBodyReceiveStream(TSharedRef<FArchive> Stream) override;
 	virtual void SetHeader(const FString& HeaderName, const FString& HeaderValue) override;
 	virtual void AppendToHeader(const FString& HeaderName, const FString& AdditionalHeaderValue) override;
 	virtual void SetTimeout(float InTimeoutSecs) override;
@@ -43,11 +51,17 @@ public:
 	virtual TOptional<float> GetTimeout() const override;
 	virtual bool ProcessRequest() override;
 	virtual void CancelRequest() override;
-	virtual EHttpRequestStatus::Type GetStatus() const override;
 	virtual const FHttpResponsePtr GetResponse() const override;
 	virtual void Tick(float DeltaSeconds) override;
 	virtual float GetElapsedTime() const override;
 	//~ End IHttpRequest Interface
+
+	//~ Begin IHttpRequestThreaded Interface
+	virtual bool StartThreadedRequest() override;
+	virtual void FinishRequest() override;
+	virtual bool IsThreadedRequestComplete() override;
+	virtual void TickThreadedRequest(float DeltaSeconds) override;
+	//~ End IHttpRequestThreaded Interface
 
 	/**
 	 * Constructor
@@ -72,16 +86,9 @@ private:
 	bool StartRequest();
 
 	/**
-	 * Process state for a finished request that no longer needs to be ticked
-	 * Calls the completion delegate
-	 */
-	void FinishedRequest();
-
-	/**
 	 * Close session/request handles and unregister callbacks
 	 */
 	void CleanupRequest();
-
 
 private:
 	/** This is the NSMutableURLRequest, all our Apple functionality will deal with this. */
@@ -97,7 +104,7 @@ private:
 	bool bIsPayloadFile;
 
 	/** The request payload length in bytes. This must be tracked separately for a file stream */
-	int32 ContentBytesLength;
+	uint64 ContentBytesLength;
 
 	/** The response object which we will use to pair with this request */
 	TSharedPtr<class FAppleHttpNSUrlSessionResponse,ESPMode::ThreadSafe> Response;
@@ -105,14 +112,17 @@ private:
 	/** Array used to retrieve back content set on the ObjC request when calling GetContent*/
 	mutable TArray<uint8> StorageForGetContent;
 
-	/** Current status of request being processed */
-	EHttpRequestStatus::Type CompletionStatus;
-
-	/** Start of the request */
-	double StartRequestTime;
+	/** The stream to receive response body */
+	TSharedPtr<FArchive> ResponseBodyReceiveStream;
 
 	/** Time taken to complete/cancel the request. */
 	float ElapsedTime;
+
+	/** Last reported bytes written */
+	int32 LastReportedBytesWritten;
+
+	/** Last reported bytesread */
+	int32 LastReportedBytesRead;
 };
 
 @class FAppleHttpNSUrlSessionResponseDelegate;
@@ -141,7 +151,7 @@ public:
 	virtual FString GetHeader(const FString& HeaderName) const override;
 	virtual TArray<FString> GetAllHeaders() const override;	
 	virtual FString GetContentType() const override;
-	virtual int32 GetContentLength() const override;
+	virtual uint64 GetContentLength() const override;
 	virtual const TArray<uint8>& GetContent() const override;
 	//~ End IHttpBase Interface
 
@@ -173,12 +183,23 @@ public:
 	/**
 	 * Get the number of bytes received so far
 	 */
-	const int32 GetNumBytesReceived() const;
+	const uint64 GetNumBytesReceived() const;
 
 	/**
 	* Get the number of bytes sent so far
 	*/
-	const int32 GetNumBytesWritten() const;
+	const uint64 GetNumBytesWritten() const;
+
+	/**
+	 * Cleans internal shared objects between request and response
+	 */
+	void CleanSharedObjects();
+
+	/**
+	 * Sets delegate invoked after processing URLSession:task:didCompleteWithError:
+	 * Should be set right before task is started 
+	*/
+	void SetInternalTaskCompleteDelegate(FTaskCompleteDelegate&& Delegate);
 
 	/**
 	 * Constructor

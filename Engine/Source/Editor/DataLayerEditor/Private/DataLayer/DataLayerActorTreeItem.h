@@ -9,6 +9,9 @@
 #include "Engine/World.h"
 #include "WorldPartition/DataLayer/DataLayerInstance.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
+#include "Misc/ArchiveMD5.h"
+#include "Misc/SecureHash.h"
+#include "UObject/ObjectKey.h"
 
 //////////////////////////////////////////////////////////////////////////
 // FDataLayerActorTreeItemData
@@ -45,9 +48,15 @@ public:
 	const AActor* GetActor() const { return Actor.Get(); }
 	AActor* GetActor() { return Actor.Get(); }
 
-	static uint32 ComputeTreeItemID(const AActor* InActor, const UDataLayerInstance* InDataLayerInstance)
+	static FSceneOutlinerTreeItemID ComputeTreeItemID(AActor* InActor, const UDataLayerInstance* InDataLayerInstance)
 	{
-		return HashCombine(GetTypeHash(FObjectKey(InActor)), GetTypeHash(FObjectKey(InDataLayerInstance)));
+		FObjectKey ActorKey(InActor);
+		FObjectKey DataLayerInstanceKey(InDataLayerInstance);
+
+		FArchiveMD5 Ar;
+		Ar << ActorKey << DataLayerInstanceKey;
+
+		return FSceneOutlinerTreeItemID(Ar.GetGuidFromHash());
 	}
 
 	bool Filter(FFilterPredicate Pred) const
@@ -86,7 +95,7 @@ private:
 		{
 			ULevel* Level = Actor.IsValid() ? Actor->GetLevel() : nullptr;
 			ULevelInstanceSubsystem* LevelInstanceSubsystem = UWorld::GetSubsystem<ULevelInstanceSubsystem>(OwningWorld);
-			if (LevelInstanceSubsystem && Level)
+			if (LevelInstanceSubsystem && Level && (Level != OwningWorld->GetCurrentLevel()))
 			{
 				DisplayString = LevelInstanceSubsystem->PrefixWithParentLevelInstanceActorLabels(DisplayString, Level);
 			}
@@ -94,5 +103,5 @@ private:
 	}
 
 	TWeakObjectPtr<UDataLayerInstance> DataLayerInstance;
-	const uint32 IDDataLayerActor;
+	const FSceneOutlinerTreeItemID IDDataLayerActor;
 };

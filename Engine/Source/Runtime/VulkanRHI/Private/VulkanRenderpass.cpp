@@ -145,7 +145,7 @@ void FVulkanRenderPassManager::BeginRenderPass(FVulkanCommandListContext& Contex
 
 		FRHITexture* ColorTexture = ColorEntry.RenderTarget;
 		CA_ASSUME(ColorTexture);
-		FVulkanTexture& ColorSurface = *FVulkanTexture::Cast(ColorTexture);
+		FVulkanTexture& ColorSurface = *ResourceCast(ColorTexture);
 		const bool bPassPerformsResolve = ColorSurface.GetNumSamples() > 1 && ColorEntry.ResolveTarget;
 
 		if (GetLoadAction(ColorEntry.Action) == ERenderTargetLoadAction::ELoad)
@@ -206,23 +206,42 @@ void FVulkanRenderPassManager::BeginRenderPass(FVulkanCommandListContext& Contex
 
 	Barrier.Execute(CmdBuffer);
 
-	VkRect2D RenderArea = Framebuffer->GetRenderArea();
-	if (!RPInfo.RenderArea.IsEmpty())
+	// BEGIN META SECTION - Multi-View Per View Viewports / Render Areas
+	const uint32 numRenderAreas = (RPInfo.ResolveRect.IsValid() && RPInfo.ResolveRect2.IsValid()) ? 2 : 1;
+	VkRect2D* RenderAreas = new VkRect2D[numRenderAreas];
+
+	if (RPInfo.ResolveRect.IsValid())
 	{
 		// If an optional renderArea is specified in RPInfo, use it instead of the framebuffer size
-		RenderArea.offset.x = RPInfo.RenderArea.Min.X;
-		RenderArea.offset.y = RPInfo.RenderArea.Min.Y;
-		RenderArea.extent.width = RPInfo.RenderArea.Size().X;
-		RenderArea.extent.height = RPInfo.RenderArea.Size().Y;
+		RenderAreas[0].offset.x = RPInfo.ResolveRect.X1;
+		RenderAreas[0].offset.y = RPInfo.ResolveRect.Y1;
+		RenderAreas[0].extent.width = RPInfo.ResolveRect.X2 - RPInfo.ResolveRect.X1;
+		RenderAreas[0].extent.height = RPInfo.ResolveRect.Y2 - RPInfo.ResolveRect.Y1;
+
+		// A second renderArea can be use for Mult-View Per View Render Areas
+		if (RPInfo.ResolveRect2.IsValid())
+		{
+			RenderAreas[1].offset.x = RPInfo.ResolveRect2.X1;
+			RenderAreas[1].offset.y = RPInfo.ResolveRect2.Y1;
+			RenderAreas[1].extent.width = RPInfo.ResolveRect2.X2 - RPInfo.ResolveRect2.X1;
+			RenderAreas[1].extent.height = RPInfo.ResolveRect2.Y2 - RPInfo.ResolveRect2.Y1;
+		}
+	}
+	else
+	{
+		RenderAreas[0] = Framebuffer->GetRenderArea();
 	}
 
-	CmdBuffer->BeginRenderPass(RenderPass->GetLayout(), RenderPass, Framebuffer, ClearValues, RenderArea);
+	CmdBuffer->BeginRenderPass(RenderPass->GetLayout(), RenderPass, Framebuffer, ClearValues, RenderAreas, numRenderAreas);
 
 	{
 		const VkExtent3D& Extents = RTLayout.GetExtent3D();
 		Context.GetPendingGfxState()->SetViewport(0, 0, 0, Extents.width, Extents.height, 1);
 	}
+
+	delete[] RenderAreas;
 }
+// END META SECTION - Multi-View Per View Viewports / Render Areas
 
 void FVulkanRenderPassManager::EndRenderPass(FVulkanCmdBuffer* CmdBuffer)
 {

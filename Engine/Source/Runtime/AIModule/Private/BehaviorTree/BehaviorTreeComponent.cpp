@@ -418,7 +418,7 @@ void UBehaviorTreeComponent::StopTree(EBTStopMode::Type StopMode)
 	bWaitingForLatentAborts = false;
 }
 
-void UBehaviorTreeComponent::RestartTree()
+void UBehaviorTreeComponent::RestartTree(EBTRestartMode RestartMode /*= EBTRestartMode::SkipReAddedNodes*/)
 {
 	UE_VLOG(GetOwner(), LogBehaviorTree, Log, TEXT("%s"), ANSI_TO_TCHAR(__FUNCTION__));
 	
@@ -440,8 +440,25 @@ void UBehaviorTreeComponent::RestartTree()
 	}
 	else if (InstanceStack.Num())
 	{
-		FBehaviorTreeInstance& TopInstance = InstanceStack[0];
-		RequestExecution(TopInstance.RootNode, 0, TopInstance.RootNode, -1, EBTNodeResult::Aborted);
+		switch(RestartMode)
+		{
+			case EBTRestartMode::ForceReevaluateRootNode:
+			{
+				FBehaviorTreeInstance& TopInstance = InstanceStack[0];
+				RequestExecution(TopInstance.RootNode, 0, TopInstance.RootNode, -1, EBTNodeResult::Aborted);
+				break;
+			}
+			case EBTRestartMode::CompleteRestart:
+			{
+				TreeStartInfo.Asset = GetRootTree();
+				TreeStartInfo.ExecuteMode = bLoopExecution ? EBTExecutionMode::Looped : EBTExecutionMode::SingleRun;
+				TreeStartInfo.bPendingInitialize = true;
+				ProcessPendingInitialize();
+
+				StopTree(EBTStopMode::Safe);
+				break;
+			}
+		}
 	}
 }
 
@@ -690,6 +707,16 @@ void UBehaviorTreeComponent::DeactivateBranch(const UBTDecorator& RequestedBy)
 	else if (ensureMsgf(RequestedBy.GetParentNode() && RequestedBy.GetParentNode()->Children.IsValidIndex(RequestedBy.GetChildIndex()), 
 				TEXT("The decorator %s does not have a parent or is not a valid child."), *UBehaviorTreeTypes::DescribeNodeHelper(&RequestedBy)))
 	{
+		const bool bAbortPending = IsAbortPending();
+		if (bAbortPending)
+		{
+			// Branch that caused an abort and still waiting on a latent abort to complete might see its decorators changed again causing a call to DeactivateBranch.
+			// In this particular case we explicitly request the parent composite node to reevaluate without specifying a child index (i.e. RequestedByChildIndex = -1) so it will reevaluate all children.
+			UE_VLOG(GetOwner(), LogBehaviorTree, Verbose, TEXT("%s, Branch deactivation resulted in a reevaluation of the parent composite node because the abort was pending"), *UBehaviorTreeTypes::DescribeNodeHelper(&RequestedBy));
+			const int32 InstanceIdx = FindInstanceContainingNode(&RequestedBy);
+			RequestExecution(RequestedBy.GetParentNode(), InstanceIdx, &RequestedBy, -1, EBTNodeResult::Aborted);
+		}
+
 		UE_VLOG(GetOwner(), LogBehaviorTree, Verbose, TEXT("%s, Branch deactivation resulted in aux nodes unregistration"), *UBehaviorTreeTypes::DescribeNodeHelper(&RequestedBy));
 		if (const UBTCompositeNode* BranchRoot = RequestedBy.GetParentNode()->Children[RequestedBy.GetChildIndex()].ChildComposite)
 		{

@@ -5,6 +5,7 @@
 #include "PoseSearch/PoseSearchDerivedDataKey.h"
 #include "Animation/AnimBoneCompressionSettings.h"
 #include "Animation/AnimCurveCompressionSettings.h"
+#include "Animation/AnimData/IAnimationDataModel.h"
 #include "Animation/MirrorDataTable.h"
 #include "Animation/Skeleton.h"
 #include "Engine/SkeletalMesh.h"
@@ -21,6 +22,7 @@ namespace UE::PoseSearch
 
 FKeyBuilder::FKeyBuilder()
 {
+	bAnyAssetNotReady = false;
 	ArIgnoreOuterRef = true;
 
 	// Set FDerivedDataKeyBuilder to be a saving archive instead of a reference collector.
@@ -34,11 +36,12 @@ FKeyBuilder::FKeyBuilder(const UObject* Object, bool bUseDataVer)
 : FKeyBuilder()
 {
 	check(Object);
+	bAnyAssetNotReady = false;
 
 	if (bUseDataVer)
 	{
 		// used to invalidate the key without having to change POSESEARCHDB_DERIVEDDATA_VER all the times
-		int32 POSESEARCHDB_DERIVEDDATA_VER_SMALL = 17;
+		int32 POSESEARCHDB_DERIVEDDATA_VER_SMALL = 157;
 		FGuid VersionGuid = FDevSystemGuids::GetSystemGuid(FDevSystemGuids::Get().POSESEARCHDB_DERIVEDDATA_VER);
 
 		*this << VersionGuid;
@@ -65,21 +68,25 @@ bool FKeyBuilder::ShouldSkipProperty(const FProperty* InProperty) const
 
 	if (Super::ShouldSkipProperty(InProperty))
 	{
-		return true;
-	}
-
-	if (!InProperty->HasAllPropertyFlags(CPF_Edit)) // bIsEditAnywhereProperty
-	{
+		#if UE_POSE_SEARCH_DERIVED_DATA_LOGGING
+		UE_LOG(LogPoseSearch, Log, TEXT("%s x %s (ShouldSkipProperty)"), *GetIndentation(), *InProperty->GetFullName());
+		#endif
 		return true;
 	}
 
 	if (InProperty->HasAllPropertyFlags(CPF_Transient))
 	{
+		#if UE_POSE_SEARCH_DERIVED_DATA_LOGGING
+		UE_LOG(LogPoseSearch, Log, TEXT("%s x %s (Transient)"), *GetIndentation(), *InProperty->GetFullName());
+		#endif
 		return true;
 	}
 
 	if (InProperty->HasMetaData(ExcludeFromHashName))
 	{
+		#if UE_POSE_SEARCH_DERIVED_DATA_LOGGING
+		UE_LOG(LogPoseSearch, Log, TEXT("%s x %s (ExcludeFromHash)"), *GetIndentation(), *InProperty->GetFullName());
+		#endif
 		return true;
 	}
 		
@@ -120,51 +127,67 @@ FArchive& FKeyBuilder::operator<<(class UObject*& Object)
 {
 	if (Object)
 	{
-		#if UE_POSE_SEARCH_DERIVED_DATA_LOGGING
-		++Indentation;
-		#endif
-
-		bool bAlreadyProcessed = false;
-		ObjectsAlreadySerialized.Add(Object, &bAlreadyProcessed);
-
-		// If we haven't already serialized this object
-		if (bAlreadyProcessed)
+		if (Object->HasAnyFlags(RF_NeedPostLoad))
 		{
-			#if UE_POSE_SEARCH_DERIVED_DATA_LOGGING
-			UE_LOG(LogPoseSearch, Log, TEXT("%sAlreadyProcessed '%s' (%s)"), *GetIndentation(), *Object->GetName(), *Object->GetClass()->GetName());
-			#endif
-		}
-		// for specific types we only add their names to the hash
-		else if (AddNameOnly(Object))
-		{
-			#if UE_POSE_SEARCH_DERIVED_DATA_LOGGING
-			UE_LOG(LogPoseSearch, Log, TEXT("%sAddingNameOnly '%s' (%s)"), *GetIndentation(), *Object->GetName(), *Object->GetClass()->GetName());
-			#endif
-
-			FString ObjectName = GetFullNameSafe(Object);
-			*this << ObjectName;
+			bAnyAssetNotReady = true;
 		}
 		else
 		{
-			// Serialize it
-			ObjectBeingSerialized = Object;
-
 			#if UE_POSE_SEARCH_DERIVED_DATA_LOGGING
-			UE_LOG(LogPoseSearch, Log, TEXT("%sBegin '%s' (%s)"), *GetIndentation(), *Object->GetName(), *Object->GetClass()->GetName());
+			++Indentation;
 			#endif
 
-			const_cast<UObject*>(Object)->Serialize(*this);
+			if (Object->HasAnyFlags(RF_Transient))
+			{
+				#if UE_POSE_SEARCH_DERIVED_DATA_LOGGING
+				UE_LOG(LogPoseSearch, Log, TEXT("%sTransient '%s' (%s)"), *GetIndentation(), *Object->GetName(), *Object->GetClass()->GetName());
+				#endif
+			}
+			else
+			{
+				bool bAlreadyProcessed = false;
+				ObjectsAlreadySerialized.Add(Object, &bAlreadyProcessed);
+
+				// If we haven't already serialized this object
+				if (bAlreadyProcessed)
+				{
+					#if UE_POSE_SEARCH_DERIVED_DATA_LOGGING
+					UE_LOG(LogPoseSearch, Log, TEXT("%sAlreadyProcessed '%s' (%s)"), *GetIndentation(), *Object->GetName(), *Object->GetClass()->GetName());
+					#endif
+				}
+				// for specific types we only add their names to the hash
+				else if (AddNameOnly(Object))
+				{
+					#if UE_POSE_SEARCH_DERIVED_DATA_LOGGING
+					UE_LOG(LogPoseSearch, Log, TEXT("%sAddingNameOnly '%s' (%s)"), *GetIndentation(), *Object->GetName(), *Object->GetClass()->GetName());
+					#endif
+
+					FString ObjectName = GetFullNameSafe(Object);
+					*this << ObjectName;
+				}
+				else
+				{
+					const UObject* PreviousObjectBeingSerialized = ObjectBeingSerialized;
+					ObjectBeingSerialized = Object;
+
+					#if UE_POSE_SEARCH_DERIVED_DATA_LOGGING
+					UE_LOG(LogPoseSearch, Log, TEXT("%sBegin '%s' (%s)"), *GetIndentation(), *Object->GetName(), *Object->GetClass()->GetName());
+					#endif
+
+					const_cast<UObject*>(Object)->Serialize(*this);
+
+					#if UE_POSE_SEARCH_DERIVED_DATA_LOGGING
+					UE_LOG(LogPoseSearch, Log, TEXT("%sEnd '%s' (%s)"), *GetIndentation(), *Object->GetName(), *Object->GetClass()->GetName());
+					#endif
+
+					ObjectBeingSerialized = PreviousObjectBeingSerialized;
+				}
+			}
 
 			#if UE_POSE_SEARCH_DERIVED_DATA_LOGGING
-			UE_LOG(LogPoseSearch, Log, TEXT("%sEnd '%s' (%s)"), *GetIndentation(), *Object->GetName(), *Object->GetClass()->GetName());
+			--Indentation;
 			#endif
-
-			ObjectBeingSerialized = nullptr;
 		}
-			
-		#if UE_POSE_SEARCH_DERIVED_DATA_LOGGING
-		--Indentation;
-		#endif
 	}
 
 	return *this;
@@ -175,8 +198,14 @@ FString FKeyBuilder::GetArchiveName() const
 	return TEXT("FDerivedDataKeyBuilder");
 }
 	
+bool FKeyBuilder::AnyAssetNotReady() const
+{
+	return bAnyAssetNotReady;
+}
+
 FIoHash FKeyBuilder::Finalize() const
 {
+	check(!bAnyAssetNotReady); // otherwise key can be non deterministic
 	// Stores a BLAKE3-160 hash, taken from the first 20 bytes of a BLAKE3-256 hash
 	return FIoHash(Hasher.Finalize());
 }
@@ -189,21 +218,17 @@ const TSet<const UObject*>& FKeyBuilder::GetDependencies() const
 bool FKeyBuilder::AddNameOnly(class UObject* Object) const
 {
 	return
+		Cast<IAnimationDataModel>(Object) ||
+		Cast<UActorComponent>(Object) ||
 		Cast<UAnimBoneCompressionSettings>(Object) ||
 		Cast<UAnimCurveCompressionSettings>(Object) ||
-		Cast<UFbxAnimSequenceImportData>(Object) ||
+		Cast<UAssetImportData>(Object) ||
+		Cast<UFunction>(Object) ||
 		Cast<UMirrorDataTable>(Object) ||
-		Cast<USkeleton>(Object) ||
-		Cast<USkeletalMeshComponent>(Object) ||
+		Cast<USkeletalMesh>(Object) ||
 		Cast<USkeletalMeshSocket>(Object) ||
-		Cast<USkinnedMeshComponent>(Object) ||
-		Cast<UMeshComponent>(Object) ||
-		Cast<UPrimitiveComponent>(Object) ||
-		Cast<USceneComponent>(Object) ||
-		Cast<UActorComponent>(Object) ||
-		Cast<UStreamableRenderAsset>(Object) ||
-		Cast<USkinnedAsset>(Object) ||
-		Cast<USkeletalMesh>(Object);
+		Cast<USkeleton>(Object) ||
+		Cast<UStreamableRenderAsset>(Object);
 }
 
 #if UE_POSE_SEARCH_DERIVED_DATA_LOGGING

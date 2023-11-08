@@ -63,7 +63,35 @@ struct CUSTOMIZABLEOBJECT_API FCustomizableObjectCustomVersion
 		DeformSkeletonOptionsAdded,
 
 		GroupProjectorImagePin,
+
+		GroupProjectorImagePinRemoved,
+
+		StateTextureCompressionStrategyEnum,
+
+		AddedTableNodesTextureMode,
 		
+		ConvertAnimationSlotToFName,
+
+		RemovedParameterDecorations,
+
+		AutomaticNodeSkeletalMesh,
+
+		AutomaticNodeSkeletalMeshPinDataOuter,
+
+		AutomaticNodeSkeletalMeshPinDataUProperty,
+
+		EditMaterialMaskPinDesync, // MTBL-979
+		
+		IgnoreDisabledSections,
+
+		SkeletalMeshNodeDefaultPinWithoutPinData,
+		
+		AddedTableMaterialSwitch,
+
+		FixPinsNamesImageToTexture2,
+
+		MeshReshapeVertexColorUsageSelection,
+
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,
 		LatestVersion = VersionPlusOne - 1

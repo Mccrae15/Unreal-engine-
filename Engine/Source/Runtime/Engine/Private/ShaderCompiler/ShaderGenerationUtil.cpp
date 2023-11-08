@@ -41,12 +41,12 @@ bool NeedsVelocityDepth(EShaderPlatform TargetPlatform)
 
 #if WITH_EDITOR
 
-static int FetchCompileInt(const FShaderCompilerEnvironment& OutEnvironment, const char* SrcName)
+int FShaderCompileUtilities::FetchCompileInt(const FShaderCompilerEnvironment& OutEnvironment, const char* SrcName)
 {
 	int32 Ret = 0;
-	if (OutEnvironment.GetDefinitions().Contains(SrcName))
+	if (OutEnvironment.Definitions.GetDefinitionMap().Contains(SrcName))
 	{
-		const FString* Str = OutEnvironment.GetDefinitions().Find(SrcName);
+		const FString* Str = OutEnvironment.Definitions.GetDefinitionMap().Find(SrcName);
 
 		Ret = atoi((const char*)Str->GetCharArray().GetData());
 	}
@@ -57,15 +57,10 @@ static int FetchCompileInt(const FShaderCompilerEnvironment& OutEnvironment, con
 
 #define SET_COMPILE_BOOL_IF_TRUE(X) { if (DerivedDefines.X) { OutEnvironment.SetDefine(TEXT(#X),TEXT("1")); } }
 
-#define FETCH_COMPILE_BOOL(X) { if (OutEnvironment.GetDefinitions().Contains(#X)) SrcDefines.X = FetchCompileInt(OutEnvironment,#X) != 0 ? 1 : 0; }
-#define FETCH_COMPILE_INT(X) { if (OutEnvironment.GetDefinitions().Contains(#X)) SrcDefines.X = FetchCompileInt(OutEnvironment,#X); }
+#define FETCH_COMPILE_BOOL(X) { if (Environment.Definitions.GetDefinitionMap().Contains(#X)) SrcDefines.X = FetchCompileInt(Environment,#X) != 0 ? 1 : 0; }
+#define FETCH_COMPILE_INT(X) { if (Environment.Definitions.GetDefinitionMap().Contains(#X)) SrcDefines.X = FetchCompileInt(Environment,#X); }
 
-#define MERGE_COMPILE_BOOL(X) (Lhs.X = (Lhs.X | Rhs.X))
-
-// these definitions can't be merged, so one of them should be cleared at zero.
-#define MERGE_COMPILE_INT(X) { check(Lhs.X == 0 || Rhs.X == 0); Lhs.X = Lhs.X > Rhs.X ? Lhs.X : Rhs.X; }
-
-void FShaderCompileUtilities::ApplyFetchEnvironment(FShaderGlobalDefines& SrcDefines, FShaderCompilerEnvironment& OutEnvironment, const EShaderPlatform Platform)
+void FShaderCompileUtilities::ApplyFetchEnvironment(FShaderGlobalDefines& SrcDefines, const FShaderCompilerEnvironment& Environment, const EShaderPlatform Platform)
 {
 	FETCH_COMPILE_BOOL(GBUFFER_HAS_VELOCITY);
 	FETCH_COMPILE_BOOL(GBUFFER_HAS_TANGENT);
@@ -98,7 +93,7 @@ void FShaderCompileUtilities::ApplyFetchEnvironment(FShaderGlobalDefines& SrcDef
 	}
 }
 
-void FShaderCompileUtilities::ApplyFetchEnvironment(FShaderLightmapPropertyDefines& SrcDefines, FShaderCompilerEnvironment& OutEnvironment)
+void FShaderCompileUtilities::ApplyFetchEnvironment(FShaderLightmapPropertyDefines& SrcDefines, const FShaderCompilerEnvironment& Environment)
 {
 	FETCH_COMPILE_BOOL(LQ_TEXTURE_LIGHTMAP);
 	FETCH_COMPILE_BOOL(HQ_TEXTURE_LIGHTMAP);
@@ -125,7 +120,7 @@ void FShaderCompileUtilities::ApplyFetchEnvironment(FShaderLightmapPropertyDefin
 
 }
 
-void FShaderCompileUtilities::ApplyFetchEnvironment(FShaderMaterialPropertyDefines& SrcDefines, FShaderCompilerEnvironment& OutEnvironment)
+void FShaderCompileUtilities::ApplyFetchEnvironment(FShaderMaterialPropertyDefines& SrcDefines, const FShaderCompilerEnvironment& Environment)
 {
 	FETCH_COMPILE_BOOL(MATERIAL_ENABLE_TRANSLUCENCY_FOGGING);
 	FETCH_COMPILE_BOOL(MATERIALBLENDING_ANY_TRANSLUCENT);
@@ -241,7 +236,7 @@ void FShaderCompileUtilities::ApplyFetchEnvironment(FShaderMaterialPropertyDefin
 	FETCH_COMPILE_INT(GBUFFER_LAYOUT);
 }
 
-void FShaderCompileUtilities::ApplyFetchEnvironment(FShaderCompilerDefines& SrcDefines, FShaderCompilerEnvironment& OutEnvironment)
+void FShaderCompileUtilities::ApplyFetchEnvironment(FShaderCompilerDefines& SrcDefines, const FShaderCompilerEnvironment& Environment)
 {
 	FETCH_COMPILE_BOOL(COMPILER_GLSL_ES3_1);
 	FETCH_COMPILE_BOOL(ES3_1_PROFILE);
@@ -654,6 +649,8 @@ static int32 GetBufferNumBits(EGBufferType Format, int32 Channel)
 	case GBT_Float_16_16_16_16:
 		Ret = 16;
 		break;
+	case GBT_Float_32:
+		Ret = 32;
 	default:
 		check(0);
 		break;
@@ -691,6 +688,9 @@ static int32 GetTargetNumChannels(EGBufferType Type)
 		break;
 	case GBT_Float_16_16_16_16:
 		Ret = 4;
+		break;
+	case GBT_Float_32:
+		Ret = 1;
 		break;
 	default:
 		check(0);
@@ -2095,9 +2095,12 @@ void FShaderCompileUtilities::WriteGBufferInfoAutogen(EShaderPlatform TargetPlat
 void FShaderCompileUtilities::GenerateBrdfHeaders(EShaderPlatform TargetPlatform)
 {
 	ERHIFeatureLevel::Type FeatureLevel = GetMaxSupportedFeatureLevel(TargetPlatform);
-
-	// Writes the GBuffer format .ush file if it's out of date.
-	WriteGBufferInfoAutogen(TargetPlatform, FeatureLevel);
+	// auto-generated GBuffer layout is not used by mobile rendering
+	if (FeatureLevel > ERHIFeatureLevel::ES3_1)
+	{
+		// Writes the GBuffer format .ush file if it's out of date.
+		WriteGBufferInfoAutogen(TargetPlatform, FeatureLevel);
+	}
 }
 
 void FShaderCompileUtilities::GenerateBrdfHeaders(const FName& ShaderFormat)

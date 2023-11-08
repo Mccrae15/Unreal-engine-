@@ -8,15 +8,7 @@ namespace UnrealBuildTool.Rules
         {
 			PrivateIncludePaths.AddRange(
                 new string[] {
-					System.IO.Path.Combine(GetModuleDirectory("AssetTools"), "Private"),
 					System.IO.Path.Combine(GetModuleDirectory("ControlRig"), "Private"),
-					System.IO.Path.Combine(GetModuleDirectory("Kismet"), "Private"),
-					System.IO.Path.Combine(GetModuleDirectory("MessageLog"), "Private"), //compatibility for FBX importer
-					System.IO.Path.Combine(GetModuleDirectory("Persona"), "Private"),
-					System.IO.Path.Combine(GetModuleDirectory("PropertyEditor"), "Private"),
-					System.IO.Path.Combine(GetModuleDirectory("SceneOutliner"), "Private"),
-					System.IO.Path.Combine(GetModuleDirectory("Slate"), "Private"),
-					System.IO.Path.Combine(GetModuleDirectory("UnrealEd"), "Private"),
 				}
 			);
 
@@ -25,12 +17,14 @@ namespace UnrealBuildTool.Rules
 				{
 					"MainFrame",
 					"AppFramework",
+                    "RigVMEditor",
 				}
 			);
 
             PrivateDependencyModuleNames.AddRange(
                 new string[]
                 {
+					"AssetDefinition",
                     "Core",
                     "CoreUObject",
 					"CurveEditor",
@@ -79,6 +73,7 @@ namespace UnrealBuildTool.Rules
 					"ToolMenus",
                     "RigVM",
                     "RigVMDeveloper",
+                    "RigVMEditor",
 					"AnimationEditor",
 					"MessageLog",
                     "SequencerScripting",

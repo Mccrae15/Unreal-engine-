@@ -23,15 +23,15 @@ public:
 	FStreamableTextureResource(UTexture* InOwner, const FTexturePlatformData* InPlatformData, const FStreamableRenderResourceState& InPostInitState, bool bAllowPartiallyResidentMips);
 
 	// Dynamic cast methods.
-	ENGINE_API virtual FStreamableTextureResource* GetStreamableTextureResource() { return this; }
+	virtual FStreamableTextureResource* GetStreamableTextureResource() { return this; }
 	// Dynamic cast methods (const).
-	ENGINE_API virtual const FStreamableTextureResource* GetStreamableTextureResource() const { return this; }
+	virtual const FStreamableTextureResource* GetStreamableTextureResource() const { return this; }
 
 	virtual uint32 GetSizeX() const final override { return SizeX; }
 	virtual uint32 GetSizeY() const final override { return SizeY; }
 	// Depth for 3D texture or ArraySize for texture 2d arrays
 	virtual uint32 GetSizeZ() const final override { return SizeZ; }
-	virtual void InitRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 	virtual void ReleaseRHI() final override;
 
 	// This is only coherent sync on the rendering thread. To get the gamethread coherent value, use UStreamableRenderResource.CacheStreamableResourceState
@@ -114,6 +114,9 @@ protected:
 	ETextureCreateFlags  CreationFlags = TexCreate_None;
 	/** Whether this texture should be updated using the virtual address mapping for each mip. */
 	bool bUsePartiallyResidentMips = false;
+
+	/** Max anisotropy. if 0, will use r.MaxAnisotropy */
+	int8 MaxAniso = 0;
 
 #if STATS
 private:

@@ -8,21 +8,12 @@
 #include "Templates/AndOrNot.h"
 #include "Templates/LosesQualifiersFromTo.h"
 #include "Containers/Map.h"
+#include "UObject/WeakObjectPtrTemplatesFwd.h"
 
 #include <type_traits>
 
-/**
- * FWeakObjectPtr is a weak pointer to a UObject. 
- * It can return nullptr later if the object is garbage collected.
- * It has no impact on if the object is garbage collected or not.
- * It can't be directly used across a network.
- *
- * Most often it is used when you explicitly do NOT want to prevent something from being garbage collected.
- */
-struct FWeakObjectPtr;
 
-template<class T=UObject, class TWeakObjectPtrBase=FWeakObjectPtr>
-struct TWeakObjectPtr;
+struct FWeakObjectPtr;
 
 /**
  * TWeakObjectPtr is the templated version of the generic FWeakObjectPtr
@@ -34,7 +25,7 @@ struct TWeakObjectPtr : private TWeakObjectPtrBase
 
 	// Although templated, these parameters are not intended to be anything other than the default,
 	// and are only templates for module organization reasons.
-	static_assert(std::is_same_v<TWeakObjectPtrBase, FWeakObjectPtr>, "TWeakObjectPtrBase should not be overridden");
+	static_assert(std::is_same_v<TWeakObjectPtrBase*, FWeakObjectPtr*>, "TWeakObjectPtrBase should not be overridden");
 
 public:
 	using ElementType = T;
@@ -58,7 +49,7 @@ public:
 	 */
 	template <
 		typename U,
-		decltype(ImplicitConv<T*>(std::declval<U>()))* = nullptr
+		typename = decltype(ImplicitConv<T*>(std::declval<U>()))
 	>
 	FORCEINLINE TWeakObjectPtr(U Object) :
 		TWeakObjectPtrBase((const UObject*)Object)
@@ -320,10 +311,6 @@ FORCEINLINE TWeakObjectPtr<T> MakeWeakObjectPtr(T* Ptr)
 	return TWeakObjectPtr<T>(Ptr);
 }
 
-template<class T> struct TIsPODType<TWeakObjectPtr<T> > { enum { Value = true }; };
-template<class T> struct TIsZeroConstructType<TWeakObjectPtr<T> > { enum { Value = true }; };
-template<class T> struct TIsWeakPointerType<TWeakObjectPtr<T> > { enum { Value = true }; };
-
 
 /**
  * SetKeyFuncs for TWeakObjectPtrs which allow the key to become stale without invalidating the set.
@@ -408,6 +395,12 @@ public:
 template<class T> struct TIsPODType<TAutoWeakObjectPtr<T> > { enum { Value = true }; };
 template<class T> struct TIsZeroConstructType<TAutoWeakObjectPtr<T> > { enum { Value = true }; };
 template<class T> struct TIsWeakPointerType<TAutoWeakObjectPtr<T> > { enum { Value = true }; };
+
+template <typename T>
+struct TCallTraits<TWeakObjectPtr<T>> : public TCallTraitsBase<TWeakObjectPtr<T>>
+{
+	using ConstPointerType = TWeakObjectPtr<const T>;
+};
 
 /** Utility function to fill in a TArray<ClassName*> from a TArray<TWeakObjectPtr<ClassName>> */
 template<typename DestArrayType, typename SourceArrayType>

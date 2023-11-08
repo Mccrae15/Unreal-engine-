@@ -1,8 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "PhysicsEngine/PhysicsObjectBlueprintLibrary.h"
 #include "PhysicsEngine/PhysicsObjectExternalInterface.h"
+#include "Chaos/PhysicsObjectCollisionInterface.h"
+#include "Chaos/PhysicsObjectInterface.h"
+#include "Chaos/PhysicsObjectInternalInterface.h"
+
+#include "PhysicsProxy/ClusterUnionPhysicsProxy.h"
+#include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 
 #include "Components/PrimitiveComponent.h"
+#include "PhysicsEngine/ClusterUnionComponent.h"
 
 FClosestPhysicsObjectResult UPhysicsObjectBlueprintLibrary::GetClosestPhysicsObjectFromWorldLocation(UPrimitiveComponent* Component, const FVector& WorldLocation)
 {
@@ -16,8 +23,8 @@ FClosestPhysicsObjectResult UPhysicsObjectBlueprintLibrary::GetClosestPhysicsObj
 	PhysicsObjects = PhysicsObjects.FilterByPredicate(
 		// Maybe allow users to customize the predicate?
 		[&Interface](Chaos::FPhysicsObject* Object) {
-			// We need to filter so we only get the leaf bodies. Mainly in consideration of the geometry collection.
-			return !Interface->HasChildren(Object);
+			// Filter for enabled particles. Other systems should be responsible for attaching the wheel to child particles if the geometry collection breaks (for example).
+			return !Interface->AreAllDisabled({ &Object, 1 });
 		}
 	);
 	return Interface->GetClosestPhysicsBodyFromLocation(PhysicsObjects, WorldLocation);
@@ -45,4 +52,20 @@ FTransform UPhysicsObjectBlueprintLibrary::GetPhysicsObjectWorldTransform(UPrimi
 	}
 	
 	return FTransform::Identity;
+}
+
+void UPhysicsObjectBlueprintLibrary::ApplyRadialImpulse(UPrimitiveComponent* Component, FVector Origin, float Radius, float Strength, enum ERadialImpulseFalloff Falloff, bool bApplyStrain)
+{
+	if (Component == nullptr)
+	{
+		return;
+	}
+
+	if (Chaos::FPhysicsObject* PhysicsObject = Component->GetPhysicsObjectByName(NAME_None))
+	{
+		TArray<Chaos::FPhysicsObjectHandle>  PhysicsObjects;
+		PhysicsObjects.Add(PhysicsObject);
+		FLockedWritePhysicsObjectExternalInterface Interface = FPhysicsObjectExternalInterface::LockWrite(PhysicsObjects);
+		return Interface->AddRadialImpulse(PhysicsObjects, Origin, Radius, Strength, Falloff, bApplyStrain, true);
+	}
 }

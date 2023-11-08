@@ -16,8 +16,8 @@ namespace EpicGames.Horde.Logs
 	/// <summary>
 	/// Read-only buffer for log text, with indexed line offsets.
 	/// </summary>
-	[TreeNode("{7020B6CA-0F72-4174-B6AA-06AA60A3EF30}", 1)]
-	public class LogChunkNode : TreeNode
+	[NodeType("{7020B6CA-0F72-4174-B6AA-06AA60A3EF30}", 1)]
+	public class LogChunkNode : Node
 	{
 		/// <summary>
 		/// Provides access to the lines for this chunk through a list interface
@@ -113,19 +113,16 @@ namespace EpicGames.Horde.Logs
 		/// Deserializing constructor
 		/// </summary>
 		/// <param name="reader">Reader to pull data from</param>
-		public LogChunkNode(ITreeNodeReader reader)
+		public LogChunkNode(NodeReader reader)
 			: this(reader.ReadVariableLengthBytes())
 		{
 		}
 
 		/// <inheritdoc/>
-		public override void Serialize(ITreeNodeWriter writer)
+		public override void Serialize(NodeWriter writer)
 		{
 			writer.WriteVariableLengthBytes(Data.Span);
 		}
-
-		/// <inheritdoc/>
-		public override IEnumerable<TreeNodeRef> EnumerateRefs() => Enumerable.Empty<TreeNodeRef>();
 
 		/// <summary>
 		/// Accessor for an individual line
@@ -133,6 +130,13 @@ namespace EpicGames.Horde.Logs
 		/// <param name="idx">Index of the line to retrieve</param>
 		/// <returns>Line at the given index</returns>
 		public Utf8String GetLine(int idx) => new Utf8String(Data.Slice(LineOffsets[idx], LineOffsets[idx + 1] - LineOffsets[idx] - 1));
+
+		/// <summary>
+		/// Accessor for an individual line, including the trailing newline character
+		/// </summary>
+		/// <param name="idx">Index of the line to retrieve</param>
+		/// <returns>Line at the given index</returns>
+		public Utf8String GetLineWithNewline(int idx) => new Utf8String(Data.Slice(LineOffsets[idx], LineOffsets[idx + 1] - LineOffsets[idx]));
 
 		/// <summary>
 		/// Find the line index for a particular offset
@@ -170,21 +174,11 @@ namespace EpicGames.Horde.Logs
 		/// <param name="lineOffsets">Offsets of each line within the text</param>
 		public static void UpdateLineOffsets(ReadOnlySpan<byte> data, int start, List<int> lineOffsets)
 		{
-			if (start < data.Length)
+			for (int idx = start; idx < data.Length; idx++)
 			{
-				// Make sure the data ends with a newline
-				if (data[data.Length - 1] != '\n')
+				if (data[idx] == '\n')
 				{
-					throw new InvalidDataException("Chunk data must end with a newline");
-				}
-
-				// Calculate the new number of newlines
-				for (int idx = start; idx < data.Length; idx++)
-				{
-					if (data[idx] == '\n')
-					{
-						lineOffsets.Add(idx + 1);
-					}
+					lineOffsets.Add(idx + 1);
 				}
 			}
 		}
@@ -193,7 +187,7 @@ namespace EpicGames.Horde.Logs
 	/// <summary>
 	/// Reference to a chunk of text, with information about its placement in the larger log file
 	/// </summary>
-	public class LogChunkRef : TreeNodeRef<LogChunkNode>
+	public class LogChunkRef : NodeRef<LogChunkNode>
 	{
 		/// <summary>
 		/// First line within the file
@@ -219,22 +213,24 @@ namespace EpicGames.Horde.Logs
 		/// Constructor
 		/// </summary>
 		/// <param name="lineIndex">Index of the first line within this block</param>
+		/// <param name="lineCount">Number of lines in the chunk</param>
 		/// <param name="offset">Offset within the log file</param>
+		/// <param name="length">Length of the chunk</param>
 		/// <param name="target">Referenced log text</param>
-		public LogChunkRef(int lineIndex, long offset, LogChunkNode target)
+		public LogChunkRef(int lineIndex, int lineCount, long offset, int length, NodeRef<LogChunkNode> target)
 			: base(target)
 		{
 			LineIndex = lineIndex;
-			LineCount = target.LineCount;
+			LineCount = lineCount;
 			Offset = offset;
-			Length = target.Length;
+			Length = length;
 		}
 
 		/// <summary>
 		/// Deserializing constructor
 		/// </summary>
 		/// <param name="reader"></param>
-		public LogChunkRef(ITreeNodeReader reader)
+		public LogChunkRef(NodeReader reader)
 			: base(reader)
 		{
 			LineIndex = (int)reader.ReadUnsignedVarInt();
@@ -244,7 +240,7 @@ namespace EpicGames.Horde.Logs
 		}
 
 		/// <inheritdoc/>
-		public override void Serialize(ITreeNodeWriter writer)
+		public override void Serialize(NodeWriter writer)
 		{
 			base.Serialize(writer);
 
@@ -689,7 +685,7 @@ namespace EpicGames.Horde.Logs
 			{
 				for (; lineIdx < chunk.LineCount; lineIdx++)
 				{
-					yield return chunk.GetLine(lineIdx);
+					yield return chunk.GetLineWithNewline(lineIdx);
 				}
 				lineIdx -= chunk.LineCount;
 			}

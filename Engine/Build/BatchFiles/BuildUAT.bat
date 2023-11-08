@@ -8,6 +8,9 @@ rem ## if you copy it to a different location and run it.
 
 setlocal
 
+rem ## Make sure we use the Windows "find" utility and not a Unix-like tool found in PATH
+set FIND=%SYSTEMROOT%\System32\find.exe
+
 rem ## First, make sure the batch file exists in the folder we expect it to.  This is necessary in order to
 rem ## verify that our relative path to the /Engine/Source directory is correct
 if not exist "%~dp0..\..\Source" goto Error_BatchFileInWrongLocation
@@ -20,55 +23,61 @@ rem Check to see if the files in the AutomationTool, EpicGames.Build, EpicGames.
 rem find ".cs" files to only lines that match those names - excludes lines that will change for uninteresting reasons, like free space
 md ..\Intermediate\Build >nul 2>nul
 
-dir /s^
- Programs\Shared\EpicGames.Build\*.cs^
- Programs\Shared\EpicGames.Build\*.csproj^
- Programs\Shared\EpicGames.Core\*.cs^
- Programs\Shared\EpicGames.Core\*.csproj^
- Programs\Shared\EpicGames.IoHash\*.cs^
- Programs\Shared\EpicGames.IoHash\*.csproj^
- Programs\Shared\EpicGames.MsBuild\*.cs^
- Programs\Shared\EpicGames.MsBuild\*.csproj^
- Programs\Shared\EpicGames.Serialization\*.cs^
- Programs\Shared\EpicGames.Serialization\*.csproj^
- Programs\Shared\EpicGames.UHT\*.cs^
- Programs\Shared\EpicGames.UHT\*.csproj^
- Programs\UnrealBuildTool\*.cs^
- Programs\UnrealBuildTool\*.csproj^
- | find ".cs" >..\Intermediate\Build\AutomationToolFiles.txt
+dir /s ^
+ Programs\Shared\EpicGames.Box\*.cs ^
+ Programs\Shared\EpicGames.Box\*.csproj ^
+ Programs\Shared\EpicGames.Build\*.cs ^
+ Programs\Shared\EpicGames.Build\*.csproj ^
+ Programs\Shared\EpicGames.Core\*.cs ^
+ Programs\Shared\EpicGames.Core\*.csproj ^
+ Programs\Shared\EpicGames.Horde\*.cs ^
+ Programs\Shared\EpicGames.Horde\*.csproj ^
+ Programs\Shared\EpicGames.IoHash\*.cs ^
+ Programs\Shared\EpicGames.IoHash\*.csproj ^
+ Programs\Shared\EpicGames.MsBuild\*.cs ^
+ Programs\Shared\EpicGames.MsBuild\*.csproj ^
+ Programs\Shared\EpicGames.OIDC\*.cs ^
+ Programs\Shared\EpicGames.OIDC\*.csproj ^
+ Programs\Shared\EpicGames.Serialization\*.cs ^
+ Programs\Shared\EpicGames.Serialization\*.csproj ^
+ Programs\Shared\EpicGames.UHT\*.cs ^
+ Programs\Shared\EpicGames.UHT\*.csproj ^
+ Programs\UnrealBuildTool\*.cs ^
+ Programs\UnrealBuildTool\*.csproj ^
+ | %FIND% ".cs" > ..\Intermediate\Build\AutomationToolFiles.txt
 
 if not exist ..\Platforms goto NoPlatforms
 for /d %%D in (..\Platforms\*) do (
 	if exist %%D\Source\Programs\UnrealBuildTool (
-		dir /s^
-		 %%D\Source\Programs\AutomationTool\*.cs^
-		 %%D\Source\Programs\AutomationTool\*.csproj^
-		 %%D\Source\Programs\UnrealBuildTool\*.cs^
-		 %%D\Source\Programs\UnrealBuildTool\*.csproj^
-		 | find ".cs" >> ..\Intermediate\Build\AutomationToolFiles.txt
-	)
+		dir /s ^
+		 %%D\Source\Programs\AutomationTool\*.cs ^
+		 %%D\Source\Programs\AutomationTool\*.csproj ^
+		 %%D\Source\Programs\UnrealBuildTool\*.cs ^
+		 %%D\Source\Programs\UnrealBuildTool\*.csproj ^
+		 | %FIND% ".cs" >> ..\Intermediate\Build\AutomationToolFiles.txt
+	) 2>nul
 )
 :NoPlatforms
 
 if not exist ..\Restricted goto NoRestricted
 for /d %%D in (..\Restricted\*) do (
 	if exist %%D\Source\Programs\UnrealBuildTool (
-		dir /s^
-		 %%D\Source\Programs\AutomationTool\*.cs^
-		 %%D\Source\Programs\AutomationTool\*.csproj^
-		 %%D\Source\Programs\UnrealBuildTool\*.cs^
-		 %%D\Source\Programs\UnrealBuildTool\*.csproj^
-		 | find ".cs" >> ..\Intermediate\Build\AutomationToolFiles.txt
-	)
+		dir /s ^
+		 %%D\Source\Programs\AutomationTool\*.cs ^
+		 %%D\Source\Programs\AutomationTool\*.csproj ^
+		 %%D\Source\Programs\UnrealBuildTool\*.cs ^
+		 %%D\Source\Programs\UnrealBuildTool\*.csproj ^
+		 | %FIND% ".cs" >> ..\Intermediate\Build\AutomationToolFiles.txt
+	) 2>nul
 )
 :NoRestricted
 
 rem note: no /s
 dir ^
- Programs\Shared\MetaData.cs^
- Programs\AutomationTool\*.cs^
- Programs\AutomationTool\*.csproj^
- | find ".cs" >>..\Intermediate\Build\AutomationToolFiles.txt
+ Programs\Shared\MetaData.cs ^
+ Programs\AutomationTool\*.cs ^
+ Programs\AutomationTool\*.csproj ^
+ | %FIND% ".cs" >>..\Intermediate\Build\AutomationToolFiles.txt
 
 set MSBUILD_LOGLEVEL=%1
 if not defined %MSBUILD_LOGLEVEL set MSBUILD_LOGLEVEL=quiet
@@ -81,7 +90,7 @@ if /I "%ARGUMENT%" == "FORCE" goto Build_AutomationTool
 if not exist ..\Binaries\DotNET\AutomationTool\AutomationTool.dll goto Build_AutomationTool
 set RUNUAT_EXITCODE=0
 rem per https://ss64.com/nt/fc.html using redirection syntax rather than errorlevel, based on observed inconsistent results from this function
-fc ..\Intermediate\Build\AutomationToolFiles.txt ..\Intermediate\Build\AutomationToolPrevFiles.txt >nul && goto Exit
+fc ..\Intermediate\Build\AutomationToolFiles.txt ..\Intermediate\Build\AutomationToolPrevFiles.txt >nul 2>&1 && goto Exit
 
 :Build_AutomationTool
 rem ## Verify that dotnet is present

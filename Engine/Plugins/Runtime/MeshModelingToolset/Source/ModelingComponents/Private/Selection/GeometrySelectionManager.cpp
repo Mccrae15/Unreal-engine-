@@ -3,18 +3,13 @@
 #include "Selection/GeometrySelectionManager.h"
 #include "Engine/Engine.h"
 #include "Selection/DynamicMeshSelector.h"
+#include "Selection/ToolSelectionUtil.h"
 #include "Selection/SelectionEditInteractiveCommand.h"
 #include "InteractiveToolsContext.h"
 #include "InteractiveToolManager.h"
 #include "ToolContextInterfaces.h"
 #include "ToolDataVisualizer.h"
 #include "Selections/GeometrySelectionUtil.h"
-
-// for debug drawing
-#include "SceneManagement.h"
-#include "SceneView.h"
-#include "DynamicMeshBuilder.h"
-#include "ToolSetupUtil.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(GeometrySelectionManager)
 
@@ -52,7 +47,7 @@ void UGeometrySelectionManager::Shutdown()
 
 	for (TSharedPtr<FGeometrySelectionTarget> Target : ActiveTargetReferences)
 	{
-		SleepOrShutdownTarget(Target.Get(), false);
+		SleepOrShutdownTarget(Target, false);
 	}
 
 	ResetTargetCache();
@@ -240,7 +235,14 @@ bool UGeometrySelectionManager::HasSelection() const
 }
 
 
-
+void UGeometrySelectionManager::GetActiveSelectionInfo(EGeometryTopologyType& TopologyTypeOut, EGeometryElementType& ElementTypeOut, int& NumTargetsOut, bool& bIsEmpty) const
+{
+	FGeometrySelectionHitQueryConfig Config = GetCurrentSelectionQueryConfig();
+	TopologyTypeOut = Config.TopologyType;
+	ElementTypeOut = Config.ElementType;
+	NumTargetsOut = ActiveTargetReferences.Num();
+	bIsEmpty = (NumTargetsOut == 0) || ActiveTargetReferences[0]->Selection.IsEmpty();
+}
 
 
 class FGeometrySelectionManager_ActiveTargetsChange : public FToolCommandChange
@@ -270,6 +272,31 @@ public:
 
 
 
+class FGeometrySelectionManager_TargetLockStateChange : public FToolCommandChange
+{
+public:
+	FGeometryIdentifier TargetIdentifier;
+	bool bToState;
+
+	virtual void Apply(UObject* Object) override
+	{
+		CastChecked<UGeometrySelectionManager>(Object)->SetTargetLockStateOnUndoRedo(TargetIdentifier, bToState);
+	}
+
+	virtual void Revert(UObject* Object) override
+	{
+		CastChecked<UGeometrySelectionManager>(Object)->SetTargetLockStateOnUndoRedo(TargetIdentifier, !bToState);
+	}
+
+	virtual FString ToString() const override { return TEXT("FGeometrySelectionManager_TargetLockStateChange"); }
+
+	virtual bool HasExpired(UObject* Object) const override
+	{
+		UGeometrySelectionManager* Manager = Cast<UGeometrySelectionManager>(Object);
+		return (Manager == nullptr || IsValid(Manager) == false || Manager->HasBeenShutDown());
+	}
+};
+
 
 
 bool UGeometrySelectionManager::HasActiveTargets() const
@@ -288,7 +315,7 @@ void UGeometrySelectionManager::ClearActiveTargets()
 
 	for (TSharedPtr<FGeometrySelectionTarget> Target : ActiveTargetReferences)
 	{
-		SleepOrShutdownTarget(Target.Get(), false);
+		SleepOrShutdownTarget(Target, false);
 	}
 
 	ActiveTargetReferences.Reset();
@@ -322,7 +349,10 @@ bool UGeometrySelectionManager::AddActiveTarget(FGeometryIdentifier TargetIdenti
 	}
 
 	TSharedPtr<FGeometrySelectionTarget> SelectionTarget = GetCachedTarget(TargetIdentifier, UseFactory);
-	check(SelectionTarget != nullptr);
+	if (SelectionTarget.IsValid() == false)
+	{
+		return false;
+	}
 
 	ActiveTargetMap.Add(TargetIdentifier, SelectionTarget);
 	ActiveTargetReferences.Add(SelectionTarget);
@@ -369,6 +399,81 @@ void UGeometrySelectionManager::SynchronizeActiveTargets(
 	}
 }
 
+
+bool UGeometrySelectionManager::GetAnyCurrentTargetsLockable() const
+{
+	for (TSharedPtr<FGeometrySelectionTarget> Target : ActiveTargetReferences)
+	{
+		if (Target->Selector->IsLockable())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool UGeometrySelectionManager::GetAnyCurrentTargetsLocked() const
+{
+	for (TSharedPtr<FGeometrySelectionTarget> Target : ActiveTargetReferences)
+	{
+		if (Target->Selector->IsLockable() && Target->Selector->IsLocked())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void UGeometrySelectionManager::SetCurrentTargetsLockState(bool bLocked)
+{
+	bool bInTransaction = false;
+
+	bool bLockStateModified = false;
+	for (TSharedPtr<FGeometrySelectionTarget> Target : ActiveTargetReferences)
+	{
+		if (Target->Selector->IsLockable() && Target->Selector->IsLocked() != bLocked)
+		{
+			Target->Selector->SetLockedState(bLocked);
+			bLockStateModified = true;
+
+			if (!bInTransaction)
+			{
+				GetTransactionsAPI()->BeginUndoTransaction(
+					(bLocked) ? LOCTEXT("Lock Target", "Lock Target") : LOCTEXT("Unlock Target", "Unlock Target"));
+				bInTransaction = true;
+			}
+
+			TUniquePtr<FGeometrySelectionManager_TargetLockStateChange> Change = MakeUnique<FGeometrySelectionManager_TargetLockStateChange>();
+			Change->TargetIdentifier = Target->TargetIdentifier;
+			Change->bToState = bLocked;
+			GetTransactionsAPI()->AppendChange(this, MoveTemp(Change), 
+				(bLocked) ? LOCTEXT("Lock Target", "Lock Target") : LOCTEXT("Unlock Target", "Unlock Target"));
+		}
+	}
+
+	if (bLockStateModified)
+	{
+		ClearSelection();
+	}
+
+	if (bInTransaction)
+	{
+		GetTransactionsAPI()->EndUndoTransaction();
+	}
+}
+
+void UGeometrySelectionManager::SetTargetLockStateOnUndoRedo(FGeometryIdentifier TargetIdentifier, bool bLocked)
+{
+	for (TSharedPtr<FGeometrySelectionTarget> Target : ActiveTargetReferences)
+	{
+		if (Target->TargetIdentifier == TargetIdentifier)
+		{
+			Target->Selector->SetLockedState(bLocked);
+		}
+	}
+}
+
+
 TArray<FGeometryIdentifier> UGeometrySelectionManager::GetCurrentTargetIdentifiers() const
 {
 	TArray<FGeometryIdentifier> Result;
@@ -391,18 +496,22 @@ void UGeometrySelectionManager::SetTargetsOnUndoRedo(TArray<FGeometryIdentifier>
 
 
 
-void UGeometrySelectionManager::SleepOrShutdownTarget(FGeometrySelectionTarget* Target, bool bForceShutdown)
+void UGeometrySelectionManager::SleepOrShutdownTarget(TSharedPtr<FGeometrySelectionTarget> Target, bool bForceShutdown)
 {
 	if (Target->Selector->SupportsSleep() && bForceShutdown == false)
 	{
-		bool bOK = Target->Selector->Sleep();
-		check(bOK);
+		if (Target->Selector->Sleep())
+		{
+			return;
+		}
 	}
-	else
-	{
-		Target->Selector->GetOnGeometryModifed().Remove(Target->OnGeometryModifiedHandle);
-		Target->Selector->Shutdown();
-	}
+
+	// if target cannot sleep or if sleeping failed, make sure it is not in the target
+	// cache so that we do not try to restore it later
+	TargetCache.Remove(Target->TargetIdentifier);
+
+	Target->Selector->GetOnGeometryModifed().Remove(Target->OnGeometryModifiedHandle);
+	Target->Selector->Shutdown();
 }
 
 TSharedPtr<UGeometrySelectionManager::FGeometrySelectionTarget> UGeometrySelectionManager::GetCachedTarget(FGeometryIdentifier TargetIdentifier, const IGeometrySelectorFactory* UseFactory)
@@ -411,24 +520,36 @@ TSharedPtr<UGeometrySelectionManager::FGeometrySelectionTarget> UGeometrySelecti
 	{
 		TSharedPtr<FGeometrySelectionTarget> FoundTarget = TargetCache[TargetIdentifier];
 		FoundTarget->Selection.Reset();
-		FoundTarget->Selector->Restore();
+		bool bRestored = FoundTarget->Selector->Restore();
+		if (bRestored)
+		{
+			// ensure these are current, as they may have changed while Target was asleep
+			FoundTarget->Selection.ElementType = GetSelectionElementType();
+			FoundTarget->Selection.TopologyType = GetSelectionTopologyType();
+			bool bEnableTopologyFilter = (FoundTarget->Selection.TopologyType == EGeometryTopologyType::Polygroup && FoundTarget->Selection.ElementType != EGeometryElementType::Vertex);
+			FoundTarget->SelectionEditor->UpdateQueryConfig(GetCurrentSelectionQueryConfig(), bEnableTopologyFilter);
 
-		// ensure these are current, as they may have changed while Target was asleep
-		FoundTarget->Selection.ElementType = GetSelectionElementType();
-		FoundTarget->Selection.TopologyType = GetSelectionTopologyType();
-		bool bEnableTopologyFilter = (FoundTarget->Selection.TopologyType == EGeometryTopologyType::Polygroup && FoundTarget->Selection.ElementType != EGeometryElementType::Vertex);
-		FoundTarget->SelectionEditor->UpdateQueryConfig(GetCurrentSelectionQueryConfig(), bEnableTopologyFilter);
-
-		return FoundTarget;
+			return FoundTarget;
+		}
+		else
+		{
+			// if restore failed, something is wrong w/ TargetCache, remove this Target
+			TargetCache.Remove(TargetIdentifier);
+		}
 	}
 
 	// if we are in a situation where we don't have a cache, currently we need the Factory to exist?
-	check(UseFactory != nullptr);
+	if (UseFactory == nullptr)
+	{
+		return nullptr;
+	}
 
 	// selector has to be built properly
 	TUniquePtr<IGeometrySelector> Selector = UseFactory->BuildForTarget(TargetIdentifier);
-	// not going to handle this for now...
-	check(Selector.IsValid());
+	if (Selector.IsValid() == false)
+	{
+		return nullptr;
+	}
 
 	TSharedPtr<FGeometrySelectionTarget> SelectionTarget = MakeShared<FGeometrySelectionTarget>();
 	SelectionTarget->Selector = MoveTemp(Selector);
@@ -452,9 +573,12 @@ TSharedPtr<UGeometrySelectionManager::FGeometrySelectionTarget> UGeometrySelecti
 
 void UGeometrySelectionManager::ResetTargetCache()
 {
-	for (TPair<FGeometryIdentifier, TSharedPtr<FGeometrySelectionTarget>> Pair : TargetCache)
+	// SleepOrShutdownTarget may modify TargetCache
+	TArray<TSharedPtr<FGeometrySelectionTarget>> ToShutdown;
+	TargetCache.GenerateValueArray(ToShutdown);
+	for (TSharedPtr<FGeometrySelectionTarget> Target : ToShutdown)
 	{
-		SleepOrShutdownTarget(Pair.Value.Get(), true);
+		SleepOrShutdownTarget(Target, true);
 	}
 	TargetCache.Reset();
 }
@@ -509,7 +633,7 @@ void UGeometrySelectionManager::ClearSelection()
 		if (ClearDelta.IsEmpty() == false)
 		{
 			TUniquePtr<FGeometrySelectionDeltaChange> ClearChange = MakeUnique<FGeometrySelectionDeltaChange>();
-			ClearChange->Identifier = Target->SelectionIdentifer;
+			ClearChange->Identifier = Target->TargetIdentifier;
 			ClearChange->Delta = MoveTemp(ClearDelta);
 			GetTransactionsAPI()->AppendChange(this, MoveTemp(ClearChange), LOCTEXT("ClearSelection", "Clear Selection"));
 		}
@@ -550,7 +674,7 @@ void UGeometrySelectionManager::UpdateSelectionViaRaycast(
 	if (ResultOut.bSelectionModified)
 	{
 		TUniquePtr<FGeometrySelectionDeltaChange> DeltaChange = MakeUnique<FGeometrySelectionDeltaChange>();
-		DeltaChange->Identifier = Target->SelectionIdentifer;
+		DeltaChange->Identifier = Target->TargetIdentifier;
 		DeltaChange->Delta = ResultOut.SelectionDelta;
 
 		GetTransactionsAPI()->BeginUndoTransaction(LOCTEXT("UpdateSelectionViaRaycast", "Change Selection"));
@@ -593,7 +717,7 @@ void UGeometrySelectionManager::UpdateSelectionViaConvex(
 	if (ResultOut.bSelectionModified)
 	{
 		TUniquePtr<FGeometrySelectionDeltaChange> DeltaChange = MakeUnique<FGeometrySelectionDeltaChange>();
-		DeltaChange->Identifier = Target->SelectionIdentifer;
+		DeltaChange->Identifier = Target->TargetIdentifier;
 		DeltaChange->Delta = ResultOut.SelectionDelta;
 
 		GetTransactionsAPI()->BeginUndoTransaction(LOCTEXT("UpdateSelectionViaConvex", "Change Selection"));
@@ -691,7 +815,7 @@ void UGeometrySelectionManager::EndTrackedSelectionChange()
 			if (InitialTrackedDelta.IsEmpty() == false)
 			{
 				TUniquePtr<FGeometrySelectionDeltaChange> InitialDeltaChange = MakeUnique<FGeometrySelectionDeltaChange>();
-				InitialDeltaChange->Identifier = Target->SelectionIdentifer;
+				InitialDeltaChange->Identifier = Target->TargetIdentifier;
 				InitialDeltaChange->Delta = MoveTemp(InitialTrackedDelta);
 				GetTransactionsAPI()->AppendChange(this, MoveTemp(InitialDeltaChange), LOCTEXT("ChangeSelection", "Change Selection"));
 			}
@@ -699,7 +823,7 @@ void UGeometrySelectionManager::EndTrackedSelectionChange()
 			if (ActiveTrackedDelta.IsEmpty() == false)
 			{
 				TUniquePtr<FGeometrySelectionDeltaChange> AccumDeltaChange = MakeUnique<FGeometrySelectionDeltaChange>();
-				AccumDeltaChange->Identifier = Target->SelectionIdentifer;
+				AccumDeltaChange->Identifier = Target->TargetIdentifier;
 				AccumDeltaChange->Delta = MoveTemp(ActiveTrackedDelta);
 				GetTransactionsAPI()->AppendChange(this, MoveTemp(AccumDeltaChange), LOCTEXT("ChangeSelection", "Change Selection"));
 			}
@@ -725,7 +849,7 @@ bool UGeometrySelectionManager::SetSelectionForComponent(UPrimitiveComponent* Co
 			if ( AfterDelta.IsEmpty() == false )
 			{
 				TUniquePtr<FGeometrySelectionReplaceChange> NewSelectionChange = MakeUnique<FGeometrySelectionReplaceChange>();
-				NewSelectionChange->Identifier = Target->Selector->GetIdentifier();
+				NewSelectionChange->Identifier = Target->TargetIdentifier; //Target->Selector->GetIdentifier();
 				NewSelectionChange->After = Target->Selection;
 				NewSelectionChange->Before = InitialSelection;
 				GetTransactionsAPI()->AppendChange(this, MoveTemp(NewSelectionChange), LOCTEXT("NewSelection", "New Selection"));
@@ -964,7 +1088,7 @@ void UGeometrySelectionManager::ExecuteSelectionCommand(UGeometrySelectionEditCo
 		// so it will not be holding onto the active Selection on Redo later
 		// (if that becomes necessary, this sequence of changes will need to become more complicated....)
 		TUniquePtr<FGeometrySelectionReplaceChange> ClearChange = MakeUnique<FGeometrySelectionReplaceChange>();
-		ClearChange->Identifier = Target->Selector->GetIdentifier();
+		ClearChange->Identifier = Target->TargetIdentifier; //Target->Selector->GetIdentifier();
 		ClearChange->Before = Target->Selection;
 		ClearChange->After.InitializeTypes(ClearChange->Before);
 		GetTransactionsAPI()->AppendChange(this, MoveTemp(ClearChange), LOCTEXT("ClearSelection", "Clear Selection"));
@@ -991,7 +1115,7 @@ void UGeometrySelectionManager::ExecuteSelectionCommand(UGeometrySelectionEditCo
 				if (Target->Selection.IsEmpty() == false)
 				{
 					TUniquePtr<FGeometrySelectionReplaceChange> NewSelectionChange = MakeUnique<FGeometrySelectionReplaceChange>();
-					NewSelectionChange->Identifier = Target->Selector->GetIdentifier();
+					NewSelectionChange->Identifier = Target->TargetIdentifier; //Target->Selector->GetIdentifier();
 					NewSelectionChange->After = Target->Selection;
 					NewSelectionChange->Before.InitializeTypes(Target->Selection);
 					GetTransactionsAPI()->AppendChange(this, MoveTemp(NewSelectionChange), LOCTEXT("NewSelection", "New Selection"));
@@ -1043,7 +1167,7 @@ void UGeometrySelectionManager::ApplyChange(IGeometrySelectionChange* Change)
 
 	for (int32 k = 0; k < ActiveTargetReferences.Num(); ++k)
 	{
-		if (ActiveTargetReferences[k]->SelectionIdentifer == Identifer) 
+		if (ActiveTargetReferences[k]->TargetIdentifier == Identifer)
 		{
 			FGeometrySelectionDelta ApplyDelta;
 			Change->ApplyChange( ActiveTargetReferences[k]->SelectionEditor.Get(), ApplyDelta);
@@ -1072,7 +1196,7 @@ void UGeometrySelectionManager::RevertChange(IGeometrySelectionChange* Change)
 
 	for (int32 k = 0; k < ActiveTargetReferences.Num(); ++k)
 	{
-		if (ActiveTargetReferences[k]->SelectionIdentifer == Identifer) 
+		if (ActiveTargetReferences[k]->TargetIdentifier == Identifer) 
 		{
 			FGeometrySelectionDelta RevertDelta;
 			Change->RevertChange( ActiveTargetReferences[k]->SelectionEditor.Get(), RevertDelta);
@@ -1157,93 +1281,25 @@ void UGeometrySelectionManager::DebugRender(IToolsContextRenderAPI* RenderAPI)
 	// disable selection during xform to avoid overhead
 	if (IsInActiveTransformation())
 	{
+		for (int32 k = 0; k < ActiveTargetReferences.Num(); ++k)
+		{
+			if (ActiveTransformations[k] != nullptr)
+			{
+				ActiveTransformations[k]->PreviewRender(RenderAPI);
+			}
+		}
+
 		return;
 	}
 
 	//const UMaterialInterface* TriangleMaterial = ToolSetupUtil::GetSelectionMaterial(FLinearColor(1.0f, 0, 0, 0.5f), nullptr, 0.5f);
 
 	RebuildSelectionRenderCaches();
-
 	for ( const FGeometrySelectionElements& Elements : CachedSelectionRenderElements )
 	{
-		// batch render all the triangles, vastly more efficient than drawing one by one!
-
-		FPrimitiveDrawInterface* CurrentPDI = RenderAPI->GetPrimitiveDrawInterface();
-		FDynamicMeshBuilder MeshBuilder(CurrentPDI->View->GetFeatureLevel());
-		int32 DepthPriority = SDPG_World; // SDPG_Foreground;  // SDPG_World
-		FVector2f UVs[3] = { FVector2f(0,0), FVector2f(0,1), FVector2f(1,1)	};
-		FVector3f Normal = FVector3f(0, 0, 1);
-		FVector3f Tangent = FVector3f(1, 0, 0);	
-		for (const FTriangle3d& Triangle : Elements.Triangles)
-		{
-			int32 V0 = MeshBuilder.AddVertex(FDynamicMeshVertex((FVector3f)Triangle.V[0], Tangent, Normal, UVs[0], FColor::White));
-			int32 V1 = MeshBuilder.AddVertex(FDynamicMeshVertex((FVector3f)Triangle.V[1], Tangent, Normal, UVs[1], FColor::White));
-			int32 V2 = MeshBuilder.AddVertex(FDynamicMeshVertex((FVector3f)Triangle.V[2], Tangent, Normal, UVs[2], FColor::White));
-			MeshBuilder.AddTriangle(V0, V1, V2);
-		}
-		//FMaterialRenderProxy* MaterialRenderProxy = TriangleMaterial->GetRenderProxy();		// currently does not work, material does not render
-		FMaterialRenderProxy* MaterialRenderProxy = GEngine->ConstraintLimitMaterialX->GetRenderProxy();
-		MeshBuilder.Draw(CurrentPDI, FMatrix::Identity, MaterialRenderProxy, DepthPriority, false, false);
-
-
-		FToolDataVisualizer Visualizer;
-		Visualizer.bDepthTested = false;
-		Visualizer.BeginFrame(RenderAPI);
-
-		Visualizer.SetLineParameters(FLinearColor(0,0.3f,0.95f,1), 3.0f);
-		for (const FSegment3d& Segment : Elements.Segments)
-		{
-			Visualizer.DrawLine(Segment.StartPoint(), Segment.EndPoint());
-		}
-
-		Visualizer.SetPointParameters(FLinearColor(0,0.3f,0.95f,1), 10.0f);
-		for (const FVector3d& Point : Elements.Points)
-		{
-			Visualizer.DrawPoint(Point);
-		}
-
-		Visualizer.EndFrame();
+		ToolSelectionUtil::DebugRenderGeometrySelectionElements(RenderAPI, Elements, false);
 	}
-
-	// draw selection preview
-	{
-		FPrimitiveDrawInterface* CurrentPDI = RenderAPI->GetPrimitiveDrawInterface();
-		FDynamicMeshBuilder MeshBuilder(CurrentPDI->View->GetFeatureLevel());
-		int32 DepthPriority = SDPG_World; // SDPG_Foreground;  // SDPG_World
-		FVector2f UVs[3] = { FVector2f(0,0), FVector2f(0,1), FVector2f(1,1) };
-		FVector3f Normal = FVector3f(0, 0, 1);
-		FVector3f Tangent = FVector3f(1, 0, 0);
-		for (const FTriangle3d& Triangle : CachedPreviewRenderElements.Triangles)
-		{
-			int32 V0 = MeshBuilder.AddVertex(FDynamicMeshVertex((FVector3f)Triangle.V[0], Tangent, Normal, UVs[0], FColor::White));
-			int32 V1 = MeshBuilder.AddVertex(FDynamicMeshVertex((FVector3f)Triangle.V[1], Tangent, Normal, UVs[1], FColor::White));
-			int32 V2 = MeshBuilder.AddVertex(FDynamicMeshVertex((FVector3f)Triangle.V[2], Tangent, Normal, UVs[2], FColor::White));
-			MeshBuilder.AddTriangle(V0, V1, V2);
-		}
-		//FMaterialRenderProxy* MaterialRenderProxy = TriangleMaterial->GetRenderProxy();		// currently does not work, material does not render
-		FMaterialRenderProxy* MaterialRenderProxy = GEngine->ConstraintLimitMaterialX->GetRenderProxy();
-		MeshBuilder.Draw(CurrentPDI, FMatrix::Identity, MaterialRenderProxy, DepthPriority, false, false);
-
-
-		FToolDataVisualizer Visualizer;
-		Visualizer.bDepthTested = false;
-		Visualizer.BeginFrame(RenderAPI);
-
-		Visualizer.SetLineParameters(FLinearColor(1, 1, 0, 1), 1.0f);
-		for (const FSegment3d& Segment : CachedPreviewRenderElements.Segments)
-		{
-			Visualizer.DrawLine(Segment.StartPoint(), Segment.EndPoint());
-		}
-
-		Visualizer.SetPointParameters(FLinearColor(1, 1, 0, 1), 5.0f);
-		for (const FVector3d& Point : CachedPreviewRenderElements.Points)
-		{
-			Visualizer.DrawPoint(Point);
-		}
-
-		Visualizer.EndFrame();
-	}
-
+	ToolSelectionUtil::DebugRenderGeometrySelectionElements(RenderAPI, CachedPreviewRenderElements, true);
 }
 
 

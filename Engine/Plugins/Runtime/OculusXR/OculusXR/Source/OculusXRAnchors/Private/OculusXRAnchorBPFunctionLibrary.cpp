@@ -10,6 +10,8 @@ LICENSE file in the root directory of this source tree.
 #include "OculusXRHMD.h"
 #include "OculusXRSpatialAnchorComponent.h"
 #include "OculusXRAnchorsPrivate.h"
+#include "OculusXRRoomLayoutManager.h"
+#include "OculusXRAnchorManager.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 
 AActor* UOculusXRAnchorBPFunctionLibrary::SpawnActorWithAnchorHandle(UObject* WorldContextObject, FOculusXRUInt64 Handle, FOculusXRUUID UUID, EOculusXRSpaceStorageLocation Location, UClass* ActorClass,
@@ -167,7 +169,45 @@ const UOculusXRBaseAnchorComponent* UOculusXRAnchorBPFunctionLibrary::GetAnchorC
 			return UOculusXRBaseAnchorComponent::FromSpace<UOculusXRSharableAnchorComponent>(QueryResult.Space.Value, Outer);
 		case EOculusXRSpaceComponentType::Storable:
 			return UOculusXRBaseAnchorComponent::FromSpace<UOculusXRStorableAnchorComponent>(QueryResult.Space.Value, Outer);
+		case EOculusXRSpaceComponentType::TriangleMesh:
+			return UOculusXRBaseAnchorComponent::FromSpace<UOculusXRTriangleMeshAnchorComponent>(QueryResult.Space.Value, Outer);
 		default:
 			return nullptr;
 	}
+}
+
+bool UOculusXRAnchorBPFunctionLibrary::GetRoomLayout(FOculusXRUInt64 Space, FOculusXRRoomLayout& RoomLayoutOut, int32 MaxWallsCapacity)
+{
+	if (MaxWallsCapacity <= 0)
+	{
+		return false;
+	}
+
+	FOculusXRUUID OutCeilingUuid;
+	FOculusXRUUID OutFloorUuid;
+	TArray<FOculusXRUUID> OutWallsUuid;
+
+	const bool bSuccess = OculusXRAnchors::FOculusXRRoomLayoutManager::GetSpaceRoomLayout(Space.Value, static_cast<uint32>(MaxWallsCapacity), OutCeilingUuid, OutFloorUuid, OutWallsUuid);
+
+	if (bSuccess)
+	{
+		RoomLayoutOut.CeilingUuid = OutCeilingUuid;
+		RoomLayoutOut.FloorUuid = OutFloorUuid;
+		RoomLayoutOut.WallsUuid.InsertZeroed(0, OutWallsUuid.Num());
+
+		for (int32 i = 0; i < OutWallsUuid.Num(); ++i)
+		{
+			RoomLayoutOut.WallsUuid[i] = OutWallsUuid[i];
+		}
+
+		TArray<FOculusXRUUID> spaceUUIDs;
+		EOculusXRAnchorResult::Type result = OculusXRAnchors::FOculusXRAnchorManager::GetSpaceContainerUUIDs(Space, spaceUUIDs);
+
+		if (UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(result))
+		{
+			RoomLayoutOut.RoomObjectUUIDs = spaceUUIDs;
+		}
+	}
+
+	return bSuccess;
 }

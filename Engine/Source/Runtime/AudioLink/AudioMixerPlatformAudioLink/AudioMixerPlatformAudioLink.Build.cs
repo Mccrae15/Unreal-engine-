@@ -7,19 +7,16 @@ public class AudioMixerPlatformAudioLink: ModuleRules
 	public AudioMixerPlatformAudioLink(ReadOnlyTargetRules Target) : base(Target)
 	{
         PrivateIncludePathModuleNames.Add("TargetPlatform");
-		PublicIncludePaths.Add("Runtime/AudioMixer/Public");
-		PrivateIncludePaths.Add("Runtime/AudioMixer/Private");
-
+		PublicIncludePathModuleNames.Add("AudioMixer");
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
-				"Core",
-				"CoreUObject",
-				"Engine",
 				"AudioMixer",
 				"AudioMixerCore",
 				"AudioLinkEngine",
-				"SignalProcessing",
+				"Core",
+				"CoreUObject",
+				"Engine",
 		});
 					
 		if (Target.bCompileAgainstEngine) 

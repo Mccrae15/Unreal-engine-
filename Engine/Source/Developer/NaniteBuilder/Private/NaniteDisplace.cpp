@@ -96,7 +96,7 @@ static FVector2f GetErrorBounds(
 }
 
 void TessellateAndDisplace(
-	TArray< FStaticMeshBuildVertex >& Verts,
+	FMeshBuildVertexData& Verts,
 	TArray< uint32 >& Indexes,
 	TArray< int32 >& MaterialIndexes,
 	const FBounds3f& MeshBounds,
@@ -107,13 +107,13 @@ void TessellateAndDisplace(
 	float SurfaceArea = 0.0f;
 	for( int32 TriIndex = 0; TriIndex < MaterialIndexes.Num(); TriIndex++ )
 	{
-		auto& Vert0 = Verts[ Indexes[ TriIndex * 3 + 0 ] ];
-		auto& Vert1 = Verts[ Indexes[ TriIndex * 3 + 1 ] ];
-		auto& Vert2 = Verts[ Indexes[ TriIndex * 3 + 2 ] ];
+		auto& Vert0Position = Verts.Position[ Indexes[ TriIndex * 3 + 0 ] ];
+		auto& Vert1Position = Verts.Position[ Indexes[ TriIndex * 3 + 1 ] ];
+		auto& Vert2Position = Verts.Position[ Indexes[ TriIndex * 3 + 2 ] ];
 
-		FVector3f Edge01 = Vert1.Position - Vert0.Position;
-		FVector3f Edge12 = Vert2.Position - Vert1.Position;
-		FVector3f Edge20 = Vert0.Position - Vert2.Position;
+		FVector3f Edge01 = Vert1Position - Vert0Position;
+		FVector3f Edge12 = Vert2Position - Vert1Position;
+		FVector3f Edge20 = Vert0Position - Vert2Position;
 
 		SurfaceArea += 0.5f * ( Edge01 ^ Edge20 ).Size();
 	}
@@ -126,14 +126,31 @@ void TessellateAndDisplace(
 	TArray< FDisplacementMap > DisplacementMaps;
 	for( auto& DisplacementMap : Settings.DisplacementMaps )
 	{
-		if( IsValid( DisplacementMap.Texture ) )
+		if ( DisplacementMap.Texture )
 		{
-			DisplacementMaps.Add( FDisplacementMap(
-				DisplacementMap.Texture->Source,
-				DisplacementMap.Magnitude,
-				DisplacementMap.Center,
-				DisplacementMap.Texture->AddressX,
-				DisplacementMap.Texture->AddressY ) );
+			if ( IsValid( DisplacementMap.Texture ) && DisplacementMap.Texture->Source.IsValid() )
+			{
+				FImage FirstMipImage;
+				if ( DisplacementMap.Texture->Source.GetMipImage( FirstMipImage, 0 ) )
+				{
+					DisplacementMaps.Add( Nanite::FDisplacementMap(
+						MoveTemp( FirstMipImage ),
+						DisplacementMap.Magnitude,
+						DisplacementMap.Center,
+						DisplacementMap.Texture->AddressX,
+						DisplacementMap.Texture->AddressY ) );
+				}
+				else
+				{
+					// Virtualization can fail to fetch the bulk data.
+					checkNoEntry();
+				}
+			}
+			else
+			{
+				// If the raw pointer is not null, but for some reason it is not valid better to crash then continuing with some false data
+				checkNoEntry();
+			}
 		}
 		else
 		{
@@ -142,9 +159,9 @@ void TessellateAndDisplace(
 	}
 
 	TArray< FLerpVert >	LerpVerts;
-	LerpVerts.AddUninitialized( Verts.Num() );
-	for( int i = 0; i < Verts.Num(); i++ )
-		LerpVerts[i] = Verts[i];
+	LerpVerts.AddUninitialized( Verts.Position.Num() );
+	for( int i = 0; i < Verts.Position.Num(); i++ )
+		LerpVerts[i] = MakeStaticMeshVertex(Verts, i);
 
 	FAdaptiveTessellator Tessellator( LerpVerts, Indexes, MaterialIndexes, TargetError, TargetError, true,
 		[&](const FVector3f& Barycentrics,
@@ -184,9 +201,38 @@ void TessellateAndDisplace(
 				DisplacementMaps );
 		} );
 
-	Verts.SetNumUninitialized( LerpVerts.Num() );
-	for( int i = 0; i < Verts.Num(); i++ )
-		Verts[i] = LerpVerts[i];
+	const bool bHasVertexColor = Verts.Color.Num() > 0;
+	
+	Verts.Position.SetNumUninitialized(LerpVerts.Num());
+	Verts.TangentX.SetNumUninitialized(LerpVerts.Num());
+	Verts.TangentY.SetNumUninitialized(LerpVerts.Num());
+	Verts.TangentZ.SetNumUninitialized(LerpVerts.Num());
+
+	for (int32 UVCoord = 0; UVCoord < Verts.UVs.Num(); ++UVCoord)
+	{
+		Verts.UVs[UVCoord].SetNumUninitialized(LerpVerts.Num());
+	}
+
+	Verts.Color.SetNumUninitialized(bHasVertexColor ? LerpVerts.Num() : 0);
+
+	for (int32 LerpIndex = 0; LerpIndex < LerpVerts.Num(); ++LerpIndex)
+	{
+		const FLerpVert& LerpVert = LerpVerts[LerpIndex];
+		Verts.Position[LerpIndex] = LerpVert.Position;
+		Verts.TangentX[LerpIndex] = LerpVert.TangentX;
+		Verts.TangentY[LerpIndex] = LerpVert.TangentY;
+		Verts.TangentZ[LerpIndex] = LerpVert.TangentZ;
+
+		for (int32 UVCoord = 0; UVCoord < Verts.UVs.Num(); ++UVCoord)
+		{
+			Verts.UVs[UVCoord][LerpIndex] = LerpVert.UVs[UVCoord];
+		}
+
+		if (bHasVertexColor)
+		{
+			Verts.Color[LerpIndex] = LerpVert.Color.ToFColor(false);
+		}
+	}
 }
 
 } // namespace Nanite

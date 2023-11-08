@@ -16,28 +16,30 @@
 #include "Iris/Serialization/NetSerializationContext.h"
 #include "Iris/Serialization/ObjectNetSerializer.h"
 #include "Misc/CoreMiscDefines.h"
+#include "Misc/PackageName.h"
 #include "Misc/StringBuilder.h"
 #include "Net/Core/Trace/NetDebugName.h"
 #include "Net/Core/Trace/NetTrace.h"
 #include "UObject/Package.h"
+#include "HAL/IConsoleManager.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogIrisReferences, Log, All);
-
-#if (UE_BUILD_SHIPPING || UE_BUILD_TEST)
-#	define UE_NET_ENABLE_REFERENCECACHE_LOG 0
-#	define UE_NET_VALIDATE_REFERENCECACHE 0
-#else
-#	define UE_NET_ENABLE_REFERENCECACHE_LOG 1
-#	define UE_NET_VALIDATE_REFERENCECACHE 1
+#ifndef UE_NET_ENABLE_REFERENCECACHE_LOG
+#	define UE_NET_ENABLE_REFERENCECACHE_LOG !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 #endif 
 
-#if UE_NET_ENABLE_REFERENCECACHE_LOG
-#	define UE_LOG_REFERENCECACHE(Verbosity, Format, ...)  UE_LOG(LogIrisReferences, Verbosity, Format, ##__VA_ARGS__)
-#else
-#	define UE_LOG_REFERENCECACHE(...)
+#ifndef UE_NET_VALIDATE_REFERENCECACHE
+#	define UE_NET_VALIDATE_REFERENCECACHE 0
 #endif
 
-#define UE_LOG_REFERENCECACHE_WARNING(Format, ...)  UE_LOG(LogIrisReferences, Warning, Format, ##__VA_ARGS__)
+// Only compile warnings or errors when UE_NET_ENABLE_REFERENCECACHE_LOG is false
+#if UE_NET_ENABLE_REFERENCECACHE_LOG
+	DEFINE_LOG_CATEGORY_STATIC(LogIrisReferences, Log, All);
+#else
+	DEFINE_LOG_CATEGORY_STATIC(LogIrisReferences, Warning, Warning);
+#endif
+
+#define UE_LOG_REFERENCECACHE(Verbosity, Format, ...)  UE_LOG(LogIrisReferences, Verbosity, Format, ##__VA_ARGS__)
+#define UE_CLOG_REFERENCECACHE(Condition, Verbosity, Format, ...)  UE_CLOG(Condition, LogIrisReferences, Verbosity, Format, ##__VA_ARGS__)
 
 // $TODO: If we add information about why a dynamic object is being destroyed (filtering or actual destroy) then we can 
 // try to clean up references to reduce cache pollution
@@ -45,6 +47,28 @@ DEFINE_LOG_CATEGORY_STATIC(LogIrisReferences, Log, All);
 
 namespace UE::Net::Private
 {
+
+static bool bIrisAllowAsyncLoading = true;
+FAutoConsoleVariableRef CVarIrisAllowAsyncLoading(TEXT("net.iris.AllowAsyncLoading"), bIrisAllowAsyncLoading, TEXT("Flag to allow or disallow async loading when using iris replication. Note: net.allowAsyncLoading must also be enabled."), ECVF_Default);
+
+FObjectReferenceCache::FPendingAsyncLoadRequest::FPendingAsyncLoadRequest(FNetRefHandle InNetRefHandle, double InRequestStartTime)
+: RequestStartTime(InRequestStartTime)
+{
+	NetRefHandles.Add(InNetRefHandle);
+}
+
+void FObjectReferenceCache::FPendingAsyncLoadRequest::Merge(const FPendingAsyncLoadRequest& Other)
+{
+	for (FNetRefHandle OtherNetRefHandle : Other.NetRefHandles)
+	{
+		NetRefHandles.AddUnique(OtherNetRefHandle);
+	}
+}
+
+void FObjectReferenceCache::FPendingAsyncLoadRequest::Merge(FNetRefHandle InNetRefHandle)
+{
+	NetRefHandles.AddUnique(InNetRefHandle);
+}
 
 /**
  * Don't allow infinite recursion of InternalLoadObject - an attacker could
@@ -59,7 +83,10 @@ FObjectReferenceCache::FObjectReferenceCache()
 , StringTokenStore(nullptr)
 , NetRefHandleManager(nullptr)
 , bIsAuthority(false)
+, AsyncLoadMode(EAsyncLoadMode::UseCVar)
+, bCachedCVarAllowAsyncLoading(false)
 {
+	SetAsyncLoadMode(EAsyncLoadMode::UseCVar);
 }
 
 void FObjectReferenceCache::Init(UReplicationSystem* InReplicationSystem)
@@ -113,14 +140,20 @@ bool FObjectReferenceCache::IsAuthority() const
 bool FObjectReferenceCache::CanClientLoadObjectInternal(const UObject* Object, bool bIsDynamic) const
 {
 	// PackageMapClient can't load maps, we must wait for the client to load the map when ready
-	// These guids are special guids, where the guid and all child guids resolve once the map has been loaded
-	if (bIsDynamic || Object->GetOutermost()->ContainsMap())
+	// These references are special references, where the reference and all child references resolve once the map has been loaded
+	if (bIsDynamic)
+	{
+		return false;
+	}
+
+	if (Object->GetPackage()->ContainsMap())
 	{
 		return false;
 	}
 
 #if WITH_EDITOR
 	// For objects using external package, we need to do the test on the package of their outer most object
+	// (this is currently only possible in Editor)
 	UObject* OutermostObject = Object->GetOutermostObject();
 	if (OutermostObject && OutermostObject->GetPackage()->ContainsMap())
 	{
@@ -136,7 +169,7 @@ bool FObjectReferenceCache::ShouldIgnoreWhenMissing(FNetRefHandle RefHandle) con
 {
 	if (RefHandle.IsDynamic())
 	{
-		return true;		// Ignore missing dynamic guids (even on server because client may send RPC on/with object it doesn't know server destroyed)
+		return true;		// Ignore missing dynamic references (even on server because client may send RPC on/with object it doesn't know server destroyed)
 	}
 
 	if (IsAuthority())
@@ -147,7 +180,7 @@ bool FObjectReferenceCache::ShouldIgnoreWhenMissing(FNetRefHandle RefHandle) con
 	const FCachedNetObjectReference* CacheObject = ReferenceHandleToCachedReference.Find(RefHandle);
 	if (CacheObject == nullptr)
 	{
-		return false;		// If we haven't been told about this static guid before, we need to warn
+		return false;		// If we haven't been told about this static reference before, we need to warn
 	}
 
 	const FCachedNetObjectReference* OutermostCacheObject = CacheObject;
@@ -166,7 +199,7 @@ bool FObjectReferenceCache::ShouldIgnoreWhenMissing(FNetRefHandle RefHandle) con
 			return true;
 		}
 		// Sometimes, other systems async load packages, which we don't track, but still must be aware of
-		if (OutermostCacheObject->Object != nullptr && !OutermostCacheObject->Object->GetOutermost()->IsFullyLoaded())
+		if (OutermostCacheObject->Object != nullptr && !OutermostCacheObject->Object->GetPackage()->IsFullyLoaded())
 		{
 			return true;
 		}
@@ -199,36 +232,58 @@ bool FObjectReferenceCache::CreateObjectReferenceInternal(const UObject* Object,
 	CA_ASSUME(Object != nullptr);
 
 	// Check if we are already know about this object
-	if (FNetRefHandle* ReferenceHandle = ObjectToNetReferenceHandle.Find(Object))
+	if (FNetRefHandle* RefHandlePtr = ObjectToNetReferenceHandle.Find(Object))
 	{
-		// Verify that this is the same object and clean up if it is not
-		FCachedNetObjectReference& CachedObject = ReferenceHandleToCachedReference.FindChecked(*ReferenceHandle);
+		// Cache RefHandle as the pointer can become invalidated later.
+		const FNetRefHandle RefHandle = *RefHandlePtr;
 
+		// Verify that this is the same object and clean up if it is not
+		if (FCachedNetObjectReference* CachedObjectPtr = ReferenceHandleToCachedReference.Find(RefHandle))
+		{
+			FCachedNetObjectReference& CachedObject = *CachedObjectPtr;
 		if (CachedObject.Object.Get() == Object)
 		{
-			UE_LOG_REFERENCECACHE(VeryVerbose, TEXT("ObjectReferenceCache::CreateObjectReferenceHandle Found existing %s for Object %s, OuterNetRefHandle: %s"), *CachedObject.NetRefHandle.ToString(), ToCStr(Object->GetPathName()), *CachedObject.OuterNetRefHandle.ToString());
-			OutReference = MakeNetObjectReference(CachedObject);			
+				UE_LOG_REFERENCECACHE(VeryVerbose, TEXT("ObjectReferenceCache::CreateObjectReferenceHandle Found existing %s for ObjectPath %s Object: %s (0x%p), OuterNetRefHandle: %s"),
+				*CachedObject.NetRefHandle.ToString(), ToCStr(Object->GetPathName()), *GetNameSafe(Object), Object, *CachedObject.OuterNetRefHandle.ToString());
+				OutReference = MakeNetObjectReference(CachedObject);
 			return true;
 		}
 		else
 		{
-			UE_LOG_REFERENCECACHE(Verbose, TEXT("Detected stale cached Object removing %s from ObjectToNetReferenceHandle lookup"), *CachedObject.NetRefHandle.ToString());
+				UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::CreateObjectReferenceHandle Removed %s from ObjectToNetReferenceHandle due to stale cache. Cached Object (0x%p).  New object %s (0x%p)"),
+					*CachedObject.NetRefHandle.ToString(), CachedObject.ObjectKey, *GetNameSafe(Object), Object);
 
 			ObjectToNetReferenceHandle.Remove(CachedObject.ObjectKey);
 			ObjectToNetReferenceHandle.Remove(Object);
+				RefHandlePtr = nullptr;
 
-			if ((*ReferenceHandle).IsStatic())
+			if (RefHandle.IsStatic())
 			{
+					UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::CreateObjectReferenceHandle clearing stale cache for static handle %s. Cached Object (0x%p).  New object %s (0x%p)"),
+						*CachedObject.NetRefHandle.ToString(), CachedObject.ObjectKey, *GetNameSafe(Object), Object);
+
 				// Note we only cleanse the object reference
 				// we still keep the cachedObject data around in order to be able to serialize static destruction infos
 				CachedObject.ObjectKey = nullptr;
 				CachedObject.Object = nullptr;
+
 			}
 			else
 			{
-				ReferenceHandleToCachedReference.Remove(*ReferenceHandle);
+					UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::CreateObjectReferenceHandle removing cache for handle %s. Cached Object (0x%p). New object %s (0x%p)"),
+						*CachedObject.NetRefHandle.ToString(), CachedObject.ObjectKey, *GetNameSafe(Object), Object);
+
+				ReferenceHandleToCachedReference.Remove(RefHandle);
 			}
 		}
+	}
+		else
+		{
+			UE_LOG_REFERENCECACHE(Warning, TEXT("ObjectReferenceCache::CreateObjectReferenceInternal removed %s from ObjectToNetReferenceHandle due to mismatch with cache. Object %s (0x%p) "), *RefHandle.ToString(), *GetNameSafe(Object), Object);
+			ObjectToNetReferenceHandle.Remove(Object);
+			RefHandlePtr = nullptr;
+		}
+		
 	}
 
 #if WITH_EDITOR
@@ -336,7 +391,8 @@ bool FObjectReferenceCache::CreateObjectReferenceInternal(const UObject* Object,
 	}
 #endif
 	
-	UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::CreateObjectReferenceHandle %s for Object %s, OuterNetRefHandle: %s"), *CachedObject.NetRefHandle.ToString(), ToCStr(Object->GetPathName()), *CachedObject.OuterNetRefHandle.ToString());
+	UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::CreateObjectReferenceHandle Adding %s to ObjectToNetReferenceHandle and Cache for ObjectPath %s, Object (0x%p), OuterNetRefHandle: %s"), 
+		*CachedObject.NetRefHandle.ToString(), ToCStr(Object->GetPathName()), *GetNameSafe(Object), Object, *CachedObject.OuterNetRefHandle.ToString());
 
 	// Create reference
 	OutReference = MakeNetObjectReference(CachedObject);
@@ -367,7 +423,16 @@ FNetRefHandle FObjectReferenceCache::GetObjectReferenceHandleFromObject(const UO
 	if (const FNetRefHandle* Reference = ObjectToNetReferenceHandle.Find(Object))
 	{
 		// Verify that this is the same object
-		const FCachedNetObjectReference& CachedObject = ReferenceHandleToCachedReference.FindChecked(*Reference);
+
+		const FCachedNetObjectReference* CachedObjectPtr = ReferenceHandleToCachedReference.Find(*Reference);
+		if (CachedObjectPtr == nullptr)
+		{
+			UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::GetObjectReferenceHandleFromObject removed %s from ObjectToNetReferenceHandle due to ReferenceHandleToCachedReference not holding the handle. For Object %s (0x%p) "), *Reference->ToString(), *GetNameSafe(Object), Object);
+			const_cast<TMap<const UObject*, FNetRefHandle>&>(ObjectToNetReferenceHandle).Remove(Object);
+			return FNetRefHandle();
+		}
+
+		const FCachedNetObjectReference& CachedObject = *CachedObjectPtr;
 
 		const UObject* ExistingObject = CachedObject.Object.Get();
 		if (ExistingObject == Object)
@@ -378,7 +443,8 @@ FNetRefHandle FObjectReferenceCache::GetObjectReferenceHandleFromObject(const UO
 		}
 		else
 		{
-			UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::Found %s cached RefHandle %s for object %s"), CachedObject.Object.IsStale() ? TEXT("Stale") : TEXT("UnResolved"), *CachedObject.NetRefHandle.ToString(), ToCStr(Object->GetName()));
+			UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::Found %s cached RefHandle %s for object %s (0x%p) but cache was holding an invalid object."), 
+				CachedObject.Object.IsStale() ? TEXT("Stale") : TEXT("UnResolved"), *CachedObject.NetRefHandle.ToString(), *GetNameSafe(Object), Object);
 		}
 	}
 
@@ -394,16 +460,19 @@ void FObjectReferenceCache::AddRemoteReference(FNetRefHandle RefHandle, const UO
 
 	if (ensure(RefHandle.IsDynamic()))
 	{
-		UE_LOG_REFERENCECACHE(Verbose, TEXT("AddRemoteReference: %s, Object: %s Pointer: %p" ), *RefHandle.ToString(), Object ? *Object->GetName() : TEXT("NULL"), Object);
+		UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::AddRemoteReference: Adding %s to ObjectToNetReferenceHandle, Object: %s (0x%p)" ), *RefHandle.ToString(), *GetNameSafe(Object), Object);
 
 	#if UE_NET_VALIDATE_REFERENCECACHE
 		// Dynamic object might have been referenced before it gets replicated, then it will then already be registered (with a path relative to its outer)
 		if (FNetRefHandle* ExistingHandle = ObjectToNetReferenceHandle.Find(Object))
 		{
-			FCachedNetObjectReference& ExistingCachedObject = ReferenceHandleToCachedReference.FindChecked(*ExistingHandle);
-			if (ExistingCachedObject.NetRefHandle != RefHandle)
+			if (FCachedNetObjectReference* ExistingCachedObject = ReferenceHandleToCachedReference.Find(*ExistingHandle))
 			{
-				UE_LOG_REFERENCECACHE_WARNING(TEXT("AddRemoteReference: Detected conflicting Ref %s"), *ExistingCachedObject.NetRefHandle.ToString());
+				if (ExistingCachedObject->NetRefHandle != RefHandle)
+				{
+					UE_LOG_REFERENCECACHE(Warning, TEXT("ObjectReferenceCache::AddRemoteReference: Detected conflicting Ref %s: Received: %s, Object: %s (0x%p)"), *ExistingCachedObject.NetRefHandle.ToString(),
+					*RefHandle.ToString(), *GetNameSafe(Object), Object);
+				}
 			}
 		}
 	#endif
@@ -411,9 +480,12 @@ void FObjectReferenceCache::AddRemoteReference(FNetRefHandle RefHandle, const UO
 		// The object could already be known as it has been exported as a reference prior to being replicated to this connection
 		if (FCachedNetObjectReference* CacheObjectPtr = ReferenceHandleToCachedReference.Find(RefHandle))
 		{
+			UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::AddRemoteReference: %s, Object: %s (0x%p).  Patching up existing cache that held: 0x%p"), *RefHandle.ToString(), *GetNameSafe(Object), Object, CacheObjectPtr->ObjectKey);
+
 			// Patch-up object pointers
 			CacheObjectPtr->Object = MakeWeakObjectPtr(const_cast<UObject*>(Object));
 			CacheObjectPtr->ObjectKey = Object;
+
 		}
 		else
 		{
@@ -432,6 +504,8 @@ void FObjectReferenceCache::AddRemoteReference(FNetRefHandle RefHandle, const UO
 			CachedObject.bIsPending = false;
 			CachedObject.bIgnoreWhenMissing = false;
 
+			UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::AddRemoteReference: Adding %s to Cache Object: %s (0x%p).  Adding new cache"), *RefHandle.ToString(), *GetNameSafe(Object), Object);
+
 			ReferenceHandleToCachedReference.Add(RefHandle, CachedObject);
 		}
 
@@ -444,7 +518,7 @@ void FObjectReferenceCache::RemoveReference(FNetRefHandle RefHandle, const UObje
 	// Cleanup cached data for dynamic instance
 	if (ensure(RefHandle.IsDynamic()))
 	{
-		UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::RemoveReference %s, Object: %s Pointer: %p"), *RefHandle.ToString(), Object ? *Object->GetName() : TEXT("NULL"), Object);
+		UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::RemoveReference: %s, Object: %s (0x%p)"), *RefHandle.ToString(), *GetNameSafe(Object), Object);
 
 		// We create an iterator to avoid having to find the key twice
 		TMap<FNetRefHandle, FCachedNetObjectReference>::TKeyIterator It = ReferenceHandleToCachedReference.CreateKeyIterator(RefHandle);
@@ -458,7 +532,7 @@ void FObjectReferenceCache::RemoveReference(FNetRefHandle RefHandle, const UObje
 			}
 			else
 			{
-				check(Object == CachedItemToRemove.ObjectKey);
+				ensureAlwaysMsgf(Object == CachedItemToRemove.ObjectKey, TEXT("ObjectReferenceCache::RemoveReference: %s, Object 0x%p doesn't match cached reference 0x%p."), *RefHandle.ToString(), Object, CachedItemToRemove.ObjectKey);
 			}
 
 #if UE_NET_CLEANUP_REFERENCES_WITH_DYNAMIC_OUTER
@@ -473,7 +547,7 @@ void FObjectReferenceCache::RemoveReference(FNetRefHandle RefHandle, const UObje
 					if (ReferenceHandleToCachedReference.RemoveAndCopyValue(SubRefHandle, RemovedSubObjectRef))
 					{
 						const UObject* SubRefObject = RemovedSubObjectRef.Object.Get();
-						UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::RemoveReference %s, Referenced dynamic %s, Object: %s Pointer: %p"), *SubRefHandle.ToString(), *RefHandle.ToString(), SubRefObject ? *SubRefObject->GetName() : TEXT("NULL"), RemovedSubObjectRef.ObjectKey);
+						UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::RemoveReference: %s removed from ObjectToNetReferenceHandle. Referenced dynamic %s, Object: %s Pointer: %p"), *SubRefHandle.ToString(), *RefHandle.ToString(), SubRefObject ? *SubRefObject->GetName() : TEXT("NULL"), RemovedSubObjectRef.ObjectKey);
 
 						ObjectToNetReferenceHandle.Remove(RemovedSubObjectRef.ObjectKey);
 					}
@@ -486,11 +560,14 @@ void FObjectReferenceCache::RemoveReference(FNetRefHandle RefHandle, const UObje
 			// Remove if RelativePath is invalid
 			if (!CachedItemToRemove.RelativePath.IsValid())
 			{
+				UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::RemoveReference: %s, Object: %s (0x%p). Destroying cache since Path is invalid (%s)"),
+					*RefHandle.ToString(), *GetNameSafe(Object), Object, *CachedItemToRemove.RelativePath.ToString());
 				It.RemoveCurrent();
 			}
 			else
 			{
 				// Clear out object reference since it will be invalid
+				UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::RemoveReference: %s, Object: %s (0x%p). Clearing cache reference to (0x%p)"), *RefHandle.ToString(), *GetNameSafe(Object), Object, CachedItemToRemove.ObjectKey);
 				CachedItemToRemove.ObjectKey = nullptr;
 				CachedItemToRemove.Object.Reset();
 			}
@@ -505,15 +582,38 @@ void FObjectReferenceCache::RemoveReference(FNetRefHandle RefHandle, const UObje
 				const FNetRefHandle ExistingRefHandle = ObjectIt.Value();
 				if (ExistingRefHandle == RefHandle)
 				{
+					UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::RemoveReference: %s removed from ObjectToNetReferenceHandle Object: %s (0x%p)."), 
+						*RefHandle.ToString(), *GetNameSafe(Object), Object);
 					ObjectIt.RemoveCurrent();
 				}
 				else
 				{
 					// If we have an existing handle associated with the Object that differs from the one stored in the cache it means that the client might have destroyed the instance without notifying the replication system
 					// and reused the instance, if that is the case we just leave the association as it is
-					UE_LOG_REFERENCECACHE(Verbose, TEXT("FObjectReferenceCache::RemoveReference ExistingReference %s != RefHandle being removed: %s "), *(ExistingRefHandle.ToString()), *RefHandle.ToString());
+					UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::RemoveReference: ExistingReference %s != RefHandle being removed: %s, Object: %s (0x%p) "), 
+						*(ExistingRefHandle.ToString()), *RefHandle.ToString(), *GetNameSafe(Object), Object);
 				}
 			}
+			else
+			{
+				UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::RemoveReference: %s, Object: %s (0x%p). Skipped removing since ObjectToNetReferenceHandle had no entry"), 
+					*RefHandle.ToString(), *GetNameSafe(Object), Object);
+			}
+		}
+		else
+		{
+			bool bSuccesfullyRemoved = false;
+			for (auto RefHandleIt = ObjectToNetReferenceHandle.CreateIterator(); RefHandleIt; ++RefHandleIt)
+			{
+				if (RefHandleIt.Value() == RefHandle)
+				{
+					RefHandleIt.RemoveCurrent();
+					bSuccesfullyRemoved = true;
+					UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::RemoveReference: %s. Successfully removed RefHandle from ObjectToNetReferenceHandle."), *RefHandle.ToString());
+					break;
+				}
+			}
+			UE_CLOG_REFERENCECACHE(!bSuccesfullyRemoved, Verbose, TEXT("ObjectReferenceCache::RemoveReference: %s. Failed removing RefHandle from ObjectToNetReferenceHandle."), *RefHandle.ToString());
 		}
 	}
 }
@@ -527,6 +627,12 @@ UObject* FObjectReferenceCache::GetObjectFromReferenceHandle(FNetRefHandle RefHa
 	return ResolvedObject;
 }
 
+bool FObjectReferenceCache::IsNetRefHandleBroken(FNetRefHandle RefHandle, bool bMustBeRegistered) const
+{
+	const FCachedNetObjectReference* CacheObjectPtr = ReferenceHandleToCachedReference.Find(RefHandle);	
+	return CacheObjectPtr ? CacheObjectPtr->bIsBroken : bMustBeRegistered;
+}
+
 // $IRIS: $TODO: Most of the logic comes from GUIDCache::GetObjectFromNetGUID so we want to keep this in sync
 UObject* FObjectReferenceCache::ResolveObjectReferenceHandleInternal(FNetRefHandle RefHandle, const FNetObjectResolveContext& ResolveContext, bool& bOutMustBeMapped)
 {
@@ -537,8 +643,6 @@ UObject* FObjectReferenceCache::ResolveObjectReferenceHandleInternal(FNetRefHand
 		bOutMustBeMapped = false;
 		return nullptr;
 	}
-
-	check(!CacheObjectPtr->bIsPending);
 	
 	UObject* Object = CacheObjectPtr->Object.Get();
 
@@ -558,7 +662,7 @@ UObject* FObjectReferenceCache::ResolveObjectReferenceHandleInternal(FNetRefHand
 			FNetRefHandle* ExistingRefHandle = ObjectToNetReferenceHandle.Find(Object);
 			if (ExistingRefHandle && *ExistingRefHandle != RefHandle)
 			{
-				UE_LOG_REFERENCECACHE_WARNING(TEXT("ObjectReferenceCache::ResolveObjectRefererenceHandle detected potential conflicting references: %s and %s"), *RefHandle.ToString(), *(*ExistingRefHandle).ToString());
+				UE_LOG_REFERENCECACHE(Warning, TEXT("ObjectReferenceCache::ResolveObjectRefererenceHandle detected potential conflicting references: %s and %s"), *RefHandle.ToString(), *(*ExistingRefHandle).ToString());
 			}
 		}
 #endif
@@ -632,10 +736,9 @@ UObject* FObjectReferenceCache::ResolveObjectReferenceHandleInternal(FNetRefHand
 
 	// At this point, we either have an outer, or we are a package
 	const uint32 TreatAsLoadedFlags = EPackageFlags::PKG_CompiledIn | EPackageFlags::PKG_PlayInEditor;
-
 	check(!CacheObjectPtr->bIsPending);
 
-	if (!ensure(ObjOuter == nullptr || ObjOuter->GetOutermost()->IsFullyLoaded() || ObjOuter->GetOutermost()->HasAnyPackageFlags(TreatAsLoadedFlags)))
+	if (!ensure(ObjOuter == nullptr || ObjOuter->GetPackage()->IsFullyLoaded() || ObjOuter->GetPackage()->HasAnyPackageFlags(TreatAsLoadedFlags)))
 	{
 		UE_LOG(LogIris, Error, TEXT("GetObjectFromRefHandle: Outer is null or package is not fully loaded. FullPath: %s Outer: %s"), ToCStr(FullPath(RefHandle, ResolveContext)), *GetFullNameSafe(ObjOuter));
 	}
@@ -650,21 +753,29 @@ UObject* FObjectReferenceCache::ResolveObjectReferenceHandleInternal(FNetRefHand
 	constexpr bool bReading = true;
 	RenamePathForPie(ResolveContext.ConnectionId, ObjectPath, bReading);
 
-	// See if this object is in memory
-	Object = StaticFindObject(UObject::StaticClass(), ObjOuter, *ObjectPath, false);
+	const FName ObjectPathName(ObjectPath);
 
-	// Assume this is a package if the outer is invalid and this is a static guid
+	// See if this object is in memory
+	Object = FindObjectFast<UObject>(ObjOuter, ObjectPathName);
+#if WITH_EDITOR
+	// Object must be null if the package is a dynamic PIE package with pending external objects still loading, as it would normally while object is async loading
+	if (Object && Object->GetPackage()->IsDynamicPIEPackagePending())
+	{
+		Object = nullptr;
+	}
+#endif
+
+	// Assume this is a package if the outer is invalid and this is a static reference
 	const bool bIsPackage = CacheObjectPtr->bIsPackage;
 
 	if (Object == nullptr && !CacheObjectPtr->bNoLoad)
 	{
 		if (IsAuthority())
 		{
-			// Log when the server needs to re-load an object, it's probably due to a GC after initially loading as default guid
+			// Log when the server needs to re-load an object, it's probably due to a GC after initially loading as default reference
 			UE_LOG(LogIris, Error, TEXT("GetObjectFromRefHandle: Server re-loading object (might have been GC'd). FullPath: %s"), ToCStr(FullPath(RefHandle, ResolveContext)));
 		}
 
-		// $IRIS: $TODO: Implement Async loading support https://jira.it.epicgames.com/browse/UE-123487
 		if (bIsPackage)
 		{
 			// Async load the package if:
@@ -673,27 +784,28 @@ UObject* FObjectReferenceCache::ResolveObjectReferenceHandleInternal(FNetRefHand
 			//	3. We're actually suppose to load (levels don't load here for example)
 			//		(Refer to CanClientLoadObject, which is where we protect clients from trying to load levels)
 
-			//if (ShouldAsyncLoad())
-			//{
-			//	if (!PendingAsyncLoadRequests.Contains(Path))
-			//	{
-			//		CacheObjectPtr->bIsPending = true;
+			if (ShouldAsyncLoad() && !ResolveContext.bForceSyncLoad)
+			{
+				if (!PendingAsyncLoadRequests.Contains(ObjectPathName))
+				{
+					CacheObjectPtr->bIsPending = true;
 
-			//		StartAsyncLoadingPackage(NetGUID, false);
-			//		UE_LOG(LogIris, Error, TEXT("GetObjectFromRefHandle: Async loading package. Path: %s, %s"), *ObjectPath, *RefHandle.ToString());
-			//	}
-			//	else
-			//	{
-			//		ValidateAsyncLoadingPackage(NetGUID);
-			//	}
+					StartAsyncLoadingPackage(*CacheObjectPtr, ObjectPathName, RefHandle, false);
+					UE_LOG_REFERENCECACHE(VeryVerbose, TEXT("GetObjectFromRefHandle: Async loading package. Path: %s, %s"), *ObjectPath, *RefHandle.ToString());
+				}
+				else
+				{
+					ValidateAsyncLoadingPackage(*CacheObjectPtr, ObjectPathName, RefHandle);
+				}
 
-			//	// There is nothing else to do except wait on the delegate to tell us this package is done loading
-			//	return NULL;
-			//}
-			//else
+				// There is nothing else to do except wait on the delegate to tell us this package is done loading
+				return NULL;
+			}
+			else
 			{
 				// Async loading disabled
 				Object = LoadPackage(nullptr, *ObjectPath, LOAD_None);
+				//SyncLoadedGUIDs.AddUnique(NetGUID);
 			}
 		}
 		else
@@ -704,10 +816,10 @@ UObject* FObjectReferenceCache::ResolveObjectReferenceHandleInternal(FNetRefHand
 			//	2. Someone else started async loading the outer package, and it's not fully loaded yet
 			Object = StaticLoadObject(UObject::StaticClass(), ObjOuter, *ObjectPath, nullptr, LOAD_NoWarn);
 
-			//if (ShouldAsyncLoad())
-			//{
-			//	UE_LOG( LogNetPackageMap, Error, TEXT( "GetObjectFromRefHandle: Forced blocking load. Path: %s, %s"), *ObjectPath, *RefHandle.ToString());
-			//}
+			if (ShouldAsyncLoad() && !ResolveContext.bForceSyncLoad)
+			{
+				UE_LOG(LogIris, Error, TEXT( "GetObjectFromRefHandle: Forced blocking load. Path: %s, %s"), *ObjectPath, *RefHandle.ToString());
+			}
 		}
 	}
 
@@ -730,26 +842,29 @@ UObject* FObjectReferenceCache::ResolveObjectReferenceHandleInternal(FNetRefHand
 		{
 			// This isn't really a package but it should be
 			CacheObjectPtr->bIsBroken = true;
-			//UE_LOG( LogNetPackageMap, Error, TEXT( "GetObjectFromNetGUID: Object is not a package but should be! Path: %s, NetGUID: %s" ), *Path.ToString(), *NetGUID.ToString() );
+			UE_LOG(LogIris, Error, TEXT( "GetObjectFromRefHandle: Object is not a package but should be! Path: %s, NetRefHandle: %s" ), *ObjectPath, *RefHandle.ToString() );
 			return nullptr;
 		}
 
 		if (!Package->IsFullyLoaded() 
 			&& !Package->HasAnyPackageFlags(TreatAsLoadedFlags)) //TODO: dependencies of CompiledIn could still be loaded asynchronously. Are they necessary at this point??
 		{
-			//if (ShouldAsyncLoad() && Package->HasAnyInternalFlags(EInternalObjectFlags::AsyncLoading))
-			//{
-			//	CacheObjectPtr->bIsPending = true;
-
-			//	// Something else is already async loading this package, calling load again will add our callback to the existing load request
-			//	StartAsyncLoadingPackage(NetGUID, true);
-			//	UE_LOG(LogNetPackageMap, Log, TEXT("GetObjectFromNetGUID: Listening to existing async load. Path: %s, NetGUID: %s"), *Path.ToString(), *NetGUID.ToString());
-			//}
-			//else
+			if (ShouldAsyncLoad()  && !ResolveContext.bForceSyncLoad && Package->HasAnyInternalFlags(EInternalObjectFlags::AsyncLoading))
+			{
+				// Something else is already async loading this package, calling load again will add our callback to the existing load request
+				StartAsyncLoadingPackage(*CacheObjectPtr, ObjectPathName, RefHandle, true);
+				UE_LOG(LogNetPackageMap, Log, TEXT("GetObjectFromRefHandle: Listening to existing async load. Path: %s, NetRefHandle: %s"), *ObjectPath, *RefHandle.ToString());
+			}
+			else if (/*!GbNetCheckNoLoadPackages ||*/ !CacheObjectPtr->bNoLoad)
 			{
 				// If package isn't fully loaded, load it now
 				UE_LOG_REFERENCECACHE(Warning, TEXT("ObjectReferenceCache::GetObjectFromRefHandle Blocking load of %s, %s"), ToCStr(ObjectPath), *RefHandle.ToString());
 				Object = LoadPackage(nullptr, ToCStr(ObjectPath), LOAD_None);
+				//SyncLoadedGUIDs.AddUnique(NetGUID);
+			}
+			else
+			{
+				return nullptr;
 			}
 		}
 	}
@@ -762,7 +877,7 @@ UObject* FObjectReferenceCache::ResolveObjectReferenceHandleInternal(FNetRefHand
 	//	{
 	//		if ( NetworkChecksumMode == ENetworkChecksumMode::SaveAndUse )
 	//		{
-	//			FString ErrorStr = FString::Printf(TEXT("GetObjectFromNetGUID: Network checksum mismatch. ``IDPath: %s, %u, %u"), *FullNetGUIDPath(NetGUID), CacheObjectPtr->NetworkChecksum, NetworkChecksum);
+	//			FString ErrorStr = FString::Printf(TEXT("GetObjectFromRefHandle: Network checksum mismatch. ``IDPath: %s, %u, %u"), *FullRefHandlePath(RefHandle), CacheObjectPtr->NetworkChecksum, NetworkChecksum);
 	//			UE_LOG( LogNetPackageMap, Warning, TEXT("%s"), *ErrorStr );
 
 	//			CacheObjectPtr->bIsBroken = true;
@@ -772,7 +887,7 @@ UObject* FObjectReferenceCache::ResolveObjectReferenceHandleInternal(FNetRefHand
 	//		}
 	//		else
 	//		{
-	//			UE_LOG( LogNetPackageMap, Verbose, TEXT( "GetObjectFromNetGUID: Network checksum mismatch. ``IDPath: %s, %u, %u" ), *FullNetGUIDPath( NetGUID ), CacheObjectPtr->NetworkChecksum, NetworkChecksum );
+	//			UE_LOG( LogNetPackageMap, Verbose, TEXT( "GetObjectFromRefHandle: Network checksum mismatch. ``IDPath: %s, %u, %u" ), *FullRefHandlePath( RefHandle ), CacheObjectPtr->NetworkChecksum, NetworkChecksum );
 	//		}
 	//	}
 	//}
@@ -784,7 +899,7 @@ UObject* FObjectReferenceCache::ResolveObjectReferenceHandleInternal(FNetRefHand
 		return nullptr;
 	}
 
-	// Assign the resolved object to this guid
+	// Assign the resolved object to this reference
 	if (!Object)
 	{
 		if (!CacheObjectPtr->bIgnoreWhenMissing)
@@ -797,7 +912,7 @@ UObject* FObjectReferenceCache::ResolveObjectReferenceHandleInternal(FNetRefHand
 
 	if (!IsValid(Object))
 	{
-		UE_LOG_REFERENCECACHE_WARNING(TEXT("GetObjectFromRefHandle: Resolved object Pointer: %p that is not valid? FullPath: %s"), Object, ToCStr(FullPath(RefHandle, ResolveContext)));
+		UE_LOG_REFERENCECACHE(Verbose, TEXT("GetObjectFromRefHandle: Resolved object Pointer: %p that is not valid? FullPath: %s"), Object, ToCStr(FullPath(RefHandle, ResolveContext)));
 	}
 
 	CacheObjectPtr->Object = MakeWeakObjectPtr(Object);
@@ -838,18 +953,27 @@ UObject* FObjectReferenceCache::ResolveObjectReferenceHandleInternal(FNetRefHand
 	FNetRefHandle* ExistingHandle = ObjectToNetReferenceHandle.Find(Object);
 	if (ExistingHandle && (*ExistingHandle != CompleteRefHandle))
 	{		
-		FCachedNetObjectReference& ExistingCachedObject = ReferenceHandleToCachedReference.FindChecked(*ExistingHandle);
+		if (FCachedNetObjectReference* ExistingCachedObjectPtr = ReferenceHandleToCachedReference.Find(*ExistingHandle))
+		{
+			FCachedNetObjectReference& ExistingCachedObject = *ExistingCachedObjectPtr;
 		if (ExistingCachedObject.Object.IsStale())
 		{
-			UE_LOG_REFERENCECACHE_WARNING(TEXT("Invalidating object for Stale Ref %s with %s as the object has been reused"), *ExistingCachedObject.NetRefHandle.ToString(), *CompleteRefHandle.ToString());
+			UE_LOG_REFERENCECACHE(Verbose, TEXT("Invalidating object for Stale Ref %s with %s as the object has been reused"), *ExistingCachedObject.NetRefHandle.ToString(), *CompleteRefHandle.ToString());
 		}
 		else if (ExistingCachedObject.Object.HasSameIndexAndSerialNumber(CacheObjectPtr->Object))
 		{
 			bShouldAssign = CompleteRefHandle.GetId() > (*ExistingHandle).GetId();
 			if (bShouldAssign)
 			{
-				UE_LOG_REFERENCECACHE_WARNING(TEXT("Invalidating object for conflicting Ref %s with %s"), *ExistingCachedObject.NetRefHandle.ToString(), *CompleteRefHandle.ToString());
+				UE_LOG_REFERENCECACHE(Verbose, TEXT("Invalidating object for conflicting Ref %s with %s"), *ExistingCachedObject.NetRefHandle.ToString(), *CompleteRefHandle.ToString());
 			}	
+		}
+	}
+		else
+		{
+			UE_LOG_REFERENCECACHE(Warning, TEXT("ObjectReferenceCache::ResolveObjectReferenceHandleInternal removed %s from ObjectToNetReferenceHandle due to mismatch with cache. Object %s (0x%p) "), *ExistingHandle->ToString(), *GetNameSafe(Object), Object);
+			ObjectToNetReferenceHandle.Remove(Object);
+			ExistingHandle = nullptr;
 		}
 	}
 
@@ -859,9 +983,15 @@ UObject* FObjectReferenceCache::ResolveObjectReferenceHandleInternal(FNetRefHand
 	{
 		ObjectToNetReferenceHandle.Add(Object, CompleteRefHandle);
 		UE_NET_TRACE_NETHANDLE_CREATED(CompleteRefHandle, CreatePersistentNetDebugName(ResolvedToken), 0, IsAuthority() ? 1U : 0U);
+
+		UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::ResolveObjectReferenceHandleInternal Adding %s Object %s (0x%p) to ObjectToNetReferenceHandle"),
+			*CompleteRefHandle.ToString(), *GetNameSafe(Object), Object);
 	}
 	
-	UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::ResolveObjectRefererenceHandle %s for Object: %s Pointer: %p"), *RefHandle.ToString(), ToCStr(Object->GetPathName()), Object);
+	UE_LOG_REFERENCECACHE(VeryVerbose, TEXT("ObjectReferenceCache::ResolveObjectRefererenceHandle %s for ObjectPath: %s Object %s (0x%p)"), *RefHandle.ToString(), ToCStr(Object->GetPathName()), *GetNameSafe(Object), Object);
+
+	// Update our QueuedObjectReference if one exists.
+	UpdateTrackedQueuedBatchObjectReference(CompleteRefHandle, Object);
 
 	return Object;
 }
@@ -874,8 +1004,6 @@ ENetObjectReferenceResolveResult FObjectReferenceCache::ResolveObjectReference(c
 	if (Reference.PathToken.IsValid())
 	{
 		// This path is only used by Client to Server references
-		//$TODO: $IRIS: Should we try to load or not? Currently we do not!
-
 		const TCHAR* ResolvedToken = StringTokenStore->ResolveRemoteToken(Reference.PathToken, *ResolveContext.RemoteNetTokenStoreState);
 		if (ResolvedToken)
 		{
@@ -888,11 +1016,35 @@ ENetObjectReferenceResolveResult FObjectReferenceCache::ResolveObjectReference(c
 			{
 				UObject* ReplicatedOuter = GetObjectFromReferenceHandle(Reference.GetRefHandle());
 				ResolvedObject = ReplicatedOuter ? StaticFindObject(UObject::StaticClass(), ReplicatedOuter, ToCStr(ObjectPath), false) : nullptr;
+
+				if (ResolvedObject == nullptr)
+				{
+					UE_LOG_REFERENCECACHE(Warning, TEXT("ResolveObjectReference Failed to resolve clientassigned ref: %s due to not finding object with relative path %s."), *Reference.ToString(), *ObjectPath);	
+				}
 			}
 			else
 			{
 				ResolvedObject = StaticFindObject(UObject::StaticClass(), nullptr, *ObjectPath, false);
+
+				// Try to load package if it wasn't found. Note load package fails if the package is already loaded.
+				if (ResolvedObject == nullptr)
+				{
+					FPackagePath Path = FPackagePath::FromPackageNameChecked(FPackageName::ObjectPathToPackageName(ObjectPath));
+					if (UPackage* LoadedPackage = LoadPackage(nullptr, Path, LOAD_None))
+					{
+						ResolvedObject = StaticFindObject(UObject::StaticClass(), nullptr, *ObjectPath, false);	
+					}
+				}
+
+				if (ResolvedObject == nullptr)
+				{
+					UE_LOG_REFERENCECACHE(Warning, TEXT("ResolveObjectReference Failed to resolve clientassigned ref: due to not finding object with path %s."), *ObjectPath);	
+				}
 			}
+		}
+		else
+		{
+			UE_LOG_REFERENCECACHE(Warning, TEXT("ResolveObjectReference Failed to resolve clientassigned ref: %s due to missing token:"), *Reference.ToString());	
 		}
 	}
 	else
@@ -996,7 +1148,8 @@ FNetObjectReference FObjectReferenceCache::GetOrCreateObjectReference(const FStr
 
 		ReferenceHandleToCachedReference.Add(RefHandle, CachedObject);
 	
-		UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::GetOrCreateObjectReference(FromPath) %s for Object %s, %s"), *CachedObject.NetRefHandle.ToString(), ToCStr(ObjectPath), *CachedObject.OuterNetRefHandle.ToString());
+		UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::GetOrCreateObjectReference(FromPath) Added cache for %s for Object: %s, OuterHandle %s OuterObject: %s (0x%p)"), 
+			*CachedObject.NetRefHandle.ToString(), ToCStr(ObjectPath), *CachedObject.OuterNetRefHandle.ToString(), *GetNameSafe(Outer), Outer);
 	}
 
 	OutReference = FNetObjectReference(RefHandle);
@@ -1072,13 +1225,7 @@ void FObjectReferenceCache::WriteFullReferenceInternal(FNetSerializationContext&
 	UE_LOG_REFERENCECACHE(VeryVerbose, TEXT("ObjectReferenceCache::WriteFullReferenceInternal Auth: %u %s, Outer: %s Export: %u"), IsAuthority() ? 1U : 0U, *CachedObject->NetRefHandle.ToString(), *CachedObject->OuterNetRefHandle.ToString(), bMustExport ? 1U : 0U);
 
 	if (Writer->WriteBool(bMustExport))
-	{
-		// $IRIS: $TODO: Implement Async loading support https://jira.it.epicgames.com/browse/UE-123487	
-		//if (ShouldAsyncLoad() && IsAuthority() && !CachedObject->bNoLoad)
-		//{
-		//	MustBeMappedGuidsInLastBunch.AddUnique( NetGUID );
-		//}
-	
+	{	
 		// Write the data, bNoLoad is implicit true for dynamic objects
 		Writer->WriteBits(CachedObject->bNoLoad, 1U);
 
@@ -1102,7 +1249,7 @@ void FObjectReferenceCache::ReadFullReferenceInternal(FNetSerializationContext& 
 
 	if (RecursionCount > INTERNAL_READ_REF_RECURSION_LIMIT) 
 	{
-		UE_LOG_REFERENCECACHE_WARNING(TEXT("ReadFullReferenceInternal: Hit recursion limit."));
+		UE_LOG_REFERENCECACHE(Warning, TEXT("ReadFullReferenceInternal: Hit recursion limit."));
 		check(false);
 		Reader->DoOverflow();
 		OutObjectRef = FNetObjectReference();
@@ -1141,7 +1288,7 @@ void FObjectReferenceCache::ReadFullReferenceInternal(FNetSerializationContext& 
 	if (bIsExported)
 	{
 		// Can we load this object?
-		bNoLoad = Reader->ReadBits(1U);
+		bNoLoad = Reader->ReadBits(1U) & 1;
 		if (Reader->IsOverflown())
 		{
 			check(false);
@@ -1204,6 +1351,9 @@ void FObjectReferenceCache::ReadFullReferenceInternal(FNetSerializationContext& 
 		CachedObject.bIgnoreWhenMissing = bNoLoad;
 
 		ReferenceHandleToCachedReference.Add(NetRefHandle, CachedObject);
+
+		UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::ReadFullReferenceInternal Added cache for %s for Object: %s, OuterHandle %s"),
+			*CachedObject.NetRefHandle.ToString(), *RelativePath.ToString(), *OuterRef.GetRefHandle().ToString());
 	}
 
 	OutObjectRef = FNetObjectReference(NetRefHandle);
@@ -1223,16 +1373,16 @@ void FObjectReferenceCache::ReadFullReferenceInternal(FNetSerializationContext& 
 
 void FObjectReferenceCache::ReadFullReference(FNetSerializationContext& Context, FNetObjectReference& OutRef)
 {
-	FNetObjectReference ObjectRef;
 	FNetBitStreamReader* Reader = Context.GetBitStreamReader();
 
 	UE_NET_TRACE_SCOPE(FullNetObjectReference, *Reader, Context.GetTraceCollector(), ENetTraceVerbosity::Trace);
-	UE_NET_TRACE_NAMED_OBJECT_SCOPE(ReferenceScope, FNetRefHandle(), *Reader, Context.GetTraceCollector(), ENetTraceVerbosity::Verbose);
 	LLM_SCOPE_BYTAG(Iris);
 
-	// Handle client assigned reference
+	// Handle client assigned reference as they never should take the export path.
 	if (const bool bIsClientAssignedReference = Reader->ReadBool())
 	{
+		UE_NET_TRACE_SCOPE(ClientAssigned, *Reader, Context.GetTraceCollector(), ENetTraceVerbosity::Verbose);
+
 		const FNetRefHandle NetRefHandle = ReadNetRefHandle(Context);
 		FNetToken RelativePath = ReadNetToken(Reader);
 		ConditionalReadNetTokenData(Context, RelativePath);
@@ -1243,6 +1393,16 @@ void FObjectReferenceCache::ReadFullReference(FNetSerializationContext& Context,
 		return;
 	}
 
+	// Normally all references are imported, unless we are doing this when reading exports
+	if (Context.GetInternalContext()->bInlineObjectReferenceExports == 0U)
+	{
+		ReadReference(Context, OutRef);
+		return;
+	}
+
+	FNetObjectReference ObjectRef;
+
+	UE_NET_TRACE_NAMED_OBJECT_SCOPE(ReferenceScope, FNetRefHandle(), *Reader, Context.GetTraceCollector(), ENetTraceVerbosity::Verbose);
 	ReadFullReferenceInternal(Context, ObjectRef, 0U);
 
 	UE_NET_TRACE_SET_SCOPE_OBJECTID(ReferenceScope, ObjectRef.GetRefHandle());
@@ -1252,18 +1412,30 @@ void FObjectReferenceCache::ReadFullReference(FNetSerializationContext& Context,
 
 void FObjectReferenceCache::WriteFullReference(FNetSerializationContext& Context, FNetObjectReference Ref) const
 {
-	UE_NET_TRACE_SCOPE(FullNetObjectReference, *Context.GetBitStreamWriter(), Context.GetTraceCollector(), ENetTraceVerbosity::Trace);
-
-	// Handle client assigned reference 
 	FNetBitStreamWriter* Writer = Context.GetBitStreamWriter();
+
+	UE_NET_TRACE_SCOPE(FullNetObjectReference, *Writer, Context.GetTraceCollector(), ENetTraceVerbosity::Trace);
+
+	// Client assigned references are always written outside of the export path
 	const bool bIsClientAssignedReference = Ref.PathToken.IsValid();
 	if (Writer->WriteBool(bIsClientAssignedReference))
 	{
+		UE_NET_TRACE_SCOPE(ClientAssigned, *Writer, Context.GetTraceCollector(), ENetTraceVerbosity::Verbose);
+
 		WriteNetRefHandle(Context, Ref.GetRefHandle());
 		WriteNetToken(Writer, Ref.PathToken);
-		FNetExportContext* ExportContext = Context.GetExportContext();
-		ConditionalWriteNetTokenData(Context, ExportContext, Ref.PathToken);
+		ConditionalWriteNetTokenData(Context, Context.GetExportContext(), Ref.PathToken);
+		return;
+	}
 
+	// If we do not inline reference exports we just write the reference
+	if (Context.GetInternalContext()->bInlineObjectReferenceExports == 0U)
+	{
+		if (FNetExportContext* ExportContext = Context.GetExportContext())
+		{
+			AddPendingExport(*ExportContext, Ref);
+		}
+		WriteReference(Context, Ref);
 		return;
 	}
 
@@ -1301,7 +1473,7 @@ void FObjectReferenceCache::WriteReference(FNetSerializationContext& Context, FN
 		return;
 	}
 
-	UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::WriteReference Auth: %u %s"), IsAuthority() ? 1U : 0U, *RefHandle.ToString());
+	UE_LOG_REFERENCECACHE(VeryVerbose, TEXT("ObjectReferenceCache::WriteReference Auth: %u %s"), IsAuthority() ? 1U : 0U, *RefHandle.ToString());
 
 	checkSlow(Ref.CanBeExported() || RefHandle.IsDynamic());
 
@@ -1313,7 +1485,6 @@ void FObjectReferenceCache::ReadReference(FNetSerializationContext& Context, FNe
 {
 	UE_NET_TRACE_SCOPE(NetObjectReference, *Context.GetBitStreamReader(), Context.GetTraceCollector(), ENetTraceVerbosity::Trace);
 	UE_NET_TRACE_NAMED_OBJECT_SCOPE(ReferenceScope, FNetRefHandle(), *Context.GetBitStreamReader(), Context.GetTraceCollector(), ENetTraceVerbosity::Verbose);
-	LLM_SCOPE_BYTAG(Iris);
 
 	FNetBitStreamReader* Reader = Context.GetBitStreamReader();
 
@@ -1348,7 +1519,7 @@ void FObjectReferenceCache::ReadReference(FNetSerializationContext& Context, FNe
 	// The handle must exist in the cache or it must be a dynamic handle that will be explicitly registered
 	if (ensureAlwaysMsgf(NetRefHandle.IsDynamic() || ReferenceHandleToCachedReference.Find(NetRefHandle), TEXT("FObjectReferenceCache::ReadReference: Handle %s must already be known or be dynamic"), *NetRefHandle.ToString()))
 	{
-		UE_LOG_REFERENCECACHE(Verbose, TEXT("ObjectReferenceCache::ReadReference Auth: %u %s"), IsAuthority() ? 1U : 0U, *NetRefHandle.ToString());
+		UE_LOG_REFERENCECACHE(VeryVerbose, TEXT("ObjectReferenceCache::ReadReference Auth: %u %s"), IsAuthority() ? 1U : 0U, *NetRefHandle.ToString());
 		OutRef = FNetObjectReference(NetRefHandle);
 	}
 	else
@@ -1357,23 +1528,128 @@ void FObjectReferenceCache::ReadReference(FNetSerializationContext& Context, FNe
 	}
 }
 
-bool FObjectReferenceCache::WriteExports(FNetSerializationContext& Context, TArrayView<const FNetObjectReference> ExportsView) const
+void FObjectReferenceCache::AddPendingExport(FNetExportContext& ExportContext, const FNetObjectReference& Reference) const
 {
-	FNetBitStreamWriter& Writer = *Context.GetBitStreamWriter();
+	const bool bIsClientAssigned = Reference.PathToken.IsValid();
+	const FNetRefHandle Handle = Reference.GetRefHandle();
 
+	if (bIsClientAssigned || (IsAuthority() && Reference.CanBeExported()))
+	{
+		LLM_SCOPE_BYTAG(Iris);
+		ExportContext.AddPendingExport(Reference);
+	}
+}
+
+void FObjectReferenceCache::AddPendingExports(FNetSerializationContext& Context, TArrayView<const FNetObjectReference> ExportsView) const
+{
 	if (FNetExportContext* ExportContext = Context.GetExportContext())
 	{
-		UE_NET_TRACE_SCOPE(Exports, Writer, Context.GetTraceCollector(), ENetTraceVerbosity::Verbose);
+		for (const FNetObjectReference& Reference : ExportsView)
+		{
+			AddPendingExport(*ExportContext, Reference);
+		}
+	}
+}
+
+FObjectReferenceCache::EWriteExportsResult FObjectReferenceCache::WritePendingExports(FNetSerializationContext& Context)
+{	
+	FNetBitStreamWriter& Writer = *Context.GetBitStreamWriter();
+
+	FNetExportContext* ExportContext = Context.GetExportContext();
+	if (!ExportContext || ExportContext->GetBatchExports().ReferencesPendingExportInCurrentBatch.IsEmpty())
+	{
+		return EWriteExportsResult::NoExports;
+	}
+
+	UE_NET_TRACE_SCOPE(Exports, Writer, Context.GetTraceCollector(), ENetTraceVerbosity::Verbose);
+	FNetBitStreamRollbackScope Rollback(*Context.GetBitStreamWriter());
+	const uint32 ExportsStartBitPos = Writer.GetPosBits();
+
+	TArrayView<const FNetObjectReference> ExportsView = MakeArrayView(ExportContext->GetBatchExports().ReferencesPendingExportInCurrentBatch);
+
+	// Force exports to be written
+	{
+		FForceInlineExportScope ForceInlineExportScope(Context.GetInternalContext());
 
 		for (const FNetObjectReference& Reference : ExportsView)
 		{
 			const bool bIsClientAssigned = Reference.PathToken.IsValid();
 			const FNetRefHandle Handle = Reference.GetRefHandle();
-
 			if ((bIsClientAssigned && !ExportContext->IsExported(Reference.GetPathToken())) || (IsAuthority() && Reference.CanBeExported() && !ExportContext->IsExported(Handle)))
 			{
 				Writer.WriteBool(true);
 				WriteFullReference(Context, Reference);
+			}
+		}
+
+		// Write stop bit
+		Writer.WriteBool(false);
+	}
+
+	// We also write any must be mapped exports
+	WriteMustBeMappedExports(Context, ExportsView);
+
+	// Reset state of pending exports
+	ExportContext->ClearPendingExports();
+
+	if (Writer.IsOverflown())
+	{
+		return EWriteExportsResult::BitStreamOverflow;
+	}
+	else if ((Writer.GetPosBits() - ExportsStartBitPos) > 2U)
+	{
+		return EWriteExportsResult::WroteExports;
+	}
+	
+	Rollback.Rollback();
+
+	return EWriteExportsResult::NoExports;
+}
+
+bool FObjectReferenceCache::ReadExports(FNetSerializationContext& Context, TArray<FNetRefHandle>* MustBeMappedExports)
+{
+	FNetBitStreamReader& Reader = *Context.GetBitStreamReader();
+
+	bool bHasExportsToRead = Reader.ReadBool(); 
+	UE_NET_TRACE_SCOPE(Exports, Reader, Context.GetTraceCollector(), ENetTraceVerbosity::Verbose);
+
+	// Force inlined exports
+	{
+		FForceInlineExportScope ForceInlineExportScope(Context.GetInternalContext());
+		while (bHasExportsToRead && !Context.HasErrorOrOverflow())
+		{
+			FNetObjectReference Import;
+			ReadFullReference(Context, Import);
+			bHasExportsToRead = Reader.ReadBool();
+		}
+	}
+
+	if (!Context.HasErrorOrOverflow())
+	{
+		ReadMustBeMappedExports(Context, MustBeMappedExports);
+	}
+
+	return !Context.HasErrorOrOverflow();
+}
+
+bool FObjectReferenceCache::WriteMustBeMappedExports(FNetSerializationContext& Context, TArrayView<const FNetObjectReference> ExportsView) const
+{
+	FNetBitStreamWriter& Writer = *Context.GetBitStreamWriter();
+	FNetExportContext* ExportContext = Context.GetExportContext();
+
+	if (IsAuthority() && ShouldAsyncLoad() && ExportContext)
+	{
+		UE_NET_TRACE_SCOPE(MustBeMappedExports, Writer, Context.GetTraceCollector(), ENetTraceVerbosity::Verbose);
+
+		for (const FNetObjectReference& Reference : ExportsView)
+		{
+			const FNetRefHandle Handle = Reference.GetRefHandle();
+			const FCachedNetObjectReference* CachedObject = Reference.CanBeExported() ? ReferenceHandleToCachedReference.Find(Handle) : nullptr;
+			if (CachedObject && !CachedObject->bNoLoad)
+			{
+				UE_NET_TRACE_OBJECT_SCOPE(Handle, *Context.GetBitStreamWriter(), Context.GetTraceCollector(), ENetTraceVerbosity::Verbose);
+				Writer.WriteBool(true);
+				WriteNetRefHandle(Context, Handle);
 			}
 		}
 	}
@@ -1384,21 +1660,26 @@ bool FObjectReferenceCache::WriteExports(FNetSerializationContext& Context, TArr
 	return !Writer.IsOverflown();
 }
 
-bool FObjectReferenceCache::ReadExports(FNetSerializationContext& Context)
+void FObjectReferenceCache::ReadMustBeMappedExports(FNetSerializationContext& Context, TArray<FNetRefHandle>* MustBeMappedExports)
 {
 	FNetBitStreamReader& Reader = *Context.GetBitStreamReader();
 
 	bool bHasExportsToRead = Reader.ReadBool(); 
-	UE_NET_TRACE_SCOPE(Exports, Reader, Context.GetTraceCollector(), ENetTraceVerbosity::Verbose);
+	UE_NET_TRACE_SCOPE(MustBeMappedExports, Reader, Context.GetTraceCollector(), ENetTraceVerbosity::Verbose);
 
 	while (bHasExportsToRead && !Context.HasErrorOrOverflow())
 	{
-		FNetObjectReference Import;
-		ReadFullReference(Context, Import);
-		bHasExportsToRead  = Reader.ReadBool();
-	}
+		UE_NET_TRACE_NAMED_OBJECT_SCOPE(ReferenceScope, FNetRefHandle(), *Context.GetBitStreamReader(), Context.GetTraceCollector(), ENetTraceVerbosity::Verbose);
+		const FNetRefHandle MustBeMappedHandle = ReadNetRefHandle(Context);
+		UE_NET_TRACE_SET_SCOPE_OBJECTID(ReferenceScope, MustBeMappedHandle);	
 
-	return !Context.HasErrorOrOverflow();
+		bHasExportsToRead = Reader.ReadBool();
+
+		if (MustBeMappedExports)
+		{
+			MustBeMappedExports->Add(MustBeMappedHandle);
+		}
+	}
 }
 
 FString FObjectReferenceCache::FullPath(FNetRefHandle RefHandle, const FNetObjectResolveContext& ResolveContext) const
@@ -1412,7 +1693,7 @@ FString FObjectReferenceCache::FullPath(FNetRefHandle RefHandle, const FNetObjec
 
 void FObjectReferenceCache::GenerateFullPath_r(FNetRefHandle RefHandle, const FNetObjectResolveContext& ResolveContext, FString& FullPath) const
 {
-	if ( !RefHandle.IsValid() )
+	if (!RefHandle.IsValid())
 	{
 		// This is the end of the outer chain, we're done
 		return;
@@ -1462,5 +1743,216 @@ void FObjectReferenceCache::GenerateFullPath_r(FNetRefHandle RefHandle, const FN
 		}
 	}
 }
+
+
+void FObjectReferenceCache::ValidateAsyncLoadingPackage(FCachedNetObjectReference& CacheObject, FName PackagePath, const FNetRefHandle RefHandle)
+{
+	// With level streaming support we may end up trying to load the same package with a different
+	// RefHandle during replay fast-forwarding. This is because if a package was unloaded, and later
+	// re-loaded, it will likely be assigned a new RefHandle (since the TWeakObjectPtr to the old package
+	// in the cache object would have gone stale). During replay fast-forward, it's possible
+	// to see the new RefHandle before the previous one has finished loading, so here we fix up
+	// PendingAsyncLoadRequests to refer to the new NetRefHandle. Also keep track of all the NetRefHandles referring
+	// to the same package so their CacheObjects can be properly updated later.
+	FPendingAsyncLoadRequest& PendingLoadRequest = PendingAsyncLoadRequests[PackagePath];
+
+	PendingLoadRequest.Merge(RefHandle);
+	CacheObject.bIsPending = true;
+
+	if (PendingLoadRequest.NetRefHandles.Last() != RefHandle)
+	{
+		UE_LOG_REFERENCECACHE(VeryVerbose, TEXT("ValidateAsyncLoadingPackage: Already async loading package with a different NetRefHandle. Path: %s, original RefHandle: %s, new RefHandle: %s"),
+			*PackagePath.ToString(), *PendingLoadRequest.NetRefHandles.Last().ToString(), *RefHandle.ToString());
+	}
+	else
+	{
+		UE_LOG_REFERENCECACHE(VeryVerbose, TEXT("ValidateAsyncLoadingPackage: Already async loading package. Path: %s, RefHandle: %s"), *PackagePath.ToString(), *RefHandle.ToString());
+	}
+	
+//#if CSV_PROFILER
+//	PendingLoadRequest.bWasRequestedByOwnerOrPawn |= IsTrackingOwnerOrPawn();
+//#endif
+}
+
+void FObjectReferenceCache::StartAsyncLoadingPackage(FCachedNetObjectReference& CacheObject, FName PackagePath, const FNetRefHandle RefHandle, const bool bWasAlreadyAsyncLoading)
+{
+	LLM_SCOPE_BYTAG(Iris);
+
+	// Need timer?
+	FPendingAsyncLoadRequest LoadRequest(RefHandle, ReplicationSystem->GetElapsedTime());
+	
+//#if CSV_PROFILER
+//	LoadRequest.bWasRequestedByOwnerOrPawn = IsTrackingOwnerOrPawn();
+//#endif
+
+	CacheObject.bIsPending = true;
+
+	FPendingAsyncLoadRequest* ExistingRequest = PendingAsyncLoadRequests.Find(PackagePath);
+	if (ExistingRequest)
+	{
+		// Same package name but a possibly different net GUID. Note down the GUID and wait for the async load completion callback
+		ExistingRequest->Merge(LoadRequest);
+		return;
+	}
+
+	PendingAsyncLoadRequests.Emplace(PackagePath, MoveTemp(LoadRequest));
+
+	//DelinquentAsyncLoads.MaxConcurrentAsyncLoads = FMath::Max<uint32>(DelinquentAsyncLoads.MaxConcurrentAsyncLoads, PendingAsyncLoadRequests.Num());
+
+	LoadPackageAsync(PackagePath.ToString(), FLoadPackageAsyncDelegate::CreateRaw(this, &FObjectReferenceCache::AsyncPackageCallback));
+}
+
+void FObjectReferenceCache::AsyncPackageCallback(const FName& PackageName, UPackage* Package, EAsyncLoadingResult::Type Result)
+{
+	// $TODO: $IRIS
+	// We probably want to deffer this to a safe time to process, we do not want any callbacks when we do not expect them
+	// Probably want to put this in a queue that we can guard to be processed when we are ready.
+	
+	LLM_SCOPE_BYTAG(Iris);
+
+	check(Package == nullptr || Package->IsFullyLoaded());
+
+	if (FPendingAsyncLoadRequest const* const PendingLoadRequest = PendingAsyncLoadRequests.Find(PackageName))
+	{
+		const bool bIsBroken = (Package == nullptr);
+
+		for (FNetRefHandle RefHandleToProcess : PendingLoadRequest->NetRefHandles)
+		{
+			if (FCachedNetObjectReference* CacheObject = ReferenceHandleToCachedReference.Find(RefHandleToProcess))
+			{
+				if (!CacheObject->bIsPending)
+				{
+					UE_LOG_REFERENCECACHE(Error, TEXT("AsyncPackageCallback: Package wasn't pending. Path: %s, RefHandle: %s"), *PackageName.ToString(), *RefHandleToProcess.ToString());
+				}
+
+				CacheObject->bIsPending = false;
+
+				if (bIsBroken)
+				{
+					CacheObject->bIsBroken = true;
+					UE_LOG_REFERENCECACHE(Error, TEXT("AsyncPackageCallback: Package FAILED to load. Path: %s, RefHandle: %s"), *PackageName.ToString(), *RefHandleToProcess.ToString());
+				}
+
+				if (UObject* Object = CacheObject->Object.Get())
+				{
+					// Something is loaded, we can now resolve queued data
+					UpdateTrackedQueuedBatchObjectReference(RefHandleToProcess, Object);
+
+					// $TODO: $IRIS
+					// This is odd, can we deprecate?, Does not really belong here IMHO
+					// If we need it, we can expose and bind a delegate from NetDriver
+					//if (UWorld* World = Object->GetWorld())
+					//{
+					//	if (AGameStateBase* GS = World->GetGameState())
+					//	{
+					//		GS->AsyncPackageLoaded(Object);
+					//	}
+					//}
+				}
+			}
+			else
+			{
+				UE_LOG_REFERENCECACHE(Error, TEXT("AsyncPackageCallback: Could not find net guid. Path: %s, RefHandle: %s"), *PackageName.ToString(), *RefHandleToProcess.ToString());
+			}
+		}
+
+		// This won't be the exact amount of time that we spent loading the package, but should
+		// give us a close enough estimate (within a frame time).
+		const double LoadTime = (ReplicationSystem->GetElapsedTime() - PendingLoadRequest->RequestStartTime);
+		//if (GGuidCacheTrackAsyncLoadingGUIDThreshold > 0.f &&
+		//	LoadTime >= GGuidCacheTrackAsyncLoadingGUIDThreshold)
+		//{
+		//	DelinquentAsyncLoads.DelinquentAsyncLoads.Emplace(PackageName, LoadTime);
+		//}
+
+//#if CSV_PROFILER
+//		if (PendingLoadRequest->bWasRequestedByOwnerOrPawn &&
+//			GGuidCacheTrackAsyncLoadingGUIDThresholdOwner > 0.f &&
+//			LoadTime >= GGuidCacheTrackAsyncLoadingGUIDThresholdOwner &&
+//			Driver->ServerConnection)
+//		{
+//			CSV_EVENT(PackageMap, TEXT("Owner Net Stall Async Load (Package=%s|LoadTime=%.2f)"), *PackageName.ToString(), LoadTime);
+//		}
+//#endif
+
+		PendingAsyncLoadRequests.Remove(PackageName);
+	}
+	else
+	{
+		UE_LOG_REFERENCECACHE(Error, TEXT( "AsyncPackageCallback: Could not find package. Path: %s" ), *PackageName.ToString());
+	}
+}
+
+void FObjectReferenceCache::SetAsyncLoadMode(const EAsyncLoadMode NewMode)
+{
+	AsyncLoadMode = NewMode;
+	if (const IConsoleVariable* CVarAllowAsyncLoading = IConsoleManager::Get().FindConsoleVariable(TEXT("net.AllowAsyncLoading"), false /* bTrackFrequentCalls */))
+	{
+		bCachedCVarAllowAsyncLoading = CVarAllowAsyncLoading->GetInt() > 0;
+	}
+}
+
+bool FObjectReferenceCache::ShouldAsyncLoad() const
+{
+	if (!bIrisAllowAsyncLoading)
+	{
+		return false;
+	}
+
+	switch (AsyncLoadMode)
+	{
+		case EAsyncLoadMode::UseCVar:		return bCachedCVarAllowAsyncLoading;
+		case EAsyncLoadMode::ForceDisable:	return false;
+		case EAsyncLoadMode::ForceEnable:	return true;
+		default: ensureMsgf( false, TEXT( "Invalid AsyncLoadMode: %i" ), (int32)AsyncLoadMode ); return false;
+	}
+}
+void FObjectReferenceCache::AddReferencedObjects(FReferenceCollector& ReferenceCollector)
+{
+	for (auto& It : QueuedBatchObjectReferences)
+	{
+		FQueuedBatchObjectReference& Ref = It.Value;
+
+		if (Ref.Object)
+		{
+			// AddReferencedObject will set our reference to nullptr if the object is pending kill.
+			ReferenceCollector.AddReferencedObject(Ref.Object, ReplicationSystem);
+
+			if (!Ref.Object)
+			{
+				UE_LOG_REFERENCECACHE(Warning, TEXT("FObjectReferenceCache::CollectReferences: QueuedBatchObjectReference was killed by GC. %s"), *(It.Key.ToString()));
+			}			
+		}
+	}
+}
+
+void FObjectReferenceCache::AddTrackedQueuedBatchObjectReference(const FNetRefHandle InHandle, const UObject* InObject)
+{
+	FQueuedBatchObjectReference& Ref = QueuedBatchObjectReferences.FindOrAdd(InHandle);
+	Ref.Object = InObject;
+	++Ref.RefCount;
+}
+
+void FObjectReferenceCache::UpdateTrackedQueuedBatchObjectReference(const FNetRefHandle InHandle, const UObject* NewObject)
+{
+	if (FQueuedBatchObjectReference* Ref = QueuedBatchObjectReferences.Find(InHandle))
+	{
+		Ref->Object = NewObject;
+	}
+}
+
+void FObjectReferenceCache::RemoveTrackedQueuedBatchObjectReference(const FNetRefHandle InHandle)
+{
+	if (auto It = QueuedBatchObjectReferences.CreateKeyIterator(InHandle))
+	{
+		FQueuedBatchObjectReference& Ref = It.Value();
+		check(Ref.RefCount > 0);
+		if (--Ref.RefCount == 0)
+		{
+			It.RemoveCurrent();
+		}
+	}
+}
+
 
 }

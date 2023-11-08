@@ -3,36 +3,24 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/DisplayClusterShader_Enums.h"
 #include "RHI.h"
 
-enum class EDisplayClusterShaderParametersICVFX_ChromakeySource : uint8
+/**
+ * Camera view projection data
+ */
+struct FDisplayClusterShaderParametersICVFX_CameraViewProjection
 {
-	// Dont use chromakey
-	Disabled = 0,
-
-	// Render color over camera frame
-	FrameColor,
-
-	// Render specified layer from scene
-	ChromakeyLayers,
+	FRotator ViewRotation;
+	FVector  ViewLocation;
+	FMatrix  PrjMatrix;
 };
 
-enum class EDisplayClusterShaderParametersICVFX_LightcardRenderMode : uint8
-{
-	// Render incamera frame over lightcard
-	Under = 0,
-
-	// Over lightcard over incamera frame
-	Over,
-};
-
-struct FDisplayClusterShaderParametersICVFX_CameraContext
-{
-	FRotator CameraViewRotation;
-	FVector  CameraViewLocation;
-	FMatrix  CameraPrjMatrix;
-};
-
+/**
+ * ICVFX rendering uses the resources of other viewports
+ * During initialization on a game thread, only the name of the viewport is saved here
+ * Later on the rendering thread, the resource reference is initialized
+ */
 struct FDisplayClusterShaderParametersICVFX_ViewportResource
 {
 public:
@@ -60,57 +48,54 @@ public:
 	FRHITexture* Texture = nullptr;
 };
 
-// Compact ICVFX data for viewport
+/**
+ * This is where the ICVFX data for the outer viewport is stored.
+ */
 class FDisplayClusterShaderParameters_ICVFX
 {
 public:
 	FDisplayClusterShaderParameters_ICVFX()
 	{ }
 
-	FDisplayClusterShaderParameters_ICVFX(const FDisplayClusterShaderParameters_ICVFX& InParameters)
-	{
-		SetParameters(InParameters);
-	}
-
 public:
-	bool IsLightcardOverUsed() const
+	inline bool IsLightCardOverUsed() const
 	{
-		return Lightcard.IsValid() && LightcardMode == EDisplayClusterShaderParametersICVFX_LightcardRenderMode::Over;
+		return LightCard.IsValid() && LightCardMode == EDisplayClusterShaderParametersICVFX_LightCardRenderMode::Over;
 	}
 
-	bool IsLightcardUnderUsed() const
+	inline bool IsLightCardUnderUsed() const
 	{
-		return Lightcard.IsValid() && LightcardMode == EDisplayClusterShaderParametersICVFX_LightcardRenderMode::Under;
+		return LightCard.IsValid() && LightCardMode == EDisplayClusterShaderParametersICVFX_LightCardRenderMode::Under;
 	}
 
-	bool IsUVLightcardOverUsed() const
+	inline bool IsUVLightCardOverUsed() const
 	{
-		return UVLightcard.IsValid() && LightcardMode == EDisplayClusterShaderParametersICVFX_LightcardRenderMode::Over;
+		return UVLightCard.IsValid() && LightCardMode == EDisplayClusterShaderParametersICVFX_LightCardRenderMode::Over;
 	}
 
-	bool IsUVLightcardUnderUsed() const
+	inline bool IsUVLightCardUnderUsed() const
 	{
-		return UVLightcard.IsValid() && LightcardMode == EDisplayClusterShaderParametersICVFX_LightcardRenderMode::Under;
+		return UVLightCard.IsValid() && LightCardMode == EDisplayClusterShaderParametersICVFX_LightCardRenderMode::Under;
 	}
 
-	bool IsCameraUsed(int32 CameraIndex) const
+	inline bool IsCameraUsed(int32 CameraIndex) const
 	{
-		return (Cameras.Num() > CameraIndex) && CameraIndex >= 0 && Cameras[CameraIndex].IsUsed();
+		return Cameras.IsValidIndex(CameraIndex) && Cameras[CameraIndex].IsUsed();
 	}
 
-	bool IsAnyCameraUsed() const
+	inline bool IsAnyCameraUsed() const
 	{
-		return (Cameras.Num() > 0);
+		return !Cameras.IsEmpty();
 	}
 
-	bool IsMultiCamerasUsed() const
+	inline bool IsMultiCamerasUsed() const
 	{
-		return (Cameras.Num() > 1);
+		return Cameras.Num() > 1;
 	}
 
-	bool IsValid()
+	inline bool IsValid()
 	{
-		return Lightcard.IsValid() || UVLightcard.IsValid() || IsAnyCameraUsed();
+		return LightCard.IsValid() || UVLightCard.IsValid() || IsAnyCameraUsed();
 	}
 
 public:
@@ -118,8 +103,8 @@ public:
 	{
 		Cameras.Empty();
 
-		UVLightcard.Reset();
-		Lightcard.Reset();
+		UVLightCard.Reset();
+		LightCard.Reset();
 	}
 
 	// Implement copy ref and arrays
@@ -129,9 +114,11 @@ public:
 
 		Cameras = InParameters.Cameras;
 
-		UVLightcard   = InParameters.UVLightcard;
-		Lightcard     = InParameters.Lightcard;
-		LightcardMode = InParameters.LightcardMode;
+		CameraOverlappingRenderMode = InParameters.CameraOverlappingRenderMode;
+
+		UVLightCard = InParameters.UVLightCard;
+		LightCard   = InParameters.LightCard;
+		LightCardMode = InParameters.LightCardMode;
 	}
 
 	inline void SortCamerasRenderOrder()
@@ -147,25 +134,33 @@ public:
 	}
 
 public:
-	// ICVFX Target only data
+	/**
+	 * Incamera render settings
+	 */
 	struct FCameraSettings
 	{
-		bool IsUsed() const
+		inline bool IsUsed() const
 		{
 			return (ChromakeySource == EDisplayClusterShaderParametersICVFX_ChromakeySource::FrameColor) || Resource.IsValid();
 		}
 
-		bool IsChromakeyMarkerUsed() const
+		inline bool IsChromakeyMarkerUsed() const
 		{
 			return ChromakeMarkerTextureRHI.IsValid();
 		}
 
-		void UpdateCameraContext(const FDisplayClusterShaderParametersICVFX_CameraContext& InContext)
+		/** Gets whether a valid texture is available to render chromakey markers for any overlapping ICVFX frustums  */
+		inline bool IsOverlapChromakeyMarkerUsed() const
+		{
+			return OverlapChromakeyMarkerTextureRHI.IsValid();
+		}
+
+		inline void SetViewProjection(const FDisplayClusterShaderParametersICVFX_CameraViewProjection& InLocalSpaceViewProjection)
 		{
 			// Support icvfx stereo - update context from camera for each eye
-			CameraViewRotation = Local2WorldTransform.InverseTransformRotation(InContext.CameraViewRotation.Quaternion()).Rotator();
-			CameraViewLocation = Local2WorldTransform.InverseTransformPosition(InContext.CameraViewLocation);
-			CameraPrjMatrix = InContext.CameraPrjMatrix;
+			ViewProjection.ViewRotation = Local2WorldTransform.InverseTransformRotation(InLocalSpaceViewProjection.ViewRotation.Quaternion()).Rotator();
+			ViewProjection.ViewLocation = Local2WorldTransform.InverseTransformPosition(InLocalSpaceViewProjection.ViewLocation);
+			ViewProjection.PrjMatrix = InLocalSpaceViewProjection.PrjMatrix;
 		}
 
 		/**
@@ -185,26 +180,72 @@ public:
 			}
 		}
 
+		/**
+		 * Copying camera settings from the source camera.
+		 * The function is moved here from the DisplayClusterMedia module, because it must also be updated when new settings are added.
+		 * 
+		 * @param InCameraSettings - source camera settings
+		 * @param bIncludeResources - enables resource copying
+		 */
+		inline void SetCameraSettings(const FCameraSettings& InCameraSettings, const bool bIncludeResources)
+		{
+			if (bIncludeResources)
+			{
+				Resource = InCameraSettings.Resource;
+				Chromakey = InCameraSettings.Chromakey;
+				ChromakeMarkerTextureRHI = InCameraSettings.ChromakeMarkerTextureRHI;
+				OverlapChromakeyMarkerTextureRHI = InCameraSettings.OverlapChromakeyMarkerTextureRHI;
+			}
+
+			SoftEdge = InCameraSettings.SoftEdge;
+
+			InnerCameraBorderColor      = InCameraSettings.InnerCameraBorderColor;
+			InnerCameraBorderThickness  = InCameraSettings.InnerCameraBorderThickness;
+			InnerCameraFrameAspectRatio = InCameraSettings.InnerCameraFrameAspectRatio;
+
+			Local2WorldTransform = InCameraSettings.Local2WorldTransform;
+
+			ViewProjection = InCameraSettings.ViewProjection;
+
+			ChromakeySource = InCameraSettings.ChromakeySource;
+			ChromakeyColor = InCameraSettings.ChromakeyColor;
+			OverlapChromakeyColor = InCameraSettings.OverlapChromakeyColor;
+
+			ChromakeyMarkersColor = InCameraSettings.ChromakeyMarkersColor;
+			ChromakeyMarkersScale = InCameraSettings.ChromakeyMarkersScale;
+			ChromakeyMarkersDistance = InCameraSettings.ChromakeyMarkersDistance;
+			ChromakeyMarkersOffset = InCameraSettings.ChromakeyMarkersOffset;
+
+			OverlapChromakeyMarkersColor = InCameraSettings.OverlapChromakeyMarkersColor;
+			OverlapChromakeyMarkersScale = InCameraSettings.OverlapChromakeyMarkersScale;
+			OverlapChromakeyMarkersDistance = InCameraSettings.OverlapChromakeyMarkersDistance;
+			OverlapChromakeyMarkersOffset = InCameraSettings.OverlapChromakeyMarkersOffset;
+
+			RenderOrder = InCameraSettings.RenderOrder;
+		}
+
 	public:
+		// resource with the camera image
 		FDisplayClusterShaderParametersICVFX_ViewportResource Resource;
+
 		FVector4 SoftEdge;
 
 		FLinearColor InnerCameraBorderColor = FLinearColor::Black;
 		float InnerCameraBorderThickness = 0.1f;
 		float InnerCameraFrameAspectRatio = 1.0f;
 
-		// Camera Origin
 		FTransform Local2WorldTransform;
 
-		// Camera world
-		FRotator CameraViewRotation;
-		FVector  CameraViewLocation;
-		FMatrix  CameraPrjMatrix;
+		// Camera view projection data
+		FDisplayClusterShaderParametersICVFX_CameraViewProjection ViewProjection;
 
 		// Chromakey settings:
 		EDisplayClusterShaderParametersICVFX_ChromakeySource  ChromakeySource = EDisplayClusterShaderParametersICVFX_ChromakeySource::Disabled;
 		FDisplayClusterShaderParametersICVFX_ViewportResource Chromakey;
 		FLinearColor ChromakeyColor = FLinearColor::Black;
+
+		/** The color to use when rendering chromakey for any regions of overlapping ICVFX frustums */
+		FLinearColor OverlapChromakeyColor = FLinearColor::Black;
 
 		// Chromakey markers settings:
 		FLinearColor ChromakeyMarkersColor = FLinearColor::Black;
@@ -212,6 +253,21 @@ public:
 		float ChromakeyMarkersDistance;
 		FVector2D ChromakeyMarkersOffset;
 		FTextureRHIRef ChromakeMarkerTextureRHI;
+
+		/** The color of the chroamkey markers for any regions of overlapping ICVFX frustums */
+		FLinearColor OverlapChromakeyMarkersColor = FLinearColor::Black;
+
+		/** The scale of the chroamkey markers for any regions of overlapping ICVFX frustums */
+		float OverlapChromakeyMarkersScale;
+
+		/** The distance between the chroamkey markers for any regions of overlapping ICVFX frustums */
+		float OverlapChromakeyMarkersDistance;
+
+		/** The offset of the chroamkey markers for any regions of overlapping ICVFX frustums */
+		FVector2D OverlapChromakeyMarkersOffset;
+
+		/** The texture to use to render the chromakey markers for any regions of overlaping ICVFX frustums */
+		FTextureRHIRef OverlapChromakeyMarkerTextureRHI;
 
 		int32 RenderOrder = -1;
 	};
@@ -222,14 +278,14 @@ public:
 	template <typename Predicate>
 	void IterateViewportResourcesByPredicate(Predicate Pred)
 	{
-		if (Lightcard.IsDefined())
+		if (LightCard.IsDefined())
 		{
-			::Invoke(Pred, Lightcard);
+			::Invoke(Pred, LightCard);
 		}
 
-		if (UVLightcard.IsDefined())
+		if (UVLightCard.IsDefined())
 		{
-			::Invoke(Pred, UVLightcard);
+			::Invoke(Pred, UVLightCard);
 		}
 
 		for (FCameraSettings& CameraIt : Cameras)
@@ -250,7 +306,7 @@ public:
 	}
 
 	// Remove unused cameras from render
-	bool CleanupCamerasForRender()
+	inline bool CleanupCamerasForRender()
 	{
 		const TArray<FCameraSettings> InCameras = Cameras;
 		Cameras.Empty();
@@ -266,10 +322,14 @@ public:
 		return Cameras.Num() == InCameras.Num();
 	}
 
+	// All cameras that render on this viewport
 	TArray<FCameraSettings> Cameras;
 
-	// Lightcard settings
-	FDisplayClusterShaderParametersICVFX_ViewportResource    UVLightcard;
-	FDisplayClusterShaderParametersICVFX_ViewportResource    Lightcard;
-	EDisplayClusterShaderParametersICVFX_LightcardRenderMode LightcardMode = EDisplayClusterShaderParametersICVFX_LightcardRenderMode::Under;
+	// Rendering mode for overlapping areas of camera projections
+	EDisplayClusterShaderParametersICVFX_CameraOverlappingRenderMode CameraOverlappingRenderMode = EDisplayClusterShaderParametersICVFX_CameraOverlappingRenderMode::None;
+
+	// LightCard settings
+	FDisplayClusterShaderParametersICVFX_ViewportResource    UVLightCard;
+	FDisplayClusterShaderParametersICVFX_ViewportResource    LightCard;
+	EDisplayClusterShaderParametersICVFX_LightCardRenderMode LightCardMode = EDisplayClusterShaderParametersICVFX_LightCardRenderMode::Under;
 };

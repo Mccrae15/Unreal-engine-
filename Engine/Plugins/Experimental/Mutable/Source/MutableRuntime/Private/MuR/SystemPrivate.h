@@ -8,67 +8,49 @@
 #include "MuR/Operations.h"
 #include "MuR/ImagePrivate.h"
 #include "MuR/MutableString.h"
+#include "MuR/ModelPrivate.h"
 #include "MuR/MeshPrivate.h"
 #include "MuR/InstancePrivate.h"
 #include "MuR/ParametersPrivate.h"
+#include "MuR/MutableTrace.h"
 
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#include "HAL/Thread.h"
+#include "HAL/PlatformTLS.h"
+#endif
+
+namespace mu::MemoryCounters
+{
+	struct FMemoryTrackerInternalMemoryCounterTag {};
+	using FMemoryTrackerInternalMemoryCounter = TMemoryCounter<FMemoryTrackerInternalMemoryCounterTag>;
+}
 
 namespace mu
 {
+	class ExtensionDataStreamer;
 
-	//! Reference-counted colour to be stored in the cache
-	class Colour : public RefCounted
+	// Call the tick of the LLM system (we do this to simulate a frame since the LLM system is not entirelly designed to run over a program)
+	inline void UpdateLLMStats()
 	{
-	public:
-		Colour(FVector4f v = FVector4f()) : m_colour(v) {}
-		FVector4f m_colour;
-	};
-	typedef Ptr<Colour> ColourPtr;
+		// This code will only be compiled (and ran) if the global definition to enable LLM tracking is set to 1 for the host program
+		// Ex : 			GlobalDefinitions.Add("LLM_ENABLED_IN_CONFIG=1");
+#if ENABLE_LOW_LEVEL_MEM_TRACKER && IS_PROGRAM
+		FLowLevelMemTracker& MemTracker = FLowLevelMemTracker::Get();
+		if (MemTracker.IsEnabled())
+		{
+			MemTracker.UpdateStatsPerFrame();
+		}
+#endif
+	}
+
+	constexpr uint64 AllParametersMask = TNumericLimits<uint64> ::Max();
 
 
-	//! Reference-counted bool to be stored in the cache
-	class Bool : public RefCounted
-	{
-	public:
-		Bool(bool v = false) : m_value(v) {}
-		bool m_value;
-	};
-	typedef Ptr<Bool> BoolPtr;
-
-
-	//! Reference-counted scalar to be stored in the cache
-	class Scalar : public RefCounted
-	{
-	public:
-		Scalar(float v = 0.0f) : m_value(v) {}
-		float m_value;
-	};
-	typedef Ptr<Scalar> ScalarPtr;
-
-
-	//! Reference-counted scalar to be stored in the cache
-	class Int : public RefCounted
-	{
-	public:
-		Int(int32 v = 0) : m_value(v) {}
-		int32 m_value;
-	};
-	typedef Ptr<Int> IntPtr;
-
-
-	//! Reference-counted scalar to be stored in the cache
-	class Projector : public RefCounted
-	{
-	public:
-		FProjector m_value;
-	};
-	typedef Ptr<Projector> ProjectorPtr;
-
-
-	//! ExecutinIndex stores the location inside all ranges of the execution of a specific
-	//! operation. The first integer on each pair is the dimension/range index in the program
-	//! array of ranges, and the second integer is the value inside that range.
-	//! The vector order is undefined.
+	/** ExecutinIndex stores the location inside all ranges of the execution of a specific
+	* operation. The first integer on each pair is the dimension/range index in the program
+	* array of ranges, and the second integer is the value inside that range.
+	* The vector order is undefined.
+	*/
 	class ExecutionIndex : public  TArray<TPair<int32, int32>>
 	{
 	public:
@@ -157,7 +139,7 @@ namespace mu
 		//! may have more steges to schedule children that are optional for execution, etc.
 		uint8 Stage : 7;
 
-		//! Type of calculation we are requestinf for this operation.
+		//! Type of calculation we are requesting for this operation.
 		enum class EType : uint8
 		{
 			//! Execute the operation to calculate the full result
@@ -175,7 +157,7 @@ namespace mu
 	}
 
 
-	//! A cache address is the operation plus the context of execution (iteration indices, etc...).
+	/** A cache address is the operation plus the context of execution(iteration indices, etc...). */
 	struct FCacheAddress
 	{
 		/** The meaning of all these fields is the same than the FScheduledOp struct. */
@@ -217,17 +199,25 @@ namespace mu
 	}
 
 
+	inline uint32 GetTypeHash(const Ptr<const Resource>& V)
+	{
+		return ::GetTypeHash(V.get());
+	}
+
+
 	//! Container that stores data per executable code operation (indexed by address and execution
 	//! index).
 	template<class DATA>
 	class CodeContainer
 	{
-	public:
+		using MemoryCounter = MemoryCounters::FMemoryTrackerInternalMemoryCounter;
+		using ArrayDataContainerType = TArray<DATA, FDefaultMemoryTrackingAllocator<MemoryCounter>>;
+		using MapDataContainerType = TMap<FCacheAddress, DATA, FDefaultMemoryTrackingSetAllocator<MemoryCounter>>;
 
+	public:
 		void resize(size_t s)
 		{
-			m_index0.SetNum(s);
-			FMemory::Memzero(m_index0.GetData(), s * sizeof(DATA));
+			m_index0.SetNumZeroed(s);
 		}
 
 		uint32 size_code() const
@@ -277,6 +267,30 @@ namespace mu
 			return 0;
 		}
 
+		inline DATA* get_ptr(const FCacheAddress& at)
+		{
+			if (at.ExecutionIndex == 0 && at.ExecutionOptions == 0)
+			{
+				if (at.At < uint32(m_index0.Num()))
+				{
+					return &m_index0[at.At];
+				}
+				else
+				{
+					return nullptr;
+				}
+			}
+			else
+			{
+				DATA* it = m_otherIndex.Find(at);
+				if (it)
+				{
+					return it;
+				}
+			}
+			return nullptr;
+		}
+
 		inline const DATA* get_ptr(const FCacheAddress& at) const
 		{
 			if (at.ExecutionIndex == 0 && at.ExecutionOptions == 0)
@@ -313,13 +327,26 @@ namespace mu
 			}
 		}
 
+		inline const DATA& operator[](const FCacheAddress& at) const
+		{
+			if (at.ExecutionIndex == 0 && at.ExecutionOptions == 0)
+			{
+				return m_index0[at.At];
+			}
+			else
+			{
+				return m_otherIndex[at];
+			}
+		}
+
 		struct iterator
 		{
 		private:
 			friend class CodeContainer<DATA>;
+
 			const CodeContainer<DATA>* container;
-			typename TArray<DATA>::TIterator it0;
-			typename TMap<FCacheAddress, DATA>::TIterator it1;
+			typename CodeContainer<DATA>::ArrayDataContainerType::TIterator it0;
+			typename CodeContainer<DATA>::MapDataContainerType::TIterator it1;
 
 			iterator(CodeContainer<DATA>* InContainer)
 				: container(InContainer)
@@ -386,7 +413,7 @@ namespace mu
 
 			inline bool IsValid() const
 			{
-				return bool(it0) && bool(it1);
+				return bool(it0) || bool(it1);
 			}
 		};
 
@@ -396,42 +423,77 @@ namespace mu
 			return it;
 		}
 
+		inline int32 GetAllocatedSize() const
+		{
+			return m_index0.GetAllocatedSize()
+				+ m_otherIndex.GetAllocatedSize();
+		}
 	private:
 		// For index 0
-		TArray<DATA> m_index0;
+		ArrayDataContainerType m_index0;
 
 		// For index>0
-		TMap<FCacheAddress, DATA> m_otherIndex;
+		MapDataContainerType m_otherIndex;
 	};
 
 
 	/** Interface for storage of data while Mutable code is being executed. */
 	class FProgramCache
 	{
-	private:
-
-		TArray< ExecutionIndex, TInlineAllocator<4> > m_usedRangeIndices;
-
-		// first value of the pair:
-		// 0 : value not valid (not set).
-		// 1 : valid, not worth freeing for memory
-		// 2 : valid, worth freeing
-		CodeContainer< TPair<int32, Ptr<const RefCounted>> > m_resources;
-
-		// TODO
 	public:
 
-		//! Addressed with OP::ADDRESS. It is true if value for an image desc is valid.
-		TArray<bool> m_descCache;
+		using AllocType = FDefaultMemoryTrackingAllocator<MemoryCounters::FMemoryTrackerInternalMemoryCounter>;
 
-		//! The number of times an operation will be run for the current build operation.
-		//! \todo: this could be optimised by merging in other CodeContainers here.
-		CodeContainer<int> m_opHitCount;
+		template<class Type, class Alloc = AllocType >
+		using TMemoryTrackedArray = TArray<Type, Alloc>;
+		
+		TMemoryTrackedArray<ExecutionIndex, TInlineAllocator<4, AllocType>> m_usedRangeIndices;
 
-	public:
+		/** Runtime data for each program op. */
+		struct FOpExecutionData
+		{
+			uint16 OpHitCount;
 
+			/** Enabled if the op descriptor has been calculated. */
+			uint8 IsDescCacheValid : 1;
+			uint8 IsValueValid : 1;
+			uint8 IsCacheLocked : 1;
 
-		inline const ExecutionIndex& GetRageIndex(uint32_t i)
+			/** The operation DATA_TYPE. */
+			uint8 DataType;
+
+			/** The position in the type-specific array where the result data is stored. 
+			* 0 means index not valid.
+			* For small types like bool, int and float, the actual value is the index, instead of having their own array.
+			*/
+			union
+			{
+				int32 DataTypeIndex;
+				float ScalarResult;
+			};
+		};
+
+		/** Cached resources while the program is executing. 
+		* first value of the pair:
+		* 0 : value not valid (not set).
+		* 1 : valid, not worth freeing for memory
+		* 2 : valid, worth freeing
+		*/
+		CodeContainer<FOpExecutionData> OpExecutionData;
+
+		/** */
+
+		TMemoryTrackedArray<FVector4f> ColorResults;
+		TMemoryTrackedArray<Ptr<const Image>> ImageResults;
+		TMemoryTrackedArray<Ptr<const Layout>> LayoutResults;
+		TMemoryTrackedArray<Ptr<const Mesh>> MeshResults;
+		TMemoryTrackedArray<Ptr<const Instance>> InstanceResults;
+		TMemoryTrackedArray<FProjector> ProjectorResults;
+		TMemoryTrackedArray<Ptr<const String>> StringResults;
+		TMemoryTrackedArray<Ptr<const ExtensionData>> ExtensionDataResults;
+
+		/** */
+		inline const ExecutionIndex& GetRangeIndex(uint32_t i)
 		{
 			// Make sure we have the default element.
 			if (m_usedRangeIndices.IsEmpty())
@@ -444,7 +506,7 @@ namespace mu
 		}
 
 		//!
-		inline uint32_t GetRageIndexIndex(const ExecutionIndex& rangeIndex)
+		inline uint32_t GetRangeIndexIndex(const ExecutionIndex& rangeIndex)
 		{
 			if (rangeIndex.IsEmpty())
 			{
@@ -468,79 +530,114 @@ namespace mu
 			return uint32_t(m_usedRangeIndices.Num()) - 1;
 		}
 
-		void Init(size_t size)
+		void Init(uint32 Size)
 		{
-			m_resources.resize(size);
-			m_opHitCount.resize(size);
+			// This clear would prevent live update cache reusal
+			//OpExecutionData.clear();
+
+			OpExecutionData.resize(Size);
+
+			if (ColorResults.IsEmpty())
+			{
+				// Insert dafault/null values
+				ColorResults.Add(FVector4f());
+				ImageResults.Add(nullptr);
+				LayoutResults.Add(nullptr);
+				MeshResults.Add(nullptr);
+				InstanceResults.Add(nullptr);
+				ProjectorResults.Add(FProjector());
+				StringResults.Add(nullptr);
+				ExtensionDataResults.Add(nullptr);
+			}
 		}
 
-		void SetUnused(FCacheAddress at)
+		void SetUnused(FOpExecutionData& Data)
 		{
-			//UE_LOG(LogMutableCore, Log, TEXT("memory SetUnused : %5d "), at.At);
-			if (m_resources[at].Key >= 2)
+			// Only clear datatypes that have results that use relevant amounts of memory			
+			uint32 DataTypeIndex = Data.DataTypeIndex;
+			Data.IsValueValid = false;
+
+			if (DataTypeIndex)
 			{
-				// Keep the result anyway if it doesn't use any memory.
-				if (m_resources[at].Value)
+				check(Data.DataType < DATATYPE::DT_COUNT);
+				switch ((DATATYPE)Data.DataType)
 				{
-					m_resources[at].Value = nullptr;
-					m_resources[at].Key = 0;
+				case DATATYPE::DT_IMAGE:					
+					ImageResults[DataTypeIndex] = nullptr;
+					break;
+
+				case DATATYPE::DT_MESH:
+					MeshResults[DataTypeIndex] = nullptr;
+					break;
+
+				case DATATYPE::DT_INSTANCE:
+					InstanceResults[DataTypeIndex] = nullptr;
+					break;
+
+				case DATATYPE::DT_EXTENSION_DATA:
+					ExtensionDataResults[DataTypeIndex] = nullptr;
+					break;
+
+				default:
+					break;
 				}
 			}
 		}
 
 
-		bool IsValid(FCacheAddress at)
+		bool IsValid(FCacheAddress at) const
 		{
-			if (at.At == 0) return false;
+			if (at.At == 0 || at.At>=OpExecutionData.size_code() )
+			{
+				return false;
+			}
+
+			const FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			if (!Data)
+			{
+				return false;
+			}
 
 			// Is it a desc data query?
 			if (at.Type == FScheduledOp::EType::ImageDesc)
 			{
-				if (uint32(m_descCache.Num()) > at.At)
-				{
-					return m_descCache[at.At];
-				}
-				else
-				{
-					return false;
-				}
+				return Data->IsDescCacheValid;
 			}
 
 			// It's a full data query.
-			auto d = m_resources.get_ptr(at);
-			return d && d->Key != 0;
+			return Data->IsValueValid != 0;
 		}
 
 
-		void ClearCacheLayer0()
+		/** */
+		void CheckHitCountsCleared()
 		{
-			MUTABLE_CPUPROFILER_SCOPE(ClearLayer0);
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+			//MUTABLE_CPUPROFILER_SCOPE(CheckHitCountsCleared);
 
-			CodeContainer<int>::iterator it = m_opHitCount.begin();
-			for (; it.IsValid(); ++it)
-			{
-				int32 Count = *it;
-				if (Count < 3000000)
-				{
-					SetUnused(it.get_address());
-					*it = 0;
-				}
-			}
-		}
+			//int32 IncorrectCount = 0;
+			//CodeContainer<int>::iterator it = m_opHitCount.begin();
+			//for (; it.IsValid(); ++it)
+			//{
+			//	int32 Count = *it;
+			//	if (Count>0 && Count < UE_MUTABLE_CACHE_COUNT_LIMIT)
+			//	{
+			//		// We don't manage the hitcounts of small types that don't use much memory
+			//		if (m_resources[it.get_address()].Key==2)
+			//		{
+			//			// Op hitcount should have reached 0, otherwise, it means we requested an operation but never read 
+			//			// the result.
+			//			++IncorrectCount;
+			//		}
+			//	}
+			//}
 
-
-		void ClearCacheLayer1()
-		{
-			MUTABLE_CPUPROFILER_SCOPE(ClearLayer1);
-
-			CodeContainer<int>::iterator it = m_opHitCount.begin();
-			for (; it.IsValid(); ++it)
-			{
-				m_resources[it.get_address()].Value = nullptr;
-				m_resources[it.get_address()].Key = 0;
-			}
-
-			m_descCache.SetNum(0);
+			//if (IncorrectCount > 0)
+			//{
+			//	UE_LOG(LogMutableCore, Log, TEXT("The op-hit-count didn't hit 0 for %5d operations. This may mean that too much memory is cached."), IncorrectCount);
+			//	//check(false);
+			//}
+#endif
 		}
 
 
@@ -548,287 +645,407 @@ namespace mu
 		{
 			MUTABLE_CPUPROFILER_SCOPE(ProgramCacheClear);
 
-			size_t codeSize = m_resources.size_code();
-			m_resources.clear();
-			m_resources.resize(codeSize);
-			m_descCache.SetNum(0);
-			m_opHitCount.clear();
-			m_opHitCount.resize(codeSize);
+			uint32 CodeSize = OpExecutionData.size_code();
+			OpExecutionData.clear();
+			OpExecutionData.resize(CodeSize);
+		}
+
+
+		void ClearDescCache()
+		{
+			MUTABLE_CPUPROFILER_SCOPE(ProgramDescCacheClear);
+
+			CodeContainer<FProgramCache::FOpExecutionData>::iterator it = OpExecutionData.begin();
+			for (; it.IsValid(); ++it)
+			{
+				(*it).IsDescCacheValid = false;
+			}
 		}
 
 
 		bool GetBool(FCacheAddress at)
 		{
 			if (!at.At) return false;
-			auto d = m_resources.get_ptr(at);
-			if (!d) return false;
+			const FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			if (!Data) return false;
 
-			Ptr<const Bool> pResult;
-			if (at.At)
-			{
-				pResult = (const Bool*)d->Value.get();
-			}
-			return pResult ? pResult->m_value : false;
+			check(Data->DataType==DATATYPE::DT_BOOL);
+			return Data->DataTypeIndex!=0;
 		}
 
 		float GetScalar(FCacheAddress at)
 		{
 			if (!at.At) return 0.0f;
-			auto d = m_resources.get_ptr(at);
-			if (!d) return 0.0f;
+			const FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			if (!Data) return 0.0f;
 
-			Ptr<const Scalar> pResult;
-			if (at.At)
-			{
-				pResult = (const Scalar*)d->Value.get();
-			}
-			return pResult ? pResult->m_value : 0.0f;
+			check(Data->DataType == DATATYPE::DT_SCALAR);
+			return Data->ScalarResult;
 		}
 
-		int GetInt(FCacheAddress at)
+		int32 GetInt(FCacheAddress at)
 		{
 			if (!at.At) return 0;
-			auto d = m_resources.get_ptr(at);
-			if (!d) return 0;
+			const FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			if (!Data) return 0;
 
-			Ptr<const Int> pResult;
-			if (at.At)
-			{
-				pResult = (const Int*)d->Value.get();
-			}
-			return pResult ? pResult->m_value : 0;
+			check(Data->DataType == DATATYPE::DT_INT);
+			return Data->DataTypeIndex;
 		}
 
 		FVector4f GetColour(FCacheAddress at)
 		{
 			if (!at.At) return FVector4f();
-			auto d = m_resources.get_ptr(at);
-			if (!d) return FVector4f();
+			const FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			if (!Data) return FVector4f();
 
-			Ptr<const Colour> pResult;
-			if (at.At)
-			{
-				pResult = (const Colour*)d->Value.get();
-			}
-			return pResult ? pResult->m_colour : FVector4f();
+			check(Data->DataType == DATATYPE::DT_COLOUR);
+			return ColorResults[Data->DataTypeIndex];
 		}
 
-		Ptr<const Projector> GetProjector(FCacheAddress at)
+		FProjector GetProjector(FCacheAddress at)
 		{
-			if (!at.At) return nullptr;
-			auto d = m_resources.get_ptr(at);
-			if (!d) return nullptr;
+			if (!at.At) return FProjector();
+			const FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			if (!Data) return FProjector();
 
-			Ptr<const Projector> pResult;
-			if (at.At)
-			{
-				pResult = (const Projector*)d->Value.get();
-			}
-			return pResult;
+			check(Data->DataType == DATATYPE::DT_PROJECTOR);
+			return ProjectorResults[Data->DataTypeIndex];
 		}
 
 		Ptr<const Instance> GetInstance(FCacheAddress at)
 		{
 			if (!at.At) return nullptr;
-			auto d = m_resources.get_ptr(at);
-			if (!d) return nullptr;
+			FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			if (!Data) return nullptr;
 
-			Ptr<const Instance> pResult = (const Instance*)d->Value.get();
+			check(Data->DataType == DATATYPE::DT_INSTANCE);
+			Ptr<const Instance> Result = InstanceResults[Data->DataTypeIndex];
 
-			// We need to decrease the hitcount even if the result is null.
-			// Lower hit counts means we shouldn't clear the value
-			if (m_opHitCount[at] > 0)
+			// We need to decrease the hit-count even if the result is null.
+			check(Data->OpHitCount > 0);
+
+			--Data->OpHitCount;
+			if (Data->OpHitCount == 0 && !Data->IsCacheLocked)
 			{
-				--m_opHitCount[at];
-
-				if (m_opHitCount[at] <= 0)
-				{
-					SetUnused(at);
-				}
+				SetUnused(*Data);
 			}
 
-			return pResult;
+			return Result;
+		}
+
+
+		Ptr<const Image> GetImage(FCacheAddress at, bool& bIsLastReference)
+		{
+			bIsLastReference = false;
+
+			if (!at.At) return nullptr;
+			if (at.At >= OpExecutionData.size_code()) return nullptr;
+			FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			if (!Data) return nullptr;
+
+			check(Data->DataType == DATATYPE::DT_IMAGE);
+			Ptr<const Image> Result = ImageResults[Data->DataTypeIndex];
+
+			// We need to decrease the hit-count even if the result is null.
+			check(Data->OpHitCount > 0);
+
+			--Data->OpHitCount;
+			if (Data->OpHitCount == 0 && !Data->IsCacheLocked)
+			{
+				SetUnused(*Data);
+				bIsLastReference = true;
+			}
+
+			return Result;
+		}
+
+
+		Ptr<const Mesh> GetMesh(FCacheAddress at, bool& bIsLastReference)
+		{
+			bIsLastReference = false;
+
+			if (!at.At) return nullptr;
+			if (at.At >= OpExecutionData.size_code()) return nullptr;
+			FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			if (!Data) return nullptr;
+
+			check(Data->DataType == DATATYPE::DT_MESH);
+			Ptr<const Mesh> Result = MeshResults[Data->DataTypeIndex];
+
+			// We need to decrease the hit-count even if the result is null.
+			check(Data->OpHitCount > 0);
+
+			--Data->OpHitCount;
+			if (Data->OpHitCount == 0 && !Data->IsCacheLocked)
+			{
+				SetUnused(*Data);
+				bIsLastReference = true;
+			}
+
+			return Result;
 		}
 
 
 		Ptr<const Layout> GetLayout(FCacheAddress at)
 		{
-			if (!at.At)
-			{
-				return nullptr;
-			}
-			auto d = m_resources.get_ptr(at);
-			if (!d) return nullptr;
+			if (!at.At) return nullptr;
+			FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			if (!Data) return nullptr;
 
-			Ptr<const Layout> pResult;
-			if (at.At)
-			{
-				pResult = (const Layout*)d->Value.get();
-			}
-			return pResult;
+			check(Data->DataType == DATATYPE::DT_LAYOUT);
+			return LayoutResults[Data->DataTypeIndex];
 		}
+
 
 		Ptr<const String> GetString(FCacheAddress at)
 		{
-			if (!at.At)
-			{
-				return nullptr;
-			}
-			auto d = m_resources.get_ptr(at);
-			if (!d)
-				return nullptr;
+			if (!at.At) return nullptr;
+			FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			if (!Data) return nullptr;
 
-			Ptr<const String> pResult;
-			if (at.At)
-			{
-				pResult = (const String*)d->Value.get();
-			}
-			return pResult;
+			check(Data->DataType == DATATYPE::DT_STRING);
+			return StringResults[Data->DataTypeIndex];
 		}
 
-		void SetBool(FCacheAddress at, bool v)
-		{
-			check(at.At < m_resources.size_code());
 
-			Ptr<Bool> pResult = new Bool;
-			pResult->m_value = v;
-			m_resources[at] = TPair<int, Ptr<const RefCounted>>(1, pResult);
+		Ptr<const ExtensionData> GetExtensionData(FCacheAddress at)
+		{
+			if (!at.At) return nullptr;
+			FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			if (!Data) return nullptr;
+
+			check(Data->DataType == DATATYPE::DT_EXTENSION_DATA);
+			return ExtensionDataResults[Data->DataTypeIndex];
 		}
 
 		void SetValidDesc(FCacheAddress at)
 		{
 			check(at.Type == FScheduledOp::EType::ImageDesc);
-			check(at.At < uint32(m_descCache.Num()));
+			check(at.At < OpExecutionData.size_code());
+			FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			Data->IsDescCacheValid = true;
+		}
 
-			m_descCache[at.At] = true;
+		void SetBool(FCacheAddress at, bool v)
+		{
+			check(at.At < OpExecutionData.size_code());
+			FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			check(Data->DataType == DATATYPE::DT_BOOL || Data->DataType == DATATYPE::DT_NONE);
+			Data->DataType = DATATYPE::DT_BOOL;
+			Data->DataTypeIndex = v;
+			Data->IsValueValid = true;
+		}
+
+		void SetInt(FCacheAddress at, int32 v)
+		{
+			check(at.At < OpExecutionData.size_code());
+			FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			check(Data->DataType == DATATYPE::DT_INT || Data->DataType == DATATYPE::DT_NONE);
+			Data->DataType = DATATYPE::DT_INT;
+			Data->DataTypeIndex = v;
+			Data->IsValueValid = true;
 		}
 
 		void SetScalar(FCacheAddress at, float v)
 		{
-			check(at.At < m_resources.size_code());
-
-			Ptr<Scalar> pResult = new Scalar;
-			pResult->m_value = v;
-			m_resources[at] = TPair<int, Ptr<const RefCounted>>(1, pResult);
-		}
-
-		void SetInt(FCacheAddress at, int v)
-		{
-			check(at.At < m_resources.size_code());
-
-			Ptr<Int> pResult = new Int;
-			pResult->m_value = v;
-			m_resources[at] = TPair<int, Ptr<const RefCounted>>(1, pResult);
+			check(at.At < OpExecutionData.size_code());
+			FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			check(Data->DataType == DATATYPE::DT_SCALAR || Data->DataType == DATATYPE::DT_NONE);
+			Data->DataType = DATATYPE::DT_SCALAR;
+			Data->ScalarResult = v;
+			Data->IsValueValid = true;
 		}
 
 		void SetColour(FCacheAddress at, const FVector4f& v)
 		{
-			check(at.At < m_resources.size_code());
+			check(at.At < OpExecutionData.size_code());
+			FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			check(Data->DataType == DATATYPE::DT_COLOUR || Data->DataType == DATATYPE::DT_NONE);
+			Data->DataType = DATATYPE::DT_COLOUR;
+			Data->IsValueValid = true;
 
-			Ptr<Colour> pResult = new Colour;
-			pResult->m_colour = v;
-			m_resources[at] = TPair<int, Ptr<const RefCounted>>(1, pResult);
+			if (!Data->DataTypeIndex)
+			{
+				Data->DataTypeIndex = ColorResults.Num();
+				ColorResults.Add(v);
+			}
+			else
+			{
+				ColorResults[Data->DataTypeIndex] = v;
+			}
+			check(Data->DataTypeIndex != 0);
 		}
 
-		void SetProjector(FCacheAddress at, Ptr<const Projector> v)
+		void SetProjector(FCacheAddress at, const FProjector& v)
 		{
-			check(at.At < m_resources.size_code());
-			m_resources[at] = TPair<int, Ptr<const RefCounted>>(1, v);
+			check(at.At < OpExecutionData.size_code());
+			FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			check(Data->DataType == DATATYPE::DT_PROJECTOR || Data->DataType == DATATYPE::DT_NONE);
+			Data->DataType = DATATYPE::DT_PROJECTOR;
+			Data->IsValueValid = true;
+
+			if (!Data->DataTypeIndex)
+			{
+				Data->DataTypeIndex = ProjectorResults.Num();
+				ProjectorResults.Add(v);
+			}
+			else
+			{
+				ProjectorResults[Data->DataTypeIndex] = v;
+			}
+			check(Data->DataTypeIndex != 0);
 		}
 
 		void SetInstance(FCacheAddress at, Ptr<const Instance> v)
 		{
-			check(at.At < m_resources.size_code());
-			m_resources[at] = TPair<int, Ptr<const RefCounted>>(2, v);
+			check(at.At < OpExecutionData.size_code());
+			FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			check(Data->DataType == DATATYPE::DT_INSTANCE || Data->DataType == DATATYPE::DT_NONE);
+			Data->DataType = DATATYPE::DT_INSTANCE;
+			Data->IsValueValid = true;
+
+			if (!Data->DataTypeIndex)
+			{
+				Data->DataTypeIndex = InstanceResults.Num();
+				InstanceResults.Add(v);
+			}
+			else
+			{
+				InstanceResults[Data->DataTypeIndex] = v;
+			}
+			check(Data->DataTypeIndex != 0);
+		}
+
+		void SetExtensionData(FCacheAddress at, Ptr<const ExtensionData> v)
+		{
+			check(at.At < OpExecutionData.size_code());
+			FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			check(Data->DataType == DATATYPE::DT_EXTENSION_DATA || Data->DataType == DATATYPE::DT_NONE);
+			Data->DataType = DATATYPE::DT_EXTENSION_DATA;
+			Data->IsValueValid = true;
+
+			if (!Data->DataTypeIndex)
+			{
+				Data->DataTypeIndex = ExtensionDataResults.Num();
+				ExtensionDataResults.Add(v);
+			}
+			else
+			{
+				ExtensionDataResults[Data->DataTypeIndex] = v;
+			}
+			check(Data->DataTypeIndex != 0);
 		}
 
 		void SetImage(FCacheAddress at, Ptr<const Image> v)
 		{
-			check(at.At < m_resources.size_code());
-			m_resources[at] = TPair<int, Ptr<const RefCounted>>(2, v);
+			check(at.At < OpExecutionData.size_code());
+			FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			check(Data->DataType == DATATYPE::DT_IMAGE || Data->DataType == DATATYPE::DT_NONE);
+			Data->DataType = DATATYPE::DT_IMAGE;
+			Data->IsValueValid = true;
+
+			if (!Data->DataTypeIndex)
+			{
+				Data->DataTypeIndex = ImageResults.Num();
+				ImageResults.Add(v);
+			}
+			else
+			{
+				ImageResults[Data->DataTypeIndex] = v;
+			}
+			check(Data->DataTypeIndex != 0);
+
+			mu::UpdateLLMStats();
 		}
 
 		void SetMesh(FCacheAddress at, Ptr<const Mesh> v)
 		{
-			// debug
-//            if (v)
-//            {
-//                v->GetPrivate()->CheckIntegrity();
-//            }
+			check(at.At < OpExecutionData.size_code());
+			FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			check(Data->DataType == DATATYPE::DT_MESH || Data->DataType == DATATYPE::DT_NONE);
+			Data->DataType = DATATYPE::DT_MESH;
+			Data->IsValueValid = true;
 
-			check(at.At < m_resources.size_code());
-			m_resources[at] = TPair<int, Ptr<const RefCounted>>(2, v);
+			if (!Data->DataTypeIndex)
+			{
+				Data->DataTypeIndex = MeshResults.Num();
+				MeshResults.Add(v);
+			}
+			else
+			{
+				MeshResults[Data->DataTypeIndex] = v;
+			}
+			check(Data->DataTypeIndex != 0);
+
+			mu::UpdateLLMStats();
 		}
 
 		void SetLayout(FCacheAddress at, Ptr<const Layout> v)
 		{
-			check(at.At < m_resources.size_code());
-			m_resources[at] = TPair<int, Ptr<const RefCounted>>(1, v);
+			check(at.At < OpExecutionData.size_code());
+			FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			check(Data->DataType == DATATYPE::DT_LAYOUT || Data->DataType == DATATYPE::DT_NONE);
+			Data->DataType = DATATYPE::DT_LAYOUT;
+			Data->IsValueValid = true;
+
+			if (!Data->DataTypeIndex)
+			{
+				Data->DataTypeIndex = LayoutResults.Num();
+				LayoutResults.Add(v);
+			}
+			else
+			{
+				LayoutResults[Data->DataTypeIndex] = v;
+			}
+			check(Data->DataTypeIndex != 0);
+
+			mu::UpdateLLMStats();
 		}
 
 		void SetString(FCacheAddress at, Ptr<const String> v)
 		{
-			check(at.At < m_resources.size_code());
-			m_resources[at] = TPair<int, Ptr<const RefCounted>>(1, v);
+			check(at.At < OpExecutionData.size_code());
+			FOpExecutionData* Data = OpExecutionData.get_ptr(at);
+			check(Data->DataType == DATATYPE::DT_STRING || Data->DataType == DATATYPE::DT_NONE);
+			Data->DataType = DATATYPE::DT_STRING;
+			Data->IsValueValid = true;
+
+			if (!Data->DataTypeIndex)
+			{
+				Data->DataTypeIndex = StringResults.Num();
+				StringResults.Add(v);
+			}
+			else
+			{
+				StringResults[Data->DataTypeIndex] = v;
+			}
+			check(Data->DataTypeIndex!=0);
 		}
 
 
 		inline void IncreaseHitCount(FCacheAddress at)
 		{
-			m_opHitCount[at] += 1;
+			// Don't count hits for instruction 0, which is always null. It is usually already
+			// check that At is not 0, and then it is not requested, generating a stray non-zero count
+			// at its position.
+			if (at.At)
+			{
+				check(at.At < OpExecutionData.size_code());
+				FOpExecutionData& Data = OpExecutionData[at];
+				Data.OpHitCount++;
+			}
 		}
 
 		inline void SetForceCached(OP::ADDRESS at)
 		{
-			m_opHitCount[{at, 0, 0}] = 0xffffff;
-		}
-
-
-		Ptr<const Image> GetImage(FCacheAddress at)
-		{
-			if (!at.At) return nullptr;
-			if (size_t(at.At) >= m_resources.size_code()) return nullptr;
-			auto d = m_resources.get_ptr(at);
-			if (!d) return nullptr;
-
-			Ptr<const Image> pResult = (const Image*)d->Value.get();
-
-			// We need to decrease the hit count even if the result is null.
-			// Lower hit counts means we shouldn't clear the value
-			if ( m_opHitCount[at] > 0)
+			// \TODO: It only locks at,0,0
+			if (at)
 			{
-				--m_opHitCount[at];
-				if (m_opHitCount[at] <= 0)
-				{
-					SetUnused(at);
-				}
+				check(at < OpExecutionData.size_code());
+				FOpExecutionData& Data = OpExecutionData[FCacheAddress(at, 0, 0)];
+				Data.IsCacheLocked = true;
 			}
-
-			return pResult;
-		}
-
-		Ptr<const Mesh> GetMesh(FCacheAddress at)
-		{
-			if (!at.At) return nullptr;
-			if (size_t(at.At) >= m_resources.size_code()) return nullptr;
-			auto d = m_resources.get_ptr(at);
-			if (!d) return nullptr;
-
-			Ptr<const Mesh> pResult = (const Mesh*)d->Value.get();
-
-			// We need to decrease the hitcount even if the result is null.
-			// Lower hit counts means we shouldn't clear the value
-			if ( m_opHitCount[at] > 0)
-			{
-				--m_opHitCount[at];
-
-				if (m_opHitCount[at] <= 0)
-				{
-					SetUnused(at);
-				}
-			}
-
-			return pResult;
 		}
 	};
 
@@ -855,55 +1072,766 @@ namespace mu
 		return a.Type < b.Type;
 	}
 
+	/** Data for an instance that is currently being processed in the mutable system. This means it is
+	* between a BeginUpdate and EndUpdate, or during an "atomic" operation (like generate a single resource).
+	*/
+	struct FLiveInstance
+	{
+		Instance::ID InstanceID;
+		int32 State = 0;
+		Ptr<const Instance> Instance;
+		TSharedPtr<const Model> Model;
 
+		Ptr<Parameters> OldParameters;
 
-    //---------------------------------------------------------------------------------------------
-    //! Struct to manage models for which we have streamed rom data.
-    //---------------------------------------------------------------------------------------------
-    struct FModelCache
-    {
-		~FModelCache()
+		/** Mask of the parameters that have changed since the last update.
+		* Every bit represents a state parameter.
+		*/
+		uint64 UpdatedParameters = 0;
+
+		/** Cached data for the generation of this instance. */
+		TSharedPtr<FProgramCache> Cache;
+
+		~FLiveInstance()
 		{
-			MUTABLE_CPUPROFILER_SCOPE(FModelCacheDestructor);
+			// Manually done to trace mem deallocations
+			MUTABLE_CPUPROFILER_SCOPE(LiveInstanceDestructor);
+			Cache = nullptr;
+			OldParameters = nullptr;
+			Instance = nullptr;
+			Model = nullptr;
 		}
+	};
 
+
+    /** Struct to manage all the memory allocated for resources used during mutable operation. */
+    struct FWorkingMemoryManager
+    {
+		using MemoryCounter = MemoryCounters::FMemoryTrackerInternalMemoryCounter;
+
+		template<class Type>
+		using TMemoryTrackedArray = TArray<Type, FDefaultMemoryTrackingAllocator<MemoryCounter>>;
+
+		template<class KeyType, class ValueType>
+		using TMemoryTrackedMap = TMap<KeyType, ValueType, FDefaultMemoryTrackingSetAllocator<MemoryCounter>>;
+
+		/** Cached traking for streamed model data for one model. */
         struct FModelCacheEntry
         {
-            //!
-            TWeakPtr<const Model> m_pModel;
+            /** Model who's data is being tracked. */
+            TWeakPtr<const Model> Model;
 
-            // Rom streaming management
-            TArray< TPair<uint64,uint64> > m_romWeight;
+            /** For each model rom, the last time its streamed data was used. */
+            TMemoryTrackedArray<TPair<uint64, uint64>> RomWeights;
+
+			/** Count of pending operations for every rom index. */
+			TMemoryTrackedArray<uint16> PendingOpsPerRom;
         };
 
-        // Rom streaming management
-        uint64 m_romBudget = 0;
+		//! Management of generated resources
+		//! @{
 
-        uint64 m_romTick = 0;
-        TArray< FModelCacheEntry > m_cachePerModel;
+		//! This is used to uniquely identify a generated resource like meshes or images.
+		struct FGeneratedResourceData
+		{
+			/** Model for this resource. */
+			TWeakPtr<const Model> Model;
 
-        //! Make sure the cached memory is below the internal budget, even counting with the
-        //! passed additional memory.
-		uint64 EnsureCacheBelowBudget(uint64 AdditionalMemory, 
-			TFunctionRef<bool(const Model*, int)> IsRomLockedFunc = [](const Model*, int) {return false;});
+			//! The id assigned to the generated resource.
+			FResourceID Id;
 
-        //!
-        void UpdateForLoad( int romIndex, const TSharedPtr<const Model>& pModel, TFunctionRef<bool(const Model*,int)> isRomLockedFunc );
-        void MarkRomUsed( int romIndex, const TSharedPtr<const Model>& pModel );
+			//! The last request operation for this resource
+			uint32 LastRequestId;
 
-        //! Private helper
-		FModelCacheEntry& GetModelCache(const TSharedPtr<const Model>&);
-    };
+			//! An opaque blob with the values of the relevant parameters
+			TMemoryTrackedArray<uint8> ParameterValuesBlob;
+		};
+
+		//! The last id generated for a resource
+		uint32 LastResourceKeyId = 0;
+
+		//! The last id generated for a resource request. This is used to check the
+		//! relevancy of the resources when flushing the cache
+		uint32 LastResourceResquestId = 0;
+
+		//! Cached ids for returned assets
+		//! This is non-persistent runtime data
+		TMemoryTrackedArray<FGeneratedResourceData> GeneratedResources;
+
+		/** */
+		FResourceID GetResourceKey(const TSharedPtr<const Model>&, const Parameters*, uint32 ParamListIndex, OP::ADDRESS RootAt);
+
+		//! @}
+
+		/** Maximum working memory that mutable should be using. */
+		int64 BudgetBytes = 0;
+
+		/** Maximum excess memory reached suring the current operation. */
+		int64 BudgetExcessBytes = 0;
+
+		/** Maximum number of resource keys that will be stored for resource reusal. */
+		int32 MaxGeneratedResourceCacheSize = 1024;
 
 
-    //---------------------------------------------------------------------------------------------
-    //! Abstract private system interface
-    //---------------------------------------------------------------------------------------------
+		/** This value is used to track the order of loading of roms. */
+        uint64 RomTick = 0;
+
+		/** Control info for the per-model cache of streamed data. */
+        TMemoryTrackedArray<FModelCacheEntry> CachePerModel;
+
+		/** Data for each mutable instance that is being updated. */
+		TMemoryTrackedArray<FLiveInstance> LiveInstances;
+
+		/** Temporary reference to the memory of the current instance being updated. Only valid during a mutable "atomic" operation, like a BeginUpdate or a GetImage. */
+		TSharedPtr<FProgramCache> CurrentInstanceCache;
+
+		/** Resources that have been used in the past, but haven't been deallocated because they still fitted the memory budget and they could be reused. */
+		TMemoryTrackedArray<Ptr<Image>> PooledImages;
+
+		/** List of intermediate resources that are not soterd anywhere yet. They are still locally referenced by code. */
+		TMemoryTrackedArray<Ptr<const Image>> TempImages;
+		TMemoryTrackedArray<Ptr<const Mesh>> TempMeshes;
+
+		/** List of resources that are currently in any cache position, and the number of positions they are in. */
+		TMemoryTrackedMap<Ptr<const Resource>, int32> CacheResources;
+
+		/** Given a mutable model, find or create its rom cache. */
+		FModelCacheEntry* FindModelCache(const Model*);
+		FModelCacheEntry& FindOrAddModelCache(const TSharedPtr<const Model>&);
+
+        /** Make sure the working memory is below the internal budget, even counting with the passed additional memory. 
+		* An optional function can be passed to "block" the unload of certain roms of data.
+		* Return true if it succeeded, false otherwise.
+		*/
+		bool EnsureBudgetBelow(uint64 AdditionalMemory);
+		
+		/** Return true if the memory budget is 90% full. */
+		bool IsMemoryBudgetFull() const;
+
+		/** Calculate the current usage of memory as used to calculate the budget. */
+		int64 GetCurrentMemoryBytes() const;
+
+        /** Register that a specific rom has been requested and update the heuristics to keep it in memory. */
+        void MarkRomUsed( int32 RomIndex, const TSharedPtr<const Model>& );
+
+		/** */
+		UE_NODISCARD Ptr<Image> CreateImage(uint32 SizeX, uint32 SizeY, uint32 Lods, EImageFormat Format, EInitializationType Init)
+		{
+			CheckRunnerThread();
+
+			uint32 DataSize = Image::CalculateDataSize(SizeX, SizeY, Lods, Format);
+
+			// Look for an unused image in the pool that can be reused
+			int32 PooledImageCount = PooledImages.Num();
+			for (int Index = 0; DataSize>0 && Index<PooledImageCount; ++Index)
+			{
+				Ptr<Image>& Candidate = PooledImages[Index];
+				if (Candidate->GetFormat() == Format
+					&& Candidate->GetSizeX() == SizeX
+					&& Candidate->GetSizeY() == SizeY
+					&& Candidate->GetLODCount() == Lods
+					)
+				{
+					Ptr<Image> Result = Candidate;
+					PooledImages.RemoveAtSwap(Index);
+					
+					if (Init == EInitializationType::Black)
+					{
+						Result->InitToBlack();
+					}
+					else
+					{
+						Result->m_flags = 0;
+						Result->RelevancyMinY = 0;
+						Result->RelevancyMaxY = 0;
+					}
+					return Result;
+				}
+			}
+
+			// Make room in the budget
+			EnsureBudgetBelow(DataSize);
+
+			// Create it
+			Ptr<Image> Result = new Image(SizeX, SizeY, Lods, Format, Init);
+
+			TempImages.Add(Result);
+			return Result;
+		}
+
+		/** Ref will be nulled and relesed in any case. */
+		UE_NODISCARD Ptr<Image> CloneOrTakeOver(Ptr<const Image>& Resource)
+		{
+			CheckRunnerThread();
+
+			TempImages.RemoveSingle(Resource);
+			
+			check(!TempImages.Contains(Resource));
+			check(!PooledImages.Contains(Resource));
+
+			Ptr<Image> Result;
+			if (!Resource->IsUnique())
+			{
+				// TODO: try to grab from the pool
+
+				uint32 DataSize = Resource->GetDataSize();
+				EnsureBudgetBelow(DataSize);
+
+				Result = Resource->Clone();
+				Release(Resource);
+			}
+			else
+			{
+				Result = const_cast<Image*>(Resource.get());
+				Resource = nullptr;
+			}
+
+			return Result;
+		}
+
+		/** */
+		void Release(Ptr<const Image>& Resource)
+		{
+			CheckRunnerThread();
+
+			if (!Resource)
+			{
+				return;
+			}
+
+			const int32 ResourceDataSize = Resource->GetDataSize();
+			TempImages.RemoveSingle(Resource);
+
+			check(!TempImages.Contains(Resource));
+			check(!PooledImages.Contains(Resource));
+
+			if (IsBudgetTemp(Resource))
+			{
+				// Check if we are exceeding the budget
+				bool bInBudget = EnsureBudgetBelow(ResourceDataSize);
+				if (bInBudget)
+				{
+					PooledImages.Add(const_cast<Image*>(Resource.get()));
+				}
+			}
+			else
+			{
+				// Check if we are exceeding the budget
+				EnsureBudgetBelow(0);
+			}
+
+			Resource = nullptr;
+		}
+
+		/** */
+		void Release(Ptr<Image>& Resource)
+		{
+			CheckRunnerThread();
+
+			if (!Resource)
+			{
+				return;
+			}
+
+			const int32 ResourceDataSize = Resource->GetDataSize();
+			TempImages.RemoveSingle(Resource);
+
+			check(!TempImages.Contains(Resource));
+			check(!PooledImages.Contains(Resource));
+
+			if (IsBudgetTemp(Resource))
+			{
+				// Check if we are exceeding the budget
+				bool bInBudget = EnsureBudgetBelow(ResourceDataSize);
+				if (bInBudget)
+				{
+					PooledImages.Add(Resource.get());
+				}
+			}
+			else
+			{
+				// Check if we are exceeding the budget
+				EnsureBudgetBelow(0);
+			}
+
+			Resource = nullptr;
+		}
+
+		UE_NODISCARD Ptr<Mesh> CreateMesh(int32 BudgetReserveSize)
+		{
+			CheckRunnerThread();
+
+			EnsureBudgetBelow(BudgetReserveSize);
+
+			Ptr<Mesh> Result = new Mesh();
+
+			TempMeshes.Add(Result);
+
+			return Result;
+		}
+
+		UE_NODISCARD Ptr<Mesh> CloneOrTakeOver(Ptr<const Mesh>& Resource)
+		{
+			CheckRunnerThread();
+
+			const int32 ResourceDataSize = Resource->GetDataSize();
+			TempMeshes.RemoveSingle(Resource);
+
+			Ptr<Mesh> Result;
+			if (!Resource->IsUnique())
+			{
+				Result = CreateMesh(ResourceDataSize); 
+				Result->CopyFrom(*Resource);
+				Release(Resource);
+			}
+			else
+			{
+				Result = Ptr<Mesh>(const_cast<Mesh*>(Resource.get()));
+				Resource = nullptr;
+			}
+
+			return Result;
+		}
+
+		void Release(Ptr<const Mesh>& Resource)
+		{
+			CheckRunnerThread();
+
+			if (!Resource)
+			{
+				return;
+			}
+
+			TempMeshes.RemoveSingle(Resource);
+			check(!TempMeshes.Contains(Resource));
+
+			EnsureBudgetBelow(0);
+
+			Resource = nullptr;
+		}
+
+		void Release(Ptr<Mesh>& Resource)
+		{
+			Ptr<const Mesh> ConstPtr = Resource;
+
+			Release(ConstPtr);
+
+			Resource = nullptr;
+		}
+
+		/** */
+		UE_NODISCARD Ptr<const Mesh> LoadMesh(const FCacheAddress& From, bool bTakeOwnership = false)
+		{
+			bool bIsLastReference = false;
+			Ptr<const Mesh> Result = CurrentInstanceCache->GetMesh(From, bIsLastReference);
+			if (!Result)
+			{
+				return nullptr;
+			}
+
+			// If we retrieved the last reference to this resource in "From" cache position (it could still be in other cache positions as well)
+			if (bIsLastReference)
+			{
+				int32* CountPtr = CacheResources.Find(Result);
+				check(CountPtr);
+				*CountPtr = (*CountPtr) - 1;
+				if (!*CountPtr)
+				{
+					CacheResources.FindAndRemoveChecked(Result);
+				}
+			}
+
+			if (!bTakeOwnership && Result->IsUnique())
+			{
+				TempMeshes.Add(Result);
+			}
+
+			return Result;
+		}
+
+		/** */
+		UE_NODISCARD Ptr<const Image> LoadImage(const FCacheAddress& From, bool bTakeOwnership = false)
+		{
+			bool bIsLastReference = false;
+			Ptr<const Image> Result = CurrentInstanceCache->GetImage(From, bIsLastReference);
+			if (!Result)
+			{
+				return nullptr;
+			}
+
+			// If we retrieved the last reference to this resource in "From" cache position (it could still be in other cache positions as well)
+			if (bIsLastReference)
+			{
+				int32* CountPtr = CacheResources.Find(Result);
+				check(CountPtr);
+				*CountPtr = (*CountPtr) - 1;
+				if (!*CountPtr)
+				{
+					CacheResources.FindAndRemoveChecked(Result);
+				}
+			}
+
+
+			if (!bTakeOwnership && Result->IsUnique())
+			{
+				TempImages.Add(Result);
+			}
+
+			return Result;
+		}
+
+		/** */
+		void StoreImage(const FCacheAddress& To, Ptr<const Image> Resource)
+		{
+			if (Resource)
+			{
+				int32 ResourceDataSize = Resource->GetDataSize();
+				TempImages.RemoveSingle(Resource);
+
+				check(!TempImages.Contains(Resource));
+
+				int32& Count = CacheResources.FindOrAdd(Resource, 0);
+				++Count;
+			}
+
+			CurrentInstanceCache->SetImage(To, Resource);
+		}
+
+		void StoreMesh(const FCacheAddress& To, Ptr<const Mesh> Resource)
+		{
+			if (Resource)
+			{
+				TempMeshes.RemoveSingle(Resource);
+
+				int32& Count = CacheResources.FindOrAdd(Resource, 0);
+				++Count;
+			}
+
+			CurrentInstanceCache->SetMesh(To, Resource);
+		}
+
+		/** Return true if the resource is not in any cache (0,1,rom). */
+		bool IsBudgetTemp(const Ptr<const Resource>& Resource)
+		{
+			if (!Resource)
+			{
+				return false;
+			}
+
+			bool bIsTemp = Resource->IsUnique();
+			return bIsTemp;
+		}
+
+		int32 GetPooledBytes() const
+		{
+			int32 Result = 0;
+			for (const Ptr<Image>& Value : PooledImages)
+			{
+				Result += Value->GetDataSize();
+			}
+
+			return Result;
+		}
+
+		int32 GetTempBytes() const
+		{
+			int32 Result = 0;
+			for (const Ptr<const Image>& Value : TempImages)
+			{
+				Result += Value->GetDataSize();
+			}
+
+			for (const Ptr<const Mesh>& Value : TempMeshes)
+			{
+				Result += Value->GetDataSize();
+			}
+
+			return Result;
+		}
+
+
+		int32 GetRomBytes() const
+		{
+			int32 Result = 0;
+
+			TArray<const Model*> Models;
+			for (const FLiveInstance& Instance : LiveInstances)
+			{
+				Models.AddUnique(Instance.Model.Get());
+			}
+
+			// Data stored per-model, but related to instance construction
+			for (const Model* Model : Models)
+			{
+				// Count streamable and currently-loaded resources
+				const FProgram& Program = Model->GetPrivate()->m_program;
+				for (const TPair<int32, Ptr<const Image>>& Rom : Program.m_constantImageLODs)
+				{
+					if (Rom.Value && Rom.Key >= 0)
+					{
+						Result += Rom.Value->GetDataSize();
+					}
+				}
+				for (const TPair<int32, Ptr<const Mesh>>& Rom : Program.m_constantMeshes)
+				{
+					if (Rom.Value && Rom.Key >= 0)
+					{
+						Result += Rom.Value->GetDataSize();
+					}
+				}
+			}
+
+			return Result;
+		}
+
+
+		int32 GetTrackedCacheBytes() const
+		{
+			int32 Result = 0;
+			for (const TTuple<Ptr<const Resource>,int32>& It : CacheResources)
+			{
+				Result += It.Key->GetDataSize();
+			}
+
+			return Result;
+		}
+
+		/** Calculate the amount of bytes in data cached in the level 0 and 1 cache in all live instances. */
+		int32 GetCacheBytes() const
+		{
+			int32 Result = 0;
+			TSet<const Resource*> Cache0Unique;
+			TSet<const Resource*> Cache1Unique;
+
+			for (const FLiveInstance& Instance : LiveInstances)
+			{
+				CodeContainer<FProgramCache::FOpExecutionData>::iterator it = Instance.Cache->OpExecutionData.begin();
+				for (; it.IsValid(); ++it)
+				{
+					if (!(*it).DataTypeIndex)
+					{
+						continue;
+					}
+
+					TSet<const Resource*>* TargetSet = &Cache0Unique;
+					if ((*it).IsCacheLocked)
+					{
+						TargetSet = &Cache1Unique;
+					}
+
+					const Resource* Value = nullptr;
+					switch ((*it).DataType)
+					{
+					case DATATYPE::DT_IMAGE:
+						Value = Instance.Cache->ImageResults[(*it).DataTypeIndex].get();
+						if (Value)
+						{
+							TargetSet->Add(Value);
+						}
+						break;
+
+					case DATATYPE::DT_MESH:
+						Value = Instance.Cache->MeshResults[(*it).DataTypeIndex].get();
+						if (Value)
+						{
+							TargetSet->Add(Value);
+						}
+						break;
+
+					default:
+						break;
+					}
+				}
+			}
+
+			// Merge
+			Cache0Unique.Append(Cache1Unique);
+
+			// Count
+			for (const Resource* Value : Cache0Unique)
+			{
+				Result += Value->GetDataSize();
+			}
+
+			return Result;
+		}
+
+		/** Remove all intermediate data (big and small) from the memory except for the one that has been explicitely
+		* marked as state cache.
+		*/
+		void ClearCacheLayer0()
+		{
+			check(CurrentInstanceCache);
+
+			MUTABLE_CPUPROFILER_SCOPE(ClearLayer0);
+
+			CodeContainer<FProgramCache::FOpExecutionData>::iterator it = CurrentInstanceCache->OpExecutionData.begin();
+			for (; it.IsValid(); ++it)
+			{
+				FProgramCache::FOpExecutionData& Data = *it;
+				if (!Data.DataTypeIndex
+					||
+					Data.IsCacheLocked)
+				{
+					continue;
+				}
+
+				const Resource* Value = nullptr;
+
+				switch (Data.DataType)
+				{
+				case DATATYPE::DT_IMAGE:
+					Value = CurrentInstanceCache->ImageResults[Data.DataTypeIndex].get();
+					if (Value)
+					{
+						CacheResources.Remove(Value);
+						CurrentInstanceCache->ImageResults[Data.DataTypeIndex] = nullptr;
+					}
+					break;
+
+				case DATATYPE::DT_MESH:
+					Value = CurrentInstanceCache->MeshResults[Data.DataTypeIndex].get();
+					if (Value)
+					{
+						CacheResources.Remove(Value);
+						CurrentInstanceCache->MeshResults[Data.DataTypeIndex] = nullptr;
+					}
+					break;
+
+				case DATATYPE::DT_LAYOUT:
+					Value = CurrentInstanceCache->LayoutResults[Data.DataTypeIndex].get();
+					CurrentInstanceCache->LayoutResults[Data.DataTypeIndex] = nullptr;
+					break;
+
+				case DATATYPE::DT_INSTANCE:
+					Value = CurrentInstanceCache->InstanceResults[Data.DataTypeIndex].get();
+					CurrentInstanceCache->InstanceResults[Data.DataTypeIndex] = nullptr;
+					break;
+
+				default:
+					break;
+				}
+
+				Data.OpHitCount = 0;
+				Data.IsValueValid = false;
+			}
+		}
+
+
+		/** Remove all intermediate data (big and small) from the memory including the one that has been explicitely
+		* marked as state cache.
+		*/
+		void ClearCacheLayer1()
+		{
+			MUTABLE_CPUPROFILER_SCOPE(ClearLayer1);
+
+			CodeContainer<FProgramCache::FOpExecutionData>::iterator it = CurrentInstanceCache->OpExecutionData.begin();
+			for (; it.IsValid(); ++it)
+			{
+				FProgramCache::FOpExecutionData& Data = *it;
+				if (!Data.DataTypeIndex)
+				{
+					continue;
+				}
+
+				const Resource* Value = nullptr;
+
+				switch (Data.DataType)
+				{
+				case DATATYPE::DT_IMAGE:
+					Value = CurrentInstanceCache->ImageResults[Data.DataTypeIndex].get();
+					CacheResources.Remove(Value);
+					CurrentInstanceCache->ImageResults[Data.DataTypeIndex] = nullptr;
+					break;
+
+				case DATATYPE::DT_MESH:
+					Value = CurrentInstanceCache->MeshResults[Data.DataTypeIndex].get();
+					CacheResources.Remove(Value);
+					CurrentInstanceCache->MeshResults[Data.DataTypeIndex] = nullptr;
+					break;
+
+				case DATATYPE::DT_LAYOUT:
+					Value = CurrentInstanceCache->LayoutResults[Data.DataTypeIndex].get();
+					CurrentInstanceCache->LayoutResults[Data.DataTypeIndex] = nullptr;
+					break;
+
+				case DATATYPE::DT_INSTANCE:
+					Value = CurrentInstanceCache->InstanceResults[Data.DataTypeIndex].get();
+					CurrentInstanceCache->InstanceResults[Data.DataTypeIndex] = nullptr;
+					break;
+
+				default:
+					break;
+				}
+
+				Data.OpHitCount = 0;
+				Data.IsValueValid = false;
+			}
+		}
+
+
+		void LogWorkingMemory(const class CodeRunner* CurrentRunner) const;
+
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+		/** Temp variable with the ID of the thread running code, for debugging. */
+		uint32 DebugRunnerThreadID = FThread::InvalidThreadId;
+#endif
+
+		/** This is a development-only check to make sure calls to resource management happen in the correct thread. */
+		inline void BeginRunnerThread()
+		{
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+			// If this check fails it means have not set up correctly all the paths to debug threading for resource management.
+			check(DebugRunnerThreadID == FThread::InvalidThreadId);
+
+			DebugRunnerThreadID = FPlatformTLS::GetCurrentThreadId();
+#endif
+		}
+
+
+		/** This is a development-only check to make sure calls to resource management happen in the correct thread. */
+		inline void CheckRunnerThread()
+		{
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+			// If this check fails it means have not set up correctly all the paths to debug threading for resource management.
+			check(DebugRunnerThreadID != FThread::InvalidThreadId);
+
+			// If this check fails it means we are doing resource management from a thread that is not the CodeRunner::RunCode
+			// thread, and this is not allowed.
+			check(DebugRunnerThreadID== FPlatformTLS::GetCurrentThreadId());
+#endif
+		}
+
+
+		/** This is a development-only check to make sure calls to resource management happen in the correct thread. */
+		inline void EndRunnerThread()
+		{
+			CurrentInstanceCache->CheckHitCountsCleared();
+
+			// If this check fails it means some operation is not correctly handling resource management and didn't release
+			// a resource it created.
+			// This should be reported and reviewed, but it is not fatal. Some unnecessary memory may be used temporarily.
+			ensure(TempImages.Num() == 0);
+			ensure(TempMeshes.Num() == 0);
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+			// If this check fails it means have not set up correctly all the paths to debug threading for resource management.
+			check(DebugRunnerThreadID != FThread::InvalidThreadId);
+
+			DebugRunnerThreadID = FThread::InvalidThreadId;
+#endif
+		}
+
+	};
+
+
+	/** */
     class System::Private : public Base
     {
     public:
 
-        Private( SettingsPtr pSettings );
+        Private( Ptr<Settings>, const TSharedPtr<ExtensionDataStreamer>& );
         virtual ~Private();
 
         //-----------------------------------------------------------------------------------------
@@ -914,115 +1842,48 @@ namespace mu
 		MUTABLERUNTIME_API void BeginBuild(const TSharedPtr<const Model>&);
 		MUTABLERUNTIME_API void EndBuild();
 
-		MUTABLERUNTIME_API bool BuildBool(const TSharedPtr<const Model>&, const Parameters* pParams, OP::ADDRESS at) ;
-		MUTABLERUNTIME_API int BuildInt(const TSharedPtr<const Model>&, const Parameters* pParams, OP::ADDRESS at) ;
-		MUTABLERUNTIME_API float BuildScalar(const TSharedPtr<const Model>&, const Parameters* pParams, OP::ADDRESS at) ;
-		MUTABLERUNTIME_API void BuildColour(const TSharedPtr<const Model>&, const Parameters*, OP::ADDRESS, float* OutR, float* OutG, float* OutB, float* OutA) ;
-		MUTABLERUNTIME_API Ptr<const String> BuildString(const TSharedPtr<const Model>&, const Parameters* pParams, OP::ADDRESS at) ;
-		MUTABLERUNTIME_API Ptr<const Image> BuildImage(const TSharedPtr<const Model>&, const Parameters* pParams, OP::ADDRESS at, int32 MipsToSkip) ;
-		MUTABLERUNTIME_API Ptr<const Mesh> BuildMesh(const TSharedPtr<const Model>&, const Parameters* pParams, OP::ADDRESS at) ;
-		MUTABLERUNTIME_API Ptr<const Layout> BuildLayout(const TSharedPtr<const Model>&, const Parameters* pParams, OP::ADDRESS at) ;
-    	MUTABLERUNTIME_API Ptr<const Projector> BuildProjector(const TSharedPtr<const Model>&, const Parameters* pParams, OP::ADDRESS at) ;
-		void ClearCache() ;
-		void SetStreamingCache(uint64 bytes) ;
+		MUTABLERUNTIME_API bool BuildBool(const TSharedPtr<const Model>&, const Parameters*, OP::ADDRESS) ;
+		MUTABLERUNTIME_API int32 BuildInt(const TSharedPtr<const Model>&, const Parameters*, OP::ADDRESS) ;
+		MUTABLERUNTIME_API float BuildScalar(const TSharedPtr<const Model>&, const Parameters*, OP::ADDRESS) ;
+		MUTABLERUNTIME_API FVector4f BuildColour(const TSharedPtr<const Model>&, const Parameters*, OP::ADDRESS) ;
+		MUTABLERUNTIME_API Ptr<const String> BuildString(const TSharedPtr<const Model>&, const Parameters*, OP::ADDRESS) ;
+		MUTABLERUNTIME_API Ptr<const Image> BuildImage(const TSharedPtr<const Model>&, const Parameters*, OP::ADDRESS, int32 MipsToSkip, int32 LOD) ;
+		MUTABLERUNTIME_API Ptr<const Mesh> BuildMesh(const TSharedPtr<const Model>&, const Parameters*, OP::ADDRESS) ;
+		MUTABLERUNTIME_API Ptr<const Layout> BuildLayout(const TSharedPtr<const Model>&, const Parameters*, OP::ADDRESS) ;
+    	MUTABLERUNTIME_API FProjector BuildProjector(const TSharedPtr<const Model>&, const Parameters*, OP::ADDRESS) ;
+
+		ExtensionDataStreamer* GetExtensionDataStreamer() const { return ExtensionDataStreamer.Get(); }
 
         //!
-        SettingsPtrConst m_pSettings;
+        Ptr<const Settings> Settings;
 
         //! Data streaming interface, if any.
-        //! It is owned by this system
-        ModelStreamer* m_pStreamInterface;
+		TSharedPtr<ModelReader> StreamInterface;
 
-        //! It is not owned by this system
-        ImageParameterGenerator* m_pImageParameterGenerator;
+		TSharedPtr<ImageParameterGenerator> ImageParameterGenerator;
 
-        //! Maximum amount of memory (bytes) if a limit has been set. If 0, it means there is no
-        //! limit.
-        uint32 m_maxMemory;
-
-        //! Current instances management
-        //! @{
-
-		/** Data for an instance that is currently being processed in the mutable system. This means it is
-		* between a BeginUpdate and EndUpdate, or during an atmoic operation (like generate a single resource).
-		*/
-        struct FLiveInstance
-        {
-            Instance::ID m_instanceID;
-            InstancePtrConst m_pInstance;
-            TSharedPtr<const Model> m_pModel;
-
-            int m_state;
-            ParametersPtr m_pOldParameters;
-
-			//! Mask of the parameters that have changed since the last update.
-			//! Every bit represents a state parameter.
-			uint64 m_updatedParameters = 0;
-
-			//! An entry for every instruction in the program to cache resources (meshes, images) if necessary.
-			TSharedPtr<FProgramCache> m_memory;
-
-			~FLiveInstance()
-			{
-				// Manually done to trace mem deallocations
-				MUTABLE_CPUPROFILER_SCOPE(LiveInstanceDestructor);
-				m_memory = nullptr;
-				m_pOldParameters = nullptr;
-				m_pInstance = nullptr;
-				m_pModel = nullptr;
-			}
-        };
-
-        TArray<FLiveInstance> m_liveInstances;
-
-		/** Temporary reference to the memory of the current instance being updated. */
-		TSharedPtr<FProgramCache> m_memory;
+		/** */
+		FWorkingMemoryManager WorkingMemoryManager;
 
 		/** Counter used to generate unique IDs for every new instance created in the system. */
-        Instance::ID m_lastInstanceID = 0;
+        Instance::ID LastInstanceID = 0;
 
 		/** The pointer returned by this function is only valid for the duration of the current mutable operation. */
-        inline FLiveInstance* FindLiveInstance( Instance::ID id )
-        {
-            for ( int32 i=0; i<m_liveInstances.Num(); ++i )
-            {
-                if (m_liveInstances[i].m_instanceID==id)
-                {
-                    return &m_liveInstances[i];
-                }
-            }
-            return nullptr;
-        }
-
-        //! @}
+		inline FLiveInstance* FindLiveInstance(Instance::ID id);
 
         //!
-        bool CheckUpdatedParameters( const FLiveInstance* pLiveInstance,
-			const Ptr<const Parameters>& pParams,
-			uint64& OutUpdatedParameters );
-
-        // Profile metrics
-        std::atomic<uint64> m_profileMetrics[ size_t(ProfileMetric::_Count) ];
+        bool CheckUpdatedParameters( const FLiveInstance*, const Ptr<const Parameters>&, uint64& OutUpdatedParameters );
 
 
-	public:
-
-		void RunCode(const TSharedPtr<const Model>& pModel,
-			const Parameters* pParams,
-			OP::ADDRESS at, uint32 LODs = System::AllLODs, uint8 executionOptions = 0);
+		void RunCode(const TSharedPtr<const Model>&, const Parameters*, OP::ADDRESS at, uint32 LODs = System::AllLODs, uint8 executionOptions = 0, int32 LOD = 0);
 
 		//!
 		void PrepareCache(const Model*, int32 State);
 
-		//! Cache related members
-		//! @{
-
-		//! Data for each used model.
-		FModelCache m_modelCache;
-
-		//! @}
-
 	private:
+
+		/** Owned by this system. */
+		TSharedPtr<ExtensionDataStreamer> ExtensionDataStreamer = nullptr;
 
 		/** This flag is turned on when a streaming error or similar happens. Results are not usable.
 		* This should only happen in-editor.

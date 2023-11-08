@@ -3,28 +3,39 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Misc/Crc.h"
-#include "Rendering/NaniteResources.h"
-#include "InstanceUniformShaderParameters.h"
-#include "GeometryCollection/ManagedArray.h"
+#include "Chaos/ChaosSolverActor.h"
 #include "GeometryCollection/GeometryCollectionDamagePropagationData.h"
 #include "GeometryCollection/GeometryCollectionSimulationTypes.h"
-#include "Chaos/ChaosSolverActor.h"
+#include "GeometryCollection/ManagedArray.h"
+#include "InstanceUniformShaderParameters.h"
+#include "Interfaces/Interface_AssetUserData.h"
+#include "Misc/Crc.h"
+#include "Containers/Map.h"
 
 #include "GeometryCollectionObject.generated.h"
 
-class UMaterialInterface;
-class UGeometryCollectionCache;
 class FGeometryCollection;
-struct FManagedArrayCollection;
+class FGeometryCollectionRenderData;
 struct FGeometryCollectionSection;
+struct FManagedArrayCollection;
 struct FSharedSimulationParameters;
 class UDataflow;
+class UGeometryCollectionCache;
+class UMaterial;
+class UMaterialInterface;
+class UPhysicalMaterial;
 
 USTRUCT(BlueprintType)
-struct GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionSource
+struct FGeometryCollectionSource
 {
 	GENERATED_BODY()
+
+	FGeometryCollectionSource() {}
+	FGeometryCollectionSource(const FSoftObjectPath& SourceSoftObjectPath, const FTransform& ComponentTransform, const TArray<TObjectPtr<UMaterialInterface>>& SourceMaterials, bool bSplitComponents = false, bool bSetInternalFromMaterialIndex = false)
+		: SourceGeometryObject(SourceSoftObjectPath), LocalTransform(ComponentTransform), SourceMaterial(SourceMaterials), bAddInternalMaterials(false), bSplitComponents(bSplitComponents), bSetInternalFromMaterialIndex(bSetInternalFromMaterialIndex)
+	{
+
+	}
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "GeometrySource", meta=(AllowedClasses="/Script/Engine.StaticMesh, /Script/Engine.SkeletalMesh, /Script/GeometryCollectionEngine.GeometryCollection"))
 	FSoftObjectPath SourceGeometryObject;
@@ -35,33 +46,54 @@ struct GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionSource
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "GeometrySource")
 	TArray<TObjectPtr<UMaterialInterface>> SourceMaterial;
 
-	/** Whether source materials should be duplicated to create slots for internal materials. Does not apply if the source is a GeometryCollection. */
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "GeometrySource")
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "GeometrySource|Instance")
+	TArray<float> InstanceCustomData;
+
+	//~ Note: bAddInternalMaterials defaults to true so a 'Reset' of a geometry collection that was created before this member was added will have consistent behavior. New geometry collections should always set bAddInternalMaterials to false.
+	/** (Legacy) Whether source materials will be duplicated to create new slots for internal materials, or existing odd materials will be considered internal. (For non-Geometry Collection inputs only.) */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "GeometrySource", DisplayName = "(Legacy) Add Internal Materials")
 	bool bAddInternalMaterials = true;
 
-	/** Whether individual source mesh components should be split into separate pieces of geometry based on mesh connectivity. If checked, triangles that are not topologically connected will be assigned separate bones. */
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "GeometrySource")
+	/** Whether individual source mesh components should be split into separate pieces of geometry based on mesh connectivity. If checked, triangles that are not topologically connected will be assigned separate bones. (For non-Geometry Collection inputs only.) */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "GeometrySource", DisplayName = "Split Meshes")
 	bool bSplitComponents = false;
+
+	/** Whether to set the 'internal' flag for faces with odd-numbered materials slots. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "GeometrySource")
+	bool bSetInternalFromMaterialIndex = false;
 
 	// TODO: add primtive custom data
 };
 
 USTRUCT(BlueprintType)
-struct GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionAutoInstanceMesh
+struct FGeometryCollectionAutoInstanceMesh
 {
 	GENERATED_BODY()
 
+#if WITH_EDITORONLY_DATA
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Use Mesh instead."))
+	FSoftObjectPath StaticMesh_DEPRECATED;
+#endif
+
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "AutoInstance", meta = (AllowedClasses = "/Script/Engine.StaticMesh"))
-	FSoftObjectPath StaticMesh;
+	TObjectPtr<const UStaticMesh> Mesh;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "AutoInstance")
 	TArray<TObjectPtr<UMaterialInterface>> Materials;
 
-	bool operator ==(const FGeometryCollectionAutoInstanceMesh& Other) const;
+	UPROPERTY(VisibleAnywhere, Category = "AutoInstance")
+	int32 NumInstances = 0;
+
+	UPROPERTY(VisibleAnywhere, Category = "AutoInstance")
+	TArray<float> CustomData;
+
+	GEOMETRYCOLLECTIONENGINE_API int32 GetNumDataPerInstance() const;
+
+	GEOMETRYCOLLECTIONENGINE_API bool operator ==(const FGeometryCollectionAutoInstanceMesh& Other) const;
 };
 
 USTRUCT(BlueprintType)
-struct GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionEmbeddedExemplar
+struct FGeometryCollectionEmbeddedExemplar
 {
 	GENERATED_BODY()
 
@@ -93,11 +125,11 @@ struct GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionEmbeddedExemplar
 };
 
 USTRUCT()
-struct GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionLevelSetData
+struct FGeometryCollectionLevelSetData
 {
 	GENERATED_BODY()
 
-	FGeometryCollectionLevelSetData();
+	GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionLevelSetData();
 
 	/*
 	*  Resolution on the smallest axes for the level set. (def: 5)
@@ -126,11 +158,11 @@ struct GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionLevelSetData
 
 
 USTRUCT()
-struct GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionCollisionParticleData
+struct FGeometryCollectionCollisionParticleData
 {
 	GENERATED_BODY()
 
-	FGeometryCollectionCollisionParticleData();
+	GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionCollisionParticleData();
 
 	/**
 	 * Number of particles on the triangulated surface to use for collisions.
@@ -148,11 +180,11 @@ struct GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionCollisionParticleData
 
 
 USTRUCT()
-struct GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionCollisionTypeData
+struct FGeometryCollectionCollisionTypeData
 {
 	GENERATED_BODY()
 
-	FGeometryCollectionCollisionTypeData();
+	GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionCollisionTypeData();
 
 	/*
 	*  CollisionType defines how to initialize the rigid collision structures.
@@ -196,11 +228,11 @@ struct GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionCollisionTypeData
 
 
 USTRUCT()
-struct GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionSizeSpecificData
+struct FGeometryCollectionSizeSpecificData
 {
 	GENERATED_BODY()
 
-	FGeometryCollectionSizeSpecificData();
+	GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionSizeSpecificData();
 
 	/** The max size these settings apply to*/
 	UPROPERTY(EditAnywhere, Category = "Collisions")
@@ -274,9 +306,9 @@ struct GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionSizeSpecificData
 	UPROPERTY(EditAnywhere, Category = "Collisions")
 	int32 DamageThreshold;
 
-	bool Serialize(FArchive& Ar);
+	GEOMETRYCOLLECTIONENGINE_API bool Serialize(FArchive& Ar);
 #if WITH_EDITORONLY_DATA
-	void PostSerialize(const FArchive& Ar);
+	GEOMETRYCOLLECTIONENGINE_API void PostSerialize(const FArchive& Ar);
 #endif
 };
 
@@ -290,34 +322,33 @@ struct TStructOpsTypeTraits<FGeometryCollectionSizeSpecificData> : public TStruc
 		WithPostSerialize = true
 #endif
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 
-class FGeometryCollectionNaniteData
+
+
+USTRUCT(BlueprintType)
+struct FGeometryCollectionProxyMeshData
 {
-public:
-	GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionNaniteData();
-	GEOMETRYCOLLECTIONENGINE_API ~FGeometryCollectionNaniteData();
+	GENERATED_BODY()
 
-	FORCEINLINE bool IsInitialized()
-	{
-		return bIsInitialized;
-	}
-
-	/** Serialization. */
-	void Serialize(FArchive& Ar, UGeometryCollection* Owner);
-
-	/** Initialize the render resources. */
-	void InitResources(UGeometryCollection* Owner);
-
-	/** Releases the render resources. */
-	GEOMETRYCOLLECTIONENGINE_API void ReleaseResources();
-
-	Nanite::FResources NaniteResource;
-
-private:
-	bool bIsInitialized = false;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rendering", meta = (AllowedClasses = "/Script/Engine.StaticMesh"))
+	TArray<TObjectPtr<UStaticMesh>> ProxyMeshes;
 };
 
+USTRUCT()
+struct FGeometryCollectionRenderResourceSizeInfo
+{
+	GENERATED_BODY();
+
+	// Total size of the arrays for the MeshResources
+	UPROPERTY()
+	uint64 MeshResourcesSize = 0;
+
+	// Total size of the arrays for the NaniteResources
+	UPROPERTY()
+	uint64 NaniteResourcesSize = 0;
+};
 
 /**
 * UGeometryCollectionObject (UObject)
@@ -325,31 +356,31 @@ private:
 * UObject wrapper for the FGeometryCollection
 *
 */
-UCLASS(BlueprintType, customconstructor)
-class GEOMETRYCOLLECTIONENGINE_API UGeometryCollection : public UObject
+UCLASS(BlueprintType, customconstructor, MinimalAPI)
+class UGeometryCollection : public UObject, public IInterface_AssetUserData
 {
 	GENERATED_UCLASS_BODY()
 
 public:
-	UGeometryCollection(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+	GEOMETRYCOLLECTIONENGINE_API UGeometryCollection(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
 
 	/** UObject Interface */
 #if WITH_EDITOR
-	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
-	virtual bool Modify(bool bAlwaysMarkDirty = true) override;
+	GEOMETRYCOLLECTIONENGINE_API virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+	GEOMETRYCOLLECTIONENGINE_API virtual bool Modify(bool bAlwaysMarkDirty = true) override;
 #endif
-	virtual void PostInitProperties() override;
-	virtual void PostLoad() override;
-	virtual void BeginDestroy() override;
+	GEOMETRYCOLLECTIONENGINE_API virtual void PostInitProperties() override;
+	GEOMETRYCOLLECTIONENGINE_API virtual void PostLoad() override;
+	GEOMETRYCOLLECTIONENGINE_API virtual void BeginDestroy() override;
 	/** End UObject Interface */
 
-	void Serialize(FArchive& Ar);
+	GEOMETRYCOLLECTIONENGINE_API void Serialize(FArchive& Ar);
 #if WITH_EDITORONLY_DATA
-	void PostSerialize(const FArchive& Ar);
+	GEOMETRYCOLLECTIONENGINE_API void PostSerialize(const FArchive& Ar);
 #endif
 
 #if WITH_EDITOR
-	void EnsureDataIsCooked(bool bInitResources = true, bool bIsTransacting = false);
+	GEOMETRYCOLLECTIONENGINE_API void EnsureDataIsCooked(bool bInitResources, bool bIsTransacting, bool bIsPersistant, bool bAllowCopyFromDDC = true);
 #endif
 
 	/** Accessors for internal geometry collection */
@@ -358,80 +389,69 @@ public:
 	const TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GetGeometryCollection() const { return GeometryCollection; }
 
 	/** Return collection to initial (ie. empty) state. */
-	void Reset();
+	GEOMETRYCOLLECTIONENGINE_API void Reset();
 
 	/** Reset the collection from another set of attributes and materials. */
-	void ResetFrom(const FManagedArrayCollection& InCollection, const TArray<UMaterial*>& InMaterials, bool bHasInternalMaterials);
+	GEOMETRYCOLLECTIONENGINE_API void ResetFrom(const FManagedArrayCollection& InCollection, const TArray<UMaterial*>& InMaterials, bool bHasInternalMaterials);
 	
-	int32 AppendGeometry(const UGeometryCollection & Element, bool ReindexAllMaterials = false, const FTransform& TransformRoot = FTransform::Identity);
-	int32 NumElements(const FName& Group) const;
-	void RemoveElements(const FName& Group, const TArray<int32>& SortedDeletionList);
+	GEOMETRYCOLLECTIONENGINE_API int32 AppendGeometry(const UGeometryCollection & Element, bool ReindexAllMaterials = false, const FTransform& TransformRoot = FTransform::Identity);
+	GEOMETRYCOLLECTIONENGINE_API int32 NumElements(const FName& Group) const;
+	GEOMETRYCOLLECTIONENGINE_API void RemoveElements(const FName& Group, const TArray<int32>& SortedDeletionList);
 
-	FORCEINLINE bool HasNaniteData() const
-	{
-		return NaniteData != nullptr;
-	}
+	/** Has data for static mesh rendering. */
+	GEOMETRYCOLLECTIONENGINE_API bool HasMeshData() const;
+	/** Has data for nanite rendering. */
+	GEOMETRYCOLLECTIONENGINE_API bool HasNaniteData() const;
 
-	FORCEINLINE uint32 GetNaniteResourceID() const
-	{
-		Nanite::FResources& Resource = NaniteData->NaniteResource;
-		return Resource.RuntimeResourceID;
-	}
-
-	FORCEINLINE uint32 GetNaniteHierarchyOffset() const
-	{
-		Nanite::FResources& Resource = NaniteData->NaniteResource;
-		return Resource.HierarchyOffset;
-	}
-
-	FORCEINLINE uint32 GetNaniteHierarchyOffset(int32 GeometryIndex, bool bFlattened = false) const
-	{
-		Nanite::FResources& Resource = NaniteData->NaniteResource;
-		check(GeometryIndex >= 0 && GeometryIndex < Resource.HierarchyRootOffsets.Num());
-		uint32 HierarchyOffset = Resource.HierarchyRootOffsets[GeometryIndex];
-		if (bFlattened)
-		{
-			HierarchyOffset += Resource.HierarchyOffset;
-		}
-		return HierarchyOffset;
-	}
+	GEOMETRYCOLLECTIONENGINE_API uint32 GetNaniteResourceID() const;
+	GEOMETRYCOLLECTIONENGINE_API uint32 GetNaniteHierarchyOffset() const;
+	GEOMETRYCOLLECTIONENGINE_API uint32 GetNaniteHierarchyOffset(int32 GeometryIndex, bool bFlattened = false) const;
 
 	/** ReindexMaterialSections */
-	void ReindexMaterialSections();
+	GEOMETRYCOLLECTIONENGINE_API void ReindexMaterialSections();
 
 	/** appends the standard materials to this UObject */
-	void InitializeMaterials(bool bHasInternalMaterials = true);
+	GEOMETRYCOLLECTIONENGINE_API void InitializeMaterials(bool bHasLegacyInternalMaterialsPairs = false);
+
+	/** Add a material to the materials array and update the selected bone material to be at the end of the array */
+	GEOMETRYCOLLECTIONENGINE_API int32 AddNewMaterialSlot(bool bCopyLastMaterial = true);
+
+	/** Remove a material from the materials array, keeping the selected bone material at the end of the array. Returns false if materials could not be removed (e.g. because there were too few). */
+	GEOMETRYCOLLECTIONENGINE_API bool RemoveLastMaterialSlot();
 
 
 	/** Returns true if there is anything to render */
-	bool HasVisibleGeometry() const;
+	GEOMETRYCOLLECTIONENGINE_API bool HasVisibleGeometry() const;
 
 	/** Invalidates this collection signaling a structural change and renders any previously recorded caches unable to play with this collection */
-	void InvalidateCollection();
+	GEOMETRYCOLLECTIONENGINE_API void InvalidateCollection();
 
 	/** Check to see if Simulation Data requires regeneration */
-	bool IsSimulationDataDirty() const;
+	GEOMETRYCOLLECTIONENGINE_API bool IsSimulationDataDirty() const;
 
 	/** Attach a Static Mesh exemplar for embedded geometry, if that mesh has not already been attached. Return the exemplar index. */
-	int32 AttachEmbeddedGeometryExemplar(const UStaticMesh* Exemplar);
+	GEOMETRYCOLLECTIONENGINE_API int32 AttachEmbeddedGeometryExemplar(const UStaticMesh* Exemplar);
 
 	/** Remove embedded geometry exemplars with indices matching the sorted removal list. */
-	void RemoveExemplars(const TArray<int32>& SortedRemovalIndices);
+	GEOMETRYCOLLECTIONENGINE_API void RemoveExemplars(const TArray<int32>& SortedRemovalIndices);
 
 	/** find or add a auto instance mesh and return its index */
-	const FGeometryCollectionAutoInstanceMesh& GetAutoInstanceMesh(int32 AutoInstanceMeshIndex) const;
+	GEOMETRYCOLLECTIONENGINE_API const FGeometryCollectionAutoInstanceMesh& GetAutoInstanceMesh(int32 AutoInstanceMeshIndex) const;
 
 	/**  find or add a auto instance mesh from another one and return its index */
-	int32 FindOrAddAutoInstanceMesh(const FGeometryCollectionAutoInstanceMesh& AutoInstanecMesh);
+	GEOMETRYCOLLECTIONENGINE_API int32 FindOrAddAutoInstanceMesh(const FGeometryCollectionAutoInstanceMesh& AutoInstanceMesh);
 
 	/** find or add a auto instance mesh from a mesh and alist of material and return its index */
-	int32 FindOrAddAutoInstanceMesh(const UStaticMesh& StaticMesh, const TArray<UMaterialInterface*>& Materials);
+	GEOMETRYCOLLECTIONENGINE_API int32 FindOrAddAutoInstanceMesh(const UStaticMesh* StaticMesh, const TArray<UMaterialInterface*>& Materials);
 
 	/** Produce a deep copy of GeometryCollection member, stripped of data unecessary for gameplay. */
-	TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GenerateMinimalGeometryCollection() const;
+	GEOMETRYCOLLECTIONENGINE_API TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GenerateMinimalGeometryCollection() const;
 
 	/** copy a collection and remove geometry from it */
-	static TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> CopyCollectionAndRemoveGeometry(const TSharedPtr<const FGeometryCollection, ESPMode::ThreadSafe>& CollectionToCopy);
+	static GEOMETRYCOLLECTIONENGINE_API TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> CopyCollectionAndRemoveGeometry(const TSharedPtr<const FGeometryCollection, ESPMode::ThreadSafe>& CollectionToCopy);
+
+	/** get the size of the render data resources associated with this collection */
+	GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionRenderResourceSizeInfo GetRenderResourceSizeInfo() const;
 
 #if WITH_EDITOR
 	/** If this flag is set, we only regenerate simulation data when requested via CreateSimulationData() */
@@ -442,27 +462,43 @@ public:
 	* Note : this does not check if the simulation data is drty or not and will cause a load from the DDC
 	* use CreateSimulationDataIfNeeded() for avoiding extra runtime cost 
 	*/
-	void CreateSimulationData();
+	GEOMETRYCOLLECTIONENGINE_API void CreateSimulationData();
 
 	/** Create the simulation data ( calls CreateSimulationData) only if the simulation data is dirty */
-	void CreateSimulationDataIfNeeded();
+	GEOMETRYCOLLECTIONENGINE_API void CreateSimulationDataIfNeeded();
 
-	/** Create the Nanite rendering data. */
-	static TUniquePtr<FGeometryCollectionNaniteData> CreateNaniteData(FGeometryCollection* Collection);
+	/** Rebuild the render data. */
+	GEOMETRYCOLLECTIONENGINE_API void RebuildRenderData();
+
+	/** Propogate render state dirty to components */
+	GEOMETRYCOLLECTIONENGINE_API void PropagateMarkDirtyToComponents() const;
+
+	/** Propogate the fact that transform have been updated to all components */
+	GEOMETRYCOLLECTIONENGINE_API void PropagateTransformUpdateToComponents() const;
 #endif
 
-	void InitResources();
-	void ReleaseResources();
+	GEOMETRYCOLLECTIONENGINE_API void InitResources();
+	GEOMETRYCOLLECTIONENGINE_API void ReleaseResources();
 
 	/** Fills params struct with parameters used for precomputing content. */
-	void GetSharedSimulationParams(FSharedSimulationParameters& OutParams) const;
+	GEOMETRYCOLLECTIONENGINE_API void GetSharedSimulationParams(FSharedSimulationParameters& OutParams) const;
+
+	/**
+	* Get Mass or density as set by the asset 
+	* Mass is return in Kg and Density is returned in Kg/Cm3
+	* @param bOutIsDensity  is set to true by the function if the returned value is to be treated as a density
+	*/
+	GEOMETRYCOLLECTIONENGINE_API float GetMassOrDensity(bool& bOutIsDensity) const;
 
 	/** Accessors for the two guids used to identify this collection */
-	FGuid GetIdGuid() const;
-	FGuid GetStateGuid() const;
+	GEOMETRYCOLLECTIONENGINE_API FGuid GetIdGuid() const;
+	GEOMETRYCOLLECTIONENGINE_API FGuid GetStateGuid() const;
 
-	/** Pointer to the data used to render this geometry collection with Nanite. */
-	TUniquePtr<class FGeometryCollectionNaniteData> NaniteData;
+	/** Get the cached root index */
+	int32 GetRootIndex() const { return RootIndex; }
+
+	/** Pointer to the data used to render this geometry collection. */
+	TUniquePtr<FGeometryCollectionRenderData> RenderData;
 
 	UPROPERTY(EditAnywhere, Category = "Clustering")
 	bool EnableClustering;
@@ -475,12 +511,16 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Clustering")
 	int32 MaxClusterLevel;
 
+	/** Damage model to use for evaluating destruction. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Damage")
+	EDamageModelTypeEnum DamageModel;
+
 	/** Damage threshold for clusters at different levels. */
-	UPROPERTY(EditAnywhere, Category = "Damage", meta = (EditCondition = "!bUseSizeSpecificDamageThreshold"))
+	UPROPERTY(EditAnywhere, Category = "Damage", meta = (EditCondition = "!bUseSizeSpecificDamageThreshold && DamageModel == EDamageModelTypeEnum::Chaos_Damage_Model_UserDefined_Damage_Threshold"))
 	TArray<float> DamageThreshold;
 
 	/** whether to use size specific damage threshold instead of level based ones ( see Size Specific Data array ). */
-	UPROPERTY(EditAnywhere, Category = "Damage")
+	UPROPERTY(EditAnywhere, Category = "Damage", meta = (EditCondition = "DamageModel == EDamageModelTypeEnum::Chaos_Damage_Model_UserDefined_Damage_Threshold"))
 	bool bUseSizeSpecificDamageThreshold;
 
 	/** compatibility check, when true, only cluster compute damage from parameters and propagate to direct children
@@ -516,25 +556,48 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Rendering")
 	bool bUseFullPrecisionUVs = false;
 
-	/** list of unique static mesh / materials pairs for auto instancing*/
-	UPROPERTY(EditAnywhere, Category = "Rendering")
-	TArray<FGeometryCollectionAutoInstanceMesh> AutoInstanceMeshes;
-
-	/** static mesh to use as a proxy for rendering until the geometry collection is broken */
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Rendering", meta = (AllowedClasses = "/Script/Engine.StaticMesh"))
-	FSoftObjectPath RootProxy;
-
 	/**
 	 * Strip unnecessary data from the Geometry Collection to keep the memory footprint as small as possible.
 	 */
-	UPROPERTY(EditAnywhere, Category = "Nanite")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rendering", meta = (DisplayName = "Strip Source Data On Cook"))
 	bool bStripOnCook;
+
+	/**
+	 * Strip unnecessary render data from the Geometry Collection to keep the memory footprint as small as possible.
+	 * This may be used if the cooked build uses a custom renderer such as the ISMPool renderer.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rendering")
+	bool bStripRenderDataOnCook;
+
+	/** Custom class type that will be used to render the geometry collection instead of using the native rendering. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rendering", meta = (MustImplement = "/Script/GeometryCollectionEngine.GeometryCollectionExternalRenderInterface"))
+	TObjectPtr<UClass> CustomRendererType;
+
+	/** Static mesh to use as a proxy for rendering until the geometry collection is broken. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Rendering")
+	FGeometryCollectionProxyMeshData RootProxyData;
+
+	/** List of unique static mesh / materials pairs for auto instancing. */
+	UPROPERTY(EditAnywhere, Category = "Rendering")
+	TArray<FGeometryCollectionAutoInstanceMesh> AutoInstanceMeshes;
+
+	UFUNCTION(BlueprintCallable, Category = "Nanite")
+	GEOMETRYCOLLECTIONENGINE_API void SetEnableNanite(bool bValue);
 
 	/**
 	 * Enable support for Nanite.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Nanite")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter=SetEnableNanite, Category = "Nanite")
 	bool EnableNanite;
+
+	UFUNCTION(BlueprintCallable, Category = "Rendering")
+	GEOMETRYCOLLECTIONENGINE_API void SetConvertVertexColorsToSRGB(bool bValue);
+
+	/**
+	 * Convert vertex colors to sRGB for rendering. Exposed to avoid changing vertex color rendering for legacy assets; should typically be true for new geometry collections.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter=SetConvertVertexColorsToSRGB, Category = "Rendering")
+	bool bConvertVertexColorsToSRGB = true;
 
 #if WITH_EDITORONLY_DATA
 	/*
@@ -578,18 +641,32 @@ public:
 	*/
 	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated. Use the default SizeSpecificData instead."))
 	float CollisionObjectReductionPercentage_DEPRECATED;
+
+	/** static mesh to use as a proxy for rendering until the geometry collection is broken */
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated. Use RootProxyData instead."))
+	FSoftObjectPath RootProxy_DEPRECATED;
 #endif
 	
-	/**
-	* Mass As Density, units are in kg/m^3
-	*/
+	/**	Physics material to use for the geometry collection */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Collisions")
+	TObjectPtr<UPhysicalMaterial> PhysicsMaterial;
+
+	/**
+	* Whether to use density ( for mass computation ) from physics material ( if physics material is not set, use the component one or defaults )
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Collisions", meta = (EditCondition = "PhysicsMaterial != nullptr"))
+	bool bDensityFromPhysicsMaterial;
+
+	/**
+	* Mass As Density, units are in kg/m^3 ( only enabled if physics material is not set )
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Collisions", meta = (EditCondition = "!bDensityFromPhysicsMaterial"))
 	bool bMassAsDensity;
 
 	/**
-	* Total Mass of Collection. If density, units are in kg/m^3
+	* Total Mass of Collection. If density, units are in kg/m^3 ( only enabled if physics material is not set )
 	*/
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Collisions")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Collisions", meta = (EditCondition = "!bDensityFromPhysicsMaterial"))
 	float Mass;
 
 	/**
@@ -617,6 +694,10 @@ public:
 	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated. Use the default SizeSpecificData instead."))
 	int32 MaximumCollisionParticles_DEPRECATED;
 #endif
+
+	/** When enabled, particle will scale down (shrink) when using being removed ( using both remove on sleep or remove on break ) - Enabled by default */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Removal)
+	bool bScaleOnRemoval;
 
 	/** Remove particle from simulation and dissolve rendered geometry once sleep threshold has been exceeded. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Removal, meta = (DisplayName = "Remove on Sleep"))
@@ -646,10 +727,10 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Collisions")
 	TArray<FGeometryCollectionSizeSpecificData> SizeSpecificData;
 
-	int GetDefaultSizeSpecificDataIndex() const;
-	FGeometryCollectionSizeSpecificData& GetDefaultSizeSpecificData();
-	const FGeometryCollectionSizeSpecificData& GetDefaultSizeSpecificData() const;
-	static FGeometryCollectionSizeSpecificData GeometryCollectionSizeSpecificDataDefaults();
+	GEOMETRYCOLLECTIONENGINE_API int GetDefaultSizeSpecificDataIndex() const;
+	GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionSizeSpecificData& GetDefaultSizeSpecificData();
+	GEOMETRYCOLLECTIONENGINE_API const FGeometryCollectionSizeSpecificData& GetDefaultSizeSpecificData() const;
+	static GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionSizeSpecificData GeometryCollectionSizeSpecificDataDefaults();
 
 	/**
 	* Enable remove pieces on fracture
@@ -665,12 +746,17 @@ public:
 
 	FORCEINLINE const int32 GetBoneSelectedMaterialIndex() const { return BoneSelectedMaterialIndex; }
 
+	UMaterialInterface* GetBoneSelectedMaterial() const
+	{
+		return BoneSelectedMaterial;
+	}
+
 	/** Returns the asset path for the automatically populated selected material. */
-	static const TCHAR* GetSelectedMaterialPath();
+	static GEOMETRYCOLLECTIONENGINE_API const TCHAR* GetSelectedMaterialPath();
 
 #if WITH_EDITORONLY_DATA
 	/** Importing data and options used for this geometry collection */
-	UPROPERTY(EditAnywhere, Instanced, Category = ImportSettings)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Instanced, Category = ImportSettings)
 	TObjectPtr<class UAssetImportData> AssetImportData;
 
 	/** Information for thumbnail rendering */
@@ -681,14 +767,21 @@ public:
 	/*
 	* Update the convex geometry on the collection.
 	*/
-	void UpdateConvexGeometry();
-	void UpdateConvexGeometryIfMissing();
+	GEOMETRYCOLLECTIONENGINE_API void UpdateConvexGeometry();
+	GEOMETRYCOLLECTIONENGINE_API void UpdateConvexGeometryIfMissing();
 	
 	/*
 	 * Update properties that depend on the geometry and clustering: Proximity, Convex Hulls, Volume and Size data.
 	 */
-	void UpdateGeometryDependentProperties();
+	GEOMETRYCOLLECTIONENGINE_API void UpdateGeometryDependentProperties();
 
+
+	//~ Begin IInterface_AssetUserData Interface
+	GEOMETRYCOLLECTIONENGINE_API virtual void AddAssetUserData(UAssetUserData* InUserData) override;
+	GEOMETRYCOLLECTIONENGINE_API virtual void RemoveUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass) override;
+	GEOMETRYCOLLECTIONENGINE_API virtual UAssetUserData* GetAssetUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass) override;
+	GEOMETRYCOLLECTIONENGINE_API virtual const TArray<UAssetUserData*>* GetAssetUserDataArray() const override;
+	//~ End IInterface_AssetUserData Interface
 
 	//
 	// Dataflow
@@ -699,18 +792,26 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Dataflow")
 	FString DataflowTerminal = "GeometryCollectionTerminal";
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dataflow", DisplayName = "DataFlow Overrides")
+	TMap<FString, FString> Overrides;
 
 private:
 #if WITH_EDITOR
-	void CreateSimulationDataImp(bool bCopyFromDDC);
+	GEOMETRYCOLLECTIONENGINE_API void CreateSimulationDataImp(bool bCopyFromDDC);
+	GEOMETRYCOLLECTIONENGINE_API void CreateRenderDataImp(bool bCopyFromDDC);
 #endif
 
 	/*
 	* Used to transfer deprecated properties to the size specific structures during serialization
 	* and to add back the default size specific data when deleted.
 	*/
-	void ValidateSizeSpecificDataDefaults();
+	GEOMETRYCOLLECTIONENGINE_API void ValidateSizeSpecificDataDefaults();
 
+	// update cached root index using the current hierarchy setup
+	GEOMETRYCOLLECTIONENGINE_API void UpdateRootIndex();
+
+	// fill instanced mesh instance count from geometry collection data if not done yet 
+	GEOMETRYCOLLECTIONENGINE_API void FillAutoInstanceMeshesInstancesIfNeeded();
 
 private:
 	/** Guid created on construction of this collection. It should be used to uniquely identify this collection */
@@ -726,16 +827,34 @@ private:
 	FGuid StateGuid;
 
 #if WITH_EDITOR
-	//Used to determine whether we need to cook content
-	FGuid LastBuiltGuid;
-
+	//Used to determine whether we need to cook simulation data
+	FGuid LastBuiltSimulationDataGuid;
 	//Used to determine whether we need to regenerate simulation data
 	FGuid SimulationDataGuid;
+
+	//Used to determine whether we need to cook render data
+	FGuid LastBuiltRenderDataGuid;
+	//Used to determine whether we need to regenerate render data
+	FGuid RenderDataGuid;
 #endif
 
+	// cached root index for faster queries
+	UPROPERTY(VisibleAnywhere, Category = "Clustering")
+	int32 RootIndex = INDEX_NONE;
+
 	// #todo(dmp): rename to be consistent BoneSelectedMaterialID?
+	// Legacy index of the bone selected material in the object's Materials array, or INDEX_NONE if it is not stored there.
+	// Note for new objects the bone selected material should not be stored in the Materials array, so this should be INDEX_NONE
 	UPROPERTY()
-	int32 BoneSelectedMaterialIndex;
+	int32 BoneSelectedMaterialIndex = INDEX_NONE;
+
+	// The material to use for rendering bone selections in the editor, or nullptr
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> BoneSelectedMaterial = nullptr;
 
 	TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollection;
+
+	/** Array of user data stored with the asset */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Instanced, Category = AssetUserData)
+	TArray<TObjectPtr<UAssetUserData>> AssetUserData;
 };

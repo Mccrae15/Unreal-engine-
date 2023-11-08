@@ -2,7 +2,10 @@
 
 #pragma once
 
-#include "RenderGraph.h"
+#include "RenderGraphFwd.h"
+#include "RHIDefinitions.h"
+#include "RHIFwd.h"
+#include "RHIShaderPlatform.h"
 
 enum class ECustomDepthPassLocation : uint32
 {
@@ -38,7 +41,7 @@ inline bool IsCustomDepthPassEnabled()
 
 struct FCustomDepthTextures
 {
-	static FCustomDepthTextures Create(FRDGBuilder& GraphBuilder, FIntPoint CustomDepthExtent);
+	static FCustomDepthTextures Create(FRDGBuilder& GraphBuilder, FIntPoint CustomDepthExtent, EShaderPlatform ShaderPlatform);
 
 	bool IsValid() const
 	{

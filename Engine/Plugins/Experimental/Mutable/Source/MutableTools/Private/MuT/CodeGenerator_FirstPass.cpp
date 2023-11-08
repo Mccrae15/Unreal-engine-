@@ -25,7 +25,6 @@
 #include "MuT/NodeObject.h"
 #include "MuT/NodeObjectGroupPrivate.h"
 #include "MuT/NodeObjectNewPrivate.h"
-#include "MuT/NodeObjectStatePrivate.h"
 #include "MuT/NodePrivate.h"
 #include "MuT/NodeSurface.h"
 #include "MuT/NodeSurfaceEditPrivate.h"
@@ -152,7 +151,7 @@ namespace mu
 
         if ( m_states.IsEmpty() )
         {
-            OBJECT_STATE data;
+            FObjectState data;
             data.m_name = "Default";
             m_states.Emplace( data, root );
         }
@@ -481,14 +480,12 @@ namespace mu
         {
             m_states.Emplace( s, &node );
 
-            // \todo move this 32 constant to a macro or constexpr with a meaningful name and location
-            if ( s.m_runtimeParams.Num() > 32 )
+            if ( s.m_runtimeParams.Num() > MUTABLE_MAX_RUNTIME_PARAMETERS_PER_STATE )
             {
-                char temp[256];
-                mutable_snprintf( temp, 256,
-                                  "State [%s] has more than 32 runtime parameters. Their update may fail.",
-                                  s.m_name.c_str() );
-                m_pErrorLog->GetPrivate()->Add( temp, ELMT_ERROR, node.m_errorContext );
+                FString Msg = FString::Printf( TEXT("State [%s] has more than %d runtime parameters. Their update may fail."),
+                	StringCast<TCHAR>(s.m_name.c_str()).Get(),
+                    MUTABLE_MAX_RUNTIME_PARAMETERS_PER_STATE);
+                m_pErrorLog->GetPrivate()->Add(Msg, ELMT_ERROR, node.m_errorContext );
             }
         }
 
@@ -532,7 +529,7 @@ namespace mu
             op->parameter.m_name = node.m_name;
             op->parameter.m_uid = node.m_uid;
             op->parameter.m_type = PARAMETER_TYPE::T_INT;
-            op->parameter.m_defaultValue.m_int = -1;
+            op->parameter.m_defaultValue.Set<ParamIntType>(-1);
 
             if ( node.m_type==NodeObjectGroup::CS_ONE_OR_NONE )
             {
@@ -540,7 +537,7 @@ namespace mu
                 nullValue.m_value = -1;
                 nullValue.m_name = "None";
                 op->parameter.m_possibleValues.Add( nullValue );
-                op->parameter.m_defaultValue.m_int = nullValue.m_value;
+                op->parameter.m_defaultValue.Set<ParamIntType>(nullValue.m_value);
             }
 
             enumOp = op;
@@ -565,7 +562,7 @@ namespace mu
                         op->parameter.m_name = pChildNode->GetName();
                         op->parameter.m_uid = pChildNode->GetUid();
                         op->parameter.m_type = PARAMETER_TYPE::T_BOOL;
-                        op->parameter.m_defaultValue.m_bool = false;
+                        op->parameter.m_defaultValue.Set<ParamBoolType>(false);
 
                         paramOp = op;
                         break;
@@ -591,9 +588,9 @@ namespace mu
                         enumOp->parameter.m_possibleValues.Add( value );
 
                         // Set as default if none has been set.
-                        if ( enumOp->parameter.m_defaultValue.m_int == -1 )
+                        if ( enumOp->parameter.m_defaultValue.Get<ParamIntType>() == -1 )
                         {
-                            enumOp->parameter.m_defaultValue.m_int = (int)t;
+                            enumOp->parameter.m_defaultValue.Set<ParamIntType>(t);
                         }
 
                         check(enumOp);
@@ -634,28 +631,6 @@ namespace mu
 
         return nullptr;
  	}
-
-
-    //---------------------------------------------------------------------------------------------
-    Ptr<ASTOp> FirstPassGenerator::Visit( const NodeObjectState::Private& node )
-    {
-        // Generate the source object
-        Ptr<ASTOp> source;
-
-        if (node.m_pSource)
-        {
-            // Process the source
-            node.m_pSource->GetBasePrivate()->Accept(*this);
-
-            if (node.m_pRoot)
-            {
-                // Remember the new state with the new root.
-                m_states.Emplace( node.m_state, node.m_pRoot->GetBasePrivate() );
-            }
-        }
-
-        return source;
-    }
 
 
 	//---------------------------------------------------------------------------------------------

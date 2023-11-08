@@ -13,6 +13,7 @@
 #include "Templates/Casts.h"
 #include "UObject/UnrealType.h"
 #include "Serialization/DuplicatedDataWriter.h"
+#include "Misc/PackageAccessTrackingOps.h"
 #include "Misc/PackageName.h"
 #include "UObject/ObjectResource.h"
 #include "UObject/GCObject.h"
@@ -168,8 +169,8 @@ void FBlueprintSupport::RegisterDeferredDependenciesInStruct(const UStruct* Stru
 	{
 		const FObjectProperty* Property = It.Key();
 		void* PropertyValue = (void*)It.Value();
-		UObject* ObjectValue = *((UObject**)PropertyValue);
-		
+		TObjectPtr<UObject> ObjectValue = Property->GetObjectPtrPropertyValue(PropertyValue);
+
 		ULinkerPlaceholderExportObject* PlaceholderVal = Cast<ULinkerPlaceholderExportObject>(ObjectValue);
 		ULinkerPlaceholderClass* PlaceholderClass = Cast<ULinkerPlaceholderClass>(ObjectValue);
 
@@ -1758,6 +1759,7 @@ void FLinkerLoad::PRIVATE_ForceLoadAllDependencies(UPackage* Package)
 
 void FLinkerLoad::ResolveAllImports()
 {
+	UE_TRACK_REFERENCING_PACKAGE_SCOPED(LinkerRoot->GetFName(), PackageAccessTrackingOps::NAME_Load);
 	for (int32 ImportIndex = 0; ImportIndex < ImportMap.Num() && IsBlueprintFinalizationPending(); ++ImportIndex)
 	{
 		// first, make sure every import object is available... just because 
@@ -1829,7 +1831,7 @@ void FLinkerLoad::FinalizeBlueprint(UClass* LoadClass)
 		if ((SuperLinker != nullptr) && SuperLinker->IsBlueprintFinalizationPending())
 		{
 			DEFERRED_DEPENDENCY_CHECK(SuperLinker->DeferredCDOIndex != INDEX_NONE || SuperLinker->bForceBlueprintFinalization);
-			UObject* SuperCDO = SuperLinker->DeferredCDOIndex != INDEX_NONE ? SuperLinker->ExportMap[SuperLinker->DeferredCDOIndex].Object : SuperClass->ClassDefaultObject;
+			UObject* SuperCDO = SuperLinker->DeferredCDOIndex != INDEX_NONE ? ToRawPtr(SuperLinker->ExportMap[SuperLinker->DeferredCDOIndex].Object) : ToRawPtr(SuperClass->ClassDefaultObject);
 			// we MUST have the super fully serialized before we can finalize  
 			// this (class and CDO); if the SuperCDO is already in the midst of 
 			// serializing somewhere up the stack (and a cyclic dependency has  
@@ -1916,7 +1918,7 @@ void FLinkerLoad::FinalizeBlueprint(UClass* LoadClass)
 	if (IsBlueprintFinalizationPending())
 	{
 		int32 DeferredCDOIndexCopy = DeferredCDOIndex;
-		UObject* CDO = DeferredCDOIndex != INDEX_NONE ? ExportMap[DeferredCDOIndexCopy].Object : LoadClass->ClassDefaultObject;
+		UObject* CDO = DeferredCDOIndex != INDEX_NONE ? ToRawPtr(ExportMap[DeferredCDOIndexCopy].Object) : ToRawPtr(LoadClass->ClassDefaultObject);
 		// clear this so IsBlueprintFinalizationPending() doesn't report true:
 		FLinkerLoad::bForceBlueprintFinalization = false;
 		// clear this because we're processing this CDO now:
@@ -2010,7 +2012,7 @@ void FLinkerLoad::ResolveDeferredExports(UClass* LoadClass)
 		}
 	}
 
-	UObject* BlueprintCDO = DeferredCDOIndex != INDEX_NONE ? ExportMap[DeferredCDOIndex].Object : LoadClass->ClassDefaultObject;
+	UObject* BlueprintCDO = DeferredCDOIndex != INDEX_NONE ? ToRawPtr(ExportMap[DeferredCDOIndex].Object) : ToRawPtr(LoadClass->ClassDefaultObject);
 	DEFERRED_DEPENDENCY_CHECK(BlueprintCDO != nullptr);
 	
 	TArray<int32> DeferredTemplateObjects;
@@ -2535,15 +2537,15 @@ bool FObjectInitializer::InitNonNativeProperty(FProperty* Property, UObject* Dat
  * FDeferredInitializationTrackerBase
  ******************************************************************************/
 
-FObjectInitializer* FDeferredInitializationTrackerBase::Add(const UObject* InitDependecy, const FObjectInitializer& DeferringInitializer)
+FObjectInitializer* FDeferredInitializationTrackerBase::Add(const UObject* InitDependency, const FObjectInitializer& DeferringInitializer)
 {
 	FObjectInitializer* DeferredInitializerCopy = nullptr;
 
-	DEFERRED_DEPENDENCY_CHECK(InitDependecy);
-	if (InitDependecy)
+	DEFERRED_DEPENDENCY_CHECK(InitDependency);
+	if (InitDependency)
 	{
 		UObject* InstanceObj = DeferringInitializer.GetObj();
-		ArchetypeInstanceMap.AddUnique(InitDependecy, InstanceObj);
+		ArchetypeInstanceMap.AddUnique(InitDependency, InstanceObj);
 
 		DEFERRED_DEPENDENCY_CHECK(DeferredInitializers.Find(InstanceObj) == nullptr); // did we try to init the object twice?
 
@@ -2553,17 +2555,17 @@ FObjectInitializer* FDeferredInitializationTrackerBase::Add(const UObject* InitD
 	return DeferredInitializerCopy;
 }
 
-void FDeferredInitializationTrackerBase::ResolveArchetypeInstances(UObject* InitDependecy)
+void FDeferredInitializationTrackerBase::ResolveArchetypeInstances(UObject* InitDependency)
 {
 	TArray<UObject*> ArchetypeInstances;
-	ArchetypeInstanceMap.MultiFind(InitDependecy, ArchetypeInstances);
+	ArchetypeInstanceMap.MultiFind(InitDependency, ArchetypeInstances);
 
 	for (UObject* Instance : ArchetypeInstances)
 	{
 		DEFERRED_DEPENDENCY_CHECK(ResolvingObjects.Contains(Instance) == false);
 		ResolvingObjects.Push(Instance);
 
-		if (ResolveDeferredInitialization(InitDependecy, Instance))
+		if (ResolveDeferredInitialization(InitDependency, Instance))
 		{
 			// For sub-objects, this has to come after ResolveDeferredInitialization(), since InitSubObjectProperties() is 
 			// invoked there (which is where we fill this sub-object with values from the super)
@@ -2574,7 +2576,7 @@ void FDeferredInitializationTrackerBase::ResolveArchetypeInstances(UObject* Init
 		ResolvingObjects.Pop();
 	}
 
-	ArchetypeInstanceMap.Remove(InitDependecy);
+	ArchetypeInstanceMap.Remove(InitDependency);
 }
 
 bool FDeferredInitializationTrackerBase::IsInitializationDeferred(const UObject* Object) const

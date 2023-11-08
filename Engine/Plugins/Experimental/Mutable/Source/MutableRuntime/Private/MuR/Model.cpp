@@ -22,62 +22,16 @@
 
 namespace mu
 {
+    MUTABLE_IMPLEMENT_POD_SERIALISABLE(FRomData);
+	MUTABLE_IMPLEMENT_POD_SERIALISABLE(FImageLODRange);
 
+	
     //---------------------------------------------------------------------------------------------
     void FProgram::Check()
     {
-//    #ifdef MUTABLE_DEBUG
-//        // Process all from root
-//        if (m_states.size())
-//        {
-//            // Super debug: enable in case of emergencies.
-////            InvariantCodeVisitor invariantVisitor;
-////            invariantVisitor.Apply( *this, m_states[0].m_root );
-//        }
-
-//        for ( size_t i=0; i<m_code.size(); ++i )
-//        {
-//            if ( m_code[i].type == OP_TYPE::IM_PIXELFORMAT )
-//            {
-//                check( m_code[i].args.ImagePixelFormat.format != IF_NONE );
-//                check( m_code[i].args.ImagePixelFormat.source != i );
-//            }
-//    //
-//    //            if ( m_code[i].type == OP_TYPE::IM_MIPMAP )
-//    //            {
-//    //                check( m_code[i].args.ImageMipmap.blockLevels != 0 );
-//    //            }
-
-//            if ( m_code[i].type == OP_TYPE::ME_APPLYLAYOUT )
-//            {
-//                check( m_code[i].args.MeshApplyLayout.mesh != 0 );
-//                check( m_code[i].args.MeshApplyLayout.mesh != i );
-//            }
-
-//            if ( m_code[i].type == OP_TYPE::ME_MORPH2 )
-//            {
-//                for (int j=0;j<MUTABLE_OP_MAX_MORPH2_TARGETS;++j)
-//                {
-//                    auto target = m_code[i].args.MeshMorph2.targets[j];
-//                    check( m_code[target].type!=OP_TYPE::ME_APPLYLAYOUT );
-//                }
-//            }
-
-//            if ( m_code[i].type == OP_TYPE::ME_CONDITIONAL ||
-//                 m_code[i].type == OP_TYPE::IN_CONDITIONAL ||
-//                 m_code[i].type == OP_TYPE::IM_CONDITIONAL ||
-//                 m_code[i].type == OP_TYPE::LA_CONDITIONAL )
-//            {
-//                for (int j=0;j<MUTABLE_OP_MAX_MORPH2_TARGETS;++j)
-//                {
-//                    check( m_code[i].args.Conditional.condition!=i );
-//                    check( m_code[i].args.Conditional.yes!=i );
-//                    check( m_code[i].args.Conditional.no!=i );
-//                }
-//            }
-
-//        }
-//    #endif
+    #ifdef MUTABLE_DEBUG
+		// Insert debug checks here.
+    #endif
     }
 
 
@@ -154,7 +108,7 @@ namespace mu
         //-----------------------------------------------------------------------------------------
         // Life cycle
         //-----------------------------------------------------------------------------------------
-        OutputModelStream( ModelStreamer* pStreamer )
+        OutputModelStream(ModelWriter* pStreamer )
             : m_pStreamer( pStreamer )
         {
         }
@@ -170,12 +124,12 @@ namespace mu
 
     private:
 
-        ModelStreamer* m_pStreamer;
+        ModelWriter* m_pStreamer;
     };
 
 
     //---------------------------------------------------------------------------------------------
-    void Model::Serialise( Model* p, ModelStreamer& streamer )
+    void Model::Serialise( Model* p, ModelWriter& streamer )
     {
 		LLM_SCOPE_BYNAME(TEXT("MutableRuntime"));
 
@@ -206,7 +160,7 @@ namespace mu
 			Image::Serialise(ResData.Value.get(), MemoryArch);
 			check(RomData.Size == MemStream.GetBufferSize());
 
-			streamer.OpenWriteFile(p->GetLocation(), RomData.Id);
+			streamer.OpenWriteFile(RomData.Id);
 			streamer.Write(MemStream.GetBuffer(), MemStream.GetBufferSize());
 			streamer.CloseWriteFile();
 
@@ -236,7 +190,7 @@ namespace mu
 			Mesh::Serialise(ResData.Value.get(), MemoryArch);
 			check(RomData.Size == MemStream.GetBufferSize());
 
-			streamer.OpenWriteFile(p->GetLocation(), RomData.Id);
+			streamer.OpenWriteFile(RomData.Id);
 			streamer.Write(MemStream.GetBuffer(), MemStream.GetBufferSize());
 			streamer.CloseWriteFile();
 
@@ -246,7 +200,7 @@ namespace mu
 
 		// Store the main data of the model
 		{
-			streamer.OpenWriteFile(p->GetLocation(), 0);
+			streamer.OpenWriteFile(0);
 			OutputModelStream stream(&streamer);
 			OutputArchive arch(&stream);
 
@@ -301,24 +255,6 @@ namespace mu
         return pResult;
     }
 
-
-    //---------------------------------------------------------------------------------------------
-    const char* Model::GetLocation( ) const
-    {
-        return m_pD->m_location.c_str();
-    }
-
-
-    //---------------------------------------------------------------------------------------------
-    void Model::SetLocation( const char* strLocation )
-    {
-        if (strLocation)
-        {
-            m_pD->m_location = strLocation;
-        }
-    }
-
-
     //---------------------------------------------------------------------------------------------
     Model::Private* Model::GetPrivate() const
     {
@@ -327,14 +263,133 @@ namespace mu
 
 
     //---------------------------------------------------------------------------------------------
-    void Model::ClearCaches()
+    bool Model::GetBoolDefaultValue(int32 Index) const
     {
-		LLM_SCOPE_BYNAME(TEXT("MutableRuntime"));
+    	check(m_pD->m_program.m_parameters.IsValidIndex(Index));
+		check(m_pD->m_program.m_parameters[Index].m_type == PARAMETER_TYPE::T_BOOL);
 
-        if (m_pD)
+        // Early out in case of invalid parameters
+        if (!m_pD->m_program.m_parameters.IsValidIndex(Index) ||
+            m_pD->m_program.m_parameters[Index].m_type != PARAMETER_TYPE::T_BOOL)
         {
-            m_pD->m_generatedResources.Empty();
+            return false;
         }
+		
+        return m_pD->m_program.m_parameters[Index].m_defaultValue.Get<ParamBoolType>();
+    }
+
+
+    //---------------------------------------------------------------------------------------------
+	int32 Model::GetIntDefaultValue(int32 Index) const
+	{
+		check(m_pD->m_program.m_parameters.IsValidIndex(Index));
+		check(m_pD->m_program.m_parameters[Index].m_type == PARAMETER_TYPE::T_INT);
+
+        // Early out in case of invalid parameters
+        if (!m_pD->m_program.m_parameters.IsValidIndex(Index) ||
+            m_pD->m_program.m_parameters[Index].m_type != PARAMETER_TYPE::T_INT)
+        {
+            return 0;
+        }
+		
+        return m_pD->m_program.m_parameters[Index].m_defaultValue.Get<ParamIntType>();
+	}
+
+
+    //---------------------------------------------------------------------------------------------
+	float Model::GetFloatDefaultValue(int32 Index) const
+	{
+    	check(m_pD->m_program.m_parameters.IsValidIndex(Index));
+		check(m_pD->m_program.m_parameters[Index].m_type == PARAMETER_TYPE::T_FLOAT);
+
+        // Early out in case of invalid parameters
+        if (!m_pD->m_program.m_parameters.IsValidIndex(Index) ||
+            m_pD->m_program.m_parameters[Index].m_type != PARAMETER_TYPE::T_FLOAT)
+        {
+            return 0.0f;
+        }
+		
+        return m_pD->m_program.m_parameters[Index].m_defaultValue.Get<ParamFloatType>();
+	}
+
+
+	void Model::GetColourDefaultValue(int32 Index, float* R, float* G, float* B) const
+    {
+    	check(m_pD->m_program.m_parameters.IsValidIndex(Index));
+		check(m_pD->m_program.m_parameters[Index].m_type == PARAMETER_TYPE::T_COLOUR);
+
+        // Early out in case of invalid parameters
+        if (!m_pD->m_program.m_parameters.IsValidIndex(Index) ||
+            m_pD->m_program.m_parameters[Index].m_type != PARAMETER_TYPE::T_COLOUR)
+        {
+            return;
+        }
+
+        ParamColorType& Color = m_pD->m_program.m_parameters[Index].m_defaultValue.Get<ParamColorType>();
+        if (R) *R = Color[0];
+    	if (G) *G = Color[1];
+    	if (B) *B = Color[2];
+    }
+
+
+	void Model::GetProjectorDefaultValue(int32 Index, PROJECTOR_TYPE* OutProjectionType, FVector3f* OutPos,
+		FVector3f* OutDir, FVector3f* OutUp, FVector3f* OutScale, float* OutProjectionAngle) const
+	{
+    	check(m_pD->m_program.m_parameters.IsValidIndex(Index));
+		check(m_pD->m_program.m_parameters[Index].m_type == PARAMETER_TYPE::T_PROJECTOR);
+
+        // Early out in case of invalid parameters
+        if (!m_pD->m_program.m_parameters.IsValidIndex(Index) ||
+            m_pD->m_program.m_parameters[Index].m_type != PARAMETER_TYPE::T_PROJECTOR)
+        {
+            return;
+        }
+
+        const ParamProjectorType& Projector = m_pD->m_program.m_parameters[Index].m_defaultValue.Get<ParamProjectorType>();
+        if (OutProjectionType) *OutProjectionType = Projector.type;
+    	if (OutPos) *OutPos = Projector.position;
+		if (OutDir) *OutDir = Projector.direction;
+    	if (OutUp) *OutUp = Projector.up;
+    	if (OutScale) *OutScale = Projector.scale;
+    	if (OutProjectionAngle) *OutProjectionAngle = Projector.projectionAngle;
+	}
+
+
+	//---------------------------------------------------------------------------------------------
+	FName Model::GetImageDefaultValue(int32 Index) const
+    {
+	    check(m_pD->m_program.m_parameters.IsValidIndex(Index));
+		check(m_pD->m_program.m_parameters[Index].m_type == PARAMETER_TYPE::T_IMAGE);
+
+        // Early out in case of invalid parameters
+        if (!m_pD->m_program.m_parameters.IsValidIndex(Index) ||
+            m_pD->m_program.m_parameters[Index].m_type != PARAMETER_TYPE::T_IMAGE)
+        {
+            return {};
+        }
+		
+        return m_pD->m_program.m_parameters[Index].m_defaultValue.Get<ParamImageType>();
+    }
+
+
+    //---------------------------------------------------------------------------------------------
+    int32 Model::GetRomCount() const
+    {
+    	return m_pD->m_program.m_roms.Num();
+    }
+
+
+    //---------------------------------------------------------------------------------------------
+    uint32 Model::GetRomId(int32 Index) const
+    {
+    	return m_pD->m_program.m_roms[Index].Id;
+    }
+
+
+    //---------------------------------------------------------------------------------------------
+    uint32 Model::GetRomSize(int32 Index) const
+    {
+    	return m_pD->m_program.m_roms[Index].Size;
     }
 
 
@@ -391,8 +446,7 @@ namespace mu
                         {
 //							float m[16];
 //							pOld->GetProjectorValue( p, m );
-                            pRes->GetPrivate()->m_values[thisP].m_projector =
-                                    pOld->GetPrivate()->m_values[p].m_projector;
+                            pRes->GetPrivate()->m_values[thisP].Set<ParamProjectorType>(pOld->GetPrivate()->m_values[p].Get<ParamProjectorType>());
                             break;
                         }
 
@@ -412,6 +466,18 @@ namespace mu
         return pRes;
     }
 
+
+    //---------------------------------------------------------------------------------------------
+    bool Model::IsParameterMultidimensional(const int32 ParamIndex) const
+    {
+		if (m_pD->m_program.m_parameters.IsValidIndex(ParamIndex))
+		{
+			return m_pD->m_program.m_parameters[ParamIndex].m_ranges.Num() > 0;
+		}
+
+		return false;
+    }
+	
 
     //---------------------------------------------------------------------------------------------
     int Model::GetStateCount() const
@@ -480,240 +546,6 @@ namespace mu
         }
 
         return res;
-    }
-
-
-    //---------------------------------------------------------------------------------------------
-    static size_t AddMultiValueKeys(TArray<uint8_t>& parameterValuesBlob, size_t pos,
-                                  const TMap< TArray<int>, PARAMETER_VALUE >& multi )
-    {
-        parameterValuesBlob.SetNum( pos+4 );
-        uint32 s = uint32( multi.Num() );
-        FMemory::Memcpy( &parameterValuesBlob[pos], &s, sizeof(uint32) );
-        pos+=4;
-
-        for(const auto& v: multi)
-        {
-            uint32 ds = uint32( v.Key.Num() );
-
-            parameterValuesBlob.SetNum( pos + 4 + ds*4 );
-
-			FMemory::Memcpy( &parameterValuesBlob[pos], &s, sizeof(uint32) );
-            pos+=4;
-
-			FMemory::Memcpy( &parameterValuesBlob[pos],v.Key.GetData(), ds*sizeof(int32) );
-            pos += ds*sizeof(int32);
-        }
-
-        return pos;
-    }
-
-
-    //---------------------------------------------------------------------------------------------
-    uint32 Model::Private::GetResourceKey( uint32 paramListIndex, OP::ADDRESS rootAt, const Parameters* pParams )
-    {
-		MUTABLE_CPUPROFILER_SCOPE(GetResourceKey)
-
-        // Find the list of relevant parameters
-        const TArray<uint16>* params = nullptr;
-        if (paramListIndex<(uint32)m_program.m_parameterLists.Num())
-        {
-            params = &m_program.m_parameterLists[paramListIndex];
-        }
-        check(params);
-        if (!params)
-        {
-            return 0xffff;
-        }
-
-        // Generate the relevant parameters blob
-		TArray<uint8_t> parameterValuesBlob;
-		parameterValuesBlob.Reserve(1024);
-        for (int param: *params)
-        {
-            int32 pos = parameterValuesBlob.Num();
-			int32 dataSize = 0;
-
-            switch(m_program.m_parameters[param].m_type)
-            {
-            case PARAMETER_TYPE::T_BOOL:
-                dataSize = 1;
-                parameterValuesBlob.Add( pParams->GetPrivate()->m_values[param].m_bool ? 1 : 0 );
-                pos += dataSize;
-
-                // Multi-values
-                if ( param < int(pParams->GetPrivate()->m_multiValues.Num()) )
-                {
-                    const auto& multi = pParams->GetPrivate()->m_multiValues[param];
-                    pos = AddMultiValueKeys( parameterValuesBlob, pos, multi );
-                    for(const auto& v: multi)
-                    {
-                        parameterValuesBlob.Add( v.Value.m_bool ? 1 : 0 );
-                        pos += dataSize;
-                    }
-                }
-                break;
-
-            case PARAMETER_TYPE::T_INT:
-                dataSize = sizeof(int32);
-                parameterValuesBlob.SetNum( pos+dataSize );
-                FMemory::Memcpy( &parameterValuesBlob[pos], &pParams->GetPrivate()->m_values[param].m_int, dataSize );
-                pos += dataSize;
-
-                // Multi-values
-                if ( param < int(pParams->GetPrivate()->m_multiValues.Num()) )
-                {
-                    const auto& multi = pParams->GetPrivate()->m_multiValues[param];
-                    pos = AddMultiValueKeys( parameterValuesBlob, pos, multi );
-                    parameterValuesBlob.SetNum( pos+multi.Num()*dataSize );
-                    for(const auto& v: multi)
-                    {
-						FMemory::Memcpy( &parameterValuesBlob[pos], &v.Value.m_int, dataSize );
-                        pos += dataSize;
-                    }
-                }
-                break;
-
-            //! Floating point value in the range of 0.0 to 1.0
-            case PARAMETER_TYPE::T_FLOAT:
-                dataSize = sizeof(float);
-                parameterValuesBlob.SetNum( pos+dataSize );
-				FMemory::Memcpy( &parameterValuesBlob[pos], &pParams->GetPrivate()->m_values[param].m_float, dataSize );
-                pos += dataSize;
-
-                // Multi-values
-                if ( param < pParams->GetPrivate()->m_multiValues.Num() )
-                {
-                    const auto& multi = pParams->GetPrivate()->m_multiValues[param];
-                    pos = AddMultiValueKeys( parameterValuesBlob, pos, multi );
-                    parameterValuesBlob.SetNum( pos+multi.Num()*dataSize );
-                    for(const auto& v: multi)
-                    {
-						FMemory::Memcpy( &parameterValuesBlob[pos], &v.Value.m_float,dataSize );
-                        pos += dataSize;
-                    }
-                }
-                break;
-
-            //! Floating point RGBA colour, with each channel ranging from 0.0 to 1.0
-            case PARAMETER_TYPE::T_COLOUR:
-                dataSize = 3*sizeof(float);
-                parameterValuesBlob.SetNum( pos+dataSize );
-				FMemory::Memcpy( &parameterValuesBlob[pos], &pParams->GetPrivate()->m_values[param].m_colour, dataSize );
-                pos += dataSize;
-
-                // Multi-values
-                if ( param < int(pParams->GetPrivate()->m_multiValues.Num()) )
-                {
-                    const auto& multi = pParams->GetPrivate()->m_multiValues[param];
-                    pos = AddMultiValueKeys( parameterValuesBlob, pos, multi );
-                    parameterValuesBlob.SetNum( pos+multi.Num()*dataSize );
-                    for(const auto& v: multi)
-                    {
-						FMemory::Memcpy( &parameterValuesBlob[pos], &v.Value.m_colour,dataSize );
-                        pos += dataSize;
-                    }
-                }
-                break;
-
-            //! 3D Projector type, defining a position, scale and orientation. Basically used for
-            //! projected decals.
-            case PARAMETER_TYPE::T_PROJECTOR:
-                dataSize = sizeof(FProjector);
-
-                // \todo: padding will be random?
-                parameterValuesBlob.SetNum( pos+dataSize );
-				FMemory::Memcpy( &parameterValuesBlob[pos], &pParams->GetPrivate()->m_values[param].m_projector, dataSize );
-				pos += dataSize;
-
-                // Multi-values
-                if ( param < int(pParams->GetPrivate()->m_multiValues.Num()) )
-                {
-                    const auto& multi = pParams->GetPrivate()->m_multiValues[param];
-                    pos = AddMultiValueKeys( parameterValuesBlob, pos, multi );
-                    parameterValuesBlob.SetNum( pos+multi.Num()*dataSize );
-                    for(const auto& v: multi)
-                    {
-						FMemory::Memcpy( &parameterValuesBlob[pos], &v.Value.m_projector,dataSize );
-                        pos += dataSize;
-                    }
-                }
-                break;
-
-            case PARAMETER_TYPE::T_IMAGE:
-                dataSize = sizeof(EXTERNAL_IMAGE_ID);
-                parameterValuesBlob.SetNum( pos+dataSize );
-				FMemory::Memcpy( &parameterValuesBlob[pos],
-                        &pParams->GetPrivate()->m_values[param].m_image,
-                        dataSize );
-				pos += dataSize;
-
-                // Multi-values
-                if ( param < int(pParams->GetPrivate()->m_multiValues.Num()) )
-                {
-                    const auto& multi = pParams->GetPrivate()->m_multiValues[param];
-                    pos = AddMultiValueKeys( parameterValuesBlob, pos, multi );
-                    parameterValuesBlob.SetNum( pos+multi.Num()*dataSize );
-                    for(const auto& v: multi)
-                    {
-						FMemory::Memcpy( &parameterValuesBlob[pos], &v.Value.m_image,dataSize );
-                        pos += dataSize;
-                    }
-                }
-                break;
-
-            default:
-                // unsupported parameter type
-                check(false);
-            }
-        }
-
-        // Increase the request id
-        ++m_lastResourceResquestId;
-
-        // See if we already have this id
-        size_t oldestCachePosition = 0;
-        for (size_t i=0; i<m_generatedResources.Num(); ++i)
-        {
-            auto& key = m_generatedResources[i];
-            if (key.m_rootAddress==rootAt
-				&&
-				key.m_parameterValuesBlob==parameterValuesBlob)
-            {
-                key.m_lastRequestId = m_lastResourceResquestId;
-                return key.m_id;
-            }
-            else
-            {
-                if ( m_generatedResources[oldestCachePosition].m_lastRequestId
-                     >
-                     key.m_lastRequestId )
-                {
-                    oldestCachePosition = i;
-                }
-            }
-        }
-
-        // Generate a new id
-        uint32 newId = ++m_lastResourceKeyId;
-        RESOURCE_KEY newKey;
-        newKey.m_id = newId;
-        newKey.m_lastRequestId = m_lastResourceResquestId;
-        newKey.m_rootAddress = rootAt;
-        newKey.m_parameterValuesBlob = MoveTemp(parameterValuesBlob);
-
-        // TODO: Move the constant to settings?
-        const size_t maxGeneratedResourcesIDCacheSize = 1024;
-        if (m_generatedResources.Num()>=maxGeneratedResourcesIDCacheSize)
-        {
-            m_generatedResources[oldestCachePosition] = MoveTemp(newKey);
-        }
-        else
-        {
-            m_generatedResources.Add(MoveTemp(newKey));
-        }
-
-        return newId;
     }
 
 

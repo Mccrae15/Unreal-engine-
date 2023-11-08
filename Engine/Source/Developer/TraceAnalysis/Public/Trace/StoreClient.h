@@ -22,6 +22,8 @@ public:
 		FUtf8StringView	GetStoreDir() const;
 		uint32			GetRecorderPort() const;
 		uint32			GetChangeSerial() const;
+		uint32			GetSettingsSerial() const;
+		void			GetWatchDirectories(TArray<FString>& OutDirs) const;
 	};
 
 	struct TRACEANALYSIS_API FTraceInfo
@@ -30,6 +32,7 @@ public:
 		uint32			GetId() const;
 		uint64			GetSize() const;
 		uint64			GetTimestamp() const;
+		FUtf8StringView GetUri() const;
 		//const TCHAR*	GetMetadata(const TCHAR* Key) const;
 		//template <typename Lambda> uint32 ReadMetadata(Lambda&& Callback) const;
 	};
@@ -42,6 +45,7 @@ public:
 	
 						~FStoreClient() = default;
 	static FStoreClient*Connect(const TCHAR* Host, uint32 Port=0);
+	bool				Reconnect(const TCHAR* Host, uint32 Port);
 	void				operator delete (void* Addr);
 	bool				IsValid() const;
 	uint32				GetStoreAddress() const;
@@ -51,6 +55,8 @@ public:
 	const FTraceInfo*	GetTraceInfo(uint32 Index);
 	const FTraceInfo*	GetTraceInfoById(uint32 Id);
 	FTraceData			ReadTrace(uint32 Id);
+	bool SetStoreDirectories(const TCHAR* StoreDir, const TArray<FString>& AddWatchDirs,
+							const TArray<FString>& RemoveWatchDirs);
 #if 0
 	template <typename Lambda> uint32 GetTraceInfos(uint32 StartIndex, uint32 Count, Lambda&& Callback) const;
 #endif // 0
@@ -66,6 +72,7 @@ public:
 	const FSessionInfo* GetSessionInfo(uint32 Index) const;
 	const FSessionInfo* GetSessionInfoById(uint32 Id) const;
 	const FSessionInfo* GetSessionInfoByTraceId(uint32 TraceId) const;
+	const FSessionInfo* GetSessionInfoByGuid(const FGuid& TraceGuid);
 #if 0
 	template <typename Lambda> uint32	GetSessionInfos(uint32 StartIndex, uint32 Count, Lambda&& Callback) const;
 #endif // 0

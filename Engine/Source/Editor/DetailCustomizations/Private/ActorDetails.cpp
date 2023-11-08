@@ -565,7 +565,7 @@ FReply FActorDetails::HandleAddOrViewEventForVariable(UBlueprint* BP, FMulticast
 	const UFunction* SignatureFunction = Property ? Property->SignatureFunction : nullptr;
 	UEdGraph* EventGraph = BP ? FBlueprintEditorUtils::FindEventGraph(BP) : nullptr;
 
-	if (EventGraph && SignatureFunction)
+	if (EventGraph && SignatureFunction && Property)
 	{
 		const FVector2D SpawnPos = EventGraph->GetGoodPlaceForNewNode();
 
@@ -614,6 +614,26 @@ void FActorDetails::AddActorCategory( IDetailLayoutBuilder& DetailBuilder, const
 							.Font(IDetailLayoutBuilder::GetDetailFont())
 							.IsEnabled(false)
 					];
+
+				if (Actor->GetActorInstanceGuid() != Actor->GetActorGuid())
+				{
+					const FText ActorInstanceGuidText = FText::FromString(Actor->GetActorInstanceGuid().ToString());
+					ActorCategory.AddCustomRow( LOCTEXT("ActorInstanceGuid", "ActorInstanceGuid") )
+						.NameContent()
+						[
+							SNew(STextBlock)
+							.Text(LOCTEXT("ActorInstanceGuid2", "Actor Instance Guid"))
+							.ToolTipText(LOCTEXT("ActorInstanceGuid_ToolTip", "Actor Instance Guid"))
+							.Font(IDetailLayoutBuilder::GetDetailFont())
+						]
+						.ValueContent()
+						[
+							SNew(STextBlock)
+								.Text(ActorInstanceGuidText)
+								.Font(IDetailLayoutBuilder::GetDetailFont())
+								.IsEnabled(false)
+						];
+				}
 			}
 
 			if (Actor->GetContentBundleGuid().IsValid())

@@ -59,12 +59,85 @@ ONLINESUBSYSTEM_API DEFINE_STAT(STAT_Session_Interface);
 ONLINESUBSYSTEM_API DEFINE_STAT(STAT_Voice_Interface);
 #endif
 
+#ifndef NULL_SUBSYSTEM
+const FName NULL_SUBSYSTEM(TEXT("NULL"));
+#endif
+
+#ifndef GOOGLEPLAY_SUBSYSTEM
+const FName GOOGLEPLAY_SUBSYSTEM(TEXT("GOOGLEPLAY"));
+#endif
+
+#ifndef IOS_SUBSYSTEM
+const FName IOS_SUBSYSTEM(TEXT("IOS"));
+#endif
+
+#ifndef APPLE_SUBSYSTEM
+const FName APPLE_SUBSYSTEM(TEXT("APPLE"));
+#endif
+
+#ifndef AMAZON_SUBSYSTEM
+const FName AMAZON_SUBSYSTEM(TEXT("AMAZON"));
+#endif
+
+#ifndef GOOGLE_SUBSYSTEM
+const FName GOOGLE_SUBSYSTEM(TEXT("GOOGLE"));
+#endif
+
+#ifndef FACEBOOK_SUBSYSTEM
+const FName FACEBOOK_SUBSYSTEM(TEXT("FACEBOOK"));
+#endif
+
+#ifndef GAMECIRCLE_SUBSYSTEM
+const FName GAMECIRCLE_SUBSYSTEM(TEXT("GAMECIRCLE"));
+#endif
+
+#ifndef STEAM_SUBSYSTEM
+const FName STEAM_SUBSYSTEM(TEXT("STEAM"));
+#endif
+
+#ifndef PS4_SUBSYSTEM
+const FName PS4_SUBSYSTEM(TEXT("PS4"));
+#endif
+
+#ifndef PS4SERVER_SUBSYSTEM
+const FName PS4SERVER_SUBSYSTEM(TEXT("PS4SERVER"));
+#endif
+
+#ifndef THUNDERHEAD_SUBSYSTEM
+const FName THUNDERHEAD_SUBSYSTEM(TEXT("THUNDERHEAD"));
+#endif
+
+#ifndef MCP_SUBSYSTEM
+const FName MCP_SUBSYSTEM(TEXT("MCP"));
+#endif
+
+#ifndef MCP_SUBSYSTEM_EMBEDDED
+const FName MCP_SUBSYSTEM_EMBEDDED(TEXT("MCP:EMBEDDED"));
+#endif
+
+#ifndef TENCENT_SUBSYSTEM
+const FName TENCENT_SUBSYSTEM(TEXT("TENCENT"));
+#endif
+
+#ifndef SWITCH_SUBSYSTEM
+const FName SWITCH_SUBSYSTEM(TEXT("SWITCH"));
+#endif
+
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
-FName WECHAT_SUBSYSTEM(TEXT("WeChat"));
-FName LIVE_SUBSYSTEM(TEXT("LIVE"));
-FName LIVESERVER_SUBSYSTEM(TEXT("LIVESERVER"));
-FName OCULUS_SUBSYSTEM(TEXT("OCULUS"));
+const FName OCULUS_SUBSYSTEM(TEXT("OCULUS"));
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+#ifndef SAMSUNG_SUBSYSTEM
+const FName SAMSUNG_SUBSYSTEM(TEXT("SAMSUNG"));
+#endif
+
+#ifndef QUAIL_SUBSYSTEM
+const FName QUAIL_SUBSYSTEM(TEXT("Quail"));
+#endif
+
+#ifndef EOS_SUBSYSTEM
+const FName EOS_SUBSYSTEM(TEXT("EOS"));
+#endif
 
 /** The default key that will update presence text in the platform's UI */
 const FString DefaultPresenceKey = TEXT("RichPresence");
@@ -90,6 +163,7 @@ const FString DefaultSessionIdKey = TEXT("SessionId");
 /** Resource the client is logged in with */
 const FString PresenceResourceKey = TEXT("ResourceKey");
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 namespace OnlineIdentity
 {
 	namespace Errors
@@ -105,6 +179,7 @@ namespace OnlineIdentity
 		const FString NoAuthType = TEXT("no_auth_type");
 	}
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 /** Workaround, please avoid using this */
 FUniqueNetIdPtr GetFirstSignedInUser(IOnlineIdentityPtr IdentityInt)
@@ -149,7 +224,12 @@ int32 GetBuildUniqueId()
 	if (!bStaticCheck)
 	{
 		bStaticCheck = true;
-		if (FParse::Value(FCommandLine::Get(), TEXT("BuildIdOverride="), BuildIdOverride) && BuildIdOverride != 0)
+		FString BuildIdOverrideCommandLineString;
+		if (FParse::Value(FCommandLine::Get(), TEXT("BuildIdOverride="), BuildIdOverrideCommandLineString))
+		{
+			BuildIdOverride = FCString::Atoi(*BuildIdOverrideCommandLineString);
+		}
+		if (BuildIdOverride != 0)
 		{
 			bUseBuildIdOverride = true;
 		}

@@ -78,7 +78,15 @@ public:
 	};
 
 public:
-	static void GetSelectedGeometryCollectionComponents(TSet<UGeometryCollectionComponent*>& GeomCompSelection);
+
+	/**
+	 * Get the Geometry Collection components in the current selection
+	 * @param GeomCompSelection					the set to fill with Geometry Collection components
+	 * @param bFilterForUniqueRestCollections	if true, and selection contains multiple components backed by the same Rest Collection asset, the selection will be filtered to only contain one component per asset
+	 */
+	static void GetSelectedGeometryCollectionComponents(TSet<UGeometryCollectionComponent*>& GeomCompSelection, bool bFilterForUniqueRestCollections = false);
+	static TArray<FString> GetSelectedComponentMaterialNames(bool bIncludeDefault, bool bUseFullNamesIfPossible = true);
+
 	
 protected:
 	static bool IsStaticMeshSelected();
@@ -86,6 +94,7 @@ protected:
 	static void AddSingleRootNodeIfRequired(UGeometryCollection* GeometryCollectionObject);
 	static void AddAdditionalAttributesIfRequired(UGeometryCollection* GeometryCollectionObject);
 	static void Refresh(FFractureToolContext& Context, FFractureEditorModeToolkit* Toolkit, bool bClearSelection=false);
+	static void Refresh(UGeometryCollectionComponent* Component, FFractureEditorModeToolkit* Toolkit, const TArray<int32>& SetSelection, bool bClearSelection=false, bool bMustUpdateBoneColors=false);
 	static void SetOutlinerComponents(TArray<FFractureToolContext>& InContexts, FFractureEditorModeToolkit* Toolkit);
 	static void ClearProximity(FGeometryCollection* GeometryCollection);
 
@@ -159,6 +168,12 @@ public:
 	/** Executes function that generates new geometry. Returns the first new geometry index. */
 	virtual int32 ExecuteFracture(const FFractureToolContext& FractureContext) { return INDEX_NONE; }
 
+	// Optional processing after a successful fracture (i.e., will not be called if ExecuteFracture returns INDEX_NONE)
+	virtual void PostFractureProcess(const FFractureToolContext& FractureContext, int32 FirstNewGeometryIndex)
+	{
+
+	}
+
 	virtual void OnTick(float DeltaTime) {}
 
 	/** Draw callback from edmode*/
@@ -172,7 +187,7 @@ public:
 	virtual void SelectedBonesChanged() {}
 
 	// Called when the modal tool is entered
-	virtual void Setup()
+	virtual void Setup(TWeakPtr<FFractureEditorModeToolkit> InToolkit)
 	{
 		GEngine->OnComponentTransformChanged().AddUObject(this, &UFractureModalTool::OnComponentTransformChangedInternal);
 	}

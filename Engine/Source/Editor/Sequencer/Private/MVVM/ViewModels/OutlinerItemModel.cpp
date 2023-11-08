@@ -9,12 +9,14 @@
 #include "MVVM/Extensions/IObjectBindingExtension.h"
 #include "MVVM/ViewModels/OutlinerViewModel.h"
 #include "MVVM/ViewModels/SequencerEditorViewModel.h"
+#include "MVVM/Selection/Selection.h"
 
 #include "CurveEditor.h"
 #include "Framework/Commands/GenericCommands.h"
 #include "Framework/Commands/UIAction.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "ISettingsModule.h"
+#include "MovieScene.h"
 #include "MovieSceneSequence.h"
 #include "ScopedTransaction.h"
 #include "Sequencer.h"
@@ -149,6 +151,16 @@ FName FOutlinerItemModelMixin::GetIdentifier() const
 void FOutlinerItemModelMixin::SetIdentifier(FName InNewIdentifier)
 {
 	TreeItemIdentifier = InNewIdentifier;
+
+	const FViewModel* ViewModel = AsViewModel();
+	if (ViewModel && ViewModel->IsConstructed())
+	{
+		TSharedPtr<FSequencerEditorViewModel> EditorViewModel = GetEditor();
+		if (EditorViewModel)
+		{
+			EditorViewModel->HandleDataHierarchyChanged();
+		}
+	}
 }
 
 bool FOutlinerItemModelMixin::IsExpanded() const
@@ -249,7 +261,7 @@ bool FOutlinerItemModelMixin::IsDimmed() const
 	TSharedPtr<FSequencer> Sequencer = EditorViewModel ? EditorViewModel->GetSequencerImpl() : nullptr;
 	if (Sequencer)
 	{
-		TSharedPtr<FViewModel> ThisShared(const_cast<FViewModel*>(AsViewModel())->AsShared());
+		TViewModelPtr<IOutlinerExtension> ThisShared(const_cast<FViewModel*>(AsViewModel())->AsShared(), const_cast<FOutlinerItemModelMixin*>(this));
 		FSequencerNodeTree& ParentTree = Sequencer->GetNodeTree().Get();
 		if (ParentTree.IsNodeMute(ThisShared) || (ParentTree.HasSoloNodes() && !ParentTree.IsNodeSolo(ThisShared)))
 		{
@@ -265,7 +277,7 @@ bool FOutlinerItemModelMixin::IsSolo() const
 	TSharedPtr<FSequencer> Sequencer = EditorViewModel ? EditorViewModel->GetSequencerImpl() : nullptr;
 	if (Sequencer)
 	{
-		TSharedPtr<FViewModel> ThisShared(const_cast<FViewModel*>(AsViewModel())->AsShared());
+		TViewModelPtr<IOutlinerExtension> ThisShared(const_cast<FViewModel*>(AsViewModel())->AsShared(), const_cast<FOutlinerItemModelMixin*>(this));
 		return Sequencer->GetNodeTree()->IsNodeSolo(ThisShared);
 	}
 	return false;
@@ -277,7 +289,7 @@ bool FOutlinerItemModelMixin::IsMuted() const
 	TSharedPtr<FSequencer> Sequencer = EditorViewModel ? EditorViewModel->GetSequencerImpl() : nullptr;
 	if (Sequencer)
 	{
-		TSharedPtr<FViewModel> ThisShared(const_cast<FViewModel*>(AsViewModel())->AsShared());
+		TViewModelPtr<IOutlinerExtension> ThisShared(const_cast<FViewModel*>(AsViewModel())->AsShared(), const_cast<FOutlinerItemModelMixin*>(this));
 		return Sequencer->GetNodeTree()->IsNodeMute(ThisShared);
 	}
 	return false;
@@ -474,15 +486,12 @@ void FOutlinerItemModelMixin::BuildContextMenu(FMenuBuilder& MenuBuilder)
 	MenuBuilder.EndSection();
 
 	TArray<UMovieSceneTrack*> AllTracks;
-	for (TWeakPtr<FViewModel> Node : Sequencer->GetSelection().GetSelectedOutlinerItems())
+	for (TViewModelPtr<ITrackExtension> TrackExtension : Sequencer->GetViewModel()->GetSelection()->Outliner.Filter<ITrackExtension>())
 	{
-		if (ITrackExtension* TrackExtension = ICastable::CastWeakPtr<ITrackExtension>(Node))
+		UMovieSceneTrack* Track = TrackExtension->GetTrack();
+		if (Track)
 		{
-			UMovieSceneTrack* Track = TrackExtension->GetTrack();
-			if (Track)
-			{
-				AllTracks.Add(Track);
-			}
+			AllTracks.Add(Track);
 		}
 	}
 
@@ -547,10 +556,8 @@ void FOutlinerItemModelMixin::BuildOrganizeContextMenu(FMenuBuilder& MenuBuilder
 	
 	TArray<UMovieSceneTrack*> AllTracks;
 	TArray<TSharedPtr<FViewModel> > DraggableNodes;
-	for (TWeakPtr<FViewModel> WeakNode : Sequencer->GetSelection().GetSelectedOutlinerItems())
+	for (FViewModelPtr Node : Sequencer->GetViewModel()->GetSelection()->Outliner)
 	{
-		TSharedPtr<FViewModel> Node = WeakNode.Pin();
-
 		if (ITrackExtension* TrackExtension = Node->CastThis<ITrackExtension>())
 		{
 			UMovieSceneTrack* Track = TrackExtension->GetTrack();
@@ -598,11 +605,12 @@ void FOutlinerItemModelMixin::BuildOrganizeContextMenu(FMenuBuilder& MenuBuilder
 void FOutlinerItemModelMixin::BuildSectionColorTintsContextMenu(FMenuBuilder& MenuBuilder)
 {
 	TSharedPtr<FSequencer> Sequencer = GetEditor()->GetSequencerImpl();
+	TSharedPtr<FSequencerSelection> Selection = Sequencer->GetViewModel()->GetSelection();
 
 	TArray<UMovieSceneSection*> Sections;
-	for (TWeakObjectPtr<UMovieSceneSection> WeakSection : Sequencer->GetSelection().GetSelectedSections())
+	for (TViewModelPtr<FSectionModel> SectionModel : Selection->Outliner.Filter<FSectionModel>())
 	{
-		if (UMovieSceneSection* Section = WeakSection.Get())
+		if (UMovieSceneSection* Section = SectionModel->GetSection())
 		{
 			Sections.Add(Section);
 		}
@@ -610,16 +618,11 @@ void FOutlinerItemModelMixin::BuildSectionColorTintsContextMenu(FMenuBuilder& Me
 
 	if (!Sections.Num())
 	{
-		for (TWeakPtr<FViewModel> WeakNode : Sequencer->GetSelection().GetSelectedOutlinerItems())
+		for (TViewModelPtr<ITrackExtension> TrackExtension : Selection->Outliner.Filter<ITrackExtension>())
 		{
-			TSharedPtr<FViewModel> Node = WeakNode.Pin();
-
-			if (ITrackExtension* TrackExtension = Node->CastThis<ITrackExtension>())
+			for (UMovieSceneSection* Section : TrackExtension->GetSections())
 			{
-				for (UMovieSceneSection* Section : TrackExtension->GetSections())
-				{
-					Sections.Add(Section);
-				}
+				Sections.Add(Section);
 			}
 		}
 	}

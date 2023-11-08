@@ -18,18 +18,20 @@ public class WindowsTargetPlatform : ModuleRules
 
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
-				"Settings",
+				"Settings"
 			}
 		);
 
-		PrivateIncludePaths.AddRange(
+		PublicIncludePathModuleNames.AddRange(
 			new string[] {
+				"AudioPlatformConfiguration"
 			}
 		);
 
 		// compile with Engine
 		if (Target.bCompileAgainstEngine)
 		{
+			PublicIncludePathModuleNames.Add("Engine");
 			PrivateDependencyModuleNames.AddRange( new string[] {
 				"Engine", 
 				"RHI",

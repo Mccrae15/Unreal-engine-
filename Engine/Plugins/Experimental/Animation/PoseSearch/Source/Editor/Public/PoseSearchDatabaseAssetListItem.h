@@ -27,7 +27,6 @@ namespace UE::PoseSearch
 	protected:
 		FText GetName() const;
 		TSharedRef<SWidget> GenerateItemWidget();
-		TSharedRef<SWidget> GenerateAddButtonWidget();
 
 		const FSlateBrush* GetGroupBackgroundImage() const;
 		void ConstructGroupItem(const TSharedRef<STableViewBase>& OwnerTable);
@@ -36,6 +35,8 @@ namespace UE::PoseSearch
 		void OnAddSequence();
 		void OnAddBlendSpace();
 		void OnAddAnimComposite();
+		void OnAddAnimMontage();
+		virtual FReply OnMouseButtonDoubleClick(const FGeometry& InMyGeometry, const FPointerEvent& InMouseEvent) override;
 
 		EVisibility GetSelectedActorIconVisbility() const;
 

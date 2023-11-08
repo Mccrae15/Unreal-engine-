@@ -5,6 +5,7 @@
 #include "PCGPin.h"
 #include "PCGSettings.h"
 #include "Elements/PCGActorSelector.h"
+#include "Metadata/PCGMetadataAttribute.h"
 
 #include "PCGPropertyToParamData.generated.h"
 
@@ -21,6 +22,9 @@ class PCG_API UPCGPropertyToParamDataSettings : public UPCGSettings
 public:
 	//~Begin UObject interface
 	virtual void PostLoad() override;
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
 	//~End UObject interface
 
 	//~Begin UPCGSettings interface
@@ -28,9 +32,10 @@ public:
 	virtual FName GetDefaultNodeName() const override { return FName(TEXT("GetActorProperty")); }
 	virtual FText GetDefaultNodeTitle() const override { return NSLOCTEXT("PCGPropertyToParamDataSettings", "NodeTitle", "Get Actor Property"); }
 	virtual EPCGSettingsType GetType() const override { return EPCGSettingsType::Param; }
-	virtual void GetTrackedActorTags(FPCGTagToSettingsMap& OutTagToSettings, TArray<TObjectPtr<const UPCGGraph>>& OutVisitedGraphs) const override;
+	virtual void GetTrackedActorKeys(FPCGActorSelectionKeyToSettingsMap& OutKeysToSettings, TArray<TObjectPtr<const UPCGGraph>>& OutVisitedGraphs) const override;
 #endif
 
+	virtual FName AdditionalTaskName() const override;
 	virtual TArray<FPCGPinProperties> OutputPinProperties() const override;
 	virtual TArray<FPCGPinProperties> InputPinProperties() const override { return TArray<FPCGPinProperties>(); }
 
@@ -58,7 +63,7 @@ public:
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings)
 	bool bExtractObjectAndStruct = false;
 
-	/** By default, attribute name will be the property name, but it can be overridden by this name. */
+	/** By default, attribute name will be None, but it can be overridden by this name. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings, meta = (EditCondition = "!bExtractObjectAndStruct", EditConditionHides))
 	FName OutputAttributeName = NAME_None;
 

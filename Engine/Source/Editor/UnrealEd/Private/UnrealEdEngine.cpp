@@ -269,15 +269,17 @@ void UUnrealEdEngine::Init(IEngineLoop* InEngineLoop)
 
 #if STALL_DETECTOR
 	// Start tracking stalls when we open the Main Frame
-	IMainFrameModule::Get().OnMainFrameCreationFinished().AddLambda([](TSharedPtr<SWindow>, bool)
+	IMainFrameModule::Get().OnMainFrameCreationFinished().AddWeakLambda(this, [this](TSharedPtr<SWindow>, bool)
 		{
+			bRequiresStallDetectorShutdown = true;
 			UE::FStallDetector::Startup();
 		});
 
 	// Stop tracking stalls when we close the Main Frame, the closest event around
-	OnEditorClose().AddLambda([]()
+	OnEditorClose().AddLambda([this]()
 		{
 			// We conditionally shutdown here because for now there is no UnreadEdEngine specific shutdown 
+			bRequiresStallDetectorShutdown = false;
 			if (UE::FStallDetector::IsRunning())
 			{
 				UE::FStallDetector::Shutdown();
@@ -468,6 +470,16 @@ UUnrealEdEngine::~UUnrealEdEngine()
 	{
 		GUnrealEd = NULL; 
 	}
+
+#if STALL_DETECTOR
+	// Handle cases where OnEditorClose() was not called such as UE_LOG fatal errors or any call to RequestEngineExit()
+	// Without this stall detector thread will continue to run until it crashes trying to access cleaned up critical section
+	if (bRequiresStallDetectorShutdown && UE::FStallDetector::IsRunning())
+	{
+		bRequiresStallDetectorShutdown = false;
+		UE::FStallDetector::Shutdown();
+	}
+#endif // STALL_DETECTOR
 }
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
@@ -630,7 +642,11 @@ void UUnrealEdEngine::AttemptModifiedPackageNotification()
 				}
 			}
 		}
-		SourceControlProvider.Execute(ISourceControlOperation::Create<FUpdateStatus>(), SourceControlHelpers::AbsoluteFilenames(Files), EConcurrency::Asynchronous, FSourceControlOperationComplete::CreateUObject(this, &UUnrealEdEngine::OnSourceControlStateUpdated, Packages));
+
+		if (Files.Num() > 0)
+		{
+			SourceControlProvider.Execute(ISourceControlOperation::Create<FUpdateStatus>(), SourceControlHelpers::AbsoluteFilenames(Files), EConcurrency::Asynchronous, FSourceControlOperationComplete::CreateUObject(this, &UUnrealEdEngine::OnSourceControlStateUpdated, Packages));
+		}
 	}
 	
 	if (bShowWritePermissionWarning)
@@ -669,9 +685,6 @@ void UUnrealEdEngine::OnSourceControlStateUpdated(const FSourceControlOperationR
 		// Get the source control state of the package
 		ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
 
-		TArray<TWeakObjectPtr<UPackage>> PackagesToAutomaticallyCheckOut;
-		TArray<FString> FilesToAutomaticallyCheckOut;
-
 		const UEditorLoadingSavingSettings* Settings = GetDefault<UEditorLoadingSavingSettings>();
 		for (const TWeakObjectPtr<UPackage>& PackagePtr : Packages)
 		{
@@ -692,12 +705,7 @@ void UUnrealEdEngine::OnSourceControlStateUpdated(const FSourceControlOperationR
 						}
 						else
 						{
-							if (Settings->GetAutomaticallyCheckoutOnAssetModification())
-							{
-								PackagesToAutomaticallyCheckOut.Add(PackagePtr);
-								FilesToAutomaticallyCheckOut.Add(SourceControlHelpers::PackageFilename(Package));
-							}
-							else
+							if (!Settings->GetAutomaticallyCheckoutOnAssetModification())
 							{
 								PackageToNotifyState.Add(PackagePtr, NS_PendingPrompt);
 								bShowPackageNotification = true;
@@ -711,11 +719,6 @@ void UUnrealEdEngine::OnSourceControlStateUpdated(const FSourceControlOperationR
 					}
 				}
 			}
-		}
-
-		if (FilesToAutomaticallyCheckOut.Num() > 0)
-		{
-			SourceControlProvider.Execute(ISourceControlOperation::Create<FCheckOut>(), SourceControlHelpers::AbsoluteFilenames(FilesToAutomaticallyCheckOut), EConcurrency::Asynchronous, FSourceControlOperationComplete::CreateUObject(this, &UUnrealEdEngine::OnPackagesCheckedOut, PackagesToAutomaticallyCheckOut));
 		}
 	}
 }
@@ -1490,7 +1493,7 @@ void UUnrealEdEngine::OnEditorSelectionChanged(UObject* SelectionThatChanged)
 			{
 				// Try and find a visualizer
 				TSharedPtr<FComponentVisualizer> Visualizer = FindComponentVisualizer(Comp->GetClass());
-				if (Visualizer.IsValid())
+				if (Visualizer.IsValid() && (Comp == SelectedComponent || Visualizer->ShouldShowForSelectedSubcomponents(Comp)))
 				{
 					FCachedComponentVisualizer CachedComponentVisualizer(Comp, Visualizer);
 					FComponentVisualizerForSelection Temp{CachedComponentVisualizer};
@@ -1506,7 +1509,8 @@ void UUnrealEdEngine::OnEditorSelectionChanged(UObject* SelectionThatChanged)
 		}
 	};
 
-	if (SelectionThatChanged == GetSelectedActors())
+	const int32 SelectedComponentCount = GetSelectedComponents()->CountSelections<UActorComponent>();
+	if (SelectionThatChanged == GetSelectedActors() && SelectedComponentCount == 0)
 	{
 		// actor selection changed.  Update the list of component visualizers
 		// This is expensive so we do not search for visualizers each time they want to draw
@@ -1522,31 +1526,29 @@ void UUnrealEdEngine::OnEditorSelectionChanged(UObject* SelectionThatChanged)
 			}
 		}
 	}
-	else if (SelectionThatChanged == GetSelectedComponents())
+
+	// Do not proceed if the selection contains no components. This occurs when a component is
+	// deselected while selecting its owner actor. But a corresponding actor selection is not invoked
+	// so if the visualizers are cleared here, they will not be properly reset for the selected actor. 
+	else if (SelectionThatChanged == GetSelectedComponents() && SelectedComponentCount > 0)
 	{
 		if (USelection* Selection = Cast<USelection>(SelectionThatChanged))
 		{
-			// Do not proceed if the selection contains no components. This occurs when a component is
-			// deselected while selecting its owner actor. But a corresponding actor selection is not invoked
-			// so if the visualizers are cleared here, they will not be properly reset for the selected actor. 
-			if (Selection->Num() > 0)
+			VisualizersForSelection.Empty();
+
+			TArray<AActor*> ActorsProcessed;
+
+			// Iterate over all selected components
+			for (FSelectionIterator It(GetSelectedComponentIterator()); It; ++It)
 			{
-				VisualizersForSelection.Empty();
-
-				TArray<AActor*> ActorsProcessed;
-
-				// Iterate over all selected components
-				for (FSelectionIterator It(GetSelectedComponentIterator()); It; ++It)
+				if (UActorComponent* Comp = Cast<UActorComponent>(*It))
 				{
-					if (UActorComponent* Comp = Cast<UActorComponent>(*It))
+					if (AActor* Actor = Comp->GetOwner())
 					{
-						if (AActor* Actor = Comp->GetOwner())
+						if (!ActorsProcessed.Contains(Actor))
 						{
-							if (!ActorsProcessed.Contains(Actor))
-							{
-								GetVisualizersForSelection(Actor, Comp);
-								ActorsProcessed.Emplace(Actor);
-							}
+							GetVisualizersForSelection(Actor, Comp);
+							ActorsProcessed.Emplace(Actor);
 						}
 					}
 				}
@@ -1651,6 +1653,6 @@ void UUnrealEdEngine::ValidateFreeDiskSpace() const
 
 		const FText Title = NSLOCTEXT("DriveSpaceDialog", "LowHardDriveSpaceMsgTitle", "Warning: Low Drive Space");
 
-		FMessageDialog::Open(EAppMsgType::Ok, Message, &Title);
+		FMessageDialog::Open(EAppMsgType::Ok, Message, Title);
 	}
 }

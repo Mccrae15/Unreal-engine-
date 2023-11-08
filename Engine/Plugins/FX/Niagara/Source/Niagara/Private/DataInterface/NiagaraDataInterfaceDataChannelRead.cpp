@@ -1,23 +1,30 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "NiagaraDataInterfaceDataChannelRead.h"
+#include "DataInterface/NiagaraDataInterfaceDataChannelRead.h"
 
+#include "NiagaraCompileHashVisitor.h"
 #include "ShaderCompilerCore.h"
-#include "ShaderParameterUtils.h"
+#include "NiagaraModule.h"
 #include "NiagaraShaderParametersBuilder.h"
 
-#include "CoreMinimal.h"
 #include "NiagaraCommon.h"
+#include "NiagaraSystem.h"
 #include "NiagaraWorldManager.h"
 
 #include "NiagaraDataChannel.h"
 #include "NiagaraDataChannelHandler.h"
-#include "NiagaraDataChannelDefinitions.h"
+#include "NiagaraDataChannelManager.h"
 
 #include "NiagaraRenderer.h"
 #include "NiagaraGPUSystemTick.h"
 
 #include "NiagaraDataInterfaceUtilities.h"
+
+#if WITH_EDITOR
+#include "INiagaraEditorOnlyDataUtlities.h"
+#include "Modules/ModuleManager.h"
+#include "NiagaraModule.h"
+#endif
 
 //////////////////////////////////////////////////////////////////////////
 
@@ -25,8 +32,27 @@
 
 DECLARE_CYCLE_STAT(TEXT("NDIDataChannelRead Read"), STAT_NDIDataChannelRead_Read, STATGROUP_NiagaraDataChannels);
 DECLARE_CYCLE_STAT(TEXT("NDIDataChannelRead Consume"), STAT_NDIDataChannelRead_Consume, STATGROUP_NiagaraDataChannels);
+DECLARE_CYCLE_STAT(TEXT("NDIDataChannelRead Spawn"), STAT_NDIDataChannelRead_Spawn, STATGROUP_NiagaraDataChannels);
 DECLARE_CYCLE_STAT(TEXT("NDIDataChannelRead Tick"), STAT_NDIDataChannelRead_Tick, STATGROUP_NiagaraDataChannels);
 DECLARE_CYCLE_STAT(TEXT("NDIDataChannelRead PostTick"), STAT_NDIDataChannelRead_PostTick, STATGROUP_NiagaraDataChannels);
+
+static int GNDCReadForceTG = -1;
+static FAutoConsoleVariableRef CVarNDCReadForceTG(
+	TEXT("fx.Niagara.DataChannels.ForceReadTickGroup"),
+	GNDCReadForceTG,
+	TEXT("When >= 0 this will force Niagara systems with NDC read DIs to tick in the given Tick Group."),
+	ECVF_Default
+);
+
+static bool GNDCReadForcePrevFrame = false;
+static FAutoConsoleVariableRef CVarNDCReadForcePrevFrame(
+	TEXT("fx.Niagara.DataChannels.ForceReadPrevFrame"),
+	GNDCReadForcePrevFrame,
+	TEXT("When true this will force Niagara systems with NDC read DIs to read from the previous frame."),
+	ECVF_Default
+);
+
+
 
 namespace NDIDataChannelReadLocal
 {
@@ -38,6 +64,10 @@ namespace NDIDataChannelReadLocal
 	static const FName NumName(TEXT("Num"));
 	static const FName ReadName(TEXT("Read"));
 	static const FName ConsumeName(TEXT("Consume"));
+	static const FName SpawnFromSpawnInfoName(TEXT("SpawnFromSpawnInfo"));
+	static const FName SpawnConditionalName(TEXT("SpawnConditional"));
+
+	static const FName SpawnInfoName(TEXT("SpawnInfo"));
 
 	const TCHAR* GetFunctionTemplate(FName FunctionName)
 	{
@@ -63,12 +93,10 @@ namespace NDIDataChannelReadLocal
 /** Render thread copy of current instance data. */
 struct FNDIDataChannelReadInstanceData_RT
 {
-	//GPU Dataset from the channel handler. We'll grab the current buffer from this on the RT.
-	//This must be grabbed fresh from the handler each frame as it's lifetime cannot be ensured.
-	//TODO: Improve this.
-	//TODO: Likely better to have the handler provide some RT proxy class for the correct data from which we grab the correct buffer.
-	FNiagaraDataSet* ChannelDataSet = nullptr;
+	//RT proxy for game channel data from which we're reading.
+	FNiagaraDataChannelDataProxy* ChannelDataRTProxy = nullptr;
 
+	bool bReadPrevFrame = false;
 	/**
 	Table of all parameter offsets used by each GPU script using this DI.
 	Each script has to have it's own section of this table as the offsets into this table are embedded in the hlsl.
@@ -93,20 +121,14 @@ struct FNDIDataChannelReadInstanceData_RT
 
 FNDIDataChannelReadInstanceData::~FNDIDataChannelReadInstanceData()
 {
-	if (ExternalCPU)
-	{
-		ExternalCPU->ReleaseReadRef();
-		ExternalCPU = nullptr;
-	}
 
-	ExternalGPU = nullptr;
 }
 
-FNiagaraDataBuffer* FNDIDataChannelReadInstanceData::GetReadBufferCPU()
+FNiagaraDataBuffer* FNDIDataChannelReadInstanceData::GetReadBufferCPU(bool bPrevFrame)
 {
-	if (ExternalCPU)
+	if (DataChannelData)
 	{
-		return ExternalCPU;
+		return DataChannelData->GetCPUData(bPrevFrame);
 	}
 
 	//TODO: Local reads.
@@ -123,6 +145,8 @@ FNiagaraDataBuffer* FNDIDataChannelReadInstanceData::GetReadBufferCPU()
 
 bool FNDIDataChannelReadInstanceData::Init(UNiagaraDataInterfaceDataChannelRead* Interface, FNiagaraSystemInstance* Instance)
 {
+	EmitterInstance = Interface->EmitterBinding.Resolve(Instance, Interface);
+
 	bool bSuccess = Tick(Interface, Instance);
 	bSuccess &= PostTick(Interface, Instance);
 	return bSuccess;
@@ -131,15 +155,19 @@ bool FNDIDataChannelReadInstanceData::Init(UNiagaraDataInterfaceDataChannelRead*
 bool FNDIDataChannelReadInstanceData::Tick(UNiagaraDataInterfaceDataChannelRead* Interface, FNiagaraSystemInstance* Instance)
 {
 	ConsumeIndex = 0;
+	ConditionalSpawns.Reset();
 
 	const FNDIDataChannelCompiledData& CompiledData = Interface->GetCompiledData();
 
 	//Interface is never used so do not create any instance data.
 	if (CompiledData.UsedByCPU() == false && CompiledData.UsedByGPU() == false)
 	{
-		UE_LOG(LogNiagara, Warning, TEXT("Data Channel Interface is being initialized but it is never used.\nSystem: %s\nInterface: %s"), *Instance->GetSystem()->GetFullName(), *Interface->GetFullName());
+		//UE_LOG(LogNiagara, Warning, TEXT("Data Channel Interface is being initialized but it is never used.\nSystem: %s\nInterface: %s"), *Instance->GetSystem()->GetFullName(), *Interface->GetFullName());
 		return true;
 	}
+	
+	//In non test/shipping builds we gather and log and missing parameters that cause us to fail to find correct bindings.
+	TArray<FNiagaraVariableBase> MissingParams;
 
 	//TODO: Reads directly from a local writer DI.
 	//For local readers, we find the source DI inside the same system and bind our functions to it's data layout.
@@ -201,55 +229,39 @@ bool FNDIDataChannelReadInstanceData::Tick(UNiagaraDataInterfaceDataChannelRead*
 		UNiagaraDataChannelHandler* DataChannelPtr = DataChannel.Get();
 		if (DataChannelPtr == nullptr)
 		{
-			//DataChannel channel we had could have been destroy so clear these.
-			ExternalCPU = nullptr;
-			ExternalGPU = nullptr;
+			DataChannelData = nullptr;
 			ChachedDataSetLayoutHash = INDEX_NONE;
-			if (UNiagaraSystem* System = Interface->GetTypedOuter<UNiagaraSystem>())
+			UWorld* World = Instance->GetWorld();
+			if (FNiagaraWorldManager* WorldMan = FNiagaraWorldManager::Get(World))
 			{
-				UWorld* World = Instance->GetWorld();
-				if (FNiagaraWorldManager* WorldMan = FNiagaraWorldManager::Get(World))
+				if (UNiagaraDataChannelHandler* NewChannelHandler = WorldMan->GetDataChannelManager().FindDataChannelHandler(Interface->Channel))
 				{
-					if (UNiagaraDataChannelHandler* NewChannelHandler = WorldMan->GetDataChannelManager().FindDataChannelHandler(Interface->Channel.ChannelName))
-					{
-						DataChannelPtr = NewChannelHandler;
-						DataChannel = NewChannelHandler;
-					}
-					else
-					{
-						UE_LOG(LogNiagara, Warning, TEXT("Failed to find or add Naigara DataChannel Channel: %s"), *Interface->Channel.ChannelName.ToString());
-						return false;
-					}
+					DataChannelPtr = NewChannelHandler;
+					DataChannel = NewChannelHandler;
+				}
+				else
+				{
+					UE_LOG(LogNiagara, Warning, TEXT("Failed to find or add Naigara DataChannel Channel: %s"), *Interface->Channel.GetName());
+					return false;
 				}
 			}
 		}
 
-		check(ExternalCPU == nullptr);
-
 		//Grab the world DataChannel data if we're reading from there.	
 		if (DataChannelPtr)
 		{
-			const FNiagaraDataSetCompiledData* CPUSourceDataCompiledData = nullptr;
-			const FNiagaraDataSetCompiledData* GPUSourceDataCompiledData = nullptr;
-			if (CompiledData.UsedByCPU())
+			if(DataChannelData == nullptr || Interface->bUpdateSourceDataEveryTick)
 			{
 				//TODO: Automatically modify tick group if we have DIs that require current frame info?
-				DataChannelPtr->GetData(Instance, ExternalCPU, Interface->bReadCurrentFrame == false);
-				CPUSourceDataCompiledData = &ExternalCPU->GetOwner()->GetCompiledData();
+				FNiagaraDataChannelSearchParameters SearchParams;
+				SearchParams.OwningComponent = Instance->GetAttachComponent();
+				DataChannelData = DataChannelPtr->FindData(SearchParams, ENiagaraResourceAccess::ReadOnly);//TODO: Maybe should have two paths, one for system instances and another for SceneComponents...
 			}
 
-			if (CompiledData.UsedByGPU())
-			{
-				//TODO: Detect in post compile if we need GPU/CPU or both.
-				DataChannelPtr->GetDataGPU(Instance, ExternalGPU);
-				GPUSourceDataCompiledData = &ExternalGPU->GetCompiledData();
-			}
-
-			const FNiagaraDataSetCompiledData* SourceDataCompiledData = CPUSourceDataCompiledData ? CPUSourceDataCompiledData : GPUSourceDataCompiledData;
-			check(SourceDataCompiledData);
-			check(CPUSourceDataCompiledData == nullptr || GPUSourceDataCompiledData == nullptr || CPUSourceDataCompiledData->GetLayoutHash() == GPUSourceDataCompiledData->GetLayoutHash());
-
-			uint64 SourceDataLayoutHash = SourceDataCompiledData->GetLayoutHash();
+			const FNiagaraDataSetCompiledData& CPUSourceDataCompiledData = DataChannelPtr->GetDataChannel()->GetCompiledData(ENiagaraSimTarget::CPUSim);
+			const FNiagaraDataSetCompiledData& GPUSourceDataCompiledData = DataChannelPtr->GetDataChannel()->GetCompiledData(ENiagaraSimTarget::GPUComputeSim);
+			check(CPUSourceDataCompiledData.GetLayoutHash() && CPUSourceDataCompiledData.GetLayoutHash() == GPUSourceDataCompiledData.GetLayoutHash());			
+			uint64 SourceDataLayoutHash = CPUSourceDataCompiledData.GetLayoutHash();
 			bool bChanged = SourceDataLayoutHash != ChachedDataSetLayoutHash;
 
 			//If our CPU or GPU source data has changed then regenerate our binding info.
@@ -258,6 +270,8 @@ bool FNDIDataChannelReadInstanceData::Tick(UNiagaraDataInterfaceDataChannelRead*
 			if (bChanged)
 			{
 				ChachedDataSetLayoutHash = SourceDataLayoutHash;
+
+				SpawnInfoAccessor = FNiagaraDataSetAccessor<FNiagaraSpawnInfo>(CPUSourceDataCompiledData, Interface->SpawnInfoName);
 
 				//We can likely be more targeted here.
 				//Could probably only update the RT when the GPU data changes and only update the bindings if the function hashes change etc.
@@ -270,16 +284,35 @@ bool FNDIDataChannelReadInstanceData::Tick(UNiagaraDataInterfaceDataChannelRead*
 					const FNDIDataChannelFunctionInfo& FuncInfo = CompiledData.GetFunctionInfo()[BindingIdx];
 
 					FNDIDataChannel_FuncToDataSetBindingPtr& BindingPtr = FuncToDataSetBindingInfo[BindingIdx];
-					BindingPtr = FNDIDataChannelLayoutManager::Get().GetLayoutInfo(FuncInfo, *SourceDataCompiledData/*, FuncToDataSetLayoutKeys[BindingIdx]*/);
+					BindingPtr = FNDIDataChannelLayoutManager::Get().GetLayoutInfo(FuncInfo, CPUSourceDataCompiledData, MissingParams);
 				}
 			}
 		}
 	}
 
+#if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
+	if(MissingParams.Num() > 0)
+	{
+		FString MissingParamsString;
+		for (FNiagaraVariableBase& MissingParam : MissingParams)
+		{
+			MissingParamsString += FString::Printf(TEXT("%s %s\n"), *MissingParam.GetType().GetName(), *MissingParam.GetName().ToString());
+		}
+
+		UE_LOG(LogNiagara, Warning, TEXT("Niagara Data Channel Reader Interface is trying to read parameters that do not exist in this channel.\nIt's likely that the Data Channel Definition has been changed and this system needs to be updated.\nData Channel: %s\nSystem: %s\nComponent:%s\nMissing Parameters:\n%s\n")
+			, *DataChannel->GetDataChannel()->GetName()
+			, *Instance->GetSystem()->GetPathName()
+			, *Instance->GetAttachComponent()->GetPathName()
+			, *MissingParamsString);		
+	}	
+#endif
 
 	if (!DataChannel.IsValid() /*&& !SourceDI.IsValid()*/)//TODO: Local reads
 	{
-		//No valid source for data so bail
+		UE_LOG(LogNiagara, Warning, TEXT("Niagara Data Channel Reader Interface could not find a valid data channel.\nData Channel: %s\nSystem: %s\nComponent:%s\n")
+			, Interface->Channel ? *Interface->Channel->GetName() : TEXT("None")
+			, *Instance->GetSystem()->GetPathName()
+			, *Instance->GetAttachComponent()->GetPathName());
 		return false;
 	}
 
@@ -302,13 +335,6 @@ bool FNDIDataChannelReadInstanceData::Tick(UNiagaraDataInterfaceDataChannelRead*
 
 bool FNDIDataChannelReadInstanceData::PostTick(UNiagaraDataInterfaceDataChannelRead* Interface, FNiagaraSystemInstance* Instance)
 {
-	if (ExternalCPU)
-	{
-		//TODO: Create ref object to do this for us and make Add/Release ref private.
-		ExternalCPU->ReleaseReadRef();
-		ExternalCPU = nullptr;
-	}
-
 	return true;
 }
 
@@ -318,6 +344,8 @@ UNiagaraDataInterfaceDataChannelRead::UNiagaraDataInterfaceDataChannelRead(FObje
 	: Super(ObjectInitializer)
 {
 	Proxy.Reset(new FNiagaraDataInterfaceProxy_DataChannelRead());
+	EmitterBinding.BindingMode = ENiagaraDataInterfaceEmitterBindingMode::Self;
+	SpawnInfoName = NDIDataChannelReadLocal::SpawnInfoName;
 }
 
 void UNiagaraDataInterfaceDataChannelRead::PostInitProperties()
@@ -421,19 +449,43 @@ bool UNiagaraDataInterfaceDataChannelRead::PerInstanceTickPostSimulate(void* Per
 	return false;
 }
 
+void UNiagaraDataInterfaceDataChannelRead::PostStageTick(FNDICpuPostStageContext& Context)
+{
+	FNDIDataChannelReadInstanceData* InstanceData = Context.GetPerInstanceData<FNDIDataChannelReadInstanceData>();
+
+	check(InstanceData);
+	for(int32 i=0; i<InstanceData->ConditionalSpawns.Num(); ++i)
+	{
+		if(InstanceData->ConditionalSpawns[i].Count > 0)
+		{
+			if(bOverrideSpawnGroupToDataChannelIndex)
+			{
+				InstanceData->ConditionalSpawns[i].SpawnGroup = i;
+			}
+			InstanceData->EmitterInstance->GetSpawnInfo().Emplace(InstanceData->ConditionalSpawns[i]);
+		}
+	}
+	InstanceData->ConditionalSpawns.Reset();
+}
+
 void UNiagaraDataInterfaceDataChannelRead::ProvidePerInstanceDataForRenderThread(void* DataForRenderThread, void* PerInstanceData, const FNiagaraSystemInstanceID& SystemInstance)
 {
 	const FNDIDataChannelReadInstanceData& SourceData = *reinterpret_cast<const FNDIDataChannelReadInstanceData*>(PerInstanceData);
 	FNDIDataChannelReadInstanceData_RT* TargetData = new(DataForRenderThread) FNDIDataChannelReadInstanceData_RT();
 
 	//Always update the dataset, this may change without triggering a full update if it's layout is the same.
-	TargetData->ChannelDataSet = SourceData.ExternalGPU;
+	TargetData->ChannelDataRTProxy = SourceData.DataChannelData ? SourceData.DataChannelData->GetRTProxy() : nullptr;
+
+	bool bReadPrevFrame = bReadCurrentFrame == false || GNDCReadForcePrevFrame;
+	TargetData->bReadPrevFrame = bReadPrevFrame;
 
 	if (SourceData.bUpdateRTData && INiagaraModule::DataChannelsEnabled())
 	{
 		SourceData.bUpdateRTData = false;
 
 		TargetData->bHasUpdate = true;
+		
+		const FNiagaraDataSetCompiledData& GPUCompiledData = SourceData.DataChannel->GetDataChannel()->GetCompiledData(ENiagaraSimTarget::GPUComputeSim);
 
 		//For every GPU script, we append it's parameter access info to the table.
 		TargetData->GPUScriptParameterTableOffsets.Reset();
@@ -449,11 +501,11 @@ void UNiagaraDataInterfaceDataChannelRead::ProvidePerInstanceDataForRenderThread
 			//Now fill the table for this script
 			for (const FNiagaraVariableBase& Param : ParamAccessInfo.SortedParameters)
 			{
-				if (const FNiagaraVariableLayoutInfo* LayoutInfo = SourceData.ExternalGPU->GetVariableLayout(Param))
+				if (const FNiagaraVariableLayoutInfo* LayoutInfo = GPUCompiledData.FindVariableLayoutInfo(Param))
 				{
-					TargetData->GPUScriptParameterOffsetTable.Add(LayoutInfo->GetNumFloatComponents() > 0 ? LayoutInfo->FloatComponentStart : INDEX_NONE);
-					TargetData->GPUScriptParameterOffsetTable.Add(LayoutInfo->GetNumInt32Components() > 0 ? LayoutInfo->Int32ComponentStart : INDEX_NONE);
-					TargetData->GPUScriptParameterOffsetTable.Add(LayoutInfo->GetNumHalfComponents() > 0 ? LayoutInfo->HalfComponentStart : INDEX_NONE);
+					TargetData->GPUScriptParameterOffsetTable.Add(LayoutInfo->GetNumFloatComponents() > 0 ? LayoutInfo->GetFloatComponentStart() : INDEX_NONE);
+					TargetData->GPUScriptParameterOffsetTable.Add(LayoutInfo->GetNumInt32Components() > 0 ? LayoutInfo->GetInt32ComponentStart() : INDEX_NONE);
+					TargetData->GPUScriptParameterOffsetTable.Add(LayoutInfo->GetNumHalfComponents() > 0 ? LayoutInfo->GetHalfComponentStart() : INDEX_NONE);
 				}
 				else
 				{
@@ -498,17 +550,30 @@ void UNiagaraDataInterfaceDataChannelRead::GetEmitterDependencies(UNiagaraSystem
 // 	}
 }
 
+bool UNiagaraDataInterfaceDataChannelRead::HasTickGroupPrereqs() const
+{
+	if (GNDCReadForceTG >= 0 && GNDCReadForceTG < (int32)ETickingGroup::TG_MAX)
+	{
+		return true;
+	}
+	return false;
+}
+
+ETickingGroup UNiagaraDataInterfaceDataChannelRead::CalculateTickGroup(const void* PerInstanceData) const
+{
+	if(GNDCReadForceTG >= 0 && GNDCReadForceTG < (int32)ETickingGroup::TG_MAX)
+	{
+		return (ETickingGroup)GNDCReadForceTG;
+	}
+	return NiagaraFirstTickGroup; 
+}
+
 #if WITH_EDITORONLY_DATA
 
 void UNiagaraDataInterfaceDataChannelRead::PostCompile()
 {
 	UNiagaraSystem* OwnerSystem = GetTypedOuter<UNiagaraSystem>();
 	CompiledData.Init(OwnerSystem, this);
-
-	if (const UNiagaraDataChannel* DataChannel = UNiagaraDataChannelDefinitions::FindDataChannel(Channel.ChannelName))
-	{
-		OwnerSystem->RegisterDataChannelUse(DataChannel);
-	}
 }
 
 #endif
@@ -518,19 +583,40 @@ void UNiagaraDataInterfaceDataChannelRead::PostCompile()
 
 void UNiagaraDataInterfaceDataChannelRead::GetFeedback(UNiagaraSystem* InAsset, UNiagaraComponent* InComponent, TArray<FNiagaraDataInterfaceError>& OutErrors, TArray<FNiagaraDataInterfaceFeedback>& OutWarnings, TArray<FNiagaraDataInterfaceFeedback>& OutInfo)
 {
-	//We have to post compile here manually as these graph node DIs don't get done elsewhere but we rely on the post compile data for reporting errors.
-	PostCompile();
-
 	Super::GetFeedback(InAsset, InComponent, OutErrors, OutWarnings, OutInfo);
+
+	INiagaraModule& NiagaraModule = FModuleManager::GetModuleChecked<INiagaraModule>("Niagara");
+	const INiagaraEditorOnlyDataUtilities& EditorOnlyDataUtilities = NiagaraModule.GetEditorOnlyDataUtilities();
+	UNiagaraDataInterface* RuntimeInstanceOfThis = InAsset && EditorOnlyDataUtilities.IsEditorDataInterfaceInstance(this)
+		? EditorOnlyDataUtilities.GetResolvedRuntimeInstanceForEditorDataInterfaceInstance(*InAsset, *this)
+		: this;
+
+	UNiagaraDataInterfaceDataChannelRead* RuntimeReadDI = Cast<UNiagaraDataInterfaceDataChannelRead>(RuntimeInstanceOfThis);
+	
+	if(!RuntimeReadDI)
+	{
+		return;	
+	}
+
+	if (RuntimeReadDI->Channel == nullptr)
+	{
+		OutErrors.Emplace(LOCTEXT("DataChannelMissingFmt", "Data Channel Interface has no valid Data Channel."),
+			LOCTEXT("DataChannelMissingErrorSummaryFmt", "Missing Data Channel."),
+			FNiagaraDataInterfaceFix());
+
+		return;
+	}
 
 	//if(Scope == ENiagaraDataChannelScope::World)
 	{
-		if (const UNiagaraDataChannel* DataChannel = UNiagaraDataChannelDefinitions::FindDataChannel(Channel.ChannelName))
+		if (const UNiagaraDataChannel* DataChannel = RuntimeReadDI->Channel->Get())
 		{
 			//Ensure the data channel contains all the parameters this function is requesting.
 			TConstArrayView<FNiagaraVariable> ChannelVars = DataChannel->GetVariables();
-			for (const FNDIDataChannelFunctionInfo& FuncInfo : CompiledData.GetFunctionInfo())
+			for (const FNDIDataChannelFunctionInfo& FuncInfo : RuntimeReadDI->GetCompiledData().GetFunctionInfo())
 			{
+				TArray<FNiagaraVariableBase> MissingParams;
+
 				auto VerifyChannelContainsParams = [&](const TArray<FNiagaraVariableBase>& Parameters)
 				{
 					for (const FNiagaraVariableBase& FuncParam : Parameters)
@@ -538,35 +624,50 @@ void UNiagaraDataInterfaceDataChannelRead::GetFeedback(UNiagaraSystem* InAsset, 
 						bool bParamFound = false;
 						for (const FNiagaraVariable& ChannelVar : ChannelVars)
 						{
-							//We have to convert each channel var to SWC for comparrison with the function variables as there is no reliable way to go back from the SWC function var to the originating LWC var.
-							UScriptStruct* ChannelSWCStruct = FNiagaraTypeHelper::GetSWCStruct(ChannelVar.GetType().GetScriptStruct());
-							if (ChannelSWCStruct)
+							//We have to convert each channel var to SWC for comparison with the function variables as there is no reliable way to go back from the SWC function var to the originating LWC var.
+							FNiagaraVariable SWCVar(ChannelVar);
+							if(ChannelVar.GetType().IsEnum() == false)
 							{
-								FNiagaraTypeDefinition SWCType(ChannelSWCStruct, FNiagaraTypeDefinition::EAllowUnfriendlyStruct::Deny);
-								FNiagaraVariable SWCVar(SWCType, ChannelVar.GetName());
-								if (SWCVar == FuncParam)
+								UScriptStruct* ChannelSWCStruct = FNiagaraTypeHelper::GetSWCStruct(ChannelVar.GetType().GetScriptStruct());
+								if (ChannelSWCStruct)
 								{
-									bParamFound = true;
-									break;
+									FNiagaraTypeDefinition SWCType(ChannelSWCStruct, FNiagaraTypeDefinition::EAllowUnfriendlyStruct::Deny);
+									SWCVar = FNiagaraVariable(SWCType, ChannelVar.GetName());
 								}
+							}
+						
+							if (SWCVar == FuncParam)
+							{
+								bParamFound = true;
+								break;
 							}
 						}
 
 						if (bParamFound == false)
 						{
-							OutErrors.Emplace(FText::Format(LOCTEXT("FuncParamMissingFromDataChannelErrorFmt", "Accessing variable {0} {1} which does not exist in Data Channel {2}."), FuncParam.GetType().GetNameText(), FText::FromName(FuncParam.GetName()), FText::FromName(Channel.ChannelName)),
-								LOCTEXT("FuncParamMissingFromDataChannelErrorSummaryFmt", "Data Channel DI function is accessing and invalid parameter."),
-								FNiagaraDataInterfaceFix());
+							MissingParams.Add(FuncParam);
 						}
 					}
 				};
 				VerifyChannelContainsParams(FuncInfo.Inputs);
 				VerifyChannelContainsParams(FuncInfo.Outputs);
+
+				if(MissingParams.Num() > 0)
+				{
+					FTextBuilder Builder;
+					Builder.AppendLineFormat(LOCTEXT("FuncParamMissingFromDataChannelErrorFmt", "Accessing variables that do not exist in Data Channel {0}."), FText::FromString(Channel.GetName()));
+					for(FNiagaraVariableBase& Param : MissingParams)
+					{
+						Builder.AppendLineFormat(LOCTEXT("FuncParamMissingFromDataChannelErrorLineFmt", "{0} {1}"), Param.GetType().GetNameText(), FText::FromName(Param.GetName()));
+					}					
+					
+					OutErrors.Emplace(Builder.ToText(), LOCTEXT("FuncParamMissingFromDataChannelErrorSummaryFmt", "Data Channel DI function is accessing invalid parameters."), FNiagaraDataInterfaceFix());
+				}
 			}
 		}
 		else
 		{
-			OutErrors.Emplace(FText::Format(LOCTEXT("DataChannelDoesNotExistErrorFmt", "Data Channel {0} does not exist. It may have been deleted."), FText::FromName(Channel.ChannelName)),
+			OutErrors.Emplace(FText::Format(LOCTEXT("DataChannelDoesNotExistErrorFmt", "Data Channel {0} does not exist. It may have been deleted."), FText::FromString(Channel.GetName())),
 				LOCTEXT("DataChannelDoesNotExistErrorSummaryFmt", "Data Channel DI is accesssinga a Data Channel that doesn't exist."),
 				FNiagaraDataInterfaceFix());
 		}
@@ -638,8 +739,12 @@ bool UNiagaraDataInterfaceDataChannelRead::Equals(const UNiagaraDataInterface* O
 		if (Super::Equals(Other) &&
 			//Scope == OtherTyped->Scope &&
 			//Source == OtherTyped->Source &&
-			Channel.ChannelName == OtherTyped->Channel.ChannelName &&
-			bReadCurrentFrame == OtherTyped->bReadCurrentFrame)
+			Channel == OtherTyped->Channel &&
+			bReadCurrentFrame == OtherTyped->bReadCurrentFrame &&
+			bUpdateSourceDataEveryTick == OtherTyped->bUpdateSourceDataEveryTick &&
+			EmitterBinding == OtherTyped->EmitterBinding &&
+			bOverrideSpawnGroupToDataChannelIndex == OtherTyped->bOverrideSpawnGroupToDataChannelIndex &&
+			SpawnInfoName == OtherTyped->SpawnInfoName)
 		{
 			return true;
 		}
@@ -663,6 +768,10 @@ bool UNiagaraDataInterfaceDataChannelRead::CopyToInternal(UNiagaraDataInterface*
 		DestTyped->Channel = Channel;
 		DestTyped->CompiledData = CompiledData;
 		DestTyped->bReadCurrentFrame = bReadCurrentFrame;
+		DestTyped->bUpdateSourceDataEveryTick = bUpdateSourceDataEveryTick;
+		DestTyped->EmitterBinding = EmitterBinding;
+		DestTyped->bOverrideSpawnGroupToDataChannelIndex = bOverrideSpawnGroupToDataChannelIndex;
+		DestTyped->SpawnInfoName = SpawnInfoName;
 		return true;
 	}
 
@@ -712,6 +821,49 @@ void UNiagaraDataInterfaceDataChannelRead::GetFunctions(TArray<FNiagaraFunctionS
 		Sig.RequiredOutputs = Sig.Outputs.Num();//The user defines what we read in the graph.
 		OutFunctions.Add(Sig);
 	}
+
+	FNiagaraVariable EnabledVar(FNiagaraTypeDefinition::GetBoolDef(), TEXT("Enable"));
+	EnabledVar.SetValue(FNiagaraBool(true));
+
+	{
+		FNiagaraFunctionSignature Sig;
+		Sig.Name = NDIDataChannelReadLocal::SpawnFromSpawnInfoName;
+#if WITH_EDITORONLY_DATA
+		Sig.Description = LOCTEXT("SpawnFromSpawnInfolFunctionDescription", "Will Spawn particles into the bound Emitter based on a spawn info variable read from each Data Channel element. ");
+#endif
+		Sig.bMemberFunction = true;
+		Sig.bExperimental = true;
+		Sig.bRequiresExecPin = true;
+		Sig.ModuleUsageBitmask = ENiagaraScriptUsageMask::Emitter | ENiagaraScriptUsageMask::System;
+		Sig.AddInput(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("DataChannel interface")));
+		Sig.AddInput(EnabledVar, LOCTEXT("SpawnEnableInputDesc", "Enable or disable this function call. If false, this call with have no effetcs."));
+		OutFunctions.Add(Sig);
+	}
+
+	{
+		FNiagaraFunctionSignature Sig;
+		Sig.Name = NDIDataChannelReadLocal::SpawnConditionalName;
+#if WITH_EDITORONLY_DATA
+		Sig.Description = LOCTEXT("SpawnCustomFunctionDescription", "Will Spawn particles into the bound Emitter between Min and Max counts for every element in the bound Data Channel.\n\
+		Can take optional additional parameters as conditions on spawning that will be compared against the contents of each data channel element.\n\
+		For example you could spawn only for a particular value of an enum.\n\
+		For compound data types that contain multiple component floats or ints, comparissons are done on a per component basis.\n\
+		For example if you add a Vector condition parameter it will be compared against each component of the corresponding Vector in the Data Channel.\n\
+		Result = (Param.X == ChannelValue.X) && (Param.Y == ChannelValue.Y) && (Param.Z == ChannelValue.Z)");
+#endif
+		Sig.bMemberFunction = true;
+		Sig.bExperimental = true;
+		Sig.bRequiresExecPin = true;
+		Sig.ModuleUsageBitmask = ENiagaraScriptUsageMask::Emitter | ENiagaraScriptUsageMask::System;
+		Sig.AddInput(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("DataChannel interface")));
+		Sig.AddInput(EnabledVar, LOCTEXT("SpawnEnableInputDesc", "Enable or disable this function call. If false, this call with have no effetcs."));
+		Sig.AddInput(FNiagaraVariable(StaticEnum<ENDIDataChannelSpawnMode>(), TEXT("Mode")), LOCTEXT("SpawnCondModeInputDesc", "A mode switch that controls how this funciton will behave."));
+		Sig.AddInput(FNiagaraVariable(StaticEnum<ENiagaraConditionalOperator>(), TEXT("Operator")), LOCTEXT("SpawnCondOpInputDesc", "The comparison operator to use when comparing values in the data channel to conditional parameters."));
+		Sig.AddInput(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Min Spawn Count")), LOCTEXT("MinSpawnCountInputDesc", "Minimum number of particles to spawn for each element in the data channel."));
+		Sig.AddInput(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Max Spawn Count")), LOCTEXT("MaxSpawnCountInputDesc", "Maximum number of particles to spawn for each element in the data channel."));
+		Sig.RequiredInputs = Sig.Inputs.Num();
+		OutFunctions.Add(Sig);
+	}
 }
 
 void UNiagaraDataInterfaceDataChannelRead::GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction& OutFunc)
@@ -723,20 +875,21 @@ void UNiagaraDataInterfaceDataChannelRead::GetVMExternalFunction(const FVMExtern
 	else
 	{
 		int32 FuncIndex = CompiledData.FindFunctionInfoIndex(BindingInfo.Name, BindingInfo.VariadicInputs, BindingInfo.VariadicOutputs);
-		if (FuncIndex != INDEX_NONE)
+		if (BindingInfo.Name == NDIDataChannelReadLocal::SpawnFromSpawnInfoName)
 		{
-			if (BindingInfo.Name == NDIDataChannelReadLocal::ReadName)
-			{
-				OutFunc = FVMExternalFunction::CreateLambda([this, FuncIndex](FVectorVMExternalFunctionContext& Context) { this->Read(Context, FuncIndex); });
-			}
-			else if (BindingInfo.Name == NDIDataChannelReadLocal::ConsumeName)
-			{
-				OutFunc = FVMExternalFunction::CreateLambda([this, FuncIndex](FVectorVMExternalFunctionContext& Context) { this->Consume(Context, FuncIndex); });
-			}
-			else
-			{
-				UE_LOG(LogTemp, Display, TEXT("Could not find data interface external function in %s. Received Name: %s"), *GetPathNameSafe(this), *BindingInfo.Name.ToString());
-			}
+			OutFunc = FVMExternalFunction::CreateLambda([this](FVectorVMExternalFunctionContext& Context) { this->SpawnFromSpawnInfo(Context); });
+		}
+		else if (BindingInfo.Name == NDIDataChannelReadLocal::ReadName)
+		{
+			OutFunc = FVMExternalFunction::CreateLambda([this, FuncIndex](FVectorVMExternalFunctionContext& Context) { this->Read(Context, FuncIndex); });
+		}
+		else if (BindingInfo.Name == NDIDataChannelReadLocal::ConsumeName)
+		{
+			OutFunc = FVMExternalFunction::CreateLambda([this, FuncIndex](FVectorVMExternalFunctionContext& Context) { this->Consume(Context, FuncIndex); });
+		}
+		else if (BindingInfo.Name == NDIDataChannelReadLocal::SpawnConditionalName)
+		{
+			OutFunc = FVMExternalFunction::CreateLambda([this, FuncIndex](FVectorVMExternalFunctionContext& Context) { this->SpawnConditional(Context, FuncIndex); });
 		}
 		else
 		{
@@ -745,121 +898,14 @@ void UNiagaraDataInterfaceDataChannelRead::GetVMExternalFunction(const FVMExtern
 	}
 }
 
-template<int32 EXPECTED_NUM_INPUTS>
-struct FNDIVariadicOutputHandler
-{
-	TArray<VectorVM::FExternalFuncRegisterHandler<float>, TInlineAllocator<EXPECTED_NUM_INPUTS>> FloatOutputs;
-	TArray<VectorVM::FExternalFuncRegisterHandler<int32>, TInlineAllocator<EXPECTED_NUM_INPUTS>> IntOutputs;
-	TArray<VectorVM::FExternalFuncRegisterHandler<FFloat16>, TInlineAllocator<EXPECTED_NUM_INPUTS>> HalfOutputs;
-
-	FNDIVariadicOutputHandler(FVectorVMExternalFunctionContext& Context, const FNDIDataChannel_FuncToDataSetBindingPtr& BindingPtr)
-	{
-		//Parse the VM bytecode inputs in order, mapping them to the correct DataChannel data 
-		FloatOutputs.Reserve(BindingPtr->NumFloatComponents);
-		IntOutputs.Reserve(BindingPtr->NumInt32Components);
-		HalfOutputs.Reserve(BindingPtr->NumHalfComponents);
-		for (FNDIDataChannelRegisterBinding& VMBinding : BindingPtr->VMRegisterBindings)
-		{
-			if (VMBinding.DataType == (int32)ENiagaraBaseTypes::Float)
-			{
-				FloatOutputs.Emplace(Context);
-			}
-			else if (VMBinding.DataType == (int32)ENiagaraBaseTypes::Int32 || VMBinding.DataType == (int32)ENiagaraBaseTypes::Bool)
-			{
-				IntOutputs.Emplace(Context);
-			}
-			else if (VMBinding.DataType == (int32)ENiagaraBaseTypes::Half)
-			{
-				HalfOutputs.Emplace(Context);
-			}
-			else
-			{
-				checkf(false, TEXT("Didn't find a binding for this function input. Likely an error in the building of the binding data and the Float/Int/Half Bindings arrays."));
-			}
-		}
-	}
-
-	bool Process(FNiagaraDataBuffer* Data, uint32 Index, const FNDIDataChannel_FuncToDataSetBindingPtr& BindingPtr)
-	{
-		checkSlow(Data);
-
-		//Process this index.
-		//TODO: Can be optimized to pull N values out at a time, reducing the binding/lookup overhead.
-		if ((uint32)Index < Data->GetNumInstances())
-		{
-			for (FNDIDataChannelRegisterBinding& VMBinding : BindingPtr->VMRegisterBindings)
-			{
-				if (VMBinding.DataType == (int32)ENiagaraBaseTypes::Float)
-				{
-					if (VMBinding.DataSetRegisterIndex == INDEX_NONE)
-					{
-						*FloatOutputs[VMBinding.FunctionRegisterIndex].GetDestAndAdvance() = 0.0f;
-					}
-					else
-					{
-						*FloatOutputs[VMBinding.FunctionRegisterIndex].GetDestAndAdvance() = *Data->GetInstancePtrFloat(VMBinding.DataSetRegisterIndex, (uint32)Index);
-					}
-				}
-				else if (VMBinding.DataType == (int32)ENiagaraBaseTypes::Int32 || VMBinding.DataType == (int32)ENiagaraBaseTypes::Bool)
-				{
-					if (VMBinding.DataSetRegisterIndex == INDEX_NONE)
-					{
-						*IntOutputs[VMBinding.FunctionRegisterIndex].GetDestAndAdvance() = 0;
-					}
-					else
-					{
-						*IntOutputs[VMBinding.FunctionRegisterIndex].GetDestAndAdvance() = *Data->GetInstancePtrInt32(VMBinding.DataSetRegisterIndex, (uint32)Index);
-					}
-				}
-				else if (VMBinding.DataType == (int32)ENiagaraBaseTypes::Half)
-				{
-					if (VMBinding.DataSetRegisterIndex == INDEX_NONE)
-					{
-						*HalfOutputs[VMBinding.FunctionRegisterIndex].GetDestAndAdvance() = FFloat16(0.0f);
-					}
-					else
-					{
-						*HalfOutputs[VMBinding.FunctionRegisterIndex].GetDestAndAdvance() = *Data->GetInstancePtrHalf(VMBinding.DataSetRegisterIndex, (uint32)Index);
-					}
-				}
-			}
-			return true;
-		}
-
-		Fallback(1);
-
-		return false;
-	}
-
-	void Fallback(int32 Count)
-	{
-		for (int32 OutIdx = 0; OutIdx < FloatOutputs.Num(); ++OutIdx)
-		{
-			FMemory::Memzero(FloatOutputs[OutIdx].GetDest(), sizeof(float) * Count);
-			FloatOutputs[OutIdx].Advance(Count);
-		}
-
-		for (int32 OutIdx = 0; OutIdx < IntOutputs.Num(); ++OutIdx)
-		{
-			FMemory::Memzero(IntOutputs[OutIdx].GetDest(), sizeof(int32) * Count);
-			IntOutputs[OutIdx].Advance(Count);
-		}
-
-		for (int32 OutIdx = 0; OutIdx < HalfOutputs.Num(); ++OutIdx)
-		{
-			FMemory::Memzero(HalfOutputs[OutIdx].GetDest(), sizeof(FFloat16) * Count);
-			HalfOutputs[OutIdx].Advance(Count);
-		}
-	}
-};
-
 void UNiagaraDataInterfaceDataChannelRead::Num(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIDataChannelReadInstanceData> InstData(Context);
 
 	FNDIOutputParam<int32> OutNum(Context);
 
-	FNiagaraDataBuffer* Buffer = InstData->GetReadBufferCPU();
+	bool bReadPrevFrame = bReadCurrentFrame == false || GNDCReadForcePrevFrame;
+	FNiagaraDataBuffer* Buffer = InstData->GetReadBufferCPU(bReadPrevFrame);
 
 	int32 Num = 0;
 	if (Buffer && INiagaraModule::DataChannelsEnabled())
@@ -879,21 +925,47 @@ void UNiagaraDataInterfaceDataChannelRead::Read(FVectorVMExternalFunctionContext
 	VectorVM::FUserPtrHandler<FNDIDataChannelReadInstanceData> InstData(Context);
 	FNDIInputParam<int32> InIndex(Context);
 
-	FNDIOutputParam<bool> OutSuccess(Context);
+	FNDIOutputParam<FNiagaraBool> OutSuccess(Context);
 
 	const FNDIDataChannelFunctionInfo& FuncInfo = CompiledData.GetFunctionInfo()[FuncIdx];
-	const FNDIDataChannel_FuncToDataSetBindingPtr& BindingInfo = InstData->FuncToDataSetBindingInfo.IsValidIndex(FuncIdx) ? InstData->FuncToDataSetBindingInfo[FuncIdx] : nullptr;
+	const FNDIDataChannel_FunctionToDataSetBinding* BindingInfo = InstData->FuncToDataSetBindingInfo.IsValidIndex(FuncIdx) ? InstData->FuncToDataSetBindingInfo[FuncIdx].Get() : nullptr;
 	FNDIVariadicOutputHandler<16> VariadicOutputs(Context, BindingInfo);//TODO: Make static / avoid allocation
 
-	FNiagaraDataBuffer* Buffer = InstData->GetReadBufferCPU();
-	if (Buffer && BindingInfo && INiagaraModule::DataChannelsEnabled())
-	{
+	bool bReadPrevFrame = bReadCurrentFrame == false || GNDCReadForcePrevFrame;
+	FNiagaraDataBuffer* Data = InstData->GetReadBufferCPU(bReadPrevFrame);
+	if (Data && BindingInfo && INiagaraModule::DataChannelsEnabled())
+ 	{
+ 		//FString Label = TEXT("NDIDataChannelRead::Read() - ");
+ 		//Data->Dump(0, Data->GetNumInstances(), Label);
+
 		for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 		{
 			int32 Index = InIndex.GetAndAdvance();
 
-			//TODO: Optimize for long runs of reads.
-			bool bSuccess = VariadicOutputs.Process(Buffer, Index, BindingInfo);
+			bool bProcess = (uint32)Index < Data->GetNumInstances();
+
+			auto FloatFunc = [Data, Index](const FNDIDataChannelRegisterBinding& VMBinding, VectorVM::FExternalFuncRegisterHandler<float>& FloatData)
+			{
+				if (VMBinding.DataSetRegisterIndex != INDEX_NONE)
+				{
+					float* Src = Data->GetInstancePtrFloat(VMBinding.DataSetRegisterIndex, (uint32)Index);
+					*FloatData.GetDestAndAdvance() = *Src;
+				}
+			};
+			auto IntFunc = [Data, Index](const FNDIDataChannelRegisterBinding& VMBinding, VectorVM::FExternalFuncRegisterHandler<int32>& IntData)
+			{
+				if (VMBinding.DataSetRegisterIndex != INDEX_NONE)
+				{
+					int32* Src = Data->GetInstancePtrInt32(VMBinding.DataSetRegisterIndex, (uint32)Index);
+					*IntData.GetDestAndAdvance() = *Src;
+				}
+			};
+			auto HalfFunc = [Data, Index](const FNDIDataChannelRegisterBinding& VMBinding, VectorVM::FExternalFuncRegisterHandler<FFloat16>& HalfData)
+			{
+				if (VMBinding.DataSetRegisterIndex != INDEX_NONE)
+					*HalfData.GetDestAndAdvance() = *Data->GetInstancePtrHalf(VMBinding.DataSetRegisterIndex, (uint32)Index);
+			};
+			bool bSuccess = VariadicOutputs.Process(bProcess, 1, BindingInfo, FloatFunc, IntFunc, HalfFunc);
 
 			if (OutSuccess.IsValid())
 			{
@@ -921,28 +993,46 @@ void UNiagaraDataInterfaceDataChannelRead::Consume(FVectorVMExternalFunctionCont
 	FNDIOutputParam<int32> OutIndex(Context);
 
 	const FNDIDataChannelFunctionInfo& FuncInfo = CompiledData.GetFunctionInfo()[FuncIdx];
-	const FNDIDataChannel_FuncToDataSetBindingPtr& BindingInfo = InstData->FuncToDataSetBindingInfo.IsValidIndex(FuncIdx) ? InstData->FuncToDataSetBindingInfo[FuncIdx] : nullptr;
+	const FNDIDataChannel_FunctionToDataSetBinding* BindingInfo = InstData->FuncToDataSetBindingInfo.IsValidIndex(FuncIdx) ? InstData->FuncToDataSetBindingInfo[FuncIdx].Get() : nullptr;
 	FNDIVariadicOutputHandler<16> VariadicOutputs(Context, BindingInfo);//TODO: Make static / avoid allocation
 
 	//TODO: Optimize for constant bConsume.
 	//TODO: Optimize for long runs of bConsume==true;
-	FNiagaraDataBuffer* Buffer = InstData->GetReadBufferCPU();
-	if (Buffer && BindingInfo && INiagaraModule::DataChannelsEnabled())
+	bool bReadPrevFrame = bReadCurrentFrame == false || GNDCReadForcePrevFrame;
+	FNiagaraDataBuffer* Data = InstData->GetReadBufferCPU(bReadPrevFrame);
+	if (Data && BindingInfo && INiagaraModule::DataChannelsEnabled())
 	{
 		for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 		{
 			bool bConsume = InConsume.GetAndAdvance();
 
 			bool bSuccess = false;
-			int32 ConsumeIdx = InstData->ConsumeIndex;
+			int32 Index = InstData->ConsumeIndex;
 			if (bConsume)
 			{
-				while (ConsumeIdx < (int32)Buffer->GetNumInstances() && InstData->ConsumeIndex.compare_exchange_strong(ConsumeIdx, ConsumeIdx + 1) == false)
+				while (Index < (int32)Data->GetNumInstances() && InstData->ConsumeIndex.compare_exchange_strong(Index, Index + 1) == false)
 				{
-					ConsumeIdx = InstData->ConsumeIndex;
+					Index = InstData->ConsumeIndex;
 				}
 
-				bSuccess = VariadicOutputs.Process(Buffer, ConsumeIdx, BindingInfo);
+				bConsume &= (uint32)Index < Data->GetNumInstances();
+
+				auto FloatFunc = [Data, Index](const FNDIDataChannelRegisterBinding& VMBinding, VectorVM::FExternalFuncRegisterHandler<float>& FloatData)
+				{
+					if (VMBinding.DataSetRegisterIndex != INDEX_NONE)
+						*FloatData.GetDestAndAdvance() = *Data->GetInstancePtrFloat(VMBinding.DataSetRegisterIndex, (uint32)Index);
+				};
+				auto IntFunc = [Data, Index](const FNDIDataChannelRegisterBinding& VMBinding, VectorVM::FExternalFuncRegisterHandler<int32>& IntData)
+				{
+					if (VMBinding.DataSetRegisterIndex != INDEX_NONE)
+						*IntData.GetDestAndAdvance() = *Data->GetInstancePtrInt32(VMBinding.DataSetRegisterIndex, (uint32)Index);
+				};
+				auto HalfFunc = [Data, Index](const FNDIDataChannelRegisterBinding& VMBinding, VectorVM::FExternalFuncRegisterHandler<FFloat16>& HalfData)
+				{
+					if (VMBinding.DataSetRegisterIndex != INDEX_NONE)
+						*HalfData.GetDestAndAdvance() = *Data->GetInstancePtrHalf(VMBinding.DataSetRegisterIndex, (uint32)Index);
+				};
+				bSuccess = VariadicOutputs.Process(bConsume, 1, BindingInfo, FloatFunc, IntFunc, HalfFunc);
 			}
 			else
 			{
@@ -955,7 +1045,7 @@ void UNiagaraDataInterfaceDataChannelRead::Consume(FVectorVMExternalFunctionCont
 			}
 			if (OutIndex.IsValid())
 			{
-				OutIndex.SetAndAdvance(bSuccess ? ConsumeIdx : INDEX_NONE);
+				OutIndex.SetAndAdvance(bSuccess ? Index : INDEX_NONE);
 			}
 		}
 	}
@@ -971,6 +1061,142 @@ void UNiagaraDataInterfaceDataChannelRead::Consume(FVectorVMExternalFunctionCont
 		if (OutIndex.IsValid())
 		{
 			FMemory::Memset(OutSuccess.Data.GetDest(), 0xFF, sizeof(int32) * Context.GetNumInstances());
+		}
+	}
+}
+
+void UNiagaraDataInterfaceDataChannelRead::SpawnFromSpawnInfo(FVectorVMExternalFunctionContext& Context)
+{
+	SCOPE_CYCLE_COUNTER(STAT_NDIDataChannelRead_Spawn);
+
+	//This should only be called from emitter scripts and since it has per instance data then we process them individually.
+	check(Context.GetNumInstances() == 1);
+
+	FNDIRandomHelperFromStream RandHelper(Context);
+
+	VectorVM::FUserPtrHandler<FNDIDataChannelReadInstanceData> InstData(Context);
+		
+	FNDIInputParam<FNiagaraBool> InEnabled(Context);
+
+	FNiagaraEmitterInstance* EmittterInst = InstData->EmitterInstance;
+	FNiagaraDataChannelData* DataChannelData = InstData->DataChannelData.Get();
+
+	bool bReadPrevFrame = bReadCurrentFrame == false || GNDCReadForcePrevFrame;
+	FNiagaraDataBuffer* Data = DataChannelData ? DataChannelData->GetCPUData(bReadPrevFrame) : nullptr;
+
+	if ( INiagaraModule::DataChannelsEnabled() && Data && EmittterInst )
+	{
+		TArray<FNiagaraSpawnInfo>& EmitterSpawnInfos = EmittterInst->GetSpawnInfo();
+
+		const bool bSpawn = InEnabled.GetAndAdvance() && InstData->SpawnInfoAccessor.IsValid();
+		if (bSpawn)
+		{
+			FNiagaraDataSetReaderStruct<FNiagaraSpawnInfo> Reader = InstData->SpawnInfoAccessor.GetReader(Data);
+
+			int32 NumDataChannelInstances = Data->GetNumInstances();
+
+			for (int32 DataChannelIdx = 0; DataChannelIdx < NumDataChannelInstances; ++DataChannelIdx)
+			{
+				FNiagaraSpawnInfo SpawnInfo(0, 0.0f, 0.0f, 0);
+				SpawnInfo = Reader.Get(DataChannelIdx);
+
+				if (SpawnInfo.Count > 0)
+				{
+					if (bOverrideSpawnGroupToDataChannelIndex)
+					{
+						SpawnInfo.SpawnGroup = DataChannelIdx;
+					}
+					EmitterSpawnInfos.Emplace(SpawnInfo);
+				}
+			}
+		}
+	}
+}
+
+void UNiagaraDataInterfaceDataChannelRead::SpawnConditional(FVectorVMExternalFunctionContext& Context, int32 FuncIdx)
+{
+	SCOPE_CYCLE_COUNTER(STAT_NDIDataChannelRead_Spawn);
+
+	//UE_LOG(LogNiagara, Warning, TEXT("UNiagaraDataInterfaceDataChannelRead::SpawnConditional - %u"), FuncIdx);
+
+	//This should only be called from emitter scripts and since it has per instance data then we process them individually.
+	check(Context.GetNumInstances() == 1);
+
+	VectorVM::FUserPtrHandler<FNDIDataChannelReadInstanceData> InstData(Context);
+
+	//Binding info can be null here as we can be spawning without any conditions, i.e. no variadic parameters to the function.
+	const FNDIDataChannel_FunctionToDataSetBinding* BindingInfo = InstData->FuncToDataSetBindingInfo.IsValidIndex(FuncIdx) ? InstData->FuncToDataSetBindingInfo[FuncIdx].Get() : nullptr;
+
+	FNDIInputParam<FNiagaraBool> InEnabled(Context);
+	FNDIInputParam<int32> InMode(Context);
+	FNDIInputParam<int32> InOp(Context);
+	FNDIInputParam<int32> InSpawnMin(Context);
+	FNDIInputParam<int32> InSpawnMax(Context);
+
+	FNDIVariadicInputHandler<16> VariadicInputs(Context, BindingInfo);//TODO: Make static / avoid allocation
+
+	FNiagaraEmitterInstance* EmittterInst = InstData->EmitterInstance;
+	FNiagaraDataChannelData* DataChannelData = InstData->DataChannelData.Get();
+
+	bool bReadPrevFrame = bReadCurrentFrame == false || GNDCReadForcePrevFrame;
+	FNiagaraDataBuffer* Data = DataChannelData ? DataChannelData->GetCPUData(bReadPrevFrame) : nullptr;
+
+	bool bSpawn = INiagaraModule::DataChannelsEnabled() && Data && Data->GetNumInstances() > 0 && EmittterInst && EmittterInst->IsActive() && InEnabled.GetAndAdvance();
+	if(bSpawn)
+	{
+		FNDIRandomHelperFromStream RandHelper(Context);
+
+		TArray<FNiagaraSpawnInfo>& EmitterSpawnInfos = EmittterInst->GetSpawnInfo();
+		ENDIDataChannelSpawnMode Mode = (ENDIDataChannelSpawnMode)InMode.GetAndAdvance();
+		ENiagaraConditionalOperator Op = (ENiagaraConditionalOperator)InOp.GetAndAdvance();
+
+		//Is mode none or invalid?
+		if ((int32)Mode == (int32)ENDIDataChannelSpawnMode::None || (int32)Mode < 0 || (int32)Mode >= (int32)ENDIDataChannelSpawnMode::Max)
+		{
+			return;
+		}
+
+		int32 SpawnMin = InSpawnMin.GetAndAdvance();
+		int32 SpawnMax = InSpawnMax.GetAndAdvance();
+
+		int32 NumDataChannelInstances = Data->GetNumInstances();
+
+		//Each data channel element has an additional spawn entry which accumulates across all spawning calls and can be nulled independently by a suppression call.
+		InstData->ConditionalSpawns.SetNumZeroed(NumDataChannelInstances);
+
+		for (int32 DataChannelIdx = 0; DataChannelIdx < NumDataChannelInstances; ++DataChannelIdx)
+		{
+			bool bConditionsPass = true;
+			auto FloatFunc = [&bConditionsPass, Op, Data, DataChannelIdx](const FNDIDataChannelRegisterBinding& VMBinding, FNDIInputParam<float>& FloatData)
+			{
+				if (VMBinding.DataSetRegisterIndex != INDEX_NONE)
+					bConditionsPass &= EvalConditional(Op, FloatData.GetAndAdvance(), *Data->GetInstancePtrFloat(VMBinding.DataSetRegisterIndex, (uint32)DataChannelIdx));
+			};
+			auto IntFunc = [&bConditionsPass, Op, Data, DataChannelIdx](const FNDIDataChannelRegisterBinding& VMBinding, FNDIInputParam<int32>& IntData)
+			{
+				if (VMBinding.DataSetRegisterIndex != INDEX_NONE)
+					bConditionsPass &= EvalConditional(Op, IntData.GetAndAdvance(), *Data->GetInstancePtrInt32(VMBinding.DataSetRegisterIndex, (uint32)DataChannelIdx));
+			};
+			auto HalfFunc = [&bConditionsPass, Op, Data, DataChannelIdx](const FNDIDataChannelRegisterBinding& VMBinding, FNDIInputParam<FFloat16>& HalfData)
+			{
+				if (VMBinding.DataSetRegisterIndex != INDEX_NONE)
+					bConditionsPass &= EvalConditional(Op, HalfData.GetAndAdvance(), *Data->GetInstancePtrHalf(VMBinding.DataSetRegisterIndex, (uint32)DataChannelIdx));
+			};
+			VariadicInputs.Process(true, 1, BindingInfo, FloatFunc, IntFunc, HalfFunc);
+			VariadicInputs.Reset();
+
+			if (bConditionsPass)
+			{
+				int32 Count = RandHelper.RandRange(DataChannelIdx, SpawnMin, SpawnMax);
+				if (Mode == ENDIDataChannelSpawnMode::Accumulate)
+				{
+					InstData->ConditionalSpawns[DataChannelIdx].Count += Count;
+				}
+				else if (Mode == ENDIDataChannelSpawnMode::Override)
+				{
+					InstData->ConditionalSpawns[DataChannelIdx].Count = Count;
+				}
+			}
 		}
 	}
 }
@@ -1021,7 +1247,9 @@ void UNiagaraDataInterfaceDataChannelRead::GetParameterDefinitionHLSL(FNiagaraDa
 	{
 		//Common args for all functions
 		{TEXT("ParameterName"),							HlslGenContext.ParameterInfo.DataInterfaceHLSLSymbol},
+		
 		//Per function args. These will be changed with each function written
+		{TEXT("FunctionSymbol"),						FString(TEXT("FunctionSymbol"))},//Function symbol which will be a mangled form from the translator.
 		{TEXT("FunctionParameters"),					FString(TEXT("FunctionParameters"))},//Function parameters written into the function signature.
 		{TEXT("PerFunctionParameterShaderCode"),		FString(TEXT("PerFunctionParameterShaderCode"))},//Combined string of all code dealing with each of the function parameters.
 		//Per function parameter args. These will be changed with each parameter written
@@ -1036,6 +1264,7 @@ void UNiagaraDataInterfaceDataChannelRead::GetParameterDefinitionHLSL(FNiagaraDa
 	};
 
 	//Grab refs to per function args we'll change with each function written.
+	FStringFormatArg& FunctionSymbol = HlslTemplateArgs.FindChecked(TEXT("FunctionSymbol"));
 	FStringFormatArg& FunctionParameters = HlslTemplateArgs.FindChecked(TEXT("FunctionParameters"));
 	FStringFormatArg& PerFunctionParameterShaderCode = HlslTemplateArgs.FindChecked(TEXT("PerFunctionParameterShaderCode"));
 
@@ -1133,6 +1362,7 @@ void UNiagaraDataInterfaceDataChannelRead::GetParameterDefinitionHLSL(FNiagaraDa
 		const FNiagaraFunctionSignature& Signature = HlslGenContext.Signatures[FuncIdx];
 
 		//Init/Reset our per function hlsl template args.
+		FunctionSymbol.StringValue = HlslGenContext.GetFunctionSignatureSymbol(Signature);
 		FunctionParameters.StringValue.Reset();//Reset function parameters ready to rebuild when we iterate over the parameters.
 		PerFunctionParameterShaderCode.StringValue.Reset(); //Reset function parameters ready to rebuild when we iterate over the parameters.
 
@@ -1144,6 +1374,12 @@ void UNiagaraDataInterfaceDataChannelRead::GetParameterDefinitionHLSL(FNiagaraDa
 			//Function that will recurse down a parameter's type and generate the appropriate IO code for all of it's members.
 			TFunction<void(bool, UScriptStruct*, FString&)> GenerateRWParameterCode = [&](bool bRead, UScriptStruct* Struct, FString& OutCode)
 			{
+				//Intercept positions and replace with FVector3fs
+				if(Struct == FNiagaraPosition::StaticStruct())
+				{
+					Struct = FNiagaraTypeDefinition::GetVec3Struct();
+				}
+
 				if (Struct == FNiagaraTypeDefinition::GetFloatStruct() || Struct == FNiagaraTypeDefinition::GetVec2Struct() || Struct == FNiagaraTypeDefinition::GetVec3Struct()
 					|| Struct == FNiagaraTypeDefinition::GetVec4Struct() || Struct == FNiagaraTypeDefinition::GetColorStruct() || Struct == FNiagaraTypeDefinition::GetQuatStruct())
 				{
@@ -1155,6 +1391,12 @@ void UNiagaraDataInterfaceDataChannelRead::GetParameterDefinitionHLSL(FNiagaraDa
 				{
 					FunctionParameterComponentBufferType = TEXT("Int32");
 					FunctionParameterComponentType = HlslGenContext.GetStructHlslTypeName(FNiagaraTypeDefinition(Struct));
+					OutCode += FString::Format(bRead ? *ReadDataTemplate : *WriteDataTemplate, HlslTemplateArgs);
+				}
+				else if (Struct == FNiagaraTypeDefinition::GetBoolStruct())
+				{
+					FunctionParameterComponentBufferType = TEXT("Int32");
+					FunctionParameterComponentType = HlslGenContext.GetStructHlslTypeName(FNiagaraTypeDefinition::GetIntDef());
 					OutCode += FString::Format(bRead ? *ReadDataTemplate : *WriteDataTemplate, HlslTemplateArgs);
 				}
 				else
@@ -1255,6 +1497,7 @@ void UNiagaraDataInterfaceDataChannelRead::GetParameterDefinitionHLSL(FNiagaraDa
 
 			//Finally generate the final code for this function and add it to the final hlsl.
 			OutHLSL += FString::Format(*FunctionTemplateFile, HlslTemplateArgs);
+			OutHLSL += TEXT("\n");
 		}
 	}
 }
@@ -1283,9 +1526,10 @@ void UNiagaraDataInterfaceDataChannelRead::SetShaderParameters(const FNiagaraDat
 			ParameterOffsetTableIndex = *ParameterOffsetTableIndexPtr;
 		}
 
-		if (InstanceData->ChannelDataSet && ParameterOffsetTableIndex != INDEX_NONE)
+		if (InstanceData->ChannelDataRTProxy && ParameterOffsetTableIndex != INDEX_NONE)
 		{
-			if (FNiagaraDataBuffer* Data = InstanceData->ChannelDataSet->GetCurrentData())
+			FNiagaraDataBuffer* Data = InstanceData->bReadPrevFrame ? InstanceData->ChannelDataRTProxy->PrevFrameData.GetReference() : InstanceData->ChannelDataRTProxy->GPUDataSet->GetCurrentData();
+			if (Data)
 			{
 				const FReadBuffer& ParameterLayoutBuffer = InstanceData->ParameterLayoutBuffer;
 
@@ -1326,7 +1570,10 @@ void FNiagaraDataInterfaceProxy_DataChannelRead::ConsumePerInstanceDataFromGameT
 	FNDIDataChannelReadInstanceData_RT& SourceData = *reinterpret_cast<FNDIDataChannelReadInstanceData_RT*>(PerInstanceData);
 	FInstanceData& InstData = SystemInstancesToProxyData_RT.FindOrAdd(Instance);
 
-	InstData.ChannelDataSet = SourceData.ChannelDataSet;
+	FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
+
+	InstData.ChannelDataRTProxy = SourceData.ChannelDataRTProxy;
+	InstData.bReadPrevFrame = SourceData.bReadPrevFrame;
 
 	if (SourceData.bHasUpdate)
 	{
@@ -1347,7 +1594,7 @@ void FNiagaraDataInterfaceProxy_DataChannelRead::ConsumePerInstanceDataFromGameT
 			if(SourceData.GPUScriptParameterOffsetTable.Num() > 0)
 			{
 				InstData.ParameterLayoutData = SourceData.GPUScriptParameterOffsetTable;
-				InstData.ParameterLayoutBuffer.Initialize(TEXT("NDIDataChannel_ParameterLayoutBuffer"), sizeof(uint32), SourceData.GPUScriptParameterOffsetTable.Num(), EPixelFormat::PF_R32_UINT, BUF_Static, &InstData.ParameterLayoutData);
+				InstData.ParameterLayoutBuffer.Initialize(RHICmdList, TEXT("NDIDataChannel_ParameterLayoutBuffer"), sizeof(uint32), SourceData.GPUScriptParameterOffsetTable.Num(), EPixelFormat::PF_R32_UINT, BUF_Static, &InstData.ParameterLayoutData);
 			}
 		}
 	}
@@ -1358,6 +1605,19 @@ void FNiagaraDataInterfaceProxy_DataChannelRead::ConsumePerInstanceDataFromGameT
 int32 FNiagaraDataInterfaceProxy_DataChannelRead::PerInstanceDataPassedToRenderThreadSize() const
 {
 	return sizeof(FNDIDataChannelReadInstanceData_RT);
+}
+
+void FNiagaraDataInterfaceProxy_DataChannelRead::GetDispatchArgs(const FNDIGpuComputeDispatchArgsGenContext& Context)
+{
+	const FNiagaraDataInterfaceProxy_DataChannelRead::FInstanceData* InstanceData = SystemInstancesToProxyData_RT.Find(Context.GetSystemInstanceID());
+	if (InstanceData && InstanceData->ChannelDataRTProxy)
+	{
+		FNiagaraDataBuffer* Data = InstanceData->bReadPrevFrame ? InstanceData->ChannelDataRTProxy->PrevFrameData.GetReference() : InstanceData->ChannelDataRTProxy->GPUDataSet->GetCurrentData();
+		if (Data)
+		{
+			Context.SetDirect(Data->GetNumInstances());
+		}
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

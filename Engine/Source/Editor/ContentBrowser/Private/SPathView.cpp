@@ -1551,7 +1551,7 @@ void SPathView::Populate(const bool bIsRefreshingFilter)
 		TArray<TSharedPtr<FTreeItem>> ItemsCreated;
 		ContentBrowserData->EnumerateItemsMatchingFilter(CompiledDataFilter, [this, bFilteringByText, bDisplayEmpty, ContentBrowserData, &ItemsCreated](FContentBrowserItemData&& InItemData)
 		{
-			bool bPassesFilter = bDisplayEmpty || ContentBrowserData->IsFolderVisibleIfHidingEmpty(InItemData.GetVirtualPath());
+			bool bPassesFilter = ContentBrowserData->IsFolderVisible(InItemData.GetVirtualPath(), ContentBrowserUtils::GetIsFolderVisibleFlags(bDisplayEmpty));
 			if (bPassesFilter && bFilteringByText)
 			{
 				// Use the whole path so we deliberately include any children of matched parents in the filtered list
@@ -1814,7 +1814,7 @@ bool SPathView::VerifyFolderNameChanged(const TSharedPtr< FTreeItem >& TreeItem,
 	return true;
 }
 
-void SPathView::FolderNameChanged( const TSharedPtr< FTreeItem >& TreeItem, const FString& ProposedName, const FVector2D& MessageLocation, const ETextCommit::Type CommitType )
+void SPathView::FolderNameChanged( const TSharedPtr< FTreeItem >& TreeItem, const FString& ProposedName, const UE::Slate::FDeprecateVector2DParameter& MessageLocation, const ETextCommit::Type CommitType )
 {
 	bool bSuccess = false;
 	FText ErrorMessage;
@@ -2012,7 +2012,7 @@ void SPathView::HandleItemDataUpdated(TArrayView<const FContentBrowserItemDataUp
 			return false;
 		}
 
-		if (!bDisplayEmpty && !ContentBrowserData->IsFolderVisibleIfHidingEmpty(InItemData.GetVirtualPath()))
+		if (!ContentBrowserData->IsFolderVisible(InItemData.GetVirtualPath(), ContentBrowserUtils::GetIsFolderVisibleFlags(bDisplayEmpty)))
 		{
 			return false;
 		}
@@ -2032,27 +2032,30 @@ void SPathView::HandleItemDataUpdated(TArrayView<const FContentBrowserItemDataUp
 
 	for (const FContentBrowserItemDataUpdate& ItemDataUpdate : InUpdatedItems)
 	{
-		const FContentBrowserItemData& ItemData = ItemDataUpdate.GetItemData();
-		if (!ItemData.IsFolder())
+		const FContentBrowserItemData& ItemDataRef = ItemDataUpdate.GetItemData();
+		if (!ItemDataRef.IsFolder())
 		{
 			continue;
 		}
 
 		ConditionalCompileFilter();
 
+		FContentBrowserItemData ItemData = ItemDataRef;
+		ItemData.GetOwnerDataSource()->ConvertItemForFilter(ItemData, CompiledDataFilter);
+
 		switch (ItemDataUpdate.GetUpdateType())
 		{
 		case EContentBrowserItemUpdateType::Added:
 			if (DoesItemPassFilter(ItemData))
 			{
-				AddFolderItem(CopyTemp(ItemData));
+				AddFolderItem(MoveTemp(ItemData));
 			}
 			break;
 
 		case EContentBrowserItemUpdateType::Modified:
 			if (DoesItemPassFilter(ItemData))
 			{
-				AddFolderItem(CopyTemp(ItemData));
+				AddFolderItem(MoveTemp(ItemData));
 			}
 			else
 			{
@@ -2067,7 +2070,7 @@ void SPathView::HandleItemDataUpdated(TArrayView<const FContentBrowserItemDataUp
 
 			if (DoesItemPassFilter(ItemData))
 			{
-				AddFolderItem(CopyTemp(ItemData));
+				AddFolderItem(MoveTemp(ItemData));
 			}
 		}
 		break;
@@ -2250,7 +2253,7 @@ TSharedRef<SWidget> SPathView::CreateFavoritesView()
 		.BorderImage(FAppStyle::Get().GetBrush("Brushes.Header"))
 		.BodyBorderImage(FAppStyle::Get().GetBrush("Brushes.Recessed"))
 		.HeaderPadding(FMargin(4.0f, 4.0f))
-		.Padding(0)
+		.Padding(0.f)
 		.AllowAnimatedTransition(false)
 		.InitiallyCollapsed(true)
 		.HeaderContent()
@@ -2333,6 +2336,7 @@ void SFavoritePathView::Populate(const bool bIsRefreshingFilter)
 			[this, &CompiledDataFilter](FContentBrowserItemData&& InItemData)
 				{
 					UContentBrowserDataSource* ItemDataSource = InItemData.GetOwnerDataSource();
+					ItemDataSource->ConvertItemForFilter(InItemData, CompiledDataFilter);
 					if (ItemDataSource->DoesItemPassFilter(InItemData, CompiledDataFilter))
 					{
 						if (TSharedPtr<FTreeItem> Item = AddFolderItem(MoveTemp(InItemData)))
@@ -2373,6 +2377,7 @@ void SFavoritePathView::SaveSettings(const FString& IniFilename, const FString& 
 	}
 
 	GConfig->SetString(*IniSection, TEXT("FavoritePaths"), *FavoritePathsString, IniFilename);
+	GConfig->Flush(false, IniFilename);
 }
 
 void SFavoritePathView::LoadSettings(const FString& IniFilename, const FString& IniSection, const FString& SettingsString)
@@ -2397,13 +2402,15 @@ void SFavoritePathView::LoadSettings(const FString& IniFilename, const FString& 
 		{
 			// If the selected paths is empty, the path was "All assets"
 			// This should handle that case properly
-			for (int32 PathIdx = 0; PathIdx < NewFavoritePaths.Num(); ++PathIdx)
+			for (const FString& InvariantPath : NewFavoritePaths)
 			{
-				const FString& InvariantPath = NewFavoritePaths[PathIdx];
-				FName VirtualPath;
-				IContentBrowserDataModule::Get().GetSubsystem()->ConvertInternalPathToVirtual(FStringView(InvariantPath), VirtualPath);
-				ContentBrowserUtils::AddFavoriteFolder(VirtualPath.ToString());
-				bAddedAtLeastOnePath = true;
+				FStringView InvariantPathView(InvariantPath);
+				InvariantPathView.TrimStartAndEndInline();
+				if (!InvariantPathView.IsEmpty() && InvariantPathView != TEXT("None"))
+				{
+					ContentBrowserUtils::AddFavoriteFolder(FContentBrowserItemPath(InvariantPathView, EContentBrowserPathType::Internal));
+					bAddedAtLeastOnePath = true;
+				}
 			}
 		}
 
@@ -2537,27 +2544,30 @@ void SFavoritePathView::HandleItemDataUpdated(TArrayView<const FContentBrowserIt
 
 	for (const FContentBrowserItemDataUpdate& ItemDataUpdate : InUpdatedItems)
 	{
-		const FContentBrowserItemData& ItemData = ItemDataUpdate.GetItemData();
-		if (!ItemData.IsFolder())
+		const FContentBrowserItemData& ItemDataRef = ItemDataUpdate.GetItemData();
+		if (!ItemDataRef.IsFolder())
 		{
 			continue;
 		}
 
 		ConditionalCompileFilter();
 
+		FContentBrowserItemData ItemData = ItemDataUpdate.GetItemData();
+		ItemData.GetOwnerDataSource()->ConvertItemForFilter(ItemData, CompiledDataFilter);
+
 		switch (ItemDataUpdate.GetUpdateType())
 		{
 		case EContentBrowserItemUpdateType::Added:
 			if (DoesItemPassFilter(ItemData))
 			{
-				AddFolderItem(CopyTemp(ItemData));
+				AddFolderItem(MoveTemp(ItemData));
 			}
 			break;
 
 		case EContentBrowserItemUpdateType::Modified:
 			if (DoesItemPassFilter(ItemData))
 			{
-				AddFolderItem(CopyTemp(ItemData));
+				AddFolderItem(MoveTemp(ItemData));
 			}
 			else
 			{
@@ -2572,16 +2582,16 @@ void SFavoritePathView::HandleItemDataUpdated(TArrayView<const FContentBrowserIt
 
 			if (DoesItemPassFilter(ItemData))
 			{
-				AddFolderItem(CopyTemp(ItemData));
+				AddFolderItem(MoveTemp(ItemData));
 			}
 
-			ContentBrowserUtils::RemoveFavoriteFolder(ItemDataUpdate.GetPreviousVirtualPath().ToString());
+			ContentBrowserUtils::RemoveFavoriteFolder(FContentBrowserItemPath(ItemDataUpdate.GetPreviousVirtualPath(), EContentBrowserPathType::Virtual));
 		}
 		break;
 
 		case EContentBrowserItemUpdateType::Removed:
 			RemoveFolderItem(ItemData);
-			ContentBrowserUtils::RemoveFavoriteFolder(ItemData.GetVirtualPath().ToString());
+			ContentBrowserUtils::RemoveFavoriteFolder(FContentBrowserItemPath(ItemData.GetVirtualPath(), EContentBrowserPathType::Virtual));
 			break;
 
 		default:
@@ -2596,22 +2606,23 @@ void SFavoritePathView::HandleItemDataUpdated(TArrayView<const FContentBrowserIt
 bool SFavoritePathView::PathIsFilteredFromViewBySearch(const FString& InPath) const
 {
 	return SPathView::PathIsFilteredFromViewBySearch(InPath)
-		&& ContentBrowserUtils::IsFavoriteFolder(InPath);
+		&& ContentBrowserUtils::IsFavoriteFolder(FContentBrowserItemPath(InPath, EContentBrowserPathType::Virtual));
 }
 
 void SFavoritePathView::FixupFavoritesFromExternalChange(TArrayView<const AssetViewUtils::FMovedContentFolder> MovedFolders)
 {
 	for (const AssetViewUtils::FMovedContentFolder& MovedFolder : MovedFolders)
 	{
-		const bool bWasFavorite = ContentBrowserUtils::IsFavoriteFolder(MovedFolder.Key);
+		FContentBrowserItemPath ItemPath(MovedFolder.Key, EContentBrowserPathType::Virtual);
+		const bool bWasFavorite = ContentBrowserUtils::IsFavoriteFolder(ItemPath);
 		if (bWasFavorite)
 		{
 			// Remove the original path
-			ContentBrowserUtils::RemoveFavoriteFolder(MovedFolder.Key);
+			ContentBrowserUtils::RemoveFavoriteFolder(ItemPath);
 
 			// Add the new path to favorites instead
 			const FString& NewPath = MovedFolder.Value;
-			ContentBrowserUtils::AddFavoriteFolder(NewPath);
+			ContentBrowserUtils::AddFavoriteFolder(FContentBrowserItemPath(NewPath, EContentBrowserPathType::Virtual));
 			TSharedPtr<FTreeItem> Item = FindTreeItem(*NewPath);
 			if (Item.IsValid())
 			{

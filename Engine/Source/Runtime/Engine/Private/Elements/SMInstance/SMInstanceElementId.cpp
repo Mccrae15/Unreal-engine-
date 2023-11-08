@@ -20,7 +20,8 @@ FSMInstanceElementIdMapEntry::FSMInstanceElementIdMapEntry(FSMInstanceElementIdM
 	checkf(Component, TEXT("FSMInstanceElementIdMapEntry must be constructed with a valid component!"));
 
 #if WITH_EDITORONLY_DATA
-	Transactor = NewObject<USMInstanceElementIdMapTransactor>(GetTransientPackage(), NAME_None, RF_Transient | RF_Transactional);
+	Transactor = NewObject<USMInstanceElementIdMapTransactor>(GetTransientPackage(), NAME_None, RF_Transient);
+	Transactor->SetFlags(RF_Transactional);
 	Transactor->SetOwnerEntry(this);
 #endif	// WITH_EDITORONLY_DATA
 }
@@ -364,10 +365,12 @@ void FSMInstanceElementIdMap::AddReferencedObjects(FReferenceCollector& Collecto
 #if WITH_EDITORONLY_DATA
 	FScopeLock Lock(&ISMComponentsCS);
 
-	for (const TTuple<UInstancedStaticMeshComponent*, TSharedPtr<FSMInstanceElementIdMapEntry>>& ISMEntryPair : ISMComponents)
+	Collector.AllowEliminatingReferences(false);
+	for (const auto& ISMEntryPair : ISMComponents)
 	{
 		Collector.AddReferencedObject(ISMEntryPair.Value->Transactor);
 	}
+	Collector.AllowEliminatingReferences(true);
 #endif	// WITH_EDITORONLY_DATA
 }
 
@@ -382,7 +385,8 @@ USMInstanceElementIdMapTransactor::USMInstanceElementIdMapTransactor()
 #if WITH_EDITORONLY_DATA
 void USMInstanceElementIdMapTransactor::Serialize(FArchive& Ar)
 {
-	checkf(!Ar.IsPersistent(), TEXT("USMInstanceElementIdMapTransactor can only be serialized by transient archives!"));
+	checkf(!Ar.IsPersistent() || this->HasAnyFlags(RF_ClassDefaultObject),
+		TEXT("USMInstanceElementIdMapTransactor can only be serialized by transient archives!"));
 
 	if (OwnerEntry)
 	{

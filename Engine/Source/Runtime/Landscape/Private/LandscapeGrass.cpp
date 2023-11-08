@@ -52,6 +52,7 @@
 #include "LandscapeRender.h"
 #include "MaterialCompiler.h"
 #include "Algo/Accumulate.h"
+#include "Algo/ForEach.h"
 #include "UObject/Package.h"
 #include "Engine/StaticMesh.h"
 #include "Components/InstancedStaticMeshComponent.h"
@@ -68,6 +69,7 @@
 #include "MaterialCachedData.h"
 #include "SceneRenderTargetParameters.h"
 #include "TextureResource.h"
+#include "SceneRendererInterface.h"
 
 #define LOCTEXT_NAMESPACE "Landscape"
 
@@ -219,7 +221,588 @@ static FAutoConsoleVariableRef CVarGGrassDensityQualityLevelCVar(
 	GGrassQualityLevel,
 	TEXT("The quality level for grass (low, medium, high, epic). \n"),
 	ECVF_Scalability);
-	
+
+static FAutoConsoleCommand ConsoleCommandDumpLandscapeGrassData(
+	TEXT("grass.DumpGrassData"),
+	TEXT("[optional: -csv -detailed -byproxy -bycomponent -bygrasstype -full] - Dumps a report of all grass data being currently used on landscape components. \
+		-csv formats the report in a CSV-friendly way. \
+		-fullnames displays the listed objects' full names, rather than the user-friendly version. \
+		-showempty will dump info even from components with no grass data \
+		-detailed shows a detailed report of all grass data, for all grass types, in all landscape components. \
+		-byproxy shows a report of grass data per landscape proxy. \
+		-bycomponent shows a report of grass data per landscape component. \
+		-bygrasstype shows a report of grass data per grass type. \
+		-full enables all sub-reports. \
+		If no report type option specified, assume full report is requested."),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		bool bCSV = false;
+		bool bUseFullNames = false;
+		bool bIncludeEmpty = false;
+		bool bDetailed = false;
+		bool bByProxy = false;
+		bool bByComponent = false;
+		bool bByGrassType = false;
+		bool bFull = false;
+		for (const FString& Arg : Args)
+		{
+			if (FParse::Param(*Arg, TEXT("csv")))
+			{
+				bCSV = true;
+			}
+			if (FParse::Param(*Arg, TEXT("fullnames")))
+			{
+				bUseFullNames = true;
+			}
+			if (FParse::Param(*Arg, TEXT("showempty")))
+			{
+				bIncludeEmpty = true;
+			}
+			if (FParse::Param(*Arg, TEXT("detailed")))
+			{
+				bDetailed = true;
+			}
+			if (FParse::Param(*Arg, TEXT("byproxy")))
+			{
+				bByProxy = true;
+			}
+			if (FParse::Param(*Arg, TEXT("bycomponent")))
+			{
+				bByComponent = true;
+			}
+			if (FParse::Param(*Arg, TEXT("bygrasstype")))
+			{
+				bByGrassType = true;
+			}
+			if (FParse::Param(*Arg, TEXT("full")))
+			{
+				bFull = true;
+			}
+		}
+		if (!bDetailed && !bByProxy && !bByComponent && !bByGrassType && !bFull)
+		{
+			// If nothing specified, assume full report :
+			bFull = true;
+		}
+
+		struct FSortDataEntry
+		{
+			FSortDataEntry(const UWorld* InWorld, const ALandscape* InActor, const ALandscapeProxy* InProxy, const ULandscapeComponent* InComponent, const ULandscapeGrassType* InGrassType, int32 InOffset)
+				: World(InWorld)
+				, Actor(InActor)
+				, Proxy(InProxy)
+				, Component(InComponent)
+				, GrassType(InGrassType)
+				, Offset(InOffset)
+			{}
+			const UWorld* World = nullptr;
+			const ALandscape* Actor = nullptr;
+			const ALandscapeProxy* Proxy = nullptr;
+			const ULandscapeComponent* Component = nullptr;
+			const ULandscapeGrassType* GrassType = nullptr; // If nullptr, this entry corresponds to height data 
+			int32 Offset = 0;
+			int32 Size = 0;
+		};
+		TArray<FSortDataEntry> SortData;
+		TSet<const ULandscapeGrassType*> UniqueGrassTypes;
+
+		// Gather all data first : 
+		for (TObjectIterator<const ULandscapeComponent> It(RF_ClassDefaultObject, true, EInternalObjectFlags::Garbage); It; ++It)
+		{
+			const ULandscapeComponent* Component = *It;
+			if (Component->GrassData->HasValidData() && (bIncludeEmpty || !Component->GrassData->HeightWeightData.IsEmpty()))
+			{
+				if (const UWorld* World = Component->GetWorld())
+				{
+					if (const ALandscapeProxy* Proxy = Component->GetLandscapeProxy())
+					{
+						if (const ALandscape* Actor = Proxy->GetLandscapeActor())
+						{
+							int32 MinWeightOffset = MAX_int32;
+							for (auto ItPair : Component->GrassData->WeightOffsets)
+							{
+								const ULandscapeGrassType* GrassType = ItPair.Key;
+								int32 GrassTypeOffset = ItPair.Value;
+								SortData.Add(FSortDataEntry(World, Actor, Proxy, Component, GrassType, GrassTypeOffset));
+								MinWeightOffset = FMath::Min(GrassTypeOffset, MinWeightOffset);
+
+								UniqueGrassTypes.Add(GrassType);
+							}
+							// Height data, if any, is at the beginning so if one the weight offsets is at index 0, then there's no height data on this component at all
+							int32 HeightOffset = (MinWeightOffset == 0) ? INDEX_NONE : 0;
+							// Always add an entry for height, even if no height data was found (makes reporting easier) : 
+							SortData.Add(FSortDataEntry(World, Actor, Proxy, Component, /* InGrassType = */nullptr, HeightOffset));
+						}
+					}
+				}
+			}
+		}
+
+		const int32 NumEntries = SortData.Num();
+		if (NumEntries == 0)
+		{
+			GLog->Logf(TEXT("No grass data."));
+			return;
+		}
+
+		// Then compute the size of each landscape grass type within a component : 
+		{
+			// Sort by Component then offset: 
+			SortData.Sort([](const FSortDataEntry& InLHS, const FSortDataEntry& InRHS)
+			{
+				if (InLHS.Component == InRHS.Component)
+				{
+					return InLHS.Offset < InRHS.Offset;
+				}
+				else
+				{
+					return InLHS.Component < InRHS.Component;
+				}
+			});
+
+			// Then iterate over all entries and use the next item's offset to compute the previous item's size, component by component:
+			const ULandscapeComponent* CurrentComponent = SortData[0].Component;
+			int32 CurrentOffsetInComponent = 0;
+			for (int32 NextIndex = 1; NextIndex < NumEntries; ++NextIndex)
+			{
+				const FSortDataEntry& NextEntry = SortData[NextIndex];
+				if (NextEntry.Component != CurrentComponent)
+				{
+					SortData[NextIndex - 1].Size = CurrentComponent->GrassData->HeightWeightData.Num() - CurrentOffsetInComponent;
+					CurrentComponent = NextEntry.Component;
+					CurrentOffsetInComponent = 0;
+				}
+				else
+				{
+					SortData[NextIndex - 1].Size = NextEntry.Offset - CurrentOffsetInComponent;
+					CurrentOffsetInComponent = NextEntry.Offset;
+				}
+			}
+
+			// Since the loop sets the size at index - 1, the last item's size is not yet computed : 
+			SortData[NumEntries - 1].Size = CurrentComponent->GrassData->HeightWeightData.Num() - CurrentOffsetInComponent;
+		}
+
+		// Sort by World, then Actor, then Proxy, then Component, then GrassType : 
+		SortData.Sort([](const FSortDataEntry& InLHS, const FSortDataEntry& InRHS)
+		{
+			if (InLHS.World == InRHS.World)
+			{
+				if (InLHS.Actor == InRHS.Actor)
+				{
+					if (InLHS.Proxy == InRHS.Proxy)
+					{
+						if (InLHS.Component == InRHS.Component)
+						{
+							return InLHS.GrassType < InRHS.GrassType;
+						}
+						else
+						{
+							return InLHS.Component < InRHS.Component;
+						}
+					}
+					else
+					{
+						return InLHS.Proxy < InRHS.Proxy;
+					}
+				}
+				else
+				{
+					return InLHS.Actor < InRHS.Actor;
+				}
+			}
+			else
+			{
+				return InLHS.World < InRHS.World;
+			}
+		});
+
+		auto GetFormattedObjectName = [bUseFullNames](const UObject* InObject) -> FString { return bUseFullNames ? InObject->GetFullName() : InObject->GetName(); };
+		auto GetFormattedActorName = [bUseFullNames](const AActor* InActor) -> FString { return bUseFullNames ? InActor->GetFullName() : InActor->GetActorNameOrLabel(); };
+		auto GetFormattedGrassTypeName = [bUseFullNames](const ULandscapeGrassType* InGrassType) -> FString { return (InGrassType != nullptr) ? (bUseFullNames ? InGrassType->GetFullName() : InGrassType->GetName()) : FString(TEXT("(HeightData)")); };
+		auto LogWorldActorLine = [GetFormattedObjectName, GetFormattedActorName](const UWorld* InWorld, const ALandscape* InActor) { GLog->Logf(TEXT("-- World: %s - Landscape Actor: %s --"), *GetFormattedObjectName(InWorld), *GetFormattedActorName(InActor)); };
+
+		// List of lines to display in a sub-report (one element per entry):
+		TArray<TPair<FString, FString>> CurrentSubReportContent; // Key = entry's name (for sorting), Value = line
+		auto AddLineToSubReport = [&CurrentSubReportContent](const FString& InEntryName, const FString& InLine) { CurrentSubReportContent.Emplace(InEntryName, InLine); };
+		auto FinalizeSubReport = [&CurrentSubReportContent]()
+		{
+			// Lexicographically sort entries, output them and reset the sub-report content :
+			CurrentSubReportContent.Sort([](const TPair<FString, FString>& InLHS, const TPair<FString, FString>& InRHS) { return (InLHS.Key.Compare(InRHS.Key) < 0); });
+			Algo::ForEach(CurrentSubReportContent, [](const TPair<FString, FString>& InEntry) { GLog->Log(*InEntry.Value); });
+			CurrentSubReportContent.Empty();
+		};
+
+		if (bFull || bDetailed)
+		{
+			// Start a new report :
+			GLog->Logf(TEXT("Detailed report:"));
+			ON_SCOPE_EXIT{ GLog->Logf(TEXT("--------")); };
+
+			if (bCSV)
+			{
+				GLog->Logf(TEXT("World,Landscape Actor,Landscape Proxy,Landscape Component,Landscape Grass Type,Size (KB)"));
+				for (const FSortDataEntry& Entry : SortData)
+				{
+					if ((Entry.GrassType != nullptr) || (bIncludeEmpty || (Entry.Size > 0)))
+					{
+						FString Line = FString::Printf(TEXT("%s,%s,%s,%s,%s,%.2f"),
+							*GetFormattedObjectName(Entry.World),
+							*GetFormattedActorName(Entry.Actor),
+							*GetFormattedActorName(Entry.Proxy),
+							*Entry.Component->GetName(),
+							*GetFormattedGrassTypeName(Entry.GrassType),
+							Entry.Size / 1024.0f);
+						// Use the line itself as the sort key since it's already formatted the way we want: 
+						AddLineToSubReport(Line, Line);
+					}
+				}
+				FinalizeSubReport();
+			}
+			else
+			{
+				const UWorld* CurrentWorld = SortData[0].World;
+				const ALandscape* CurrentActor = SortData[0].Actor;
+				const ALandscapeProxy* CurrentProxy = SortData[0].Proxy;
+				const ULandscapeComponent* CurrentComponent = SortData[0].Component;
+				bool bCurrentWorldHasGrassData = false;
+				bool bCurrentActorHasGrassData = false;
+				bool bCurrentProxyHasGrassData = false;
+				bool bCurrentComponentHasGrassData = false;
+				int32 NumWorldsWithGrassData = 0;
+				int32 NumActorsWithGrassData = 0;
+				int32 NumProxiesWithGrassData = 0;
+				int32 NumComponentsWithGrassData = 0;
+				int32 TotalHeightDataSize = 0;
+				int32 TotalWeightDataSize = 0;
+				for (int32 Index = 0; Index < NumEntries; ++Index)
+				{
+					const FSortDataEntry& Entry = SortData[Index];
+					if (CurrentWorld != Entry.World)
+					{
+						// This world was fully processed, take note of the info and start tracking the new world:
+						if (bCurrentWorldHasGrassData)
+						{
+							++NumWorldsWithGrassData;
+						}
+						CurrentWorld = Entry.World;
+						bCurrentWorldHasGrassData = false;
+					}
+
+					if (CurrentActor != Entry.Actor)
+					{
+						// This actor was fully processed, take note of the info and start tracking the new actor:
+						if (bCurrentActorHasGrassData)
+						{
+							++NumActorsWithGrassData;
+						}
+						CurrentActor = Entry.Actor;
+						bCurrentActorHasGrassData = false;
+					}
+
+					if (CurrentProxy != Entry.Proxy)
+					{
+						// This proxy was fully processed, take note of the info and start tracking the new proxy:
+						if (bCurrentProxyHasGrassData)
+						{
+							++NumProxiesWithGrassData;
+						}
+						CurrentProxy = Entry.Proxy;
+						bCurrentProxyHasGrassData = false;
+					}
+
+					// This component was fully processed, take note of the info and start tracking the new component:
+					if (CurrentComponent != Entry.Component)
+					{
+						if (bCurrentComponentHasGrassData)
+						{
+							++NumComponentsWithGrassData;
+						}
+						CurrentComponent = Entry.Component;
+						bCurrentComponentHasGrassData = false;
+					}
+
+					if (Entry.Size > 0)
+					{
+						bCurrentWorldHasGrassData = true;
+						bCurrentActorHasGrassData = true;
+						bCurrentProxyHasGrassData = true;
+						bCurrentComponentHasGrassData = true;
+						if (Entry.GrassType == nullptr)
+						{
+							TotalHeightDataSize += Entry.Size;
+						}
+						else
+						{
+							TotalWeightDataSize += Entry.Size;
+						}
+					}
+				}
+
+				// And dump one more time, for the last entry, which hasn't been taken into account yet :
+				if (bCurrentWorldHasGrassData)
+				{
+					++NumWorldsWithGrassData;
+				}
+				if (bCurrentActorHasGrassData)
+				{
+					++NumActorsWithGrassData;
+				}
+				if (bCurrentProxyHasGrassData)
+				{
+					++NumProxiesWithGrassData;
+				}
+				if (bCurrentComponentHasGrassData)
+				{
+					++NumComponentsWithGrassData;
+				}
+
+				GLog->Logf(TEXT("Num worlds : %i"), NumWorldsWithGrassData);
+				GLog->Logf(TEXT("Num landscape actors with grass data: %i"), NumActorsWithGrassData);
+				GLog->Logf(TEXT("Num landscape proxies with grass data: %i"), NumProxiesWithGrassData);
+				GLog->Logf(TEXT("Num landscape components with grass data: %i"), NumComponentsWithGrassData);
+				GLog->Logf(TEXT("Num grass types used: %i"), UniqueGrassTypes.Num());
+				GLog->Logf(TEXT("Total height data size (KB): %.2f"), TotalHeightDataSize / 1024.0f);
+				GLog->Logf(TEXT("Total weight data size (KB): %.2f"), TotalWeightDataSize / 1024.0f);
+				GLog->Logf(TEXT("Total grass data size (KB): %.2f"), (TotalHeightDataSize + TotalWeightDataSize) / 1024.0f);
+			}
+		}
+
+		// Assumes the list is sorted by world / by actor / by proxy already: 
+		if (bFull || bByProxy)
+		{
+			// Start a new report :
+			GLog->Logf(TEXT("By proxy report:"));
+			ON_SCOPE_EXIT{ GLog->Logf(TEXT("--------")); };
+
+			// Start a new sub-report per world / per actor:
+			LogWorldActorLine(SortData[0].World, SortData[0].Actor);
+			const ALandscape* CurrentActor = SortData[0].Actor;
+
+			auto LogCSVHeader = [bCSV]() { if (bCSV) { GLog->Logf(TEXT("Landscape Proxy,Num Grass Types,Total Height Data Size (KB), Total Weight Data Size (KB), Total Data Size (KB)")); } };
+			auto LogLine = [bCSV, AddLineToSubReport](const TCHAR* InProxyName, int32 InNumGrassTypes, int32 InTotalHeightDataSizeBytes, int32 InTotalWeightDataSizeBytes)
+			{
+				if (bCSV)
+				{
+					AddLineToSubReport(FString(InProxyName), FString::Printf(TEXT("%s,%i,%.2f,%.2f,%.2f"),
+						InProxyName,
+						InNumGrassTypes,
+						InTotalHeightDataSizeBytes / 1024.0f,
+						InTotalWeightDataSizeBytes / 1024.0f,
+						(InTotalHeightDataSizeBytes + InTotalWeightDataSizeBytes) / 1024.0f));
+				}
+				else
+				{
+					AddLineToSubReport(FString(InProxyName), FString::Printf(TEXT("%s: Num grass types = %i, total height data size = %.2f KB, total weight data size = %.2f KB, total data size = %.2f KB"),
+						InProxyName,
+						InNumGrassTypes,
+						InTotalHeightDataSizeBytes / 1024.0f,
+						InTotalWeightDataSizeBytes / 1024.0f,
+						(InTotalHeightDataSizeBytes + InTotalWeightDataSizeBytes) / 1024.0f));
+				}
+			};
+
+			LogCSVHeader();
+			const ALandscapeProxy* CurrentProxy = SortData[0].Proxy;
+			int32 HeightDataSizeForCurrentProxy = 0;
+			int32 WeightDataSizeForCurrentProxy = 0;
+			TSet<const ULandscapeGrassType*> UniqueGrassTypesForCurrentProxy;
+			for (int32 Index = 0; Index < NumEntries; ++Index)
+			{
+				const FSortDataEntry& Entry = SortData[Index];
+				if (Entry.Proxy != CurrentProxy)
+				{
+					// The info from CurrentProxy is now complete, we can dump it :
+					LogLine(*GetFormattedActorName(CurrentProxy), UniqueGrassTypesForCurrentProxy.Num(), HeightDataSizeForCurrentProxy, WeightDataSizeForCurrentProxy);
+
+					// Start gathering stats for the next proxy :
+					CurrentProxy = Entry.Proxy;
+					HeightDataSizeForCurrentProxy = 0;
+					WeightDataSizeForCurrentProxy = 0;
+					UniqueGrassTypesForCurrentProxy.Empty();
+				}
+
+				if (Entry.Actor != CurrentActor)
+				{
+					// Start a new sub-report per world / per actor:
+					FinalizeSubReport();
+					LogWorldActorLine(Entry.World, Entry.Actor);
+					LogCSVHeader();
+					CurrentActor = Entry.Actor;
+				}
+
+				// Accumulate data about this proxy :
+				if (Entry.Size > 0)
+				{
+					if (Entry.GrassType != nullptr)
+					{
+						WeightDataSizeForCurrentProxy += Entry.Size;
+						UniqueGrassTypesForCurrentProxy.Add(Entry.GrassType);
+					}
+					else
+					{
+						HeightDataSizeForCurrentProxy += Entry.Size;
+					}
+				}
+			}
+
+			// And dump one more time, for the last proxy, which hasn't been reported yet :
+			LogLine(*GetFormattedActorName(CurrentProxy), UniqueGrassTypesForCurrentProxy.Num(), HeightDataSizeForCurrentProxy, WeightDataSizeForCurrentProxy);
+			FinalizeSubReport();
+		}
+
+		// Assumes the list is sorted by world / by actor / ... / by component already: 
+		if (bFull || bByComponent)
+		{
+			// Start a new report :
+			GLog->Logf(TEXT("By component report:"));
+			ON_SCOPE_EXIT{ GLog->Logf(TEXT("--------")); };
+
+			// Start a new sub-report per world / per actor:
+			LogWorldActorLine(SortData[0].World, SortData[0].Actor);
+			const ALandscape* CurrentActor = SortData[0].Actor;
+
+			auto LogCSVHeader = [bCSV]() { if (bCSV) { GLog->Logf(TEXT("Landscape Proxy,Landscape Component,Num Grass Types,Total Height Data Size (KB), Total Weight Data Size (KB), Total Data Size (KB)")); } };
+			auto LogLine = [bCSV, AddLineToSubReport](const TCHAR* InProxyName, const TCHAR* InComponentName, int32 InNumGrassTypes, int32 InTotalHeightDataSizeBytes, int32 InTotalWeightDataSizeBytes)
+			{
+				if (bCSV)
+				{
+					AddLineToSubReport(FString(InComponentName), FString::Printf(TEXT("%s,%s,%i,%.2f,%.2f,%.2f"),
+						InProxyName,
+						InComponentName,
+						InNumGrassTypes,
+						InTotalHeightDataSizeBytes / 1024.0f,
+						InTotalWeightDataSizeBytes / 1024.0f,
+						(InTotalHeightDataSizeBytes + InTotalWeightDataSizeBytes) / 1024.0f));
+				}
+				else
+				{
+					AddLineToSubReport(FString(InComponentName), FString::Printf(TEXT("%s (%s): Num grass types = %i, total height data size = %.2f KB, total weight data size = %.2f KB, total data size = %.2f KB"),
+						InProxyName,
+						InComponentName,
+						InNumGrassTypes,
+						InTotalHeightDataSizeBytes / 1024.0f,
+						InTotalWeightDataSizeBytes / 1024.0f,
+						(InTotalHeightDataSizeBytes + InTotalWeightDataSizeBytes) / 1024.0f));
+				}
+			};
+
+			LogCSVHeader();
+			const ULandscapeComponent* CurrentComponent = SortData[0].Component;
+			int32 NumGrassTypesForCurrentComponent = 0;
+			int32 HeightDataSizeForCurrentComponent = 0;
+			int32 WeightDataSizeForCurrentComponent = 0;
+			for (int32 Index = 0; Index < NumEntries; ++Index)
+			{
+				const FSortDataEntry& Entry = SortData[Index];
+				if (Entry.Component != CurrentComponent)
+				{
+					// The info from CurrentComponent is now complete, we can dump it :
+					LogLine(*GetFormattedActorName(CurrentComponent->GetLandscapeProxy()), *CurrentComponent->GetName(), NumGrassTypesForCurrentComponent, HeightDataSizeForCurrentComponent, WeightDataSizeForCurrentComponent);
+
+					// Start gathering stats for the next component :
+					CurrentComponent = Entry.Component;
+					NumGrassTypesForCurrentComponent = 0;
+					HeightDataSizeForCurrentComponent = 0;
+					WeightDataSizeForCurrentComponent = 0;
+				}
+
+				if (Entry.Actor != CurrentActor)
+				{
+					// Start a new sub-report per world / per actor:
+					FinalizeSubReport();
+					LogWorldActorLine(Entry.World, Entry.Actor);
+					LogCSVHeader();
+					CurrentActor = Entry.Actor;
+				}
+
+				// Accumulate data about this component :
+				if (Entry.Size > 0)
+				{
+					if (Entry.GrassType != nullptr)
+					{
+						++NumGrassTypesForCurrentComponent;
+						WeightDataSizeForCurrentComponent += Entry.Size;
+					}
+					else
+					{
+						HeightDataSizeForCurrentComponent += Entry.Size;
+					}
+				}
+			}
+
+			// And dump one more time, for the last component, which hasn't been reported yet :
+			LogLine(*GetFormattedActorName(CurrentComponent->GetLandscapeProxy()), *CurrentComponent->GetName(), NumGrassTypesForCurrentComponent, HeightDataSizeForCurrentComponent, WeightDataSizeForCurrentComponent);
+			FinalizeSubReport();
+		}
+
+		if (bFull || bByGrassType)
+		{
+			// Sort by Grass Type, then Component: 
+			SortData.Sort([](const FSortDataEntry& InLHS, const FSortDataEntry& InRHS)
+			{
+				if (InLHS.GrassType == InRHS.GrassType)
+				{
+					return (InLHS.Component < InRHS.Component);
+				}
+				return (InLHS.GrassType < InRHS.GrassType);
+			});
+
+			// Start a new sub-report :
+			GLog->Logf(TEXT("By grass type report:"));
+			ON_SCOPE_EXIT{ GLog->Logf(TEXT("--------")); };
+
+			auto LogCSVHeader = [bCSV]() { if (bCSV) { GLog->Logf(TEXT("Grass Type,Num Components,Total Data Size (KB)")); } };
+			auto LogLine = [bCSV, AddLineToSubReport](const TCHAR* InGrassTypeName, int32 InNumComponents, int32 InTotalDataSizeBytes)
+			{
+				if (bCSV)
+				{
+					AddLineToSubReport(FString(InGrassTypeName), FString::Printf(TEXT("%s,%i,%.2f"),
+						InGrassTypeName,
+						InNumComponents,
+						InTotalDataSizeBytes / 1024.0f));
+				}
+				else
+				{
+					AddLineToSubReport(FString(InGrassTypeName), FString::Printf(TEXT("%s: Num components = %i, total data size = %.2f KB"),
+						InGrassTypeName,
+						InNumComponents,
+						InTotalDataSizeBytes / 1024.0f));
+				}
+			};
+
+			LogCSVHeader();
+			const ULandscapeGrassType* CurrentGrassType = SortData[0].GrassType;
+			int32 DataSizeForCurrentGrassType = 0;
+			int32 NumComponentsForCurrentGrassType = 0;
+			for (int32 Index = 0; Index < NumEntries; ++Index)
+			{
+				const FSortDataEntry& Entry = SortData[Index];
+				if (Entry.GrassType != CurrentGrassType)
+				{
+					// The info from CurrentGrassType is now complete, we can dump it :
+					LogLine(*GetFormattedGrassTypeName(CurrentGrassType), NumComponentsForCurrentGrassType, DataSizeForCurrentGrassType);
+
+					// Start gathering stats for the next grass type :
+					CurrentGrassType = Entry.GrassType;
+					DataSizeForCurrentGrassType = 0;
+					NumComponentsForCurrentGrassType = 0;
+				}
+
+				// Accumulate data about this grass type :
+				if (Entry.Size > 0)
+				{
+					DataSizeForCurrentGrassType += Entry.Size;
+					++NumComponentsForCurrentGrassType;
+				}
+			}
+
+			// And dump one more time, for the last grass type, which hasn't been reported yet :
+			LogLine(*GetFormattedGrassTypeName(CurrentGrassType), NumComponentsForCurrentGrassType, DataSizeForCurrentGrassType);
+			FinalizeSubReport();
+		}
+	}));
+
 struct FPerQualityLevelInt;
 struct FPerQualityLevelFloat;
 
@@ -311,7 +894,7 @@ protected:
 	: FMeshMaterialShader(Initializer)
 	{
 		RenderOffsetParameter.Bind(Initializer.ParameterMap, TEXT("RenderOffset"));
-		PassUniformBuffer.Bind(Initializer.ParameterMap, FSceneTextureUniformParameters::StaticStructMetadata.GetShaderVariableName());
+		PassUniformBuffer.Bind(Initializer.ParameterMap, FSceneTextureUniformParameters::FTypeInfo::GetStructMetadata()->GetShaderVariableName());
 	}
 
 public:
@@ -354,7 +937,7 @@ public:
 	: FMeshMaterialShader(Initializer)
 	{
 		OutputPassParameter.Bind(Initializer.ParameterMap, TEXT("OutputPass"));
-		PassUniformBuffer.Bind(Initializer.ParameterMap, FSceneTextureUniformParameters::StaticStructMetadata.GetShaderVariableName());
+		PassUniformBuffer.Bind(Initializer.ParameterMap, FSceneTextureUniformParameters::FTypeInfo::GetStructMetadata()->GetShaderVariableName());
 	}
 
 	FLandscapeGrassWeightPS()
@@ -571,7 +1154,7 @@ public:
 
 	struct FComponentInfo
 	{
-		ULandscapeComponent* Component;
+		TObjectPtr<ULandscapeComponent> Component;
 		FVector2D ViewOffset;
 		int32 PixelOffsetX;
 		FLandscapeComponentSceneProxy* SceneProxy;
@@ -597,6 +1180,7 @@ public:
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FLandscapeGrassPassParameters, )
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, Scene)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FInstanceCullingDrawParams, InstanceCullingDrawParams)
 		RENDER_TARGET_BINDING_SLOTS()
 	END_SHADER_PARAMETER_STRUCT()
@@ -628,6 +1212,7 @@ public:
 
 		auto* PassParameters = GraphBuilder.AllocParameters<FLandscapeGrassPassParameters>();
 		PassParameters->View = View->ViewUniformBuffer;
+		PassParameters->Scene = GetSceneUniformBufferRef(GraphBuilder, *View);
 		PassParameters->RenderTargets[0] = FRenderTargetBinding(OutputTexture, ERenderTargetLoadAction::EClear);
 
 		AddSimpleMeshPass(GraphBuilder, PassParameters, SceneInterface->GetRenderScene(), *View, nullptr, RDG_EVENT_NAME("LandscapeGrass"), View->UnscaledViewRect,
@@ -659,12 +1244,12 @@ public:
 
 class FLandscapeGrassWeightExporter : public FLandscapeGrassWeightExporter_RenderThread
 {
-	ALandscapeProxy* LandscapeProxy;
+	TObjectPtr<ALandscapeProxy> LandscapeProxy;
 	int32 ComponentSizeVerts;
 	int32 SubsectionSizeQuads;
 	int32 NumSubsections;
-	TArray<ULandscapeGrassType*> GrassTypes;
-	UTextureRenderTarget2D* RenderTargetTexture;
+	TArray<TObjectPtr<ULandscapeGrassType>> GrassTypes;
+	TObjectPtr<UTextureRenderTarget2D> RenderTargetTexture;
 
 public:
 	FLandscapeGrassWeightExporter(ALandscapeProxy* InLandscapeProxy, const TArray<ULandscapeComponent*>& InLandscapeComponents, TArray<ULandscapeGrassType*> InGrassTypes, bool InbNeedsHeightmap = true, TArray<int32> InHeightMips = {})
@@ -1010,13 +1595,13 @@ bool ULandscapeComponent::CanRenderGrassMap() const
 {
 	// Check we can render
 	UWorld* ComponentWorld = GetWorld();
-	if (!GIsEditor || GUsingNullRHI || !ComponentWorld || ComponentWorld->IsGameWorld() || ComponentWorld->FeatureLevel < ERHIFeatureLevel::SM5 || !SceneProxy)
+	if (!GIsEditor || GUsingNullRHI || !ComponentWorld || ComponentWorld->IsGameWorld() || ComponentWorld->GetFeatureLevel() < ERHIFeatureLevel::SM5 || !SceneProxy)
 	{
 		return false;
 	}
 
 	UMaterialInstance* MaterialInstance = GetMaterialInstanceCount(false) > 0 ? GetMaterialInstance(0) : nullptr;
-	FMaterialResource* MaterialResource = MaterialInstance != nullptr ? MaterialInstance->GetMaterialResource(ComponentWorld->FeatureLevel) : nullptr;
+	FMaterialResource* MaterialResource = MaterialInstance != nullptr ? MaterialInstance->GetMaterialResource(ComponentWorld->GetFeatureLevel()) : nullptr;
 
 	// Check we can render the material
 	if (MaterialResource == nullptr)
@@ -1113,7 +1698,7 @@ TArray<uint16> ULandscapeComponent::RenderWPOHeightmap(int32 LOD)
 
 	if (!CanRenderGrassMap())
 	{
-		GetMaterialInstance(0)->GetMaterialResource(GetWorld()->FeatureLevel)->FinishCompilation();
+		GetMaterialInstance(0)->GetMaterialResource(GetWorld()->GetFeatureLevel())->FinishCompilation();
 	}
 
 	if (ensure(SceneProxy))
@@ -1249,14 +1834,15 @@ void UMaterialExpressionLandscapeGrassOutput::GetCaption(TArray<FString>& OutCap
 	OutCaptions.Add(TEXT("Landscape Grass"));
 }
 
-const TArray<FExpressionInput*> UMaterialExpressionLandscapeGrassOutput::GetInputs()
+TArrayView<FExpressionInput*> UMaterialExpressionLandscapeGrassOutput::GetInputsView()
 {
-	TArray<FExpressionInput*> OutInputs;
+	CachedInputs.Empty();
+	CachedInputs.Reserve(GrassTypes.Num());
 	for (auto& GrassType : GrassTypes)
 	{
-		OutInputs.Add(&GrassType.Input);
+		CachedInputs.Add(&GrassType.Input);
 	}
-	return OutInputs;
+	return CachedInputs;
 }
 
 FExpressionInput* UMaterialExpressionLandscapeGrassOutput::GetInput(int32 InputIndex)
@@ -1363,6 +1949,7 @@ FGrassVariety::FGrassVariety()
 	, bCastContactShadow(true)
 	, bKeepInstanceBufferCPUCopy(false)
 	, InstanceWorldPositionOffsetDisableDistance(0)
+	, ShadowCacheInvalidationBehavior(EShadowCacheInvalidationBehavior::Auto)
 {
 	GrassDensityQuality.Init(GGrassQualityLevelCVarName, GGrassQualityLevelScalabilitySection);
 	StartCullDistanceQuality.Init(GGrassQualityLevelCVarName, GGrassQualityLevelScalabilitySection);
@@ -1418,8 +2005,8 @@ ULandscapeGrassType::ULandscapeGrassType(const FObjectInitializer& ObjectInitial
 : Super(ObjectInitializer)
 {
 	GrassDensity_DEPRECATED = 400;
-	StartCullDistance_DEPRECATED = 10000.0f;
-	EndCullDistance_DEPRECATED = 10000.0f;
+	StartCullDistance_DEPRECATED = 10000;
+	EndCullDistance_DEPRECATED = 10000;
 	PlacementJitter_DEPRECATED = 1.0f;
 	RandomRotation_DEPRECATED = true;
 	AlignToSurface_DEPRECATED = true;
@@ -1458,7 +2045,7 @@ void ULandscapeGrassType::PostEditChangeProperty(FPropertyChangedEvent& Property
 			ALandscapeProxy* Proxy = *It;
 			if (Proxy->GetWorld() && !Proxy->GetWorld()->IsPlayInEditor())
 			{
-				const UMaterialInterface* MaterialInterface = Proxy->LandscapeMaterial;
+				const UMaterialInterface* MaterialInterface = Proxy->GetLandscapeMaterial();
 				if (MaterialInterface)
 				{
 					TArray<const UMaterialExpressionLandscapeGrassOutput*> GrassExpressions;
@@ -1645,8 +2232,8 @@ FArchive& operator<<(FArchive& Ar, FLandscapeComponentGrassData& Data)
 				CollisionHeightData.BulkSerialize(Ar);
 				if (CollisionHeightData.Num())
 				{
-					const int32 ComponentSizeQuads = FMath::Sqrt(static_cast<float>(Data.GetHeightData().Num())) - 1;
-					const int32 CollisionSizeQuads = FMath::Sqrt(static_cast<float>(CollisionHeightData.Num())) - 1;
+					const int32 ComponentSizeQuads = static_cast<int32>(FMath::Sqrt(static_cast<float>(Data.GetHeightData().Num())) - 1);
+					const int32 CollisionSizeQuads = static_cast<int32>(FMath::Sqrt(static_cast<float>(CollisionHeightData.Num())) - 1);
 					const int32 CollisionMip = FMath::FloorLog2(ComponentSizeQuads / CollisionSizeQuads);
 					Data.HeightMipData.Add(CollisionMip, MoveTemp(CollisionHeightData));
 				}
@@ -1655,8 +2242,8 @@ FArchive& operator<<(FArchive& Ar, FLandscapeComponentGrassData& Data)
 				SimpleCollisionHeightData.BulkSerialize(Ar);
 				if (SimpleCollisionHeightData.Num())
 				{
-					const int32 ComponentSizeQuads = FMath::Sqrt(static_cast<float>(Data.GetHeightData().Num())) - 1;
-					const int32 SimpleCollisionSizeQuads = FMath::Sqrt(static_cast<float>(SimpleCollisionHeightData.Num())) - 1;
+					const int32 ComponentSizeQuads = static_cast<int32>(FMath::Sqrt(static_cast<float>(Data.GetHeightData().Num())) - 1);
+					const int32 SimpleCollisionSizeQuads = static_cast<int32>(FMath::Sqrt(static_cast<float>(SimpleCollisionHeightData.Num())) - 1);
 					const int32 SimpleCollisionMip = FMath::FloorLog2(ComponentSizeQuads / SimpleCollisionSizeQuads);
 					Data.HeightMipData.Add(SimpleCollisionMip, MoveTemp(SimpleCollisionHeightData));
 				}
@@ -1706,7 +2293,7 @@ void FLandscapeComponentGrassData::ConditionalDiscardDataOnLoad()
 		}
 		else if (bRemoved) 
 		{
-			TMap<ULandscapeGrassType*, int32> PreviousOffsets(MoveTemp(WeightOffsets));
+			TMap<ULandscapeGrassType*, int32> PreviousOffsets(ObjectPtrDecay(MoveTemp(WeightOffsets)));
 			TArray<uint8> PreviousHeightWeightData(MoveTemp(HeightWeightData));
 			HeightWeightData.SetNumUninitialized(NumElements * sizeof(uint16) + NumElements * PreviousOffsets.Num() * sizeof(uint8), /*bAllowShrinking*/ true);
 
@@ -1747,7 +2334,7 @@ void ALandscapeProxy::TickGrass(const TArray<FVector>& Cameras, int32& InOutNumC
 	if (ALandscape* Landscape = GetLandscapeActor())
 	{
 		// Don't allow grass to tick, except in ES3.1 preview mode, since landscape update is not possible there : IsUpToDate might return false and we'll never see grass in the preview mode as a result :
-		bool bAllowGrassTick = Landscape->IsUpToDate() || (GetWorld()->FeatureLevel < ERHIFeatureLevel::SM5);
+		bool bAllowGrassTick = Landscape->IsUpToDate() || (GetWorld()->GetFeatureLevel() < ERHIFeatureLevel::SM5);
 		if (!bAllowGrassTick || !Landscape->bGrassUpdateEnabled)
 		{
 			return;
@@ -1799,7 +2386,7 @@ struct FGrassBuilderBase
 		ComponentOrigin.Y = DrawScale.Y * (SectionBase.Y - LandscapeSectionOffset.Y);
 		ComponentOrigin.Z = 0.0f;
 
-		SqrtMaxInstances = FMath::CeilToInt(FMath::Sqrt(FMath::Abs(Extent.X * Extent.Y * GrassDensity / 1000.0f / 1000.0f)));
+		SqrtMaxInstances = FMath::CeilToInt32(FMath::Sqrt(FMath::Abs(Extent.X * Extent.Y * GrassDensity / 1000.0f / 1000.0f)));
 
 		bHaveValidData = SqrtMaxInstances != 0;
 
@@ -2297,8 +2884,8 @@ struct FAsyncGrassBuilder : public FGrassBuilderBase
 	FORCEINLINE_DEBUGGABLE void SampleLandscapeAtLocationLocal(const FVector& InLocation, FVector& OutLocation, float& OutLayerWeight, FVector* OutNormal = nullptr)
 	{
 		// Find location
-		const float TestX = InLocation.X / DrawScale.X - (float)SectionBase.X;
-		const float TestY = InLocation.Y / DrawScale.Y - (float)SectionBase.Y;
+		const float TestX = static_cast<float>(InLocation.X / DrawScale.X - SectionBase.X);
+		const float TestY = static_cast<float>(InLocation.Y / DrawScale.Y - SectionBase.Y);
 
 		// Find data
 		const int32 X1 = FMath::FloorToInt(TestX);
@@ -2461,7 +3048,7 @@ void ALandscapeProxy::GetGrassTypes(const UWorld* World, UMaterialInterface* Lan
 			{
 				for (auto& GrassVariety : GrassType->GrassVarieties)
 				{
-					int32 EndCullDistance = GrassVariety.GetEndCullDistance();
+					const float EndCullDistance = static_cast<float>(GrassVariety.GetEndCullDistance());
 					if (EndCullDistance > OutMaxDiscardDistance)
 					{
 						OutMaxDiscardDistance = EndCullDistance;
@@ -2474,7 +3061,7 @@ void ALandscapeProxy::GetGrassTypes(const UWorld* World, UMaterialInterface* Lan
 
 static uint32 GGrassExclusionChangeTag = 1;
 static uint32 GFrameNumberLastStaleCheck = 0;
-static TMap<FWeakObjectPtr, FBox> GGrassExclusionBoxes;
+static TMap<FWeakObjectPtr, FBox, FDefaultSetAllocator, TWeakObjectPtrMapKeyFuncs<FWeakObjectPtr, FBox>> GGrassExclusionBoxes;
 
 void ALandscapeProxy::AddExclusionBox(FWeakObjectPtr Owner, const FBox& BoxToRemove)
 {
@@ -2510,7 +3097,7 @@ void FLandscapeGrassMapsBuilder::Build()
 	if (World)
 	{
 		int32 Count = GetOutdatedGrassMapCount();
-		FScopedSlowTask SlowTask(Count, (LOCTEXT("GrassMaps_BuildGrassMaps", "Building Grass maps")));
+		FScopedSlowTask SlowTask(static_cast<float>(Count), (LOCTEXT("GrassMaps_BuildGrassMaps", "Building Grass maps")));
 		SlowTask.MakeDialog();
 
 		for (TActorIterator<ALandscapeProxy> ProxyIt(World); ProxyIt; ++ProxyIt)
@@ -2574,9 +3161,7 @@ int32 ALandscapeProxy::GetOutdatedGrassMapCount() const
 	return OutdatedGrassMaps;
 }
 
-int32 ALandscapeProxy::TotalComponentsNeedingGrassMapRender = 0;
 int32 ALandscapeProxy::TotalTexturesToStreamForVisibleGrassMapRender = 0;
-int32 ALandscapeProxy::TotalComponentsNeedingTextureBaking = 0;
 
 void ALandscapeProxy::UpdateGrassDataStatus(TSet<UTexture2D*>* OutCurrentForcedStreamedTextures, TSet<UTexture2D*>* OutDesiredForcedStreamedTextures, TSet<ULandscapeComponent*>* OutComponentsNeedingGrassMapRender, TSet<ULandscapeComponent*>* OutOutdatedComponents, bool bInEnableForceResidentFlag, int32* OutOutdatedGrassMaps) const
 {
@@ -2615,7 +3200,7 @@ void ALandscapeProxy::UpdateGrassDataStatus(TSet<UTexture2D*>* OutCurrentForcedS
 
 	TArray<ULandscapeGrassType*> GrassTypes;
 	float OutMaxDiscardDistance = 0.0f;
-	GetGrassTypes(World, LandscapeMaterial, GrassTypes, OutMaxDiscardDistance);
+	GetGrassTypes(World, GetLandscapeMaterial(), GrassTypes, OutMaxDiscardDistance);
 	const bool bHasGrassTypes = GrassTypes.Num() > 0;
 
 	const bool bIsOutermostPackageDirty = GetOutermost()->IsDirty();
@@ -2743,7 +3328,7 @@ void ALandscapeProxy::UpdateGrassData(bool bInShouldMarkDirty, FScopedSlowTask* 
 	{
 		if (InSlowTask && Increment && ((InSlowTask->CompletedWork + Increment) <= InSlowTask->TotalAmountOfWork))
 		{
-			InSlowTask->EnterProgressFrame(Increment, FText::Format(LOCTEXT("GrassMaps_BuildGrassMapsProgress", "Building Grass Map {0} of {1})"), FText::AsNumber(InSlowTask->CompletedWork), FText::AsNumber(InSlowTask->TotalAmountOfWork)));
+			InSlowTask->EnterProgressFrame(static_cast<float>(Increment), FText::Format(LOCTEXT("GrassMaps_BuildGrassMapsProgress", "Building Grass Map {0} of  {1})"), FText::AsNumber(InSlowTask->CompletedWork), FText::AsNumber(InSlowTask->TotalAmountOfWork)));
 		}
 	};
 
@@ -2832,18 +3417,19 @@ void ALandscapeProxy::UpdateGrass(const TArray<FVector>& Cameras, int32& InOutNu
 
 		if (World)
 		{
+			UMaterialInterface* LandscapeMaterialInterface = GetLandscapeMaterial();
 #if WITH_EDITOR
 			TArray<ULandscapeGrassType*> LandscapeGrassTypes;
 			float GrassMaxDiscardDistance = 0.0f;
-			GetGrassTypes(World, LandscapeMaterial, LandscapeGrassTypes, GrassMaxDiscardDistance);
+			GetGrassTypes(World, LandscapeMaterialInterface, LandscapeGrassTypes, GrassMaxDiscardDistance);
 #else
 			// In non editor builds, cache grass types for performance.
-			if (LandscapeMaterial != LandscapeMaterialCached)
+			if (LandscapeMaterialInterface != LandscapeMaterialCached)
 			{
-				LandscapeMaterialCached = LandscapeMaterial;
+				LandscapeMaterialCached = LandscapeMaterialInterface;
 				LandscapeGrassTypes.Reset();
 				GrassMaxDiscardDistance = 0.0f;
-				GetGrassTypes(World, LandscapeMaterial, LandscapeGrassTypes, GrassMaxDiscardDistance);
+				GetGrassTypes(World, LandscapeMaterialInterface, LandscapeGrassTypes, GrassMaxDiscardDistance);
 			}
 #endif
 			// Cull grass max distance based on Cull Distance scale factor and on max GuardBand factor.
@@ -2896,7 +3482,7 @@ void ALandscapeProxy::UpdateGrass(const TArray<FVector>& Cameras, int32& InOutNu
 				float MinSqrDistanceToComponent = Cameras.Num() ? MAX_flt : 0.0f;
 				for (const FVector& CameraPos : Cameras)
 				{
-					MinSqrDistanceToComponent = FMath::Min<float>(MinSqrDistanceToComponent, WorldBounds.ComputeSquaredDistanceFromBoxToPoint(CameraPos));
+					MinSqrDistanceToComponent = FMath::Min<float>(MinSqrDistanceToComponent, static_cast<float>(WorldBounds.ComputeSquaredDistanceFromBoxToPoint(CameraPos)));
 				}
 
 				if (MinSqrDistanceToComponent > GrassMaxSquareDiscardDistance)
@@ -3014,7 +3600,7 @@ void ALandscapeProxy::UpdateGrass(const TArray<FVector>& Cameras, int32& InOutNu
 												MinDistanceToSubComp = Cameras.Num() ? MAX_flt : 0.0f;
 												for (auto& Pos : Cameras)
 												{
-													MinDistanceToSubComp = FMath::Min<float>(MinDistanceToSubComp, ComputeSquaredDistanceFromBoxToPoint(WorldSubBox.Min, WorldSubBox.Max, Pos));
+													MinDistanceToSubComp = FMath::Min<float>(MinDistanceToSubComp, static_cast<float>(ComputeSquaredDistanceFromBoxToPoint(WorldSubBox.Min, WorldSubBox.Max, Pos)));
 												}
 												MinDistanceToSubComp = FMath::Sqrt(MinDistanceToSubComp);
 											}
@@ -3169,7 +3755,8 @@ void ALandscapeProxy::UpdateGrass(const TArray<FVector>& Cameras, int32& InOutNu
 										GrassInstancedStaticMeshComponent->OverrideMaterials = GrassVariety.OverrideMaterials;
 										GrassInstancedStaticMeshComponent->bEvaluateWorldPositionOffset = true;
 										GrassInstancedStaticMeshComponent->WorldPositionOffsetDisableDistance = GrassVariety.InstanceWorldPositionOffsetDisableDistance;
-
+										GrassInstancedStaticMeshComponent->ShadowCacheInvalidationBehavior = GrassVariety.ShadowCacheInvalidationBehavior;
+										
 										GrassInstancedStaticMeshComponent->PrecachePSOs();
 
 										const FMeshMapBuildData* MeshMapBuildData = Component->GetMeshMapBuildData();
@@ -3202,8 +3789,8 @@ void ALandscapeProxy::UpdateGrass(const TArray<FVector>& Cameras, int32& InOutNu
 										}
 										else
 										{
-											GrassInstancedStaticMeshComponent->InstanceStartCullDistance = GrassVariety.GetStartCullDistance() * CullDistanceScale;
-											GrassInstancedStaticMeshComponent->InstanceEndCullDistance = GrassVariety.GetEndCullDistance() * CullDistanceScale;
+											GrassInstancedStaticMeshComponent->InstanceStartCullDistance = static_cast<int32>(GrassVariety.GetStartCullDistance() * CullDistanceScale);
+											GrassInstancedStaticMeshComponent->InstanceEndCullDistance = static_cast<int32>(GrassVariety.GetEndCullDistance() * CullDistanceScale);
 										}
 
 										{

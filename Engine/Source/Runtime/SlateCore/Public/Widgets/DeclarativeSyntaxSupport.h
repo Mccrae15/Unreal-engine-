@@ -6,6 +6,7 @@
 #include "Misc/Attribute.h"
 #include "Layout/Visibility.h"
 #include "Layout/Clipping.h"
+#include "Widgets/WidgetPixelSnapping.h"
 #include "Layout/FlowDirection.h"
 #include "Rendering/SlateRenderTransform.h"
 #include "GenericPlatform/ICursor.h"
@@ -58,11 +59,12 @@ template<typename WidgetType> struct TSlateBaseNamedArgs;
  *    SLATE_END_ARGS()
  */
 
-#define SLATE_BEGIN_ARGS( WidgetType ) \
+#define SLATE_BEGIN_ARGS( InWidgetType ) \
 	public: \
-	struct FArguments : public TSlateBaseNamedArgs<WidgetType> \
+	struct FArguments : public TSlateBaseNamedArgs<InWidgetType> \
 	{ \
 		typedef FArguments WidgetArgsType; \
+		typedef InWidgetType WidgetType; \
 		FORCENOINLINE FArguments()
 
 /**
@@ -190,6 +192,14 @@ template<typename WidgetType> struct TSlateBaseNamedArgs;
  */
 #define SLATE_ATTRIBUTE( AttrType, AttrName ) \
 		SLATE_PRIVATE_ATTRIBUTE_VARIABLE( AttrType, AttrName ); \
+		SLATE_PRIVATE_ATTRIBUTE_FUNCTION( AttrType, AttrName )
+
+/**
+ * Use when an argument used to be declared SLATE_ATTRIBUTE and it should no longer be used
+ */
+#define SLATE_ATTRIBUTE_DEPRECATED( AttrType, AttrName, DeprecationVersion, DeprecationMessage) \
+		SLATE_PRIVATE_ATTRIBUTE_VARIABLE( AttrType, AttrName ); \
+		UE_DEPRECATED(DeprecationVersion, DeprecationMessage) \
 		SLATE_PRIVATE_ATTRIBUTE_FUNCTION( AttrType, AttrName )
 
 /**
@@ -524,7 +534,7 @@ struct NamedSlotProperty
 		WidgetArgsType& EventName##_UObject( UserClass* InUserObject, typename DelegateName::template TMethodPtr< UserClass, VarTypes... > InFunc, VarTypes... Vars )	\
 		{ \
 			_##EventName = DelegateName::CreateUObject( InUserObject, InFunc, Vars... ); \
-			return *this; \
+			return static_cast<WidgetArgsType*>(this)->Me(); \
 		} \
 		template< class UserClass, typename... VarTypes >	\
 		WidgetArgsType& EventName##_UObject( UserClass* InUserObject, typename DelegateName::template TConstMethodPtr< UserClass, VarTypes... > InFunc, VarTypes... Vars )	\
@@ -655,6 +665,7 @@ struct FSlateBaseNamedArgs
 	/** If true, bound Slate Attributes will be updated once per frame. */
 	SLATE_PRIVATE_ARGUMENT_VARIABLE(bool, EnabledAttributesUpdate) = true;
 	SLATE_PRIVATE_ARGUMENT_VARIABLE(EWidgetClipping, Clipping) = EWidgetClipping::Inherit;
+	SLATE_PRIVATE_ARGUMENT_VARIABLE(EWidgetPixelSnapping, PixelSnappingMethod) = EWidgetPixelSnapping::Inherit;
 	SLATE_PRIVATE_ARGUMENT_VARIABLE(EFlowDirectionPreference, FlowDirectionPreference) = EFlowDirectionPreference::Inherit;
 	SLATE_PRIVATE_ARGUMENT_VARIABLE(float, RenderOpacity) = 1.f;
 	SLATE_PRIVATE_ATTRIBUTE_VARIABLE(TOptional<FSlateRenderTransform>, RenderTransform);
@@ -667,9 +678,10 @@ struct FSlateBaseNamedArgs
 
 
 /** Base class for named arguments. Provides settings necessary for all widgets. */
-template<typename WidgetType>
+template<typename InWidgetType>
 struct TSlateBaseNamedArgs : public FSlateBaseNamedArgs
 {
+	typedef InWidgetType WidgetType;
 	typedef typename WidgetType::FArguments WidgetArgsType;
 
 	SLATE_PRIVATE_ATTRIBUTE_FUNCTION(FText, ToolTipText)
@@ -679,6 +691,7 @@ struct TSlateBaseNamedArgs : public FSlateBaseNamedArgs
 	SLATE_PRIVATE_ATTRIBUTE_FUNCTION(EVisibility, Visibility)
 	SLATE_PRIVATE_ARGUMENT_FUNCTION(bool, ForceVolatile)
 	SLATE_PRIVATE_ARGUMENT_FUNCTION(EWidgetClipping, Clipping)
+	SLATE_PRIVATE_ARGUMENT_FUNCTION(EWidgetPixelSnapping, PixelSnappingMethod)
 	SLATE_PRIVATE_ARGUMENT_FUNCTION(EFlowDirectionPreference, FlowDirectionPreference)
 	SLATE_PRIVATE_ARGUMENT_FUNCTION(float, RenderOpacity)
 	SLATE_PRIVATE_ATTRIBUTE_FUNCTION(TOptional<FSlateRenderTransform>, RenderTransform)
@@ -726,7 +739,7 @@ namespace RequiredArgs
 		}
 
 		template<class WidgetType>
-		void CallConstruct(const TSharedRef<WidgetType>& OnWidget, const typename WidgetType::FArguments& WithNamedArgs) const
+		void CallConstruct(WidgetType* OnWidget, const typename WidgetType::FArguments& WithNamedArgs) const
 		{
 			// YOUR WIDGET MUST IMPLEMENT void Construct(const FArguments& InArgs)
 			OnWidget->Construct(WithNamedArgs);
@@ -742,7 +755,7 @@ namespace RequiredArgs
 		}
 
 		template<class WidgetType>
-		void CallConstruct(const TSharedRef<WidgetType>& OnWidget, const typename WidgetType::FArguments& WithNamedArgs) const
+		void CallConstruct(WidgetType* OnWidget, const typename WidgetType::FArguments& WithNamedArgs) const
 		{
 			// YOUR WIDGET MUST IMPLEMENT void Construct(const FArguments& InArgs)
 			OnWidget->Construct(WithNamedArgs, Forward<Arg0Type>(Arg0));
@@ -761,7 +774,7 @@ namespace RequiredArgs
 		}
 
 		template<class WidgetType>
-		void CallConstruct(const TSharedRef<WidgetType>& OnWidget, const typename WidgetType::FArguments& WithNamedArgs) const
+		void CallConstruct(WidgetType* OnWidget, const typename WidgetType::FArguments& WithNamedArgs) const
 		{
 			// YOUR WIDGET MUST IMPLEMENT Construct(const FArguments& InArgs)
 			OnWidget->Construct(WithNamedArgs, Forward<Arg0Type>(Arg0), Forward<Arg1Type>(Arg1));
@@ -782,7 +795,7 @@ namespace RequiredArgs
 		}
 
 		template<class WidgetType>
-		void CallConstruct(const TSharedRef<WidgetType>& OnWidget, const typename WidgetType::FArguments& WithNamedArgs) const
+		void CallConstruct(WidgetType* OnWidget, const typename WidgetType::FArguments& WithNamedArgs) const
 		{
 			// YOUR WIDGET MUST IMPLEMENT Construct(const FArguments& InArgs)
 			OnWidget->Construct(WithNamedArgs, Forward<Arg0Type>(Arg0), Forward<Arg1Type>(Arg1), Forward<Arg2Type>(Arg2));
@@ -805,7 +818,7 @@ namespace RequiredArgs
 		}
 
 		template<class WidgetType>
-		void CallConstruct(const TSharedRef<WidgetType>& OnWidget, const typename WidgetType::FArguments& WithNamedArgs) const
+		void CallConstruct(WidgetType* OnWidget, const typename WidgetType::FArguments& WithNamedArgs) const
 		{
 			// YOUR WIDGET MUST IMPLEMENT Construct(const FArguments& InArgs)
 			OnWidget->Construct(WithNamedArgs, Forward<Arg0Type>(Arg0), Forward<Arg1Type>(Arg1), Forward<Arg2Type>(Arg2), Forward<Arg3Type>(Arg3));
@@ -830,7 +843,7 @@ namespace RequiredArgs
 		}
 
 		template<class WidgetType>
-		void CallConstruct(const TSharedRef<WidgetType>& OnWidget, const typename WidgetType::FArguments& WithNamedArgs) const
+		void CallConstruct(WidgetType* OnWidget, const typename WidgetType::FArguments& WithNamedArgs) const
 		{
 			// YOUR WIDGET MUST IMPLEMENT Construct(const FArguments& InArgs)
 			OnWidget->Construct(WithNamedArgs, Forward<Arg0Type>(Arg0), Forward<Arg1Type>(Arg1), Forward<Arg2Type>(Arg2), Forward<Arg3Type>(Arg3), Forward<Arg4Type>(Arg4));
@@ -880,31 +893,6 @@ namespace RequiredArgs
 }
 
 
-/** Normal widgets are allocated directly by the TSlateDecl. */
-template<typename WidgetType, bool IsDerived>
-struct TWidgetAllocator
-{
-	static TSharedRef<WidgetType> PrivateAllocateWidget()
-	{
-		return MakeShared<WidgetType>();
-	}
-};
-
-/**
- * SUserWidgets are allocated in the corresponding CPP file, so that
- * the implementer can return an implementation that differs from the
- * public interface. @see SUserWidgetExample
- */
-template<typename WidgetType>
-struct TWidgetAllocator< WidgetType, true >
-{
-	static TSharedRef<WidgetType> PrivateAllocateWidget()
-	{
-		return WidgetType::New();
-	}
-};
-
-
 /**
  * Utility class used during widget instantiation.
  * Performs widget allocation and construction.
@@ -918,10 +906,24 @@ template<class WidgetType, typename RequiredArgsPayloadType>
 struct TSlateDecl
 {
 	TSlateDecl( const ANSICHAR* InType, const ANSICHAR* InFile, int32 OnLine, RequiredArgsPayloadType&& InRequiredArgs )
-		: _Widget( TWidgetAllocator<WidgetType, TIsDerivedFrom<WidgetType, SUserWidget>::IsDerived >::PrivateAllocateWidget() )
-		, _RequiredArgs(InRequiredArgs)
+		: _RequiredArgs(InRequiredArgs)
 	{
-		_Widget->SetDebugInfo( InType, InFile, OnLine, sizeof(WidgetType) );
+		if constexpr (std::is_base_of_v<SUserWidget, WidgetType>)
+		{
+			/**
+			 * SUserWidgets are allocated in the corresponding CPP file, so that
+			 * the implementer can return an implementation that differs from the
+			 * public interface. @see SUserWidgetExample
+			 */
+			_Widget = WidgetType::New();
+		}
+		else
+		{
+			/** Normal widgets are allocated directly by the TSlateDecl. */
+			_Widget = MakeShared<WidgetType>();
+		}
+
+		_Widget->SetDebugInfo(InType, InFile, OnLine, sizeof(WidgetType));
 	}
 
 	/**
@@ -929,10 +931,11 @@ struct TSlateDecl
 	 * @see SAssignNew
 	 */
 	template<class ExposeAsWidgetType>
-	TSlateDecl& Expose( TSharedPtr<ExposeAsWidgetType>& OutVarToInit )
+	TSlateDecl&& Expose( TSharedPtr<ExposeAsWidgetType>& OutVarToInit ) &&
 	{
+		// Can't move out _Widget here because operator<<= needs it
 		OutVarToInit = _Widget;
-		return *this;
+		return MoveTemp(*this);
 	}
 
 	/**
@@ -940,10 +943,11 @@ struct TSlateDecl
 	 * @see SAssignNew
 	 */
 	template<class ExposeAsWidgetType>
-	TSlateDecl& Expose( TSharedRef<ExposeAsWidgetType>& OutVarToInit )
+	TSlateDecl&& Expose( TSharedRef<ExposeAsWidgetType>& OutVarToInit ) &&
 	{
-		OutVarToInit = _Widget;
-		return *this;
+		// Can't move out _Widget here because operator<<= needs it
+		OutVarToInit = _Widget.ToSharedRef();
+		return MoveTemp(*this);
 	}
 
 	/**
@@ -951,10 +955,11 @@ struct TSlateDecl
 	 * @see SAssignNew
 	 */
 	template<class ExposeAsWidgetType>
-	TSlateDecl& Expose( TWeakPtr<ExposeAsWidgetType>& OutVarToInit )
+	TSlateDecl&& Expose( TWeakPtr<ExposeAsWidgetType>& OutVarToInit ) &&
 	{
-		OutVarToInit = _Widget;
-		return *this;
+		// Can't move out _Widget here because operator<<= needs it
+		OutVarToInit = _Widget.ToWeakPtr();
+		return MoveTemp(*this);
 	}
 
 	/**
@@ -964,17 +969,17 @@ struct TSlateDecl
 	 *
 	 * @return A reference to the widget that we constructed.
 	 */
-	TSharedRef<WidgetType> operator<<=( const typename WidgetType::FArguments& InArgs ) const
+	TSharedRef<WidgetType> operator<<=( const typename WidgetType::FArguments& InArgs ) &&
 	{
 		_Widget->SWidgetConstruct(InArgs);
-		_RequiredArgs.CallConstruct(_Widget, InArgs);
+		_RequiredArgs.CallConstruct(_Widget.Get(), InArgs);
 		_Widget->CacheVolatility();
 		_Widget->bIsDeclarativeSyntaxConstructionCompleted = true;
 
-		return _Widget;
+		return MoveTemp(_Widget).ToSharedRef();
 	}
 
-	const TSharedRef<WidgetType> _Widget;
+	TSharedPtr<WidgetType> _Widget;
 	RequiredArgsPayloadType& _RequiredArgs;
 };
 

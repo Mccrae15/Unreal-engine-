@@ -51,32 +51,16 @@ namespace OculusXRHMD
 		FVector2f UV;
 	};
 
-	inline FBufferRHIRef CreateTempOcculusVertexBuffer()
-	{
-		FRHIResourceCreateInfo CreateInfo(TEXT("TempOcculusVertexBuffer"));
-		FBufferRHIRef VertexBufferRHI = RHICreateVertexBuffer(sizeof(FTextureVertex) * 4, BUF_Volatile, CreateInfo);
-		void* VoidPtr = RHILockBuffer(VertexBufferRHI, 0, sizeof(FTextureVertex) * 4, RLM_WriteOnly);
-
-		FTextureVertex* Vertices = (FTextureVertex*)VoidPtr;
-		Vertices[0].Position = FVector4(-1.0f, 1.0f, 0, 1.0f);
-		Vertices[1].Position = FVector4(1.0f, 1.0f, 0, 1.0f);
-		Vertices[2].Position = FVector4(-1.0f, -1.0f, 0, 1.0f);
-		Vertices[3].Position = FVector4(1.0f, -1.0f, 0, 1.0f);
-		Vertices[0].UV = FVector2f(0, 0);
-		Vertices[1].UV = FVector2f(1, 0);
-		Vertices[2].UV = FVector2f(0, 1);
-		Vertices[3].UV = FVector2f(1, 1);
-		RHIUnlockBuffer(VertexBufferRHI);
-
-		return VertexBufferRHI;
-	}
-
 	class FTextureVertexDeclaration : public FRenderResource
 	{
 	public:
 		FVertexDeclarationRHIRef VertexDeclarationRHI;
 
+#if UE_VERSION_OLDER_THAN(5, 3, 0)
 		virtual void InitRHI() override
+#else
+		virtual void InitRHI(FRHICommandListBase& RHICmdList) override
+#endif
 		{
 			FVertexDeclarationElementList Elements;
 			uint32 Stride = sizeof(FTextureVertex);

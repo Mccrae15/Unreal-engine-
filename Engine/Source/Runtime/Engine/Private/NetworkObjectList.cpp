@@ -400,6 +400,17 @@ void FNetworkObjectList::MarkDirtyForReplay(AActor* const Actor)
 	}
 }
 
+void FNetworkObjectList::ResetReplayDirtyTracking()
+{
+	for (auto It = AllNetworkObjects.CreateIterator(); It; ++It)
+	{
+		if (FNetworkObjectInfo* ObjectInfo = (*It).Get())
+		{
+			ObjectInfo->bDirtyForReplay = false;
+		}
+	}
+}
+
 void FNetworkObjectList::ClearRecentlyDormantConnection(AActor* const Actor, UNetConnection* const Connection, UNetDriver* NetDriver)
 {
 	TSharedPtr<FNetworkObjectInfo>* NetworkObjectInfoPtr = FindOrAdd(Actor, NetDriver);
@@ -417,9 +428,10 @@ void FNetworkObjectList::ClearRecentlyDormantConnection(AActor* const Actor, UNe
 void FNetworkObjectList::OnActorIsTraveling(AActor* TravelingAtor)
 {
 	TSharedPtr<FNetworkObjectInfo>* NetworkObjectInfoPtr = AllNetworkObjects.Find(TravelingAtor);
-	check(NetworkObjectInfoPtr);
-
-	SeamlessTravelingObjects.Add(*NetworkObjectInfoPtr);
+	if (NetworkObjectInfoPtr)
+	{
+		SeamlessTravelingObjects.Add(*NetworkObjectInfoPtr);
+	}
 }
 
 void FNetworkObjectList::OnPostSeamlessTravel()

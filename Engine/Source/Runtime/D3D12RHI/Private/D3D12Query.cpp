@@ -5,6 +5,7 @@
 =============================================================================*/
 
 #include "D3D12RHIPrivate.h"
+#include "ProfilingDebugging/AssetMetadataTrace.h"
 
 namespace D3D12RHI
 {
@@ -44,12 +45,12 @@ FD3D12RenderQuery::~FD3D12RenderQuery()
 	Result = nullptr;
 }
 
-FD3D12QueryHeap::FD3D12QueryHeap(FD3D12Device* Device, D3D12_QUERY_TYPE QueryType, D3D12_QUERY_HEAP_TYPE HeapType, uint32 NumQueries)
+FD3D12QueryHeap::FD3D12QueryHeap(FD3D12Device* Device, D3D12_QUERY_TYPE QueryType, D3D12_QUERY_HEAP_TYPE HeapType)
 	: FD3D12SingleNodeGPUObject(Device->GetGPUMask())
 	, Device(Device)
 	, QueryType(QueryType)
 	, HeapType(HeapType)
-	, NumQueries(NumQueries)
+	, NumQueries(MaxHeapSize / GetResultSize())
 {
 	INC_DWORD_STAT(STAT_D3D12NumQueryHeaps);
 
@@ -72,7 +73,15 @@ FD3D12QueryHeap::FD3D12QueryHeap(FD3D12Device* Device, D3D12_QUERY_TYPE QueryTyp
 		QueryHeapName    = TEXT("Timestamp Query Heap (Copy)");
 		ResultBufferName = TEXT("Timestamp Query Heap Result Buffer (Copy)");
 		break;
+
+	case D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS:
+		QueryHeapName    = TEXT("Pipeline Statistics Query Heap (Copy)");
+		ResultBufferName = TEXT("Pipeline Statistics Query Heap Result Buffer (Copy)");
+		break;
 	}
+
+	const static FLazyName D3D12QueryHeapName(TEXT("FD3D12QueryHeap"));
+	UE_TRACE_METADATA_SCOPE_ASSET_FNAME(FName(ResultBufferName), D3D12QueryHeapName, NAME_None);
 
 	// Create the query heap
 #if D3D12RHI_PLATFORM_USES_TIMESTAMP_QUERIES == 0
@@ -87,8 +96,8 @@ FD3D12QueryHeap::FD3D12QueryHeap(FD3D12Device* Device, D3D12_QUERY_TYPE QueryTyp
 		VERIFYD3D12RESULT(Device->GetDevice()->CreateQueryHeap(&QueryHeapDesc, IID_PPV_ARGS(D3DQueryHeap.GetInitReference())));
 		SetName(D3DQueryHeap, QueryHeapName);
 
-#if ENABLE_RESIDENCY_MANAGEMENT
-		D3DX12Residency::Initialize(ResidencyHandle, D3DQueryHeap, ResultSize * NumQueries, this);
+#if ENABLE_RESIDENCY_MANAGEMENT && 0 // Temporary workaround for missing resource usage tracking for query heap
+		D3DX12Residency::Initialize(ResidencyHandle, D3DQueryHeap, GetResultSize() * NumQueries, this);
 		D3DX12Residency::BeginTrackingObject(Device->GetResidencyManager(), ResidencyHandle);
 #endif
 	}
@@ -100,7 +109,7 @@ FD3D12QueryHeap::FD3D12QueryHeap(FD3D12Device* Device, D3D12_QUERY_TYPE QueryTyp
 			GetGPUMask().GetNative(),
 			GetVisibilityMask().GetNative());
 			
-		D3D12_RESOURCE_DESC BufferDesc = CD3DX12_RESOURCE_DESC::Buffer(ResultSize * NumQueries);
+		D3D12_RESOURCE_DESC BufferDesc = CD3DX12_RESOURCE_DESC::Buffer(GetResultSize() * NumQueries);
 
 		// Create the readback heap
 		VERIFYD3D12RESULT(Device->GetParentAdapter()->CreateCommittedResource(
@@ -117,7 +126,7 @@ FD3D12QueryHeap::FD3D12QueryHeap(FD3D12Device* Device, D3D12_QUERY_TYPE QueryTyp
 
 	// Map the readback buffer. Resources in a readback heap are allowed
 	// to be persistently mapped, so we only need to do this once.
-	ResultPtr = (uint64*)ResultBuffer->Map();
+	ResultPtr = static_cast<uint8 const*>(ResultBuffer->Map());
 }
 
 FD3D12QueryHeap::~FD3D12QueryHeap()
@@ -129,7 +138,10 @@ FD3D12QueryHeap::~FD3D12QueryHeap()
 	}
 
 #if ENABLE_RESIDENCY_MANAGEMENT
-	D3DX12Residency::EndTrackingObject(Device->GetResidencyManager(), ResidencyHandle);
+	if (D3DX12Residency::IsInitialized(ResidencyHandle))
+	{
+		D3DX12Residency::EndTrackingObject(Device->GetResidencyManager(), ResidencyHandle);
+	}
 #endif
 
 	DEC_DWORD_STAT(STAT_D3D12NumQueryHeaps);

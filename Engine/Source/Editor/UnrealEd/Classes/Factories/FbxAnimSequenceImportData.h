@@ -33,8 +33,8 @@ enum EFBXAnimationLengthImportType : int
 /**
 * Import data and options used when importing any mesh from FBX
 */
-UCLASS(BlueprintType, config = EditorPerProjectUserSettings, configdonotcheckdefaults)
-class UNREALED_API UFbxAnimSequenceImportData : public UFbxAssetImportData
+UCLASS(BlueprintType, config = EditorPerProjectUserSettings, configdonotcheckdefaults, MinimalAPI)
+class UFbxAnimSequenceImportData : public UFbxAssetImportData
 {
 	GENERATED_UCLASS_BODY()
 	
@@ -93,6 +93,10 @@ class UNREALED_API UFbxAnimSequenceImportData : public UFbxAssetImportData
 	UPROPERTY(EditAnywhere, AdvancedDisplay, config, Category = ImportSettings, meta = (EditCondition = "bImportCustomAttribute", DisplayName="Set Material Curve Type"))
 	bool bSetMaterialDriveParameterOnCustomAttribute;
 
+	/** Whether to automatically add curve metadata to an animation's skeleton. If this is disabled, curve metadata will be added to skeletal meshes for morph targets, but no metadata entry will be created for general curves. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, config, Category = ImportSettings)
+	bool bAddCurveMetadataToSkeleton;
+
 	/** Set Material Curve Type for the custom attribute with the following suffixes. This doesn't matter if Set Material Curve Type is true  */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, config, Category = ImportSettings, meta = (EditCondition = "bImportCustomAttribute", DisplayName = "Material Curve Suffixes"))
 	TArray<FString> MaterialCurveSuffixes;
@@ -114,13 +118,13 @@ class UNREALED_API UFbxAnimSequenceImportData : public UFbxAssetImportData
 	bool bPreserveLocalTransform;
 
 	/** Gets or creates fbx import data for the specified anim sequence */
-	static UFbxAnimSequenceImportData* GetImportDataForAnimSequence(UAnimSequence* AnimSequence, UFbxAnimSequenceImportData* TemplateForCreation);
+	static UNREALED_API UFbxAnimSequenceImportData* GetImportDataForAnimSequence(UAnimSequence* AnimSequence, UFbxAnimSequenceImportData* TemplateForCreation);
 
-	virtual bool CanEditChange(const FProperty* InProperty) const override;
+	UNREALED_API virtual bool CanEditChange(const FProperty* InProperty) const override;
 
-	virtual void Serialize(FArchive& Ar) override;
+	UNREALED_API virtual void Serialize(FArchive& Ar) override;
 
-	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	UNREALED_API virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 
-	void CopyAnimationValues(const UFbxAnimSequenceImportData* Other);
+	UNREALED_API void CopyAnimationValues(const UFbxAnimSequenceImportData* Other);
 };

@@ -13,7 +13,7 @@
 #include "StaticMeshOperations.h"
 #include "SkeletalMeshOperations.h"
 
-#include "Mesh/InterchangeStaticMeshPayload.h"
+#include "Mesh/InterchangeMeshPayload.h"
 
 namespace UE::Interchange::Gltf::Private
 {
@@ -71,10 +71,21 @@ namespace UE::Interchange::Gltf::Private
 		}
 	}
 
-	bool GetSkeletalMeshDescriptionForPayLoadKey(const GLTF::FAsset& GltfAsset, const FString& PayLoadKey, FMeshDescription& MeshDescription, TArray<FString>* OutJointUniqueNames)
+	bool GetSkeletalMeshDescriptionForPayLoadKey(const GLTF::FAsset& GltfAsset, const FString& PayLoadKey, const FTransform& MeshGlobalTransform, FMeshDescription& MeshDescription, TArray<FString>* OutJointUniqueNames)
 	{
+		TArray<FString> BakingAndPayloadKey;
+		PayLoadKey.ParseIntoArray(BakingAndPayloadKey, TEXT(";"));
+
+		bool bBakeSkinJointTransform = false;
+		if (BakingAndPayloadKey.Num() == 2)
+		{
+			LexFromString(bBakeSkinJointTransform, *BakingAndPayloadKey[0]);
+		}
+
+		FString PayloadKeyToParse = BakingAndPayloadKey.Num() == 2 ? BakingAndPayloadKey[1] : PayLoadKey;
+
 		TArray<FString> PayLoadKeys;
-		PayLoadKey.ParseIntoArray(PayLoadKeys, TEXT(":"));
+		PayloadKeyToParse.ParseIntoArray(PayLoadKeys, TEXT(":"));
 		TMap<int32, TArray<int32>> MeshIndexToSkinIndicesMap;
 
 		int32 MeshIndex = 0;
@@ -110,7 +121,7 @@ namespace UE::Interchange::Gltf::Private
 		const GLTF::FMesh& GltfMesh = GltfAsset.Meshes[MeshIndex];
 		GLTF::FMeshFactory MeshFactory;
 		MeshFactory.SetUniformScale(GltfUnitConversionMultiplier); // GLTF is in meters while UE is in centimeters
-		MeshFactory.FillMeshDescription(GltfMesh, &BaseMeshDescription);
+		MeshFactory.FillMeshDescription(GltfMesh, MeshGlobalTransform, &BaseMeshDescription);
 
 		PatchPolygonGroups(BaseMeshDescription, GltfAsset);
 
@@ -131,7 +142,7 @@ namespace UE::Interchange::Gltf::Private
 			FStaticMeshAttributes StaticMeshAttributes(SkinnedMeshDescription);
 
 			//for instanced meshes we need to bake the transforms of the joints:
-			if (SkinIndices.Num() > 1 && GltfAsset.Skins[SkinIndex].Joints.Num() > 0)
+			if ((bBakeSkinJointTransform || SkinIndices.Num() > 1) && GltfAsset.Skins[SkinIndex].Joints.Num() > 0)
 			{
 				FTransform TransformLocalToWorld3d(FTransform::Identity);
 
@@ -267,10 +278,18 @@ namespace UE::Interchange::Gltf::Private
 		return true;
 	}
 
-	bool GetStaticMeshPayloadDataForPayLoadKey(const GLTF::FAsset& GltfAsset, const FString& PayLoadKey, FStaticMeshPayloadData& StaticMeshPayloadData)
+	bool GetStaticMeshPayloadDataForPayLoadKey(const GLTF::FAsset& GltfAsset, const FString& PayLoadKey, const FTransform& MeshGlobalTransform, FMeshDescription& MeshDescription)
 	{
+		TArray<FString> PayLoadKeys;
+		PayLoadKey.ParseIntoArray(PayLoadKeys, TEXT(":"));
+
+		if (PayLoadKeys.Num() == 0)
+		{
+			return false;
+		}
+
 		int32 MeshIndex = 0;
-		LexFromString(MeshIndex, *PayLoadKey);
+		LexFromString(MeshIndex, *PayLoadKeys[0]);
 
 		if (!GltfAsset.Meshes.IsValidIndex(MeshIndex))
 		{
@@ -278,11 +297,28 @@ namespace UE::Interchange::Gltf::Private
 		}
 
 		const GLTF::FMesh& GltfMesh = GltfAsset.Meshes[MeshIndex];
-		GLTF::FMeshFactory MeshFactory;
-		MeshFactory.SetUniformScale(100.f); // GLTF is in meters while UE is in centimeters
-		MeshFactory.FillMeshDescription(GltfMesh, &StaticMeshPayloadData.MeshDescription);
 
-		PatchPolygonGroups(StaticMeshPayloadData.MeshDescription, GltfAsset);
+		TArray<float> MorphTargetWeights;
+		if (PayLoadKeys.Num() == 2)
+		{
+			int32 MorphTargetIndex;
+			LexFromString(MorphTargetIndex, *PayLoadKeys[1]);
+
+			MorphTargetWeights.SetNumZeroed(GltfMesh.MorphTargetNames.Num());
+
+			if (MorphTargetIndex >= MorphTargetWeights.Num())
+			{
+				return false;
+			}
+
+			MorphTargetWeights[MorphTargetIndex] = 1.0f;
+		}
+
+		GLTF::FMeshFactory MeshFactory;
+		MeshFactory.SetUniformScale(GltfUnitConversionMultiplier); // GLTF is in meters while UE is in centimeters
+		MeshFactory.FillMeshDescription(GltfMesh, MeshGlobalTransform, &MeshDescription, MorphTargetWeights);
+
+		PatchPolygonGroups(MeshDescription, GltfAsset);
 
 		return true;
 	}

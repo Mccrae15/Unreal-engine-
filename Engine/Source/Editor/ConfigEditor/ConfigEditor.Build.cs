@@ -8,7 +8,6 @@ public class ConfigEditor : ModuleRules
 	{
 		PublicIncludePaths.AddRange(
 			new string[] {
-				"Editor/ConfigEditor/Public",
 				"Editor/ConfigEditor/Public/PropertyVisualization",
 			}
 		);
@@ -23,13 +22,11 @@ public class ConfigEditor : ModuleRules
 			new string[] {
 				"Core",
 				"CoreUObject",
-				"InputCore",
 				"PropertyEditor",
 				"Slate",
 				"SlateCore",
 				"SourceControl",
 				"TargetPlatform",
-				"WorkspaceMenuStructure",
 			}
 		);
 

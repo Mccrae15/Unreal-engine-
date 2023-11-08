@@ -2,14 +2,16 @@
 
 #include "Retargeter/IKRetargetProcessor.h"
 
-#include "IKRigDefinition.h"
 #include "IKRigLogger.h"
-#include "IKRigProcessor.h"
-#include "Engine/SkeletalMesh.h"
-#include "Kismet/KismetMathLibrary.h"
+#include "Rig/IKRigDefinition.h"
+#include "Rig/Solvers/PointsToRotation.h"
+#include "Rig/IKRigProcessor.h"
+
 #include "Retargeter/IKRetargeter.h"
 #include "Retargeter/IKRetargetProfile.h"
-#include "Solvers/PointsToRotation.h"
+
+#include "Engine/SkeletalMesh.h"
+#include "Kismet/KismetMathLibrary.h"
 #include "UObject/UnrealTypePrivate.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(IKRetargetProcessor)
@@ -2298,6 +2300,10 @@ void UIKRetargetProcessor::ApplyNewRetargetPose(
 	// re-initialize the bone chains using the newly generated retarget pose
 	const UIKRigDefinition* SourceIKRig = RetargeterAsset->GetSourceIKRig();
 	const UIKRigDefinition* TargetIKRig = RetargeterAsset->GetTargetIKRig();
+	if (!(SourceIKRig && TargetIKRig))
+	{
+		return;
+	}
 	for (FRetargetChainPairFK& FKChainPair : ChainPairsFK)
 	{
 		const FBoneChain* SourceBoneChain = SourceIKRig->GetRetargetChainByName(FKChainPair.SourceBoneChainName);

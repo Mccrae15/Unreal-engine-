@@ -6,19 +6,26 @@
 
 #include "CommonRenderResources.h"
 #include "Containers/DynamicRHIResourceArray.h"
+#include "StereoRenderUtils.h"
 
 
-TGlobalResource<FFilterVertexDeclaration> GFilterVertexDeclaration;
-TGlobalResource<FEmptyVertexDeclaration> GEmptyVertexDeclaration;
+TGlobalResource<FFilterVertexDeclaration, FRenderResource::EInitPhase::Pre> GFilterVertexDeclaration;
+TGlobalResource<FEmptyVertexDeclaration, FRenderResource::EInitPhase::Pre> GEmptyVertexDeclaration;
 
-TGlobalResource<FScreenRectangleVertexBuffer> GScreenRectangleVertexBuffer;
-TGlobalResource<FScreenRectangleIndexBuffer> GScreenRectangleIndexBuffer;
+TGlobalResource<FScreenRectangleVertexBuffer, FRenderResource::EInitPhase::Pre> GScreenRectangleVertexBuffer;
+TGlobalResource<FScreenRectangleIndexBuffer, FRenderResource::EInitPhase::Pre> GScreenRectangleIndexBuffer;
 
 IMPLEMENT_GLOBAL_SHADER(FScreenVertexShaderVS, "/Engine/Private/Tools/FullscreenVertexShader.usf", "MainVS", SF_Vertex);
+IMPLEMENT_GLOBAL_SHADER(FInstancedScreenVertexShaderVS, "/Engine/Private/Tools/FullscreenVertexShader.usf", "MainVS", SF_Vertex);
 IMPLEMENT_GLOBAL_SHADER(FCopyRectPS, "/Engine/Private/ScreenPass.usf", "CopyRectPS", SF_Pixel);
 
+bool FInstancedScreenVertexShaderVS::ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+{
+	UE::StereoRenderUtils::FStereoShaderAspects Aspects(Parameters.Platform);
+	return Aspects.IsInstancedMultiViewportEnabled();
+}
 
-void FScreenRectangleVertexBuffer::InitRHI()
+void FScreenRectangleVertexBuffer::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	TResourceArray<FFilterVertex, VERTEXBUFFER_ALIGNMENT> Vertices;
 	Vertices.SetNumUninitialized(6);
@@ -44,10 +51,10 @@ void FScreenRectangleVertexBuffer::InitRHI()
 
 	// Create vertex buffer. Fill buffer with initial data upon creation
 	FRHIResourceCreateInfo CreateInfo(TEXT("FScreenRectangleVertexBuffer"), &Vertices);
-	VertexBufferRHI = RHICreateVertexBuffer(Vertices.GetResourceDataSize(), BUF_Static, CreateInfo);
+	VertexBufferRHI = RHICmdList.CreateVertexBuffer(Vertices.GetResourceDataSize(), BUF_Static, CreateInfo);
 }
 
-void FScreenRectangleIndexBuffer::InitRHI()
+void FScreenRectangleIndexBuffer::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	const uint16 Indices[] = 
 	{
@@ -63,5 +70,5 @@ void FScreenRectangleIndexBuffer::InitRHI()
 
 	// Create index buffer. Fill buffer with initial data upon creation
 	FRHIResourceCreateInfo CreateInfo(TEXT("FScreenRectangleIndexBuffer"), &IndexBuffer);
-	IndexBufferRHI = RHICreateIndexBuffer(sizeof(uint16), IndexBuffer.GetResourceDataSize(), BUF_Static, CreateInfo);
+	IndexBufferRHI = RHICmdList.CreateIndexBuffer(sizeof(uint16), IndexBuffer.GetResourceDataSize(), BUF_Static, CreateInfo);
 }

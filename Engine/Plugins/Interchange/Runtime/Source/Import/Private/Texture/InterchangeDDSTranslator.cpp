@@ -3,7 +3,6 @@
 #include "Texture/InterchangeDDSTranslator.h"
 
 #include "DDSFile.h"
-#include "DDSLoader.h"
 #include "Engine/Texture.h"
 #include "Engine/Texture2D.h"
 #include "HAL/FileManager.h"
@@ -39,14 +38,13 @@ namespace UE::Interchange::Private::InterchangeDDSTranslator
 
 		if (FileReaderArchive)
 		{
-			const int64 SizeOfDDSMarker = 4;
 			const int64 SizeOfFile = FileReaderArchive->TotalSize();
-			const int64 MinimalHeaderSize = FDDSLoadHelper::GetDDSHeaderMinimalSize() + SizeOfDDSMarker;
+			const int64 MinimalHeaderSize = UE::DDS::GetDDSHeaderMinimalSize();
 
 			// If the file is not bigger than the smallest header possible then clearly the file is not valid as a dds file.
 			if (SizeOfFile > MinimalHeaderSize)
 			{
-				const int64 MaximalHeaderSize = FDDSLoadHelper::GetDDSHeaderMaximalSize() + SizeOfDDSMarker;
+				const int64 MaximalHeaderSize = UE::DDS::GetDDSHeaderMaximalSize();
 				const int64 BytesToRead = FMath::Min(SizeOfFile, MaximalHeaderSize);
 
 				OutHeader.Reset(BytesToRead);
@@ -73,6 +71,7 @@ namespace UE::Interchange::Private::InterchangeDDSTranslator
 		if (bHeaderOnly)
 		{
 			LoadDDSHeaderFromFile(DDSSourceData, Filename);
+			// no error checking?
 		}
 		else if (!FFileHelper::LoadFileToArray(DDSSourceData, *Filename))
 		{
@@ -89,13 +88,25 @@ namespace UE::Interchange::Private::InterchangeDDSTranslator
 			check(Error != UE::DDS::EDDSError::OK);
 			if (Error != UE::DDS::EDDSError::NotADds && Error != UE::DDS::EDDSError::IoError)
 			{
-				UE_LOG(LogInterchangeImport, Warning, TEXT("Failed to load DDS (Error=%d)"), (int)Error);
+				UE_LOG(LogInterchangeImport, Warning, TEXT("Failed to load DDS (Error=%d) [%s]"), (int)Error, *Filename);
 			}
 			return {};
 		}
 
 		if (!bHeaderOnly)
 		{
+			// this function is called 4 times with bHeaderOnly=true, then once with bHeaderOnly=false
+			// do noisy warnings only in the last call so they aren't repeated
+
+			// We require a complete mip chain or a single mip.
+			if (DDS->MipCount > 1)
+			{
+				if (DDS->MipCount != FImageCoreUtils::GetMipCountFromDimensions(DDS->Width, DDS->Height, DDS->Depth, DDS->IsValidTextureVolume()))
+				{
+					UE_LOG(LogInterchangeImport, Warning, TEXT("Imported DDS files must either be a single base mip, or a full mip chain, not a partial mip chain (found %d expected %d) [%s]"), DDS->MipCount, FImageCoreUtils::GetMipCountFromDimensions(DDS->Width, DDS->Height, DDS->Depth, DDS->IsValidTextureVolume()), *Filename);
+				}
+			}
+
 			// change X8 formats to A8 :	
 			DDS->ConvertRGBXtoRGBA();
 			// change RGBA8 to BGRA8 before DXGIFormatGetClosestRawFormat :
@@ -117,28 +128,6 @@ namespace UE::Interchange::Private::InterchangeDDSTranslator
 		}
 
 		return MipCount;
-	}
-
-	bool PerformPrePayloadValidations(const UInterchangeDDSTranslator& DDSTranslator, const UInterchangeSourceData* PayloadSourceData, const FString& PayLoadKey)
-	{
-		check(PayloadSourceData == DDSTranslator.GetSourceData());
-
-		if (!PayloadSourceData)
-		{
-			UE_LOG(LogInterchangeImport, Error, TEXT("Failed to import DDS, bad source data."));
-			return false;
-		}
-
-		FString Filename = PayloadSourceData->GetFilename();
-
-		//Make sure the key fit the filename, The key should always be valid
-		if (!Filename.Equals(PayLoadKey))
-		{
-			UE_LOG(LogInterchangeImport, Error, TEXT("Failed to import DDS, wrong payload key. [%s]"), *Filename);
-			return false;
-		}
-
-		return true;
 	}
 
 	bool DDSPayloadIsSRGB(const TUniquePtr<UE::DDS::FDDSFile>& DDS, ERawImageFormat::Type RawFormat)
@@ -283,11 +272,12 @@ bool UInterchangeDDSTranslator::Translate(UInterchangeBaseNodeContainer& BaseNod
 	return false;
 }
 
-TOptional<UE::Interchange::FImportImage> UInterchangeDDSTranslator::GetTexturePayloadData(const UInterchangeSourceData* PayloadSourceData, const FString& PayLoadKey) const
+TOptional<UE::Interchange::FImportImage> UInterchangeDDSTranslator::GetTexturePayloadData(const FString& /*PayloadKey*/, TOptional<FString>& /*AlternateTexturePath*/) const
 {
 	using namespace UE::Interchange::Private::InterchangeDDSTranslator;
+	using namespace UE::Interchange;
 
-	if (!PerformPrePayloadValidations(*this, PayloadSourceData, PayLoadKey))
+	if (!FTextureTranslatorUtilities::IsTranslatorValid(*this, TEXT("DDS")))
 	{
 		return {};
 	}
@@ -298,7 +288,8 @@ TOptional<UE::Interchange::FImportImage> UInterchangeDDSTranslator::GetTexturePa
 
 	if (!DDS || !DDS->IsValidTexture2D())
 	{
-		UE_LOG(LogInterchangeImport, Error, TEXT("Failed to import DDS, unsupported format. [%s]"), *Filename);
+		FText ErrorMessage = FText::Format(NSLOCTEXT("InterchangeDDSTranslator", "UnsupportedFormat", "Failed to import DDS, unsupported format. [{0}]"), FText::FromString(Filename));
+		FTextureTranslatorUtilities::LogError(*this, MoveTemp(ErrorMessage));
 		return TOptional<UE::Interchange::FImportImage>();
 	}
 
@@ -306,9 +297,8 @@ TOptional<UE::Interchange::FImportImage> UInterchangeDDSTranslator::GetTexturePa
 	ERawImageFormat::Type RawFormat = UE::DDS::DXGIFormatGetClosestRawFormat(DDS->DXGIFormat);
 	if (RawFormat == ERawImageFormat::Invalid)
 	{
-		UInterchangeResultError_Generic* Error = AddMessage<UInterchangeResultError_Generic>();
-		Error->AssetType = UTexture2D::StaticClass();
-		Error->Text = FText::Format(NSLOCTEXT("InterchangeDDSTranslator", "InvalidDXGIFormat", "DDS DXGIFormat not supported : {0} : {1}"), (int)DDS->DXGIFormat, FText::FromString(UE::DDS::DXGIFormatGetName(DDS->DXGIFormat)));
+		FText ErrorMessage = FText::Format(NSLOCTEXT("InterchangeDDSTranslator", "InvalidDXGIFormat", "DDS DXGIFormat not supported : {0} : {1}"), (int)DDS->DXGIFormat, FText::FromString(UE::DDS::DXGIFormatGetName(DDS->DXGIFormat)));
+		FTextureTranslatorUtilities::LogError(*this, MoveTemp(ErrorMessage));
 		return {};
 	}
 
@@ -337,7 +327,7 @@ TOptional<UE::Interchange::FImportImage> UInterchangeDDSTranslator::GetTexturePa
 
 		if (!DDS->GetMipImage(DestMipData, MipIndex))
 		{
-			UE_LOG(LogInterchangeImport, Error, TEXT("DDS could not convert pixel format"));
+			FTextureTranslatorUtilities::LogError(*this, NSLOCTEXT("InterchangeDDSTranslator", "FailedPixelFormat", "DDS could not convert pixel format"));
 			return {};
 		}
 
@@ -349,11 +339,12 @@ TOptional<UE::Interchange::FImportImage> UInterchangeDDSTranslator::GetTexturePa
 	return PayloadData;
 }
 
-TOptional<UE::Interchange::FImportSlicedImage> UInterchangeDDSTranslator::GetSlicedTexturePayloadData(const UInterchangeSourceData* PayloadSourceData, const FString& PayLoadKey) const
+TOptional<UE::Interchange::FImportSlicedImage> UInterchangeDDSTranslator::GetSlicedTexturePayloadData(const FString& /*PayloadKey*/, TOptional<FString>& /*AlternateTexturePath*/) const
 {
+	using namespace UE::Interchange;
 	using namespace UE::Interchange::Private::InterchangeDDSTranslator;
 
-	if (!PerformPrePayloadValidations(*this, PayloadSourceData, PayLoadKey))
+	if (!FTextureTranslatorUtilities::IsTranslatorValid(*this, TEXT("DDS")))
 	{
 		return {};
 	}
@@ -364,7 +355,8 @@ TOptional<UE::Interchange::FImportSlicedImage> UInterchangeDDSTranslator::GetSli
 
 	if (!DDS)
 	{
-		UE_LOG(LogInterchangeImport, Error, TEXT("Failed to import DDS, unsupported format. [%s]"), *Filename);
+		FText ErrorMessage = FText::Format(NSLOCTEXT("InterchangeDDSTranslator", "UnsupportedFormat", "Failed to import DDS, unsupported format. [{0}]"), FText::FromString(Filename));
+		FTextureTranslatorUtilities::LogError(*this, MoveTemp(ErrorMessage));
 		return {};
 	}
 
@@ -388,9 +380,8 @@ TOptional<UE::Interchange::FImportSlicedImage> UInterchangeDDSTranslator::GetSli
 	ERawImageFormat::Type RawFormat = UE::DDS::DXGIFormatGetClosestRawFormat(DDS->DXGIFormat);
 	if (RawFormat == ERawImageFormat::Invalid)
 	{
-		UInterchangeResultError_Generic* Error = AddMessage<UInterchangeResultError_Generic>();
-		Error->AssetType = UTexture2D::StaticClass();
-		Error->Text = FText::Format(NSLOCTEXT("InterchangeDDSTranslator", "InvalidDXGIFormat", "DDS DXGIFormat not supported : {0} : {1}"), (int)DDS->DXGIFormat, FText::FromString(UE::DDS::DXGIFormatGetName(DDS->DXGIFormat)));
+		FText ErrorMessage = FText::Format(NSLOCTEXT("InterchangeDDSTranslator", "InvalidDXGIFormat", "DDS DXGIFormat not supported : {0} : {1}"), (int)DDS->DXGIFormat, FText::FromString(UE::DDS::DXGIFormatGetName(DDS->DXGIFormat)));
+		FTextureTranslatorUtilities::LogError(*this, MoveTemp(ErrorMessage));
 		return {};
 	}
 
@@ -445,7 +436,7 @@ TOptional<UE::Interchange::FImportSlicedImage> UInterchangeDDSTranslator::GetSli
 
 			if (!DDS->GetMipImage(DestMipData, MipIndex))
 			{
-				UE_LOG(LogInterchangeImport, Error, TEXT("DDS could not convert pixel format"));
+				FTextureTranslatorUtilities::LogError(*this, NSLOCTEXT("InterchangeDDSTranslator", "InvalidPixelFormat", "DDS could not convert pixel format"));
 				return {};
 			}
 		}
@@ -464,7 +455,7 @@ TOptional<UE::Interchange::FImportSlicedImage> UInterchangeDDSTranslator::GetSli
 
 				if (!DDS->GetMipImage(DestSliceData, DDSMipIndex))
 				{
-					UE_LOG(LogInterchangeImport, Error, TEXT("DDS could not convert pixel format"));
+					FTextureTranslatorUtilities::LogError(*this, NSLOCTEXT("InterchangeDDSTranslator", "FailedPixelFormat", "DDS could not convert pixel format"));
 					return {};
 				}
 			}

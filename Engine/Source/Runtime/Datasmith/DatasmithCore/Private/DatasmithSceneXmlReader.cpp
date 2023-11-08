@@ -287,7 +287,7 @@ void FDatasmithSceneXmlReader::ParseVariant( FXmlNode* InNode, const TSharedRef<
 			}
 			else
 			{
-				UE_LOG( LogDatasmith, Warning, TEXT( "Missing actor referenced in variant %s" ), *OutElement->GetName() );
+				UE_LOG( LogDatasmith, Warning, TEXT( "Missing actor referenced in variant %s" ), OutElement->GetName() );
 			}
 
 			ParseActorBinding( ChildNode, BindingElement, Objects );
@@ -342,14 +342,14 @@ void FDatasmithSceneXmlReader::ParsePropertyCapture( FXmlNode* InNode, const TSh
 	{
 		if ( !CheckTCharIsHex( Char ) )
 		{
-			UE_LOG( LogDatasmith, Warning, TEXT( "Invalid recorded data '%s' for captured property with path '%s' and category '%d'" ), *RecordedDataHex, *PropertyPath, Category );
+			UE_LOG( LogDatasmith, Warning, TEXT( "Invalid recorded data '%s' for captured property with path '%s' and category '%d'" ), *RecordedDataHex, *PropertyPath, int(Category) );
 			RecordedDataHex = FString();
 			break;
 		}
 	}
 	if ( RecordedDataHex.Len() % 2 != 0 )
 	{
-		UE_LOG( LogDatasmith, Warning, TEXT( "Invalid recorded data '%s' for captured property with path '%s' and category '%d'" ), *RecordedDataHex, *PropertyPath, Category );
+		UE_LOG( LogDatasmith, Warning, TEXT( "Invalid recorded data '%s' for captured property with path '%s' and category '%d'" ), *RecordedDataHex, *PropertyPath, int(Category) );
 		RecordedDataHex = FString();
 	}
 
@@ -360,7 +360,7 @@ void FDatasmithSceneXmlReader::ParsePropertyCapture( FXmlNode* InNode, const TSh
 	int32 NumRead = HexToBytes( RecordedDataHex, RecordedBytes.GetData() );
 	if ( NumRead != NumBytes )
 	{
-		UE_LOG( LogDatasmith, Warning, TEXT( "Invalid recorded data '%s' for captured property with path '%s' and category '%d'" ), *RecordedDataHex, *PropertyPath, Category );
+		UE_LOG( LogDatasmith, Warning, TEXT( "Invalid recorded data '%s' for captured property with path '%s' and category '%d'" ), *RecordedDataHex, *PropertyPath, int(Category) );
 		bool bAllowShrinking = false;
 		RecordedBytes.SetNum( 0, bAllowShrinking );
 		RecordedBytes.SetNumZeroed( NumBytes );
@@ -392,7 +392,7 @@ void FDatasmithSceneXmlReader::ParseObjectPropertyCapture( FXmlNode* InNode, con
 	}
 	else
 	{
-		UE_LOG( LogDatasmith, Warning, TEXT( "Missing object '%s' referenced by captured property with path '%s' and category '%d'" ), *OutElement->GetName(), *PropertyPath, Category );
+		UE_LOG( LogDatasmith, Warning, TEXT( "Missing object '%s' referenced by captured property with path '%s' and category '%d'" ), OutElement->GetName(), *PropertyPath, int(Category) );
 	}
 }
 
@@ -1116,7 +1116,7 @@ bool FDatasmithSceneXmlReader::LoadFromBuffer(const FString& XmlBuffer)
 	if (SceneNode->GetTag() != TEXT("DatasmithUnrealScene"))
 	{
 		FText DialogTitle = FText::FromString( TEXT("Error parsing file") );
-		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString( SceneNode->GetTag() ), &DialogTitle);
+		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString( SceneNode->GetTag() ), DialogTitle);
 		XmlFile.Reset();
 	}
 
@@ -1200,6 +1200,26 @@ bool FDatasmithSceneXmlReader::ParseXmlFile(TSharedRef< IDatasmithScene >& OutSc
 		{
 			OutScene->SetUserID(*Nodes[i]->GetAttribute(DATASMITH_USERID));
 			OutScene->SetUserOS(*Nodes[i]->GetAttribute(DATASMITH_USEROS));
+		}
+		else if (Nodes[i]->GetTag() == DATASMITH_GEOLOCATION)
+		{
+			FString LatitudeStr = Nodes[i]->GetAttribute(DATASMITH_GEOLOCATION_LATITUDE);
+			if (!LatitudeStr.IsEmpty())
+			{
+				OutScene->SetGeolocationLatitude(ValueFromString<double>(LatitudeStr));
+			}
+
+			FString LongitudeStr = Nodes[i]->GetAttribute(DATASMITH_GEOLOCATION_LONGITUDE);
+			if (!LongitudeStr.IsEmpty())
+			{
+				OutScene->SetGeolocationLongitude(ValueFromString<double>(LongitudeStr));
+			}
+
+			FString ElevationStr = Nodes[i]->GetAttribute(DATASMITH_GEOLOCATION_ELEVATION);
+			if (!ElevationStr.IsEmpty())
+			{
+				OutScene->SetGeolocationElevation(ValueFromString<double>(ElevationStr));
+			}
 		}
 		// STATIC MESHES
 		else if (Nodes[i]->GetTag() == DATASMITH_STATICMESHNAME)

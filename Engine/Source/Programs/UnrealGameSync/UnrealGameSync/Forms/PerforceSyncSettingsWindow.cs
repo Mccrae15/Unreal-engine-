@@ -8,40 +8,40 @@ namespace UnrealGameSync
 {
 	partial class PerforceSyncSettingsWindow : Form
 	{
-		UserSettings _settings;
-		ILogger _logger;
+		readonly UserSettings _settings;
+		readonly ILogger _logger;
 
 		public PerforceSyncSettingsWindow(UserSettings settings, ILogger logger)
 		{
-			this._settings = settings;
-			this._logger = logger;
+			_settings = settings;
+			_logger = logger;
 
 			InitializeComponent();
+			Font = new System.Drawing.Font("Segoe UI", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
 		}
 
 		private void PerforceSettingsWindow_Load(object sender, EventArgs e)
 		{
 			PerforceSyncOptions syncOptions = _settings.SyncOptions;
-			numericUpDownNumRetries.Value = (syncOptions.NumRetries > 0) ? syncOptions.NumRetries : PerforceSyncOptions.DefaultNumRetries;
-			numericUpDownTcpBufferSize.Value = (syncOptions.TcpBufferSize > 0) ? syncOptions.TcpBufferSize / 1024 : PerforceSyncOptions.DefaultTcpBufferSize / 1024;
-			numericUpDownFileBufferSize.Value = (syncOptions.FileBufferSize > 0) ? syncOptions.FileBufferSize / 1024 : PerforceSyncOptions.DefaultFileBufferSize / 1024;
-			numericUpDownMaxCommandsPerBatch.Value = (syncOptions.MaxCommandsPerBatch > 0) ? syncOptions.MaxCommandsPerBatch : PerforceSyncOptions.DefaultMaxCommandsPerBatch;
-			numericUpDownMaxSizePerBatch.Value = (syncOptions.MaxSizePerBatch > 0) ? syncOptions.MaxSizePerBatch / 1024 / 1024 : PerforceSyncOptions.DefaultMaxSizePerBatch / 1024 / 1024;
-			numericUpDownRetriesOnSyncError.Value = (syncOptions.NumSyncErrorRetries > 0) ? syncOptions.NumSyncErrorRetries : PerforceSyncOptions.DefaultNumSyncErrorRetries;
+			numericUpDownMaxCommandsPerBatch.Value = syncOptions.MaxCommandsPerBatch ?? PerforceSyncOptions.DefaultMaxCommandsPerBatch;
+			numericUpDownMaxSizePerBatch.Value = (syncOptions.MaxSizePerBatch ?? PerforceSyncOptions.DefaultMaxSizePerBatch) / 1024 / 1024;
+			numericUpDownRetriesOnSyncError.Value = syncOptions.NumSyncErrorRetries ?? PerforceSyncOptions.DefaultNumSyncErrorRetries;
 		}
 
 		private void OkButton_Click(object sender, EventArgs e)
 		{
-			_settings.SyncOptions.NumRetries = (int)numericUpDownNumRetries.Value;
-			_settings.SyncOptions.TcpBufferSize = (int)numericUpDownTcpBufferSize.Value * 1024;
-			_settings.SyncOptions.FileBufferSize = (int)numericUpDownFileBufferSize.Value * 1024;
-			_settings.SyncOptions.MaxCommandsPerBatch = (int)numericUpDownMaxCommandsPerBatch.Value;
-			_settings.SyncOptions.MaxSizePerBatch = (int)numericUpDownMaxSizePerBatch.Value * 1024 * 1024;
-			_settings.SyncOptions.NumSyncErrorRetries = (int)numericUpDownRetriesOnSyncError.Value;
+			_settings.SyncOptions.MaxCommandsPerBatch = GetValueIfNotDefault((int)numericUpDownMaxCommandsPerBatch.Value, PerforceSyncOptions.DefaultMaxCommandsPerBatch);
+			_settings.SyncOptions.MaxSizePerBatch = GetValueIfNotDefault((int)numericUpDownMaxSizePerBatch.Value, PerforceSyncOptions.DefaultMaxSizePerBatch) * 1024 * 1024;
+			_settings.SyncOptions.NumSyncErrorRetries = GetValueIfNotDefault((int)numericUpDownRetriesOnSyncError.Value, PerforceSyncOptions.DefaultNumSyncErrorRetries);
 			_settings.Save(_logger);
 
 			DialogResult = System.Windows.Forms.DialogResult.OK;
 			Close();
+		}
+
+		private static int? GetValueIfNotDefault(int value, int defaultValue)
+		{
+			return (value == defaultValue) ? (int?)null : value;
 		}
 
 		private void CancButton_Click(object sender, EventArgs e)
@@ -52,10 +52,6 @@ namespace UnrealGameSync
 
 		private void ResetButton_Click(object sender, EventArgs e)
 		{
-			PerforceSyncOptions syncOptions = _settings.SyncOptions;
-			numericUpDownNumRetries.Value = PerforceSyncOptions.DefaultNumRetries;
-			numericUpDownTcpBufferSize.Value = PerforceSyncOptions.DefaultTcpBufferSize / 1024;
-			numericUpDownFileBufferSize.Value = PerforceSyncOptions.DefaultFileBufferSize / 1024;
 			numericUpDownMaxCommandsPerBatch.Value = PerforceSyncOptions.DefaultMaxCommandsPerBatch;
 			numericUpDownMaxSizePerBatch.Value = PerforceSyncOptions.DefaultMaxSizePerBatch / 1024 / 1024;
 			numericUpDownRetriesOnSyncError.Value = PerforceSyncOptions.DefaultNumSyncErrorRetries;

@@ -20,8 +20,6 @@ public class ScreenShotComparisonTools : ModuleRules
 				"ImageWrapper",
 				"Json",
 				"JsonUtilities",
-				"Slate",
-				"UnrealEdMessages",
 				"DesktopPlatform"
 			}
 		);
@@ -29,6 +27,7 @@ public class ScreenShotComparisonTools : ModuleRules
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
 				"MessagingCommon",
+				"LauncherServices"
 			}
 		);
 

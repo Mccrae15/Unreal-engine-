@@ -74,7 +74,7 @@ IVirtualizationBackend::EConnectionStatus FDDCBackend::OnConnect()
 	return IVirtualizationBackend::EConnectionStatus::Connected;
 }
 
-bool FDDCBackend::PushData(TArrayView<FPushRequest> Requests)
+bool FDDCBackend::PushData(TArrayView<FPushRequest> Requests, EPushFlags Flags)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FDDCBackend::PushData);
 
@@ -84,12 +84,14 @@ bool FDDCBackend::PushData(TArrayView<FPushRequest> Requests)
 
 	bool bWasSuccess = true;
 
+	const bool bEnableExistenceCheck = !EnumHasAllFlags(Flags, EPushFlags::Force);
+
 	// TODO: We tend not to memory bloat too much on large batches as the requests complete quite quickly
 	// however we might want to consider adding better control on how much total memory we can dedicate to
 	// loading payloads before we wait for requests to complete?
 	for (FPushRequest& Request : Requests)
 	{
-		if (DoesPayloadExist(Request.GetIdentifier()))
+		if (bEnableExistenceCheck && DoesPayloadExist(Request.GetIdentifier()))
 		{
 			Request.SetResult(FPushResult::GetAsAlreadyExists());
 		}
@@ -131,7 +133,7 @@ bool FDDCBackend::PushData(TArrayView<FPushRequest> Requests)
 	return bWasSuccess;
 }
 
-bool FDDCBackend::PullData(TArrayView<FPullRequest> Requests)
+bool FDDCBackend::PullData(TArrayView<FPullRequest> Requests, EPullFlags Flags, FText& OutErrors)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FDDCBackend::PullData);
 

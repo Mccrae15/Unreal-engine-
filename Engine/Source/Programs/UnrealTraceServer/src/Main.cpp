@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Pch.h"
+#include "StoreSettings.h"
 #include "StoreService.h"
 #include "Utils.h"
 #include "Version.h"
@@ -289,15 +290,7 @@ struct FLoggingScope
 // {{{1 store ------------------------------------------------------------------
 
 ////////////////////////////////////////////////////////////////////////////////
-struct FStoreOptions
-{
-	FPath		Dir;
-	int			Port			= 1989;
-	int			RecorderPort	= 1981;
-};
-
-////////////////////////////////////////////////////////////////////////////////
-static FStoreOptions ParseOptions(int ArgC, char** ArgV)
+static void ParseOptions(int ArgC, char** ArgV, FStoreSettings* Settings)
 {
 	cxxopts::Options Options("UnrealTraceServer", "Unreal Trace Server");
 	Options.add_options()
@@ -308,35 +301,22 @@ static FStoreOptions ParseOptions(int ArgC, char** ArgV)
 
 	auto Parsed = Options.parse(ArgC, ArgV);
 
-	FStoreOptions Ret;
 	if (int Value = Parsed["port"].as<int>())
 	{
-		Ret.Port = Value;
+		Settings->StorePort = Value;
 	}
 
 	if (int Value = Parsed["recport"].as<int>())
 	{
-		Ret.RecorderPort = Value;
+		Settings->RecorderPort = Value;
 	}
 
 	std::string Value = Parsed["storedir"].as<std::string>();
 	if (!Value.empty())
 	{
-		std::error_code ErrorCode;
-		Ret.Dir = fs::absolute(Value, ErrorCode);
+		Settings->StoreDir = Value;
 	}
 
-	return Ret;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-static FStoreService* StartStore(const FStoreOptions& Options)
-{
-	FStoreService::FDesc Desc;
-	Desc.StoreDir = Options.Dir;
-	Desc.StorePort = Options.Port;
-	Desc.RecorderPort = Options.RecorderPort;
-	return FStoreService::Create(Desc);
 }
 
 
@@ -886,21 +866,36 @@ static int MainDaemon(int ArgC, char** ArgV)
 		InstanceInfo->Set();
 	}
 
+	// Set locale for std function application wide.
+	std::setlocale(LC_ALL, ".UTF-8");
+
 	// Fire up the store
-	TS_LOG("Starting the store");
-	FStoreService* StoreService;
+	FStoreSettings* Settings = new FStoreSettings();
+	FStoreService* StoreService = nullptr;
 	{
-		FStoreOptions Options = ParseOptions(ArgC, ArgV);
+		 TS_LOG("Starting the store");
+		 FPath HomeDir;
+		 GetUnrealTraceHome(HomeDir);
 
-		if (Options.Dir.empty())
-		{
-			FPath StoreDir;
-			GetUnrealTraceHome(StoreDir);
-			StoreDir /= "Store";
-			Options.Dir = StoreDir;
-		}
+		 // Read settings from configuration file
+		 Settings->ReadFromSettings(HomeDir);
 
-		StoreService = StartStore(Options);
+		 // Override with command line arguments.
+		 ParseOptions(ArgC, ArgV, Settings);
+
+		 TS_LOG("Creating store with settings:");
+		 TS_LOG(" - Directory: '%s'", Settings->StoreDir.string().c_str());
+		 TS_LOG(" - Store port: %u", Settings->StorePort);
+		 TS_LOG(" - Recorder port: %u", Settings->RecorderPort);
+		 if (Settings->AdditionalWatchDirs.Num())
+		 {
+			 for (const auto& Dir : Settings->AdditionalWatchDirs)
+			 {
+				 TS_LOG(" - Additional watch directory: '%s'", Dir.string().c_str());
+			 }
+		 }
+
+		 StoreService = FStoreService::Create(Settings);
 	}
 
 	// Let every one know we've started.
@@ -1196,19 +1191,19 @@ static int MainDaemon(int ArgC, char** ArgV, pid_t ParentPid)
 
 	// Fire up the store
 	TS_LOG("Starting the store");
-	FStoreService* StoreService;
+	FStoreSettings* Settings = new FStoreSettings();
+	FStoreService* StoreService = nullptr;
 	{
-		FStoreOptions Options = ParseOptions(ArgC, ArgV);
+		FPath HomeDir;
+		GetUnrealTraceHome(HomeDir);
 
-		if (Options.Dir.empty())
-		{
-			FPath StoreDir;
-			GetUnrealTraceHome(StoreDir);
-			StoreDir /= "Store";
-			Options.Dir = StoreDir;
-		}
+		// Read settings from configuration file
+		Settings->ReadFromSettings(HomeDir);
 
-		StoreService = StartStore(Options);
+		// Override with command line arguments
+		ParseOptions(ArgC, ArgV, Settings);
+
+		StoreService = FStoreService::Create(Settings);
 	}
 	OnScopeExit([StoreService] () { delete StoreService; });
 
@@ -1320,6 +1315,10 @@ int main(int ArgC, char** ArgV)
 
 		return 127;
 	}
+
+#ifdef TS_WITH_MUSL
+	printf("Using musl\n");
+#endif
 
 	struct {
 		const char*	Verb;

@@ -10,7 +10,7 @@ DECLARE_CYCLE_STAT(TEXT("Chaos PBD Long Range Constraint"), STAT_PBD_LongRange, 
 namespace Chaos::Softs
 {
 
-class CHAOS_API FPBDLongRangeConstraints : public FPBDLongRangeConstraintsBase
+class FPBDLongRangeConstraints : public FPBDLongRangeConstraintsBase
 {
 public:
 	typedef FPBDLongRangeConstraintsBase Base;
@@ -21,6 +21,30 @@ public:
 		return IsTetherStiffnessEnabled(PropertyCollection, false);
 	}
 
+	FPBDLongRangeConstraints(
+		const FSolverParticles& Particles,
+		const int32 InParticleOffset,
+		const int32 InParticleCount,
+		const TArray<TConstArrayView<TTuple<int32, int32, FRealSingle>>>& InTethers,
+		const TMap<FString, TConstArrayView<FRealSingle>>& WeightMaps,
+		const FCollectionPropertyConstFacade& PropertyCollection,
+		FSolverReal MeshScale)
+		: FPBDLongRangeConstraintsBase(
+			Particles,
+			InParticleOffset,
+			InParticleCount,
+			InTethers,
+			WeightMaps.FindRef(GetTetherStiffnessString(PropertyCollection, TetherStiffnessName.ToString())),
+			WeightMaps.FindRef(GetTetherScaleString(PropertyCollection, TetherScaleName.ToString())),
+			FSolverVec2(GetWeightedFloatTetherStiffness(PropertyCollection, 1.f)),
+			FSolverVec2(GetWeightedFloatTetherScale(PropertyCollection, 1.f)),  // Scale clamping done in constructor
+			FPBDStiffness::DefaultPBDMaxStiffness,
+			MeshScale)
+		, TetherStiffnessIndex(PropertyCollection)
+		, TetherScaleIndex(PropertyCollection)
+	{}
+
+	UE_DEPRECATED(5.3, "Use weight map constructor instead.")
 	FPBDLongRangeConstraints(
 		const FSolverParticles& Particles,
 		const int32 InParticleOffset,
@@ -41,6 +65,8 @@ public:
 			FSolverVec2(GetWeightedFloatTetherScale(PropertyCollection, 1.f)),  // Scale clamping done in constructor
 			FPBDStiffness::DefaultPBDMaxStiffness,
 			MeshScale)
+		, TetherStiffnessIndex(PropertyCollection)
+		, TetherScaleIndex(PropertyCollection)
 	{}
 
 	FPBDLongRangeConstraints(
@@ -63,31 +89,35 @@ public:
 			InStiffness,
 			InScale,
 			MeshScale)
+		, TetherStiffnessIndex(ForceInit)
+		, TetherScaleIndex(ForceInit)
 	{}
 
 	virtual ~FPBDLongRangeConstraints() override {}
 
 	using Base::SetProperties;
 
-	void SetProperties(const FCollectionPropertyConstFacade& PropertyCollection, FSolverReal MeshScale)
+	CHAOS_API void SetProperties(
+		const FCollectionPropertyConstFacade& PropertyCollection,
+		const TMap<FString, TConstArrayView<FRealSingle>>& WeightMaps,
+		FSolverReal MeshScale);
+
+	UE_DEPRECATED(5.3, "Use SetProperties(const FCollectionPropertyConstFacade&, const TMap<FString, TConstArrayView<FRealSingle>>&, FSolverReal) instead.")
+	void SetProperties(const FCollectionPropertyConstFacade& PropertyCollection)
 	{
-		if (IsTetherStiffnessMutable(PropertyCollection))
-		{
-			Stiffness.SetWeightedValue(FSolverVec2(GetWeightedFloatTetherStiffness(PropertyCollection)));
-		}
-		if (IsTetherScaleMutable(PropertyCollection))
-		{
-			TetherScale.SetWeightedValue(FSolverVec2(GetWeightedFloatTetherScale(PropertyCollection)).ClampAxes(MinTetherScale, MaxTetherScale) * MeshScale);
-		}
+		SetProperties(PropertyCollection, TMap<FString, TConstArrayView<FRealSingle>>(), (FSolverReal)1.);
 	}
 
-	void Apply(FSolverParticles& Particles, const FSolverReal Dt) const;
+	CHAOS_API void Apply(FSolverParticles& Particles, const FSolverReal Dt) const;
 
 private:
+	using Base::MinTetherScale;
+	using Base::MaxTetherScale;
 	using Base::Tethers;
 	using Base::Stiffness;
 	using Base::TetherScale;
 	using Base::ParticleOffset;
+	using Base::ParticleCount;
 
 	UE_CHAOS_DECLARE_PROPERTYCOLLECTION_NAME(TetherStiffness, float);
 	UE_CHAOS_DECLARE_PROPERTYCOLLECTION_NAME(TetherScale, float);

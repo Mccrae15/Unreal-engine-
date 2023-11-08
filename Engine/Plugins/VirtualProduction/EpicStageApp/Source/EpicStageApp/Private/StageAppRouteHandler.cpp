@@ -18,6 +18,7 @@
 #include "RemoteControlWebsocketRoute.h"
 #include "StageAppResponse.h"
 #include "TextureResource.h"
+#include "UObject/Package.h"
 #include "WebRemoteControlUtils.h"
 #include "StageActor/DisplayClusterStageActorTemplate.h"
 #include "StageActor/DisplayClusterWeakStageActorPtr.h"
@@ -30,12 +31,6 @@
 #endif
 
 #define LOCTEXT_NAMESPACE "StageAppRouteHandler"
-
-static TAutoConsoleVariable<bool> CVarStageAppDebugLightCardHelperNormals(
-	TEXT("StageApp.DebugLightCardHelperNormals"),
-	false,
-	TEXT("Whether to overlay preview renders with a debug display of the normal maps for the lightcard helper.")
-);
 
 static TAutoConsoleVariable<float> CVarStageAppDragTimeoutCheckInterval(
 	TEXT("StageApp.DragTimeoutCheckInterval"),
@@ -334,6 +329,18 @@ void FStageAppRouteHandler::RegisterRoutes(IWebRemoteControlModule& WebRemoteCon
 		TEXT("stageapp.actors.duplicate"),
 		FWebSocketMessageDelegate::CreateRaw(this, &FStageAppRouteHandler::HandleWebSocketStageAppActorsDuplicate)
 	));
+
+	RegisterRoute(MakeUnique<FRemoteControlWebsocketRoute>(
+		TEXT("Create an object that will be kept alive until the client disconnects"),
+		TEXT("stageapp.clientobject.create"),
+		FWebSocketMessageDelegate::CreateRaw(this, &FStageAppRouteHandler::HandleWebSocketStageAppClientObjectCreate)
+	));
+
+	RegisterRoute(MakeUnique<FRemoteControlWebsocketRoute>(
+		TEXT("Destroy an object that was created using the stageapp.clientobject.create route"),
+		TEXT("stageapp.clientobject.destroy"),
+		FWebSocketMessageDelegate::CreateRaw(this, &FStageAppRouteHandler::HandleWebSocketStageAppClientObjectDestroy)
+	));
 }
 
 void FStageAppRouteHandler::RegisterEngineEvents()
@@ -545,30 +552,6 @@ void FStageAppRouteHandler::HandleWebSocketNDisplayPreviewRender(const FRemoteCo
 				return;
 			}
 
-			if (CVarStageAppDebugLightCardHelperNormals.GetValueOnGameThread())
-			{
-				// Draw the normal texture in the top-left corner if available
-				if (PerRendererData)
-				{
-					FDisplayClusterLightCardEditorHelper& Helper = PerRendererData->GetLightCardHelper();
-					const FGameTime Time = FGameTime::GetTimeSinceAppStart();
-					const ERHIFeatureLevel::Type FeatureLevel = PerRendererData->GetRootActor()->GetWorld()->Scene->GetFeatureLevel();
-					const FIntPoint HalfResolution = Resolution / 2;
-
-					auto DrawNormalMap = [&](const FIntPoint& Position, bool bShowNorthMap) {
-						if (const UTexture2D* NorthMapTexture = Helper.GetNormalMapTexture(bShowNorthMap))
-						{
-							FCanvas Canvas(RenderTarget, nullptr, Time, FeatureLevel);
-							Canvas.DrawTile(Position.X, Position.Y, HalfResolution.X, HalfResolution.Y, 0, 0, 1, 1, FColor::White, NorthMapTexture->GetResource());
-							Canvas.Flush_GameThread();
-						}
-					};
-
-					DrawNormalMap(FIntPoint(0, 0), true);
-					DrawNormalMap(FIntPoint(HalfResolution.X, 0), false);
-				}
-			}
-
 			// Read image data
 			TArray<FColor> PixelData;
 			RenderTarget->ReadPixels(PixelData);
@@ -709,6 +692,10 @@ void FStageAppRouteHandler::HandleWebSocketNDisplayPreviewActorDragBegin(const F
 		}
 
 		PerRendererData->PrimaryActor = FDisplayClusterWeakStageActorPtr(PrimaryActor);
+	}
+	else
+	{
+		PerRendererData->PrimaryActor.Reset();
 	}
 
 	if (!DragTimeoutTickerHandle.IsValid())
@@ -875,7 +862,7 @@ void FStageAppRouteHandler::HandleWebSocketNDisplayPreviewActorCreate(const FRem
 		FDisplayClusterLightCardEditorHelper& LightCardHelper = PerRendererData->GetLightCardHelper();
 
 		FSceneViewInitOptions ViewInitOptions;
-		if (PerRendererData->GetSceneViewInitOptions(ViewInitOptions, false))
+		if (PerRendererData->GetSceneViewInitOptions(ViewInitOptions))
 		{
 			const FSceneView View(ViewInitOptions);
 			LightCardHelper.MoveActorsToPixel({ NewActor }, PixelPos, View);
@@ -979,6 +966,70 @@ void FStageAppRouteHandler::HandleWebSocketStageAppActorsDuplicate(const FRemote
 	}
 }
 
+void FStageAppRouteHandler::HandleWebSocketStageAppClientObjectCreate(const FRemoteControlWebSocketMessage& WebSocketMessage)
+{
+	FRCWebSocketStageAppClientObjectCreateBody Body;
+	if (!WebRemoteControlUtils::DeserializeMessage(WebSocketMessage.RequestPayload, Body))
+	{
+		return;
+	}
+
+	UPackage* Package = CreatePackage(TEXT("/Engine/Transient/StageAppClientObjects"));
+	if (!Package)
+	{
+		return;
+	}
+
+	UObject* CreatedObject = NewObject<UObject>(Package, Body.ObjectClass, NAME_None, RF_Transient | RF_Public);
+	if (!CreatedObject)
+	{
+		return;
+	}
+
+	CreatedObject->AddToRoot();
+	BoundObjectsByClientId.FindOrAdd(WebSocketMessage.ClientId).Add(CreatedObject);
+
+	// Sent response with the new object's path
+	FRCRequestedClientObjectCreated Event;
+
+	Event.RequestId = Body.RequestId;
+	Event.ObjectPath = CreatedObject->GetPathName();
+
+	TArray<uint8> Payload;
+	WebRemoteControlUtils::SerializeMessage(Event, Payload);
+	RemoteControlModule->SendWebsocketMessage(WebSocketMessage.ClientId, Payload);
+}
+
+void FStageAppRouteHandler::HandleWebSocketStageAppClientObjectDestroy(const FRemoteControlWebSocketMessage& WebSocketMessage)
+{
+	FRCWebSocketStageAppClientObjectDestroyBody Body;
+	if (!WebRemoteControlUtils::DeserializeMessage(WebSocketMessage.RequestPayload, Body))
+	{
+		return;
+	}
+
+	if (TArray<UObject*>* ClientBoundObjects = BoundObjectsByClientId.Find(WebSocketMessage.ClientId))
+	{
+		for (auto BoundObjectIt = ClientBoundObjects->CreateIterator(); BoundObjectIt; ++BoundObjectIt)
+		{
+			UObject* BoundObject = *BoundObjectIt;
+			if (!BoundObject)
+			{
+				BoundObjectIt.RemoveCurrentSwap();
+				continue;
+			}
+
+			if (BoundObject->GetPathName() == Body.ObjectPath)
+			{
+				BoundObjectIt.RemoveCurrentSwap();
+				BoundObject->RemoveFromRoot();
+				BoundObject->ConditionalBeginDestroy();
+				return;
+			}
+		}
+	}
+}
+
 void FStageAppRouteHandler::HandleClientDisconnected(FGuid ClientId)
 {
 	// Destroy the client's renderers
@@ -992,6 +1043,18 @@ void FStageAppRouteHandler::HandleClientDisconnected(FGuid ClientId)
 		}
 
 		PerRendererDataMapsByClientId.Remove(ClientId);
+	}
+
+	// Destroy objects bound to the client's connection lifetime
+	if (TArray<UObject*>* ClientBoundObjects = BoundObjectsByClientId.Find(ClientId))
+	{
+		for (UObject* BoundObject : *ClientBoundObjects)
+		{
+			BoundObject->RemoveFromRoot();
+			BoundObject->ConditionalBeginDestroy();
+		}
+
+		BoundObjectsByClientId.Remove(ClientId);
 	}
 }
 

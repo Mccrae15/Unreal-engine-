@@ -13,18 +13,19 @@ namespace UnrealGameSync
 {
 	public partial class DiagnosticsWindow : Form
 	{
-		DirectoryReference _appDataFolder;
-		DirectoryReference _workspaceDataFolder;
-		List<FileReference> _extraFiles;
+		readonly DirectoryReference _appDataFolder;
+		readonly DirectoryReference _workspaceDataFolder;
+		readonly List<FileReference> _extraFiles;
 
 		public DiagnosticsWindow(DirectoryReference inAppDataFolder, DirectoryReference inWorkspaceDataFolder, string inDiagnosticsText, IEnumerable<FileReference> inExtraFiles)
 		{
 			InitializeComponent();
+			Font = new System.Drawing.Font("Segoe UI", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
 
 			_appDataFolder = inAppDataFolder;
 			_workspaceDataFolder = inWorkspaceDataFolder;
 
-			DiagnosticsTextBox.Text = inDiagnosticsText.Replace("\n", "\r\n");
+			DiagnosticsTextBox.Text = inDiagnosticsText.Replace("\n", "\r\n", StringComparison.Ordinal);
 			_extraFiles = inExtraFiles.ToList();
 		}
 
@@ -40,7 +41,7 @@ namespace UnrealGameSync
 
 		private void SaveButton_Click(object sender, EventArgs e)
 		{
-			SaveFileDialog dialog = new SaveFileDialog();
+			using SaveFileDialog dialog = new SaveFileDialog();
 			dialog.Filter = "Zip Files (*.zip)|*.zip|AllFiles (*.*)|*.*";
 			dialog.InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
 			dialog.FileName = Path.Combine(dialog.InitialDirectory, "UGS-Diagnostics.zip");
@@ -71,7 +72,7 @@ namespace UnrealGameSync
 							{
 								using (FileStream inputStream = FileReference.Open(extraFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
 								{
-									ZipArchiveEntry entry = zip.CreateEntry(extraFile.FullName.Replace(":", "").Replace('\\', '/'));
+									ZipArchiveEntry entry = zip.CreateEntry(extraFile.FullName.Replace(":", "", StringComparison.Ordinal).Replace("\\", "/", StringComparison.Ordinal));
 									using (Stream outputStream = entry.Open())
 									{
 										inputStream.CopyTo(outputStream);

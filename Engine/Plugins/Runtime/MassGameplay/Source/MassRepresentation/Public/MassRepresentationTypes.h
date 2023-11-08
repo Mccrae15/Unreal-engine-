@@ -10,6 +10,9 @@
 
 class UMaterialInterface;
 class UStaticMesh;
+struct FMassLODSignificanceRange;
+class UMassVisualizationComponent;
+class UInstancedStaticMeshComponent;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogMassRepresentation, Log, All);
 
@@ -35,9 +38,11 @@ enum class EMassActorEnabledType : uint8
 };
 
 USTRUCT()
-struct FStaticMeshInstanceVisualizationMeshDesc
+struct MASSREPRESENTATION_API FMassStaticMeshInstanceVisualizationMeshDesc
 {
 	GENERATED_BODY()
+
+	FMassStaticMeshInstanceVisualizationMeshDesc();
 	
 	/** The static mesh visual representation */
 	UPROPERTY(EditAnywhere, Category = "Mass|Visual")
@@ -64,10 +69,13 @@ struct FStaticMeshInstanceVisualizationMeshDesc
 	bool bCastShadows = false;
 	
 	/** Controls the mobility of the ISM */
-	UPROPERTY(EditAnywhere, Category = "Mass|Visual")
-	TEnumAsByte<EComponentMobility::Type> Mobility = EComponentMobility::Movable;
+	EComponentMobility::Type Mobility = EComponentMobility::Movable;
 
-	bool operator==(const FStaticMeshInstanceVisualizationMeshDesc& Other) const
+	/** InstancedStaticMeshComponent class to use to manage instances described by this struct instance */
+	UPROPERTY(EditAnywhere, Category = "Mass|Visual")
+	TSubclassOf<UInstancedStaticMeshComponent> ISMComponentClass;
+
+	bool operator==(const FMassStaticMeshInstanceVisualizationMeshDesc& Other) const
 	{
 		return Mesh == Other.Mesh && 
 			MaterialOverrides == Other.MaterialOverrides && 
@@ -77,7 +85,7 @@ struct FStaticMeshInstanceVisualizationMeshDesc
 			Mobility == Other.Mobility;
 	}
 	
-	friend FORCEINLINE uint32 GetTypeHash(const FStaticMeshInstanceVisualizationMeshDesc& MeshDesc)
+	friend FORCEINLINE uint32 GetTypeHash(const FMassStaticMeshInstanceVisualizationMeshDesc& MeshDesc)
 	{
 		uint32 Hash = 0x0;
 		Hash = PointerHash(MeshDesc.Mesh, Hash);
@@ -93,9 +101,12 @@ struct FStaticMeshInstanceVisualizationMeshDesc
 		return Hash;
 	}
 
-	operator uint32() const
+	// convenience function for setting MinLODSinificance and MaxLODSinificance based on EMassLOD values
+	void SetSignificanceRange(const EMassLOD::Type MinLOD, const EMassLOD::Type MaxLOD)
 	{
-		return GetTypeHash(*this);
+		checkSlow(MinLOD <= MaxLOD);
+		MinLODSignificance = float(MinLOD);
+		MaxLODSignificance = float(MaxLOD);
 	}
 };
 
@@ -109,7 +120,7 @@ struct FStaticMeshInstanceVisualizationDesc : public FTableRowBase
 	 * visualize the given agent.
 	 */
 	UPROPERTY(EditAnywhere, Category = "Mass|Visual")
-	TArray<FStaticMeshInstanceVisualizationMeshDesc> Meshes;
+	TArray<FMassStaticMeshInstanceVisualizationMeshDesc> Meshes;
 
 	/** Boolean to enable code to transform the static meshes if not align the mass agent transform */
 	UPROPERTY(EditAnywhere, Category = "Mass|Visual")
@@ -127,37 +138,63 @@ struct FStaticMeshInstanceVisualizationDesc : public FTableRowBase
 
 class UInstancedStaticMeshComponent;
 
-USTRUCT()
-struct MASSREPRESENTATION_API FISMCSharedData
+
+struct MASSREPRESENTATION_API FMassISMCSharedData
 {
-	GENERATED_BODY()
+	FMassISMCSharedData() = default;
 
-	FISMCSharedData() = default;
-
-	FISMCSharedData(UInstancedStaticMeshComponent* InISMC)
-		: ISMC(InISMC),
-		RefCount(1)
+	FMassISMCSharedData(UInstancedStaticMeshComponent* InISMC)
+		: ISMC(InISMC)
 	{
-
 	}
 
-	UInstancedStaticMeshComponent* ISMC = nullptr;
+	void SetISMComponent(UInstancedStaticMeshComponent& InISMC)
+	{
+		check(ISMC == nullptr && RefCount == 0);
+		ISMC = &InISMC;
+	}
 
-	int32 RefCount = 1;
+	UInstancedStaticMeshComponent* GetISMComponent() { return ISMC; }
+	int32 StoreReference() { return ++RefCount; }
+	int32 ReleaseReference() { ensure(RefCount >= 0); return --RefCount; }
 
+	void ResetAccumulatedData()
+	{
+		UpdateInstanceIds.Reset();
+		StaticMeshInstanceCustomFloats.Reset();
+		StaticMeshInstanceTransforms.Reset();
+		StaticMeshInstancePrevTransforms.Reset();
+		RemoveInstanceIds.Reset();
+		WriteIterator = 0;
+	}
+
+	TConstArrayView<int32> GetUpdateInstanceIds() const { return UpdateInstanceIds; }
+	TConstArrayView<FTransform> GetStaticMeshInstanceTransforms() const { return StaticMeshInstanceTransforms; }
+	TConstArrayView<FTransform> GetStaticMeshInstancePrevTransforms() const { return StaticMeshInstancePrevTransforms; }
+	TConstArrayView<int32> GetRemoveInstanceIds() const { return RemoveInstanceIds; }
+	TConstArrayView<float> GetStaticMeshInstanceCustomFloats() const { return StaticMeshInstanceCustomFloats; }
+
+protected:
+	friend FMassLODSignificanceRange;
+	friend UMassVisualizationComponent;
 	/** Buffer holding current frame transforms for the static mesh instances, used to batch update the transforms */
 	TArray<int32> UpdateInstanceIds;
 	TArray<FTransform> StaticMeshInstanceTransforms;
 	TArray<FTransform> StaticMeshInstancePrevTransforms;
+	TArray<int32> RemoveInstanceIds;
 
 	/** Buffer holding current frame custom floats for the static mesh instances, used to batch update the ISMs custom data */
 	TArray<float> StaticMeshInstanceCustomFloats;
 
 	// When initially adding to StaticMeshInstanceCustomFloats, can use the size as the write iterator, but on subsequent processors, we need to know where to start writing
 	int32 WriteIterator = 0;
+
+	UInstancedStaticMeshComponent* ISMC = nullptr;
+	int32 RefCount = 0;
 };
 
-typedef TMap<uint32, FISMCSharedData> FISMCSharedDataMap;
+using FMassISMCSharedDataMap = TMap<uint32, FMassISMCSharedData>;
+
 
 USTRUCT()
 struct MASSREPRESENTATION_API FMassLODSignificanceRange
@@ -183,7 +220,7 @@ public:
 				continue;
 			}
 
-			FISMCSharedData& SharedData = (*ISMCSharedDataPtr)[StaticMeshRefs[i]];
+			FMassISMCSharedData& SharedData = (*ISMCSharedDataPtr)[StaticMeshRefs[i]];
 			const int32 StartIndex = SharedData.StaticMeshInstanceCustomFloats.AddDefaulted(StructSizeInFloats + NumFloatsToPad);
 			InCustomDataType* CustomData = reinterpret_cast<InCustomDataType*>(&SharedData.StaticMeshInstanceCustomFloats[StartIndex]);
 			*CustomData = InCustomData;
@@ -192,6 +229,11 @@ public:
 
 	void AddBatchedCustomDataFloats(const TArray<float>& CustomFloats, const TArray<uint32>& ExcludeStaticMeshRefs);
 
+	/** Single-instance version of AddBatchedCustomData when called to add entities (as opposed to modify existing ones).*/
+	void AddInstance(const int32 InstanceId, const FTransform& Transform);
+
+	void RemoveInstance(const int32 InstanceId);
+
 	void WriteCustomDataFloatsAtStartIndex(int32 StaticMeshIndex, const TArrayView<float>& CustomFloats, const int32 FloatsPerInstance, const int32 StartIndex, const TArray<uint32>& ExcludeStaticMeshRefs);
 
 	/** LOD Significance range */
@@ -199,10 +241,10 @@ public:
 	float MaxSignificance;
 
 	/** The component handling these instances */
-	UPROPERTY()
+	UPROPERTY(VisibleAnywhere, Category = "Mass/Debug")
 	TArray<uint32> StaticMeshRefs;
 
-	FISMCSharedDataMap* ISMCSharedDataPtr = nullptr;
+	FMassISMCSharedDataMap* ISMCSharedDataPtr = nullptr;
 };
 
 USTRUCT()
@@ -218,11 +260,6 @@ public:
 	{
 	}
 
-	bool operator==(const FStaticMeshInstanceVisualizationDesc& OtherDesc) const
-	{
-		return Desc == OtherDesc;
-	}
-	
 	const FStaticMeshInstanceVisualizationDesc& GetDesc() const
 	{
 		return Desc;
@@ -252,11 +289,20 @@ public:
 			if(PrevLODSignificance >= 0.0f)
 			{
 				FMassLODSignificanceRange* PrevRange = GetLODSignificanceRange(PrevLODSignificance);
-				if (PrevRange != Range)
+				if (ensureMsgf(PrevRange, TEXT("Couldn't find a valid LODSignificanceRange for PrevLODSignificance %f"), PrevLODSignificance)
+					&& PrevRange != Range)
 				{
 					PrevRange->AddBatchedTransform(InstanceId, Transform, PrevTransform, Range->StaticMeshRefs);
 				}
 			}
+		}
+	}
+
+	FORCEINLINE void RemoveInstance(const int32 InstanceId, const float LODSignificance)
+	{
+		if (FMassLODSignificanceRange* Range = GetLODSignificanceRange(LODSignificance))
+		{
+			Range->RemoveInstance(InstanceId);
 		}
 	}
 
@@ -271,7 +317,8 @@ public:
 			if(PrevLODSignificance >= 0.0f)
 			{
 				FMassLODSignificanceRange* PrevRange = GetLODSignificanceRange(PrevLODSignificance);
-				if (PrevRange != Range)
+				if (ensureMsgf(PrevRange, TEXT("Couldn't find a valid LODSignificanceRange for PrevLODSignificance %f"), PrevLODSignificance)
+					&& PrevRange != Range)
 				{
 					PrevRange->AddBatchedCustomData(InCustomData, Range->StaticMeshRefs, NumFloatsToPad);
 				}
@@ -287,7 +334,8 @@ public:
 			if(PrevLODSignificance >= 0.0f)
 			{
 				FMassLODSignificanceRange* PrevRange = GetLODSignificanceRange(PrevLODSignificance);
-				if (PrevRange != Range)
+				if (ensureMsgf(PrevRange, TEXT("Couldn't find a valid LODSignificanceRange for PrevLODSignificance %f"), PrevLODSignificance)
+					&& PrevRange != Range)
 				{
 					PrevRange->AddBatchedCustomDataFloats(CustomFloats, Range->StaticMeshRefs);
 				}
@@ -303,7 +351,8 @@ public:
 			if(PrevLODSignificance >= 0.0f)
 			{
 				FMassLODSignificanceRange* PrevRange = GetLODSignificanceRange(PrevLODSignificance);
-				if (PrevRange != Range)
+				if (ensureMsgf(PrevRange, TEXT("Couldn't find a valid LODSignificanceRange for PrevLODSignificance %f"), PrevLODSignificance)
+					&& PrevRange != Range)
 				{
 					PrevRange->WriteCustomDataFloatsAtStartIndex(StaticMeshIndex, CustomFloats, FloatsPerInstance, FloatStartIndex, Range->StaticMeshRefs);
 				}
@@ -311,21 +360,33 @@ public:
 		}
 	}
 
+	void AddISMComponent(FMassISMCSharedData& SharedData)
+	{
+		if (ensure(SharedData.GetISMComponent()))
+		{
+			InstancedStaticMeshComponents.Add(SharedData.GetISMComponent());
+			SharedData.StoreReference();
+		}
+	}
+
+	int32 GetLODSignificanceRangesNum() const { return LODSignificanceRanges.Num(); }
+
 protected:
 
 	/** Destroy the visual instance */
-	void ClearVisualInstance(FISMCSharedDataMap& ISMCSharedData);
+	void ClearVisualInstance(FMassISMCSharedDataMap& ISMCSharedData);
 
 	/** Information about this static mesh which will represent all instances */
-	UPROPERTY()
-		FStaticMeshInstanceVisualizationDesc Desc;
+	UPROPERTY(VisibleAnywhere, Category = "Mass/Debug")
+	FStaticMeshInstanceVisualizationDesc Desc;
 
 	/** The component handling these instances */
-	UPROPERTY()
-		TArray<TObjectPtr<UInstancedStaticMeshComponent>> InstancedStaticMeshComponents;
+	UPROPERTY(VisibleAnywhere, Category = "Mass/Debug")
+	TArray<TObjectPtr<UInstancedStaticMeshComponent>> InstancedStaticMeshComponents;
 
-	UPROPERTY()
-		TArray<FMassLODSignificanceRange> LODSignificanceRanges;
+	UPROPERTY(VisibleAnywhere, Category = "Mass/Debug")
+	TArray<FMassLODSignificanceRange> LODSignificanceRanges;
+
 	friend class UMassVisualizationComponent;
 };
 

@@ -30,12 +30,14 @@
 #include "Logging/MessageLog.h"
 #include "Engine/SCS_Node.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "UnrealEngine.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SceneCaptureComponent)
 
 #define LOCTEXT_NAMESPACE "SceneCaptureComponent"
 
 static TMultiMap<TWeakObjectPtr<UWorld>, TWeakObjectPtr<USceneCaptureComponent> > SceneCapturesToUpdateMap;
+static FCriticalSection SceneCapturesToUpdateMapCS;
 
 static TAutoConsoleVariable<bool> CVarSCOverrideOrthographicTilingValues(
 	TEXT("r.SceneCapture.OverrideOrthographicTilingValues"),
@@ -59,6 +61,12 @@ static TAutoConsoleVariable<int32> CVarSCOrthographicNumYTiles(
 	TEXT("r.SceneCapture.OrthographicNumYTiles"),
 	4,
 	TEXT("Number of Y tiles to render. Ignored in Perspective mode, works only in Orthographic mode and when r.SceneCapture.OverrideOrthographicTilingValues is on."),
+	ECVF_Scalability);
+
+static TAutoConsoleVariable<bool> CVarSCCullByDetailMode(
+	TEXT("r.SceneCapture.CullByDetailMode"),
+	1,
+	TEXT("Whether to prevent scene capture updates according to the current detail mode"),
 	ECVF_Scalability);
 
 ASceneCapture::ASceneCapture(const FObjectInitializer& ObjectInitializer)
@@ -467,6 +475,7 @@ void USceneCaptureComponent::Serialize(FArchive& Ar)
 
 void USceneCaptureComponent::UpdateDeferredCaptures(FSceneInterface* Scene)
 {
+	FScopeLock ScopeLock(&SceneCapturesToUpdateMapCS);
 	UWorld* World = Scene->GetWorld();
 	if (!World || SceneCapturesToUpdateMap.Num() == 0)
 	{
@@ -504,6 +513,11 @@ void USceneCaptureComponent::UpdateDeferredCaptures(FSceneInterface* Scene)
 
 void USceneCaptureComponent::OnUnregister()
 {
+	// Make sure this component isn't still in the update map before we fully unregister
+	{
+		FScopeLock ScopeLock(&SceneCapturesToUpdateMapCS);
+		SceneCapturesToUpdateMap.Remove(GetWorld(), this);
+	}
 	for (int32 ViewIndex = 0; ViewIndex < ViewStates.Num(); ViewIndex++)
 	{
 		ViewStates[ViewIndex].Destroy();
@@ -518,6 +532,11 @@ void USceneCaptureComponent::OnUnregister()
 	ViewStates.Empty();
 
 	Super::OnUnregister();
+}
+
+bool USceneCaptureComponent::IsCulledByDetailMode() const
+{
+	return CVarSCCullByDetailMode.GetValueOnAnyThread() && DetailMode > GetCachedScalabilityCVars().DetailMode;
 }
 
 // -----------------------------------------------
@@ -664,12 +683,11 @@ void USceneCaptureComponent2D::GetCameraView(float DeltaTime, FMinimalViewInfo& 
 void USceneCaptureComponent2D::CaptureSceneDeferred()
 {
 	UWorld* World = GetWorld();
-	if (World && World->Scene && IsVisible())
+	if (World && World->Scene && IsVisible() && !IsCulledByDetailMode())
 	{
 		// Defer until after updates finish
 		// Needs some CS because of parallel updates.
-		static FCriticalSection CriticalSection;
-		FScopeLock ScopeLock(&CriticalSection);
+		FScopeLock ScopeLock(&SceneCapturesToUpdateMapCS);
 		SceneCapturesToUpdateMap.AddUnique(World, this);
 	}	
 }
@@ -677,12 +695,12 @@ void USceneCaptureComponent2D::CaptureSceneDeferred()
 void USceneCaptureComponent2D::CaptureScene()
 {
 	UWorld* World = GetWorld();
-	if (World && World->Scene && IsVisible())
+	if (World && World->Scene && IsVisible() && !IsCulledByDetailMode())
 	{
 		// We must push any deferred render state recreations before causing any rendering to happen, to make sure that deleted resource references are updated
 		World->SendAllEndOfFrameUpdates();
 		UpdateSceneCaptureContents(World->Scene);
-	}	
+	}
 
 	if (bCaptureEveryFrame)
 	{
@@ -1243,20 +1261,19 @@ void USceneCaptureComponentCube::UpdateDrawFrustum()
 void USceneCaptureComponentCube::CaptureSceneDeferred()
 {
 	UWorld* World = GetWorld();
-	if (World && World->Scene && IsVisible())
+	if (World && World->Scene && IsVisible() && !IsCulledByDetailMode())
 	{
 		// Defer until after updates finish
 		// Needs some CS because of parallel updates.
-		static FCriticalSection CriticalSection;
-		FScopeLock ScopeLock(&CriticalSection);
-		SceneCapturesToUpdateMap.AddUnique( World, this );
+		FScopeLock ScopeLock(&SceneCapturesToUpdateMapCS);
+		SceneCapturesToUpdateMap.AddUnique(World, this);
 	}	
 }
 
 void USceneCaptureComponentCube::CaptureScene()
 {
 	UWorld* World = GetWorld();
-	if (World && World->Scene && IsVisible())
+	if (World && World->Scene && IsVisible() && !IsCulledByDetailMode())
 	{
 		// We must push any deferred render state recreations before causing any rendering to happen, to make sure that deleted resource references are updated
 		World->SendAllEndOfFrameUpdates();

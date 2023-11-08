@@ -9,17 +9,23 @@
 namespace UE::PoseSearch
 {
 
+class FDebuggerDatabaseSharedData : public TSharedFromThis<FDebuggerDatabaseSharedData>
+{
+public:
+	TWeakObjectPtr<const UPoseSearchDatabase> SourceDatabase;
+	FString DatabaseName = "";
+	FString DatabasePath = "";
+	TAlignedArray<float> QueryVector;
+	TAlignedArray<float> PCAQueryVector;
+};
+
 class FDebuggerDatabaseRowData : public TSharedFromThis<FDebuggerDatabaseRowData>
 {
 public:
-	FDebuggerDatabaseRowData() = default;
-	
-	ESearchIndexAssetType AssetType = ESearchIndexAssetType::Invalid;
+	explicit FDebuggerDatabaseRowData(TSharedRef<FDebuggerDatabaseSharedData> InSharedData) : SharedData(InSharedData) {}
+
 	int32 PoseIdx = 0;
-	TWeakObjectPtr<const UPoseSearchDatabase> SourceDatabase = nullptr;
 	EPoseCandidateFlags PoseCandidateFlags = EPoseCandidateFlags::None;
-	FString DatabaseName = "";
-	FString DatabasePath = "";
 	FString AssetName = "";
 	FString AssetPath = "";
 	int32 DbAssetIdx = 0;
@@ -31,9 +37,13 @@ public:
 	FVector BlendParameters = FVector::Zero();
 	FPoseSearchCost PoseCost;
 	FLinearColor CostColor = FLinearColor::White;
+	float PosePCACost = 0.f;
+	FLinearColor PCACostColor = FLinearColor::White;
 	TArray<float> CostBreakdowns;
 	TArray<FLinearColor> CostBreakdownsColors;
 	TArray<float> CostVector;
+
+	TSharedRef<FDebuggerDatabaseSharedData> SharedData;
 };
 
 } // namespace UE::PoseSearch

@@ -21,6 +21,7 @@
 #include "UnrealEngine.h"
 #include "UnrealEdMisc.h"
 #include "EditorModes.h"
+#include "Framework/Application/SlateApplication.h"
 #include "DesktopPlatformModule.h"
 
 #include "DebugToolExec.h"
@@ -127,7 +128,7 @@ int32 EditorInit( IEngineLoop& EngineLoop )
 	SlowTask.EnterProgressFrame(40);
 
 	// Set up the actor folders singleton
-	FActorFolders::Init();
+	FActorFolders::Get();
 
 	// Initialize the misc editor
 	FUnrealEdMisc::Get().OnInit();
@@ -162,13 +163,24 @@ int32 EditorInit( IEngineLoop& EngineLoop )
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(EditorInit::MainFrame);
 
-		// Startup Slate main frame and other editor windows
+		// Startup Slate main frame and other editor windows if possible
 		{
 			const bool bStartImmersive = bIsImmersive;
 			const bool bStartPIE = bIsImmersive || bIsPlayInEditorRequested;
 
 			IMainFrameModule& MainFrameModule = FModuleManager::LoadModuleChecked<IMainFrameModule>(TEXT("MainFrame"));
-			MainFrameModule.CreateDefaultMainFrame( bStartImmersive, bStartPIE );
+			if (!MainFrameModule.IsWindowInitialized())
+			{
+				if (FSlateApplication::IsInitialized())
+				{
+					MainFrameModule.CreateDefaultMainFrame(bStartImmersive, bStartPIE);
+				}
+				else
+				{
+					RequestEngineExit(TEXT("Slate Application terminated or not initialized for MainFrame"));
+					return 1;
+				}
+			}
 		}
 	}
 
@@ -235,13 +247,12 @@ int32 EditorReinit()
 void EditorExit()
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(EditorExit);
+	LLM_SCOPE(ELLMTag::EngineMisc);
 
 	// Save out any config settings for the editor so they don't get lost
 	GEditor->SaveConfig();
 	GLevelEditorModeTools().SaveConfig();
 
-	// Clean up the actor folders singleton
-	FActorFolders::Cleanup();
 
 	// Save out default file directories
 	FEditorDirectories::Get().SaveLastDirectories();

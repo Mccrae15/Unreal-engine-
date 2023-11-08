@@ -73,6 +73,11 @@ namespace UE::PixelStreaming
 	 */
 	void FPixelStreamingModule::StartupModule()
 	{
+#if UE_SERVER
+		// Hack to no-op the rest of the module so Blueprints can still work
+		return;
+#endif
+
 		// Initialise all settings from command line args etc
 		Settings::InitialiseSettings();
 
@@ -322,6 +327,17 @@ namespace UE::PixelStreaming
 		ExternalVideoSourceGroup->SetFPS(InFPS);
 	}
 
+	void FPixelStreamingModule::SetExternalVideoSourceCoupleFramerate(bool bShouldCoupleFPS)
+	{
+		ExternalVideoSourceGroup->SetCoupleFramerate(bShouldCoupleFPS);
+	}
+
+	void FPixelStreamingModule::SetExternalVideoSourceInput(TSharedPtr<FPixelStreamingVideoInput> InVideoInput)
+	{
+		ExternalVideoSourceGroup->SetVideoInput(InVideoInput);
+		ExternalVideoSourceGroup->Start();
+	}
+
 	rtc::scoped_refptr<webrtc::VideoTrackSourceInterface> FPixelStreamingModule::CreateExternalVideoSource()
 	{
 		return ExternalVideoSourceGroup->CreateVideoSource([]() { return true; });
@@ -424,7 +440,7 @@ namespace UE::PixelStreaming
 			FString ErrorString(TEXT("Failed to initialize Pixel Streaming plugin because minimum requirement is Windows 8"));
 			FText ErrorText = FText::FromString(ErrorString);
 			FText TitleText = FText::FromString(TEXT("Pixel Streaming Plugin"));
-			FMessageDialog::Open(EAppMsgType::Ok, ErrorText, &TitleText);
+			FMessageDialog::Open(EAppMsgType::Ok, ErrorText, TitleText);
 			UE_LOG(LogPixelStreaming, Error, TEXT("%s"), *ErrorString);
 			bCompatible = false;
 		}

@@ -121,6 +121,13 @@ void UInterchangePipelineBase::LoadSettingsInternal(const FName PipelineStackNam
 		{
 			continue;
 		}
+#if WITH_EDITOR
+		if (Property->GetBoolMetaData(FName("AlwaysResetToDefault")))
+		{
+			//Stand alone pipeline property
+			continue;
+		}
+#endif //WITH_EDITOR
 
 		if (const FInterchangePipelinePropertyStates* PropertyStates = ParentPropertiesStates.Find(PropertyPath))
 		{
@@ -348,4 +355,66 @@ void UInterchangePipelineBase::HidePropertiesOfSubCategory(UInterchangePipelineB
 {
 	constexpr bool bVisibilityState = false;
 	InternalToggleVisibilityPropertiesOfMetaDataValue(OuterMostPipeline, Pipeline, bDoTransientSubPipeline, TEXT("SubCategory"), HideSubCategoryName, bVisibilityState);
+}
+
+struct FWeakObjectPtrData
+{
+	FString PropertyName;
+	FWeakObjectProperty* WeakObjectProperty;
+	void* ValuePtr;
+};
+
+void GatherObjectAndWeakObjectPtrs(UClass* Class, UObject* Object/*Value*/, TMap<FString, UObject*>& ObjectPtrs, TArray<FWeakObjectPtrData>& WeakObjectPtrs)
+{
+	for (TFieldIterator<FProperty> It(Class); It; ++It)
+	{
+		FProperty* Property = *It;
+
+		FString VariableName = Property->GetName();
+
+		if (FWeakObjectProperty* WeakObjectProperty = CastField<FWeakObjectProperty>(Property))
+		{
+			FWeakObjectPtrData& Data = WeakObjectPtrs.AddDefaulted_GetRef();
+			Data.PropertyName = Property->GetName();
+			Data.WeakObjectProperty = WeakObjectProperty;
+			Data.ValuePtr = Property->ContainerPtrToValuePtr<uint8>(Object);
+		}
+		else if (FObjectProperty* ObjectProperty = CastField<FObjectProperty>(Property))
+		{
+			const void* SubValue = Property->ContainerPtrToValuePtr<uint8>(Object);
+			UObject* SubObject = ObjectProperty->GetObjectPropertyValue(SubValue);
+			if (SubObject)
+			{
+				FString PropertyName = Property->GetName();
+				ObjectPtrs.Add(PropertyName, SubObject);
+
+				UClass* SubObjectPropertyClass = SubObject->GetClass();
+
+				GatherObjectAndWeakObjectPtrs(SubObjectPropertyClass, SubObject, ObjectPtrs, WeakObjectPtrs);
+			}
+		}
+	}
+}
+
+void UInterchangePipelineBase::UpdateWeakObjectPtrs()
+{
+	//Fix WeakObjectPtr connections:
+	TMap<FString, UObject*> ObjectPtrs;
+	TArray<FWeakObjectPtrData> WeakObjectPtrs;
+	GatherObjectAndWeakObjectPtrs(GetClass(), this, ObjectPtrs, WeakObjectPtrs);
+
+	for (FWeakObjectPtrData& WeakObjectPtrData : WeakObjectPtrs)
+	{
+		if (ObjectPtrs.Contains(WeakObjectPtrData.PropertyName))
+		{
+			WeakObjectPtrData.WeakObjectProperty->SetPropertyValue(WeakObjectPtrData.ValuePtr, ObjectPtrs[WeakObjectPtrData.PropertyName]);
+		}
+	}
+}
+
+void UInterchangePipelineBase::PostDuplicate(bool bDuplicateForPIE)
+{
+	Super::PostDuplicate(bDuplicateForPIE);
+
+	UpdateWeakObjectPtrs();
 }

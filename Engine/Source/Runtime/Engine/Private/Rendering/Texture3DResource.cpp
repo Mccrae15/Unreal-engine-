@@ -10,10 +10,6 @@
 #include "RenderUtils.h"
 
 //*****************************************************************************
-
-extern RHI_API bool GUseTexture3DBulkDataRHI;
-
-//*****************************************************************************
 //************************* FVolumeTextureBulkData ****************************
 //*****************************************************************************
 
@@ -123,12 +119,15 @@ void FTexture3DResource::CreateTexture()
 	// Create the RHI texture.
 	{
 		const FTexture2DMipMap& FirstMip = *MipsView[FirstMipIdx];
+		const static FLazyName ClassName(TEXT("FTexture3DResource"));
 
 		FRHITextureCreateDesc Desc =
 			FRHITextureCreateDesc::Create3D(TEXT("FTexture3DResource"), FirstMip.SizeX, FirstMip.SizeY, FirstMip.SizeZ, PixelFormat)
 			.SetNumMips(State.NumRequestedLODs)
 			.SetFlags(CreationFlags)
-			.SetExtData(PlatformData->GetExtData());
+			.SetExtData(PlatformData->GetExtData())
+			.SetClassName(ClassName)
+			.SetOwnerName(GetOwnerName());
 
 		if (GUseTexture3DBulkDataRHI)
 		{
@@ -203,7 +202,7 @@ uint64 FTexture3DResource::GetPlatformMipsSize(uint32 NumMips) const
 	}
 }
 
-void FTexture3DResource::InitRHI()
+void FTexture3DResource::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	if (ProxiedResource)
 	{
@@ -214,6 +213,6 @@ void FTexture3DResource::InitRHI()
 	}
 	else
 	{
-		FStreamableTextureResource::InitRHI();
+		FStreamableTextureResource::InitRHI(RHICmdList);
 	}
 }

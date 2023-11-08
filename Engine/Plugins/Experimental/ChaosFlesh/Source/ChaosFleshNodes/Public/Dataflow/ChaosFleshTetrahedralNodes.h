@@ -17,6 +17,30 @@ namespace UE {
 	}
 }
 
+// Generate quality metrics
+USTRUCT(meta = (DataflowFlesh))
+struct FCalculateTetMetrics : public FDataflowNode
+{
+	GENERATED_USTRUCT_BODY()
+	DATAFLOW_NODE_DEFINE_INTERNAL(FCalculateTetMetrics, "AuthorTetMetrics", "Flesh", "")
+public:
+	typedef FManagedArrayCollection DataType;
+
+	// Passthrough geometry collection. Bindings are stored as standalone groups in the \p Collection, keyed by the name of the input render mesh and all available LOD's.
+	UPROPERTY(meta = (DataflowInput, DataflowOutput, DataflowPassthrough = "Collection", DisplayName = "Collection"))
+	FManagedArrayCollection Collection;
+
+	FCalculateTetMetrics(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
+		: FDataflowNode(InParam, InGuid)
+	{
+		RegisterInputConnection(&Collection);
+		RegisterOutputConnection(&Collection, &Collection);
+	}
+
+	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
+};
+
+
 USTRUCT(meta = (DataflowFlesh))
 struct FConstructTetGridNode : public FDataflowNode
 {
@@ -36,6 +60,9 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Dataflow", meta = (ClampMin = "0.0"))
 	FVector GridDomain = FVector(10.0, 10.0, 10.0);
 
+	UPROPERTY(EditAnywhere, Category = "Dataflow")
+	bool bDiscardInteriorTriangles = true;
+
 	FConstructTetGridNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
 		: FDataflowNode(InParam, InGuid)
 	{
@@ -48,7 +75,7 @@ public:
 
 
 UENUM()
-enum TetMeshingMethod
+enum TetMeshingMethod : int
 {
 	IsoStuffing		UMETA(DisplayName = "IsoStuffing"),
 	TetWild			UMETA(DisplayName = "TetWild"),
@@ -129,6 +156,9 @@ public:
 	UPROPERTY(meta = (DataflowInput, DataflowOutput, DisplayName = "Collection"))
 	FManagedArrayCollection Collection;
 
+	UPROPERTY(EditAnywhere, Category = "Dataflow")
+	bool bDiscardInteriorTriangles = true;
+
 	FGenerateTetrahedralCollectionDataflowNodes(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
 		: FDataflowNode(InParam, InGuid)
 	{
@@ -147,7 +177,7 @@ protected:
 
 namespace Dataflow
 {
-	TArray<FIntVector3> GetSurfaceTriangles(const TArray<FIntVector4>& Tets);
+	TArray<FIntVector3> GetSurfaceTriangles(const TArray<FIntVector4>& Tets, const bool bKeepInterior);
 	void ChaosFleshTetrahedralNodes();
 
 

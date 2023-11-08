@@ -24,6 +24,7 @@ void UFractureProximityActions::SaveAsDefaults()
 	ModeSettings->bProximityUseAsConnectionGraph = ProximityTool->ProximitySettings->bUseAsConnectionGraph;
 	ModeSettings->ProximityContactThreshold = ProximityTool->ProximitySettings->ContactThreshold;
 	ModeSettings->ProximityContactMethod = ProximityTool->ProximitySettings->ContactMethod;
+	ModeSettings->ProximityConnectionContactAreaMethod = ProximityTool->ProximitySettings->ContactAreaMethod;
 }
 
 void UFractureProximityActions::SetFromDefaults()
@@ -35,6 +36,7 @@ void UFractureProximityActions::SetFromDefaults()
 	ProximityTool->ProximitySettings->bUseAsConnectionGraph = ModeSettings->bProximityUseAsConnectionGraph;
 	ProximityTool->ProximitySettings->ContactThreshold = ModeSettings->ProximityContactThreshold;
 	ProximityTool->ProximitySettings->ContactMethod = ModeSettings->ProximityContactMethod;
+	ProximityTool->ProximitySettings->ContactAreaMethod = ModeSettings->ProximityConnectionContactAreaMethod;
 
 	ProximityTool->NotifyOfPropertyChangeByTool(this);
 }
@@ -183,7 +185,17 @@ void UFractureToolProximity::Render(const FSceneView* View, FViewport* Viewport,
 			{
 				FVector P1 = WorldTransform.TransformPosition(Vis.GeoCenters[Edge.A] + GetExplodedOffset(Edge.A));
 				FVector P2 = WorldTransform.TransformPosition(Vis.GeoCenters[Edge.B] + GetExplodedOffset(Edge.B));
-				PDI->DrawLine(P1, P2, FLinearColor::Green, SDPG_Foreground, 0.0f, 0.001f);
+				PDI->DrawLine(P1, P2, ProximitySettings->LineColor, SDPG_Foreground, ProximitySettings->LineThickness, 0.001f);
+			}
+
+			for (int32 CenterIndex = 0; CenterIndex < Vis.GeoCenters.Num(); CenterIndex++)
+			{
+				// Draw centers for geometry (clusters can have geometry but it is not visible and won't be connected in the proximity graph)
+				if (Collection.SimulationType[Collection.TransformIndex[CenterIndex]] == FGeometryCollection::ESimulationTypes::FST_Rigid)
+				{
+					FVector P = WorldTransform.TransformPosition(Vis.GeoCenters[CenterIndex] + GetExplodedOffset(CenterIndex));
+					PDI->DrawPoint(P, ProximitySettings->CenterColor, ProximitySettings->CenterSize, SDPG_Foreground);
+				}
 			}
 		}
 	}
@@ -223,6 +235,7 @@ int32 UFractureToolProximity::ExecuteFracture(const FFractureToolContext& Fractu
 		Properties.Method = ProximitySettings->Method;
 		Properties.DistanceThreshold = ProximitySettings->DistanceThreshold;
 		Properties.bUseAsConnectionGraph = ProximitySettings->bUseAsConnectionGraph;
+		Properties.ContactAreaMethod = ProximitySettings->ContactAreaMethod;
 		Properties.ContactMethod = ProximitySettings->ContactMethod;
 		Properties.RequireContactAmount = ProximitySettings->ContactThreshold;
 		
@@ -236,9 +249,9 @@ int32 UFractureToolProximity::ExecuteFracture(const FFractureToolContext& Fractu
 	return INDEX_NONE;
 }
 
-void UFractureToolProximity::Setup()
+void UFractureToolProximity::Setup(TWeakPtr<FFractureEditorModeToolkit> InToolkit)
 {
-	Super::Setup();
+	Super::Setup(InToolkit);
 }
 
 #undef LOCTEXT_NAMESPACE

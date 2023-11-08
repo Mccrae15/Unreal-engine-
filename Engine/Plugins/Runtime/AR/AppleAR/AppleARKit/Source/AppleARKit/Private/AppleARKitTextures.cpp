@@ -145,7 +145,7 @@ public:
 	/** Returns the height of the texture in pixels. */
 	virtual uint32 GetSizeY() const override { return Size.Y; }
 	
-	virtual void InitRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		FSamplerStateInitializerRHI SamplerStateInitializer(SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp);
 		SamplerStateRHI = RHICreateSamplerState(SamplerStateInitializer);
@@ -495,7 +495,7 @@ void UAppleARKitEnvironmentCaptureProbeTexture::Init(float InTimestamp, id<MTLTe
 		ENQUEUE_RENDER_COMMAND(UpdateEnvironmentCapture)(
 			[InResource = GetResource()](FRHICommandListImmediate& RHICmdList)
 			{
-				InResource->InitRHI();
+				InResource->InitRHI(RHICmdList);
 			});
 	}
 }
@@ -578,7 +578,7 @@ public:
 	/**
 	 * Called when the resource is initialized. This is only called by the rendering thread.
 	 */
-	virtual void InitRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		FRHIResourceCreateInfo CreateInfo(TEXT("FARMetalResource"));
 
@@ -754,7 +754,7 @@ void UAppleARKitOcclusionTexture::SetMetalTexture(float InTimestamp, id<MTLTextu
 			if (MetalTexture)
 			{
 				CFRetain(MetalTexture);
-				Size = FVector2D(MetalTexture.width, MetalTexture.height);
+				Size = FVector2f(MetalTexture.width, MetalTexture.height);
 			}
 		}
 	}
@@ -893,7 +893,7 @@ public:
 	{
 	}
 
-	virtual void InitRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		FSamplerStateInitializerRHI SamplerStateInitializer(SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp);
 		SamplerStateRHI = RHICreateSamplerState(SamplerStateInitializer);
@@ -1013,7 +1013,7 @@ public:
 		
 		if (!DecodedTextureUAV)
 		{
-			DecodedTextureUAV = RHICreateUnorderedAccessView(DecodedTextureRef);
+			DecodedTextureUAV = RHICmdList.CreateUnorderedAccessView(DecodedTextureRef);
 		}
 		
 		{
@@ -1118,27 +1118,35 @@ void UAppleARKitCameraVideoTexture::Init()
 void UAppleARKitCameraVideoTexture::UpdateFrame(const FAppleARKitFrame& InFrame)
 {
 #if SUPPORTS_ARKIT_1_0
-	if (InFrame.CapturedYImage && InFrame.CapturedCbCrImage)
+    if ((InFrame.CapturedYImage && InFrame.CapturedCbCrImage) &&
+        (InFrame.CapturedYImageSize.GetMin() > 0) &&
+        (InFrame.CapturedCbCrImageSize.GetMin() > 0))
 	{
-		if (auto VideoResource = static_cast<FARKitCameraVideoResource*>(GetResource()))
+		CVMetalTextureRef CapturedYImageCopy = InFrame.CapturedYImage;
+		CVMetalTextureRef CapturedCbCrImageCopy = InFrame.CapturedCbCrImage;
+		CFRetain(CapturedYImageCopy);
+		CFRetain(CapturedCbCrImageCopy);
+		const FIntPoint CapturedYImageSize = InFrame.CapturedYImageSize;
+		const FIntPoint CapturedCbCrImageSize = InFrame.CapturedCbCrImageSize;
+		const EDeviceScreenOrientation DeviceOrientation = FPlatformMisc::GetDeviceOrientation();
+
+		Size = CapturedYImageSize;
+
+		ENQUEUE_RENDER_COMMAND(UpdateVideoTexture)(
+			[this, CapturedYImageCopy, CapturedCbCrImageCopy, CapturedYImageSize, CapturedCbCrImageSize, DeviceOrientation](FRHICommandListImmediate& RHICmdList)
 		{
-			auto CapturedYImageCopy = InFrame.CapturedYImage;
-			auto CapturedCbCrImageCopy = InFrame.CapturedCbCrImage;
-			CFRetain(CapturedYImageCopy);
-			CFRetain(CapturedCbCrImageCopy);
-			const auto CapturedYImageSize = InFrame.CapturedYImageSize;
-			const auto CapturedCbCrImageSize = InFrame.CapturedCbCrImageSize;
-			const auto DeviceOrientation = FPlatformMisc::GetDeviceOrientation();
-			ENQUEUE_RENDER_COMMAND(UpdateVideoTexture)(
-				[VideoResource, CapturedYImageCopy, CapturedCbCrImageCopy, CapturedYImageSize, CapturedCbCrImageSize, DeviceOrientation](FRHICommandListImmediate& RHICmdList)
-			{
+			FARKitCameraVideoResource* VideoResource = static_cast<FARKitCameraVideoResource*>(GetResource());
+			if (VideoResource != nullptr)
+			{	
 				VideoResource->UpdateVideoTexture(RHICmdList, CapturedYImageCopy, CapturedYImageSize, CapturedCbCrImageCopy, CapturedCbCrImageSize, DeviceOrientation);
-			});
-			
-			Size = CapturedYImageSize;
-		}
+			}
+		});
 	}
+    else
 #endif
+    {
+        Size = FVector2f::ZeroVector;
+    }
 }
 
 #if SUPPORTS_ARKIT_1_0

@@ -2,12 +2,11 @@
 
 #include "NiagaraTypes.h"
 
-#include "Engine/Texture2D.h"
 #include "NiagaraDataInterface.h"
-#include "NiagaraStats.h"
 #include "NiagaraEmitter.h"
 #include "Misc/StringBuilder.h"
 #include "UObject/Class.h"
+#include "UObject/EnumProperty.h"
 #include "UObject/Package.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraTypes)
@@ -21,7 +20,7 @@ void FNiagaraVariableBase::SetNamespacedName(const FString& InNamespace, FName I
 	NameBuilder.Append(InNamespace);
 	NameBuilder.AppendChar(TEXT('.'));
 	InVariableName.AppendString(NameBuilder);
-	Name = FName(NameBuilder.ToString());
+	Name = FName(NameBuilder);
 }
 
 bool FNiagaraVariableBase::RemoveRootNamespace(const FStringView& ExpectedNamespace)
@@ -52,6 +51,20 @@ bool FNiagaraVariableBase::ReplaceRootNamespace(const FStringView& ExpectedNames
 		NewNameString.Append(NewNamespace);
 		NewNameString.Append(NameStringView.Mid(ExpectedNamespace.Len()));
 		Name = FName(FStringView(NewNameString));
+		return true;
+	}
+	return false;
+}
+
+bool FNiagaraVariableBase::SerializeFromMismatchedTag(const struct FPropertyTag& Tag, FStructuredArchive::FSlot Slot)
+{
+	if (Tag.Type == NAME_StructProperty && Tag.StructName == FNiagaraVariable::StaticStruct()->GetFName())
+	{
+		FNiagaraVariable Var;
+		FNiagaraVariable::StaticStruct()->SerializeItem(Slot, &Var, nullptr);
+		Name = Var.Name;
+		TypeDefHandle = Var.TypeDefHandle;
+		//ensureMsgf(Var.IsDataAllocated() == false, TEXT("NiagaraVariable has been demoted to Base but contains data, this is probably an error."));
 		return true;
 	}
 	return false;
@@ -148,6 +161,16 @@ FVector FNiagaraLWCConverter::ConvertSimulationPositionToWorld(FNiagaraPosition 
 FVector FNiagaraLWCConverter::ConvertSimulationVectorToWorld(FVector3f SimulationPosition) const
 {
 	return FVector(SimulationPosition) + SystemWorldPos;
+}
+
+FMatrix FNiagaraLWCConverter::ConvertWorldToSimulationMatrix(const FMatrix& Matrix) const
+{
+	return Matrix.ConcatTranslation(-SystemWorldPos);
+}
+
+FMatrix FNiagaraLWCConverter::ConvertSimulationToWorldMatrix(const FMatrix& Matrix) const
+{
+	return Matrix.ConcatTranslation(SystemWorldPos);
 }
 
 FNiagaraStructConversionStep::FNiagaraStructConversionStep()
@@ -279,6 +302,11 @@ void FNiagaraLwcStructConverter::AddConversionStep(int32 InSourceBytes, int32 In
 }
 
 //////////////////////////////////////////////////////////////////////////
+
+FNiagaraTypeDefinition FNiagaraTypeHelper::Vector2DDef;
+FNiagaraTypeDefinition FNiagaraTypeHelper::VectorDef;
+FNiagaraTypeDefinition FNiagaraTypeHelper::Vector4Def;
+FNiagaraTypeDefinition FNiagaraTypeHelper::QuatDef;
 
 FRWLock FNiagaraTypeHelper::RemapTableLock;
 TMap<TWeakObjectPtr<UScriptStruct>, FNiagaraTypeHelper::FRemapEntry> FNiagaraTypeHelper::RemapTable;
@@ -635,11 +663,89 @@ UScriptStruct* FNiagaraTypeHelper::GetLWCStruct(UScriptStruct* SWCStruct)
 
 FNiagaraTypeDefinition FNiagaraTypeHelper::GetSWCType(const FNiagaraTypeDefinition& InType)
 {
+	if (InType.IsEnum() || InType.IsUObject() || InType.IsDataInterface())
+	{
+		return InType;
+	}
+
 	if (IsLWCType(InType))
 	{
 		return FNiagaraTypeDefinition(FindNiagaraFriendlyTopLevelStruct(CastChecked<UScriptStruct>(InType.GetStruct()), ENiagaraStructConversion::Simulation));
 	}
 	return InType;
+}
+
+FNiagaraTypeDefinition FNiagaraTypeHelper::GetLWCType(const FNiagaraTypeDefinition& InType)
+{
+	if(InType.IsEnum() || InType.IsUObject() || InType.IsDataInterface())
+	{
+		return InType;
+	}
+
+	if(InType == FNiagaraTypeDefinition::GetFloatDef())
+	{
+		return FNiagaraTypeDefinition(FNiagaraDouble::StaticStruct(), FNiagaraTypeDefinition::EAllowUnfriendlyStruct::Allow);
+	}
+	else if (InType == FNiagaraTypeDefinition::GetVec2Def())
+	{
+		return Vector2DDef;
+	}
+	else if (InType == FNiagaraTypeDefinition::GetVec3Def())
+	{
+		return VectorDef;
+	}
+	else if (InType == FNiagaraTypeDefinition::GetVec4Def())
+	{
+		return Vector4Def;
+	}
+	else if (InType == FNiagaraTypeDefinition::GetQuatDef())
+	{
+		return QuatDef;
+	}
+
+	if (IsLWCType(InType))
+	{
+		return InType;
+	}
+
+	if(UScriptStruct* LWCStruct = GetLWCStruct(InType.GetScriptStruct()))
+	{
+		return FNiagaraTypeDefinition(LWCStruct, FNiagaraTypeDefinition::EAllowUnfriendlyStruct::Allow);
+	}
+	
+	return InType;
+}
+
+void FNiagaraTypeHelper::InitStaticTypes()
+{
+	if (Vector2DDef.IsValid() == false)
+	{
+		UPackage* CoreUObjectPkg = FindObjectChecked<UPackage>(nullptr, TEXT("/Script/CoreUObject"));
+		Vector2DDef = FNiagaraTypeDefinition(FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Vector2D")), FNiagaraTypeDefinition::EAllowUnfriendlyStruct::Allow);
+		VectorDef = FNiagaraTypeDefinition(FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Vector")), FNiagaraTypeDefinition::EAllowUnfriendlyStruct::Allow);
+		Vector4Def = FNiagaraTypeDefinition(FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Vector4")), FNiagaraTypeDefinition::EAllowUnfriendlyStruct::Allow);
+		QuatDef = FNiagaraTypeDefinition(FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Quat")), FNiagaraTypeDefinition::EAllowUnfriendlyStruct::Allow);
+	}
+}
+
+FNiagaraTypeDefinition FNiagaraTypeHelper::GetVector2DDef()
+{
+	return Vector2DDef;
+}
+
+FNiagaraTypeDefinition FNiagaraTypeHelper::GetVectorDef()
+{
+	return VectorDef;
+}
+
+FNiagaraTypeDefinition FNiagaraTypeHelper::GetVector4Def()
+{
+	return Vector4Def;
+}
+
+FNiagaraTypeDefinition FNiagaraTypeHelper::GetQuatDef()
+{
+	return QuatDef;
 }
 
 UScriptStruct* FNiagaraTypeHelper::FindNiagaraFriendlyTopLevelStruct(UScriptStruct* InStruct, ENiagaraStructConversion StructConversion)
@@ -702,3 +808,64 @@ bool FNiagaraTypeHelper::IsNiagaraFriendlyTopLevelStruct(UScriptStruct* InStruct
 
 /////////////////////////////////////////////////////////////////////////////
 
+void FNiagaraTypeLayoutInfo::GenerateLayoutInfo(const UScriptStruct* Struct)
+{
+	int32 FloatCount = 0;
+	int32 Int32Count = 0;
+	int32 HalfCount = 0;
+	GenerateLayoutInfoInternal(Struct, FloatCount, Int32Count, HalfCount, true);
+	NumFloatComponents = FloatCount;
+	NumInt32Components = Int32Count;
+	NumHalfComponents = HalfCount;
+
+	FloatCount = 0;
+	Int32Count = 0;
+	HalfCount = 0;
+	ComponentsOffsets.SetNum(GetTotalComponents() * 2);
+	GenerateLayoutInfoInternal(Struct, FloatCount, Int32Count, HalfCount, false);
+}
+
+void FNiagaraTypeLayoutInfo::GenerateLayoutInfoInternal(const UScriptStruct* Struct, int32& FloatCount, int32& Int32Count, int32& HalfCount, bool bCountComponentsOnly, int32 BaseOffset)
+{
+	for (TFieldIterator<FProperty> PropertyIt(Struct, EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
+	{
+		const FProperty* Property = *PropertyIt;
+		const int32 PropOffset = BaseOffset + Property->GetOffset_ForInternal();
+		if (Property->IsA(FFloatProperty::StaticClass()))
+		{
+			if (bCountComponentsOnly == false)
+			{
+				ComponentsOffsets[GetFloatArrayByteOffset() + FloatCount] = PropOffset;
+				ComponentsOffsets[GetFloatArrayRegisterOffset() + FloatCount] = FloatCount;
+			}
+			++FloatCount;
+		}
+		else if (Property->IsA(FUInt16Property::StaticClass()))
+		{
+			if (bCountComponentsOnly == false)
+			{
+				ComponentsOffsets[GetHalfArrayByteOffset() + HalfCount] = PropOffset;
+				ComponentsOffsets[GetHalfArrayRegisterOffset() + HalfCount] = HalfCount;
+			}
+			++HalfCount;
+		}
+		else if (Property->IsA(FIntProperty::StaticClass()) || Property->IsA(FBoolProperty::StaticClass()))
+		{
+			if (bCountComponentsOnly == false)
+			{
+				ComponentsOffsets[GetInt32ArrayByteOffset() + Int32Count] = PropOffset;
+				ComponentsOffsets[GetInt32ArrayRegisterOffset() + Int32Count] = Int32Count;
+			}
+			++Int32Count;
+		}
+		//Should be able to support double easily enough
+		else if (const FStructProperty* StructProp = CastField<FStructProperty>(Property))
+		{
+			GenerateLayoutInfoInternal(FNiagaraTypeHelper::FindNiagaraFriendlyTopLevelStruct(StructProp->Struct, ENiagaraStructConversion::Simulation), FloatCount, Int32Count, HalfCount, bCountComponentsOnly, PropOffset);
+		}
+		else
+		{
+			checkf(false, TEXT("Property(%s) Class(%s) is not a supported type"), *Property->GetName(), *Property->GetClass()->GetName());
+		}
+	}
+}

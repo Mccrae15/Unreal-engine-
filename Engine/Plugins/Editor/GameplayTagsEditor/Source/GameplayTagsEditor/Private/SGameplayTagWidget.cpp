@@ -111,7 +111,7 @@ void SGameplayTagWidget::Construct(const FArguments& InArgs, const TArray<FEdita
 		for (int32 Idx = TagItems.Num() - 1; Idx >= 0; --Idx)
 		{
 			bool DelegateShouldHide = false;
-			FGameplayTagSource* Source = Manager.FindTagSource(TagItems[Idx]->SourceName);
+			FGameplayTagSource* Source = Manager.FindTagSource(TagItems[Idx]->GetFirstSourceName());
 			Manager.OnFilterGameplayTag.Broadcast(UGameplayTagsManager::FFilterGameplayTagContext(RootFilterString, TagItems[Idx], Source, PropertyHandle), DelegateShouldHide);
 			if (DelegateShouldHide)
 			{
@@ -407,7 +407,7 @@ bool SGameplayTagWidget::FilterChildrenCheck( TSharedPtr<FGameplayTagNode> InIte
 		return false;
 	}
 
-	auto FilterChildrenCheck_r = ([=]()
+	auto FilterChildrenCheck_r = ([this, InItem]()
 	{
 		TArray< TSharedPtr<FGameplayTagNode> > Children = InItem->GetChildTagNodes();
 		for( int32 iChild = 0; iChild < Children.Num(); ++iChild )
@@ -425,7 +425,7 @@ bool SGameplayTagWidget::FilterChildrenCheck( TSharedPtr<FGameplayTagNode> InIte
 	Manager.OnFilterGameplayTagChildren.Broadcast(RootFilterString, InItem, DelegateShouldHide);
 	if (!DelegateShouldHide && Manager.OnFilterGameplayTag.IsBound())
 	{
-		FGameplayTagSource* Source = Manager.FindTagSource(InItem->SourceName);
+		FGameplayTagSource* Source = Manager.FindTagSource(InItem->GetFirstSourceName());
 		Manager.OnFilterGameplayTag.Broadcast(UGameplayTagsManager::FFilterGameplayTagContext(RootFilterString, InItem, Source, PropertyHandle), DelegateShouldHide);
 	}
 	if (DelegateShouldHide)
@@ -456,22 +456,16 @@ TSharedRef<ITableRow> SGameplayTagWidget::OnGenerateRow(TSharedPtr<FGameplayTagN
 
 		if (Node.IsValid())
 		{
-			// Add Tag source if we're in management mode
-			if (GameplayTagUIMode == EGameplayTagUIMode::ManagementMode)
+			FName TagSource;
+			if (Node->bIsExplicitTag)
 			{
-				FName TagSource;
-
-				if (Node->bIsExplicitTag)
-				{
-					TagSource = Node->SourceName;
-				}
-				else
-				{
-					TagSource = FName(TEXT("Implicit"));
-				}
-
-				TooltipString.Append(FString::Printf(TEXT(" (%s)"), *TagSource.ToString()));
+				TagSource = Node->GetFirstSourceName();
 			}
+			else
+			{
+				TagSource = FName(TEXT("Implicit"));
+			}
+			TooltipString.Append(FString::Printf(TEXT(" (%s)"), *TagSource.ToString()));
 
 			// tag comments
 			if (!Node->DevComment.IsEmpty())
@@ -930,7 +924,7 @@ TSharedRef<SWidget> SGameplayTagWidget::MakeTagActionsMenu(TSharedPtr<FGameplayT
 	}
 
 	// we can only rename or delete tags if they came from an ini file
-	if (!InTagNode->SourceName.ToString().EndsWith(TEXT(".ini")))
+	if (!InTagNode->GetFirstSourceName().ToString().EndsWith(TEXT(".ini")))
 	{
 		bShowManagement = false;
 	}
@@ -1255,7 +1249,7 @@ void SGameplayTagWidget::RefreshTags()
 		for (int32 Idx = TagItems.Num() - 1; Idx >= 0; --Idx)
 		{
 			bool DelegateShouldHide = false;
-			FGameplayTagSource* Source = Manager.FindTagSource(TagItems[Idx]->SourceName);
+			FGameplayTagSource* Source = Manager.FindTagSource(TagItems[Idx]->GetFirstSourceName());
 			Manager.OnFilterGameplayTag.Broadcast(UGameplayTagsManager::FFilterGameplayTagContext(RootFilterString, TagItems[Idx], Source, PropertyHandle), DelegateShouldHide);
 			if (DelegateShouldHide)
 			{
@@ -1485,7 +1479,7 @@ void SGameplayTagWidget::VerifyAssetTagValidity()
 				Arguments.Add(TEXT("Objects"), FText::FromString(InvalidTagNames));
 				FText DialogText = FText::Format(LOCTEXT("GameplayTagWidget_InvalidTags", "Invalid Tags that have been removed: \n\n{Objects}"), Arguments);
 				FText DialogTitle = LOCTEXT("GameplayTagWidget_Warning", "Warning");
-				FMessageDialog::Open(EAppMsgType::Ok, DialogText, &DialogTitle);
+				FMessageDialog::Open(EAppMsgType::Ok, DialogText, DialogTitle);
 			}
 		}
 	}

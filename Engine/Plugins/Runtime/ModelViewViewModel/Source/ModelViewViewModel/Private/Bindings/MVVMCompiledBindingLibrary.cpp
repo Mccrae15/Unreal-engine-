@@ -3,14 +3,28 @@
 #include "Bindings/MVVMCompiledBindingLibrary.h"
 
 #include "Bindings/MVVMBindingHelper.h"
-#include "FieldNotification/IClassDescriptor.h"
-#include "UObject/PropertyAccessUtil.h"
-#include "FieldNotification/IFieldValueChanged.h"
+#include "IFieldNotificationClassDescriptor.h"
+#include "INotifyFieldValueChanged.h"
+#include "ModelViewViewModelModule.h"
 #include "Templates/ValueOrError.h"
 #include "Types/MVVMFieldContext.h"
 #include "Types/MVVMFunctionContext.h"
+#include "UObject/PropertyAccessUtil.h"
+#include "UObject/UnrealType.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MVVMCompiledBindingLibrary)
+
+DECLARE_CYCLE_STAT(TEXT("Load Library"), STAT_UMG_Viewmodel_LoadLibrary, STATGROUP_UMG_Viewmodel);
+
+#define LOCTEXT_NAMESPACE "MVVMCompiledBindingLibrary"
+
+namespace UE::MVVM::Private
+{
+	bool IsFunctionVirtual(UFunction* Function)
+	{
+		return !Function->HasAnyFunctionFlags(FUNC_Static | FUNC_Final);
+	}
+}
 
 /**
  *
@@ -50,17 +64,36 @@ FMVVMCompiledBindingLibrary::FMVVMCompiledBindingLibrary()
 
 }
 
-FMVVMCompiledBindingLibrary::~FMVVMCompiledBindingLibrary() = default;
+
+FText FMVVMCompiledBindingLibrary::LexToText(EExecutionFailingReason Reason)
+{
+	switch (Reason)
+	{
+	case EExecutionFailingReason::IncompatibleLibrary: return LOCTEXT("FailingReasonIncompatibleLibrary", "Incompatible Library");
+	case EExecutionFailingReason::InvalidSource: return LOCTEXT("FailingReasonInvalidSource", "Invalid Source");
+	case EExecutionFailingReason::InvalidDestination: return LOCTEXT("FailingReasonInvalidDestination", "Invalid Destination");
+	case EExecutionFailingReason::InvalidConversionFunction: return LOCTEXT("FailingReasonInvalidConversionFunction", "Invalid Conversion Function");
+	case EExecutionFailingReason::InvalidCast: return LOCTEXT("FailingReasonInvalidCast", "Invalid Cast");
+	}
+	return FText();
+}
 
 
 void FMVVMCompiledBindingLibrary::Load()
 {
+	SCOPE_CYCLE_COUNTER(STAT_UMG_Viewmodel_LoadLibrary);
+
 	ensureAlwaysMsgf(LoadedProperties.Num() == 0, TEXT("The binding library was loaded more than once."));
 	ensureAlwaysMsgf(LoadedFunctions.Num() == 0, TEXT("The binding library was loaded more than once."));
 	ensureAlwaysMsgf(LoadedFieldIds.Num() == 0, TEXT("The binding library was loaded more than once."));
 
 	for (const FMVVMVCompiledFields& Field : CompiledFields)
 	{
+		if (const UClass* Class = Cast<UClass>(Field.GetStruct()))
+		{
+			ensureAlwaysMsgf(!Class->HasAnyClassFlags(CLASS_NewerVersionExists), TEXT("The field is invalid. Property and Functions will not be loaded correctly."));
+		}
+
 		{
 			const int32 NumberOfProperties = Field.GetPropertyNum();
 			for (int32 Index = 0; Index < NumberOfProperties; ++Index)
@@ -92,11 +125,20 @@ void FMVVMCompiledBindingLibrary::Load()
 			}
 		}
 	}
+}
 
-#if !WITH_EDITOR
-	CompiledFieldNames.Reset(); // Once loaded, we do not need to keep that information.
-	CompiledFields.Reset();
-#endif
+
+bool FMVVMCompiledBindingLibrary::IsLoaded() const
+{
+	return LoadedProperties.Num() > 0 || LoadedFunctions.Num() > 0 || LoadedFieldIds.Num() > 0 || CompiledFields.Num() == 0;
+}
+
+
+void FMVVMCompiledBindingLibrary::Unload()
+{
+	LoadedProperties.Empty();
+	LoadedFunctions.Empty();
+	LoadedFieldIds.Empty();
 }
 
 
@@ -153,7 +195,7 @@ TValueOrError<void, FMVVMCompiledBindingLibrary::EExecutionFailingReason> FMVVMC
 			checkf(TestSource.GetValue().GetObjectVariant().GetData() != nullptr, TEXT("Tested in EvaluateFieldPath"));
 #endif
 
-			TValueOrError<UE::MVVM::FMVVMFieldVariant, void> FinalPath = GetFinalFieldFromPathImpl(InBinding.SourceFieldPath);
+			TValueOrError<UE::MVVM::FMVVMFieldVariant, void> FinalPath = GetFinalFieldFromPathImpl(UE::MVVM::FObjectVariant(InSource), InBinding.SourceFieldPath);
 			if (FinalPath.HasError())
 			{
 				return MakeError(EExecutionFailingReason::InvalidSource);
@@ -329,6 +371,11 @@ TValueOrError<UE::MVVM::FFieldContext, void> FMVVMCompiledBindingLibrary::Evalua
 		{
 			check(LoadedFunctions.IsValidIndex(PathIndex.Index));
 			UFunction* Function = LoadedFunctions[PathIndex.Index];
+			if (Function && UE::MVVM::Private::IsFunctionVirtual(Function) && CurrentContainer.IsUObject())
+			{
+				Function = CurrentContainer.GetUObject()->GetClass()->FindFunctionByName(Function->GetFName());
+			}
+
 			if (!Function)
 			{
 				return MakeError();
@@ -339,7 +386,7 @@ TValueOrError<UE::MVVM::FFieldContext, void> FMVVMCompiledBindingLibrary::Evalua
 				const FObjectPropertyBase* ReturnObjectProperty = CastFieldChecked<const FObjectPropertyBase>(UE::MVVM::BindingHelper::GetReturnProperty(Function));
 				check(ReturnObjectProperty);
 				check(Function->NumParms == 1);
-				
+
 				if (!CurrentContainer.IsUObject())
 				{
 					return MakeError();
@@ -364,7 +411,7 @@ TValueOrError<UE::MVVM::FFieldContext, void> FMVVMCompiledBindingLibrary::Evalua
 		return MakeError();
 	}
 
-	TValueOrError<UE::MVVM::FMVVMFieldVariant, void> FinalPath = GetFinalFieldFromPathImpl(InFieldPath);
+	TValueOrError<UE::MVVM::FMVVMFieldVariant, void> FinalPath = GetFinalFieldFromPathImpl(CurrentContainer, InFieldPath);
 	if (FinalPath.HasError())
 	{
 		return MakeError();
@@ -373,7 +420,7 @@ TValueOrError<UE::MVVM::FFieldContext, void> FMVVMCompiledBindingLibrary::Evalua
 }
 
 
-TValueOrError<UE::MVVM::FMVVMFieldVariant, void> FMVVMCompiledBindingLibrary::GetFinalFieldFromPathImpl(const FMVVMVCompiledFieldPath& InFieldPath) const
+TValueOrError<UE::MVVM::FMVVMFieldVariant, void> FMVVMCompiledBindingLibrary::GetFinalFieldFromPathImpl(UE::MVVM::FObjectVariant CurrentContainer, const FMVVMVCompiledFieldPath& InFieldPath) const
 {
 	const int32 IterationMax = InFieldPath.StartIndex + InFieldPath.Num - 1;
 
@@ -394,6 +441,11 @@ TValueOrError<UE::MVVM::FMVVMFieldVariant, void> FMVVMCompiledBindingLibrary::Ge
 	{
 		check(LoadedFunctions.IsValidIndex(FinalPathIndex.Index));
 		UFunction* Function = LoadedFunctions[FinalPathIndex.Index];
+		if (Function && UE::MVVM::Private::IsFunctionVirtual(Function) && CurrentContainer.IsUObject())
+		{
+			Function = CurrentContainer.GetUObject()->GetClass()->FindFunctionByName(Function->GetFName());
+		}
+
 		if (!Function)
 		{
 			return MakeError();
@@ -405,7 +457,7 @@ TValueOrError<UE::MVVM::FMVVMFieldVariant, void> FMVVMCompiledBindingLibrary::Ge
 }
 
 
-TValueOrError<FString, FString> FMVVMCompiledBindingLibrary::FieldPathToString(const FMVVMVCompiledFieldPath& FieldPath) const
+TValueOrError<FString, FString> FMVVMCompiledBindingLibrary::FieldPathToString(FMVVMVCompiledFieldPath FieldPath, bool bUseDisplayName) const
 {
 #if WITH_EDITORONLY_DATA
 	const bool bIsValidBinding = FieldPath.CompiledBindingLibraryId == CompiledBindingLibraryId;
@@ -416,38 +468,90 @@ TValueOrError<FString, FString> FMVVMCompiledBindingLibrary::FieldPathToString(c
 	}
 #endif
 
+	bool bHasError = false;
 	TStringBuilder<512> StringBuilder;
 	const int32 IterationMax = FieldPath.StartIndex + FieldPath.Num;
-	checkf(IterationMax < FieldPaths.Num(), TEXT("The number of field is bigger than the number of field that was compiled."));
+	checkf(IterationMax <= FieldPaths.Num(), TEXT("The number of field is bigger than the number of field that was compiled."));
 	for (int32 Index = FieldPath.StartIndex; Index < IterationMax; ++Index)
 	{
 		if (StringBuilder.Len() > 0)
 		{
-			StringBuilder.AppendChar(TEXT('.'));
+			StringBuilder << TEXT('.');
 		}
 
 		check(FieldPaths.IsValidIndex(Index));
 		FMVVMCompiledLoadedPropertyOrFunctionIndex PathIndex = FieldPaths[Index];
 		if (PathIndex.bIsProperty)
 		{
-			check(LoadedProperties.IsValidIndex(PathIndex.Index));
-			const FProperty* Property = LoadedProperties[PathIndex.Index];
-			if (!Property)
+			if (LoadedProperties.IsValidIndex(PathIndex.Index))
 			{
-				return MakeError<FString>(StringBuilder.ToString());
+				const FProperty* Property = LoadedProperties[PathIndex.Index];
+				if (!Property)
+				{
+					StringBuilder << TEXT("<Invalid>");
+					bHasError = true;
+				}
+				else
+				{
+#if WITH_EDITOR
+					if (bUseDisplayName)
+					{
+						StringBuilder << Property->GetDisplayNameText().ToString();
+					}
+					else
+#endif
+					{
+						StringBuilder << Property->GetFName();
+					}
+				}
+			}
+			else
+			{
+				StringBuilder << TEXT("<Invalid>");
+				bHasError = true;
 			}
 		}
 		else
 		{
-			check(LoadedFunctions.IsValidIndex(PathIndex.Index));
-			UFunction* Function = LoadedFunctions[PathIndex.Index];
-			if (!Function)
+			if (LoadedFunctions.IsValidIndex(PathIndex.Index))
 			{
-				return MakeError<FString>(StringBuilder.ToString());
+				const UFunction* Function = LoadedFunctions[PathIndex.Index];
+				if (!Function)
+				{
+					StringBuilder << TEXT("<Invalid>");
+					bHasError = true;
+				}
+				else
+				{
+#if WITH_EDITOR
+					if (bUseDisplayName)
+					{
+						StringBuilder << Function->GetDisplayNameText().ToString();
+					}
+					else
+#endif
+					{
+						StringBuilder << Function->GetFName();
+					}
+				}
+			}
+			else
+			{
+				StringBuilder << TEXT("<Invalid>");
+				bHasError = true;
 			}
 		}
 	}
-	return MakeValue<FString>(StringBuilder.ToString());
+
+	if (bHasError)
+	{
+		return MakeError<FString>(StringBuilder.ToString());
+	}
+	else
+	{
+
+		return MakeValue<FString>(StringBuilder.ToString());
+	}
 }
 
 
@@ -462,7 +566,11 @@ TValueOrError<UE::FieldNotification::FFieldId, void> FMVVMCompiledBindingLibrary
 	}
 #endif
 
-	check(LoadedFieldIds.IsValidIndex(InFieldId.FieldIdIndex));
-	return MakeValue(LoadedFieldIds[InFieldId.FieldIdIndex]);
+	if (LoadedFieldIds.IsValidIndex(InFieldId.FieldIdIndex))
+	{
+		return MakeValue(LoadedFieldIds[InFieldId.FieldIdIndex]);
+	}
+	return MakeError<>();
 }
 
+#undef LOCTEXT_NAMESPACE

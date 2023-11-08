@@ -8,38 +8,40 @@
 
 #if WITH_EDITOR
 class UActorDescContainer;
-class FActorDescContainerCollection;
 class FWorldPartitionActorDesc;
 struct FWorldPartitionHandleImpl;
 struct FWorldPartitionReferenceImpl;
 
-class ENGINE_API FWorldPartitionLoadingContext
+template<class U>
+class TActorDescContainerCollection;
+
+class FWorldPartitionLoadingContext
 {
 public:
 	/**
 	 * Base class for loading contexts
 	 */
-	class ENGINE_API IContext
+	class IContext
 	{
 		friend class FWorldPartitionLoadingContext;
 
 	public:
-		IContext();
-		virtual ~IContext();
+		ENGINE_API IContext();
+		ENGINE_API virtual ~IContext();
 
 	private:
-		virtual void RegisterActor(FWorldPartitionActorDesc* ActorDesc) =0;
-		virtual void UnregisterActor(FWorldPartitionActorDesc* ActorDesc) =0;
+		virtual void RegisterActor(FWorldPartitionActorDesc* ActorDesc) = 0;
+		virtual void UnregisterActor(FWorldPartitionActorDesc* ActorDesc) = 0;
 	};
 
 	/**
 	 * Immediate loading context, which will register and unregister actors on demand.
 	 */
-	class ENGINE_API FImmediate : public IContext
+	class FImmediate : public IContext
 	{
 	private:
-		virtual void RegisterActor(FWorldPartitionActorDesc* ActorDesc) override;
-		virtual void UnregisterActor(FWorldPartitionActorDesc* ActorDesc) override;
+		ENGINE_API virtual void RegisterActor(FWorldPartitionActorDesc* ActorDesc) override;
+		ENGINE_API virtual void UnregisterActor(FWorldPartitionActorDesc* ActorDesc) override;
 	};
 
 	/**
@@ -47,17 +49,18 @@ public:
 	 * execute them at the end of scope. This respects ULevel components registrations and
 	 * construction scripts execution logic.
 	 */
-	class ENGINE_API FDeferred : public IContext
+	class FDeferred : public IContext
 	{
 	public:
-		~FDeferred();
+		ENGINE_API ~FDeferred();
 
 		int32 GetNumRegistrations() const { return NumRegistrations; }
 		int32 GetNumUnregistrations() const { return NumUnregistrations; }
+		bool GetNeedsClearTransactions() const { return bNeedsClearTransactions; }
 
 	private:
-		virtual void RegisterActor(FWorldPartitionActorDesc* ActorDesc) override;
-		virtual void UnregisterActor(FWorldPartitionActorDesc* ActorDesc) override;
+		ENGINE_API virtual void RegisterActor(FWorldPartitionActorDesc* ActorDesc) override;
+		ENGINE_API virtual void UnregisterActor(FWorldPartitionActorDesc* ActorDesc) override;
 
 		struct FContainerOps
 		{
@@ -69,10 +72,21 @@ public:
 
 		int32 NumRegistrations = 0;
 		int32 NumUnregistrations = 0;
+		bool bNeedsClearTransactions = false;
 	};
 
-	static void LoadAndRegisterActor(FWorldPartitionActorDesc* ActorDesc);
-	static void UnloadAndUnregisterActor(FWorldPartitionActorDesc* ActorDesc);
+	/**
+	 * Null loading context, which will ignore all loading/unloading commands.
+	 */
+	class FNull : public IContext
+	{
+	private:
+		virtual void RegisterActor(FWorldPartitionActorDesc* ActorDesc) override {}
+		virtual void UnregisterActor(FWorldPartitionActorDesc* ActorDesc) override {}
+	};
+
+	static ENGINE_API void LoadAndRegisterActor(FWorldPartitionActorDesc* ActorDesc);
+	static ENGINE_API void UnloadAndUnregisterActor(FWorldPartitionActorDesc* ActorDesc);
 
 private:
 	static FImmediate DefaultContext;
@@ -107,7 +121,8 @@ public:
 		}
 	}
 
-	FORCEINLINE TWorldPartitionHandle(FActorDescContainerCollection* ContainerCollection, const FGuid& ActorGuid)
+	template<class U>
+	FORCEINLINE TWorldPartitionHandle(TActorDescContainerCollection<U>* ContainerCollection, const FGuid& ActorGuid)
 		: Container(Impl::GetActorDescContainer(ContainerCollection, ActorGuid))
 		, ActorDesc(nullptr)
 	{
@@ -323,26 +338,31 @@ public:
 	TUniquePtr<FWorldPartitionActorDesc>* ActorDesc;
 };
 
-struct ENGINE_API FWorldPartitionImplBase
+struct FWorldPartitionImplBase
 {
-	static TUniquePtr<FWorldPartitionActorDesc>* GetActorDesc(UActorDescContainer* Container, const FGuid& ActorGuid);
-	static UActorDescContainer* GetActorDescContainer(TUniquePtr<FWorldPartitionActorDesc>* ActorDesc);
-	static UActorDescContainer* GetActorDescContainer(FActorDescContainerCollection* ContainerCollection, const FGuid& ActorGuid);
-	static bool IsActorDescLoaded(FWorldPartitionActorDesc* ActorDesc);
+	static ENGINE_API TUniquePtr<FWorldPartitionActorDesc>* GetActorDesc(UActorDescContainer* Container, const FGuid& ActorGuid);
+	static ENGINE_API UActorDescContainer* GetActorDescContainer(TUniquePtr<FWorldPartitionActorDesc>* ActorDesc);
+	static ENGINE_API bool IsActorDescLoaded(FWorldPartitionActorDesc* ActorDesc);
+
+	template<class U>
+	static UActorDescContainer* GetActorDescContainer(TActorDescContainerCollection<U>* ContainerCollection, const FGuid& ActorGuid)
+	{
+		return ContainerCollection ? ContainerCollection->GetActorDescContainer(ActorGuid) : nullptr;
+	}
 };
 
-struct ENGINE_API FWorldPartitionHandleImpl : FWorldPartitionImplBase
+struct FWorldPartitionHandleImpl : FWorldPartitionImplBase
 {
-	static void IncRefCount(FWorldPartitionActorDesc* ActorDesc);
-	static void DecRefCount(FWorldPartitionActorDesc* ActorDesc);
-	static TWorldPartitionHandle<FWorldPartitionReferenceImpl> ToReference(const TWorldPartitionHandle<FWorldPartitionHandleImpl>& Source);
+	static ENGINE_API void IncRefCount(FWorldPartitionActorDesc* ActorDesc);
+	static ENGINE_API void DecRefCount(FWorldPartitionActorDesc* ActorDesc);
+	static ENGINE_API TWorldPartitionHandle<FWorldPartitionReferenceImpl> ToReference(const TWorldPartitionHandle<FWorldPartitionHandleImpl>& Source);
 };
 
-struct ENGINE_API FWorldPartitionReferenceImpl : FWorldPartitionImplBase
+struct FWorldPartitionReferenceImpl : FWorldPartitionImplBase
 {
-	static void IncRefCount(FWorldPartitionActorDesc* ActorDesc);
-	static void DecRefCount(FWorldPartitionActorDesc* ActorDesc);
-	static TWorldPartitionHandle<FWorldPartitionHandleImpl> ToHandle(const TWorldPartitionHandle<FWorldPartitionReferenceImpl>& Source);
+	static ENGINE_API void IncRefCount(FWorldPartitionActorDesc* ActorDesc);
+	static ENGINE_API void DecRefCount(FWorldPartitionActorDesc* ActorDesc);
+	static ENGINE_API TWorldPartitionHandle<FWorldPartitionHandleImpl> ToHandle(const TWorldPartitionHandle<FWorldPartitionReferenceImpl>& Source);
 };
 
 /**

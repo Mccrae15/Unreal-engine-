@@ -50,7 +50,7 @@ namespace DecalRendering
 		}
 
 		// Enforce blend modes output limitations.
-		if (!bIsStrataEnabled && IsAlphaCompositeBlendMode(Desc))
+		if (IsAlphaCompositeBlendMode(Desc))
 		{
 			Desc.bWriteNormal = false;
 		}
@@ -900,10 +900,10 @@ namespace DecalRendering
 		OutEnvironment.SetDefine(TEXT("DECAL_RENDERTARGETMODE"), (uint32)RenderTargetMode);
 		OutEnvironment.SetDefine(TEXT("DECAL_RENDERTARGET_COUNT"), RenderTargetCount);
 
-		OutEnvironment.SetDefine(TEXT("DECAL_OUT_MRT0"), (RenderTargetWriteMask & 1) != 0 ? 1 : 0);
-		OutEnvironment.SetDefine(TEXT("DECAL_OUT_MRT1"), (RenderTargetWriteMask & 2) != 0 ? 1 : 0);
-		OutEnvironment.SetDefine(TEXT("DECAL_OUT_MRT2"), (RenderTargetWriteMask & 4) != 0 ? 1 : 0);
-		OutEnvironment.SetDefine(TEXT("DECAL_OUT_MRT3"), (RenderTargetWriteMask & 8) != 0 ? 1 : 0);
+		OutEnvironment.SetDefineAndCompileArgument(TEXT("DECAL_OUT_MRT0"), (RenderTargetWriteMask & 1) != 0 ? true : false);
+		OutEnvironment.SetDefineAndCompileArgument(TEXT("DECAL_OUT_MRT1"), (RenderTargetWriteMask & 2) != 0 ? true : false);
+		OutEnvironment.SetDefineAndCompileArgument(TEXT("DECAL_OUT_MRT2"), (RenderTargetWriteMask & 4) != 0 ? true : false);
+		OutEnvironment.SetDefineAndCompileArgument(TEXT("DECAL_OUT_MRT3"), (RenderTargetWriteMask & 8) != 0 ? true : false);
 
 		OutEnvironment.SetDefine(TEXT("DECAL_RENDERSTAGE_BEFOREBASEPASS"), (uint32)EDecalRenderStage::BeforeBasePass);
 		OutEnvironment.SetDefine(TEXT("DECAL_RENDERSTAGE_BEFORELIGHTING"), (uint32)EDecalRenderStage::BeforeLighting);
@@ -925,7 +925,8 @@ namespace DecalRendering
 		if (IsMobilePlatform(Platform))
 		{
 			// On mobile decals are rendered in a "depth read" sub-pass
-			OutEnvironment.SetDefine(TEXT("IS_MOBILE_DEPTHREAD_SUBPASS"), 1u);
+			const bool bMobileForceDepthRead = MobileUsesFullDepthPrepass(Platform);
+			OutEnvironment.SetDefine(TEXT("IS_MOBILE_DEPTHREAD_SUBPASS"), bMobileForceDepthRead ? 0u : 1u);
 		}
 	}
 }

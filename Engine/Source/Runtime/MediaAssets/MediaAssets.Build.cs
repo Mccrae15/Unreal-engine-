@@ -10,6 +10,7 @@ namespace UnrealBuildTool.Rules
 				new string[] {
 					"SignalProcessing",
 					"AudioMixer",
+					"AudioExtensions",
                     "Core",
 					"CoreUObject",
 					"Engine",
@@ -21,15 +22,12 @@ namespace UnrealBuildTool.Rules
 				new string[] {
 					"RenderCore",
 					"RHI",
-					"ColorManagement"
+					"ColorManagement",
+					"Renderer",
 				});
 
 			if (Target.bBuildEditor)
 			{
-				PrivateDependencyModuleNames.AddRange(
-					new string[] {
-						"UnrealEd",
-					});
 				PrivateIncludePathModuleNames.Add("TargetPlatform");
 			}
 		}

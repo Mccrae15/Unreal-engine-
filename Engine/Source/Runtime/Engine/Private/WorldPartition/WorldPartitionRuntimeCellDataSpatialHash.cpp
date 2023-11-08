@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WorldPartition/WorldPartitionRuntimeCellDataSpatialHash.h"
+#include "WorldPartition/WorldPartitionDebugHelper.h"
 #include "Engine/Level.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(WorldPartitionRuntimeCellDataSpatialHash)
@@ -10,6 +11,12 @@ static FAutoConsoleVariableRef CVarRuntimeSpatialHashCellToSourceAngleContributi
 	TEXT("wp.Runtime.RuntimeSpatialHashCellToSourceAngleContributionToCellImportance"),
 	GRuntimeSpatialHashCellToSourceAngleContributionToCellImportance,
 	TEXT("Value between 0 and 1 that modulates the contribution of the angle between streaming source-to-cell vector and source-forward vector to the cell importance. The closest to 0, the less the angle will contribute to the cell importance."));
+
+static bool GRuntimeSpatialHashSortUsingCellExtent = true;
+static FAutoConsoleVariableRef CVarRuntimeSpatialHashSortUsingCellExtent(
+	TEXT("wp.Runtime.RuntimeSpatialHashSortUsingCellExtent"),
+	GRuntimeSpatialHashSortUsingCellExtent,
+	TEXT("Set to 1 to use cell extent instead of cell grid level when sorting cells by importance."));
 
 UWorldPartitionRuntimeCellDataSpatialHash::UWorldPartitionRuntimeCellDataSpatialHash(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -135,8 +142,8 @@ int32 UWorldPartitionRuntimeCellDataSpatialHash::SortCompare(const UWorldPartiti
 	{
 		const UWorldPartitionRuntimeCellDataSpatialHash* Other = (UWorldPartitionRuntimeCellDataSpatialHash*)InOther;
 		
-		// Level (higher value is higher prio)
-		Result = Other->Level - Level;
+		// By default, now compare cell's extent instead of its grid level since we compare cells across multiple WPs/grids (higher value is higher prio)
+		Result = GRuntimeSpatialHashSortUsingCellExtent ? int32(Other->Extent - Extent) : (Other->Level - Level);
 		if (bCanUseSortingCache && (Result == 0))
 		{
 			// Closest distance (lower value is higher prio)
@@ -162,4 +169,11 @@ FBox UWorldPartitionRuntimeCellDataSpatialHash::GetCellBounds() const
 	Box.Min.Z = GetContentBounds().Min.Z;
 	Box.Max.Z = GetContentBounds().Max.Z;
 	return Box;
+}
+
+bool UWorldPartitionRuntimeCellDataSpatialHash::IsDebugShown() const
+{
+	return Super::IsDebugShown() && 
+		   FWorldPartitionDebugHelper::IsDebugRuntimeHashGridShown(GridName) &&
+		   FWorldPartitionDebugHelper::IsDebugCellNameShown(GetName());
 }

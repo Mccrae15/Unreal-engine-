@@ -77,46 +77,49 @@ DECLARE_DELEGATE(FPacketHandlerHandshakeComplete);
  * Enums related to the PacketHandler
  */
 
-namespace Handler
+namespace UE
 {
-	/**
-	 * State of PacketHandler
-	 */
-	enum class State : uint8
-	{
-		Uninitialized,			// PacketHandler is uninitialized
-		InitializingComponents,	// PacketHandler is initializing HandlerComponents
-		Initialized				// PacketHandler and all HandlerComponents (if any) are initialized
-	};
-
-	/**
-	 * Mode of Packet Handler
-	 */
-	enum class Mode : uint8
-	{
-		Client,					// Clientside PacketHandler
-		Server					// Serverside PacketHandler
-	};
-
-	namespace Component
+	namespace Handler
 	{
 		/**
-		 * HandlerComponent State
-		 */
+		* State of PacketHandler
+		*/
 		enum class State : uint8
 		{
-			UnInitialized,		// HandlerComponent not yet initialized
-			InitializedOnLocal, // Initialized on local instance
-			InitializeOnRemote, // Initialized on remote instance, not on local instance
-			Initialized         // Initialized on both local and remote instances
+			Uninitialized,			// PacketHandler is uninitialized
+			InitializingComponents,	// PacketHandler is initializing HandlerComponents
+			Initialized				// PacketHandler and all HandlerComponents (if any) are initialized
 		};
+	
+		/**
+		* Mode of Packet Handler
+		*/
+		enum class Mode : uint8
+		{
+			Client,					// Clientside PacketHandler
+			Server					// Serverside PacketHandler
+		};
+	
+		namespace Component
+		{
+			/**
+			* HandlerComponent State
+			*/
+			enum class State : uint8
+			{
+				UnInitialized,		// HandlerComponent not yet initialized
+				InitializedOnLocal, // Initialized on local instance
+				InitializeOnRemote, // Initialized on remote instance, not on local instance
+				Initialized         // Initialized on both local and remote instances
+			};
+		}
 	}
 }
 
 /**
  * The result of calling Incoming and Outgoing in the PacketHandler
  */
-struct PACKETHANDLER_API ProcessedPacket
+struct ProcessedPacket
 {
 	/** Pointer to the returned packet data */
 	uint8* Data;
@@ -149,7 +152,7 @@ public:
 /**
  * PacketHandler will buffer packets, this struct is used to buffer such packets while handler components are initialized
  */
-struct PACKETHANDLER_API BufferedPacket
+struct BufferedPacket
 {
 	/** Buffered packet data */
 	uint8* Data;
@@ -211,7 +214,7 @@ public:
 	/**
 	 * Base destructor
 	 */
-	~BufferedPacket();
+	PACKETHANDLER_API ~BufferedPacket();
 
 	void CountBytes(FArchive& Ar) const
 	{
@@ -246,7 +249,7 @@ enum class EIncomingResult : uint8
 /**
  * This class maintains an array of all PacketHandler Components and forwards incoming and outgoing packets the each component
  */
-class PACKETHANDLER_API PacketHandler
+class PacketHandler
 {
 public:
 	/**
@@ -254,7 +257,7 @@ public:
 	 *
 	 * @param InDDoS			Reference to the owning net drivers DDoS detection handler
 	 */
-	PacketHandler(FDDoSDetection* InDDoS=nullptr);
+	PACKETHANDLER_API PacketHandler(FDDoSDetection* InDDoS=nullptr);
 
 	virtual ~PacketHandler() = default;
 
@@ -268,7 +271,7 @@ public:
 	 * @param InDDoS				Reference to the owning net drivers DDoS detection handler
 	 * @param InDriverProfile		The PacketHandler configuration profile to use
 	 */
-	void Initialize(Handler::Mode Mode, uint32 InMaxPacketBits, bool bConnectionlessOnly=false,
+	PACKETHANDLER_API void Initialize(UE::Handler::Mode Mode, uint32 InMaxPacketBits, bool bConnectionlessOnly=false,
 					TSharedPtr<class IAnalyticsProvider> InProvider=nullptr, FDDoSDetection* InDDoS=nullptr, FName InDriverProfile=NAME_None);
 
 	/**
@@ -277,7 +280,7 @@ public:
 	 * @param InLowLevelSendDel		The delegate the PacketHandler should use for triggering packet sends
 	 * @param InAddHandlerDel		Callback for notifying of new HandlerComponent's
 	 */
-	void InitializeDelegates(FPacketHandlerLowLevelSendTraits InLowLevelSendDel,
+	PACKETHANDLER_API void InitializeDelegates(FPacketHandlerLowLevelSendTraits InLowLevelSendDel,
 								FPacketHandlerNotifyAddHandler InAddHandlerDel=FPacketHandlerNotifyAddHandler());
 
 	/**
@@ -285,7 +288,7 @@ public:
 	 *
 	 * @param InFaultRecovery	A reference to the fault recovery interface
 	 */
-	void InitFaultRecovery(UE::Net::FNetConnectionFaultRecoveryBase* InFaultRecovery);
+	PACKETHANDLER_API void InitFaultRecovery(UE::Net::FNetConnectionFaultRecoveryBase* InFaultRecovery);
 
 	/**
 	 * Notification that the NetDriver analytics provider has been updated (NOT called on first initialization)
@@ -294,21 +297,21 @@ public:
 	 * @param InProvider		The analytics provider
 	 * @param InAggregator		The net analytics aggregator
 	 */
-	void NotifyAnalyticsProvider(TSharedPtr<IAnalyticsProvider> InProvider, TSharedPtr<FNetAnalyticsAggregator> InAggregator);
+	PACKETHANDLER_API void NotifyAnalyticsProvider(TSharedPtr<IAnalyticsProvider> InProvider, TSharedPtr<FNetAnalyticsAggregator> InAggregator);
 
 	/**
 	 * Triggers initialization of HandlerComponents.
 	 */
-	void InitializeComponents();
+	PACKETHANDLER_API void InitializeComponents();
 
 
 	/**
 	 * Triggered by the higher level netcode, to begin any required HandlerComponent handshakes
 	 */
-	void BeginHandshaking(FPacketHandlerHandshakeComplete InHandshakeDel=FPacketHandlerHandshakeComplete());
+	PACKETHANDLER_API void BeginHandshaking(FPacketHandlerHandshakeComplete InHandshakeDel=FPacketHandlerHandshakeComplete());
 
 
-	void Tick(float DeltaTime);
+	PACKETHANDLER_API void Tick(float DeltaTime);
 
 	/**
 	 * Adds a HandlerComponent to the pipeline, prior to initialization (none can be added after initialization)
@@ -316,7 +319,7 @@ public:
 	 * @param NewHandler		The HandlerComponent to add
 	 * @param bDeferInitialize	Whether or not to defer triggering Initialize (for batch-adds - code calling this, triggers it instead)
 	 */
-	void AddHandler(TSharedPtr<HandlerComponent>& NewHandler, bool bDeferInitialize=false);
+	PACKETHANDLER_API void AddHandler(TSharedPtr<HandlerComponent>& NewHandler, bool bDeferInitialize=false);
 
 	/**
 	 * As above, but initializes from a string specifying the component module, and (optionally) additional options
@@ -324,7 +327,7 @@ public:
 	 * @param ComponentStr		The handler component to load
 	 * @param bDeferInitialize	Whether or not to defer triggering Initialize (for batch-adds - code calling this, triggers it instead)
 	 */
-	TSharedPtr<HandlerComponent> AddHandler(const FString& ComponentStr, bool bDeferInitialize=false);
+	PACKETHANDLER_API TSharedPtr<HandlerComponent> AddHandler(const FString& ComponentStr, bool bDeferInitialize=false);
 
 
 	// @todo #JohnB: Add runtime-calculated arrays for each packet pipeline type, to reduce redundant iterations,
@@ -343,7 +346,7 @@ public:
 	 *
 	 * @param Reader	The FBitReader for the incoming packet
 	 */
-	void IncomingHigh(FBitReader& Reader);
+	PACKETHANDLER_API void IncomingHigh(FBitReader& Reader);
 
 	/**
 	 * @todo #JohnB: Work in progress, don't use yet.
@@ -354,7 +357,7 @@ public:
 	 *
 	 * @param Writer	The FBitWriter for the outgoing packet
 	 */
-	void OutgoingHigh(FBitWriter& Writer);
+	PACKETHANDLER_API void OutgoingHigh(FBitWriter& Writer);
 
 	// @todo: Don't deprecate, until after the NetDriver refactor
 	//UE_DEPRECATED(4.26, "Incoming now uses FReceivedPacketView.")
@@ -438,12 +441,12 @@ public:
 	}
 
 	/** Returns a pointer to the component set as the encryption handler, if any. */
-	TSharedPtr<FEncryptionComponent> GetEncryptionComponent();
+	PACKETHANDLER_API TSharedPtr<FEncryptionComponent> GetEncryptionComponent();
 
 	/** Returns a pointer to the first component in the HandlerComponents array with the specified name. */
-	TSharedPtr<HandlerComponent> GetComponentByName(FName ComponentName) const;
+	PACKETHANDLER_API TSharedPtr<HandlerComponent> GetComponentByName(FName ComponentName) const;
 
-	virtual void CountBytes(FArchive& Ar) const;
+	PACKETHANDLER_API virtual void CountBytes(FArchive& Ar) const;
 
 protected:
 	UE_DEPRECATED(4.26, "Incoming_Internal now uses FReceivedPacketView")
@@ -473,7 +476,7 @@ protected:
 	 * @param PacketView	View of the packet being processed - PacketView.Data should be used to return the result
 	 * @return				Returns Success/Failure
 	 */
-	EIncomingResult Incoming_Internal(FReceivedPacketView& PacketView);
+	PACKETHANDLER_API EIncomingResult Incoming_Internal(FReceivedPacketView& PacketView);
 
 	/**
 	 * Internal handling for Outgoing/OutgoingConnectionless
@@ -485,7 +488,7 @@ protected:
 	 * @param Address			The address the packet is being sent to
 	 * @return					Returns the final packet
 	 */
-	const ProcessedPacket Outgoing_Internal(uint8* Packet, int32 CountBits, FOutPacketTraits& Traits, bool bConnectionless, const TSharedPtr<const FInternetAddr>& Address);
+	PACKETHANDLER_API const ProcessedPacket Outgoing_Internal(uint8* Packet, int32 CountBits, FOutPacketTraits& Traits, bool bConnectionless, const TSharedPtr<const FInternetAddr>& Address);
 
 public:
 
@@ -498,13 +501,13 @@ public:
 	 * @param Writer		The packet being sent
 	 * @param Traits		The traits applied to the packet, if applicable
 	 */
-	void SendHandlerPacket(HandlerComponent* InComponent, FBitWriter& Writer, FOutPacketTraits& Traits);
+	PACKETHANDLER_API void SendHandlerPacket(HandlerComponent* InComponent, FBitWriter& Writer, FOutPacketTraits& Traits);
 
 
 	/**
 	 * Triggered when a child HandlerComponent has been initialized
 	 */
-	void HandlerComponentInitialized(HandlerComponent* InComponent);
+	PACKETHANDLER_API void HandlerComponentInitialized(HandlerComponent* InComponent);
 
 	/**
 	 * Queue's a packet to be sent when the handler is ticked (as a raw packet, since it's already been processed)
@@ -532,7 +535,7 @@ public:
 	 * @param InComponentName	The PacketHandler Component to search for
 	 * @return if there is a profile that has the component included.
 	 */
-	static bool DoesAnyProfileHaveComponent(const FString& InComponentName);
+	static PACKETHANDLER_API bool DoesAnyProfileHaveComponent(const FString& InComponentName);
 
 	/**
 	 * Searches the PacketHandler profile configuration for the given netdriver to find if a component is listed.
@@ -541,35 +544,35 @@ public:
 	 * @param InComponentName	The component to search for
 	 * @return if the component is listed in the profile configuration.
 	 */
-	static bool DoesProfileHaveComponent(const FName InNetDriverName, const FString& InComponentName);
+	static PACKETHANDLER_API bool DoesProfileHaveComponent(const FName InNetDriverName, const FString& InComponentName);
 
 	/**
 	 * Gets a packet from the buffered packet queue for sending
 	 *
 	 * @return		The packet to be sent, or nullptr if none are to be sent
 	 */
-	BufferedPacket* GetQueuedPacket();
+	PACKETHANDLER_API BufferedPacket* GetQueuedPacket();
 
 	/**
 	* Gets a packet from the buffered packet queue for sending (as a raw packet)
 	*
 	* @return		The packet to be sent, or nullptr if none are to be sent
 	*/
-	BufferedPacket* GetQueuedRawPacket();
+	PACKETHANDLER_API BufferedPacket* GetQueuedRawPacket();
 
 	/**
 	 * Gets a packet from the buffered connectionless packet queue for sending
 	 *
 	 * @return		The packet to be sent, or nullptr if none are to be sent
 	 */
-	BufferedPacket* GetQueuedConnectionlessPacket();
+	PACKETHANDLER_API BufferedPacket* GetQueuedConnectionlessPacket();
 
 	/**
 	 * Gets the combined reserved packet/protocol bits from all handlers, for reserving space in the parent connections packets
 	 *
 	 * @return	The combined reserved packet/protocol bits
 	 */
-	int32 GetTotalReservedPacketBits();
+	PACKETHANDLER_API int32 GetTotalReservedPacketBits();
 
 
 	/**
@@ -596,7 +599,7 @@ public:
 	 */
 	FORCEINLINE bool IsFullyInitialized()
 	{
-		return State == Handler::State::Initialized;
+		return State == UE::Handler::State::Initialized;
 	}
 
 	/** Returns a pointer to the DDoS detection handler */
@@ -615,39 +618,39 @@ private:
 	 *
 	 * @param InState	The new state for the handler
 	 */
-	void SetState(Handler::State InState);
+	PACKETHANDLER_API void SetState(UE::Handler::State InState);
 
 	/**
 	 * Called when net send/receive functions are triggered, when the handler is still uninitialized - to set a valid initial state
 	 */
-	void UpdateInitialState();
+	PACKETHANDLER_API void UpdateInitialState();
 
 	/**
 	 * Called when handler is finished initializing
 	 */
-	void HandlerInitialized();
+	PACKETHANDLER_API void HandlerInitialized();
 
 	/**
 	 * Replaces IncomingPacket with all unread data from ReplacementPacket
 	 *
 	 * @param ReplacementPacket		The packet whose unread data should replace IncomingPacket
 	 */
-	void ReplaceIncomingPacket(FBitReader& ReplacementPacket);
+	PACKETHANDLER_API void ReplaceIncomingPacket(FBitReader& ReplacementPacket);
 
 	/**
 	 * Takes a Packet whose position is not at bit 0, and shifts/aligns all packet data to place the current bit at position 0
 	 *
 	 * @param Packet	The packet to realign
 	 */
-	void RealignPacket(FBitReader& Packet);
+	PACKETHANDLER_API void RealignPacket(FBitReader& Packet);
 
 
 public:
 	/** Mode of the handler, Client or Server */
-	Handler::Mode Mode;
+	UE::Handler::Mode Mode;
 
-	static FPacketHandlerAddComponentByNameDelegate& GetAddComponentByNameDelegate();
-	static FPacketHandlerAddComponentDelegate& GetAddComponentDelegate();
+	static PACKETHANDLER_API FPacketHandlerAddComponentByNameDelegate& GetAddComponentByNameDelegate();
+	static PACKETHANDLER_API FPacketHandlerAddComponentDelegate& GetAddComponentDelegate();
 
 private:
 	/** Whether or not this PacketHandler handles connectionless (i.e. non-UNetConnection) data */
@@ -681,7 +684,7 @@ private:
 	uint32 MaxPacketBits;
 
 	/** State of the handler */
-	Handler::State State;
+	UE::Handler::State State;
 
 	/** Packets that are buffered while HandlerComponents are being initialized */
 	TArray<BufferedPacket*> BufferedPackets;
@@ -720,7 +723,7 @@ private:
 /**
  * This class appends or modifies incoming and outgoing packets on a connection
  */
-class PACKETHANDLER_API HandlerComponent
+class HandlerComponent
 {
 	friend class PacketHandler;
 
@@ -728,12 +731,12 @@ public:
 	/**
 	 * Base constructor
 	 */
-	HandlerComponent();
+	PACKETHANDLER_API HandlerComponent();
 
 	/**
 	 * Constructor that accepts a name
 	 */
-	explicit HandlerComponent(FName InName);
+	PACKETHANDLER_API explicit HandlerComponent(FName InName);
 
 	/**
 	 * Base destructor
@@ -745,7 +748,7 @@ public:
 	/**
 	 * Returns whether this handler is currently active
 	 */
-	virtual bool IsActive() const;
+	PACKETHANDLER_API virtual bool IsActive() const;
 
 	/**
 	 * Return whether this handler is valid
@@ -755,7 +758,7 @@ public:
 	/**
 	 * Returns whether this handler is initialized
 	 */
-	bool IsInitialized() const;
+	PACKETHANDLER_API bool IsInitialized() const;
 
 	/**
 	* Returns whether this handler perform a network handshake during initialization
@@ -866,7 +869,7 @@ public:
 	 *
 	 * @param Active	Whether or not the handled should be active
 	 */
-	virtual void SetActive(bool Active);
+	PACKETHANDLER_API virtual void SetActive(bool Active);
 
 	/**
 	 * Returns the amount of reserved packet/protocol bits expected from this component.
@@ -887,7 +890,7 @@ public:
 	 */
 	virtual void NotifyAnalyticsProvider() {}
 
-	virtual void CountBytes(FArchive& Ar) const;
+	PACKETHANDLER_API virtual void CountBytes(FArchive& Ar) const;
 
 protected:
 	/**
@@ -895,12 +898,12 @@ protected:
 	 *
 	 * @param State		The new state for the handler
 	 */
-	void SetState(Handler::Component::State State);
+	PACKETHANDLER_API void SetState(UE::Handler::Component::State State);
 
 	/**
 	 * Should be called when the handler is fully initialized on both remote and local
 	 */
-	void Initialized();
+	PACKETHANDLER_API void Initialized();
 
 
 public:
@@ -909,7 +912,7 @@ public:
 
 protected:
 	/** The state of this handler */
-	Handler::Component::State State;
+	UE::Handler::Component::State State;
 
 	/** Maximum number of Outgoing packet bits supported (automatically calculated to factor in other HandlerComponent reserved bits) */
 	uint32 MaxOutgoingBits;
@@ -934,7 +937,7 @@ private:
 /**
  * PacketHandler Module Interface
  */
-class PACKETHANDLER_API FPacketHandlerComponentModuleInterface : public IModuleInterface
+class FPacketHandlerComponentModuleInterface : public IModuleInterface
 {
 public:
 	/* Creates an instance of this component */
@@ -943,7 +946,7 @@ public:
 		return nullptr;
 	}
 
-	virtual void StartupModule() override;
+	PACKETHANDLER_API virtual void StartupModule() override;
 
-	virtual void ShutdownModule() override;
+	PACKETHANDLER_API virtual void ShutdownModule() override;
 };

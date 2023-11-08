@@ -100,7 +100,7 @@ bool UMassActorSpawnerSubsystem::ReleaseActorToPool(AActor* Actor)
 				AgentComp->UnregisterWithAgentSubsystem();
 			}
 
-			TArray<AActor*>& Pool = PooledActors.FindOrAdd(Actor->GetClass());
+			auto& Pool = PooledActors.FindOrAdd(Actor->GetClass());
 			checkf(Pool.Find(Actor) == INDEX_NONE, TEXT("Actor%s is already in the pool"), *AActor::GetDebugName(Actor));
 			Pool.Add(Actor);
 			++NumActorPooled;
@@ -178,12 +178,13 @@ FMassActorSpawnRequestHandle UMassActorSpawnerSubsystem::GetNextRequestToSpawn()
 	return BestSpawnRequestHandle;
 }
 
-AActor* UMassActorSpawnerSubsystem::SpawnOrRetrieveFromPool(FConstStructView SpawnRequestView)
+ESpawnRequestStatus UMassActorSpawnerSubsystem::SpawnOrRetrieveFromPool(FConstStructView SpawnRequestView, TObjectPtr<AActor>& OutSpawnedActor)
 {
+	const FMassActorSpawnRequest& SpawnRequest = SpawnRequestView.Get<const FMassActorSpawnRequest>();
+
 	if (UE::MassActors::bUseActorPooling != 0 && bActorPoolingEnabled)
 	{
-		const FMassActorSpawnRequest& SpawnRequest = SpawnRequestView.Get<FMassActorSpawnRequest>();
-		TArray<AActor*>* Pool = PooledActors.Find(SpawnRequest.Template);
+		auto* Pool = PooledActors.Find(SpawnRequest.Template);
 
 		if (Pool && Pool->Num() > 0)
 		{
@@ -197,50 +198,53 @@ AActor* UMassActorSpawnerSubsystem::SpawnOrRetrieveFromPool(FConstStructView Spa
 
 			if (UMassAgentComponent* AgentComp = PooledActor->FindComponentByClass<UMassAgentComponent>())
 			{
+				// normally this function gets called from UMassAgentComponent::OnRegister. We need to call it manually here
+				// since we're bringing this actor our of a pool.
 				AgentComp->RegisterWithAgentSubsystem();
-				AgentComp->SetPuppetHandle(SpawnRequest.MassAgent);
 			}
 
-			return PooledActor;
+			OutSpawnedActor = PooledActor;
+			return ESpawnRequestStatus::Succeeded;
 		}
 	}
 
-	return SpawnActor(SpawnRequestView);
-}
+	ESpawnRequestStatus SpawnStatus = SpawnActor(SpawnRequestView, OutSpawnedActor);
 
-AActor* UMassActorSpawnerSubsystem::SpawnActor(FConstStructView SpawnRequestView) const
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(UMassActorSpawnerSubsystem::SpawnActor);
-
-	UWorld* World = GetWorld();
-	check(World);
-
-	const FMassActorSpawnRequest& SpawnRequest = SpawnRequestView.Get<FMassActorSpawnRequest>();
-	if (AActor* SpawnedActor = World->SpawnActorDeferred<AActor>(SpawnRequest.Template, SpawnRequest.Transform, nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn))
+	if (SpawnStatus == ESpawnRequestStatus::Succeeded)
 	{
-		// Add code here before construction script
-
-		SpawnedActor->FinishSpawning(SpawnRequest.Transform);
-		++NumActorSpawned;
-		// The finish spawning might have failed and the spawned actor is destroyed.
-		if (IsValidChecked(SpawnedActor))
+		if (IsValidChecked(OutSpawnedActor))
 		{
-			if (UMassAgentComponent* AgentComp = SpawnedActor->FindComponentByClass<UMassAgentComponent>())
-			{
-				AgentComp->SetPuppetHandle(SpawnRequest.MassAgent);
-			}
-			return SpawnedActor;
+			++NumActorSpawned;
 		}
 	}
-
-	UE_VLOG_CAPSULE(this, LogMassActor, Error,
+	else
+	{
+		UE_VLOG_CAPSULE(this, LogMassActor, Error,
 					SpawnRequest.Transform.GetLocation(),
 					SpawnRequest.Template.GetDefaultObject()->GetSimpleCollisionHalfHeight(),
 					SpawnRequest.Template.GetDefaultObject()->GetSimpleCollisionRadius(),
 					SpawnRequest.Transform.GetRotation(),
 					FColor::Red,
 					TEXT("Unable to spawn actor for Mass entity [%s]"), *SpawnRequest.MassAgent.DebugGetDescription());
-	return nullptr;
+	}
+
+	return SpawnStatus;
+}
+
+ ESpawnRequestStatus UMassActorSpawnerSubsystem::SpawnActor(FConstStructView SpawnRequestView, TObjectPtr<AActor>& OutSpawnedActor) const
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(UMassActorSpawnerSubsystem::SpawnActor);
+
+	UWorld* World = GetWorld();
+	check(World);
+
+	const FMassActorSpawnRequest& SpawnRequest = SpawnRequestView.Get<const FMassActorSpawnRequest>();
+
+	FActorSpawnParameters SpawnParameters;
+	SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	OutSpawnedActor = World->SpawnActor<AActor>(SpawnRequest.Template, SpawnRequest.Transform, SpawnParameters);
+
+	return IsValid(OutSpawnedActor) ? ESpawnRequestStatus::Succeeded : ESpawnRequestStatus::Failed;
 }
 
 void UMassActorSpawnerSubsystem::ProcessPendingSpawningRequest(const double MaxTimeSlicePerTick)
@@ -260,7 +264,7 @@ void UMassActorSpawnerSubsystem::ProcessPendingSpawningRequest(const double MaxT
 		}
 
 		FStructView SpawnRequestView = SpawnRequests[SpawnRequestHandle.GetIndex()];
-		FMassActorSpawnRequest& SpawnRequest = SpawnRequestView.GetMutable<FMassActorSpawnRequest>();
+		FMassActorSpawnRequest& SpawnRequest = SpawnRequestView.Get<FMassActorSpawnRequest>();
 
 		if (!ensureMsgf(SpawnRequest.SpawnStatus == ESpawnRequestStatus::Pending ||
 						SpawnRequest.SpawnStatus == ESpawnRequestStatus::RetryPending, TEXT("GetNextRequestToSpawn returned a request that was already processed, need to return only request with pending status.")))
@@ -277,14 +281,27 @@ void UMassActorSpawnerSubsystem::ProcessPendingSpawningRequest(const double MaxT
 			SpawnRequest.ActorPreSpawnDelegate.Execute(SpawnRequestHandle, SpawnRequestView);
 		}
 
-		SpawnRequest.SpawnedActor = SpawnOrRetrieveFromPool(SpawnRequestView);
+		SpawnRequest.SpawnStatus = SpawnOrRetrieveFromPool(SpawnRequestView, SpawnRequest.SpawnedActor);
 
-		SpawnRequest.SpawnStatus = SpawnRequest.SpawnedActor ? ESpawnRequestStatus::Succeeded : ESpawnRequestStatus::Failed;
-
-		// Call the post spawn delegate on the spawn request
-		if (SpawnRequest.ActorPostSpawnDelegate.IsBound())
+		if (SpawnRequest.IsFinished())
 		{
-			if (SpawnRequest.ActorPostSpawnDelegate.Execute(SpawnRequestHandle, SpawnRequestView) == EMassActorSpawnRequestAction::Remove)
+			if (SpawnRequest.SpawnStatus == ESpawnRequestStatus::Succeeded && IsValid(SpawnRequest.SpawnedActor))
+			{
+				if (UMassAgentComponent* AgentComp = SpawnRequest.SpawnedActor->FindComponentByClass<UMassAgentComponent>())
+				{
+					AgentComp->SetPuppetHandle(SpawnRequest.MassAgent);
+				}
+			}
+
+			EMassActorSpawnRequestAction PostAction = EMassActorSpawnRequestAction::Remove;
+
+			// Call the post spawn delegate on the spawn request
+			if (SpawnRequest.ActorPostSpawnDelegate.IsBound())
+			{
+				PostAction = SpawnRequest.ActorPostSpawnDelegate.Execute(SpawnRequestHandle, SpawnRequestView);
+			}
+
+			if (PostAction == EMassActorSpawnRequestAction::Remove)
 			{
 				// If notified, remove the spawning request
 				ensureMsgf(SpawnRequestHandleManager.RemoveHandle(SpawnRequestHandle), TEXT("When providing a delegate, the spawn request gets automatically removed, no need to remove it on your side"));
@@ -341,16 +358,13 @@ void UMassActorSpawnerSubsystem::ProcessPendingDestruction(const double MaxTimeS
 
 void UMassActorSpawnerSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
-	Collection.InitializeDependency(UMassSimulationSubsystem::StaticClass());
+	UMassSimulationSubsystem* SimSystem = Collection.InitializeDependency<UMassSimulationSubsystem>();
+	check(SimSystem);
+
 	Super::Initialize(Collection);
 
-	if (const UWorld* World = GetWorld())
-	{
-		UMassSimulationSubsystem* SimSystem = UWorld::GetSubsystem<UMassSimulationSubsystem>(World);
-		check(SimSystem);
-		SimSystem->GetOnProcessingPhaseStarted(EMassProcessingPhase::PrePhysics).AddUObject(this, &UMassActorSpawnerSubsystem::OnPrePhysicsPhaseStarted);
-		SimSystem->GetOnProcessingPhaseFinished(EMassProcessingPhase::PrePhysics).AddUObject(this, &UMassActorSpawnerSubsystem::OnPrePhysicsPhaseFinished);
-	}
+	SimSystem->GetOnProcessingPhaseStarted(EMassProcessingPhase::PrePhysics).AddUObject(this, &UMassActorSpawnerSubsystem::OnPrePhysicsPhaseStarted);
+	SimSystem->GetOnProcessingPhaseFinished(EMassProcessingPhase::PrePhysics).AddUObject(this, &UMassActorSpawnerSubsystem::OnPrePhysicsPhaseFinished);
 }
 
 void UMassActorSpawnerSubsystem::Deinitialize()
@@ -396,9 +410,7 @@ void UMassActorSpawnerSubsystem::AddReferencedObjects(UObject* InThis, FReferenc
 	{
 		for (auto It = MASS->PooledActors.CreateIterator(); It; ++It)
 		{
-			TArray<AActor*>& Value = It.Value();
-
-			Collector.AddReferencedObjects<AActor>(Value);
+			Collector.AddReferencedObjects<AActor>(It.Value());
 		}
 	}
 
@@ -424,7 +436,7 @@ void UMassActorSpawnerSubsystem::ReleaseAllResources()
 	{
 		for (auto It = PooledActors.CreateIterator(); It; ++It)
 		{
-			TArray<AActor*>& ActorArray = It.Value();
+			auto& ActorArray = It.Value();
 			for (int i = 0; i < ActorArray.Num(); i++)
 			{
 				World->DestroyActor(ActorArray[i]);

@@ -5,51 +5,6 @@
 #include "WorldPartition/WorldPartitionActorContainerID.h"
 #include "HLODSubActor.generated.h"
 
-USTRUCT()
-struct FHLODSubActorDesc
-{
-	GENERATED_USTRUCT_BODY()
-
-	FHLODSubActorDesc()
-	{}
-
-	FHLODSubActorDesc(FGuid InActorGuid, const FActorContainerID& InContainerID)
-#if WITH_EDITORONLY_DATA
-		: ActorGuid(InActorGuid)
-		, ContainerID(InContainerID)
-#endif
-	{}
-
-#if WITH_EDITORONLY_DATA
-	friend bool operator==(const FHLODSubActorDesc& Lhs, const FHLODSubActorDesc& Rhs)
-	{
-		return Lhs.ActorGuid == Rhs.ActorGuid && Lhs.ContainerID == Rhs.ContainerID;
-	}
-
-	friend bool operator!=(const FHLODSubActorDesc& Lhs, const FHLODSubActorDesc& Rhs)
-	{
-		return !(Lhs == Rhs);
-	}
-
-	friend bool operator<(const FHLODSubActorDesc& Lhs, const FHLODSubActorDesc& Rhs)
-	{
-		if (Lhs.ActorGuid == Rhs.ActorGuid)
-		{
-			return Lhs.ContainerID.ID < Rhs.ContainerID.ID;
-		}
-
-		return Lhs.ActorGuid < Rhs.ActorGuid;
-	}
-	
-	ENGINE_API friend FArchive& operator<<(FArchive& Ar, FHLODSubActorDesc& SubActor);
-
-	UPROPERTY()
-	FGuid ActorGuid;
-
-	UPROPERTY()
-	FActorContainerID ContainerID;
-#endif
-};
 
 USTRUCT()
 struct FHLODSubActor
@@ -79,7 +34,12 @@ struct FHLODSubActor
 #if WITH_EDITORONLY_DATA
 	friend bool operator==(const FHLODSubActor& Lhs, const FHLODSubActor& Rhs)
 	{
-		return Lhs.ActorGuid == Rhs.ActorGuid && Lhs.ContainerID == Rhs.ContainerID;
+		return Lhs.ActorGuid == Rhs.ActorGuid 
+			&& Lhs.ActorPackage == Rhs.ActorPackage
+			&& Lhs.ActorPath == Rhs.ActorPath
+			&& Lhs.ContainerID == Rhs.ContainerID
+			&& Lhs.ContainerPackage == Rhs.ContainerPackage
+			&& Lhs.ContainerTransform.Equals(Rhs.ContainerTransform);
 	}
 
 	friend bool operator!=(const FHLODSubActor& Lhs, const FHLODSubActor& Rhs)
@@ -91,7 +51,7 @@ struct FHLODSubActor
 	{
 		if (Lhs.ActorGuid == Rhs.ActorGuid)
 		{
-			return Lhs.ContainerID.ID < Rhs.ContainerID.ID;
+			return Lhs.ContainerID < Rhs.ContainerID;
 		}
 
 		return Lhs.ActorGuid < Rhs.ActorGuid;

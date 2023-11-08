@@ -49,14 +49,14 @@ TSharedPtr<ISourceControlRevision, ESPMode::ThreadSafe> FConcertSourceControlSta
 	return ActualState.IsValid() ? ActualState->FindHistoryRevision(InRevision) : TSharedPtr<ISourceControlRevision, ESPMode::ThreadSafe>();
 }
 
-TSharedPtr<ISourceControlRevision, ESPMode::ThreadSafe> FConcertSourceControlStateProxy::GetBaseRevForMerge() const
-{
-	return ActualState.IsValid() ? ActualState->GetBaseRevForMerge() : TSharedPtr<ISourceControlRevision, ESPMode::ThreadSafe>();
-}
-
 TSharedPtr<ISourceControlRevision, ESPMode::ThreadSafe> FConcertSourceControlStateProxy::GetCurrentRevision() const
 {
 	return ActualState.IsValid() ? ActualState->GetCurrentRevision() : TSharedPtr<ISourceControlRevision, ESPMode::ThreadSafe>();
+}
+
+ISourceControlState::FResolveInfo FConcertSourceControlStateProxy::GetResolveInfo() const
+{
+	return ActualState.IsValid() ? ActualState->GetResolveInfo() : FResolveInfo();
 }
 
 FSlateIcon FConcertSourceControlStateProxy::GetIcon() const
@@ -296,9 +296,18 @@ FText FConcertSourceControlProxy::GetStatusText() const
 {
 	if (ActualProvider)
 	{
-		ActualProvider->GetStatusText();
+		return ActualProvider->GetStatusText();
 	}
 	return FText();
+}
+
+TMap<ISourceControlProvider::EStatus, FString> FConcertSourceControlProxy::GetStatus() const
+{
+	if (ActualProvider)
+	{
+		return ActualProvider->GetStatus();
+	}
+	return {};
 }
 
 bool FConcertSourceControlProxy::IsEnabled() const
@@ -451,6 +460,16 @@ ECommandResult::Type FConcertSourceControlProxy::Execute(const FSourceControlOpe
 	}
 
 	return ECommandResult::Failed;
+}
+
+bool FConcertSourceControlProxy::CanExecuteOperation(const FSourceControlOperationRef& InOperation) const
+{
+	if (ActualProvider)
+	{
+		return ActualProvider->CanExecuteOperation(InOperation);
+	}
+
+	return false;
 }
 
 bool FConcertSourceControlProxy::CanCancelOperation(const FSourceControlOperationRef& InOperation) const

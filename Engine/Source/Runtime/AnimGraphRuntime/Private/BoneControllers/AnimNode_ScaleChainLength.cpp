@@ -4,6 +4,7 @@
 #include "SceneManagement.h"
 #include "Engine/SkeletalMeshSocket.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "Animation/AnimStats.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_ScaleChainLength)
 
@@ -48,6 +49,8 @@ void FAnimNode_ScaleChainLength::CacheBones_AnyThread(const FAnimationCacheBones
 void FAnimNode_ScaleChainLength::Evaluate_AnyThread(FPoseContext& Output)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Evaluate_AnyThread)
+	ANIM_MT_SCOPE_CYCLE_COUNTER_VERBOSE(ScaleChainLength, !IsInGameThread());
+
 	// Evaluate incoming pose into our output buffer.
 	InputPose.Evaluate(Output);
 

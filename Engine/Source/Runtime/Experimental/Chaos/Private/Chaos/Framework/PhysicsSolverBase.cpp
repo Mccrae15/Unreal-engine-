@@ -11,6 +11,17 @@
 #include "Framework/Threading.h"
 #include "RewindData.h"
 
+#include "ChaosVisualDebugger/ChaosVisualDebuggerTrace.h"
+#include "ChaosVisualDebugger/ChaosVDContextProvider.h"
+
+DEFINE_STAT(STAT_AsyncPullResults);
+DEFINE_STAT(STAT_AsyncInterpolateResults);
+DEFINE_STAT(STAT_SyncPullResults);
+DEFINE_STAT(STAT_ProcessSingleProxy);
+DEFINE_STAT(STAT_ProcessGCProxy);
+DEFINE_STAT(STAT_ProcessClusterUnionProxy);
+DEFINE_STAT(STAT_PullConstraints);
+
 namespace Chaos
 {	
 	extern int GSingleThreadedPhysics;
@@ -119,8 +130,25 @@ namespace Chaos
 		
 	}
 
+
+	FPhysicsSolverAdvanceTask::FPhysicsSolverAdvanceTask(FPhysicsSolverBase& InSolver, FPushPhysicsData* InPushData)
+		: Solver(InSolver)
+		, PushData(InPushData)
+	{
+		CVD_GET_CURRENT_CONTEXT(CVDContext);
+	}
+
+	void FPhysicsSolverAdvanceTask::DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
+	{
+		CVD_SCOPE_CONTEXT(CVDContext);
+
+		AdvanceSolver();
+	}
+
+
 	void FPhysicsSolverAdvanceTask::AdvanceSolver()
 	{
+		CVD_SCOPE_TRACE_SOLVER_FRAME(FPhysicsSolverBase, Solver);
 		LLM_SCOPE(ELLMTag::ChaosUpdate);
 		SCOPE_CYCLE_COUNTER(STAT_ChaosTick);
 		CSV_SCOPED_TIMING_STAT_EXCLUSIVE(Physics);
@@ -154,7 +182,7 @@ namespace Chaos
 	// 0 blocks on any physics steps generated from past GT Frames, and blocks on none of the tasks from current frame.
 	// 1 blocks on everything except the single most recent task (including tasks from current frame)
 	// 1 should gurantee we will always have a future output for interpolation from 2 frames in the past
-	int32 AsyncPhysicsBlockMode = 1;
+	int32 AsyncPhysicsBlockMode = 0;
 	FAutoConsoleVariableRef CVarAsyncPhysicsBlockMode(TEXT("p.AsyncPhysicsBlockMode"), AsyncPhysicsBlockMode, TEXT("Setting to 0 blocks on any physics steps generated from past GT Frames, and blocks on none of the tasks from current frame."
 		" 1 blocks on everything except the single most recent task (including tasks from current frame). 1 should gurantee we will always have a future output for interpolation from 2 frames in the past."));
 
@@ -265,16 +293,16 @@ namespace Chaos
 		delete &InSolver;
 	}
 
-	void FPhysicsSolverBase::UpdateParticleInAccelerationStructure_External(FGeometryParticle* Particle,bool bDelete)
+	void FPhysicsSolverBase::UpdateParticleInAccelerationStructure_External(FGeometryParticle* Particle, EPendingSpatialDataOperation InOperation)
 	{
 		//mark it as pending for async structure being built
 		FAccelerationStructureHandle AccelerationHandle(Particle);
 		FPendingSpatialData& SpatialData = PendingSpatialOperations_External->FindOrAdd(Particle->UniqueIdx());
 
 		//make sure any new operations (i.e not currently being consumed by sim) are not acting on a deleted object
-		ensure(SpatialData.SyncTimestamp < MarshallingManager.GetExternalTimestamp_External() || !SpatialData.bDelete);
+		ensure(SpatialData.SyncTimestamp < MarshallingManager.GetExternalTimestamp_External() || SpatialData.Operation != EPendingSpatialDataOperation::Delete);
 
-		SpatialData.bDelete = bDelete;
+		SpatialData.Operation = InOperation;
 		SpatialData.SpatialIdx = Particle->SpatialIdx();
 		SpatialData.AccelerationHandle = AccelerationHandle;
 		SpatialData.SyncTimestamp = MarshallingManager.GetExternalTimestamp_External();

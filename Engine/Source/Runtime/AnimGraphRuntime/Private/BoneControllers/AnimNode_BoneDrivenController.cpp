@@ -5,6 +5,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Curves/CurveFloat.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "Animation/AnimStats.h"
 #include "Animation/AnimTrace.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_BoneDrivenController)
@@ -61,6 +62,8 @@ void FAnimNode_BoneDrivenController::GatherDebugData(FNodeDebugData& DebugData)
 void FAnimNode_BoneDrivenController::EvaluateSkeletalControl_AnyThread(FComponentSpacePoseContext& Output, TArray<FBoneTransform>& OutBoneTransforms)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(EvaluateSkeletalControl_AnyThread)
+	ANIM_MT_SCOPE_CYCLE_COUNTER_VERBOSE(BoneDrivenController, !IsInGameThread());
+
 	check(OutBoneTransforms.Num() == 0);
 
 	// Early out if we're not driving from or to anything
@@ -201,17 +204,12 @@ void FAnimNode_BoneDrivenController::EvaluateComponentSpaceInternal(FComponentSp
 	const FTransform& SourceRefPoseBoneTransform = BoneContainer.GetRefPoseArray()[SourceBone.BoneIndex];
 	const FTransform SourceCurrentBoneTransform = Context.Pose.GetLocalSpaceTransform(SourceBone.GetCompactPoseIndex(BoneContainer));
 
-	const double FinalDriverValue = ExtractSourceValue(SourceCurrentBoneTransform, SourceRefPoseBoneTransform);
-
 	if (DestinationMode == EDrivenDestinationMode::MorphTarget || DestinationMode == EDrivenDestinationMode::MaterialParameter)
 	{
+		const double FinalDriverValue = ExtractSourceValue(SourceCurrentBoneTransform, SourceRefPoseBoneTransform);
+		
 		//	Morph target and Material parameter curves
-		USkeleton* Skeleton = Context.AnimInstanceProxy->GetSkeleton();
-		USkeleton::AnimCurveUID NameUID = Skeleton->GetUIDByName(USkeleton::AnimCurveMappingName, ParameterName);
-		if (NameUID != SmartName::MaxUID)
-		{
-			Context.Curve.Set(NameUID, static_cast<float>(FinalDriverValue));
-		}
+		Context.Curve.Set(ParameterName, static_cast<float>(FinalDriverValue));
 	}
 }
 

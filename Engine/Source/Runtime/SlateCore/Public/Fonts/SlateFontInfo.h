@@ -8,6 +8,12 @@
 #include "Fonts/CompositeFont.h"
 #include "SlateFontInfo.generated.h"
 
+namespace FontConstants
+{
+	/** The  DPI we render at (horizontal and vertical) */
+	inline const uint32 RenderDPI = 96;
+}
+
 /**
  * Sets the maximum font fallback level, for when a character can't be found in the selected font set.
  * UI code that renders strings from a third party (e.g. player chat in a multiplayer game) may want to restrict font fallback to prevent potential performance problems.
@@ -28,12 +34,12 @@ enum class EFontFallback : uint8
  * Settings for applying an outline to a font
  */
 USTRUCT(BlueprintType)
-struct SLATECORE_API FFontOutlineSettings
+struct FFontOutlineSettings
 {
 	GENERATED_USTRUCT_BODY()
 
 	/** Size of the outline in slate units (at 1.0 font scale this unit is a pixel)*/
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=OutlineSettings, meta=(ClampMin="0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=OutlineSettings, meta=(ClampMin="0", ClampMax="1024"))
 	int32 OutlineSize;
 
 	/**
@@ -109,7 +115,7 @@ struct SLATECORE_API FFontOutlineSettings
 	void PostSerialize(const FArchive& Ar);
 #endif
 
-	static FFontOutlineSettings NoOutline;
+	static SLATECORE_API FFontOutlineSettings NoOutline;
 };
 
 #if WITH_EDITORONLY_DATA
@@ -129,7 +135,7 @@ struct TStructOpsTypeTraits<FFontOutlineSettings>
  * A representation of a font in Slate.
  */
 USTRUCT(BlueprintType)
-struct SLATECORE_API FSlateFontInfo
+struct FSlateFontInfo
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -153,12 +159,12 @@ struct SLATECORE_API FSlateFontInfo
 	FName TypefaceFontName;
 
 	/**
-	 * The font size is a measure in point values. The conversion of points to Slate Units is done at 96 dpi.  So if 
-	 * you're using a tool like Photoshop to prototype layouts and UI mock ups, be sure to change the default dpi 
-	 * measurements from 72 dpi to 96 dpi.
+	 * The font size is a measure in point values. The conversion of points to Slate Units is done at 96 DPI.
+	 * So if you're using a tool like Photoshop to prototype layouts and UI mock ups, you can change the UMG Font settings
+	 * to ensure that UMG font size is displayed in its 72 DPI equivalent, even if Slate will still use 96 DPI internally.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=SlateStyleRules, meta=(ClampMin=1, ClampMax=1000))
-	int32 Size;
+	float Size;
 
 	/** The uniform spacing (or tracking) between all characters in the text. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=SlateStyleRules, meta=(ClampMin=-1000, ClampMax=10000))
@@ -186,7 +192,10 @@ private:
 public:
 
 	/** Default constructor. */
-	FSlateFontInfo();
+	SLATECORE_API FSlateFontInfo();
+
+	/** Dtor. Must be inline*/
+	~FSlateFontInfo() {}
 
 	/**
 	 * Creates and initializes a new instance with the specified font, size, and emphasis.
@@ -195,7 +204,7 @@ public:
 	 * @param InSize The size of the font.
 	 * @param InTypefaceFontName The name of the font to use from the default typeface (None will use the first entry)
 	 */
-	FSlateFontInfo( TSharedPtr<const FCompositeFont> InCompositeFont, const int32 InSize, const FName& InTypefaceFontName = NAME_None, const FFontOutlineSettings& InOutlineSettings = FFontOutlineSettings());
+	SLATECORE_API FSlateFontInfo( TSharedPtr<const FCompositeFont> InCompositeFont, const float InSize, const FName& InTypefaceFontName = NAME_None, const FFontOutlineSettings& InOutlineSettings = FFontOutlineSettings());
 
 	/**
 	 * Creates and initializes a new instance with the specified font, size, and emphasis.
@@ -204,7 +213,7 @@ public:
 	 * @param InSize The size of the font.
 	 * @param InFamilyFontName The name of the font to use from the default typeface (None will use the first entry)
 	 */
-	FSlateFontInfo( const UObject* InFontObject, const int32 InSize, const FName& InTypefaceFontName = NAME_None, const FFontOutlineSettings& InOutlineSettings = FFontOutlineSettings());
+	SLATECORE_API FSlateFontInfo( const UObject* InFontObject, const float InSize, const FName& InTypefaceFontName = NAME_None, const FFontOutlineSettings& InOutlineSettings = FFontOutlineSettings());
 
 	/**
 	 * DEPRECATED - Creates and initializes a new instance with the specified font name and size.
@@ -213,7 +222,7 @@ public:
 	 * @param InSize The size of the font.
 	 * @param InHinting The type of hinting to use for the font.
 	 */
-	FSlateFontInfo( const FString& InFontName, uint16 InSize, EFontHinting InHinting = EFontHinting::Default, const FFontOutlineSettings& InOutlineSettings = FFontOutlineSettings());
+	SLATECORE_API FSlateFontInfo( const FString& InFontName, float InSize, EFontHinting InHinting = EFontHinting::Default, const FFontOutlineSettings& InOutlineSettings = FFontOutlineSettings());
 
 	/**
 	 * DEPRECATED - Creates and initializes a new instance with the specified font name and size.
@@ -222,7 +231,7 @@ public:
 	 * @param InSize The size of the font.
 	 * @param InHinting The type of hinting to use for the font.
 	 */
-	FSlateFontInfo( const FName& InFontName, uint16 InSize, EFontHinting InHinting = EFontHinting::Default );
+	SLATECORE_API FSlateFontInfo( const FName& InFontName, float InSize, EFontHinting InHinting = EFontHinting::Default );
 
 	/**
 	 * DEPRECATED - Creates and initializes a new instance with the specified font name and size.
@@ -231,7 +240,7 @@ public:
 	 * @param InSize The size of the font.
 	 * @param InHinting The type of hinting to use for the font.
 	 */
-	FSlateFontInfo( const ANSICHAR* InFontName, uint16 InSize, EFontHinting InHinting = EFontHinting::Default );
+	SLATECORE_API FSlateFontInfo( const ANSICHAR* InFontName, float InSize, EFontHinting InHinting = EFontHinting::Default );
 
 	/**
 	 * DEPRECATED - Creates and initializes a new instance with the specified font name and size.
@@ -240,7 +249,7 @@ public:
 	 * @param InSize The size of the font.
 	 * @param InHinting The type of hinting to use for the font.
 	 */
-	FSlateFontInfo( const WIDECHAR* InFontName, uint16 InSize, EFontHinting InHinting = EFontHinting::Default );
+	SLATECORE_API FSlateFontInfo( const WIDECHAR* InFontName, float InSize, EFontHinting InHinting = EFontHinting::Default );
 
 public:
 	inline bool IsIdentialToForCaching(const FSlateFontInfo& Other) const
@@ -274,19 +283,19 @@ public:
 	/**
 	 * Check to see whether this font info has a valid composite font pointer set (either directly or via a UFont)
 	 */
-	bool HasValidFont() const;
+	SLATECORE_API bool HasValidFont() const;
 
 	/**
 	 * Get the composite font pointer associated with this font info (either directly or via a UFont)
 	 * @note This function will return the fallback font if this font info itself does not contain a valid font. If you want to test whether this font info is empty, use HasValidFont
 	 */
-	const FCompositeFont* GetCompositeFont() const;
+	SLATECORE_API const FCompositeFont* GetCompositeFont() const;
 
 	/** Get the font size clamp for the font renderer (on 16bits) */
-	uint16 GetClampSize() const;
+	SLATECORE_API float GetClampSize() const;
 
 	/** Get the skew amount clamp for the text shaper */
-	float GetClampSkew() const;
+	SLATECORE_API float GetClampSkew() const;
 
 	/**
 	 * Calculates a type hash value for a font info.
@@ -313,10 +322,10 @@ public:
 	/**
 	 * Used to upgrade legacy font into so that it uses composite fonts
 	 */
-	void PostSerialize(const FArchive& Ar);
+	SLATECORE_API void PostSerialize(const FArchive& Ar);
 #endif
 
-	void AddReferencedObjects(FReferenceCollector& Collector);
+	SLATECORE_API void AddReferencedObjects(FReferenceCollector& Collector);
 
 private:
 

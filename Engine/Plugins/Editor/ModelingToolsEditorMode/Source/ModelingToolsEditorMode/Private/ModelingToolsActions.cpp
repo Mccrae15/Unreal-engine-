@@ -6,6 +6,7 @@
 #include "EditMeshMaterialsTool.h"
 #include "MeshVertexSculptTool.h"
 #include "MeshGroupPaintTool.h"
+#include "MeshVertexPaintTool.h"
 #include "MeshAttributePaintTool.h"
 #include "MeshInspectorTool.h"
 #include "CubeGridTool.h"
@@ -37,6 +38,7 @@ FModelingModeActionCommands::FModelingModeActionCommands() :
 void FModelingModeActionCommands::RegisterCommands()
 {
 	UI_COMMAND(FocusViewCommand, "Focus View at Cursor", "Focuses the camera at the scene hit location under the cursor", EUserInterfaceActionType::None, FInputChord(EKeys::C));
+	UI_COMMAND(ToggleSelectionLockStateCommand, "Toggle Selection Lock State", "Toggles the Locked/Unlocked state of the active Selection Target", EUserInterfaceActionType::None, FInputChord(EKeys::U));
 }
 
 
@@ -47,12 +49,17 @@ void FModelingModeActionCommands::RegisterCommandBindings(TSharedPtr<FUICommandL
 	UICommandList->MapAction(
 		Commands.FocusViewCommand,
 		FExecuteAction::CreateLambda([OnCommandExecuted]() { OnCommandExecuted(EModelingModeActionCommands::FocusViewToCursor); }));
+
+	UICommandList->MapAction(
+		Commands.ToggleSelectionLockStateCommand,
+		FExecuteAction::CreateLambda([OnCommandExecuted]() { OnCommandExecuted(EModelingModeActionCommands::ToggleSelectionLockState); }));
 }
 
 void FModelingModeActionCommands::UnRegisterCommandBindings(TSharedPtr<FUICommandList> UICommandList)
 {
 	const FModelingModeActionCommands& Commands = FModelingModeActionCommands::Get();
 	UICommandList->UnmapAction(Commands.FocusViewCommand);
+	UICommandList->UnmapAction(Commands.ToggleSelectionLockStateCommand);
 }
 
 
@@ -86,6 +93,7 @@ void FModelingToolActionCommands::RegisterAllToolActions()
 	FSculptToolActionCommands::Register();
 	FVertexSculptToolActionCommands::Register();
 	FMeshGroupPaintToolActionCommands::Register();
+	FMeshVertexPaintToolActionCommands::Register();
 	FMeshAttributePaintToolActionCommands::Register();
 	FDrawPolygonToolActionCommands::Register();
 	FTransformToolActionCommands::Register();
@@ -103,6 +111,7 @@ void FModelingToolActionCommands::UnregisterAllToolActions()
 	FSculptToolActionCommands::Unregister();
 	FVertexSculptToolActionCommands::Unregister();
 	FMeshGroupPaintToolActionCommands::Unregister();
+	FMeshVertexPaintToolActionCommands::Unregister();
 	FMeshAttributePaintToolActionCommands::Unregister();
 	FDrawPolygonToolActionCommands::Unregister();
 	FTransformToolActionCommands::Unregister();
@@ -136,6 +145,10 @@ void FModelingToolActionCommands::UpdateToolCommandBinding(UInteractiveTool* Too
 	else if (ExactCast<UMeshGroupPaintTool>(Tool) != nullptr)
 	{
 		UPDATE_BINDING(FMeshGroupPaintToolActionCommands);
+	}
+	else if (ExactCast<UMeshVertexPaintTool>(Tool) != nullptr)
+	{
+		UPDATE_BINDING(FMeshVertexPaintToolActionCommands);
 	}
 	else if (ExactCast<UMeshAttributePaintTool>(Tool) != nullptr)
 	{
@@ -193,6 +206,7 @@ void CommandsClassName::GetToolDefaultObjectList(TArray<UInteractiveTool*>& Tool
 DEFINE_TOOL_ACTION_COMMANDS(FSculptToolActionCommands, "ModelingToolsSculptTool", "Modeling Tools - Sculpt Tool", UDynamicMeshSculptTool);
 DEFINE_TOOL_ACTION_COMMANDS(FVertexSculptToolActionCommands, "ModelingToolsVertexSculptTool", "Modeling Tools - Vertex Sculpt Tool", UMeshVertexSculptTool);
 DEFINE_TOOL_ACTION_COMMANDS(FMeshGroupPaintToolActionCommands, "ModelingToolsMeshGroupPaintTool", "Modeling Tools - Group Paint Tool", UMeshGroupPaintTool);
+DEFINE_TOOL_ACTION_COMMANDS(FMeshVertexPaintToolActionCommands, "ModelingToolsMeshVertexPaintTool", "Modeling Tools - Vertex Paint Tool", UMeshVertexPaintTool);
 DEFINE_TOOL_ACTION_COMMANDS(FMeshAttributePaintToolActionCommands, "ModelingToolsMeshAttributePaintTool", "Modeling Tools - Attribute Paint Tool", UMeshAttributePaintTool);
 DEFINE_TOOL_ACTION_COMMANDS(FTransformToolActionCommands, "ModelingToolsTransformTool", "Modeling Tools - Transform Tool", UTransformMeshesTool);
 DEFINE_TOOL_ACTION_COMMANDS(FDrawPolygonToolActionCommands, "ModelingToolsDrawPolygonTool", "Modeling Tools - Draw Polygon Tool", UDrawPolygonTool);

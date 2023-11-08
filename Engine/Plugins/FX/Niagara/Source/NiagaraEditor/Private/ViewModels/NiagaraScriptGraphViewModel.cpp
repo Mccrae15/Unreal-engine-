@@ -8,6 +8,7 @@
 #include "NiagaraNodeInput.h"
 
 #include "Framework/Commands/GenericCommands.h"
+#include "Framework/Notifications/NotificationManager.h"
 #include "ScopedTransaction.h"
 #include "EdGraphUtilities.h"
 #include "Editor.h"
@@ -43,7 +44,7 @@ FNiagaraScriptGraphViewModel::FNiagaraScriptGraphViewModel(TAttribute<FText> InD
 
 FNiagaraScriptGraphViewModel::~FNiagaraScriptGraphViewModel()
 {
-	if (bIsForDataProcessingOnly == false)
+	if (bIsForDataProcessingOnly == false && GEditor != nullptr)
 	{
 		GEditor->UnregisterForUndo(this);
 	}

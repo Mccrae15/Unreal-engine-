@@ -3,14 +3,17 @@
 #pragma once
 
 #include "Components/DMXPixelMappingOutputComponent.h"
+#include "DMXPixelMappingOutputDMXComponent.h"
 #include "Library/DMXEntityReference.h"
 #include "Library/DMXEntityFixtureType.h"
+
 #include "DMXPixelMappingMatrixComponent.generated.h"
 
 enum class EDMXColorMode : uint8;
 class UDMXLibrary;
 class UDMXPixelMappingColorSpace;
 class UDMXPixelMappingLayoutScript;
+class UDMXPixelMappingMatrixCellComponent;
 
 
 /**
@@ -18,7 +21,7 @@ class UDMXPixelMappingLayoutScript;
  */
 UCLASS()
 class DMXPIXELMAPPINGRUNTIME_API UDMXPixelMappingMatrixComponent
-	: public UDMXPixelMappingOutputComponent
+	: public UDMXPixelMappingOutputDMXComponent
 {
 	GENERATED_BODY()
 
@@ -58,7 +61,7 @@ public:
 	virtual void ResetDMX() override;
 	virtual void SendDMX() override;
 	virtual bool CanBeMovedTo(const UDMXPixelMappingBaseComponent* Component) const override;
-	virtual FString GetUserFriendlyName() const override;
+	virtual FString GetUserName() const override;
 	// ~End UDMXPixelMappingBaseComponent interface
 
 	// ~Begin UDMXPixelMappingOutputComponent interface
@@ -66,10 +69,16 @@ public:
 	virtual const FText GetPaletteCategory() override;
 #endif // WITH_EDITOR
 	virtual bool IsOverParent() const override;
-	virtual void QueueDownsample() override;
 	virtual void SetPosition(const FVector2D& NewPosition) override;
 	virtual void SetSize(const FVector2D& NewSize) override;
 	// ~End UDMXPixelMappingOutputComponent interface
+	
+	//~ Begin UDMXPixelMappingOutputDMXComponent implementation
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	UE_DEPRECATED(5.3, "Deprecated for performance reasons. Instead use 'Get DMX Pixel Mapping Renderer Component' and Render only once each tick.")
+	virtual void RenderWithInputAndSendDMX() override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	//~ End UDMXPixelMappingOutputDMXComponent implementation
 
 	/** Handles changes in position */
 	void HandlePositionChanged();
@@ -79,6 +88,9 @@ public:
 
 	/** Handles changes in size or in matrix */
 	void HandleMatrixChanged();
+
+	UE_DEPRECATED(5.3, "Please use UDMXPixelMappingPixelMapRenderer to render the pixel map")
+	virtual void QueueDownsample() override;
 
 protected:
 	/** Called when the fixture type in use changed */
@@ -104,25 +116,6 @@ public:
 	UPROPERTY()
 	FDMXEntityFixturePatchRef FixturePatchMatrixRef_DEPRECATED;
 #endif // WITH_EDITORONLY_DATA
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Matrix Settings")
-	FDMXEntityFixturePatchRef FixturePatchRef;
-
-	/** Sets which color space Pixel Mapping sends */
-	UPROPERTY(Transient, EditAnywhere, NoClear, Category = "Color Space", Meta = (DisplayPriority = 2, DisplayName = "Output Mode", ShowDisplayNames))
-	TSubclassOf<UDMXPixelMappingColorSpace> ColorSpaceClass;
-
-	/** The Color Space currently in use */
-	UPROPERTY(VisibleAnywhere, Instanced, Category = "Color Space")
-	TObjectPtr<UDMXPixelMappingColorSpace> ColorSpace;
-
-	/** Modulators applied to the output before sending DMX */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Transient, Category = "Output Settings", meta = (DisplayName = "Output Modulators"))
-	TArray<TSubclassOf<UDMXModulator>> ModulatorClasses;
-
-	/** The actual modulator instances */
-	UPROPERTY()
-	TArray<TObjectPtr<UDMXModulator>> Modulators;
 
 	UPROPERTY()
 	FIntPoint CoordinateGrid;

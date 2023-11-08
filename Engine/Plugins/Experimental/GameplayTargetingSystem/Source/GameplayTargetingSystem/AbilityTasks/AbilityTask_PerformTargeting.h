@@ -5,7 +5,7 @@
 #include "UObject/ObjectMacros.h"
 #include "Engine/EngineTypes.h"
 #include "Abilities/Tasks/AbilityTask.h"
-#include "GameplayTargetingSystem/Types/TargetingSystemTypes.h"
+#include "Types/TargetingSystemTypes.h"
 #include "AbilityTask_PerformTargeting.generated.h"
 
 class UTargetingPreset;
@@ -13,10 +13,11 @@ class UTargetingPreset;
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FTargetReadyDelegate, FTargetingRequestHandle, TargetingRequestHandle);
 
 UCLASS()
-class UAbilityTask_PerformTargeting : public UAbilityTask
+class TARGETINGSYSTEM_API UAbilityTask_PerformTargeting : public UAbilityTask
 {
 	GENERATED_BODY()
 
+public:
 	// Called when the targeting request has been completed and results are ready
 	UPROPERTY(BlueprintAssignable)
 	FTargetReadyDelegate OnTargetReady;

@@ -7,8 +7,9 @@
 #include "RenderingThread.h"
 #include "HAL/Runnable.h"
 #include "HAL/RunnableThread.h"
-#include "HAL/ExceptionHandling.h"
+#include "HAL/ExceptionHandling.h" // IWYU pragma: keep
 #include "HAL/PlatformApplicationMisc.h"
+#include "Misc/CommandLine.h"
 #include "Misc/OutputDeviceRedirector.h"
 #include "Misc/CoreStats.h"
 #include "Misc/TimeGuard.h"
@@ -22,6 +23,7 @@
 #include "Stats/StatsData.h"
 #include "HAL/ThreadHeartBeat.h"
 #include "RenderResource.h"
+#include "RHIUtilities.h"
 #include "Misc/ScopeLock.h"
 #include "HAL/LowLevelMemTracker.h"
 #include "ProfilingDebugging/MiscTrace.h"
@@ -42,7 +44,7 @@ RENDERCORE_API bool GIsThreadedRendering = false;
 RENDERCORE_API bool GUseThreadedRendering = false;
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-	RENDERCORE_API TAtomic<bool> GMainThreadBlockedOnRenderThread;
+	RENDERCORE_API TAtomic<bool> GMainThreadBlockedOnRenderThread(false);
 #endif // #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
 static FRunnable* GRenderingThreadRunnable = NULL;
@@ -112,13 +114,6 @@ static void WaitAndResumeRendering()
  */
 FSuspendRenderingThread::FSuspendRenderingThread( bool bInRecreateThread )
 {
-	// Suspend async loading thread so that it doesn't start queueing render commands 
-	// while the render thread is suspended.
-	if (IsAsyncLoadingMultithreaded())
-	{
-		SuspendAsyncLoading();
-	}
-
 	// Pause asset streaming to prevent rendercommands from being enqueued.
 	SuspendTextureStreamingRenderTasks();
 
@@ -290,12 +285,12 @@ void TickRenderingTickables()
 
 /** How many cycles the renderthread used (excluding idle time). It's set once per frame in FViewport::Draw. */
 uint32 GRenderThreadTime = 0;
+/** How many cycles of wait time renderthread used. It's set once per frame in FViewport::Draw. */
+uint32 GRenderThreadWaitTime = 0;
 /** How many cycles the rhithread used (excluding idle time). */
 uint32 GRHIThreadTime = 0;
 /** How many cycles the renderthread used, including dependent wait time. */
 uint32 GRenderThreadTimeCriticalPath = 0;
-
-
 
 /** The RHI thread runnable object. */
 class FRHIThread : public FRunnable
@@ -1130,8 +1125,7 @@ void FRenderCommandFence::BeginFence(bool bSyncToRHIAndGPU)
 			STAT_FNullGraphTask_FenceRenderCommand,
 				STATGROUP_TaskGraphTasks);
 
-			CompletionEvent = FGraphEvent::CreateGraphEvent();
-			FFunctionGraphTask::CreateAndDispatchWhenReady([CompletionEvent = CompletionEvent] { CompletionEvent->DispatchSubsequents(); }, GET_STATID(STAT_FNullGraphTask_FenceRenderCommand), nullptr, ENamedThreads::GetRenderThread());
+			CompletionEvent = FFunctionGraphTask::CreateAndDispatchWhenReady([] {}, GET_STATID(STAT_FNullGraphTask_FenceRenderCommand), nullptr, ENamedThreads::GetRenderThread());
 		}
 	}
 }
@@ -1154,6 +1148,10 @@ bool FRenderCommandFence::IsFenceComplete() const
 
 /** How many cycles the gamethread used (excluding idle time). It's set once per frame in FViewport::Draw. */
 uint32 GGameThreadTime = 0;
+
+/** How much idle time on the game thread. It's set once per frame in FViewport::Draw. */
+uint32 GGameThreadWaitTime = 0;
+
 /** How many cycles it took to swap buffers to present the frame. */
 uint32 GSwapBufferTime = 0;
 
@@ -1365,14 +1363,14 @@ void FlushPendingDeleteRHIResources_GameThread()
 			});
 	}
 }
+
 void FlushPendingDeleteRHIResources_RenderThread()
 {
 	if (!IsRunningRHIInSeparateThread())
 	{
-		FRHIResource::FlushPendingDeletes(FRHICommandListExecutor::GetImmediateCommandList());
+		FRHICommandListExecutor::GetImmediateCommandList().ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
 	}
 }
-
 
 FRHICommandListImmediate& GetImmediateCommandList_ForRenderCommand()
 {

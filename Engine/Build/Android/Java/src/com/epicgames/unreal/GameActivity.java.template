@@ -81,7 +81,10 @@ import android.os.Bundle;
 import android.os.PersistableBundle;
 import android.util.Log;
 
+import android.hardware.input.InputManager;
 import android.os.Vibrator;
+import android.os.VibrationEffect;
+import android.os.VibratorManager;
 import android.os.SystemClock;
 import android.os.Looper;
 import android.os.Handler;
@@ -194,6 +197,10 @@ import android.os.Build;
 
 import com.epicgames.unreal.DownloadShim;
 
+// Network connection change tracking
+import com.epicgames.unreal.network.NetworkConnectivityClient;
+import com.epicgames.unreal.network.NetworkChangedManager;
+
 // used in new virtual keyboard
 import android.view.inputmethod.InputMethodManager;
 
@@ -250,6 +257,9 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 	static boolean first_acceleration_sample = true;
 	static final float SampleDecayRate = 0.85f;
 
+	private InputManager inputManager;
+	private Vibrator deviceVibrator;
+
 	private Rect safezone = new Rect(0, 0, 0, 0);
 	private RectF safezoneF = new RectF(0.0f, 0.0f, 0.0f, 0.0f);
 
@@ -272,6 +282,9 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 	static float[] current_acceleration = new float[]{0, 0, 0};
 
 	public static Logger Log = new Logger("UE", "GameActivity");
+
+	// For Network connection change tracking
+	private NetworkConnectivityClient.Listener NetworkListener = null;
 
 	// From cpufeatures.h AndroidCpuFamily enum
 	private static final int ANDROID_CPU_FAMILY_UNKNOWN = 0;
@@ -501,6 +514,10 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 	private boolean localNotificationAppLaunched = false;
 	private String	localNotificationLaunchActivationEvent = "";
 	private int		localNotificationLaunchFireDate = 0;
+
+	/** Memstats logging settings */
+	private int memstatLoggingInterval = 30000;
+	private int memstatRSSRequiredDiff = 2048;
 	
 	enum EAlertDialogType
 	{
@@ -577,9 +594,9 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 	{
 		// onConfigurationChanged won't be called if orientation changes from landscape/portrait to reverse landscape/portrait
 		// use this function instead of caching DeviceRotation
-		int orientation = AndroidThunkJava_GetDeviceOrientation();
+		int rotation = AndroidThunkJava_GetDeviceRotation();
 
-		switch (orientation)
+		switch (rotation)
 		{
 			case Surface.ROTATION_0:	return 0;
 			case Surface.ROTATION_90:	return 90;
@@ -698,8 +715,15 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		if(!TextUtils.isEmpty(tempCommandLine)) {
 			Log.debug("Using alternative commandline source");
 			// remember full commandline for regex checks by configrules
-			CommandLineFull = tempCommandLine;
-			parseCommandLineParams(tempCommandLine);
+			CommandLineFull += tempCommandLine;
+			parseCommandLineParams(CommandLineFull);
+			return;
+		}
+
+		if (CommandLineFull != "")
+		{
+			//if command line was provided via adb shell then skip reading cmd line from file
+			parseCommandLineParams(CommandLineFull);
 			return;
 		}
 
@@ -1431,7 +1455,7 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 			else if (SourceType.equals("SRC_CommandLine"))
 			{
 				bSourceIsCommandLine = true;
-				Source = CommandLineFull;;
+				Source = CommandLineFull;
 			}
 			else if (variables.containsKey(SourceType))
 			{
@@ -2242,6 +2266,30 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 			}
 		}
 
+		try 
+		{
+			if (variables.containsKey("MemstatLoggingInterval"))
+			{
+				memstatLoggingInterval = Integer.decode(variables.get("MemstatLoggingInterval"));
+			}
+		} 
+		catch (Exception e)
+		{
+			Log.debug("Failed to read memstats: MemstatLoggingInterval");
+		}
+		try 
+		{
+			if (variables.containsKey("MemstatRSSRequiredDiff"))
+			{
+				memstatRSSRequiredDiff = Integer.decode(variables.get("MemstatRSSRequiredDiff"));
+			}
+		} 
+		catch (Exception e)
+		{
+			Log.debug("Failed to read memstats: MemstatRSSRequiredDiff");
+		}
+		
+
 		// notify AndroidProcess of the core masks and affinity enable state
 		if (variables.containsKey("unsupportedDevice"))
 		{
@@ -2338,6 +2386,17 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		magnetometer = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD);
 		gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
 
+		inputManager = (InputManager) getSystemService(Context.INPUT_SERVICE);
+		deviceVibrator = null;
+		if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S)
+		{
+			VibratorManager vibratorManager = (VibratorManager) getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
+			deviceVibrator = vibratorManager.getDefaultVibrator();
+		}
+		else
+		{
+			deviceVibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+		}
 
 		if (PermissionHelper.checkPermission("android.permission.CHANGE_WIFI_MULTICAST_STATE"))
 		{
@@ -2351,6 +2410,8 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		{
 			getWindow().getDecorView().setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
 		}
+
+		boolean bIsShipping = nativeIsShippingBuild();
 
 		// create splashscreen dialog (if launched by SplashActivity)
 		_extrasBundle = getIntent().getExtras();
@@ -2402,6 +2463,12 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 				e.printStackTrace();
 			}
 
+			String CmdLine = _extrasBundle.getString("cmdline");
+			if (CmdLine != null && !bIsShipping)
+			{
+				CommandLineFull = CmdLine;
+			}
+
 			if (UseDisplayCutout)
 			{
 				// will not be true if not Android Pie or later
@@ -2425,7 +2492,6 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		}
 
 		// Check for target sdk.  If 23 or higher then warn that permission handling may mean features don't work if user denies them.
-		boolean bIsShipping = nativeIsShippingBuild();
 		if (ANDROID_BUILD_VERSION >= 23 && targetSdkVersion >= 23) //23 is the API level (Marshmallow) where runtime permission handling is available
 		{
 			Log.debug("Target SDK is " + targetSdkVersion + ".  This may cause issues if permissions are denied by the user." );	
@@ -2448,10 +2514,12 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 			Logger.SuppressLogs();
 		}
 
-		// update memory stats every 10 seconds
+		// update memory stats every "memstatLoggingInterval" seconds
+		// only print if VmRSS diff is >= "memstatRSSRequiredDiff" bytes 
 		memoryRunnable = new Runnable() {
 			boolean showPSSInfo = false;
 			int LastProcessMemoryValue = 0;
+			int LastRSSMemoryValue = 0;
 			@Override
 			public void run()
 			{
@@ -2475,26 +2543,36 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 					}
 				}
 
-				Log.debug("--- memstats:");
 				String[] statusLines = FindLineFromFile("/proc/self/status",new String[] {"VmSize:","VmHWM:", "VmRSS:", "VmData:", "VmSwap:"});
+				String rssSubString = statusLines[2].substring(0, statusLines[2].lastIndexOf(" "));
+				int rssMemory = Integer.parseInt(rssSubString.substring(rssSubString.lastIndexOf(" ")+1, rssSubString.length()));
+				int rssDiffed = Math.abs(rssMemory - LastRSSMemoryValue);
+
 				String ProcessMemInfoLine = "Used memory: ";
-				if( LastProcessMemoryValue != ProcessMemory)
+				if(rssDiffed >= memstatRSSRequiredDiff)
 				{
-					ProcessMemInfoLine+=" (updated): ";
-					LastProcessMemoryValue = ProcessMemory;
-				}
-				Log.debug("memstat: "+ProcessMemInfoLine + ProcessMemory);
-				for(String memstatusline : statusLines)
-				{
-					Log.debug("memstat: "+memstatusline);
-				}
-				if( showPSSInfo )
-				{
-					String[] smapsLines = FindLineFromFile("/proc/self/smaps_rollup",new String[] {"SwapPss:","Pss:"});
-				    for(String memstatusline : smapsLines)
-				    {
-					    Log.debug("memstat: "+memstatusline);
-				    }
+					String memLog = "--- memstats: \n";
+					LastRSSMemoryValue = rssMemory;
+					if( LastProcessMemoryValue != ProcessMemory)
+					{
+						ProcessMemInfoLine+=" (updated): ";
+						LastProcessMemoryValue = ProcessMemory;
+					}
+					memLog += "memstat: "+ProcessMemInfoLine + ProcessMemory + "\n";
+					for(String memstatusline : statusLines)
+					{
+						memLog += "memstat: "+memstatusline + "\n";
+					}
+				
+					if( showPSSInfo )
+					{
+						String[] smapsLines = FindLineFromFile("/proc/self/smaps_rollup",new String[] {"SwapPss:","Pss:"});
+				    	for(String memstatusline : smapsLines)
+				    	{
+							memLog += "memstat: "+memstatusline + "\n";
+				    	}
+					}
+					Log.debug(memLog);
 				}
 				synchronized(_activity)
 				{
@@ -2503,9 +2581,9 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 						_activity.UsedMemory = ProcessMemory;
 					}
 					
-					if (_activity.memoryHandler != null)
+					if (_activity.memoryHandler != null && memstatLoggingInterval > 0)
 					{
-						_activity.memoryHandler.postDelayed(this, 10000);
+						_activity.memoryHandler.postDelayed(this, memstatLoggingInterval);
 					}
 				}
 			}
@@ -2862,7 +2940,7 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		nativeSetGlobalActivity(UseExternalFilesDir, PublicLogFiles, getFilesDir().getPath(), getExternalFilesDir(null).getPath(), PackageDataInsideApkValue==1, APKPath);
 
 		// tell the engine if this is a portrait app
-		nativeSetWindowInfo(getResources().getConfiguration().orientation == Configuration.ORIENTATION_PORTRAIT, DepthBufferPreference, PropagateAlpha);
+		nativeSetWindowInfo(getResources().getConfiguration().orientation, DepthBufferPreference, PropagateAlpha);
 
 		// get the full language code, like en-US
 		// note: this may need to be Locale.getDefault().getLanguage()
@@ -3305,7 +3383,7 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		}
 
 		// invalidate window cache
-		nativeSetWindowInfo(getResources().getConfiguration().orientation == Configuration.ORIENTATION_PORTRAIT, DepthBufferPreference, PropagateAlpha);
+		nativeSetWindowInfo(getResources().getConfiguration().orientation, DepthBufferPreference, PropagateAlpha);
 
 		// only do this on KitKat and above
 		if (ShouldHideUI)
@@ -3387,10 +3465,10 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		super.onResume();
 		bIsActivityPaused.set(false);
 
-		// start memory reporter timer (runs every 10 seconds)
+		// start memory reporter timer (runs every "memstatLoggingInterval" seconds)
 		synchronized(this)
 		{
-			if (memoryHandler == null && memoryRunnable != null)
+			if (memoryHandler == null && memoryRunnable != null && memstatLoggingInterval > 0)
 			{
 				Log.debug("onResume: start memory reporter runnable");
 				memoryHandler = new Handler(memoryHandlerThread.getLooper());
@@ -3800,8 +3878,7 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		super.onConfigurationChanged(newConfig);
 		//$${gameActivityonConfigurationChangedAdditions}$$
 		// forward the orientation
-		boolean bPortrait = newConfig.orientation == Configuration.ORIENTATION_PORTRAIT;
-		nativeOnConfigurationChanged(bPortrait);
+		nativeOnConfigurationChanged(newConfig.orientation);
 	}
 
 	public void surfaceChanged(SurfaceHolder holder, int format, int width, int height)
@@ -3930,31 +4007,32 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 	}
 
 	private class VibrateRunnable implements Runnable {
-		private int duration;
+		private int intensity;
+		private long duration;
 		private Vibrator vibrator;
 
-		VibrateRunnable(final int Duration, final Vibrator vibrator)
+		VibrateRunnable(final int Intensity, final long Duration, final Vibrator vibrator)
 		{
+			this.intensity = Intensity;
 			this.duration = Duration;
 			this.vibrator = vibrator;
 		}
 		public void run ()
 		{
-			if (duration < 1)
+			if (intensity < 1 || duration < 1)
 			{
 				vibrator.cancel();
 			} else {
-				vibrator.vibrate(duration);
+				vibrator.vibrate(VibrationEffect.createOneShot(duration, intensity));
 			}
 		}
 	}
 
-	public void AndroidThunkJava_Vibrate(int Duration)
+	public void AndroidThunkJava_Vibrate(int Intensity, int Duration)
 	{
-		Vibrator vibrator = (Vibrator)getSystemService(VIBRATOR_SERVICE);
-		if (vibrator != null)
+		if (deviceVibrator != null)
 		{
-			_activity.runOnUiThread(new VibrateRunnable(Duration, vibrator));
+			_activity.runOnUiThread(new VibrateRunnable(Intensity, (long)Duration, deviceVibrator));
 		}
 	}
 
@@ -4596,6 +4674,22 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		});
 	}
 
+	public void AndroidThunkJava_SetCellularPreference(int value)
+	{
+		Context context = getApplicationContext();
+		SharedPreferences preferences = context.getSharedPreferences("CellularNetworkPreferences", context.MODE_PRIVATE);
+		SharedPreferences.Editor editor = preferences.edit();
+		editor.putInt("AllowCellular", value);
+		editor.commit();
+	}
+
+	public int AndroidThunkJava_GetCellularPreference()
+	{
+		Context context = getApplicationContext();
+		SharedPreferences preferences = context.getSharedPreferences("CellularNetworkPreferences", context.MODE_PRIVATE);
+		return preferences.getInt("AllowCellular", 0 );
+	}
+
 	// call back into native code from the Java UI thread, initializing any available VR HMD modules
 	public void AndroidThunkJava_InitHMDs()
 	{
@@ -4781,6 +4875,20 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		return false;
 	}
 
+	public boolean AndroidThunkJava_IapAcknowledgePurchase(String purchaseToken)
+	{
+		Log.debug("[JAVA] - AndroidThunkJava_IapAcknowledgePurchase " + purchaseToken);
+
+		if( IapStoreHelper != null )
+		{
+			IapStoreHelper.AcknowledgePurchase(purchaseToken);
+			return true;
+		}
+
+		Log.debug("[JAVA] - Store Helper is invalid");
+		return false;
+	}
+
 	public boolean AndroidThunkJava_IapQueryExistingPurchases()
 	{
 		Log.debug("[JAVA] - AndroidThunkJava_IapQueryExistingPurchases");
@@ -4906,6 +5014,36 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 				}
 			}
 		}
+	}
+
+	public static void AddLocalNotificationID(Context context, int id)
+	{
+		SharedPreferences preferences = context.getSharedPreferences("LocalNotificationPreferences", MODE_PRIVATE);
+		SharedPreferences.Editor editor = preferences.edit();
+		String notificationIDs = preferences.getString("notificationIDs", "");
+		if (notificationIDs.length() == 0)
+		{
+			editor.putString("notificationIDs", Integer.toString(id));
+			editor.commit();
+		}
+		else
+		{
+			String[] parts = notificationIDs.split("-");
+			ArrayList<Integer> iParts = new ArrayList<Integer>();
+			for (String part : parts)
+			{
+				if (part.length() > 0)
+				{
+					iParts.add(Integer.parseInt(part));
+				}
+			}
+			if (!iParts.contains(id))
+			{
+				editor.putString("notificationIDs", notificationIDs + "-" + id);
+				editor.commit();
+			}
+		}
+		
 	}
 
 	public static int LocalNotificationGetID(Context context)
@@ -5043,9 +5181,18 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		}
 	}
 
-	public int AndroidThunkJava_LocalNotificationScheduleAtTime(String targetDateTime, boolean localTime, String title, String body, String action, String activationEvent) 
+	public int AndroidThunkJava_LocalNotificationScheduleAtTime(String targetDateTime, boolean localTime, String title, String body, String action, String activationEvent, int idOverride) 
 	{
-		int notificationID = LocalNotificationGetID(this);
+		int notificationID = idOverride;
+		if (notificationID == -1)
+		{
+			notificationID = LocalNotificationGetID(this);
+		}
+		else
+		{
+			//Make sure the Overriden id is a part of the current notification list
+			AddLocalNotificationID(this, notificationID);
+		}
 
 		if (!LocalNotificationScheduleAtTime(this, notificationID, targetDateTime, localTime, title, body, action, activationEvent))
 		{
@@ -5129,10 +5276,21 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 
 		long msDiff = targetDate.getTime() - currentDate.getTime();
 
+		// If you set the targetDateTime to 0, just send the notification as soon as possible
 		if(msDiff < 0)
 		{
-			LocalNotificationRemoveID(context, notificationID);
-			return false;
+			if (targetDate.getYear() == -1899)
+			{
+				// AlarmManager delivery is inexact: So instead of using the alarmManager to send instant notifications, just sending them right away
+				LocalNotificationReceiver directSend = new LocalNotificationReceiver();
+				directSend.onReceive(context, notificationIntent);
+				return false;
+			}
+			else
+			{
+				LocalNotificationRemoveID(context, notificationID);
+				return false;
+			}
 		}
 
 		long futureTimeInMillis = SystemClock.elapsedRealtime() + msDiff;//Calculate the time to run the callback
@@ -5230,9 +5388,11 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		new DeviceInfoData(0x054c, 0x0ce6, "PS5 Wireless Controller"),
 		new DeviceInfoData(0x05ac, 0x056a, "glap QXPGP001"),
 		new DeviceInfoData(0x0483, 0x5750, "STMicroelectronics Lenovo GamePad"),
+		new DeviceInfoData(0x1532, 0x0037, "Razer Kishi V2 Pro XBox360"),
 		new DeviceInfoData(0x1532, 0x0705, "Razer Razer Claire T1 Wired"),
 		new DeviceInfoData(0x1532, 0x0712, "Razer Kishi V2"),
-		new DeviceInfoData(0x1532, 0x0718, "Razer Kishi V2 Pro XBox360")
+		new DeviceInfoData(0x1532, 0x0718, "Razer Kishi V2 Pro XBox360"),
+		new DeviceInfoData(0x0171, 0x0419, "Luna Gamepad")
 	};
 
 	public class InputDeviceInfo {
@@ -5242,8 +5402,9 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		public int controllerId;
 		public String name;
 		public String descriptor;
+		public int feedbackMotorCount;
 
-		InputDeviceInfo(int did, int vid, int pid, int cid, String inName, String inDescriptor)
+		InputDeviceInfo(int did, int vid, int pid, int cid, String inName, String inDescriptor, int fmcount)
 		{
 			deviceId = did;
 			vendorId = vid;
@@ -5251,6 +5412,7 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 			controllerId = cid;
 			name = inName;
 			descriptor = inDescriptor;
+			feedbackMotorCount = fmcount;
 		}
 	}
 
@@ -5265,9 +5427,20 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 				int vendorId = 0;
 				int productId = 0;
 				int controllerNumber = 0;
+				int feedbackMotorCount = 0;
 
 				// requires 4.1 (Jellybean)
 				String descriptor = ANDROID_BUILD_VERSION >= 16 ? inputDevice.getDescriptor() : Integer.toString(deviceId);
+				
+				// supported on 12.0 onward
+				if (ANDROID_BUILD_VERSION >= 31)
+				{
+					VibratorManager vibratorManager = (VibratorManager) inputDevice.getVibratorManager();
+					if (vibratorManager != null)
+					{
+						feedbackMotorCount = vibratorManager.getVibratorIds().length;
+					}
+				}
 
 				// supported on 4.4 (KitKat) onward
 				if (ANDROID_BUILD_VERSION >= 19)
@@ -5281,16 +5454,59 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 					{
 						if (deviceInfo.IsMatch(vendorId, productId))
 						{
-							return new InputDeviceInfo(deviceId, vendorId, productId, controllerNumber, deviceInfo.name, descriptor);
+							return new InputDeviceInfo(deviceId, vendorId, productId, controllerNumber, deviceInfo.name, descriptor, feedbackMotorCount);
 						}
 					}
 				}
 
 				// use device name as fallback (may be generic like "Bluetooth HID" so not always useful)
-				return new InputDeviceInfo(deviceId, vendorId, productId, controllerNumber, inputDevice.getName(), descriptor);
+				return new InputDeviceInfo(deviceId, vendorId, productId, controllerNumber, inputDevice.getName(), descriptor, feedbackMotorCount);
 			}
 		}
-		return new InputDeviceInfo(deviceId, 0, 0, -1, "Unknown", "Unknown");
+		return new InputDeviceInfo(deviceId, 0, 0, -1, "Unknown", "Unknown", 0);
+	}
+
+	private boolean UpdateVibrator(Vibrator vibrator, int intensity, long duration)
+	{
+		if (vibrator != null)
+		{
+			_activity.runOnUiThread(new VibrateRunnable(intensity, duration, vibrator));
+			return true;
+		}
+		return false;
+	}
+
+	public boolean AndroidThunkJava_SetInputDeviceVibrators(int deviceId, int leftIntensity, int leftDuration, int rightIntensity, int rightDuration)
+	{
+		boolean result = false;
+		
+		InputDevice inputDevice = inputManager.getInputDevice(deviceId);
+        if (inputDevice != null)
+		{
+			int intensity = leftIntensity > rightIntensity ? leftIntensity : rightIntensity;
+			long duration = leftDuration > rightDuration ? leftDuration : rightDuration;
+			
+			if (ANDROID_BUILD_VERSION >= 31)
+			{
+				VibratorManager vibratorManager = inputDevice.getVibratorManager();
+				int[] vibratorIds = vibratorManager.getVibratorIds();
+				int count = vibratorIds.length;
+				if (count == 1)
+				{
+					result |= UpdateVibrator(vibratorManager.getVibrator(vibratorIds[0]), intensity, duration);
+				}
+				else if (count > 1)
+				{
+					result |= UpdateVibrator(vibratorManager.getVibrator(vibratorIds[0]), leftIntensity, leftDuration);
+					result |= UpdateVibrator(vibratorManager.getVibrator(vibratorIds[1]), rightIntensity, rightDuration);
+				}
+            }
+			else
+			{
+				result |= UpdateVibrator(inputDevice.getVibrator(), intensity, duration);
+            }
+  		}
+		return result;
 	}
 
 	public void AndroidThunkJava_UseSurfaceViewWorkaround()
@@ -5361,7 +5577,12 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 			if (((inputDevice.getSources() & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD)
                 || ((inputDevice.getSources() & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK))
 			{
-				return true;
+				// make sure it isn't actually a keyboard or finger scanner
+				if ((inputDevice.getKeyboardType() != InputDevice.KEYBOARD_TYPE_ALPHABETIC)
+					&& (!inputDevice.getName().equals("uinput-fpc")))
+				{
+					return true;
+				}
 			}
 		}
 
@@ -5567,7 +5788,36 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		}
 		return bAirplaneMode ? CONNECTION_TYPE_AIRPLANEMODE : CONNECTION_TYPE_NONE;
 	}
-	
+
+	public void AndroidThunkJava_AddNetworkListener()
+	{
+		if (NetworkListener == null)
+		{
+			NetworkListener = new NetworkConnectivityClient.Listener() {
+				@Override
+				public void onNetworkAvailable(NetworkConnectivityClient.NetworkTransportType networkTransportType)
+				{
+					nativeNetworkChanged();
+				}
+				@Override
+				public void onNetworkLost()
+				{
+					nativeNetworkChanged();
+				}
+			};
+			NetworkChangedManager.getInstance().addListener(NetworkListener);
+		}
+	}
+
+	public void AndroidThunkJava_RemoveNetworkListener()
+	{
+		if (NetworkListener != null)
+		{
+			NetworkChangedManager.getInstance().removeListener(NetworkListener);
+			NetworkListener = null;
+		}
+	}
+
 	public boolean AndroidThunkJava_HasMetaDataKey(String key)
 	{
 		if (_bundle == null || key == null)
@@ -5588,63 +5838,69 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 
 	public int AndroidThunkJava_GetMetaDataInt(String key)
 	{
-		if (key.equals("unreal.http.proxy.proxyPort"))
-		{
-			if (ANDROID_BUILD_VERSION >= 14)
-			{
-				String ProxyPort = System.getProperty("http.proxyPort");
-				return ProxyPort == null ? -1 : Integer.parseInt(ProxyPort);
-			}
-			else
-			{
-				return android.net.Proxy.getPort(getApplicationContext());
-			}
-		}
-		else
-		if (key.equals("android.hardware.vulkan.version"))
-		{
-			return VulkanVersion;
-		}
-		else
-		if (key.equals("android.hardware.vulkan.level"))
-		{
-			return VulkanLevel;
-		}
-		else
-		if (key.equals("unreal.getUsedMemory"))
-		{
-			int ProcessMemory = 0;
-			synchronized(_activity)
-			{
-				ProcessMemory = _activity.UsedMemory;
-			}
-			return ProcessMemory;
-		}
-		else
-		if (key.equals("audiomanager.framesPerBuffer"))
-		{
-			AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-			String framesPerBuffer = am.getProperty(AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER);
-			int framesPerBufferInt = framesPerBuffer == null ? 0 : Integer.parseInt(framesPerBuffer);
-			if (framesPerBufferInt == 0) framesPerBufferInt = 256; // Use default
-			Log.debug("[JAVA] audiomanager.framesPerBuffer = " + framesPerBufferInt);
-			return framesPerBufferInt;
-		}
-		else
-		if (key.equals("audiomanager.optimalSampleRate"))
-		{
-			AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-			String sampleRateStr = am.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE);
-			int sampleRateInt = sampleRateStr == null ? 0 : Integer.parseInt(sampleRateStr);
-			if (sampleRateInt == 0) sampleRateInt = 44100; // Use a default value if property not found
-			Log.debug("[JAVA] audiomanager.optimalSampleRate = " + sampleRateInt);
-			return sampleRateInt;
-		}
-		if (_bundle == null || key == null)
+		if (key == null)
 		{
 			return 0;
 		}
-		return _bundle.getInt(key);
+
+		switch(key)
+		{
+			case "unreal.http.proxy.proxyPort":
+			{
+				if (ANDROID_BUILD_VERSION >= 14)
+				{
+					String ProxyPort = System.getProperty("http.proxyPort");
+					return ProxyPort == null ? -1 : Integer.parseInt(ProxyPort);
+				}
+				else
+				{
+					return android.net.Proxy.getPort(getApplicationContext());
+				}
+			}
+			case "android.hardware.vulkan.version":
+			{
+				return VulkanVersion;
+			}
+			case "android.hardware.vulkan.level":
+			{
+				return VulkanLevel;
+			}
+			case "unreal.getUsedMemory":
+			{
+				int ProcessMemory = 0;
+				synchronized(_activity)
+				{
+					ProcessMemory = _activity.UsedMemory;
+				}
+				return ProcessMemory;
+			}
+			case "audiomanager.framesPerBuffer":
+			{
+				AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+				String framesPerBuffer = am.getProperty(AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER);
+				int framesPerBufferInt = framesPerBuffer == null ? 0 : Integer.parseInt(framesPerBuffer);
+				if (framesPerBufferInt == 0) framesPerBufferInt = 256; // Use default
+				Log.debug("[JAVA] audiomanager.framesPerBuffer = " + framesPerBufferInt);
+				return framesPerBufferInt;
+			}
+			case "audiomanager.optimalSampleRate":
+			{
+				AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+				String sampleRateStr = am.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE);
+				int sampleRateInt = sampleRateStr == null ? 0 : Integer.parseInt(sampleRateStr);
+				if (sampleRateInt == 0) sampleRateInt = 44100; // Use a default value if property not found
+				Log.debug("[JAVA] audiomanager.optimalSampleRate = " + sampleRateInt);
+				return sampleRateInt;
+			}
+			default:
+			{
+				if (_bundle == null)
+				{
+					return 0;
+				}
+				return _bundle.getInt(key);
+			}
+		}
 	}
 
 	public long AndroidThunkJava_GetMetaDataLong(String key)
@@ -5686,49 +5942,179 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		return 0.0f;
 	}
 
+	private Display GetDefaultDisplay()
+	{
+		if (android.os.Build.VERSION.SDK_INT >= 31)
+		{
+			return getDisplay();
+		}
+		else
+		{
+			return getWindowManager().getDefaultDisplay();
+		}
+	}
+
+	private DisplayMetrics GetDefaultDisplayMetrics()
+	{
+		DisplayMetrics metrics = new DisplayMetrics();
+		if (android.os.Build.VERSION.SDK_INT >= 31)
+		{
+			metrics = getResources().getDisplayMetrics();
+		}
+		else
+		if (android.os.Build.VERSION.SDK_INT >= 17)
+		{
+			getWindowManager().getDefaultDisplay().getRealMetrics(metrics);
+		}
+		else
+		{
+			// note: not available so get what we can
+			getWindowManager().getDefaultDisplay().getMetrics(metrics);
+		}
+		return metrics;
+	}
+
+	private boolean IsPrimitiveOrWrapperOrString(Class<?> type)
+	{
+		return type.isPrimitive()
+				|| type == Byte.class
+				|| type == Short.class
+				|| type == Integer.class
+				|| type == Long.class
+				|| type == Float.class
+				|| type == Double.class
+				|| type == Boolean.class
+				|| type == Character.class
+				|| type == String.class;
+	}
+
+	private String ExtractFieldsToKVString(Object obj, String Delim, boolean invokeParameterlessGetMethods)
+	{
+		String ret = "";
+		Class<?> ObjClass = obj.getClass();
+		try
+		{
+			Field[] fields = ObjClass.getDeclaredFields();
+			boolean bFirst = true;
+			for( Field field : fields)
+			{
+				// examine only public fields, ignore static and final to avoid gathering constants.
+				int fieldmodifiers = field.getModifiers();
+				if(!java.lang.reflect.Modifier.isPublic(fieldmodifiers)
+					|| java.lang.reflect.Modifier.isStatic(fieldmodifiers) 
+					|| java.lang.reflect.Modifier.isFinal(fieldmodifiers) 
+				)
+				{
+					continue;
+				}
+
+				String K,V;
+				try
+				{
+					K = field.getName();
+					V = field.get(obj).toString().replace(Delim, "");
+					ret += bFirst ? "" : Delim;
+					bFirst = false;
+					ret +=  K + Delim + V;
+				}
+				catch(Exception e)
+				{
+				}
+			}
+			if(invokeParameterlessGetMethods)
+			{
+				Method[] methods = ObjClass.getDeclaredMethods();
+				for(Method method : methods)
+				{
+					String K,V;
+					int methodmodifier = method.getModifiers();
+					if( !java.lang.reflect.Modifier.isPublic(methodmodifier) || method.getParameterTypes().length>0 || !(method.getName().startsWith("get")||method.getName().startsWith("is")) || !IsPrimitiveOrWrapperOrString(method.getReturnType()) )
+					{
+						continue;
+					}
+					try
+					{
+						K = method.getName();
+						V = method.invoke(obj).toString().replace(Delim, "");
+						ret += bFirst ? "" : Delim;
+						bFirst = false;
+						ret +=  K + Delim + V;
+					}
+					catch(Exception e)
+					{
+					}
+				}
+			}
+		}
+		catch(SecurityException e)
+		{
+			System.out.println("failed to find fields for obj ("+ObjClass.toString()+"):\n"+ e.toString());
+		}
+
+		return ret;
+	}
+
 	public String AndroidThunkJava_GetMetaDataString(String key)
 	{
-		if (key.startsWith("getprop:"))
-		{
-			return getProp(key.substring(8));
-		}
-		else
-		if (key.equals("unreal.http.proxy.proxyHost"))
-		{
-			if (ANDROID_BUILD_VERSION >= 14)
-			{
-				return System.getProperty("http.proxyHost");
-			}
-			else
-			{
-				return android.net.Proxy.getHost(getApplicationContext());
-			}
-		}
-		else
-		if (key.equals("unreal.displaymetrics.dpi"))
-		{
-			DisplayMetrics metrics = new DisplayMetrics();
-			if (android.os.Build.VERSION.SDK_INT >= 17)
-			{
-				getWindowManager().getDefaultDisplay().getRealMetrics(metrics);
-			} else {
-				// note: not available so get what we can
-				getWindowManager().getDefaultDisplay().getMetrics(metrics);
-			}
-
-			DecimalFormatSymbols symbols = new DecimalFormatSymbols();
-			symbols.setDecimalSeparator('.');
-			DecimalFormat decimalFormat = new DecimalFormat("###.##", symbols);
-
-			String screenDPI = decimalFormat.format(metrics.xdpi) + "," + decimalFormat.format(metrics.ydpi) + "," + decimalFormat.format(metrics.densityDpi);
-			return screenDPI;
-		}
-		else
-		if (_bundle == null || key == null)
+		if (key == null)
 		{
 			return null;
 		}
-		return _bundle.getString(key);
+
+		switch(key)
+		{
+			case "unreal.http.proxy.proxyHost":
+			{
+				if (ANDROID_BUILD_VERSION >= 14)
+				{
+					return System.getProperty("http.proxyHost");
+				}
+				else
+				{
+					return android.net.Proxy.getHost(getApplicationContext());
+				}
+			}
+			case "unreal.displaymetrics.dpi":
+			{
+				DisplayMetrics metrics = GetDefaultDisplayMetrics();
+
+				DecimalFormatSymbols symbols = new DecimalFormatSymbols();
+				symbols.setDecimalSeparator('.');
+				DecimalFormat decimalFormat = new DecimalFormat("###.##", symbols);
+
+				String screenDPI = decimalFormat.format(metrics.xdpi) + "," + decimalFormat.format(metrics.ydpi) + "," + decimalFormat.format(metrics.densityDpi);
+				return screenDPI;
+			}
+			case "unreal.displaymetrics.metrics":
+			{
+				DisplayMetrics metrics = GetDefaultDisplayMetrics();
+				return ExtractFieldsToKVString(metrics, ";", false);
+			}
+			case "unreal.display":
+			{
+				Display displayobj = GetDefaultDisplay();
+				String Info = ExtractFieldsToKVString(displayobj, ";", true);
+				if(!Info.isEmpty())
+				{
+					android.graphics.Point displaySize = new android.graphics.Point();
+					displayobj.getRealSize(displaySize);
+					Info += ";realWidth;"+displaySize.x+";realHeight;"+displaySize.y;
+				}
+				return Info;
+			}
+			default:
+			{
+				if (key.startsWith("getprop:"))
+				{
+					return getProp(key.substring(8));
+				}				
+				if (_bundle != null)
+				{
+					return _bundle.getString(key);
+				}
+				return null;
+			}
+		}		
 	}
 
 	public boolean AndroidThunkJava_HasIntentExtrasKey(String key)
@@ -5887,68 +6273,17 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		public VirtualKeyboardInput(Context context, AttributeSet attrs, int defStyle) 
 		{
 			super(context, attrs, defStyle);
-	        init();
 		}
 
 		public VirtualKeyboardInput(Context context, AttributeSet attrs) 
 		{
 			super(context, attrs);
-	        init();
 		}
 
 		public VirtualKeyboardInput(Context context) 
 		{
 			super(context);
-	        init();
 		}
-
-		private void init() 
-		{
-			if (emojiExcludeFilter == null)
-			{
-				emojiExcludeFilter = new EmojiExcludeFilter();
-			}
-			//setFilters(new InputFilter[]{emojiExcludeFilter});
-		}
-
-		@Override
-		public void setFilters(InputFilter[] filters) 
-		{
-			if (filters.length != 0 && emojiExcludeFilter != null) 
-			{ //if length == 0 it will here return when init() is called
-				boolean add = true;
-				for (InputFilter inputFilter : filters) 
-				{
-					if (inputFilter == emojiExcludeFilter) 
-					{
-						add = false;
-						break;
-					}
-				}
-				if (add)
-				{
-					filters = Arrays.copyOf(filters, filters.length + 1);
-					filters[filters.length - 1] = emojiExcludeFilter;
-				}
-			}
-			super.setFilters(filters);
-		}
-		    
-		private EmojiExcludeFilter emojiExcludeFilter;
-
-	    private class EmojiExcludeFilter implements InputFilter 
-	    {
-	        @Override
-	        public CharSequence filter(CharSequence source, int start, int end, Spanned dest, int dstart, int dend) {
-	            for (int i = start; i < end; i++) {
-	                int type = Character.getType(source.charAt(i));
-	                if (type == Character.SURROGATE || type == Character.OTHER_SYMBOL) {
-	                    return "";
-	                }
-	            }
-	            return null;
-	        }
-	    }
 
 		//Override BACK key to hide the virtual keyboard
 		@Override 
@@ -5959,7 +6294,7 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		    	AndroidThunkJava_HideVirtualKeyboardInput();
 				nativeVirtualKeyboardSendKey(KeyEvent.KEYCODE_BACK);
 		    }
-		    return super.dispatchKeyEvent(event);
+		    return super.onKeyPreIme(keyCode, event);
 		}
 
 		// listen for cursor position changes &  send message to the UMG widget
@@ -6449,9 +6784,14 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		return "";
 	}
 
-	public int AndroidThunkJava_GetDeviceOrientation() 
+	public int AndroidThunkJava_GetDeviceRotation() 
 	{
 		return getWindowManager().getDefaultDisplay().getRotation();
+	}
+
+	public int AndroidThunkJava_GetConfigurationOrientation()
+	{
+		return getResources().getConfiguration().orientation;
 	}
 
 	@SuppressWarnings("deprecation")
@@ -6584,7 +6924,7 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 	public native void nativeSetAndroidStartupState(boolean bDebuggerAttached);
 	public native void nativeSetGlobalActivity(boolean bUseExternalFilesDir, boolean bPublicLogFiles, String internalFilePath, String externalFilePath, boolean bOBBInAPK, String APKPath);
 	public native void nativeSetObbFilePaths(String OBBMainFilePath, String OBBPatchFilePath, String OBBOverflow1FilePath, String OBBOverflow2FilePath);
-	public native void nativeSetWindowInfo(boolean bIsPortrait, int DepthBufferPreference, int PropagateAlpha);
+	public native void nativeSetWindowInfo(int orientation, int DepthBufferPreference, int PropagateAlpha);
 	public native void nativeSetObbInfo(String ProjectName, String PackageName, int Version, int PatchVersion, String AppType);
 	public native void nativeSetAndroidVersionInformation( String AndroidVersion, int TargetSDK, String PhoneMake, String PhoneModel, String PhoneBuildNumber, String OSLanguage );
 
@@ -6609,7 +6949,7 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 	public native void nativeVirtualKeyboardShown(int left, int top, int right, int bottom);
 	public native void nativeVirtualKeyboardVisible(boolean bShown);
 
-	public native void nativeOnConfigurationChanged(boolean bPortrait);
+	public native void nativeOnConfigurationChanged(int orientation);
 		
 	public native void nativeOnInitialDownloadStarted();
 	public native void nativeOnInitialDownloadCompleted();
@@ -6622,6 +6962,8 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 	public native void nativeCrashContextSetIntegerKey(String Key, int Value);
 	public native void nativeCrashContextSetFloatKey(String Key, float Value);
 	public native void nativeCrashContextSetDoubleKey(String Key, double Value);
+
+	public native void nativeNetworkChanged();
 
 	static
 	{

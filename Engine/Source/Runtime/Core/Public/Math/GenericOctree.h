@@ -822,7 +822,7 @@ public:
 		checkSlow(ElementId.IsValidId());
 
 		// Remove the element from the node's element list.
-		TreeElements[ElementId.NodeIndex].RemoveAtSwap(ElementId.ElementIndex);
+		TreeElements[ElementId.NodeIndex].RemoveAtSwap(ElementId.ElementIndex, 1, false);
 
 		if (ElementId.ElementIndex < TreeElements[ElementId.NodeIndex].Num())
 		{
@@ -1047,14 +1047,16 @@ private:
 
 	// Function overload set which calls the V2 version if it's supported or the old version if it's not
 	template <typename Semantics>
-	typename TEnableIf<!TModels<COctreeSemanticsV2, Semantics>::Value>::Type SetOctreeSemanticsElementId(const ElementType& Element, FOctreeElementId2 Id)
+	void SetOctreeSemanticsElementId(const ElementType& Element, FOctreeElementId2 Id)
 	{
-		Semantics::SetElementId(Element, Id);
-	}
-	template <typename Semantics>
-	typename TEnableIf<TModels<COctreeSemanticsV2, Semantics>::Value>::Type SetOctreeSemanticsElementId(const ElementType& Element, FOctreeElementId2 Id)
-	{
-		Semantics::SetElementId(static_cast<typename Semantics::FOctree&>(*this), Element, Id);
+		if constexpr (TModels_V<COctreeSemanticsV2, Semantics>)
+		{
+			Semantics::SetElementId(static_cast<typename Semantics::FOctree&>(*this), Element, Id);
+		}
+		else
+		{
+			Semantics::SetElementId(Element, Id);
+		}
 	}
 
 protected:
@@ -1782,16 +1784,18 @@ private:
 			-> decltype(Semantics::SetElementId(OctreeInstance, Element, Id));
 	};
 
-	// Function overload set which calls the V2 version if it's supported or the old version if it's not
+	// Calls the V2 version if it's supported or the old version if it's not
 	template <typename Semantics>
-	typename TEnableIf<!TModels<COctreeSemanticsV2, Semantics>::Value>::Type SetOctreeSemanticsElementId(const ElementType& Element, FOctreeElementId Id)
+	void SetOctreeSemanticsElementId(const ElementType& Element, FOctreeElementId Id)
 	{
-		Semantics::SetElementId(Element, Id);
-	}
-	template <typename Semantics>
-	typename TEnableIf<TModels<COctreeSemanticsV2, Semantics>::Value>::Type SetOctreeSemanticsElementId(const ElementType& Element, FOctreeElementId Id)
-	{
-		Semantics::SetElementId(*this, Element, Id);
+		if constexpr (TModels_V<COctreeSemanticsV2, Semantics>)
+		{
+			Semantics::SetElementId(*this, Element, Id);
+		}
+		else
+		{
+			Semantics::SetElementId(Element, Id);
+		}
 	}
 
 protected:

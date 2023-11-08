@@ -19,6 +19,7 @@
 #include "TextureLayout.h"
 #include "CommonRenderResources.h"
 #include "ScreenPass.h"
+#include "RectLightTexture.h"
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Possible improvements:
@@ -197,7 +198,7 @@ struct FRectLightTextureManager : public FRenderResource
 	bool bHasPendingAdds = false;
 	bool bHasPendingDeletes = false;
 
-	virtual void ReleaseDynamicRHI()
+	virtual void ReleaseRHI()
 	{
 		AtlasTexture.SafeRelease();
 	}
@@ -224,7 +225,8 @@ static FIntPoint ToMIP(const FIntPoint& InMip, uint32 MipIndex)
 
 static int32 GetSlotMaxMIPLevel(const FAtlasSlot& In)
 {
-	return FMath::FloorLog2(FMath::Min(In.Rect.Resolution.X, In.Rect.Resolution.Y)) - 1;
+	const uint32 MaxMIP = FMath::FloorLog2(FMath::Min(In.Rect.Resolution.X, In.Rect.Resolution.Y));
+	return MaxMIP > 0u ? MaxMIP-1u : 0u;
 }
 
 static bool Traits_IsValid(const FAtlasRect& In)					{ return true; }
@@ -1471,7 +1473,7 @@ void RemoveTexture(uint32 InSlotIndex)
 	if (InSlotIndex != InvalidSlotIndex && InSlotIndex < uint32(GRectLightTextureManager.AtlasSlots.Num()))
 	{
 		// If it is the last light referencing this texture, we retires the atlas slot
-		if (GRectLightTextureManager.AtlasSlots[InSlotIndex].RefCount == 1)
+		if (--GRectLightTextureManager.AtlasSlots[InSlotIndex].RefCount == 0)
 		{
 			// Add pending slots to clean-up the layout during the next update call
 			GRectLightTextureManager.DeletedSlots.Add(GRectLightTextureManager.AtlasSlots[InSlotIndex].Rect);
@@ -1705,7 +1707,6 @@ void AddDebugPass(FRDGBuilder& GraphBuilder, const FViewInfo& View, FRDGTextureR
 	}
 }
 
-
 FRHITexture* GetAtlasTexture()
 {
 	return GRectLightTextureManager.AtlasTexture ? GRectLightTextureManager.AtlasTexture->GetRHI() : nullptr;
@@ -1713,7 +1714,7 @@ FRHITexture* GetAtlasTexture()
 
 // Scope object allowing to force refresh of a slot texture, and locking/preventing 
 // the atlas update during the 'update'/'capture'
-FAtlasTextureInvalidationScope::FAtlasTextureInvalidationScope(UTexture* In)
+FAtlasTextureInvalidationScope::FAtlasTextureInvalidationScope(const UTexture* In)
 {
 	if (In)
 	{
@@ -1728,7 +1729,7 @@ FAtlasTextureInvalidationScope::FAtlasTextureInvalidationScope(UTexture* In)
 				// Sanity check, allow a single lock/capture refresh at a time.
 				check(GRectLightTextureManager.bLock == false);
 
-				Texture = In;
+				bLocked = true;
 				Slot.bForceRefresh = true;
 				GRectLightTextureManager.bLock = true;
 				return;
@@ -1739,12 +1740,13 @@ FAtlasTextureInvalidationScope::FAtlasTextureInvalidationScope(UTexture* In)
 
 FAtlasTextureInvalidationScope::~FAtlasTextureInvalidationScope()
 {
-	if (Texture)
+	if (bLocked)
 	{
 		// Sanity check, allow a single lock/capture refresh at a time.
 		check(GRectLightTextureManager.bLock == true);
 
 		GRectLightTextureManager.bLock = false;
+		bLocked = false;
 	}
 }
 

@@ -31,6 +31,12 @@ static TAutoConsoleVariable<bool> CVarDisableOpenXROnAndroidWithoutOculus(
 	TEXT("If true OpenXR will not initialize on Android unless the project is packaged for Oculus (ProjectSetting->Platforms->Android->Advanced APK Packaging->PackageForOculusMobileDevices list not empty).  Currently defaulted to true because the OpenXR loader we are using hangs during intialization on some devices instead of failing, as it should."),
 	ECVF_RenderThreadSafe);
 
+static TAutoConsoleVariable<bool> CVarCheckOpenXRInstanceConformance(
+	TEXT("xr.CheckOpenXRInstanceConformance"),
+	true,
+	TEXT("If true, OpenXR will verify Instance is conformant by calling xrStringToPath. Some runtimes fail without a system attached at instance creation time."),
+	ECVF_RenderThreadSafe);
+
 //---------------------------------------------------
 // OpenXRHMD Plugin Implementation
 //---------------------------------------------------
@@ -41,6 +47,8 @@ FOpenXRHMDModule::FOpenXRHMDModule()
 	: LoaderHandle(nullptr)
 	, Instance(XR_NULL_HANDLE)
 	, RenderBridge(nullptr)
+	, OculusAudioInputDevice()
+	, OculusAudioOutputDevice()
 { }
 
 FOpenXRHMDModule::~FOpenXRHMDModule()
@@ -78,6 +86,39 @@ TSharedPtr< class IXRTrackingSystem, ESPMode::ThreadSafe > FOpenXRHMDModule::Cre
 	}
 
 	return nullptr;
+}
+
+bool FOpenXRHMDModule::PreInit()
+{
+	// On Windows, we need to get the audio input/output devices before init, so create the instance first, grab the audio devices, and then
+	// immediately destroy it so a new one can be created for the actual initialize call
+	const bool bInitialized = InitInstance();
+	if (bInitialized)
+	{
+#if PLATFORM_WINDOWS
+		if (IsExtensionEnabled(XR_OCULUS_AUDIO_DEVICE_GUID_EXTENSION_NAME))
+		{
+			PFN_xrGetAudioInputDeviceGuidOculus GetAudioInputDeviceGuidOculus = nullptr;
+			if (XR_ENSURE(xrGetInstanceProcAddr(Instance, "xrGetAudioInputDeviceGuidOculus", (PFN_xrVoidFunction*)&GetAudioInputDeviceGuidOculus)))
+			{
+				WCHAR DeviceGuid[XR_MAX_AUDIO_DEVICE_STR_SIZE_OCULUS];
+				GetAudioInputDeviceGuidOculus(Instance, DeviceGuid);
+				OculusAudioInputDevice = FString(XR_MAX_AUDIO_DEVICE_STR_SIZE_OCULUS, DeviceGuid);
+			}
+
+			PFN_xrGetAudioOutputDeviceGuidOculus GetAudioOutputDeviceGuidOculus = nullptr;
+			if (XR_ENSURE(xrGetInstanceProcAddr(Instance, "xrGetAudioOutputDeviceGuidOculus", (PFN_xrVoidFunction*)&GetAudioOutputDeviceGuidOculus)))
+			{
+				WCHAR DeviceGuid[XR_MAX_AUDIO_DEVICE_STR_SIZE_OCULUS];
+				GetAudioOutputDeviceGuidOculus(Instance, DeviceGuid);
+				OculusAudioOutputDevice = FString(XR_MAX_AUDIO_DEVICE_STR_SIZE_OCULUS, DeviceGuid);
+			}
+		}
+#endif // PLATFORM_WINDOWS
+		XR_ENSURE(xrDestroyInstance(Instance));
+		Instance = nullptr;
+	}
+	return bInitialized;
 }
 
 void FOpenXRHMDModule::ShutdownModule()
@@ -179,9 +220,7 @@ bool FOpenXRHMDModule::IsStandaloneStereoOnlyDevice()
 		}
 
 #if PLATFORM_HOLOLENS || PLATFORM_ANDROID
-		bool bStartInVR = false;
-		GConfig->GetBool(TEXT("/Script/EngineSettings.GeneralProjectSettings"), TEXT("bStartInVR"), bStartInVR, GGameIni); 
-		return FParse::Param(FCommandLine::Get(), TEXT("vr")) || bStartInVR;
+		return IStereoRendering::IsStartInVR();
 #endif
 	}
 	return false;
@@ -205,9 +244,11 @@ bool FOpenXRHMDModule::EnumerateExtensions()
 
 	if (XR_ENSURE(xrEnumerateInstanceExtensionProperties(nullptr, ExtensionsCount, &ExtensionsCount, Properties.GetData())))
 	{
+		UE_LOG(LogHMD, Log, TEXT("OpenXR runtime supported extensions:"));
 		for (const XrExtensionProperties& Prop : Properties)
 		{
 			AvailableExtensions.Add(Prop.extensionName);
+			UE_LOG(LogHMD, Log, TEXT("\t%S"), (Prop.extensionName));
 		}
 		return true;
 	}
@@ -495,17 +536,25 @@ bool FOpenXRHMDModule::GetOptionalExtensions(TArray<const ANSICHAR*>& OutExtensi
 #ifdef XR_USE_GRAPHICS_API_VULKAN
 	OutExtensions.Add(XR_KHR_VULKAN_ENABLE_EXTENSION_NAME);
 	OutExtensions.Add(XR_KHR_VULKAN_SWAPCHAIN_FORMAT_LIST_EXTENSION_NAME);
+	OutExtensions.Add(XR_FB_FOVEATION_VULKAN_EXTENSION_NAME);
 #endif
 	OutExtensions.Add(XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME);
+	OutExtensions.Add(XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME);
+	OutExtensions.Add(XR_KHR_COMPOSITION_LAYER_EQUIRECT_EXTENSION_NAME);
 	OutExtensions.Add(XR_VARJO_QUAD_VIEWS_EXTENSION_NAME);
 	OutExtensions.Add(XR_KHR_VISIBILITY_MASK_EXTENSION_NAME);
 	OutExtensions.Add(XR_KHR_BINDING_MODIFICATION_EXTENSION_NAME);
 	OutExtensions.Add(XR_EPIC_VIEW_CONFIGURATION_FOV_EXTENSION_NAME);
+	OutExtensions.Add(XR_EXT_DPAD_BINDING_EXTENSION_NAME);
 	OutExtensions.Add(XR_EXT_PALM_POSE_EXTENSION_NAME);
-
-	// Draft extension not yet provided in headers
-	OutExtensions.Add("XR_EXT_dpad_binding");
-	OutExtensions.Add("XR_EXT_active_action_set_priority");
+	OutExtensions.Add(XR_EXT_ACTIVE_ACTION_SET_PRIORITY_EXTENSION_NAME);
+	OutExtensions.Add(XR_FB_COMPOSITION_LAYER_ALPHA_BLEND_EXTENSION_NAME);
+	OutExtensions.Add(XR_FB_FOVEATION_EXTENSION_NAME);
+	OutExtensions.Add(XR_FB_SWAPCHAIN_UPDATE_STATE_EXTENSION_NAME);
+	OutExtensions.Add(XR_FB_FOVEATION_CONFIGURATION_EXTENSION_NAME); 
+#if PLATFORM_WINDOWS
+	OutExtensions.Add(XR_OCULUS_AUDIO_DEVICE_GUID_EXTENSION_NAME);
+#endif
 
 	return true;
 }
@@ -749,6 +798,22 @@ bool FOpenXRHMDModule::InitInstance()
 	InstanceProps.runtimeName[XR_MAX_RUNTIME_NAME_SIZE - 1] = 0; // Ensure the name is null terminated.
 	UE_LOG(LogHMD, Log, TEXT("Initialized OpenXR on %S runtime version %d.%d.%d"), InstanceProps.runtimeName, XR_VERSION_MAJOR(InstanceProps.runtimeVersion), XR_VERSION_MINOR(InstanceProps.runtimeVersion), XR_VERSION_PATCH(InstanceProps.runtimeVersion));
 
+	if (CVarCheckOpenXRInstanceConformance.GetValueOnAnyThread() &&
+		(FCStringAnsi::Strstr(InstanceProps.runtimeName, "SteamVR/OpenXR") != nullptr))
+	{
+		// Runtimes should not be dependent on system availability to use instance-only functions.
+		// However, some runtimes fail with some instance-only calls, such as xrStringToPath. We
+		// need to bail early to prevent failures later on during setup.
+		XrPath UserHeadTestPath = XR_NULL_PATH;
+		const XrResult StringToPathTest = xrStringToPath(Instance, "/user/head", &UserHeadTestPath);
+
+		if (StringToPathTest != XR_SUCCESS)
+		{
+			UE_LOG(LogHMD, Warning, TEXT("Instance does not support expected usage of xrStringToPath. Instance is not viable."));
+			return false;
+		}
+	}
+
 	for (IOpenXRExtensionPlugin* Module : ExtensionPlugins)
 	{
 		Module->PostCreateInstance(Instance);
@@ -844,4 +909,14 @@ XrPath FOpenXRHMDModule::ResolveNameToPath(FName Name)
 	{
 		return XR_NULL_PATH;
 	}
+}
+
+FString FOpenXRHMDModule::GetAudioInputDevice()
+{
+	return OculusAudioInputDevice;
+}
+
+FString FOpenXRHMDModule::GetAudioOutputDevice()
+{
+	return OculusAudioOutputDevice;
 }

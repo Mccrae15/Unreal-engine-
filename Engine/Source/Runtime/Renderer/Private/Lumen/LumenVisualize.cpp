@@ -17,6 +17,7 @@
 #include "LumenSurfaceCacheFeedback.h"
 #include "LumenVisualizationData.h"
 #include "MeshCardBuild.h"
+#include "LumenReflections.h"
 
 // Must be in sync with VISUALIZE_MODE_* in LumenVisualize.h
 int32 GLumenVisualize = 0;
@@ -29,8 +30,8 @@ FAutoConsoleVariableRef CVarLumenVisualize(
 	TEXT("2 - Reflection View\n")
 	TEXT("3 - Surface Cache Coverage\n")
 	TEXT("4 - Overview\n")
-	TEXT("5 - Albedo\n")
-	TEXT("6 - Geometry normals\n")
+	TEXT("5 - Geometry normals\n")
+	TEXT("6 - Albedo\n")
 	TEXT("7 - Normals\n")
 	TEXT("8 - Emissive\n")
 	TEXT("9 - Opacity (disable alpha masking)\n")
@@ -289,14 +290,20 @@ class FVisualizeLumenSceneCS : public FGlobalShader
 
 	class FTraceMeshSDF : SHADER_PERMUTATION_BOOL("TRACE_MESH_SDF");
 	class FTraceGlobalSDF : SHADER_PERMUTATION_BOOL("TRACE_GLOBAL_SDF");
+	class FSimpleCoverageBasedExpand : SHADER_PERMUTATION_BOOL("GLOBALSDF_SIMPLE_COVERAGE_BASED_EXPAND");
 	class FRadianceCache : SHADER_PERMUTATION_BOOL("RADIANCE_CACHE");
 	class FTraceHeightfields : SHADER_PERMUTATION_BOOL("SCENE_TRACE_HEIGHTFIELDS");
 
-	using FPermutationDomain = TShaderPermutationDomain<FTraceMeshSDF, FTraceGlobalSDF, FRadianceCache, FTraceHeightfields>;
+	using FPermutationDomain = TShaderPermutationDomain<FTraceMeshSDF, FTraceGlobalSDF, FSimpleCoverageBasedExpand, FRadianceCache, FTraceHeightfields>;
 
 public:
 	static FPermutationDomain RemapPermutation(FPermutationDomain PermutationVector)
 	{
+		if (!PermutationVector.Get<FTraceGlobalSDF>())
+		{
+			PermutationVector.Set<FSimpleCoverageBasedExpand>(false);
+		}
+
 		return PermutationVector;
 	}
 
@@ -317,7 +324,6 @@ public:
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 
 		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE"), GetGroupSize());
-		OutEnvironment.SetDefine(TEXT("USE_GLOBAL_GPU_SCENE_DATA"), 1);
 		OutEnvironment.SetDefine(TEXT("ENABLE_VISUALIZE_MODE"), 1);
 		OutEnvironment.SetDefine(TEXT("SURFACE_CACHE_FEEDBACK"), 1);
 		OutEnvironment.SetDefine(TEXT("SURFACE_CACHE_HIGH_RES_PAGES"), 1);
@@ -397,7 +403,7 @@ public:
 	/** Destructor. */
 	virtual ~FVisualizeTracesVertexDeclaration() {}
 
-	virtual void InitRHI()
+	virtual void InitRHI(FRHICommandListBase& RHICmdList)
 	{
 		FVertexDeclarationElementList Elements;
 		VertexDeclarationRHI = RHICreateVertexDeclaration(Elements);
@@ -498,6 +504,19 @@ void SetupVisualizeParameters(
 	int32 VisualizeTileIndex, 
 	FLumenVisualizeSceneSoftwareRayTracingParameters& VisualizeParameters)
 {
+	float MaxMeshSDFTraceDistance = GVisualizeLumenSceneMaxMeshSDFTraceDistance >= 0.0f ? GVisualizeLumenSceneMaxMeshSDFTraceDistance : FLT_MAX;
+	float MaxTraceDistance = GVisualizeLumenSceneMaxTraceDistance;
+	uint32 MaxReflectionBounces = 1;
+
+	// Reflection scene view uses reflection setup
+	if (VisualizeMode == VISUALIZE_MODE_REFLECTION_VIEW)
+	{
+		extern FLumenGatherCvarState GLumenGatherCvars;
+		MaxMeshSDFTraceDistance = GLumenGatherCvars.MeshSDFTraceDistance;
+		MaxTraceDistance = Lumen::GetMaxTraceDistance(View);
+		MaxReflectionBounces = LumenReflections::GetMaxReflectionBounces(View);
+	}
+
 	// FLumenVisualizeSceneParameters
 	{
 		FLumenVisualizeSceneParameters& CommonParameters = VisualizeParameters.CommonParameters;
@@ -505,6 +524,11 @@ void SetupVisualizeParameters(
 		CommonParameters.VisualizeHiResSurface = GVisualizeLumenSceneHiResSurface ? 1 : 0;
 		CommonParameters.Tonemap = (EyeAdaptationBuffer != nullptr && ColorGradingTexture != nullptr) ? 1 : 0;
 		CommonParameters.VisualizeMode = VisualizeMode;
+		CommonParameters.MaxReflectionBounces = MaxReflectionBounces;
+
+		LumenReflections::SetupCompositeParameters(CommonParameters.ReflectionsCompositeParameters);
+		CommonParameters.PreIntegratedGF = GSystemTextures.PreintegratedGF->GetRHI();
+		CommonParameters.PreIntegratedGFSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
 		CommonParameters.InputViewOffset = ViewRect.Min;
 		CommonParameters.OutputViewOffset = ViewRect.Min;
@@ -524,17 +548,6 @@ void SetupVisualizeParameters(
 
 	// FLumenVisualizeSceneSoftwareRayTracingParameters
 	{
-		float MaxMeshSDFTraceDistance = GVisualizeLumenSceneMaxMeshSDFTraceDistance >= 0.0f ? GVisualizeLumenSceneMaxMeshSDFTraceDistance : FLT_MAX;
-		float MaxTraceDistance = GVisualizeLumenSceneMaxTraceDistance;
-
-		// Reflection scene view uses reflection setup
-		if (VisualizeMode == VISUALIZE_MODE_REFLECTION_VIEW)
-		{
-			extern FLumenGatherCvarState GLumenGatherCvars;
-			MaxMeshSDFTraceDistance = GLumenGatherCvars.MeshSDFTraceDistance;
-			MaxTraceDistance = Lumen::GetMaxTraceDistance(View);
-		}
-
 		bool bTraceMeshSDF = GVisualizeLumenSceneTraceMeshSDFs != 0 && View.Family->EngineShowFlags.LumenDetailTraces;
 		if (!bTraceMeshSDF)
 		{
@@ -603,7 +616,8 @@ void VisualizeLumenScene(
 	FRDGTextureRef ColorGradingTexture,
 	FRDGBufferRef EyeAdaptationBuffer,
 	int32 VisualizeMode,
-	int32 VisualizeTileIndex)
+	int32 VisualizeTileIndex,
+	bool bLumenGIEnabled)
 {
 	FRDGTextureUAVRef SceneColorUAV = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(Output.Texture));
 
@@ -636,7 +650,8 @@ void VisualizeLumenScene(
 			IndirectTracingParameters,
 			VisualizeParameters.CommonParameters,
 			Output.Texture,
-			bVisualizeModeWithHitLighting);
+			bVisualizeModeWithHitLighting,
+			bLumenGIEnabled);
 	}
 	else
 	{
@@ -679,6 +694,7 @@ void VisualizeLumenScene(
 		FVisualizeLumenSceneCS::FPermutationDomain PermutationVector;
 		PermutationVector.Set<FVisualizeLumenSceneCS::FTraceMeshSDF>(bTraceMeshSDF);
 		PermutationVector.Set<FVisualizeLumenSceneCS::FTraceGlobalSDF>(bTraceGlobalSDF);
+		PermutationVector.Set<FVisualizeLumenSceneCS::FSimpleCoverageBasedExpand>(bTraceGlobalSDF && Lumen::UseGlobalSDFSimpleCoverageBasedExpand());
 		PermutationVector.Set<FVisualizeLumenSceneCS::FRadianceCache>(GVisualizeLumenSceneTraceRadianceCache != 0 && LumenScreenProbeGather::UseRadianceCache(View));
 		PermutationVector.Set<FVisualizeLumenSceneCS::FTraceHeightfields>(Lumen::UseHeightfieldTracing(*View.Family, *Scene->GetLumenSceneData(View)));
 		PermutationVector = FVisualizeLumenSceneCS::RemapPermutation(PermutationVector);
@@ -702,7 +718,7 @@ int32 GetLumenVisualizeMode(const FViewInfo& View)
 	return VisualizeMode;
 }
 
-FScreenPassTexture AddVisualizeLumenScenePass(FRDGBuilder& GraphBuilder, const FViewInfo& View, bool bAnyLumenActive, const FVisualizeLumenSceneInputs& Inputs, FLumenSceneFrameTemporaries& FrameTemporaries)
+FScreenPassTexture AddVisualizeLumenScenePass(FRDGBuilder& GraphBuilder, const FViewInfo& View, bool bAnyLumenActive, bool bLumenGIEnabled, const FVisualizeLumenSceneInputs& Inputs, FLumenSceneFrameTemporaries& FrameTemporaries)
 {
 	check(Inputs.SceneColor.IsValid());
 
@@ -747,23 +763,23 @@ FScreenPassTexture AddVisualizeLumenScenePass(FRDGBuilder& GraphBuilder, const F
 				};
 
 				FVisualizeTile VisualizeTiles[LumenVisualize::NumOverviewTilesPerRow];
-				VisualizeTiles[0].Mode = VISUALIZE_MODE_LUMEN_SCENE;
+				VisualizeTiles[0].Mode = VISUALIZE_MODE_GEOMETRY_NORMALS;
+				VisualizeTiles[0].Name = TEXT("Geometry Normals");
+				VisualizeTiles[1].Mode = VISUALIZE_MODE_REFLECTION_VIEW;
 				if (Lumen::UseHardwareRayTracing(ViewFamily))
 				{
-					VisualizeTiles[0].Name = LumenVisualize::IsHitLightingForceEnabled(View) ? TEXT("Lumen Scene (HWRT with hit lighting)") : TEXT("Lumen Scene (HWRT)");
+					VisualizeTiles[1].Name = LumenReflections::IsHitLightingForceEnabled(View, bLumenGIEnabled) ? TEXT("Reflection View, HWRT with hit lighting") : TEXT("Reflection View, HWRT");
 				}
 				else
 				{
-					VisualizeTiles[0].Name = Lumen::UseMeshSDFTracing(ViewFamily) ? TEXT("Lumen Scene (SWRT with detail tracing)") : TEXT("Lumen Scene (SWRT)");
+					VisualizeTiles[1].Name = Lumen::UseMeshSDFTracing(ViewFamily) ? TEXT("Reflection View, SWRT with detail tracing") : TEXT("Reflection View, SWRT");
 				}
-				VisualizeTiles[1].Mode = VISUALIZE_MODE_REFLECTION_VIEW;
-				VisualizeTiles[1].Name = TEXT("Reflection View");
 				VisualizeTiles[2].Mode = VISUALIZE_MODE_SURFACE_CACHE;
-				VisualizeTiles[2].Name = TEXT("Surface Cache");
+				VisualizeTiles[2].Name = TEXT("Lumen Scene, Pink - missing Surface Cache coverage, Yellow - culled Surface Cache");
 
 				for (int32 TileIndex = 0; TileIndex < LumenVisualize::NumOverviewTilesPerRow; ++TileIndex)
 				{
-					VisualizeLumenScene(Scene, GraphBuilder, ViewFamily.EngineShowFlags, View, FrameTemporaries, Output, Inputs.ColorGradingTexture, Inputs.EyeAdaptationBuffer, VisualizeTiles[TileIndex].Mode, TileIndex);	
+					VisualizeLumenScene(Scene, GraphBuilder, ViewFamily.EngineShowFlags, View, FrameTemporaries, Output, Inputs.ColorGradingTexture, Inputs.EyeAdaptationBuffer, VisualizeTiles[TileIndex].Mode, TileIndex, bLumenGIEnabled);	
 				}
 
 				AddDrawCanvasPass(GraphBuilder, RDG_EVENT_NAME("LumenVisualizeLabels"), View, FScreenPassRenderTarget(Output, ERenderTargetLoadAction::ELoad),
@@ -787,7 +803,7 @@ FScreenPassTexture AddVisualizeLumenScenePass(FRDGBuilder& GraphBuilder, const F
 			}
 			else
 			{
-				VisualizeLumenScene(Scene, GraphBuilder, ViewFamily.EngineShowFlags, View, FrameTemporaries, Output, Inputs.ColorGradingTexture, Inputs.EyeAdaptationBuffer, VisualizeMode, /*VisualizeTileIndex*/ -1);
+				VisualizeLumenScene(Scene, GraphBuilder, ViewFamily.EngineShowFlags, View, FrameTemporaries, Output, Inputs.ColorGradingTexture, Inputs.EyeAdaptationBuffer, VisualizeMode, /*VisualizeTileIndex*/ -1, bLumenGIEnabled);
 			}
 		}
 	}

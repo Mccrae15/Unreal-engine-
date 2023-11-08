@@ -16,7 +16,15 @@
 * 
 * ImageCore does not use Engine, only Core
 * it can be used in standalone apps that don't have Engine
-* 
+*
+* note to authors: as much as possible, write functions that act on FImageView
+*  for example reading and modifying pixels? use FImageView
+* use FImage when you may need to change the format or allocate a new image.
+*
+* prefer using FImage/FImageView instead of TextureSourceFormat or raw arrays or bytes
+*
+* Try not to write code that switches on pixel format, as formats may be added and it creates a fragile maintenance problem.
+*
 */
 
 
@@ -62,15 +70,21 @@ namespace ERawImageFormat
 	// RGBA -> G8 takes from the  *R* channel
 	// G8 -> RGBA replicated to gray
  
-	IMAGECORE_API int32 GetBytesPerPixel(Type Format);
+	IMAGECORE_API int64 GetBytesPerPixel(Type Format);
 	
 	IMAGECORE_API const TCHAR * GetName(Type Format);
 	
 	IMAGECORE_API bool IsHDR(Type Format);
 	
 	// Get one pixel of Format type from PixelData and return in Linear color
-	IMAGECORE_API FLinearColor GetOnePixelLinear(const void * PixelData,Type Format,bool bSRGB);	
+	IMAGECORE_API const FLinearColor GetOnePixelLinear(const void * PixelData,Type Format,EGammaSpace Gamma);
 	
+	// Get one pixel of Format type from PixelData and return in Linear color
+	FORCEINLINE const FLinearColor GetOnePixelLinear(const void * PixelData,Type Format,bool bSRGB)
+	{
+		return GetOnePixelLinear(PixelData,Format,bSRGB ? EGammaSpace::sRGB : EGammaSpace::Linear);
+	}
+
 	// G8 and BGRA8 are affected by Gamma
 	//	16/32 is NOT
 	FORCEINLINE bool GetFormatNeedsGammaSpace(Type Format)
@@ -141,7 +155,17 @@ struct FImageInfo
 		, GammaSpace(InGammaSpace)
 	{
 	}
-		
+	
+	FORCEINLINE bool operator == (const FImageInfo & rhs) const
+	{
+		return 
+			SizeX == rhs.SizeX &&
+			SizeY == rhs.SizeY &&
+			NumSlices == rhs.NumSlices &&
+			Format == rhs.Format &&
+			GammaSpace == rhs.GammaSpace;
+	}
+
 	FORCEINLINE bool IsImageInfoValid() const
 	{
 		if ( SizeX < 0 || SizeY < 0 || NumSlices < 0 ) return false;
@@ -161,7 +185,7 @@ struct FImageInfo
 	 *
 	 * @return Bytes per pixel.
 	 */
-	FORCEINLINE int32 GetBytesPerPixel() const
+	FORCEINLINE int64 GetBytesPerPixel() const
 	{
 		return ERawImageFormat::GetBytesPerPixel(Format);
 	}
@@ -186,8 +210,8 @@ struct FImageInfo
 		return GetSliceNumPixels() * GetBytesPerPixel();
 	}
 	
-	FORCEINLINE int32 GetWidth()  const { return SizeX; }
-	FORCEINLINE int32 GetHeight() const { return SizeY; }
+	FORCEINLINE int64 GetWidth()  const { return SizeX; }
+	FORCEINLINE int64 GetHeight() const { return SizeY; }
 	
 	FORCEINLINE EGammaSpace GetGammaSpace() const
 	{
@@ -196,6 +220,23 @@ struct FImageInfo
 
 		return GammaSpace;
 	}
+	
+	// get offset of a pixel from the base pointer, in bytes
+	FORCEINLINE int64 GetPixelOffsetBytes(int32 X,int32 Y,int32 Slice = 0) const
+	{
+		checkSlow( X >= 0 && X < SizeX );
+		checkSlow( Y >= 0 && Y < SizeY );
+		checkSlow( Slice >= 0 && Slice < NumSlices );
+
+		int64 Offset = Slice * GetSliceNumPixels();
+		Offset += Y * (int64)SizeX;
+		Offset += X;
+		// Offset is now is pixels
+		Offset *= GetBytesPerPixel();
+
+		return Offset;
+	}
+
 };
 
 /***
@@ -275,11 +316,26 @@ struct FImageView : public FImageInfo
 	IMAGECORE_API void CopyTo(FImage& DestImage, ERawImageFormat::Type DestFormat, EGammaSpace DestGammaSpace) const;
 	
 	// CopyTo same format
-	IMAGECORE_API void CopyTo(FImage& DestImage) const
+	void CopyTo(FImage& DestImage) const
 	{
 		CopyTo(DestImage,Format,GammaSpace);
 	}
 	
+	// get a pointer to a pixel
+	FORCEINLINE void * GetPixelPointer(int32 X,int32 Y,int32 Slice=0) const
+	{
+		uint8 * Ptr = (uint8 *)RawData;
+		Ptr += GetPixelOffsetBytes(X,Y,Slice);
+		return (void *)Ptr;
+	}
+
+	// Get one pixel from the image and return in Linear color
+	const FLinearColor GetOnePixelLinear(int32 X,int32 Y,int32 Slice=0) const
+	{
+		void * Ptr = GetPixelPointer(X,Y,Slice);
+		return ERawImageFormat::GetOnePixelLinear(Ptr,Format,GammaSpace);
+	}
+
 public:
 
 	// Convenience accessors to raw data
@@ -324,6 +380,7 @@ public:
 	TArrayView64<FLinearColor> AsRGBA32F() const
 	{
 		check(Format == ERawImageFormat::RGBA32F);
+		check(GammaSpace == EGammaSpace::Linear);
 		return { (struct FLinearColor*)RawData, GetNumPixels() };
 	}
 
@@ -422,7 +479,7 @@ public:
 	IMAGECORE_API void CopyTo(FImage& DestImage, ERawImageFormat::Type DestFormat, EGammaSpace DestGammaSpace) const;
 	
 	// CopyTo same format
-	IMAGECORE_API void CopyTo(FImage& DestImage) const
+	void CopyTo(FImage& DestImage) const
 	{
 		CopyTo(DestImage,Format,GammaSpace);
 	}
@@ -459,16 +516,7 @@ public:
 		Linearize(0,DestImage);
 	}
 
-	/**
-	 * Apply a color space transformation from the source chromaticities to the engine's working color space.
-	 *
-	 * @param SourceRedChromaticity - The red chromaticity coordinate of the source color space.
-	 * @param SourceGreenChromaticity - The green chromaticity coordinate of the source color space.
-	 * @param SourceBlueChromaticity - The blue chromaticity coordinate of the source color space.
-	 * @param SourceWhiteChromaticity - The white chromaticity coordinate of the source color space.
-	 * @param Method - The chromatic adapation method.
-	 * @param EqualityTolerance - The tolerance for the source and working color space chromaticities to be considered equal, bypassing the transform.
-	 */
+	UE_DEPRECATED(5.3, "TransformToWorkingColorSpace is deprecated, please use the function in FImageCore.")
 	IMAGECORE_API void TransformToWorkingColorSpace(const FVector2d& SourceRedChromaticity, const FVector2d& SourceGreenChromaticity, const FVector2d& SourceBlueChromaticity, const FVector2d& SourceWhiteChromaticity, UE::Color::EChromaticAdaptationMethod Method, double EqualityTolerance = 1.e-7);
 
 	/**
@@ -511,6 +559,20 @@ public:
 	 * @param Info - The image description.  Can also pass an FImage or FImageView to this function.
 	 */
 	IMAGECORE_API void Init(const FImageInfo & Info);
+	
+	// get a pointer to a pixel
+	FORCEINLINE void * GetPixelPointer(int32 X,int32 Y,int32 Slice=0) const
+	{
+		int64 Offset = GetPixelOffsetBytes(X,Y,Slice);
+		return (void *)&RawData[Offset];
+	}
+
+	// Get one pixel from the image and return in Linear color
+	const FLinearColor GetOnePixelLinear(int32 X,int32 Y,int32 Slice=0) const
+	{
+		void * Ptr = GetPixelPointer(X,Y,Slice);
+		return ERawImageFormat::GetOnePixelLinear(Ptr,Format,GammaSpace);
+	}
 
 public:
 
@@ -632,7 +694,7 @@ public:
 
 IMAGECORE_API int32 ImageParallelForComputeNumJobsForPixels(int64 & OutNumPixelsPerJob,int64 NumPixels);
 
-IMAGECORE_API int32 ImageParallelForComputeNumJobsForRows(int32 & OutNumItemsPerJob,int32 SizeX,int32 SizeY);
+IMAGECORE_API int32 ImageParallelForComputeNumJobsForRows(int32 & OutNumItemsPerJob,int64 SizeX,int64 SizeY);
 
 namespace FImageCore
 {
@@ -658,6 +720,15 @@ IMAGECORE_API void CopyImage(const FImageView & SrcImage,const FImageView & Dest
  * @param DestImage - The destination image to copy to. (the FImageView is const but what it points at is not)
  */
 IMAGECORE_API void CopyImageRGBABGRA(const FImageView & SrcImage,const FImageView & DestImage);
+
+/**
+ * Copy Image to 2xU16 ; Dest Image should be allocated as BGRA8 but is actually 2xU16
+ * Sizes must match. Dest must already be allocated.
+ *
+ * @param SrcImage - The source image to copy from.
+ * @param DestImage - The destination image to copy to. (the FImageView is const but what it points at is not)
+ */
+IMAGECORE_API void CopyImageTo2U16(const FImageView & SrcImage,const FImageView & DestImage);
 
 /**
 * Swap RB channels on Image.  Image must be BGRA8 or RGBA16.
@@ -712,14 +783,19 @@ IMAGECORE_API void ResizeTo(const FImageView & SourceImage,FImage& DestImage, in
  * @param OutMin - filled with the minimum of the color channels
  * @param OutMax - filled with the maximum of the color channels
  */
-IMAGECORE_API void ComputeChannelLinearMinMax(const FImage & InImage, FLinearColor & OutMin, FLinearColor & OutMax);
+IMAGECORE_API void ComputeChannelLinearMinMax(const FImageView & InImage, FLinearColor & OutMin, FLinearColor & OutMax);
+
+/**
+ * Apply a color space transformation from the source chromaticities to the engine's working color space.
+ *
+ * @param InLinearImage - The image to convert, which must be linear.
+ * @param SourceRedChromaticity - The red chromaticity coordinate of the source color space.
+ * @param SourceGreenChromaticity - The green chromaticity coordinate of the source color space.
+ * @param SourceBlueChromaticity - The blue chromaticity coordinate of the source color space.
+ * @param SourceWhiteChromaticity - The white chromaticity coordinate of the source color space.
+ * @param Method - The chromatic adapation method.
+ * @param EqualityTolerance - The tolerance for the source and working color space chromaticities to be considered equal, bypassing the transform.
+ */
+IMAGECORE_API void TransformToWorkingColorSpace(const FImageView& InLinearImage, const FVector2d& SourceRedChromaticity, const FVector2d& SourceGreenChromaticity, const FVector2d& SourceBlueChromaticity, const FVector2d& SourceWhiteChromaticity, UE::Color::EChromaticAdaptationMethod Method, double EqualityTolerance = 1.e-7);
 
 };
-
-
-// non-namespaced CopyImage for backwards compatibility
-UE_DEPRECATED(5.1,"Use FImageCore::CopyImage")
-FORCEINLINE void CopyImage(const FImageView & SrcImage,const FImageView & DestImage)
-{
-	return FImageCore::CopyImage(SrcImage,DestImage);
-}

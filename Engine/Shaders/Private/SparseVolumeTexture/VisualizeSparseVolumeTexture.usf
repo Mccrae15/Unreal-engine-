@@ -5,6 +5,7 @@
 =============================================================================*/
 
 #include "/Engine/Private/Common.ush"
+#include "SparseVolumeTextureCommon.ush"
 
 
 #ifdef VERTEX_SHADER
@@ -40,6 +41,15 @@ bool Slabs(float3 p0, float3 p1, float3 rayOrigin, float3 invRaydir, out float o
 	return maxtmin <= mintmax;
 }
 
+SamplerState TileDataTextureSampler;
+Texture3D<uint> SparseVolumeTexturePageTable;
+Texture3D<float4> SparseVolumeTextureA;
+Texture3D<float4> SparseVolumeTextureB;
+ByteAddressBuffer StreamingInfoBuffer;
+uint4 PackedSVTUniforms0;
+uint4 PackedSVTUniforms1;
+float3 SparseVolumeTextureResolution;
+int MipLevel;
 float4 WorldToLocal0;
 float4 WorldToLocal1;
 float4 WorldToLocal2;
@@ -47,16 +57,7 @@ float3 WorldToLocalNoScale0;
 float3 WorldToLocalNoScale1;
 float3 WorldToLocalNoScale2;
 uint ComponentToVisualize;
-
-
-Texture3D<float4> SparseVolumeTextureA;
-Texture3D<float4> SparseVolumeTextureB;
-float3 SparseVolumeTextureResolution;
-
-Texture3D<uint> SparseVolumeTexturePageTable;
-float3 SparseVolumeTexturePageTableResolution;
-
-#define SPARSE_VOLUME_TILE_RES	16
+float Extinction;
 
 void VisualizeSparseVolumeTexturePS(
 	in float4 SVPos : SV_POSITION,
@@ -99,7 +100,8 @@ void VisualizeSparseVolumeTexturePS(
 
 		float3 StartPos = RayOrig + RayDir * max(0.0, TMin);
 
-		float3 VolumeResolution = SparseVolumeTexturePageTableResolution * SPARSE_VOLUME_TILE_RES;
+		float3 VolumeResolution = SparseVolumeTextureResolution;
+		float3 RcpVolumeResolution = 1.0f / VolumeResolution;
 
 		const float3 StartUVs = StartPos * 0.5f + 0.5f;
 		float3 P = StartUVs * VolumeResolution;
@@ -130,10 +132,44 @@ void VisualizeSparseVolumeTexturePS(
 		tMax.y *= tDelta.y;
 		tMax.z *= tDelta.z;
 
+		const FSparseVolumeTextureUniforms SVTUniforms = SparseVolumeTextureUnpackUniforms(PackedSVTUniforms0, PackedSVTUniforms1, StreamingInfoBuffer);
+
+		float StepLength = 1.0f;
+
 		LOOP
 		while (P.x >= 0 && P.y >= 0 && P.z >= 0 && P.x <= VolumeResolution.x && P.y <= VolumeResolution.y && P.z <= VolumeResolution.z)
 		{
-			float StepLength = 0.0;
+			const float3 UVW = P * RcpVolumeResolution;
+			const float3 VoxelUVW = SparseVolumeTextureSamplePageTable(SparseVolumeTexturePageTable, SVTUniforms, UVW, SVTADDRESSMODE_CLAMP, SVTADDRESSMODE_CLAMP, SVTADDRESSMODE_CLAMP, MipLevel);
+			const float3 UVWTileSize = float(SPARSE_VOLUME_TILE_RES_PADDED) * SVTUniforms.TileDataTexelSize;
+			if (any(VoxelUVW >= UVWTileSize)) // skip on null tile
+			{
+				const int PhysicalTileDataIndex = ComponentToVisualize < 4 ? 0 : 1;
+				const float4 VoxelData = SparseVolumeTextureSamplePhysicalTileData(SparseVolumeTextureA, SparseVolumeTextureB, TileDataTextureSampler, VoxelUVW, PhysicalTileDataIndex);
+
+				float Density = 0.0f;
+				if (ComponentToVisualize < 4)
+				{
+					Density = VoxelData[ComponentToVisualize];
+				}
+				else
+				{
+					Density = VoxelData[min(ComponentToVisualize - 4, 3u)];
+				}
+
+				if (Density > 0.0f)
+				{
+#if 0
+					//OutLuminanceAlpha = float4(Rand3DPCG16(PageCoordF).x / 65535.0f, Rand3DPCG16(VoxelCoord).y / 65535.0f, 0.0, 0.0);
+					//OutLuminanceAlpha = float4(Rand3DPCG16(PageCoordF) / 65535.0f, 0.0);
+					OutLuminanceAlpha = float4(Rand3DPCG16(VoxelCoord) / 65535.0f, 0.0);
+					break;
+#else
+					Transmittance *= exp(-StepLength * Density * Extinction);
+#endif
+				}
+			}
+
 #if 0
 			// Slow reference
 			P += RayDir * 0.005;
@@ -146,15 +182,11 @@ void VisualizeSparseVolumeTexturePS(
 				{
 					P.x += stepSign.x;
 					tMax.x += tDelta.x;
-
-					StepLength += 1;
 				}
 				else
 				{
 					P.z += stepSign.z;
 					tMax.z += tDelta.z;
-
-					StepLength += 1;
 				}
 			}
 			else
@@ -163,55 +195,14 @@ void VisualizeSparseVolumeTexturePS(
 				{
 					P.y += stepSign.y;
 					tMax.y += tDelta.y;
-
-					StepLength += 1;
 				}
 				else
 				{
 					P.z += stepSign.z;
 					tMax.z += tDelta.z;
-
-					StepLength += 1;
 				}
 			}
 #endif
-
-			float3 PageCoordF = floor(P * (1.0 / SPARSE_VOLUME_TILE_RES));
-			const uint EncodedPage = SparseVolumeTexturePageTable.Load(int4(int3(PageCoordF), 0));
-			if (EncodedPage)
-			{
-				const int3 TileCoord = int3(
-					 EncodedPage         & 0x7FF,
-					(EncodedPage >> 11 ) & 0x7FF,
-					(EncodedPage >> 22 ) & 0x3FF);
-
-				int3 VoxelCoord = TileCoord * SPARSE_VOLUME_TILE_RES + int3(P - PageCoordF * SPARSE_VOLUME_TILE_RES);
-
-				float Density = 0.0f;
-				if (ComponentToVisualize < 4)
-				{
-					float4 VoxelData = SparseVolumeTextureA.Load(int4(VoxelCoord, 0));
-					Density = VoxelData[ComponentToVisualize];
-				}
-				else
-				{
-					float4 VoxelData = SparseVolumeTextureB.Load(int4(VoxelCoord, 0));
-					Density = VoxelData[min(ComponentToVisualize - 4, 3u)];
-				}
-
-				if (Density > 0.0f)
-
-				{
-				#if 0
-					//OutLuminanceAlpha = float4(Rand3DPCG16(PageCoordF).x / 65535.0f, Rand3DPCG16(VoxelCoord).y / 65535.0f, 0.0, 0.0);
-					//OutLuminanceAlpha = float4(Rand3DPCG16(PageCoordF) / 65535.0f, 0.0);
-					OutLuminanceAlpha = float4(Rand3DPCG16(VoxelCoord) / 65535.0f, 0.0);
-					break;
-				#else
-					Transmittance *= exp(-StepLength * Density * 0.025);
-				#endif
-				}
-			}
 		}
 	}
 

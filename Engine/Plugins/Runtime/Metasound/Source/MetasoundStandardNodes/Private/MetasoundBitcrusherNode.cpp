@@ -33,20 +33,17 @@ namespace Metasound
 	{
 	public:
 
-		FBitcrusherOperator(const FOperatorSettings& InSettings,
+		FBitcrusherOperator(const FCreateOperatorParams& InParams,
 			const FAudioBufferReadRef& InAudio,
 			const FFloatReadRef& InCrushedSampleRate,
 			const FFloatReadRef& InCrushedBitDepth)
 			: AudioInput(InAudio)
-			, AudioOutput(FAudioBufferWriteRef::CreateNew(InSettings))
+			, AudioOutput(FAudioBufferWriteRef::CreateNew(InParams.OperatorSettings))
 			, CrushedSampleRate(InCrushedSampleRate)
 			, CrushedBitDepth(InCrushedBitDepth)
-			, MaxSampleRate(InSettings.GetSampleRate())
+			, MaxSampleRate(InParams.OperatorSettings.GetSampleRate())
 		{
-			// Passing in 1 for NumChannels because the node takes one audio input
-			Bitcrusher.Init(InSettings.GetSampleRate(), 1);
-			Bitcrusher.SetSampleRateCrush(FMath::Clamp(*CrushedSampleRate, 1.0f, MaxSampleRate));
-			Bitcrusher.SetBitDepthCrush(FMath::Clamp(*CrushedBitDepth, 1.0f, Bitcrusher.GetMaxBitDepth()));
+			Reset(InParams);
 		}
 
 		static const FNodeClassMetadata& GetNodeInfo()
@@ -95,29 +92,37 @@ namespace Metasound
 			return Interface;
 		}
 
-		virtual FDataReferenceCollection GetInputs() const override
+
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
 		{
 			using namespace BitcrusherVertexNames;
 
-			FDataReferenceCollection InputDataReferences;
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputAudio), AudioInput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputSampleRate), CrushedSampleRate);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputBitDepth), CrushedBitDepth);
+		}
 
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputAudio), AudioInput);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputSampleRate), CrushedSampleRate);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputBitDepth), CrushedBitDepth);
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+		{
+			using namespace BitcrusherVertexNames;
 
-			return InputDataReferences;
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputAudio), AudioOutput);
+		}
 
+		virtual FDataReferenceCollection GetInputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		virtual FDataReferenceCollection GetOutputs() const override
 		{
-			using namespace BitcrusherVertexNames;
-
-			FDataReferenceCollection OutputDataReferences;
-
-			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputAudio), AudioOutput);
-
-			return OutputDataReferences;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		static TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors)
@@ -130,7 +135,24 @@ namespace Metasound
 			FFloatReadRef SampleRateIn = Inputs.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, METASOUND_GET_PARAM_NAME(InputSampleRate), InParams.OperatorSettings);
 			FFloatReadRef BitDepthIn = Inputs.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, METASOUND_GET_PARAM_NAME(InputBitDepth), InParams.OperatorSettings);
 
-			return MakeUnique<FBitcrusherOperator>(InParams.OperatorSettings, AudioIn, SampleRateIn, BitDepthIn);
+			return MakeUnique<FBitcrusherOperator>(InParams, AudioIn, SampleRateIn, BitDepthIn);
+		}
+
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			AudioOutput->Zero();
+
+			// Passing in 1 for NumChannels because the node takes one audio input
+			Bitcrusher.Init(InParams.OperatorSettings.GetSampleRate(), 1);
+
+			const float CurSampleRate = FMath::Clamp(*CrushedSampleRate, 1.0f, MaxSampleRate);
+			const float CurBitDepth = FMath::Clamp(*CrushedBitDepth, 1.0f, Bitcrusher.GetMaxBitDepth());
+
+			Bitcrusher.SetSampleRateCrush(CurSampleRate);
+			Bitcrusher.SetBitDepthCrush(CurBitDepth);
+
+			PrevSampleRate = CurSampleRate;
+			PrevBitDepth = CurBitDepth;
 		}
 
 		void Execute()

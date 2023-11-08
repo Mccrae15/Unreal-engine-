@@ -118,6 +118,7 @@ public:
 	/** Construct the AssetRegistryImpl, including initial scans if applicable. */
 	void Initialize(Impl::FInitializeContext& Context);
 	void OnEnginePreExit();
+	void OnAllModuleLoadingPhasesComplete();
 
 	// Helpers for functions of the same name from UAssetRegistryImpl
 
@@ -135,7 +136,7 @@ public:
 	bool AddPath(Impl::FEventContext& EventContext, const FString& PathToAdd);
 	void SearchAllAssets(Impl::FEventContext& EventContext, Impl::FClassInheritanceContext& InheritanceContext,
 		bool bSynchronousSearch);
-	bool GetVerseFilesByPath(FName PackagePath, TArray<FName>& OutFilePaths, bool bRecursive = false) const;
+	bool GetVerseFilesByPath(FName PackagePath, TArray<FName>* OutFilePaths, bool bRecursive) const;
 	void ScanPathsSynchronous(Impl::FScanPathContext& Context);
 	void PrioritizeSearchPath(const FString& PathToPrioritize);
 	void ScanModifiedAssetFiles(Impl::FEventContext& EventContext, Impl::FClassInheritanceContext& InheritanceContext,
@@ -177,9 +178,6 @@ public:
 	/** Enumerate assets in the State, filtering by package not in PackagesToSkip */
 	void EnumerateAllDiskAssets(TSet<FName>& PackageNamesToSkip, TFunctionRef<bool(const FAssetData&)> Callback) const;
 
-	/** Delete any temporary allocated objects that were passed out to external callers and hopefully have been deleted by now */
-	UE_DEPRECATED(5.0, "Supports deprecated functions returning pointers")
-	void TickDeletes();
 	/** Waits for the gatherer to be idle if it is operating synchronously. */
 	void WaitForGathererIdleIfSynchronous();
 	/** Callback type for TickGatherer */
@@ -188,8 +186,10 @@ public:
 	Impl::EGatherStatus TickGatherer(Impl::FEventContext& EventContext,
 		Impl::FClassInheritanceContext& InheritanceContext, const double TickStartTime, bool& bOutInterrupted,
 		TOptional<FAssetsFoundCallback> AssetsFoundCallback = TOptional<FAssetsFoundCallback>());
-	/** Send a log message with the search statistics. */
-	void LogSearchDiagnostics() const;
+	/** Send a log message with the search statistics. 
+	 *  StartTime is used to report wall clock search time in the case of background scan
+	 */
+	void LogSearchDiagnostics(double StartTime) const;
 	/** Look for and load a single AssetData result from the gatherer. */
 	void TickGatherPackage(Impl::FEventContext& EventContext, const FString& PackageName, const FString& LocalPath);
 	void ClearGathererCache();
@@ -228,7 +228,7 @@ public:
 	/** Removes the asset data associated with this package from the look-up maps */
 	void RemovePackageData(Impl::FEventContext& EventContext, const FName PackageName);
 	/** Removes the Verse file from the look-up maps */
-	void RemoveVerseFile(FName VerseFilePathToRemove);
+	void RemoveVerseFile(Impl::FEventContext& EventContext, FName VerseFilePathToRemove);
 
 	/** Returns the names of all subclasses of the class whose name is ClassName */
 	void GetSubClasses(Impl::FClassInheritanceContext& InheritanceContext, const TArray<FTopLevelAssetPath>& InClassNames,
@@ -248,8 +248,6 @@ public:
 	const FAssetRegistryState& GetState() const;
 	const FPathTree& GetCachedPathTree() const;
 	const TSet<FName>& GetCachedEmptyPackages() const;
-	/** Find the AssetPackageData for the given PackageName and return a pointer to it or nullptr if not found */
-	const FAssetPackageData* GetAssetPackageData(FName PackageName);
 
 	/** Same as UE::AssetRegistry::Filtering::ShouldSkipAsset, but can be read from any thread under readlock */
 	bool ShouldSkipAsset(FTopLevelAssetPath AssetClass, uint32 PackageFlags) const;
@@ -286,6 +284,8 @@ private:
 	 * If TickStartTime is < 0, the entire list of gathered assets will be cached. Also used in sychronous searches
 	 */
 	void AssetSearchDataGathered(Impl::FEventContext& EventContext, const double TickStartTime, TMultiMap<FName, FAssetData*>& AssetResults);
+	/** Validate assets gathered from disk before adding them to the AssetRegistry. */
+	bool ShouldSkipGatheredAsset(FAssetData& AssetData);
 
 	/**
 	 * Called every tick when data is retrieved by the background path search.
@@ -301,13 +301,17 @@ private:
 		TRingBuffer<FString>& CookedPackageNamesWithoutAssetDataResults, bool& bOutInterrupted);
 
 	/** Called every tick when data is retrieved by the background dependency search */
-	void VerseFilesGathered(const double TickStartTime, TRingBuffer<FName>& VerseResults);
+	void VerseFilesGathered(Impl::FEventContext& EventContext, const double TickStartTime, TRingBuffer<FName>& VerseResults);
 
 	/** Adds the asset data to the lookup maps */
 	void AddAssetData(Impl::FEventContext& EventContext, FAssetData* AssetData);
 
 	/** Updates an existing asset data with the new value and updates lookup maps */
 	void UpdateAssetData(Impl::FEventContext& EventContext, FAssetData* AssetData, FAssetData&& NewAssetData, bool bKeepDeletedTags);
+
+	/** Updates the tags on an existing asset data by adding the tags from NewAssetData that do not already exist. */
+	void AddNonOverlappingTags(Impl::FEventContext& EventContext, FAssetData& ExistingAssetData,
+		const FAssetData& NewAssetData);
 
 	/** Removes the asset data from the lookup maps */
 	bool RemoveAssetData(Impl::FEventContext& EventContext, FAssetData* AssetData);
@@ -385,20 +389,28 @@ private:
 	/** Lists of results from the background thread that are waiting to get processed by the main thread */
 	FAssetDataGatherer::FResults BackgroundResults;
 
-	UE_DEPRECATED(5.0, "DelayDelete is only intended to support deprecated functions.")
-	TArray<TUniqueFunction<void()>> DeleteActions;
-
 	/** Time spent processing Gather results */
 	float StoreGatherResultsTimeSeconds;
 	/** The highest number of pending results observed during initial gathering */
 	int32 HighestPending = 0;
 
+	/** Time the initial async search was started */
+	double InitialSearchStartTime = 0.0f;
 	/** Flag to indicate if we used an initial async search */
 	bool bInitialSearchStarted;
 	/** Flag to indicate if the initial background search has completed */
 	bool bInitialSearchCompleted;
-	/** Flag to indicate if the initial background search can be finalized */
-	bool bCanFinishInitialSearch = false;
+	/**
+	 * Flag to indicate PreloadingComplete; finishing the background search is blocked until preloading complete
+	 * because preloading can add assets.
+	 */
+	bool bPreloadingComplete = false;
+	/**
+	 * Flag to indicate LaunchEngineLoop's AllModuleLoadingPhases is complete; finishing the background search is
+	 * blocked until preloading complete because plugins can be mounted during startup up until that point, and
+	 * we need to wait for all the plugins that will load before declaring completion.
+	 */
+	bool bAllModuleLoadingPhasesComplete = false;
 	/** Status of the background search, so we can take actions when it changes to or from idle */
 	Impl::EGatherStatus GatherStatus;
 
@@ -443,7 +455,7 @@ private:
 	TMultiMap<FString, FName> DirectoryReferencers;
 
 	/** A map of per asset class dependency gatherer called in LoadCalculatedDependencies */
-	TMap<UClass*, UE::AssetDependencyGatherer::Private::FRegisteredAssetDependencyGatherer*> RegisteredDependencyGathererClasses;
+	TMultiMap<UClass*, UE::AssetDependencyGatherer::Private::FRegisteredAssetDependencyGatherer*> RegisteredDependencyGathererClasses;
 	bool bRegisteredDependencyGathererClassesDirty;
 #endif
 #if WITH_ENGINE && WITH_EDITOR
@@ -467,17 +479,21 @@ namespace Impl
  */
 struct FEventContext
 {
-	enum class EEvent
+	enum class EEvent : uint32
 	{
 		Added,
 		Removed,
 		Updated,
 		UpdatedOnDisk,
+		
+		MAX
 	};
 	TOptional<IAssetRegistry::FFileLoadProgressUpdateData> ProgressUpdateData;
 	TArray<TPair<FString, EEvent>> PathEvents;
 	TArray<TPair<FAssetData, EEvent>> AssetEvents;
+	TArray<TPair<FName, EEvent>> VerseEvents;
 	TArray<FString> RequiredLoads;
+	TArray<FString> BlockedFiles;
 	bool bFileLoadedEventBroadcast = false;
 
 	/** Remove all stored events */
@@ -487,6 +503,7 @@ struct FEventContext
 	/** Add all events from other onto this context's collection of events */
 	void Append(FEventContext&& Other);
 };
+
 
 /*
  * An accessor for the inheritance map and related data for functions that need them; the source
@@ -608,7 +625,8 @@ void EnumerateMemoryAssetsHelper(const FARCompiledFilter& InFilter, TSet<FName>&
  * Fills in OutPackageNamesWithAssets with names of all packages tested.
 */
 void EnumerateMemoryAssets(const FARCompiledFilter& InFilter, TSet<FName>& OutPackageNamesWithAssets,
-	bool& bOutStopIteration, TFunctionRef<bool(FAssetData&&)> Callback, bool bSkipARFilteredAssets);
+	bool& bOutStopIteration, FRWLock& InterfaceLock, const FAssetRegistryState& GuardedDataState,
+	TFunctionRef<bool(FAssetData&&)> Callback, bool bSkipARFilteredAssets);
 
 }
 

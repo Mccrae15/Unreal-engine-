@@ -35,7 +35,6 @@ namespace UnrealBuildTool.Rules
 					"ImageCore",
 					"ImageWrapper",
 					"InterchangeCommonParser",
-					"InterchangeDispatcher",
 					"InterchangeMessages",
 					"Json",
 					"RenderCore",
@@ -52,6 +51,7 @@ namespace UnrealBuildTool.Rules
 					{
 						"BSPUtils",
 						"MaterialEditor",
+						"SkeletalMeshUtilitiesCommon",
 						"UnrealEd",
 						"VariantManager",
 					}

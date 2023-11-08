@@ -149,7 +149,16 @@ void UAnimGraphNode_PoseDriver::ValidateAnimNodeDuringCompilation(USkeleton* For
 			this, GetData(Node.PoseTargets[Node.SoloTargetIndex].DrivenName.ToString()));
 	}
 
-	Super::ValidateAnimNodeDuringCompilation(ForSkeleton, MessageLog);
+	// Note: UAnimGraphNode_PoseHandler::ValidateAnimNodeDuringCompilation checks if PoseAsset is valid, 
+	// This check is only necessary when using DrivePoses
+	if (Node.DriveOutput == EPoseDriverOutput::DrivePoses)
+	{
+		Super::ValidateAnimNodeDuringCompilation(ForSkeleton, MessageLog);
+	}
+	else
+	{
+		UAnimGraphNode_AssetPlayerBase::ValidateAnimNodeDuringCompilation(ForSkeleton, MessageLog);
+	}
 }
 
 FEditorModeID UAnimGraphNode_PoseDriver::GetEditorMode() const
@@ -173,13 +182,6 @@ void UAnimGraphNode_PoseDriver::PostLoad()
 {
 	Super::PostLoad();
 
-	// since this is postload, sometimes pose asset post load isn't finished yet
-	// we mmake sure it finishes since this needs post info
-	if (Node.PoseAsset)
-	{
-		Node.PoseAsset->ConditionalPostLoad();
-	}
-
 	if (GetLinkerCustomVersion(FPoseDriverCustomVersion::GUID) < FPoseDriverCustomVersion::MultiBoneInput)
 	{
 		if (Node.SourceBone_DEPRECATED.BoneName != NAME_None)
@@ -190,6 +192,13 @@ void UAnimGraphNode_PoseDriver::PostLoad()
 
 	if (GetLinkerCustomVersion(FPoseDriverCustomVersion::GUID) < FPoseDriverCustomVersion::AddRBFData)
 	{
+		// since this is postload, sometimes pose asset post load isn't finished yet
+		// we mmake sure it finishes since this needs post info
+		if (Node.PoseAsset)
+		{
+			Node.PoseAsset->ConditionalPostLoad();
+		}
+
 		// Convert distance method
 		if (Node.Type_DEPRECATED == EPoseDriverType::SwingAndTwist)
 		{
@@ -304,11 +313,11 @@ void UAnimGraphNode_PoseDriver::CopyTargetsFromPoseAsset()
 		Node.PoseTargets.Empty();
 
 		// For each pose we create a target
-		const TArray<FSmartName> PoseNames = PoseAsset->GetPoseNames();
+		const TArray<FName>& PoseNames = PoseAsset->GetPoseFNames();
 		for (int32 PoseIdx = 0; PoseIdx < PoseAsset->GetNumPoses(); PoseIdx++)
 		{
 			FPoseDriverTarget PoseTarget;
-			PoseTarget.DrivenName = PoseNames[PoseIdx].DisplayName;
+			PoseTarget.DrivenName = PoseNames[PoseIdx];
 
 			// Create entry for each bone
 			for (const FBoneReference& SourceBoneRef : Node.SourceBones)
@@ -432,16 +441,6 @@ void UAnimGraphNode_PoseDriver::SetPoseDriverOutput(EPoseDriverOutput DriverOutp
 EPoseDriverOutput& UAnimGraphNode_PoseDriver::GetPoseDriverOutput()
 {
 	return Node.DriveOutput;
-}
-
-void UAnimGraphNode_PoseDriver::SetOnlyDriveSelectedBones(bool bOnlyDriveSelectedBones)
-{
-	Node.bOnlyDriveSelectedBones = bOnlyDriveSelectedBones;
-}
-
-bool UAnimGraphNode_PoseDriver::GetOnlyDriveSelectedBones()
-{
-	return Node.bOnlyDriveSelectedBones == 1;
 }
 
 void UAnimGraphNode_PoseDriver::AddNewTarget()

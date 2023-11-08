@@ -80,7 +80,7 @@ void FDisplayClusterViewportResource::ImplInitDynamicRHI_TextureResource2D(FText
 //------------------------------------------------------------------------------------------------
 // FDisplayClusterViewportTextureResource
 //------------------------------------------------------------------------------------------------
-void FDisplayClusterViewportTextureResource::InitDynamicRHI()
+void FDisplayClusterViewportTextureResource::InitRHI(FRHICommandListBase&)
 {
 	FTexture2DRHIRef NewTextureRHI;
 
@@ -100,7 +100,7 @@ void FDisplayClusterViewportTextureResource::InitDynamicRHI()
 //------------------------------------------------------------------------------------------------
 // FDisplayClusterViewportRenderTargetResource
 //------------------------------------------------------------------------------------------------
-void FDisplayClusterViewportRenderTargetResource::InitDynamicRHI()
+void FDisplayClusterViewportRenderTargetResource::InitRHI(FRHICommandListBase&)
 {
 	// Create RTT and shader resources
 	FTexture2DRHIRef NewTextureRHI;

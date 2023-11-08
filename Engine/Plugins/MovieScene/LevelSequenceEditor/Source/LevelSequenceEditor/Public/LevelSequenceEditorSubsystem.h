@@ -6,7 +6,7 @@
 #include "EditorSubsystem.h"
 
 #include "SequenceTimeUnit.h"
-
+#include "Containers/SortedMap.h"
 #include "LevelSequenceEditorSubsystem.generated.h"
 
 class FUICommandList;
@@ -17,6 +17,7 @@ struct FMovieScenePasteBindingsParams;
 struct FMovieScenePasteFoldersParams;
 struct FMovieScenePasteSectionsParams;
 struct FMovieScenePasteTracksParams;
+struct FBakingAnimationKeySettings;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogLevelSequenceEditor, Log, All);
 
@@ -26,6 +27,7 @@ class FMenuBuilder;
 class UMovieSceneCompiledDataManager;
 class UMovieSceneFolder;
 class UMovieSceneSection;
+class USequencerScriptingLayer;
 
 USTRUCT(BlueprintType)
 struct FMovieSceneScriptingParams
@@ -40,7 +42,7 @@ struct FMovieSceneScriptingParams
 
 /**
 * ULevelSequenceEditorSubsystem
-* Subsystem for level sequencer related utilities to scripts
+* Subsystem for level sequence editor related utilities to scripts
 */
 UCLASS(Blueprintable)
 class LEVELSEQUENCEEDITOR_API ULevelSequenceEditorSubsystem : public UEditorSubsystem
@@ -53,6 +55,10 @@ public:
 	virtual void Deinitialize() override;
 
 	void OnSequencerCreated(TSharedRef<ISequencer> InSequencer);
+
+	/** Retrieve the outliner */
+	UFUNCTION(BlueprintPure, Category = "Level Sequence Editor")
+	USequencerScriptingLayer* GetScriptingLayer();
 
 	/** Add existing actors to Sequencer. Tracks will be automatically added based on default track settings. */
 	UFUNCTION(BlueprintCallable, Category = "Level Sequence Editor")
@@ -147,8 +153,12 @@ public:
 	void SyncSectionsUsingSourceTimecode(const TArray<UMovieSceneSection*>& Sections);
 
 	/** Bake transform */
+	UE_DEPRECATED(5.3, "Use ULevelSequenceEditorSubsystem::BakeTransformWithSettings instead")
 	UFUNCTION(BlueprintCallable, Category = "Level Sequence Editor")
 	void BakeTransform(const TArray<FMovieSceneBindingProxy>& ObjectBindings, const FFrameTime& BakeInTime, const FFrameTime& BakeOutTime, const FFrameTime& BakeInterval, const FMovieSceneScriptingParams& Params = FMovieSceneScriptingParams());
+
+	UFUNCTION(BlueprintCallable, Category = "Level Sequence Editor")
+	bool BakeTransformWithSettings(const TArray<FMovieSceneBindingProxy>& ObjectBindings, const FBakingAnimationKeySettings& InSettings, const FMovieSceneScriptingParams& Params = FMovieSceneScriptingParams());
 
 	/** Attempts to automatically fix up broken actor references in the current scene */
 	UFUNCTION(BlueprintCallable, Category = "Level Sequence Editor")
@@ -177,6 +187,18 @@ public:
 	/** Rebind the component binding to the requested component */
 	UFUNCTION(BlueprintCallable, Category = "Level Sequence Editor")
 	void RebindComponent(const TArray<FMovieSceneBindingProxy>& ComponentBindings, const FName& ComponentName);
+
+private:
+	/** Used by Baking transforms*/
+	struct FBakeData
+	{
+		TArray<FVector> Locations;
+		TArray<FRotator> Rotations;
+		TArray<FVector> Scales;
+		TSortedMap<FFrameNumber,FFrameNumber> KeyTimes;
+	};
+	void CalculateFramesPerGuid(TSharedPtr<ISequencer>& Sequencer, const FBakingAnimationKeySettings& InSettings, TMap<FGuid, FBakeData>& OutBakeDataMa,
+		TSortedMap<FFrameNumber, FFrameNumber>&  OutFrameMap);
 
 private:
 

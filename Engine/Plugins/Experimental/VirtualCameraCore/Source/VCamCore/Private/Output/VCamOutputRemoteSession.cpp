@@ -13,7 +13,7 @@
 #include "Slate/SceneViewport.h"
 #include "Widgets/SVirtualWindow.h"
 #include "UObject/SoftObjectPath.h"
-#include "VPFullScreenUserWidget.h"
+#include "Widgets/VPFullScreenUserWidget.h"
 
 #if WITH_EDITOR
 #include "LevelEditor.h"
@@ -32,8 +32,7 @@ namespace UE::VCamOutputRemoteSession::Private
 
 UVCamOutputRemoteSession::UVCamOutputRemoteSession()
 {
-	DisplayType = EVPWidgetDisplayType::PostProcess;
-	InitViewTargetPolicyInSubclass();
+	DisplayType = EVPWidgetDisplayType::PostProcessSceneViewExtension;
 }
 
 void UVCamOutputRemoteSession::Initialize()
@@ -53,7 +52,7 @@ void UVCamOutputRemoteSession::Deinitialize()
 	Super::Deinitialize();
 }
 
-void UVCamOutputRemoteSession::Activate()
+void UVCamOutputRemoteSession::OnActivate()
 {
 	// If we don't have a UMG assigned, we still need to create an empty 'dummy' UMG in order to properly route the input back from the RemoteSession device
 	if (!GetUMGClass())
@@ -63,14 +62,14 @@ void UVCamOutputRemoteSession::Activate()
 	}
 
 	CreateRemoteSession();
-	Super::Activate();
+	Super::OnActivate();
 }
 
-void UVCamOutputRemoteSession::Deactivate()
+void UVCamOutputRemoteSession::OnDeactivate()
 {
 	DestroyRemoteSession();
 
-	Super::Deactivate();
+	Super::OnDeactivate();
 
 	if (bUsingDummyUMG)
 	{
@@ -192,7 +191,7 @@ void UVCamOutputRemoteSession::OnImageChannelCreated(TWeakPtr<IRemoteSessionChan
 		MediaCapture = Cast<URemoteSessionMediaCapture>(MediaOutput->CreateMediaCapture());
 
 		FMediaCaptureOptions Options;
-		Options.bResizeSourceBuffer = true;
+		Options.ResizeMethod = EMediaCaptureResizeMethod::ResizeSource;
 
 		// If we are rendering from a ComposureOutputProvider, get the requested render target and use that instead of the viewport
 		if (UVCamOutputComposure* ComposureProvider = Cast<UVCamOutputComposure>(GetOtherOutputProviderByIndex(FromComposureOutputProviderIndex)))
@@ -228,14 +227,18 @@ void UVCamOutputRemoteSession::OnInputChannelCreated(TWeakPtr<IRemoteSessionChan
 		if (GetUMGClass() && GetUMGWidget()) 
 		{
 			TSharedPtr<SVirtualWindow> InputWindow;
-
+			
 			// If we are rendering from a ComposureOutputProvider, we need to get the InputWindow from that UMG, not the one in the RemoteSessionOutputProvider
 			if (UVCamOutputComposure* ComposureProvider = Cast<UVCamOutputComposure>(GetOtherOutputProviderByIndex(FromComposureOutputProviderIndex)))
 			{
 				if (UVPFullScreenUserWidget* ComposureUMGWidget = ComposureProvider->GetUMGWidget())
 				{
-					InputWindow = ComposureUMGWidget->PostProcessDisplayType.GetSlateWindow();
-					UE_LOG(LogVCamOutputProvider, Log, TEXT("InputChannel callback - Routing input to active viewport with Composure UMG"));
+					const EVPWidgetDisplayType WidgetDisplayType = ComposureUMGWidget->GetDisplayType(GetWorld());
+					if (ensure(UVPFullScreenUserWidget::DoesDisplayTypeUsePostProcessSettings(WidgetDisplayType)))
+					{
+						InputWindow = ComposureUMGWidget->GetPostProcessDisplayTypeSettingsFor(WidgetDisplayType)->GetSlateWindow();
+						UE_LOG(LogVCamOutputProvider, Log, TEXT("InputChannel callback - Routing input to active viewport with Composure UMG"));
+					}
 				}
 				else
 				{
@@ -244,7 +247,8 @@ void UVCamOutputRemoteSession::OnInputChannelCreated(TWeakPtr<IRemoteSessionChan
 			}
 			else
 			{
-				InputWindow = GetUMGWidget()->PostProcessDisplayType.GetSlateWindow();
+				checkf(UVPFullScreenUserWidget::DoesDisplayTypeUsePostProcessSettings(DisplayType), TEXT("DisplayType not set up correctly in constructor!"));
+				InputWindow = GetUMGWidget()->GetPostProcessDisplayTypeSettingsFor(DisplayType)->GetSlateWindow();
 				UE_LOG(LogVCamOutputProvider, Log, TEXT("InputChannel callback - Routing input to active viewport with UMG"));
 			}
 

@@ -5,6 +5,7 @@
 #include "Engine/World.h"
 #include "TimerManager.h"
 #include "Blueprint/ListViewDesignerPreviewItem.h"
+#include "Styling/DefaultStyleCache.h"
 #include "Styling/UMGCoreStyle.h"
 #include "UMGPrivate.h"
 
@@ -15,58 +16,21 @@
 /////////////////////////////////////////////////////
 // UListView
 
-static FTableViewStyle* DefaultListViewStyle = nullptr;
-static FScrollBarStyle* DefaultListViewScrollBarStyle = nullptr;
-
-#if WITH_EDITOR
-static FTableViewStyle* EditorListViewStyle = nullptr;
-static FScrollBarStyle* EditorListViewScrollBarStyle = nullptr;
-#endif 
-
 UListView::UListView(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, Orientation(EOrientation::Orient_Vertical)
 {
-	if (DefaultListViewStyle == nullptr)
-	{
-		DefaultListViewStyle = new FTableViewStyle(FUMGCoreStyle::Get().GetWidgetStyle<FTableViewStyle>("ListView"));
-
-		// Unlink UMG default colors.
-		DefaultListViewStyle->UnlinkColors();
-	}
-
-	if (DefaultListViewScrollBarStyle == nullptr)
-	{
-		DefaultListViewScrollBarStyle = new FScrollBarStyle(FUMGCoreStyle::Get().GetWidgetStyle<FScrollBarStyle>("Scrollbar"));
-
-		// Unlink UMG default colors.
-		DefaultListViewScrollBarStyle->UnlinkColors();
-	}
-
-	WidgetStyle = *DefaultListViewStyle;
-	ScrollBarStyle = *DefaultListViewScrollBarStyle;
-
+	WidgetStyle = UE::Slate::Private::FDefaultStyleCache::GetRuntime().GetListViewStyle();
+	ScrollBarStyle = UE::Slate::Private::FDefaultStyleCache::GetRuntime().GetScrollBarStyle();
+	
 #if WITH_EDITOR 
-	if (EditorListViewStyle == nullptr)
-	{
-		EditorListViewStyle = new FTableViewStyle(FAppStyle::Get().GetWidgetStyle<FTableViewStyle>("ListView"));
-
-		// Unlink UMG default colors.
-		EditorListViewStyle->UnlinkColors();
-	}
-
-	if (EditorListViewScrollBarStyle == nullptr)
-	{
-		EditorListViewScrollBarStyle = new FScrollBarStyle(FCoreStyle::Get().GetWidgetStyle<FScrollBarStyle>("Scrollbar"));
-
-		// Unlink UMG default colors.
-		EditorListViewScrollBarStyle->UnlinkColors();
-	}
-
 	if (IsEditorWidget())
 	{
-		WidgetStyle = *EditorListViewStyle;
-		ScrollBarStyle = *EditorListViewScrollBarStyle;
+		WidgetStyle = UE::Slate::Private::FDefaultStyleCache::GetEditor().GetListViewStyle();
+		ScrollBarStyle = UE::Slate::Private::FDefaultStyleCache::GetEditor().GetScrollBarStyle();
+
+		// The CDO isn't an editor widget and thus won't use the editor style, call post edit change to mark difference from CDO
+		PostEditChange();
 	}
 #endif // WITH_EDITOR
 }
@@ -81,7 +45,7 @@ void UListView::ReleaseSlateResources(bool bReleaseChildren)
 #if WITH_EDITOR
 void UListView::OnRefreshDesignerItems()
 {
-	RefreshDesignerItems<UObject*>(ListItems, [this] () {return NewObject<UListViewDesignerPreviewItem>(this); });
+	RefreshDesignerItems<TObjectPtr<UObject>>(ListItems, [this] () {return NewObject<UListViewDesignerPreviewItem>(this); });
 }
 #endif
 
@@ -330,12 +294,12 @@ FMargin UListView::GetDesiredEntryPadding(UObject* Item) const
 		if (Orientation == EOrientation::Orient_Horizontal)
 		{
 			// For all entries after the first one, add the spacing as left padding
-			return FMargin(EntrySpacing, 0.f, 0.0f, 0.f);
+			return FMargin(HorizontalEntrySpacing, 0.f, 0.0f, 0.f);
 		}
 		else
 		{
 			// For all entries after the first one, add the spacing as top padding
-			return FMargin(0.f, EntrySpacing, 0.f, 0.f);
+			return FMargin(0.f, VerticalEntrySpacing, 0.f, 0.f);
 		}
 	}
 
@@ -377,6 +341,35 @@ void UListView::OnListViewScrolledInternal(float ItemOffset, float DistanceRemai
 	BP_OnListViewScrolled.Broadcast(ItemOffset, DistanceRemaining);
 }
 
+void UListView::InitHorizontalEntrySpacing(float InHorizontalEntrySpacing)
+{
+	ensureMsgf(!MyListView.IsValid(), TEXT("The SWidget is already created."));
+	HorizontalEntrySpacing = InHorizontalEntrySpacing;
+}
+
+void UListView::InitVerticalEntrySpacing(float InVerticalEntrySpacing)
+{
+	ensureMsgf(!MyListView.IsValid(), TEXT("The SWidget is already created."));
+	VerticalEntrySpacing = InVerticalEntrySpacing;
+}
+
+void UListView::PostLoad()
+{
+	Super::PostLoad();
+
+#if WITH_EDITOR
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
+		if (EntrySpacing != 0.f)
+		{
+			HorizontalEntrySpacing = EntrySpacing;
+			VerticalEntrySpacing = EntrySpacing;
+			EntrySpacing = 0.f;
+		}
+
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+#endif // WITH_EDITOR
+}
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE

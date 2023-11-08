@@ -325,6 +325,9 @@ class SwitchboardDialog(QtCore.QObject):
         # Redeploy menu item
         self.register_redeploy_menuitem()
 
+        # Fill DDC submenu
+        self.register_fill_ddc_menuitem()
+
         # Transport Manager
         #self.transport_queue = recording.TransportQueue(CONFIG.SWITCHBOARD_DIR)
         #self.transport_queue.signal_transport_queue_job_started.connect(self.transport_queue_job_started)
@@ -685,6 +688,23 @@ class SwitchboardDialog(QtCore.QObject):
         action = self.register_tools_menu_action("Listener &Redeployer")
         action.triggered.connect(show_redeploy_dialog)
 
+    def register_fill_ddc_menuitem(self):
+        def fill_ddc(current_level_only):
+            for device in self.device_manager.devices():
+                if not device.is_disconnected:
+                    DeviceUnreal(device).fill_derived_data_cache(current_level_only)
+
+        def fill_ddc_current_level_action():
+            fill_ddc(True)
+
+        def fill_ddc_all_levels_action():
+            fill_ddc(False)
+
+        current_level_action = self.register_tools_menu_action("Current Level", ["Fill DDC (Prepare Shaders)"])
+        current_level_action.triggered.connect(fill_ddc_current_level_action)
+        all_levels_action = self.register_tools_menu_action("All Levels", ["Fill DDC (Prepare Shaders)"])
+        all_levels_action.triggered.connect(fill_ddc_all_levels_action)
+
     def add_tools_menu(self):
         ''' Adds tools menu to menu bar and populates built-in items '''
 
@@ -705,7 +725,7 @@ class SwitchboardDialog(QtCore.QObject):
 
         current_menu:QMenu = self.tools_menu
 
-        # iterate over menunames give
+        # iterate over menunames given
         for menuname in menunames:
 
             create_menu = True
@@ -1298,8 +1318,16 @@ class SwitchboardDialog(QtCore.QObject):
         device_widget.signal_device_widget_close.connect(self.device_widget_close)
         device_widget.signal_device_widget_sync.connect(self.device_widget_sync)
         device_widget.signal_device_widget_build.connect(self.device_widget_build)
+        if hasattr(device_widget, 'signal_device_widget_fill_ddc'):
+            device_widget.signal_device_widget_fill_ddc.connect(self.device_widget_fill_ddc)
         device_widget.signal_device_widget_trigger_start_toggled.connect(self.device_widget_trigger_start_toggled)
         device_widget.signal_device_widget_trigger_stop_toggled.connect(self.device_widget_trigger_stop_toggled)
+
+        #Live Link Face Toggle Display
+        try:
+            device_widget.signal_device_widget_toggle_display.connect(self.device_widget_toggle_display)
+        except:
+            pass
 
         # KiPro Signal Support
         try:
@@ -1313,6 +1341,10 @@ class SwitchboardDialog(QtCore.QObject):
             device.device_widget_registered(device_widget)
         except:
             LOGGER.error(f'Could not find device with hash {device_widget.device_hash} when registering its widget')
+
+    def device_widget_toggle_display(self, device_widget):
+        device = self.device_manager.device_with_hash(device_widget.device_hash)
+        device.toggle_display()
 
     def on_all_plugin_devices_connect_toggled(self, plugin_name, button_state):
         devices = self.device_manager.devices_of_type(plugin_name)
@@ -1639,6 +1671,11 @@ class SwitchboardDialog(QtCore.QObject):
     def device_widget_build(self, device_widget):
         device = self.device_manager.device_with_hash(device_widget.device_hash)
         device.build()
+
+    @QtCore.Slot(object)
+    def device_widget_fill_ddc(self, device_widget, current_level_only):
+        device = self.device_manager.device_with_hash(device_widget.device_hash)
+        device.fill_derived_data_cache(current_level_only)
 
     @QtCore.Slot(object)
     def device_widget_play(self, device_widget):
@@ -1974,7 +2011,7 @@ class SwitchboardDialog(QtCore.QObject):
             return
         
         # To disambiguate, show the full path name in the drop-down
-        level_combo_box.setItemData(0, "Default level")
+        level_combo_box.setItemData(0, DEFAULT_MAP_TEXT)
         level_combo_box.setItemData(0, "Default level", QtCore.Qt.ToolTipRole)
         for short_name_index in range(len(short_name_list)):
             short_name = short_name_list[short_name_index]

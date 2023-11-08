@@ -474,6 +474,13 @@ TSharedPtr<FNiagaraScratchPadScriptViewModel> UNiagaraScratchPadViewModel::Creat
 	TArray<TObjectPtr<UNiagaraScript>>* TargetScripts;
 	GetOuterAndTargetScripts(GetSystemViewModel(), ScriptOuter, TargetScripts);
 
+	// we have to make sure we can record the script outer into the transaction buffer. If not, undoing the creation of this script will keep the (deleted/undone) script in the outer
+	if(ScriptOuter->HasAnyFlags(RF_Transactional) == false)
+	{
+		ScriptOuter->SetFlags(RF_Transactional);
+	}
+	ScriptOuter->Modify();
+	
 	UNiagaraScript* NewScript = nullptr;
 	switch (InScriptUsage)
 	{
@@ -558,10 +565,9 @@ void UNiagaraScratchPadViewModel::CreateAssetFromActiveScript()
 	{
 		if (ActiveScriptViewModel->HasUnappliedChanges())
 		{
-			FText Title = LOCTEXT("ScriptHasUnappliedchangesLabel", "Apply Changes?");
 			EAppReturnType::Type DialogResult = FMessageDialog::Open(EAppMsgType::YesNoCancel, EAppReturnType::Cancel,
 				LOCTEXT("ScriptHasUnappliedChangesMessage", "The selected scratch pad script has unapplied changes.\nWould you like to apply the changes before saving?\n"),
-				&Title);
+				LOCTEXT("ScriptHasUnappliedchangesLabel", "Apply Changes?"));
 			if (DialogResult == EAppReturnType::Cancel)
 			{
 				return;
@@ -858,10 +864,9 @@ void UNiagaraScratchPadViewModel::ScriptViewModelRequestDiscardChanges(TWeakPtr<
 	TSharedPtr<FNiagaraScratchPadScriptViewModel> ScriptViewModel = ScriptViewModelWeak.Pin();
 	if (ScriptViewModel.IsValid() && ScriptViewModel->HasUnappliedChanges())
 	{
-		FText Title = LOCTEXT("DiscardChangesTitle", "Discard Changes?");
 		EAppReturnType::Type DialogResult = FMessageDialog::Open(EAppMsgType::YesNo, EAppReturnType::No,
 			LOCTEXT("DiscardChangesMessage", "Are you sure you want to discard changes?\nThis operation can not be undone."),
-			&Title);
+			LOCTEXT("DiscardChangesTitle", "Discard Changes?"));
 		if (DialogResult == EAppReturnType::No)
 		{
 			return;

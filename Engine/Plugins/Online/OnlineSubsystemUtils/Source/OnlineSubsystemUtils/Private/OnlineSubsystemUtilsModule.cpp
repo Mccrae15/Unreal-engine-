@@ -7,6 +7,11 @@
 #include "OnlineDelegates.h"
 #include "OnlinePIESettings.h"
 
+#if WITH_EDITOR
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
+#endif
+
 IMPLEMENT_MODULE(FOnlineSubsystemUtilsModule, OnlineSubsystemUtils);
 
 /**
@@ -103,11 +108,25 @@ public:
 	}
 
 #if WITH_EDITOR
+
+private:
+	bool HasAuthCommandLine(FOnlineAccountCredentials& LoginParameters) const
+	{
+		return FParse::Value(FCommandLine::Get(), TEXT("AUTH_LOGIN="), LoginParameters.Id ) &&
+			   FParse::Value(FCommandLine::Get(), TEXT("AUTH_PASSWORD="), LoginParameters.Token) &&
+			   FParse::Value(FCommandLine::Get(), TEXT("AUTH_TYPE="), LoginParameters.Type);
+	}
+	bool HasAuthCommandLine() const
+	{
+		FOnlineAccountCredentials LoginParameters;
+		return HasAuthCommandLine(LoginParameters);
+	}
+public:	
 	virtual bool SupportsOnlinePIE() const override
 	{
 		check(UObjectInitialized());
 		const UOnlinePIESettings* OnlinePIESettings = GetDefault<UOnlinePIESettings>();
-		if (OnlinePIESettings->bOnlinePIEEnabled && GetNumPIELogins() > 0)
+		if ((OnlinePIESettings->bOnlinePIEEnabled && GetNumPIELogins() > 0) || HasAuthCommandLine())
 		{
 			// If we can't get the identity interface then things are either not configured right or disabled
 			IOnlineIdentityPtr IdentityInt = Online::GetIdentityInterface();
@@ -131,8 +150,12 @@ public:
 	virtual bool IsOnlinePIEEnabled() const override
 	{
 		check(UObjectInitialized());
+		if (!bShouldTryOnlinePIE)
+		{
+			return false;
+		}
 		const UOnlinePIESettings* OnlinePIESettings = GetDefault<UOnlinePIESettings>();
-		return bShouldTryOnlinePIE && OnlinePIESettings->bOnlinePIEEnabled;
+		return OnlinePIESettings->bOnlinePIEEnabled || HasAuthCommandLine();
 	}
 
 	virtual int32 GetNumPIELogins() const override
@@ -148,6 +171,10 @@ public:
 				NumValidLogins++;
 			}
 		}
+		if (NumValidLogins == 0 && HasAuthCommandLine())
+		{
+			NumValidLogins++;
+		}
 	
 		return NumValidLogins;
 	}
@@ -158,15 +185,21 @@ public:
 		const UOnlinePIESettings* OnlinePIESettings = GetDefault<UOnlinePIESettings>();
 		if (OnlinePIESettings->Logins.Num() > 0)
 		{
-			FOnlineAccountCredentials TempLogin;
-
 			Logins.Empty(OnlinePIESettings->Logins.Num());
 			for (const FPIELoginSettingsInternal& Login : OnlinePIESettings->Logins)
 			{
 				if (Login.IsValid())
 				{
-					new (Logins)FOnlineAccountCredentials(Login.Type, Login.Id, Login.Token);
+					Logins.Emplace(Login.Type, Login.Id, Login.Token);
 				}
+			}
+		}
+		if (Logins.IsEmpty())
+		{
+			FOnlineAccountCredentials LoginParameters;
+			if (HasAuthCommandLine(LoginParameters))
+			{
+				Logins.Emplace(MoveTemp(LoginParameters));
 			}
 		}
 	}
@@ -195,9 +228,6 @@ private:
 		CREATE_HASH(MCP_SUBSYSTEM);
 		CREATE_HASH(STEAM_SUBSYSTEM);
 		CREATE_HASH(PS4_SUBSYSTEM);
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		CREATE_HASH(LIVE_SUBSYSTEM);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		CREATE_HASH(GOOGLE_SUBSYSTEM);
 		CREATE_HASH(GOOGLEPLAY_SUBSYSTEM);
 		CREATE_HASH(FACEBOOK_SUBSYSTEM);
@@ -209,16 +239,12 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		CREATE_HASH(GAMECIRCLE_SUBSYSTEM);
 		CREATE_HASH(THUNDERHEAD_SUBSYSTEM); 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		CREATE_HASH(WECHAT_SUBSYSTEM);
 		CREATE_HASH(OCULUS_SUBSYSTEM); 
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		CREATE_HASH(QUAIL_SUBSYSTEM);
 		// Shouldn't need these as they are mocking interfaces for existing platforms
 		CREATE_HASH(PS4SERVER_SUBSYSTEM);
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		CREATE_HASH(LIVESERVER_SUBSYSTEM);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 #undef CREATE_HASH
 

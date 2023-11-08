@@ -2,6 +2,7 @@
 
 #include "WorldConditions/SmartObjectWorldConditionSlotTagQuery.h"
 #include "SmartObjectSubsystem.h"
+#include "WorldConditionContext.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SmartObjectWorldConditionSlotTagQuery)
 
@@ -32,8 +33,7 @@ bool FSmartObjectWorldConditionSlotTagQuery::Initialize(const UWorldConditionSch
 
 bool FSmartObjectWorldConditionSlotTagQuery::Activate(const FWorldConditionContext& Context) const
 {
-	// @todo SO: replace const_cast by mutable data in the context once supported
-	USmartObjectSubsystem* SmartObjectSubsystem = const_cast<USmartObjectSubsystem*>(Context.GetContextDataPtr<USmartObjectSubsystem>(SubsystemRef));
+	USmartObjectSubsystem* SmartObjectSubsystem = Context.GetContextDataPtr<USmartObjectSubsystem>(SubsystemRef);
 	check(SmartObjectSubsystem);
 
 	// Use a callback to listen changed to persistent data.
@@ -45,10 +45,11 @@ bool FSmartObjectWorldConditionSlotTagQuery::Activate(const FWorldConditionConte
 			{
 				FStateType& State = Context.GetState(*this);
 				State.SlotHandle = *SlotHandle;
-				State.DelegateHandle = SlotDelegate->AddLambda([InvalidationHandle = Context.GetInvalidationHandle(*this)](const FSmartObjectEventData& Event)
+				State.DelegateHandle = SlotDelegate->AddLambda([InvalidationHandle = Context.GetInvalidationHandle(*this), TargetSlot = *SlotHandle](const FSmartObjectEventData& Event)
 					{
-						if (Event.Reason == ESmartObjectChangeReason::OnTagAdded
-							|| Event.Reason == ESmartObjectChangeReason::OnTagRemoved)
+						if (TargetSlot == Event.SlotHandle
+							&& (Event.Reason == ESmartObjectChangeReason::OnTagAdded
+								|| Event.Reason == ESmartObjectChangeReason::OnTagRemoved))
 						{
 							InvalidationHandle.InvalidateResult();
 						}
@@ -85,8 +86,7 @@ FWorldConditionResult FSmartObjectWorldConditionSlotTagQuery::IsTrue(const FWorl
 
 void FSmartObjectWorldConditionSlotTagQuery::Deactivate(const FWorldConditionContext& Context) const
 {
-	// @todo SO: replace const_cast by mutable data in the context once supported
-	USmartObjectSubsystem* SmartObjectSubsystem = const_cast<USmartObjectSubsystem*>(Context.GetContextDataPtr<USmartObjectSubsystem>(SubsystemRef));
+	USmartObjectSubsystem* SmartObjectSubsystem = Context.GetContextDataPtr<USmartObjectSubsystem>(SubsystemRef);
 	check(SmartObjectSubsystem);
 
 	FStateType& State = Context.GetState(*this);

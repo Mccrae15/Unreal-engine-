@@ -3,7 +3,7 @@
 import { Point } from '@fluentui/react';
 import { ContextualMenu, ContextualMenuItemType, IContextualMenuItem, Stack, Text } from '@fluentui/react';
 import React, { MutableRefObject, useState } from 'react';
-import { GetChangeSummaryResponse, GetJobStepRefResponse, JobData } from '../backend/Api';
+import { GetChangeSummaryResponse, GetJobResponse, GetJobStepRefResponse, JobData, JobStepBatchError, JobStepBatchState, JobStepOutcome, JobStepState } from '../backend/Api';
 import dashboard, { StatusColor } from "../backend/Dashboard";
 import { projectStore } from '../backend/ProjectStore';
 
@@ -52,7 +52,7 @@ export const ChangeContextMenu: React.FC<{ target: ChangeContextMenuTarget, onDi
 
       menuItems.push({
          key: "commit", onRender: () => {
-            return <Stack style={{ padding: 18, paddingTop: 18, paddingBottom: 18, maxWidth: 500 }} tokens={{ childrenGap: 12 }}>
+            return <Stack style={{ padding: 18, paddingTop: 18, paddingBottom: 18, maxWidth: 800 }} tokens={{ childrenGap: 12 }}>
                <Stack horizontal tokens={{ childrenGap: 36 }}>
                   <Text variant="small" style={{ fontFamily: "Horde Open Sans Bold" }}>Author:</Text>
                   <Text variant="small" >{commit.authorInfo?.name}</Text>
@@ -64,7 +64,7 @@ export const ChangeContextMenu: React.FC<{ target: ChangeContextMenuTarget, onDi
 
                <Stack horizontal tokens={{ childrenGap: 12 }}>
                   <Text variant="small" style={{ fontFamily: "Horde Open Sans Bold" }}>Description:</Text>
-                  <Text variant="small" >{commit.description}</Text>
+                  <Text variant="small" style={{whiteSpace: "pre-wrap"}}>{commit.description}</Text>
                </Stack>
             </Stack>
          }
@@ -79,10 +79,10 @@ export const ChangeContextMenu: React.FC<{ target: ChangeContextMenuTarget, onDi
    } else if (job.preflightDescription) {
       menuItems.push({
          key: "commit", onRender: () => {
-            return <Stack style={{ padding: 18, paddingTop: 18, paddingBottom: 18, maxWidth: 500 }} tokens={{ childrenGap: 12 }}>
+            return <Stack style={{ padding: 18, paddingTop: 18, paddingBottom: 18, maxWidth: 800 }} tokens={{ childrenGap: 12 }}>
                <Stack horizontal tokens={{ childrenGap: 12 }}>
                   <Text variant="small" style={{ fontFamily: "Horde Open Sans Bold" }}>Description:</Text>
-                  <Text variant="small" >{job.preflightDescription}</Text>
+                  <Text variant="small" style={{whiteSpace: "pre-wrap"}} >{job.preflightDescription}</Text>
                </Stack>
             </Stack>
          }
@@ -115,10 +115,9 @@ export const ChangeContextMenu: React.FC<{ target: ChangeContextMenuTarget, onDi
    const stream = projectStore.streamById(job.streamId)!;
    const project = projectStore.byId(stream!.projectId)!;
    const name = project.name === "Engine" ? "UE4" : project.name;
-
-   let url = "";
-   url = `${dashboard.swarmUrl}/files/${name}/${stream.name}?range=@${jobChange}#commits`;
-
+   
+   const historyUrl = `${dashboard.swarmUrl}/files/${name}/${stream.name}?range=@${jobChange}#commits`;
+   menuItems.push({ key: 'open_in_swarm_history', text: "Open CL History in Swarm", onClick: (ev) => { window.open(historyUrl) } })
 
    let highCL = jobChange;
    let lowCL = jobChange;
@@ -126,22 +125,13 @@ export const ChangeContextMenu: React.FC<{ target: ChangeContextMenuTarget, onDi
    if (rangeCL !== undefined) {
       lowCL = Math.min(jobChange, rangeCL);
       highCL = Math.max(jobChange, rangeCL);
-      url = `${dashboard.swarmUrl}/files/${name}/${stream.name}?range=@${lowCL},@${highCL}#commits`;
-   }
-
-   let rangeText = 'Open CL Range in Swarm';
-
-   if (rangeCL) {
-      rangeText = `Open CL Range ${lowCL} - ${highCL}`;
-   }
-
-
-   if (url) {
+      const url = `${dashboard.swarmUrl}/files/${name}/${stream.name}?range=@${lowCL},@${highCL}#commits`;
+      const rangeText = `Open CL Range ${lowCL} - ${highCL}`;
       menuItems.push({ key: 'open_in_swarm_range', text: rangeText, onClick: (ev) => { window.open(url) } })
    }
-
+   
    return (<ContextualMenu
-      styles={{ list: { selectors: { '.ms-ContextualMenu-itemText': { fontSize: "10px", paddingLeft: 8 } } } }}
+      styles={{ root: {paddingBottom: 12, paddingRight: 24, paddingLeft: 8, paddingTop: 12},list: { selectors: { '.ms-ContextualMenu-itemText': { fontSize: "10px", paddingLeft: 8 } } } }}
       items={menuItems}
       hidden={false}
       target={target.ref ?? target.point}
@@ -151,7 +141,81 @@ export const ChangeContextMenu: React.FC<{ target: ChangeContextMenuTarget, onDi
 
 }
 
-export const ChangeButton: React.FC<{ job?: JobData, stepRef?: GetJobStepRefResponse, commit?: GetChangeSummaryResponse, hideAborted?: boolean, rangeCL?: number }> = ({ job, stepRef, commit, hideAborted, rangeCL }) => {
+function getJobSummary(job: GetJobResponse): { text: string, color: string } {
+
+   const colors = dashboard.getStatusColors();
+   let color = colors.get(StatusColor.Skipped)!;
+
+   const batches = job.batches;
+
+   const cancelled = job.abortedByUserInfo?.id ? "Canceled" : "";
+
+   const numBatches = batches?.length;
+
+   if (cancelled || !batches || !numBatches) {
+      return { text: cancelled, color: colors.get(StatusColor.Skipped)! };
+   }
+
+   let batchErrors = 0;
+   let batchFinished = 0;
+
+   let stepsCanceled = 0;
+   let stepsSkipped = 0;
+   let stepsWarnings = 0;
+   let stepsFailures = 0;
+
+   let stepsComplete = true;
+
+   batches.forEach(b => {
+
+      if (!!b.finishTime || b.state === JobStepBatchState.Complete) {
+         batchFinished++;
+      }
+      if (b.error && b.error !== JobStepBatchError.None) {
+         batchErrors++;
+      }
+
+      b.steps?.forEach(s => {
+
+         if (s.state === JobStepState.Waiting || s.state === JobStepState.Ready || s.state === JobStepState.Running) {
+            stepsComplete = false;
+         }
+
+         if (s.state === JobStepState.Aborted) {
+            stepsCanceled++;
+         }
+         if (s.state === JobStepState.Skipped) {
+            stepsSkipped++;
+         }
+
+         if (s.outcome === JobStepOutcome.Warnings) {
+            stepsWarnings++;
+         }
+
+         if (s.outcome === JobStepOutcome.Failure) {
+            stepsFailures++;
+         }
+      })
+   });
+
+   let state = (stepsComplete || batchFinished === batches.length) ? "Completed" : "Running";
+   color = state === "Running" ? colors.get(StatusColor.Running)! : colors.get(StatusColor.Success)!
+
+   if (batchErrors || stepsFailures) {
+      color = colors.get(StatusColor.Failure)!
+   } else if (stepsSkipped || stepsCanceled) {
+      state += " with skipped steps";
+      color = colors.get(StatusColor.Skipped)!
+   } else if (stepsWarnings) {
+      color = colors.get(StatusColor.Warnings)!
+   }
+
+   return { text: state, color: color };
+
+}
+
+
+export const ChangeButton: React.FC<{ job?: JobData, stepRef?: GetJobStepRefResponse, commit?: GetChangeSummaryResponse, hideAborted?: boolean, rangeCL?: number, pinned?: boolean, prefix?: string }> = ({ job, stepRef, commit, hideAborted, rangeCL, pinned, prefix }) => {
 
    const [menuShown, setMenuShown] = useState(false);
 
@@ -161,10 +225,9 @@ export const ChangeButton: React.FC<{ job?: JobData, stepRef?: GetJobStepRefResp
       return null;
    }
 
-   if (!job.abortedByUserInfo) {
-      hideAborted = true;
-   }
+   let showStatus = pinned || (!hideAborted && job.abortedByUserInfo?.id);
 
+   const { text, color } = getJobSummary(job);
 
    let change = job?.change?.toString() ?? "Latest";
    if (job?.preflightChange) {
@@ -175,25 +238,16 @@ export const ChangeButton: React.FC<{ job?: JobData, stepRef?: GetJobStepRefResp
       change = stepRef.change.toString();
    }
 
-   const colors = dashboard.getStatusColors();
-
+   if (prefix) {
+      change = `${prefix} ${change}`;
+   }
+   
    return (<Stack verticalAlign="center" verticalFill={true} horizontalAlign="start"> <div style={{ paddingBottom: "1px" }}>
       <Stack tokens={{ childrenGap: 4 }}>
          <span ref={spanRef} style={{ padding: "2px 6px 2px 6px", height: "15px", cursor: "pointer" }} className={job.startedByUserInfo ? "cl-callout-button-user" : "cl-callout-button"} onClick={(ev) => { ev.stopPropagation(); ev.preventDefault(); setMenuShown(!menuShown) }} >{change}</span>
-         {!hideAborted && <span ref={spanRef} style={{ padding: "2px 6px 2px 6px", height: "16px", cursor: "pointer", userSelect: "none", fontFamily: "Horde Open Sans SemiBold", fontSize: "10px", backgroundColor: colors.get(StatusColor.Failure), color: "rgb(255, 255, 255)" }} onClick={(ev) => { ev.preventDefault(); setMenuShown(!menuShown) }}>Aborted</span>}
+         {(!!showStatus) && <span ref={spanRef} style={{ padding: "2px 6px 2px 6px", height: "16px", cursor: "pointer", userSelect: "none", fontFamily: "Horde Open Sans SemiBold", fontSize: "10px", backgroundColor: color, color: "rgb(255, 255, 255)" }} onClick={(ev) => { ev.preventDefault(); setMenuShown(!menuShown) }}>{text}</span>}
       </Stack>
       {menuShown && <ChangeContextMenu target={{ ref: spanRef }} job={job} commit={commit} stepRef={stepRef} rangeCL={rangeCL} onDismiss={() => setMenuShown(false)} />}
    </div></Stack>);
 };
 
-/*
-
-text-decoration: none;
-  white-space: nowrap;
-  background:#0288ee;
-  color: rgb(255, 255, 255);
-  user-select: none;
-  font-family: "Horde Open Sans SemiBold";
-  font-size: 10px;
-  border-width: 0;
-  */

@@ -83,9 +83,8 @@
 
 #include "Animation/Skeleton.h"
 #include "ChaosClothAsset/ClothAsset.h"
-#include "ChaosClothAsset/ClothAdapter.h"
-#include "ChaosClothAsset/ClothLodAdapter.h"
-#include "ChaosClothAsset/ClothPatternAdapter.h"
+#include "ChaosClothAsset/CollectionClothFacade.h"
+#include "GeometryCollection/ManagedArrayCollection.h"
 
 extern UNREALED_API UEditorEngine* GEditor;
 
@@ -288,7 +287,7 @@ void FDatasmithImporter::ImportStaticMeshes( FDatasmithImportContext& ImportCont
 
 			TSharedRef<IDatasmithMeshElement> MeshElement = ImportContext.FilteredScene->GetMesh( MeshIndex ).ToSharedRef();
 
-			UStaticMesh*& ImportedStaticMesh = ImportContext.ImportedStaticMeshes.FindOrAdd( MeshElement );
+			auto& ImportedStaticMesh = ImportContext.ImportedStaticMeshes.FindOrAdd( MeshElement );
 
 			// We still have factories that are importing the UStaticMesh on their own, so check if it's already imported here
 			if (ImportedStaticMesh == nullptr)
@@ -370,7 +369,7 @@ void FDatasmithImporter::ImportStaticMeshes( FDatasmithImportContext& ImportCont
 
 	TMap< TSharedRef< IDatasmithMeshElement >, float > LightmapWeights = FDatasmithStaticMeshImporter::CalculateMeshesLightmapWeights( ImportContext.Scene.ToSharedRef() );
 
-	for ( TPair< TSharedRef< IDatasmithMeshElement >, UStaticMesh* >& ImportedStaticMeshPair : ImportContext.ImportedStaticMeshes )
+	for ( auto& ImportedStaticMeshPair : ImportContext.ImportedStaticMeshes )
 	{
 		FDatasmithStaticMeshImporter::SetupStaticMesh( ImportContext.AssetsContext, ImportedStaticMeshPair.Key, ImportedStaticMeshPair.Value, ImportContext.Options->BaseOptions.StaticMeshOptions, LightmapWeights[ ImportedStaticMeshPair.Key ] );
 	}
@@ -488,14 +487,6 @@ void FDatasmithImporter::ImportClothes(FDatasmithImportContext& ImportContext)
 		else
 		{
 			ClothAsset = NewObject<UChaosClothAsset>(ImportPackage, *ClothName, ObjectFlags);
-
-			// Setup a default skeleton
-			if (ClothAsset && !ClothAsset->GetSkeleton())
-			{
-				USkeleton* const DefaultSkeleton = LoadObject<USkeleton>(nullptr, TEXT("/Engine/EditorMeshes/SkeletalMesh/DefaultSkeletalMesh_Skeleton.DefaultSkeletalMesh_Skeleton"), nullptr, LOAD_None, nullptr);
-				check(DefaultSkeleton);
-				ClothAsset->SetSkeleton(DefaultSkeleton);
-			}
 		}
 
 		if (!ensure(ClothAsset))
@@ -503,54 +494,56 @@ void FDatasmithImporter::ImportClothes(FDatasmithImportContext& ImportContext)
 			continue;
 		}
 
-		TSharedPtr<UE::Chaos::ClothAsset::FClothCollection> Collection = ClothAsset->GetClothCollection();
-		UE::Chaos::ClothAsset::FClothAdapter Adapter(Collection);
-		Adapter.Reset(); // on reimport, asset is non-empty
-		UE::Chaos::ClothAsset::FClothLodAdapter LODAdapter = Adapter.GetNumLods() ? Adapter.GetLod(0) : Adapter.AddGetLod();
+		using namespace UE::Chaos::ClothAsset;
+
+		TArray<TSharedRef<FManagedArrayCollection>>& Collections = ClothAsset->GetClothCollections();
+		Collections.Reset(1);
+		FCollectionClothFacade Cloth(Collections.Emplace_GetRef(MakeShared<FManagedArrayCollection>()));
+		Cloth.DefineSchema();
 
 		for (FDatasmithClothPattern& Pattern : DsCloth.Patterns)
 		{
 			if (Pattern.IsValid())
 			{
-				UE::Chaos::ClothAsset::FClothPatternAdapter ClothPattern = LODAdapter.AddGetPattern();
+				FCollectionClothSimPatternFacade ClothPattern = Cloth.AddGetSimPattern();
 				ClothPattern.Initialize(Pattern.SimPosition, Pattern.SimRestPosition, Pattern.SimTriangleIndices);
 			}
 		}
 
-		LODAdapter.SetNumSeams(DsCloth.Sewing.Num());
-		TArrayView<FIntVector2> SeamPatterns = LODAdapter.GetSeamPatterns();
-		TArrayView<TArray<FIntVector2>> SeamStitches = LODAdapter.GetSeamStitches();
-
-		uint32 SeamIndex = 0;
 		for (const FDatasmithClothSewingInfo& SeamInfo : DsCloth.Sewing)
 		{
-			SeamPatterns[SeamIndex] = FIntVector2(SeamInfo.Seam0PanelIndex, SeamInfo.Seam1PanelIndex);
-			TArray<FIntVector2>& Stitches = SeamStitches[SeamIndex];
-			uint32 StitchesCount = std::min(SeamInfo.Seam0MeshIndices.Num(), SeamInfo.Seam1MeshIndices.Num());
-			Stitches.Reserve(StitchesCount);
-			for (uint32 StitchIndex = 0; StitchIndex < StitchesCount; ++StitchIndex)
+			const int32 SeamPattern0 = (int32)SeamInfo.Seam0PanelIndex;
+			const int32 SeamPattern1 = (int32)SeamInfo.Seam1PanelIndex;
+
+			if (SeamPattern0 >= 0 && SeamPattern0 < Cloth.GetNumSimPatterns() &&
+				SeamPattern1 >= 0 && SeamPattern1 < Cloth.GetNumSimPatterns())
 			{
-				Stitches.Add(FIntVector2(SeamInfo.Seam0MeshIndices[StitchIndex], SeamInfo.Seam1MeshIndices[StitchIndex]));
+				const FCollectionClothSimPatternConstFacade ClothPattern0 = Cloth.GetSimPattern(SeamPattern0);
+				const FCollectionClothSimPatternConstFacade ClothPattern1 = Cloth.GetSimPattern(SeamPattern1);
+
+				const int32 ClothPattern0VerticesOffset = ClothPattern0.GetSimVertices2DOffset();
+				const int32 ClothPattern1VerticesOffset = ClothPattern1.GetSimVertices2DOffset();
+
+				TArray<FIntVector2> Stitches;
+				const uint32 StitchesCount = FMath::Min(SeamInfo.Seam0MeshIndices.Num(), SeamInfo.Seam1MeshIndices.Num());
+				Stitches.Reserve(StitchesCount);
+				for (uint32 StitchIndex = 0; StitchIndex < StitchesCount; ++StitchIndex)
+				{
+					Stitches.Emplace(
+						(int32)SeamInfo.Seam0MeshIndices[StitchIndex] + ClothPattern0VerticesOffset, 
+						(int32)SeamInfo.Seam1MeshIndices[StitchIndex] + ClothPattern1VerticesOffset);
+				}
+
+				FCollectionClothSeamFacade SeamFacade = Cloth.AddGetSeam();
+				SeamFacade.Initialize(Stitches);
 			}
-
-			++SeamIndex;
-		}
-
-		// Add a default material
-		ClothAsset->GetMaterials().Reset(1);
-		UMaterial* DefaultMaterial = LoadObject<UMaterial>(nullptr, TEXT("/Engine/EditorMaterials/Cloth/CameraLitDoubleSided.CameraLitDoubleSided"), nullptr, LOAD_None, nullptr);
-		const int32 MaterialId = ClothAsset->GetMaterials().Emplace(DefaultMaterial, true, false, DefaultMaterial->GetFName());
-
-		// Set a default skeleton
-		if (USkeleton* DefaultSkeleton = LoadObject<USkeleton>(nullptr, TEXT("/Engine/EditorMeshes/SkeletalMesh/DefaultSkeletalMesh_Skeleton.DefaultSkeletalMesh_Skeleton"), nullptr, LOAD_None, nullptr))
-		{
-			ClothAsset->SetReferenceSkeleton(DefaultSkeleton->GetReferenceSkeleton(), false);
 		}
 
 		// Set the render mesh to duplicate the sim mesh
-		ClothAsset->CopySimMeshToRenderMesh(MaterialId);
+		ClothAsset->CopySimMeshToRenderMesh();
 
-		ClothAsset->Build();
+		// Set a default skeleton and rebuild the asset
+		ClothAsset->SetReferenceSkeleton(nullptr);  // This creates a default reference skeleton, redo the bindings, and rebuild the asset
 
 		ImportContext.ImportedClothes.Add(ClothElement, ClothAsset);
 
@@ -571,7 +564,7 @@ UStaticMesh* FDatasmithImporter::ImportStaticMesh( FDatasmithImportContext& Impo
 
 	TRACE_CPUPROFILER_EVENT_SCOPE(FDatasmithImporter::ImportStaticMesh);
 
-	UStaticMesh*& ImportedStaticMesh = ImportContext.ImportedStaticMeshes.FindOrAdd( MeshElement );
+	auto& ImportedStaticMesh = ImportContext.ImportedStaticMeshes.FindOrAdd( MeshElement );
 
 	TArray<UDatasmithAdditionalData*> AdditionalData;
 
@@ -1312,7 +1305,7 @@ void FDatasmithImporter::FinalizeActors( FDatasmithImportContext& ImportContext,
 	if ( !ImportContext.bUserCancelled )
 	{
 		// Ensure a proper setup for the finalize of the actors
-		ADatasmithSceneActor*& ImportSceneActor = ImportContext.ActorsContext.ImportSceneActor;
+		auto& ImportSceneActor = ImportContext.ActorsContext.ImportSceneActor;
 		TSet< ADatasmithSceneActor* >& FinalSceneActors = ImportContext.ActorsContext.FinalSceneActors;
 
 		if ( !ImportContext.ActorsContext.FinalWorld )
@@ -1401,6 +1394,29 @@ void FDatasmithImporter::FinalizeActors( FDatasmithImportContext& ImportContext,
 				}
 
 				FDatasmithImporterUtils::DeleteNonImportedDatasmithElementFromSceneActor( *ImportSceneActor, *DestinationSceneActor, ImportContext.ActorsContext.NonImportedDatasmithActors );
+
+
+				// Update destination actor's metadata
+				if (IInterface_AssetUserData* SourceAssetUserData = Cast<IInterface_AssetUserData>(ImportSceneActor->GetRootComponent()))
+				{
+					if (UDatasmithAssetUserData* SourceDatasmithUserData = SourceAssetUserData->GetAssetUserData<UDatasmithAssetUserData>())
+					{
+						USceneComponent* SceneComponent = DestinationSceneActor->GetRootComponent();
+
+						if (IInterface_AssetUserData* AssetUserData = Cast<IInterface_AssetUserData>(SceneComponent))
+						{
+							UDatasmithAssetUserData* DatasmithUserData = AssetUserData->GetAssetUserData<UDatasmithAssetUserData>();
+
+							if (!DatasmithUserData)
+							{
+								DatasmithUserData = NewObject<UDatasmithAssetUserData>(SceneComponent, NAME_None, RF_Public | RF_Transactional);
+								AssetUserData->AddAssetUserData(DatasmithUserData);
+							}
+
+							DatasmithUserData->MetaData.Append(SourceDatasmithUserData->MetaData);
+						}
+					}
+				}
 			}
 
 			// Add Actor info to the remap info
@@ -1646,7 +1662,7 @@ void FDatasmithImporter::ImportLevelSequences( FDatasmithImportContext& ImportCo
 				}
 			}
 
-			ULevelSequence*& ImportedLevelSequence = ImportContext.ImportedLevelSequences.FindOrAdd( SequenceElement.ToSharedRef() );
+			auto& ImportedLevelSequence = ImportContext.ImportedLevelSequences.FindOrAdd( SequenceElement.ToSharedRef() );
 			ImportedLevelSequence = FDatasmithLevelSequenceImporter::ImportLevelSequence( SequenceElement.ToSharedRef(), ImportContext, ExistingLevelSequence );
 
 			SequencesToImport.RemoveAt(SequenceIndex);
@@ -1728,7 +1744,7 @@ void FDatasmithImporter::ImportLevelVariantSets( FDatasmithImportContext& Import
 		FString LevelVariantSetsName = ObjectTools::SanitizeObjectName(LevelVariantSetsElement->GetName());
 		FDatasmithImporterImpl::ReportProgress(Progress, 1.f, FText::FromString(FString::Printf(TEXT("Importing level variant sets %d/%d (%s) ..."), LevelVariantSetIndex + 1, LevelVariantSetsCount, *LevelVariantSetsName)));
 
-		ULevelVariantSets*& ImportedLevelVariantSets = ImportContext.ImportedLevelVariantSets.FindOrAdd( LevelVariantSetsElement.ToSharedRef() );
+		auto& ImportedLevelVariantSets = ImportContext.ImportedLevelVariantSets.FindOrAdd( LevelVariantSetsElement.ToSharedRef() );
 		ImportedLevelVariantSets = FDatasmithLevelVariantSetsImporter::ImportLevelVariantSets( LevelVariantSetsElement.ToSharedRef(), ImportContext, ExistingLevelVariantSets );
 	}
 
@@ -2012,7 +2028,7 @@ void FDatasmithImporter::FinalizeImport(FDatasmithImportContext& ImportContext, 
 			FDatasmithImporterImpl::CheckAssetPersistenceValidity(ExistingMaterialFunction, ImportContext);
 		}
 
-		for (const TPair< TSharedRef< IDatasmithBaseMaterialElement >, UMaterialInterface* >& ImportedMaterialPair : ImportContext.ImportedMaterials)
+		for (const auto& ImportedMaterialPair : ImportContext.ImportedMaterials)
 		{
 			if (ImportContext.bUserCancelled)
 			{
@@ -2073,7 +2089,7 @@ void FDatasmithImporter::FinalizeImport(FDatasmithImportContext& ImportContext, 
 
 	// Sometimes, the data is invalid and we get the same UStaticMesh multiple times
 	TSet< UStaticMesh* > StaticMeshes;
-	for (TPair< TSharedRef< IDatasmithMeshElement >, UStaticMesh* >& ImportedStaticMeshPair : ImportContext.ImportedStaticMeshes)
+	for (auto& ImportedStaticMeshPair : ImportContext.ImportedStaticMeshes)
 	{
 		if (ImportContext.bUserCancelled)
 		{
@@ -2164,7 +2180,7 @@ void FDatasmithImporter::FinalizeImport(FDatasmithImportContext& ImportContext, 
 		ImportedPair.Value = FinalizedCloth;
 	}
 
-	for (const TPair< TSharedRef< IDatasmithLevelSequenceElement >, ULevelSequence* >& ImportedLevelSequencePair : ImportContext.ImportedLevelSequences)
+	for (const auto& ImportedLevelSequencePair : ImportContext.ImportedLevelSequences)
 	{
 		if (ImportContext.bUserCancelled)
 		{
@@ -2195,7 +2211,7 @@ void FDatasmithImporter::FinalizeImport(FDatasmithImportContext& ImportContext, 
 		}
 	}
 
-	for (const TPair< TSharedRef< IDatasmithLevelVariantSetsElement >, ULevelVariantSets* >& ImportedLevelVariantSetsPair : ImportContext.ImportedLevelVariantSets)
+	for (const auto& ImportedLevelVariantSetsPair : ImportContext.ImportedLevelVariantSets)
 	{
 		if (ImportContext.bUserCancelled)
 		{

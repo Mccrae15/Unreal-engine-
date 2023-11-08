@@ -405,7 +405,7 @@ void FTextureMediaPlayer::OnFrame(const TArray<uint8>& TextureBuffer, FIntPoint 
 		TextureMediaPlayerVideoDecoderOutput* VideoDecoderOutput = static_cast<TextureMediaPlayerVideoDecoderOutput*>(NewVideoDecoderOutput.Get());
 
 		// Set up parameters.
-		TUniquePtr<Electra::FParamDict> OutputBufferSampleProperties(new Electra::FParamDict());
+		TSharedPtr<Electra::FParamDict, ESPMode::ThreadSafe> OutputBufferSampleProperties(new Electra::FParamDict());
 		Electra::FTimeValue TimeStamp;
 		TimeStamp.SetFromHNS((int64)1);	// Duration as HNS; should not be 0 but is unknown. Use a small value instead.
 		OutputBufferSampleProperties->Set("duration", Electra::FVariantValue(TimeStamp));
@@ -414,7 +414,7 @@ void FTextureMediaPlayer::OnFrame(const TArray<uint8>& TextureBuffer, FIntPoint 
 		OutputBufferSampleProperties->Set("width", Electra::FVariantValue((int64)Width));
 		OutputBufferSampleProperties->Set("height", Electra::FVariantValue((int64)Height));
 
-		VideoDecoderOutput->Initialize(OutputBufferSampleProperties.Release(), TextureBuffer, Size);
+		VideoDecoderOutput->Initialize(MoveTemp(OutputBufferSampleProperties), TextureBuffer, Size);
 
 		// We are dealing with real time video here, so it is important we show the most recent frame received.
 		// Older frames that may have accumulated in the queue past a certain point are not relevant any more.
@@ -431,7 +431,7 @@ void FTextureMediaPlayer::OnFrame(const TArray<uint8>& TextureBuffer, FIntPoint 
 			// NOTE: We cannot use Internal_PurgeVideoSamplesHint here because if the game loop is not
 			//       being ticked the time it uses for comparison will not have advanced and nothing
 			//       will get purged.
-			MediaSamples->PurgeOutdatedVideoSamples(FMediaTimeStamp(FTimespan::MaxValue()), false);
+			MediaSamples->PurgeOutdatedVideoSamples(FMediaTimeStamp(FTimespan::MaxValue()), false, FTimespan::Zero());
 			EventSink.ReceiveMediaEvent(EMediaEvent::Internal_ResetForDiscontinuity);
 		}
 
@@ -458,7 +458,7 @@ void FTextureMediaPlayer::OnFrame(FTextureRHIRef TextureRHIRef, TRefCountPtr<ID3
 		TextureMediaPlayerVideoDecoderOutput* VideoDecoderOutput = static_cast<TextureMediaPlayerVideoDecoderOutput*>(NewVideoDecoderOutput.Get());
 
 		// Set up parameters.
-		TUniquePtr<Electra::FParamDict> OutputBufferSampleProperties(new Electra::FParamDict());
+		TSharedPtr<Electra::FParamDict, ESPMode::ThreadSafe> OutputBufferSampleProperties(new Electra::FParamDict());
 		Electra::FTimeValue TimeStamp;
 		TimeStamp.SetFromHNS((int64)1);	// Duration as HNS; should not be 0 but is unknown. Use a small value instead.
 		OutputBufferSampleProperties->Set("duration", Electra::FVariantValue(TimeStamp));
@@ -467,7 +467,7 @@ void FTextureMediaPlayer::OnFrame(FTextureRHIRef TextureRHIRef, TRefCountPtr<ID3
 		OutputBufferSampleProperties->Set("width", Electra::FVariantValue((int64)Width));
 		OutputBufferSampleProperties->Set("height", Electra::FVariantValue((int64)Height));
 
-		VideoDecoderOutput->Initialize(OutputBufferSampleProperties.Release(), TextureRHIRef, FIntPoint(Width, SampleHeight), D3DFence, FenceValue);
+		VideoDecoderOutput->Initialize(MoveTemp(OutputBufferSampleProperties), TextureRHIRef, FIntPoint(Width, SampleHeight), D3DFence, FenceValue);
 
 		// We are dealing with real time video here, so it is important we show the most recent frame received.
 		// Older frames that may have accumulated in the queue past a certain point are not relevant any more.
@@ -484,7 +484,7 @@ void FTextureMediaPlayer::OnFrame(FTextureRHIRef TextureRHIRef, TRefCountPtr<ID3
 			// NOTE: We cannot use Internal_PurgeVideoSamplesHint here because if the game loop is not
 			//       being ticked the time it uses for comparison will not have advanced and nothing
 			//       will get purged.
-			MediaSamples->PurgeOutdatedVideoSamples(FMediaTimeStamp(FTimespan::MaxValue()), false);
+			MediaSamples->PurgeOutdatedVideoSamples(FMediaTimeStamp(FTimespan::MaxValue()), false, FTimespan::Zero());
 			EventSink.ReceiveMediaEvent(EMediaEvent::Internal_ResetForDiscontinuity);
 		}
 

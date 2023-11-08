@@ -603,7 +603,7 @@ void FHierarchicalLODBuilder::InitializeClusters(ULevel* InLevel, const int32 LO
 
 	if (LODIdx == 0)
 	{
-		FilterActors(InLevel->Actors);
+		FilterActors(ObjectPtrDecay(InLevel->Actors));
 		CreateClusters(ValidStaticMeshActorsInLevel);
 	}
 	else
@@ -700,11 +700,6 @@ bool FHierarchicalLODBuilder::ShouldGenerateCluster(AActor* Actor, const int32 H
 	}
 
 	if (!Actor->IsHLODRelevant())
-	{
-		return false;
-	}
-
-	if( Actor->HasAnyFlags( RF_Transient ) )
 	{
 		return false;
 	}

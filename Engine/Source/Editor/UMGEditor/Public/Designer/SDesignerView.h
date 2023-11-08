@@ -38,6 +38,7 @@ class UWidgetBlueprint;
 class FHittestGrid;
 struct FOnPaintHandlerParams;
 struct FWidgetHitResult;
+class UWidgetEditingProjectSettings;
 
 /**
  * The designer for widgets.  Allows for laying out widgets in a drag and drop environment.
@@ -124,6 +125,8 @@ public:
 
 	void BeginResizingArea();
 	void EndResizingArea();
+	
+	const UWidgetEditingProjectSettings* GetRelevantSettings() const;
 
 protected:
 	virtual void OnPaintBackground(const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId) const override;
@@ -284,6 +287,7 @@ private:
 	bool IsRespectingLocks() const;
 
 	void ProcessDropAndAddWidget(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent, const bool bIsPreview);
+	void MoveWidgets(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent, const bool bIsPreview, UWidget* Target, const bool bAnyWidgetChangingParent);
 
 	FVector2D GetExtensionPosition(TSharedRef<FDesignerSurfaceElement> ExtensionElement) const;
 
@@ -306,7 +310,7 @@ private:
 	FScopedTransaction* ScopedTransaction;
 
 	/** The current preview widget */
-	UUserWidget* PreviewWidget;
+	TObjectPtr<UUserWidget> PreviewWidget;
 
 	/** The current preview widget's slate widget */
 	TWeakPtr<SWidget> PreviewSlateWidget;
@@ -316,8 +320,8 @@ private:
 	
 	struct FDropPreview
 	{
-		UWidget* Widget;
-		UPanelWidget* Parent;
+		TObjectPtr<UWidget> Widget;
+		TObjectPtr<UPanelWidget> Parent;
 		TWeakPtr<FDragDropOperation> DragOperation;
 	};
 

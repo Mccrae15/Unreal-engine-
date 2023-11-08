@@ -3,16 +3,16 @@
 #include "NiagaraDataInterfacePhysicsAsset.h"
 #include "Animation/SkeletalMeshActor.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "SkeletalRenderPublic.h"
-#include "SkeletalMeshTypes.h"
 #include "AnimationRuntime.h"
-#include "NiagaraShader.h"
-#include "NiagaraComponent.h"
+#include "Engine/SkeletalMesh.h"
 #include "NiagaraRenderer.h"
+#include "NiagaraCompileHashVisitor.h"
 #include "NiagaraSimStageData.h"
 #include "NiagaraShaderParametersBuilder.h"
+#include "NiagaraSystem.h"
 #include "NiagaraSystemInstance.h"
-#include "ShaderParameterUtils.h"
+#include "PhysicsEngine/PhysicsAsset.h"
+#include "RenderGraphBuilder.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfacePhysicsAsset)
 
@@ -54,25 +54,25 @@ static const FName GetProjectionPointName(TEXT("GetProjectionPoint"));
 //------------------------------------------------------------------------------------------------------------
 
 template<typename BufferType, EPixelFormat PixelFormat, uint32 ElementCount, uint32 BufferCount = 1>
-void CreateInternalBuffer(FReadBuffer& OutputBuffer)
+void CreateInternalBuffer(FRHICommandListBase& RHICmdList, FReadBuffer& OutputBuffer)
 {
 	if (ElementCount > 0)
 	{
-		OutputBuffer.Initialize(TEXT("FNDIPhysicsAssetBuffer"), sizeof(BufferType), ElementCount * BufferCount, PixelFormat, BUF_Static);
+		OutputBuffer.Initialize(RHICmdList, TEXT("FNDIPhysicsAssetBuffer"), sizeof(BufferType), ElementCount * BufferCount, PixelFormat, BUF_Static);
 	}
 }
 
 template<typename BufferType, EPixelFormat PixelFormat, uint32 ElementCount, uint32 BufferCount = 1>
-void UpdateInternalBuffer(const TStaticArray<BufferType,ElementCount*BufferCount>& InputData, FReadBuffer& OutputBuffer)
+void UpdateInternalBuffer(FRHICommandListBase& RHICmdList, const TStaticArray<BufferType,ElementCount*BufferCount>& InputData, FReadBuffer& OutputBuffer)
 {
 	if (ElementCount > 0 && OutputBuffer.Buffer.IsValid())
 	{
 		const uint32 BufferBytes = sizeof(BufferType) * ElementCount * BufferCount;
 
-		void* OutputData = RHILockBuffer(OutputBuffer.Buffer, 0, BufferBytes, RLM_WriteOnly);
+		void* OutputData = RHICmdList.LockBuffer(OutputBuffer.Buffer, 0, BufferBytes, RLM_WriteOnly);
 
 		FMemory::Memcpy(OutputData, InputData.GetData(), BufferBytes);
-		RHIUnlockBuffer(OutputBuffer.Buffer);
+		RHICmdList.UnlockBuffer(OutputBuffer.Buffer);
 	}
 }
 
@@ -413,15 +413,15 @@ ETickingGroup ComputeTickingGroup(const TArray<TWeakObjectPtr<class USkeletalMes
 
 //------------------------------------------------------------------------------------------------------------
 
-void FNDIPhysicsAssetBuffer::InitRHI()
+void FNDIPhysicsAssetBuffer::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	using namespace NDIPhysicsAssetLocal;
 
-	CreateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F, PHYSICS_ASSET_MAX_TRANSFORMS, 3>(WorldTransformBuffer);
-	CreateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F, PHYSICS_ASSET_MAX_TRANSFORMS, 3>(InverseTransformBuffer);
+	CreateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F, PHYSICS_ASSET_MAX_TRANSFORMS, 3>(RHICmdList, WorldTransformBuffer);
+	CreateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F, PHYSICS_ASSET_MAX_TRANSFORMS, 3>(RHICmdList, InverseTransformBuffer);
 
-	CreateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F, PHYSICS_ASSET_MAX_PRIMITIVES>(ElementExtentBuffer);
-	CreateInternalBuffer<uint32, EPixelFormat::PF_R32_UINT, PHYSICS_ASSET_MAX_PRIMITIVES>(PhysicsTypeBuffer);
+	CreateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F, PHYSICS_ASSET_MAX_PRIMITIVES>(RHICmdList, ElementExtentBuffer);
+	CreateInternalBuffer<uint32, EPixelFormat::PF_R32_UINT, PHYSICS_ASSET_MAX_PRIMITIVES>(RHICmdList, PhysicsTypeBuffer);
 }
 
 void FNDIPhysicsAssetBuffer::ReleaseRHI()
@@ -552,10 +552,12 @@ void FNDIPhysicsAssetProxy::PreStage(const FNDIGpuComputePostStageContext& Conte
 	{
 		if (Context.GetSimStageData().bFirstStage)
 		{
-			UpdateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F, PHYSICS_ASSET_MAX_TRANSFORMS, 3>(ProxyData->AssetArrays.WorldTransform, ProxyData->AssetBuffer->WorldTransformBuffer);
-			UpdateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F, PHYSICS_ASSET_MAX_TRANSFORMS, 3>(ProxyData->AssetArrays.InverseTransform, ProxyData->AssetBuffer->InverseTransformBuffer);
-			UpdateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F, PHYSICS_ASSET_MAX_PRIMITIVES>(ProxyData->AssetArrays.ElementExtent, ProxyData->AssetBuffer->ElementExtentBuffer);
-			UpdateInternalBuffer<uint32, EPixelFormat::PF_R32_UINT, PHYSICS_ASSET_MAX_PRIMITIVES>(ProxyData->AssetArrays.PhysicsType, ProxyData->AssetBuffer->PhysicsTypeBuffer);
+			FRHICommandListBase& RHICmdList = Context.GetGraphBuilder().RHICmdList;
+
+			UpdateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F, PHYSICS_ASSET_MAX_TRANSFORMS, 3>(RHICmdList, ProxyData->AssetArrays.WorldTransform, ProxyData->AssetBuffer->WorldTransformBuffer);
+			UpdateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F, PHYSICS_ASSET_MAX_TRANSFORMS, 3>(RHICmdList, ProxyData->AssetArrays.InverseTransform, ProxyData->AssetBuffer->InverseTransformBuffer);
+			UpdateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F, PHYSICS_ASSET_MAX_PRIMITIVES>(RHICmdList, ProxyData->AssetArrays.ElementExtent, ProxyData->AssetBuffer->ElementExtentBuffer);
+			UpdateInternalBuffer<uint32, EPixelFormat::PF_R32_UINT, PHYSICS_ASSET_MAX_PRIMITIVES>(RHICmdList, ProxyData->AssetArrays.PhysicsType, ProxyData->AssetBuffer->PhysicsTypeBuffer);
 		}
 	}
 }

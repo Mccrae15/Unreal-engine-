@@ -2,11 +2,9 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.IO;
 using EpicGames.Core;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using UnrealBuildBase;
 
 namespace UnrealBuildTool
@@ -45,6 +43,12 @@ namespace UnrealBuildTool
 		/// </summary>
 		[CommandLine("-EnableMinUBSan")]
 		public bool bEnableMinimalUndefinedBehaviorSanitizer = false;
+
+		/// <summary>
+		/// Enables runtime ray tracing support.
+		/// </summary>
+		[ConfigFile(ConfigHierarchyType.Engine, "/Script/AndroidTargetPlatform.AndroidTargetSettings")]
+		public bool bEnableRayTracing = false;
 	}
 
 	/// <summary>
@@ -70,39 +74,23 @@ namespace UnrealBuildTool
 		/// Accessors for fields on the inner TargetRules instance
 		/// </summary>
 		#region Read-only accessor properties 
-		#pragma warning disable CS1591
+#pragma warning disable CS1591
 
-		public bool bEnableAddressSanitizer
-		{
-			get { return Inner.bEnableAddressSanitizer; }
-		}
+		public bool bEnableAddressSanitizer => Inner.bEnableAddressSanitizer;
 
-		public bool bEnableHWAddressSanitizer
-		{
-			get { return Inner.bEnableHWAddressSanitizer; }
-		}
+		public bool bEnableHWAddressSanitizer => Inner.bEnableHWAddressSanitizer;
 
-		public bool bEnableThreadSanitizer
-		{
-			get { return Inner.bEnableThreadSanitizer; }
-		}
+		public bool bEnableThreadSanitizer => Inner.bEnableThreadSanitizer;
 
-		public bool bEnableUndefinedBehaviorSanitizer
-		{
-			get { return Inner.bEnableUndefinedBehaviorSanitizer; }
-		}
+		public bool bEnableUndefinedBehaviorSanitizer => Inner.bEnableUndefinedBehaviorSanitizer;
 
-		public bool bEnableMinimalUndefinedBehaviorSanitizer
-		{
-			get { return Inner.bEnableMinimalUndefinedBehaviorSanitizer; }
-		}
+		public bool bEnableMinimalUndefinedBehaviorSanitizer => Inner.bEnableMinimalUndefinedBehaviorSanitizer;
 
-		public AndroidTargetRules TargetRules
-		{
-			get { return Inner; }
-		}
+		public bool bEnableRayTracing => Inner.bEnableRayTracing;
 
-		#pragma warning restore CS1591
+		public AndroidTargetRules TargetRules => Inner;
+
+#pragma warning restore CS1591
 		#endregion
 	}
 
@@ -120,9 +108,6 @@ namespace UnrealBuildTool
 		{
 			return Architecture == UnrealArch.Arm64 ? "a" : "x";
 		}
-
-
-
 
 		private static UnrealArchitectures? CachedActiveArchitectures = null;
 		private static FileReference? CachedActiveArchesProject = null;
@@ -178,7 +163,7 @@ namespace UnrealBuildTool
 	{
 		UEBuildPlatformSDK SDK;
 
-		public AndroidPlatform(UnrealTargetPlatform InTargetPlatform, UEBuildPlatformSDK InSDK, ILogger InLogger) 
+		public AndroidPlatform(UnrealTargetPlatform InTargetPlatform, UEBuildPlatformSDK InSDK, ILogger InLogger)
 			: base(InTargetPlatform, InSDK, new AndroidArchitectureConfig(), InLogger)
 		{
 			SDK = InSDK;
@@ -197,11 +182,11 @@ namespace UnrealBuildTool
 
 		public override void ValidateTarget(TargetRules Target)
 		{
-			if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CLANG_STATIC_ANALYZER_MODE")))
+			if (!String.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CLANG_STATIC_ANALYZER_MODE")))
 			{
 				Target.StaticAnalyzer = StaticAnalyzer.Default;
 				Target.StaticAnalyzerOutputType = (Environment.GetEnvironmentVariable("CLANG_ANALYZER_OUTPUT")?.Contains("html", StringComparison.OrdinalIgnoreCase) == true) ? StaticAnalyzerOutputType.Html : StaticAnalyzerOutputType.Text;
-				Target.StaticAnalyzerMode = string.Equals(Environment.GetEnvironmentVariable("CLANG_STATIC_ANALYZER_MODE"), "shallow") ? StaticAnalyzerMode.Shallow : StaticAnalyzerMode.Deep;
+				Target.StaticAnalyzerMode = String.Equals(Environment.GetEnvironmentVariable("CLANG_STATIC_ANALYZER_MODE"), "shallow") ? StaticAnalyzerMode.Shallow : StaticAnalyzerMode.Deep;
 			}
 			else if (Target.StaticAnalyzer == StaticAnalyzer.Clang)
 			{
@@ -217,7 +202,6 @@ namespace UnrealBuildTool
 
 			Target.bCompileRecast = true;
 			Target.bCompileISPC = false;
-
 
 			// disable plugins by architecture (if we are compiling for multiple architectures, we still need to disable the plugin for all architectures)
 			if (Target.Architectures.Contains(UnrealArch.Arm64) && Target.Name != "UnrealHeaderTool")
@@ -276,14 +260,14 @@ namespace UnrealBuildTool
 
 		public override string[] GetDebugInfoExtensions(ReadOnlyTargetRules InTarget, UEBuildBinaryType InBinaryType)
 		{
-			return new string [] {};
+			return new string[] { };
 		}
 
 		public override void FindAdditionalBuildProductsToClean(ReadOnlyTargetRules Target, List<FileReference> FilesToDelete, List<DirectoryReference> DirectoriesToDelete)
 		{
 			base.FindAdditionalBuildProductsToClean(Target, FilesToDelete, DirectoriesToDelete);
 
-			if(Target.ProjectFile != null)
+			if (Target.ProjectFile != null)
 			{
 				DirectoriesToDelete.Add(DirectoryReference.Combine(DirectoryReference.FromFile(Target.ProjectFile), "Intermediate", "Android"));
 			}
@@ -292,7 +276,7 @@ namespace UnrealBuildTool
 		public virtual bool HasSpecificDefaultBuildConfig(UnrealTargetPlatform Platform, DirectoryReference ProjectPath, ILogger Logger)
 		{
 			string[] BoolKeys = new string[] {
-				"bBuildForArm64", "bBuildForX8664", 
+				"bBuildForArm64", "bBuildForX8664",
 				"bBuildForES31", "bBuildWithHiddenSymbolVisibility", "bSaveSymbols"
 			};
 			string[] StringKeys = new string[] {
@@ -315,7 +299,7 @@ namespace UnrealBuildTool
 			{
 				return false;
 			}
-			
+
 			// any shared-between-all-androids would be here
 
 			// check the base settings
@@ -444,7 +428,7 @@ namespace UnrealBuildTool
 			SDK.TryConvertVersionToInt(NDKToolchainVersion, out NDKVersionInt);
 
 			// PLATFORM_ANDROID_NDK_VERSION is in the form 150100, where 15 is major version, 01 is the letter (1 is 'a'), 00 indicates beta revision if letter is 00
-			CompileEnvironment.Definitions.Add(string.Format("PLATFORM_ANDROID_NDK_VERSION={0}", NDKVersionInt));
+			CompileEnvironment.Definitions.Add(String.Format("PLATFORM_ANDROID_NDK_VERSION={0}", NDKVersionInt));
 
 			Logger.LogInformation("NDK toolchain: {Version}, NDK version: {NdkVersion}, ClangVersion: {ClangVersion}", NDKToolchainVersion, NDKVersionInt, ToolChain.GetClangVersionString());
 
@@ -506,13 +490,19 @@ namespace UnrealBuildTool
 			CompileEnvironment.Definitions.Add("WITH_EDITOR=0");
 			CompileEnvironment.Definitions.Add("USE_NULL_RHI=0");
 
-			if (Target.bPGOOptimize || Target.bPGOProfile)
+			if (Target.AndroidPlatform.bEnableRayTracing)
+			{
+				Logger.LogInformation("Compiling with ray tracing enabled");
+				CompileEnvironment.Definitions.Add("RHI_RAYTRACING=1");
+			}
+
+			if ((Target.bPGOOptimize || Target.bPGOProfile) && Target.ProjectFile != null)
 			{
 				Logger.LogInformation("PGO {PgoType} build", Target.bPGOOptimize ? "optimize" : "profile");
 				if (Target.bPGOOptimize)
 				{
-					CompileEnvironment.PGODirectory = Path.Combine(DirectoryReference.FromFile(Target.ProjectFile)!.FullName, "Platforms", "Android", "Build", "PGO");
-					CompileEnvironment.PGOFilenamePrefix = string.Format("{0}-Android", Target.Name);
+					CompileEnvironment.PGODirectory = DirectoryReference.Combine(Target.ProjectFile.Directory, "Platforms", "Android", "Build", "PGO").FullName;
+					CompileEnvironment.PGOFilenamePrefix = String.Format("{0}-Android", Target.Name);
 
 					LinkEnvironment.PGODirectory = CompileEnvironment.PGODirectory;
 					LinkEnvironment.PGOFilenamePrefix = CompileEnvironment.PGOFilenamePrefix;
@@ -554,7 +544,7 @@ namespace UnrealBuildTool
 			};
 		}
 
-		static public ClangToolChainOptions CreateToolChainOptions(AndroidTargetRules TargetRules)
+		public static ClangToolChainOptions CreateToolChainOptions(AndroidTargetRules TargetRules)
 		{
 			ClangToolChainOptions Options = ClangToolChainOptions.None;
 			if (TargetRules.bEnableAddressSanitizer)
@@ -606,13 +596,9 @@ namespace UnrealBuildTool
 		}
 	}
 
-
 	class AndroidPlatformFactory : UEBuildPlatformFactory
 	{
-		public override UnrealTargetPlatform TargetPlatform
-		{
-			get { return UnrealTargetPlatform.Android; }
-		}
+		public override UnrealTargetPlatform TargetPlatform => UnrealTargetPlatform.Android;
 
 		public override void RegisterBuildPlatforms(ILogger Logger)
 		{
@@ -621,6 +607,7 @@ namespace UnrealBuildTool
 			// Register this build platform
 			UEBuildPlatform.RegisterBuildPlatform(new AndroidPlatform(SDK, Logger), Logger);
 			UEBuildPlatform.RegisterPlatformWithGroup(UnrealTargetPlatform.Android, UnrealPlatformGroup.Android);
+			UEBuildPlatform.RegisterPlatformWithGroup(UnrealTargetPlatform.Android, UnrealPlatformGroup.ThirtyHz);
 		}
 	}
 }

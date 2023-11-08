@@ -21,7 +21,10 @@
   #elif STRATA_TILETYPE == 1
 	#define STRATA_SINGLEPATH 1
   #elif STRATA_TILETYPE == 2
-  // COMPLEX PATH
+	// COMPLEX PATH
+  #elif STRATA_TILETYPE == 3
+	// COMPLEX PATH
+	#define STRATA_COMPLEXSPECIALPATH 1
   #else
 	#error Strata tile type non-implemented
   #endif
@@ -182,8 +185,8 @@ float4 GetSimpleLightLighting(
 		FSimpleDeferredLightData SimpleLightData = (FSimpleDeferredLightData)0;
 		SimpleLightData.TranslatedWorldPosition = LocalLight.LightPositionAndInvRadius.xyz;
 		SimpleLightData.InvRadius = LocalLight.LightPositionAndInvRadius.w;
-		SimpleLightData.Color = LocalLight.LightColorAndFalloffExponent.xyz;
-		SimpleLightData.FalloffExponent = LocalLight.LightColorAndFalloffExponent.w;
+		SimpleLightData.Color = UnpackLightColor(LocalLight.LightColorAndIdAndFalloffExponent.xy);
+		SimpleLightData.FalloffExponent = LocalLight.LightColorAndIdAndFalloffExponent.w;
 		SimpleLightData.bInverseSquared = SimpleLightData.FalloffExponent == 0;
 		FStrataDeferredLighting StrataLighting = GetSimpleDynamicLighting(TranslatedWorldPosition, CameraVector, ScreenSpaceData.GBuffer.WorldNormal, ScreenSpaceData.AmbientOcclusion, ScreenSpaceData.GBuffer.DiffuseColor, ScreenSpaceData.GBuffer.SpecularColor, ScreenSpaceData.GBuffer.Roughness, SimpleLightData);
 
@@ -374,7 +377,7 @@ float4 GetLightGridLocalLighting(
 		float2 ScreenPosition = UVAndScreenPos.zw;	\
 		FScreenSpaceData ScreenSpaceData = GetScreenSpaceData(ScreenUV);	\
 		float SceneDepth = CalcSceneDepth(ScreenUV);	\
-		float3 TranslatedWorldPosition = mul(float4(ScreenPosition * SceneDepth, SceneDepth, 1), PrimaryView.ScreenToTranslatedWorld).xyz;	\
+		float3 TranslatedWorldPosition = mul(float4(GetScreenPositionForProjectionType(ScreenPosition, SceneDepth), SceneDepth, 1), PrimaryView.ScreenToTranslatedWorld).xyz;	\
 		float3 CameraVector = normalize(TranslatedWorldPosition - PrimaryView.TranslatedWorldCameraOrigin);	\
 		ScreenSpaceData.GBuffer.ShadingModelID = ShadingModelId;	\
 		CompositedLighting += GetLightGridLocalLighting(ScreenSpaceData, LightGridData, TranslatedWorldPosition, CameraVector, ScreenUV, 0, Dither, FirstNonSimpleLightIndex); \
@@ -421,7 +424,7 @@ void ClusteredShadingPixelShader(
 	if (StrataPixelHeader.BSDFCount > 0 || CulledLightGridData.NumLocalLights == 0)
 	{
 		const float2 ScreenPosition = ViewportUVToScreenPos(ScreenUV);
-		const float3 TranslatedWorldPosition = mul(float4(ScreenPosition * SceneDepth, SceneDepth, 1), PrimaryView.ScreenToTranslatedWorld).xyz;
+		const float3 TranslatedWorldPosition = mul(float4(GetScreenPositionForProjectionType(ScreenPosition, SceneDepth), SceneDepth, 1), PrimaryView.ScreenToTranslatedWorld).xyz;
 		const float3 CameraVector = normalize(TranslatedWorldPosition - PrimaryView.TranslatedWorldCameraOrigin);
 		uint FirstNonSimpleLightIndex = 0;
 
@@ -477,7 +480,7 @@ void ClusteredShadingPixelShader(
 	}
 
 	float4 CompositedLighting = 0;
-	float3 TranslatedWorldPosition = mul(float4(ScreenPosition * SceneDepth, SceneDepth, 1), PrimaryView.ScreenToTranslatedWorld).xyz;
+	float3 TranslatedWorldPosition = mul(float4(GetScreenPositionForProjectionType(ScreenPosition, SceneDepth), SceneDepth, 1), PrimaryView.ScreenToTranslatedWorld).xyz;
 	float3 CameraVector = normalize(TranslatedWorldPosition - PrimaryView.TranslatedWorldCameraOrigin);
 	uint FirstNonSimpleLightIndex = 0;
 
@@ -551,7 +554,7 @@ void ClusteredShadingPixelShader(
 		return;
 	}
 
-	const float3 TranslatedWorldPosition = mul(float4(ScreenPosition * SceneDepth, SceneDepth, 1), PrimaryView.ScreenToTranslatedWorld).xyz;
+	const float3 TranslatedWorldPosition = mul(float4(GetScreenPositionForProjectionType(ScreenPosition, SceneDepth), SceneDepth, 1), PrimaryView.ScreenToTranslatedWorld).xyz;
 	const float3 CameraVector = normalize(TranslatedWorldPosition - PrimaryView.TranslatedWorldCameraOrigin);
 
 	float4 CompositedLighting = 0;

@@ -211,7 +211,7 @@ struct FLandscapeComponentGrassData
 	//  therefore empty) or not known yet (== UnknownNumElements)
 	int32 NumElements = UnknownNumElements;
 	// Serialized in one block to prevent Slack waste
-	TMap<ULandscapeGrassType*, int32> WeightOffsets;
+	TMap<TObjectPtr<ULandscapeGrassType>, int32> WeightOffsets;
 	TArray<uint8> HeightWeightData;
 
 	FLandscapeComponentGrassData() = default;
@@ -548,21 +548,19 @@ public:
 	int32 LODBias;
 
 	UPROPERTY()
+	// TODO [jonathan.bard] : remove unused : 
 	FGuid StateId;
 
-	/** The Material Guid that used when baking, to detect material recompilations */
-	UPROPERTY()
+	UE_DEPRECATED(5.3, "BakedTextureMaterialGuid is officially deprecated now and nothing updates it anymore")
 	FGuid BakedTextureMaterialGuid;
 
-	/** The Material Guid that last saved, to notify manual build operation to bake textures */
-	UPROPERTY(Transient)
+	UE_DEPRECATED(5.3, "LastBakedTextureMaterialGuid is officially deprecated now and nothing updates it anymore")
 	FGuid LastBakedTextureMaterialGuid;
 
-	/** Pre-baked Base Color texture for use by distance field GI */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = BakedTextures)
+#if WITH_EDITORONLY_DATA
+	UE_DEPRECATED(5.3, "GIBakedBaseColorTexture is officially deprecated now and nothing updates it anymore")
 	TObjectPtr<UTexture2D> GIBakedBaseColorTexture;
 
-#if WITH_EDITORONLY_DATA
 	/**	Legacy irrelevant lights */
 	UPROPERTY()
 	TArray<FGuid> IrrelevantLights_DEPRECATED;
@@ -614,10 +612,11 @@ public:
 	UPROPERTY(NonPIEDuplicateTransient)
 	TArray<TObjectPtr<UTexture2D>> MobileWeightmapTextures;
 
-#if WITH_EDITORONLY_DATA
-	/** Layer allocations used by mobile. Cached value here used only in the editor for usage visualization. */
+	/** Layer allocations used by mobile.*/
+	UPROPERTY()
 	TArray<FWeightmapLayerAllocationInfo> MobileWeightmapLayerAllocations;
 
+#if WITH_EDITORONLY_DATA
 	/** The editor needs to save out the combination MIC we'll use for mobile, 
 	  because we cannot generate it at runtime for standalone PIE games */
 	UPROPERTY(NonPIEDuplicateTransient)
@@ -698,9 +697,9 @@ public:
 	LANDSCAPE_API UTexture2D* GetHeightmap(bool InReturnEditingHeightmap = false) const;
 	// Returns the heightmap for this component and the edit layer specified by InLayerGuid. If InLayerGuid is invalid, returns the final (base) heightmap : 
 	LANDSCAPE_API UTexture2D* GetHeightmap(const FGuid& InLayerGuid) const;
-	LANDSCAPE_API TArray<UTexture2D*>& GetWeightmapTextures(bool InReturnEditingWeightmap = false);
+	LANDSCAPE_API TArray<TObjectPtr<UTexture2D>>& GetWeightmapTextures(bool InReturnEditingWeightmap = false);
 	LANDSCAPE_API const TArray<UTexture2D*>& GetWeightmapTextures(bool InReturnEditingWeightmap = false) const;
-	LANDSCAPE_API TArray<UTexture2D*>& GetWeightmapTextures(const FGuid& InLayerGuid);
+	LANDSCAPE_API TArray<TObjectPtr<UTexture2D>>& GetWeightmapTextures(const FGuid& InLayerGuid);
 	LANDSCAPE_API const TArray<UTexture2D*>& GetWeightmapTextures(const FGuid& InLayerGuid) const;
 
 	LANDSCAPE_API TArray<FWeightmapLayerAllocationInfo>& GetWeightmapLayerAllocations(bool InReturnEditingWeightmap = false);
@@ -708,20 +707,26 @@ public:
 	LANDSCAPE_API TArray<FWeightmapLayerAllocationInfo>& GetWeightmapLayerAllocations(const FGuid& InLayerGuid);
 	LANDSCAPE_API const TArray<FWeightmapLayerAllocationInfo>& GetWeightmapLayerAllocations(const FGuid& InLayerGuid) const;
 
+	LANDSCAPE_API TArray<FWeightmapLayerAllocationInfo>& GetCurrentRuntimeWeightmapLayerAllocations();
+	LANDSCAPE_API const TArray<FWeightmapLayerAllocationInfo>& GetCurrentRuntimeWeightmapLayerAllocations() const;
+
 	const TArray<FLandscapePerLODMaterialOverride>& GetPerLODOverrideMaterials() const { return PerLODOverrideMaterials; }
 	void SetPerLODOverrideMaterials(const TArray<FLandscapePerLODMaterialOverride>& InValue) { PerLODOverrideMaterials = InValue; }
 
 	LANDSCAPE_API void SetHeightmap(UTexture2D* NewHeightmap);
 	LANDSCAPE_API void SetWeightmapTextures(const TArray<UTexture2D*>& InNewWeightmapTextures, bool InApplyToEditingWeightmap = false);
+	void SetWeightmapTexturesInternal(const TArray<UTexture2D*>& InNewWeightmapTextures, const FGuid& InEditLayerGuid);
 
 #if WITH_EDITOR
 	LANDSCAPE_API void SetWeightmapLayerAllocations(const TArray<FWeightmapLayerAllocationInfo>& InNewWeightmapLayerAllocations);
 	LANDSCAPE_API uint32 ComputeLayerHash(bool InReturnEditingHash = true) const;
 
 	LANDSCAPE_API void SetWeightmapTexturesUsage(const TArray<ULandscapeWeightmapUsage*>& InNewWeightmapTexturesUsage, bool InApplyToEditingWeightmap = false);
-	LANDSCAPE_API TArray<ULandscapeWeightmapUsage*>& GetWeightmapTexturesUsage(bool InReturnEditingWeightmap = false);
+	void SetWeightmapTexturesUsageInternal(const TArray<ULandscapeWeightmapUsage*>& InNewWeightmapTexturesUsage, const FGuid& InEditLayerGuid);
+
+	LANDSCAPE_API TArray<TObjectPtr<ULandscapeWeightmapUsage>>& GetWeightmapTexturesUsage(bool InReturnEditingWeightmap = false);
 	LANDSCAPE_API const TArray<ULandscapeWeightmapUsage*>& GetWeightmapTexturesUsage(bool InReturnEditingWeightmap = false) const;
-	LANDSCAPE_API TArray<ULandscapeWeightmapUsage*>& GetWeightmapTexturesUsage(const FGuid& InLayerGuid);
+	LANDSCAPE_API TArray<TObjectPtr<ULandscapeWeightmapUsage>>& GetWeightmapTexturesUsage(const FGuid& InLayerGuid);
 	LANDSCAPE_API const TArray<ULandscapeWeightmapUsage*>& GetWeightmapTexturesUsage(const FGuid& InLayerGuid) const;
 	LANDSCAPE_API void InitializeLayersWeightmapUsage(const FGuid& InLayerGuid);
 
@@ -734,7 +739,7 @@ public:
 	LANDSCAPE_API void ForEachLayer(TFunctionRef<void(const FGuid&, struct FLandscapeLayerComponentData&)> Fn);
 
 	UE_DEPRECATED(5.1, "SetEditingLayer has been deprecated, use GetLandscapeActor()->SetEditingLayer() instead.")
-	LANDSCAPE_API void SetEditingLayer(const FGuid& InEditingLayer) {}
+	void SetEditingLayer(const FGuid& InEditingLayer) {}
 
 	/** Get the Landscape Actor's editing layer data */
 	FLandscapeLayerComponentData* GetEditingLayer();
@@ -749,7 +754,7 @@ public:
 	bool GetPendingCollisionDataUpdate() const { return bPendingCollisionDataUpdate; }
 	void SetPendingLayerCollisionDataUpdate(bool bInPendingLayerCollisionDataUpdate) { bPendingLayerCollisionDataUpdate = bInPendingLayerCollisionDataUpdate; }
 	bool GetPendingLayerCollisionDataUpdate() const { return bPendingLayerCollisionDataUpdate; }
-#endif 
+#endif // WITH_EDITOR
 
 	virtual bool IsShown(const FEngineShowFlags& ShowFlags) const override;
 
@@ -788,16 +793,17 @@ public:
 	LANDSCAPE_API void DeleteLayer(ULandscapeLayerInfoObject* LayerInfo, FLandscapeEditDataInterface& LandscapeEdit);
 	
 	/** Deletes a material layer from the specified edit layer on this component, removing all its data, adjusting other layer's weightmaps if necessary, etc. */
-	void DeleteLayerInternal(ULandscapeLayerInfoObject* LayerInfo, FLandscapeEditDataInterface& LandscapeEdit, const FGuid& EditLayerGuid);
+	void DeleteLayerInternal(ULandscapeLayerInfoObject* LayerInfo, FLandscapeEditDataInterface& LandscapeEdit, const FGuid& InEditLayerGuid);
 
 	/** Deletes a layer from this component, but doesn't do anything else (assumes the user knows what he's doing, use DeleteLayer otherwise) */
 	void DeleteLayerAllocation(const FGuid& InEditLayerGuid, int32 InLayerAllocationIdx, bool bInShouldDirtyPackage);
 
-	/** Fills a layer to 100% on this component, adding it if needed and removing other layers that get painted away */
+	/** Fills a layer to 100% on this component, adding it if needed and removing other layers that get painted away.  Uses the edit layer specified by LandscapeEdit. */
 	LANDSCAPE_API void FillLayer(ULandscapeLayerInfoObject* LayerInfo, FLandscapeEditDataInterface& LandscapeEdit);
 
 	/** Replaces one layerinfo on this component with another */
 	LANDSCAPE_API void ReplaceLayer(ULandscapeLayerInfoObject* FromLayerInfo, ULandscapeLayerInfoObject* ToLayerInfo, FLandscapeEditDataInterface& LandscapeEdit);
+	void ReplaceLayerInternal(ULandscapeLayerInfoObject* FromLayerInfo, ULandscapeLayerInfoObject* ToLayerInfo, FLandscapeEditDataInterface& LandscapeEdit, const FGuid& InEditLayerGUID);
 
 	// true if the component's landscape material supports grass
 	bool MaterialHasGrass() const;
@@ -863,13 +869,13 @@ public:
 	LANDSCAPE_API ALandscapeProxy* GetLandscapeProxy() const;
 
 	/** @return Component section base as FIntPoint */
-	LANDSCAPE_API FIntPoint GetSectionBase() const
+	FIntPoint GetSectionBase() const
 	{
 		return FIntPoint(SectionBaseX, SectionBaseY);
 	}
 
 	/** @param InSectionBase new section base for a component */
-	LANDSCAPE_API void SetSectionBase(FIntPoint InSectionBase)
+	void SetSectionBase(FIntPoint InSectionBase)
 	{
 		SectionBaseX = InSectionBase.X;
 		SectionBaseY = InSectionBase.Y;
@@ -903,6 +909,12 @@ public:
 
 	/** Initialize the landscape component */
 	LANDSCAPE_API void Init(int32 InBaseX, int32 InBaseY, int32 InComponentSizeQuads, int32 InNumSubsections, int32 InSubsectionSizeQuads);
+
+	/** Returns the component's LandscapeMaterial, or the Component's OverrideLandscapeMaterial if set */
+	LANDSCAPE_API UMaterialInterface* GetLandscapeMaterial(int8 InLODIndex = INDEX_NONE) const;
+
+	/** Returns the components's LandscapeHoleMaterial, or the Component's OverrideLandscapeHoleMaterial if set */
+	LANDSCAPE_API UMaterialInterface* GetLandscapeHoleMaterial() const;
 
 #if WITH_EDITOR
 	/**
@@ -1009,25 +1021,28 @@ public:
 	bool CanUpdatePhysicalMaterial();
 	/** Update physical material render tasks. */
 	void UpdatePhysicalMaterialTasks();
+	/** Write the physical materials into the LandscapeComponent from the Render & Immediately Rebuild physics if requested */
+	void FinalizePhysicalMaterial(bool bInImmediatePhysicsRebuild);
 	/** Update collision component physical materials from render task results. */
 	void UpdateCollisionPhysicalMaterialData(TArray<UPhysicalMaterial*> const& InPhysicalMaterials, TArray<uint8> const& InMaterialIds);
 
 	/**
-	 * Create weightmaps for this component for the layers specified in the WeightmapLayerAllocations array
+	 * Create weightmaps for this component for the layers specified in the WeightmapLayerAllocations array, works in the landscape current edit layer when InCanUseEditingWeightmap is true
 	 */
 	LANDSCAPE_API void ReallocateWeightmaps(FLandscapeEditDataInterface* DataInterface = nullptr, bool InCanUseEditingWeightmap = true, bool InSaveToTransactionBuffer = true, bool InForceReallocate = false, ALandscapeProxy* InTargetProxy = nullptr, TArray<UTexture*>* OutNewCreatedTextures = nullptr);
 
-	/** Returns the component's LandscapeMaterial, or the Component's OverrideLandscapeMaterial if set */
-	LANDSCAPE_API UMaterialInterface* GetLandscapeMaterial(int8 InLODIndex = INDEX_NONE) const;
-
-	/** Returns the components's LandscapeHoleMaterial, or the Component's OverrideLandscapeHoleMaterial if set */
-	LANDSCAPE_API UMaterialInterface* GetLandscapeHoleMaterial() const;
+	/**
+	 * Create weightmaps for this component for the layers specified in the WeightmapLayerAllocations array, works in the specified edit layer
+	 */
+	void ReallocateWeightmapsInternal(FLandscapeEditDataInterface* DataInterface = nullptr, const FGuid& InEditLayerGuid = FGuid(), bool InSaveToTransactionBuffer = true, bool InForceReallocate = false, ALandscapeProxy* InTargetProxy = nullptr, TArray<UTexture*>* OutNewCreatedTextures = nullptr);
 
 	/** Returns true if the component has a valid LandscapeHoleMaterial */
 	LANDSCAPE_API bool IsLandscapeHoleMaterialValid() const;
 
 	/** Returns true if this component has visibility painted */
 	LANDSCAPE_API bool ComponentHasVisibilityPainted() const;
+
+	LANDSCAPE_API ULandscapeLayerInfoObject* GetVisibilityLayer() const;
 
 	/**
 	 * Generate a key for a component's layer allocations to use with MaterialInstanceConstantMap.
@@ -1063,7 +1078,7 @@ public:
 	LANDSCAPE_API void RequestHeightmapUpdate(bool bUpdateAll = false, bool bUpdateCollision = true, bool bInUserTriggered = false);
 	LANDSCAPE_API void RequestEditingClientUpdate(bool bInUserTriggered = false);
 	LANDSCAPE_API void RequestDeferredClientUpdate();
-	LANDSCAPE_API uint32 GetLayerUpdateFlagPerMode() const { return LayerUpdateFlagPerMode; }
+	uint32 GetLayerUpdateFlagPerMode() const { return LayerUpdateFlagPerMode; }
 	LANDSCAPE_API uint32 ComputeWeightmapsHash();
 
 	void GetUsedPaintLayers(const FGuid& InLayerGuid, TArray<ULandscapeLayerInfoObject*>& OutUsedLayerInfos) const;
@@ -1100,8 +1115,8 @@ public:
 		return bNaniteActive;
 	}
 
-	LANDSCAPE_API ULandscapeHeightfieldCollisionComponent* GetCollisionComponent() const { return CollisionComponentRef.Get(); }
-	LANDSCAPE_API void SetCollisionComponent(ULandscapeHeightfieldCollisionComponent* InCollisionComponent) { CollisionComponentRef = InCollisionComponent; }
+	ULandscapeHeightfieldCollisionComponent* GetCollisionComponent() const { return CollisionComponentRef.Get(); }
+	void SetCollisionComponent(ULandscapeHeightfieldCollisionComponent* InCollisionComponent) { CollisionComponentRef = InCollisionComponent; }
 
 	void SetUserTriggeredChangeRequested(bool bInUserTriggeredChangeRequested)
 	{

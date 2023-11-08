@@ -7,6 +7,7 @@
 #include "AnimationGraph.h"
 #include "AnimationStateGraph.h"
 #include "AnimationStateMachineGraph.h"
+#include "AnimationCustomTransitionGraph.h"
 #include "AnimationStateMachineSchema.h"
 #include "AnimationTransitionGraph.h"
 #include "AssetRegistry/AssetData.h"
@@ -41,6 +42,7 @@
 #include "Engine/MemberReference.h"
 #include "Engine/SCS_Node.h"
 #include "Engine/SimpleConstructionScript.h"
+#include "FieldNotifyToggle.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/SlateDelegates.h"
 #include "GenericPlatform/GenericApplication.h"
@@ -49,6 +51,7 @@
 #include "IDocumentation.h"
 #include "Internationalization/Culture.h"
 #include "Internationalization/Internationalization.h"
+#include "INotifyFieldValueChanged.h"
 #include "K2Node.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_Variable.h"
@@ -273,6 +276,11 @@ static void GetSubGraphIcon(FEdGraphSchemaAction_K2Graph const* const ActionIn, 
 			{
 				IconOut = FAppStyle::GetBrush(TEXT("BlendSpace.SampleGraph") );
 				ToolTipOut = LOCTEXT("BlendSpaceSample_ToolTip", "BlendSpace Sample");
+			}
+			else if (Cast<UAnimationCustomTransitionGraph>(ActionIn->EdGraph))
+			{
+				IconOut = FAppStyle::GetBrush(TEXT("GraphEditor.SubGraph_16x"));
+				ToolTipOut = LOCTEXT("CustomBlendGraph_ToolTip", "Custom Blend");
 			}
 			else
 			{
@@ -1378,6 +1386,19 @@ void SBlueprintPaletteItem::Construct(const FArguments& InArgs, FCreateWidgetFor
 				IconWidget
 			];
 
+		if (InBlueprint && FBlueprintEditorUtils::ImplementsInterface(InBlueprint, true, UNotifyFieldValueChanged::StaticClass()) && GraphAction->GetTypeId() == FEdGraphSchemaAction_K2Var::StaticGetTypeId())
+		{
+			ActionBox.Get().AddSlot()
+				.AutoWidth()
+				.Padding(FMargin(6.0f, 0.0f, 3.0f, 0.0f))
+				.HAlign(HAlign_Right)
+				.VAlign(VAlign_Center)
+				[
+					SNew(SPaletteItemVarFieldNotifyToggle, ActionPtr, InBlueprintEditor, InBlueprint)
+					.IsEnabled(bIsEditingEnabled)
+				];
+		}
+
 		ActionBox.Get().AddSlot()
 			.AutoWidth()
 			.Padding(FMargin(6.0f, 0.0f, 3.0f, 0.0f))
@@ -1421,6 +1442,28 @@ void SBlueprintPaletteItem::Construct(const FArguments& InArgs, FCreateWidgetFor
 			[
 				NameSlotWidget
 			];
+
+		if (TSharedPtr<FEdGraphSchemaAction> Action = ActionPtr.Pin())
+		{
+			if (GraphAction->GetTypeId() == FEdGraphSchemaAction_K2Graph::StaticGetTypeId())
+			{
+				if (TSharedPtr<FEdGraphSchemaAction_K2Graph> ActionK2Graph = StaticCastSharedPtr<FEdGraphSchemaAction_K2Graph>(Action))
+				{
+					if (InBlueprint && FBlueprintEditorUtils::ImplementsInterface(InBlueprint, true, UNotifyFieldValueChanged::StaticClass()) && ActionK2Graph->GraphType == EEdGraphSchemaAction_K2Graph::Function)
+					{
+						ActionBox.Get().AddSlot()
+							.AutoWidth()
+							.Padding(FMargin(6.0f, 0.0f, 3.0f, 0.0f))
+							.HAlign(HAlign_Right)
+							.VAlign(VAlign_Center)
+							[
+								SNew(SPaletteItemFunctionFieldNotifyToggle, ActionPtr, InBlueprintEditor, InBlueprint)
+								.IsEnabled(bIsEditingEnabled)
+							];
+					}
+				}
+			}
+		}
 	}
 
 	// Now, create the actual widget

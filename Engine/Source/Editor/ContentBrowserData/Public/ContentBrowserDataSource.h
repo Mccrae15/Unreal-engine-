@@ -247,11 +247,10 @@ public:
 	virtual bool PrioritizeSearchPath(const FName InPath);
 
 	/**
-	 * Query whether the given virtual folder should be visible if the UI is asking to hide empty content folders.
+	 * Query whether the given virtual folder should be visible in the UI.
 	 * @note This function must be able to answer the question quickly or not at all (and assume visible). It *must not* block doing something like a file system scan.
-	 * @note "Empty" in this case means that it recursively contains no file items.
 	 */
-	virtual bool IsFolderVisibleIfHidingEmpty(const FName InPath);
+	virtual bool IsFolderVisible(const FName InPath, const EContentBrowserIsFolderVisibleFlags InFlags);
 
 	/*
 	 * Query whether a folder can be created at the given virtual path, optionally providing error information if it cannot.
@@ -274,7 +273,8 @@ public:
 	virtual bool CreateFolder(const FName InPath, FContentBrowserItemDataTemporaryContext& OutPendingItem);
 
 	/*
-	 * Query whether the given item passes the given compiled filter.
+	 * Query whether the given item passes the given compiled filter. Should be called after ConvertItemForFilter
+	 *
 	 * @see CompileFilter.
 	 *
 	 * @param InItem The item to query.
@@ -283,6 +283,19 @@ public:
 	 * @return True if the item passes the filter, false otherwise.
 	 */
 	virtual bool DoesItemPassFilter(const FContentBrowserItemData& InItem, const FContentBrowserDataCompiledFilter& InFilter);
+
+
+	/*
+	 * Let the compiled filter decide the payload and the type of the item 
+	 * Some Compiled filter might change the type/payload of the item. This allow these filter to work properly and should be called before the filtering (see DoesItemPassFilter)
+	 * @see CompileFilter
+	 * 
+	 * @param Item The item that might be converted
+	 * @param InFilter The compiled filter used to possibly convert the matching items.
+	 * 
+	 * @return True if the item was converted by the filter.
+	 */
+	virtual bool ConvertItemForFilter(FContentBrowserItemData& Item, const FContentBrowserDataCompiledFilter& InFilter);
 
 	/**
 	 * Query the value of the given attribute on the given item.
@@ -820,6 +833,16 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	 * @return True if the internal path was mapped, false otherwise.
 	 */
 	virtual bool TryConvertInternalPathToVirtual(const FName InInternalPath, FName& OutPath);
+
+	/**
+	 * Tell the data source to remove any cached data for the filter compilation that might not be needed any more.
+	 */
+	virtual void RemoveUnusedCachedFilterData(const FContentBrowserDataFilterCacheIDOwner& IDOwner, TArrayView<const FName> InVirtualPathsInUse, const FContentBrowserDataFilter& DataFilter);
+
+	/**
+	 * Tell the data source to remove the cached data for the filter compilation for this specific owner. 
+	 */
+	virtual void ClearCachedFilterData(const FContentBrowserDataFilterCacheIDOwner& IDOwner);
 
 protected:
 

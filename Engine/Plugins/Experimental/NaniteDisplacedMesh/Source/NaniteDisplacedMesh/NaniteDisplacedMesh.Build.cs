@@ -6,9 +6,6 @@ namespace UnrealBuildTool.Rules
 	{
 		public NaniteDisplacedMesh(ReadOnlyTargetRules Target) : base(Target)
 		{
-			PrivateIncludePaths.Add("NaniteDisplacedMesh/Private");
-			PublicIncludePaths.Add(ModuleDirectory + "/Public");
-
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{
@@ -21,9 +18,6 @@ namespace UnrealBuildTool.Rules
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
-					"Core",
-					"CoreUObject",
-					"Engine",
 					"RenderCore",
 					"RHI",
 					"SlateCore",
@@ -36,14 +30,15 @@ namespace UnrealBuildTool.Rules
 					new string[]
 					{
 						"DerivedDataCache",
+						"ImageCore",
+						"MeshBuilder",
+						"MeshBuilderCommon",
 						"MeshDescription",
-						"StaticMeshDescription",
-						"RawMesh",
 						"MeshUtilities",
 						"MeshUtilitiesCommon",
-						"MeshBuilderCommon",
-						"MeshBuilder",
 						"NaniteUtilities",
+						"RawMesh",
+						"StaticMeshDescription",
 					}
 				);
 

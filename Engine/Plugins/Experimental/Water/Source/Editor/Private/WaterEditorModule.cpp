@@ -6,6 +6,8 @@
 #include "PropertyEditorModule.h"
 #include "WaterLandscapeBrush.h"
 #include "EngineUtils.h"
+#include "ThumbnailRendering/ThumbnailManager.h"
+#include "Modules/ModuleManager.h"
 #include "Landscape.h"
 #include "Logging/MessageLog.h"
 #include "WaterZoneActor.h"
@@ -19,11 +21,12 @@
 #include "WaterZoneActorFactory.h"
 #include "WaterBodyActorDetailCustomization.h"
 #include "WaterBrushManagerFactory.h"
-#include "AssetTypeActions_WaterWaves.h"
+#include "AssetDefinition_WaterWaves.h"
 #include "WaterBrushCacheContainer.h"
 #include "WaterBodyBrushCacheContainerThumbnailRenderer.h"
 #include "WaterWavesEditorToolkit.h"
 #include "WaterRuntimeSettings.h"
+#include "WaterBodyOceanComponent.h"
 
 #define LOCTEXT_NAMESPACE "WaterEditor"
 
@@ -43,19 +46,6 @@ void FWaterEditorModule::StartupModule()
 
 	FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>(TEXT("PropertyEditor"));
 	PropertyModule.RegisterCustomClassLayout(TEXT("WaterBody"), FOnGetDetailCustomizationInstance::CreateStatic(&FWaterBodyActorDetailCustomization::MakeInstance));
-
-	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-	WaterAssetCategory = AssetTools.RegisterAdvancedAssetCategory(FName(TEXT("Water")), LOCTEXT("WaterAssetCategory", "Water"));
-
-	// Helper lambda for registering asset type actions for automatic cleanup on shutdown
-	auto RegisterAssetTypeAction = [&](TSharedRef<IAssetTypeActions> Action)
-	{
-		AssetTools.RegisterAssetTypeActions(Action);
-		CreatedAssetTypeActions.Add(Action);
-	};
-
-	// Register type actions
-	RegisterAssetTypeAction(MakeShareable(new FAssetTypeActions_WaterWaves));
 
 	GEngine->OnLevelActorAdded().AddRaw(this, &FWaterEditorModule::OnLevelActorAddedToWorld);
 
@@ -108,16 +98,6 @@ void FWaterEditorModule::ShutdownModule()
 			GUnrealEd->UnregisterComponentVisualizer(ClassName);
 		}
 	}
-
-	if (FModuleManager::Get().IsModuleLoaded("AssetTools"))
-	{
-		IAssetTools& AssetTools = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools").Get();
-		for (auto CreatedAssetTypeAction : CreatedAssetTypeActions)
-		{
-			AssetTools.UnregisterAssetTypeActions(CreatedAssetTypeAction.ToSharedRef());
-		}
-	}
-	CreatedAssetTypeActions.Empty();
 
 	FEditorDelegates::OnMapOpened.RemoveAll(this);
 
@@ -277,69 +257,79 @@ void FWaterEditorModule::OnLevelActorAddedToWorld(AActor* Actor)
 			}
 		}
 
-		// Setup the water zone actor for this water body : 
-
-		const bool bHasZoneActor = !!TActorIterator<AWaterZone>(ActorWorld);
-		if ((WaterBodyActor != nullptr) && !bHasZoneActor)
+		if (WaterBodyActor != nullptr)
 		{
-			TSubclassOf<AWaterZone> WaterZoneClass = WaterEditorSettings->GetWaterZoneClass();
-			if (UClass* WaterZoneClassPtr = WaterZoneClass.Get())
+			const bool bHasZoneActor = !!TActorIterator<AWaterZone>(ActorWorld);
+			// Setup the water zone actor for this water body : 
+			if (!bHasZoneActor)
 			{
-				UActorFactory* WaterZoneActorFactory = GEditor->FindActorFactoryForActorClass(WaterZoneClassPtr);
-
-				FActorSpawnParameters SpawnParams;
-				SpawnParams.OverrideLevel = ActorWorld->PersistentLevel;
-				SpawnParams.bAllowDuringConstructionScript = true; // This can be called by construction script if the actor being added to the world is part of a blueprint, for example : 
-
-				AWaterZone* WaterZoneActor = (WaterZoneActorFactory != nullptr)
-					? Cast<AWaterZone>(WaterZoneActorFactory->CreateActor(WaterZoneClassPtr, Actor->GetLevel(), FTransform(WaterZoneBounds.GetCenter()), SpawnParams))
-					: ActorWorld->SpawnActor<AWaterZone>(WaterZoneClassPtr, SpawnParams);
-
-				if (WaterZoneActor)
+				TSubclassOf<AWaterZone> WaterZoneClass = WaterEditorSettings->GetWaterZoneClass();
+				if (UClass* WaterZoneClassPtr = WaterZoneClass.Get())
 				{
-					if (!WaterZoneActorFactory)
+					UActorFactory* WaterZoneActorFactory = GEditor->FindActorFactoryForActorClass(WaterZoneClassPtr);
+
+					FActorSpawnParameters SpawnParams;
+					SpawnParams.OverrideLevel = ActorWorld->PersistentLevel;
+					SpawnParams.bAllowDuringConstructionScript = true; // This can be called by construction script if the actor being added to the world is part of a blueprint, for example : 
+
+					AWaterZone* WaterZoneActor = (WaterZoneActorFactory != nullptr)
+						? Cast<AWaterZone>(WaterZoneActorFactory->CreateActor(WaterZoneClassPtr, Actor->GetLevel(), FTransform(WaterZoneBounds.GetCenter()), SpawnParams))
+						: ActorWorld->SpawnActor<AWaterZone>(WaterZoneClassPtr, SpawnParams);
+
+					if (WaterZoneActor)
 					{
-						UE_LOG(LogWaterEditor, Warning, TEXT("WaterZone Actor Factory could not be found! The newly spawned %s may have incorrect defaults!"), *WaterZoneActor->GetActorLabel());
-					}
-
-					// TODO [jonathan.bard] : when we can tag static meshes as "water ground", add these to the bounds
-					// Set a more sensible default location and extent so that the zone fully encapsulates the landscape if one exists.
-					if (WaterZoneBounds.IsValid)
-					{
-						WaterZoneActor->SetActorLocation(WaterZoneBounds.GetCenter());
-
-						// FBox::GetExtent returns the radius, SetZoneExtent expects diameter.
-						FVector2D NewExtent = 2 * FVector2D(WaterZoneBounds.GetExtent());
-
-						float ZoneExtentScale = WaterEditorModule::CVarOverrideNewWaterZoneScale.GetValueOnGameThread();
-						const float MinimumMargin = WaterEditorModule::CVarOverrideNewWaterZoneMinimumMargin.GetValueOnGameThread();
-
-						if (ZoneExtentScale == 0)
+						if (!WaterZoneActorFactory)
 						{
-							ZoneExtentScale = GetDefault<UWaterEditorSettings>()->WaterZoneActorDefaults.NewWaterZoneScale;
+							UE_LOG(LogWaterEditor, Warning, TEXT("WaterZone Actor Factory could not be found! The newly spawned %s may have incorrect defaults!"), *WaterZoneActor->GetActorLabel());
 						}
 
-						if (ZoneExtentScale != 0)
+						// TODO [jonathan.bard] : when we can tag static meshes as "water ground", add these to the bounds
+						// Set a more sensible default location and extent so that the zone fully encapsulates the landscape if one exists.
+						if (WaterZoneBounds.IsValid)
 						{
-							NewExtent = FMath::Abs(ZoneExtentScale) * NewExtent;
+							WaterZoneActor->SetActorLocation(WaterZoneBounds.GetCenter());
+
+							// FBox::GetExtent returns the radius, SetZoneExtent expects diameter.
+							FVector2D NewExtent = 2 * FVector2D(WaterZoneBounds.GetExtent());
+
+							float ZoneExtentScale = WaterEditorModule::CVarOverrideNewWaterZoneScale.GetValueOnGameThread();
+							const float MinimumMargin = WaterEditorModule::CVarOverrideNewWaterZoneMinimumMargin.GetValueOnGameThread();
+
+							if (ZoneExtentScale == 0)
+							{
+								ZoneExtentScale = GetDefault<UWaterEditorSettings>()->WaterZoneActorDefaults.NewWaterZoneScale;
+							}
+
+							if (ZoneExtentScale != 0)
+							{
+								NewExtent = FMath::Abs(ZoneExtentScale) * NewExtent;
+							}
+
+							if ((MinimumMargin > 0) && (LandscapeBounds.IsValid))
+							{
+								const FVector2D LandscapeBoundsDiameter = 2.f * FVector2D(LandscapeBounds.GetExtent());
+								const FVector2D MinimumWaterZoneExtent = LandscapeBoundsDiameter + 2.f * MinimumMargin;
+
+								NewExtent.X = (NewExtent.X < MinimumWaterZoneExtent.X) ? MinimumWaterZoneExtent.X : NewExtent.X;
+								NewExtent.Y = (NewExtent.Y < MinimumWaterZoneExtent.Y) ? MinimumWaterZoneExtent.Y : NewExtent.Y;
+							}
+
+							WaterZoneActor->SetZoneExtent(NewExtent);
 						}
-
-						if ((MinimumMargin > 0) && (LandscapeBounds.IsValid))
-						{
-							const FVector2D LandscapeBoundsDiameter = 2.f * FVector2D(LandscapeBounds.GetExtent());
-							const FVector2D MinimumWaterZoneExtent = LandscapeBoundsDiameter + 2.f * MinimumMargin;
-
-							NewExtent.X = (NewExtent.X < MinimumWaterZoneExtent.X) ? MinimumWaterZoneExtent.X : NewExtent.X;
-							NewExtent.Y = (NewExtent.Y < MinimumWaterZoneExtent.Y) ? MinimumWaterZoneExtent.Y : NewExtent.Y;
-						}
-
-						WaterZoneActor->SetZoneExtent(NewExtent);
 					}
 				}
+				else
+				{
+					UE_LOG(LogWaterEditor, Warning, TEXT("Could not find Water Zone class %s to spawn"), *WaterEditorSettings->GetWaterZoneClassPath().GetAssetPathString());
+				}
+
 			}
-			else
+
+			// If the actor is an ocean, we can help the user by initializing the ocean extent to fully fill the zone to which it belongs:
+			check(WaterBodyActor->GetWaterBodyComponent());
+			if (UWaterBodyOceanComponent* OceanComponent = Cast<UWaterBodyOceanComponent>(WaterBodyActor->GetWaterBodyComponent()))
 			{
-				UE_LOG(LogWaterEditor, Warning, TEXT("Could not find Water Zone class %s to spawn"), *WaterEditorSettings->GetWaterZoneClassPath().GetAssetPathString());
+				OceanComponent->FillWaterZoneWithOcean();
 			}
 		}
 	}
@@ -364,7 +354,7 @@ void FWaterEditorModule::AddWaterCollisionProfile()
 	// Make sure WaterCollisionProfileName is added to Engine's collision profiles
 	const FName WaterCollisionProfileName = GetDefault<UWaterRuntimeSettings>()->GetDefaultWaterCollisionProfileName();
 	FCollisionResponseTemplate WaterBodyCollisionProfile;
-	if (!UCollisionProfile::Get()->GetProfileTemplate(WaterCollisionProfileName, WaterBodyCollisionProfile))
+	if (FApp::HasProjectName() && !UCollisionProfile::Get()->GetProfileTemplate(WaterCollisionProfileName, WaterBodyCollisionProfile))
 	{
 		WaterBodyCollisionProfile.Name = WaterCollisionProfileName;
 		WaterBodyCollisionProfile.CollisionEnabled = ECollisionEnabled::QueryOnly;
@@ -384,6 +374,7 @@ void FWaterEditorModule::AddWaterCollisionProfile()
 		FCollisionProfilePrivateAccessor::AddProfileTemplate(WaterBodyCollisionProfile);
 	}
 }
+
 
 IMPLEMENT_MODULE(FWaterEditorModule, WaterEditor);
 

@@ -4,11 +4,13 @@
 
 #include "CADFileData.h"
 #include "CADFileReader.h"
+#include "CADOptions.h"
 #include "DatasmithDispatcherConfig.h"
 #include "DatasmithDispatcherLog.h"
 #include "DatasmithDispatcherTask.h"
 
 #include "Algo/Count.h"
+#include "Algo/Find.h"
 #include "HAL/FileManager.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/Paths.h"
@@ -19,6 +21,18 @@
 
 namespace DatasmithDispatcher
 {
+
+bool bCheckMemory = true;
+bool bEnableMemoryControl = true;
+FAutoConsoleVariableRef GCADTranslatorEnableMemoryControl(
+	TEXT("ds.CADTranslator.EnableMemoryControl"),
+	bEnableMemoryControl,
+	TEXT("\
+Enable/disable the control of the memory used by static meshes to avoid running out of memory.\n\
+if CheckMemoryUsage = true, a warning is displayed allowing the user to interrupt the import and have only data already processed or to continue with the risk of running out of memory.\n\
+Default value is true.\n"),
+ECVF_Default);
+
 
 static uint64 EstimationOfMemoryUsedByStaticMeshes = 0;
 static uint64 AvailableMemory = 0;
@@ -50,16 +64,32 @@ const EAppReturnType::Type OpenMessageDialog(uint64 AvailableRam, uint64 Estimat
 }
 
 
-FDatasmithDispatcher::FDatasmithDispatcher(const CADLibrary::FImportParameters& InImportParameters, const FString& InCacheDir, int32 InNumberOfWorkers, TMap<uint32, FString>& OutCADFileToUnrealFileMap, TMap<uint32, FString>& OutCADFileToUnrealGeomMap)
+FDatasmithDispatcher::FDatasmithDispatcher(const CADLibrary::FImportParameters& InImportParameters, const FString& InCacheDir, TMap<uint32, FString>& OutCADFileToUnrealFileMap, TMap<uint32, FString>& OutCADFileToUnrealGeomMap)
 	: NextTaskIndex(0)
 	, CompletedTaskCount(0)
 	, CADFileToUnrealFileMap(OutCADFileToUnrealFileMap)
 	, CADFileToUnrealGeomMap(OutCADFileToUnrealGeomMap)
 	, ProcessCacheFolder(InCacheDir)
 	, ImportParameters(InImportParameters)
-	, NumberOfWorkers(InNumberOfWorkers)
+	, NumberOfWorkers(0)
 	, NextWorkerId(0)
 {
+	constexpr double RecommandedRamPerWorkers = 6.;
+	constexpr double OneGigaByte = 1024. * 1024. * 1024.;
+	const double AvailableRamGB = (double)(FPlatformMemory::GetStats().AvailablePhysical / OneGigaByte);
+
+	const int32 MaxNumberOfWorkers = FPlatformMisc::NumberOfCores();
+	const int32 RecommandedNumberOfWorkers = (int32)(AvailableRamGB / RecommandedRamPerWorkers + 0.5);
+
+	// UE recommendation 
+	NumberOfWorkers = FMath::Min(MaxNumberOfWorkers, RecommandedNumberOfWorkers);
+
+	// User choice but limited by the number of cores. More brings nothing
+	if (CADLibrary::GMaxImportThreads > 1)
+	{
+		NumberOfWorkers = FMath::Min(CADLibrary::GMaxImportThreads, MaxNumberOfWorkers);
+	}
+
 	if (CADLibrary::FImportParameters::bGEnableCADCache)
 	{
 		// init cache folders
@@ -70,18 +100,17 @@ FDatasmithDispatcher::FDatasmithDispatcher(const CADLibrary::FImportParameters& 
 	}
 }
 
-void FDatasmithDispatcher::AddTask(const CADLibrary::FFileDescriptor& InFileDescription)
+void FDatasmithDispatcher::AddTask(const CADLibrary::FFileDescriptor& InFileDescription, const CADLibrary::EMesher Mesher)
 {
+	using namespace CADLibrary;
 	FScopeLock Lock(&TaskPoolCriticalSection);
-	for (const FTask& Task : TaskPool)
+
+	if (Algo::FindByPredicate(TaskPool, [&InFileDescription, &Mesher](const FTask& Task) { return Task.FileDescription == InFileDescription && Task.Mesher == Mesher; }))
 	{
-		if (Task.FileDescription == InFileDescription)
-		{
-			return;
-		}
+		return;
 	}
 
-	int32 TaskIndex = TaskPool.Emplace(InFileDescription);
+	int32 TaskIndex = TaskPool.Emplace(InFileDescription, Mesher);
 	TaskPool[TaskIndex].Index = TaskIndex;
 }
 
@@ -132,6 +161,8 @@ TOptional<FTask> FDatasmithDispatcher::GetNextTask()
 	}
 
 	TaskPool[NextTaskIndex].State = ETaskState::Running;
+	UE_LOG(LogDatasmithDispatcher, Display, TEXT("Launch %s (%d / %d)"), *TaskPool[NextTaskIndex].FileDescription.GetSourcePath(), NextTaskIndex, TaskPool.Num());
+
 	return TaskPool[NextTaskIndex++];
 }
 
@@ -159,8 +190,21 @@ void FDatasmithDispatcher::SetTaskState(int32 TaskIndex, ETaskState TaskState)
 			break;
 		}
 
-		case ETaskState::ProcessOk:
 		case ETaskState::ProcessFailed:
+		{
+			if (Task.Mesher == CADLibrary::EMesher::CADKernel)
+			{
+				UE_LOG(LogDatasmithDispatcher, Warning, TEXT("   - Task failed with CADKernel: %s"), *Task.FileDescription.GetFileName());
+				UE_LOG(LogDatasmithDispatcher, Warning, TEXT("      => Add task to process with Techsoft"));
+				AddTask(Task.FileDescription, CADLibrary::EMesher::TechSoft);
+				TaskState = ETaskState::UnTreated;
+			}
+
+			CompletedTaskCount++;
+			break;
+		}
+
+		case ETaskState::ProcessOk:
 		case ETaskState::FileNotFound:
 		{
 			CompletedTaskCount++;
@@ -186,8 +230,13 @@ void FDatasmithDispatcher::SetTaskState(int32 TaskIndex, ETaskState TaskState)
 
 void FDatasmithDispatcher::Process(bool bWithProcessor)
 {
+	if (TaskPool.Num() == 1 && !TaskPool[0].FileDescription.CanReferenceOtherFiles())
+	{
+		NumberOfWorkers = 1;
+	}
+
 	EstimationOfMemoryUsedByStaticMeshes = 0;
-	bool bCheckMemory = true;
+	bCheckMemory = bEnableMemoryControl & !CADLibrary::FImportParameters::bValidationProcess;
 
 	// This function is added in 5.1.1 but is cloned with the lines 370 to 387
 	TFunction<bool()> CanImportContinue = [&]() -> bool
@@ -361,26 +410,31 @@ void FDatasmithDispatcher::CloseHandlers()
 
 void FDatasmithDispatcher::ProcessLocal()
 {
-	bool bCheckMemory = true;
+	using namespace CADLibrary;
+	EMesher DefaultMesher = FImportParameters::bGDisableCADKernelTessellation ? EMesher::TechSoft : EMesher::CADKernel;
+
 	while (TOptional<FTask> Task = GetNextTask())
 	{
-		CADLibrary::FFileDescriptor& FileDescription = Task->FileDescription;
+		FFileDescriptor& FileDescription = Task->FileDescription;
+		FImportParameters FileImporParameters(ImportParameters, Task->Mesher);
 
-		CADLibrary::FCADFileReader FileReader(ImportParameters, FileDescription, *FPaths::EnginePluginsDir(), ProcessCacheFolder);
+		FCADFileReader FileReader(FileImporParameters, FileDescription, *FPaths::EnginePluginsDir(), ProcessCacheFolder);
 		ETaskState ProcessResult = FileReader.ProcessFile();
 
 		ETaskState TaskState = ProcessResult;
 		SetTaskState(Task->Index, TaskState);
 
-		if (TaskState == ETaskState::ProcessOk)
+		switch (TaskState)
 		{
-			const CADLibrary::FCADFileData& CADFileData = FileReader.GetCADFileData();
-			const TArray<CADLibrary::FFileDescriptor>& ExternalRefSet = CADFileData.GetExternalRefSet();
+		case ETaskState::ProcessOk:
+		{
+			const FCADFileData& CADFileData = FileReader.GetCADFileData();
+			const TArray<FFileDescriptor>& ExternalRefSet = CADFileData.GetExternalRefSet();
 			if (ExternalRefSet.Num() > 0)
 			{
-				for (const CADLibrary::FFileDescriptor& ExternalFile : ExternalRefSet)
+				for (const FFileDescriptor& ExternalFile : ExternalRefSet)
 				{
-					AddTask(ExternalFile);
+					AddTask(ExternalFile, DefaultMesher);
 				}
 			}
 
@@ -405,6 +459,18 @@ void FDatasmithDispatcher::ProcessLocal()
 				}
 				bCheckMemory = false;
 			}
+			break;
+		}
+		case ETaskState::ProcessFailed:
+		{
+			if (Task->Mesher == EMesher::CADKernel)
+			{
+				AddTask(Task->FileDescription, EMesher::TechSoft);
+			}
+			break;
+		}
+		default:
+			break;
 		}
 	}
 }

@@ -63,6 +63,13 @@ static FAutoConsoleVariableRef CVarSplinesAlwaysUseBlockAll(
 	TEXT("Force splines to always use the BlockAll collision profile instead of whatever is stored in the CollisionProfileName property")
 );
 
+int32 LandscapeSplineToSplineComponentMaxIterations = 200;
+static FAutoConsoleVariableRef CVarLandscapeSplineToSplineComponentMaxIterations(
+	TEXT("Landscape.Splines.ApplyToSplineComponentMaxIterations"),
+	LandscapeSplineToSplineComponentMaxIterations,
+	TEXT("Max possible iterations when converting a landscape spline into a spline component")
+);
+
 //////////////////////////////////////////////////////////////////////////
 // LANDSCAPE SPLINES SCENE PROXY
 
@@ -90,7 +97,7 @@ struct FLandscapeFixSplines
 			if (!CurrentWorld->IsGameWorld())
 			{
 				auto& LandscapeInfoMap = ULandscapeInfoMap::GetLandscapeInfoMap(CurrentWorld);
-				for (TPair<FGuid, ULandscapeInfo*>& Pair : LandscapeInfoMap.Map)
+				for (auto& Pair : LandscapeInfoMap.Map)
 				{
 					if (Pair.Value && Pair.Value->SupportsLandscapeEditing())
 					{
@@ -222,7 +229,7 @@ public:
 		{
 			if (VisibilityMap & (1 << ViewIndex))
 			{
-				const FSceneView* View = Views[ViewIndex];
+				const FSceneView* const View = Views[ViewIndex];
 				FPrimitiveDrawInterface* PDI = Collector.GetPDI(ViewIndex);
 				const uint8 DepthPriority = static_cast<uint8>(GetDepthPriorityGroup(View));
 
@@ -281,8 +288,8 @@ public:
 						double ControlPointSpriteScale = MyLocalToWorld.GetScaleVector().X * ControlPoint.SpriteScale;
 						const FLinearColor ControlPointSpriteColor = ControlPoint.bSelected ? SelectedControlPointSpriteColor : FLinearColor::White;
 						PDI->SetHitProxy(ControlPoint.HitProxy);
-						const FMatrix& ProectionMatrix = View->ViewMatrices.GetProjectionMatrix();
-						const double ZoomFactor = FMath::Min<double>(ProectionMatrix.M[0][0], ProectionMatrix.M[1][1]);
+						const FMatrix& ProjectionMatrix = View->ViewMatrices.GetProjectionMatrix();
+						const double ZoomFactor = FMath::Min<double>(ProjectionMatrix.M[0][0], ProjectionMatrix.M[1][1]);
 						const double Scale = View->WorldToScreen(ControlPointLocation).W * (4.0f / View->UnscaledViewRect.Width() / ZoomFactor);
 						ControlPointSpriteScale *= Scale;
 
@@ -749,6 +756,140 @@ void ULandscapeSplinesComponent::ForEachControlPoint(TFunctionRef<void(ULandscap
 	{
 		Func(ControlPoint);
 	}
+}
+
+void ULandscapeSplinesComponent::CopyToSplineComponent(USplineComponent* SplineComponent)
+{
+	if (SplineComponent == nullptr)
+	{
+		return;
+	}
+
+	if (Segments.IsEmpty())
+	{
+		return;
+	}
+	
+	SplineComponent->ClearSplinePoints(false);
+
+	// Incremented index for spline component points
+	int32 CurrentPointIndex = 0;
+
+	// Traverse up to this many segments
+	// For safety.  Ensures we don't get caught in an infinite loop.
+	const int32 MAX_ITERATIONS = LandscapeSplineToSplineComponentMaxIterations;
+	int32 NumIterations = 0;
+
+	// List of segments we've visited.  Used to ensure we don't visit the same segment twice.
+	TSet<ULandscapeSplineSegment*> VisitedSegments;
+
+	// The last control point we used
+	// 2 control points per segment
+	// 2 segments can share the same control point - one being the arrive control point and one being the exit
+	ULandscapeSplineControlPoint* LastControlPoint = nullptr;
+
+	// Arrive Tangent to apply to the next spline point.  Populated as the previous spline mesh's End Tangent
+	FVector ArriveTangent;
+	
+	ULandscapeSplineSegment* CurrentSegment = Segments[0];
+	do
+	{
+		if (!ensure(NumIterations < MAX_ITERATIONS))
+		{
+			UE_LOG(LogLandscape, Error, TEXT("%s Reached Max Iterations. Exiting."), ANSI_TO_TCHAR(__FUNCTION__));
+			break;
+		}
+		
+		if (!ensure(CurrentSegment != nullptr))
+		{
+			UE_LOG(LogLandscape, Error, TEXT("%s Current Segment is nullptr. Exiting."), ANSI_TO_TCHAR(__FUNCTION__));
+			break;
+		}
+
+		if (!ensure(!VisitedSegments.Contains(CurrentSegment)))
+		{
+			UE_LOG(LogLandscape, Error, TEXT("%s Current Segment was already visited. Exiting."), ANSI_TO_TCHAR(__FUNCTION__));
+			break;
+		}
+
+		VisitedSegments.Add(CurrentSegment);
+
+		// No guarantee if the control point we're looking at is the segments start or end control point
+		// If it's the end control point, we must reverse the direction we traverse over this segment
+		// Connections[0] == Start; Connections[1] == End;
+		bool bReverseTraversal = CurrentSegment->Connections[1].ControlPoint == LastControlPoint;
+
+		// Walk down the spline meshes
+		TArray<USplineMeshComponent*> SegmentSplineMeshComponents = CurrentSegment->GetLocalMeshComponents();
+		if (!bReverseTraversal)
+		{
+			for (int Index = 0; Index < SegmentSplineMeshComponents.Num(); ++Index)
+			{
+				USplineMeshComponent* SplineMesh = SegmentSplineMeshComponents[Index];
+				if (SplineMesh == nullptr)
+				{
+					continue;
+				}
+
+				// Create a spline component point from each spline mesh in the segment
+				SplineComponent->AddSplinePoint(SplineMesh->GetStartPosition() + SplineMesh->GetComponentLocation(), ESplineCoordinateSpace::World, false);
+				SplineComponent->SetTangentsAtSplinePoint(CurrentPointIndex, ArriveTangent, SplineMesh->GetStartTangent(), ESplineCoordinateSpace::World, false);
+
+				++CurrentPointIndex;
+				ArriveTangent = SplineMesh->GetEndTangent();
+			}
+		}
+		else
+		{
+			// Same as the true block, but reversed direction
+			for (int Index = SegmentSplineMeshComponents.Num() - 1; Index >= 0; --Index)
+			{
+				USplineMeshComponent* SplineMesh = SegmentSplineMeshComponents[Index];
+				if (SplineMesh == nullptr)
+				{
+					continue;
+				}
+
+				// Swap start with end since we're going in reverse
+				SplineComponent->AddSplinePoint(SplineMesh->GetEndPosition() + SplineMesh->GetComponentLocation(), ESplineCoordinateSpace::World, false);
+				SplineComponent->SetTangentsAtSplinePoint(CurrentPointIndex, ArriveTangent, SplineMesh->GetEndTangent(), ESplineCoordinateSpace::World, false);
+
+				++CurrentPointIndex;
+				ArriveTangent = SplineMesh->GetStartTangent();
+			}
+		}
+		
+		// Search for the next segment
+		FLandscapeSplineSegmentConnection& Connection = bReverseTraversal ? CurrentSegment->Connections[0] : CurrentSegment->Connections[1];
+		bool bFoundNextSegment = false;
+		if (Connection.ControlPoint)
+		{
+			for (FLandscapeSplineConnection& ControlPointConnection : Connection.ControlPoint->ConnectedSegments)
+			{
+				if (ControlPointConnection.Segment == nullptr || VisitedSegments.Contains(ControlPointConnection.Segment))
+				{
+					continue;
+				}
+				
+				CurrentSegment = ControlPointConnection.Segment;
+				LastControlPoint = Connection.ControlPoint;
+				bFoundNextSegment = true;
+				break;
+			}
+		}
+
+		if (!bFoundNextSegment)
+		{
+			UE_LOG(LogLandscape, Verbose, TEXT("%s Could not find next segment or all segments have been traversed."), ANSI_TO_TCHAR(__FUNCTION__));
+			break;
+		}
+
+		++NumIterations;
+	}
+	while (NumIterations < MAX_ITERATIONS);
+
+	// Finish by updating the spline with all of our work
+	SplineComponent->UpdateSpline();
 }
 
 bool ULandscapeSplinesComponent::IsUsingLayerInfo(const ULandscapeLayerInfoObject* LayerInfo) const
@@ -1758,7 +1899,7 @@ bool ULandscapeSplineControlPoint::SupportsForeignSplineMesh() const
 FName ULandscapeSplineControlPoint::GetBestConnectionTo(FVector Destination) const
 {
 	FName BestSocket = NAME_None;
-	float BestScore = -FLT_MAX;
+	double BestScore = -DBL_MAX;
 
 	if (Mesh != nullptr)
 	{
@@ -1768,8 +1909,16 @@ FName ULandscapeSplineControlPoint::GetBestConnectionTo(FVector Destination) con
 			FVector SocketLocation = SocketTransform.GetTranslation();
 			FRotator SocketRotation = SocketTransform.GetRotation().Rotator();
 
-			const float Score = static_cast<float>((Destination - Location).Size() - (Destination - SocketLocation).Size() // Score closer sockets higher
-				* FMath::Abs(FVector::DotProduct((Destination - SocketLocation), SocketRotation.Vector()))); // score closer rotation higher
+			const double DistanceToCP = (Destination - Location).Size();
+
+			// score closer locations higher
+			const FVector SocketDelta = Destination - SocketLocation;
+			const double DistanceToSocket = SocketDelta.Size();
+
+			// score closer rotations higher
+			const double DirectionWeight = FMath::Abs(FVector::DotProduct(SocketDelta, SocketRotation.Vector()));
+
+			const double Score = (DistanceToCP - DistanceToSocket) * DirectionWeight;
 
 			if (Score > BestScore)
 			{
@@ -2691,7 +2840,7 @@ void ULandscapeSplineSegment::AutoFlipTangents()
 
 static float ApproxLength(const FInterpCurveVector& SplineInfo, const float Start = 0.0f, const float End = 1.0f, const int32 ApproxSections = 4)
 {
-	float SplineLength = 0;
+	double SplineLength = 0;
 	FVector OldPos = SplineInfo.Eval(Start, FVector::ZeroVector);
 	for (int32 i = 1; i <= ApproxSections; i++)
 	{
@@ -2700,7 +2849,7 @@ static float ApproxLength(const FInterpCurveVector& SplineInfo, const float Star
 		OldPos = NewPos;
 	}
 
-	return SplineLength;
+	return static_cast<float>(SplineLength);
 }
 
 static ESplineMeshAxis::Type CrossAxis(ESplineMeshAxis::Type InForwardAxis, ESplineMeshAxis::Type InUpAxis)
@@ -3331,7 +3480,7 @@ FName ULandscapeSplineSegment::GetCollisionProfileName() const
 void ULandscapeSplineSegment::FindNearest( const FVector& InLocation, float& t, FVector& OutLocation, FVector& OutTangent )
 {
 	float TempOutDistanceSq;
-	t = SplineInfo.InaccurateFindNearest(InLocation, TempOutDistanceSq);
+	t = SplineInfo.FindNearest(InLocation, TempOutDistanceSq);
 	OutLocation = SplineInfo.Eval(t, FVector::ZeroVector);
 	OutTangent = SplineInfo.EvalDerivative(t, FVector::ZeroVector);
 }

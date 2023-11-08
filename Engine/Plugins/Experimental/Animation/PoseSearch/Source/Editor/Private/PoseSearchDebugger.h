@@ -4,13 +4,16 @@
 
 #include "CoreMinimal.h"
 #include "IRewindDebuggerExtension.h"
-#include "IRewindDebuggerViewCreator.h"
+#include "IRewindDebuggerTrackCreator.h"
+#include "RewindDebuggerTrack.h"
+#include "SCurveTimelineView.h"
 
 namespace TraceServices { class IAnalysisSession; }
 
 namespace UE::PoseSearch
 {
 
+class SCostTimelineView;
 class SDebuggerView;
 class FDebuggerViewModel;
 
@@ -62,19 +65,35 @@ private:
  * Creates the slate widgets associated with the PoseSearch debugger
  * when prompted by the Rewind Debugger
  */
-class FDebuggerViewCreator : public IRewindDebuggerViewCreator
+class FDebuggerTrack : public RewindDebugger::FRewindDebuggerTrack
 {
 public:
-	virtual ~FDebuggerViewCreator() = default;
-	virtual FName GetName() const override;
-	virtual FText GetTitle() const override;
-	virtual FSlateIcon GetIcon() const override;
-	virtual FName GetTargetTypeName() const override;
-	
-	/** Creates the PoseSearch Slate view for the provided AnimInstance */
-	virtual TSharedPtr<IRewindDebuggerView> CreateDebugView(uint64 ObjectId, double CurrentTime, const TraceServices::IAnalysisSession& InAnalysisSession) const override;
-	virtual bool HasDebugInfo(uint64 ObjectId) const override;
+	FDebuggerTrack(uint64 InObjectId);
+
+private:
+	virtual FSlateIcon GetIconInternal() override;
+	virtual TSharedPtr<SWidget> GetTimelineViewInternal() override;
+	virtual TSharedPtr<SWidget> GetDetailsViewInternal() override;
+	virtual FName GetNameInternal() const override;
+	virtual FText GetDisplayNameInternal() const override;
+	virtual uint64 GetObjectIdInternal() const override { return ObjectId; }
+	virtual int GetSortOrderPriorityInternal() const override { return 10; };
+	virtual bool UpdateInternal() override;
+
+	TSharedPtr<SCostTimelineView> CostTimelineView;
+
+	TWeakPtr<IRewindDebuggerView> View;
+	FSlateIcon Icon;
+	uint64 ObjectId;
 };
 
+class FDebuggerTrackCreator : public RewindDebugger::IRewindDebuggerTrackCreator
+{
+private:
+	virtual FName GetTargetTypeNameInternal() const override;
+	virtual FName GetNameInternal() const override;
+	virtual TSharedPtr<RewindDebugger::FRewindDebuggerTrack> CreateTrackInternal(uint64 ObjectId) const override;
+	virtual bool HasDebugInfoInternal(uint64 ObjectId) const override;
+};
 
 } // namespace UE::PoseSearch

@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "Components/ListView.h"
 #include "PoseSearchDebuggerDatabaseColumns.h"
 #include "PoseSearchDebuggerDatabaseView.h"
 #include "Widgets/Views/STableRow.h"
@@ -48,7 +49,6 @@ class SDebuggerDatabaseRow : public SMultiColumnTableRow<TSharedRef<FDebuggerDat
 		// Get column
 		const TSharedRef<DebuggerDatabaseColumns::IColumn>& Column = (*ColumnMap.Get())[InColumnName];
 		
-		static FSlateFontInfo NormalFont = FAppStyle::Get().GetFontStyle("DetailsView.CategoryTextStyle");
 		const TSharedRef<SWidget> Widget = Column->GenerateWidget(Row.ToSharedRef());
 		
 		return

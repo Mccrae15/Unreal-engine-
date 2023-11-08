@@ -2,10 +2,11 @@
 
 #include "Chaos/PBDCollisionConstraints.h"
 
+#include "Chaos/CastingUtilities.h"
 #include "Chaos/ChaosPerfTest.h"
 #include "Chaos/ContactModification.h"
 #include "Chaos/MidPhaseModification.h"
-#include "Chaos/PBDCollisionConstraintsContact.h"
+#include "Chaos/CCDModification.h"
 #include "Chaos/CollisionResolution.h"
 #include "Chaos/Collision/CollisionPruning.h"
 #include "Chaos/Collision/PBDCollisionContainerSolver.h"
@@ -13,16 +14,16 @@
 #include "Chaos/Collision/PBDCollisionContainerSolverSimd.h"
 #include "Chaos/Defines.h"
 #include "Chaos/Evolution/SolverBodyContainer.h"
+#include "Chaos/Evolution/ABTestingConstraintContainerSolver.h"
 #include "Chaos/GeometryQueries.h"
 #include "Chaos/Island/IslandManager.h"
-#include "Chaos/SpatialAccelerationCollection.h"
+#include "Chaos/PBDCollisionConstraintsContact.h"
 #include "Chaos/PBDRigidsSOAs.h"
-#include "Chaos/CastingUtilities.h"
+#include "Chaos/PhysicsMaterialUtilities.h"
+#include "Chaos/SpatialAccelerationCollection.h"
 #include "ChaosLog.h"
 #include "ChaosStats.h"
 #include "ProfilingDebugging/ScopedTimers.h"
-#include "Algo/Sort.h"
-#include "Algo/StableSort.h"
 
 //PRAGMA_DISABLE_OPTIMIZATION
 
@@ -31,6 +32,8 @@ namespace Chaos
 	namespace CVars
 	{
 		extern bool bChaos_PBDCollisionSolver_UseJacobiPairSolver2;
+		
+		extern bool bChaosSolverPersistentGraph;
 	}
 
 	int32 CollisionParticlesBVHDepth = 4;
@@ -77,8 +80,6 @@ namespace Chaos
 
 	bool DebugDrawProbeDetection = false;
 	FAutoConsoleVariableRef CVarDebugDrawProbeDetection(TEXT("p.Chaos.Collision.DebugDrawProbeDetection"), DebugDrawProbeDetection, TEXT("Draw probe constraint detection."));
-	
-	extern bool bChaosSolverPersistentGraph;
 
 #if CHAOS_DEBUG_DRAW
 	namespace CVars
@@ -91,6 +92,226 @@ namespace Chaos
 	DECLARE_CYCLE_STAT(TEXT("Collisions::BeginDetect"), STAT_Collisions_BeginDetect, STATGROUP_ChaosCollision);
 	DECLARE_CYCLE_STAT(TEXT("Collisions::EndDetect"), STAT_Collisions_EndDetect, STATGROUP_ChaosCollision);
 	DECLARE_CYCLE_STAT(TEXT("Collisions::DetectProbeCollisions"), STAT_Collisions_DetectProbeCollisions, STATGROUP_ChaosCollision);
+
+#if CHAOS_ABTEST_CONSTRAINTSOLVER_ENABLED
+	namespace CVars
+	{
+		bool bCollisionsEnableSolverABTest = false;
+		FAutoConsoleVariableRef CVarCollisionsEnableSolverABTest(TEXT("p.Chaos.Collision.ABTestSolver"), bCollisionsEnableSolverABTest, TEXT(""));
+	}
+
+	// An AB Testing collision solver for use while developing the Simd version
+	using FABTestingCollisionContainerSolver = Private::TABTestingConstraintContainerSolver<FPBDCollisionContainerSolver, Private::FPBDCollisionContainerSolverSimd>;
+
+	// Simd AB testing callback
+	void ABTestSimdCollisionSolver(
+		FABTestingCollisionContainerSolver::ESolverPhase Phase,
+		const FPBDCollisionContainerSolver& SolverA,
+		const Private::FPBDCollisionContainerSolverSimd& SolverB,
+		const FSolverBodyContainer& SolverBodyContainerA,
+		const FSolverBodyContainer& SolverBodyContainerB)
+	{
+		for (int32 ConstraintIndex = 0; ConstraintIndex < SolverA.GetNumConstraints(); ++ConstraintIndex)
+		{
+			const Private::FPBDCollisionSolver& ConstraintSolverA = SolverA.GetConstraintSolver(ConstraintIndex);
+			const FSolverBody& Body0 = ConstraintSolverA.SolverBody0().SolverBody();
+			const FSolverBody& Body1 = ConstraintSolverA.SolverBody1().SolverBody();
+
+			const Private::FPBDCollisionContainerSolverSimd::FConstraintSolverId ConstraintSolverBId = SolverB.GetConstraintSolverId(ConstraintIndex);
+			const Private::TPBDCollisionSolverSimd<4>& ConstraintSolverB = SolverB.GetConstraintSolver(ConstraintSolverBId.SolverIndex);
+			const int32 LaneIndexB = ConstraintSolverBId.LaneIndex;
+
+			if (ConstraintSolverA.NumManifoldPoints() != ConstraintSolverB.NumManifoldPoints().GetValue(LaneIndexB))
+			{
+				UE_LOG(LogChaos, Warning, TEXT("ManifoldPoint count mismatch"));
+				return;
+			}
+
+			for (int32 ManifoldPointIndex = 0; ManifoldPointIndex < ConstraintSolverA.NumManifoldPoints(); ++ManifoldPointIndex)
+			{
+				const Private::FPBDCollisionSolverManifoldPoint& ManifoldPointSolverA = ConstraintSolverA.GetManifoldPoint(ManifoldPointIndex);
+				const Private::TPBDCollisionSolverManifoldPointsSimd<4>& ManifoldPointSolverB = ConstraintSolverB.GetManifoldPoint(ManifoldPointIndex, SolverB.GetManifoldPointBuffer());
+				bool bIsError = false;
+
+				if (ManifoldPointSolverA.ContactNormal != ManifoldPointSolverB.SimdContactNormal.GetValue(LaneIndexB))
+				{
+					UE_LOG(LogChaos, Warning, TEXT("ContactNormal mismatch"));
+					bIsError = true;
+				}
+				if (ManifoldPointSolverA.ContactTangentU != ManifoldPointSolverB.SimdContactTangentU.GetValue(LaneIndexB))
+				{
+					UE_LOG(LogChaos, Warning, TEXT("ContactTangentU mismatch"));
+					bIsError = true;
+				}
+				if (ManifoldPointSolverA.ContactTangentV != ManifoldPointSolverB.SimdContactTangentV.GetValue(LaneIndexB))
+				{
+					UE_LOG(LogChaos, Warning, TEXT("ContactTangentV mismatch"));
+					bIsError = true;
+				}
+				if (ManifoldPointSolverA.RelativeContactPoints[0] != ManifoldPointSolverB.SimdRelativeContactPoint0.GetValue(LaneIndexB))
+				{
+					UE_LOG(LogChaos, Warning, TEXT("RelativeContactPoints mismatch"));
+					bIsError = true;
+				}
+				if (ManifoldPointSolverA.RelativeContactPoints[1] != ManifoldPointSolverB.SimdRelativeContactPoint1.GetValue(LaneIndexB))
+				{
+					UE_LOG(LogChaos, Warning, TEXT("RelativeContactPoints mismatch"));
+					bIsError = true;
+				}
+				if (ManifoldPointSolverA.ContactMassNormal != ManifoldPointSolverB.SimdContactMassNormal.GetValue(LaneIndexB))
+				{
+					UE_LOG(LogChaos, Warning, TEXT("ContactMassNormal mismatch"));
+					bIsError = true;
+				}
+				if (ManifoldPointSolverA.ContactMassTangentU != ManifoldPointSolverB.SimdContactMassTangentU.GetValue(LaneIndexB))
+				{
+					UE_LOG(LogChaos, Warning, TEXT("ContactMassTangentU mismatch"));
+					bIsError = true;
+				}
+				if (ManifoldPointSolverA.ContactMassTangentV != ManifoldPointSolverB.SimdContactMassTangentV.GetValue(LaneIndexB))
+				{
+					UE_LOG(LogChaos, Warning, TEXT("ContactMassTangentV mismatch"));
+					bIsError = true;
+				}
+				if (Body0.IsDynamic())
+				{
+					if (ManifoldPointSolverA.ContactTangentUAngular0 != ManifoldPointSolverB.SimdContactTangentUAngular0.GetValue(LaneIndexB))
+					{
+						UE_LOG(LogChaos, Warning, TEXT("ContactTangentUAngular0 mismatch"));
+						bIsError = true;
+					}
+					if (ManifoldPointSolverA.ContactTangentVAngular0 != ManifoldPointSolverB.SimdContactTangentVAngular0.GetValue(LaneIndexB))
+					{
+						UE_LOG(LogChaos, Warning, TEXT("ContactTangentVAngular0 mismatch"));
+						bIsError = true;
+					}
+				}
+				if (Body1.IsDynamic())
+				{
+					if (ManifoldPointSolverA.ContactTangentUAngular1 != ManifoldPointSolverB.SimdContactTangentUAngular1.GetValue(LaneIndexB))
+					{
+						UE_LOG(LogChaos, Warning, TEXT("ContactTangentUAngular1 mismatch"));
+						bIsError = true;
+					}
+					if (ManifoldPointSolverA.ContactTangentVAngular1 != ManifoldPointSolverB.SimdContactTangentVAngular1.GetValue(LaneIndexB))
+					{
+						UE_LOG(LogChaos, Warning, TEXT("ContactTangentVAngular1 mismatch"));
+						bIsError = true;
+					}
+				}
+
+				if (Phase == FABTestingCollisionContainerSolver::ESolverPhase::PostApplyPositionConstraints)
+				{
+					if (ManifoldPointSolverA.NetPushOutNormal != ManifoldPointSolverB.SimdNetPushOutNormal.GetValue(LaneIndexB))
+					{
+						UE_LOG(LogChaos, Warning, TEXT("NetPushOutNormal mismatch"));
+						bIsError = true;
+					}
+					if (ManifoldPointSolverA.NetPushOutTangentU != ManifoldPointSolverB.SimdNetPushOutTangentU.GetValue(LaneIndexB))
+					{
+						UE_LOG(LogChaos, Warning, TEXT("NetPushOutTangentU mismatch"));
+						bIsError = true;
+					}
+					if (ManifoldPointSolverA.NetPushOutTangentV != ManifoldPointSolverB.SimdNetPushOutTangentV.GetValue(LaneIndexB))
+					{
+						UE_LOG(LogChaos, Warning, TEXT("NetPushOutTangentV mismatch"));
+						bIsError = true;
+					}
+				}
+
+				if (Phase == FABTestingCollisionContainerSolver::ESolverPhase::PostApplyVelocityConstraints)
+				{
+					if (ManifoldPointSolverA.NetImpulseNormal != ManifoldPointSolverB.SimdNetImpulseNormal.GetValue(LaneIndexB))
+					{
+						UE_LOG(LogChaos, Warning, TEXT("NetImpulseNormal mismatch"));
+						bIsError = true;
+					}
+					if (ManifoldPointSolverA.NetImpulseTangentU != ManifoldPointSolverB.SimdNetImpulseTangentU.GetValue(LaneIndexB))
+					{
+						UE_LOG(LogChaos, Warning, TEXT("NetImpulseTangentU mismatch"));
+						bIsError = true;
+					}
+					if (ManifoldPointSolverA.NetImpulseTangentV != ManifoldPointSolverB.SimdNetImpulseTangentV.GetValue(LaneIndexB))
+					{
+						UE_LOG(LogChaos, Warning, TEXT("NetImpulseTangentV mismatch"));
+						bIsError = true;
+					}
+				}
+
+				if (bIsError)
+				{
+					UE_LOG(LogChaos, Warning, TEXT("SimdCollisionSolver mismatch"));
+				}
+			}
+		}
+
+		if (SolverBodyContainerA.Num() != SolverBodyContainerB.Num())
+		{
+			UE_LOG(LogChaos, Warning, TEXT("Body count mismatch"));
+			return;
+		}
+
+		for (int BodyIndex = 0; BodyIndex < SolverBodyContainerA.Num(); ++BodyIndex)
+		{
+			const FSolverBody& BodyA = SolverBodyContainerA.GetSolverBody(BodyIndex);
+			const FSolverBody& BodyB = SolverBodyContainerB.GetSolverBody(BodyIndex);
+			bool bIsError = false;
+
+			if (BodyA.P() != BodyB.P())
+			{
+				UE_LOG(LogChaos, Warning, TEXT("Position mismatch"));
+				bIsError = true;
+			}
+
+			if (BodyA.Q() != BodyB.Q())
+			{
+				UE_LOG(LogChaos, Warning, TEXT("Rotation mismatch"));
+				bIsError = true;
+			}
+
+			if (BodyA.DP() != BodyB.DP())
+			{
+				UE_LOG(LogChaos, Warning, TEXT("PositionDelta mismatch"));
+				bIsError = true;
+			}
+
+			if (BodyA.DQ() != BodyB.DQ())
+			{
+				UE_LOG(LogChaos, Warning, TEXT("RotationDelta mismatch"));
+				bIsError = true;
+			}
+
+			if (BodyA.V() != BodyB.V())
+			{
+				UE_LOG(LogChaos, Warning, TEXT("Velocity mismatch"));
+				bIsError = true;
+			}
+
+			if (BodyA.W() != BodyB.W())
+			{
+				UE_LOG(LogChaos, Warning, TEXT("AngVel mismatch"));
+				bIsError = true;
+			}
+
+			if (BodyA.InvM() != BodyB.InvM())
+			{
+				UE_LOG(LogChaos, Warning, TEXT("InvM mismatch"));
+				bIsError = true;
+			}
+
+			if (BodyA.InvI() != BodyB.InvI())
+			{
+				UE_LOG(LogChaos, Warning, TEXT("InvI mismatch"));
+				bIsError = true;
+			}
+
+			if (bIsError)
+			{
+				UE_LOG(LogChaos, Warning, TEXT("SimdCollisionSolver mismatch"));
+			}
+		}
+	}
+#endif
 
 	//
 	// Collision Constraint Container
@@ -145,8 +366,21 @@ namespace Chaos
 		{
 		case Private::ECollisionSolverType::GaussSeidel:
 			return MakeUnique<FPBDCollisionContainerSolver>(*this, Priority);
+
 		case Private::ECollisionSolverType::GaussSeidelSimd:
+#if CHAOS_ABTEST_CONSTRAINTSOLVER_ENABLED
+			if (CVars::bCollisionsEnableSolverABTest)
+			{
+				// Create an AB testing collison solver for simd testing
+				return MakeUnique<FABTestingCollisionContainerSolver>(
+					MakeUnique<FPBDCollisionContainerSolver>(*this, Priority),
+					MakeUnique<Private::FPBDCollisionContainerSolverSimd>(*this, Priority),
+					Priority,
+					&ABTestSimdCollisionSolver);
+			}
+#endif
 			return MakeUnique<Private::FPBDCollisionContainerSolverSimd>(*this, Priority);
+
 		case Private::ECollisionSolverType::PartialJacobi:
 			return MakeUnique<Private::FPBDCollisionContainerSolverJacobi>(*this, Priority);
 		}
@@ -171,56 +405,19 @@ namespace Chaos
 		return ConstraintAllocator.GetConstConstraints();
 	}
 
-	const FChaosPhysicsMaterial* GetPhysicsMaterial(const TGeometryParticleHandle<FReal, 3>* Particle, const FImplicitObject* Geom, const TArrayCollectionArray<TSerializablePtr<FChaosPhysicsMaterial>>& PhysicsMaterials, const TArrayCollectionArray<TUniquePtr<FChaosPhysicsMaterial>>& PerParticlePhysicsMaterials, const THandleArray<FChaosPhysicsMaterial>* const SimMaterials)
-	{
-		// Use the per-particle material if it exists
-		const FChaosPhysicsMaterial* UniquePhysicsMaterial = Particle->AuxilaryValue(PerParticlePhysicsMaterials).Get();
-		if (UniquePhysicsMaterial != nullptr)
-		{
-			return UniquePhysicsMaterial;
-		}
-		const FChaosPhysicsMaterial* PhysicsMaterial = Particle->AuxilaryValue(PhysicsMaterials).Get();
-		if (PhysicsMaterial != nullptr)
-		{
-			return PhysicsMaterial;
-		}
-
-		// If no particle material, see if the shape has one
-		// @todo(chaos): handle materials for meshes etc
-		for (const TUniquePtr<FPerShapeData>& ShapeData : Particle->ShapesArray())
-		{
-			const FImplicitObject* OuterShapeGeom = ShapeData->GetGeometry().Get();
-			const FImplicitObject* InnerShapeGeom = Utilities::ImplicitChildHelper(OuterShapeGeom);
-			if (Geom == OuterShapeGeom || Geom == InnerShapeGeom)
-			{
-				if (ShapeData->GetMaterials().Num() > 0)
-				{
-					if(SimMaterials)
-					{
-						return SimMaterials->Get(ShapeData->GetMaterials()[0].InnerHandle);
-					}
-					else
-					{
-						UE_LOG(LogChaos, Warning, TEXT("Attempted to resolve a material for a constraint but we do not have a sim material container."));
-					}
-				}
-				else
-				{
-					// This shape doesn't have a material assigned
-					return nullptr;
-				}
-			}
-		}
-
-		// The geometry used for this particle does not belong to the particle.
-		// This can happen in the case of fracture.
-		return nullptr;
-	}
-
 	void FPBDCollisionConstraints::UpdateConstraintMaterialProperties(FPBDCollisionConstraint& Constraint)
 	{
-		const FChaosPhysicsMaterial* PhysicsMaterial0 = GetPhysicsMaterial(Constraint.Particle[0], Constraint.Implicit[0], MPhysicsMaterials, MPerParticlePhysicsMaterials, SimMaterials);
-		const FChaosPhysicsMaterial* PhysicsMaterial1 = GetPhysicsMaterial(Constraint.Particle[1], Constraint.Implicit[1], MPhysicsMaterials, MPerParticlePhysicsMaterials, SimMaterials);
+		// We only support one material shared by all manifold points for now, even when our 
+		// 4 manifold points are on different triangles of a mesh for example
+		int32 ShapeFaceIndex = INDEX_NONE;
+		if (Constraint.NumManifoldPoints() > 0)
+		{
+			ShapeFaceIndex = Constraint.GetManifoldPoint(0).ContactPoint.FaceIndex;
+		}
+
+		// This is a bit dodgy - we pass the FaceIndex to both material requests, knowing that at most one of the shapes will use it
+		const FChaosPhysicsMaterial* PhysicsMaterial0 = Private::GetPhysicsMaterial(Constraint.Particle[0], Constraint.GetShape0(), ShapeFaceIndex, &MPhysicsMaterials, &MPerParticlePhysicsMaterials, SimMaterials);
+		const FChaosPhysicsMaterial* PhysicsMaterial1 = Private::GetPhysicsMaterial(Constraint.Particle[1], Constraint.GetShape1(), ShapeFaceIndex, &MPhysicsMaterials, &MPerParticlePhysicsMaterials, SimMaterials);
 
 		FReal MaterialRestitution = 0;
 		FReal MaterialRestitutionThreshold = 0;
@@ -332,7 +529,7 @@ namespace Chaos
 		// for a contact which no longer is occurring due to resolution of another constraint.
 		for (FPBDCollisionConstraint* Contact : GetConstraints())
 		{
-			if (Contact->IsProbe())
+			if ((Contact != nullptr) && Contact->IsProbe())
 			{
 				const FGeometryParticleHandle* Particle0 = Contact->GetParticle0();
 				const FGeometryParticleHandle* Particle1 = Contact->GetParticle1();
@@ -363,15 +560,26 @@ namespace Chaos
 		}
 	}
 
+	void FPBDCollisionConstraints::ApplyCCDModifier(const TArray<ISimCallbackObject*>& CCDModifiers, FReal Dt)
+	{
+		FCCDModifierAccessor ModifierAccessor(Dt);
+		for (ISimCallbackObject* ModifierCallback : CCDModifiers)
+		{
+			ModifierCallback->CCDModification_Internal(ModifierAccessor);
+		}
+	}
+
 	void FPBDCollisionConstraints::ApplyCollisionModifier(const TArray<ISimCallbackObject*>& CollisionModifiers, FReal Dt)
 	{
 		if (GetConstraints().Num() > 0)
 		{
+			// NOTE: at this point, we will not have any nullptrs in the constraint handles
 			TArrayView<FPBDCollisionConstraint* const> ConstraintHandles = GetConstraintHandles();
 			FCollisionContactModifier Modifier(ConstraintHandles, Dt);
 
 			for(ISimCallbackObject* ModifierCallback : CollisionModifiers)
 			{
+				FScopedTraceSolverCallback ScopedCallback(ModifierCallback);
 				ModifierCallback->ContactModification_Internal(Modifier);
 			}
 
@@ -397,30 +605,28 @@ namespace Chaos
 		// Debugging/diagnosing: if we have collisions disabled, remove all collisions from the graph and don't add any more
 		if (!GetCollisionsEnabled())
 		{
-			IslandManager.RemoveConstraints(GetContainerId());
+			IslandManager.RemoveContainerConstraints(GetContainerId());
 			return;
 		}
 
-		// If we are running with a persistent graph, remove expired collisions	
-		if (bChaosSolverPersistentGraph)
-		{
-			// Find all expired constraints in the graph
-			TempCollisions.Reset();
-			IslandManager.VisitConstraintsInAwakeIslands(GetContainerId(),
-				[this](FConstraintHandle* ConstraintHandle)
-				{
-					FPBDCollisionConstraintHandle* CollisionHandle = ConstraintHandle->AsUnsafe<FPBDCollisionConstraintHandle>();
-					if (!CollisionHandle->IsEnabled() || CollisionHandle->IsProbe() || ConstraintAllocator.IsConstraintExpired(CollisionHandle->GetContact()))
-					{
-						TempCollisions.Add(CollisionHandle);
-					}
-				});
-
-			// Remove expired constraints
-			for (FPBDCollisionConstraintHandle* CollisionHandle : TempCollisions)
+		// Remove expired collisions
+		// @chaos(todo): if graph persistent is disabled we remove all collisions, but in a non-optimal way...
+		TempCollisions.Reset();
+		const bool bRemoveAllAwakeCollisions = !CVars::bChaosSolverPersistentGraph;
+		IslandManager.VisitAwakeConstraints(GetContainerId(),
+			[this, bRemoveAllAwakeCollisions](const Private::FPBDIslandConstraint* IslandConstraint)
 			{
-				IslandManager.RemoveConstraint(GetContainerId(), CollisionHandle);
-			}
+				FPBDCollisionConstraintHandle* CollisionHandle = IslandConstraint->GetConstraint()->AsUnsafe<FPBDCollisionConstraintHandle>();
+				if (bRemoveAllAwakeCollisions || !CollisionHandle->IsEnabled() || CollisionHandle->IsProbe() || ConstraintAllocator.IsConstraintExpired(CollisionHandle->GetContact()))
+				{
+					TempCollisions.Add(CollisionHandle);
+				}
+			});
+
+		// Remove expired constraints
+		for (FPBDCollisionConstraintHandle* CollisionHandle : TempCollisions)
+		{
+			IslandManager.RemoveConstraint(CollisionHandle);
 		}
 
 		// Collect all the new constraints that need to be added to the graph

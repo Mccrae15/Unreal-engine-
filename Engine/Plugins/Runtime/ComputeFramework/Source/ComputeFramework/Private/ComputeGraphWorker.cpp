@@ -151,12 +151,13 @@ void FComputeGraphTaskWorker::SubmitWork(FRDGBuilder& GraphBuilder, FName InExec
 		}
 
 		// Allocate RDG resources for all the data providers in the graph.
+		FComputeDataProviderRenderProxy::FAllocationData AllocationData { NumKernels };
 		for (int32 DataProviderIndex = 0; DataProviderIndex < GraphInvocation.DataProviderRenderProxies.Num(); ++DataProviderIndex)
 		{
 			FComputeDataProviderRenderProxy* DataProvider = GraphInvocation.DataProviderRenderProxies[DataProviderIndex];
 			if (DataProvider != nullptr)
 			{
-				DataProvider->AllocateResources(GraphBuilder);
+				DataProvider->AllocateResources(GraphBuilder, AllocationData);
 			}
 		}
 	}
@@ -195,7 +196,7 @@ void FComputeGraphTaskWorker::SubmitWork(FRDGBuilder& GraphBuilder, FName InExec
 
 		// Allocate parameters buffer and fill from data providers.
 		TStridedView<FComputeKernelShader::FParameters> ParameterArray = GraphBuilder.AllocParameters<FComputeKernelShader::FParameters>(KernelInvocation.ShaderParameterMetadata, NumSubInvocations);
-		FComputeDataProviderRenderProxy::FDispatchData DispatchData{ NumSubInvocations, bIsUnifiedDispatch, 0, 0, ParameterArray.GetStride(), reinterpret_cast<uint8*>(&ParameterArray[0]) };
+		FComputeDataProviderRenderProxy::FDispatchData DispatchData{ KernelIndex, NumSubInvocations, bIsUnifiedDispatch, 0, 0, ParameterArray.GetStride(), reinterpret_cast<uint8*>(&ParameterArray[0]) };
 
 		// Iterate shader parameter members to fill the dispatch data structures.
 		// We assume that the members were filled out with a single data interface per member, and that the
@@ -210,6 +211,15 @@ void FComputeGraphTaskWorker::SubmitWork(FRDGBuilder& GraphBuilder, FName InExec
 				FComputeDataProviderRenderProxy* DataProvider = GraphInvocation.DataProviderRenderProxies[DataProviderIndex];
 				if (ensure(DataProvider != nullptr))
 				{
+					// 1. Data interfaces sharing the same binding (primary) as the kernel should present its data in a way that
+					// matches the kernel dispatch method, which can be either unified(full buffer) or non-unified (per invocation window into the full buffer)
+					// 2. Data interfaces not sharing the same binding (secondary) should always provide a full view to its data (unified)
+					// Note: In case of non-unified kernel, extra work maybe needed to read from secondary buffers.
+					// When kernel is non-unified, index = 0...section.max for each invocation/section, 
+					// so user may want to consider using a dummy buffer that maps section index to the indices of secondary buffers
+					// for example, given a non-unified kernel, primary and secondary components sharing the same vertex count, we might want to create a buffer
+					// in the primary group that is simply [0,1,2...,NumVerts-1], which we can then index into to map section vert index to the global vert index
+					DispatchData.bUnifiedDispatch = KernelInvocation.BoundProviderIsPrimary[MemberIndex]? bIsUnifiedDispatch : true;
 					DispatchData.ParameterStructSize = Member.GetStructMetadata()->GetSize();
 					DispatchData.ParameterBufferOffset = Member.GetOffset();
 					DataProvider->GatherDispatchData(DispatchData);
@@ -221,8 +231,10 @@ void FComputeGraphTaskWorker::SubmitWork(FRDGBuilder& GraphBuilder, FName InExec
 		for (int32 SubInvocationIndex = 0; SubInvocationIndex < NumSubInvocations; ++SubInvocationIndex)
 		{
 			TShaderRef<FComputeKernelShader> Shader = Shaders[SubmitDesc.ShaderIndex + SubInvocationIndex];
-			const FIntVector GroupCount = FComputeShaderUtils::GetGroupCount(ThreadCounts[SubInvocationIndex], KernelInvocation.KernelGroupSize);
+			FIntVector GroupCount = FComputeShaderUtils::GetGroupCount(ThreadCounts[SubInvocationIndex], KernelInvocation.KernelGroupSize);
 
+			GroupCount = FComputeShaderUtils::GetGroupCountWrapped(GroupCount.X);
+			
 			FComputeShaderUtils::AddPass(
 				GraphBuilder,
 				{},

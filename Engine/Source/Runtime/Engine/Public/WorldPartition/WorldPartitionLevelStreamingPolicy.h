@@ -14,6 +14,7 @@
 #include "WorldPartition/WorldPartitionStreamingPolicy.h"
 #include "WorldPartitionLevelStreamingPolicy.generated.h"
 
+class UWorldPartitionRuntimeLevelStreamingCell;
 enum class EWorldPartitionRuntimeCellState : uint8;
 
 UCLASS()
@@ -23,30 +24,36 @@ class UWorldPartitionLevelStreamingPolicy : public UWorldPartitionStreamingPolic
 
 public:
 	virtual void DrawRuntimeCellsDetails(class UCanvas* Canvas, FVector2D& Offset) override;
-	virtual void DrawStreamingStatusLegend(UCanvas* Canvas, FVector2D& Offset) override;
 	virtual bool IsStreamingCompleted(const TArray<FWorldPartitionStreamingSource>* InStreamingSources) const override;
 
 #if WITH_EDITOR
 	virtual TSubclassOf<class UWorldPartitionRuntimeCell> GetRuntimeCellClass() const override;
 	virtual void PrepareActorToCellRemapping() override;
-	virtual void RemapSoftObjectPath(FSoftObjectPath& ObjectPath) override;
-	virtual bool ConvertEditorPathToRuntimePath(const FSoftObjectPath& InPath, FSoftObjectPath& OutPath) const override;
+	virtual void RemapSoftObjectPath(FSoftObjectPath& ObjectPath) const override;
 	static FString GetCellPackagePath(const FName& InCellName, const UWorld* InWorld);
+
+	virtual bool StoreToExternalStreamingObject(URuntimeHashExternalStreamingObjectBase& OutExternalStreamingObject) override;
 #endif
 
+	virtual bool ConvertEditorPathToRuntimePath(const FSoftObjectPath& InPath, FSoftObjectPath& OutPath) const override;
 	virtual UObject* GetSubObject(const TCHAR* SubObjectPath) override;
 
-protected:
-	virtual int32 GetCellLoadingCount() const override;
+	virtual bool InjectExternalStreamingObject(URuntimeHashExternalStreamingObjectBase* ExternalStreamingObject) override;
+	virtual bool RemoveExternalStreamingObject(URuntimeHashExternalStreamingObjectBase* ExternalStreamingObject) override;
 
+protected:
 	void ForEachActiveRuntimeCell(TFunctionRef<void(const UWorldPartitionRuntimeCell*)> Func) const;
 
 private:
-#if WITH_EDITORONLY_DATA
+	const FName* FindCellNameForSubObject(FName SubObjectName) const;
+	const UWorldPartitionRuntimeLevelStreamingCell* FindCellForSubObject(FName SubObjectName) const;
+
 	UPROPERTY()
-	TMap<FName, FName> ActorToCellRemapping;
-#endif
+	FTopLevelAssetPath SourceWorldAssetPath;
 
 	UPROPERTY()
 	TMap<FName, FName> SubObjectsToCellRemapping;
+
+	UPROPERTY(Transient)
+	TArray<TWeakObjectPtr<URuntimeHashExternalStreamingObjectBase>> ExternalStreamingObjects;
 };

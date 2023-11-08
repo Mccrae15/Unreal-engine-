@@ -321,25 +321,25 @@ void UNiagaraNodeWithDynamicPins::GetNodeContextMenuActions(UToolMenu* Menu, UGr
 					"MoveDynamicPinUp",
 					MoveUpLabel, 
 					MoveUpTooltip,
-					FNewToolMenuDelegate::CreateLambda([=](UToolMenu* InSubMenuBuilder)
-				{
-					FToolMenuSection& SubSection = InSubMenuBuilder->FindOrAddSection("MovePin");
-					for (int i = PinIdx - 1; i >= 0; i--)
+					FNewToolMenuDelegate::CreateLambda([=,this](UToolMenu* InSubMenuBuilder)
 					{
-						int32 MoveAmount = i - PinIdx;
-						if (!CanMovePin(Context->Pin, MoveAmount))
+						FToolMenuSection& SubSection = InSubMenuBuilder->FindOrAddSection("MovePin");
+						for (int i = PinIdx - 1; i >= 0; i--)
 						{
-							break;
+							int32 MoveAmount = i - PinIdx;
+							if (!CanMovePin(Context->Pin, MoveAmount))
+							{
+								break;
+							}
+							FText PinName = FText::FromName(SameDirectionPins[i]->PinName);
+							SubSection.AddMenuEntry(FName("MoveDynamicPinUp" + FString::FromInt(i)),
+								FText::Format(LOCTEXT("MoveDynamicPinUpLabel", "Move up {0} - above '{1}'"), abs(MoveAmount), PinName),
+								MoveUpTooltip,
+								FSlateIcon(),
+								FUIAction(FExecuteAction::CreateUObject(const_cast<UNiagaraNodeWithDynamicPins*>(this), &UNiagaraNodeWithDynamicPins::MoveDynamicPinFromMenu, const_cast<UEdGraphPin*>(Context->Pin), MoveAmount))
+							);
 						}
-						FText PinName = FText::FromName(SameDirectionPins[i]->PinName);
-						SubSection.AddMenuEntry(FName("MoveDynamicPinUp" + FString::FromInt(i)),
-							FText::Format(LOCTEXT("MoveDynamicPinUpLabel", "Move up {0} - above '{1}'"), abs(MoveAmount), PinName),
-							MoveUpTooltip,
-							FSlateIcon(),
-							FUIAction(FExecuteAction::CreateUObject(const_cast<UNiagaraNodeWithDynamicPins*>(this), &UNiagaraNodeWithDynamicPins::MoveDynamicPinFromMenu, const_cast<UEdGraphPin*>(Context->Pin), MoveAmount))
-						);
-					}
-				}));
+					}));
 			}
 			else
 			{
@@ -362,7 +362,7 @@ void UNiagaraNodeWithDynamicPins::GetNodeContextMenuActions(UToolMenu* Menu, UGr
 					"MoveDynamicPinDown",
 					MoveDownLabel, 
 					MoveDownTooltip,
-					FNewToolMenuDelegate::CreateLambda([=](UToolMenu* InSubMenuBuilder)
+					FNewToolMenuDelegate::CreateLambda([=, this](UToolMenu* InSubMenuBuilder)
 				{
 					FToolMenuSection& SubSection = InSubMenuBuilder->FindOrAddSection("MovePin");
 					for (int i = PinIdx + 1; i < SameDirectionPins.Num(); i++)
@@ -396,7 +396,7 @@ void UNiagaraNodeWithDynamicPins::GetNodeContextMenuActions(UToolMenu* Menu, UGr
 	}
 }
 
-void UNiagaraNodeWithDynamicPins::AddParameter(FNiagaraVariable Parameter, const UEdGraphPin* AddPin)
+void UNiagaraNodeWithDynamicPins::AddParameter(FNiagaraVariable Parameter, TEnumAsByte<EEdGraphPinDirection> Direction)
 {
 	if (this->IsA<UNiagaraNodeParameterMapBase>())
 	{
@@ -416,15 +416,15 @@ void UNiagaraNodeWithDynamicPins::AddParameter(FNiagaraVariable Parameter, const
 		Graph->AddParameter(Parameter);
 
 		Modify();
-		UEdGraphPin* Pin = this->RequestNewTypedPin(AddPin->Direction, Parameter.GetType(), Parameter.GetName());
+		UEdGraphPin* Pin = this->RequestNewTypedPin(Direction, Parameter.GetType(), Parameter.GetName());
 	}
 	else
 	{
-		RequestNewTypedPin(AddPin->Direction, Parameter.GetType(), Parameter.GetName());
+		RequestNewTypedPin(Direction, Parameter.GetType(), Parameter.GetName());
 	}
 }
 
-void UNiagaraNodeWithDynamicPins::AddParameter(const UNiagaraScriptVariable* ScriptVar, const UEdGraphPin* AddPin)
+void UNiagaraNodeWithDynamicPins::AddParameter(const UNiagaraScriptVariable* ScriptVar, TEnumAsByte<EEdGraphPinDirection> Direction)
 {
 	const FNiagaraVariable& Parameter = ScriptVar->Variable;
 	if (this->IsA<UNiagaraNodeParameterMapBase>())
@@ -439,11 +439,11 @@ void UNiagaraNodeWithDynamicPins::AddParameter(const UNiagaraScriptVariable* Scr
 		Graph->AddParameter(ScriptVar);
 
 		Modify();
-		UEdGraphPin* Pin = this->RequestNewTypedPin(AddPin->Direction, Parameter.GetType(), Parameter.GetName());
+		UEdGraphPin* Pin = this->RequestNewTypedPin(Direction, Parameter.GetType(), Parameter.GetName());
 	}
 	else
 	{
-		RequestNewTypedPin(AddPin->Direction, Parameter.GetType(), Parameter.GetName());
+		RequestNewTypedPin(Direction, Parameter.GetType(), Parameter.GetName());
 	}
 }
 
@@ -505,6 +505,28 @@ void UNiagaraNodeWithDynamicPins::MoveDynamicPinFromMenu(UEdGraphPin* Pin, int32
 {
 	FScopedTransaction MovePinTransaction(LOCTEXT("MovePinTransaction", "Moved pin"));
 	MoveDynamicPin(Pin, DirectionToMove);
+}
+
+void UNiagaraNodeWithDynamicPins::GetCompilationInputPins(FPinCollectorArray& InputPins) const
+{
+	for (UEdGraphPin* Pin : Pins)
+	{
+		if (Pin->Direction == EGPD_Input && !Pin->bOrphanedPin && !IsAddPin(Pin))
+		{
+			InputPins.Add(Pin);
+		}
+	}
+}
+
+void UNiagaraNodeWithDynamicPins::GetCompilationOutputPins(FPinCollectorArray& OutputPins) const
+{
+	for (UEdGraphPin* Pin : Pins)
+	{
+		if (Pin->Direction == EGPD_Output && !Pin->bOrphanedPin && !IsAddPin(Pin))
+		{
+			OutputPins.Add(Pin);
+		}
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

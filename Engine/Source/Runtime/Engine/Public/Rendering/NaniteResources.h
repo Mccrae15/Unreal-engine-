@@ -13,8 +13,8 @@
 #include "Serialization/BulkData.h"
 #include "Misc/MemoryReadStream.h"
 #include "NaniteDefinitions.h"
+#include "NaniteInterface.h"
 #include "Templates/DontCopy.h"
-#include "Templates/PimplPtr.h"
 #include "VertexFactory.h"
 
 /** Whether Nanite::FSceneProxy should store data and enable codepaths needed for debug rendering. */
@@ -93,7 +93,7 @@ struct FPackedCluster
 	uint32		ColorBits_GroupIndex;						// R:4, G:4, B:4, A:4. (GroupIndex&0xFFFF) is for debug visualization only.
 
 	FIntVector	PosStart;
-	uint32		BitsPerIndex_PosPrecision_PosBits_NormalPrecision;			// BitsPerIndex:4, PosPrecision: 5, PosBits:5.5.5, NormalPrecision: 4
+	uint32		BitsPerIndex_PosPrecision_PosBits_NormalPrecision_TangentPrecision;	// BitsPerIndex:4, PosPrecision: 5, PosBits:5.5.5, NormalPrecision: 4, TangentPrecision: 4
 	
 	// Members needed for culling
 	FVector4f	LODBounds;									// LWC_TODO: Was FSphere, but that's now twice as big and won't work on GPU.
@@ -105,9 +105,9 @@ struct FPackedCluster
 	uint32		Flags;
 
 	// Members needed by materials
-	uint32		AttributeOffset_BitsPerAttribute;			// AttributeOffset: 22, BitsPerAttribute: 10
-	uint32		DecodeInfoOffset_NumUVs_ColorMode;			// DecodeInfoOffset: 22, NumUVs: 3, ColorMode: 2
-	uint32		UV_Prec;									// U0:4, V0:4, U1:4, V1:4, U2:4, V2:4, U3:4, V3:4
+	uint32		AttributeOffset_BitsPerAttribute;				// AttributeOffset: 22, BitsPerAttribute: 10
+	uint32		DecodeInfoOffset_HasTangents_NumUVs_ColorMode;	// DecodeInfoOffset: 22, bHasTangents: 1, NumUVs: 3, ColorMode: 2
+	uint32		UV_Prec;										// U0:4, V0:4, U1:4, V1:4, U2:4, V2:4, U3:4, V3:4
 	uint32		PackedMaterialInfo;
 
 	uint32		VertReuseBatchInfo[4];
@@ -118,12 +118,13 @@ struct FPackedCluster
 	uint32		GetNumTris() const						{ return GetBits(NumTris_IndexOffset, 8, 0); }
 	uint32		GetIndexOffset() const					{ return GetBits(NumTris_IndexOffset, 24, 8); }
 
-	uint32		GetBitsPerIndex() const					{ return GetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision, 4, 0); }
-	int32		GetPosPrecision() const					{ return (int32)GetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision, 5, 4) + NANITE_MIN_POSITION_PRECISION; }
-	uint32		GetPosBitsX() const						{ return GetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision, 5, 9); }
-	uint32		GetPosBitsY() const						{ return GetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision, 5, 14); }
-	uint32		GetPosBitsZ() const						{ return GetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision, 5, 19); }
-	uint32		GetNormalPrecision() const				{ return GetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision, 4, 24); }
+	uint32		GetBitsPerIndex() const					{ return GetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision_TangentPrecision, 4, 0); }
+	int32		GetPosPrecision() const					{ return (int32)GetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision_TangentPrecision, 5, 4) + NANITE_MIN_POSITION_PRECISION; }
+	uint32		GetPosBitsX() const						{ return GetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision_TangentPrecision, 5, 9); }
+	uint32		GetPosBitsY() const						{ return GetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision_TangentPrecision, 5, 14); }
+	uint32		GetPosBitsZ() const						{ return GetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision_TangentPrecision, 5, 19); }
+	uint32		GetNormalPrecision() const				{ return GetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision_TangentPrecision, 4, 24); }
+	uint32		GetTangentPrecision() const				{ return GetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision_TangentPrecision, 28, 4); }
 
 	uint32		GetAttributeOffset() const				{ return GetBits(AttributeOffset_BitsPerAttribute, 22, 0); }
 	uint32		GetBitsPerAttribute() const				{ return GetBits(AttributeOffset_BitsPerAttribute, 10, 22); }
@@ -134,19 +135,21 @@ struct FPackedCluster
 	void		SetNumTris(uint32 NumTris)				{ SetBits(NumTris_IndexOffset, NumTris, 8, 0); }
 	void		SetIndexOffset(uint32 Offset)			{ SetBits(NumTris_IndexOffset, Offset, 24, 8); }
 
-	void		SetBitsPerIndex(uint32 BitsPerIndex)	{ SetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision, BitsPerIndex, 4, 0); }
-	void		SetPosPrecision(int32 Precision)		{ SetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision, uint32(Precision - NANITE_MIN_POSITION_PRECISION), 5, 4); }
-	void		SetPosBitsX(uint32 NumBits)				{ SetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision, NumBits, 5, 9); }
-	void		SetPosBitsY(uint32 NumBits)				{ SetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision, NumBits, 5, 14); }
-	void		SetPosBitsZ(uint32 NumBits)				{ SetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision, NumBits, 5, 19); }
-	void		SetNormalPrecision(uint32 NumBits)		{ SetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision, NumBits, 4, 24); }
+	void		SetBitsPerIndex(uint32 BitsPerIndex)	{ SetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision_TangentPrecision, BitsPerIndex, 4, 0); }
+	void		SetPosPrecision(int32 Precision)		{ SetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision_TangentPrecision, uint32(Precision - NANITE_MIN_POSITION_PRECISION), 5, 4); }
+	void		SetPosBitsX(uint32 NumBits)				{ SetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision_TangentPrecision, NumBits, 5, 9); }
+	void		SetPosBitsY(uint32 NumBits)				{ SetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision_TangentPrecision, NumBits, 5, 14); }
+	void		SetPosBitsZ(uint32 NumBits)				{ SetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision_TangentPrecision, NumBits, 5, 19); }
+	void		SetNormalPrecision(uint32 NumBits)		{ SetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision_TangentPrecision, NumBits, 4, 24); }
+	void		SetTangentPrecision(uint32 NumBits)		{ SetBits(BitsPerIndex_PosPrecision_PosBits_NormalPrecision_TangentPrecision, NumBits, 4, 28); }
 
 	void		SetAttributeOffset(uint32 Offset)		{ SetBits(AttributeOffset_BitsPerAttribute, Offset, 22, 0); }
 	void		SetBitsPerAttribute(uint32 Bits)		{ SetBits(AttributeOffset_BitsPerAttribute, Bits, 10, 22); }
 
-	void		SetDecodeInfoOffset(uint32 Offset)		{ SetBits(DecodeInfoOffset_NumUVs_ColorMode, Offset, 22, 0); }
-	void		SetNumUVs(uint32 Num)					{ SetBits(DecodeInfoOffset_NumUVs_ColorMode, Num, 3, 22); }
-	void		SetColorMode(uint32 Mode)				{ SetBits(DecodeInfoOffset_NumUVs_ColorMode, Mode, 2, 22+3); }
+	void		SetDecodeInfoOffset(uint32 Offset)		{ SetBits(DecodeInfoOffset_HasTangents_NumUVs_ColorMode, Offset, 22, 0); }
+	void		SetHasTangents(bool bHasTangents)		{ SetBits(DecodeInfoOffset_HasTangents_NumUVs_ColorMode, bHasTangents, 1, 22); }
+	void		SetNumUVs(uint32 Num)					{ SetBits(DecodeInfoOffset_HasTangents_NumUVs_ColorMode, Num, 3, 23); }
+	void		SetColorMode(uint32 Mode)				{ SetBits(DecodeInfoOffset_HasTangents_NumUVs_ColorMode, Mode, 2, 26); }
 
 	void		SetColorBitsR(uint32 NumBits)			{ SetBits(ColorBits_GroupIndex, NumBits, 4, 0); }
 	void		SetColorBitsG(uint32 NumBits)			{ SetBits(ColorBits_GroupIndex, NumBits, 4, 4); }
@@ -178,8 +181,9 @@ struct FPageStreamingState
 	uint32			BulkSize;
 	uint32			PageSize;
 	uint32			DependenciesStart;
-	uint32			DependenciesNum;
-	uint32			Flags;
+	uint16			DependenciesNum;
+	uint8			MaxHierarchyDepth;
+	uint8			Flags;
 };
 
 class FHierarchyFixup
@@ -246,10 +250,10 @@ class FFixupChunk	//TODO: rename to something else
 public:
 	struct FHeader
 	{
+		uint16 Magic = 0;
 		uint16 NumClusters = 0;
 		uint16 NumHierachyFixups = 0;
 		uint16 NumClusterFixups = 0;
-		uint16 Pad = 0;
 	} Header;
 	
 	uint8 Data[sizeof(FHierarchyFixup) * NANITE_MAX_CLUSTERS_PER_PAGE + sizeof( FClusterFixup ) * NANITE_MAX_CLUSTERS_PER_PAGE];	// One hierarchy fixup per cluster and at most one cluster fixup per cluster.
@@ -278,6 +282,7 @@ struct FResources
 	uint32							NumRootPages		= 0;
 	int32							PositionPrecision	= 0;
 	int32							NormalPrecision		= 0;
+	int32							TangentPrecision	= 0;
 	uint32							NumInputTriangles	= 0;
 	uint32							NumInputVertices	= 0;
 	uint16							NumInputMeshes		= 0;
@@ -291,6 +296,7 @@ struct FResources
 	int32	RootPageIndex			= INDEX_NONE;
 	int32	ImposterIndex			= INDEX_NONE;
 	uint32	NumHierarchyNodes		= 0;
+	uint32	NumResidentClusters		= 0;
 	uint32	PersistentHash			= NANITE_INVALID_PERSISTENT_HASH;
 
 #if WITH_EDITOR
@@ -347,10 +353,9 @@ public:
 	bool IsRootPage(uint32 PageIndex) const { return PageIndex < NumRootPages; }
 };
 
-
-class ENGINE_API FVertexFactory final : public ::FVertexFactory
+class FVertexFactory final : public ::FVertexFactory
 {
-	DECLARE_VERTEX_FACTORY_TYPE(FVertexFactory);
+	DECLARE_VERTEX_FACTORY_TYPE_API(FVertexFactory, ENGINE_API);
 
 public:
 	FVertexFactory(ERHIFeatureLevel::Type FeatureLevel) : ::FVertexFactory(FeatureLevel)
@@ -361,17 +366,17 @@ public:
 		ReleaseResource();
 	}
 
-	virtual void InitRHI() override final;
+	ENGINE_API virtual void InitRHI(FRHICommandListBase& RHICmdList) override final;
 
-	static bool ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters);
-	static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
-	static void GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements);
+	static ENGINE_API bool ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters);
+	static ENGINE_API void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
+	static ENGINE_API void GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements);
 };
 
 class FVertexFactoryResource : public FRenderResource
 {
 public:
-	virtual void InitRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 	virtual void ReleaseRHI() override;
 
 	FVertexFactory* GetVertexFactory() { return VertexFactory; }
@@ -385,17 +390,13 @@ private:
 	class FNaniteVertexFactory* VertexFactory2 = nullptr;
 };
 
-enum class ERayTracingMode : uint8
-{
-	Fallback = 0u,
-	StreamOut = 1u,
-};
-
-ENGINE_API ERayTracingMode GetRayTracingMode();
-
-extern ENGINE_API TGlobalResource< FVertexFactoryResource > GVertexFactoryResource;
-
-ENGINE_API bool GetSupportsRayTracingProceduralPrimitive(EShaderPlatform InShaderPlatform);
-ENGINE_API bool GetSupportsCustomDepthRendering();
-
 } // namespace Nanite
+
+ENGINE_API void ClearNaniteResources(TPimplPtr<Nanite::FResources>& InResources);
+ENGINE_API void InitNaniteResources(TPimplPtr<Nanite::FResources>& InResources, bool bRecreate = false);
+
+ENGINE_API uint64 GetNaniteResourcesSize(const TPimplPtr<Nanite::FResources>& InResources);
+ENGINE_API void GetNaniteResourcesSizeEx(const TPimplPtr<Nanite::FResources>& InResources, FResourceSizeEx& CumulativeResourceSize);
+
+ENGINE_API uint64 GetNaniteResourcesSize(const Nanite::FResources& InResources);
+ENGINE_API void GetNaniteResourcesSizeEx(const Nanite::FResources& InResources, FResourceSizeEx& CumulativeResourceSize);

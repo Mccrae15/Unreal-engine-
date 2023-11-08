@@ -8,6 +8,7 @@
 #include "Misc/TemplateSequenceEditorPlaybackContext.h"
 #include "Misc/TemplateSequenceEditorSpawnRegister.h"
 #include "Modules/ModuleManager.h"
+#include "MovieScene.h"
 #include "ScopedTransaction.h"
 #include "Selection.h"
 #include "Widgets/Docking/SDockTab.h"
@@ -274,11 +275,11 @@ void FTemplateSequenceEditorToolkit::HandleMapChanged(UWorld* NewWorld, EMapChan
 	if ((MapChangeType == EMapChangeType::LoadMap || MapChangeType == EMapChangeType::NewMap || MapChangeType == EMapChangeType::TearDownWorld))
 	{
 		Sequencer->GetSpawnRegister().CleanUp(*Sequencer);
-		CloseWindow();
+		CloseWindow(EAssetEditorCloseReason::AssetUnloadingOrInvalid);
 	}
 }
 
-bool FTemplateSequenceEditorToolkit::OnRequestClose()
+bool FTemplateSequenceEditorToolkit::OnRequestClose(EAssetEditorCloseReason InCloseReason)
 {
 	return true;
 }

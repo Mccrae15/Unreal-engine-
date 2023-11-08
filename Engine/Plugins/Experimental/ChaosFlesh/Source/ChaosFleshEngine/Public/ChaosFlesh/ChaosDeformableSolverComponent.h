@@ -94,6 +94,36 @@ struct FSolverGridBasedCollisionsGroup
 		float GridDx = 25.;
 };
 
+USTRUCT(BlueprintType)
+struct FSolverGaussSeidelConstraintsGroup
+{
+	GENERATED_USTRUCT_BODY()
+
+	/**
+	* Enable the Gauss Seidel solver instead of the existing XPBD.
+	*/
+	UPROPERTY(EditAnywhere, Category = "GaussSeidelConstraints")
+		bool bUseGaussSeidelConstraints = false;
+
+	/**
+	* Enable another model that runs simulation faster.
+	*/
+	UPROPERTY(EditAnywhere, Category = "GaussSeidelConstraints")
+		bool bUseGSNeohookean = false;
+
+	/**
+	* Enable acceleration technique for Gauss Seidel solver to make simulation look better within a limited budget.
+	*/
+	UPROPERTY(EditAnywhere, Category = "GaussSeidelConstraints")
+		bool bUseSOR = true;
+
+	/**
+	* Acceleration related parameter. Tune it down if simulation becomes unstable. 
+	*/
+	UPROPERTY(EditAnywhere, Category = "GaussSeidelConstraints")
+		float OmegaSOR = 1.6f;
+};
+
 
 USTRUCT(BlueprintType)
 struct FSolverCollisionsGroup
@@ -138,6 +168,12 @@ struct FSolverConstraintsGroup
 
 	UPROPERTY(EditAnywhere, Category = "Constraints")
 	FSolverCorotatedConstraintsGroup CorotatedConstraints;
+
+	/**
+	* These are options for another solver. 
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Constraints")
+	FSolverGaussSeidelConstraintsGroup GaussSeidelConstraints;
 };
 
 
@@ -207,6 +243,8 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Physics")
 	FSolverConstraintsGroup SolverConstraints;
+
+	
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Physics")
 	FSolverForcesGroup SolverForces;

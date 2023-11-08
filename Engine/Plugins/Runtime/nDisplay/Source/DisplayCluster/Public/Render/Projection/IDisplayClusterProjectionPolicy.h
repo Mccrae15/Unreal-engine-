@@ -8,6 +8,7 @@ class FRHICommandListImmediate;
 class IDisplayClusterViewport;
 class IDisplayClusterViewportProxy;
 class IDisplayClusterWarpBlend;
+class IDisplayClusterWarpPolicy;
 class UMeshComponent;
 struct FDisplayClusterConfigurationProjection;
 
@@ -70,6 +71,30 @@ public:
 	virtual void HandleEndScene(IDisplayClusterViewport* InViewport)
 	{ }
 
+	/**
+	* Set warp policy for this projection
+	*
+	* @param InWarpPolicy - the warp policy instance
+	*/
+	virtual void SetWarpPolicy(IDisplayClusterWarpPolicy* InWarpPolicy)
+	{ }
+
+	/**
+	* Get warp policy
+	*/
+	virtual IDisplayClusterWarpPolicy* GetWarpPolicy() const
+	{
+		return nullptr;
+	}
+
+	/**
+	* Get warp policy on rendering thread
+	*/
+	virtual IDisplayClusterWarpPolicy* GetWarpPolicy_RenderThread() const
+	{
+		return nullptr;
+	}
+
 	// Handle request for additional render targetable resource inside viewport api for projection policy
 	virtual bool ShouldUseAdditionalTargetableResource() const
 	{ 
@@ -94,7 +119,7 @@ public:
 	}
 
 	// Return true, if camera projection visible for this viewport geometry
-	// ICVFX Perforamance : if camera frame not visible on this node, disable render for this camera
+	// ICVFX Performance : if camera frame not visible on this node, disable render for this camera
 	virtual bool IsCameraProjectionVisible(const FRotator& InViewRotation, const FVector& InViewLocation, const FMatrix& InProjectionMatrix)
 	{
 		return true;
@@ -108,6 +133,34 @@ public:
 	* @return - True if found changes
 	*/
 	virtual bool IsConfigurationChanged(const struct FDisplayClusterConfigurationProjection* InConfigurationProjectionPolicy) const = 0;
+
+	/** Get viewpoint for this projection policy
+	 *
+	 * @param OutViewRotation - viewpoint rotation
+	 * @param OutViewLocation - viewpoint location
+	 *
+	 * @return - true, if the viewpoint values have changed
+	 */
+	virtual bool GetViewPoint(IDisplayClusterViewport* InViewport, FRotator& InOutViewRotation, FVector& InOutViewLocation)
+	{
+		return false;
+	}
+
+	/** Projection policy can override PP */
+	virtual void OverridePostProcessSettings(IDisplayClusterViewport* InViewport)
+	{ }
+
+	 /** Get the distance from the eye to the viewpoint location
+	 *
+	 * @param InContextNum - eye context of this viewport
+	 * @param OutStereoEyeOffsetDistance - new eye distance
+	 *
+	 * @return - true, if the offset distance of the stereo eye has changed
+	 */
+	virtual bool GetStereoEyeOffsetDistance(IDisplayClusterViewport* InViewport, const uint32 InContextNum, float& InOutStereoEyeOffsetDistance)
+	{
+		return false;
+	}
 
 	/**
 	* @param ViewIdx           - Index of view that is being processed for this viewport

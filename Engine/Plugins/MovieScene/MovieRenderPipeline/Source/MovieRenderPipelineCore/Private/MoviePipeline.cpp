@@ -89,6 +89,7 @@ UMoviePipeline::UMoviePipeline()
 	, bShutdownRequested(false)
 	, bIsTransitioningState(false)
 	, AccumulatedTickSubFrameDeltas(0.f)
+	, bHasRenderedFirstViewThisFrame(false)
 	, CurrentJob(nullptr)
 {
 	CustomTimeStep = CreateDefaultSubobject<UMoviePipelineCustomTimeStep>("MoviePipelineCustomTimeStep");
@@ -369,7 +370,7 @@ void UMoviePipeline::RestoreTargetSequenceToOriginalState()
 }
 
 
-void UMoviePipeline::RequestShutdown(bool bIsError)
+void UMoviePipeline::RequestShutdownImpl(bool bIsError)
 {
 	// It's possible for a previous call to RequestionShutdown to have set an error before this call that may not
 	// We don't want to unset a previously set error state
@@ -394,7 +395,7 @@ void UMoviePipeline::RequestShutdown(bool bIsError)
 	}
 }
 
-void UMoviePipeline::Shutdown(bool bIsError)
+void UMoviePipeline::ShutdownImpl(bool bIsError)
 {
 	check(IsInGameThread());
 
@@ -1785,9 +1786,13 @@ void UMoviePipeline::GetSidecarCameraData(UMoviePipelineExecutorShot* InShot, in
 		BoundCamera->GetCameraView(GetWorld()->GetDeltaSeconds(), OutViewInfo);
 				
 		// We override the current/previous transform based on cached data though to ensure we accurately handle cur/next frame positions
-		OutViewInfo.Location = FrameInfo.CurrSidecarViewLocations[InCameraIndex];
-		OutViewInfo.Rotation = FrameInfo.CurrSidecarViewRotations[InCameraIndex];
-		OutViewInfo.PreviousViewTransform = FTransform(FrameInfo.PrevSidecarViewRotations[InCameraIndex], FrameInfo.PrevSidecarViewLocations[InCameraIndex]);
+		if (FrameInfo.CurrSidecarViewLocations.IsValidIndex(InCameraIndex) && FrameInfo.CurrSidecarViewRotations.IsValidIndex(InCameraIndex) &&
+			FrameInfo.PrevSidecarViewLocations.IsValidIndex(InCameraIndex) && FrameInfo.PrevSidecarViewRotations.IsValidIndex(InCameraIndex))
+		{
+			OutViewInfo.Location = FrameInfo.CurrSidecarViewLocations[InCameraIndex];
+			OutViewInfo.Rotation = FrameInfo.CurrSidecarViewRotations[InCameraIndex];
+			OutViewInfo.PreviousViewTransform = FTransform(FrameInfo.PrevSidecarViewRotations[InCameraIndex], FrameInfo.PrevSidecarViewLocations[InCameraIndex]);
+		}
 	}
 }
 

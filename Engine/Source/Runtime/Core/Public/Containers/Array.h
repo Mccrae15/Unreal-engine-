@@ -4,6 +4,7 @@
 
 #include "CoreTypes.h"
 #include "Misc/AssertionMacros.h"
+#include "Misc/ReverseIterate.h"
 #include "HAL/UnrealMemory.h"
 #include "Templates/IsSigned.h"
 #include "Templates/UnrealTypeTraits.h"
@@ -17,6 +18,8 @@
 #include "Algo/HeapSort.h"
 #include "Algo/IsHeap.h"
 #include "Algo/Impl/BinaryHeap.h"
+#include "Algo/StableSort.h"
+#include "Concepts/GetTypeHashable.h"
 #include "Templates/AndOrNot.h"
 #include "Templates/IdentityFunctor.h"
 #include "Templates/Invoke.h"
@@ -190,7 +193,7 @@ FORCEINLINE TIndexedContainerIterator<ContainerType, ElementType, SizeType> oper
 	 * Pointer-like iterator type for ranged-for loops which checks that the
 	 * container hasn't been resized during iteration.
 	 */
-	template <typename ElementType, typename SizeType>
+	template <typename ElementType, typename SizeType, bool bReverse = false>
 	struct TCheckedPointerIterator
 	{
 		// This iterator type only supports the minimal functionality needed to support
@@ -207,18 +210,39 @@ FORCEINLINE TIndexedContainerIterator<ContainerType, ElementType, SizeType> oper
 
 		FORCEINLINE ElementType& operator*() const
 		{
-			return *Ptr;
+			if constexpr (bReverse)
+			{
+				return *(Ptr - 1);
+			}
+			else
+			{
+				return *Ptr;
+			}
 		}
 
 		FORCEINLINE TCheckedPointerIterator& operator++()
 		{
-			++Ptr;
+			if constexpr (bReverse)
+			{
+				--Ptr;
+			}
+			else
+			{
+				++Ptr;
+			}
 			return *this;
 		}
 
 		FORCEINLINE TCheckedPointerIterator& operator--()
 		{
-			--Ptr;
+			if constexpr (bReverse)
+			{
+				++Ptr;
+			}
+			else
+			{
+				--Ptr;
+			}
 			return *this;
 		}
 
@@ -331,8 +355,11 @@ namespace UE4Array_Private
 	{
 		enum { Value = TArrayElementsAreCompatible<ElementType, TElementType_T<RangeType>>::Value };
 	};
+}
 
-	CORE_API void OnInvalidArrayNum(const TCHAR* ArrayNameSuffix, unsigned long long NewNum);
+namespace UE::Core::Private
+{
+	[[noreturn]] CORE_API void OnInvalidArrayNum(unsigned long long NewNum);
 }
 
 
@@ -360,16 +387,6 @@ public:
 
 private:
 	using USizeType = typename TMakeUnsigned<SizeType>::Type;
-
-	FORCENOINLINE static void OnInvalidNum(USizeType NewNum)
-	{
-		const TCHAR* ArrayNameSuffix = TEXT("");
-		if constexpr (sizeof(SizeType) == 8)
-		{
-			ArrayNameSuffix = TEXT("64");
-		}
-		UE4Array_Private::OnInvalidArrayNum(ArrayNameSuffix, (unsigned long long)NewNum);
-	}
 
 public:
 	UE_DEPRECATED(5.0, "TArray::Allocator type is deprecated, please use TArray::AllocatorType instead.")
@@ -402,7 +419,8 @@ public:
 	{
 		if (Count < 0)
 		{
-			OnInvalidNum((USizeType)Count);
+			// Cast to USizeType first to prevent sign extension on negative sizes, producing unusually large values.
+			UE::Core::Private::OnInvalidArrayNum((unsigned long long)(USizeType)Count);
 		}
 
 		check(Ptr != nullptr || Count == 0);
@@ -549,7 +567,8 @@ private:
 			{
 				if (ToArray.ArrayNum != FromArray.ArrayNum || ToArray.ArrayMax != FromArray.ArrayMax)
 				{
-					OnInvalidNum((USizeType)ToArray.ArrayNum);
+					// Cast to USizeType first to prevent sign extension on negative sizes, producing unusually large values.
+					UE::Core::Private::OnInvalidArrayNum((unsigned long long)(USizeType)ToArray.ArrayNum);
 				}
 			}
 
@@ -588,7 +607,7 @@ private:
 			// This should only happen when we've underflowed or overflowed SizeType
 			if ((SizeType)NewMax < LocalArrayNum)
 			{
-				OnInvalidNum((USizeType)ExtraSlack);
+				UE::Core::Private::OnInvalidArrayNum((unsigned long long)ExtraSlack);
 			}
 
 			ToArray.Reserve(NewMax);
@@ -1791,7 +1810,8 @@ public:
 	{
 		if (NewSize < 0)
 		{
-			OnInvalidNum((USizeType)NewSize);
+			// Cast to USizeType first to prevent sign extension on negative sizes, producing unusually large values.
+			UE::Core::Private::OnInvalidArrayNum((unsigned long long)(USizeType)NewSize);
 		}
 
 		// If we have space to hold the excepted size, then don't reallocate
@@ -1815,7 +1835,8 @@ public:
 	{
 		if (Slack < 0)
 		{
-			OnInvalidNum((USizeType)Slack);
+			// Cast to USizeType first to prevent sign extension on negative sizes, producing unusually large values.
+			UE::Core::Private::OnInvalidArrayNum((unsigned long long)(USizeType)Slack);
 		}
 
 		DestructItems(GetData(), ArrayNum);
@@ -1845,7 +1866,8 @@ public:
 		}
 		else if (NewNum < 0)
 		{
-			OnInvalidNum((USizeType)NewNum);
+			// Cast to USizeType first to prevent sign extension on negative sizes, producing unusually large values.
+			UE::Core::Private::OnInvalidArrayNum((unsigned long long)(USizeType)NewNum);
 		}
 		else if (NewNum < Num())
 		{
@@ -1868,7 +1890,8 @@ public:
 		}
 		else if (NewNum < 0)
 		{
-			OnInvalidNum((USizeType)NewNum);
+			// Cast to USizeType first to prevent sign extension on negative sizes, producing unusually large values.
+			UE::Core::Private::OnInvalidArrayNum((unsigned long long)(USizeType)NewNum);
 		}
 		else if (NewNum < Num())
 		{
@@ -1889,7 +1912,8 @@ public:
 		}
 		else if (NewNum < 0)
 		{
-			OnInvalidNum((USizeType)NewNum);
+			// Cast to USizeType first to prevent sign extension on negative sizes, producing unusually large values.
+			UE::Core::Private::OnInvalidArrayNum((unsigned long long)(USizeType)NewNum);
 		}
 		else if (NewNum < Num())
 		{
@@ -2283,7 +2307,8 @@ public:
 		return *Ptr;
 	}
 
-	/** Implicit conversion operator to container of compatible element type. */
+#if !UE_DEPRECATE_MUTABLE_TOBJECTPTR
+	/** Mutable implicit conversion operator to container of compatible element type. */
 	template <
 		typename AliasElementType = ElementType,
 		std::enable_if_t<TIsContainerElementTypeReinterpretable<AliasElementType>::Value>* = nullptr
@@ -2294,8 +2319,9 @@ public:
 		ElementCompat::ReinterpretRangeContiguous(begin(), end(), Num());
 		return *reinterpret_cast<TArray<typename ElementCompat::ReinterpretType>*>(this);
 	}
-
-	/** Implicit conversion operator to constant container of compatible element type. */
+#endif
+  
+	/** Immutable implicit conversion operator to constant container of compatible element type. */
 	template <
 		typename AliasElementType = ElementType,
 		typename std::enable_if_t<TIsContainerElementTypeReinterpretable<AliasElementType>::Value>* = nullptr
@@ -2477,7 +2503,8 @@ public:
 		checkSlow(Number >= 0);
 		if (Number < 0)
 		{
-			OnInvalidNum((USizeType)Number);
+			// Cast to USizeType first to prevent sign extension on negative sizes, producing unusually large values.
+			UE::Core::Private::OnInvalidArrayNum((unsigned long long)(USizeType)Number);
 		}
 		else if (Number > ArrayMax)
 		{
@@ -2496,7 +2523,7 @@ public:
 		Empty(Number);
 		for (SizeType Index = 0; Index < Number; ++Index)
 		{
-			new(*this) ElementType(Element);
+			Add(Element);
 		}
 	}
 
@@ -2694,10 +2721,9 @@ public:
 	 */
 	FORCEINLINE void SwapMemory(SizeType FirstIndexToSwap, SizeType SecondIndexToSwap)
 	{
-		FMemory::Memswap(
-			(uint8*)AllocatorInstance.GetAllocation() + (sizeof(ElementType)*FirstIndexToSwap),
-			(uint8*)AllocatorInstance.GetAllocation() + (sizeof(ElementType)*SecondIndexToSwap),
-			sizeof(ElementType)
+		::Swap(
+			*(ElementType*)((uint8*)AllocatorInstance.GetAllocation() + (sizeof(ElementType)*FirstIndexToSwap)),
+			*(ElementType*)((uint8*)AllocatorInstance.GetAllocation() + (sizeof(ElementType)*SecondIndexToSwap))
 		);
 	}
 
@@ -2780,11 +2806,15 @@ public:
 	}
 
 	#if TARRAY_RANGED_FOR_CHECKS
-		typedef TCheckedPointerIterator<      ElementType, SizeType> RangedForIteratorType;
-		typedef TCheckedPointerIterator<const ElementType, SizeType> RangedForConstIteratorType;
+		typedef TCheckedPointerIterator<      ElementType, SizeType, false> RangedForIteratorType;
+		typedef TCheckedPointerIterator<const ElementType, SizeType, false> RangedForConstIteratorType;
+		typedef TCheckedPointerIterator<      ElementType, SizeType, true>  RangedForReverseIteratorType;
+		typedef TCheckedPointerIterator<const ElementType, SizeType, true>  RangedForConstReverseIteratorType;
 	#else
-		typedef       ElementType* RangedForIteratorType;
-		typedef const ElementType* RangedForConstIteratorType;
+		typedef                               ElementType* RangedForIteratorType;
+		typedef                         const ElementType* RangedForConstIteratorType;
+		typedef TReversePointerIterator<      ElementType> RangedForReverseIteratorType;
+		typedef TReversePointerIterator<const ElementType> RangedForConstReverseIteratorType;
 	#endif
 
 public:
@@ -2794,15 +2824,23 @@ public:
 	 * STL-like iterators to enable range-based for loop support.
 	 */
 	#if TARRAY_RANGED_FOR_CHECKS
-		FORCEINLINE RangedForIteratorType      begin()       { return RangedForIteratorType     (ArrayNum, GetData()); }
-		FORCEINLINE RangedForConstIteratorType begin() const { return RangedForConstIteratorType(ArrayNum, GetData()); }
-		FORCEINLINE RangedForIteratorType      end  ()       { return RangedForIteratorType     (ArrayNum, GetData() + Num()); }
-		FORCEINLINE RangedForConstIteratorType end  () const { return RangedForConstIteratorType(ArrayNum, GetData() + Num()); }
+		FORCEINLINE RangedForIteratorType             begin ()       { return RangedForIteratorType            (ArrayNum, GetData()); }
+		FORCEINLINE RangedForConstIteratorType        begin () const { return RangedForConstIteratorType       (ArrayNum, GetData()); }
+		FORCEINLINE RangedForIteratorType             end   ()       { return RangedForIteratorType            (ArrayNum, GetData() + Num()); }
+		FORCEINLINE RangedForConstIteratorType        end   () const { return RangedForConstIteratorType       (ArrayNum, GetData() + Num()); }
+		FORCEINLINE RangedForReverseIteratorType      rbegin()       { return RangedForReverseIteratorType     (ArrayNum, GetData() + Num()); }
+		FORCEINLINE RangedForConstReverseIteratorType rbegin() const { return RangedForConstReverseIteratorType(ArrayNum, GetData() + Num()); }
+		FORCEINLINE RangedForReverseIteratorType      rend  ()       { return RangedForReverseIteratorType     (ArrayNum, GetData()); }
+		FORCEINLINE RangedForConstReverseIteratorType rend  () const { return RangedForConstReverseIteratorType(ArrayNum, GetData()); }
 	#else
-		FORCEINLINE RangedForIteratorType      begin()       { return GetData(); }
-		FORCEINLINE RangedForConstIteratorType begin() const { return GetData(); }
-		FORCEINLINE RangedForIteratorType      end()         { return GetData() + Num(); }
-		FORCEINLINE RangedForConstIteratorType end() const   { return GetData() + Num(); }
+		FORCEINLINE RangedForIteratorType             begin ()       { return                                   GetData(); }
+		FORCEINLINE RangedForConstIteratorType        begin () const { return                                   GetData(); }
+		FORCEINLINE RangedForIteratorType             end   ()       { return                                   GetData() + Num(); }
+		FORCEINLINE RangedForConstIteratorType        end   () const { return                                   GetData() + Num(); }
+		FORCEINLINE RangedForReverseIteratorType      rbegin()       { return RangedForReverseIteratorType     (GetData() + Num()); }
+		FORCEINLINE RangedForConstReverseIteratorType rbegin() const { return RangedForConstReverseIteratorType(GetData() + Num()); }
+		FORCEINLINE RangedForReverseIteratorType      rend  ()       { return RangedForReverseIteratorType     (GetData()); }
+		FORCEINLINE RangedForConstReverseIteratorType rend  () const { return RangedForConstReverseIteratorType(GetData()); }
 	#endif
 
 public:
@@ -2812,12 +2850,12 @@ public:
 	 *
 	 * @note: If your array contains raw pointers, they will be automatically dereferenced during sorting.
 	 *        Therefore, your array will be sorted by the values being pointed to, rather than the pointers' values.
-	 *        If this is not desirable, please use Algo::Sort(MyArray) instead.
+	 *        If this is not desirable, please use Algo::Sort(MyArray) directly instead.
 	 *        The auto-dereferencing behavior does not occur with smart pointers.
 	 */
 	void Sort()
 	{
-		::Sort(GetData(), Num());
+		Algo::Sort(*this, TDereferenceWrapper<ElementType, TLess<>>(TLess<>()));
 	}
 
 	/**
@@ -2827,13 +2865,14 @@ public:
 	 *
 	 * @note: If your array contains raw pointers, they will be automatically dereferenced during sorting.
 	 *        Therefore, your predicate will be passed references rather than pointers.
-	 *        If this is not desirable, please use Algo::Sort(MyArray, Predicate) instead.
+	 *        If this is not desirable, please use Algo::Sort(MyArray, Predicate) directly instead.
 	 *        The auto-dereferencing behavior does not occur with smart pointers.
 	 */
 	template <class PREDICATE_CLASS>
 	void Sort(const PREDICATE_CLASS& Predicate)
 	{
-		::Sort(GetData(), Num(), Predicate);
+		TDereferenceWrapper<ElementType, PREDICATE_CLASS> PredicateWrapper(Predicate);
+		Algo::Sort(*this, PredicateWrapper);
 	}
 
 	/**
@@ -2843,11 +2882,12 @@ public:
 	 *
 	 * @note: If your array contains raw pointers, they will be automatically dereferenced during sorting.
 	 *        Therefore, your array will be sorted by the values being pointed to, rather than the pointers' values.
+	 *        If this is not desirable, please use Algo::StableSort(MyArray) directly instead.
 	 *        The auto-dereferencing behavior does not occur with smart pointers.
 	 */
 	void StableSort()
 	{
-		::StableSort(GetData(), Num());
+		Algo::StableSort(*this, TDereferenceWrapper<ElementType, TLess<>>(TLess<>()));
 	}
 
 	/**
@@ -2859,12 +2899,14 @@ public:
 	 *
 	 * @note: If your array contains raw pointers, they will be automatically dereferenced during sorting.
 	 *        Therefore, your predicate will be passed references rather than pointers.
+	 *        If this is not desirable, please use Algo::StableSort(MyArray, Predicate) directly instead.
 	 *        The auto-dereferencing behavior does not occur with smart pointers.
 	 */
 	template <class PREDICATE_CLASS>
 	void StableSort(const PREDICATE_CLASS& Predicate)
 	{
-		::StableSort(GetData(), Num(), Predicate);
+		TDereferenceWrapper<ElementType, PREDICATE_CLASS> PredicateWrapper(Predicate);
+		Algo::StableSort(*this, PredicateWrapper);
 	}
 
 #if defined(_MSC_VER) && !defined(__clang__)	// Relies on MSVC-specific lazy template instantiation to support arrays of incomplete types
@@ -2937,7 +2979,8 @@ private:
 		// This should only happen when we've underflowed or overflowed SizeType in the caller
 		if (LocalArrayNum < OldNum)
 		{
-			OnInvalidNum((USizeType)LocalArrayNum - (USizeType)OldNum);
+			// Cast to USizeType first to prevent sign extension on negative sizes, producing unusually large values.
+			UE::Core::Private::OnInvalidArrayNum((unsigned long long)(USizeType)LocalArrayNum);
 		}
 		ArrayMax = AllocatorCalculateSlackGrow(LocalArrayNum, ArrayMax);
 		AllocatorResizeAllocation(OldNum, ArrayMax);
@@ -3030,7 +3073,7 @@ private:
 			// This should only happen when we've underflowed or overflowed SizeType
 			if ((SizeType)NewMax < NewNum)
 			{
-				OnInvalidNum((USizeType)NewMax);
+				UE::Core::Private::OnInvalidArrayNum((unsigned long long)NewMax);
 			}
 
 			ResizeForCopy(NewNum + ExtraSlack, PrevMax);
@@ -3149,7 +3192,7 @@ public:
 		// Add at the end, then sift up
 		Add(MoveTempIfPossible(InItem));
 		TDereferenceWrapper<ElementType, PREDICATE_CLASS> PredicateWrapper(Predicate);
-		SizeType Result = AlgoImpl::HeapSiftUp(GetData(), 0, Num() - 1, FIdentityFunctor(), PredicateWrapper);
+		SizeType Result = AlgoImpl::HeapSiftUp(GetData(), (SizeType)0, Num() - 1, FIdentityFunctor(), PredicateWrapper);
 
 		return Result;
 	}
@@ -3171,7 +3214,7 @@ public:
 		// Add at the end, then sift up
 		Add(InItem);
 		TDereferenceWrapper<ElementType, PREDICATE_CLASS> PredicateWrapper(Predicate);
-		SizeType Result = AlgoImpl::HeapSiftUp(GetData(), 0, Num() - 1, FIdentityFunctor(), PredicateWrapper);
+		SizeType Result = AlgoImpl::HeapSiftUp(GetData(), (SizeType)0, Num() - 1, FIdentityFunctor(), PredicateWrapper);
 
 		return Result;
 	}
@@ -3225,7 +3268,7 @@ public:
 		RemoveAtSwap(0, 1, bAllowShrinking);
 
 		TDereferenceWrapper< ElementType, PREDICATE_CLASS> PredicateWrapper(Predicate);
-		AlgoImpl::HeapSiftDown(GetData(), 0, Num(), FIdentityFunctor(), PredicateWrapper);
+		AlgoImpl::HeapSiftDown(GetData(), (SizeType)0, Num(), FIdentityFunctor(), PredicateWrapper);
 	}
 
 	/** 
@@ -3270,7 +3313,7 @@ public:
 	{
 		RemoveAtSwap(0, 1, bAllowShrinking);
 		TDereferenceWrapper< ElementType, PREDICATE_CLASS> PredicateWrapper(Predicate);
-		AlgoImpl::HeapSiftDown(GetData(), 0, Num(), FIdentityFunctor(), PredicateWrapper);
+		AlgoImpl::HeapSiftDown(GetData(), (SizeType)0, Num(), FIdentityFunctor(), PredicateWrapper);
 	}
 
 	/** 
@@ -3329,7 +3372,7 @@ public:
 
 		TDereferenceWrapper< ElementType, PREDICATE_CLASS> PredicateWrapper(Predicate);
 		AlgoImpl::HeapSiftDown(GetData(), Index, Num(), FIdentityFunctor(), PredicateWrapper);
-		AlgoImpl::HeapSiftUp(GetData(), 0, FPlatformMath::Min(Index, Num() - 1), FIdentityFunctor(), PredicateWrapper);
+		AlgoImpl::HeapSiftUp(GetData(), (SizeType)0, FPlatformMath::Min(Index, Num() - 1), FIdentityFunctor(), PredicateWrapper);
 	}
 
 	/**
@@ -3434,20 +3477,26 @@ struct TIsContiguousContainer<TArray<T, AllocatorType>>
 };
 
 /**
- * Traits class which determines whether or not a type is a TArray.
+ * Trait which determines whether or not a type is a TArray.
  */
-template <typename T> struct TIsTArray { enum { Value = false }; };
+template <typename T> constexpr bool TIsTArray_V = false;
 
-template <typename InElementType, typename InAllocatorType> struct TIsTArray<               TArray<InElementType, InAllocatorType>> { enum { Value = true }; };
-template <typename InElementType, typename InAllocatorType> struct TIsTArray<const          TArray<InElementType, InAllocatorType>> { enum { Value = true }; };
-template <typename InElementType, typename InAllocatorType> struct TIsTArray<      volatile TArray<InElementType, InAllocatorType>> { enum { Value = true }; };
-template <typename InElementType, typename InAllocatorType> struct TIsTArray<const volatile TArray<InElementType, InAllocatorType>> { enum { Value = true }; };
+template <typename InElementType, typename InAllocatorType> constexpr bool TIsTArray_V<               TArray<InElementType, InAllocatorType>> = true;
+template <typename InElementType, typename InAllocatorType> constexpr bool TIsTArray_V<const          TArray<InElementType, InAllocatorType>> = true;
+template <typename InElementType, typename InAllocatorType> constexpr bool TIsTArray_V<      volatile TArray<InElementType, InAllocatorType>> = true;
+template <typename InElementType, typename InAllocatorType> constexpr bool TIsTArray_V<const volatile TArray<InElementType, InAllocatorType>> = true;
+
+template <typename T>
+struct TIsTArray
+{
+	enum { Value = TIsTArray_V<T> };
+};
 
 
 //
 // Array operator news.
 //
-template <typename T,typename AllocatorType> void* operator new( size_t Size, TArray<T,AllocatorType>& Array )
+template <typename T,typename AllocatorType> void* operator new(size_t Size, TArray<T, AllocatorType>& Array)
 {
 	check(Size == sizeof(T));
 	const auto Index = Array.AddUninitialized();
@@ -3493,56 +3542,55 @@ struct TArrayPrivateFriend
 
 		check(SerializeNum >= 0);
 
-		if (!Ar.IsError() && SerializeNum > 0 && ensure(!Ar.IsNetArchive() || SerializeNum <= MaxNetArraySerialize))
+		if (Ar.IsError() || SerializeNum < 0 || !ensure(!Ar.IsNetArchive() || SerializeNum <= MaxNetArraySerialize))
 		{
-			// if we don't need to perform per-item serialization, just read it in bulk
-			if constexpr (sizeof(ElementType) == 1 || TCanBulkSerialize<ElementType>::Value)
+			Ar.SetError();
+			return Ar;
+		}
+
+		// if we don't need to perform per-item serialization, just read it in bulk
+		if constexpr (sizeof(ElementType) == 1 || TCanBulkSerialize<ElementType>::Value)
+		{
+			A.ArrayNum = SerializeNum;
+
+			// Serialize simple bytes which require no construction or destruction.
+			if ((A.ArrayNum || A.ArrayMax) && Ar.IsLoading())
 			{
-				A.ArrayNum = SerializeNum;
-
-				// Serialize simple bytes which require no construction or destruction.
-				if ((A.ArrayNum || A.ArrayMax) && Ar.IsLoading())
-				{
-					A.ResizeForCopy(A.ArrayNum, A.ArrayMax);
-				}
-
-				if(TIsUECoreVariant<ElementType, double>::Value && Ar.IsLoading() && Ar.UEVer() < EUnrealEngineObjectUE5Version::LARGE_WORLD_COORDINATES)
-				{
-					// Per item serialization is required for core variant types loaded from pre LWC archives, to enable conversion from float to double.
-					A.Empty(SerializeNum);
-					for (SizeType i=0; i<SerializeNum; i++)
-					{
-						Ar << *::new(A) ElementType;
-					}		
-				}
-				else
-				{
-					Ar.Serialize(A.GetData(), A.Num() * sizeof(ElementType));
-				}
+				A.ResizeForCopy(A.ArrayNum, A.ArrayMax);
 			}
-			else if (Ar.IsLoading())
-			{
-				// Required for resetting ArrayNum
-				A.Empty(SerializeNum);
 
+			if(TIsUECoreVariant<ElementType, double>::Value && Ar.IsLoading() && Ar.UEVer() < EUnrealEngineObjectUE5Version::LARGE_WORLD_COORDINATES)
+			{
+				// Per item serialization is required for core variant types loaded from pre LWC archives, to enable conversion from float to double.
+				A.Empty(SerializeNum);
 				for (SizeType i=0; i<SerializeNum; i++)
 				{
-					Ar << *::new(A) ElementType;
+					Ar << A.AddDefaulted_GetRef();
 				}
 			}
 			else
 			{
-				A.ArrayNum = SerializeNum;
+				Ar.Serialize(A.GetData(), A.Num() * sizeof(ElementType));
+			}
+		}
+		else if (Ar.IsLoading())
+		{
+			// Required for resetting ArrayNum
+			A.Empty(SerializeNum);
 
-				for (SizeType i=0; i<A.ArrayNum; i++)
-				{
-					Ar << A[i];
-				}
+			for (SizeType i=0; i<SerializeNum; i++)
+			{
+				Ar << A.AddDefaulted_GetRef();
 			}
 		}
 		else
 		{
-			Ar.SetError();
+			A.ArrayNum = SerializeNum;
+
+			for (SizeType i=0; i<A.ArrayNum; i++)
+			{
+				Ar << A[i];
+			}
 		}
 
 		return Ar;
@@ -3554,4 +3602,16 @@ template<typename ElementType, typename AllocatorType>
 FArchive& operator<<(FArchive& Ar, TArray<ElementType, AllocatorType>& A)
 {
 	return TArrayPrivateFriend::Serialize(Ar, A);
+}
+
+/** Returns a unique hash by combining those of each array element. */
+template<typename InElementType, typename InAllocatorType>
+uint32 GetTypeHash(const TArray<InElementType, InAllocatorType>& A)
+{
+	uint32 Hash = 0;
+	for (const InElementType& V : A)
+	{
+		Hash = HashCombineFast(Hash, GetTypeHash(V));
+	}
+	return Hash;
 }

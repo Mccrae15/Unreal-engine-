@@ -31,14 +31,18 @@ static FVector3f UserGetDisplacement(
 	UV += Vert1.UVs[0] * Barycentrics.Y;
 	UV += Vert2.UVs[0] * Barycentrics.Z;
 
-	FVector3f Normal;
-	Normal  = Vert0.TangentX * Barycentrics.X;
-	Normal += Vert1.TangentX * Barycentrics.Y;
-	Normal += Vert2.TangentX * Barycentrics.Z;
+	const FVector3f Normal0 = FVector3f(Vert0.UVs[6].X, Vert0.UVs[6].Y, Vert0.UVs[7].X);
+	const FVector3f Normal1 = FVector3f(Vert1.UVs[6].X, Vert1.UVs[6].Y, Vert1.UVs[7].X);
+	const FVector3f Normal2 = FVector3f(Vert2.UVs[6].X, Vert2.UVs[6].Y, Vert2.UVs[7].X);
 
-	if( Vert0.TangentX.IsUnit() &&
-		Vert1.TangentX.IsUnit() &&
-		Vert2.TangentX.IsUnit() )
+	FVector3f Normal;
+	Normal  = Normal0 * Barycentrics.X;
+	Normal += Normal1 * Barycentrics.Y;
+	Normal += Normal2 * Barycentrics.Z;
+
+	if( Normal0.IsUnit() &&
+		Normal1.IsUnit() &&
+		Normal2.IsUnit() )
 	{
 		Normal.Normalize();
 	}
@@ -75,14 +79,18 @@ static FVector2f UserGetErrorBounds(
 	LerpedDisplacement += TAffine< FVector3f, 2 >( Displacement1 ) * Barycentric1;
 	LerpedDisplacement += TAffine< FVector3f, 2 >( Displacement2 ) * Barycentric2;
 
-	TAffine< FVector3f, 2 > Normal;
-	Normal  = TAffine< FVector3f, 2 >( Vert0.TangentX ) * Barycentric0;
-	Normal += TAffine< FVector3f, 2 >( Vert1.TangentX ) * Barycentric1;
-	Normal += TAffine< FVector3f, 2 >( Vert2.TangentX ) * Barycentric2;
+	const FVector3f Normal0 = FVector3f(Vert0.UVs[6].X, Vert0.UVs[6].Y, Vert0.UVs[7].X);
+	const FVector3f Normal1 = FVector3f(Vert1.UVs[6].X, Vert1.UVs[6].Y, Vert1.UVs[7].X);
+	const FVector3f Normal2 = FVector3f(Vert2.UVs[6].X, Vert2.UVs[6].Y, Vert2.UVs[7].X);
 
-	if( Vert0.TangentX.IsUnit() &&
-		Vert1.TangentX.IsUnit() &&
-		Vert2.TangentX.IsUnit() )
+	TAffine< FVector3f, 2 > Normal;
+	Normal  = TAffine< FVector3f, 2 >( Normal0 ) * Barycentric0;
+	Normal += TAffine< FVector3f, 2 >( Normal1 ) * Barycentric1;
+	Normal += TAffine< FVector3f, 2 >( Normal2 ) * Barycentric2;
+
+	if( Normal0.IsUnit() &&
+		Normal1.IsUnit() &&
+		Normal2.IsUnit() )
 	{
 		Normal = Normalize( Normal );
 	}
@@ -154,9 +162,10 @@ static FVector2f UserGetErrorBounds(
 bool DisplaceNaniteMesh(
 	const FNaniteDisplacedMeshParams& Parameters,
 	const uint32 NumTextureCoord,
-	TArray< FStaticMeshBuildVertex >& Verts,
+	FMeshBuildVertexData& Verts,
 	TArray< uint32 >& Indexes,
-	TArray< int32 >& MaterialIndexes
+	TArray< int32 >& MaterialIndexes,
+	FBounds3f& VertexBounds
 )
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(DisplaceNaniteMesh);
@@ -166,68 +175,65 @@ bool DisplaceNaniteMesh(
 	// TODO: Make the mesh prepare and displacement logic extensible, and not hardcoded within this plugin
 
 	// START - MESH PREPARE
-
-	TArray<uint32> VertSamples;
-	VertSamples.SetNumZeroed(Verts.Num());
-
-	ParallelFor(TEXT("Nanite.Displace.Guide"), Verts.Num(), 1024,
-	[&](int32 VertIndex)
+	TArray<FVector3f> VertDisplacements;
+	if (Verts.UVs.Num() > 1)
 	{
-		FStaticMeshBuildVertex& TargetVert = Verts[VertIndex];
+		TArray<uint32> VertSamples;
+		VertSamples.SetNumZeroed(Verts.Position.Num());
+		VertDisplacements.SetNumZeroed(Verts.Position.Num());
 
-		TargetVert.TangentX = FVector3f::ZeroVector;
-
-		for (int32 GuideVertIndex = 0; GuideVertIndex < Verts.Num(); ++GuideVertIndex)
+		ParallelFor(TEXT("Nanite.Displace.Guide"), Verts.Position.Num(), 1024,
+		[&](int32 VertIndex)
 		{
-			const FStaticMeshBuildVertex& GuideVert = Verts[GuideVertIndex];
-
-			if (GuideVert.UVs[1].Y >= 0.0f)
+			for (int32 GuideVertIndex = 0; GuideVertIndex < Verts.Position.Num(); ++GuideVertIndex)
 			{
-				continue;
+				if (Verts.UVs[1][GuideVertIndex].Y >= 0.0f)
+				{
+					continue;
+				}
+
+				FVector3f GuideVertPos = Verts.Position[GuideVertIndex];
+
+				// Matches the geoscript prototype (TODO: Remove)
+				const bool bApplyTolerance = true;
+				if (bApplyTolerance)
+				{
+					float Tolerance = 0.01f;
+					GuideVertPos /= Tolerance;
+					GuideVertPos.X = float(FMath::CeilToInt(GuideVertPos.X)) * Tolerance;
+					GuideVertPos.Y = float(FMath::CeilToInt(GuideVertPos.Y)) * Tolerance;
+					GuideVertPos.Z = float(FMath::CeilToInt(GuideVertPos.Z)) * Tolerance;
+				}
+
+				if (FVector3f::Distance(Verts.Position[VertIndex], GuideVertPos) < 0.1f)
+				{
+					++VertSamples[VertIndex];
+					VertDisplacements[VertIndex] += Verts.TangentZ[GuideVertIndex];
+				}
 			}
 
-			FVector3f GuideVertPos = GuideVert.Position;
-
-			// Matches the geoscript prototype (TODO: Remove)
-			const bool bApplyTolerance = true;
-			if (bApplyTolerance)
+			if (VertSamples[VertIndex] > 0)
 			{
-			    float Tolerance = 0.01f;
-			    GuideVertPos /= Tolerance;
-			    GuideVertPos.X = float(FMath::CeilToInt(GuideVertPos.X)) * Tolerance;
-			    GuideVertPos.Y = float(FMath::CeilToInt(GuideVertPos.Y)) * Tolerance;
-			    GuideVertPos.Z = float(FMath::CeilToInt(GuideVertPos.Z)) * Tolerance;
+				VertDisplacements[VertIndex].Normalize();
 			}
-
-			if (FVector3f::Distance(TargetVert.Position, GuideVertPos) < 0.1f)
-			{
-				++VertSamples[VertIndex];
-				TargetVert.TangentX += GuideVert.TangentZ;
-			}
-		}
-
-		if (VertSamples[VertIndex] > 0)
-		{
-			TargetVert.TangentX /= VertSamples[VertIndex];
-			TargetVert.TangentX.Normalize();
-		}
-	});
+		});
+	}
 	// END - MESH PREPARE
 
 	FBounds3f Bounds;
-	for( auto& Vert : Verts )
-		Bounds += Vert.Position;
+	for( const FVector3f& VertPosition : Verts.Position )
+		Bounds += VertPosition;
 
 	float SurfaceArea = 0.0f;
 	for( int32 TriIndex = 0; TriIndex < MaterialIndexes.Num(); TriIndex++ )
 	{
-		auto& Vert0 = Verts[ Indexes[ TriIndex * 3 + 0 ] ];
-		auto& Vert1 = Verts[ Indexes[ TriIndex * 3 + 1 ] ];
-		auto& Vert2 = Verts[ Indexes[ TriIndex * 3 + 2 ] ];
+		const FVector3f& Vert0Position = Verts.Position[ Indexes[ TriIndex * 3 + 0 ] ];
+		const FVector3f& Vert1Position = Verts.Position[ Indexes[ TriIndex * 3 + 1 ] ];
+		const FVector3f& Vert2Position = Verts.Position[ Indexes[ TriIndex * 3 + 2 ] ];
 
-		FVector3f Edge01 = Vert1.Position - Vert0.Position;
-		FVector3f Edge12 = Vert2.Position - Vert1.Position;
-		FVector3f Edge20 = Vert0.Position - Vert2.Position;
+		FVector3f Edge01 = Vert1Position - Vert0Position;
+		FVector3f Edge12 = Vert2Position - Vert1Position;
+		FVector3f Edge20 = Vert0Position - Vert2Position;
 
 		SurfaceArea += 0.5f * ( Edge01 ^ Edge20 ).Size();
 	}
@@ -240,14 +246,34 @@ bool DisplaceNaniteMesh(
 	TArray< Nanite::FDisplacementMap > DisplacementMaps;
 	for( auto& DisplacementMap : Parameters.DisplacementMaps )
 	{
-		if( IsValid( DisplacementMap.Texture ) )
+
+		if (DisplacementMap.Texture)
 		{
-			DisplacementMaps.Add( Nanite::FDisplacementMap(
-				DisplacementMap.Texture->Source,
-				DisplacementMap.Magnitude,
-				DisplacementMap.Center,
-				DisplacementMap.Texture->AddressX,
-				DisplacementMap.Texture->AddressY ) );
+			if (IsValid(DisplacementMap.Texture) && DisplacementMap.Texture->Source.IsValid())
+			{
+				FImage FirstMipImage;
+				if (DisplacementMap.Texture->Source.GetMipImage(FirstMipImage, 0))
+				{
+					DisplacementMaps.Add(Nanite::FDisplacementMap(
+						MoveTemp(FirstMipImage),
+						DisplacementMap.Magnitude,
+						DisplacementMap.Center,
+						DisplacementMap.Texture->AddressX,
+						DisplacementMap.Texture->AddressY));
+				}
+				else
+				{
+					// Virtualization can fail to fetch the bulk data. (Avoid crashing or polluting a ddc key)
+					UE_LOG( LogStaticMesh, Error, TEXT("Adaptive tessellate failed because it couldn't read the displacement texture source data"));
+					return false;
+				}
+			}
+			else
+			{
+				// If the raw pointer is not null, but for some reason it is not valid bail out of the build to not pollute a ddc key
+				UE_LOG( LogStaticMesh, Error, TEXT("Adaptive tessellate failed because it couldn't use the displacement texture"));
+				return false;
+			}
 		}
 		else
 		{
@@ -256,9 +282,19 @@ bool DisplaceNaniteMesh(
 	}
 
 	TArray< FLerpVert >	LerpVerts;
-	LerpVerts.AddUninitialized( Verts.Num() );
-	for( int i = 0; i < Verts.Num(); i++ )
-		LerpVerts[i] = Verts[i];
+	LerpVerts.AddUninitialized( Verts.Position.Num() );
+	for( int32 i = 0; i < Verts.Position.Num(); i++ )
+		LerpVerts[i] = MakeStaticMeshVertex(Verts, i);
+	
+	if (!VertDisplacements.IsEmpty())
+	{
+		for (int32 i = 0; i < Verts.Position.Num(); i++)
+		{
+			LerpVerts[i].UVs[6].X = VertDisplacements[i].X;
+			LerpVerts[i].UVs[6].Y = VertDisplacements[i].Y;
+			LerpVerts[i].UVs[7].X = VertDisplacements[i].Z;
+		}
+	}
 
 	Nanite::FAdaptiveTessellator Tessellator( LerpVerts, Indexes, MaterialIndexes, TargetError, TargetError, true,
 		[&](const FVector3f& Barycentrics,
@@ -296,9 +332,40 @@ bool DisplaceNaniteMesh(
 				DisplacementMaps );
 		} );
 
-	Verts.SetNumUninitialized( LerpVerts.Num() );
-	for( int i = 0; i < Verts.Num(); i++ )
-		Verts[i] = LerpVerts[i];
+	const bool bHasVertexColor = Verts.Color.Num() > 0;
+	
+	Verts.Position.SetNumUninitialized(LerpVerts.Num());
+	Verts.TangentX.SetNumUninitialized(LerpVerts.Num());
+	Verts.TangentY.SetNumUninitialized(LerpVerts.Num());
+	Verts.TangentZ.SetNumUninitialized(LerpVerts.Num());
+
+	for (int32 UVCoord = 0; UVCoord < Verts.UVs.Num(); ++UVCoord)
+	{
+		Verts.UVs[UVCoord].SetNumUninitialized(LerpVerts.Num());
+	}
+
+	Verts.Color.SetNumUninitialized(bHasVertexColor ? LerpVerts.Num() : 0);
+
+	for (int32 LerpIndex = 0; LerpIndex < LerpVerts.Num(); ++LerpIndex)
+	{
+		const FLerpVert& LerpVert = LerpVerts[LerpIndex];
+		Verts.Position[LerpIndex] = LerpVert.Position;
+		Verts.TangentX[LerpIndex] = LerpVert.TangentX;
+		Verts.TangentY[LerpIndex] = LerpVert.TangentY;
+		Verts.TangentZ[LerpIndex] = LerpVert.TangentZ;
+
+		for (int32 UVCoord = 0; UVCoord < Verts.UVs.Num(); ++UVCoord)
+		{
+			Verts.UVs[UVCoord][LerpIndex] = LerpVert.UVs[UVCoord];
+		}
+
+		if (bHasVertexColor)
+		{
+			Verts.Color[LerpIndex] = LerpVert.Color.ToFColor(false);
+		}
+
+		VertexBounds += LerpVert.Position;
+	}
 
 	uint32 Time1 = FPlatformTime::Cycles();
 	UE_LOG( LogStaticMesh, Log, TEXT("Adaptive tessellate [%.2fs], tris: %i"), FPlatformTime::ToMilliseconds( Time1 - Time0 ) / 1000.0f, Indexes.Num() / 3 );

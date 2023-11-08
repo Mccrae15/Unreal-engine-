@@ -91,6 +91,14 @@ static FAutoConsoleVariableRef CVarNaniteRayTracingMaxStagingBufferSizeMB(
 	ECVF_RenderThreadSafe
 );
 
+static bool GNaniteRayTracingProfileStreamOut = false;
+static FAutoConsoleVariableRef CVarNaniteRayTracingProfileStreamOut(
+	TEXT("r.RayTracing.Nanite.ProfileStreamOut"),
+	GNaniteRayTracingProfileStreamOut,
+	TEXT("[Development only] Stream out pending requests every frame in order to measure performance."),
+	ECVF_RenderThreadSafe
+);
+
 DECLARE_GPU_STAT(RebuildNaniteBLAS);
 
 DECLARE_STATS_GROUP(TEXT("Nanite RayTracing"), STATGROUP_NaniteRayTracing, STATCAT_Advanced);
@@ -156,7 +164,7 @@ namespace Nanite
 
 	}
 
-	void FRayTracingManager::InitRHI()
+	void FRayTracingManager::InitRHI(FRHICommandListBase&)
 	{
 		if (!DoesPlatformSupportNanite(GMaxRHIShaderPlatform))
 		{
@@ -255,11 +263,19 @@ namespace Nanite
 			Data->SegmentMapping = MeshInfo.SegmentMapping;
 			Data->DebugName = MeshInfo.DebugName;
 
+			Data->NumResidentClusters = 0;
+			Data->NumResidentClustersUpdate = MeshInfo.NumResidentClusters;
+
 			Data->PrimitiveId = INDEX_NONE;
 
 			Id = Geometries.Add(Data);
 
-			UpdateRequests.Add(Id);
+			if (Data->NumResidentClustersUpdate > 0)
+			{
+				// some clusters are already streamed in and RequestUpdates(...) is only called when new pages are streamed in/out
+				// so request an update here to make sure we build ray tracing geometry with the currently available data
+				UpdateRequests.Add(Id);
+			}
 		}
 		else
 		{
@@ -304,20 +320,25 @@ namespace Nanite
 		NaniteProxy->SetRayTracingDataOffset(INDEX_NONE);
 	}
 
-	void FRayTracingManager::RequestUpdates(const TSet<uint32>& InUpdateRequests)
+	void FRayTracingManager::RequestUpdates(const TMap<uint32, uint32>& InUpdateRequests)
 	{
 		if (!IsRayTracingAllowed())
 		{
 			return;
 		}
 
-		for (uint32 ResourceId : InUpdateRequests)
+		for (auto& Elem : InUpdateRequests)
 		{
-			uint32* Id = ResourceToRayTracingIdMap.Find(ResourceId);
+			uint32 RuntimeResourceID = Elem.Key;
+			uint32* GeometryId = ResourceToRayTracingIdMap.Find(RuntimeResourceID);
 
-			if (Id != nullptr)
+			if (GeometryId != nullptr)
 			{
-				UpdateRequests.Add(*Id);
+				FInternalData& Data = *Geometries[*GeometryId];
+				Data.NumResidentClustersUpdate = Elem.Value;
+				check(Data.NumResidentClustersUpdate > 0);
+
+				UpdateRequests.Add(*GeometryId);
 			}
 		}
 	}
@@ -343,7 +364,7 @@ namespace Nanite
 		RDG_BUFFER_ACCESS(ScratchBuffer, ERHIAccess::UAVCompute)
 	END_SHADER_PARAMETER_STRUCT()
 
-	void FRayTracingManager::ProcessUpdateRequests(FRDGBuilder& GraphBuilder, FShaderResourceViewRHIRef GPUScenePrimitiveBufferSRV)
+	void FRayTracingManager::ProcessUpdateRequests(FRDGBuilder& GraphBuilder, FSceneUniformBuffer &SceneUniformBuffer)
 	{
 		// D3D12 limits resources to 2048MB.
 		GNaniteRayTracingMaxStagingBufferSizeMB = FMath::Min(GNaniteRayTracingMaxStagingBufferSizeMB, 2048);
@@ -373,7 +394,9 @@ namespace Nanite
 			{
 				FInternalData& Data = *Geometries[GeometryId];
 
-				const uint64 NewNumAuxiliaryDataEntries = NumAuxiliaryDataEntries + CalculateAuxiliaryDataSizeInUints(Data.NumClusters * NANITE_MAX_CLUSTER_TRIANGLES);
+				check(Data.NumResidentClustersUpdate > 0 && Data.NumResidentClustersUpdate <= Data.NumClusters);
+
+				const uint64 NewNumAuxiliaryDataEntries = NumAuxiliaryDataEntries + CalculateAuxiliaryDataSizeInUints(Data.NumResidentClustersUpdate * NANITE_MAX_CLUSTER_TRIANGLES);
 				const uint64 NewAuxiliaryDataBufferSize = NewNumAuxiliaryDataEntries * sizeof(uint32);
 
 				if (NewAuxiliaryDataBufferSize >= (uint64)GNaniteRayTracingMaxStagingBufferSizeMB * 1024ull * 1024ull)
@@ -383,8 +406,13 @@ namespace Nanite
 
 				check(NewAuxiliaryDataBufferSize <= (1u << 31)); // D3D12 limits resources to 2048MB.
 
-				UpdateRequests.Remove(GeometryId);
+				if (!GNaniteRayTracingProfileStreamOut) // don't remove request when profiling stream out
+				{
+					UpdateRequests.Remove(GeometryId);
+				}
 				ToUpdate.Add(GeometryId);
+
+				Data.NumResidentClusters = Data.NumResidentClustersUpdate;
 
 				check(!Data.bUpdating);
 				Data.bUpdating = true;
@@ -395,7 +423,7 @@ namespace Nanite
 				check(Data.StagingAuxiliaryDataOffset == INDEX_NONE);
 				Data.StagingAuxiliaryDataOffset = NumAuxiliaryDataEntries;
 
-				NumMeshDataEntries += (3 + 2 * Data.NumSegments); // one entry per mesh
+				NumMeshDataEntries += (sizeof(FStreamOutMeshDataHeader) + sizeof(FStreamOutMeshDataSegment) * Data.NumSegments);
 				NumAuxiliaryDataEntries = NewNumAuxiliaryDataEntries;
 				NumSegmentMappingEntries += Data.SegmentMapping.Num();
 			}
@@ -409,9 +437,12 @@ namespace Nanite
 			return;
 		}
 
+		RDG_EVENT_SCOPE(GraphBuilder, "Nanite::FRayTracingManager::ProcessUpdateRequests");
+
 		bUpdating = true;
 
 		FReadbackData& ReadbackData = ReadbackBuffers[ReadbackBuffersWriteIndex];
+		check(ReadbackData.Entries.IsEmpty());
 
 		// Upload geometry data
 		FRDGBufferRef RequestBuffer = nullptr;
@@ -454,7 +485,24 @@ namespace Nanite
 			SegmentMappingBuffer = CreateStructuredBuffer(GraphBuilder, TEXT("NaniteRayTracing.SegmentMappingBuffer"), SegmentMappingUploadData);
 		}
 
-		FRDGBufferRef MeshDataBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(uint32), FMath::Max(NumMeshDataEntries, 32U)), TEXT("NaniteStreamOut.MeshDataBuffer"));
+		FRDGBufferDesc MeshDataBufferDesc = FRDGBufferDesc::CreateStructuredDesc(sizeof(uint32), FMath::Max(NumMeshDataEntries, 32U));
+		MeshDataBufferDesc.Usage |= BUF_SourceCopy;
+
+#if USE_NON_TRANSIENT_MESH_DATA_BUFFER
+		FRDGBufferRef MeshDataBuffer;
+		if (!MeshDataBufferPooled || MeshDataBufferDesc.GetSize() > MeshDataBufferPooled->GetSize())
+		{
+			MeshDataBuffer = GraphBuilder.CreateBuffer(MeshDataBufferDesc, TEXT("NaniteRayTracing.MeshDataBuffer"));
+
+			MeshDataBufferPooled = GraphBuilder.ConvertToExternalBuffer(MeshDataBuffer);
+		}
+		else
+		{
+			MeshDataBuffer = GraphBuilder.RegisterExternalBuffer(MeshDataBufferPooled);
+		}
+#else
+		FRDGBufferRef MeshDataBuffer = GraphBuilder.CreateBuffer(MeshDataBufferDesc, TEXT("NaniteRayTracing.MeshDataBuffer"));
+#endif
 		AddClearUAVPass(GraphBuilder, GraphBuilder.CreateUAV(MeshDataBuffer), 0);
 
 		FRDGBufferRef StagingAuxiliaryDataBufferRDG;
@@ -485,7 +533,7 @@ namespace Nanite
 		StreamOutData(
 			GraphBuilder,
 			GetGlobalShaderMap(GetFeatureLevel()),
-			GPUScenePrimitiveBufferSRV,
+			SceneUniformBuffer,
 			NodesAndClusterBatchesBuffer,
 			GetCutError(),
 			ToUpdate.Num(),
@@ -500,18 +548,37 @@ namespace Nanite
 
 		INC_DWORD_STAT_BY(STAT_NaniteRayTracingStreamOutRequests, ToUpdate.Num());
 
-		// readback
+		if (!GNaniteRayTracingProfileStreamOut)
 		{
-			AddReadbackBufferPass(GraphBuilder, RDG_EVENT_NAME("NaniteRayTracing::Readback"), MeshDataBuffer,
-				[MeshDataReadbackBuffer = ReadbackData.MeshDataReadbackBuffer, MeshDataBuffer](FRHICommandList& RHICmdList)
+			// readback
 			{
-				MeshDataReadbackBuffer->EnqueueCopy(RHICmdList, MeshDataBuffer->GetRHI(), 0u);
-			});
+				AddReadbackBufferPass(GraphBuilder, RDG_EVENT_NAME("NaniteRayTracing::Readback"), MeshDataBuffer,
+					[MeshDataReadbackBuffer = ReadbackData.MeshDataReadbackBuffer, MeshDataBuffer](FRHICommandList& RHICmdList)
+					{
+						MeshDataReadbackBuffer->EnqueueCopy(RHICmdList, MeshDataBuffer->GetRHI(), 0u);
+					});
 
-			ReadbackData.NumMeshDataEntries = NumMeshDataEntries;
+				ReadbackData.NumMeshDataEntries = NumMeshDataEntries;
 
-			ReadbackBuffersWriteIndex = (ReadbackBuffersWriteIndex + 1u) % MaxReadbackBuffers;
-			ReadbackBuffersNumPending = FMath::Min(ReadbackBuffersNumPending + 1u, MaxReadbackBuffers);
+				ReadbackBuffersWriteIndex = (ReadbackBuffersWriteIndex + 1u) % MaxReadbackBuffers;
+				ReadbackBuffersNumPending = FMath::Min(ReadbackBuffersNumPending + 1u, MaxReadbackBuffers);
+			}
+		}
+		else
+		{
+			// if running profile mode, clear state for next frame
+
+			bUpdating = false;
+
+			for (auto GeometryId : ToUpdate)
+			{
+				FInternalData& Data = *Geometries[GeometryId];
+				Data.bUpdating = false;
+				Data.BaseMeshDataOffset = -1;
+				Data.StagingAuxiliaryDataOffset = INDEX_NONE;
+			}
+
+			ReadbackData.Entries.Empty();
 		}
 
 		ToUpdate.Empty();
@@ -553,7 +620,7 @@ namespace Nanite
 
 		// scheduling pending builds
 		{
-			checkf(ScheduledBuilds.IsEmpty(), TEXT("Scheduled builds were not dispacthed last frame."));
+			checkf(ScheduledBuilds.IsEmpty(), TEXT("Scheduled builds were not dispatched last frame."));
 
 			for (const FPendingBuild& PendingBuild : PendingBuilds)
 			{
@@ -607,15 +674,21 @@ namespace Nanite
 			{
 				ReadbackBuffersNumPending--;
 
-				const uint32* MeshDataReadbackBufferPtr = (const uint32*)ReadbackData.MeshDataReadbackBuffer->Lock(ReadbackData.NumMeshDataEntries * sizeof(uint32));
+				auto MeshDataReadbackBufferPtr = (const uint32*)ReadbackData.MeshDataReadbackBuffer->Lock(ReadbackData.NumMeshDataEntries * sizeof(uint32));
 
 				for (int32 GeometryIndex = 0; GeometryIndex < ReadbackData.Entries.Num(); ++GeometryIndex)
 				{
 					uint32 GeometryId = ReadbackData.Entries[GeometryIndex];
 					FInternalData& Data = *Geometries[GeometryId];
 
-					const uint32 VertexBufferOffset = MeshDataReadbackBufferPtr[Data.BaseMeshDataOffset + 0];
-					const uint32 IndexBufferOffset = MeshDataReadbackBufferPtr[Data.BaseMeshDataOffset + 1];
+					auto Header = (const FStreamOutMeshDataHeader*)(MeshDataReadbackBufferPtr + Data.BaseMeshDataOffset);
+					auto Segments = (const FStreamOutMeshDataSegment*)(Header + 1);
+
+					check(Header->NumClusters <= Data.NumResidentClusters);
+
+					const uint32 VertexBufferOffset = Header->VertexBufferOffset;
+					const uint32 IndexBufferOffset = Header->IndexBufferOffset;
+					const uint32 NumVertices = Header->NumVertices;
 
 					if (VertexBufferOffset == 0xFFFFFFFFu || IndexBufferOffset == 0xFFFFFFFFu)
 					{
@@ -634,8 +707,6 @@ namespace Nanite
 						continue;
 					}
 
-					const uint32 NumVertices = MeshDataReadbackBufferPtr[Data.BaseMeshDataOffset + 2];
-
 					FRayTracingGeometryInitializer Initializer;
 					Initializer.DebugName = Data.DebugName;
 // 					Initializer.bFastBuild = false;
@@ -651,8 +722,8 @@ namespace Nanite
 
 					for (uint32 SegmentIndex = 0; SegmentIndex < Data.NumSegments; ++SegmentIndex)
 					{
-						const uint32 NumIndices = MeshDataReadbackBufferPtr[Data.BaseMeshDataOffset + 3 + (SegmentIndex * 2)];
-						const uint32 FirstIndex = MeshDataReadbackBufferPtr[Data.BaseMeshDataOffset + 4 + (SegmentIndex * 2)];
+						const uint32 NumIndices = Segments[SegmentIndex].NumIndices;
+						const uint32 FirstIndex = Segments[SegmentIndex].FirstIndex;
 
 						FRayTracingGeometrySegment& Segment = Initializer.Segments[SegmentIndex];
 						Segment.FirstPrimitive = FirstIndex / 3;

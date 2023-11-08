@@ -1,11 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Runtime.InteropServices;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace UnrealGameSync
 {
@@ -29,7 +25,7 @@ namespace UnrealGameSync
 			void ActivateTab(IntPtr hWnd);
 			void SetActiveAlt(IntPtr hWnd);
 			void MarkFullscreenWindow(IntPtr hWnd, int fFullscreen);
-			void SetProgressValue(IntPtr hWnd, UInt64 ullCompleted, UInt64 ullTotal);
+			void SetProgressValue(IntPtr hWnd, ulong ullCompleted, ulong ullTotal);
 			void SetProgressState(IntPtr hWnd, TaskbarState state);
 		}
 
@@ -38,13 +34,17 @@ namespace UnrealGameSync
 		{
 		}
 
-		static ITaskbarList3? _interface;
+		static readonly ITaskbarList3? _interface = CreateTaskbarListInterface();
 
-		static Taskbar()
+		static ITaskbarList3? CreateTaskbarListInterface()
 		{
-			if(Environment.OSVersion.Version >= new Version(6, 1))
+			if (Environment.OSVersion.Version >= new Version(6, 1))
 			{
-				_interface = new TaskbarList3() as ITaskbarList3;
+				return new TaskbarList3() as ITaskbarList3;
+			}
+			else
+			{
+				return null;
 			}
 		}
 

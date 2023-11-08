@@ -8,13 +8,10 @@ public class TextureShare : ModuleRules
 {
 	public TextureShare(ReadOnlyTargetRules ROTargetRules) : base(ROTargetRules)
 	{
-		// [temporary] We need this to be able to use some private data types. This should
-		// be removed once we move the nD rendering pipeline to RDG (TextureShareSceneViewExtension.h).
-		string EngineDir = Path.GetFullPath(Target.RelativeEnginePath);
-		PrivateIncludePaths.Add(Path.Combine(EngineDir, "Source", "Runtime", "Renderer", "Private"));
-
-		// Internal dependency (debug log purpose)
-		PrivateIncludePaths.Add(Path.Combine(EngineDir, "Plugins", "VirtualProduction", "TextureShare", "Source", "TextureShareCore", "Private"));
+		PrivateIncludePaths.AddRange(new string[] {
+			Path.Combine(GetModuleDirectory("Renderer"), "Private"),
+			Path.Combine(GetModuleDirectory("TextureShareCore"), "Private"),
+		});
 
 		PublicDependencyModuleNames.AddRange(
 			new string[]

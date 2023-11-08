@@ -172,6 +172,13 @@ class TRange;
 #define UE_DOUBLE_HALF_SQRT_2	(0.70710678118654752440084436210485)
 #define UE_DOUBLE_HALF_SQRT_3	(0.86602540378443864676372317075294)
 
+// Common metric unit conversion
+#define UE_KM_TO_M   (1000.f)
+#define UE_M_TO_KM   (0.001f)
+#define UE_CM_TO_M   (0.01f)
+#define UE_M_TO_CM   (100.f)
+#define UE_CM2_TO_M2 (0.0001f)
+#define UE_M2_TO_CM2 (10000.f)
 
 // Magic numbers for numerical precision.
 #define UE_DELTA		(0.00001f)
@@ -530,9 +537,7 @@ public:
 	 */
 	template <
 		typename IntegralType
-		UE_CONSTRAINTS_BEGIN
-			UE_CONSTRAINT(std::is_integral_v<IntegralType>)
-		UE_CONSTRAINTS_END
+		UE_REQUIRES(std::is_integral_v<IntegralType>)
 	>
 	UE_NODISCARD static constexpr FORCEINLINE IntegralType Floor(IntegralType I)
 	{
@@ -585,9 +590,9 @@ public:
 
 	/** Clamps X to be between Min and Max, inclusive */
 	template< class T >
-	UE_NODISCARD static constexpr FORCEINLINE T Clamp(const T X, const T Min, const T Max)
+	UE_NODISCARD static constexpr FORCEINLINE T Clamp(const T X, const T MinValue, const T MaxValue)
 	{
-		return (X < Min) ? Min : (X < Max) ? X : Max;
+		return Max(Min(X, MaxValue), MinValue);
 	}
 	/** Allow mixing float/double arguments, promoting to highest precision type. */
 	MIX_FLOATS_3_ARGS(Clamp);
@@ -695,9 +700,7 @@ public:
 	*/
 	template <
 		typename T
-		UE_CONSTRAINTS_BEGIN
-			UE_CONSTRAINT(std::is_floating_point_v<T>)
-		UE_CONSTRAINTS_END
+		UE_REQUIRES(std::is_floating_point_v<T>)
 	>
 	static constexpr FORCEINLINE void SinCos(std::decay_t<T>* ScalarSin, std::decay_t<T>* ScalarCos, T  Value )
 	{
@@ -750,9 +753,7 @@ public:
 	template <
 		typename T,
 		typename U
-		UE_CONSTRAINTS_BEGIN
-			UE_CONSTRAINT(!std::is_same_v<T, U>)
-		UE_CONSTRAINTS_END
+		UE_REQUIRES(!std::is_same_v<T, U>)
 	>
 	static FORCEINLINE void SinCos(T* ScalarSin, T* ScalarCos, U Value)
 	{
@@ -775,14 +776,14 @@ public:
 	UE_NODISCARD static FORCEINLINE float FastAsin(float Value)
 	{
 		// Clamp input to [-1,1].
-		bool nonnegative = (Value >= 0.0f);
-		float x = FMath::Abs(Value);
+		const bool nonnegative = (Value >= 0.0f);
+		const float x = FMath::Abs(Value);
 		float omx = 1.0f - x;
 		if (omx < 0.0f)
 		{
 			omx = 0.0f;
 		}
-		float root = FMath::Sqrt(omx);
+		const float root = FMath::Sqrt(omx);
 		// 7-degree minimax approximation
 		float result = ((((((-0.0012624911f * x + 0.0066700901f) * x - 0.0170881256f) * x + 0.0308918810f) * x - 0.0501743046f) * x + 0.0889789874f) * x - 0.2145988016f) * x + FASTASIN_HALF_PI;
 		result *= root;  // acos(|x|)
@@ -810,8 +811,8 @@ public:
 		return RadVal * (180.f / UE_PI);
 	}
 
-	static FORCEINLINE float RadiansToDegrees(float const& RadVal) { return RadVal * (180.f / UE_PI); }
-	static FORCEINLINE double RadiansToDegrees(double const& RadVal) { return RadVal * (180.0 / UE_DOUBLE_PI); }
+	static constexpr FORCEINLINE float RadiansToDegrees(float const& RadVal) { return RadVal * (180.f / UE_PI); }
+	static constexpr FORCEINLINE double RadiansToDegrees(double const& RadVal) { return RadVal * (180.0 / UE_DOUBLE_PI); }
 
 	/** 
 	 * Converts degrees to radians.
@@ -824,8 +825,8 @@ public:
 		return DegVal * (UE_PI / 180.f);
 	}
 
-	static FORCEINLINE float DegreesToRadians(float const& DegVal) { return DegVal * (UE_PI / 180.f); }
-	static FORCEINLINE double DegreesToRadians(double const& DegVal) { return DegVal * (UE_DOUBLE_PI / 180.0); }
+	static constexpr FORCEINLINE float DegreesToRadians(float const& DegVal) { return DegVal * (UE_PI / 180.f); }
+	static constexpr FORCEINLINE double DegreesToRadians(double const& DegVal) { return DegVal * (UE_DOUBLE_PI / 180.0); }
 
 	/** 
 	 * Clamps an arbitrary angle to be between the given angles.  Will clamp to nearest boundary.
@@ -843,9 +844,7 @@ public:
 	template <
 		typename T,
 		typename T2
-		UE_CONSTRAINTS_BEGIN
-			UE_CONSTRAINT(std::is_floating_point_v<T> || std::is_floating_point_v<T2>)
-		UE_CONSTRAINTS_END
+		UE_REQUIRES(std::is_floating_point_v<T> || std::is_floating_point_v<T2>)
 	>
 	UE_NODISCARD static constexpr auto FindDeltaAngleDegrees(T A1, T2 A2) -> decltype(A1 * A2)
 	{
@@ -873,9 +872,7 @@ public:
 	template <
 		typename T,
 		typename T2
-		UE_CONSTRAINTS_BEGIN
-			UE_CONSTRAINT(std::is_floating_point_v<T> || std::is_floating_point_v<T2>)
-		UE_CONSTRAINTS_END
+		UE_REQUIRES(std::is_floating_point_v<T> || std::is_floating_point_v<T2>)
 	>
 	UE_NODISCARD static constexpr auto FindDeltaAngleRadians(T A1, T2 A2) -> decltype(A1 * A2)
 	{
@@ -902,9 +899,7 @@ public:
 	/** Given a heading which may be outside the +/- PI range, 'unwind' it back into that range. */
 	template <
 		typename T
-		UE_CONSTRAINTS_BEGIN
-			UE_CONSTRAINT(std::is_floating_point_v<T>)
-		UE_CONSTRAINTS_END
+		UE_REQUIRES(std::is_floating_point_v<T>)
 	>
 	UE_NODISCARD static constexpr T UnwindRadians(T A)
 	{
@@ -924,9 +919,7 @@ public:
 	/** Utility to ensure angle is between +/- 180 degrees by unwinding. */
 	template <
 		typename T
-		UE_CONSTRAINTS_BEGIN
-			UE_CONSTRAINT(std::is_floating_point_v<T>)
-		UE_CONSTRAINTS_END
+		UE_REQUIRES(std::is_floating_point_v<T>)
 	>
 	UE_NODISCARD static constexpr T UnwindDegrees(T A)
 	{
@@ -1033,9 +1026,7 @@ public:
 	template <
 		typename T,
 		typename T2
-		UE_CONSTRAINTS_BEGIN
-			UE_CONSTRAINT(std::is_floating_point_v<T>)
-		UE_CONSTRAINTS_END
+		UE_REQUIRES(std::is_floating_point_v<T>)
 	>
 	UE_NODISCARD static constexpr FORCEINLINE auto GetRangePct(T MinValue, T MaxValue, T2 Value)
 	{
@@ -1055,9 +1046,7 @@ public:
 	template <
 		typename T,
 		typename T2
-		UE_CONSTRAINTS_BEGIN
-			UE_CONSTRAINT(std::is_floating_point_v<T>)
-		UE_CONSTRAINTS_END
+		UE_REQUIRES(std::is_floating_point_v<T>)
 	>
 	UE_NODISCARD static auto GetRangePct(UE::Math::TVector2<T> const& Range, T2 Value)
 	{
@@ -1068,9 +1057,7 @@ public:
 	template <
 		typename T,
 		typename T2
-		UE_CONSTRAINTS_BEGIN
-			UE_CONSTRAINT(std::is_floating_point_v<T>)
-		UE_CONSTRAINTS_END
+		UE_REQUIRES(std::is_floating_point_v<T>)
 	>
 	UE_NODISCARD static auto GetRangeValue(UE::Math::TVector2<T> const& Range, T2 Pct)
 	{
@@ -1116,9 +1103,7 @@ public:
 	template <
 		typename T,
 		typename U
-		UE_CONSTRAINTS_BEGIN
-			UE_CONSTRAINT(!TCustomLerp<T>::Value && (std::is_floating_point_v<U> || std::is_same_v<T, U>))
-		UE_CONSTRAINTS_END
+		UE_REQUIRES(!TCustomLerp<T>::Value && (std::is_floating_point_v<U> || std::is_same_v<T, U>))
 	>
 	UE_NODISCARD static constexpr FORCEINLINE_DEBUGGABLE T Lerp( const T& A, const T& B, const U& Alpha )
 	{
@@ -1129,9 +1114,7 @@ public:
 	template <
 		typename T,
 		typename U
-		UE_CONSTRAINTS_BEGIN
-			UE_CONSTRAINT(TCustomLerp<T>::Value)
-		UE_CONSTRAINTS_END
+		UE_REQUIRES(TCustomLerp<T>::Value)
 	>
 	UE_NODISCARD static FORCEINLINE_DEBUGGABLE T Lerp(const T& A, const T& B, const U& Alpha)
 	{
@@ -1143,9 +1126,7 @@ public:
 		typename T1,
 		typename T2,
 		typename T3
-		UE_CONSTRAINTS_BEGIN
-			UE_CONSTRAINT(!std::is_same_v<T1, T2> && !TCustomLerp<T1>::Value && !TCustomLerp<T2>::Value)
-		UE_CONSTRAINTS_END
+		UE_REQUIRES(!std::is_same_v<T1, T2> && !TCustomLerp<T1>::Value && !TCustomLerp<T2>::Value)
 	>
 	UE_NODISCARD static auto Lerp( const T1& A, const T2& B, const T3& Alpha ) -> decltype(A * B)
 	{
@@ -1172,9 +1153,7 @@ public:
 		typename T1,
 		typename T2,
 		typename T3
-		UE_CONSTRAINTS_BEGIN
-			UE_CONSTRAINT(!std::is_same_v<T1, T2>)
-		UE_CONSTRAINTS_END
+		UE_REQUIRES(!std::is_same_v<T1, T2>)
 	>
 	UE_NODISCARD static auto LerpStable( const T1& A, const T2& B, const T3& Alpha ) -> decltype(A * B)
 	{
@@ -1186,9 +1165,7 @@ public:
 	template <
 		typename T,
 		typename U
-		UE_CONSTRAINTS_BEGIN
-			UE_CONSTRAINT(!TCustomLerp<T>::Value && (std::is_floating_point_v<U> || std::is_same_v<T, U>))
-		UE_CONSTRAINTS_END
+		UE_REQUIRES(!TCustomLerp<T>::Value && (std::is_floating_point_v<U> || std::is_same_v<T, U>))
 	>
 	UE_NODISCARD static constexpr FORCEINLINE_DEBUGGABLE T BiLerp(const T& P00,const T& P10,const T& P01,const T& P11, const U& FracX, const U& FracY)
 	{
@@ -1203,9 +1180,7 @@ public:
 	template <
 		typename T,
 		typename U
-		UE_CONSTRAINTS_BEGIN
-			UE_CONSTRAINT(TCustomLerp<T>::Value)
-		UE_CONSTRAINTS_END
+		UE_REQUIRES(TCustomLerp<T>::Value)
 	>
 	UE_NODISCARD static FORCEINLINE_DEBUGGABLE T BiLerp(const T& P00, const T& P10, const T& P01, const T& P11, const U& FracX, const U& FracY)
 	{
@@ -1224,9 +1199,7 @@ public:
 	template <
 		typename T,
 		typename U
-		UE_CONSTRAINTS_BEGIN
-			UE_CONSTRAINT(!TCustomLerp<T>::Value && (std::is_floating_point_v<U> || std::is_same_v<T, U>))
-		UE_CONSTRAINTS_END
+		UE_REQUIRES(!TCustomLerp<T>::Value && (std::is_floating_point_v<U> || std::is_same_v<T, U>))
 	>
 	UE_NODISCARD static constexpr FORCEINLINE_DEBUGGABLE T CubicInterp( const T& P0, const T& T0, const T& P1, const T& T1, const U& A )
 	{
@@ -1240,9 +1213,7 @@ public:
 	template <
 		typename T,
 		typename U
-		UE_CONSTRAINTS_BEGIN
-			UE_CONSTRAINT(TCustomLerp<T>::Value)
-		UE_CONSTRAINTS_END
+		UE_REQUIRES(TCustomLerp<T>::Value)
 	>
 	UE_NODISCARD static FORCEINLINE_DEBUGGABLE T CubicInterp(const T& P0, const T& T0, const T& P1, const T& T1, const U& A)
 	{
@@ -1261,9 +1232,7 @@ public:
 	template <
 		typename T,
 		typename U
-		UE_CONSTRAINTS_BEGIN
-			UE_CONSTRAINT(std::is_floating_point_v<U>)
-		UE_CONSTRAINTS_END
+		UE_REQUIRES(std::is_floating_point_v<U>)
 	>
 	UE_NODISCARD static constexpr FORCEINLINE_DEBUGGABLE T CubicInterpDerivative( const T& P0, const T& T0, const T& P1, const T& T1, const U& A )
 	{
@@ -1288,9 +1257,7 @@ public:
 	template <
 		typename T,
 		typename U
-		UE_CONSTRAINTS_BEGIN
-			UE_CONSTRAINT(std::is_floating_point_v<U>)
-		UE_CONSTRAINTS_END
+		UE_REQUIRES(std::is_floating_point_v<U>)
 	>
 	UE_NODISCARD static constexpr FORCEINLINE_DEBUGGABLE T CubicInterpSecondDerivative( const T& P0, const T& T0, const T& P1, const T& T1, const U& A )
 	{
@@ -2380,9 +2347,9 @@ public:
 	 * Get a bit in memory created from bitflags (uint32 Value:1), used for EngineShowFlags,
 	 * TestBitFieldFunctions() tests the implementation
 	 */
-	UE_NODISCARD static constexpr bool ExtractBoolFromBitfield(uint8* Ptr, uint32 Index)
+	UE_NODISCARD static constexpr bool ExtractBoolFromBitfield(const uint8* Ptr, uint32 Index)
 	{
-		uint8* BytePtr = Ptr + Index / 8;
+		const uint8* BytePtr = Ptr + Index / 8;
 		uint8 Mask = (uint8)(1 << (Index & 0x7));
 
 		return (*BytePtr & Mask) != 0;
@@ -2466,7 +2433,7 @@ public:
 	UE_NODISCARD static CORE_API float PerlinNoise1D(float Value);
 
 	/**
-	* Generates a 1D Perlin noise sample at the given location.  Returns a continuous random value between -1.0 and 1.0.
+	* Generates a 2D Perlin noise sample at the given location.  Returns a continuous random value between -1.0 and 1.0.
 	*
 	* @param	Location	Where to sample
 	*
@@ -2528,6 +2495,20 @@ public:
 		}
 		return WeightedMovingAverage(CurrentSample, PreviousSample, Weight);
 	}
+	
+	/**
+	 * Calculate the inverse of an FMatrix44.  Src == Dst is allowed
+	 *
+	 * @param DstMatrix		FMatrix44 pointer to where the result should be stored
+	 * @param SrcMatrix		FMatrix44 pointer to the Matrix to be inversed
+	 * @return bool			returns false if matrix is not invertable and stores identity 
+	 *
+	 * Do not call this directly, use VectorMatrixInverse or Matrix::Inverse
+	 * this is the fallback scalar implementation used by VectorMatrixInverse
+	 */
+	UE_NODISCARD static CORE_API bool MatrixInverse(FMatrix44f* DstMatrix, const FMatrix44f* SrcMatrix);
+	UE_NODISCARD static CORE_API bool MatrixInverse(FMatrix44d* DstMatrix, const FMatrix44d* SrcMatrix);
+
 };
 
 // LWC Conversion helpers

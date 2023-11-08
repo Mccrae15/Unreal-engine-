@@ -53,11 +53,11 @@ void FWorkerRequestsRemote::DequeueAllExternal(TArray<FSchedulerCallback>& OutCa
 	ExternalRequests.DequeueAll(OutCallbacks, OutCookRequests);
 }
 
-void FWorkerRequestsRemote::AddDiscoveredPackage(const FPackageData& PackageData, const FInstigator& Instigator,
-	bool bLoadReady, bool& bOutShouldAddToQueue)
+void FWorkerRequestsRemote::QueueDiscoveredPackage(UCookOnTheFlyServer& COTFS, FPackageData& PackageData,
+	FInstigator&& Instigator, FDiscoveredPlatformSet&& ReachablePlatforms, bool bUrgent)
 {
-	bOutShouldAddToQueue = false;
-	CookWorkerClient.ReportDiscoveredPackage(PackageData, Instigator);
+	(void)bUrgent; // Tracking urgency on CookWorkers is not supported
+	CookWorkerClient.ReportDiscoveredPackage(PackageData, MoveTemp(Instigator), MoveTemp(ReachablePlatforms));
 }
 
 void FWorkerRequestsRemote::AddStartCookByTheBookRequest(FFilePlatformRequest&& Request)

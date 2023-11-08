@@ -20,8 +20,11 @@ FSceneOutlinerTreeItemSCC::FSceneOutlinerTreeItemSCC(FSceneOutlinerTreeItemPtr I
 
 FSceneOutlinerTreeItemSCC::~FSceneOutlinerTreeItemSCC()
 {
-	FUncontrolledChangelistsModule& UncontrolledChangelistModule = FUncontrolledChangelistsModule::Get();
-	UncontrolledChangelistModule.OnUncontrolledChangelistModuleChanged.Remove(UncontrolledChangelistChangedHandle);
+	if(FUncontrolledChangelistsModule::IsAvailable())
+	{
+		FUncontrolledChangelistsModule& UncontrolledChangelistModule = FUncontrolledChangelistsModule::Get();
+		UncontrolledChangelistModule.OnUncontrolledChangelistModuleChanged.Remove(UncontrolledChangelistChangedHandle);
+	}
 	
 	DisconnectSourceControl();
 }
@@ -31,7 +34,7 @@ void FSceneOutlinerTreeItemSCC::Initialize()
 	if (TreeItemPtr.IsValid())
 	{
 		ExternalPackageName = SceneOutliner::FSceneOutlinerHelpers::GetExternalPackageName(*TreeItemPtr.Get());
-		ExternalPackageFileName = USourceControlHelpers::PackageFilename(ExternalPackageName);
+		ExternalPackageFileName = !ExternalPackageName.IsEmpty() ? USourceControlHelpers::PackageFilename(ExternalPackageName) : FString();
 		ExternalPackage = SceneOutliner::FSceneOutlinerHelpers::GetExternalPackage(*TreeItemPtr.Get());
 		
 		if (FActorTreeItem* ActorItem = TreeItemPtr->CastTo<FActorTreeItem>())
@@ -75,7 +78,7 @@ void FSceneOutlinerTreeItemSCC::Initialize()
 	});
 
 	// Call the delegate to update the initial uncontrolled state
-	HandleUncontrolledChangelistsStateChanged();	
+	HandleUncontrolledChangelistsStateChanged();
 }
 
 FSourceControlStatePtr FSceneOutlinerTreeItemSCC::GetSourceControlState()
@@ -152,6 +155,14 @@ void FSceneOutlinerTreeItemSCC::HandleSourceControlStateChanged(EStateCacheUsage
 void FSceneOutlinerTreeItemSCC::HandleSourceControlProviderChanged(ISourceControlProvider& OldProvider, ISourceControlProvider& NewProvider)
 {
 	OldProvider.UnregisterSourceControlStateChanged_Handle(SourceControlStateChangedDelegateHandle);
+	
+	/* Early exit if the engine is shutting down, in case there are any lingering SCC items in the Outliner that haven't
+	 * been destroyed yet calling into modules that have been unloaded
+	 */
+	if (IsEngineExitRequested())
+	{
+		return;
+	}
 
 	SourceControlStateChangedDelegateHandle = NewProvider.RegisterSourceControlStateChanged_Handle(FSourceControlStateChanged::FDelegate::CreateLambda([this, WeakThis = AsWeak()]()
 	{
@@ -181,7 +192,7 @@ void FSceneOutlinerTreeItemSCC::HandleUncontrolledChangelistsStateChanged()
 
 	for (const TSharedRef<FUncontrolledChangelistState>& UncontrolledChangelistStateRef : UncontrolledChangelistStates)
 	{
-		if (UncontrolledChangelistStateRef->GetFilenames().Contains(ExternalPackageFileName))
+		if (UncontrolledChangelistStateRef->ContainsFilename(ExternalPackageFileName))
 		{
 			UncontrolledChangelistState = UncontrolledChangelistStateRef;
 			break;

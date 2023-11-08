@@ -9,22 +9,24 @@
 #if !UE_BUILD_SHIPPING // TODO: Decide whether or not the struct should be entirely stripped out of shipping
 
 class UMaterialInterface;
+class FScene;
+class FViewInfo;
+class FViewCommands;
 
 DECLARE_MULTICAST_DELEGATE(FOnUpdateViewDebugInfo);
 
 /**
  * A collection of debug data associated with the current on screen view.
  */
-struct RENDERER_API FViewDebugInfo
+struct FViewDebugInfo
 {
-	friend class FSceneRenderer;
 	friend class FDrawPrimitiveDebuggerModule;
 
 private:
 
-	static FViewDebugInfo Instance;
+	static RENDERER_API FViewDebugInfo Instance;
 
-	FViewDebugInfo();
+	RENDERER_API FViewDebugInfo();
 	
 public:
 
@@ -32,7 +34,7 @@ public:
 	 * Gets a reference to the view debug information that is used by the renderer.
 	 * @returns The debug information that is used by the renderer.
 	 */
-	static inline const FViewDebugInfo& Get()
+	static inline FViewDebugInfo& Get()
 	{
 		return Instance;
 	}
@@ -78,20 +80,23 @@ private:
 	
 	TArray<FPrimitiveInfo> Primitives;
 
-	void ProcessPrimitive(FPrimitiveSceneInfo* PrimitiveSceneInfo, const FViewInfo& View, FScene* Scene, const UPrimitiveComponent* DebugComponent);
+	RENDERER_API void ProcessPrimitive(FPrimitiveSceneInfo* PrimitiveSceneInfo, const FViewInfo& View, FScene* Scene, const UPrimitiveComponent* DebugComponent);
 
-	void CaptureNextFrame();
+	RENDERER_API void CaptureNextFrame();
 
-	void EnableLiveCapture();
+	RENDERER_API void EnableLiveCapture();
 
-	void DisableLiveCapture();
+	RENDERER_API void DisableLiveCapture();
+
+	static RENDERER_API void DumpPrimitives(FScene* Scene, const FViewCommands& ViewCommands);
 
 public:
+	RENDERER_API void ProcessPrimitives(FScene* Scene, const FViewInfo& View, const FViewCommands& ViewCommands);
 
 	/**
 	 * Writes the currently stored information out to a CSV file.
 	 */
-	void DumpToCSV() const;
+	RENDERER_API void DumpToCSV() const;
 
 	/**
 	 * Performs an operation for each primitive currently tracked.
@@ -116,13 +121,13 @@ public:
 	 * Checks if this debug information has ever been updated.
 	 * @returns True if the information has been updated at least once.
 	 */
-	bool HasEverUpdated() const;
+	RENDERER_API bool HasEverUpdated() const;
 
 	/**
 	 * Checks if current information is from an older frame.
 	 * @returns True if the data in this object is outdated.
 	 */
-	bool IsOutOfDate() const;
+	RENDERER_API bool IsOutOfDate() const;
 
 	template <typename UserClass>
 	FDelegateHandle AddUpdateHandler(UserClass* UserObject, void (UserClass::*Func)())

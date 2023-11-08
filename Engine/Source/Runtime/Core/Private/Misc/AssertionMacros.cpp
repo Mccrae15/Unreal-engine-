@@ -7,6 +7,8 @@
 #include "Templates/Atomic.h"
 #include "Misc/CString.h"
 #include "Misc/Crc.h"
+#include "Async/UniqueLock.h"
+#include "Async/WordMutex.h"
 #include "Containers/UnrealString.h"
 #include "Containers/StringConv.h"
 #include "GenericPlatform/GenericPlatformStackWalk.h"
@@ -32,12 +34,9 @@ namespace
 	TAtomic<SIZE_T> NumEnsureFailures {0};
 	int32 ActiveEnsureCount = 0;
 
-	/** Lock used to synchronize the fail debug calls. */
-	static FCriticalSection& GetFailDebugCriticalSection()
-	{
-		static FCriticalSection FailDebugCriticalSection;
-		return FailDebugCriticalSection;
-	}
+	// Lock used to synchronize the fail debug calls.
+	// Using FWordMutex because it is zero-initialized and has no destructor.
+	static UE::FWordMutex FailDebugMutex;
 
 	struct FTempCommandLineScope
 	{
@@ -150,13 +149,13 @@ public:
 
 	inline FErrorHistWriter()
 	{
-		GetFailDebugCriticalSection().Lock();
+		FailDebugMutex.Lock();
 	}
 
 	inline ~FErrorHistWriter()
 	{
 		Terminate();
-		GetFailDebugCriticalSection().Unlock();
+		FailDebugMutex.Unlock();
 	}
 
 	inline void Terminate()
@@ -548,8 +547,7 @@ FORCENOINLINE void FDebug::EnsureFailed(const ANSICHAR* Expr, const ANSICHAR* Fi
 #endif
 
 #if PLATFORM_USE_REPORT_ENSURE
-			FScopeLock Lock(&GetFailDebugCriticalSection());
-
+			UE::TUniqueLock Lock(FailDebugMutex);
 			ReportEnsure(ErrorMsg, ProgramCounter);
 
 			GErrorHist[0] = TEXT('\0');
@@ -562,7 +560,7 @@ FORCENOINLINE void FDebug::EnsureFailed(const ANSICHAR* Expr, const ANSICHAR* Fi
 	FPlatformAtomics::InterlockedDecrement(&ActiveEnsureCount);
 }
 
-void FORCENOINLINE FDebug::CheckVerifyFailedImpl(
+bool FORCENOINLINE FDebug::CheckVerifyFailedImpl(
 	const ANSICHAR* Expr,
 	const ANSICHAR* File,
 	int32 Line,
@@ -590,7 +588,15 @@ void FORCENOINLINE FDebug::CheckVerifyFailedImpl(
 		va_start(Args, Format);
 		AssertFailedImplV(Expr, File, Line, ProgramCounter, Format, Args);
 		va_end(Args);
+
+		return false;
 	}
+
+#if UE_BUILD_SHIPPING
+	return true;
+#else
+	return !GIgnoreDebugger;
+#endif
 }
 
 #endif // DO_CHECK || DO_GUARD_SLOW || DO_ENSURE
@@ -623,25 +629,38 @@ void FDebug::ProcessFatalError(void* ProgramCounter)
 #if DO_CHECK || DO_GUARD_SLOW || DO_ENSURE
 FORCENOINLINE bool VARARGS FDebug::OptionallyLogFormattedEnsureMessageReturningFalseImpl( bool bLog, const ANSICHAR* Expr, const ANSICHAR* File, int32 Line, void* ProgramCounter, const TCHAR* FormattedMsg, ... )
 {
+	va_list Args;
+	va_start(Args, FormattedMsg);
+	OptionallyLogFormattedEnsureMessageReturningFalseImpl(bLog, Expr, File, Line, ProgramCounter, FormattedMsg, Args);
+	va_end(Args);
+
+	return false;
+}
+
+FORCENOINLINE bool FDebug::OptionallyLogFormattedEnsureMessageReturningFalseImpl(bool bLog, const ANSICHAR* Expr, const ANSICHAR* File, int32 Line, void* ProgramCounter, const TCHAR* FormattedMsg, va_list Args)
+{
 	if (bLog)
 	{
 		const int32 TempStrSize = 4096;
-		TCHAR TempStr[ TempStrSize ];
-		GET_VARARGS( TempStr, TempStrSize, TempStrSize - 1, FormattedMsg, FormattedMsg );
+		TCHAR TempStr[TempStrSize];
+		FCString::GetVarArgs(TempStr, TempStrSize, FormattedMsg, Args);
 
-		EnsureFailed( Expr, File, Line, ProgramCounter, TempStr );
+		EnsureFailed(Expr, File, Line, ProgramCounter, TempStr);
 	}
-	
+
 	return false;
 }
 #endif
 
-FORCENOINLINE void VARARGS LowLevelFatalErrorHandler(const ANSICHAR* File, int32 Line, void* ProgramCounter, const TCHAR* Format, ...)
+FORCENOINLINE void UE_DEBUG_SECTION VARARGS LowLevelFatalErrorHandler(const ANSICHAR* File, int32 Line, void* ProgramCounter, const TCHAR* Format, ...)
 {
 	va_list Args;
 	va_start(Args, Format);
 	StaticFailDebugV(TEXT("LowLevelFatalError"), "", File, Line, /*bIsEnsure*/ false, ProgramCounter, Format, Args);
 	va_end(Args);
+
+	UE_DEBUG_BREAK_AND_PROMPT_FOR_REMOTE();
+	FDebug::ProcessFatalError(ProgramCounter);
 }
 
 void FDebug::DumpStackTraceToLog(const ELogVerbosity::Type LogVerbosity)
@@ -674,5 +693,33 @@ FORCENOINLINE void FDebug::DumpStackTraceToLog(const TCHAR* Heading, const ELogV
 	FMemory::SystemFree(StackTrace);
 #endif
 }
+
+#if DO_ENSURE && !USING_CODE_ANALYSIS
+bool UE_DEBUG_SECTION VARARGS CheckVerifyImpl(bool& InOutExecuted, bool Always, const ANSICHAR* File, int32 Line, void* ProgramCounter, const ANSICHAR* Expr, const TCHAR* Format, ...)
+{
+	if ((!InOutExecuted || Always) && FPlatformMisc::IsEnsureAllowed())
+	{
+		InOutExecuted = true;
+		va_list Args;
+		va_start(Args, Format);
+		FDebug::OptionallyLogFormattedEnsureMessageReturningFalse(true, Expr, File, Line, ProgramCounter, Format, Args);
+		va_end(Args);
+
+		if (!FPlatformMisc::IsDebuggerPresent())
+		{
+			FPlatformMisc::PromptForRemoteDebugging(true);
+			return false;
+		}
+
+#if UE_BUILD_SHIPPING
+		return true;
+#else
+		return !GIgnoreDebugger;
+#endif
+	}
+
+	return false;
+}
+#endif
 
 #undef FILE_LINE_DESC_ANSI

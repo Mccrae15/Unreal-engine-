@@ -116,6 +116,11 @@ namespace mu
 		m_pD->m_pTargetShape = pNode;
 	}
 
+	//---------------------------------------------------------------------------------------------
+	void NodeMeshReshape::SetReshapeVertices(bool bEnable)
+	{
+		m_pD->m_reshapeVertices = bEnable;
+	}
 
 	//---------------------------------------------------------------------------------------------
 	void NodeMeshReshape::SetReshapeSkeleton(bool bEnable)
@@ -125,21 +130,24 @@ namespace mu
 	
 
 	//---------------------------------------------------------------------------------------------
-	void NodeMeshReshape::SetEnableRigidParts(bool bEnable)
-	{
-		m_pD->m_enableRigidParts = bEnable;
+	void NodeMeshReshape::SetColorUsages(EVertexColorUsage R, EVertexColorUsage G, EVertexColorUsage B, EVertexColorUsage A)
+	{	
+		m_pD->ColorRChannelUsage = R;
+		m_pD->ColorGChannelUsage = G;
+		m_pD->ColorBChannelUsage = B;
+		m_pD->ColorAChannelUsage = A;
 	}	
 
 	//---------------------------------------------------------------------------------------------
-	void NodeMeshReshape::AddBoneToDeform(const char* BoneName)
+	void NodeMeshReshape::AddBoneToDeform(const uint16 BoneId)
 	{
-		m_pD->m_bonesToDeform.Emplace(BoneName);
+		m_pD->BonesToDeform.Emplace(BoneId);
 	}
 
 	//---------------------------------------------------------------------------------------------
-	void NodeMeshReshape::AddPhysicsBodyToDeform(const char* BoneName)
+	void NodeMeshReshape::AddPhysicsBodyToDeform(const uint16 BoneId)
 	{
-		m_pD->m_physicsToDeform.Emplace(BoneName);
+		m_pD->PhysicsToDeform.Emplace(BoneId);
 	}
 
 	void NodeMeshReshape::SetReshapePhysicsVolumes(bool bEnable)

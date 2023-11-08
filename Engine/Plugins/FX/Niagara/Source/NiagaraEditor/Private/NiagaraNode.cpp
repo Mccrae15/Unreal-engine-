@@ -5,7 +5,7 @@
 #include "EdGraphSchema_Niagara.h"
 #include "NiagaraHlslTranslator.h"
 #include "GraphEditAction.h"
-#include "SNiagaraGraphNode.h"
+#include "Widgets/SNiagaraGraphNode.h"
 #include "Misc/SecureHash.h"
 #include "ToolMenuSection.h"
 #include "ToolMenu.h"
@@ -355,9 +355,9 @@ bool UNiagaraNode::ReallocatePins(bool bMarkNeedsResynchronizeOnChange)
 	return bAllSame;
 }
 
-int32 UNiagaraNode::CompileInputPin(FHlslNiagaraTranslator *Translator, UEdGraphPin* Pin)
+int32 UNiagaraNode::CompileInputPin(FTranslator* Translator, UEdGraphPin* Pin) const
 {
-	return Translator->CompilePin(Pin);
+	return Translator->CompileInputPin(Pin);
 }
 
 bool UNiagaraNode::IsValidPinToCompile(UEdGraphPin* Pin) const 
@@ -365,7 +365,7 @@ bool UNiagaraNode::IsValidPinToCompile(UEdGraphPin* Pin) const
 	return Pin->bOrphanedPin == false;
 }
 
-bool UNiagaraNode::CompileInputPins(FHlslNiagaraTranslator *Translator, TArray<int32>& OutCompiledInputs)
+bool UNiagaraNode::CompileInputPins(FTranslator* Translator, TArray<int32>& OutCompiledInputs) const
 {
 	bool bError = false;
 	
@@ -550,7 +550,7 @@ void UNiagaraNode::AddWidgetsToOutputBox(TSharedPtr<SVerticalBox> OutputBox)
 }
 
 void UNiagaraNode::GetNodeContextMenuActions(class UToolMenu* Menu, class UGraphNodeContextMenuContext* Context) const
-{
+{	
 	{
 		FToolMenuSection& Section = Menu->AddSection("Alignment");
 		Section.AddSubMenu(
@@ -582,6 +582,11 @@ void UNiagaraNode::GetNodeContextMenuActions(class UToolMenu* Menu, class UGraph
 bool UNiagaraNode::CanCreateUnderSpecifiedSchema(const UEdGraphSchema* Schema) const
 {
 	return Schema->IsA<UEdGraphSchema_Niagara>();
+}
+
+TSharedRef<SWidget> UNiagaraNode::CreateTitleRightWidget()
+{
+	return SNullWidget::NullWidget;
 }
 
 void UNiagaraNode::MarkNodeRequiresSynchronization(FString Reason, bool bRaiseGraphNeedsRecompile)
@@ -681,7 +686,7 @@ UNiagaraScriptSource* UNiagaraNode::GetSource()const
 	return GetNiagaraGraph()->GetSource();
 }
 
-void UNiagaraNode::Compile(FHlslNiagaraTranslator *Translator, TArray<int32>& Outputs)
+void UNiagaraNode::Compile(FTranslator* Translator, TArray<int32>& Outputs) const
 {
 	Translator->Error(FText::FromString("Unimplemented Node!"), this, nullptr);
 }
@@ -901,7 +906,7 @@ UEdGraphPin* UNiagaraNode::GetTracedOutputPin(UEdGraphPin* LocallyOwnedOutputPin
 }
 
 
-bool UNiagaraNode::SubstituteCompiledPin(FHlslNiagaraTranslator* Translator, UEdGraphPin** LocallyOwnedPin)
+bool UNiagaraNode::SubstituteCompiledPin(FTranslator* Translator, UEdGraphPin** LocallyOwnedPin)
 {
 	return false;
 }
@@ -947,7 +952,7 @@ void UNiagaraNode::RegisterPassthroughPin(FNiagaraParameterMapHistoryBuilder& Ou
 {
 	const UEdGraphSchema_Niagara* Schema = CastChecked<UEdGraphSchema_Niagara>(GetSchema());
 	if (bVisitInputPin)
-		OutHistory.VisitInputPin(InputPin, this, bFilterForCompilation);
+		OutHistory.VisitInputPin(InputPin, bFilterForCompilation);
 
 	FNiagaraTypeDefinition InDef = Schema->PinToTypeDefinition(InputPin);
 	FNiagaraTypeDefinition OutDef = Schema->PinToTypeDefinition(OutputPin);
@@ -1018,5 +1023,27 @@ void UNiagaraNode::GatherForLocalization(FPropertyLocalizationDataGatherer& Prop
 	Super::GatherForLocalization(PropertyLocalizationDataGatherer, GatherTextFlags | EPropertyLocalizationGathererTextFlags::ForceEditorOnly);
 }
 #endif
+
+void UNiagaraNode::GetCompilationInputPins(FPinCollectorArray& InputPins) const
+{
+	for (UEdGraphPin* Pin : Pins)
+	{
+		if (Pin->Direction == EGPD_Input && !Pin->bOrphanedPin)
+		{
+			InputPins.Add(Pin);
+		}
+	}
+}
+
+void UNiagaraNode::GetCompilationOutputPins(FPinCollectorArray& OutputPins) const
+{
+	for (UEdGraphPin* Pin : Pins)
+	{
+		if (Pin->Direction == EGPD_Output && !Pin->bOrphanedPin)
+		{
+			OutputPins.Add(Pin);
+		}
+	}
+}
 
 #undef LOCTEXT_NAMESPACE

@@ -12,6 +12,7 @@ LICENSE file in the root directory of this source tree.
 #include "OculusXRPluginWrapper.h"
 #include "OculusXRMovementFunctionLibrary.h"
 #include "OculusXRMovementLog.h"
+#include "OculusXRTelemetryMovementEvents.h"
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 static TAutoConsoleVariable<int32> CVarOVRBodyDebugDraw(
@@ -103,6 +104,8 @@ UOculusXRBodyTrackingComponent::UOculusXRBodyTrackingComponent()
 	BoneNames.Add(EOculusXRBoneID::BodyRightHandLittleIntermediate, "RightHandLittleIntermediate");
 	BoneNames.Add(EOculusXRBoneID::BodyRightHandLittleDistal, "RightHandLittleDistal");
 	BoneNames.Add(EOculusXRBoneID::BodyRightHandLittleTip, "RightHandLittleTip");
+
+	OculusXRTelemetry::TScopedMarker<OculusXRTelemetry::Events::FMovementSDKBodyStart>(static_cast<int>(GetTypeHash(this)));
 }
 
 void UOculusXRBodyTrackingComponent::BeginPlay()
@@ -129,7 +132,6 @@ void UOculusXRBodyTrackingComponent::BeginPlay()
 		return;
 	}
 
-
 	if (!UOculusXRMovementFunctionLibrary::StartBodyTracking())
 	{
 		UE_LOG(LogOculusXRMovement, Warning, TEXT("Failed to start body tracking. (%s: %s)"), *GetOwner()->GetName(), *GetName());
@@ -143,7 +145,6 @@ void UOculusXRBodyTrackingComponent::EndPlay(const EEndPlayReason::Type EndPlayR
 {
 	if (IsComponentTickEnabled())
 	{
-
 		if (--TrackingInstanceCount == 0)
 		{
 			if (!UOculusXRMovementFunctionLibrary::StopBodyTracking())

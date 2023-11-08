@@ -27,129 +27,10 @@
 
 #include "Settings/ContentBrowserSettings.h"
 #include "Settings/WidgetDesignerSettings.h"
-#include "UMGEditorProjectSettings.h"
+#include "WidgetEditingProjectSettings.h"
 #include "WidgetPaletteFavorites.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
-
-namespace UE::Editor::SPaletteViewModel::Private
-{
-	/** Helper class to perform path based filtering for unloaded BP's */
-	class FUnloadedBlueprintData : public IUnloadedBlueprintData
-	{
-	public:
-		FUnloadedBlueprintData(const FAssetData& InAssetData)
-			:ClassPath()
-			,ClassFlags(CLASS_None)
-			,bIsNormalBlueprintType(false)
-		{
-			ClassName = MakeShared<FString>(InAssetData.AssetName.ToString());
-
-			FString GeneratedClassPath;
-			const UClass* AssetClass = InAssetData.GetClass();
-			if (AssetClass && AssetClass->IsChildOf(UBlueprintGeneratedClass::StaticClass()))
-			{
-				ClassPath = InAssetData.ToSoftObjectPath().GetAssetPathString();
-			}
-			else if (InAssetData.GetTagValue(FBlueprintTags::GeneratedClassPath, GeneratedClassPath))
-			{
-				ClassPath = FTopLevelAssetPath(*FPackageName::ExportTextPathToObjectPath(GeneratedClassPath));
-			}
-
-			FEditorClassUtils::GetImplementedInterfaceClassPathsFromAsset(InAssetData, ImplementedInterfaces);
-		}
-
-		virtual ~FUnloadedBlueprintData()
-		{
-		}
-
-		// Begin IUnloadedBlueprintData interface
-		virtual bool HasAnyClassFlags(uint32 InFlagsToCheck) const
-		{
-			return (ClassFlags & InFlagsToCheck) != 0;
-		}
-
-		virtual bool HasAllClassFlags(uint32 InFlagsToCheck) const
-		{
-			return ((ClassFlags & InFlagsToCheck) == InFlagsToCheck);
-		}
-
-		virtual void SetClassFlags(uint32 InFlags)
-		{
-			ClassFlags = InFlags;
-		}
-
-		virtual bool ImplementsInterface(const UClass* InInterface) const
-		{
-			FString InterfacePath = InInterface->GetPathName();
-			for (const FString& ImplementedInterface : ImplementedInterfaces)
-			{
-				if (ImplementedInterface == InterfacePath)
-				{
-					return true;
-				}
-			}
-
-			return false;
-		}
-
-		virtual bool IsChildOf(const UClass* InClass) const
-		{
-			return false;
-		}
-
-		virtual bool IsA(const UClass* InClass) const
-		{
-			// Unloaded blueprint classes should always be a BPGC, so this just checks against the expected type.
-			return UBlueprintGeneratedClass::StaticClass()->UObject::IsA(InClass);
-		}
-
-		virtual const UClass* GetClassWithin() const
-		{
-			return nullptr;
-		}
-
-		virtual const UClass* GetNativeParent() const
-		{
-			return nullptr;
-		}
-
-		virtual void SetNormalBlueprintType(bool bInNormalBPType)
-		{
-			bIsNormalBlueprintType = bInNormalBPType;
-		}
-
-		virtual bool IsNormalBlueprintType() const
-		{
-			return bIsNormalBlueprintType;
-		}
-
-		virtual TSharedPtr<FString> GetClassName() const
-		{
-			return ClassName;
-		}
-
-		virtual FName GetClassPath() const
-		{
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			return ClassPath.ToFName();
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-		}
-
-		virtual FTopLevelAssetPath GetClassPathName() const
-		{
-			return ClassPath;
-		}
-		// End IUnloadedBlueprintData interface
-
-	private:
-		TSharedPtr<FString> ClassName;
-		FTopLevelAssetPath ClassPath;
-		uint32 ClassFlags;
-		TArray<FString> ImplementedInterfaces;
-		bool bIsNormalBlueprintType;
-	};
-}
 
 FWidgetTemplateViewModel::FWidgetTemplateViewModel()
 	: FavortiesViewModel(nullptr),
@@ -292,20 +173,23 @@ void FWidgetCatalogViewModel::BuildWidgetList()
 	bool bHasFavorites = FavoriteHeader->Children.Num() != 0;
 	FavoriteHeader->Children.Reset();
 	
-	// Copy of the list of favorites to be able to do some cleanup in the real list
-	UWidgetPaletteFavorites* FavoritesPalette = GetDefault<UWidgetDesignerSettings>()->Favorites;
-	TArray<FString> FavoritesList = FavoritesPalette->GetFavorites();
-
-	// For each entry in the category create a view model for the widget template
-	for ( auto& Entry : WidgetTemplateCategories )
+	// Build ViewModel and clean the Favorite list if needed
 	{
-		BuildWidgetTemplateCategory(Entry.Key, Entry.Value, FavoritesList);
-	}
+		// Copy of the list of favorites to be able to do some cleanup in the real list
+		UWidgetPaletteFavorites* FavoritesPalette = GetDefault<UWidgetDesignerSettings>()->Favorites;
+		TArray<FString> FavoritesList = FavoritesPalette->GetFavorites();
 
-	// Remove all Favorites that may be left in the list.Typically happening when the list of favorite contains widget that were deleted since the last opening.
-	for (const FString& favoriteName : FavoritesList)
-	{
-		FavoritesPalette->Remove(favoriteName);
+		// For each entry in the category create a view model for the widget template
+		for (auto& Entry : WidgetTemplateCategories)
+		{
+			BuildWidgetTemplateCategory(Entry.Key, Entry.Value, FavoritesList);
+		}
+
+		// Remove all Favorites that may be left in the list.Typically happening when the list of favorite contains widget that were deleted since the last opening.
+		for (const FString& FavoriteName : FavoritesList)
+		{
+			FavoritesPalette->Remove(FavoriteName);
+		}
 	}
 
 	// Sort the view models by name
@@ -332,310 +216,147 @@ void FWidgetCatalogViewModel::BuildWidgetList()
 
 void FWidgetCatalogViewModel::BuildClassWidgetList()
 {
-	static const FName DevelopmentStatusKey(TEXT("DevelopmentStatus"));
-	static const FString InvalidCategoryName("InvalidCategoryName");
-
-	TMap<FName, TSubclassOf<UUserWidget>> LoadedWidgetBlueprintClassesByName;
-	TMap<FName, TSubclassOf<UBlueprintGeneratedClass>> LoadedGeneratedBlueprintClassesByName;
-
-	auto ActiveWidgetBlueprintClass = GetBlueprint()->GeneratedClass;
+	const UClass* ActiveWidgetBlueprintClass = GetBlueprint()->GeneratedClass;
 	FName ActiveWidgetBlueprintClassName = ActiveWidgetBlueprintClass->GetFName();
+	TSharedPtr<FWidgetBlueprintEditor> PinnedBPEditor = BlueprintEditor.Pin();
 
-	UUMGEditorProjectSettings* UMGEditorProjectSettings = GetMutableDefault<UUMGEditorProjectSettings>();
-	bool bUseEditorConfigPaletteFiltering = UMGEditorProjectSettings->bUseEditorConfigPaletteFiltering;
-	const FNamePermissionList& AllowedPaletteCategories = UMGEditorProjectSettings->GetAllowedPaletteCategories();
-	const FPathPermissionList& AllowedPaletteWidgets = UMGEditorProjectSettings->GetAllowedPaletteWidgets();
-	const TArray<FSoftClassPath>& WidgetClassesToHide = UMGEditorProjectSettings->WidgetClassesToHide;
-
-	// Since allowing all widgets in a category can be excessive when using permission lists, ensure widgets pass class viewing filters
-	FClassViewerModule& ClassViewerModule = FModuleManager::LoadModuleChecked<FClassViewerModule>("ClassViewer");
-	const TSharedPtr<IClassViewerFilter>& GlobalClassFilter = ClassViewerModule.GetGlobalClassViewerFilter();
-	TSharedRef<FClassViewerFilterFuncs> ClassFilterFuncs = ClassViewerModule.CreateFilterFuncs();
-	FClassViewerInitializationOptions ClassViewerOptions = {};
-
-	auto WidgetPassesConfigFiltering = [&](const FAssetData& InWidgetAssetData, const FString& InCategoryName, TWeakObjectPtr<UClass> InWidgetClass)
+	if (!PinnedBPEditor)
 	{
-		if (AllowedPaletteWidgets.PassesFilter(InWidgetAssetData.GetObjectPathString()))
-		{
-			return true;
-		}
-
-		if (AllowedPaletteCategories.PassesFilter(*InCategoryName) && GlobalClassFilter.IsValid())
-		{
-			if (InWidgetClass.IsValid())
-			{
-				return GlobalClassFilter->IsClassAllowed(ClassViewerOptions, InWidgetClass.Get(), ClassFilterFuncs);
-			}
-			else if (InWidgetAssetData.IsValid())
-			{
-				using namespace UE::Editor::SPaletteViewModel::Private;
-				TSharedRef<FUnloadedBlueprintData> UnloadedBlueprint = MakeShared<FUnloadedBlueprintData>(InWidgetAssetData);
-				return GlobalClassFilter->IsUnloadedClassAllowed(ClassViewerOptions, UnloadedBlueprint, ClassFilterFuncs);
-			}
-		}
-
-		return false;
-	};
+		return;
+	}
 
 	// Locate all UWidget classes from code and loaded widget BPs
 	for (TObjectIterator<UClass> ClassIt; ClassIt; ++ClassIt)
 	{
 		UClass* WidgetClass = *ClassIt;
-
-		if (!FWidgetBlueprintEditorUtils::IsUsableWidgetClass(WidgetClass))
-		{
-			continue;
-		}
-
-		if (WidgetClass->HasAnyClassFlags(CLASS_HideDropDown))
-		{
-			continue;
-		}
-
-		// Initialize AssetData for checking PackagePath
-		FAssetData WidgetAssetData = FAssetData(WidgetClass);
-
-		// Excludes engine content if user sets it to false
-		if (!GetDefault<UContentBrowserSettings>()->GetDisplayEngineFolder() || !GetDefault<UUMGEditorProjectSettings>()->bShowWidgetsFromEngineContent)
-		{
-			if (WidgetAssetData.PackagePath.ToString().Find(TEXT("/Engine")) == 0)
-			{
-				continue;
-			}
-		}
-
-		// Excludes developer content if user sets it to false
-		if (!GetDefault<UContentBrowserSettings>()->GetDisplayDevelopersFolder() || !GetDefault<UUMGEditorProjectSettings>()->bShowWidgetsFromDeveloperContent)
-		{
-			if (WidgetAssetData.PackagePath.ToString().Find(TEXT("/Game/Developers")) == 0)
-			{
-				continue;
-			}
-		}
-
-		if (bUseEditorConfigPaletteFiltering)
-		{
-			if (!WidgetPassesConfigFiltering(WidgetAssetData, WidgetClass->GetDefaultObject<UWidget>()->GetPaletteCategory().ToString(), WidgetClass))
-			{
-				continue;
-			}
-		}
-		else
-		{
-			// Excludes this widget if it is on the hide list
-			bool bIsOnList = false;
-			for (FSoftClassPath Widget : WidgetClassesToHide)
-			{
-				if (WidgetAssetData.GetObjectPathString().Find(Widget.ToString()) == 0)
-				{
-					bIsOnList = true;
-					break;
-				}
-			}
-			if (bIsOnList)
-			{
-				continue;
-			}
-		}
-
 		const bool bIsSameClass = WidgetClass->GetFName() == ActiveWidgetBlueprintClassName;
+		if (bIsSameClass)
+		{
+			continue;
+		}
 
-		// Check that the asset that generated this class is valid (necessary b/c of a larger issue wherein force delete does not wipe the generated class object)
-		if ( bIsSameClass )
+		if (!FWidgetBlueprintEditorUtils::IsUsableWidgetClass(WidgetClass, PinnedBPEditor.ToSharedRef()))
+		{
+			continue;
+		}
+
+		if (WidgetClass->HasAnyClassFlags(CLASS_HideDropDown | CLASS_Hidden))
 		{
 			continue;
 		}
 
 		if (WidgetClass->IsChildOf(UUserWidget::StaticClass()))
 		{
-			if ( WidgetClass->ClassGeneratedBy )
-			{
-				// Track the widget blueprint classes that are already loaded
-				LoadedWidgetBlueprintClassesByName.Add(WidgetClass->ClassGeneratedBy->GetFName()) = WidgetClass;
-			}
-		}
-		else if (Cast<UBlueprintGeneratedClass>(WidgetClass))
-		{
-			// Note: Don't check IsChildOf above, since superstruct of BPGC is the C++ class
-			LoadedGeneratedBlueprintClassesByName.Add(WidgetClass->GetFName()) = WidgetClass;
-			TSharedPtr<FWidgetTemplateClass> Template = MakeShareable(new FWidgetTemplateClass(WidgetClass));
-			AddWidgetTemplate(Template);
+			AddWidgetTemplate(MakeShared<FWidgetTemplateBlueprintClass>(FAssetData(WidgetClass), WidgetClass));
 		}
 		else
 		{
-			TSharedPtr<FWidgetTemplateClass> Template = MakeShareable(new FWidgetTemplateClass(WidgetClass));
-			AddWidgetTemplate(Template);
+			// For UWidget
+			AddWidgetTemplate(MakeShared<FWidgetTemplateClass>(WidgetClass));
 		}
-
-		//TODO UMG does not prevent deep nested circular references
 	}
 
-	// Locate all widget BP assets (include unloaded)
-	const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	// Locate all UWidget BP assets, include loaded and unloaded. Only parsed the unloaded.
+	const FAssetRegistryModule* AssetRegistryModule = FModuleManager::GetModulePtr<FAssetRegistryModule>(TEXT("AssetRegistry"));
 	TArray<FAssetData> AllBPsAssetData;
-	AssetRegistryModule.Get().GetAssetsByClass(UBlueprint::StaticClass()->GetClassPathName(), AllBPsAssetData, true);
-
-	for (FAssetData& BPAssetData : AllBPsAssetData)
+	if (AssetRegistryModule)
 	{
-		// Blueprints get the class type actions for their parent native class - this avoids us having to load the blueprint
-		UClass* ParentClass = nullptr;
-		FString ParentClassName;
-		if (!BPAssetData.GetTagValue(FBlueprintTags::NativeParentClassPath, ParentClassName))
-		{
-			BPAssetData.GetTagValue(FBlueprintTags::ParentClassPath, ParentClassName);
-		}
-		if (!ParentClassName.IsEmpty())
-		{
-			ParentClass = UClass::TryFindTypeSlow<UClass>(FPackageName::ExportTextPathToObjectPath(ParentClassName));
-			// UUserWidgets have their own loading section, and we don't want to process any blueprints that don't have UWidget parents
-			if (ParentClass)
-			{
-				if (!ParentClass->IsChildOf(UWidget::StaticClass()) || ParentClass->IsChildOf(UUserWidget::StaticClass()))
-				{
-					continue;
-				}
-			}
-		}
-
-		if (!FilterAssetData(BPAssetData))
-		{
-			// If this object isn't currently loaded, add it to the palette view
-			if (BPAssetData.ToSoftObjectPath().ResolveObject() == nullptr)
-			{
-				if (bUseEditorConfigPaletteFiltering)
-				{
-					// Still check the soft object path even if we can't check category due to BP asset being unloaded
-					if (!WidgetPassesConfigFiltering(BPAssetData, InvalidCategoryName, nullptr))
-					{
-						continue;
-					}
-				}
-
-				auto Template = MakeShareable(new FWidgetTemplateClass(BPAssetData, nullptr));
-				AddWidgetTemplate(Template);
-			}
-		}
+		AssetRegistryModule->Get().GetAssetsByClass(UBlueprint::StaticClass()->GetClassPathName(), AllBPsAssetData, true);
 	}
 
-	TArray<FAssetData> AllWidgetBPsAssetData;
-	AssetRegistryModule.Get().GetAssetsByClass(UWidgetBlueprint::StaticClass()->GetClassPathName(), AllWidgetBPsAssetData, true);
-
-	FName ActiveWidgetBlueprintName = ActiveWidgetBlueprintClass->ClassGeneratedBy->GetFName();
-	for (FAssetData& WidgetBPAssetData : AllWidgetBPsAssetData)
+	for (const FAssetData& BPAssetData : AllBPsAssetData)
 	{
-		// Excludes the blueprint you're currently in
-		if (WidgetBPAssetData.AssetName == ActiveWidgetBlueprintName)
+		const bool bIsSameClass = BPAssetData.AssetName == ActiveWidgetBlueprintClassName;
+		if (bIsSameClass)
 		{
 			continue;
 		}
 
-		if (!FilterAssetData(WidgetBPAssetData))
+		// Was already parsed by the TObjectIterator<UClass>
+		if (BPAssetData.IsAssetLoaded())
 		{
-			// If the blueprint generated class was found earlier, pass it to the template
-			TSubclassOf<UUserWidget> WidgetBPClass = nullptr;
-			auto LoadedWidgetBPClass = LoadedWidgetBlueprintClassesByName.Find(WidgetBPAssetData.AssetName);
-			if (LoadedWidgetBPClass)
-			{
-				WidgetBPClass = *LoadedWidgetBPClass;
-			}
+			continue;
+		}
 
-			if (bUseEditorConfigPaletteFiltering)
-			{
-				FText Category = FWidgetTemplateBlueprintClass(WidgetBPAssetData, WidgetBPClass).GetCategory();
-				if (!WidgetPassesConfigFiltering(WidgetBPAssetData, Category.ToString(), WidgetBPClass))
-				{
-					continue;
-				}
-			}
-			else
-			{
-				// Excludes this widget if it is on the hide list
-				bool bIsOnList = false;
-				for (FSoftClassPath Widget : WidgetClassesToHide)
-				{
-					if (Widget.ToString().Find(WidgetBPAssetData.GetObjectPathString()) == 0)
-					{
-						bIsOnList = true;
-						break;
-					}
-				}
-				if (bIsOnList)
-				{
-					continue;
-				}
-			}
+		TValueOrError<FWidgetBlueprintEditorUtils::FUsableWidgetClassResult, void> Usable = FWidgetBlueprintEditorUtils::IsUsableWidgetClass(BPAssetData, PinnedBPEditor.ToSharedRef());
+		if (Usable.HasError())
+		{
+			continue;
+		}
 
-			uint32 BPFlags = WidgetBPAssetData.GetTagValueRef<uint32>(FBlueprintTags::ClassFlags);
-			if ((BPFlags & (CLASS_Hidden | CLASS_HideDropDown | CLASS_Deprecated | CLASS_Abstract | CLASS_NewerVersionExists)) == 0)
-			{
-				auto Template = MakeShareable(new FWidgetTemplateBlueprintClass(WidgetBPAssetData, WidgetBPClass));
+		if ((Usable.GetValue().AssetClassFlags & (CLASS_Hidden | CLASS_HideDropDown)) != 0)
+		{
+			continue;
+		}		
 
-				AddWidgetTemplate(Template);
-			}
+		if (Usable.GetValue().NativeParentClass->IsChildOf(UUserWidget::StaticClass()))
+		{
+			AddWidgetTemplate(MakeShared<FWidgetTemplateBlueprintClass>(BPAssetData, nullptr));
+		}
+		else
+		{
+			AddWidgetTemplate(MakeShared<FWidgetTemplateClass>(BPAssetData, nullptr));
 		}
 	}
 
 
-	TArray<FAssetData> AllGeneratedBPsAssetData;
-	AssetRegistryModule.Get().GetAssetsByClass(UBlueprintGeneratedClass::StaticClass()->GetClassPathName(), AllGeneratedBPsAssetData, true);
+	TArray<FAssetData> AllGeneratedBPsAssetData; // if it's a widget already compiled
 
-	// Search generated class assets if using palette filtering, only do this with palette filtering since otherwise searching all generated BP's would be expensive
-	if (bUseEditorConfigPaletteFiltering)
+	if (AssetRegistryModule && FWidgetBlueprintEditorUtils::GetRelevantSettings(BlueprintEditor)->bUseEditorConfigPaletteFiltering)
 	{
-		for (FAssetData& GeneratedBPAssetData : AllGeneratedBPsAssetData)
+		AssetRegistryModule->Get().GetAssetsByClass(UBlueprintGeneratedClass::StaticClass()->GetClassPathName(), AllGeneratedBPsAssetData, true);
+	}
+
+	for (const FAssetData& BPAssetData : AllGeneratedBPsAssetData)
+	{
+		const bool bIsSameClass = BPAssetData.AssetName == ActiveWidgetBlueprintClassName;
+		if (bIsSameClass)
 		{
-			// Excludes the blueprint you're currently in
-			if (GeneratedBPAssetData.AssetName == ActiveWidgetBlueprintName)
-			{
-				continue;
-			}
-
-			if (!FilterAssetData(GeneratedBPAssetData) 
-				&& AllowedPaletteWidgets.PassesFilter(GeneratedBPAssetData.GetObjectPathString()) 
-				&& !LoadedGeneratedBlueprintClassesByName.Contains(GeneratedBPAssetData.AssetName))
-			{
-				uint32 BPFlags = GeneratedBPAssetData.GetTagValueRef<uint32>(FBlueprintTags::ClassFlags);
-				if ((BPFlags & (CLASS_Hidden | CLASS_HideDropDown | CLASS_Deprecated | CLASS_Abstract | CLASS_NewerVersionExists)) == 0)
-				{
-					bool bIsBlueprintGeneratedClass = true;
-					auto Template = MakeShareable(new FWidgetTemplateBlueprintClass(GeneratedBPAssetData, nullptr, bIsBlueprintGeneratedClass));
-
-					AddWidgetTemplate(Template);
-				}
-			}
+			continue;
 		}
+
+		// Was already parsed by the TObjectIterator<UClass>
+		if (BPAssetData.IsAssetLoaded())
+		{
+			continue;
+		}
+
+		TValueOrError<FWidgetBlueprintEditorUtils::FUsableWidgetClassResult, void> Usable = FWidgetBlueprintEditorUtils::IsUsableWidgetClass(BPAssetData, PinnedBPEditor.ToSharedRef());
+		if (Usable.HasError())
+		{
+			continue;
+		}
+
+		if ((Usable.GetValue().AssetClassFlags & (CLASS_Hidden | CLASS_HideDropDown)) != 0)
+		{
+			continue;
+		}
+
+		AddWidgetTemplate(MakeShared<FWidgetTemplateBlueprintClass>(BPAssetData, nullptr));
 	}
 }
 
-bool FWidgetCatalogViewModel::FilterAssetData(FAssetData &InAssetData)
+void FWidgetCatalogViewModel::AddHeader(TSharedPtr<FWidgetHeaderViewModel>& Header)
 {
-	// Excludes engine content if user sets it to false
-	if (!GetDefault<UContentBrowserSettings>()->GetDisplayEngineFolder() || !GetDefault<UUMGEditorProjectSettings>()->bShowWidgetsFromEngineContent)
-	{
-		if (InAssetData.PackagePath.ToString().Find(TEXT("/Engine")) == 0)
-		{
-			return true;
-		}
-	}
+	WidgetViewModels.Add(Header);
+}
 
-	// Excludes developer content if user sets it to false
-	if (!GetDefault<UContentBrowserSettings>()->GetDisplayDevelopersFolder() || !GetDefault<UUMGEditorProjectSettings>()->bShowWidgetsFromDeveloperContent)
+void FWidgetCatalogViewModel::AddToFavoriteHeader(TSharedPtr<FWidgetTemplateViewModel>& Favorite)
+{
+	if (FavoriteHeader)
 	{
-		if (InAssetData.PackagePath.ToString().Find(TEXT("/Game/Developers")) == 0)
-		{
-			return true;
-		}
+		FavoriteHeader->Children.Add(Favorite);
 	}
-	return false;
 }
 
 void FWidgetCatalogViewModel::AddWidgetTemplate(TSharedPtr<FWidgetTemplate> Template)
 {
-	FString Category = Template->GetCategory().ToString();
+	FString Category = *Template->GetCategory().ToString();
 
 	// Hide user specific categories
-	TArray<FString> CategoriesToHide = GetDefault<UUMGEditorProjectSettings>()->CategoriesToHide;
-	for (FString CategoryName : CategoriesToHide)
+	const TArray<FString>& CategoriesToHide = FWidgetBlueprintEditorUtils::GetRelevantSettings(BlueprintEditor)->CategoriesToHide;
+	
+	for (const FString& CategoryName : CategoriesToHide)
 	{
 		if (Category == CategoryName)
 		{
@@ -680,10 +401,6 @@ void FPaletteViewModel::BuildWidgetTemplateCategory(FString& Category, TArray<TS
 {
 	TSharedPtr<FWidgetHeaderViewModel> Header = MakeShareable(new FWidgetHeaderViewModel());
 	Header->GroupName = FText::FromString(Category);
-
-	// Copy of the list of favorites to be able to do some cleanup in the real list
-	UWidgetPaletteFavorites* FavoritesPalette = GetDefault<UWidgetDesignerSettings>()->Favorites;
-
 	for (auto& Template : Templates)
 	{
 		TSharedPtr<FWidgetTemplateViewModel> TemplateViewModel = MakeShareable(new FWidgetTemplateViewModel());
@@ -703,7 +420,7 @@ void FPaletteViewModel::BuildWidgetTemplateCategory(FString& Category, TArray<TS
 			FavoriteTemplateViewModel->FavortiesViewModel = this;
 			FavoriteTemplateViewModel->SetFavorite();
 
-			FavoriteHeader->Children.Add(FavoriteTemplateViewModel);
+			AddToFavoriteHeader(FavoriteTemplateViewModel);
 
 			// Remove the favorite from the temporary list
 			FavoritesList.RemoveAt(index);
@@ -713,16 +430,16 @@ void FPaletteViewModel::BuildWidgetTemplateCategory(FString& Category, TArray<TS
 	
 	Header->Children.Sort([](const TSharedPtr<FWidgetViewModel>& L, const TSharedPtr<FWidgetViewModel>& R) { return R->GetName().CompareTo(L->GetName()) > 0; });
 
-	WidgetViewModels.Add(Header);
+	AddHeader(Header);
 }
 
-void FPaletteViewModel::AddToFavorites(const FWidgetTemplateViewModel* WidgetTemplateViewModel)
+void FWidgetCatalogViewModel::AddToFavorites(const FWidgetTemplateViewModel* WidgetTemplateViewModel)
 {
 	UWidgetPaletteFavorites* Favorites = GetDefault<UWidgetDesignerSettings>()->Favorites;
 	Favorites->Add(WidgetTemplateViewModel->GetName().ToString());
 }
 
-void FPaletteViewModel::RemoveFromFavorites(const FWidgetTemplateViewModel* WidgetTemplateViewModel)
+void FWidgetCatalogViewModel::RemoveFromFavorites(const FWidgetTemplateViewModel* WidgetTemplateViewModel)
 {
 	UWidgetPaletteFavorites* Favorites = GetDefault<UWidgetDesignerSettings>()->Favorites;
 	Favorites->Remove(WidgetTemplateViewModel->GetName().ToString());

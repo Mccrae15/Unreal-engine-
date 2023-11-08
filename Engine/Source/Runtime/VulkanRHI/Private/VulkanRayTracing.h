@@ -6,9 +6,10 @@
 
 #if VULKAN_RHI_RAYTRACING
 
+#include "RayTracingBuiltInResources.h"
+
 class FVulkanCommandListContext;
 class FVulkanResourceMultiBuffer;
-class FVulkanRayTracingLayout;
 
 class FVulkanRayTracingPlatform
 {
@@ -16,19 +17,19 @@ public:
 	static bool CheckVulkanInstanceFunctions(VkInstance inInstance);
 };
 
-struct FVkRtAllocation
+
+// Built-in local root parameters that are always bound to all hit shaders
+// :todo-jn: NOTE: Keep in sync with VulkanCommon.ush decl until it's put in a common header
+struct FVulkanHitGroupSystemParameters
 {
-	VkDevice Device = VK_NULL_HANDLE;
-	VkDeviceMemory Memory = VK_NULL_HANDLE;
-	VkBuffer Buffer = VK_NULL_HANDLE;
+	FHitGroupSystemRootConstants RootConstants;
+
+	uint32 BindlessHitGroupSystemIndexBuffer;
+	uint32 BindlessHitGroupSystemVertexBuffer;
+
+	uint32 BindlessUniformBuffers[16];
 };
 
-class FVulkanRayTracingAllocator
-{
-public:
-	static void Allocate(FVulkanDevice* Device, VkDeviceSize Size, VkBufferUsageFlags UsageFlags, VkMemoryPropertyFlags MemoryFlags, FVkRtAllocation& Result);
-	static void Free(FVkRtAllocation& Allocation);
-};
 
 struct FVkRtTLASBuildData
 {
@@ -58,11 +59,63 @@ struct FVkRtBLASBuildData
 	VkAccelerationStructureBuildSizesInfoKHR SizesInfo;
 };
 
+class FVulkanRayTracingShaderTable : VulkanRHI::FDeviceChild
+{
+public:
+	FVulkanRayTracingShaderTable(FVulkanDevice* Device);
+	~FVulkanRayTracingShaderTable();
+
+	void Init(const FVulkanRayTracingScene* Scene, const FVulkanRayTracingPipelineState* Pipeline);
+
+	const VkStridedDeviceAddressRegionKHR* GetRegion(EShaderFrequency Frequency);
+
+	void SetSlot(EShaderFrequency Frequency, uint32 DstSlot, uint32 SrcHandleIndex, TConstArrayView<uint8> SrcHandleData);
+
+	template <typename T>
+	void SetLocalShaderParameters(EShaderFrequency Frequency, uint32 RecordIndex, uint32 InOffsetWithinRootSignature, const T& Parameters)
+	{
+		SetLocalShaderParameters(Frequency, RecordIndex, InOffsetWithinRootSignature, &Parameters, sizeof(Parameters));
+	}
+
+	void SetLocalShaderParameters(EShaderFrequency Frequency, uint32 RecordIndex, uint32 OffsetWithinRecord, const void* InData, uint32 InDataSize);
+
+private:
+
+	struct FVulkanShaderTableAllocation
+	{
+		FVulkanShaderTableAllocation()
+		{
+			FMemory::Memzero(Region);
+		}
+
+		uint32 HandleCount = 0;
+		bool bUseLocalRecord = false;
+
+		VkBuffer Buffer = VK_NULL_HANDLE;
+		VulkanRHI::FVulkanAllocation Allocation;
+		VkStridedDeviceAddressRegionKHR Region;
+		uint8* MappedBufferMemory = nullptr;
+	};
+
+	FVulkanShaderTableAllocation& GetAlloc(EShaderFrequency Frequency);
+
+	FVulkanShaderTableAllocation Raygen;
+	FVulkanShaderTableAllocation Miss;
+	FVulkanShaderTableAllocation HitGroup;
+	FVulkanShaderTableAllocation Callable;
+
+	// Convenience
+	const uint32 HandleSize;
+	const uint32 HandleSizeAligned;
+};
+
 class FVulkanRayTracingGeometry : public FRHIRayTracingGeometry
 {
 public:
+	static constexpr uint32 IndicesPerPrimitive = 3; // Only triangle meshes are supported
+
 	FVulkanRayTracingGeometry(ENoInit);
-	FVulkanRayTracingGeometry(const FRayTracingGeometryInitializer& Initializer, FVulkanDevice* InDevice);
+	FVulkanRayTracingGeometry(FRHICommandListBase& RHICmdList, const FRayTracingGeometryInitializer& Initializer, FVulkanDevice* InDevice);
 	~FVulkanRayTracingGeometry();
 
 	virtual FRayTracingAccelerationStructureAddress GetAccelerationStructureAddress(uint64 GPUIndex) const final override { return Address; }	
@@ -76,16 +129,26 @@ public:
 	void RemoveCompactionRequest();
 	void CompactAccelerationStructure(FVulkanCmdBuffer& CmdBuffer, uint64 InSizeAfterCompaction);
 
+	void SetupHitGroupSystemParameters();
+	void ReleaseBindlessHandles();
+
 	VkAccelerationStructureKHR Handle = VK_NULL_HANDLE;
 	VkDeviceAddress Address = 0;
 	TRefCountPtr<FVulkanResourceMultiBuffer> AccelerationStructureBuffer;
 	bool bHasPendingCompactionRequests = false;
 	uint64 AccelerationStructureCompactedSize = 0;
-private:
+
 	FVulkanDevice* const Device = nullptr;
+
+	TArray<FVulkanHitGroupSystemParameters> HitGroupSystemParameters;
+	TArray<FRHIDescriptorHandle> HitGroupSystemVertexViews;  // :todo-jn: use views?
+	FRHIDescriptorHandle HitGroupSystemIndexView;
+
+	FDebugName DebugName;
+	FName OwnerName;		// Store the path name of the owner object for resource tracking
 };
 
-class FVulkanRayTracingScene : public FRHIRayTracingScene
+class FVulkanRayTracingScene : public FRHIRayTracingScene, public VulkanRHI::FDeviceChild
 {
 public:
 	FVulkanRayTracingScene(FRayTracingSceneInitializer2 Initializer, FVulkanDevice* InDevice);
@@ -100,14 +163,29 @@ public:
 		FVulkanResourceMultiBuffer* ScratchBuffer, uint32 ScratchOffset, 
 		FVulkanResourceMultiBuffer* InstanceBuffer, uint32 InstanceOffset);
 
-	virtual FRHIShaderResourceView* GetMetadataBufferSRV() const override final
+	virtual FRHIShaderResourceView* GetOrCreateMetadataBufferSRV(FRHICommandListImmediate& RHICmdList) override final
 	{
+		if (!PerInstanceGeometryParameterSRV.IsValid())
+		{
+			PerInstanceGeometryParameterSRV = RHICmdList.CreateShaderResourceView(PerInstanceGeometryParameterBuffer, FRHIViewDesc::CreateBufferSRV().SetType(FRHIViewDesc::EBufferType::Structured));
+		}
+
 		return PerInstanceGeometryParameterSRV.GetReference();
 	}
 
-private:
-	FVulkanDevice* const Device = nullptr;
+	FVulkanRayTracingShaderTable* FindOrCreateShaderTable(const FVulkanRayTracingPipelineState* Pipeline);
 
+	inline uint32 GetHitRecordBaseIndex(uint32 InstanceIndex, uint32 SegmentIndex) const 
+	{
+		return (Initializer.SegmentPrefixSum[InstanceIndex] + SegmentIndex) * Initializer.ShaderSlotsPerGeometrySegment;
+	}
+
+	inline bool IsBuilt() const
+	{
+		return bBuilt;
+	}
+
+private:
 	const FRayTracingSceneInitializer2 Initializer;
 
 	// Native TLAS handles are owned by SRV objects in Vulkan RHI.
@@ -120,7 +198,7 @@ private:
 
 	struct FLayerData
 	{
-		TRefCountPtr<FVulkanShaderResourceView> ShaderResourceView;
+		TUniquePtr<FVulkanView> View;
 		uint32 BufferOffset;
 		uint32 ScratchBufferOffset;
 	};
@@ -131,11 +209,17 @@ private:
 
 	// Buffer that contains per-instance index and vertex buffer binding data
 	TRefCountPtr<FVulkanResourceMultiBuffer> PerInstanceGeometryParameterBuffer;
-	TRefCountPtr<FVulkanShaderResourceView> PerInstanceGeometryParameterSRV;
+	FShaderResourceViewRHIRef PerInstanceGeometryParameterSRV;
+	
+	TMap<const FVulkanRayTracingPipelineState*, FVulkanRayTracingShaderTable*> ShaderTables;
+
 	void BuildPerInstanceGeometryParameterBuffer(FVulkanCommandListContext& CommandContext);
+
+	bool bBuilt = false;
 };
 
-class FVulkanRayTracingPipelineState : public FRHIRayTracingPipelineState
+
+class FVulkanRayTracingPipelineState : public FRHIRayTracingPipelineState, public VulkanRHI::FDeviceChild
 {
 public:
 
@@ -143,13 +227,37 @@ public:
 	FVulkanRayTracingPipelineState(FVulkanDevice* const InDevice, const FRayTracingPipelineStateInitializer& Initializer);
 	~FVulkanRayTracingPipelineState();
 
+	inline VkPipeline GetPipeline() const
+	{
+		return Pipeline;
+	}
+
+	int32 GetShaderIndex(const FVulkanRayTracingShader* Shader) const;
+	const FVulkanRayTracingShader* GetShader(EShaderFrequency Frequency, int32 ShaderIndex) const;
+	const TArray<uint8>& GetShaderHandles(EShaderFrequency Frequency) const;
+
 private:
 
-	FVulkanRayTracingLayout* Layout = nullptr;
+	struct ShaderData
+	{
+		TArray<TRefCountPtr<FVulkanRayTracingShader>> Shaders;
+		TArray<uint8> ShaderHandles;
+	};
+
+	const ShaderData& GetShaderData(EShaderFrequency Frequency) const;
+
+	ShaderData RayGen;
+	ShaderData Miss;
+	ShaderData HitGroup;
+	ShaderData Callable;
+
 	VkPipeline Pipeline = VK_NULL_HANDLE;
-	FVkRtAllocation RayGenShaderBindingTable;
-	FVkRtAllocation MissShaderBindingTable;
-	FVkRtAllocation HitShaderBindingTable;
+
+public:
+	bool bAllowHitGroupIndexing = true;
+
+	friend FVulkanCommandListContext;
+	friend FVulkanRayTracingScene;
 };
 
 class FVulkanRayTracingCompactedSizeQueryPool : public FVulkanQueryPool

@@ -11,15 +11,6 @@
 
 #define MAX_STREAMS 8
 
-#define BINKA_COMPRESS_SUCCESS 0
-#define BINKA_COMPRESS_ERROR_CHANS 1
-#define BINKA_COMPRESS_ERROR_SAMPLES 2
-#define BINKA_COMPRESS_ERROR_RATE 3
-#define BINKA_COMPRESS_ERROR_QUALITY 4
-#define BINKA_COMPRESS_ERROR_ALLOCATORS 5
-#define BINKA_COMPRESS_ERROR_OUTPUT 6
-
-
 struct MemBufferEntry
 {
     U32 bytecount;
@@ -203,9 +194,8 @@ static void SeekTableBufferFree(SeekTableBuffer* seek)
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
-static U32 SeekTableBufferTrim(SeekTableBuffer* seek)
+static U32 SeekTableBufferTrim(SeekTableBuffer* seek, U16 max_entry_count)
 {
-    // Trim to 4096 size, or 2048 total entries.
     // Return # of frames per entry.
 
     // resolve to a single buffer for ease.
@@ -213,30 +203,35 @@ static U32 SeekTableBufferTrim(SeekTableBuffer* seek)
     MemBufferWriteBuffer(&seek->buffer, table);
     memcpy((char*)table + seek->buffer.total_bytes, seek->current_stack, sizeof(U16) * seek->current_index);
 
-    S32 frames_per_entry = 1;
-    while (seek->total_count > 4096)
+    U32 frames_per_entry = 1;
+    while (seek->total_count > (U32)max_entry_count)
     {
         // collapse pairs.
         frames_per_entry <<= 1;
 
-        S32 new_total_count = seek->total_count;
         U32 read_index = 0;
         U32 write_index = 0;
         while (read_index < seek->total_count)
         {
-            U16 total = table[read_index];
+            U32 total = table[read_index];
             if (read_index + 1 < seek->total_count)
             {
                 total += table[read_index + 1];
-                new_total_count--;
             }
 
-            table[write_index] = total;
+            if (total > 65535)
+            {
+                // we can't fit the offset in the table - fail to trim, this file is too big
+                // with the given max seek table size.
+                return ~0U;
+            }
+
+            table[write_index] = (U16)total;
             write_index++;
             read_index += 2;
         }
 
-        seek->total_count = new_total_count;
+        seek->total_count = write_index;
     }
 
     seek->collapsed = table;
@@ -337,14 +332,14 @@ struct FPStateScope
 //-----------------------------------------------------------------------------
 uint8_t UECompressBinkAudio(
     void* WavData, uint32_t WavDataLen, uint32_t WavRate, uint8_t WavChannels, 
-    uint8_t Quality, uint8_t GenerateSeekTable, BAUECompressAllocFnType* MemAlloc, BAUECompressFreeFnType* MemFree,
+    uint8_t Quality, uint8_t GenerateSeekTable, uint16_t SeekTableMaxEntries, BAUECompressAllocFnType* MemAlloc, BAUECompressFreeFnType* MemFree,
     void** OutData, uint32_t* OutDataLen)
 {
     FPStateScope FixFloatingPoint;
 
     if (WavChannels == 0)
         return BINKA_COMPRESS_ERROR_CHANS;
-    if (WavRate > 256000 || WavRate < 11025)
+    if (WavRate > 256000 || WavRate < 2000)
         return BINKA_COMPRESS_ERROR_RATE;
     if (Quality > 9)
         return BINKA_COMPRESS_ERROR_QUALITY;
@@ -354,6 +349,8 @@ uint8_t UECompressBinkAudio(
     if (OutData == nullptr ||
         OutDataLen == nullptr)
         return BINKA_COMPRESS_ERROR_OUTPUT;
+    if (GenerateSeekTable && SeekTableMaxEntries < 2)
+        return BINKA_COMPRESS_ERROR_SEEKTABLE;
 
     //
     // Deinterlace the input.
@@ -537,27 +534,40 @@ uint8_t UECompressBinkAudio(
             break;
     }
 
-    // Trim the table to 4k and get how many frames ended up per entry.
-    U32 FramesPerEntry = SeekTableBufferTrim(&SeekTable);
+    uint8_t Result = BINKA_COMPRESS_SUCCESS;
+    // Trim the table and get how many frames ended up per entry.
+    U32 FramesPerEntry = SeekTableBufferTrim(&SeekTable, SeekTableMaxEntries);
+    if (FramesPerEntry == ~0U)
+    {
+        // The file is too big - can't fit offsets in to U16.
+        Result = BINKA_COMPRESS_ERROR_SIZE;
+    }
+    else
+    {
+        BinkAudioFileHeader Header;
+        Header.tag = 'UEBA';
+        Header.PADDING = 0;
+        Header.channels = (U8)WavChannels;
+        Header.rate = WavRate;
+        Header.sample_count = SamplesPerChannel;
+        Header.max_comp_space_needed = (U16)MaxBlockSize;
+        Header.flags = 1;
+        Header.version = 1;
+        Header.output_file_size = DataBuffer.total_bytes + sizeof(BinkAudioFileHeader) + SeekTable.total_count*sizeof(U16);
+        Header.blocks_per_seek_table_entry = (U16)FramesPerEntry;
+        Header.seek_table_entry_count = (U16)SeekTable.total_count;
 
-    BinkAudioFileHeader Header;
-    Header.tag = 'UEBA';
-    Header.PADDING = 0;
-    Header.channels = (U8)WavChannels;
-    Header.rate = WavRate;
-    Header.sample_count = SamplesPerChannel;
-    Header.max_comp_space_needed = (U16)MaxBlockSize;
-    Header.flags = 1;
-    Header.version = 1;
-    Header.output_file_size = DataBuffer.total_bytes + sizeof(BinkAudioFileHeader) + SeekTable.total_count*sizeof(U16);
-    Header.blocks_per_seek_table_entry = (U16)FramesPerEntry;
-    Header.seek_table_entry_count = (U16)SeekTable.total_count;
+        // Create the actual output buffer.
+        char* Output = (char*)MemAlloc(Header.output_file_size);
+        memcpy(Output, &Header, sizeof(BinkAudioFileHeader));
+        memcpy(Output + sizeof(BinkAudioFileHeader), SeekTable.collapsed, SeekTable.total_count * sizeof(U16));
+        MemBufferWriteBuffer(&DataBuffer, Output + sizeof(BinkAudioFileHeader) + SeekTable.total_count * sizeof(U16));
 
-    // Create the actual output buffer.
-    char* Output = (char*)MemAlloc(Header.output_file_size);
-    memcpy(Output, &Header, sizeof(BinkAudioFileHeader));
-    memcpy(Output + sizeof(BinkAudioFileHeader), SeekTable.collapsed, SeekTable.total_count * sizeof(U16));
-    MemBufferWriteBuffer(&DataBuffer, Output + sizeof(BinkAudioFileHeader) + SeekTable.total_count * sizeof(U16));
+        *OutData = Output;
+        *OutDataLen = Header.output_file_size;
+
+        Result = BINKA_COMPRESS_SUCCESS;
+    }
 
     MemBufferFree(&DataBuffer);
     SeekTableBufferFree(&SeekTable);
@@ -567,10 +577,8 @@ uint8_t UECompressBinkAudio(
         BinkAudioCompressClose(hBink[i]);
     }
 
-    *OutData = Output;
-    *OutDataLen = Header.output_file_size;
 
-    return BINKA_COMPRESS_SUCCESS;
+    return Result;
 }
 
 #if 0
@@ -581,7 +589,8 @@ struct fuzzer_input
     uint32_t Rate;
     uint8_t Chans;
     uint8_t Quality;
-    uint8_t GenTable;    
+    uint8_t GenTable;
+    uint16_t GenTableMaxEntries;  
 };
 
 static void* AllocThunk(uintptr_t ByteCount) { return malloc(ByteCount); }
@@ -600,7 +609,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size)
     uint32_t CompressedLen;
 
     UECompressBinkAudio((void*)(Data + sizeof(fuzzer_input)), (uint32_t)Size - sizeof(fuzzer_input),
-        input->Rate, input->Chans, input->Quality, input->GenTable, AllocThunk, FreeThunk,
+        input->Rate, input->Chans, input->Quality, input->GenTable, input->GenTableMaxEntries, AllocThunk, FreeThunk,
         &CompressedData, &CompressedLen);
 
     FreeThunk(CompressedData);

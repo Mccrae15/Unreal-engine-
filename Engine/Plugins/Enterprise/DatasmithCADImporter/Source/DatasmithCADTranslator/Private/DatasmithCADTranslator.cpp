@@ -23,14 +23,6 @@ DEFINE_LOG_CATEGORY(LogCADTranslator);
 
 namespace DatasmithCADTranslatorImpl
 {
-static bool bGEnableNativeIFCTranslator = false;
-FAutoConsoleVariableRef GCADTranslatorEnableNativeIFCTranslator(
-	TEXT("ds.IFC.EnableNativeTranslator"),
-	bGEnableNativeIFCTranslator,
-	TEXT("\
-Enable/disable UE native IFC translator. If native translator is disabled, TechSoft is used.\n\
-Default is disable\n"),
-	ECVF_Default);
 
 static bool bGEnableUnsupportedCADFormats = false;
 FAutoConsoleVariableRef GEnableUnsupportedCADFormats(
@@ -122,11 +114,8 @@ void FDatasmithCADTranslator::Initialize(FDatasmithTranslatorCapabilities& OutCa
 	OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("dwg"), TEXT("AutoCAD model files") });
 	OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("dxf"), TEXT("AutoCAD model files") });
 
-	if (!DatasmithCADTranslatorImpl::bGEnableNativeIFCTranslator)
-	{
-		OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("ifc"), TEXT("IFC (Industry Foundation Classes)") });
-		OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("ifczip"), TEXT("IFC (Industry Foundation Classes)") });
-	}
+	OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("ifc"), TEXT("IFC (Industry Foundation Classes)") });
+	OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("ifczip"), TEXT("IFC (Industry Foundation Classes)") });
 	
 	OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("hsf"), TEXT("HOOPS stream files") });
 	OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("prc"), TEXT("HOOPS stream files") });
@@ -148,7 +137,6 @@ void FDatasmithCADTranslator::Initialize(FDatasmithTranslatorCapabilities& OutCa
 		OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("vda"), TEXT("VDA-FS") });
 		OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("vrml"), TEXT("VRML") });
 		OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("wrl"), TEXT("VRML") });
-		OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("obj"), TEXT("Wavefront OBJ") });
 	}
 }
 
@@ -181,7 +169,7 @@ bool FDatasmithCADTranslator::LoadScene(TSharedRef<IDatasmithScene> DatasmithSce
 	{
 		if (Value < MinValue)
 		{
-			UE_LOG(LogCADTranslator, Warning, TEXT("%s value (%f) of tessellation parameters is smaller than the minimal value %d. It's value is modified to respect the limit"), ParameterName, Value, MinValue);
+			UE_LOG(LogCADTranslator, Warning, TEXT("%s value (%lf) of tessellation parameters is smaller than the minimal value %lf. It's value is modified to respect the limit"), ParameterName, Value, MinValue);
 			return MinValue;
 		}
 		return Value;
@@ -194,9 +182,9 @@ bool FDatasmithCADTranslator::LoadScene(TSharedRef<IDatasmithScene> DatasmithSce
 	ImportParameters.SetModelCoordinateSystem(FDatasmithUtils::EModelCoordSystem::ZUp_RightHanded);
 
 	UE_LOG(LogCADTranslator, Display, TEXT(" - Import parameters:"));
-	UE_LOG(LogCADTranslator, Display, TEXT("     - ChordTolerance:     %f"), ImportParameters.GetChordTolerance());
-	UE_LOG(LogCADTranslator, Display, TEXT("     - MaxEdgeLength:      %f"), ImportParameters.GetMaxEdgeLength());
-	UE_LOG(LogCADTranslator, Display, TEXT("     - MaxNormalAngle:     %f"), ImportParameters.GetMaxNormalAngle());
+	UE_LOG(LogCADTranslator, Display, TEXT("     - ChordTolerance:     %lf"), ImportParameters.GetChordTolerance());
+	UE_LOG(LogCADTranslator, Display, TEXT("     - MaxEdgeLength:      %lf"), ImportParameters.GetMaxEdgeLength());
+	UE_LOG(LogCADTranslator, Display, TEXT("     - MaxNormalAngle:     %lf"), ImportParameters.GetMaxNormalAngle());
 	FString StitchingTechnique;
 	switch(ImportParameters.GetStitchingTechnique())
 	{
@@ -266,30 +254,9 @@ bool FDatasmithCADTranslator::LoadScene(TSharedRef<IDatasmithScene> DatasmithSce
 	{
 		TMap<uint32, FString> CADFileToUEFileMap;
 		{
-			constexpr double RecommandedRamPerWorkers = 6.;
-			constexpr double OneGigaByte = 1024. * 1024. * 1024.;
-			const double AvailableRamGB = (double) (FPlatformMemory::GetStats().AvailablePhysical / OneGigaByte);
-
-			const int32 MaxNumberOfWorkers = FPlatformMisc::NumberOfCores();
-			const int32 RecommandedNumberOfWorkers = (int32) (AvailableRamGB / RecommandedRamPerWorkers + 0.5);
-
-			// UE recommendation 
-			int32 NumberOfWorkers = FMath::Min(MaxNumberOfWorkers, RecommandedNumberOfWorkers);
-
-			// User choice but limited by the number of cores. More brings nothing
-			if (GMaxImportThreads > 1)
-			{
-				NumberOfWorkers = FMath::Min(GMaxImportThreads, MaxNumberOfWorkers);
-			}
-
-			// If the file cannot have reference. One worker is enough.
-			if (GMaxImportThreads != 1 && !FileDescriptor.CanReferenceOtherFiles())
-			{
-				NumberOfWorkers = 1;
-			}
-
-			DatasmithDispatcher::FDatasmithDispatcher Dispatcher(ImportParameters, CachePath, NumberOfWorkers, CADFileToUEFileMap, CADFileToUEGeomMap);
-			Dispatcher.AddTask(FileDescriptor);
+			const EMesher Mesher = FImportParameters::bGDisableCADKernelTessellation ? EMesher::TechSoft : EMesher::CADKernel;
+			DatasmithDispatcher::FDatasmithDispatcher Dispatcher(ImportParameters, CachePath, CADFileToUEFileMap, CADFileToUEGeomMap);
+			Dispatcher.AddTask(FileDescriptor, Mesher);
 
 			Dispatcher.Process(GMaxImportThreads != 1);
 		}
@@ -333,11 +300,16 @@ bool FDatasmithCADTranslator::LoadStaticMesh(const TSharedRef<IDatasmithMeshElem
 
 	CADLibrary::FMeshParameters MeshParameters;
 
+	// Two meshers can be used (TechSoft and CADKernel) during the import indeed in case of failure of one, the other is tried.
+	// At this stage, the only clue to know which mesher has been used for the current body is the extension of the rawdata file
+	const TCHAR* FileName = MeshElement->GetFile();
+	FString Extension = FPaths::GetExtension(FileName);
+
 	if (TOptional< FMeshDescription > Mesh = MeshBuilderPtr->GetMeshDescription(MeshElement, MeshParameters))
 	{
 		OutMeshPayload.LodMeshes.Add(MoveTemp(Mesh.GetValue()));
 
-		if (CADLibrary::FImportParameters::bGDisableCADKernelTessellation)
+		if (Extension == TEXT("prc"))
 		{
 			ParametricSurfaceUtils::AddSurfaceData(MeshElement->GetFile(), ImportParameters, MeshParameters, GetCommonTessellationOptions(), OutMeshPayload);
 		}

@@ -41,6 +41,7 @@
 #include "Settings/ProjectPackagingSettings.h"
 #include "ShaderCompiler.h"
 #include "Stats/StatsMisc.h"
+#include "Templates/UnrealTemplate.h"
 #include "UObject/Class.h"
 #include "UObject/MetaData.h"
 #include "UObject/Package.h"
@@ -172,7 +173,7 @@ int32 UCookCommandlet::Main(const FString& CmdLineParams)
 	bUnversioned = Switches.Contains(TEXT("UNVERSIONED"));   // Save all cooked packages without versions. These are then assumed to be current version on load. This is dangerous but results in smaller patch sizes.
 	bCookEditorOptional = Switches.Contains(TEXT("EDITOROPTIONAL")); // Produce the optional editor package data alongside the cooked data.
 	bGenerateStreamingInstallManifests = Switches.Contains(TEXT("MANIFESTS"));   // Generate manifests for building streaming install packages
-	bIterativeCooking = Switches.Contains(TEXT("ITERATE"));
+	bIterativeCooking = Switches.Contains(TEXT("ITERATE")) || Switches.Contains(TEXT("ITERATIVE"));
 	bSkipEditorContent = Switches.Contains(TEXT("SKIPEDITORCONTENT")); // This won't save out any packages in Engine/Content/Editor*
 	bErrorOnEngineContentUse = Switches.Contains(TEXT("ERRORONENGINECONTENTUSE"));
 	bCookSinglePackage = Switches.Contains(TEXT("cooksinglepackagenorefs"));
@@ -180,7 +181,7 @@ int32 UCookCommandlet::Main(const FString& CmdLineParams)
 	bCookSinglePackage = bCookSinglePackage || bKeepSinglePackageRefs;
 	bVerboseCookerWarnings = Switches.Contains(TEXT("verbosecookerwarnings"));
 	bPartialGC = Switches.Contains(TEXT("Partialgc"));
-	ShowErrorCount = !Switches.Contains(TEXT("DIFFONLY"));
+	ShowErrorCount = !Switches.Contains(TEXT("DIFFONLY")) && !Switches.Contains(TEXT("NoErrorSummary"));
 	ShowProgress = !Switches.Contains(TEXT("DIFFONLY"));
 	bIgnoreIniSettingsOutOfDate = Switches.Contains(TEXT("IgnoreIniSettingsOutOfDate"));
 	bFastCook = Switches.Contains(TEXT("FastCook"));
@@ -241,7 +242,7 @@ int32 UCookCommandlet::Main(const FString& CmdLineParams)
 	return 0;
 }
 
-bool UCookCommandlet::CookByTheBook( const TArray<ITargetPlatform*>& Platforms)
+bool UCookCommandlet::CookByTheBook(const TArray<ITargetPlatform*>& Platforms)
 {
 #if OUTPUT_COOKTIMING
 	TRACE_CPUPROFILER_EVENT_SCOPE_ON_CHANNEL(CookByTheBook, CookChannel);
@@ -268,19 +269,18 @@ bool UCookCommandlet::CookByTheBook( const TArray<ITargetPlatform*>& Platforms)
 	{
 		// Add shared build flag to method flag, and enable iterative
 		IterateFlags |= ECookInitializationFlags::IterateSharedBuild;
-		
+
 		bIterativeCooking = true;
 	}
-	
+
 	ECookInitializationFlags CookFlags = ECookInitializationFlags::IncludeServerMaps;
 	CookFlags |= bIterativeCooking ? IterateFlags : ECookInitializationFlags::None;
-	CookFlags |= bSkipEditorContent ? ECookInitializationFlags::SkipEditorContent : ECookInitializationFlags::None;	
+	CookFlags |= bSkipEditorContent ? ECookInitializationFlags::SkipEditorContent : ECookInitializationFlags::None;
 	CookFlags |= bUnversioned ? ECookInitializationFlags::Unversioned : ECookInitializationFlags::None;
 	CookFlags |= bCookEditorOptional ? ECookInitializationFlags::CookEditorOptional : ECookInitializationFlags::None;
 	CookFlags |= bVerboseCookerWarnings ? ECookInitializationFlags::OutputVerboseCookerWarnings : ECookInitializationFlags::None;
 	CookFlags |= bPartialGC ? ECookInitializationFlags::EnablePartialGC : ECookInitializationFlags::None;
-	bool bTestCook = Switches.Contains(TEXT("TestCook"));
-	CookFlags |= bTestCook ? ECookInitializationFlags::TestCook : ECookInitializationFlags::None;
+	CookFlags |= Switches.Contains(TEXT("TestCook")) ? ECookInitializationFlags::TestCook : ECookInitializationFlags::None;
 	CookFlags |= Switches.Contains(TEXT("LogDebugInfo")) ? ECookInitializationFlags::LogDebugInfo : ECookInitializationFlags::None;
 	CookFlags |= bIgnoreIniSettingsOutOfDate || CookerSettings->bIgnoreIniSettingsOutOfDateForIteration ? ECookInitializationFlags::IgnoreIniSettingsOutOfDate : ECookInitializationFlags::None;
 	CookFlags |= Switches.Contains(TEXT("IgnoreScriptPackagesOutOfDate")) || CookerSettings->bIgnoreScriptPackagesOutOfDateForIteration ? ECookInitializationFlags::IgnoreScriptPackagesOutOfDate : ECookInitializationFlags::None;
@@ -289,16 +289,16 @@ bool UCookCommandlet::CookByTheBook( const TArray<ITargetPlatform*>& Platforms)
 	// parse commandline options 
 
 	FString DLCName;
-	FParse::Value( *Params, TEXT("DLCNAME="), DLCName);
+	FParse::Value(*Params, TEXT("DLCNAME="), DLCName);
 
 	FString BasedOnReleaseVersion;
-	FParse::Value( *Params, TEXT("BasedOnReleaseVersion="), BasedOnReleaseVersion);
+	FParse::Value(*Params, TEXT("BasedOnReleaseVersion="), BasedOnReleaseVersion);
 
 	FString CreateReleaseVersion;
-	FParse::Value( *Params, TEXT("CreateReleaseVersion="), CreateReleaseVersion);
+	FParse::Value(*Params, TEXT("CreateReleaseVersion="), CreateReleaseVersion);
 
 	FString OutputDirectoryOverride;
-	FParse::Value( *Params, TEXT("OutputDir="), OutputDirectoryOverride);
+	FParse::Value(*Params, TEXT("OutputDir="), OutputDirectoryOverride);
 
 	TArray<FString> CmdLineMapEntries;
 	TArray<FString> CmdLineDirEntries;
@@ -399,7 +399,12 @@ bool UCookCommandlet::CookByTheBook( const TArray<ITargetPlatform*>& Platforms)
 	CookOptions |= bCookAll ? ECookByTheBookOptions::CookAll : ECookByTheBookOptions::None;
 	CookOptions |= Switches.Contains(TEXT("MAPSONLY")) ? ECookByTheBookOptions::MapsOnly : ECookByTheBookOptions::None;
 	CookOptions |= Switches.Contains(TEXT("NODEV")) ? ECookByTheBookOptions::NoDevContent : ECookByTheBookOptions::None;
-	CookOptions |= Switches.Contains(TEXT("FullLoadAndSave")) ? ECookByTheBookOptions::FullLoadAndSave : ECookByTheBookOptions::None;
+	if (Switches.Contains(TEXT("FullLoadAndSave"))) // Deprecated in UE 5.3
+	{
+		UE_LOG(LogCook, Warning, TEXT("-FullLoadAndSave has been deprecated; remove the argument to remove this warning.\n")
+			TEXT("For cook optimizations, try using multiprocess cook (-cookprocesscount=<N>, N>1).\n")
+			TEXT("If you still need further optimizations, contact Epic on UDN."));
+	}
 	CookOptions |= bUseZenStore ? ECookByTheBookOptions::ZenStore : ECookByTheBookOptions::None;
 	CookOptions |= Switches.Contains(TEXT("NoGameAlwaysCook")) ? ECookByTheBookOptions::NoGameAlwaysCookPackages : ECookByTheBookOptions::None;
 	CookOptions |= Switches.Contains(TEXT("DisableUnsolicitedPackages")) ? (ECookByTheBookOptions::SkipHardReferences | ECookByTheBookOptions::SkipSoftReferences) : ECookByTheBookOptions::None;
@@ -409,6 +414,7 @@ bool UCookCommandlet::CookByTheBook( const TArray<ITargetPlatform*>& Platforms)
 	CookOptions |= Switches.Contains(TEXT("CookAgainstFixedBase")) ? ECookByTheBookOptions::CookAgainstFixedBase : ECookByTheBookOptions::None;
 	CookOptions |= (Switches.Contains(TEXT("DlcLoadMainAssetRegistry")) || !bErrorOnEngineContentUse) ? ECookByTheBookOptions::DlcLoadMainAssetRegistry : ECookByTheBookOptions::None;
 	CookOptions |= Switches.Contains(TEXT("DlcReevaluateUncookedAssets")) ? ECookByTheBookOptions::DlcReevaluateUncookedAssets : ECookByTheBookOptions::None;
+	bool bCookList = Switches.Contains(TEXT("CookList"));
 
 	if (bCookSinglePackage)
 	{
@@ -458,57 +464,83 @@ bool UCookCommandlet::CookByTheBook( const TArray<ITargetPlatform*>& Platforms)
 		return false;
 	}
 
-	Swap( StartupOptions.CookMaps, CmdLineMapEntries);
-	Swap( StartupOptions.CookDirectories, CmdLineDirEntries );
-	Swap( StartupOptions.NeverCookDirectories, CmdLineNeverCookDirEntries);
-	Swap( StartupOptions.CookCultures, CookCultures );
-	Swap( StartupOptions.DLCName, DLCName );
-	Swap( StartupOptions.BasedOnReleaseVersion, BasedOnReleaseVersion );
-	Swap( StartupOptions.CreateReleaseVersion, CreateReleaseVersion );
-	Swap( StartupOptions.IniMapSections, MapIniSections);
+	Swap(StartupOptions.CookMaps, CmdLineMapEntries);
+	Swap(StartupOptions.CookDirectories, CmdLineDirEntries);
+	Swap(StartupOptions.NeverCookDirectories, CmdLineNeverCookDirEntries);
+	Swap(StartupOptions.CookCultures, CookCultures);
+	Swap(StartupOptions.DLCName, DLCName);
+	Swap(StartupOptions.BasedOnReleaseVersion, BasedOnReleaseVersion);
+	Swap(StartupOptions.CreateReleaseVersion, CreateReleaseVersion);
+	Swap(StartupOptions.IniMapSections, MapIniSections);
 	StartupOptions.CookOptions = CookOptions;
 	StartupOptions.bErrorOnEngineContentUse = bErrorOnEngineContentUse;
 	StartupOptions.bGenerateDependenciesForMaps = Switches.Contains(TEXT("GenerateDependenciesForMaps"));
 	StartupOptions.bGenerateStreamingInstallManifests = bGenerateStreamingInstallManifests;
 
 	COOK_STAT(
+		{
+			for (const auto& Platform : Platforms)
+			{
+				DetailedCookStats::TargetPlatforms += Platform->PlatformName() + TEXT("+");
+			}
+			if (!DetailedCookStats::TargetPlatforms.IsEmpty())
+			{
+				DetailedCookStats::TargetPlatforms.RemoveFromEnd(TEXT("+"));
+			}
+		});
+
+	// Cast to void as a workaround to support inability to foward-declare inner classes.
+	// TODO: Change FCookByTheBookStartupOptions to a global class.
+	void* StartupOptionsAsVoid = &StartupOptions;
+
+	if (bCookList)
 	{
-		for (const auto& Platform : Platforms)
-		{
-			DetailedCookStats::TargetPlatforms += Platform->PlatformName() + TEXT("+");
-		}
-		if (!DetailedCookStats::TargetPlatforms.IsEmpty())
-		{
-			DetailedCookStats::TargetPlatforms.RemoveFromEnd(TEXT("+"));
-		}
-	});
+		RunCookByTheBookList(CookOnTheFlyServer, StartupOptionsAsVoid, CookOptions);
+	}
+	else
+	{
+		RunCookByTheBookCook(CookOnTheFlyServer, StartupOptionsAsVoid, CookOptions);
+	}
+	return true;
+}
+
+void UCookCommandlet::RunCookByTheBookList(UCookOnTheFlyServer* CookOnTheFlyServer, void* StartupOptionsAsVoid,
+	ECookByTheBookOptions CookOptions)
+{
+	UCookOnTheFlyServer::FCookByTheBookStartupOptions& StartupOptions =
+		*reinterpret_cast<UCookOnTheFlyServer::FCookByTheBookStartupOptions*>(StartupOptionsAsVoid);
+
+	ECookListOptions CookListOptions = ECookListOptions::None;
+	if (Switches.Contains(TEXT("showrejected"))) CookListOptions |= ECookListOptions::ShowRejected;
+
+	CookOnTheFlyServer->StartCookByTheBook(StartupOptions);
+	CookOnTheFlyServer->RunCookList(CookListOptions);
+}
+
+void UCookCommandlet::RunCookByTheBookCook(UCookOnTheFlyServer* CookOnTheFlyServer, void* StartupOptionsAsVoid,
+	ECookByTheBookOptions CookOptions)
+{
+	UCookOnTheFlyServer::FCookByTheBookStartupOptions& StartupOptions =
+		*reinterpret_cast<UCookOnTheFlyServer::FCookByTheBookStartupOptions*>(StartupOptionsAsVoid);
+	bool bTestCook = EnumHasAnyFlags(CookOnTheFlyServer->GetCookFlags(), ECookInitializationFlags::TestCook);
 
 #if ENABLE_LOW_LEVEL_MEM_TRACKER
 	FLowLevelMemTracker::Get().UpdateStatsPerFrame();
 #endif
-
+	bool bShouldVerifyEDLCookInfo = false;
 	do
 	{
 		{
 			COOK_STAT(FScopedDurationTimer StartCookByTheBookTimer(DetailedCookStats::StartCookByTheBookTimeSec));
 			CookOnTheFlyServer->StartCookByTheBook(StartupOptions);
+			bShouldVerifyEDLCookInfo = CookOnTheFlyServer->ShouldVerifyEDLCookInfo();
 		}
 		DECLARE_SCOPE_CYCLE_COUNTER(TEXT("CookByTheBook.MainLoop"), STAT_CookByTheBook_MainLoop, STATGROUP_LoadTime);
-		if (CookOnTheFlyServer->IsFullLoadAndSave())
+		while (CookOnTheFlyServer->IsInSession())
 		{
-			CookOnTheFlyServer->CookFullLoadAndSave();
-		}
-		else
-		{
-			while (CookOnTheFlyServer->IsInSession())
-			{
-				uint32 TickResults = 0;
-				uint32 UnusedVariable = 0;
-
-				TickResults = CookOnTheFlyServer->TickCookByTheBook(MAX_flt,
-					ShowProgress ? ECookTickFlags::None : ECookTickFlags::HideProgressDisplay);
-				ConditionalCollectGarbage(TickResults, *CookOnTheFlyServer);
-			}
+			uint32 TickResults = TickResults = CookOnTheFlyServer->TickCookByTheBook(MAX_flt,
+				ShowProgress ? ECookTickFlags::None : ECookTickFlags::HideProgressDisplay);
+			ConditionalCollectGarbage(TickResults, *CookOnTheFlyServer);
 		}
 	} while (bTestCook);
 
@@ -516,13 +548,11 @@ bool UCookCommandlet::CookByTheBook( const TArray<ITargetPlatform*>& Platforms)
 	FLowLevelMemTracker::Get().UpdateStatsPerFrame();
 #endif
 
-	if (StartupOptions.DLCName.IsEmpty())
+	if (bShouldVerifyEDLCookInfo)
 	{
 		bool bFullReferencesExpected = !(CookOptions & ECookByTheBookOptions::SkipHardReferences);
 		UE::SavePackageUtilities::VerifyEDLCookInfo(bFullReferencesExpected);
 	}
-
-	return true;
 }
 
 bool UCookCommandlet::CookAsCookWorker()
@@ -600,7 +630,7 @@ void UCookCommandlet::ConditionalCollectGarbage(uint32 TickResults, UCookOnTheFl
 				}
 			}
 
-			GShaderCompilingManager->ProcessAsyncResults(false, false);
+			GShaderCompilingManager->ProcessAsyncResults(0.f, false);
 
 			FPlatformProcess::Sleep(0.05);
 
@@ -641,7 +671,10 @@ void UCookCommandlet::ConditionalCollectGarbage(uint32 TickResults, UCookOnTheFl
 	COTFS.SetGarbageCollectType(TickResults);
 
 	UE_LOG(LogCookCommandlet, Display, TEXT("GarbageCollection...%s (%s)"), *GCType, *GCReason);
-	CollectGarbage(RF_NoFlags);
+	{
+		TGuardValue<bool> SoftGCGuard(UPackage::bSupportCookerSoftGC, true);
+		CollectGarbage(RF_NoFlags);
+	}
 
 	COTFS.ClearGarbageCollectType();
 	FPlatformMemoryStats MemStatsAfterGC = FPlatformMemory::GetStats();

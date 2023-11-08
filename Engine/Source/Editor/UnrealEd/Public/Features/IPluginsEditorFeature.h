@@ -96,6 +96,7 @@ struct FPluginEditorExtension : public TSharedFromThis<FPluginEditorExtension>
 DECLARE_DELEGATE_RetVal_TwoParams(TSharedPtr<FPluginEditorExtension>, FOnPluginBeingEdited, FPluginEditingContext& /*InPluginContext*/, IDetailLayoutBuilder& /*DetailBuilder*/);
 
 using FPluginEditorExtensionHandle = int32;
+const FPluginEditorExtensionHandle PluginEditorExtensionInvalidHandle = 0;
 
 /**
  * Feature interface for a Plugins management UI
@@ -123,6 +124,11 @@ public:
 	  * Remove a customization
 	  */
 	virtual void UnregisterPluginEditorExtension(FPluginEditorExtensionHandle ExtensionHandle) = 0;
+
+	/**
+	  * Returns the currently registered plugin templates.
+	  */
+	virtual const TArray<TSharedRef<FPluginTemplateDescription>>& GetAddedPluginTemplates() const = 0;
 
 	/**
 	 * Open the plugin editor for a plugin

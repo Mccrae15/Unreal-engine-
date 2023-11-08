@@ -87,7 +87,7 @@ public:
 
 	// Constructor
 	FD3D12MemoryPool(FD3D12Device* ParentDevice, FRHIGPUMask VisibleNodes, const FD3D12ResourceInitConfig& InInitConfig, const FString& Name,
-		EResourceAllocationStrategy InAllocationStrategy, int16 InPoolIndex, uint64 InPoolSize, uint32 InPoolAlignment, ERHIPoolResourceTypes InSupportedResourceTypes, EFreeListOrder InFreeListOrder);
+		EResourceAllocationStrategy InAllocationStrategy, int16 InPoolIndex, uint64 InPoolSize, uint32 InPoolAlignment, ERHIPoolResourceTypes InSupportedResourceTypes, EFreeListOrder InFreeListOrder, HeapId InTraceParentHeapId);
 	virtual ~FD3D12MemoryPool();
 
 	// Setup/Shutdown
@@ -111,6 +111,9 @@ protected:
 	TRefCountPtr<FD3D12Heap> BackingHeap;
 
 	uint64 LastUsedFrameFence;
+
+private:
+	HeapId TraceHeapId;
 };
 
 
@@ -127,7 +130,7 @@ public:
 
 	// Constructor
 	FD3D12PoolAllocator(FD3D12Device* ParentDevice, FRHIGPUMask VisibleNodes, const FD3D12ResourceInitConfig& InInitConfig, const FString& InName,
-		EResourceAllocationStrategy InAllocationStrategy, uint64 InDefaultPoolSize, uint32 InPoolAlignment, uint32 InMaxAllocationSize, FRHIMemoryPool::EFreeListOrder InFreeListOrder, bool bInDefragEnabled);
+		EResourceAllocationStrategy InAllocationStrategy, uint64 InDefaultPoolSize, uint32 InPoolAlignment, uint32 InMaxAllocationSize, FRHIMemoryPool::EFreeListOrder InFreeListOrder, bool bInDefragEnabled, HeapId InTraceParentHeapId);
 	~FD3D12PoolAllocator();
 	
 	// Function names currently have to match with FD3D12DefaultBufferPool until we can make full replacement of the allocator
@@ -144,7 +147,6 @@ public:
 	void FlushPendingCopyOps(FD3D12CommandContext& InCommandContext);
 
 	void TransferOwnership(FD3D12ResourceLocation& InSource, FD3D12ResourceLocation& InDest);
-	void Swap(FD3D12ResourceLocation& InLHS, FD3D12ResourceLocation& InRHS);
 	bool IsOwner(FD3D12ResourceLocation& ResourceLocation) const { return ResourceLocation.GetPoolAllocator() == this; }
 
 	EResourceAllocationStrategy GetAllocationStrategy() const { return AllocationStrategy; }
@@ -206,5 +208,8 @@ protected:
 
 	// Allocation data pool used to reduce allocation overhead
 	TArray<FRHIPoolAllocationData*> AllocationDataPool;
+
+private:
+	HeapId TraceHeapId;
 };
 

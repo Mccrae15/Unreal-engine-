@@ -170,7 +170,7 @@ class UMovieSceneTrack
 public:
 
 	MOVIESCENE_API UMovieSceneTrack(const FObjectInitializer& InInitializer);
-	MOVIESCENE_API ~UMovieSceneTrack() {};
+	~UMovieSceneTrack() {};
 
 public:
 
@@ -345,16 +345,19 @@ public:
 	 */
 	MOVIESCENE_API bool FixRowIndices();
 
+	/** Called when row indices have been fixed up */
+	virtual void OnRowIndicesChanged(const TMap<int32, int32>& NewToOldRowIndices) {}
+
 	/**
 	* @return Whether evaluation of this track should be disabled due to mute/solo settings
 	*/
-	MOVIESCENE_API bool IsEvalDisabled() const { return bIsEvalDisabled; }
+	bool IsEvalDisabled() const { return bIsEvalDisabled; }
 	MOVIESCENE_API bool IsRowEvalDisabled(int32 RowIndex) const;
 
 	/**
 	* Called by Sequencer to set whether evaluation of this track should be disabled due to mute/solo settings
 	*/
-	MOVIESCENE_API void SetEvalDisabled(bool bEvalDisabled) { bIsEvalDisabled = bEvalDisabled; }
+	void SetEvalDisabled(bool bEvalDisabled) { bIsEvalDisabled = bEvalDisabled; }
 	MOVIESCENE_API void SetRowEvalDisabled(bool bEvalDisabled, int32 RowIndex);
 
 public:

@@ -15,6 +15,7 @@
 #include "ProfilingDebugging/ScopedTimers.h"
 #include "UObject/Linker.h"
 #include "UObject/Package.h"
+#include "WorldPartition/WorldPartition.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(LevelInstanceLevelStreaming)
 
@@ -22,6 +23,32 @@
 #include "LevelInstance/LevelInstanceEditorInstanceActor.h"
 #include "LevelUtils.h"
 #include "ActorFolder.h"
+#include "Misc/LazySingleton.h"
+#include "Misc/ScopeExit.h"
+#include "UObject/LinkerLoad.h"
+
+static bool GDisableLevelInstanceEditorPartialLoading = false;
+FAutoConsoleVariableRef CVarDisableLevelInstanceEditorPartialLoading(
+	TEXT("wp.Editor.DisableLevelInstanceEditorPartialLoading"),
+	GDisableLevelInstanceEditorPartialLoading,
+	TEXT("Allow disabling partial loading of level instances in the editor."),
+	ECVF_Default);
+
+namespace FLevelInstanceLevelStreamingUtils
+{
+	static void MarkObjectsInPackageAsTransientAndNonTransactional(UPackage* InPackage)
+	{
+		InPackage->ClearFlags(RF_Transactional);
+		InPackage->SetFlags(RF_Transient);
+		ForEachObjectWithPackage(InPackage, [](UObject* Obj)
+			{
+				Obj->SetFlags(RF_Transient);
+				Obj->ClearFlags(RF_Transactional);
+				return true;
+			}, true);
+	}
+}
+
 #endif
 
 ULevelStreamingLevelInstance::ULevelStreamingLevelInstance(const FObjectInitializer& ObjectInitializer)
@@ -80,18 +107,30 @@ FBox ULevelStreamingLevelInstance::GetBounds() const
 	return CachedBounds;
 }
 
+void ULevelStreamingLevelInstance::OnLoadedActorPreAddedToLevel(const TArray<AActor*>& InActors)
+{
+	check(LevelInstanceEditorInstanceActor.IsValid());
+	if (ILevelInstanceInterface* LevelInstance = GetLevelInstance())
+	{
+		for (AActor* Actor : InActors)
+		{
+			// Must happen before the actors are registered with the world, which is the case for this delegate.
+			const FActorContainerID& ContainerID = LevelInstance->GetLevelInstanceID().GetContainerID();
+			FSetActorInstanceGuid SetActorInstanceGuid(Actor, ContainerID.GetActorGuid(Actor->GetActorGuid()));
+		}
+	}
+}
+
 void ULevelStreamingLevelInstance::OnLoadedActorAddedToLevel(AActor& InActor)
 {
 	check(LevelInstanceEditorInstanceActor.IsValid());
-	PrepareLevelInstanceLoadedActor(InActor, GetLevelInstance(), true);
+	// If bResetLoadersCalled is false, wait for ResetLevelInstanceLoaders call to do the ResetLoaders calls
+	PrepareLevelInstanceLoadedActor(InActor, GetLevelInstance(), bResetLoadersCalled);
 }
 
 void ULevelStreamingLevelInstance::ResetLevelInstanceLoaders()
 {
-	// @todo_ow: Resetting the load will prevent any OFPA package to properly load since their import level will fail to resolve.
-	//           This is a temporary workaround. The downside of this is that the level can't be saved. 
-	//           Most of the changes will only affect OFPA packages. One problematic use case is when changing the pivot of a Level Instance.
-
+	// @todo_ow: Ideally at some point it is no longer needed to ResetLoaders at all and Linker would not lock the package files preventing saves.
 	if (bResetLoadersCalled)
 	{
 		return;
@@ -105,6 +144,12 @@ void ULevelStreamingLevelInstance::ResetLevelInstanceLoaders()
 		if (!ULevel::GetIsLevelPartitionedFromPackage(PackageName))
 		{
 			ResetLoaders(OuterWorld->GetPackage());
+		}
+		else if(FLinkerLoad* LinkerLoad = OuterWorld->GetPackage()->GetLinker())
+		{
+			// Resetting the loader will prevent any OFPA package to properly re-load since their import level will fail to resolve.
+			// DetachLoader allows releasing the lock on the file handle so level package can be saved.
+			LinkerLoad->DetachLoader();
 		}
 
 		for (AActor* Actor : LoadedLevel->Actors)
@@ -130,9 +175,6 @@ void ULevelStreamingLevelInstance::ResetLevelInstanceLoaders()
 
 void ULevelStreamingLevelInstance::PrepareLevelInstanceLoadedActor(AActor& InActor, ILevelInstanceInterface* InLevelInstance, bool bResetLoaders)
 {
-	InActor.ClearFlags(RF_Transactional);
-	InActor.SetFlags(RF_Transient);
-
 	if (InActor.IsPackageExternal())
 	{
 		if (bResetLoaders)
@@ -140,7 +182,7 @@ void ULevelStreamingLevelInstance::PrepareLevelInstanceLoadedActor(AActor& InAct
 			ResetLoaders(InActor.GetExternalPackage());
 		}
 
-		InActor.GetPackage()->SetFlags(RF_Transient);
+		FLevelInstanceLevelStreamingUtils::MarkObjectsInPackageAsTransientAndNonTransactional(InActor.GetExternalPackage());
 	}
 
 	InActor.PushSelectionToProxies();
@@ -206,7 +248,15 @@ ULevelStreamingLevelInstance* ULevelStreamingLevelInstance::LoadInstance(ILevelI
 	{
 		Params.bInitiallyVisible = LevelInstance->IsInitiallyVisible();
 	}
-	
+
+	const FString LevelInstancePackageName = ULevelStreamingDynamic::GetLevelInstancePackageName(Params);
+
+#if WITH_EDITOR
+	FActorInstanceGuidMapper& ActorInstanceGuidMapper = TLazySingleton<FActorInstanceGuidMapper>::Get();
+	ActorInstanceGuidMapper.RegisterGuidMapper(*LevelInstancePackageName, [LevelInstance](const FGuid& InActorGuid) { return LevelInstance->GetLevelInstanceID().GetContainerID().GetActorGuid(InActorGuid); });
+	ON_SCOPE_EXIT { ActorInstanceGuidMapper.UnregisterGuidMapper(*LevelInstancePackageName); };
+#endif
+
 	ULevelStreamingLevelInstance* LevelStreaming = Cast<ULevelStreamingLevelInstance>(ULevelStreamingDynamic::LoadLevelInstance(Params, bOutSuccess));
 	if (bOutSuccess)
 	{
@@ -225,21 +275,11 @@ ULevelStreamingLevelInstance* ULevelStreamingLevelInstance::LoadInstance(ILevelI
 			{
 				check(LevelStreaming->GetLevelStreamingState() == ELevelStreamingState::LoadedVisible);
 
+				Level->OnLoadedActorAddedToLevelPreEvent.AddUObject(LevelStreaming, &ULevelStreamingLevelInstance::OnLoadedActorPreAddedToLevel);
 				Level->OnLoadedActorAddedToLevelEvent.AddUObject(LevelStreaming, &ULevelStreamingLevelInstance::OnLoadedActorAddedToLevel);
 				Level->OnLoadedActorRemovedFromLevelEvent.AddUObject(LevelStreaming, &ULevelStreamingLevelInstance::OnLoadedActorRemovedFromLevel);
 
-				UWorld* OuterWorld = Level->GetTypedOuter<UWorld>();
-				OuterWorld->ClearFlags(RF_Transactional);
-				OuterWorld->SetFlags(RF_Transient);
-			
-				OuterWorld->GetPackage()->ClearFlags(RF_Transactional);
-				OuterWorld->GetPackage()->SetFlags(RF_Transient);
-
-				ForEachObjectWithOuter(OuterWorld, [&](UObject* Obj)
-				{
-					Obj->ClearFlags(RF_Transactional);
-					Obj->SetFlags(RF_Transient);
-				}, true);
+				FLevelInstanceLevelStreamingUtils::MarkObjectsInPackageAsTransientAndNonTransactional(Level->GetPackage());
 
 				for (AActor* LevelActor : Level->Actors)
 				{
@@ -253,7 +293,7 @@ ULevelStreamingLevelInstance* ULevelStreamingLevelInstance::LoadInstance(ILevelI
 				{
 					if (ActorFolder->IsPackageExternal())
 					{
-						ActorFolder->GetPackage()->SetFlags(RF_Transient);
+						FLevelInstanceLevelStreamingUtils::MarkObjectsInPackageAsTransientAndNonTransactional(ActorFolder->GetPackage());
 					}
 					return true;
 				});
@@ -286,6 +326,7 @@ void ULevelStreamingLevelInstance::UnloadInstance(ULevelStreamingLevelInstance* 
 	else
 	{
 		ULevel* LoadedLevel = LevelStreaming->GetLoadedLevel();
+		LoadedLevel->OnLoadedActorAddedToLevelPreEvent.RemoveAll(LevelStreaming);
 		LoadedLevel->OnLoadedActorAddedToLevelEvent.RemoveAll(LevelStreaming);
 		LoadedLevel->OnLoadedActorRemovedFromLevelEvent.RemoveAll(LevelStreaming);
 		LevelStreaming->LevelInstanceEditorInstanceActor.Reset();
@@ -298,6 +339,7 @@ void ULevelStreamingLevelInstance::UnloadInstance(ULevelStreamingLevelInstance* 
 			if(Obj->HasAnyFlags(RF_Transactional))
 			{
 				bResetTrans = true;
+				UE_LOG(LogLevelInstance, Warning, TEXT("Found RF_Transactional object '%s' while unloading Level Instance."), *Obj->GetPathName());
 				return false;
 			}
 			return true;
@@ -325,7 +367,29 @@ void ULevelStreamingLevelInstance::OnLevelLoadedChanged(ULevel* InLevel)
 		if (ULevelInstanceSubsystem* LevelInstanceSubsystem = GetWorld()->GetSubsystem<ULevelInstanceSubsystem>())
 		{
 			LevelInstanceSubsystem->RegisterLoadedLevelStreamingLevelInstance(this);
+
+#if WITH_EDITOR
+			if (UWorldPartition* OuterWorldPartition = NewLoadedLevel->GetWorldPartition())
+			{
+				check(!OuterWorldPartition->IsInitialized());
+				if (UWorldPartition* OwningWorldPartition = GetWorld()->GetWorldPartition(); OwningWorldPartition && OwningWorldPartition->IsStreamingEnabled())
+				{
+					if (GDisableLevelInstanceEditorPartialLoading)
+					{
+						OuterWorldPartition->bOverrideEnableStreamingInEditor = false;
+					}
+					else if (ILevelInstanceInterface* LevelInstance = LevelInstanceSubsystem->GetLevelInstance(LevelInstanceID))
+					{
+						OuterWorldPartition->bOverrideEnableStreamingInEditor = LevelInstance->SupportsPartialEditorLoading();
+					}
+				}
+				else
+				{
+					// Do not enable Streaming in Editor if Level Instance is not part of a World Partition/Streaming world
+					OuterWorldPartition->bOverrideEnableStreamingInEditor = false;
+				}
+			}
+#endif
 		}
 	}
 }
-

@@ -7,6 +7,14 @@
 
 #define LOCTEXT_NAMESPACE "SubversionSourceControl.State"
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+FSubversionSourceControlState::FSubversionSourceControlState() = default;
+FSubversionSourceControlState::FSubversionSourceControlState(const FSubversionSourceControlState& Other) = default;
+FSubversionSourceControlState::FSubversionSourceControlState(FSubversionSourceControlState&& Other) noexcept = default;
+FSubversionSourceControlState& FSubversionSourceControlState::operator=(const FSubversionSourceControlState& Other) = default;
+FSubversionSourceControlState& FSubversionSourceControlState::operator=(FSubversionSourceControlState&& Other) noexcept = default;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 int32 FSubversionSourceControlState::GetHistorySize() const
 {
 	return History.Num();
@@ -44,14 +52,14 @@ TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> FSubversionSourceC
 	return NULL;
 }
 
-TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> FSubversionSourceControlState::GetBaseRevForMerge() const
-{
-	return FindHistoryRevision(PendingMergeBaseFileRevNumber);
-}
-
 TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> FSubversionSourceControlState::GetCurrentRevision() const
 {
 	return FindHistoryRevision(LocalRevNumber);
+}
+
+ISourceControlState::FResolveInfo FSubversionSourceControlState::GetResolveInfo() const
+{
+	return PendingResolveInfo;
 }
 
 FSlateIcon FSubversionSourceControlState::GetIcon() const
@@ -275,11 +283,6 @@ bool FSubversionSourceControlState::IsModified() const
 bool FSubversionSourceControlState::CanAdd() const
 {
 	return WorkingCopyState == EWorkingCopyState::NotControlled;
-}
-
-bool FSubversionSourceControlState::IsConflicted() const
-{
-	return PendingMergeBaseFileRevNumber != INVALID_REVISION;
 }
 
 bool FSubversionSourceControlState::CanRevert() const

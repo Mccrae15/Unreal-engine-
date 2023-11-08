@@ -23,10 +23,31 @@ public:
 		, AutoScrollFrameAlignment((int32)TraceFrameType_Game) // -1 = none, 0 = game, 1 = rendering
 		, AutoScrollViewportOffsetPercent(0.1) // scrolls forward 10% of viewport's width
 		, AutoScrollMinDelay(0.3) // [seconds]
+		, TimersViewMode((int32)TraceFrameType_Count)
+		, TimersViewGroupingMode(3) // ByType
+		, bTimersViewShowCpuTimers(true)
+		, bTimersViewShowGpuTimers(true)
+		, bTimersViewShowZeroCountTimers(true)
 	{
 		if (!bIsDefault)
 		{
 			LoadFromConfig();
+		}
+		else
+		{
+			TimersViewInstanceVisibleColumns.Add(TEXT("Count"));
+			TimersViewInstanceVisibleColumns.Add(TEXT("TotalInclTime"));
+			TimersViewInstanceVisibleColumns.Add(TEXT("TotalExclTime"));
+
+			TimersViewGameFrameVisibleColumns.Add(TEXT("MaxInclTime"));
+			TimersViewGameFrameVisibleColumns.Add(TEXT("AverageInclTime"));
+			TimersViewGameFrameVisibleColumns.Add(TEXT("MedianInclTime"));
+			TimersViewGameFrameVisibleColumns.Add(TEXT("MinInclTime"));
+
+			TimersViewRenderingFrameVisibleColumns.Add(TEXT("MaxInclTime"));
+			TimersViewRenderingFrameVisibleColumns.Add(TEXT("AverageInclTime"));
+			TimersViewRenderingFrameVisibleColumns.Add(TEXT("MedianInclTime"));
+			TimersViewRenderingFrameVisibleColumns.Add(TEXT("MinInclTime"));
 		}
 	}
 
@@ -47,6 +68,7 @@ public:
 		GConfig->GetBool(TEXT("Insights.TimingProfiler"), TEXT("bAutoZoomOnFrameSelection"), bAutoZoomOnFrameSelection, SettingsIni);
 
 		// Auto-scroll options
+		GConfig->GetBool(TEXT("Insights.AutoScroll"), TEXT("bAutoScroll"), bAutoScroll, SettingsIni);
 		FString FrameAlignment;
 		if (GConfig->GetString(TEXT("Insights.TimingProfiler"), TEXT("AutoScrollFrameAlignment"), FrameAlignment, SettingsIni))
 		{
@@ -70,6 +92,17 @@ public:
 		GConfig->GetDouble(TEXT("Insights.TimingProfiler"), TEXT("AutoScrollMinDelay"), AutoScrollMinDelay, SettingsIni);
 
 		GConfig->GetArray(TEXT("Insights.MemoryProfiler"), TEXT("SymbolSearchPaths"), SymbolSearchPaths, SettingsIni);
+		
+		GConfig->GetArray(TEXT("Insights.TimingProfiler.TimersView"), TEXT("InstanceColumns"), TimersViewInstanceVisibleColumns, SettingsIni);
+		GConfig->GetArray(TEXT("Insights.TimingProfiler.TimersView"), TEXT("GameFrameColumns"), TimersViewGameFrameVisibleColumns, SettingsIni);
+		GConfig->GetArray(TEXT("Insights.TimingProfiler.TimersView"), TEXT("RenderingFrameColumns"), TimersViewRenderingFrameVisibleColumns, SettingsIni);
+
+		GConfig->GetInt(TEXT("Insights.TimingProfiler.TimersView"), TEXT("Mode"), TimersViewMode, SettingsIni);
+
+		GConfig->GetInt(TEXT("Insights.TimingProfiler.TimersView"), TEXT("GroupingMode"), TimersViewGroupingMode, SettingsIni);
+		GConfig->GetBool(TEXT("Insights.TimingProfiler.TimersView"), TEXT("ShowCpuTimers"), bTimersViewShowCpuTimers, SettingsIni);
+		GConfig->GetBool(TEXT("Insights.TimingProfiler.TimersView"), TEXT("ShowGpuTimers"), bTimersViewShowGpuTimers, SettingsIni);
+		GConfig->GetBool(TEXT("Insights.TimingProfiler.TimersView"), TEXT("ShowZeroCountTimers"), bTimersViewShowZeroCountTimers, SettingsIni);
 	}
 
 	void SaveToConfig()
@@ -80,12 +113,24 @@ public:
 		GConfig->SetBool(TEXT("Insights.TimingProfiler"), TEXT("bAutoZoomOnFrameSelection"), bAutoZoomOnFrameSelection, SettingsIni);
 
 		// Auto-scroll options
+		GConfig->SetBool(TEXT("Insights.AutoScroll"), TEXT("bAutoScroll"), bAutoScroll, SettingsIni);
 		const TCHAR* FrameAlignment = (AutoScrollFrameAlignment == 0) ? TEXT("game") : (AutoScrollFrameAlignment == 1) ? TEXT("rendering") : TEXT("none");
 		GConfig->SetString(TEXT("Insights.TimingProfiler"), TEXT("AutoScrollFrameAlignment"), FrameAlignment, SettingsIni);
 		GConfig->SetDouble(TEXT("Insights.TimingProfiler"), TEXT("AutoScrollViewportOffsetPercent"), AutoScrollViewportOffsetPercent, SettingsIni);
 		GConfig->SetDouble(TEXT("Insights.TimingProfiler"), TEXT("AutoScrollMinDelay"), AutoScrollMinDelay, SettingsIni);
 
 		GConfig->SetArray(TEXT("Insights.MemoryProfiler"), TEXT("SymbolSearchPaths"), SymbolSearchPaths, SettingsIni);
+
+		GConfig->SetArray(TEXT("Insights.TimingProfiler.TimersView"), TEXT("InstanceColumns"), TimersViewInstanceVisibleColumns, SettingsIni);
+		GConfig->SetArray(TEXT("Insights.TimingProfiler.TimersView"), TEXT("GameFrameColumns"), TimersViewGameFrameVisibleColumns, SettingsIni);
+		GConfig->SetArray(TEXT("Insights.TimingProfiler.TimersView"), TEXT("RenderingFrameColumns"), TimersViewRenderingFrameVisibleColumns, SettingsIni);
+
+		GConfig->SetInt(TEXT("Insights.TimingProfiler.TimersView"), TEXT("Mode"), TimersViewMode, SettingsIni);
+
+		GConfig->SetInt(TEXT("Insights.TimingProfiler.TimersView"), TEXT("GroupingMode"), TimersViewGroupingMode, SettingsIni);
+		GConfig->SetInt(TEXT("Insights.TimingProfiler.TimersView"), TEXT("ShowCpuTimers"), bTimersViewShowCpuTimers, SettingsIni);
+		GConfig->SetInt(TEXT("Insights.TimingProfiler.TimersView"), TEXT("ShowGpuTimers"), bTimersViewShowGpuTimers, SettingsIni);
+		GConfig->SetInt(TEXT("Insights.TimingProfiler.TimersView"), TEXT("ShowZeroCountTimers"), bTimersViewShowZeroCountTimers, SettingsIni);
 
 		GConfig->Flush(false, SettingsIni);
 	}
@@ -139,6 +184,10 @@ public:
 	void SetAutoZoomOnFrameSelection(bool bOnOff) { bAutoZoomOnFrameSelection = bOnOff; }
 	void SetAndSaveAutoZoomOnFrameSelection(bool bOnOff) { SET_AND_SAVE(bAutoZoomOnFrameSelection, bOnOff); }
 
+	bool IsAutoScrollEnabled() const { return bAutoScroll; }
+	void SetAutoScroll(bool bOnOff) { bAutoScroll = bOnOff; }
+	void SetAndSaveAutoScroll(bool bOnOff) { SET_AND_SAVE(bAutoScroll, bOnOff); }
+
 	int32 GetAutoScrollFrameAlignment() const { return AutoScrollFrameAlignment; }
 	void SetAutoScrollFrameAlignment(int32 FrameType) { AutoScrollFrameAlignment = FrameType; }
 	void SetAndSaveAutoScrollFrameAlignment(int32 FrameType) { SET_AND_SAVE(AutoScrollFrameAlignment, FrameType); }
@@ -154,6 +203,38 @@ public:
 	const TArray<FString>& GetSymbolSearchPaths() const { return SymbolSearchPaths; }
 	void SetSymbolSearchPaths(const TArray<FString>& SearchPaths) { SymbolSearchPaths = SearchPaths; }
 	void SetAndSaveSymbolSearchPaths(const TArray<FString>& SearchPaths) { SET_AND_SAVE(SymbolSearchPaths, SearchPaths); }
+
+	const TArray<FString>& GetTimersViewInstanceVisibleColumns() const { return TimersViewInstanceVisibleColumns; }
+	void SetTimersViewInstanceVisibleColumns(const TArray<FString>& Columns) { TimersViewInstanceVisibleColumns = Columns; }
+	void SetAndSaveTimersViewInstanceVisibleColumns(const TArray<FString>& Columns) { SET_AND_SAVE(TimersViewInstanceVisibleColumns, Columns); }
+
+	const TArray<FString>& GetTimersViewGameFrameVisibleColumns() const { return TimersViewGameFrameVisibleColumns; }
+	void SetTimersViewGameFrameVisibleColumns(const TArray<FString>& Columns) { TimersViewGameFrameVisibleColumns = Columns; }
+	void SetAndSaveTimersViewGameFrameVisibleColumns(const TArray<FString>& Columns) { SET_AND_SAVE(TimersViewGameFrameVisibleColumns, Columns); }
+
+	const TArray<FString>& GetTimersViewRenderingFrameVisibleColumns() const { return TimersViewRenderingFrameVisibleColumns; }
+	void SetTimersViewRenderingFrameVisibleColumns(const TArray<FString>& Columns) { TimersViewRenderingFrameVisibleColumns = Columns; }
+	void SetAndSaveTimersViewRenderingFrameVisibleColumns(const TArray<FString>& Columns) { SET_AND_SAVE(TimersViewRenderingFrameVisibleColumns, Columns); }
+
+	int32 GetTimersViewMode() const { return TimersViewMode; }
+	void SetTimersViewMode(int32 InMode) { TimersViewMode = InMode; }
+	void SetAndSaveTimersViewMode(int32 InMode) { SET_AND_SAVE(TimersViewMode, InMode); }
+
+	int32 GetTimersViewGroupingMode() const { return TimersViewGroupingMode; }
+	void SetTimersViewGroupingMode(int32 InValue) { TimersViewGroupingMode = InValue; }
+	void SetAndSaveTimersViewGroupingMode(int32 InValue) { SET_AND_SAVE(TimersViewGroupingMode, InValue); }
+
+	bool GetTimersViewShowCpuEvents() const { return bTimersViewShowCpuTimers; }
+	void SetTimersViewShowCpuEvents(bool InValue) { bTimersViewShowCpuTimers = InValue; }
+	void SetAndSaveTimersViewShowCpuEvents(bool InValue) { SET_AND_SAVE(bTimersViewShowCpuTimers, InValue); }
+
+	bool GetTimersViewShowGpuEvents() const { return bTimersViewShowGpuTimers; }
+	void SetTimersViewShowGpuEvents(bool InValue) { bTimersViewShowGpuTimers = InValue; }
+	void SetAndSaveTimersViewShowGpuEvents(bool InValue) { SET_AND_SAVE(bTimersViewShowGpuTimers, InValue); }
+
+	bool GetTimersViewShowZeroCountTimers() const { return bTimersViewShowZeroCountTimers; }
+	void SetTimersViewShowZeroCountTimers(bool InValue) { bTimersViewShowZeroCountTimers = InValue; }
+	void SetAndSaveTimersViewShowZeroCountTimers(bool InValue) { SET_AND_SAVE(bTimersViewShowZeroCountTimers, InValue); }
 
 	#undef SET_AND_SAVE
 
@@ -191,6 +272,9 @@ private:
 	/** List of search paths to look for symbol files */
 	TArray<FString> SymbolSearchPaths;
 
+	/** If enabled, the Timing View will start with auto-scroll enabled. */
+	bool bAutoScroll;
+
 	/**
 	 * Viewport offset while auto-scrolling, as percent of viewport width.
 	 * If positive, it offsets the viewport forward, allowing an empty space at the right side of the viewport (i.e. after end of session).
@@ -200,4 +284,28 @@ private:
 
 	/** Minimum time between two auto-scroll updates, in [seconds]. */
 	double AutoScrollMinDelay;
+
+	//** The list of visible columns in the Timers view in the Instance mode. */
+	TArray<FString> TimersViewInstanceVisibleColumns;
+
+	//** The list of visible columns in the Timers view in the Game Frame mode. */
+	TArray<FString> TimersViewGameFrameVisibleColumns;
+
+	//** The list of visible columns in the Timers view in the Rendering Frame mode. */
+	TArray<FString> TimersViewRenderingFrameVisibleColumns;
+
+	//** The mode for the timers panel. */
+	int32 TimersViewMode;
+
+	//** The grouping mode for the timers panel. */
+	int32 TimersViewGroupingMode;
+
+	//** If enabled, Cpu timers will be displayed in the Timing View. */
+	bool bTimersViewShowCpuTimers;
+
+	//** If enabled, Gpu timers will be displayed in the Timing View. */
+	bool bTimersViewShowGpuTimers;
+
+	//** If enabled, timers with no instances in the selected interval will still be displayed in the Timers View. */
+	bool bTimersViewShowZeroCountTimers;
 };

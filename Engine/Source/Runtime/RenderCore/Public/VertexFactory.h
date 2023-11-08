@@ -134,9 +134,9 @@ ENUM_CLASS_FLAGS(EVertexFactoryFlags);
 /**
  * An interface to the parameter bindings for the vertex factory used by a shader.
  */
-class RENDERCORE_API FVertexFactoryShaderParameters
+class FVertexFactoryShaderParameters
 {
-	DECLARE_TYPE_LAYOUT(FVertexFactoryShaderParameters, NonVirtual);
+	DECLARE_EXPORTED_TYPE_LAYOUT(FVertexFactoryShaderParameters, RENDERCORE_API, NonVirtual);
 public:
 	void Bind(const class FShaderParameterMap& ParameterMap) {}
 
@@ -441,7 +441,7 @@ public:
 	UE_DEPRECATED(5.2, "FlushShaderFileCache is deprecated. UpdateReferencedUniformBufferNames should be used to flush any uniform buffer changes")
 	RENDERCORE_API void FlushShaderFileCache(const TMap<FString, TArray<const TCHAR*> >& ShaderFileToUniformBufferVariables);
 
-	inline const TSet<const TCHAR*>& GetReferencedUniformBufferNames() const { return ReferencedUniformBufferNames; };
+	inline const TSet<const TCHAR*, TStringPointerSetKeyFuncs_DEPRECATED<const TCHAR*>>& GetReferencedUniformBufferNames() const { return ReferencedUniformBufferNames; };
 #endif // WITH_EDITOR
 
 private:
@@ -473,7 +473,7 @@ private:
 	 * These are derived from source files so they need to be flushed when editing and recompiling shaders on the fly. 
 	 * FShaderType::Initialize will add the referenced uniform buffers, but this set may be updated by FlushShaderFileCache
 	 */
-	TSet<const TCHAR*> ReferencedUniformBufferNames;
+	TSet<const TCHAR*, TStringPointerSetKeyFuncs_DEPRECATED<const TCHAR*>> ReferencedUniformBufferNames;
 #endif // WITH_EDITOR
 };
 
@@ -495,6 +495,11 @@ extern RENDERCORE_API FVertexFactoryType* FindVertexFactoryType(const FHashedNam
 	public: \
 	static FVertexFactoryType StaticType; \
 	virtual FVertexFactoryType* GetType() const override;
+
+#define DECLARE_VERTEX_FACTORY_TYPE_API(FactoryClass, ModuleApi) \
+	public: \
+	ModuleApi static FVertexFactoryType StaticType; \
+	ModuleApi virtual FVertexFactoryType* GetType() const override;
 
 #if WITH_EDITOR
 	#define IMPLEMENT_VERTEX_FACTORY_EDITOR_VTABLE(FactoryClass) \
@@ -582,7 +587,7 @@ public:
 /**
  * Encapsulates a vertex data source which can be linked into a vertex shader.
  */
-class RENDERCORE_API FVertexFactory : public FRenderResource
+class FVertexFactory : public FRenderResource
 {
 public:
 	FVertexFactory(ERHIFeatureLevel::Type InFeatureLevel) 
@@ -596,9 +601,9 @@ public:
 
 	virtual FVertexFactoryType* GetType() const { return nullptr; }
 
-	void GetStreams(ERHIFeatureLevel::Type InFeatureLevel, EVertexInputStreamType VertexStreamType, FVertexInputStreamArray& OutVertexStreams) const;
+	RENDERCORE_API void GetStreams(ERHIFeatureLevel::Type InFeatureLevel, EVertexInputStreamType VertexStreamType, FVertexInputStreamArray& OutVertexStreams) const;
 
-	void OffsetInstanceStreams(uint32 InstanceOffset, EVertexInputStreamType VertexStreamType, FVertexInputStreamArray& VertexStreams) const;
+	RENDERCORE_API void OffsetInstanceStreams(uint32 InstanceOffset, EVertexInputStreamType VertexStreamType, FVertexInputStreamArray& VertexStreams) const;
 
 	/**
 	* Can be overridden by FVertexFactory subclasses to modify their compile environment just before compilation occurs.
@@ -616,7 +621,7 @@ public:
 	static void GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements) { checkNoEntry(); }
 
 	// FRenderResource interface.
-	virtual void ReleaseRHI();
+	RENDERCORE_API virtual void ReleaseRHI();
 
 	// Accessors.
 	FVertexDeclarationRHIRef& GetDeclaration() { return Declaration; }
@@ -676,7 +681,7 @@ protected:
 		PrimitiveIdStreamIndex[TranslatePrimitiveIdStreamIndex(InFeatureLevel, InputStreamType)] = static_cast<int8>(StreamIndex);
 	}
 	
-	bool AddPrimitiveIdStreamElement(EVertexInputStreamType InputStreamType, FVertexDeclarationElementList& Elements, uint8 AttributeIndex, uint8 AttributeIndex_Mobile);
+	RENDERCORE_API bool AddPrimitiveIdStreamElement(EVertexInputStreamType InputStreamType, FVertexDeclarationElementList& Elements, uint8 AttributeIndex, uint8 AttributeIndex_Mobile);
 
 	/**
 	 * Creates a vertex element for a vertex stream components.  Adds a unique stream index for the vertex buffer used by the component.
@@ -696,7 +701,7 @@ protected:
 	 * @param AttributeIndex - The attribute index to which the stream component is bound.
 	 * @return The vertex element which corresponds to Component.
 	 */
-	FVertexElement AccessStreamComponent(const FVertexStreamComponent& Component, uint8 AttributeIndex, EVertexInputStreamType InputStreamType);
+	RENDERCORE_API FVertexElement AccessStreamComponent(const FVertexStreamComponent& Component, uint8 AttributeIndex, EVertexInputStreamType InputStreamType);
 	
 	/**
 	 * Creates a vertex element for a vertex stream components.  Adds a unique stream index for the vertex buffer used by the component.
@@ -721,7 +726,7 @@ protected:
 	 * Initializes the vertex declaration.
 	 * @param Elements - The elements of the vertex declaration.
 	 */
-	void InitDeclaration(const FVertexDeclarationElementList& Elements, EVertexInputStreamType StreamType = EVertexInputStreamType::Default);
+	RENDERCORE_API void InitDeclaration(const FVertexDeclarationElementList& Elements, EVertexInputStreamType StreamType = EVertexInputStreamType::Default);
 
 	/**
 	 * Information needed to set a vertex stream.
@@ -748,9 +753,6 @@ protected:
 		
 	/** The vertex streams used to render the factory. */
 	FVertexStreamList Streams;
-
-	/* VF can explicitly set this to false to avoid errors without decls; this is for VFs that fetch from buffers directly (e.g. Niagara) */
-	bool bNeedsDeclaration = true;
 	
 	static constexpr int32 PrimitiveIdStreamStride = 0;
 
@@ -774,6 +776,11 @@ private:
 	int8 PrimitiveIdStreamIndex[(int32)EVertexInputStreamType::Count];
 #endif
 
+protected:
+	/* VF can explicitly set this to false to avoid errors without decls; this is for VFs that fetch from buffers directly (e.g. Niagara) */
+	bool bNeedsDeclaration = true;
+
+private:
 	static int32 TranslatePrimitiveIdStreamIndex(const FStaticFeatureLevel InFeatureLevel, EVertexInputStreamType InputStreamType)
 	{
 	#if WITH_EDITOR
@@ -792,7 +799,7 @@ class FPrimitiveIdDummyBuffer : public FVertexBuffer
 {
 public:
 
-	virtual void InitRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 
 	virtual void ReleaseRHI() override
 	{
@@ -811,7 +818,7 @@ public:
 	// float4 * 5
 	static constexpr uint32 BufferStride = 16u * 5u;
 
-	virtual void InitRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 
 	virtual void ReleaseRHI() override
 	{

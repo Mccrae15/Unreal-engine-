@@ -11,6 +11,7 @@
 #include "MetasoundFrontend.h"
 #include "MetasoundFrontendRegistries.h"
 #include "MetasoundLog.h"
+#include "MetasoundParameterTransmitter.h"
 #include "MetasoundVertex.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MetasoundFrontendDocument)
@@ -103,6 +104,20 @@ namespace Metasound
 					return EMetasoundFrontendVertexAccessType::Reference;
 			}
 		}
+
+		FName ResolveMemberDataType(FName DataType, EAudioParameterType ParamType)
+		{
+			if (!DataType.IsNone())
+			{
+				const bool bIsRegisteredType = Metasound::Frontend::IDataTypeRegistry::Get().IsRegistered(DataType);
+				if (ensureAlwaysMsgf(bIsRegisteredType, TEXT("Attempting to register Interface member with unregistered DataType '%s'."), *DataType.ToString()))
+				{
+					return DataType;
+				}
+			}
+
+			return Frontend::ConvertParameterToDataType(ParamType);
+		};
 	} // namespace DocumentPrivate
 } // namespace Metasound
 
@@ -272,6 +287,79 @@ bool FMetasoundFrontendClassVertex::CanConnectVertexAccessTypes(EMetasoundFronte
 	}
 
 	return true;
+}
+
+FMetasoundFrontendInterfaceUClassOptions::FMetasoundFrontendInterfaceUClassOptions(const Audio::FParameterInterface::FClassOptions& InOptions)
+	: ClassPath(InOptions.ClassPath)
+	, bIsModifiable(InOptions.bIsModifiable)
+	, bIsDefault(InOptions.bIsDefault)
+{
+}
+
+FMetasoundFrontendInterfaceUClassOptions::FMetasoundFrontendInterfaceUClassOptions(const FTopLevelAssetPath& InClassPath, bool bInIsModifiable, bool bInIsDefault)
+	: ClassPath(InClassPath)
+	, bIsModifiable(bInIsModifiable)
+	, bIsDefault(bInIsDefault)
+{
+}
+
+FMetasoundFrontendInterface::FMetasoundFrontendInterface(Audio::FParameterInterfacePtr InInterface)
+{
+	using namespace Metasound::DocumentPrivate;
+	using namespace Metasound::Frontend;
+
+	Version = { InInterface->GetName(), FMetasoundFrontendVersionNumber { InInterface->GetVersion().Major, InInterface->GetVersion().Minor } };
+
+	// Transfer all input data from AudioExtension interface struct to FrontendInterface
+	Algo::Transform(InInterface->GetInputs(), Inputs, [this](const Audio::FParameterInterface::FInput& Input)
+	{
+#if WITH_EDITOR
+		AddSortOrderToInputStyle(Input.SortOrderIndex);
+
+		// Setup required inputs by telling the style that the input is required
+		// This will later be validated against.
+		if (!Input.RequiredText.IsEmpty())
+		{
+			AddRequiredInputToStyle(Input.InitValue.ParamName, Input.RequiredText);
+		}
+#endif // WITH_EDITOR
+
+		return FMetasoundFrontendClassInput(Input);
+	});
+
+	// Transfer all output data from AudioExtension interface struct to FrontendInterface
+	Algo::Transform(InInterface->GetOutputs(), Outputs, [this](const Audio::FParameterInterface::FOutput& Output)
+	{
+#if WITH_EDITOR
+		AddSortOrderToOutputStyle(Output.SortOrderIndex);
+
+		// Setup required outputs by telling the style that the output is required.  This will later be validated against.
+		if (!Output.RequiredText.IsEmpty())
+		{
+			AddRequiredOutputToStyle(Output.ParamName, Output.RequiredText);
+		}
+#endif // WITH_EDITOR
+
+		return FMetasoundFrontendClassOutput(Output);
+	});
+
+	// Transfer all environment variables from AudioExtension interface struct to FrontendInterface
+	Algo::Transform(InInterface->GetEnvironment(), Environment, [](const Audio::FParameterInterface::FEnvironmentVariable& Variable)
+	{
+		return FMetasoundFrontendClassEnvironmentVariable(Variable);
+	});
+
+	// Transfer all class options from AudioExtension interface struct to FrontendInterface
+	Algo::Transform(InInterface->GetUClassOptions(), UClassOptions, [](const Audio::FParameterInterface::FClassOptions& Options)
+	{
+		return FMetasoundFrontendInterfaceUClassOptions(Options);
+	});
+}
+
+const FMetasoundFrontendInterfaceUClassOptions* FMetasoundFrontendInterface::FindClassOptions(const FTopLevelAssetPath& InClassPath) const
+{
+	auto FindClassOptionsPredicate = [&InClassPath](const FMetasoundFrontendInterfaceUClassOptions& Options) { return Options.ClassPath == InClassPath; };
+	return UClassOptions.FindByPredicate(FindClassOptionsPredicate);
 }
 
 FMetasoundFrontendClassName::FMetasoundFrontendClassName(const FName& InNamespace, const FName& InName, const FName& InVariant)
@@ -655,6 +743,23 @@ FMetasoundFrontendClassInput::FMetasoundFrontendClassInput(const FMetasoundFront
 	DefaultLiteral.SetType(DefaultType);
 }
 
+FMetasoundFrontendClassInput::FMetasoundFrontendClassInput(const Audio::FParameterInterface::FInput& InInput)
+{
+	Name = InInput.InitValue.ParamName;
+	DefaultLiteral = FMetasoundFrontendLiteral(InInput.InitValue);
+	TypeName = Metasound::DocumentPrivate::ResolveMemberDataType(InInput.DataType, InInput.InitValue.ParamType);
+	VertexID = FGuid::NewGuid();
+
+#if WITH_EDITOR
+	// Interfaces should never serialize text to avoid desync between
+	// copied versions serialized in assets and those defined in code.
+	Metadata.SetSerializeText(false);
+	Metadata.SetDisplayName(InInput.DisplayName);
+	Metadata.SetDescription(InInput.Description);
+	Metadata.SortOrderIndex = InInput.SortOrderIndex;
+#endif // WITH_EDITOR
+}
+
 FMetasoundFrontendClassVariable::FMetasoundFrontendClassVariable(const FMetasoundFrontendClassVertex& InOther)
 	: FMetasoundFrontendClassVertex(InOther)
 {
@@ -663,6 +768,35 @@ FMetasoundFrontendClassVariable::FMetasoundFrontendClassVariable(const FMetasoun
 	EMetasoundFrontendLiteralType DefaultType = GetMetasoundFrontendLiteralType(IDataTypeRegistry::Get().GetDesiredLiteralType(InOther.TypeName));
 
 	DefaultLiteral.SetType(DefaultType);
+}
+
+FMetasoundFrontendClassOutput::FMetasoundFrontendClassOutput(const Audio::FParameterInterface::FOutput& Output)
+{
+	Name = Output.ParamName;
+	TypeName = Metasound::DocumentPrivate::ResolveMemberDataType(Output.DataType, Output.ParamType);
+	VertexID = FGuid::NewGuid();
+
+#if WITH_EDITOR
+	// Interfaces should never serialize text to avoid desync between
+	// copied versions serialized in assets and those defined in code.
+	Metadata.SetSerializeText(false);
+	Metadata.SetDisplayName(Output.DisplayName);
+	Metadata.SetDescription(Output.Description);
+	Metadata.SortOrderIndex = Output.SortOrderIndex;
+#endif // WITH_EDITOR
+}
+
+FMetasoundFrontendClassOutput::FMetasoundFrontendClassOutput(const FMetasoundFrontendClassVertex& InOther)
+	: FMetasoundFrontendClassVertex(InOther)
+{
+}
+
+FMetasoundFrontendClassEnvironmentVariable::FMetasoundFrontendClassEnvironmentVariable(const Audio::FParameterInterface::FEnvironmentVariable& InVariable)
+	: Name(InVariable.ParamName)
+	// Disabled as it isn't used to infer type when getting/setting at a lower level.
+	// TODO: Either remove type info for environment variables all together or enforce type.
+	// , TypeName(Metasound::Frontend::DocumentPrivate::ResolveMemberDataType(Environment.DataType, Environment.ParamType))
+{
 }
 
 FMetasoundFrontendGraphClass::FMetasoundFrontendGraphClass()
@@ -680,6 +814,38 @@ FMetasoundFrontendDocument::FMetasoundFrontendDocument()
 	RootGraph.ID = FGuid::NewGuid();
 	RootGraph.Metadata.SetType(EMetasoundFrontendClassType::Graph);
 	ArchetypeVersion = FMetasoundFrontendVersion::GetInvalid();
+}
+
+const TCHAR* LexToString(EMetasoundFrontendClassType InClassType)
+{
+	switch (InClassType)
+	{
+		case EMetasoundFrontendClassType::External:
+			return TEXT("External");
+		case EMetasoundFrontendClassType::Graph:
+			return TEXT("Graph");
+		case EMetasoundFrontendClassType::Input:
+			return TEXT("Input");
+		case EMetasoundFrontendClassType::Output:
+			return TEXT("Output");
+		case EMetasoundFrontendClassType::Literal:
+			return TEXT("Literal");
+		case EMetasoundFrontendClassType::Variable:
+			return TEXT("Variable");
+		case EMetasoundFrontendClassType::VariableDeferredAccessor:
+			return TEXT("Variable (Deferred Accessor)");
+		case EMetasoundFrontendClassType::VariableAccessor:
+			return TEXT("Variable (Accessor)");
+		case EMetasoundFrontendClassType::VariableMutator:
+			return TEXT("Variable (Mutator)");
+		case EMetasoundFrontendClassType::Template:
+			return TEXT("Template");
+		case EMetasoundFrontendClassType::Invalid:
+			return TEXT("Invalid");
+		default:
+			static_assert(static_cast<int32>(EMetasoundFrontendClassType::Invalid) == 10, "Possible missed EMetasoundFrontendClassType case coverage");
+			return nullptr;
+	}
 }
 
 const TCHAR* LexToString(EMetasoundFrontendVertexAccessType InVertexAccess)

@@ -48,6 +48,22 @@ enum class EContentBrowserPathType : uint8
 	Virtual
 };
 
+enum class EContentBrowserIsFolderVisibleFlags : uint8
+{
+	None = 0,
+
+	/**
+	 * Hide folders that recursively contain no file items.
+	 */
+	HideEmptyFolders = 1<<0,
+
+	/**
+	 * Default visibility flags.
+	 */
+	Default = None,
+};
+ENUM_CLASS_FLAGS(EContentBrowserIsFolderVisibleFlags);
+
 /** Called for incremental item data updates from data sources that can provide delta-updates */
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnContentBrowserItemDataUpdated, TArrayView<const FContentBrowserItemDataUpdate>);
 
@@ -236,8 +252,14 @@ public:
 	bool PrioritizeSearchPath(const FName InPath);
 
 	/**
+	 * Query whether the given virtual folder should be visible in the UI.
+	 */
+	bool IsFolderVisible(const FName InPath, const EContentBrowserIsFolderVisibleFlags InFlags = EContentBrowserIsFolderVisibleFlags::Default) const;
+
+	/**
 	 * Query whether the given virtual folder should be visible if the UI is asking to hide empty content folders.
 	 */
+	UE_DEPRECATED(5.3, "IsFolderVisibleIfHidingEmpty is deprecated. Use IsFolderVisible instead and add EContentBrowserIsFolderVisibleFlags::HideEmptyFolders to the flags.")
 	bool IsFolderVisibleIfHidingEmpty(const FName InPath) const;
 
 	/*
@@ -340,7 +362,29 @@ public:
 	 */
 	TSharedRef<FPathPermissionList>& GetEditableFolderPermissionList();
 
+
+	/**
+	 * Provide an partial access to private api for the filter cache ID owners
+	 * See FContentBrowserDataFilterCacheIDOwner declaration for how to use the caching for filter compilation
+	 */
+	struct FContentBrowserFilterCacheApi
+	{
+	private:
+		friend FContentBrowserDataFilterCacheIDOwner;
+
+		static void InitializeCacheIDOwner(UContentBrowserDataSubsystem& Subsystem, FContentBrowserDataFilterCacheIDOwner& IDOwner);
+		static void RemoveUnusedCachedData(const UContentBrowserDataSubsystem& Subsystem, const FContentBrowserDataFilterCacheIDOwner& IDOwner, TArrayView<const FName> InVirtualPathsInUse, const FContentBrowserDataFilter& DataFilter);
+		static void ClearCachedData(const UContentBrowserDataSubsystem& Subsystem, const FContentBrowserDataFilterCacheIDOwner& IDOwner);
+	};
+
 private:
+
+	void InitializeCacheIDOwner(FContentBrowserDataFilterCacheIDOwner& IDOwner);
+
+	void RemoveUnusedCachedFilterData(const FContentBrowserDataFilterCacheIDOwner& IDOwner, TArrayView<const FName> InVirtualPathsInUse, const FContentBrowserDataFilter& DataFilter) const;
+
+	void ClearCachedFilterData(const FContentBrowserDataFilterCacheIDOwner& IDOwner) const;
+
 	using FNameToDataSourceMap = TSortedMap<FName, UContentBrowserDataSource*, FDefaultAllocator, FNameFastLess>;
 
 	/**
@@ -375,6 +419,12 @@ private:
 	 * Called when Play in Editor stops.
 	 */
 	void OnEndPIE(const bool bIsSimulating);
+
+	/**
+	 * Called when Content added to delay content browser tick for a frame
+	 * Prevents content browser from slowing down initialization by ticking as content is loaded
+	 */
+	void OnContentPathMounted(const FString& AssetPath, const FString& ContentPath);
 
 	//~ IContentBrowserItemDataSink interface
 	virtual void QueueItemDataUpdate(FContentBrowserItemDataUpdate&& InUpdate) override;
@@ -429,6 +479,11 @@ private:
 	bool bIsPIEActive = false;
 
 	/**
+	 * True if content was just mounted this frame
+	 */
+	bool bContentMountedThisFrame = false;
+
+	/**
 	 * >0 if Tick events have currently been suppressed.
 	 * @see FScopedSuppressContentBrowserDataTick
 	 */
@@ -472,6 +527,8 @@ private:
 
 	/** Permission list of folder paths we can edit */
 	TSharedRef<FPathPermissionList> EditableFolderPermissionList;
+
+	int64 LastCacheIDForFilter = INDEX_NONE;
 };
 
 /**

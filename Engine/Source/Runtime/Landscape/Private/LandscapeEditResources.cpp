@@ -22,13 +22,13 @@ FLandscapeTexture2DResource::FLandscapeTexture2DResource(uint32 InSizeX, uint32 
 
 }
 
-void FLandscapeTexture2DResource::InitRHI()
+void FLandscapeTexture2DResource::InitRHI(FRHICommandListBase& RHICmdList)
 {
-	FTextureResource::InitRHI();
+	FTextureResource::InitRHI(RHICmdList);
 
 	FRHITextureCreateDesc Desc =
 		FRHITextureCreateDesc::Create2D(TEXT("FLandscapeTexture2DResource"), SizeX, SizeY, Format)
-		.SetNumMips(NumMips);
+		.SetNumMips(static_cast<uint8>(NumMips));
 
 	if (bCreateUAVs)
 	{
@@ -47,13 +47,16 @@ void FLandscapeTexture2DResource::InitRHI()
 		TextureUAVs.Reserve(NumMips);
 		for (uint32 MipLevel = 0; MipLevel < NumMips; ++MipLevel)
 		{
-			TextureUAVs.Add(RHICreateUnorderedAccessView(TextureRHI, MipLevel));
+			TextureUAVs.Add(RHICmdList.CreateUnorderedAccessView(TextureRHI, FRHIViewDesc::CreateTextureUAV()
+				.SetDimensionFromTexture(TextureRHI)
+				.SetMipLevel(uint8(MipLevel))
+			));
 		}
 	}
 
 	if (bCreateSRV)
 	{
-		TextureSRV = RHICreateShaderResourceView(TextureRHI, /*MipLevel = */0, NumMips, Format);
+		TextureSRV = RHICmdList.CreateShaderResourceView(TextureRHI, /*MipLevel = */0, static_cast<uint8>(NumMips), Format);
 	}
 }
 
@@ -93,46 +96,48 @@ FLandscapeTexture2DArrayResource::FLandscapeTexture2DArrayResource(uint32 InSize
 	, Format(InFormat)
 	, NumMips(InNumMips)
 	, bCreateUAVs(bInNeedUAVs)
+    , bCreateSRV(bInNeedSRV)
 {
 
 }
 
-void FLandscapeTexture2DArrayResource::InitRHI()
+void FLandscapeTexture2DArrayResource::InitRHI(FRHICommandListBase& RHICmdList)
 {
-	FTextureResource::InitRHI();
-
-	FRHIResourceCreateInfo CreateInfo(TEXT("FLandscapeTexture2DArrayResource"));
-	ETextureCreateFlags Flags = TexCreate_NoTiling | TexCreate_OfflineProcessed;
-
-	if (bCreateUAVs)
-	{
-		Flags |= TexCreate_UAV;
-	}
-
-	if (bCreateSRV)
-	{
-		Flags |= TexCreate_ShaderResource;
-	}
-
-	const FRHITextureCreateDesc Desc =
+	FTextureResource::InitRHI(RHICmdList);
+    
+	FRHITextureCreateDesc Desc =
 		FRHITextureCreateDesc::Create2DArray(TEXT("FLandscapeTexture2DArrayResource"), SizeX, SizeY, SizeZ, Format)
-		.SetNumMips(static_cast<uint8>(NumMips))
-		.SetFlags(Flags);
+        .SetNumMips(static_cast<uint8>(NumMips));
 
-	TextureRHI = RHICreateTexture(Desc);
+    Desc.AddFlags(ETextureCreateFlags::NoTiling | ETextureCreateFlags::OfflineProcessed);
+    
+    if (bCreateUAVs)
+    {
+        Desc.AddFlags(ETextureCreateFlags::UAV);
+    }
+
+    if (bCreateSRV)
+    {
+        Desc.AddFlags(ETextureCreateFlags::ShaderResource);
+    }
+    
+    TextureRHI = RHICreateTexture(Desc);
 
 	if (bCreateUAVs)
 	{
 		TextureUAVs.Reserve(NumMips);
 		for (uint32 MipLevel = 0; MipLevel < NumMips; ++MipLevel)
 		{
-			TextureUAVs.Add(RHICreateUnorderedAccessView(TextureRHI, MipLevel));
+			TextureUAVs.Add(RHICmdList.CreateUnorderedAccessView(TextureRHI, FRHIViewDesc::CreateTextureUAV()
+				.SetDimensionFromTexture(TextureRHI)
+				.SetMipLevel(MipLevel)
+			));
 		}
 	}
 
 	if (bCreateSRV)
 	{
-		TextureSRV = RHICreateShaderResourceView(TextureRHI, /*MipLevel = */0, static_cast<uint8>(NumMips), Format);
+		TextureSRV = RHICmdList.CreateShaderResourceView(TextureRHI, /*MipLevel = */0, static_cast<uint8>(NumMips), Format);
 	}
 }
 

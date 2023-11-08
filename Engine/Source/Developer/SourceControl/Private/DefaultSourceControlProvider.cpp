@@ -24,6 +24,15 @@ FText FDefaultSourceControlProvider::GetStatusText() const
 	return LOCTEXT("SourceControlDisabled", "Revision control is disabled");
 }
 
+
+TMap<ISourceControlProvider::EStatus, FString> FDefaultSourceControlProvider::GetStatus() const
+{
+	TMap<EStatus, FString> Result;
+	Result.Add(EStatus::Enabled, IsEnabled() ? TEXT("Yes") : TEXT("No") );
+	Result.Add(EStatus::Connected, (IsEnabled() && IsAvailable()) ? TEXT("Yes") : TEXT("No") );
+	return Result;
+}
+
 bool FDefaultSourceControlProvider::IsAvailable() const
 {
 	return false;
@@ -68,6 +77,11 @@ void FDefaultSourceControlProvider::UnregisterSourceControlStateChanged_Handle( 
 ECommandResult::Type FDefaultSourceControlProvider::Execute( const FSourceControlOperationRef& InOperation, FSourceControlChangelistPtr InChangelist, const TArray<FString>& InFiles, EConcurrency::Type InConcurrency, const FSourceControlOperationComplete& InOperationCompleteDelegate )
 {
 	return ECommandResult::Failed;
+}
+
+bool FDefaultSourceControlProvider::CanExecuteOperation( const FSourceControlOperationRef& InOperation ) const
+{
+	return false;
 }
 
 bool FDefaultSourceControlProvider::CanCancelOperation( const FSourceControlOperationRef& InOperation ) const

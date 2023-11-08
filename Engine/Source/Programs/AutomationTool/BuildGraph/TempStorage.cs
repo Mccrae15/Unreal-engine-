@@ -16,6 +16,9 @@ using System.Threading.Tasks;
 using System.Xml;
 using System.Xml.Serialization;
 using UnrealBuildTool;
+using Microsoft.Extensions.Logging;
+
+using static AutomationTool.CommandUtils;
 
 namespace AutomationTool
 {
@@ -161,7 +164,7 @@ namespace AutomationTool
 			{
 				if(Message != null)
 				{
-					CommandUtils.LogInformation(Message);
+					Logger.LogInformation("{Text}", Message);
 				}
 				return true;
 			}
@@ -169,7 +172,7 @@ namespace AutomationTool
 			{
 				if(Message != null)
 				{
-					CommandUtils.LogError(Message);
+					Logger.LogError("{Text}", Message);
 				}
 				return false;
 			}
@@ -408,7 +411,8 @@ namespace AutomationTool
 	/// <summary>
 	/// Stores the contents of a tagged file set
 	/// </summary>
-	public class TempStorageFileList
+	[XmlRoot(ElementName = "TempStorageFileList")]
+	public class TempStorageTagManifest
 	{
 		/// <summary>
 		/// List of files that are in this tag set, relative to the root directory
@@ -432,14 +436,21 @@ namespace AutomationTool
 		public TempStorageBlock[] Blocks;
 
 		/// <summary>
+		/// List of keys for published artifacts
+		/// </summary>
+		[XmlArray]
+		[XmlArrayItem("ArtifactKey")]
+		public string[] ArtifactKeys;
+
+		/// <summary>
 		/// Construct a static Xml serializer to avoid throwing an exception searching for the reflection info at runtime
 		/// </summary>
-		static XmlSerializer Serializer = XmlSerializer.FromTypes(new Type[]{ typeof(TempStorageFileList) })[0];
+		static XmlSerializer Serializer = XmlSerializer.FromTypes(new Type[]{ typeof(TempStorageTagManifest) })[0];
 
 		/// <summary>
 		/// Construct an empty file list for deserialization
 		/// </summary>
-		private TempStorageFileList()
+		private TempStorageTagManifest()
 		{
 		}
 
@@ -449,7 +460,8 @@ namespace AutomationTool
 		/// <param name="InFiles">List of full file paths</param>
 		/// <param name="RootDir">Root folder for all the files. All files must be relative to this RootDir.</param>
 		/// <param name="InBlocks">Referenced storage blocks required for these files</param>
-		public TempStorageFileList(IEnumerable<FileReference> InFiles, DirectoryReference RootDir, IEnumerable<TempStorageBlock> InBlocks)
+		/// <param name="InArtifactKeys">Keys for published artifacts</param>
+		public TempStorageTagManifest(IEnumerable<FileReference> InFiles, DirectoryReference RootDir, IEnumerable<TempStorageBlock> InBlocks, IEnumerable<string> InArtifactKeys)
 		{
 			List<string> NewLocalFiles = new List<string>();
 			List<string> NewExternalFiles = new List<string>();
@@ -468,17 +480,18 @@ namespace AutomationTool
 			ExternalFiles = NewExternalFiles.ToArray();
 
 			Blocks = InBlocks.ToArray();
+			ArtifactKeys = InArtifactKeys.ToArray();
 		}
 
 		/// <summary>
 		/// Load this list of files from disk
 		/// </summary>
 		/// <param name="File">File to load</param>
-		static public TempStorageFileList Load(FileReference File)
+		static public TempStorageTagManifest Load(FileReference File)
 		{
 			using(StreamReader Reader = new StreamReader(File.FullName))
 			{
-				return (TempStorageFileList)Serializer.Deserialize(Reader);
+				return (TempStorageTagManifest)Serializer.Deserialize(Reader);
 			}
 		}
 
@@ -676,7 +689,7 @@ namespace AutomationTool
 				}
 
 				// Read the manifest and add the referenced blocks to be checked
-				TempStorageFileList LocalFileList = TempStorageFileList.Load(LocalFileListLocation);
+				TempStorageTagManifest LocalFileList = TempStorageTagManifest.Load(LocalFileListLocation);
 				Blocks.UnionWith(LocalFileList.Blocks);
 			}
 
@@ -726,16 +739,16 @@ namespace AutomationTool
 		/// <param name="NodeName">Name of the node which produced the tag set</param>
 		/// <param name="TagName">Name of the tag, with a '#' prefix</param>
 		/// <returns>The set of files</returns>
-		public TempStorageFileList ReadFileList(string NodeName, string TagName)
+		public TempStorageTagManifest ReadFileList(string NodeName, string TagName)
 		{
-			TempStorageFileList FileList = null;
+			TempStorageTagManifest FileList = null;
 
 			// Try to read the tag set from the local directory
 			FileReference LocalFileListLocation = GetTaggedFileListLocation(LocalDir, NodeName, TagName);
 			if(FileReference.Exists(LocalFileListLocation))
 			{
-				CommandUtils.LogInformation("Reading local file list from {0}", LocalFileListLocation.FullName);
-				FileList = TempStorageFileList.Load(LocalFileListLocation);
+				Logger.LogInformation("Reading local file list from {Arg0}", LocalFileListLocation.FullName);
+				FileList = TempStorageTagManifest.Load(LocalFileListLocation);
 			}
 			else
 			{
@@ -762,8 +775,8 @@ namespace AutomationTool
 					PerformActionWithRetries(() =>
 					{
 						// Read the shared manifest
-						CommandUtils.LogInformation("Copying shared tag set from {0} to {1}", SharedFileListLocation.FullName, LocalFileListLocation.FullName);
-						FileList = TempStorageFileList.Load(SharedFileListLocation);
+						Logger.LogInformation("Copying shared tag set from {Arg0} to {Arg1}", SharedFileListLocation.FullName, LocalFileListLocation.FullName);
+						FileList = TempStorageTagManifest.Load(SharedFileListLocation);
 					}, Attempts, TimeSpan.FromSeconds(5));
 				}
 				catch
@@ -785,11 +798,12 @@ namespace AutomationTool
 		/// <param name="TagName">Name of the tag, with a '#' prefix</param>
 		/// <param name="Files">List of files in this set</param>
 		/// <param name="Blocks">List of referenced storage blocks</param>
+		/// <param name="ArtifactKeys">Keys for published artifacts</param>
 		/// <returns>The set of files</returns>
-		public void WriteFileList(string NodeName, string TagName, IEnumerable<FileReference> Files, IEnumerable<TempStorageBlock> Blocks)
+		public void WriteFileList(string NodeName, string TagName, IEnumerable<FileReference> Files, IEnumerable<TempStorageBlock> Blocks, IEnumerable<string> ArtifactKeys)
 		{
 			// Create the file list
-			TempStorageFileList FileList = new TempStorageFileList(Files, RootDir, Blocks);
+			TempStorageTagManifest FileList = new TempStorageTagManifest(Files, RootDir, Blocks, ArtifactKeys);
 
 			// Save the set of files to the local and shared locations
 			FileReference LocalFileListLocation = GetTaggedFileListLocation(LocalDir, NodeName, TagName);
@@ -801,7 +815,7 @@ namespace AutomationTool
 				{
 					PerformActionWithRetries(() =>
 					{
-						CommandUtils.LogInformation("Saving file list to {0} and {1}", LocalFileListLocation.FullName, SharedFileListLocation.FullName);
+						Logger.LogInformation("Saving file list to {Arg0} and {Arg1}", LocalFileListLocation.FullName, SharedFileListLocation.FullName);
 						DirectoryReference.CreateDirectory(SharedFileListLocation.Directory);
 						FileList.Save(SharedFileListLocation);
 					}, 3, TimeSpan.FromSeconds(5));
@@ -813,7 +827,7 @@ namespace AutomationTool
 			}
 			else
 			{
-				CommandUtils.LogInformation("Saving file list to {0}", LocalFileListLocation.FullName);
+				Logger.LogInformation("Saving file list to {Arg0}", LocalFileListLocation.FullName);
 			}
 
 			// Save the local file list
@@ -854,13 +868,13 @@ namespace AutomationTool
 					Manifest.ZipFiles = ZipFiles.Select(x => new TempStorageZipFile(x)).ToArray();
 
 					// Save the shared manifest
-					CommandUtils.LogInformation("Saving shared manifest to {0}", SharedManifestFile.FullName);
+					Logger.LogInformation("Saving shared manifest to {Arg0}", SharedManifestFile.FullName);
 					PerformActionWithRetries(() => Manifest.Save(SharedManifestFile), 3, TimeSpan.FromSeconds(5));
 				}
 
 				// Save the local manifest
 				FileReference LocalManifestFile = GetManifestLocation(LocalDir, NodeName, BlockName);
-				CommandUtils.LogInformation("Saving local manifest to {0}", LocalManifestFile.FullName);
+				Logger.LogInformation("Saving local manifest to {Arg0}", LocalManifestFile.FullName);
 				Manifest.Save(LocalManifestFile);
 
 				// Update the stats
@@ -892,7 +906,7 @@ namespace AutomationTool
 				TempStorageManifest Manifest = null;
 				if(bLocal)
 				{
-					CommandUtils.LogInformation("Reading shared manifest from {0}", LocalManifestFile.FullName);
+					Logger.LogInformation("Reading shared manifest from {Arg0}", LocalManifestFile.FullName);
 					Manifest = TempStorageManifest.Load(LocalManifestFile);
 				}
 				else
@@ -913,7 +927,7 @@ namespace AutomationTool
 					}
 
 					// Read the shared manifest
-					CommandUtils.LogInformation("Copying shared manifest from {0} to {1}", SharedManifestFile.FullName, LocalManifestFile.FullName);
+					Logger.LogInformation("Copying shared manifest from {Arg0} to {Arg1}", SharedManifestFile.FullName, LocalManifestFile.FullName);
 					PerformActionWithRetries(() => Manifest = TempStorageManifest.Load(SharedManifestFile), 3, TimeSpan.FromSeconds(5));
 
 					// Unzip all the build products
@@ -923,7 +937,7 @@ namespace AutomationTool
 					if (!string.IsNullOrWhiteSpace(Result))
 					{
 						string LogPath = CommandUtils.CombinePaths(RootDir.FullName, "Engine/Programs/AutomationTool/Saved/Logs", $"Copy Manifest - {NodeName}.log");
-						CommandUtils.LogInformation("Saving copy log to {0}", LogPath);
+						Logger.LogInformation("Saving copy log to {LogPath}", LogPath);
 						File.WriteAllText(LogPath, Result);
 					}
 
@@ -1045,7 +1059,7 @@ namespace AutomationTool
 						}
 						catch (IOException)
 						{
-							CommandUtils.LogError("Unable to open file for TempStorage zip: \"{0}\"", ZipFileName.FullName);
+							Logger.LogError("Unable to open file for TempStorage zip: \"{Arg0}\"", ZipFileName.FullName);
 							throw new AutomationException("Unable to open file {0}", ZipFileName.FullName);
 						}
 
@@ -1067,14 +1081,14 @@ namespace AutomationTool
 				{
 					string CopyResult = CopyDirectory(ZipDir, OutputDir);
 					string LogPath = CommandUtils.CombinePaths(RootDir.FullName, "Engine/Programs/AutomationTool/Saved/Logs", $"Copy Files to Temp Storage.log");
-					CommandUtils.LogInformation("Saving copy log to {0}", LogPath);
+					Logger.LogInformation("Saving copy log to {LogPath}", LogPath);
 					File.WriteAllText(LogPath, string.Join(Environment.NewLine, CopyResult));
 					Parallel.ForEach(ZipFiles, (z) => z.Delete());
 					ZipFiles = new ConcurrentBag<FileInfo>(ZipFiles.Select(z => new FileInfo(CommandUtils.MakeRerootedFilePath(z.FullName, StagingDir.FullName, OutputDir.FullName))));
 				}
 				catch (IOException Ex)
 				{
-					CommandUtils.LogError("Unable to copy staging directory {0} to {1}, Ex: {2}", ZipDir.FullName, OutputDir.FullName, Ex);
+					Logger.LogError("Unable to copy staging directory {Arg0} to {Arg1}, Ex: {Ex}", ZipDir.FullName, OutputDir.FullName, Ex);
 					throw new AutomationException(Ex, "Unable to copy staging directory {0} to {1}", ZipDir.FullName, OutputDir.FullName);
 				}
 			}
@@ -1156,7 +1170,7 @@ namespace AutomationTool
 													throw;
 												}
 
-												Log.TraceWarning("Failed to unzip '{0}' from '{1}' to '{2}', retrying.. (Error: {3})", Entry.FullName, LocalZipFile, ExtractedFilename, IOEx.Message);
+												Log.Logger.LogWarning(IOEx, "Failed to unzip '{File}' from '{LocalZipFile}' to '{ExtractedFilename}', retrying.. (Error: {Message})", Entry.FullName, LocalZipFile, ExtractedFilename, IOEx.Message);
 											}
 										}
 									}
@@ -1169,9 +1183,9 @@ namespace AutomationTool
 						{
 							if (UnzipFileAttempts == 0)
 							{
-								Log.TraceError("All retries exhausted attempting to unzip entries from '{0}'. Terminating.", LocalZipFile);
+								Log.Logger.LogError(Ex, "All retries exhausted attempting to unzip entries from '{LocalZipFile}'. Terminating.", LocalZipFile);
 								string LogPath = CommandUtils.CombinePaths(RootDir.FullName, "Engine/Programs/AutomationTool/Saved/Logs", $"Copy Manifest - {ZipFile.Name}.log");
-								CommandUtils.LogInformation("Saving copy log to {0}", LogPath);
+								Logger.LogInformation("Saving copy log to {LogPath}", LogPath);
 								File.WriteAllText(LogPath, string.Join(Environment.NewLine, CopyResults));
 								throw;
 							}
@@ -1179,7 +1193,7 @@ namespace AutomationTool
 							// Some exceptions may be caused by networking hiccups. We want to retry in those cases.
 							if ((Ex is IOException || Ex is InvalidDataException))
 							{
-								Log.TraceWarning("Failed to unzip entries from '{0}' to '{1}', retrying.. (Error: {2})", LocalZipFile, RootDir.FullName, Ex.Message);
+								Log.Logger.LogWarning(Ex, "Failed to unzip entries from '{LocalZipFile}' to '{TargetDir}', retrying.. (Error: {Message})", LocalZipFile, RootDir.FullName, Ex.Message);
 							}
 						}
 						finally
@@ -1268,7 +1282,7 @@ namespace AutomationTool
 			{
 				return true;
 			}
-			if (FileName.Equals("tbbmalloc.dll", StringComparison.OrdinalIgnoreCase) || FileName.Equals("libtbbmalloc.dylib", StringComparison.OrdinalIgnoreCase))
+			if (FileName.Equals("tbbmalloc.dll", StringComparison.OrdinalIgnoreCase) || FileName.Equals("tbbmalloc.pdb", StringComparison.OrdinalIgnoreCase) || FileName.Equals("libtbbmalloc.dylib", StringComparison.OrdinalIgnoreCase) || FileName.Equals("tbbmalloc.psym", StringComparison.OrdinalIgnoreCase))
 			{
 				return true;
 			}
@@ -1293,12 +1307,31 @@ namespace AutomationTool
 			{
 				return true;
 			}
+			if ((FileName.Equals("info.plist", StringComparison.OrdinalIgnoreCase) || FileName.Equals("coderesources", StringComparison.OrdinalIgnoreCase)) && LocalFile.FullName.Contains(".app/"))
+			{
+				// xcode can generate plist files and coderesources differently in different stages of compile/cook/stage/package/etc. only allow ones inside a .app bundle
+				return true;
+			}
 			return false;
 		}
-
+		
+		/// <summary>
+		/// Copy a temp storage .zip file to directory.
+		/// Uses Robocopy on Windows, rsync on Linux/macOS and native .NET API when under Wine.
+		/// </summary>
+		/// <param name="ZipFile">.zip file to copy</param>
+		/// <param name="RootDir">Destination dir</param>
+		/// <returns>Output from the copy operation</returns>
 		static string CopyFile(FileInfo ZipFile, DirectoryReference RootDir)
 		{
-			if (HostPlatform.Current.HostEditorPlatform == UnrealTargetPlatform.Win64)
+			if (BuildHostPlatform.Current.IsRunningOnWine())
+			{
+				string sourceFile = ZipFile.FullName;
+				string destFile = Path.Join(RootDir.FullName, ZipFile.Name);
+				File.Copy(sourceFile, destFile, true);
+				return $".NET file copy. Source='{sourceFile}' Dest='{destFile}'";
+			}
+			else if (HostPlatform.Current.HostEditorPlatform == UnrealTargetPlatform.Win64)
 			{
 				return CommandUtils.RunAndLog(GetRoboCopyExe(), $"\"{ZipFile.DirectoryName}\" \"{RootDir}\" \"{ZipFile.Name}\" /w:5 /r:10", MaxSuccessCode: 3, Options: CommandUtils.ERunOptions.AppMustExist | CommandUtils.ERunOptions.NoLoggingOfRunCommand);
 			}
@@ -1308,7 +1341,34 @@ namespace AutomationTool
 			}
 		}
 
+		/// <summary>
+		/// Copy a directory using the most suitable option
+		/// </summary>
+		/// <param name="SourceDir">Source directory</param>
+		/// <param name="DestinationDir">Directory directory</param>
+		/// <returns>Output from directory copy operation</returns>
+		/// <exception cref="DirectoryNotFoundException">If source directory wasn't found</exception>
 		static string CopyDirectory(DirectoryReference SourceDir, DirectoryReference DestinationDir)
+		{
+			if (BuildHostPlatform.Current.IsRunningOnWine())
+			{
+				return CopyDirectoryDotNet(SourceDir, DestinationDir);
+			}
+			else
+			{
+				return CopyDirectoryExternalTool(SourceDir, DestinationDir);
+			}
+		}
+
+		/// <summary>
+		/// Copy a directory using an external tool native to OS
+		/// Robocopy Windows and rsync for Linux and macOS.
+		/// </summary>
+		/// <param name="SourceDir">Source directory</param>
+		/// <param name="DestinationDir">Directory directory</param>
+		/// <returns>Output from directory copy operation</returns>
+		/// <exception cref="DirectoryNotFoundException">If source directory wasn't found</exception>
+		static string CopyDirectoryExternalTool(DirectoryReference SourceDir, DirectoryReference DestinationDir)
 		{
 			if (HostPlatform.Current.HostEditorPlatform == UnrealTargetPlatform.Win64)
 			{
@@ -1318,6 +1378,40 @@ namespace AutomationTool
 			{
 				return CommandUtils.RunAndLog("rsync", $"-vam --include=\"**\" \"{SourceDir}/\" \"{DestinationDir}/\"", Options: CommandUtils.ERunOptions.AppMustExist | CommandUtils.ERunOptions.NoLoggingOfRunCommand);
 			}
+		}
+		
+		/// <summary>
+		/// Copy a directory using .NET SDK directory and file copy API
+		/// </summary>
+		/// <param name="SourceDir">Source directory</param>
+		/// <param name="DestinationDir">Directory directory</param>
+		/// <returns>Output from directory copy operation</returns>
+		/// <exception cref="DirectoryNotFoundException">If source directory wasn't found</exception>
+		static string CopyDirectoryDotNet(DirectoryReference SourceDir, DirectoryReference DestinationDir)
+		{
+			DirectoryInfo dir = new (SourceDir.FullName);
+
+			if (!dir.Exists)
+			{
+				throw new DirectoryNotFoundException($"Source directory not found: {dir.FullName}");
+			}
+
+			DirectoryInfo[] dirs = dir.GetDirectories();
+			Directory.CreateDirectory(DestinationDir.FullName);
+
+			foreach (FileInfo file in dir.GetFiles())
+			{
+				string targetFilePath = Path.Combine(DestinationDir.FullName, file.Name);
+				file.CopyTo(targetFilePath);
+			}
+
+			foreach (DirectoryInfo subDir in dirs)
+			{
+				string newDestinationDir = Path.Combine(DestinationDir.FullName, subDir.Name);
+				CopyDirectoryDotNet(new DirectoryReference(subDir.FullName), new DirectoryReference(newDestinationDir));
+			}
+
+			return ".NET directory copy";
 		}
 
 		static string GetRoboCopyExe()
@@ -1387,12 +1481,12 @@ namespace AutomationTool
 			CheckManifest(WorkingDir, NamedManifest, NamedOutput);
 
 			// Delete local temp storage and the working directory and try again
-			CommandUtils.LogInformation("Clearing local folders...");
+			Logger.LogInformation("Clearing local folders...");
 			CommandUtils.DeleteDirectoryContents(WorkingDir.FullName);
 			CommandUtils.DeleteDirectoryContents(LocalDir.FullName);
 
 			// First output should fail
-			CommandUtils.LogInformation("Checking default manifest is now unavailable...");
+			Logger.LogInformation("Checking default manifest is now unavailable...");
 			bool bGotManifest = false;
 			try
 			{
@@ -1489,7 +1583,7 @@ namespace AutomationTool
 
 			if (!Directory.Exists(TempStorageDir))
 			{
-				CommandUtils.LogInformation("Temp Storage folder '{0}' does not exist, no work to do.", TempStorageDir);
+				Logger.LogInformation("Temp Storage folder '{TempStorageDir}' does not exist, no work to do.", TempStorageDir);
 				return;
 			}
 
@@ -1508,12 +1602,12 @@ namespace AutomationTool
 			DateTime RetainTime = DateTime.UtcNow - TimeSpan.FromDays(DaysValue);
 
 			// Enumerate all the build directories
-			CommandUtils.LogInformation("Scanning {0}...", TempStorageDir);
+			Logger.LogInformation("Scanning {TempStorageDir}...", TempStorageDir);
 			int NumBuilds = 0;
 			List<DirectoryInfo> BuildsToDelete = new List<DirectoryInfo>();
 			foreach (DirectoryInfo StreamDirectory in new DirectoryInfo(TempStorageDir).EnumerateDirectories().OrderBy(x => x.Name))
 			{
-				CommandUtils.LogInformation("Scanning {0}...", StreamDirectory.FullName);
+				Logger.LogInformation("Scanning {Arg0}...", StreamDirectory.FullName);
 				try
 				{
 					foreach (DirectoryInfo BuildDirectory in StreamDirectory.EnumerateDirectories())
@@ -1528,16 +1622,16 @@ namespace AutomationTool
 						}
 						catch (Exception Ex)
 						{
-							Log.TraceError("Exception while trying to scan files under {0}: {1}", BuildDirectory, Ex);
+							Logger.LogError(Ex, "Exception while trying to scan files under {BuildDirectory}: {Ex}", BuildDirectory, Ex);
 						}
 					}
 				}
 				catch (Exception Ex)
 				{
-					Log.TraceError("Exception while trying to scan {0}: {1}", StreamDirectory, Ex);
+					Logger.LogError(Ex, "Exception while trying to scan {StreamDirectory}: {Ex}", StreamDirectory, Ex);
 				}
 			}
-			CommandUtils.LogInformation("Found {0} builds; {1} to delete.", NumBuilds, BuildsToDelete.Count);
+			Logger.LogInformation("Found {NumBuilds} builds; {Arg1} to delete.", NumBuilds, BuildsToDelete.Count);
 
 			// Loop through them all, checking for files older than the delete time
 			int Idx = BuildsToDelete.Count;
@@ -1555,17 +1649,17 @@ namespace AutomationTool
 					FileInfo DeleteInProgressFile = BuildsToDelete[Idx].GetFiles("DeleteInProgress.tmp").FirstOrDefault();
 					if (DeleteInProgressFile != null && DeleteInProgressFile.LastWriteTimeUtc < (DateTimeOffset.UtcNow - TimeSpan.FromMinutes(20)))
 					{
-						CommandUtils.LogInformation("[{0}/{1}] {2} flagged as delete in progress, skipping...", BuildsToDelete.Count - Idx, BuildsToDelete.Count, BuildsToDelete[Idx].FullName);
+						Logger.LogInformation("[{Arg0}/{Arg1}] {Arg2} flagged as delete in progress, skipping...", BuildsToDelete.Count - Idx, BuildsToDelete.Count, BuildsToDelete[Idx].FullName);
 						continue;
 					}
 
 					File.WriteAllBytes(Path.Combine(BuildsToDelete[Idx].FullName, "DeleteInProgress.tmp"), Array.Empty<byte>());
-					CommandUtils.LogInformation("[{0}/{1}] Deleting {2}...", BuildsToDelete.Count - Idx, BuildsToDelete.Count, BuildsToDelete[Idx].FullName);
+					Logger.LogInformation("[{Arg0}/{Arg1}] Deleting {Arg2}...", BuildsToDelete.Count - Idx, BuildsToDelete.Count, BuildsToDelete[Idx].FullName);
 					BuildsToDelete[Idx].Delete(true);
 				}
 				catch (Exception Ex)
 				{
-					CommandUtils.LogWarning("Failed to delete old manifest folder; will try one file at a time: {0}", Ex);
+					Logger.LogWarning("Failed to delete old manifest folder; will try one file at a time: {Ex}", Ex);
 					CommandUtils.DeleteDirectory_NoExceptions(true, BuildsToDelete[Idx].FullName);
 				}
 			}
@@ -1587,13 +1681,13 @@ namespace AutomationTool
 						}
 						catch (Exception Ex)
 						{
-							CommandUtils.LogWarning("Unexpected failure trying to delete (potentially empty) stream directory {0}: {1}", StreamDirectory.FullName, Ex);
+							Logger.LogWarning("Unexpected failure trying to delete (potentially empty) stream directory {Arg0}: {Ex}", StreamDirectory.FullName, Ex);
 						}
 					}
 				}
 				catch (Exception Ex)
 				{
-					Log.TraceError("Exception while trying to delete {0}: {1}", StreamDirectory, Ex);
+					Logger.LogError(Ex, "Exception while trying to delete {StreamDirectory}: {Ex}", StreamDirectory, Ex);
 				}
 			}
 		}

@@ -1,9 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 using EpicGames.Core;
 using Microsoft.Extensions.Logging;
@@ -101,6 +98,6 @@ namespace UnrealBuildTool
 		/// <param name="Arguments">List of command line arguments</param>
 		/// <param name="Logger"></param>
 		/// <returns>Exit code for the process</returns>
-		public abstract int Execute(CommandLineArguments Arguments, ILogger Logger);
+		public abstract Task<int> ExecuteAsync(CommandLineArguments Arguments, ILogger Logger);
 	}
 }

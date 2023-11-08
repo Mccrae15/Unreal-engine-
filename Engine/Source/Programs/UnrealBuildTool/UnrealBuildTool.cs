@@ -7,9 +7,6 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
-using System.Text.Json;
-using System.Threading;
-using System.Threading.Tasks;
 using EpicGames.Core;
 using Microsoft.Extensions.Logging;
 using OpenTracing.Util;
@@ -23,17 +20,17 @@ namespace UnrealBuildTool
 		/// Save the application startup time. This can be used as the timestamp for build makefiles, to determine a base time after which any
 		/// modifications should invalidate it.
 		/// </summary>
-		static public DateTime StartTimeUtc { get; } = DateTime.UtcNow;
+		public static DateTime StartTimeUtc { get; } = DateTime.UtcNow;
 
 		/// <summary>
 		/// The environment at boot time.
 		/// </summary>
-		static public System.Collections.IDictionary? InitialEnvironment;
+		public static System.Collections.IDictionary? InitialEnvironment;
 
 		/// <summary>
 		/// Whether we're running with an installed project
 		/// </summary>
-		static private bool? bIsProjectInstalled;
+		private static bool? bIsProjectInstalled;
 
 		/// <summary>
 		/// If we are running with an installed project, specifies the path to it
@@ -122,7 +119,7 @@ namespace UnrealBuildTool
 		/// Returns true if UnrealBuildTool is running using an installed project (ie. a mod kit)
 		/// </summary>
 		/// <returns>True if running using an installed project</returns>
-		static public bool IsProjectInstalled()
+		public static bool IsProjectInstalled()
 		{
 			if (!bIsProjectInstalled.HasValue)
 			{
@@ -145,9 +142,9 @@ namespace UnrealBuildTool
 		/// Gets the installed project file
 		/// </summary>
 		/// <returns>Location of the installed project file</returns>
-		static public FileReference? GetInstalledProjectFile()
+		public static FileReference? GetInstalledProjectFile()
 		{
-			if(IsProjectInstalled())
+			if (IsProjectInstalled())
 			{
 				return InstalledProjectFile;
 			}
@@ -162,13 +159,13 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="File">File to test</param>
 		/// <returns>True if the file is part of the installed distribution, false otherwise</returns>
-		static public bool IsFileInstalled(FileReference File)
+		public static bool IsFileInstalled(FileReference File)
 		{
-			if(Unreal.IsEngineInstalled() && File.IsUnderDirectory(Unreal.EngineDirectory))
+			if (Unreal.IsEngineInstalled() && File.IsUnderDirectory(Unreal.EngineDirectory))
 			{
 				return true;
 			}
-			if(IsProjectInstalled() && File.IsUnderDirectory(InstalledProjectFile!.Directory))
+			if (IsProjectInstalled() && File.IsUnderDirectory(InstalledProjectFile!.Directory))
 			{
 				return true;
 			}
@@ -180,18 +177,18 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <returns>A string containing the path to the UBT assembly.</returns>
 		[Obsolete("Deprecated in UE5.1 - use UnrealBuildTool.DotnetPath Unreal.UnrealBuildToolDllPath")]
-		static public FileReference GetUBTPath() => Unreal.UnrealBuildToolPath;
+		public static FileReference GetUBTPath() => Unreal.UnrealBuildToolPath;
 
 		/// <summary>
 		/// The Unreal remote tool ini directory.  This should be valid if compiling using a remote server
 		/// </summary>
 		/// <returns>The directory path</returns>
-		static public string? GetRemoteIniPath()
+		public static string? GetRemoteIniPath()
 		{
 			return RemoteIniPath;
 		}
 
-		static public void SetRemoteIniPath(string Path)
+		public static void SetRemoteIniPath(string Path)
 		{
 			RemoteIniPath = Path;
 		}
@@ -208,12 +205,12 @@ namespace UnrealBuildTool
 			[CommandLine(Prefix = "-h")]
 			[CommandLine(Prefix = "--help")]
 			public bool bGetHelp = false;
-			
+
 			/// <summary>
 			/// The amount of detail to write to the log
 			/// </summary>
-			[CommandLine(Prefix = "-Verbose", Value ="Verbose", Description = "Increase output verbosity")]
-			[CommandLine(Prefix = "-VeryVerbose", Value ="VeryVerbose", Description = "Increase output verbosity more")]
+			[CommandLine(Prefix = "-Verbose", Value = "Verbose", Description = "Increase output verbosity")]
+			[CommandLine(Prefix = "-VeryVerbose", Value = "VeryVerbose", Description = "Increase output verbosity more")]
 			public LogEventType LogOutputLevel = LogEventType.Log;
 
 			/// <summary>
@@ -274,41 +271,53 @@ namespace UnrealBuildTool
 			/// </summary>
 			[CommandLine("-Mode=")] // description handling is special-cased in PrintUsage()
 
-			[CommandLine("-Clean", Value="Clean", Description = "Clean build products. Equivalent to -Mode=Clean")]
+			[CommandLine("-Clean", Value = "Clean", Description = "Clean build products. Equivalent to -Mode=Clean")]
 
-			[CommandLine("-ProjectFiles", Value="GenerateProjectFiles", Description = "Generate project files based on IDE preference. Equivalent to -Mode=GenerateProjectFiles")]
-			[CommandLine("-ProjectFileFormat=", Value="GenerateProjectFiles", Description = "Generate project files in specified format. May be used multiple times.")]
-			[CommandLine("-Makefile", Value="GenerateProjectFiles", Description = "Generate Linux Makefile")]
-			[CommandLine("-CMakefile", Value="GenerateProjectFiles", Description = "Generate project files for CMake")]
-			[CommandLine("-QMakefile", Value="GenerateProjectFiles", Description = "Generate project files for QMake")]
-			[CommandLine("-KDevelopfile", Value="GenerateProjectFiles", Description = "Generate project files for KDevelop")]
-			[CommandLine("-CodeliteFiles", Value="GenerateProjectFiles", Description = "Generate project files for Codelite")]
-			[CommandLine("-XCodeProjectFiles", Value="GenerateProjectFiles", Description = "Generate project files for XCode")]
-			[CommandLine("-EddieProjectFiles", Value="GenerateProjectFiles", Description = "Generate project files for Eddie")]
-			[CommandLine("-VSCode", Value="GenerateProjectFiles", Description = "Generate project files for Visual Studio Code")]
-			[CommandLine("-VSMac", Value="GenerateProjectFiles", Description = "Generate project files for Visual Studio Mac")]
-			[CommandLine("-CLion", Value="GenerateProjectFiles", Description = "Generate project files for CLion")]
-			[CommandLine("-Rider", Value="GenerateProjectFiles", Description = "Generate project files for Rider")]
-			#if __VPROJECT_AVAILABLE__
-				[CommandLine("-VProject", Value = "GenerateProjectFiles")]
-			#endif
+			[CommandLine("-ProjectFiles", Value = "GenerateProjectFiles", Description = "Generate project files based on IDE preference. Equivalent to -Mode=GenerateProjectFiles")]
+			[CommandLine("-ProjectFileFormat=", Value = "GenerateProjectFiles", Description = "Generate project files in specified format. May be used multiple times.")]
+			[CommandLine("-Makefile", Value = "GenerateProjectFiles", Description = "Generate Linux Makefile")]
+			[CommandLine("-CMakefile", Value = "GenerateProjectFiles", Description = "Generate project files for CMake")]
+			[CommandLine("-QMakefile", Value = "GenerateProjectFiles", Description = "Generate project files for QMake")]
+			[CommandLine("-KDevelopfile", Value = "GenerateProjectFiles", Description = "Generate project files for KDevelop")]
+			[CommandLine("-CodeliteFiles", Value = "GenerateProjectFiles", Description = "Generate project files for Codelite")]
+			[CommandLine("-XCodeProjectFiles", Value = "GenerateProjectFiles", Description = "Generate project files for XCode")]
+			[CommandLine("-EddieProjectFiles", Value = "GenerateProjectFiles", Description = "Generate project files for Eddie")]
+			[CommandLine("-VSCode", Value = "GenerateProjectFiles", Description = "Generate project files for Visual Studio Code")]
+			[CommandLine("-VSMac", Value = "GenerateProjectFiles", Description = "Generate project files for Visual Studio Mac")]
+			[CommandLine("-CLion", Value = "GenerateProjectFiles", Description = "Generate project files for CLion")]
+			[CommandLine("-Rider", Value = "GenerateProjectFiles", Description = "Generate project files for Rider")]
+#if __VPROJECT_AVAILABLE__
+			[CommandLine("-VProject", Value = "GenerateProjectFiles")]
+#endif
 			public string? Mode = null;
 
 			// The following Log settings exists in this location because, at the time of writing, EpicGames.Core does
 			// not have access to XmlConfigFileAttribute.
-			
+
 			/// <summary>
 			/// Whether to backup an existing log file, rather than overwriting it.
 			/// </summary>
-			[XmlConfigFile(Category = "Log")] 
+			[XmlConfigFile(Category = "Log")]
 			public bool bBackupLogFiles = Log.BackupLogFiles;
-			
+
 			/// <summary>
 			/// The number of log file backups to preserve. Older backups will be deleted.
 			/// </summary>
 			[XmlConfigFile(Category = "Log")]
 			public int LogFileBackupCount = Log.LogFileBackupCount;
-			
+
+			/// <summary>
+			/// If set TMP\TEMP will be overidden to this directory, each process will create a unique subdirectory in this folder.
+			/// </summary>
+			[XmlConfigFile(Category = "BuildConfiguration")]
+			public string? TempDirectory = null;
+
+			/// <summary>
+			/// If set the application temp directory will be deleted on exit, only when running with a single instance mutex.
+			/// </summary>
+			[XmlConfigFile(Category = "BuildConfiguration")]
+			public bool bDeleteTempDirectory = false;
+
 			/// <summary>
 			/// Initialize the options with the given command line arguments
 			/// </summary>
@@ -316,7 +325,7 @@ namespace UnrealBuildTool
 			public GlobalOptions(CommandLineArguments Arguments)
 			{
 				Arguments.ApplyTo(this);
-				if (!string.IsNullOrEmpty(RemoteIni))
+				if (!String.IsNullOrEmpty(RemoteIni))
 				{
 					UnrealBuildTool.SetRemoteIniPath(RemoteIni);
 				}
@@ -398,12 +407,14 @@ namespace UnrealBuildTool
 
 		/// <summary>
 		/// Main entry point. Parses any global options and initializes the logging system, then invokes the appropriate command.
+		/// NB: That the entry point is deliberately NOT async, since we have a single-instance mutex that cannot be disposed from a different thread.
 		/// </summary>
 		/// <param name="ArgumentsArray">Command line arguments</param>
 		/// <returns>Zero on success, non-zero on error</returns>
 		private static int Main(string[] ArgumentsArray)
 		{
 			FileReference? RunFile = null;
+			DirectoryReference? TempDirectory = null;
 			SingleInstanceMutex? Mutex = null;
 			JsonTracer? Tracer = null;
 
@@ -439,16 +450,16 @@ namespace UnrealBuildTool
 
 				if (
 					// Print usage if there are zero arguments provided
-					ArgumentsArray.Length == 0 
+					ArgumentsArray.Length == 0
 
 					// Print usage if the user asks for help
-					|| Options.bGetHelp 
+					|| Options.bGetHelp
 					)
 				{
 					PrintUsage();
 					return Options.bGetHelp ? 0 : 1;
 				}
-				
+
 				// Configure the log system
 				Log.OutputLevel = Options.LogOutputLevel;
 				Log.IncludeTimestamps = Options.bLogTimestamps;
@@ -470,14 +481,14 @@ namespace UnrealBuildTool
 					Utils.WriteFileIfChangedTrace = Options.TraceWrites;
 				}
 
-				// Add all the default event matchers from the UBT assembly
-				Log.EventParser.AddMatchersFromAssembly(Assembly.GetExecutingAssembly());
-
 				// Configure the progress writer
 				ProgressWriter.bWriteMarkup = Options.bWriteProgressMarkup;
 
 				// Ensure we can resolve any external assemblies that are not in the same folder as our assembly.
 				AssemblyUtils.InstallAssemblyResolver(Path.GetDirectoryName(Assembly.GetEntryAssembly()!.GetOriginalLocation())!);
+
+				// Add the application directory to PATH
+				DirectoryReference.AddDirectoryToPath(Unreal.UnrealBuildToolDllPath.Directory);
 
 				// Change the working directory to be the Engine/Source folder. We are likely running from Engine/Binaries/DotNET
 				// This is critical to be done early so any code that relies on the current directory being Engine/Source will work.
@@ -489,10 +500,10 @@ namespace UnrealBuildTool
 
 				// Get the type of the mode to execute, using a fast-path for the build mode.
 				Type? ModeType = typeof(BuildMode);
-				if(Options.Mode != null)
+				if (Options.Mode != null)
 				{
 					// Try to get the correct mode
-					if(!ModeNameToType.TryGetValue(Options.Mode, out ModeType))
+					if (!ModeNameToType.TryGetValue(Options.Mode, out ModeType))
 					{
 						List<string> ModuleNameList = ModeNameToType.Keys.ToList();
 						ModuleNameList.Sort(StringComparer.OrdinalIgnoreCase);
@@ -511,7 +522,7 @@ namespace UnrealBuildTool
 				}
 
 				// Start prefetching the contents of the engine folder
-				if((ModeOptions & ToolModeOptions.StartPrefetchingEngine) != 0)
+				if ((ModeOptions & ToolModeOptions.StartPrefetchingEngine) != 0)
 				{
 					using (GlobalTracer.Instance.BuildSpan("FileMetadataPrefetch.QueueEngineDirectory()").StartActive())
 					{
@@ -520,26 +531,26 @@ namespace UnrealBuildTool
 				}
 
 				// Read the XML configuration files
-				if((ModeOptions & ToolModeOptions.XmlConfig) != 0)
+				if ((ModeOptions & ToolModeOptions.XmlConfig) != 0)
 				{
 					using (GlobalTracer.Instance.BuildSpan("XmlConfig.ReadConfigFiles()").StartActive())
 					{
 						string XmlConfigMutexName = SingleInstanceMutex.GetUniqueMutexForPath("UnrealBuildTool_Mutex_XmlConfig", Assembly.GetExecutingAssembly().Location);
-						using(SingleInstanceMutex XmlConfigMutex = new SingleInstanceMutex(XmlConfigMutexName, true))
+						using (SingleInstanceMutex XmlConfigMutex = new SingleInstanceMutex(XmlConfigMutexName, true))
 						{
 							FileReference? XmlConfigCache = Arguments.GetFileReferenceOrDefault("-XmlConfigCache=", null);
-							XmlConfig.ReadConfigFiles(XmlConfigCache, Logger);
+							XmlConfig.ReadConfigFiles(XmlConfigCache, null, Logger);
 						}
 					}
-				
+
 					XmlConfig.ApplyTo(Options);
 				}
-				
+
 				Log.BackupLogFiles = Options.bBackupLogFiles;
 				Log.LogFileBackupCount = Options.LogFileBackupCount;
 
 				// Add the log writer if requested. When building a target, we'll create the writer for the default log file later.
-				if(Options.LogFileName != null)
+				if (Options.LogFileName != null)
 				{
 					Log.AddFileWriter("LogTraceListener", Options.LogFileName);
 				}
@@ -550,20 +561,63 @@ namespace UnrealBuildTool
 					DirectoryReference RunsDir = DirectoryReference.Combine(Unreal.EngineDirectory, "Intermediate", "UbtRuns");
 					Directory.CreateDirectory(RunsDir.FullName);
 					string ModuleFileName = Process.GetCurrentProcess().MainModule?.FileName ?? "";
-					if (!string.IsNullOrEmpty(ModuleFileName))
+					if (!String.IsNullOrEmpty(ModuleFileName))
 					{
 						ModuleFileName = Path.GetFullPath(ModuleFileName);
 					}
 					FileReference RunFileTemp = FileReference.Combine(RunsDir, $"{Process.GetCurrentProcess().Id}_{ContentHash.MD5(Encoding.UTF8.GetBytes(ModuleFileName.ToUpperInvariant()))}");
-					File.WriteAllLines(RunFileTemp.FullName, new string [] { ModuleFileName });
+					File.WriteAllLines(RunFileTemp.FullName, new string[] { ModuleFileName });
 					RunFile = RunFileTemp;
 				}
 				catch
 				{
 				}
 
+				// Override the temp directory
+				try
+				{
+					// If the temp directory is already overridden from a parent process, do not override again
+					if (String.IsNullOrEmpty(Environment.GetEnvironmentVariable("UnrealBuildTool_TMP")))
+					{
+						DirectoryReference OverrideTempDirectory = new DirectoryReference(Path.Combine(Path.GetTempPath(), "UnrealBuildTool"));
+						if (Options.TempDirectory != null)
+						{
+							if (Directory.Exists(Options.TempDirectory))
+							{
+								OverrideTempDirectory = new DirectoryReference(Options.TempDirectory);
+								if (OverrideTempDirectory.GetDirectoryName() != "UnrealBuildTool")
+								{
+									OverrideTempDirectory = DirectoryReference.Combine(OverrideTempDirectory, "UnrealBuildTool");
+								}
+							}
+							else
+							{
+								Logger.LogWarning("Warning: TempDirectory override '{Override}' does not exist, using '{Temp}'", Options.TempDirectory, OverrideTempDirectory.FullName);
+							}
+						}
+
+						OverrideTempDirectory = DirectoryReference.Combine(OverrideTempDirectory, ContentHash.MD5(Encoding.UTF8.GetBytes(Unreal.UnrealBuildToolDllPath.FullName)).ToString().Substring(0, 8));
+						DirectoryReference.CreateDirectory(OverrideTempDirectory);
+
+						Logger.LogDebug("Setting temp directory to '{Path}'", OverrideTempDirectory);
+						Environment.SetEnvironmentVariable("UnrealBuildTool_TMP", OverrideTempDirectory.FullName);
+						Environment.SetEnvironmentVariable("TMP", OverrideTempDirectory.FullName);
+						Environment.SetEnvironmentVariable("TEMP", OverrideTempDirectory.FullName);
+
+						// Deleting the directory is only safe in single instance mode, and only if requested
+						if ((ModeOptions & ToolModeOptions.SingleInstance) != 0 && !Options.bNoMutex && Options.bDeleteTempDirectory)
+						{
+							Logger.LogDebug("Temp directory '{Path}' will be deleted on exit", OverrideTempDirectory);
+							TempDirectory = OverrideTempDirectory;
+						}
+					}
+				}
+				catch
+				{
+				}
+
 				// Acquire a lock for this branch
-				if((ModeOptions & ToolModeOptions.SingleInstance) != 0 && !Options.bNoMutex)
+				if ((ModeOptions & ToolModeOptions.SingleInstance) != 0 && !Options.bNoMutex)
 				{
 					using (GlobalTracer.Instance.BuildSpan("SingleInstanceMutex.Acquire()").StartActive())
 					{
@@ -573,25 +627,25 @@ namespace UnrealBuildTool
 				}
 
 				// Register all the build platforms
-				if((ModeOptions & ToolModeOptions.BuildPlatforms) != 0)
+				if ((ModeOptions & ToolModeOptions.BuildPlatforms) != 0)
 				{
 					using (GlobalTracer.Instance.BuildSpan("UEBuildPlatform.RegisterPlatforms()").StartActive())
 					{
-						UEBuildPlatform.RegisterPlatforms(false, false, Logger);
+						UEBuildPlatform.RegisterPlatforms(false, false, ModeType, ArgumentsArray, Logger);
 					}
 				}
 				if ((ModeOptions & ToolModeOptions.BuildPlatformsHostOnly) != 0)
 				{
 					using (GlobalTracer.Instance.BuildSpan("UEBuildPlatform.RegisterPlatforms()").StartActive())
 					{
-						UEBuildPlatform.RegisterPlatforms(false, true, Logger);
+						UEBuildPlatform.RegisterPlatforms(false, true, ModeType, ArgumentsArray, Logger);
 					}
 				}
 				if ((ModeOptions & ToolModeOptions.BuildPlatformsForValidation) != 0)
 				{
 					using (GlobalTracer.Instance.BuildSpan("UEBuildPlatform.RegisterPlatforms()").StartActive())
 					{
-						UEBuildPlatform.RegisterPlatforms(true, false, Logger);
+						UEBuildPlatform.RegisterPlatforms(true, false, ModeType, ArgumentsArray, Logger);
 					}
 				}
 
@@ -599,11 +653,23 @@ namespace UnrealBuildTool
 				ToolMode Mode = (ToolMode)Activator.CreateInstance(ModeType)!;
 
 				// Execute the mode
-				int Result = Mode.Execute(Arguments, Logger);
-				if((ModeOptions & ToolModeOptions.ShowExecutionTime) != 0)
+				int Result;
+				try
 				{
-					Logger.LogInformation("Total execution time: {Time:0.00} seconds", Timeline.Elapsed.TotalSeconds);
+					Result = Mode.ExecuteAsync(Arguments, Logger).GetAwaiter().GetResult();
 				}
+				catch (AggregateException AggEx) when (AggEx.InnerExceptions.Count == 1)
+				{
+					throw AggEx.InnerExceptions[0];
+				}
+				finally
+				{
+					if ((ModeOptions & ToolModeOptions.ShowExecutionTime) != 0)
+					{
+						Logger.LogInformation("Total execution time: {Time:0.00} seconds", Timeline.Elapsed.TotalSeconds);
+					}
+				}
+
 				return Result;
 			}
 			catch (CompilationResultException Ex)
@@ -638,7 +704,13 @@ namespace UnrealBuildTool
 				// Cancel the prefetcher
 				using (GlobalTracer.Instance.BuildSpan("FileMetadataPrefetch.Stop()").StartActive())
 				{
-					FileMetadataPrefetch.Stop();
+					try
+					{
+						FileMetadataPrefetch.Stop();
+					}
+					catch
+					{
+					}
 				}
 
 				// Uncomment this to output a file that contains all files that UBT has scanned.
@@ -659,12 +731,6 @@ namespace UnrealBuildTool
 					Tracer.Flush();
 				}
 
-				// Dispose of the mutex. Must be done last to ensure that another process does not startup and start trying to write to the same log file.
-				if (Mutex != null)
-				{
-					Mutex.Dispose();
-				}
-
 				// Delete the ubt run file
 				if (RunFile != null)
 				{
@@ -675,6 +741,24 @@ namespace UnrealBuildTool
 					catch
 					{
 					}
+				}
+
+				// Remove the the temp subdirectory. TempDirectory will only be set if running in single instance mode when Options.DeleteTempDirectory is enabled
+				if (TempDirectory != null)
+				{
+					try
+					{
+						DirectoryReference.Delete(TempDirectory, true);
+					}
+					catch
+					{
+					}
+				}
+
+				// Dispose of the mutex. Must be done last to ensure that another process does not startup and start trying to write to the same log file.
+				if (Mutex != null)
+				{
+					Mutex.Dispose();
 				}
 			}
 		}

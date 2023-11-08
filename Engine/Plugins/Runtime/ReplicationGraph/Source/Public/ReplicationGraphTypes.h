@@ -9,15 +9,6 @@
 #include "Templates/Greater.h"
 #include "ReplicationGraphTypes.generated.h"
 
-#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
-#include "EngineGlobals.h"
-#include "UObject/Package.h"
-#include "Engine/ActorChannel.h"
-#include "Engine/LocalPlayer.h"
-#include "Engine/NetConnection.h"
-#include "Misc/ConfigCacheIni.h"
-#endif
-
 class AActor;
 class AController;
 class UActorChannel;
@@ -268,9 +259,9 @@ struct REPLICATIONGRAPH_API FActorRepListRefView
 	}
 
 	/** Removes the element quickly but changes the list order */
-	bool RemoveFast(const FActorRepListType& ElementToRemove)
+	bool RemoveFast(const FActorRepListType& ElementToRemove, bool bAllowShrink = true)
 	{
-		return RepList.RemoveSingleSwap(ElementToRemove) > 0;
+		return RepList.RemoveSingleSwap(ElementToRemove, bAllowShrink) > 0;
 	}
 
 	/** Removes the element but keeps the order intact. Generally not recommended for large lists. */
@@ -700,7 +691,13 @@ struct FGlobalActorReplicationEvents
 struct FGlobalActorReplicationInfo
 {
 	FGlobalActorReplicationInfo(FClassReplicationInfo& ClassInfo) 
-		: LastPreReplicationFrame(0), WorldLocation(ForceInitToZero), Settings(ClassInfo) { }
+		: LastPreReplicationFrame(0)
+		, WorldLocation(ForceInitToZero)
+		, bWantsToBeDormant(false)
+		, bSwapRolesOnReplicate(false)
+		, bWasWorldLocClamped(false)
+		, Settings(ClassInfo) 
+	{ }
 
 	// -----------------------------------------------------------
 	//	Dynamic state
@@ -716,10 +713,13 @@ struct FGlobalActorReplicationInfo
 	FVector WorldLocation;
 
 	/** Mirrors AActor::NetDormancy > DORM_Awake */
-	bool bWantsToBeDormant = false;
+	uint32 bWantsToBeDormant : 1;
 
 	/** True if we should swap the actor role and remote role before calling ReplicateActor() */
-	bool bSwapRolesOnReplicate = false;
+	uint32 bSwapRolesOnReplicate : 1;
+
+	/** Set when the object is found with an invalid world location */
+	uint32 bWasWorldLocClamped : 1;
 
 	/** Class default mirrors: state that is initialized directly from class defaults (and can be later changed on a per-actor basis) */
 	FClassReplicationInfo Settings;
@@ -1099,9 +1099,9 @@ ENUM_CLASS_FLAGS(FGlobalActorReplicationInfoMap::EWarnFlag);
 /** Per-Actor data that is stored per connection */
 struct FConnectionReplicationActorInfo
 {
-	FConnectionReplicationActorInfo() : bDormantOnConnection(0), bTearOff(0), bGridSpatilization_AlreadyDormant(0) { }
+	FConnectionReplicationActorInfo() : bDormantOnConnection(0), bTearOff(0), bGridSpatilization_AlreadyDormant(0), bForceCullDistanceToZero(0) { }
 
-	FConnectionReplicationActorInfo(const FGlobalActorReplicationInfo& GlobalInfo) : bDormantOnConnection(0), bTearOff(0), bGridSpatilization_AlreadyDormant(0)
+	FConnectionReplicationActorInfo(const FGlobalActorReplicationInfo& GlobalInfo) : bDormantOnConnection(0), bTearOff(0), bGridSpatilization_AlreadyDormant(0), bForceCullDistanceToZero(0)
 	{
 		// Pull data from the global actor info. This is done for things that we just want to duplicate in both places so that we can avoid a lookup into the global map
 		// and also for things that we want to be overridden per (connection/actor)
@@ -1131,8 +1131,8 @@ struct FConnectionReplicationActorInfo
 		CullDistance = FMath::Sqrt(CullDistanceSquared);
 	}
 
-	float GetCullDistance() const { return CullDistance; }
-	float GetCullDistanceSquared() const { return CullDistanceSquared; }
+	float GetCullDistance() const { return bForceCullDistanceToZero ? 0.0f : CullDistance; }
+	float GetCullDistanceSquared() const { return bForceCullDistanceToZero ? 0.0f : CullDistanceSquared; }
 
 	UActorChannel* Channel = nullptr;
 
@@ -1154,7 +1154,6 @@ public:
 	uint16	ReplicationPeriodFrame = 1;		
 	uint16	FastPath_ReplicationPeriodFrame = 1;
 	
-
 	/** The frame num that we will close the actor channel. This will get updated/pushed anytime the actor replicates based on FGlobalActorReplicationInfo::ActorChannelFrameTimeout  */
 	uint32 ActorChannelCloseFrameNum = 0;
 
@@ -1163,6 +1162,11 @@ public:
 
 	/** Used as an optimization when doing 2D Grid Spatilization, prevents replicating the dormancy of the same actor twice in splitscreen evaluations. */
 	uint8 bGridSpatilization_AlreadyDormant:1;
+
+	/** When enabled: GetCullDistance() and GetCullDistanceSquared() will return 0.0f.
+	*	When disabled: GetCullDistance() and GetCullDistanceSquared() return CullDistance and CullDistanceSquared respectively.
+	*	Useful for temporarily making the actor on this connection always relevant. */
+	uint8 bForceCullDistanceToZero:1;
 
 	void LogDebugString(FOutputDevice& Ar) const;
 };
@@ -1296,7 +1300,7 @@ struct FPrioritizedActorFullDebugDetails
 	bool operator==(const FActorRepListType& InActor) const { return Actor == InActor; }
 
 	FActorRepListType Actor;
-	float DistanceSq = 0.f;
+	FVector::FReal DistanceSq = 0.f;
 	float DistanceFactor = 0.f;
 
 	uint32 FramesSinceLastRap = 0;
@@ -1417,8 +1421,19 @@ typedef TArray<FNetViewer, FReplicationGraphConnectionsAllocator> FNetViewerArra
 // Parameter structure for what we actually pass down during the Gather phase.
 struct FConnectionGatherActorListParameters
 {
-	FConnectionGatherActorListParameters(FNetViewerArray& InViewers, UNetReplicationGraphConnection& InConnectionManager, const TSet<FName>& InClientVisibleLevelNamesRef, uint32 InReplicationFrameNum, FGatheredReplicationActorLists& InOutGatheredReplicationLists)
-		: Viewers(InViewers), ConnectionManager(InConnectionManager), ReplicationFrameNum(InReplicationFrameNum), OutGatheredReplicationLists(InOutGatheredReplicationLists), ClientVisibleLevelNamesRef(InClientVisibleLevelNamesRef)
+	FConnectionGatherActorListParameters(
+			FNetViewerArray& InViewers,
+			UNetReplicationGraphConnection& InConnectionManager,
+			const TSet<FName>& InClientVisibleLevelNamesRef,
+			uint32 InReplicationFrameNum,
+			FGatheredReplicationActorLists& InOutGatheredReplicationLists,
+			bool bInSelectedForHeavyComputation)
+		: Viewers(InViewers)
+		, ConnectionManager(InConnectionManager)
+		, ReplicationFrameNum(InReplicationFrameNum)
+		, OutGatheredReplicationLists(InOutGatheredReplicationLists)
+		, ClientVisibleLevelNamesRef(InClientVisibleLevelNamesRef)
+		, bIsSelectedForHeavyComputation(bInSelectedForHeavyComputation)
 	{
 	}
 
@@ -1448,6 +1463,7 @@ struct FConnectionGatherActorListParameters
 
 	// Cached off reference for fast Level Visibility lookup
 	const TSet<FName>& ClientVisibleLevelNamesRef;
+	const bool bIsSelectedForHeavyComputation;
 
 private:
 
@@ -2055,3 +2071,12 @@ private:
 	/** Keeps track if a node was already collected since the same node can be shared across connections and visited multiple times */
 	TMap<const UObject*, bool> VisitedNodes;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "EngineGlobals.h"
+#include "UObject/Package.h"
+#include "Engine/ActorChannel.h"
+#include "Engine/LocalPlayer.h"
+#include "Engine/NetConnection.h"
+#include "Misc/ConfigCacheIni.h"
+#endif

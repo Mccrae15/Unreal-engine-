@@ -53,6 +53,9 @@ UInterchangeDatasmithPipeline::UInterchangeDatasmithPipeline()
 
 	MeshPipeline->CommonMeshesProperties = CommonMeshesProperties;
 	MeshPipeline->CommonSkeletalMeshesAndAnimationsProperties = CommonSkeletalMeshesAndAnimationsProperties;
+
+	AnimationPipeline->CommonMeshesProperties = CommonMeshesProperties;
+	AnimationPipeline->CommonSkeletalMeshesAndAnimationsProperties = CommonSkeletalMeshesAndAnimationsProperties;
 }
 
 void UInterchangeDatasmithPipeline::ExecutePipeline(UInterchangeBaseNodeContainer* InBaseNodeContainer, const TArray<UInterchangeSourceData*>& SourceDatas)
@@ -130,7 +133,7 @@ void UInterchangeDatasmithPipeline::ExecutePipeline(UInterchangeBaseNodeContaine
 
 	// Datasmith Scene
 	{
-		const FString DatasmithSceneUid = TEXT("Factory_") + DatasmithSceneNode->GetUniqueID();
+		const FString DatasmithSceneUid = UInterchangeFactoryBaseNode::BuildFactoryNodeUid(DatasmithSceneNode->GetUniqueID());
 		const FString DisplayLabel = DatasmithSceneNode->GetDisplayLabel();
 		UInterchangeDatasmithSceneFactoryNode* DatasmithSceneFactoryNode = NewObject<UInterchangeDatasmithSceneFactoryNode>(BaseNodeContainer, NAME_None);
 		if (!ensure(DatasmithSceneFactoryNode))

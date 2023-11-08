@@ -58,11 +58,11 @@ mu::NodeModifierPtr GenerateMutableSourceModifier(const UEdGraphPin * Pin, FMuta
 		ClipNode->SetParams(TypedNodeClip->B, TypedNodeClip->Exponent);
 		ClipNode->SetMorphEllipse(TypedNodeClip->Radius, TypedNodeClip->Radius2, TypedNodeClip->RotationAngle);
 
-		ClipNode->SetVertexSelectionBone(TCHAR_TO_ANSI(*TypedNodeClip->BoneName.ToString()), TypedNodeClip->MaxEffectRadius);
+		ClipNode->SetVertexSelectionBone(GenerationContext.BoneNames.AddUnique(TypedNodeClip->BoneName), TypedNodeClip->MaxEffectRadius);
 
 		for (const FString& Tag : TypedNodeClip->Tags)
 		{
-			 ClipNode->AddTag(TCHAR_TO_ANSI(*Tag));
+			 ClipNode->AddTag(StringCast<ANSICHAR>(*Tag).Get());
 		}
 	}
 
@@ -74,7 +74,7 @@ mu::NodeModifierPtr GenerateMutableSourceModifier(const UEdGraphPin * Pin, FMuta
 		if (const UEdGraphPin* ConnectedPin = FollowInputPin(*TypedNodeClipDeform->ClipShapePin()))
 		{
 			FMutableGraphMeshGenerationData DummyMeshData;
-			mu::NodeMeshPtr ClipMesh = GenerateMutableSourceMesh(ConnectedPin, GenerationContext, DummyMeshData);
+			mu::NodeMeshPtr ClipMesh = GenerateMutableSourceMesh(ConnectedPin, GenerationContext, DummyMeshData, false, true);
 
 			ClipNode->SetClipMesh(ClipMesh.get());
 
@@ -100,7 +100,7 @@ mu::NodeModifierPtr GenerateMutableSourceModifier(const UEdGraphPin * Pin, FMuta
 	
 		for (const FString& Tag : TypedNodeClipDeform->Tags)
 		{
-			ClipNode->AddTag(TCHAR_TO_ANSI(*Tag));
+			ClipNode->AddTag(StringCast<ANSICHAR>(*Tag).Get());
 		}		
 	}
 
@@ -117,7 +117,7 @@ mu::NodeModifierPtr GenerateMutableSourceModifier(const UEdGraphPin * Pin, FMuta
 		{
 			FMutableGraphMeshGenerationData DummyMeshData;
 
-			mu::NodeMeshPtr ClipMesh = GenerateMutableSourceMesh(ConnectedPin, GenerationContext, DummyMeshData);
+			mu::NodeMeshPtr ClipMesh = GenerateMutableSourceMesh(ConnectedPin, GenerationContext, DummyMeshData, false, true);
 
 			FPinDataValue* PinData = GenerationContext.PinData.Find(ConnectedPin);
 			for (const FMeshData& MeshData : PinData->MeshesData)
@@ -165,7 +165,7 @@ mu::NodeModifierPtr GenerateMutableSourceModifier(const UEdGraphPin * Pin, FMuta
 
 		for (const FString& Tag : TypedNodeClipMesh->Tags)
 		{
-			 ClipNode->AddTag(TCHAR_TO_ANSI(*Tag));
+			 ClipNode->AddTag(StringCast<ANSICHAR>(*Tag).Get());
 		}
 
 		if (TypedNodeClipMesh->CustomizableObjectToClipWith != nullptr)

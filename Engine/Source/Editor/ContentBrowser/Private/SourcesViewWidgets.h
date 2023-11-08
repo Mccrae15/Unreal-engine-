@@ -35,7 +35,7 @@ struct FSlateFontInfo;
 class SAssetTreeItem : public SCompoundWidget
 {
 public:
-	DECLARE_DELEGATE_FourParams( FOnNameChanged, const TSharedPtr<FTreeItem>& /*TreeItem*/, const FString& /*InProposedName*/, const FVector2D& /*MessageLocation*/, const ETextCommit::Type /*CommitType*/);
+	DECLARE_DELEGATE_FourParams( FOnNameChanged, const TSharedPtr<FTreeItem>& /*TreeItem*/, const FString& /*InProposedName*/, const UE::Slate::FDeprecateVector2DParameter& /*MessageLocation*/, const ETextCommit::Type /*CommitType*/);
 	DECLARE_DELEGATE_RetVal_ThreeParams( bool, FOnVerifyNameChanged, const TSharedPtr<FTreeItem>& /*TreeItem*/, const FString& /*InProposedName*/, FText& /*OutErrorMessage*/);
 
 	SLATE_BEGIN_ARGS( SAssetTreeItem )
@@ -99,6 +99,9 @@ private:
 	/** Returns the image for the border around this item. Used for drag/drop operations */
 	const FSlateBrush* GetBorderImage() const;
 
+	/** Returns a widget that combines the results of calling all registered PathViewStateIconGenerators **/
+	TSharedRef<SWidget> GenerateStateIcons();
+	
 private:
 	enum class EFolderType : uint8
 	{

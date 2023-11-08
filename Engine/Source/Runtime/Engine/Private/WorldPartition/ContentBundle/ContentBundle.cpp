@@ -6,12 +6,11 @@
 #include "WorldPartition/ContentBundle/ContentBundleDescriptor.h"
 #include "WorldPartition/WorldPartitionRuntimeHash.h"
 #include "WorldPartition/ContentBundle/ContentBundleLog.h"
+#include "Engine/World.h"
 
 #if WITH_EDITOR
 #include "WorldPartition/ContentBundle/ContentBundleWorldSubsystem.h"
 #endif
-
-int32 FContentBundle::ContentBundlesEpoch = 0;
 
 FContentBundle::FContentBundle(TSharedPtr<FContentBundleClient>& InClient, UWorld* InWorld)
 	: FContentBundleBase(InClient, InWorld)
@@ -32,7 +31,7 @@ void FContentBundle::DoInitialize()
 		if (UObject* Object = StaticFindObjectFast(URuntimeHashExternalStreamingObjectBase::StaticClass(), ExternalStreamingObjectPackage, *GetExternalStreamingObjectName()))
 		{
 			ExternalStreamingObject = CastChecked<URuntimeHashExternalStreamingObjectBase>(Object);
-			ExternalStreamingObject->OnStreamingObjectLoaded();
+			ExternalStreamingObject->OnStreamingObjectLoaded(GetInjectedWorld());
 		}
 		else
 		{
@@ -60,12 +59,10 @@ void FContentBundle::DoInjectContent()
 {
 	if (ExternalStreamingObject != nullptr)
 	{
-		if (GetInjectedWorld()->GetWorldPartition()->RuntimeHash->InjectExternalStreamingObject(ExternalStreamingObject))
+		if (GetInjectedWorld()->GetWorldPartition()->InjectExternalStreamingObject(ExternalStreamingObject))
 		{
 			UE_LOG(LogContentBundle, Log, TEXT("%s Streaming Object Injected."), *ContentBundle::Log::MakeDebugInfoString(*this));
 			SetStatus(EContentBundleStatus::ContentInjected);
-
-			ContentBundlesEpoch++;
 		}
 		else
 		{
@@ -84,11 +81,7 @@ void FContentBundle::DoRemoveContent()
 {
 	if (ExternalStreamingObject != nullptr)
 	{
-		if (GetInjectedWorld()->GetWorldPartition()->RuntimeHash->RemoveExternalStreamingObject(ExternalStreamingObject))
-		{
-			ContentBundlesEpoch++;
-		}
-		else
+		if (!GetInjectedWorld()->GetWorldPartition()->RemoveExternalStreamingObject(ExternalStreamingObject))
 		{
 			UE_LOG(LogContentBundle, Error, TEXT("%s Error while removing streaming object."), *ContentBundle::Log::MakeDebugInfoString(*this));
 		}

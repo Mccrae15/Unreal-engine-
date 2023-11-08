@@ -14,6 +14,7 @@
 #include "RHIStaticStates.h"
 #include "HAL/IConsoleManager.h"
 #include "SceneUtils.h"
+#include "RenderGraph.h"
 
 #include "VT/AllocatedVirtualTexture.h"
 
@@ -106,7 +107,7 @@ void FVirtualTextureSpace::FreeVirtualTexture(FAllocatedVirtualTexture* VirtualT
 	Allocator.Free(VirtualTexture);
 }
 
-void FVirtualTextureSpace::InitRHI()
+void FVirtualTextureSpace::InitRHI(FRHICommandListBase&)
 {
 	for (uint32 TextureIndex = 0u; TextureIndex < GetNumPageTableTextures(); ++TextureIndex)
 	{
@@ -194,6 +195,14 @@ public:
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
 		return true;
+	}
+
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, FIntPoint InPageTableSize, uint32 InFirstUpdate, uint32 InNumUpdates, FRHIShaderResourceView* InUpdateBuffer)
+	{
+		SetShaderValue(BatchedParameters, PageTableSize, InPageTableSize);
+		SetShaderValue(BatchedParameters, FirstUpdate, InFirstUpdate);
+		SetShaderValue(BatchedParameters, NumUpdates, InNumUpdates);
+		SetSRVParameter(BatchedParameters, UpdateBuffer, InUpdateBuffer);
 	}
 
 	LAYOUT_FIELD(FShaderParameter, PageTableSize);
@@ -407,6 +416,8 @@ void FVirtualTextureSpace::ApplyUpdates(FVirtualTextureSystem* System, FRDGBuild
 		return;
 	}
 
+	FRHICommandListBase& RHICmdList = GraphBuilder.RHICmdList;
+
 	if (UpdateBuffer == nullptr || TotalNumUpdates * sizeof(FPageTableUpdate) > UpdateBuffer->GetSize())
 	{
 		// Resize Update Buffer
@@ -418,13 +429,13 @@ void FVirtualTextureSpace::ApplyUpdates(FVirtualTextureSystem* System, FRDGBuild
 		}
 
 		FRHIResourceCreateInfo CreateInfo(TEXT("FVirtualTextureSpace_UpdateBuffer"));
-		UpdateBuffer = RHICreateVertexBuffer(NewBufferSize, BUF_ShaderResource | BUF_Volatile, CreateInfo);
-		UpdateBufferSRV = RHICreateShaderResourceView(UpdateBuffer, sizeof(FPageTableUpdate), PF_R16G16B16A16_UINT);
+		UpdateBuffer = RHICmdList.CreateVertexBuffer(NewBufferSize, BUF_ShaderResource | BUF_Volatile, CreateInfo);
+		UpdateBufferSRV = RHICmdList.CreateShaderResourceView(UpdateBuffer, sizeof(FPageTableUpdate), PF_R16G16B16A16_UINT);
 	}
 
 	// This flushes the RHI thread!
 	{
-		uint8* Buffer = (uint8*)RHILockBuffer(UpdateBuffer, 0, TotalNumUpdates * sizeof(FPageTableUpdate), RLM_WriteOnly);
+		uint8* Buffer = (uint8*)RHICmdList.LockBuffer(UpdateBuffer, 0, TotalNumUpdates * sizeof(FPageTableUpdate), RLM_WriteOnly);
 		for (uint32 LayerIndex = 0u; LayerIndex < Description.NumPageTableLayers; ++LayerIndex)
 		{
 			for (uint32 Mip = 0; Mip < CachedNumPageTableLevels; Mip++)
@@ -438,7 +449,7 @@ void FVirtualTextureSpace::ApplyUpdates(FVirtualTextureSystem* System, FRDGBuild
 				}
 			}
 		}
-		RHIUnlockBuffer(UpdateBuffer);
+		RHICmdList.UnlockBuffer(UpdateBuffer);
 	}
 
 	// Draw
@@ -521,13 +532,7 @@ void FVirtualTextureSpace::ApplyUpdates(FVirtualTextureSystem* System, FRDGBuild
 
 					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
-					{
-						FRHIVertexShader* ShaderRHI = VertexShader.GetVertexShader();
-						SetShaderValue(RHICmdList, ShaderRHI, VertexShader->PageTableSize, FIntPoint(CachedPageTableWidth, CachedPageTableHeight));
-						SetShaderValue(RHICmdList, ShaderRHI, VertexShader->FirstUpdate, FirstUpdate);
-						SetShaderValue(RHICmdList, ShaderRHI, VertexShader->NumUpdates, NumUpdates);
-						SetSRVParameter(RHICmdList, ShaderRHI, VertexShader->UpdateBuffer, UpdateBufferSRV);
-					}
+					SetShaderParametersLegacyVS(RHICmdList, VertexShader, FIntPoint(CachedPageTableWidth, CachedPageTableHeight), FirstUpdate, NumUpdates, UpdateBufferSRV);
 
 					// needs to be the same on shader side (faster on NVIDIA and AMD)
 					uint32 QuadsPerInstance = 8;

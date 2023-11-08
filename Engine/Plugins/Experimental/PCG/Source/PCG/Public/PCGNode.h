@@ -46,6 +46,9 @@ public:
 
 	/** Used to be able to force deprecation when things need to be deprecated at the graph level. */
 	void ApplyDeprecation();
+
+	/** If a node does require structural changes, this will apply them */
+	virtual void ApplyStructuralDeprecation();
 #endif
 
 	/** Returns the owning graph */
@@ -101,13 +104,17 @@ public:
 	UPCGPin* GetOutputPin(const FName& Label);
 	const UPCGPin* GetOutputPin(const FName& Label) const;
 	bool HasInboundEdges() const;
+	int32 GetInboundEdgesNum() const;
 
 	/** Allow to change the name of a pin, to keep edges connected. You need to make sure that the underlying settings are also updated, otherwise, it will be overwritten next time the settings are updated */
-	void RenameInputPin(const FName& OldLabel, const FName& NewLabel);
-	void RenameOutputPin(const FName& OldLabel, const FName& NewLabel);
+	void RenameInputPin(const FName& InOldLabel, const FName& InNewLabel, bool bInBroadcastUpdate = true);
+	void RenameOutputPin(const FName& InOldLabel, const FName& InNewLabel, bool bInBroadcastUpdate = true);
 
 	/** Pin from which data is passed through when this node is disabled. */
 	virtual const UPCGPin* GetPassThroughInputPin() const;
+
+	/** Pin to which data is passed through when this node is disabled. */
+	virtual const UPCGPin* GetPassThroughOutputPin() const;
 
 	/** True if the pin is being used by the node. UI will gray out unused pins. */
 	virtual bool IsPinUsedByNodeExecution(const UPCGPin* InPin) const;
@@ -115,8 +122,14 @@ public:
 	/** True if the edge is being used by the node. UI will gray out unused pins. */
 	virtual bool IsEdgeUsedByNodeExecution(const UPCGEdge* InEdge) const;
 
+	/** Returns the first connected pin on the node */
+	const UPCGPin* GetFirstConnectedInputPin() const;
+
 	const TArray<TObjectPtr<UPCGPin>>& GetInputPins() const { return InputPins; }
 	const TArray<TObjectPtr<UPCGPin>>& GetOutputPins() const { return OutputPins; }
+
+	/** Recursively follow downstream edges and call UpdatePins on each node that has dynamic pins. */
+	EPCGChangeType PropagateDynamicPinTypes(const UPCGNode* FromNode = nullptr);
 
 #if WITH_EDITOR
 	/** Transfer all editor only properties to the other node */
@@ -166,9 +179,10 @@ public:
 #endif // WITH_EDITORONLY_DATA
 
 protected:
+	/** Updates pins based on node settings. Attempts to migrate pins via matching. Broadcasts node change events for affected nodes. */
 	EPCGChangeType UpdatePins();
-	EPCGChangeType UpdatePins(TFunctionRef<UPCGPin* (UPCGNode*)> PinAllocator, const UPCGNode* FromNode = nullptr);
-	EPCGChangeType UpdateDynamicPins(const UPCGNode* FromNode = nullptr);
+	/** Updates pins based on node settings PinAllocator creates new pin objects. Attempts to migrate pins via matching. Broadcasts node change events for affected nodes. */
+	EPCGChangeType UpdatePins(TFunctionRef<UPCGPin* (UPCGNode*)> PinAllocator);
 
 	// When we create a new graph, we initialize the input/output nodes as default, with default pins.
 	// Those default pins are not serialized, therefore if we change the default pins, combined with the use

@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
-	BasePassPixelShader.usf: Base pass pixel shader
+	BasePassPixelShader.usf: Base pass pixel shader 
 =============================================================================*/
 
 #include "Common.ush"
@@ -215,7 +215,7 @@ float3 GetTranslucencyVolumeLighting(
 
 	#if TRANSLUCENCY_LIGHTING_VOLUMETRIC_PERVERTEX_DIRECTIONAL
 
-		GetVolumeLightingDirectional(float4(BasePassInterpolants.AmbientLightingVector, 1), BasePassInterpolants.DirectionalLightingVector, MaterialParameters.WorldNormal, GBuffer.DiffuseColor, InterpolatedLighting, VolumeLighting);
+		GetVolumeLightingDirectional(float4(BasePassInterpolants.AmbientLightingVector, 1), BasePassInterpolants.DirectionalLightingVector, MaterialParameters.WorldNormal, GBuffer.DiffuseColor, GetMaterialTranslucencyDirectionalLightingIntensity(), InterpolatedLighting, VolumeLighting);
 
 	#elif TRANSLUCENCY_LIGHTING_VOLUMETRIC_PERVERTEX_NONDIRECTIONAL
 
@@ -225,7 +225,7 @@ float3 GetTranslucencyVolumeLighting(
 	
 		float4 AmbientLightingVector = GetAmbientLightingVectorFromTranslucentLightingVolume(InnerVolumeUVs, OuterVolumeUVs, FinalLerpFactor);
 		float3 DirectionalLightingVector = GetDirectionalLightingVectorFromTranslucentLightingVolume(InnerVolumeUVs, OuterVolumeUVs, FinalLerpFactor);
-		GetVolumeLightingDirectional(AmbientLightingVector, DirectionalLightingVector, MaterialParameters.WorldNormal, GBuffer.DiffuseColor, InterpolatedLighting, VolumeLighting);
+		GetVolumeLightingDirectional(AmbientLightingVector, DirectionalLightingVector, MaterialParameters.WorldNormal, GBuffer.DiffuseColor, GetMaterialTranslucencyDirectionalLightingIntensity(), InterpolatedLighting, VolumeLighting);
 
 	#elif TRANSLUCENCY_LIGHTING_VOLUMETRIC_NONDIRECTIONAL
 
@@ -602,7 +602,7 @@ void GetPrecomputedIndirectLightingAndSkyLight(
 		LightmapUVType LightmapUV0, LightmapUV1;
 		uint LightmapDataIndex;
 		GetLightMapCoordinates(Interpolants, LightmapUV0, LightmapUV1, LightmapDataIndex);
-		GetLightMapColorLQ(LightmapVTPageTableResult, LightmapUV0, LightmapUV1, LightmapDataIndex, DiffuseDir, bEvaluateBackface, OutDiffuseLighting, OutSubsurfaceLighting, OutIndirectIrradiance);
+		GetLightMapColorLQ(LightmapVTPageTableResult, LightmapUV0, LightmapUV1, LightmapDataIndex, DiffuseDir, bEvaluateBackface, OutDiffuseLighting, OutSubsurfaceLighting);
 
 	#endif
 
@@ -672,7 +672,7 @@ uint GetDiffuseIndirectSampleOcclusion(FSharedLocalBases SharedLocalBases, float
 		for (uint i = 0; i < SharedLocalBases.Count; ++i)
 		{
 			const float3 WorldNormal = SharedLocalBases.Normals[i];
-			const float3 BenNormal = WorldNormal; // STRATA_TODO: bent normal support - GetBentNormal(MaterialParameters)
+			const float3 BentNormal = WorldNormal; // STRATA_TODO: bent normal support - GetBentNormal(MaterialParameters)
 			const FSphericalGaussian HemisphereSG = Hemisphere_ToSphericalGaussian(WorldNormal);
 			const FSphericalGaussian VisibleSG = BentNormalAO_ToSphericalGaussian(BentNormal, MaterialAO);
 			const float VisibilityThreshold = InterleavedGradientNoise(SvPosition, View.StateFrameIndexMod8);
@@ -737,7 +737,7 @@ uint GetDiffuseIndirectSampleOcclusion(FGBufferData GBuffer, float3 V, float3 Wo
 uint GetSelectiveOutputMask()
 {
 	uint Mask = 0;
-#if MATERIAL_USES_ANISOTROPY
+#if MATERIAL_USES_ANISOTROPY && !IS_NANITE_PASS
 	Mask |= HAS_ANISOTROPY_MASK;
 #endif
 #if !GBUFFER_HAS_PRECSHADOWFACTOR
@@ -903,25 +903,20 @@ void FPixelShaderInOut_MainPS(
 #endif // !STRATA_ENABLED
 
 #if STRATA_ENABLED && !STRATA_OPTIMIZED_UNLIT
-	FStrataData StrataData = PixelMaterialInputs.FrontMaterial;
-
 	// Initialise a Strata header with normal in registers
-	FStrataPixelHeader StrataPixelHeader = InitialiseStrataPixelHeader();
-	StrataPixelHeader.StrataTree = MaterialParameters.StrataTree;
-	StrataPixelHeader.BSDFCount = MaterialParameters.StrataTree.BSDFCount;
-	StrataPixelHeader.SharedLocalBases = MaterialParameters.SharedLocalBases;
-	StrataPixelHeader.IrradianceAO = InitIrradianceAndOcclusion();
+	FStrataData StrataData = PixelMaterialInputs.GetFrontStrataData();
+	FStrataPixelHeader StrataPixelHeader = MaterialParameters.GetFrontStrataHeader();
 	StrataPixelHeader.IrradianceAO.MaterialAO = MaterialAO;
-	SetCastContactShadow(StrataPixelHeader, GetPrimitiveData(MaterialParameters).Flags & PRIMITIVE_SCENE_DATA_FLAG_HAS_CAST_CONTACT_SHADOW);
-	SetDynamicIndirectShadowCasterRepresentation(StrataPixelHeader, GetPrimitiveData(MaterialParameters).Flags & PRIMITIVE_SCENE_DATA_FLAG_HAS_CAPSULE_REPRESENTATION);
+	StrataPixelHeader.SetCastContactShadow(GetPrimitiveData(MaterialParameters).Flags & PRIMITIVE_SCENE_DATA_FLAG_HAS_CAST_CONTACT_SHADOW);
+	StrataPixelHeader.SetDynamicIndirectShadowCasterRepresentation(GetPrimitiveData(MaterialParameters).Flags & PRIMITIVE_SCENE_DATA_FLAG_HAS_CAPSULE_REPRESENTATION);
 #endif
 
 #if STRATA_ENABLED && STRATA_INLINE_SINGLELAYERWATER
-	SetMaterialMode(StrataPixelHeader, HEADER_MATERIALMODE_SLWATER);
+	StrataPixelHeader.SetMaterialMode(HEADER_MATERIALMODE_SLWATER);
 
 	// Override GBuffer data with Strata SLW water BSDF to run forward shadfing code.
 	// STRATA_TODO: run the shading through a strata path? (by adding a special BSDF?)
-	SanitizeStrataSingleLayerWater(StrataPixelHeader.StrataTree.BSDFs[0]);
+	StrataPixelHeader.StrataTree.BSDFs[0].StrataSanitizeBSDF();
 	FStrataBSDF SLWBSDF = StrataPixelHeader.StrataTree.BSDFs[0];
 
 	BaseColor = SLW_BASECOLOR(SLWBSDF);
@@ -1018,26 +1013,26 @@ void FPixelShaderInOut_MainPS(
 	{
 		// Encode shadow mask only if the shadow mask is entirely non-zero and non-one
 	#if WRITES_PRECSHADOWFACTOR_ZERO
-		SetHasPrecShadowMask(StrataPixelHeader, false);
-		SetZeroPrecShadowMask(StrataPixelHeader, true);
+		StrataPixelHeader.SetHasPrecShadowMask(false);
+		StrataPixelHeader.SetZeroPrecShadowMask(true);
 	#else
 	  #if ALLOW_STATIC_LIGHTING
 		const bool bAllZero = all(GBuffer.PrecomputedShadowFactors == 0);
 		const bool bAllOne  = all(GBuffer.PrecomputedShadowFactors == 1);
 		if (!bAllZero && !bAllOne)
 		{
-			SetHasPrecShadowMask(StrataPixelHeader, true);
+			StrataPixelHeader.SetHasPrecShadowMask(true);
 		}
 		else if (bAllZero)
 		{
-			SetHasPrecShadowMask(StrataPixelHeader, false);
-			SetZeroPrecShadowMask(StrataPixelHeader, true);
+			StrataPixelHeader.SetHasPrecShadowMask(false);
+			StrataPixelHeader.SetZeroPrecShadowMask(true);
 		}
 		else if (bAllOne)
 	  #endif
 		{
-			SetHasPrecShadowMask(StrataPixelHeader, false);
-			SetZeroPrecShadowMask(StrataPixelHeader, false);
+			StrataPixelHeader.SetHasPrecShadowMask(false);
+			StrataPixelHeader.SetZeroPrecShadowMask(false);
 		}
 	#endif
 	}
@@ -1249,7 +1244,7 @@ void FPixelShaderInOut_MainPS(
 					#endif
 
 					FDeferredLightingSplit ForwardDirectLighting = GetForwardDirectLightingSplit(
-						In.SvPosition,
+						In.SvPosition.xy,
 						GridIndex, MaterialParameters.WorldPosition_CamRelative, MaterialParameters.CameraVector, GBuffer, NearestResolvedDepthScreenUV, MaterialParameters.PrimitiveId, EyeIndex, Dither, 
 						DirectionalLightCloudShadow, DirectionalLightAtmosphereTransmittance, DirectionalLightShadow,
 						bSeparateWaterMainDirLightLuminance, SeparatedWaterMainDirLightLuminance,
@@ -1302,7 +1297,7 @@ void FPixelShaderInOut_MainPS(
 
 	float4 Fogging = HeightFogging;
 
-#if NEEDS_BASEPASS_PIXEL_VOLUMETRIC_FOGGING && COMPILE_BASEPASS_PIXEL_VOLUMETRIC_FOGGING
+#if NEEDS_BASEPASS_PIXEL_VOLUMETRIC_FOGGING
 	if (FogStruct.ApplyVolumetricFog > 0) 
 	{
 		float3 VolumeUV = ComputeVolumeUV(MaterialParameters.AbsoluteWorldPosition, ResolvedView.WorldToClip);
@@ -1371,8 +1366,8 @@ void FPixelShaderInOut_MainPS(
 	float3 OutOfBoundsMaskLuminance = 0;
 	// This feature is only needed for development/editor - we can compile it out for a shipping build (see r.CompileShadersForDevelopment cvar help)
 	// The following block is disabled on Vulkan because it triggers an nvidia driver bug (UE-101609).
-	#if !VULKAN_PROFILE_SM5
-		#if METAL_SM5_PROFILE || SM6_PROFILE || SM5_PROFILE || VULKAN_PROFILE_SM5
+	#if !VULKAN_PROFILE_SM5 && !VULKAN_PROFILE_SM6
+		#if METAL_SM5_PROFILE || METAL_SM6_PROFILE || SM6_PROFILE || SM5_PROFILE || VULKAN_PROFILE_SM5 || VULKAN_PROFILE_SM6
 		BRANCH
 		if (View.OutOfBoundsMask > 0)
 		{
@@ -1392,12 +1387,12 @@ void FPixelShaderInOut_MainPS(
 				Emissive = OutOfBoundsMaskLuminance;
 				Opacity = 1;
 			}
-			else if (PrimitiveData.MaxWPODisplacement > 0.0f)
+			else if (PrimitiveData.MaxWPOExtent > 0.0f)
 			{
 				// this highlights pixels that are close to Max WPO Distance boundary (and might be getting clamped)
 				const float3 OffsetAmt = abs(MaterialParameters.WorldPosition_CamRelative - MaterialParameters.WorldPosition_NoOffsets_CamRelative);
 				const float MaxOffsetDim = max3(OffsetAmt.x, OffsetAmt.y, OffsetAmt.z);
-				const float Proximity = 1.0f - saturate(abs(MaxOffsetDim - PrimitiveData.MaxWPODisplacement) / 0.05f);
+				const float Proximity = 1.0f - saturate(abs(MaxOffsetDim - PrimitiveData.MaxWPOExtent) / 0.05f);
 				Emissive = Proximity * float3(1, 0 ,1);
 				Opacity = sign(Proximity);
 			}
@@ -1742,7 +1737,7 @@ void FPixelShaderInOut_MainPS(
 
 	// Unlit forces a single BSDF
 	FStrataBSDF UnlitBSDF = PixelMaterialInputs.FrontMaterial.InlinedBSDF;
-	SanitizeStrataUnlit(UnlitBSDF);
+	UnlitBSDF.StrataSanitizeBSDF();
 
 #if ((STRATA_OPAQUE_DEFERRED || (STRATA_OPAQUE_MATERIAL && STRATA_FORWARD_SHADING))) && !STRATA_MATERIAL_EXPORT_FROM_TRANSLUCENT
 	Color = BSDF_GETEMISSIVE(UnlitBSDF);
@@ -1830,11 +1825,10 @@ void FPixelShaderInOut_MainPS(
 		#endif
 
 	#elif STRATA_TRANSLUCENT_MATERIAL
-			
-		#if STRATA_LEGACY_PREMULT_ALPHA_OVERRIDE && !STRATA_OPTIMIZED_UNLIT
-			// This data patching is working because DualBlendSurfaceCoverage is always 1 when converting material from legacy to Strata with premultiplied alpha blending.
-			DualBlendSurfaceTransmittancePreCoverage= StrataData.PreMultipliedAlphaOverrideCoverage >= 0.0f ? 0.0f											: DualBlendSurfaceTransmittancePreCoverage;
-			DualBlendSurfaceCoverage				= StrataData.PreMultipliedAlphaOverrideCoverage >= 0.0f ? StrataData.PreMultipliedAlphaOverrideCoverage	: DualBlendSurfaceCoverage;
+
+		#if STRATA_USE_PREMULTALPHA_OVERRIDE // AlphaComposite - Premultiplied alpha blending
+			DualBlendSurfaceTransmittancePreCoverage= 0.0;
+			DualBlendSurfaceCoverage = GetMaterialOpacity(PixelMaterialInputs);
 		#endif
 
 			// Add fog luminance according to surfacecoverage and reduce surface luminance according to fog coverage.
@@ -1921,7 +1915,7 @@ void FPixelShaderInOut_MainPS(
 		{
 			// change this so that we can pack everything into the gbuffer, but leave this for now
 			#if GBUFFER_HAS_DIFFUSE_SAMPLE_OCCLUSION
-				GBuffer.GenericAO = float(GBuffer.DiffuseIndirectSampleOcclusion) * rcp(255) + (0.5 / 255.0);
+				GBuffer.GenericAO = float(GBuffer.DiffuseIndirectSampleOcclusion) * (1.0f / 255.0f);
 			#elif ALLOW_STATIC_LIGHTING
 				// No space for AO. Multiply IndirectIrradiance by AO instead of storing.
 				GBuffer.GenericAO = EncodeIndirectIrradiance(GBuffer.IndirectIrradiance * GBuffer.GBufferAO) + QuantizationBias * (1.0 / 255.0);	// Stationary sky light path
@@ -2090,7 +2084,7 @@ void FPixelShaderInOut_MainPS(
 	// We also half that range to also make sure we have room for other additive elements such as bloom, clouds or particle visual effects.
 	Out.MRT[0].xyz = min(Out.MRT[0].xyz, Max10BitsFloat.xxx * 0.5f);
 
-#if NUM_VIRTUALTEXTURE_SAMPLES || LIGHTMAP_VT_ENABLED
+#if MATERIAL_VIRTUALTEXTURE_FEEDBACK || LIGHTMAP_VT_ENABLED
 #if OUTPUT_PIXEL_DEPTH_OFFSET
 	// When in deferred, opaque materials with pixel depth offset must execute a custom depth test in order to avoid conflicting UAV writes.
 	if (ManualDepthTestEqual(In.SvPosition, Out.Depth))
@@ -2143,8 +2137,8 @@ void FPixelShaderInOut_MainPS(
 
 #else // STRATA_OPAQUE_DEFERRED
 
-// If virtual texture is enabled then use early depth test so that UAV feedback buffer writes respect the depth test
-#if NUM_VIRTUALTEXTURE_SAMPLES || LIGHTMAP_VT_ENABLED || OIT_ENABLED
+// If virtual texture feedback is enabled then use early depth test so that UAV feedback buffer writes respect the depth test
+#if MATERIAL_VIRTUALTEXTURE_FEEDBACK || LIGHTMAP_VT_ENABLED || OIT_ENABLED
 	#if IS_NANITE_PASS
 		// Even with masking and/or pixel depth offset, Nanite never uses actual clip() or SV_Depth
 		#define PIXELSHADER_EARLYDEPTHSTENCIL EARLYDEPTHSTENCIL

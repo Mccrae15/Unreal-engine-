@@ -194,6 +194,11 @@ public:
 		return GetCurrentShaderKey(ShaderStage::GetFrequencyForGfxStage(Stage));
 	}
 
+	const FVulkanShader* GetCurrentShader(EShaderFrequency Frequency) const
+	{
+		return (CurrentPipeline ? CurrentPipeline->GetShader(Frequency) : nullptr);
+	}
+
 	void SetViewport(float MinX, float MinY, float MinZ, float MaxX, float MaxY, float MaxZ)
 	{
 		Viewports.SetNumZeroed(1);
@@ -257,6 +262,14 @@ public:
 		Scissors[0].extent.width = Width;
 		Scissors[0].extent.height = Height;
 	}
+
+	// BEGIN META SECTION - Multi-View Per View Viewports / Render Areas
+	void SetMultiScissor(const TArrayView<VkRect2D>& InScissors)
+	{
+		Scissors = InScissors;
+		bScissorEnable = true;
+	}
+	// END META SECTION - Multi-View Per View Viewports / Render Areas
 
 	inline void SetStreamSource(uint32 StreamIndex, VkBuffer VertexBuffer, uint32 Offset)
 	{

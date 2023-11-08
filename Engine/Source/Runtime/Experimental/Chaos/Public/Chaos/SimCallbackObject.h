@@ -6,11 +6,20 @@
 #include "Chaos/SimCallbackInput.h"
 #include "Chaos/CollisionResolutionTypes.h"
 #include "Chaos/GeometryParticlesfwd.h"
+#include "ChaosStats.h"
+
+// Enable through build or just here in code to cause an untracked callback to fail to compile
+// Untracked callbacks will show up a such in profiling sessions and this can help track them down
+#ifndef UE_CHAOS_UNTRACKED_CALLBACK_IS_ERROR
+#define UE_CHAOS_UNTRACKED_CALLBACK_IS_ERROR 0
+#endif
 
 namespace Chaos
 {
 class FPhysicsSolverBase;
 class FMidPhaseModifierAccessor;
+class FCCDModifierAccessor;
+class FStrainModifierAccessor;
 class FCollisionContactModifier;
 class FSingleParticlePhysicsProxy;
 
@@ -19,15 +28,17 @@ namespace Utilities
 	CHAOS_API FReal GetSolverPhysicsResultsTime(FPhysicsSolverBase*);
 }
 
-enum class ESimCallbackOptions : uint8
+enum class ESimCallbackOptions : uint16
 {
 	Presimulate				= 1 << 0,
 	MidPhaseModification	= 1 << 1,
-	ContactModification		= 1 << 2,
-	ParticleRegister		= 1 << 3,
-	ParticleUnregister		= 1 << 4,
-	RunOnFrozenGameThread	= 1 << 5,
-	Rewind					= 1 << 6
+	CCDModification			= 1 << 2,
+	ContactModification		= 1 << 3,
+	StrainModification		= 1 << 5,
+	ParticleRegister		= 1 << 6,
+	ParticleUnregister		= 1 << 7,
+	RunOnFrozenGameThread	= 1 << 8,
+	Rewind					= 1 << 9
 };
 ENUM_CLASS_FLAGS(ESimCallbackOptions)
 
@@ -46,7 +57,7 @@ ENUM_CLASS_FLAGS(ESimCallbackOptions)
  * We rely on this to cache results and skip callbacks when possible during a resim.
  * See functions for more details.
  */
-class CHAOS_API ISimCallbackObject
+class ISimCallbackObject
 {
 public:
 
@@ -70,6 +81,16 @@ public:
 	void MidPhaseModification_Internal(FMidPhaseModifierAccessor& Modifier)
 	{
 		OnMidPhaseModification_Internal(Modifier);
+	}
+
+	void CCDModification_Internal(FCCDModifierAccessor& Modifier)
+	{
+		OnCCDModification_Internal(Modifier);
+	}
+
+	void StrainModification_Internal(FStrainModifierAccessor& Modifier)
+	{
+		OnStrainModification_Internal(Modifier);
 	}
 
 	void ContactModification_Internal(FCollisionContactModifier& Modifier)
@@ -98,13 +119,57 @@ public:
 	 */
 	virtual void FreeInputData_Internal(FSimCallbackInput* Input) = 0;
 
+#if STATS
+	/**
+	 * Get a stat to describe this callback. Uses GetFNameForStatId() which derived classes should implement to describe themselves
+	 */
+	TStatId GetStatId() const
+	{
+		static TStatId StatId = FDynamicStats::CreateStatId<FStatGroup_STATGROUP_Chaos>(GetFNameForStatId());
+		return StatId;
+	};
+#endif
 
-	FPhysicsSolverBase* GetSolver() { return Solver; }
+	/**
+	 * Get a stat name to describe this callback in external profiling and STATS when Named events are enabled
+	 */
+#if UE_CHAOS_UNTRACKED_CALLBACK_IS_ERROR
+	virtual FName GetFNameForStatId() const = 0;
+#else
+	virtual FName GetFNameForStatId() const
+	{
+		const static FLazyName StaticName("Untracked Physics Callback");
+		return StaticName;
+	}
+#endif
+
+	FPhysicsSolverBase* GetSolver()
+	{ 
+		return Solver; 
+	}
+	
+	const FPhysicsSolverBase* GetSolver() const 
+	{ 
+		return Solver; 
+	}
 
 	// Rewind API
-	virtual int32 TriggerRewindIfNeeded_Internal(int32 LastCompletedStep) { ensure(false); return INDEX_NONE; }
-	virtual void ApplyCorrections_Internal(int32 PhysicsStep, FSimCallbackInput* Input) { ensure(false); }
-	virtual void FirstPreResimStep_Internal(int32 PhysicsStep) { }
+	virtual void InjectInputs_External(int32 PhysicsStep, int32 NumSteps) {}
+	virtual void ProcessInputs_Internal(int32 PhysicsStep) {}
+	virtual void ProcessInputs_External(int32 PhysicsStep) {}
+	
+	virtual int32 TriggerRewindIfNeeded_Internal(int32 LastCompletedStep)
+	{
+		return INDEX_NONE;
+	}
+	
+	virtual void ApplyCorrections_Internal(int32 PhysicsStep, FSimCallbackInput* Input)
+	{
+		ensure(false);
+	}
+	
+	virtual void FirstPreResimStep_Internal(int32 PhysicsStep)
+	{}
 
 	bool HasOption(const ESimCallbackOptions Option) const
 	{
@@ -116,7 +181,7 @@ public:
 	{
 		return HasOption(ESimCallbackOptions::RunOnFrozenGameThread);
 	}
-	
+
 protected:
 
 	ISimCallbackObject(const ESimCallbackOptions InOptions = ESimCallbackOptions::Presimulate)
@@ -134,7 +199,7 @@ protected:
 	/**
 	 * Gets the current producer input data. This is what the external thread should be writing to
 	 */
-	FSimCallbackInput* GetProducerInputData_External();
+	CHAOS_API FSimCallbackInput* GetProducerInputData_External();
 
 	void SetCurrentInput_Internal(FSimCallbackInput* NewInput)
 	{
@@ -167,6 +232,22 @@ private:
 	* NOTE: you must explicitly request midphase modification when registering the callback for this to be called
 	*/
 	virtual void OnMidPhaseModification_Internal(FMidPhaseModifierAccessor& Modifier)
+	{
+		check(false);
+	}
+
+
+	/**
+	* Called once per simulation step. Allows user to modify CCD results
+	*
+	* NOTE: you must explicitly request CCD modification when registering the callback for this to be called
+	*/
+	virtual void OnCCDModification_Internal(FCCDModifierAccessor& Modifier)
+	{
+		check(false);
+	}
+
+	virtual void OnStrainModification_Internal(FStrainModifierAccessor& Modifier)
 	{
 		check(false);
 	}
@@ -218,7 +299,10 @@ private:
 	FPhysicsSolverBase* Solver;
 
 	//putting this here so that user classes don't have to bother with non-default constructor
-	void SetSolver_External(FPhysicsSolverBase* InSolver) { Solver = InSolver;}
+	void SetSolver_External(FPhysicsSolverBase* InSolver)
+	{
+		Solver = InSolver;
+	}
 	
 	UE_DEPRECATED(5.1, "Do not change options after creation of the callback object - instead, specify them using the TOptions template parameter.")
 	void SetContactModification(bool InContactModification)
@@ -229,7 +313,11 @@ private:
 protected:
 	FSimCallbackOutput* CurrentOutput_Internal;	//the output currently being written to in this sim step
 
-	const FSimCallbackInput* GetCurrentInput_Internal() const { return CurrentInput_Internal; }
+	const FSimCallbackInput* GetCurrentInput_Internal() const 
+	{ 
+		return CurrentInput_Internal; 
+	}
+
 private:
 	FSimCallbackInput* CurrentInput_Internal;	        //the input associated with the step we are executing.
 
@@ -249,12 +337,26 @@ class FSimCallbackCommandObject : public ISimCallbackObject
 public:
 	FSimCallbackCommandObject(TUniqueFunction<void()>&& InFunc)
 		: Func(MoveTemp(InFunc))
+		, Func2(nullptr)
+		, bFuncHasTimeParameters(false)
+	{}
+
+	FSimCallbackCommandObject(TUniqueFunction<void(FReal DeltaTime, FReal SimTime)>&& InFunc)
+		: Func(nullptr)
+		, Func2(MoveTemp(InFunc))
+		, bFuncHasTimeParameters(true)
 	{}
 
 	virtual void FreeOutputData_External(FSimCallbackOutput* Output)
 	{
 		//data management handled by command passed in (data should be copied by value as commands run async and memory lifetime is hard to predict)
 		check(false);
+	}
+
+	virtual FName GetFNameForStatId() const override
+	{
+		const static FLazyName StaticName("FSimCallbackCommandObject");
+		return StaticName;
 	}
 
 private:
@@ -274,10 +376,22 @@ private:
 
 	virtual void OnPreSimulate_Internal() override
 	{
-		Func();
+		if (!bFuncHasTimeParameters)
+		{ 
+			Func();
+		}
+		else
+		{
+			Func2(GetDeltaTime_Internal(), GetSimTime_Internal());
+		}
+		
 	}
 
+	// Those two function could be in an union 
 	TUniqueFunction<void()> Func;
+	TUniqueFunction<void(FReal deltaTime, FReal SimTime)> Func2;
+
+	bool bFuncHasTimeParameters;
 
 	friend struct FSimCallbackInput;
 };

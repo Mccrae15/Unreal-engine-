@@ -45,6 +45,8 @@ public:
 	ElectraHTTPStream::FHttpRange												Range;
 
 	EStreamType																	StreamType;							//!< Type of stream (video, audio, etc.)
+	int32																		QualityIndex;
+	int32																		MaxQualityIndex;
 	uint32																		StreamUniqueID;						//!< The unique stream ID identifying the stream for which this is a request.
 	int32																		Bitrate;
 	int32																		QualityLevel;
@@ -156,8 +158,11 @@ private:
 			FString GetResourceURL() const override
 			{ return URL; }
 
-			void SetPlaybackData(TSharedPtr<TArray<uint8>, ESPMode::ThreadSafe>	PlaybackData) override
+			void SetPlaybackData(TSharedPtr<TArray<uint8>, ESPMode::ThreadSafe>	PlaybackData, int64 TotalResourceSize) override
 			{ Data = PlaybackData; }
+
+			FBinaryDataParams GetBinaryDataParams() const override
+			{ FBinaryDataParams None; return None; }
 
 			void SignalDataReady() override
 			{ DoneSignal.Signal(); }

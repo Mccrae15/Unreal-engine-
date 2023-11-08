@@ -53,6 +53,10 @@ AWaterBrushManager::AWaterBrushManager(const FObjectInitializer& ObjectInitializ
 	SceneCaptureComponent2D->SetRelativeScale3D(FVector(0.01f, 0.01f, 0.01f));
 	// HACK [jonathan.bard] : Nanite doesn't support USceneCaptureComponent's ShowOnlyComponents ATM so just disable Nanite during captures : 
 	SceneCaptureComponent2D->ShowFlagSettings.Add(FEngineShowFlagsSetting { TEXT("NaniteMeshes"), false } );
+	// These also need to be disabled to get a clean capture of just the water info material output
+	SceneCaptureComponent2D->ShowFlagSettings.Add(FEngineShowFlagsSetting { TEXT("Atmosphere"), false } );
+	SceneCaptureComponent2D->ShowFlagSettings.Add(FEngineShowFlagsSetting { TEXT("Bloom"), false } );
+	SceneCaptureComponent2D->ShowFlagSettings.Add(FEngineShowFlagsSetting { TEXT("Lighting"), false } );
 
 	PrimaryActorTick.TickGroup = ETickingGroup::TG_PrePhysics;
 	bIsEditorOnlyActor = false;
@@ -1082,7 +1086,7 @@ bool AWaterBrushManager::DeprecateWaterLandscapeInfo(FVector& OutRTWorldLocation
 void AWaterBrushManager::ShowForceUpdateMapCheckError()
 {
 	FFormatNamedArguments Arguments;
-	Arguments.Add(TEXT("WaterBrush"), FText::FromString(GetName()));
+	Arguments.Add(TEXT("WaterBrush"), FText::FromString(GetActorNameOrLabel()));
 	Arguments.Add(TEXT("Outer"), FText::FromString(GetPackage()->GetPathName()));
 	
 	FMessageLog("MapCheck").Warning()
@@ -1274,7 +1278,7 @@ void AWaterBrushManager::RenderBrushActorContext(FBrushRenderContext& BrushRende
 	if (WaterBody != nullptr)
 	{
 		// rebuilding the water mesh is expensive and not necessary : 
-		WaterBody->GetWaterBodyComponent()->UpdateComponentVisibility(/* bAllowWaterMeshRebuild = */false);
+		WaterBody->GetWaterBodyComponent()->UpdateComponentVisibility(/* bAllowWaterZoneRebuild = */false);
 	}
 
 	ApplyToCompositeWaterBodyTexture(BrushRenderContext, BrushActorRenderContext);
@@ -1349,15 +1353,15 @@ void AWaterBrushManager::SetupDefaultMaterials()
 	FindEdgesMaterial = WaterEditorSettings->GetDefaultFindEdgesMaterial();
 }
 
-UTextureRenderTarget2D* AWaterBrushManager::Render_Native(bool InIsHeightmap, UTextureRenderTarget2D* InCombinedResult, FName const& InWeightmapLayerName)
+UTextureRenderTarget2D* AWaterBrushManager::RenderLayer_Native(const FLandscapeBrushParameters& InParameters)
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(AWaterBrushManager::Render_Native);
+	TRACE_CPUPROFILER_EVENT_SCOPE(AWaterBrushManager::RenderLayer_Native);
 
-	LandscapeRTRef = InCombinedResult;
+	LandscapeRTRef = InParameters.CombinedResult;
 
 	FBrushRenderContext BrushRenderContext;
-	BrushRenderContext.bHeightmapRender = InIsHeightmap;
-	BrushRenderContext.WeightmapLayerName = InWeightmapLayerName;
+	BrushRenderContext.bHeightmapRender = InParameters.LayerType == ELandscapeToolTargetType::Heightmap;
+	BrushRenderContext.WeightmapLayerName = InParameters.WeightmapLayerName;
 
 	if (!BrushRenderSetup())
 	{
@@ -1407,7 +1411,7 @@ UTextureRenderTarget2D* AWaterBrushManager::Render_Native(bool InIsHeightmap, UT
 	}
 
 	// Render Completed
-	UTextureRenderTarget2D* ReturnRT = InIsHeightmap ? HeightPingPongRead(BrushRenderContext) : WeightPingPongRead(BrushRenderContext);
+	UTextureRenderTarget2D* ReturnRT = (InParameters.LayerType == ELandscapeToolTargetType::Heightmap) ? HeightPingPongRead(BrushRenderContext) : WeightPingPongRead(BrushRenderContext);
 
 	bKillCache = false;
 
@@ -1434,7 +1438,7 @@ void AWaterBrushManager::UpdateBrushCacheKeys()
 				SetActorCache(Actor, WaterBrushCacheContainer);
 			}
 			// Make sure there's an appropriate render target in that cache : 
-			WaterBrushCacheContainer->Cache.CacheRenderTarget = FWaterUtils::GetOrCreateTransientRenderTarget2D(WaterBrushCacheContainer->Cache.CacheRenderTarget, FName(*FString::Printf(TEXT("BrushCacheRT_%s"), *Actor->GetName())), LandscapeRTRes, Format);
+			WaterBrushCacheContainer->Cache.CacheRenderTarget = FWaterUtils::GetOrCreateTransientRenderTarget2D(WaterBrushCacheContainer->Cache.CacheRenderTarget, FName(*FString::Printf(TEXT("BrushCacheRT_%s"), *Actor->GetActorNameOrLabel())), LandscapeRTRes, Format);
 			check(WaterBrushCacheContainer->Cache.CacheRenderTarget != nullptr);
 		}
 	}

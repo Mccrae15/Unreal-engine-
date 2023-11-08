@@ -15,16 +15,20 @@
 #include "DefaultSpectatorScreenController.h"
 #include "IHeadMountedDisplayVulkanExtensions.h"
 #include "IOpenXRExtensionPluginDelegates.h"
+#include "Misc/EnumClassFlags.h"
 
 #include <openxr/openxr.h>
 
 class APlayerController;
 class FSceneView;
 class FSceneViewFamily;
+class FFBFoveationImageGenerator;
+class FOpenXRSwapchain;
 class UCanvas;
 class FOpenXRRenderBridge;
 class IOpenXRInputModule;
 struct FDefaultStereoLayers_LayerRenderParams;
+union FXrCompositionLayerUnion;
 
 /**
  * Simple Head Mounted Display
@@ -69,13 +73,6 @@ public:
 		XrPosef BasePose;
 	};
 
-	struct FPluginViewInfo
-	{
-		class IOpenXRExtensionPlugin* Plugin = nullptr;
-		EStereoscopicPass PassType = EStereoscopicPass::eSSP_PRIMARY;
-		bool bIsPluginManaged = false;
-	};
-
 	// The game and render threads each have a separate copy of these structures so that they don't stomp on each other or cause tearing
 	// when the game thread progresses to the next frame while the render thread is still working on the previous frame.
 	struct FPipelinedFrameState
@@ -83,14 +80,11 @@ public:
 		XrFrameState FrameState{XR_TYPE_FRAME_STATE};
 		XrViewState ViewState{XR_TYPE_VIEW_STATE};
 		TArray<XrView> Views;
+		TArray<XrViewConfigurationView> ViewConfigs;
 		TArray<XrSpaceLocation> DeviceLocations;
 		TSharedPtr<FTrackingSpace> TrackingSpace;
 		float WorldToMetersScale = 100.0f;
 		float PixelDensity = 1.0f;
-
-		TArray<XrViewConfigurationView> ViewConfigs;
-		TArray<FPluginViewInfo> PluginViewInfos;
-
 		bool bXrFrameStateUpdated = false;
 	};
 
@@ -102,12 +96,40 @@ public:
 		TArray<XrSwapchainSubImage> EmulationImages;
 		// This swapchain is where the emulated face locked layers are rendered into.
 		FXRSwapChainPtr EmulationSwapchain;
-		bool bIsFaceLockedLayerEmulationActive = false;
 	};
+
+	struct FBasePassLayerBlendParameters
+	{
+		// Default constructor inverts the alpha for color blending to make up for the fact that UE uses
+		// alpha = 0 for opaque and alpha = 1 for transparent while OpenXR does the opposite.
+		// Alpha blending passes through the destination alpha instead.
+		FBasePassLayerBlendParameters()
+		{
+			srcFactorColor = XR_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA_FB;
+			dstFactorColor = XR_BLEND_FACTOR_SRC_ALPHA_FB;
+			srcFactorAlpha = XR_BLEND_FACTOR_ZERO_FB;
+			dstFactorAlpha = XR_BLEND_FACTOR_ONE_FB;
+		}
+		
+		XrBlendFactorFB	srcFactorColor;
+		XrBlendFactorFB	dstFactorColor;
+		XrBlendFactorFB	srcFactorAlpha;
+		XrBlendFactorFB	dstFactorAlpha;
+	};
+
+	enum class EOpenXRLayerStateFlags : uint32
+	{
+		None = 0u,
+		BackgroundLayerVisible = (1u << 0),
+		SubmitBackgroundLayer = (1u << 1),
+		SubmitDepthLayer = (1u << 2),
+		SubmitEmulatedFaceLockedLayer = (1u << 3),
+	};
+	FRIEND_ENUM_CLASS_FLAGS(EOpenXRLayerStateFlags);
 
 	struct FPipelinedLayerState
 	{
-		TArray<XrCompositionLayerQuad> QuadLayers;
+		TArray<FXrCompositionLayerUnion> NativeOverlays;
 		TArray<XrCompositionLayerProjectionView> ProjectionLayers;
 		TArray<XrCompositionLayerDepthInfoKHR> DepthLayers;
 
@@ -116,12 +138,12 @@ public:
 
 		FXRSwapChainPtr ColorSwapchain;
 		FXRSwapChainPtr DepthSwapchain;
-		TArray<FXRSwapChainPtr> QuadSwapchains;
+		TArray<FXRSwapChainPtr> NativeOverlaySwapchains;
 
 		FEmulatedLayerState EmulatedLayerState;
 
-		bool bBackgroundLayerVisible = true;
-		bool bSubmitBackgroundLayer = true;
+		EOpenXRLayerStateFlags LayerStateFlags = EOpenXRLayerStateFlags::None;
+		FBasePassLayerBlendParameters BasePassLayerBlendParams;
 	};
 
 	class FVulkanExtensions : public IHeadMountedDisplayVulkanExtensions
@@ -181,7 +203,7 @@ public:
 
 	virtual bool GetIsTracked(int32 DeviceId);
 	virtual bool GetCurrentPose(int32 DeviceId, FQuat& CurrentOrientation, FVector& CurrentPosition) override;
-	virtual bool GetPoseForTime(int32 DeviceId, FTimespan Timespan, bool& OutTimeWasUsed, FQuat& CurrentOrientation, FVector& CurrentPosition, bool& bProvidedLinearVelocity, FVector& LinearVelocity, bool& bProvidedAngularVelocity, FVector& AngularVelocityRadPerSec, bool& bProvidedLinearAcceleration, FVector& LinearAcceleration, float WorldToMetersScale);
+	virtual bool GetPoseForTime(int32 DeviceId, FTimespan Timespan, bool& OutTimeWasUsed, FQuat& CurrentOrientation, FVector& CurrentPosition, bool& bProvidedLinearVelocity, FVector& LinearVelocity, bool& bProvidedAngularVelocity, FVector& AngularVelocityAsAxisAndLength, bool& bProvidedLinearAcceleration, FVector& LinearAcceleration, float WorldToMetersScale);
 	virtual bool GetCurrentInteractionProfile(const EControllerHand Hand, FString& InteractionProfile) override;
 	
 	virtual void SetBaseRotation(const FRotator& InBaseRotation) override;
@@ -233,7 +255,6 @@ public:
 	virtual bool HDRGetMetaDataForStereo(EDisplayOutputFormat& OutDisplayOutputFormat, EDisplayColorGamut& OutDisplayColorGamut, bool& OutbHDRSupported) override;
 
 protected:
-
 	enum ETextureCopyBlendModifier : uint8;
 
 	bool StartSession();
@@ -254,7 +275,6 @@ protected:
 	void UpdateDeviceLocations(bool bUpdateOpenXRExtensionPlugins);
 	void EnumerateViews(FPipelinedFrameState& PipelineState);
 	void LocateViews(FPipelinedFrameState& PipelinedState, bool ResizeViewsArray = false);
-	bool IsViewManagedByPlugin(int32 ViewIndex) const;
 
 	void CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture2D* SrcTexture, FIntRect SrcRect, FRHITexture2D* DstTexture, FIntRect DstRect, 
 								  bool bClearBlack, ERenderTargetActions RTAction, ERHIAccess FinalDstAccess, ETextureCopyBlendModifier SrcTextureCopyModifier) const;
@@ -266,7 +286,7 @@ protected:
 	// Used with FCoreDelegates
 	void VRHeadsetRecenterDelegate();
 
-	void SetupFrameQuadLayers_RenderThread(FRHICommandListImmediate& RHICmdList);
+	void SetupFrameLayers_RenderThread(FRHICommandListImmediate& RHICmdList);
 	void DrawEmulatedLayers_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& InView);
 	void DrawBackgroundCompositedEmulatedLayers_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& InView);
 	void DrawEmulatedFaceLockedLayers_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& InView);
@@ -394,12 +414,17 @@ public:
 
 	/** Returns shader platform the plugin is currently configured for, in the editor it can change due to preview platforms. */
 	EShaderPlatform GetConfiguredShaderPlatform() const { check(ConfiguredShaderPlatform != EShaderPlatform::SP_NumPlatforms); return ConfiguredShaderPlatform; }
-
+	FOpenXRSwapchain* GetColorSwapchain_RenderThread();
 private:
+
 	TArray<XrEnvironmentBlendMode> RetrieveEnvironmentBlendModes() const;
 	FDefaultStereoLayers_LayerRenderParams CalculateEmulatedLayerRenderParams(const FSceneView& InView);
 	FRHIRenderPassInfo SetupEmulatedLayersRenderPass(FRHICommandListImmediate& RHICmdList, const FSceneView& InView, TArray<IStereoLayers::FLayerDesc>& Layers, FTexture2DRHIRef RenderTarget, FDefaultStereoLayers_LayerRenderParams& OutRenderParams);
 	bool IsEmulatingStereoLayers();
+	
+	void UpdateLayerSwapchainTexture(const FOpenXRLayer& Layer, FRHICommandListImmediate& RHICmdList);
+	void ConfigureLayerSwapchain(FOpenXRLayer& Layer, TArray<FOpenXRLayer>& BackupLayers);
+	void AddLayersToHeaders(TArray<const XrCompositionLayerBaseHeader*>& Headers);
 
 	bool					bStereoEnabled;
 	TAtomic<bool>			bIsRunning;
@@ -414,7 +439,7 @@ private:
 	bool					bNeedReBuildOcclusionMesh;
 	bool					bIsMobileMultiViewEnabled;
 	bool					bSupportsHandTracking;
-	bool					bSpaceAccellerationSupported;
+	bool					bSpaceAccelerationSupported;
 	bool					bProjectionLayerAlphaEnabled;
 	bool					bIsStandaloneStereoOnlyDevice;
 	bool					bIsTrackingOnlySession;
@@ -467,7 +492,15 @@ private:
 	FVector					BasePosition;
 
 	bool					bLayerSupportOpenXRCompliant;
+	bool					bOpenXRInvertAlphaCvarCachedValue;
+	bool					bOpenXRForceStereoLayersEmulationCVarCachedValue;
 	TArray<IStereoLayers::FLayerDesc> BackgroundCompositedEmulatedLayers;
 	TArray<IStereoLayers::FLayerDesc> EmulatedFaceLockedLayers;
-	TArray<FOpenXRLayer>			  NativeQuadLayers;
+	TArray<FOpenXRLayer>			  NativeLayers;
+
+	TUniquePtr<FFBFoveationImageGenerator> FBFoveationImageGenerator;
+	bool					bFoveationExtensionSupported;
+	bool					bRuntimeFoveationSupported;
 };
+
+ENUM_CLASS_FLAGS(FOpenXRHMD::EOpenXRLayerStateFlags);

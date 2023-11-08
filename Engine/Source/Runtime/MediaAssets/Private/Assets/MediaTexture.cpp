@@ -18,6 +18,7 @@
 #include "Misc/MediaTextureResource.h"
 #include "IMediaTextureSample.h"
 
+#include "RectLightTexture.h"
 
 /* Local helpers
  *****************************************************************************/
@@ -88,6 +89,7 @@ UMediaTexture::UMediaTexture(const FObjectInitializer& ObjectInitializer)
 	, CachedNextSampleTime(FTimespan::MinValue())
 	, TextureNumMips(1)
 	, MipMapBias(0.0f)
+	, ColorspaceOverride(UE::Color::EColorSpace::None)
 {
 	NeverStream = true;
 	SRGB = true;
@@ -174,7 +176,7 @@ FTextureResource* UMediaTexture::CreateResource()
 		Filter = (TextureNumMips > 1) ? TF_Trilinear : TF_Bilinear;
 	}
 
-	return new FMediaTextureResource(*this, Dimensions, Size, ClearColor, CurrentGuid.IsValid() ? CurrentGuid : DefaultGuid, EnableGenMips, NumMips);
+	return new FMediaTextureResource(*this, Dimensions, Size, ClearColor, CurrentGuid.IsValid() ? CurrentGuid : DefaultGuid, EnableGenMips, NumMips, ColorspaceOverride);
 }
 
 
@@ -216,6 +218,12 @@ void UMediaTexture::SetRenderedExternalTextureGuid(const FGuid& InNewGuid)
 
 	FScopeLock Lock(&CriticalSection);
 	CurrentRenderedGuid = InNewGuid;
+}
+
+
+uint32 UMediaTexture::CalcTextureMemorySizeEnum(ETextureMipCount Enum) const
+{
+	return Size;
 }
 
 /* UObject interface
@@ -266,6 +274,18 @@ void UMediaTexture::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
 	CumulativeResourceSize.AddUnknownMemoryBytes(Size);
 }
 
+
+void UMediaTexture::PostInitProperties()
+{
+	Super::PostInitProperties();
+
+#if WITH_EDITORONLY_DATA
+	if (!HasAnyFlags(RF_ClassDefaultObject | RF_NeedLoad))
+	{
+		NewStyleOutput = true;
+	}
+#endif
+}
 
 void UMediaTexture::PostLoad()
 {
@@ -360,12 +380,8 @@ void UMediaTexture::TickResource(FTimespan Timecode)
 	bool bIsSampleValid = false;
 	if (UMediaPlayer* CurrentPlayerPtr = CurrentPlayer.Get())
 	{
-		const bool PlayerActive = CurrentPlayerPtr->IsPaused() || CurrentPlayerPtr->IsPlaying() || CurrentPlayerPtr->IsPreparing();
-
-		if (PlayerActive)
+		if (CurrentPlayerPtr->GetPlayerFacade()->GetPlayer().IsValid())
 		{
-			check(CurrentPlayerPtr->GetPlayerFacade()->GetPlayer());
-
 			if (CurrentPlayerPtr->GetPlayerFacade()->GetPlayer()->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::UsePlaybackTimingV2))
 			{
 				/*
@@ -404,23 +420,37 @@ void UMediaTexture::TickResource(FTimespan Timecode)
 				//
 				// Old style: pass queue along and dequeue only at render time
 				//
-				TSharedPtr<IMediaTextureSample, ESPMode::ThreadSafe> Sample;
-				if (SampleQueue->Peek(Sample))
+				const bool PlayerActive = CurrentPlayerPtr->IsPaused() || CurrentPlayerPtr->IsPlaying() || CurrentPlayerPtr->IsPreparing();
+				if (PlayerActive)
 				{
-					UpdateSampleInfo(Sample);
+					TSharedPtr<IMediaTextureSample, ESPMode::ThreadSafe> Sample;
+					if (SampleQueue->Peek(Sample))
+					{
+						UpdateSampleInfo(Sample);
 
-					// See above: track sRGB state (for V1 we don't look at all samples - but this should be fine as this should not change on a per sample basis usually)
-					SRGB = Sample->IsOutputSrgb();
-					LastSrgb = SRGB;
+						// See above: track sRGB state (for V1 we don't look at all samples - but this should be fine as this should not change on a per sample basis usually)
+						SRGB = Sample->IsOutputSrgb();
+						LastSrgb = SRGB;
 
-					TextureNumMips = (Sample->GetNumMips() > 1) ? Sample->GetNumMips() : NumMips;
-					bIsSampleValid = true;
+						TextureNumMips = (Sample->GetNumMips() > 1) ? Sample->GetNumMips() : NumMips;
+						bIsSampleValid = true;
+					}
+
+					RenderParams.SampleSource = SampleQueue;
+
+					RenderParams.Rate = CurrentPlayerPtr->GetRate();
+					RenderParams.Time = CurrentPlayerPtr->GetTime();
 				}
+				else
+				{
+					CurrentAspectRatio = 0.0f;
+					CurrentOrientation = MTORI_Original;
 
-				RenderParams.SampleSource = SampleQueue;
-
-				RenderParams.Rate = CurrentPlayerPtr->GetRate();
-				RenderParams.Time = CurrentPlayerPtr->GetTime();
+					if (!AutoClear)
+					{
+						return; // retain last frame
+					}
+				}
 			}
 		}
 		else 
@@ -456,11 +486,15 @@ void UMediaTexture::TickResource(FTimespan Timecode)
 	FMediaTextureResource* ResourceParam = (FMediaTextureResource*)GetResource();
 
 	const ERenderMode RenderModeParam = GetRenderMode();
+	const UTexture* TexturePtrNotDeferenced = this;
 
 	ENQUEUE_RENDER_COMMAND(MediaTextureResourceRender)(
-		[ResourceParam, RenderParams, RenderModeParam](FRHICommandListImmediate& RHICmdList)
+		[ResourceParam, RenderParams, RenderModeParam, TexturePtrNotDeferenced](FRHICommandListImmediate& RHICmdList)
 		{
 			check(ResourceParam);
+
+			// Lock/Enqueue rect atlas refresh if that texture is used by a rect. light
+			RectLightAtlas::FAtlasTextureInvalidationScope InvalidationScope(TexturePtrNotDeferenced);
 
 			if (RenderModeParam == ERenderMode::JustInTime)
 			{

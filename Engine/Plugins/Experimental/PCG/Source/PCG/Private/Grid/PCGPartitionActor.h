@@ -45,13 +45,14 @@ public:
 	//~Begin APartitionActor Interface
 	virtual uint32 GetDefaultGridSize(UWorld* InWorld) const override;
 	virtual FGuid GetGridGuid() const override { return PCGGuid; }
+	virtual bool ShouldIncludeGridSizeInLabel() const override { return true; }
 	//~End APartitionActor Interface
 #endif
 
 	FBox GetFixedBounds() const;
 	FIntVector GetGridCoord() const;
 
-	uint32 GetGridSize() const { return PCGGridSize; }
+	uint32 GetPCGGridSize() const { return PCGGridSize; }
 	bool IsUsing2DGrid() const { return bUse2DGrid; }
 
 	void AddGraphInstance(UPCGComponent* OriginalComponent);
@@ -64,7 +65,7 @@ public:
 
 #if WITH_EDITOR
 	/** To be called after the creation of a new actor to copy the GridSize property (Editor only) into the PCGGridSize property */
-	void PostCreation();
+	void PostCreation(const FGuid& InGridGUID);
 
 	/** [Game thread only] Return if the actor is safe for deletion, meaning no generation is currently running on all original components. */
 	bool IsSafeForDeletion() const;

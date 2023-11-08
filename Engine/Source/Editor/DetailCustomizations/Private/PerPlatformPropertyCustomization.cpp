@@ -61,6 +61,10 @@ void FPerPlatformPropertyCustomization<PerPlatformType>::CustomizeChildren(TShar
 	{
 		return GetWidget(PlatformGroupName, StructPropertyHandle, StructBuilder);
 	});
+	Args.IsEnabled = TAttribute<bool>::CreateLambda([StructPropertyHandle]()
+	{		
+		return StructPropertyHandle->IsEditable();
+	});		
 	
 	StructBuilder.AddCustomBuilder(MakeShared<FPerPlatformPropertyCustomNodeBuilder>(MoveTemp(Args)));
 }
@@ -104,6 +108,7 @@ TSharedRef<SWidget> FPerPlatformPropertyCustomization<PerPlatformType>::GetWidge
 	}
 
 	// Push down struct metadata to per-platform properties
+	if (EditProperty.IsValid())
 	{
 		// First get the source map
 		const TMap<FName, FString>* SourceMap = StructPropertyHandle->GetMetaDataProperty()->GetMetaDataMap();
@@ -119,15 +124,12 @@ TSharedRef<SWidget> FPerPlatformPropertyCustomization<PerPlatformType>::GetWidge
 		{
 			EditProperty->SetInstanceMetaData(*It.Key.ToString(), *It.Value);
 		}
-	}
 
-	if (ensure(EditProperty.IsValid()))
-	{
 		if (EditProperty->GetProperty()->IsA<FStructProperty>())
 		{
 			return StructBuilder.GenerateStructValueWidget(EditProperty->AsShared());
 		}
-		
+
 		return EditProperty->CreatePropertyValueWidget(false);
 	}
 	

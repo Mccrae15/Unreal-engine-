@@ -58,9 +58,19 @@ namespace Chaos
 		virtual int32 GetOwnerLODIndex(int32 LODIndex) const;
 		virtual bool IsValidLODIndex(int32 LODIndex) const;
 		virtual int32 GetNumPoints(int32 LODIndex) const;
+		virtual int32 GetNumPatternPoints(int32 LODIndex) const;
 		virtual TConstArrayView<FVector3f> GetPositions(int32 LODIndex) const;
+		virtual TConstArrayView<FVector2f> GetPatternPositions(int32 LODIndex) const;
 		virtual TConstArrayView<FVector3f> GetNormals(int32 LODIndex) const;
 		virtual TConstArrayView<uint32> GetIndices(int32 LODIndex) const;
+		virtual TConstArrayView<uint32> GetPatternIndices(int32 LODIndex) const;
+		virtual TConstArrayView<uint32> GetPatternToWeldedIndices(int32 LODIndex) const;
+		virtual TArray<FName> GetWeightMapNames(int32 LODIndex) const;
+		UE_DEPRECATED(5.3, "Use LODIndex version.")
+		virtual TArray<FName> GetWeightMapNames() const { return GetWeightMapNames(0); }
+		virtual TMap<FString, int32> GetWeightMapIndices(int32 LODIndex) const;
+		UE_DEPRECATED(5.3, "Use LODIndex version.")
+		virtual TMap<FString, int32> GetWeightMapIndices() const { return GetWeightMapIndices(0); }
 		virtual TArray<TConstArrayView<FRealSingle>> GetWeightMaps(int32 LODIndex) const;
 		virtual TArray<TConstArrayView<TTuple<int32, int32, float>>> GetTethers(int32 LODIndex, bool bUseGeodesicTethers) const;
 		virtual int32 GetReferenceBoneIndex() const;
@@ -88,8 +98,14 @@ namespace Chaos
 		/* Return the number of points for the specified LOD, or 0 if the LOD is empty or invalid. */
 		virtual int32 GetNumPoints(int32 LODIndex) const = 0;
 
+		/* Return the number of pattern points (2d, unwelded) for the specified LOD, or 0 if patterns are not supported or the LOD is empty or invalid. */
+		virtual int32 GetNumPatternPoints(int32 LODIndex) const = 0;
+
 		/* Return the source mesh positions (pre-skinning). */
 		virtual TConstArrayView<FVector3f> GetPositions(int32 LODIndex) const = 0;
+
+		/* Return the source mesh 2d pattern positions. */
+		virtual TConstArrayView<FVector2f> GetPatternPositions(int32 LODIndex) const = 0;
 
 		/* Return the source mesh normals (pre-skinning). */
 		virtual TConstArrayView<FVector3f> GetNormals(int32 LODIndex) const = 0;
@@ -97,7 +113,23 @@ namespace Chaos
 		/* Return the specified LOD's triangle indices for this mesh. */
 		virtual TConstArrayView<uint32> GetIndices(int32 LODIndex) const = 0;
 
-		/* Return the specified LOD's weightmap. */
+		/* Return the specified LOD's pattern (unwelded) triangle indices for this mesh, or empty array if patterns are not supported. */
+		virtual TConstArrayView<uint32> GetPatternIndices(int32 LODIndex) const = 0;
+
+		/* Return the specified LOD's map from pattern (unwelded) vertices to (welded) vertices, or empty array if patterns are not supported. */
+		virtual TConstArrayView<uint32> GetPatternToWeldedIndices(int32 LODIndex) const = 0;
+
+		/* Return all weight maps associated with this mesh returned in the same order as GetWeightMaps. */
+		virtual TArray<FName> GetWeightMapNames(int32 LODIndex) const = 0;
+		UE_DEPRECATED(5.3, "Use LODIndex version.")
+		virtual TArray<FName> GetWeightMapNames() const = 0;
+
+		/* Return a map of all weight map names associated with this mesh to the index in the array returned by GetWeightMaps. */
+		virtual TMap<FString, int32> GetWeightMapIndices(int32 LODIndex) const = 0;
+		UE_DEPRECATED(5.3, "Use LODIndex version.")
+		virtual TMap<FString, int32> GetWeightMapIndices() const = 0;
+
+		/* Return the specified LOD's weight map. */
 		virtual TArray<TConstArrayView<FRealSingle>> GetWeightMaps(int32 LODIndex) const = 0;
 
 		/* Return the tethers connections for the long range attachment into convenient parallel friendly batches. */

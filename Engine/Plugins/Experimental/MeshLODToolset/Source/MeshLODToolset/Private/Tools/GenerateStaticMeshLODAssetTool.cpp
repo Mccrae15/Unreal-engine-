@@ -21,7 +21,7 @@
 
 #include "Misc/Paths.h"
 #include "EditorAssetLibrary.h"
-
+#include "ObjectTools.h"
 
 #include "ModelingOperators.h"
 #include "MeshOpPreviewHelpers.h"
@@ -60,7 +60,7 @@ namespace GenerateStaticMeshLODAssetLocals
 	public:
 
 		// Inputs
-		UGenerateStaticMeshLODProcess* GenerateProcess;
+		TObjectPtr<UGenerateStaticMeshLODProcess> GenerateProcess;
 		FGenerateStaticMeshLODProcess_PreprocessSettings GeneratorSettings_Preprocess;
 		FGenerateStaticMeshLODProcessSettings GeneratorSettings_MeshGeneration;
 		FGenerateStaticMeshLODProcess_SimplifySettings GeneratorSettings_Simplify;
@@ -214,13 +214,32 @@ const FToolTargetTypeRequirements& UGenerateStaticMeshLODAssetToolBuilder::GetTa
 bool UGenerateStaticMeshLODAssetToolBuilder::CanBuildTool(const FToolBuilderState& SceneState) const
 {
 	// hack to make multi-tool look like single-tool
-	return (SceneState.TargetManager->CountSelectedAndTargetable(SceneState, GetTargetRequirements()) == 1);
+	const int NumTargets = SceneState.TargetManager->CountSelectedAndTargetable(SceneState, GetTargetRequirements());
+	if (NumTargets == 1)
+	{
+		// Ensure that the StaticMesh asset is still valid.
+		// [TODO] Remove this check once we properly handle a failed DuplicateAsset in UGenerateStaticMeshLODProcess::WriteDerivedStaticMeshAsset
+		bool bValidTarget = false;
+		SceneState.TargetManager->EnumerateSelectedAndTargetableComponents(SceneState, GetTargetRequirements(),
+			[&bValidTarget](UActorComponent* Component)
+			{
+				const UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(Component);
+				UStaticMesh* StaticMesh = StaticMeshComponent ? StaticMeshComponent->GetStaticMesh() : nullptr;
+				if (IsValid(StaticMesh))
+				{
+					bValidTarget = ObjectTools::IsObjectBrowsable(StaticMesh);
+				}
+			});
+		return bValidTarget;
+	}
+	return false;
 }
 
 UMultiSelectionMeshEditingTool* UGenerateStaticMeshLODAssetToolBuilder::CreateNewTool(const FToolBuilderState& SceneState) const
 {
 	UGenerateStaticMeshLODAssetTool* NewTool = NewObject<UGenerateStaticMeshLODAssetTool>(SceneState.ToolManager);
 	NewTool->SetUseAssetEditorMode(bUseAssetEditorMode);
+	NewTool->SetRestrictiveMode(bInRestrictiveMode);
 	return NewTool;
 }
 
@@ -244,6 +263,12 @@ void UGenerateStaticMeshLODAssetToolPresetProperties::PostAction(EGenerateLODAss
 void UGenerateStaticMeshLODAssetTool::SetUseAssetEditorMode(bool bEnable)
 {
 	bIsInAssetEditorMode = bEnable;
+}
+
+
+void UGenerateStaticMeshLODAssetTool::SetRestrictiveMode(bool bEnable)
+{
+	bRestrictiveMode = bEnable;
 }
 
 
@@ -316,11 +341,14 @@ void UGenerateStaticMeshLODAssetTool::Setup()
 	OutputProperties->OutputMode = (bIsInAssetEditorMode) ? EGenerateLODAssetOutputMode::UpdateExistingAsset : EGenerateLODAssetOutputMode::CreateNewAsset;
 	OutputProperties->bShowOutputMode = !bIsInAssetEditorMode;
 
-	PresetProperties = NewObject<UGenerateStaticMeshLODAssetToolPresetProperties>(this);
-	PresetProperties->RestoreProperties(this);
-	PresetProperties->Initialize(this);
-	AddToolPropertySource(PresetProperties);
-	PresetProperties->WatchProperty(PresetProperties->Preset, [this](TWeakObjectPtr<UStaticMeshLODGenerationSettings>) { OnPresetSelectionChanged(); });
+	if (!bRestrictiveMode)
+	{
+		PresetProperties = NewObject<UGenerateStaticMeshLODAssetToolPresetProperties>(this);
+		PresetProperties->RestoreProperties(this);
+		PresetProperties->Initialize(this);
+		AddToolPropertySource(PresetProperties);
+		PresetProperties->WatchProperty(PresetProperties->Preset, [this](TWeakObjectPtr<UStaticMeshLODGenerationSettings>) { OnPresetSelectionChanged(); });
+	}
 
 	SlowTask.EnterProgressFrame(1);
 	BasicProperties = NewObject<UGenerateStaticMeshLODAssetToolProperties>(this);
@@ -391,13 +419,14 @@ void UGenerateStaticMeshLODAssetTool::Setup()
 			(const GenerateStaticMeshLODAssetLocals::FGenerateStaticMeshLODAssetOperatorOp*)(Op);
 		check(GenerateLODOp);
 
+		// Clear any previous collision geometry visualization
+		CollisionPreview->RemoveAllLineSets();
+
 		// Must happen on main thread
 		FPhysicsDataCollection PhysicsData;
 		PhysicsData.Geometry = GenerateLODOp->ResultCollision;
 		PhysicsData.CopyGeometryToAggregate();
-		UE::PhysicsTools::InitializePreviewGeometryLines(PhysicsData,
-														 CollisionPreview,
-														 CollisionVizSettings->Color, CollisionVizSettings->LineThickness, 0.0f, 16, CollisionVizSettings->bRandomColors);
+		UE::PhysicsTools::InitializeCollisionGeometryVisualization(CollisionPreview, CollisionVizSettings, PhysicsData, 0.f, 16);
 
 		// Must happen on main thread, and GenerateProcess might be in use by an Op somewhere else
 		GenerateProcess->GraphEvalCriticalSection.Lock();
@@ -423,10 +452,7 @@ void UGenerateStaticMeshLODAssetTool::Setup()
 	CollisionVizSettings = NewObject<UCollisionGeometryVisualizationProperties>(this);
 	CollisionVizSettings->RestoreProperties(this);
 	AddToolPropertySource(CollisionVizSettings);
-	CollisionVizSettings->WatchProperty(CollisionVizSettings->LineThickness, [this](float NewValue) { bCollisionVisualizationDirty = true; });
-	CollisionVizSettings->WatchProperty(CollisionVizSettings->Color, [this](FColor NewValue) { bCollisionVisualizationDirty = true; });
-	CollisionVizSettings->WatchProperty(CollisionVizSettings->bRandomColors, [this](bool bNewValue) { bCollisionVisualizationDirty = true; });
-	CollisionVizSettings->WatchProperty(CollisionVizSettings->bShowHidden, [this](bool bNewValue) { bCollisionVisualizationDirty = true; });
+	CollisionVizSettings->Initialize(this);
 
 	CollisionPreview = NewObject<UPreviewGeometry>(this);
 	CollisionPreview->CreateInWorld(GetTargetWorld(), (FTransform)PreviewTransform);
@@ -515,6 +541,14 @@ bool UGenerateStaticMeshLODAssetTool::ValidateSettings() const
 
 void UGenerateStaticMeshLODAssetTool::OnSettingsModified()
 {
+	if (BasicProperties)
+	{
+		// Set the transient property which controls the edit condition for ThickenAmount
+		// Note: The tool will display an error if ThickenWeightMapName exists but isn't valid
+		BasicProperties->Preprocessing.bIsThickenAmountEnabled = (
+			BasicProperties->Preprocessing.ThickenWeightMapName.IsNone() == false);
+	}
+
 	bool bOK = ValidateSettings();
 	if (bOK)
 	{
@@ -588,29 +622,9 @@ void UGenerateStaticMeshLODAssetTool::OnTick(float DeltaTime)
 		PreviewWithBackgroundCompute->Tick(DeltaTime);
 	}
 
-	if (bCollisionVisualizationDirty)
-	{
-		UpdateCollisionVisualization();
-		bCollisionVisualizationDirty = false;
-	}
+	UE::PhysicsTools::UpdateCollisionGeometryVisualization(CollisionPreview, CollisionVizSettings);
 }
 
-
-
-void UGenerateStaticMeshLODAssetTool::UpdateCollisionVisualization()
-{
-	float UseThickness = CollisionVizSettings->LineThickness;
-	FColor UseColor = CollisionVizSettings->Color;
-	LineMaterial = ToolSetupUtil::GetDefaultLineComponentMaterial(GetToolManager(), !CollisionVizSettings->bShowHidden);
-
-	int32 ColorIdx = 0;
-	CollisionPreview->UpdateAllLineSets([&](ULineSetComponent* LineSet)
-	{
-		LineSet->SetAllLinesThickness(UseThickness);
-		LineSet->SetAllLinesColor(CollisionVizSettings->bRandomColors ? LinearColors::SelectFColor(ColorIdx++) : UseColor);
-	});
-	CollisionPreview->SetAllLineSetsMaterial(LineMaterial);
-}
 
 
 void UGenerateStaticMeshLODAssetTool::CreateNewAsset()
@@ -655,6 +669,11 @@ void UGenerateStaticMeshLODAssetTool::UpdateExistingAsset()
 
 void UGenerateStaticMeshLODAssetTool::RequestPresetAction(EGenerateLODAssetToolPresetAction ActionType)
 {
+	if (PresetProperties == nullptr)
+	{
+		return;
+	}
+
 	UStaticMeshLODGenerationSettings* CurrentPreset = PresetProperties->Preset.Get();
 	if (CurrentPreset == nullptr)
 	{
@@ -710,4 +729,3 @@ void UGenerateStaticMeshLODAssetTool::OnPresetSelectionChanged()
 
 
 #undef LOCTEXT_NAMESPACE
-

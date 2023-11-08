@@ -34,6 +34,7 @@ struct FAnimNotifyEvent;
 struct FPassedMarker;
 struct FAnimSyncMarker;
 struct FAnimMontageInstance;
+class UPoseWatchPoseElement;
 
 struct FAnimTrace
 {
@@ -148,7 +149,7 @@ struct FAnimTrace
 			OutputAnimNodeAttribute(*InContext.AnimInstanceProxy, *InContext.AnimInstanceProxy, InTargetNodeId, InSourceNodeId, UE::Anim::FAttributes::Attributes);
 		}
 
-		if(InContext.Curve.NumValid() > 0)
+		if(InContext.Curve.Num() > 0)
 		{
 			OutputAnimNodeAttribute(*InContext.AnimInstanceProxy, *InContext.AnimInstanceProxy, InTargetNodeId, InSourceNodeId, UE::Anim::FAttributes::Curves);
 		}
@@ -165,6 +166,7 @@ struct FAnimTrace
 	ENGINE_API FORCENOINLINE static void OutputAnimNodeValue(const FAnimationBaseContext& InContext, uint32 NodeIndex, const TCHAR* InKey, const TCHAR* InValue);
 	ENGINE_API FORCENOINLINE static void OutputAnimNodeValue(const FAnimationBaseContext& InContext, uint32 NodeIndex, const TCHAR* InKey, const UClass* InValue);
 	ENGINE_API FORCENOINLINE static void OutputAnimNodeValue(const FAnimationBaseContext& InContext, uint32 NodeIndex, const TCHAR* InKey, const UObject* InValue);
+	ENGINE_API FORCENOINLINE static void OutputAnimNodeValueAnimNode(const FAnimationBaseContext& InContext, uint32 NodeIndex, const TCHAR* InKey, int32 InValue, const UObject* InValueAnimInstanceId);
 
 	/** Helper function to output debug info for sequence player nodes */
 	ENGINE_API static void OutputAnimSequencePlayer(const FAnimationBaseContext& InContext, const FAnimNode_SequencePlayerBase& InNode);
@@ -191,7 +193,7 @@ struct FAnimTrace
 	ENGINE_API static void OutputSync(const FAnimInstanceProxy& InSourceProxy, int32 InSourceNodeId, FName InGroupName);
 
 	/** Helper function to output a pose watch record */
-	ENGINE_API static void OutputPoseWatch(const FAnimInstanceProxy& InSourceProxy, int32 InPoseWatchId, const TArray<FTransform>& BoneTransforms, const TArray<FBoneIndexType>& RequiredBones, const FTransform& WorldTransform, const bool bIsEnabled);
+	ENGINE_API static void OutputPoseWatch(const FAnimInstanceProxy& InSourceProxy, UPoseWatchPoseElement* InPoseWatchElement, int32 InPoseWatchId, const TArray<FTransform>& BoneTransforms, const FBlendedHeapCurve& InCurves, const TArray<FBoneIndexType>& RequiredBones, const FTransform& WorldTransform, const bool bIsEnabled);
 };
 
 #define TRACE_ANIM_TICK_RECORD(Context, TickRecord) \
@@ -227,6 +229,9 @@ struct FAnimTrace
 #define TRACE_ANIM_NODE_VALUE_WITH_ID(Context, NodeId, Key, Value) \
 	FAnimTrace::OutputAnimNodeValue(Context, NodeId, Key, Value);
 
+#define TRACE_ANIM_NODE_VALUE_WITH_ID_ANIM_NODE(Context, NodeId, Key, Value, ValueAnimInstanceId) \
+	FAnimTrace::OutputAnimNodeValueAnimNode(Context, NodeId, Key, Value, ValueAnimInstanceId);
+
 #define TRACE_ANIM_SEQUENCE_PLAYER(Context, Node) \
 	FAnimTrace::OutputAnimSequencePlayer(Context, Node);
 
@@ -245,8 +250,8 @@ struct FAnimTrace
 #define TRACE_ANIM_NODE_SYNC(SourceProxy, SourceNodeId, GroupName) \
 	FAnimTrace::OutputSync(SourceProxy, SourceNodeId, GroupName);
 
-#define TRACE_ANIM_POSE_WATCH(SourceProxy, PoseWatchId, BoneTransforms, RequiredBones, WorldTransform, bIsEnabled) \
-	FAnimTrace::OutputPoseWatch(SourceProxy, PoseWatchId, BoneTransforms, RequiredBones, WorldTransform, bIsEnabled);
+#define TRACE_ANIM_POSE_WATCH(SourceProxy, PoseWatchElement, PoseWatchId, BoneTransforms, Curves, RequiredBones, WorldTransform, bIsEnabled) \
+	FAnimTrace::OutputPoseWatch(SourceProxy, PoseWatchElement, PoseWatchId, BoneTransforms, Curves, RequiredBones, WorldTransform, bIsEnabled);
 
 #else
 
@@ -261,12 +266,13 @@ struct FAnimTrace
 #define TRACE_SCOPED_ANIM_NODE_SUSPEND
 #define TRACE_ANIM_NODE_VALUE(Context, Key, Value)
 #define TRACE_ANIM_NODE_VALUE_WITH_ID(Context, NodeId, Key, Value)
+#define TRACE_ANIM_NODE_VALUE_WITH_ID_ANIM_NODE(Context, NodeId, Key, Value, ValueAnimInstanceId)
 #define TRACE_ANIM_SEQUENCE_PLAYER(Context, Node)
 #define TRACE_ANIM_STATE_MACHINE_STATE(Context, StateMachineIndex, StateIndex, StateWeight, ElapsedTime)
 #define TRACE_ANIM_NOTIFY(AnimInstance, NotifyEvent, EventType)
 #define TRACE_ANIM_SYNC_MARKER(AnimInstance, SyncMarker)
 #define TRACE_ANIM_MONTAGE(AnimInstance, MontageInstance)
 #define TRACE_ANIM_NODE_SYNC(SourceProxy, SourceNodeId, GroupName)
-#define TRACE_ANIM_POSE_WATCH(SourceProxy, PoseWatchId, BoneTransforms, RequiredBones, WorldTransform, bIsEnabled)
+#define TRACE_ANIM_POSE_WATCH(SourceProxy, PoseWatchElement, PoseWatchId, BoneTransforms, Curves, RequiredBones, WorldTransform, bIsEnabled)
 
 #endif

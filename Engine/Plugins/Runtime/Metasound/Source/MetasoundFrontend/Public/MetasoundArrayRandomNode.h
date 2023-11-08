@@ -177,16 +177,66 @@ namespace Metasound
 			, InputWeightsArray(InInputWeightsArray)
 			, SeedValue(InSeedValue)
 			, NoRepeatOrder(InNoRepeatOrder)
-			, bEnableSharedState(bInEnableSharedState)
 			, TriggerOnNext(FTriggerWriteRef::CreateNew(InParams.OperatorSettings))
 			, TriggerOnReset(FTriggerWriteRef::CreateNew(InParams.OperatorSettings))
 			, OutValue(TDataWriteReferenceFactory<ElementType>::CreateAny(InParams.OperatorSettings))
+			, bEnableSharedState(bInEnableSharedState)
 		{
 			using namespace Frontend;
 
+			SharedStateUniqueId = InParams.Node.GetInstanceID();
+
+			Reset(InParams);
+		}
+
+		virtual ~TArrayRandomGetOperator() = default;
+
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
+		{
+			using namespace ArrayNodeRandomGetVertexNames;
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputTriggerNextValue), TriggerNext);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputTriggerResetSeed), TriggerReset);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputRandomArray), InputArray);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputWeights), InputWeightsArray);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputSeed), SeedValue);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputNoRepeatOrder), NoRepeatOrder);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputEnableSharedState), bEnableSharedState);
+		}
+
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+		{
+			using namespace ArrayNodeRandomGetVertexNames;
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputTriggerOnNext), TriggerOnNext);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputTriggerOnReset), TriggerOnReset);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ShuffleOutputValue), OutValue);
+		}
+
+		virtual FDataReferenceCollection GetInputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
+		}
+
+		virtual FDataReferenceCollection GetOutputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
+		}
+
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			using namespace Frontend;
 #if WITH_METASOUND_DEBUG_ENVIRONMENT
-			GraphName = *InParams.Environment.GetValue<FString>(SourceInterface::Environment::GraphName);
+			if (InParams.Environment.Contains<FString>(SourceInterface::Environment::GraphName))
+			{
+				GraphName = *InParams.Environment.GetValue<FString>(SourceInterface::Environment::GraphName);
+			}
 #endif // WITH_METASOUND_DEBUG_ENVIRONMENT
+			bIsPreviewSound = InParams.Environment.GetValue<bool>(SourceInterface::Environment::IsPreview);
 
 			// Check to see if this is a global shuffler or a local one. 
 			// Global shuffler will use a namespace to opt into it.
@@ -198,69 +248,16 @@ namespace Metasound
 			const ArrayType& InputArrayRef = *InputArray;
 			PrevArraySize = InputArrayRef.Num();
 
-			if (PrevArraySize > 0)
-			{
-				if (*bEnableSharedState)
-				{
-					// Get the environment variable for the unique ID of the sound
-					SharedStateUniqueId = InParams.Node.GetInstanceID();
-					check(SharedStateUniqueId.IsValid());
+			InitializeState(PrevArraySize);
 
-					bIsPreviewSound = InParams.Environment.GetValue<bool>(SourceInterface::Environment::IsPreview);
-
-					FSharedStateRandomGetManager& RGM = FSharedStateRandomGetManager::Get();
-
-					InitSharedStateArgs Args;
-					Args.SharedStateId = SharedStateUniqueId;
-					Args.Seed = PrevSeedValue;
-					Args.NumElements = PrevArraySize;
-					Args.NoRepeatOrder = PrevNoRepeatOrder;
-					Args.bIsPreviewSound = bIsPreviewSound;
-					Args.Weights = WeightsArray;
-
-					RGM.InitSharedState(Args);
-				}
-				else
-				{
-					ArrayRandomGet = MakeUnique<FArrayRandomGet>(PrevSeedValue, PrevArraySize, WeightsArray, PrevNoRepeatOrder);
-				}
-			}
-#if WITH_METASOUND_DEBUG_ENVIRONMENT
-			else
-			{
- 				UE_LOG(LogMetaSound, Verbose, TEXT("Array Random Get: Can't retrieve random elements from an empty array in graph '%s'"), *GraphName);
-			}
-#endif // WITH_METASOUND_DEBUG_ENVIRONMENT
+			*OutValue = TDataTypeFactory<ElementType>::CreateAny(InParams.OperatorSettings);
+			TriggerOnNext->Reset();
+			TriggerOnReset->Reset();
 		}
 
-		virtual ~TArrayRandomGetOperator() = default;
-
-		virtual FDataReferenceCollection GetInputs() const override
+		bool UseSharedState() const
 		{
-			using namespace ArrayNodeRandomGetVertexNames;
-
-			FDataReferenceCollection Inputs;
-			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputTriggerNextValue), TriggerNext);
-			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputTriggerResetSeed), TriggerReset);
-			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputRandomArray), InputArray);
-			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputWeights), InputWeightsArray);
-			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputSeed), SeedValue);
-			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputNoRepeatOrder), NoRepeatOrder);
-			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputEnableSharedState), bEnableSharedState);
-
-			return Inputs;
-		}
-
-		virtual FDataReferenceCollection GetOutputs() const override
-		{
-			using namespace ArrayNodeRandomGetVertexNames;
-
-			FDataReferenceCollection Outputs;
-			Outputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputTriggerOnNext), TriggerOnNext);
-			Outputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputTriggerOnReset), TriggerOnReset);
-			Outputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(ShuffleOutputValue), OutValue);
-
-			return Outputs;
+			return *bEnableSharedState && bSharedStateInitialized;
 		}
 
 		void Execute()
@@ -270,29 +267,30 @@ namespace Metasound
 
 			const ArrayType& InputArrayRef = *InputArray;
 
-			// If the array size has changed, we need to reinit before getting the next value
-			if (PrevArraySize != InputArrayRef.Num())
+			// Determine if the state of the random number generator needs to be
+			// reinitialized.
+			const bool bIsArrayNonEmpty = InputArrayRef.Num() != 0; // Skip reinit if the array is empty because it represents an invalid state for this node.
+			const bool bIsArraySizeChanged = PrevArraySize != InputArrayRef.Num(); // Need to reinit for array size changes. 
+			const bool bIsSharedStateEnablementInconsistent = (*bEnableSharedState != bSharedStateInitialized); // Need to reinit if the shared state enablement has been updated.
+
+			const bool bIsStateReinitializationNeeded = bIsArrayNonEmpty && (bIsArraySizeChanged || bIsSharedStateEnablementInconsistent);
+
+			PrevArraySize = InputArrayRef.Num();
+
+			if (bIsStateReinitializationNeeded)
 			{
-				PrevArraySize = InputArrayRef.Num();
-				if (PrevArraySize != 0)
-				{
-					if (!ArrayRandomGet.IsValid())
-					{
-						ArrayRandomGet = MakeUnique<FArrayRandomGet>(PrevSeedValue, PrevArraySize, WeightsArray, PrevNoRepeatOrder);
-					}
-					ArrayRandomGet->Init(PrevSeedValue, PrevArraySize, WeightsArray, PrevNoRepeatOrder);
-				}
+				InitializeState(PrevArraySize);
 			}
 
 			if (PrevArraySize == 0)
 			{
+#if WITH_METASOUND_DEBUG_ENVIRONMENT
 				if (!bHasLoggedEmptyArrayWarning)
 				{
-#if WITH_METASOUND_DEBUG_ENVIRONMENT
 					UE_LOG(LogMetaSound, Verbose, TEXT("Array Random Get: empty array input (Graph '%s')"), *GraphName);
-#endif // WITH_METASOUND_DEBUG_ENVIRONMENT
 					bHasLoggedEmptyArrayWarning = true;
 				}
+#endif // WITH_METASOUND_DEBUG_ENVIRONMENT
 				return;
 			}
 
@@ -301,7 +299,7 @@ namespace Metasound
 			{
 				PrevSeedValue = *SeedValue;
 
-				if (SharedStateUniqueId.IsValid())
+				if (UseSharedState())
 				{
 					FSharedStateRandomGetManager& RGM = FSharedStateRandomGetManager::Get();
 					RGM.SetSeed(SharedStateUniqueId, PrevSeedValue);
@@ -316,7 +314,7 @@ namespace Metasound
 			if (PrevNoRepeatOrder != *NoRepeatOrder)
 			{
 				PrevNoRepeatOrder = *NoRepeatOrder;
-				if (SharedStateUniqueId.IsValid())
+				if (UseSharedState())
 				{
 					FSharedStateRandomGetManager& RGM = FSharedStateRandomGetManager::Get();
 					RGM.SetNoRepeatOrder(SharedStateUniqueId, PrevNoRepeatOrder);
@@ -329,7 +327,7 @@ namespace Metasound
 			}
 
 			WeightsArray = *InputWeightsArray;
-			if (SharedStateUniqueId.IsValid())
+			if (UseSharedState())
 			{
 				FSharedStateRandomGetManager& RGM = FSharedStateRandomGetManager::Get();
 				RGM.SetRandomWeights(SharedStateUniqueId, WeightsArray);
@@ -352,7 +350,7 @@ namespace Metasound
 				},
 				[this](int32 StartFrame, int32 EndFrame)
 				{
-					if (SharedStateUniqueId.IsValid())
+					if (UseSharedState())
 					{
 						FSharedStateRandomGetManager& RGM = FSharedStateRandomGetManager::Get();
 						RGM.ResetSeed(SharedStateUniqueId);
@@ -375,7 +373,7 @@ namespace Metasound
 					const ArrayType& InputArrayRef = *InputArray;
 					int32 OutRandomIndex = INDEX_NONE;
 
-					if (SharedStateUniqueId.IsValid())
+					if (UseSharedState())
 					{
 						FSharedStateRandomGetManager& RGM = FSharedStateRandomGetManager::Get();
 						OutRandomIndex = RGM.NextValue(SharedStateUniqueId);
@@ -397,6 +395,42 @@ namespace Metasound
 		}
 
 	private:
+		void InitializeState(int32 InArraySize)
+		{
+			bSharedStateInitialized = false;
+			if (InArraySize > 0)
+			{
+				if (*bEnableSharedState)
+				{
+					// Get the environment variable for the unique ID of the sound
+					check(SharedStateUniqueId.IsValid());
+					FSharedStateRandomGetManager& RGM = FSharedStateRandomGetManager::Get();
+
+					InitSharedStateArgs Args;
+					Args.SharedStateId = SharedStateUniqueId;
+					Args.Seed = PrevSeedValue;
+					Args.NumElements = PrevArraySize;
+					Args.NoRepeatOrder = PrevNoRepeatOrder;
+					Args.bIsPreviewSound = bIsPreviewSound;
+					Args.Weights = WeightsArray;
+
+					RGM.InitSharedState(Args);
+
+					bSharedStateInitialized = true;
+				}
+				else
+				{
+					ArrayRandomGet = MakeUnique<FArrayRandomGet>(PrevSeedValue, PrevArraySize, WeightsArray, PrevNoRepeatOrder);
+				}
+			}
+			else
+			{
+				ArrayRandomGet = MakeUnique<FArrayRandomGet>();
+#if WITH_METASOUND_DEBUG_ENVIRONMENT
+ 				UE_LOG(LogMetaSound, Verbose, TEXT("Array Random Get: Can't retrieve random elements from an empty array in graph '%s'"), *GraphName);
+#endif // WITH_METASOUND_DEBUG_ENVIRONMENT
+			}
+		}
 
 		// Inputs
 		FTriggerReadRef TriggerNext;
@@ -405,7 +439,6 @@ namespace Metasound
 		TDataReadReference<WeightsArrayType> InputWeightsArray;
 		FInt32ReadRef SeedValue;
 		FInt32ReadRef NoRepeatOrder;
-		FBoolReadRef bEnableSharedState;
 
 		// Outputs
 		FTriggerWriteRef TriggerOnNext;
@@ -414,6 +447,7 @@ namespace Metasound
 
 #if WITH_METASOUND_DEBUG_ENVIRONMENT
 		FString GraphName;
+		bool bHasLoggedEmptyArrayWarning = false;
 #endif // WITH_METASOUND_DEBUG_ENVIRONMENT
 
 		// Data
@@ -424,7 +458,8 @@ namespace Metasound
 		FGuid SharedStateUniqueId;
 		int32 PrevArraySize = 0;
 		bool bIsPreviewSound = false;
-		bool bHasLoggedEmptyArrayWarning = false;
+		FBoolReadRef bEnableSharedState;
+		bool bSharedStateInitialized = false;
 	};
 
 	template<typename ArrayType>

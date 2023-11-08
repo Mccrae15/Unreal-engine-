@@ -62,12 +62,6 @@ public:
 
 	virtual void SpawnIdent(FDatabase& Database) override;
 
-	virtual void ResetMarkersRecursively() override
-	{
-		ResetMarkers();
-	}
-
-
 #ifdef CADKERNEL_DEV
 	virtual FInfoEntity& GetInfo(FInfoEntity&) const override;
 #endif
@@ -135,15 +129,19 @@ public:
 		return Coordinates.SquareDistance(Point);
 	}
 
-	TSharedRef<FVertexMesh> GetOrCreateMesh(FModelMesh& MeshModel);
+	FVertexMesh& GetOrCreateMesh(FModelMesh& MeshModel);
 
-	const TSharedRef<FVertexMesh> GetMesh() const
+	const FVertexMesh* GetMesh() const
 	{
 		if (!IsActiveEntity())
 		{
 			return GetLinkActiveEntity()->GetMesh();
 		}
-		return Mesh.ToSharedRef();
+		if (Mesh.IsValid())
+		{
+			return Mesh.Get();
+		}
+		return nullptr;
 	}
 
 	void Link(FTopologicalVertex& InEntity);
@@ -184,7 +182,7 @@ public:
 		TLinkable<FTopologicalVertex, FVertexLink>::Empty();
 	}
 
-	bool IsBorderVertex();
+	bool IsBorderVertex() const;
 
 	void AddConnectedEdge(FTopologicalEdge& Edge);
 	void RemoveConnectedEdge(FTopologicalEdge& Edge);
@@ -203,6 +201,8 @@ public:
 	{
 		return ConnectedEdges;
 	}
+
+	const FTopologicalFace* GetFace() const;
 
 	void GetConnectedEdges(TArray<FTopologicalEdge*>& OutConnectedEdges) const
 	{

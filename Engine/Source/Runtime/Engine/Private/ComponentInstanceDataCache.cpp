@@ -79,7 +79,7 @@ public:
 			}
 			else if (Object->GetOuter() == CacheObject)
 			{
-				Result = DuplicateObject(Object, InstanceData.GetUniqueTransientPackage());
+				Result = DuplicateObject(Object, InstanceData.GetUniqueTransientObject(Object->GetClass()));
 				InstanceData.DuplicatedObjects.Emplace(Result);
 			}
 			else
@@ -556,11 +556,20 @@ void FActorComponentInstanceData::ApplyToComponent(UActorComponent* Component, c
 	}
 }
 
-UObject* FInstanceCacheDataBase::GetUniqueTransientPackage()
+UObject* FInstanceCacheDataBase::GetUniqueTransientObject(UClass* ForClass)
 {
-	if (UniqueTransientPackage.DuplicatedObject == nullptr)
+	if (ForClass->ClassWithin && ForClass->ClassWithin != ForClass && ForClass->ClassWithin != UObject::StaticClass())
 	{
-		UniqueTransientPackage = FDataCacheDuplicatedObjectData(NewObject<UActorComponentInstanceDataTransientOuter>(GetTransientPackage()));
+		// If this results in a lot of new objects, we could do a GetObjectsWithOuter on the result of
+		// GetUniqueTransientObject(ForClass->ClassWithin) and reuse an object.But that doesn't seem likely
+		// to be necessary as this is a pretty edge case situation
+		FScopedAllowAbstractClassAllocation AllowAbstract;
+		return NewObject<UObject>(GetUniqueTransientObject(ForClass->ClassWithin), ForClass->ClassWithin, NAME_None, RF_Transient);
+	}
+	else if (UniqueTransientPackage.DuplicatedObject == nullptr)
+	{
+		FScopedAllowAbstractClassAllocation AllowAbstract;
+		UniqueTransientPackage = FDataCacheDuplicatedObjectData(NewObject<UObject>(GetTransientPackage()));
 	}
 	return UniqueTransientPackage.DuplicatedObject;
 }
@@ -776,7 +785,7 @@ void FComponentInstanceDataCache::ApplyToActor(AActor* Actor, const ECacheApplyP
 		}
 
 		// Once we're done attaching, if we have any unattached instance components move them to the root
-		for (const TPair<USceneComponent*, FTransform>& InstanceTransformPair : InstanceComponentTransformToRootMap)
+		for (const auto& InstanceTransformPair : InstanceComponentTransformToRootMap)
 		{
 			check(Actor->GetRootComponent());
 
@@ -800,7 +809,7 @@ void FComponentInstanceDataCache::FindAndReplaceInstances(const TMap<UObject*, U
 		}
 	}
 	TArray<USceneComponent*> SceneComponents;
-	InstanceComponentTransformToRootMap.GenerateKeyArray(SceneComponents);
+	ObjectPtrDecay(InstanceComponentTransformToRootMap).GenerateKeyArray(SceneComponents);
 
 	for (USceneComponent* SceneComponent : SceneComponents)
 	{

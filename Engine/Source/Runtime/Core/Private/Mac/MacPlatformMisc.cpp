@@ -566,12 +566,12 @@ void FMacPlatformMisc::PlatformPreInit()
 	}
 	if (Limit.rlim_cur < OPEN_MAX)
 	{
-		UE_LOG(LogInit, Warning, TEXT("Open files limit too small: %llu, should be at least OPEN_MAX (%llu). rlim_max is %llu, kern.maxfilesperproc is %u. UE4 may be unstable."), Limit.rlim_cur, OPEN_MAX, Limit.rlim_max, MaxFilesPerProc);
+		UE_LOG(LogInit, Warning, TEXT("Open files limit too small: %llu, should be at least OPEN_MAX (%llu). rlim_max is %llu, kern.maxfilesperproc is %u. UE may be unstable."), Limit.rlim_cur, OPEN_MAX, Limit.rlim_max, MaxFilesPerProc);
 	}
 	Result = setrlimit(RLIMIT_NOFILE, &Limit);
 	if (Result != 0)
 	{
-		UE_LOG(LogInit, Warning, TEXT("Failed to change open file limit, UE4 may be unstable."));
+		UE_LOG(LogInit, Warning, TEXT("Failed to change open file limit, UE may be unstable."));
 	}
 
 	FApplePlatformSymbolication::EnableCoreSymbolication(!FPlatformProcess::IsSandboxedApplication() && IS_PROGRAM);
@@ -706,11 +706,16 @@ TArray<uint8> FMacPlatformMisc::GetMacAddress()
 	return Result;
 }
 
-void FMacPlatformMisc::RequestExit( bool Force )
+void FMacPlatformMisc::RequestExit( bool Force, const TCHAR* CallSite)
 {
-	UE_LOG(LogMac, Log,  TEXT("FPlatformMisc::RequestExit(%i)"), Force );
+	UE_LOG(LogMac, Log,  TEXT("FPlatformMisc::RequestExit(%i, %s)"), Force,
+		CallSite ? CallSite : TEXT("<NoCallSiteInfo>"));
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FCoreDelegates::ApplicationWillTerminateDelegate.Broadcast();
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	FCoreDelegates::GetApplicationWillTerminateDelegate().Broadcast();
 
 	notify_cancel(GMacAppInfo.PowerSourceNotification);
 	GMacAppInfo.PowerSourceNotification = 0;
@@ -2190,7 +2195,7 @@ void FMacCrashContext::GenerateInfoInFolder(char const* const InfoFolder) const
 		int ReportFile = open(FilePath, O_CREAT|O_WRONLY, 0766);
 		if (ReportFile != -1)
 		{
-			WriteUTF16String(ReportFile, TEXT("GameName UE4-"));
+			WriteUTF16String(ReportFile, TEXT("GameName UE-"));
 			WriteLine(ReportFile, *GMacAppInfo.AppName);
 			
 			WriteUTF16String(ReportFile, TEXT("BuildVersion 1.0."));
@@ -2363,7 +2368,7 @@ void FMacCrashContext::GenerateCrashInfoAndLaunchReporter() const
 	if(bCanRunCrashReportClient)
 	{
 		// create a crash-specific directory
-		FString CrashInfoFolder = FString::Printf(TEXT("%s/CrashReport-UE4-%s-pid-%d-%s"), UTF8_TO_TCHAR(GMacAppInfo.CrashReportPath), UTF8_TO_TCHAR(GMacAppInfo.AppNameUTF8), (int32)getpid(), *GMacAppInfo.RunUUID.ToString());
+		FString CrashInfoFolder = FString::Printf(TEXT("%s/CrashReport-UE-%s-pid-%d-%s"), UTF8_TO_TCHAR(GMacAppInfo.CrashReportPath), UTF8_TO_TCHAR(GMacAppInfo.AppNameUTF8), (int32)getpid(), *GMacAppInfo.RunUUID.ToString());
 
 		// Do not inline this! The lifetime of this object needs to extend over the usage of Argv in posix_spawn() call below.
 		auto CrashInfoFolderUTF8 = TStringConversion<FTCHARToUTF8_Convert>(*CrashInfoFolder);
@@ -2397,28 +2402,44 @@ void FMacCrashContext::GenerateCrashInfoAndLaunchReporter() const
 			}
 		}
 
-		posix_spawn_file_actions_t FileActions;
-		posix_spawn_file_actions_init(&FileActions);
-
-		posix_spawnattr_t SpawnAttr;
-		posix_spawnattr_init(&SpawnAttr);
-
+		// We've generated the crash report above since we were able to,
+		// now we need to make sure CRC actually exists and is executable before
+		// trying to run it.
+		struct stat Stat;
+		stat(GMacAppInfo.CrashReportClient, &Stat);
+		if (!S_ISREG(Stat.st_mode))
 		{
-			uint16 SpawnFlags = POSIX_SPAWN_SETPGROUP;
-			posix_spawnattr_setflags(&SpawnAttr, SpawnFlags);
+			UE_LOG(LogMac, Error, TEXT("Unable to locate CrashReporterClient: %s"), UTF8_TO_TCHAR(GMacAppInfo.CrashReportClient));
 		}
-
-		extern char **environ; // provided by libc
-
-		// Use posix_spawn() as it is async-signal safe, CreateProc can fail in Cocoa.
-		Status = posix_spawn(&CrcPID, GMacAppInfo.CrashReportClient, &FileActions, &SpawnAttr, (char *const *)Argv, environ);
-
-		posix_spawn_file_actions_destroy(&FileActions);
-		posix_spawnattr_destroy(&SpawnAttr);
-
-		if (Status != 0)
+		else if ((Stat.st_mode & S_IXUSR) == 0)
 		{
-			UE_LOG(LogHAL, Fatal, TEXT("FMacPlatformMisc::GenerateCrashInfoAndLaunchReporter: posix_spawn() failed (%d, %s)"), Status, UTF8_TO_TCHAR(strerror(Status)));
+			UE_LOG(LogMac, Error, TEXT("Unable to execute CrashReporterClient, please run: chmod u+x %s"), UTF8_TO_TCHAR(GMacAppInfo.CrashReportClient));
+		}
+		else
+		{
+			posix_spawn_file_actions_t FileActions;
+			posix_spawn_file_actions_init(&FileActions);
+
+			posix_spawnattr_t SpawnAttr;
+			posix_spawnattr_init(&SpawnAttr);
+
+			{
+				uint16 SpawnFlags = POSIX_SPAWN_SETPGROUP;
+				posix_spawnattr_setflags(&SpawnAttr, SpawnFlags);
+			}
+
+			extern char **environ; // provided by libc
+
+			// Use posix_spawn() as it is async-signal safe, CreateProc can fail in Cocoa.
+			Status = posix_spawn(&CrcPID, GMacAppInfo.CrashReportClient, &FileActions, &SpawnAttr, (char *const *)Argv, environ);
+
+			posix_spawn_file_actions_destroy(&FileActions);
+			posix_spawnattr_destroy(&SpawnAttr);
+
+			if (Status != 0)
+			{
+				UE_LOG(LogMac, Error, TEXT("FMacPlatformMisc::GenerateCrashInfoAndLaunchReporter: posix_spawn() failed (%d, %s)"), Status, UTF8_TO_TCHAR(strerror(Status)));
+			}
 		}
 	}
 

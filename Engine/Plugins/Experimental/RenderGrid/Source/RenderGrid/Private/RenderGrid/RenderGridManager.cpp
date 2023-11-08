@@ -2,7 +2,7 @@
 
 #include "RenderGrid/RenderGridManager.h"
 #include "RenderGrid/RenderGridQueue.h"
-#include "RenderGridUtils.h"
+#include "Utils/RenderGridUtils.h"
 #include "MoviePipelineHighResSetting.h"
 
 
@@ -20,13 +20,45 @@ URenderGridQueue* UE::RenderGrid::FRenderGridManager::CreateBatchRenderQueue(URe
 	return NewRenderQueue;
 }
 
+URenderGridQueue* UE::RenderGrid::FRenderGridManager::CreateBatchRenderQueueSingleFrame(URenderGrid* Grid, const TArray<URenderGridJob*>& Jobs, const int32 Frame)
+{
+	FRenderGridQueueCreateArgs JobArgs;
+	JobArgs.RenderGrid = TStrongObjectPtr(Grid);
+	JobArgs.RenderGridJobs.Append(Jobs);
+	JobArgs.bIsBatchRender = true;
+	JobArgs.bForceUseSequenceFrameRate = true;
+	JobArgs.Frame = Frame;
+	URenderGridQueue* NewRenderQueue = URenderGridQueue::Create(JobArgs);
+	if (!IsValid(NewRenderQueue))
+	{
+		return nullptr;
+	}
+	return NewRenderQueue;
+}
+
+URenderGridQueue* UE::RenderGrid::FRenderGridManager::CreateBatchRenderQueueSingleFramePosition(URenderGrid* Grid, const TArray<URenderGridJob*>& Jobs, const double FramePosition)
+{
+	FRenderGridQueueCreateArgs JobArgs;
+	JobArgs.RenderGrid = TStrongObjectPtr(Grid);
+	JobArgs.RenderGridJobs.Append(Jobs);
+	JobArgs.bIsBatchRender = true;
+	JobArgs.bForceUseSequenceFrameRate = true;
+	JobArgs.FramePosition = FramePosition;
+	URenderGridQueue* NewRenderQueue = URenderGridQueue::Create(JobArgs);
+	if (!IsValid(NewRenderQueue))
+	{
+		return nullptr;
+	}
+	return NewRenderQueue;
+}
+
 
 URenderGridQueue* UE::RenderGrid::FRenderGridManager::RenderPreviewFrame(const FRenderGridManagerRenderPreviewFrameArgs& Args)
 {
 	const FRenderGridManagerRenderPreviewFrameArgsCallback Callback = Args.Callback;
 
 	URenderGrid* RenderGrid = Args.RenderGrid.Get();
-	if (!IsValid(RenderGrid))
+	if (!IsValid(RenderGrid) || RenderGrid->GetLevel().IsNull() || !RenderGrid->GetLevel().IsValid())
 	{
 		Callback.ExecuteIfBound(false);
 		return nullptr;
@@ -175,7 +207,7 @@ UTexture2D* UE::RenderGrid::FRenderGridManager::GetRenderedPreviewFrame(URenderG
 }
 
 
-void UE::RenderGrid::FRenderGridManager::UpdateRenderGridJobsPropValues(URenderGrid* Grid)
+void UE::RenderGrid::FRenderGridManager::UpdateStoredRenderGridJobsPropValues(URenderGrid* Grid)
 {
 	if (!IsValid(Grid))
 	{
@@ -200,7 +232,7 @@ void UE::RenderGrid::FRenderGridManager::UpdateRenderGridJobsPropValues(URenderG
 		{
 			for (URenderGridJob* Job : Jobs)
 			{
-				if (!Job->HasRemoteControlValueBytes(Entity))
+				if (!Job->HasStoredRemoteControlValueBytes(Entity))
 				{
 					Job->SetRemoteControlValueBytes(Entity, Bytes);
 				}
@@ -230,7 +262,7 @@ FRenderGridManagerPreviousPropValues UE::RenderGrid::FRenderGridManager::ApplyJo
 			}
 
 			TArray<uint8> PropData;
-			if (!Job->ConstGetRemoteControlValueBytes(Prop->GetRemoteControlEntity(), PropData))
+			if (!Job->GetRemoteControlValueBytes(Prop->GetRemoteControlEntity(), PropData))
 			{
 				continue;
 			}

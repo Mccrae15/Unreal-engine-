@@ -73,12 +73,6 @@ public:
 		return MemberType == UBMT_RDG_UNIFORM_BUFFER;
 	}
 
-	UE_DEPRECATED(5.1, "Use IsViewableResource instead.")
-	bool IsParentResource() const
-	{
-		return IsTexture() || IsBuffer();
-	}
-
 	bool IsViewableResource() const
 	{
 		return IsTexture() || IsBuffer();
@@ -105,14 +99,6 @@ public:
 		check(IsUniformBuffer());
 		return *GetAs<FRDGUniformBufferBinding>();
 	}
-
-	UE_DEPRECATED(5.1, "Use IsViewableResource instead.")
-	FRDGViewableResource* GetAsParentResource() const
-	{
-		check(IsViewableResource());
-		return *GetAs<FRDGViewableResource*>();
-	}
-
 
 	FRDGViewableResource* GetAsViewableResource() const
 	{
@@ -223,7 +209,7 @@ private:
 };
 
 /** Wraps a pass parameter struct payload and provides helpers for traversing members. */
-class RENDERCORE_API FRDGParameterStruct
+class FRDGParameterStruct
 {
 public:
 	template <typename ParameterStructType>
@@ -290,13 +276,13 @@ public:
 	void EnumerateUniformBuffers(FunctionType Function) const;
 
 	/** Returns a set of static uniform buffer bindings for the parameter struct. */
-	FUniformBufferStaticBindings GetStaticUniformBuffers() const;
+	RENDERCORE_API FUniformBufferStaticBindings GetStaticUniformBuffers() const;
 
 	/** Returns the render pass info generated from the render target binding slots. */
-	FRHIRenderPassInfo GetRenderPassInfo() const;
+	RENDERCORE_API FRHIRenderPassInfo GetRenderPassInfo() const;
 
 	/** Clears out all uniform buffer references in the parameter struct. */
-	static void ClearUniformBuffers(void* Contents, const FRHIUniformBufferLayout* Layout);
+	static RENDERCORE_API void ClearUniformBuffers(void* Contents, const FRHIUniformBufferLayout* Layout);
 
 private:
 	FRDGParameter GetParameterInternal(TArrayView<const FRHIUniformBufferResource> Parameters, uint32 ParameterIndex) const
@@ -344,6 +330,12 @@ template <typename TParameterStruct>
 FORCEINLINE static FRHIRenderPassInfo GetRenderPassInfo(TParameterStruct* Parameters)
 {
 	return FRDGParameterStruct(Parameters, TParameterStruct::FTypeInfo::GetStructMetadata()).GetRenderPassInfo();
+}
+
+template <typename TParameterStruct>
+FORCEINLINE static bool HasRenderPassInfo(TParameterStruct* Parameters)
+{
+	return FRDGParameterStruct(Parameters, TParameterStruct::FTypeInfo::GetStructMetadata()).HasRenderTargets();
 }
 
 /** Helper function to get RHI global uniform buffers out of a pass parameters struct. */

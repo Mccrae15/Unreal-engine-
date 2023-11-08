@@ -9,11 +9,11 @@
 #include "Containers/RingBuffer.h"
 #include "Containers/UnrealString.h"
 #include "CookTypes.h"
-#include "Engine/ICookInfo.h"
 #include "HAL/CriticalSection.h"
 #include "HAL/PlatformCrt.h"
 #include "HAL/PlatformProcess.h"
 #include "Templates/UniquePtr.h"
+#include "UObject/ICookInfo.h"
 #include "UObject/NameTypes.h"
 
 #include <atomic>
@@ -37,6 +37,7 @@ protected:
 	TArray<const ITargetPlatform*> Platforms;
 	FCompletionCallback CompletionCallback;
 	FInstigator Instigator;
+	bool bUrgent = false;
 
 public:
 	FFilePlatformRequest() = default;
@@ -55,6 +56,9 @@ public:
 	void SetFilename(FString InFilename);
 	const FName& GetFilename() const;
 	FInstigator& GetInstigator();
+
+	void SetUrgent(bool bInUrgent) { bUrgent = bInUrgent; }
+	bool IsUrgent() const { return bUrgent; }
 
 	const TArray<const ITargetPlatform*>& GetPlatforms() const;
 	TArray<const ITargetPlatform*>& GetPlatforms();

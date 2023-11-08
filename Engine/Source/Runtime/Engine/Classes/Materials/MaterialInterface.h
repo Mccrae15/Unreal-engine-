@@ -49,6 +49,7 @@ class UMaterial;
 class UPhysicalMaterial;
 class UPhysicalMaterialMask;
 class USubsurfaceProfile;
+class USpecularProfile;
 class UTexture;
 class UMaterialInstance;
 struct FDebugShaderTypeInfo;
@@ -92,6 +93,7 @@ enum EMaterialUsage : int
 	MATUSAGE_VirtualHeightfieldMesh,
 	MATUSAGE_Nanite,
 	MATUSAGE_VolumetricCloud,
+	MATUSAGE_HeterogeneousVolumes,
 
 	MATUSAGE_MAX,
 };
@@ -270,9 +272,17 @@ public:
 #endif // WITH_EDITORONLY_DATA
 
 public:
-	/** SubsurfaceProfile, for Screen Space Subsurface Scattering */
+	/** SubsurfaceProfile, for Screen Space Subsurface Scattering.. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Material, meta = (DisplayName = "Subsurface Profile"))
 	TObjectPtr<class USubsurfaceProfile> SubsurfaceProfile;
+
+	/** Specular Profile. For internal usage, not editable/visible */
+	UPROPERTY()
+	TArray<TObjectPtr<class USpecularProfile>> SpecularProfiles;
+
+	/** Whether this material interface is included in the base game (and not in a DLC) */
+	UPROPERTY()
+	uint8 bIncludedInBaseGame : 1;
 
 	/* -------------------------- */
 
@@ -339,7 +349,7 @@ public:
 	/** Importing data and options used for this material */
 	UPROPERTY(EditAnywhere, Instanced, Category = ImportSettings)
 	TObjectPtr<class UAssetImportData> AssetImportData;
-
+	
 private:
 	/** Unique ID for this material, used for caching during distributed lighting */
 	UPROPERTY()
@@ -544,9 +554,13 @@ public:
 
 	/**
 	 * Get the associated nanite override material
-	 * @return - nanite override, will be this material if none was set
+	 * @return - nanite override, if none was set returns null as a signal to use this material instead
 	 */
-	virtual UMaterialInterface* GetNaniteOverride(TMicRecursionGuard RecursionGuard = TMicRecursionGuard()) PURE_VIRTUAL(UMaterialInterface::GetNaniteOverride, return nullptr;);
+	virtual UMaterialInterface* GetNaniteOverride(TMicRecursionGuard RecursionGuard = TMicRecursionGuard()) const PURE_VIRTUAL(UMaterialInterface::GetNaniteOverride, return nullptr;);
+
+	/** Get the associated nanite override material. */
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Material")
+	UMaterialInterface* GetNaniteOverideMaterial() const { return GetNaniteOverride(); }
 
 	/**
 	 * Precache PSOs which can be used for this material for the given vertex factory type and material paramaters
@@ -680,10 +694,10 @@ public:
 	 * Output to the log which materials and textures are used by this material.
 	 * @param Indent	Number of tabs to put before the log.
 	 */
-	ENGINE_API virtual void LogMaterialsAndTextures(FOutputDevice& Ar, int32 Indent) const {}
+	virtual void LogMaterialsAndTextures(FOutputDevice& Ar, int32 Indent) const {}
 #endif
 
-	ENGINE_API virtual void DumpDebugInfo(FOutputDevice& OutputDevice) const {}
+	virtual void DumpDebugInfo(FOutputDevice& OutputDevice) const {}
 
 private:
 	// might get called from game or render thread
@@ -718,6 +732,10 @@ public:
 	 *	@param	OutGuids			The list of all resource guids affecting the precomputed lighting system and texture streamer.
 	 */
 	ENGINE_API virtual void GetLightingGuidChain(bool bIncludeTextures, TArray<FGuid>& OutGuids) const;
+
+#if WITH_EDITOR
+	ENGINE_API virtual uint32 ComputeAllStateCRC() const;
+#endif // WITH_EDITOR
 
 	/**
 	 *	Check if the textures have changed since the last time the material was
@@ -865,7 +883,7 @@ public:
 	ENGINE_API bool IsDoubleVectorParameterUsedAsChannelMask(const FHashedMaterialParameterInfo& ParameterInfo, bool& OutValue) const;
 	ENGINE_API bool GetDoubleVectorParameterChannelNames(const FHashedMaterialParameterInfo& ParameterInfo, FParameterChannelNames& OutValue) const;
 #endif // WITH_EDITOR
-	ENGINE_API bool GetTextureParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, class UTexture*& OutValue, bool bOveriddenOnly = false) const;
+	ENGINE_API virtual bool GetTextureParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, class UTexture*& OutValue, bool bOveriddenOnly = false) const;
 	ENGINE_API bool GetRuntimeVirtualTextureParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, class URuntimeVirtualTexture*& OutValue, bool bOveriddenOnly = false) const;
 	ENGINE_API bool GetSparseVolumeTextureParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, class USparseVolumeTexture*& OutValue, bool bOveriddenOnly = false) const;
 #if WITH_EDITOR
@@ -891,9 +909,13 @@ public:
 	ENGINE_API virtual bool IsTranslucencyWritingFrontLayerTransparency() const;
 	ENGINE_API virtual bool IsMasked() const;
 	ENGINE_API virtual bool IsDeferredDecal() const;
+	ENGINE_API virtual bool WritesToRuntimeVirtualTexture() const;
+	ENGINE_API virtual FDisplacementScaling GetDisplacementScaling() const;
 	ENGINE_API virtual float GetMaxWorldPositionOffsetDisplacement() const;
-
+	ENGINE_API virtual bool ShouldAlwaysEvaluateWorldPositionOffset() const;
 	ENGINE_API virtual USubsurfaceProfile* GetSubsurfaceProfile_Internal() const;
+	ENGINE_API virtual uint32 NumSpecularProfile_Internal() const;
+	ENGINE_API virtual USpecularProfile* GetSpecularProfile_Internal(uint32 Index) const;
 	ENGINE_API virtual bool CastsRayTracedShadows() const;
 
 	/**
@@ -956,10 +978,10 @@ public:
 	*
 	* @param CompileMode Controls whether or not we block on the shader compile results.
 	*/
-	ENGINE_API virtual void CacheShaders(EMaterialShaderPrecompileMode CompileMode = EMaterialShaderPrecompileMode::Default) {}
+	virtual void CacheShaders(EMaterialShaderPrecompileMode CompileMode = EMaterialShaderPrecompileMode::Default) {}
 
 #if WITH_EDITOR
-	ENGINE_API virtual void CacheGivenTypesForCooking(EShaderPlatform Platform, ERHIFeatureLevel::Type FeatureLevel, EMaterialQualityLevel::Type QualityLevel, const TArray<const FVertexFactoryType*>& VFTypes, const TArray<const FShaderPipelineType*> PipelineTypes, const TArray<const FShaderType*>& ShaderTypes) {}
+	virtual void CacheGivenTypesForCooking(EShaderPlatform Platform, ERHIFeatureLevel::Type FeatureLevel, EMaterialQualityLevel::Type QualityLevel, const TArray<const FVertexFactoryType*>& VFTypes, const TArray<const FShaderPipelineType*> PipelineTypes, const TArray<const FShaderType*>& ShaderTypes) {}
 #endif
 
 	/** @brief Checks to see if this material has all its shaders cached.
@@ -972,7 +994,7 @@ public:
 	* @see CacheShaders
 	* @note This function will return true if the resources are not cache for this material yet.
 	*/
-	ENGINE_API virtual bool IsComplete() const { return true; }
+	virtual bool IsComplete() const { return true; }
 
 	/** @brief Checks to see if this material has all its shaders cached and if not, will perform a synchronous compilation of those.
 	*
@@ -987,7 +1009,7 @@ public:
 
 #if WITH_EDITOR
 	/** Clears the shader cache and recompiles the shader for rendering. */
-	ENGINE_API virtual void ForceRecompileForRendering() {}
+	virtual void ForceRecompileForRendering() {}
 #endif // WITH_EDITOR
 
 	/**
@@ -1016,13 +1038,13 @@ public:
 	ENGINE_API virtual int32 CompilePropertyEx( class FMaterialCompiler* Compiler, const FGuid& AttributeID );
 
 	/** True if this Material Interface should force a plane preview */
-	ENGINE_API virtual bool ShouldForcePlanePreview()
+	virtual bool ShouldForcePlanePreview()
 	{
 		return bShouldForcePlanePreview;
 	}
 	
 	/** Set whether or not this Material Interface should force a plane preview */
-	ENGINE_API void SetShouldForcePlanePreview(const bool bInShouldForcePlanePreview)
+	void SetShouldForcePlanePreview(const bool bInShouldForcePlanePreview)
 	{
 		bShouldForcePlanePreview = bInShouldForcePlanePreview;
 	};
@@ -1112,7 +1134,7 @@ public:
 	*	@param	OutShaderInfo	Array of results sorted by vertex factory type, and shader type.
 	*
 	*/
-	ENGINE_API virtual void GetShaderTypes(EShaderPlatform Platform, const ITargetPlatform* TargetPlatform, TArray<FDebugShaderTypeInfo>& OutShaderInfo) {};
+	virtual void GetShaderTypes(EShaderPlatform Platform, const ITargetPlatform* TargetPlatform, TArray<FDebugShaderTypeInfo>& OutShaderInfo) {};
 #endif // WITH_EDITOR
 
 protected:

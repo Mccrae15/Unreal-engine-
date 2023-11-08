@@ -74,13 +74,13 @@ namespace ConstructorHelpersInternal
 	}
 }
 
-struct COREUOBJECT_API ConstructorHelpers
+struct ConstructorHelpers
 {
 public:
 	template<class T>
 	struct FObjectFinder : public FGCObject
 	{
-		T* Object;
+		TObjectPtr<T> Object;
 		FObjectFinder(const TCHAR* ObjectToFind, uint32 InLoadFlags = LOAD_None)
 		{
 			CheckIfIsInConstructor(ObjectToFind);
@@ -110,7 +110,7 @@ public:
 	struct FObjectFinderOptional : public FGCObject
 	{
 	private:
-		T* Object;
+		TObjectPtr<T> Object;
 		const TCHAR* ObjectToFind;
 		uint32 LoadFlags;
 	public:
@@ -176,9 +176,7 @@ public:
 		
 		virtual void AddReferencedObjects( FReferenceCollector& Collector ) override
 		{
-			UClass* ReferencedClass = Class.Get();
-			Collector.AddReferencedObject(ReferencedClass);
-			Class = ReferencedClass;
+			Collector.AddReferencedObject(Class.GetGCPtr());
 		}
 
 		virtual FString GetReferencerName() const override
@@ -189,7 +187,7 @@ public:
 
 public:
 	/** If there is an object class, strips it off. */
-	static void StripObjectClass( FString& PathName, bool bAssertOnBadPath = false );
+	static COREUOBJECT_API void StripObjectClass( FString& PathName, bool bAssertOnBadPath = false );
 
 private:
 	static void ValidateObject(UObject *Object, const FString& PathName, const TCHAR* ObjectToFind)
@@ -206,9 +204,9 @@ private:
 #endif
 	}
 
-	static void FailedToFind(const TCHAR* ObjectToFind);
-	static void CheckFoundViaRedirect(UObject *Object, const FString& PathName, const TCHAR* ObjectToFind);
-	static void CheckIfIsInConstructor(const TCHAR* ObjectToFind);
+	static COREUOBJECT_API void FailedToFind(const TCHAR* ObjectToFind);
+	static COREUOBJECT_API void CheckFoundViaRedirect(UObject *Object, const FString& PathName, const TCHAR* ObjectToFind);
+	static COREUOBJECT_API void CheckIfIsInConstructor(const TCHAR* ObjectToFind);
 };
 
 

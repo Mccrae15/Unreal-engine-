@@ -8,11 +8,14 @@
 #include "DynamicMesh/MeshIndexUtil.h"
 #include "DynamicMesh/MeshNormals.h"
 #include "Changes/MeshVertexChange.h"
+#include "Changes/MeshChange.h"
 #include "DynamicMesh/ColliderMesh.h"
 #include "GroupTopology.h"
 #include "Spatial/SegmentTree3.h"
 #include "ToolSceneQueriesUtil.h"
 #include "Selection/DynamicMeshPolygroupTransformer.h"
+#include "Selection/ToolSelectionUtil.h"
+#include "ToolDataVisualizer.h"
 
 using namespace UE::Geometry;
 
@@ -65,6 +68,12 @@ void FBaseDynamicMeshSelector::InvalidateOnMeshChange(FDynamicMeshChangeInfo Cha
 	NotifyGeometryModified();
 }
 
+bool FBaseDynamicMeshSelector::SupportsSleep() const
+{
+	// can only sleep if target mesh is valid
+	return TargetMesh.IsValid();
+}
+
 void FBaseDynamicMeshSelector::Shutdown()
 {
 	if (TargetMesh.IsValid())
@@ -81,7 +90,10 @@ void FBaseDynamicMeshSelector::Shutdown()
 
 bool FBaseDynamicMeshSelector::Sleep()
 {
-	check(TargetMesh.IsValid());
+	if (TargetMesh.IsValid() == false)
+	{
+		return false;
+	}
 
 	TargetMesh->OnMeshChanged().Remove(TargetMesh_OnMeshChangedHandle);
 	TargetMesh_OnMeshChangedHandle.Reset();
@@ -98,7 +110,10 @@ bool FBaseDynamicMeshSelector::Sleep()
 
 bool FBaseDynamicMeshSelector::Restore()
 {
-	check(SleepingTargetMesh.IsValid());
+	if (SleepingTargetMesh.IsValid() == false)
+	{
+		return false;
+	}
 
 	TargetMesh = SleepingTargetMesh.Get();
 	SleepingTargetMesh = nullptr;
@@ -115,6 +130,8 @@ void FBaseDynamicMeshSelector::InitializeSelectionFromPredicate(
 	EInitializeSelectionMode InitializeMode,
 	const FGeometrySelection* ReferenceSelection)
 {
+	if (IsLockable() && IsLocked()) return;
+
 	const FGroupTopology* UseGroupTopology = ( SelectionOut.TopologyType == EGeometryTopologyType::Polygroup ) ? 
 		GetGroupTopology() : nullptr;
 
@@ -156,6 +173,8 @@ void FBaseDynamicMeshSelector::UpdateSelectionFromSelection(
 	const FGeometrySelectionUpdateConfig& UpdateConfig,
 	FGeometrySelectionDelta* SelectionDelta )
 {
+	if (IsLockable() && IsLocked()) return;
+
 	if ( FromSelection.IsSameType(SelectionEditor.GetSelection()) )
 	{
 		UE::Geometry::UpdateSelectionWithNewElements(&SelectionEditor, UpdateConfig.ChangeType,
@@ -185,7 +204,8 @@ void FBaseDynamicMeshSelector::UpdateSelectionFromSelection(
 		return;
 	}
 
-	ensure(false);		// todo: support this type of convert selection
+	// todo: support additional conversion types here
+	//ensure(false);
 }
 
 
@@ -196,6 +216,7 @@ bool FBaseDynamicMeshSelector::RayHitTest(
 	FInputRayHit& HitResultOut )
 {
 	HitResultOut = FInputRayHit();
+	if (IsLockable() && IsLocked()) return false;
 
 	// todo: do we need to sometimes ignore surface hits here? maybe for Volumes in (eg) edge mode...
 
@@ -238,6 +259,8 @@ void FBaseDynamicMeshSelector::UpdateSelectionViaRaycast(
 	const FGeometrySelectionUpdateConfig& UpdateConfig,
 	FGeometrySelectionUpdateResult& ResultOut)
 {
+	if (IsLockable() && IsLocked()) return;
+
 	if (SelectionEditor.GetTopologyType() == EGeometryTopologyType::Triangle)
 	{
 		UpdateSelectionViaRaycast_MeshTopology(RayInfo, SelectionEditor, UpdateConfig, ResultOut);
@@ -342,6 +365,8 @@ void FBaseDynamicMeshSelector::GetSelectionPreviewForRaycast(
 	const FWorldRayQueryInfo& RayInfo,
 	FGeometrySelectionEditor& PreviewEditor)
 {
+	if (IsLockable() && IsLocked()) return;
+
 	FGeometrySelectionUpdateResult UpdateResult;
 	UpdateSelectionViaRaycast(RayInfo, PreviewEditor,
 		FGeometrySelectionUpdateConfig(),	// defaults to add
@@ -358,6 +383,8 @@ void FBaseDynamicMeshSelector::UpdateSelectionViaShape(
 {
 	ResultOut.bSelectionModified = false;
 	ResultOut.bSelectionMissed = true;
+
+	if (IsLockable() && IsLocked()) return;
 
 	FTransformSRT3d WorldTransform = GetWorldTransformFunc();
 	TArray<uint64> InsideElements;
@@ -588,36 +615,33 @@ void FBaseDynamicMeshSelector::AccumulateSelectionBounds(const FGeometrySelectio
 
 void FBaseDynamicMeshSelector::AccumulateSelectionElements(const FGeometrySelection& Selection, FGeometrySelectionElements& Elements, bool bTransformToWorld, bool bIsForPreview)
 {
-	FTransform UseWorldTransform = GetLocalToWorldTransform();
+	const FTransform UseWorldTransform = GetLocalToWorldTransform();
 	const FTransform* ApplyTransform = (bTransformToWorld) ? &UseWorldTransform : nullptr;
+	const bool bMapFacesToEdges = bIsForPreview;
 
-	bool bMapFacesToEdges = bIsForPreview;
-	if (Selection.TopologyType == EGeometryTopologyType::Polygroup)
-	{
-		const FGroupTopology* Topology = GetGroupTopology();
-		TargetMesh->ProcessMesh([&](const UE::Geometry::FDynamicMesh3& SourceMesh)
-		{
-			UE::Geometry::EnumeratePolygroupSelectionElements(Selection, SourceMesh, Topology,
-				[&](uint32 VertexID, const FVector3d& Point) { Elements.Points.Add(Point); },
-				[&](uint32 EdgeID, const FSegment3d& Segment) { Elements.Segments.Add(Segment); },
-				[&](uint32 TriangleID, const FTriangle3d& Triangle) { Elements.Triangles.Add(Triangle); },
-				ApplyTransform, bMapFacesToEdges
-			);
-		});
-	}
-	else
-	{
-		TargetMesh->ProcessMesh([&](const UE::Geometry::FDynamicMesh3& SourceMesh)
-		{
-			UE::Geometry::EnumerateTriangleSelectionElements(Selection, SourceMesh, 
-				[&](uint32 VertexID, const FVector3d& Point) { Elements.Points.Add(Point); },
-				[&](uint32 EdgeID, const FSegment3d& Segment) { Elements.Segments.Add(Segment); },
-				[&](uint32 TriangleID, const FTriangle3d& Triangle) { Elements.Triangles.Add(Triangle); },
-				ApplyTransform, bMapFacesToEdges
-			);
-		});
-	}
+	ToolSelectionUtil::AccumulateSelectionElements(
+		Elements,
+		Selection,
+		TargetMesh->GetMeshRef(),
+		Selection.TopologyType == EGeometryTopologyType::Polygroup ? GetGroupTopology() : nullptr,
+		ApplyTransform,
+		bMapFacesToEdges);
 }
+
+
+
+
+
+void FBaseDynamicMeshSelector::UpdateAfterGeometryEdit(
+	IToolsContextTransactionsAPI* TransactionsAPI,
+	bool bInTransaction,
+	TUniquePtr<FDynamicMeshChange> DynamicMeshChange,
+	FText GeometryEditTransactionString)
+{
+	TransactionsAPI->AppendChange(GetDynamicMesh(),
+		MakeUnique<FMeshChange>(MoveTemp(DynamicMeshChange)), GeometryEditTransactionString);
+}
+
 
 
 void FBaseDynamicMeshSelector::UpdateColliderMesh()
@@ -808,10 +832,37 @@ void FBasicDynamicMeshSelectionTransformer::BeginTransform(const FGeometrySelect
 		UE::Geometry::VertexToTriangleOneRing(&SourceMesh, MeshVertices, TriangleROI);
 
 		// save overlay normals
+		OverlayNormalsArray.Reset();
+		OverlayNormalsSet.Reset();
 		if (SourceMesh.HasAttributes() && SourceMesh.Attributes()->PrimaryNormals() != nullptr)
 		{
 			const FDynamicMeshNormalOverlay* Normals = SourceMesh.Attributes()->PrimaryNormals();
-			UE::Geometry::TrianglesToOverlayElements(Normals, TriangleROI, OverlayNormals);
+			UE::Geometry::TrianglesToOverlayElements(Normals, TriangleROI, OverlayNormalsSet);
+			OverlayNormalsArray = OverlayNormalsSet.Array();
+		}
+
+		// collect selected mesh edges and vertices
+		ActiveSelectionEdges.Reset();
+		ActiveSelectionVertices.Reset();
+		TSet<int32> SelectionEdges;
+		UE::Geometry::EnumerateTriangleSelectionElements(Selection, SourceMesh, 
+			[&](int32 VertexID, FVector3d Position) { ActiveSelectionVertices.Add(VertexID); },
+			[&](int32 EdgeID, const FSegment3d&) { ActiveSelectionEdges.Add(SourceMesh.GetEdgeV(EdgeID)); SelectionEdges.Add(EdgeID); },
+			[&](int32 TriangleID, const FTriangle3d&) {},
+			/*ApplyTransform*/nullptr, /*bMapFacesToEdgeLoops*/true);
+
+		ActiveROIEdges.Reset();
+		for (int32 tid : TriangleROI)
+		{
+			FIndex3i TriEdges = SourceMesh.GetTriEdges(tid);
+			for (int32 k = 0; k < 3; ++k)
+			{
+				if (SelectionEdges.Contains(TriEdges[k]) == false)
+				{
+					ActiveROIEdges.Add(SourceMesh.GetEdgeV(TriEdges[k]));
+					SelectionEdges.Add(TriEdges[k]);
+				}
+			}
 		}
 	});
 
@@ -838,14 +889,10 @@ void FBasicDynamicMeshSelectionTransformer::UpdateTransform(
 			EditMesh.SetVertex(MeshVertices[k], UpdatedPositions[k]);
 		}
 
-		// TODO: the right thing to do here would be to only recompute the modified overlay normals...but we have no utility for that??
-		//FMeshNormals::QuickRecomputeOverlayNormals(EditMesh);
+		FMeshNormals::RecomputeOverlayElementNormals(EditMesh, OverlayNormalsArray);
 
 	}, EDynamicMeshChangeType::DeformationEdit,
-		//EDynamicMeshAttributeChangeFlags::VertexPositions, false);
 	   EDynamicMeshAttributeChangeFlags::VertexPositions | EDynamicMeshAttributeChangeFlags::NormalsTangents, false);
-
-	UpdatePendingVertexChange(false);
 }
 
 void FBasicDynamicMeshSelectionTransformer::UpdatePendingVertexChange(bool bFinal)
@@ -854,7 +901,7 @@ void FBasicDynamicMeshSelectionTransformer::UpdatePendingVertexChange(bool bFina
 	Selector->GetDynamicMesh()->ProcessMesh([&](const FDynamicMesh3& SourceMesh)
 	{
 		ActiveVertexChange->SaveVertices(&SourceMesh, MeshVertices, !bFinal);
-		ActiveVertexChange->SaveOverlayNormals(&SourceMesh, OverlayNormals, !bFinal);
+		ActiveVertexChange->SaveOverlayNormals(&SourceMesh, OverlayNormalsSet, !bFinal);
 	});
 }
 
@@ -878,6 +925,38 @@ void FBasicDynamicMeshSelectionTransformer::EndTransform(IToolsContextTransactio
 
 
 
+void FBasicDynamicMeshSelectionTransformer::PreviewRender(IToolsContextRenderAPI* RenderAPI)
+{
+	if (!bEnableSelectionTransformDrawing) return;
+
+	FToolDataVisualizer Visualizer;
+	Visualizer.bDepthTested = false;
+	Visualizer.BeginFrame(RenderAPI);
+
+	Visualizer.PushTransform(Selector->GetLocalToWorldTransform());
+
+	Selector->GetDynamicMesh()->ProcessMesh([&](const FDynamicMesh3& SourceMesh)
+	{
+		Visualizer.SetPointParameters(FLinearColor(0, 0.3f, 0.95f, 1), 5.0f);
+		for (int32 VertexID : ActiveSelectionVertices)
+		{
+			Visualizer.DrawPoint(SourceMesh.GetVertex(VertexID));
+		}
+
+		Visualizer.SetLineParameters(FLinearColor(0, 0.3f, 0.95f, 1), 3.0f);
+		for (FIndex2i EdgeV : ActiveSelectionEdges)
+		{
+			Visualizer.DrawLine(SourceMesh.GetVertex(EdgeV.A), SourceMesh.GetVertex(EdgeV.B));
+		}
+		Visualizer.SetLineParameters(FLinearColor(0, 0.3f, 0.95f, 1), 1.0f);
+		for (FIndex2i EdgeV : ActiveROIEdges)
+		{
+			Visualizer.DrawLine(SourceMesh.GetVertex(EdgeV.A), SourceMesh.GetVertex(EdgeV.B));
+		}
+	});
+
+	Visualizer.EndFrame();
+}
 
 
 

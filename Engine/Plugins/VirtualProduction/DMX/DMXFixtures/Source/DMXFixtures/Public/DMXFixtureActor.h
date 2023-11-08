@@ -21,7 +21,7 @@
 
 
 UENUM()
-enum EDMXFixtureQualityLevel
+enum EDMXFixtureQualityLevel : int
 {
 	LowQuality			UMETA(DisplayName = "Low"),
 	MediumQuality		UMETA(DisplayName = "Medium"),
@@ -50,9 +50,6 @@ public:
 	//~ Begin DMXMVRFixtureActorInterface interface
 	virtual void OnMVRGetSupportedDMXAttributes_Implementation(TArray<FName>& OutAttributeNames, TArray<FName>& OutMatrixAttributeNames) const override;
 	//~ End DMXMVRFixtureActorInterface interface
-	
-	// UObject interface
-	virtual void PostLoad() override;
 
 	bool HasBeenInitialized;
 	float LensRadius;
@@ -91,6 +88,14 @@ public:
 	virtual void PushNormalizedValuesPerAttribute(const FDMXNormalizedAttributeValueMap& ValuePerAttributeMap) override;
 	
 public:
+	/** 
+	 * Updates the spotlight intensity. 
+	 * Considers light intensity max, the spotlight intensity scale and the cone angle to compute the intensity. 
+	 * Should be used instead of setting the intensity of the spotlight directly.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "DMX Fixture")
+	void UpdateSpotLightIntensity();
+
 	/** Sets the a new max light intensity */
 	UFUNCTION(BlueprintCallable, Category = "DMX Fixture")
 	void SetLightIntensityMax(float NewLightIntensityMax);
@@ -114,7 +119,6 @@ public:
 	/** Sets if the light should cast shadows */
 	UFUNCTION(BlueprintCallable, Category = "DMX Fixture")
 	void SetLightCastShadow(bool bLightShouldCastShadow);
-
 
 	// PARAMETERS---------------------------------
 
@@ -196,9 +200,9 @@ public:
 public:
 	UE_DEPRECATED(5.1, "Use BeamQuality instead")
 	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Use BeamQuality instead."))
-	float MinQuality;
+	float MinQuality_DEPRECATED;
 
 	UE_DEPRECATED(5.1, "Use ZoomQuality instead")
 	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Use ZoomQuality instead."))
-	float MaxQuality;
+	float MaxQuality_DEPRECATED;
 };

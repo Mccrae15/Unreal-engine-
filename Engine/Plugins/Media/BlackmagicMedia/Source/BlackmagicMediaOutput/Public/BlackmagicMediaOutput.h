@@ -4,7 +4,7 @@
 
 #include "MediaOutput.h"
 
-#include "BlackmagicDeviceProvider.h"
+#include "BlackmagicMediaDefinitions.h"
 #include "MediaIOCoreDefinitions.h"
 
 #include "BlackmagicMediaOutput.generated.h"
@@ -39,7 +39,6 @@ enum class EBlackmagicMediaOutputAudioBitDepth : uint8
 	Signed_16Bits = 16 UMETA(DisplayName = "16 bits signed"),
 	Signed_32Bits = 32 UMETA(DisplayName = "32 bits signed")
 };
-
 
 /**
  * Output information for a MediaCapture.
@@ -104,6 +103,12 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Output")
 	bool bInterlacedFieldsTimecodeNeedToMatch;
+	
+	/**
+	 * HDR Metadata of the video signal.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Output", DisplayName="HDR")
+	FBlackmagicMediaHDROptions HDROptions;
 
 	/**
 	 * Whether to use multi threaded scheduling which should improve performance when outputting 4k and 8k content. (Experimental)

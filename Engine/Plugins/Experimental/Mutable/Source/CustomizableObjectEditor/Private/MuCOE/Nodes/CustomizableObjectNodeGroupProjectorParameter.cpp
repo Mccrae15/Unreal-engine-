@@ -31,7 +31,7 @@ TArray<FGroupProjectorParameterImage> UCustomizableObjectNodeGroupProjectorParam
 
 	int32 NameIndex = 0;
 
-	for (auto RowIt = Helper_GetRowMap(OptionImagesDataTable).CreateConstIterator(); RowIt; ++RowIt)
+	for (TMap<FName, uint8*>::TConstIterator RowIt = OptionImagesDataTable->GetRowMap().CreateConstIterator(); RowIt; ++RowIt)
 	{
 		uint8* RowData = RowIt.Value();
 		FString PropertyValue(TEXT(""));
@@ -116,7 +116,7 @@ void UCustomizableObjectNodeGroupProjectorParameter::BackwardsCompatibleFixup()
 		}
 	}
 
-	if (CustomizableObjectCustomVersion < FCustomizableObjectCustomVersion::GroupProjectorImagePin)
+	if (CustomizableObjectCustomVersion < FCustomizableObjectCustomVersion::GroupProjectorImagePinRemoved)
 	{
 		ReconstructNode();		
 	}
@@ -128,13 +128,6 @@ void UCustomizableObjectNodeGroupProjectorParameter::AllocateDefaultPins(UCustom
 	const UEdGraphSchema_CustomizableObject* Schema = GetDefault<UEdGraphSchema_CustomizableObject>();
 
 	CustomCreatePin(EGPD_Output, Schema->PC_GroupProjector, TEXT("Value"));	
-	ImagePin = CustomCreatePin(EGPD_Input, Schema->PC_Image, TEXT("Texture"));
-}
-
-
-UEdGraphPin& UCustomizableObjectNodeGroupProjectorParameter::GetImagePin() const
-{
-	return *ImagePin.Get();
 }
 
 

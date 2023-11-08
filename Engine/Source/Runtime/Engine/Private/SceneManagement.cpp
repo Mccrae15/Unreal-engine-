@@ -3,11 +3,11 @@
 #include "SceneManagement.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
+#include "EngineModule.h"
+#include "MaterialShared.h"
 #include "PrimitiveSceneProxy.h"
 #include "StaticMeshResources.h"
 #include "RHIStaticStates.h"
-#include "SceneRendering.h"
-#include "SceneCore.h"
 #include "SceneView.h"
 #include "Async/ParallelFor.h"
 #include "LightMap.h"
@@ -20,6 +20,8 @@
 #include "ColorSpace.h"
 #include "DataDrivenShaderPlatformInfo.h"
 #include "StaticMeshBatch.h"
+#include "PrimitiveUniformShaderParametersBuilder.h"
+#include "PrimitiveSceneShaderData.h"
 
 static TAutoConsoleVariable<float> CVarLODTemporalLag(
 	TEXT("lod.TemporalLag"),
@@ -66,11 +68,11 @@ bool ShouldAllPrimitivesHaveDistanceField(EShaderPlatform ShaderPlatform)
 
 bool ShouldCompileDistanceFieldShaders(EShaderPlatform ShaderPlatform)
 {
-	return IsFeatureLevelSupported(ShaderPlatform, ERHIFeatureLevel::SM5) && DoesPlatformSupportDistanceFieldAO(ShaderPlatform) && IsUsingDistanceFields(ShaderPlatform);
+	return DoesPlatformSupportDistanceFieldAO(ShaderPlatform) && IsUsingDistanceFields(ShaderPlatform);
 }
 
 
-void FTemporalLODState::UpdateTemporalLODTransition(const FViewInfo& View, float LastRenderTime)
+void FTemporalLODState::UpdateTemporalLODTransition(const FSceneView& View, float LastRenderTime)
 {
 	bool bOk = false;
 	if (!View.bDisableDistanceBasedFadeTransitions)
@@ -278,13 +280,18 @@ void FSimpleElementCollector::DrawPoint(
 		);
 }
 
+void FDynamicPrimitiveResource::InitPrimitiveResource()
+{
+	InitPrimitiveResource(FRHICommandListImmediate::Get());
+}
+
 void FSimpleElementCollector::RegisterDynamicResource(FDynamicPrimitiveResource* DynamicResource)
 {
 	// Add the dynamic resource to the list of resources to cleanup on destruction.
 	DynamicResources.Add(DynamicResource);
 
 	// Initialize the dynamic resource immediately.
-	DynamicResource->InitPrimitiveResource();
+	DynamicResource->InitPrimitiveResource(FRHICommandListImmediate::Get());
 }
 
 void FSimpleElementCollector::DrawBatchedElements(FRHICommandList& RHICmdList, const FMeshPassProcessorRenderState& DrawRenderState, const FSceneView& InView, EBlendModeFilter::Type Filter, ESceneDepthPriorityGroup DepthPriorityGroup) const
@@ -313,19 +320,13 @@ FMeshBatchAndRelevance::FMeshBatchAndRelevance(const FMeshBatch& InMesh, const F
 	bRenderInMainPass = PrimitiveSceneProxy->ShouldRenderInMainPass();
 }
 
-static TAutoConsoleVariable<int32> CVarUseParallelGetDynamicMeshElementsTasks(
-	TEXT("r.UseParallelGetDynamicMeshElementsTasks"),
-	0,
-	TEXT("If > 0, and if FApp::ShouldUseThreadingForPerformance(), then parts of GetDynamicMeshElements will be done in parallel."));
-
 FMeshElementCollector::FMeshElementCollector(ERHIFeatureLevel::Type InFeatureLevel, FSceneRenderingBulkObjectAllocator& InBulkAllocator) :
 	OneFrameResources(InBulkAllocator),
 	PrimitiveSceneProxy(NULL),
 	DynamicIndexBuffer(nullptr),
 	DynamicVertexBuffer(nullptr),
 	DynamicReadBuffer(nullptr),
-	FeatureLevel(InFeatureLevel),
-	bUseAsyncTasks(FApp::ShouldUseThreadingForPerformance() && CVarUseParallelGetDynamicMeshElementsTasks.GetValueOnAnyThread() > 0)
+	FeatureLevel(InFeatureLevel)
 {	
 }
 
@@ -336,7 +337,6 @@ FMeshElementCollector::~FMeshElementCollector()
 
 void FMeshElementCollector::DeleteTemporaryProxies()
 {
-	check(!ParallelTasks.Num()); // We should have blocked on this already
 	for (int32 ProxyIndex = 0; ProxyIndex < TemporaryProxies.Num(); ProxyIndex++)
 	{
 		delete TemporaryProxies[ProxyIndex];
@@ -360,6 +360,13 @@ void FMeshElementCollector::SetPrimitive(const FPrimitiveSceneProxy* InPrimitive
 	{
 		MeshIdInPrimitivePerView[ViewIndex] = 0;
 	}
+#if UE_ENABLE_DEBUG_DRAWING
+	for (int32 ViewIndex = 0; ViewIndex < DebugSimpleElementCollectors.Num(); ViewIndex++)
+	{
+		DebugSimpleElementCollectors[ViewIndex]->HitProxyId = DefaultHitProxyId;
+		DebugSimpleElementCollectors[ViewIndex]->PrimitiveMeshId = 0;
+	}
+#endif
 }
 
 void FMeshElementCollector::ClearViewMeshArrays()
@@ -367,6 +374,9 @@ void FMeshElementCollector::ClearViewMeshArrays()
 	Views.Empty();
 	MeshBatches.Empty();
 	SimpleElementCollectors.Empty();
+#if UE_ENABLE_DEBUG_DRAWING
+	DebugSimpleElementCollectors.Empty();
+#endif
 	MeshIdInPrimitivePerView.Empty();
 	DynamicPrimitiveCollectorPerView.Empty();
 	NumMeshBatchElementsPerView.Empty();
@@ -383,7 +393,11 @@ void FMeshElementCollector::AddViewMeshArrays(
 	ERHIFeatureLevel::Type InFeatureLevel,
 	FGlobalDynamicIndexBuffer* InDynamicIndexBuffer,
 	FGlobalDynamicVertexBuffer* InDynamicVertexBuffer,
-	FGlobalDynamicReadBuffer* InDynamicReadBuffer)
+	FGlobalDynamicReadBuffer* InDynamicReadBuffer
+#if UE_ENABLE_DEBUG_DRAWING
+	,FSimpleElementCollector* InDebugSimpleElementCollector
+#endif
+)
 {
 	Views.Add(InView);
 	MeshIdInPrimitivePerView.Add(0);
@@ -396,25 +410,14 @@ void FMeshElementCollector::AddViewMeshArrays(
 	DynamicIndexBuffer = InDynamicIndexBuffer;
 	DynamicVertexBuffer = InDynamicVertexBuffer;
 	DynamicReadBuffer = InDynamicReadBuffer;
-}
 
-void FMeshElementCollector::ProcessTasks()
-{
-	check(IsInRenderingThread());
-	check(!ParallelTasks.Num() || bUseAsyncTasks);
-
-	if (ParallelTasks.Num())
+#if UE_ENABLE_DEBUG_DRAWING
+	//Assign the debug draw only simple element collector per view	
+	if (InDebugSimpleElementCollector)
 	{
-		QUICK_SCOPE_CYCLE_COUNTER(STAT_FMeshElementCollector_ProcessTasks);
-		TArray<TFunction<void()>, SceneRenderingAllocator>& LocalParallelTasks(ParallelTasks);
-		ParallelFor(ParallelTasks.Num(), 
-			[&LocalParallelTasks](int32 Index)
-			{
-				LocalParallelTasks[Index]();
-				LocalParallelTasks[Index] = {};
-			});
-		ParallelTasks.Empty();
+		DebugSimpleElementCollectors.Add(InDebugSimpleElementCollector);
 	}
+#endif
 }
 
 void FMeshElementCollector::AddMesh(int32 ViewIndex, FMeshBatch& MeshBatch)
@@ -445,22 +448,7 @@ void FMeshElementCollector::AddMesh(int32 ViewIndex, FMeshBatch& MeshBatch)
 	// If we are maintaining primitive scene data on the GPU, copy the primitive uniform buffer data to a unified array so it can be uploaded later
 	if (UseGPUScene(GMaxRHIShaderPlatform, FeatureLevel) && MeshBatch.VertexFactory->GetPrimitiveIdStreamIndex(FeatureLevel, EVertexInputStreamType::Default) >= 0)
 	{
-		for (int32 Index = 0; Index < MeshBatch.Elements.Num(); ++Index)
-		{
-			const TUniformBuffer<FPrimitiveUniformShaderParameters>* PrimitiveUniformBufferResource = MeshBatch.Elements[Index].PrimitiveUniformBufferResource;
-			if (PrimitiveUniformBufferResource)
-			{
-				FMeshBatchElement& Element = MeshBatch.Elements[Index];
-
-				Element.PrimitiveIdMode = PrimID_DynamicPrimitiveShaderData;
-				DynamicPrimitiveCollectorPerView[ViewIndex]->Add(
-					Element.DynamicPrimitiveData,
-					*reinterpret_cast<const FPrimitiveUniformShaderParameters*>(PrimitiveUniformBufferResource->GetContents()),
-					Element.NumInstances,
-					Element.DynamicPrimitiveIndex,
-					Element.DynamicPrimitiveInstanceSceneDataOffset);
-			}
-		}
+		GetRendererModule().AddMeshBatchToGPUScene(DynamicPrimitiveCollectorPerView[ViewIndex], MeshBatch);
 	}
 
 	MeshBatch.MaterialRenderProxy->UpdateUniformExpressionCacheIfNeeded(Views[ViewIndex]->GetFeatureLevel());
@@ -508,7 +496,7 @@ void FDynamicPrimitiveUniformBuffer::Set(
 			.CustomPrimitiveData(CustomPrimitiveData)
 		.Build()
 	);
-	UniformBuffer.InitResource();
+	UniformBuffer.InitResource(FRHICommandListImmediate::Get());
 }
 
 void FDynamicPrimitiveUniformBuffer::Set(
@@ -949,6 +937,10 @@ FViewUniformShaderParameters::FViewUniformShaderParameters()
 	GlobalDistanceFieldPageTableTexture = BlackVolume;
 	GlobalDistanceFieldMipTexture = BlackVolume;
 
+	GlobalDistanceFieldPageAtlasTextureSampler = TStaticSamplerState<SF_Trilinear, AM_Wrap, AM_Wrap, AM_Wrap>::GetRHI();
+	GlobalDistanceFieldCoverageAtlasTextureSampler = TStaticSamplerState<SF_Trilinear, AM_Wrap, AM_Wrap, AM_Wrap>::GetRHI();
+	GlobalDistanceFieldMipTextureSampler = TStaticSamplerState<SF_Trilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+
 	SharedPointWrappedSampler = TStaticSamplerState<SF_Point, AM_Wrap, AM_Wrap, AM_Wrap>::GetRHI();
 	SharedPointClampedSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 	SharedBilinearWrappedSampler = TStaticSamplerState<SF_Bilinear, AM_Wrap, AM_Wrap, AM_Wrap>::GetRHI();
@@ -976,11 +968,6 @@ FViewUniformShaderParameters::FViewUniformShaderParameters()
 	CameraAerialPerspectiveVolumeRayOnly = GBlackAlpha1VolumeTexture->TextureRHI;
 	CameraAerialPerspectiveVolumeRayOnlySampler = TStaticSamplerState<SF_Bilinear>::GetRHI();
 
-	PrimitiveSceneData = GIdentityPrimitiveBuffer.PrimitiveSceneDataBufferSRV;
-	InstanceSceneData = GIdentityPrimitiveBuffer.InstanceSceneDataBufferSRV;
-	InstancePayloadData = GIdentityPrimitiveBuffer.InstancePayloadDataBufferSRV;
-	LightmapSceneData = GIdentityPrimitiveBuffer.LightmapSceneDataBufferSRV;
-
 	SkyIrradianceEnvironmentMap = GIdentityPrimitiveBuffer.SkyIrradianceEnvironmentMapSRV;
 
 	PhysicsFieldClipmapBuffer = GWhiteVertexBufferWithSRV->ShaderResourceViewRHI;
@@ -998,11 +985,13 @@ FViewUniformShaderParameters::FViewUniformShaderParameters()
 	HairScatteringLUTTexture = BlackVolume;
 	HairScatteringLUTSampler = TStaticSamplerState<SF_Bilinear>::GetRHI();
 
-	// Rect area light
-	LTCMatTexture = GBlackTextureWithSRV->TextureRHI;
-	LTCMatSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-	LTCAmpTexture = GBlackTextureWithSRV->TextureRHI;
-	LTCAmpSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+	// GGX/Sheen - Rect area light
+	GGXLTCMatTexture = GBlackTextureWithSRV->TextureRHI;
+	GGXLTCMatSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+	GGXLTCAmpTexture = GBlackTextureWithSRV->TextureRHI;
+	GGXLTCAmpSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+	SheenLTCTexture = GBlackTextureWithSRV->TextureRHI;
+	SheenLTCSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
 	// Shading energy conservation
 	bShadingEnergyConservation = 0u;
@@ -1012,6 +1001,16 @@ FViewUniformShaderParameters::FViewUniformShaderParameters()
 	ShadingEnergyGGXGlassTexture = BlackVolume;
 	ShadingEnergyClothSpecTexture = GBlackTextureWithSRV->TextureRHI;
 	ShadingEnergyDiffuseTexture = GBlackTextureWithSRV->TextureRHI;
+
+	// Glint
+	GlintTexture = GBlackArrayTexture->TextureRHI;
+	GlintSampler = TStaticSamplerState<SF_Trilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+
+	// SimpleVolume
+	SimpleVolumeTexture = GBlackVolumeTexture->TextureRHI;
+	SimpleVolumeTextureSampler = TStaticSamplerState<SF_Trilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+	SimpleVolumeEnvTexture = GBlackVolumeTexture->TextureRHI;
+	SimpleVolumeEnvTextureSampler = TStaticSamplerState<SF_Trilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
 	// Rect light atlas
 	RectLightAtlasMaxMipLevel = 1;
@@ -1024,38 +1023,23 @@ FViewUniformShaderParameters::FViewUniformShaderParameters()
 	IESAtlasTexture = GBlackTextureWithSRV->TextureRHI;
 	IESAtlasSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
-	// Subsurface profiles/pre-intregrated
+	// Subsurface profiles
 	SSProfilesTextureSizeAndInvSize = FVector4f(1.f,1.f,1.f,1.f);
 	SSProfilesTexture = GBlackTextureWithSRV->TextureRHI;
 	SSProfilesSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();;
 	SSProfilesTransmissionSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
+	// Subsurface pre-intregrated profiles
 	SSProfilesPreIntegratedTextureSizeAndInvSize = FVector4f(1.f,1.f,1.f,1.f);
 	SSProfilesPreIntegratedTexture = GBlackArrayTexture->TextureRHI;
 	SSProfilesPreIntegratedSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
-	//this can be deleted once sm4 support is removed.
-	if (!PrimitiveSceneData)
-	{
-		PrimitiveSceneData = GBlackTextureWithSRV->ShaderResourceViewRHI;
-	}
-	if (!InstanceSceneData)
-	{
-		InstanceSceneData = GBlackTextureWithSRV->ShaderResourceViewRHI;
-	}
-	if (!InstancePayloadData)
-	{
-		InstancePayloadData = GBlackTextureWithSRV->ShaderResourceViewRHI;
-	}
-	if (!LightmapSceneData)
-	{
-		LightmapSceneData = GBlackTextureWithSRV->ShaderResourceViewRHI;
-	}
-	VTFeedbackBuffer = GEmptyVertexBufferWithUAV->UnorderedAccessViewRHI;
-//#if WITH_EDITOR
-	EditorVisualizeLevelInstanceIds = GIdentityPrimitiveBuffer.EditorVisualizeLevelInstanceDataBufferSRV;
-	EditorSelectedHitProxyIds = GIdentityPrimitiveBuffer.EditorSelectedDataBufferSRV;
-//#endif
+	// Specular profiles
+	SpecularProfileTextureSizeAndInvSize = FVector4f(1.f,1.f,1.f,1.f);
+	SpecularProfileTexture = GBlackArrayTexture->TextureRHI;
+	SpecularProfileSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+
+	VTFeedbackBuffer = GEmptyStructuredBufferWithUAV->UnorderedAccessViewRHI;
 }
 
 FInstancedViewUniformShaderParameters::FInstancedViewUniformShaderParameters()
@@ -1063,17 +1047,19 @@ FInstancedViewUniformShaderParameters::FInstancedViewUniformShaderParameters()
 	FMemory::Memzero(*this);
 }
 
-void FSharedSamplerState::InitRHI()
+void FSharedSamplerState::InitRHI(FRHICommandListBase&)
 {
 	const float MipMapBias = UTexture2D::GetGlobalMipMapLODBias();
 
+	const UTextureLODSettings* TextureLODSettings = UDeviceProfileManager::Get().GetActiveProfile()->GetTextureLODSettings();
 	FSamplerStateInitializerRHI SamplerStateInitializer
 	(
-	(ESamplerFilter)UDeviceProfileManager::Get().GetActiveProfile()->GetTextureLODSettings()->GetSamplerFilter(TEXTUREGROUP_World),
+	(ESamplerFilter)TextureLODSettings->GetSamplerFilter(TEXTUREGROUP_World),
 		bWrap ? AM_Wrap : AM_Clamp,
 		bWrap ? AM_Wrap : AM_Clamp,
 		bWrap ? AM_Wrap : AM_Clamp,
-		MipMapBias
+		MipMapBias,
+		TextureLODSettings->GetTextureLODGroup(TEXTUREGROUP_World).MaxAniso
 	);
 	SamplerStateRHI = RHICreateSamplerState(SamplerStateInitializer);
 }
@@ -1104,7 +1090,7 @@ void FLightCacheInterface::CreatePrecomputedLightingUniformBuffer_RenderingThrea
 		if (PrecomputedLightingUniformBuffer)
 		{
 			// Don't recreate the buffer if it already exists
-			RHIUpdateUniformBuffer(PrecomputedLightingUniformBuffer, &Parameters);
+			FRHICommandListImmediate::Get().UpdateUniformBuffer(PrecomputedLightingUniformBuffer, &Parameters);
 		}
 		else
 		{
@@ -1248,12 +1234,12 @@ void GetLightmapClusterResourceParameters(
 	}
 }
 
-void FDefaultLightmapResourceClusterUniformBuffer::InitDynamicRHI()
+void FDefaultLightmapResourceClusterUniformBuffer::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	FLightmapResourceClusterShaderParameters Parameters;
 	GetLightmapClusterResourceParameters(GMaxRHIFeatureLevel, FLightmapClusterResourceInput(), nullptr, Parameters);
 	SetContents(Parameters);
-	Super::InitDynamicRHI();
+	Super::InitRHI(RHICmdList);
 }
 
 /** Global uniform buffer containing the default precomputed lighting data. */
@@ -1473,15 +1459,17 @@ bool FMeshBatch::Validate(const FPrimitiveSceneProxy* PrimitiveSceneProxy, ERHIF
 	}
 
 	const bool bVFSupportsPrimitiveIdStream = VertexFactory->GetType()->SupportsPrimitiveIdStream();
+	const bool bVFRequiresPrimitiveUniformBuffer = PrimitiveSceneProxy->DoesVFRequirePrimitiveUniformBuffer();
 
-	if (!PrimitiveSceneProxy->DoesVFRequirePrimitiveUniformBuffer() && !bVFSupportsPrimitiveIdStream)
+	if (!bVFRequiresPrimitiveUniformBuffer && !bVFSupportsPrimitiveIdStream)
 	{
 		return LogMeshError(TEXT("PrimitiveSceneProxy has bVFRequiresPrimitiveUniformBuffer disabled yet tried to draw with a vertex factory that did not support PrimitiveIdStream"));
 	}
 
-	if (PrimitiveSceneProxy->SupportsGPUScene() && !VertexFactory->SupportsGPUScene(FeatureLevel))
+	// Some primitives may use several VFs with a mixed support for a GPUScene
+	if (PrimitiveSceneProxy->SupportsGPUScene() && !(VertexFactory->SupportsGPUScene(FeatureLevel) || bVFRequiresPrimitiveUniformBuffer))
 	{
-		return LogMeshError(TEXT("PrimitiveSceneProxy has SupportsGPUScene() does not match VertexFactory->SupportsGPUScene()"));
+		return LogMeshError(TEXT("PrimitiveSceneProxy has SupportsGPUScene() does not match VertexFactory->SupportsGPUScene() or bVFRequiresPrimitiveUniformBuffer"));
 	}
 	const bool bUseGPUScene = UseGPUScene(GMaxRHIShaderPlatform, FeatureLevel);
 	
@@ -1493,7 +1481,9 @@ bool FMeshBatch::Validate(const FPrimitiveSceneProxy* PrimitiveSceneProxy, ERHIF
 	{
 		const FMeshBatchElement& MeshElement = Elements[ElementIndex];
 
-		if (bPrimitiveShaderDataComesFromSceneBuffer && Elements[ElementIndex].PrimitiveUniformBuffer)
+		// Some primitives may use several VFs with a mixed support for a GPUScene 
+		// in this case all mesh batches get Primitive UB assigned regardless of VF type
+		if (bPrimitiveShaderDataComesFromSceneBuffer && Elements[ElementIndex].PrimitiveUniformBuffer && !bVFRequiresPrimitiveUniformBuffer)
 		{
 			// on mobile VS has access to PrimitiveUniformBuffer
 			if (FeatureLevel > ERHIFeatureLevel::ES3_1)
@@ -1524,14 +1514,14 @@ bool FMeshBatch::Validate(const FPrimitiveSceneProxy* PrimitiveSceneProxy, ERHIF
 
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FMobileReflectionCaptureShaderParameters, "MobileReflectionCapture");
 
-void FDefaultMobileReflectionCaptureUniformBuffer::InitDynamicRHI()
+void FDefaultMobileReflectionCaptureUniformBuffer::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	FMobileReflectionCaptureShaderParameters Parameters;
 	Parameters.Params = FVector4f(1.f, 0.f, 0.f, 0.f);
 	Parameters.Texture = GBlackTextureCube->TextureRHI;
 	Parameters.TextureSampler = GBlackTextureCube->SamplerStateRHI;
 	SetContents(Parameters);
-	Super::InitDynamicRHI();
+	Super::InitRHI(RHICmdList);
 }
 
 /** Global uniform buffer containing the default reflection data used in mobile renderer. */

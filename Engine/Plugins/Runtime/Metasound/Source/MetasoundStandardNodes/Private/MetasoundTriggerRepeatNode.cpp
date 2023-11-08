@@ -29,6 +29,7 @@ namespace Metasound
 		METASOUND_PARAM(InputStart, "Start", "Starts executing periodic output triggers.");
 		METASOUND_PARAM(InputStop, "Stop", "Stops executing periodic output triggers.");
 		METASOUND_PARAM(InputPeriod, "Period", "The period to trigger in seconds.");
+		METASOUND_PARAM(InputNumRepeats, "Num Repeats", "The number of times to repeat. When set to 0, will repeat indefinitely until stopped.")
 		METASOUND_PARAM(RepeatOutputOnTrigger, "RepeatOut", "The periodically generated output trigger.");
 	}
 
@@ -39,13 +40,19 @@ namespace Metasound
 			static const FVertexInterface& GetVertexInterface();
 			static TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors);
 
-			FTriggerRepeatOperator(const FOperatorSettings& InSettings, const FTriggerReadRef& InTriggerEnable, const FTriggerReadRef& InTriggerDisable, const FTimeReadRef& InPeriod);
+			FTriggerRepeatOperator(const FOperatorSettings& InSettings, const FTriggerReadRef& InTriggerEnable, const FTriggerReadRef& InTriggerDisable, 
+				const FTimeReadRef& InPeriod, const FInt32ReadRef& InNumRepeats);
+
+			virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override;
+
+			virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override;
 
 			virtual FDataReferenceCollection GetInputs() const override;
 
 			virtual FDataReferenceCollection GetOutputs() const override;
 
 			void Execute();
+			void Reset(const IOperator::FResetParams& InParams);
 
 		private:
 			bool bEnabled;
@@ -57,40 +64,58 @@ namespace Metasound
 
 			FTimeReadRef Period;
 
+			FInt32ReadRef NumRepeats;
+
 			FSampleCount BlockSize;
 			FSampleCounter SampleCounter;
+
+			//The number of repeats the node has already performed
+			int CurrentRepeats = 0;
 	};
 
-	FTriggerRepeatOperator::FTriggerRepeatOperator(const FOperatorSettings& InSettings, const FTriggerReadRef& InTriggerEnable, const FTriggerReadRef& InTriggerDisable, const FTimeReadRef& InPeriod)
+	FTriggerRepeatOperator::FTriggerRepeatOperator(const FOperatorSettings& InSettings, const FTriggerReadRef& InTriggerEnable, const FTriggerReadRef& InTriggerDisable, const FTimeReadRef& InPeriod, const FInt32ReadRef& InNumRepeats)
 		: bEnabled(false)
 		, TriggerOut(FTriggerWriteRef::CreateNew(InSettings))
 		, TriggerEnable(InTriggerEnable)
 		, TriggerDisable(InTriggerDisable)
 		, Period(InPeriod)
+		, NumRepeats(InNumRepeats)
 		, BlockSize(InSettings.GetNumFramesPerBlock())
 		, SampleCounter(0, InSettings.GetSampleRate())
 	{
 	}
 
-	FDataReferenceCollection FTriggerRepeatOperator::GetInputs() const
+
+	void FTriggerRepeatOperator::BindInputs(FInputVertexInterfaceData& InOutVertexData)
 	{
 		using namespace TriggerRepeatVertexNames;
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputStart), TriggerEnable);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputStop), TriggerDisable);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputPeriod), Period);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputNumRepeats), NumRepeats);
 
-		FDataReferenceCollection InputDataReferences;
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputStart), TriggerEnable);
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputStop), TriggerDisable);
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputPeriod), Period);
-		return InputDataReferences;
+	}
+
+	void FTriggerRepeatOperator::BindOutputs(FOutputVertexInterfaceData& InOutVertexData)
+	{
+		using namespace TriggerRepeatVertexNames;
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(RepeatOutputOnTrigger), TriggerOut);
+	}
+
+	FDataReferenceCollection FTriggerRepeatOperator::GetInputs() const
+	{
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
 	}
 
 	FDataReferenceCollection FTriggerRepeatOperator::GetOutputs() const
 	{
-		using namespace TriggerRepeatVertexNames;
-
-		FDataReferenceCollection OutputDataReferences;
-		OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(RepeatOutputOnTrigger), TriggerOut);
-
-		return OutputDataReferences;
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
 	}
 
 	void FTriggerRepeatOperator::Execute()
@@ -100,6 +125,9 @@ namespace Metasound
 			{
 				bEnabled = true;
 				SampleCounter.SetNumSamples(0);
+
+				//Reset current number of repeats if we get another play command
+				CurrentRepeats = 0;
 			}
 		);
 
@@ -122,15 +150,33 @@ namespace Metasound
 
 			while ((SampleCounter - BlockSize).GetNumSamples() <= 0)
 			{
+				//Whether or not the node has any repeats it should perform
+				bool bShouldRepeat = (*NumRepeats == 0) || (CurrentRepeats < *NumRepeats);
+
+				if (!bShouldRepeat)
+				{
+					break;
+				}
+
 				const int32 StartOffset = static_cast<int32>(SampleCounter.GetNumSamples());
 				TriggerOut->TriggerFrame(StartOffset);
 				SampleCounter += PeriodInSamples;
+
+				++CurrentRepeats;
 			}
 
 			SampleCounter -= BlockSize;
 		}
 	}
 
+	void FTriggerRepeatOperator::Reset(const IOperator::FResetParams& InParams)
+	{
+		bEnabled = false;
+
+		TriggerOut->Reset();
+		SampleCounter.SetNumSamples(0);
+		CurrentRepeats = 0;
+	}
 
 	TUniquePtr<IOperator> FTriggerRepeatOperator::CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors)
 	{
@@ -142,8 +188,9 @@ namespace Metasound
 		FTriggerReadRef TriggerEnable = InParams.InputDataReferences.GetDataReadReferenceOrConstruct<FTrigger>(METASOUND_GET_PARAM_NAME(InputStart), InParams.OperatorSettings);
 		FTriggerReadRef TriggerDisable = InParams.InputDataReferences.GetDataReadReferenceOrConstruct<FTrigger>(METASOUND_GET_PARAM_NAME(InputStop), InParams.OperatorSettings);
 		FTimeReadRef Period = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<FTime>(InputInterface, METASOUND_GET_PARAM_NAME(InputPeriod), InParams.OperatorSettings);
+		FInt32ReadRef NumRepeats = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<int32>(InputInterface, METASOUND_GET_PARAM_NAME(InputNumRepeats), InParams.OperatorSettings);
 
-		return MakeUnique<FTriggerRepeatOperator>(InParams.OperatorSettings, TriggerEnable, TriggerDisable, Period);
+		return MakeUnique<FTriggerRepeatOperator>(InParams.OperatorSettings, TriggerEnable, TriggerDisable, Period, NumRepeats);
 	}
 
 	const FVertexInterface& FTriggerRepeatOperator::GetVertexInterface()
@@ -154,7 +201,8 @@ namespace Metasound
 			FInputVertexInterface(
 				TInputDataVertex<FTrigger>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputStart)),
 				TInputDataVertex<FTrigger>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputStop)),
-				TInputDataVertex<FTime>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputPeriod), 0.2f)
+				TInputDataVertex<FTime>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputPeriod), 0.2f),
+				TInputDataVertex<int32>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputNumRepeats), 0)
 			),
 			FOutputVertexInterface(
 				TOutputDataVertex<FTrigger>(METASOUND_GET_PARAM_NAME_AND_METADATA(RepeatOutputOnTrigger))

@@ -2,251 +2,339 @@
 
 #include "ChaosClothAsset/ClothTransferSkinWeightsTool.h"
 
-#include "ChaosClothAsset/ClothComponent.h"
-#include "ChaosClothAsset/ClothComponentToolTarget.h"
-#include "ChaosClothAsset/ClothPatternToDynamicMesh.h"
-#include "ChaosClothAsset/ClothAdapter.h"
-#include "ChaosClothAsset/ClothCollection.h"
-
-#include "BoneWeights.h"
 #include "SkeletalMeshAttributes.h"
-
-#include "ToolTargetManager.h"
-#include "MeshDescriptionToDynamicMesh.h"
-
-#include "Rendering/SkeletalMeshLODImporterData.h"
-#include "Rendering/SkeletalMeshModel.h"
-
-#include "DynamicMesh/DynamicMeshAttributeSet.h"
-#include "DynamicMesh/DynamicVertexSkinWeightsAttribute.h"
-#include "DynamicMesh/DynamicMeshAABBTree3.h"
-#include "DynamicMesh/MeshTransforms.h"
-
-#include "Operations/TransferBoneWeights.h"
-
-#include "TransformTypes.h"
-
-#include "InteractiveTool.h"
-#include "InteractiveToolManager.h"
-
+#include "Engine/World.h"
+#include "ToolSetupUtil.h"
+#include "ModelingToolTargetUtil.h"
 #include "Engine/SkeletalMesh.h"
+#include "ChaosClothAsset/ClothEditorContextObject.h"
+#include "ContextObjectStore.h"
+#include "Dataflow/DataflowEdNode.h"
+#include "ChaosClothAsset/TransferSkinWeightsNode.h"
+#include "BaseGizmos/TransformGizmoUtil.h"
+#include "InteractiveToolObjects.h"
+#include "MeshOpPreviewHelpers.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "ChaosClothAsset/ClothPatternVertexType.h"
 
-#define LOCTEXT_NAMESPACE "ClothSkinWeightRetargetingTool"
+#define LOCTEXT_NAMESPACE "ClothTransferSkinWeightsTool"
 
-// ------------------- Properties -------------------
-
-void UClothTransferSkinWeightsToolActionProperties::PostAction(EClothTransferSkinWeightsToolActions Action)
+namespace UE::Chaos::ClothAsset::Private
 {
-	if (ParentTool.IsValid())
+	/** An empty operator in case we need to add a background compute operation in the future. */
+	class FClothTransferSkinWeightsOp : public UE::Geometry::FDynamicMeshOperator
 	{
-		ParentTool->RequestAction(Action);
-	}
-}
+	public:
+		FClothTransferSkinWeightsOp()
+		{
+		}
 
+	private:
+		// FDynamicMeshOperator interface
+		virtual void CalculateResult(FProgressCancel* Progress) override
+		{
+			using namespace UE::Geometry;
+
+			FGeometryResult OpResult;
+			OpResult.Result = EGeometryResultType::Success;
+			SetResultInfo(OpResult);
+		}
+	};
+}
 
 // ------------------- Builder -------------------
 
-const FToolTargetTypeRequirements& UClothTransferSkinWeightsToolBuilder::GetTargetRequirements() const
+void UClothTransferSkinWeightsToolBuilder::GetSupportedViewModes(TArray<UE::Chaos::ClothAsset::EClothPatternVertexType>& Modes) const
 {
-	static FToolTargetTypeRequirements TypeRequirements({ 
-		UPrimitiveComponentBackedTarget::StaticClass(),
-		UClothAssetBackedTarget::StaticClass()
-		});
-	return TypeRequirements;
+	Modes.Add(UE::Chaos::ClothAsset::EClothPatternVertexType::Sim3D);
 }
 
-bool UClothTransferSkinWeightsToolBuilder::CanBuildTool(const FToolBuilderState& SceneState) const
+USingleSelectionMeshEditingTool* UClothTransferSkinWeightsToolBuilder::CreateNewTool(const FToolBuilderState& SceneState) const
 {
-	return (SceneState.TargetManager->CountSelectedAndTargetable(SceneState, GetTargetRequirements()) == 1);
-}
+	UClothTransferSkinWeightsTool* NewTool = NewObject<UClothTransferSkinWeightsTool>(SceneState.ToolManager);
 
-UInteractiveTool* UClothTransferSkinWeightsToolBuilder::BuildTool(const FToolBuilderState& SceneState) const
-{
-	UClothTransferSkinWeightsTool* NewTool = NewObject<UClothTransferSkinWeightsTool>();
-	
-	UToolTarget* Target = SceneState.TargetManager->BuildFirstSelectedTargetable(SceneState, GetTargetRequirements());
-	NewTool->SetTarget(Target);
+	if (UClothEditorContextObject* ContextObject = SceneState.ToolManager->GetContextObjectStore()->FindContext<UClothEditorContextObject>())
+	{
+		NewTool->SetClothEditorContextObject(ContextObject);
+	}
 
 	return NewTool;
 }
 
+
 // ------------------- Tool -------------------
+
 
 void UClothTransferSkinWeightsTool::Setup()
 {
-	UInteractiveTool::Setup();
+	USingleSelectionMeshEditingTool::Setup();
 
-	UClothComponentToolTarget* ClothComponentToolTarget = Cast<UClothComponentToolTarget>(Target);
-	ClothComponent = ClothComponentToolTarget->GetClothComponent();
-	
+	TransferSkinWeightsNode = ClothEditorContextObject->GetSingleSelectedNodeOfType<FChaosClothAssetTransferSkinWeightsNode>();
+	checkf(TransferSkinWeightsNode, TEXT("No Transfer Skin Weights Node is currently selected, or more than one node is selected"));
+
 	ToolProperties = NewObject<UClothTransferSkinWeightsToolProperties>(this);
+
+	SetSRTPropertiesFromTransform(TransferSkinWeightsNode->Transform);
+	ToolProperties->SourceMesh = TransferSkinWeightsNode->SkeletalMesh;
+
 	AddToolPropertySource(ToolProperties);
 
-	ActionProperties = NewObject<UClothTransferSkinWeightsToolActionProperties>(this);
-	ActionProperties->ParentTool = this;
-	AddToolPropertySource(ActionProperties);
+
+	//
+	// Set up Preview mesh that will show the results of the computation
+	//
+
+	TargetClothPreview = NewObject<UMeshOpPreviewWithBackgroundCompute>(this);
+	TargetClothPreview->Setup(GetTargetWorld(), this);
+	ToolSetupUtil::ApplyRenderingConfigurationToPreview(TargetClothPreview->PreviewMesh, Target);
+	UMaterialInterface* const TargetMaterial = ToolSetupUtil::GetDefaultSculptMaterial(GetToolManager());
+	TargetClothPreview->ConfigureMaterials(TargetMaterial, TargetMaterial);
+
+	// Mesh topology is not being changed 
+	TargetClothPreview->SetIsMeshTopologyConstant(true, EMeshRenderAttributeFlags::VertexColors);
+
+	TargetClothPreview->OnOpCompleted.AddUObject(this, &UClothTransferSkinWeightsTool::OpFinishedCallback);
+	TargetClothPreview->OnMeshUpdated.AddUObject(this, &UClothTransferSkinWeightsTool::PreviewMeshUpdatedCallback);
+
+	// Set the initial preview mesh before any computation runs
+	UE::Geometry::FDynamicMesh3 InitialPreviewMesh = UE::ToolTarget::GetDynamicMeshCopy(Target, true);
+	TargetClothPreview->PreviewMesh->UpdatePreview(MoveTemp(InitialPreviewMesh));
+
+	TargetClothPreview->SetVisibility(true);
+
+	//
+	// Source mesh (populated from the SkeletalMesh tool property)
+	//
+
+	SourceMeshParentActor = GetTargetWorld()->SpawnActor<AInternalToolFrameworkActor>();
+	SourceMeshComponent = NewObject<USkeletalMeshComponent>(SourceMeshParentActor);
+	SourceMeshComponent->SetDisablePostProcessBlueprint(true); 
+	SourceMeshParentActor->SetRootComponent(SourceMeshComponent);
+	SourceMeshComponent->RegisterComponent();
+
+	// Watch for property changes
+	ToolProperties->WatchProperty(TransferSkinWeightsNode->Transform, 
+	[this](const FTransform& Transform) 
+	{
+		SetSRTPropertiesFromTransform(Transform);
+	}, 
+	[this](const FTransform& Transform1, const FTransform& Transform2)
+	{ 
+		return !Transform1.Equals(Transform2, 0.f);
+	});
+
+	ToolProperties->WatchProperty(ToolProperties->SourceMesh, [this](TObjectPtr<USkeletalMesh> Mesh) { UpdateSourceMesh(Mesh); });
+
+	ToolProperties->WatchProperty(TransferSkinWeightsNode->SkeletalMesh, [this](TObjectPtr<USkeletalMesh> Mesh) 
+	{ 
+		ToolProperties->SourceMesh = Mesh; // this triggers the WatchProperty of ToolProperties->SourceMesh above
+	});
+	
+	ToolProperties->WatchProperty(ToolProperties->bHideSourceMesh, [this](bool bNewHideSourceMesh) 
+	{ 
+		check(SourceMeshComponent);
+		SourceMeshComponent->SetVisibility(!bNewHideSourceMesh);
+	});
+
+	//
+	// Transform/Gizmo/Proxy stuff
+	//
+
+	ToolProperties->WatchProperty(ToolProperties->SourceMeshTranslation, [this](const FVector3d& NewTranslation)
+	{
+		if (DataBinder)
+		{
+			DataBinder->UpdateAfterDataEdit();
+		}
+	});
+
+	ToolProperties->WatchProperty(ToolProperties->SourceMeshRotation, [this](const FVector3d& NewTranslation)
+	{
+		if (DataBinder)
+		{
+			DataBinder->UpdateAfterDataEdit();
+		}
+	});
+
+	ToolProperties->WatchProperty(ToolProperties->SourceMeshScale, [this](const FVector3d& NewTranslation)
+	{
+		if (DataBinder)
+		{
+			DataBinder->UpdateAfterDataEdit();
+		}
+	});
+
+
+	UInteractiveGizmoManager* const GizmoManager = GetToolManager()->GetPairedGizmoManager();
+	ensure(GizmoManager);
+	SourceMeshTransformProxy = NewObject<UTransformProxy>(this);
+	ensure(SourceMeshTransformProxy);
+	SourceMeshTransformProxy->SetTransform(TransferSkinWeightsNode->Transform);
+
+	SourceMeshTransformProxy->OnTransformChanged.AddWeakLambda(this, [this](UTransformProxy*, FTransform NewTransform)
+	{
+		if (SourceMeshParentActor)
+		{
+			SourceMeshParentActor->SetActorTransform(NewTransform);
+		}
+	});
+
+	SourceMeshTransformGizmo = UE::TransformGizmoUtil::CreateCustomTransformGizmo(GizmoManager, ETransformGizmoSubElements::StandardTranslateRotate, this);
+	ensure(SourceMeshTransformGizmo);
+
+	SourceMeshTransformGizmo->SetActiveTarget(SourceMeshTransformProxy, GetToolManager());
+	SourceMeshTransformGizmo->SetVisibility(ToolProperties->SourceMesh != nullptr);
+	SourceMeshTransformGizmo->bUseContextCoordinateSystem = false;
+	SourceMeshTransformGizmo->bUseContextGizmoMode = false;
+	SourceMeshTransformGizmo->CurrentCoordinateSystem = EToolContextCoordinateSystem::Local;
+
+	DataBinder = MakeShared<FTransformGizmoDataBinder>();
+	DataBinder->InitializeBoundVectors(&ToolProperties->SourceMeshTranslation, &ToolProperties->SourceMeshRotation, &ToolProperties->SourceMeshScale);
+	DataBinder->BindToInitializedGizmo(SourceMeshTransformGizmo, SourceMeshTransformProxy);
+
+
+	UpdateSourceMesh(ToolProperties->SourceMesh);
+
+	UE::ToolTarget::HideSourceObject(Target);
 }
 
-void UClothTransferSkinWeightsTool::TransferWeights()
+void UClothTransferSkinWeightsTool::Shutdown(EToolShutdownType ShutdownType)
 {
-	using namespace UE::AnimationCore;
-	using namespace UE::Geometry;
-	
-	//TODO: for now, assume we are always transfering from LOD 0, but make this a parameter in the future...
-	constexpr int32 SourceLODIdx = 0; 
+	USingleSelectionMeshEditingTool::Shutdown(ShutdownType);
 
-	/** 
-	 * Compute mappings between indices and bone names.
-	 * 
-     * @note We assume that each mesh inherits its reference skeleton from the same USkeleton asset. However, their  
-     * internal indexing can be different and hence when transfering weights we need to make sure we reference the correct  
-     * bones via their names instead of indices. 
-     */
-	auto GetBoneMaps = [](const USkinnedAsset* SourceSkinnedAsset, 
-						  const USkinnedAsset* TargetSkinnedAsset, 
-						  TMap<FBoneIndexType, FName>& IndexToBone,
-						  TMap<FName, FBoneIndexType>& BoneToIndex)
+	if (ShutdownType == EToolShutdownType::Accept)
 	{
-		BoneToIndex.Reset();
-		IndexToBone.Reset();
-		const FReferenceSkeleton& SourceRefSkeleton = SourceSkinnedAsset->GetRefSkeleton();
-		for (int32 Index = 0; Index < SourceRefSkeleton.GetRawBoneNum(); ++Index)
-		{
-			IndexToBone.Add(Index, SourceRefSkeleton.GetRawRefBoneInfo()[Index].Name);
-		}
-
-		const FReferenceSkeleton& TargetRefSkeleton = TargetSkinnedAsset->GetRefSkeleton();
-		for (int32 Index = 0; Index < TargetRefSkeleton.GetRawBoneNum(); ++Index)
-		{
-			BoneToIndex.Add(TargetRefSkeleton.GetRawRefBoneInfo()[Index].Name, Index);
-		}
-	};
-
-	auto SkeletalMeshToDynamicMesh = [SourceLODIdx](USkeletalMesh* FromSkeletalMeshAsset,
-									    		    FDynamicMesh3& ToDynamicMesh)
-	{
-		FMeshDescription SourceMesh;
-
-		// Check first if we have bulk data available and non-empty.
-		if (FromSkeletalMeshAsset->IsLODImportedDataBuildAvailable(SourceLODIdx) && !FromSkeletalMeshAsset->IsLODImportedDataEmpty(SourceLODIdx))
-		{
-			FSkeletalMeshImportData SkeletalMeshImportData;
-			FromSkeletalMeshAsset->LoadLODImportedData(SourceLODIdx, SkeletalMeshImportData);
-			SkeletalMeshImportData.GetMeshDescription(SourceMesh);
-		}
-		else
-		{
-			// Fall back on the LOD model directly if no bulk data exists. When we commit
-			// the mesh description, we override using the bulk data. This can happen for older
-			// skeletal meshes, from UE 4.24 and earlier.
-			const FSkeletalMeshModel* SkeletalMeshModel = FromSkeletalMeshAsset->GetImportedModel();
-			if (SkeletalMeshModel && SkeletalMeshModel->LODModels.IsValidIndex(SourceLODIdx))
-			{
-				SkeletalMeshModel->LODModels[SourceLODIdx].GetMeshDescription(SourceMesh, FromSkeletalMeshAsset);
-			}
-		}
-
-		FMeshDescriptionToDynamicMesh Converter;
-		Converter.Convert(&SourceMesh, ToDynamicMesh);
-	};
-
-	// User hasn't specified the source mesh in the UI
-	if (ToolProperties->SourceMesh == nullptr) 
-	{
-		//TODO: Display error message
-		return;
+		TransferSkinWeightsNode->SkeletalMesh = ToolProperties->SourceMesh;
+		TransferSkinWeightsNode->Transform = TransformFromProperties();
+		TransferSkinWeightsNode->Invalidate();
 	}
 
-	// Convert source Skeletal Mesh to Dynamic Mesh
-	FDynamicMesh3 SourceDynamicMesh;
-	USkeletalMesh* FromSkeletalMeshAsset = ToolProperties->SourceMesh.Get();
-	SkeletalMeshToDynamicMesh(FromSkeletalMeshAsset, SourceDynamicMesh);
-	FTransformSRT3d SourceToWorld; //TODO: Allows the user to set this value or infer it from an editor
-	MeshTransforms::ApplyTransform(SourceDynamicMesh, SourceToWorld, true);
-
-	UChaosClothAsset* TargetClothAsset = ClothComponent->GetClothAsset(); 
-
-	// Compute bone index mappings
-	TMap<FBoneIndexType, FName> SourceIndexToBone;
-	TMap<FName, FBoneIndexType> TargetBoneToIndex;
-	GetBoneMaps(static_cast<USkinnedAsset*>(FromSkeletalMeshAsset), static_cast<USkinnedAsset*>(TargetClothAsset), SourceIndexToBone, TargetBoneToIndex);
-	
-	// Setup bone weight transfer operator
-	FTransferBoneWeights TransferBoneWeights(&SourceDynamicMesh, FSkeletalMeshAttributes::DefaultSkinWeightProfileName); 
-	TransferBoneWeights.SourceIndexToBone = &SourceIndexToBone;
-	TransferBoneWeights.TargetBoneToIndex = &TargetBoneToIndex;
-	if (TransferBoneWeights.Validate() != EOperationValidationResult::Ok)
+	if (SourceMeshTransformProxy)
 	{
-		//TODO: Display error message
-		return;
+		SourceMeshTransformProxy->OnTransformChanged.RemoveAll(this);
+		SourceMeshTransformProxy->OnEndTransformEdit.RemoveAll(this);
 	}
 
-	UE::Chaos::ClothAsset::FClothAdapter ClothAdapter(TargetClothAsset->GetClothCollection());
-    FTransformSRT3d TargetToWorld; //TODO: Allows the user to set this value or infer it from an editor
-
-	// Iterate over the LODs and transfer the bone weights from the source Skeletal mesh to the Cloth asset
-	for (int TargetLODIdx = 0; TargetLODIdx < ClothAdapter.GetNumLods(); ++TargetLODIdx) 
+	if (TargetClothPreview)
 	{
-		UE::Chaos::ClothAsset::FClothLodAdapter ClothLodAdapter = ClothAdapter.GetLod(TargetLODIdx);
-
-		// Cloth collection data arrays we are writing to
-		TArrayView<int32> NumBoneInfluences = ClothLodAdapter.GetPatternsSimNumBoneInfluences();
-		TArrayView<TArray<int32>> SimBoneIndices = ClothLodAdapter.GetPatternsSimBoneIndices();
-		TArrayView<TArray<float>> SimBoneWeights = ClothLodAdapter.GetPatternsSimBoneWeights();
-
-		const TArrayView<FVector3f> SimPositions =  ClothLodAdapter.GetPatternsSimRestPosition();
-		
-		checkSlow(SimPositions.Num() == SimBoneIndices.Num());
-		
-		const int32 NumVert = ClothLodAdapter.GetPatternsNumSimVertices();
-		constexpr bool bUseParallel = true; 
-
-		// Iterate over each vertex and write the data from FBoneWeights into cloth collection managed arrays
-		ParallelFor(NumVert, [&](int32 VertexID)
-		{
-			const FVector3f Pos = SimPositions[VertexID];
-			const FVector3d PosD = FVector3d((double)Pos[0], (double)Pos[1], (double)Pos[2]);
-			
-			UE::AnimationCore::FBoneWeights BoneWeights;
-			TransferBoneWeights.Compute(PosD, TargetToWorld, BoneWeights);
-			
-			const int32 NumBones = BoneWeights.Num();
-			
-			NumBoneInfluences[VertexID] = NumBones;
-			SimBoneIndices[VertexID].SetNum(NumBones);
-			SimBoneWeights[VertexID].SetNum(NumBones);
-
-			for (int BoneIdx = 0; BoneIdx < NumBones; ++BoneIdx) 
-			{
-				SimBoneIndices[VertexID][BoneIdx] = BoneWeights[BoneIdx].GetBoneIndex();
-				SimBoneWeights[VertexID][BoneIdx] = BoneWeights[BoneIdx].GetWeight();
-			}
-
-		}, bUseParallel ? EParallelForFlags::None : EParallelForFlags::ForceSingleThread);
+		TargetClothPreview->OnMeshUpdated.RemoveAll(this);
+		TargetClothPreview->Shutdown();
+		TargetClothPreview = nullptr;
 	}
+
+	if (SourceMeshComponent)
+	{
+		SourceMeshComponent->DestroyComponent();
+		SourceMeshComponent = nullptr;
+	}
+
+	if (SourceMeshParentActor)
+	{
+		SourceMeshParentActor->Destroy();
+		SourceMeshParentActor = nullptr;
+	}
+
+	GetToolManager()->GetPairedGizmoManager()->DestroyAllGizmosByOwner(this);
+	SourceMeshTransformGizmo = nullptr;
+
+	UE::ToolTarget::ShowSourceObject(Target);
 }
 
+
+bool UClothTransferSkinWeightsTool::CanAccept() const
+{
+	const FTransform& TransformOnNode = TransferSkinWeightsNode->Transform;;
+
+	return (ToolProperties->SourceMesh != TransferSkinWeightsNode->SkeletalMesh) ||
+		(ToolProperties->SourceMeshRotation != TransformOnNode.Rotator().Euler()) ||
+		(ToolProperties->SourceMeshTranslation != TransformOnNode.GetTranslation()) ||
+		(ToolProperties->SourceMeshScale != TransformOnNode.GetScale3D());
+
+}
 
 void UClothTransferSkinWeightsTool::OnTick(float DeltaTime)
 {
-	if (PendingAction != EClothTransferSkinWeightsToolActions::NoAction)
+	if (TargetClothPreview)
 	{
-		if (PendingAction == EClothTransferSkinWeightsToolActions::Transfer)
+		TargetClothPreview->Tick(DeltaTime);
+	}
+}
+
+TUniquePtr<UE::Geometry::FDynamicMeshOperator> UClothTransferSkinWeightsTool::MakeNewOperator()
+{
+	TUniquePtr<UE::Chaos::ClothAsset::Private::FClothTransferSkinWeightsOp> TransferOp =
+		MakeUnique<UE::Chaos::ClothAsset::Private::FClothTransferSkinWeightsOp>();
+	return TransferOp;
+}
+
+void UClothTransferSkinWeightsTool::SetClothEditorContextObject(TObjectPtr<UClothEditorContextObject> InClothEditorContextObject)
+{
+	ClothEditorContextObject = InClothEditorContextObject;
+}
+
+FTransform UClothTransferSkinWeightsTool::TransformFromProperties() const
+{
+	const FRotator Rotation = FRotator::MakeFromEuler(ToolProperties->SourceMeshRotation);
+	return FTransform(Rotation, ToolProperties->SourceMeshTranslation, ToolProperties->SourceMeshScale);
+}
+
+void UClothTransferSkinWeightsTool::SetSRTPropertiesFromTransform(const FTransform& Transform) const
+{
+	ToolProperties->SourceMeshRotation = Transform.Rotator().Euler();
+	ToolProperties->SourceMeshTranslation = Transform.GetTranslation();
+	ToolProperties->SourceMeshScale = Transform.GetScale3D();
+}
+
+void UClothTransferSkinWeightsTool::UpdateSourceMesh(TObjectPtr<USkeletalMesh> Mesh)
+{
+	checkf(ToolProperties, TEXT("ToolProperties is expected to be non-null. Be sure to run Setup() on this tool when it is created."));
+
+	if (Mesh == SourceMeshComponent->GetSkeletalMeshAsset())
+	{
+		return;
+	}
+
+	SourceMeshComponent->SetSkeletalMeshAsset(Mesh);
+
+	if (Mesh)
+	{
+		// Set up source mesh (from the SkeletalMesh)
+		SourceMeshParentActor->SetActorTransform(TransformFromProperties());
+		SourceMeshComponent->SetVisibility(!ToolProperties->bHideSourceMesh);
+
+		// Use ReinitializeGizmoTransform rather than SetNewGizmoTransform to avoid having this on the undo stack
+		SourceMeshTransformGizmo->ReinitializeGizmoTransform(SourceMeshParentActor->GetActorTransform());
+		SourceMeshTransformGizmo->SetVisibility(!ToolProperties->bHideSourceMesh);
+		SourceMeshTransformGizmo->ActiveGizmoMode = EToolContextTransformGizmoMode::Combined;
+	}
+	else
+	{
+		SourceMeshComponent->SetVisibility(false);
+		SourceMeshTransformGizmo->SetVisibility(false);
+	}	
+}
+
+
+void UClothTransferSkinWeightsTool::OpFinishedCallback(const UE::Geometry::FDynamicMeshOperator* Op)
+{
+	if (Op->GetResultInfo().Result == UE::Geometry::EGeometryResultType::Failure)
+	{
+		GetToolManager()->DisplayMessage(LOCTEXT("TransferOpFailedWarning", "Operation failed"), EToolMessageLevel::UserWarning);
+		bHasOpFailedWarning = true;
+	}
+	else
+	{
+		if (bHasOpFailedWarning)
 		{
-			TransferWeights();
+			GetToolManager()->DisplayMessage(FText(), EToolMessageLevel::UserWarning);    // clear old warning
+			bHasOpFailedWarning = false;
 		}
-		PendingAction = EClothTransferSkinWeightsToolActions::NoAction;
 	}
 }
 
 
-void UClothTransferSkinWeightsTool::RequestAction(EClothTransferSkinWeightsToolActions ActionType)
+void UClothTransferSkinWeightsTool::PreviewMeshUpdatedCallback(UMeshOpPreviewWithBackgroundCompute* Preview)
 {
-	if (PendingAction != EClothTransferSkinWeightsToolActions::NoAction)
-	{
-		return;
-	}
-	PendingAction = ActionType;
 }
 
 #undef LOCTEXT_NAMESPACE

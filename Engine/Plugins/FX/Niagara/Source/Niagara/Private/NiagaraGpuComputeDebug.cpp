@@ -7,11 +7,10 @@
 #include "CanvasTypes.h"
 #include "CommonRenderResources.h"
 #include "Engine/Font.h"
-#include "Modules/ModuleManager.h"
 #include "RHI.h"
 #include "RenderGraphBuilder.h"
+#include "RenderGraphUtils.h"
 #include "ScreenPass.h"
-#include "ScreenRendering.h"
 
 int32 GNiagaraGpuComputeDebug_MinTextureHeight = 128;
 static FAutoConsoleVariableRef CVarNiagaraGpuComputeDebug_MinTextureHeight(
@@ -236,7 +235,7 @@ bool FNiagaraGpuComputeDebug::ShouldDrawDebug() const
 	return GNiagaraGpuComputeDebug_DrawDebugEnabled && (VisualizeTextures.Num() > 0);
 }
 
-void FNiagaraGpuComputeDebug::DrawDebug(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FScreenPassRenderTarget& Output)
+void FNiagaraGpuComputeDebug::DrawDebug(FRDGBuilder& GraphBuilder, const FSceneView& View, const FScreenPassRenderTarget& Output)
 {
 	if (!GNiagaraGpuComputeDebug_DrawDebugEnabled || (VisualizeTextures.Num() == 0))
 	{
@@ -285,7 +284,7 @@ void FNiagaraGpuComputeDebug::DrawDebug(FRDGBuilder& GraphBuilder, const FViewIn
 	}
 }
 
-void FNiagaraGpuComputeDebug::DrawSceneDebug(class FRDGBuilder& GraphBuilder, const class FViewInfo& View, FRDGTextureRef SceneColor, FRDGTextureRef SceneDepth)
+void FNiagaraGpuComputeDebug::DrawSceneDebug(FRDGBuilder& GraphBuilder, const FSceneView& View, FRDGTextureRef SceneColor, FRDGTextureRef SceneDepth)
 {
 	if (!GNiagaraGpuComputeDebug_DrawDebugEnabled)
 	{

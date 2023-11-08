@@ -99,14 +99,37 @@ public:
 		Initialize(BufferPointer, BufferCapacity);
 	}
 
-	inline int32 Len() const					{ return int32(CurPos - Base); }
-	inline CharType* GetData()					{ return Base; }
-	inline const CharType* GetData() const		{ return Base; }
-	inline const CharType* ToString() const		{ EnsureNulTerminated(); return Base; }
-	inline ViewType ToView() const				{ return ViewType(Base, Len()); }
-	inline const CharType* operator*() const	{ EnsureNulTerminated(); return Base; }
+	inline int32 Len() const { return int32(CurPos - Base); }
 
-	inline const CharType	LastChar() const	{ return *(CurPos - 1); }
+	/** Returns a pointer to Len() code units that are not necessarily null-terminated. */
+	inline CharType* GetData() UE_LIFETIMEBOUND { return Base; }
+	inline const CharType* GetData() const UE_LIFETIMEBOUND { return Base; }
+
+	/** Returns a pointer to a null-terminated string that is valid until the builder is mutated. */
+	inline const CharType* ToString() const UE_LIFETIMEBOUND
+	{
+		EnsureNulTerminated();
+		return Base;
+	}
+
+	/** Returns a pointer to a null-terminated string that is valid until the builder is mutated. */
+	inline const CharType* operator*() const UE_LIFETIMEBOUND
+	{
+		EnsureNulTerminated();
+		return Base;
+	}
+
+	/** Returns a view of the string that is valid until the builder is mutated. */
+	inline ViewType ToView() const UE_LIFETIMEBOUND
+	{
+		return ViewType(Base, Len());
+	}
+
+	/** Returns the last character, technically the last code unit. */
+	inline const CharType LastChar() const
+	{
+		return *(CurPos - 1);
+	}
 
 	/**
 	 * Helper function to return the amount of memory allocated by this container.
@@ -157,7 +180,10 @@ public:
 	{
 		int32 ConvertedLength = FPlatformString::ConvertedLength<CharType>(String, Length);
 		EnsureAdditionalCapacity(ConvertedLength);
-		CurPos = FPlatformString::Convert(CurPos, ConvertedLength, String, Length);
+		if (Length)
+		{
+			CurPos = FPlatformString::Convert(CurPos, ConvertedLength, String, Length);
+		}
 		return *this;
 	}
 
@@ -189,21 +215,8 @@ public:
 		return *this;
 	}
 
-	template <
-		typename AppendedCharType,
-		std::enable_if_t<TIsCharType<AppendedCharType>::Value>* = nullptr
-	>
-	UE_DEPRECATED(5.0, "Use AppendChar instead of Append.")
-	inline BuilderType& Append(AppendedCharType Char)
-	{
-		return AppendChar(Char);
-	}
-
+	UE_DEPRECATED(5.3, "Use Append instead of AppendAnsi.")
 	inline BuilderType& AppendAnsi(const FAnsiStringView String) { return Append(String); }
-	UE_DEPRECATED(5.0, "Use Append instead of AppendAnsi.")
-	inline BuilderType& AppendAnsi(const ANSICHAR* const String) { return Append(String); }
-	UE_DEPRECATED(5.0, "Use Append instead of AppendAnsi.")
-	inline BuilderType& AppendAnsi(const ANSICHAR* const String, const int32 Length) { return Append(String, Length); }
 
 	/** Replace characters at given position and length with substring */
 	void ReplaceAt(int32 Pos, int32 RemoveLen, ViewType Str)
@@ -233,7 +246,10 @@ public:
 			}
 		}
 		
-		FMemory::Memcpy(Base + Pos, Str.GetData(), Str.Len() * sizeof(CharType));
+		if (Str.Len())
+		{
+			FMemory::Memcpy(Base + Pos, Str.GetData(), Str.Len() * sizeof(CharType));
+		}
 	}
 
 	/** Insert substring at given position */
@@ -328,8 +344,8 @@ public:
 	 *
 	 * @param Fmt A format string that specifies how to format the additional arguments. Refer to standard printf format.
 	 */
-	template <typename FmtType, typename... Types,
-		std::enable_if_t<TIsArrayOrRefOfTypeByPredicate<FmtType, TIsCharEncodingCompatibleWithCharType>::Value>* = nullptr>
+	template <typename FmtType, typename... Types
+		UE_REQUIRES(TIsArrayOrRefOfTypeByPredicate<FmtType, TIsCharEncodingCompatibleWithCharType>::Value)>
 	BuilderType& Appendf(const FmtType& Fmt, Types... Args)
 	{
 		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to Appendf.");
@@ -406,6 +422,16 @@ public:
 	{
 	}
 
+	/**
+	 * Construct a string builder by appending the arguments using operator<<.
+	 */
+	template <typename... ArgTypes>
+	explicit TStringBuilderWithBuffer(EInPlace, ArgTypes&&... Args)
+		: TStringBuilderBase<CharType>(StringBuffer, BufferSize)
+	{
+		(*this << ... << (ArgTypes&&)Args);
+	}
+
 	using TStringBuilderBase<CharType>::operator=;
 
 private:
@@ -477,40 +503,59 @@ inline FWideStringBuilderBase&		operator<<(FWideStringBuilderBase& Builder, uint
 inline FUtf8StringBuilderBase&		operator<<(FUtf8StringBuilderBase& Builder, int16 Value)							{ return Builder << int32(Value); }
 inline FUtf8StringBuilderBase&		operator<<(FUtf8StringBuilderBase& Builder, uint16 Value)							{ return Builder << uint32(Value); }
 
+template <typename CharType, int32 BufferSize>
+class UE_DEPRECATED(5.3, "Use WriteToString<N>(...) or TStringBuilder<N>(InPlace, ...).") TWriteToString : public TStringBuilderWithBuffer<CharType, BufferSize>
+{
+public:
+	template <typename... ArgTypes>
+	explicit TWriteToString(ArgTypes&&... Args)
+	{
+		(*this << ... << (ArgTypes&&)Args);
+	}
+};
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+template <typename CharType, int32 BufferSize>
+struct TIsContiguousContainer<TWriteToString<CharType, BufferSize>>
+{
+	static constexpr inline bool Value = true;
+};
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 /**
- * A function-like type that creates a TStringBuilder by appending its arguments.
+ * A function to create and append to a temporary string builder.
  *
  * Example Use Cases:
  *
  * For void Action(FStringView) -> Action(WriteToString<64>(Arg1, Arg2));
  * For UE_LOG or checkf -> checkf(Condition, TEXT("%s"), *WriteToString<32>(Arg));
  */
-template <typename CharType, int32 BufferSize>
-class TWriteToString : public TStringBuilderWithBuffer<CharType, BufferSize>
+template <int32 BufferSize, typename... ArgTypes>
+TStringBuilderWithBuffer<TCHAR, BufferSize> WriteToString(ArgTypes&&... Args)
 {
-public:
-	template <typename... ArgTypes>
-	explicit TWriteToString(ArgTypes&&... Args)
-	{
-	#if PLATFORM_COMPILER_HAS_FOLD_EXPRESSIONS
-		(*this << ... << Forward<ArgTypes>(Args));
-	#else
-		using Fold = int[];
-		void(Fold{0, (void(*this << Forward<ArgTypes>(Args)), 0)...});
-	#endif
-	}
-};
+	return TStringBuilderWithBuffer<TCHAR, BufferSize>(InPlace, (ArgTypes&&)Args...);
+}
 
-template <typename CharType, int32 BufferSize>
-struct TIsContiguousContainer<TWriteToString<CharType, BufferSize>>
+/** A function to create and append to a temporary string builder. See WriteToString. */
+template <int32 BufferSize, typename... ArgTypes>
+TStringBuilderWithBuffer<ANSICHAR, BufferSize> WriteToAnsiString(ArgTypes&&... Args)
 {
-	static constexpr bool Value = true;
-};
+	return TStringBuilderWithBuffer<ANSICHAR, BufferSize>(InPlace, (ArgTypes&&)Args...);
+}
 
-template <int32 BufferSize> using WriteToString = TWriteToString<TCHAR, BufferSize>;
-template <int32 BufferSize> using WriteToAnsiString = TWriteToString<ANSICHAR, BufferSize>;
-template <int32 BufferSize> using WriteToWideString = TWriteToString<WIDECHAR, BufferSize>;
-template <int32 BufferSize> using WriteToUtf8String = TWriteToString<UTF8CHAR, BufferSize>;
+/** A function to create and append to a temporary string builder. See WriteToString. */
+template <int32 BufferSize, typename... ArgTypes>
+TStringBuilderWithBuffer<WIDECHAR, BufferSize> WriteToWideString(ArgTypes&&... Args)
+{
+	return TStringBuilderWithBuffer<WIDECHAR, BufferSize>(InPlace, (ArgTypes&&)Args...);
+}
+
+/** A function to create and append to a temporary string builder. See WriteToString. */
+template <int32 BufferSize, typename... ArgTypes>
+TStringBuilderWithBuffer<UTF8CHAR, BufferSize> WriteToUtf8String(ArgTypes&&... Args)
+{
+	return TStringBuilderWithBuffer<UTF8CHAR, BufferSize>(InPlace, (ArgTypes&&)Args...);
+}
 
 /**
  * Returns an object that can be used as the output container for algorithms by appending to the builder.

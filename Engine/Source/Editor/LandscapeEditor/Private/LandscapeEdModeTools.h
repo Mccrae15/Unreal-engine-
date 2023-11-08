@@ -7,6 +7,7 @@
 #include "LandscapeProxy.h"
 #include "LandscapeToolInterface.h"
 #include "LandscapeEdMode.h"
+#include "LandscapeEditTypes.h"
 #include "EditorViewportClient.h"
 #include "LandscapeEdit.h"
 #include "LandscapeComponent.h"
@@ -52,7 +53,7 @@ struct FNoiseParameter
 		{
 			for (uint32 Octave = 0; Octave < 4; Octave++)
 			{
-				float	OctaveShift = 1 << Octave;
+				float	OctaveShift = static_cast<float>(1 << Octave);
 				float	OctaveScale = OctaveShift / NoiseScale;
 				Noise += PerlinNoise2D(X * OctaveScale, Y * OctaveScale) / OctaveShift;
 			}
@@ -70,7 +71,7 @@ struct FNoiseParameter
 		{
 			for (uint32 Octave = 0; Octave < 4; Octave++)
 			{
-				float	OctaveShift = 1 << Octave;
+				float	OctaveShift = static_cast<float>(1 << Octave);
 				float	OctaveAmplitude = NoiseAmount / OctaveShift;
 
 				// Attempt to avoid calculating noise if the test value is outside of the noise amplitude.
@@ -186,13 +187,13 @@ inline void LowPassFilter(int32 X1, int32 Y1, int32 X2, int32 Y2, FLandscapeBrus
 
 	for (int32 Y = Y1 + 1; Y <= Y2 - 1; Y++)
 	{
-		auto* DataScanline = Data.GetData() + (Y - Y1) * (X2 - X1 + 1) + (0 - X1);
-		auto* bufScanline = buf + (Y - (Y1 + 1)) * Dims[1] + (0 - (X1 + 1));
+		const typename TArray<DataType>::ElementType* DataScanline = Data.GetData() + (Y - Y1) * (X2 - X1 + 1) + (0 - X1);
+		kiss_fft_cpx* BufScanline = buf + (Y - (Y1 + 1)) * Dims[1] + (0 - (X1 + 1));
 
 		for (int32 X = X1 + 1; X <= X2 - 1; X++)
 		{
-			bufScanline[X].r = DataScanline[X];
-			bufScanline[X].i = 0;
+			BufScanline[X].r = DataScanline[X];
+			BufScanline[X].i = 0;
 		}
 	}
 
@@ -202,7 +203,7 @@ inline void LowPassFilter(int32 X1, int32 Y1, int32 X2, int32 Y2, FLandscapeBrus
 	int32 CenterPos[2] = { Dims[0] >> 1, Dims[1] >> 1 };
 	for (int32 Y = 0; Y < Dims[0]; Y++)
 	{
-		float DistFromCenter = 0.0f;
+		float DistFromCenter;
 		for (int32 X = 0; X < Dims[1]; X++)
 		{
 			if (Y < CenterPos[0])
@@ -210,12 +211,12 @@ inline void LowPassFilter(int32 X1, int32 Y1, int32 X2, int32 Y2, FLandscapeBrus
 				if (X < CenterPos[1])
 				{
 					// 1
-					DistFromCenter = X*X + Y*Y;
+					DistFromCenter = static_cast<float>(X*X + Y*Y);
 				}
 				else
 				{
 					// 2
-					DistFromCenter = (X - Dims[1])*(X - Dims[1]) + Y*Y;
+					DistFromCenter = static_cast<float>((X - Dims[1])*(X - Dims[1]) + Y*Y);
 				}
 			}
 			else
@@ -223,18 +224,18 @@ inline void LowPassFilter(int32 X1, int32 Y1, int32 X2, int32 Y2, FLandscapeBrus
 				if (X < CenterPos[1])
 				{
 					// 3
-					DistFromCenter = X*X + (Y - Dims[0])*(Y - Dims[0]);
+					DistFromCenter = static_cast<float>(X*X + (Y - Dims[0])*(Y - Dims[0]));
 				}
 				else
 				{
 					// 4
-					DistFromCenter = (X - Dims[1])*(X - Dims[1]) + (Y - Dims[0])*(Y - Dims[0]);
+					DistFromCenter = static_cast<float>((X - Dims[1])*(X - Dims[1]) + (Y - Dims[0])*(Y - Dims[0]));
 				}
 			}
 			// High frequency removal
 			float Ratio = 1.0f - DetailScale;
 			float Dist = FMath::Min<float>((Dims[0] * Ratio)*(Dims[0] * Ratio), (Dims[1] * Ratio)*(Dims[1] * Ratio));
-			float Filter = 1.0 / (1.0 + DistFromCenter / Dist);
+			float Filter = 1.0f / (1.0f + DistFromCenter / Dist);
 			CA_SUPPRESS(6385);
 			out[X + Y*Dims[1]].r *= Filter;
 			out[X + Y*Dims[1]].i *= Filter;
@@ -244,7 +245,7 @@ inline void LowPassFilter(int32 X1, int32 Y1, int32 X2, int32 Y2, FLandscapeBrus
 	// Inverse FFT
 	kiss_fftnd(sti, out, buf);
 
-	float Scale = Dims[0] * Dims[1];
+	const float Scale = static_cast<float>(Dims[0] * Dims[1]);
 	const int32 BrushX1 = FMath::Max<int32>(BrushInfo.GetBounds().Min.X, X1 + 1);
 	const int32 BrushY1 = FMath::Max<int32>(BrushInfo.GetBounds().Min.Y, Y1 + 1);
 	const int32 BrushX2 = FMath::Min<int32>(BrushInfo.GetBounds().Max.X, X2);
@@ -252,8 +253,8 @@ inline void LowPassFilter(int32 X1, int32 Y1, int32 X2, int32 Y2, FLandscapeBrus
 	for (int32 Y = BrushY1; Y < BrushY2; Y++)
 	{
 		const float* BrushScanline = BrushInfo.GetDataPtr(FIntPoint(0, Y));
-		auto* DataScanline = Data.GetData() + (Y - Y1) * (X2 - X1 + 1) + (0 - X1);
-		auto* bufScanline = buf + (Y - (Y1 + 1)) * Dims[1] + (0 - (X1 + 1));
+		typename TArray<DataType>::ElementType* DataScanline = Data.GetData() + (Y - Y1) * (X2 - X1 + 1) + (0 - X1);
+		const kiss_fft_cpx* BufScanline = buf + (Y - (Y1 + 1)) * Dims[1] + (0 - (X1 + 1));
 
 		for (int32 X = BrushX1; X < BrushX2; X++)
 		{
@@ -261,7 +262,7 @@ inline void LowPassFilter(int32 X1, int32 Y1, int32 X2, int32 Y2, FLandscapeBrus
 
 			if (BrushValue > 0.0f)
 			{
-				DataScanline[X] = FMath::Lerp((float)DataScanline[X], bufScanline[X].r / Scale, BrushValue * ApplyRatio);
+				DataScanline[X] = static_cast<DataType>(FMath::Lerp(static_cast<float>(DataScanline[X]), BufScanline[X].r / Scale, BrushValue * ApplyRatio));
 			}
 		}
 	}
@@ -284,6 +285,8 @@ struct TLandscapeEditCache
 {
 public:
 	typedef AccessorType DataType;
+	typedef Accessor AccessorClass;
+
 	Accessor DataAccess;
 
 	TLandscapeEditCache(const FLandscapeToolTarget& InTarget)
@@ -297,6 +300,8 @@ public:
 	// Note that this should maybe be called "ExtendDataCache" because the region here will be combined with the existing cached region, not loaded independently, giving a cached region that is the bounding box of previous and new
 	void CacheData(int32 X1, int32 Y1, int32 X2, int32 Y2, bool bCacheOriginalData = false)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(TLandscapeEditCache_CacheData);
+
 		if (!bIsValid)
 		{
 			if (Accessor::bUseInterp)
@@ -550,6 +555,8 @@ public:
 	// X2/Y2 Coordinates are "inclusive" max values
 	bool GetCachedData(int32 X1, int32 Y1, int32 X2, int32 Y2, TArray<AccessorType>& OutData)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(TLandscapeEditCache_GetCachedData);
+
 		const int32 XSize = (1 + X2 - X1);
 		const int32 YSize = (1 + Y2 - Y1);
 		const int32 NumSamples = XSize * YSize;
@@ -585,6 +592,8 @@ public:
 	// X2/Y2 Coordinates are "inclusive" max values
 	void SetCachedData(int32 X1, int32 Y1, int32 X2, int32 Y2, TArray<AccessorType>& Data, ELandscapeLayerPaintingRestriction PaintingRestriction = ELandscapeLayerPaintingRestriction::None, bool bUpdateData = true)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(TLandscapeEditCache_SetCachedData);
+
 		checkSlow(Data.Num() == (1 + Y2 - Y1) * (1 + X2 - X1));
 
 		// Update cache
@@ -607,6 +616,8 @@ public:
 	// X2/Y2 Coordinates are "inclusive" max values
 	void GetOriginalData(int32 X1, int32 Y1, int32 X2, int32 Y2, TArray<AccessorType>& OutOriginalData)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(TLandscapeEditCache_GetOriginalData);
+
 		int32 NumSamples = (1 + X2 - X1)*(1 + Y2 - Y1);
 		OutOriginalData.Empty(NumSamples);
 		OutOriginalData.AddUninitialized(NumSamples);
@@ -626,6 +637,7 @@ public:
 
 	void Flush()
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(TLandscapeEditCache_Flush);
 		DataAccess.Flush();
 	}
 
@@ -689,7 +701,7 @@ struct FHeightmapAccessorTool : public FHeightmapAccessor<bInUseInterp>
 
 struct FLandscapeHeightCache : public TLandscapeEditCache<FHeightmapAccessorTool<true>, uint16>
 {
-	static uint16 ClampValue(int32 Value) { return FMath::Clamp(Value, 0, LandscapeDataAccess::MaxValue); }
+	static uint16 ClampValue(int32 Value) { return static_cast<uint16>(FMath::Clamp(Value, 0, LandscapeDataAccess::MaxValue)); }
 
 	FLandscapeHeightCache(const FLandscapeToolTarget& InTarget)
 		: TLandscapeEditCache<FHeightmapAccessorTool<true>, uint16>(InTarget)
@@ -729,7 +741,7 @@ struct FXYOffsetmapAccessor
 				FVector* Value = Data.Find(FIntPoint(X, Y));
 				if (Value)
 				{
-					Value->Z = ((float)NewHeights.FindRef(FIntPoint(X, Y)) - 32768.0f) * LANDSCAPE_ZSCALE;
+					Value->Z = LandscapeDataAccess::GetLocalHeight(static_cast<uint16>(NewHeights.FindRef(FIntPoint(X, Y))));
 				}
 			}
 		}
@@ -748,7 +760,7 @@ struct FXYOffsetmapAccessor
 				FVector* Value = Data.Find(FIntPoint(X, Y));
 				if (Value)
 				{
-					Value->Z = ((float)NewHeights.FindRef(FIntPoint(X, Y)) - 32768.0f) * LANDSCAPE_ZSCALE;
+					Value->Z = LandscapeDataAccess::GetLocalHeight(static_cast<uint16>(NewHeights.FindRef(FIntPoint(X, Y))));
 				}
 			}
 		}
@@ -769,7 +781,7 @@ struct FXYOffsetmapAccessor
 			{
 				for (int32 X = X1; X <= X2; ++X)
 				{
-					NewHeights[X - X1 + (Y - Y1) * (X2 - X1 + 1)] = FMath::Clamp<uint16>(Data[(X - X1 + (Y - Y1) * (X2 - X1 + 1))].Z * LANDSCAPE_INV_ZSCALE + 32768.0f, 0, 65535);
+					NewHeights[X - X1 + (Y - Y1) * (X2 - X1 + 1)] = LandscapeDataAccess::GetTexHeight(static_cast<float>(Data[(X - X1 + (Y - Y1) * (X2 - X1 + 1))].Z));
 				}
 			}
 						
@@ -875,7 +887,7 @@ struct FAlphamapAccessorTool : public FAlphamapAccessor<bInUseInterp, bInUseTota
 
 struct FLandscapeAlphaCache : public TLandscapeEditCache<FAlphamapAccessorTool<true, false>, uint8>
 {
-	static uint8 ClampValue(int32 Value) { return FMath::Clamp(Value, 0, 255); }
+	static uint8 ClampValue(int32 Value) { return static_cast<uint8>(FMath::Clamp(Value, 0, 255)); }
 
 	FLandscapeAlphaCache(const FLandscapeToolTarget& InTarget)
 		: TLandscapeEditCache<FAlphamapAccessorTool<true, false>, uint8>(InTarget)
@@ -893,7 +905,7 @@ struct FVisibilityAccessor : public FAlphamapAccessorTool<false, false>
 
 struct FLandscapeVisCache : public TLandscapeEditCache<FAlphamapAccessorTool<false, false>, uint8>
 {
-	static uint8 ClampValue(int32 Value) { return FMath::Clamp(Value, 0, 255); }
+	static uint8 ClampValue(int32 Value) { return static_cast<uint8>(FMath::Clamp(Value, 0, 255)); }
 
 	FLandscapeVisCache(const FLandscapeToolTarget& InTarget)
 		: TLandscapeEditCache<FAlphamapAccessorTool<false, false>, uint8>(InTarget)
@@ -909,6 +921,7 @@ public:
 	FLandscapeLayerDataCache(const FLandscapeToolTarget& InTarget, typename ToolTarget::CacheClass& Cache)
 		: LandscapeInfo(nullptr)
 		, Landscape(nullptr)
+		, EditingLayerGuid()
 		, EditingLayerIndex(MAX_uint8)
 		, bIsInitialized(false)
 		, bCombinedLayerOperation(false)
@@ -919,8 +932,16 @@ public:
 	{
 	}
 
+	void SetCacheEditingLayer(const FGuid& InEditLayerGUID)
+	{
+		CacheUpToEditingLayer.DataAccess.SetEditLayer(InEditLayerGUID);
+		CacheBottomLayers.DataAccess.SetEditLayer(InEditLayerGUID);
+		EditingLayerGuid = InEditLayerGUID;
+	}
+
 	void Initialize(ULandscapeInfo* InLandscapeInfo, bool InCombinedLayerOperation)
 	{
+		check(EditingLayerGuid.IsSet());	// you must call SetCacheEditingLayer before Initialize
 		if (!bIsInitialized)
 		{
 			LandscapeInfo = InLandscapeInfo;
@@ -928,12 +949,11 @@ public:
 			bCombinedLayerOperation = Landscape && Landscape->HasLayersContent() && InCombinedLayerOperation && bTargetIsHeightmap;
 			if (bCombinedLayerOperation)
 			{
-				EditingLayerGuid = Landscape->GetEditingLayer();
-				for (int i = 0; i < Landscape->GetLayerCount(); ++i)
+				for (uint8 i = 0; i < Landscape->GetLayerCount(); ++i)
 				{
 					FLandscapeLayer* CurrentLayer = Landscape->GetLayer(i);
 					BackupLayerVisibility.Add(CurrentLayer->bVisible);
-					if (CurrentLayer->Guid == EditingLayerGuid)
+					if (CurrentLayer->Guid == EditingLayerGuid.GetValue())
 					{
 						EditingLayerIndex = i;
 					}
@@ -944,6 +964,7 @@ public:
 		}
 	}
 
+	// read values in the specified rectangle into the array
 	void Read(int32 X1, int32 Y1, int32 X2, int32 Y2, TArray<typename ToolTarget::CacheClass::DataType>& Data)
 	{
 		check(bIsInitialized);
@@ -979,7 +1000,10 @@ public:
 				return DesiredCacheBounds;
 			};
 
-			FScopedSetLandscapeEditingLayer Scope(Landscape, FGuid());
+			// temporarily switch to working on the final runtime data, so we can gather the combined layer data into the caches
+			FGuid PreviousLayerGUID = EditingLayerGuid.GetValue();
+			SetCacheEditingLayer(FGuid());
+
 			CacheUpToEditingLayer.GetDataAndCache(X1, Y1, X2, Y2, Data, OnCacheUpdating);
 			// Release Texture Mips that will be Locked by the next SynchronousUpdateComponentVisibilityForHeight
 			CacheUpToEditingLayer.DataAccess.Flush();
@@ -989,6 +1013,9 @@ public:
 			CacheBottomLayers.GetDataAndCache(X1, Y1, X2, Y2, BottomLayersData, OnCacheUpdating);
 			// Do the same here for consistency
 			CacheBottomLayers.DataAccess.Flush();
+			
+			SetCacheEditingLayer(PreviousLayerGUID);
+			check(PreviousLayerGUID == CacheUpToEditingLayer.DataAccess.GetEditLayer());
 		}
 		else
 		{
@@ -1011,11 +1038,13 @@ public:
 			for (int i = 0; i < Data.Num(); ++i)
 			{
 				float Contribution = (LandscapeDataAccess::GetLocalHeight(Data[i]) - LandscapeDataAccess::GetLocalHeight(BottomLayersData[i])) * InverseAlpha;
-				DataContribution[i] = LandscapeDataAccess::GetTexHeight(Contribution);
+				DataContribution[i] = static_cast<typename ToolTarget::CacheClass::DataType>(LandscapeDataAccess::GetTexHeight(Contribution));
 			}
-			checkf(EditingLayerGuid == Landscape->GetEditingLayer(), TEXT("EditingLayer has changed between Initialize and Write. Was: %s (%s). Is now: %s (%s)"), 
-				Landscape->GetLayer(EditingLayerGuid) ? *(Landscape->GetLayer(EditingLayerGuid)->Name.ToString()) : TEXT("<unknown>"), *EditingLayerGuid.ToString(),
-				Landscape->GetLayer(Landscape->GetEditingLayer()) ? *(Landscape->GetLayer(Landscape->GetEditingLayer())->Name.ToString()) : TEXT("<unknown>"), *Landscape->GetEditingLayer().ToString());
+
+			FGuid CacheAccessorLayerGuid = CacheUpToEditingLayer.DataAccess.GetEditLayer();
+ 			checkf(EditingLayerGuid.GetValue() == CacheAccessorLayerGuid, TEXT("Editing Layer has changed between Initialize and Write. Was: %s (%s). Is now: %s (%s)"),
+ 				Landscape->GetLayer(*EditingLayerGuid) ? *(Landscape->GetLayer(*EditingLayerGuid)->Name.ToString()) : TEXT("<unknown>"), *EditingLayerGuid->ToString(),
+ 				Landscape->GetLayer(CacheAccessorLayerGuid) ? *(Landscape->GetLayer(CacheAccessorLayerGuid)->Name.ToString()) : TEXT("<unknown>"), *CacheAccessorLayerGuid.ToString());
 
 			// Restore layers visibility
 			SetLayersVisibility(BackupLayerVisibility);
@@ -1079,7 +1108,7 @@ private:
 
 	ULandscapeInfo* LandscapeInfo;
 	ALandscape* Landscape;
-	FGuid EditingLayerGuid;
+	TOptional<FGuid> EditingLayerGuid;
 	uint8 EditingLayerIndex;
 	TArray<bool> BackupLayerVisibility;
 	TArray<typename ToolTarget::CacheClass::DataType> BottomLayersData;
@@ -1131,6 +1160,16 @@ struct FFullWeightmapAccessor
 				}
 			}
 		}
+	}
+
+	void SetEditLayer(const FGuid& InEditLayerGUID)
+	{
+		LandscapeEdit.SetEditLayer(InEditLayerGUID);
+	}
+
+	FGuid GetEditLayer() const
+	{
+		return LandscapeEdit.GetEditLayer();
 	}
 
 	void GetData(int32& X1, int32& Y1, int32& X2, int32& Y2, TMap<FIntPoint, TArray<uint8>>& Data)
@@ -1293,7 +1332,7 @@ private:
 
 struct FLandscapeDataCache : public TLandscapeEditCache<FDatamapAccessor<false>, uint8>
 {
-	static uint8 ClampValue(int32 Value) { return FMath::Clamp(Value, 0, 255); }
+	static uint8 ClampValue(int32 Value) { return static_cast<uint8>(FMath::Clamp(Value, 0, 255)); }
 
 	FLandscapeDataCache(const FLandscapeToolTarget& InTarget)
 		: TLandscapeEditCache<FDatamapAccessor<false>, uint8>(InTarget)
@@ -1308,21 +1347,21 @@ struct FLandscapeDataCache : public TLandscapeEditCache<FDatamapAccessor<false>,
 struct FHeightmapToolTarget
 {
 	typedef FLandscapeHeightCache CacheClass;
-	static const ELandscapeToolTargetType::Type TargetType = ELandscapeToolTargetType::Heightmap;
+	static const ELandscapeToolTargetType TargetType = ELandscapeToolTargetType::Heightmap;
 
 	static float StrengthMultiplier(ULandscapeInfo* LandscapeInfo, float BrushRadius)
 	{
 		if (LandscapeInfo)
 		{
 			// Adjust strength based on brush size and drawscale, so strength 1 = one hemisphere
-			return BrushRadius * LANDSCAPE_INV_ZSCALE / (LandscapeInfo->DrawScale.Z);
+			return static_cast<float>(BrushRadius * LANDSCAPE_INV_ZSCALE / LandscapeInfo->DrawScale.Z);
 		}
 		return 5.0f * LANDSCAPE_INV_ZSCALE;
 	}
 
 	static FMatrix ToWorldMatrix(ULandscapeInfo* LandscapeInfo)
 	{
-		FMatrix Result = FTranslationMatrix(FVector(0, 0, -32768.0f));
+		FMatrix Result = FTranslationMatrix(FVector(0, 0, -LandscapeDataAccess::MidValue));
 		Result *= FScaleMatrix(FVector(1.0f, 1.0f, LANDSCAPE_ZSCALE) * LandscapeInfo->DrawScale);
 		return Result;
 	}
@@ -1330,7 +1369,7 @@ struct FHeightmapToolTarget
 	static FMatrix FromWorldMatrix(ULandscapeInfo* LandscapeInfo)
 	{
 		FMatrix Result = FScaleMatrix(FVector(1.0f, 1.0f, LANDSCAPE_INV_ZSCALE) / (LandscapeInfo->DrawScale));
-		Result *= FTranslationMatrix(FVector(0, 0, 32768.0f));
+		Result *= FTranslationMatrix(FVector(0, 0, LandscapeDataAccess::MidValue));
 		return Result;
 	}
 };
@@ -1339,7 +1378,7 @@ struct FHeightmapToolTarget
 struct FWeightmapToolTarget
 {
 	typedef FLandscapeAlphaCache CacheClass;
-	static const ELandscapeToolTargetType::Type TargetType = ELandscapeToolTargetType::Weightmap;
+	static const ELandscapeToolTargetType TargetType = ELandscapeToolTargetType::Weightmap;
 
 	static float StrengthMultiplier(ULandscapeInfo* LandscapeInfo, float BrushRadius)
 	{
@@ -1368,6 +1407,13 @@ public:
 	{
 	}
 
+	virtual void SetEditLayer(const FGuid& EditLayerGUID)
+	{
+		// if this function is not overridden, then the tool uses the old method of getting the edit layer (using the shared EditingLayer on ALandscape)
+		// we should migrate tools to use SetEditLayer() and deprecate the reliance on the shared EditingLayer
+		// once all tools use SetEditLayer we can move this to be part of the constructor
+	}
+
 	// Signature of Apply() method for derived strokes
 	// void Apply(FEditorViewportClient* ViewportClient, FLandscapeBrush* Brush, const ULandscapeEditorObject* UISettings, const TArray<FLandscapeToolMousePosition>& MousePositions);
 
@@ -1383,7 +1429,7 @@ public:
 protected:
 	FEdModeLandscape* EdMode = nullptr;
 	const FLandscapeToolTarget& Target;
-	ULandscapeInfo* LandscapeInfo = nullptr;
+	TObjectPtr<ULandscapeInfo> LandscapeInfo = nullptr;
 };
 
 
@@ -1395,6 +1441,8 @@ protected:
 template<class TStrokeClass>
 class FLandscapeToolBase : public FLandscapeTool
 {
+	using Super = FLandscapeTool;
+
 public:
 	FLandscapeToolBase(FEdModeLandscape* InEdMode)
 		: LastInteractorPosition(FVector2D::ZeroVector)
@@ -1412,7 +1460,7 @@ public:
 
 	virtual ELandscapeLayerUpdateMode GetBeginToolContentUpdateFlag() const
 	{
-		bool bUpdateHeightmap = this->EdMode->CurrentToolTarget.TargetType == ELandscapeToolTargetType::Type::Heightmap; 
+		bool bUpdateHeightmap = this->EdMode->CurrentToolTarget.TargetType == ELandscapeToolTargetType::Heightmap; 
 		return bUpdateHeightmap ? ELandscapeLayerUpdateMode::Update_Heightmap_Editing : ELandscapeLayerUpdateMode::Update_Weightmap_Editing;
 	}
 
@@ -1423,19 +1471,21 @@ public:
 
 	virtual ELandscapeLayerUpdateMode GetEndToolContentUpdateFlag() const
 	{
-		bool bUpdateHeightmap = this->EdMode->CurrentToolTarget.TargetType == ELandscapeToolTargetType::Type::Heightmap;
+		bool bUpdateHeightmap = this->EdMode->CurrentToolTarget.TargetType == ELandscapeToolTargetType::Heightmap;
 		return bUpdateHeightmap ? ELandscapeLayerUpdateMode::Update_Heightmap_All : ELandscapeLayerUpdateMode::Update_Weightmap_All;
 	}
 
 	virtual bool BeginTool(FEditorViewportClient* ViewportClient, const FLandscapeToolTarget& InTarget, const FVector& InHitLocation) override
 	{
+		TRACE_BOOKMARK(TEXT("BeginTool - %s"), GetToolName());
+
 		if (ShouldUpdateEditingLayer())
 		{
 			ALandscape* Landscape = this->EdMode->GetLandscape();
 			if (Landscape)
 			{
 				Landscape->RequestLayersContentUpdate(GetBeginToolContentUpdateFlag());
-				Landscape->SetEditingLayer(this->EdMode->GetCurrentLayerGuid());
+				Landscape->SetEditingLayer(this->EdMode->GetCurrentLayerGuid());	// legacy way to set the edit layer, via Landscape state
 				Landscape->SetGrassUpdateEnabled(false);
 			}
 		}
@@ -1445,13 +1495,14 @@ public:
 			InteractorPositions.Empty(1);
 		}
 
-		if( !IsToolActive() )
+		if (ensure(!IsToolActive()))
 		{
-			ToolStroke.Emplace( EdMode, ViewportClient, InTarget );
-			EdMode->CurrentBrush->BeginStroke( InHitLocation.X, InHitLocation.Y, this );
+			ToolStroke.Emplace( EdMode, ViewportClient, InTarget );				// construct the tool stroke class
+			ToolStroke->SetEditLayer(this->EdMode->GetCurrentLayerGuid());		// set the edit layer explicitly (if the tool supports this path)
+			EdMode->CurrentBrush->BeginStroke(static_cast<float>(InHitLocation.X), static_cast<float>(InHitLocation.Y), this);
 		}
 
-		// Save the mouse position
+		// Save the mouse position  
 		LastInteractorPosition = FVector2D(InHitLocation);
 		InteractorPositions.Emplace(LastInteractorPosition, ViewportClient ? IsModifierPressed(ViewportClient) : false); // Copy tool sometimes activates without a specific viewport via ctrl+c hotkey
 		TimeSinceLastInteractorMove = 0.0f;
@@ -1481,9 +1532,6 @@ public:
 			}
 			TimeSinceLastInteractorMove += DeltaTime;
 
-			// Prevent landscape from baking textures while tool stroke is active
-			EdMode->CurrentToolTarget.LandscapeInfo->PostponeTextureBaking();
-
 			if (ShouldUpdateEditingLayer())
 			{
 				ALandscape* Landscape = this->EdMode->CurrentToolTarget.LandscapeInfo->LandscapeActor.Get();
@@ -1503,7 +1551,7 @@ public:
 			InteractorPositions.Empty(1);
 		}
 
-		ToolStroke.Reset();
+		ToolStroke.Reset();		// destruct the tool stroke class
 		EdMode->CurrentBrush->EndStroke();
 		EdMode->UpdateLayerUsageInformation(&EdMode->CurrentToolTarget.LayerInfo);
 
@@ -1517,6 +1565,8 @@ public:
 				Landscape->SetGrassUpdateEnabled(true);
 			}
 		}
+
+		TRACE_BOOKMARK(TEXT("EndTool - %s"), GetToolName());
 	}
 
 	virtual bool MouseMove(FEditorViewportClient* ViewportClient, FViewport* Viewport, int32 x, int32 y) override
@@ -1530,7 +1580,7 @@ public:
 				if (EdMode->CurrentBrush && !EdMode->IsAdjustingBrush(ViewportClient))
 				{
 					// Inform the brush of the current location, to update the cursor
-					EdMode->CurrentBrush->MouseMove(HitLocation.X, HitLocation.Y);
+					EdMode->CurrentBrush->MouseMove(static_cast<float>(HitLocation.X), static_cast<float>(HitLocation.Y));
 				}
 
 				if (IsToolActive())

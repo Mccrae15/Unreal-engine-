@@ -9,6 +9,7 @@
 #include "Systems/MovieSceneMaterialSystem.h"
 #include "Systems/MovieSceneInitialValueSystem.h"
 #include "Systems/MovieScenePreAnimatedMaterialParameters.h"
+#include "Systems/WeightAndEasingEvaluatorSystem.h"
 
 #include "Evaluation/PreAnimatedState/MovieScenePreAnimatedObjectStorage.h"
 
@@ -73,14 +74,14 @@ FAnimatedMaterialParameterInfo::~FAnimatedMaterialParameterInfo()
 /** Apply scalar material parameters */
 struct FApplyScalarParameters
 {
-	static void ForEachEntity(UObject* BoundMaterial, FName ParameterName, double InScalarValue)
+	static void ForEachEntity(const FObjectComponent& BoundMaterial, FName ParameterName, double InScalarValue)
 	{
 		// WARNING: BoundMaterial may be nullptr here
-		if (UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(BoundMaterial))
+		if (UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(BoundMaterial.GetObject()))
 		{
 			MID->SetScalarParameterValue(ParameterName, (float)InScalarValue);
 		}
-		else if (UMaterialParameterCollectionInstance* MPCI = Cast<UMaterialParameterCollectionInstance>(BoundMaterial))
+		else if (UMaterialParameterCollectionInstance* MPCI = Cast<UMaterialParameterCollectionInstance>(BoundMaterial.GetObject()))
 		{
 			MPCI->SetScalarParameterValue(ParameterName, (float)InScalarValue);
 		}
@@ -91,7 +92,7 @@ struct FApplyScalarParameters
 struct FApplyVectorParameters
 {
 	static void ForEachAllocation(FEntityAllocationIteratorItem Item,
-		TRead<UObject*> BoundMaterials,
+		TRead<FObjectComponent> BoundMaterials,
 		TReadOneOrMoreOf<FName, FName> VectorOrColorParameterNames,
 		TReadOneOrMoreOf<double, double, double, double> VectorChannels)
 	{
@@ -105,7 +106,7 @@ struct FApplyVectorParameters
 		
 		for (int32 Index = 0; Index < Num; ++Index)
 		{
-			UObject* BoundMaterial = BoundMaterials[Index];
+			const FObjectComponent& BoundMaterial = BoundMaterials[Index];
 			if (!BoundMaterial)
 			{
 				continue;
@@ -118,11 +119,11 @@ struct FApplyVectorParameters
 				B ? (float)B[Index] : 1.f,
 				A ? (float)A[Index] : 1.f
 			);
-			if (UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(BoundMaterial))
+			if (UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(BoundMaterial.GetObject()))
 			{
 				MID->SetVectorParameterValue(ParameterNames[Index], Color);
 			}
-			else if (UMaterialParameterCollectionInstance* MPCI = Cast<UMaterialParameterCollectionInstance>(BoundMaterial))
+			else if (UMaterialParameterCollectionInstance* MPCI = Cast<UMaterialParameterCollectionInstance>(BoundMaterial.GetObject()))
 			{
 				MPCI->SetVectorParameterValue(ParameterNames[Index], Color);
 			}
@@ -132,7 +133,7 @@ struct FApplyVectorParameters
 
 struct FScalarMixin
 {
-	void CreateEntity(UMovieSceneEntitySystemLinker* Linker, UObject* BoundMaterial, FName ParameterName, FComponentTypeID BlenderTypeTag, TArrayView<const FMovieSceneEntityID> Inputs, FAnimatedMaterialParameterInfo* Output)
+	void CreateEntity(UMovieSceneEntitySystemLinker* Linker, const FObjectComponent& BoundMaterial, FName ParameterName, FComponentTypeID BlenderTypeTag, TArrayView<const FMovieSceneEntityID> Inputs, FAnimatedMaterialParameterInfo* Output)
 	{
 		FBuiltInComponentTypes* BuiltInComponents = FBuiltInComponentTypes::Get();
 		FMovieSceneTracksComponentTypes* TracksComponents = FMovieSceneTracksComponentTypes::Get();
@@ -152,11 +153,11 @@ struct FScalarMixin
 
 		if (!bHasInitialValue)
 		{
-			if (UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(BoundMaterial))
+			if (UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(BoundMaterial.GetObject()))
 			{
 				bHasInitialValue = MID->GetScalarParameterValue(ParameterName, InitialValue);
 			}
-			else if (UMaterialParameterCollectionInstance* MPCI = Cast<UMaterialParameterCollectionInstance>(BoundMaterial))
+			else if (UMaterialParameterCollectionInstance* MPCI = Cast<UMaterialParameterCollectionInstance>(BoundMaterial.GetObject()))
 			{
 				bHasInitialValue = MPCI->GetScalarParameterValue(ParameterName, InitialValue);
 			}
@@ -176,30 +177,37 @@ struct FScalarMixin
 		Linker->EntityManager.CopyComponents(Inputs[0], Output->OutputEntityID, Linker->EntityManager.GetComponents()->GetCopyAndMigrationMask());
 	}
 
-	void InitializeSoleInput(UMovieSceneEntitySystemLinker* Linker, UObject* BoundMaterial, FName ParameterName, FMovieSceneEntityID SoleContributor, FAnimatedMaterialParameterInfo* Output)
+	void InitializeSoleInput(UMovieSceneEntitySystemLinker* Linker, const FObjectComponent& BoundMaterial, FName ParameterName, FMovieSceneEntityID SoleContributor, FAnimatedMaterialParameterInfo* Output)
 	{
-		if (Linker->EntityManager.HasComponent(SoleContributor, FBuiltInComponentTypes::Get()->Tags.AlwaysCacheInitialValue))
-		{
-			FMovieSceneTracksComponentTypes* TracksComponents = FMovieSceneTracksComponentTypes::Get();
+		FBuiltInComponentTypes* BuiltInComponents = FBuiltInComponentTypes::Get();
+		FMovieSceneTracksComponentTypes* TracksComponents = FMovieSceneTracksComponentTypes::Get();
 
+		const FComponentMask& SoleContributorType = Linker->EntityManager.GetEntityType(SoleContributor);
+		const bool bNeedsInitialValue = SoleContributorType.ContainsAny({ BuiltInComponents->Tags.RestoreState, BuiltInComponents->Tags.AlwaysCacheInitialValue });
+		const bool bAlreadyHasInitialValue = SoleContributorType.Contains(TracksComponents->FloatParameter.InitialValue);
+
+		if (bNeedsInitialValue && !bAlreadyHasInitialValue)
+		{
 			float InitialValue = 0.0;
-			if (UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(BoundMaterial))
+			if (UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(BoundMaterial.GetObject()))
 			{
 				MID->GetScalarParameterValue(ParameterName, InitialValue);
 				Linker->EntityManager.AddComponent(SoleContributor, TracksComponents->FloatParameter.InitialValue, InitialValue);
 			}
-			else if (UMaterialParameterCollectionInstance* MPCI = Cast<UMaterialParameterCollectionInstance>(BoundMaterial))
+			else if (UMaterialParameterCollectionInstance* MPCI = Cast<UMaterialParameterCollectionInstance>(BoundMaterial.GetObject()))
 			{
 				MPCI->GetScalarParameterValue(ParameterName, InitialValue);
 				Linker->EntityManager.AddComponent(SoleContributor, TracksComponents->FloatParameter.InitialValue, InitialValue);
 			}
 		}
+
+		Linker->EntityManager.RemoveComponent(SoleContributor, FBuiltInComponentTypes::Get()->HierarchicalBlendTarget);
 	}
 };
 
 struct FVectorMixin
 {
-	void CreateEntity(UMovieSceneEntitySystemLinker* Linker, UObject* BoundMaterial, FName ParameterName, FComponentTypeID BlenderTypeTag, TArrayView<const FMovieSceneEntityID> Inputs, FAnimatedMaterialParameterInfo* Output)
+	void CreateEntity(UMovieSceneEntitySystemLinker* Linker, const FObjectComponent& BoundMaterial, FName ParameterName, FComponentTypeID BlenderTypeTag, TArrayView<const FMovieSceneEntityID> Inputs, FAnimatedMaterialParameterInfo* Output)
 	{
 		FBuiltInComponentTypes* BuiltInComponents = FBuiltInComponentTypes::Get();
 		FMovieSceneTracksComponentTypes* TracksComponents = FMovieSceneTracksComponentTypes::Get();
@@ -220,11 +228,11 @@ struct FVectorMixin
 		if (!bHasInitialValue)
 		{
 			FLinearColor ColorValue;
-			if (UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(BoundMaterial))
+			if (UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(BoundMaterial.GetObject()))
 			{
 				bHasInitialValue = MID->GetVectorParameterValue(ParameterName, ColorValue);
 			}
-			else if (UMaterialParameterCollectionInstance* MPCI = Cast<UMaterialParameterCollectionInstance>(BoundMaterial))
+			else if (UMaterialParameterCollectionInstance* MPCI = Cast<UMaterialParameterCollectionInstance>(BoundMaterial.GetObject()))
 			{
 				bHasInitialValue = MPCI->GetVectorParameterValue(ParameterName, ColorValue);
 			}
@@ -252,21 +260,26 @@ struct FVectorMixin
 		Linker->EntityManager.CopyComponents(Inputs[0], Output->OutputEntityID, Linker->EntityManager.GetComponents()->GetCopyAndMigrationMask());
 	}
 
-	void InitializeSoleInput(UMovieSceneEntitySystemLinker* Linker, UObject* BoundMaterial, FName ParameterName, FMovieSceneEntityID SoleContributor, FAnimatedMaterialParameterInfo* Output)
+	void InitializeSoleInput(UMovieSceneEntitySystemLinker* Linker, const FObjectComponent& BoundMaterial, FName ParameterName, FMovieSceneEntityID SoleContributor, FAnimatedMaterialParameterInfo* Output)
 	{
-		if (Linker->EntityManager.HasComponent(SoleContributor, FBuiltInComponentTypes::Get()->Tags.AlwaysCacheInitialValue))
-		{
-			FMovieSceneTracksComponentTypes* TracksComponents = FMovieSceneTracksComponentTypes::Get();
+		FBuiltInComponentTypes* BuiltInComponents = FBuiltInComponentTypes::Get();
+		FMovieSceneTracksComponentTypes* TracksComponents = FMovieSceneTracksComponentTypes::Get();
 
+		const FComponentMask& SoleContributorType = Linker->EntityManager.GetEntityType(SoleContributor);
+		const bool bNeedsInitialValue = SoleContributorType.ContainsAny({ BuiltInComponents->Tags.RestoreState, BuiltInComponents->Tags.AlwaysCacheInitialValue });
+		const bool bAlreadyHasInitialValue = SoleContributorType.Contains(TracksComponents->ColorParameter.InitialValue);
+
+		if (bNeedsInitialValue && !bAlreadyHasInitialValue)
+		{
 			FLinearColor ColorValue = FLinearColor::White;
-			if (UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(BoundMaterial))
+			if (UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(BoundMaterial.GetObject()))
 			{
 				if (MID->GetVectorParameterValue(ParameterName, ColorValue))
 				{
 					Linker->EntityManager.AddComponent(SoleContributor, TracksComponents->ColorParameter.InitialValue, FIntermediateColor(ColorValue));
 				}
 			}
-			else if (UMaterialParameterCollectionInstance* MPCI = Cast<UMaterialParameterCollectionInstance>(BoundMaterial))
+			else if (UMaterialParameterCollectionInstance* MPCI = Cast<UMaterialParameterCollectionInstance>(BoundMaterial.GetObject()))
 			{
 				if (MPCI->GetVectorParameterValue(ParameterName, ColorValue))
 				{
@@ -289,12 +302,12 @@ struct TOverlappingMaterialParameterHandler : Mixin
 		, System(InSystem)
 	{}
 
-	void InitializeOutput(UObject* BoundMaterial, FName ParameterName, TArrayView<const FMovieSceneEntityID> Inputs, FAnimatedMaterialParameterInfo* Output, FEntityOutputAggregate Aggregate)
+	void InitializeOutput(const FObjectComponent& BoundMaterial, FName ParameterName, TArrayView<const FMovieSceneEntityID> Inputs, FAnimatedMaterialParameterInfo* Output, FEntityOutputAggregate Aggregate)
 	{
 		UpdateOutput(BoundMaterial, ParameterName, Inputs, Output, Aggregate);
 	}
 
-	void UpdateOutput(UObject* BoundMaterial, FName ParameterName, TArrayView<const FMovieSceneEntityID> Inputs, FAnimatedMaterialParameterInfo* Output, FEntityOutputAggregate Aggregate)
+	void UpdateOutput(const FObjectComponent& BoundMaterial, FName ParameterName, TArrayView<const FMovieSceneEntityID> Inputs, FAnimatedMaterialParameterInfo* Output, FEntityOutputAggregate Aggregate)
 	{
 		using namespace UE::MovieScene;
 
@@ -331,6 +344,40 @@ struct TOverlappingMaterialParameterHandler : Mixin
 
 			const FComponentTypeID BlenderTypeTag = System->DoubleBlenderSystem->GetBlenderTypeTag();
 
+			struct FBlendInfo
+			{
+				int16 HBias = TNumericLimits<int16>::Min();
+				bool bBlendHierarchicalBias = true;
+			};
+			FBlendInfo IgnoredBlendInfo;
+			FBlendInfo BlendInfo;
+			for (FMovieSceneEntityID Input : Inputs)
+			{
+				FBlendInfo& BlendInfoToUpdate = Linker->EntityManager.HasComponent(Input, BuiltInComponents->Tags.Ignored) ? IgnoredBlendInfo : BlendInfo;
+
+				TOptionalComponentReader<int16> HBiasComponent = Linker->EntityManager.ReadComponent(Input, BuiltInComponents->HierarchicalBias);
+				const int16 HBias = HBiasComponent ? *HBiasComponent : 0;
+
+				if (HBias > BlendInfoToUpdate.HBias)
+				{
+					BlendInfoToUpdate.HBias = HBias;
+					BlendInfoToUpdate.bBlendHierarchicalBias = Linker->EntityManager.HasComponent(Input, BuiltInComponents->Tags.BlendHierarchicalBias);
+				}
+				else if (HBias == BlendInfoToUpdate.HBias && !BlendInfoToUpdate.bBlendHierarchicalBias)
+				{
+					BlendInfoToUpdate.bBlendHierarchicalBias = Linker->EntityManager.HasComponent(Input, BuiltInComponents->Tags.BlendHierarchicalBias);
+				}
+			}
+
+			if (BlendInfo.HBias == TNumericLimits<int16>::Min())
+			{
+				BlendInfo = IgnoredBlendInfo;
+			}
+			else if (IgnoredBlendInfo.HBias != TNumericLimits<int16>::Min())
+			{
+				BlendInfo.bBlendHierarchicalBias |= IgnoredBlendInfo.bBlendHierarchicalBias;
+			}
+
 			for (FMovieSceneEntityID Input : Inputs)
 			{
 				if (!Linker->EntityManager.HasComponent(Input, BuiltInComponents->BlendChannelInput))
@@ -341,6 +388,18 @@ struct TOverlappingMaterialParameterHandler : Mixin
 				{
 					// If the bound material changed, we might have been re-assigned a different blend channel so make sure it's up to date
 					Linker->EntityManager.WriteComponentChecked(Input, BuiltInComponents->BlendChannelInput, Output->BlendChannelID);
+				}
+
+				if (BlendInfo.bBlendHierarchicalBias)
+				{
+					if (!Linker->EntityManager.HasComponent(Input, BuiltInComponents->HierarchicalBlendTarget))
+					{
+						Linker->EntityManager.AddComponent(Input, BuiltInComponents->HierarchicalBlendTarget, BlendInfo.HBias);
+					}
+					else
+					{
+						Linker->EntityManager.WriteComponentChecked(Input, BuiltInComponents->HierarchicalBlendTarget, BlendInfo.HBias);
+					}
 				}
 
 				// Ensure we have the blender type tag on the inputs.
@@ -357,7 +416,7 @@ struct TOverlappingMaterialParameterHandler : Mixin
 		Output->NumContributors = NumContributors;
 	}
 
-	void DestroyOutput(UObject* BoundMaterial, FName ParameterName, FAnimatedMaterialParameterInfo* Output, FEntityOutputAggregate Aggregate)
+	void DestroyOutput(const FObjectComponent& BoundMaterial, FName ParameterName, FAnimatedMaterialParameterInfo* Output, FEntityOutputAggregate Aggregate)
 	{
 		if (Output->OutputEntityID)
 		{
@@ -387,11 +446,12 @@ UMovieSceneMaterialParameterSystem::UMovieSceneMaterialParameterSystem(const FOb
 	FMovieSceneTracksComponentTypes* TracksComponents = FMovieSceneTracksComponentTypes::Get();
 
 	RelevantComponent = TracksComponents->BoundMaterial;
-	Phase = ESystemPhase::Instantiation | ESystemPhase::Evaluation;
+	Phase = ESystemPhase::Instantiation | ESystemPhase::Scheduling;
 
 	if (HasAnyFlags(RF_ClassDefaultObject))
 	{
 		DefineComponentConsumer(GetClass(), TracksComponents->BoundMaterial);
+		DefineComponentProducer(GetClass(), BuiltInComponents->HierarchicalBlendTarget);
 
 		DefineImplicitPrerequisite(UFloatChannelEvaluatorSystem::StaticClass(), GetClass());
 		DefineImplicitPrerequisite(UDoubleChannelEvaluatorSystem::StaticClass(), GetClass());
@@ -401,6 +461,7 @@ UMovieSceneMaterialParameterSystem::UMovieSceneMaterialParameterSystem(const FOb
 			DefineComponentConsumer(GetClass(), BuiltInComponents->DoubleResult[Index]);
 		}
 
+		DefineImplicitPrerequisite(UMovieSceneHierarchicalEasingInstantiatorSystem::StaticClass(), GetClass());
 		DefineImplicitPrerequisite(UMovieScenePiecewiseDoubleBlenderSystem::StaticClass(), GetClass());
 		DefineImplicitPrerequisite(GetClass(), UMovieSceneHierarchicalBiasSystem::StaticClass());
 		DefineImplicitPrerequisite(GetClass(), UMovieSceneInitialValueSystem::StaticClass());
@@ -466,7 +527,7 @@ void UMovieSceneMaterialParameterSystem::OnInstantiation()
 			this->VectorParameterTracker.VisitUnlinkedAllocation(Allocation);
 		};
 
-		auto HandleUpdatedAllocation = [this](const FEntityAllocation* Allocation, TRead<UObject*> InObjects, TReadOneOf<FName, FName, FName> ScalarVectorOrColorParameterNames)
+		auto HandleUpdatedAllocation = [this](const FEntityAllocation* Allocation, TRead<FObjectComponent> InObjects, TReadOneOf<FName, FName, FName> ScalarVectorOrColorParameterNames)
 		{
 			if (TComponentPtr<const FName> ScalarParameterNames = TComponentPtr<const FName>(ScalarVectorOrColorParameterNames.Get<0>()))
 			{
@@ -504,7 +565,7 @@ void UMovieSceneMaterialParameterSystem::OnInstantiation()
 		VectorParameterTracker.ProcessInvalidatedOutputs(Linker, VectorHandler);
 
 		// Gather inputs that contribute to the material parameter by excluding outputs (which will not have an instance handle)
-		TPreAnimatedStateTaskParams<UObject*, FName> Params;
+		TPreAnimatedStateTaskParams<FObjectComponent, FName> Params;
 		Params.AdditionalFilter.Reset();
 		Params.AdditionalFilter.None({ TracksComponents->MPC, BuiltInComponents->BlendChannelOutput });
 		Params.AdditionalFilter.Any({ BuiltInComponents->Tags.NeedsLink, TracksComponents->Tags.BoundMaterialChanged });
@@ -513,6 +574,31 @@ void UMovieSceneMaterialParameterSystem::OnInstantiation()
 		VectorParameterStorage->BeginTrackingAndCachePreAnimatedValuesTask(Linker, Params, TracksComponents->BoundMaterial, TracksComponents->VectorParameterName);
 		VectorParameterStorage->BeginTrackingAndCachePreAnimatedValuesTask(Linker, Params, TracksComponents->BoundMaterial, TracksComponents->ColorParameterName);
 	}
+}
+
+void UMovieSceneMaterialParameterSystem::OnSchedulePersistentTasks(UE::MovieScene::IEntitySystemScheduler* TaskScheduler)
+{
+	using namespace UE::MovieScene;
+
+	FBuiltInComponentTypes* BuiltInComponents = FBuiltInComponentTypes::Get();
+	FMovieSceneTracksComponentTypes* TracksComponents = FMovieSceneTracksComponentTypes::Get();
+
+	FEntityTaskBuilder()
+	.Read(TracksComponents->BoundMaterial)
+	.Read(TracksComponents->ScalarParameterName)
+	.Read(BuiltInComponents->DoubleResult[0])
+	.FilterNone({ BuiltInComponents->BlendChannelInput })
+	.SetDesiredThread(Linker->EntityManager.GetDispatchThread())
+	.Fork_PerEntity<FApplyScalarParameters>(&Linker->EntityManager, TaskScheduler);
+
+	// Vectors and colors use the same API
+	FEntityTaskBuilder()
+	.Read(TracksComponents->BoundMaterial)
+	.ReadOneOrMoreOf(TracksComponents->VectorParameterName, TracksComponents->ColorParameterName)
+	.ReadOneOrMoreOf(BuiltInComponents->DoubleResult[0], BuiltInComponents->DoubleResult[1], BuiltInComponents->DoubleResult[2], BuiltInComponents->DoubleResult[3])
+	.FilterNone({ BuiltInComponents->BlendChannelInput })
+	.SetDesiredThread(Linker->EntityManager.GetDispatchThread())
+	.Fork_PerAllocation<FApplyVectorParameters>(&Linker->EntityManager, TaskScheduler);
 }
 
 void UMovieSceneMaterialParameterSystem::OnEvaluation(FSystemTaskPrerequisites& InPrerequisites, FSystemSubsequentTasks& Subsequents)

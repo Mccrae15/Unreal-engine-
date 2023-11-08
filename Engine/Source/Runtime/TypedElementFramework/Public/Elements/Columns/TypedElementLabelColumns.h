@@ -12,11 +12,12 @@
 /**
  * Column that stores a label.
  */
-USTRUCT()
-struct FTypedElementLabelColumn : public FTypedElementDataStorageColumn
+USTRUCT(meta = (DisplayName = "Label"))
+struct FTypedElementLabelColumn final : public FTypedElementDataStorageColumn
 {
 	GENERATED_BODY()
 
+	UPROPERTY()
 	FString Label;
 };
 
@@ -24,10 +25,11 @@ struct FTypedElementLabelColumn : public FTypedElementDataStorageColumn
  * Column that stores the hash of a label. This is typically paired with FTypedElementLabelColumn, but 
  * kept separate in order to iterate quickly over all hash values.
  */
-USTRUCT()
-struct FTypedElementLabelHashColumn : public FTypedElementDataStorageColumn
+USTRUCT(meta = (DisplayName = "Label hash"))
+struct FTypedElementLabelHashColumn final : public FTypedElementDataStorageColumn
 {
 	GENERATED_BODY()
 
+	UPROPERTY(meta = (IgnoreForMemberInitializationTest))
 	uint64 LabelHash;
 };

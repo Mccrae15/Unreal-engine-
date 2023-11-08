@@ -102,6 +102,9 @@ struct FSavePackageResultStruct
 
 	TArray<FAssetData> SavedAssets;
 
+	TArray<FName> ImportPackages;
+	TArray<FName> SoftPackageReferences;
+
 	/** Constructors, it will implicitly construct from the result enum */
 	COREUOBJECT_API FSavePackageResultStruct();
 	COREUOBJECT_API FSavePackageResultStruct(ESavePackageResult InResult);
@@ -191,9 +194,6 @@ private:
 	uint8	bDirty:1;
 
 #if WITH_EDITORONLY_DATA
-	/** True if this package is only referenced by editor-only properties */
-	uint8 bLoadedByEditorPropertiesOnly:1;
-
 	/** True if this package is a dynamic PIE package with external objects still loading */
 	uint8 bIsDynamicPIEPackagePending:1;
 #endif
@@ -208,21 +208,6 @@ public:
 	/** Whether this package has been fully loaded (aka had all it's exports created) at some point.															*/
 	mutable uint8 bHasBeenFullyLoaded:1;
 
-#if WITH_EDITORONLY_DATA
-	/** Set to true after serialization and postload and before returning from LoadPackage or calling load completion delegate, for loaded packages.			*/
-private:
-	uint8 bHasBeenEndLoaded : 1;
-public:
-	bool GetHasBeenEndLoaded() const
-	{
-		return bHasBeenEndLoaded != 0;
-	}
-	void SetHasBeenEndLoaded(bool bValue)
-	{
-		bHasBeenEndLoaded = bValue ? 1 : 0;
-	}
-#endif
-
 	/**
 	 * Whether this package can be imported, i.e. its package name is a package that exists on disk.
 	 * Note: This includes all normal packages where the Name matches the FileName
@@ -230,6 +215,28 @@ public:
 	 * but excludes level streaming packages with /Temp/ names.
 	 */
 	uint8 bCanBeImported:1;
+
+#if WITH_EDITORONLY_DATA
+private:
+	/** True if this package is only referenced by editor-only properties 
+	*   Note: This flag is manipulated on different threads, do not mix with other bitfields above as they might get corrupted.
+	*/
+	std::atomic<bool> bLoadedByEditorPropertiesOnly{ false };
+
+	/** Set to true after serialization and postload and before returning from LoadPackage or calling load completion delegate, for loaded packages.			
+	*   Note: This flag is manipulated on different threads, do not mix with other bitfields above as they might get corrupted.
+	*/
+	std::atomic<bool> bHasBeenEndLoaded{ false };
+public:
+	bool GetHasBeenEndLoaded() const
+	{
+		return bHasBeenEndLoaded.load(std::memory_order_acquire) != 0;
+	}
+	void SetHasBeenEndLoaded(bool bValue)
+	{
+		bHasBeenEndLoaded.store(bValue, std::memory_order_release);
+	}
+#endif
 
 private:
 	// @note this should probably be entirely deprecated and removed but certain stat dump function are still using it, just compile it out in shipping for now
@@ -349,6 +356,18 @@ public:
 
 	/** Packages are never assets */
 	virtual bool IsAsset() const override { return false; }
+
+#if WITH_EDITOR
+	/**
+	 *  Functionality to support SoftGC in the cooker. When activated by the cooker, objects in
+	 * each package are Objects in each package are stored in SoftGCPackageToObjectList and are
+	 * marked as referenced if the package is referenced.
+	 */
+	static bool bSupportCookerSoftGC;
+	static TMap<UPackage*, TArrayView<TObjectPtr<UObject>>> SoftGCPackageToObjectList;
+	/** Static class override of UObject::AddReferencedObjects */
+	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
+#endif
 
 	// UPackage interface.
 
@@ -901,14 +920,6 @@ public:
 	* @return	FSavePackageResultStruct enum value with the result of saving a package as well as extra data
 	*/
 	static FSavePackageResultStruct Save(UPackage* InOuter, UObject* InAsset, const TCHAR* Filename, const FSavePackageArgs& SaveArgs);
-
-	UE_DEPRECATED(5.0, "Pack the arguments into FSavePackageArgs and call the function overload that takes FSavePackageArgs. Note that Conform and InOutDiffMap are no longer implemented.")
-	static FSavePackageResultStruct Save(UPackage* InOuter, UObject* Base, EObjectFlags TopLevelFlags,
-		const TCHAR* Filename, FOutputDevice* Error = GError, FLinkerNull* Conform = nullptr,
-		bool bForceByteSwapping = false, bool bWarnOfLongFilename = true, uint32 SaveFlags = SAVE_None,
-		const ITargetPlatform* TargetPlatform = nullptr, const FDateTime& FinalTimeStamp = FDateTime::MinValue(),
-		bool bSlowTask = true, class FArchiveDiffMap* InOutDiffMap = nullptr,
-		FSavePackageContext* SavePackageContext = nullptr);
 
 	/**
 	 * Save a list of packages concurrently using Save2 mechanism

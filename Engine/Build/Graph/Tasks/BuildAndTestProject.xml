@@ -2,6 +2,9 @@
 <BuildGraph xmlns="http://www.epicgames.com/BuildGraph" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.epicgames.com/BuildGraph ../Schema.xsd" >
 	<EnvVar Name="UE_HORDE_JOBID"/>
 	
+	<EnvVar Name="UE-CloudPublishHost"/>
+	<EnvVar Name="UE-CloudPublishNamespace"/>
+	
 	<!-- Project Options -->
 	<Option Name="ProjectName" DefaultValue="None" Restrict=".+" Description="Name of Project"/>
 	<Option Name="ProjectPath" DefaultValue="None" Restrict=".+" Description="Path to the folder that contains your project"/>
@@ -34,6 +37,7 @@
 	<Option Name="TestAgentOverride" DefaultValue="" Description="If set, other logic is ignored and this agent type is used for all test work." />
 	<Option Name="TargetPlatformTestAgentOverride" DefaultValue="DevkitAutomation" Description="Override agent type use to run target platform tests"/>
 	<Option Name="ClientCompileAgentOverride" DefaultValue="" Description="Specifies the agent type to use for C++ compilation jobs for target platform binaries." />
+	<Option Name="UnrealInsightsBuildConfiguration" DefaultValue="Shipping" Restrict="Development|Debug|Shipping" Description="In which configuration to build Unreal Insights, if included. Shipping, Debug, or Development." />
 	<Option Name="IncludeUnrealInsightsInToolCompile" DefaultValue="false" Description="Include Unreal Insights into Compile Tools prerequisites" />
 	<Option Name="IncludeEpicWebHelperInToolCompile" DefaultValue="false" Description="Include EpicWebHelper into Compile Tools prerequisites" />
 
@@ -52,6 +56,8 @@
 	<Option Name="NetworkPublishRootOverride" DefaultValue="" Description="Network publish root override"/>
 	<Option Name="NetworkReportRootOverride" DefaultValue="" Description="Network report root override"/>
 	<Option Name="SymbolServerPath" DefaultValue="" Description="Symbol server path"/>
+
+	<Option Name="PublishCloudSnapshot" DefaultValue="false" Restrict="true|false" Description="Publish build to cloud host" />
 
 	<Option Name="EnableSymbolStore" DefaultValue="$(IsBuildMachine)" Restrict="true|false" Description="Enables the upload of debugging symbols" />
 	<Property Name="SymbolServerPath" Value="" If="$(EnableSymbolStore) == 'false'"/>
@@ -98,6 +104,11 @@
 	<Option Name="PathSettingsFile" DefaultValue="Inc/PathSettings.xml" Description="Path settings to use" />
 	<Option Name="GauntletSettingsFile" DefaultValue="Inc/GauntletSettings.xml" Description="Gauntlet settings to use" />
 
+    <!-- Annotations notif settings -->
+	<Option Name="AnnotationsTarget" DefaultValue="" Description="Set annotations target" />
+	<Option Name="AnnotationsPlatforms" DefaultValue="" Description="List of platforms that require annotations"/>
+	<Option Name="AnnotationsTests" DefaultValue="" Description="List of tests that require annotations"/>
+
 	<!-- Some common properties -->
 	<Include Script="Inc/CommonProperties.xml" />
 
@@ -113,9 +124,7 @@
 	<Error Message="Project file $(TargetProject) does not exist" If="!Exists('$(TargetProject)')" />
 
 	<!-- If the user didn't supply a TargetName then use the ProjectName -->
-	<Property Name="TargetName" Value="UnrealGame" If="$(IsContentOnlyProject) And '$(TargetName)' == ''"/>
 	<Property Name="TargetName" Value="$(ProjectName)" If="'$(TargetName)' == ''"/>
-	<Property Name="EditorTargetName" Value="UnrealEditor" If="$(IsContentOnlyProject) And '$(EditorTargetName)' == ''"/>
 	<Property Name="EditorTargetName" Value="$(ProjectName)Editor" If="'$(EditorTargetName)' == ''"/>
 	<Property Name="CookedEditorTargetName" Value="$(ProjectName)CookedEditor" If="'$(CookedEditorTargetName)' == ''"/>
 
@@ -143,6 +152,17 @@
 	<!-- Detect the type of the client based on the target name -->
 	<Property Name="TargetType" Value="Game" />
 	<Property Name="TargetType" Value="Client" If="Contains('$(TargetName)', 'Client')" />
+
+	<!-- Sanitize node title for test name that include ':' ie: 'Runtest=Group:Animation' => 'Runtest=Group_Animation' -->
+	<Macro Name="SanitizeTestNameTitle">
+		<!-- Expect a Property named "TestNameTitle" to be defined beforehand -->
+		<Do If="Contains('$(TestNameTitle)', ':')">
+			<Property Name="Left" Value=""/>
+			<Property Name="Right" Value=""/>
+			<Regex Pattern="(.*):(.*)" Capture="Left;Right" Input="$(TestNameTitle)"/>
+			<Property Name="TestNameTitle" Value="$(Left)_$(Right)"/>
+		</Do>
+	</Macro>
 
 	<!-- These properties will be filled in with nodes that are generated based on options -->
 	<Property Name="GeneratedToolNodes" Value="" />
@@ -185,11 +205,21 @@
 						</ForEach>
 					</Do>
 				</Do>
-				<Compile Target="UnrealInsights" Platform="$(EditorPlatform)" Configuration="Shipping" Arguments="$(GenericCompileArguments)" If="$(IncludeUnrealInsightsInToolCompile)"/>
+				<Compile Target="UnrealInsights" Platform="$(EditorPlatform)" Configuration="$(UnrealInsightsBuildConfiguration)" Arguments="$(GenericCompileArguments)" If="$(IncludeUnrealInsightsInToolCompile)"/>
 				<Compile Target="EpicWebHelper" Platform="$(EditorPlatform)" Configuration="Shipping" Arguments="$(GenericCompileArguments)" If="$(IncludeEpicWebHelperInToolCompile)"/>
 			</Node>
-			<Node Name="$(PreNodeName)Compile Editor $(EditorPlatform)" Requires="$(PreNodeName)Compile Tools $(EditorPlatform)">
-				<Compile Target="$(EditorTargetName)" Platform="$(EditorPlatform)" Configuration="Development" Arguments="$(GenericCompileArguments) $(ExtraEditorCompileArguments)"/>
+			<Property Name="CompileEditor" Value="$(PreNodeName)Compile Editor $(EditorPlatform)"/>
+			<Node Name="$(CompileEditor)" Requires="$(PreNodeName)Compile Tools $(EditorPlatform)">
+				<Switch>
+					<Case If="$(IsContentOnlyProject)">
+						<Command Name="BuildCookRun" Arguments="-project=&quot;$(RootDir)/$(TargetProject)&quot; -platform=$(EditorPlatform) -configuration=Development -build -notools -ubtargs=&quot;$(GenericCompileArguments) $(ExtraEditorCompileArguments)&quot;"/>
+						<Tag Files="$(RootDir)/$(ProjectPath)/Binaries/..." Filter="$(EditorTargetName).target" With="#$(CompileEditor)"/>
+						<TagReceipt Files="#$(CompileEditor)" BuildProducts="true" With="#$(CompileEditor)"/>
+					</Case>
+					<Default>
+						<Compile Target="$(EditorTargetName)" Platform="$(EditorPlatform)" Configuration="Development" Arguments="$(GenericCompileArguments) $(ExtraEditorCompileArguments)"/>
+					</Default>
+				</Switch>
 			</Node>
 			<!-- Cooked editor target -->
 			<Node Name="$(PreNodeName)Compile CookedEditor $(EditorPlatform)" Requires="$(PreNodeName)Compile Tools $(EditorPlatform)">
@@ -198,7 +228,7 @@
 				</ForEach>
 			</Node>
 			<!--Add these nodes to our dependency list -->
-			<Property Name="GeneratedToolNodes" Value="$(PreNodeName)Compile Editor $(EditorPlatform);$(PreNodeName)Compile Tools $(EditorPlatform)" If="!$(SkipBuild)" />
+			<Property Name="GeneratedToolNodes" Value="$(CompileEditor);$(PreNodeName)Compile Tools $(EditorPlatform)" If="!$(SkipBuild)" />
 			<!-- Editor Labels -->
 			<Label Category="Editors" Name="$(PreLabelName)Editor $(EditorPlatform)" Requires="$(GeneratedToolNodes)" />
 		</Agent>
@@ -213,7 +243,10 @@
 				<Property Name="GauntletReportArgs" Value="-logdir=&quot;$(OutputReportPath)&quot; -artifactname=Gauntlet -ReportExportPath=&quot;$(OutputReportPath)&quot;" />
 				<Property Name="GauntletReportArgs" Value="$(GauntletReportArgs) -ReportURL=&quot;$(AutomationReportUrl)/$(OutputFragmentPath)/&quot;" If="'$(AutomationReportUrl)' != ''" />
 			</Do>
-			<Node Name="$(PlatformBootTestNodeName)" Requires="$(GeneratedToolNodes)">
+			<!-- Annotations -->
+			<Property Name="NodeAnnotations" Value=""/>
+			<Property Name="NodeAnnotations" Value="Workflow=$(AnnotationsTarget)" If="ContainsItem('$(AnnotationsPlatforms)', '$(EditorPlatform)Editor', ';') and ContainsItem('$(AnnotationsTests)', 'BootTest', ';')"/>
+			<Node Name="$(PlatformBootTestNodeName)" Requires="$(TestPrerequisites)" Annotations="$(NodeAnnotations)">
 				<Command Name="RunUnreal" Arguments="-project=$(TargetProject) -build=Editor -test=&quot;UE.EditorBootTest&quot; $(GauntletEditorTestArgs) $(GauntletReportArgs)" />
 			</Node>
 			<Property Name="ProjectEditorDDC" Value="$(PreNodeName)Editor DDC $(EditorPlatform)" />
@@ -228,14 +261,18 @@
 			</Do>
 			<!-- Now generate a test node for each editor test in the list-->
 			<ForEach Name="TestName" Values="$(EditorTestList)" Separator="+">
+				<Property Name="TestNameTitle" Value="$(TestName)"/>
+				<Expand Name="SanitizeTestNameTitle"/>
 				<Do If="'$(AutomationReportOutputDirectory)' != ''">
-					<Property Name="OutputFragmentPath" Value="$(EditorPlatform)/Editor$(TestName)" />
+					<Property Name="OutputFragmentPath" Value="$(EditorPlatform)/Editor$(TestNameTitle)" />
 					<Property Name="OutputReportPath" Value="$(AutomationReportOutputDirectory)/$(OutputFragmentPath)" />
 					<Property Name="GauntletReportArgs" Value="-logdir=&quot;$(OutputReportPath)&quot; -artifactname=Gauntlet -ReportExportPath=&quot;$(OutputReportPath)&quot;" />
 					<Property Name="GauntletReportArgs" Value="$(GauntletReportArgs) -ReportURL=&quot;$(AutomationReportUrl)/$(OutputFragmentPath)/&quot;" If="'$(AutomationReportUrl)' != ''" />
 				</Do>
-				<Property Name="TestNodeName" Value="$(PreNodeName)Editor $(EditorPlatform) Test=$(TestName)" />
-				<Node Name="$(TestNodeName)" Requires="$(TestPrerequisites)">
+				<Property Name="TestNodeName" Value="$(PreNodeName)Editor $(EditorPlatform) Test=$(TestNameTitle)" />
+				<Property Name="NodeAnnotations" Value=""/>
+				<Property Name="NodeAnnotations" Value="Workflow=$(AnnotationsTarget)" If="ContainsItem('$(AnnotationsPlatforms)', '$(EditorPlatform)Editor', ';') and ContainsItem('$(AnnotationsTests)', '$(TestName)', ';')"/>
+				<Node Name="$(TestNodeName)" Requires="$(TestPrerequisites)" Annotations="$(NodeAnnotations)">
 					<Command Name="RunUnreal" Arguments="-project=$(TargetProject) -build=Editor -test=&quot;$(TestName)&quot; $(GauntletReportArgs) $(GauntletEditorTestArgs)" />
 				</Node>
 				<!-- Add each test node to our generated list -->
@@ -313,7 +350,9 @@
 				<Property Name="GauntletReportArgs" Value="-logdir=&quot;$(OutputReportPath)&quot; -artifactname=Gauntlet -ReportExportPath=&quot;$(OutputReportPath)&quot;" />
 				<Property Name="GauntletReportArgs" Value="$(GauntletReportArgs) -ReportURL=&quot;$(AutomationReportUrl)/$(OutputFragmentPath)/&quot;" If="'$(AutomationReportUrl)' != ''" />
 			</Do>
-			<Node Name="$(PlatformBootTestNodeName)" Requires="$(TestPrerequisites)">
+			<Property Name="NodeAnnotations" Value=""/>
+			<Property Name="NodeAnnotations" Value="Workflow=$(AnnotationsTarget)" If="ContainsItem('$(AnnotationsPlatforms)', '$(EditorPlatform)Editor', ';') and ContainsItem('$(AnnotationsTests)', 'BootTest', ';')"/>
+			<Node Name="$(PlatformBootTestNodeName)" Requires="$(TestPrerequisites)" Annotations="$(NodeAnnotations)">
 				<Command Name="RunUnreal" Arguments="-project=$(TargetProject) -build=&quot;$(NetworkOutputDirectory)/$(EditorPlatformPath)CookedEditor&quot; -test=&quot;UE.EditorBootTest&quot; $(GauntletCookedEditorTestArgs) $(CustomModuleRoleArg) $(GauntletReportArgs)" />
 			</Node>
 
@@ -324,14 +363,18 @@
 			<!-- Now generate a test node for each editor test in the list-->
 			<Property Name="PlatformCookedEditorTestNodes" Value="" />
 			<ForEach Name="TestName" Values="$(CookedEditorTestList)" Separator="+">
+				<Property Name="TestNameTitle" Value="$(TestName)"/>
+				<Expand Name="SanitizeTestNameTitle"/>
 				<Do If="'$(AutomationReportOutputDirectory)' != ''">
-					<Property Name="OutputFragmentPath" Value="$(EditorPlatform)/Editor$(TestName)" />
+					<Property Name="OutputFragmentPath" Value="$(EditorPlatform)/Editor$(TestNameTitle)" />
 					<Property Name="OutputReportPath" Value="$(AutomationReportOutputDirectory)/$(OutputFragmentPath)" />
 					<Property Name="GauntletReportArgs" Value="-logdir=&quot;$(OutputReportPath)&quot; -artifactname=Gauntlet -ReportExportPath=&quot;$(OutputReportPath)&quot;" />
 					<Property Name="GauntletReportArgs" Value="$(GauntletReportArgs) -ReportURL=&quot;$(AutomationReportUrl)/$(OutputFragmentPath)/&quot;" If="'$(AutomationReportUrl)' != ''" />
 				</Do>
-				<Property Name="TestNodeName" Value="$(PreNodeName)CookedEditor $(EditorPlatform) Test=$(TestName)" />
-				<Node Name="$(TestNodeName)" Requires="$(TestPrerequisites)">
+				<Property Name="TestNodeName" Value="$(PreNodeName)CookedEditor $(EditorPlatform) Test=$(TestNameTitle)" />
+				<Property Name="NodeAnnotations" Value=""/>
+				<Property Name="NodeAnnotations" Value="Workflow=$(AnnotationsTarget)" If="ContainsItem('$(AnnotationsPlatforms)', '$(EditorPlatform)Editor', ';') and ContainsItem('$(AnnotationsTests)', '$(TestName)', ';')"/>
+				<Node Name="$(TestNodeName)" Requires="$(TestPrerequisites)" Annotations="$(NodeAnnotations)">
 					<Command Name="RunUnreal" Arguments="-project=$(TargetProject) -build=&quot;$(NetworkOutputDirectory)/$(EditorPlatformPath)CookedEditor&quot; -test=&quot;$(TestName)&quot; $(GauntletReportArgs) $(CustomModuleRoleArg) $(GauntletCookedEditorTestArgs)" />
 				</Node>
 				<!-- Add each test node to our generated list -->
@@ -421,17 +464,18 @@
 		<Agent Name="Compile $(PlatformAgentName)" Type="$(CompileAgentType)">
 
 			<!-- Compile -->
-			<Node Name="$(PlatformCompileNodeName)" Requires="$(PlatformToolsNodeName)" Produces="#$(PlatformCompileNodeName) Binaries">
+			<Node Name="$(PlatformCompileNodeName)" Requires="$(PlatformToolsNodeName)">
 				<Switch>
 					<Case If="$(IsContentOnlyProject)">
-						<Command Name="BuildGame" Arguments="$(BCRArgs) -configuration=$(TargetConfigurations) -notools -ubtargs=&quot;-BuildVersion=$(BuildName) $(GenericCompileArguments) $(ExtraTargetCompileArguments)&quot;" />
-						<Tag Files="$(RootDir)/$(ProjectPath)/Binaries/..." Except="$(ProjectPath)/Binaries/DotNET/..." With="#$(PlatformCompileNodeName) Binaries"/>
+						<Command Name="BuildGame" Arguments="$(BCRArgs) -configuration=$(TargetConfigurations) -notools -ubtargs=&quot;-BuildVersion=$(BuildVersion) $(GenericCompileArguments) $(ExtraTargetCompileArguments)&quot;" />
+						<Tag Files="$(RootDir)/$(ProjectPath)/Binaries/..." Filter="$(TargetName).target" With="#$(PlatformCompileNodeName)"/>
+						<TagReceipt Files="#$(PlatformCompileNodeName)" BuildProducts="true" With="#$(PlatformCompileNodeName)"/>
 					</Case>
 					<Default>
 						<ForEach Name="TargetConfiguration" Values="$(TargetConfigurations)" Separator="+">
-							<Compile Target="$(TargetName)" Platform="$(TargetPlatform)" Configuration="$(TargetConfiguration)" Arguments="-BuildVersion=&quot;$(BuildName)&quot; $(GenericCompileArguments) $(ExtraTargetCompileArguments)"/>
+							<Compile Target="$(TargetName)" Platform="$(TargetPlatform)" Configuration="$(TargetConfiguration)" Arguments="-BuildVersion=&quot;$(BuildVersion)&quot; $(GenericCompileArguments) $(ExtraTargetCompileArguments)"/>
 							<Do If="'$(DedicatedServer)'" >
-								<Compile Target="$(TargetName)Server" Platform="Win64" Configuration="$(TargetConfiguration)" Arguments="-BuildVersion=&quot;$(BuildName)&quot; $(GenericCompileArguments) $(ExtraTargetCompileArguments)"/>
+								<Compile Target="$(TargetName)Server" Platform="Win64" Configuration="$(TargetConfiguration)" Arguments="-BuildVersion=&quot;$(BuildVersion)&quot; $(GenericCompileArguments) $(ExtraTargetCompileArguments)"/>
 							</Do>
 						</ForEach>
 					</Default>
@@ -442,7 +486,7 @@
 			<Do If="'$(UploadSymbolsNodeName)' != ''">
 				<Node Name="$(UploadSymbolsNodeName)" Requires="$(PlatformCompileNodeName)">
 					<Log Message="Uploading symbols to &quot;$(SymbolServerPath)&quot; ..."/>
-					<SymStore Platform="$(TargetPlatform)" Files="#$(PlatformCompileNodeName)" StoreDir="$(SymbolServerPath)/$(TargetPlatform)" Product="$(TargetName)" BuildVersion="$(BuildName)" />
+					<SymStore Platform="$(TargetPlatform)" Files="#$(PlatformCompileNodeName)" StoreDir="$(SymbolServerPath)/$(TargetPlatform)" Product="$(TargetName)" BuildVersion="$(BuildVersion)" />
 				</Node>
 			</Do>
 
@@ -455,11 +499,11 @@
 			<Node Name="$(PlatformCookNodeName)" Requires="$(PlatformEditorNodeName)" Produces="#$(PlatformCookNodeName) Complete" RunEarly="true">
 				<Property Name="CookArgs" Value="" />
 				<Property Name="CookArgs" Value="-MapIniSection=$(MapIniSection) $(CookPlatform)" If="'$(MapIniSection)' != ''"/>				
-				<Cook Project="$(TargetProject)" Platform="$(CookPlatform)" Arguments="$(CookArgs) $(ExtraCookArguments)"/>
+				<Cook Project="$(TargetProject)" Platform="$(CookPlatform)" TagOutput="false" Arguments="$(CookArgs) $(ExtraCookArguments)"/>
 			</Node>
 			
 			<!-- Stage -->
-			<Node Name="$(PlatformStageNodeName)" Requires="$(PlatformCompileNodeName);#$(PlatformCompileNodeName) Binaries;#$(PlatformCookNodeName) Complete">
+			<Node Name="$(PlatformStageNodeName)" Requires="$(PlatformCompileNodeName);#$(PlatformCookNodeName) Complete">
 				<Switch>
 					<Case If="$(IsMobilePlatform)">
 						<ForEach Name="PackageConfiguration" Values="$(PackageConfigurations)" Separator="+">
@@ -478,9 +522,19 @@
 					<Spawn Exe="$(RootDir)/Engine/Restricted/NotForLicensees/Binaries/Win64/unsync.exe" Arguments="hash &quot;$(ProjectOutputDirectory)/$(StagedPlatformFolder)&quot; -v --buffered-files"/>
 				</Do>
 			</Node>
+
+			<!-- (Optional) Publish to Cloud -->
+			<Property Name="PlatformPublishStageDependencyName" Value="$(PlatformHashNodeName)" />
+			<Do If="$(PublishBuilds) and $(PublishCloudSnapshot) and '$(UE-CloudPublishHost)' != '' and '$(UE-CloudPublishNamespace)' != ''">
+				<Property Name="PlatformCloudPublishNodeName" Value="$(PreNodeName)Cloud Publish $(TargetPlatform)" />
+				<Node Name="$(PlatformCloudPublishNodeName)" Requires="$(PlatformHashNodeName)">
+					<ZenExportSnapshot Project="$(TargetProject)" Platform="$(CookPlatform)" DestinationStorageType="Cloud" DestinationCloudHost="$(UE-CloudPublishHost)" DestinationCloudNamespace="$(UE-CloudPublishNamespace)" DestinationCloudIdentifier="$(EscapedBranch)/$(BuildNamePath)" SnapshotDescriptorFile="$(NetworkOutputDirectory)/$(StagedPlatformFolder)/SnapshotDescriptor.json"/>
+				</Node>
+				<Property Name="PlatformPublishStageDependencyName" Value="$(PlatformCloudPublishNodeName)" />
+			</Do>
 			
 			<!-- Publish (Staged) -->
-			<Node Name="$(PlatformPublishStagedNodeName)" Requires="$(PlatformHashNodeName)">
+			<Node Name="$(PlatformPublishStagedNodeName)" Requires="$(PlatformPublishStageDependencyName)">
 				<Copy Files="..." From="$(ProjectOutputDirectory)/$(StagedPlatformFolder)" To="$(NetworkOutputDirectory)/$(StagedPlatformFolder)/Staged"/>
 				<Copy Files="..." From="$(ShaderSymbolsDirectory)/*$(TargetPlatform)*" To="$(NetworkOutputDirectory)/$(StagedPlatformFolder)/ShaderSymbols"/>
 			</Node>
@@ -524,9 +578,11 @@
 				<Property Name="GauntletTestArgs" Value="$(GauntletTargetTestArgs)"/>
 				<Property Name="GauntletTestArgs" Value="$(GauntletTargetTestAltArgs)" If="ContainsItem('$(AlternateDevicePoolPlatforms)', '$(TargetPlatform)', ';')"/>
 
-				<!-- Declare a boot test for the target-->	
+				<!-- Declare a boot test for the target-->
+				<Property Name="NodeAnnotations" Value=""/>
+				<Property Name="NodeAnnotations" Value="Workflow=$(AnnotationsTarget)" If="ContainsItem('$(AnnotationsPlatforms)', '$(TargetPlatform)', ';') and ContainsItem('$(AnnotationsTests)', 'BootTest', ';')"/>
 				<Property Name="BootTestName" Value="$(PreNodeName)$(TargetPlatform) $(TestConfiguration) BootTest" />
-				<Node Name="$(BootTestName)" After="$(PlatformPublishPackagedNodeName)" Requires="$(TestPrerequisites)">
+				<Node Name="$(BootTestName)" After="$(PlatformPublishPackagedNodeName)" Requires="$(TestPrerequisites)" Annotations="$(NodeAnnotations)">
 					<Do If="'$(AutomationReportOutputDirectory)' != ''">
 						<Property Name="OutputFragmentPath" Value="$(TargetPlatform)/$(TestConfiguration)/UE.BootTest" />
 						<Property Name="OutputReportPath" Value="$(AutomationReportOutputDirectory)/$(OutputFragmentPath)" />
@@ -544,16 +600,20 @@
 				</Do>
 				<!-- Go through the list of tests -->	
 				<ForEach Name="TestName" Values="$(TargetTestList)" Separator="+">
+					<Property Name="TestNameTitle" Value="$(TestName)"/>
+					<Expand Name="SanitizeTestNameTitle"/>
 					<!-- Run and report on the test-->
 					<Do If="'$(AutomationReportOutputDirectory)' != ''">
-						<Property Name="OutputFragmentPath" Value="$(TargetPlatform)/$(TestConfiguration)/$(TestName)" />
+						<Property Name="OutputFragmentPath" Value="$(TargetPlatform)/$(TestConfiguration)/$(TestNameTitle)" />
 						<Property Name="OutputReportPath" Value="$(AutomationReportOutputDirectory)/$(OutputFragmentPath)" />
 						<Property Name="GauntletReportArgs" Value="-logdir=&quot;$(OutputReportPath)&quot; -artifactname=Gauntlet -ReportExportPath=&quot;$(OutputReportPath)&quot;" />
 						<Property Name="GauntletReportArgs" Value="$(GauntletReportArgs) -ReportURL=&quot;$(AutomationReportUrl)/$(OutputFragmentPath)/&quot;" If="'$(AutomationReportUrl)' != ''" />
 					</Do>
-					<Property Name="TestNodeName" Value="$(PreNodeName)$(TargetPlatform) $(TestConfiguration) $(TestName)" />
+					<Property Name="TestNodeName" Value="$(PreNodeName)$(TargetPlatform) $(TestConfiguration) $(TestNameTitle)" />
+					<Property Name="NodeAnnotations" Value=""/>
+					<Property Name="NodeAnnotations" Value="Workflow=$(AnnotationsTarget)" If="ContainsItem('$(AnnotationsPlatforms)', '$(TargetPlatform)', ';') and ContainsItem('$(AnnotationsTests)', '$(TestName)', ';')"/>
 					<!-- Run the test. No 'Requires' as we run on the same machine locally and use the publish folder otherwise -->
-					<Node Name="$(TestNodeName)" Requires="$(TestPrerequisites)">
+					<Node Name="$(TestNodeName)" Requires="$(TestPrerequisites)" Annotations="$(NodeAnnotations)">
 						<Command Name="RunUnreal" Arguments="-project=$(TargetProject) -test=&quot;$(TestName)&quot; -platform=$(TargetPlatform) -configuration=$(TestConfiguration) $(GauntletBuildArg) $(GauntletTestArgs) $(GauntletReportArgs)"/>
 					</Node>
 					<!-- Add it to our list -->

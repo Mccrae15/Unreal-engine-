@@ -20,8 +20,7 @@ namespace UnrealBuildTool.Rules
                     "DetailCustomizations",
                     "Engine",
                     "GraphEditor",
-					"InputBlueprintNodes",
-					"InputCore",
+                    "InputCore",
 					"KismetCompiler",
 					"PropertyEditor",
                     "SharedSettingsWidgets",
@@ -34,6 +33,7 @@ namespace UnrealBuildTool.Rules
 					"ToolMenus",
 					"ContentBrowser",
 					"SourceControl",
+					"GameplayTags",
                 }
             );
         }

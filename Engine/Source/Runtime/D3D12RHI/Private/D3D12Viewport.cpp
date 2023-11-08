@@ -9,6 +9,7 @@
 #include "Engine/RendererSettings.h"
 #include "HDRHelper.h"
 #include "DataDrivenShaderPlatformInfo.h"
+#include "RHIUtilities.h"
 
 namespace D3D12RHI
 {
@@ -187,12 +188,22 @@ FD3D12Texture* GetSwapChainSurface(FD3D12Device* Parent, EPixelFormat PixelForma
 		SwapchainTextureCreateFlags |= ETextureCreateFlags::UAV;
 	}
 
-	FRHITextureCreateDesc CreateDesc =
-		FRHITextureCreateDesc::Create2D(*Name)
+	bool const bQuadBufferStereo = FD3D12DynamicRHI::GetD3DRHI()->IsQuadBufferStereoEnabled();
+
+	FRHITextureCreateDesc CreateDesc = bQuadBufferStereo
+		? FRHITextureCreateDesc::Create2DArray(*Name)
+		: FRHITextureCreateDesc::Create2D(*Name);
+
+	CreateDesc
 		.SetExtent(FIntPoint((uint32)BackBufferDesc.Width, BackBufferDesc.Height))
 		.SetFormat(PixelFormat)
 		.SetFlags(SwapchainTextureCreateFlags)
 		.SetInitialState(ERHIAccess::Present);
+
+	if (bQuadBufferStereo)
+	{
+		CreateDesc.SetArraySize(2);
+	}
 
 	FD3D12DynamicRHI* DynamicRHI = FD3D12DynamicRHI::GetD3DRHI();
 
@@ -205,6 +216,7 @@ FD3D12Texture* GetSwapChainSurface(FD3D12Device* Parent, EPixelFormat PixelForma
 		if (Device->GetGPUIndex() == Parent->GetGPUIndex())
 		{
 			FD3D12Resource* NewResourceWrapper = new FD3D12Resource(Device, FRHIGPUMask::All(), BackBufferResource, InitialState, BackBufferDesc);
+			NewResourceWrapper->SetIsBackBuffer(true);
 			NewResourceWrapper->AddRef();
 			NewResourceWrapper->StartTrackingForResidency();
 			NewTexture->ResourceLocation.AsStandAlone(NewResourceWrapper);
@@ -223,9 +235,6 @@ FD3D12Texture* GetSwapChainSurface(FD3D12Device* Parent, EPixelFormat PixelForma
 				D3D12_RESOURCE_STATE_PRESENT,
 				TEXT("SwapChainSurface"));
 		}
-
-		FD3D12RenderTargetView* BackBufferRenderTargetView = nullptr;
-		FD3D12RenderTargetView* BackBufferRenderTargetViewRight = nullptr; // right eye RTV
 
 		// active stereoscopy initialization
 		if (FD3D12DynamicRHI::GetD3DRHI()->IsQuadBufferStereoEnabled())
@@ -246,12 +255,9 @@ FD3D12Texture* GetSwapChainSurface(FD3D12Device* Parent, EPixelFormat PixelForma
 			RTVDescRight.Texture2DArray.FirstArraySlice = 1;
 			RTVDescRight.Texture2DArray.ArraySize = 1;
 
-			BackBufferRenderTargetView = new FD3D12RenderTargetView(Device, RTVDescLeft, NewTexture);
-			BackBufferRenderTargetViewRight = new FD3D12RenderTargetView(Device, RTVDescRight, NewTexture);
-
-			NewTexture->SetNumRenderTargetViews(2);
-			NewTexture->SetRenderTargetViewIndex(BackBufferRenderTargetView, 0);
-			NewTexture->SetRenderTargetViewIndex(BackBufferRenderTargetViewRight, 1);
+			NewTexture->SetNumRTVs(2);
+			NewTexture->EmplaceRTV(RTVDescLeft, 0);
+			NewTexture->EmplaceRTV(RTVDescRight, 1);
 		}
 		else
 		{
@@ -261,8 +267,8 @@ FD3D12Texture* GetSwapChainSurface(FD3D12Device* Parent, EPixelFormat PixelForma
 			RTVDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
 			RTVDesc.Texture2D.MipSlice = 0;
 
-			BackBufferRenderTargetView = new FD3D12RenderTargetView(Device, RTVDesc, NewTexture);
-			NewTexture->SetRenderTargetView(BackBufferRenderTargetView);
+			NewTexture->SetNumRTVs(1);
+			NewTexture->EmplaceRTV(RTVDesc, 0);
 		}
 
 		// create a shader resource view to allow using the backbuffer as a texture
@@ -273,8 +279,7 @@ FD3D12Texture* GetSwapChainSurface(FD3D12Device* Parent, EPixelFormat PixelForma
 		SRVDesc.Texture2D.MostDetailedMip = 0;
 		SRVDesc.Texture2D.MipLevels = 1;
 
-		FD3D12ShaderResourceView* WrappedShaderResourceView = new FD3D12ShaderResourceView(NewTexture, SRVDesc);
-		NewTexture->SetShaderResourceView(WrappedShaderResourceView);
+		NewTexture->EmplaceSRV(SRVDesc);
 
 		return NewTexture;
 	});
@@ -315,14 +320,14 @@ FD3D12Viewport::~FD3D12Viewport()
 {
 	check(IsInRHIThread() || IsInRenderingThread());
 
-#if !PLATFORM_HOLOLENS && D3D12_VIEWPORT_EXPOSES_SWAP_CHAIN
+#if D3D12_VIEWPORT_EXPOSES_SWAP_CHAIN
 	// If the swap chain was in fullscreen mode, switch back to windowed before releasing the swap chain.
 	// DXGI throws an error otherwise.
 	if (SwapChain1)
 	{
 		SwapChain1->SetFullscreenState(0, nullptr);
 	}
-#endif // !PLATFORM_HOLOLENS && D3D12_VIEWPORT_EXPOSES_SWAP_CHAIN
+#endif // D3D12_VIEWPORT_EXPOSES_SWAP_CHAIN
 
 	GetParentAdapter()->GetViewports().Remove(this);
 
@@ -550,7 +555,7 @@ FD3D12Texture* FD3D12Viewport::GetDummyBackBuffer_RenderThread(bool bInIsSDR) co
 #endif
 }
 
-FD3D12UnorderedAccessView* FD3D12Viewport::GetBackBufferUAV_RenderThread() const
+FD3D12UnorderedAccessView_RHI* FD3D12Viewport::GetBackBufferUAV_RenderThread() const
 { 
 #if D3D12_USE_DUMMY_BACKBUFFER
     // See FD3D12Viewport::PresentChecked: if we change fullscreen state (which is detected on RHI thread), we might end up with invalid backbuffer: the safe way is to rely on the dummybackbuffer instead, but 

@@ -93,8 +93,8 @@ namespace ENDICollisionQuery_AsyncGpuTraceProvider
 	};
 }
 
-UCLASS(config = Niagara, defaultconfig, meta=(DisplayName="Niagara"))
-class NIAGARA_API UNiagaraSettings : public UDeveloperSettings
+UCLASS(config = Niagara, defaultconfig, meta=(DisplayName="Niagara"), MinimalAPI)
+class UNiagaraSettings : public UDeveloperSettings
 {
 	GENERATED_UCLASS_BODY()
 
@@ -140,9 +140,21 @@ class NIAGARA_API UNiagaraSettings : public UDeveloperSettings
 	UPROPERTY(config, EditAnywhere, Category = Niagara, meta = (DisplayName = "Enable building data for Experimental VM"))
 	bool bExperimentalVMEnabled = false;
 
+	/** Whether to limit the max tick delta time or not. */
+	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Niagara", meta = (InlineEditConditionToggle))
+	bool bLimitDeltaTime = true;
+
+	/** Limits the delta time per tick for emitters to prevent simulation spikes due to frame lags. */
+	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Niagara", meta = (EditCondition = "bLimitDeltaTime", ForceUnits=s))
+	float MaxDeltaTimePerTick = 0.125;
+	
 	/** Default effect type to use for effects that don't define their own. Can be null. */
 	UPROPERTY(config, EditAnywhere, Category = Niagara, meta = (AllowedClasses = "/Script/Niagara.NiagaraEffectType"))
 	FSoftObjectPath DefaultEffectType;
+
+	/** Specifies a required effect type which must be used for effects in the project. */
+	UPROPERTY(config, EditAnywhere, Category = Niagara, meta = (AllowedClasses = "/Script/Niagara.NiagaraEffectType"))
+	FSoftObjectPath RequiredEffectType;
 
 	/** Position pin type color. The other pin colors are defined in the general editor settings. */
 	UPROPERTY(config, EditAnywhere, Category=Niagara)
@@ -224,25 +236,26 @@ class NIAGARA_API UNiagaraSettings : public UDeveloperSettings
 	TArray<FNiagaraPlatformSetRedirect> PlatformSetRedirects;
 
 	// Begin UDeveloperSettings Interface
-	virtual FName GetCategoryName() const override;
+	NIAGARA_API virtual FName GetCategoryName() const override;
 #if WITH_EDITOR
-	void AddEnumParameterType(UEnum* Enum);
-	virtual FText GetSectionText() const override;
-#endif
+	NIAGARA_API void AddEnumParameterType(UEnum* Enum);
+	NIAGARA_API virtual FText GetSectionText() const override;
+
 	// END UDeveloperSettings Interface
 
-	UNiagaraEffectType* GetDefaultEffectType()const;
+	NIAGARA_API UNiagaraEffectType* GetDefaultEffectType() const;
 
-#if WITH_EDITOR
-	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	NIAGARA_API UNiagaraEffectType* GetRequiredEffectType() const;
+
+	NIAGARA_API virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 
 public:
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnNiagaraSettingsChanged, const FName&, const UNiagaraSettings*);
 
 	/** Gets a multicast delegate which is called whenever one of the parameters in this settings object changes. */
-	static FOnNiagaraSettingsChanged& OnSettingsChanged();
+	static NIAGARA_API FOnNiagaraSettingsChanged& OnSettingsChanged();
 
 protected:
-	static FOnNiagaraSettingsChanged SettingsChangedDelegate;
+	static NIAGARA_API FOnNiagaraSettingsChanged SettingsChangedDelegate;
 #endif
 };

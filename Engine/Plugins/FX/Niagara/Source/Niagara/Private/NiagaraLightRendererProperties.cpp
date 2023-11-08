@@ -1,8 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraLightRendererProperties.h"
+#include "NiagaraBoundsCalculator.h"
 #include "NiagaraRenderer.h"
 #include "NiagaraConstants.h"
+#include "NiagaraModule.h"
 #include "NiagaraRendererLights.h"
 #include "Modules/ModuleManager.h"
 
@@ -13,7 +15,6 @@
 #include "Styling/SlateIconFinder.h"
 #include "Widgets/SWidget.h"
 #include "Styling/SlateBrush.h"
-#include "AssetThumbnail.h"
 #include "Widgets/Text/STextBlock.h"
 #endif
 
@@ -30,14 +31,16 @@ UNiagaraLightRendererProperties::UNiagaraLightRendererProperties()
 	, DefaultExponent(1.0f)
 	, ColorAdd(FVector(0.0f, 0.0f, 0.0f))
 {
-	AttributeBindings.Reserve(7);
-	AttributeBindings.Add(&LightRenderingEnabledBinding);
-	AttributeBindings.Add(&LightExponentBinding);
-	AttributeBindings.Add(&PositionBinding);
-	AttributeBindings.Add(&ColorBinding);
-	AttributeBindings.Add(&RadiusBinding);
-	AttributeBindings.Add(&VolumetricScatteringBinding);
-	AttributeBindings.Add(&RendererVisibilityTagBinding);
+	AttributeBindings =
+	{
+		&LightRenderingEnabledBinding,
+		&LightExponentBinding,
+		&PositionBinding,
+		&ColorBinding,
+		&RadiusBinding,
+		&VolumetricScatteringBinding,
+		&RendererVisibilityTagBinding,
+	};
 }
 
 void UNiagaraLightRendererProperties::PostLoad()
@@ -185,13 +188,13 @@ void UNiagaraLightRendererProperties::CacheFromCompiledData(const FNiagaraDataSe
 {
 	UpdateSourceModeDerivates(SourceMode);
 
-	PositionDataSetAccessor.Init(CompiledData, PositionBinding.GetDataSetBindableVariable().GetName());
-	ColorDataSetAccessor.Init(CompiledData, ColorBinding.GetDataSetBindableVariable().GetName());
-	RadiusDataSetAccessor.Init(CompiledData, RadiusBinding.GetDataSetBindableVariable().GetName());
-	ExponentDataSetAccessor.Init(CompiledData, LightExponentBinding.GetDataSetBindableVariable().GetName());
-	ScatteringDataSetAccessor.Init(CompiledData, VolumetricScatteringBinding.GetDataSetBindableVariable().GetName());
-	EnabledDataSetAccessor.Init(CompiledData, LightRenderingEnabledBinding.GetDataSetBindableVariable().GetName());
-	RendererVisibilityTagAccessor.Init(CompiledData, RendererVisibilityTagBinding.GetDataSetBindableVariable().GetName());
+	InitParticleDataSetAccessor(PositionDataSetAccessor, CompiledData, PositionBinding);
+	InitParticleDataSetAccessor(ColorDataSetAccessor, CompiledData, ColorBinding);
+	InitParticleDataSetAccessor(RadiusDataSetAccessor, CompiledData, RadiusBinding);
+	InitParticleDataSetAccessor(ExponentDataSetAccessor, CompiledData, LightExponentBinding);
+	InitParticleDataSetAccessor(ScatteringDataSetAccessor, CompiledData, VolumetricScatteringBinding);
+	InitParticleDataSetAccessor(EnabledDataSetAccessor, CompiledData, LightRenderingEnabledBinding);
+	InitParticleDataSetAccessor(RendererVisibilityTagAccessor, CompiledData, RendererVisibilityTagBinding);
 }
 
 void UNiagaraLightRendererProperties::UpdateSourceModeDerivates(ENiagaraRendererSourceDataMode InSourceMode, bool bFromPropertyEdit)

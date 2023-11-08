@@ -31,6 +31,11 @@ namespace Horde.Agent.Utility
 	interface IRpcConnection : IAsyncDisposable
 	{
 		/// <summary>
+		/// Reports whether the server connection is healthy
+		/// </summary>
+		bool Healthy { get; }
+
+		/// <summary>
 		/// Logger for this connection
 		/// </summary>
 		ILogger Logger { get; }
@@ -365,22 +370,24 @@ namespace Horde.Agent.Utility
 			public Task DisposingTask => _subConnection.DisposingTask;
 		}
 
-		private readonly Func<GrpcChannel> _createGrpcChannel;
+		private readonly Func<CancellationToken, Task<GrpcChannel>> _createGrpcChannelAsync;
 		private readonly TaskCompletionSource<bool> _stoppingTaskSource = new TaskCompletionSource<bool>();
 		private TaskCompletionSource<RpcSubConnection> _subConnectionTaskSource = new TaskCompletionSource<RpcSubConnection>();
 		private Task? _backgroundTask;
+		private bool _healthy;
 		private readonly ILogger _logger;
 
+		public bool Healthy => _healthy;
 		public ILogger Logger => _logger;
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="createGrpcChannel">Factory method for creating new GRPC channels</param>
+		/// <param name="createGrpcChannelAsync">Factory method for creating new GRPC channels</param>
 		/// <param name="logger">Logger instance</param>
-		public RpcConnection(Func<GrpcChannel> createGrpcChannel, ILogger logger)
+		public RpcConnection(Func<CancellationToken, Task<GrpcChannel>> createGrpcChannelAsync, ILogger logger)
 		{
-			_createGrpcChannel = createGrpcChannel;
+			_createGrpcChannelAsync = createGrpcChannelAsync;
 			_logger = logger;
 
 			_backgroundTask = Task.Run(() => ExecuteAsync());
@@ -531,7 +538,7 @@ namespace Horde.Agent.Utility
 		/// <returns>Async task</returns>
 		async Task HandleConnectionInternalAsync(int connectionId, TaskCompletionSource<bool> reconnectTaskSource)
 		{
-			using (GrpcChannel channel = _createGrpcChannel())
+			using (GrpcChannel channel = await _createGrpcChannelAsync(CancellationToken.None))
 			{
 				HordeRpc.HordeRpcClient client = new HordeRpc.HordeRpcClient(channel);
 
@@ -568,6 +575,9 @@ namespace Horde.Agent.Utility
 									_subConnectionTaskSource.SetResult(subConnection);
 								}
 
+								// Set the healthy flag for reporting status to the tray app
+								_healthy = true;
+
 								// Wait for the StoppingTask token to be set, or the server to inform that it's shutting down
 								moveNextTask = call.ResponseStream.MoveNext();
 								await Task.WhenAny(_stoppingTaskSource.Task, Task.Delay(TimeSpan.FromSeconds(45.0)), moveNextTask);
@@ -601,6 +611,8 @@ namespace Horde.Agent.Utility
 				}
 				finally
 				{
+					_healthy = false;
+
 					if (subConnection != null)
 					{
 						await subConnection.DisposeAsync();

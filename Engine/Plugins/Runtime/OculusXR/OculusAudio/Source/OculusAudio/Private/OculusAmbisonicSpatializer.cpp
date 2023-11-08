@@ -4,6 +4,7 @@
 #include "ISoundfieldFormat.h"
 #include "OculusAudioMixer.h"
 #include "DSP/BufferVectorOperations.h"
+#include "DSP/FloatArrayMath.h"
 #include "AudioMixerDevice.h"
 #include "OculusAudioDllManager.h"
 #include "OculusAudioContextManager.h"
@@ -175,7 +176,7 @@ public:
 			OVR_AUDIO_CHECK(Result, "Failed to spatialize mono source interleaved");
 
 			// sum the interleaved output into the output bed.
-			Audio::MixInBufferFast(ScratchOutputBuffer, OutputBuffer.AudioBuffer);
+			Audio::ArrayMixIn(ScratchOutputBuffer, OutputBuffer.AudioBuffer);
 		}
 	}
 };
@@ -218,7 +219,7 @@ public:
 			else if (InputData.PositionalData.NumChannels == InputBuffer.NumChannels)
 			{
 				// If the number of output channels is the same as the input channels, mix it in directly.
-				Audio::MixInBufferFast(InputBuffer.AudioBuffer, OutputData.AudioBuffer);
+				Audio::ArrayMixIn(InputBuffer.AudioBuffer, OutputData.AudioBuffer);
 			}
 			else
 			{
@@ -310,7 +311,7 @@ public:
 			check(InputBuffer.AudioBuffer.Num() == OutputBuffer.AudioBuffer.Num());
 			check(InputBuffer.NumChannels == OutputBuffer.NumChannels);
 
-			Audio::MixInBufferFast(InputBuffer.AudioBuffer, OutputBuffer.AudioBuffer, InputData.SendLevel);
+			Audio::ArrayMixIn(InputBuffer.AudioBuffer, OutputBuffer.AudioBuffer, InputData.SendLevel);
 		}
 	}
 };

@@ -19,22 +19,19 @@ namespace UnrealBuildTool.Rules
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
 					"Projects",
-					"RenderCore",
 					"RHI",
 					"RenderCore",
 					"Renderer",
+					"ImageCore",
 					"Slate",
 					"SlateCore",
+					"ColorManagement"
 				});
 
 			PrivateIncludePathModuleNames.AddRange(
 				new string[] {
 					"DerivedDataCache",
-				});
-
-			PrivateIncludePaths.AddRange(
-				new string[] {
-					System.IO.Path.Combine(GetModuleDirectory("Renderer"), "Private"), //required for FPostProcessMaterialInputs
+					"OpenColorIOWrapper" //for OpenColorIOWrapperDefines.h
 				});
 
 			PublicDependencyModuleNames.AddRange(
@@ -50,10 +47,10 @@ namespace UnrealBuildTool.Rules
 				PrivateDependencyModuleNames.AddRange(
 					new string[]
 					{
-						"OpenColorIOLib",
 						"TargetPlatform",
 						"EditorFramework",
-						"UnrealEd"
+						"UnrealEd",
+						"OpenColorIOWrapper"
 					});
 			}
 		}

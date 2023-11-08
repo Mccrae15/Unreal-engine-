@@ -8,13 +8,10 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
-using System.Xml.Linq;
 using EpicGames.Core;
-using EpicGames.Horde.Storage;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 
@@ -23,7 +20,7 @@ namespace EpicGames.Horde.Storage.Backends
 	/// <summary>
 	/// Implementation of <see cref="IStorageClient"/> which communicates with an upstream Horde instance via HTTP.
 	/// </summary>
-	public class HttpStorageClient : StorageClientBase
+	public class HttpStorageClient : BundleStorageClient
 	{
 		/// <summary>
 		/// Name of clients created from the http client factory
@@ -32,7 +29,7 @@ namespace EpicGames.Horde.Storage.Backends
 
 		class WriteBlobResponse
 		{
-			public BlobLocator Locator { get; set; }
+			public BlobLocator Blob { get; set; }
 			public Uri? UploadUrl { get; set; }
 			public bool? SupportsRedirects { get; set; }
 		}
@@ -64,7 +61,8 @@ namespace EpicGames.Horde.Storage.Backends
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		public HttpStorageClient(Func<HttpClient> createClient, Func<HttpClient> createRedirectClient, ILogger logger) 
+		public HttpStorageClient(Func<HttpClient> createClient, Func<HttpClient> createRedirectClient, IMemoryCache? memoryCache, ILogger logger) 
+			: base(memoryCache, logger)
 		{
 			_createClient = createClient;
 			_createRedirectClient = createRedirectClient;
@@ -74,8 +72,8 @@ namespace EpicGames.Horde.Storage.Backends
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		public HttpStorageClient(IHttpClientFactory httpClientFactory, Uri baseAddress, string? bearerToken, ILogger logger)
-			: this(() => CreateAuthenticatedClient(httpClientFactory, baseAddress, bearerToken), () => CreateClient(httpClientFactory), logger)
+		public HttpStorageClient(IHttpClientFactory httpClientFactory, Uri baseAddress, string? bearerToken, IMemoryCache? memoryCache, ILogger logger)
+			: this(() => CreateAuthenticatedClient(httpClientFactory, baseAddress, bearerToken), () => CreateClient(httpClientFactory), memoryCache, logger)
 		{
 		}
 
@@ -150,19 +148,19 @@ namespace EpicGames.Horde.Storage.Backends
 							if (!uploadResponse.IsSuccessStatusCode)
 							{
 								string body = await uploadResponse.Content.ReadAsStringAsync(cancellationToken);
-								throw new StorageException($"Unable to upload data to redirected URL: {body}", null);
+								throw new StorageException($"Unable to upload data to redirected URL: {body}");
 							}
 						}
-						_logger.LogDebug("Written {Locator} (using redirect)", redirectResponse.Locator);
-						return redirectResponse.Locator;
+						_logger.LogDebug("Written {Locator} (using redirect)", redirectResponse.Blob);
+						return redirectResponse.Blob;
 					}
 				}
 			}
 
 			WriteBlobResponse response = await SendWriteRequestAsync(streamContent, prefix, cancellationToken);
 			_supportsUploadRedirects = response.SupportsRedirects ?? false;
-			_logger.LogDebug("Written {Locator} (direct)", response.Locator);
-			return response.Locator;
+			_logger.LogDebug("Written {Locator} (direct)", response.Blob);
+			return response.Blob;
 		}
 
 		async Task<WriteBlobResponse> SendWriteRequestAsync(StreamContent? streamContent, Utf8String prefix = default, CancellationToken cancellationToken = default)
@@ -196,7 +194,19 @@ namespace EpicGames.Horde.Storage.Backends
 		#region Nodes
 
 		/// <inheritdoc/>
-		public override async IAsyncEnumerable<NodeHandle> FindNodesAsync(Utf8String alias, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+		public override Task AddAliasAsync(Utf8String name, BlobHandle locator, CancellationToken cancellationToken = default)
+		{
+			throw new NotSupportedException("Http storage client does not currently support aliases.");
+		}
+
+		/// <inheritdoc/>
+		public override Task RemoveAliasAsync(Utf8String name, BlobHandle locator, CancellationToken cancellationToken = default)
+		{
+			throw new NotSupportedException("Http storage client does not currently support aliases.");
+		}
+
+		/// <inheritdoc/>
+		public override async IAsyncEnumerable<BlobHandle> FindNodesAsync(Utf8String alias, [EnumeratorCancellation] CancellationToken cancellationToken = default)
 		{
 			_logger.LogDebug("Finding nodes with alias {Alias}", alias);
 			using (HttpClient httpClient = _createClient())
@@ -210,7 +220,7 @@ namespace EpicGames.Horde.Storage.Backends
 						FindNodesResponse? message = await response.Content.ReadFromJsonAsync<FindNodesResponse>(cancellationToken: cancellationToken);
 						foreach (FindNodeResponse node in message!.Nodes)
 						{
-							yield return new NodeHandle(node.Hash, node.Blob, node.ExportIdx);
+							yield return new FlushedNodeHandle(TreeReader, new NodeLocator(node.Hash, node.Blob, node.ExportIdx));
 						}
 					}
 				}
@@ -238,12 +248,17 @@ namespace EpicGames.Horde.Storage.Backends
 		}
 
 		/// <inheritdoc/>
-		public override async Task<NodeHandle?> TryReadRefTargetAsync(RefName name, DateTime cacheTime = default, CancellationToken cancellationToken = default)
+		public override async Task<BlobHandle?> TryReadRefTargetAsync(RefName name, RefCacheTime cacheTime = default, CancellationToken cancellationToken = default)
 		{
 			using (HttpClient httpClient = _createClient())
 			{
 				using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, $"refs/{name}"))
 				{
+					if (cacheTime.IsSet())
+					{
+						request.Headers.CacheControl = new CacheControlHeaderValue { MaxAge = cacheTime.MaxAge };
+					}
+
 					using (HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken))
 					{
 						if (response.StatusCode == HttpStatusCode.NotFound)
@@ -254,14 +269,14 @@ namespace EpicGames.Horde.Storage.Backends
 						else if (!response.IsSuccessStatusCode)
 						{
 							_logger.LogError("Unable to read ref {RefName} (status: {StatusCode}, body: {Body})", name, response.StatusCode, await response.Content.ReadAsStringAsync(cancellationToken));
-							throw new StorageException($"Unable to read ref '{name}'", null);
+							throw new StorageException($"Unable to read ref '{name}'");
 						}
 						else
 						{
 							response.EnsureSuccessStatusCode();
 							ReadRefResponse? data = await response.Content.ReadFromJsonAsync<ReadRefResponse>(cancellationToken: cancellationToken);
 							_logger.LogDebug("Read ref {RefName} -> {Blob}#{ExportIdx}", name, data!.Blob, data!.ExportIdx);
-							return new NodeHandle(data.Hash, new NodeLocator(data!.Blob, data!.ExportIdx));
+							return new FlushedNodeHandle(TreeReader, new NodeLocator(data.Hash, data!.Blob, data!.ExportIdx));
 						}
 					}
 				}
@@ -269,12 +284,13 @@ namespace EpicGames.Horde.Storage.Backends
 		}
 
 		/// <inheritdoc/>
-		public override async Task WriteRefTargetAsync(RefName name, NodeHandle target, RefOptions? options = null, CancellationToken cancellationToken = default)
+		public override async Task WriteRefTargetAsync(RefName name, BlobHandle target, RefOptions? options = null, CancellationToken cancellationToken = default)
 		{
 			_logger.LogDebug("Writing ref {RefName} -> {RefTarget}", name, target);
 			using (HttpClient httpClient = _createClient())
 			{
-				using (HttpResponseMessage response = await httpClient.PutAsync($"refs/{name}", new { hash = target.Hash, blob = target.Locator.Blob, exportIdx = target.Locator.ExportIdx, options }, cancellationToken))
+				NodeLocator locator = await target.FlushAsync(cancellationToken);
+				using (HttpResponseMessage response = await httpClient.PutAsync($"refs/{name}", new { blob = locator.Blob, exportIdx = locator.ExportIdx, options }, cancellationToken))
 				{
 					response.EnsureSuccessStatusCode();
 				}

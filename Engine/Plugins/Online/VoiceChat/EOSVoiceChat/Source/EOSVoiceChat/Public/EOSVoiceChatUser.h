@@ -71,9 +71,9 @@ public:
 	virtual FOnVoiceChatPlayerVolumeUpdatedDelegate& OnVoiceChatPlayerVolumeUpdated() override { return OnVoiceChatPlayerVolumeUpdatedDelegate; }
 	virtual void TransmitToAllChannels() override;
 	virtual void TransmitToNoChannels() override;
-	virtual void TransmitToSpecificChannel(const FString& ChannelName) override;
+	virtual void TransmitToSpecificChannels(const TSet<FString>& ChannelNames) override;
 	virtual EVoiceChatTransmitMode GetTransmitMode() const override;
-	virtual FString GetTransmitChannel() const override;
+	virtual TSet<FString> GetTransmitChannels() const override;
 	virtual FDelegateHandle StartRecording(const FOnVoiceChatRecordSamplesAvailableDelegate::FDelegate& Delegate) override;
 	virtual void StopRecording(FDelegateHandle Handle) override;
 	virtual FDelegateHandle RegisterOnVoiceChatAfterCaptureAudioReadDelegate(const FOnVoiceChatAfterCaptureAudioReadDelegate::FDelegate& Delegate) override;
@@ -167,10 +167,6 @@ protected:
 		FString PlayerName;
 		// Current participants in the channel, and the current blocked/muted state
 		TMap<FString, FChannelParticipant> Participants;
-		// Is the connection enabled
-		bool bConnectionEnabled = false;
-		// Is this connection allowed to send audio? Will be false if houseparty is being used as a mic
-		bool bSendAudioEnabled = true;
 		// Did the user toggle "off" this channel
 		bool bIsNotListening = false;
 
@@ -270,7 +266,7 @@ protected:
 	struct FTransmitState
 	{
 		EVoiceChatTransmitMode Mode = EVoiceChatTransmitMode::All;
-		FString ChannelName;
+		TSet<FString> SpecificChannels;
 	};
 	FTransmitState TransmitState;
 
@@ -346,7 +342,6 @@ protected:
 	void OnUpdateParticipantVolume(const EOS_RTCAudio_UpdateParticipantVolumeCallbackInfo* CallbackInfo);
 	static void EOS_CALL OnUpdateReceivingAudioStatic(const EOS_RTCAudio_UpdateReceivingCallbackInfo* CallbackInfo);
 	void OnUpdateReceivingAudio(const EOS_RTCAudio_UpdateReceivingCallbackInfo* CallbackInfo);
-	static void EOS_CALL OnUpdateSendingAudioStatic(const EOS_RTCAudio_UpdateSendingCallbackInfo* CallbackInfo);
 	void OnUpdateSendingAudio(const EOS_RTCAudio_UpdateSendingCallbackInfo* CallbackInfo);
 
 	// EOS notification callbacks

@@ -1,9 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Chaos/Framework/ChaosResultsManager.h"
+#include "PhysicsProxy/ClusterUnionPhysicsProxy.h"
 #include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 #include "PhysicsProxy/GeometryCollectionPhysicsProxy.h"
 #include "Chaos/ChaosMarshallingManager.h"
+#include "Chaos/Framework/PhysicsSolverBase.h"
+
+DECLARE_CYCLE_STAT(TEXT("Process Rigid Resim Targets"), STAT_RigidResimTargets, STATGROUP_Chaos);
 
 namespace Chaos
 {	
@@ -68,6 +72,7 @@ namespace Chaos
 	{
 		ResetInterpolations<FSingleParticlePhysicsProxy>(RigidInterpolations);
 		ResetInterpolations<FGeometryCollectionPhysicsProxy>(GeometryCollectionInterpolations);
+		ResetInterpolations<FClusterUnionPhysicsProxy>(ClusterUnionInterpolations);
 
 		//purposely leave Prev and Next alone as we use those for rebuild
 	}
@@ -80,7 +85,7 @@ namespace Chaos
 		{
 			if (auto Proxy = Data.GetProxy())
 			{
-				FProxyInterpolationData& InterpolationData = Proxy->GetInterpolationData(); 
+				FProxyInterpolationBase& InterpolationData = Proxy->GetInterpolationData();
 				
 				//If proxy is not associated with this channel, do nothing
 				if (InterpolationData.GetInterpChannel_External() != ChannelIdx)
@@ -122,23 +127,37 @@ namespace Chaos
 	{
 		//clear results
 		const int32 Timestamp = PullData.SolverTimestamp;
+		
+		{
+			SCOPE_CYCLE_COUNTER(STAT_ProcessSingleProxy);
+			SetPrevNextDataHelperTyped<Mode>(PullData.DirtyRigids, Results.RigidInterpolations);
+		}
 
-		SetPrevNextDataHelperTyped<Mode>(PullData.DirtyRigids, Results.RigidInterpolations);
+		{
+			SCOPE_CYCLE_COUNTER(STAT_ProcessGCProxy);
+			SetPrevNextDataHelperTyped<Mode>(PullData.DirtyGeometryCollections, Results.GeometryCollectionInterpolations);
+		}
 
-		SetPrevNextDataHelperTyped<Mode>(PullData.DirtyGeometryCollections, Results.GeometryCollectionInterpolations);
+		{
+			SCOPE_CYCLE_COUNTER(STAT_ProcessClusterUnionProxy);
+			SetPrevNextDataHelperTyped<Mode>(PullData.DirtyClusterUnions, Results.ClusterUnionInterpolations);
+		}
 
 		// update resim target for rigids
-		for (const FDirtyRigidParticleData& Data : PullData.DirtyRigids)
 		{
-			if (FSingleParticlePhysicsProxy* Proxy = Data.GetProxy())
+			SCOPE_CYCLE_COUNTER(STAT_RigidResimTargets);
+			for(const FDirtyRigidParticleData& Data : PullData.DirtyRigids)
 			{
-				// only if the proxy is associated with this channel 
-				if (Proxy->GetInterpolationData().GetInterpChannel_External() == ChannelIdx)
+				if(FSingleParticlePhysicsProxy* Proxy = Data.GetProxy())
 				{
-					//update leash target
-					if(FDirtyRigidParticleData* ResimTarget = ParticleToResimTarget.Find(Proxy))
+					// only if the proxy is associated with this channel 
+					if(Proxy->GetInterpolationData().GetInterpChannel_External() == ChannelIdx)
 					{
-						*ResimTarget = Data;
+						//update leash target
+						if(FDirtyRigidParticleData* ResimTarget = ParticleToResimTarget.Find(Proxy))
+						{
+							*ResimTarget = Data;
+						}
 					}
 				}
 			}
@@ -274,8 +293,8 @@ namespace Chaos
 		{
 			FSingleParticlePhysicsProxy* Proxy = Itr.Key;
 
-			FProxyInterpolationData& InterpolationData = Proxy->GetInterpolationData(); 
-			if(InterpolationData.IsResimSmoothing())
+			FProxyInterpolationBase& InterpolationData = Proxy->GetInterpolationData();
+			if (InterpolationData.IsErrorSmoothing())
 			{
 				if (InterpolationData.GetPullDataInterpIdx_External() == INDEX_NONE)	//not in results array
 				{
@@ -380,12 +399,11 @@ namespace Chaos
 		{
 			if (FSingleParticlePhysicsProxy* ResimProxy = ResimDirty.GetProxy())
 			{
-				FProxyInterpolationData& InterpolationData = ResimProxy->GetInterpolationData(); 
+				FProxyInterpolationBase& InterpolationData = ResimProxy->GetInterpolationData(); 
 				//Mark as resim only if proxy is owned by this channel
 				if(InterpolationData.GetInterpChannel_External() == ChannelIdx)
 				{
 					ParticleToResimTarget.FindOrAdd(ResimProxy) = ResimDirty;
-					InterpolationData.SetResimSmoothing(true);
 				}
 			}
 		}

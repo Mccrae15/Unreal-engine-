@@ -16,9 +16,7 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/SkinnedAssetCommon.h"
 #include "Model.h"
-#if (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 2) || ENGINE_MAJOR_VERSION > 5
 #include "MaterialDomain.h"
-#endif
 
 #define OCULUS_TO_UE4_SCALE 100.0f
 
@@ -662,5 +660,27 @@ namespace OculusXRInput
 	FQuat FOculusHandTracking::OvrBoneQuatToFQuat(ovrpQuatf ovrpQuat)
 	{
 		return FQuat(ovrpQuat.x, -ovrpQuat.y, ovrpQuat.z, -ovrpQuat.w);
+	}
+
+	EOculusXRControllerDrivenHandPoseTypes FOculusHandTracking::ControllerDrivenHandType = EOculusXRControllerDrivenHandPoseTypes::None;
+
+	void FOculusHandTracking::SetControllerDrivenHandPoses(const EOculusXRControllerDrivenHandPoseTypes Type)
+	{
+		FOculusHandTracking::ControllerDrivenHandType = Type;
+		switch (Type)
+		{
+			case EOculusXRControllerDrivenHandPoseTypes::None:
+				FOculusXRHMDModule::GetPluginWrapper().SetControllerDrivenHandPoses(false);
+				FOculusXRHMDModule::GetPluginWrapper().SetControllerDrivenHandPosesAreNatural(false);
+				break;
+			case EOculusXRControllerDrivenHandPoseTypes::Natural:
+				FOculusXRHMDModule::GetPluginWrapper().SetControllerDrivenHandPoses(true);
+				FOculusXRHMDModule::GetPluginWrapper().SetControllerDrivenHandPosesAreNatural(true);
+				break;
+			case EOculusXRControllerDrivenHandPoseTypes::Controller:
+				FOculusXRHMDModule::GetPluginWrapper().SetControllerDrivenHandPoses(true);
+				FOculusXRHMDModule::GetPluginWrapper().SetControllerDrivenHandPosesAreNatural(false);
+				break;
+		}
 	}
 } // namespace OculusXRInput

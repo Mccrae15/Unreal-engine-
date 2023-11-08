@@ -7,6 +7,7 @@
 #include "PostProcess/PostProcessLocalExposure.h"
 #include "PostProcess/PostProcessEyeAdaptation.h"
 #include "PostProcess/PostProcessWeightedSampleSum.h"
+#include "SceneRendering.h"
 #include "ShaderCompilerCore.h"
 #include "DataDrivenShaderPlatformInfo.h"
 
@@ -66,6 +67,8 @@ public:
 
 		SHADER_PARAMETER_STRUCT(FEyeAdaptationParameters, EyeAdaptation)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, EyeAdaptationBuffer)
+
+		SHADER_PARAMETER_STRUCT(FLocalExposureParameters, LocalExposure)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture3D, LumBilateralGrid)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, BlurredLogLum)
 
@@ -88,6 +91,34 @@ public:
 IMPLEMENT_GLOBAL_SHADER(FApplyLocalExposureCS, "/Engine/Private/PostProcessLocalExposure.usf", "ApplyLocalExposureCS", SF_Compute);
 
 } //! namespace
+
+FVector2f GetLocalExposureBilateralGridUVScale(const FIntPoint ViewRectSize);
+
+FLocalExposureParameters GetLocalExposureParameters(const FViewInfo& View, FIntPoint ViewRectSize, const FEyeAdaptationParameters& EyeAdaptationParameters)
+{
+	const FPostProcessSettings& Settings = View.FinalPostProcessSettings;
+
+	const EAutoExposureMethod AutoExposureMethod = GetAutoExposureMethod(View);
+
+	float LocalExposureMiddleGreyExposureCompensation = FMath::Pow(2.0f, View.FinalPostProcessSettings.LocalExposureMiddleGreyBias);
+
+	if (AutoExposureMethod == EAutoExposureMethod::AEM_Manual)
+	{
+		// when using manual exposure cancel exposure compensation setting and curve from middle grey used by local exposure.
+		LocalExposureMiddleGreyExposureCompensation /= (EyeAdaptationParameters.ExposureCompensationSettings * EyeAdaptationParameters.ExposureCompensationCurve);
+	}
+
+	const FVector2f LocalExposureBilateralGridUVScale = GetLocalExposureBilateralGridUVScale(ViewRectSize);
+
+	FLocalExposureParameters Parameters;
+	Parameters.HighlightContrastScale = Settings.LocalExposureHighlightContrastScale;
+	Parameters.ShadowContrastScale = Settings.LocalExposureShadowContrastScale;
+	Parameters.DetailStrength = Settings.LocalExposureDetailStrength;
+	Parameters.BlurredLuminanceBlend = Settings.LocalExposureBlurredLuminanceBlend;
+	Parameters.MiddleGreyExposureCompensation = LocalExposureMiddleGreyExposureCompensation;
+	Parameters.BilateralGridUVScale = LocalExposureBilateralGridUVScale;
+	return Parameters;
+}
 
 FRDGTextureRef AddLocalExposureBlurredLogLuminancePass(
 	FRDGBuilder& GraphBuilder,
@@ -150,6 +181,7 @@ void AddApplyLocalExposurePass(
 	const FViewInfo& View,
 	const FEyeAdaptationParameters& EyeAdaptationParameters,
 	FRDGBufferRef EyeAdaptationBuffer,
+	const FLocalExposureParameters& LocalExposureParamaters,
 	FRDGTextureRef LocalExposureTexture,
 	FRDGTextureRef BlurredLogLuminanceTexture,
 	FScreenPassTexture Input,
@@ -171,8 +203,11 @@ void AddApplyLocalExposurePass(
 
 	PassParameters->EyeAdaptation = EyeAdaptationParameters;
 	PassParameters->EyeAdaptationBuffer = GraphBuilder.CreateSRV(EyeAdaptationBuffer);
+
+	PassParameters->LocalExposure = LocalExposureParamaters;
 	PassParameters->LumBilateralGrid = LocalExposureTexture;
 	PassParameters->BlurredLogLum = BlurredLogLuminanceTexture;
+
 	PassParameters->TextureSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();;
 
 	FComputeShaderUtils::AddPass(

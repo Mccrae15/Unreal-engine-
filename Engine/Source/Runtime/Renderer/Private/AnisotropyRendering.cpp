@@ -262,6 +262,14 @@ void FAnisotropyMeshProcessor::CollectPSOInitializers(const FSceneTexturesConfig
 		}
 
 		FGraphicsPipelineRenderTargetsInfo RenderTargetsInfo;
+		RenderTargetsInfo.NumSamples = 1;
+
+		ETextureCreateFlags GBufferFCreateFlags;
+		EPixelFormat GBufferFPixelFormat = FSceneTextures::GetGBufferFFormatAndCreateFlags(GBufferFCreateFlags);
+		AddRenderTargetInfo(GBufferFPixelFormat, GBufferFCreateFlags, RenderTargetsInfo);
+		SetupDepthStencilInfo(PF_DepthStencil, SceneTexturesConfig.DepthCreateFlags, ERenderTargetLoadAction::ELoad,
+			ERenderTargetLoadAction::ELoad, FExclusiveDepthStencil::DepthRead_StencilNop, RenderTargetsInfo);
+
 		AddGraphicsPipelineStateInitializer(
 			VertexFactoryData,
 			Material,
@@ -359,7 +367,7 @@ void FDeferredShadingSceneRenderer::RenderAnisotropyPass(
 					ERDGPassFlags::Raster | ERDGPassFlags::SkipRenderPass,
 					[this, &View, &ParallelMeshPass, PassParameters](const FRDGPass* InPass, FRHICommandListImmediate& RHICmdList)
 				{
-					FRDGParallelCommandListSet ParallelCommandListSet(InPass, RHICmdList, GET_STATID(STAT_CLP_AnisotropyPass), *this, View, FParallelCommandListBindings(PassParameters));
+					FRDGParallelCommandListSet ParallelCommandListSet(InPass, RHICmdList, GET_STATID(STAT_CLP_AnisotropyPass), View, FParallelCommandListBindings(PassParameters));
 
 					ParallelMeshPass.DispatchDraw(&ParallelCommandListSet, RHICmdList, &PassParameters->InstanceCullingDrawParams);
 				});

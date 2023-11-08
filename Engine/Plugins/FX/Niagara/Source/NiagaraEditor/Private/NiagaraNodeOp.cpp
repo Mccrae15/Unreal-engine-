@@ -161,7 +161,7 @@ FNiagaraTypeDefinition UNiagaraNodeOp::ResolveCustomNumericType(const TArray<FNi
 }
 
 
-void UNiagaraNodeOp::Compile(class FHlslNiagaraTranslator* Translator, TArray<int32>& Outputs)
+void UNiagaraNodeOp::Compile(FTranslator* Translator, TArray<int32>& Outputs) const
 {
 	const FNiagaraOpInfo* OpInfo = FNiagaraOpInfo::GetOpInfo(OpName);
 	if (!OpInfo)
@@ -185,7 +185,7 @@ void UNiagaraNodeOp::Compile(class FHlslNiagaraTranslator* Translator, TArray<in
 		{
 			continue;
 		}
-		int32 CompiledInput = Translator->CompilePin(Pin);
+		int32 CompiledInput = Translator->CompileInputPin(Pin);
 		if (CompiledInput == INDEX_NONE)
 		{
 			bError = true;
@@ -330,7 +330,7 @@ bool UNiagaraNodeOp::AllowNiagaraTypeForAddPin(const FNiagaraTypeDefinition& InT
 		return true;
 	}
 
-	auto FindPredicate = [=](const FNiagaraTypeDefinition& PinType)
+	auto FindPredicate = [this, InType](const FNiagaraTypeDefinition& PinType)
 	{
 		if (bAllStatic)
 			return PinType.ToStaticDef() == InType;
@@ -531,6 +531,40 @@ void UNiagaraNodeOp::PinConnectionListChanged(UEdGraphPin* Pin)
 	{
 		HandleStaticOutputPinUpgrade();
 	}
+}
+
+FText UNiagaraNodeOp::GetCompactTitle() const
+{
+	const FNiagaraOpInfo* OpInfo = FNiagaraOpInfo::GetOpInfo(OpName);
+	if(OpInfo == nullptr)
+	{
+		// this will effectively turn off compact mode
+		return FText::GetEmpty();
+	}
+	
+	return OpInfo->CompactName; 
+}
+
+bool UNiagaraNodeOp::ShouldShowPinNamesInCompactMode()
+{
+	const FNiagaraOpInfo* OpInfo = FNiagaraOpInfo::GetOpInfo(OpName);
+	if(OpInfo == nullptr)
+	{
+		return false;
+	}
+	
+	return OpInfo->bShowPinNamesInCompactMode; 
+}
+
+TOptional<float> UNiagaraNodeOp::GetCompactModeFontSizeOverride() const
+{
+	const FNiagaraOpInfo* OpInfo = FNiagaraOpInfo::GetOpInfo(OpName);
+	if(OpInfo == nullptr)
+	{
+		return {};
+	}
+	
+	return OpInfo->CompactNameFontSizeOverride;
 }
 
 void UNiagaraNodeOp::HandleStaticInputPinUpgrade(UEdGraphPin* Pin)

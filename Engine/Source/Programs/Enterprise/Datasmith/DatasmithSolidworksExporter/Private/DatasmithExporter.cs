@@ -7,10 +7,9 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using DatasmithSolidworks.Names;
-using static DatasmithSolidworks.FConfigurationTree;
+using static DatasmithSolidworks.Addin;
 
 
 namespace DatasmithSolidworks
@@ -126,6 +125,80 @@ namespace DatasmithSolidworks
 			public override int GetHashCode() => Value.GetHashCode();
 		}
 
+		public struct FVariantName : IEquatable<FVariantName>
+		{
+			private readonly string Value;
+
+			// Solidworks configuration name this variant is based on
+			public readonly string CfgName; 
+
+			private FVariantName(string InCfgName, string InValue)
+			{
+				CfgName =  InCfgName;
+				Value = InValue;
+			}
+
+			public FVariantName(IConfiguration Configuration, string InCfgName)
+			{
+				Debug.Assert(Configuration.Name == InCfgName);
+
+				CfgName = InCfgName;
+
+				Value = Configuration.IsDerived() 
+					? $"{Configuration.GetParent().Name}_{CfgName}" 
+					: Configuration.Name;
+			}
+
+			public FVariantName(IConfiguration Configuration): this(Configuration, Configuration.Name)
+			{
+			}
+
+			public static FVariantName PartVariant(string CfgName)
+			{
+				return new FVariantName(CfgName, CfgName);
+			}
+
+			public FVariantName LinkedDisplayStateVariant(string DisplayStateName)
+			{
+				return new FVariantName(CfgName, $"{Value}_{FDatasmithExporter.SanitizeName(DisplayStateName)}");
+			}
+
+			public static FVariantName DisplayStateVariant(string DisplayStateName)
+			{
+				return new FVariantName((string)null, $"DisplayState_{FDatasmithExporter.SanitizeName(DisplayStateName)}");
+			}
+
+			public FVariantName ExplodedViewVariant(string ExplodedViewName)
+			{
+				return new FVariantName(CfgName, $"{Value}_{FDatasmithExporter.SanitizeName(ExplodedViewName)}");
+			}
+
+			public static FVariantName Invalid() => new FVariantName((string)null, null);
+
+			public FComponentName GetRootComponentName()
+			{
+				return FComponentName.FromCustomString(Value);
+			}
+
+			// Following is common between 'Names' but unfortunately C# has no way to generalize this for structs
+			public bool IsValid()
+			{
+				return !string.IsNullOrEmpty(Value);
+			}
+
+			public string GetString() => Value;
+
+			public override string ToString() => Value;
+
+			public override bool Equals(object Obj) => Obj is FVariantName Other && this == Other;
+			public bool Equals(FVariantName Other) => Value == Other.Value;
+			public static bool operator ==(FVariantName A, FVariantName B) => A.Equals(B);
+			public static bool operator !=(FVariantName A, FVariantName B) => !(A == B);
+
+			public override int GetHashCode() => Value.GetHashCode();
+
+		}
+
 	}
 }
 
@@ -149,22 +222,29 @@ namespace DatasmithSolidworks
 		public FActorName Name;
 		public FActorName ParentName;
 		public FMeshName MeshName;
-		public float[] Transform;
+		public FConvertedTransform Transform;
 		public bool bVisible;
+
+		public override string ToString()
+		{
+			return $"FDatasmithActorExportInfo(Name={Name}, Type={Type}, MeshName={MeshName}, ParentName={ParentName})";
+		}
 	};
 
 	public class FDatasmithExporter
 	{
 		private Dictionary<FActorName, Tuple<EActorType, FDatasmithFacadeActor>> ExportedActorsMap = new Dictionary<FActorName, Tuple<EActorType, FDatasmithFacadeActor>>();
-		private ConcurrentDictionary<FMeshName, FDatasmithFacadeMeshElement> ExportedMeshesMap = new ConcurrentDictionary<FMeshName, FDatasmithFacadeMeshElement>();
-		private ConcurrentDictionary<int, FDatasmithFacadeMaterialInstance> ExportedMaterialsMap = new ConcurrentDictionary<int, FDatasmithFacadeMaterialInstance>();
-		private ConcurrentDictionary<string, FDatasmithFacadeTexture> ExportedTexturesMap = new ConcurrentDictionary<string, FDatasmithFacadeTexture>();
-		private Dictionary<string, FDatasmithFacadeActorBinding> ExportedActorBindingsMap = new Dictionary<string, FDatasmithFacadeActorBinding>();
-		private Dictionary<string, FDatasmithFacadeVariant> ExportedVariantsMap = new Dictionary<string, FDatasmithFacadeVariant>();
+		private Dictionary<FMeshName, FMeshExportInfo> ExportedMeshesMap = new Dictionary<FMeshName, FMeshExportInfo>();
+		private Dictionary<int, FDatasmithFacadeMaterialInstance> ExportedMaterialInstancesMap = new Dictionary<int, FDatasmithFacadeMaterialInstance>();
+		private Dictionary<string, FDatasmithFacadeTexture> ExportedTexturesMap = new Dictionary<string, FDatasmithFacadeTexture>();
+
+		// Number of meshes/variants using this material to allow exporting only used materials
+		private Dictionary<int, int> MaterialUsers = new Dictionary<int, int>();
+
 
 		private FDatasmithFacadeScene DatasmithScene = null;
 
-		public struct FMeshExportInfo
+		public class FMeshExportInfo
 		{
 			public FComponentName ComponentName;
 			public FMeshName MeshName;
@@ -172,10 +252,11 @@ namespace DatasmithSolidworks
 			public FMeshData MeshData;
 
 			public FDatasmithFacadeMeshElement MeshElement;
+			public HashSet<int> Materials;
 
 			public override string ToString()
 			{
-				return $"FMeshExportInfo(ComponentName={ComponentName}, MeshName={MeshName}, ActorName={ActorName}), MeshElement={(MeshElement==null?"<null>":MeshElement.GetName())}";
+				return $"FMeshExportInfo(ComponentName={ComponentName}, MeshName={MeshName}), MeshElement={(MeshElement==null?"<null>":MeshElement.GetName())}";
 			}
 		}
 
@@ -196,6 +277,7 @@ namespace DatasmithSolidworks
 
 		public FDatasmithFacadeActor ExportOrUpdateActor(FDatasmithActorExportInfo InExportInfo)
 		{
+			LogDebug($"ExportOrUpdateActor({InExportInfo})");
 			FDatasmithFacadeActor Actor = null;
 
 			if (ExportedActorsMap.ContainsKey(InExportInfo.Name))
@@ -241,6 +323,7 @@ namespace DatasmithSolidworks
 					DatasmithScene.AddActor(Actor);
 				}
 			}
+			LogDebug($"  Datasmith Name for the Actor '{Actor.GetName()}'");
 
 			// ImportBinding uses Tag[0] ('original name') to group parts used in variants
 			Actor.SetLabel(InExportInfo.Label);
@@ -252,31 +335,93 @@ namespace DatasmithSolidworks
 				FDatasmithFacadeActorMesh MeshActor = Actor as FDatasmithFacadeActorMesh;
 				if (InExportInfo.MeshName.IsValid())
 				{
-					MeshActor.SetMesh(GetDatasmithMeshName(InExportInfo.MeshName));
+					string DatasmithMeshName = GetDatasmithMeshName(InExportInfo.MeshName);
+					LogDebug($"  Set Mesh '{InExportInfo.MeshName}' with Datasmith Name '{DatasmithMeshName}' to DatasmithActorMesh)");
+					MeshActor.SetMesh(DatasmithMeshName);
 				}
 			}
 
 			return Actor;
 		}
 
-		public void AddMesh(FMeshName MeshName, FDatasmithFacadeMeshElement NewMesh)
+		public void AddMesh(FMeshExportInfo Info)
 		{
-			Debug.Assert(MeshName.IsValid());
-			Debug.Assert(NewMesh != null);
-			RemoveMesh(MeshName);
-			ExportedMeshesMap.TryAdd(MeshName, NewMesh);
-			DatasmithScene.AddMesh(NewMesh);
+			LogDebug($"FDatasmithExporter.AddMesh('{Info.MeshName}')");
+			Debug.Assert(Info.MeshName.IsValid());
+			Debug.Assert(Info.MeshElement != null);
+
+
+			LogIndent();
+			RemoveMesh(Info.MeshName);
+			LogDedent();
+
+			ExportedMeshesMap[Info.MeshName] = Info;
+
+			LogDebug($"DatasmithScene.AddMesh('{Info.MeshElement.GetName()}')");
+			DatasmithScene.AddMesh(Info.MeshElement);
+
+			// Increase user count on mesh materials
+			foreach (int MaterialId in Info.Materials)
+			{
+				AddMaterialUser(MaterialId);
+			}
 		}
 
 		public void RemoveMesh(FMeshName MeshName)
 		{
+			LogDebug($"FDatasmithExporter.RemoveMesh('{MeshName}')");
+
             if (!MeshName.IsValid())
             {
                 return;
             }
-			if (ExportedMeshesMap.TryRemove(MeshName, out FDatasmithFacadeMeshElement OldMesh))
+
+            
+			if (ExportedMeshesMap.TryRemove(MeshName, out FMeshExportInfo Info))
 			{
-				DatasmithScene.RemoveMesh(OldMesh);
+				LogDebug($"  removing mesh element '{Info.MeshElement.GetName()}'");
+				DatasmithScene.RemoveMesh(Info.MeshElement);
+
+				// Decrease user count on materials
+				foreach (int MaterialId in Info.Materials)
+				{
+					RemoveMaterialUser(MaterialId);
+				}
+			}
+			else
+			{
+				LogDebug($"  WARNING: NOT FOUND IN EXPORTED");
+			}
+		}
+
+		private void AddMaterialUser(int MaterialId)
+		{
+			if (MaterialUsers.TryGetValue(MaterialId, out int Count))
+			{
+				MaterialUsers[MaterialId] = Count + 1;
+			}
+			else
+			{
+				MaterialUsers.Add(MaterialId, 1);
+			}
+		}
+
+		private void RemoveMaterialUser(int MaterialId)
+		{
+			if (MaterialUsers.TryGetValue(MaterialId, out int Count))
+			{
+				if (Count == 1)
+				{
+					MaterialUsers.Remove(MaterialId);
+				}
+				else
+				{
+					MaterialUsers[MaterialId] = Count - 1;
+				}
+			}
+			else
+			{
+				Debug.Assert(false); // Bug
 			}
 		}
 
@@ -351,21 +496,24 @@ namespace DatasmithSolidworks
 			}
 		}
 
-		public bool ExportMesh(FMeshName InMeshName, FMeshData InData, out FDatasmithFacadeMeshElement OutMeshElement)
+		public bool ExportMesh(FMeshExportInfo Info)
 		{
-			string MeshNameInitial = InMeshName.GetString(); // Make Datasmith Mesh string to build Mesh/MeshElement from, Datasmith will modify it with FDatasmithUtils::SanitizeObjectName
+			FMeshName MeshName = Info.MeshName;
+			FMeshData MeshData = Info.MeshData;
 
-			OutMeshElement = null;
+			string MeshNameInitial = MeshName.GetString(); // Make Datasmith Mesh string to build Mesh/MeshElement from, Datasmith will modify it with FDatasmithUtils::SanitizeObjectName
 
-			if (InData.Vertices == null || InData.Normals == null || InData.TexCoords == null || InData.Triangles == null)
+			Info.MeshElement = null;
+
+			if (MeshData.Vertices == null || MeshData.Normals == null || MeshData.TexCoords == null || MeshData.Triangles == null)
 			{
-				Addin.Instance.LogDebugThread($"  skipping(some attributes are null) - Vertices:{InData.Vertices == null}, Normals:{InData.Normals == null}, TexCoords: {InData.TexCoords == null}, Triangles:{InData.Triangles}");
+				LogDebugThread($"  skipping(some attributes are null) - Vertices:{MeshData.Vertices == null}, Normals:{MeshData.Normals == null}, TexCoords: {MeshData.TexCoords == null}, Triangles:{MeshData.Triangles}");
 				return false;
 			}
 
-			if (InData.Vertices.Length == 0 || InData.Normals.Length == 0 || InData.TexCoords.Length == 0 || InData.Triangles.Length == 0)
+			if (MeshData.Vertices.Length == 0 || MeshData.Normals.Length == 0 || MeshData.TexCoords.Length == 0 || MeshData.Triangles.Length == 0)
 			{
-				Addin.Instance.LogDebugThread($"  skipping - Vertices: {InData.Vertices.Length}, Normals: {InData.Normals.Length}, TexCoords: {InData.TexCoords.Length} Triangles: {InData.Triangles.Length}");
+				LogDebugThread($"  skipping - Vertices: {MeshData.Vertices.Length}, Normals: {MeshData.Normals.Length}, TexCoords: {MeshData.TexCoords.Length} Triangles: {MeshData.Triangles.Length}");
 				return false;
 			}
 
@@ -375,26 +523,26 @@ namespace DatasmithSolidworks
 
 				FDatasmithFacadeMeshElement MeshElement = new FDatasmithFacadeMeshElement(MeshNameInitial);
 
-				Mesh.SetVerticesCount(InData.Vertices.Length);
-				Mesh.SetFacesCount(InData.Triangles.Length);
+				Mesh.SetVerticesCount(MeshData.Vertices.Length);
+				Mesh.SetFacesCount(MeshData.Triangles.Length);
 
-				for (int i = 0; i < InData.Vertices.Length; i++)
+				for (int i = 0; i < MeshData.Vertices.Length; i++)
 				{
-					Mesh.SetVertex(i, InData.Vertices[i].X, InData.Vertices[i].Y, InData.Vertices[i].Z);
+					Mesh.SetVertex(i, MeshData.Vertices[i].X, MeshData.Vertices[i].Y, MeshData.Vertices[i].Z);
 				}
 
-				for (int i = 0; i < InData.Normals.Length; i++)
+				for (int i = 0; i < MeshData.Normals.Length; i++)
 				{
-					Mesh.SetNormal(i, InData.Normals[i].X, InData.Normals[i].Y, InData.Normals[i].Z);
+					Mesh.SetNormal(i, MeshData.Normals[i].X, MeshData.Normals[i].Y, MeshData.Normals[i].Z);
 				}
 
-				if (InData.TexCoords != null)
+				if (MeshData.TexCoords != null)
 				{
 					Mesh.SetUVChannelsCount(1);
-					Mesh.SetUVCount(0, InData.TexCoords.Length);
-					for (int i = 0; i < InData.TexCoords.Length; i++)
+					Mesh.SetUVCount(0, MeshData.TexCoords.Length);
+					for (int i = 0; i < MeshData.TexCoords.Length; i++)
 					{
-						Mesh.SetUV(0, i, InData.TexCoords[i].X, InData.TexCoords[i].Y);
+						Mesh.SetUV(0, i, MeshData.TexCoords[i].X, MeshData.TexCoords[i].Y);
 					}
 
 				}
@@ -403,49 +551,35 @@ namespace DatasmithSolidworks
 
 				HashSet<int> MeshMaterialIds = new HashSet<int>();
 
-				for (int TriIndex = 0; TriIndex < InData.Triangles.Length; TriIndex++)
+				for (int TriIndex = 0; TriIndex < MeshData.Triangles.Length; TriIndex++)
 				{
-					FTriangle Triangle = InData.Triangles[TriIndex];
+					FTriangle Triangle = MeshData.Triangles[TriIndex];
 					int MatID = 0;
 
 					MeshMaterialIds.Add(Triangle.MaterialID);
-					if (Triangle.MaterialID >= 1)
+
+					if (Triangle.MaterialID > 0)
 					{
 						if (!MeshAddedMaterials.Contains(Triangle.MaterialID))
 						{
-							Addin.Instance.LogDebugThread($"  set material if it's exported: {Triangle.MaterialID}");
-
-							FDatasmithFacadeMaterialInstance Material = null;
-							ExportedMaterialsMap.TryGetValue(Triangle.MaterialID, out Material);
-
-							if (Material != null)
-							{
-								Addin.Instance.LogDebugThread(
-									$" SetMaterial({Material.GetName()}, SlotId: {Triangle.MaterialID})");
-
-								MeshAddedMaterials.Add(Triangle.MaterialID);
-								MeshElement.SetMaterial(Material.GetName(), Triangle.MaterialID);
-								MatID = Triangle.MaterialID;
-							}
+							MeshAddedMaterials.Add(Triangle.MaterialID);
 						}
-						else
-						{
-							MatID = Triangle.MaterialID;
-						}
+						MatID = Triangle.MaterialID;
 					}
 
 					Mesh.SetFace(TriIndex, Triangle[0], Triangle[1], Triangle[2], MatID);
 					Mesh.SetFaceUV(TriIndex, 0, Triangle[0], Triangle[1], Triangle[2]);
 				}
 
-				Addin.Instance.LogDebugThread($"  material ids assigned to faces: {string.Join(", ", MeshMaterialIds)})");
+				LogDebugThread($"  material ids assigned to faces: {string.Join(", ", MeshMaterialIds)})");
 				if (MeshAddedMaterials.Count > 0)
 				{
-					Addin.Instance.LogDebugThread($"  assigned materials: {string.Join(", ", MeshAddedMaterials)})");
+					LogDebugThread($"  assigned materials: {string.Join(", ", MeshAddedMaterials)})");
 				}
 
 				DatasmithScene.ExportDatasmithMesh(MeshElement, Mesh);
-				OutMeshElement = MeshElement;
+				Info.MeshElement = MeshElement;
+				Info.Materials = MeshAddedMaterials;
 			}
 
 			return true;
@@ -525,7 +659,8 @@ namespace DatasmithSolidworks
 			return NewBinding;
 		}
 
-		private void ExportMaterialVariants(List<Tuple<FConfigurationData, FDatasmithFacadeVariant>> InVariants)
+		private void ExportMaterialVariants(List<Tuple<FConfigurationData, FDatasmithFacadeVariant>> InVariants,
+			Dictionary<FDatasmithFacadeActorBinding, int> MaterialBindings)
 		{
 			foreach (Tuple<FConfigurationData, FDatasmithFacadeVariant> KVP in InVariants)
 			{
@@ -574,10 +709,13 @@ namespace DatasmithSolidworks
 						foreach (var MatID in UniqueMaterialsSet)
 						{
 							FMaterial Material = Materials.GetMaterial(MatID);
-							FDatasmithFacadeMaterialInstance DatasmithMaterial = null;
-							if (Material != null && ExportedMaterialsMap.TryGetValue(Material.ID, out DatasmithMaterial))
+							if (Material != null)
 							{
-								Binding.AddMaterialCapture(DatasmithMaterial);
+								MaterialBindings[Binding] = Material.ID;
+
+								// todo: Sync for variants needs to track usage of materials between variants/configurations
+								// i.e. removal of material user too
+								AddMaterialUser(Material.ID);
 							}
 						}
 					}
@@ -598,7 +736,7 @@ namespace DatasmithSolidworks
 					FDatasmithFacadeActorBinding Binding = GetActorBinding(TransformMap.Key, Variant);
 					if (Binding != null)
 					{
-						Binding.AddRelativeTransformCapture(TransformMap.Value);
+						Binding.AddRelativeTransformCapture(TransformMap.Value.Matrix);
 					}
 				}
 			}
@@ -623,7 +761,8 @@ namespace DatasmithSolidworks
 			}
 		}
 
-		public void ExportLevelVariantSets(List<FConfigurationData> InConfigs)
+		public void ExportLevelVariantSets(List<FConfigurationData> InConfigs,
+			Dictionary<FDatasmithFacadeActorBinding, int> MaterialBindings)
 		{
 			if (InConfigs == null)
 			{
@@ -704,7 +843,7 @@ namespace DatasmithSolidworks
 				// todo: visibility variants may drop ComponentName from FConfigurationData
 				// at this point only actor names may stay
 				ExportActorVisibilityVariants(ConfigurationVariants);
-				ExportMaterialVariants(ConfigurationVariants);
+				ExportMaterialVariants(ConfigurationVariants, MaterialBindings);
 				ExportTransformVariants(ConfigurationVariants);
 
 				// Geometry variants
@@ -727,58 +866,86 @@ namespace DatasmithSolidworks
 
 			if (DisplayStateVariants != null)
 			{
-				ExportMaterialVariants(DisplayStateVariants);
+				ExportMaterialVariants(DisplayStateVariants, MaterialBindings);
 			}
 		}
 
-		public void ExportMaterials(ConcurrentDictionary<int, FMaterial> InMaterialsMap)
+		public void ExportMaterials(Dictionary<int, FMaterial> InMaterialsMap)
 		{
-			Addin.Instance.LogDebug($"ExportMaterials: \n  {string.Join("  \n", InMaterialsMap.Select(KVP => $"{KVP.Key}: {KVP.Value}" ))}");
+			LogDebug($"ExportMaterials: \n  {string.Join("  \n", InMaterialsMap.Select(KVP => $"{KVP.Key}: {KVP.Value}" ))}");
 
-			ConcurrentBag<FDatasmithFacadeTexture> CreatedTextures = new ConcurrentBag<FDatasmithFacadeTexture>();
-			ConcurrentBag<FDatasmithFacadeMaterialInstance> CreatedMaterials = new ConcurrentBag<FDatasmithFacadeMaterialInstance>();
+			List<FDatasmithFacadeTexture> CreatedTextures = new List<FDatasmithFacadeTexture>();
+			List<FDatasmithFacadeMaterialInstance> CreatedMaterials = new List<FDatasmithFacadeMaterialInstance>();
+			List<FDatasmithFacadeMaterialInstance> UnusedMaterials = new List<FDatasmithFacadeMaterialInstance>();
+
 			foreach(KeyValuePair<int, FMaterial> MatKVP in InMaterialsMap)
 			{
-				List<FDatasmithFacadeTexture> NewMaterialTextures = null;
-				FDatasmithFacadeMaterialInstance NewMaterial = null;
-				if (CreateAndCacheMaterial(MatKVP.Value, out NewMaterialTextures, out NewMaterial))
-				{
-					CreatedMaterials.Add(NewMaterial);
+				int MaterialId = MatKVP.Key;
+				FMaterial Material = MatKVP.Value;
 
-					foreach (FDatasmithFacadeTexture Texture in NewMaterialTextures)
+				LogDebug($"  Material: {MaterialId}, {Material.Name}");
+
+				if (!MaterialUsers.ContainsKey(MaterialId))
+				{
+					LogDebug($"    skipping, no users");
+					if (ExportedMaterialInstancesMap.ContainsKey(MaterialId))
 					{
-						CreatedTextures.Add(Texture);
+						LogDebug($"      but should remove exported");
+						if (ExportedMaterialInstancesMap.TryRemove(MaterialId, out FDatasmithFacadeMaterialInstance MaterialInstance))
+						{
+							UnusedMaterials.Add(MaterialInstance);
+						}
 					}
+					continue;
+				}
+
+				if (ExportedMaterialInstancesMap.ContainsKey(MaterialId))
+				{
+					LogDebug($"    skipping, already exported");
+					continue;
+				}
+
+				ConvertMaterialToDatasmith(Material, out List<FDatasmithFacadeTexture> NewMaterialTextures, out FDatasmithFacadeMaterialInstance NewDatasmithMaterial);
+
+				ExportedMaterialInstancesMap[MaterialId] = NewDatasmithMaterial;
+
+				CreatedMaterials.Add(NewDatasmithMaterial);
+
+				foreach (FDatasmithFacadeTexture Texture in NewMaterialTextures)
+				{
+					CreatedTextures.Add(Texture);
 				}
 			}
 
-			Addin.Instance.LogDebug($"  AddMaterials");
-			// Adding stuff to a datasmith scene cannot be multithreaded!
+			LogDebug($"  Remove Materials");
+			foreach (FDatasmithFacadeMaterialInstance Mat in UnusedMaterials)
+			{
+				LogDebug($"    Material: {Mat.GetName()}: {Mat.GetLabel()}");
+				DatasmithScene.RemoveMaterial(Mat);
+			}
+
+			LogDebug($"  AddMaterials");
 			foreach (FDatasmithFacadeMaterialInstance Mat in CreatedMaterials)
 			{
-				Addin.Instance.LogDebug($"  AddMaterial: {Mat.GetName()}: {Mat.GetLabel()}");
+				LogDebug($"    Material: {Mat.GetName()}: {Mat.GetLabel()}");
 				DatasmithScene.AddMaterial(Mat);
 			}
+
 			foreach (FDatasmithFacadeTexture Texture in CreatedTextures)
 			{
 				DatasmithScene.AddTexture(Texture);
 			}
+
 		}
 
-		private bool CreateAndCacheMaterial(FMaterial InMaterial, out List<FDatasmithFacadeTexture> OutCreatedTextures, out FDatasmithFacadeMaterialInstance OutCreatedMaterial)
+		private void ConvertMaterialToDatasmith(FMaterial InMaterial, out List<FDatasmithFacadeTexture> OutCreatedTextures, out FDatasmithFacadeMaterialInstance OutCreatedMaterial)
 		{
-			Addin.Instance.LogDebug($"CreateAndCacheMaterial({InMaterial.Name}: {InMaterial.ID})");
+			LogDebug($"ConvertMaterialToDatasmith({InMaterial.Name}: {InMaterial.ID})");
 
 			OutCreatedTextures = null;
 			OutCreatedMaterial = null;
 
-			if (ExportedMaterialsMap.ContainsKey(InMaterial.ID))
-			{
-				Addin.Instance.LogDebug($"  skipping, already present in map");
-				return false;
-			}
-
-			Addin.Instance.LogDebug($"  making, ShaderName: '{InMaterial.ShaderName}'");
+			LogDebug($"  making, ShaderName: '{InMaterial.ShaderName}'");
 
 			FMaterial.EMaterialType Type = FMaterial.GetMaterialType(InMaterial.ShaderName);
 
@@ -870,10 +1037,6 @@ namespace DatasmithSolidworks
 					OutCreatedTextures.Add(NormalMap);
 				}
 			}
-
-			ExportedMaterialsMap[InMaterial.ID] = MaterialInstance;
-
-			return true;
 		}
 
 		public FActorName GetComponentActorName(FComponentName ComponentName)
@@ -957,7 +1120,7 @@ namespace DatasmithSolidworks
 					TextureElement.SetTextureAddressY(FDatasmithFacadeTexture.ETextureAddress.Wrap);
 					FDatasmithFacadeTexture.ETextureMode TextureMode = FDatasmithFacadeTexture.ETextureMode.Diffuse;
 					TextureElement.SetTextureMode(TextureMode);
-					ExportedTexturesMap.TryAdd(InMaterial.Texture, TextureElement);
+					ExportedTexturesMap[InMaterial.Texture] = TextureElement;
 
 					InMaterialInstance.AddTexture(InParamName, TextureElement);
 				}
@@ -989,7 +1152,7 @@ namespace DatasmithSolidworks
 					TextureElement.SetTextureAddressY(FDatasmithFacadeTexture.ETextureAddress.Wrap);
 					FDatasmithFacadeTexture.ETextureMode TextureMode = FDatasmithFacadeTexture.ETextureMode.Normal;
 					TextureElement.SetTextureMode(TextureMode);
-					ExportedTexturesMap.TryAdd(InMaterial.BumpTextureFileName, TextureElement);
+					ExportedTexturesMap[InMaterial.BumpTextureFileName] = TextureElement;
 
 					InMaterialInstance.AddTexture(InParamName, TextureElement);
 				}
@@ -1031,14 +1194,13 @@ namespace DatasmithSolidworks
 			return Result;
 		}
 
-		private FMatrix4 AdjustTransformForDatasmith(float[] InXForm)
+		private FMatrix4 AdjustTransformForDatasmith(FConvertedTransform InXForm)
 		{
 			FMatrix4 RotMatrix = FMatrix4.FromRotationX(-90f);
-			if (InXForm != null)
+			if (InXForm.IsValid())
 			{
-				FMatrix4 Mat = new FMatrix4(InXForm);
-				Mat = Mat * RotMatrix;
-				return Mat;
+				FMatrix4 Mat = new FMatrix4(InXForm.Matrix);
+				return Mat * RotMatrix;
 			}
 			return RotMatrix;
 		}
@@ -1049,49 +1211,79 @@ namespace DatasmithSolidworks
 		//   The way to make element name ahead of constructing and element(e.g. to properly make unique names for every case) is to expose FDatasmithUtils::SanitizeObjectName
 		public string GetDatasmithMeshName(FMeshName MeshName)  
 		{
-			if (ExportedMeshesMap.TryGetValue(MeshName, out FDatasmithFacadeMeshElement MeshElement))
+			if (ExportedMeshesMap.TryGetValue(MeshName, out FMeshExportInfo Info))
 			{
-				return MeshElement.GetName();
+				return Info.MeshElement.GetName();
 			}
 
 			return null;
 		}
 
 		// Export meshes
-		public void ExportMeshes(List<FMeshExportInfo> MeshExportInfos, out List<FMeshExportInfo> OutCreatedMeshes)
+		public IEnumerable<FMeshExportInfo> ExportMeshes(List<FMeshExportInfo> MeshExportInfos)
 		{
-			Addin.Instance.LogDebug($"ExportMeshes: {string.Join(", ", MeshExportInfos)}");
+			LogDebug($"ExportMeshes: {string.Join(", ", MeshExportInfos)}");
 
 			ConcurrentQueue<FMeshExportInfo> CreatedMeshes = new ConcurrentQueue<FMeshExportInfo>();
 
 			Parallel.ForEach(MeshExportInfos, Info =>
 			{
-				if (ExportMesh(Info.MeshName, Info.MeshData, out Info.MeshElement))
+				if (ExportMesh(Info))
 				{
 					CreatedMeshes.Enqueue(Info);
 				}
 			});
 
-			// Remember exported meshes and assign to actor
-			foreach (FMeshExportInfo Info in CreatedMeshes)
-			{
-				Addin.Instance.LogDebug($"  AddMesh(DatasmithMeshName: {Info}");
-				// Info.MeshElement should be valid here
-				AddMesh(Info.MeshName, Info.MeshElement);
+			return CreatedMeshes;
+		}
 
-				if (Info.ActorName.IsValid())
+		public void AssignMeshToDatasmithMeshActor(FActorName ActorName, FDatasmithFacadeMeshElement MeshElement)
+		{
+			LogDebug($"AssignMeshToDatasmithMeshActor('{ActorName}', '{MeshElement.GetName()}')");
+			if (ActorName.IsValid())
+			{
+				Tuple<EActorType, FDatasmithFacadeActor> ExportedActorInfo = null;
+				if (ExportedActorsMap.TryGetValue(ActorName, out ExportedActorInfo) &&
+				    ExportedActorInfo.Item1 == EActorType.MeshActor)
 				{
-					Tuple<EActorType, FDatasmithFacadeActor> ExportedActorInfo = null;
-					if (ExportedActorsMap.TryGetValue(Info.ActorName, out ExportedActorInfo) && ExportedActorInfo.Item1 == EActorType.MeshActor)
+					FDatasmithFacadeActorMesh MeshActor = ExportedActorInfo.Item2 as FDatasmithFacadeActorMesh;
+					LogDebug($"  SetMesh on MeshActor: {MeshActor.GetName()}: {MeshActor.GetLabel()}  )");
+					MeshActor.SetMesh(MeshElement.GetName());
+				}
+				else
+				{
+					LogDebug($"  NOT setting mesh yet - actor '{ActorName}' not exported')");
+				}
+			}
+		}
+
+		public void AssignMaterialsToDatasmithMeshes(List<FMeshExportInfo> MeshExportInfos)
+		{
+			LogDebug($"AssignMaterialsToDatasmithMeshes: {string.Join(", ", MeshExportInfos)}");
+
+			foreach (FMeshExportInfo Info in MeshExportInfos)
+			{
+				LogDebug($"  {Info}");
+
+				foreach (int MaterialId in Info.Materials)
+				{
+					LogDebug($"    Material: {MaterialId}");
+					if (GetDatasmithMaterial(MaterialId, out FDatasmithFacadeMaterialInstance Material))
 					{
-						FDatasmithFacadeActorMesh MeshActor = ExportedActorInfo.Item2 as FDatasmithFacadeActorMesh;
-						Addin.Instance.LogDebug($"  SetMesh on MeshActor: {MeshActor.GetName()}: {MeshActor.GetLabel()}  )");
-						MeshActor.SetMesh(Info.MeshElement.GetName());
+						LogDebug($"      SetMaterial({Material.GetName()}, SlotId: {MaterialId})");
+						Info.MeshElement.SetMaterial(Material.GetName(), MaterialId);
+					}
+					else
+					{
+						LogDebug($"      NOT FOUND among exported materials!");
 					}
 				}
 			}
+		}
 
-			OutCreatedMeshes = CreatedMeshes.ToList();
+		public bool GetDatasmithMaterial(int MaterialId, out FDatasmithFacadeMaterialInstance Material)
+		{
+			return ExportedMaterialInstancesMap.TryGetValue(MaterialId, out Material);
 		}
 	}
 }

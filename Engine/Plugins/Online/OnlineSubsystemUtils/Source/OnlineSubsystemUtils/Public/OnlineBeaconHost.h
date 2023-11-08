@@ -34,6 +34,13 @@ public:
 	UPROPERTY(Config)
 	int32 ListenPort;
 
+	/**
+	 * Whether to configure the listening socket to allow reuse of the address and port. If this is true, be sure no other
+	 * servers can run on the same port, otherwise this can lead to undefined behavior since packets will go to two servers.
+	 */
+	UPROPERTY(Config)
+	bool bReuseAddressAndPort = false;
+
 	//~ Begin AActor Interface
 	virtual void OnNetCleanup(UNetConnection* Connection) override;
 	//~ End AActor Interface
@@ -149,7 +156,27 @@ protected:
 	 * @param PlayerId net id of player to authenticate.
 	 * @param AuthenticationToken token to use for verification.
 	 */
+	UE_DEPRECATED(5.3, "This version of the StartVerifyAuthentication is deprecated. Please use the new StartVerifyAuthentication method instead.")
 	virtual bool StartVerifyAuthentication(const FUniqueNetId& PlayerId, const FString& AuthenticationToken, const FOnAuthenticationVerificationCompleteDelegate& OnComplete);
+
+	/**
+	 * Start verifying an authentication token for a connection.
+	 * OnAuthenticationVerificationComplete must be called to complete authentication verification.
+	 *
+	 * @param PlayerId net id of player to authenticate.
+	 * @Param LoginOptions all options passed as part of the Login request.
+	 * @param AuthenticationToken token to use for verification.
+	 * @Param OnComplete delegate to call once the request for authentication has completed
+	 */
+	virtual bool StartVerifyAuthentication(const FUniqueNetId& PlayerId, const FString& LoginOptions, const FString& AuthenticationToken, const FOnAuthenticationVerificationCompleteDelegate& OnComplete);
+
+	/**
+	 * Verify user authentication once the beacon type is known.
+	 *
+	 * @param PlayerId net id of player to authenticate.
+	 * @Param BeaconType type of beacon to verify the authentication for.
+	 */
+	virtual bool VerifyJoinForBeaconType(const FUniqueNetId& PlayerId, const FString& BeaconType);
 
 private:
 	/**
@@ -199,9 +226,6 @@ private:
 	bool HandleControlMessage(UNetConnection* Connection, uint8 MessageType, FInBunch& Bunch);
 	void FinishHandshake(UNetConnection* Connection, FString BeaconType);
 	void SendFailurePacket(UNetConnection* Connection, FNetCloseResult&& CloseReason, const FText& ErrorText);
-
-	UE_DEPRECATED(5.1, "SendFailurePacket without CloseReason is deprecated. Use the version which takes CloseReason.")
-	void SendFailurePacket(UNetConnection* Connection, const FText& ErrorMsg);
 
 	void CloseHandshakeConnection(UNetConnection* Connection);
 

@@ -19,7 +19,7 @@ UGameFeatureAction_AddWPContent::UGameFeatureAction_AddWPContent(const FObjectIn
 #if WITH_EDITOR
 	if (UGameFeatureData* GameFeatureData = GetTypedOuter<UGameFeatureData>())
 	{
-		ContentBundleDescriptor->InitializeObject(GameFeatureData->GetName(), FPackageName::GetPackageMountPoint(GetPackage()->GetName()).ToString());
+		ContentBundleDescriptor->InitializeObject(GameFeatureData->GetName());
 	}
 #endif
 }
@@ -29,6 +29,13 @@ void UGameFeatureAction_AddWPContent::OnGameFeatureRegistering()
 	Super::OnGameFeatureRegistering();
 	ContentBundleClient = FContentBundleClient::CreateClient(ContentBundleDescriptor, GetTypedOuter<UGameFeatureData>()->GetName());
 	UE_CLOG(ContentBundleClient == nullptr, LogGameFeatures, Error, TEXT("OnGameFeatureRegistering %s: Failed to create a content bundle client for %s"), *GetPathName(), *ContentBundleDescriptor->GetDisplayName())
+
+#if WITH_EDITOR
+	if (IsRunningCookCommandlet() && ContentBundleClient != nullptr)
+	{
+		ContentBundleClient->RequestContentInjection();
+	}
+#endif 
 }
 
 void UGameFeatureAction_AddWPContent::OnGameFeatureUnregistering()

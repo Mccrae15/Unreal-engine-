@@ -1,7 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Collections.Generic;
 using EpicGames.Core;
 using Microsoft.Extensions.Logging;
 
@@ -12,10 +11,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// which devices the game is allowed to run on
 		/// </summary>
-		public override string RuntimeDevices
-		{
-			get { return "3"; }
-		}
+		public override string RuntimeDevices => "3";
 
 		public TVOSProjectSettings(FileReference? ProjectFile, String? Bundle)
 			: base(ProjectFile, UnrealTargetPlatform.TVOS, Bundle)
@@ -32,7 +28,7 @@ namespace UnrealBuildTool
 	}
 
 	class TVOSPlatform : IOSPlatform
-    {
+	{
 		public TVOSPlatform(UEBuildPlatformSDK InSDK, ILogger Logger)
 			: base(InSDK, UnrealTargetPlatform.TVOS, Logger)
 		{
@@ -62,7 +58,7 @@ namespace UnrealBuildTool
 		}
 
 		public TVOSProvisioningData ReadProvisioningData(TVOSProjectSettings ProjectSettings, bool bForDistribution = false)
-        {
+		{
 			return (TVOSProvisioningData)base.ReadProvisioningData(ProjectSettings, bForDistribution);
 		}
 
@@ -127,10 +123,7 @@ namespace UnrealBuildTool
 
 	class TVOSPlatformFactory : UEBuildPlatformFactory
 	{
-		public override UnrealTargetPlatform TargetPlatform
-		{
-			get { return UnrealTargetPlatform.TVOS; }
-		}
+		public override UnrealTargetPlatform TargetPlatform => UnrealTargetPlatform.TVOS;
 
 		/// <summary>
 		/// Register the platform with the UEBuildPlatform class
@@ -138,13 +131,12 @@ namespace UnrealBuildTool
 		public override void RegisterBuildPlatforms(ILogger Logger)
 		{
 			ApplePlatformSDK SDK = new IOSPlatformSDK(Logger);
-		
+
 			// Register this build platform for IOS
 			UEBuildPlatform.RegisterBuildPlatform(new TVOSPlatform(SDK, Logger), Logger);
 			UEBuildPlatform.RegisterPlatformWithGroup(UnrealTargetPlatform.TVOS, UnrealPlatformGroup.Apple);
 			UEBuildPlatform.RegisterPlatformWithGroup(UnrealTargetPlatform.TVOS, UnrealPlatformGroup.IOS);
 		}
 	}
-
 }
 

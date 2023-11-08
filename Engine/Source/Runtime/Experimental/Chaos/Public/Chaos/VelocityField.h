@@ -10,12 +10,12 @@ namespace Chaos::Softs
 {
 
 // Velocity field used solely for aerodynamics effects, use Chaos Fields for other types of fields.
-class CHAOS_API FVelocityAndPressureField final
+class FVelocityAndPressureField final
 {
 public:
 	static constexpr FSolverReal DefaultDragCoefficient = (FSolverReal)0.5;
 	static constexpr FSolverReal DefaultLiftCoefficient = (FSolverReal)0.1;
-	static constexpr FSolverReal DefaultFluidDensity = (FSolverReal)1.225e-6;
+	static constexpr FSolverReal DefaultFluidDensity = (FSolverReal)1.225;
 	static constexpr FSolverReal MinCoefficient = (FSolverReal)0.;   // Applies to both drag and lift
 	static constexpr FSolverReal MaxCoefficient = (FSolverReal)10.;  //
 
@@ -30,25 +30,33 @@ public:
 	explicit FVelocityAndPressureField(const FCollectionPropertyConstFacade& PropertyCollection)
 		: Offset(INDEX_NONE)
 		, NumParticles(0)
+		, DragIndex(PropertyCollection)
+		, LiftIndex(PropertyCollection)
+		, FluidDensityIndex(PropertyCollection)
+		, PressureIndex(PropertyCollection)
 	{
 		SetProperties(
-			FSolverVec2(GetWeightedFloatDrag(PropertyCollection, DefaultDragCoefficient)),
-			FSolverVec2(GetWeightedFloatLift(PropertyCollection, DefaultLiftCoefficient)),
-			FSolverReal(GetFluidDensity(PropertyCollection, DefaultFluidDensity)),
-			FSolverVec2(GetWeightedFloatPressure(PropertyCollection, 0.f)));
+			FSolverVec2(GetWeightedFloatDrag(PropertyCollection, (FSolverReal)0.)),  // If these properties don't exist, set their values to 0, not to DefaultCoefficients!
+			FSolverVec2(GetWeightedFloatLift(PropertyCollection, (FSolverReal)0.)),
+			FSolverReal(GetFluidDensity(PropertyCollection, (FSolverReal)0.)),
+			FSolverVec2(GetWeightedFloatPressure(PropertyCollection, (FSolverReal)0.)));
 	}
 
 	// Construct an uninitialized field. Mesh, properties, and velocity will have to be set for this field to be valid.
 	FVelocityAndPressureField()
 		: Offset(INDEX_NONE)
 		, NumParticles(0)
+		, DragIndex(ForceInit)
+		, LiftIndex(ForceInit)
+		, FluidDensityIndex(ForceInit)
+		, PressureIndex(ForceInit)
 	{
-		SetProperties(FSolverVec2(0.), FSolverVec2(0.), (FSolverReal)0.);
+		SetProperties(FSolverVec2(0.), FSolverVec2(0.), (FSolverReal)0., FSolverVec2(0.));
 	}
 
 	~FVelocityAndPressureField() {}
 
-	void UpdateForces(const FSolverParticles& InParticles, const FSolverReal /*Dt*/);
+	CHAOS_API void UpdateForces(const FSolverParticles& InParticles, const FSolverReal /*Dt*/);
 
 	inline void Apply(FSolverParticles& InParticles, const FSolverReal Dt, const int32 Index) const
 	{
@@ -61,56 +69,45 @@ public:
 		}
 	}
 
-	void SetProperties(const FCollectionPropertyConstFacade& PropertyCollection)
+	CHAOS_API void SetProperties(
+		const FCollectionPropertyConstFacade& PropertyCollection,
+		const TMap<FString, TConstArrayView<FRealSingle>>& Weightmaps,
+		FSolverReal WorldScale,
+		bool bEnableAerodynamics);
+
+	UE_DEPRECATED(5.3, "Use SetProperties(const FCollectionPropertyConstFacade&, const TMap<FString, TConstArrayView<FRealSingle>>&, FSolverReal, bool) instead.")
+	void SetProperties(const FCollectionPropertyConstFacade& PropertyCollection, FSolverReal WorldScale)
 	{
-		if (IsFluidDensityMutable(PropertyCollection))
-		{
-			constexpr FSolverReal OneQuarter = (FSolverReal)0.25;
-			QuarterRho = (FSolverReal)GetFluidDensity(PropertyCollection) * OneQuarter;
-		}
-
-		if (IsDragMutable(PropertyCollection))
-		{
-			const FSolverVec2 Drag(GetWeightedFloatDrag(PropertyCollection));
-			DragBase = FMath::Clamp(Drag[0], MinCoefficient, MaxCoefficient);
-			DragRange = FMath::Clamp(Drag[1], MinCoefficient, MaxCoefficient) - DragBase;
-		}
-
-		if (IsLiftMutable(PropertyCollection))
-		{
-			const FSolverVec2 Lift(GetWeightedFloatLift(PropertyCollection));
-			LiftBase = FMath::Clamp(Lift[0], MinCoefficient, MaxCoefficient);
-			LiftRange = FMath::Clamp(Lift[1], MinCoefficient, MaxCoefficient) - LiftBase;
-		}
-
-		if (IsPressureMutable(PropertyCollection))
-		{
-			const FSolverVec2 Pressure(GetWeightedFloatPressure(PropertyCollection));
-			PressureBase = Pressure[0];
-			PressureRange = Pressure[1] - PressureBase;
-		}
+		constexpr bool bEnableAerodynamics = true;
+		SetProperties(PropertyCollection, TMap<FString, TConstArrayView<FRealSingle>>(), WorldScale, bEnableAerodynamics);
 	}
 
-	void SetProperties(const FSolverVec2& Drag, const FSolverVec2& Lift, const FSolverReal FluidDensity, const FSolverVec2& Pressure = FSolverVec2::ZeroVector)
-	{
-		constexpr FSolverReal OneQuarter = (FSolverReal)0.25;
-		QuarterRho = FluidDensity * OneQuarter;
-
-		DragBase = FMath::Clamp(Drag[0], MinCoefficient, MaxCoefficient);
-		DragRange = FMath::Clamp(Drag[1], MinCoefficient, MaxCoefficient) - DragBase;
-		LiftBase = FMath::Clamp(Lift[0], MinCoefficient, MaxCoefficient);
-		LiftRange = FMath::Clamp(Lift[1], MinCoefficient, MaxCoefficient) - LiftBase;
-		PressureBase = Pressure[0];
-		PressureRange = Pressure[1] - PressureBase;
-	}
+	CHAOS_API void SetProperties(
+		const FSolverVec2& Drag,
+		const FSolverVec2& Lift,
+		const FSolverReal FluidDensity,
+		const FSolverVec2& Pressure = FSolverVec2::ZeroVector,
+		FSolverReal WorldScale = 1.f);
 
 	bool IsActive() const 
 	{ 
-		// Note: range can be a negative value (although not when Lift or Drag base is zero)
-		return (DragBase > (FSolverReal)0. || DragRange != (FSolverReal)0.) || (LiftBase > (FSolverReal)0. || LiftRange != (FSolverReal)0.) || PressureBase != (FSolverReal)0. || PressureRange != (FSolverReal)0.; 
+		return PressureBase != (FSolverReal)0. || PressureRange != (FSolverReal)0. ||
+			(AreAerodynamicsEnabled() && (
+				DragBase > (FSolverReal)0. || DragRange != (FSolverReal)0. ||  // Note: range can be a negative value (although not when Lift or Drag base is zero)
+				LiftBase > (FSolverReal)0. || LiftRange != (FSolverReal)0.));
 	}
 
-	void SetGeometry(const FTriangleMesh* TriangleMesh, const TConstArrayView<FRealSingle>& DragMultipliers, const TConstArrayView<FRealSingle>& LiftMultipliers, const TConstArrayView<FRealSingle>& PressureMultipliers = TConstArrayView<FRealSingle>());
+	CHAOS_API void SetGeometry(
+		const FTriangleMesh* TriangleMesh,
+		const FCollectionPropertyConstFacade& PropertyCollection,
+		const TMap<FString, TConstArrayView<FRealSingle>>& Weightmaps,
+		FSolverReal WorldScale);
+
+	CHAOS_API void SetGeometry(
+		const FTriangleMesh* TriangleMesh,
+		const TConstArrayView<FRealSingle>& DragMultipliers,
+		const TConstArrayView<FRealSingle>& LiftMultipliers,
+		const TConstArrayView<FRealSingle>& PressureMultipliers = TConstArrayView<FRealSingle>());
 
 	void SetVelocity(const FSolverVec3& InVelocity) { Velocity = InVelocity; }
 
@@ -118,6 +115,17 @@ public:
 	TConstArrayView<FSolverVec3> GetForces() const { return TConstArrayView<FSolverVec3>(Forces); }
 
 private:
+	bool AreAerodynamicsEnabled() const { return QuarterRho > (FSolverReal)0.; }
+
+	CHAOS_API void SetGeometry(const FTriangleMesh* TriangleMesh);
+
+	CHAOS_API void SetMultipliers(const FCollectionPropertyConstFacade& PropertyCollection,const TMap<FString, TConstArrayView<FRealSingle>>& Weightmaps);
+
+	CHAOS_API void SetMultipliers(
+		const TConstArrayView<FRealSingle>& DragMultipliers,
+		const TConstArrayView<FRealSingle>& LiftMultipliers,
+		const TConstArrayView<FRealSingle>& PressureMultipliers);
+
 	void UpdateField(const FSolverParticles& InParticles, int32 ElementIndex, const FSolverVec3& InVelocity, const FSolverReal Cd, const FSolverReal Cl, const FSolverReal Cp)
 	{
 		const TVec3<int32>& Element = Elements[ElementIndex];
@@ -156,6 +164,7 @@ private:
 	FSolverReal LiftRange;
 	FSolverReal PressureBase; 
 	FSolverReal PressureRange;
+	FSolverReal Rho;
 	FSolverReal QuarterRho;
 	int32 Offset;
 	int32 NumParticles;

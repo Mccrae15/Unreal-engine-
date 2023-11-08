@@ -12,6 +12,7 @@
 #include "Widgets/SWidget.h"
 #include "Widgets/Layout/SSpacer.h"
 #include "DetailCategoryBuilder.h"
+#include "PropertyEditorCopyPaste.h"
 
 class FDetailWidgetRow;
 class FResetToDefaultOverride;
@@ -113,13 +114,13 @@ public:
 		, ExtensionWidget( *this, 0.0f, 0.0f, HAlign_Right, VAlign_Center)
 		, WholeRowWidget( *this, 0.0f, 0.0f, HAlign_Fill, VAlign_Fill )
 		, VisibilityAttr( EVisibility::Visible )
-		, IsEnabledAttr( true )
 		, FilterTextString()
 		, CopyMenuAction()
 		, PasteMenuAction()
 		, RowTagName()
 	{
 	}
+	
 	FDetailWidgetRow& operator=(const FDetailWidgetRow& Other)
 	{
 		NameWidget = FDetailWidgetDecl(*this, Other.NameWidget);
@@ -289,6 +290,12 @@ public:
 		return CopyMenuAction.ExecuteAction.IsBound() && PasteMenuAction.ExecuteAction.IsBound();
 	}
 
+	/** @return true if a custom paste text is bound on this row */
+	bool IsPasteFromTextBound() const
+	{
+		return OnPasteFromTextDelegate.IsValid() && OnPasteFromTextDelegate.Pin()->IsBoundToObject(this);
+	}
+
 	/**
 	* Sets a tag which can be used to identify this row 
 	*/
@@ -368,10 +375,12 @@ public:
 	TAttribute<bool> IsValueEnabledAttr;
 	/** String to filter with */
 	FText FilterTextString;
-	/** Action for coping data on this row */
+	/** Action for copying data on this row */
 	FUIAction CopyMenuAction;
 	/** Action for pasting data on this row */
-	FUIAction PasteMenuAction;
+	FUIAction PasteMenuAction;	
+	/** Delegate for pasting (optionally tagged) text on this row */
+	TWeakPtr<FOnPasteFromText> OnPasteFromTextDelegate;
 
 	struct FCustomMenuData
 	{
@@ -404,4 +413,3 @@ public:
 	/** True to force auto-expansion */
 	TOptional<bool> ForceAutoExpansion;
 };
-

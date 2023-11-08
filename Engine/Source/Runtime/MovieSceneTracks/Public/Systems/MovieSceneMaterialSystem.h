@@ -15,6 +15,7 @@
 #include "EntitySystem/MovieSceneCachedEntityFilterResult.h"
 #include "Evaluation/PreAnimatedState/MovieScenePreAnimatedObjectStorage.h"
 #include "MovieSceneTracksComponentTypes.h"
+#include "UObject/SoftObjectPtr.h"
 
 #include "MovieSceneMaterialSystem.generated.h"
 
@@ -26,11 +27,19 @@ struct FMovieScenePreAnimatedMaterialParameters
 {
 	GENERATED_BODY()
 
-	UPROPERTY()
-	TObjectPtr<UMaterialInterface> PreviousMaterial = nullptr;
+	MOVIESCENETRACKS_API UMaterialInterface* GetMaterial() const;
 
+	MOVIESCENETRACKS_API void SetMaterial(UMaterialInterface* InMaterial);
+
+private:
+
+	/** Strong ptr to the previously assigned material interface (used when Sequencer.UseSoftObjectPtrsForPreAnimatedMaterial is false) */
 	UPROPERTY()
-	TObjectPtr<UMaterialInterface> PreviousParameterContainer = nullptr;
+	TObjectPtr<UMaterialInterface> PreviousMaterial;
+
+	/** Soft ptr to the previously assigned material interface (used when Sequencer.UseSoftObjectPtrsForPreAnimatedMaterial is true) */
+	UPROPERTY()
+	TSoftObjectPtr<UMaterialInterface> SoftPreviousMaterial;
 };
 
 namespace UE::MovieScene
@@ -38,25 +47,6 @@ namespace UE::MovieScene
 
 template<typename AccessorType, typename... RequiredComponents>
 struct TPreAnimatedMaterialTraits : FBoundObjectPreAnimatedStateTraits
-{
-	using KeyType     = typename AccessorType::KeyType;
-	using StorageType = UMaterialInterface*;
-
-	static_assert(THasAddReferencedObjectForComponent<StorageType>::Value, "StorageType is not correctly exposed to the reference graph!");
-
-	static UMaterialInterface* CachePreAnimatedValue(typename TCallTraits<RequiredComponents>::ParamType... InRequiredComponents)
-	{
-		return AccessorType{ InRequiredComponents... }.GetMaterial();
-	}
-
-	static void RestorePreAnimatedValue(const KeyType& InKeyType, UMaterialInterface* OldMaterial, const FRestoreStateParams& Params)
-	{
-		AccessorType{ InKeyType }.SetMaterial(OldMaterial);
-	}
-};
-
-template<typename AccessorType, typename... RequiredComponents>
-struct TPreAnimatedMaterialParameterTraits : FBoundObjectPreAnimatedStateTraits
 {
 	using KeyType     = typename AccessorType::KeyType;
 	using StorageType = FMovieScenePreAnimatedMaterialParameters;
@@ -68,14 +58,10 @@ struct TPreAnimatedMaterialParameterTraits : FBoundObjectPreAnimatedStateTraits
 		AccessorType Accessor{ InRequiredComponents... };
 
 		FMovieScenePreAnimatedMaterialParameters Parameters;
-		Parameters.PreviousMaterial = Accessor.GetMaterial();
 
-		// If the current material we're overriding is already a material instance dynamic, copy it since we will be modifying the data. 
-		// The copied material will be used to restore the values in RestoreState.
-		UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(Parameters.PreviousMaterial);
-		if (MID)
+		if (Accessor)
 		{
-			Parameters.PreviousParameterContainer = DuplicateObject<UMaterialInterface>(MID, MID->GetOuter());
+			Parameters.SetMaterial(Accessor.GetMaterial());
 		}
 
 		return Parameters;
@@ -84,22 +70,18 @@ struct TPreAnimatedMaterialParameterTraits : FBoundObjectPreAnimatedStateTraits
 	static void RestorePreAnimatedValue(const KeyType& InKey, const FMovieScenePreAnimatedMaterialParameters& PreAnimatedValue, const FRestoreStateParams& Params)
 	{
 		AccessorType Accessor{ InKey };
-		if (PreAnimatedValue.PreviousParameterContainer != nullptr)
+		if (Accessor)
 		{
-			// If we cached parameter values in CachePreAnimatedValue that means the previous material was already a MID
-			// and we probably did not replace it with a new one when resolving bound materials. Therefore we
-			// just copy the parameters back over without changing the material
-			UMaterialInstanceDynamic* CurrentMID = Cast<UMaterialInstanceDynamic>(Accessor.GetMaterial());
-			if (CurrentMID)
+			if (UMaterialInterface* PreviousMaterial = PreAnimatedValue.GetMaterial())
 			{
-				CurrentMID->CopyMaterialUniformParameters(PreAnimatedValue.PreviousParameterContainer);
-				return;
+				Accessor.SetMaterial(PreAnimatedValue.GetMaterial());
 			}
 		}
-
-		Accessor.SetMaterial(PreAnimatedValue.PreviousMaterial);
 	}
 };
+
+template<typename AccessorType, typename... RequiredComponents>
+using TPreAnimatedMaterialParameterTraits = TPreAnimatedMaterialTraits<AccessorType, RequiredComponents...>;
 
 template<typename AccessorType, typename... RequiredComponents>
 class TMovieSceneMaterialSystem
@@ -131,12 +113,16 @@ protected:
 template<typename AccessorType, typename... RequiredComponents>
 struct TApplyMaterialSwitchers
 {
-	static void ForEachEntity(typename TCallTraits<RequiredComponents>::ParamType... Inputs, UObject* ObjectResult)
+	static void ForEachEntity(typename TCallTraits<RequiredComponents>::ParamType... Inputs, const FObjectComponent& ObjectResult)
 	{
 		// ObjectResult must be a material
-		UMaterialInterface* NewMaterial = Cast<UMaterialInterface>(ObjectResult);
+		UMaterialInterface* NewMaterial = Cast<UMaterialInterface>(ObjectResult.GetObject());
 
 		AccessorType Accessor(Inputs...);
+		if (!Accessor)
+		{
+			return;
+		}
 
 		UMaterialInterface*        ExistingMaterial = Accessor.GetMaterial();
 		UMaterialInstanceDynamic*  ExistingMID      = Cast<UMaterialInstanceDynamic>(ExistingMaterial);
@@ -155,12 +141,12 @@ struct TApplyMaterialSwitchers
 template<typename AccessorType, typename... RequiredComponents>
 struct TInitializeBoundMaterials
 {
-	static bool InitializeBoundMaterial(typename TCallTraits<RequiredComponents>::ParamType... Inputs, UObject*& OutDynamicMaterial)
+	static bool InitializeBoundMaterial(typename TCallTraits<RequiredComponents>::ParamType... Inputs, FObjectComponent& OutDynamicMaterial)
 	{
 		AccessorType Accessor(Inputs...);
 		if (!Accessor)
 		{
-			OutDynamicMaterial = nullptr;
+			OutDynamicMaterial = FObjectComponent::Null();
 			return false;
 		}
 
@@ -168,7 +154,7 @@ struct TInitializeBoundMaterials
 
 		if (!ExistingMaterial)
 		{
-			OutDynamicMaterial = nullptr;
+			OutDynamicMaterial = FObjectComponent::Null();
 			return true;
 		}
 
@@ -176,13 +162,13 @@ struct TInitializeBoundMaterials
 		{
 			if (OutDynamicMaterial != MID)
 			{
-				OutDynamicMaterial = MID;
+				OutDynamicMaterial = FObjectComponent::Weak(MID);
 				return true;
 			}
 			return false;
 		}
 
-		UMaterialInstanceDynamic* CurrentMID = Cast<UMaterialInstanceDynamic>(OutDynamicMaterial);
+		UMaterialInstanceDynamic* CurrentMID = Cast<UMaterialInstanceDynamic>(OutDynamicMaterial.GetObject());
 		if (CurrentMID && CurrentMID->Parent == ExistingMaterial)
 		{
 			Accessor.SetMaterial(CurrentMID);
@@ -190,12 +176,12 @@ struct TInitializeBoundMaterials
 		}
 		
 		UMaterialInstanceDynamic* NewMaterial = Accessor.CreateDynamicMaterial(ExistingMaterial);
-		OutDynamicMaterial = NewMaterial;
+		OutDynamicMaterial = FObjectComponent::Weak(NewMaterial);
 		Accessor.SetMaterial(NewMaterial);
 		return true;
 	}
 
-	static void ForEachEntity(typename TCallTraits<RequiredComponents>::ParamType... Inputs, UObject*& OutDynamicMaterial)
+	static void ForEachEntity(typename TCallTraits<RequiredComponents>::ParamType... Inputs, FObjectComponent& OutDynamicMaterial)
 	{
 		InitializeBoundMaterial(Inputs..., OutDynamicMaterial);
 	}
@@ -212,7 +198,7 @@ struct TReinitializeBoundMaterials
 		: Linker(InLinker)
 	{}
 
-	void ForEachAllocation(int32 Num, const FMovieSceneEntityID* EntityIDs, const RequiredComponents*... Inputs, UObject** Objects)
+	void ForEachAllocation(int32 Num, const FMovieSceneEntityID* EntityIDs, const RequiredComponents*... Inputs, FObjectComponent* Objects)
 	{
 		for (int32 Index = 0; Index < Num; ++Index)
 		{
@@ -220,7 +206,7 @@ struct TReinitializeBoundMaterials
 		}
 	}
 
-	void ForEachEntity(FMovieSceneEntityID EntityID, typename TCallTraits<RequiredComponents>::ParamType... Inputs, UObject*& OutDynamicMaterial)
+	void ForEachEntity(FMovieSceneEntityID EntityID, typename TCallTraits<RequiredComponents>::ParamType... Inputs, FObjectComponent& OutDynamicMaterial)
 	{
 		if (TInitializeBoundMaterials<AccessorType, RequiredComponents...>::InitializeBoundMaterial(Inputs..., OutDynamicMaterial))
 		{
@@ -256,16 +242,16 @@ struct TAddBoundMaterialMutationImpl<AccessorType, TIntegerSequence<int, Indices
 	}
 	virtual void InitializeAllocation(FEntityAllocation* Allocation, const FComponentMask& AllocationType) const
 	{
-		TComponentWriter<UObject*> BoundMaterials = Allocation->WriteComponents(TracksComponents->BoundMaterial, FEntityAllocationWriteContext::NewAllocation());
+		TComponentWriter<FObjectComponent> BoundMaterials = Allocation->WriteComponents(TracksComponents->BoundMaterial, FEntityAllocationWriteContext::NewAllocation());
 		InitializeAllocation(Allocation, BoundMaterials, Allocation->ReadComponents(ComponentTypes.template Get<Indices>())...);
 	}
 
-	void InitializeAllocation(FEntityAllocation* Allocation, UObject** OutBoundMaterials, const RequiredComponents*... InRequiredComponents) const
+	void InitializeAllocation(FEntityAllocation* Allocation, FObjectComponent* OutBoundMaterials, const RequiredComponents*... InRequiredComponents) const
 	{
 		const int32 Num = Allocation->Num();
 		for (int32 Index = 0; Index < Num; ++Index)
 		{
-			OutBoundMaterials[Index] = nullptr;
+			OutBoundMaterials[Index] = FObjectComponent::Null();
 		}
 	}
 private:

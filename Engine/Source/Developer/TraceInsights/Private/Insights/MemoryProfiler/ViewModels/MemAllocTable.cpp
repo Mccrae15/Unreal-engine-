@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MemAllocTable.h"
+
 #include "Styling/StyleColors.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/SToolTip.h"
@@ -37,6 +38,7 @@ const FName FMemAllocTableColumns::CountColumnId(TEXT("Count"));
 const FName FMemAllocTableColumns::SizeColumnId(TEXT("Size"));
 const FName FMemAllocTableColumns::TagColumnId(TEXT("Tag"));
 const FName FMemAllocTableColumns::AssetColumnId(TEXT("Asset"));
+const FName FMemAllocTableColumns::PackageColumnId(TEXT("Package"));
 const FName FMemAllocTableColumns::ClassNameColumnId(TEXT("ClassName"));
 const FName FMemAllocTableColumns::FunctionColumnId(TEXT("Function"));
 const FName FMemAllocTableColumns::SourceFileColumnId(TEXT("SourceFile"));
@@ -736,6 +738,64 @@ void FMemAllocTable::AddDefaultColumns()
 		AddColumn(ColumnRef);
 	}
 	//////////////////////////////////////////////////
+	// Package Column
+	{
+		TSharedRef<FTableColumn> ColumnRef = MakeShared<FTableColumn>(FMemAllocTableColumns::PackageColumnId);
+		FTableColumn& Column = *ColumnRef;
+
+		Column.SetIndex(ColumnIndex++);
+
+		Column.SetShortName(LOCTEXT("PackageColumnName", "Package"));
+		Column.SetTitleName(LOCTEXT("PackageColumnTitle", "Package"));
+		Column.SetDescription(LOCTEXT("PackageColumnDesc", "Asset package associated with allocation"));
+
+		Column.SetFlags(ETableColumnFlags::CanBeHidden | ETableColumnFlags::CanBeFiltered);
+
+		Column.SetHorizontalAlignment(HAlign_Left);
+		Column.SetInitialWidth(320.0f);
+
+		Column.SetDataType(ETableCellDataType::CString);
+
+		class FPackageMetadataValueGetter : public FTableCellValueGetter
+		{
+		public:
+			virtual const TOptional<FTableCellValue> GetValue(const FTableColumn& Column, const FBaseTreeNode& Node) const
+			{
+				if (Node.IsGroup())
+				{
+					const FTableTreeNode& NodePtr = static_cast<const FTableTreeNode&>(Node);
+					if (NodePtr.HasAggregatedValue(Column.GetId()))
+					{
+						return NodePtr.GetAggregatedValue(Column.GetId());
+					}
+				}
+				else //if (Node->Is<FMemAllocNode>())
+				{
+					const FMemAllocNode& MemAllocNode = static_cast<const FMemAllocNode&>(Node);
+					const FMemoryAlloc* Alloc = MemAllocNode.GetMemAlloc();
+					if (Alloc)
+					{
+						return FTableCellValue(Alloc->GetPackage());
+					}
+				}
+
+				return TOptional<FTableCellValue>();
+			}
+		};
+		TSharedRef<ITableCellValueGetter> Getter = MakeShared<FPackageMetadataValueGetter>();
+		Column.SetValueGetter(Getter);
+
+		TSharedRef<ITableCellValueFormatter> Formatter = MakeShared<FCStringValueFormatterAsText>();
+		Column.SetValueFormatter(Formatter);
+
+		TSharedRef<ITableCellValueSorter> Sorter = MakeShared<FSorterByCStringValue>(ColumnRef);
+		Column.SetValueSorter(Sorter);
+
+		Column.SetAggregation(ETableColumnAggregation::SameValue);
+
+		AddColumn(ColumnRef);
+	}
+	//////////////////////////////////////////////////
 	// Asset Column
 	{
 		TSharedRef<FTableColumn> ColumnRef = MakeShared<FTableColumn>(FMemAllocTableColumns::AssetColumnId);
@@ -863,14 +923,12 @@ void FMemAllocTable::AddDefaultColumns()
 		Column.SetTitleName(LOCTEXT("FunctionColumnTitle", "Top Function"));
 		Column.SetDescription(LOCTEXT("FunctionColumnDesc", "Resolved top function from the callstack of allocation"));
 
-		Column.SetFlags(ETableColumnFlags::ShouldBeVisible | ETableColumnFlags::CanBeHidden | ETableColumnFlags::CanBeFiltered);
+		Column.SetFlags(ETableColumnFlags::ShouldBeVisible | ETableColumnFlags::CanBeHidden | ETableColumnFlags::CanBeFiltered | ETableColumnFlags::IsDynamic);
 
 		Column.SetHorizontalAlignment(HAlign_Left);
 		Column.SetInitialWidth(550.0f);
 
 		Column.SetDataType(ETableCellDataType::Text);
-
-		Column.SetIsDynamic(true);
 
 		class FFunctionValueGetter : public FTableCellValueGetter
 		{
@@ -966,14 +1024,12 @@ void FMemAllocTable::AddDefaultColumns()
 		Column.SetTitleName(LOCTEXT("SourceFileColumnTitle", "Top Source File"));
 		Column.SetDescription(LOCTEXT("SourceFileColumnDesc", "Source file of the top function from the callstack of allocation"));
 
-		Column.SetFlags(ETableColumnFlags::CanBeHidden | ETableColumnFlags::CanBeFiltered);
+		Column.SetFlags(ETableColumnFlags::CanBeHidden | ETableColumnFlags::CanBeFiltered | ETableColumnFlags::IsDynamic);
 
 		Column.SetHorizontalAlignment(HAlign_Left);
 		Column.SetInitialWidth(550.0f);
 
 		Column.SetDataType(ETableCellDataType::Text);
-
-		Column.SetIsDynamic(true);
 
 		class FSourceValueGetter : public FTableCellValueGetter
 		{
@@ -1128,10 +1184,22 @@ void FMemAllocTable::AddDefaultColumns()
 			{
 				const FMemAllocNode& MemAllocNode = static_cast<const FMemAllocNode&>(Node);
 
+				FText HeaderText = FText::Format(LOCTEXT("CallstackHeaderFmt", "CallstackId={0} FreeCallstackId={1}"),
+					FText::AsNumber(MemAllocNode.GetCallstackId(), &FNumberFormattingOptions::DefaultNoGrouping()),
+					FText::AsNumber(MemAllocNode.GetFreeCallstackId(), &FNumberFormattingOptions::DefaultNoGrouping()));
+
 				return SNew(SToolTip)
 					.Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateStatic(&FTableCellValueFormatter::GetTooltipVisibility)))
 					[
 						SNew(SVerticalBox)
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(2.0f)
+						[
+							SNew(STextBlock)
+							.Text(HeaderText)
+							.ColorAndOpacity(FSlateColor(EStyleColor::White25))
+						]
 						+ SVerticalBox::Slot()
 						.AutoHeight()
 						.Padding(2.0f)

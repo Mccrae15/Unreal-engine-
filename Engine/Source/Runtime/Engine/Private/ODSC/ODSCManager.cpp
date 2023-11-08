@@ -15,10 +15,13 @@ FODSCManager* GODSCManager = nullptr;
 FODSCManager::FODSCManager()
 	: FTSTickerObjectBase(0.0f, FTSBackgroundableTicker::GetCoreTicker())
 {
-	if (IsRunningCookOnTheFly())
+	FString Host;
+	const bool bODSCEnabled = FParse::Value(FCommandLine::Get(), TEXT("-odschost="), Host);
+
+	if (IsRunningCookOnTheFly() || bODSCEnabled)
 	{
 		FCoreDelegates::OnEnginePreExit.AddRaw(this, &FODSCManager::OnEnginePreExit);
-		Thread = new FODSCThread();
+		Thread = new FODSCThread(Host);
 		Thread->StartThread();
 	}
 }
@@ -69,7 +72,14 @@ bool FODSCManager::Tick(float DeltaSeconds)
 	return false;
 }
 
-void FODSCManager::AddThreadedRequest(const TArray<FString>& MaterialsToCompile, const FString& ShaderTypesToLoad, EShaderPlatform ShaderPlatform, ERHIFeatureLevel::Type FeatureLevel, EMaterialQualityLevel::Type QualityLevel, ODSCRecompileCommand RecompileCommandType)
+void FODSCManager::AddThreadedRequest(
+	const TArray<FString>& MaterialsToCompile,
+	const FString& ShaderTypesToLoad,
+	EShaderPlatform ShaderPlatform,
+	ERHIFeatureLevel::Type FeatureLevel,
+	EMaterialQualityLevel::Type QualityLevel,
+	ODSCRecompileCommand RecompileCommandType
+)
 {
 	if (IsHandlingRequests())
 	{
@@ -77,10 +87,19 @@ void FODSCManager::AddThreadedRequest(const TArray<FString>& MaterialsToCompile,
 	}
 }
 
-void FODSCManager::AddThreadedShaderPipelineRequest(EShaderPlatform ShaderPlatform, ERHIFeatureLevel::Type FeatureLevel, EMaterialQualityLevel::Type QualityLevel, const FString& MaterialName, const FString& VertexFactoryName, const FString& PipelineName, const TArray<FString>& ShaderTypeNames)
+void FODSCManager::AddThreadedShaderPipelineRequest(
+	EShaderPlatform ShaderPlatform,
+	ERHIFeatureLevel::Type FeatureLevel,
+	EMaterialQualityLevel::Type QualityLevel,
+	const FString& MaterialName,
+	const FString& VertexFactoryName,
+	const FString& PipelineName,
+	const TArray<FString>& ShaderTypeNames,
+	int32 PermutationId
+)
 {
 	if (IsHandlingRequests())
 	{
-		Thread->AddShaderPipelineRequest(ShaderPlatform, FeatureLevel, QualityLevel, MaterialName, VertexFactoryName, PipelineName, ShaderTypeNames);
+		Thread->AddShaderPipelineRequest(ShaderPlatform, FeatureLevel, QualityLevel, MaterialName, VertexFactoryName, PipelineName, ShaderTypeNames, PermutationId);
 	}
 }

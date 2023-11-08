@@ -49,6 +49,9 @@
 #include "ToolMenu.h"
 #include "WorldPartition/WorldPartitionSubsystem.h"
 #include "SLevelViewport.h"
+#include "SortHelper.h"
+#include "Interfaces/IMainFrameModule.h"
+#include "SCommonEditorViewportToolbarBase.h"
 
 #define LOCTEXT_NAMESPACE "LevelViewportToolBar"
 
@@ -731,7 +734,12 @@ void SLevelViewportToolBar::FillOptionsMenu(UToolMenu* Menu)
 				Section.AddEntry(FToolMenuEntry::InitWidget("FarViewPlane", GenerateFarViewPlaneMenu(), LOCTEXT("FarViewPlane", "Far View Plane")));
 			}
 
-			Section.AddEntry(FToolMenuEntry::InitWidget("ScreenPercentage", GenerateScreenPercentageMenu(), LOCTEXT("ScreenPercentage", "Screen Percentage")));
+			FEditorViewportClient& ViewportClient = Viewport.Pin()->GetLevelViewportClient();
+			Section.AddSubMenu(
+				"ScreenPercentageSubMenu",
+				LOCTEXT("ScreenPercentageSubMenu", "Screen Percentage"),
+				LOCTEXT("ScreenPercentageSubMenu_ToolTip", "Customize the viewport's screen percentage"),
+				FNewMenuDelegate::CreateStatic(&SCommonEditorViewportToolbarBase::ConstructScreenPercentageMenu, &ViewportClient));
 		}
 
 		{
@@ -911,6 +919,16 @@ void SLevelViewportToolBar::SetLevelProfile( FString DeviceProfileName )
 void SLevelViewportToolBar::GeneratePlacedCameraMenuEntries(FToolMenuSection& Section, TArray<ACameraActor*> Cameras) const
 {
 	FSlateIcon CameraIcon( FAppStyle::GetAppStyleSetName(), "ClassIcon.CameraComponent" );
+
+	// Sort the cameras to make the ordering predictable for users.
+	Cameras.StableSort([](const ACameraActor& Left, const ACameraActor& Right)
+	{
+		// Do "natural sorting" via SceneOutliner::FNumericStringWrapper to make more sense to humans (also matches the Scene Outliner). This sorts "Camera2" before "Camera10" which a normal lexicographical sort wouldn't.
+		SceneOutliner::FNumericStringWrapper LeftWrapper(FString(Left.GetActorLabel()));
+		SceneOutliner::FNumericStringWrapper RightWrapper(FString(Right.GetActorLabel()));
+
+		return LeftWrapper < RightWrapper;
+	});
 
 	for( ACameraActor* CameraActor : Cameras )
 	{
@@ -1281,7 +1299,7 @@ TSharedRef<SWidget> SLevelViewportToolBar::GenerateViewModeOptionsMenu() const
 	Viewport.Pin()->OnFloatingButtonClicked();
 	FLevelEditorViewportClient& ViewClient = Viewport.Pin()->GetLevelViewportClient();
 	const UWorld* World = ViewClient.GetWorld();
-	return BuildViewModeOptionsMenu(Viewport.Pin()->GetCommandList(), ViewClient.GetViewMode(), World ? World->FeatureLevel.GetValue() : GMaxRHIFeatureLevel, ViewClient.GetViewModeParamNameMap());
+	return BuildViewModeOptionsMenu(Viewport.Pin()->GetCommandList(), ViewClient.GetViewMode(), World ? World->GetFeatureLevel() : GMaxRHIFeatureLevel, ViewClient.GetViewModeParamNameMap());
 }
 
 TSharedRef<SWidget> SLevelViewportToolBar::GenerateFOVMenu() const
@@ -1338,53 +1356,6 @@ void SLevelViewportToolBar::OnFOVValueChanged( float NewValue )
 	}
 
 	ViewportClient.ViewFOV = NewValue;
-	ViewportClient.Invalidate();
-}
-
-TSharedRef<SWidget> SLevelViewportToolBar::GenerateScreenPercentageMenu() const
-{
-	const int32 PreviewScreenPercentageMin = ISceneViewFamilyScreenPercentage::kMinTSRResolutionFraction * 100.0f;
-	const int32 PreviewScreenPercentageMax = ISceneViewFamilyScreenPercentage::kMaxTSRResolutionFraction * 100.0f;
-
-	return
-		SNew(SBox)
-		.HAlign(HAlign_Right)
-		.IsEnabled(this, &SLevelViewportToolBar::OnScreenPercentageIsEnabled)
-		[
-			SNew(SBox)
-			.Padding(FMargin(4.0f, 0.0f, 0.0f, 0.0f))
-			.WidthOverride(100.0f)
-			[
-				SNew ( SBorder )
-				.BorderImage(FAppStyle::Get().GetBrush("Menu.WidgetBorder"))
-				.Padding(FMargin(1.0f))
-				[
-					SNew(SSpinBox<int32>)
-					.Style(&FAppStyle::Get(), "Menu.SpinBox")
-					.Font(FAppStyle::GetFontStyle(TEXT("MenuItem.Font")))
-					.MinSliderValue(PreviewScreenPercentageMin)
-					.MaxSliderValue(PreviewScreenPercentageMax)
-					.Value(this, &SLevelViewportToolBar::OnGetScreenPercentageValue)
-					.OnValueChanged(const_cast<SLevelViewportToolBar*>(this), &SLevelViewportToolBar::OnScreenPercentageValueChanged)
-				]
-			]
-		];
-}
-
-int32 SLevelViewportToolBar::OnGetScreenPercentageValue() const
-{
-	return Viewport.Pin()->GetLevelViewportClient().GetPreviewScreenPercentage();
-}
-
-bool SLevelViewportToolBar::OnScreenPercentageIsEnabled() const
-{
-	return Viewport.Pin()->GetLevelViewportClient().SupportsPreviewResolutionFraction();
-}
-
-void SLevelViewportToolBar::OnScreenPercentageValueChanged(int32 NewValue)
-{
-	FLevelEditorViewportClient& ViewportClient = Viewport.Pin()->GetLevelViewportClient();
-	ViewportClient.SetPreviewScreenPercentage(NewValue);
 	ViewportClient.Invalidate();
 }
 
@@ -1794,12 +1765,22 @@ float SLevelViewportToolBar::GetTransformToolbarWidth() const
 				const float ToolbarWidthMinusPreviousTransformToolbar = GetDesiredSize().X - TransformToolbar_CachedMaxWidth;
 				const float ToolbarWidthEstimate = ToolbarWidthMinusPreviousTransformToolbar + TransformToolbarWidth;
 
-				const float OverflowWidth = ToolbarWidthEstimate - ViewportWidth;
+				float DpiScale = 1.0f;
+				{
+					IMainFrameModule& MainFrameModule = FModuleManager::LoadModuleChecked<IMainFrameModule>(TEXT("MainFrame"));
+					const TSharedPtr<SWindow>& MainFrameParentWindow = MainFrameModule.GetParentWindow();
+					if (MainFrameParentWindow.IsValid())
+					{
+						DpiScale = MainFrameParentWindow->GetDPIScaleFactor();
+					}
+				}
+
+				const float OverflowWidth = ToolbarWidthEstimate * DpiScale - ViewportWidth;
 				if (OverflowWidth > 0.0f)
 				{
 					// There isn't enough space in the viewport to show the toolbar!
 					// Try and shrink the transform toolbar (which has an overflow area) to make things fit
-					TransformToolbar_CachedMaxWidth = FMath::Max(FMath::Min(4.0f, TransformToolbarWidth), TransformToolbarWidth - OverflowWidth);
+					TransformToolbar_CachedMaxWidth = FMath::Max(FMath::Min(4.0f, TransformToolbarWidth), TransformToolbarWidth - OverflowWidth / DpiScale);
 				}
 				else
 				{

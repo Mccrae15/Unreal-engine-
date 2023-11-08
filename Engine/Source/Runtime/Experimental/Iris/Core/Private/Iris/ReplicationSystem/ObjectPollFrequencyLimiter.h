@@ -14,9 +14,6 @@ namespace UE::Net::Private
 namespace UE::Net::Private
 {
 
-extern IRISCORE_API float PollFrequencyMultiplier;
-extern IRISCORE_API const int MaxPollFramePeriod;
-
 class FObjectPollFrequencyLimiter
 {
 public:
@@ -29,10 +26,19 @@ public:
 
 	void SetPollWithObject(FInternalNetRefIndex ObjectToPollWithInternalIndex, FInternalNetRefIndex InternalIndex);
 
-	void Update(const FNetBitArrayView& ScopableObjects, const FNetBitArrayView& DirtyObjects, FNetBitArrayView& OutObjectsToPoll);
+	/** 
+	* Produces the list of objects that should be polled this frame.
+	* This list is composed of relevant objects that are dirty or that hit their poll period this frame.
+	*/
+	void Update(const FNetBitArrayView& RelevantObjects, const FNetBitArrayView& DirtyObjects, FNetBitArrayView& OutObjectsToPoll);
+
+	/** We use a uint8 to track frames, so the limit is 255 frames.*/
+	static constexpr uint32 GetMaxPollingFrames()
+	{		
+		return static_cast<uint32>(std::numeric_limits<uint8>::max());
+	}
 
 private:
-	uint32 GetPollFramePeriodForFrequency(float PollFrequency) const;
 
 	uint32 MaxInternalHandle = 0;
 	uint32 FrameIndex = 0;
@@ -49,9 +55,9 @@ inline void FObjectPollFrequencyLimiter::SetPollFramePeriod(FInternalNetRefIndex
 	MaxInternalHandle = FPlatformMath::Max(MaxInternalHandle, InternalIndex);
 
 	FramesBetweenUpdates[InternalIndex] = PollFramePeriod;
-	// Spread the polling of objects with the same frequency so that if you add lots of objects the same frame they won't be polled at the same time.
-	const uint32 FrameOffset = FrameIndexOffsets[PollFramePeriod]++;
-	FrameCounters[InternalIndex] = FrameOffset % (uint32(PollFramePeriod) + 1U);
+	// Spread the polling of objects with the same frequency so that if you add lots of objects the same frame they won't be polled at the same time. The update loop decrements counters so we need to be careful with how we offset things.
+	const uint8 FrameOffset = --FrameIndexOffsets[PollFramePeriod];
+	FrameCounters[InternalIndex] = static_cast<uint8>(uint32(~(FrameIndex + FrameOffset)) % uint32(PollFramePeriod + 1U));
 }
 
 inline void FObjectPollFrequencyLimiter::SetPollWithObject(FInternalNetRefIndex ObjectToPollWithInternalIndex, FInternalNetRefIndex InternalIndex)

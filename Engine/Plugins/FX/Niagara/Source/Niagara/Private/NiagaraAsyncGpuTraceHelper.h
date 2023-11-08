@@ -1,19 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreMinimal.h"
-
 #include "NiagaraAsyncGpuTraceProvider.h"
 #include "NiagaraGpuScratchPad.h"
-
+#include "NiagaraSettings.h"
+#include "PrimitiveComponentId.h"
 #include "RHIDefinitions.h"
-
-#include "PrimitiveSceneInfo.h"
-#include "RHI.h"
 #include "RHIUtilities.h"
 
 struct FNiagaraDataInterfaceProxy;
 class FNiagaraGpuComputeDispatchInterface;
+class FPrimitiveSceneInfo;
 class FRayTracingPipelineState;
 class FRHICommandList;
 class FRHIRayTracingScene;
@@ -22,7 +19,7 @@ class FRHIUniformBuffer;
 class FRHIUnorderedAccessView;
 struct FRWBuffer;
 class FScene;
-class FViewInfo;
+class FSceneView;
 
 // we currently support assigning, from blueprint, primitives into collision groups which can be excluded
 // from ray traces.  Currently only supported with HWRT
@@ -68,8 +65,8 @@ public:
 	void Reset();
 
 	void BeginFrame(FRHICommandList& RHICmdList, FNiagaraGpuComputeDispatchInterface* Dispatcher);
-	void PostRenderOpaque(FRHICommandList& RHICmdList, FNiagaraGpuComputeDispatchInterface* Dispatcher, TConstArrayView<FViewInfo> Views);
-	void EndFrame(FRHICommandList& RHICmdList, FNiagaraGpuComputeDispatchInterface* Dispatcher);
+	void PostRenderOpaque(FRHICommandList& RHICmdList, FNiagaraGpuComputeDispatchInterface* Dispatcher, TConstStridedView<FSceneView> Views, TUniformBufferRef<FSceneUniformParameters> SceneUniformBufferRHI);
+	void EndFrame(FRHICommandList& RHICmdList, FNiagaraGpuComputeDispatchInterface* Dispatcher, TUniformBufferRef<FSceneUniformParameters> SceneUniformBufferRHI);
 
 	/** Accumulates ray requests from user DIs into single dispatches per DI. */
 	void AddToDispatch(FNiagaraDataInterfaceProxy* DispatchKey, uint32 MaxRays, int32 MaxRetraces, ENDICollisionQuery_AsyncGpuTraceProvider::Type ProviderType);

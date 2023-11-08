@@ -11,12 +11,12 @@
 
 #include "DEditorParameterValue.generated.h"
 
-UCLASS(hidecategories=Object, collapsecategories, editinlinenew)
-class UNREALED_API UDEditorParameterValue : public UObject
+UCLASS(hidecategories=Object, collapsecategories, editinlinenew, MinimalAPI)
+class UDEditorParameterValue : public UObject
 {
 	GENERATED_UCLASS_BODY()
 
-	static UDEditorParameterValue* Create(UObject* Owner,
+	static UNREALED_API UDEditorParameterValue* Create(UObject* Owner,
 		EMaterialParameterType Type,
 		const FMaterialParameterInfo& ParameterInfo,
 		const FMaterialParameterMetadata& Meta);
@@ -53,6 +53,12 @@ class UNREALED_API UDEditorParameterValue : public UObject
 		OutResult.SortPriority = SortPriority;
 		OutResult.bOverride = bOverride;
 		return false;
+	}
+
+	bool IsStaticParameter() const
+	{
+		EMaterialParameterType Type = GetParameterType();
+		return Type == EMaterialParameterType::StaticSwitch || Type == EMaterialParameterType::StaticComponentMask;
 	}
 
 	EMaterialParameterType GetParameterType() const

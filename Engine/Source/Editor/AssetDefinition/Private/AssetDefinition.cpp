@@ -15,12 +15,14 @@ FAssetCategoryPath EAssetCategoryPaths::Physics(LOCTEXT("Physics", "Physics"));
 FAssetCategoryPath EAssetCategoryPaths::UI(LOCTEXT("UserInterface", "User Interface"));
 FAssetCategoryPath EAssetCategoryPaths::Misc(LOCTEXT("Miscellaneous", "Miscellaneous"));
 FAssetCategoryPath EAssetCategoryPaths::Gameplay(LOCTEXT("Gameplay", "Gameplay"));
+FAssetCategoryPath EAssetCategoryPaths::AI(LOCTEXT("AI", "Artificial Intelligence"));
 FAssetCategoryPath EAssetCategoryPaths::Blueprint(LOCTEXT("Blueprint", "Blueprint"));
 FAssetCategoryPath EAssetCategoryPaths::Texture(LOCTEXT("Texture", "Texture"));
 FAssetCategoryPath EAssetCategoryPaths::Foliage(LOCTEXT("Foliage", "Foliage"));
 FAssetCategoryPath EAssetCategoryPaths::Input(LOCTEXT("Input", "Input"));
 FAssetCategoryPath EAssetCategoryPaths::FX(LOCTEXT("FX", "FX"));
 FAssetCategoryPath EAssetCategoryPaths::Cinematics(LOCTEXT("Cinematics", "Cinematics"));
+FAssetCategoryPath EAssetCategoryPaths::Media(LOCTEXT("Media", "Media"));
 
 FAssetCategoryPath::FAssetCategoryPath(const FText& InCategory)
 {
@@ -72,6 +74,46 @@ TConstArrayView<FAssetCategoryPath> UAssetDefinition::GetAssetCategories() const
 {
 	static const auto Categories = { EAssetCategoryPaths::Misc };
 	return Categories;
+}
+
+EAssetCommandResult UAssetDefinition::GetSourceFiles(const FAssetSourceFilesArgs& InArgs, TFunctionRef<bool(const FAssetSourceFilesResult& InSourceFile)> SourceFileFunc) const
+{
+	bool bFoundSomeData = false;
+
+	FString SourceFileTagData;
+	FAssetSourceFilesResult Result;
+	for (const FAssetData& Asset : InArgs.Assets)
+	{
+		if (Asset.GetTagValue(UObject::SourceFileTagName(), SourceFileTagData))
+		{
+			TOptional<FAssetImportInfo> ImportInfoOptional = FAssetImportInfo::FromJson(SourceFileTagData);
+			if (ImportInfoOptional.IsSet())
+			{
+				bFoundSomeData = true;
+				FAssetImportInfo& ImportInfo = ImportInfoOptional.GetValue();
+
+				for (FAssetImportInfo::FSourceFile& SourceFiles : ImportInfo.SourceFiles)
+				{
+					Result.FilePath = MoveTemp(SourceFiles.RelativeFilename);
+					Result.DisplayLabel = MoveTemp(SourceFiles.DisplayLabelName);
+					Result.Timestamp = MoveTemp(SourceFiles.Timestamp);
+					Result.FileHash = MoveTemp(SourceFiles.FileHash);
+				
+					if (InArgs.FilePathFormat == EPathUse::AbsolutePath)
+					{
+						Result.FilePath = UAssetImportData::ResolveImportFilename(FStringView(Result.FilePath), Asset.PackageName.ToString());
+					}
+
+					if (!SourceFileFunc(Result))
+					{
+						return EAssetCommandResult::Handled;
+					}
+				}
+			}
+		}
+	}
+
+	return bFoundSomeData ? EAssetCommandResult::Handled : EAssetCommandResult::Unhandled;
 }
 
 EAssetCommandResult UAssetDefinition::GetSourceFiles(const FAssetData& InAsset, TFunctionRef<void(const FAssetImportInfo& AssetImportData)> SourceFileFunc) const

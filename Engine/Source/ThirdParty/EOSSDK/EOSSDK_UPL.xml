@@ -18,27 +18,14 @@
 			</false>
 		</if>		
 	</init>
-
-	<baseBuildGradleAdditions>
-	<if condition="bSupported">
-		<true>
-			<insert>
-				allprojects {
-				repositories {
-				repositories {
-				flatDir {
-			</insert>
-			<insertValue value="dirs '$S(AbsEngineDir)/Source/ThirdParty/EOSSDK/SDK/Bin/Android/static-stdc++/aar'"/>
-			<insertNewline/>
-			<insert>
-				}
-				}
-				}
-				}
-			</insert>
-		</true>
-	</if>
-	</baseBuildGradleAdditions>
+	
+	<resourceCopies>
+		<if condition="bSupported">
+			<true>
+				<copyFile src="$S(PluginDir)/EOSSDK_strings.xml" dst="$S(BuildDir)/res/values/EOSSDK_strings.xml" />
+			</true>
+		</if>
+	</resourceCopies>
 
 	<buildGradleAdditions>
 		<if condition="bSupported">
@@ -49,12 +36,17 @@
 					exclude 'build-data.properties'
 					}
 					}
-			
-					dependencies.implementation(name: 'eos-sdk', ext: 'aar')
+				</insert>
+
+				<insertValue value="dependencies.implementation files ('$S(AbsEngineDir)/Source/ThirdParty/EOSSDK/SDK/Bin/Android/static-stdc++/aar/eos-sdk.aar')"/>
+				<insertNewline/>
+				<insert>
 					dependencies {
 					implementation 'androidx.constraintlayout:constraintlayout:1.1.3'
-					implementation 'com.android.support:appcompat-v7:28.0.0'
-					implementation 'androidx.security:security-crypto:1.0.0-rc03'
+					implementation 'androidx.appcompat:appcompat:1.2.0'
+					implementation 'com.google.android.material:material:1.2.1'
+					implementation 'androidx.security:security-crypto:1.0.0'
+					implementation 'androidx.browser:browser:1.0.0'
 					}
 				</insert>
 			</true>
@@ -76,7 +68,7 @@
 		<if condition="bSupported">
 			<true>
 				<insert>
-					EOSSDK.init(getApplicationContext());
+					EOSSDK.init(this);
 				</insert>
 			</true>
 		</if>

@@ -15,17 +15,16 @@
 class FDMXEditor;
 class FDMXFixturePatchNode;
 class FDMXFixturePatchSharedData;
-class SDMXChannelConnector;
-class SDMXFixturePatchFragment;
-class UDMXLibrary;
-class UDMXEntityFixturePatch;
-
 class FDragDropEvent;
 struct FTimerHandle;
 class FUICommandList;
 class SBorder;
+class SDMXChannelConnector;
+class SDMXFixturePatchFragment;
 class SGridPanel;
-
+class UDMXLibrary;
+class UDMXEntityFixturePatch;
+namespace UE::DMXEditor::AutoAssign { enum class EAutoAssignMode : uint8; }
 
 enum class EDMXPatchedUniverseReachability
 {
@@ -81,10 +80,10 @@ public:
 	void SetMonitorInputsEnabled(bool bEnabled);
 
 	/** Finds or adds a Node to this Universe */
-	bool FindOrAdd(const TSharedPtr<FDMXFixturePatchNode>& Node);
+	bool FindOrAdd(const TSharedRef<FDMXFixturePatchNode>& Node);
 
 	/** Removes a Node from this Universe */
-	void Remove(const TSharedPtr<FDMXFixturePatchNode>& Node);
+	void Remove(const TSharedRef<FDMXFixturePatchNode>& Node);
 
 	/** Returns wether the patch can be patched to its current channels */
 	bool CanAssignFixturePatch(TWeakObjectPtr<UDMXEntityFixturePatch> TestedPatch) const;
@@ -105,7 +104,7 @@ public:
 	int32 GetUniverseID() const { return UniverseID; }
 
 	/** Gets all nodes patched to this universe */
-	const TArray<TSharedPtr<FDMXFixturePatchNode>>& GetPatchedNodes() const { return PatchedNodes; }
+	const TArray<TSharedRef<FDMXFixturePatchNode>>& GetPatchedNodes() const { return PatchedNodes; }
 
 protected:
 	//~ Begin SWidget Interface
@@ -125,6 +124,9 @@ private:
 	/** Refreshes the widget directly */
 	void RefreshInternal();
 
+	/** Updates the hover state of all nodes */
+	void UpdateNodesHoveredState();
+
 	/** Updates the monitor */
 	void UpdateMonitor();
 
@@ -137,6 +139,12 @@ private:
 	/** Returns the name of the universe displayed */
 	FText GetHeaderText() const;
 	
+	/** Called when a channel is hovered */
+	void HandleOnChannelHovered(int32 Channel);
+
+	/** Called when a channel is unhovered */
+	void HandleOnChannelUnhovered(int32 Channel);
+
 	/** Handles when a mouse button was pressed on a Channel */
 	FReply HandleOnMouseButtonDownOnChannel(uint32 Channel, const FPointerEvent& PointerEvent);
 
@@ -168,7 +176,25 @@ private:
 	void OnSelectionChanged();
 
 	/** Auto assigns selected Fixture Patches */
-	void AutoAssignFixturePatches();
+	void AutoAssignFixturePatches(UE::DMXEditor::AutoAssign::EAutoAssignMode AutoAssignMode);
+
+	/** Assign selected Fixture Patches */
+	void AssignFixturePatches();
+
+	/** Aligns selected Fixture Patches */
+	void AlignFixturePatches();
+
+	/** Stacks selected Fixture Patches */
+	void StackFixturePatches();
+
+	/** Spreads selected Fixture Patches over Universes */
+	void SpreadFixturePatchesOverUniverses();
+
+	/** Gets selected fixture patches. Returns false if no patches are selected */
+	bool GetSelectedFixturePatches(TArray<UDMXEntityFixturePatch*>& OutFixturePatchArray) const;
+
+	/** Returns true if the DMX Library has reachable Universes */
+	bool DoesDMXLibraryHaveReachableUniverses() const;
 
 	/** Returns the Fixture Patch that is topmost under Channel */
 	UDMXEntityFixturePatch* GetTopmostFixturePatchOnChannel(uint32 Channel) const;
@@ -181,6 +207,12 @@ private:
 
 	/** The universe being displayed */
 	int32 UniverseID;
+
+	/** The hovered channel, or unset if no channel is hovered */
+	TSharedPtr<SDMXChannelConnector> HoveredChannel;
+
+	/** The channel that was last hovered */
+	int32 LastHoveredChannel = 1;
 
 	/** If true, monitors inputs */
 	bool bMonitorInputs = false;
@@ -195,10 +227,10 @@ private:
 	TSharedPtr<SGridPanel> Grid;
 
 	/** Patches in the grid */
-	TArray<TSharedPtr<FDMXFixturePatchNode>> PatchedNodes;
+	TArray<TSharedRef<FDMXFixturePatchNode>> PatchedNodes;
 
 	/** The Channel connectors in this universe */
-	TArray<TSharedPtr<SDMXChannelConnector>> ChannelConnectors;
+	TArray<TSharedRef<SDMXChannelConnector>> ChannelConnectors;
 
 	/** Delegate executed when drag enters a Channel */
 	FOnDragOverChannel OnDragEnterChannel;
@@ -213,7 +245,7 @@ private:
 	TWeakObjectPtr<UDMXEntityFixturePatch> ShiftSelectAnchorPatch;
 
 	/** The Fixture Patch Widgets that are currently being displalyed */
-	TArray<TSharedPtr<SDMXFixturePatchFragment>> FixturePatchWidgets;
+	TArray<TSharedRef<SDMXFixturePatchFragment>> FixturePatchFragmentWidgets;
 
 	/** Timer handle for the Request Refresh method */
 	FTimerHandle RequestRefreshTimerHandle;
@@ -222,7 +254,7 @@ private:
 	TSharedPtr<FDMXFixturePatchSharedData> SharedData;
 
 	/** The owning editor */
-	TWeakPtr<FDMXEditor> DMXEditorPtr;
+	TWeakPtr<FDMXEditor> WeakDMXEditor;
 
 	private:
 	///////////////////////////////////////////////////

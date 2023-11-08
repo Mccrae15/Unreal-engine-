@@ -35,6 +35,7 @@ class FRenderResource;
 class FRenderTarget;
 class FRHICommandListImmediate;
 class FRHIUniformBuffer;
+class FScene;
 class FSceneRenderer;
 class FSceneViewStateInterface;
 class FSkyAtmosphereRenderSceneInfo;
@@ -112,6 +113,12 @@ public:
 	virtual void RemovePrimitive(UPrimitiveComponent* Primitive) = 0;
 	/** Called when a primitive is being unregistered and will not be immediately re-registered. */
 	virtual void ReleasePrimitive(UPrimitiveComponent* Primitive) = 0;
+
+	/** Batched versions of Add / Remove / ReleasePrimitive, for improved CPU performance */
+	virtual void BatchAddPrimitives(TArrayView<UPrimitiveComponent*> InPrimitives) = 0;
+	virtual void BatchRemovePrimitives(TArrayView<UPrimitiveComponent*> InPrimitives) = 0;
+	virtual void BatchReleasePrimitives(TArrayView<UPrimitiveComponent*> InPrimitives) = 0;
+
 	/**
 	* Updates all primitive scene info additions, remobals and translation changes
 	*/
@@ -145,9 +152,13 @@ public:
 	 * Updates distance field scene data (transforms, uv scale, self-shadow bias, etc.) but doesn't change allocation in the atlas
 	 */
 	virtual void UpdatePrimitiveDistanceFieldSceneData_GameThread(UPrimitiveComponent* Primitive) {}
+
+	/** Finds the  primitive with the associated index into the primitive array. */
+	virtual FPrimitiveSceneInfo* GetPrimitiveSceneInfo(int32 PrimitiveIndex) const = 0;
+
 	/** Finds the  primitive with the associated component id. */
-	virtual FPrimitiveSceneInfo* GetPrimitiveSceneInfo(int32 PrimitiveIndex) = 0;
-	virtual FPrimitiveSceneInfo* GetPrimitiveSceneInfo(const FPersistentPrimitiveIndex& PersistentPrimitiveIndex) = 0;
+	virtual FPrimitiveSceneInfo* GetPrimitiveSceneInfo(FPrimitiveComponentId PrimitiveId) const = 0;
+	virtual FPrimitiveSceneInfo* GetPrimitiveSceneInfo(const FPersistentPrimitiveIndex& PersistentPrimitiveIndex) const = 0;
 
 	/** Get the primitive previous local to world (used for motion blur). Returns true if the matrix was set. */
 	virtual bool GetPreviousLocalToWorld(const FPrimitiveSceneInfo* PrimitiveSceneInfo, FMatrix& OutPreviousLocalToWorld) const { return false; }
@@ -336,6 +347,23 @@ public:
 	virtual bool HasAnyExponentialHeightFog() const = 0;
 
 	/**
+	 * Adds a new local height fog component to the scene
+	 *
+	 * @param FogProxy - fog proxy to add
+	 */
+	virtual void AddLocalHeightFog(class FLocalHeightFogSceneProxy* FogProxy) = 0;
+	/**
+	 * Removes a local height fog component from the scene
+	 *
+	 * @param FogProxy - fog proxy to remove
+	 */
+	virtual void RemoveLocalHeightFog(class FLocalHeightFogSceneProxy* FogProxy) = 0;
+	/**
+	 * @return True if there are any local height fog potentially enabled in the scene
+	 */
+	virtual bool HasAnyLocalHeightFog() const = 0;
+
+	/**
 	 * Adds the unique volumetric cloud component to the scene
 	 *
 	 * @param SkyAtmosphereSceneProxy - the sky atmosphere proxy
@@ -485,6 +513,10 @@ public:
 	virtual void UpdateLumenSceneCardTransform(class ULumenSceneCardComponent* LumenSceneCardComponent) {};
 	virtual void RemoveLumenSceneCard(class ULumenSceneCardComponent* LumenSceneCardComponent) {};
 
+	// BEGIN META SECTION - XR Soft Occlusions
+	virtual void SetEnableXRPassthroughSoftOcclusions(bool bEnable) {};
+	// END META SECTION - XR Soft Occlusions
+
 	/**
 	 * Release this scene and remove it from the rendering thread
 	 */
@@ -513,10 +545,8 @@ public:
 	 * Return the scene to be used for rendering. Note that this can return null if rendering has
 	 * been disabled!
 	 */
-	virtual class FScene* GetRenderScene()
-	{
-		return nullptr;
-	}
+	virtual FScene* GetRenderScene() = 0;
+	virtual const FScene* GetRenderScene() const = 0;
 
 	virtual void OnWorldCleanup()
 	{
@@ -613,12 +643,15 @@ public:
 	}
 #endif //WITH_EDITOR
 
+	virtual TConstArrayView<FPrimitiveSceneProxy*> GetPrimitiveSceneProxies() const = 0;
+
 	/**
 	 * Returns the FPrimitiveComponentId for all primitives in the scene
 	 */
-	ENGINE_API virtual TArray<FPrimitiveComponentId> GetScenePrimitiveComponentIds() const;
+	virtual TConstArrayView<FPrimitiveComponentId> GetScenePrimitiveComponentIds() const = 0;
 
 	virtual void StartFrame() {}
+	virtual void EndFrame(FRHICommandListImmediate& RHICmdList) {}
 	virtual uint32 GetFrameNumber() const { return 0; }
 	virtual void IncrementFrameNumber() {}
 
@@ -627,6 +660,7 @@ public:
 	virtual class FRayTracingSkinnedGeometryUpdateQueue* GetRayTracingSkinnedGeometryUpdateQueue() { return nullptr; }
 
 	virtual bool RequestGPUSceneUpdate(FPrimitiveSceneInfo& PrimitiveSceneInfo, EPrimitiveDirtyState PrimitiveDirtyState) { return false; }
+	virtual bool RequestUniformBufferUpdate(FPrimitiveSceneInfo& PrimitiveSceneInfo) { return false; }
 
 	virtual void RefreshNaniteRasterBins(FPrimitiveSceneInfo& PrimitiveSceneInfo) { }
 

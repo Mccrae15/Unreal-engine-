@@ -15,6 +15,9 @@
 #include "Engine/Texture2D.h"
 #include "EngineAnalytics.h"
 #include "GeometryCache.h"
+#include "GroomAsset.h"
+#include "GroomBindingAsset.h"
+#include "GroomCache.h"
 #include "HAL/FileManager.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstance.h"
@@ -25,6 +28,7 @@
 #include "Misc/SecureHash.h"
 #include "PhysicsEngine/PhysicsAsset.h"
 #include "Serialization/JsonSerializer.h"
+#include "UObject/NameTypes.h"
 #include "UObject/ObjectSaveContext.h"
 #include "UObject/Package.h"
 
@@ -204,10 +208,24 @@ void IUsdClassesModule::SendAnalytics( TArray<FAnalyticsEventAttribute>&& InAttr
 		Attributes.Emplace( TEXT( "Platform" ), FPlatformProperties::IniPlatformName() );
 		Attributes.Emplace( TEXT( "EngineVersion" ), FEngineVersion::Current().ToString() );
 		Attributes.Emplace( TEXT( "EngineMode" ), FPlatformMisc::GetEngineMode() );
-		Attributes.Emplace( TEXT( "EpicAccountId" ), FPlatformMisc::GetEpicAccountId() );
 
 		const FString EventText = FString::Printf( TEXT( "Engine.Usage.USD.%s" ), *EventName);
 		FEngineAnalytics::GetProvider().RecordEvent( EventText, Attributes );
+	}
+}
+
+void IUsdClassesModule::SendAnalytics(TArray<FAnalyticsEventAttribute>&& InAttributes, const FString& EventName)
+{
+	if (FEngineAnalytics::IsAvailable())
+	{
+		TArray<FAnalyticsEventAttribute> Attributes(InAttributes);
+
+		Attributes.Emplace(TEXT("Platform"), FPlatformProperties::IniPlatformName());
+		Attributes.Emplace(TEXT("EngineVersion"), FEngineVersion::Current().ToString());
+		Attributes.Emplace(TEXT("EngineMode"), FPlatformMisc::GetEngineMode());
+
+		const FString EventText = FString::Printf(TEXT("Engine.Usage.USD.%s"), *EventName);
+		FEngineAnalytics::GetProvider().RecordEvent(EventText, Attributes);
 	}
 }
 
@@ -313,38 +331,22 @@ TSet<UObject*> IUsdClassesModule::GetAssetDependencies(UObject* Asset)
 		Result.Reserve(Result.Num() + MaterialInstance->TextureParameterValues.Num());
 		for (const FTextureParameterValue& TextureValue : MaterialInstance->TextureParameterValues)
 		{
-			if (UTexture* Texture = TextureValue.ParameterValue)
-			{
-				Result.Add(Texture);
-			}
+			Result.Add(TextureValue.ParameterValue);
 		}
 
 		// We'll have a dependency on our reference material too of course (this happens for Mdl
 		// materials for example, that create new UMaterial assets every time, and also material instances).
-		if (UMaterialInterface* ReferenceMaterial = MaterialInstance->Parent.Get())
-		{
-			Result.Add(ReferenceMaterial);
-		}
+		Result.Add(MaterialInstance->Parent.Get());
 	}
 	else if (USkeletalMesh* SkeletalMesh = Cast<USkeletalMesh>(Asset))
 	{
-		if (USkeleton* Skeleton = SkeletalMesh->GetSkeleton())
-		{
-			Result.Add(Skeleton);
-		}
-
-		if (UPhysicsAsset* PhysicsAsset = SkeletalMesh->GetPhysicsAsset())
-		{
-			Result.Add(PhysicsAsset);
-		}
+		Result.Add(SkeletalMesh->GetSkeleton());
+		Result.Add(SkeletalMesh->GetPhysicsAsset());
 
 		Result.Reserve(Result.Num() + SkeletalMesh->GetMaterials().Num());
 		for (const FSkeletalMaterial& SkeletalMaterial : SkeletalMesh->GetMaterials())
 		{
-			if (UMaterialInterface* UsedMaterial = SkeletalMaterial.MaterialInterface)
-			{
-				Result.Add(UsedMaterial);
-			}
+			Result.Add(SkeletalMaterial.MaterialInterface);
 		}
 	}
 	else if (UStaticMesh* StaticMesh = Cast<UStaticMesh>(Asset))
@@ -352,33 +354,36 @@ TSet<UObject*> IUsdClassesModule::GetAssetDependencies(UObject* Asset)
 		Result.Reserve(Result.Num() + StaticMesh->GetStaticMaterials().Num());
 		for (const FStaticMaterial& StaticMaterial : StaticMesh->GetStaticMaterials())
 		{
-			if (UMaterialInterface* UsedMaterial = StaticMaterial.MaterialInterface)
-			{
-				Result.Add(UsedMaterial);
-			}
+			Result.Add(StaticMaterial.MaterialInterface);
 		}
 	}
 	else if (UGeometryCache* GeometryCache = Cast<UGeometryCache>(Asset))
 	{
 		for (UMaterialInterface* UsedMaterial : GeometryCache->Materials)
 		{
-			if (UsedMaterial)
-			{
-				Result.Add(UsedMaterial);
-			}
+			Result.Add(UsedMaterial);
 		}
 	}
 	else if (UAnimSequence* AnimSequence = Cast<UAnimSequence>(Asset))
 	{
-		if (USkeletalMesh* Mesh = AnimSequence->GetPreviewMesh())
-		{
-			Result.Add(Mesh);
-		}
-
-		if (USkeleton* Skeleton = AnimSequence->GetSkeleton())
-		{
-			Result.Add(Skeleton);
-		}
+		Result.Add(AnimSequence->GetPreviewMesh());
+		Result.Add(AnimSequence->GetSkeleton());
+	}
+	else if (UGroomBindingAsset* GroomBinding = Cast<UGroomBindingAsset>(Asset))
+	{
+		Result.Add(GroomBinding->GetGroom());
+		Result.Add(GroomBinding->GetTargetSkeletalMesh());
+		Result.Add(GroomBinding->GetSourceSkeletalMesh());
+		Result.Add(GroomBinding->GetSourceGeometryCache());
+		Result.Add(GroomBinding->GetTargetGeometryCache());
+	}
+	else if (UGroomAsset* GroomAsset = Cast<UGroomAsset>(Asset))
+	{
+		// Do nothing. The atual groom assets have no additional dependencies
+	}
+	else if (UGroomCache* GroomCache = Cast<UGroomCache>(Asset))
+	{
+		// Do nothing. The groom cache doesn't have any additional dependencies
 	}
 	else if (UTexture* Texture = Cast<UTexture>(Asset))
 	{
@@ -401,7 +406,22 @@ TSet<UObject*> IUsdClassesModule::GetAssetDependencies(UObject* Asset)
 		UE_LOG(LogUsd, Warning, TEXT("Unknown asset '%s' encountered when collecting dependencies."), Asset ? *Asset->GetName() : TEXT("nullptr"));
 	}
 
+	// This way we don't have to nullptr check everything we add to the set
+	Result.Remove(nullptr);
 	return Result;
+}
+
+FString IUsdClassesModule::SanitizeObjectName(const FString& InObjectName)
+{
+	FString SanitizedText = InObjectName;
+	const TCHAR* InvalidChar = INVALID_OBJECTNAME_CHARACTERS;
+	while (*InvalidChar)
+	{
+		SanitizedText.ReplaceCharInline(*InvalidChar, TCHAR('_'), ESearchCase::CaseSensitive);
+		++InvalidChar;
+	}
+
+	return SanitizedText;
 }
 
 class FUsdClassesModule : public IUsdClassesModule

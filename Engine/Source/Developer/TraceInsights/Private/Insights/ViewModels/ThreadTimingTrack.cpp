@@ -413,6 +413,21 @@ void FThreadTimingSharedState::GetVisibleCpuThreads(TSet<uint32>& OutSet) const
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+void FThreadTimingSharedState::GetVisibleTimelineIndexes(TSet<uint32>& OutSet) const
+{
+	OutSet.Reset();
+	for (const auto& KV : CpuTracks)
+	{
+		const FCpuTimingTrack& Track = *KV.Value;
+		if (Track.IsVisible())
+		{
+			OutSet.Add(Track.GetTimelineIndex());
+		}
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 void FThreadTimingSharedState::OnBeginSession(Insights::ITimingViewSession& InSession)
 {
 	if (&InSession != TimingView)
@@ -712,7 +727,7 @@ void FThreadTimingSharedState::SetAllCpuTracksToggle(bool bOnOff)
 		KV.Value.bIsVisible = bShowHideAllCpuTracks;
 	}
 
-	TimingView->OnTrackVisibilityChanged();
+	TimingView->HandleTrackVisibilityChanged();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -731,7 +746,7 @@ void FThreadTimingSharedState::SetAllGpuTracksToggle(bool bOnOff)
 	}
 	if (GpuTrack.IsValid() || Gpu2Track.IsValid())
 	{
-		TimingView->OnTrackVisibilityChanged();
+		TimingView->HandleTrackVisibilityChanged();
 	}
 }
 
@@ -765,7 +780,7 @@ void FThreadTimingSharedState::ToggleTrackVisibilityByGroup_Execute(const TCHAR*
 			}
 		}
 
-		TimingView->OnTrackVisibilityChanged();
+		TimingView->HandleTrackVisibilityChanged();
 	}
 }
 
@@ -781,7 +796,7 @@ FThreadTimingTrack::~FThreadTimingTrack()
 {
 	if (FilterConfigurator.IsValid())
 	{
-		FilterConfigurator->GetOnChangesCommitedEvent().Remove(OnFilterChangesCommitedHandle);
+		FilterConfigurator->GetOnChangesCommittedEvent().Remove(OnFilterChangesCommittedHandle);
 	}
 }
 
@@ -1176,8 +1191,13 @@ void FThreadTimingTrack::InitTooltip(FTooltipDrawState& InOutTooltip, const ITim
 				}
 
 				ENamedThreads::Type ThreadInfo = (ENamedThreads::Type)Task.ThreadToExecuteOn;
-				const TCHAR* NamedThreadsStr[] = { TEXT("Stats"), TEXT("RHI"), TEXT("Audio"), TEXT("Game"), TEXT("Rendering") };
 				ENamedThreads::Type ThreadIndex = ENamedThreads::GetThreadIndex(ThreadInfo);
+
+				auto GetTrackName = [this](uint32 InThreadId) -> FString
+				{
+					TSharedPtr<FCpuTimingTrack> Track = SharedState.GetCpuTrack(InThreadId);
+					return Track.IsValid() ? Track->GetName() : TEXT("Unknown");
+				};
 
 				if (ThreadIndex == ENamedThreads::AnyThread)
 				{
@@ -1185,33 +1205,21 @@ void FThreadTimingTrack::InitTooltip(FTooltipDrawState& InOutTooltip, const ITim
 
 					int32 ThreadPriIndex = ENamedThreads::GetThreadPriorityIndex(ThreadInfo);
 					const TCHAR* ThreadPriStrs[] = { TEXT("Normal"), TEXT("High"), TEXT("Low") };
-					const TCHAR* ThreadPri = ThreadPriStrs[ThreadPriIndex];
+					const TCHAR* ThreadPri = ensure(ThreadPriIndex >= 0 && ThreadPriIndex < 3) ? ThreadPriStrs[ThreadPriIndex] : TEXT("Unknown");
 
-					InOutTooltip.AddTextLine(FString::Printf(TEXT("%s Pri task on %s Pri worker"), TaskPri, ThreadPri), FLinearColor::Green);
+					InOutTooltip.AddTextLine(FString::Printf(TEXT("%s Pri task on %s Pri worker (%s)"), TaskPri, ThreadPri, *GetTrackName(Task.StartedThreadId)), FLinearColor::Green);
 				}
 				else
 				{
 					const TCHAR* QueueStr = ENamedThreads::GetQueueIndex(ThreadInfo) == ENamedThreads::MainQueue ? TEXT("Main") : TEXT("Local");
-					InOutTooltip.AddTextLine(FString::Printf(TEXT("%s (%s queue)"), NamedThreadsStr[ThreadIndex], QueueStr), FLinearColor::Green);
+					InOutTooltip.AddTextLine(FString::Printf(TEXT("%s (%s queue)"), *GetTrackName(Task.StartedThreadId), QueueStr), FLinearColor::Green);
 				}
 
-				{
-					TSharedPtr<FCpuTimingTrack> Track = SharedState.GetCpuTrack(Task.CreatedThreadId);
-					FString TrackName = Track.IsValid() ? Track->GetName() : TEXT("Unknown");
-					InOutTooltip.AddNameValueTextLine(TEXT("Created:"), FString::Printf(TEXT("%f on %s"), Task.CreatedTimestamp, *TrackName));
-				}
+				InOutTooltip.AddNameValueTextLine(TEXT("Created:"), FString::Printf(TEXT("%f on %s"), Task.CreatedTimestamp, *GetTrackName(Task.CreatedThreadId)));
 
-				{
-					TSharedPtr<FCpuTimingTrack> Track = SharedState.GetCpuTrack(Task.LaunchedThreadId);
-					FString TrackName = Track.IsValid() ? Track->GetName() : TEXT("Unknown");
-					InOutTooltip.AddNameValueTextLine(TEXT("Launched:"), FString::Printf(TEXT("%f (+%s) on %s"), Task.LaunchedTimestamp, *TimeUtils::FormatTimeAuto(Task.LaunchedTimestamp - Task.CreatedTimestamp), *TrackName));
-				}
+				InOutTooltip.AddNameValueTextLine(TEXT("Launched:"), FString::Printf(TEXT("%f (+%s) on %s"), Task.LaunchedTimestamp, *TimeUtils::FormatTimeAuto(Task.LaunchedTimestamp - Task.CreatedTimestamp), *GetTrackName(Task.LaunchedThreadId)));
 
-				{
-					TSharedPtr<FCpuTimingTrack> Track = SharedState.GetCpuTrack(Task.ScheduledThreadId);
-					FString TrackName = Track.IsValid() ? Track->GetName() : TEXT("Unknown");
-					InOutTooltip.AddNameValueTextLine(TEXT("Scheduled:"), FString::Printf(TEXT("%f (+%s) on %s"), Task.ScheduledTimestamp, *TimeUtils::FormatTimeAuto(Task.ScheduledTimestamp - Task.LaunchedTimestamp), *TrackName));
-				}
+				InOutTooltip.AddNameValueTextLine(TEXT("Scheduled:"), FString::Printf(TEXT("%f (+%s) on %s"), Task.ScheduledTimestamp, *TimeUtils::FormatTimeAuto(Task.ScheduledTimestamp - Task.LaunchedTimestamp), *GetTrackName(Task.ScheduledThreadId)));
 
 				InOutTooltip.AddNameValueTextLine(TEXT("Started:"), FString::Printf(TEXT("%f (+%s)"), Task.StartedTimestamp, *TimeUtils::FormatTimeAuto(Task.StartedTimestamp - Task.ScheduledTimestamp)));
 				if (Task.FinishedTimestamp != TraceServices::FTaskInfo::InvalidTimestamp)
@@ -1220,15 +1228,11 @@ void FThreadTimingTrack::InitTooltip(FTooltipDrawState& InOutTooltip, const ITim
 
 					if (Task.CompletedTimestamp != TraceServices::FTaskInfo::InvalidTimestamp)
 					{
-						TSharedPtr<FCpuTimingTrack> CompletedTrack = SharedState.GetCpuTrack(Task.CompletedThreadId);
-						FString CompletedTrackName = CompletedTrack.IsValid() ? CompletedTrack->GetName() : TEXT("Unknown");
-						InOutTooltip.AddNameValueTextLine(TEXT("Completed:"), FString::Printf(TEXT("%f (+%s) on %s"), Task.CompletedTimestamp, *TimeUtils::FormatTimeAuto(Task.CompletedTimestamp - Task.FinishedTimestamp), *CompletedTrackName));
+						InOutTooltip.AddNameValueTextLine(TEXT("Completed:"), FString::Printf(TEXT("%f (+%s) on %s"), Task.CompletedTimestamp, *TimeUtils::FormatTimeAuto(Task.CompletedTimestamp - Task.FinishedTimestamp), *GetTrackName(Task.CompletedThreadId)));
 
 						if (Task.DestroyedTimestamp != TraceServices::FTaskInfo::InvalidTimestamp)
 						{
-							TSharedPtr<FCpuTimingTrack> DestroyedTrack = SharedState.GetCpuTrack(Task.DestroyedThreadId);
-							FString DestroyedTrackName = DestroyedTrack.IsValid() ? DestroyedTrack->GetName() : TEXT("Unknown");
-							InOutTooltip.AddNameValueTextLine(TEXT("Destroyed:"), FString::Printf(TEXT("%f (+%s) on %s"), Task.DestroyedTimestamp, *TimeUtils::FormatTimeAuto(Task.DestroyedTimestamp - Task.CompletedTimestamp), *DestroyedTrackName));
+							InOutTooltip.AddNameValueTextLine(TEXT("Destroyed:"), FString::Printf(TEXT("%f (+%s) on %s"), Task.DestroyedTimestamp, *TimeUtils::FormatTimeAuto(Task.DestroyedTimestamp - Task.CompletedTimestamp), *GetTrackName(Task.DestroyedThreadId)));
 						}
 					}
 				}
@@ -1416,7 +1420,7 @@ const TSharedPtr<const ITimingEvent> FThreadTimingTrack::GetEvent(float InPosX, 
 		{
 			TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
 
-			if (TraceServices::ReadTimingProfilerProvider(*Session.Get()))
+			if (EventTime <= Session->GetDurationSeconds() && TraceServices::ReadTimingProfilerProvider(*Session.Get()))
 			{
 				const TraceServices::ITimingProfilerProvider& TimingProfilerProvider = *TraceServices::ReadTimingProfilerProvider(*Session.Get());
 
@@ -1760,22 +1764,48 @@ void FThreadTimingTrack::OnFilterTrackClicked()
 	if (!FilterConfigurator.IsValid())
 	{
 		FilterConfigurator = MakeShared<FFilterConfigurator>();
-		TSharedPtr<TArray<TSharedPtr<struct FFilter>>>& AvailableFilters = FilterConfigurator->GetAvailableFilters();
 
-		AvailableFilters->Add(MakeShared<FFilter>(static_cast<int32>(EFilterField::StartTime), LOCTEXT("StartTime", "Start Time"), LOCTEXT("StartTime", "Start Time"), EFilterDataType::Double, FFilterService::Get()->GetDoubleOperators()));
-		AvailableFilters->Add(MakeShared<FFilter>(static_cast<int32>(EFilterField::EndTime), LOCTEXT("EndTime", "End Time"), LOCTEXT("EndTime", "End Time"), EFilterDataType::Double, FFilterService::Get()->GetDoubleOperators()));
-		AvailableFilters->Add(MakeShared<FFilter>(static_cast<int32>(EFilterField::Duration), LOCTEXT("Duration", "Duration"), LOCTEXT("Duration", "Duration"), EFilterDataType::Double, FFilterService::Get()->GetDoubleOperators()));
-		AvailableFilters->Add(MakeShared<FFilter>(static_cast<int32>(EFilterField::TimerId), LOCTEXT("TimerId", "Timer Id"), LOCTEXT("TimerId", "Timer Id"), EFilterDataType::Int64, FFilterService::Get()->GetIntegerOperators()));
+		FilterConfigurator->Add(MakeShared<FFilter>(
+			static_cast<int32>(EFilterField::StartTime),
+			LOCTEXT("StartTime", "Start Time"),
+			LOCTEXT("StartTime", "Start Time"),
+			EFilterDataType::Double,
+			nullptr,
+			FFilterService::Get()->GetDoubleOperators()));
+
+		FilterConfigurator->Add(MakeShared<FFilter>(
+			static_cast<int32>(EFilterField::EndTime),
+			LOCTEXT("EndTime", "End Time"),
+			LOCTEXT("EndTime", "End Time"),
+			EFilterDataType::Double,
+			nullptr,
+			FFilterService::Get()->GetDoubleOperators()));
+
+		FilterConfigurator->Add(MakeShared<FFilter>(
+			static_cast<int32>(EFilterField::Duration),
+			LOCTEXT("Duration", "Duration"),
+			LOCTEXT("Duration", "Duration"),
+			EFilterDataType::Double,
+			nullptr,
+			FFilterService::Get()->GetDoubleOperators()));
+
+		FilterConfigurator->Add(MakeShared<FFilter>(
+			static_cast<int32>(EFilterField::TimerId),
+			LOCTEXT("TimerId", "Timer Id"),
+			LOCTEXT("TimerId", "Timer Id"),
+			EFilterDataType::Int64,
+			nullptr,
+			FFilterService::Get()->GetIntegerOperators()));
 	}
 	else
 	{
-		FilterConfigurator->GetOnChangesCommitedEvent().Remove(OnFilterChangesCommitedHandle);
+		FilterConfigurator->GetOnChangesCommittedEvent().Remove(OnFilterChangesCommittedHandle);
 
 		// Make a copy, so it will not affect other tracks that shares same filter.
 		FilterConfigurator = MakeShared<FFilterConfigurator>(*FilterConfigurator);
 	}
 
-	OnFilterChangesCommitedHandle = FilterConfigurator->GetOnChangesCommitedEvent().AddLambda([this]()
+	OnFilterChangesCommittedHandle = FilterConfigurator->GetOnChangesCommittedEvent().AddLambda([this]()
 		{
 			this->SetDirtyFlag();
 		});
@@ -1787,16 +1817,7 @@ void FThreadTimingTrack::OnFilterTrackClicked()
 
 bool FThreadTimingTrack::HasCustomFilter() const
 {
-	if (!FilterConfigurator.IsValid())
-	{
-		return false;
-	}
-	if (FilterConfigurator->GetRootNode().IsValid() && FilterConfigurator->GetRootNode()->GetChildren().Num() > 0)
-	{
-		return true;
-	}
-
-	return false;
+	return FilterConfigurator.IsValid() && !FilterConfigurator->IsEmpty();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

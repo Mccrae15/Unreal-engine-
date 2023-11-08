@@ -201,13 +201,13 @@ export const HealthPanel: React.FC<{ jobDetails: JobDetailsV2 }> = observer(({ j
    });
 
    const columns = [
-      { key: 'health_column1', name: 'Summary', minWidth: 500, maxWidth: 500, isResizable: false },
+      { key: 'health_column1', name: 'Summary', minWidth: 460, maxWidth: 460, isResizable: false },
       { key: 'health_column2', name: 'Quarantine', minWidth: 80, maxWidth: 80, isResizable: false },
       { key: 'health_column3', name: 'Jira', minWidth: 80, maxWidth: 80, isResizable: false },
       { key: 'health_column4', name: 'JiraPriority', minWidth: 64, maxWidth: 64, isResizable: false },
-      { key: 'health_column5', name: 'JiraAssignee', minWidth: 240, maxWidth: 240, isResizable: false },
+      { key: 'health_column5', name: 'JiraAssignee', minWidth: 180, maxWidth: 180, isResizable: false },
       { key: 'health_column6', name: 'JiraStatus', minWidth: 64, maxWidth: 64, isResizable: false },
-      { key: 'health_column7', name: 'Status', minWidth: 160, maxWidth: 160, isResizable: false },
+      { key: 'health_column7', name: 'Status', minWidth: 140, maxWidth: 140, isResizable: false },
       { key: 'health_column8', name: 'Opened', minWidth: 140, maxWidth: 150, isResizable: false },
    ];
 
@@ -248,13 +248,17 @@ export const HealthPanel: React.FC<{ jobDetails: JobDetailsV2 }> = observer(({ j
          query.set("issue", item.issue.id.toString());
          const href = `${location.pathname}?${query.toString()}` + window.location.hash;
 
-         return <Link to={href} className="job-item" onClick={() => setIssueHistory(true)}><Stack horizontal disableShrink={true}>{<IssueStatusIcon issue={issue} streamId={jobDetails.jobData!.streamId} />}<Text variant={textSize} style={{ textDecoration: !!issue.resolvedAt ? "line-through" : undefined }}>{`Issue ${issue.id} - ${summary}`}</Text></Stack></Link>;
+         return <Link to={href} className="job-item" onClick={() => setIssueHistory(true)}><Stack horizontal disableShrink={true}>{<IssueStatusIcon issue={issue} />}<Text variant={textSize} style={{ textDecoration: !!issue.resolvedAt ? "line-through" : undefined }}>{`Issue ${issue.id} - ${summary}`}</Text></Stack></Link>;
       }
 
       if (column.name === "Quarantine") {
 
-         if (!issue.quarantinedByUserInfo) {
+         if (!issue.quarantinedByUserInfo && !issue.workflowThreadUrl) {
             return null;
+         }
+
+         if (issue.workflowThreadUrl) {
+            return <a onClick={(e) => e.stopPropagation()} href={issue.workflowThreadUrl} target="_blank" rel="noreferrer"><Stack style={{ height: "100%" }} horizontalAlign="center" disableShrink={true}  verticalAlign="center" >Slack Thread</Stack></a>
          }
 
          return <Stack horizontalAlign="start" disableShrink={true} verticalAlign="center" ><Text variant={textSize}>Quarantined</Text></Stack>;

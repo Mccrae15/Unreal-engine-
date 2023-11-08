@@ -22,7 +22,11 @@ UOculusXRLiveLinkRetargetFaceAsset::UOculusXRLiveLinkRetargetFaceAsset(const FOb
 void UOculusXRLiveLinkRetargetFaceAsset::Initialize()
 {
 	LastSkeletonGuid.Invalidate();
+#if UE_VERSION_OLDER_THAN(5, 3, 0)
 	Algo::ForEach(RemappingForLastSkeleton, [](TArray<SmartName::UID_Type>& Arr) { Arr.Reset(); });
+#else
+	Algo::ForEach(RemappingForLastSkeleton, [](TArray<FName>& Arr) { Arr.Reset(); });
+#endif
 }
 
 void UOculusXRLiveLinkRetargetFaceAsset::BuildPoseAndCurveFromBaseData(float DeltaTime, const FLiveLinkBaseStaticData* InBaseStaticData, const FLiveLinkBaseFrameData* InBaseFrameData, FCompactPose& OutPose, FBlendedCurve& OutCurve)
@@ -46,10 +50,17 @@ void UOculusXRLiveLinkRetargetFaceAsset::BuildPoseAndCurveFromBaseData(float Del
 
 	for (uint8 ExpressionId = 0; ExpressionId < static_cast<uint8>(EOculusXRFaceExpression::COUNT); ++ExpressionId)
 	{
+#if UE_VERSION_OLDER_THAN(5, 3, 0)
 		for (const SmartName::UID_Type UID : RemappingForLastSkeleton[ExpressionId])
 		{
 			OutCurve.Set(UID, InBaseFrameData->PropertyValues[ExpressionId]);
 		}
+#else
+		for (const FName Name : RemappingForLastSkeleton[ExpressionId])
+		{
+			OutCurve.Set(Name, InBaseFrameData->PropertyValues[ExpressionId]);
+		}
+#endif
 	}
 }
 
@@ -61,10 +72,14 @@ void UOculusXRLiveLinkRetargetFaceAsset::OnSkeletonChanged(const USkeleton* Skel
 	{
 		for (const auto& CurveName : CurveMapping.CurveNames)
 		{
+#if UE_VERSION_OLDER_THAN(5, 3, 0)
 			if (const SmartName::UID_Type UID = Skeleton->GetUIDByName(USkeleton::AnimCurveMappingName, CurveName); UID != SmartName::MaxUID)
 			{
 				RemappingForLastSkeleton[static_cast<uint8>(ExpressionId)].Emplace(UID);
 			}
+#else
+			RemappingForLastSkeleton[static_cast<uint8>(ExpressionId)].Emplace(CurveName);
+#endif
 		}
 	}
 

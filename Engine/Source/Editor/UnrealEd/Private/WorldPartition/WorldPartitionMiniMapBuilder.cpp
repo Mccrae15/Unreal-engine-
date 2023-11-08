@@ -19,7 +19,7 @@
 #include "WorldPartition/ActorDescContainer.h"
 #include "WorldPartition/DataLayer/ActorDataLayer.h"
 #include "WorldPartition/DataLayer/DataLayerInstance.h"
-#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
+#include "WorldPartition/DataLayer/DataLayerManager.h"
 #include "WorldPartition/HLOD/HLODActor.h"
 #include "WorldPartition/HLOD/HLODActorDesc.h"
 #include "WorldPartition/WorldPartition.h"
@@ -52,7 +52,7 @@ bool UWorldPartitionMiniMapBuilder::PreRun(UWorld* World, FPackageSourceControlH
 	}
 
 	// Dump bitmaps for debugging purpose
-	bDebugCapture = FParse::Param(FCommandLine::Get(), TEXT("DebugCapture"));
+	bDebugCapture = HasParam("DebugCapture");
 
 	// World bounds to process
 	IterativeWorldBounds = WorldMiniMap->GetMiniMapWorldBounds();
@@ -63,8 +63,9 @@ bool UWorldPartitionMiniMapBuilder::PreRun(UWorld* World, FPackageSourceControlH
 	// Create minimap texture
 	{
 		TStrongObjectPtr<UTextureFactory> Factory(NewObject<UTextureFactory>());
-		WorldMiniMap->MiniMapTexture = Factory->CreateTexture2D(WorldMiniMap, TEXT("MinimapTexture"), RF_NoFlags);
+		WorldMiniMap->MiniMapTexture = Factory->CreateTexture2D(WorldMiniMap, TEXT("MinimapTexture"), RF_TextExportTransient);
 		WorldMiniMap->MiniMapTexture->Source.Init(MinimapImageSizeX, MinimapImageSizeY, 1, 1, TSF_BGRA8);
+		WorldMiniMap->MiniMapTexture->MipGenSettings = TMGS_SimpleAverage;
 		WorldMiniMap->MiniMapWorldBounds = IterativeWorldBounds;
 	}
 
@@ -81,10 +82,10 @@ bool UWorldPartitionMiniMapBuilder::PreRun(UWorld* World, FPackageSourceControlH
 
 	// Gather excluded data layers
 	{
-		UDataLayerSubsystem* DataLayerSubSystem = UWorld::GetSubsystem<UDataLayerSubsystem>(World);
+		UDataLayerManager* DataLayerManager = UDataLayerManager::GetDataLayerManager(World);
 		for (const FActorDataLayer& ActorDataLayer : WorldMiniMap->ExcludedDataLayers)
 		{
-			const UDataLayerInstance* DataLayerInstance = DataLayerSubSystem->GetDataLayerInstance(ActorDataLayer.Name);
+			const UDataLayerInstance* DataLayerInstance = DataLayerManager->GetDataLayerInstance(ActorDataLayer.Name);
 
 			if (DataLayerInstance != nullptr)
 			{
@@ -240,5 +241,5 @@ bool UWorldPartitionMiniMapBuilder::PostRun(UWorld* World, FPackageSourceControl
 	}
 
 	const FString ChangeDescription = FString::Printf(TEXT("Rebuilt minimap for %s"), *World->GetName());
-	return AutoSubmitFiles({ PackageFileName }, ChangeDescription);
+	return OnFilesModified({ PackageFileName }, ChangeDescription);
 }

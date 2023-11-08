@@ -38,6 +38,7 @@ class UMaterialExpressionComment;
 class UPhysicalMaterial;
 class UPhysicalMaterialMask;
 class USubsurfaceProfile;
+class USpecularProfile;
 class UTexture;
 struct FODSCRequestPayload;
 
@@ -348,6 +349,9 @@ public:
 	UPROPERTY()
 	FVectorMaterialInput WorldPositionOffset;
 
+	UPROPERTY()
+	FScalarMaterialInput Displacement;
+
 	/** Inner material color, only used for ShadingModel=Subsurface */
 	UPROPERTY()
 	FColorMaterialInput SubsurfaceColor;
@@ -413,7 +417,7 @@ class UMaterial : public UMaterialInterface
 	GENERATED_UCLASS_BODY()
 
 #if WITH_EDITORONLY_DATA
-	ENGINE_API virtual const UClass* GetEditorOnlyDataClass() const override { return UMaterialEditorOnlyData::StaticClass(); }
+	virtual const UClass* GetEditorOnlyDataClass() const override { return UMaterialEditorOnlyData::StaticClass(); }
 
 	virtual UMaterialEditorOnlyData* GetEditorOnlyData() override { return CastChecked<UMaterialEditorOnlyData>(Super::GetEditorOnlyData(), ECastCheckedType::NullAllowed); }
 	virtual const UMaterialEditorOnlyData* GetEditorOnlyData() const override { return CastChecked<UMaterialEditorOnlyData>(Super::GetEditorOnlyData(), ECastCheckedType::NullAllowed); }
@@ -458,15 +462,12 @@ class UMaterial : public UMaterialInterface
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Material, AdvancedDisplay, meta=(DisplayName = "Decal Response (DBuffer)"), AssetRegistrySearchable)
 	TEnumAsByte<EMaterialDecalResponse> MaterialDecalResponse;
 
-	/** An override material which will be used instead of this one when rendering with nanite. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Nanite, meta = (EditInline, ShowOnlyInnerProperties))
+	/** An override material which will be used instead of this one when rendering with Nanite. */
+	UPROPERTY(EditAnywhere, Category=Nanite, meta = (EditInline, ShowOnlyInnerProperties))
 	FMaterialOverrideNanite NaniteOverrideMaterial;
 
-	/**
-	 * Cached connected inputs
-	 */
-	UPROPERTY()
-	uint32 CachedConnectedInputs;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Nanite, meta = (DisplayName = "Displacement"))
+	FDisplacementScaling DisplacementScaling;
 
 private:
 	/** Determines how inputs are combined to create the material's final color. */
@@ -492,7 +493,7 @@ public:
 
 	/**
 	 * If BlendMode is BLEND_Masked, the surface is not rendered where OpacityMask < OpacityMaskClipValue.
-	 * If BlendMode is BLEND_Translucent, BLEND_Additive, or BLEND_Modulate, and "Output Velocity" is enabled,
+	 * If BlendMode is BLEND_Translucent, BLEND_Additive, or BLEND_Modulate, and "Output Depth and Velocity" is enabled,
 	 * the object velocity is not rendered where Opacity < OpacityMaskClipValue.
 	 */
 	UPROPERTY(EditAnywhere, Category = Material, AdvancedDisplay)
@@ -523,7 +524,7 @@ public:
 	UPROPERTY(EditAnywhere, Category=Material)
 	uint8 TwoSided : 1;
 
-	/** Indicates that the material should be rendered as a thin surface (i.e., without inner volume). Only used by Substrate materials. */
+	/** Indicates that the material should be rendered as a thin surface (i.e., without inner volume). Only used by Substrate materials. Enabling ThinSurface will disable subsurface profiles. */
 	UPROPERTY(EditAnywhere, Category = Material)
 	uint8 bIsThinSurface : 1;
 
@@ -779,12 +780,19 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Usage)
 	uint32 bUsedWithNanite : 1;
 
-	/**
+	/** 
 	 * Indicates that the material and its instances with volumetric cloud. Without that flag, it can only be used on volumetric fog.
 	 * This will result in the shaders required to support Volumetric Cloud rendering being compiled which will increase shader compile time and memory usage.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Usage)
 	uint32 bUsedWithVolumetricCloud : 1;
+
+	/**
+	 * Indicates that the material and its instances with heterogeneous volumes. Without that flag, it can only be used on volumetric fog.
+	 * This will result in the shaders required to support Heterogeneous Volumes rendering being compiled which will increase shader compile time and memory usage.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Usage)
+	uint32 bUsedWithHeterogeneousVolumes : 1;
 
 	/** 
 	 * Indicates that the material and its instances can be used with Slate UI and UMG
@@ -934,12 +942,18 @@ public:
 	UPROPERTY(EditAnywhere, Category=Material, AdvancedDisplay)
 	uint8 bIsSky : 1;
 
+	// BEGIN META SECTION - XR Soft Occlusions
+	/** When true and scene soft occlusions are enabled this material can be occluded by the environment depth. Defaults to true. */
+	UPROPERTY(EditAnywhere, Category = Material, AdvancedDisplay)
+	uint8 bXRSoftOcclusions : 1;
+	// END META SECTION - XR Soft Occlusions
+
 	/** When true, translucent materials have fog computed for every pixel, which costs more but fixes artifacts due to low tessellation. */
 	UPROPERTY(EditAnywhere, Category=Translucency)
 	uint8 bComputeFogPerPixel : 1;
 
 	/** When true, translucent materials will output motion vectors and write to depth buffer in velocity pass. */
-	UPROPERTY(EditAnywhere, Category = Translucency, meta = (DisplayName = "Output Velocity"))
+	UPROPERTY(EditAnywhere, Category = Translucency, meta = (DisplayName = "Output Depth and Velocity"))
 	uint8 bOutputTranslucentVelocity : 1;
 
 	/** If true the compilation environment will be changed to remove the global COMPILE_SHADERS_FOR_DEVELOPMENT flag. */
@@ -978,6 +992,10 @@ public:
 	UPROPERTY(EditAnywhere, Category=Refraction)
 	TEnumAsByte<ERefractionMode> RefractionMethod;
 
+	/** Controls whether refraction takes into account the material surface coverage, or not. */
+	UPROPERTY(EditAnywhere, Category=Refraction)
+	TEnumAsByte<ERefractionCoverageMode> RefractionCoverageMode;
+
 	/** If multiple nodes with the same  type are inserted at the same point, this defined order and if they get combined, only used if domain is PostProcess */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = PostProcessMaterial, meta = (DisplayName = "Blendable Priority"))
 	int32 BlendablePriority;
@@ -990,17 +1008,26 @@ public:
 	UPROPERTY(transient, duplicatetransient)
 	uint32 UsageFlagWarnings;
 
+	mutable std::atomic<uint32> UsageFlagCacheMiss{0u};
+
 	/** This is the refraction depth bias, larger values offset distortion to prevent closer objects from rendering into the distorted surface at acute viewing angles but increases the disconnect between surface and where the refraction starts. */
 	UPROPERTY(EditAnywhere, Category=Refraction)
 	float RefractionDepthBias;
 
-	/**
+	/** 
 	 * Specifies the max world position offset of the material. Use this value to resolve issues with culling and self-occlusion caused by
 	 * World Position Offset, and/or to restrict how much offset is permitted (i.e. values are clamped on each axis).
 	 * NOTE: A value of 0.0 effectively means "no maximum", and will not clamp the offsets, however it will also not extend culling bounds.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = WorldPositionOffset, meta = (ClampMin = 0.0f))
 	float MaxWorldPositionOffsetDisplacement;
+
+	/**
+	 * Forces World Position Offset to always be evaluated for this material, even if the primitive it's applied to has disabled it
+	 * via "Evaluate World Position Offset" or "World Position Offset Disable Distance".
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = WorldPositionOffset)
+	bool bAlwaysEvaluateWorldPositionOffset;
 
 	/** Not a UPROPERTY, used to propagate editor only strata material simplification options for preview. */
 	FStrataCompilationConfig StrataCompilationConfig;
@@ -1029,7 +1056,7 @@ public:
 	TMap<FName, TArray<UMaterialExpression*> > EditorParameters;
 
 	/** EdGraph based representation of the Material */
-	class UMaterialGraph*	MaterialGraph;
+	TObjectPtr<class UMaterialGraph>	MaterialGraph;
 #endif //WITH_EDITORONLY_DATA
 
 private:
@@ -1075,7 +1102,7 @@ public:
 	ENGINE_API virtual UPhysicalMaterial* GetPhysicalMaterial() const override;
 	ENGINE_API virtual UPhysicalMaterialMask* GetPhysicalMaterialMask() const override;
 	ENGINE_API virtual UPhysicalMaterial* GetPhysicalMaterialFromMap(int32 Index) const override;
-	ENGINE_API virtual UMaterialInterface* GetNaniteOverride(TMicRecursionGuard RecursionGuard = TMicRecursionGuard()) override;
+	ENGINE_API virtual UMaterialInterface* GetNaniteOverride(TMicRecursionGuard RecursionGuard = TMicRecursionGuard()) const override;
 	ENGINE_API virtual void GetUsedTextures(TArray<UTexture*>& OutTextures, EMaterialQualityLevel::Type QualityLevel, bool bAllQualityLevels, ERHIFeatureLevel::Type FeatureLevel, bool bAllFeatureLevels) const override;
 	ENGINE_API virtual void GetUsedTexturesAndIndices(TArray<UTexture*>& OutTextures, TArray< TArray<int32> >& OutIndices, EMaterialQualityLevel::Type QualityLevel, ERHIFeatureLevel::Type FeatureLevel) const override;
 	ENGINE_API virtual void OverrideTexture(const UTexture* InTextureToOverride, UTexture* OverrideTexture, ERHIFeatureLevel::Type InFeatureLevel) override;
@@ -1111,8 +1138,13 @@ public:
 	ENGINE_API virtual bool IsUIMaterial() const;
 	ENGINE_API virtual bool IsPostProcessMaterial() const;
 	ENGINE_API virtual USubsurfaceProfile* GetSubsurfaceProfile_Internal() const override;
+	ENGINE_API virtual uint32 NumSpecularProfile_Internal() const override;
+	ENGINE_API virtual USpecularProfile* GetSpecularProfile_Internal(uint32 Index) const override;
 	ENGINE_API virtual bool CastsRayTracedShadows() const override;
+	ENGINE_API virtual FDisplacementScaling GetDisplacementScaling() const override;
 	ENGINE_API virtual float GetMaxWorldPositionOffsetDisplacement() const override;
+	ENGINE_API virtual bool ShouldAlwaysEvaluateWorldPositionOffset() const override;
+	ENGINE_API virtual bool WritesToRuntimeVirtualTexture() const override;
 
 	ENGINE_API virtual FGraphEventArray PrecachePSOs(const FPSOPrecacheVertexFactoryDataList& VertexFactoryDataList, const FPSOPrecacheParams& PreCacheParams, EPSOPrecachePriority Priority, TArray<FMaterialPSOPrecacheRequestID>& OutMaterialPSORequestIDs) override;
 
@@ -1212,8 +1244,11 @@ public:
 	/** Useful to customize rendering if that case (e.g. hide the object) */
 	ENGINE_API bool IsCompilingOrHadCompileError(ERHIFeatureLevel::Type InFeatureLevel);
 
-#if WITH_EDITOR
+#if WITH_EDITORONLY_DATA
 	ENGINE_API TConstArrayView<TObjectPtr<UMaterialExpression>> GetExpressions() const;
+#endif // WITH_EDITORONLY_DATA
+
+#if WITH_EDITOR
 	ENGINE_API TConstArrayView<TObjectPtr<UMaterialExpressionComment>> GetEditorComments() const;
 	ENGINE_API UMaterialExpressionExecBegin* GetExpressionExecBegin() const;
 	ENGINE_API UMaterialExpressionExecEnd* GetExpressionExecEnd() const;
@@ -1249,6 +1284,17 @@ public:
 	 *	@param	OutGuids			The list of all resource guids affecting the precomputed lighting system and texture streamer.
 	 */
 	ENGINE_API virtual void GetLightingGuidChain(bool bIncludeTextures, TArray<FGuid>& OutGuids) const override;
+
+#if WITH_EDITOR
+	/**
+	 *	Returns a CRC of all the Guids related to this material's shader.
+	 *  This includes Guids from the parent hierarchy (for material instances),
+	 *  material function state, and parameter assignment state.
+	 *  NOTE this function does NOT include texture content state or texture streaming state.
+	 *  Used as a faster way to detect changes than GetLightingGuidChain.
+	 */
+	ENGINE_API virtual uint32 ComputeAllStateCRC() const override;
+#endif // WITH_EDITOR
 
 	/**
 	 * Checks that no pre-compilation errors have been detected and if so it reports them using specified compiler.
@@ -1294,9 +1340,10 @@ public:
 	 * Set the given usage flag.
 	 * @param bNeedsRecompile - true if the material was recompiled for the usage change
 	 * @param Usage - The usage flag to set
+	 * @param MaterialInstance - MI requesting the usage (as of now usage flags are only stored in the parent)
 	 * @return bool - true if the material can be used for rendering with the given type.
 	 */
-	ENGINE_API bool SetMaterialUsage(bool &bNeedsRecompile, const EMaterialUsage Usage);
+	ENGINE_API bool SetMaterialUsage(bool &bNeedsRecompile, const EMaterialUsage Usage, UMaterialInterface* MaterialInstance = nullptr);
 
 	/**
 	 * Tests to see if this material needs a usage flag update
@@ -1469,7 +1516,7 @@ private:
 	 * Caller is responsible for deleting OutCachedMaterialResources.
 	 * Note: This modifies material variables used for rendering and is assumed to be called within a FMaterialUpdateContext!
 	 */
-	void CacheResourceShadersForCooking(EShaderPlatform Platform, TArray<FMaterialResource*>& OutCachedMaterialResources, const ITargetPlatform* TargetPlatform = nullptr);
+	void CacheResourceShadersForCooking(EShaderPlatform Platform, TArray<FMaterialResource*>& OutCachedMaterialResources, const ITargetPlatform* TargetPlatform = nullptr, bool bBlocking = false);
 
 	void GetNewResources(EShaderPlatform ShaderPlatform, TArray<FMaterialResource*>& NewResourcesToCache);
 
@@ -1732,6 +1779,7 @@ public:
 	ENGINE_API bool HasSurfaceThicknessConnected() const;
 	ENGINE_API bool HasStrataFrontMaterialConnected() const;
 	ENGINE_API bool HasVertexPositionOffsetConnected() const;
+	ENGINE_API bool HasDisplacementConnected() const;
 	ENGINE_API bool HasPixelDepthOffsetConnected() const;
 
 	// Return true if the property is supported

@@ -16,10 +16,12 @@ class FViewInfo;
 struct FEngineShowFlags;
 
 extern bool ShouldRenderLumenDiffuseGI(const FScene* Scene, const FSceneView& View, bool bSkipTracingDataCheck = false, bool bSkipProjectCheck = false);
-extern bool ShouldRenderLumenReflections(const FViewInfo& View, bool bSkipTracingDataCheck = false, bool bSkipProjectCheck = false);
+extern bool ShouldRenderLumenReflections(const FViewInfo& View, bool bSkipTracingDataCheck = false, bool bSkipProjectCheck = false, bool bIncludeStandalone = true);
 extern bool ShouldRenderLumenReflectionsWater(const FViewInfo& View, bool bSkipTracingDataCheck = false, bool bSkipProjectCheck = false);
 extern bool ShouldRenderLumenDirectLighting(const FScene* Scene, const FSceneView& View);
 extern bool ShouldRenderAOWithLumenGI();
+extern bool ShouldUseStereoLumenOptimizations();
+extern bool DoesPlatformSupportLumenGI(EShaderPlatform Platform, bool bSkipProjectCheck = false);
 
 class FLumenSceneData;
 
@@ -58,8 +60,6 @@ namespace Lumen
 	bool ShouldVisualizeHardwareRayTracing(const FSceneViewFamily& ViewFamily);
 	bool ShouldHandleSkyLight(const FScene* Scene, const FSceneViewFamily& ViewFamily);
 
-	float GetDistanceSceneNaniteLODScaleFactor();
-
 	bool ShouldUpdateLumenSceneViewOrigin();
 	FVector GetLumenSceneViewOrigin(const FViewInfo& View, int32 ClipmapIndex);
 
@@ -82,6 +82,7 @@ namespace Lumen
 	bool IsSoftwareRayTracingSupported();
 	bool UseMeshSDFTracing(const FSceneViewFamily& ViewFamily);
 	bool UseGlobalSDFTracing(const FSceneViewFamily& ViewFamily);
+	bool UseGlobalSDFSimpleCoverageBasedExpand();
 	bool UseGlobalSDFObjectGrid(const FSceneViewFamily& ViewFamily);
 	bool UseHeightfieldTracing(const FSceneViewFamily& ViewFamily, const FLumenSceneData& LumenSceneData);
 	bool UseHeightfieldTracingForVoxelLighting(const FLumenSceneData& LumenSceneData);
@@ -104,8 +105,7 @@ namespace Lumen
 	bool ShouldVisualizeHardwareRayTracing(const FSceneViewFamily& ViewFamily);
 
 	bool ShouldPrecachePSOs(EShaderPlatform Platform);
-
-	int32 GetMaxTranslucentSkipCount();
+	
 	bool UseHardwareInlineRayTracing(const FSceneViewFamily& ViewFamily);
 
 	enum class EHardwareRayTracingLightingMode
@@ -116,8 +116,8 @@ namespace Lumen
 		EvaluateMaterialAndDirectLightingAndSkyLighting,
 		MAX
 	};
-	EHardwareRayTracingLightingMode GetHardwareRayTracingLightingMode(const FViewInfo& View);
-	EHardwareRayTracingLightingMode GetRadianceCacheHardwareRayTracingLightingMode();
+	EHardwareRayTracingLightingMode GetHardwareRayTracingLightingMode(const FViewInfo& View, bool bLumenGIEnabled);
+	bool UseReflectionCapturesForHitLighting();
 
 	enum class ESurfaceCacheSampling
 	{
@@ -126,13 +126,12 @@ namespace Lumen
 		HighResPages,
 	};
 
-	const TCHAR* GetRayTracedLightingModeName(EHardwareRayTracingLightingMode LightingMode);
-	const TCHAR* GetRayTracedNormalModeName(int NormalMode);
 	float GetHardwareRayTracingPullbackBias();
 
 	bool UseFarField(const FSceneViewFamily& ViewFamily);
 	float GetFarFieldMaxTraceDistance();
-	float GetFarFieldDitheredStartDistanceFactor();
+	float GetNearFieldMaxTraceDistanceDitherScale(bool bUseFarField);
+	float GetNearFieldSceneRadius(const FViewInfo& View, bool bUseFarField);
 	FVector GetFarFieldReferencePos();
 
 	float GetHeightfieldReceiverBias();
@@ -147,6 +146,5 @@ namespace LumenHardwareRayTracing
 };
 
 extern int32 GLumenFastCameraMode;
-extern int32 GLumenDistantScene;
 
 LLM_DECLARE_TAG(Lumen);

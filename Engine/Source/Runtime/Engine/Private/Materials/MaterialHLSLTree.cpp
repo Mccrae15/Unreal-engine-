@@ -606,6 +606,58 @@ bool FExpressionParameter::EmitCustomHLSLParameter(FEmitContext& Context, FEmitS
 	return false;
 }
 
+void FExpressionCollectionParameter::ComputeAnalyticDerivatives(FTree& Tree, FExpressionDerivatives& OutResult) const
+{
+	OutResult.ExpressionDdx = Tree.NewConstant(0.f);
+	OutResult.ExpressionDdy = OutResult.ExpressionDdx;
+}
+
+bool FExpressionCollectionParameter::PrepareValue(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FPrepareValueResult& OutResult) const
+{
+	return OutResult.SetType(Context, RequestedType, EExpressionEvaluation::Shader, Shader::EValueType::Float4);
+}
+
+void FExpressionCollectionParameter::EmitValueShader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValueShaderResult& OutResult) const
+{
+	OutResult.Code = Context.EmitInlineExpression(Scope, Shader::EValueType::Float4, TEXT("MaterialCollection%.Vectors[%]"), CollectionIndex, ParameterIndex);
+}
+
+void FExpressionDynamicParameter::ComputeAnalyticDerivatives(FTree& Tree, FExpressionDerivatives& OutResult) const
+{
+	OutResult.ExpressionDdx = Tree.NewConstant(0.f);
+	OutResult.ExpressionDdy = OutResult.ExpressionDdx;
+}
+
+bool FExpressionDynamicParameter::PrepareValue(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FPrepareValueResult& OutResult) const
+{
+	if (Context.ShaderFrequency != SF_Vertex && Context.ShaderFrequency != SF_Pixel && Context.ShaderFrequency != SF_Compute)
+	{
+		return Context.Error(TEXT("Invalid node used in hull/domain shader input!"));
+	}
+
+	return OutResult.SetType(Context, RequestedType, EExpressionEvaluation::Shader, Shader::EValueType::Float4);
+}
+
+void FExpressionDynamicParameter::EmitValueShader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValueShaderResult& OutResult) const
+{
+	FEmitShaderExpression* EmitDefaultValueExpression = DefaultValueExpression->GetValueShader(Context, Scope, Shader::EValueType::Float4);
+	OutResult.Code = Context.EmitExpression(Scope, Shader::EValueType::Float4, TEXT("GetDynamicParameter(Parameters.Particle, %, %)"), EmitDefaultValueExpression, ParameterIndex);
+}
+
+bool FExpressionSkyLightEnvMapSample::PrepareValue(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FPrepareValueResult& OutResult) const
+{
+	// This expression evaluates to constant 1.0f when IS_BASE_PASS is not defined but we cannot do special handling
+	// here since the define is tied to specific shader types.
+	return OutResult.SetType(Context, RequestedType, EExpressionEvaluation::Shader, Shader::EValueType::Float3);
+}
+
+void FExpressionSkyLightEnvMapSample::EmitValueShader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValueShaderResult& OutResult) const
+{
+	FEmitShaderExpression* EmitDirectionExpression = DirectionExpression->GetValueShader(Context, Scope, Shader::EValueType::Float3);
+	FEmitShaderExpression* EmitRoughnessExpression = RoughnessExpression->GetValueShader(Context, Scope, Shader::EValueType::Float1);
+	OutResult.Code = Context.EmitExpression(Scope, Shader::EValueType::Float3, TEXT("MaterialExpressionSkyLightEnvMapSample(%, %)"), EmitDirectionExpression, EmitRoughnessExpression);
+}
+
 namespace Private
 {
 
@@ -1111,7 +1163,13 @@ bool FExpressionFunctionCall::PrepareValue(FEmitContext& Context, FEmitScope& Sc
 			FMaterialFunctionInfo NewFunctionInfo;
 			NewFunctionInfo.Function = MaterialFunction;
 			NewFunctionInfo.StateId = MaterialFunction->StateId;
-			EmitMaterialData.CachedExpressionData->FunctionInfos.AddUnique(NewFunctionInfo);
+			
+			int32 OldCount = EmitMaterialData.CachedExpressionData->FunctionInfos.Num();
+			int32 NewIndex = EmitMaterialData.CachedExpressionData->FunctionInfos.AddUnique(NewFunctionInfo);
+			if (NewIndex >= OldCount)	// don't update crc unless we actually added a FunctionInfo
+			{
+				EmitMaterialData.CachedExpressionData->FunctionInfosStateCRC = FCrc::TypeCrc32(MaterialFunction->StateId, EmitMaterialData.CachedExpressionData->FunctionInfosStateCRC);
+			}
 		}
 	}
 	return FExpressionForward::PrepareValue(Context, Scope, RequestedType, OutResult);
@@ -1305,6 +1363,17 @@ void FExpressionVertexInterpolator::EmitValuePreshader(FEmitContext& Context, FE
 	OutResult.Type = VertexExpression->GetValuePreshader(Context, Scope, RequestedType, OutResult.Preshader);
 }
 
+bool FExpressionSkyAtmosphereLightDirection::PrepareValue(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FPrepareValueResult& OutResult) const
+{
+	return OutResult.SetType(Context, RequestedType, EExpressionEvaluation::Shader, Shader::EValueType::Float3);
+}
+
+void FExpressionSkyAtmosphereLightDirection::EmitValueShader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValueShaderResult& OutResult) const
+{
+	Context.bUsesSkyAtmosphere = true;
+	OutResult.Code = Context.EmitInlineExpression(Scope, Shader::EValueType::Float3, TEXT("MaterialExpressionSkyAtmosphereLightDirection(Parameters, %)"), LightIndex);
+}
+
 int32 FEmitData::FindInterpolatorIndex(const FExpression* Expression) const
 {
 	for (int32 Index = 0; Index < VertexInterpolators.Num(); ++Index)
@@ -1325,6 +1394,7 @@ void FEmitData::AddInterpolator(const FExpression* Expression, const FRequestedT
 		InterpolatorIndex = VertexInterpolators.Emplace(Expression);
 	}
 
+	bool bAnyComponentRequested = false;
 	const Shader::FType LocalType = PreparedType.GetResultType();
 	FVertexInterpolator& Interpolator = VertexInterpolators[InterpolatorIndex];
 	Interpolator.RequestedType = FRequestedType(RequestedType, false);
@@ -1338,8 +1408,14 @@ void FEmitData::AddInterpolator(const FExpression* Expression, const FRequestedT
 			{
 				// Only request components that need 'Shader' evaluation
 				Interpolator.RequestedType.SetComponentRequest(ComponentIndex);
+				bAnyComponentRequested = true;
 			}
 		}
+	}
+
+	if (bAnyComponentRequested && CachedExpressionData)
+	{
+		CachedExpressionData->bHasVertexInterpolator = true;
 	}
 }
 

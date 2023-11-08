@@ -51,6 +51,14 @@ protected:
 	UPROPERTY(EditAnywhere, Category = Parameter)
 	EGameplayInteractionTaskTrigger Trigger = EGameplayInteractionTaskTrigger::OnEnterState;
 
+	/** If true, handle external State Tree stop as a failure. */
+	UPROPERTY(EditAnywhere, Category = "Parameter")
+	bool bHandleExternalStopAsFailure = true;
+
+	/** If false, will not trigger on state reselection. */
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	bool bShouldTriggerOnReselect = true;
+
 	/** Handle to retrieve USmartObjectSubsystem. */
 	TStateTreeExternalDataHandle<USmartObjectSubsystem> SmartObjectSubsystemHandle;
 };

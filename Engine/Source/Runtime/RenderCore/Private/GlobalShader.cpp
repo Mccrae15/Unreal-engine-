@@ -6,22 +6,14 @@
 
 #include "GlobalShader.h"
 
-#include "Misc/MessageDialog.h"
-#include "HAL/FileManager.h"
-#include "Serialization/NameAsStringProxyArchive.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Misc/Paths.h"
 #include "Serialization/MemoryWriter.h"
-#include "Serialization/MemoryReader.h"
-#include "Misc/ScopedSlowTask.h"
-#include "Misc/App.h"
-#include "Misc/DataDrivenPlatformInfoRegistry.h"
 #include "Misc/CoreMisc.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Containers/StaticBitArray.h"
 #include "ShaderCodeLibrary.h"
-#include "StaticBoundShaderState.h"
 
 /** The global shader map. */
 FGlobalShaderMap* GGlobalShaderMap[SP_NumPlatforms] = {};
@@ -47,7 +39,7 @@ public:
 				{
 					if (Define.IsRelevant(ShaderFormat, Parameters.PermutationId))
 					{
-						OutEnvironment.SetDefine(*Define.Name, Define.Value);
+						OutEnvironment.SetDefineAndCompileArgument(*Define.Name, Define.Value);
 					}
 				}
 			}
@@ -815,5 +807,48 @@ void FGlobalShaderMap::LoadFromGlobalArchive(FArchive& Ar)
 		{
 			UE_LOG(LogShaders, Fatal, TEXT("Could not load section %d (of %d) of the global shadermap."), i, NumSections);
 		}
+	}
+}
+
+RENDERCORE_API ERecursiveShader GRequiredRecursiveShaders = ERecursiveShader::None;
+
+void ForceInitGlobalShaderType(FShaderType& ShaderType)
+{
+	FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
+	for (int32 Permutation = 0; Permutation < ShaderType.GetPermutationCount(); ++Permutation)
+	{
+		TShaderRef<FShader> ShaderRef = GlobalShaderMap->GetShader(&ShaderType, Permutation);
+
+		if (ShaderRef.IsValid())
+		{
+			FShaderMapResource& MapResource = ShaderRef.GetResourceChecked();
+			for (int32 Index = 0; Index < MapResource.GetNumShaders(); ++Index)
+			{
+				MapResource.GetShader(Index);
+			}
+		}
+	}
+}
+
+RENDERCORE_API void CreateRecursiveShaders()
+{
+	ensureMsgf(!GRHISupportsMultithreadedShaderCreation, TEXT("CreateRecursiveShaders() is called while GRHISupportsMultithreadedShaderCreation is true. This is an unnecessary call."));
+	ensureMsgf(IsInRenderingThread(), TEXT("CreateRecursiveShaders() is expected to be called from the render thread."));
+
+	if (EnumHasAnyFlags(GRequiredRecursiveShaders, ERecursiveShader::Resolve))
+	{
+		extern void CreateResolveShaders();
+		CreateResolveShaders();
+	}
+
+	if (EnumHasAnyFlags(GRequiredRecursiveShaders, ERecursiveShader::Clear))
+	{
+		extern void CreateClearReplacementShaders();
+		CreateClearReplacementShaders();
+	}
+
+	if (EnumHasAnyFlags(GRequiredRecursiveShaders, ERecursiveShader::Null))
+	{
+		ForceInitGlobalShaderType<FNULLPS>();
 	}
 }

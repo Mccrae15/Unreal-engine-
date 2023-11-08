@@ -71,8 +71,10 @@ public:
 	TOptional<FString> GetLocalValueString() const;
 	TOptional<FNiagaraVariable> GetLocalValueRapidIterationParameter() const;
 	TOptional<FNiagaraStackLinkedValueData> GetLinkedValueData() const;
-	TOptional<FName> GetDataValueInputName() const;
-	UNiagaraDataInterface* GetDataValueObject() const;
+	TOptional<FName> GetDataInterfaceValueInputName() const;
+	UNiagaraDataInterface* GetDataInterfaceValue() const;
+	TOptional<FNiagaraVariableBase> GetObjectAssetInputVariable() const;
+	UObject* GetObjectAssetValue() const;
 	TSharedPtr<FNiagaraStackFunctionMergeAdapter> GetDynamicValueFunction() const;
 	TOptional<FString> GetStaticSwitchValue() const;
 
@@ -83,13 +85,15 @@ private:
 	FNiagaraTypeDefinition Type;
 
 	TWeakObjectPtr<UNiagaraNodeParameterMapSet> OverrideNode;
-	UEdGraphPin* OverridePin;
+	UEdGraphPin* OverridePin = nullptr;
 
 	TOptional<FString> LocalValueString;
 	TOptional<FNiagaraVariable> LocalValueRapidIterationParameter;
 	TOptional<FNiagaraStackLinkedValueData> LinkedValueData;
-	TOptional<FName> DataValueInputName;
-	UNiagaraDataInterface* DataValueObject;
+	TOptional<FName> DataInterfaceValueInputName;
+	UNiagaraDataInterface* DataInterfaceValue = nullptr;
+	TOptional<FNiagaraVariableBase> ObjectAssetInputVariable;
+	UObject* ObjectAssetValue = nullptr;
 	TSharedPtr<FNiagaraStackFunctionMergeAdapter> DynamicValueFunction;
 	TOptional<FString> StaticSwitchValue;
 
@@ -109,7 +113,7 @@ public:
 
 	const TArray<TSharedRef<FNiagaraStackFunctionInputOverrideMergeAdapter>>& GetInputOverrides() const;
 
-	TSharedPtr<FNiagaraStackFunctionInputOverrideMergeAdapter> GetInputOverrideByInputName(FString InputName) const;
+	TSharedPtr<FNiagaraStackFunctionInputOverrideMergeAdapter> GetInputOverrideByInputNameAndType(const FString& InputName, const FNiagaraTypeDefinition& InputType) const;
 
 	void GatherFunctionCallNodes(TArray<UNiagaraNodeFunctionCall*>& OutFunctionCallNodes) const;
 
@@ -405,15 +409,8 @@ struct FNiagaraEmitterDiffResults
 	TArray<TSharedRef<FNiagaraRendererMergeAdapter>> ModifiedBaseRenderers;
 	TArray<TSharedRef<FNiagaraRendererMergeAdapter>> ModifiedOtherRenderers;
 
-	TArray<TSharedRef<FNiagaraInputSummaryMergeAdapter>> RemovedInputSummaryEntries;
-	TArray<TSharedRef<FNiagaraInputSummaryMergeAdapter>> AddedInputSummaryEntries;
-	TArray<TSharedRef<FNiagaraInputSummaryMergeAdapter>> ModifiedInputSummaryEntries;
-	TArray<TSharedRef<FNiagaraInputSummaryMergeAdapter>> ModifiedOtherInputSummaryEntries;
-
-	TArray<FNiagaraStackSection> RemovedBaseSummarySections;
-	TArray<FNiagaraStackSection> AddedOtherSummarySections;
-	TArray<FNiagaraStackSection> ModifiedBaseSummarySections;
-	TArray<FNiagaraStackSection> ModifiedOtherSummarySections;
+	TArray<UNiagaraHierarchyItemBase*> AddedSummaryEntriesInOther;	
+	TArray<UNiagaraHierarchySection*> AddedSummarySectionsInOther;
 
 	TOptional<bool> NewShouldShowSummaryViewValue;
 	
@@ -458,8 +455,11 @@ public:
 	// Find the module originating this module id in the scratch lists
 	bool FindBaseModule(const FVersionedNiagaraEmitter& BaseEmitter, ENiagaraScriptUsage ScriptUsage, FGuid ScriptUsageId, FGuid ModuleId, class UNiagaraScript*& OutActualScript, FGuid& OutScriptVersionGuid, FVersionedNiagaraEmitter& OutBaseEmitter);
 
-	bool IsModuleInputDifferentFromBase(const FVersionedNiagaraEmitter& Emitter, const FVersionedNiagaraEmitter& BaseEmitter, ENiagaraScriptUsage ScriptUsage, FGuid ScriptUsageId, FGuid ModuleId, FString InputName);
+	bool IsModuleInputDifferentFromBase(const FVersionedNiagaraEmitter& Emitter, const FVersionedNiagaraEmitter& BaseEmitter, ENiagaraScriptUsage ScriptUsage, FGuid ScriptUsageId, FGuid ModuleId, FNiagaraVariableBase Variable);
 
+	/** Check whether a given summary item identity exists in the parent of a given emitter. */
+	bool DoesSummaryItemExistInBase(const FVersionedNiagaraEmitter& Emitter, FNiagaraHierarchyIdentity Identity);
+	
 	FApplyDiffResults ResetModuleInputToBase(const FVersionedNiagaraEmitter& VersionedEmitter, const FVersionedNiagaraEmitter& VersionedBaseEmitter, ENiagaraScriptUsage ScriptUsage, FGuid ScriptUsageId, FGuid ModuleId, FString InputName);
 
 	bool HasBaseEventHandler(const FVersionedNiagaraEmitter& BaseEmitter, FGuid EventScriptUsageId);

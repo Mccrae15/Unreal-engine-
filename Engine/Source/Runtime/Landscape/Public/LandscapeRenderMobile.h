@@ -38,12 +38,12 @@ public:
 	/** 
 	* Initialize the RHI for this rendering resource 
 	*/
-	virtual void InitRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 	}
 
 	UE_DEPRECATED(5.1, "FLandscapeVertexBufferMobile is now deprecated and will be removed.")
-	static LANDSCAPE_API void UpdateMemoryStat(int32 Delta) 
+	static void UpdateMemoryStat(int32 Delta) 
 	{
 	}
 };

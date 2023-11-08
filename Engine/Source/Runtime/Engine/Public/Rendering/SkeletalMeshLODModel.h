@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
+#include "Animation/SkeletalMeshVertexAttribute.h"
 
 #if WITH_EDITOR
 
@@ -381,25 +382,28 @@ public:
 	/** Set of skin weight profile, identified by a FName which matches FSkinWeightProfileInfo.Name in the owning Skeletal Mesh*/
 	TMap<FName, FImportedSkinWeightProfileData> SkinWeightProfiles;
 
+	/** Set of vertex attributes identified by an FName */
+	TMap<FName, FSkeletalMeshModelVertexAttribute> VertexAttributes;
+
 	/** Mapping from final mesh vertex index to raw import vertex index. Needed for vertex animation, which only stores positions for import verts. */
 	TArray<int32>				MeshToImportVertexMap;
 	/** The max index in MeshToImportVertexMap, ie. the number of imported (raw) verts. */
 	int32						MaxImportVertex;
 
 	/** Accessor for the RawPointIndice which is editor only data: array of the original point (wedge) indices for each of the vertices in a FSkeletalMeshLODModel */
-	ENGINE_API const TArray<uint32>& GetRawPointIndices() const
+	const TArray<uint32>& GetRawPointIndices() const
 	{
 		return RawPointIndices2;
 	}
 
 	/** Accessor for the RawPointIndice which is editor only data: array of the original point (wedge) indices for each of the vertices in a FSkeletalMeshLODModel */
-	ENGINE_API TArray<uint32>& GetRawPointIndices()
+	TArray<uint32>& GetRawPointIndices()
 	{
 		return RawPointIndices2;
 	}
 	
 	UE_DEPRECATED(5.0, "Please do not access this function anymore. This data is not use anymore.")
-	ENGINE_API FRawSkeletalMeshBulkData& GetRawSkeletalMeshBulkData_DEPRECATED()
+	FRawSkeletalMeshBulkData& GetRawSkeletalMeshBulkData_DEPRECATED()
 	{
 		return RawSkeletalMeshBulkData_DEPRECATED;
 	}
@@ -552,7 +556,7 @@ public:
 	* Create a new FSkeletalMeshLODModel on the heap. Copy data from the "FSkeletalMeshLODModel* Other" to the just created LODModel return the heap allocated LODModel.
 	* This function is thread safe since its use the thread safe CopyStructure function to copy the data from Other.
 	*/
-	static ENGINE_API FSkeletalMeshLODModel* CreateCopy(const FSkeletalMeshLODModel* Other)
+	static FSkeletalMeshLODModel* CreateCopy(const FSkeletalMeshLODModel* Other)
 	{
 		FSkeletalMeshLODModel* Destination = new FSkeletalMeshLODModel();
 		FSkeletalMeshLODModel::CopyStructure(Destination, Other);

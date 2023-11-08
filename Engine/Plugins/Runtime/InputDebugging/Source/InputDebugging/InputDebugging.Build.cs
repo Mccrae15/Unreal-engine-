@@ -8,13 +8,13 @@ namespace UnrealBuildTool.Rules
 		{
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
+					"ApplicationCore",
 					"Core",
-					"Engine",
-					"SlateCore",
-					"Slate",
-					"InputCore",
 					"CoreUObject",
-					"ApplicationCore"
+					"Engine",
+					"InputCore",
+					"Slate",
+					"SlateCore",
 				}
 			);
 		}

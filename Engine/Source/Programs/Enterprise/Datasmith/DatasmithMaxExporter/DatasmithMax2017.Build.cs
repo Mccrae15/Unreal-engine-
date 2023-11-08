@@ -32,8 +32,7 @@ namespace UnrealBuildTool.Rules
 				}
 			);
 
-
-			PrivateIncludePaths.AddRange( new string[] { "Runtime/Launch/Public", "Runtime/Launch/Private", ModuleDirectory } );
+			PrivateIncludePathModuleNames.Add("Launch");
 
 			// Max SDK setup
 			{
@@ -81,6 +80,8 @@ namespace UnrealBuildTool.Rules
 			{
 				PrivateIncludePaths.Add(ItooInterfaceLocation);
 			}
+
+			PrivateIncludePaths.Add(ModuleDirectory);
 		}
 
 		public abstract string GetMaxVersion();

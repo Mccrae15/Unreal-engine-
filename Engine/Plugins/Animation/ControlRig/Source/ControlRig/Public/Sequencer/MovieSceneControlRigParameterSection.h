@@ -24,6 +24,7 @@
 
 class UAnimSequence;
 class USkeletalMeshComponent;
+struct FKeyDataOptimizationParams;
 
 struct CONTROLRIG_API FControlRigBindingHelper
 {
@@ -197,7 +198,9 @@ public:
 	TArray<FIntegerParameterNameAndCurve>& GetIntegerParameterNamesAndCurves();
 	const TArray<FIntegerParameterNameAndCurve>& GetIntegerParameterNamesAndCurves() const;
 
-	void FixRotationWinding(FName ControlName, FFrameNumber StartFrame, FFrameNumber EndFrame);
+	void FixRotationWinding(const FName& ControlName, FFrameNumber StartFrame, FFrameNumber EndFrame);
+	void OptimizeSection(const FName& ControlName, const FKeyDataOptimizationParams& InParams);
+	void AutoSetTangents(const FName& ControlName);
 
 	TArray<FSpaceControlNameAndChannel>& GetSpaceChannels();
 	const TArray< FSpaceControlNameAndChannel>& GetSpaceChannels() const;
@@ -208,6 +211,10 @@ public:
 	const FName& FindControlNameFromConstraintChannel(const FMovieSceneConstraintChannel* InConstraintChannel) const;
 		
 	bool RenameParameterName(const FName& OldParameterName, const FName& NewParameterName);
+
+	void ChangeControlRotationOrder(const FName& InControlName, const TOptional<EEulerRotationOrder>& CurrentOrder, 
+		const  TOptional<EEulerRotationOrder>& NewOrder, EMovieSceneKeyInterpolation Interpolation);
+
 private:
 
 	FSpaceChannelAddedEvent OnSpaceChannelAdded;
@@ -469,10 +476,10 @@ public:
 	TOptional<FMovieSceneControlRigSpaceBaseKey> EvaluateSpaceChannel(const  FFrameTime& InTime, FName InParameterName);
 
 	/** Key Zero Values on all or just selected controls in these section at the specified time */
-	void KeyZeroValue(FFrameNumber InFrame, bool bSelected);
+	void KeyZeroValue(FFrameNumber InFrame, EMovieSceneKeyInterpolation DefaultInterpolation, bool bSelected);
 
 	/** Key the Weights to the specified value */
-	void KeyWeightValue(FFrameNumber InFrame, float InVal);
+	void KeyWeightValue(FFrameNumber InFrame, EMovieSceneKeyInterpolation DefaultInterpolation, float InVal);
 ;
 	/** Remove All Keys, but maybe not space keys if bIncludeSpaceKeys is false */
 	void RemoveAllKeys(bool bIncludeSpaceKeys);

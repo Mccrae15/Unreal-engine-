@@ -2,10 +2,12 @@
 
 #pragma once
 
+#include "Containers/UnrealString.h"
 #include "Misc/Optional.h"
 #include "Templates/UniquePtr.h"
 #include "UObject/NameTypes.h"
 
+#include "UnrealUSDWrapper.h"
 #include "UsdWrappers/ForwardDeclarations.h"
 
 #if USE_USD_SDK
@@ -24,6 +26,10 @@ namespace UE
 {
 	class FSdfPath;
 	class FUsdAttribute;
+	class FUsdPayloads;
+	class FUsdReferences;
+	class FUsdVariantSet;
+	class FUsdVariantSets;
 
 	namespace Internal
 	{
@@ -85,8 +91,21 @@ namespace UE
 
 		TArray<FName> GetAppliedSchemas() const;
 
-		bool IsA( FName SchemaType ) const;
-		bool HasAPI( FName SchemaType, TOptional<FName> InstanceName = {} ) const;
+		bool IsA( FName SchemaIdentifier ) const;
+		bool HasAPI( FName SchemaIdentifier ) const;
+		bool HasAPI( FName SchemaIdentifier, FName InstanceName ) const;
+
+		UE_DEPRECATED( 5.3, "Please use the one FName overload for single apply API schemas, or the two FName overload for multiple apply API schemas." )
+		bool HasAPI( FName SchemaType, TOptional<FName> InstanceName ) const;
+
+		bool CanApplyAPI( FName SchemaIdentifier, FString* OutWhyNot = nullptr ) const;
+		bool CanApplyAPI( FName SchemaIdentifier, FName InstanceName, FString* OutWhyNot = nullptr ) const;
+
+		bool ApplyAPI( FName SchemaIdentifier ) const;
+		bool ApplyAPI( FName SchemaIdentifier, FName InstanceName ) const;
+
+		bool RemoveAPI( FName SchemaIdentifier ) const;
+		bool RemoveAPI( FName SchemaIdentifier, FName InstanceName ) const;
 
 		const FSdfPath GetPrimPath() const;
 		FUsdStage GetStage() const;
@@ -99,13 +118,20 @@ namespace UE
 		TArray< FUsdPrim > GetChildren() const;
 		TArray< FUsdPrim > GetFilteredChildren( bool bTraverseInstanceProxies ) const;
 
+		FUsdVariantSets GetVariantSets() const;
+		FUsdVariantSet GetVariantSet(const FString& VariantSetName) const;
 		bool HasVariantSets() const;
-		bool HasAuthoredReferences() const;
 
+		FUsdPayloads GetPayloads() const;
+		bool HasAuthoredPayloads() const;
+		UE_DEPRECATED(5.3, "Please use HasAuthoredPayloads() instead.")
 		bool HasPayload() const;
 		bool IsLoaded() const;
-		void Load();
+		void Load( EUsdLoadPolicy Policy = EUsdLoadPolicy::UsdLoadWithDescendants );
 		void Unload();
+
+		FUsdReferences GetReferences() const;
+		bool HasAuthoredReferences() const;
 
 		bool RemoveProperty( FName PropName ) const;
 
@@ -113,6 +139,20 @@ namespace UE
 		TArray< FUsdAttribute > GetAttributes() const;
 		FUsdAttribute GetAttribute(const TCHAR* AttrName) const;
 		bool HasAttribute(const TCHAR* AttrName) const;
+
+		bool IsInstanceable() const;
+		bool SetInstanceable(bool bInstanceable) const;
+		bool ClearInstanceable() const;
+		bool HasAuthoredInstanceable() const;
+		bool IsInstance() const;
+		bool IsInstanceProxy() const;
+		bool IsPrototype() const;
+		bool IsInPrototype() const;
+		FUsdPrim GetPrototype() const;
+		FUsdPrim GetPrimInPrototype() const;
+		TArray<FUsdPrim> GetInstances() const;
+		static bool IsPrototypePath(const FSdfPath& Path);
+		static bool IsPathInPrototype(const FSdfPath& Path);
 
 	private:
 		TUniquePtr< Internal::FUsdPrimImpl > Impl;

@@ -5,7 +5,9 @@
 #include "EdGraphUtilities.h"
 #include "INiagaraEditorTypeUtilities.h"
 #include "Misc/FileHelper.h"
+#include "Misc/PathViews.h"
 #include "Modules/ModuleManager.h"
+#include "NiagaraCompilationPrivate.h"
 #include "NiagaraComponent.h"
 #include "NiagaraDataInterface.h"
 #include "NiagaraEditorModule.h"
@@ -83,6 +85,23 @@ static FAutoConsoleVariableRef CVarNiagaraEnablePrecompilerNamespaceFixup(
 	ECVF_Default
 );
 
+namespace NiagaraCompileRequestHelper
+{
+	using FDebugGroupNameBuilder = TStringBuilder<512>;
+	static void BuildScriptDebugGroupName(const FNiagaraCompileRequestData* InCompileRequest, const FNiagaraCompileOptions& InCompileOptions, FDebugGroupNameBuilder& NameBuilder)
+	{
+		FPathViews::Append(NameBuilder, InCompileRequest->SourceName);
+		FPathViews::Append(NameBuilder, InCompileRequest->EmitterUniqueName);
+		FPathViews::Append(NameBuilder, InCompileRequest->ENiagaraScriptUsageEnum->GetNameStringByValue((int64)InCompileOptions.TargetUsage));
+
+		if (InCompileOptions.TargetUsageId.IsValid())
+		{
+			NameBuilder << TEXT("_");
+			InCompileOptions.TargetUsageId.AppendString(NameBuilder, EGuidFormats::Digits);
+		}
+	}
+
+};
 
 static FCriticalSection TranslationCritSec;
 
@@ -154,7 +173,7 @@ void FNiagaraCompileRequestDuplicateData::DuplicateReferencedGraphsRecursive(UNi
 				{
 					UNiagaraDataInterface* DataInterface = InputNode->GetDataInterface();
 					bool bIsParameterMapDataInterface = false;
-					FName DIName = FHlslNiagaraTranslator::GetDataInterfaceName(InputNode->Input.GetName(), EmitterUniqueName, bIsParameterMapDataInterface);
+					FName DIName = FNiagaraHlslTranslator::GetDataInterfaceName(InputNode->Input.GetName(), EmitterUniqueName, bIsParameterMapDataInterface);
 					UNiagaraDataInterface* Dupe = PrecompileDuplicateObject<UNiagaraDataInterface>(DataInterface, GetTransientPackage());
 					SharedNameToDuplicatedDataInterfaceMap->Add(DIName, Dupe);
 				}
@@ -320,7 +339,7 @@ void FNiagaraCompileRequestData::SortOutputNodesByDependencies(TArray<class UNia
 
 FName FNiagaraCompileRequestData::ResolveEmitterAlias(FName VariableName) const
 {
-	return FNiagaraParameterMapHistory::ResolveEmitterAlias(VariableName, EmitterUniqueName);
+	return FNiagaraParameterUtilities::ResolveEmitterAlias(VariableName, EmitterUniqueName);
 }
 
 bool FNiagaraCompileRequestDuplicateData::IsDuplicateDataFor(UNiagaraSystem* InSystem, UNiagaraEmitter* InEmitter, UNiagaraScript* InScript) const
@@ -378,10 +397,10 @@ void FNiagaraCompileRequestData::GatherPreCompiledVariables(const FString& InNam
 	{
 		for (const FNiagaraVariable& EncounteredVariable : EncounteredVariables)
 		{
-			if (FNiagaraParameterMapHistory::IsInNamespace(EncounteredVariable, InNamespaceFilter))
+			if (FNiagaraParameterUtilities::IsInNamespace(EncounteredVariable, InNamespaceFilter))
 			{
 				FNiagaraVariable NewVar = EncounteredVariable;
-				if (NewVar.IsDataAllocated() == false && !NewVar.IsDataInterface())
+				if (NewVar.IsDataAllocated() == false && !NewVar.IsDataInterface() && !NewVar.IsUObject())
 				{
 					FNiagaraEditorUtilities::ResetVariableToDefaultValue(NewVar);
 				}
@@ -624,8 +643,8 @@ void FNiagaraCompileRequestData::FinishPrecompile(const TArray<FNiagaraVariable>
 			if (bStageEnabled)
 			{
 				// Map all for this output node
-				FNiagaraParameterMapHistoryWithMetaDataBuilder Builder;
-				Builder.ConstantResolver = ConstantResolver;
+				TNiagaraParameterMapHistoryWithMetaDataBuilder<FNiagaraCompilationGraphBridge> Builder;
+				*Builder.ConstantResolver = ConstantResolver;
 				Builder.AddGraphToCallingGraphContextStack(Source->NodeGraph);
 				Builder.RegisterEncounterableVariables(EncounterableVariables);
 				Builder.RegisterExternalStaticVariables(StaticVariables);
@@ -764,7 +783,7 @@ void FNiagaraCompileRequestData::FinishPrecompile(const TArray<FNiagaraVariable>
 					{
 						int32 VariableIndex = DataInterfaceVariableIndices[i];
 						const FNiagaraVariable& Variable = History.Variables[VariableIndex];
-						for (const FModuleScopedPin& WritePin : History.PerVariableWriteHistory[VariableIndex])
+						for (const FNiagaraParameterMapHistory::FModuleScopedPin& WritePin : History.PerVariableWriteHistory[VariableIndex])
 						{
 							if (WritePin.Pin != nullptr && WritePin.Pin->LinkedTo.Num() == 1 && WritePin.Pin->LinkedTo[0] != nullptr)
 							{
@@ -775,14 +794,17 @@ void FNiagaraCompileRequestData::FinishPrecompile(const TArray<FNiagaraVariable>
 									FCompileDataInterfaceData* DataInterfaceData = nullptr;
 									if (DataInterface != nullptr)
 									{
+										TArray<FString> EmitterReferences;
+										DataInterface->GetEmitterReferencesByName(EmitterReferences);
+
 										for (const FString& EmitterName : EmitterNames)
 										{
-											if (DataInterface->ReadsEmitterParticleData(EmitterName))
+											if (EmitterReferences.Contains(EmitterName))
 											{
 												if (DataInterfaceData == nullptr)
 												{
 													DataInterfaceData = &SharedCompileDataInterfaceData->AddDefaulted_GetRef();
-													DataInterfaceData->EmitterName = ConstantResolver.GetEmitter() != nullptr ? ConstantResolver.GetEmitter()->GetUniqueEmitterName() : FString();
+													DataInterfaceData->EmitterName = EmitterUniqueName;
 													DataInterfaceData->Usage = FoundOutputNode->GetUsage();
 													DataInterfaceData->UsageId = FoundOutputNode->GetUsageId();
 													DataInterfaceData->Variable = Variable;
@@ -862,7 +884,7 @@ void FNiagaraCompileRequestDuplicateData::FinishPrecompileDuplicate(const TArray
 		{
 			// Map all for this output node
 			FNiagaraParameterMapHistoryWithMetaDataBuilder Builder;
-			Builder.ConstantResolver = ConstantResolver;
+			*Builder.ConstantResolver = ConstantResolver;
 			Builder.AddGraphToCallingGraphContextStack(NodeGraphDeepCopy.Get());
 			Builder.RegisterEncounterableVariables(EncounterableVariables);
 			Builder.RegisterExternalStaticVariables(InStaticVariables);
@@ -969,7 +991,7 @@ TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> FNiagaraEditorMo
 	TArray<TSharedPtr<FNiagaraCompileRequestData, ESPMode::ThreadSafe>> DependentRequests;
 	FCompileConstantResolver EmptyResolver;
 
-	BasePtr->SourceName = InObj->GetName();
+	BasePtr->SourceName = LogName;
 
 	if (Script)
 	{
@@ -1407,9 +1429,10 @@ int32 FNiagaraEditorModule::CompileScript(const FNiagaraCompileRequestDataBase* 
 	UE_LOG(LogNiagaraEditor, Verbose, TEXT("Compiling System %s ..................................................................."), *InCompileOptions.FullName);
 
 	FNiagaraCompileResults Results;
-	TSharedPtr<FHlslNiagaraCompiler> Compiler = MakeShared<FHlslNiagaraCompiler>();
+	FActiveCompilation ActiveCompilation;
+	ActiveCompilation.Compiler = MakeShared<FHlslNiagaraCompiler>();
 	FNiagaraTranslateResults TranslateResults;
-	FHlslNiagaraTranslator Translator;
+	TUniquePtr<INiagaraHlslTranslator> Translator = INiagaraHlslTranslator::CreateTranslator(CompileRequest, CompileRequestDuplicate);
 
 	FHlslNiagaraTranslatorOptions TranslateOptions;
 
@@ -1430,27 +1453,31 @@ int32 FNiagaraEditorModule::CompileScript(const FNiagaraCompileRequestDataBase* 
 	if (GbForceNiagaraTranslatorSingleThreaded > 0)
 	{
 		FScopeLock Lock(&TranslationCritSec);
-		TranslateResults = Translator.Translate(CompileRequest, CompileRequestDuplicate, InCompileOptions, TranslateOptions);
+		TranslateResults = Translator->Translate(InCompileOptions, TranslateOptions);
 	}
 	else
 	{
-		TranslateResults = Translator.Translate(CompileRequest, CompileRequestDuplicate, InCompileOptions, TranslateOptions);
+		TranslateResults = Translator->Translate(InCompileOptions, TranslateOptions);
 	}
+
+	ActiveCompilation.TranslationTime = (float) (FPlatformTime::Seconds() - TranslationStartTime);
 	UE_LOG(LogNiagaraEditor, Verbose, TEXT("Translating System %s took %f sec."), *InCompileOptions.FullName, (float)(FPlatformTime::Seconds() - TranslationStartTime));
 
 	if (GbForceNiagaraTranslatorDump != 0)
 	{
-		DumpHLSLText(Translator.GetTranslatedHLSL(), InCompileOptions.FullName);
+		DumpHLSLText(Translator->GetTranslatedHLSL(), InCompileOptions.FullName);
 		if (GbForceNiagaraVMBinaryDump != 0 && Results.Data.IsValid())
 		{
 			DumpHLSLText(Results.Data->LastAssemblyTranslation, InCompileOptions.FullName);
 		}
 	}
 
-	int32 JobID = Compiler->CompileScript(CompileRequest, InCompileOptions, TranslateResults, &Translator.GetTranslateOutput(), Translator.GetTranslatedHLSL());
-	ActiveCompilations.Add(JobID, Compiler);
+	NiagaraCompileRequestHelper::FDebugGroupNameBuilder DebugGroupName;
+	NiagaraCompileRequestHelper::BuildScriptDebugGroupName(CompileRequest, InCompileOptions, DebugGroupName);
+
+	int32 JobID = ActiveCompilation.Compiler->CompileScript(DebugGroupName, InCompileOptions, TranslateResults, Translator->GetTranslateOutput(), Translator->GetTranslatedHLSL());
+	ActiveCompilations.Add(JobID, ActiveCompilation);
 	return JobID;
-	
 }
 
 TSharedPtr<FNiagaraGraphCachedDataBase, ESPMode::ThreadSafe> FNiagaraEditorModule::CacheGraphTraversal(const UObject* Obj, FGuid Version)
@@ -1563,7 +1590,7 @@ TSharedPtr<FNiagaraGraphCachedDataBase, ESPMode::ThreadSafe> FNiagaraEditorModul
 
 			// Map all for this output node
 			FNiagaraParameterMapHistoryWithMetaDataBuilder Builder;
-			Builder.ConstantResolver = ConstantResolver;
+			*Builder.ConstantResolver = ConstantResolver;
 			if (ScriptSource != nullptr)
 			{
 				Builder.AddGraphToCallingGraphContextStack(ScriptSource->NodeGraph);
@@ -1580,7 +1607,9 @@ TSharedPtr<FNiagaraGraphCachedDataBase, ESPMode::ThreadSafe> FNiagaraEditorModul
 			Builder.EndUsage();
 
 			for (const FNiagaraVariable& Var : Builder.StaticVariables)
+			{
 				StaticVariables.AddUnique(Var);
+			}
 		}
 	}
 
@@ -1600,19 +1629,22 @@ TSharedPtr<FNiagaraGraphCachedDataBase, ESPMode::ThreadSafe> FNiagaraEditorModul
 	return CachedPtr;
 }
 
-TSharedPtr<FNiagaraVMExecutableData> FNiagaraEditorModule::GetCompilationResult(int32 JobID, bool bWait)
+TSharedPtr<FNiagaraVMExecutableData> FNiagaraEditorModule::GetCompilationResult(int32 JobID, bool bWait, FNiagaraScriptCompileMetrics& ScriptMetrics)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FNiagaraEditorModule::GetCompilationResult);
 
-	TSharedPtr<FHlslNiagaraCompiler>* MapEntry = ActiveCompilations.Find(JobID);
-	check(MapEntry && *MapEntry);
+	FActiveCompilation* MapEntry = ActiveCompilations.Find(JobID);
+	check(MapEntry && MapEntry->Compiler.IsValid());
 
-	TSharedPtr<FHlslNiagaraCompiler> Compiler = *MapEntry;
+	TSharedPtr<FHlslNiagaraCompiler> Compiler = MapEntry->Compiler;
 	TOptional<FNiagaraCompileResults> CompileResult = Compiler->GetCompileResult(JobID, bWait);
 	if (!CompileResult)
 	{
 		return TSharedPtr<FNiagaraVMExecutableData>();
 	}
+
+	ScriptMetrics.TranslateTime = MapEntry->TranslationTime;
+
 	ActiveCompilations.Remove(JobID);
 	FNiagaraCompileResults& Results = CompileResult.GetValue();
 
@@ -1640,6 +1672,11 @@ TSharedPtr<FNiagaraVMExecutableData> FNiagaraEditorModule::GetCompilationResult(
 		// When there are no errors the compile events get emptied, so add them back here.
 		Results.Data->LastCompileEvents.Append(Results.CompileEvents);
 	}
+
+	ScriptMetrics.CompilerWallTime = CompileResult->CompilerWallTime;
+	ScriptMetrics.CompilerPreprocessTime = CompileResult->CompilerPreprocessTime;
+	ScriptMetrics.CompilerWorkerTime = CompileResult->CompilerWorkerTime;
+
 	return CompileResult->Data;
 }
 
@@ -1733,11 +1770,17 @@ ENiagaraScriptCompileStatus FNiagaraCompileResults::CompileResultsToSummary(cons
 	return SummaryStatus;
 }
 
-int32 FHlslNiagaraCompiler::CompileScript(const FNiagaraCompileRequestData* InCompileRequest, const FNiagaraCompileOptions& InOptions, const FNiagaraTranslateResults& InTranslateResults, FNiagaraTranslatorOutput *TranslatorOutput, FString &TranslatedHLSL)
+int32 FHlslNiagaraCompiler::CompileScript(const FNiagaraCompileRequestData* InCompileRequest, const FNiagaraCompileOptions& InOptions, const FNiagaraTranslateResults& InTranslateResults, FNiagaraTranslatorOutput* TranslatorOutput, FString& TranslatedHLSL)
+{
+	NiagaraCompileRequestHelper::FDebugGroupNameBuilder DebugGroupName;
+	NiagaraCompileRequestHelper::BuildScriptDebugGroupName(InCompileRequest, InOptions, DebugGroupName);
+
+	return CompileScript(DebugGroupName, InOptions, InTranslateResults, TranslatorOutput ? *TranslatorOutput : FNiagaraTranslatorOutput(), TranslatedHLSL);
+}
+
+int32 FHlslNiagaraCompiler::CompileScript(const FStringView GroupName, const FNiagaraCompileOptions& InOptions, const FNiagaraTranslateResults& InTranslateResults, const FNiagaraTranslatorOutput& TranslatorOutput, const FString& TranslatedHLSL)
 {
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraEditor_HlslCompiler_CompileScript);
-
-	static const auto CVarDumpCommandLine = IConsoleManager::Get().FindConsoleVariable(TEXT("r.DumpShaderDebugWorkerCommandLine"));
 
 	CompileResults.Data = MakeShared<FNiagaraVMExecutableData>();
 
@@ -1761,10 +1804,9 @@ int32 FHlslNiagaraCompiler::CompileScript(const FNiagaraCompileRequestData* InCo
 	Input.Environment.SetDefine(TEXT("MESHSHADER"), 0);
 	Input.Environment.SetDefine(TEXT("AMPLIFICATIONSHADER"), 0);
 	Input.Environment.IncludeVirtualPathToContentsMap.Add(TEXT("/Engine/Generated/NiagaraEmitterInstance.ush"), TranslatedHLSL);
-	Input.bGenerateDirectCompileFile = CVarDumpCommandLine ? CVarDumpCommandLine->GetBool() : false;
+	Input.DebugInfoFlags = GShaderCompilingManager->GetDumpShaderDebugInfoFlags();
 	Input.DumpDebugInfoRootPath = GShaderCompilingManager->GetAbsoluteShaderDebugInfoDirectory() / TEXT("VM");
-	FString UsageIdStr = !InOptions.TargetUsageId.IsValid() ? TEXT("") : (TEXT("_") + InOptions.TargetUsageId.ToString());
-	Input.DebugGroupName = InCompileRequest->SourceName / InCompileRequest->EmitterUniqueName / InCompileRequest->ENiagaraScriptUsageEnum->GetNameStringByValue((int64)InOptions.TargetUsage) + UsageIdStr;
+	Input.DebugGroupName = GroupName;
 	Input.DebugExtension.Empty();
 	Input.DumpDebugInfoPath.Empty();
 
@@ -1776,7 +1818,7 @@ int32 FHlslNiagaraCompiler::CompileScript(const FNiagaraCompileRequestData* InCo
 
 	uint32 JobID = FShaderCommonCompileJob::GetNextJobId();
 	CompilationJob = MakeUnique<FNiagaraCompilerJob>();
-	CompilationJob->TranslatorOutput = TranslatorOutput ? *TranslatorOutput : FNiagaraTranslatorOutput();
+	CompilationJob->TranslatorOutput = TranslatorOutput;
 
 	CompileResults.bVMSucceeded = (CompilationJob->TranslatorOutput.Errors.Len() == 0) && (TranslatedHLSL.Len() > 0) && !InTranslateResults.NumErrors;
 
@@ -1799,6 +1841,7 @@ int32 FHlslNiagaraCompiler::CompileScript(const FNiagaraCompileRequestData* InCo
 	CompileResults.Data->LastCompileEvents.Append(InTranslateResults.CompileEvents);
 	CompileResults.Data->ExternalDependencies = InTranslateResults.CompileDependencies;
 	CompileResults.Data->CompileTags = InTranslateResults.CompileTags;
+	CompileResults.Data->CompileTagsEditorOnly = InTranslateResults.CompileTagsEditorOnly;
 
 	// Early out if compiling a GPU particle script as we do not need to submit a CPU compile request.
 	// This must be done after we add in the translator errors etc so tha they are passed to the compile job correctly.
@@ -1813,6 +1856,7 @@ int32 FHlslNiagaraCompiler::CompileScript(const FNiagaraCompileRequestData* InCo
 	CompilationJob->TranslatorOutput.ScriptData.LastHlslTranslation = TranslatedHLSL;
 	CompilationJob->TranslatorOutput.ScriptData.ExternalDependencies = InTranslateResults.CompileDependencies;
 	CompilationJob->TranslatorOutput.ScriptData.CompileTags = InTranslateResults.CompileTags;
+	CompilationJob->TranslatorOutput.ScriptData.CompileTagsEditorOnly = InTranslateResults.CompileTagsEditorOnly;
 
 	bool bJobScheduled = false;
 	if (CompileResults.bVMSucceeded)
@@ -1859,6 +1903,7 @@ int32 FHlslNiagaraCompiler::CompileScript(const FNiagaraCompileRequestData* InCo
 		CompileResults.Data->Parameters.Empty();
 		CompileResults.Data->InternalParameters.Empty();
 		CompileResults.Data->DataInterfaceInfo.Empty();
+		CompileResults.Data->UObjectInfos.Empty();
 
 	}
 	CompilationJob->CompileResults = CompileResults;
@@ -1868,12 +1913,76 @@ int32 FHlslNiagaraCompiler::CompileScript(const FNiagaraCompileRequestData* InCo
 
 void FHlslNiagaraCompiler::FixupVMAssembly(FString& Asm)
 {
-	for (int32 OpCode = 0; OpCode < VectorVM::GetNumOpCodes(); ++OpCode)
+	const TCHAR* OpTag = TEXT("__OP__");
+	const TCHAR* OpDelimTags[] = { TEXT("("), TEXT(";") };
+	const int32 OpTagLen = FCString::Strlen(OpTag);
+	const int32 OpCount = VectorVM::GetNumOpCodes();
+	constexpr int32 MaxDigitLength = 8;
+
+	const FString OriginalAsm = MoveTemp(Asm);
+	const FStringView OriginalAsmView(OriginalAsm);
+
+	Asm.Reserve(OriginalAsm.Len());
+
+	int32 SearchStartLocation = 0;
+	while (SearchStartLocation != INDEX_NONE)
 	{
-		//TODO: reduce string ops here by moving these out to a static list.
-		FString ToReplace = TEXT("__OP__") + LexToString(OpCode) + TEXT("(");
-		FString Replacement = VectorVM::GetOpName(EVectorVMOp(OpCode)) + TEXT("(");
-		Asm.ReplaceInline(*ToReplace, *Replacement);
+		const int32 OpStartLocation = OriginalAsmView.Find(OpTag, SearchStartLocation);
+
+		// append the string leading up to the OpCode
+		const int32 SubStringLength = OpStartLocation == INDEX_NONE ? MAX_int32 : OpStartLocation - SearchStartLocation;
+		if (SubStringLength)
+		{
+			Asm.Append(OriginalAsmView.Mid(SearchStartLocation, SubStringLength));
+			SearchStartLocation = OpStartLocation;
+		}
+
+		if (OpStartLocation == INDEX_NONE)
+		{
+			break;
+		}
+
+		// find the next delimiter
+		const int32 OpEndLocation = OpStartLocation + OpTagLen;
+		FStringView DelimSearchView = OriginalAsmView.Mid(OpEndLocation, MaxDigitLength + 1);
+		int32 DelimOffset = INDEX_NONE;
+
+		for (const TCHAR* DelimTag : OpDelimTags)
+		{
+			int32 NextLocation = DelimSearchView.Find(DelimTag);
+			if (NextLocation != INDEX_NONE && (DelimOffset == INDEX_NONE || NextLocation < DelimOffset))
+			{
+				DelimOffset = NextLocation;
+			}
+		}
+
+		// check if the intervening spaces are digits (op index)
+		int32 OpIndex = INDEX_NONE;
+
+		if (DelimOffset != INDEX_NONE)
+		{
+			FStringView OpIndexStrView = OriginalAsmView.Mid(OpEndLocation, DelimOffset);
+			if (OpIndexStrView.Len() <= MaxDigitLength)
+			{
+				TStringBuilder<MaxDigitLength + 1> OpIndexStr;
+				OpIndexStr.Append(OpIndexStrView);
+				if (!LexTryParseString<int32>(OpIndex, *OpIndexStr))
+				{
+					OpIndex = INDEX_NONE;
+				}
+			}
+		}
+
+		if (OpIndex != INDEX_NONE && OpIndex < OpCount)
+		{
+			Asm.Append(VectorVM::GetOpName(EVectorVMOp(OpIndex)));
+			SearchStartLocation = OpEndLocation + DelimOffset;
+		}
+		else
+		{
+			Asm.Append(OriginalAsmView.Mid(OpStartLocation, OpTagLen));
+			SearchStartLocation = OpEndLocation;
+		}
 	}
 }
 
@@ -1993,6 +2102,7 @@ TOptional<FNiagaraCompileResults> FHlslNiagaraCompiler::GetCompileResult(int32 J
 		Results.Data->Parameters.Empty();
 		Results.Data->InternalParameters.Empty();
 		Results.Data->DataInterfaceInfo.Empty();
+		Results.Data->UObjectInfos.Empty();
 		//Eventually Niagara will have all the shader plumbing and do things like materials.
 	}
 	else
@@ -2039,7 +2149,10 @@ TOptional<FNiagaraCompileResults> FHlslNiagaraCompiler::GetCompileResult(int32 J
 			break;
 			}
 		}
-		Results.CompileTime = (float)(FPlatformTime::Seconds() - CompilationJob->StartTime);
+
+		Results.CompilerWallTime = (float)(FPlatformTime::Seconds() - CompilationJob->StartTime);
+		Results.CompilerWorkerTime = (float)CompilationJob->ShaderCompileJob->Output.CompileTime;
+		Results.CompilerPreprocessTime = (float)CompilationJob->ShaderCompileJob->Output.PreprocessTime;
 
 		Results.Data->CalledVMExternalFunctions.Empty(CompilationOutput.CalledVMFunctionTable.Num());
 		for (FCalledVMFunction& FuncInfo : CompilationOutput.CalledVMFunctionTable)
@@ -2050,7 +2163,7 @@ TOptional<FNiagaraCompileResults> FHlslNiagaraCompiler::GetCompileResult(int32 J
 			{
 				Sig = NDIInfo.RegisteredFunctions.FindByPredicate([&](const FNiagaraFunctionSignature& CheckSig)
 				{
-					FString SigSymbol = FHlslNiagaraTranslator::GetFunctionSignatureSymbol(CheckSig);
+					FString SigSymbol = FNiagaraHlslTranslator::GetFunctionSignatureSymbol(CheckSig);
 					return SigSymbol == FuncInfo.Name;
 				});
 				if (Sig)
@@ -2065,7 +2178,7 @@ TOptional<FNiagaraCompileResults> FHlslNiagaraCompiler::GetCompileResult(int32 J
 				Sig = UNiagaraFunctionLibrary::GetVectorVMFastPathOps(true).FindByPredicate(
 					[&](const FNiagaraFunctionSignature& CheckSig)
 				{
-					FString SigSymbol = FHlslNiagaraTranslator::GetFunctionSignatureSymbol(CheckSig);
+					FString SigSymbol = FNiagaraHlslTranslator::GetFunctionSignatureSymbol(CheckSig);
 					return SigSymbol == FuncInfo.Name;
 				}
 				);
@@ -2103,6 +2216,7 @@ TOptional<FNiagaraCompileResults> FHlslNiagaraCompiler::GetCompileResult(int32 J
 	Results.NumErrors = CompileResults.NumErrors;
 	Results.CompileEvents = CompileResults.CompileEvents;
 	Results.Data->CompileTags = CompileResults.Data->CompileTags;
+	Results.Data->CompileTagsEditorOnly = CompileResults.Data->CompileTagsEditorOnly;
 
 	CompilationJob.Reset();
 	return Results;

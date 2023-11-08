@@ -8,6 +8,8 @@
 #include "MassEntityUtils.h"
 #include "MassEntityManager.h"
 
+#include "MassCommands.generated.h"
+
 /**
  * Enum used by MassBatchCommands to declare their "type". This data is later used to group commands so that command 
  * effects are applied in a controllable fashion 
@@ -137,14 +139,14 @@ struct FMassBatchedEntityCommand : public FMassBatchedCommand
 
 	void Add(FMassEntityHandle Entity)
 	{
-		UE_MT_SCOPED_READ_ACCESS(EntitiesAccessDetector);
+		UE_MT_SCOPED_WRITE_ACCESS(EntitiesAccessDetector);
 		TargetEntities.Add(Entity);
 		bHasWork = true;
 	}
 
 	void Add(TConstArrayView<FMassEntityHandle> Entities)
 	{
-		UE_MT_SCOPED_READ_ACCESS(EntitiesAccessDetector);
+		UE_MT_SCOPED_WRITE_ACCESS(EntitiesAccessDetector);
 		TargetEntities.Append(Entities.GetData(), Entities.Num());
 		bHasWork = true;
 	}
@@ -353,6 +355,13 @@ struct FMassCommandAddFragmentInstances : public FMassBatchedEntityCommand
 	}
 
 protected:
+	virtual void Reset() override
+	{
+		Fragments.Reset(); 
+		FragmentsAffected.Reset();
+		Super::Reset();
+	}
+
 	virtual SIZE_T GetAllocatedSize() const override
 	{
 		return Super::GetAllocatedSize() + Fragments.GetAllocatedSize() + FragmentsAffected.GetAllocatedSize();

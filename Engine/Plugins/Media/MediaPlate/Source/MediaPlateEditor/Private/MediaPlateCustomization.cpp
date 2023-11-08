@@ -14,6 +14,7 @@
 #include "MediaPlate.h"
 #include "MediaPlateComponent.h"
 #include "MediaPlateEditorModule.h"
+#include "MediaPlateEditorStyle.h"
 #include "MediaPlayer.h"
 #include "MediaPlaylist.h"
 #include "MediaSource.h"
@@ -58,16 +59,7 @@ void FMediaPlateCustomization::CustomizeDetails(IDetailLayoutBuilder& DetailBuil
 	}
 
 	// Get style.
-	const ISlateStyle* Style = nullptr;
-	FMediaPlateEditorModule* EditorModule = FModuleManager::LoadModulePtr<FMediaPlateEditorModule>("MediaPlateEditor");
-	if (EditorModule != nullptr)
-	{
-		Style = EditorModule->GetStyle().Get();
-	}
-	if (Style == nullptr)
-	{
-		Style = &FAppStyle::Get();
-	}
+	const ISlateStyle* Style = &FMediaPlateEditorStyle::Get().Get();
 
 	// Hide the static mesh.
 	IDetailCategoryBuilder& StaticMeshCategory = DetailBuilder.EditCategory("StaticMesh");
@@ -452,7 +444,7 @@ void FMediaPlateCustomization::CustomizeDetails(IDetailLayoutBuilder& DetailBuil
 					.Padding(0, 5, 10, 5)
 					[
 						SNew(SButton)
-							.ContentPadding(3)
+							.ContentPadding(3.0f)
 							.VAlign(VAlign_Center)
 							.HAlign(HAlign_Center)
 							.OnClicked(this, &FMediaPlateCustomization::OnOpenMediaPlate)
@@ -544,7 +536,7 @@ void FMediaPlateCustomization::AddMeshCustomization(IDetailCategoryBuilder& Medi
 				[
 					SNew(SComboButton)
 						.OnGetMenuContent(this, &FMediaPlateCustomization::OnGetAspectRatios)
-						.ContentPadding(2)
+						.ContentPadding(2.0f)
 						.ButtonContent()
 						[
 							SNew(STextBlock)
@@ -586,7 +578,7 @@ void FMediaPlateCustomization::AddMeshCustomization(IDetailCategoryBuilder& Medi
 				[
 					SNew(SComboButton)
 						.OnGetMenuContent(this, &FMediaPlateCustomization::OnGetLetterboxAspectRatios)
-						.ContentPadding(2)
+						.ContentPadding(2.0f)
 						.ButtonContent()
 						[
 							SNew(STextBlock)
@@ -880,7 +872,7 @@ TOptional<float> FMediaPlateCustomization::GetLetterboxAspectRatio() const
 
 void FMediaPlateCustomization::SetMeshHorizontalRange(float HorizontalRange)
 {
-	HorizontalRange = FMath::Clamp(HorizontalRange, 0.0f, 360.0f);
+	HorizontalRange = FMath::Clamp(HorizontalRange, 1.0f, 360.0f);
 	TOptional VerticalRange = GetMeshVerticalRange();
 	if (VerticalRange.IsSet())
 	{
@@ -897,7 +889,7 @@ TOptional<float> FMediaPlateCustomization::GetMeshHorizontalRange() const
 		UMediaPlateComponent* MediaPlate = MediaPlatePtr.Get();
 		if (MediaPlate != nullptr)
 		{
-			return MediaPlate->GetMeshRange().X;
+			return static_cast<float>(MediaPlate->GetMeshRange().X);
 		}
 	}
 
@@ -906,7 +898,7 @@ TOptional<float> FMediaPlateCustomization::GetMeshHorizontalRange() const
 
 void FMediaPlateCustomization::SetMeshVerticalRange(float VerticalRange)
 {
-	VerticalRange = FMath::Clamp(VerticalRange, 0.0f, 180.0f);
+	VerticalRange = FMath::Clamp(VerticalRange, 1.0f, 180.0f);
 	TOptional HorizontalRange = GetMeshHorizontalRange();
 	if (HorizontalRange.IsSet())
 	{
@@ -923,7 +915,7 @@ TOptional<float> FMediaPlateCustomization::GetMeshVerticalRange() const
 		UMediaPlateComponent* MediaPlate = MediaPlatePtr.Get();
 		if (MediaPlate != nullptr)
 		{
-			return MediaPlate->GetMeshRange().Y;
+			return static_cast<float>(MediaPlate->GetMeshRange().Y);
 		}
 	}
 
@@ -932,6 +924,8 @@ TOptional<float> FMediaPlateCustomization::GetMeshVerticalRange() const
 
 void FMediaPlateCustomization::SetMeshRange(FVector2D Range)
 {
+	const FScopedTransaction Transaction(LOCTEXT("SetMeshRange", "Media Plate Set Mesh Range"));
+
 	// Loop through all our objects.
 	for (const TWeakObjectPtr<UMediaPlateComponent>& MediaPlatePtr : MediaPlatesList)
 	{
@@ -940,6 +934,7 @@ void FMediaPlateCustomization::SetMeshRange(FVector2D Range)
 		{
 			if (MediaPlate->GetMeshRange() != Range)
 			{
+				MediaPlate->Modify();
 				MediaPlate->SetMeshRange(Range);
 				SetSphereMesh(MediaPlate);
 			}

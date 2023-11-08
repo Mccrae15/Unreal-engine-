@@ -427,10 +427,6 @@
 	#define PLATFORM_SUPPORTS_STACK_SYMBOLS 0
 #endif
 
-#ifndef PLATFORM_RUNTIME_MALLOCPROFILER_SYMBOLICATION
-	#define PLATFORM_RUNTIME_MALLOCPROFILER_SYMBOLICATION PLATFORM_SUPPORTS_STACK_SYMBOLS
-#endif
-
 #ifndef PLATFORM_HAS_128BIT_ATOMICS
 	#define PLATFORM_HAS_128BIT_ATOMICS 0
 #endif
@@ -441,10 +437,6 @@
 
 #ifndef PLATFORM_IMPLEMENTS_BeginNamedEventStatic
 	#define PLATFORM_IMPLEMENTS_BeginNamedEventStatic			0
-#endif
-
-#ifndef PLATFORM_RHITHREAD_DEFAULT_BYPASS
-	#define PLATFORM_RHITHREAD_DEFAULT_BYPASS					1
 #endif
 
 #ifndef PLATFORM_HAS_UMA
@@ -477,10 +469,6 @@
 
 #ifndef PLATFORM_WEAKLY_CONSISTENT_MEMORY
 	#define PLATFORM_WEAKLY_CONSISTENT_MEMORY PLATFORM_CPU_ARM_FAMILY
-#endif
-
-#ifndef PLATFORM_HAS_CRC_INTRINSICS
-	#define PLATFORM_HAS_CRC_INTRINSICS							0
 #endif
 
 #ifndef PLATFORM_NEEDS_RHIRESOURCELIST
@@ -607,10 +595,6 @@
 	#define PLATFORM_CONSOLE_DYNAMIC_LINK 0
 #endif
 
-#ifndef PLATFORM_MAC_ENABLE_EXPERIMENTAL_NANITE_SUPPORT
-	#define PLATFORM_MAC_ENABLE_EXPERIMENTAL_NANITE_SUPPORT 0
-#endif
-
 // deprecated, do not use
 #define PLATFORM_HAS_THREADSAFE_RHIGetRenderQueryResult	#
 #define PLATFORM_SUPPORTS_RHI_THREAD #
@@ -688,6 +672,16 @@
 	#define UE_CONSTEVAL consteval
 #else
 	#define UE_CONSTEVAL constexpr
+#endif
+
+/* Use before a class data member declaration allow it to be overlapped with other non-static data members or base class subobjects of its class. */
+#if !defined(UE_NO_UNIQUE_ADDRESS) && defined(__has_cpp_attribute)
+	#if __has_cpp_attribute(no_unique_address)
+		#define UE_NO_UNIQUE_ADDRESS [[no_unique_address]]
+	#endif
+#endif
+#ifndef UE_NO_UNIQUE_ADDRESS
+	#define UE_NO_UNIQUE_ADDRESS
 #endif
 
 /* Wrap a function signature in these to indicate that the function never returns nullptr */

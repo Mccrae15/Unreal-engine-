@@ -30,6 +30,7 @@ class MESHMODELINGTOOLSEDITORONLYEXP_API UMeshTangentsToolBuilder : public USing
 
 public:
 	virtual USingleSelectionMeshEditingTool* CreateNewTool(const FToolBuilderState& SceneState) const override;
+	virtual bool CanBuildTool(const FToolBuilderState& SceneState) const override;
 
 protected:
 	virtual const FToolTargetTypeRequirements& GetTargetRequirements() const override;
@@ -147,4 +148,6 @@ protected:
 	};
 	TArray<FMikktDeviation> Deviations;
 
+private:
+	bool bHasDisplayedNoAttributeError = false;
 };

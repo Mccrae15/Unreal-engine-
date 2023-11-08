@@ -20,6 +20,7 @@ public class TypedElementsDataStorageUI : ModuleRules
 					"CoreUObject",
 					"Engine",
 					"EditorFramework",
+					"SceneOutliner",
 					"Slate",
 					"SlateCore",
 					"ToolMenus",
@@ -32,7 +33,8 @@ public class TypedElementsDataStorageUI : ModuleRules
 				new string[]
 				{
 					"MassActors",
-					"MassEntity"
+					"MassEntity",
+					"StructUtils"
 				});
 
 			DynamicallyLoadedModuleNames.AddRange(new string[] {});

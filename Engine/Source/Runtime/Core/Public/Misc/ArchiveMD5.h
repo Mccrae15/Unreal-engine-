@@ -13,7 +13,7 @@
 /**
  * FArchive adapter for FMD5
  */
-class CORE_API FArchiveMD5 : public FArchive
+class FArchiveMD5 : public FArchive
 {
 public:
 	inline FArchiveMD5()
@@ -23,7 +23,7 @@ public:
 		SetIsPersistent(false);
 	}
 
-	virtual FString GetArchiveName() const;
+	CORE_API virtual FString GetArchiveName() const;
 
 	void Serialize(void* Data, int64 Num) override
 	{
@@ -45,9 +45,22 @@ public:
 		return *this;
 	}
 
+	virtual void Reset() override
+	{
+		FArchive::Reset();
+		MD5 = FMD5();
+	}
+
 	void GetHash(FMD5Hash& Hash)
 	{
 		Hash.Set(MD5);
+	}
+
+	FGuid GetGuidFromHash()
+	{
+		FMD5Hash MD5Hash;
+		GetHash(MD5Hash);
+		return MD5HashToGuid(MD5Hash);
 	}
 
 protected:

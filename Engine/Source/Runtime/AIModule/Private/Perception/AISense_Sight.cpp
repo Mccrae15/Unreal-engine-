@@ -1,16 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Perception/AISense_Sight.h"
-#include "EngineDefines.h"
-#include "EngineGlobals.h"
+
+#include "AIHelpers.h"
+#include "AISystem.h"
 #include "CollisionQueryParams.h"
 #include "Engine/Engine.h"
-#include "AISystem.h"
-#include "AIHelpers.h"
+#include "EngineDefines.h"
+#include "EngineGlobals.h"
 #include "Perception/AIPerceptionComponent.h"
-#include "VisualLogger/VisualLogger.h"
-#include "Perception/AISightTargetInterface.h"
 #include "Perception/AISenseConfig_Sight.h"
+#include "Perception/AISightTargetInterface.h"
+#include "VisualLogger/VisualLogger.h"
+
+#if WITH_GAMEPLAY_DEBUGGER_MENU
+#include "GameplayDebuggerTypes.h"
+#include "GameplayDebuggerCategory.h"
+#endif // WITH_GAMEPLAY_DEBUGGER_MENU
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AISense_Sight)
 
@@ -377,12 +383,12 @@ float UAISense_Sight::Update()
 			}
 			else
 			{
-				UE_CLOG(VisibilityResult != EVisibilityResult::Visible && VisibilityResult != EVisibilityResult::NotVisible, LogAIPerception, Error, TEXT("UAISense_Sight::Update received invalid Visibility result [%d] for query between Listener %s and Target %s. We'll consider it as NotVisible"), VisibilityResult, *GetNameSafe(ListenerBodyActor), *GetNameSafe(TargetActor));
+				UE_CLOG(VisibilityResult != EVisibilityResult::Visible && VisibilityResult != EVisibilityResult::NotVisible, LogAIPerception, Error, TEXT("UAISense_Sight::Update received invalid Visibility result [%d] for query between Listener %s and Target %s. We'll consider it as NotVisible"), int(VisibilityResult), *GetNameSafe(ListenerBodyActor), *GetNameSafe(TargetActor));
 
 				const bool bIsVisible = VisibilityResult == EVisibilityResult::Visible;
 				const bool bWasVisible = SightQuery->GetLastResult();
 				const FVector TargetLocation = TargetActor->GetActorLocation();
-				UpdateQueryVisibilityStatus(*SightQuery, Listener, bIsVisible, SeenLocation, StimulusStrength, TargetActor, TargetLocation);
+				UpdateQueryVisibilityStatus(*SightQuery, Listener, bIsVisible, SeenLocation, StimulusStrength, *TargetActor, TargetLocation);
 
 				const float SightRadiusSq = bWasVisible ? PropDigest.LoseSightRadiusSq : PropDigest.SightRadiusSq;
 				SightQuery->Importance = CalcQueryImportance(Listener, TargetLocation, SightRadiusSq);
@@ -578,10 +584,18 @@ UAISense_Sight::EVisibilityResult UAISense_Sight::ComputeVisibility(UWorld* Worl
 
 void UAISense_Sight::UpdateQueryVisibilityStatus(FAISightQuery& SightQuery, FPerceptionListener& Listener, const bool bIsVisible, const FVector& SeenLocation, const float StimulusStrength, AActor* TargetActor, const FVector& TargetLocation) const
 {
+	if (TargetActor)
+	{
+		UpdateQueryVisibilityStatus(SightQuery, Listener, bIsVisible, SeenLocation, StimulusStrength, *TargetActor, TargetLocation);
+	}
+}
+
+void UAISense_Sight::UpdateQueryVisibilityStatus(FAISightQuery& SightQuery, FPerceptionListener& Listener, const bool bIsVisible, const FVector& SeenLocation, const float StimulusStrength, AActor& TargetActor, const FVector& TargetLocation) const
+{
 	if (bIsVisible)
 	{
 		const bool bHasValidSeenLocation = SeenLocation != FAISystem::InvalidLocation;
-		Listener.RegisterStimulus(TargetActor, FAIStimulus(*this, StimulusStrength, bHasValidSeenLocation ? SeenLocation : SightQuery.LastSeenLocation, Listener.CachedLocation));
+		Listener.RegisterStimulus(&TargetActor, FAIStimulus(*this, StimulusStrength, bHasValidSeenLocation ? SeenLocation : SightQuery.LastSeenLocation, Listener.CachedLocation));
 		SightQuery.SetLastResult(true);
 		if (bHasValidSeenLocation)
 		{
@@ -591,12 +605,12 @@ void UAISense_Sight::UpdateQueryVisibilityStatus(FAISightQuery& SightQuery, FPer
 	// communicate failure only if we've seen given actor before
 	else if (SightQuery.GetLastResult())
 	{
-		Listener.RegisterStimulus(TargetActor, FAIStimulus(*this, 0.f, TargetLocation, Listener.CachedLocation, FAIStimulus::SensingFailed));
+		Listener.RegisterStimulus(&TargetActor, FAIStimulus(*this, 0.f, TargetLocation, Listener.CachedLocation, FAIStimulus::SensingFailed));
 		SightQuery.SetLastResult(false);
 		SightQuery.LastSeenLocation = FAISystem::InvalidLocation;
 	}
 
-	SIGHT_LOG_SEGMENT(ListenerPtr->GetOwner(), Listener.CachedLocation, TargetLocation, bIsVisible ? FColor::Green : FColor::Red, TEXT("TargetID %d"), Target.TargetId);
+	SIGHT_LOG_SEGMENT(Listener.GetBodyActor(), Listener.CachedLocation, TargetLocation, bIsVisible ? FColor::Green : FColor::Red, TEXT("Target: %s"), *TargetActor.GetName());
 }
 
 void UAISense_Sight::OnPendingCanBeSeenQueryProcessed(const FAISightQueryID& QueryID, const bool bIsVisible, const float StimulusStrength, const FVector& SeenLocation, const TOptional<int32>& UserData)
@@ -677,7 +691,7 @@ void UAISense_Sight::OnPendingQueryProcessed(const int32 SightQueryIndex, const 
 
 	const bool bWasVisible = SightQuery.GetLastResult();
 	const FVector TargetLocation = TargetActor->GetActorLocation();
-	UpdateQueryVisibilityStatus(SightQuery, *Listener, bIsVisible, SeenLocation, StimulusStrength, TargetActor, TargetLocation);
+	UpdateQueryVisibilityStatus(SightQuery, *Listener, bIsVisible, SeenLocation, StimulusStrength, *TargetActor, TargetLocation);
 
 	if (UserData.IsSet())
 	{
@@ -727,7 +741,7 @@ void UAISense_Sight::UnregisterSource(AActor& SourceActor)
 	FAISightTarget AsTarget;
 
 	if (ObservedTargets.RemoveAndCopyValue(AsTargetId, AsTarget) 
-		&& (SightQueriesInRange.Num() + SightQueriesOutOfRange.Num()) > 0)
+		&& (SightQueriesInRange.Num() + SightQueriesOutOfRange.Num() + SightQueriesPending.Num()) > 0)
 	{
 		AActor* TargetActor = AsTarget.Target.Get();
 
@@ -1093,3 +1107,18 @@ void UAISense_Sight::OnListenerForgetsAll(const FPerceptionListener& Listener)
 	ForEach(SightQueriesPending, ForgetPreviousResult);
 }
 
+#if WITH_GAMEPLAY_DEBUGGER_MENU
+void UAISense_Sight::DescribeSelfToGameplayDebugger(const UAIPerceptionSystem& PerceptionSystem, FGameplayDebuggerCategory& DebuggerCategory) const
+{
+	const int32 TotalQueriesCount = SightQueriesInRange.Num() + SightQueriesOutOfRange.Num() + SightQueriesPending.Num();
+	DebuggerCategory.AddTextLine(
+		FString::Printf(TEXT("%s: %d Targets, %d Queries (InRange:%d, OutOfRange:%d, Pending:%d)"),
+			*GetSenseID().Name.ToString(),
+			ObservedTargets.Num(),
+			TotalQueriesCount,
+			SightQueriesInRange.Num(),
+			SightQueriesOutOfRange.Num(),
+			SightQueriesPending.Num())
+		);
+}
+#endif // WITH_GAMEPLAY_DEBUGGER_MENU

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraSettings.h"
+#include "NiagaraEffectType.h"
 
 UNiagaraSettings::UNiagaraSettings(const FObjectInitializer& ObjectInitlaizer)
 	: Super(ObjectInitlaizer)
@@ -54,10 +55,15 @@ UNiagaraSettings::FOnNiagaraSettingsChanged& UNiagaraSettings::OnSettingsChanged
 }
 
 UNiagaraSettings::FOnNiagaraSettingsChanged UNiagaraSettings::SettingsChangedDelegate;
-#endif
 
-UNiagaraEffectType* UNiagaraSettings::GetDefaultEffectType()const
+UNiagaraEffectType* UNiagaraSettings::GetDefaultEffectType() const
 {
 	return Cast<UNiagaraEffectType>(DefaultEffectType.TryLoad());
 }
+
+UNiagaraEffectType* UNiagaraSettings::GetRequiredEffectType() const
+{
+	return Cast<UNiagaraEffectType>(RequiredEffectType.TryLoad());
+}
+#endif
 

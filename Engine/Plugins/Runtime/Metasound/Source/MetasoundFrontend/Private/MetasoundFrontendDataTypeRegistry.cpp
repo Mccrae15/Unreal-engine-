@@ -1,7 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "MetasoundFrontendDataTypeRegistry.h"
 
+#include "MetasoundLiteral.h"
 #include "MetasoundTrace.h"
+#include "Misc/ScopeLock.h"
 
 namespace Metasound
 {
@@ -140,6 +142,11 @@ namespace Metasound
 					return nullptr;
 				}
 
+				virtual TSet<FMetasoundFrontendVersion>* GetImplementedInterfaces() const override
+				{
+					return nullptr;
+				}
+
 				virtual bool IsNative() const override
 				{
 					return true;
@@ -183,7 +190,6 @@ namespace Metasound
 					InputParams.InstanceID = InParams.InstanceID;
 					InputParams.NodeName = InParams.NodeName;
 					InputParams.VertexName = InParams.VertexName;
-					InputParams.bEnableTransmission = false;
 
 					return DataTypeEntry->CreateInputNode(MoveTemp(InputParams));
 				}
@@ -224,7 +230,6 @@ namespace Metasound
 					InputParams.InstanceID = InParams.InstanceID;
 					InputParams.NodeName = InParams.NodeName;
 					InputParams.VertexName = InParams.VertexName;
-					InputParams.bEnableTransmission = false;
 
 					return DataTypeEntry->CreateConstructorInputNode(MoveTemp(InputParams));
 				}
@@ -494,6 +499,7 @@ namespace Metasound
 
 				virtual void GetRegisteredDataTypeNames(TArray<FName>& OutNames) const override;
 
+				virtual const IDataTypeRegistryEntry* FindDataTypeRegistryEntry(const FName& InDataTypeName) const override;
 				virtual bool GetDataTypeInfo(const UObject* InObject, FDataTypeRegistryInfo& OutInfo) const override;
 				virtual bool GetDataTypeInfo(const FName& InDataType, FDataTypeRegistryInfo& OutInfo) const override;
 
@@ -512,8 +518,9 @@ namespace Metasound
 
 				virtual UClass* GetUClassForDataType(const FName& InDataType) const override;
 
-				bool IsUObjectProxyFactory(UObject* InObject) const override;
-				TSharedPtr<Audio::IProxyData> CreateProxyFromUObject(const FName& InDataType, UObject* InObject) const override;
+				virtual bool IsUObjectProxyFactory(UObject* InObject) const override;
+				virtual TSharedPtr<Audio::IProxyData> CreateProxyFromUObject(const FName& InDataType, UObject* InObject) const override;
+				virtual bool IsValidUObjectForDataType(const FName& InDataTypeName, const UObject* InUObject) const override;
 
 				virtual FLiteral CreateDefaultLiteral(const FName& InDataType) const override;
 				virtual FLiteral CreateLiteralFromUObject(const FName& InDataType, UObject* InObject) const override;
@@ -523,6 +530,7 @@ namespace Metasound
 				virtual TSharedPtr<IDataChannel, ESPMode::ThreadSafe> CreateDataChannel(const FName& InDataType, const FOperatorSettings& InOperatorSettings) const override;
 
 				virtual const IParameterAssignmentFunction& GetRawAssignmentFunction(const FName& InDataType) const override;
+				virtual FLiteralAssignmentFunction GetLiteralAssignmentFunction(const FName& InDataType) const override;
 
 				virtual bool GetFrontendInputClass(const FName& InDataType, FMetasoundFrontendClass& OutClass) const override;
 				virtual bool GetFrontendConstructorInputClass(const FName& InDataType, FMetasoundFrontendClass& OutClass) const override;
@@ -554,6 +562,9 @@ namespace Metasound
 
 				// UObject type names to DataTypeNames
 				TMap<const UClass*, FName> RegisteredObjectClasses;
+
+				mutable FCriticalSection RegistryMapMutex;
+				mutable FCriticalSection RegistryObjectMapMutex;
 			};
 
 			bool FDataTypeRegistry::RegisterDataType(TUniquePtr<IDataTypeRegistryEntry>&& InEntry)
@@ -566,12 +577,25 @@ namespace Metasound
 
 					const FName Name = Entry->GetDataTypeInfo().DataTypeName;
 
-					if (!ensureAlwaysMsgf(!RegisteredDataTypes.Contains(Name),
-						TEXT("Name collision when trying to register Metasound Data Type [Name:%s]. DataType must have "
-							"unique name and REGISTER_METASOUND_DATATYPE cannot be called in a public header."),
-							*Name.ToString()))
 					{
-						return false;
+						FScopeLock RegistryLock(&RegistryMapMutex);
+						FScopeLock ObjectRegistryLock(&RegistryObjectMapMutex);
+
+						if (!ensureAlwaysMsgf(!RegisteredDataTypes.Contains(Name),
+							TEXT("Name collision when trying to register Metasound Data Type [Name:%s]. DataType must have "
+								"unique name and REGISTER_METASOUND_DATATYPE cannot be called in a public header."),
+								*Name.ToString()))
+						{
+							return false;
+						}
+
+						const FDataTypeRegistryInfo& RegistryInfo = Entry->GetDataTypeInfo();
+						if (const UClass* Class = RegistryInfo.ProxyGeneratorClass)
+						{
+							RegisteredObjectClasses.Add(Class, Name);
+						}
+
+						RegisteredDataTypes.Add(Name, Entry);
 					}
 
 					// Register nodes associated with data type.
@@ -598,13 +622,6 @@ namespace Metasound
 						}
 					}
 
-					const FDataTypeRegistryInfo& RegistryInfo = Entry->GetDataTypeInfo();
-					if (const UClass* Class = RegistryInfo.ProxyGeneratorClass)
-					{
-						RegisteredObjectClasses.Add(Class, Name);
-					}
-
-					RegisteredDataTypes.Add(Name, Entry);
 
 					UE_LOG(LogMetaSound, Verbose, TEXT("Registered Metasound Datatype [Name:%s]."), *Name.ToString());
 					return true;
@@ -615,19 +632,34 @@ namespace Metasound
 
 			void FDataTypeRegistry::GetRegisteredDataTypeNames(TArray<FName>& OutNames) const
 			{
+				FScopeLock Lock(&RegistryMapMutex);
 				RegisteredDataTypes.GetKeys(OutNames);
+			}
+
+			const IDataTypeRegistryEntry* FDataTypeRegistry::FindDataTypeRegistryEntry(const FName& InDataTypeName) const
+			{
+				return FindDataTypeEntry(InDataTypeName);
 			}
 
 			bool FDataTypeRegistry::GetDataTypeInfo(const UObject* InObject, FDataTypeRegistryInfo& OutInfo) const
 			{
 				if (InObject)
 				{
-					if (const FName* DataTypeName = RegisteredObjectClasses.Find(InObject->GetClass()))
+					FScopeLock Lock(&RegistryObjectMapMutex);
+					for (UClass* Class = InObject->GetClass(); Class != UObject::StaticClass(); Class = Class->GetSuperClass())
 					{
-						if (const IDataTypeRegistryEntry* Entry = FindDataTypeEntry(*DataTypeName))
+						if (const FName* DataTypeName = RegisteredObjectClasses.Find(Class))
 						{
-							OutInfo = Entry->GetDataTypeInfo();
-							return true;
+							if (const IDataTypeRegistryEntry* Entry = FindDataTypeEntry(*DataTypeName))
+							{
+								const FDataTypeRegistryInfo& Info = Entry->GetDataTypeInfo();
+								if (Info.bIsExplicit && Class != InObject->GetClass())
+								{
+									return false;
+								}
+								OutInfo = Info;
+								return true;
+							}
 						}
 					}
 				}
@@ -647,6 +679,7 @@ namespace Metasound
 
 			void FDataTypeRegistry::IterateDataTypeInfo(TFunctionRef<void(const FDataTypeRegistryInfo&)> InFunction) const
 			{
+				FScopeLock Lock(&RegistryMapMutex);
 				for (const TPair<FName, TSharedRef<IDataTypeRegistryEntry, ESPMode::ThreadSafe>>& Entry : RegisteredDataTypes)
 				{
 					InFunction(Entry.Value->GetDataTypeInfo());
@@ -655,6 +688,7 @@ namespace Metasound
 
 			bool FDataTypeRegistry::IsRegistered(const FName& InDataType) const
 			{
+				FScopeLock Lock(&RegistryMapMutex);
 				return RegisteredDataTypes.Contains(InDataType);
 			}
 
@@ -800,12 +834,17 @@ namespace Metasound
 					return false;
 				}
 
+				FScopeLock Lock(&RegistryObjectMapMutex);
 				UClass* ObjectClass = InObject->GetClass();
 				while (ObjectClass != UObject::StaticClass())
 				{
-					if (RegisteredObjectClasses.Contains(ObjectClass))
+					if (const FName* DataTypeName = RegisteredObjectClasses.Find(ObjectClass))
 					{
-						return true;
+						if (const IDataTypeRegistryEntry* Entry = FindDataTypeEntry(*DataTypeName))
+						{
+							const FDataTypeRegistryInfo& Info = Entry->GetDataTypeInfo();
+							return !Info.bIsExplicit || ObjectClass == InObject->GetClass();
+						}
 					}
 
 					ObjectClass = ObjectClass->GetSuperClass();
@@ -828,6 +867,59 @@ namespace Metasound
 				}
 
 				return ProxyPtr;
+			}
+
+			bool FDataTypeRegistry::IsValidUObjectForDataType(const FName& InDataTypeName, const UObject* InUObject) const
+			{
+				FDataTypeRegistryInfo DataTypeInfo;
+				if (GetDataTypeInfo(InDataTypeName, DataTypeInfo))
+				{
+					if (DataTypeInfo.bIsProxyParsable || DataTypeInfo.bIsUniquePtrProxyParsable_DEPRECATED)
+					{
+						if (InUObject)
+						{
+							FScopeLock ObjectRegistryLock(&RegistryObjectMapMutex);
+							FScopeLock RegistryLock(&RegistryMapMutex);
+
+							const UClass* ObjectClass = InUObject->GetClass();
+							while (ObjectClass != UObject::StaticClass())
+							{
+								if (const FName* DataTypeSupportedByUObject = RegisteredObjectClasses.Find(ObjectClass))
+								{
+									// If this is the specified data type and it corresponds to the given object, skip finding its registry entry.
+									if (*DataTypeSupportedByUObject == InDataTypeName && ObjectClass == InUObject->GetClass())
+									{
+										return true;
+									}
+
+									// Find the object's data type's registry entry to determine if it must match the given object.
+									if (const TSharedRef<IDataTypeRegistryEntry, ESPMode::ThreadSafe>* Entry = RegisteredDataTypes.Find(*DataTypeSupportedByUObject))
+									{
+										const FDataTypeRegistryInfo& Info = (*Entry)->GetDataTypeInfo();
+										if (Info.bIsExplicit)
+										{
+											return false;
+										}
+									}
+
+									// If this is the specified data type, then the object is valid.
+									if (*DataTypeSupportedByUObject == InDataTypeName)
+									{
+										return true;
+									}
+								}
+
+								ObjectClass = ObjectClass->GetSuperClass();
+							}
+						}
+						else
+						{
+							return true;
+						}
+					}
+				}
+
+				return false;
 			}
 
 			FLiteral FDataTypeRegistry::CreateLiteralFromUObject(const FName& InDataType, UObject* InObject) const
@@ -860,7 +952,7 @@ namespace Metasound
 				const IDataTypeRegistryEntry* ElementEntry = FindDataTypeEntry(ElementDataType);
 				if (!ElementEntry)
 				{
-					UE_LOG(LogMetaSound, Error, TEXT("Failed to create a valid proxy from DataType '%s': ElementType '%s' is not registered."), *ElementDataType.ToString());
+					UE_LOG(LogMetaSound, Error, TEXT("Failed to create a valid proxy from DataType '%s': ElementType '%s' is not registered."), *InDataType.ToString(), *ElementDataType.ToString());
 					return Metasound::FLiteral(MoveTemp(ProxyArray));
 				}
 
@@ -905,6 +997,15 @@ namespace Metasound
 					return Entry->GetRawAssignmentFunction();
 				}
 				return NoOp;
+			}
+
+			FLiteralAssignmentFunction FDataTypeRegistry::GetLiteralAssignmentFunction(const FName& InDataType) const
+			{
+				if (const IDataTypeRegistryEntry* Entry = FindDataTypeEntry(InDataType))
+				{
+					return Entry->GetLiteralAssignmentFunction();
+				}
+				return nullptr;
 			}
 
 			bool FDataTypeRegistry::GetFrontendInputClass(const FName& InDataType, FMetasoundFrontendClass& OutClass) const
@@ -1092,11 +1193,14 @@ namespace Metasound
 
 			const IDataTypeRegistryEntry* FDataTypeRegistry::FindDataTypeEntry(const FName& InDataTypeName) const
 			{
-				const TSharedRef<IDataTypeRegistryEntry, ESPMode::ThreadSafe>* Entry = RegisteredDataTypes.Find(InDataTypeName);
-
-				if (ensureMsgf(nullptr != Entry, TEXT("Data type not registered [Name:%s]"), *InDataTypeName.ToString()))
+				FScopeLock Lock(&RegistryMapMutex);
 				{
-					return &Entry->Get();
+					const TSharedRef<IDataTypeRegistryEntry, ESPMode::ThreadSafe>* Entry = RegisteredDataTypes.Find(InDataTypeName);
+
+					if (ensureMsgf(nullptr != Entry, TEXT("Data type not registered [Name:%s]"), *InDataTypeName.ToString()))
+					{
+						return &Entry->Get();
+					}
 				}
 
 				return nullptr;
@@ -1108,6 +1212,57 @@ namespace Metasound
 			static MetasoundFrontendDataTypeRegistryPrivate::FDataTypeRegistry Registry;
 			return Registry;
 		}
+
+		void CreateDefaults(const FOperatorSettings& InOperatorSettings, FInputVertexInterfaceData& OutVertexData)
+		{
+			using namespace MetasoundVertexDataPrivate;
+
+			auto VertexAccessTypeToDataReferenceAccessType = [](EVertexAccessType InVertexAccessType) -> EDataReferenceAccessType
+			{
+				switch(InVertexAccessType)
+				{
+					case EVertexAccessType::Value:
+						return EDataReferenceAccessType::Value;
+
+					case EVertexAccessType::Reference:
+					default:
+						return EDataReferenceAccessType::Write;
+				}
+			};
+
+			IDataTypeRegistry& DataTypeRegistry = IDataTypeRegistry::Get();
+
+			for (const FInputBinding& Binding : OutVertexData)
+			{
+				// Attempt to create default data reference from the literal stored
+				// on the input vertex.
+				const FInputDataVertex& InputVertex = Binding.GetVertex();
+				EDataReferenceAccessType AccessType = VertexAccessTypeToDataReferenceAccessType(InputVertex.AccessType);
+
+				if (const IDataTypeRegistryEntry* Entry = DataTypeRegistry.FindDataTypeRegistryEntry(InputVertex.DataTypeName))
+				{
+					TOptional<FAnyDataReference> DataRef = Entry->CreateDataReference(AccessType, InputVertex.GetDefaultLiteral(), InOperatorSettings);
+
+					if (DataRef.IsSet())
+					{
+						// Set as vertex data reference.
+						OutVertexData.SetVertex(InputVertex.VertexName, *DataRef);
+					}
+					else
+					{
+						const FDataTypeRegistryInfo& DataTypeInfo = Entry->GetDataTypeInfo();
+						if (DataTypeInfo.bIsParsable)
+						{
+							// All parsable inputs should have creatable defaults.
+							UE_LOG(LogMetaSound, Warning, TEXT("Failed to create default data reference for vertex %s of data type %s using constructor argument %s"), *InputVertex.VertexName.ToString(), *InputVertex.DataTypeName.ToString(), *::LexToString(InputVertex.GetDefaultLiteral()));
+						}
+					}
+				}
+				else
+				{
+					UE_LOG(LogMetaSound, Warning, TEXT("Failed to create default data reference for vertex %s of data type %s because data type is not registered. Please ensure that the plugin which registers the data type is loaded."), *InputVertex.VertexName.ToString(), *InputVertex.DataTypeName.ToString());
+				}
+			}
+		}
 	}
 }
-

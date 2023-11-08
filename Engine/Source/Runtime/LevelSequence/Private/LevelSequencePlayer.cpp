@@ -91,17 +91,27 @@ void ULevelSequencePlayer::Initialize(ULevelSequence* InLevelSequence, ULevel* I
 	World = InLevel->OwningWorld;
 	Level = InLevel;
 	CameraSettings = InCameraSettings;
-
+	// Default to owning world (to resolve AlwaysLoaded actors not part of a Streaming Level and Disabled Streaming World Partitions)
+	StreamingWorld = World;
 	// Construct the path to the level asset that the streamed level relates to
 	ULevelStreaming* LevelStreaming = FLevelUtils::FindStreamingLevel(InLevel);
 	if (LevelStreaming)
 	{
-		// All ULevelStreaming objects live in the owning world but if we are streaming a World Partition persistent level it will be returned as the StreamingWorld for all it's 
-		// ULevelStreaming cells. This streaming world should be used to resolve bindings.
-		if (UWorld* StreamingWorld = LevelStreaming->GetStreamingWorld(); StreamingWorld && (StreamingWorld != World))
+		// If we are streaming the persistent level of a World Partition
+		if (UWorldPartition* WorldPartition = InLevel->GetWorldPartition())
 		{
-			Level = StreamingWorld->PersistentLevel;
-			LevelStreaming = FLevelUtils::FindStreamingLevel(Level.Get());
+			StreamingWorld = InLevel->GetTypedOuter<UWorld>();
+		}
+		else
+		{
+			// All ULevelStreaming objects live in the owning world but if we are streaming a World Partition persistent level it will be returned as the StreamingWorld for all it's 
+			// ULevelStreaming cells. This streaming world should be used to resolve bindings.
+			StreamingWorld = LevelStreaming->GetStreamingWorld();
+			if (StreamingWorld.IsValid() && (StreamingWorld != World))
+			{
+				Level = StreamingWorld->PersistentLevel;
+				LevelStreaming = FLevelUtils::FindStreamingLevel(Level.Get());
+			}
 		}
 	}
 		
@@ -134,8 +144,17 @@ void ULevelSequencePlayer::ResolveBoundObjects(const FGuid& InBindingId, FMovieS
 
 		if (ULevelSequence* LevelSequence = Cast<ULevelSequence>(&InSequence))
 		{
-			// Passing through the streamed level asset path ensures that bindings within instance sub levels resolve correctly
-			LevelSequence->LocateBoundObjects(InBindingId, ResolutionContext, StreamedLevelAssetPath, OutObjects);
+			FLevelSequenceBindingReference::FResolveBindingParams Params;
+			Params.StreamedLevelAssetPath = StreamedLevelAssetPath;
+			
+			if (ALevelSequenceActor* LevelSequenceActor = GetTypedOuter<ALevelSequenceActor>(); LevelSequenceActor && LevelSequenceActor->GetWorldPartitionResolveData().IsValid())
+			{
+				Params.WorldPartitionResolveData = &LevelSequenceActor->GetWorldPartitionResolveData();
+				check(StreamingWorld.IsValid());
+				Params.StreamingWorld = StreamingWorld.Get();
+			}
+			
+			LevelSequence->LocateBoundObjects(InBindingId, ResolutionContext, Params, OutObjects);
 		}
 		else
 		{
@@ -171,7 +190,10 @@ void ULevelSequencePlayer::OnStopped()
 		}
 	}
 
+	LastCameraObject = nullptr;
 	LastViewTarget.Reset();
+	LastLocalPlayer.Reset();
+	LastAspectRatioAxisConstraint.Reset();
 }
 
 void ULevelSequencePlayer::UpdateMovieSceneInstance(FMovieSceneEvaluationRange InRange, EMovieScenePlayerStatus::Type PlayerStatus, const FMovieSceneUpdateArgs& Args)
@@ -245,6 +267,45 @@ TTuple<EViewTargetBlendFunction, float> BuiltInEasingTypeToBlendFunction(EMovieS
 	return Return(EViewTargetBlendFunction::VTBlend_Linear, 1.f);
 }
 
+void ULevelSequencePlayer::ValidateLastViewTarget(UObject* CameraObject, AActor* ViewTarget)
+{
+	if (!LastViewTarget.IsValid())
+	{
+		// If we had another level sequence playing before us, we don't want to cache its last camera. Let's see if
+		// we can instead ask it what its LastViewTarget was, so that we get what the actual previous view target was
+		// before any sequence started to play.
+		TArray<IMovieScenePlayer*> ActivePlayers;
+		const bool bOnlyEvaluatingPlayers = true;
+		IMovieScenePlayer::Get(ActivePlayers, bOnlyEvaluatingPlayers);
+		for (IMovieScenePlayer* ActivePlayer : ActivePlayers)
+		{
+			UObject* PlayerObject = ActivePlayer->AsUObject();
+			if (!PlayerObject)
+			{
+				continue;
+			}
+
+
+			ULevelSequencePlayer* PreviousLevelSequencePlayer = Cast<ULevelSequencePlayer>(PlayerObject);
+			if (!PreviousLevelSequencePlayer || PreviousLevelSequencePlayer == this)
+			{
+				continue;
+			}
+
+			if (PreviousLevelSequencePlayer->LastViewTarget.IsValid())
+			{
+				LastViewTarget = PreviousLevelSequencePlayer->LastViewTarget;
+				break;
+			}
+		}
+	}
+
+	if (!LastViewTarget.IsValid() || (ViewTarget != nullptr && ViewTarget != CameraObject && ViewTarget != LastCameraObject))
+	{
+		LastViewTarget = ViewTarget;
+	}
+}
+
 void ULevelSequencePlayer::UpdateCameraCut(UObject* CameraObject, const EMovieSceneCameraCutParams& CameraCutParams)
 {
 	UCameraComponent* CameraComponent = MovieSceneHelpers::CameraComponentFromRuntimeObject(CameraObject);
@@ -265,6 +326,17 @@ void ULevelSequencePlayer::UpdateCameraCut(UObject* CameraObject, const EMovieSc
 
 	if (PC == nullptr)
 	{
+		// If we are releasing view target control but can't actually do it because game state has been
+		// torn down, see if we can at least restore aspect ratio axis constraint. This fixes a bug
+		// where the wrong constraint carries over to a new level if the level change was executed
+		// while we were playing the sequence.
+		if (CameraObject == nullptr && LastAspectRatioAxisConstraint.IsSet())
+		{
+			if (ULocalPlayer* LocalPlayer = LastLocalPlayer.Get())
+			{
+				LocalPlayer->AspectRatioAxisConstraint = LastAspectRatioAxisConstraint.GetValue();
+			}
+		}
 		return;
 	}
 
@@ -295,6 +367,12 @@ void ULevelSequencePlayer::UpdateCameraCut(UObject* CameraObject, const EMovieSc
 				MotionVectorSim->SimulateAllTransforms();
 			}
 		}
+
+		// If we just started a new sequence that happens to give control to the same camera actor as
+		// the previous sequence, we end up here for an early out, but we also miss on setting out LastViewTarget,
+		// so let's check we have a valid one.
+		ValidateLastViewTarget(CameraObject, ViewTarget);
+
 		return;
 	}
 
@@ -316,9 +394,10 @@ void ULevelSequencePlayer::UpdateCameraCut(UObject* CameraObject, const EMovieSc
 	if (CameraActor == nullptr)
 	{
 		CameraActor = LastViewTarget.Get();
-		bRestoreAspectRatioConstraint = true;
+		CameraObject = CameraActor;
 
 		// Skip if the last view target is the same as the current view target so that there's no additional camera cut
+		// In this case, restore the aspect ratio axis constraint right away before exiting.
 		if (CameraActor == ViewTarget)
 		{
 			if (LocalPlayer && LastAspectRatioAxisConstraint.IsSet())
@@ -327,12 +406,16 @@ void ULevelSequencePlayer::UpdateCameraCut(UObject* CameraObject, const EMovieSc
 			}
 			return;
 		}
+		// Otherwise, remember to restore the aspect ratio axis constraint later in this function.
+		bRestoreAspectRatioConstraint = true;
 	}
 
 	// Save the last view target/aspect ratio constraint/etc. so that it can all be restored when the camera object is null.
-	if (!LastViewTarget.IsValid())
+	ValidateLastViewTarget(CameraObject, ViewTarget);
+
+	if (!LastLocalPlayer.IsValid() || (LocalPlayer != LastLocalPlayer))
 	{
-		LastViewTarget = ViewTarget;
+		LastLocalPlayer = LocalPlayer;
 	}
 	if (!LastAspectRatioAxisConstraint.IsSet())
 	{
@@ -341,6 +424,8 @@ void ULevelSequencePlayer::UpdateCameraCut(UObject* CameraObject, const EMovieSc
 			LastAspectRatioAxisConstraint = LocalPlayer->AspectRatioAxisConstraint;
 		}
 	}
+
+	LastCameraObject = CameraObject;
 
 	bool bDoSetViewTarget = true;
 	FViewTargetTransitionParams TransitionParams;
@@ -351,9 +436,11 @@ void ULevelSequencePlayer::UpdateCameraCut(UObject* CameraObject, const EMovieSc
 			(CameraObject ? *CameraObject->GetName() : TEXT("None")),
 			TransitionParams.BlendTime);
 
+		const float PlayRateFactor = PlaybackSettings.PlayRate != 0.f ? (1.f / PlaybackSettings.PlayRate) : 1.f;
+
 		// Convert known easing functions to their corresponding view target blend parameters.
 		TTuple<EViewTargetBlendFunction, float> BlendFunctionAndExp = BuiltInEasingTypeToBlendFunction(CameraCutParams.BlendType.GetValue());
-		TransitionParams.BlendTime = CameraCutParams.BlendTime;
+		TransitionParams.BlendTime = CameraCutParams.BlendTime * PlayRateFactor;
 		TransitionParams.bLockOutgoing = CameraCutParams.bLockPreviousCamera;
 		TransitionParams.BlendFunction = BlendFunctionAndExp.Get<0>();
 		TransitionParams.BlendExp = BlendFunctionAndExp.Get<1>();

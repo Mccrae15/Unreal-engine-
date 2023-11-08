@@ -5,16 +5,18 @@ D3D12Resources.cpp: D3D RHI utility implementation.
 =============================================================================*/
 
 #include "D3D12RHIPrivate.h"
+#include "D3D12IntelExtensions.h"
 #include "EngineModule.h"
 #include "HAL/LowLevelMemTracker.h"
+#include "ProfilingDebugging/MemoryTrace.h"
+#include "ProfilingDebugging/AssetMetadataTrace.h"
 
-#if INTEL_EXTENSIONS
-	#define INTC_IGDEXT_D3D12 1
-
-	THIRD_PARTY_INCLUDES_START
-	#include "igdext.h"
-	THIRD_PARTY_INCLUDES_END
-#endif
+static TAutoConsoleVariable<int32> CVarD3D12ReservedResourceHeapSizeMB(
+	TEXT("d3d12.ReservedResourceHeapSizeMB"),
+	16,
+	TEXT("Size of the backing heaps for reserved resources in megabytes (default 16MB)."),
+	ECVF_ReadOnly
+);
 
 /////////////////////////////////////////////////////////////////////
 //	ID3D12ResourceAllocator
@@ -30,10 +32,28 @@ void ID3D12ResourceAllocator::AllocateTexture(uint32 GPUIndex, D3D12_HEAP_TYPE I
 	Desc.Alignment = b4KAligment ? D3D12_SMALL_RESOURCE_PLACEMENT_ALIGNMENT : D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
 
 	// Get the size and alignment for the allocation
-	D3D12_RESOURCE_ALLOCATION_INFO Info = FD3D12DynamicRHI::GetD3DRHI()->GetAdapter().GetDevice(0)->GetResourceAllocationInfo(Desc);
+	D3D12_RESOURCE_ALLOCATION_INFO Info = FD3D12DynamicRHI::GetD3DRHI()->GetAdapter().GetDevice(GPUIndex)->GetResourceAllocationInfo(Desc);
 	AllocateResource(GPUIndex, InHeapType, Desc, Info.SizeInBytes, Info.Alignment, InResourceStateMode, InCreateState, InClearValue, InName, ResourceLocation);
 }
 
+#if D3D12RHI_SUPPORTS_UNCOMPRESSED_UAV
+TArray<DXGI_FORMAT, TInlineAllocator<4>> FD3D12ResourceDesc::GetCastableFormats() const
+{
+	TArray<DXGI_FORMAT, TInlineAllocator<4>> Result;
+
+	// We have to add the 'implied' castable formats for SRVs. Since we don't have any sRGB flags here, just add both formats.
+	Result.Emplace(UE::DXGIUtilities::FindShaderResourceFormat(Format, true));
+	Result.Emplace(UE::DXGIUtilities::FindShaderResourceFormat(Format, false));
+
+	if (UAVPixelFormat != PF_Unknown)
+	{
+		// Add the uncompressed UAV format we want
+		Result.Emplace((DXGI_FORMAT)GPixelFormats[UAVPixelFormat].PlatformFormat);
+	}
+
+	return Result;
+}
+#endif // D3D12RHI_SUPPORTS_UNCOMPRESSED_UAV
 
 /////////////////////////////////////////////////////////////////////
 //	FD3D12 Resource
@@ -70,7 +90,7 @@ FD3D12Resource::FD3D12Resource(FD3D12Device* ParentDevice,
 	, Heap(InHeap)
 	, Desc(InDesc)
 	, HeapType(InHeapType)
-	, PlaneCount(::GetPlaneCount(Desc.Format))
+	, PlaneCount(UE::DXGIUtilities::GetPlaneCount(Desc.Format))
 	, bRequiresResourceStateTracking(true)
 	, bDepthStencil(false)
 	, bDeferDelete(true)
@@ -98,13 +118,24 @@ FD3D12Resource::FD3D12Resource(FD3D12Device* ParentDevice,
 		GFSDK_Aftermath_DX12_RegisterResource(InResource, &AftermathHandle);
 	}
 #endif
+
+	if (!IsPlacedResource())
+	{
+		ResidencyHandle = MakeUnique<FD3D12ResidencyHandle>();
+	}
+
+	if (Desc.bReservedResource)
+	{
+		checkf(Heap == nullptr, TEXT("Reserved resources are not expected to have a heap"));
+		ReservedResourceData = MakeUnique<FD3D12ReservedResourceData>();
+	}
 }
 
 FD3D12Resource::~FD3D12Resource()
 {
-	if (D3DX12Residency::IsInitialized(ResidencyHandle))
+	if (!IsPlacedResource() && D3DX12Residency::IsInitialized(*ResidencyHandle))
 	{
-		D3DX12Residency::EndTrackingObject(GetParentDevice()->GetResidencyManager(), ResidencyHandle);
+		D3DX12Residency::EndTrackingObject(GetParentDevice()->GetResidencyManager(), *ResidencyHandle);
 	}
 
 #if NV_AFTERMATH
@@ -123,6 +154,119 @@ FD3D12Resource::~FD3D12Resource()
 	}
 }
 
+void FD3D12Resource::CommitReservedResource()
+{
+	check(Desc.bReservedResource);
+	check(ReservedResourceData.IsValid());
+	checkf(ReservedResourceData->BackingHeaps.IsEmpty(), TEXT("Reserved resource is already committed"));
+	checkf(Desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D, TEXT("CommitReservedResource is currently only implemented for 2D textures"));
+	checkf(Desc.MipLevels == 1, TEXT("CommitReservedResource is currently only implemented for textures without mips"));
+
+	uint32 NumTiles = 0;
+	D3D12_PACKED_MIP_INFO PackedMipDesc = {};
+	D3D12_TILE_SHAPE TileShape = {};
+	const uint32 FirstSubresource = 0;
+
+	// We assume that all subresources in a 2D texture array are identical, so only query the tiling config for the first
+	uint32 NumSubresourceTilings = 1;
+	D3D12_SUBRESOURCE_TILING SubresourceTiling = {}; 
+
+	ID3D12Device* D3DDevice = GetParentDevice()->GetDevice();
+	FD3D12Adapter* Adapter = GetParentDevice()->GetParentAdapter();
+
+	D3DDevice->GetResourceTiling(GetResource(), &NumTiles, &PackedMipDesc, &TileShape, &NumSubresourceTilings, FirstSubresource, &SubresourceTiling);
+
+	const uint64 TileSizeInBytes = 65536; // reserved resource tiles are always 64KB
+	const uint64 TotalSize = NumTiles * TileSizeInBytes;
+	const uint64 MaxHeapSize = uint64(CVarD3D12ReservedResourceHeapSizeMB.GetValueOnAnyThread()) * 1024 * 1024;
+	const uint64 NumHeaps = FMath::DivideAndRoundUp(TotalSize, MaxHeapSize);
+
+	TArray<TRefCountPtr<ID3D12Heap>>& Heaps = ReservedResourceData->BackingHeaps;
+	Heaps.Reserve(NumHeaps);
+
+	const uint32 NumTilesPerHeap = uint32(MaxHeapSize / TileSizeInBytes);
+
+	// NOTE: Accessing the queue from this thread is OK, as D3D12 runtime acquires a lock around all command queue APIs.
+	// https://microsoft.github.io/DirectX-Specs/d3d/CPUEfficiency.html#threading
+	FD3D12Queue& Queue = GetParentDevice()->GetQueue(ED3D12QueueType::Direct);
+	ID3D12CommandQueue* D3DCommandQueue = Queue.D3DCommandQueue.GetReference();
+
+	const D3D12_TILE_MAPPING_FLAGS MappingFlags = D3D12_TILE_MAPPING_FLAG_NONE;
+
+	// Set high residency priority based on the same heuristics as D3D12 committed resources,
+	// i.e. normal priority unless it's a UAV/RT/DS texture.
+	const bool bHighPriorityResource = EnumHasAnyFlags(Desc.Flags, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+	const uint32 GPUIndex = GetParentDevice()->GetGPUIndex();
+
+	D3D12_HEAP_PROPERTIES BackingHeapProps = {};
+	BackingHeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+	BackingHeapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+	BackingHeapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+	BackingHeapProps.CreationNodeMask = GetGPUMask().GetNative();
+	BackingHeapProps.VisibleNodeMask = GetVisibilityMask().GetNative();
+
+	const uint32 NumTilesX = SubresourceTiling.WidthInTiles;
+	const uint32 NumTilesY = SubresourceTiling.HeightInTiles;
+
+	check(SubresourceTiling.DepthInTiles == 1);
+
+	const uint32 NumTilesPerSubresource = NumTilesX * NumTilesY;
+	const uint32 NumTotalTiles = NumTilesPerSubresource * SubresourceCount;
+
+	uint32 NumMappedTiles = 0;
+
+	while (NumMappedTiles < NumTotalTiles)
+	{
+		const uint32 NumRemainingTiles = NumTotalTiles - NumMappedTiles;
+
+		D3D12_TILE_REGION_SIZE RegionSize = {};
+		RegionSize.UseBox = false;
+		RegionSize.NumTiles = FMath::Min(NumTilesPerHeap, NumRemainingTiles);
+
+		const uint32 ThisHeapSize = RegionSize.NumTiles * TileSizeInBytes;
+		D3D12_HEAP_DESC NewHeapDesc = {};
+		NewHeapDesc.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+		NewHeapDesc.Flags = D3D12_HEAP_FLAG_DENY_BUFFERS | D3D12_HEAP_FLAG_DENY_RT_DS_TEXTURES;
+		NewHeapDesc.SizeInBytes = ThisHeapSize;
+		NewHeapDesc.Properties = BackingHeapProps;
+		TRefCountPtr<ID3D12Heap> NewHeap;
+		VERIFYD3D12RESULT(D3DDevice->CreateHeap(&NewHeapDesc, IID_PPV_ARGS(NewHeap.GetInitReference())));
+
+		if (bHighPriorityResource)
+		{
+			Adapter->SetResidencyPriority(NewHeap, D3D12_RESIDENCY_PRIORITY_HIGH, GPUIndex);
+		}
+
+		D3D12_TILED_RESOURCE_COORDINATE ResourceCoordinate = {}; // Coordinates are in tiles, not pixels
+		const uint32 TileIndexInSubresource = NumMappedTiles % NumTilesPerSubresource;
+		ResourceCoordinate.Subresource = NumMappedTiles / NumTilesPerSubresource;
+		ResourceCoordinate.X = TileIndexInSubresource % NumTilesX;
+		ResourceCoordinate.Y = (TileIndexInSubresource / NumTilesX) % NumTilesY;
+		ResourceCoordinate.Z = 0; // Only simple 2D / Array2D textures are implemented
+
+		const D3D12_TILE_RANGE_FLAGS RangeFlags = D3D12_TILE_RANGE_FLAG_NONE;
+		const uint32 HeapRangeStartOffsetInTiles = 0;
+		const uint32 RangeTileCount = RegionSize.NumTiles;
+
+		D3DCommandQueue->UpdateTileMappings(GetResource(), 1,
+			&ResourceCoordinate, &RegionSize, NewHeap.GetReference(),
+			1,
+			&RangeFlags,
+			&HeapRangeStartOffsetInTiles,
+			&RangeTileCount,
+			MappingFlags);
+
+	#if NAME_OBJECTS
+		const int32 HeapIndex = Heaps.Num();
+		FString HeapName = FString::Printf(TEXT("%s.Heap[%d]"), DebugName.IsValid() ? *DebugName.ToString() : TEXT("UNKNOWN"), HeapIndex);
+		::SetName(NewHeap, *HeapName);
+	#endif // NAME_OBJECTS
+
+		NumMappedTiles += RegionSize.NumTiles;
+		Heaps.Add(MoveTemp(NewHeap));
+	}
+}
+
 ID3D12Pageable* FD3D12Resource::GetPageable()
 {
 	if (IsPlacedResource())
@@ -138,13 +282,23 @@ ID3D12Pageable* FD3D12Resource::GetPageable()
 void FD3D12Resource::StartTrackingForResidency()
 {
 #if ENABLE_RESIDENCY_MANAGEMENT
-	check(IsGPUOnly(HeapType));	// This is checked at a higher level before calling this function.
-	check(D3DX12Residency::IsInitialized(ResidencyHandle) == false);
-	const D3D12_RESOURCE_DESC ResourceDesc = Resource->GetDesc();
-	const D3D12_RESOURCE_ALLOCATION_INFO Info = GetParentDevice()->GetDevice()->GetResourceAllocationInfo(0, 1, &ResourceDesc);
+	if (bBackBuffer)
+	{
+		// Back buffers may be referenced outside of command lists (during presents), however D3DX12Residency.h library 
+		// uses fences tied to command lists to detect when it's safe to evict a resource, which is wrong for back buffers.
+		// Simply disable residency tracking for back buffers as a workaround (keep them always resident).
+		return;
+	}
 
-	D3DX12Residency::Initialize(ResidencyHandle, Resource.GetReference(), Info.SizeInBytes, this);
-	D3DX12Residency::BeginTrackingObject(GetParentDevice()->GetResidencyManager(), ResidencyHandle);
+	check(IsGPUOnly(HeapType));	// This is checked at a higher level before calling this function.		
+	if (!IsPlacedResource())
+	{
+		check(D3DX12Residency::IsInitialized(*ResidencyHandle) == false);
+
+		const D3D12_RESOURCE_ALLOCATION_INFO Info = GetParentDevice()->GetResourceAllocationInfoUncached(Desc);
+		D3DX12Residency::Initialize(*ResidencyHandle, Resource.GetReference(), Info.SizeInBytes, this);
+		D3DX12Residency::BeginTrackingObject(GetParentDevice()->GetResidencyManager(), *ResidencyHandle);
+	}
 #endif
 }
 
@@ -157,15 +311,24 @@ void FD3D12Resource::DeferDelete()
 //	FD3D12 Heap
 /////////////////////////////////////////////////////////////////////
 
-FD3D12Heap::FD3D12Heap(FD3D12Device* Parent, FRHIGPUMask VisibleNodes) :
+FD3D12Heap::FD3D12Heap(FD3D12Device* Parent, FRHIGPUMask VisibleNodes, HeapId InTraceParentHeapId) :
 	FD3D12DeviceChild(Parent),
 	FD3D12MultiNodeGPUObject(Parent->GetGPUMask(), VisibleNodes),
-	ResidencyHandle()
+	ResidencyHandle(),
+	TraceParentHeapId(InTraceParentHeapId)
 {
 }
 
 FD3D12Heap::~FD3D12Heap()
 {
+#if UE_MEMORY_TRACE_ENABLED
+	if (GPUVirtualAddress != 0)
+	{
+		MemoryTrace_UnmarkAllocAsHeap(GPUVirtualAddress, TraceHeapId);
+		MemoryTrace_Free(GPUVirtualAddress, EMemoryTraceRootHeap::VideoMemory);
+	}
+#endif	
+
 #if TRACK_RESOURCE_ALLOCATIONS
 	FD3D12Adapter* Adapter = GetParentDevice()->GetParentAdapter();
 	if (GPUVirtualAddress != 0 && bTrack)
@@ -212,7 +375,17 @@ void FD3D12Heap::SetHeap(ID3D12Heap* HeapIn, const TCHAR* const InName, bool bIn
 		const D3D12_RESOURCE_DESC BufDesc = CD3DX12_RESOURCE_DESC::Buffer(HeapSize, D3D12_RESOURCE_FLAG_NONE);
 		VERIFYD3D12RESULT(Adapter->GetD3DDevice()->CreatePlacedResource(Heap, 0, &BufDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(TempResource.GetInitReference())));
 		GPUVirtualAddress = TempResource->GetGPUVirtualAddress();
-				
+#if UE_MEMORY_TRACE_ENABLED
+		TraceHeapId = MemoryTrace_HeapSpec(TraceParentHeapId, *(FString(InName) + TEXT(" D3D12Heap")));
+		// Calling GetResourceAllocationInfo is not trivial, only do it if memory trace is enabled
+		if (UE_TRACE_CHANNELEXPR_IS_ENABLED(MemAllocChannel))
+		{
+			const D3D12_RESOURCE_DESC ResourceDesc = TempResource->GetDesc();
+			const D3D12_RESOURCE_ALLOCATION_INFO Info = Adapter->GetD3DDevice()->GetResourceAllocationInfo(0, 1, &ResourceDesc);
+			MemoryTrace_Alloc(GPUVirtualAddress, Info.SizeInBytes, Info.Alignment, EMemoryTraceRootHeap::VideoMemory);
+			MemoryTrace_MarkAllocAsHeap(GPUVirtualAddress, TraceHeapId);
+		}
+#endif				
 #if TRACK_RESOURCE_ALLOCATIONS
 		if (bTrack)
 		{
@@ -284,13 +457,45 @@ HRESULT FD3D12Adapter::CreateCommittedResource(const FD3D12ResourceDesc& InDesc,
 	}
 	else
 #endif
+#if D3D12RHI_SUPPORTS_UNCOMPRESSED_UAV
+	if (InDesc.SupportsUncompressedUAV())
+	{
+		// Convert the desc to the version required by CreateCommittedResource3
+		const CD3DX12_RESOURCE_DESC1 LocalDesc1(LocalDesc);
+
+		// Common layout is the required starting state for any "legacy" transitions
+		const D3D12_BARRIER_LAYOUT InitialLayout = D3D12_BARRIER_LAYOUT_COMMON;
+		
+		ID3D12ProtectedResourceSession* ProtectedSession = nullptr;
+
+		const TArray<DXGI_FORMAT, TInlineAllocator<4>> CastableFormats = InDesc.GetCastableFormats();
+
+		hr = RootDevice12->CreateCommittedResource3(
+			&HeapProps,
+			HeapFlags,
+			&LocalDesc1,
+			InitialLayout,
+			ClearValue,
+			ProtectedSession,
+			CastableFormats.Num(),
+			CastableFormats.GetData(),
+			IID_PPV_ARGS(pResource.GetInitReference()));
+
+		if (SUCCEEDED(hr))
+		{
+			// Change the initial state to match the initial layout on construction
+			InInitialState = D3D12_RESOURCE_STATE_COMMON;
+		}
+	}
+	else
+#endif
 	{
 		hr = RootDevice->CreateCommittedResource(&HeapProps, HeapFlags, &LocalDesc, InInitialState, ClearValue, IID_PPV_ARGS(pResource.GetInitReference()));
 	}
 	if (SUCCEEDED(hr))
 	{
 		// Set the output pointer
-		*ppOutResource = new FD3D12Resource(GetDevice(CreationNode.ToIndex()), CreationNode, pResource, InInitialState, InResourceStateMode, InDefaultState, InDesc, nullptr, HeapProps.Type);
+		*ppOutResource = new FD3D12Resource(GetDevice(CreationNode.ToIndex()), CreationNode, pResource, InInitialState, InResourceStateMode, InDefaultState, LocalDesc, nullptr, HeapProps.Type);
 		(*ppOutResource)->AddRef();
 
 		// Set a default name (can override later).
@@ -301,11 +506,95 @@ HRESULT FD3D12Adapter::CreateCommittedResource(const FD3D12ResourceDesc& InDesc,
 		{
 			(*ppOutResource)->StartTrackingForResidency();
 		}
+
+		TraceMemoryAllocation(*ppOutResource);
 	}
 	else	
 	{
-		UE_LOG(LogD3D12RHI, Display, TEXT("D3D12 CreateCommittedResource failed with params:\n\tHeap Type: %d\n\tHeap Flags: %d\n\tResource Dimension: %d\n\tResource Width: %d\n\tResource Height: %d\n\tFormat: %d\n\tResource Flags: %d"),
+		UE_LOG(LogD3D12RHI, Display, TEXT("D3D12 CreateCommittedResource failed with params:\n\tHeap Type: %d\n\tHeap Flags: %d\n\tResource Dimension: %d\n\tResource Width: %llu\n\tResource Height: %u\n\tFormat: %d\n\tResource Flags: %d"),
 			HeapProps.Type, HeapFlags, LocalDesc.Dimension, LocalDesc.Width, LocalDesc.Height, LocalDesc.PixelFormat, LocalDesc.Flags);
+
+		if (bVerifyHResult)
+		{
+			VERIFYD3D12RESULT_EX(hr, RootDevice);
+		}
+	}
+
+	return hr;
+}
+
+HRESULT FD3D12Adapter::CreateReservedResource(const FD3D12ResourceDesc& InDesc, FRHIGPUMask CreationNode, D3D12_RESOURCE_STATES InInitialState,
+	ED3D12ResourceStateMode InResourceStateMode, D3D12_RESOURCE_STATES InDefaultState, const D3D12_CLEAR_VALUE* ClearValue, FD3D12Resource** ppOutResource, const TCHAR* Name, bool bVerifyHResult)
+{
+	if (!ppOutResource)
+	{
+		return E_POINTER;
+	}
+
+	TRACE_CPUPROFILER_EVENT_SCOPE(CreateReservedResource);
+
+	LLM_PLATFORM_SCOPE(ELLMTag::GraphicsPlatform);
+
+	TRefCountPtr<ID3D12Resource> pResource;
+
+	FD3D12ResourceDesc LocalDesc = InDesc;
+	LocalDesc.Layout = D3D12_TEXTURE_LAYOUT_64KB_UNDEFINED_SWIZZLE;
+	LocalDesc.bReservedResource = true;
+
+#if D3D12_RHI_RAYTRACING
+	if (InDefaultState == D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE)
+	{
+		LocalDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+	}
+#endif // D3D12_RHI_RAYTRACING
+
+	HRESULT hr = S_OK;
+	
+#if D3D12RHI_SUPPORTS_UNCOMPRESSED_UAV
+	if (InDesc.SupportsUncompressedUAV())
+	{
+		// Common layout is the require starting state for any "legacy" transitions
+		const D3D12_BARRIER_LAYOUT InitialLayout = D3D12_BARRIER_LAYOUT_COMMON;
+
+		ID3D12ProtectedResourceSession* ProtectedSession = nullptr;
+		const TArray<DXGI_FORMAT, TInlineAllocator<4>> CastableFormats = InDesc.GetCastableFormats();
+
+		hr = RootDevice12->CreateReservedResource2(
+			&LocalDesc,
+			InitialLayout,
+			ClearValue,
+			ProtectedSession,
+			CastableFormats.Num(),
+			CastableFormats.GetData(),
+			IID_PPV_ARGS(pResource.GetInitReference()));
+
+		if (SUCCEEDED(hr))
+		{
+			// Change the initial state to match the initial layout on construction
+			InInitialState = D3D12_RESOURCE_STATE_COMMON;
+		}
+	}
+	else
+#endif
+	{
+		hr = RootDevice->CreateReservedResource(&LocalDesc, InInitialState, ClearValue, IID_PPV_ARGS(pResource.GetInitReference()));
+	}
+
+	if (SUCCEEDED(hr))
+	{
+		// Set the output pointer
+		*ppOutResource = new FD3D12Resource(GetDevice(CreationNode.ToIndex()), CreationNode, pResource, InInitialState, InResourceStateMode, InDefaultState, LocalDesc, nullptr /*Heap*/, D3D12_HEAP_TYPE_DEFAULT);
+		(*ppOutResource)->AddRef();
+
+		// Set a default name (can override later).
+		SetName(*ppOutResource, Name);
+		
+		// NOTE: reserved resource residency is not tracked/managed by the engine, so we don't need to call StartTrackingForResidency().
+	}
+	else
+	{
+		UE_LOG(LogD3D12RHI, Display, TEXT("D3D12 CreateReservedResource failed with params:\n\tResource Dimension: %d\n\tResource Width: %llu\n\tResource Height: %u\n\tFormat: %d\n\tResource Flags: %d"),
+			LocalDesc.Dimension, LocalDesc.Width, LocalDesc.Height, LocalDesc.PixelFormat, LocalDesc.Flags);
 
 		if (bVerifyHResult)
 		{
@@ -337,6 +626,35 @@ HRESULT FD3D12Adapter::CreatePlacedResource(const FD3D12ResourceDesc& InDesc, FD
 		IntelLocalDesc.EmulatedTyped64bitAtomics = true;
 
 		hr = INTC_D3D12_CreatePlacedResource(FD3D12DynamicRHI::GetD3DRHI()->GetIntelExtensionContext(), Heap, HeapOffset, &IntelLocalDesc, InInitialState, ClearValue, IID_PPV_ARGS(pResource.GetInitReference()));
+	}
+	else
+#endif
+#if D3D12RHI_SUPPORTS_UNCOMPRESSED_UAV
+	if (InDesc.SupportsUncompressedUAV())
+	{
+		// Convert the desc to the version required by CreatePlacedResource2
+		const CD3DX12_RESOURCE_DESC1 LocalDesc(InDesc);
+
+		// Common layout is the required starting state for any "legacy" transitions
+		const D3D12_BARRIER_LAYOUT InitialLayout = D3D12_BARRIER_LAYOUT_COMMON;
+		
+		const TArray<DXGI_FORMAT, TInlineAllocator<4>> CastableFormats = InDesc.GetCastableFormats();
+
+		hr = RootDevice10->CreatePlacedResource2(
+			Heap,
+			HeapOffset,
+			&LocalDesc,
+			InitialLayout,
+			ClearValue,
+			CastableFormats.Num(),
+			CastableFormats.GetData(),
+			IID_PPV_ARGS(pResource.GetInitReference()));
+
+		if (SUCCEEDED(hr))
+		{
+			// Change the initial state to match the initial layout on construction
+			InInitialState = D3D12_RESOURCE_STATE_COMMON;
+		}
 	}
 	else
 #endif
@@ -375,6 +693,11 @@ HRESULT FD3D12Adapter::CreatePlacedResource(const FD3D12ResourceDesc& InDesc, FD
 			}
 		}
 #endif		
+		// Don't track resources allocated on transient heaps
+		if (!BackingHeap->GetIsTransient())
+		{
+			TraceMemoryAllocation(*ppOutResource);
+		}
 
 		// Set a default name (can override later).
 		SetName(*ppOutResource, Name);
@@ -383,7 +706,7 @@ HRESULT FD3D12Adapter::CreatePlacedResource(const FD3D12ResourceDesc& InDesc, FD
 	}
 	else
 	{
-		UE_LOG(LogD3D12RHI, Display, TEXT("D3D12 CreatePlacedResource failed with params:\n\tHeap Type: %d\n\tHeap Flags: %d\n\tResource Dimension: %d\n\tResource Width: %d\n\tResource Height: %d\n\tHeightFormat: %d\n\tResource Flags: %d"),
+		UE_LOG(LogD3D12RHI, Display, TEXT("D3D12 CreatePlacedResource failed with params:\n\tHeap Type: %d\n\tHeap Flags: %d\n\tResource Dimension: %d\n\tResource Width: %llu\n\tResource Height: %u\n\tFormat: %d\n\tResource Flags: %d"),
 			BackingHeap->GetHeapDesc().Properties.Type, BackingHeap->GetHeapDesc().Flags, InDesc.Dimension, InDesc.Width, InDesc.Height, InDesc.PixelFormat, InDesc.Flags);
 
 		if (bVerifyHResult)
@@ -393,6 +716,23 @@ HRESULT FD3D12Adapter::CreatePlacedResource(const FD3D12ResourceDesc& InDesc, FD
 	}
 
 	return hr;
+}
+
+void FD3D12Adapter::TraceMemoryAllocation(FD3D12Resource* Resource)
+{
+#if UE_MEMORY_TRACE_ENABLED
+	// Calling GetResourceAllocationInfo is not cheap so check memory allocation tracking is enabled
+	if (UE_TRACE_CHANNELEXPR_IS_ENABLED(MemAllocChannel))
+	{
+		const D3D12_RESOURCE_ALLOCATION_INFO Info = Resource->GetParentDevice()->GetResourceAllocationInfo(Resource->GetDesc());
+		D3D12_GPU_VIRTUAL_ADDRESS GPUAddress = Resource->GetGPUVirtualAddress();
+		// Textures don't have valid GPUVirtualAddress when IsTrackingAllAllocations() is false, so don't do memory trace in this case.
+		if (IsTrackingAllAllocations() || GPUAddress != 0)
+		{
+			MemoryTrace_Alloc(GPUAddress, Info.SizeInBytes, Info.Alignment, EMemoryTraceRootHeap::VideoMemory);
+		}
+	}
+#endif
 }
 
 HRESULT FD3D12Adapter::CreateBuffer(D3D12_HEAP_TYPE HeapType, FRHIGPUMask CreationNode, FRHIGPUMask VisibleNodes, uint64 HeapSize, FD3D12Resource** ppOutResource, const TCHAR* Name, D3D12_RESOURCE_FLAGS Flags)
@@ -442,7 +782,7 @@ void FD3D12Adapter::CreateUAVAliasResource(D3D12_CLEAR_VALUE* ClearValuePtr, con
 	const FD3D12Heap* const ResourceHeap = SourceResource->GetHeap();
 
 	const EPixelFormat SourceFormat = SourceDesc.PixelFormat;
-	const EPixelFormat AliasTextureFormat = SourceDesc.UAVAliasPixelFormat;
+	const EPixelFormat AliasTextureFormat = SourceDesc.UAVPixelFormat;
 
 	if (ensure(ResourceHeap != nullptr) && ensure(SourceFormat != PF_Unknown) && SourceFormat != AliasTextureFormat)
 	{
@@ -465,7 +805,7 @@ void FD3D12Adapter::CreateUAVAliasResource(D3D12_CLEAR_VALUE* ClearValuePtr, con
 
 		EnumAddFlags(AliasTextureDesc.Flags, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
-		AliasTextureDesc.UAVAliasPixelFormat = PF_Unknown;
+		AliasTextureDesc.UAVPixelFormat = PF_Unknown;
 
 		TRefCountPtr<ID3D12Resource> pAliasResource;
 		HRESULT AliasHR = GetD3DDevice()->CreatePlacedResource(
@@ -538,6 +878,13 @@ void FD3D12ResourceLocation::InternalClear()
 
 void FD3D12ResourceLocation::TransferOwnership(FD3D12ResourceLocation& Destination, FD3D12ResourceLocation& Source)
 {
+	// The bTransient field is not preserved
+	check(!Destination.bTransient && !Source.bTransient);
+
+	// Preserve the owner fields
+	FD3D12BaseShaderResource* DstOwner = Destination.Owner;
+	FD3D12BaseShaderResource* SrcOwner = Source.Owner;
+
 	// Clear out the destination
 	Destination.Clear();
 
@@ -558,80 +905,9 @@ void FD3D12ResourceLocation::TransferOwnership(FD3D12ResourceLocation& Destinati
 
 	// Destroy the source but don't invoke any resource destruction
 	Source.InternalClear<false>();
-}
 
-void FD3D12ResourceLocation::Swap(FD3D12ResourceLocation& Other)
-{
-	// TODO: Probably shouldn't manually track suballocations. It's error-prone and inaccurate
-#if !PLATFORM_WINDOWS && ENABLE_LOW_LEVEL_MEM_TRACKER
-	const bool bRequiresManualTracking = GetType() == ResourceLocationType::eSubAllocation && AllocatorType != AT_SegList;
-	const bool bOtherRequiresManualTracking = Other.GetType() == ResourceLocationType::eSubAllocation && Other.AllocatorType != AT_SegList;
-
-	if (bRequiresManualTracking)
-	{
-		FLowLevelMemTracker::Get().OnLowLevelFree(ELLMTracker::Default, GetAddressForLLMTracking());
-	}
-	if (bOtherRequiresManualTracking)
-	{
-		FLowLevelMemTracker::Get().OnLowLevelAllocMoved(ELLMTracker::Default, GetAddressForLLMTracking(), Other.GetAddressForLLMTracking());
-	}
-	if (bRequiresManualTracking)
-	{
-		FLowLevelMemTracker::Get().OnLowLevelAlloc(ELLMTracker::Default, Other.GetAddressForLLMTracking(), GetSize());
-	}
-#endif
-
-	if (Other.Type == ResourceLocationType::eStandAlone)
-	{
-		bool bIncrement = false;
-		Other.UpdateStandAloneStats(bIncrement);
-	}
-
-	if (Other.GetAllocatorType() == FD3D12ResourceLocation::AT_Pool)
-	{
-		// Swap all members except the pool data because that needs to happen while the pool is taken
-		FD3D12DeviceChild::Swap(Other);
-
-		::Swap(Owner, Other.Owner);
-		::Swap(UnderlyingResource, Other.UnderlyingResource);
-		::Swap(ResidencyHandle, Other.ResidencyHandle);
-				
-		::Swap(MappedBaseAddress, Other.MappedBaseAddress);
-		::Swap(GPUVirtualAddress, Other.GPUVirtualAddress);
-		::Swap(OffsetFromBaseOfResource, Other.OffsetFromBaseOfResource);
-
-		::Swap(Type, Other.Type);
-		::Swap(Size, Other.Size);
-		::Swap(bTransient, Other.bTransient);
-				
-		// Also pool allocated, then perform full swap with lock
-		if (GetAllocatorType() == EAllocatorType::AT_Pool)
-		{
-			check(PoolAllocator == Other.PoolAllocator);
-			GetPoolAllocator()->Swap(*this, Other);
-		}
-		else
-		{
-			// Assume unallocated
-			check(GetAllocatorType() == FD3D12ResourceLocation::AT_Unknown);
-
-			// We know this allocation is empty so can use transfer instead of full swap
-			Other.GetPoolAllocator()->TransferOwnership(Other, *this);
-
-			::Swap(AllocatorType, Other.AllocatorType);
-			::Swap(PoolAllocator, Other.PoolAllocator);
-		}
-	}
-	else
-	{
-		::Swap(*this, Other);
-	}
-
-	if (Type == ResourceLocationType::eStandAlone)
-	{
-		bool bIncrement = true;
-		UpdateStandAloneStats(bIncrement);
-	}
+	Destination.Owner = DstOwner;
+	Source.Owner = SrcOwner;
 }
 
 void FD3D12ResourceLocation::Alias(FD3D12ResourceLocation & Destination, FD3D12ResourceLocation & Source)
@@ -786,7 +1062,7 @@ void FD3D12ResourceLocation::UpdateStandAloneStats(bool bIncrement)
 {
 	if (UnderlyingResource->GetHeapType() == D3D12_HEAP_TYPE_DEFAULT)
 	{
-		D3D12_RESOURCE_DESC Desc = UnderlyingResource->GetDesc();
+		FD3D12ResourceDesc Desc = UnderlyingResource->GetDesc();
 		bool bIsBuffer = (Desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER);
 		bool bIsRenderTarget = (Desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET || Desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
 		bool bIsUAV = (Desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) > 0;
@@ -798,7 +1074,7 @@ void FD3D12ResourceLocation::UpdateStandAloneStats(bool bIncrement)
 		}
 
 		// Get the desired size and allocated size for stand alone resources - allocated are very slow anyway
-		D3D12_RESOURCE_ALLOCATION_INFO Info = UnderlyingResource->GetParentDevice()->GetDevice()->GetResourceAllocationInfo(0, 1, &Desc);
+		D3D12_RESOURCE_ALLOCATION_INFO Info = UnderlyingResource->GetParentDevice()->GetResourceAllocationInfoUncached(Desc);
 
 		int64 SizeInBytes = bIncrement ? Info.SizeInBytes : -(int64)Info.SizeInBytes;
 		int32 Count = bIncrement ? 1 : -1;
@@ -894,19 +1170,41 @@ bool FD3D12ResourceLocation::OnAllocationMoved(FRHIPoolAllocationData* InNewData
 	FD3D12Resource* CurrentResource = GetResource();
 	FD3D12PoolAllocator* NewAllocator = GetPoolAllocator();
 
+	UE_TRACE_METADATA_SCOPE_ASSET_FNAME(CurrentResource->GetName(), FName(TEXT("FD3D12ResourceLocation::OnAllocationMoved")), NAME_None);
+
+	// Textures don't have valid GPUVirtualAddress when IsTrackingAllAllocations() is false, so don't do memory trace in this case.
+	const bool bTrackingAllAllocations = GetParentDevice()->GetParentAdapter()->IsTrackingAllAllocations();
+	const bool bMemoryTrace = bTrackingAllAllocations || GPUVirtualAddress != 0;
+
 	// If sub allocated and not placed only update the internal data
 	if (NewAllocator->GetAllocationStrategy() == EResourceAllocationStrategy::kManualSubAllocation)
 	{
 		check(!CurrentResource->IsPlacedResource());
-
+		D3D12_GPU_VIRTUAL_ADDRESS OldGPUAddress = GPUVirtualAddress;
 		OffsetFromBaseOfResource = AllocationData.GetOffset();
 		UnderlyingResource = NewAllocator->GetBackingResource(*this);
+		GPUVirtualAddress = UnderlyingResource->GetGPUVirtualAddress() + OffsetFromBaseOfResource;
+
+#if UE_MEMORY_TRACE_ENABLED
+		if (bMemoryTrace)
+		{
+			MemoryTrace_ReallocFree(OldGPUAddress, EMemoryTraceRootHeap::VideoMemory);
+			MemoryTrace_ReallocAlloc(GPUVirtualAddress, AllocationData.GetSize(), AllocationData.GetAlignment(), EMemoryTraceRootHeap::VideoMemory);
+		}
+#endif
 	}
 	else
 	{
 		check(CurrentResource->IsPlacedResource());
 		check(OffsetFromBaseOfResource == 0);
 
+#if UE_MEMORY_TRACE_ENABLED
+		if (bMemoryTrace)
+		{
+			// CreatePlacedResource function below calls MemoryTrace_Alloc to track new memory, so call MemoryTrace_Free to match (instead of calling MemoryTrace_ReallocFree/MemoryTrace_ReallocAlloc).
+			MemoryTrace_Free(GPUVirtualAddress, EMemoryTraceRootHeap::VideoMemory);
+		}
+#endif
 		// recreate the placed resource (ownership of current resource is already handled during the internal move)
 		FD3D12HeapAndOffset HeapAndOffset = NewAllocator->GetBackingHeapAndAllocationOffsetInBytes(*this);
 
@@ -933,9 +1231,9 @@ bool FD3D12ResourceLocation::OnAllocationMoved(FRHIPoolAllocationData* InNewData
 		FD3D12Resource* NewResource = nullptr;
 		VERIFYD3D12RESULT(CurrentResource->GetParentDevice()->GetParentAdapter()->CreatePlacedResource(CurrentResource->GetDesc(), HeapAndOffset.Heap, HeapAndOffset.Offset, CreateState, ResourceStateMode, D3D12_RESOURCE_STATE_TBD, ClearValue, &NewResource, *Name.ToString()));
 		UnderlyingResource = NewResource;
+		GPUVirtualAddress = UnderlyingResource->GetGPUVirtualAddress() + OffsetFromBaseOfResource;
 	}
-
-	GPUVirtualAddress = UnderlyingResource->GetGPUVirtualAddress() + OffsetFromBaseOfResource;
+	
 	ResidencyHandle = &UnderlyingResource->GetResidencyHandle();
 
 	// Refresh aliases
@@ -954,7 +1252,7 @@ bool FD3D12ResourceLocation::OnAllocationMoved(FRHIPoolAllocationData* InNewData
 	check(!CurrentResource->GetDesc().NeedsUAVAliasWorkarounds());
 
 	// Notify all the dependent resources about the change
-	Owner->ResourceRenamed(this);
+	Owner->ResourceRenamed();
 
 	return true;
 }
@@ -966,6 +1264,13 @@ void FD3D12ResourceLocation::UnlockPoolData()
 	{
 		GetPoolAllocatorPrivateData().PoolData.Unlock();
 	}
+}
+
+bool FD3D12ResourceLocation::IsStandaloneOrPooledPlacedResource() const
+{
+	bool bStandalone = Type == ResourceLocationType::eStandAlone;
+	bool bPoolPlacedResource = (!bStandalone && AllocatorType == AT_Pool) ? PoolAllocator->GetAllocationStrategy() == EResourceAllocationStrategy::kPlacedResource : false;
+	return bStandalone || bPoolPlacedResource;
 }
 
 /////////////////////////////////////////////////////////////////////

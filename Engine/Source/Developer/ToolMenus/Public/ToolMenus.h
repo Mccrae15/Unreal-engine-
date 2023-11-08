@@ -34,7 +34,7 @@ struct FToolMenuSection;
 
 struct FGeneratedToolMenuWidget
 {
-	UToolMenu* GeneratedMenu;
+	TObjectPtr<UToolMenu> GeneratedMenu;
 	TWeakPtr<SWidget> Widget;
 };
 
@@ -254,6 +254,9 @@ public:
 	/** Find or add runtime customization settings for a menu */
 	FCustomizedToolMenu* AddRuntimeMenuCustomization(const FName InName);
 
+	/** Unregister runtime customization settings for a specific owner name */
+	void UnregisterRuntimeMenuCustomizationOwner(const FName InOwnerName);
+
 	/** Generates sub menu by entry name in the given generated menu parent */
 	UToolMenu* GenerateSubMenu(const UToolMenu* InGeneratedParent, const FName InBlockName);
 
@@ -389,7 +392,7 @@ private:
 
 	TMap<FName, FGeneratedToolMenuWidgets> GeneratedMenuWidgets;
 
-	TMap<TWeakPtr<FMultiBox>, TArray<const UObject*>> WidgetObjectReferences;
+	TMap<TWeakPtr<FMultiBox>, TArray<TObjectPtr<const UObject>>> WidgetObjectReferences;
 
 	TArray<FToolMenuOwner> OwnerStack;
 

@@ -13,14 +13,14 @@
 //! data structures. Compiled models are not necessarily compatible when the runtime is updated,
 //! so this version number can be used externally to verify this. It is not used internally, and
 //! serializing models from different versions than this runtime will probably result in a crash.
-#define MUTABLE_COMPILED_MODEL_CODE_VERSION		uint32( 54 )
-#define MUTABLE_PARAMETERS_VERSION              uint32( 1 )
+#define MUTABLE_COMPILED_MODEL_CODE_VERSION		uint32( 73 )
+#define MUTABLE_PARAMETERS_VERSION              uint32( 2 )
 
 
 namespace mu
 {
 	class InputArchive;
-	class ModelStreamer;
+	class ModelWriter;
 	class OutputArchive;
 
 	typedef Ptr<Parameters> ParametersPtr;
@@ -60,17 +60,11 @@ namespace mu
 		//! Special serialise operation that serialises the data in separate "files". An object
         //! with the ModelStreamer interface is responsible of storing this data and providing
 		//! the "file" concept.
-        static void Serialise( Model* p, ModelStreamer& arch );
+        static void Serialise( Model* p, ModelWriter& arch );
 
 		//! Return true if the model has external data in other files. This kind of models will
 		//! require data streaming when used.
 		bool HasExternalData() const;
-
-        //! Get the streamer-specific location data.
-        //! This is a non-persistent string with meaning specific to every ModelStreamer
-        //! implementation.
-        const char* GetLocation( ) const;
-        void SetLocation( const char* strLocation );
 
 		//-----------------------------------------------------------------------------------------
 		// Own interface
@@ -80,6 +74,9 @@ namespace mu
 		//! If old parameters are provided, they will be reused when possible instead of the
 		//! default values.
         static ParametersPtr NewParameters( TSharedPtr<const Model> Model, const Parameters* pOld = nullptr );
+
+		/** Return true if the parameter is multi-dimensional */
+		bool IsParameterMultidimensional(int32 ParameterIndex) const;
 
 		//! Get the number of states in the model.
 		int GetStateCount() const;
@@ -99,12 +96,53 @@ namespace mu
 
         //! Free memory used by streaming data that may be loaded again when needed.
         void UnloadExternalData();
+    	
+		//! Return the default value of a boolean parameter.
+		//! \pre The parameter specified by index is a T_BOOL.
+		//! \param Index Index of the parameter from 0 to GetCount()-1
+    	bool GetBoolDefaultValue(int32 Index) const;
 
-        //! Free memory used in internal runtime caches. This is useful for long-running processes
-        //! that keep models loaded. This could be called when a game finishes, or a change of
-        //! level.
-        void ClearCaches();
+   		//! Return the default value of a integer parameter.
+		//! \pre The parameter specified by index is a T_INT.
+		//! \param Index Index of the parameter from 0 to GetCount()-1
+    	int32 GetIntDefaultValue(int32 Index) const;
 
+		//! Return the default value of a float parameter.
+		//! \pre The parameter specified by index is a T_FLOAT.
+		//! \param Index Index of the parameter from 0 to GetCount()-1
+        float GetFloatDefaultValue(int32 Index) const;
+
+		//! Return the default value of a colour parameter.
+		//! \pre The parameter specified by index is a T_FLOAT.
+        //! \param Index Index of the parameter from 0 to GetCount()-1
+        //! \param R,G,B Pointers to values where every resulting colour channel will be stored
+    	void GetColourDefaultValue(int32 Index, float* R, float* G, float* B) const;
+
+    	//! Return the default value of a projector parameter, as a 4x4 matrix. The matrix is supposed to be
+		//! a linear transform in column-major.
+		//! \pre The parameter specified by index is a T_PROJECTOR.
+        //! \param Index Index of the parameter from 0 to GetCount()-1
+        //! \param OutPos Pointer to where the object-space position coordinates of the projector will be stored.
+        //! \param OutDir Pointer to where the object-space direction vector of the projector will be stored.
+        //! \param OutUp Pointer to where the object-space vertically up direction vector
+        //!         of the projector will be stored. This controls the "roll" angle of the
+        //!         projector.
+        //! \param OutScale Pointer to the projector-space scaling of the projector.
+    	void GetProjectorDefaultValue(int32 Index, PROJECTOR_TYPE* OutProjectionType, FVector3f* OutPos,
+    	 	FVector3f* OutDir, FVector3f* OutUp, FVector3f* OutScale, float* OutProjectionAngle) const;
+
+        //! Return the default value of an image parameter.
+        //! \pre The parameter specified by index is a T_IMAGE.
+        //! \param Index Index of the parameter from 0 to GetCount()-1
+		//! \return The externalId specified when setting the image value (\see SetImageValue)
+		FName GetImageDefaultValue(int32 Index) const;
+
+    	int32 GetRomCount() const;
+
+		uint32 GetRomId(int32 Index) const;
+
+		uint32 GetRomSize(int32 Index) const;
+    	
 		//-----------------------------------------------------------------------------------------
 		// Interface pattern
 		//-----------------------------------------------------------------------------------------

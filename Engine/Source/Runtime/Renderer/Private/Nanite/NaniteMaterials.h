@@ -9,10 +9,6 @@
 
 static constexpr uint32 NANITE_MAX_MATERIALS = 64;
 
-// TODO: Until RHIs no longer set stencil ref to 0 on a PSO change, this optimization 
-// is actually worse (forces a context roll per unique material draw, back to back).
-#define NANITE_MATERIAL_STENCIL 0
-
 struct FNaniteMaterialPassCommand;
 struct FLumenMeshCaptureMaterialPass;
 class  FLumenCardPassUniformParameters;
@@ -473,19 +469,37 @@ extern bool UseComputeDepthExport();
 namespace Nanite
 {
 
+struct FCustomDepthContext
+{
+	FRDGTextureRef InputDepth = nullptr;
+	FRDGTextureSRVRef InputStencilSRV = nullptr;
+	FRDGTextureRef DepthTarget = nullptr;
+	FRDGTextureRef StencilTarget = nullptr;
+	bool bComputeExport = true;
+};
+
+struct FShadeBinning
+{
+	FRDGBufferRef ShadingBinMeta  = nullptr;
+	FRDGBufferRef ShadingBinArgs  = nullptr;
+	FRDGBufferRef ShadingBinData = nullptr;
+	FRDGBufferRef ShadingBinStats = nullptr;
+};
+
 void EmitDepthTargets(
 	FRDGBuilder& GraphBuilder,
 	const FScene& Scene,
 	const FViewInfo& View,
-	const FIntVector4& PageConstants,
-	FRDGBufferRef VisibleClustersSWHW,
-	FRDGBufferRef ViewsBuffer,
+	bool bDrawSceneViewsInOneNanitePass,
+	FRasterResults& RasterResults,
 	FRDGTextureRef SceneDepth,
-	FRDGTextureRef VisBuffer64,
-	FRDGTextureRef VelocityBuffer,
-	FRDGTextureRef& OutMaterialDepth,
-	FRDGTextureRef& OutMaterialResolve,
-	bool bStencilMask
+	FRDGTextureRef VelocityBuffer
+);
+
+FCustomDepthContext InitCustomDepthStencilContext(
+	FRDGBuilder& GraphBuilder,
+	const FCustomDepthTextures& CustomDepthTextures,
+	bool bWriteCustomStencil
 );
 
 void EmitCustomDepthStencilTargets(
@@ -496,15 +510,21 @@ void EmitCustomDepthStencilTargets(
 	FRDGBufferRef VisibleClustersSWHW,
 	FRDGBufferRef ViewsBuffer,
 	FRDGTextureRef VisBuffer64,
-	bool bWriteCustomStencil,
-	FCustomDepthTextures& CustomDepthTextures
+	const FCustomDepthContext& CustomDepthContext
+);
+
+void FinalizeCustomDepthStencil(
+	FRDGBuilder& GraphBuilder,
+	const FCustomDepthContext& CustomDepthContext,
+	FCustomDepthTextures& OutTextures
 );
 
 void DrawBasePass(
 	FRDGBuilder& GraphBuilder,
 	TArray<FNaniteMaterialPassCommand, SceneRenderingAllocator>& NaniteMaterialPassCommands,
-	const FSceneRenderer& SceneRenderer,
+	FSceneRenderer& SceneRenderer,
 	const FSceneTextures& SceneTextures,
+	const FRenderTargetBindingSlots& BasePassRenderTargets,
 	const FDBufferTextures& DBufferTextures,
 	const FScene& Scene,
 	const FViewInfo& View,
@@ -516,7 +536,7 @@ void DrawLumenMeshCapturePass(
 	FScene& Scene,
 	FViewInfo* SharedView,
 	TArrayView<const FCardPageRenderData> CardPagesToRender,
-	const FCullingContext& CullingContext,
+	const FRasterResults& RasterResults,
 	const FRasterContext& RasterContext,
 	FLumenCardPassUniformParameters* PassUniformParameters,
 	FRDGBufferSRVRef RectMinMaxBufferSRV,
@@ -528,12 +548,20 @@ void DrawLumenMeshCapturePass(
 	FRDGTextureRef DepthAtlasTexture
 );
 
+FShadeBinning ShadeBinning(
+	FRDGBuilder& GraphBuilder,
+	const FScene& Scene,
+	const FViewInfo& View,
+	const FIntRect InViewRect,
+	const FRasterResults& RasterResults
+);
+
 void BuildShadingCommands(
 	const FScene& Scene,
 	const FNaniteShadingPipelines& ShadingPipelines,
 	TArray<TPimplPtr<FNaniteShadingCommand>>& ShadingCommands
 );
 
-EGBufferLayout GetGBufferLayoutForMaterial(const FMaterial& Material);
+EGBufferLayout GetGBufferLayoutForMaterial(bool bMaterialUsesWorldPositionOffset);
 
 } // namespace Nanite

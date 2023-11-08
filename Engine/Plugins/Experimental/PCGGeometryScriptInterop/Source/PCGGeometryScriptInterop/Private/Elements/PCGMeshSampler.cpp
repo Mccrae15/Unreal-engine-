@@ -30,6 +30,19 @@ UPCGMeshSamplerSettings::UPCGMeshSamplerSettings()
 	bUseSeed = true;
 }
 
+void UPCGMeshSamplerSettings::PostLoad()
+{
+	Super::PostLoad();
+
+#if WITH_EDITOR
+	if (!StaticMeshPath_DEPRECATED.IsNull())
+	{
+		StaticMesh = StaticMeshPath_DEPRECATED;
+		StaticMeshPath_DEPRECATED.Reset();
+	}
+#endif
+}
+
 TArray<FPCGPinProperties> UPCGMeshSamplerSettings::InputPinProperties() const
 {
 	return TArray<FPCGPinProperties>{};
@@ -91,12 +104,12 @@ bool FPCGMeshSamplerElement::PrepareDataInternal(FPCGContext* InContext) const
 	check(Settings);
 
 	// TODO: Could be async
-	TSoftObjectPtr<UStaticMesh> StaticMeshPtr{ Settings->StaticMeshPath };
+	TSoftObjectPtr<UStaticMesh> StaticMeshPtr = Settings->StaticMesh;
 	UStaticMesh* StaticMesh = StaticMeshPtr.LoadSynchronous();
 
 	if (!StaticMesh)
 	{
-		PCGE_LOG(Error, GraphAndLog, FText::Format(LOCTEXT("MeshDoesNotExist", "Provided static mesh does not exist: '{0}'"), FText::FromString(Settings->StaticMeshPath.ToString())));
+		PCGE_LOG(Error, GraphAndLog, FText::Format(LOCTEXT("MeshDoesNotExist", "Provided static mesh does not exist or could not be loaded: '{0}'"), FText::FromString(StaticMeshPtr.ToString())));
 		return true;
 	}
 
@@ -162,7 +175,6 @@ bool FPCGMeshSamplerElement::PrepareDataInternal(FPCGContext* InContext) const
 
 	TArray<FPCGTaggedData>& Outputs = InContext->OutputData.TaggedData;
 	Context->OutPointData = NewObject<UPCGPointData>();
-	Context->OutPointData->TargetActor = Context->SourceComponent->GetOwner();
 	Outputs.Emplace_GetRef().Data = Context->OutPointData;
 
 	Context->bDataPrepared = true;
@@ -210,6 +222,7 @@ bool FPCGMeshSamplerElement::ExecuteInternal(FPCGContext* InContext) const
 			OutPoint.Transform = FTransform{ FRotationMatrix::MakeFromZ(Normal).Rotator(), Position, FVector{1.0, 1.0, 1.0} };
 			OutPoint.Density = Settings->bUseRedAsDensity ? Color.R : 1.0f;
 			OutPoint.Color = Color;
+			OutPoint.Steepness = Settings->PointSteepness;
 
 			UPCGBlueprintHelpers::SetSeedFromPosition(OutPoint);
 
@@ -225,7 +238,7 @@ bool FPCGMeshSamplerElement::ExecuteInternal(FPCGContext* InContext) const
 
 		const TArray<int32>& TriangleIds = *Context->TriangleIds.List.Get();
 
-		auto IterationBody = [DynamicMesh = Context->DynamicMesh, &TriangleIds](int32 Index, FPCGPoint& OutPoint) -> bool
+		auto IterationBody = [DynamicMesh = Context->DynamicMesh, PointSteepness = Settings->PointSteepness, &TriangleIds](int32 Index, FPCGPoint& OutPoint) -> bool
 		{
 			const int32 TriangleId = TriangleIds[Index];
 
@@ -240,6 +253,7 @@ bool FPCGMeshSamplerElement::ExecuteInternal(FPCGContext* InContext) const
 			OutPoint = FPCGPoint{};
 			OutPoint.Transform = FTransform{ FRotationMatrix::MakeFromZ(Normal).Rotator(), Position, FVector{1.0, 1.0, 1.0} };
 			OutPoint.Density = 1.0f;
+			OutPoint.Steepness = PointSteepness;
 
 			UPCGBlueprintHelpers::SetSeedFromPosition(OutPoint);
 
@@ -305,6 +319,7 @@ bool FPCGMeshSamplerElement::ExecuteInternal(FPCGContext* InContext) const
 					FPCGPoint& OutPoint = Points.Emplace_GetRef();
 					OutPoint.Transform = Sample.ToTransform();
 					OutPoint.Density = 1.0f;
+					OutPoint.Steepness = Settings->PointSteepness;
 
 					UPCGBlueprintHelpers::SetSeedFromPosition(OutPoint);
 				}

@@ -140,30 +140,6 @@ struct FMeshReductionSettings
 	{
 	}
 
-	FMeshReductionSettings(const FMeshReductionSettings& Other)
-		: PercentTriangles(Other.PercentTriangles)
-		, MaxNumOfTriangles(Other.MaxNumOfTriangles)
-		, PercentVertices(Other.PercentVertices)
-		, MaxNumOfVerts(Other.MaxNumOfVerts)
-		, MaxDeviation(Other.MaxDeviation)
-		, PixelError(Other.PixelError)
-		, WeldingThreshold(Other.WeldingThreshold)
-		, HardAngleThreshold(Other.HardAngleThreshold)
-		, BaseLODModel(Other.BaseLODModel)
-		, SilhouetteImportance(Other.SilhouetteImportance)
-		, TextureImportance(Other.TextureImportance)
-		, ShadingImportance(Other.ShadingImportance)
-		, bRecalculateNormals(Other.bRecalculateNormals)
-		, bGenerateUniqueLightmapUVs(Other.bGenerateUniqueLightmapUVs)
-		, bKeepSymmetry(Other.bKeepSymmetry)
-		, bVisibilityAided(Other.bVisibilityAided)
-		, bCullOccluded(Other.bCullOccluded)
-		, TerminationCriterion(Other.TerminationCriterion)
-		, VisibilityAggressiveness(Other.VisibilityAggressiveness)
-		, VertexColorImportance(Other.VertexColorImportance)
-	{
-	}
-
 	/** Equality operator. */
 	bool operator==(const FMeshReductionSettings& Other) const
 	{
@@ -527,12 +503,8 @@ struct FMeshMergingSettings
 	uint8 bMergeMeshSockets : 1;
 
 	/** Whether to merge source materials into one flat material, ONLY available when LOD Selection Type is set to LowestDetailLOD */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = MaterialSettings, meta=(EditCondition="LODSelectionType == EMeshLODSelectionType::LowestDetailLOD"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = MaterialSettings, meta=(EditCondition="LODSelectionType == EMeshLODSelectionType::LowestDetailLOD || LODSelectionType == EMeshLODSelectionType::SpecificLOD"))
 	uint8 bMergeMaterials:1;
-
-	/** Create a flat material from all source materials, along with a new set of UVs. This material won't be applied to any section by default. */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category = MaterialSettings, meta=(EditCondition="LODSelectionType == EMeshLODSelectionType::LowestDetailLOD"))
-	uint8 bCreateMergedMaterial : 1;
 
 	/** Whether or not vertex data such as vertex colours should be baked into the resulting mesh */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = MeshSettings)
@@ -594,6 +566,9 @@ struct FMeshMergingSettings
 	uint8 bExportSpecularMap_DEPRECATED:1;
 
 	UPROPERTY()
+	uint8 bCreateMergedMaterial_DEPRECATED : 1;
+
+	UPROPERTY()
 	int32 MergedMaterialAtlasResolution_DEPRECATED;
 
 	UPROPERTY()
@@ -603,7 +578,7 @@ struct FMeshMergingSettings
 	uint8 bGenerateNaniteEnabledMesh_DEPRECATED : 1;
 
 	UPROPERTY()
-	float NaniteFallbackTrianglePercent_DEPRECATED;
+	float NaniteFallbackTrianglePercent_DEPRECATED;	
 #endif
 
 	EMeshMergeType MergeType;
@@ -620,7 +595,6 @@ struct FMeshMergingSettings
 		, bMergePhysicsData(false)
 		, bMergeMeshSockets(false)
 		, bMergeMaterials(false)
-		, bCreateMergedMaterial(false)
 		, bBakeVertexDataToMesh(false)
 		, bUseVertexDataForBakingMaterial(true)
 		, bUseTextureBinning(false)
@@ -637,6 +611,7 @@ struct FMeshMergingSettings
 		, bExportMetallicMap_DEPRECATED(false)
 		, bExportRoughnessMap_DEPRECATED(false)
 		, bExportSpecularMap_DEPRECATED(false)
+		, bCreateMergedMaterial_DEPRECATED(false)
 		, MergedMaterialAtlasResolution_DEPRECATED(1024)
 		, ExportSpecificLOD_DEPRECATED(0)
 		, bGenerateNaniteEnabledMesh_DEPRECATED(false)
@@ -695,11 +670,11 @@ struct FSectionInfo
 
 /** Mesh instance-replacement settings */
 USTRUCT(Blueprintable)
-struct ENGINE_API FMeshInstancingSettings
+struct FMeshInstancingSettings
 {
 	GENERATED_BODY()
 
-	FMeshInstancingSettings();
+	ENGINE_API FMeshInstancingSettings();
 
 	/** The actor class to attach new instance static mesh components to */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, NoClear, Category="Instancing")
@@ -871,7 +846,7 @@ struct FMeshApproximationSettings
 	EMeshApproximationGroundPlaneClippingPolicy GroundClipping = EMeshApproximationGroundPlaneClippingPolicy::NoGroundClipping;
 
 	/** Z-Height for the ground clipping plane, if enabled */
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = SimplifySettings, meta = (EditCondition = "GroundClipping != EGroundPlaneClippingPolicy::NoGroundClipping"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = SimplifySettings, meta = (EditCondition = "GroundClipping != EMeshApproximationGroundPlaneClippingPolicy::NoGroundClipping"))
 	float GroundClippingZHeight = 0.0f;
 
 

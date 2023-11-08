@@ -1,8 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MVVM/CurveEditorExtension.h"
+#include "MVVM/Selection/Selection.h"
 
 #include "FrameNumberDetailsCustomization.h"
+#include "Filters/SCurveEditorFilterPanel.h"
 #include "Framework/Docking/TabManager.h"
 #include "IPropertyRowGenerator.h"
 #include "MVVM/ViewModels/SequencerEditorViewModel.h"
@@ -59,6 +61,16 @@ public:
 				}
 			}
 		}
+	}
+	int32 GetSupportedTangentTypes() override
+	{
+		return ((int32)ECurveEditorTangentTypes::InterpolationConstant	|
+			(int32)ECurveEditorTangentTypes::InterpolationLinear		|
+			(int32)ECurveEditorTangentTypes::InterpolationCubicAuto		|
+			(int32)ECurveEditorTangentTypes::InterpolationCubicUser		|
+			(int32)ECurveEditorTangentTypes::InterpolationCubicBreak	|
+			(int32)ECurveEditorTangentTypes::InterpolationCubicWeighted |
+			(int32)ECurveEditorTangentTypes::InterpolationCubicSmartAuto);
 	}
 };
 
@@ -190,7 +202,7 @@ void FCurveEditorExtension::CreateCurveEditor(const FTimeSliderArgs& TimeSliderA
 			TimeSliderArgs, Sequencer, CurveEditorModel.ToSharedRef());
 
 	CurveEditorTreeView = SNew(SCurveEditorTree, CurveEditorModel);
-	TSharedRef<SCurveEditorPanel> CurveEditorWidget = SNew(SCurveEditorPanel, CurveEditorModel.ToSharedRef())
+	CurveEditorPanel = SNew(SCurveEditorPanel, CurveEditorModel.ToSharedRef())
 		// Grid lines match the color specified in FSequencerTimeSliderController::OnPaintViewArea
 		.GridLineTint(FLinearColor(0.f, 0.f, 0.f, 0.3f))
 		.ExternalTimeSliderController(CurveEditorTimeSliderController)
@@ -231,7 +243,7 @@ void FCurveEditorExtension::CreateCurveEditor(const FTimeSliderArgs& TimeSliderA
 
 	// Register an instanced custom property type layout to handle converting FFrameNumber from Tick Resolution to Display Rate.
 	TWeakPtr<ISequencer> WeakSequencer(Sequencer);
-	CurveEditorWidget->GetKeyDetailsView()->GetPropertyRowGenerator()->RegisterInstancedCustomPropertyTypeLayout(
+	CurveEditorPanel->GetKeyDetailsView()->GetPropertyRowGenerator()->RegisterInstancedCustomPropertyTypeLayout(
 			"FrameNumber", 
 			FOnGetPropertyTypeCustomizationInstance::CreateStatic(CreateFrameNumberCustomization, WeakSequencer));
 
@@ -241,14 +253,43 @@ void FCurveEditorExtension::CreateCurveEditor(const FTimeSliderArgs& TimeSliderA
 		FExecuteAction::CreateLambda([this] { FSlateApplication::Get().SetKeyboardFocus(CurveEditorSearchBox, EFocusCause::SetDirectly); })
 	);
 
-	CurveEditorPanel = SNew(SSequencerCurveEditor, CurveEditorWidget, Sequencer);
+	CurveEditorWidget = SNew(SSequencerCurveEditor, CurveEditorPanel.ToSharedRef(), Sequencer);
+
+	CurveEditorPanel->OnFilterClassChanged.BindRaw(this, &FCurveEditorExtension::FilterClassChanged);
 
 	// Check to see if the tab is already opened due to the saved window layout.
 	FTabId TabId = FTabId(FCurveEditorExtension::CurveEditorTabName);
 	TSharedPtr<SDockTab> ExistingCurveEditorTab = Sequencer->GetToolkitHost()->GetTabManager()->FindExistingLiveTab(TabId);
 	if (ExistingCurveEditorTab)
 	{
-		ExistingCurveEditorTab->SetContent(CurveEditorPanel.ToSharedRef());
+		ExistingCurveEditorTab->SetContent(CurveEditorWidget.ToSharedRef());
+	}
+}
+
+void FCurveEditorExtension::FilterClassChanged()
+{
+	TSharedPtr<FSequencerEditorViewModel> OwnerModel = WeakOwnerModel.Pin();
+	if (!ensure(OwnerModel))
+	{
+		return;
+	}
+
+	TSharedPtr<FSequencer> Sequencer = OwnerModel->GetSequencerImpl();
+	if (!ensure(Sequencer))
+	{
+		return;
+	}
+
+	if (CurveEditorPanel)
+	{
+		TSharedPtr<SCurveEditorFilterPanel> FilterPanel = CurveEditorPanel->GetFilterPanel();
+		if (FilterPanel)
+		{
+			TWeakPtr<ISequencer> WeakSequencer(Sequencer);
+			FilterPanel->GetDetailsView()->RegisterInstancedCustomPropertyTypeLayout(
+				"FrameNumber",
+				FOnGetPropertyTypeCustomizationInstance::CreateStatic(CreateFrameNumberCustomization, WeakSequencer));
+		}
 	}
 }
 
@@ -272,7 +313,7 @@ void FCurveEditorExtension::OpenCurveEditor()
 	TSharedPtr<SDockTab> CurveEditorTab = Sequencer->GetToolkitHost()->GetTabManager()->TryInvokeTab(TabId);
 	if (CurveEditorTab.IsValid())
 	{
-		CurveEditorTab->SetContent(CurveEditorPanel.ToSharedRef());
+		CurveEditorTab->SetContent(CurveEditorWidget.ToSharedRef());
 
 		const FSlateIcon SequencerGraphIcon = FSlateIcon(FAppStyle::GetAppStyleSetName(), "GenericCurveEditor.TabIcon");
 		CurveEditorTab->SetTabIcon(SequencerGraphIcon.GetIcon());
@@ -338,12 +379,22 @@ FKeyAttributes FCurveEditorExtension::GetDefaultKeyAttributes() const
 	case EMovieSceneKeyInterpolation::Break:    return FKeyAttributes().SetInterpMode(RCIM_Cubic).SetTangentMode(RCTM_Break);
 	case EMovieSceneKeyInterpolation::Linear:   return FKeyAttributes().SetInterpMode(RCIM_Linear).SetTangentMode(RCTM_Auto);
 	case EMovieSceneKeyInterpolation::Constant: return FKeyAttributes().SetInterpMode(RCIM_Constant).SetTangentMode(RCTM_Auto);
-	default:                                    return FKeyAttributes().SetInterpMode(RCIM_Cubic).SetTangentMode(RCTM_Auto);
+	case EMovieSceneKeyInterpolation::Auto:     return FKeyAttributes().SetInterpMode(RCIM_Cubic).SetTangentMode(RCTM_Auto);
+	case EMovieSceneKeyInterpolation::SmartAuto:
+	default:                                    return FKeyAttributes().SetInterpMode(RCIM_Cubic).SetTangentMode(RCTM_SmartAuto);
 	}
 }
 
+static bool bSyncSelectionRequested = false;
 void FCurveEditorExtension::RequestSyncSelection()
 {
+	if (bSyncSelectionRequested)
+	{
+		return;
+	}
+
+	bSyncSelectionRequested = true;
+
 	// We schedule selection syncing to the next editor tick because we might want to select items that
 	// have just been added to the curve editor tree this tick. If it happened after the Slate update,
 	// these items don't yet have a UI widget, and so selecting them doesn't do anything.
@@ -354,6 +405,8 @@ void FCurveEditorExtension::RequestSyncSelection()
 	TWeakPtr<FSequencerEditorViewModel> WeakRootViewModel(WeakOwnerModel);
 	GEditor->GetTimerManager()->SetTimerForNextTick([WeakRootViewModel]()
 	{
+		bSyncSelectionRequested = false;
+	
 		TSharedPtr<FSequencerEditorViewModel> RootViewModel = WeakRootViewModel.Pin();
 		if (!RootViewModel.IsValid())
 		{
@@ -392,10 +445,9 @@ void FCurveEditorExtension::SyncSelection()
 	CurveEditorTreeView->ClearSelection();
 
 	FCurveEditorTreeItemID FirstCurveEditorTreeItemID;
-	const TSet<TWeakPtr<FViewModel>>& SelectedItems = Sequencer->GetSelection().GetSelectedOutlinerItems();
-	for (TWeakPtr<FViewModel> SelectedItem : SelectedItems)
+	for (TViewModelPtr<IOutlinerExtension> SelectedItem : OwnerModel->GetSelection()->Outliner)
 	{
-		if (ICurveEditorTreeItemExtension* CurveEditorItem = ICastable::CastWeakPtr<ICurveEditorTreeItemExtension>(SelectedItem))
+		if (TViewModelPtr<ICurveEditorTreeItemExtension> CurveEditorItem = SelectedItem.ImplicitCast())
 		{
 			FCurveEditorTreeItemID CurveEditorTreeItem = CurveEditorItem->GetCurveEditorItemID();
 			if (CurveEditorTreeItem != FCurveEditorTreeItemID::Invalid())

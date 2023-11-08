@@ -16,6 +16,10 @@ class UEdGraph;
 class UMVVMBlueprintView;
 class UMVVMViewClass;
 class UWidgetBlueprintGeneratedClass;
+namespace  UE::MVVM
+{
+	enum class EBindingMessageType : uint8;
+}
 
 namespace UE::MVVM::Private
 {
@@ -25,8 +29,10 @@ struct FMVVMViewBlueprintCompiler
 private:
 	struct FCompilerUserWidgetPropertyContext;
 	struct FCompilerSourceCreatorContext;
+	struct FCompiledBinding;
 	struct FCompilerBinding;
 	struct FBindingSourceContext;
+	struct FBindingDestinationContext;
 
 public:
 	FMVVMViewBlueprintCompiler(FWidgetBlueprintCompilerContext& InCreationContext)
@@ -53,10 +59,15 @@ public:
 	/** Compile the library and fill the view and viewclass */
 	bool Compile(UWidgetBlueprintGeneratedClass* Class, UMVVMBlueprintView* BlueprintView, UMVVMViewClass* ViewExtension);
 
+
+	static void TestGenerateSetter(FStringView ObjectName, FStringView FieldPath, FStringView FunctionName);
+
 private:
 	void CreateWidgetMap(const FWidgetBlueprintCompilerContext::FCreateVariableContext& Context, UMVVMBlueprintView* BlueprintView);
 	void CreateSourceLists(const FWidgetBlueprintCompilerContext::FCreateVariableContext& Context, UMVVMBlueprintView* BlueprintView);
 	void CreateFunctionsDeclaration(const FWidgetBlueprintCompilerContext::FCreateVariableContext& Context, UMVVMBlueprintView* BlueprintView);
+	void CreateIntermediateGraphFunctions(const FWidgetBlueprintCompilerContext::FCreateVariableContext& Context, UMVVMBlueprintView* BlueprintView);
+	void CreateBindingDestinationContexts(UMVVMBlueprintView* BlueprintView);
 
 	bool PreCompileBindingSources(UWidgetBlueprintGeneratedClass* Class, UMVVMBlueprintView* BlueprintView);
 	bool CompileBindingSources(const FCompiledBindingLibraryCompiler::FCompileResult& CompileResult, UWidgetBlueprintGeneratedClass* Class, UMVVMBlueprintView* BlueprintView, UMVVMViewClass* ViewExtension);
@@ -69,20 +80,21 @@ private:
 
 	const FCompilerSourceCreatorContext* FindViewModelSource(FGuid Id) const;
 
-	void AddErrorForBinding(FMVVMBlueprintViewBinding& Binding, const FText& Message, FName ArgumentName = FName()) const;
+	void AddMessageForBinding(FMVVMBlueprintViewBinding& Binding, UMVVMBlueprintView* BlueprintView, const FText& MessageText, EBindingMessageType MessageType, FName ArgumentName = FName()) const;
 	void AddErrorForViewModel(const FMVVMBlueprintViewModelContext& ViewModel, const FText& Message) const;
 
-	TValueOrError<FBindingSourceContext, FText> CreateBindingSourceContext(const UMVVMBlueprintView* BlueprintView, const UWidgetBlueprintGeneratedClass* Class, const FMVVMBlueprintPropertyPath& PropertyPath);
+	TValueOrError<FBindingSourceContext, FText> CreateBindingSourceContext(const UMVVMBlueprintView* BlueprintView, const UWidgetBlueprintGeneratedClass* Class, const FMVVMBlueprintPropertyPath& PropertyPath, bool bIsOneTimeBinding);
 	TArray<FMVVMConstFieldVariant> CreateBindingDestinationPath(const UMVVMBlueprintView* BlueprintView, const UWidgetBlueprintGeneratedClass* Class, const FMVVMBlueprintPropertyPath& PropertyPath) const;
+	TValueOrError<FCompiledBinding, FText> CreateCompiledBinding(const UWidgetBlueprintGeneratedClass* Class, TArrayView<const UE::MVVM::FMVVMConstFieldVariant> GetterFields, TArrayView<const UE::MVVM::FMVVMConstFieldVariant> SetterFields, const UFunction* ConversionFunction, bool bIsComplexBinding);
 
-	TArray<FMVVMConstFieldVariant> CreatePropertyPath(const UClass* Class, FName PropertyName, TArray<FMVVMConstFieldVariant> Properties) const;
-	bool IsPropertyPathValid(TArrayView<const FMVVMConstFieldVariant> PropertyPath) const;
+	static TArray<FMVVMConstFieldVariant> CreatePropertyPath(const UClass* Class, FName PropertyName, TArray<FMVVMConstFieldVariant> Properties);
+	static bool IsPropertyPathValid(TArrayView<const FMVVMConstFieldVariant> PropertyPath);
+	static bool CanBeSetInNative(TArrayView<const FMVVMConstFieldVariant> PropertyPath);
 
 private:
 	/**
-	 * Describe the Property that is needed to start a PropertyPath on the UserWidget.
+	 * Describe the Property that need to be added (if it doesn't already exist)
 	 * They can be a Widget, a viewmodel, or any object owned by the UserWidget.
-	 * The property will be created if it doesn't exist yet.
 	 */
 	struct FCompilerUserWidgetPropertyContext
 	{
@@ -96,6 +108,7 @@ private:
 		FGuid ViewModelId;
 
 		bool bExposeOnSpawn = false;
+		bool bPublicGetter = false;
 	};
 	TArray<FCompilerUserWidgetPropertyContext> CompilerUserWidgetPropertyContexts;
 
@@ -104,7 +117,8 @@ private:
 	 */
 	enum class ECompilerSourceCreatorType
 	{
-		ViewModel,
+		ViewModel, // added manually
+		ViewModelDynamic, // added by a long binding chain
 	};
 	struct FCompilerSourceCreatorContext
 	{
@@ -113,8 +127,32 @@ private:
 		ECompilerSourceCreatorType Type = ECompilerSourceCreatorType::ViewModel;
 		FString SetterFunctionName;
 		UEdGraph* SetterGraph = nullptr;
+		FName DynamicParentSourceName;
 	};
 	TArray<FCompilerSourceCreatorContext> CompilerSourceCreatorContexts;
+
+	/** The compiled binding from the binding compiler. */
+	struct FCompiledBinding
+	{
+		FCompiledBindingLibraryCompiler::FBindingHandle BindingHandle;
+
+		// At runtime, OnFieldValueChanged
+		//if the ConversionFunction exist
+		// then we read the Source
+		// then we call ConversionFunction with the source as an input
+		// then we copy the result of the ConversionFunction to DestinationWrite
+		//else if the ConversionFunction is complex
+		// then we call ConversionFunction without input (SourceRead can be invalid)
+		// then we copy the result of the ConversionFunction to DestinationWrite
+		//else
+		// then we copy SourceRead to DestiantionWrite.
+		FCompiledBindingLibraryCompiler::FFieldPathHandle SourceRead;
+		FCompiledBindingLibraryCompiler::FFieldPathHandle DestinationWrite;
+		FCompiledBindingLibraryCompiler::FFieldPathHandle ConversionFunction;
+		FCompiledBindingLibraryCompiler::FFieldPathHandle ExecutionFunction;
+
+		bool bIsConversionFunctionComplex = false;
+	};
 
 	/** 
 	 * Describe a binding for the compiler.
@@ -123,29 +161,38 @@ private:
 	enum class ECompilerBindingType
 	{
 		PropertyBinding, // normal binding
+		ViewModelDynamic, // added by a long binding chain
 	};
 	struct FCompilerBinding
 	{
+		ECompilerBindingType Type = ECompilerBindingType::PropertyBinding;
 		int32 BindingIndex = INDEX_NONE;
 		int32 UserWidgetPropertyContextIndex = INDEX_NONE;
+		int32 SourceCreatorContextIndex = INDEX_NONE;
+		int32 ComplexConversionFunctionContextIndex = INDEX_NONE;
 		bool bSourceIsUserWidget = false;
 		bool bFieldIdNeeded = false;
-		bool bIsConversionFunctionComplex = false;
+		bool bIsForwardBinding = false;
+		bool bNeedsValidSource = true;	// if false, the binding is a onetime or executed manually (onclick event).
 
-		FCompiledBindingLibraryCompiler::FBindingHandle BindingHandle;
-
-		// At runtime, when TriggerFields changes
-		//if the ConversionFunction exist
-		// then we need to read all the inputs of the ConversionFunction
-		// then we copy the result of the ConversionFunction to DestinationWrite
-		//else we read the same property that TriggerField changed
-		// then we copy TriggerField to DestiantionWrite.
 		FCompiledBindingLibraryCompiler::FFieldIdHandle FieldIdHandle;
-		FCompiledBindingLibraryCompiler::FFieldPathHandle SourceRead;
-		FCompiledBindingLibraryCompiler::FFieldPathHandle DestinationWrite;
-		FCompiledBindingLibraryCompiler::FFieldPathHandle ConversionFunction;
+		FCompiledBinding CompiledBinding;
+		FName DynamicViewModelName;
 	};
 	TArray<FCompilerBinding> CompilerBindings;
+
+	/**
+	 * Binding that do not requires a source to execute.
+	 * They could be a OneTime ComplexConversionFunction or an event (onclick).
+	 */
+	struct FSimpleBindingContext
+	{
+		int32 BindingIndex = INDEX_NONE;
+		bool bIsForwardBinding = false;
+
+		int32 ComplexConversionFunctionContextIndex = INDEX_NONE;
+	};
+	TArray<FSimpleBindingContext> SimpleBindingContexts;
 
 	/**
 	 * Source path of a binding that contains a FieldId that we can register/bind to
@@ -155,7 +202,7 @@ private:
 		int32 BindingIndex = INDEX_NONE;
 		bool bIsForwardBinding = false;
 
-		UClass* SourceClass = nullptr;
+		const UClass* SourceClass = nullptr;
 		// The property that are registering to.
 		FFieldNotificationId FieldId;
 		// The path always start with the UserWidget as self.
@@ -164,12 +211,50 @@ private:
 		// or Field.SubProperty.SubProperty
 		TArray<UE::MVVM::FMVVMConstFieldVariant> PropertyPath;
 
+		// Complex binding do not need to add the PropertyPath to the binding info.
+		int32 ComplexConversionFunctionContextIndex = INDEX_NONE;
 		// The source if it's a property
 		int32 UserWidgetPropertyContextIndex = INDEX_NONE;
+		// The source if it's a property
+		int32 SourceCreatorContextIndex = INDEX_NONE;
 		// The source is the UserWidget itself
 		bool bIsRootWidget = false;
 	};
 	TArray<FBindingSourceContext> BindingSourceContexts;
+
+	/**
+	 * Destination path of a binding.
+	 * The info needs to be validate before we generate the functions list.
+	 */
+	struct FBindingDestinationContext
+	{
+		int32 BindingIndex = INDEX_NONE;
+		bool bIsForwardBinding = false;
+
+		bool bCanBeSetInNative = true;
+		FName GeneratedFunctionName;
+
+	};
+	TArray<FBindingDestinationContext> BindingDestinationContexts;
+
+	/**
+	 * Complex Conversion function shared data
+	 */
+	struct FComplexConversionFunctionContext
+	{
+		int32 BindingIndex = INDEX_NONE;
+		bool bIsForwardBinding = false;
+
+		// More than one binding can use the same conversion function.
+		// Only one should execute the binding at initialization.
+		bool bExecAtInitGenerated = false;
+		// More than one binding can use the same conversion function.
+		// At least one must have a valid source to trigger the binding.
+		//If not, then it should be a FSimpleBindingContext
+		bool bHasValidFieldId = false;
+		bool bNeedsValidSource = true;
+	};
+	TArray<FComplexConversionFunctionContext> ComplexConversionFunctionContexts;
 
 	TMap<FName, UWidget*> WidgetNameToWidgetPointerMap;
 	FWidgetBlueprintCompilerContext& WidgetBlueprintCompilerContext;

@@ -36,8 +36,9 @@ class UChooserColumnDetails : public UObject
 public:
 	UPROPERTY(EditAnywhere, Instanced, Category="Hidden")
 	TObjectPtr<UChooserTable> Chooser;
-	int Column;
+	int Column = -1;
 };
+
 
 namespace UE::ChooserEditor
 {
@@ -73,6 +74,7 @@ namespace UE::ChooserEditor
 		virtual FLinearColor GetWorldCentricTabColorScale() const override;
 		virtual bool IsPrimaryEditor() const override { return true; }
 		virtual bool IsSimpleAssetEditor() const override { return false; }
+		virtual void InitToolMenuContext(FToolMenuContext& MenuContext) override;
 		
 		/** FEditorUndoClient Interface */
 		virtual void PostUndo(bool bSuccess) override;
@@ -83,6 +85,7 @@ namespace UE::ChooserEditor
 		virtual void NotifyPostChange( const FPropertyChangedEvent& PropertyChangedEvent, FProperty* PropertyThatChanged) override;
 
 		UChooserTable* GetChooser() { return Cast<UChooserTable>(EditingObjects[0]); }
+		const UChooserTable* GetChooser() const { return Cast<UChooserTable>(EditingObjects[0]); }
 	
 		/** Used to show or hide certain properties */
 		void SetPropertyVisibilityDelegate(FIsPropertyVisible InVisibilityDelegate);
@@ -97,10 +100,16 @@ namespace UE::ChooserEditor
 
 		void UpdateTableRows();
 		void SelectColumn(int Index);
+		void ClearSelectedColumn();
 		void DeleteColumn(int Index);
+		void AddColumn(const UScriptStruct* ColumnType);
+		void MoveRow(int SourceRowIndex, int TargetIndex);
 	private:
 
-		FReply SelectRootProperties();
+		void SelectRootProperties();
+		void RegisterToolbar();
+		void BindCommands();
+		void MakeDebugTargetMenu(UToolMenu* InToolMenu);
 	
 		/** Create the properties tab and its content */
 		TSharedRef<SDockTab> SpawnPropertiesTab( const FSpawnTabArgs& Args );
@@ -125,7 +134,7 @@ namespace UE::ChooserEditor
 		/** The objects open within this editor */
 		TArray<UObject*> EditingObjects;
 
-		TObjectPtr<UChooserColumnDetails> SelectedColumn;
+		UChooserColumnDetails* SelectedColumn = nullptr;
 		TArray<TObjectPtr<UChooserRowDetails>> SelectedRows;
 
 		void UpdateTableColumns();
@@ -136,12 +145,9 @@ namespace UE::ChooserEditor
 		
 		TSharedPtr<SHeaderRow> HeaderRow;
 		TSharedPtr<SListView<TSharedPtr<FChooserTableRow>>> TableView;
-		
 	public:
 		TSharedPtr<SComboButton>& GetCreateRowComboButton() { return CreateRowComboButton; };
 
-		static TMap<const UStruct*, TFunction<TSharedRef<SWidget> (UChooserTable* Chooser, FChooserColumnBase* Column, int Row)>> ColumnWidgetCreators;
-	
 		/** The name given to all instances of this type of editor */
 		static const FName ToolkitFName;
 
@@ -152,3 +158,12 @@ namespace UE::ChooserEditor
 		static void RegisterWidgets();
 	};
 }
+
+UCLASS()
+class UChooserEditorToolMenuContext : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	TWeakPtr<UE::ChooserEditor::FChooserTableEditor> ChooserEditor;
+};

@@ -49,7 +49,7 @@ public:
 	void SetContents(const TBufferStruct& NewContents)
 	{
 		SetContentsNoUpdate(NewContents);
-		UpdateRHI();
+		UpdateRHI(FRenderResource::GetCommandList());
 	}
 	/** Sets the contents of the uniform buffer to all zeros. */
 	void SetContentsToZero()
@@ -59,7 +59,7 @@ public:
 			Contents = (uint8*)FMemory::Malloc(sizeof(TBufferStruct), SHADER_PARAMETER_STRUCT_ALIGNMENT);
 		}
 		FMemory::Memzero(Contents, sizeof(TBufferStruct));
-		UpdateRHI();
+		UpdateRHI(FRenderResource::GetCommandList());
 	}
 
 	const uint8* GetContents() const 
@@ -68,7 +68,7 @@ public:
 	}
 
 	// FRenderResource interface.
-	virtual void InitDynamicRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		check(IsInRenderingThread());
 		UniformBufferRHI.SafeRelease();
@@ -77,7 +77,7 @@ public:
 			UniformBufferRHI = CreateUniformBufferImmediate<TBufferStruct>(*((const TBufferStruct*)Contents), BufferUsage);
 		}
 	}
-	virtual void ReleaseDynamicRHI() override
+	virtual void ReleaseRHI() override
 	{
 		UniformBufferRHI.SafeRelease();
 	}
@@ -101,7 +101,7 @@ public:
 
 protected:
 
-	/** Sets the contents of the uniform buffer. Used within calls to InitDynamicRHI */
+	/** Sets the contents of the uniform buffer. Used within calls to InitRHI */
 	void SetContentsNoUpdate(const TBufferStruct& NewContents)
 	{
 		check(IsInRenderingThread());

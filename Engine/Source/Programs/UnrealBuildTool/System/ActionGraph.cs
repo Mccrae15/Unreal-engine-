@@ -1,8 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using EpicGames.Core;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -10,13 +11,12 @@ using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Threading;
 using System.Threading.Tasks;
+using EpicGames.Core;
+using Microsoft.Extensions.Logging;
 using OpenTracing.Util;
 using UnrealBuildBase;
-using Microsoft.Extensions.Logging;
-using System.Collections.Concurrent;
-using System.Collections.Immutable;
+using UnrealBuildTool.Artifacts;
 
 namespace UnrealBuildTool
 {
@@ -43,7 +43,8 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="Actions">List of actions in the graph</param>
 		/// <param name="Logger">Logger for output</param>
-		public static void Link(List<LinkedAction> Actions, ILogger Logger)
+		/// <param name="Sort">Optional sorting of actions</param>
+		public static void Link(List<LinkedAction> Actions, ILogger Logger, bool Sort = true)
 		{
 			// Build a map from item to its producing action
 			Dictionary<FileItem, LinkedAction> ItemToProducingAction = new Dictionary<FileItem, LinkedAction>();
@@ -72,7 +73,10 @@ namespace UnrealBuildTool
 			}
 
 			// Sort the action graph
-			SortActionList(Actions);
+			if (Sort)
+			{
+				SortActionList(Actions);
+			}
 		}
 
 		/// <summary>
@@ -242,8 +246,8 @@ namespace UnrealBuildTool
 
 			string AJson = JsonSerializer.Serialize(A, Options);
 			string BJson = JsonSerializer.Serialize(B, Options);
-			string AJsonPath = Path.Combine(Path.GetTempPath(), "UnrealBuildTool", $"{A.StatusDescription}-{IoHash.Compute(Encoding.Default.GetBytes(AJson)).GetHashCode():X}") + ".json";
-			string BJsonPath = Path.Combine(Path.GetTempPath(), "UnrealBuildTool", $"{B.StatusDescription}-{IoHash.Compute(Encoding.Default.GetBytes(BJson)).GetHashCode():X}") + ".json";
+			string AJsonPath = Path.Combine(Path.GetTempPath(), "UnrealBuildTool", $"{IoHash.Compute(Encoding.Default.GetBytes(AJson)).GetHashCode():X}") + ".json";
+			string BJsonPath = Path.Combine(Path.GetTempPath(), "UnrealBuildTool", $"{IoHash.Compute(Encoding.Default.GetBytes(BJson)).GetHashCode():X}") + ".json";
 
 			Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "UnrealBuildTool"));
 			File.WriteAllText(AJsonPath, AJson);
@@ -295,6 +299,16 @@ namespace UnrealBuildTool
 						{
 							FailPaths.Add(PrerequisiteItem.Location);
 						}
+
+						if (PrerequisiteItem.Location.FullName.Length > Unreal.RootDirectory.FullName.Length + BuildConfiguration.MaxNestedPathLength &&
+							PrerequisiteItem.Location.IsUnderDirectory(Unreal.RootDirectory) &&
+							(PrerequisiteItem.Location.ContainsName("Restricted", 0) == false) && //Be more relaxed for internal only code
+							(PrerequisiteItem.Location.ContainsName("NotForLicensees", 0) == false)
+							)
+						{
+							WarnPaths.Add(PrerequisiteItem.Location);
+						}
+
 					}
 
 					foreach (FileItem ProducedItem in Action.ProducedItems)
@@ -304,10 +318,10 @@ namespace UnrealBuildTool
 							FailPaths.Add(ProducedItem.Location);
 						}
 
-						// don't look in Intermediate directories - these aren't portable between machines, so don't need to be cbecked for length underneath the root
-						if (ProducedItem.Location.FullName.Length > Unreal.RootDirectory.FullName.Length + BuildConfiguration.MaxNestedPathLength && 
+						if (ProducedItem.Location.FullName.Length > Unreal.RootDirectory.FullName.Length + BuildConfiguration.MaxNestedPathLength &&
 							ProducedItem.Location.IsUnderDirectory(Unreal.RootDirectory) &&
-							!ProducedItem.Location.ContainsName("Intermediate", Unreal.RootDirectory)
+							(ProducedItem.Location.ContainsName("Restricted", 0) == false) && //Be more relaxed for internal only code
+							(ProducedItem.Location.ContainsName("NotForLicensees", 0) == false)
 							)
 						{
 							WarnPaths.Add(ProducedItem.Location);
@@ -326,7 +340,6 @@ namespace UnrealBuildTool
 
 					throw new BuildException(Message.ToString());
 				}
-
 				if (WarnPaths.Count > 0)
 				{
 					StringBuilder Message = new StringBuilder();
@@ -348,6 +361,14 @@ namespace UnrealBuildTool
 		/// </summary>
 		private static ActionExecutor SelectExecutor(BuildConfiguration BuildConfiguration, int ActionCount, List<TargetDescriptor> TargetDescriptors, ILogger Logger)
 		{
+#if __BOXEXECUTOR_AVAILABLE__
+			bool bAnySingleFile = TargetDescriptors.Any(Descriptor => Descriptor.SpecificFilesToCompile.Count == 1);
+			if (!bAnySingleFile && BuildConfiguration.bAllowBoxExecutor && BoxExecutor.IsAvailable(Logger))
+			{
+				return new BoxExecutor(BuildConfiguration.MaxParallelActions, BuildConfiguration.bAllCores, BuildConfiguration.bCompactOutput, Logger);
+			}
+#endif // #if __BOXEXECUTOR_AVAILABLE__
+
 			if (ActionCount > ParallelExecutor.GetDefaultNumParallelProcesses(BuildConfiguration.MaxParallelActions, BuildConfiguration.bAllCores, Logger))
 			{
 				if (BuildConfiguration.bAllowHybridExecutor && HybridExecutor.IsAvailable(Logger))
@@ -356,19 +377,15 @@ namespace UnrealBuildTool
 				}
 				else if (BuildConfiguration.bAllowXGE && XGE.IsAvailable(Logger) && ActionCount >= XGE.MinActions)
 				{
-					return new XGE();
+					return new XGE(Logger);
+				}
+				else if (BuildConfiguration.bAllowSNDBS && SNDBS.IsAvailable(Logger))
+				{
+					return new SNDBS(TargetDescriptors, Logger);
 				}
 				else if (BuildConfiguration.bAllowFASTBuild && FASTBuild.IsAvailable(Logger))
 				{
 					return new FASTBuild(BuildConfiguration.MaxParallelActions, BuildConfiguration.bAllCores, BuildConfiguration.bCompactOutput, Logger);
-				}
-				else if (BuildConfiguration.bAllowSNDBS && SNDBS.IsAvailable(Logger))
-				{
-					return new SNDBS(TargetDescriptors);
-				}
-				else if (BuildConfiguration.bAllowHordeCompute && HordeExecutor.IsAvailable())
-				{
-					return new HordeExecutor(BuildConfiguration.MaxParallelActions, BuildConfiguration.bAllCores, BuildConfiguration.bCompactOutput, Logger);
 				}
 			}
 
@@ -378,7 +395,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Executes a list of actions.
 		/// </summary>
-		public static void ExecuteActions(BuildConfiguration BuildConfiguration, List<LinkedAction> ActionsToExecute, List<TargetDescriptor> TargetDescriptors, ILogger Logger)
+		public static async Task ExecuteActionsAsync(BuildConfiguration BuildConfiguration, List<LinkedAction> ActionsToExecute, List<TargetDescriptor> TargetDescriptors, ILogger Logger, IActionArtifactCache? actionArtifactCache = null)
 		{
 			if (ActionsToExecute.Count == 0)
 			{
@@ -387,19 +404,18 @@ namespace UnrealBuildTool
 			else
 			{
 				// Figure out which executor to use
-				ActionExecutor Executor = SelectExecutor(BuildConfiguration, ActionsToExecute.Count, TargetDescriptors, Logger);
-
-				// Ensure actions are ordered
-				IOrderedEnumerable<LinkedAction> OrderedActionsToExecute = ActionsToExecute.OrderByDescending(x => x.NumTotalDependentActions).ThenByDescending(x => x.PrerequisiteItems.Count());
+				using ActionExecutor Executor = SelectExecutor(BuildConfiguration, ActionsToExecute.Count, TargetDescriptors, Logger);
 
 				// Execute the build
 				Stopwatch Timer = Stopwatch.StartNew();
-				if (!Executor.ExecuteActions(OrderedActionsToExecute, Logger))
+				bool Result = await Executor.ExecuteActionsAsync(ActionsToExecute, Logger, actionArtifactCache);
+
+				Logger.LogInformation("Total time in {ExecutorName} executor: {TotalSeconds:0.00} seconds", Executor.Name, Timer.Elapsed.TotalSeconds);
+
+				if (!Result)
 				{
 					throw new CompilationResultException(CompilationResult.OtherCompilationError);
 				}
-
-				Logger.LogInformation("Total time in {ExecutorName} executor: {TotalSeconds:0.00} seconds", Executor.Name, Timer.Elapsed.TotalSeconds);
 
 				// Reset the file info for all the produced items
 				foreach (LinkedAction BuildAction in ActionsToExecute)
@@ -411,15 +427,18 @@ namespace UnrealBuildTool
 				}
 
 				// Verify the link outputs were created (seems to happen with Win64 compiles)
-				foreach (LinkedAction BuildAction in ActionsToExecute)
+				if (Executor.VerifyOutputs)
 				{
-					if (BuildAction.ActionType == ActionType.Link)
+					foreach (LinkedAction BuildAction in ActionsToExecute)
 					{
-						foreach (FileItem Item in BuildAction.ProducedItems)
+						if (BuildAction.ActionType == ActionType.Link)
 						{
-							if (!Item.Exists)
+							foreach (FileItem Item in BuildAction.ProducedItems)
 							{
-								throw new BuildException($"Failed to produce item: {Item.AbsolutePath}");
+								if (!Item.Exists)
+								{
+									throw new BuildException($"Failed to produce item: {Item.AbsolutePath}");
+								}
 							}
 						}
 					}
@@ -432,19 +451,40 @@ namespace UnrealBuildTool
 		/// </summary>
 		static void SortActionList(List<LinkedAction> Actions)
 		{
-			// Clear the current dependent count
+			// Clear the current dependent count and SortIndex if there is any
 			foreach (LinkedAction Action in Actions)
 			{
 				Action.NumTotalDependentActions = 0;
+				Action.SortIndex = 0;
 			}
 
-			// Increment all the dependencies
-			Actions.AsParallel().ForAll((Action) =>
+			// Increment all the dependencies plus propagate high priority flag
+			Parallel.ForEach(Actions, (Action) =>
 			{
-				Action.IncrementDependentCount(new HashSet<LinkedAction>());
+				Action.IncrementDependentCount(new HashSet<LinkedAction>(), Action.bIsHighPriority);
 			});
 
 			// Sort actions by number of actions depending on them, descending. Secondary sort criteria is file size.
+			Actions.Sort(LinkedAction.Compare);
+
+			// Now when everything is sorted we want to move link actions and actions that can't run remotely to as early as possible
+			// Find the last prereq action and set the sort index to the same. since action has at least one more dependency it will end up after in the next sorting call
+			int I = 0;
+			foreach (LinkedAction Action in Actions)
+			{
+				Action.SortIndex = ++I;
+				if ((!Action.bCanExecuteRemotely || Action.ActionType == ActionType.Link) && Action.PrerequisiteActions.Count > 0)
+				{
+					int LastSortIndex = 0;
+					foreach (LinkedAction Prereq in Action.PrerequisiteActions)
+					{
+						LastSortIndex = Math.Max(LastSortIndex, Prereq.SortIndex);
+					}
+					Action.SortIndex = LastSortIndex;
+				}
+			}
+
+			// Sort again now when we have set sorting index and will put link actions earlier
 			Actions.Sort(LinkedAction.Compare);
 		}
 
@@ -660,12 +700,14 @@ namespace UnrealBuildTool
 				// where aborting an earlier compile produced invalid zero-sized obj files, but that may cause actions where that's
 				// legitimate output to always be considered outdated.
 				if (ProducedItem.Exists && (RootAction.ActionType != ActionType.Compile || ProducedItem.Length > 0 ||
-				                            (!ProducedItem.Location.HasExtension(".obj") && !ProducedItem.Location.HasExtension(".o"))))
+											(!ProducedItem.Location.HasExtension(".obj") && !ProducedItem.Location.HasExtension(".o"))))
 				{
+					// Find the newer of LastWriteTime and CreationTime, as copied files (such as from a build cache) can have a newer creation time in some cases
+					DateTime ExecutionTimeUtc = ProducedItem.LastWriteTimeUtc > ProducedItem.CreationTimeUtc ? ProducedItem.LastWriteTimeUtc : ProducedItem.CreationTimeUtc;
 					// Use the oldest produced item's time as the last execution time.
-					if (ProducedItem.LastWriteTimeUtc < LastExecutionTimeUtc)
+					if (ExecutionTimeUtc < LastExecutionTimeUtc)
 					{
-						LastExecutionTimeUtc = ProducedItem.LastWriteTimeUtc;
+						LastExecutionTimeUtc = ExecutionTimeUtc;
 					}
 				}
 				else
@@ -691,7 +733,7 @@ namespace UnrealBuildTool
 							// Need to check for import libraries here too
 							if (!bIgnoreOutdatedImportLibraries || !IsImportLibraryDependency(RootAction, PrerequisiteItem))
 							{
-								Logger.LogDebug("{StatusDescription}: Prerequisite {PrerequisiteItem} is newer than the last execution of the action: {Message}", RootAction.StatusDescription, PrerequisiteItem.Location, 
+								Logger.LogDebug("{StatusDescription}: Prerequisite {PrerequisiteItem} is newer than the last execution of the action: {Message}", RootAction.StatusDescription, PrerequisiteItem.Location,
 									$"{PrerequisiteItem.LastWriteTimeUtc.ToLocalTime().ToString(CultureInfo.CurrentCulture)} vs {LastExecutionTimeUtc.LocalDateTime.ToString(CultureInfo.CurrentCulture)}");
 								bIsOutdated = true;
 								break;
@@ -860,7 +902,7 @@ namespace UnrealBuildTool
 
 			using (GlobalTracer.Instance.BuildSpan("Cache outdated actions based on recursive prerequisites").StartActive())
 			{
-				foreach (var Action in Actions)
+				foreach (LinkedAction Action in Actions)
 				{
 					IsActionOutdatedDueToPrerequisites(Action, OutdatedActions, bIgnoreOutdatedImportLibraries, Logger);
 				}
@@ -951,7 +993,7 @@ namespace UnrealBuildTool
 			{
 				System.Collections.DictionaryEntry Pair = (System.Collections.DictionaryEntry)Object!;
 				if (!UnrealBuildTool.InitialEnvironment!.Contains(Pair.Key) ||
-				    (string)(UnrealBuildTool.InitialEnvironment[Pair.Key]!) != (string)(Pair.Value!))
+					(string)(UnrealBuildTool.InitialEnvironment[Pair.Key]!) != (string)(Pair.Value!))
 				{
 					Writer.WriteValue((string)Pair.Key, (string)Pair.Value!);
 				}

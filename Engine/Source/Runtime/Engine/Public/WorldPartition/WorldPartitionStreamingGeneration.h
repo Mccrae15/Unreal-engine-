@@ -4,9 +4,10 @@
 #if WITH_EDITOR
 #include "CoreMinimal.h"
 #include "OverrideVoidReturnInvoker.h"
+#include "WorldPartition/ActorDescContainerCollection.h"
 #include "WorldPartition/WorldPartitionActorDescView.h"
 
-class ENGINE_API FActorDescViewMap
+class FActorDescViewMap
 {
 	friend class FWorldPartitionStreamingGenerator;
 
@@ -40,7 +41,7 @@ private:
 	}
 
 public:
-	FActorDescViewMap();
+	ENGINE_API FActorDescViewMap();
 
 	// Non-copyable but movable
 	FActorDescViewMap(const FActorDescViewMap&) = delete;
@@ -48,7 +49,7 @@ public:
 	FActorDescViewMap& operator=(const FActorDescViewMap&) = delete;
 	FActorDescViewMap& operator=(FActorDescViewMap&&) = default;
 
-	FWorldPartitionActorDescView* Emplace(const FGuid& InActorGuid, const FWorldPartitionActorDescView& InActorDescView);
+	ENGINE_API FWorldPartitionActorDescView* Emplace(const FGuid& InActorGuid, const FWorldPartitionActorDescView& InActorDescView);
 
 	FORCEINLINE int32 Num() const
 	{
@@ -89,7 +90,7 @@ public:
 		return FindByExactNativeClass(ClassType::StaticClass());
 	}
 
-	TArray<const FWorldPartitionActorDescView*> FindByExactNativeClass(UClass* InExactNativeClass) const;
+	ENGINE_API TArray<const FWorldPartitionActorDescView*> FindByExactNativeClass(UClass* InExactNativeClass) const;
 
 	const TMap<FGuid, FWorldPartitionActorDescView*>& GetActorDescViewsByGuid() const { return ActorDescViewsByGuid; }
 
@@ -98,6 +99,31 @@ protected:
 
 	TMap<FGuid, FWorldPartitionActorDescView*> ActorDescViewsByGuid;
 	TMultiMap<FName, const FWorldPartitionActorDescView*> ActorDescViewsByClass;
+};
+
+class FStreamingGenerationActorDescCollection : public TActorDescContainerCollection<TObjectPtr<const UActorDescContainer>>
+{
+public:
+	FStreamingGenerationActorDescCollection() = default;
+	ENGINE_API FStreamingGenerationActorDescCollection(std::initializer_list<TObjectPtr<const UActorDescContainer>> ActorDescContainerArray);
+
+	ENGINE_API UWorld* GetWorld() const;
+
+	// @todo_ow : Remove once conversion to ExternalDataLayer is complete. 
+	// It is present to handle content bundles streaming generation via the same code path. 
+	ENGINE_API FGuid GetContentBundleGuid() const;
+
+	ENGINE_API const UActorDescContainer* GetMainActorDescContainer() const;
+	ENGINE_API FName GetMainContainerPackageName() const;
+	ENGINE_API TArrayView<const UActorDescContainer*> GetExternalDataLayerContainers();
+
+	ENGINE_API virtual void OnCollectionChanged() override;
+
+private:
+	ENGINE_API void SortCollection();
+
+	static constexpr int MainContainerIdx = 0;
+	static constexpr int ExternalDataLayerContainerStartIdx = MainContainerIdx + 1;
 };
 
 #endif // WITH_EDITOR

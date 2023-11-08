@@ -33,6 +33,9 @@ class FCbWriter;
 // enable visualization in the desktop Development builds only as it has a memory hit and writes files
 #define UE_SCA_VISUALIZE_SHADER_USAGE			(!WITH_EDITOR && UE_BUILD_DEVELOPMENT && PLATFORM_DESKTOP)
 
+// enable deep, manual debugging of leaked preload groups. This level of information slows the engine down and is only needed when chasing tricky bugs
+#define UE_SCA_DEBUG_PRELOADING					(0)
+
 struct FShaderMapEntry
 {
 	uint32 ShaderIndicesOffset = 0u;
@@ -70,7 +73,7 @@ struct FShaderCodeEntry
 };
 
 // Portion of shader code archive that's serialize to disk
-class RENDERCORE_API FSerializedShaderArchive
+class FSerializedShaderArchive
 {
 public:
 
@@ -156,17 +159,23 @@ public:
 
 	void Empty()
 	{
+		EmptyShaderMaps();
+
 		ShaderHashes.Empty();
 		ShaderEntries.Empty();
+		ShaderHashTable.Clear();
+	}
+
+	void EmptyShaderMaps()
+	{
 		ShaderMapHashes.Empty();
 		ShaderMapEntries.Empty();
 		PreloadEntries.Empty();
 		ShaderIndices.Empty();
 		ShaderMapHashTable.Clear();
-		ShaderHashTable.Clear();
 #if WITH_EDITOR
 		ShaderCodeToAssets.Empty();
-#endif // WITH_EDITOR
+#endif
 	}
 
 	int32 GetNumShaderMaps() const
@@ -179,24 +188,34 @@ public:
 		return ShaderEntries.Num();
 	}
 
-	int32 FindShaderMapWithKey(const FSHAHash& Hash, uint32 Key) const;
-	int32 FindShaderMap(const FSHAHash& Hash) const;
-	bool FindOrAddShaderMap(const FSHAHash& Hash, int32& OutIndex, const FShaderMapAssetPaths* AssociatedAssets);
-
-	int32 FindShaderWithKey(const FSHAHash& Hash, uint32 Key) const;
-	int32 FindShader(const FSHAHash& Hash) const;
-	bool FindOrAddShader(const FSHAHash& Hash, int32& OutIndex);
-
-	void DecompressShader(int32 Index, const TArray<TArray<uint8>>& ShaderCode, TArray<uint8>& OutDecompressedShader) const;
-
-	void Finalize();
-	void Serialize(FArchive& Ar);
+	bool IsEmpty() const
+	{
+		return ShaderMapEntries.IsEmpty() && ShaderEntries.IsEmpty() && PreloadEntries.IsEmpty()
 #if WITH_EDITOR
-	void SaveAssetInfo(FArchive& Ar);
-	bool LoadAssetInfo(const FString& Filename);
-	void CreateAsChunkFrom(const FSerializedShaderArchive& Parent, const TSet<FName>& PackagesInChunk, TArray<int32>& OutShaderCodeEntriesNeeded);
-	void CollectStatsAndDebugInfo(FDebugStats& OutDebugStats, FExtendedDebugStats* OutExtendedDebugStats);
-	void DumpContentsInPlaintext(FString& OutText) const;
+			&& ShaderCodeToAssets.IsEmpty()
+#endif
+			;
+	}
+
+	RENDERCORE_API int32 FindShaderMapWithKey(const FSHAHash& Hash, uint32 Key) const;
+	RENDERCORE_API int32 FindShaderMap(const FSHAHash& Hash) const;
+	RENDERCORE_API bool FindOrAddShaderMap(const FSHAHash& Hash, int32& OutIndex, const FShaderMapAssetPaths* AssociatedAssets);
+
+	RENDERCORE_API int32 FindShaderWithKey(const FSHAHash& Hash, uint32 Key) const;
+	RENDERCORE_API int32 FindShader(const FSHAHash& Hash) const;
+	RENDERCORE_API bool FindOrAddShader(const FSHAHash& Hash, int32& OutIndex);
+	RENDERCORE_API void RemoveLastAddedShader();
+
+	RENDERCORE_API void DecompressShader(int32 Index, const TArray<TArray<uint8>>& ShaderCode, TArray<uint8>& OutDecompressedShader) const;
+
+	RENDERCORE_API void Finalize();
+	RENDERCORE_API void Serialize(FArchive& Ar);
+#if WITH_EDITOR
+	RENDERCORE_API void SaveAssetInfo(FArchive& Ar);
+	RENDERCORE_API bool LoadAssetInfo(const FString& Filename);
+	RENDERCORE_API void CreateAsChunkFrom(const FSerializedShaderArchive& Parent, const TSet<FName>& PackagesInChunk, TArray<int32>& OutShaderCodeEntriesNeeded);
+	RENDERCORE_API void CollectStatsAndDebugInfo(FDebugStats& OutDebugStats, FExtendedDebugStats* OutExtendedDebugStats);
+	RENDERCORE_API void DumpContentsInPlaintext(FString& OutText) const;
 	RENDERCORE_API friend FCbWriter& operator<<(FCbWriter& Writer, const FSerializedShaderArchive& Archive);
 	RENDERCORE_API friend bool LoadFromCompactBinary(FCbFieldView Field, FSerializedShaderArchive& OutArchive);
 #endif
@@ -385,13 +404,11 @@ namespace ShaderCodeArchive
 	/** Decompresses the shader into caller-provided memory. Caller is assumed to allocate at least ShaderEntry uncompressed size value.
 	 * The engine will crash (LogFatal) if this function fails.
 	 */
-	RENDERCORE_API void DecompressShader(uint8* OutDecompressedShader, int64 UncompressedSize, const uint8* CompressedShaderCode, int64 CompressedSize);
-
-	/** Compresses the shader into caller-provided memory using the current CVar settings (e.g. on Windows), which is as opposed to potentially different settings on 
-	 * the platform where the shaders are going to be decompressed (e.g. on console). It is the caller's responsibility to make sure those two match.
-	 * This function can also be used for the estimation as it will return false if the provided CompressedBufferLength isn't sufficient (it is safe to pass nullptr in that case).
-	 */
-	RENDERCORE_API bool CompressShaderUsingCurrentSettings(uint8* OutCompressedShader, int64& OutCompressedSize, const uint8* UncompressedShaderCode, int64 UncompressedSize);
+	RENDERCORE_API void DecompressShaderWithOodle(uint8* OutDecompressedShader, int64 UncompressedSize, const uint8* CompressedShaderCode, int64 CompressedSize);
+	
+	// We decompression, group, and recompress shaders when they are added to iostore containers in UnrealPak, where we don't have access to cvars - so there's no way 
+	// to configure - so we force Oodle and allow specification of the parameters here.
+	RENDERCORE_API bool CompressShaderWithOodle(uint8* OutCompressedShader, int64& OutCompressedSize, const uint8* InUncompressedShaderCode, int64 InUncompressedSize, FOodleDataCompression::ECompressor InOodleCompressor, FOodleDataCompression::ECompressionLevel InOodleLevel);
 }
 
 /** Descriptor of a shader map. This concept exists in run time, so this class describes the information stored in the library for a particular FShaderMap */
@@ -596,6 +613,10 @@ private:
 		uint32 NumRefs : 31;
 		uint32 bNeverToBePreloaded : 1;
 
+#if UE_SCA_DEBUG_PRELOADING
+		FString DebugInfo;
+#endif
+
 		FShaderGroupPreloadEntry()
 			: NumRefs(0)
 			, bNeverToBePreloaded(0)
@@ -608,16 +629,28 @@ private:
 	FIoDispatcher& IoDispatcher;
 
 	/** Preloads a given shader group. */
-	bool PreloadShaderGroup(int32 ShaderGroupIndex, FGraphEventArray& OutCompletionEvents, FCoreDelegates::FAttachShaderReadRequestFunc* AttachShaderReadRequestFuncPtr = nullptr);
+	bool PreloadShaderGroup(int32 ShaderGroupIndex, FGraphEventArray& OutCompletionEvents, 
+#if UE_SCA_DEBUG_PRELOADING
+		const FString& CallsiteInfo,
+#endif
+		FCoreDelegates::FAttachShaderReadRequestFunc* AttachShaderReadRequestFuncPtr = nullptr);
 
 	/** Sets up a new preload entry for preload.*/
 	void SetupPreloadEntryForLoading(int32 ShaderGroupIndex, FShaderGroupPreloadEntry& PreloadEntry);
 
 	/** Sets up a preload entry for groups that shouldn't be preloaded.*/
-	void MarkPreloadEntrySkipped(int32 ShaderGroupIndex);
+	void MarkPreloadEntrySkipped(int32 ShaderGroupIndex
+#if UE_SCA_DEBUG_PRELOADING
+		, const FString& CallsiteInfo
+#endif
+	);
 
 	/** Releases a reference to a preloaded shader group, potentially deleting it. */
-	void ReleasePreloadEntry(int32 ShaderGroupIndex);
+	void ReleasePreloadEntry(int32 ShaderGroupIndex
+#if UE_SCA_DEBUG_PRELOADING
+		, const FString& CallsiteInfo
+#endif
+	);
 
 	/** Returns the index of shader group that a given shader belongs to. */
 	inline int32 GetGroupIndexForShader(int32 ShaderIndex) const

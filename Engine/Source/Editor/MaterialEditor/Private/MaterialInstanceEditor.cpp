@@ -763,9 +763,9 @@ bool FMaterialInstanceEditor::OnApplyVisible() const
 	return MaterialEditorInstance && MaterialEditorInstance->bIsFunctionPreviewMaterial == true;
 }
 
-bool FMaterialInstanceEditor::OnRequestClose()
+bool FMaterialInstanceEditor::OnRequestClose(EAssetEditorCloseReason InCloseReason)
 {
-	if (MaterialEditorInstance->bIsFunctionInstanceDirty)
+	if (MaterialEditorInstance->bIsFunctionInstanceDirty && InCloseReason != EAssetEditorCloseReason::AssetForceDeleted)
 	{
 		// Find out the user wants to do with this dirty function instance
 		EAppReturnType::Type YesNoCancelReply = FMessageDialog::Open(EAppMsgType::YesNoCancel,
@@ -827,7 +827,7 @@ void FMaterialInstanceEditor::CreateInternalWidgets()
 	MaterialInstanceDetails->SetCustomValidatePropertyNodesFunction(FOnValidateDetailsViewPropertyNodes::CreateLambda(MoveTemp(ValidationLambda)));
 
 	FOnGetDetailCustomizationInstance LayoutMICDetails = FOnGetDetailCustomizationInstance::CreateStatic( 
-		&FMaterialInstanceParameterDetails::MakeInstance, MaterialEditorInstance, FGetShowHiddenParameters::CreateSP(this, &FMaterialInstanceEditor::GetShowHiddenParameters) );
+		&FMaterialInstanceParameterDetails::MakeInstance, MaterialEditorInstance.Get(), FGetShowHiddenParameters::CreateSP(this, &FMaterialInstanceEditor::GetShowHiddenParameters) );
 	MaterialInstanceDetails->RegisterInstancedCustomPropertyLayout( UMaterialEditorInstanceConstant::StaticClass(), LayoutMICDetails );
 	MaterialInstanceDetails->SetCustomFilterLabel(LOCTEXT("ShowOverriddenOnly", "Show Only Overridden Parameters"));
 	MaterialInstanceDetails->SetCustomFilterDelegate(FSimpleDelegate::CreateSP(this, &FMaterialInstanceEditor::FilterOverriddenProperties));

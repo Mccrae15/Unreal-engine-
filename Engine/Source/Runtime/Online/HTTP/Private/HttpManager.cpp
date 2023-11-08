@@ -35,6 +35,14 @@ const TCHAR* LexToString(const EHttpFlushReason& FlushReason)
 	return TEXT("Invalid");
 }
 
+namespace
+{
+	bool ShouldOutputHttpWarnings()
+	{
+		return !IsRunningCommandlet() && !FApp::IsUnattended();
+	}
+}
+
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FHttpManager::FHttpManager()
 	: FTSTickerObjectBase(0.0f, FTSBackgroundableTicker::GetCoreTicker())
@@ -63,6 +71,59 @@ void FHttpManager::Initialize()
 	}
 
 	UpdateConfigs();
+}
+
+void FHttpManager::Shutdown()
+{
+	FScopeLock ScopeLock(&RequestLock);
+
+	// Don't emit these tracking logs in commandlet runs. Build system traps warnings during cook, and these are not truly fatal, but useful for tracking down shutdown issues.
+	UE_CLOG(ShouldOutputHttpWarnings() && Requests.Num(), LogHttp, Warning, TEXT("[FHttpManager::Shutdown] Unbinding delegates for %d outstanding Http Requests:"), Requests.Num());
+
+	// Clear delegates since they may point to deleted instances
+	for (TArray<FHttpRequestRef>::TIterator It(Requests); It; ++It)
+	{
+		FHttpRequestRef& Request = *It;
+		Request->OnProcessRequestComplete().Unbind();
+		Request->OnRequestProgress().Unbind();
+		Request->OnHeaderReceived().Unbind();
+
+		// Don't emit these tracking logs in commandlet runs. Build system traps warnings during cook, and these are not truly fatal, but useful for tracking down shutdown issues.
+		UE_CLOG(ShouldOutputHttpWarnings(), LogHttp, Warning, TEXT("	verb=[%s] url=[%s] refs=[%d] status=%s"), *Request->GetVerb(), *Request->GetURL(), Request.GetSharedReferenceCount(), EHttpRequestStatus::ToString(Request->GetStatus()));
+	}
+
+	// Clear general delegates since they may point to deleted instances
+	RequestAddedDelegate.Unbind();
+	RequestCompletedDelegate.Unbind();
+
+	// Flush all requests
+	Flush(EHttpFlushReason::Shutdown);
+}
+
+bool FHttpManager::HasAnyBoundDelegate() const
+{
+	FScopeLock ScopeLock(&RequestLock);
+
+	for (TArray<FHttpRequestRef>::TConstIterator It(Requests); It; ++It)
+	{
+		const FHttpRequestRef& Request = *It;
+		if (Request->OnProcessRequestComplete().IsBound())
+		{
+			return true;
+		}
+	}
+
+	if (RequestAddedDelegate.IsBound())
+	{
+		return true;
+	}
+
+	if (RequestCompletedDelegate.IsBound())
+	{
+		return true;
+	}
+
+	return false;
 }
 
 void FHttpManager::ReloadFlushTimeLimits()
@@ -134,6 +195,13 @@ FString FHttpManager::CreateCorrelationId() const
 
 bool FHttpManager::IsDomainAllowed(const FString& Url) const
 {
+	if (!URLRequestFilter.IsEmpty())
+	{
+		return URLRequestFilter.IsRequestAllowed(Url);
+	}
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 #if !UE_BUILD_SHIPPING
 #if !(UE_GAME || UE_SERVER)
 	// Allowed domain filtering is opt-in in non-shipping non-game/server builds
@@ -152,7 +220,7 @@ bool FHttpManager::IsDomainAllowed(const FString& Url) const
 #endif
 #endif // !UE_BUILD_SHIPPING
 
-	// check to see if the Domain is allowed (either on the list or the list was empty)
+	// Check to see if the Domain is allowed (either on the list or the list was empty)
 	const TArray<FString>& AllowedDomains = FHttpModule::Get().GetAllowedDomains();
 	if (AllowedDomains.Num() > 0)
 	{
@@ -167,6 +235,8 @@ bool FHttpManager::IsDomainAllowed(const FString& Url) const
 		return false;
 	}
 	return true;
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 /*static*/
@@ -193,6 +263,8 @@ void FHttpManager::OnEndFramePostFork()
 
 void FHttpManager::UpdateConfigs()
 {
+	URLRequestFilter.UpdateConfig(TEXT("Online.HttpManager"), GEngineIni);
+
 	ReloadFlushTimeLimits();
 
 	if (Thread)
@@ -209,22 +281,15 @@ void FHttpManager::AddGameThreadTask(TFunction<void()>&& Task)
 	}
 }
 
-FHttpThread* FHttpManager::CreateHttpThread()
+void FHttpManager::AddHttpThreadTask(TFunction<void()>&& Task)
 {
-	return new FHttpThread();
+	check(Thread);
+	Thread->AddHttpThreadTask(MoveTemp(Task));
 }
 
-void FHttpManager::Flush(bool bShutdown)
+FHttpThreadBase* FHttpManager::CreateHttpThread()
 {
-	Flush(bShutdown ? EHttpFlushReason::Shutdown : EHttpFlushReason::Default);
-}
-
-namespace
-{
-	bool ShouldOutputHttpWarnings()
-	{
-		return !IsRunningCommandlet() && !FApp::IsUnattended();
-	}
+	return new FLegacyHttpThread();
 }
 
 void FHttpManager::Flush(EHttpFlushReason FlushReason)
@@ -232,6 +297,8 @@ void FHttpManager::Flush(EHttpFlushReason FlushReason)
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FHttpManager_Flush);
 
 	FScopeLock ScopeLock(&RequestLock);
+
+	checkf(FlushReason != EHttpFlushReason::Shutdown || !HasAnyBoundDelegate(), TEXT("Use Shutdown() instead of Flush(EHttpFlushReason::Shutdown) directly."));
 	
 	// This variable is set to indicate that flush is happening.
 	// While flushing is in progress, the RequestLock is held and threads are blocked when trying to submit new requests.
@@ -246,25 +313,6 @@ void FHttpManager::Flush(EHttpFlushReason FlushReason)
 	GConfig->GetFloat(TEXT("HTTP"), TEXT("RequestCleanupDelaySec"), SecondsToSleepForOutstandingThreadedRequests, GEngineIni);
 
 	UE_CLOG(!IsRunningCommandlet(), LogHttp, Verbose, TEXT("[FHttpManager::Flush] FlushReason [%s] FlushTimeSoftLimitSeconds [%.3fs] FlushTimeHardLimitSeconds [%.3fs] SecondsToSleepForOutstandingThreadedRequests [%.3fs]"), LexToString(FlushReason), FlushTimeSoftLimitSeconds, FlushTimeHardLimitSeconds, SecondsToSleepForOutstandingThreadedRequests);
-
-	// Clear all delegates bound to ongoing Http requests
-	if (FlushReason == EHttpFlushReason::Shutdown)
-	{
-		// Don't emit these tracking logs in commandlet runs. Build system traps warnings during cook, and these are not truly fatal, but useful for tracking down shutdown issues.
-		UE_CLOG(ShouldOutputHttpWarnings() && Requests.Num(), LogHttp, Warning, TEXT("[FHttpManager::Flush] FlushReason was Shutdown. Unbinding delegates for %d outstanding Http Requests:"), Requests.Num());
-
-		// Clear delegates since they may point to deleted instances
-		for (TArray<FHttpRequestRef>::TIterator It(Requests); It; ++It)
-		{
-			FHttpRequestRef& Request = *It;
-			Request->OnProcessRequestComplete().Unbind();
-			Request->OnRequestProgress().Unbind();
-			Request->OnHeaderReceived().Unbind();
-
-			// Don't emit these tracking logs in commandlet runs. Build system traps warnings during cook, and these are not truly fatal, but useful for tracking down shutdown issues.
-			UE_CLOG(ShouldOutputHttpWarnings(), LogHttp, Warning, TEXT("	verb=[%s] url=[%s] refs=[%d] status=%s"), *Request->GetVerb(), *Request->GetURL(), Request.GetSharedReferenceCount(), EHttpRequestStatus::ToString(Request->GetStatus()));
-		}
-	}
 
 	UE_CLOG(!IsRunningCommandlet() && Requests.Num(), LogHttp, Verbose, TEXT("[FHttpManager::Flush] Cleanup starts for %d outstanding Http Requests."), Requests.Num());
 
@@ -362,17 +410,15 @@ bool FHttpManager::Tick(float DeltaSeconds)
 		Task();
 	}
 
-	FScopeLock ScopeLock(&RequestLock);
-
-	// Tick each active request
-	for (TArray<FHttpRequestRef>::TIterator It(Requests); It; ++It)
-	{
-		FHttpRequestRef Request = *It;
-		Request->Tick(DeltaSeconds);
-	}
-
 	if (Thread)
 	{
+		FScopeLock ScopeLock(&RequestLock);
+		// Tick each active request
+		for (const FHttpRequestRef& Request: Requests)
+		{
+			Request->Tick(DeltaSeconds);
+		}
+
 		TArray<IHttpThreadedRequest*> CompletedThreadedRequests;
 		Thread->GetCompletedRequests(CompletedThreadedRequests);
 
@@ -381,9 +427,33 @@ bool FHttpManager::Tick(float DeltaSeconds)
 		{
 			FHttpRequestRef CompletedRequestRef = CompletedRequest->AsShared();
 			Requests.Remove(CompletedRequestRef);
-			CompletedRequest->FinishRequest();
+			if (CompletedRequest->GetDelegateThreadPolicy() == EHttpRequestDelegateThreadPolicy::CompleteOnGameThread)
+			{
+				CompletedRequest->FinishRequest();
+			}
 			BroadcastHttpRequestCompleted(CompletedRequestRef);
 		}
+	}
+	else
+	{
+		TArray<FHttpRequestRef> CompletedRequests;
+		
+		FScopeLock ScopeLock(&RequestLock);
+		// Tick each active request
+		for (const FHttpRequestRef& Request: Requests)
+		{
+			Request->Tick(DeltaSeconds);
+			if (EHttpRequestStatus::IsFinished(Request->GetStatus()))
+			{
+				CompletedRequests.Add(Request);
+			}
+		}
+
+		for (const FHttpRequestRef& CompletedRequest: CompletedRequests)
+		{
+            Requests.Remove(CompletedRequest);
+            BroadcastHttpRequestCompleted(CompletedRequest);
+        }		
 	}
 	// keep ticking
 	return true;
@@ -396,12 +466,12 @@ void FHttpManager::FlushTick(float DeltaSeconds)
 
 void FHttpManager::AddRequest(const FHttpRequestRef& Request)
 {
-	FScopeLock ScopeLock(&RequestLock);
-	check(!bFlushing);
-	Requests.Add(Request);
-PRAGMA_DISABLE_DEPRECATION_WARNINGS // Valid direct access of RequestAddedDelegate
+	{
+		FScopeLock ScopeLock(&RequestLock);
+		check(!bFlushing);
+		Requests.Add(Request);
+	}
 	RequestAddedDelegate.ExecuteIfBound(Request);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void FHttpManager::RemoveRequest(const FHttpRequestRef& Request)
@@ -445,9 +515,7 @@ bool FHttpManager::IsValidRequest(const IHttpRequest* RequestPtr) const
 
 void FHttpManager::SetRequestAddedDelegate(const FHttpManagerRequestAddedDelegate& Delegate)
 {
-PRAGMA_DISABLE_DEPRECATION_WARNINGS // Valid direct access of RequestAddedDelegate
 	RequestAddedDelegate = Delegate;
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void FHttpManager::SetRequestCompletedDelegate(const FHttpManagerRequestCompletedDelegate& Delegate)

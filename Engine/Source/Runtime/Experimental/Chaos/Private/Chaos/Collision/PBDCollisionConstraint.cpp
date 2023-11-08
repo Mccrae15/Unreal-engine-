@@ -4,6 +4,7 @@
 #include "Chaos/Collision/PBDCollisionConstraintHandle.h"
 #include "Chaos/Collision/PBDCollisionContainerSolver.h"
 #include "Chaos/Collision/PBDCollisionSolver.h"
+#include "Chaos/CollisionResolution.h"
 #include "Chaos/Evolution/SolverBody.h"
 #include "Chaos/Evolution/SolverBodyContainer.h"
 #include "Chaos/Island/IslandManager.h"
@@ -12,7 +13,7 @@
 #include "Chaos/PBDCollisionConstraints.h"
 
 
-//PRAGMA_DISABLE_OPTIMIZATION
+//UE_DISABLE_OPTIMIZATION
 
 namespace Chaos
 {
@@ -127,8 +128,8 @@ namespace Chaos
 		OutConstraint.Particle[1] = Particle1;
 		OutConstraint.Implicit[0] = Implicit0;
 		OutConstraint.Implicit[1] = Implicit1;
-		OutConstraint.Shape[0] = Shape0;
-		OutConstraint.Shape[1] = Shape1;
+		OutConstraint.Shape[0] = (Shape0 != nullptr) ? Shape0->AsShapeInstance() : nullptr;
+		OutConstraint.Shape[1] = (Shape1 != nullptr) ? Shape1->AsShapeInstance() : nullptr;
 		OutConstraint.Simplicial[0] = Simplicial0;
 		OutConstraint.Simplicial[1] = Simplicial1;
 
@@ -153,7 +154,7 @@ namespace Chaos
 		Constraint.GetContainerCookie().ClearContainerData();
 
 		// We are not in the constraint graph, even if Source was
-		Constraint.SetConstraintGraphIndex(INDEX_NONE);
+		Constraint.SetConstraintGraphEdge(nullptr);
 
 		return Constraint;
 	}
@@ -164,14 +165,14 @@ namespace Chaos
 		// We do not want to overwrite these properties because they are managed by the systems
 		// where the constraint is registsred (allocator, container, graph).
 		const FPBDCollisionConstraintContainerCookie Cookie = ContainerCookie;
-		const int32 ConstraintGraphIndex = GetConstraintGraphIndex();
+		Private::FPBDIslandConstraint* ConstraintGraphEdge = GetConstraintGraphEdge();
 
 		// Copy everything
 		*this = Source;
 
 		// Restore the system state
 		ContainerCookie = Cookie;
-		SetConstraintGraphIndex(ConstraintGraphIndex);
+		SetConstraintGraphEdge(ConstraintGraphEdge);
 	}
 
 	FPBDCollisionConstraint::FPBDCollisionConstraint()
@@ -216,7 +217,7 @@ namespace Chaos
 		: ImplicitTransform{ FRigidTransform3(), FRigidTransform3() }
 		, Particle{ Particle0, Particle1 }
 		, Implicit{ Implicit0, Implicit1 }
-		, Shape{ Shape0, Shape1 }
+		, Shape{ nullptr, nullptr }
 		, Simplicial{ Simplicial0, Simplicial1 }
 		, AccumulatedImpulse(0)
 		, ContainerCookie()
@@ -240,13 +241,25 @@ namespace Chaos
 		, CCDEnablePenetration(0)
 		, CCDTargetPenetration(0)
 	{
+		// These downcasts should never fail if the input shape is not null
+		// @todo(chaos): remove when FPerShapeData is deprecated
+		check((Shape0 == nullptr) || (Shape0->AsShapeInstance() != nullptr));
+		check((Shape1 == nullptr) || (Shape1->AsShapeInstance() != nullptr));
+		if (Shape0 != nullptr)
+		{
+			Shape[0] = Shape0->AsShapeInstance();
+		}
+		if (Shape1 != nullptr)
+		{
+			Shape[1] = Shape1->AsShapeInstance();
+		}
 	}
 
 	FPBDCollisionConstraint::~FPBDCollisionConstraint()
 	{
 #if !UE_BUILD_TEST && !UE_BUILD_SHIPPING
 		// Make sure we have been dropped by the graph
-		ensure(GetConstraintGraphIndex() == INDEX_NONE);
+		ensure(GetConstraintGraphEdge() == nullptr);
 #endif
 	}
 
@@ -277,8 +290,8 @@ namespace Chaos
 		// Initialize tolerances that depend on shape type etc, also the bIsQuadratic flags
 		const FRealSingle Margin0 = FRealSingle(GetImplicit0()->GetMargin());
 		const FRealSingle Margin1 = FRealSingle(GetImplicit1()->GetMargin());
-		const EImplicitObjectType ImplicitType0 = GetInnerType(GetImplicit0()->GetCollisionType());
-		const EImplicitObjectType ImplicitType1 = GetInnerType(GetImplicit1()->GetCollisionType());
+		const EImplicitObjectType ImplicitType0 = Collisions::GetImplicitCollisionType(GetParticle0(), GetImplicit0());
+		const EImplicitObjectType ImplicitType1 = Collisions::GetImplicitCollisionType(GetParticle1(), GetImplicit1());
 		InitMarginsAndTolerances(ImplicitType0, ImplicitType1, Margin0, Margin1);
 
 		// Are we allowing manifolds?
@@ -386,8 +399,18 @@ namespace Chaos
 		const FRealSingle MinBounds0 = FConstGenericParticleHandle(Particle[0])->CCDEnabled() ? FRealSingle(Implicit[0]->BoundingBox().Extents().GetAbsMin()) : FRealSingle(0);
 		const FRealSingle MinBounds1 = FConstGenericParticleHandle(Particle[1])->CCDEnabled() ? FRealSingle(Implicit[1]->BoundingBox().Extents().GetAbsMin()) : FRealSingle(0);
 		const FRealSingle MinBounds = FMath::Max(MinBounds0, MinBounds1);
+
+		// If we perform a CCD sweep and it finds a hit, but the the penetration depth at the end of
+		// the sweep (T=1) is less than this, we ignore the sweep result (no rewind) and just run
+		// regular collision detection at T=1 (i.e., as if CCD is not enabled for this tick).
+		// If this is zero, then we will always perform CCD rewind when we get a sweep hit.
 		CCDEnablePenetration = MinBounds * CVars::CCDEnableThresholdBoundsScale;
-		CCDTargetPenetration = FMath::Min(MinBounds * CVars::CCDAllowedDepthBoundsScale, CCDEnablePenetration);
+		
+		// If we have a CCD sweep hit above the enable penetration, we will rewind the body so
+		// that the penetration depth CCDTargetPenetration (or less). A new contact manifold is then calculated.
+		// NOTE: this can be zero but if it is we will get very poor behaviour because there will be
+		// nothing for the contact resolution to do since we fully depenetrated in the CCD rewind.
+		CCDTargetPenetration = MinBounds * CVars::CCDAllowedDepthBoundsScale;
 	}
 
 	void FPBDCollisionConstraint::Activate()
@@ -651,9 +674,10 @@ namespace Chaos
 		ManifoldPointResults.Reset();
 		ExpectedNumManifoldPoints = 0;
 		Flags.bWasManifoldRestored = false;
+		Flags.bCanRestoreManifold = false;
 	}
 
-	bool FPBDCollisionConstraint::UpdateAndTryRestoreManifold()
+	bool FPBDCollisionConstraint::TryRestoreManifold()
 	{
 		const FCollisionTolerances Tolerances = FCollisionTolerances();//Chaos_Manifold_Tolerances;
 		const FReal ContactPositionTolerance = Tolerances.ContactPositionToleranceScale * CollisionTolerance;
@@ -668,6 +692,11 @@ namespace Chaos
 		// we have a face or edge contact. We don't reuse the manifold if we lose points after culling here
 		ExpectedNumManifoldPoints = ManifoldPoints.Num();
 		Flags.bWasManifoldRestored = false;
+
+		if (!Flags.bCanRestoreManifold)
+		{
+			return false;
+		}
 
 		// If we have not moved or rotated much we may reuse some of the manifold points, as long as they have not moved far as well (see below)
 		bool bMovedBeyondTolerance = true;
@@ -692,7 +721,6 @@ namespace Chaos
 
 		if (bMovedBeyondTolerance)
 		{
-			ResetActiveManifoldContacts();
 			return false;
 		}
 
@@ -756,7 +784,6 @@ namespace Chaos
 				else
 				{
 					// We want to remove a(nother) point, but we will never reuse the manifold now so throw it away
-					ResetActiveManifoldContacts();
 					return false;
 				}
 			}
@@ -1024,7 +1051,8 @@ namespace Chaos
 	{
 		int32 MatchIndex = INDEX_NONE;
 
-		if (bChaos_Manifold_EnableFrictionRestore)
+		const bool bEnableNetworkPhysicsResim = FPhysicsSolverBase::IsNetworkPhysicsPredictionEnabled() && FPhysicsSolverBase::IsPhysicsResimulationEnabled();
+		if (bChaos_Manifold_EnableFrictionRestore && !bEnableNetworkPhysicsResim)
 		{
 			const FManifoldPoint& ManifoldPoint = ManifoldPoints[ManifoldPointIndex];
 			if (!ManifoldPoint.Flags.bDisabled)

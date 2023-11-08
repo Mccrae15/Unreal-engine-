@@ -7,6 +7,7 @@
 #include "Misc/AssetRegistryInterface.h"
 #include "Misc/ITransaction.h"
 #include "Misc/PackageName.h"
+#include "UObject/GarbageCollectionSchema.h"
 #include "UObject/LinkerLoad.h"
 #include "UObject/LinkerSave.h"
 #include "UObject/LinkerManager.h"
@@ -93,33 +94,35 @@ void UPackage::PostInitProperties()
 /**
  * Marks/Unmarks the package's bDirty flag
  */
-void UPackage::SetDirtyFlag( bool bIsDirty )
+void UPackage::SetDirtyFlag( bool bInIsDirty )
 {
-	if ( GetOutermost() != GetTransientPackage() )
+	// Early out if there is no change to the flag
+	if (bDirty != bInIsDirty)
 	{
-		if ( GUndo != nullptr
-		// PIE and script/class packages should never end up in the transaction buffer as we cannot undo during gameplay.
-		&& !GetOutermost()->HasAnyPackageFlags(PKG_PlayInEditor|PKG_ContainsScript|PKG_CompiledIn) )
+		if ( GetOutermost() != GetTransientPackage() )
 		{
-			// make sure we're marked as transactional
-			SetFlags(RF_Transactional);
+			if ( GUndo != nullptr
+				// PIE and script/class packages should never end up in the transaction buffer as we cannot undo during gameplay.
+				&& !GetOutermost()->HasAnyPackageFlags(PKG_PlayInEditor|PKG_ContainsScript|PKG_CompiledIn) )
+			{
+				// make sure we're marked as transactional
+				SetFlags(RF_Transactional);
 
-			// don't call Modify() since it calls SetDirtyFlag()
-			GUndo->SaveObject( this );
-		}
+				// don't call Modify() since it calls SetDirtyFlag()
+				GUndo->SaveObject( this );
+			}
 
-		// Update dirty bit
-		const bool bWasDirty = bDirty;
-		bDirty = bIsDirty;
+			// Update dirty bit after we saved the object in the transaction buffer.
+			bDirty = bInIsDirty;
 
-		if( bWasDirty != bIsDirty						// Only fire the callback if the dirty state actually changes
-			&& GIsEditor								// Only fire the callback in editor mode
-			&& !HasAnyPackageFlags(PKG_ContainsScript)	// Skip script packages
-			&& !HasAnyPackageFlags(PKG_PlayInEditor)	// Skip packages for PIE
-			&& GetTransientPackage() != this )			// Skip the transient package
-		{
-			// Package is changing dirty state, let the editor know so we may prompt for source control checkout
-			PackageDirtyStateChangedEvent.Broadcast(this);
+			if (GIsEditor									// Only fire the callback in editor mode
+				&& !HasAnyPackageFlags(PKG_ContainsScript)	// Skip script packages
+				&& !HasAnyPackageFlags(PKG_PlayInEditor)	// Skip packages for PIE
+				&& GetTransientPackage() != this )			// Skip the transient package
+			{
+				// Package is changing dirty state, let the editor know so we may prompt for source control checkout
+				PackageDirtyStateChangedEvent.Broadcast(this);
+			}
 		}
 	}
 }
@@ -140,6 +143,27 @@ void UPackage::Serialize( FArchive& Ar )
 		}
 	}
 }
+
+#if WITH_EDITOR
+bool UPackage::bSupportCookerSoftGC = false;
+TMap<UPackage*, TArrayView<TObjectPtr<UObject>>> UPackage::SoftGCPackageToObjectList;
+void UPackage::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
+{
+	if (bSupportCookerSoftGC)
+	{
+		UPackage* ThisPackage = static_cast<UPackage*>(InThis);
+		auto* ObjectList = SoftGCPackageToObjectList.Find(ThisPackage);
+		if (ObjectList)
+		{
+			for (auto& Object : *ObjectList)
+			{
+				Collector.AddReferencedObject(Object);
+			}
+		}
+	}
+	Super::AddReferencedObjects(InThis, Collector);
+}
+#endif
 
 UObject* UPackage::FindAssetInPackage(EObjectFlags RequiredTopLevelFlags) const
 {
@@ -372,8 +396,7 @@ void FixupPackageEditorOnlyFlag(FName PackageThatGotEditorOnlyFlagCleared, bool 
 
 void UPackage::SetLoadedByEditorPropertiesOnly(bool bIsEditorOnly, bool bRecursive /*= false*/)
 {
-	const bool bWasEditorOnly = bLoadedByEditorPropertiesOnly;
-	bLoadedByEditorPropertiesOnly = bIsEditorOnly;
+	const bool bWasEditorOnly = bLoadedByEditorPropertiesOnly.exchange(bIsEditorOnly);
 	if (bWasEditorOnly && !bIsEditorOnly)
 	{
 		FixupPackageEditorOnlyFlag(GetFName(), bRecursive);
@@ -385,8 +408,7 @@ void UPackage::SetLoadedByEditorPropertiesOnly(bool bIsEditorOnly, bool bRecursi
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 IMPLEMENT_CORE_INTRINSIC_CLASS(UPackage, UObject,
 	{
-		UE::GC::FTokenStreamBuilder& Builder = UE::GC::FIntrinsicClassTokens::AllocateBuilder(Class);
-		Builder.EmitObjectReference(STRUCT_OFFSET(UPackage, MetaData), TEXT("MetaData"));
+		UE::GC::DeclareIntrinsicMembers(Class, { UE_GC_MEMBER(UPackage, MetaData) });
 	}
 );
 PRAGMA_ENABLE_DEPRECATION_WARNINGS

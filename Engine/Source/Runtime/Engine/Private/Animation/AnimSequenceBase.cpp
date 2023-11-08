@@ -59,7 +59,7 @@ UAnimSequenceBase::UAnimSequenceBase(const FObjectInitializer& ObjectInitializer
 
 bool UAnimSequenceBase::IsPostLoadThreadSafe() const
 {
-	return false;	// PostLoad is not thread safe because of the call to VerifyCurveNames() (calling USkeleton::VerifySmartName) that can mutate a shared map in the skeleton.
+	return WITH_EDITORONLY_DATA == 0;	// Not thread safe in editor because new objects can be constructed on upgrade and the skeleton can be modified
 }
 
 #if WITH_EDITORONLY_DATA
@@ -85,12 +85,16 @@ void UAnimSequenceBase::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutC
 }
 #endif
 
-template <typename DataType>
-void VerifyCurveNames(USkeleton& Skeleton, const FName& NameContainer, TArray<DataType>& CurveList)
+void UAnimSequenceBase::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
 {
-	for (DataType& Curve : CurveList)
+	Super::GetResourceSizeEx(CumulativeResourceSize);
+
+	const FRawCurveTracks& CurveData = GetCurveData();
+	const UStruct* Struct = CurveData.StaticStruct();
+	if (ensure(Struct))
 	{
-		Skeleton.VerifySmartName(NameContainer, Curve.Name);
+		CumulativeResourceSize.AddDedicatedSystemMemoryBytes(Struct->GetStructureSize());
+		CumulativeResourceSize.AddDedicatedSystemMemoryBytes(CurveData.FloatCurves.GetAllocatedSize());
 	}
 }
 
@@ -100,8 +104,8 @@ void UAnimSequenceBase::PostLoad()
 	if (!HasAnyFlags(EObjectFlags::RF_ClassDefaultObject))
 	{
 		LLM_SCOPE(ELLMTag::Animation);
-		
-		auto PreloadSkeletonAndVerifyCurves = [this]()
+
+		auto PreloadSkeleton = [this]()
 		{
 			if (USkeleton* MySkeleton = GetSkeleton())
 			{
@@ -110,11 +114,6 @@ void UAnimSequenceBase::PostLoad()
 					SkeletonLinker->Preload(MySkeleton);
 				}
 				MySkeleton->ConditionalPostLoad();
-
-				PRAGMA_DISABLE_DEPRECATION_WARNINGS
-				VerifyCurveNames<FFloatCurve>(*MySkeleton, USkeleton::AnimCurveMappingName, RawCurveData.FloatCurves);
-				VerifyCurveNames<FTransformCurve>(*MySkeleton, USkeleton::AnimTrackCurveMappingName, RawCurveData.TransformCurves);
-				PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			}
 		};
 
@@ -137,10 +136,17 @@ void UAnimSequenceBase::PostLoad()
 		    }
 
 		    ValidateModel();
+			if (UObject* DataModelObject = DataModelInterface.GetObject())
+			{
+				if (DataModelObject->HasAnyFlags(RF_NeedPostLoad | RF_NeedPostLoadSubobjects))
+				{
+					DataModelObject->ConditionalPostLoad();
+				}
+			}
 		    GetController();
 		    BindToModelModificationEvent();
 
-		    PreloadSkeletonAndVerifyCurves();
+		    PreloadSkeleton();
 
 		    if (bRequiresModelPopulation || bRequiresModelCreation)
 		    {
@@ -198,13 +204,14 @@ void UAnimSequenceBase::PostLoad()
 		}
 		else
 		{
-			PreloadSkeletonAndVerifyCurves();
+			PreloadSkeleton();
 		}
 	}
 #endif // WITH_EDITORONLY_DATA
 
 	Super::PostLoad();
 
+#if WITH_EDITORONLY_DATA
 	// Convert Notifies to new data
 	if( GIsEditor && Notifies.Num() > 0 )
 	{
@@ -221,12 +228,11 @@ void UAnimSequenceBase::PostLoad()
 		}
 	}
 
-#if WITH_EDITOR
 	InitializeNotifyTrack();
-#endif
+#endif	// WITH_EDITORONLY_DATA
 	RefreshCacheData();
 
-#if WITH_EDITOR
+#if WITH_EDITORONLY_DATA
 	if (!GetPackage()->GetHasBeenEndLoaded())
 	{
 		FCoreUObjectDelegates::OnEndLoadPackage.AddUObject(this, &UAnimSequenceBase::OnEndLoadPackage);
@@ -234,13 +240,11 @@ void UAnimSequenceBase::PostLoad()
 	else
 	{
 		OnAnimModelLoaded();
-	}	
-#endif
+	}
 
 	if(USkeleton* MySkeleton = GetSkeleton())
 	{
-#if WITH_EDITOR
-		if (ensure(IsDataModelValid()))
+		if (IsDataModelValid())
 		{
 			const bool bDoNotTransactAction = false;
 			if (GetLinkerCustomVersion(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::FixUpNoneNameAnimationCurves)
@@ -251,37 +255,28 @@ void UAnimSequenceBase::PostLoad()
 					for (int32 Index = 0; Index < FloatCurves.Num(); ++Index)
 					{
 						const FFloatCurve& Curve = FloatCurves[Index];
-						if (Curve.Name.DisplayName == NAME_None)
+						if (Curve.GetName() == NAME_None)
 						{
 							// give unique name
 							const FName UniqueName = FName(*FString(GetName() + TEXT("_CurveNameFix_") + FString::FromInt(Index)));
-							UE_LOG(LogAnimation, Warning, TEXT("[AnimSequence %s] contains invalid curve name \'None\'. Renaming this to %s. Please fix this curve in the editor. "), *GetFullName(), *Curve.Name.DisplayName.ToString());
+							UE_LOG(LogAnimation, Warning, TEXT("[AnimSequence %s] contains invalid curve name \'None\'. Renaming this to %s. Please fix this curve in the editor. "), *GetFullName(), *Curve.GetName().ToString());
 
-							FSmartName NewSmartName = Curve.Name;
-							NewSmartName.DisplayName = UniqueName;
-
-							Controller->RenameCurve(FAnimationCurveIdentifier(Curve.Name, ERawCurveTrackTypes::RCT_Float), FAnimationCurveIdentifier(NewSmartName, ERawCurveTrackTypes::RCT_Float), bDoNotTransactAction);
+							Controller->RenameCurve(FAnimationCurveIdentifier(Curve.GetName(), ERawCurveTrackTypes::RCT_Float), FAnimationCurveIdentifier(UniqueName, ERawCurveTrackTypes::RCT_Float), bDoNotTransactAction);
 						}
 					}
 				}
 				Controller->CloseBracket(bDoNotTransactAction);
 			}
 		}
-#endif
 
 		// this should continue to add if skeleton hasn't been saved either 
 		// we don't wipe out data, so make sure you add back in if required
 		if (GetLinkerCustomVersion(FFrameworkObjectVersion::GUID) < FFrameworkObjectVersion::MoveCurveTypesToSkeleton
 			|| MySkeleton->GetLinkerCustomVersion(FFrameworkObjectVersion::GUID) < FFrameworkObjectVersion::MoveCurveTypesToSkeleton)
 		{
-#if WITH_EDITOR
 			// This is safe as the data model will have been created during this PostLoad call
 			const TArray<FFloatCurve>& FloatCurves = DataModelInterface->GetFloatCurves();
-#else
-			PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			const TArray<FFloatCurve>& FloatCurves = RawCurveData.FloatCurves;
-			PRAGMA_ENABLE_DEPRECATION_WARNINGS
-#endif
+
 			// fix up curve flags to skeleton
 			for (const FFloatCurve& Curve : FloatCurves)
 			{
@@ -291,11 +286,12 @@ void UAnimSequenceBase::PostLoad()
 				// only add this if that has to 
 				if (bMorphtargetSet || bMaterialSet)
 				{
-					MySkeleton->AccumulateCurveMetaData(Curve.Name.DisplayName, bMaterialSet, bMorphtargetSet);
+					MySkeleton->AccumulateCurveMetaData(Curve.GetName(), bMaterialSet, bMorphtargetSet);
 				}
 			}
 		}
 	}
+#endif // WITH_EDITORONLY_DATA
 }
 
 void UAnimSequenceBase::PostDuplicate(EDuplicateMode::Type DuplicateMode)
@@ -357,6 +353,28 @@ void UAnimSequenceBase::RemoveNotifies()
 	MarkPackageDirty();
 	RefreshCacheData();
 }
+
+#if WITH_EDITOR
+void UAnimSequenceBase::RenameNotifies(FName InOldName, FName InNewName)
+{
+	Modify();
+
+	for(FAnimNotifyEvent& Notify : Notifies)
+	{
+		// Only handle named notifies
+		if(!Notify.IsBlueprintNotify())
+		{
+			if(Notify.NotifyName == InOldName)
+			{
+				Notify.NotifyName = InNewName;
+			}
+		}
+	}
+
+	// notification broadcast
+	OnNotifyChanged.Broadcast();
+}
+#endif
 
 bool UAnimSequenceBase::IsNotifyAvailable() const
 {
@@ -524,19 +542,11 @@ void UAnimSequenceBase::GetAnimNotifiesFromDeltaPositions(const float& PreviousP
 	}
 }
 
-#if WITH_EDITOR
-void UAnimSequenceBase::RemapTracksToNewSkeleton(USkeleton* NewSkeleton, bool bConvertSpaces)
-{
-	Super::RemapTracksToNewSkeleton(NewSkeleton, bConvertSpaces);
-
-	Controller->FindOrAddCurveNamesOnSkeleton(NewSkeleton, ERawCurveTrackTypes::RCT_Float);
-	Controller->FindOrAddCurveNamesOnSkeleton(NewSkeleton, ERawCurveTrackTypes::RCT_Transform);
-}
-#endif
-
 void UAnimSequenceBase::TickAssetPlayer(FAnimTickRecord& Instance, struct FAnimNotifyQueue& NotifyQueue, FAnimAssetTickContext& Context) const
 {
+	// Local copy of the asset player's time that is about to be updated.
 	float CurrentTime = *(Instance.TimeAccumulator);
+	
 	if (Context.ShouldResyncToSyncGroup() && !Instance.bIsEvaluator)
 	{
 		// Synchronize the asset player time to the other sync group members when (re)joining the group
@@ -545,16 +555,17 @@ void UAnimSequenceBase::TickAssetPlayer(FAnimTickRecord& Instance, struct FAnimN
 
 	float PreviousTime = CurrentTime;
 	float DeltaTime = 0.f;
+	const float PlayRate = Instance.PlayRateMultiplier * RateScale;
 
-	const float PlayRate = Instance.PlayRateMultiplier * this->RateScale;
-
-	if( Context.IsLeader() )
+	if (Context.IsLeader())
 	{
 		DeltaTime = PlayRate * Context.GetDeltaTime();
 
+		// Prepare context before ticking.
 		Context.SetLeaderDelta(DeltaTime);
 		Context.SetPreviousAnimationPositionRatio(PreviousTime / GetPlayLength());
 
+		// Tick as leader using marked based syncing if possible, other fallback to normal ticking.
 		if (DeltaTime != 0.f)
 		{
 			if (Instance.bCanUseMarkerSync && Context.CanUseMarkerPosition())
@@ -569,11 +580,12 @@ void UAnimSequenceBase::TickAssetPlayer(FAnimTickRecord& Instance, struct FAnimN
 			}
 		}
 
+		// Update context's data after ticking.
 		Context.SetAnimationPositionRatio(CurrentTime / GetPlayLength());
 	}
 	else
 	{
-		// Follow the leader
+		// Follow the leader using marker based syncing if possible, otherwise fallback to length based syncing.
 		if (Instance.bCanUseMarkerSync)
 		{
 			if (Context.CanUseMarkerPosition() && Context.MarkerTickContext.IsMarkerSyncStartValid())
@@ -583,6 +595,7 @@ void UAnimSequenceBase::TickAssetPlayer(FAnimTickRecord& Instance, struct FAnimN
 			else
 			{
 				DeltaTime = PlayRate * Context.GetDeltaTime();
+				
 				// If leader is not valid, advance time as normal, do not jump position and pop.
 				FAnimationRuntime::AdvanceTime(Instance.bLooping, DeltaTime, CurrentTime, GetPlayLength());
 				UE_LOG(LogAnimMarkerSync, Log, TEXT("Follower (%s) (normal advance) - PreviousTime (%0.2f), CurrentTime (%0.2f), MoveDelta (%0.2f), Looping (%d) "), *GetName(), PreviousTime, CurrentTime, DeltaTime, Instance.bLooping ? 1 : 0);
@@ -590,44 +603,49 @@ void UAnimSequenceBase::TickAssetPlayer(FAnimTickRecord& Instance, struct FAnimN
 		}
 		else
 		{
+			// Match group leader's last calculated anim position since we're not using marker based sync.
 			PreviousTime = Context.GetPreviousAnimationPositionRatio() * GetPlayLength();
 			CurrentTime = Context.GetAnimationPositionRatio() * GetPlayLength();
+			
 			UE_LOG(LogAnimMarkerSync, Log, TEXT("Follower (%s) (normalized position advance) - PreviousTime (%0.2f), CurrentTime (%0.2f), MoveDelta (%0.2f), Looping (%d) "), *GetName(), PreviousTime, CurrentTime, DeltaTime, Instance.bLooping ? 1 : 0);
 		}
-
-		//@TODO: NOTIFIES: Calculate AdvanceType based on what the new delta time is
-
-		if( CurrentTime != PreviousTime )
+		
+		if (CurrentTime != PreviousTime)
 		{
 			// Figure out delta time 
 			DeltaTime = CurrentTime - PreviousTime;
-			// if we went against play rate, then loop around.
-			if( (DeltaTime * PlayRate) < 0.f )
+			
+			// If we went against play rate, then loop around.
+			if ((DeltaTime * PlayRate) < 0.f)
 			{
 				DeltaTime += FMath::Sign<float>(PlayRate) * GetPlayLength();
 			}
 		}
 	}
 
-	// Assign the instance's TimeAccumulator after all side effects on CurrentTime have been applied
+	// Update the instance's TimeAccumulator after all side effects on the local copy of the asset player's time have been applied.
 	*(Instance.TimeAccumulator) = CurrentTime;
-
+	
 	// Capture the final adjusted delta time and previous frame time as an asset player record
 	check(Instance.DeltaTimeRecord);
 	Instance.DeltaTimeRecord->Set(PreviousTime, DeltaTime);
 
+	// Allow asset to react right after its asset player has being ticked.
 	HandleAssetPlayerTickedInternal(Context, PreviousTime, DeltaTime, Instance, NotifyQueue);
 }
 
 void UAnimSequenceBase::TickByMarkerAsFollower(FMarkerTickRecord &Instance, FMarkerTickContext &MarkerContext, float& CurrentTime, float& OutPreviousTime, const float MoveDelta, const bool bLooping, const UMirrorDataTable* MirrorTable) const
 {
+	// Re-compute marker indices since the asset's tick record is invalid. Get previous and next markers.
 	if (!Instance.IsValid(bLooping))
 	{
 		GetMarkerIndicesForPosition(MarkerContext.GetMarkerSyncStartPosition(), bLooping, Instance.PreviousMarker, Instance.NextMarker, CurrentTime, MirrorTable);
 	}
 
+	// Keep track the asset's previous time, since its current time is about to be modified.
 	OutPreviousTime = CurrentTime;
 
+	// Tick and update as follower.
 	AdvanceMarkerPhaseAsFollower(MarkerContext, MoveDelta, bLooping, CurrentTime, Instance.PreviousMarker, Instance.NextMarker, MirrorTable);
 
 	UE_LOG(LogAnimMarkerSync, Log, TEXT("Follower (%s) (TickByMarker) PreviousTime(%0.2f) CurrentTime(%0.2f) MoveDelta(%0.2f) Looping(%d) %s"), *GetName(), OutPreviousTime, CurrentTime, MoveDelta, bLooping ? 1 : 0, *MarkerContext.ToString());
@@ -635,6 +653,7 @@ void UAnimSequenceBase::TickByMarkerAsFollower(FMarkerTickRecord &Instance, FMar
 
 void UAnimSequenceBase::TickByMarkerAsLeader(FMarkerTickRecord& Instance, FMarkerTickContext& MarkerContext, float& CurrentTime, float& OutPreviousTime, const float MoveDelta, const bool bLooping, const UMirrorDataTable* MirrorTable) const
 {
+	// Re-compute marker indices since the asset's tick record is invalid. Get previous and next markers.
 	if (!Instance.IsValid(bLooping))
 	{
 		if (MarkerContext.IsMarkerSyncStartValid())
@@ -645,15 +664,18 @@ void UAnimSequenceBase::TickByMarkerAsLeader(FMarkerTickRecord& Instance, FMarke
 		{
 			GetMarkerIndicesForTime(CurrentTime, bLooping, MarkerContext.GetValidMarkerNames(), Instance.PreviousMarker, Instance.NextMarker);
 		}
-		
 	}
 
+	// Store the sync anim position BEFORE the asset has being ticked.
 	MarkerContext.SetMarkerSyncStartPosition(GetMarkerSyncPositionFromMarkerIndicies(Instance.PreviousMarker.MarkerIndex, Instance.NextMarker.MarkerIndex, CurrentTime, MirrorTable));
 
+	// Keep track the asset's previous time, since its current time is about to be modified.
 	OutPreviousTime = CurrentTime;
 
+	// Advance as leader.
 	AdvanceMarkerPhaseAsLeader(bLooping, MoveDelta, MarkerContext.GetValidMarkerNames(), CurrentTime, Instance.PreviousMarker, Instance.NextMarker, MarkerContext.MarkersPassedThisTick, MirrorTable);
 
+	// Store the sync anim position AFTER the asset has being ticked.
 	MarkerContext.SetMarkerSyncEndPosition(GetMarkerSyncPositionFromMarkerIndicies(Instance.PreviousMarker.MarkerIndex, Instance.NextMarker.MarkerIndex, CurrentTime, MirrorTable));
 
 	UE_LOG(LogAnimMarkerSync, Log, TEXT("Leader (%s) (TickByMarker) PreviousTime(%0.2f) CurrentTime(%0.2f) MoveDelta(%0.2f) Looping(%d) %s"), *GetName(), OutPreviousTime, CurrentTime, MoveDelta, bLooping ? 1 : 0, *MarkerContext.ToString());
@@ -849,37 +871,31 @@ EAnimEventTriggerOffsets::Type UAnimSequenceBase::CalculateOffsetForNotify(float
 void UAnimSequenceBase::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 {
 	Super::GetAssetRegistryTags(OutTags);
-	if(Notifies.Num() > 0)
-	{
-		FString NotifyList;
 
-		// add notifies to 
-		for(auto Iter=Notifies.CreateConstIterator(); Iter; ++Iter)
+	// Add notify IDs to a tag list, or a delimiter if we have no notifies.
+	// The delimiter is necessary so we can distinguish between data with no curves and old data, as the asset registry
+	// strips tags that have empty values 
+	FString NotifyList = USkeleton::AnimNotifyTagDelimiter;
+	for(auto Iter=Notifies.CreateConstIterator(); Iter; ++Iter)
+	{
+		// only add if not BP anim notify since they're handled separately
+		if(Iter->IsBlueprintNotify() == false)
 		{
-			// only add if not BP anim notify since they're handled separate
-			if(Iter->IsBlueprintNotify() == false)
-			{
-				NotifyList += FString::Printf(TEXT("%s%s"), *Iter->NotifyName.ToString(), *USkeleton::AnimNotifyTagDelimiter);
-			}
-		}
-		
-		if(NotifyList.Len() > 0)
-		{
-			OutTags.Add(FAssetRegistryTag(USkeleton::AnimNotifyTag, NotifyList, FAssetRegistryTag::TT_Hidden));
+			NotifyList += FString::Printf(TEXT("%s%s"), *Iter->NotifyName.ToString(), *USkeleton::AnimNotifyTagDelimiter);
 		}
 	}
+	
+	OutTags.Add(FAssetRegistryTag(USkeleton::AnimNotifyTag, NotifyList, FAssetRegistryTag::TT_Hidden));
 
-	// Add curve IDs to a tag list, or a blank tag if we have no curves.
-	// The blank list is necessary when we attempt to delete a curve so
-	// an old asset can be detected from its asset data so we load as few
-	// as possible.
-	FString CurveNameList;
-
+	// Add curve IDs to a tag list, or a delimiter if we have no curves.
+	// The delimiter is necessary so we can distinguish between data with no curves and old data, as the asset registry
+	// strips tags that have empty values 
+	FString CurveNameList = USkeleton::CurveTagDelimiter;
 	if (DataModelInterface.GetObject())
 	{
 		for(const FFloatCurve& Curve : DataModelInterface->GetFloatCurves())
 		{
-			CurveNameList += FString::Printf(TEXT("%s%s"), *Curve.Name.DisplayName.ToString(), *USkeleton::CurveTagDelimiter);
+			CurveNameList += FString::Printf(TEXT("%s%s"), *Curve.GetName().ToString(), *USkeleton::CurveTagDelimiter);
 		}
 	}
 	OutTags.Add(FAssetRegistryTag(USkeleton::CurveNameTag, CurveNameList, FAssetRegistryTag::TT_Hidden));
@@ -944,7 +960,7 @@ void UAnimSequenceBase::RefreshParentAssetData()
 		Controller->RemoveAllCurvesOfType(ERawCurveTrackTypes::RCT_Float);
 		for (const FFloatCurve& FloatCurve : ParentDataModel->GetFloatCurves())
 		{
-			const FAnimationCurveIdentifier CurveId = UAnimationCurveIdentifierExtensions::FindCurveIdentifier(GetSkeleton(), FloatCurve.Name.DisplayName, ERawCurveTrackTypes::RCT_Float);
+			const FAnimationCurveIdentifier CurveId(FloatCurve.GetName(), ERawCurveTrackTypes::RCT_Float);
 			Controller->AddCurve(CurveId, FloatCurve.GetCurveTypeFlags());
 			Controller->SetCurveKeys(CurveId, FloatCurve.FloatCurve.GetConstRefOfKeys());
 		}
@@ -952,7 +968,7 @@ void UAnimSequenceBase::RefreshParentAssetData()
 		Controller->RemoveAllCurvesOfType(ERawCurveTrackTypes::RCT_Transform);
 		for (const FTransformCurve& TransformCurve : ParentDataModel->GetTransformCurves())
 		{
-			const FAnimationCurveIdentifier CurveId(TransformCurve.Name, ERawCurveTrackTypes::RCT_Transform);
+			const FAnimationCurveIdentifier CurveId(TransformCurve.GetName(), ERawCurveTrackTypes::RCT_Transform);
 			Controller->AddCurve(CurveId, TransformCurve.GetCurveTypeFlags());
 
 			// Set each individual channel rich curve keys, to account for any custom tangents etc.
@@ -1027,10 +1043,10 @@ void UAnimSequenceBase::EvaluateCurveData(FBlendedCurve& OutCurve, float Current
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
-float UAnimSequenceBase::EvaluateCurveData(SmartName::UID_Type CurveUID, float CurrentTime, bool bForceUseRawData) const
+float UAnimSequenceBase::EvaluateCurveData(FName CurveName, float CurrentTime, bool bForceUseRawData) const
 {
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	const FFloatCurve* Curve = (const FFloatCurve*)RawCurveData.GetCurveData(CurveUID, ERawCurveTrackTypes::RCT_Float);
+	const FFloatCurve* Curve = (const FFloatCurve*)RawCurveData.GetCurveData(CurveName, ERawCurveTrackTypes::RCT_Float);
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	return Curve != nullptr ? Curve->Evaluate(CurrentTime) : 0.0f;
@@ -1043,17 +1059,17 @@ const FRawCurveTracks& UAnimSequenceBase::GetCurveData() const
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
-bool UAnimSequenceBase::HasCurveData(SmartName::UID_Type CurveUID, bool bForceUseRawData) const
+bool UAnimSequenceBase::HasCurveData(FName CurveName, bool bForceUseRawData) const
 {
 #if WITH_EDITOR
 	if (IsDataModelValid())
 	{
-		return DataModelInterface->FindFloatCurve(FAnimationCurveIdentifier(CurveUID, ERawCurveTrackTypes::RCT_Float)) != nullptr;
-	}
+		return DataModelInterface->FindFloatCurve(FAnimationCurveIdentifier(CurveName, ERawCurveTrackTypes::RCT_Float)) != nullptr;
+	}	
 #endif
 	
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	return RawCurveData.GetCurveData(CurveUID) != nullptr;
+	return RawCurveData.GetCurveData(CurveName) != nullptr;
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
@@ -1073,7 +1089,7 @@ void UAnimSequenceBase::Serialize(FArchive& Ar)
 
 	// fix up version issue and so on
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	RawCurveData.PostSerialize(Ar);
+	RawCurveData.PostSerializeFixup(Ar);
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
@@ -1286,18 +1302,18 @@ void UAnimSequenceBase::OnModelModified(const EAnimDataModelNotifyType& NotifyTy
 				if (Identifier.CurveType == ERawCurveTrackTypes::RCT_Float)
 				{
 					PRAGMA_DISABLE_DEPRECATION_WARNINGS
-					return RawCurveData.FloatCurves.FindByPredicate([SmartName=Identifier.InternalName](FFloatCurve& Curve)
+					return RawCurveData.FloatCurves.FindByPredicate([CurveName=Identifier.CurveName](FFloatCurve& Curve)
 	                {
-	                    return Curve.Name == SmartName;
+	                    return Curve.GetName() == CurveName;
 	                });
 					PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				}
 				else if (Identifier.CurveType == ERawCurveTrackTypes::RCT_Transform)
 				{
 					PRAGMA_DISABLE_DEPRECATION_WARNINGS
-					return RawCurveData.TransformCurves.FindByPredicate([SmartName=Identifier.InternalName](FTransformCurve& Curve)
+					return RawCurveData.TransformCurves.FindByPredicate([CurveName=Identifier.CurveName](FTransformCurve& Curve)
                     {
-                        return Curve.Name == SmartName;
+                        return Curve.GetName() == CurveName;
                     });
 					PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				}
@@ -1307,7 +1323,7 @@ void UAnimSequenceBase::OnModelModified(const EAnimDataModelNotifyType& NotifyTy
 				
 			if (CurvePtr)
 			{
-				CurvePtr->Name = TypedPayload.NewIdentifier.InternalName;
+				CurvePtr->SetName(TypedPayload.NewIdentifier.CurveName);
 			}
 			break;
 		}
@@ -1485,12 +1501,8 @@ void UAnimSequenceBase::OnAnimModelLoaded()
 			for (int32 Index = 0; Index < FloatCurves.Num(); ++Index)
 			{
 				const FFloatCurve& Curve = FloatCurves[Index];
-				ensureMsgf(Curve.Name.DisplayName != NAME_None, TEXT("[AnimSequencer %s] has invalid curve name."), *GetFullName());
+				ensureMsgf(Curve.GetName() != NAME_None, TEXT("[AnimSequencer %s] has invalid curve name."), *GetFullName());
 			}
-
-			constexpr bool bDoNotTransactAction = false;
-			Controller->FindOrAddCurveNamesOnSkeleton(MySkeleton, ERawCurveTrackTypes::RCT_Float, bDoNotTransactAction);
-			Controller->FindOrAddCurveNamesOnSkeleton(MySkeleton, ERawCurveTrackTypes::RCT_Transform, bDoNotTransactAction);
 		}
 	}
 }

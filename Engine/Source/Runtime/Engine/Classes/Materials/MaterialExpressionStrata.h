@@ -186,7 +186,6 @@ class UMaterialExpressionStrataLegacyConversion : public UMaterialExpressionStra
 	virtual FName GetInputName(int32 InputIndex) const override;
 	virtual void GetConnectorToolTip(int32 InputIndex, int32 OutputIndex, TArray<FString>& OutToolTip) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
-	virtual const TArray<FExpressionInput*> GetInputs() override;
 
 	bool HasSSS() const;
 	bool HasAnisotropy() const;
@@ -207,13 +206,13 @@ class UMaterialExpressionStrataSlabBSDF : public UMaterialExpressionStrataBSDF
 	FExpressionInput DiffuseAlbedo;
 
 	/**
-	 * Defines F0, the percentage of light reflected as specular from a surface when the view is perpendicular to the surface. (type = float3, unit = unitless, defaults to plastic 0.04)
+	 * Defines the color and brightness of the specular highlight where the surface is facing the camera. Each specular contribution will fade to black as F0 drops below 0.02. (type = float3, unit = unitless, defaults to plastic 0.04)
 	 */
 	UPROPERTY()
 	FExpressionInput F0;
 
 	/**
-	 * Defines F90, the percentage of light reflected as specular from a surface when the view is tangent to the surface. (type = float3, unit = unitless, defaults to 1.0f)
+	 * Defines the color of the specular highlight where the surface normal is 90 degrees from the view direction. Only the hue and saturation are preserved, the brightness is fixed at 1.0. Fades to black as F0 drops below 0.02. (type = float3, unit = unitless, defaults to 1.0f)
 	 */
 	UPROPERTY()
 	FExpressionInput F90;
@@ -296,9 +295,25 @@ class UMaterialExpressionStrataSlabBSDF : public UMaterialExpressionStrataBSDF
 	UPROPERTY()
 	FExpressionInput FuzzColor;
 
+	/**
+	 * This represent the logarithm of the micro facet density. Only used when `r.Substrate.Glints=1`. Defaults to 0.
+	 */
+	UPROPERTY()
+	FExpressionInput GlintValue;
+
+	/**
+	 * The parameterization of the surface required to position glints on a surface. Only used when `r.Substrate.Glints=1`. Defaults to (0,0).
+	 */
+	UPROPERTY()
+	FExpressionInput GlintUV;
+
 	/** SubsurfaceProfile, for Screen Space Subsurface Scattering. The profile needs to be set up on both the Substrate diffuse node, and the material node at the moment. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Material, meta = (DisplayName = "Subsurface Profile"))
 	TObjectPtr<class USubsurfaceProfile> SubsurfaceProfile;
+
+	/** SpecularProfile, for modulating specular appearance and simulating more complex visuals such as iridescence. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Material, meta = (DisplayName = "Specular Profile"))
+	TObjectPtr<class USpecularProfile> SpecularProfile;
 
 	/** Whether to use light diffusion (i.e., SSS diffusion) or wrap-approximation for material with scattering behavior. This option trades quality over performance and will result into visual differences. */
 	UPROPERTY(EditAnywhere, Category = Mode, meta = (DisplayName = "Use Subsurface Diffusion"))
@@ -315,7 +330,7 @@ class UMaterialExpressionStrataSlabBSDF : public UMaterialExpressionStrataBSDF
 	virtual FStrataOperator* StrataGenerateMaterialTopologyTree(class FMaterialCompiler* Compiler, class UMaterialExpression* Parent, int32 OutputIndex) override;
 	virtual FName GetInputName(int32 InputIndex) const override;
 	virtual void GetConnectorToolTip(int32 InputIndex, int32 OutputIndex, TArray<FString>& OutToolTip) override;
-	virtual const TArray<FExpressionInput*> GetInputs() override;
+	virtual void GetExpressionToolTip(TArray<FString>& OutToolTip) override;
 
 	bool HasEdgeColor() const;
 	bool HasFuzz() const;
@@ -325,6 +340,17 @@ class UMaterialExpressionStrataSlabBSDF : public UMaterialExpressionStrataBSDF
 	bool HasSSSProfile() const;
 	bool HasMFPPluggedIn() const;
 	bool HasAnisotropy() const;
+	bool HasGlint() const;
+	bool HasSpecularProfile() const;
+
+	struct FComplexity
+	{
+		bool bStrataMaterialIsComplexSpecial;
+		bool bStrataMaterialIsComplex;
+		bool bStrataMaterialIsSingle;
+		// If all the above are false, complexity is Simple
+	};
+	FComplexity GetComplexity() const;
 #endif
 	//~ End UMaterialExpression Interface
 };
@@ -341,7 +367,7 @@ class UMaterialExpressionStrataSimpleClearCoatBSDF : public UMaterialExpressionS
 	FExpressionInput DiffuseAlbedo;
 
 	/**
-	 * Defines F0, the percentage of light reflected as specular from a surface when the view is perpendicular to the surface. (type = float3, unit = unitless, defaults to plastic 0.04)
+	 * Defines the color and brightness of the specular highlight where the surface is facing the camera. Each specular contribution will fade to black as F0 drops below 0.02. (type = float3, unit = unitless, defaults to plastic 0.04)
 	 */
 	UPROPERTY()
 	FExpressionInput F0;
@@ -386,7 +412,6 @@ class UMaterialExpressionStrataSimpleClearCoatBSDF : public UMaterialExpressionS
 	virtual void GatherStrataMaterialInfo(FStrataMaterialInfo& StrataMaterialInfo, int32 OutputIndex) override;
 	virtual FStrataOperator* StrataGenerateMaterialTopologyTree(class FMaterialCompiler* Compiler, class UMaterialExpression* Parent, int32 OutputIndex) override;
 	virtual FName GetInputName(int32 InputIndex) const override;
-	virtual const TArray<FExpressionInput*> GetInputs() override;
 #endif
 	//~ End UMaterialExpression Interface
 };
@@ -449,6 +474,12 @@ class UMaterialExpressionStrataUnlitBSDF : public UMaterialExpressionStrataBSDF
 	 */
 	UPROPERTY()
 	FExpressionInput TransmittanceColor;
+
+	/**
+	 * The surface normal. Only used for refraction effects when `IOR` or `pixel normal offset` modes are selected.
+	 */
+	UPROPERTY()
+	FExpressionInput Normal;
 
 	//~ Begin UMaterialExpression Interface
 #if WITH_EDITOR
@@ -1063,13 +1094,13 @@ class UMaterialExpressionStrataThinFilm : public UMaterialExpressionStrataUtilit
 	FExpressionInput Normal;
 
 	/**
-	 * Defines F0, the percentage of light reflected as specular from a surface when the view is perpendicular to the surface. (type = float3, unit = unitless, defaults to plastic 0.04)
+	 * Defines the color and brightness of the specular highlight where the surface is facing the camera. Each specular contribution will fade to black as F0 drops below 0.02. (type = float3, unit = unitless, defaults to plastic 0.04)
 	 */
 	UPROPERTY()
 	FExpressionInput F0;
 
 	/**
-	 * Defines F90, the percentage of light reflected as specular from a surface when the view is tangent to the surface. (type = float3, unit = unitless, defaults to 1.0f)
+	 * Defines the color of the specular highlight where the surface normal is 90 degrees from the view direction. Only the hue and saturation are preserved, the brightness is fixed at 1.0. Fades to black as F0 drops below 0.02. (type = float3, unit = unitless, defaults to 1.0f)
 	 */
 	UPROPERTY()
 	FExpressionInput F90;

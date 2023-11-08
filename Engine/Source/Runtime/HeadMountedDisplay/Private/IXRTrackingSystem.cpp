@@ -5,6 +5,9 @@
 #include "EngineGlobals.h"
 #include "Engine/Engine.h"
 #include "Kismet/GameplayStatics.h"
+#include "Misc/App.h"
+
+const int32 IXRTrackingSystem::HMDDeviceId;
 
 void IXRTrackingSystem::GetHMDData(UObject* WorldContext, FXRHMDData& HMDData)
 {

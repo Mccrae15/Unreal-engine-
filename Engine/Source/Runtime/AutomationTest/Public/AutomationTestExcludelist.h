@@ -5,41 +5,71 @@
 #include "CoreMinimal.h"
 #include "AutomationTestExcludelist.generated.h"
 
-UENUM(Meta = (Bitflags, UseEnumValuesAsMaskValuesInEditor = "true"))
-enum class ERHI_Flags : uint8
+UENUM()
+enum class ETEST_RHI_Options
 {
-	DirectX11	= 1 << 0 UMETA(DisplayName = "DirectX 11"),
-	DirectX12	= 1 << 1 UMETA(DisplayName = "DirectX 12"),
-	Vulkan		= 1 << 2 UMETA(DisplayName = "Vulkan"),
-	Metal		= 1 << 3 UMETA(DisplayName = "Metal"),
-	NUM			UMETA(Hidden)
+	DirectX11,
+	DirectX12,
+	Vulkan,
+	Metal,
+	Null
 };
 
-ENUM_CLASS_FLAGS(ERHI_Flags);
+inline FString LexToString(ETEST_RHI_Options Option)
+{
+	switch (Option)
+	{
+	case ETEST_RHI_Options::DirectX11:    return TEXT("DirectX 11");
+	case ETEST_RHI_Options::DirectX12:    return TEXT("DirectX 12");
+	case ETEST_RHI_Options::Vulkan:       return TEXT("Vulkan");
+	case ETEST_RHI_Options::Metal:        return TEXT("Metal");
+	case ETEST_RHI_Options::Null:         return TEXT("Null");
+	default:                              return TEXT("Unknown");
+	}
+}
+
+UENUM()
+enum class ETEST_RHI_FeatureLevel_Options
+{
+	SM5,
+	SM6
+};
+
+inline FString LexToString(ETEST_RHI_FeatureLevel_Options Option)
+{
+	switch (Option)
+	{
+	case ETEST_RHI_FeatureLevel_Options::SM5:   return TEXT("SM5");
+	case ETEST_RHI_FeatureLevel_Options::SM6:   return TEXT("SM6");
+	default:                                    return TEXT("Unknown");
+	}
+}
 
 USTRUCT()
 struct FAutomationTestExcludeOptions
 {
 	GENERATED_BODY()
 
-	void SetRHIFlagsFromNames(TSet<FName>& InRHIs)
+	template<typename EnumType>
+	static TSet<FName> GetAllRHIOptionNames()
 	{
-		int32 Num_RHIs = InRHIs.Num();
-		if (Num_RHIs == 0)
-			return;
-
-		int32 InRHIs_index = 0;
-		UEnum* Enum = StaticEnum<ERHI_Flags>();
-		int32 Num_Flags = Enum->NumEnums();
-		for (int32 i = 0; i < Num_Flags && InRHIs_index < Num_RHIs; i++)
+		static TSet<FName> NameSet;
+		if (NameSet.IsEmpty())
 		{
-			if (InRHIs.Contains(*Enum->GetDisplayNameTextByIndex(i).ToString()))
+			if constexpr (std::is_same_v<EnumType, ETEST_RHI_Options> || std::is_same_v<EnumType, ETEST_RHI_FeatureLevel_Options>)
 			{
-				RHIs |= (int8)Enum->GetValueByIndex(i);
-				InRHIs_index++;
+				UEnum* Enum = StaticEnum<EnumType>();
+				int32 Num_Flags = Enum->NumEnums() - 1;
+				for (int32 i = 0; i < Num_Flags; i++)
+				{
+					NameSet.Add(*LexToString((EnumType)Enum->GetValueByIndex(i)));
+				}
 			}
 		}
+
+		return NameSet;
 	}
+
 	/* Name of the target test */
 	UPROPERTY(VisibleAnywhere, Category = ExcludeTestOptions)
 	FName Test;
@@ -48,9 +78,9 @@ struct FAutomationTestExcludeOptions
 	UPROPERTY(EditAnywhere, Category = ExcludeTestOptions)
 	FName Reason;
 
-	/* Option to target specific RHI. No option means it should be applied to all RHI */
-	UPROPERTY(EditAnywhere, Meta = (Bitmask, BitmaskEnum = "/Script/AutomationTest.ERHI_Flags"), Category = ExcludeTestOptions)
-	int8 RHIs = 0;
+	/* Options to target specific RHI. No option means it should be applied to all RHIs */
+	UPROPERTY(EditAnywhere, Category = ExcludeTestOptions)
+	TSet<FName> RHIs;
 
 	/* Should the Reason be reported as a warning in the log */
 	UPROPERTY(EditAnywhere, Category = ExcludeTestOptions)
@@ -67,32 +97,38 @@ struct FAutomationTestExcludelistEntry
 	FAutomationTestExcludelistEntry(const FAutomationTestExcludeOptions& Options)
 		: Test(Options.Test)
 		, Reason(Options.Reason)
+		, RHIs(Options.RHIs)
 		, Warn(Options.Warn)
-	{
-		UEnum* Enum = StaticEnum<ERHI_Flags>();
-		int32 Num_Flags = Enum->NumEnums();
-		for (int32 i = 0; i < Num_Flags; i++)
-		{
-			int8 Flag = IntCastChecked<int8>(Enum->GetValueByIndex(i));
-			if ((int8)ERHI_Flags::NUM == Flag)
-				break; // We reach the maximum value
+	{ }
 
-			if ((Options.RHIs & Flag) == Flag)
-			{
-				RHIs.Add(*Enum->GetDisplayNameTextByIndex(i).ToString());
-			}
-		}
-	}
-
-	TSharedPtr<FAutomationTestExcludeOptions> GetOptions()
+	TSharedPtr<FAutomationTestExcludeOptions> GetOptions() const
 	{
 		TSharedPtr<FAutomationTestExcludeOptions> Options = MakeShareable(new FAutomationTestExcludeOptions());
 		Options->Test = Test;
 		Options->Reason = Reason;
 		Options->Warn = Warn;
-		Options->SetRHIFlagsFromNames(RHIs);
+		Options->RHIs = RHIs;
 		
 		return Options;
+	}
+
+	/* Return the number of RHI types that needs to be matched for exclusion */
+	int8 NumRHIType() const
+	{
+		int8 Num = 0;
+		// Test mentions of each RHI option types
+		static const TSet<FName> AllRHI_OptionNames = FAutomationTestExcludeOptions::GetAllRHIOptionNames<ETEST_RHI_Options>();
+		if (RHIs.Difference(AllRHI_OptionNames).Num() < RHIs.Num())
+		{
+			Num++;
+		}
+		static const TSet<FName> AllRHI_FeatureLevel_OptionNames = FAutomationTestExcludeOptions::GetAllRHIOptionNames<ETEST_RHI_FeatureLevel_Options>();
+		if (RHIs.Difference(AllRHI_FeatureLevel_OptionNames).Num() < RHIs.Num())
+		{
+			Num++;
+		}
+
+		return Num;
 	}
 
 	/* Determine if exclusion entry is propagated based on test name - used for management in test automation window */
@@ -169,33 +205,33 @@ struct FAutomationTestExcludelistEntry
 };
 
 
-UCLASS(config = Engine, defaultconfig)
-class AUTOMATIONTEST_API UAutomationTestExcludelist : public UObject
+UCLASS(config = Engine, defaultconfig, MinimalAPI)
+class UAutomationTestExcludelist : public UObject
 {
 	GENERATED_BODY()
 
 public:
 	UAutomationTestExcludelist() {}
 
-	static UAutomationTestExcludelist* Get();
+	static AUTOMATIONTEST_API UAutomationTestExcludelist* Get();
 
-	void AddToExcludeTest(const FString& TestName, const FAutomationTestExcludelistEntry& ExcludelistEntry);
-	void RemoveFromExcludeTest(const FString& TestName);
-	bool IsTestExcluded(const FString& TestName, const FString& RHI = TEXT(""), FName* OutReason = nullptr, bool* OutWarn = nullptr);
-	FAutomationTestExcludelistEntry* GetExcludeTestEntry(const FString& TestName, const FString& RHI = TEXT(""));
+	AUTOMATIONTEST_API void AddToExcludeTest(const FString& TestName, const FAutomationTestExcludelistEntry& ExcludelistEntry);
+	AUTOMATIONTEST_API void RemoveFromExcludeTest(const FString& TestName);
+	AUTOMATIONTEST_API bool IsTestExcluded(const FString& TestName, const TSet<FName>& = TSet<FName>(), FName* OutReason = nullptr, bool* OutWarn = nullptr);
+	AUTOMATIONTEST_API FAutomationTestExcludelistEntry* GetExcludeTestEntry(const FString& TestName, const TSet<FName>& = TSet<FName>());
 
-	void SaveConfig();
+	AUTOMATIONTEST_API void SaveConfig();
 	FString GetConfigFilename() { return UObject::GetDefaultConfigFilename(); } const
 	// It is called automatically when CDO is created, usually you don't need to call LoadConfig manually
 	void LoadConfig() { UObject::LoadConfig(GetClass()); }
 
-	virtual void OverrideConfigSection(FString& SectionName) override;
+	AUTOMATIONTEST_API virtual void OverrideConfigSection(FString& SectionName) override;
 
 protected:
-	virtual void PostInitProperties() override;
+	AUTOMATIONTEST_API virtual void PostInitProperties() override;
 
 private:
-	FString GetFullTestName(const FAutomationTestExcludelistEntry& ExcludelistEntry);
+	AUTOMATIONTEST_API FString GetFullTestName(const FAutomationTestExcludelistEntry& ExcludelistEntry);
 
 	UPROPERTY(EditDefaultsOnly, globalconfig, Category = AutomationTestExcludelist)
 	TArray<FAutomationTestExcludelistEntry> ExcludeTest;

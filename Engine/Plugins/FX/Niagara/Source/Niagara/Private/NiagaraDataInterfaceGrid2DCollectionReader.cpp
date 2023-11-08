@@ -1,15 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "NiagaraDataInterfaceGrid2DCollectionReader.h"
-#include "NiagaraShader.h"
-#include "ShaderParameterUtils.h"
-#include "ClearQuad.h"
+#include "Engine/TextureRenderTarget.h"
 #include "NiagaraSystemInstance.h"
-#include "NiagaraRenderer.h"
-#include "Engine/VolumeTexture.h"
-#include "Engine/TextureRenderTargetVolume.h"
-#include "NiagaraSettings.h"
-#include "NiagaraConstants.h"
 #include "NiagaraComputeExecutionContext.h"
+#include "NiagaraEmitterInstance.h"
+#include "NiagaraSystem.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceGrid2DCollectionReader)
 
@@ -113,7 +108,7 @@ bool UNiagaraDataInterfaceGrid2DCollectionReader::InitPerInstanceData(void* PerI
 			int32 NumNamedAttribChannelsFound = 0;
 			TArray<FNiagaraVariableBase> Vars;
 			TArray<uint32> Offsets;
-			FindAttributes(Vars, Offsets, NumNamedAttribChannelsFound, nullptr, true);
+			FindAttributes(Vars, Offsets, NumNamedAttribChannelsFound, nullptr);
 
 			FGrid2DCollectionRWInstanceData_GameThread* Grid2DInstanceData = GridInterface->GetSystemInstancesToProxyData_GT().FindRef(SystemInstance->GetId());
 			InstanceData->OtherDI = GridInterface;

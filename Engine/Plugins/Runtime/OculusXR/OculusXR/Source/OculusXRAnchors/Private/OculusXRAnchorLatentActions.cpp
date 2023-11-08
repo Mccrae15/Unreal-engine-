@@ -10,6 +10,8 @@ LICENSE file in the root directory of this source tree.
 #include "OculusXRAnchorsPrivate.h"
 #include "OculusXRHMD.h"
 #include "OculusXRAnchorBPFunctionLibrary.h"
+#include "OculusXRRoomLayoutManager.h"
+#include "OculusXRAnchorDelegates.h"
 
 //
 // Create Spatial Anchor
@@ -206,9 +208,9 @@ void UOculusXRAsyncAction_SaveAnchor::HandleSaveAnchorComplete(EOculusXRAnchorRe
 }
 
 //
-// Save Spaces
+// Save Anchor List
 //
-void UOculusXRAsyncAction_SaveAnchors::Activate()
+void UOculusXRAsyncAction_SaveAnchorList::Activate()
 {
 	if (TargetAnchors.Num() == 0)
 	{
@@ -222,7 +224,7 @@ void UOculusXRAsyncAction_SaveAnchors::Activate()
 	bool bStartedAsync = OculusXRAnchors::FOculusXRAnchors::SaveAnchorList(
 		TargetAnchors,
 		StorageLocation,
-		FOculusXRAnchorSaveListDelegate::CreateUObject(this, &UOculusXRAsyncAction_SaveAnchors::HandleSaveAnchorsComplete),
+		FOculusXRAnchorSaveListDelegate::CreateUObject(this, &UOculusXRAsyncAction_SaveAnchorList::HandleSaveAnchorListComplete),
 		Result);
 
 	if (!bStartedAsync)
@@ -233,9 +235,9 @@ void UOculusXRAsyncAction_SaveAnchors::Activate()
 	}
 }
 
-UOculusXRAsyncAction_SaveAnchors* UOculusXRAsyncAction_SaveAnchors::OculusXRAsyncSaveAnchors(const TArray<AActor*>& TargetActors, EOculusXRSpaceStorageLocation StorageLocation)
+UOculusXRAsyncAction_SaveAnchorList* UOculusXRAsyncAction_SaveAnchorList::OculusXRAsyncSaveAnchorList(const TArray<AActor*>& TargetActors, EOculusXRSpaceStorageLocation StorageLocation)
 {
-	UOculusXRAsyncAction_SaveAnchors* Action = NewObject<UOculusXRAsyncAction_SaveAnchors>();
+	UOculusXRAsyncAction_SaveAnchorList* Action = NewObject<UOculusXRAsyncAction_SaveAnchorList>();
 
 	auto ValidActorPtr = TargetActors.FindByPredicate([](AActor* Actor) { return IsValid(Actor); });
 
@@ -260,7 +262,7 @@ UOculusXRAsyncAction_SaveAnchors* UOculusXRAsyncAction_SaveAnchors::OculusXRAsyn
 	return Action;
 }
 
-void UOculusXRAsyncAction_SaveAnchors::HandleSaveAnchorsComplete(EOculusXRAnchorResult::Type SaveResult, const TArray<UOculusXRAnchorComponent*>& SavedSpaces)
+void UOculusXRAsyncAction_SaveAnchorList::HandleSaveAnchorListComplete(EOculusXRAnchorResult::Type SaveResult, const TArray<UOculusXRAnchorComponent*>& SavedSpaces)
 {
 	if (UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(SaveResult))
 	{
@@ -541,5 +543,45 @@ void UOculusXRAsyncAction_ShareAnchors::HandleShareAnchorsComplete(EOculusXRAnch
 	}
 
 	// Unbind and mark for destruction
+	SetReadyToDestroy();
+}
+
+
+UOculusXRAnchorLaunchCaptureFlow* UOculusXRAnchorLaunchCaptureFlow::LaunchCaptureFlowAsync(const UObject* WorldContext)
+{
+	UWorld* World = GEngine->GetWorldFromContextObject(WorldContext, EGetWorldErrorMode::ReturnNull);
+	if (!ensureAlwaysMsgf(IsValid(WorldContext), TEXT("World Context was not valid.")))
+	{
+		return nullptr;
+	}
+
+	// Create a new UMyDelayAsyncAction, and store function arguments in it.
+	auto NewAction = NewObject<UOculusXRAnchorLaunchCaptureFlow>();
+	NewAction->RegisterWithGameInstance(World->GetGameInstance());
+	return NewAction;
+}
+
+void UOculusXRAnchorLaunchCaptureFlow::Activate()
+{
+	Request = 0;
+	FOculusXRAnchorEventDelegates::OculusSceneCaptureComplete.AddUObject(this, &UOculusXRAnchorLaunchCaptureFlow::OnCaptureFinish);
+	bool CaptureStarted = OculusXRAnchors::FOculusXRRoomLayoutManager::RequestSceneCapture(Request);
+	if (!CaptureStarted)
+	{
+		FOculusXRAnchorEventDelegates::OculusSceneCaptureComplete.RemoveAll(this);
+		Failure.Broadcast();
+	}
+}
+
+void UOculusXRAnchorLaunchCaptureFlow::OnCaptureFinish(FOculusXRUInt64 RequestId, bool bSuccess)
+{
+	if (Request != RequestId.GetValue())
+	{
+		UE_LOG(LogOculusXRAnchors, Warning, TEXT("%llu request id doesn't match %llu. Ignoring request."), RequestId, Request);
+		return;
+	}
+
+	FOculusXRAnchorEventDelegates::OculusSceneCaptureComplete.RemoveAll(this);
+	Success.Broadcast();
 	SetReadyToDestroy();
 }

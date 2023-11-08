@@ -1,14 +1,13 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
-using System.Text;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using EpicGames.Core;
-using UnrealBuildBase;
 using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
@@ -26,8 +25,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		public static UnrealArch TVOSSimulator = FindOrAddByName("tvossimulator", bIsX64: false);
 
-
-		private static Dictionary<UnrealArch, string> AppleToolchainArchitectures = new()
+		private static IReadOnlyDictionary<UnrealArch, string> AppleToolchainArchitectures = new Dictionary<UnrealArch, string>()
 		{
 			{ UnrealArch.Arm64,         "arm64" },
 			{ UnrealArch.X64,           "x86_64" },
@@ -42,15 +40,15 @@ namespace UnrealBuildTool
 		{
 			get
 			{
-				if (AppleToolchainArchitectures.ContainsKey(this)) return AppleToolchainArchitectures[this];
+				if (AppleToolchainArchitectures.ContainsKey(this))
+				{
+					return AppleToolchainArchitectures[this];
+				}
 
 				throw new BuildException($"Unknown architecture {ToString()} passed to UnrealArch.AppleName");
 			}
 		}
-
-
 	}
-
 
 	/// <summary>
 	/// IOS-specific target settings
@@ -171,80 +169,33 @@ namespace UnrealBuildTool
 		/// </summary>
 		#region Read-only accessor properties 
 #pragma warning disable CS1591
-		public bool bStripSymbols
-		{
-			get { return Inner.bStripSymbols; }
-		}
-			
-		public bool bShipForBitcode
-		{
-			get { return Inner.ProjectSettings!.bShipForBitcode; }
-		}
+		public bool bStripSymbols => Inner.bStripSymbols;
 
-		public bool bGenerateFrameworkWrapperProject
-		{
-			get { return Inner.bGenerateFrameworkWrapperProject; }
-		}
+		public bool bGenerateFrameworkWrapperProject => Inner.bGenerateFrameworkWrapperProject;
 
-		public bool bGeneratedSYM
-		{
-			get { return Inner.bGeneratedSYM; }
-		}
+		public bool bGeneratedSYM => Inner.bGeneratedSYM;
 
-		public bool bCreateStubIPA
-		{
-			get { return Inner.bCreateStubIPA; }
-		}
+		public bool bCreateStubIPA => Inner.bCreateStubIPA;
 
-		public bool bSkipCrashlytics
-		{
-			get { return Inner.bSkipCrashlytics; }
-		}
+		public bool bSkipCrashlytics => Inner.bSkipCrashlytics;
 
-		public bool bSkipClangValidation
-		{
-			get { return Inner.bSkipClangValidation; }
-		}
+		public bool bSkipClangValidation => Inner.bSkipClangValidation;
 
-		public bool bForDistribution
-		{
-			get { return Inner.bForDistribution; }
-		}
+		public bool bForDistribution => Inner.bForDistribution;
 
-		public string? ImportProvision
-		{
-			get { return Inner.ImportProvision; }
-		}
+		public string? ImportProvision => Inner.ImportProvision;
 
-		public string? ImportCertificate
-		{
-			get { return Inner.ImportCertificate; }
-		}
+		public string? ImportCertificate => Inner.ImportCertificate;
 
-		public string? ImportCertificatePassword
-		{
-			get { return Inner.ImportCertificatePassword; }
-		}
+		public string? ImportCertificatePassword => Inner.ImportCertificatePassword;
 
-		public float RuntimeVersion
-		{
-			get { return float.Parse(Inner.ProjectSettings!.RuntimeVersion, System.Globalization.CultureInfo.InvariantCulture); }
-		}
+		public float RuntimeVersion => Single.Parse(Inner.ProjectSettings!.RuntimeVersion, System.Globalization.CultureInfo.InvariantCulture);
 
-		public bool bEnableAddressSanitizer
-		{
-			get { return Inner.bEnableAddressSanitizer; }
-		}
+		public bool bEnableAddressSanitizer => Inner.bEnableAddressSanitizer;
 
-		public bool bEnableThreadSanitizer
-		{
-			get { return Inner.bEnableThreadSanitizer; }
-		}
+		public bool bEnableThreadSanitizer => Inner.bEnableThreadSanitizer;
 
-		public bool bEnableUndefinedBehaviorSanitizer
-		{
-			get { return Inner.bEnableUndefinedBehaviorSanitizer; }
-		}
+		public bool bEnableUndefinedBehaviorSanitizer => Inner.bEnableUndefinedBehaviorSanitizer;
 
 #pragma warning restore CS1591
 		#endregion
@@ -279,7 +230,7 @@ namespace UnrealBuildTool
 		[ConfigFile(ConfigHierarchyType.Engine, "/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bGeneratedSYMFile")]
 		[CommandLine("-generatedsymfile")]
 		public readonly bool bGeneratedSYMFile = false;
-		
+
 		/// <summary>
 		/// Whether to generate a dSYM bundle (as opposed to single file dSYM)
 		/// </summary>
@@ -287,16 +238,16 @@ namespace UnrealBuildTool
 		[CommandLine("-generatedsymbundle")]
 		public readonly bool bGeneratedSYMBundle = false;
 
-        /// <summary>
-        /// Whether to generate a dSYM file or not.
-        /// </summary>
-        [ConfigFile(ConfigHierarchyType.Engine, "/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bGenerateCrashReportSymbols")]
-        public readonly bool bGenerateCrashReportSymbols = false;
+		/// <summary>
+		/// Whether to generate a dSYM file or not.
+		/// </summary>
+		[ConfigFile(ConfigHierarchyType.Engine, "/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bGenerateCrashReportSymbols")]
+		public readonly bool bGenerateCrashReportSymbols = false;
 
-        /// <summary>
-        /// The minimum supported version
-        /// </summary>
-        [ConfigFile(ConfigHierarchyType.Engine, "/Script/IOSRuntimeSettings.IOSRuntimeSettings", "MinimumiOSVersion")]
+		/// <summary>
+		/// The minimum supported version
+		/// </summary>
+		[ConfigFile(ConfigHierarchyType.Engine, "/Script/IOSRuntimeSettings.IOSRuntimeSettings", "MinimumiOSVersion")]
 		private readonly string? MinimumIOSVersion = null;
 
 		/// <summary>
@@ -329,30 +280,23 @@ namespace UnrealBuildTool
 		[ConfigFile(ConfigHierarchyType.Engine, "/Script/IOSRuntimeSettings.IOSRuntimeSettings", "MobileProvision")]
 		public readonly string MobileProvision = "";
 
-        /// <summary>
-        /// signing certificate to use for code signing
-        /// </summary>
+		/// <summary>
+		/// signing certificate to use for code signing
+		/// </summary>
 		[ConfigFile(ConfigHierarchyType.Engine, "/Script/IOSRuntimeSettings.IOSRuntimeSettings", "SigningCertificate")]
-        public readonly string SigningCertificate = "";
-
+		public readonly string SigningCertificate = "";
 
 		/// <summary>
-		/// true if bit code should be embedded
+		/// true if notifications are enabled
 		/// </summary>
-		[ConfigFile(ConfigHierarchyType.Engine, "/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bShipForBitcode")]
-		public readonly bool bShipForBitcode = false;
-
-        /// <summary>
-        /// true if notifications are enabled
-        /// </summary>
 		[ConfigFile(ConfigHierarchyType.Engine, "/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bEnableRemoteNotificationsSupport")]
-        public readonly bool bNotificationsEnabled = false;
+		public readonly bool bNotificationsEnabled = false;
 
-        /// <summary>
-        /// true if notifications are enabled
-        /// </summary>
-        [ConfigFile(ConfigHierarchyType.Engine, "/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bEnableBackgroundFetch")]
-        public readonly bool bBackgroundFetchEnabled = false;
+		/// <summary>
+		/// true if notifications are enabled
+		/// </summary>
+		[ConfigFile(ConfigHierarchyType.Engine, "/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bEnableBackgroundFetch")]
+		public readonly bool bBackgroundFetchEnabled = false;
 
 		/// <summary>
 		/// true if iTunes file sharing support is enabled
@@ -383,7 +327,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		[ConfigFile(ConfigHierarchyType.Engine, "/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bDisableForceInline")]
 		public readonly bool bDisableForceInline = false;
-		
+
 		/// <summary>
 		/// true if IDFA are enabled
 		/// </summary>
@@ -417,12 +361,15 @@ namespace UnrealBuildTool
 			{
 				switch (MinimumIOSVersion)
 				{
-					case "IOS_14":
-						return "14.0";
+					case "IOS_Minimum":
 					case "IOS_15":
 						return "15.0";
+					case "IOS_16":
+						return "16.0";
+					case "IOS_17":
+						return "17.0";
 					default:
-						return "14.0";
+						return "15.0";
 				}
 			}
 		}
@@ -454,7 +401,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="ProjectFile">The project file to read settings for</param>
 		/// <param name="Bundle">Bundle identifier needed when project file is empty</param>
-		public IOSProjectSettings(FileReference? ProjectFile, string? Bundle) 
+		public IOSProjectSettings(FileReference? ProjectFile, string? Bundle)
 			: this(ProjectFile, UnrealTargetPlatform.IOS, Bundle)
 		{
 		}
@@ -469,7 +416,7 @@ namespace UnrealBuildTool
 		{
 			this.ProjectFile = ProjectFile;
 			ConfigCache.ReadSettings(DirectoryReference.FromFile(ProjectFile), Platform, this);
-			if ((ProjectFile == null || string.IsNullOrEmpty(ProjectFile.FullName)) && !string.IsNullOrEmpty(Bundle))
+			if ((ProjectFile == null || String.IsNullOrEmpty(ProjectFile.FullName)) && !String.IsNullOrEmpty(Bundle))
 			{
 				BundleIdentifier = Bundle;
 			}
@@ -480,20 +427,17 @@ namespace UnrealBuildTool
 	/// <summary>
 	/// IOS provisioning data
 	/// </summary>
-    class IOSProvisioningData
-    {
+	class IOSProvisioningData
+	{
 		public string? SigningCertificate;
 		public FileReference? MobileProvisionFile;
-        public string? MobileProvisionUUID;
-        public string? MobileProvisionName;
-        public string? TeamUUID;
+		public string? MobileProvisionUUID;
+		public string? MobileProvisionName;
+		public string? TeamUUID;
 		public string? BundleIdentifier;
 		public bool bHaveCertificate = false;
 
-		public string? MobileProvision
-		{
-			get => MobileProvisionFile?.GetFileName();
-		}
+		public string? MobileProvision => MobileProvisionFile?.GetFileName();
 
 		public IOSProvisioningData(IOSProjectSettings ProjectSettings, bool bForDistribution, ILogger Logger)
 			: this(ProjectSettings, false, bForDistribution, Logger)
@@ -502,48 +446,27 @@ namespace UnrealBuildTool
 
 		protected IOSProvisioningData(IOSProjectSettings ProjectSettings, bool bIsTVOS, bool bForDistribution, ILogger Logger)
 		{
-            SigningCertificate = ProjectSettings.SigningCertificate;
-            string? MobileProvision = ProjectSettings.MobileProvision;
+			SigningCertificate = ProjectSettings.SigningCertificate;
+			string? MobileProvision = ProjectSettings.MobileProvision;
 
 			FileReference? ProjectFile = ProjectSettings.ProjectFile;
-			FileReference IPhonePackager = FileReference.Combine(Unreal.EngineDirectory, "Binaries/DotNET/IOS/IPhonePackager.exe");
+			CodeSigningConfig.Initialize(ProjectFile, bIsTVOS);
 
-			if (!string.IsNullOrEmpty(SigningCertificate))
-            {
-                // verify the certificate
-                Process IPPProcess = new Process();
+			if (!String.IsNullOrEmpty(SigningCertificate))
+			{
+				List<string> Certs = AppleCodeSign.FindCertificates();
+				List<FileReference> Provisions = AppleCodeSign.FindProvisions(ProjectSettings.BundleIdentifier, bForDistribution, out _);
+			}
+			else
+			{
+				SigningCertificate = bForDistribution ? "iPhone Distribution" : "iPhone Developer";
+				bHaveCertificate = true;
+			}
 
-				string IPPCmd = "certificates " + ((ProjectFile != null) ? ("\"" + ProjectFile.ToString() + "\"") : "Engine") + " -bundlename " + ProjectSettings.BundleIdentifier + (bForDistribution ? " -distribution" : "");
-				IPPProcess.StartInfo.StandardOutputEncoding = Encoding.UTF8;
-				IPPProcess.StartInfo.StandardErrorEncoding = Encoding.UTF8;
-				IPPProcess.StartInfo.WorkingDirectory = Unreal.EngineDirectory.ToString();
-				IPPProcess.OutputDataReceived += new DataReceivedEventHandler((s, e) => IPPDataReceivedHandler(s, e, Logger));
-				IPPProcess.ErrorDataReceived += new DataReceivedEventHandler((s, e) => IPPDataReceivedHandler(s, e, Logger));
-
-				if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac)
-                {
-                    IPPProcess.StartInfo.FileName = FileReference.Combine(Unreal.EngineDirectory, "Build/BatchFiles/Mac/RunMono.sh").FullName;
-					IPPProcess.StartInfo.Arguments = string.Format("\"{0}\" {1}", IPhonePackager ,IPPCmd);
-				}
-                else
-                {
-					IPPProcess.StartInfo.FileName = IPhonePackager.FullName;
-					IPPProcess.StartInfo.Arguments = IPPCmd;
-                }
-
-				Logger.LogInformation("Getting certifcate information via {IPPProcessStartInfoFileName} {IPPProcessStartInfoArguments}", IPPProcess.StartInfo.FileName, IPPProcess.StartInfo.Arguments);
-                Utils.RunLocalProcess(IPPProcess);
-            }
-            else
-            {
-                SigningCertificate = bForDistribution ? "iPhone Distribution" : "iPhone Developer";
-                bHaveCertificate = true;
-            }
-
-			if(!string.IsNullOrEmpty(MobileProvision))
+			if (!String.IsNullOrEmpty(MobileProvision))
 			{
 				DirectoryReference MobileProvisionDir;
-				if(BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac)
+				if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac)
 				{
 					MobileProvisionDir = DirectoryReference.Combine(new DirectoryReference(Environment.GetEnvironmentVariable("HOME")!), "Library", "MobileDevice", "Provisioning Profiles");
 				}
@@ -553,63 +476,45 @@ namespace UnrealBuildTool
 				}
 
 				FileReference PossibleMobileProvisionFile = FileReference.Combine(MobileProvisionDir, MobileProvision);
-				if(FileReference.Exists(PossibleMobileProvisionFile))
+				if (FileReference.Exists(PossibleMobileProvisionFile))
 				{
 					MobileProvisionFile = PossibleMobileProvisionFile;
 				}
 			}
 
-            if (MobileProvisionFile == null || !bHaveCertificate)
-            {
+			if (MobileProvisionFile == null || !bHaveCertificate)
+			{
 
-                SigningCertificate = "";
-                MobileProvision = "";
+				SigningCertificate = "";
+				MobileProvision = "";
 				MobileProvisionFile = null;
-                Logger.LogInformation("Provision not specified or not found for {Project}, searching for compatible match...", ((ProjectFile != null) ? ProjectFile.GetFileNameWithoutAnyExtensions() : "UnrealGame"));
-                Process IPPProcess = new Process();
+				Logger.LogInformation("Provision not specified or not found for {Project}, searching for compatible match...", ((ProjectFile != null) ? ProjectFile.GetFileNameWithoutAnyExtensions() : "UnrealGame"));
 
-				IPPProcess.StartInfo.StandardOutputEncoding = Encoding.UTF8;
-				IPPProcess.StartInfo.StandardErrorEncoding = Encoding.UTF8;
-				IPPProcess.OutputDataReceived += new DataReceivedEventHandler((s, e) => IPPDataReceivedHandler(s, e, Logger));
-				IPPProcess.ErrorDataReceived += new DataReceivedEventHandler((s, e) => IPPDataReceivedHandler(s, e, Logger));
-				IPPProcess.StartInfo.WorkingDirectory = Unreal.EngineDirectory.ToString();
-
-				string IPPCmd = "signing_match " + ((ProjectFile != null) ? ("\"" + ProjectFile.ToString() + "\"") : "Engine") + " -bundlename " + ProjectSettings.BundleIdentifier + (bIsTVOS ? " -tvos" : "") + (bForDistribution ? " -distribution" : "");
-
-				if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac)
+				if (AppleCodeSign.FindCertAndProvision(ProjectSettings.BundleIdentifier, out MobileProvisionFile, out SigningCertificate))
 				{
-					IPPProcess.StartInfo.FileName = FileReference.Combine(Unreal.EngineDirectory, "Build/BatchFiles/Mac/RunMono.sh").FullName;
-					IPPProcess.StartInfo.Arguments = string.Format("\"{0}\" {1}", IPhonePackager, IPPCmd);
-				}
-				else
-				{
-					IPPProcess.StartInfo.FileName = IPhonePackager.FullName;
-					IPPProcess.StartInfo.Arguments = IPPCmd;
+					MobileProvision = MobileProvisionFile!.FullName;
 				}
 
-				Logger.LogInformation("Getting signing information via {IPPProcessStartInfoFileName} {IPPProcessStartInfoArguments}", IPPProcess.StartInfo.FileName, IPPProcess.StartInfo.Arguments);
-
-				Utils.RunLocalProcess(IPPProcess);
-				if(MobileProvisionFile != null)
+				if (MobileProvisionFile != null)
 				{
 					Logger.LogInformation("Provision found for {Project}, Provision: {Provision}, Certificate: {Certificate}", ((ProjectFile != null) ? ProjectFile.GetFileNameWithoutAnyExtensions() : "UnrealGame"), MobileProvisionFile, SigningCertificate);
 				}
 			}
 
-            // add to the dictionary
-            SigningCertificate = SigningCertificate.Replace("\"", "");
+			// add to the dictionary
+			SigningCertificate = SigningCertificate.Replace("\"", "");
 
-            // read the provision to get the UUID
-			if(MobileProvisionFile == null)
+			// read the provision to get the UUID
+			if (MobileProvisionFile == null)
 			{
 				Logger.LogInformation("No matching provision file was discovered for {ProjectFile}. Please ensure you have a compatible provision installed.", ProjectFile);
 			}
-			else if(!FileReference.Exists(MobileProvisionFile))
+			else if (!FileReference.Exists(MobileProvisionFile))
 			{
 				Logger.LogInformation("Selected mobile provision for {ProjectFile} ({MobileProvisionFile}) was not found. Please ensure you have a compatible provision installed.", ProjectFile, MobileProvisionFile);
 			}
 			else
-            {
+			{
 				byte[] AllBytes = FileReference.ReadAllBytes(MobileProvisionFile);
 
 				uint StartIndex = (uint)AllBytes.Length;
@@ -617,7 +522,7 @@ namespace UnrealBuildTool
 
 				for (uint i = 0; i + 4 < AllBytes.Length; i++)
 				{
-					if (AllBytes[i] == '<' && AllBytes[i+1] == '?' && AllBytes[i+ 2] == 'x' && AllBytes[i+ 3] == 'm' && AllBytes[i+ 4] == 'l')
+					if (AllBytes[i] == '<' && AllBytes[i + 1] == '?' && AllBytes[i + 2] == 'x' && AllBytes[i + 3] == 'm' && AllBytes[i + 4] == 'l')
 					{
 						StartIndex = i;
 						break;
@@ -628,9 +533,9 @@ namespace UnrealBuildTool
 				{
 					for (uint i = StartIndex; i + 7 < AllBytes.Length; i++)
 					{
-						if(AllBytes[i] == '<' && AllBytes[i + 1] == '/' && AllBytes[i + 2] == 'p' && AllBytes[i + 3] == 'l' && AllBytes[i + 4] == 'i' && AllBytes[i + 5] == 's' && AllBytes[i + 6] == 't' && AllBytes[i + 7] == '>')
+						if (AllBytes[i] == '<' && AllBytes[i + 1] == '/' && AllBytes[i + 2] == 'p' && AllBytes[i + 3] == 'l' && AllBytes[i + 4] == 'i' && AllBytes[i + 5] == 's' && AllBytes[i + 6] == 't' && AllBytes[i + 7] == '>')
 						{
-							EndIndex = i+7;
+							EndIndex = i + 7;
 							break;
 						}
 					}
@@ -674,30 +579,30 @@ namespace UnrealBuildTool
 						}
 					}
 					idx = AllText.IndexOf("<key>Name</key>");
-                    if (idx > 0)
-                    {
-                        idx = AllText.IndexOf("<string>", idx);
-                        if (idx > 0)
-                        {
-                            idx += "<string>".Length;
-                            MobileProvisionName = AllText.Substring(idx, AllText.IndexOf("</string>", idx) - idx);
-                        }
-                    }
+					if (idx > 0)
+					{
+						idx = AllText.IndexOf("<string>", idx);
+						if (idx > 0)
+						{
+							idx += "<string>".Length;
+							MobileProvisionName = AllText.Substring(idx, AllText.IndexOf("</string>", idx) - idx);
+						}
+					}
 				}
 
-				if (string.IsNullOrEmpty(MobileProvisionUUID) || string.IsNullOrEmpty(TeamUUID))
+				if (String.IsNullOrEmpty(MobileProvisionUUID) || String.IsNullOrEmpty(TeamUUID))
 				{
 					MobileProvision = null;
 					SigningCertificate = null;
 					Logger.LogInformation("Failed to parse the mobile provisioning profile.");
 				}
-            }
+			}
 		}
 
-        void IPPDataReceivedHandler(Object Sender, DataReceivedEventArgs Line, ILogger Logger)
-        {
-            if ((Line != null) && (Line.Data != null))
-            {
+		void IPPDataReceivedHandler(Object Sender, DataReceivedEventArgs Line, ILogger Logger)
+		{
+			if ((Line != null) && (Line.Data != null))
+			{
 				if (Line.Data.StartsWith("IPP WARNING:"))
 				{
 					// Don't output IPP warnings to the console as they may not be warnings relevant to the build and could cause build failures.
@@ -708,36 +613,36 @@ namespace UnrealBuildTool
 					Logger.LogInformation("{LineData}", Line.Data);
 				}
 
-				if (!string.IsNullOrEmpty(SigningCertificate))
-                {
-                    if (Line.Data.Contains("CERTIFICATE-") && Line.Data.Contains(SigningCertificate))
-                    {
-                        bHaveCertificate = true;
-                    }
-                }
-                else
-                {
-                    int cindex = Line.Data.IndexOf("CERTIFICATE-");
-                    int pindex = Line.Data.IndexOf("PROVISION-");
-                    if (cindex > -1 && pindex > -1)
-                    {
-                        cindex += "CERTIFICATE-".Length;
-                        SigningCertificate = Line.Data.Substring(cindex, pindex - cindex - 1);
-                        pindex += "PROVISION-".Length;
-						if(pindex < Line.Data.Length)
+				if (!String.IsNullOrEmpty(SigningCertificate))
+				{
+					if (Line.Data.Contains("CERTIFICATE-") && Line.Data.Contains(SigningCertificate))
+					{
+						bHaveCertificate = true;
+					}
+				}
+				else
+				{
+					int cindex = Line.Data.IndexOf("CERTIFICATE-");
+					int pindex = Line.Data.IndexOf("PROVISION-");
+					if (cindex > -1 && pindex > -1)
+					{
+						cindex += "CERTIFICATE-".Length;
+						SigningCertificate = Line.Data.Substring(cindex, pindex - cindex - 1);
+						pindex += "PROVISION-".Length;
+						if (pindex < Line.Data.Length)
 						{
 							MobileProvisionFile = new FileReference(Line.Data.Substring(pindex));
 						}
-                    }
-                }
-            }
-        }
-    }
-	
+					}
+				}
+			}
+		}
+	}
+
 	class IOSArchitectureConfig : UnrealArchitectureConfig
 	{
 		public IOSArchitectureConfig()
-			: base(UnrealArchitectureMode.SingleTargetCompileSeparately,new[] { UnrealArch.Arm64, UnrealArch.IOSSimulator })
+			: base(UnrealArchitectureMode.SingleTargetCompileSeparately, new[] { UnrealArch.Arm64, UnrealArch.IOSSimulator })
 		{
 
 		}
@@ -765,11 +670,10 @@ namespace UnrealBuildTool
 		{
 		}
 
-
 		public override List<FileReference> FinalizeBinaryPaths(FileReference BinaryName, FileReference? ProjectFile, ReadOnlyTargetRules Target)
 		{
 			List<FileReference> BinaryPaths = new List<FileReference>();
-			if(Target.bShouldCompileAsDLL)
+			if (Target.bShouldCompileAsDLL)
 			{
 				BinaryPaths.Add(FileReference.Combine(BinaryName.Directory, Target.Configuration.ToString(), Target.Name + ".framework", Target.Name));
 			}
@@ -785,17 +689,20 @@ namespace UnrealBuildTool
 			Target.bDeployAfterCompile = true;
 
 			Target.IOSPlatform.ProjectSettings = ((IOSPlatform)GetBuildPlatform(Target.Platform)).ReadProjectSettings(Target.ProjectFile);
-			
-			// always strip in shipping configuration (commandline could have set it also)
-			if (Target.Configuration == UnrealTargetConfiguration.Shipping)
+
+			if (!AppleExports.UseModernXcode(Target.ProjectFile))
 			{
-				Target.IOSPlatform.bStripSymbols = true;	
-			}
-			
-			// if we are stripping the executable, or if the project requested it, or if it's a buildmachine, generate the dsym
-			if (Target.IOSPlatform.bStripSymbols || Target.IOSPlatform.ProjectSettings.bGeneratedSYMFile || Environment.GetEnvironmentVariable("IsBuildMachine") == "1")
-			{
-				Target.IOSPlatform.bGeneratedSYM = true;
+				// always strip in shipping configuration (commandline could have set it also)
+				if (Target.Configuration == UnrealTargetConfiguration.Shipping)
+				{
+					Target.IOSPlatform.bStripSymbols = true;
+				}
+
+				// if we are stripping the executable, or if the project requested it, or if it's a buildmachine, generate the dsym
+				if (Target.IOSPlatform.bStripSymbols || Target.IOSPlatform.ProjectSettings.bGeneratedSYMFile || Environment.GetEnvironmentVariable("IsBuildMachine") == "1")
+				{
+					Target.IOSPlatform.bGeneratedSYM = true;
+				}
 			}
 
 			// Set bShouldCompileAsDLL when building as a framework
@@ -804,11 +711,11 @@ namespace UnrealBuildTool
 
 		public override void ValidateTarget(TargetRules Target)
 		{
-			if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CLANG_STATIC_ANALYZER_MODE")))
+			if (!String.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CLANG_STATIC_ANALYZER_MODE")))
 			{
 				Target.StaticAnalyzer = StaticAnalyzer.Default;
 				Target.StaticAnalyzerOutputType = (Environment.GetEnvironmentVariable("CLANG_ANALYZER_OUTPUT")?.Contains("html", StringComparison.OrdinalIgnoreCase) == true) ? StaticAnalyzerOutputType.Html : StaticAnalyzerOutputType.Text;
-				Target.StaticAnalyzerMode = string.Equals(Environment.GetEnvironmentVariable("CLANG_STATIC_ANALYZER_MODE"), "shallow") ? StaticAnalyzerMode.Shallow : StaticAnalyzerMode.Deep;
+				Target.StaticAnalyzerMode = String.Equals(Environment.GetEnvironmentVariable("CLANG_STATIC_ANALYZER_MODE"), "shallow") ? StaticAnalyzerMode.Shallow : StaticAnalyzerMode.Deep;
 			}
 			else if (Target.StaticAnalyzer == StaticAnalyzer.Clang)
 			{
@@ -842,19 +749,20 @@ namespace UnrealBuildTool
 				}
 
 				Target.GlobalDefinitions.Add("BUILD_EMBEDDED_APP=1");
-				
+
 				if (Target.Platform == UnrealTargetPlatform.IOS)
 				{
 					Target.ExportPublicHeader = "Headers/PreIOSEmbeddedView.h";
 				}
 			}
 
-
 			Target.bCheckSystemHeadersForModification = false;
 		}
 
 		public override void ValidateModule(UEBuildModule Module, ReadOnlyTargetRules Target)
-		{ 
+		{
+			base.ValidateModule(Module, Target);
+
 			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac && !Target.IOSPlatform.bSkipClangValidation)
 			{
 				IOSPlatformSDK SDK = (IOSPlatformSDK?)GetSDK() ?? new IOSPlatformSDK(Logger);
@@ -869,7 +777,7 @@ namespace UnrealBuildTool
 								Args += LibLoc.FullName;
 								Args += " | grep -m1 -i \\(clang\"";
 								string StdOutResult = Utils.RunLocalProcessAndReturnStdOut("bash", Args);
-								if (string.IsNullOrEmpty(StdOutResult))
+								if (String.IsNullOrEmpty(StdOutResult))
 								{
 									continue;
 								}
@@ -939,28 +847,32 @@ namespace UnrealBuildTool
 			IOSProjectSettings? ProjectSettings = null;
 
 			// Use separate lists to prevent an overridden Bundle id polluting the standard project file. 
-			bool bCacheByBundle = !string.IsNullOrEmpty(Bundle);
+			bool bCacheByBundle = !String.IsNullOrEmpty(Bundle);
 			if (bCacheByBundle)
 			{
-				ProjectSettings = CachedProjectSettingsByBundle.FirstOrDefault(x => x.ProjectFile == ProjectFile && x.BundleIdentifier == Bundle);
+				lock (CachedProjectSettingsByBundle)
+				{
+					ProjectSettings = CachedProjectSettingsByBundle.FirstOrDefault(x => x.ProjectFile == ProjectFile && x.BundleIdentifier == Bundle);
+					if (ProjectSettings == null)
+					{
+						ProjectSettings = CreateProjectSettings(ProjectFile, Bundle);
+						CachedProjectSettingsByBundle.Add(ProjectSettings);
+					}
+				}
 			}
 			else
 			{
-				ProjectSettings = CachedProjectSettings.FirstOrDefault(x => x.ProjectFile == ProjectFile);
+				lock (CachedProjectSettings)
+				{
+					ProjectSettings = CachedProjectSettings.FirstOrDefault(x => x.ProjectFile == ProjectFile);
+					if (ProjectSettings == null)
+					{
+						ProjectSettings = CreateProjectSettings(ProjectFile, Bundle);
+						CachedProjectSettings.Add(ProjectSettings);
+					}
+				}
 			}
 
-			if(ProjectSettings == null)
-			{
-				ProjectSettings = CreateProjectSettings(ProjectFile, Bundle);
-				if (bCacheByBundle)
-				{
-					CachedProjectSettingsByBundle.Add(ProjectSettings);
-				}
-				else
-				{
-					CachedProjectSettings.Add(ProjectSettings);
-				}
-			}
 			return ProjectSettings;
 		}
 
@@ -976,17 +888,21 @@ namespace UnrealBuildTool
 		}
 
 		public IOSProvisioningData ReadProvisioningData(IOSProjectSettings ProjectSettings, bool bForDistribution = false)
-        {
+		{
 			string ProvisionKey = ProjectSettings.BundleIdentifier + " " + bForDistribution.ToString();
 
-            IOSProvisioningData? ProvisioningData;
-			if(!ProvisionCache.TryGetValue(ProvisionKey, out ProvisioningData))
-            {
-				ProvisioningData = CreateProvisioningData(ProjectSettings, bForDistribution);
-                ProvisionCache.Add(ProvisionKey, ProvisioningData);
-            }
+			IOSProvisioningData? ProvisioningData;
+
+			lock (ProvisionCache)
+			{
+				if (!ProvisionCache.TryGetValue(ProvisionKey, out ProvisioningData))
+				{
+					ProvisioningData = CreateProvisioningData(ProjectSettings, bForDistribution);
+					ProvisionCache.Add(ProvisionKey, ProvisioningData);
+				}
+			}
 			return ProvisioningData;
-        }
+		}
 
 		protected virtual IOSProvisioningData CreateProvisioningData(IOSProjectSettings ProjectSettings, bool bForDistribution)
 		{
@@ -1010,12 +926,12 @@ namespace UnrealBuildTool
 				}
 			}
 
-            return new string [] {};
+			return new string[] { };
 		}
 
 		public override bool CanUseXGE()
 		{
-			return false;
+			return BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac;
 		}
 
 		public override bool CanUseFASTBuild()
@@ -1026,7 +942,7 @@ namespace UnrealBuildTool
 		public bool HasCustomIcons(DirectoryReference ProjectDirectoryName, ILogger Logger)
 		{
 			string IconDir = Path.Combine(ProjectDirectoryName.FullName, "Build", "IOS", "Resources", "Graphics");
-			if(Directory.Exists(IconDir))
+			if (Directory.Exists(IconDir))
 			{
 				foreach (string f in Directory.EnumerateFiles(IconDir))
 				{
@@ -1049,10 +965,10 @@ namespace UnrealBuildTool
 			string[] BoolKeys = new string[] {
 				"bShipForBitcode", "bGeneratedSYMFile",
 				"bGeneratedSYMBundle", "bEnableRemoteNotificationsSupport", "bEnableCloudKitSupport",
-                "bGenerateCrashReportSymbols", "bEnableBackgroundFetch"
-            };
+				"bGenerateCrashReportSymbols", "bEnableBackgroundFetch"
+			};
 			string[] StringKeys = new string[] {
-				"MinimumiOSVersion", 
+				"MinimumiOSVersion",
 				"AdditionalLinkerFlags",
 				"AdditionalShippingLinkerFlags"
 			};
@@ -1212,14 +1128,14 @@ namespace UnrealBuildTool
 			{
 				CompileEnvironment.Definitions.Add("NOTIFICATIONS_ENABLED=0");
 			}
-            if (ProjectSettings.bBackgroundFetchEnabled)
-            {
-                CompileEnvironment.Definitions.Add("BACKGROUNDFETCH_ENABLED=1");
-            }
-            else
-            {
-                CompileEnvironment.Definitions.Add("BACKGROUNDFETCH_ENABLED=0");
-            }
+			if (ProjectSettings.bBackgroundFetchEnabled)
+			{
+				CompileEnvironment.Definitions.Add("BACKGROUNDFETCH_ENABLED=1");
+			}
+			else
+			{
+				CompileEnvironment.Definitions.Add("BACKGROUNDFETCH_ENABLED=0");
+			}
 			if (ProjectSettings.bFileSharingEnabled)
 			{
 				CompileEnvironment.Definitions.Add("FILESHARING_ENABLED=1");
@@ -1233,11 +1149,11 @@ namespace UnrealBuildTool
 
 			if (Target.Architecture == UnrealArch.IOSSimulator || Target.Architecture == UnrealArch.TVOSSimulator)
 			{
-				CompileEnvironment.Definitions.Add("WITH_SIMULATOR=1");
+				CompileEnvironment.Definitions.Add("WITH_IOS_SIMULATOR=1");
 			}
 			else
 			{
-				CompileEnvironment.Definitions.Add("WITH_SIMULATOR=0");
+				CompileEnvironment.Definitions.Add("WITH_IOS_SIMULATOR=0");
 			}
 
 			if (ProjectSettings.bEnableAdvertisingIdentifier)
@@ -1322,13 +1238,9 @@ namespace UnrealBuildTool
 		}
 	}
 
-
 	class IOSPlatformFactory : UEBuildPlatformFactory
 	{
-		public override UnrealTargetPlatform TargetPlatform
-		{
-			get { return UnrealTargetPlatform.IOS; }
-		}
+		public override UnrealTargetPlatform TargetPlatform => UnrealTargetPlatform.IOS;
 
 		/// <summary>
 		/// Register the platform with the UEBuildPlatform class

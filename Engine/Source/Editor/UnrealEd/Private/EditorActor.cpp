@@ -484,9 +484,7 @@ public:
 		// Paste to the dest level
 		{
 			ULevel* CurrentDestLevel = DestLevel->OwningWorld->GetCurrentLevel();
-
-			FLevelPartitionOperationScope LevelPartitionScope(DestLevel);
-			DestLevel->OwningWorld->SetCurrentLevel(LevelPartitionScope.GetLevel());
+			DestLevel->OwningWorld->SetCurrentLevel(DestLevel);
 
 			TArray<AActor*> PastedActors;
 			GUnrealEd->PasteActors(PastedActors, DestLevel->OwningWorld, LocationOffset, /*bDuplicate*/true, /*bWarnIfHidden*/true, &ScratchData);
@@ -931,7 +929,7 @@ bool UUnrealEdEngine::DeleteActors(const TArray<AActor*>& InActorsToDelete, UWor
 		// the world first and build a map of actors referenced by other actors. We can then quickly look this up later on in the loop.
 		if (bWarnAboutReferences)
 		{
-			FBlueprintEditorUtils::GetActorReferenceMap(InWorld, ClassesToIgnoreDeleteReferenceWarning, ReferencingActorsMap);
+			FBlueprintEditorUtils::GetActorReferenceMap(InWorld,MutableView(ClassesToIgnoreDeleteReferenceWarning), ReferencingActorsMap);
 
 			if (bWarnAboutSoftReferences)
 			{

@@ -246,13 +246,12 @@ struct CONTROLRIG_API FRigComputedTransform
 
 	FRigComputedTransform()
 	: Transform(FTransform::Identity)
-	, bDirty(false)
 	{}
 
-	void Save(FArchive& Ar);
-	void Load(FArchive& Ar);
+	void Save(FArchive& Ar, bool& bDirty);
+	void Load(FArchive& Ar, bool& bDirty);
 
-	void Set(const FTransform& InTransform)
+	void Set(const FTransform& InTransform, bool& bDirty)
 	{
 #if WITH_EDITOR
 		ensure(InTransform.GetRotation().IsNormalized());
@@ -273,13 +272,11 @@ struct CONTROLRIG_API FRigComputedTransform
 
 	bool operator == (const FRigComputedTransform& Other) const
 	{
-		return bDirty == Other.bDirty && Equals(Transform, Other.Transform);
+		return Equals(Transform, Other.Transform);
     }
 
 	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = "Pose")
 	FTransform Transform;
-
-	bool bDirty;
 };
 
 USTRUCT(BlueprintType)
@@ -292,19 +289,23 @@ struct CONTROLRIG_API FRigLocalAndGlobalTransform
     , Global()
 	{}
 
+	enum EDirty
+	{
+		ELocal = 0,
+		EGlobal,
+		EDirtyMax
+	};
+
 	void Save(FArchive& Ar);
 	void Load(FArchive& Ar);
-
-	bool operator == (const FRigLocalAndGlobalTransform& Other) const
-	{
-		return Local == Other.Local && Global == Other.Global;
-	}
 
 	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = "Pose")
 	FRigComputedTransform Local;
 
 	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = "Pose")
 	FRigComputedTransform Global;
+
+	bool bDirty[FRigLocalAndGlobalTransform::EDirtyMax] = { false, false };
 };
 
 USTRUCT(BlueprintType)
@@ -365,6 +366,42 @@ struct CONTROLRIG_API FRigCurrentAndInitialTransform
 		return Initial.Global;
 	}
 
+	bool& GetDirtyFlag(const ERigTransformType::Type InTransformType)
+	{
+		switch (InTransformType)
+		{
+			case ERigTransformType::CurrentLocal:
+				return Current.bDirty[FRigLocalAndGlobalTransform::ELocal];
+
+			case ERigTransformType::CurrentGlobal:
+				return Current.bDirty[FRigLocalAndGlobalTransform::EGlobal];
+
+			case ERigTransformType::InitialLocal:
+				return Initial.bDirty[FRigLocalAndGlobalTransform::ELocal];
+			
+			default:
+				return Initial.bDirty[FRigLocalAndGlobalTransform::EGlobal];
+		}
+	}
+
+	const bool& GetDirtyFlag(const ERigTransformType::Type InTransformType) const
+	{
+		switch (InTransformType)
+		{
+		case ERigTransformType::CurrentLocal:
+			return Current.bDirty[FRigLocalAndGlobalTransform::ELocal];
+
+		case ERigTransformType::CurrentGlobal:
+			return Current.bDirty[FRigLocalAndGlobalTransform::EGlobal];
+
+		case ERigTransformType::InitialLocal:
+			return Initial.bDirty[FRigLocalAndGlobalTransform::ELocal];
+
+		default:
+			return Initial.bDirty[FRigLocalAndGlobalTransform::EGlobal];
+		}
+	}
+
 	const FTransform& Get(const ERigTransformType::Type InTransformType) const
 	{
 		return operator[](InTransformType).Transform;
@@ -372,18 +409,18 @@ struct CONTROLRIG_API FRigCurrentAndInitialTransform
 
 	void Set(const ERigTransformType::Type InTransformType, const FTransform& InTransform)
 	{
-		operator[](InTransformType).Set(InTransform);
+		operator[](InTransformType).Set(InTransform, GetDirtyFlag(InTransformType));
 	}
 
 	bool IsDirty(const ERigTransformType::Type InTransformType) const
 	{
-		return operator[](InTransformType).bDirty;
+		return GetDirtyFlag(InTransformType);
 	}
 
 	void MarkDirty(const ERigTransformType::Type InTransformType)
 	{
-		ensure(!(operator[](ERigTransformType::SwapLocalAndGlobal(InTransformType)).bDirty));
-		operator[](InTransformType).bDirty = true;
+		ensure(!(GetDirtyFlag(ERigTransformType::SwapLocalAndGlobal(InTransformType))));
+		GetDirtyFlag(InTransformType) = true;
 	}
 
 	void Save(FArchive& Ar);
@@ -391,7 +428,10 @@ struct CONTROLRIG_API FRigCurrentAndInitialTransform
 
 	bool operator == (const FRigCurrentAndInitialTransform& Other) const
 	{
-		return Current == Other.Current && Initial == Other.Initial;
+		return Current.bDirty[FRigLocalAndGlobalTransform::ELocal]  == Other.Current.bDirty[FRigLocalAndGlobalTransform::ELocal]  && Current.Local  == Other.Current.Local
+			&& Current.bDirty[FRigLocalAndGlobalTransform::EGlobal] == Other.Current.bDirty[FRigLocalAndGlobalTransform::EGlobal] && Current.Global == Other.Current.Global
+			&& Initial.bDirty[FRigLocalAndGlobalTransform::ELocal]  == Other.Initial.bDirty[FRigLocalAndGlobalTransform::ELocal]  && Initial.Local  == Other.Initial.Local
+			&& Initial.bDirty[FRigLocalAndGlobalTransform::EGlobal] == Other.Initial.bDirty[FRigLocalAndGlobalTransform::EGlobal] && Initial.Global == Other.Initial.Global;
 	}
 
 	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = "Pose")
@@ -430,8 +470,13 @@ struct CONTROLRIG_API FRigPreferredEulerAngles
 	FRotator GetRotator(bool bInitial = false) const;
 	FRotator SetRotator(const FRotator& InValue, bool bInitial = false, bool bFixEulerFlips = false);
 	FVector GetAngles(bool bInitial = false, EEulerRotationOrder InRotationOrder = DefaultRotationOrder) const;
-	void SetAngles(const FVector& InValue, bool bInitial = false, EEulerRotationOrder InRotationOrder = DefaultRotationOrder);
+	void SetAngles(const FVector& InValue, bool bInitial = false, EEulerRotationOrder InRotationOrder = DefaultRotationOrder, bool bFixEulerFlips = false);
+	void SetRotationOrder(EEulerRotationOrder InRotationOrder);
 
+
+	FRotator GetRotatorFromQuat(const FQuat& InQuat) const;
+	FQuat GetQuatFromRotator(const FRotator& InRotator) const;
+	
 	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = "Pose")
 	EEulerRotationOrder RotationOrder;
 
@@ -513,11 +558,11 @@ public:
 	, NameString()
     , Index(INDEX_NONE)
 	, SubIndex(INDEX_NONE)
-	, bSelected(false)
 	, CreatedAtInstructionIndex(INDEX_NONE)
+	, OwnedInstances(0)
 	, TopologyVersion(0)
 	, MetadataVersion(0)
-	, OwnedInstances(0)
+	, bSelected(false)
 	{}
 
 	FRigBaseElement(const FRigBaseElement& InOther);
@@ -544,12 +589,6 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = RigElement, meta = (AllowPrivateAccess = "true"))
 	int32 SubIndex;
-
-	UPROPERTY(BlueprintReadOnly, Transient, Category = RigElement, meta = (AllowPrivateAccess = "true"))
-	bool bSelected;
-
-	UPROPERTY(BlueprintReadOnly, Transient, Category = RigElement, meta = (AllowPrivateAccess = "true"))
-	int32 CreatedAtInstructionIndex;
 
 	TArray<FRigBaseMetadata*> Metadata;
 	TMap<FName,int32> MetadataNameToIndex;
@@ -674,15 +713,22 @@ protected:
 	void NotifyMetadataChanged(const FName& InName);
 	void NotifyMetadataTagChanged(const FName& InTag, bool bAdded);
 
-	mutable uint16 TopologyVersion;
-	mutable uint16 MetadataVersion;
 	mutable FRigBaseElementChildrenArray CachedChildren;
+
+	FRigElementMetadataChangedDelegate MetadataChangedDelegate;
+	FRigElementMetadataTagChangedDelegate MetadataTagChangedDelegate;
+
+	UPROPERTY(BlueprintReadOnly, Transient, Category = RigElement, meta = (AllowPrivateAccess = "true"))
+	int32 CreatedAtInstructionIndex;
 
 	// used for constructing / destructing the memory. typically == 1
 	int32 OwnedInstances;
 
-	FRigElementMetadataChangedDelegate MetadataChangedDelegate;
-	FRigElementMetadataTagChangedDelegate MetadataTagChangedDelegate;
+	mutable uint16 TopologyVersion;
+	mutable uint16 MetadataVersion;
+
+	UPROPERTY(BlueprintReadOnly, Transient, Category = RigElement, meta = (AllowPrivateAccess = "true"))
+	bool bSelected;
 
 	friend class URigHierarchy;
 	friend class URigHierarchyController;
@@ -873,18 +919,18 @@ public:
 USTRUCT()
 struct CONTROLRIG_API FRigElementParentConstraint
 {
-public:
 	GENERATED_BODY()
 
 	FRigTransformElement* ParentElement;
 	FRigElementWeight Weight;
 	FRigElementWeight InitialWeight;
 	mutable FRigComputedTransform Cache;
+	mutable bool bCacheIsDirty;
 		
 	FRigElementParentConstraint()
 		: ParentElement(nullptr)
 	{
-		Cache.bDirty = true;
+		bCacheIsDirty = true;
 	}
 
 	const FRigElementWeight& GetWeight(bool bInitial = false) const
@@ -902,7 +948,7 @@ public:
 		{
 			InitialWeight = InOther.InitialWeight;
 		}
-		Cache.bDirty = true;
+		bCacheIsDirty = true;
 	}
 };
 
@@ -1146,6 +1192,46 @@ struct CONTROLRIG_API FRigControlSettings
 	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = Animation)
 	TArray<ERigControlTransformChannel> FilteredChannels;
 
+	/**
+	 * The euler rotation order this control prefers for animation, if we aren't using default UE rotator
+	 */
+	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = Animation)
+	EEulerRotationOrder PreferredRotationOrder;
+
+	/**
+	* Whether to use a specfied rotation order or just use the default FRotator order and conversion functions
+	*/
+	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = Animation)
+	bool bUsePreferredRotationOrder;
+
+	/**
+	* The euler rotation order this control prefers for animation if it is active. If not set then we use the default UE rotator.
+	*/
+	TOptional<EEulerRotationOrder> GetRotationOrder() const
+	{
+		TOptional<EEulerRotationOrder> RotationOrder;
+		if (bUsePreferredRotationOrder)
+		{
+			RotationOrder = PreferredRotationOrder;
+		}
+		return RotationOrder;
+	}
+
+	/**
+	*  Set the rotation order if the rotation is set otherwise use default rotator
+	*/
+	void SetRotationOrder(const TOptional<EEulerRotationOrder>& EulerRotation)
+	{
+		if (EulerRotation.IsSet())
+		{
+			bUsePreferredRotationOrder = true;
+			PreferredRotationOrder = EulerRotation.GetValue();
+		}
+		else
+		{
+			bUsePreferredRotationOrder = false;
+		}
+	}
 #if WITH_EDITORONLY_DATA
 	/**
 	 * Deprecated properties.
@@ -1308,11 +1394,11 @@ public:
 	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = RigElement)
 	FRigCurrentAndInitialTransform Shape;
 
-protected:
-
 	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = RigElement)
 	FRigPreferredEulerAngles PreferredEulerAngles;
 	
+protected:
+
 	static bool IsClassOf(const FRigBaseElement* InElement)
 	{
 		return InElement->GetType() == ERigElementType::Control;
@@ -1326,6 +1412,7 @@ protected:
 
 	friend struct FRigBaseElement;
 	friend class URigHierarchy;
+	friend class URigHierarchyController;
 };
 
 USTRUCT(BlueprintType)

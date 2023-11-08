@@ -5,9 +5,14 @@
 #include "Modules/ModuleManager.h"
 #include "UObject/ObjectMacros.h"
 
-struct FAssetData;
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "AssetRegistry/AssetData.h"
+#include "CoreMinimal.h"
+#endif
 
 #include "DataValidationModule.generated.h"
+
+struct FAssetData;
 
 UENUM(BlueprintType)
 enum class EDataValidationUsecase : uint8
@@ -66,8 +71,3 @@ public:
 	/** Validates selected assets and opens a window to report the results. If bValidateDependencies is true it will also validate any assets that the selected assets depend on. */
 	virtual void ValidateAssets(const TArray<FAssetData>& SelectedAssets, bool bValidateDependencies, const EDataValidationUsecase InValidationUsecase) = 0;
 };
-
-#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
-#include "AssetRegistry/AssetData.h"
-#include "CoreMinimal.h"
-#endif

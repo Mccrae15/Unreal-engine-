@@ -3,15 +3,20 @@
 #pragma once
 
 #include "RHIDefinitions.h"
-
-#if RHI_RAYTRACING
-
 #include "GlobalShader.h"
 #include "Lumen/LumenTracingUtils.h"
 #include "RayTracing/RayTracingLighting.h"
 #include "RayTracingPayloadType.h"
 #include "SceneTextureParameters.h"
-#include "Strata/Strata.h"
+#include "Strata/Strata.h" 
+
+namespace LumenHardwareRayTracing
+{
+	bool IsInlineSupported();
+	bool IsRayGenSupported();
+}
+
+#if RHI_RAYTRACING
 
 namespace Lumen
 {
@@ -52,20 +57,23 @@ public:
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneTextureUniformParameters, SceneTexturesStruct)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataGlobalUniformParameters, Strata)
-		SHADER_PARAMETER_SRV(RaytracingAccelerationStructure, TLAS)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(RaytracingAccelerationStructure, TLAS)
 		SHADER_PARAMETER_SRV(StructuredBuffer, RayTracingSceneMetadata)
 
 		// Lighting structures
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FRaytracingLightDataPacked, LightDataPacked)
+		SHADER_PARAMETER_STRUCT_REF(FReflectionCaptureShaderData, ReflectionCapture)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FForwardLightData, Forward)
 
 		// Surface cache
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenCardTracingParameters, TracingParameters)
 
 		// Inline data
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<Lumen::FHitGroupRootConstants>, HitGroupData)
-		END_SHADER_PARAMETER_STRUCT()
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FLumenHardwareRayTracingUniformBufferParameters, LumenHardwareRayTracingUniformBuffer)
+	END_SHADER_PARAMETER_STRUCT()
 
-		FLumenHardwareRayTracingShaderBase();
+	FLumenHardwareRayTracingShaderBase();
 	FLumenHardwareRayTracingShaderBase(const ShaderMetaType::CompiledShaderInitializerType& Initializer);
 
 	static constexpr const Lumen::ERayTracingShaderDispatchSize DispatchSize = Lumen::ERayTracingShaderDispatchSize::DispatchSize2D;
@@ -159,61 +167,6 @@ void SetLumenHardwareRayTracingSharedParameters(
 	const FLumenCardTracingParameters& TracingParameters,
 	FLumenHardwareRayTracingShaderBase::FSharedParameters* SharedParameters);
 
-// Hardware ray-tracing pipeline
-namespace LumenHWRTPipeline
-{
-	enum class ELightingMode
-	{
-		// Permutations for tracing modes
-		SurfaceCache,
-		HitLighting,
-		MAX
-	};
-
-	enum class ECompactMode
-	{
-		// Permutations for compaction modes
-		HitLightingRetrace,
-		FarFieldRetrace,
-		ForceHitLighting,
-		AppendRays,
-
-		MAX
-	};
-
-	// Struct definitions much match those in LumenHardwareRayTracingPipelineCommon.ush
-	struct FTraceDataPacked
-	{
-		//uint32 PackedData[4];
-		uint32 PackedData[5];
-	};
-
-} // namespace LumenHWRTPipeline
-
-void LumenHWRTCompactRays(
-	FRDGBuilder& GraphBuilder,
-	const FScene* Scene,
-	const FViewInfo& View,
-	int32 RayCount,
-	LumenHWRTPipeline::ECompactMode CompactMode,
-	const FRDGBufferRef& RayAllocatorBuffer,
-	const FRDGBufferRef& TraceDataPackedBuffer,
-	FRDGBufferRef& OutputRayAllocatorBuffer,
-	FRDGBufferRef& OutputTraceDataPackedBuffer,
-	ERDGPassFlags ComputePassFlags
-);
-
-void LumenHWRTBucketRaysByMaterialID(
-	FRDGBuilder& GraphBuilder,
-	const FScene* Scene,
-	const FViewInfo& View,
-	int32 RayCount,
-	FRDGBufferRef& RayAllocatorBuffer,
-	FRDGBufferRef& TraceDataPackedBuffer,
-	ERDGPassFlags ComputePassFlags
-);
-
-
 // Pass helpers
 template<typename TShaderClass>
 static void AddLumenRayTraceDispatchPass(
@@ -279,3 +232,8 @@ static void AddLumenRayTraceDispatchIndirectPass(
 }
 
 #endif // RHI_RAYTRACING
+
+BEGIN_UNIFORM_BUFFER_STRUCT(FLumenHardwareRayTracingUniformBufferParameters, )
+	SHADER_PARAMETER(float, SkipBackFaceHitDistance)
+	SHADER_PARAMETER(float, SkipTwoSidedHitDistance)
+END_UNIFORM_BUFFER_STRUCT()

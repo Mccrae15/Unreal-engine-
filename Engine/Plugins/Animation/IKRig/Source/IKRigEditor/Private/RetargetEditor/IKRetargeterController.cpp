@@ -36,8 +36,14 @@ UIKRetargeter* UIKRetargeterController::GetAsset() const
 	return Asset;
 }
 
+TObjectPtr<UIKRetargeter>& UIKRetargeterController::GetAssetPtr()
+{
+	return Asset;
+}
+
 void UIKRetargeterController::CleanAsset() const
 {
+	FScopeLock Lock(&ControllerLock);
 	CleanChainMapping();
 	CleanPoseList(ERetargetSourceOrTarget::Source);
 	CleanPoseList(ERetargetSourceOrTarget::Target);
@@ -45,6 +51,8 @@ void UIKRetargeterController::CleanAsset() const
 
 void UIKRetargeterController::SetIKRig(const ERetargetSourceOrTarget SourceOrTarget, UIKRigDefinition* IKRig) const
 {
+	FScopeLock Lock(&ControllerLock);
+	
 	if (SourceOrTarget == ERetargetSourceOrTarget::Source)
 	{
 		Asset->SourceIKRigAsset = IKRig;
@@ -75,18 +83,22 @@ void UIKRetargeterController::SetIKRig(const ERetargetSourceOrTarget SourceOrTar
 
 const UIKRigDefinition* UIKRetargeterController::GetIKRig(const ERetargetSourceOrTarget SourceOrTarget) const
 {
+	FScopeLock Lock(&ControllerLock);
 	return SourceOrTarget == ERetargetSourceOrTarget::Source ? Asset->GetSourceIKRig() : Asset->GetTargetIKRig();
 }
 
 UIKRigDefinition* UIKRetargeterController::GetIKRigWriteable(const ERetargetSourceOrTarget SourceOrTarget) const
 {
+	FScopeLock Lock(&ControllerLock);
 	return SourceOrTarget == ERetargetSourceOrTarget::Source ? Asset->GetSourceIKRigWriteable() : Asset->GetTargetIKRigWriteable();
 }
 
 void UIKRetargeterController::SetPreviewMesh(
 	const ERetargetSourceOrTarget SourceOrTarget,
 	USkeletalMesh* PreviewMesh) const
-{	
+{
+	FScopeLock Lock(&ControllerLock);
+	
 	if (SourceOrTarget == ERetargetSourceOrTarget::Source)
 	{
 		Asset->SourcePreviewMesh = PreviewMesh;
@@ -106,6 +118,8 @@ void UIKRetargeterController::SetPreviewMesh(
 
 USkeletalMesh* UIKRetargeterController::GetPreviewMesh(const ERetargetSourceOrTarget SourceOrTarget) const
 {
+	FScopeLock Lock(&ControllerLock);
+	
 	// can't preview anything if target IK Rig is null
 	const UIKRigDefinition* IKRig = GetIKRig(SourceOrTarget);
 	if (!IKRig)
@@ -126,27 +140,33 @@ USkeletalMesh* UIKRetargeterController::GetPreviewMesh(const ERetargetSourceOrTa
 
 FTargetRootSettings UIKRetargeterController::GetRootSettings() const
 {
+	FScopeLock Lock(&ControllerLock);
 	return GetAsset()->GetRootSettingsUObject()->Settings;
 }
 
 void UIKRetargeterController::SetRootSettings(const FTargetRootSettings& RootSettings) const
 {
+	FScopeLock Lock(&ControllerLock);
 	GetAsset()->GetRootSettingsUObject()->Settings = RootSettings;
 }
 
 FRetargetGlobalSettings UIKRetargeterController::GetGlobalSettings() const
 {
+	FScopeLock Lock(&ControllerLock);
 	return GetAsset()->GetGlobalSettingsUObject()->Settings;
 }
 
 void UIKRetargeterController::SetGlobalSettings(const FRetargetGlobalSettings& GlobalSettings) const
 {
+	FScopeLock Lock(&ControllerLock);
 	GetAsset()->GetGlobalSettingsUObject()->Settings = GlobalSettings;
 }
 
 FTargetChainSettings UIKRetargeterController::GetRetargetChainSettings(const FName& TargetChainName) const
 {
-	URetargetChainSettings* ChainSettings = GetChainSettings(TargetChainName);
+	FScopeLock Lock(&ControllerLock);
+	
+	const URetargetChainSettings* ChainSettings = GetChainSettings(TargetChainName);
 	if (!ChainSettings)
 	{
 		return FTargetChainSettings();
@@ -157,6 +177,8 @@ FTargetChainSettings UIKRetargeterController::GetRetargetChainSettings(const FNa
 
 bool UIKRetargeterController::SetRetargetChainSettings(const FName& TargetChainName, const FTargetChainSettings& Settings) const
 {
+	FScopeLock Lock(&ControllerLock);
+	
 	if (URetargetChainSettings* ChainSettings = GetChainSettings(TargetChainName))
 	{
 		ChainSettings->Settings = Settings;
@@ -173,6 +195,7 @@ bool UIKRetargeterController::GetAskedToFixRootHeightForMesh(USkeletalMesh* Mesh
 
 void UIKRetargeterController::SetAskedToFixRootHeightForMesh(USkeletalMesh* Mesh, bool InAsked) const
 {
+	FScopeLock Lock(&ControllerLock);
 	if (InAsked)
 	{
 		GetAsset()->MeshesAskedToFixRootHeightFor.Add(Mesh);
@@ -183,9 +206,9 @@ void UIKRetargeterController::SetAskedToFixRootHeightForMesh(USkeletalMesh* Mesh
 	}
 }
 
-FName UIKRetargeterController::GetRetargetRootBone(
-	const ERetargetSourceOrTarget SourceOrTarget) const
+FName UIKRetargeterController::GetRetargetRootBone(const ERetargetSourceOrTarget SourceOrTarget) const
 {
+	FScopeLock Lock(&ControllerLock);
 	const UIKRigDefinition* IKRig = GetIKRig(SourceOrTarget);
 	return IKRig ? IKRig->GetRetargetRoot() : FName("None");
 }
@@ -298,6 +321,7 @@ void UIKRetargeterController::CleanPoseList(const ERetargetSourceOrTarget Source
 
 void UIKRetargeterController::AutoMapChains(const EAutoMapChainType AutoMapType, const bool bForceRemap) const
 {
+	FScopeLock Lock(&ControllerLock);
 	FScopedTransaction Transaction(LOCTEXT("AutoMapRetargetChains", "Auto-Map Retarget Chains"));
 	
 	CleanChainMapping();
@@ -442,6 +466,7 @@ void UIKRetargeterController::HandleRetargetChainRemoved(UIKRigDefinition* IKRig
 
 bool UIKRetargeterController::SetSourceChain(FName SourceChainName, FName TargetChainName) const
 {
+	FScopeLock Lock(&ControllerLock);
 	URetargetChainSettings* ChainSettings = GetChainSettings(TargetChainName);
 	if (!ChainSettings)
 	{
@@ -506,6 +531,7 @@ bool UIKRetargeterController::IsChainGoalConnectedToASolver(const FName& GoalNam
 
 FName UIKRetargeterController::CreateRetargetPose(const FName& NewPoseName, const ERetargetSourceOrTarget SourceOrTarget) const
 {
+	FScopeLock Lock(&ControllerLock);
 	FScopedTransaction Transaction(LOCTEXT("CreateRetargetPose", "Create Retarget Pose"));
 	Asset->Modify();
 
@@ -535,6 +561,7 @@ bool UIKRetargeterController::RemoveRetargetPose(const FName& PoseToRemove, cons
 		return false; // cannot remove pose that doesn't exist
 	}
 
+	FScopeLock Lock(&ControllerLock);
 	FScopedTransaction Transaction(LOCTEXT("RemoveRetargetPose", "Remove Retarget Pose"));
 	Asset->Modify();
 
@@ -559,7 +586,8 @@ FName UIKRetargeterController::DuplicateRetargetPose( const FName PoseToDuplicat
 		UE_LOG(LogIKRigEditor, Warning, TEXT("Trying to duplicate pose that does not exist, %s."), *PoseToDuplicate.ToString());
 		return NAME_None; // cannot duplicate pose that doesn't exist
 	}
-	
+
+	FScopeLock Lock(&ControllerLock);
 	FScopedTransaction Transaction(LOCTEXT("DuplicateRetargetPose", "Duplicate Retarget Pose"));
 	Asset->Modify();
 
@@ -581,6 +609,8 @@ FName UIKRetargeterController::DuplicateRetargetPose( const FName PoseToDuplicat
 
 bool UIKRetargeterController::RenameRetargetPose(const FName OldPoseName, const FName NewPoseName, const ERetargetSourceOrTarget SourceOrTarget) const
 {
+	FScopeLock Lock(&ControllerLock);
+	
 	// does the old pose exist?
 	if (!GetRetargetPoses(SourceOrTarget).Contains(OldPoseName))
 	{
@@ -627,6 +657,8 @@ void UIKRetargeterController::ResetRetargetPose(
 	const TArray<FName>& BonesToReset,
 	const ERetargetSourceOrTarget SourceOrTarget) const
 {
+	FScopeLock Lock(&ControllerLock);
+	
 	TMap<FName, FIKRetargetPose>& Poses = GetRetargetPoses(SourceOrTarget);
 	if (!Poses.Contains(PoseToReset))
 	{
@@ -668,18 +700,21 @@ void UIKRetargeterController::ResetRetargetPose(
 
 FName UIKRetargeterController::GetCurrentRetargetPoseName(const ERetargetSourceOrTarget SourceOrTarget) const
 {
+	FScopeLock Lock(&ControllerLock);
 	return SourceOrTarget == ERetargetSourceOrTarget::Source ? GetAsset()->CurrentSourceRetargetPose : GetAsset()->CurrentTargetRetargetPose;
 }
 
 bool UIKRetargeterController::SetCurrentRetargetPose(FName NewCurrentPose, const ERetargetSourceOrTarget SourceOrTarget) const
 {
+	FScopeLock Lock(&ControllerLock);
+	
 	const TMap<FName, FIKRetargetPose>& Poses = GetRetargetPoses(SourceOrTarget);
 	if (!Poses.Contains(NewCurrentPose))
 	{
 		UE_LOG(LogIKRigEditor, Warning, TEXT("Trying to set current pose to a pose that does not exist, %s."), *NewCurrentPose.ToString());
 		return false;
 	}
-
+	
 	FScopedTransaction Transaction(LOCTEXT("SetCurrentPose", "Set Current Pose"));
 	Asset->Modify();
 	FName& CurrentPose = SourceOrTarget == ERetargetSourceOrTarget::Source ? Asset->CurrentSourceRetargetPose : Asset->CurrentTargetRetargetPose;
@@ -692,11 +727,13 @@ bool UIKRetargeterController::SetCurrentRetargetPose(FName NewCurrentPose, const
 
 TMap<FName, FIKRetargetPose>& UIKRetargeterController::GetRetargetPoses(const ERetargetSourceOrTarget SourceOrTarget) const
 {
+	FScopeLock Lock(&ControllerLock);
 	return SourceOrTarget == ERetargetSourceOrTarget::Source ? GetAsset()->SourceRetargetPoses : GetAsset()->TargetRetargetPoses;
 }
 
 FIKRetargetPose& UIKRetargeterController::GetCurrentRetargetPose(const ERetargetSourceOrTarget SourceOrTarget) const
 {
+	FScopeLock Lock(&ControllerLock);
 	return GetRetargetPoses(SourceOrTarget)[GetCurrentRetargetPoseName(SourceOrTarget)];
 }
 
@@ -705,6 +742,7 @@ void UIKRetargeterController::SetRotationOffsetForRetargetPoseBone(
 	const FQuat& RotationOffset,
 	const ERetargetSourceOrTarget SourceOrTarget) const
 {
+	FScopeLock Lock(&ControllerLock);
 	const UIKRigDefinition* IKRig = SourceOrTarget == ERetargetSourceOrTarget::Source ? GetAsset()->GetSourceIKRig() : GetAsset()->GetTargetIKRig();
 	FIKRetargetPose& Pose = GetCurrentRetargetPose(SourceOrTarget);
 	Pose.SetDeltaRotationForBone(BoneName, RotationOffset);
@@ -715,6 +753,8 @@ FQuat UIKRetargeterController::GetRotationOffsetForRetargetPoseBone(
 	const FName& BoneName,
 	const ERetargetSourceOrTarget SourceOrTarget) const
 {
+	FScopeLock Lock(&ControllerLock);
+	
 	TMap<FName, FQuat>& BoneOffsets = GetCurrentRetargetPose(SourceOrTarget).BoneRotationOffsets;
 	if (!BoneOffsets.Contains(BoneName))
 	{
@@ -728,12 +768,14 @@ void UIKRetargeterController::SetRootOffsetInRetargetPose(
 	const FVector& TranslationOffset,
 	const ERetargetSourceOrTarget SourceOrTarget) const
 {
+	FScopeLock Lock(&ControllerLock);
 	GetCurrentRetargetPose(SourceOrTarget).AddToRootTranslationDelta(TranslationOffset);
 }
 
 FVector UIKRetargeterController::GetRootOffsetInRetargetPose(
 	const ERetargetSourceOrTarget SourceOrTarget) const
 {
+	FScopeLock Lock(&ControllerLock);
 	return GetCurrentRetargetPose(SourceOrTarget).GetRootTranslationDelta();
 }
 

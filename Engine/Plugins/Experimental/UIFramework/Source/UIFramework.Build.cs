@@ -13,9 +13,12 @@ public class UIFramework : ModuleRules
 				"CoreUObject",
 				"DeveloperSettings",
 				"Engine",
+				"FieldNotification",
+				"LocalizableMessage",
 				"ModelViewViewModel",
 				"SlateCore",
 				"Slate",
+				"StructUtils",
 				"UMG",
 			}
 		);

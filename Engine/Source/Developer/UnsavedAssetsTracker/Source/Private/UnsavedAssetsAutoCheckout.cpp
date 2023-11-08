@@ -10,9 +10,12 @@
 #include "UObject/Package.h"
 #include "SourceControlOperations.h"
 #include "UnsavedAssetsTrackerModule.h"
+#include "UncontrolledChangelistsModule.h"
 
 FUnsavedAssetsAutoCheckout::FUnsavedAssetsAutoCheckout(FUnsavedAssetsTrackerModule* Module)
 	: bProcessCheckoutBatchPending(false)
+	, CheckOutBatch()
+	, CheckOutOperation(ISourceControlOperation::Create<FCheckOut>())
 {
 	Module->OnUnsavedAssetAdded.AddRaw(this, &FUnsavedAssetsAutoCheckout::OnAsyncCheckout);
 	AsyncCheckoutComplete.BindRaw(this, &FUnsavedAssetsAutoCheckout::OnAsyncCheckoutComplete);
@@ -31,11 +34,39 @@ void FUnsavedAssetsAutoCheckout::OnAsyncCheckout(const FString& AbsoluteAssetFil
 		return;
 	}
 
-	// Add to FilesToCheckout batch.
+	// Check if SourceControl is enabled and available.
+	ISourceControlModule& SourceControlModule = ISourceControlModule::Get();
+	if (!SourceControlModule.IsEnabled())
+	{
+		return;
+	}
+	else
+	{
+		bool bIsAvailable = SourceControlModule.GetProvider().IsAvailable();
+		if (!bIsAvailable)
+		{
+			// The UncontrolledChangelists module relies on the 'checkout' to make the files locally writable
+			// and able to reconcile later. So if used and enabled, allow the 'checkout' to continue.
+			bool bUncontrolledChangelistsUsed = SourceControlModule.GetProvider().UsesUncontrolledChangelists();
+			bool bUncontrolledChangelistsEnabled = FUncontrolledChangelistsModule::Get().IsEnabled();
+			
+			bool bUncontrolledChangelistsRequiresCheckout = bUncontrolledChangelistsUsed && bUncontrolledChangelistsEnabled;
+			if (!bUncontrolledChangelistsRequiresCheckout)
+			{
+				return;
+			}
+		}
+	}
+
+	// Add to CheckOutBatch.
 	// Why are we batching? Because moving a large prefab (1000+ source files) would result in
-	// an equal amount of FCheckOut operation which didn't scale and locked the editor due to
+	// an equal amount of FCheckOut operations which didn't scale and locked the editor due to
 	// worker thread exhaustion.
-	CheckoutBatch.Add(AbsoluteAssetFilepath);
+	CheckOutBatch.Add(AbsoluteAssetFilepath);
+
+	// Broadcast that this file is potentially going to be automatically checked out.
+	// This will be followed up by either a Success/Failure/Cancel notification.
+	FUnsavedAssetsTrackerModule::Get().PreUnsavedAssetAutoCheckout.Broadcast(AbsoluteAssetFilepath, CheckOutOperation);
 
 	// If no batch process tick is pending, queue one.
 	if (!bProcessCheckoutBatchPending)
@@ -48,33 +79,40 @@ void FUnsavedAssetsAutoCheckout::OnAsyncCheckout(const FString& AbsoluteAssetFil
 	}
 }
 
-void FUnsavedAssetsAutoCheckout::OnAsyncCheckoutComplete(const FSourceControlOperationRef& CheckOutOperation, ECommandResult::Type Result)
+void FUnsavedAssetsAutoCheckout::OnAsyncCheckoutComplete(const FSourceControlOperationRef& InCheckOutOperation, ECommandResult::Type Result)
 {
-	const TArray<FString> FilesInBatch = OperationToPaths.FindAndRemoveChecked(&CheckOutOperation.Get());
-
-	if (Result == ECommandResult::Succeeded)
+	if (TArray<FString>* Files = OperationToFiles.Find(InCheckOutOperation))
 	{
-		for (const FString& File : FilesInBatch)
+		switch (Result)
 		{
-			FUnsavedAssetsTrackerModule::Get().PostUnsavedAssetAutoCheckout.Broadcast(File, CheckOutOperation);
+		case ECommandResult::Succeeded:
+			NotifySuccess(MakeArrayView(*Files), InCheckOutOperation);
+			break;
+		case ECommandResult::Failed:
+			NotifyFailure(MakeArrayView(*Files), InCheckOutOperation);
+			break;
+		case ECommandResult::Cancelled:
+			NotifyCancel(MakeArrayView(*Files), InCheckOutOperation);
+			break;
+		default:
+			checkNoEntry();
+			break;
 		}
-	}
 
-	if (Result == ECommandResult::Failed)
-	{
-		for (const FString& File : FilesInBatch)
-		{
-			FUnsavedAssetsTrackerModule::Get().PostUnsavedAssetAutoCheckoutFailure.Broadcast(File, CheckOutOperation);
-		}
+		OperationToFiles.Remove(InCheckOutOperation);
 	}
 }
 
 bool FUnsavedAssetsAutoCheckout::OnProcessCheckoutBatch(float)
 {
 	TArray<FString> FilesToCheckout;
-	FilesToCheckout.Reserve(CheckoutBatch.Num());
+	FilesToCheckout.Reserve(CheckOutBatch.Num());
 
-	for (const FString& File : CheckoutBatch)
+	TArray<FString> FilesToCancel;
+	FilesToCancel.Reserve(CheckOutBatch.Num());
+
+	// Determine which files need not be checked out and can thus be canceled.
+	for (const FString& File : CheckOutBatch)
 	{
 		// Why are we checking for file exists?
 		// The OnUnsavedAssetAdded delegate triggers when dragging an asset in the viewport as well,
@@ -82,50 +120,77 @@ bool FUnsavedAssetsAutoCheckout::OnProcessCheckoutBatch(float)
 		// to do an FCheckOut for them.
 		if (!FPaths::FileExists(File))
 		{
+			FilesToCancel.Add(File);
 			continue;
 		}
 
-		// Why are we checking if the package is still dirty?
-		// Some packages become temporarily dirty, for example during world recreation.
-		// By the time we try to check them out they may no longer be dirty.
+		// Why are we checking if the package is still loaded and dirty?
+		// Some packages become temporarily dirty, for example during world destruction / world recreation.
+		// By the time we try to check them out they may no longer be dirty or even loaded.
 		FString PackageName;
 		if (FPackageName::TryConvertFilenameToLongPackageName(File, PackageName))
 		{
-			if (UPackage* Package = FindPackage(nullptr, *PackageName))
+			UPackage* Package = FindPackage(nullptr, *PackageName);
+			if (!Package || !Package->IsDirty())
 			{
-				if (!Package->IsDirty())
-				{
-					continue;
-				}
+				FilesToCancel.Add(File);
+				continue;
 			}
 		}
 
+		// If not canceled, it should be checked out.
 		FilesToCheckout.Add(File);
 	}
-	CheckoutBatch.Empty();
 
+	// Call the Cancel delegate for those that no longer need to be checked out.
+	if (FilesToCancel.Num() > 0)
+	{
+		NotifyCancel(FilesToCancel, CheckOutOperation);
+	}
+	// Call the Success/Failure/Cancel delegate for others by triggering a checkout operation.
 	if (FilesToCheckout.Num() > 0)
 	{
-		AsyncCheckout(FilesToCheckout);
+		TriggerAsyncCheckout(FilesToCheckout, CheckOutOperation);
 	}
 
+	// Reset now that all files in this batch are either cancelled or pending checkout.
+	CheckOutBatch.Empty();
+	CheckOutOperation = ISourceControlOperation::Create<FCheckOut>();
 	bProcessCheckoutBatchPending = false;
+
 	return false; // One shot.
 }
 
-void FUnsavedAssetsAutoCheckout::AsyncCheckout(const TArray<FString>& FilesToCheckout)
+void FUnsavedAssetsAutoCheckout::TriggerAsyncCheckout(const TArray<FString>& FilesToCheckout, const FSourceControlOperationRef& Operation)
 {
 	ensure(FilesToCheckout.Num() > 0);
 
-	FSourceControlOperationRef CheckOutOperation = ISourceControlOperation::Create<FCheckOut>();
-
-	OperationToPaths.Add(&CheckOutOperation.Get(), FilesToCheckout);
-
-	for (const FString& File : FilesToCheckout)
-	{
-		FUnsavedAssetsTrackerModule::Get().PreUnsavedAssetAutoCheckout.Broadcast(File, CheckOutOperation);
-	}
+	OperationToFiles.Add(Operation, FilesToCheckout);
 
 	ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
-	SourceControlProvider.Execute(CheckOutOperation, FilesToCheckout, EConcurrency::Asynchronous, AsyncCheckoutComplete);
+	SourceControlProvider.Execute(Operation, FilesToCheckout, EConcurrency::Asynchronous, AsyncCheckoutComplete);
+}
+
+void FUnsavedAssetsAutoCheckout::NotifySuccess(TConstArrayView<FString> Files, const FSourceControlOperationRef& Operation)
+{
+	for (const FString& File : Files)
+	{
+		FUnsavedAssetsTrackerModule::Get().PostUnsavedAssetAutoCheckout.Broadcast(File, Operation);
+	}
+}
+
+void FUnsavedAssetsAutoCheckout::NotifyFailure(TConstArrayView<FString> Files, const FSourceControlOperationRef& Operation)
+{
+	for (const FString& File : Files)
+	{
+		FUnsavedAssetsTrackerModule::Get().PostUnsavedAssetAutoCheckoutFailure.Broadcast(File, Operation);
+	}
+}
+
+void FUnsavedAssetsAutoCheckout::NotifyCancel(TConstArrayView<FString> Files, const FSourceControlOperationRef& Operation)
+{
+	for (const FString& File : Files)
+	{
+		FUnsavedAssetsTrackerModule::Get().PostUnsavedAssetAutoCheckoutCancel.Broadcast(File, Operation);
+	}
 }

@@ -29,7 +29,7 @@
 // Changing this causes a full shader recompile
 static TAutoConsoleVariable<int32> CVarVelocityOutputPass(
 	TEXT("r.VelocityOutputPass"),
-	1,
+	0,
 	TEXT("When to write velocity buffer.\n") \
 	TEXT(" 0: Renders during the depth pass. This splits the depth pass into 2 phases: with and without velocity.\n") \
 	TEXT(" 1: Renders during the regular base pass. This adds an extra GBuffer target during base pass rendering.") \
@@ -121,7 +121,8 @@ public:
 		// The material may explicitly request that it be rendered into the translucent velocity pass.
 		const bool bIsSeparateVelocityPassRequiredByMaterial = Parameters.MaterialParameters.bIsTranslucencyWritingVelocity;
 
-		return bHasPlatformSupport && (bIsDefault || bIsSeparateVelocityPassRequired || bIsSeparateVelocityPassRequiredByMaterial);
+		const bool bIsNaniteFactory = Parameters.VertexFactoryType->SupportsNaniteRendering();
+		return bHasPlatformSupport && !bIsNaniteFactory && (bIsDefault || bIsSeparateVelocityPassRequired || bIsSeparateVelocityPassRequiredByMaterial);
 	}
 
 	FVelocityVS() = default;
@@ -329,7 +330,7 @@ void FSceneRenderer::RenderVelocities(
 					ERDGPassFlags::Raster | ERDGPassFlags::SkipRenderPass,
 					[this, &View, &ParallelMeshPass, VelocityPass, PassParameters](const FRDGPass* InPass, FRHICommandListImmediate& RHICmdList)
 				{
-					FRDGParallelCommandListSet ParallelCommandListSet(InPass, RHICmdList, GET_STATID(STAT_CLP_Velocity), *this, View, FParallelCommandListBindings(PassParameters));
+					FRDGParallelCommandListSet ParallelCommandListSet(InPass, RHICmdList, GET_STATID(STAT_CLP_Velocity), View, FParallelCommandListBindings(PassParameters));
 					ParallelMeshPass.DispatchDraw(&ParallelCommandListSet, RHICmdList, &PassParameters->InstanceCullingDrawParams);
 				});
 			}
@@ -507,13 +508,12 @@ bool FOpaqueVelocityMeshProcessor::PrimitiveHasVelocityForFrame(bool bAllowStati
 	return true;
 }
 
-
-static bool UseDefaultMaterial(const FMaterial* Material, bool bMaterialModifiesMeshPosition)
+static bool UseDefaultMaterial(const FMaterial* Material, bool bVFTypeSupportsNullPixelShader, bool bMaterialModifiesMeshPosition)
 {
 	// Materials without masking or custom vertex modifications can be swapped out
 	// for the default material, which simplifies the shader. However, the default
 	// material also does not support being two-sided.
-	return Material->WritesEveryPixel() && !Material->IsTwoSided() && !bMaterialModifiesMeshPosition;
+	return Material->WritesEveryPixel(false, bVFTypeSupportsNullPixelShader) && !Material->IsTwoSided() && !bMaterialModifiesMeshPosition;
 }
 
 bool FOpaqueVelocityMeshProcessor::TryAddMeshBatch(
@@ -533,8 +533,11 @@ bool FOpaqueVelocityMeshProcessor::TryAddMeshBatch(
 		const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
 		const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(*Material, OverrideSettings);
 		const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(*Material, OverrideSettings);
+		const bool bVFTypeSupportsNullPixelShader = MeshBatch.VertexFactory->SupportsNullPixelShader();
+		const bool bEvaluateWPO = Material->MaterialModifiesMeshPosition_RenderThread()
+			&& (!ShouldOptimizedWPOAffectNonNaniteShaderSelection() || PrimitiveSceneProxy->EvaluateWorldPositionOffset());
 
-		const bool bSwapWithDefaultMaterial = UseDefaultMaterial(Material, Material->MaterialModifiesMeshPosition_RenderThread());
+		const bool bSwapWithDefaultMaterial = UseDefaultMaterial(Material, bVFTypeSupportsNullPixelShader, bEvaluateWPO);
 		if (bSwapWithDefaultMaterial)
 		{
 			MaterialRenderProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
@@ -624,8 +627,9 @@ void FOpaqueVelocityMeshProcessor::CollectPSOInitializers(const FSceneTexturesCo
 		const bool bIsNotTranslucent = IsOpaqueOrMaskedBlendMode(Material);
 
 		if (PreCacheParams.bRenderInMainPass && bIsNotTranslucent && ShouldIncludeMaterialInDefaultOpaquePass(Material))
-		{			
-			const bool bUseDefaultMaterial = UseDefaultMaterial(&Material, Material.MaterialModifiesMeshPosition_GameThread());
+		{
+			const bool bVFTypeSupportsNullPixelShader = VertexFactoryData.VertexFactoryType->SupportsNullPixelShader();
+			const bool bUseDefaultMaterial = UseDefaultMaterial(&Material, bVFTypeSupportsNullPixelShader, Material.MaterialModifiesMeshPosition_GameThread());
 			if (!bUseDefaultMaterial)
 			{
 				bCollectPSOs = true;
@@ -901,9 +905,13 @@ FMeshPassProcessor* CreateVelocityPassProcessor(ERHIFeatureLevel::Type FeatureLe
 	FMeshPassProcessorRenderState VelocityPassState;
 	VelocityPassState.SetBlendState(TStaticBlendState<CW_RGBA>::GetRHI());
 
+	static bool bShownError = false;
 	// AppSpaceWarp
-	const EShaderPlatform ShaderPlatform = Scene->GetShaderPlatform();
-	VelocityPassState.SetDepthStencilState(SupportsSpaceWarp(ShaderPlatform) || (EarlyZPassMode == DDM_AllOpaqueNoVelocity) // if the depth mode is all opaque except velocity, it relies on velocity to write the depth of the remaining meshes
+	if (!Scene && !bShownError) {
+		UE_LOG(LogRenderer, Warning, TEXT("Got an unexpected null scene and AppSpaceWarp will be disabled!"));
+		bShownError = true;
+	}
+	VelocityPassState.SetDepthStencilState((Scene ? SupportsSpaceWarp(Scene->GetShaderPlatform()) : false) || (EarlyZPassMode == DDM_AllOpaqueNoVelocity) // if the depth mode is all opaque except velocity, it relies on velocity to write the depth of the remaining meshes
 										    ? TStaticDepthStencilState<true, CF_DepthNearOrEqual>::GetRHI()
 											: TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI());
 

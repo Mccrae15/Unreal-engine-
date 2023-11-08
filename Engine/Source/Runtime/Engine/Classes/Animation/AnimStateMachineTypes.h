@@ -54,15 +54,15 @@ namespace ETransitionLogicType
 struct FTransitionEvent
 {
 	TArray<int32, TInlineAllocator<8>> ConsumedTransitions;
-	FName EventName;
 	double CreationTime;
 	double TimeToLive;
+	FName EventName;
 	ETransitionRequestQueueMode QueueMode;
 	ETransitionRequestOverwriteMode OverwriteMode;
 
 	FTransitionEvent(const FName& InEventName, const double InTimeToLive, const ETransitionRequestQueueMode& InQueueMode, const ETransitionRequestOverwriteMode& InOverwriteMode)
-		: EventName(InEventName)
-		, TimeToLive(InTimeToLive)
+		: TimeToLive(InTimeToLive)
+		, EventName(InEventName)
 		, QueueMode(InQueueMode)
 		, OverwriteMode(InOverwriteMode)
 	{
@@ -267,7 +267,13 @@ struct FBakedStateExitTransition
 	// Automatic Transition Rule based on animation remaining time.
 	UPROPERTY()
 	bool bAutomaticRemainingTimeRule;
-	
+
+	// Automatic Transition Rule triggering time:
+	//  < 0 means trigger the transition 'Crossfade Duration' seconds before the end of the asset player, so a standard blend would finish just as the asset player ends
+	// >= 0 means trigger the transition 'Automatic Rule Trigger Time' seconds before the end of the asset player
+	UPROPERTY()
+	float AutomaticRuleTriggerTime;
+
 	// Additional rule around SyncGroup requiring Valid Markers
 	UPROPERTY()
 	FName SyncGroupNameToRequireValidMarkersRule;
@@ -281,6 +287,7 @@ struct FBakedStateExitTransition
 		, TransitionIndex(INDEX_NONE)
 		, bDesiredTransitionReturnValue(true)
 		, bAutomaticRemainingTimeRule(false)
+		, AutomaticRuleTriggerTime(-1.f)
 		, SyncGroupNameToRequireValidMarkersRule(NAME_None)
 	{
 	}

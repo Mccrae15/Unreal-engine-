@@ -9,6 +9,9 @@ using System.Reflection;
 using System.Text.RegularExpressions;
 using UnrealBuildBase;
 using UnrealBuildTool;
+using Microsoft.Extensions.Logging;
+
+using static AutomationTool.CommandUtils;
 
 namespace EpicGames.MCP.Automation
 {
@@ -379,7 +382,7 @@ namespace EpicGames.MCP.Automation
 					return _ManifestFilename;
 				}
 
-				CommandUtils.LogInformation("Using legacy behavior of constructing manifest filename from appname, build version and platform. Update your code to specify manifest filename when constructing BuildPatchToolStagingInfo or call RetrieveManifestFilename to query it.");
+				Logger.LogInformation("Using legacy behavior of constructing manifest filename from appname, build version and platform. Update your code to specify manifest filename when constructing BuildPatchToolStagingInfo or call RetrieveManifestFilename to query it.");
 				var BaseFilename = string.Format("{0}{1}-{2}.manifest",
 					AppName,
 					BuildVersion,
@@ -642,8 +645,11 @@ namespace EpicGames.MCP.Automation
 			/// </summary>
 			Online_v140,
 			Online_v150,
+			Online_v151,
+			Online_v152,
+			Online_v160,
 
-			Online_Live = Online_v150
+			Online_Live = Online_v160
 		}
 
 		/// <summary>
@@ -691,6 +697,7 @@ namespace EpicGames.MCP.Automation
 			{
 				DataAgeThreshold = DEFAULT_DATA_AGE_THRESHOLD;
 				ChunkWindowSize = 1048576;
+				ResaveKnownChunks = false;
 			}
 
 			/// <summary>
@@ -744,6 +751,14 @@ namespace EpicGames.MCP.Automation
 			/// </summary>
 			public string AppLaunchCmdArgs;
 			/// <summary>
+			/// The custom uninstall action executable to launch right before product uninstall, relative to the build root.
+			/// </summary>
+			public string UninstallActionPath;
+			/// <summary>
+			/// The commandline to send to the custom uninstall action on launch.
+			/// </summary>
+			public string UninstallActionArgs;
+			/// <summary>
 			/// The list of prerequisite Ids that this prerequisite installer satisfies.
 			/// </summary>
 			public List<string> PrereqIds;
@@ -771,6 +786,10 @@ namespace EpicGames.MCP.Automation
 			/// Specifies the desired output FeatureLevel of BuildPatchTool, if this is not provided BPT will warn and default to LatestJson so that project scripts can be updated.
 			/// </summary>
 			public string FeatureLevel;
+			/// <summary>
+			/// Output includes all known chunks, not just new chunks generated
+			/// </summary>
+			public bool ResaveKnownChunks;
 			/// <summary>
 			/// Contains a list of custom string arguments to be embedded in the generated manifest file.
 			/// </summary>
@@ -865,6 +884,14 @@ namespace EpicGames.MCP.Automation
 			/// The commandline to send to the app on launch.
 			/// </summary>
 			public string AppLaunchCmdArgs;
+			/// <summary>
+			/// The custom uninstall action executable to launch right before product uninstall, relative to the build root.
+			/// </summary>
+			public string UninstallActionPath;
+			/// <summary>
+			/// The commandline to send to the custom uninstall action on launch.
+			/// </summary>
+			public string UninstallActionArgs;
 			/// <summary>
 			/// The list of prerequisite Ids that this prerequisite installer satisfies.
 			/// </summary>
@@ -1115,7 +1142,7 @@ namespace EpicGames.MCP.Automation
 					if (MCPPlatform.TryParse(Label.Platform, out NewLabel.Platform) == false)
 					{
 						// skip platforms which don't have a resolvable platform
-						CommandUtils.LogWarning("Unable to resolve MCP platform for Label {0} platform string is {1}", Label.LabelName, Label.Platform);
+						Logger.LogWarning("Unable to resolve MCP platform for Label {Arg0} platform string is {Arg1}", Label.LabelName, Label.Platform);
 						continue;
 					}
 					NewLabel.LabelName = Label.LabelName;
@@ -1199,7 +1226,7 @@ namespace EpicGames.MCP.Automation
 				ResolvedErrorCode = BPTErrorCode.Success;
 				LogFileLines = null;
 				// try to classify the type of error
-				CommandUtils.LogInformation("Parsing log for build patch tool exception");
+				Logger.LogInformation("Parsing log for build patch tool exception");
 				if (File.Exists(StdOutLogFileName))
 				{
 					LogFileLines = CommandUtils.ReadAllLines(StdOutLogFileName);
@@ -1217,7 +1244,7 @@ namespace EpicGames.MCP.Automation
 								ResolvedErrorCode = BPTErrorCode.Unknown;
 							}
 							string ErrorCodeString = Match.Groups[@"errorCode"].Value;
-							CommandUtils.LogInformation("Found match for build patch tool exception \"{0}\"", ErrorCodeString);
+							Logger.LogInformation("Found match for build patch tool exception \"{ErrorCodeString}\"", ErrorCodeString);
 							if (string.IsNullOrEmpty(ErrorCodeString) == false)
 							{
 								if (Enum.TryParse<BPTErrorCode>(ErrorCodeString, true, out ResolvedErrorCode))
@@ -1968,7 +1995,7 @@ namespace EpicGames.MCP.Automation
 					{
 						if(!bSuppressLogs)
 						{
-							CommandUtils.LogInformation("Reusing client token for {0} with expiry {1:yyyy-MM-dd HH:mm:ss}", McpConfig.Name, TokenWithExpiry.Item2);
+							Logger.LogInformation("Reusing client token for {Arg0} with expiry {1:yyyy-MM-dd HH:mm:ss}", McpConfig.Name, TokenWithExpiry.Item2);
 						}
 						return TokenWithExpiry.Item1;
 					}
@@ -1990,7 +2017,7 @@ namespace EpicGames.MCP.Automation
 				}
 				if (!bSuppressLogs)
 				{
-					CommandUtils.LogInformation("Obtained new client token for {0} with expiry {1:yyyy-MM-dd HH:mm:ss}", McpConfig.Name, Expiry);
+					Logger.LogInformation("Obtained new client token for {Arg0} with expiry {1:yyyy-MM-dd HH:mm:ss}", McpConfig.Name, Expiry);
 				}
 			}
 			return Result;
@@ -2061,7 +2088,7 @@ namespace EpicGames.MCP.Automation
 		{
 			if (InstanceName == DEFAULT_INSTANCE_NAME)
 			{
-				CommandUtils.LogWarning("CloudStorageBase.GetByName called with {0}. This will return the same instance as Get().", DEFAULT_INSTANCE_NAME);
+				Logger.LogWarning("CloudStorageBase.GetByName called with {DEFAULT_INSTANCE_NAME}. This will return the same instance as Get().", DEFAULT_INSTANCE_NAME);
 			}
 			return GetByNameImpl(InstanceName);
 		}
@@ -2552,12 +2579,10 @@ namespace EpicGames.MCP.Config
                                	var Inner = Ex.InnerException;
 								while(null != Inner)
 								{
-									BuildCommand.LogWarning("Exception encountered creating McpConfig [{0}] with error: {1}",
-										PotentialConfigType.Name, Inner.Message);
+									Logger.LogWarning("Exception encountered creating McpConfig [{Name}] with error: {Message}", PotentialConfigType.Name, Inner.Message);
 									Inner = Inner.InnerException;
 								}
-								BuildCommand.LogWarning("Unable to create McpConfig [{0}] with error: {1} \n {2}",
-									PotentialConfigType.Name, Ex.Message, Ex.StackTrace);
+								Logger.LogWarning("Unable to create McpConfig [{Name}] with error: {Message} \n {Trace}", PotentialConfigType.Name, Ex.Message, Ex.StackTrace);
                             }
                         }
                     }
@@ -2613,14 +2638,14 @@ namespace EpicGames.MCP.Config
 
         public void SpewValues()
         {
-            CommandUtils.LogVerbose("Name : {0}", Name);
-            CommandUtils.LogVerbose("AccountBaseUrl : {0}", AccountBaseUrl);
-            CommandUtils.LogVerbose("FortniteBaseUrl : {0}", FortniteBaseUrl);
-            CommandUtils.LogVerbose("LauncherBaseUrl : {0}", LauncherBaseUrl);
-			CommandUtils.LogVerbose("BuildInfoV2BaseUrl : {0}", BuildInfoV2BaseUrl);
-			CommandUtils.LogVerbose("LauncherV2BaseUrl : {0}", LauncherV2BaseUrl);
-			CommandUtils.LogVerbose("CatalogBaseUrl : {0}", CatalogBaseUrl);
-            CommandUtils.LogVerbose("ClientId : {0}", ClientId);
+            Logger.LogDebug("Name : {Name}", Name);
+            Logger.LogDebug("AccountBaseUrl : {AccountBaseUrl}", AccountBaseUrl);
+            Logger.LogDebug("FortniteBaseUrl : {FortniteBaseUrl}", FortniteBaseUrl);
+            Logger.LogDebug("LauncherBaseUrl : {LauncherBaseUrl}", LauncherBaseUrl);
+			Logger.LogDebug("BuildInfoV2BaseUrl : {BuildInfoV2BaseUrl}", BuildInfoV2BaseUrl);
+			Logger.LogDebug("LauncherV2BaseUrl : {LauncherV2BaseUrl}", LauncherV2BaseUrl);
+			Logger.LogDebug("CatalogBaseUrl : {CatalogBaseUrl}", CatalogBaseUrl);
+            Logger.LogDebug("ClientId : {ClientId}", ClientId);
             // we don't really want this in logs CommandUtils.LogVerbose("ClientSecret : {0}", ClientSecret);
         }
     }

@@ -32,6 +32,7 @@ void FMeshPropertyMapEvaluator::Setup(const FMeshBaseBaker& Baker, FEvaluationCo
 	Context.Evaluate = bHasDetailNormalTextures ? &EvaluateSample<true> : &EvaluateSample<false>;
 	Context.EvaluateDefault = &EvaluateDefault;
 	Context.EvaluateColor = &EvaluateColor;
+	Context.EvaluateChannel = &EvaluateChannel;
 	Context.EvalData = this;
 	Context.AccumulateMode = EAccumulateMode::Add;
 	Context.DataLayout = DataLayout();
@@ -62,6 +63,7 @@ void FMeshPropertyMapEvaluator::Setup(const FMeshBaseBaker& Baker, FEvaluationCo
 		DefaultValue = UVToColor(FVector2f::Zero());
 		break;
 	case EMeshPropertyMapType::MaterialID:
+	case EMeshPropertyMapType::PolyGroupID:
 		DefaultValue = FVector3f(LinearColors::LightPink3f());
 		Context.AccumulateMode = EAccumulateMode::Overwrite;
 		break;
@@ -95,6 +97,13 @@ void FMeshPropertyMapEvaluator::EvaluateColor(const int DataIdx, float*& In, FVe
 	// TODO: Move property color space transformation from EvaluateSample/Default to here.
 	Out = FVector4f(In[0], In[1], In[2], 1.0f);
 	In += 3;
+}
+
+void FMeshPropertyMapEvaluator::EvaluateChannel(const int DataIdx, float*& In, float& Out, void* EvalData)
+{
+	ensure(false);		// Should not be able to select per-channel evaluation for multi-dimensional properties
+	Out = In[0];
+	In += 1;
 }
 
 template <bool bUseDetailNormalMap>
@@ -192,6 +201,12 @@ FVector3f FMeshPropertyMapEvaluator::SampleFunction(const FCorrespondenceSample&
 		{
 			Color = FVector3f(DetailColor.X, DetailColor.Y, DetailColor.Z);
 		}
+	}
+	break;
+	case EMeshPropertyMapType::PolyGroupID:
+	{
+		const int32 GroupID = DetailSampler->GetPolyGroupID(DetailMesh, DetailTriID);
+		Color = LinearColors::SelectColor<FVector3f>(GroupID);
 	}
 	break;
 	}

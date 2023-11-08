@@ -187,7 +187,7 @@ public:
 	 * @param Target active target
 	 * @param TransactionProvider optional IToolContextTransactionProvider implementation to use - by default uses GizmoManager
 	 */
-	virtual void SetActiveTarget(UTransformProxy* Target, IToolContextTransactionProvider* TransactionProvider = nullptr);
+	virtual void SetActiveTarget(UTransformProxy* Target, IToolContextTransactionProvider* TransactionProvider = nullptr, IGizmoStateTarget* InStateTarget = nullptr);
 
 	/**
 	 * Clear the active target object for the Gizmo
@@ -205,6 +205,11 @@ public:
 	 */
 	virtual void SetVisibility(bool bVisible);
 
+	/**
+	 * Set customization function for this Gizmo
+	 */
+	void SetCustomizationFunction(const TFunction<const FGizmoCustomization()>& InFunction);
+	
 public:
 
 	/** The active target object for the Gizmo */
@@ -362,10 +367,10 @@ protected:
 	// internal function that updates CameraAxisSource by getting current view state from GizmoManager
 	void UpdateCameraAxisSource();
 
-	/** The state target is created internally during SetActiveTarget() */
+	/** The state target is created internally during SetActiveTarget() if no one is provided. */
 	UPROPERTY()
-	TObjectPtr<UGizmoObjectModifyStateTarget> StateTarget;
-
+	TScriptInterface<IGizmoStateTarget> StateTarget;
+	
 	/**
 	 * These are used to let the translation subgizmos use raycasts into the scene to align the gizmo with scene geometry.
 	 * See comment for SetWorldAlignmentFunctions().
@@ -670,6 +675,9 @@ protected:
 
 	/** Array of function pointers, indexed by gizmo part id, to handle update interacting state */
 	TArray<TFunction<void(UTransformGizmo* TransformGizmo, bool bInInteracting, uint32 InHitPart)> > OnUpdateInteractingFunctions;
+
+	/** Customization function (to override default material or increment gizmo size for example) */
+	TFunction<const FGizmoCustomization()> CustomizationFunction;
 
 	/** Percentage-based scale multiplier */
 	UPROPERTY()

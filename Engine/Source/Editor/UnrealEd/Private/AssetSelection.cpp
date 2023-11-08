@@ -460,8 +460,7 @@ namespace ActorPlacementUtils
 			FSourceControlStatePtr SCState = ISourceControlModule::Get().GetProvider().GetState(FileName, EStateCacheUsage::Use);
 			if (!(SCState->IsCheckedOut() || SCState->IsAdded() || SCState->CanAdd() || SCState->IsUnknown()))
 			{
-				FText Title = NSLOCTEXT("UnrealEd", "LevelCheckout_Title", "Level Checkout Warning");
-				if (EAppReturnType::Ok != FMessageDialog::Open(EAppMsgType::OkCancel, NSLOCTEXT("UnrealEd","LevelNotCheckedOutMsg", "This actor will be placed in a level that is in revision control but not currently checked out. Continue?"), &Title))
+				if (EAppReturnType::Ok != FMessageDialog::Open(EAppMsgType::OkCancel, NSLOCTEXT("UnrealEd","LevelNotCheckedOutMsg", "This actor will be placed in a level that is in revision control but not currently checked out. Continue?"), NSLOCTEXT("UnrealEd", "LevelCheckout_Title", "Level Checkout Warning")))
 				{
 					return false;
 				}
@@ -511,8 +510,7 @@ namespace ActorPlacementUtils
 				FTransform ActorTransform = InActorTransforms[ActorTransformIndex];
 				if (!CurrentLevelBounds.IsInsideOrOn(ActorTransform.GetLocation()))
 				{
-					FText Title = NSLOCTEXT("UnrealEd", "ActorPlacement_Title", "Actor Placement Warning");
-					if (EAppReturnType::Ok != FMessageDialog::Open(EAppMsgType::OkCancel, NSLOCTEXT("UnrealEd", "LevelBoundsMsg", "The actor will be placed outside the bounds of the current level. Continue?"), &Title))
+					if (EAppReturnType::Ok != FMessageDialog::Open(EAppMsgType::OkCancel, NSLOCTEXT("UnrealEd", "LevelBoundsMsg", "The actor will be placed outside the bounds of the current level. Continue?"), NSLOCTEXT("UnrealEd", "ActorPlacement_Title", "Actor Placement Warning")))
 					{
 						return false;
 					}
@@ -586,15 +584,6 @@ static AActor* PrivateAddActor( UObject* Asset, UActorFactory* Factory, bool Sel
 	FSnappingUtils::ClearSnappingHelpers( bClearImmediately );
 
 	ULevel* DesiredLevel = GWorld->GetCurrentLevel();
-
-	// If DesireLevel is part of a LevelPartition find the proper DesiredLevel by asking the Partition
-	if (const ILevelPartitionInterface* LevelPartition = DesiredLevel->GetLevelPartition())
-	{
-		if (ULevel* SubLevel = LevelPartition->GetSubLevel(ActorTransform.GetLocation()))
-		{
-			DesiredLevel = SubLevel;
-		}
-	}
 
 	bool bSpawnActor = true;
 
@@ -852,25 +841,12 @@ AActor* FActorFactoryAssetProxy::AddActorForAsset( UObject* AssetObj, bool Selec
 				Result = PrivateAddActor( AssetObj, FactoryToUse, SelectActor, ObjectFlags, Name );
 			}
 		}
-		// If no specific factory has been provided, find the highest priority one that is valid for the asset and use
-		// it to create the actor
+		// If no specific factory has been provided, use the placement subsystem to find the appropriate factory and place
 		else
 		{
-			const TArray<UActorFactory*>& ActorFactories = GEditor->ActorFactories;
-			for ( int32 FactoryIdx = 0; FactoryIdx < ActorFactories.Num(); FactoryIdx++ )
-			{
-				UActorFactory* ActorFactory = ActorFactories[FactoryIdx];
-
-				// Check if the actor can be created using this factory, making sure to check for an asset to be assigned from the selector
-				if ( ActorFactory->CanCreateActorFrom( AssetData, UnusedErrorMessage ) )
-				{
-					Result = PrivateAddActor(AssetObj, ActorFactory, SelectActor, ObjectFlags, Name);
-					if ( Result != NULL )
-					{
-						break;
-					}
-				}
-			}
+			UPlacementSubsystem* PlacementSubsystem = GEditor->GetEditorSubsystem<UPlacementSubsystem>();
+			TScriptInterface<IAssetFactoryInterface> AssetFactory = PlacementSubsystem->FindAssetFactoryFromAssetData(AssetData);
+			Result = PrivateAddActor(AssetObj, Cast<UActorFactory>(AssetFactory.GetObject()), SelectActor, ObjectFlags, Name);
 		}
 	}
 

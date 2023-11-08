@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "DMXControlConsoleFaderBase.h"
 
 #include "DMXControlConsoleFixturePatchMatrixCell.generated.h"
@@ -30,6 +29,9 @@ public:
 	virtual int32 GetUniverseID() const override;
 	virtual int32 GetStartingAddress() const override;
 	virtual int32 GetEndingAddress() const override;
+#if WITH_EDITOR
+	virtual void SetIsMatchingFilter(bool bMatches) override;
+#endif // WITH_EDITOR
 	virtual void Destroy() override;
 	//~ End IDMXControlConsoleFaderGroupElementInterface
 
@@ -50,6 +52,14 @@ public:
 
 	/** Gets Y coordinate of this Matrix Cell */
 	int32 GetCellY() const { return CellY; }
+
+#if WITH_EDITOR
+	/** True if there's at least one CellAttributeFader visible in Editor */
+	bool HasVisibleInEditorCellAttributeFaders() const;
+
+	/** Sets in Editor visibility state of all elements to true */
+	void ShowAllFadersInEditor();
+#endif // WITH_EDITOR
 
 	// Property Name getters
 	FORCEINLINE static FName GetCellXPropertyName() { return GET_MEMBER_NAME_CHECKED(UDMXControlConsoleFixturePatchMatrixCell, CellX); }

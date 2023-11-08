@@ -77,6 +77,9 @@ DEFINE_LOG_CATEGORY_STATIC(LogAbcImporter, Verbose, All);
 
 #define PRINT_UNIQUE_VERTICES 0
 
+static const FString NoFaceSetNameStr(TEXT("NoFaceSetName"));
+static const FName NoFaceSetName(TEXT("NoFaceSetName"));
+
 FAbcImporter::FAbcImporter()
 	: ImportSettings(nullptr), AbcFile(nullptr)
 {
@@ -153,12 +156,12 @@ const EAbcImportError FAbcImporter::ImportTrackData(const int32 InNumThreads, UA
 template<typename T>
 T* FAbcImporter::CreateObjectInstance(UObject*& InParent, const FString& ObjectName, const EObjectFlags Flags)
 {
-	// Parent package to place new mesh
+	// Parent package to place new asset
 	UPackage* Package = nullptr;
 	FString NewPackageName;
 
 	// Setup package name and create one accordingly
-	NewPackageName = FPackageName::GetLongPackagePath(InParent->GetOutermost()->GetName() + TEXT("/") + ObjectName);
+	NewPackageName = FPackageName::GetLongPackagePath(InParent->GetOutermost()->GetPathName()) + TEXT("/") + ObjectName;
 	NewPackageName = UPackageTools::SanitizePackageName(NewPackageName);
 	Package = CreatePackage(*NewPackageName);
 
@@ -238,7 +241,14 @@ UStaticMesh* FAbcImporter::CreateStaticMeshFromSample(UObject* InParent, const F
 				}
 			}
 
-			StaticMesh->GetStaticMaterials().Add((Material != nullptr) ? Material : DefaultMaterial);
+			FStaticMaterial StaticMaterial;
+			StaticMaterial.MaterialInterface = (Material != nullptr) ? Material : DefaultMaterial;
+
+			FName SlotName((Material != nullptr) ? FName(FaceSetNames[MaterialIndex]) : NoFaceSetName);
+			StaticMaterial.MaterialSlotName = SlotName;
+			StaticMaterial.ImportedMaterialSlotName = SlotName;
+
+			StaticMesh->GetStaticMaterials().Add(StaticMaterial);
 		}
 
 		GenerateMeshDescriptionFromSample(Sample, MeshDescription, StaticMesh);
@@ -307,8 +317,7 @@ const TArray<UStaticMesh*> FAbcImporter::ImportAsStaticMesh(UObject* InParent, E
 					else
 					{
 						// Default name
-						static const FString DefaultName("NoFaceSetName");
-						MergedFaceSetNames.Add(DefaultName);
+						MergedFaceSetNames.Add(NoFaceSetNameStr);
 					}
 				}
 			}
@@ -408,26 +417,32 @@ UGeometryCache* FAbcImporter::ImportAsGeometryCache(UObject* InParent, EObjectFl
 				Track->BeginCoding(Codec, ImportSettings->GeometryCacheSettings.bApplyConstantTopologyOptimizations && !bContainsHeterogeneousMeshes, bCalculateMotionVectors, ImportSettings->GeometryCacheSettings.bOptimizeIndexBuffers);
 				Tracks.Add(Track);
 				
-				FScopedSlowTask SlowTask((ImportSettings->SamplingSettings.FrameEnd + 1) - ImportSettings->SamplingSettings.FrameStart, FText::FromString(FString(TEXT("Importing Frames"))));
+				FScopedSlowTask SlowTask(static_cast<float>((ImportSettings->SamplingSettings.FrameEnd + 1) - ImportSettings->SamplingSettings.FrameStart), FText::FromString(FString(TEXT("Importing Frames"))));
 				SlowTask.MakeDialog(true);
 
 				const TArray<FString>& UniqueFaceSetNames = AbcFile->GetUniqueFaceSetNames();
 				const TArray<FAbcPolyMesh*>& PolyMeshes = AbcFile->GetPolyMeshes();
+				TArray<float> FrameTimes;
+				FrameTimes.SetNum(ImportSettings->SamplingSettings.FrameEnd - ImportSettings->SamplingSettings.FrameStart + 1);
 				
 				const int32 NumTracks = Tracks.Num();
 				int32 PreviousNumVertices = 0;
-				TFunction<void(int32, FAbcFile*)> Callback = [this, &Tracks, &SlowTask, &UniqueFaceSetNames, &PolyMeshes, &PreviousNumVertices](int32 FrameIndex, const FAbcFile* InAbcFile)
+				TFunction<void(int32, FAbcFile*)> Callback = [this, &Tracks, &SlowTask, &UniqueFaceSetNames, &PolyMeshes, &PreviousNumVertices, &FrameTimes](int32 FrameIndex, const FAbcFile* InAbcFile)
 				{
 					const bool bUseVelocitiesAsMotionVectors = (ImportSettings->GeometryCacheSettings.MotionVectors == EAbcGeometryCacheMotionVectorsImport::ImportAbcVelocitiesAsMotionVectors);
 					FGeometryCacheMeshData MeshData;
 					bool bConstantTopology = true;
 					const bool bStoreImportedVertexNumbers = ImportSettings->GeometryCacheSettings.bStoreImportedVertexNumbers;
 
+					int32 FrameTimeIndex = FrameIndex - ImportSettings->SamplingSettings.FrameStart;
 					AbcImporterUtilities::MergePolyMeshesToMeshData(FrameIndex, ImportSettings->SamplingSettings.FrameStart, AbcFile->GetSecondsPerFrame(), bUseVelocitiesAsMotionVectors,
-						PolyMeshes, UniqueFaceSetNames,
-						MeshData, PreviousNumVertices, bConstantTopology, bStoreImportedVertexNumbers);
+						PolyMeshes, UniqueFaceSetNames, FrameTimes[FrameTimeIndex], MeshData, PreviousNumVertices, bConstantTopology, bStoreImportedVertexNumbers);
 					
-					Tracks[0]->AddMeshSample(MeshData, PolyMeshes[0]->GetTimeForFrameIndex(FrameIndex) - InAbcFile->GetImportTimeOffset(), bConstantTopology);
+					const float FrameRate = static_cast<float>(InAbcFile->GetFramerate());
+
+					// Convert frame times to frame numbers and back to time to avoid float imprecision
+					const float FrameTime = static_cast<float>(FMath::RoundToInt(FrameTimes[FrameTimeIndex] * FrameRate) - FMath::RoundToInt(InAbcFile->GetImportTimeOffset() * FrameRate)) / FrameRate;
+					Tracks[0]->AddMeshSample(MeshData, FrameTime, bConstantTopology);
 					
 					if (IsInGameThread())
 					{
@@ -442,6 +457,7 @@ UGeometryCache* FAbcImporter::ImportAsGeometryCache(UObject* InParent, EObjectFl
 				{
 					UMaterialInterface* Material = AbcImporterUtilities::RetrieveMaterial(*AbcFile, FaceSetName, InParent, Flags);
 					GeometryCache->Materials.Add((Material != nullptr) ? Material : DefaultMaterial);		
+					GeometryCache->MaterialSlotNames.Add(FaceSetName != TEXT("DefaultMaterial") ? FName(FaceSetName) : NoFaceSetName);
 
 					if (Material != UMaterial::GetDefaultMaterial(MD_Surface))
 					{
@@ -480,10 +496,15 @@ UGeometryCache* FAbcImporter::ImportAsGeometryCache(UObject* InParent, EObjectFl
 							if (PolyMesh->FaceSetNames.IsValidIndex(MaterialIndex))
 							{
 								Material = AbcImporterUtilities::RetrieveMaterial(*AbcFile, PolyMesh->FaceSetNames[MaterialIndex], InParent, Flags);
+								GeometryCache->MaterialSlotNames.Add(FName(PolyMesh->FaceSetNames[MaterialIndex]));
 								if (Material != UMaterial::GetDefaultMaterial(MD_Surface))
 								{
 									Material->PostEditChange();
 								}
+							}
+							else
+							{
+								GeometryCache->MaterialSlotNames.Add(NoFaceSetName);
 							}
 
 							GeometryCache->Materials.Add((Material != nullptr) ? Material : DefaultMaterial);
@@ -496,6 +517,7 @@ UGeometryCache* FAbcImporter::ImportAsGeometryCache(UObject* InParent, EObjectFl
 				const int32 NumTracks = Tracks.Num();
 				TFunction<void(int32, FAbcFile*)> Callback = [this, NumTracks, &ImportPolyMeshes, &Tracks, &MaterialOffsets](int32 FrameIndex, const FAbcFile* InAbcFile)
 				{
+					const float FrameRate = static_cast<float>(InAbcFile->GetFramerate());
 					for (int32 TrackIndex = 0; TrackIndex < NumTracks; ++TrackIndex)
 					{
 						const FAbcPolyMesh* PolyMesh = ImportPolyMeshes[TrackIndex];
@@ -505,7 +527,8 @@ UGeometryCache* FAbcImporter::ImportAsGeometryCache(UObject* InParent, EObjectFl
 
 							// Generate the mesh data for this sample
 							const bool bVisible = PolyMesh->GetVisibility(FrameIndex);
-							const float FrameTime = PolyMesh->GetTimeForFrameIndex(FrameIndex) - InAbcFile->GetImportTimeOffset();
+							// Convert frame times to frame numbers and back to time to avoid float imprecision
+							const float FrameTime = static_cast<float>(FMath::RoundToInt(PolyMesh->GetTimeForFrameIndex(FrameIndex) * FrameRate) - FMath::RoundToInt(InAbcFile->GetImportTimeOffset() * FrameRate)) / FrameRate;
 							if (bVisible)
 							{
 								const bool bUseVelocitiesAsMotionVectors = ( ImportSettings->GeometryCacheSettings.MotionVectors == EAbcGeometryCacheMotionVectorsImport::ImportAbcVelocitiesAsMotionVectors );
@@ -678,8 +701,8 @@ TArray<UObject*> FAbcImporter::ImportAsSkeletalMesh(UObject* InParent, EObjectFl
 		const FFrameNumber FrameNumber = FrameRate.AsFrameNumber(AbcFile->GetImportLength());
 		Controller.SetNumberOfFrames(FrameNumber);
 
-		Sequence->ImportFileFramerate = FrameRate.AsDecimal();
-		Sequence->ImportResampleFramerate = FrameRate.AsInterval();
+		Sequence->ImportFileFramerate = static_cast<float>(FrameRate.AsDecimal());
+		Sequence->ImportResampleFramerate = static_cast<int32>(FrameRate.AsInterval());
 
 		{
 #if WITH_EDITOR
@@ -744,7 +767,7 @@ TArray<UObject*> FAbcImporter::ImportAsSkeletalMesh(UObject* InParent, EObjectFl
 				{
 					const FString& MaterialName = CompressedData.MaterialNames[MaterialIndex];
 					UMaterialInterface* Material = AbcImporterUtilities::RetrieveMaterial(*AbcFile, MaterialName, InParent, Flags);
-					SkeletalMesh->GetMaterials().Add(FSkeletalMaterial(Material, true));
+					SkeletalMesh->GetMaterials().Add(FSkeletalMaterial(Material, true, false, FName(MaterialName), FName(MaterialName)));
 					if (Material != UMaterial::GetDefaultMaterial(MD_Surface))
 					{
 						Material->PostEditChange();
@@ -792,7 +815,6 @@ TArray<UObject*> FAbcImporter::ImportAsSkeletalMesh(UObject* InParent, EObjectFl
 
 		SkeletalMesh->MarkPackageDirty();
 
-		Controller.UpdateCurveNamesFromSkeleton(Skeleton, ERawCurveTrackTypes::RCT_Float);
 		Controller.NotifyPopulated();
 
 		Controller.CloseBracket();
@@ -826,10 +848,13 @@ TArray<UObject*> FAbcImporter::ImportAsSkeletalMesh(UObject* InParent, EObjectFl
 
 void FAbcImporter::SetupMorphTargetCurves(USkeleton* Skeleton, FName ConstCurveName, UAnimSequence* Sequence, const TArray<float> &CurveValues, const TArray<float>& TimeValues, IAnimationDataController& Controller)
 {
-	FSmartName NewName;
-	Skeleton->AddSmartNameAndModify(USkeleton::AnimCurveMappingName, ConstCurveName, NewName);
+	// Need curve metadata for the AnimSequence to playback. Can be either on the Skeleton or SKelMesh,
+	// but by default for FBX import it's on the Skeleton so do the same for Alembic
+	const bool bMaterialCurve = false;
+	const bool bMorphTargetCurve = true;
+	Skeleton->AccumulateCurveMetaData(ConstCurveName, bMaterialCurve, bMorphTargetCurve);
 
-	FAnimationCurveIdentifier CurveId(NewName, ERawCurveTrackTypes::RCT_Float);
+	FAnimationCurveIdentifier CurveId(ConstCurveName, ERawCurveTrackTypes::RCT_Float);
 	Controller.AddCurve(CurveId);
 
 	const FFloatCurve* NewCurve = Sequence->GetDataModel()->FindFloatCurve(CurveId);
@@ -914,12 +939,15 @@ const bool FAbcImporter::CompressAnimationDataUsingPCA(const FAbcCompressionSett
 				[this, PolyMeshesToCompress, &MinTime, &MaxTime, &NumSamples, &ObjectVertexOffsets, &ObjectIndexOffsets, &AverageVertexData, &AverageNormalData, NumPolyMeshesToCompress]
 				(int32 FrameIndex, FAbcFile* InFile)
 				{
+					const float FrameRate = static_cast<float>(AbcFile->GetFramerate());
 					for (int32 MeshIndex = 0; MeshIndex < NumPolyMeshesToCompress; ++MeshIndex)
 					{
 						FAbcPolyMesh* PolyMesh = PolyMeshesToCompress[MeshIndex];
 
-						MinTime = FMath::Min(MinTime, (float)PolyMesh->GetTimeForFrameIndex(FrameIndex) - AbcFile->GetImportTimeOffset());
-						MaxTime = FMath::Max(MaxTime, (float)PolyMesh->GetTimeForFrameIndex(FrameIndex) - AbcFile->GetImportTimeOffset());
+						// Convert frame times to frame numbers and back to time to avoid float imprecision
+						const float FrameTime = static_cast<float>(FMath::RoundToInt(PolyMesh->GetTimeForFrameIndex(FrameIndex) * FrameRate) - FMath::RoundToInt(AbcFile->GetImportTimeOffset() * FrameRate)) / FrameRate;
+						MinTime = FMath::Min(MinTime, FrameTime);
+						MaxTime = FMath::Max(MaxTime, FrameTime);
 
 						if (ObjectVertexOffsets.Num() != NumPolyMeshesToCompress)
 						{
@@ -988,7 +1016,7 @@ const bool FAbcImporter::CompressAnimationDataUsingPCA(const FAbcCompressionSett
 
 			// Average out vertex data
 			FBox AverageBoundingBox(ForceInit);
-			const float Multiplier = 1.0f / FMath::Max(NumSamples, 1);
+			const float Multiplier = 1.0f / static_cast<float>(FMath::Max(NumSamples, 1.f));
 			for (FVector3f& Vertex : AverageVertexData)
 			{
 				Vertex *= Multiplier;
@@ -1018,8 +1046,7 @@ const bool FAbcImporter::CompressAnimationDataUsingPCA(const FAbcCompressionSett
 				}
 				else
 				{
-					static const FString DefaultName("NoFaceSetName");
-					CompressedData.MaterialNames.Add(DefaultName);
+					CompressedData.MaterialNames.Add(NoFaceSetNameStr);
 				}
 			}
 
@@ -1152,6 +1179,7 @@ const bool FAbcImporter::CompressAnimationDataUsingPCA(const FAbcCompressionSett
 				[this, NumPolyMeshesToCompress, &PolyMeshesToCompress, &MinTimes, &MaxTimes, &NumSamples, &AverageVertexData, &AverageNormalData]
 				(int32 FrameIndex, FAbcFile* InFile)
 			{
+				const float FrameRate = static_cast<float>(AbcFile->GetFramerate());
 				// Each individual object creates a compressed data object
 				for (int32 MeshIndex = 0; MeshIndex < NumPolyMeshesToCompress; ++MeshIndex)
 				{
@@ -1180,8 +1208,9 @@ const bool FAbcImporter::CompressAnimationDataUsingPCA(const FAbcCompressionSett
 						}
 					}
 
-					MinTimes[MeshIndex] = FMath::Min(MinTimes[MeshIndex], (float)PolyMesh->GetTimeForFrameIndex(FrameIndex) - AbcFile->GetImportTimeOffset());
-					MaxTimes[MeshIndex] = FMath::Max(MaxTimes[MeshIndex], (float)PolyMesh->GetTimeForFrameIndex(FrameIndex) - AbcFile->GetImportTimeOffset());
+					const float FrameTime = static_cast<float>(FMath::RoundToInt(PolyMesh->GetTimeForFrameIndex(FrameIndex) * FrameRate) - FMath::RoundToInt(AbcFile->GetImportTimeOffset() * FrameRate)) / FrameRate;
+					MinTimes[MeshIndex] = FMath::Min(MinTimes[MeshIndex], FrameTime);
+					MaxTimes[MeshIndex] = FMath::Max(MaxTimes[MeshIndex], FrameTime);
 				}
 
 				for (int32 MeshIndex = 0; MeshIndex < NumPolyMeshesToCompress; ++MeshIndex)
@@ -1246,7 +1275,7 @@ const bool FAbcImporter::CompressAnimationDataUsingPCA(const FAbcCompressionSett
 
 			// Average out vertex data
 			FBox AverageBoundingBox(ForceInit);
-			const float Multiplier = 1.0f / FMath::Max(NumSamples, 1);
+			const float Multiplier = 1.0f / static_cast<float>(FMath::Max(NumSamples, 1));
 			for (TArray<FVector3f>& VertexData : AverageVertexData)
 			{
 				for (FVector3f& Vertex : VertexData)
@@ -1390,8 +1419,7 @@ const bool FAbcImporter::CompressAnimationDataUsingPCA(const FAbcCompressionSett
 				}
 				else
 				{
-					static const FString DefaultName("NoFaceSetName");
-					CompressedData.MaterialNames.Add(DefaultName);
+					CompressedData.MaterialNames.Add(NoFaceSetNameStr);
 				}
 
 				if (bRunComparison)
@@ -1433,8 +1461,7 @@ const bool FAbcImporter::CompressAnimationDataUsingPCA(const FAbcCompressionSett
 		}
 		else
 		{
-			static const FString DefaultName("NoFaceSetName");
-			CompressedData.MaterialNames.Add(DefaultName);
+			CompressedData.MaterialNames.Add(NoFaceSetNameStr);
 		}
 	}
 		

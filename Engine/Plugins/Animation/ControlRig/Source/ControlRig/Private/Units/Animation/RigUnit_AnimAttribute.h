@@ -134,7 +134,7 @@ struct CONTROLRIG_API FRigDispatch_AnimAttributeBase : public FRigDispatchFactor
 	virtual FString GetNodeTitle(const FRigVMTemplateTypeMap& InTypes) const override;;
 #endif
 	
-	virtual TArray<FRigVMTemplateArgument> GetArguments() const override;
+	virtual const TArray<FRigVMTemplateArgument>& GetArguments() const override;
 	virtual bool IsSet() const { return false; }
 
 #if WITH_EDITOR
@@ -182,7 +182,12 @@ struct CONTROLRIG_API FRigDispatch_GetAnimAttribute: public FRigDispatch_AnimAtt
 {
 	GENERATED_BODY()
 
-	virtual TArray<FRigVMTemplateArgument> GetArguments() const override;
+	FRigDispatch_GetAnimAttribute()
+	{
+		FactoryScriptStruct = StaticStruct();
+	}
+
+	virtual const TArray<FRigVMTemplateArgument>& GetArguments() const override;
 	virtual FRigVMTemplateTypeMap OnNewArgumentType(const FName& InArgumentName, TRigVMTypeIndex InTypeIndex) const override;
 
 	
@@ -214,7 +219,7 @@ protected:
 
 	// dispatch function for built-in types
 	template<typename ValueType>	
-	static void GetAnimAttributeDispatch(FRigVMExtendedExecuteContext& InContext, FRigVMMemoryHandleArray Handles)
+	static void GetAnimAttributeDispatch(FRigVMExtendedExecuteContext& InContext, FRigVMMemoryHandleArray Handles, FRigVMPredicateBranchArray Predicates)
 	{
 		const FRigDispatch_GetAnimAttribute* Factory = static_cast<const FRigDispatch_GetAnimAttribute*>(InContext.Factory);
 		
@@ -244,7 +249,7 @@ protected:
 	}
 
 	// dispatch function for user/dev defined types
-	static void GetAnimAttributeDispatch(FRigVMExtendedExecuteContext& InContext, FRigVMMemoryHandleArray Handles);
+	static void GetAnimAttributeDispatch(FRigVMExtendedExecuteContext& InContext, FRigVMMemoryHandleArray Handles, FRigVMPredicateBranchArray Predicates);
 	
 };
 
@@ -255,9 +260,15 @@ USTRUCT(meta=(DisplayName="Set Animation Attribute"))
 struct CONTROLRIG_API FRigDispatch_SetAnimAttribute: public FRigDispatch_AnimAttributeBase
 {
 	GENERATED_BODY()
+
+	FRigDispatch_SetAnimAttribute()
+	{
+		FactoryScriptStruct = StaticStruct();
+	}
+
 	virtual bool IsSet() const override { return true; }
-	virtual TArray<FRigVMTemplateArgument> GetArguments() const override;
-	virtual TArray<FRigVMExecuteArgument> GetExecuteArguments_Impl(const FRigVMDispatchContext& InContext) const override;
+	virtual const TArray<FRigVMTemplateArgument>& GetArguments() const override;
+	virtual const TArray<FRigVMExecuteArgument>& GetExecuteArguments_Impl(const FRigVMDispatchContext& InContext) const override;
 	virtual FRigVMTemplateTypeMap OnNewArgumentType(const FName& InArgumentName, TRigVMTypeIndex InTypeIndex) const override;
 	
 protected:
@@ -287,7 +298,7 @@ protected:
 
 	// dispatch function for built-in types
 	template<typename ValueType>	
-	static void SetAnimAttributeDispatch(FRigVMExtendedExecuteContext& InContext, FRigVMMemoryHandleArray Handles)
+	static void SetAnimAttributeDispatch(FRigVMExtendedExecuteContext& InContext, FRigVMMemoryHandleArray Handles, FRigVMPredicateBranchArray Predicates)
 	{
 		const FRigDispatch_SetAnimAttribute* Factory = static_cast<const FRigDispatch_SetAnimAttribute*>(InContext.Factory);
 		
@@ -320,6 +331,6 @@ protected:
 	}
 
 	// dispatch function for user/dev defined types
-	static void SetAnimAttributeDispatch(FRigVMExtendedExecuteContext& InContext, FRigVMMemoryHandleArray Handles);
+	static void SetAnimAttributeDispatch(FRigVMExtendedExecuteContext& InContext, FRigVMMemoryHandleArray Handles, FRigVMPredicateBranchArray Predicates);
 };
 

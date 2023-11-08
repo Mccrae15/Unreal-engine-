@@ -12,6 +12,7 @@ namespace Insights
 {
 
 class FTable;
+class STableTreeView;
 
 struct FTableRowId
 {
@@ -51,7 +52,7 @@ class FTableTreeNode : public FBaseTreeNode
 
 public:
 	/** Initialization constructor for a table record node. */
-	FTableTreeNode(const FName InName, TWeakPtr<FTable> InParentTable, int32 InRowIndex)
+	explicit FTableTreeNode(const FName InName, TWeakPtr<FTable> InParentTable, int32 InRowIndex)
 		: FBaseTreeNode(InName, false)
 		, ParentTable(InParentTable)
 		, RowId(InRowIndex)
@@ -60,10 +61,19 @@ public:
 	}
 
 	/** Initialization constructor for a group node. */
-	FTableTreeNode(const FName InGroupName, TWeakPtr<FTable> InParentTable)
+	explicit FTableTreeNode(const FName InGroupName, TWeakPtr<FTable> InParentTable)
 		: FBaseTreeNode(InGroupName, true)
 		, ParentTable(InParentTable)
 		, RowId(FTableRowId::InvalidRowIndex)
+		, AggregatedValues(nullptr)
+	{
+	}
+
+	/** Initialization constructor for a table record node. */
+	explicit FTableTreeNode(const FName InName, TWeakPtr<FTable> InParentTable, int32 InRowIndex, bool IsGroup)
+		: FBaseTreeNode(InName, IsGroup)
+		, ParentTable(InParentTable)
+		, RowId(InRowIndex)
 		, AggregatedValues(nullptr)
 	{
 	}
@@ -76,6 +86,9 @@ public:
 	const TWeakPtr<FTable>& GetParentTable() const { return ParentTable; }
 	FTableRowId GetRowId() const { return RowId; }
 	int32 GetRowIndex() const { return RowId.RowIndex; }
+
+	//////////////////////////////////////////////////
+	// Aggregation
 
 	void InitAggregatedValues()
 	{
@@ -94,16 +107,46 @@ public:
 		}
 	}
 
-	void ResetAggregatedValues() { CleanupAggregatedValues(); }
-	void ResetAggregatedValues(const FName& ColumnId) { if (AggregatedValues) { AggregatedValues->Remove(ColumnId); } }
-	bool HasAggregatedValue(const FName& ColumnId) const { return AggregatedValues && AggregatedValues->Contains(ColumnId); }
-	const FTableCellValue* FindAggregatedValue(const FName& ColumnId) const { return AggregatedValues ? AggregatedValues->Find(ColumnId) : nullptr; }
-	const FTableCellValue& GetAggregatedValue(const FName& ColumnId) const { return AggregatedValues->FindChecked(ColumnId); }
-	void AddAggregatedValue(const FName& ColumnId, const FTableCellValue& Value) { InitAggregatedValues(); AggregatedValues->Add(ColumnId, Value); }
-	void SetAggregatedValue(const FName& ColumnId, const FTableCellValue& Value) { InitAggregatedValues(); (*AggregatedValues)[ColumnId] = Value; }
+	void ResetAggregatedValues()
+	{
+		CleanupAggregatedValues();
+	}
 
-	virtual bool IsFiltered() const override { return bIsFiltered; }
+	void ResetAggregatedValue(const FName& ColumnId)
+	{
+		if (AggregatedValues)
+		{
+			AggregatedValues->Remove(ColumnId);
+		}
+	}
+
+	bool HasAggregatedValue(const FName& ColumnId) const
+	{
+		return AggregatedValues && AggregatedValues->Contains(ColumnId);
+	}
+
+	const FTableCellValue* FindAggregatedValue(const FName& ColumnId) const
+	{
+		return AggregatedValues ? AggregatedValues->Find(ColumnId) : nullptr;
+	}
+
+	const FTableCellValue& GetAggregatedValue(const FName& ColumnId) const
+	{
+		return AggregatedValues->FindChecked(ColumnId);
+	}
+
+	void SetAggregatedValue(const FName& ColumnId, const FTableCellValue& Value)
+	{
+		InitAggregatedValues();
+		AggregatedValues->Add(ColumnId, Value);
+	}
+
+	//////////////////////////////////////////////////
+
+	virtual bool IsFiltered() const { return bIsFiltered; }
 	virtual void SetIsFiltered(bool InValue) { bIsFiltered = InValue; }
+
+	virtual bool OnLazyCreateChildren(TSharedPtr<STableTreeView> InTableTreeView) { return false; }
 
 protected:
 	TWeakPtr<FTable> ParentTable;
@@ -113,6 +156,65 @@ protected:
 
 private:
 	bool bIsFiltered = false;
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+class FCustomTableTreeNode : public FTableTreeNode
+{
+	INSIGHTS_DECLARE_RTTI(FCustomTableTreeNode, FTableTreeNode)
+
+public:
+	/** Initialization constructor for a table record node. */
+	explicit FCustomTableTreeNode(const FName InName, TWeakPtr<FTable> InParentTable, int32 InRowIndex, const FSlateBrush* InIconBrush, FLinearColor InColor, bool IsGroup)
+		: FTableTreeNode(InName, InParentTable, InRowIndex, IsGroup)
+		, IconBrush(InIconBrush)
+		, Color(InColor)
+	{
+	}
+
+	/** Initialization constructor for the group node. */
+	explicit FCustomTableTreeNode(const FName InName, TWeakPtr<FTable> InParentTable, const FSlateBrush* InIconBrush, FLinearColor InColor)
+		: FTableTreeNode(InName, InParentTable)
+		, IconBrush(InIconBrush)
+		, Color(InColor)
+	{
+	}
+
+	virtual ~FCustomTableTreeNode()
+	{
+	}
+
+	/**
+	 * @return a brush icon for this node.
+	 */
+	virtual const FSlateBrush* GetIcon() const override
+	{
+		return IconBrush;
+	}
+
+	/**
+	 * Sets an icon brush for this node.
+	 */
+	void SetIcon(const FSlateBrush* InIconBrush)
+	{
+		IconBrush = InIconBrush;
+	}
+
+	/**
+	 * @return the color tint for icon and name text.
+	 */
+	virtual FLinearColor GetColor() const override
+	{
+		return Color;
+	}
+
+private:
+	/** The icon of this node. */
+	const FSlateBrush* IconBrush;
+
+	/** The color tint of this node. */
+	FLinearColor Color;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

@@ -27,7 +27,7 @@ public:
 	FOnlineServicesCommon(const FString& InConfigName, FName InInstanceName);
 	FOnlineServicesCommon(const FOnlineServicesCommon&) = delete;
 	FOnlineServicesCommon(FOnlineServicesCommon&&) = delete;
-	virtual ~FOnlineServicesCommon() {}
+	virtual ~FOnlineServicesCommon();
 
 	// IOnlineServices
 	virtual void Init() override;
@@ -49,6 +49,7 @@ public:
 	virtual IUserFilePtr GetUserFileInterface() override;
 	virtual TOnlineResult<FGetResolvedConnectString> GetResolvedConnectString(FGetResolvedConnectString::Params&& Params) override;
 	virtual FName GetInstanceName() const override;
+	virtual void AssignBaseInterfaceSharedPtr(const FOnlineTypeName& TypeName, void* OutBaseInterfaceSP) override final;
 
 	// FOnlineServicesCommon
 
@@ -284,19 +285,19 @@ public:
 
 	/* Get op (Interface) */
 	template <typename OpType>
-	TOnlineAsyncOpRef<OpType> GetOp(typename OpType::Params&& Params, const TArray<FString> ConfigSectionHeiarchy)
+	TOnlineAsyncOpRef<OpType> GetOp(typename OpType::Params&& Params, const TArray<FString>& ConfigSectionHeiarchy)
 	{
 		return OpCache.GetOp<OpType>(MoveTemp(Params), ConfigSectionHeiarchy);
 	}
 
-	template <typename OpType, typename ParamsFuncsType /*= TJoinableOpParamsFuncs<OpType>*/>
-	TOnlineAsyncOpRef<OpType> GetJoinableOp(typename OpType::Params&& Params, const TArray<FString> ConfigSectionHeiarchy)
+	template <typename OpType, typename ParamsFuncsType = TJoinableOpParamsFuncs<OpType>>
+	TOnlineAsyncOpRef<OpType> GetJoinableOp(typename OpType::Params&& Params, const TArray<FString>& ConfigSectionHeiarchy)
 	{
 		return OpCache.GetJoinableOp<OpType, ParamsFuncsType>(MoveTemp(Params), ConfigSectionHeiarchy);
 	}
 
-	template <typename OpType, typename ParamsFuncsType /*= TMergeableOpParamsFuncs<OpType>*/>
-	TOnlineAsyncOpRef<OpType> GetMergeableOp(typename OpType::Params&& Params, const TArray<FString> ConfigSectionHeiarchy)
+	template <typename OpType, typename ParamsFuncsType = TMergeableOpParamsFuncs<OpType>>
+	TOnlineAsyncOpRef<OpType> GetMergeableOp(typename OpType::Params&& Params, const TArray<FString>& ConfigSectionHeiarchy)
 	{
 		return OpCache.GetMergeableOp<OpType, ParamsFuncsType>(MoveTemp(Params), ConfigSectionHeiarchy);
 	}
@@ -312,11 +313,15 @@ public:
 	
 	void RegisterExecHandler(const FString& Name, TUniquePtr<IOnlineExecHandler>&& Handler);
 
+#if UE_ALLOW_EXEC_COMMANDS
 	virtual bool Exec(UWorld* World, const TCHAR* Cmd, FOutputDevice& Ar) override;
+#endif
 
 	FOnlineAsyncOpCache OpCache;
 
 protected:
+	void LoadCommonConfig();
+
 	TMap<FString, TUniquePtr<IOnlineExecHandler>> ExecCommands;
 
 	static uint32 NextInstanceIndex;

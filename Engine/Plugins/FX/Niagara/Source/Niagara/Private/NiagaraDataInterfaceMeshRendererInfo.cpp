@@ -1,13 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "NiagaraDataInterfaceMeshRendererInfo.h"
-#include "NiagaraSystem.h"
-#include "NiagaraEmitter.h"
+#include "NiagaraCompileHashVisitor.h"
 #include "NiagaraMeshRendererProperties.h"
-#include "ShaderParameterUtils.h"
-#include "NiagaraStats.h"
 #include "NiagaraRenderer.h"
 #include "NiagaraShaderParametersBuilder.h"
 #include "Engine/StaticMesh.h"
+#include "RenderingThread.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceMeshRendererInfo)
 
@@ -332,8 +330,8 @@ void UNiagaraDataInterfaceMeshRendererInfo::PushToRenderThreadImpl()
 			TypedProxy->GPUMeshData.Release();
 			if ( TypedProxy->NumMeshes > 0 )
 			{
-				TypedProxy->GPUMeshData.Initialize(TEXT("UNiagaraDataInterfaceMeshRendererInfo"), sizeof(float), CachedMeshData_RT.Num() * 6, PF_R32_FLOAT, BUF_Static);
-				float* GpuMeshData = reinterpret_cast<float*>(RHILockBuffer(TypedProxy->GPUMeshData.Buffer, 0, TypedProxy->GPUMeshData.NumBytes, RLM_WriteOnly));
+				TypedProxy->GPUMeshData.Initialize(RHICmdList, TEXT("UNiagaraDataInterfaceMeshRendererInfo"), sizeof(float), CachedMeshData_RT.Num() * 6, PF_R32_FLOAT, BUF_Static);
+				float* GpuMeshData = reinterpret_cast<float*>(RHICmdList.LockBuffer(TypedProxy->GPUMeshData.Buffer, 0, TypedProxy->GPUMeshData.NumBytes, RLM_WriteOnly));
 				for ( const UNiagaraDataInterfaceMeshRendererInfo::FMeshData& MeshData : CachedMeshData_RT )
 				{
 					*GpuMeshData++ = MeshData.MinLocalBounds.X;
@@ -344,7 +342,7 @@ void UNiagaraDataInterfaceMeshRendererInfo::PushToRenderThreadImpl()
 					*GpuMeshData++ = MeshData.MaxLocalBounds.Y;
 					*GpuMeshData++ = MeshData.MaxLocalBounds.Z;
 				}
-				RHIUnlockBuffer(TypedProxy->GPUMeshData.Buffer);
+				RHICmdList.UnlockBuffer(TypedProxy->GPUMeshData.Buffer);
 			}
 		}
 	);

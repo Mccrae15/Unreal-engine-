@@ -1,9 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RenderGraphResources.h"
-#include "RenderGraphPass.h"
 #include "RenderGraphPrivate.h"
-#include "RenderGraphResourcePool.h"
 
 inline bool SkipUAVBarrier(const FRDGSubresourceState& Previous, const FRDGSubresourceState& Next)
 {
@@ -121,6 +119,10 @@ bool FRDGSubresourceState::IsTransitionRequired(const FRDGSubresourceState& Prev
 
 	return false;
 }
+
+FRDGPooledBuffer::FRDGPooledBuffer(TRefCountPtr<FRHIBuffer> InBuffer, const FRDGBufferDesc& InDesc, uint32 InNumAllocatedElements, const TCHAR* InName)
+	: FRDGPooledBuffer(FRHICommandListImmediate::Get(), MoveTemp(InBuffer), InDesc, InNumAllocatedElements, InName)
+{}
 
 void FRDGUniformBuffer::InitRHI()
 {

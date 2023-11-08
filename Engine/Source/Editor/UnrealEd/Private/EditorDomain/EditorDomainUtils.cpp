@@ -8,6 +8,7 @@
 #include "Algo/Unique.h"
 #include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/IAssetRegistry.h"
+#include "AssetRegistry/PackageReader.h"
 #include "DerivedDataBuildDefinition.h"
 #include "DerivedDataCache.h"
 #include "DerivedDataCacheKey.h"
@@ -15,6 +16,7 @@
 #include "DerivedDataRequestOwner.h"
 #include "DerivedDataValue.h"
 #include "Editor.h"
+#include "Engine/Blueprint.h"
 #include "Engine/StaticMesh.h"
 #include "HAL/CriticalSection.h"
 #include "HAL/FileManager.h"
@@ -195,15 +197,14 @@ TMap<FTopLevelAssetPath, EDomainUse> GClassBlockedUses;
 TMap<FName, EDomainUse> GPackageBlockedUses;
 TMultiMap<FTopLevelAssetPath, FTopLevelAssetPath> GConstructClasses;
 TSet<FTopLevelAssetPath> GTargetDomainClassBlockList;
-bool GTargetDomainClassUseAllowList = true;
-bool GTargetDomainClassEmptyAllowList = false;
 TArray<FTopLevelAssetPath> GGlobalConstructClasses;
 bool bGGlobalConstructClassesInitialized = false;
+bool bGUtilsTargetDomainInitialized = false;
 FBlake3Hash GGlobalConstructClassesHash;
 int64 GMaxBulkDataSize = -1;
 
 // Change to a new guid when EditorDomain needs to be invalidated
-const TCHAR* EditorDomainVersion = TEXT("1F8E29F8458141ADB52D9EBEEA2991F0");
+const TCHAR* EditorDomainVersion = TEXT("4132358BA4F34EFA8294F50D76F1C94F");
 
 // Identifier of the CacheBuckets for EditorDomain tables
 const TCHAR* EditorDomainPackageBucketName = TEXT("EditorDomainPackage");
@@ -216,10 +217,6 @@ static bool GetEditorDomainSaveUnversioned()
 	{
 		bool bParsedValue;
 		bool bResult = GConfig->GetBool(TEXT("EditorDomain"), TEXT("SaveUnversioned"), bParsedValue, GEditorIni) ? bParsedValue : true;
-		if (GConfig->GetBool(TEXT("CookSettings"), TEXT("EditorDomainSaveUnversioned"), bResult, GEditorIni))
-		{
-			UE_LOG(LogEditorDomain, Error, TEXT("Editor.ini:[CookSettings]:EditorDomainSaveUnversioned is deprecated, use Editor.ini:[EditorDomain]:SaveUnversioned instead."));
-		}
 		return bResult;
 	};
 	static bool bEditorDomainSaveUnversioned = Initialize();
@@ -510,10 +507,6 @@ FClassDigestData* FPrecacheClassDigest::GetRecursive(FTopLevelAssetPath ClassPat
 	// Fill in digest data config-driven flags
 	DigestData->EditorDomainUse = EDomainUse::LoadEnabled | EDomainUse::SaveEnabled;
 	DigestData->EditorDomainUse &= ~MapFindRef(GClassBlockedUses, ClassPath, EDomainUse::None);
-	if (!GTargetDomainClassUseAllowList)
-	{
-		DigestData->bTargetIterativeEnabled = !GTargetDomainClassBlockList.Contains(ClassPath);
-	}
 
 	// Fill in native-specific digest data, get the ParentName, and if non-native, get the native ancestor struct
 	UStruct* Struct = nullptr;
@@ -638,10 +631,6 @@ FClassDigestData* FPrecacheClassDigest::GetRecursive(FTopLevelAssetPath ClassPat
 			}
 			EnumSetFlagsAnd(DigestData->EditorDomainUse, EDomainUse::LoadEnabled | EDomainUse::SaveEnabled,
 				DigestData->EditorDomainUse, ParentDigest->EditorDomainUse);
-			if (!GTargetDomainClassUseAllowList)
-			{
-				DigestData->bTargetIterativeEnabled &= ParentDigest->bTargetIterativeEnabled;
-			}
 			ConstructClasses.Append(ParentDigest->ConstructClasses);
 			if (!StructAsClass)
 			{
@@ -705,7 +694,7 @@ FClassDigestData* FPrecacheClassDigest::GetRecursive(FTopLevelAssetPath ClassPat
 			// all transitive constructclasses of the strongly connected component.
 			UE_LOG(LogEditorDomain, Error,
 				TEXT("Cycle detected in ConstructClasses of class %s. Packages with classes that can construct %s will sometimes fail to update during incremental cooks."),
-				*ClassPath.ToString());
+				*ClassPath.ToString(), *ClassPath.ToString());
 		}
 		// The map has possibly been modified so we need to recalculate the address of ClassName's DigestData
 		DigestData = &ClassDigests.FindChecked(ClassPath);
@@ -844,6 +833,11 @@ public:
 	virtual FString GetArchiveName() const override
 	{
 		return TEXT("FCustomVersionCollectorArchive");
+	}
+
+	virtual FArchive& operator<<(FObjectPtr& Value) override
+	{
+		return *this;
 	}
 
 private:
@@ -992,7 +986,6 @@ TSet<FTopLevelAssetPath> ConstructTargetIterativeClassBlockList()
 
 void ConstructTargetIterativeClassAllowList()
 {
-	// We're using an allowlist with a blocklist override, so the blocklist is only needed when creating the allowlist
 	TSet<FTopLevelAssetPath> BlockListClassPaths = ConstructTargetIterativeClassBlockList();
 
 	// AllowList elements implicitly allow all parent classes, so instead of consulting a list and propagating
@@ -1006,8 +999,13 @@ void ConstructTargetIterativeClassAllowList()
 	TStringBuilder<256> NameStringBuffer;
 	TMap<FTopLevelAssetPath, TOptional<bool>> Visited;
 	auto EnableClassIfNotBlocked = [&Visited, &EnabledClassPaths, &BlockListClassPaths, &NameStringBuffer]
-		(const FTopLevelAssetPath& ClassPath, UStruct* Struct, bool& bOutIsBlocked, auto& EnableClassIfNotBlockedRef)
+		(UStruct* Struct, bool& bOutIsBlocked, auto& EnableClassIfNotBlockedRef)
 	{
+		FTopLevelAssetPath ClassPath(Struct);
+		if (!ClassPath.IsValid())
+		{
+			return;
+		}
 		int32 KeyHash = GetTypeHash(ClassPath);
 		TOptional<bool>& BlockedValue = Visited.FindOrAddByHash(KeyHash, ClassPath);
 		if (BlockedValue.IsSet())
@@ -1021,11 +1019,7 @@ void ConstructTargetIterativeClassAllowList()
 		UStruct* ParentStruct = Struct->GetSuperStruct();
 		if (ParentStruct)
 		{
-			FTopLevelAssetPath ParentStructPath(ParentStruct);
-			if (ParentStructPath.IsValid())
-			{
-				EnableClassIfNotBlockedRef(ParentStructPath, ParentStruct, bParentBlocked, EnableClassIfNotBlockedRef);
-			}
+			EnableClassIfNotBlockedRef(ParentStruct, bParentBlocked, EnableClassIfNotBlockedRef);
 		}
 
 		bOutIsBlocked = bParentBlocked || BlockListClassPaths.Contains(ClassPath);
@@ -1041,7 +1035,10 @@ void ConstructTargetIterativeClassAllowList()
 	};
 
 	TArray<FString> AllowListLeafNames;
+	TArray<FString> AllowListScriptPackages;
 	GConfig->GetArray(TEXT("TargetDomain"), TEXT("IterativeClassAllowList"), AllowListLeafNames, GEditorIni);
+	GConfig->GetArray(TEXT("TargetDomain"), TEXT("IterativeScriptPackageAllowList"), AllowListScriptPackages, GEditorIni);
+	TSet<UStruct*> AllowListClasses;
 	for (const FString& ClassPathString : AllowListLeafNames)
 	{
 		FTopLevelAssetPath ClassPath(ClassPathString);
@@ -1059,8 +1056,45 @@ void ConstructTargetIterativeClassAllowList()
 		{
 			continue;
 		}
+		AllowListClasses.Add(Struct);
+	}
+	UPackage* CoreUObjectPackage = UClass::StaticClass()->GetPackage();
+	UPackage* EnginePackage = UBlueprint::StaticClass()->GetPackage();
+	for (const FString& ScriptPackage : AllowListScriptPackages)
+	{
+		if (!FPackageName::IsScriptPackage(ScriptPackage))
+		{
+			continue;
+		}
+		UPackage* Package = FindObject<UPackage>(nullptr, *ScriptPackage);
+		if (!Package)
+		{
+			continue;
+		}
+		ForEachObjectWithPackage(Package, [Package, CoreUObjectPackage, EnginePackage, &AllowListClasses](UObject* Object)
+			{
+				UClass* Class = Cast<UClass>(Object);
+				if (!Class)
+				{
+					return true;
+				}
+				if (Package == CoreUObjectPackage || Package == EnginePackage)
+				{
+					// Skip some non-normal classes in CoreUObject and Engine; we crash on them because e.g. they do not have a CDO
+					if (FStringView(WriteToString<256>(Object->GetFName())).StartsWith(TEXT("Default_")))
+					{
+						return true;
+					}
+				}
+				AllowListClasses.Add(Class);
+				return true;
+			}, false /* bIncludeNestedObjects */);
+	}
+
+	for (UStruct* Struct : AllowListClasses)
+	{
 		bool bUnusedIsBlocked;
-		EnableClassIfNotBlocked(ClassPath, Struct, bUnusedIsBlocked, EnableClassIfNotBlocked);
+		EnableClassIfNotBlocked(Struct, bUnusedIsBlocked, EnableClassIfNotBlocked);
 	}
 
 	TArray<FTopLevelAssetPath> EnabledClassPathsArray = EnabledClassPaths.Array();
@@ -1111,9 +1145,6 @@ TMultiMap<FTopLevelAssetPath, FTopLevelAssetPath> ConstructConstructClasses()
 	};
 	return ConstructClasses;
 }
-
-FDelegateHandle GUtilsPostInitDelegate;
-void UtilsPostEngineInit();
 
 /** A default implementation of IPackageDigestCache that stores the Digests in a TMap. */
 class FDefaultPackageDigestCache : public IPackageDigestCache
@@ -1174,53 +1205,21 @@ void UtilsInitialize()
 	GPackageBlockedUses = ConstructPackageNameBlockedUses();
 	GConstructClasses = ConstructConstructClasses();
 
-	bool bTargetDomainClassUseBlockList = true;
-	if (FParse::Param(FCommandLine::Get(), TEXT("fullcook")))
-	{
-		// Allow list is marked as used, but is initialized empty
-		bTargetDomainClassUseBlockList = false;
-		GTargetDomainClassUseAllowList = true;
-		GTargetDomainClassEmptyAllowList = true;
-	}
-	else if (FParse::Param(FCommandLine::Get(), TEXT("iterate")))
-	{
-		bTargetDomainClassUseBlockList = false;
-		GTargetDomainClassUseAllowList = false;
-	}
-	else
-	{
-		GConfig->GetBool(TEXT("TargetDomain"), TEXT("IterativeClassAllowListEnabled"), GTargetDomainClassUseAllowList, GEditorIni);
-		GTargetDomainClassEmptyAllowList = false;
-	}
-
-	if (!GTargetDomainClassUseAllowList && bTargetDomainClassUseBlockList)
-	{
-		GTargetDomainClassBlockList = ConstructTargetIterativeClassBlockList();
-	}
-
 	double MaxBulkDataSize = 64 * 1024;
 	GConfig->GetDouble(TEXT("EditorDomain"), TEXT("MaxBulkDataSize"), MaxBulkDataSize, GEditorIni);
 	GMaxBulkDataSize = static_cast<uint64>(MaxBulkDataSize);
 
-	// Constructing allowlists requires use of UStructs, and the early SetPackageResourceManager
-	// where UtilsInitialize is called is too early; trying to call UStruct->GetSchemaHash at that
-	// time will break the UClass. Defer the construction of allowlist-based data until OnPostEngineInit
-	GUtilsPostInitDelegate = FCoreDelegates::OnPostEngineInit.AddLambda([]() { UtilsPostEngineInit(); });
-
-
 	COOK_STAT(UE::EditorDomain::CookStats::Register());
 }
 
-void UtilsPostEngineInit()
+void UtilsTargetDomainInit()
 {
-	FCoreDelegates::OnPostEngineInit.Remove(GUtilsPostInitDelegate);
-	GUtilsPostInitDelegate.Reset();
-
-	// Note that constructing AllowLists depends on all BlockLists having been parsed already
-	if (GTargetDomainClassUseAllowList && !GTargetDomainClassEmptyAllowList)
+	if (bGUtilsTargetDomainInitialized)
 	{
-		ConstructTargetIterativeClassAllowList();
+		return;
 	}
+	bGUtilsTargetDomainInitialized = true;
+	ConstructTargetIterativeClassAllowList();
 }
 
 UE::DerivedData::FCacheKey GetEditorDomainPackageKey(const FIoHash& EditorDomainHash)
@@ -1264,295 +1263,6 @@ void RequestEditorDomainPackage(const FPackagePath& PackagePath,
 	ECachePolicy CachePolicy = SkipFlags | ECachePolicy::Local | ECachePolicy::StoreRemote;
 	Cache.Get({{{PackagePath.GetDebugName()}, GetEditorDomainPackageKey(EditorDomainHash), CachePolicy}}, Owner, MoveTemp(Callback));
 }
-
-/** TODO: Delete this duplicate of AssetRegistry/PackageReader once we have approved making that class Public */
-class FPackageReader : public FArchiveUObject
-{
-public:
-	FPackageReader()
-		: Loader(nullptr)
-		, PackageFileSize(0)
-	{
-		SetIsLoading(true);
-		SetIsPersistent(true);
-	}
-
-	bool OpenPackageFile(FArchive* InLoader)
-	{
-		Loader = InLoader;
-		return OpenPackageFile();
-	}
-	bool OpenPackageFile()
-	{
-		// Read package file summary from the file
-		*this << PackageFileSummary;
-		PackageFileSize = TotalSize();
-		return true;
-	}
-	bool ReadImportedClasses(TArray<FName>& OutClassNames)
-	{
-		if (!SerializeNameMap())
-		{
-			return false;
-		}
-
-		TArray<FObjectImport> ImportMap;
-		if (!SerializeImportMap(ImportMap))
-		{
-			return false;
-		}
-		if (!SerializeImportedClasses(ImportMap, OutClassNames))
-		{
-			return false;
-		}
-		return true;
-	}
-	const FPackageFileSummary& GetPackageFileSummary() const { return PackageFileSummary; }
-
-
-	// Farchive implementation to redirect requests to the Loader
-	virtual void Serialize(void* V, int64 Length) override
-	{
-		check(Loader);
-		Loader->Serialize(V, Length);
-		if (Loader->IsError())
-		{
-			SetError();
-		}
-	}
-
-	virtual bool Precache(int64 PrecacheOffset, int64 PrecacheSize) override
-	{
-		check(Loader);
-		return Loader->Precache(PrecacheOffset, PrecacheSize);
-	}
-
-	virtual void Seek(int64 InPos) override
-	{
-		check(Loader);
-		Loader->Seek(InPos);
-		if (Loader->IsError())
-		{
-			SetError();
-		}
-	}
-
-	virtual int64 Tell() override
-	{
-		check(Loader);
-		return Loader->Tell();
-	}
-
-	virtual int64 TotalSize() override
-	{
-		check(Loader);
-		return Loader->TotalSize();
-	}
-
-	virtual FArchive& operator<<(FName& Name) override
-	{
-		int32 NameIndex;
-		FArchive& Ar = *this;
-		Ar << NameIndex;
-
-		if (!NameMap.IsValidIndex(NameIndex))
-		{
-			SetError();
-			return *this;
-		}
-
-		// if the name wasn't loaded (because it wasn't valid in this context)
-		if (NameMap[NameIndex] == NAME_None)
-		{
-			int32 TempNumber;
-			Ar << TempNumber;
-			Name = NAME_None;
-		}
-		else
-		{
-			int32 Number;
-			Ar << Number;
-			// simply create the name from the NameMap's name and the serialized instance number
-			Name = FName(NameMap[NameIndex], Number);
-		}
-
-		return *this;
-	}
-
-	virtual FString GetArchiveName() const override
-	{
-		return TEXT("EditorDomainPackageReader");
-	}
-private:
-	// Serializers for different package maps
-	bool SerializeNameMap()
-	{
-		if (NameMap.Num() == 0 && PackageFileSummary.NameCount > 0)
-		{
-			if (!StartSerializeSection(PackageFileSummary.NameOffset))
-			{
-				return false;
-			}
-
-			const int MinSizePerNameEntry = 1;
-			if (PackageFileSize < Tell() + PackageFileSummary.NameCount * MinSizePerNameEntry)
-			{
-				return false;
-			}
-
-			for (int32 NameMapIdx = 0; NameMapIdx < PackageFileSummary.NameCount; ++NameMapIdx)
-			{
-				// Read the name entry from the file.
-				FNameEntrySerialized NameEntry(ENAME_LinkerConstructor);
-				*this << NameEntry;
-				if (IsError())
-				{
-					return false;
-				}
-				NameMap.Add(FName(NameEntry));
-			}
-		}
-
-		return true;
-	}
-	bool SerializeImportMap(TArray<FObjectImport>& OutImportMap)
-	{
-		if (PackageFileSummary.ImportCount > 0)
-		{
-			if (!StartSerializeSection(PackageFileSummary.ImportOffset))
-			{
-				return false;
-			}
-
-			const int MinSizePerImport = 1;
-			if (PackageFileSize < Tell() + PackageFileSummary.ImportCount * MinSizePerImport)
-			{
-				return false;
-			}
-			for (int32 ImportMapIdx = 0; ImportMapIdx < PackageFileSummary.ImportCount; ++ImportMapIdx)
-			{
-				FObjectImport& Import = OutImportMap.Emplace_GetRef();
-				*this << Import;
-				if (IsError())
-				{
-					return false;
-				}
-			}
-		}
-
-		return true;
-	}
-	bool SerializeImportedClasses(const TArray<FObjectImport>& ImportMap, TArray<FName>& OutClassNames)
-	{
-		OutClassNames.Reset();
-
-		TSet<int32> ClassImportIndices;
-		if (PackageFileSummary.ExportCount > 0)
-		{
-			if (!StartSerializeSection(PackageFileSummary.ExportOffset))
-			{
-				return false;
-			}
-
-			const int MinSizePerExport = 1;
-			if (PackageFileSize < Tell() + PackageFileSummary.ExportCount * MinSizePerExport)
-			{
-				return false;
-			}
-			FObjectExport ExportBuffer;
-			for (int32 ExportMapIdx = 0; ExportMapIdx < PackageFileSummary.ExportCount; ++ExportMapIdx)
-			{
-				*this << ExportBuffer;
-				if (IsError())
-				{
-					return false;
-				}
-				if (ExportBuffer.ClassIndex.IsImport())
-				{
-					ClassImportIndices.Add(ExportBuffer.ClassIndex.ToImport());
-				}
-			}
-		}
-
-		TArray<FName, TInlineAllocator<5>>  ParentChain;
-		FNameBuilder ClassObjectPath;
-		for (int32 ClassImportIndex : ClassImportIndices)
-		{
-			ParentChain.Reset();
-			ClassObjectPath.Reset();
-			if (!ImportMap.IsValidIndex(ClassImportIndex))
-			{
-				return false;
-			}
-			bool bParentChainComplete = false;
-			int32 CurrentParentIndex = ClassImportIndex;
-			for (;;)
-			{
-				const FObjectImport& ObjectImport = ImportMap[CurrentParentIndex];
-				ParentChain.Add(ObjectImport.ObjectName);
-				if (ObjectImport.OuterIndex.IsImport())
-				{
-					CurrentParentIndex = ObjectImport.OuterIndex.ToImport();
-					if (!ImportMap.IsValidIndex(CurrentParentIndex))
-					{
-						return false;
-					}
-				}
-				else if (ObjectImport.OuterIndex.IsNull())
-				{
-					bParentChainComplete = true;
-					break;
-				}
-				else
-				{
-					check(ObjectImport.OuterIndex.IsExport());
-					// Ignore classes in an external package but with an object in this package as one of their outers;
-					// We do not need to handle that case yet for Import Classes, and we would have to make this
-					// loop more complex (searching in both ExportMap and ImportMap) to do so
-					break;
-				}
-			}
-
-			if (bParentChainComplete)
-			{
-				int32 NumTokens = ParentChain.Num();
-				check(NumTokens >= 1);
-				const TCHAR Delimiters[] = { '.', SUBOBJECT_DELIMITER_CHAR, '.' };
-				int32 DelimiterIndex = 0;
-				ParentChain[NumTokens - 1].AppendString(ClassObjectPath);
-				for (int32 TokenIndex = NumTokens - 2; TokenIndex >= 0; --TokenIndex)
-				{
-					ClassObjectPath << Delimiters[DelimiterIndex];
-					DelimiterIndex = FMath::Min(DelimiterIndex + 1, static_cast<int32>(UE_ARRAY_COUNT(Delimiters)) - 1);
-					ParentChain[TokenIndex].AppendString(ClassObjectPath);
-				}
-				OutClassNames.Emplace(ClassObjectPath);
-			}
-		}
-
-		OutClassNames.Sort(FNameLexicalLess());
-		return true;
-	}
-	bool StartSerializeSection(int64 Offset)
-	{
-		check(Loader);
-		if (Offset <= 0 || Offset > PackageFileSize)
-		{
-			return false;
-		}
-		ClearError();
-		Loader->ClearError();
-		Seek(Offset);
-		return !IsError();
-	}
-
-	FArchive* Loader;
-	FPackageFileSummary PackageFileSummary;
-	TArray<FName> NameMap;
-	int64 PackageFileSize;
-	int64 AssetRegistryDependencyDataOffset;
-	bool bLoaderOwner;
-};
 
 /** Stores data from SavePackage in accessible fields */
 class FEditorDomainPackageWriter final : public TPackageWriterToSharedBuffer<IPackageWriter>
@@ -1836,7 +1546,7 @@ bool TrySavePackage(UPackage* Package)
 	if (Result.Result != ESavePackageResult::Success)
 	{
 		UE_LOG(LogEditorDomain, Warning, TEXT("Could not save %s to EditorDomain: SavePackage returned %d."),
-			*Package->GetName(), Result.Result);
+					 *Package->GetName(), int(Result.Result));
 		return false;
 	}
 

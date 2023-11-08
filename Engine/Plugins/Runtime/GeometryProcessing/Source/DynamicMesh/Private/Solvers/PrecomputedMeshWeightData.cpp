@@ -5,24 +5,6 @@
 using namespace UE::Geometry;
 
 
-UE::MeshDeformation::CotanTriangleData::CotanTriangleData(const CotanTriangleData& Other)
-{
-
-	Cotangent[0] = Other.Cotangent[0];
-	Cotangent[1] = Other.Cotangent[1];
-	Cotangent[2] = Other.Cotangent[2];
-
-	VoronoiArea[0] = Other.VoronoiArea[0];
-	VoronoiArea[1] = Other.VoronoiArea[1];
-	VoronoiArea[2] = Other.VoronoiArea[2];
-
-	OppositeEdge[0] = Other.OppositeEdge[0];
-	OppositeEdge[1] = Other.OppositeEdge[1];
-	OppositeEdge[2] = Other.OppositeEdge[2];
-
-}
-
-
 void UE::MeshDeformation::CotanTriangleData::Initialize(const FDynamicMesh3& DynamicMesh, int32 SrcTriId)
 {
 	TriId = SrcTriId;
@@ -126,21 +108,6 @@ void UE::MeshDeformation::CotanTriangleData::Initialize(const FDynamicMesh3& Dyn
 }
 
 
-UE::MeshDeformation::MeanValueTriangleData::MeanValueTriangleData(const MeanValueTriangleData& Other)
-	: TriId(Other.TriId)
-	, TriVtxIds(Other.TriVtxIds)
-	, TriEdgeIds(Other.TriEdgeIds)
-	, bDegenerate(Other.bDegenerate)
-{
-	EdgeLength[0] = Other.EdgeLength[0];
-	EdgeLength[1] = Other.EdgeLength[1];
-	EdgeLength[2] = Other.EdgeLength[2];
-
-	TanHalfAngle[0] = Other.TanHalfAngle[0];
-	TanHalfAngle[1] = Other.TanHalfAngle[1];
-	TanHalfAngle[2] = Other.TanHalfAngle[2];
-}
-
 void UE::MeshDeformation::MeanValueTriangleData::Initialize(const FDynamicMesh3& DynamicMesh, int32 SrcTriId)
 {
 	TriId = SrcTriId;
@@ -189,3 +156,25 @@ void UE::MeshDeformation::MeanValueTriangleData::Initialize(const FDynamicMesh3&
 #endif
 }
 
+void UE::MeshDeformation::ConstructEdgeCotanWeightsDataArray(const FDynamicMesh3& Mesh, TArray<double>& EdgeWeightsDataArray, double ClampMin, double ClampMax)
+{
+	TArray<UE::MeshDeformation::CotanTriangleData> CotangentTriangleDataArray;
+	CotangentTriangleDataArray.SetNumUninitialized(Mesh.MaxTriangleID());
+
+	for (const int32 TriID : Mesh.TriangleIndicesItr())
+	{
+		CotangentTriangleDataArray[TriID].Initialize(Mesh, TriID);
+	}
+
+	EdgeWeightsDataArray.SetNumUninitialized(Mesh.MaxEdgeID());
+	for (const int32 EdgeId : Mesh.EdgeIndicesItr())
+	{   
+		const FDynamicMesh3::FEdge Edge = Mesh.GetEdge(EdgeId);
+
+		const double CotanAlpha = CotangentTriangleDataArray[Edge.Tri[0]].GetOpposingCotangent(EdgeId);
+
+		const double CotanBeta = (Edge.Tri[1] != FDynamicMesh3::InvalidID) ? CotangentTriangleDataArray[Edge.Tri[1]].GetOpposingCotangent(EdgeId) : 0.0;
+
+		EdgeWeightsDataArray[EdgeId] = FMathd::Clamp(CotanAlpha + CotanBeta, ClampMin, ClampMax);
+	}
+}

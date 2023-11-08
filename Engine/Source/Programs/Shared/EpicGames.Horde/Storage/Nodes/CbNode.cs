@@ -12,26 +12,26 @@ namespace EpicGames.Horde.Storage.Nodes
 	/// <summary>
 	/// A node containing arbitrary compact binary data
 	/// </summary>
-	[TreeNode("{34A0793F-8364-42F4-8632-98A71C843229}", 1)]
-	public class CbNode : TreeNode
+	[NodeType("{34A0793F-8364-42F4-8632-98A71C843229}", 1)]
+	public class CbNode : Node
 	{
 		class HandleMapper
 		{
-			public IReadOnlyList<NodeLocator> Locators { get; }
-			public List<NodeHandle> Handles { get; }
+			readonly NodeReader _reader;
+			readonly List<NodeRef> _refs;
 
-			public HandleMapper(IReadOnlyList<NodeLocator> locators)
+			public HandleMapper(NodeReader reader, List<NodeRef> refs)
 			{
-				Locators = locators;
-				Handles = new List<NodeHandle>(locators.Count);
+				_reader = reader;
+				_refs = refs;
 			}
 
 			public void IterateField(CbField field)
 			{
 				if (field.IsAttachment())
 				{
-					NodeLocator locator = Locators[Handles.Count];
-					Handles.Add(new NodeHandle(field.AsAttachment(), locator));
+					BlobHandle handle = _reader.GetNodeHandle(_refs.Count, field.AsAttachment());
+					_refs.Add(new NodeRef(handle));
 				}
 				else if (field.IsArray())
 				{
@@ -54,14 +54,14 @@ namespace EpicGames.Horde.Storage.Nodes
 		/// <summary>
 		/// Imported nodes
 		/// </summary>
-		public IReadOnlyList<TreeNodeRef> References { get; }
+		public IReadOnlyList<NodeRef> References { get; }
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
 		/// <param name="obj">The compact binary object</param>
 		/// <param name="references">List of references to attachments</param>
-		public CbNode(CbObject obj, IReadOnlyList<TreeNodeRef> references)
+		public CbNode(CbObject obj, IReadOnlyList<NodeRef> references)
 		{
 			Object = obj;
 			References = references;
@@ -71,23 +71,20 @@ namespace EpicGames.Horde.Storage.Nodes
 		/// Deserialization constructor
 		/// </summary>
 		/// <param name="reader">Reader to deserialize from</param>
-		public CbNode(ITreeNodeReader reader)
+		public CbNode(NodeReader reader)
 		{
 			Object = new CbObject(reader.ReadFixedLengthBytes(reader.Length));
 
-			HandleMapper mapper = new HandleMapper(reader.References);
-			Object.IterateAttachments(mapper.IterateField);
+			List<NodeRef> references = new List<NodeRef>();
+			Object.IterateAttachments(new HandleMapper(reader, references).IterateField);
 
-			References = mapper.Handles.ConvertAll(x => new TreeNodeRef(x));
+			References = references;
 		}
 
 		/// <inheritdoc/>
-		public override void Serialize(ITreeNodeWriter writer)
+		public override void Serialize(NodeWriter writer)
 		{
 			writer.WriteFixedLengthBytes(Object.GetView().Span);
 		}
-
-		/// <inheritdoc/>
-		public override IEnumerable<TreeNodeRef> EnumerateRefs() => References;
 	}
 }

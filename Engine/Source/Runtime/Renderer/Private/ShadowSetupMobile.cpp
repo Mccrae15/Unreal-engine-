@@ -245,11 +245,12 @@ static void VisualizeMobileDynamicCSMSubjectCapsules(FViewInfo& View, FLightScen
 			// Combined bounds
 			FVector CombinedCasterStart;
 			FVector CombinedCasterEnd;
-			FBoxSphereBounds CombinedBounds(ForceInitToZero);
+			FBoxSphereBounds::Builder CombinedBoundsBuilder;
 			for (auto& Caster : MobileCSMSubjectPrimitives.GetShadowSubjectPrimitives())
 			{
-				CombinedBounds = (CombinedBounds.SphereRadius > 0.0f) ? CombinedBounds + Caster->Proxy->GetBounds() : Caster->Proxy->GetBounds();
+				CombinedBoundsBuilder += Caster->Proxy->GetBounds();
 			}
+			FBoxSphereBounds CombinedBounds(CombinedBoundsBuilder);
 			CombinedCasterStart = CombinedBounds.Origin;
 			CombinedCasterEnd = CombinedBounds.Origin + (LightDir * ShadowCastLength);
 
@@ -283,7 +284,7 @@ static void VisualizeMobileDynamicCSMSubjectCapsules(FViewInfo& View, FLightScen
 }
 
 /** Finds the visible dynamic shadows for each view. */
-void FMobileSceneRenderer::InitDynamicShadows(FRDGBuilder& GraphBuilder, FInstanceCullingManager& InstanceCullingManager, FRDGExternalAccessQueue& ExternalAccessQueue)
+FDynamicShadowsTaskData* FMobileSceneRenderer::InitDynamicShadows(FRDGBuilder& GraphBuilder, FInstanceCullingManager& InstanceCullingManager, FRDGExternalAccessQueue& ExternalAccessQueue)
 {
 	static auto* MyCVarMobileEnableStaticAndCSMShadowReceivers = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.EnableStaticAndCSMShadowReceivers"));
 	const bool bCombinedStaticAndCSMEnabled = MyCVarMobileEnableStaticAndCSMShadowReceivers->GetValueOnRenderThread()!=0;
@@ -307,7 +308,7 @@ void FMobileSceneRenderer::InitDynamicShadows(FRDGBuilder& GraphBuilder, FInstan
 		}
 	}
 
-	FSceneRenderer::InitDynamicShadows(GraphBuilder, DynamicIndexBuffer, DynamicVertexBuffer, DynamicReadBuffer, InstanceCullingManager, ExternalAccessQueue);
+	FDynamicShadowsTaskData* TaskData = FSceneRenderer::InitDynamicShadows(GraphBuilder, DynamicIndexBuffer, DynamicVertexBuffer, DynamicReadBuffer, InstanceCullingManager, ExternalAccessQueue);
 
 	bool bAlwaysUseCSM = false;
 	const bool bSkipCSMShaderCulling = MobileBasePassAlwaysUsesCSM(Scene->GetShaderPlatform());
@@ -361,6 +362,8 @@ void FMobileSceneRenderer::InitDynamicShadows(FRDGBuilder& GraphBuilder, FInstan
 			bModulatedShadowsInUse = VisibleLightInfo.ShadowsToProject.Num() > 0;
 		}
 	}
+
+	return TaskData;
 }
 
 // generate a single FProjectedShadowInfo to encompass LightSceneInfo.
@@ -512,17 +515,16 @@ void FMobileSceneRenderer::BuildCSMVisibilityState(FLightSceneInfo* LightSceneIn
 					}
 					case 2: // combined casters:
 					{
-						FVector CombinedCasterStart;
-						FVector CombinedCasterEnd;
-						FBoxSphereBounds CombinedBounds(ForceInitToZero);
-
 						// Calculate combined bounds
+						FBoxSphereBounds::Builder CombinedBoundsBuilder;
 						for (auto& Caster : ShadowSubjectPrimitives)
 						{
-							CombinedBounds = (CombinedBounds.SphereRadius > 0.0f) ? CombinedBounds + Caster->Proxy->GetBounds() : Caster->Proxy->GetBounds();
+							CombinedBoundsBuilder += Caster->Proxy->GetBounds();
 						}
-						CombinedCasterStart = CombinedBounds.Origin;
-						CombinedCasterEnd = CombinedBounds.Origin + (LightDir * ShadowCastLength);
+
+						FBoxSphereBounds CombinedBounds(CombinedBoundsBuilder);
+						FVector CombinedCasterStart = CombinedBounds.Origin;
+						FVector CombinedCasterEnd = CombinedBounds.Origin + (LightDir * ShadowCastLength);
 
 						if (bSphereTest)
 						{

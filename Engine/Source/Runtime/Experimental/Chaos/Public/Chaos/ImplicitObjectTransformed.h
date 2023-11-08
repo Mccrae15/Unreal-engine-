@@ -3,6 +3,7 @@
 
 #include "Chaos/Box.h"
 #include "Chaos/ImplicitObject.h"
+#include "Chaos/ShapeInstanceFwd.h"
 #include "Chaos/Transform.h"
 #include "ChaosArchive.h"
 #include "Templates/EnableIf.h"
@@ -98,6 +99,11 @@ public:
 			check(false);	//duplicate only supported for owned geometry
 			return nullptr;
 		}
+	}
+
+	virtual EImplicitObjectType GetNestedType() const override
+	{
+		return MObject->GetNestedType();
 	}
 
 	virtual TUniquePtr<FImplicitObject> Copy() const
@@ -340,6 +346,8 @@ public:
 		TImplicitObjectTransformSerializeHelper(Ar, MObject);
 		Ar << MTransform;
 		TBox<T, d>::SerializeAsAABB(Ar, MLocalBoundingBox);
+
+		// NOTE: Not serializing SharedObject which is a temp fix and only used in the runtime
 	}
 
 	virtual uint32 GetTypeHash() const override
@@ -353,11 +361,79 @@ public:
 		return MObject->GetMaterialIndex(HintIndex);
 	}
 
+protected:
+	virtual void VisitOverlappingLeafObjectsImpl(
+		const FAABB3& InLocalBounds,
+		const FRigidTransform3& ObjectTransform,
+		const int32 RootObjectIndex,
+		int32& ObjectIndex,
+		int32& LeafObjectIndex,
+		const FImplicitHierarchyVisitor& VisitorFunc) const override final
+	{
+		// Skip self
+		++ObjectIndex;
+
+		// Visit child
+		const FAABB3 LocalBounds = InLocalBounds.InverseTransformedAABB(MTransform);
+		MObject->VisitOverlappingLeafObjectsImpl(LocalBounds, MTransform * ObjectTransform, RootObjectIndex, ObjectIndex, LeafObjectIndex, VisitorFunc);
+	}
+
+	virtual void VisitLeafObjectsImpl(
+		const FRigidTransform3& ObjectTransform,
+		const int32 RootObjectIndex,
+		int32& ObjectIndex,
+		int32& LeafObjectIndex,
+		const FImplicitHierarchyVisitor& VisitorFunc) const override final
+	{
+		// Skip self
+		++ObjectIndex;
+
+		// Visit child
+		MObject->VisitLeafObjectsImpl(MTransform * ObjectTransform, RootObjectIndex, ObjectIndex, LeafObjectIndex, VisitorFunc);
+	}
+
+	virtual bool VisitObjectsImpl(
+		const FRigidTransform3& ObjectTransform,
+		const int32 RootObjectIndex,
+		int32& ObjectIndex,
+		int32& LeafObjectIndex,
+		const FImplicitHierarchyVisitorBool& VisitorFunc) const override final
+	{
+		// Visit self
+		bool bContinue = VisitorFunc(this, ObjectTransform, RootObjectIndex, ObjectIndex, INDEX_NONE);
+		++ObjectIndex;
+
+		// Visit child
+		if (bContinue)
+		{
+			bContinue = MObject->VisitObjectsImpl(MTransform * ObjectTransform, RootObjectIndex, ObjectIndex, LeafObjectIndex, VisitorFunc);
+		}
+
+		return bContinue;
+	}
+
+	virtual bool IsOverlappingBoundsImpl(const FAABB3& InLocalBounds) const override final
+	{
+		const FAABB3 LocalBounds = InLocalBounds.InverseTransformedAABB(MTransform);
+		return MObject->IsOverlappingBoundsImpl(LocalBounds);
+	}
+
 private:
 	ObjectType MObject;
-	TUniquePtr<Chaos::FImplicitObject> MObjectOwner;
+	TUniquePtr<FImplicitObject> MObjectOwner;
 	TRigidTransform<T, d> MTransform;
 	TAABB<T, d> MLocalBoundingBox;
+
+	// TEMP: workaround for a clustering issue when a geometry collection in a cluster is destroyed 
+	// after the cluster's geometry has been shared between game and physics thread
+	// @todo(chaos): remove this when FImplicitObject is ref counted
+	FConstImplicitObjectPtr SharedObject;
+
+	friend class FClusterUnionManager;
+	void SetSharedObject(const FConstImplicitObjectPtr& InSharedObject)
+	{
+		SharedObject = InSharedObject;
+	}
 
 	//needed for serialization
 	TImplicitObjectTransformed() : FImplicitObject(EImplicitObject::HasBoundingBox, ImplicitObjectType::Transformed) {}
@@ -394,5 +470,7 @@ namespace Utilities
 
 template <typename T, int d>
 using TImplicitObjectTransformedNonSerializable = TImplicitObjectTransformed<T, d, false>;
+
+using FImplicitObjectTransformed = TImplicitObjectTransformed<FReal, 3>;
 
 }

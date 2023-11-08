@@ -5,6 +5,7 @@
 #include "InstancedStructContainer.h"
 #include "StateTreeEvents.h"
 #include "StateTreeTypes.h"
+#include "StateTreeExecutionTypes.h"
 #include "StateTreeInstanceData.generated.h"
 
 struct FStateTreeTransitionRequest;
@@ -72,7 +73,10 @@ struct STATETREEMODULE_API FStateTreeInstanceStorage
 
 	/** Reset all pending transition requests. */
 	void ResetTransitionRequests();
-	
+
+	/** @return true if all instances are valid. */
+	bool AreAllInstancesValid() const;
+
 protected:
 	/** Struct instances */
 	UPROPERTY()
@@ -174,6 +178,9 @@ struct STATETREEMODULE_API FStateTreeInstanceData
 	/** Reset all pending transition requests. */
 	void ResetTransitionRequests();
 
+	/** @return true if all instances are valid. */
+	bool AreAllInstancesValid() const;
+
 	FStateTreeInstanceStorage& GetMutableStorage();
 	const FStateTreeInstanceStorage& GetStorage() const;
 
@@ -262,7 +269,7 @@ struct TStateTreeInstanceDataStructRef
 		check(IsValid());
 		FStructView Struct = Storage.GetMutableStruct(StructIndex);
 		check(Struct.GetScriptStruct() == TBaseStructure<T>::Get());
-		return *reinterpret_cast<T*>(Struct.GetMutableMemory());
+		return *reinterpret_cast<T*>(Struct.GetMemory());
 	}
 
 protected:

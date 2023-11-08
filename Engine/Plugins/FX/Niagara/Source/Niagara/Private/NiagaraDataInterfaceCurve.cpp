@@ -1,15 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraDataInterfaceCurve.h"
-#include "Curves/CurveVector.h"
-#include "Curves/CurveLinearColor.h"
-#include "Curves/CurveFloat.h"
 #include "NiagaraTypes.h"
 #include "UObject/Package.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceCurve)
 
 #if WITH_EDITORONLY_DATA
+#include "Curves/CurveFloat.h"
 #include "Interfaces/ITargetPlatform.h"
 #endif
 
@@ -146,6 +144,14 @@ TArray<float> UNiagaraDataInterfaceCurve::BuildLUT(int32 NumEntries) const
 // TODO: need a way to identify each specific function here
 // 
 #if WITH_EDITORONLY_DATA
+void UNiagaraDataInterfaceCurve::SyncCurvesToAsset()
+{
+	if (UCurveFloat* LoadedCurve = Cast<UCurveFloat>(CurveAsset))
+	{
+		Curve = LoadedCurve->FloatCurve;
+	}
+}
+
 bool UNiagaraDataInterfaceCurve::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)
 {
 	if (FunctionInfo.DefinitionName == SampleCurveName)

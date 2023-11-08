@@ -17,6 +17,7 @@
 #include "RivermaxMediaTextureSample.h"
 #include "RivermaxMediaUtils.h"
 #include "RivermaxPTPUtils.h"
+#include "RivermaxTracingUtils.h"
 #include "RivermaxTypes.h"
 #include "Stats/Stats2.h"
 #include "Tasks/Task.h"
@@ -32,6 +33,7 @@ DECLARE_CYCLE_STAT(TEXT("Rivermax MediaPlayer Request frame"), STAT_Rivermax_Med
 DECLARE_CYCLE_STAT(TEXT("Rivermax MediaPlayer Process frame"), STAT_Rivermax_MediaPlayer_ProcessFrame, STATGROUP_Media);
 
 DECLARE_GPU_STAT_NAMED(RivermaxMedia_SampleUsageFence, TEXT("RivermaxMedia_SampleUsageFence"));
+DECLARE_GPU_STAT_NAMED(Rmax_WaitForPixels, TEXT("Rmax_WaitForPixels"));
 
 
 namespace UE::RivermaxMedia
@@ -564,7 +566,9 @@ namespace UE::RivermaxMedia
 				if (Frame->FrameNumber < NextFrameExpectations.FrameNumber)
 				{
 					Frame->ReceptionState = ESampleReceptionState::Available;
-					UE_LOG(LogRivermaxMedia, Verbose, TEXT("Making frame %u as available since it will never be processed. Last render = %u, next render = %u"), Frame->FrameNumber, FrameTracking.LastFrameRendered.GetValue(), NextFrameExpectations.FrameNumber);
+
+					const FString LastRender = FrameTracking.LastFrameRendered.IsSet() ? FString::Printf(TEXT("%u"), FrameTracking.LastFrameRendered.GetValue()) : FString(TEXT("None"));
+					UE_LOG(LogRivermaxMedia, Verbose, TEXT("Making frame %u as available since it will never be processed. Last render = %s, next render = %u"), Frame->FrameNumber, *LastRender, NextFrameExpectations.FrameNumber);
 				}
 			}
 		}
@@ -659,7 +663,7 @@ namespace UE::RivermaxMedia
 			int32 HighestTimestampIndex = INDEX_NONE;
 			uint32 HighestTimestamp = 0;
 
-			int32 LowestTimstampIndex = INDEX_NONE;
+			int32 LowestTimestampIndex = INDEX_NONE;
 			uint32 LowestTimestamp = ~0;
 
 			// Use timestamps to pick the latest one. 
@@ -678,7 +682,7 @@ namespace UE::RivermaxMedia
 					if (LowestTimestamp > Frame->Timestamp)
 					{
 						LowestTimestamp = Frame->Timestamp;
-						LowestTimstampIndex = Index;
+						LowestTimestampIndex = Index;
 					}
 				}
 			}
@@ -689,7 +693,7 @@ namespace UE::RivermaxMedia
 				return false;
 			}
 
-			check(LowestTimstampIndex >= 0);
+			check(LowestTimestampIndex >= 0);
 
 			// No point in rendering the same frame as last time
 			if (FrameTracking.LastFrameExpectation.FrameNumber == SamplePool[HighestTimestampIndex]->FrameNumber)
@@ -708,8 +712,7 @@ namespace UE::RivermaxMedia
 			OutExpectation.FrameIndex = HighestTimestampIndex;
 
 			// Make the ones skipped available for reception again
-			const FString TraceName = FString::Format(TEXT("RmaxInput::Selected {0}"), { OutExpectation.FrameNumber });
-			TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*TraceName);
+			TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FRivermaxTracingUtils::RmaxInSelectedFrameTraceEvents[OutExpectation.FrameNumber % 10]);
 
 			for (const TSharedPtr<FRivermaxSampleWrapper>& Frame : SamplePool)
 			{
@@ -987,6 +990,7 @@ namespace UE::RivermaxMedia
 			FPlatformProcess::SleepNoStats(SleepTimeSeconds);
 			if ((FPlatformTime::Seconds() - StartTimeSeconds) > TimeoutSeconds)
 			{
+				UE_LOG(LogRivermaxMedia, Warning, TEXT("Timed out waiting for pendings tasks to finish."));
 				break;
 			}
 		}
@@ -1133,9 +1137,17 @@ namespace UE::RivermaxMedia
 					}
 				);
 			}
-
+			
 			// Setup requirements for sample to be ready to be rendered
-			FRHICommandListImmediate & RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
+			FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
+
+			SCOPED_GPU_STAT(RHICmdList, Rmax_WaitForPixels);
+			SCOPED_DRAW_EVENT(RHICmdList, Rmax_WaitForPixels);
+
+			// Since we are going to enqueue a lambda that can potentially sleep in the RHI thread if the pixels haven't arrived,
+			// we dispatch the existing commands (including the draw event start timing in the SCOPED_DRAW_EVENT above) before any potential sleep.
+			RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
+
 			RHICmdList.EnqueueLambda(
 				[NextFrameExpectations, this](FRHICommandList& RHICmdList)
 				{

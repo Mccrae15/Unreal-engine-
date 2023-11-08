@@ -5,6 +5,7 @@
 
 #include "Chaos/Framework/Parallel.h"
 #include "Chaos/PBDSoftsEvolutionFwd.h"
+#include "Chaos/PBDSoftsSolverParticles.h"
 #include "Chaos/PBDStiffness.h"
 #include "Chaos/CollectionPropertyFacade.h"
 #include "ChaosStats.h"
@@ -39,9 +40,39 @@ namespace Chaos::Softs
 			, UseDeprecatedApply(true)
 			, Stiffness(FSolverVec2::UnitVector, StiffnessMultipliers, InParticleCount)
 			, Damping(FSolverVec2::UnitVector, DampingMultipliers, InParticleCount)
+			, AnimDriveStiffnessIndex(ForceInit)
+			, AnimDriveDampingIndex(ForceInit)
 		{
 		}
 
+		FPBDAnimDriveConstraint(
+			const int32 InParticleOffset,
+			const int32 InParticleCount,
+			const TArray<FSolverVec3>& InAnimationPositions,  // Use global indexation (will need adding ParticleOffset)
+			const TArray<FSolverVec3>& InAnimationVelocities,  // Use global indexation (will need adding ParticleOffset)
+			const TMap<FString, TConstArrayView<FRealSingle>>& WeightMaps,
+			const FCollectionPropertyConstFacade& PropertyCollection
+		)
+			: AnimationPositions(InAnimationPositions)
+			, OldAnimationPositions_deprecated(InAnimationVelocities) // Unused when not using apply
+			, AnimationVelocities(InAnimationVelocities)
+			, ParticleOffset(InParticleOffset)
+			, ParticleCount(InParticleCount)
+			, UseDeprecatedApply(false)
+			, Stiffness(
+				FSolverVec2(GetWeightedFloatAnimDriveStiffness(PropertyCollection, 1.f)),
+				WeightMaps.FindRef(GetAnimDriveStiffnessString(PropertyCollection, AnimDriveStiffnessName.ToString())),
+				InParticleCount)
+			, Damping(
+				FSolverVec2(GetWeightedFloatAnimDriveDamping(PropertyCollection, 1.f)),
+				WeightMaps.FindRef(GetAnimDriveDampingString(PropertyCollection, AnimDriveDampingName.ToString())),
+				InParticleCount)
+			, AnimDriveStiffnessIndex(PropertyCollection)
+			, AnimDriveDampingIndex(PropertyCollection)
+		{
+		}
+
+		UE_DEPRECATED(5.3, "Use weight map constructor instead.")
 		FPBDAnimDriveConstraint(
 			const int32 InParticleOffset,
 			const int32 InParticleCount,
@@ -65,6 +96,8 @@ namespace Chaos::Softs
 				FSolverVec2(GetWeightedFloatAnimDriveDamping(PropertyCollection, 1.f)),
 				DampingMultipliers,
 				InParticleCount)
+			, AnimDriveStiffnessIndex(PropertyCollection)
+			, AnimDriveDampingIndex(PropertyCollection)
 		{
 		}
 
@@ -85,6 +118,8 @@ namespace Chaos::Softs
 			, UseDeprecatedApply(false)
 			, Stiffness(FSolverVec2::UnitVector, StiffnessMultipliers, InParticleCount)
 			, Damping(FSolverVec2::UnitVector, DampingMultipliers, InParticleCount)
+			, AnimDriveStiffnessIndex(ForceInit)
+			, AnimDriveDampingIndex(ForceInit)
 		{
 		}
 
@@ -96,16 +131,42 @@ namespace Chaos::Softs
 		// Return the damping input values used by the constraint
 		FSolverVec2 GetDamping() const { return Damping.GetWeightedValue(); }
 
-		void SetProperties(const FCollectionPropertyConstFacade& PropertyCollection)
+		void SetProperties(
+			const FCollectionPropertyConstFacade& PropertyCollection,
+			const TMap<FString, TConstArrayView<FRealSingle>>& WeightMaps)
 		{
 			if (IsAnimDriveStiffnessMutable(PropertyCollection))
 			{
-				Stiffness.SetWeightedValue(FSolverVec2(GetWeightedFloatAnimDriveStiffness(PropertyCollection)));
+				const FSolverVec2 WeightedValue(GetWeightedFloatAnimDriveStiffness(PropertyCollection));
+				if (IsAnimDriveStiffnessStringDirty(PropertyCollection))
+				{
+					const FString& WeightMapName = GetAnimDriveStiffnessString(PropertyCollection);
+					Stiffness = FPBDStiffness(WeightedValue, WeightMaps.FindRef(WeightMapName), ParticleCount);
+				}
+				else
+				{
+					Stiffness.SetWeightedValue(WeightedValue);
+				}
 			}
 			if (IsAnimDriveDampingMutable(PropertyCollection))
 			{
-				Damping.SetWeightedValue(FSolverVec2(GetWeightedFloatAnimDriveDamping(PropertyCollection)));
+				const FSolverVec2 WeightedValue(GetWeightedFloatAnimDriveDamping(PropertyCollection));
+				if (IsAnimDriveDampingStringDirty(PropertyCollection))
+				{
+					const FString& WeightMapName = GetAnimDriveDampingString(PropertyCollection);
+					Damping = FPBDStiffness(WeightedValue, WeightMaps.FindRef(WeightMapName), ParticleCount);
+				}
+				else
+				{
+					Damping.SetWeightedValue(WeightedValue);
+				}
 			}
+		}
+
+		UE_DEPRECATED(5.3, "Use SetProperties(const FCollectionPropertyConstFacade&, const TMap<FString, TConstArrayView<FRealSingle>>&, FSolverReal) instead.")
+		void SetProperties(const FCollectionPropertyConstFacade& PropertyCollection)
+		{
+			SetProperties(PropertyCollection, TMap<FString, TConstArrayView<FRealSingle>>());
 		}
 
 		inline void SetProperties(const FSolverVec2& InStiffness, const FSolverVec2& InDamping)

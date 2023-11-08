@@ -183,6 +183,19 @@ void FGameplayAbilityActivationInfo::SetActivationRejected()
 	ActivationMode = EGameplayAbilityActivationMode::Rejected;
 }
 
+bool FGameplayAbilitySpecDef::operator==(const FGameplayAbilitySpecDef& Other) const
+{
+	return Ability == Other.Ability &&
+		LevelScalableFloat == Other.LevelScalableFloat &&
+		InputID == Other.InputID &&
+		RemovalPolicy == Other.RemovalPolicy;
+}
+
+bool FGameplayAbilitySpecDef::operator!=(const FGameplayAbilitySpecDef& Other) const
+{
+	return !(*this == Other);
+}
+
 bool FGameplayAbilitySpec::IsActive() const
 {
 	// If ability hasn't replicated yet we're not active
@@ -283,7 +296,9 @@ FGameplayAbilitySpec::FGameplayAbilitySpec(FGameplayAbilitySpecDef& InDef, int32
 {
 	Handle.GenerateNewHandle();
 	InDef.AssignedHandle = Handle;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	GameplayEffectHandle = InGameplayEffectHandle;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	SetByCallerTagMagnitudes = InDef.SetByCallerTagMagnitudes;
 

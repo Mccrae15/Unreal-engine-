@@ -288,7 +288,7 @@ void UK2Node_LatentGameplayTaskCall::PinDefaultValueChanged(UEdGraphPin* Changed
 
 		// Refresh the UI for the graph so the pin changes show up
 		UEdGraph* Graph = GetGraph();
-		Graph->NotifyGraphChanged();
+		Graph->NotifyNodeChanged(this);
 
 		// Mark dirty
 		FBlueprintEditorUtils::MarkBlueprintAsModified(GetBlueprint());
@@ -463,7 +463,7 @@ bool UK2Node_LatentGameplayTaskCall::ConnectSpawnProperties(UClass* ClassToSpawn
 					// We don't want to generate an assignment node unless the default value 
 					// differs from the value in the CDO:
 					FString DefaultValueAsString;
-					FBlueprintEditorUtils::PropertyValueToString(Property, (uint8*)ClassToSpawn->ClassDefaultObject, DefaultValueAsString, this);
+					FBlueprintEditorUtils::PropertyValueToString(Property, (uint8*)ClassToSpawn->ClassDefaultObject.Get(), DefaultValueAsString, this);
 					if (DefaultValueAsString == SpawnVarPin->DefaultValue)
 					{
 						continue;

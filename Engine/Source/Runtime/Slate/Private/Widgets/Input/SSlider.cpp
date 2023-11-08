@@ -15,6 +15,9 @@ void SSlider::PrivateRegisterAttributes(FSlateAttributeInitializer& AttributeIni
 	SLATE_ADD_MEMBER_ATTRIBUTE_DEFINITION_WITH_NAME(AttributeInitializer, "Locked", LockedSlateAttribute, EInvalidateWidgetReason::Paint);
 	SLATE_ADD_MEMBER_ATTRIBUTE_DEFINITION_WITH_NAME(AttributeInitializer, "SliderBarColor", SliderBarColorSlateAttribute, EInvalidateWidgetReason::Paint);
 	SLATE_ADD_MEMBER_ATTRIBUTE_DEFINITION_WITH_NAME(AttributeInitializer, "SliderHandleColor", SliderHandleColorSlateAttribute, EInvalidateWidgetReason::Paint);
+
+	AttributeInitializer.OverrideInvalidationReason("EnabledState", FSlateAttributeDescriptor::FInvalidateWidgetReasonAttribute{EInvalidateWidgetReason::Paint});
+	AttributeInitializer.OverrideInvalidationReason("Hovered", FSlateAttributeDescriptor::FInvalidateWidgetReasonAttribute{EInvalidateWidgetReason::Paint});
 }
 
 SSlider::SSlider()
@@ -405,14 +408,17 @@ void SSlider::CommitValue(float NewValue)
 {
 	const float OldValue = GetValue();
 
-	if (!ValueSlateAttribute.IsBound(*this))
+	if (NewValue != OldValue)
 	{
-		ValueSlateAttribute.Assign(*this, NewValue);
+		if (!ValueSlateAttribute.IsBound(*this))
+		{
+			ValueSlateAttribute.Assign(*this, NewValue);
+		}
+
+		Invalidate(EInvalidateWidgetReason::Paint);
+
+		OnValueChanged.ExecuteIfBound(NewValue);
 	}
-
-	Invalidate(EInvalidateWidgetReason::Paint);
-
-	OnValueChanged.ExecuteIfBound(NewValue);
 }
 
 float SSlider::PositionToValue( const FGeometry& MyGeometry, const UE::Slate::FDeprecateVector2DParameter& AbsolutePosition )
@@ -514,11 +520,15 @@ void SSlider::SetValue(TAttribute<float> InValueAttribute)
 
 void SSlider::SetMinAndMaxValues(float InMinValue, float InMaxValue)
 {
-	MinValue = InMinValue;
-	MaxValue = InMaxValue;
-	if (MinValue > MaxValue)
+	if (MinValue != InMinValue || MaxValue != InMaxValue)
 	{
-		MaxValue = MinValue;
+		MinValue = InMinValue;
+		MaxValue = InMaxValue;
+		if (MinValue > MaxValue)
+		{
+			MaxValue = MinValue;
+		}
+		Invalidate(EInvalidateWidgetReason::Paint);
 	}
 }
 

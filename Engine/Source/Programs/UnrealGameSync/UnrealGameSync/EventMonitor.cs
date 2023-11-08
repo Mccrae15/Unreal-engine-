@@ -3,7 +3,6 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -72,6 +71,17 @@ namespace UnrealGameSync
 		Skipped,
 	}
 
+	class Link
+	{
+		public string Text { get; set; } = String.Empty;
+		public string Url { get; set; } = String.Empty;
+	}
+
+	class BadgeMetadata
+	{
+		public List<Link>? Links { get; set; } = new List<Link>();
+	}
+
 	class BadgeData
 	{
 		public long Id { get; set; }
@@ -80,16 +90,11 @@ namespace UnrealGameSync
 		public BadgeResult Result { get; set; }
 		public string Url { get; set; } = String.Empty;
 		public string Project { get; set; } = String.Empty;
+		public BadgeMetadata? Metadata { get; set; }
 
-		public bool IsSuccess
-		{
-			get { return Result == BadgeResult.Success || Result == BadgeResult.Warning; }
-		}
+		public bool IsSuccess => Result == BadgeResult.Success || Result == BadgeResult.Warning;
 
-		public bool IsFailure
-		{
-			get { return Result == BadgeResult.Failure; }
-		}
+		public bool IsFailure => Result == BadgeResult.Failure;
 
 		public string BadgeName
 		{
@@ -100,7 +105,7 @@ namespace UnrealGameSync
 					return "Unknown";
 				}
 
-				int idx = BuildType.IndexOf(':');
+				int idx = BuildType.IndexOf(':', StringComparison.Ordinal);
 				if(idx == -1)
 				{
 					return BuildType;
@@ -121,7 +126,7 @@ namespace UnrealGameSync
 					return "Unknown";
 				}
 
-				int idx = BuildType.IndexOf(':');
+				int idx = BuildType.IndexOf(':', StringComparison.Ordinal);
 				if(idx == -1)
 				{
 					return BuildType;
@@ -212,33 +217,35 @@ namespace UnrealGameSync
 
 	class EventMonitor : IDisposable
 	{
-		string? _apiUrl;
+		readonly string? _apiUrl;
 		int _apiVersion;
-		string _project;
-		string _currentUserName;
-		SynchronizationContext _synchronizationContext;
-		CancellationTokenSource _cancellationSource;
+		readonly string _project;
+		readonly string _currentUserName;
+		readonly SynchronizationContext _synchronizationContext;
+#pragma warning disable CA2213 // warning CA2213: 'EventMonitor' contains field '_cancellationSource' that is of IDisposable type 'CancellationTokenSource', but it is never disposed. Change the Dispose method on 'EventMonitor' to call Close or Dispose on this field.
+		readonly CancellationTokenSource _cancellationSource;
+#pragma warning restore CA2213
 		Task? _workerTask;
-		AsyncEvent _refreshEvent = new AsyncEvent();
-		ConcurrentQueue<EventData> _outgoingEvents = new ConcurrentQueue<EventData>();
-		ConcurrentQueue<EventData> _incomingEvents = new ConcurrentQueue<EventData>();
-		ConcurrentQueue<CommentData> _outgoingComments = new ConcurrentQueue<CommentData>();
-		ConcurrentQueue<CommentData> _incomingComments = new ConcurrentQueue<CommentData>();
-		ConcurrentQueue<BadgeData> _incomingBadges = new ConcurrentQueue<BadgeData>();
-		SortedDictionary<int, EventSummary> _changeNumberToSummary = new SortedDictionary<int, EventSummary>();
-		Dictionary<string, EventData> _userNameToLastSyncEvent = new Dictionary<string, EventData>(StringComparer.InvariantCultureIgnoreCase);
-		Dictionary<string, BadgeData> _badgeNameToLatestData = new Dictionary<string, BadgeData>();
-		ILogger _logger;
-		IAsyncDisposer _asyncDisposer;
-		LatestData _latestIds;
+		readonly AsyncEvent _refreshEvent = new AsyncEvent();
+		readonly ConcurrentQueue<EventData> _outgoingEvents = new ConcurrentQueue<EventData>();
+		readonly ConcurrentQueue<EventData> _incomingEvents = new ConcurrentQueue<EventData>();
+		readonly ConcurrentQueue<CommentData> _outgoingComments = new ConcurrentQueue<CommentData>();
+		readonly ConcurrentQueue<CommentData> _incomingComments = new ConcurrentQueue<CommentData>();
+		readonly ConcurrentQueue<BadgeData> _incomingBadges = new ConcurrentQueue<BadgeData>();
+		readonly SortedDictionary<int, EventSummary> _changeNumberToSummary = new SortedDictionary<int, EventSummary>();
+		readonly Dictionary<string, EventData> _userNameToLastSyncEvent = new Dictionary<string, EventData>(StringComparer.InvariantCultureIgnoreCase);
+		readonly Dictionary<string, BadgeData> _badgeNameToLatestData = new Dictionary<string, BadgeData>();
+		readonly ILogger _logger;
+		readonly IAsyncDisposer _asyncDisposer;
+		readonly LatestData _latestIds;
 		HashSet<int> _filterChangeNumbers = new HashSet<int>();
-		List<EventData> _investigationEvents = new List<EventData>();
+		readonly List<EventData> _investigationEvents = new List<EventData>();
 		List<EventData>? _activeInvestigations;
 
 		// MetadataV2
-		string _metadataStream;
-		string _metadataProject;
-		ConcurrentQueue<GetMetadataResponseV2> _incomingMetadata = new ConcurrentQueue<GetMetadataResponseV2>();
+		readonly string _metadataStream;
+		readonly string _metadataProject;
+		readonly ConcurrentQueue<GetMetadataResponseV2> _incomingMetadata = new ConcurrentQueue<GetMetadataResponseV2>();
 		int _minChange;
 		int _newMinChange;
 		long _metadataSequenceNumber;
@@ -285,10 +292,7 @@ namespace UnrealGameSync
 
 		public void Start()
 		{
-			if (_workerTask == null)
-			{
-				_workerTask = Task.Run(() => PollForUpdatesAsync(_cancellationSource.Token));
-			}
+			_workerTask ??= Task.Run(() => PollForUpdatesAsync(_cancellationSource.Token));
 		}
 
 		public void Dispose()
@@ -298,7 +302,7 @@ namespace UnrealGameSync
 			if(_workerTask != null)
 			{
 				_cancellationSource.Cancel();
-				_asyncDisposer.Add(_workerTask.ContinueWith(_ => _cancellationSource.Dispose()));
+				_asyncDisposer.Add(_workerTask.ContinueWith(_ => _cancellationSource.Dispose(), CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default));
 				_workerTask = null;
 			}
 		}
@@ -431,14 +435,14 @@ namespace UnrealGameSync
 			}
 			else if(evt.Type == EventType.Syncing)
 			{
-				summary.SyncEvents.RemoveAll(x => String.Compare(x.UserName, evt.UserName, true) == 0);
+				summary.SyncEvents.RemoveAll(x => String.Equals(x.UserName, evt.UserName, StringComparison.OrdinalIgnoreCase));
 				summary.SyncEvents.Add(evt);
 				ApplyFilteredUpdate(evt);
 			}
 			else if(IsReview(evt.Type))
 			{
 				// Try to find an existing review by this user. If we already have a newer review, ignore this one. Otherwise remove it.
-				EventData? existingReview = summary.Reviews.Find(x => String.Compare(x.UserName, evt.UserName, true) == 0);
+				EventData? existingReview = summary.Reviews.Find(x => String.Equals(x.UserName, evt.UserName, StringComparison.OrdinalIgnoreCase));
 				if(existingReview != null)
 				{
 					if(existingReview.Id <= evt.Id)
@@ -491,7 +495,7 @@ namespace UnrealGameSync
 		void ApplyCommentUpdate(CommentData comment)
 		{
 			EventSummary summary = FindOrAddSummary(comment.ChangeNumber);
-			if(String.Compare(comment.UserName, _currentUserName, true) == 0 && summary.Comments.Count > 0 && summary.Comments.Last().Id == long.MaxValue)
+			if(String.Equals(comment.UserName, _currentUserName, StringComparison.OrdinalIgnoreCase) && summary.Comments.Count > 0 && summary.Comments.Last().Id == Int64.MaxValue)
 			{
 				// This comment was added by PostComment(), to mask the latency of a round trip to the server. Remove it now we have the sorted comment.
 				summary.Comments.RemoveAt(summary.Comments.Count - 1);
@@ -505,7 +509,7 @@ namespace UnrealGameSync
 
 			for(; insertIdx > 0 && idSelector(items[insertIdx - 1]) >= idSelector(newItem); insertIdx--)
 			{
-				if(String.Compare(userSelector(items[insertIdx - 1]), userSelector(newItem), true) == 0)
+				if(String.Equals(userSelector(items[insertIdx - 1]), userSelector(newItem), StringComparison.OrdinalIgnoreCase))
 				{
 					return false;
 				}
@@ -515,7 +519,7 @@ namespace UnrealGameSync
 
 			for(; insertIdx > 0; insertIdx--)
 			{
-				if(String.Compare(userSelector(items[insertIdx - 1]), userSelector(newItem), true) == 0)
+				if(String.Equals(userSelector(items[insertIdx - 1]), userSelector(newItem), StringComparison.OrdinalIgnoreCase))
 				{
 					items.RemoveAt(insertIdx - 1);
 				}
@@ -560,7 +564,7 @@ namespace UnrealGameSync
 				newSummary.ProjectMetadata = summary.ProjectMetadata;
 			}
 
-			if (string.IsNullOrEmpty(metadata.Project))
+			if (String.IsNullOrEmpty(metadata.Project))
 			{
 				newSummary.SharedMetadata = metadata;
 			}
@@ -691,7 +695,7 @@ namespace UnrealGameSync
 				{
 					if(evt.Id > lastSync.Id)
 					{
-						_changeNumberToSummary[lastSync.Change].CurrentUsers.RemoveAll(x => String.Compare(x, evt.UserName, true) == 0);
+						_changeNumberToSummary[lastSync.Change].CurrentUsers.RemoveAll(x => String.Equals(x, evt.UserName, StringComparison.OrdinalIgnoreCase));
 						FindOrAddSummary(evt.Change).CurrentUsers.Add(evt.UserName);
 						_userNameToLastSyncEvent[evt.UserName] = evt;
 					}
@@ -742,7 +746,7 @@ namespace UnrealGameSync
 					await ReadEventsFromBackendAsync(updateThrottledRequests, cancellationToken);
 
 					// Send a notification that we're ready to update
-					if(_incomingMetadata.Count > 0 || _incomingEvents.Count > 0 || _incomingBadges.Count > 0 || _incomingComments.Count > 0)
+					if(!_incomingMetadata.IsEmpty || !_incomingEvents.IsEmpty || !_incomingBadges.IsEmpty || !_incomingComments.IsEmpty)
 					{
 						_synchronizationContext.Post(_ => OnUpdatesReady?.Invoke(), null);
 					}
@@ -781,7 +785,7 @@ namespace UnrealGameSync
 				_logger.LogInformation("Posting event... ({Change}, {UserName}, {Type})", evt.Change, evt.UserName, evt.Type);
 				if (_apiVersion == 2)
 				{
-					await SendMetadataUpdateUpdateV2Async(evt.Change, evt.Project, evt.UserName, evt.Type, null, cancellationToken);
+					await SendMetadataUpdateUpdateV2Async(evt.Change, evt.UserName, evt.Type, null, cancellationToken);
 				}
 				else
 				{
@@ -804,7 +808,7 @@ namespace UnrealGameSync
 				_logger.LogInformation("Posting comment... ({Change}, {User}, {Text}, {Project})", comment.ChangeNumber, comment.UserName, comment.Text, comment.Project);
 				if (_apiVersion == 2)
 				{
-					await SendMetadataUpdateUpdateV2Async(comment.ChangeNumber, comment.Project, comment.UserName, null, comment.Text, cancellationToken);
+					await SendMetadataUpdateUpdateV2Async(comment.ChangeNumber, comment.UserName, null, comment.Text, cancellationToken);
 				}
 				else
 				{
@@ -820,7 +824,7 @@ namespace UnrealGameSync
 			}
 		}
 
-		async Task SendMetadataUpdateUpdateV2Async(int change, string project, string userName, EventType? evt, string? comment, CancellationToken cancellationToken)
+		async Task SendMetadataUpdateUpdateV2Async(int change, string userName, EventType? evt, string? comment, CancellationToken cancellationToken)
 		{
 			UpdateMetadataRequestV2 update = new UpdateMetadataRequestV2();
 			update.Stream = _metadataStream;
@@ -977,11 +981,6 @@ namespace UnrealGameSync
 			}
 		}
 
-		static bool MatchesWildcard(string wildcard, string project)
-		{
-			return wildcard.EndsWith("...") && project.StartsWith(wildcard.Substring(0, wildcard.Length - 3), StringComparison.InvariantCultureIgnoreCase);
-		}
-
 		public void PostEvent(int changeNumber, EventType type)
 		{
 			if(_apiUrl != null)
@@ -1005,7 +1004,7 @@ namespace UnrealGameSync
 			if(_apiUrl != null)
 			{
 				CommentData comment = new CommentData();
-				comment.Id = long.MaxValue;
+				comment.Id = Int64.MaxValue;
 				comment.ChangeNumber = changeNumber;
 				comment.UserName = _currentUserName;
 				comment.Text = text;
@@ -1027,7 +1026,7 @@ namespace UnrealGameSync
 				return false;
 			}
 
-			CommentData? comment = summary.Comments.Find(x => String.Compare(x.UserName, _currentUserName, true) == 0);
+			CommentData? comment = summary.Comments.Find(x => String.Equals(x.UserName, _currentUserName, StringComparison.OrdinalIgnoreCase));
 			if(comment == null || String.IsNullOrWhiteSpace(comment.Text))
 			{
 				commentText = null;
@@ -1046,7 +1045,7 @@ namespace UnrealGameSync
 				return null;
 			}
 
-			EventData? evt = summary.Reviews.FirstOrDefault(x => String.Compare(x.UserName, _currentUserName, true) == 0);
+			EventData? evt = summary.Reviews.FirstOrDefault(x => String.Equals(x.UserName, _currentUserName, StringComparison.OrdinalIgnoreCase));
 			if(evt == null || evt.Type == EventType.Unknown)
 			{
 				return null;
@@ -1085,7 +1084,7 @@ namespace UnrealGameSync
 		public bool WasSyncedByCurrentUser(int changeNumber)
 		{
 			EventSummary? summary = GetSummaryForChange(changeNumber);
-			return (summary != null && summary.SyncEvents.Any(x => x.Type == EventType.Syncing && String.Compare(x.UserName, _currentUserName, true) == 0));
+			return (summary != null && summary.SyncEvents.Any(x => x.Type == EventType.Syncing && String.Equals(x.UserName, _currentUserName, StringComparison.OrdinalIgnoreCase)));
 		}
 
 		public void StartInvestigating(int changeNumber)
@@ -1119,7 +1118,7 @@ namespace UnrealGameSync
 						}
 						else
 						{
-							_activeInvestigations.RemoveAll(x => String.Compare(x.UserName, investigationEvent.UserName, true) == 0 && x.Change <= investigationEvent.Change);
+							_activeInvestigations.RemoveAll(x => String.Equals(x.UserName, investigationEvent.UserName, StringComparison.OrdinalIgnoreCase) && x.Change <= investigationEvent.Change);
 						}
 					}
 				}
@@ -1129,7 +1128,7 @@ namespace UnrealGameSync
 				{
 					for(int otherIdx = 0; otherIdx < idx; otherIdx++)
 					{
-						if(String.Compare(_activeInvestigations[idx].UserName, _activeInvestigations[otherIdx].UserName, true) == 0)
+						if(String.Equals(_activeInvestigations[idx].UserName, _activeInvestigations[otherIdx].UserName, StringComparison.OrdinalIgnoreCase))
 						{
 							_activeInvestigations.RemoveAt(idx--);
 							break;
@@ -1142,19 +1141,19 @@ namespace UnrealGameSync
 		public bool IsUnderInvestigation(int changeNumber)
 		{
 			UpdateActiveInvestigations();
-			return _activeInvestigations.Any(x => x.Change <= changeNumber);
+			return _activeInvestigations?.Any(x => x.Change <= changeNumber) ?? false;
 		}
 
 		public bool IsUnderInvestigationByCurrentUser(int changeNumber)
 		{
 			UpdateActiveInvestigations();
-			return _activeInvestigations.Any(x => x.Change <= changeNumber && String.Compare(x.UserName, _currentUserName, true) == 0);
+			return _activeInvestigations?.Any(x => x.Change <= changeNumber && String.Equals(x.UserName, _currentUserName, StringComparison.OrdinalIgnoreCase)) ?? false;
 		}
 
 		public IEnumerable<string> GetInvestigatingUsers(int changeNumber)
 		{
 			UpdateActiveInvestigations();
-			return _activeInvestigations.Where(x => changeNumber >= x.Change).Select(x => x.UserName);
+			return _activeInvestigations?.Where(x => changeNumber >= x.Change).Select(x => x.UserName) ?? Array.Empty<string>();
 		}
 
 		public int GetInvestigationStartChangeNumber(int lastChangeNumber)
@@ -1166,7 +1165,7 @@ namespace UnrealGameSync
 			{
 				foreach (EventData activeInvestigation in _activeInvestigations)
 				{
-					if (String.Compare(activeInvestigation.UserName, _currentUserName, true) == 0)
+					if (String.Equals(activeInvestigation.UserName, _currentUserName, StringComparison.OrdinalIgnoreCase))
 					{
 						if (activeInvestigation.Change <= lastChangeNumber && (startChangeNumber == -1 || activeInvestigation.Change < startChangeNumber))
 						{

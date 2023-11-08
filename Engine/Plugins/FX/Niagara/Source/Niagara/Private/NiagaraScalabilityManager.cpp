@@ -55,7 +55,7 @@ static int32 GetMaxUpdatesPerFrame(const UNiagaraEffectType* EffectType, int32 I
 
 				if (!AlreadyAdded)
 				{
-					UE_LOG(LogNiagara, Warning, TEXT("NiagaraScalabilityManager needs to process %d updates (will be clamped to %d) for EffectType - %s - (%d items, %f period (s), %f delta (s)"),
+					UE_LOG(LogNiagara, Verbose, TEXT("NiagaraScalabilityManager needs to process %d updates (will be clamped to %d) for EffectType - %s - (%d items, %f period (s), %f delta (s)"),
 						UpdateCount,
 						GScalabilityMaxUpdatesPerFrame,
 						*EffectType->GetName(),
@@ -205,12 +205,14 @@ bool FNiagaraScalabilityManager::EvaluateCullState(FNiagaraWorldManager* WorldMa
 		return false;
 	}
 
+	FNiagaraScalabilityState& CompState = State[ComponentIndex];
+
 	//Don't update if we're doing new systems only and this is not new.
 	//Saves the potential cost of reavaluating every effect in every tick group something new is added.
 	//Though this does mean the sorted significance values will be using out of date distances etc.
 	//I'm somewhat on the fence currently as to whether it's better to pay this cost for correctness.
 	const bool UpdateScalability = Component->ScalabilityManagerHandle == ComponentIndex
-		&& (!Context.bNewOnly || Component->GetSystemInstanceController()->IsPendingSpawn());
+		&& (!Context.bNewOnly || CompState.bNewlyRegistered);
 
 	if (UpdateScalability)
 	{
@@ -222,8 +224,9 @@ bool FNiagaraScalabilityManager::EvaluateCullState(FNiagaraWorldManager* WorldMa
 			Unregister(Component);
 			return false;
 		}
+		CompState.bNewlyRegisteredDirty = CompState.bNewlyRegistered;
+		CompState.bNewlyRegistered = false;
 
-		FNiagaraScalabilityState& CompState = State[ComponentIndex];
 		const FNiagaraSystemScalabilitySettings& Scalability = System->GetScalabilitySettings();
 
 		const FNiagaraScalabilitySystemData& SysData = GetSystemData(ComponentIndex);
@@ -334,11 +337,17 @@ void FNiagaraScalabilityManager::ProcessSignificance(FNiagaraWorldManager* World
 	}
 }
 
-bool FNiagaraScalabilityManager::ApplyScalabilityState(int32 ComponentIndex, ENiagaraCullReaction CullReaction)
+bool FNiagaraScalabilityManager::ApplyScalabilityState(int32 ComponentIndex, ENiagaraCullReaction CullReaction, bool bNewOnly)
 {
 	FNiagaraScalabilityState& CompState = State[ComponentIndex];
 
 	if (!CompState.IsDirty())
+	{
+		return true;
+	}
+
+	// If we are only processing new only do not update the state for existing component as it will cause a stall on the game thread
+	if (bNewOnly && !CompState.bNewlyRegisteredDirty)
 	{
 		return true;
 	}
@@ -378,6 +387,7 @@ bool FNiagaraScalabilityManager::ApplyScalabilityState(int32 ComponentIndex, ENi
 			case ENiagaraCullReaction::DeactivateImmediate:			Component->DeactivateImmediateInternal(false); bContinueIteration = false;  break; //We don't increment CompIdx here as this call will remove an entry from ManagedObjects;
 			case ENiagaraCullReaction::DeactivateResume:			Component->DeactivateInternal(true); break;
 			case ENiagaraCullReaction::DeactivateImmediateResume:	Component->DeactivateImmediateInternal(true); break;
+			case ENiagaraCullReaction::PauseResume:					Component->SetPausedInternal(true,true); break;
 			};
 		}
 		else
@@ -386,7 +396,14 @@ bool FNiagaraScalabilityManager::ApplyScalabilityState(int32 ComponentIndex, ENi
 			{
 				UE_LOG(LogNiagara, Error, TEXT("Niagara Component is incorrectly still registered with the scalability manager. %d - %s "), (int32)CullReaction, *Component->GetAsset()->GetFullName());
 			}
-			Component->ActivateInternal(false, true);
+			else if(CullReaction == ENiagaraCullReaction::PauseResume)
+			{
+				Component->SetPausedInternal(false, true);
+			}
+			else
+			{
+				Component->ActivateInternal(false, true);
+			}
 		}
 
 		//TODO: Beyond culling by hard limits here we could progressively scale down fx by biasing detail levels they use. Could also introduce some budgeting here like N at lvl 0, M at lvl 1 etc.
@@ -437,7 +454,7 @@ void FNiagaraScalabilityManager::UpdateInternal(FNiagaraWorldManager* WorldMan, 
 			//As we'll be activating and deactivating here, this must be done on the game thread.
 			while (CompIdx < ManagedComponents.Num())
 			{
-				if (ApplyScalabilityState(CompIdx, CullReaction))
+				if (ApplyScalabilityState(CompIdx, CullReaction, Context.bNewOnly))
 				{
 					++CompIdx;
 				}

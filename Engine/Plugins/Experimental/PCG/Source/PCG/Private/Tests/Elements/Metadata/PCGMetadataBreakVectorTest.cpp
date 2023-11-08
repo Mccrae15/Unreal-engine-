@@ -115,8 +115,7 @@ bool FPCGMetadataBreakVectorTest::RunTest(const FString& Parameters)
 		const FName OutputAttributeName = TEXT("Output");
 
 		UPCGMetadataBreakVectorSettings* Settings = CastChecked<UPCGMetadataBreakVectorSettings>(TestData.Settings);
-		Settings->OutputTarget.Selection = EPCGAttributePropertySelection::Attribute;
-		Settings->OutputTarget.AttributeName = OutputAttributeName;
+		Settings->OutputTarget.SetAttributeName(OutputAttributeName);
 		FPCGElementPtr MetadataBreakVectorElement = TestData.Settings->GetElement();
 
 		TUniquePtr<FPCGContext> Context = TestData.InitializeTestContext();
@@ -324,7 +323,7 @@ bool FPCGMetadataBreakVectorTest::RunTest(const FString& Parameters)
 	AllTestData[1] = PairWhatData("Testing with param data as input", &TestDataParams);
 
 	// Setup error catching. This error should happen only twice (invalid type)
-	AddExpectedError(TEXT("Attribute/Property Float is not a supported type for input 0"), EAutomationExpectedErrorFlags::Contains, 2);
+	AddExpectedError(TEXT("Attribute/Property 'Float' from pin"), EAutomationExpectedErrorFlags::Contains, 2);
 
 	for (PairWhatData& PairTestData : AllTestData)
 	{

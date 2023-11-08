@@ -9,6 +9,7 @@
 #include "Async/TaskGraphInterfaces.h"
 #include "Containers/Queue.h"
 #include "Delegates/DelegateCombinations.h"
+#include "HAL/CriticalSection.h"
 #include "HAL/Thread.h"
 #include "HAL/ThreadSafeBool.h"
 #include "InterchangePipelineConfigurationBase.h"
@@ -27,9 +28,11 @@
 #include "InterchangeManager.generated.h"
 
 class FAsyncTaskNotification;
+class UInterchangeBlueprintPipelineBase;
 class UInterchangeFactoryBase;
 class UInterchangeFactoryBaseNode;
 class UInterchangePipelineBase;
+class UInterchangePythonPipelineBase;
 
 /** Some utilities delegates for the automation of interchange */
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnObjectImportDoneDynamic, UObject*, Object);
@@ -42,29 +45,29 @@ namespace UE
 {
 	namespace Interchange
 	{
-		class INTERCHANGEENGINE_API FScopedInterchangeImportEnableState
+		class FScopedInterchangeImportEnableState
 		{
 		public:
-			explicit FScopedInterchangeImportEnableState(const bool bScopeValue);
-			~FScopedInterchangeImportEnableState();
+			INTERCHANGEENGINE_API explicit FScopedInterchangeImportEnableState(const bool bScopeValue);
+			INTERCHANGEENGINE_API ~FScopedInterchangeImportEnableState();
 		private:
 			bool bOriginalInterchangeImportEnableState;
 		};
 
-		class INTERCHANGEENGINE_API FScopedSourceData
+		class FScopedSourceData
 		{
 		public:
-			explicit FScopedSourceData(const FString& Filename);
-			UInterchangeSourceData* GetSourceData() const;
+			INTERCHANGEENGINE_API explicit FScopedSourceData(const FString& Filename);
+			INTERCHANGEENGINE_API UInterchangeSourceData* GetSourceData() const;
 		private:
 			TStrongObjectPtr<UInterchangeSourceData> SourceDataPtr = nullptr;
 		};
 
-		class INTERCHANGEENGINE_API FScopedTranslator
+		class FScopedTranslator
 		{
 		public:
-			explicit FScopedTranslator(const UInterchangeSourceData* SourceData);
-			UInterchangeTranslatorBase* GetTranslator();
+			INTERCHANGEENGINE_API explicit FScopedTranslator(const UInterchangeSourceData* SourceData);
+			INTERCHANGEENGINE_API UInterchangeTranslatorBase* GetTranslator();
 
 		private:
 			TStrongObjectPtr<UInterchangeTranslatorBase> ScopedTranslatorPtr = nullptr;
@@ -82,6 +85,9 @@ namespace UE
 			//True if the import process is unattended. We cannot show UI  if the import is automated
 			bool bIsAutomated = false;
 
+			// True if redirectors will be followed when determining what location to import an asset
+			bool bFollowRedirectors = false;
+
 			//We can import assets or full scene
 			EImportType ImportType = EImportType::ImportType_None;
 
@@ -89,10 +95,10 @@ namespace UE
 			UObject* ReimportObject = nullptr;
 		};
 
-		class INTERCHANGEENGINE_API FImportResult : protected FGCObject
+		class FImportResult : protected FGCObject
 		{
 		public:
-			FImportResult();
+			INTERCHANGEENGINE_API FImportResult();
 
 			FImportResult(FImportResult&&) = delete;
 			FImportResult& operator=(FImportResult&&) = delete;
@@ -110,30 +116,30 @@ namespace UE
 				Done
 			};
 
-			EStatus GetStatus() const;
+			INTERCHANGEENGINE_API EStatus GetStatus() const;
 
-			bool IsValid() const;
+			INTERCHANGEENGINE_API bool IsValid() const;
 
-			void SetInProgress();
-			void SetDone();
-			void WaitUntilDone();
+			INTERCHANGEENGINE_API void SetInProgress();
+			INTERCHANGEENGINE_API void SetDone();
+			INTERCHANGEENGINE_API void WaitUntilDone();
 
 			// Assets are only made available once they have been completely imported (passed through the entire import pipeline)
 			// While the status isn't EStatus::Done, the list can grow between subsequent calls.
 			// FAssetImportResult holds a reference to the assets so that they aren't garbage collected.
-			const TArray< UObject* >& GetImportedObjects() const;
+			INTERCHANGEENGINE_API const TArray< UObject* >& GetImportedObjects() const;
 
 			// Helper to get the first asset of a certain class. Use when expecting a single asset of that class to be imported since the order isn't deterministic.
-			UObject* GetFirstAssetOfClass(UClass* InClass) const;
+			INTERCHANGEENGINE_API UObject* GetFirstAssetOfClass(UClass* InClass) const;
 
 			// Return the results of this asset import operation
 			UInterchangeResultsContainer* GetResults() const { return Results; }
 
 			// Adds an asset to the list of imported assets.
-			void AddImportedObject(UObject* ImportedObject);
+			INTERCHANGEENGINE_API void AddImportedObject(UObject* ImportedObject);
 
 			// Callback when the status switches to done.
-			void OnDone(TFunction< void(FImportResult&) > Callback);
+			INTERCHANGEENGINE_API void OnDone(TFunction< void(FImportResult&) > Callback);
 
 			// Internal delegates (use the FImportAssetParameters when calling the interchange import functions to set those)
 			FOnObjectImportDoneDynamic OnObjectDone;
@@ -144,7 +150,7 @@ namespace UE
 
 		protected:
 			/* FGCObject interface */
-			virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+			INTERCHANGEENGINE_API virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 			virtual FString GetReferencerName() const override
 			{
 				return TEXT("UE::Interchange::FImportResult");
@@ -153,9 +159,9 @@ namespace UE
 		private:
 			std::atomic< EStatus > ImportStatus;
 
-			TArray< UObject* > ImportedObjects;
+			TArray< TObjectPtr<UObject> > ImportedObjects;
 			mutable FRWLock ImportedObjectsRWLock;
-			UInterchangeResultsContainer* Results;
+			TObjectPtr<UInterchangeResultsContainer> Results;
 
 			FGraphEventRef GraphEvent; // WaitUntilDone waits for this event to be triggered.
 
@@ -189,11 +195,11 @@ namespace UE
 
 			//The following Arrays are per source data
 			TArray<TStrongObjectPtr<UInterchangeBaseNodeContainer>> BaseNodeContainers;
-			TArray<UInterchangeSourceData*> SourceDatas;
-			TArray<UInterchangeTranslatorBase*> Translators;
+			TArray<TObjectPtr<UInterchangeSourceData>> SourceDatas;
+			TArray<TObjectPtr<UInterchangeTranslatorBase>> Translators;
 
 			//Pipelines array is not per source data
-			TArray<UInterchangePipelineBase*> Pipelines;
+			TArray<TObjectPtr<UInterchangePipelineBase>> Pipelines;
 			//The original pipelines asset to save in the asset reimport data. The original pipeline can restore python class member value.
 			//Python class instanced assets cannot be saved, so we have to serialize in json the data to restore it when we do a re-import.
 			TArray<UObject*> OriginalPipelines;
@@ -202,21 +208,29 @@ namespace UE
 			TArray<FGraphEventRef> PipelineTasks;
 			TArray<FGraphEventRef> PipelinePostImportTasks;
 			FGraphEventRef ParsingTask;
-			TArray<FGraphEventRef> CreatePackageTasks;
-			TArray<FGraphEventRef> CreateAssetTasks;
+			TArray<FGraphEventRef> BeginImportObjectTasks;
+			TArray<FGraphEventRef> ImportObjectTasks;
+			TArray<FGraphEventRef> FinalizeImportObjectTasks;
 			TArray<FGraphEventRef> SceneTasks;
 
 			FGraphEventRef PreAsyncCompletionTask;
 			FGraphEventRef PreCompletionTask;
 			FGraphEventRef CompletionTask;
 
-			//Create package map, Key is package name. We cannot create package asynchronously so we have to create a game thread task to do this
-			FCriticalSection CreatedPackagesLock;
-			TMap<FString, UPackage*> CreatedPackages;
+			// Package where the Pipeline Instances are stored during an import.
+			FString PipelineInstancesPackageName;
 
-			// Created factories map, Key is factory node UID
-			FCriticalSection CreatedFactoriesLock;
-			TMap<FString, UInterchangeFactoryBase*> CreatedFactories;
+			UPackage* GetCreatedPackage(const FString& PackageName) const;
+			void AddCreatedPackage(const FString& PackageName, UPackage* Package);
+
+			UInterchangeFactoryBase* GetCreatedFactory(const FString& FactoryNodeUniqueId) const;
+			void AddCreatedFactory(const FString& FactoryNodeUniqueId, UInterchangeFactoryBase* Factory);
+
+			// Set of classes which creation has been denied
+			TSet<UClass*> DeniedClasses;
+
+			// Set of classes which creation is allowed
+			TSet<UClass*> AllowedClasses;
 
 			struct FImportedObjectInfo
 			{
@@ -226,11 +240,20 @@ namespace UE
 				bool bIsReimport;
 			};
 
-			FCriticalSection ImportedAssetsPerSourceIndexLock;
-			TMap<int32, TArray<FImportedObjectInfo>> ImportedAssetsPerSourceIndex;
+			FImportedObjectInfo& AddDefaultImportedAssetGetRef(int32 SourceIndex);
+			const FImportedObjectInfo* FindImportedAssets(int32 SourceIndex, TFunction< bool(const FImportedObjectInfo& ImportedObjects) > Predicate) const;
+			void IterateImportedAssets(int32 SourceIndex, TFunction< void(const TArray<FImportedObjectInfo>& ImportedObjects) > Callback) const;
+			void IterateImportedAssetsPerSourceIndex(TFunction< void(int32 SourceIndex, const TArray<FImportedObjectInfo>& ImportedObjects) > Callback) const;
 
-			FCriticalSection ImportedSceneObjectsPerSourceIndexLock;
-			TMap<int32, TArray<FImportedObjectInfo>> ImportedSceneObjectsPerSourceIndex;
+			FImportedObjectInfo& AddDefaultImportedSceneObjectGetRef(int32 SourceIndex);
+			const FImportedObjectInfo* FindImportedSceneObjects(int32 SourceIndex, TFunction< bool(const FImportedObjectInfo& ImportedObjects) > Predicate) const;
+			void IterateImportedSceneObjects(int32 SourceIndex, TFunction< void(const TArray<FImportedObjectInfo>& ImportedObjects) > Callback) const;
+			void IterateImportedSceneObjectsPerSourceIndex(TFunction< void(int32 SourceIndex, const TArray<FImportedObjectInfo>& ImportedObjects) > Callback) const;
+
+			/*
+			 * Return true if the Object is imported by this async import, false otherwise
+			 */
+			bool IsImportingObject(UObject* Object) const;
 
 			FImportAsyncHelperData TaskData;
 
@@ -251,6 +274,21 @@ namespace UE
 			void InitCancel();
 
 			void CleanUp();
+
+		private:
+			//Create package map, Key is package name. We cannot create package asynchronously so we have to create a game thread task to do this
+			mutable FCriticalSection CreatedPackagesLock;
+			TMap<FString, UPackage*> CreatedPackages;
+
+			// Created factories map, Key is factory node UID
+			mutable FCriticalSection CreatedFactoriesLock;
+			TMap<FString, TObjectPtr<UInterchangeFactoryBase>> CreatedFactories;
+
+			mutable FCriticalSection ImportedAssetsPerSourceIndexLock;
+			TMap<int32, TArray<FImportedObjectInfo>> ImportedAssetsPerSourceIndex;
+
+			mutable FCriticalSection ImportedSceneObjectsPerSourceIndexLock;
+			TMap<int32, TArray<FImportedObjectInfo>> ImportedSceneObjectsPerSourceIndex;
 		};
 
 		void SanitizeObjectPath(FString& ObjectPath);
@@ -258,7 +296,9 @@ namespace UE
 		void SanitizeObjectName(FString& ObjectName);
 
 		/* This function take an asset representing a pipeline and generate a UInterchangePipelineBase asset. */
-		INTERCHANGEENGINE_API UInterchangePipelineBase* GeneratePipelineInstance(const FSoftObjectPath& PipelineInstance);
+		INTERCHANGEENGINE_API UInterchangePipelineBase* GeneratePipelineInstance(const FSoftObjectPath& PipelineInstance, UPackage* PipelineInstancePackage = nullptr);
+
+		INTERCHANGEENGINE_API UInterchangePipelineBase* GeneratePipelineInstanceInSourceAssetPackage(const FSoftObjectPath& PipelineInstance);
 
 	} //ns interchange
 } //ns UE
@@ -266,18 +306,27 @@ namespace UE
 /**
  * This class is use to pass override pipelines in the ImportAssetTask Options member
  */
-UCLASS(Transient, BlueprintType)
-class INTERCHANGEENGINE_API UInterchangePipelineStackOverride : public UObject
+UCLASS(Transient, BlueprintType, MinimalAPI)
+class UInterchangePipelineStackOverride : public UObject
 {
 	GENERATED_BODY()
 public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interchange|ImportAsset")
-		TArray<TObjectPtr<UInterchangePipelineBase>> OverridePipelines;
+	TArray<FSoftObjectPath> OverridePipelines;
+
+	UFUNCTION(BlueprintCallable, Category = "Interchange | PipelineStackOverride")
+	INTERCHANGEENGINE_API void AddPythonPipeline(UInterchangePythonPipelineBase* PipelineBase);
+
+	UFUNCTION(BlueprintCallable, Category = "Interchange | PipelineStackOverride")
+	INTERCHANGEENGINE_API void AddBlueprintPipeline(UInterchangeBlueprintPipelineBase* PipelineBase);
+
+	UFUNCTION(BlueprintCallable, Category = "Interchange | PipelineStackOverride")
+	INTERCHANGEENGINE_API void AddPipeline(UInterchangePipelineBase* PipelineBase);
 };
 
 USTRUCT(BlueprintType)
-struct INTERCHANGEENGINE_API FImportAssetParameters
+struct FImportAssetParameters
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -293,9 +342,13 @@ struct INTERCHANGEENGINE_API FImportAssetParameters
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interchange|ImportAsset")
 	bool bIsAutomated = false;
 
-	// Adding some override will tell interchange to use the specific custom set pipelines instead of letting the user or the system chose
+	// Tell interchange to follow redirectors when determining the location an asset will be imported
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interchange|ImportAsset")
-	TArray<TObjectPtr<UInterchangePipelineBase>> OverridePipelines;
+	bool bFollowRedirectors = false;
+
+	// Adding some override will tell interchange to use the specific custom set pipelines instead of letting the user or the system chose
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interchange|ImportAsset", meta = (AllowedClasses = "/Script/InterchangeCore.InterchangePipelineBase, /Script/InterchangeEngine.InterchangeBlueprintPipelineBase, /Script/InterchangeEngine.InterchangePythonPipelineAsset"))
+	TArray<FSoftObjectPath> OverridePipelines;
 
 	/* Delegates used track the imported objects */
 
@@ -320,8 +373,8 @@ struct INTERCHANGEENGINE_API FImportAssetParameters
 	FOnImportDoneNative OnSceneImportDoneNative;
 };
 
-UCLASS(Transient, BlueprintType)
-class INTERCHANGEENGINE_API UInterchangeManager : public UObject
+UCLASS(Transient, BlueprintType, MinimalAPI)
+class UInterchangeManager : public UObject
 {
 	GENERATED_BODY()
 public:
@@ -338,10 +391,12 @@ public:
 	}
 
 	/** Return the interchange manager singleton.*/
-	static UInterchangeManager& GetInterchangeManager();
+	static INTERCHANGEENGINE_API UInterchangeManager& GetInterchangeManager();
 
 	/** Return the CVar which make interchange enable or not.*/
-	static bool IsInterchangeImportEnabled();
+	static INTERCHANGEENGINE_API bool IsInterchangeImportEnabled();
+	/** Set the CVar which make interchange enable or not.*/
+	static INTERCHANGEENGINE_API void SetInterchangeImportEnabled(bool bEnabled);
 
 	/** delegate type fired when new assets have been imported. Note: InCreatedObject can be NULL if import failed. Params: UFactory* InFactory, UObject* InCreatedObject */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FInterchangeOnAssetPostImport, UObject*);
@@ -366,7 +421,7 @@ public:
 	 * @Note if you register multiple time the same class it will return true for every call
 	 * @Note The order in which the translators are registered will be the same as the order used to select a translator to import a file
 	 */
-	bool RegisterTranslator(const UClass* TranslatorClass);
+	INTERCHANGEENGINE_API bool RegisterTranslator(const UClass* TranslatorClass);
 
 	/**
 	 * Any factory must register to the manager
@@ -375,7 +430,7 @@ public:
 	 *
 	 * @Note if you register multiple time the same class it will return true for every call
 	 */
-	bool RegisterFactory(const UClass* Factory);
+	INTERCHANGEENGINE_API bool RegisterFactory(const UClass* Factory);
 
 	/**
 	 * Any writer must register to the manager
@@ -384,22 +439,22 @@ public:
 	 *
 	 * @Note if you register multiple time the same class it will return true for every call
 	 */
-	bool RegisterWriter(const UClass* Writer);
+	INTERCHANGEENGINE_API bool RegisterWriter(const UClass* Writer);
 
 	/**
 	 * Returns the list of supported formats for a given translator type.
 	 */
-	TArray<FString> GetSupportedFormats(const EInterchangeTranslatorType ForTranslatorType) const;
+	INTERCHANGEENGINE_API TArray<FString> GetSupportedFormats(const EInterchangeTranslatorType ForTranslatorType) const;
 
 	/**
 	 * Returns the list of formats supporting the specified translator asset type.
 	 */
-	TArray<FString> GetSupportedAssetTypeFormats(const EInterchangeTranslatorAssetType ForTranslatorAssetType) const;
+	INTERCHANGEENGINE_API TArray<FString> GetSupportedAssetTypeFormats(const EInterchangeTranslatorAssetType ForTranslatorAssetType) const;
 
 	/**
 	 * Returns the list of supported formats for a given Object.
 	 */
-	TArray<FString> GetSupportedFormatsForObject(const UObject* Object) const;
+	INTERCHANGEENGINE_API TArray<FString> GetSupportedFormatsForObject(const UObject* Object) const;
 
 	/**
 	 * Look if there is a registered translator for this source data.
@@ -407,14 +462,14 @@ public:
 	 * @Param SourceData - The source data input we want to translate to Uod
 	 * @return True if there is a registered translator that can handle handle this source data, false otherwise.
 	 */
-	bool CanTranslateSourceData(const UInterchangeSourceData* SourceData) const;
+	INTERCHANGEENGINE_API bool CanTranslateSourceData(const UInterchangeSourceData* SourceData) const;
 
 	/**
 	 * Returns true if Interchange can create that type of assets and is able to translate its source file.
 	 * @Param Object - The object we want to reimport.
 	 * @Param OutFilenames - An array that is filled with the object's source filenames if the operation is successful.
 	 */
-	bool CanReimport(const UObject* Object, TArray<FString>& OutFilenames) const;
+	INTERCHANGEENGINE_API bool CanReimport(const UObject* Object, TArray<FString>& OutFilenames) const;
 
 	/**
 	 * Call this to start an import asset process, the caller must specify a source data.
@@ -426,8 +481,8 @@ public:
 	 * @return true if the import succeed, false otherwise.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Import Manager")
-	bool ImportAsset(const FString& ContentPath, const UInterchangeSourceData* SourceData, const FImportAssetParameters& ImportAssetParameters);
-	UE::Interchange::FAssetImportResultRef ImportAssetAsync(const FString& ContentPath, const UInterchangeSourceData* SourceData, const FImportAssetParameters& ImportAssetParameters);
+	INTERCHANGEENGINE_API bool ImportAsset(const FString& ContentPath, const UInterchangeSourceData* SourceData, const FImportAssetParameters& ImportAssetParameters);
+	INTERCHANGEENGINE_API UE::Interchange::FAssetImportResultRef ImportAssetAsync(const FString& ContentPath, const UInterchangeSourceData* SourceData, const FImportAssetParameters& ImportAssetParameters);
 
 	/**
 	 * Call this to start an import scene process, the caller must specify a source data.
@@ -439,9 +494,9 @@ public:
 	 * @return true if the import succeed, false otherwise.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Import Manager")
-	bool ImportScene(const FString& ContentPath, const UInterchangeSourceData* SourceData, const FImportAssetParameters& ImportAssetParameters);
+	INTERCHANGEENGINE_API bool ImportScene(const FString& ContentPath, const UInterchangeSourceData* SourceData, const FImportAssetParameters& ImportAssetParameters);
 
-	TTuple<UE::Interchange::FAssetImportResultRef, UE::Interchange::FSceneImportResultRef>
+	INTERCHANGEENGINE_API TTuple<UE::Interchange::FAssetImportResultRef, UE::Interchange::FSceneImportResultRef>
 	ImportSceneAsync(const FString& ContentPath, const UInterchangeSourceData* SourceData, const FImportAssetParameters& ImportAssetParameters);
 
 	/**
@@ -452,7 +507,7 @@ public:
 	 * @return true if the import succeed, false otherwise.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Export Manager")
-	bool ExportAsset(const UObject* Asset, bool bIsAutomated = false);
+	INTERCHANGEENGINE_API bool ExportAsset(const UObject* Asset, bool bIsAutomated = false);
 
 	/**
 	 * Call this to start an export scene process, the caller must specify a source data
@@ -462,7 +517,7 @@ public:
 	 * @return true if the import succeed, false otherwise.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Export Manager")
-	bool ExportScene(const UObject* World, bool bIsAutomated = false);
+	INTERCHANGEENGINE_API bool ExportScene(const UObject* World, bool bIsAutomated = false);
 
 	/*
 	* Script helper to create a source data object pointing on a file on disk
@@ -470,7 +525,7 @@ public:
 	* @return: A new UInterchangeSourceData.
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Import Manager")
-	static UInterchangeSourceData* CreateSourceData(const FString& InFileName);
+	static INTERCHANGEENGINE_API UInterchangeSourceData* CreateSourceData(const FString& InFileName);
 
 	/**
 	* Script helper to get a registered factory for a specified class
@@ -478,42 +533,42 @@ public:
 	* @return: if found, we return the factory class that is registered. Return NULL if nothing found.
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Import Manager")
-	const UClass* GetRegisteredFactoryClass(const UClass* ClassToMake) const;
+	INTERCHANGEENGINE_API const UClass* GetRegisteredFactoryClass(const UClass* ClassToMake) const;
 
 	/**
 	 * Return an FImportAsynHelper pointer. The pointer is deleted when ReleaseAsyncHelper is call.
 	 * @param Data - The data we want to pass to the different import tasks
 	 */
-	TSharedRef<UE::Interchange::FImportAsyncHelper, ESPMode::ThreadSafe> CreateAsyncHelper(const UE::Interchange::FImportAsyncHelperData& Data, const FImportAssetParameters& ImportAssetParameters);
+	INTERCHANGEENGINE_API TSharedRef<UE::Interchange::FImportAsyncHelper, ESPMode::ThreadSafe> CreateAsyncHelper(const UE::Interchange::FImportAsyncHelperData& Data, const FImportAssetParameters& ImportAssetParameters);
 
 	/** Delete the specified AsyncHelper and remove it from the array that was holding it. */
-	void ReleaseAsyncHelper(TWeakPtr<UE::Interchange::FImportAsyncHelper, ESPMode::ThreadSafe> AsyncHelper);
+	INTERCHANGEENGINE_API void ReleaseAsyncHelper(TWeakPtr<UE::Interchange::FImportAsyncHelper, ESPMode::ThreadSafe> AsyncHelper);
 
 	/*
 	 * Return the first translator that can translate the source data.
 	 * @Param SourceData - The source data for which we search a translator.
 	 * @return return a matching translator or nullptr if there is no match.
 	 */
-	UInterchangeTranslatorBase* GetTranslatorForSourceData(const UInterchangeSourceData* SourceData) const;
+	INTERCHANGEENGINE_API UInterchangeTranslatorBase* GetTranslatorForSourceData(const UInterchangeSourceData* SourceData) const;
 
 	/**
 	 * Return true if the Interchange is active (importing or exporting), return false otherwise.
 	 */
-	bool IsInterchangeActive();
+	INTERCHANGEENGINE_API bool IsInterchangeActive();
 
 	/**
 	 * Return false if the Interchange is not active (importing or exporting).
 	 * If the interchange is active, it will display a notification to let the user know they can cancel the asynchronous import/export
 	 * to be able to complete the operation they want to do. (The exit editor operation is calling this)
 	 */
-	bool WarnIfInterchangeIsActive();
+	INTERCHANGEENGINE_API bool WarnIfInterchangeIsActive();
 
 	/**
 	 * Look if there is a translator registered that can translate the source data with the specified PayloadInterface
 	 * @Param SourceData - The source data input we want to translate to Uod
 	 * @return true if the source data can be translated using the specified PayloadInterface, false otherwise.
 	 */
-	bool CanTranslateSourceDataWithPayloadInterface(const UInterchangeSourceData* SourceData, const UClass* PayloadInterfaceClass) const;
+	INTERCHANGEENGINE_API bool CanTranslateSourceDataWithPayloadInterface(const UInterchangeSourceData* SourceData, const UClass* PayloadInterfaceClass) const;
 
 	/*
 	 * Return the first translator that can translate the source data with the specified PayloadInterface.
@@ -521,49 +576,55 @@ public:
 	 * @Param PayloadInterfaceClass - The PayloadInterface that the translator must implement.
 	 * @return return a matching translator implementing the specified PayloadInterface or nullptr if there is no match.
 	 */
-	UInterchangeTranslatorBase* GetTranslatorSupportingPayloadInterfaceForSourceData(const UInterchangeSourceData* SourceData, const UClass* PayloadInterfaceClass) const;
+	INTERCHANGEENGINE_API UInterchangeTranslatorBase* GetTranslatorSupportingPayloadInterfaceForSourceData(const UInterchangeSourceData* SourceData, const UClass* PayloadInterfaceClass) const;
+
+	/**
+	 * Return true if the object is being imported, return false otherwise. If the user import multiple file in the same folder its possible to
+	 * have the same asset name in two different files.
+	 */
+	INTERCHANGEENGINE_API bool IsObjectBeingImported(UObject* Object) const;
 
 protected:
 
 	/** Return true if we can show some UI */
-	static bool IsAttended();
+	static INTERCHANGEENGINE_API bool IsAttended();
 
 	/*
 	 * Find all Pipeline candidate (c++, blueprint and python).
 	 * @Param SourceData - The source data for which we search a translator.
 	 * @return return a matching translator or nullptr if there is no match.
 	 */
-	void FindPipelineCandidate(TArray<UClass*>& PipelineCandidates);
+	INTERCHANGEENGINE_API void FindPipelineCandidate(TArray<UClass*>& PipelineCandidates);
 
 	/**
 	 * This function cancel all task and finish them has fast as possible.
 	 * We use this if the user cancel the work or if the editor is exiting.
 	 * @note - This is a asynchronous call, tasks will be completed (cancel) soon.
 	 */
-	void CancelAllTasks();
+	INTERCHANGEENGINE_API void CancelAllTasks();
 
 	/**
 	 * Wait synchronously that all tasks are done
 	 */
-	void WaitUntilAllTasksDone(bool bCancel);
+	INTERCHANGEENGINE_API void WaitUntilAllTasksDone(bool bCancel);
 
 
 	/**
 	 * If we set the mode to active we will setup the timer and add the thread that will block the GC.
 	 * If the we set the mode to inactive we will remove the timer and finish the thread that block the GC.
 	 */
-	void SetActiveMode(bool IsActive);
+	INTERCHANGEENGINE_API void SetActiveMode(bool IsActive);
 
 	/**
 	 * Start task until we reach the taskgraph worker number.
 	 * @param bCancelAllTasks - If true we will start all task but with the cancel state set, so task will complete fast and call the completion task
 	 */
-	void StartQueuedTasks(bool bCancelAllTasks = false);
+	INTERCHANGEENGINE_API void StartQueuedTasks(bool bCancelAllTasks = false);
 
 	/**
 	 * Called by the public Import functions
 	 */
-	TTuple<UE::Interchange::FAssetImportResultRef, UE::Interchange::FSceneImportResultRef>
+	INTERCHANGEENGINE_API TTuple<UE::Interchange::FAssetImportResultRef, UE::Interchange::FSceneImportResultRef>
 	ImportInternal(const FString& ContentPath, const UInterchangeSourceData* SourceData, const FImportAssetParameters& ImportAssetParameters, const UE::Interchange::EImportType ImportType);
 
 private:
@@ -614,6 +675,10 @@ private:
 	//Indicates that the import process was canceled by the user.
 	//This boolean is reset to false when the ImportTasks array is empty.
 	bool bImportCanceled = false;
+
+	//We want to avoid starting an import task during a GC
+	FDelegateHandle GCEndDelegate;
+	bool bGCEndDelegateCancellAllTask = false;
 
 	friend class UE::Interchange::FScopedTranslator;
 };

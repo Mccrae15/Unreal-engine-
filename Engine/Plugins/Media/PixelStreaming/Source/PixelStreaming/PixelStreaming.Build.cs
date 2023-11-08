@@ -1,10 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using System;
-using System.IO;
 using System.Collections.Generic;
-using EpicGames.Core;
-
+using System.IO;
 
 namespace UnrealBuildTool.Rules
 {
@@ -62,8 +59,6 @@ namespace UnrealBuildTool.Rules
 
 		public PixelStreaming(ReadOnlyTargetRules Target) : base(Target)
 		{
-			var EngineDir = Path.GetFullPath(Target.RelativeEnginePath);
-
 			// This is so for game projects using our public headers don't have to include extra modules they might not know about.
 			PublicDependencyModuleNames.AddRange(new string[]
 			{
@@ -72,13 +67,6 @@ namespace UnrealBuildTool.Rules
 				"WebRTC",
 				"PixelCapture",
 				"PixelStreamingInput"
-			});
-
-			// NOTE: General rule is not to access the private folder of another module
-			PrivateIncludePaths.AddRange(new string[]
-			{
-				Path.Combine(GetModuleDirectory("AudioMixer"), "Private"),
-				Path.Combine(GetModuleDirectory("Renderer"), "Private"),
 			});
 
 			PrivateDependencyModuleNames.AddRange(new string[]

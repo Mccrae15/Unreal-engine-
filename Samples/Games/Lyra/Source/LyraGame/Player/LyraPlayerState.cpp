@@ -35,8 +35,9 @@ ALyraPlayerState::ALyraPlayerState(const FObjectInitializer& ObjectInitializer)
 	AbilitySystemComponent->SetIsReplicated(true);
 	AbilitySystemComponent->SetReplicationMode(EGameplayEffectReplicationMode::Mixed);
 
-	CreateDefaultSubobject<ULyraHealthSet>(TEXT("HealthSet"));
-	CreateDefaultSubobject<ULyraCombatSet>(TEXT("CombatSet"));
+	// These attribute sets will be detected by AbilitySystemComponent::InitializeComponent. Keeping a reference so that the sets don't get garbage collected before that.
+	HealthSet = CreateDefaultSubobject<ULyraHealthSet>(TEXT("HealthSet"));
+	CombatSet = CreateDefaultSubobject<ULyraCombatSet>(TEXT("CombatSet"));
 
 	// AbilitySystemComponent needs to be updated at a high frequency.
 	NetUpdateFrequency = 100.0f;
@@ -132,7 +133,25 @@ void ALyraPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 	DOREPLIFETIME_WITH_PARAMS_FAST(ThisClass, MyTeamID, SharedParams);
 	DOREPLIFETIME_WITH_PARAMS_FAST(ThisClass, MySquadID, SharedParams);
 
-	DOREPLIFETIME(ThisClass, StatTags);
+	SharedParams.Condition = ELifetimeCondition::COND_SkipOwner;
+	DOREPLIFETIME_WITH_PARAMS_FAST(ThisClass, ReplicatedViewRotation, SharedParams);
+
+	DOREPLIFETIME(ThisClass, StatTags);	
+}
+
+FRotator ALyraPlayerState::GetReplicatedViewRotation() const
+{
+	// Could replace this with custom replication
+	return ReplicatedViewRotation;
+}
+
+void ALyraPlayerState::SetReplicatedViewRotation(const FRotator& NewRotation)
+{
+	if (NewRotation != ReplicatedViewRotation)
+	{
+		MARK_PROPERTY_DIRTY_FROM_NAME(ThisClass, ReplicatedViewRotation, this);
+		ReplicatedViewRotation = NewRotation;
+	}
 }
 
 ALyraPlayerController* ALyraPlayerState::GetLyraPlayerController() const

@@ -610,6 +610,7 @@ static bool CheckUnicodeStatus(ClientApi& P4Client, bool& bIsUnicodeServer, TArr
 FPerforceConnection::FPerforceConnection(const FPerforceConnectionInfo& InConnectionInfo, FPerforceSourceControlProvider& InSCCProvider)
 	: bEstablishedConnection(false)
 	, bIsUnicode(false)
+	, LatestCommunicateTime(0.0)
 	, SCCProvider(InSCCProvider)
 {
 	EstablishConnection(InConnectionInfo);
@@ -979,9 +980,14 @@ void FPerforceConnection::Disconnect()
 	}
 }
 
+double FPerforceConnection::GetLatestCommuncationTime() const
+{
+	return LatestCommunicateTime;
+}
+
 bool FPerforceConnection::RunCommand(	const FString& InCommand, const TArray<FString>& InParameters, FP4RecordSet& OutRecordSet, 
-										TArray<FSharedBuffer>* OutData, TArray<FText>& OutErrorMessage, 
-										FOnIsCancelled InIsCancelled, bool& OutConnectionDropped, ERunCommandFlags RunFlags)
+                                        TArray<FSharedBuffer>* OutData, TArray<FText>& OutErrorMessage, 
+                                        FOnIsCancelled InIsCancelled, bool& OutConnectionDropped, ERunCommandFlags RunFlags)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("FPerforceConnection::RunCommand_%s"), *InCommand));
 
@@ -1071,7 +1077,19 @@ bool FPerforceConnection::RunCommand(	const FString& InCommand, const TArray<FSt
 	if (bLogCommandDetails)
 	{
 		const double ExecutionTime = FPlatformTime::Seconds() - SCCStartTime;
-		UE_CLOG((LogSourceControl.GetVerbosity() == ELogVerbosity::VeryVerbose) || (ExecutionTime >= 0.1), LogSourceControl, Log, TEXT("P4 execution time: %0.4f seconds. Command: %s"), ExecutionTime, *FullCommand);
+		if (ExecutionTime >= 0.1)
+		{
+			UE_LOG(LogSourceControl, Log, TEXT("P4 execution time: %0.4f seconds. Command: %s"), ExecutionTime, *FullCommand);
+		}
+		else
+		{
+			UE_LOG(LogSourceControl, VeryVerbose, TEXT("P4 execution time: %0.4f seconds. Command: %s"), ExecutionTime, *FullCommand);
+		}
+	}
+
+	if (!OutConnectionDropped)
+	{
+		LatestCommunicateTime = FPlatformTime::Seconds();
 	}
 
 	return OutRecordSet.Num() > 0;
@@ -1257,8 +1275,7 @@ void FPerforceConnection::EstablishConnection(const FPerforceConnectionInfo& InC
 				UE_LOG(LogSourceControl, Verbose, TEXT(" ... getting clientroot" ));
 				ClientRoot = Records[0](TEXT("clientRoot"));
 
-				//make sure all slashes point the same way
-				ClientRoot = ClientRoot.Replace(TEXT("\\"), TEXT("/"));
+				FPaths::NormalizeDirectoryName(ClientRoot);
 			}
 		}
 	}

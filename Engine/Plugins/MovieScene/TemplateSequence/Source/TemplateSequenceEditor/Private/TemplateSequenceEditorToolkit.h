@@ -60,7 +60,7 @@ public:
 		return TEXT("FTemplateSequenceEditorToolkit");
 	}
 
-	virtual bool OnRequestClose() override;
+	virtual bool OnRequestClose(EAssetEditorCloseReason InCloseReason) override;
 	virtual bool CanFindInContentBrowser() const override;
 
 public:
@@ -89,7 +89,7 @@ private:
 private:
 
 	/** Template sequence for our edit operation. */
-	UTemplateSequence* TemplateSequence;
+	TObjectPtr<UTemplateSequence> TemplateSequence;
 
 	/** The sequencer used by this editor. */
 	TSharedPtr<ISequencer> Sequencer;

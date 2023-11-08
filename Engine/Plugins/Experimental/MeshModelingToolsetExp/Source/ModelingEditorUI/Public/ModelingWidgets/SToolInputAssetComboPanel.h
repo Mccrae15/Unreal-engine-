@@ -9,6 +9,7 @@
 #include "PropertyHandle.h"
 #include "AssetRegistry/AssetData.h"
 #include "CollectionManagerTypes.h"
+#include "AssetThumbnail.h"
 
 class SComboButton;
 class FAssetThumbnailPool;
@@ -65,6 +66,10 @@ public:
 		, _FlyoutSize(600, 400)
 		, _AssetClassType(0)
 		, _OnSelectionChanged()
+		, _InitiallySelectedAsset()
+		, _AssetThumbnailLabel(EThumbnailLabel::NoLabel)
+		, _bForceShowEngineContent(false)
+		, _bForceShowPluginContent(false)
 	{
 		}
 
@@ -95,6 +100,18 @@ public:
 		/** This delegate is executed each time the Selected Asset is modified */
 		SLATE_EVENT( FOnSelectedAssetChanged, OnSelectionChanged )
 
+		/** Sets the asset selected by the widget before any user made selection occurs. */
+		SLATE_ARGUMENT( FAssetData, InitiallySelectedAsset)
+
+		/** Sets the type of label used for the asset picker tiles */
+		SLATE_ARGUMENT( EThumbnailLabel::Type, AssetThumbnailLabel)
+
+		/** Indicates if engine content should always be shown */
+		SLATE_ARGUMENT(bool, bForceShowEngineContent)
+
+		/** Indicates if plugin content should always be shown */
+		SLATE_ARGUMENT(bool, bForceShowPluginContent)
+
 	SLATE_END_ARGS()
 
 
@@ -104,6 +121,8 @@ public:
 	 * @param	InArgs	The declaration data for this widget
 	 */
 	void Construct( const FArguments& InArgs );
+
+	void RefreshThumbnailFromProperty();
 
 protected:
 

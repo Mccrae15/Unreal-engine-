@@ -158,7 +158,7 @@ namespace Chaos
 		// NOTE: relies on the sort above, and retains order
 		if (TriangleContactPoints.Num() > 4)
 		{
-			PruneUnnecessaryContactPoints(FReal(0.1), FReal(0.1));
+			PruneUnnecessaryContactPoints();
 		}
 
 		DebugDrawContactPoints(FColor::Yellow, 0.5);
@@ -370,7 +370,7 @@ namespace Chaos
 	// NOTE: ContactPoints must be sorted on Phi on entry, and will be sorted on exit
 	// @todo(chaos): we should only remove shallow contacts that are hidden by nearby deeper contacts. It should be ok to have shallow contacts
 	// far from the deeper ones. E.g., a box landing on plane at an angle.
-	void FContactTriangleCollector::PruneUnnecessaryContactPoints(const FReal PhiTolerance, const FReal DistanceTolerance)
+	void FContactTriangleCollector::PruneUnnecessaryContactPoints()
 	{
 		// Remove all points except for the deepest one, and ones with phis similar to it
 		int32 NewContactPointCount = TriangleContactPoints.Num() > 0 ? 1 : 0;
@@ -533,7 +533,7 @@ namespace Chaos
 		}
 	}
 
-	void FContactTriangleCollector::DebugDrawContactPoints(const FColor& Color, const FReal LineThickness)
+	void FContactTriangleCollector::DebugDrawContactPoints(const FColor& Color, const FReal LineScale)
 	{
 #if CHAOS_DEBUG_DRAW
 		if (CVars::ChaosSolverDebugDrawMeshContacts && FDebugDrawQueue::GetInstance().IsDebugDrawingEnabled())
@@ -550,10 +550,10 @@ namespace Chaos
 				const FVec3 N = ConvexTransform.TransformVectorNoScale(ContactPoint.ShapeContactNormal);
 
 				// Draw the normal from the triangle face
-				FDebugDrawQueue::GetInstance().DrawDebugLine(P1, P1 + FReal(15) * N, Color, false, FRealSingle(Duration), DrawPriority, FRealSingle(LineThickness));
+				FDebugDrawQueue::GetInstance().DrawDebugLine(P1, P1 + LineScale * FReal(50) * N, Color, false, FRealSingle(Duration), DrawPriority, 2 * FRealSingle(LineScale));
 
 				// Draw a thin black line connecting the two contact points (triangle face to convex surface)
-				FDebugDrawQueue::GetInstance().DrawDebugLine(P0, P1, FColor::Black, false, FRealSingle(Duration), DrawPriority, 0.5f * FRealSingle(LineThickness));
+				//FDebugDrawQueue::GetInstance().DrawDebugLine(P0, P1, FColor::Black, false, FRealSingle(Duration), DrawPriority, 0.5f * FRealSingle(LineThickness));
 
 				if (!bTriangleDrawn[ContactPoint.ContactTriangleIndex])
 				{
@@ -561,9 +561,9 @@ namespace Chaos
 					const FVec3 V0 = ConvexTransform.TransformPosition(Triangle.Vertices[0]);
 					const FVec3 V1 = ConvexTransform.TransformPosition(Triangle.Vertices[1]);
 					const FVec3 V2 = ConvexTransform.TransformPosition(Triangle.Vertices[2]);
-					FDebugDrawQueue::GetInstance().DrawDebugLine(V0, V1, FColor::Silver, false, FRealSingle(Duration), DrawPriority, 0.5f * FRealSingle(LineThickness));
-					FDebugDrawQueue::GetInstance().DrawDebugLine(V1, V2, FColor::Silver, false, FRealSingle(Duration), DrawPriority, 0.5f * FRealSingle(LineThickness));
-					FDebugDrawQueue::GetInstance().DrawDebugLine(V2, V0, FColor::Silver, false, FRealSingle(Duration), DrawPriority, 0.5f * FRealSingle(LineThickness));
+					FDebugDrawQueue::GetInstance().DrawDebugLine(V0, V1, FColor::Silver, false, FRealSingle(Duration), DrawPriority, FRealSingle(LineScale));
+					FDebugDrawQueue::GetInstance().DrawDebugLine(V1, V2, FColor::Silver, false, FRealSingle(Duration), DrawPriority, FRealSingle(LineScale));
+					FDebugDrawQueue::GetInstance().DrawDebugLine(V2, V0, FColor::Silver, false, FRealSingle(Duration), DrawPriority, FRealSingle(LineScale));
 					bTriangleDrawn[ContactPoint.ContactTriangleIndex] = true;
 				}
 			}

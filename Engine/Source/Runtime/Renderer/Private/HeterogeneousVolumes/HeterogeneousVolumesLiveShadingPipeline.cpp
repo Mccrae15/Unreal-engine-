@@ -1,9 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HeterogeneousVolumes.h"
+#include "HeterogeneousVolumeInterface.h"
 
 #include "LightRendering.h"
 #include "LocalVertexFactory.h"
+#include "MeshPassUtils.h"
 #include "PixelShaderUtils.h"
 #include "RayTracingDefinitions.h"
 #include "RayTracingInstance.h"
@@ -99,6 +101,7 @@ class FRenderLightingCacheWithLiveShadingCS : public FMeshMaterialShader
 		// Scene data
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, Scene)
 
 		// Light data
 		SHADER_PARAMETER(int, bApplyEmissionAndTransmittance)
@@ -110,6 +113,7 @@ class FRenderLightingCacheWithLiveShadingCS : public FMeshMaterialShader
 
 		// Shadow data
 		SHADER_PARAMETER(float, ShadowStepSize)
+		SHADER_PARAMETER(float, ShadowStepFactor)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FForwardLightData, ForwardLightData)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FVolumeShadowingShaderParameters, VolumeShadowingShaderParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FVirtualShadowMapSamplingParameters, VirtualShadowMapSamplingParameters)
@@ -126,10 +130,12 @@ class FRenderLightingCacheWithLiveShadingCS : public FMeshMaterialShader
 		SHADER_PARAMETER(float, MaxTraceDistance)
 		SHADER_PARAMETER(float, MaxShadowTraceDistance)
 		SHADER_PARAMETER(float, StepSize)
+		SHADER_PARAMETER(float, StepFactor)
 		SHADER_PARAMETER(int, MaxStepCount)
 		SHADER_PARAMETER(int, bJitter)
 
 		// Volume data
+		SHADER_PARAMETER(FIntVector, VoxelResolution)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLightingCacheParameters, LightingCache)
 
 		// Output
@@ -213,6 +219,7 @@ class FRenderSingleScatteringWithLiveShadingCS : public FMeshMaterialShader
 		// Scene data
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, Scene)
 
 		// Light data
 		SHADER_PARAMETER(int, bApplyEmissionAndTransmittance)
@@ -224,6 +231,7 @@ class FRenderSingleScatteringWithLiveShadingCS : public FMeshMaterialShader
 
 		// Shadow data
 		SHADER_PARAMETER(float, ShadowStepSize)
+		SHADER_PARAMETER(float, ShadowStepFactor)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FForwardLightData, ForwardLightData)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FVolumeShadowingShaderParameters, VolumeShadowingShaderParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FVirtualShadowMapSamplingParameters, VirtualShadowMapSamplingParameters)
@@ -240,11 +248,13 @@ class FRenderSingleScatteringWithLiveShadingCS : public FMeshMaterialShader
 		SHADER_PARAMETER(int32, PrimitiveId)
 
 		// Volume data
+		SHADER_PARAMETER(FIntVector, VoxelResolution)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLightingCacheParameters, LightingCache)
 
 		// Ray data
 		SHADER_PARAMETER(float, MaxTraceDistance)
 		SHADER_PARAMETER(float, StepSize)
+		SHADER_PARAMETER(float, StepFactor)
 		SHADER_PARAMETER(int, MaxStepCount)
 		SHADER_PARAMETER(int, bJitter)
 
@@ -362,10 +372,8 @@ void AddComputePass(
 				ComputeShader->ShaderLooseBindings.SetParameters(SingleShaderBindings, PassParameters);
 				ShaderBindings.Finalize(&PassShaders);
 			}
-			SetComputePipelineState(RHICmdList, ComputeShader.GetComputeShader());
-			ShaderBindings.SetOnCommandList(RHICmdList, ComputeShader.GetComputeShader());
 
-			FComputeShaderUtils::Dispatch(RHICmdList, ComputeShader, *PassParameters, GroupCount);
+			UE::MeshPassUtils::Dispatch(RHICmdList, ComputeShader, ShaderBindings, *PassParameters, GroupCount);
 		}
 	);
 }
@@ -386,7 +394,7 @@ void RenderLightingCacheWithLiveShading(
 	const FVisibleLightInfo* VisibleLightInfo,
 	const FVirtualShadowMapArray& VirtualShadowMapArray,
 	// Object data
-	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+	const IHeterogeneousVolumeInterface* HeterogeneousVolumeInterface,
 	const FMaterialRenderProxy* DefaultMaterialRenderProxy,
 	const int32 PrimitiveId,
 	const FBoxSphereBounds LocalBoxSphereBounds,
@@ -409,6 +417,7 @@ void RenderLightingCacheWithLiveShading(
 		// Scene data
 		PassParameters->View = View.ViewUniformBuffer;
 		PassParameters->SceneTextures = GetSceneTextureParameters(GraphBuilder, SceneTextures);
+		PassParameters->Scene = View.GetSceneUniforms().GetBuffer(GraphBuilder);
 
 		// Light data
 		check(LightSceneInfo != nullptr)
@@ -420,7 +429,7 @@ void RenderLightingCacheWithLiveShading(
 		PassParameters->VolumetricScatteringIntensity = LightSceneInfo->Proxy->GetVolumetricScatteringIntensity();
 
 		// Object data
-		FMatrix44f LocalToWorld = FMatrix44f(PrimitiveSceneProxy->GetLocalToWorld());
+		FMatrix44f LocalToWorld = FMatrix44f(HeterogeneousVolumeInterface->GetLocalToWorld());
 		PassParameters->LocalToWorld = LocalToWorld;
 		PassParameters->WorldToLocal = LocalToWorld.Inverse();
 		PassParameters->LocalBoundsOrigin = FVector3f(LocalBoxSphereBounds.Origin);
@@ -428,7 +437,9 @@ void RenderLightingCacheWithLiveShading(
 		PassParameters->PrimitiveId = PrimitiveId;
 
 		// Transmittance volume
-		PassParameters->LightingCache.LightingCacheResolution = HeterogeneousVolumes::GetLightingCacheResolution();
+		PassParameters->VoxelResolution = HeterogeneousVolumeInterface->GetVoxelResolution();
+		PassParameters->LightingCache.LightingCacheResolution = HeterogeneousVolumes::GetLightingCacheResolution(HeterogeneousVolumeInterface);
+		PassParameters->LightingCache.LightingCacheVoxelBias = HeterogeneousVolumeInterface->GetShadowBiasFactor();
 		//PassParameters->LightingCache.LightingCacheTexture = GraphBuilder.CreateSRV(LightingCacheTexture);
 		PassParameters->LightingCache.LightingCacheTexture = FRDGSystemTextures::Get(GraphBuilder).VolumetricBlack;
 
@@ -436,7 +447,9 @@ void RenderLightingCacheWithLiveShading(
 		PassParameters->MaxTraceDistance = HeterogeneousVolumes::GetMaxTraceDistance();
 		PassParameters->MaxShadowTraceDistance = HeterogeneousVolumes::GetMaxShadowTraceDistance();
 		PassParameters->StepSize = HeterogeneousVolumes::GetStepSize();
+		PassParameters->StepFactor = HeterogeneousVolumeInterface->GetStepFactor();
 		PassParameters->ShadowStepSize = HeterogeneousVolumes::GetShadowStepSize();
+		PassParameters->ShadowStepFactor = HeterogeneousVolumeInterface->GetShadowStepFactor();
 		PassParameters->MaxStepCount = HeterogeneousVolumes::GetMaxStepCount();
 		PassParameters->bJitter = HeterogeneousVolumes::ShouldJitter();
 
@@ -481,7 +494,7 @@ void RenderLightingCacheWithLiveShading(
 	}
 #endif // WANTS_DRAW_MESH_EVENTS
 
-	FIntVector GroupCount = HeterogeneousVolumes::GetLightingCacheResolution();
+	FIntVector GroupCount = HeterogeneousVolumes::GetLightingCacheResolution(HeterogeneousVolumeInterface);
 	GroupCount.X = FMath::DivideAndRoundUp(GroupCount.X, FRenderLightingCacheWithLiveShadingCS::GetThreadGroupSize3D());
 	GroupCount.Y = FMath::DivideAndRoundUp(GroupCount.Y, FRenderLightingCacheWithLiveShadingCS::GetThreadGroupSize3D());
 	GroupCount.Z = FMath::DivideAndRoundUp(GroupCount.Z, FRenderLightingCacheWithLiveShadingCS::GetThreadGroupSize3D());
@@ -511,7 +524,7 @@ void RenderSingleScatteringWithLiveShading(
 	const FVisibleLightInfo* VisibleLightInfo,
 	const FVirtualShadowMapArray& VirtualShadowMapArray,
 	// Object data
-	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+	const IHeterogeneousVolumeInterface* HeterogeneousVolumeInterface,
 	const FMaterialRenderProxy* DefaultMaterialRenderProxy,
 	const int32 PrimitiveId,
 	const FBoxSphereBounds LocalBoxSphereBounds,
@@ -550,6 +563,7 @@ void RenderSingleScatteringWithLiveShading(
 		// Scene data
 		PassParameters->View = View.ViewUniformBuffer;
 		PassParameters->SceneTextures = GetSceneTextureParameters(GraphBuilder, SceneTextures);
+		PassParameters->Scene = View.GetSceneUniforms().GetBuffer(GraphBuilder);
 
 		// Light data
 		PassParameters->bApplyEmissionAndTransmittance = bApplyEmissionAndTransmittance;
@@ -562,18 +576,23 @@ void RenderSingleScatteringWithLiveShading(
 		PassParameters->DeferredLight = DeferredLightUB;
 		PassParameters->LightType = LightType;
 		PassParameters->ShadowStepSize = HeterogeneousVolumes::GetShadowStepSize();
+		PassParameters->ShadowStepFactor = HeterogeneousVolumeInterface->GetShadowStepFactor();
 
 		// Object data
-		FMatrix44f LocalToWorld = FMatrix44f(PrimitiveSceneProxy->GetLocalToWorld());
+		FMatrix44f LocalToWorld = FMatrix44f(HeterogeneousVolumeInterface->GetLocalToWorld());
 		PassParameters->LocalToWorld = LocalToWorld;
 		PassParameters->WorldToLocal = LocalToWorld.Inverse();
 		PassParameters->LocalBoundsOrigin = FVector3f(LocalBoxSphereBounds.Origin);
 		PassParameters->LocalBoundsExtent = FVector3f(LocalBoxSphereBounds.BoxExtent);
 		PassParameters->PrimitiveId = PrimitiveId;
 
+		// Volume data
+		PassParameters->VoxelResolution = HeterogeneousVolumeInterface->GetVoxelResolution();
+
 		// Ray data
 		PassParameters->MaxTraceDistance = HeterogeneousVolumes::GetMaxTraceDistance();
 		PassParameters->StepSize = HeterogeneousVolumes::GetStepSize();
+		PassParameters->StepFactor = HeterogeneousVolumeInterface->GetStepFactor();
 		PassParameters->MaxStepCount = HeterogeneousVolumes::GetMaxStepCount();
 		PassParameters->bJitter = HeterogeneousVolumes::ShouldJitter();
 
@@ -601,13 +620,14 @@ void RenderSingleScatteringWithLiveShading(
 
 		// Indirect lighting data
 		auto* LumenUniforms = GraphBuilder.AllocParameters<FLumenTranslucencyLightingUniforms>();
-		LumenUniforms->Parameters = GetLumenTranslucencyLightingParameters(GraphBuilder, View.LumenTranslucencyGIVolume, View.LumenFrontLayerTranslucency);
+		LumenUniforms->Parameters = GetLumenTranslucencyLightingParameters(GraphBuilder, View.GetLumenTranslucencyGIVolume(), View.LumenFrontLayerTranslucency);
 		PassParameters->LumenGIVolumeStruct = GraphBuilder.CreateUniformBuffer(LumenUniforms);
 
 		// Volume data
 		if ((HeterogeneousVolumes::UseLightingCacheForTransmittance() && bApplyShadowTransmittance) || HeterogeneousVolumes::UseLightingCacheForInscattering())
 		{
-			PassParameters->LightingCache.LightingCacheResolution = HeterogeneousVolumes::GetLightingCacheResolution();
+			PassParameters->LightingCache.LightingCacheResolution = HeterogeneousVolumes::GetLightingCacheResolution(HeterogeneousVolumeInterface);
+			PassParameters->LightingCache.LightingCacheVoxelBias = HeterogeneousVolumeInterface->GetShadowBiasFactor();
 			PassParameters->LightingCache.LightingCacheTexture = LightingCacheTexture;
 		}
 		else
@@ -639,7 +659,7 @@ void RenderSingleScatteringWithLiveShading(
 	FRenderSingleScatteringWithLiveShadingCS::FPermutationDomain PermutationVector;
 	PermutationVector.Set<FRenderSingleScatteringWithLiveShadingCS::FUseTransmittanceVolume>(HeterogeneousVolumes::UseLightingCacheForTransmittance() && PassParameters->bApplyShadowTransmittance);
 	PermutationVector.Set<FRenderSingleScatteringWithLiveShadingCS::FUseInscatteringVolume>(HeterogeneousVolumes::UseLightingCacheForInscattering());
-	PermutationVector.Set<FRenderSingleScatteringWithLiveShadingCS::FUseLumenGI>(HeterogeneousVolumes::UseIndirectLighting() && View.LumenTranslucencyGIVolume.Texture0 != nullptr);
+	PermutationVector.Set<FRenderSingleScatteringWithLiveShadingCS::FUseLumenGI>(HeterogeneousVolumes::UseIndirectLighting() && View.GetLumenTranslucencyGIVolume().Texture0 != nullptr);
 	TShaderRef<FRenderSingleScatteringWithLiveShadingCS> ComputeShader = Material.GetShader<FRenderSingleScatteringWithLiveShadingCS>(&FLocalVertexFactory::StaticType, PermutationVector, false);
 	if (!ComputeShader.IsNull())
 	{
@@ -656,7 +676,7 @@ void RenderWithTransmittanceVolumePipeline(
 	TArray<FVisibleLightInfo, SceneRenderingAllocator>& VisibleLightInfos,
 	const FVirtualShadowMapArray& VirtualShadowMapArray,
 	// Object data
-	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+	const IHeterogeneousVolumeInterface* HeterogeneousVolumeInterface,
 	const FMaterialRenderProxy* MaterialRenderProxy,
 	const int32 PrimitiveId,
 	const FBoxSphereBounds LocalBoxSphereBounds,
@@ -670,7 +690,7 @@ void RenderWithTransmittanceVolumePipeline(
 	TArray<FLightSceneInfoCompact, TInlineAllocator<64>> LightSceneInfoCompact;
 	for (auto LightIt = Scene->Lights.CreateConstIterator(); LightIt; ++LightIt)
 	{
-		if (LightIt->AffectsPrimitive(PrimitiveSceneProxy->GetBounds(), PrimitiveSceneProxy))
+		if (LightIt->AffectsPrimitive(HeterogeneousVolumeInterface->GetBounds(), HeterogeneousVolumeInterface->GetPrimitiveSceneProxy()))
 		{
 			LightSceneInfoCompact.Add(*LightIt);
 		}
@@ -719,7 +739,7 @@ void RenderWithTransmittanceVolumePipeline(
 				VisibleLightInfo,
 				VirtualShadowMapArray,
 				// Object data
-				PrimitiveSceneProxy,
+				HeterogeneousVolumeInterface,
 				MaterialRenderProxy,
 				PrimitiveId,
 				LocalBoxSphereBounds,
@@ -744,7 +764,7 @@ void RenderWithTransmittanceVolumePipeline(
 			VisibleLightInfo,
 			VirtualShadowMapArray,
 			// Object data
-			PrimitiveSceneProxy,
+			HeterogeneousVolumeInterface,
 			MaterialRenderProxy,
 			PrimitiveId,
 			LocalBoxSphereBounds,
@@ -765,7 +785,7 @@ void RenderWithInscatteringVolumePipeline(
 	TArray<FVisibleLightInfo, SceneRenderingAllocator>& VisibleLightInfos,
 	const FVirtualShadowMapArray& VirtualShadowMapArray,
 	// Object data
-	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+	const IHeterogeneousVolumeInterface* HeterogeneousVolumeInterface,
 	const FMaterialRenderProxy* MaterialRenderProxy,
 	const int32 PrimitiveId,
 	const FBoxSphereBounds LocalBoxSphereBounds,
@@ -779,7 +799,7 @@ void RenderWithInscatteringVolumePipeline(
 	TArray<FLightSceneInfoCompact, TInlineAllocator<64>> LightSceneInfoCompact;
 	for (auto LightIt = Scene->Lights.CreateConstIterator(); LightIt; ++LightIt)
 	{
-		if (LightIt->AffectsPrimitive(PrimitiveSceneProxy->GetBounds(), PrimitiveSceneProxy))
+		if (LightIt->AffectsPrimitive(HeterogeneousVolumeInterface->GetBounds(), HeterogeneousVolumeInterface->GetPrimitiveSceneProxy()))
 		{
 			LightSceneInfoCompact.Add(*LightIt);
 		}
@@ -826,7 +846,7 @@ void RenderWithInscatteringVolumePipeline(
 			VisibleLightInfo,
 			VirtualShadowMapArray,
 			// Object data
-			PrimitiveSceneProxy,
+			HeterogeneousVolumeInterface,
 			MaterialRenderProxy,
 			PrimitiveId,
 			LocalBoxSphereBounds,
@@ -861,7 +881,7 @@ void RenderWithInscatteringVolumePipeline(
 			VisibleLightInfo,
 			VirtualShadowMapArray,
 			// Object data
-			PrimitiveSceneProxy,
+			HeterogeneousVolumeInterface,
 			MaterialRenderProxy,
 			PrimitiveId,
 			LocalBoxSphereBounds,
@@ -882,7 +902,7 @@ void RenderWithLiveShading(
 	TArray<FVisibleLightInfo, SceneRenderingAllocator>& VisibleLightInfos,
 	const FVirtualShadowMapArray& VirtualShadowMapArray,
 	// Object data
-	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+	const IHeterogeneousVolumeInterface* HeterogeneousVolumeInterface,
 	const FMaterialRenderProxy* MaterialRenderProxy,
 	const int32 PrimitiveId,
 	const FBoxSphereBounds LocalBoxSphereBounds,
@@ -903,7 +923,7 @@ void RenderWithLiveShading(
 			VisibleLightInfos,
 			VirtualShadowMapArray,
 			// Object data
-			PrimitiveSceneProxy,
+			HeterogeneousVolumeInterface,
 			MaterialRenderProxy,
 			PrimitiveId,
 			LocalBoxSphereBounds,
@@ -924,7 +944,7 @@ void RenderWithLiveShading(
 			VisibleLightInfos,
 			VirtualShadowMapArray,
 			// Object data
-			PrimitiveSceneProxy,
+			HeterogeneousVolumeInterface,
 			MaterialRenderProxy,
 			PrimitiveId,
 			LocalBoxSphereBounds,

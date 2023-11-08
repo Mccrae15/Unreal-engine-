@@ -12,6 +12,7 @@ using UnrealBuildBase;
 using System.Threading.Tasks;
 
 using static AutomationTool.Tasks.StandardTasks;
+using Microsoft.Extensions.Logging;
 
 #nullable enable
 
@@ -29,7 +30,6 @@ namespace AutomationTool
 		static string[] PluginsExceptions =
 		{
 			"Engine/Plugins/Enterprise/DatasmithCADImporter/...",
-			"Engine/Plugins/Enterprise/DatasmithIFCImporter/...",
 			"Engine/Plugins/Enterprise/DatasmithC4DImporter/...",
 			"Engine/Plugins/Enterprise/AxFImporter/...",
 			"Engine/Plugins/Enterprise/MDLImporter/..."
@@ -98,7 +98,6 @@ namespace AutomationTool
 			BgBool DefaultWithLinuxArm64 = !(HostPlatformEditorOnly | (HostPlatformOnly & (CurrentHostPlatform != UnrealTargetPlatform.Linux)));
 			BgBool DefaultWithPlatform = !(HostPlatformEditorOnly | HostPlatformOnly);
 			BgBool DefaultWithIOS = !((CurrentHostPlatform != UnrealTargetPlatform.Mac) & !AllPlatforms);
-			BgBool DefaultWithHoloLens = !((CurrentHostPlatform != UnrealTargetPlatform.Win64) & !AllPlatforms);
 
 			BgBoolOption WithWin64 = new BgBoolOption("WithWin64", "Include the Win64 target platform", DefaultWithWin64);
 			BgBoolOption WithMac = new BgBoolOption("WithMac", "Include the Mac target platform", DefaultWithMac);
@@ -107,7 +106,6 @@ namespace AutomationTool
 			BgBoolOption WithTVOS = new BgBoolOption("WithTVOS", "Include the tvOS target platform", DefaultWithIOS);
 			BgBoolOption WithLinux = new BgBoolOption("WithLinux", "Include the Linux target platform", DefaultWithLinux);
 			BgBoolOption WithLinuxArm64 = new BgBoolOption("WithLinuxArm64", "Include the Linux AArch64 target platform", DefaultWithLinuxArm64);
-			BgBoolOption WithHoloLens = new BgBoolOption("WithHoloLens", "Include the HoloLens target platform", DefaultWithHoloLens);
 
 			BgBoolOption WithClient = new BgBoolOption("WithClient", "Include precompiled client targets", false);
 			BgBoolOption WithServer = new BgBoolOption("WithServer", "Include precompiled server targets", false);
@@ -247,7 +245,7 @@ namespace AutomationTool
 			if (State.Get(EmbedSrcSrvInfo))
 			{
 				// Embed source info into the PDB files. Should be done from this machine to ensure that paths are correct.
-				Log.TraceInformation("Embedding source file information into PDB files...");
+				Logger.LogInformation("Embedding source file information into PDB files...");
 				FileSet SourceFiles = Workspace.Filter("Engine/Source/...;Engine/Plugins/...").Except("Engine/Source/ThirdParty/...").Filter("*.c;*.h;*.cpp;*.hpp;*.inl");
 //				State.SrcSrv(BinaryFiles: Full, SourceFiles: SourceFiles);
 			}

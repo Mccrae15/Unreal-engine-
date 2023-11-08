@@ -50,11 +50,11 @@ struct PCG_API FPCGSplineSamplerParams
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings, meta = (EditCondition = "Dimension!=EPCGSplineSamplingDimension::OnInterior"))
-	EPCGSplineSamplingMode Mode = EPCGSplineSamplingMode::Subdivision;
-
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings)
 	EPCGSplineSamplingDimension Dimension = EPCGSplineSamplingDimension::OnSpline;
+
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings, meta = (EditCondition = "Dimension!=EPCGSplineSamplingDimension::OnInterior"))
+	EPCGSplineSamplingMode Mode = EPCGSplineSamplingMode::Subdivision;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings, meta = (EditCondition = "Dimension!=EPCGSplineSamplingDimension::OnSpline&&Dimension!=EPCGSplineSamplingDimension::OnInterior"))
 	EPCGSplineSamplingFill Fill = EPCGSplineSamplingFill::Fill;
@@ -85,6 +85,13 @@ struct PCG_API FPCGSplineSamplerParams
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings, meta = (EditCondition = "bComputeCurvature"))
 	FName CurvatureAttribute = "Curvature";
 
+	/** If no Bounding Shape input is provided, the actor bounds are used to limit the sample generation domain.
+	* This option allows ignoring the actor bounds and generating over the entire spline. Use with caution as this
+	* may generate a lot of points.
+	*/
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings, meta = (PCG_Overridable))
+	bool bUnbounded = false; 
+	
 	/** The space between each sample point */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings, meta = (ClampMin = "0.1", EditCondition = "Dimension==EPCGSplineSamplingDimension::OnInterior"))
 	float InteriorSampleSpacing = 100.0f;
@@ -109,6 +116,14 @@ struct PCG_API FPCGSplineSamplerParams
 	/** Defines the density for each sample based on its distance from the spline. X axis is normalized distance to boundary (0-1), Y axis is density value. */
 	UPROPERTY(EditAnywhere, Category = Settings, meta = (EditCondition = "Dimension==EPCGSplineSamplingDimension::OnInterior"))
 	FRuntimeFloatCurve InteriorDensityFalloffCurve;
+
+	/** Each PCG point represents a discretized, volumetric region of world space. The points' Steepness value [0.0 to
+	 * 1.0] establishes how "hard" or "soft" that volume will be represented. From 0, it will ramp up linearly
+	 * increasing its influence over the density from the point's center to up to two times the bounds. At 1, it will
+	 * represent a binary box function with the size of the point's bounds.
+	 */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Settings|Points", meta=(ClampMin="0", ClampMax="1", PCG_Overridable))
+	float PointSteepness = 0.5f;
 
 	/** Controls whether we will seed the sampled points using the final world position or the local position */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Settings|Seeding")
@@ -148,6 +163,7 @@ public:
 #endif
 
 #if WITH_EDITOR
+	virtual void ApplyDeprecation(UPCGNode* InOutNode) override;
 	virtual void ApplyDeprecationBeforeUpdatePins(UPCGNode* InOutNode, TArray<TObjectPtr<UPCGPin>>& InputPins, TArray<TObjectPtr<UPCGPin>>& OutputPins) override;
 #endif
 
@@ -166,7 +182,7 @@ class FPCGSplineSamplerElement : public FSimplePCGElement
 {
 public:
 	// Worth computing a full CRC in case we can halt change propagation/re-executions
-	virtual bool ShouldComputeFullOutputDataCrc() const override { return true; }
+	virtual bool ShouldComputeFullOutputDataCrc(FPCGContext* Context) const override { return true; }
 
 protected:
 	virtual bool ExecuteInternal(FPCGContext* Context) const override;

@@ -38,8 +38,10 @@ namespace GeometryCollection
 		TManagedArray<bool>&  Visible = RestCollection->Visible;
 		TManagedArray<int32>&  MaterialIndex = RestCollection->MaterialIndex;
 		TManagedArray<int32>&  MaterialID = RestCollection->MaterialID;
+		TManagedArray<bool>& Internal = RestCollection->Internal;
 		TManagedArray<FTransform>&  Transform = RestCollection->Transform;
 		TManagedArray<int32>& SimType = RestCollection->SimulationType;
+		TManagedArray<int32>& BoneMap = RestCollection->BoneMap;
 
 		// set the particle information
 		Transform[0] = center;
@@ -85,6 +87,15 @@ namespace GeometryCollection
 		Colors[6] = FLinearColor::White;
 		Colors[7] = FLinearColor::White;
 
+		BoneMap[0] = 0;
+		BoneMap[1] = 0;
+		BoneMap[2] = 0;
+		BoneMap[3] = 0;
+		BoneMap[4] = 0;
+		BoneMap[5] = 0;
+		BoneMap[6] = 0;
+		BoneMap[7] = 0;
+
 
 		// set the index information
 
@@ -110,9 +121,10 @@ namespace GeometryCollection
 		// distribute the number of materials equally between the 12 faces
 		check(NumberOfMaterials <= 12 && (12 % NumberOfMaterials)==0); // preferably divisible into 12
 		int NumberOfEachMaterial = 12 / NumberOfMaterials;
-		for (int i = 0; i < 12;i++)
+		for (int i = 0; i < 12; i++)
 		{
 			Visible[i] = true;
+			Internal[i] = false;
 
 			MaterialIndex[i] = i;
 			MaterialID[i] = i / NumberOfEachMaterial;
@@ -476,7 +488,7 @@ namespace GeometryCollection
 	}
 
 
-	void GenerateTemporaryGuids(FTransformCollection* Collection, int32 StartIdx, bool bForceInit)
+	void GenerateTemporaryGuids(FManagedArrayCollection* Collection, int32 StartIdx, bool bForceInit)
 	{
 		bool bNeedsInit = false;
 		if (!Collection->HasAttribute("GUID", FTransformCollection::TransformGroup))

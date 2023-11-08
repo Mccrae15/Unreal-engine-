@@ -9,6 +9,7 @@
 #include "Engine/DeveloperSettings.h"
 #include "PixelFormat.h"
 #include "PerPlatformProperties.h"
+#include "LegacyScreenPercentageDriver.h"
 
 #include "RendererSettings.generated.h"
 
@@ -283,8 +284,8 @@ namespace EWorkingColorSpace
 /**
  * Rendering settings.
  */
-UCLASS(config=Engine, defaultconfig, meta=(DisplayName="Rendering"))
-class ENGINE_API URendererSettings : public UDeveloperSettings
+UCLASS(config=Engine, defaultconfig, meta=(DisplayName="Rendering"), MinimalAPI)
+class URendererSettings : public UDeveloperSettings
 {
 	GENERATED_UCLASS_BODY()
 
@@ -293,6 +294,12 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ToolTip = "The shading path to use on mobile platforms. Changing this setting requires restarting the editor.",
 		ConfigRestartRequired = true))
 	TEnumAsByte<EMobileShadingPath::Type> MobileShadingPath;
+
+	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (
+		ConsoleVariable = "r.Mobile.AllowDeferredShadingOpenGL", DisplayName = "Allow Deferred Shading on OpenGL",
+		ToolTip = "Whether to allow Deferred Shading on OpenGL, requires the DXC shader compiler and Mobile Shading set to deferred",
+		ConfigRestartRequired = true))
+	uint32 bMobileSupportDeferredOnOpenGL : 1;
 
 	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (
 		ConsoleVariable = "r.Mobile.SupportGPUScene", DisplayName = "Enable GPUScene on Mobile",
@@ -329,11 +336,8 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ToolTip = "When running in game mode, whether to keep shaders for all quality levels in memory or only those needed for the current quality level.\nUnchecked: Keep all quality levels in memory allowing a runtime quality level change. (default)\nChecked: Discard unused quality levels when loading content for the game, saving some memory."))
 	uint32 bDiscardUnusedQualityLevels : 1;
 
-	UPROPERTY(config, EditAnywhere, Category = Materials, meta = (
-		ConsoleVariable = "r.Shaders.CompressionFormat", DisplayName = "Shader Compression Format",
-		ToolTip = "Select how the shaders are compressed for storage",
-		ConfigRestartRequired = true))
-	TEnumAsByte<EShaderCompressionFormat::Type> ShaderCompressionFormat;	// requires restart as we may have jobs in flight that already used the previous one. Also it's also used for decompression the currently compressed shaders
+	UPROPERTY()
+	TEnumAsByte<EShaderCompressionFormat::Type> ShaderCompressionFormat_DEPRECATED;	// we now force oodle
 
 	UPROPERTY(config, EditAnywhere, Category=Culling, meta=(
 		ConsoleVariable="r.AllowOcclusionQueries",DisplayName="Occlusion Culling",
@@ -525,10 +529,8 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ToolTip = "Controls whether Ray Traced Shadows are used by default. Lights can still override and force Ray Traced shadows on or off. Requires Hardware Ray Tracing to be enabled."))
 		uint32 bEnableRayTracingShadows : 1;
 
-	UPROPERTY(config, EditAnywhere, Category = HardwareRayTracing, meta = (
-		ConsoleVariable = "r.RayTracing.Skylight", DisplayName = "Ray Traced Skylight",
-		ToolTip = "Controls whether Ray Traced Skylight is used by default. Skylights can still override and force Ray Traced Skylight on or off. Requires Hardware Ray Tracing to be enabled.  Has no effect when Dynamic Global Illumination Method is set to Lumen."))
-		uint32 bEnableRayTracingSkylight : 1;
+	UPROPERTY()
+		uint32 bEnableRayTracingSkylight_DEPRECATED : 1;
 
 	UPROPERTY(config, EditAnywhere, Category = HardwareRayTracing, meta = (
 		ConsoleVariable = "r.RayTracing.UseTextureLod", DisplayName = "Texture LOD",
@@ -602,14 +604,14 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 	FVector TranslucentSortAxis;
 
 	UPROPERTY(config, EditAnywhere, Category = VR, meta = (
-		ConsoleVariable = "vr.VRS.HMDFixedFoveationLevel", DisplayName = "HMD Fixed Foveation Level (Experimental)",
-		ToolTip = "Set the level of fixed-foveation to apply when generating the Variable Rate Shading attachment. This feature is currently experimental.\nThis can yield some fairly significant performance benefits on GPUs that support Tier 2 VRS.\nLower settings will result in almost no discernible artifacting on most HMDs; higher settings will show some artifacts towards the edges of the view."))
-	TEnumAsByte<EFixedFoveationLevels::Type> HMDFixedFoveationLevel;
+		ConsoleVariable = "xr.VRS.FoveationLevel", DisplayName = "Stereo Foveation Level (Experimental)",
+		ToolTip = "Set the level of foveation to apply when generating the Variable Rate Shading attachment. This feature is currently experimental.\nThis can yield some fairly significant performance benefits on GPUs that support Tier 2 VRS.\nLower settings will result in almost no discernible artifacting on most HMDs; higher settings will show some artifacts towards the edges of the view."))
+	TEnumAsByte<EFixedFoveationLevels::Type> FoveationLevel;
 
 	UPROPERTY(config, EditAnywhere, Category = VR, meta = (
-		ConsoleVariable = "vr.VRS.HMDFixedFoveationDynamic", DisplayName = "Dynamic Fixed Foveation (Experimental)",
-		ToolTip = "Allows fixed foveation level to adjust dynamically based on GPU utilization.\nLevel will range between none at the minimum, and the currently selected foveation level at the maximum."))
-	uint32 bHMDFixedFoveationDynamic:1;
+		ConsoleVariable = "xr.VRS.DynamicFoveation", DisplayName = "Dynamic Foveation (Experimental)",
+		ToolTip = "Allows foveation level to adjust dynamically based on GPU utilization.\nLevel will range between none at the minimum, and the currently selected foveation level at the maximum."))
+	uint32 bDynamicFoveation:1;
 
 	UPROPERTY(config, EditAnywhere, Category=Postprocessing, meta=(
 		ConsoleVariable="r.CustomDepth",DisplayName="Custom Depth-Stencil Pass",
@@ -665,6 +667,16 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 	uint32 bExtendDefaultLuminanceRangeInAutoExposureSettings : 1;
 
 	UPROPERTY(config, EditAnywhere, Category = DefaultSettings, meta = (
+		ConsoleVariable = "r.DefaultFeature.LocalExposure.HighlightContrastScale", DisplayName = "Local Exposure Highlight Contrast Scale",
+		ToolTip = "Default Value for Local Exposure Highlight Contrast Scale.", ClampMin = "0.0", ClampMax = "1.0"))
+	float DefaultFeatureLocalExposureHighlightContrastScale;
+
+	UPROPERTY(config, EditAnywhere, Category = DefaultSettings, meta = (
+		ConsoleVariable = "r.DefaultFeature.LocalExposure.ShadowContrastScale", DisplayName = "Local Exposure Shadow Contrast Scale",
+		ToolTip = "Default Value for Local Exposure Shadow Contrast Scale.", ClampMin = "0.0", ClampMax = "1.0"))
+	float DefaultFeatureLocalExposureShadowContrastScale;
+
+	UPROPERTY(config, EditAnywhere, Category = DefaultSettings, meta = (
 		ConsoleVariable = "r.DefaultFeature.MotionBlur", DisplayName = "Motion Blur",
 		ToolTip = "Whether the default for MotionBlur is enabled or not (postprocess volume/camera/game setting can still override and enable or disable it independently)"))
 	uint32 bDefaultFeatureMotionBlur : 1;
@@ -700,6 +712,31 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ToolTip = "Pixel format used for back buffer, when not specified",
 		ConfigRestartRequired=true))
 	TEnumAsByte<EDefaultBackBufferPixelFormat::Type> DefaultBackBufferPixelFormat;
+	
+	UPROPERTY(config, EditAnywhere, Category = DefaultScreenPercentage, meta = (
+		ConsoleVariable = "r.ScreenPercentage.Default", DisplayName = "Manual Screen Percentage",
+		ToolTip = ""))
+	float DefaultManualScreenPercentage;
+
+	UPROPERTY(config, EditAnywhere, Category = DefaultScreenPercentage, meta = (
+		ConsoleVariable = "r.ScreenPercentage.Default.Desktop.Mode", DisplayName = "Screen Percentage Mode for Desktop renderer",
+		ToolTip = ""))
+	EScreenPercentageMode DefaultScreenPercentageDesktopMode;
+
+	UPROPERTY(config, EditAnywhere, Category = DefaultScreenPercentage, meta = (
+		ConsoleVariable = "r.ScreenPercentage.Default.Mobile.Mode", DisplayName = "Screen Percentage Mode for Mobile renderer",
+		ToolTip = ""))
+	EScreenPercentageMode DefaultScreenPercentageMobileMode;
+
+	UPROPERTY(config, EditAnywhere, Category = DefaultScreenPercentage, meta = (
+		ConsoleVariable = "r.ScreenPercentage.Default.VR.Mode", DisplayName = "Screen Percentage Mode for VR",
+		ToolTip = ""))
+	EScreenPercentageMode DefaultScreenPercentageVRMode;
+
+	UPROPERTY(config, EditAnywhere, Category = DefaultScreenPercentage, meta = (
+		ConsoleVariable = "r.ScreenPercentage.Default.PathTracer.Mode", DisplayName = "Screen Percentage Mode for PathTracer",
+		ToolTip = ""))
+	EScreenPercentageMode DefaultScreenPercentagePathTracerMode;
 
 	UPROPERTY(config, EditAnywhere, Category=Optimizations, meta=(
 		ConsoleVariable="r.Shadow.UnbuiltPreviewInGame",DisplayName="Render Unbuilt Preview Shadows in game",
@@ -837,9 +874,17 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ConfigRestartRequired = true))
 		uint32 bMobileSupportSpaceWarp : 1;
 
-	UPROPERTY(config, EditAnywhere, Category = Experimental, meta = (
+	// BEGIN META SECTION - XR Soft Occlusions
+	UPROPERTY(config, EditAnywhere, Category = VR, meta = (
+		ConsoleVariable = "r.Mobile.XRSoftOcclusionsPermutation", DisplayName = "Support Mobile XR Soft Occlusions",
+		ToolTip = "Enable this to compile the shader variations needed to enable mixed reality passthrough soft occlusions at runtime.",
+		ConfigRestartRequired = true))
+		uint32 bMobileSupportsXRSoftOcclusions : 1;
+	// END META SECTION - XR Soft Occlusions
+
+	UPROPERTY(config, EditAnywhere, Category = "Mesh Streaming", meta = (
 		ConsoleVariable="r.MeshStreaming",DisplayName="Mesh Streaming",
-		ToolTip="When enabled mesh will stream in based on what is visible on screen.",
+		ToolTip="When enabled mesh LODs will stream in based on what is visible on screen.",
 		ConfigRestartRequired = true))
 		uint32 bMeshStreaming : 1;
 
@@ -956,7 +1001,7 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 	*/
 	UPROPERTY(config, EditAnywhere, Category = Materials, meta = (
 		ConsoleVariable = "r.Material.RoughDiffuse", DisplayName = "Enable Rough Diffuse Material",
-		ToolTip = "Enable Rough Diffuse Material.",
+		ToolTip = "Enable Rough Diffuse Material. Please note that when Substrate is enabled, energy conservation is forced to ENABLED.",
 		ConfigRestartRequired = true))
 		uint32 bMaterialRoughDiffuse : 1; 
 
@@ -965,7 +1010,7 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 	*/
 	UPROPERTY(config, EditAnywhere, Category = Materials, meta = (
 		ConsoleVariable = "r.Material.EnergyConservation", DisplayName = "Enable Energy Conservation on Material",
-		ToolTip = "Enable Energy Conservation on Material. Please note that when Substrate is enabled, energy conservation is forced to enabled.",
+		ToolTip = "Enable Energy Conservation on Material. Please note that when Substrate is enabled, energy conservation is forced to ENABLED.",
 		ConfigRestartRequired = true))
 		uint32 bMaterialEnergyConservation : 1;
 
@@ -1130,12 +1175,13 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ConfigRestartRequired = true))
 		uint32 bMobileSupportsGen4TAA : 1;
 
-	UPROPERTY(config, EditAnywhere, Category="Experimental|LOD Streaming|Skeletal Mesh", meta=(
+	UPROPERTY(config, EditAnywhere, Category="Mesh Streaming|Skeletal Mesh", meta=(
+		EditCondition = "bMeshStreaming",
 		DisplayName="Stream LODs by default",
 		ToolTip="Whether to stream skeletal mesh LODs by default."))
 	FPerPlatformBool bStreamSkeletalMeshLODs;
 
-	UPROPERTY(config, EditAnywhere, Category="Experimental|LOD Streaming|Skeletal Mesh", meta=(
+	UPROPERTY(config, EditAnywhere, Category="Mesh Streaming|Skeletal Mesh", meta=(
 		DisplayName="Discard optional LODs",
 		ToolTip="Whether to discard skeletal mesh LODs below minimum LOD levels at cook time."))
 	FPerPlatformBool bDiscardSkeletalMeshOptionalLODs;
@@ -1165,12 +1211,12 @@ public:
 
 	//~ Begin UObject Interface
 
-	virtual void PostInitProperties() override;
+	ENGINE_API virtual void PostInitProperties() override;
 
 #if WITH_EDITOR
-	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
-	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
-	virtual bool CanEditChange(const FProperty* InProperty) const override;
+	ENGINE_API virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
+	ENGINE_API virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	ENGINE_API virtual bool CanEditChange(const FProperty* InProperty) const override;
 #endif
 
 	//~ End UObject Interface
@@ -1191,8 +1237,8 @@ private:
 	void UpdateWorkingColorSpaceAndChromaticities();
 };
 
-UCLASS(config = Engine, projectuserconfig, meta = (DisplayName = "Rendering Overrides (Local)"))
-class ENGINE_API URendererOverrideSettings : public UDeveloperSettings
+UCLASS(config = Engine, projectuserconfig, meta = (DisplayName = "Rendering Overrides (Local)"), MinimalAPI)
+class URendererOverrideSettings : public UDeveloperSettings
 {
 	GENERATED_UCLASS_BODY()
 
@@ -1208,9 +1254,9 @@ public:
 
 	//~ Begin UObject Interface
 
-	virtual void PostInitProperties() override;
+	ENGINE_API virtual void PostInitProperties() override;
 
 #if WITH_EDITOR
-	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	ENGINE_API virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 };

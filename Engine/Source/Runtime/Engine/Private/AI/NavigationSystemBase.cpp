@@ -13,6 +13,8 @@
 
 DEFINE_LOG_CATEGORY(LogNavigation);
 DEFINE_LOG_CATEGORY(LogNavigationDataBuild);
+DEFINE_LOG_CATEGORY(LogNavigationHistory);
+DEFINE_LOG_CATEGORY(LogNavInvokers);
 DEFINE_LOG_CATEGORY(LogNavLink);
 DEFINE_LOG_CATEGORY(LogAStar);
 
@@ -287,16 +289,6 @@ namespace FNavigationSystem
 		return CoordTypeTransforms;
 	}
 
-	const FTransform& GetCoordTransformTo(const ENavigationCoordSystem::Type CoordType)
-	{
-		return GetCoordTransform(ENavigationCoordSystem::Unreal, CoordType);
-	}
-
-	const FTransform& GetCoordTransformFrom(const ENavigationCoordSystem::Type CoordType)
-	{
-		return GetCoordTransform(CoordType, ENavigationCoordSystem::Unreal);
-	}
-
 	const FTransform& GetCoordTransform(const ENavigationCoordSystem::Type FromCoordType, const ENavigationCoordSystem::Type ToCoordType)
 	{
 		return GetCoordTypeTransforms().Get(FromCoordType, ToCoordType);
@@ -369,16 +361,6 @@ void FNavigationLockContext::UnlockUpdates()
 //----------------------------------------------------------------------//
 // UNavigationSystemBase
 //----------------------------------------------------------------------//
-void UNavigationSystemBase::SetCoordTransformTo(const ENavigationCoordSystem::Type CoordType, const FTransform& Transform)
-{
-	SetCoordTransform(ENavigationCoordSystem::Unreal, CoordType, Transform);
-}
-
-void UNavigationSystemBase::SetCoordTransformFrom(const ENavigationCoordSystem::Type CoordType, const FTransform& Transform)
-{
-	SetCoordTransform(CoordType, ENavigationCoordSystem::Unreal, Transform);
-}
-
 void UNavigationSystemBase::SetCoordTransform(const ENavigationCoordSystem::Type FromCoordType, const ENavigationCoordSystem::Type ToCoordType, const FTransform& Transform, bool bAddInverse)
 {
 	FNavigationSystem::GetCoordTypeTransforms().Get(FromCoordType, ToCoordType) = Transform;

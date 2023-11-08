@@ -233,6 +233,23 @@ void BloomVS_Mobile(
 	OutTexCoords[3] = TransformedUV + BufferSizeAndInvSize.zw * float2( 1,  1);
 }
 
+
+
+float Luma4(float3 Color)
+{
+	return (Color.g * 2.0) + (Color.r + Color.b);
+}
+
+float HdrWeight4(float3 Color)
+{
+	return rcp(Luma4(Color) + 4.0);
+}
+
+float HdrWeightInv4(float3 Color)
+{
+	return 4.0 * rcp(1.0 - Luma4(Color));
+}
+
 void BloomPS_Mobile(
 	float2 InUVs[4] : TEXCOORD0
 #if MOBILE_USEBLOOM
@@ -280,13 +297,20 @@ void BloomPS_Mobile(
 	half3 AverageColor = 0.0f;
 
 #if MOBILE_USEBLOOM || MOBILE_USESUN || MOBILE_USEEYEADAPTATION
-	half4 C0 = SceneColorTexture.Sample(SceneColorSampler, InUVs[0]);
-	half4 C1 = SceneColorTexture.Sample(SceneColorSampler, InUVs[1]);
-	half4 C2 = SceneColorTexture.Sample(SceneColorSampler, InUVs[2]);
-	half4 C3 = SceneColorTexture.Sample(SceneColorSampler, InUVs[3]);
+
+	float4 C0 = SceneColorTexture.Sample(SceneColorSampler, InUVs[0]);
+	float4 C1 = SceneColorTexture.Sample(SceneColorSampler, InUVs[1]);
+	float4 C2 = SceneColorTexture.Sample(SceneColorSampler, InUVs[2]);
+	float4 C3 = SceneColorTexture.Sample(SceneColorSampler, InUVs[3]);
+
+	C0 *= HdrWeight4(C0);
+	C1 *= HdrWeight4(C1);
+	C2 *= HdrWeight4(C2);
+	C3 *= HdrWeight4(C3);
 
 	// Output color is average.
 	AverageColor.rgb = (C0.rgb * 0.25) + (C1.rgb * 0.25) + (C2.rgb * 0.25) + (C3.rgb * 0.25);
+	AverageColor.rgb *= HdrWeightInv4(AverageColor);
 
 	#if METAL_MSAA_HDR_DECODE
 		// This should really happen before the average, instead doing after average as optimization.
@@ -1278,6 +1302,7 @@ RWStructuredBuffer<float4> OutputBuffer;
 void BasicEyeAdaptationCS_Mobile()
 {
 	OutputBuffer[0] = BasicEyeAdaptation_Mobile();
+	OutputBuffer[1] = float4(1.0f, 0.0f, 0.0f, 0.0f);
 }
 
 #endif
@@ -1526,5 +1551,6 @@ void HistogramEyeAdaptationCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 	OutColor.w = MiddleGreyExposureCompensation;
 
 	OutputBuffer[0] = OutColor;
+	OutputBuffer[1] = float4(1.0f, 0.0f, 0.0f, 0.0f);
 }
 #endif

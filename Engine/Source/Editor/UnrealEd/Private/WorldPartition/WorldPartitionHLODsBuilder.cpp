@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "HAL/FileManager.h"
 #include "Logging/LogMacros.h"
+#include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/EngineVersion.h"
 #include "Misc/FileHelper.h"
@@ -13,6 +14,7 @@
 
 #include "ActorFolder.h"
 #include "Engine/Engine.h"
+#include "Engine/LevelStreamingGCHelper.h"
 #include "EngineUtils.h"
 #include "SourceControlHelpers.h"
 #include "ISourceControlModule.h"
@@ -27,16 +29,8 @@
 #include "WorldPartition/HLOD/HLODActor.h"
 #include "WorldPartition/HLOD/HLODActorDesc.h"
 #include "WorldPartition/HLOD/HLODLayer.h"
-
-#include "Engine/StaticMesh.h"
-#include "Engine/LevelStreamingGCHelper.h"
-#include "Engine/Texture.h"
-#include "Materials/Material.h"
-#include "Materials/MaterialInstance.h"
-
-#include "Components/InstancedStaticMeshComponent.h"
-
-#include "AssetCompilingManager.h"
+#include "WorldPartition/HLOD/HLODProviderInterface.h"
+#include "WorldPartition/HLOD/HLODSubsystem.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogWorldPartitionHLODsBuilder, All, All);
 
@@ -163,30 +157,28 @@ UWorldPartitionHLODsBuilder::UWorldPartitionHLODsBuilder(const FObjectInitialize
 	: Super(ObjectInitializer)
 	, BuilderIdx(INDEX_NONE)
 	, BuilderCount(INDEX_NONE)
-	, DistributedBuildWorkingDir(FPaths::RootDir() / DistributedBuildWorkingDirName)
-	, DistributedBuildManifest(DistributedBuildWorkingDir / DistributedBuildManifestName)
 {
-	BuildOptions = FParse::Param(FCommandLine::Get(), TEXT("SetupHLODs")) ? EHLODBuildStep::HLOD_Setup : EHLODBuildStep::None;
-	BuildOptions |= FParse::Param(FCommandLine::Get(), TEXT("BuildHLODs")) ? EHLODBuildStep::HLOD_Build : EHLODBuildStep::None;
-	BuildOptions |= FParse::Param(FCommandLine::Get(), TEXT("RebuildHLODs")) ? EHLODBuildStep::HLOD_Build : EHLODBuildStep::None;
-	BuildOptions |= FParse::Param(FCommandLine::Get(), TEXT("DeleteHLODs")) ? EHLODBuildStep::HLOD_Delete : EHLODBuildStep::None;
-	BuildOptions |= FParse::Param(FCommandLine::Get(), TEXT("FinalizeHLODs")) ? EHLODBuildStep::HLOD_Finalize : EHLODBuildStep::None;
-	BuildOptions |= FParse::Param(FCommandLine::Get(), TEXT("DumpStats")) ? EHLODBuildStep::HLOD_Stats : EHLODBuildStep::None;
+	BuildOptions  = HasParam("SetupHLODs") ? EHLODBuildStep::HLOD_Setup : EHLODBuildStep::None;
+	BuildOptions |= HasParam("BuildHLODs") ? EHLODBuildStep::HLOD_Build : EHLODBuildStep::None;
+	BuildOptions |= HasParam("RebuildHLODs") ? EHLODBuildStep::HLOD_Build : EHLODBuildStep::None;
+	BuildOptions |= HasParam("DeleteHLODs") ? EHLODBuildStep::HLOD_Delete : EHLODBuildStep::None;
+	BuildOptions |= HasParam("FinalizeHLODs") ? EHLODBuildStep::HLOD_Finalize : EHLODBuildStep::None;
+	BuildOptions |= HasParam("DumpStats") ? EHLODBuildStep::HLOD_Stats : EHLODBuildStep::None;
 
-	bResumeBuild = FParse::Value(FCommandLine::Get(), TEXT("ResumeBuild="), ResumeBuildIndex);
+	bResumeBuild = GetParamValue("ResumeBuild=", ResumeBuildIndex);
 
-	bDistributedBuild = FParse::Param(FCommandLine::Get(), TEXT("DistributedBuild"));
-	bForceBuild = FParse::Param(FCommandLine::Get(), TEXT("RebuildHLODs"));
+	bDistributedBuild = HasParam("DistributedBuild");
+	bForceBuild = HasParam("RebuildHLODs");
 
-	FParse::Value(FCommandLine::Get(), TEXT("BuildManifest="), BuildManifest);
-	FParse::Value(FCommandLine::Get(), TEXT("BuilderIdx="), BuilderIdx);
-	FParse::Value(FCommandLine::Get(), TEXT("BuilderCount="), BuilderCount);
-	FParse::Value(FCommandLine::Get(), TEXT("BuildHLODLayer="), HLODLayerToBuild);
-	FParse::Value(FCommandLine::Get(), TEXT("BuildSingleHLOD="), HLODActorToBuild);
+	GetParamValue("BuildManifest=", BuildManifest);
+	GetParamValue("BuilderIdx=", BuilderIdx);
+	GetParamValue("BuilderCount=", BuilderCount);
+	GetParamValue("BuildHLODLayer=", HLODLayerToBuild);
+	GetParamValue("BuildSingleHLOD=", HLODActorToBuild);
 
 	if (!HLODActorToBuild.IsNone() || !HLODLayerToBuild.IsNone())
 	{
-		BuildOptions = EHLODBuildStep::HLOD_Build;
+		BuildOptions |= EHLODBuildStep::HLOD_Build;
 		bForceBuild = bForceBuild || !HLODActorToBuild.IsNone();
 	}
 	
@@ -194,16 +186,6 @@ UWorldPartitionHLODsBuilder::UWorldPartitionHLODsBuilder(const FObjectInitialize
 	if (BuildOptions == EHLODBuildStep::None)
 	{
 		BuildOptions = EHLODBuildStep::HLOD_Setup | EHLODBuildStep::HLOD_Build;
-	}
-
-	if (bDistributedBuild)
-	{
-		if (!BuildManifest.IsEmpty())
-		{
-			UE_LOG(LogWorldPartitionHLODsBuilder, Warning, TEXT("Ignoring parameter -BuildManifest when a distributed build is performed"));
-		}
-
-		BuildManifest = DistributedBuildManifest;
 	}
 }
 
@@ -265,17 +247,25 @@ bool UWorldPartitionHLODsBuilder::ValidateParams() const
 		}
 	}
 
-	if (ShouldRunStep(EHLODBuildStep::HLOD_Finalize) && bAutoSubmit && !ISourceControlModule::Get().GetProvider().IsEnabled())
-	{
-		UE_LOG(LogWorldPartitionHLODsBuilder, Error, TEXT("Submit requires that a valid revision control provider is enabled, exiting..."), *BuildManifest);
-		return false;
-	}
-
 	return true;
 }
 
-bool UWorldPartitionHLODsBuilder::PreWorldInitialization(FPackageSourceControlHelper& PackageHelper)
+bool UWorldPartitionHLODsBuilder::PreWorldInitialization(UWorld* InWorld, FPackageSourceControlHelper& PackageHelper)
 {
+	if (bDistributedBuild)
+	{
+		uint32 WorldPackageHash = GetTypeHash(InWorld->GetPackage()->GetFullName());
+		DistributedBuildWorkingDir = FString::Printf(TEXT("%s/%s/%08x"), *FPaths::RootDir(), *DistributedBuildWorkingDirName, WorldPackageHash);
+		DistributedBuildManifest = DistributedBuildWorkingDir / DistributedBuildManifestName;
+
+		if (!BuildManifest.IsEmpty())
+		{
+			UE_LOG(LogWorldPartitionHLODsBuilder, Warning, TEXT("Ignoring parameter -BuildManifest when a distributed build is performed"));
+		}
+
+		BuildManifest = DistributedBuildManifest;
+	}
+
 	if (!ValidateParams())
 	{
 		return false;
@@ -293,11 +283,11 @@ bool UWorldPartitionHLODsBuilder::PreWorldInitialization(FPackageSourceControlHe
 	return bRet;
 }
 
-bool UWorldPartitionHLODsBuilder::RunInternal(UWorld* World, const FCellInfo& InCellInfo, FPackageSourceControlHelper& PackageHelper)
+bool UWorldPartitionHLODsBuilder::RunInternal(UWorld* InWorld, const FCellInfo& InCellInfo, FPackageSourceControlHelper& PackageHelper)
 {
+	World = InWorld;
 	WorldPartition = World->GetWorldPartition();
-	check(WorldPartition);
-
+	
 	// Allows HLOD Streaming levels to be GCed properly
 	FLevelStreamingGCHelper::EnableForCommandlet();
 
@@ -320,7 +310,7 @@ bool UWorldPartitionHLODsBuilder::RunInternal(UWorld* World, const FCellInfo& In
 		bRet = DeleteHLODActors();
 	}
 
-	if (bRet && ShouldRunStep(EHLODBuildStep::HLOD_Finalize) && bAutoSubmit)
+	if (bRet && ShouldRunStep(EHLODBuildStep::HLOD_Finalize))
 	{
 		bRet = SubmitHLODActors();
 	}
@@ -338,6 +328,12 @@ bool UWorldPartitionHLODsBuilder::RunInternal(UWorld* World, const FCellInfo& In
 
 bool UWorldPartitionHLODsBuilder::SetupHLODActors()
 {
+	// No setup needed for non partitioned worlds
+	if (!WorldPartition)
+	{
+		return true;
+	}
+
 	auto ActorFolderAddedDelegateHandle = GEngine->OnActorFolderAdded().AddLambda([this](UActorFolder* InActorFolder)
 	{
 		UPackage* ActorFolderPackage = InActorFolder->GetPackage();
@@ -367,7 +363,7 @@ bool UWorldPartitionHLODsBuilder::SetupHLODActors()
 	UE_LOG(LogWorldPartitionHLODsBuilder, Display, TEXT("#### World HLOD actors ####"));
 
 	int32 NumActors = 0;
-	for (FActorDescList::TIterator<AWorldPartitionHLOD> HLODIterator(WorldPartition->GetActorDescContainer()); HLODIterator; ++HLODIterator)
+	for (FActorDescContainerCollection::TIterator<AWorldPartitionHLOD> HLODIterator(WorldPartition); HLODIterator; ++HLODIterator)
 	{
 		FWorldPartitionActorDesc* HLODActorDesc = *HLODIterator;
 		FString PackageName = HLODActorDesc->GetActorPackage().ToString();
@@ -436,11 +432,8 @@ bool UWorldPartitionHLODsBuilder::SetupHLODActors()
 			BuildProducts.Add(BuildManifest);
 
 			// Write build products to a file
-			FString BuildProductsFile = DistributedBuildWorkingDir / BuildProductsFileName;
-			bool bRet = FFileHelper::SaveStringArrayToFile(BuildProducts, *BuildProductsFile);
-			if (!bRet)
+			if (!AddBuildProducts(BuildProducts))
 			{
-				UE_LOG(LogWorldPartitionHLODsBuilder, Error, TEXT("Error writing build product file %s"), *BuildProductsFile);
 				return false;
 			}
 
@@ -453,45 +446,12 @@ bool UWorldPartitionHLODsBuilder::SetupHLODActors()
 
 bool UWorldPartitionHLODsBuilder::BuildHLODActors()
 {
-	TArray<FGuid> HLODActorsToBuild;
-	if (!GetHLODActorsToBuild(HLODActorsToBuild))
+	auto SaveHLODActor = [this](AWorldPartitionHLOD* HLODActor)
 	{
-		return false;
-	}
-
-	if (!ValidateWorkload(HLODActorsToBuild))
-	{
-		return false;
-	}
-
-	UE_LOG(LogWorldPartitionHLODsBuilder, Display, TEXT("#### Building %d HLOD actors ####"), HLODActorsToBuild.Num());
-	if (bResumeBuild)
-	{
-		UE_LOG(LogWorldPartitionHLODsBuilder, Display, TEXT("#### Resuming build at %d ####"), ResumeBuildIndex);
-	}
-
-	for (int32 CurrentActor = ResumeBuildIndex; CurrentActor < HLODActorsToBuild.Num(); ++CurrentActor)
-	{
-		TRACE_BOOKMARK(TEXT("BuildHLOD Start - %d"), CurrentActor);
-
-		const FGuid& HLODActorGuid = HLODActorsToBuild[CurrentActor];
-
-		FWorldPartitionReference ActorRef(WorldPartition, HLODActorGuid);
-		FWorldPartitionActorDesc* ActorDesc = ActorRef.Get();
-
-		AWorldPartitionHLOD* HLODActor = CastChecked<AWorldPartitionHLOD>(ActorDesc->GetActor());
-
-		UE_LOG(LogWorldPartitionHLODsBuilder, Display, TEXT("[%d / %d] Building HLOD actor %s..."), CurrentActor + 1, HLODActorsToBuild.Num(), *HLODActor->GetActorLabel());
-
-		// Simulate an engine tick to make sure engine & render resources that are queued for deletion are processed.
-		FWorldPartitionHelpers::FakeEngineTick(WorldPartition->GetWorld());
-
-		HLODActor->BuildHLOD(bForceBuild);
-
 		UPackage* ActorPackage = HLODActor->GetPackage();
 		if (ActorPackage->IsDirty())
 		{
-			UE_LOG(LogWorldPartitionHLODsBuilder, Display, TEXT("[%d / %d] HLOD actor %s was modified, saving..."), CurrentActor + 1, HLODActorsToBuild.Num(), *HLODActor->GetActorLabel());
+			UE_LOG(LogWorldPartitionHLODsBuilder, Display, TEXT("HLOD actor %s was modified, saving..."), *HLODActor->GetActorLabel());
 
 			bool bSaved = SourceControlHelper->Save(ActorPackage);
 			if (!bSaved)
@@ -501,15 +461,86 @@ bool UWorldPartitionHLODsBuilder::BuildHLODActors()
 			}
 		}
 
-		if (FWorldPartitionHelpers::HasExceededMaxMemory())
+		return true;
+	};
+
+	if (WorldPartition)
+	{
+		TArray<FGuid> HLODActorsToBuild;
+		if (!GetHLODActorsToBuild(HLODActorsToBuild))
 		{
-			FWorldPartitionHelpers::DoCollectGarbage();
+			return false;
 		}
 
-		TRACE_BOOKMARK(TEXT("BuildHLOD End - %d"), CurrentActor);
+		if (!ValidateWorkload(HLODActorsToBuild))
+		{
+			return false;
+		}
+
+		UE_LOG(LogWorldPartitionHLODsBuilder, Display, TEXT("#### Building %d HLOD actors ####"), HLODActorsToBuild.Num());
+		if (bResumeBuild)
+		{
+			UE_LOG(LogWorldPartitionHLODsBuilder, Display, TEXT("#### Resuming build at %d ####"), ResumeBuildIndex);
+		}
+
+		for (int32 CurrentActor = ResumeBuildIndex; CurrentActor < HLODActorsToBuild.Num(); ++CurrentActor)
+		{
+			TRACE_BOOKMARK(TEXT("BuildHLOD Start - %d"), CurrentActor);
+
+			const FGuid& HLODActorGuid = HLODActorsToBuild[CurrentActor];
+
+			FWorldPartitionReference ActorRef(WorldPartition, HLODActorGuid);
+			FWorldPartitionActorDesc* ActorDesc = ActorRef.Get();
+
+			AWorldPartitionHLOD* HLODActor = CastChecked<AWorldPartitionHLOD>(ActorDesc->GetActor());
+
+			UE_LOG(LogWorldPartitionHLODsBuilder, Display, TEXT("[%d / %d] Building HLOD actor %s..."), CurrentActor + 1, HLODActorsToBuild.Num(), *HLODActor->GetActorLabel());
+
+			// Simulate an engine tick to make sure engine & render resources that are queued for deletion are processed.
+			FWorldPartitionHelpers::FakeEngineTick(WorldPartition->GetWorld());
+
+			HLODActor->BuildHLOD(bForceBuild);
+
+			bool bSaved = SaveHLODActor(HLODActor);
+			if (!bSaved)
+			{
+				return false;
+			}
+
+			if (FWorldPartitionHelpers::ShouldCollectGarbage())
+			{
+				FWorldPartitionHelpers::DoCollectGarbage();
+			}
+
+			TRACE_BOOKMARK(TEXT("BuildHLOD End - %d"), CurrentActor);
+		}
+
+		UE_LOG(LogWorldPartitionHLODsBuilder, Display, TEXT("#### Built %d HLOD actors ####"), HLODActorsToBuild.Num());
+	}
+	else
+	{
+		uint32 NumHLODActors = 0;
+		for (TActorIterator<AActor> ActorIt(World); ActorIt; ++ActorIt)
+		{
+			if (IWorldPartitionHLODProvider* HLODProvider = Cast<IWorldPartitionHLODProvider>(*ActorIt))
+			{
+				AWorldPartitionHLOD* HLODActor = HLODProvider->CreateHLODActor();
+				if (HLODActor)
+				{
+					HLODActor->BuildHLOD(bForceBuild);
+
+					bool bSaved = SaveHLODActor(HLODActor);
+					if (!bSaved)
+					{
+						return false;
+					}
+					NumHLODActors++;
+				}
+			}
+		}
+		UE_LOG(LogWorldPartitionHLODsBuilder, Display, TEXT("#### Built %d HLOD actor ####"), NumHLODActors);
 	}
 
-	UE_LOG(LogWorldPartitionHLODsBuilder, Display, TEXT("#### Built %d HLOD actors ####"), HLODActorsToBuild.Num());
 
 	// Move modified files to the temporary working dir, to be submitted later in the final "submit" pass, from a single machine.
 	if (IsDistributedBuild())
@@ -530,11 +561,8 @@ bool UWorldPartitionHLODsBuilder::BuildHLODActors()
 		}
 
 		// Write build products to a file
-		FString BuildProductsFile = DistributedBuildWorkingDir / BuildProductsFileName;
-		bool bRet = FFileHelper::SaveStringArrayToFile(BuildProducts, *BuildProductsFile);
-		if (!bRet)
+		if (!AddBuildProducts(BuildProducts))
 		{
-			UE_LOG(LogWorldPartitionHLODsBuilder, Error, TEXT("Error writing build product file %s"), *BuildProductsFile);
 			return false;
 		}
 
@@ -549,7 +577,7 @@ bool UWorldPartitionHLODsBuilder::DeleteHLODActors()
 	UE_LOG(LogWorldPartitionHLODsBuilder, Display, TEXT("#### Deleting HLOD actors ####"));
 
 	TArray<FString> PackagesToDelete;
-	for (FActorDescList::TIterator<AWorldPartitionHLOD> HLODIterator(WorldPartition->GetActorDescContainer()); HLODIterator; ++HLODIterator)
+	for (FActorDescContainerCollection::TIterator<AWorldPartitionHLOD> HLODIterator(WorldPartition); HLODIterator; ++HLODIterator)
 	{
 		FWorldPartitionActorDesc* HLODActorDesc = *HLODIterator;
 		FString PackageName = HLODActorDesc->GetActorPackage().ToString();
@@ -589,153 +617,14 @@ bool UWorldPartitionHLODsBuilder::SubmitHLODActors()
 	ModifiedFiles.Append(SourceControlHelper->GetModifiedFiles());
 
 	// Check in all modified files
-	const FString ChangeDescription = FString::Printf(TEXT("Rebuilt HLODs for %s"), *WorldPartition->GetWorld()->GetName());
-	return AutoSubmitFiles(ModifiedFiles.GetAllFiles(), ChangeDescription);
+	const FString ChangeDescription = FString::Printf(TEXT("Rebuilt HLODs for %s"), *WorldPartition->GetWorld()->GetPackage()->GetName());
+	return OnFilesModified(ModifiedFiles.GetAllFiles(), ChangeDescription);
 }
 
 bool UWorldPartitionHLODsBuilder::DumpStats()
 {
-	struct FHLODStat
-	{
-		FString				Name;
-		FName				RuntimeGrid;
-		bool				bIsSpatiallyLoaded = false;
-		uint64				GridLocationZ = 0;
-		uint64				GridLocationX = 0;
-		uint64				GridLocationY = 0;
-		FString				DataLayers;
-		EHLODLayerType		HLODType;
-
-		uint64				InstanceCount = 0;
-		uint64				NaniteTriangleCount = 0;
-		uint64				NaniteVertexCount = 0;
-		uint64				TriangleCount = 0;
-		uint64				VertexCount = 0;
-		uint64				UVChannelCount = 0;
-
-		float				BaseColorTextureSize = 0.0f;
-		float				NormalTextureSize = 0.0f;
-		float				MRSTextureSize = 0.0f;
-		float				EmissiveTextureSize = 0.0f;
-
-		uint64				MeshResourceSize = 0;
-		uint64				TexturesResourceSize = 0;
-
-		uint64				DiskSize = 0;
-
-		static FString GetHeaderCSVString()
-		{
-			return TEXT("Name, RuntimeGrid, SpatiallyLoaded, GridLocationZ, GridLocationX, GridLocationY, DataLayers, HLODType, InstanceCount, NaniteTriangleCount, NaniteVertexCount, TriangleCount, VertexCount, UVChannelCount, BaseColorTextureSize, NormalTextureSize, MRSTextureSize, EmissiveTextureSize, MeshResourceSize, TexturesResourceSize, DiskSize");
-		}
-
-		FString ToCSVString() const
-		{
-			return FString::Printf(TEXT("%s, %s, %s, %d, %d, %d, %s, %s, %d, %d, %d, %d, %d, %d, %.0f, %.0f, %.0f, %.0f, %d, %d, %d"), 
-				*Name, 
-				*RuntimeGrid.ToString(),
-				bIsSpatiallyLoaded ? TEXT("true") : TEXT("false"),
-				GridLocationZ, GridLocationX, GridLocationY,
-				*DataLayers,
-				*StaticEnum<EHLODLayerType>()->GetNameStringByValue((int64)HLODType),
-				InstanceCount, NaniteTriangleCount, NaniteVertexCount, TriangleCount, VertexCount, UVChannelCount,
-				BaseColorTextureSize, NormalTextureSize, MRSTextureSize, EmissiveTextureSize, 
-				MeshResourceSize, TexturesResourceSize,
-				DiskSize);
-		}
-	};
-
-	TArray<FHLODStat> HLODStats;
-
-	for (UActorDescContainer::TIterator<AWorldPartitionHLOD> HLODIterator(WorldPartition->GetActorDescContainer()); HLODIterator; ++HLODIterator)
-	{
-		FWorldPartitionReference HLODActorRef(WorldPartition, HLODIterator->GetGuid());
-		AWorldPartitionHLOD* HLODActor = CastChecked<AWorldPartitionHLOD>(HLODActorRef->GetActor());
-
-		FAssetCompilingManager::Get().FinishAllCompilation();
-
-		FHLODStat& HLODStat = HLODStats.Emplace_GetRef();
-
-		HLODStat.Name = HLODActor->GetActorLabel();
-		HLODStat.RuntimeGrid = HLODActor->GetRuntimeGrid();
-		HLODStat.bIsSpatiallyLoaded = HLODActor->GetIsSpatiallyLoaded();
-		HLODStat.DataLayers = *FString::JoinBy(HLODActor->GetDataLayerInstances(), TEXT("| "), [](const UDataLayerInstance* DataLayer) { return DataLayer->GetDataLayerShortName(); });
-		HLODStat.HLODType = HLODActor->GetSubActorsHLODLayer()->GetLayerType();
-
-		HLODActor->ForEachComponent<UInstancedStaticMeshComponent>(false, [&](const UInstancedStaticMeshComponent* ISMC)
-		{
-			HLODStat.InstanceCount += ISMC->GetInstanceCount();
-		});
-
-		ForEachObjectWithPackage(HLODActor->GetPackage(), [&HLODStat](UObject* Object)
-		{
-			if (UStaticMesh* StaticMesh = Cast<UStaticMesh>(Object))
-			{
-				HLODStat.MeshResourceSize += StaticMesh->GetResourceSizeBytes(EResourceSizeMode::Exclusive);
-
-				HLODStat.TriangleCount += StaticMesh->GetNumTriangles(0);
-				HLODStat.VertexCount += StaticMesh->GetNumVertices(0);
-				HLODStat.UVChannelCount += StaticMesh->GetNumTexCoords(0);
-
-				HLODStat.NaniteTriangleCount += StaticMesh->GetNumNaniteTriangles();
-				HLODStat.NaniteVertexCount += StaticMesh->GetNumNaniteVertices();
-			}
-
-			if (UMaterialInstance* MaterialInstance = Cast<UMaterialInstance>(Object))
-			{
-				auto GetTexture = [MaterialInstance, &HLODStat](const FName TextureParamName)
-				{
-					UTexture* Texture = nullptr;
-					MaterialInstance->GetTextureParameterValue(TextureParamName, Texture, true);
-					HLODStat.TexturesResourceSize += Texture ? Texture->GetResourceSizeBytes(EResourceSizeMode::Exclusive) : 0;
-					return Texture;
-				};
-
-				UTexture* BaseColorTex = GetTexture("BaseColorTexture");
-				UTexture* NormalTex = GetTexture("NormalTexture");
-				UTexture* MetallicTex = GetTexture("MetallicTexture");
-				UTexture* RoughnessTex = GetTexture("RoughnessTexture");
-				UTexture* SpecularTex = GetTexture("SpecularTexture");
-				UTexture* EmissiveTex = GetTexture("EmissiveTexture");
-				UTexture* EmissiveHDRTex = GetTexture("EmissiveHDRTexture");
-				UTexture* PackedMRSTex = GetTexture("PackedTexture");
-				
-				HLODStat.BaseColorTextureSize = BaseColorTex ? BaseColorTex->GetSurfaceWidth() : 0;
-				HLODStat.NormalTextureSize = NormalTex ? NormalTex->GetSurfaceWidth() : 0;
-				HLODStat.MRSTextureSize = FMath::Max(HLODStat.MRSTextureSize, MetallicTex ? MetallicTex->GetSurfaceWidth() : 0);
-				HLODStat.MRSTextureSize = FMath::Max(HLODStat.MRSTextureSize, RoughnessTex ? RoughnessTex->GetSurfaceWidth() : 0);
-				HLODStat.MRSTextureSize = FMath::Max(HLODStat.MRSTextureSize, SpecularTex ? SpecularTex->GetSurfaceWidth() : 0);
-				HLODStat.MRSTextureSize = FMath::Max(HLODStat.MRSTextureSize, PackedMRSTex ? PackedMRSTex->GetSurfaceWidth() : 0);
-				HLODStat.EmissiveTextureSize = FMath::Max(HLODStat.EmissiveTextureSize, EmissiveTex ? EmissiveTex->GetSurfaceWidth() : 0);
-				HLODStat.EmissiveTextureSize = FMath::Max(HLODStat.EmissiveTextureSize, EmissiveHDRTex ? EmissiveHDRTex->GetSurfaceWidth() : 0);
-			}
-
-			return true;
-		}, false);
-
-		HLODStat.DiskSize = IFileManager::Get().FileSize(*HLODActor->GetPackage()->GetLoadedPath().GetLocalFullPath());
-	}
-
-	Algo::Sort(HLODStats, [](const FHLODStat& A, const FHLODStat& B) { return A.Name < B.Name; });
-
-
-	const FString Filename = FString::Printf(TEXT("%s/HLODStats/HLODStats-%s.csv"), *FPaths::ProjectLogDir(), *FDateTime::Now().ToString());
-	FArchive* CSVFile = IFileManager::Get().CreateFileWriter(*Filename, FILEWRITE_AllowRead);
-
-	FTCHARToUTF8 CSVHeader = FHLODStat::GetHeaderCSVString();
-	FString Newline = "\n";
-
-	CSVFile->Serialize((UTF8CHAR*)CSVHeader.Get(), CSVHeader.Length() * sizeof(UTF8CHAR));
-	*CSVFile << Newline;
-	for (const FHLODStat& HLODStat : HLODStats)
-	{
-		FTCHARToUTF8 CSVString = HLODStat.ToCSVString();
-		CSVFile->Serialize((UTF8CHAR*)CSVString.Get(), CSVString.Length() * sizeof(UTF8CHAR));
-		*CSVFile << Newline;
-	}
-
-	delete CSVFile;
-
-	return true;
+	const FString HLODStatsOutputFilename = FPaths::ProjectSavedDir() / TEXT("WorldPartition") / FString::Printf(TEXT("HLODStats-%08x.csv"), FPlatformProcess::GetCurrentProcessId());
+	return UHLODSubsystem::WriteHLODStatsCSV(WorldPartition->GetWorld(), HLODStatsOutputFilename);
 }
 
 bool UWorldPartitionHLODsBuilder::GetHLODActorsToBuild(TArray<FGuid>& HLODActorsToBuild) const
@@ -788,9 +677,11 @@ bool UWorldPartitionHLODsBuilder::GetHLODActorsToBuild(TArray<FGuid>& HLODActors
 
 TArray<TArray<FGuid>> UWorldPartitionHLODsBuilder::GetHLODWorkloads(int32 NumWorkloads) const
 {
+	check(WorldPartition);
+
 	// Build a mapping of 1 HLOD[Level] -> N HLOD[Level - 1]
 	TMap<FGuid, TArray<FGuid>>	HLODParenting;
-	for (FActorDescList::TIterator<AWorldPartitionHLOD> HLODIterator(WorldPartition->GetActorDescContainer()); HLODIterator; ++HLODIterator)
+	for (FActorDescContainerCollection::TIterator<AWorldPartitionHLOD> HLODIterator(WorldPartition); HLODIterator; ++HLODIterator)
 	{
 		// Filter by HLOD actor
 		if (!HLODActorToBuild.IsNone() && HLODIterator->GetActorLabel() != HLODActorToBuild)
@@ -804,19 +695,7 @@ TArray<TArray<FGuid>> UWorldPartitionHLODsBuilder::GetHLODWorkloads(int32 NumWor
 			continue;
 		}
 
-		TArray<FGuid>& ChildHLODs = HLODParenting.Add(HLODIterator->GetGuid());
-
-		for (const FHLODSubActorDesc& SubActor : HLODIterator->GetSubActors())
-		{
-			if (SubActor.ContainerID.IsMainContainer())
-			{
-				FWorldPartitionActorDesc* SubActorDesc = WorldPartition->GetActorDesc(SubActor.ActorGuid);
-				if (SubActorDesc && SubActorDesc->GetActorNativeClass()->IsChildOf<AWorldPartitionHLOD>())
-				{
-					ChildHLODs.Add(SubActor.ActorGuid);
-				}
-			}
-		}
+		HLODParenting.Add(HLODIterator->GetGuid(), HLODIterator->GetChildHLODActors());
 	}
 
 	// All child HLODs must be built before their parent HLOD
@@ -878,8 +757,10 @@ TArray<TArray<FGuid>> UWorldPartitionHLODsBuilder::GetHLODWorkloads(int32 NumWor
 	return Workloads;
 }
 
-bool UWorldPartitionHLODsBuilder::ValidateWorkload(const TArray<FGuid>&Workload) const
+bool UWorldPartitionHLODsBuilder::ValidateWorkload(const TArray<FGuid>& Workload) const
 {
+	check(WorldPartition);
+
 	TSet<FGuid> ProcessedHLOD;
 	ProcessedHLOD.Reserve(Workload.Num());
 
@@ -901,23 +782,12 @@ bool UWorldPartitionHLODsBuilder::ValidateWorkload(const TArray<FGuid>&Workload)
 
 		const FHLODActorDesc* HLODActorDesc = static_cast<const FHLODActorDesc*>(ActorDesc);
 
-		for (const FHLODSubActorDesc& SubActor : HLODActorDesc->GetSubActors())
+		for (const FGuid& ChildHLODActorGuid : HLODActorDesc->GetChildHLODActors())
 		{
-			if (SubActor.ContainerID.IsMainContainer())
+			if (!ProcessedHLOD.Contains(ChildHLODActorGuid))
 			{
-				FWorldPartitionActorDesc* SubActorDesc = WorldPartition->GetActorDesc(SubActor.ActorGuid);
-
-				// Invalid sub actor guid found, this is unexpected when running distributed builds as the build step is always preceeded by the setup step.
-				check(SubActorDesc || !bDistributedBuild);
-
-				if (SubActorDesc && SubActorDesc->GetActorNativeClass()->IsChildOf<AWorldPartitionHLOD>())
-				{
-					if (!ProcessedHLOD.Contains(SubActor.ActorGuid))
-					{
-						UE_LOG(LogWorldPartitionHLODsBuilder, Error, TEXT("Child HLOD actor missing or out of order in HLOD workload, exiting..."));
-						return false;
-					}
-				}
+				UE_LOG(LogWorldPartitionHLODsBuilder, Error, TEXT("Child HLOD actor missing or out of order in HLOD workload, exiting..."));
+				return false;
 			}
 		}
 
@@ -929,6 +799,8 @@ bool UWorldPartitionHLODsBuilder::ValidateWorkload(const TArray<FGuid>&Workload)
 
 bool UWorldPartitionHLODsBuilder::GenerateBuildManifest(TMap<FString, int32>& FilesToBuilderMap) const
 {
+	check(WorldPartition);
+
 	TArray<TArray<FGuid>> BuildersWorkload = GetHLODWorkloads(BuilderCount);
 
 	FConfigFile ConfigFile;
@@ -1226,4 +1098,16 @@ bool UWorldPartitionHLODsBuilder::CopyFilesFromWorkingDir(const FString& SourceD
 	AssetRegistry.ScanModifiedAssetFiles(ModifiedFiles.GetAllFiles());
 
 	return true;
+}
+
+bool UWorldPartitionHLODsBuilder::AddBuildProducts(const TArray<FString>& BuildProducts) const
+{
+	// Write build products to a file
+	FString BuildProductsFile = FString::Printf(TEXT("%s/%s/%s"), *FPaths::RootDir(), *DistributedBuildWorkingDirName, *BuildProductsFileName);
+	bool bRet = FFileHelper::SaveStringArrayToFile(BuildProducts, *BuildProductsFile, FFileHelper::EEncodingOptions::AutoDetect, &IFileManager::Get(), EFileWrite::FILEWRITE_Append);
+	if (!bRet)
+	{
+		UE_LOG(LogWorldPartitionHLODsBuilder, Error, TEXT("Error writing build product file %s"), *BuildProductsFile);
+	}
+	return bRet;
 }

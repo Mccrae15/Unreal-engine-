@@ -25,36 +25,7 @@ struct FNiagaraRibbonRenderingFrameResources;
 struct FNiagaraRibbonRenderingFrameViewResources;
 struct FNiagaraRibbonGPUInitParameters;
 struct FNiagaraRibbonGPUInitComputeBuffers;
-
-struct FNiagaraGenerationInputDataCPUAccessors
-{
-	FNiagaraGenerationInputDataCPUAccessors(const UNiagaraRibbonRendererProperties* Properties, const FNiagaraDataSet& Data)
-		: TotalNumParticles(Data.GetCurrentDataChecked().GetNumInstances())
-		, SortKeyReader(Properties->SortKeyDataSetAccessor.GetReader(Data))
-		, RibbonLinkOrderData(Properties->RibbonLinkOrderDataSetAccessor.GetReader(Data))
-		, SimpleRibbonIDData(Properties->RibbonIdDataSetAccessor.GetReader(Data))
-		, FullRibbonIDData(Properties->RibbonFullIDDataSetAccessor.GetReader(Data))
-		, PosData(Properties->PositionDataSetAccessor.GetReader(Data))
-		, AgeData(Properties->NormalizedAgeAccessor.GetReader(Data))
-		, SizeData(Properties->SizeDataSetAccessor.GetReader(Data))
-		, TwistData(Properties->TwistDataSetAccessor.GetReader(Data))
-	{
-		
-	}
-	
-	const uint32 TotalNumParticles;
-	
-	const FNiagaraDataSetReaderFloat<float> SortKeyReader;
-	const FNiagaraDataSetReaderFloat<float> RibbonLinkOrderData;
-	
-	const FNiagaraDataSetReaderInt32<int> SimpleRibbonIDData;
-	const FNiagaraDataSetReaderStruct<FNiagaraID> FullRibbonIDData;
-	
-	const FNiagaraDataSetReaderFloat<FNiagaraPosition> PosData;
-	const FNiagaraDataSetReaderFloat<float> AgeData;
-	const FNiagaraDataSetReaderFloat<float> SizeData;
-	const FNiagaraDataSetReaderFloat<float> TwistData;
-};
+struct FNiagaraGenerationInputDataCPUAccessors;
 
 struct FNiagaraIndexGenerationInput
 {
@@ -87,7 +58,6 @@ public:
 		, MaxNumRibbons(Properties->MaxNumRibbons)
 		, bHasFullRibbonIDs(Properties->RibbonFullIDDataSetAccessor.IsValid())
 		, bHasSimpleRibbonIDs(Properties->RibbonIdDataSetAccessor.IsValid())
-		, bHasCustomLinkOrder(Properties->RibbonLinkOrderDataSetAccessor.IsValid())
 		, bHasTwist(Properties->TwistDataSetAccessor.IsValid() && Properties->SizeDataSetAccessor.IsValid())
 		, bHasCustomU0Data(Properties->UV0Settings.bEnablePerParticleUOverride && Properties->U0OverrideIsBound)
 		, bHasCustomU1Data(Properties->UV1Settings.bEnablePerParticleUOverride && Properties->U1OverrideIsBound)
@@ -106,7 +76,6 @@ public:
 	bool HasSimpleRibbonIDs() const { return bHasSimpleRibbonIDs; }
 	bool HasRibbonIDs() const { return HasFullRibbonIDs() || HasSimpleRibbonIDs(); };
 	
-	bool HasCustomLinkOrder() const { return bHasCustomLinkOrder; }
 	bool HasTwist() const { return bHasTwist; }
 	
 	bool HasCustomU0Data() const { return bHasCustomU0Data; }
@@ -124,7 +93,6 @@ private:
 	
 	const uint32 bHasFullRibbonIDs : 1;
 	const uint32 bHasSimpleRibbonIDs : 1;
-	const uint32 bHasCustomLinkOrder : 1;
 	const uint32 bHasTwist : 1;
 	
 	const uint32 bHasCustomU0Data : 1;
@@ -250,7 +218,7 @@ struct FNiagaraRibbonGpuBuffer
 		Release();
 	}
 
-	bool Allocate(uint32 NumElements, uint32 MaxElements, ERHIAccess InResourceState, bool bGpuReadOnly, EBufferUsageFlags AdditionalBufferUsage = EBufferUsageFlags::None);
+	bool Allocate(FRHICommandListBase& RHICmdList, uint32 NumElements, uint32 MaxElements, ERHIAccess InResourceState, bool bGpuReadOnly, EBufferUsageFlags AdditionalBufferUsage = EBufferUsageFlags::None);
 	void Release();
 
 	const TCHAR*				DebugName = nullptr;
@@ -275,7 +243,7 @@ struct FNiagaraRibbonVertexBuffers
 	FNiagaraRibbonGpuBuffer GPUComputeCommandBuffer;
 	bool bJustCreatedCommandBuffer = false;
 
-	void InitializeOrUpdateBuffers(const FNiagaraRibbonGenerationConfig& GenerationConfig, const TSharedPtr<FNiagaraRibbonCPUGeneratedVertexData>& GeneratedGeometryData, const FNiagaraDataBuffer* SourceParticleData, int32 MaxAllocatedCount, bool bIsUsingGPUInit);
+	void InitializeOrUpdateBuffers(FRHICommandListBase& RHICmdList, const FNiagaraRibbonGenerationConfig& GenerationConfig, const TSharedPtr<FNiagaraRibbonCPUGeneratedVertexData>& GeneratedGeometryData, const FNiagaraDataBuffer* SourceParticleData, int32 MaxAllocatedCount, bool bIsUsingGPUInit);
 
 	void Release()
 	{
@@ -329,34 +297,33 @@ struct FNiagaraRibbonShapeGeometryData
 * NiagaraRendererRibbons renders an FNiagaraEmitterInstance as a ribbon connecting all particles
 * in order by particle age.
 */
-class NIAGARA_API FNiagaraRendererRibbons : public FNiagaraRenderer
+class FNiagaraRendererRibbons : public FNiagaraRenderer
 {
 public:
-	FNiagaraRendererRibbons(ERHIFeatureLevel::Type FeatureLevel, const UNiagaraRendererProperties *InProps, const FNiagaraEmitterInstance* Emitter);	// FNiagaraRenderer Interface 
-	~FNiagaraRendererRibbons();
+	NIAGARA_API FNiagaraRendererRibbons(ERHIFeatureLevel::Type FeatureLevel, const UNiagaraRendererProperties *InProps, const FNiagaraEmitterInstance* Emitter);	// FNiagaraRenderer Interface 
+	NIAGARA_API ~FNiagaraRendererRibbons();
 
 	// FNiagaraRenderer Interface 
-	virtual void CreateRenderThreadResources() override;
-	virtual void ReleaseRenderThreadResources() override;
+	NIAGARA_API virtual void CreateRenderThreadResources() override;
+	NIAGARA_API virtual void ReleaseRenderThreadResources() override;
 
-	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector, const FNiagaraSceneProxy *SceneProxy) const override;
-	virtual FNiagaraDynamicDataBase *GenerateDynamicData(const FNiagaraSceneProxy* Proxy, const UNiagaraRendererProperties* InProperties, const FNiagaraEmitterInstance* Emitteride) const override;
-	virtual int32 GetDynamicDataSize()const override;
-	virtual bool IsMaterialValid(const UMaterialInterface* Mat)const override;
+	NIAGARA_API virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector, const FNiagaraSceneProxy *SceneProxy) const override;
+	NIAGARA_API virtual FNiagaraDynamicDataBase *GenerateDynamicData(const FNiagaraSceneProxy* Proxy, const UNiagaraRendererProperties* InProperties, const FNiagaraEmitterInstance* Emitteride) const override;
+	NIAGARA_API virtual int32 GetDynamicDataSize()const override;
+	NIAGARA_API virtual bool IsMaterialValid(const UMaterialInterface* Mat)const override;
 #if RHI_RAYTRACING
-	virtual void GetDynamicRayTracingInstances(FRayTracingMaterialGatheringContext& Context, TArray<FRayTracingInstance>& OutRayTracingInstances, const FNiagaraSceneProxy* Proxy) final override;
+	NIAGARA_API virtual void GetDynamicRayTracingInstances(FRayTracingMaterialGatheringContext& Context, TArray<FRayTracingInstance>& OutRayTracingInstances, const FNiagaraSceneProxy* Proxy) final override;
 #endif
 
 protected:
 	
-	static void GenerateShapeStateMultiPlane(FNiagaraRibbonShapeGeometryData& State, int32 MultiPlaneCount, int32 WidthSegmentationCount, bool bEnableAccurateGeometry);
-	static void GenerateShapeStateTube(FNiagaraRibbonShapeGeometryData& State, int32 TubeSubdivisions);
-	static void GenerateShapeStateCustom(FNiagaraRibbonShapeGeometryData& State, const TArray<FNiagaraRibbonShapeCustomVertex>& CustomVertices);
-	static void GenerateShapeStatePlane(FNiagaraRibbonShapeGeometryData& State, int32 WidthSegmentationCount);	
-	void InitializeShape(const UNiagaraRibbonRendererProperties* Properties);
+	static NIAGARA_API void GenerateShapeStateMultiPlane(FNiagaraRibbonShapeGeometryData& State, int32 MultiPlaneCount, int32 WidthSegmentationCount, bool bEnableAccurateGeometry, bool bUseMaterialBackfaceCulling);
+	static NIAGARA_API void GenerateShapeStateTube(FNiagaraRibbonShapeGeometryData& State, int32 TubeSubdivisions, bool bUseMaterialBackfaceCulling);
+	static NIAGARA_API void GenerateShapeStateCustom(FNiagaraRibbonShapeGeometryData& State, const TArray<FNiagaraRibbonShapeCustomVertex>& CustomVertices, bool bUseMaterialBackfaceCulling);
+	static NIAGARA_API void GenerateShapeStatePlane(FNiagaraRibbonShapeGeometryData& State, int32 WidthSegmentationCount, bool bUseMaterialBackfaceCulling);
+	NIAGARA_API void InitializeShape(const UNiagaraRibbonRendererProperties* Properties);
 	
-	void InitializeTessellation(const UNiagaraRibbonRendererProperties* Properties);
-	
+	NIAGARA_API void InitializeTessellation(const UNiagaraRibbonRendererProperties* Properties);
 	
 	template<typename IntType>
 	static void CalculateUVScaleAndOffsets(const FNiagaraRibbonUVSettings& UVSettings, const TArray<IntType>& RibbonIndices, const TArray<FVector4f>& RibbonTangentsAndDistances, const FNiagaraDataSetReaderFloat<float>& NormalizedAgeReader,
@@ -371,14 +338,15 @@ protected:
 	template<typename IDType, typename ReaderType>
 	void GenerateVertexBufferForMultiRibbon(const FNiagaraGenerationInputDataCPUAccessors& CPUData, const ReaderType& IDReader, FNiagaraRibbonCPUGeneratedVertexData& OutputData) const;
 	
-	void GenerateVertexBufferCPU(const FNiagaraGenerationInputDataCPUAccessors& CPUData, FNiagaraRibbonCPUGeneratedVertexData& OutputData) const;
+	NIAGARA_API void GenerateVertexBufferCPU(const FNiagaraGenerationInputDataCPUAccessors& CPUData, FNiagaraRibbonCPUGeneratedVertexData& OutputData) const;
 
 
-	int32 CalculateTessellationFactor(const FNiagaraSceneProxy* SceneProxy, const FSceneView* View, const FVector& ViewOriginForDistanceCulling) const;
-	FNiagaraIndexGenerationInput CalculateIndexBufferConfiguration(const TSharedPtr<FNiagaraRibbonCPUGeneratedVertexData>& GeneratedVertices, const FNiagaraDataBuffer* SourceParticleData,
+	NIAGARA_API int32 CalculateTessellationFactor(const FNiagaraSceneProxy* SceneProxy, const FSceneView* View, const FVector& ViewOriginForDistanceCulling) const;
+	NIAGARA_API FNiagaraIndexGenerationInput CalculateIndexBufferConfiguration(const TSharedPtr<FNiagaraRibbonCPUGeneratedVertexData>& GeneratedVertices, const FNiagaraDataBuffer* SourceParticleData,
 		const FNiagaraSceneProxy* SceneProxy, const FSceneView* View, const FVector& ViewOriginForDistanceCulling, bool bShouldUseGPUInitIndices, bool bIsGPUSim) const;
 	
-	void GenerateIndexBufferForView(
+	NIAGARA_API void GenerateIndexBufferForView(
+		FRHICommandListBase& RHICmdList,
 		FNiagaraGpuRibbonsDataManager& GpuRibbonsDataManager, FMeshElementCollector& Collector,
 		FNiagaraIndexGenerationInput& GeneratedData, FNiagaraDynamicDataRibbon* DynamicDataRibbon,
 		const TSharedPtr<FNiagaraRibbonRenderingFrameViewResources>& RenderingViewResources, const FSceneView* View, const FVector& ViewOriginForDistanceCulling
@@ -393,24 +361,24 @@ protected:
 	template <typename TValue>
 	static TValue* AppendToIndexBufferCPU(TValue* OutIndices, const FNiagaraIndexGenerationInput& GeneratedData, const FNiagaraRibbonShapeGeometryData& ShapeState, const TArrayView<uint32>& SegmentData, bool bInvertOrder);
 	
-	void SetupPerViewUniformBuffer(FNiagaraIndexGenerationInput& GeneratedData,
+	NIAGARA_API void SetupPerViewUniformBuffer(FNiagaraIndexGenerationInput& GeneratedData,
 	                               const FSceneView* View, const FSceneViewFamily& ViewFamily, const FNiagaraSceneProxy* SceneProxy, FNiagaraRibbonUniformBufferRef& OutUniformBuffer) const;
 
-	void SetupMeshBatchAndCollectorResourceForView(const FNiagaraIndexGenerationInput& GeneratedData, FNiagaraDynamicDataRibbon* DynamicDataRibbon,
+	NIAGARA_API void SetupMeshBatchAndCollectorResourceForView(FRHICommandListBase& RHICmdList, const FNiagaraIndexGenerationInput& GeneratedData, FNiagaraDynamicDataRibbon* DynamicDataRibbon,
 	                                               const FNiagaraDataBuffer* SourceParticleData, const FSceneView* View, const FSceneViewFamily& ViewFamily, const FNiagaraSceneProxy* SceneProxy,
 	                                               const TSharedPtr<FNiagaraRibbonRenderingFrameResources>& RenderingResources, const TSharedPtr<FNiagaraRibbonRenderingFrameViewResources>& RenderingViewResources, FMeshBatch& OutMeshBatch, bool bShouldUseGPUInitIndices) const;
 
 
-	void InitializeViewIndexBuffersGPU(FRHICommandListImmediate& RHICmdList, FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface, const FNiagaraRibbonGPUInitParameters& GpuInitParameters,
+	NIAGARA_API void InitializeViewIndexBuffersGPU(FRHICommandListImmediate& RHICmdList, FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface, const FNiagaraRibbonGPUInitParameters& GpuInitParameters,
 		const TSharedPtr<FNiagaraRibbonRenderingFrameViewResources>& RenderingViewResources) const;
 
-	void InitializeVertexBuffersResources(const FNiagaraDynamicDataRibbon* DynamicDataRibbon, FNiagaraDataBuffer* SourceParticleData,
+	NIAGARA_API void InitializeVertexBuffersResources(FRHICommandListBase& RHICmdList, const FNiagaraDynamicDataRibbon* DynamicDataRibbon, FNiagaraDataBuffer* SourceParticleData,
 	                                      FGlobalDynamicReadBuffer& DynamicReadBuffer, const TSharedPtr<FNiagaraRibbonRenderingFrameResources>& RenderingResources, bool bShouldUseGPUInit) const;
 	
-	void InitializeVertexBuffersGPU(FRHICommandListImmediate& RHICmdList, FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface, const FNiagaraRibbonGPUInitParameters& GpuInitParameters,
+	NIAGARA_API void InitializeVertexBuffersGPU(FRHICommandListImmediate& RHICmdList, FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface, const FNiagaraRibbonGPUInitParameters& GpuInitParameters,
 		FNiagaraRibbonGPUInitComputeBuffers& TempBuffers, const TSharedPtr<FNiagaraRibbonRenderingFrameResources>& RenderingResources) const;
 
-	FRibbonComputeUniformParameters SetupComputeVertexGenParams(FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface, const TSharedPtr<FNiagaraRibbonRenderingFrameResources>& RenderingResources, const FNiagaraRibbonGPUInitParameters& GpuInitParameters) const;
+	NIAGARA_API FRibbonComputeUniformParameters SetupComputeVertexGenParams(FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface, const TSharedPtr<FNiagaraRibbonRenderingFrameResources>& RenderingResources, const FNiagaraRibbonGPUInitParameters& GpuInitParameters) const;
 
 	FNiagaraRibbonGenerationConfig GenerationConfig;
 	
@@ -423,6 +391,8 @@ protected:
 	ENiagaraRibbonDrawDirection DrawDirection;
 	
 	const FNiagaraRendererLayout* RendererLayout;
+	bool bGpuRibbonLinkIsFloat = false;
+	uint32 GpuRibbonLinkOrderOffset = INDEX_NONE;
 
 	mutable FNiagaraRibbonVertexBuffers VertexBuffers;
 	

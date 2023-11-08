@@ -76,6 +76,9 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FAbilitySpecDirtied, const FGameplayAbilityS
 /** Notifies when GameplayEffectSpec is blocked by an ActiveGameplayEffect due to immunity  */
 DECLARE_MULTICAST_DELEGATE_TwoParams(FImmunityBlockGE, const FGameplayEffectSpec& /*BlockedSpec*/, const FActiveGameplayEffect* /*ImmunityGameplayEffect*/);
 
+/** We allow a list of delegates to decide if the application of a Gameplay Effect can be blocked. If it's blocked, it will call the ImmunityBlockGE above */
+DECLARE_DELEGATE_RetVal_TwoParams(bool, FGameplayEffectApplicationQuery, const FActiveGameplayEffectsContainer& /*ActiveGEContainer*/, const FGameplayEffectSpec& /*GESpecToConsider*/);
+
 /** How gameplay effects will be replicated to clients */
 UENUM()
 enum class EGameplayEffectReplicationMode : uint8
@@ -184,7 +187,7 @@ class GAMEPLAYABILITIES_API UAbilitySystemComponent : public UGameplayTasksCompo
 	void SetSpawnedAttributes(const TArray<UAttributeSet*>& NewAttributeSet);
 
 	UE_DEPRECATED(5.1, "This function will be made private. Use Add/Remove SpawnedAttributes instead")
-	TArray<UAttributeSet*>& GetSpawnedAttributes_Mutable();
+	TArray<TObjectPtr<UAttributeSet>>& GetSpawnedAttributes_Mutable();
 
 	/** Access the spawned attributes list when you don't intend to modify the list. */
 	const TArray<UAttributeSet*>& GetSpawnedAttributes() const;
@@ -405,6 +408,9 @@ class GAMEPLAYABILITIES_API UAbilitySystemComponent : public UGameplayTasksCompo
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = GameplayEffects)
 	virtual void SetActiveGameplayEffectLevelUsingQuery(FGameplayEffectQuery Query, int32 NewLevel);
 
+	/** Inhibit an active gameplay effect so that it is disabled, but not removed */
+	virtual void InhibitActiveGameplayEffect(FActiveGameplayEffectHandle ActiveGEHandle, bool bInhibit, bool bInvokeGameplayCueEvents);
+
 	/**
 	 * Raw accessor to ask the magnitude of a gameplay effect, not necessarily always correct. How should outside code (UI, etc) ask things like 'how much is this gameplay effect modifying my damage by'
 	 * (most likely we want to catch this on the backend - when damage is applied we can get a full dump/history of how the number got to where it is. But still we may need polling methods like below (how much would my damage be)
@@ -519,6 +525,9 @@ class GAMEPLAYABILITIES_API UAbilitySystemComponent : public UGameplayTasksCompo
 
 	/** Called when an ability spec's internals have changed */
 	FAbilitySpecDirtied AbilitySpecDirtiedCallbacks;
+
+	/** We allow users to setup a series of functions that must be true in order to allow a GameplayEffect to be applied */
+	TArray<FGameplayEffectApplicationQuery> GameplayEffectApplicationQueries;
 
 	/** Call notify callbacks above */
 	virtual void NotifyAbilityCommit(UGameplayAbility* Ability);
@@ -643,31 +652,26 @@ class GAMEPLAYABILITIES_API UAbilitySystemComponent : public UGameplayTasksCompo
 	FORCEINLINE void AddReplicatedLooseGameplayTag(const FGameplayTag& GameplayTag)
 	{
 		GetReplicatedLooseTags_Mutable().AddTag(GameplayTag);
-		bIsNetDirty = true;
 	}
 
 	FORCEINLINE void AddReplicatedLooseGameplayTags(const FGameplayTagContainer& GameplayTags)
 	{
 		GetReplicatedLooseTags_Mutable().AddTags(GameplayTags);
-		bIsNetDirty = true;
 	}
 
 	FORCEINLINE void RemoveReplicatedLooseGameplayTag(const FGameplayTag& GameplayTag)
 	{
 		GetReplicatedLooseTags_Mutable().RemoveTag(GameplayTag);
-		bIsNetDirty = true;
 	}
 
 	FORCEINLINE void RemoveReplicatedLooseGameplayTags(const FGameplayTagContainer& GameplayTags)
 	{
 		GetReplicatedLooseTags_Mutable().RemoveTags(GameplayTags);
-		bIsNetDirty = true;
 	}
 
 	FORCEINLINE void SetReplicatedLooseGameplayTagCount(const FGameplayTag& GameplayTag, int32 NewCount)
 	{
 		GetReplicatedLooseTags_Mutable().SetTagCount(GameplayTag, NewCount);
-		bIsNetDirty = true;
 	}
 
 	/** 	 
@@ -677,32 +681,28 @@ class GAMEPLAYABILITIES_API UAbilitySystemComponent : public UGameplayTasksCompo
 	FORCEINLINE void AddMinimalReplicationGameplayTag(const FGameplayTag& GameplayTag)
 	{
 		GetMinimalReplicationTags_Mutable().AddTag(GameplayTag);
-		bIsNetDirty = true;
 	}
 
 	FORCEINLINE void AddMinimalReplicationGameplayTags(const FGameplayTagContainer& GameplayTags)
 	{
 		GetMinimalReplicationTags_Mutable().AddTags(GameplayTags);
-		bIsNetDirty = true;
 	}
 
 	FORCEINLINE void RemoveMinimalReplicationGameplayTag(const FGameplayTag& GameplayTag)
 	{
 		GetMinimalReplicationTags_Mutable().RemoveTag(GameplayTag);
-		bIsNetDirty = true;
 	}
 
 	FORCEINLINE void RemoveMinimalReplicationGameplayTags(const FGameplayTagContainer& GameplayTags)
 	{
 		GetMinimalReplicationTags_Mutable().RemoveTags(GameplayTags);
-		bIsNetDirty = true;
 	}
 
 	/** Allow events to be registered for specific gameplay tags being added or removed */
 	FOnGameplayEffectTagCountChanged& RegisterGameplayTagEvent(FGameplayTag Tag, EGameplayTagEventType::Type EventType=EGameplayTagEventType::NewOrRemoved);
 
 	/** Unregister previously added events */
-	void UnregisterGameplayTagEvent(FDelegateHandle DelegateHandle, FGameplayTag Tag, EGameplayTagEventType::Type EventType=EGameplayTagEventType::NewOrRemoved);
+	bool UnregisterGameplayTagEvent(FDelegateHandle DelegateHandle, FGameplayTag Tag, EGameplayTagEventType::Type EventType=EGameplayTagEventType::NewOrRemoved);
 
 	/** Register a tag event and immediately call it */
 	FDelegateHandle RegisterAndCallGameplayTagEvent(FGameplayTag Tag, FOnGameplayEffectTagCountChanged::FDelegate Delegate, EGameplayTagEventType::Type EventType=EGameplayTagEventType::NewOrRemoved);
@@ -1097,16 +1097,17 @@ class GAMEPLAYABILITIES_API UAbilitySystemComponent : public UGameplayTasksCompo
 	float GetAbilityLastActivatedTime() const { return AbilityLastActivatedTime; }
 
 	/** Returns an ability spec from a handle. If modifying call MarkAbilitySpecDirty */
-	FGameplayAbilitySpec* FindAbilitySpecFromHandle(FGameplayAbilitySpecHandle Handle);
+	FGameplayAbilitySpec* FindAbilitySpecFromHandle(FGameplayAbilitySpecHandle Handle) const;
 	
 	/** Returns an ability spec from a GE handle. If modifying call MarkAbilitySpecDirty */
-	FGameplayAbilitySpec* FindAbilitySpecFromGEHandle(FActiveGameplayEffectHandle Handle);
+	UE_DEPRECATED(5.3, "FindAbilitySpecFromGEHandle was never accurate because a GameplayEffect can grant multiple GameplayAbilities. It now returns nullptr.")
+	FGameplayAbilitySpec* FindAbilitySpecFromGEHandle(FActiveGameplayEffectHandle Handle) const;
 
 	/** Returns an ability spec corresponding to given ability class. If modifying call MarkAbilitySpecDirty */
-	FGameplayAbilitySpec* FindAbilitySpecFromClass(TSubclassOf<UGameplayAbility> InAbilityClass);
+	FGameplayAbilitySpec* FindAbilitySpecFromClass(TSubclassOf<UGameplayAbility> InAbilityClass) const;
 
 	/** Returns an ability spec from a handle. If modifying call MarkAbilitySpecDirty */
-	FGameplayAbilitySpec* FindAbilitySpecFromInputID(int32 InputID);
+	FGameplayAbilitySpec* FindAbilitySpecFromInputID(int32 InputID) const;
 
 	/**
 	 * Returns all abilities with the given InputID
@@ -1614,6 +1615,11 @@ public:
 	virtual void BeginPlay() override;
 
 protected:
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual void GetReplicatedCustomConditionState(FCustomPropertyConditionState& OutActiveState) const override;
+
+	void UpdateActiveGameplayEffectsReplicationCondition();
+	void UpdateMinimalReplicationGameplayCuesCondition();
 
 	/**
 	 *	The abilities we can activate. 
@@ -1625,7 +1631,7 @@ protected:
 	 *	instancing or anything else that the AbilitySystemComponent would provide, then it doesn't need the component to function.
 	 */
 
-	UPROPERTY(ReplicatedUsing=OnRep_ActivateAbilities, BlueprintReadOnly, Category = "Abilities")
+	UPROPERTY(ReplicatedUsing = OnRep_ActivateAbilities, BlueprintReadOnly, Transient, Category = "Abilities")
 	FGameplayAbilitySpecContainer ActivatableAbilities;
 
 	/** Maps from an ability spec to the target data. Used to track replicated data and callbacks */
@@ -1780,6 +1786,7 @@ protected:
 	/** Returns true if the specified ability should be activated from an event in this network mode */
 	bool HasNetworkAuthorityToActivateTriggeredAbility(const FGameplayAbilitySpec &Spec) const;
 
+	UE_DEPRECATED(5.3, "Use OnImmunityBlockGameplayEffectDelegate directly.  It is trigger from a UImmunityGameplayEffectComponent.  You can create your own GameplayEffectComponent if you need different functionality.")
 	virtual void OnImmunityBlockGameplayEffect(const FGameplayEffectSpec& Spec, const FActiveGameplayEffect* ImmunityGE);
 
 	// Internal gameplay cue functions
@@ -1798,7 +1805,7 @@ protected:
 
 	void CheckDurationExpired(FActiveGameplayEffectHandle Handle);
 		
-	TArray<UGameplayTask*>&	GetAbilityActiveTasks(UGameplayAbility* Ability);
+	TArray<TObjectPtr<UGameplayTask>>&	GetAbilityActiveTasks(UGameplayAbility* Ability);
 	
 	/** Contains all of the gameplay effects that are currently active on this component */
 	UPROPERTY(Replicated)
@@ -1872,13 +1879,13 @@ private:
 
     // Private accessor to the AllReplicatedInstancedAbilities array until the deprecation tag on it is removed and we can reference the array directly again.
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	TArray<UGameplayAbility*>& GetReplicatedInstancedAbilities_Mutable() { return AllReplicatedInstancedAbilities; }
+	TArray<TObjectPtr<UGameplayAbility>>& GetReplicatedInstancedAbilities_Mutable() { return AllReplicatedInstancedAbilities; }
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 private:
 
 	/** List of attribute sets */
-	UPROPERTY(Replicated, ReplicatedUsing=OnRep_SpawnedAttributes)
+	UPROPERTY(Replicated, ReplicatedUsing = OnRep_SpawnedAttributes, Transient)
 	TArray<TObjectPtr<UAttributeSet>>	SpawnedAttributes;
 
 	UFUNCTION()
@@ -1898,7 +1905,7 @@ public:
 	void CacheIsNetSimulated();
 
 	/** PredictionKeys, see more info in GameplayPrediction.h. This has to come *last* in all replicated properties on the AbilitySystemComponent to ensure OnRep/callback order. */
-	UPROPERTY(Replicated)
+	UPROPERTY(Replicated, Transient)
 	FReplicatedPredictionKeyMap ReplicatedPredictionKeyMap;
 
 protected:

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "MuCOE/Nodes/CustomizableObjectNode.h"
+#include "MuR/System.h"
 
 #include "CustomizableObjectNodeObject.generated.h"
 
@@ -14,6 +15,42 @@ class UCustomizableObjectNodeRemapPins;
 class UObject;
 struct FPropertyChangedEvent;
 struct FSoftObjectPath;
+
+USTRUCT()
+struct FBoneToRemove
+{
+	GENERATED_USTRUCT_BODY()
+
+	UPROPERTY(EditAnywhere, Category = CustomizableObject)
+	bool bOnlyRemoveChildren = false;
+
+	UPROPERTY(EditAnywhere, Category = CustomizableObject)
+	FName BoneName;
+};
+
+
+USTRUCT()
+struct FLODReductionSettings
+{
+	GENERATED_USTRUCT_BODY()
+
+	/** Selects which bones will be removed from the final skeleton
+	* BoneName: Name of the bone that will be removed. Its children will be removed too.
+	* Remove Only Children: If true, only the children of the selected bone will be removed. The selected bone will remain.
+	*/
+	UPROPERTY(EditAnywhere, Category = CustomizableObject)
+	TArray<FBoneToRemove> BonesToRemove;
+};
+
+
+USTRUCT()
+struct FComponentSettings
+{
+	GENERATED_USTRUCT_BODY()
+	
+	UPROPERTY(EditAnywhere, Category = CustomizableObject)
+	TArray<FLODReductionSettings> LODReductionSettings;
+};
 
 
 USTRUCT()
@@ -27,8 +64,9 @@ struct CUSTOMIZABLEOBJECTEDITOR_API FCustomizableObjectState
 	UPROPERTY(EditAnywhere, Category=CustomizableObject)
 	TArray<FString> RuntimeParameters;
 
+	/** Special treatment of texture compression for this state. */
 	UPROPERTY(EditAnywhere, Category = CustomizableObject)
-	bool bDontCompressRuntimeTextures = false;
+	ETextureCompressionStrategy TextureCompressionStrategy = ETextureCompressionStrategy::None;
 
 	/** LiveUpdateMode will reuse instance temp. data between updates and speed up update times, but spend much more memory. Good for customization screens, not for actual gameplay modes. */
 	UPROPERTY(EditAnywhere, Category = CustomizableObject)
@@ -43,11 +81,21 @@ struct CUSTOMIZABLEOBJECTEDITOR_API FCustomizableObjectState
 	UPROPERTY(EditAnywhere, Category = CustomizableObject)
 	bool bBuildOnlyFirstLOD = false;
 
+	/** If there's an entry for a specific platform, when compiling for that platform Num LODs will be built after bBuildOnlyFirstLOD */
+	UPROPERTY(EditAnywhere, Category = CustomizableObject)
+	TMap<FString, int32> NumExtraLODsToBuildPerPlatform;
+
 	UPROPERTY(EditAnywhere, Category = CustomizableObject)
 	TMap<FString, FString> ForcedParameterValues;
 
 	UPROPERTY(EditAnywhere, Category = UI, meta = (DisplayName = "State UI Metadata"))
 	FMutableParamUIMetadata StateUIMetadata;
+
+	// Deprecated
+	
+	/** This is now TextureCompressionStrategy.  */
+	UPROPERTY()
+	bool bDontCompressRuntimeTextures_DEPRECATED = false;
 };
 
 
@@ -116,12 +164,12 @@ public:
 	int32 NumLODs;
 
 	UPROPERTY(EditAnywhere, Category = CustomizableObject)
-	ECustomizableObjectAutomaticLODStrategy AutoLODStrategy;
+	ECustomizableObjectAutomaticLODStrategy AutoLODStrategy = ECustomizableObjectAutomaticLODStrategy::AutomaticFromMesh;
 
 	UPROPERTY(EditAnywhere, Category = CustomizableObject, meta = (ClampMin = "1"))
 	int32 NumMeshComponents = 1;
 
-	UPROPERTY(EditAnywhere, Category=CustomizableObject)
+	UPROPERTY(EditAnywhere, Category=CustomizableObject ,meta = (TitleProperty = "Name"))
 	TArray<FCustomizableObjectState> States;
 
 	UPROPERTY(EditAnywhere, Category = AttachedToExternalObject)
@@ -133,7 +181,7 @@ public:
 	UPROPERTY()
 	FGuid Identifier;
 
-    // Soft references SkeletalMeshes found in the provoius compilation.
+    // Soft references SkeletalMeshes found in the previous compilation.
     // Only populated if the node is the root.
     UPROPERTY()
     TArray<FSoftObjectPath> ReferencedSkeletalMeshes;
@@ -142,7 +190,12 @@ public:
     // so it is need to keep them syncronized. 
     // This overrides the per skeletal mesh node selection 
     UPROPERTY()
-    TArray<FRealTimeMorphSelectionOverride> RealTimeMorphSelectionOverrides; 
+    TArray<FRealTimeMorphSelectionOverride> RealTimeMorphSelectionOverrides;
+
+	// Array of bones to remove from the mesh.All influences assigned to these bones will be transferred to the closest valid bone.
+	// Selected per component and LOD. Bones will be accumulated down the line.
+	UPROPERTY(VisibleAnywhere, Category = CustomizableObject)
+	TArray<FComponentSettings> ComponentSettings;
 	
     // To avoid any no properly saved GUIDs
 	FGuid IdentifierVerification;
@@ -159,6 +212,7 @@ public:
 	void PostDuplicate(bool bDuplicateForPIE) override;
 
 	// UCustomizableObjectNode interface
+	virtual void BackwardsCompatibleFixup() override;
 	virtual void PostBackwardsCompatibleFixup() override;
 	void AllocateDefaultPins(UCustomizableObjectNodeRemapPins* RemapPins) override;
 
@@ -171,7 +225,7 @@ public:
 
 	UEdGraphPin* LODPin(int32 LODIndex) const
 	{
-		FString LODName = FString::Printf(TEXT("LOD %d "), LODIndex);
+		FString LODName = FString::Printf(TEXT("%s%d "), LODPinNamePrefix, LODIndex);
 		return FindPin(LODName);
 	}
 
@@ -181,7 +235,7 @@ public:
 
 		for (UEdGraphPin* Pin : GetAllNonOrphanPins())
 		{
-			if (Pin->GetName().StartsWith(TEXT("LOD ")))
+			if (Pin->GetName().StartsWith(LODPinNamePrefix))
 			{
 				Count++;
 			}
@@ -192,12 +246,12 @@ public:
 
 	UEdGraphPin* ChildrenPin() const
 	{
-		return FindPin(TEXT("Children"));
+		return FindPin(ChildrenPinName);
 	}
 
 	UEdGraphPin* OutputPin() const
 	{
-		return FindPin(TEXT("Object"));
+		return FindPin(OutputPinName);
 	}
 
 	/** Return the LOD which a LOD pin references to. Retrun -1 if a pin does not belong to any LOD. */
@@ -218,5 +272,16 @@ public:
 	{
 		NumMeshComponents = MeshComponentNum;
 	}
+
+	// Node Details Support
+	int32 CurrentComponent = 0;
+	int32 CurrentLOD = 0;
+
+private:
+	static const FName ChildrenPinName;
+	static const FName OutputPinName;
+	static const TCHAR* LODPinNamePrefix;
+
+	static bool IsBuiltInPin(FName PinName);
 };
 

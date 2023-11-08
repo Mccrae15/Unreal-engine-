@@ -16,7 +16,6 @@ class UAnimInstance;
 class UAnimSequenceBase;
 class UContextualAnimSelectionCriterion;
 class UContextualAnimSceneAsset;
-class UContextualAnimSceneInstance;
 class UContextualAnimSceneActorComponent;
 struct FAnimMontageInstance;
 
@@ -112,12 +111,6 @@ struct CONTEXTUALANIMATION_API FContextualAnimTrack
 
 	void GetStartAndEndTimeForWarpSection(int32 WarpSectionIndex, float& OutStartTime, float& OutEndTime) const;
 	void GetStartAndEndTimeForWarpSection(const FName& WarpSectionName, float& OutStartTime, float& OutEndTime) const;
-
-	FORCEINLINE FTransform GetAlignmentTransformAtTime(float Time) const { return AlignmentData.ExtractTransformAtTime(0, Time); }
-	FORCEINLINE FTransform GetAlignmentTransformAtEntryTime() const { return AlignmentData.ExtractTransformAtTime(0, 0.f); }
-	FORCEINLINE FTransform GetAlignmentTransformAtSyncTime() const { return AlignmentData.ExtractTransformAtTime(0, GetSyncTimeForWarpSection(0)); }
-
-	float FindBestAnimStartTime(const FVector& LocalLocation) const;
 
 	bool DoesQuerierPassSelectionCriteria(const FContextualAnimSceneBindingContext& PrimaryActorData, const FContextualAnimSceneBindingContext& QuerierData) const;
 
@@ -231,17 +224,37 @@ struct FContextualAnimRoleDefinition
 	static const FContextualAnimRoleDefinition InvalidRoleDefinition;
 };
 
-// FContextualAnimSetPivotDefinition
+// EContextualAnimWarpPointDefinitionMode
 ///////////////////////////////////////////////////////////////////////
 
-/** Rules used to compute the pivot for a AnimSet */
+/** Different modes for defining warp points */
+UENUM(BlueprintType)
+enum class EContextualAnimWarpPointDefinitionMode : uint8
+{
+	/** 
+	 * Warp point will be at the location/rotation of the primary actor. 
+	 * Commonly used when interacting with static objects 
+	*/
+	PrimaryActor,
+
+	/** 
+	 * Warp point will be at the location/rotation of a socket on the primary actor. 
+	 * Commonly used when re-using the same interaction animations to interact with objects with different proportions 
+	*/
+	Socket,
+
+	/**
+	 * Warp point will be calculated based on a set of rules.
+	 * Commonly used when we want actors to align at some point between them
+	*/
+	Custom
+};
+
+/** Parameters used to calculate a warp point when using 'Custom' mode */
 USTRUCT(BlueprintType)
-struct FContextualAnimSetPivotDefinition
+struct FContextualAnimWarpPointCustomParams
 {
 	GENERATED_BODY()
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
-	FName Name = NAME_None;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults", meta = (GetOptions = "GetRoles"))
 	FName Origin = NAME_None;
@@ -256,17 +269,42 @@ struct FContextualAnimSetPivotDefinition
 	float Weight = 0.f;
 };
 
-// FContextualAnimSetPivot
-///////////////////////////////////////////////////////////////////////
-
-/** Pivot for a AnimSet */
+/**
+ * Contain the params necessary to calculate a warp point for the scene. 
+ * A warp point is a transform in the scene that can be used as reference to calculate alignment between actors
+*/
 USTRUCT(BlueprintType)
-struct FContextualAnimSetPivot
+struct CONTEXTUALANIMATION_API FContextualAnimWarpPointDefinition
 {
 	GENERATED_BODY()
 
-	FContextualAnimSetPivot() = default;
-	FContextualAnimSetPivot(const FName InName, const FTransform& InTransform) : Name(InName), Transform(InTransform) {}
+	/** Name of the warp target in the warping window this warp point is for */
+	UPROPERTY(EditAnywhere, Category = "Defaults")
+	FName WarpTargetName = NAME_None;
+
+	/** Method used to calculate this warp point */
+	UPROPERTY(EditAnywhere, Category = "Defaults")
+	EContextualAnimWarpPointDefinitionMode Mode = EContextualAnimWarpPointDefinitionMode::PrimaryActor;
+
+	/** Name of the socket in the primary actor acting as warping point. Only relevant when Mode is Socket */
+	UPROPERTY(EditAnywhere, Category = "Defaults", meta = (EditCondition = "Mode==EContextualAnimWarpPointDefinitionMode::Socket", EditConditionHides))
+	FName SocketName = NAME_None;
+
+	/** Set of rules used to calculate the warp point. Only relevant when Mode is Custom */
+	UPROPERTY(EditAnywhere, Category = "Defaults", meta = (EditCondition = "Mode==EContextualAnimWarpPointDefinitionMode::Custom", EditConditionHides, FullyExpand = "true"))
+	FContextualAnimWarpPointCustomParams Params;
+};
+
+// FContextualAnimWarpPoint
+///////////////////////////////////////////////////////////////////////
+
+USTRUCT(BlueprintType)
+struct FContextualAnimWarpPoint
+{
+	GENERATED_BODY()
+
+	FContextualAnimWarpPoint() = default;
+	FContextualAnimWarpPoint(const FName InName, const FTransform& InTransform) : Name(InName), Transform(InTransform) {}
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
 	FName Name = NAME_None;
@@ -291,7 +329,16 @@ struct CONTEXTUALANIMATION_API FContextualAnimSceneBindingContext
 	FContextualAnimSceneBindingContext(const FTransform& InExternalTransform, const TOptional<FVector>& InExternalVelocity = TOptional<FVector>())
 		: ExternalTransform(InExternalTransform), ExternalVelocity(InExternalVelocity) {}
 
+	FContextualAnimSceneBindingContext(AActor* InActor, const FGameplayTagContainer& InExternalTags)
+		: Actor(InActor), ExternalGameplayTags(InExternalTags) {}
+
 	AActor* GetActor() const { return Actor.Get(); }
+
+	UAnimInstance* GetAnimInstance() const;
+
+	USkeletalMeshComponent* GetSkeletalMeshComponent() const;
+
+	UContextualAnimSceneActorComponent* GetSceneActorComponent() const;
 
 	void SetExternalTransform(const FTransform& InTransform);
 
@@ -299,28 +346,35 @@ struct CONTEXTUALANIMATION_API FContextualAnimSceneBindingContext
 
 	FVector GetVelocity() const;
 
-	//@TODO: Add accessors for GameplayTags
+	void AddGameplayTag(const FGameplayTag& Tag);
+	
+	const FGameplayTagContainer& GetGameplayTags() const { return ExternalGameplayTags; }
 
-	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
+	bool HasMatchingGameplayTag(const FGameplayTag& TagToCheck) const;
+
+	bool HasAllMatchingGameplayTags(const FGameplayTagContainer& TagContainer) const;
+
+	bool HasAnyMatchingGameplayTags(const FGameplayTagContainer& TagContainer) const;
 
 private:
 
+	UPROPERTY()
 	TWeakObjectPtr<AActor> Actor = nullptr;
+
+	UPROPERTY(NotReplicated)
+	mutable TWeakObjectPtr<UContextualAnimSceneActorComponent> CachedSceneActorComp = nullptr;
+
+	UPROPERTY(NotReplicated)
+	mutable TWeakObjectPtr<UAnimInstance> CachedAnimInstance = nullptr;
+
+	UPROPERTY(NotReplicated)
+	mutable TWeakObjectPtr<USkeletalMeshComponent> CachedSkeletalMesh = nullptr;
 
 	TOptional<FTransform> ExternalTransform;
 
 	TOptional<FVector> ExternalVelocity;
 
 	FGameplayTagContainer ExternalGameplayTags;
-};
-
-template<>
-struct TStructOpsTypeTraits<FContextualAnimSceneBindingContext> : public TStructOpsTypeTraitsBase2<FContextualAnimSceneBindingContext>
-{
-	enum
-	{
-		WithNetSerializer = true
-	};
 };
 
 /** Represent an actor bound to a role in the scene */
@@ -337,7 +391,9 @@ struct CONTEXTUALANIMATION_API FContextualAnimSceneBinding
 	FORCEINLINE AActor* GetActor() const { return GetContext().GetActor(); }
 	FORCEINLINE FTransform GetTransform() const { return GetContext().GetTransform(); }
 	FORCEINLINE FVector GetVelocity()  const { return GetContext().GetVelocity(); }
-
+	FORCEINLINE UAnimInstance* GetAnimInstance() const { return Context.GetAnimInstance(); }
+	FORCEINLINE USkeletalMeshComponent* GetSkeletalMeshComponent() const { return Context.GetSkeletalMeshComponent(); }
+	FORCEINLINE UContextualAnimSceneActorComponent* GetSceneActorComponent() const { return Context.GetSceneActorComponent(); }
 	FORCEINLINE int32 GetAnimTrackIdx() const { return AnimTrackIdx; }
 	
 	void SetAnimTrack(const FContextualAnimTrack& InAnimTrack);
@@ -352,37 +408,18 @@ struct CONTEXTUALANIMATION_API FContextualAnimSceneBinding
 	/** Returns the ActiveMontageInstance or null in the case of static actors */
 	FAnimMontageInstance* GetAnimMontageInstance() const;
 
-	UAnimInstance* GetAnimInstance() const;
-
-	USkeletalMeshComponent* GetSkeletalMeshComponent() const;
-
-	UContextualAnimSceneActorComponent* GetSceneActorComponent() const;
-
-	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
-
 	static const FContextualAnimSceneBinding InvalidBinding;
 
 private:
 
-	friend UContextualAnimSceneInstance;
+	friend class UContextualAnimSceneInstance;
 	friend struct FContextualAnimSceneBindings;
 
+	UPROPERTY()
 	FContextualAnimSceneBindingContext Context;
 
+	UPROPERTY()
 	int32 AnimTrackIdx = INDEX_NONE;
-
-	mutable TObjectPtr<UContextualAnimSceneActorComponent> CachedSceneActorComp = nullptr;
-	mutable TObjectPtr<UAnimInstance> CachedAnimInstance = nullptr;
-	mutable TObjectPtr<USkeletalMeshComponent> CachedSkeletalMesh = nullptr;
-};
-
-template<>
-struct TStructOpsTypeTraits<FContextualAnimSceneBinding> : public TStructOpsTypeTraitsBase2<FContextualAnimSceneBinding>
-{
-	enum
-	{
-		WithNetSerializer = true
-	};
 };
 
 USTRUCT(BlueprintType)
@@ -403,14 +440,15 @@ struct CONTEXTUALANIMATION_API FContextualAnimSceneBindings
 		return Role != NAME_None ? Data.FindByPredicate([this, &Role](const FContextualAnimSceneBinding& Item) { return GetAnimTrackFromBinding(Item).Role == Role; }) : nullptr;
 	}
 
+	void AddReferencedObjects(FReferenceCollector& Collector);
+
 	FORCEINLINE uint8 GetID() const { return Id; }
-	FORCEINLINE const UContextualAnimSceneAsset* GetSceneAsset() const { return SceneAsset.Get(); }
+	FORCEINLINE const UContextualAnimSceneAsset* GetSceneAsset() const { return SceneAsset; }
 	FORCEINLINE int32 GetSectionIdx() const { return SectionIdx; }
 	FORCEINLINE int32 GetAnimSetIdx() const { return AnimSetIdx; }
 	FORCEINLINE int32 Num() const { return Data.Num(); }
 	FORCEINLINE int32 Add(const FContextualAnimSceneBinding& NewData) { return Data.Add(NewData); }
 	FORCEINLINE const TArray<FContextualAnimSceneBinding>& GetBindings() const { return Data; }
-	FORCEINLINE const UContextualAnimSceneInstance* GetSceneInstance() const { return SceneInstancePtr.Get(); }
 
 	FORCEINLINE TArray<FContextualAnimSceneBinding>::RangedForIteratorType      begin() { return Data.begin(); }
 	FORCEINLINE TArray<FContextualAnimSceneBinding>::RangedForConstIteratorType begin() const { return Data.begin(); }
@@ -422,11 +460,14 @@ struct CONTEXTUALANIMATION_API FContextualAnimSceneBindings
 	static bool TryCreateBindings(const UContextualAnimSceneAsset& SceneAsset, int32 SectionIdx, const TMap<FName, FContextualAnimSceneBindingContext>& Params, FContextualAnimSceneBindings& OutBindings);
 	static bool TryCreateBindings(const UContextualAnimSceneAsset& SceneAsset, int32 SectionIdx, int32 AnimSetIdx, const FContextualAnimSceneBindingContext& Primary, const FContextualAnimSceneBindingContext& Secondary, FContextualAnimSceneBindings& OutBindings);
 	static bool TryCreateBindings(const UContextualAnimSceneAsset& SceneAsset, int32 SectionIdx, const FContextualAnimSceneBindingContext& Primary, const FContextualAnimSceneBindingContext& Secondary, FContextualAnimSceneBindings& OutBindings);
+	static int32 FindAnimSet(const UContextualAnimSceneAsset& SceneAsset, int32 SectionIdx, const TMap<FName, FContextualAnimSceneBindingContext>& Params);
 
 	bool BindActorToRole(AActor& ActorRef, FName Role);
 
-	void CalculateAnimSetPivots(TArray<FContextualAnimSetPivot>& OutScenePivots) const;
-	bool CalculateAnimSetPivot(const FContextualAnimSetPivotDefinition& AnimSetPivotDef, FContextualAnimSetPivot& OutScenePivot) const;
+	bool SetRoleWarpTarget(const FName Role, const FName WarpTargetName, const FTransform& Transform);
+
+	void CalculateWarpPoints(TArray<FContextualAnimWarpPoint>& OutWarpPoints) const;
+	bool CalculateWarpPoint(const FContextualAnimWarpPointDefinition& WarpPointDef, FContextualAnimWarpPoint& OutWarpPoint) const;
 
 	const FContextualAnimTrack& GetAnimTrackFromBinding(const FContextualAnimSceneBinding& Binding) const;
 	const FName& GetRoleFromBinding(const FContextualAnimSceneBinding& Binding) const;
@@ -435,6 +476,7 @@ struct CONTEXTUALANIMATION_API FContextualAnimSceneBindings
 	FTransform GetIKTargetTransformFromBinding(const FContextualAnimSceneBinding& Binding, const FName& TrackName, float Time) const;
 
 	const FContextualAnimSceneBinding* GetSyncLeader() const;
+	const FContextualAnimSceneBinding* GetPrimaryBinding() const;
 
 	bool IsValid() const;
 
@@ -442,9 +484,10 @@ struct CONTEXTUALANIMATION_API FContextualAnimSceneBindings
 
 	void Clear();
 
-	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
-
 	void GenerateUniqueId();
+
+	int32 FindAnimSetForTransitionTo(int32 NewSectionIdx) const;
+	void TransitionTo(int32 NewSectionIdx, int32 NewAnimSetIdx);
 
 private:
 
@@ -454,7 +497,7 @@ private:
 	uint8 Id = 0;
 
 	UPROPERTY()
-	TWeakObjectPtr<const UContextualAnimSceneAsset> SceneAsset = nullptr;
+	TObjectPtr<const UContextualAnimSceneAsset> SceneAsset = nullptr;
 
 	UPROPERTY()
 	int32 SectionIdx = INDEX_NONE;
@@ -465,20 +508,9 @@ private:
 	/** List of actors bound to each role in the SceneAsset */
 	UPROPERTY()
 	TArray<FContextualAnimSceneBinding> Data;
-
-	/** Ptr back to the scene instance we belong to (if any) */
-	UPROPERTY()
-	TWeakObjectPtr<const UContextualAnimSceneInstance> SceneInstancePtr = nullptr;
 };
 
-template<>
-struct TStructOpsTypeTraits<FContextualAnimSceneBindings> : public TStructOpsTypeTraitsBase2<FContextualAnimSceneBindings>
-{
-	enum
-	{
-		WithNetSerializer = true
-	};
-};
+// DEPRECATED: Kept around only to do not break existing content. It will go away in the future.
 
 USTRUCT(BlueprintType)
 struct CONTEXTUALANIMATION_API FContextualAnimStartSceneParams
@@ -499,17 +531,17 @@ struct CONTEXTUALANIMATION_API FContextualAnimStartSceneParams
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
 	int32 AnimSetIdx = INDEX_NONE;
 
-	/** Precomputed pivots that could be provided when starting a scene.
-	 * When not provided, the pivots will be automatically computed using local context information.
+	/** Precomputed warp points that could be provided when starting a scene.
+	 * When not provided, the warp points will be automatically computed using local context information.
 	 */
-	TArray<FContextualAnimSetPivot> Pivots;
+	TArray<FContextualAnimWarpPoint> WarpPoints;
 
 	void Reset()
 	{
 		RoleToActorMap.Reset();
 		SectionIdx = INDEX_NONE;
 		AnimSetIdx = INDEX_NONE;
-		Pivots.Reset();
+		WarpPoints.Reset();
 	}
 };
 

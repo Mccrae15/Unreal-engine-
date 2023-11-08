@@ -20,12 +20,18 @@
 #include "DynamicMesh/DynamicMeshChangeTracker.h"
 #include "DynamicMesh/MeshNormals.h"
 #include "TransformTypes.h"
-
+#include "ToolDataVisualizer.h"
+#include "GroupTopology.h"
+#include "ChaosClothAsset/ClothEditorToolBuilder.h"
 #include "ClothWeightMapPaintTool.generated.h"
 
 class UMeshElementsVisualizer;
 class UWeightMapEraseBrushOpProps;
 class UWeightMapPaintBrushOpProps;
+class UWeightMapSmoothBrushOpProps;
+class UClothEditorContextObject;
+class UPolygonSelectionMechanic;
+struct FChaosClothAssetAddWeightMapNode;
 
 DECLARE_STATS_GROUP(TEXT("WeightMapPaintTool"), STATGROUP_WeightMapPaintTool, STATCAT_Advanced);
 DECLARE_CYCLE_STAT(TEXT("WeightMapPaintTool_UpdateROI"), WeightMapPaintTool_UpdateROI, STATGROUP_WeightMapPaintTool);
@@ -48,12 +54,14 @@ DECLARE_CYCLE_STAT(TEXT("WeightMapPaintTool_Normals_Compute"), WeightMapPaintToo
  * Tool Builder
  */
 UCLASS()
-class CHAOSCLOTHASSETEDITORTOOLS_API UClothEditorWeightMapPaintToolBuilder : public UMeshSurfacePointMeshEditingToolBuilder
+class CHAOSCLOTHASSETEDITORTOOLS_API UClothEditorWeightMapPaintToolBuilder : public UMeshSurfacePointMeshEditingToolBuilder, public IChaosClothAssetEditorToolBuilder
 {
 	GENERATED_BODY()
 
-public:
+private:
+	virtual void GetSupportedViewModes(TArray<UE::Chaos::ClothAsset::EClothPatternVertexType>& Modes) const override;
 	virtual UMeshSurfacePointTool* CreateNewTool(const FToolBuilderState& SceneState) const override;
+	virtual bool CanSetConstructionViewWireframeActive() const { return false; }
 };
 
 
@@ -66,6 +74,7 @@ enum class EClothEditorWeightMapPaintInteractionType : uint8
 	Brush,
 	Fill,
 	PolyLasso,
+	Gradient,
 
 	LastValue UMETA(Hidden)
 };
@@ -82,6 +91,9 @@ enum class EClothEditorWeightMapPaintBrushType : uint8
 {
 	/** Paint weights */
 	Paint UMETA(DisplayName = "Paint"),
+
+	/** Smooth existing weights */
+	Smooth UMETA(DisplayName = "Smooth"),
 
 	/** Erase weights */
 	Erase UMETA(Hidden, DisplayName = "Erase"),
@@ -103,12 +115,12 @@ UENUM()
 enum class EClothEditorWeightMapPaintVisibilityType : uint8
 {
 	None,
-	FrontFacing,
 	Unoccluded
 };
 
 
 
+// TODO: Look at EditConditions for all these properties. Which ones make sense for which SubToolType?
 
 UCLASS()
 class CHAOSCLOTHASSETEDITORTOOLS_API UClothEditorWeightMapPaintBrushFilterProperties : public UInteractiveToolPropertySet
@@ -116,40 +128,68 @@ class CHAOSCLOTHASSETEDITORTOOLS_API UClothEditorWeightMapPaintBrushFilterProper
 	GENERATED_BODY()
 
 public:
-	/** Primary Brush Mode */
-	//UPROPERTY(EditAnywhere, Category = Brush2, meta = (DisplayName = "Brush Type"))
 	
 	UPROPERTY(EditAnywhere, Category = ActionType, meta = (DisplayName = "Action"))
 	EClothEditorWeightMapPaintInteractionType SubToolType = EClothEditorWeightMapPaintInteractionType::Brush;
 
 	UPROPERTY(EditAnywhere, Category = ActionType, meta = (DisplayName = "Brush Mode", 
-		HideEditConditionToggle, EditConditionHides, EditCondition = "SubToolType != EClothEditorWeightMapPaintInteractionType::PolyLasso"))
+		HideEditConditionToggle, EditConditionHides, EditCondition = "SubToolType == EClothEditorWeightMapPaintInteractionType::Brush"))
 	EClothEditorWeightMapPaintBrushType PrimaryBrushType = EClothEditorWeightMapPaintBrushType::Paint;
 
 	/** Relative size of brush */
-	UPROPERTY(EditAnywhere, Category = ActionType, meta = (DisplayName = "Brush Size", UIMin = "0.0", UIMax = "1.0", ClampMin = "0.0", ClampMax = "10.0", 
-		HideEditConditionToggle, EditConditionHides, EditCondition = "SubToolType != EClothEditorWeightMapPaintInteractionType::PolyLasso"))
+	UPROPERTY(EditAnywhere, Category = Brush, meta = (DisplayName = "Brush Size", UIMin = "0.0", UIMax = "1.0", ClampMin = "0.0", ClampMax = "10.0", 
+		HideEditConditionToggle, EditConditionHides, EditCondition = "SubToolType == EClothEditorWeightMapPaintInteractionType::Brush"))
 	float BrushSize = 0.25f;
 
-	/** The weight value that will be assigned to vertices */
-	UPROPERTY(EditAnywhere, Category = ActionType, meta = (UIMin = 0, ClampMin = 0, UIMax = 1, ClampMax = 1))
-	double StrengthValue = 1;
+	/** The new value to paint on the mesh */
+	UPROPERTY(EditAnywhere, Category = Brush, meta = (UIMin = 0, ClampMin = 0, UIMax = 1, ClampMax = 1,
+		HideEditConditionToggle, EditConditionHides, EditCondition = 
+		"(SubToolType == EClothEditorWeightMapPaintInteractionType::Brush && PrimaryBrushType == EClothEditorWeightMapPaintBrushType::Paint) || SubToolType == EClothEditorWeightMapPaintInteractionType::Fill || SubToolType == EClothEditorWeightMapPaintInteractionType::PolyLasso"))
+	double AttributeValue = 1;
+
+	/** How quickly each brush stroke will drive mesh values towards the desired value */
+	UPROPERTY(EditAnywhere, Category = Brush, meta = (UIMin = 0, ClampMin = 0, UIMax = 1, ClampMax = 1,
+		HideEditConditionToggle, EditConditionHides, EditCondition = 
+		"SubToolType == EClothEditorWeightMapPaintInteractionType::Brush || SubToolType == EClothEditorWeightMapPaintInteractionType::Fill"))
+	double Strength = 0.5;
+
+	/** The Gradient upper limit value */
+	UPROPERTY(EditAnywhere, Category = Gradient, meta = (UIMin = 0, ClampMin = 0, UIMax = 1, ClampMax = 1,
+		HideEditConditionToggle, EditConditionHides, EditCondition = "SubToolType == EClothEditorWeightMapPaintInteractionType::Gradient"))
+	double GradientHighValue = 1.0;
+
+	/** The Gradient lower limit value */
+	UPROPERTY(EditAnywhere, Category = Gradient, meta = (UIMin = 0, ClampMin = 0, UIMax = 1, ClampMax = 1,
+		HideEditConditionToggle, EditConditionHides, EditCondition = "SubToolType == EClothEditorWeightMapPaintInteractionType::Gradient"))
+	double GradientLowValue = 0.0;
+
 
 	/** The Region affected by the current operation will be bounded by edge angles larger than this threshold */
-	UPROPERTY(EditAnywhere, Category = Filters, meta = (UIMin = "0.0", UIMax = "180.0", EditCondition = "SubToolType != EClothEditorWeightMapPaintInteractionType::PolyLasso && BrushAreaMode == EClothEditorWeightMapPaintBrushAreaType::Connected"))
+	UPROPERTY(EditAnywhere, Category = Filters, meta = (UIMin = "0.0", ClampMin = "0.0", UIMax = "180.0", ClampMax = "180.0",
+		HideEditConditionToggle, EditConditionHides, EditCondition = 
+		"SubToolType == EClothEditorWeightMapPaintInteractionType::Brush || SubToolType == EClothEditorWeightMapPaintInteractionType::Fill"))
 	float AngleThreshold = 180.0f;
 
 	/** The Region affected by the current operation will be bounded by UV borders/seams */
-	UPROPERTY(EditAnywhere, Category = Filters, meta = (EditCondition = "SubToolType != EClothEditorWeightMapPaintInteractionType::PolyLasso && BrushAreaMode == EClothEditorWeightMapPaintBrushAreaType::Connected"))
+	UPROPERTY(EditAnywhere, Category = Filters, meta = (HideEditConditionToggle, EditConditionHides, EditCondition = 
+		"SubToolType == EClothEditorWeightMapPaintInteractionType::Brush || SubToolType == EClothEditorWeightMapPaintInteractionType::Fill"))
 	bool bUVSeams = false;
 
 	/** The Region affected by the current operation will be bounded by Hard Normal edges/seams */
-	UPROPERTY(EditAnywhere, Category = Filters, meta = (EditCondition = "SubToolType != EClothEditorWeightMapPaintInteractionType::PolyLasso && BrushAreaMode == EClothEditorWeightMapPaintBrushAreaType::Connected"))
+	UPROPERTY(EditAnywhere, Category = Filters, meta = (HideEditConditionToggle, EditConditionHides, EditCondition = 
+		"SubToolType == EClothEditorWeightMapPaintInteractionType::Brush || SubToolType == EClothEditorWeightMapPaintInteractionType::Fill"))
 	bool bNormalSeams = false;
 
 	/** Control which triangles can be affected by the current operation based on visibility. Applied after all other filters. */
-	UPROPERTY(EditAnywhere, Category = Filters)
+	UPROPERTY(EditAnywhere, Category = Filters, meta = (HideEditConditionToggle, EditConditionHides, EditCondition =
+		"SubToolType == EClothEditorWeightMapPaintInteractionType::Brush || SubToolType == EClothEditorWeightMapPaintInteractionType::Fill || SubToolType == EClothEditorWeightMapPaintInteractionType::PolyLasso"))
 	EClothEditorWeightMapPaintVisibilityType VisibilityFilter = EClothEditorWeightMapPaintVisibilityType::None;
+
+	/** The weight value at the brush indicator */
+	UPROPERTY(VisibleAnywhere, Transient, Category = Query, meta = (NoResetToDefault, 
+		HideEditConditionToggle, EditConditionHides, EditCondition = "SubToolType == EClothEditorWeightMapPaintInteractionType::Brush || SubToolType == EClothEditorWeightMapPaintInteractionType::Fill"))
+	double ValueAtBrush = 0;
+
 };
 
 
@@ -163,31 +203,21 @@ enum class EClothEditorWeightMapPaintToolActions
 
 	FloodFillCurrent,
 	ClearAll,
-
-	AddWeightMap,
-	DeleteWeightMap
 };
 
 
 UCLASS()
-class CHAOSCLOTHASSETEDITORTOOLS_API UClothEditorWeightMapPaintToolActionPropertySet : public UInteractiveToolPropertySet
+class CHAOSCLOTHASSETEDITORTOOLS_API UClothEditorMeshWeightMapPaintToolActions : public UInteractiveToolPropertySet
 {
 	GENERATED_BODY()
 
 public:
+
 	TWeakObjectPtr<UClothEditorWeightMapPaintTool> ParentTool;
 
 	void Initialize(UClothEditorWeightMapPaintTool* ParentToolIn) { ParentTool = ParentToolIn; }
 
 	void PostAction(EClothEditorWeightMapPaintToolActions Action);
-};
-
-UCLASS()
-class CHAOSCLOTHASSETEDITORTOOLS_API UMeshWeightMapPaintToolActions : public UClothEditorWeightMapPaintToolActionPropertySet
-{
-	GENERATED_BODY()
-
-public:
 
 	UFUNCTION(CallInEditor, Category = Operations, meta = (DisplayPriority = 10))
 	void ClearAll()
@@ -203,28 +233,19 @@ public:
 
 };
 
-
 UCLASS()
-class CHAOSCLOTHASSETEDITORTOOLS_API UClothEditorWeightMapActions : public UClothEditorWeightMapPaintToolActionPropertySet
+class CHAOSCLOTHASSETEDITORTOOLS_API UClothEditorUpdateWeightMapProperties : public UInteractiveToolPropertySet
 {
 	GENERATED_BODY()
 
 public:
 
-	UPROPERTY(EditAnywhere, Category = AddWeightMap, meta = (DisplayName = "New Weight Map Name"))
-	FString NewWeightMapName;
+	UPROPERTY(EditAnywhere, Category = UpdateNode, meta = (DisplayName = "Name"))
+	FString Name;
 
-	UFUNCTION(CallInEditor, Category = AddWeightMap, meta = (DisplayPriority = 2))
-	void AddNewWeightMap()
-	{
-		PostAction(EClothEditorWeightMapPaintToolActions::AddWeightMap);
-	}
+private:
 
-	UFUNCTION(CallInEditor, Category = DeleteWeightMap, meta = (DisplayPriority = 3))
-	void DeleteSelectedWeightMap()
-	{
-		PostAction(EClothEditorWeightMapPaintToolActions::DeleteWeightMap);
-	}
+	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 };
 
 /**
@@ -241,12 +262,16 @@ public:
 	virtual void Setup() override;
 	virtual void Shutdown(EToolShutdownType ShutdownType) override;
 	virtual void DrawHUD(FCanvas* Canvas, IToolsContextRenderAPI* RenderAPI) override;
+	virtual void Render(IToolsContextRenderAPI* RenderAPI) override;
+	virtual void UpdateMaterialMode(EMeshEditingMaterialModes MaterialMode) override;
+
+	virtual void UpdateStampPendingState() override;
 
 	virtual void OnTick(float DeltaTime) override;
 
 	virtual bool HasCancel() const override { return true; }
 	virtual bool HasAccept() const override { return true; }
-	virtual bool CanAccept() const override { return true; }
+	virtual bool CanAccept() const override;
 
 	virtual bool OnUpdateHover(const FInputDeviceRay& DevicePos) override;
 
@@ -256,11 +281,10 @@ public:
 
 	virtual void CommitResult(UBaseDynamicMeshComponent* Component, bool bModifiedTopology) override;
 
+	void SetClothEditorContextObject(TObjectPtr<UClothEditorContextObject> InClothEditorContextObject);
 
 public:
 
-	UPROPERTY()
-	TObjectPtr<UWeightMapSetProperties> WeightMapSetProperties;
 
 	/** Filters on paint brush */
 	UPROPERTY()
@@ -272,14 +296,14 @@ private:
 	TObjectPtr<UWeightMapPaintBrushOpProps> PaintBrushOpProperties;
 
 	UPROPERTY()
+	TObjectPtr<UWeightMapSmoothBrushOpProps> SmoothBrushOpProperties;
+
+	UPROPERTY()
 	TObjectPtr<UWeightMapEraseBrushOpProps> EraseBrushOpProperties;
 
 public:
 	void FloodFillCurrentWeightAction();
 	void ClearAllWeightsAction();
-
-	void AddWeightMapAction(const FName& NewWeightMapName);
-	void DeleteWeightMapAction(const FName& SelectedWeightMapName);
 
 	void SetVerticesToWeightMap(const TSet<int32>& Vertices, double WeightValue, bool bIsErase);
 
@@ -318,10 +342,10 @@ public:
 	virtual void RequestAction(EClothEditorWeightMapPaintToolActions ActionType);
 	
 	UPROPERTY()
-	TObjectPtr<UMeshWeightMapPaintToolActions> ActionsProps;
+	TObjectPtr<UClothEditorMeshWeightMapPaintToolActions> ActionsProps;
 
 	UPROPERTY()
-	TObjectPtr<UClothEditorWeightMapActions> ClothEditorWeightMapActions;
+	TObjectPtr<UClothEditorUpdateWeightMapProperties> UpdateWeightMapProperties;
 
 protected:
 	bool bHavePendingAction = false;
@@ -341,6 +365,24 @@ protected:
 	void OnPolyLassoFinished(const FCameraPolyLasso& Lasso, bool bCanceled);
 
 
+	// 
+	// Gradient Support
+	//
+	UPROPERTY()
+	TObjectPtr<UPolygonSelectionMechanic> PolygonSelectionMechanic;
+
+	TUniquePtr<UE::Geometry::FDynamicMeshAABBTree3> MeshSpatial = nullptr;
+
+	TUniquePtr<UE::Geometry::FTriangleGroupTopology> GradientSelectionTopology = nullptr;
+
+	FToolDataVisualizer GradientSelectionRenderer;
+
+	UE::Geometry::FGroupTopologySelection LowValueGradientVertexSelection;
+	UE::Geometry::FGroupTopologySelection HighValueGradientVertexSelection;
+
+	void ComputeGradient();
+	void OnSelectionModified();
+
 	//
 	// Internals
 	//
@@ -356,6 +398,9 @@ protected:
 	UPROPERTY()
 	TObjectPtr<UMeshElementsVisualizer> MeshElementsDisplay;
 
+	UPROPERTY()
+	TObjectPtr<UClothEditorContextObject> ClothEditorContextObject = nullptr;
+
 	// realtime visualization
 	void OnDynamicMeshComponentChanged(UDynamicMeshComponent* Component, const FMeshVertexChange* Change, bool bRevert);
 	FDelegateHandle OnDynamicMeshComponentChangedHandle;
@@ -365,8 +410,8 @@ protected:
 	double GetCurrentWeightValueUnderBrush() const;
 	FVector3d CurrentBaryCentricCoords;
 	int32 GetBrushNearestVertex() const;
-	void OnSelectedWeightMapChanged();
-	void UpdateActiveWeightMap();
+
+	void GetCurrentWeightMap(TArray<float>& OutWeights) const;
 
 	void UpdateSubToolType(EClothEditorWeightMapPaintInteractionType NewType);
 
@@ -418,13 +463,23 @@ protected:
 	TArray<int32> NormalSeamEdges;
 	void PrecomputeFilterData();
 
-	// Populate the drop-down WeightMapsList in WeightMapSetProperties
-	void InitializeWeightMapNames();
+	// DynamicMesh might be unwelded mesh, but weights are on the welded mesh.
+	bool bHaveDynamicMeshToWeightConversion = false;
+	TArray<int32> DynamicMeshToWeight; 
+	TArray<TArray<int32>> WeightToDynamicMesh;
 
 protected:
 	virtual bool ShowWorkPlane() const override { return false; }
 
+	friend class UClothEditorWeightMapPaintToolBuilder;
 
+	bool bAnyChangeMade = false;
+
+	// Node graph editor support
+
+	FChaosClothAssetAddWeightMapNode* WeightMapNodeToUpdate = nullptr;
+
+	void UpdateSelectedNode();
 };
 
 

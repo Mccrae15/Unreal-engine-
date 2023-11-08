@@ -142,7 +142,7 @@ static void PaintPolygon(
 		}
 		FSlateVertex MidPoint;
 	};
-	Sort(Vertices.GetData() + 1, Vertices.Num() - 1, FComparePoints(MidVertex));
+	Algo::Sort(MakeArrayView(Vertices.GetData() + 1, Vertices.Num() - 1), FComparePoints(MidVertex));
 
 	if (FillColor.A > 0)
 	{
@@ -497,7 +497,7 @@ TSharedPtr<SWidget> SBlendSpaceGridWidget::CreateGridEntryBox(const int32 BoxInd
 		[
 			SNew(STextBlock)
 			.Visibility(bShowLabel ? EVisibility::Visible : EVisibility::Collapsed)
-			.Text_Lambda([=]() { return (BoxIndex == 0) ? ParameterXName : ParameterYName; })
+			.Text_Lambda([this, BoxIndex]() { return (BoxIndex == 0) ? ParameterXName : ParameterYName; })
 		];
 }
 

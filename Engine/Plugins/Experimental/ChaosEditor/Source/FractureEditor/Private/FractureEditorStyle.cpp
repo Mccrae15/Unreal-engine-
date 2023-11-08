@@ -20,6 +20,8 @@ FFractureEditorStyle::FFractureEditorStyle()
 	SetContentRoot(FPaths::EnginePluginsDir() / TEXT("Experimental/ChaosEditor/Content"));
 	SetCoreContentRoot(FPaths::EngineContentDir() / TEXT("Slate"));
 
+	Set("FractureEditor.DefaultSettings", new FSlateImageBrush(RootToCoreContentDir(TEXT("../Editor/Slate/Icons/GeneralTools/Settings_40x.png")), IconSize));
+
 	Set("FractureEditor.Slice",                new IMAGE_BRUSH_SVG("FractureSliceCut", IconSize));
 	Set("FractureEditor.Uniform",              new IMAGE_BRUSH_SVG("FractureUniformVoronoi", IconSize));
 	Set("FractureEditor.Radial",               new IMAGE_BRUSH_SVG("FractureRadialVoronoi", IconSize));
@@ -57,6 +59,7 @@ FFractureEditorStyle::FFractureEditorStyle()
 	Set("FractureEditor.FlushEmbeddedGeometry",new IMAGE_BRUSH_SVG("FractureFlush", IconSize));
 
 	Set("FractureEditor.AutoUV",               new IMAGE_BRUSH_SVG("FractureAutoUV", IconSize));
+	Set("FractureEditor.Material",             new IMAGE_BRUSH("EditMats_40x", IconSize));
 
 	Set("FractureEditor.DeleteBranch",         new IMAGE_BRUSH_SVG("FracturePrune", IconSize));
 	Set("FractureEditor.Hide",				   new IMAGE_BRUSH_SVG("FractureHide", IconSize));
@@ -67,7 +70,7 @@ FFractureEditorStyle::FFractureEditorStyle()
 	Set("FractureEditor.Resample",             new IMAGE_BRUSH_SVG("FractureResample", IconSize));
 
 	Set("FractureEditor.ToMesh",        	   new CORE_IMAGE_BRUSH_SVG("../Editor/Slate/Starship/Common/MakeStaticMesh", IconSize));
-	Set("FractureEditor.Validate",        	   new CORE_IMAGE_BRUSH_SVG("../Editor/Slate/Starship/Common/Test", IconSize));
+	Set("FractureEditor.Validate",        	   new CORE_IMAGE_BRUSH_SVG("Starship/Common/Test", IconSize));
 
 	Set("FractureEditor.Convex",        	   new IMAGE_BRUSH_SVG("FractureConvex", IconSize));
 	Set("FractureEditor.CustomVoronoi",        new IMAGE_BRUSH_SVG("FractureCustom", IconSize));

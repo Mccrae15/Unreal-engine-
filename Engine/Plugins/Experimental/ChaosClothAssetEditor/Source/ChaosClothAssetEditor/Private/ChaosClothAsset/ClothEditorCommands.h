@@ -4,6 +4,8 @@
 
 #include "BaseCharacterFXEditorCommands.h"
 
+namespace UE::Chaos::ClothAsset
+{
 class CHAOSCLOTHASSETEDITOR_API FChaosClothAssetEditorCommands : public TBaseCharacterFXEditorCommands<FChaosClothAssetEditorCommands>
 {
 public:
@@ -30,29 +32,36 @@ public:
 
 	const static FString BeginRemeshToolIdentifier;
 	TSharedPtr<FUICommandInfo> BeginRemeshTool;
+
 	const static FString BeginWeightMapPaintToolIdentifier;
 	TSharedPtr<FUICommandInfo> BeginWeightMapPaintTool;
+	const static FString AddWeightMapNodeIdentifier;
+	TSharedPtr<FUICommandInfo> AddWeightMapNode;
 
 	const static FString BeginAttributeEditorToolIdentifier;
 	TSharedPtr<FUICommandInfo> BeginAttributeEditorTool;
 
-	const static FString BeginClothTrainingToolIdentifier;
-	TSharedPtr<FUICommandInfo> BeginClothTrainingTool;
-
 	const static FString BeginTransferSkinWeightsToolIdentifier;
 	TSharedPtr<FUICommandInfo> BeginTransferSkinWeightsTool;
+	const static FString AddTransferSkinWeightsNodeIdentifier;
+	TSharedPtr<FUICommandInfo> AddTransferSkinWeightsNode;
 
-	// Rest space viewport commands
-	const static FString TogglePatternModeIdentifier;
-	TSharedPtr<FUICommandInfo> TogglePatternMode;
+	const static FString BeginMeshSelectionToolIdentifier;
+	TSharedPtr<FUICommandInfo> BeginMeshSelectionTool;
+	const static FString AddMeshSelectionNodeIdentifier;
+	TSharedPtr<FUICommandInfo> AddMeshSelectionNode;
 
-	// Sim viewport commands
-	const static FString ToggleSimMeshWireframeIdentifier;
-	TSharedPtr<FUICommandInfo> ToggleSimMeshWireframe;
+	// Construction viewport commands
+	const static FString ToggleConstructionViewWireframeIdentifier;
+	TSharedPtr<FUICommandInfo> ToggleConstructionViewWireframe;
 
-	const static FString ToggleRenderMeshWireframeIdentifier;
-	TSharedPtr<FUICommandInfo> ToggleRenderMeshWireframe;
+	TSharedPtr<FUICommandInfo> SetConstructionMode2D;
+	TSharedPtr<FUICommandInfo> SetConstructionMode3D;
+	TSharedPtr<FUICommandInfo> SetConstructionModeRender;
 
+	// Preview viewport commands
+	const static FString TogglePreviewWireframeIdentifier;
+	TSharedPtr<FUICommandInfo> TogglePreviewWireframe;
 
 	const static FString SoftResetSimulationIdentifier;
 	TSharedPtr<FUICommandInfo> SoftResetSimulation;
@@ -63,4 +72,7 @@ public:
 	const static FString ToggleSimulationSuspendedIdentifier;
 	TSharedPtr<FUICommandInfo> ToggleSimulationSuspended;
 
+	TSharedPtr<FUICommandInfo> LODAuto;
+	TSharedPtr<FUICommandInfo> LOD0;
 };
+} // namespace UE::Chaos::ClothAsset

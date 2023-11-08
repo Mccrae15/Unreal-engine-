@@ -8,6 +8,7 @@
 #include "Engine/EngineTypes.h"   // FMeshNaniteSettings
 #include "MeshDescription.h"
 #include "DynamicMesh/DynamicMesh3.h"
+#include "ShapeApproximation/SimpleShapeSet3.h"
 #include "Misc/Optional.h"
 
 #include "ModelingObjectsCreationAPI.generated.h"
@@ -34,7 +35,8 @@ enum class ECreateModelingObjectResult : uint8
 	Failed_InvalidMesh,
 	Failed_InvalidTexture,
 	Failed_AssetCreationFailed,
-    Failed_ActorCreationFailed
+	Failed_ActorCreationFailed,
+	Failed_InvalidMaterial,
 };
 
 /**
@@ -76,6 +78,10 @@ enum class ECreateObjectTypeHint : uint8
 USTRUCT(Blueprintable)
 struct MODELINGCOMPONENTS_API FCreateMeshObjectParams
 {
+	// @param bConstructWithDefaultModelingComponentSettings	Whether to initialize with the default project settings.
+	// Note the modeling component settings will not be used if the CVar "modeling.CreateMesh.IgnoreProjectSettings" is enabled
+	FCreateMeshObjectParams(bool bConstructWithDefaultModelingComponentSettings = true);
+
 	GENERATED_BODY()
 
 	//
@@ -134,6 +140,9 @@ struct MODELINGCOMPONENTS_API FCreateMeshObjectParams
 	UPROPERTY(Category = "CreateMeshObjectParams", EditAnywhere)
 	TEnumAsByte<enum ECollisionTraceFlag> CollisionMode = ECollisionTraceFlag::CTF_UseComplexAsSimple;
 
+	/** Collision Shapes */
+	TOptional<UE::Geometry::FSimpleShapeSet3d> CollisionShapeSet;
+
 
 	//
 	// Rendering Configuration Options, if this is applicable for the given mesh object
@@ -142,6 +151,10 @@ struct MODELINGCOMPONENTS_API FCreateMeshObjectParams
 	/** Specify whether normals should be automatically recomputed for this new mesh object */
 	UPROPERTY(Category = "CreateMeshObjectParams", EditAnywhere)
 	bool bEnableRaytracingSupport = true;
+
+	/** Specify whether to auto-generate Lightmap UVs (if applicable for the output mesh type) */
+	UPROPERTY(Category = "CreateMeshObjectParams", EditAnywhere)
+	bool bGenerateLightmapUVs = false;
 
 	//
 	// Mesh Build Options, if this is applicable for the given mesh object
@@ -285,7 +298,7 @@ struct MODELINGCOMPONENTS_API FCreateTextureObjectResult
 	UPROPERTY(Category = "CreateTextureObjectResult", VisibleAnywhere)
 	ECreateModelingObjectResult ResultCode = ECreateModelingObjectResult::Ok;
 
-	/** A pointer to a newly-created Asset for the texture object, if applicable (eg StaticMeshAsset) */
+	/** A pointer to a newly-created Asset for the texture object */
 	UPROPERTY(Category = "CreateTextureObjectResult", VisibleAnywhere)
 	TObjectPtr<UObject> NewAsset = nullptr;
 
@@ -293,6 +306,134 @@ struct MODELINGCOMPONENTS_API FCreateTextureObjectResult
 	bool IsOK() const { return ResultCode == ECreateModelingObjectResult::Ok; }
 };
 
+
+
+
+
+
+/**
+ * FCreateMaterialObjectParams is a collection of input data intended to be passed to
+ * UModelingObjectsCreationAPI::CreateMaterialObject().
+ */
+USTRUCT(Blueprintable)
+struct MODELINGCOMPONENTS_API FCreateMaterialObjectParams
+{
+	GENERATED_BODY()
+
+	//
+	// Base data
+	//
+
+	/** 
+	 * The World/Level the new Material object should be created in (if known).
+	 * Note that Material generally do not exist as objects in a Level. 
+	 * However, it may be necessary to store the texture in a path relative to the
+	 * level (for example if the level is in a Plugin, this would be necessary in-Editor)
+	 */
+	UPROPERTY(Category = "CreateMaterialObjectParams", EditAnywhere)
+	TObjectPtr<UWorld> TargetWorld = nullptr;
+
+	/** An object to store the Material relative to. */
+	UPROPERTY(Category = "CreateMaterialObjectParams", EditAnywhere)
+	TObjectPtr<UObject> StoreRelativeToObject = nullptr;
+
+	/** The base name of the new Material object */
+	UPROPERTY(Category = "CreateMaterialObjectParams", EditAnywhere)
+	FString BaseName;
+
+	//
+	// input data
+	//
+
+	/** 
+	 * The parent UMaterial of this material will be duplicated to create the new UMaterial Asset.
+	 */
+	UPROPERTY(Category = "CreateMaterialObjectParams", EditAnywhere)
+	TObjectPtr<UMaterialInterface> MaterialToDuplicate = nullptr;
+};
+
+
+/**
+ * FCreateMaterialObjectResult is returned by UModelingObjectsCreationAPI::CreateMaterialObject()
+ * to indicate success/failure and provide information about created texture objects
+ */
+USTRUCT(BlueprintType)
+struct MODELINGCOMPONENTS_API FCreateMaterialObjectResult
+{
+	GENERATED_BODY()
+
+	/** Success/Failure status for the requested operation */
+	UPROPERTY(Category = "CreateMaterialObjectResult", VisibleAnywhere)
+	ECreateModelingObjectResult ResultCode = ECreateModelingObjectResult::Ok;
+
+	/** A pointer to a newly-created Asset for the material object */
+	UPROPERTY(Category = "CreateTextureObjectResult", VisibleAnywhere)
+	TObjectPtr<UObject> NewAsset = nullptr;
+
+
+	bool IsOK() const { return ResultCode == ECreateModelingObjectResult::Ok; }
+};
+
+
+
+
+/**
+ * FCreateActorParams is a collection of input data intended to be passed to
+ * UModelingObjectsCreationAPI::CreateNewActor().
+ */
+USTRUCT(Blueprintable)
+struct MODELINGCOMPONENTS_API FCreateActorParams
+{
+	GENERATED_BODY()
+
+	//
+	// Base data
+	//
+
+	/** 
+	 * The World/Level the new Actor should be created in (if known).
+	 */
+	UPROPERTY(Category = "CreateActorParams", EditAnywhere)
+	TObjectPtr<UWorld> TargetWorld = nullptr;
+
+	/** The base name of the new Actor */
+	UPROPERTY(Category = "CreateActorParams", EditAnywhere)
+	FString BaseName;
+
+	/** The 3D local-to-world transform for the new actor */
+	UPROPERTY(Category = "CreateActorParams", EditAnywhere)
+	FTransform Transform;
+
+	//
+	// input data
+	//
+
+	/** A template Actor the new Actor is based on */
+	UPROPERTY(Category = "CreateActorParams", EditAnywhere)
+	TObjectPtr<AActor> TemplateActor = nullptr;
+};
+
+
+/**
+ * FCreateActorResult is returned by UModelingObjectsCreationAPI::FCreateActorParams()
+ * to indicate success/failure and provide information about created actors
+ */
+USTRUCT(BlueprintType)
+struct MODELINGCOMPONENTS_API FCreateActorResult
+{
+	GENERATED_BODY()
+
+	/** Success/Failure status for the requested operation */
+	UPROPERTY(Category = "CreateMaterialObjectResult", VisibleAnywhere)
+	ECreateModelingObjectResult ResultCode = ECreateModelingObjectResult::Ok;
+
+	/** A pointer to a newly-created Actor */
+	UPROPERTY(Category="CreateMeshObjectResult", VisibleAnywhere)
+	TObjectPtr<AActor> NewActor = nullptr;
+
+
+	bool IsOK() const { return ResultCode == ECreateModelingObjectResult::Ok; }
+};
 
 
 
@@ -337,6 +478,19 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Modeling Objects")
 	virtual FCreateTextureObjectResult CreateTextureObject(const FCreateTextureObjectParams& CreateTexParams) { return FCreateTextureObjectResult{ ECreateModelingObjectResult::Failed_Unknown }; }
 
+	/**
+	 * Create a new material object based on the data in CreateMaterialParams
+	 * @return a results data structure, containing a result code and information about any new objects created
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Modeling Objects")
+	virtual FCreateMaterialObjectResult CreateMaterialObject(const FCreateMaterialObjectParams& CreateMaterialParams) { return FCreateMaterialObjectResult{ ECreateModelingObjectResult::Failed_Unknown }; }
+
+	/**
+	 * Create a new material object based on the data in CreateMaterialParams
+	 * @return a results data structure, containing a result code and information about any new objects created
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Modeling Objects")
+	virtual FCreateActorResult CreateNewActor(const FCreateActorParams& CreateActorParams) { return FCreateActorResult{ ECreateModelingObjectResult::Failed_Unknown }; }
 
 	//
 	// Non-UFunction variants that support std::move operators
@@ -350,6 +504,8 @@ public:
 
 	virtual FCreateMeshObjectResult CreateMeshObject(FCreateMeshObjectParams&& CreateMeshParams) { return FCreateMeshObjectResult{ ECreateModelingObjectResult::Failed_Unknown }; }
 	virtual FCreateTextureObjectResult CreateTextureObject(FCreateTextureObjectParams&& CreateTexParams) { return FCreateTextureObjectResult{ ECreateModelingObjectResult::Failed_Unknown }; }
+	virtual FCreateMaterialObjectResult CreateMaterialObject(FCreateMaterialObjectParams&& CreateMaterialParams) { return FCreateMaterialObjectResult{ ECreateModelingObjectResult::Failed_Unknown }; }
+	virtual FCreateActorResult CreateNewActor(FCreateActorParams&& CreateActorParams) { return FCreateActorResult{ ECreateModelingObjectResult::Failed_Unknown }; }
 
 };
 
@@ -378,6 +534,24 @@ MODELINGCOMPONENTS_API FCreateMeshObjectResult CreateMeshObject(UInteractiveTool
  * @return a results data structure, containing a result code and information about any new objects created
  */
 MODELINGCOMPONENTS_API FCreateTextureObjectResult CreateTextureObject(UInteractiveToolManager* ToolManager, FCreateTextureObjectParams&& CreateTexParams);
+
+
+/**
+ * Create a new material object based on the data in CreateMaterialParams.
+ * This is a convenience function that will try to locate a UModelingObjectsCreationAPI instance in the ToolManager's ContextObjectStore,
+ * and then call UModelingObjectsCreationAPI::CreateMaterialObject()
+ * @return a results data structure, containing a result code and information about any new objects created
+ */
+MODELINGCOMPONENTS_API FCreateMaterialObjectResult CreateMaterialObject(UInteractiveToolManager* ToolManager, FCreateMaterialObjectParams&& CreateMaterialParams);
+
+
+/**
+ * Create a new actor based on the data in CreateActorParams.
+ * This is a convenience function that will try to locate a UModelingObjectsCreationAPI instance in the ToolManager's ContextObjectStore,
+ * and then call UModelingObjectsCreationAPI::CreateNewActor()
+ * @return a results data structure, containing a result code and information about any new objects created
+ */
+MODELINGCOMPONENTS_API FCreateActorResult CreateNewActor(UInteractiveToolManager* ToolManager, FCreateActorParams&& CreateActorParams);
 
 
 

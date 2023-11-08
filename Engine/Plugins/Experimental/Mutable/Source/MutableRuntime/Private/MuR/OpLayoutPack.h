@@ -3,14 +3,15 @@
 #pragma once
 
 #include "MuR/Layout.h"
+#include "MuR/MutableMath.h"
 #include "MuR/MutableTrace.h"
 #include "MuR/Platform.h"
-
-#include <limits>
-
+#include "GenericPlatform/GenericPlatformMath.h"
+#include <string>
 
 namespace mu
 {
+	typedef std::string string;
 
 	//---------------------------------------------------------------------------------------------
     // inline void SimpleLayoutPack( Layout* pResult, const Layout* pSource )
@@ -134,8 +135,6 @@ namespace mu
 	
 
 	//---------------------------------------------------------------------------------------------
-	//! Block comparison function to establish an order
-	//---------------------------------------------------------------------------------------------
 	struct LAY_BLOCK
 	{
 		LAY_BLOCK()
@@ -143,16 +142,18 @@ namespace mu
 			index = -1;
 		}
 
-		LAY_BLOCK( int i, vec2<int> s, int p=0 )
+		LAY_BLOCK( int32 i, UE::Math::TIntVector2<uint16> s, int32 p=0, bool sym = false )
 		{
 			index = i;
 			size = s;
 			priority = p;
+			useSymmetry = sym;
 		}
 
-		int index;
-		vec2<int> size;
-		int priority;
+		int32 index;
+		UE::Math::TIntVector2<uint16> size = UE::Math::TIntVector2<uint16>(0,0);
+		int32 priority;
+		bool useSymmetry;
 	};
 
     inline bool CompareBlocks( const LAY_BLOCK& a, const LAY_BLOCK& b )
@@ -187,6 +188,11 @@ namespace mu
 
 	inline bool CompareBlocksPriority(const LAY_BLOCK& a, const LAY_BLOCK& b)
 	{
+		if (a.priority == b.priority)
+		{
+			return CompareBlocks(a, b);
+		}
+
 		return a.priority > b.priority;
 	}
 
@@ -196,11 +202,12 @@ namespace mu
     //---------------------------------------------------------------------------------------------
     struct SCRATCH_LAYOUT_PACK
     {
-        TArray< vec2<int> > blocks;
+        TArray< UE::Math::TIntVector2<uint16> > blocks;
 		TArray< LAY_BLOCK > sorted;
 		TArray< vec2<int> > positions;
 		TArray< int > priorities;
 		TArray< vec2<int> > reductions;
+		TArray< int > useSymmetry;
     };
 
 
@@ -356,11 +363,22 @@ namespace mu
     // }
 
 
+	inline void ReductionOperation(uint16& BlockSize, EReductionMethod ReductionMethod)
+	{
+		if (ReductionMethod == EReductionMethod::UNITARY_REDUCTION)
+		{
+			BlockSize -= 1;
+			return;
+		}
+		
+		BlockSize /= 2;
+	}
+
 
     //---------------------------------------------------------------------------------------------
     //! Even more expensive but precise version
     //---------------------------------------------------------------------------------------------
-	inline void ReduceBlock(int blockCount, int* area, int* reverse_it, SCRATCH_LAYOUT_PACK* scratch)
+	inline void ReduceBlock(int blockCount, int* area, int* reverse_it, SCRATCH_LAYOUT_PACK* scratch, EReductionMethod ReductionMethod)
 	{
 		int r_it = (*reverse_it);
 		bool pass = false;
@@ -369,36 +387,39 @@ namespace mu
 
 		if (scratch->sorted[r_it].size[0] != 1 || scratch->sorted[r_it].size[1] != 1)
 		{
-			if (scratch->reductions[scratch->sorted[r_it].index][0] > scratch->reductions[scratch->sorted[r_it].index][1])
+			if (scratch->sorted[r_it].useSymmetry)
 			{
-				if (scratch->sorted[r_it].size[1] > 1)
+				// We reduce both sides of the block at the same time
+				for (int32 Index = 0; Index <= 1; ++Index)
 				{
-					scratch->sorted[r_it].size[1] /= 2;
-					scratch->blocks[scratch->sorted[r_it].index][1] /= 2;
-					pass = true;
-				}
+					if (scratch->sorted[r_it].size[Index] > 1)
+					{
+						ReductionOperation(scratch->sorted[r_it].size[Index], ReductionMethod);
+						ReductionOperation(scratch->blocks[scratch->sorted[r_it].index][Index], ReductionMethod);
 
-				scratch->reductions[scratch->sorted[r_it].index][1] += 1;
-			}
-			else if (scratch->reductions[scratch->sorted[r_it].index][0] < scratch->reductions[scratch->sorted[r_it].index][1])
-			{
-				if (scratch->sorted[r_it].size[0] > 1)
-				{
-					scratch->sorted[r_it].size[0] /= 2;
-					scratch->blocks[scratch->sorted[r_it].index][0] /= 2;
-					pass = true;
+						pass = true;
+					}
 				}
-
-				scratch->reductions[scratch->sorted[r_it].index][0] += 1;
 			}
 			else
 			{
-				if (r_it % 2 == 0)
+				if (scratch->reductions[scratch->sorted[r_it].index][0] > scratch->reductions[scratch->sorted[r_it].index][1])
+				{
+					if (scratch->sorted[r_it].size[1] > 1)
+					{
+						ReductionOperation(scratch->sorted[r_it].size[1], ReductionMethod);
+						ReductionOperation(scratch->blocks[scratch->sorted[r_it].index][1], ReductionMethod);
+						pass = true;
+					}
+
+					scratch->reductions[scratch->sorted[r_it].index][1] += 1;
+				}
+				else if (scratch->reductions[scratch->sorted[r_it].index][0] < scratch->reductions[scratch->sorted[r_it].index][1])
 				{
 					if (scratch->sorted[r_it].size[0] > 1)
 					{
-						scratch->sorted[r_it].size[0] /= 2;
-						scratch->blocks[scratch->sorted[r_it].index][0] /= 2;
+						ReductionOperation(scratch->sorted[r_it].size[0], ReductionMethod);
+						ReductionOperation(scratch->blocks[scratch->sorted[r_it].index][0], ReductionMethod);
 						pass = true;
 					}
 
@@ -406,14 +427,23 @@ namespace mu
 				}
 				else
 				{
-					if (scratch->sorted[r_it].size[1] > 1)
+					// we select the first side to reduce "randomly"
+					int32 Index = r_it % 2;
+
+					// if we can't reduce a dimension then we try to reduce the other one
+					if (scratch->sorted[r_it].size[Index] <= 1)
 					{
-						scratch->sorted[r_it].size[1] /= 2;
-						scratch->blocks[scratch->sorted[r_it].index][1] /= 2;
+						Index = r_it == 0 ? 1 : 0;
+					}
+
+					if (scratch->sorted[r_it].size[Index] > 1)
+					{
+						ReductionOperation(scratch->sorted[r_it].size[Index], ReductionMethod);
+						ReductionOperation(scratch->blocks[scratch->sorted[r_it].index][Index], ReductionMethod);
 						pass = true;
 					}
 
-					scratch->reductions[scratch->sorted[r_it].index][1] += 1;
+					scratch->reductions[scratch->sorted[r_it].index][Index] += 1;
 				}
 			}
 		}
@@ -437,7 +467,8 @@ namespace mu
 		}
 	}
 
-	inline bool SetPositions(int bestY,int layoutSizeY, int* maxX, int* maxY, SCRATCH_LAYOUT_PACK* scratch, EPackStrategy packStrategy)
+
+	inline bool SetPositions(int bestY,int layoutSizeY, uint16* maxX, uint16* maxY, SCRATCH_LAYOUT_PACK* scratch, EPackStrategy packStrategy)
 	{
 		bool fits = true;
 
@@ -475,9 +506,9 @@ namespace mu
 				auto candidateSizeY = scratch->sorted[candidate].size[1];
 
 				// Seek for the lowest span where the block fits
-				int currentLevel = std::numeric_limits<int>::max();
+				int currentLevel = TNumericLimits<int>::Max();
 				int currentX = 0;
-				int currentLevelWithoutHole = std::numeric_limits<int>::max();
+				int currentLevelWithoutHole = TNumericLimits<int>::Max();
 				int currentXWithoutHole = 0;
 				for (int x = 0; x <= *maxX - candidateSizeX; ++x)
 				{
@@ -494,8 +525,8 @@ namespace mu
 					}
 
 					// Does it make an unfillable hole with the top or side?
-					int minX = std::numeric_limits<int>::max();
-					int minY = std::numeric_limits<int>::max();
+					uint16 minX = TNumericLimits<uint16>::Max();
+					uint16 minY = TNumericLimits<uint16>::Max();
 					for (size_t b = 0; b < scratch->sorted.Num(); ++b)
 					{
 						if (!packedFlag[b] && b != candidate)
@@ -508,7 +539,7 @@ namespace mu
 					bool hole =
 						// Vertical unfillable gap
 						(
-						(minY != std::numeric_limits<int>::max())
+						(minY != TNumericLimits<int>::Max())
 							&&
 							(currentLevel + candidateSizeY) < bestY
 							&&
@@ -517,7 +548,7 @@ namespace mu
 						||
 						// Horizontal unfillable gap
 						(
-						(minX != std::numeric_limits<int>::max())
+						(minX != TNumericLimits<int>::Max())
 							&&
 							(currentX + candidateSizeX) < *maxX
 							&&
@@ -574,7 +605,7 @@ namespace mu
 
 			// Store
 			scratch->positions[scratch->sorted[best].index] = vec2<int>(bestX, bestLevel);
-			*maxY = FMath::Max(*maxY, bestLevel + scratch->sorted[best].size[1]);
+			*maxY = FMath::Max(*maxY, uint16(bestLevel + scratch->sorted[best].size[1]) );
 
 			if (packStrategy == EPackStrategy::FIXED_LAYOUT && *maxY > layoutSizeY)
 			{
@@ -602,7 +633,7 @@ namespace mu
 			fits = false;
 		}
 
-		*maxY = ceilPow2(*maxY);
+		*maxY = FGenericPlatformMath::RoundUpToPowerOfTwo(*maxY);
 
 		return fits;
 	}
@@ -626,16 +657,17 @@ namespace mu
 		bool usePriority = false;
 
         // Look for the maximum block sizes on the layout and the total area
-        int maxX = 0;
-        int maxY = 0;
+		uint16 maxX = 0;
+		uint16 maxY = 0;
         int area = 0;
         for ( int index=0; index<blockCount; ++index )
         {
-            box< vec2<int> > b;
+            box< UE::Math::TIntVector2<uint16> > b;
             pSourceLayout->GetBlock( index, &b.min[0], &b.min[1], &b.size[0], &b.size[1] );
 
 			int p;
-			pSourceLayout->GetBlockPriority(index, &p);
+			bool Symmetry;
+			pSourceLayout->GetBlockOptions(index, &p, &Symmetry);
 
 			vec2<int> reductions;
 			reductions[0] = 0;
@@ -654,6 +686,7 @@ namespace mu
             scratch->blocks[index] = b.size;
 			scratch->priorities[index] = p;
 			scratch->reductions[index] = reductions;
+			scratch->useSymmetry[index] = (int)Symmetry;
         }
 
 
@@ -661,8 +694,8 @@ namespace mu
         // in case we cannot pack everything, we will grow Y with the current horizon algorithm.
 		if (pSourceLayout->GetLayoutPackingStrategy() == EPackStrategy::RESIZABLE_LAYOUT)
 		{
-			maxX = ceilPow2(maxX);
-			maxY = ceilPow2(maxY);
+			maxX = FGenericPlatformMath::RoundUpToPowerOfTwo(maxX);
+			maxY = FGenericPlatformMath::RoundUpToPowerOfTwo(maxY);
 
 			while (maxX*maxY < area)
 			{
@@ -746,8 +779,8 @@ namespace mu
 				}
 			}
 
-			maxX = ceilPow2(maxX);
-			maxY = ceilPow2(maxY);
+			maxX = FGenericPlatformMath::RoundUpToPowerOfTwo(maxX);
+			maxY = FGenericPlatformMath::RoundUpToPowerOfTwo(maxY);
 
 			// Grow until the area is big enough to fit all blocks or the size is equal to the max layout size.
 			while (maxX*maxY < area && (maxX < layoutSizeX || maxY < layoutSizeY))
@@ -770,7 +803,7 @@ namespace mu
         check( (int)scratch->sorted.Num()==blockCount );
         for ( int index=0; index<blockCount; ++index )
         {
-            scratch->sorted[index] = LAY_BLOCK( index, scratch->blocks[index], scratch->priorities[index] );
+            scratch->sorted[index] = LAY_BLOCK( index, scratch->blocks[index], scratch->priorities[index], (bool)scratch->useSymmetry[index]);
         }
 
 		scratch->sorted.Sort( CompareBlocks);
@@ -785,7 +818,7 @@ namespace mu
 			//Shrink blocks in case we do not have enough space to pack everything
 			while (maxX*maxY < area)
 			{
-				ReduceBlock(blockCount, &area, &r_it, scratch);
+				ReduceBlock(blockCount, &area, &r_it, scratch, pSourceLayout->GetBlockReductionMethod());
 			}
 			
 		}
@@ -811,7 +844,7 @@ namespace mu
 					scratch->sorted.Sort(CompareBlocksPriority);
 				}
 
-				ReduceBlock(blockCount, &area, &r_it, scratch);
+				ReduceBlock(blockCount, &area, &r_it, scratch, pSourceLayout->GetBlockReductionMethod());
 			}
 		}
 
@@ -819,6 +852,7 @@ namespace mu
         pResult->SetGridSize( maxX, maxY );
         pResult->SetMaxGridSize(layoutSizeX, layoutSizeY);
 		pResult->SetLayoutPackingStrategy(pSourceLayout->GetLayoutPackingStrategy());
+		pResult->SetBlockReductionMethod(pSourceLayout->GetBlockReductionMethod());
 
         for ( int index=0; index<blockCount; ++index )
         {
@@ -829,8 +863,7 @@ namespace mu
                     scratch->blocks[index][0], scratch->blocks[index][1]
                 );
 
-			pResult->SetBlockPriority(index, scratch->priorities[index]);
+			pResult->SetBlockOptions(index, scratch->priorities[index], (bool)scratch->useSymmetry[index]);
         }
     }
-
 }

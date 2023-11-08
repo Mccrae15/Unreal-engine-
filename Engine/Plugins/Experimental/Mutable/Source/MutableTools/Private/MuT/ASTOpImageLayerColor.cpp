@@ -42,6 +42,7 @@ namespace mu
 				mask == Other->mask &&
 				blendType == Other->blendType &&
 				blendTypeAlpha == Other->blendTypeAlpha &&
+				BlendAlphaSourceChannel == Other->BlendAlphaSourceChannel &&
 				Flags == Other->Flags;
 		}
 		return false;
@@ -68,6 +69,7 @@ namespace mu
 		n->mask = mapChild(mask.child());
 		n->blendType = blendType;
 		n->blendTypeAlpha = blendTypeAlpha;
+		n->BlendAlphaSourceChannel = BlendAlphaSourceChannel;
 		n->Flags = Flags;
 		return n;
 	}
@@ -83,7 +85,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void ASTOpImageLayerColor::Link(FProgram& program, const FLinkerOptions*)
+	void ASTOpImageLayerColor::Link(FProgram& program, FLinkerOptions*)
 	{
 		// Already linked?
 		if (!linkedAddress)
@@ -93,8 +95,10 @@ namespace mu
 
 			args.blendType = (uint8)blendType;
 			args.blendTypeAlpha = (uint8)blendTypeAlpha;
+			args.BlendAlphaSourceChannel = BlendAlphaSourceChannel;
 			args.flags = Flags;
 
+			check(base);
 			if (base) args.base = base->linkedAddress;
 			if (color) args.colour = color->linkedAddress;
 			if (mask) args.mask = mask->linkedAddress;
@@ -168,7 +172,7 @@ namespace mu
 
 
 	//---------------------------------------------------------------------------------------------
-	Ptr<ASTOp> ASTOpImageLayerColor::OptimiseSemantic(const FModelOptimizationOptions& options) const
+	Ptr<ASTOp> ASTOpImageLayerColor::OptimiseSemantic(const FModelOptimizationOptions& options, int32 Pass) const
 	{
 		Ptr<ASTOp> at;
 
@@ -214,8 +218,8 @@ namespace mu
 					// TODO: Update when alpha may come from alpha in the color.
 					switch (blendTypeAlpha)
 					{
-					case EBlendType::BT_LIGHTEN: bAlphaUnchanged = ColorConst.IsNearlyZero3(UE_SMALL_NUMBER); break;
-					case EBlendType::BT_MULTIPLY: bAlphaUnchanged = ColorConst.Equals(FVector4f(1, 1, 1, 1)); break;
+					case EBlendType::BT_LIGHTEN: bAlphaUnchanged = FMath::IsNearlyEqual(ColorConst[BlendAlphaSourceChannel], 0.0f); break;
+					case EBlendType::BT_MULTIPLY: bAlphaUnchanged = FMath::IsNearlyEqual(ColorConst[BlendAlphaSourceChannel], 1.0f); break;
 					default: break;
 					}
 				}
@@ -226,7 +230,7 @@ namespace mu
 					{
 						switch (blendType)
 						{
-						case EBlendType::BT_LIGHTEN: bRGBUnchanged = ColorConst[3]<UE_SMALL_NUMBER; break;
+						case EBlendType::BT_LIGHTEN: bRGBUnchanged = FMath::IsNearlyEqual(ColorConst[3],0.0f); break;
 						case EBlendType::BT_MULTIPLY: bRGBUnchanged = FMath::IsNearlyEqual(ColorConst[3],1.0f); break;
 						default: break;
 						}

@@ -3,8 +3,10 @@
 #pragma once
 
 #include "Containers/Array.h"
+#include "Containers/ChunkedArray.h"
 #include "Containers/Map.h"
 #include "Containers/StringFwd.h"
+#include "Containers/StringView.h"
 #include "Containers/UnrealString.h"
 #include "HAL/Platform.h"
 #include "Misc/AES.h"
@@ -13,7 +15,7 @@ class FArchive;
 
 namespace IoDirectoryIndexUtils
 {
-	FString GetCommonRootPath(const TArray<FString>& Filenames);
+	FString GetCommonRootPath(const TArray<FStringView>& Filenames);
 }
 
 struct FIoDirectoryIndexEntry
@@ -51,8 +53,11 @@ public:
 	FIoDirectoryIndexWriter();
 
 	void SetMountPoint(FString InMountPoint);
-	uint32 AddFile(const FString& InFileName);
+	uint32 AddFile(const FStringView& InFileName);
 	void SetFileUserData(uint32 InFileEntryIndex, uint32 InUserData);
+
+	// Flush() can be called only once, because afterwards contents of Strings member
+	// will be empty as all strings have been moved away
 	void Flush(TArray<uint8>& OutBuffer, FAES::FAESKey InEncryptionKey);
 
 private:
@@ -69,6 +74,11 @@ private:
 	FString MountPoint;
 	TArray<FIoDirectoryIndexEntry> DirectoryEntries;
 	TArray<FIoFileIndexEntry> FileEntries;
-	TMap<FString, uint32> StringToIndex;
-	TArray<FString> Strings;
+
+	// These FStringView's are referencing stable FString locations inside Strings
+	// member, and Strings member is only appended, never removed. It is safe to
+	// use StringToIndex during lifetime of this object while Strings member is
+	// populated by AddFile() until Flush() is called
+	TMap<FStringView, uint32> StringToIndex;
+	TChunkedArray<FString> Strings;
 };

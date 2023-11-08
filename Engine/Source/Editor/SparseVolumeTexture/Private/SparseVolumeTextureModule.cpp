@@ -3,31 +3,42 @@
 #include "SparseVolumeTextureModule.h"
 
 #include "SparseVolumeTextureOpenVDB.h"
-#include "SparseVolumeTexture/SparseVolumeTexture.h"
-#include "SparseVolumeTextureOpenVDBUtility.h"
 
 #define LOCTEXT_NAMESPACE "SparseVolumeTextureModule"
 
 IMPLEMENT_MODULE(FSparseVolumeTextureModule, SparseVolumeTexture);
 
+template<typename T>
+static void RegisterOpenVDBGrid()
+{
+	if (!T::isRegistered())
+	{
+		T::registerGrid();
+	}
+}
+
 void FSparseVolumeTextureModule::StartupModule()
 {
-	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools")).Get();
-	AssetTypeActionsForSparseVolumeTexture = MakeShareable(new FAssetTypeActions_SparseVolumeTexture);
-	AssetTools.RegisterAssetTypeActions(AssetTypeActionsForSparseVolumeTexture.ToSharedRef());
-
 #if PLATFORM_WINDOWS
 	// Global registration of  the vdb types.
 	openvdb::initialize();
+	RegisterOpenVDBGrid<FOpenVDBHalf1Grid>();
+	RegisterOpenVDBGrid<FOpenVDBHalf2Grid>();
+	RegisterOpenVDBGrid<FOpenVDBHalf3Grid>();
+	RegisterOpenVDBGrid<FOpenVDBHalf4Grid>();
+	RegisterOpenVDBGrid<FOpenVDBFloat1Grid>();
+	RegisterOpenVDBGrid<FOpenVDBFloat2Grid>();
+	RegisterOpenVDBGrid<FOpenVDBFloat3Grid>();
+	RegisterOpenVDBGrid<FOpenVDBFloat4Grid>();
+	RegisterOpenVDBGrid<FOpenVDBDouble1Grid>();
+	RegisterOpenVDBGrid<FOpenVDBDouble2Grid>();
+	RegisterOpenVDBGrid<FOpenVDBDouble3Grid>();
+	RegisterOpenVDBGrid<FOpenVDBDouble4Grid>();
 #endif
-
-	// USparseVolumeTexture needs to access (only) this function for cooking.
-	OnConvertOpenVDBToSparseVolumeTexture().BindStatic(ConvertOpenVDBToSparseVolumeTexture);
 }
 
 void FSparseVolumeTextureModule::ShutdownModule()
 {
-	OnConvertOpenVDBToSparseVolumeTexture().Unbind();
 }
 
 #undef LOCTEXT_NAMESPACE

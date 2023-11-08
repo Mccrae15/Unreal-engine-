@@ -34,6 +34,21 @@ namespace EpicGames.Core
 		}
 
 		/// <summary>
+		/// Waits for a task to complete, ignoring any cancellation exceptions
+		/// </summary>
+		/// <param name="task">Task to wait for</param>
+		public static async Task IgnoreCanceledExceptionsAsync(this Task task)
+		{
+			try
+			{
+				await task.ConfigureAwait(false);
+			}
+			catch (OperationCanceledException)
+			{
+			}
+		}
+
+		/// <summary>
 		/// Returns a task that will be abandoned if a cancellation token is activated. This differs from the normal cancellation pattern in that the task will run to completion, but waiting for it can be cancelled.
 		/// </summary>
 		/// <param name="task">Task to wait for</param>
@@ -197,6 +212,35 @@ namespace EpicGames.Core
 			else
 			{
 				return Prefetch(source, count - 1, cancellationToken);
+			}
+		}
+
+		/// <summary>
+		/// Waits for a native wait handle to be signalled
+		/// </summary>
+		/// <param name="handle">Handle to wait for</param>
+		/// <param name="cancellationToken">Cancellation token for the operation</param>
+		public static Task WaitOneAsync(this WaitHandle handle, CancellationToken cancellationToken = default) => handle.WaitOneAsync(-1, cancellationToken);
+
+		/// <summary>
+		/// Waits for a native wait handle to be signalled
+		/// </summary>
+		/// <param name="handle">Handle to wait for</param>
+		/// <param name="timeoutMs">Timeout for the wait</param>
+		/// <param name="cancellationToken">Cancellation token for the operation</param>
+		public static async Task WaitOneAsync(this WaitHandle handle, int timeoutMs, CancellationToken cancellationToken = default)
+		{
+			TaskCompletionSource<bool> completionSource = new TaskCompletionSource<bool>();
+
+			RegisteredWaitHandle waitHandle = ThreadPool.RegisterWaitForSingleObject(handle, (state, timedOut) => ((TaskCompletionSource<bool>)state!).TrySetResult(!timedOut), completionSource, timeoutMs, true);
+			try
+			{
+				using IDisposable registration = cancellationToken.Register(x => ((TaskCompletionSource<bool>)x!).SetCanceled(), completionSource);
+				await completionSource.Task;
+			}
+			finally
+			{
+				waitHandle.Unregister(null);
 			}
 		}
 	}

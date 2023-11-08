@@ -10,6 +10,7 @@
 
 class FWorldPartitionActorDesc;
 class UWorldPartition;
+class UDataLayerManager;
 
 /**
  * Snapshot of an actor descriptor, which represents the state of an actor on disk.
@@ -29,6 +30,10 @@ struct FActorDesc
 	/** The actor GUID of this descriptor. */
 	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category=Actor)
 	FGuid Guid;
+
+	/** Actor first native class. */
+	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category=Actor)
+	TObjectPtr<UClass> NativeClass;
 
 	/** Actor class, can point to a native or Blueprint class and may be redirected. */
 	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category=Actor)
@@ -65,6 +70,10 @@ struct FActorDesc
 	/** Actor's path name. */
 	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category=Actor)
 	FName ActorPath;
+
+	/** Actor's data layer assets. */
+	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category=Actor)
+	TArray<FSoftObjectPath> DataLayerAssets;
 };
 
 UCLASS(MinimalAPI)
@@ -139,4 +148,10 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category="World Partition")
 	static bool GetIntersectingActorDescs(const FBox& InBox, TArray<FActorDesc>& OutActorDescs);
+
+	/**
+	 * Returns the Data Layer Manager for this object.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "World Partition", meta = (WorldContext = "WorldContextObject"))
+	static UDataLayerManager* GetDataLayerManager(class UObject* WorldContextObject);
 };

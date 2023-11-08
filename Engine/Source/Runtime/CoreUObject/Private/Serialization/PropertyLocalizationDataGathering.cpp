@@ -9,9 +9,11 @@
 #include "UObject/UnrealType.h"
 #include "UObject/TextProperty.h"
 #include "UObject/PropertyPortFlags.h"
+#include "UObject/PropertyOptional.h"
 #include "HAL/UnrealMemory.h"
 #include "Internationalization/TextNamespaceUtil.h"
 #include "Internationalization/TextPackageNamespaceUtil.h"
+#include "Serialization/NullArchive.h"
 
 FPropertyLocalizationDataGatherer::FPropertyLocalizationDataGatherer(TArray<FGatherableTextData>& InOutGatherableTextDataArray, const UPackage* const InPackage, EPropertyLocalizationGathererResultFlags& OutResultFlags)
 	: GatherableTextDataArray(InOutGatherableTextDataArray)
@@ -144,6 +146,10 @@ const FPropertyLocalizationDataGatherer::FGatherableFieldsForType& FPropertyLoca
 				if (const FSetProperty* SetProp = CastField<const FSetProperty>(PropertyField))
 				{
 					ProcessInnerProperty(SetProp->ElementProp, PropertyField);
+				}
+				if (const FOptionalProperty* OptionalProp = CastField<const FOptionalProperty>(PropertyField))
+				{
+					ProcessInnerProperty(OptionalProp->GetValueProperty(), PropertyField);
 				}
 			}
 		}
@@ -342,6 +348,7 @@ void FPropertyLocalizationDataGatherer::GatherLocalizationDataFromChildTextPrope
 	const FSetProperty* const SetProperty = CastField<const FSetProperty>(Property);
 	const FStructProperty* const StructProperty = CastField<const FStructProperty>(Property);
 	const FObjectPropertyBase* const ObjectProperty = CastField<const FObjectPropertyBase>(Property);
+	const FOptionalProperty* const OptionalProperty = CastField<const FOptionalProperty>(Property);
 
 	const EPropertyLocalizationGathererTextFlags FixedChildPropertyGatherTextFlags = GatherTextFlags | (Property->HasAnyPropertyFlags(CPF_EditorOnly) ? EPropertyLocalizationGathererTextFlags::ForceEditorOnly : EPropertyLocalizationGathererTextFlags::None);
 
@@ -535,6 +542,18 @@ void FPropertyLocalizationDataGatherer::GatherLocalizationDataFromChildTextPrope
 			if (InnerObject && IsObjectValidForGather(InnerObject))
 			{
 				GatherLocalizationDataFromObjectWithCallbacks(InnerObject, FixedChildPropertyGatherTextFlags);
+			}
+		}
+		else if (OptionalProperty)
+		{
+			if (const void* OptionalValueAddress = OptionalProperty->GetValuePointerForReadIfSet(ElementValueAddress))
+			{
+				GatherLocalizationDataFromChildTextProperties(
+					FString::Printf(TEXT("%s?"), *PathToElement),
+					OptionalProperty->GetValueProperty(),
+					OptionalValueAddress,
+					nullptr,
+					ElementChildPropertyGatherTextFlags);
 			}
 		}
 	}
@@ -765,7 +784,7 @@ private:
 	FPropertyLocalizationDataGatherer& PropertyLocalizationDataGatherer;
 	bool bTreatAsEditorOnlyData;
 
-	FArchive DummyArchive;
+	FNullArchive DummyArchive;
 	bool bIsParsingText;
 	FString LastParsedString;
 };

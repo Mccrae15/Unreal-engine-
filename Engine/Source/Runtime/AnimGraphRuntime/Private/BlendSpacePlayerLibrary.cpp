@@ -3,6 +3,8 @@
 #include "BlendSpacePlayerLibrary.h"
 #include "Animation/AnimNode_Inertialization.h"
 #include "AnimNodes/AnimNode_BlendSpacePlayer.h"
+#include "Animation/AnimTrace.h"
+#include "Animation/AnimInstanceProxy.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(BlendSpacePlayerLibrary)
 
@@ -52,7 +54,14 @@ FBlendSpacePlayerReference UBlendSpacePlayerLibrary::SetBlendSpaceWithInertialBl
 				{
 					if (UE::Anim::IInertializationRequester* InertializationRequester = AnimationUpdateContext->GetMessage<UE::Anim::IInertializationRequester>())
 					{
-						InertializationRequester->RequestInertialization(BlendTime);
+						FInertializationRequest Request;
+						Request.Duration = BlendTime;
+#if ANIM_TRACE_ENABLED
+						Request.NodeId = AnimationUpdateContext->GetCurrentNodeId();
+						Request.AnimInstance = AnimationUpdateContext->AnimInstanceProxy->GetAnimInstanceObject();
+#endif
+
+						InertializationRequester->RequestInertialization(Request);
 					}
 				}
 				else
@@ -169,7 +178,7 @@ bool UBlendSpacePlayerLibrary::GetLoop(const FBlendSpacePlayerReference& BlendSp
 		TEXT("GetLoop"),
 		[&bLoop](FAnimNode_BlendSpacePlayer& InBlendSpacePlayer)
 		{
-			bLoop = InBlendSpacePlayer.GetLoop();
+			bLoop = InBlendSpacePlayer.IsLooping();
 		});
 	return bLoop;
 }

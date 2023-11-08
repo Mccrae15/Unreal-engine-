@@ -2,12 +2,12 @@
 
 #include "Archive/ClassDefaults/ApplyClassDefaulDataArchive.h"
 
+#include "Data/Util/ObjectDependencyUtil.h"
 #include "LevelSnapshotsLog.h"
 #include "LevelSnapshotsModule.h"
 #include "ObjectSnapshotData.h"
 #include "SelectionSet.h"
 #include "WorldSnapshotData.h"
-#include "Util/WorldData/SnapshotObjectUtil.h"
 
 void UE::LevelSnapshots::Private::FApplyClassDefaulDataArchive::SerializeClassDefaultObject(FObjectSnapshotData& InObjectData, FWorldSnapshotData& InSharedData, UObject* InCDO)
 {

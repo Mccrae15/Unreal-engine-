@@ -247,7 +247,7 @@ void FHairCardsVertexFactory::ValidateCompiledResult(const FVertexFactoryType* T
 	#if 0
 	if (Type->SupportsPrimitiveIdStream() 
 		&& UseGPUScene(Platform, GetMaxSupportedFeatureLevel(Platform)) 
-		&& ParameterMap.ContainsParameterAllocation(FPrimitiveUniformShaderParameters::StaticStructMetadata.GetShaderVariableName()))
+		&& ParameterMap.ContainsParameterAllocation(FPrimitiveUniformShaderParameters::FTypeInfo::GetStructMetadata()->GetShaderVariableName()))
 	{
 		OutErrors.AddUnique(*FString::Printf(TEXT("Shader attempted to bind the Primitive uniform buffer even though Vertex Factory %s computes a PrimitiveId per-instance.  This will break auto-instancing.  Shaders should use GetPrimitiveData(PrimitiveId).Member instead of Primitive.Member."), Type->GetName()));
 	}
@@ -257,14 +257,13 @@ void FHairCardsVertexFactory::ValidateCompiledResult(const FVertexFactoryType* T
 void FHairCardsVertexFactory::GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements)
 {
 	// Manual vertex fetch is available for this factory so only primitive ID stream is used
-	Elements.Add(FVertexElement(1, 0, VET_UInt, 13, 0, true));
+	Elements.Add(FVertexElement(0, 0, VET_UInt, 13, 0, true));
 }
 
 void FHairCardsVertexFactory::SetData(const FDataType& InData)
 {
-	check(IsInRenderingThread());
 	Data = InData;
-	UpdateRHI();
+	UpdateRHI(FRHICommandListImmediate::Get());
 }
 
 /**
@@ -283,12 +282,12 @@ void FHairCardsVertexFactory::Copy(const FHairCardsVertexFactory& Other)
 	BeginUpdateResourceRHI(this);
 }
 
-void FHairCardsVertexFactory::InitResources()
+void FHairCardsVertexFactory::InitResources(FRHICommandListBase& RHICmdList)
 {
 	if (bIsInitialized)
 		return;
 
-	FVertexFactory::InitResource(); //Call VertexFactory/RenderResources::InitResource() to mark the resource as initialized();
+	FVertexFactory::InitResource(RHICmdList); //Call VertexFactory/RenderResources::InitResource() to mark the resource as initialized();
 
 	bIsInitialized = true;
 	bNeedsDeclaration = true;
@@ -355,7 +354,7 @@ void FHairCardsVertexFactory::InitResources()
 	}
 }
 
-void FHairCardsVertexFactory::InitRHI()
+void FHairCardsVertexFactory::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	// Nothing as the initialization is done when needed
 }

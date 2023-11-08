@@ -50,6 +50,7 @@ enum EParticleDetailMode : int
 	PDM_Low UMETA(DisplayName = "Low"),
 	PDM_Medium UMETA(DisplayName = "Medium"),
 	PDM_High UMETA(DisplayName = "High"),
+	PDM_Epic UMETA(DisplayName = "Epic"),
 	PDM_MAX UMETA(Hidden),
 };
 inline const int32 PDM_DefaultValue = 0xFFFF;
@@ -1415,6 +1416,7 @@ struct FDynamicSpriteEmitterReplayDataBase
 	uint8						EmitterRenderMode;
 	uint8						EmitterNormalsMode;
 	FVector2f					PivotOffset;
+	bool						bUseVelocityForMotionBlur;
 	bool						bRemoveHMDRoll;
 	float						MinFacingCameraBlendDistance;
 	float						MaxFacingCameraBlendDistance;
@@ -2530,6 +2532,7 @@ protected:
 
 	/** The primitive's uniform buffer.  Mutable because it is cached state during GetDynamicMeshElements. */
 	mutable TUniformBuffer<FPrimitiveUniformShaderParameters> WorldSpacePrimitiveUniformBuffer;
+	mutable uint32 WorldSpaceUBHash = 0;
 
 	/** Pool for holding FMeshBatches to reduce allocations. */
 	TIndirectArray<FMeshBatch, TInlineAllocator<4> > MeshBatchPool;
@@ -2617,20 +2620,20 @@ public:
 
 #endif
 
-class ENGINE_API FNullDynamicParameterVertexBuffer : public FVertexBuffer
+class FNullDynamicParameterVertexBuffer : public FVertexBuffer
 {
 public:
 	/** 
 	* Initialize the RHI for this rendering resource 
 	*/
-	virtual void InitRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		// create a static vertex buffer
 		FRHIResourceCreateInfo CreateInfo(TEXT("FNullDynamicParameterVertexBuffer"));
-		VertexBufferRHI = RHICreateBuffer(sizeof(FParticleVertexDynamicParameter), BUF_Static | BUF_VertexBuffer, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
-		FParticleVertexDynamicParameter* Vertices = (FParticleVertexDynamicParameter*)RHILockBuffer(VertexBufferRHI, 0, sizeof(FParticleVertexDynamicParameter), RLM_WriteOnly);
+		VertexBufferRHI = RHICmdList.CreateBuffer(sizeof(FParticleVertexDynamicParameter), BUF_Static | BUF_VertexBuffer, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+		FParticleVertexDynamicParameter* Vertices = (FParticleVertexDynamicParameter*)RHICmdList.LockBuffer(VertexBufferRHI, 0, sizeof(FParticleVertexDynamicParameter), RLM_WriteOnly);
 		Vertices[0].DynamicValue[0] = Vertices[0].DynamicValue[1] = Vertices[0].DynamicValue[2] = Vertices[0].DynamicValue[3] = 1.0f;
-		RHIUnlockBuffer(VertexBufferRHI);
+		RHICmdList.UnlockBuffer(VertexBufferRHI);
 	}
 };
 
@@ -2683,15 +2686,15 @@ enum class EParticleSystemInsignificanceReaction: uint8
 };
 
 /** Helper class to reset and recreate all PSCs with specific templates on their next tick. */
-class ENGINE_API FParticleResetContext
+class FParticleResetContext
 {
 public:
 
 	TArray<class UParticleSystem*, TInlineAllocator<32>> SystemsToReset;
-	void AddTemplate(class UParticleSystem* Template);
-	void AddTemplate(class UParticleModule* Module);
-	void AddTemplate(class UParticleEmitter* Emitter);
-	~FParticleResetContext();
+	ENGINE_API void AddTemplate(class UParticleSystem* Template);
+	ENGINE_API void AddTemplate(class UParticleModule* Module);
+	ENGINE_API void AddTemplate(class UParticleEmitter* Emitter);
+	ENGINE_API ~FParticleResetContext();
 };
 
 
@@ -2703,6 +2706,7 @@ struct FParticleSystemCustomVersion
 		BeforeCustomVersionWasAdded = 0,
 		SkipCookingEmittersBasedOnDetailMode,	// skip emitter cooking if their detail mode doesn't match predefined
 		FixLegacySpawningBugs,					// fixing some spawning bugs but must keep old behavior around for existing systems.
+		AddEpicDetailMode,						// adding another bitmask entry to EParticleDetailMode
 
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,

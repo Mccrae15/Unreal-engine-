@@ -18,6 +18,30 @@
 	#endif
 #endif
 
+// If this is changed, the LightGridUses16BitBuffers function from LightGridInjection.cpp should also be updated.
+#define LIGHT_GRID_USES_16BIT_BUFFERS (PLATFORM_SUPPORTS_BUFFER_LOAD_TYPE_CONVERSION && !SHADING_PATH_MOBILE)
+
+// ForwardLightData.CulledLightDataGrid could be 32bit StructuredBuffer or 16bit Buffer, make sure to access it from this function
+uint GetCulledLightDataGrid(uint GridIndex)
+{
+#if LIGHT_GRID_USES_16BIT_BUFFERS
+	return ForwardLightData.CulledLightDataGrid16Bit[GridIndex];
+#else
+	return ForwardLightData.CulledLightDataGrid32Bit[GridIndex];
+#endif
+}
+
+#if (INSTANCED_STEREO || MOBILE_MULTI_VIEW)
+uint GetCulledLightDataGridISR(uint GridIndex)
+{
+#if LIGHT_GRID_USES_16BIT_BUFFERS
+	return ForwardLightDataISR.CulledLightDataGrid16Bit[GridIndex];
+#else
+	return ForwardLightDataISR.CulledLightDataGrid32Bit[GridIndex];
+#endif
+}
+#endif
+
 struct FLightGridData
 {
 	uint LightGridPixelSizeShift;
@@ -198,13 +222,13 @@ FLocalLightData GetLocalLightData_Internal(
 	Out.bLumenLightSupported					= LocalLightIndex >= LumenSupportedStartIndex;
 	Out.bIsSimpleLight							= LocalLightIndex <  SimpleLightsEndIndex;
 	Out.LightPositionAndInvRadius				= InData0;
-	Out.LightColorAndFalloffExponent			= InData1;
+	Out.LightColorAndIdAndFalloffExponent		= InData1;
 	Out.LightDirectionAndShadowMask				= InData2;
-	Out.SpotAnglesAndIdAndSourceRadiusPacked	= InData3;
+	Out.SpotAnglesAndSourceRadiusPacked			= InData3;
 	Out.LightTangentAndIESDataAndSpecularScale	= InData4;
 	Out.RectDataAndVirtualShadowMapId			= InData5;
 	Out.VirtualShadowMapId						= int(Out.RectDataAndVirtualShadowMapId.z);
-	Out.LightSceneId							= int(Out.SpotAnglesAndIdAndSourceRadiusPacked.y);
+	Out.LightSceneId							= int(Out.LightColorAndIdAndFalloffExponent.z);
 
 	return Out;
 }
@@ -237,7 +261,7 @@ FLocalLightData GetLocalLightData(uint GridIndex, uint EyeIndex)
 	if (EyeIndex == 0)
 	{
 #endif
-		uint LocalLightIndex = ForwardLightData.CulledLightDataGrid[GridIndex];
+		uint LocalLightIndex = GetCulledLightDataGrid(GridIndex);
 		uint LocalLightBaseIndex = LocalLightIndex * LOCAL_LIGHT_DATA_STRIDE;
 
 		Out = GetLocalLightData_Internal(
@@ -255,7 +279,7 @@ FLocalLightData GetLocalLightData(uint GridIndex, uint EyeIndex)
 	}
 	else
 	{
-		uint LocalLightIndex = ForwardLightDataISR.CulledLightDataGrid[GridIndex];
+		uint LocalLightIndex = GetCulledLightDataGridISR(GridIndex);
 		uint LocalLightBaseIndex = LocalLightIndex * LOCAL_LIGHT_DATA_STRIDE;
 
 		Out = GetLocalLightData_Internal(

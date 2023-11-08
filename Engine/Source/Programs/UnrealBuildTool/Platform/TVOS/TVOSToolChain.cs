@@ -1,18 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-
-using System;
-using System.Collections;
-using System.Collections.Generic;
-using System.Linq;
-using System.IO;
-using System.Diagnostics;
-using System.Security.AccessControl;
-using System.Xml;
-using System.Text;
-using Ionic.Zip;
-using Ionic.Zlib;
-using EpicGames.Core;
 using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
@@ -31,8 +18,8 @@ namespace UnrealBuildTool
 		{
 		}
 
-		public override string GetXcodeMinVersionParam()
-		{
+		public override string GetXcodeMinVersionParam(UnrealArch Architecture)
+	{
 			return "tvos-version-min";
 		}
 	}

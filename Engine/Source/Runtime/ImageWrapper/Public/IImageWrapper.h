@@ -9,6 +9,17 @@
 #include "ImageCore.h"
 
 /**
+
+NOTE: you should not write code that talks directly to individual ImageWrappers
+
+Instead use ImageWrapperModule CompressImage/DecompressImage
+
+Prefer the new interface that go through FImage not TArray of bytes
+
+
+**/
+
+/**
  * Enumerates the types of image formats this class can handle.
  */
 enum class EImageFormat : int8
@@ -84,15 +95,18 @@ enum class ERGBFormat : int8
  * JPEG interprets Quality as 1-100
  * JPEG default quality is 85 , Uncompressed means 100
  * 
- * Negative qualities set PNG zlib level
+ * for PNG:
+ * Negative qualities in [-1,-9] set PNG zlib level
  * PNG interprets "Uncompressed" as zlib level 0 (none)
+ * otherwise default zlib level 3 is used.
  * 
- * EXR respects the "Uncompressed" flag
+ * EXR respects the "Uncompressed" flag to turn off compression; otherwise ZIP_COMPRESSION is used.
  */
-enum class EImageCompressionQuality : uint8
+enum class EImageCompressionQuality : int8
 {
 	Default = 0,
 	Uncompressed = 1,
+	Max = 100,
 };
 
 
@@ -109,6 +123,10 @@ enum class EImageCompressionQuality : uint8
  */
 class IImageWrapper
 {
+protected:
+	// debug image name string for any errors or warnings
+	const TCHAR* DebugImageName =  nullptr;
+
 public:
 
 
@@ -273,7 +291,7 @@ public:
 	 * @return Image width.
 	 * @see GetHeight
 	 */
-	virtual int32 GetWidth() const = 0;
+	virtual int64 GetWidth() const = 0;
 
 	/** 
 	 * Gets the height of the image.
@@ -281,7 +299,7 @@ public:
 	 * @return Image height.
 	 * @see GetWidth
 	 */
-	virtual int32 GetHeight() const = 0;
+	virtual int64 GetHeight() const = 0;
 
 	/** 
 	 * Gets the bit depth of the image.
@@ -320,7 +338,7 @@ public:
 	IMAGEWRAPPER_API static void ConvertRawImageFormat(ERawImageFormat::Type RawFormat, ERGBFormat & OutFormat,int & OutBitDepth);
 	IMAGEWRAPPER_API static ERawImageFormat::Type ConvertRGBFormat(ERGBFormat RGBFormat,int BitDepth,bool * bIsExactMatch = nullptr);
 	
-	IMAGEWRAPPER_API static int GetRGBFormatBytesPerPel(ERGBFormat RGBFormat,int BitDepth);
+	IMAGEWRAPPER_API static int64 GetRGBFormatBytesPerPel(ERGBFormat RGBFormat,int BitDepth);
 
 	/* get the current image format, mapped to an ERawImageFormat
 	 * if ! *bIsExactMatch , conversion is needed
@@ -332,6 +350,13 @@ public:
 		int BitDepth = GetBitDepth();
 		ERawImageFormat::Type Ret = ConvertRGBFormat(Format,BitDepth,bIsExactMatch);
 		return Ret;
+	}
+
+	/* Set the debug image name
+	 */
+	void SetDebugImageName(const TCHAR* InDebugImageName)
+	{
+		DebugImageName = InDebugImageName;
 	}
 
 public:

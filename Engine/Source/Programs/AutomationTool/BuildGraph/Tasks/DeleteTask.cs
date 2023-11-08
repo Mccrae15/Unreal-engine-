@@ -12,6 +12,9 @@ using System.Xml;
 using EpicGames.Core;
 using UnrealBuildTool;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
+
+using static AutomationTool.CommandUtils;
 
 namespace AutomationTool.Tasks
 {
@@ -81,11 +84,11 @@ namespace AutomationTool.Tasks
 				{
 					if (Parameters.Verbose)
 					{
-						Log.TraceInformation("Deleting {0}", File.FullName);
+						Logger.LogInformation("Deleting {File}", File.FullName);
 					}
 					if (!InternalUtils.SafeDeleteFile(File.FullName))
 					{
-						CommandUtils.LogWarning("Couldn't delete file {0}", File.FullName);
+						Logger.LogWarning("Couldn't delete file {Arg0}", File.FullName);
 					}
 				}
 
@@ -120,7 +123,7 @@ namespace AutomationTool.Tasks
 					{
 						if (Parameters.Verbose)
 						{
-							Log.TraceInformation("Deleting {0}", Directory);
+							Logger.LogInformation("Deleting {Directory}", Directory);
 						}
 						DirectoryReference FullDir = new DirectoryReference(Directory);
 						if (DirectoryReference.Exists(FullDir))
@@ -160,7 +163,7 @@ namespace AutomationTool.Tasks
 			}
 			catch(Exception Ex)
 			{
-				CommandUtils.LogWarning("Couldn't delete directory {0} ({1})", CandidateDirectory.FullName, Ex.Message);
+				Logger.LogWarning("Couldn't delete directory {Arg0} ({Arg1})", CandidateDirectory.FullName, Ex.Message);
 				return false;
 			}
 		}

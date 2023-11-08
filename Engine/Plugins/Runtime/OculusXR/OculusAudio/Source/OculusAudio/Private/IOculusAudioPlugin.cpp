@@ -4,6 +4,7 @@
 #include "OculusAudioContextManager.h"
 #include "AudioDevice.h"
 #include "Features/IModularFeatures.h"
+#include "Misc/EngineVersionComparison.h"
 
 void FOculusAudioPlugin::StartupModule()
 {
@@ -20,7 +21,11 @@ void FOculusAudioPlugin::ShutdownModule()
 void FOculusAudioPlugin::RegisterAudioDevice(FAudioDevice* AudioDeviceHandle)
 {
 	// Inject the Context into the spatailizer (and reverb) if they're enabled
+#if UE_VERSION_OLDER_THAN(5, 3, 0)
 	if (!AudioDeviceHandle->IsAudioMixerEnabled())
+#else
+	if (!AudioDeviceHandle)
+#endif
 	{
 		return; // Not supported in old audio engine
 	}

@@ -1,13 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraDataInterfaceSpline.h"
-#include "NiagaraEmitterInstance.h"
+#include "Misc/LargeWorldRenderPosition.h"
 #include "NiagaraComponent.h"
+#include "NiagaraCompileHashVisitor.h"
 #include "NiagaraRenderer.h"
 #include "NiagaraShaderParametersBuilder.h"
+#include "NiagaraStats.h"
+#include "NiagaraSystem.h"
 #include "NiagaraSystemInstance.h"
 #include "Internationalization/Internationalization.h"
-#include "ShaderParameterUtils.h"
 #include "ShaderCompilerCore.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceSpline)
@@ -25,6 +27,30 @@ struct FNiagaraSplineDIFunctionVersion
 		LatestVersion = VersionPlusOne - 1
 	};
 };
+
+void FNDISpline_InstanceData_RenderThread::Reset()
+{
+	check(IsInRenderingThread());
+	DEC_MEMORY_STAT_BY(STAT_NiagaraGPUDataInterfaceMemory, SplinePositionsLUT.NumBytes);
+	DEC_MEMORY_STAT_BY(STAT_NiagaraGPUDataInterfaceMemory, SplineScalesLUT.NumBytes);
+	DEC_MEMORY_STAT_BY(STAT_NiagaraGPUDataInterfaceMemory, SplineRotationsLUT.NumBytes);
+	SplinePositionsLUT.Release();
+	SplineScalesLUT.Release();
+	SplineRotationsLUT.Release();
+
+	SplineTransform = FMatrix44f::Identity;
+	SplineTransformRotationMat = FMatrix44f::Identity;
+	SplineTransformInverse = FMatrix44f::Identity;
+	SplineTransformInverseTranspose = FMatrix44f::Identity;
+	SplineTransformRotation = FQuat4f::Identity;
+
+	DefaultUpVector = FVector3f::ZAxisVector;
+
+	SplineLength = 0.0f;
+	SplineDistanceStep = 0.0f;
+	InvSplineDistanceStep = 0.0f;
+	MaxIndex = INDEX_NONE;
+}
 
 namespace NDISplineLocal
 {
@@ -615,7 +641,7 @@ bool UNiagaraDataInterfaceSpline::PerInstanceTick(void* PerInstanceData, FNiagar
 		InstData->DefaultUpVector = SplineComponent->DefaultUpVector;
 		InstData->LwcConverter = SystemInstance->GetLWCConverter();
 
-		bool bShouldBuildLUT = (bUseLUT || IsUsedWithGPUEmitter()) && InstData->SplineLUT.MaxIndex < 0;
+		bool bShouldBuildLUT = (bUseLUT || IsUsedWithGPUScript()) && InstData->SplineLUT.MaxIndex < 0;
 		
 		if (InstData->SplineCurvesVersion != SplineComponent->SplineCurves.Version)
 		{
@@ -624,17 +650,17 @@ bool UNiagaraDataInterfaceSpline::PerInstanceTick(void* PerInstanceData, FNiagar
 			InstData->bSyncedGPUCopy = false;
 			InstData->SplineLUT.Reset();
 
-			bShouldBuildLUT = bUseLUT || IsUsedWithGPUEmitter();
+			bShouldBuildLUT = bUseLUT || IsUsedWithGPUScript();
 		}
 		
-		bool bShouldSyncToGPU = IsUsedWithGPUEmitter() && !InstData->bSyncedGPUCopy && InstData->SplineLUT.MaxIndex != INDEX_NONE;
+		bool bShouldSyncToGPU = IsUsedWithGPUScript() && !InstData->bSyncedGPUCopy && InstData->SplineLUT.MaxIndex != INDEX_NONE;
 		
 		// We must build the LUT if this is for GPU regardless of settings
 		if (bShouldBuildLUT)
 		{
 			InstData->SplineLUT.BuildLUT(InstData->SplineCurves, bUseLUT? NumLUTSteps : 256/*Default the LUT to a reasonable value if it's not specifically enabled*/);
 
-			bShouldSyncToGPU = IsUsedWithGPUEmitter();				
+			bShouldSyncToGPU = IsUsedWithGPUScript();
 		}
 
 
@@ -677,9 +703,9 @@ bool UNiagaraDataInterfaceSpline::PerInstanceTick(void* PerInstanceData, FNiagar
 				uint32 BufferSize;
 		
 				// Bind positions
-				TargetData->SplinePositionsLUT.Initialize(TEXT("SplinePositionsLUT"), sizeof(FVector4f), rtShaderLUT.Positions.Num(), EPixelFormat::PF_A32B32G32R32F, BUF_Static);
+				TargetData->SplinePositionsLUT.Initialize(RHICmdList, TEXT("SplinePositionsLUT"), sizeof(FVector4f), rtShaderLUT.Positions.Num(), EPixelFormat::PF_A32B32G32R32F, BUF_Static);
 				BufferSize = rtShaderLUT.Positions.Num() * sizeof(FVector4f);
-				FVector4f* PositionBufferData = static_cast<FVector4f*>(RHILockBuffer(TargetData->SplinePositionsLUT.Buffer, 0, BufferSize, EResourceLockMode::RLM_WriteOnly));
+				FVector4f* PositionBufferData = static_cast<FVector4f*>(RHICmdList.LockBuffer(TargetData->SplinePositionsLUT.Buffer, 0, BufferSize, EResourceLockMode::RLM_WriteOnly));
 				for (int32 Index = 0; Index < rtShaderLUT.Positions.Num(); Index++)
 				{
 					PositionBufferData[Index].X = float(rtShaderLUT.Positions[Index].X);	// LWC Precision Loss
@@ -687,12 +713,12 @@ bool UNiagaraDataInterfaceSpline::PerInstanceTick(void* PerInstanceData, FNiagar
 					PositionBufferData[Index].Z = float(rtShaderLUT.Positions[Index].Z);
 					PositionBufferData[Index].W = 1.0f;
 				}
-				RHIUnlockBuffer(TargetData->SplinePositionsLUT.Buffer);
+				RHICmdList.UnlockBuffer(TargetData->SplinePositionsLUT.Buffer);
 		
 				// Bind scales
-				TargetData->SplineScalesLUT.Initialize(TEXT("SplineScalesLUT"), sizeof(FVector4f), rtShaderLUT.Scales.Num(), EPixelFormat::PF_A32B32G32R32F, BUF_Static);
+				TargetData->SplineScalesLUT.Initialize(RHICmdList, TEXT("SplineScalesLUT"), sizeof(FVector4f), rtShaderLUT.Scales.Num(), EPixelFormat::PF_A32B32G32R32F, BUF_Static);
 				BufferSize = rtShaderLUT.Scales.Num() * sizeof(FVector4f);
-				FVector4f* ScaleBufferData = static_cast<FVector4f*>(RHILockBuffer(TargetData->SplineScalesLUT.Buffer, 0, BufferSize, EResourceLockMode::RLM_WriteOnly));
+				FVector4f* ScaleBufferData = static_cast<FVector4f*>(RHICmdList.LockBuffer(TargetData->SplineScalesLUT.Buffer, 0, BufferSize, EResourceLockMode::RLM_WriteOnly));
 				for (int32 Index = 0; Index < rtShaderLUT.Scales.Num(); Index++)
 				{
 					ScaleBufferData[Index].X = float(rtShaderLUT.Scales[Index].X);
@@ -700,17 +726,17 @@ bool UNiagaraDataInterfaceSpline::PerInstanceTick(void* PerInstanceData, FNiagar
 					ScaleBufferData[Index].Z = float(rtShaderLUT.Scales[Index].Z);
 					ScaleBufferData[Index].W = 1.0f;
 				}
-				RHIUnlockBuffer(TargetData->SplineScalesLUT.Buffer);
+				RHICmdList.UnlockBuffer(TargetData->SplineScalesLUT.Buffer);
 				
 				// Bind rotations
-				TargetData->SplineRotationsLUT.Initialize(TEXT("SplineRotationsLUT"), sizeof(FQuat4f), rtShaderLUT.Rotations.Num(), EPixelFormat::PF_A32B32G32R32F, BUF_Static);
+				TargetData->SplineRotationsLUT.Initialize(RHICmdList, TEXT("SplineRotationsLUT"), sizeof(FQuat4f), rtShaderLUT.Rotations.Num(), EPixelFormat::PF_A32B32G32R32F, BUF_Static);
 				BufferSize = rtShaderLUT.Rotations.Num() * sizeof(FQuat4f);
-				FQuat4f* RotationBufferData = static_cast<FQuat4f*>(RHILockBuffer(TargetData->SplineRotationsLUT.Buffer, 0, BufferSize, EResourceLockMode::RLM_WriteOnly));
+				FQuat4f* RotationBufferData = static_cast<FQuat4f*>(RHICmdList.LockBuffer(TargetData->SplineRotationsLUT.Buffer, 0, BufferSize, EResourceLockMode::RLM_WriteOnly));
 				for (int32 Index=0; Index < rtShaderLUT.Rotations.Num(); Index++)
 				{
 					RotationBufferData[Index] = FQuat4f(rtShaderLUT.Rotations[Index]);
 				}
-				RHIUnlockBuffer(TargetData->SplineRotationsLUT.Buffer);
+				RHICmdList.UnlockBuffer(TargetData->SplineRotationsLUT.Buffer);
 				
 				INC_MEMORY_STAT_BY(STAT_NiagaraGPUDataInterfaceMemory, TargetData->SplinePositionsLUT.NumBytes);
 				INC_MEMORY_STAT_BY(STAT_NiagaraGPUDataInterfaceMemory, TargetData->SplineScalesLUT.NumBytes);
@@ -997,7 +1023,7 @@ template <>
 float FNDISpline_InstanceData::EvaluateFindNearestPosition<TIntegralConstant<bool, false>>(FVector InPosition) const
 {
 	float Dummy;
-	return SplineCurves.Position.InaccurateFindNearest(InPosition, Dummy);
+	return SplineCurves.Position.FindNearest(InPosition, Dummy);
 }
 
 template <>

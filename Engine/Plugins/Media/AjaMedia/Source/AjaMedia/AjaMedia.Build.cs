@@ -25,6 +25,7 @@ namespace UnrealBuildTool.Rules
 					"Engine",
 					"MediaIOCore",
 					"MediaUtils",
+					"OpenColorIO",
 					"Projects",
 					"TimeManagement",
 					"RenderCore",
@@ -35,15 +36,6 @@ namespace UnrealBuildTool.Rules
 			PrivateIncludePathModuleNames.AddRange(
 				new string[] {
 					"Media",
-				});
-
-			PrivateIncludePaths.AddRange(
-				new string[] {
-					"AjaMedia/Private",
-					"AjaMedia/Private/Aja",
-					"AjaMedia/Private/Assets",
-					"AjaMedia/Private/Player",
-					"AjaMedia/Private/Shared",
 				});
 
 			PublicDependencyModuleNames.AddRange(

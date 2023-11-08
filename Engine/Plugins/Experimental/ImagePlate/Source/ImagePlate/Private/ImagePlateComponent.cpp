@@ -38,17 +38,17 @@ namespace
 	public:
 		TArray<uint16> Indices;
 
-		virtual void InitRHI() override
+		virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 		{
 			const uint32 Size = Indices.Num() * sizeof(uint16);
 
 			FRHIResourceCreateInfo CreateInfo(TEXT("FImagePlateIndexBuffer"));
-			IndexBufferRHI = RHICreateBuffer(Size, BUF_Static | BUF_IndexBuffer, sizeof(uint16), ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+			IndexBufferRHI = RHICmdList.CreateBuffer(Size, BUF_Static | BUF_IndexBuffer, sizeof(uint16), ERHIAccess::VertexOrIndexBuffer, CreateInfo);
 
 			// Copy the index data into the index buffer.		
-			void* Buffer = RHILockBuffer(IndexBufferRHI, 0, Size, RLM_WriteOnly);
+			void* Buffer = RHICmdList.LockBuffer(IndexBufferRHI, 0, Size, RLM_WriteOnly);
 			FMemory::Memcpy(Buffer, Indices.GetData(), Size);
-			RHIUnlockBuffer(IndexBufferRHI);
+			RHICmdList.UnlockBuffer(IndexBufferRHI);
 		}
 	};
 
@@ -108,8 +108,10 @@ namespace
 
 		virtual void CreateRenderThreadResources() override
 		{
+			FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
+
 			BuildMesh();
-			IndexBuffer.InitResource();
+			IndexBuffer.InitResource(RHICmdList);
 #if RHI_RAYTRACING
 			if (IsRayTracingEnabled())
 			{
@@ -122,7 +124,7 @@ namespace
 				Initializer.bAllowUpdate = false;
 
 				RayTracingGeometry.SetInitializer(Initializer);
-				RayTracingGeometry.InitResource();
+				RayTracingGeometry.InitResource(RHICmdList);
 
 				RayTracingGeometry.Initializer.IndexBuffer = IndexBuffer.IndexBufferRHI;
 				RayTracingGeometry.Initializer.TotalPrimitiveCount = IndexBuffer.Indices.Num() / 3;
@@ -133,7 +135,7 @@ namespace
 				Segment.MaxVertices = VertexBuffers.PositionVertexBuffer.GetNumVertices();
 				RayTracingGeometry.Initializer.Segments.Add(Segment);
 
-				RayTracingGeometry.UpdateRHI();
+				RayTracingGeometry.UpdateRHI(RHICmdList);
 			}
 #endif
 		}

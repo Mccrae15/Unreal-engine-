@@ -16,7 +16,9 @@ class WebRTCStreamingConnection : StreamingConnection {
     private var webRTCClientState : RTCIceConnectionState?
     private var signalClient: SignalingClient?
     private var touchControls: TouchControls?
+    private var keyboardControls: KeyboardControls?
     private var webRTCView : WebRTCView?
+    private var webRTCStatsView : WebRTCStatsView?
     private var rtcVideoTrack : RTCVideoTrack?
     
     private var signalingConnected = false
@@ -24,9 +26,13 @@ class WebRTCStreamingConnection : StreamingConnection {
     private var hasLocalSdp = false
     private var remoteCandidateCount = 0
     private var localCandidateCount = 0
+    
+    private var webRTCStats : WebRTCStats?
     private var _statsTimer : Timer?
-    private var _lastBytesReceived : Int?
-    private var _lastBytesReceivedTimestamp : CFTimeInterval?
+    
+    private var reconnectAttempt : Int = 0
+    private var maxReconnectAttempts : Int = 3
+    private var subscribedStreamer : String = ""
 
     override var name : String {
         get {
@@ -38,7 +44,7 @@ class WebRTCStreamingConnection : StreamingConnection {
             self._url?.absoluteString ?? ""
         }
         set {
-            self._url = URL(string: "ws://\(newValue):80")!
+            self._url = URL(string: "ws://\(newValue):80")
         }
     }
     
@@ -62,8 +68,22 @@ class WebRTCStreamingConnection : StreamingConnection {
                 rtcView.delegate = self
                 rtcView.layoutToSuperview(.top, .bottom, .left, .right)
                 self.webRTCView = rtcView
-                
                 self.attachVideoTrack()
+                
+                // Attach stats view here
+                let rtcStatsView = WebRTCStatsView(frame: CGRect(x: 0, y: 0, width: rv.frame.size.width, height: rv.frame.size.height));
+                rv.addSubview(rtcStatsView)
+                NSLayoutConstraint.activate([
+                    rtcStatsView.topAnchor.constraint(equalTo: rv.topAnchor),
+                    rtcStatsView.leadingAnchor.constraint(equalTo: rv.leadingAnchor),
+                    rtcStatsView.trailingAnchor.constraint(equalTo: rv.trailingAnchor),
+                    rtcStatsView.bottomAnchor.constraint(equalTo: rv.bottomAnchor)
+                ]);
+                // start with stats hidden
+                rtcStatsView.isHidden = true
+                self.webRTCStatsView = rtcStatsView;
+                self.webRTCStats = WebRTCStats(statsView: rtcStatsView)
+                
             }
         }
     }
@@ -74,6 +94,8 @@ class WebRTCStreamingConnection : StreamingConnection {
         self.webRTCClient = WebRTCClient()
         self.webRTCClient?.speakerOff()
         self.webRTCClient?.delegate = self
+        
+        self.stats = StreamingConnectionStats()
 
         _statsTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true, block: { timer in
             
@@ -81,38 +103,11 @@ class WebRTCStreamingConnection : StreamingConnection {
                 
                 webRTC.stats({ report in
                     
-                    for (key,value) in report.statistics {
-                        if key.starts(with: "RTCIceCandidatePair_") {
-                            //Log.info("\(value.values)")
-                            let timestamp = value.timestamp_us
-                            if let bytesReceived = value.values["bytesReceived"] as? Int {
-                                
-                                if bytesReceived > 0 {
-
-                                    var bytesPerSecond : Int?
-                                    if let previousTimestamp = self._lastBytesReceivedTimestamp,
-                                       let previousBytesReceived = self._lastBytesReceived {
-
-                                        bytesPerSecond = Int(Double(bytesReceived - previousBytesReceived) / ((timestamp - previousTimestamp) / 1000000.0))
-                                    }
-
-                                    self._lastBytesReceivedTimestamp = timestamp
-                                    self._lastBytesReceived = bytesReceived
-                                    
-                                    if let bps = bytesPerSecond {
-                                        self.stats = StreamingConnectionStats()
-                                        self.stats?.bytesPerSecond = bps
-                                    }
-                                }
-                            }
-                            
-                            break
-                        }
-                    }
+                    self.webRTCStats?.processStatsReport(report: report)
+                    self.stats?.framesPerSecond = Float(self.webRTCStats?.lastFPS ?? 0)
+                    self.stats?.bytesPerSecond = Int(self.webRTCStats?.lastBitrate ?? 0)
                 })
             } else {
-                self._lastBytesReceived = nil
-                self._lastBytesReceivedTimestamp = nil
                 self.stats = nil
             }
         })
@@ -124,6 +119,10 @@ class WebRTCStreamingConnection : StreamingConnection {
 
         webRTCClient = nil
     }
+    
+    override func showStats(_ shouldShow : Bool) {
+        self.webRTCStatsView?.isHidden = shouldShow == false
+    }
 
     override func shutdown() {
         _statsTimer?.invalidate()
@@ -132,15 +131,19 @@ class WebRTCStreamingConnection : StreamingConnection {
     
     override func connect() throws {
         
+        guard let url = self._url else {
+            throw StreamingConnectionError.runtimeError("The destination address wasn't formatted properly.")
+        }
+        
         if signalClient == nil {
             
             // We will use 3rd party library for websockets.
             let webSocketProvider: WebSocketProvider
             
             if #available(iOS 13.0, *) {
-                webSocketProvider = NativeWebSocketProvider(url: self._url!, timeout: 2.0)
+                webSocketProvider = NativeWebSocketProvider(url: url, timeout: 2.0)
             } else {
-                webSocketProvider = StarscreamWebSocket(url: self._url!)
+                webSocketProvider = StarscreamWebSocket(url: url)
             }
             
             self.signalClient = SignalingClient(webSocket: webSocketProvider)
@@ -248,6 +251,17 @@ class WebRTCStreamingConnection : StreamingConnection {
         }
     }
     
+    override func sendControllerConnected() {
+        guard let client = webRTCClient else { return }
+        
+        var bytes: [UInt8] = []
+
+        // Write message type using 1 byte
+        bytes.append(PixelStreamingToStreamerMessage.GamepadConnected.rawValue)
+        
+        client.sendData(Data(bytes))
+    }
+    
     override func sendControllerAnalog(_ type : StreamingConnectionControllerInputType, controllerIndex : UInt8, value : Float) {
         
         guard let client = webRTCClient else { return }
@@ -305,16 +319,30 @@ class WebRTCStreamingConnection : StreamingConnection {
        
        client.sendData(Data(bytes))
     }
+    
+    override func sendControllerDisconnected(controllerIndex: UInt8) {
+        guard let client = webRTCClient else { return }
+        
+        var bytes: [UInt8] = []
+
+        // Write message type using 1 byte
+        bytes.append(PixelStreamingToStreamerMessage.GamepadDisconnected.rawValue)
+        bytes.append(controllerIndex)
+        
+        client.sendData(Data(bytes))
+    }
 
     
     func attachVideoTrack() {
         if let webRTC = webRTCClient, let view = self.webRTCView, let track = self.rtcVideoTrack {
             self.touchControls = TouchControls(webRTC, touchView: view)
+            self.keyboardControls = KeyboardControls(webRTC)
             view.attachVideoTrack(track: track)
             view.attachTouchDelegate(delegate: self.touchControls!)
         }
     }
 }
+
 extension WebRTCStreamingConnection : WebRTCViewDelegate {
     
     func webRTCView(_ view: WebRTCView, didChangeVideoSize size: CGSize) {
@@ -327,6 +355,7 @@ extension WebRTCStreamingConnection: SignalClientDelegate {
     func signalClientDidConnect(_ signalClient: SignalingClient) {
         self.signalingConnected = true
         Log.info("Connected to signaling server")
+        signalClient.sendRequestStreamerList();
     }
     
     func signalClientDidDisconnect(_ signalClient: SignalingClient, error: Error?) {
@@ -394,6 +423,42 @@ extension WebRTCStreamingConnection: SignalClientDelegate {
         }
     }
     
+    func signalClient(_ signalClient: SignalingClient, didReceiveStreamerList streamerList: Array<String>) {
+        if signalClient.isReconnecting {
+            if streamerList.contains(self.subscribedStreamer) {
+                // If we're reconnecting and the previously subscribed stream has come back, resubscribe to it
+                signalClient.isReconnecting = false
+                self.reconnectAttempt = 0
+                signalClient.subscribe(self.subscribedStreamer)
+            } else if self.reconnectAttempt < self.maxReconnectAttempts {
+                // Our previous stream hasn't come back, wait 2 seconds and request an updated stream list
+                self.reconnectAttempt += 1
+                DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+                    signalClient.sendRequestStreamerList()
+                }
+            } else {
+                // We've exhausted our reconnect attempts, return to main menu
+                self.reconnectAttempt = 0
+                self.delegate?.streamingConnection(self, exitWithError: NSError(domain: "", code: 1, userInfo: [NSLocalizedDescriptionKey: "Unable to reconnect to \(subscribedStreamer) after \(maxReconnectAttempts) attempts"]))
+            }
+            
+        } else {
+            if streamerList.count == 0 {
+                self.delegate?.streamingConnection(self, exitWithError: NSError(domain: "", code: 1, userInfo: [NSLocalizedDescriptionKey: NSLocalizedString("error-nostream", value:"No stream connected.", comment: "Error message.")]))
+            } else if streamerList.count == 1 {
+                // If we only have a single streamer, no need to show the selection dialogue
+                self.subscribedStreamer = streamerList[0]
+                signalClient.subscribe(streamerList[0])
+            } else if streamerList.count > 1 {
+                // Otherwise make sure we have more than 1 and display the picker
+                self.delegate?.streamingConnection(self, requestStreamerSelectionWithStreamers: streamerList) { (selectedStreamer) in
+                    self.subscribedStreamer = selectedStreamer
+                    signalClient.subscribe(selectedStreamer)
+                }
+            }
+        }
+    }
+    
     func signalClientSendAnswer(_ signalClient: SignalingClient){
         if self.webRTCClient!.hasPeerConnnection() {
             Log.info("Sending answer sdp")
@@ -406,7 +471,6 @@ extension WebRTCStreamingConnection: SignalClientDelegate {
             Log.debug("WebRTC peer connection not setup yet - cannot handle sending answer.")
         }
     }
-    
 }
 
 extension WebRTCStreamingConnection: WebRTCClientDelegate {
@@ -438,7 +502,7 @@ extension WebRTCStreamingConnection: WebRTCClientDelegate {
         case .disconnected:
             self.delegate?.streamingConnection(self, didDisconnectWithError: nil)
         case .failed:
-            self.delegate?.streamingConnection(self, didDisconnectWithError: NSError(domain: "", code: 1, userInfo: [NSLocalizedDescriptionKey : "Failed to connect." ] ))
+            self.delegate?.streamingConnection(self, didDisconnectWithError: NSError(domain: "", code: 1, userInfo: [NSLocalizedDescriptionKey : NSLocalizedString("error-connectfailed", value:"Failed to connect.", comment: "Error message.") ] ))
         default:
             break
         }
@@ -453,12 +517,43 @@ extension WebRTCStreamingConnection: WebRTCClientDelegate {
                 switch payloadType {
                 case .VideoEncoderAvgQP:
                     let qp : String? = String(data: data.dropFirst(), encoding: .utf16LittleEndian)
-                    Log.info("Quality = \(qp ?? "N/A")")
+                    //Log.info("Quality = \(qp ?? "N/A")")
+                case .Command:
+                    let command: String? = String(data: data.dropFirst(), encoding: .utf16LittleEndian)
+                    Log.info("command = \(command ?? "NULL")")
+                    if let commandData = command?.data(using: .utf8) {
+                        do {
+                            let commandJson: PixelStreamingToClientCommand = try JSONDecoder().decode(PixelStreamingToClientCommand.self, from: commandData)
+                            if commandJson.command == "onScreenKeyboard" {
+                                let showKeyboardJson: PixelStreamingToClientShowOnScreenKeyboardCommand = try JSONDecoder().decode(PixelStreamingToClientShowOnScreenKeyboardCommand.self, from: commandData)
+
+                                if showKeyboardJson.showOnScreenKeyboard, let contents = showKeyboardJson.contents {
+                                    self.delegate?.streamingConnection(self, requestsTextEditWithContents: contents) { (success, newContents) in
+                                        guard let enteredContents = newContents else { return }
+                                        if success {
+                                            self.keyboardControls?.submitString(enteredContents)
+                                        }
+                                    }
+                                }
+                            }
+                        } catch {
+                            Log.error("An error occurred parsing the command `\(command ?? "<invalid>")` : \(error.localizedDescription)")
+                        }
+                    }
+                case .GamepadResponse:
+                    let response: String? = String(data: data.dropFirst(), encoding: .utf16LittleEndian)
+                    Log.info("response = \(response ?? "NULL")")
+                    if let responseData = response?.data(using: .utf8) {
+                        do {
+                            let responseJson: PixelStreamingToClientGamepadResponse = try JSONDecoder().decode(PixelStreamingToClientGamepadResponse.self, from: responseData)
+                            self.delegate?.streamingConnection(self, receivedGamepadResponse: responseJson.controllerId)
+                        } catch {
+                            Log.error("An error occurred parsing the response `\(response ?? "<invalid>")` : \(error.localizedDescription)")
+                        }
+                    }
                 case .QualityControlOwnership:
                     fallthrough
                 case .Response:
-                    fallthrough
-                case .Command:
                     fallthrough
                 case .FreezeFrame:
                     fallthrough

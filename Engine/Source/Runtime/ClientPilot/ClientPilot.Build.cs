@@ -10,12 +10,12 @@ public class ClientPilot : ModuleRules
             new string[] {
                 "Core",
                 "CoreUObject",
-                "InputCore",
             }
         );
 
 		PublicIncludePathModuleNames.AddRange(new string[] {
-				"AutomationController"
+				"AutomationController",
+				"AutomationTest",
 		});
 
 		if (Target.bCompileAgainstEngine && Target.Configuration != UnrealTargetConfiguration.Shipping)

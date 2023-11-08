@@ -25,20 +25,20 @@ struct FNiagaraInputExposureOptions
 		, bHidden(0)
 	{}
 
-	/** If this input is exposed to it's caller. */
-	UPROPERTY(EditAnywhere, Category = Exposure)
+	/** If true then this is exposed as an input to it's caller - turning this off makes sense when the input is defined in a function script and should not be visible to the caller. */
+	UPROPERTY(EditAnywhere, DisplayName="Expose Input", Category = Exposure)
 	uint32 bExposed : 1;
 
-	/** If this input is required to be bound. */
-	UPROPERTY(EditAnywhere, Category = Exposure, meta = (editcondition = "bExposed"))
+	/** If true then this input is required to be set by the caller. For optional values (e.g. values behind an edit condition) this can be set to false, so the translator uses the default value instead. */
+	UPROPERTY(EditAnywhere, DisplayName="Suppress Default Value", Category = Exposure, meta = (editcondition = "bExposed"))
 	uint32 bRequired : 1;
 
 	/** If this input can auto-bind to system parameters and emitter attributes. Will never auto bind to custom parameters. */
-	UPROPERTY(EditAnywhere, Category = Exposure, meta = (editcondition = "bExposed"))
+	UPROPERTY()
 	uint32 bCanAutoBind : 1;
 
-	/** If this input should be hidden in the advanced pin section of it's caller. */
-	UPROPERTY(EditAnywhere, Category = Exposure, meta = (editcondition = "bExposed"))
+	/** If true then this input will be shown in the advanced pin section of the caller node. Only works in function scripts, does nothing in dynamic inputs or module scripts. */
+	UPROPERTY(EditAnywhere, DisplayName="Advanced Display", Category = Exposure, meta = (editcondition = "bExposed"))
 	uint32 bHidden : 1;
 };
 
@@ -60,7 +60,7 @@ public:
 	int32 CallSortPriority;
 
 	/** Controls this inputs exposure to callers. */
-	UPROPERTY(EditAnywhere, Category = Input)
+	UPROPERTY(EditAnywhere, Category = Input, meta=(EditCondition="Usage == ENiagaraInputNodeUsage::Parameter", EditConditionHides))
 	FNiagaraInputExposureOptions ExposureOptions;
 
 	//~ Begin UObject Interface
@@ -83,17 +83,17 @@ public:
 	/** Notifies the node that the exposure options have changed externally.*/
 	void NotifyExposureOptionsChanged();
 
-	virtual void Compile(class FHlslNiagaraTranslator* Translator, TArray<int32>& Outputs)override;
+	virtual void Compile(FTranslator* Translator, TArray<int32>& Outputs) const override;
 	
-	bool IsExposed()const { return ExposureOptions.bExposed; }
-	bool IsRequired()const { return ExposureOptions.bExposed && ExposureOptions.bRequired; }
-	bool IsHidden()const { return ExposureOptions.bExposed && ExposureOptions.bHidden; }
-	bool CanAutoBind()const { return ExposureOptions.bExposed && ExposureOptions.bCanAutoBind; }
+	bool IsExposed()const { return ExposureOptions.bExposed && Usage == ENiagaraInputNodeUsage::Parameter; }
+	bool IsRequired()const { return IsExposed() && ExposureOptions.bRequired; }
+	bool IsHidden()const { return IsExposed() && ExposureOptions.bHidden; }
+	bool CanAutoBind()const { return IsExposed() && ExposureOptions.bCanAutoBind; }
 
 	bool ReferencesSameInput(UNiagaraNodeInput* Other) const;
 
 	virtual void BuildParameterMapHistory(FNiagaraParameterMapHistoryBuilder& OutHistory, bool bRecursive = true, bool bFilterForCompilation = true) const override;
-	virtual void AppendFunctionAliasForContext(const FNiagaraGraphFunctionAliasContext& InFunctionAliasContext, FString& InOutFunctionAlias, bool& OutOnlyOncePerNodeType) override;
+	virtual void AppendFunctionAliasForContext(const FNiagaraGraphFunctionAliasContext& InFunctionAliasContext, FString& InOutFunctionAlias, bool& OutOnlyOncePerNodeType) const override;
 
 	static const FLinearColor TitleColor_Attribute;
 	static const FLinearColor TitleColor_Constant;
@@ -107,9 +107,14 @@ public:
 	/** Given an array of nodes, sort them in place by their sort order, then lexicographically if the same.*/
 	static void SortNodes(TArray<UNiagaraNodeInput*>& InOutNodes);
 
-	UNiagaraDataInterface* GetDataInterface() const;
+	bool IsDataInterface() const;
+	bool IsObjectAsset() const;
 
+	UNiagaraDataInterface* GetDataInterface() const;
 	void SetDataInterface(UNiagaraDataInterface* InDataInterface);
+	
+	UObject* GetObjectAsset() const;
+	void SetObjectAsset(UObject* Object);
 
 private:
 	void DataInterfaceChanged();
@@ -118,5 +123,7 @@ private:
 private:
 	UPROPERTY(meta = (SkipForCompileHash = "true"))
 	TObjectPtr<class UNiagaraDataInterface> DataInterface;
-};
 
+	UPROPERTY(meta = (CompileHashObjectPath = "true"))
+	TObjectPtr<UObject> ObjectAsset;
+};

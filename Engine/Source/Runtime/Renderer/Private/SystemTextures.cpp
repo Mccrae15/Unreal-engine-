@@ -101,6 +101,8 @@ void SetDummyTextureArrayData(FRHITexture* Texture, const DataType& DummyData)
 	RHIUnlockTexture2DArray(Texture, 0, 0, false);
 }
 
+const static FLazyName SystemTexturesName(TEXT("FSystemTextures"));
+
 void FSystemTextures::InitializeCommonTextures(FRHICommandListImmediate& RHICmdList)
 {
 	// First initialize textures that are common to all feature levels. This is always done the first time we come into this function, as doesn't care about the
@@ -109,14 +111,15 @@ void FSystemTextures::InitializeCommonTextures(FRHICommandListImmediate& RHICmdL
 	// Create a WhiteDummy texture
 	{
 		WhiteDummy = CreateRenderTarget(GWhiteTexture->TextureRHI, TEXT("WhiteDummy"));
-		WhiteDummySRV = RHICreateShaderResourceView((FRHITexture2D*)WhiteDummy->GetRHI(), 0);
+		WhiteDummySRV = RHICmdList.CreateShaderResourceView((FRHITexture2D*)WhiteDummy->GetRHI(), 0);
 	}
 
 	// Create a BlackDummy texture
 	{
 		const FRHITextureCreateDesc Desc =
 			FRHITextureCreateDesc::Create2D(TEXT("BlackDummy"), 1, 1, PF_B8G8R8A8)
-			.SetFlags(ETextureCreateFlags::ShaderResource);
+			.SetFlags(ETextureCreateFlags::ShaderResource)
+			.SetClassName(SystemTexturesName);
 
 		FTextureRHIRef Texture = RHICreateTexture(Desc);
 		SetDummyTextureData<FColor>(Texture, FColor(0, 0, 0, 0));
@@ -127,7 +130,8 @@ void FSystemTextures::InitializeCommonTextures(FRHICommandListImmediate& RHICmdL
 	{
 		const FRHITextureCreateDesc Desc =
 			FRHITextureCreateDesc::Create2DArray(TEXT("BlackArrayDummy"), 1, 1, 1, PF_B8G8R8A8)
-			.SetFlags(ETextureCreateFlags::ShaderResource);
+			.SetFlags(ETextureCreateFlags::ShaderResource)
+			.SetClassName(SystemTexturesName);
 
 		FTextureRHIRef Texture = RHICreateTexture(Desc);
 		SetDummyTextureArrayData<FColor>(Texture, FColor(0, 0, 0, 0));
@@ -138,7 +142,8 @@ void FSystemTextures::InitializeCommonTextures(FRHICommandListImmediate& RHICmdL
 	{
 		const FRHITextureCreateDesc Desc =
 			FRHITextureCreateDesc::Create2D(TEXT("ZeroUIntDummy"), 1, 1, PF_R32_UINT)
-			.SetFlags(ETextureCreateFlags::ShaderResource);
+			.SetFlags(ETextureCreateFlags::ShaderResource)
+			.SetClassName(SystemTexturesName);
 
 		FTextureRHIRef Texture = RHICreateTexture(Desc);
 		SetDummyTextureData<uint32>(Texture, 0u);
@@ -149,7 +154,8 @@ void FSystemTextures::InitializeCommonTextures(FRHICommandListImmediate& RHICmdL
 	{
 		const FRHITextureCreateDesc Desc =
 			FRHITextureCreateDesc::Create2DArray(TEXT("ZeroUIntArrayDummy"), 1, 1, 1, PF_R32_UINT)
-			.SetFlags(ETextureCreateFlags::ShaderResource);
+			.SetFlags(ETextureCreateFlags::ShaderResource)
+			.SetClassName(SystemTexturesName);
 
 		FTextureRHIRef Texture = RHICreateTexture(Desc);
 		SetDummyTextureArrayData<uint32>(Texture, 0u);
@@ -160,7 +166,8 @@ void FSystemTextures::InitializeCommonTextures(FRHICommandListImmediate& RHICmdL
 	{
 		const FRHITextureCreateDesc Desc =
 			FRHITextureCreateDesc::Create2D(TEXT("BlackAlphaOneDummy"), 1, 1, PF_B8G8R8A8)
-			.SetFlags(ETextureCreateFlags::ShaderResource);
+			.SetFlags(ETextureCreateFlags::ShaderResource)
+			.SetClassName(SystemTexturesName);
 
 		FTextureRHIRef Texture = RHICreateTexture(Desc);
 		SetDummyTextureData<FColor>(Texture, FColor(0, 0, 0, 255));
@@ -171,7 +178,8 @@ void FSystemTextures::InitializeCommonTextures(FRHICommandListImmediate& RHICmdL
 	{
 		const FRHITextureCreateDesc Desc =
 			FRHITextureCreateDesc::Create2DArray(TEXT("GreenDummy"), 1, 1, PF_B8G8R8A8)
-			.SetFlags(ETextureCreateFlags::ShaderResource);
+			.SetFlags(ETextureCreateFlags::ShaderResource)
+			.SetClassName(SystemTexturesName);
 
 		FTextureRHIRef Texture = RHICreateTexture(Desc);
 		SetDummyTextureData<FColor>(Texture, FColor(0, 255, 0, 255));
@@ -182,7 +190,8 @@ void FSystemTextures::InitializeCommonTextures(FRHICommandListImmediate& RHICmdL
 	{
 		const FRHITextureCreateDesc Desc =
 			FRHITextureCreateDesc::Create2D(TEXT("DefaultNormal8Bit"), 1, 1, PF_B8G8R8A8)
-			.SetFlags(ETextureCreateFlags::ShaderResource);
+			.SetFlags(ETextureCreateFlags::ShaderResource)
+			.SetClassName(SystemTexturesName);
 
 		FTextureRHIRef Texture = RHICreateTexture(Desc);
 		SetDummyTextureData<FColor>(Texture, FColor(128, 128, 128, 255));
@@ -195,7 +204,8 @@ void FSystemTextures::InitializeCommonTextures(FRHICommandListImmediate& RHICmdL
 
 		const FRHITextureCreateDesc Desc =
 			FRHITextureCreateDesc::Create2D(TEXT("PerlinNoiseGradient"), Extent, Extent, PF_B8G8R8A8)
-			.SetFlags(ETextureCreateFlags::ShaderResource);
+			.SetFlags(ETextureCreateFlags::ShaderResource)
+			.SetClassName(SystemTexturesName);
 	
 		FTextureRHIRef Texture = RHICreateTexture(Desc);
 
@@ -232,7 +242,8 @@ void FSystemTextures::InitializeCommonTextures(FRHICommandListImmediate& RHICmdL
 	{
 		const FRHITextureCreateDesc Desc =
 			FRHITextureCreateDesc::Create2D(TEXT("MaxFP16Depth"), 1, 1, PF_FloatRGBA)
-			.SetFlags(ETextureCreateFlags::ShaderResource);
+			.SetFlags(ETextureCreateFlags::ShaderResource)
+			.SetClassName(SystemTexturesName);
 
 		FTextureRHIRef Texture = RHICreateTexture(Desc);
 		SetDummyTextureData<FFloat16Color>(Texture, FFloat16Color(FLinearColor(65500.0f, 65500.0f, 65500.0f, 65500.0f)));
@@ -249,19 +260,21 @@ void FSystemTextures::InitializeCommonTextures(FRHICommandListImmediate& RHICmdL
 	{
 		const FRHITextureCreateDesc Desc =
 			FRHITextureCreateDesc::Create2D(TEXT("StencilDummy"), 1, 1, PF_R8G8B8A8_UINT)
-			.SetFlags(ETextureCreateFlags::ShaderResource);
+			.SetFlags(ETextureCreateFlags::ShaderResource)
+			.SetClassName(SystemTexturesName);
 
 		FTextureRHIRef Texture = RHICreateTexture(Desc);
 		SetDummyTextureData<FColor>(Texture, FColor::White);
 		StencilDummy = CreateRenderTarget(Texture, Desc.DebugName);
-		StencilDummySRV = RHICreateShaderResourceView(StencilDummy->GetRHI(), 0);
+		StencilDummySRV = RHICmdList.CreateShaderResourceView(StencilDummy->GetRHI(), 0);
 	}
 
 	if (GPixelFormats[PF_FloatRGBA].Supported)
 	{
 		const FRHITextureCreateDesc Desc =
 			FRHITextureCreateDesc::Create2D(TEXT("MidGreyDummy"), 1, 1, PF_FloatRGBA)
-			.SetFlags(ETextureCreateFlags::ShaderResource);
+			.SetFlags(ETextureCreateFlags::ShaderResource)
+			.SetClassName(SystemTexturesName);
 
 		FTextureRHIRef Texture = RHICreateTexture(Desc);
 		SetDummyTextureData<FFloat16Color>(Texture, FFloat16Color(FLinearColor(0.5f, 0.5f, 0.5f, 0.5f)));
@@ -298,7 +311,8 @@ void FSystemTextures::InitializeFeatureLevelDependentTextures(FRHICommandListImm
 	{
 		const FRHITextureCreateDesc Desc =
 			FRHITextureCreateDesc::Create2D(TEXT("SobolSampling"), 32, 16, PF_R16_UINT)
-			.SetFlags(ETextureCreateFlags::ShaderResource);
+			.SetFlags(ETextureCreateFlags::ShaderResource)
+			.SetClassName(SystemTexturesName);
 
 		FTextureRHIRef Texture = RHICreateTexture(Desc);
 		// Write the contents of the texture.
@@ -425,7 +439,8 @@ void FSystemTextures::InitializeFeatureLevelDependentTextures(FRHICommandListImm
 
 		const FRHITextureCreateDesc Desc =
 			FRHITextureCreateDesc::Create2D(TEXT("PreintegratedGF"), Extent, Format)
-			.SetFlags(ETextureCreateFlags::ShaderResource);
+			.SetFlags(ETextureCreateFlags::ShaderResource)
+			.SetClassName(SystemTexturesName);
 
 		FTextureRHIRef Texture = RHICreateTexture(Desc);
 
@@ -548,7 +563,8 @@ void FSystemTextures::InitializeFeatureLevelDependentTextures(FRHICommandListImm
 
 			const FRHITextureCreateDesc Desc =
 				FRHITextureCreateDesc::Create3D(TEXT("PerlinNoise3D"), Extent, Extent, Extent, PF_B8G8R8A8)
-				.SetFlags(ETextureCreateFlags::ShaderResource | ETextureCreateFlags::NoTiling);
+				.SetFlags(ETextureCreateFlags::ShaderResource | ETextureCreateFlags::NoTiling)
+				.SetClassName(SystemTexturesName);
 
 			FTextureRHIRef Texture3D = RHICreateTexture(Desc);
 
@@ -657,12 +673,14 @@ void FSystemTextures::InitializeFeatureLevelDependentTextures(FRHICommandListImm
 
 		} // end Create the PerlinNoise3D texture
 
-		// LTC Textures	(used by Rect Lights)
+		// LTC Textures	(used by Rect Lights and/or BSDF evaluation)
 		{
+			// GGX - LTC matrix coefficients (4-coefficients)
 			{
 				const FRHITextureCreateDesc Desc =
-					FRHITextureCreateDesc::Create2D(TEXT("LTCMat"), LTC_Size, LTC_Size, PF_FloatRGBA)
-					.SetFlags(ETextureCreateFlags::ShaderResource | ETextureCreateFlags::FastVRAM);
+					FRHITextureCreateDesc::Create2D(TEXT("GGX.LTCMat"), GGX_LTC_Size, GGX_LTC_Size, PF_FloatRGBA)
+					.SetFlags(ETextureCreateFlags::ShaderResource | ETextureCreateFlags::FastVRAM)
+					.SetClassName(SystemTexturesName);
 
 				FTextureRHIRef Texture = RHICreateTexture(Desc);
 
@@ -670,26 +688,57 @@ void FSystemTextures::InitializeFeatureLevelDependentTextures(FRHICommandListImm
 				uint32 DestStride;
 				uint8* DestBuffer = (uint8*)RHICmdList.LockTexture2D(Texture, 0, RLM_WriteOnly, DestStride, false);
     
-				for (int32 y = 0; y < LTC_Size; ++y)
+				for (int32 y = 0; y < GGX_LTC_Size; ++y)
 				{
-					for (int32 x = 0; x < LTC_Size; ++x)
+					for (int32 x = 0; x < GGX_LTC_Size; ++x)
 					{
 						uint16* Dest = (uint16*)(DestBuffer + x * 4 * sizeof(uint16) + y * DestStride);
     
 						for (int k = 0; k < 4; k++)
 						{
-							Dest[k] = FFloat16(LTC_Mat[4 * (x + y * LTC_Size) + k]).Encoded;
+							Dest[k] = FFloat16(GGX_LTC_Mat[4 * (x + y * GGX_LTC_Size) + k]).Encoded;
 						}
 					}
 				}
 				RHICmdList.UnlockTexture2D(Texture, 0, false);
 
-				LTCMat = CreateRenderTarget(Texture, Desc.DebugName);
+				GGXLTCMat = CreateRenderTarget(Texture, Desc.DebugName);
 			}
 
+			// GGX - Split-Sum Amplitude coefficients (2-components)
 			{
 				const FRHITextureCreateDesc Desc =
-					FRHITextureCreateDesc::Create2D(TEXT("LTCAmp"), LTC_Size, LTC_Size, PF_G16R16F)
+					FRHITextureCreateDesc::Create2D(TEXT("GGX.LTCAmp"), GGX_LTC_Size, GGX_LTC_Size, PF_G16R16F)
+					.SetFlags(ETextureCreateFlags::ShaderResource | ETextureCreateFlags::FastVRAM)
+					.SetClassName(SystemTexturesName);
+
+				FTexture2DRHIRef Texture = RHICreateTexture(Desc);
+
+				// Write the contents of the texture.
+				uint32 DestStride;
+				uint8* DestBuffer = (uint8*)RHICmdList.LockTexture2D(Texture, 0, RLM_WriteOnly, DestStride, false);
+
+				for (int32 y = 0; y < GGX_LTC_Size; ++y)
+				{
+					for (int32 x = 0; x < GGX_LTC_Size; ++x)
+					{
+						uint16* Dest = (uint16*)(DestBuffer + x * 2 * sizeof(uint16) + y * DestStride);
+
+						for (int k = 0; k < 2; k++)
+						{
+							Dest[k] = FFloat16(GGX_LTC_Amp[4 * (x + y * GGX_LTC_Size) + k]).Encoded;
+						}
+					}
+				}
+				RHICmdList.UnlockTexture2D(Texture, 0, false);
+
+				GGXLTCAmp = CreateRenderTarget(Texture, Desc.DebugName);
+			}
+
+			// Sheen - Matrix & directional albedo (3-components)
+			{
+				const FRHITextureCreateDesc Desc =
+					FRHITextureCreateDesc::Create2D(TEXT("Sheen.LTC"), Sheen_LTC_Size, Sheen_LTC_Size, PF_FloatRGBA)
 					.SetFlags(ETextureCreateFlags::ShaderResource | ETextureCreateFlags::FastVRAM);
 
 				FTexture2DRHIRef Texture = RHICreateTexture(Desc);
@@ -698,21 +747,20 @@ void FSystemTextures::InitializeFeatureLevelDependentTextures(FRHICommandListImm
 				uint32 DestStride;
 				uint8* DestBuffer = (uint8*)RHICmdList.LockTexture2D(Texture, 0, RLM_WriteOnly, DestStride, false);
 
-				for (int32 y = 0; y < LTC_Size; ++y)
+				for (int32 y = 0; y < Sheen_LTC_Size; ++y)
 				{
-					for (int32 x = 0; x < LTC_Size; ++x)
+					for (int32 x = 0; x < Sheen_LTC_Size; ++x)
 					{
-						uint16* Dest = (uint16*)(DestBuffer + x * 2 * sizeof(uint16) + y * DestStride);
-
-						for (int k = 0; k < 2; k++)
-						{
-							Dest[k] = FFloat16(LTC_Amp[4 * (x + y * LTC_Size) + k]).Encoded;
-						}
+						uint16* Dest = (uint16*)(DestBuffer + x * 4 * sizeof(uint16) + y * DestStride);
+						Dest[0] = FFloat16(Sheen_LTC_Volume[x][y][0]).Encoded;
+						Dest[1] = FFloat16(Sheen_LTC_Volume[x][y][1]).Encoded;
+						Dest[2] = FFloat16(Sheen_LTC_Volume[x][y][2]).Encoded;
+						Dest[3] = 0;
 					}
 				}
 				RHICmdList.UnlockTexture2D(Texture, 0, false);
 
-				LTCAmp = CreateRenderTarget(Texture, Desc.DebugName);
+				SheenLTC = CreateRenderTarget(Texture, Desc.DebugName);
 			}
 		}
 	}
@@ -752,7 +800,8 @@ void FSystemTextures::InitializeFeatureLevelDependentTextures(FRHICommandListImm
 
 				const FRHITextureCreateDesc Desc =
 					FRHITextureCreateDesc::Create2D(TEXT("SSAORandomization"), Extent, Extent, PF_R8G8)
-					.SetFlags(ETextureCreateFlags::ShaderResource);
+					.SetFlags(ETextureCreateFlags::ShaderResource)
+					.SetClassName(SystemTexturesName);
 
 				FTextureRHIRef Texture = RHICreateTexture(Desc);
 
@@ -795,7 +844,8 @@ void FSystemTextures::InitializeFeatureLevelDependentTextures(FRHICommandListImm
 			.SetExtent(Extent)
 			.SetDepth(bGTAOPreIngegratedUsingVolumeLUT ? Extent : 1)
 			.SetFormat(PF_R16F)
-			.SetFlags(ETextureCreateFlags::ShaderResource);
+			.SetFlags(ETextureCreateFlags::ShaderResource)
+			.SetClassName(SystemTexturesName);
 
 		TRefCountPtr<FRHITexture> Texture = RHICreateTexture(Desc);
 
@@ -880,7 +930,7 @@ void FSystemTextures::InitializeFeatureLevelDependentTextures(FRHICommandListImm
 	FeatureLevelInitializedTo = InFeatureLevel;
 }
 
-void FSystemTextures::ReleaseDynamicRHI()
+void FSystemTextures::ReleaseRHI()
 {
 	WhiteDummySRV.SafeRelease();
 	WhiteDummy.SafeRelease();
@@ -897,8 +947,9 @@ void FSystemTextures::ReleaseDynamicRHI()
 	HairLUT0.SafeRelease();
 	HairLUT1.SafeRelease();
 	HairLUT2.SafeRelease();
-	LTCMat.SafeRelease();
-	LTCAmp.SafeRelease();
+	GGXLTCMat.SafeRelease();
+	GGXLTCAmp.SafeRelease();
+	SheenLTC.SafeRelease();
 	MaxFP16Depth.SafeRelease();
 	DepthDummy.SafeRelease();
 	GreenDummy.SafeRelease();
@@ -1184,7 +1235,7 @@ template<typename TInType>
 void InitializeData(const TInType& InData, EPixelFormat InFormat, uint8* OutData, uint32& OutByteCount)
 {
 	// If a new format is added insure that it is either supported here, or at least flagged as not supported
-	static_assert(PF_MAX == 87);
+	static_assert(PF_MAX == 92);
 
 	switch (InFormat)
 	{
@@ -1278,6 +1329,11 @@ void InitializeData(const TInType& InData, EPixelFormat InFormat, uint8* OutData
 		case PF_ASTC_8x8_HDR:
 		case PF_ASTC_10x10_HDR:
 		case PF_ASTC_12x12_HDR:
+		case PF_ASTC_4x4_NORM_RG:
+		case PF_ASTC_6x6_NORM_RG:
+		case PF_ASTC_8x8_NORM_RG:
+		case PF_ASTC_10x10_NORM_RG:
+		case PF_ASTC_12x12_NORM_RG:
 		case PF_BC6H:
 		case PF_BC7:
 		case PF_XGXR8:
@@ -1520,6 +1576,7 @@ FRDGBufferRef GetInternalDefaultBuffer(
 
 	FRDGBufferDesc BufferDesc;
 	FRHIResourceCreateInfo CreateInfo(TEXT(""));
+	FRHICommandListBase& RHICmdList = GraphBuilder.RHICmdList;
 
 	// Adding new buffer if there is no fit (slow path)
 	TRefCountPtr<FRHIBuffer> RHIBuffer;
@@ -1528,7 +1585,7 @@ FRDGBufferRef GetInternalDefaultBuffer(
 	case EDefaultBufferType::VertexBuffer:
 		CreateInfo.DebugName = TEXT("DefaultBuffer");
 		BufferDesc = FRDGBufferDesc::CreateUploadDesc(NumBytePerElement, NumElements);
-		RHIBuffer = RHICreateVertexBuffer(BufferSize, BUF_Static | BUF_ShaderResource, CreateInfo);
+		RHIBuffer = RHICmdList.CreateVertexBuffer(BufferSize, BUF_Static | BUF_ShaderResource, CreateInfo);
 		break;
 
 	case EDefaultBufferType::StructuredBuffer:
@@ -1536,7 +1593,7 @@ FRDGBufferRef GetInternalDefaultBuffer(
 		BufferDesc = FRDGBufferDesc::CreateStructuredDesc(NumBytePerElement, NumElements);
 		// Remove the UAV flag, as default resources are supposed to be read-only.
 		EnumRemoveFlags(BufferDesc.Usage, EBufferUsageFlags::UnorderedAccess);
-		RHIBuffer = RHICreateStructuredBuffer(NumBytePerElement, BufferSize, BufferDesc.Usage, CreateInfo);
+		RHIBuffer = RHICmdList.CreateStructuredBuffer(NumBytePerElement, BufferSize, BufferDesc.Usage, CreateInfo);
 		break;
 
 	case EDefaultBufferType::ByteAddressBuffer:
@@ -1544,12 +1601,12 @@ FRDGBufferRef GetInternalDefaultBuffer(
 		BufferDesc = FRDGBufferDesc::CreateByteAddressDesc(BufferSize);
 		// Same as above.
 		EnumRemoveFlags(BufferDesc.Usage, EBufferUsageFlags::UnorderedAccess);
-		RHIBuffer = RHICreateStructuredBuffer(NumBytePerElement, BufferSize, BufferDesc.Usage, CreateInfo);
+		RHIBuffer = RHICmdList.CreateStructuredBuffer(NumBytePerElement, BufferSize, BufferDesc.Usage, CreateInfo);
 		break;
 
 	}
 
-	uint8* DestPtr = static_cast<uint8*>(GraphBuilder.RHICmdList.LockBuffer(RHIBuffer, 0, BufferSize, RLM_WriteOnly));
+	uint8* DestPtr = static_cast<uint8*>(RHICmdList.LockBuffer(RHIBuffer, 0, BufferSize, RLM_WriteOnly));
 	if (Value)
 	{
 		const uint8 *EndPtr = DestPtr + BufferSize; 
@@ -1568,12 +1625,12 @@ FRDGBufferRef GetInternalDefaultBuffer(
 	{
 		FMemory::Memzero(DestPtr, BufferSize);
 	}
-	GraphBuilder.RHICmdList.UnlockBuffer(RHIBuffer);
+	RHICmdList.UnlockBuffer(RHIBuffer);
 
 	FDefaultBuffer Entry;
 	Entry.Key = Key;
 	Entry.Hash = Hash;
-	Entry.Buffer = new FRDGPooledBuffer(RHIBuffer, BufferDesc, NumElements, CreateInfo.DebugName);
+	Entry.Buffer = new FRDGPooledBuffer(RHICmdList, RHIBuffer, BufferDesc, NumElements, CreateInfo.DebugName);
 
 	Index = DefaultBuffers.Add(Entry);
 	HashDefaultBuffers.Add(Hash, Index);

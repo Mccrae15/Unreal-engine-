@@ -75,15 +75,14 @@ public:
 	/** Recompute camera and lens settings after each frame */
 	void RecalcDerivedData();
 
-	/** Register the stand-in class with the sequencer ECS component registry */
-	static void RegisterCameraStandIn();
-
-	/** Unregister the stand-in class with the sequencer ECS component registry */
-	static void UnregisterCameraStandIn();
-
 private:
 	void ResetDefaultValues(const FMinimalViewInfo& ViewInfo);
 	void UpdateInitialPropertyValues(UMovieSceneEntitySystemLinker* Linker);
+
+	/** Register the stand-in class with the sequencer ECS component registry */
+	static void RegisterCameraStandIn();
+	/** Unregister the stand-in class with the sequencer ECS component registry */
+	static void UnregisterCameraStandIn();
 
 private:
 	static bool bRegistered;
@@ -92,6 +91,8 @@ private:
 
 	bool bIsCineCamera = false;
 	float WorldToMeters = 0.f;
+
+	friend class FTemplateSequenceModule;
 };
 
 /**
@@ -108,32 +109,62 @@ public:
 	UCameraAnimationSequencePlayer(const FObjectInitializer& ObjInit);
 	virtual ~UCameraAnimationSequencePlayer();
 
-	/** Initializes this player with the given sequence */
-	void Initialize(UMovieSceneSequence* InSequence);
-	/** Start playing the sequence */
+	/**
+	 * Initializes this player with the given sequence
+	 *
+	 * @param InSequence    The sequence to play
+	 * @param StartOffset   The offset to start at, in frames (display rate)
+	 */
+	void Initialize(UMovieSceneSequence* InSequence, int32 StartOffset = 0);
+
+	/**
+	 * Start playing the sequence
+	 *
+	 * @param bLoop              Whether to loop playback
+	 * @param bRandomStartTime   Whether to start at a random time inside the playback range
+	 * 
+	 * Note that if StartOffset was set, the random start time will be chosen within
+	 * the reduced (offset) playback range.
+	 */
 	void Play(bool bLoop = false, bool bRandomStartTime = false);
-	/** Advance play to the given time */
+
+	/**
+	 * Advance play to the given time
+	 *
+	 * @param NewPosition   The time to advance to, in ticks
+	 */
 	void Update(FFrameTime NewPosition);
-	/** Jumps to the given time */
+
+	/**
+	 * Jumps to the given time, in ticks
+	 *
+	 * @param New Position   The time to jump to, in ticks
+	 */
 	void Jump(FFrameTime NewPosition);
+
 	/** Stop playing the sequence */
 	void Stop();
 
 	/** Sets the player in scrub mode */
+	UE_DEPRECATED(5.3, "StartScrubbing has been deprecated as it has no functionality")
 	void StartScrubbing();
+
 	/** Ends scrub mode */
+	UE_DEPRECATED(5.3, "EndScrubbing has been deprecated as it has no functionality")
 	void EndScrubbing();
 
 	/** Gets whether playback is looping */
 	bool GetIsLooping() const { return bIsLooping; }
-	/** Gets the current play position */
-	FFrameTime GetCurrentPosition() const { return PlayPosition.GetCurrentPosition(); }
-	/** Get the sequence display resolution */
+	/** Get the sequence display rate */
 	FFrameRate GetInputRate() const { return PlayPosition.GetInputRate(); }
 	/** Get the sequence tick resolution */
 	FFrameRate GetOutputRate() const { return PlayPosition.GetOutputRate(); }
-	/** Get the duration of the current sequence */
-	FFrameNumber GetDuration() const;
+	/** Get the start frame of the current sequence */
+	FFrameNumber GetStartFrame() const { return StartFrame; }
+	/** Get the duration of the current sequence in frames (display rate) */
+	FFrameTime GetDuration() const;
+	/** Gets the current play position in frames (display rate) */
+	FFrameTime GetCurrentPosition() const;
 
 	/** Sets an object that can be used to bind everything in the sequence */
 	void SetBoundObjectOverride(UObject* InObject);
@@ -181,7 +212,7 @@ private:
 	FFrameNumber StartFrame;
 
 	/** The sequence duration in frames */
-	FFrameNumber DurationFrames;
+	FFrameTime DurationFrames;
 
 	/** Whether we should be looping */
 	bool bIsLooping;

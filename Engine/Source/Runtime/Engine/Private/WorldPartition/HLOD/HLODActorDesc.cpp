@@ -5,25 +5,77 @@
 #include "WorldPartition/HLOD/HLODStats.h"
 
 #if WITH_EDITOR
+
+#include "Engine/World.h"
 #include "HAL/FileManager.h"
 #include "Misc/PackageName.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
 #include "UObject/UE5ReleaseStreamObjectVersion.h"
 #include "UObject/FortniteMainBranchObjectVersion.h"
+#include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/HLOD/HLODActor.h"
 #include "WorldPartition/HLOD/HLODLayer.h"
+#include "WorldPartition/HLOD/HLODSourceActorsFromCell.h"
+
 
 void FHLODActorDesc::Init(const AActor* InActor)
 {
 	FWorldPartitionActorDesc::Init(InActor);
 
+	const UWorldPartition* WorldPartition = InActor->GetWorld() ? InActor->GetWorld()->GetWorldPartition() : nullptr;
 	const AWorldPartitionHLOD* HLODActor = CastChecked<AWorldPartitionHLOD>(InActor);
+	const UWorldPartitionHLODSourceActors* HLODSourceActors = HLODActor->GetSourceActors();
+	const UWorldPartitionHLODSourceActorsFromCell* HLODCellSourceActors = Cast<UWorldPartitionHLODSourceActorsFromCell>(HLODSourceActors);
 
-	HLODSubActors.Reserve(HLODActor->GetSubActors().Num());
-	Algo::Transform(HLODActor->GetSubActors(), HLODSubActors, [](const FHLODSubActor& SubActor) { return FHLODSubActorDesc(SubActor.ActorGuid, SubActor.ContainerID); });
+	if (HLODCellSourceActors && WorldPartition)
+	{
+		for (const FHLODSubActor& SubActor : HLODCellSourceActors->GetActors())
+		{
+			if (SubActor.ContainerID.IsMainContainer())
+			{
+				const FWorldPartitionActorDesc* SubActorDesc = WorldPartition->GetActorDesc(SubActor.ActorGuid);
+				if (SubActorDesc && SubActorDesc->GetActorNativeClass()->IsChildOf<AWorldPartitionHLOD>())
+				{
+					ChildHLODActors.Add(SubActor.ActorGuid);
+				}
+			}
+		}
+	}
 
-	SourceHLODLayerName = HLODActor->GetSubActorsHLODLayer()->GetFName();
+	if (HLODSourceActors)
+	{
+		SourceHLODLayerName = NAME_None;
+		if (const UHLODLayer* SourceHLODLayer = HLODSourceActors->GetHLODLayer())
+		{
+			SourceHLODLayerName = SourceHLODLayer->GetFName();
+		}
+	}
+	
 	HLODStats = HLODActor->GetStats();
+}
+
+struct FHLODSubActorDescDeprecated
+{
+	friend FArchive& operator<<(FArchive& Ar, FHLODSubActorDescDeprecated& SubActor);
+	FGuid ActorGuid;
+	FActorContainerID ContainerID;
+};
+
+FArchive& operator<<(FArchive& Ar, FHLODSubActorDescDeprecated& SubActor)
+{
+	Ar << SubActor.ActorGuid;
+
+	if (Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::WorldPartitionFActorContainerIDu64ToGuid)
+	{
+		uint64 ContainerID;
+		Ar << ContainerID;
+	}
+	else
+	{
+		Ar << SubActor.ContainerID;
+	}
+
+	return Ar;
 }
 
 void FHLODActorDesc::Serialize(FArchive& Ar)
@@ -34,50 +86,58 @@ void FHLODActorDesc::Serialize(FArchive& Ar)
 
 	FWorldPartitionActorDesc::Serialize(Ar);
 
-	if (Ar.CustomVer(FUE5ReleaseStreamObjectVersion::GUID) < FUE5ReleaseStreamObjectVersion::WorldPartitionHLODActorDescSerializeHLODSubActors)
+	if (!bIsDefaultActorDesc)
 	{
-		TArray<FGuid> SubActors;
-		Ar << SubActors;
-	}
-	else
-	{
-		Ar << HLODSubActors;
-	}
-	
-	if (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::WorldPartitionHLODActorDescSerializeHLODLayer)
-	{
-		FString HLODLayer_Deprecated;
-		Ar << HLODLayer_Deprecated;
-	}
-
-	const bool bSerializeCellHash = Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::WorldPartitionHLODActorDescSerializeCellHash &&
-									Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::WorldPartitionHLODActorDescSerializeStats;
-	if (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::WorldPartitionHLODActorDescSerializeCellHash)
-	{
-		uint64 CellHash_Deprecated;
-		Ar << CellHash_Deprecated;
-	}
-
-	if (Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::WorldPartitionActorDescSerializeActorIsRuntimeOnly)
-	{
-		bActorIsRuntimeOnly = true;
-	}
-
-	if (Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) >= FFortniteMainBranchObjectVersion::WorldPartitionHLODActorDescSerializeStats)
-	{
-		if (Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::WorldPartitionHLODActorUseSourceCellGuid)
+		if (Ar.CustomVer(FUE5ReleaseStreamObjectVersion::GUID) < FUE5ReleaseStreamObjectVersion::WorldPartitionHLODActorDescSerializeHLODSubActors)
 		{
-			FName SourceCellName;
-			Ar << SourceCellName;
+			TArray<FGuid> SubActors;
+			Ar << SubActors;
+		}
+		else if(Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::WorldPartitionHLODSourceActorsRefactor)
+		{
+			TArray<FHLODSubActorDescDeprecated> HLODSubActors;
+			Ar << HLODSubActors;
+		}
+		else
+		{
+			Ar << ChildHLODActors;
+		}
+	
+		if (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::WorldPartitionHLODActorDescSerializeHLODLayer)
+		{
+			FString HLODLayer_Deprecated;
+			Ar << HLODLayer_Deprecated;
 		}
 
-		Ar << SourceHLODLayerName;
-		Ar << HLODStats;
-
-		// Update package size stat on load
-		if (Ar.IsLoading())
+		const bool bSerializeCellHash = Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::WorldPartitionHLODActorDescSerializeCellHash &&
+										Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::WorldPartitionHLODActorDescSerializeStats;
+		if (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::WorldPartitionHLODActorDescSerializeCellHash)
 		{
-			HLODStats.Add(FWorldPartitionHLODStats::MemoryDiskSizeBytes, GetPackageSize());
+			uint64 CellHash_Deprecated;
+			Ar << CellHash_Deprecated;
+		}
+
+		if (Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::WorldPartitionActorDescSerializeActorIsRuntimeOnly)
+		{
+			bActorIsRuntimeOnly = true;
+		}
+
+		if (Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) >= FFortniteMainBranchObjectVersion::WorldPartitionHLODActorDescSerializeStats)
+		{
+			if (Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::WorldPartitionHLODActorUseSourceCellGuid)
+			{
+				FName SourceCellName;
+				Ar << SourceCellName;
+			}
+
+			Ar << SourceHLODLayerName;
+			Ar << HLODStats;
+
+			// Update package size stat on load
+			if (Ar.IsLoading())
+			{
+				HLODStats.Add(FWorldPartitionHLODStats::MemoryDiskSizeBytes, GetPackageSize());
+			}
 		}
 	}
 }
@@ -89,7 +149,7 @@ bool FHLODActorDesc::Equals(const FWorldPartitionActorDesc* Other) const
 		const FHLODActorDesc& HLODActorDesc = *(FHLODActorDesc*)Other;
 		return SourceHLODLayerName == HLODActorDesc.SourceHLODLayerName &&
 			   HLODStats.OrderIndependentCompareEqual(HLODActorDesc.GetStats()) &&
-			   CompareUnsortedArrays(HLODSubActors, HLODActorDesc.HLODSubActors);
+			   CompareUnsortedArrays(ChildHLODActors, HLODActorDesc.ChildHLODActors);
 	}
 	return false;
 }
@@ -102,7 +162,8 @@ static int64 GetPackageSize(const FString& InPackageFileName)
 
 int64 FHLODActorDesc::GetPackageSize() const
 {
-	const FString PackageFileName = FPackageName::LongPackageNameToFilename(GetActorPackage().ToString(), FPackageName::GetAssetPackageExtension());
+	FString PackageFileName = GetActorPackage().ToString();
+	FPackageName::TryConvertLongPackageNameToFilename(GetActorPackage().ToString(), PackageFileName, FPackageName::GetAssetPackageExtension());
 	return ::GetPackageSize(PackageFileName);
 }
 

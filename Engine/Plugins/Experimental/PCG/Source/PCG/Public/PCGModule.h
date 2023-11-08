@@ -2,13 +2,13 @@
 
 #pragma once
 
-#include "Stats/Stats2.h"
+#include "Stats/Stats.h"
 
 // Logs
 PCG_API DECLARE_LOG_CATEGORY_EXTERN(LogPCG, Log, All);
 
 // Stats
-DECLARE_STATS_GROUP(TEXT("PCG"), STATGROUP_PCG, STATCAT_Advanced)
+DECLARE_STATS_GROUP(TEXT("PCG"), STATGROUP_PCG, STATCAT_Advanced);
 
 // CVars
 

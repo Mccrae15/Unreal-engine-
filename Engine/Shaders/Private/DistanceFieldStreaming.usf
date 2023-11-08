@@ -5,6 +5,7 @@
 =============================================================================*/
 
 #include "Common.ush"
+#include "ComputeShaderUtils.ush"
 #include "DistanceFieldLightingShared.ush"
 
 RWTexture3D<UNORM float> RWDistanceFieldBrickAtlas;
@@ -94,6 +95,8 @@ void CopyDistanceFieldIndirectionAtlasCS(
 RWStructuredBuffer<uint> RWDistanceFieldAssetWantedNumMips;
 RWStructuredBuffer<uint> RWDistanceFieldAssetStreamingRequests;
 
+float3 PreViewTranslationTile;
+float3 PreViewTranslationOffset;
 float3 Mip1WorldTranslatedCenter;
 float3 Mip1WorldExtent;
 float3 Mip2WorldTranslatedCenter;
@@ -109,16 +112,17 @@ uint DebugForceNumMips;
 
 [numthreads(THREADGROUP_SIZE, 1, 1)]
 void ComputeDistanceFieldAssetWantedMipsCS(
-	uint3 GroupId : SV_GroupID,
-	uint3 DispatchThreadId : SV_DispatchThreadID,
-	uint3 GroupThreadId : SV_GroupThreadID)
+	uint GroupIndex : SV_GroupIndex,
+	uint3 GroupId : SV_GroupID)
 {
-	if (DispatchThreadId.x == 0)
+	const uint Index = GetUnWrappedDispatchThreadId(GroupId, GroupIndex, THREADGROUP_SIZE);
+
+	if (Index == 0)
 	{
 		RWDistanceFieldAssetStreamingRequests[0] = 0;
 	}
 
-	uint ObjectIndex = DispatchThreadId.x;
+	const uint ObjectIndex = Index;
 
 	if (ObjectIndex < NumSceneObjects)
 	{
@@ -126,7 +130,7 @@ void ComputeDistanceFieldAssetWantedMipsCS(
 		if (DebugForceNumMips == 0)
 		{
 			FDFObjectBounds DFObjectBounds = LoadDFObjectBounds(ObjectIndex);
-			const float3 TranslatedCenter = LWCToFloat(LWCAdd(DFObjectBounds.Center, PrimaryView.PreViewTranslation));
+			const float3 TranslatedCenter = LWCToFloat(LWCAdd(DFObjectBounds.Center, MakeLWCVector3(PreViewTranslationTile, PreViewTranslationOffset)));
 
 			float OuterDistanceSq = ComputeSquaredDistanceBetweenAABBs(Mip1WorldTranslatedCenter, Mip1WorldExtent, TranslatedCenter, DFObjectBounds.BoxExtent);
  

@@ -73,7 +73,7 @@ void Main(
 	half3x3 TangentToLocal = VertexFactoryGetTangentToLocal(Input, VFIntermediates);	
 	FMaterialVertexParameters VertexParameters = GetMaterialVertexParameters(Input, VFIntermediates, WorldPosition.xyz, TangentToLocal);
 
-	half3 WorldPositionOffset = GetMaterialWorldPositionOffset(VertexParameters);
+	float3 WorldPositionOffset = GetMaterialWorldPositionOffset(VertexParameters);
 	
 	WorldPosition.xyz += WorldPositionOffset;
 
@@ -90,7 +90,7 @@ void Main(
 #endif
 
 #if USE_VERTEX_FOG
-	float4 VertexFog = CalculateHeightFog(WorldPosition.xyz - ResolvedView.TranslatedWorldCameraOrigin);
+	half4 VertexFog = CalculateHeightFog(WorldPosition.xyz - ResolvedView.TranslatedWorldCameraOrigin);
 
 #if PROJECT_SUPPORT_SKY_ATMOSPHERE && MATERIAL_IS_SKY==0 // Do not apply aerial perpsective on sky materials
 	if (ResolvedView.SkyAtmosphereApplyCameraAerialPerspectiveVolume > 0.0f)

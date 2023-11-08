@@ -10,6 +10,7 @@ using UnrealBuildTool;
 using System.IO;
 using EpicGames.Core;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
 
 namespace Gauntlet
 {
@@ -31,7 +32,9 @@ namespace Gauntlet
 	[ParamHelp("Build", "Reference to the build that is being tested")]
 	[ParamHelp("Configuration", "Configuration to perform tests on", Choices = new string[] { "Debug", "DebugGame", "Development", "Test", "Shipping"})]
 	[ParamHelp("Platform", "Platforms to perform tests on and their params")]
+	[ParamHelp("Packaged", "Run packaged build instead of staged", ParamType = typeof(bool))]
 	[ParamHelp("Dev", "Run in Dev mode", ParamType = typeof(bool))]
+	[ParamHelp("p4", "Enable p4v support", ParamType = typeof(bool))]
 	[ParamHelp("MaxDuration", "Maximum duration for test in sections", ParamType = typeof(int), DefaultValue = 3600)]
 	[ParamHelp("NoTimeout", "No maximum timeout", ParamType = typeof(bool))]
 	[ParamHelp("TestIterations", "Number of iterations to repeat this test", ParamType = typeof(int), DefaultValue = 1)]
@@ -58,6 +61,7 @@ namespace Gauntlet
 	[ParamHelp("ServerArgs", "Extra arguments passed to server role(s)")]
 	[ParamHelp("EditorArgs", "Extra arguments passed to editor role(s)")]
 	[ParamHelp("Namespaces", "Comma-separated list of namespaces to check for tests.", MultiSelectSeparator = ",")]
+	[ParamHelp("AdditionalArgs", "Any additional arguments to pass directly to the Gauntlet command line", IsArgument = true)]
 	public class RunUnreal : BuildCommand
 	{
 		/// <summary>
@@ -213,12 +217,10 @@ namespace Gauntlet
 					}
 
 					// look for-args= and then -clientargs= and -editorargs etc
-					Role.ExtraArgs = string.Join(' ', Globals.Params.ParseValues("Args", true));
-					IEnumerable<string> ExtraRoleArgs = Globals.Params.ParseValues(Type.ToString() + "Args", true);
-					if (ExtraRoleArgs.Count() > 0)
-					{
-						Role.ExtraArgs += " " + string.Join(' ', ExtraRoleArgs);
-					}
+					List<string> ArgsParams = Globals.Params.ParseValues("Args", false /* bCommaSeparated */);
+					List<string> RoleArgsParams = Globals.Params.ParseValues(Type.ToString() + "Args", false /* bCommaSeparated */);
+					ArgsParams.AddRange(RoleArgsParams);
+					Role.ExtraArgs = string.Join(' ', ArgsParams);
 
 					// look for -clientexeccmds=, -editorexeccmds= etc, these are separate from clientargs for sanity
 					string ExecCmds = Globals.Params.ParseValue("ExecCmds", "");
@@ -339,7 +341,7 @@ namespace Gauntlet
 
 				if (ParseParam("clean"))
 				{
-					LogInformation("Deleting temp dir {0}", Options.TempDir);
+					Logger.LogInformation("Deleting temp dir {Arg0}", Options.TempDir);
 					DirectoryInfo Di = new DirectoryInfo(Options.TempDir);
 					if (Di.Exists)
 					{

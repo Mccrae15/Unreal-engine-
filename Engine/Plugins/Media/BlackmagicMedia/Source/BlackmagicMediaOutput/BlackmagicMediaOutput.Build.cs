@@ -14,17 +14,11 @@ namespace UnrealBuildTool.Rules
 					"MediaIOCore",
 				});
 
-			PrivateIncludePaths.AddRange(
-				new string[]
-				{
-					"BlackmagicMediaOutput/Private"
-				}
-			);
-
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
 					"BlackmagicCore",
+					"ColorManagement",
 					"Core",
 					"CoreUObject",
 					"Engine",

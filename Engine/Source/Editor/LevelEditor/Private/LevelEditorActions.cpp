@@ -515,6 +515,20 @@ void FLevelEditorActionCallbacks::SaveAllLevels()
 	FEditorFileUtils::SaveDirtyPackages( bPromptUserToSave, bSaveMapPackages, bSaveContentPackages, bFastSave );
 }
 
+void FLevelEditorActionCallbacks::Browse()
+{
+	if (const ULevel* CurrentLevel = GetWorld()->GetCurrentLevel())
+	{
+		TArray<UObject*> Assets = { CurrentLevel->GetOuter() };
+		GEditor->SyncBrowserToObjects(Assets);
+	}
+}
+
+bool FLevelEditorActionCallbacks::CanBrowse()
+{
+	return !FPackageName::IsTempPackage(GetWorld()->GetPackage()->GetName());
+}
+
 
 void FLevelEditorActionCallbacks::ImportScene_Clicked()
 {
@@ -671,6 +685,11 @@ void FLevelEditorActionCallbacks::SetPreviewPlatform(FPreviewPlatformInfo NewPre
 
 bool FLevelEditorActionCallbacks::CanExecutePreviewPlatform(FPreviewPlatformInfo NewPreviewPlatform)
 {
+	if (NewPreviewPlatform.PreviewFeatureLevel > GMaxRHIFeatureLevel)
+	{
+		return false;
+	}
+
 	// TODO: Prevent switching from a platform with VSM to a platform without VSM at the same FeatureLevel until all issues are resolved.
 	// (for instance, GlobalShaderMap does not contain the shaders necessary for FVirtualShadowMapArrayCacheManager::ProcessInvalidations anymore)
 	// Currently this is mostly meant to isolate going to/from VULKAN_SM5 which is wildly different and causes issues with preview mechanics.
@@ -680,7 +699,10 @@ bool FLevelEditorActionCallbacks::CanExecutePreviewPlatform(FPreviewPlatformInfo
 			FDataDrivenShaderPlatformInfo::GetIsPreviewPlatform(NewPreviewPlatform.ShaderPlatform))
 		{
 			const EShaderPlatform ParentShaderPlatform = FDataDrivenShaderPlatformInfo::GetPreviewShaderPlatformParent(NewPreviewPlatform.ShaderPlatform);
-			return (DoesPlatformSupportVirtualShadowMaps(GMaxRHIShaderPlatform) == DoesPlatformSupportVirtualShadowMaps(ParentShaderPlatform));
+			if (DoesPlatformSupportVirtualShadowMaps(GMaxRHIShaderPlatform) != DoesPlatformSupportVirtualShadowMaps(ParentShaderPlatform))
+			{
+				return false;
+			}
 		}
 	}
 
@@ -690,10 +712,13 @@ bool FLevelEditorActionCallbacks::CanExecutePreviewPlatform(FPreviewPlatformInfo
 		FDataDrivenShaderPlatformInfo::GetIsLanguageD3D(GMaxRHIShaderPlatform))
 	{
 		const EShaderPlatform ParentShaderPlatform = FDataDrivenShaderPlatformInfo::GetPreviewShaderPlatformParent(NewPreviewPlatform.ShaderPlatform);
-		return !(FDataDrivenShaderPlatformInfo::GetIsLanguageVulkan(ParentShaderPlatform) && IsFeatureLevelSupported(ParentShaderPlatform, ERHIFeatureLevel::SM5));
+		if (FDataDrivenShaderPlatformInfo::GetIsLanguageVulkan(ParentShaderPlatform) && IsFeatureLevelSupported(ParentShaderPlatform, ERHIFeatureLevel::SM5))
+		{
+			return false;
+		}
 	}
 
-	return (NewPreviewPlatform.PreviewFeatureLevel < GMaxRHIFeatureLevel);
+	return true;
 }
 
 bool FLevelEditorActionCallbacks::IsPreviewPlatformChecked(FPreviewPlatformInfo PreviewPlatform)
@@ -713,7 +738,7 @@ bool FLevelEditorActionCallbacks::CanBuildLighting()
 {
 	// Building lighting modifies the BuildData package, which the PIE session will also be referencing without getting notified
 	return !(GEditor->PlayWorld || GUnrealEd->bIsSimulatingInEditor)
-		&& GetWorld()->FeatureLevel >= ERHIFeatureLevel::SM5;
+		&& GetWorld()->GetFeatureLevel() >= ERHIFeatureLevel::SM5;
 }
 
 bool FLevelEditorActionCallbacks::CanBuildReflectionCaptures()
@@ -764,7 +789,7 @@ bool FLevelEditorActionCallbacks::BuildLighting_CanExecute()
 
 void FLevelEditorActionCallbacks::BuildReflectionCapturesOnly_Execute()
 {
-	if (GWorld != nullptr && GWorld->FeatureLevel == ERHIFeatureLevel::ES3_1)
+	if (GWorld != nullptr && GWorld->GetFeatureLevel() == ERHIFeatureLevel::ES3_1)
 	{
 		// When we feature change from SM5 to ES31 we call BuildReflectionCapture if we have Unbuilt Reflection Components, so no reason to call it again here
 		// This is to make sure that we have valid data for Mobile Preview.
@@ -901,6 +926,30 @@ void FLevelEditorActionCallbacks::BuildVirtualTextureOnly_Execute()
 void FLevelEditorActionCallbacks::BuildAllLandscape_Execute()
 {
 	FEditorBuildUtils::EditorBuild(GetWorld(), FBuildOptions::BuildAllLandscape);
+}
+
+bool FLevelEditorActionCallbacks::BuildExternalType_CanExecute(const int32 Index)
+{
+	TArray<FName> BuildTypeNames;
+	FEditorBuildUtils::GetBuildTypes(BuildTypeNames);
+
+	if (BuildTypeNames.IsValidIndex(Index))
+	{
+		return FEditorBuildUtils::EditorCanBuild(GetWorld(), BuildTypeNames[Index]);
+	}
+
+	return false;
+}
+
+void FLevelEditorActionCallbacks::BuildExternalType_Execute(const int32 Index)
+{
+	TArray<FName> BuildTypeNames;
+	FEditorBuildUtils::GetBuildTypes(BuildTypeNames);
+
+	if (BuildTypeNames.IsValidIndex(Index))
+	{
+		FEditorBuildUtils::EditorBuild(GetWorld(), BuildTypeNames[Index]);
+	}
 }
 
 bool FLevelEditorActionCallbacks::IsLightingQualityChecked( ELightingBuildQuality TestQuality )
@@ -1366,6 +1415,20 @@ bool FLevelEditorActionCallbacks::EditAsset_CanExecute()
 	}
 
 	return false;
+}
+
+void FLevelEditorActionCallbacks::OpenSelectionInPropertyMatrix_Clicked()
+{
+	TArray<UObject*> SelectedObjects;
+	GEditor->GetSelectedActors()->GetSelectedObjects<UObject>(SelectedObjects);
+
+	FPropertyEditorModule& PropertyEditorModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>( "PropertyEditor" );
+	PropertyEditorModule.CreatePropertyEditorToolkit(TSharedPtr<IToolkitHost>(), SelectedObjects );
+}
+
+bool FLevelEditorActionCallbacks::OpenSelectionInPropertyMatrix_IsVisible()
+{
+	return FModuleManager::LoadModuleChecked<FPropertyEditorModule>( "PropertyEditor" ).GetCanUsePropertyMatrix() && GEditor->GetSelectedActorCount() > 1;
 }
 
 void FLevelEditorActionCallbacks::LockActorMovement_Clicked()
@@ -2863,7 +2926,12 @@ void FLevelEditorActionCallbacks::SaveActor_Clicked()
 
 	if (PackagesToSave.Num())
 	{
-		FEditorFileUtils::PromptForCheckoutAndSave(PackagesToSave.Array(), /*bCheckDirty*/false, /*bPromptToSave*/false);
+		FEditorFileUtils::FPromptForCheckoutAndSaveParams SaveParams;
+		SaveParams.bCheckDirty = false;
+		SaveParams.bPromptToSave = false;
+		SaveParams.bIsExplicitSave = true;
+
+		FEditorFileUtils::PromptForCheckoutAndSave(PackagesToSave.Array(), SaveParams);
 	}
 }
 
@@ -3473,6 +3541,7 @@ namespace
 {
 	const FName OpenRecentFileBundle = "OpenRecentFile";
 	const FName OpenFavoriteFileBundle = "OpenFavoriteFile";
+	const FName ExternalBuildTypesBundle = "ExternalBuilds";
 }
 
 FLevelEditorCommands::FLevelEditorCommands()
@@ -3486,6 +3555,7 @@ FLevelEditorCommands::FLevelEditorCommands()
 {
 	AddBundle(OpenRecentFileBundle, NSLOCTEXT("LevelEditorCommands", "OpenRecentFileBundle", "Open Recent File"));
 	AddBundle(OpenFavoriteFileBundle, NSLOCTEXT("LevelEditorCommands", "OpenFavoriteFileBundle", "Open Favorite File"));
+	AddBundle(ExternalBuildTypesBundle, NSLOCTEXT("LevelEditorCommands", "ExternalBuildTypesBundle", "Build External Type"));
 }
 
 /** UI_COMMAND takes long for the compile to optimize */
@@ -3499,6 +3569,7 @@ void FLevelEditorCommands::RegisterCommands()
 	UI_COMMAND( Save, "Save Current Level", "Saves the current level to disk", EUserInterfaceActionType::Button, FInputChord(EModifierKey::Control, EKeys::S) );
 	UI_COMMAND( SaveAs, "Save Current Level As...", "Save the current level as...", EUserInterfaceActionType::Button, FInputChord( EModifierKey::Control|EModifierKey::Alt, EKeys::S ) );
 	UI_COMMAND( SaveAllLevels, "Save All Levels", "Saves all unsaved levels to disk", EUserInterfaceActionType::Button, FInputChord() );
+	UI_COMMAND( BrowseLevel, "Browse To Level", "Browses to the associated level and selects it in the most recently used Content Browser (summoning one if necessary)", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( ToggleFavorite, "Toggle Favorite", "Sets whether the currently loaded level will appear in the list of favorite levels", EUserInterfaceActionType::Button, FInputChord() );
 
 	for( int32 CurRecentIndex = 0; CurRecentIndex < FLevelEditorCommands::MaxRecentFiles; ++CurRecentIndex )
@@ -3537,6 +3608,22 @@ void FLevelEditorCommands::RegisterCommands()
 	UI_COMMAND( ExportAll, "Export All...", "Exports the entire level to a file on disk (multiple formats are supported.)", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( ExportSelected, "Export Selected...", "Exports currently-selected objects to a file on disk (multiple formats are supported.)", EUserInterfaceActionType::Button, FInputChord() );
 
+	// External Build commands (inspired from RecentFiles/FavoriteFiles)
+	for (int32 Index = 0; Index < FLevelEditorCommands::MaxExternalBuildTypes; ++Index)
+	{
+		// NOTE: The actual label and tool-tip will be overridden at runtime when the command is bound to a menu item, however
+		// we still need to set one here so that the key bindings UI can function properly
+		ExternalBuildTypeCommands.Add(
+			FUICommandInfoDecl(
+				this->AsShared(),
+				FName(*FString::Printf(TEXT("ExternalBuildType %i"), Index)),
+				FText::Format(NSLOCTEXT("LevelEditorCommands", "ExternalBuildType", "Build Type {0}"), FText::AsNumber(Index)),
+				/*Description*/NSLOCTEXT("LevelEditorCommands", "ExternalBuildToolTip", "Builds an external type"),
+				ExternalBuildTypesBundle)
+			.UserInterfaceType(EUserInterfaceActionType::Button)
+			.DefaultChord(FInputChord()));
+	}
+
 	UI_COMMAND( Build, "Build All Levels", "Builds all levels (precomputes lighting data and visibility data, generates navigation networks and updates brush models.)\nThis action is not available while Play in Editor is active, static lighting is disabled in the project settings, or when previewing less than Shader Model 5", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( BuildAndSubmitToSourceControl, "Build and Submit...", "Displays a window that allows you to build all levels and submit them to revision control", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( BuildLightingOnly, "Build Lighting", "Only precomputes lighting (all levels.)\nThis action is not available while Play in Editor is active, static lighting is disabled in the project settings, or when previewing less than Shader Model 5", EUserInterfaceActionType::Button, FInputChord(EModifierKey::Control|EModifierKey::Shift, EKeys::Semicolon) );
@@ -3552,7 +3639,7 @@ void FLevelEditorCommands::RegisterCommands()
 	UI_COMMAND( BuildLandscapeSplineMeshes, "Build Landscape Spline Meshes", "Builds landscape spline meshes for the current world", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND( BuildTextureStreamingOnly, "Build Texture Streaming", "Build texture streaming data", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( BuildVirtualTextureOnly, "Build Virtual Textures", "Build runtime virtual texture low mips streaming data", EUserInterfaceActionType::Button, FInputChord());
-	UI_COMMAND( BuildAllLandscape, "Build All Landscape", "Build All Landscape Data(Grass, Baked Textures)", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND( BuildAllLandscape, "Build Landscape", "Build all data related to landscape (grass maps, physical material, Nanite, dirty height and weight maps)", EUserInterfaceActionType::Button, FInputChord());
 
 	UI_COMMAND( LightingQuality_Production, "Production", "Sets precomputed lighting quality to highest possible quality (slowest computation time.)", EUserInterfaceActionType::RadioButton, FInputChord() );
 	UI_COMMAND( LightingQuality_High, "High", "Sets precomputed lighting quality to high quality", EUserInterfaceActionType::RadioButton, FInputChord() );
@@ -3579,6 +3666,7 @@ void FLevelEditorCommands::RegisterCommands()
 
 	UI_COMMAND( EditAsset, "Edit Asset", "Edits the asset associated with the selected actor", EUserInterfaceActionType::Button, FInputChord( EKeys::E, EModifierKey::Control ) );
 	UI_COMMAND( EditAssetNoConfirmMultiple, "Edit Multiple Assets", "Edits multiple assets associated with the selected actor without a confirmation prompt", EUserInterfaceActionType::Button, FInputChord( EKeys::E, EModifierKey::Control | EModifierKey::Shift ) );
+	UI_COMMAND( OpenSelectionInPropertyMatrix, "Edit Selection in Property Matrix", "Bulk edit the selected assets in the Property Matrix", EUserInterfaceActionType::Button, FInputChord() );
 
 	UI_COMMAND( GoHere, "Go Here", "Moves the camera to the current mouse position", EUserInterfaceActionType::Button, FInputChord() );
 
@@ -3653,7 +3741,7 @@ void FLevelEditorCommands::RegisterCommands()
 
 	UI_COMMAND( MergePolys, "Merge", "Merges multiple polygons on a brush face into as few as possible", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( SeparatePolys, "Separate", "Reverses the effect of a previous merge", EUserInterfaceActionType::Button, FInputChord() );
-	UI_COMMAND( AlignBrushVerticesToGrid, "Align Brush Verticies To Grid", "Align brush verticies to the grid", EUserInterfaceActionType::Button, FInputChord() );
+	UI_COMMAND( AlignBrushVerticesToGrid, "Align Brush Vertices To Grid", "Align brush vertices to the grid", EUserInterfaceActionType::Button, FInputChord() );
 
 	// RegroupActors uses GroupActors for it's label and tooltip when simply grouping a selection of actors using overrides. This is to provide display of the chord which is the same for both.
 	UI_COMMAND( GroupActors, "Group", "Groups the selected actors", EUserInterfaceActionType::Button, FInputChord( /*EKeys::G, EModifierKey::Control*/ ) );
@@ -3663,6 +3751,7 @@ void FLevelEditorCommands::RegisterCommands()
 	UI_COMMAND( RemoveActorsFromGroup, "Remove from Group", "Removes the selected actors from the selected groups", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( LockGroup, "Lock", "Locks the selected groups", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( UnlockGroup, "Unlock", "Unlocks the selected groups", EUserInterfaceActionType::Button, FInputChord() );
+	UI_COMMAND( FixupGroupActor, "Fixup Group Actor", "Removes null actors and deletes the GroupActor if it is empty.", EUserInterfaceActionType::Button, FInputChord());
 
 #if PLATFORM_MAC
 	UI_COMMAND( ShowAll, "Show All Actors", "Shows all actors", EUserInterfaceActionType::Button, FInputChord( EModifierKey::Command, EKeys::H ) );
@@ -3829,5 +3918,13 @@ void FLevelEditorCommands::RegisterCommands()
 }
 
 UE_ENABLE_OPTIMIZATION_SHIP
+
+void FLevelEditorActionCallbacks::FixupGroupActor_Clicked()
+{
+	if (UActorGroupingUtils::IsGroupingActive())
+	{
+		AGroupActor::FixupGroupActor();
+	}
+}
 
 #undef LOCTEXT_NAMESPACE

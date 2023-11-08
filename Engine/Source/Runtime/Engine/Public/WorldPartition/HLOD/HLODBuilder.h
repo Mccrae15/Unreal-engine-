@@ -10,14 +10,15 @@
 
 class AActor;
 class UActorComponent;
+class UInstancedStaticMeshComponent;
 
 ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogHLODBuilder, Log, All);
 
 /**
  * Base class for all HLOD Builder settings
  */
-UCLASS()
-class ENGINE_API UHLODBuilderSettings : public UObject
+UCLASS(MinimalAPI)
+class UHLODBuilderSettings : public UObject
 {
 	GENERATED_UCLASS_BODY()
 
@@ -40,8 +41,8 @@ struct FHLODBuildContext
 	/** World for which HLODs are being built */
 	UWorld*	World;
 
-	/** Actors that will be represented by this HLOD */
-	TArray<AActor*> SourceActors;
+	/** Components that will be represented by this HLOD */
+	TArray<UActorComponent*> SourceComponents;
 
 	/** Outer to use for generated assets */
 	UObject* AssetsOuter;
@@ -61,8 +62,8 @@ struct FHLODBuildContext
  * Base class for all HLOD builders
  * This class takes as input a group of components, and should return component(s) that will be included in the HLOD actor.
  */
-UCLASS(Abstract)
-class ENGINE_API UHLODBuilder : public UObject
+UCLASS(Abstract, Config = Editor, MinimalAPI)
+class UHLODBuilder : public UObject
 {
 	 GENERATED_UCLASS_BODY()
 
@@ -71,21 +72,21 @@ public:
 	/**
 	 * Provide builder settings before a Build.
 	 */
-	void SetHLODBuilderSettings(const UHLODBuilderSettings* InHLODBuilderSettings);
+	ENGINE_API void SetHLODBuilderSettings(const UHLODBuilderSettings* InHLODBuilderSettings);
 
 	/**
 	 * Build an HLOD representation of the input actors.
 	 * Components returned by this method needs to be properly outered & assigned to your target (HLOD) actor.
 	 */
-	TArray<UActorComponent*> Build(const FHLODBuildContext& InHLODBuildContext) const;
+	ENGINE_API TArray<UActorComponent*> Build(const FHLODBuildContext& InHLODBuildContext) const;
 
-	UE_DEPRECATED(5.2, "Use Build() method that takes a single FHLODBuildContext parameter. SourceActors are now part of the HLOD build context object.")
+	UE_DEPRECATED(5.2, "Use Build() method that takes a single FHLODBuildContext parameter.")
 	TArray<UActorComponent*> Build(const FHLODBuildContext& InHLODBuildContext, const TArray<AActor*>& InSourceActors) const { return Build(InHLODBuildContext); }
 
 	/**
 	 * Return the setting subclass associated with this builder.
 	 */
-	virtual TSubclassOf<UHLODBuilderSettings> GetSettingsClass() const;
+	ENGINE_API virtual TSubclassOf<UHLODBuilderSettings> GetSettingsClass() const;
 
 	/**
 	 * Should return true if components generated from this builder need a warmup phase before being made visible.
@@ -93,7 +94,7 @@ public:
 	 * to warmup the VT & Nanite caches before transitionning to HLOD. Otherwise, it's likely the initial first frames
 	 * could show a low resolution texture or mesh.
 	 */
-	virtual bool RequiresWarmup() const;
+	ENGINE_API virtual bool RequiresWarmup() const;
 
 	/**
 	 * For a given component, compute a unique hash from the properties that are relevant to HLOD generation.
@@ -101,23 +102,28 @@ public:
 	 * The base version can only support hashing of static mesh components. HLOD builder subclasses
 	 * should override this method and compute the hash of component types they support as input.
 	 */
-	virtual uint32 ComputeHLODHash(const UActorComponent* InSourceComponent) const;
+	ENGINE_API virtual uint32 ComputeHLODHash(const UActorComponent* InSourceComponent) const;
 
 	/**
 	 * Components created with this method need to be properly outered & assigned to your target actor.
 	 */
-	virtual TArray<UActorComponent*> Build(const FHLODBuildContext& InHLODBuildContext, const TArray<UActorComponent*>& InSourceComponents) const PURE_VIRTUAL(UHLODBuilder::Build, return {};);
+	ENGINE_API virtual TArray<UActorComponent*> Build(const FHLODBuildContext& InHLODBuildContext, const TArray<UActorComponent*>& InSourceComponents) const PURE_VIRTUAL(UHLODBuilder::Build, return {};);
 
 	/**
-	 * From a set of actors, compute a unique hash from their properties that are relevant to HLOD generation.
+	 * From a set of components, compute a unique hash from their properties that are relevant to HLOD generation.
 	 * Used to detect changes to the source actors and trigger an HLOD rebuild if necessarry.
 	 */
-	static uint32 ComputeHLODHash(const TArray<AActor*>& InSourceActors);
+	static ENGINE_API uint32 ComputeHLODHash(const TArray<UActorComponent*>& InSourceComponents);
+
+	/** 
+	 * Get the InstancedStaticMeshComponent subclass that should be used when creating instanced HLODs.
+	 */
+	static ENGINE_API TSubclassOf<UInstancedStaticMeshComponent> GetInstancedStaticMeshComponentClass();
 
 protected:
 	virtual bool ShouldIgnoreBatchingPolicy() const { return false; }
 
-	static TArray<UActorComponent*> BatchInstances(const TArray<UActorComponent*>& InSubComponents);
+	static ENGINE_API TArray<UActorComponent*> BatchInstances(const TArray<UActorComponent*>& InSubComponents);
 
 	template <typename TComponentClass>
 	static inline TArray<TComponentClass*> FilterComponents(const TArray<UActorComponent*>& InSourceComponents)
@@ -131,13 +137,16 @@ protected:
 		}
 		return FilteredComponents;
 	}
-
 #endif // WITH_EDITOR
 
 #if WITH_EDITORONLY_DATA
 protected:
 	UPROPERTY()
 	TObjectPtr<const UHLODBuilderSettings> HLODBuilderSettings;
+
+private:
+	UPROPERTY(Config)
+	TSubclassOf<UInstancedStaticMeshComponent> HLODInstancedStaticMeshComponentClass;
 #endif
 };
 
@@ -145,8 +154,8 @@ protected:
 /**
  * Null HLOD builder that ignores it's input and generate no component.
  */
-UCLASS(HideDropdown)
-class ENGINE_API UNullHLODBuilder : public UHLODBuilder
+UCLASS(HideDropdown, MinimalAPI)
+class UNullHLODBuilder : public UHLODBuilder
 {
 	GENERATED_UCLASS_BODY()
 

@@ -61,6 +61,7 @@ public:
 	// Warning: Do not use for general editing of the data model.
 	// If you need to make modifications to the asset, do so through the API provided by this controller. 
 	UIKRigDefinition* GetAsset() const;
+	TObjectPtr<UIKRigDefinition>& GetAssetPtr();  
 	
 	// force all currently connected processors to reinitialize using latest asset state 
 	void BroadcastNeedsReinitialized() const;
@@ -184,7 +185,7 @@ public:
 
 	// Get access to the list of Goals. 
 	UFUNCTION(BlueprintCallable, Category=IKRig)
-	TArray<UIKRigEffectorGoal*>& GetAllGoals() const;
+  const TArray<UIKRigEffectorGoal*>& GetAllGoals() const;
 
 	// Get the UObject for the settings associated with the given Goal in the given Solver.
 	// Solvers can define their own per-Goal settings depending on their needs. These are termed "Effectors".

@@ -7,11 +7,14 @@
 
 #pragma once
 
+#include "ShaderParameterStructDeclaration.h"
 #include "ShaderParameterMetadata.h"
 #include "RenderGraphAllocator.h"
 #include "Algo/Reverse.h"
 #include "Templates/IsArrayOrRefOfTypeByPredicate.h"
 #include "Traits/IsCharEncodingCompatibleWith.h"
+#include "Misc/AssertionMacros.h"
+#include "RHICommandList.h"
 
 class FRDGTexture;
 class FRDGTextureSRV;
@@ -100,6 +103,26 @@ private:
 
 #endif // !PLATFORM_64BITS
 
+/** Retrieve the metadata of a UB type */
+template<class UniformBufferStructType, typename = void>
+struct TUniformBufferMetadataHelper
+{
+	static const FShaderParametersMetadata* GetStructMetadata()
+	{
+		// This uses ADL rather than templates, because template specializations can't be defined in a different namespace
+		return GetForwardDeclaredShaderParametersStructMetadata((UniformBufferStructType*)nullptr);
+	}
+};
+
+template<class UniformBufferStructType>
+struct TUniformBufferMetadataHelper<UniformBufferStructType, typename std::enable_if<!std::is_same<typename UniformBufferStructType::FTypeInfo, void>::value>::type>
+{
+	static const FShaderParametersMetadata* GetStructMetadata()
+	{
+		return UniformBufferStructType::FTypeInfo::GetStructMetadata();
+	}
+};
+
 
 /** A reference to a uniform buffer RHI resource with a specific structure. */
 template<typename TBufferStruct>
@@ -115,19 +138,25 @@ public:
 	/** Creates a uniform buffer with the given value, and returns a structured reference to it. */
 	static TUniformBufferRef<TBufferStruct> CreateUniformBufferImmediate(const TBufferStruct& Value, EUniformBufferUsage Usage, EUniformBufferValidation Validation = EUniformBufferValidation::ValidateResources)
 	{
-		return TUniformBufferRef<TBufferStruct>(RHICreateUniformBuffer(&Value, TBufferStruct::FTypeInfo::GetStructMetadata()->GetLayoutPtr(), Usage, Validation));
+		return TUniformBufferRef<TBufferStruct>(RHICreateUniformBuffer(&Value, TUniformBufferMetadataHelper<TBufferStruct>::GetStructMetadata()->GetLayoutPtr(), Usage, Validation));
 	}
-
 	/** Creates a uniform buffer with the given value, and returns a structured reference to it. */
-	UE_DEPRECATED(5.1, "Local uniform buffers are now deprecated. Use RHICreateUniformBuffer instead.")
-	static FLocalUniformBuffer CreateLocalUniformBuffer(FRHICommandList& RHICmdList, const TBufferStruct& Value, EUniformBufferUsage Usage)
+	static TUniformBufferRef<TBufferStruct> CreateEmptyUniformBufferImmediate(EUniformBufferUsage Usage)
 	{
-		return RHICmdList.BuildLocalUniformBuffer(&Value, sizeof(TBufferStruct), TBufferStruct::FTypeInfo::GetStructMetadata()->GetLayoutPtr());
+		return TUniformBufferRef<TBufferStruct>(RHICreateUniformBuffer(nullptr, TUniformBufferMetadataHelper<TBufferStruct>::GetStructMetadata()->GetLayoutPtr(), Usage, EUniformBufferValidation::ValidateResources));
 	}
 
+	UE_DEPRECATED(5.3, "UpdateUniformBufferImmediate requires a command list.")
 	void UpdateUniformBufferImmediate(const TBufferStruct& Value)
 	{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		RHIUpdateUniformBuffer(GetReference(), &Value);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+
+	void UpdateUniformBufferImmediate(FRHICommandListBase& RHICmdList, const TBufferStruct& Value)
+	{
+		RHICmdList.UpdateUniformBuffer(GetReference(), &Value);
 	}
 
 private:
@@ -192,14 +221,14 @@ public:
 	TUniformBufferBinding() = default;
 
 	TUniformBufferBinding(const TUniformBufferRef<TBufferStruct>& InUniformBuffer)
-		: FUniformBufferBinding(InUniformBuffer, TBufferStruct::FTypeInfo::GetStructMetadata()->GetPreferredBindingFlag())
+		: FUniformBufferBinding(InUniformBuffer, TUniformBufferMetadataHelper<TBufferStruct>::GetStructMetadata()->GetPreferredBindingFlag())
 	{}
 
 	TUniformBufferBinding(const TUniformBufferRef<TBufferStruct>& InUniformBuffer, EUniformBufferBindingFlags InBindingFlags)
 		: FUniformBufferBinding(InUniformBuffer, InBindingFlags)
 	{
 #if DO_CHECK
-		const auto* StructMetadata = TBufferStruct::FTypeInfo::GetStructMetadata();
+		const auto* StructMetadata = TUniformBufferMetadataHelper<TBufferStruct>::GetStructMetadata();
 		checkf(
 			EnumHasAllFlags(StructMetadata->GetBindingFlags(), GetBindingFlags()),
 			TEXT("Uniform buffer binding flags don't match those supported by the uniform buffer layout '%s."),
@@ -284,14 +313,14 @@ public:
 	TRDGUniformBufferBinding() = default;
 
 	TRDGUniformBufferBinding(TRDGUniformBuffer<TBufferStruct>* InUniformBuffer)
-		: FRDGUniformBufferBinding(InUniformBuffer, TBufferStruct::FTypeInfo::GetStructMetadata()->GetPreferredBindingFlag())
+		: FRDGUniformBufferBinding(InUniformBuffer, TUniformBufferMetadataHelper<TBufferStruct>::GetStructMetadata()->GetPreferredBindingFlag())
 	{}
 
 	TRDGUniformBufferBinding(TRDGUniformBuffer<TBufferStruct>* InUniformBuffer, EUniformBufferBindingFlags InBindingFlags)
 		: FRDGUniformBufferBinding(InUniformBuffer, InBindingFlags)
 	{
 #if DO_CHECK
-		const auto* StructMetadata = TBufferStruct::FTypeInfo::GetStructMetadata();
+		const auto* StructMetadata = TUniformBufferMetadataHelper<TBufferStruct>::GetStructMetadata();
 		checkf(
 			EnumHasAllFlags(StructMetadata->GetBindingFlags(), GetBindingFlags()),
 			TEXT("RDG uniform buffer binding flags don't match those supported by the uniform buffer layout '%s."),
@@ -467,7 +496,6 @@ using FRDGTextureAccessArray = TRDGResourceAccessArray<FRDGTextureAccess>;
 struct FRenderTargetBinding
 {
 	FRenderTargetBinding() = default;
-	FRenderTargetBinding(const FRenderTargetBinding&) = default;
 
 	FRenderTargetBinding(FRDGTexture* InTexture, ERenderTargetLoadAction InLoadAction, uint8 InMipIndex = 0, int16 InArraySlice = -1)
 		: Texture(InTexture)
@@ -573,8 +601,7 @@ private:
 struct FDepthStencilBinding
 {
 	FDepthStencilBinding() = default;
-	FDepthStencilBinding(const FDepthStencilBinding&) = default;
-	
+
 	/**
 	 * Creates a render target binding informations for a depth/stencil texture.
 	 *
@@ -586,6 +613,22 @@ struct FDepthStencilBinding
 		ERenderTargetLoadAction InStencilLoadAction,
 		FExclusiveDepthStencil InDepthStencilAccess)
 		: Texture(InTexture)
+		, ResolveTexture(nullptr)
+		, DepthLoadAction(InDepthLoadAction)
+		, StencilLoadAction(InStencilLoadAction)
+		, DepthStencilAccess(InDepthStencilAccess)
+	{
+		check(Validate());
+	}
+
+	FORCEINLINE FDepthStencilBinding(
+		FRDGTexture* InTexture,
+		FRDGTexture* InResolveTexture,
+		ERenderTargetLoadAction InDepthLoadAction,
+		ERenderTargetLoadAction InStencilLoadAction,
+		FExclusiveDepthStencil InDepthStencilAccess)
+		: Texture(InTexture)
+		, ResolveTexture(InResolveTexture)
 		, DepthLoadAction(InDepthLoadAction)
 		, StencilLoadAction(InStencilLoadAction)
 		, DepthStencilAccess(InDepthStencilAccess)
@@ -598,6 +641,20 @@ struct FDepthStencilBinding
 		ERenderTargetLoadAction InDepthLoadAction,
 		FExclusiveDepthStencil InDepthStencilAccess)
 		: Texture(InTexture)
+		, ResolveTexture(nullptr)
+		, DepthLoadAction(InDepthLoadAction)
+		, DepthStencilAccess(InDepthStencilAccess)
+	{
+		check(Validate());
+	}
+
+	FORCEINLINE FDepthStencilBinding(
+		FRDGTexture* InTexture,
+		FRDGTexture* InResolveTexture,
+		ERenderTargetLoadAction InDepthLoadAction,
+		FExclusiveDepthStencil InDepthStencilAccess)
+		: Texture(InTexture)
+		, ResolveTexture(InResolveTexture)
 		, DepthLoadAction(InDepthLoadAction)
 		, DepthStencilAccess(InDepthStencilAccess)
 	{
@@ -607,6 +664,10 @@ struct FDepthStencilBinding
 	FORCEINLINE FRDGTexture* GetTexture() const
 	{
 		return Texture;
+	}
+	FORCEINLINE FRDGTexture* GetResolveTexture() const
+	{
+		return ResolveTexture;
 	}
 	FORCEINLINE ERenderTargetLoadAction GetDepthLoadAction() const
 	{
@@ -626,6 +687,7 @@ struct FDepthStencilBinding
 	{
 		return
 			Texture == Other.Texture &&
+			ResolveTexture == Other.ResolveTexture &&
 			Other.DepthLoadAction != ERenderTargetLoadAction::EClear &&
 			Other.StencilLoadAction != ERenderTargetLoadAction::EClear &&
 			DepthStencilAccess == Other.DepthStencilAccess;
@@ -634,6 +696,12 @@ struct FDepthStencilBinding
 	void SetTexture(FRDGTexture* InTexture)
 	{
 		Texture = InTexture;
+		check(Validate());
+	}
+
+	void SetResolveTexture(FRDGTexture* InTexture)
+	{
+		ResolveTexture = InTexture;
 		check(Validate());
 	}
 
@@ -661,6 +729,7 @@ private:
 	 * force the user to call FDepthStencilBinding() constructors. No defaults allowed.
 	 */
 	TAlignedShaderParameterPtr<FRDGTexture*> Texture = nullptr;
+	TAlignedShaderParameterPtr<FRDGTexture*> ResolveTexture = nullptr;
 	ERenderTargetLoadAction		DepthLoadAction		= ERenderTargetLoadAction::ENoAction;
 	ERenderTargetLoadAction		StencilLoadAction	= ERenderTargetLoadAction::ENoAction;
 	FExclusiveDepthStencil		DepthStencilAccess	= FExclusiveDepthStencil::DepthNop_StencilNop;
@@ -674,11 +743,13 @@ struct alignas(SHADER_PARAMETER_STRUCT_ALIGNMENT) FRenderTargetBindingSlots
 	TStaticArray<FRenderTargetBinding, MaxSimultaneousRenderTargets> Output;
 	FDepthStencilBinding DepthStencil;
 	FResolveRect ResolveRect;
+	// BEGIN META SECTION - Multi-View Per View Viewports / Render Areas
+	FResolveRect ResolveRect2;
+	// END META SECTION - Multi-View Per View Viewports / Render Areas
 	uint32 NumOcclusionQueries = 0;
 	ESubpassHint SubpassHint = ESubpassHint::None;
 	uint8 MultiViewCount = 0;
 	FRDGTexture* ShadingRateTexture = nullptr;
-	FIntRect RenderArea = FIntRect();
 
 	/** Accessors for regular output to simplify the syntax to:
 	 *
@@ -754,8 +825,7 @@ struct alignas(SHADER_PARAMETER_STRUCT_ALIGNMENT) FRenderTargetBindingSlots
 			(NumOcclusionQueries != Other.NumOcclusionQueries && Other.NumOcclusionQueries != 0) ||
 			SubpassHint != Other.SubpassHint ||
 			MultiViewCount != Other.MultiViewCount ||
-			ShadingRateTexture != Other.ShadingRateTexture ||
-			RenderArea != Other.RenderArea)
+			ShadingRateTexture != Other.ShadingRateTexture)
 		{
 			return false;
 		}
@@ -777,7 +847,7 @@ struct alignas(SHADER_PARAMETER_STRUCT_ALIGNMENT) FRenderTargetBindingSlots
 	};
 };
 
-static_assert(sizeof(FRenderTargetBindingSlots) == 256, "FRenderTargetBindingSlots needs to be same size on all platforms.");
+static_assert(sizeof(FRenderTargetBindingSlots) == 272, "FRenderTargetBindingSlots needs to be same size on all platforms.");
 
 /** Static array of shader resource shader that is initialized to nullptr. */
 template<typename TElement, uint32 NumElements>
@@ -826,7 +896,7 @@ struct TShaderParameterTypeInfo
 	/** Type that has a multiple of 4 components. */
 	using TInstancedType = TypeParameter;
 
-	static const FShaderParametersMetadata* GetStructMetadata() { return &TypeParameter::StaticStructMetadata; }
+	static const FShaderParametersMetadata* GetStructMetadata() { return TypeParameter::FTypeInfo::GetStructMetadata(); }
 };
 
 // Compile SHADER_PARAMETER(bool, MyBool), just to give good error message to programmer why they shouldn't do that.
@@ -1197,7 +1267,7 @@ struct TShaderParameterTypeInfo<TUniformBufferRef<UniformBufferStructType>>
 	using TAlignedType = TAlignedShaderParameterPtr<TUniformBufferRef<UniformBufferStructType>>;
 	using TInstancedType = UniformBufferStructType;
 
-	static const FShaderParametersMetadata* GetStructMetadata() { return &UniformBufferStructType::StaticStructMetadata; }
+	static const FShaderParametersMetadata* GetStructMetadata() { return TUniformBufferMetadataHelper<UniformBufferStructType>::GetStructMetadata(); }
 };
 
 template<class UniformBufferStructType>
@@ -1212,7 +1282,7 @@ struct TShaderParameterTypeInfo<TUniformBufferBinding<UniformBufferStructType>>
 	using TAlignedType = TUniformBufferBinding<UniformBufferStructType>;
 	using TInstancedType = UniformBufferStructType;
 
-	static const FShaderParametersMetadata* GetStructMetadata() { return &UniformBufferStructType::StaticStructMetadata; }
+	static const FShaderParametersMetadata* GetStructMetadata() { return TUniformBufferMetadataHelper<UniformBufferStructType>::GetStructMetadata(); }
 };
 
 template<class UniformBufferStructType>
@@ -1227,7 +1297,7 @@ struct TShaderParameterTypeInfo<TRDGUniformBufferBinding<UniformBufferStructType
 	using TAlignedType = TRDGUniformBufferBinding<UniformBufferStructType>;
 	using TInstancedType = UniformBufferStructType;
 
-	static const FShaderParametersMetadata* GetStructMetadata() { return &UniformBufferStructType::StaticStructMetadata; }
+	static const FShaderParametersMetadata* GetStructMetadata() { return TUniformBufferMetadataHelper<UniformBufferStructType>::GetStructMetadata(); }
 };
 
 template<typename StructType>
@@ -1259,28 +1329,31 @@ struct TShaderParameterStructTypeInfo<StructType[InNumElements]>
 };
 
 #define INTERNAL_BEGIN_UNIFORM_BUFFER_STRUCT \
-	static FShaderParametersMetadata StaticStructMetadata;
+	static const FShaderParametersMetadata* GetStructMetadata(); 
 
 #define INTERNAL_UNIFORM_BUFFER_STRUCT_GET_STRUCT_METADATA(StructTypeName) \
-	return &StructTypeName::StaticStructMetadata;
+	{ return StructTypeName::GetStructMetadata(); }
 
 #define INTERNAL_SHADER_PARAMETER_GET_STRUCT_METADATA(StructTypeName) \
-	static FShaderParametersMetadata StaticStructMetadata(\
-		FShaderParametersMetadata::EUseCase::ShaderParameterStruct, \
-		EUniformBufferBindingFlags::Shader, \
-		TEXT(#StructTypeName), \
-		TEXT(#StructTypeName), \
-		nullptr, \
-		nullptr, \
-		FTypeInfo::FileName, \
-		FTypeInfo::FileLine, \
-		sizeof(StructTypeName), \
-		StructTypeName::zzGetMembers()); \
-	return &StaticStructMetadata;
+	{ \
+		static FShaderParametersMetadata StaticStructMetadata(\
+			FShaderParametersMetadata::EUseCase::ShaderParameterStruct, \
+			EUniformBufferBindingFlags::Shader, \
+			TEXT(#StructTypeName), \
+			TEXT(#StructTypeName), \
+			nullptr, \
+			nullptr, \
+			FTypeInfo::FileName, \
+			FTypeInfo::FileLine, \
+			sizeof(StructTypeName), \
+			StructTypeName::zzGetMembers()); \
+		return &StaticStructMetadata; \
+	}
+
 
 #define INTERNAL_SHADER_PARAMETER_STRUCT_CREATE_UNIFORM_BUFFER return nullptr;
 
-#define INTERNAL_UNIFORM_BUFFER_STRUCT_CREATE_UNIFORM_BUFFER return RHICreateUniformBuffer(&InContents, StaticStructMetadata.GetLayoutPtr(), InUsage);
+#define INTERNAL_UNIFORM_BUFFER_STRUCT_CREATE_UNIFORM_BUFFER return RHICreateUniformBuffer(&InContents, FTypeInfo::GetStructMetadata()->GetLayoutPtr(), InUsage);
 
 /** Begins a uniform buffer struct declaration. */
 #define INTERNAL_SHADER_PARAMETER_STRUCT_BEGIN(StructTypeName,PrefixKeywords,ConstructorSuffix,GetStructMetadataScope,CreateUniformBufferImpl) \
@@ -1294,10 +1367,10 @@ struct TShaderParameterStructTypeInfo<StructType[InNumElements]>
 			static constexpr int32 NumElements = 0; \
 			static constexpr int32 Alignment = SHADER_PARAMETER_STRUCT_ALIGNMENT; \
 			static constexpr bool bIsStoredInConstantBuffer = true; \
-			static constexpr const ANSICHAR* const FileName = UE_LOG_SOURCE_FILE(__FILE__); \
-			static constexpr int32 FileLine = __LINE__; \
+			static constexpr const ANSICHAR* const FileName = UE_LOG_SOURCE_FILE(__builtin_FILE()); \
+			static constexpr int32 FileLine = __builtin_LINE(); \
 			using TAlignedType = StructTypeName; \
-			static inline const FShaderParametersMetadata* GetStructMetadata() { GetStructMetadataScope } \
+			static const FShaderParametersMetadata* GetStructMetadata() GetStructMetadataScope \
 		}; \
 		static FUniformBufferRHIRef CreateUniformBuffer(const StructTypeName& InContents, EUniformBufferUsage InUsage) \
 		{ \
@@ -1392,26 +1465,55 @@ extern RENDERCORE_API FShaderParametersMetadata* FindUniformBufferStructByShader
  *	IMPLEMENT_UNIFORM_BUFFER_STRUCT(FMyParameterStruct, "MyShaderBindingName");
  */
 #define BEGIN_UNIFORM_BUFFER_STRUCT(StructTypeName, PrefixKeywords) \
+	DECLARE_UNIFORM_BUFFER_STRUCT(StructTypeName, PrefixKeywords) \
 	INTERNAL_SHADER_PARAMETER_STRUCT_BEGIN(StructTypeName,PrefixKeywords,{} INTERNAL_BEGIN_UNIFORM_BUFFER_STRUCT, INTERNAL_UNIFORM_BUFFER_STRUCT_GET_STRUCT_METADATA(StructTypeName), INTERNAL_UNIFORM_BUFFER_STRUCT_CREATE_UNIFORM_BUFFER)
 
 #define BEGIN_UNIFORM_BUFFER_STRUCT_WITH_CONSTRUCTOR(StructTypeName, PrefixKeywords) \
+	DECLARE_UNIFORM_BUFFER_STRUCT(StructTypeName, PrefixKeywords) \
 	INTERNAL_SHADER_PARAMETER_STRUCT_BEGIN(StructTypeName,PrefixKeywords,; INTERNAL_BEGIN_UNIFORM_BUFFER_STRUCT, INTERNAL_UNIFORM_BUFFER_STRUCT_GET_STRUCT_METADATA(StructTypeName), INTERNAL_UNIFORM_BUFFER_STRUCT_CREATE_UNIFORM_BUFFER)
 
 #define END_UNIFORM_BUFFER_STRUCT() \
 	END_SHADER_PARAMETER_STRUCT()
 
+
+class FShaderParametersMetadataRegistration
+{
+public:
+	FShaderParametersMetadataRegistration(TFunctionRef<const FShaderParametersMetadata* ()> LazyShaderParametersMetadataAccessor)
+		: LazyShaderParametersMetadataAccessor(LazyShaderParametersMetadataAccessor)
+	{
+		GetInstances().Add(this);
+	}
+
+	static RENDERCORE_API TArray<const FShaderParametersMetadataRegistration*>& GetInstances();
+
+	// Actually register all the instances and clear the array
+	static RENDERCORE_API void CommitAll();
+	static RENDERCORE_API bool IsReadyForRegistration();
+
+private:
+	TFunctionRef<const FShaderParametersMetadata* ()> LazyShaderParametersMetadataAccessor;
+};
+
 #define IMPLEMENT_UNIFORM_BUFFER_STRUCT(StructTypeName,ShaderVariableName) \
-	FShaderParametersMetadata StructTypeName::StaticStructMetadata( \
-	FShaderParametersMetadata::EUseCase::UniformBuffer, \
-	EUniformBufferBindingFlags::Shader, \
-	TEXT(#StructTypeName), \
-	TEXT(#StructTypeName), \
-	TEXT(ShaderVariableName), \
-	nullptr, \
-	StructTypeName::FTypeInfo::FileName, \
-	StructTypeName::FTypeInfo::FileLine, \
-	sizeof(StructTypeName), \
-	StructTypeName::zzGetMembers())
+	const FShaderParametersMetadata* GetForwardDeclaredShaderParametersStructMetadata(const StructTypeName* DummyPtr) { return StructTypeName::FTypeInfo::GetStructMetadata(); } \
+	const FShaderParametersMetadata* StructTypeName::GetStructMetadata() \
+	{ \
+		ensureMsgf(FShaderParametersMetadataRegistration::IsReadyForRegistration(), TEXT("GetStructMetadata should not be called from a static initializer")); \
+		static const FShaderParametersMetadata StaticStructMetadata( \
+			FShaderParametersMetadata::EUseCase::UniformBuffer, \
+			EUniformBufferBindingFlags::Shader, \
+			TEXT(#StructTypeName), \
+			TEXT(#StructTypeName), \
+			TEXT(ShaderVariableName), \
+			nullptr, \
+			StructTypeName::FTypeInfo::FileName, \
+			StructTypeName::FTypeInfo::FileLine, \
+			sizeof(StructTypeName), \
+			StructTypeName::zzGetMembers()); \
+		return &StaticStructMetadata; \
+	} \
+	FShaderParametersMetadataRegistration StructTypeName##MetadataRegistration { TFunctionRef<const ::FShaderParametersMetadata* ()>{StructTypeName::GetStructMetadata} };
 
 #define IMPLEMENT_UNIFORM_BUFFER_ALIAS_STRUCT(StructTypeName, UniformBufferAlias) \
 	static const FShaderParametersMetadata UniformBufferAlias( \
@@ -1425,37 +1527,51 @@ extern RENDERCORE_API FShaderParametersMetadata* FindUniformBufferStructByShader
 	StructTypeName::FTypeInfo::FileLine, \
 	sizeof(StructTypeName), \
 	StructTypeName::zzGetMembers())
-
+ 
 #define IMPLEMENT_STATIC_UNIFORM_BUFFER_STRUCT_EX(StructTypeName,ShaderVariableName,StaticSlotName,BindingFlagsEnum) \
 	static_assert(EnumHasAnyFlags(EUniformBufferBindingFlags::BindingFlagsEnum, EUniformBufferBindingFlags::Static), "Shader bindings must include 'Static'."); \
-	FShaderParametersMetadata StructTypeName::StaticStructMetadata( \
-		FShaderParametersMetadata::EUseCase::UniformBuffer, \
-		EUniformBufferBindingFlags::BindingFlagsEnum, \
-		TEXT(#StructTypeName), \
-		TEXT(#StructTypeName), \
-		TEXT(ShaderVariableName), \
-		TEXT(#StaticSlotName), \
-		StructTypeName::FTypeInfo::FileName, \
-		StructTypeName::FTypeInfo::FileLine, \
-		sizeof(StructTypeName), \
-		StructTypeName::zzGetMembers())
+	const FShaderParametersMetadata* GetForwardDeclaredShaderParametersStructMetadata(const StructTypeName* DummyPtr) { return StructTypeName::FTypeInfo::GetStructMetadata(); } \
+	const FShaderParametersMetadata* StructTypeName::GetStructMetadata() \
+	{ \
+		ensureMsgf(FShaderParametersMetadataRegistration::IsReadyForRegistration(), TEXT("GetStructMetadata should not be called from a static initializer")); \
+		static const FShaderParametersMetadata StaticStructMetadata( \
+			FShaderParametersMetadata::EUseCase::UniformBuffer, \
+			EUniformBufferBindingFlags::BindingFlagsEnum, \
+			TEXT(#StructTypeName), \
+			TEXT(#StructTypeName), \
+			TEXT(ShaderVariableName), \
+			TEXT(#StaticSlotName), \
+			StructTypeName::FTypeInfo::FileName, \
+			StructTypeName::FTypeInfo::FileLine, \
+			sizeof(StructTypeName), \
+			StructTypeName::zzGetMembers()); \
+		return &StaticStructMetadata; \
+	} \
+	FShaderParametersMetadataRegistration StructTypeName##MetadataRegistration { TFunctionRef<const ::FShaderParametersMetadata* ()>{StructTypeName::GetStructMetadata} };
 
 #define IMPLEMENT_STATIC_UNIFORM_BUFFER_STRUCT_EX2(StructTypeName,ShaderVariableName,StaticSlotName,BindingFlagsEnum,UsageFlags) \
 	static_assert(EnumHasAnyFlags(EUniformBufferBindingFlags::BindingFlagsEnum, EUniformBufferBindingFlags::Static), "Shader bindings must include 'Static'."); \
-	FShaderParametersMetadata StructTypeName::StaticStructMetadata( \
-		FShaderParametersMetadata::EUseCase::UniformBuffer, \
-		EUniformBufferBindingFlags::BindingFlagsEnum, \
-		TEXT(#StructTypeName), \
-		TEXT(#StructTypeName), \
-		TEXT(ShaderVariableName), \
-		TEXT(#StaticSlotName), \
-		StructTypeName::FTypeInfo::FileName, \
-		StructTypeName::FTypeInfo::FileLine, \
-		sizeof(StructTypeName), \
-		StructTypeName::zzGetMembers(), \
-		false, \
-		nullptr, \
-		(uint32)UsageFlags)
+	const FShaderParametersMetadata* GetForwardDeclaredShaderParametersStructMetadata(const StructTypeName* DummyPtr) {  return StructTypeName::FTypeInfo::GetStructMetadata(); } \
+	const FShaderParametersMetadata* StructTypeName::GetStructMetadata() \
+	{ \
+		ensureMsgf(FShaderParametersMetadataRegistration::IsReadyForRegistration(), TEXT("GetStructMetadata should not be called from a static initializer")); \
+		static const FShaderParametersMetadata StaticStructMetadata( \
+			FShaderParametersMetadata::EUseCase::UniformBuffer, \
+			EUniformBufferBindingFlags::BindingFlagsEnum, \
+			TEXT(#StructTypeName), \
+			TEXT(#StructTypeName), \
+			TEXT(ShaderVariableName), \
+			TEXT(#StaticSlotName), \
+			StructTypeName::FTypeInfo::FileName, \
+			StructTypeName::FTypeInfo::FileLine, \
+			sizeof(StructTypeName), \
+			StructTypeName::zzGetMembers(), \
+			false, \
+			nullptr, \
+			(uint32)UsageFlags); \
+		return &StaticStructMetadata; \
+	} \
+	FShaderParametersMetadataRegistration StructTypeName##MetadataRegistration { TFunctionRef<const ::FShaderParametersMetadata* ()>{StructTypeName::GetStructMetadata} };
 
 /** Implements the same contract as IMPLEMENT_STATIC_UNIFORM_BUFFER_STRUCT, with the addition of the 'StaticAndShader' binding
  *  flag. This means that the uniform buffer may be bound statically or through SetShaderParameters. The uniform buffer is NOT

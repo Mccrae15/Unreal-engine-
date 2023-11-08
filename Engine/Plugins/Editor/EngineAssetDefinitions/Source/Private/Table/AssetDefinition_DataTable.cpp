@@ -33,7 +33,10 @@ FText UAssetDefinition_DataTable::GetAssetDisplayName(const FAssetData& AssetDat
 		const FAssetDataTagMapSharedView::FFindTagResult RowStructureTag = AssetData.TagsAndValues.FindTag(NAME_RowStructure);
 		if (RowStructureTag.IsSet())
 		{
-			if (UScriptStruct* FoundStruct = UClass::TryFindTypeSlow<UScriptStruct>(RowStructureTag.GetValue(), EFindFirstObjectOptions::ExactClass))
+			// Handle full path names and deprecated short class names
+			const FTopLevelAssetPath ClassPath = FAssetData::TryConvertShortClassNameToPathName(*RowStructureTag.GetValue(), ELogVerbosity::Log);
+
+			if (const UScriptStruct* FoundStruct = UClass::TryFindTypeSlow<UScriptStruct>(ClassPath.ToString(), EFindFirstObjectOptions::ExactClass))
 			{
 				return FText::Format(LOCTEXT("DataTableWithRowType", "Data Table ({0})"), FoundStruct->GetDisplayNameText());
 			}
@@ -123,11 +126,10 @@ EAssetCommandResult UAssetDefinition_DataTable::OpenAssets(const FAssetOpenArgs&
 			DataTablesListText.AppendLineFormat(LOCTEXT("DataTable_MissingRowStructListEntry", "* {0} (Row Structure: {1})"), FText::FromString(Table->GetName()), FText::FromString(ResolvedRowStructName.ToString()));
 		}
 
-		FText Title = LOCTEXT("DataTable_MissingRowStructTitle", "Continue?");
 		const EAppReturnType::Type DlgResult = FMessageDialog::Open(
 			EAppMsgType::YesNoCancel, 
 			FText::Format(LOCTEXT("DataTable_MissingRowStructMsg", "The following Data Tables are missing their row structure and will not be editable.\n\n{0}\n\nDo you want to open these data tables?"), DataTablesListText.ToText()), 
-			&Title
+			LOCTEXT("DataTable_MissingRowStructTitle", "Continue?")
 			);
 
 		switch(DlgResult)
@@ -226,13 +228,16 @@ namespace MenuExtension_DataTable
 		TArray<FString> ImportPaths;
 		for (const FAssetData& Asset : Context->SelectedAssets)
 		{
-			UAssetDefinitionRegistry::Get()->GetAssetDefinitionForAsset(Asset)->GetSourceFiles(Asset, [&ImportPaths](const FAssetImportInfo& AssetImportInfo)
-			{
-				for (const auto& SourceFile : AssetImportInfo.SourceFiles)
+			FAssetSourceFilesArgs GetSourceFilesArgs;
+			GetSourceFilesArgs.Assets = TConstArrayView<FAssetData>(&Asset, 1);
+			if (const UAssetDefinition* AssetDefination = UAssetDefinitionRegistry::Get()->GetAssetDefinitionForAsset(Asset))
+			{ 
+				AssetDefination->GetSourceFiles(GetSourceFilesArgs, [&ImportPaths](const FAssetSourceFilesResult& AssetImportInfo)
 				{
-					ImportPaths.Add(SourceFile.RelativeFilename);
-				}
-			});
+					ImportPaths.Add(AssetImportInfo.FilePath);
+					return true;
+				});
+			}
 		}
 
 		TArray<FString> PotentialFileExtensions;
@@ -251,13 +256,16 @@ namespace MenuExtension_DataTable
 		TArray<FString> ImportPaths;
 		for (const FAssetData& Asset : Context->SelectedAssets)
 		{
-			UAssetDefinitionRegistry::Get()->GetAssetDefinitionForAsset(Asset)->GetSourceFiles(Asset, [&ImportPaths](const FAssetImportInfo& AssetImportInfo)
-			{
-				for (const auto& SourceFile : AssetImportInfo.SourceFiles)
+			FAssetSourceFilesArgs GetSourceFilesArgs;
+			GetSourceFilesArgs.Assets = TConstArrayView<FAssetData>(&Asset, 1);
+			if (const UAssetDefinition* AssetDefination = UAssetDefinitionRegistry::Get()->GetAssetDefinitionForAsset(Asset))
+			{ 
+				AssetDefination->GetSourceFiles(GetSourceFilesArgs, [&ImportPaths](const FAssetSourceFilesResult& AssetImportInfo)
 				{
-					ImportPaths.Add(SourceFile.RelativeFilename);
-				}
-			});
+					ImportPaths.Add(AssetImportInfo.FilePath);
+					return true;
+				});
+			}
 		}
 
 		TArray<FString> PotentialFileExtensions;

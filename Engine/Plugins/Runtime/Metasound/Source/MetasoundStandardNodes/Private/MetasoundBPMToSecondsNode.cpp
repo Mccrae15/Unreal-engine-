@@ -4,6 +4,7 @@
 
 #include "Internationalization/Text.h"
 #include "MetasoundExecutableOperator.h"
+#include "MetasoundFrontendNodesCategories.h"
 #include "MetasoundNodeRegistrationMacro.h"
 #include "MetasoundParamHelper.h"
 #include "MetasoundPrimitives.h"
@@ -30,10 +31,14 @@ namespace Metasound
 		static const FVertexInterface& GetVertexInterface();
 		static TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors);
 
-		FBPMToSecondsOperator(const FOperatorSettings& InSettings, const FFloatReadRef& InBPM, const FFloatReadRef& InBeatMultiplier, const FFloatReadRef& InDivOfWholeNote);
+		FBPMToSecondsOperator(const FCreateOperatorParams& InParams, const FFloatReadRef& InBPM, const FFloatReadRef& InBeatMultiplier, const FFloatReadRef& InDivOfWholeNote);
 
+
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override;
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override;
 		virtual FDataReferenceCollection GetInputs() const override;
 		virtual FDataReferenceCollection GetOutputs() const override;
+		void Reset(const IOperator::FResetParams& InParams);
 		void Execute();
 
 	private:
@@ -50,43 +55,61 @@ namespace Metasound
 		float PrevBPM = -1.0f;
 		float PrevBeatMultiplier = -1.0f;
 		float PrevDivOfWholeNote = -1.0f;
+
+		static constexpr float MaxBPM = UE_MAX_FLT / 4;
+		static constexpr float MinBPM = 1.f; 
+		static constexpr float MaxBeatMultiplier = UE_MAX_FLT / 4;
+		static constexpr float MinBeatMultiplier = KINDA_SMALL_NUMBER;
+		static constexpr float MaxDivOfWholeNote = UE_MAX_FLT / 4;
+		static constexpr float MinDivOfWholeNote = 1.f;
 	};
 
-	FBPMToSecondsOperator::FBPMToSecondsOperator(const FOperatorSettings& InSettings, const FFloatReadRef& InBPM, const FFloatReadRef& InBeatMultiplier, const FFloatReadRef& InDivOfWholeNote)
+	FBPMToSecondsOperator::FBPMToSecondsOperator(const FCreateOperatorParams& InParams, const FFloatReadRef& InBPM, const FFloatReadRef& InBeatMultiplier, const FFloatReadRef& InDivOfWholeNote)
 		: BPM(InBPM)
 		, BeatMultiplier(InBeatMultiplier)
 		, DivOfWholeNote(InDivOfWholeNote)
-		, TimeSeconds(TDataWriteReferenceFactory<FTime>::CreateAny(InSettings))
+		, TimeSeconds(TDataWriteReferenceFactory<FTime>::CreateExplicitArgs(InParams.OperatorSettings))
 	{
-		UpdateTime();
+		Reset(InParams);
+	}
+
+	void FBPMToSecondsOperator::BindInputs(FInputVertexInterfaceData& InOutVertexData)
+	{
+		using namespace BPMToSecondsVertexNames;
+
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputBPM), BPM);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputBeatMultiplier), BeatMultiplier);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputDivOfWholeNote), DivOfWholeNote);
+	}
+
+	void FBPMToSecondsOperator::BindOutputs(FOutputVertexInterfaceData& InOutVertexData)
+	{
+		using namespace BPMToSecondsVertexNames;
+
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputTimeSeconds), TimeSeconds);
 	}
 
 	FDataReferenceCollection FBPMToSecondsOperator::GetInputs() const
 	{
-		using namespace BPMToSecondsVertexNames;
-
-		FDataReferenceCollection InputDataReferences;
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputBPM), BPM);
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputBeatMultiplier), BeatMultiplier);
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputDivOfWholeNote), DivOfWholeNote);
-
-		return InputDataReferences;
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
 	}
 
 	FDataReferenceCollection FBPMToSecondsOperator::GetOutputs() const
 	{
-		using namespace BPMToSecondsVertexNames;
-
-		FDataReferenceCollection OutputDataReferences;
-		OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputTimeSeconds), TimeSeconds);
-		return OutputDataReferences;
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
 	}
 
 	void FBPMToSecondsOperator::UpdateTime()
 	{
-		float CurrBPM = FMath::Max(*BPM, 1.0f);
-		float CurrBeatMultiplier = FMath::Max(*BeatMultiplier, KINDA_SMALL_NUMBER);
-		float CurrDivOfWholeNote = FMath::Max(*DivOfWholeNote, 1.0f);
+		float CurrBPM = FMath::Clamp(*BPM, MinBPM, MaxBPM);
+		float CurrBeatMultiplier = FMath::Clamp(*BeatMultiplier, MinBeatMultiplier, MaxBeatMultiplier);
+		float CurrDivOfWholeNote = FMath::Clamp(*DivOfWholeNote, MinDivOfWholeNote, MaxDivOfWholeNote);
 
 		if (!FMath::IsNearlyEqual(PrevBPM, CurrBPM) || 
 			!FMath::IsNearlyEqual(PrevBeatMultiplier, CurrBeatMultiplier) || 
@@ -103,6 +126,11 @@ namespace Metasound
 			*TimeSeconds = FTime(NewTimeSeconds);
 		}
 
+	}
+
+	void FBPMToSecondsOperator::Reset(const IOperator::FResetParams& InParams)
+	{
+		UpdateTime();
 	}
 
 	void FBPMToSecondsOperator::Execute()
@@ -139,6 +167,7 @@ namespace Metasound
 			Info.DisplayName = METASOUND_LOCTEXT("BPMToSecondsNode_DisplayName", "BPM To Seconds");
 			Info.Description = METASOUND_LOCTEXT("BPMToSecondsNode_Desc", "Calculates a beat time in seconds from the given BPM, beat multiplier and divisions of a whole note.");
 			Info.Author = PluginAuthor;
+			Info.CategoryHierarchy = { NodeCategories::Conversions };
 			Info.PromptIfMissing = PluginNodeMissingPrompt;
 			Info.DefaultInterface = GetVertexInterface();
 			Info.Keywords = { METASOUND_LOCTEXT("BPMNodeRhythmKeyword", "Rhythm"), METASOUND_LOCTEXT("BPMNodeTempoKeyword", "Tempo") };
@@ -162,7 +191,7 @@ namespace Metasound
 		FFloatReadRef InBeatMultiplier = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, METASOUND_GET_PARAM_NAME(InputBeatMultiplier), InParams.OperatorSettings);
 		FFloatReadRef InDivOfWholeNote = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, METASOUND_GET_PARAM_NAME(InputDivOfWholeNote), InParams.OperatorSettings);
 
-		return MakeUnique<FBPMToSecondsOperator>(InParams.OperatorSettings, InBPM, InBeatMultiplier, InDivOfWholeNote);
+		return MakeUnique<FBPMToSecondsOperator>(InParams, InBPM, InBeatMultiplier, InDivOfWholeNote);
 	}
 
 	FBPMToSecondsNode::FBPMToSecondsNode(const FNodeInitData& InitData)

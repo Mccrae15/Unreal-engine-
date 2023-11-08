@@ -15,7 +15,7 @@
 #include "Chaos/RigidParticleControlFlags.h"
 #include "UObject/ExternalPhysicsCustomObjectVersion.h"
 #include "UObject/ExternalPhysicsMaterialCustomObjectVersion.h"
-#include "UObject/FortniteNCBranchObjectVersion.h"
+#include "UObject/FortniteSeasonBranchObjectVersion.h"
 #include "UObject/PhysicsObjectVersion.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
 #include "UObject/UE5ReleaseStreamObjectVersion.h"
@@ -429,6 +429,9 @@ public:
 	bool GravityEnabled() const { return MControlFlags.GetGravityEnabled(); }
 	void SetGravityEnabled(bool bInGravity){ MControlFlags.SetGravityEnabled(bInGravity); }
 
+	bool UpdateKinematicFromSimulation() const { return MControlFlags.GetUpdateKinematicFromSimulation(); }
+	void SetUpdateKinematicFromSimulation(bool bUpdateKinematicFromSimulation) { MControlFlags.SetUpdateKinematicFromSimulation(bUpdateKinematicFromSimulation); }
+
 	bool CCDEnabled() const { return MControlFlags.GetCCDEnabled(); }
 	void SetCCDEnabled(bool bInCCDEnabled) { MControlFlags.SetCCDEnabled(bInCCDEnabled); }
 
@@ -595,12 +598,13 @@ struct FCollisionData
 	}
 
 	bool HasCollisionData() const { return bSimCollision || bQueryCollision; }
+	bool HasQueryOnlyData() const { return !bSimCollision && bQueryCollision; }
 
 	void Serialize(FChaosArchive& Ar)
 	{
 		Ar.UsingCustomVersion(FExternalPhysicsCustomObjectVersion::GUID);
 		Ar.UsingCustomVersion(FExternalPhysicsMaterialCustomObjectVersion::GUID);
-		Ar.UsingCustomVersion(FFortniteNCBranchObjectVersion::GUID);
+		Ar.UsingCustomVersion(FFortniteSeasonBranchObjectVersion::GUID);
 
 		Ar << QueryData;
 		Ar << SimData;
@@ -636,7 +640,7 @@ struct FCollisionData
 			CollisionTraceType = (EChaosCollisionTraceFlag)Data;
 		}
 
-		if (Ar.CustomVer(FFortniteNCBranchObjectVersion::GUID) >= FFortniteNCBranchObjectVersion::AddShapeIsProbe)
+		if (Ar.CustomVer(FFortniteSeasonBranchObjectVersion::GUID) >= FFortniteSeasonBranchObjectVersion::AddShapeIsProbe)
 		{
 			int8 IsProbe = bIsProbe;
 			Ar << IsProbe;

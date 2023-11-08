@@ -269,7 +269,7 @@ IAllocatedVirtualTexture* FMaterialRenderProxy::GetPreallocatedVTStack(const FMa
 	}
 
 	GetRendererModule().AddVirtualTextureProducerDestroyedCallback(Texture->GetProducerHandle(), &OnVirtualTextureDestroyedCB, const_cast<FMaterialRenderProxy*>(this));
-	HasVirtualTextureCallbacks = true;
+	HasVirtualTextureCallbacks = -1;
 
 	return Texture->GetAllocatedVirtualTexture();
 }
@@ -346,7 +346,7 @@ IAllocatedVirtualTexture* FMaterialRenderProxy::AllocateVTStack(const FMaterialR
 
 	if (bFoundValidLayer)
 	{
-		HasVirtualTextureCallbacks = true;
+		HasVirtualTextureCallbacks = -1;
 		return GetRendererModule().AllocateVirtualTexture(VTDesc);
 	}
 	return nullptr;
@@ -365,7 +365,11 @@ void FMaterialRenderProxy::EvaluateUniformExpressions(FUniformExpressionCache& O
 	FMaterialShaderMap* ShaderMap = Context.Material.GetRenderingThreadShaderMap();
 	const FUniformExpressionSet& UniformExpressionSet = ShaderMap->GetUniformExpressionSet();
 
-	OutUniformExpressionCache.CachedUniformExpressionShaderMap = ShaderMap;
+	// Initialize this to null, and set it to its final value (ShaderMap) at the end of the function.  The goal is to increase the timing window where
+	// we can detect thread safety bugs where the uniform expression cache is accessed while the expressions are being evaluated.  Bugs will typically
+	// manifest as an assert in FMaterialShader::GetShaderBindings, called from various mesh draw command generation logic.
+	OutUniformExpressionCache.CachedUniformExpressionShaderMap = nullptr;
+
 	OutUniformExpressionCache.ResetAllocatedVTs();
 	OutUniformExpressionCache.AllocatedVTs.Empty(UniformExpressionSet.VTStacks.Num());
 	OutUniformExpressionCache.OwnedAllocatedVTs.Empty(UniformExpressionSet.VTStacks.Num());
@@ -426,7 +430,7 @@ void FMaterialRenderProxy::EvaluateUniformExpressions(FUniformExpressionCache& O
 
 		if (IsValidRef(OutUniformExpressionCache.UniformBuffer))
 		{
-			RHIUpdateUniformBuffer(OutUniformExpressionCache.UniformBuffer, TempBuffer);
+			FRHICommandListImmediate::Get().UpdateUniformBuffer(OutUniformExpressionCache.UniformBuffer, TempBuffer);
 		}
 		else
 		{
@@ -436,15 +440,18 @@ void FMaterialRenderProxy::EvaluateUniformExpressions(FUniformExpressionCache& O
 
 	OutUniformExpressionCache.ParameterCollections = UniformExpressionSet.ParameterCollections;
 
+	// Deliberately set this last, see comment above where it's initialized to nullptr
+	OutUniformExpressionCache.CachedUniformExpressionShaderMap = ShaderMap;
+
 	++UniformExpressionCacheSerialNumber;
 }
 
 void FMaterialRenderProxy::CacheUniformExpressions(bool bRecreateUniformBuffer)
 {
 	// Register the render proxy's as a render resource so it can receive notifications to free the uniform buffer.
-	InitResource();
+	InitResource(FRHICommandListImmediate::Get());
 
-	bool bUsingNewLoader = EVENT_DRIVEN_ASYNC_LOAD_ACTIVE_AT_RUNTIME && GEventDrivenLoaderEnabled;
+	bool bUsingNewLoader = FPlatformProperties::RequiresCookedData();
 
 	check((bUsingNewLoader && GIsInitialLoad) || // The EDL at boot time maybe not load the default materials first; we need to intialize materials before the default materials are done
 		UMaterial::GetDefaultMaterial(MD_Surface));
@@ -526,7 +533,7 @@ void FMaterialRenderProxy::UpdateUniformExpressionCacheIfNeeded(ERHIFeatureLevel
 }
 
 FMaterialRenderProxy::FMaterialRenderProxy(FString InMaterialName)
-	: SubsurfaceProfileRT(0)
+	: SubsurfaceProfileRT(nullptr)
 	, MaterialName(MoveTemp(InMaterialName))
 	, MarkedForGarbageCollection(0)
 	, DeletedFlag(0)
@@ -555,10 +562,10 @@ FMaterialRenderProxy::~FMaterialRenderProxy()
 		HasVirtualTextureCallbacks = false;
 	}
 
-	DeletedFlag = 1;
+	DeletedFlag = -1;
 }
 
-void FMaterialRenderProxy::InitDynamicRHI()
+void FMaterialRenderProxy::InitRHI(FRHICommandListBase& RHICmdList)
 {
 #if WITH_EDITOR
 	// MaterialRenderProxyMap is only used by shader compiling
@@ -575,7 +582,7 @@ void FMaterialRenderProxy::CancelCacheUniformExpressions()
 	DeferredUniformExpressionCacheRequests.Remove(this);
 }
 
-void FMaterialRenderProxy::ReleaseDynamicRHI()
+void FMaterialRenderProxy::ReleaseRHI()
 {
 #if WITH_EDITOR
 	if (!FPlatformProperties::RequiresCookedData())
@@ -598,7 +605,7 @@ void FMaterialRenderProxy::ReleaseDynamicRHI()
 
 void FMaterialRenderProxy::ReleaseResource()
 {
-	ReleaseResourceFlag = true;
+	ReleaseResourceFlag = -1;
 	FRenderResource::ReleaseResource();
 	if (HasVirtualTextureCallbacks)
 	{
@@ -759,7 +766,16 @@ bool FColoredTexturedMaterialRenderProxy::GetParameterValue(EMaterialParameterTy
 	}
 	else
 	{
-		return Parent->GetParameterValue(Type, ParameterInfo, OutValue, Context);
+		if (Type == EMaterialParameterType::Scalar && ParameterInfo.Name == UVChannelParamName)
+		{
+			OutValue = UVChannel;
+			return true;
+		}
+		else
+		{
+			// Call base class to make sure we override the color parameter if needed
+			return FColoredMaterialRenderProxy::GetParameterValue(Type, ParameterInfo, OutValue, Context);
+		}
 	}
 }
 

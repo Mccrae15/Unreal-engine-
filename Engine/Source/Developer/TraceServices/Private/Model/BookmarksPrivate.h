@@ -29,8 +29,6 @@ class FBookmarkProvider
 	, public IEditableBookmarkProvider
 {
 public:
-	static const FName ProviderName;
-
 	explicit FBookmarkProvider(IAnalysisSession& Session);
 	virtual ~FBookmarkProvider() {}
 
@@ -44,6 +42,10 @@ public:
 	virtual void AppendBookmark(uint64 BookmarkPoint, double Time, const TCHAR* Text) override;
 
 private:
+	// check whether a bookmark is actually a region marker from the deprecated/5.1 regions implementation.
+	// will forward to IEditableRegionProvider in this case
+	void CheckBookmarkForRegion(const TSharedRef<FBookmarkInternal> Shared) const;
+	
 	IAnalysisSession& Session;
 	TMap<uint64, TSharedPtr<FBookmarkSpec>> SpecMap;
 	TArray<TSharedRef<FBookmarkInternal>> Bookmarks;

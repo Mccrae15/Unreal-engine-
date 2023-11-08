@@ -6,10 +6,13 @@
 
 #include "Common.ush"
 
-float4 StencilingGeometryPosAndScale;
+// BEGIN META SECTION - GPU Occlusion Query Optimizations
+#define USE_MULTI_VIEW (INSTANCED_STEREO || MOBILE_MULTI_VIEW)
 
-#if MOBILE_MULTI_VIEW
-	uint ViewId;
+#if USE_MULTI_VIEW
+float4 StencilPosAndScale[2];
+#else
+float4 StencilPosAndScale;
 #endif
 
 void Main(
@@ -28,23 +31,18 @@ void Main(
 #if INSTANCED_STEREO
 	uint InViewId = GetEyeIndex(InstanceId);
 #endif
-
 #if USE_MULTI_VIEW_ID_INTERPOLANT
 	OutViewId = InViewId;
 #endif
-
-#if MOBILE_MULTI_VIEW
-	// Make the triangles degenerate if we're not targeting this view.
-	// We don't need to resolve the view info, since we already set the
-	// primary view with the data for the view we're interested in.
-	// TODO: Support targetting a single view properly.
-	if (InViewId != ViewId)
-	{
-		OutPosition = float4(0, 0, 0, 1);
-		return;
-	}
+#if USE_MULTI_VIEW
+	ResolvedView = ResolveView(InViewId);
+	float4 PosAndScale = StencilPosAndScale[InViewId];
+#else
+	ResolvedView = ResolveView();
+	float4 PosAndScale = StencilPosAndScale;
 #endif
 
-	float3 TransformedPosition = InPosition.xyz * StencilingGeometryPosAndScale.w + StencilingGeometryPosAndScale.xyz;
-	OutPosition = mul(float4(TransformedPosition, 1), View.TranslatedWorldToClip);
+	float3 TransformedPosition = InPosition.xyz * PosAndScale.w + PosAndScale.xyz;
+	OutPosition = mul(float4(TransformedPosition, 1), ResolvedView.TranslatedWorldToClip);
 }
+// END META SECTION - GPU Occlusion Query Optimizations

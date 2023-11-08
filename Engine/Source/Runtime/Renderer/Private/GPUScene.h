@@ -6,11 +6,15 @@
 #include "RendererInterface.h"
 #include "PrimitiveUniformShaderParameters.h"
 #include "PrimitiveSceneInfo.h"
+#include "SpanAllocator.h"
 #include "GrowOnlySpanAllocator.h"
 #include "InstanceCulling/InstanceCullingLoadBalancer.h"
 #include "MeshBatch.h"
 #include "LightSceneData.h"
+#include "SceneUniformBuffer.h"
+#include "UnifiedBuffer.h"
 
+class FRDGExternalAccessQueue;
 class FRHICommandList;
 class FScene;
 class FViewInfo;
@@ -19,17 +23,19 @@ class FGPUScene;
 class FGPUSceneDynamicContext;
 class FViewUniformShaderParameters;
 
-BEGIN_SHADER_PARAMETER_STRUCT(FGPUSceneResourceParameters, )
+BEGIN_SHADER_PARAMETER_STRUCT(FGPUSceneResourceParameters, RENDERER_API)
 	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, GPUSceneInstanceSceneData)
 	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, GPUSceneInstancePayloadData)
 	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, GPUScenePrimitiveSceneData)
 	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, GPUSceneLightmapData)
-	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<FGPULight>, GPUSceneLightData)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<FLightSceneData>, GPUSceneLightData)
 	SHADER_PARAMETER(uint32, InstanceDataSOAStride)
 	SHADER_PARAMETER(uint32, GPUSceneFrameNumber)
 	SHADER_PARAMETER(int32, NumInstances)
 	SHADER_PARAMETER(int32, NumScenePrimitives)
 END_SHADER_PARAMETER_STRUCT()
+
+DECLARE_SCENE_UB_STRUCT(FGPUSceneResourceParameters, GPUScene, RENDERER_API)
 
 /**
  * Used to manage dynamic primitives for a given view, during InitViews the data is collected and then can be committed to the GPU-Scene. 
@@ -180,11 +186,7 @@ struct FGPUSceneBufferState
 class FGPUScene
 {
 public:
-	FGPUScene()
-		: bUpdateAllPrimitives(false)
-		, InstanceSceneDataSOAStride(0)
-	{
-	}
+	FGPUScene();
 	~FGPUScene();
 
 	void SetEnabled(ERHIFeatureLevel::Type InFeatureLevel);
@@ -222,14 +224,14 @@ public:
 	void UploadDynamicPrimitiveShaderDataForView(FRDGBuilder& GraphBuilder, FScene& Scene, FViewInfo& View, FRDGExternalAccessQueue& ExternalAccessQueue, bool bIsShadowView = false);
 
 	/**
-	 * Modifies the GPU scene specific view shader parameters to the current versions. Returns true if any of the parameters changed.
+	 * Modifies the GPUScene specific scene UB parameters to the current versions. Returns true if any of the parameters changed.
 	 */
-	bool FillViewShaderParameters(FViewUniformShaderParameters& View);
+	bool FillSceneUniformBuffer(FRDGBuilder& GraphBuilder, FSceneUniformBuffer& SceneUB) const;
 
 	/**
 	 * Pull all pending updates from Scene and upload primitive & instance data.
 	 */
-	void Update(FRDGBuilder& GraphBuilder, FScene& Scene, FRDGExternalAccessQueue& ExternalAccessQueue);
+	void Update(FRDGBuilder& GraphBuilder, FSceneUniformBuffer& SceneUB, FScene& Scene, FRDGExternalAccessQueue& ExternalAccessQueue);
 
 	/**
 	 * Queue the given primitive for upload to GPU at next call to Update.
@@ -293,26 +295,29 @@ public:
 	int32 GetNumInstances() const { return InstanceSceneDataAllocator.GetMaxSize(); }
 	int32 GetNumPrimitives() const { return DynamicPrimitivesOffset; }
 	int32 GetNumLightmapDataItems() const { return LightmapDataAllocator.GetMaxSize(); }
+	/**
+	 * Returns the highest instance ID that is represented in the GPU scene (which may be lower than the host allocated IDs due to various limits)
+	 * Never larger than MAX_INSTANCE_ID, see Engine\Shaders\Shared\SceneDefinitions.h
+	 */
+	uint32 GetInstanceIdUpperBoundGPU() const;
 
-	const FGrowOnlySpanAllocator& GetInstanceSceneDataAllocator() const { return InstanceSceneDataAllocator; }
+	const FSpanAllocator& GetInstanceSceneDataAllocator() const { return InstanceSceneDataAllocator; }
 
 	/**
 	 * Return the GPU scene resource
 	 */
-	FGPUSceneResourceParameters GetShaderParameters() const { return ShaderParameters; }
+	FGPUSceneResourceParameters GetShaderParameters() const { check(ShaderParameters.GPUScenePrimitiveSceneData != nullptr); return ShaderParameters; }
 
 	/**
 	 * Draw GPU-Scene debug info, such as bounding boxes. Call once per view at some point in the frame after GPU scene has been updated fully.
 	 * What is drawn is controlled by the CVar: r.GPUScene.DebugMode. Enabling this cvar causes ShaderDraw to be being active (if supported). 
 	 */
-	void DebugRender(FRDGBuilder& GraphBuilder, FScene& Scene, FViewInfo& View);
+	void DebugRender(FRDGBuilder& GraphBuilder, FScene& Scene, FSceneUniformBuffer& SceneUniformBuffer, FViewInfo& View);
 
 	/**
-	 * Between these calls to FGrowOnlySpanAllocator::Free just appends the allocation to the free list, rather than trying to merge with existing allocations.
-	 * At EndDeferAllocatorMerges the free list is consolidated by sorting and merging all spans. This amortises the cost of the merge over many calls.
+	 * Manually trigger an allocator consolidate (will otherwise be done when an item is allocated).
 	 */
-	void BeginDeferAllocatorMerges();
-	void EndDeferAllocatorMerges();
+	void ConsolidateInstanceDataAllocations();
 
 	/**
 	 * Executes GPUScene writes that were deferred until a later point in scene rendering
@@ -332,12 +337,11 @@ public:
 	FRDGAsyncScatterUploadBuffer   PrimitiveUploadBuffer;
 
 	/** GPU primitive instance list */
-	FGrowOnlySpanAllocator         InstanceSceneDataAllocator;
 	TRefCountPtr<FRDGPooledBuffer> InstanceSceneDataBuffer;
 	FRDGAsyncScatterUploadBuffer   InstanceSceneUploadBuffer;
 	uint32                         InstanceSceneDataSOAStride;	// Distance between arrays in float4s
 
-	FGrowOnlySpanAllocator         InstancePayloadDataAllocator;
+	FSpanAllocator                 InstancePayloadDataAllocator;
 	TRefCountPtr<FRDGPooledBuffer> InstancePayloadDataBuffer;
 	FRDGAsyncScatterUploadBuffer   InstancePayloadUploadBuffer;
 
@@ -345,9 +349,9 @@ public:
 	FRDGAsyncScatterUploadBuffer   InstanceBVHUploadBuffer;
 
 	/** GPU light map data */
-	FGrowOnlySpanAllocator         LightmapDataAllocator;
+	FSpanAllocator                 LightmapDataAllocator;
 	TRefCountPtr<FRDGPooledBuffer> LightmapDataBuffer;
-	FRDGAsyncScatterUploadBuffer        LightmapUploadBuffer;
+	FRDGAsyncScatterUploadBuffer   LightmapUploadBuffer;
 
 	struct FInstanceRange
 	{
@@ -359,6 +363,7 @@ public:
 
 	using FInstanceGPULoadBalancer = TInstanceCullingLoadBalancer<SceneRenderingAllocator>;
 private:
+	FSpanAllocator		           InstanceSceneDataAllocator;
 	FGPUSceneBufferState BufferState;
 	FGPUSceneResourceParameters ShaderParameters;
 
@@ -393,14 +398,13 @@ private:
 
 	bool bIsEnabled = false;
 	bool bInBeginEndBlock = false;
-	bool bInExternalAccessMode = false;
 	FGPUSceneDynamicContext* CurrentDynamicContext = nullptr;
 	int32 NumScenePrimitives = 0;
 
 	ERHIFeatureLevel::Type FeatureLevel;
 
 	template<typename FUploadDataSourceAdapter>
-	void UpdateBufferState(FRDGBuilder& GraphBuilder, FScene& Scene, const FUploadDataSourceAdapter& UploadDataSourceAdapter);
+	void UpdateBufferState(FRDGBuilder& GraphBuilder, FSceneUniformBuffer& SceneUB, FScene& Scene, const FUploadDataSourceAdapter& UploadDataSourceAdapter, bool bIsMainUpdate = false);
 
 	/**
 	 * Generalized upload that uses an adapter to abstract the data souce. Enables uploading scene primitives & dynamic primitives using a single path.
@@ -418,14 +422,19 @@ private:
 
 	void UploadDynamicPrimitiveShaderDataForViewInternal(FRDGBuilder& GraphBuilder, FScene& Scene, FViewInfo& View, FRDGExternalAccessQueue& ExternalAccessQueue, bool bIsShadowView);
 
-	void UpdateInternal(FRDGBuilder& GraphBuilder, FScene& Scene, FRDGExternalAccessQueue& ExternalAccessQueue);
+	void UpdateInternal(FRDGBuilder& GraphBuilder, FSceneUniformBuffer& SceneUB, FScene& Scene, FRDGExternalAccessQueue& ExternalAccessQueue);
 
 	void AddUpdatePrimitiveIdsPass(FRDGBuilder& GraphBuilder, FInstanceGPULoadBalancer& IdOnlyUpdateItems);
 
 	void AddClearInstancesPass(FRDGBuilder& GraphBuilder);
 
-	void UseInternalAccessMode(FRDGBuilder& GraphBuilder);
-	void UseExternalAccessMode(FRDGExternalAccessQueue& ExternalAccessQueue, ERHIAccess Access, ERHIPipeline Pipelines);
+
+#if !UE_BUILD_SHIPPING
+	FDelegateHandle ScreenMessageDelegate;
+	bool bLoggedInstanceOverflow = false;
+	uint32 MaxInstancesDuringPrevUpdate = 0;
+#endif // UE_BUILD_SHIPPING
+
 };
 
 class FGPUSceneScopeBeginEndHelper

@@ -112,6 +112,24 @@ namespace UE
 		return !( *this == Other );
 	}
 
+	bool FSdfPath::operator<(const FSdfPath& Other) const
+	{
+#if USE_USD_SDK
+		return Impl->PxrSdfPath.Get() < Other.Impl->PxrSdfPath.Get();
+#else
+		return false;
+#endif // #if USE_USD_SDK
+	}
+
+	bool FSdfPath::operator<=(const FSdfPath& Other) const
+	{
+#if USE_USD_SDK
+		return Impl->PxrSdfPath.Get() <= Other.Impl->PxrSdfPath.Get();
+#else
+		return false;
+#endif // #if USE_USD_SDK
+	}
+
 	uint32 GetTypeHash( const UE::FSdfPath& Path )
 	{
 		uint32 Result = 0;
@@ -259,6 +277,15 @@ namespace UE
 #endif // #if USE_USD_SDK
 	}
 
+	FSdfPath FSdfPath::AppendPath(const UE::FSdfPath& NewRelativeSuffix) const
+	{
+#if USE_USD_SDK
+		return FSdfPath(Impl->PxrSdfPath.Get().AppendPath(NewRelativeSuffix.Impl->PxrSdfPath.Get()));
+#else
+		return FSdfPath();
+#endif // #if USE_USD_SDK
+	}
+
 	FSdfPath FSdfPath::AppendChild( const TCHAR* ChildName ) const
 	{
 #if USE_USD_SDK
@@ -318,6 +345,24 @@ namespace UE
 		return Impl->PxrSdfPath.Get().HasPrefix(Prefix);
 #else
 		return false;
+#endif // #if USE_USD_SDK
+	}
+
+	FSdfPath FSdfPath::MakeAbsolutePath(const UE::FSdfPath& Anchor) const
+	{
+#if USE_USD_SDK
+		return FSdfPath(Impl->PxrSdfPath.Get().MakeAbsolutePath(Anchor.Impl->PxrSdfPath.Get()));
+#else
+		return FSdfPath();
+#endif // #if USE_USD_SDK
+	}
+
+	FSdfPath FSdfPath::MakeRelativePath(const UE::FSdfPath& Anchor) const
+	{
+#if USE_USD_SDK
+		return FSdfPath(Impl->PxrSdfPath.Get().MakeRelativePath(Anchor.Impl->PxrSdfPath.Get()));
+#else
+		return FSdfPath();
 #endif // #if USE_USD_SDK
 	}
 }

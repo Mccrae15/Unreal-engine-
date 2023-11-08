@@ -5,6 +5,7 @@
 #include "AnimGraphNode_Base.h"
 
 #include "AnimNode_RemapCurvesFromMesh.h"
+#include "IRemapCurvesDebuggingProvider.h"
 
 #include "AnimGraphNode_RemapCurvesFromMesh.generated.h"
 
@@ -13,29 +14,34 @@ namespace ENodeTitleType { enum Type : int; }
 
 UCLASS(MinimalAPI)
 class UAnimGraphNode_RemapCurvesFromMesh :
-	public UAnimGraphNode_Base
+	public UAnimGraphNode_Base,
+	public IRemapCurvesDebuggingProvider
 {
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(EditAnywhere, Category=Settings)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Settings)
 	FAnimNode_RemapCurvesFromMesh Node;
 
-	bool CanVerifyExpressions() const;
-	void VerifyExpressions();
+	bool CanVerifyExpressions() const override;
+	void VerifyExpressions() override;
 
 	// UEdGraphNode interface
-	virtual FText GetNodeTitle(ENodeTitleType::Type TitleType) const override;
-	virtual FText GetTooltipText() const override;
+	FText GetNodeTitle(ENodeTitleType::Type TitleType) const override;
+	FText GetTooltipText() const override;
 	FText GetMenuCategory() const override;
 	// End of UEdGraphNode interface
 
 	// UAnimGraphNode_Base interface
-	virtual bool UsingCopyPoseFromMesh() const override { return true; }
-	virtual void GetOutputLinkAttributes(FNodeAttributeArray& OutAttributes) const override;
+	bool UsingCopyPoseFromMesh() const override { return true; }
+	void GetOutputLinkAttributes(FNodeAttributeArray& OutAttributes) const override;
+	void CustomizePinData(UEdGraphPin* Pin, FName SourcePropertyName, int32 ArrayIndex) const override;
 	// End of UAnimGraphNode_Base interface
 	
-private:
-	FAnimNode_RemapCurvesFromMesh* GetDebuggedNode() const;
+	// UObject override
+	void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override; 	
 	
+private:
+	USkeletalMeshComponent* GetDebuggedComponent() const;
+	FAnimNode_RemapCurvesFromMesh* GetDebuggedNode() const;
 };

@@ -20,6 +20,7 @@
 #include "LandscapeFileFormatRaw.h"
 #include "Settings/EditorExperimentalSettings.h"
 #include "LandscapeEditorServices.h"
+#include "LandscapeImageFileCache.h"
 
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "PropertyEditorModule.h"
@@ -132,9 +133,6 @@ public:
 		{
 			FToolMenuSection& Section = BuildMenu->FindOrAddSection("LevelEditorLandscape");
 
-			FUIAction ActionBakeTextures(FExecuteAction::CreateStatic(&BuildGITextures), FCanExecuteAction());
-			Section.AddMenuEntry(NAME_None, LOCTEXT("BuildGITexturesOnly", "Build GI Textures Only"),LOCTEXT("BuildGIBakedTextures ", "Build GI baked base color textures"), TAttribute<FSlateIcon>(), ActionBakeTextures,EUserInterfaceActionType::Button);
-			
 			FUIAction ActionBuildGrassMaps(FExecuteAction::CreateStatic(&BuildGrassMaps), FCanExecuteAction());
 			Section.AddMenuEntry(TEXT("BuildGrassMapsOnly"), LOCTEXT("BuildGrassMapsOnly", "Build Grass Maps Only"), LOCTEXT("BuildLandscapeGrassMaps", "Build landscape grass maps"), TAttribute<FSlateIcon>(), ActionBuildGrassMaps, EUserInterfaceActionType::Button);
 
@@ -144,18 +142,7 @@ public:
 			FUIAction ActionBuildNanite(FExecuteAction::CreateStatic(&BuildNanite), FCanExecuteAction());
 			Section.AddMenuEntry(NAME_None, LOCTEXT("BuildNaniteOnly", "Build Nanite Only"), LOCTEXT("BuildLandscapeNanite", "Build Nanite representation"), TAttribute<FSlateIcon>(), ActionBuildNanite, EUserInterfaceActionType::Button);
 
-			FUIAction ActionSaveModifiedLandscapes(FExecuteAction::CreateStatic(&SaveModifiedLandscapes),
-				FCanExecuteAction::CreateLambda([]()
-				{
-					if (!ULandscapeSubsystem::IsDirtyOnlyInModeEnabled())
-					{
-						return false;
-					}
-
-					return HasModifiedLandscapes();
-				}
-			));
-			
+			FUIAction ActionSaveModifiedLandscapes(FExecuteAction::CreateStatic(&SaveModifiedLandscapes), FCanExecuteAction::CreateStatic(&HasModifiedLandscapes));
 			Section.AddMenuEntry(NAME_None,
 				LOCTEXT("SaveModifiedLandscapes", "Save Modified Landscapes"), LOCTEXT("SaveModifiedLandscapesToolTip", "Save landscapes that were modified outside of the editor mode"),
 				TAttribute<FSlateIcon>(), ActionSaveModifiedLandscapes, EUserInterfaceActionType::Button);
@@ -164,6 +151,8 @@ public:
 		ILandscapeModule& LandscapeModule = FModuleManager::GetModuleChecked<ILandscapeModule>("Landscape");
 		LandscapeEditorServices.Reset(new FLandscapeEditorServices);
 		LandscapeModule.SetLandscapeEditorServices(LandscapeEditorServices.Get());
+
+		LandscapeImageFileCache.Reset(new FLandscapeImageFileCache());
 	}
 
 	/**
@@ -201,6 +190,7 @@ public:
 			LandscapeModule.SetLandscapeEditorServices(nullptr);
 		}
 		LandscapeEditorServices.Reset();
+		LandscapeImageFileCache.Reset();
 	}
 
 	static void ConstructLandscapeViewportMenu(FMenuBuilder& MenuBuilder)
@@ -242,17 +232,6 @@ public:
 		);
 	}
 
-	static void BuildGITextures()
-	{
-		if (UWorld* World = GEditor->GetEditorWorldContext().World())
-		{
-			if (ULandscapeSubsystem* LandscapeSubsystem = World->GetSubsystem<ULandscapeSubsystem>())
-			{
-				LandscapeSubsystem->BuildGIBakedTextures();
-			}
-		}
-	}
-
 	static void BuildGrassMaps()
 	{
 		if (UWorld* World = GEditor->GetEditorWorldContext().World())
@@ -288,8 +267,6 @@ public:
 
 	static bool HasModifiedLandscapes()
 	{
-		check(ULandscapeSubsystem::IsDirtyOnlyInModeEnabled());
-		
 		if (UWorld* World = GEditor->GetEditorWorldContext().World())
 		{
 			if (ULandscapeSubsystem* LandscapeSubsystem = World->GetSubsystem<ULandscapeSubsystem>())
@@ -385,6 +362,8 @@ public:
 
 	virtual TSharedPtr<FUICommandList> GetLandscapeLevelViewportCommandList() const override;
 
+	FLandscapeImageFileCache& GetImageFileCache() const override;
+
 protected:
 	TSharedPtr<FExtender> ViewportMenuExtender;
 	TSharedPtr<FUICommandList> GlobalUICommandList;
@@ -395,6 +374,7 @@ protected:
 	mutable FString HeightmapExportDialogTypeString;
 	mutable FString WeightmapExportDialogTypeString;
 	TUniquePtr<ILandscapeEditorServices> LandscapeEditorServices;
+	TUniquePtr<FLandscapeImageFileCache> LandscapeImageFileCache;
 };
 
 IMPLEMENT_MODULE(FLandscapeEditorModule, LandscapeEditor);
@@ -562,5 +542,12 @@ TSharedPtr<FUICommandList> FLandscapeEditorModule::GetLandscapeLevelViewportComm
 {
 	return GlobalUICommandList;
 }
+
+FLandscapeImageFileCache& FLandscapeEditorModule::GetImageFileCache() const
+{
+	check(LandscapeImageFileCache != nullptr);
+	return *LandscapeImageFileCache;
+}
+
 
 #undef LOCTEXT_NAMESPACE

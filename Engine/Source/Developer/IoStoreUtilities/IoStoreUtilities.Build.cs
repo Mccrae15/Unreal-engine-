@@ -13,11 +13,12 @@ public class IoStoreUtilities : ModuleRules
 		PrivateDependencyModuleNames.AddRange(new string[] {
             "Core",
             "CoreUObject",
-            "AssetRegistry",
+			"AssetRegistry",
+			"Projects",
 			"Zen",
 			"RenderCore",
-			"libcurl",
-        });
+			"Sockets",
+		});
 
 		PublicIncludePathModuleNames.AddRange(new string[] {
 			"Zen",
@@ -28,5 +29,6 @@ public class IoStoreUtilities : ModuleRules
         PrivateDependencyModuleNames.Add("RSA");
         PrivateDependencyModuleNames.Add("DeveloperToolSettings");
         PrivateDependencyModuleNames.Add("SandboxFile");
+        PrivateDependencyModuleNames.Add("IoStoreOnDemand");
 	}
 }

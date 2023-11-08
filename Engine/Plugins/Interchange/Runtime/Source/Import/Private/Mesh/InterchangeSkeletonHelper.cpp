@@ -17,13 +17,6 @@ namespace UE::Interchange::Private
 
 	bool FSkeletonHelper::ProcessImportMeshSkeleton(const USkeleton* SkeletonAsset, FReferenceSkeleton& RefSkeleton, int32& SkeletalDepth, const UInterchangeBaseNodeContainer* NodeContainer, const FString& RootJointNodeId, TArray<SkeletalMeshImportData::FBone>& RefBonesBinary, const bool bUseTimeZeroAsBindPose, bool& bOutDiffPose)
 	{
-		auto FixupBoneName = [](FString BoneName)
-		{
-			BoneName.TrimStartAndEndInline();
-			BoneName.ReplaceInline(TEXT(" "), TEXT("-"), ESearchCase::IgnoreCase);
-			return BoneName;
-		};
-
 		RefBonesBinary.Empty();
 		// Setup skeletal hierarchy + names structure.
 		RefSkeleton.Empty();
@@ -41,7 +34,7 @@ namespace UE::Interchange::Private
 		{
 			const FJointInfo& BinaryBone = JointInfos[b];
 
-			const FString BoneName = FixupBoneName(BinaryBone.Name);
+			const FString BoneName = BinaryBone.Name;
 			const FMeshBoneInfo BoneInfo(FName(*BoneName, FNAME_Add), BinaryBone.Name, BinaryBone.ParentIndex);
 			const FTransform BoneTransform(BinaryBone.LocalTransform);
 			if (RefSkeleton.FindRawBoneIndex(BoneInfo.Name) != INDEX_NONE)
@@ -78,7 +71,7 @@ namespace UE::Interchange::Private
 		return true;
 	}
 
-	bool FSkeletonHelper::IsCompatibleSkeleton(const USkeleton* Skeleton, const FString RootJoinUid, const UInterchangeBaseNodeContainer* BaseNodeContainer)
+	bool FSkeletonHelper::IsCompatibleSkeleton(const USkeleton* Skeleton, const FString RootJoinUid, const UInterchangeBaseNodeContainer* BaseNodeContainer, bool bConvertStaticToSkeletalActive)
 	{
 		// at least % of bone should match 
 		int32 NumOfBoneMatches = 0;
@@ -88,7 +81,7 @@ namespace UE::Interchange::Private
 
 		TArray<FMeshBoneInfo> SkeletalLodRawInfos;
 		SkeletalLodRawInfos.Reserve(SkeletonBoneCount);
-		RecursiveBuildSkeletalSkeleton(RootJoinUid, INDEX_NONE, BaseNodeContainer, SkeletalLodRawInfos);
+		RecursiveBuildSkeletalSkeleton(RootJoinUid, INDEX_NONE, BaseNodeContainer, SkeletalLodRawInfos, bConvertStaticToSkeletalActive);
 		const int32 SkeletalLodBoneCount = SkeletalLodRawInfos.Num();
 
 		// first ensure the parent exists for each bone
@@ -327,10 +320,10 @@ namespace UE::Interchange::Private
 		return true;
 	}
 
-	void FSkeletonHelper::RecursiveBuildSkeletalSkeleton(const FString JoinToAddUid, const int32 ParentIndex, const UInterchangeBaseNodeContainer* BaseNodeContainer, TArray<FMeshBoneInfo>& SkeletalLodRawInfos)
+	void FSkeletonHelper::RecursiveBuildSkeletalSkeleton(const FString JoinToAddUid, const int32 ParentIndex, const UInterchangeBaseNodeContainer* BaseNodeContainer, TArray<FMeshBoneInfo>& SkeletalLodRawInfos, bool bConvertStaticToSkeletalActive)
 	{
 		const UInterchangeSceneNode* SceneNode = Cast<UInterchangeSceneNode>(BaseNodeContainer->GetNode(JoinToAddUid));
-		if (!SceneNode || !SceneNode->IsSpecializedTypeContains(FSceneNodeStaticData::GetJointSpecializeTypeString()))
+		if (!bConvertStaticToSkeletalActive && (!SceneNode || !SceneNode->IsSpecializedTypeContains(FSceneNodeStaticData::GetJointSpecializeTypeString())))
 		{
 			return;
 		}

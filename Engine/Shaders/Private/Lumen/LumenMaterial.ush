@@ -105,6 +105,19 @@ FReflectionTracingCoord GetReflectionTracingCoord(uint2 InReflectionTracingCoord
 	return Out;
 }
 
+uint EncodeTraceTexel(uint2 ReflectionTracingCoord)
+{
+	return (ReflectionTracingCoord.x & 0xFFFF) | ((ReflectionTracingCoord.y & 0xFFFF) << 16);
+}
+
+FReflectionTracingCoord DecodeTraceTexel(uint TraceTexelData)
+{
+	uint2 TraceCoord;
+	TraceCoord.x = TraceTexelData & 0xFFFF;
+	TraceCoord.y = (TraceTexelData >> 16) & 0xFFFF;
+	return GetReflectionTracingCoord(TraceCoord);
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Abstract coord for material data
 struct FLumenMaterialCoord
@@ -232,20 +245,20 @@ FLumenMaterialData InternalReadMaterialData_Strata(uint2 InPixelPos)
 
 #if STRATA_MATERIALCONTAINER_IS_VIEWRESOURCE
 
-	FStrataAddressing StrataAddressing			= GetStrataPixelDataByteOffset(InPixelPos, uint2(View.BufferSizeAndInvSize.xy), Strata.MaxBytesPerPixel);
-	const FStrataPixelHeader StrataPixelHeader	= UnpackStrataHeaderIn(Strata.MaterialTextureArray, StrataAddressing, Strata.TopLayerTexture);
-	const FStrataSubsurfaceHeader SSSHeader		= StrataLoadSubsurfaceHeader(Strata.MaterialTextureArray, Strata.FirstSliceStoringStrataSSSData, InPixelPos);
+	FStrataAddressing StrataAddressing	= GetStrataPixelDataByteOffset(InPixelPos, uint2(View.BufferSizeAndInvSize.xy), Strata.MaxBytesPerPixel);
+	FStrataPixelHeader StrataPixelHeader= UnpackStrataHeaderIn(Strata.MaterialTextureArray, StrataAddressing, Strata.TopLayerTexture);
+	FStrataSubsurfaceHeader SSSHeader	= StrataLoadSubsurfaceHeader(Strata.MaterialTextureArray, Strata.FirstSliceStoringStrataSSSData, InPixelPos);
 
 	// When Lumen is not used, only MaterialAO and ShadingID (see IsValid) are read, sourced form the single UINT read for the StrataPixelHeader.
-	const uint BSDFType = StrataGetBSDFType(StrataPixelHeader);
+	const uint BSDFType = StrataPixelHeader.StrataGetBSDFType();
 
 	Out.MaterialAO						= StrataGetIrradianceAndAO(StrataPixelHeader).MaterialAO;
-	Out.ShadingID						= IsStrataMaterial(StrataPixelHeader) ? SHADINGMODELID_STRATA : SHADINGMODELID_UNLIT;
+	Out.ShadingID						= StrataPixelHeader.IsStrataMaterial() ? SHADINGMODELID_STRATA : SHADINGMODELID_UNLIT;
 	Out.DiffuseIndirectSampleOcclusion	= StrataGetIrradianceAndAO(StrataPixelHeader).DiffuseIndirectSampleOcclusion;
 	Out.bNeedsSeparateLightAccumulation = StrataSubSurfaceHeaderGetUseDiffusion(SSSHeader);
 	Out.bIsSLW							= BSDFType == STRATA_BSDF_TYPE_SINGLELAYERWATER;
 	Out.bIsHair							= BSDFType == STRATA_BSDF_TYPE_HAIR;
-	Out.bHasBackfaceDiffuse				= BSDFType == STRATA_BSDF_TYPE_SLAB && HasSubsurface(StrataPixelHeader);
+	Out.bHasBackfaceDiffuse				= BSDFType == STRATA_BSDF_TYPE_SLAB && StrataPixelHeader.HasSubsurface();
 	Out.bRequiresBxDFImportanceSampling = Out.bIsHair;
 
 	// STRATA_TODO: For now, use only the last BSDF (arbitrary)
@@ -287,7 +300,6 @@ FLumenMaterialData InternalReadMaterialData_Strata(uint2 InCoord, uint InBSDFInd
 			const FStrataIrradianceAndOcclusion IrradianceAO= StrataGetIrradianceAndAO(StrataPixelHeader);
 
 			const uint BSDFType = StrataGetBSDFType(BSDF);
-			const uint SSSType  = BSDFType == STRATA_BSDF_TYPE_SLAB ? BSDF_GETSSSTYPE(BSDF) : SSS_TYPE_INVALID;
 
 			Out.SceneDepth						= ConvertFromDeviceZ(SceneTexturesStruct.SceneDepthTexture.Load(int3(InCoord, 0)).r);
 			Out.TangentBasis					= StrataGetBSDFSharedBasis(StrataPixelHeader, BSDF, StrataAddressing);
@@ -298,7 +310,7 @@ FLumenMaterialData InternalReadMaterialData_Strata(uint2 InCoord, uint InBSDFInd
 			Out.bNeedsSeparateLightAccumulation = StrataSubSurfaceHeaderGetUseDiffusion(SSSHeader);
 			Out.bIsSLW							= BSDFType == STRATA_BSDF_TYPE_SINGLELAYERWATER;
 			Out.bIsHair							= BSDFType == STRATA_BSDF_TYPE_HAIR;
-			Out.bHasBackfaceDiffuse				= SSSType != SSS_TYPE_INVALID;
+			Out.bHasBackfaceDiffuse				= BSDFType == STRATA_BSDF_TYPE_SLAB ? BSDF.HasBackScattering() : false;
 			Out.bRequiresBxDFImportanceSampling = Out.bIsHair;
 			Out.bIsFrontLayerTranslucency		= false;
 			Out.Anisotropy						= StrataGetBSDFAnisotropy(BSDF);
@@ -363,7 +375,7 @@ FLumenMaterialData InternalReadMaterialData_GBuffer(const FGBufferData GBufferDa
 	Out.SceneDepth = GBufferData.Depth;
 	Out.WorldNormal = GBufferData.WorldNormal;
 	Out.Roughness = GBufferData.Roughness;
-	Out.Anisotropy = 0;
+	Out.Anisotropy = GBufferData.Anisotropy;
 	Out.TopLayerRoughness = GetClearCoatRoughness(GBufferData);
 	Out.MaterialAO = GBufferData.GBufferAO;
 	Out.ShadingID = GBufferData.ShadingModelID;
@@ -515,9 +527,29 @@ bool ShouldComputeIndirectLighting(FLumenMaterialData In)
 float3x3 GetTangentBasis(FLumenMaterialData In)
 {
 #if STRATA_ENABLED
-	if (In.Anisotropy != 0) { return In.TangentBasis; } else { return GetTangentBasis(In.WorldNormal);}
+	if (HasAnisotropy(In)) 
+	{ 
+		return In.TangentBasis; 
+	} 
+	else 
+	{ 
+		return GetTangentBasis(In.WorldNormal);
+	}
 #else
-	return GetTangentBasis(In.WorldNormal);
+	#if !FRONT_LAYER_TRANSLUCENCY
+	if (HasAnisotropy(In)) 
+	{ 
+		float3x3 TangentBasis;
+		TangentBasis[0] = In.GBufferData.WorldTangent;
+		TangentBasis[1] = cross(In.WorldNormal, In.GBufferData.WorldTangent);
+		TangentBasis[2] = In.WorldNormal;
+		return TangentBasis; 
+	} 
+	else 
+	#endif
+	{ 
+		return GetTangentBasis(In.WorldNormal);
+	}
 #endif
 }
 
@@ -528,7 +560,7 @@ float3x3 GetTangentBasis(FLumenMaterialData In)
 FBxDFSample SampleStrataBxDF(const uint TermMask, FLumenMaterialData InMaterial, float3 V, float4 E)
 {
 	// Temporary place holder while converting lumen
-	return SampleDefaultLitBxDF(TermMask, InMaterial.WorldNormal, InMaterial.Roughness, V, E);
+	return SampleDefaultLitBxDF(TermMask, InMaterial.WorldNormal, GetTangentBasis(InMaterial), InMaterial.Anisotropy, InMaterial.Roughness, V, E);
 }
 #endif
 
@@ -540,14 +572,10 @@ FBxDFSample SampleBxDF(const uint TermMask, FLumenMaterialData InMaterial, float
 	FBxDFSample Unused = (FBxDFSample)0;
 	return Unused;
 #else
-	FGBufferData InGBufferData;
+	FGBufferData InGBufferData = InMaterial.GBufferData;
 	InGBufferData.Roughness = InMaterial.Roughness;
 	InGBufferData.WorldNormal = InMaterial.WorldNormal;
 	InGBufferData.ShadingModelID = InMaterial.ShadingID;
-	InGBufferData.BaseColor = InMaterial.GBufferData.BaseColor;
-	InGBufferData.Specular = InMaterial.GBufferData.Specular;
-	InGBufferData.CustomData = InMaterial.GBufferData.CustomData;
-	InGBufferData.Metallic = InMaterial.GBufferData.Metallic;
 	return SampleBxDF(TermMask, InGBufferData, V, E);
 #endif
 }

@@ -2,8 +2,7 @@
 
 #pragma once
 
-
-#include "Styling/SlateBrush.h"
+#include "Engine/EngineTypes.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/Layout/SConstraintCanvas.h"
 
@@ -72,8 +71,14 @@ protected:
 	//~ End IDMXPixelMappingOutputComponentWidgetInterface
 
 private:
-	/** Updates the child slots */
-	void UpdateChildSlots();
+	/** Refreshes the widget oo the next tick */
+	void RequestRefresh();
+
+	/** Refreshes the widget */
+	void ForceRefresh();
+
+	/** Creates content */
+	TSharedRef<SWidget> CreateContent();
 
 	/** Creates the child slot that displays the component name, above the child slot */
 	void CreateComponentNameChildSlotAbove();
@@ -86,9 +91,6 @@ private:
 
 	/** Creates the child slot that displays info about the patch such as Addresses or the Fixture ID */
 	void CreatePatchInfoChildSlot();
-
-	/** Brush for the outermost Bborder */
-	FSlateBrush BorderBrush;
 
 	/** The box that is shown */
 	TSharedPtr<SBox> ComponentBox;
@@ -107,6 +109,9 @@ private:
 
 	/** Border for content to display names in the top row of the widget */
 	TSharedPtr<SBorder> BottomContentBorder;
+
+	/** Timer handle for request refresh */
+	FTimerHandle RefreshTimerHandle;
 
 	/** The model for this widget */
 	TSharedPtr<FDMXPixelMappingOutputComponentModel> Model;
@@ -151,9 +156,6 @@ private:
 
 	/** The canvas slot of the component widget */
 	SConstraintCanvas::FSlot* Slot = nullptr;
-
-	/** Brush for the outermost Bborder */
-	FSlateBrush BorderBrush;
 
 	/** Border that holds the content */
 	TSharedPtr<SBorder> ContentBorder;

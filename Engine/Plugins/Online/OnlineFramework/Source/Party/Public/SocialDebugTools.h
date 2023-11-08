@@ -12,22 +12,27 @@ class USocialManager;
 class IOnlineSubsystem;
 class FOnlineAccountCredentials;
 class IOnlinePartyPendingJoinRequestInfo;
+struct FPartyMemberJoinInProgressRequest;
 typedef TSharedPtr<const class IOnlinePartyJoinInfo> IOnlinePartyJoinInfoConstPtr;
 typedef TSharedPtr<class FOnlinePartyData> FOnlinePartyDataPtr;
 typedef TSharedPtr<const class FOnlinePartyData> FOnlinePartyDataConstPtr;
+using FUniqueNetIdPtr = TSharedPtr<const FUniqueNetId>;
+enum class EPartyJoinDenialReason : uint8;
 
 UCLASS(Within = SocialManager, Config = Game)
 class PARTY_API USocialDebugTools : public UObject, public FExec
 {
 	GENERATED_BODY()
 
-	static const int32 LocalUserNum = 0;
+	static constexpr const int32 LocalUserNum = 0;
 
 public:
 	USocialManager& GetSocialManager() const;
 
 	// FExec
+#if UE_ALLOW_EXEC_COMMANDS
 	virtual bool Exec(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Out) override;
+#endif
 
 	// USocialDebugTools
 
@@ -42,6 +47,9 @@ public:
 
 	DECLARE_DELEGATE_OneParam(FJoinPartyComplete, bool);
 	virtual void JoinParty(const FString& Instance, const FString& FriendName, const FJoinPartyComplete& OnComplete);
+
+	DECLARE_DELEGATE_OneParam(FJoinInProgressComplete, EPartyJoinDenialReason);
+	virtual void JoinInProgress(const FString& Instance, const FJoinInProgressComplete& OnComplete);
 
 	DECLARE_DELEGATE_OneParam(FLeavePartyComplete, bool);
 	virtual void LeaveParty(const FString& Instance, const FLeavePartyComplete& OnComplete);
@@ -65,8 +73,12 @@ public:
 
 		void Init();
 		void Shutdown();
-		inline IOnlineSubsystem* GetOSS() { return OnlineSub; }
-		inline FOnlinePartyDataConstPtr GetPartyMemberData() { return PartyMemberData; }
+		IOnlineSubsystem* GetOSS() const { return OnlineSub; }
+		FOnlinePartyDataPtr GetPartyMemberData() const { return PartyMemberData; }
+		FUniqueNetIdPtr GetLocalUserId() const;
+		void ModifyPartyField(const FString& FieldName, const class FVariantData& FieldValue);
+
+		bool SetJIPRequest(const FPartyMemberJoinInProgressRequest& InRequest);
 
 		FString Name;
 		IOnlineSubsystem* OnlineSub;
@@ -86,6 +98,7 @@ public:
 	FInstanceContext* GetContextForUser(const FUniqueNetId& UserId);
 
 protected:
+	virtual void PrintExecCommands() const;
 	virtual bool RunCommand(const TCHAR* Cmd, const TArray<FString>& TargetInstances);
 	virtual void NotifyContextInitialized(const FInstanceContext& Context) { }
 
@@ -99,7 +112,6 @@ private:
 	IOnlinePartyJoinInfoConstPtr GetDefaultPartyJoinInfo() const;
 	IOnlineSubsystem* GetDefaultOSS() const;
 	void PrintExecUsage() const;
-	virtual void PrintExecCommands() const;
 
 	// OSS callback handlers
 	void HandleFriendInviteReceived(const FUniqueNetId& LocalUserId, const FUniqueNetId& FriendId);

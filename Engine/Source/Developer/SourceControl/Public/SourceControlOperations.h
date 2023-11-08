@@ -36,7 +36,7 @@ public:
 
 	virtual FText GetInProgressString() const override
 	{
-		return LOCTEXT("SourceControl_Connecting", "Connecting to revision control...");
+		return LOCTEXT("SourceControl_Connecting", "Connecting to Revision Control...");
 	}
 
 	const FString& GetPassword() const
@@ -180,12 +180,25 @@ public:
 		FilesList = MoveTemp(InFilesList);
 	}
 
+	const FString& GetSearchPattern() const
+	{
+		return SearchPattern;
+	}
+
+	void SetSearchPattern(const FString& InSearchPattern)
+	{
+		SearchPattern = InSearchPattern;
+	}
+
 protected:
 	/** Include deleted files in the list. */
 	bool bIncludeDeleted = false;
 
 	/** Stored result of the operation */
 	TArray<FString> FilesList;
+
+	/** The search pattern for the file list */
+	FString SearchPattern;
 };
 
 /**
@@ -293,7 +306,7 @@ public:
 
 	virtual FText GetInProgressString() const override
 	{
-		return LOCTEXT("SourceControl_SyncPreview", "Previewing File Sync from revision control...");
+		return LOCTEXT("SourceControl_SyncPreview", "Previewing sync file(s) from Revision Control...");
 	}
 
 	void SetRevision(const FString& InRevision)
@@ -316,6 +329,16 @@ public:
 		return bHeadRevision;
 	}
 
+	void SetTransferSize(const int64 InTransferSize)
+	{
+		TransferSize = InTransferSize;
+	}
+
+	int64 GetTransferSize() const
+	{
+		return TransferSize;
+	}
+
 	void SetAffectedFiles(TArray<FString>&& InAffectedFiles)
 	{
 		AffectedFiles = MoveTemp(InAffectedFiles);
@@ -332,6 +355,9 @@ protected:
 
 	/** Flag abstracting if the operation aims to preview a sync to head */
 	bool bHeadRevision = false;
+
+	/** Number of bytes that need to be transferred for the sync operation */
+	int64 TransferSize = 0;
 
 	/** Array of files that would be affected by the sync operation */
 	TArray<FString> AffectedFiles;
@@ -351,7 +377,7 @@ public:
 
 	virtual FText GetInProgressString() const override
 	{
-		return LOCTEXT("SourceControl_Sync", "Syncing file(s) from revision control...");
+		return LOCTEXT("SourceControl_Sync", "Syncing file(s) from Revision Control...");
 	}
 
 	UE_DEPRECATED(4.26, "FSync::SetRevisionNumber(int32) has been deprecated. Please update to Fsync::SetRevision(const FString&).")
@@ -439,7 +465,7 @@ public:
 
 	virtual FText GetInProgressString() const override
 	{
-		return LOCTEXT("SourceControl_Update", "Updating file(s) revision control status...");
+		return LOCTEXT("SourceControl_Update", "Updating file(s) Revision Control status...");
 	}
 
 	void SetUpdateHistory( bool bInUpdateHistory )
@@ -1002,17 +1028,19 @@ public:
 	};
 
 	/** 
-	 * This constructor will download the files and keep them in memory, 
-	 * which can then be accessed by calling XXX.
+	 * This version of FDownloadFile will download the files and keep them in memory,
+	 * which can then be accessed by calling ::GetFileData. Full logging verbosity
+	 * will be used.
 	 */
 	FDownloadFile() = default;
 
-	FDownloadFile( EVerbosity InVerbosity)
+	/**
+	 * This version of FDownloadFile will download the files and keep them in memory,
+	 * which can then be accessed by calling ::GetFileData.
+	 */
+	FDownloadFile(EVerbosity InVerbosity)
 		: Verbosity(InVerbosity)
 	{}
-	
-	/** This constructor will download the files to the given directory */
-	SOURCECONTROL_API FDownloadFile(FStringView InTargetDirectory, EVerbosity InVerbosity);
 
 	// ISourceControlOperation interface
 	virtual FName GetName() const override
@@ -1020,45 +1048,61 @@ public:
 		return "DownloadFile";
 	}
 
+	// ISourceControlOperation interface
 	virtual FText GetInProgressString() const override
 	{
 		return LOCTEXT("SourceControl_PrintOperation", "Downloading file from server...");
 	}
 
-	virtual bool CanBeCalledFromBackgroundThreads() const
+	// ISourceControlOperation interface
+	virtual bool CanBeCalledFromBackgroundThreads() const override
 	{
 		return true;
 	}
+	
+	/** This version of FDownloadFile will download the files to the given target directory */
+	SOURCECONTROL_API FDownloadFile(FStringView InTargetDirectory, EVerbosity InVerbosity);
 
+	/**
+	 * Returns the directory that the files will (or have) been downloaded to. This path
+	 * will be empty if no target directory was given, in which case the files can be
+	 * accessed via the ::GetFileData method.
+	 */
 	FString GetTargetDirectory() const
 	{
 		return TargetDirectory;
 	}
 
-	void AddFileData(const FString& Filename, FSharedBuffer FileData)
-	{
-		FileDataMap.Add(Filename, FileData);
-	}
+	/**
+	 * If no target directory was given to download the files too then the command will keep
+	 * the files in memory which can be accessed via this method. If the file failed to download
+	 * then a null FSharedBuffer will be returned.
+	 */
+	SOURCECONTROL_API FSharedBuffer GetFileData(const FStringView& Filename);
 
-	FSharedBuffer GetFileData(const FStringView& Filename)
-	{
-		const uint32 Hash = GetTypeHash(Filename);
-		FSharedBuffer* Buffer = FileDataMap.FindByHash(Hash, Filename);
-		if (Buffer != nullptr)
-		{
-			return *Buffer;
-		}
-		else
-		{
-			return FSharedBuffer();
-		}
-	}
-
+	/** Return true if the command should log its operations, otherwise false */
 	bool ShouldLogToStdOutput() const
 	{
 		return Verbosity == EVerbosity::Full;
 	}
+
+	/** 
+	 * Do not call outside of source control implementations. Used to add the file in memory
+	 * once downloaded so that the caller can get access to it.
+	 */
+	void __Internal_AddFileData(const FString& Filename, FSharedBuffer FileData)
+	{
+		FileDataMap.Add(Filename, FileData);
+	}
+
+	UE_DEPRECATED(5.3, "Replaced by __Internal_AddFileData but you shouldn't be calling this anyway")
+	void AddFileData(const FString& Filename, FSharedBuffer FileData)
+	{
+		__Internal_AddFileData(Filename, FileData);
+	}
+
 private:
+
 	EVerbosity Verbosity = EVerbosity::Full;
 
 	FString TargetDirectory;
@@ -1245,7 +1289,7 @@ public:
 
 	virtual FText GetInProgressString() const override
 	{
-		return LOCTEXT("SourceControl_GetFile", "Retrieving file from revision control...");
+		return LOCTEXT("SourceControl_GetFile", "Retrieving file from Revision Control...");
 	}
 
 	const FString& GetChangelistNumber() const { return ChangelistNumber; }

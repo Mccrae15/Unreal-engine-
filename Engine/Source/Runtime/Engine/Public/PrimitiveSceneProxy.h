@@ -15,8 +15,10 @@
 #include "UniformBuffer.h"
 #include "SceneView.h"
 #include "PrimitiveUniformShaderParameters.h"
+#include "InstanceUniformShaderParameters.h"
 #include "DrawDebugHelpers.h"
 #include "Math/CapsuleShape.h"
+#include "SceneDefinitions.h"
 
 class FLightSceneInfo;
 class FLightSceneProxy;
@@ -33,6 +35,8 @@ class FColorVertexBuffer;
 struct FInstanceUpdateCmdBuffer;
 class FRayTracingGeometry;
 class FVertexFactory;
+class IHeterogeneousVolumeInterface;
+struct FPrimitiveUniformShaderParametersBuilder;
 
 namespace Nanite
 {
@@ -132,6 +136,7 @@ public:
 };
 
 extern bool IsOptimizedWPO();
+ENGINE_API extern bool ShouldOptimizedWPOAffectNonNaniteShaderSelection();
 extern bool IsAllowingApproximateOcclusionQueries();
 extern bool CacheShadowDepthsFromPrimitivesUsingWPO();
 
@@ -184,13 +189,13 @@ public:
 	ENGINE_API FPrimitiveSceneProxy(const UPrimitiveComponent* InComponent, FName ResourceName = NAME_None);
 
 	/** Copy constructor. */
-	ENGINE_API FPrimitiveSceneProxy(FPrimitiveSceneProxy const&) = default;
+	FPrimitiveSceneProxy(FPrimitiveSceneProxy const&) = default;
 
 	/** Virtual destructor. */
 	ENGINE_API virtual ~FPrimitiveSceneProxy();
 
 	/** Return a type (or subtype) specific hash for sorting purposes */
-	ENGINE_API virtual SIZE_T GetTypeHash() const = 0;
+	virtual SIZE_T GetTypeHash() const = 0;
 
 	/**
 	 * Updates selection for the primitive proxy. This simply sends a message to the rendering thread to call SetSelection_RenderThread.
@@ -229,10 +234,20 @@ public:
 	 * Enqueue and update for the render thread to notify it that the editor is currently moving the owning component with gizmos.
 	 */
 	void SetIsBeingMovedByEditor_GameThread(bool bIsBeingMoved);
+
+	/**
+	 * Enqueue updated selection outline color for the render thread to use.
+	 */
+	void SetSelectionOutlineColorIndex_GameThread(uint8 ColorIndex);
 #endif	// WITH_EDITOR
+
+	/** Enqueue and update for the render thread to remove the velocity data for this component from the scene. */
+	ENGINE_API void ResetSceneVelocity_GameThread();
 
 	/** Enqueue updated setting for evaluation of World Position Offset. */
 	void SetEvaluateWorldPositionOffset_GameThread(bool bEvaluate);
+
+	virtual void SetWorldPositionOffsetDisableDistance_GameThread(int32 NewValue) {}
 
 	/** @return True if the primitive is visible in the given View. */
 	ENGINE_API bool IsShown(const FSceneView* View) const;
@@ -304,7 +319,7 @@ public:
 	/**
 	 * If the ray tracing data is streaming then get the coarse mesh streaming handle 
 	 */
-	ENGINE_API virtual Nanite::CoarseMeshStreamingHandle GetCoarseMeshStreamingHandle() const { return INDEX_NONE; }
+	virtual Nanite::CoarseMeshStreamingHandle GetCoarseMeshStreamingHandle() const { return INDEX_NONE; }
 #endif // RHI_RAYTRACING
 
 	/** 
@@ -322,6 +337,14 @@ public:
 	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, class FMeshElementCollector& Collector) const {}
 
 	virtual const class FCardRepresentationData* GetMeshCardRepresentation() const { return nullptr; }
+
+	/** 
+	* Gives the primitive an opportunity to override MeshBatch arguments for a specific View
+	* Only called for a MeshBatch with a bViewDependentArguments property set
+	* @param View - the view to override for
+	* @param ViewDependentMeshBatch - view dependent mesh copy (does not affect a cached FMeshBatch)
+	*/
+	virtual void ApplyViewDependentMeshArguments(const FSceneView& View, FMeshBatch& ViewDependentMeshBatch) const {};
 
 	/** 
 	 * Gets the boxes for sub occlusion queries
@@ -382,10 +405,9 @@ public:
 
 	virtual bool StaticMeshHasPendingStreaming() const { return false; }
 
-	virtual void GetHeightfieldRepresentation(UTexture2D*& OutHeightmapTexture, UTexture2D*& OutDiffuseColorTexture, UTexture2D*& OutVisibilityTexture, FHeightfieldComponentDescription& OutDescription) const
+	virtual void GetHeightfieldRepresentation(UTexture2D*& OutHeightmapTexture, UTexture2D*& OutVisibilityTexture, FHeightfieldComponentDescription& OutDescription) const
 	{
 		OutHeightmapTexture = nullptr;
-		OutDiffuseColorTexture = nullptr;
 		OutVisibilityTexture = nullptr;
 	}
 
@@ -652,6 +674,7 @@ public:
 	inline bool ShouldUseAsOccluder() const { return bUseAsOccluder; }
 	inline bool AllowApproximateOcclusion() const { return bAllowApproximateOcclusion; }
 	inline bool Holdout() const { return bHoldout; }
+	inline bool IsSplineMesh() const { return bSplineMesh; }
 
 	inline FRHIUniformBuffer* GetUniformBuffer() const
 	{
@@ -666,8 +689,10 @@ public:
 	inline bool HasPerInstanceLMSMUVBias() const { return bHasPerInstanceLMSMUVBias; }
 	inline bool HasPerInstanceLocalBounds() const { return bHasPerInstanceLocalBounds; }
 	inline bool HasPerInstanceHierarchyOffset() const { return bHasPerInstanceHierarchyOffset; }
+	inline bool HasPerInstancePayloadExtension() const { return bHasPerInstancePayloadExtension; }
 #if WITH_EDITOR
 	inline bool HasPerInstanceEditorData() const { return bHasPerInstanceEditorData; }
+	inline uint8 GetSelectionOutlineColorIndex() const { return SelectionOutlineColorIndex; }
 #else
 	FORCEINLINE bool HasPerInstanceEditorData() const { return false; }
 #endif // WITH_EDITOR
@@ -683,7 +708,8 @@ public:
 #if WITH_EDITOR
 			bHasPerInstanceEditorData	|
 #endif
-			bHasPerInstanceHierarchyOffset;
+			bHasPerInstanceHierarchyOffset |
+			bHasPerInstancePayloadExtension;
 	}
 
 	inline uint32 GetInstanceSceneDataFlags()
@@ -695,6 +721,7 @@ public:
 		Flags |= HasPerInstanceLMSMUVBias()      ? INSTANCE_SCENE_DATA_FLAG_HAS_LIGHTSHADOW_UV_BIAS : 0u;
 		Flags |= HasPerInstanceHierarchyOffset() ? INSTANCE_SCENE_DATA_FLAG_HAS_HIERARCHY_OFFSET    : 0u;
 		Flags |= HasPerInstanceLocalBounds()     ? INSTANCE_SCENE_DATA_FLAG_HAS_LOCAL_BOUNDS        : 0u;
+		Flags |= HasPerInstancePayloadExtension()? INSTANCE_SCENE_DATA_FLAG_HAS_PAYLOAD_EXTENSION   : 0u;
 #if WITH_EDITOR
 		Flags |= HasPerInstanceEditorData()      ? INSTANCE_SCENE_DATA_FLAG_HAS_EDITOR_DATA         : 0u;
 #endif
@@ -731,21 +758,35 @@ public:
 
 	inline bool EvaluateWorldPositionOffset() const { return bEvaluateWorldPositionOffset; }
 	inline bool AnyMaterialHasWorldPositionOffset() const { return bAnyMaterialHasWorldPositionOffset; }
-	inline float GetMaxWorldPositionOffsetDisplacement() const
+	inline bool AnyMaterialAlwaysEvaluatesWorldPositionOffset() const { return bAnyMaterialAlwaysEvaluatesWorldPositionOffset; }
+	inline float GetMaxWorldPositionOffsetExtent() const
 	{
-		if (EvaluateWorldPositionOffset() && AnyMaterialHasWorldPositionOffset())
+		if ((EvaluateWorldPositionOffset() && AnyMaterialHasWorldPositionOffset())
+			|| AnyMaterialAlwaysEvaluatesWorldPositionOffset())
 		{
-			return MaxWPODisplacement;
+			return MaxWPOExtent;
 		}
 		return 0.0f;
+	}
+
+	inline const FVector2f& GetMinMaxMaterialDisplacement() const
+	{
+		return MinMaxMaterialDisplacement;
+	}
+
+	inline float GetAbsMaxDisplacement() const
+	{
+		// TODO: DISP - Fix me
+		const float AbsMaxMaterialDisplacement = FMath::Max(-GetMinMaxMaterialDisplacement().X, GetMinMaxMaterialDisplacement().Y);
+		return GetMaxWorldPositionOffsetExtent() + AbsMaxMaterialDisplacement;
 	}
 	
 	/** Returns true if this proxy can change transform so that we should cache previous transform for calculating velocity. */
 	inline bool HasDynamicTransform() const { return IsMovable() || bIsBeingMovedByEditor; }
 	/** Returns true if this proxy can write velocity. This is used for setting velocity relevance. */
-	inline bool DrawsVelocity() const { return HasDynamicTransform() || bAlwaysHasVelocity || bHasWorldPositionOffsetVelocity; }
+	inline bool DrawsVelocity() const { return HasDynamicTransform() || bAlwaysHasVelocity || bHasWorldPositionOffsetVelocity || HasPerInstanceDynamicData(); }
 	/** Returns true if this proxy should write velocity even when the transform isn't changing. Usually this is combined with a check for the transform changing. */
-	inline bool AlwaysHasVelocity() const {	return bAlwaysHasVelocity || (bHasWorldPositionOffsetVelocity && EvaluateWorldPositionOffset()); }
+	inline bool AlwaysHasVelocity() const {	return bAlwaysHasVelocity || (bHasWorldPositionOffsetVelocity && EvaluateWorldPositionOffset()) || HasPerInstanceDynamicData(); }
 
 #if WITH_EDITOR
 	inline int32 GetNumUncachedStaticLightingInteractions() { return NumUncachedStaticLightingInteractions; }
@@ -754,7 +795,7 @@ public:
 	ENGINE_API void SetUsedMaterialForVerification(const TArray<UMaterialInterface*>& InUsedMaterialsForVerification);
 #endif
 
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#if !UE_BUILD_TEST
 	inline FLinearColor GetWireframeColor() const { return WireframeColor; }
 	inline FLinearColor GetLevelColor() const { return LevelColor; }
 	inline FLinearColor GetPropertyColor() const { return PropertyColor; }
@@ -935,6 +976,11 @@ public:
 		return InstanceHierarchyOffset;
 	}
 
+	FORCEINLINE TConstArrayView<FVector4f> GetInstancePayloadExtension() const
+	{
+		return InstancePayloadExtension;
+	}
+
 	virtual void GetNaniteResourceInfo(uint32& ResourceID, uint32& HierarchyOffset, uint32& ImposterIndex) const
 	{
 		ResourceID = INDEX_NONE;
@@ -976,11 +1022,22 @@ public:
 	/**
 	 * Updates the primitive proxy's uniform buffer.
 	 */
-	ENGINE_API void UpdateUniformBuffer();
+	ENGINE_API void UpdateUniformBuffer(FRHICommandList& RHICmdList);
+
+	UE_DEPRECATED(5.3, "UpdateUniformBuffer now takes a command list.")
+	inline void UpdateUniformBuffer()
+	{
+		UpdateUniformBuffer(FRHICommandListExecutor::GetImmediateCommandList());
+	}
+
+	/**
+	 * Apply the unform shader parameter settings for the proxy to the builder.
+	 */
+	ENGINE_API void BuildUniformShaderParameters(FPrimitiveUniformShaderParametersBuilder &Builder) const;
 
 #if ENABLE_DRAW_DEBUG
 
-	struct ENGINE_API FDebugMassData
+	struct FDebugMassData
 	{
 		//Local here just means local to ElemTM which can be different depending on how the component uses the mass data
 		FQuat LocalTensorOrientation;
@@ -988,7 +1045,7 @@ public:
 		FVector MassSpaceInertiaTensor;
 		int32 BoneIndex;
 
-		void DrawDebugMass(class FPrimitiveDrawInterface* PDI, const FTransform& ElemTM) const;
+		ENGINE_API void DrawDebugMass(class FPrimitiveDrawInterface* PDI, const FTransform& ElemTM) const;
 	};
 
 	TArray<FDebugMassData> DebugMassData;
@@ -1001,7 +1058,7 @@ public:
 	 * Get the list of LCIs. Used to set the precomputed lighting uniform buffers, which can only be created by the RENDERER_API.
 	 */
 	typedef TArray<class FLightCacheInterface*, TInlineAllocator<8> > FLCIArray;
-	ENGINE_API virtual void GetLCIs(FLCIArray& LCIs) {}
+	virtual void GetLCIs(FLCIArray& LCIs) {}
 
 #if WITH_EDITORONLY_DATA
 	/**
@@ -1045,7 +1102,7 @@ public:
 	virtual int32 GetLightMapCoordinateIndex() const { return INDEX_NONE; }
 
 	/** Tell us if this proxy is drawn in game.*/
-	ENGINE_API virtual bool IsDrawnInGame() const { return DrawInGame; }
+	virtual bool IsDrawnInGame() const { return DrawInGame; }
 
 	/** Tell us if this proxy is drawn in editor.*/
 	FORCEINLINE bool IsDrawnInEditor() const { return DrawInEditor; }
@@ -1056,7 +1113,9 @@ public:
 	 * Get the custom primitive data for this scene proxy.
 	 * @return The payload of custom data that will be set on the primitive and accessible in the material through a material expression.
 	 */
-	ENGINE_API const FCustomPrimitiveData* GetCustomPrimitiveData() const { return &CustomPrimitiveData; }
+	const FCustomPrimitiveData* GetCustomPrimitiveData() const { return &CustomPrimitiveData; }
+
+	EShadowCacheInvalidationBehavior GetShadowCacheInvalidationBehavior() const { return ShadowCacheInvalidationBehavior; }
 
 protected:
 	ENGINE_API void UpdateDefaultInstanceSceneData();
@@ -1065,7 +1124,7 @@ protected:
 	ENGINE_API void UpdateVisibleInLumenScene();
 
 	/** Returns true if a primitive can never be rendered outside of a runtime virtual texture. */
-	ENGINE_API bool IsVirtualTextureOnly() const { return bVirtualTextureMainPassDrawNever; }
+	bool IsVirtualTextureOnly() const { return bVirtualTextureMainPassDrawNever; }
 
 	/** Returns true if a primitive should currently be hidden because it is drawn only to the runtime virtual texture. The result can depend on the current scene state. */
 	bool DrawInVirtualTextureOnly(bool bEditor) const;
@@ -1088,7 +1147,7 @@ protected:
 	ENGINE_API void EnableGPUSceneSupportFlags();
 
 private:
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#if !UE_BUILD_TEST
 	FLinearColor WireframeColor;
 	FLinearColor LevelColor;
 	FLinearColor PropertyColor;
@@ -1205,6 +1264,8 @@ protected:
 	/** True if the primitive casts static shadows. */
 	uint8 bCastStaticShadow : 1;
 
+	EShadowCacheInvalidationBehavior ShadowCacheInvalidationBehavior;
+
 	/** 
 	 * Whether the object should cast a volumetric translucent shadow.
 	 * Volumetric translucent shadows are useful for primitives with smoothly changing opacity like particles representing a volume, 
@@ -1304,6 +1365,9 @@ protected:
 	/** Whether the primitive has any materials with World Position Offset. */
 	uint8 bAnyMaterialHasWorldPositionOffset : 1;
 
+	/** Whether the primitive has any materials that must ALWAYS evaluate World Position Offset. */
+	uint8 bAnyMaterialAlwaysEvaluatesWorldPositionOffset : 1;
+
 	/** Whether the primitive should always be considered to have velocities, even if it hasn't moved. */
 	uint8 bAlwaysHasVelocity : 1;
 
@@ -1330,6 +1394,7 @@ protected:
 	uint8 bHasPerInstanceLMSMUVBias : 1;
 	uint8 bHasPerInstanceLocalBounds : 1;
 	uint8 bHasPerInstanceHierarchyOffset : 1;
+	uint8 bHasPerInstancePayloadExtension : 1;
 #if WITH_EDITOR
 	uint8 bHasPerInstanceEditorData : 1;
 #endif
@@ -1342,6 +1407,8 @@ protected:
 	 * should behave as usual. This feature is currently only implemented in the Path Tracer.
 	 */
 	uint8 bHoldout : 1;
+
+	uint8 bSplineMesh : 1;
 
 private:
 
@@ -1395,6 +1462,7 @@ protected:
 	TArray<float> InstanceRandomID;
 	TArray<FVector4f> InstanceLightShadowUVBias;
 	TArray<uint32> InstanceHierarchyOffset;
+	TArray<FVector4f> InstancePayloadExtension;
 #if WITH_EDITOR
 	TArray<uint32> InstanceEditorData;
 #endif
@@ -1424,7 +1492,9 @@ protected:
 	 * Maximum distance of World Position Offset used by materials. Values > 0.0 will cause the WPO to be clamped and the primitive's
 	 * bounds to be padded to account for it. Value of zero will not clamp the WPO of materials nor pad bounds (legacy behavior)
 	 */
-	float MaxWPODisplacement;
+	float MaxWPOExtent;
+
+	FVector2f MinMaxMaterialDisplacement;
 
 	/** Array of runtime virtual textures that this proxy should render to. */
 	TArray<URuntimeVirtualTexture*> RuntimeVirtualTextures;
@@ -1472,6 +1542,8 @@ private:
 	/** A copy of the actor's group membership for handling per-view group hiding */
 	uint64 HiddenEditorViews;
 
+	uint32 SelectionOutlineColorIndex : 8;
+
 	/** Whether this should only draw in any editing mode*/
 	uint32 DrawInAnyEditMode : 1;
 
@@ -1480,12 +1552,6 @@ private:
 
 	/** Used for precomputed visibility */
 	int32 VisibilityId;
-
-	/** The primitive's cull distance. */
-	float MaxDrawDistance;
-
-	/** The primitive's minimum cull distance. */
-	float MinDrawDistance;
 
 	/** The primitive's uniform buffer. */
 	TUniformBufferRef<FPrimitiveUniformShaderParameters> UniformBuffer;
@@ -1517,10 +1583,19 @@ private:
 
 	ENGINE_API bool WouldSetTransformBeRedundant_AnyThread(const FMatrix& InLocalToWorld, const FBoxSphereBounds& InBounds, const FBoxSphereBounds& InLocalBounds, const FVector& InActorPosition) const;
 
+	ENGINE_API void CreateUniformBuffer();
+
 	/** Updates the hidden editor view visibility map on the render thread */
 	void SetHiddenEdViews_RenderThread( uint64 InHiddenEditorViews );
 
 protected:
+
+	/** The primitive's cull distance. */
+	float MaxDrawDistance;
+
+	/** The primitive's minimum cull distance. */
+	float MinDrawDistance;
+	
 	/**
 	 * Updates the primitive proxy's cached transforms for all instances given a buffer of instance updates.
 	 * @param CmdBuffer - A record of all the add, update and remove instances for the proxy to apply to its internal data.
@@ -1540,7 +1615,7 @@ protected:
 	void SetHovered_RenderThread(const bool bInHovered);
 
 	/** Allows child implementations to do render-thread work when bEvaluateWorldPositionOffset changes */
-	ENGINE_API virtual void OnEvaluateWorldPositionOffsetChanged_RenderThread() {}
+	virtual void OnEvaluateWorldPositionOffsetChanged_RenderThread() {}
 
 	/**
 	 * Sets the instance local bounds for the specified instance index, and optionally will pad the bounds extents to

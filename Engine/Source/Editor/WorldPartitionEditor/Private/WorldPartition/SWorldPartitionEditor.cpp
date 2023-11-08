@@ -23,6 +23,7 @@ void SWorldPartitionEditor::Construct(const FArguments& InArgs)
 
 	FWorldBrowserModule& WorldBrowserModule = FModuleManager::LoadModuleChecked<FWorldBrowserModule>("WorldBrowser");
 	WorldBrowserModule.OnBrowseWorld.AddSP(this, &SWorldPartitionEditor::OnBrowseWorld);
+	UWorldPartition::WorldPartitionChangedEvent.AddSP(this, &SWorldPartitionEditor::OnBrowseWorld);
 
 	IWorldPartitionEditorModule& WorldPartitionEditorModule = FModuleManager::LoadModuleChecked<IWorldPartitionEditorModule>("WorldPartitionEditor");
 	WorldPartitionEditorModule.OnWorldPartitionCreated().AddSP(this, &SWorldPartitionEditor::OnBrowseWorld);
@@ -32,6 +33,7 @@ SWorldPartitionEditor::~SWorldPartitionEditor()
 {
 	FWorldBrowserModule& WorldBrowserModule = FModuleManager::GetModuleChecked<FWorldBrowserModule>("WorldBrowser");
 	WorldBrowserModule.OnBrowseWorld.RemoveAll(this);
+	UWorldPartition::WorldPartitionChangedEvent.RemoveAll(this);
 	
 	IWorldPartitionEditorModule& WorldPartitionEditorModule = FModuleManager::LoadModuleChecked<IWorldPartitionEditorModule>("WorldPartitionEditor");
 	WorldPartitionEditorModule.OnWorldPartitionCreated().RemoveAll(this);
@@ -40,7 +42,7 @@ SWorldPartitionEditor::~SWorldPartitionEditor()
 	{
 		if (UWorldPartition* WorldPartition = World->GetWorldPartition())
 		{
-			check(WorldPartition->World == World);			
+			check(WorldPartition->GetWorld() == World);
 			if (WorldPartition->WorldPartitionEditor)
 			{
 				check(WorldPartition->WorldPartitionEditor == this);
@@ -78,7 +80,7 @@ TSharedRef<SWidget> SWorldPartitionEditor::ConstructContentWidget()
 	{
 		if (UWorldPartition* WorldPartition = World->GetWorldPartition())
 		{
-			check(WorldPartition->World == World);
+			check(WorldPartition->GetWorld() == World);
 			EditorName = WorldPartition->GetWorldPartitionEditorName();
 			WorldPartition->WorldPartitionEditor = this;
 		}

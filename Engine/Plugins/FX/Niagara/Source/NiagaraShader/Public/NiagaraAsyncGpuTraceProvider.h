@@ -1,14 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreMinimal.h"
-
-#include "NiagaraSettings.h"
 #include "RHIDefinitions.h"
+#include "RHIUtilities.h"
+#include "FXRenderingUtils.h"
 
-class FScene;
+class FPrimitiveComponentId;
+class FSceneInterface;
+namespace ENDICollisionQuery_AsyncGpuTraceProvider { enum Type : int; }
+
 class FNiagaraGpuComputeDispatchInterface;
-class FViewInfo;
+class FScene;
+class FSceneView;
 
 // mirrors structure in Engine\Plugins\FX\Niagara\Shaders\Private\NiagaraAsyncGpuTraceCommon.ush
 struct FNiagaraAsyncGpuTrace
@@ -28,7 +31,7 @@ struct FNiagaraAsyncGpuTraceResult
 	float _Pad0; // padding to force 16 byte alignment to meet requirements for VK
 };
 
-class NIAGARASHADER_API FNiagaraAsyncGpuTraceProvider
+class FNiagaraAsyncGpuTraceProvider
 {
 public:
 	using EProviderType = ENDICollisionQuery_AsyncGpuTraceProvider::Type;
@@ -55,33 +58,31 @@ public:
 		uint32 MaxRetraceCount = 0;
 	};
 
-	static EProviderType ResolveSupportedType(EProviderType InType, const FProviderPriorityArray& Priorities);
-	static bool RequiresDistanceFieldData(EProviderType InType, const FProviderPriorityArray& Priorities);
-	static bool RequiresRayTracingScene(EProviderType InType, const FProviderPriorityArray& Priorities);
+	static NIAGARASHADER_API EProviderType ResolveSupportedType(EProviderType InType, const FProviderPriorityArray& Priorities);
+	static NIAGARASHADER_API bool RequiresDistanceFieldData(EProviderType InType, const FProviderPriorityArray& Priorities);
+	static NIAGARASHADER_API bool RequiresRayTracingScene(EProviderType InType, const FProviderPriorityArray& Priorities);
 
 	/** Hash table.
 		PrimIdHashTable is the main hash table that maps GPUSceneInstanceIndex to and Index we can use to store Collision Groups inside HashToCollisionGroups.
 	*/
 	struct FCollisionGroupHashMap
 	{
-		FRWBuffer PrimIdHashTable;
+		FRWBufferStructured PrimIdHashTable;
 		FRWBuffer HashToCollisionGroups;
 		uint32 HashTableSize = 0;
 	};
 
-	static void BuildCollisionGroupHashMap(FRHICommandList& RHICmdList, ERHIFeatureLevel::Type FeatureLevel, FScene* Scene, const TMap<FPrimitiveComponentId, uint32>& CollisionGroupMap, FCollisionGroupHashMap& Result);
+	static NIAGARASHADER_API void BuildCollisionGroupHashMap(FRHICommandList& RHICmdList, ERHIFeatureLevel::Type FeatureLevel, FSceneInterface* Scene, const TMap<FPrimitiveComponentId, uint32>& CollisionGroupMap, FCollisionGroupHashMap& Result);
 
-	static TArray<TUniquePtr<FNiagaraAsyncGpuTraceProvider>> CreateSupportedProviders(EShaderPlatform ShaderPlatform, FNiagaraGpuComputeDispatchInterface* Dispatcher, const FProviderPriorityArray& Priorities);
-	static void ClearResults(FRHICommandList& RHICmdList, EShaderPlatform ShaderPlatform, const FDispatchRequest& Request);
+	static NIAGARASHADER_API TArray<TUniquePtr<FNiagaraAsyncGpuTraceProvider>> CreateSupportedProviders(EShaderPlatform ShaderPlatform, FNiagaraGpuComputeDispatchInterface* Dispatcher, const FProviderPriorityArray& Priorities);
+	static NIAGARASHADER_API void ClearResults(FRHICommandList& RHICmdList, EShaderPlatform ShaderPlatform, const FDispatchRequest& Request);
 
 	virtual bool IsAvailable() const = 0;
 	virtual EProviderType GetType() const = 0;
 
-	virtual void PostRenderOpaque(FRHICommandList& RHICmdList, TConstArrayView<FViewInfo> Views, FCollisionGroupHashMap* CollisionGroupHash)
-	{
-	}
+	NIAGARASHADER_API virtual void PostRenderOpaque(FRHICommandList& RHICmdList, TConstStridedView<FSceneView> Views, TUniformBufferRef<FSceneUniformParameters> SceneUniformBufferRHI, FCollisionGroupHashMap* CollisionGroupHash);
 
-	virtual void IssueTraces(FRHICommandList& RHICmdList, const FDispatchRequest& Request, FCollisionGroupHashMap* CollisionGroupHash)
+	virtual void IssueTraces(FRHICommandList& RHICmdList, const FDispatchRequest& Request, TUniformBufferRef<FSceneUniformParameters> SceneUniformBufferRHI, FCollisionGroupHashMap* CollisionGroupHash)
 	{
 	}
 
@@ -95,3 +96,8 @@ public:
 private:
 	UE_NONCOPYABLE(FNiagaraAsyncGpuTraceProvider);
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_3
+#include "CoreMinimal.h"
+#include "NiagaraSettings.h"
+#endif

@@ -16,6 +16,7 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshSourceData.h"
 #include "StaticMeshResources.h"
+#include "Rendering/NaniteResources.h"
 #include "EngineLogs.h"
 #include "StaticMeshSceneProxy.h"
 #include "Engine/TextureCube.h"
@@ -233,7 +234,7 @@ void SDataprepEditorViewport::Construct(const FArguments& InArgs, TSharedPtr<FDa
 	UWorld* PreviewSceneWorld = PreviewScene->GetWorld();
 	if (PreviewSceneWorld != nullptr)
 	{
-		PreviewSceneWorld->ChangeFeatureLevel(GWorld->FeatureLevel);
+		PreviewSceneWorld->ChangeFeatureLevel(GWorld->GetFeatureLevel());
 	}
 
 	// Listen to and act on changes in feature level
@@ -289,17 +290,29 @@ void SDataprepEditorViewport::Construct(const FArguments& InArgs, TSharedPtr<FDa
 void SDataprepEditorViewport::ClearScene()
 {
 	const int32 PreviousCount = PreviewMeshComponents.Num();
+	
+	FDetachmentTransformRules DetachmentRules(EDetachmentRule::KeepRelative, true);
+
+	StaticActor->UnregisterAllComponents();
+	MovableActor->UnregisterAllComponents();
+	
 	TArray<UObject*> ObjectsToDelete;
-	ObjectsToDelete.Reserve( PreviousCount );
+	ObjectsToDelete.Reserve(PreviousCount);
 
 	for( const TWeakObjectPtr< UStaticMeshComponent >& PreviewMeshComponent : PreviewMeshComponents )
 	{
 		if(UStaticMeshComponent* MeshComponent = PreviewMeshComponent.Get())
 		{
+			MeshComponent->DetachFromComponent(DetachmentRules);
+			MeshComponent->SetStaticMesh(nullptr);
+
 			MeshComponent->EmptyOverrideMaterials();
 			ObjectsToDelete.Add( MeshComponent );
 		}
 	}
+
+	StaticActor->RegisterAllComponents();
+	MovableActor->RegisterAllComponents();
 
 	FDataprepCoreUtils::PurgeObjects( MoveTemp( ObjectsToDelete ) );
 
@@ -386,7 +399,7 @@ void SDataprepEditorViewport::UpdateScene()
 					const FTransform& ComponentToWorldTransform = SceneMeshComponent->GetComponentTransform();
 					SceneBounds += StaticMesh->GetExtendedBounds().GetBox().TransformBy( ComponentToWorldTransform );
 
-					bCanShowNaniteFallbackMenu |= StaticMesh->NaniteSettings.bEnabled;
+					bCanShowNaniteFallbackMenu |= StaticMesh->IsNaniteEnabled();
 				}
 			}
 
@@ -438,7 +451,7 @@ void SDataprepEditorViewport::UpdateScene()
 						FComponentReregisterContext ReregisterContext( PreviewMeshComponent );
 						PreviewMeshComponent->SetStaticMesh( StaticMesh );
 
-						PreviewMeshComponent->bDisplayNaniteFallbackMesh = bShowNaniteFallbackMenuChecked && StaticMesh->NaniteSettings.bEnabled;
+						PreviewMeshComponent->bDisplayNaniteFallbackMesh = bShowNaniteFallbackMenuChecked && StaticMesh->IsNaniteEnabled();
 
 						FTransform ComponentToWorldTransform = SceneMeshComponent->GetComponentTransform();
 
@@ -616,9 +629,9 @@ void SDataprepEditorViewport::UpdateOverlayText()
 
 			FStaticMeshLODResources& LODResource = StaticMesh->GetRenderData()->LODResources[0];
 
-			if (StaticMesh->NaniteSettings.bEnabled && StaticMesh->HasValidNaniteData())
+			if (StaticMesh->IsNaniteEnabled() && StaticMesh->HasValidNaniteData())
 			{
-				const Nanite::FResources& Resources = StaticMesh->GetRenderData()->NaniteResources;
+				const Nanite::FResources& Resources = *StaticMesh->GetRenderData()->NaniteResourcesPtr.Get();
 				if (Resources.RootData.Num() > 0)
 				{
 					NaniteTrianglesCount += bShowNaniteFallbackMenuChecked ? LODResource.GetNumTriangles() : Resources.NumInputTriangles;
@@ -1327,9 +1340,9 @@ void SDataprepEditorViewport::SetShowNaniteFallback(bool bShow)
 		if (UCustomStaticMeshComponent* PreviewMeshComponent = Cast<UCustomStaticMeshComponent>(PreviewMeshComponentPtr.Get()))
 		{
 			const UStaticMesh* StaticMesh = PreviewMeshComponent->GetStaticMesh();
-			if (StaticMesh && StaticMesh->NaniteSettings.bEnabled)
+			if (StaticMesh && StaticMesh->IsNaniteEnabled())
 			{
-				PreviewMeshComponent->bDisplayNaniteFallbackMesh = bShowNaniteFallbackMenuChecked && StaticMesh->NaniteSettings.bEnabled;
+				PreviewMeshComponent->bDisplayNaniteFallbackMesh = bShowNaniteFallbackMenuChecked;
 				PreviewMeshComponent->MarkRenderStateDirty();
 			}
 		}
@@ -1378,7 +1391,7 @@ void FDataprepEditorViewportClient::ProcessClick(FSceneView& View, HHitProxy* Hi
 			if( HitProxy->IsA( HActor::StaticGetType() ) )
 			{
 				// A static mesh component has been selected
-				if( UStaticMeshComponent* Component = Cast<UStaticMeshComponent>( const_cast<UPrimitiveComponent*>(((HActor*)HitProxy)->PrimComponent )) )
+				if( UStaticMeshComponent* Component = Cast<UStaticMeshComponent>( ((HActor*)HitProxy)->PrimComponent ))
 				{
 					// A static mesh component part of the ones to preview has been selected
 					if( DataprepEditorViewport->IsAPreviewComponent(Component) )

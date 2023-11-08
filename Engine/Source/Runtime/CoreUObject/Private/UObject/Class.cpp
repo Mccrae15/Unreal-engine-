@@ -14,6 +14,8 @@
 #include "Misc/AutomationTest.h"
 #include "Misc/EnumClassFlags.h"
 #include "Misc/StringBuilder.h"
+#include "Misc/OutputDeviceNull.h"
+#include "UObject/CoreNet.h"
 #include "Modules/ModuleManager.h"
 #include "UObject/UObjectAllocator.h"
 #include "UObject/UObjectHash.h"
@@ -33,12 +35,16 @@
 #include "UObject/Interface.h"
 #include "UObject/LinkerPlaceholderClass.h"
 #include "UObject/LinkerPlaceholderFunction.h"
+#include "UObject/PropertyOptional.h"
+#include "UObject/StructOnScope.h"
 #include "UObject/StructScriptLoader.h"
 #include "UObject/PropertyHelper.h"
 #include "UObject/CoreRedirects.h"
+#include "UObject/ObjectMacros.h"
 #include "Internationalization/PolyglotTextData.h"
 #include "Serialization/ArchiveScriptReferenceCollector.h"
 #include "Serialization/ArchiveUObjectFromStructuredArchive.h"
+#include "Serialization/NullArchive.h"
 #include "UObject/FrameworkObjectVersion.h"
 #include "UObject/GarbageCollection.h"
 #include "UObject/UObjectThreadContext.h"
@@ -56,6 +62,9 @@
 #include "AssetRegistry/AssetData.h"
 #include "HAL/PlatformStackWalk.h"
 #include "String/Find.h"
+#include "String/ParseTokens.h"
+#include "AutoRTFM/AutoRTFM.h"
+#include "Serialization/TestUndeclaredScriptStructObjectReferences.h"
 
 // This flag enables some expensive class tree validation that is meant to catch mutations of 
 // the class tree outside of SetSuperStruct. It has been disabled because loading blueprints 
@@ -575,8 +584,7 @@ void UField::SetAssociatedFField(FField* InField)
 
 IMPLEMENT_CORE_INTRINSIC_CLASS(UField, UObject,
 	{
-		UE::GC::FTokenStreamBuilder& Builder = UE::GC::FIntrinsicClassTokens::AllocateBuilder(Class);
-		Builder.EmitObjectReference(STRUCT_OFFSET(UField, Next), TEXT("Next"));
+		UE::GC::DeclareIntrinsicMembers(Class, { UE_GC_MEMBER(UField, Next) });
 	}
 );
 
@@ -621,8 +629,8 @@ UStruct::UStruct(UStruct* InSuperStruct, SIZE_T ParamsSize, SIZE_T Alignment)
 	, SuperStruct(InSuperStruct)
 	, Children(nullptr)
 	, ChildProperties(nullptr)
-	, PropertiesSize(ParamsSize ? ParamsSize : (InSuperStruct ? InSuperStruct->GetPropertiesSize() : 0))
-	, MinAlignment(Alignment ? Alignment : (FMath::Max(InSuperStruct ? InSuperStruct->GetMinAlignment() : 1, 1)))
+	, PropertiesSize(ParamsSize ? IntCastChecked<int32>(ParamsSize) : (InSuperStruct ? InSuperStruct->GetPropertiesSize() : 0))
+	, MinAlignment(Alignment ? IntCastChecked<int32>(Alignment) : (FMath::Max(InSuperStruct ? InSuperStruct->GetMinAlignment() : 1, 1)))
 	, PropertyLink(nullptr)
 	, RefLink(nullptr)
 	, DestructorLink(nullptr)
@@ -643,8 +651,8 @@ UStruct::UStruct(const FObjectInitializer& ObjectInitializer, UStruct* InSuperSt
 	, SuperStruct(InSuperStruct)
 	, Children(nullptr)
 	, ChildProperties(nullptr)
-	, PropertiesSize(ParamsSize ? ParamsSize : (InSuperStruct ? InSuperStruct->GetPropertiesSize() : 0))
-	, MinAlignment(Alignment ? Alignment : (FMath::Max(InSuperStruct ? InSuperStruct->GetMinAlignment() : 1, 1)))
+	, PropertiesSize(ParamsSize ? IntCastChecked<int32>(ParamsSize) : (InSuperStruct ? InSuperStruct->GetPropertiesSize() : 0))
+	, MinAlignment(Alignment ? IntCastChecked<int32>(Alignment) : (FMath::Max(InSuperStruct ? InSuperStruct->GetMinAlignment() : 1, 1)))
 	, PropertyLink(nullptr)
 	, RefLink(nullptr)
 	, DestructorLink(nullptr)
@@ -680,7 +688,7 @@ void UStruct::AddCppProperty(FProperty* Property)
 
 void UStruct::StaticLink(bool bRelinkExistingProperties)
 {
-	FArchive ArDummy;
+	FNullArchive ArDummy;
 	Link(ArDummy, bRelinkExistingProperties);
 }
 
@@ -705,7 +713,8 @@ void UStruct::GetPreloadDependencies(TArray<UObject*>& OutDeps)
 
 void UStruct::CollectBytecodeReferencedObjects(TArray<UObject*>& OutReferencedObjects)
 {
-	FArchiveScriptReferenceCollector ObjRefCollector(OutReferencedObjects);
+	// Collect references from byte code but exclude ourselves from the refs lists
+	FArchiveScriptReferenceCollector ObjRefCollector(OutReferencedObjects, this);
 
 	int32 BytecodeIndex = 0;
 	while (BytecodeIndex < Script.Num())
@@ -726,8 +735,8 @@ void UStruct::CollectPropertyReferencedObjects(TArray<UObject*>& OutReferencedOb
 void UStruct::CollectBytecodeAndPropertyReferencedObjects()
 {
 	ScriptAndPropertyObjectReferences.Empty();
-	CollectBytecodeReferencedObjects(ScriptAndPropertyObjectReferences);
-	CollectPropertyReferencedObjects(ScriptAndPropertyObjectReferences);
+	CollectBytecodeReferencedObjects(MutableView(ScriptAndPropertyObjectReferences));
+	CollectPropertyReferencedObjects(MutableView(ScriptAndPropertyObjectReferences));
 }
 
 void UStruct::CollectBytecodeAndPropertyReferencedObjectsRecursively()
@@ -935,7 +944,9 @@ void UStruct::Link(FArchive& Ar, bool bRelinkExistingProperties)
 	{
 		FProperty* Property = *It;
 
-		if (Property->ContainsObjectReference(EncounteredStructProps) || Property->ContainsWeakObjectReference())
+		// Ref link contains any properties which contain object references including types with user-defined serializers which don't explicitly specify whether they 
+		// contain object references
+		if (Property->ContainsObjectReference(EncounteredStructProps, EPropertyObjectReferenceType::Any))
 		{
 			*RefLinkPtr = Property;
 			RefLinkPtr = &(*RefLinkPtr)->NextRef;
@@ -976,7 +987,7 @@ void UStruct::Link(FArchive& Ar, bool bRelinkExistingProperties)
 
 	{
 		// Now collect all references from FProperties to UObjects and store them in GC-exposed array for fast access
-		CollectPropertyReferencedObjects(ScriptAndPropertyObjectReferences);
+		CollectPropertyReferencedObjects(MutableView(ScriptAndPropertyObjectReferences));
 
 #if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
 		// The old (non-EDL) FLinkerLoad code paths create placeholder objects
@@ -1077,7 +1088,9 @@ void UStruct::SerializeBin( FStructuredArchive::FSlot Slot, void* Data ) const
 
 	FStructuredArchive::FStream PropertyStream = Slot.EnterStream();
 	
-	if (UnderlyingArchive.IsObjectReferenceCollector() && !UnderlyingArchive.IsModifyingWeakAndStrongReferences())
+	// RefLink contains Strong, Weak and Soft object references including FSoftObjectPath
+	// If objects wish to serialize other properties they should not set ArIsObjectReferenceCollector
+	if (UnderlyingArchive.IsObjectReferenceCollector())
 	{
 		// The FProperty instance might start in the middle of a cache line	
 		static constexpr uint32 ExtraPrefetchBytes = PLATFORM_CACHE_LINE_SIZE - /* min alignment */ 16;
@@ -1238,7 +1251,7 @@ void UStruct::LoadTaggedPropertiesFromText(FStructuredArchive::FSlot Slot, uint8
 
 					if (!(BreakRecursionIfFullyLoad && BreakRecursionIfFullyLoad->HasAllFlags(RF_LoadCompleted)))
 					{
-						switch (Property->ConvertFromType(Tag, ItemSlot.GetValue(), Data, DefaultsStruct))
+						switch (Property->ConvertFromType(Tag, ItemSlot.GetValue(), Data, DefaultsStruct, Defaults))
 						{
 						case EConvertFromTypeResult::Converted:
 							break;
@@ -1463,7 +1476,7 @@ void UStruct::SerializeVersionedTaggedProperties(FStructuredArchive::FSlot Slot,
 					{
 						FStructuredArchive::FSlot ValueSlot = PropertyRecord.EnterField(TEXT("Value"));
 
-						switch (Property->ConvertFromType(Tag, ValueSlot, Data, DefaultsStruct))
+						switch (Property->ConvertFromType(Tag, ValueSlot, Data, DefaultsStruct, Defaults))
 						{
 							case EConvertFromTypeResult::Converted:
 								bAdvanceProperty = true;
@@ -1598,7 +1611,7 @@ void UStruct::SerializeVersionedTaggedProperties(FStructuredArchive::FSlot Slot,
 						}
 
 						// set the tag's size
-						Tag.Size = UnderlyingArchive.Tell() - DataOffset;
+						Tag.Size = IntCastChecked<int32>(UnderlyingArchive.Tell() - DataOffset);
 
 						if (Tag.Size > 0 && !UnderlyingArchive.IsTextFormat())
 						{
@@ -1809,7 +1822,7 @@ void UStruct::Serialize(FArchive& Ar)
 	UStruct* SuperStructBefore = GetSuperStruct();
 #endif
 
-	Ar << SuperStruct;
+	Ar << SuperStruct.GetAccessTrackedObjectPtr();
 
 #if USTRUCT_FAST_ISCHILDOF_IMPL == USTRUCT_ISCHILDOF_STRUCTARRAY
 	if (Ar.IsLoading())
@@ -1966,7 +1979,7 @@ void UStruct::Serialize(FArchive& Ar)
 
 				// go back and write on-disk size
 				Ar.Seek(ScriptStorageSizeOffset);
-				int32 ScriptStorageSize = BytecodeEndOffset - BytecodeStartOffset;
+				int32 ScriptStorageSize = IntCastChecked<int32>(BytecodeEndOffset - BytecodeStartOffset);
 				Ar << ScriptStorageSize;
 
 				// back to where we were
@@ -1997,6 +2010,13 @@ void UStruct::PostLoad()
 				check((int32)Script.Num() >= (int32)(MissingProperty.Value + sizeof(FField*)));
 				FField** TargetScriptPropertyPtr = (FField**)(Script.GetData() + MissingProperty.Value);
 				*TargetScriptPropertyPtr = ResolvedProperty;
+
+				// Collect UObjects referenced by this property so that its owner doesn't get GC'd leaving a stale FProperty reference in bytecode
+				{
+					auto ScriptAndPropertyObjectReferencesView = MutableView(ScriptAndPropertyObjectReferences);
+					FPropertyReferenceCollector Collector(this, ScriptAndPropertyObjectReferencesView);
+					ResolvedProperty->AddReferencedObjects(Collector);
+				}
 			}
 			else if (!MissingProperty.Key.IsPathToFieldEmpty())
 			{
@@ -2014,7 +2034,7 @@ void UStruct::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collect
 	if( GIsEditor )
 	{
 		// Required by the unified GC when running in the editor
-		Collector.AddReferencedObject( This->SuperStruct, This );
+		Collector.AddReferencedObject( This->SuperStruct.GetAccessTrackedObjectPtr(), This );
 		Collector.AddReferencedObject( This->Children, This );
 		Collector.AddReferencedObjects(This->ScriptAndPropertyObjectReferences, This);
 	}
@@ -2027,23 +2047,10 @@ void UStruct::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collect
 
 void UStruct::SetSuperStruct(UStruct* NewSuperStruct)
 {
-	SuperStruct = NewSuperStruct;
+	SuperStruct.Set(NewSuperStruct);
 #if USTRUCT_FAST_ISCHILDOF_IMPL == USTRUCT_ISCHILDOF_STRUCTARRAY
 	this->ReinitializeBaseChainArray();
 #endif
-}
-
-FString UStruct::PropertyNameToDisplayName(FName InName) const
-{
-	FFieldVariant FoundField = FindUFieldOrFProperty(this, InName);
-	if (FoundField.IsUObject())
-	{
-		return GetAuthoredNameForField(FoundField.Get<UField>());
-	}
-	else
-	{
-		return GetAuthoredNameForField(FoundField.Get<FField>());
-	}
 }
 
 FString UStruct::GetAuthoredNameForField(const UField* Field) const
@@ -2129,7 +2136,13 @@ const UStruct* UStruct::HasMetaDataHierarchical(const FName& Key) const
 	{
 		ScriptPointerType  Temp = FPlatformMemory::ReadUnaligned<ScriptPointerType>(ScriptPtr);
 		UObject*& ExprPtrRef = (UObject*&)Temp;
-		if (ULinkerPlaceholderClass* PlaceholderObj = Cast<ULinkerPlaceholderClass>(ExprPtrRef))
+
+		TObjectPtr<UObject> ObjPtr(ExprPtrRef);
+		if (!ObjPtr.IsResolved())
+		{
+			return;
+		}
+		else if (ULinkerPlaceholderClass* PlaceholderObj = Cast<ULinkerPlaceholderClass>(ExprPtrRef))
 		{
 			PlaceholderObj->AddReferencingScriptExpr((UClass**)(&ExprPtrRef));
 		}
@@ -2184,13 +2197,9 @@ IMPLEMENT_CORE_INTRINSIC_CLASS(UStruct, UField,
 	{
 		Class->CppClassStaticFunctions = UOBJECT_CPPCLASS_STATICFUNCTIONS_FORCLASS(UStruct);
 
-		UE::GC::FTokenStreamBuilder& Builder = UE::GC::FIntrinsicClassTokens::AllocateBuilder(Class);
-		Builder.EmitObjectReference(STRUCT_OFFSET(UStruct, SuperStruct), TEXT("SuperStruct"));
-		Builder.EmitObjectReference(STRUCT_OFFSET(UStruct, Children), TEXT("Children"));
-
 		// Note: None of the *Link members need to be emitted, as they only contain properties
 		// that are in the Children chain or SuperStruct->Children chains.
-		Builder.EmitObjectArrayReference(STRUCT_OFFSET(UStruct, ScriptAndPropertyObjectReferences), TEXT("ScriptAndPropertyObjectReferences"));
+		UE::GC::DeclareIntrinsicMembers(Class, { UE_GC_MEMBER(UStruct, SuperStruct), UE_GC_MEMBER(UStruct, Children), UE_GC_MEMBER(UStruct, ScriptAndPropertyObjectReferences) });
 	}
 );
 
@@ -2412,10 +2421,11 @@ bool FindConstructorUninitialized(UStruct* BaseClass,uint8* Data,uint8* Defaults
 		int32 Size = P->GetSize();
 		bool bProblem = false;
 		check(Size);
-		FBoolProperty*   PB     = CastField<FBoolProperty>(P);
-		FStructProperty* PS     = CastField<FStructProperty>(P);
-		FStrProperty*    PStr   = CastField<FStrProperty>(P);
-		FArrayProperty*  PArray = CastField<FArrayProperty>(P);
+		FBoolProperty*     PB        = CastField<FBoolProperty>(P);
+		FStructProperty*   PS        = CastField<FStructProperty>(P);
+		FStrProperty*      PStr      = CastField<FStrProperty>(P);
+		FArrayProperty*    PArray    = CastField<FArrayProperty>(P);
+		FOptionalProperty* POptional = CastField<FOptionalProperty>(P);
 		if(PStr)
 		{
 			// string that actually have data would be false positives, since they would point to the same string, but actually be different pointers
@@ -2447,6 +2457,10 @@ bool FindConstructorUninitialized(UStruct* BaseClass,uint8* Data,uint8* Defaults
 		else if (PArray)
 		{
 			bProblem = !PArray->Identical_InContainer(Data, Defaults);
+		}
+		else if (POptional)
+		{
+			bProblem = !POptional->Identical_InContainer(Data, Defaults);
 		}
 		else
 		{
@@ -2563,7 +2577,7 @@ void UScriptStruct::PrepareCppStructOps()
 		CppStructOps = GetDeferredCppStructOps().FindRef(GetFlattenedStructPathName());
 		if (!CppStructOps)
 		{
-			if (!GIsUCCMakeStandaloneHeaderGenerator && (StructFlags&STRUCT_Native))
+			if (StructFlags&STRUCT_Native)
 			{
 				UE_LOG(LogClass, Fatal, TEXT("Couldn't bind to native struct %s. Headers need to be rebuilt, or a noexport class is missing a IMPLEMENT_STRUCT."),*GetName());
 			}
@@ -2770,18 +2784,28 @@ void UScriptStruct::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, v
 		else
 		{
 #if WITH_TEXT_ARCHIVE_SUPPORT
-			FArchiveUObjectFromStructuredArchive Adapter(Slot);
-			FArchive& Ar = Adapter.GetArchive();
-			bItemSerialized = TheCppStructOps->Serialize(Ar, Value);
-			if (bItemSerialized && !Slot.IsFilled())
+			if (Slot.GetUnderlyingArchive().IsTextFormat())
 			{
-				// The struct said that serialization succeeded but it didn't actually write anything.
-				Slot.EnterRecord();
+				FArchiveUObjectFromStructuredArchive Adapter(Slot);
+				FArchive& Ar = Adapter.GetArchive();
+				bItemSerialized = TheCppStructOps->Serialize(Ar, Value);
+				if (bItemSerialized && !Slot.IsFilled())
+				{
+					// The struct said that serialization succeeded but it didn't actually write anything.
+					Slot.EnterRecord();
+				}
+				Adapter.Close();
 			}
-			Adapter.Close();
-#else
-			bItemSerialized = TheCppStructOps->Serialize(Slot.GetUnderlyingArchive(), Value);
+			else
 #endif
+			{
+				bItemSerialized = TheCppStructOps->Serialize(Slot.GetUnderlyingArchive(), Value);
+				if (bItemSerialized && !Slot.IsFilled())
+				{
+					// The struct said that serialization succeeded but it didn't actually write anything.
+					Slot.EnterRecord();
+				}
+			}
 		}		
 	}
 
@@ -2820,6 +2844,12 @@ const TCHAR* UScriptStruct::ImportText(const TCHAR* InBuffer, void* Value, UObje
 
 const TCHAR* UScriptStruct::ImportText(const TCHAR* InBuffer, void* Value, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText, const TFunctionRef<FString()>& StructNameGetter, bool bAllowNativeOverride)
 {
+	FOutputDeviceNull NullErrorText;
+	if (!ErrorText)
+	{
+		ErrorText = &NullErrorText;
+	}
+
 	if (bAllowNativeOverride && StructFlags & STRUCT_ImportTextItemNative)
 	{
 		UScriptStruct::ICppStructOps* TheCppStructOps = GetCppStructOps();
@@ -3157,6 +3187,19 @@ void UScriptStruct::InitializeStruct(void* InDest, int32 ArrayDim) const
 void UScriptStruct::InitializeDefaultValue(uint8* InStructData) const
 {
 	InitializeStruct(InStructData);
+}
+
+bool UScriptStruct::FindInnerPropertyInstance(FName PropertyName, const void* Data, const FProperty*& OutProp, const void*& OutData) const
+{
+	if (const UScriptStruct::ICppStructOps* TheCppStructOps = GetCppStructOps())
+	{
+        if (TheCppStructOps->HasFindInnerPropertyInstance())
+        {
+            return TheCppStructOps->FindInnerPropertyInstance(PropertyName, Data, OutProp, OutData);
+        }
+	}
+	
+	return false;
 }
 
 void UScriptStruct::ClearScriptStruct(void* Dest, int32 ArrayDim) const
@@ -3681,7 +3724,19 @@ FAutoConsoleCommandWithWorldAndArgs GCmdListBadScriptStructs(
 			FStructUtils::AttemptToFindUninitializedScriptStructMembers();
 		}));
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAutomationTestAttemptToFindUninitializedScriptStructMembers, "UObject.Class AttemptToFindUninitializedScriptStructMembers", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ServerContext | EAutomationTestFlags::SmokeFilter)
+class FAutomationTestUObjectClassBase : public FAutomationTestBase
+{
+public:
+	FAutomationTestUObjectClassBase(const FString& InName, const bool bInComplexTask)
+		: FAutomationTestBase(InName, bInComplexTask)
+		{ }
+
+	virtual bool SuppressLogErrors() override { return false; }
+	virtual bool SuppressLogWarnings() override { return true; }
+	virtual bool ElevateLogWarningsToErrors() override { return false; }
+};
+
+IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(FAutomationTestAttemptToFindUninitializedScriptStructMembers, FAutomationTestUObjectClassBase, "UObject.Class AttemptToFindUninitializedScriptStructMembers", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ServerContext | EAutomationTestFlags::SmokeFilter)
 bool FAutomationTestAttemptToFindUninitializedScriptStructMembers::RunTest(const FString& Parameters)
 {
 	// This test fails when running tests under UHT because there is no TestUninitializedScriptStructMembersTest, so just skip it in that config.
@@ -3754,12 +3809,28 @@ static FString GetSuggestedPathNameForTypeShortName(const FString& ShortName)
 template <typename T>
 static void LogMetaDataShortTypeName(const T* Field, FName MetaDataKey, const FString& MetaDataValue)
 {
+	static struct FLogShortTypeNameInMetaDataCheckSettings
+	{
+		ELogVerbosity::Type LogVerbosity = ELogVerbosity::Warning;
+
+		FLogShortTypeNameInMetaDataCheckSettings()
+		{
+			{
+				FString VerbositySettingString;
+				if (GConfig->GetString(TEXT("CoreUObject.ShortTypeNameInMetaDataCheck"), TEXT("LogVerbosity"), VerbositySettingString, GEngineIni))
+				{
+					LogVerbosity = ParseLogVerbosityFromString(VerbositySettingString);
+				}
+			}
+		}
+	} Settings;
+
 	if constexpr (std::is_base_of_v<T, UField>)
 	{
 		if (const UFunction* Func = Cast<UFunction>(Field))
 		{
 			UStruct* FuncOwner = CastChecked<UStruct>(Func->GetOuter());
-			FMsg::Logf(__FILE__, __LINE__, LogClass.GetCategoryName(), ELogVerbosity::Warning, TEXT("Function %s%s::%s defines MetaData key \"%s\" which contains short type name \"%s\". %s%s"),
+			FMsg::Logf(__FILE__, __LINE__, LogClass.GetCategoryName(), Settings.LogVerbosity, TEXT("Function %s%s::%s defines MetaData key \"%s\" which contains short type name \"%s\". %s%s"),
 				FuncOwner->GetPrefixCPP(),
 				*FuncOwner->GetName(),
 				*Func->GetName(),
@@ -3770,7 +3841,7 @@ static void LogMetaDataShortTypeName(const T* Field, FName MetaDataKey, const FS
 		}
 		else
 		{
-			FMsg::Logf(__FILE__, __LINE__, LogClass.GetCategoryName(), ELogVerbosity::Warning, TEXT("%s %s%s defines MetaData key \"%s\" which contains short type name \"%s\". %s%s"),
+			FMsg::Logf(__FILE__, __LINE__, LogClass.GetCategoryName(), Settings.LogVerbosity, TEXT("%s %s%s defines MetaData key \"%s\" which contains short type name \"%s\". %s%s"),
 				*Field->GetClass()->GetName(),
 				Field->template IsA<UStruct>() ? CastChecked<UStruct>(Field)->GetPrefixCPP() : TEXT(""),
 				*Field->GetName(),
@@ -3783,7 +3854,7 @@ static void LogMetaDataShortTypeName(const T* Field, FName MetaDataKey, const FS
 	else if constexpr (std::is_same_v<T, FProperty>)
 	{
 		UStruct* OwnerStruct = Field->GetOwnerStruct();
-		FMsg::Logf(__FILE__, __LINE__, LogClass.GetCategoryName(), ELogVerbosity::Warning, TEXT("Property %s %s%s::%s defines MetaData key \"%s\" which contains short type name \"%s\". %s%s"),
+		FMsg::Logf(__FILE__, __LINE__, LogClass.GetCategoryName(), Settings.LogVerbosity, TEXT("Property %s %s%s::%s defines MetaData key \"%s\" which contains short type name \"%s\". %s%s"),
 			*Field->GetClass()->GetName(),
 			OwnerStruct->GetPrefixCPP(),
 			*OwnerStruct->GetName(),
@@ -3888,7 +3959,7 @@ FAutoConsoleCommandWithWorldAndArgs GCmdListShortTypeNamesInMetaData(
 			FStructUtils::AttemptToFindShortTypeNamesInMetaData();
 		}));
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAutomationTestAttemptToFindShortTypeNamesInMetaData, "UObject.Class AttemptToFindShortTypeNamesInMetaData", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::ServerContext | EAutomationTestFlags::SmokeFilter)
+IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(FAutomationTestAttemptToFindShortTypeNamesInMetaData, FAutomationTestUObjectClassBase, "UObject.Class AttemptToFindShortTypeNamesInMetaData", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::ServerContext | EAutomationTestFlags::SmokeFilter)
 bool FAutomationTestAttemptToFindShortTypeNamesInMetaData::RunTest(const FString& Parameters)
 {
 	// This test is not necessary when running under UHT so just skip it in that config.
@@ -3897,7 +3968,171 @@ bool FAutomationTestAttemptToFindShortTypeNamesInMetaData::RunTest(const FString
 
 #endif // WITH_EDITORONLY_DATA
 
+// bExactCheck - Check for places where structs serialize a different set of object references to what they declare (Conservative is always an error)
+// otherwise - Check for places where structs serialize object references they don't declare (Conservative allows serializing any reference types)
+static bool FindUndeclaredObjectReferencesInStructSerializers(FAutomationTestBase& Test, bool bExactCheck)
+{
+	struct FTestArchive : public FArchiveUObject
+	{
+		FTestArchive()
+		{
+			// Not persistent, loading, saving, etc
+			ArIsObjectReferenceCollector = true;
+		}
+		
+		EPropertyObjectReferenceType References = EPropertyObjectReferenceType::None;
+
+		virtual FArchive& operator<<(FLazyObjectPtr& Value) override 
+		{
+			References |= EPropertyObjectReferenceType::Weak;
+			return *this;
+		}
+		virtual FArchive& operator<<(FObjectPtr& Value) override 
+		{ 
+			References |= EPropertyObjectReferenceType::Strong;
+			return *this;
+		}
+		virtual FArchive& operator<<(FSoftObjectPtr& Value) override 
+		{
+			References |= EPropertyObjectReferenceType::Weak | EPropertyObjectReferenceType::Soft;
+			return *this;
+		}
+		virtual FArchive& operator<<(FSoftObjectPath& Value) override 
+		{
+			References |= EPropertyObjectReferenceType::Soft;
+			return *this;
+		}
+		virtual FArchive& operator<<(FWeakObjectPtr& Value) override 
+		{ 
+			References |= EPropertyObjectReferenceType::Weak;
+			return *this;
+		}
+	};
+
+	bool bFoundProblems = false;
+
+	for (TObjectIterator<UScriptStruct> ScriptIt; ScriptIt; ++ScriptIt)
+	{
+		UScriptStruct* Struct = *ScriptIt;
+		if ((Struct->StructFlags & STRUCT_SerializeNative) == 0)
+		{
+			continue;
+		}
+
+		auto LogUndeclaredObjectReference = [&bFoundProblems, &Test, Struct](ELogVerbosity::Type Verbosity, const TCHAR* RefType)
+		{
+			Test.AddError(FString::Printf(TEXT("Struct %s%s serializes an object reference of type EPropertyObjectReferenceType::%s but does not declare it"),
+				Struct->GetPrefixCPP(),
+				*Struct->GetName(),
+				RefType
+				));
+			bFoundProblems = true;
+		};
+		auto LogOverdeclaredObjectReference = [&bFoundProblems, &Test, Struct](ELogVerbosity::Type Verbosity, const TCHAR* RefType)
+		{
+			Test.AddError(FString::Printf(TEXT("Struct %s%s declares an object reference of type EPropertyObjectReferenceType::%s but does not serialize it"),
+				Struct->GetPrefixCPP(),
+				*Struct->GetName(),
+				RefType
+				));
+			bFoundProblems = true;
+		};
+		EPropertyObjectReferenceType DeclaredReferences = Struct->GetCppStructOps()->GetCapabilities().HasSerializerObjectReferences;			
+		EPropertyObjectReferenceType PropertyReferences = EPropertyObjectReferenceType::None;
+		for (EPropertyObjectReferenceType Type : { EPropertyObjectReferenceType::Strong, EPropertyObjectReferenceType::Weak, EPropertyObjectReferenceType::Soft })
+		{
+			FProperty* Property = Struct->PropertyLink;
+			TArray<const FStructProperty*> EncounteredStructProps; 
+			while (Property && !EnumHasAllFlags(PropertyReferences, Type))
+			{
+				if (Property->ContainsObjectReference(EncounteredStructProps, Type))
+				{
+					PropertyReferences |= Type;
+				}
+				Property = Property->PropertyLinkNext;
+			}
+		}
+
+		FStructOnScope TempStruct(Struct);
+		
+		FTestArchive Ar;
+		Struct->SerializeItem(Ar, TempStruct.GetStructMemory(), nullptr);
+		
+		if(!bExactCheck && !EnumHasAllFlags(DeclaredReferences, EPropertyObjectReferenceType::Conservative))
+		{
+			for (EPropertyObjectReferenceType Type : { EPropertyObjectReferenceType::Strong, EPropertyObjectReferenceType::Weak, EPropertyObjectReferenceType::Soft })
+			{
+				if (EnumHasAllFlags(Ar.References, Type) && !EnumHasAllFlags(DeclaredReferences | PropertyReferences, Type))
+				{
+					LogUndeclaredObjectReference(ELogVerbosity::Warning, LexToString(Type));
+				}
+			}
+		}
+		if(bExactCheck && EnumHasAllFlags(DeclaredReferences, EPropertyObjectReferenceType::Conservative))
+		{
+			FString SerializedTypes;
+			for (uint32 Flag = 1, Max = (uint32)EPropertyObjectReferenceType::MAX; Flag != Max; Flag <<= 1)
+			{
+				EPropertyObjectReferenceType TypedFlag = (EPropertyObjectReferenceType)Flag;
+				if (EnumHasAllFlags(Ar.References, TypedFlag))
+				{
+					if (SerializedTypes.IsEmpty())
+					{
+						SerializedTypes = LexToString(TypedFlag);
+					}
+					else 
+					{
+						SerializedTypes.Appendf(TEXT(" | %s"),LexToString(TypedFlag));
+					}
+				}
+			}	
+			if (SerializedTypes.IsEmpty())
+			{
+				SerializedTypes = LexToString(EPropertyObjectReferenceType::None);
+			}
+			Test.AddError(FString::Printf(TEXT("Struct %s%s declares its object references as EPropertyObjectReferenceType::Conservative which is never exact. Actual types serialized: %s"),
+				Struct->GetPrefixCPP(),
+				*Struct->GetName(),
+				*SerializedTypes
+			));
+			bFoundProblems = true;
+		}
+		else if (bExactCheck)
+		{
+			for (EPropertyObjectReferenceType Type : { EPropertyObjectReferenceType::Strong, EPropertyObjectReferenceType::Weak, EPropertyObjectReferenceType::Soft })
+			{
+				if (EnumHasAllFlags(DeclaredReferences, Type) && !EnumHasAllFlags(Ar.References, Type))
+				{
+					LogOverdeclaredObjectReference(ELogVerbosity::Warning, LexToString(Type));
+				}
+			}
+		}
+	}
+	return !bFoundProblems;
+}
+
+// Test for finding structs which misreport their object properties for native serialization
+IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(FAutomationTestFindUndeclaredObjectReferencesInStructSerializers, FAutomationTestUObjectClassBase, "UObject.Class FindUndeclaredObjectReferencesInStructSerializers", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ServerContext | EAutomationTestFlags::SmokeFilter)
+bool FAutomationTestFindUndeclaredObjectReferencesInStructSerializers::RunTest(const FString& Parameters)
+{
+	return FindUndeclaredObjectReferencesInStructSerializers(*this, false);
+}
+
+// Test for finding structs which unoptimally their object properties for native serialization - not a smoke test
+
+IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(FAutomationTestFindInexactObjectReferencesInStructSerializers, FAutomationTestUObjectClassBase, "UObject.Class FindInexactObjectReferencesInStructSerializers", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ServerContext | EAutomationTestFlags::EngineFilter | EAutomationTestFlags::RequiresUser)
+bool FAutomationTestFindInexactObjectReferencesInStructSerializers::RunTest(const FString& Parameters)
+{
+	return FindUndeclaredObjectReferencesInStructSerializers(*this, true);
+}
+
 #endif // !(UE_BUILD_TEST || UE_BUILD_SHIPPING)
+
+bool FTestUndeclaredScriptStructObjectReferencesTest::Serialize(FArchive& Ar)
+{
+	Ar << StrongObjectPointer << SoftObjectPointer << SoftObjectPath << WeakObjectPointer;
+	return true;
+}
 
 IMPLEMENT_CORE_INTRINSIC_CLASS(UScriptStruct, UStruct,
 	{
@@ -3961,7 +4196,7 @@ void UClass::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collecto
 		Collector.AddStableReference( &Inter.Class );
 	}
 
-	for (TPair<FName, UFunction*>& Pair : This->FuncMap)
+	for (auto& Pair : This->FuncMap)
 	{
 		Collector.AddStableReference( &Pair.Value );
 	}
@@ -4144,7 +4379,7 @@ UObject* UClass::CreateDefaultObject()
 				{
 					const FSparseDelegate& SparseDelegate = SparseDelegateIt->GetPropertyValue_InContainer(ClassDefaultObject);
 					USparseDelegateFunction* SparseDelegateFunction = CastChecked<USparseDelegateFunction>(SparseDelegateIt->SignatureFunction);
-					FSparseDelegateStorage::RegisterDelegateOffset(ClassDefaultObject, SparseDelegateFunction->DelegateName, (size_t)&SparseDelegate - (size_t)ClassDefaultObject);
+					FSparseDelegateStorage::RegisterDelegateOffset(ClassDefaultObject, SparseDelegateFunction->DelegateName, (size_t)&SparseDelegate - (size_t)ClassDefaultObject.Get());
 				}
 				EObjectInitializerOptions InitOptions = EObjectInitializerOptions::None;
 				if (!HasAnyClassFlags(CLASS_Native | CLASS_Intrinsic))
@@ -4253,7 +4488,7 @@ void UClass::Bind()
 {
 	UStruct::Bind();
 
-	if( !GIsUCCMakeStandaloneHeaderGenerator && !ClassConstructor && IsNative() )
+	if( !ClassConstructor && IsNative() )
 	{
 		UE_LOG(LogClass, Fatal, TEXT("Can't bind to native class %s"), *GetPathName() );
 	}
@@ -4481,7 +4716,7 @@ static FAutoConsoleVariable CVarValidateReplicatedPropertyRegistration(TEXT("net
 
 void UClass::SetUpRuntimeReplicationData()
 {
-	if (!HasAnyClassFlags(CLASS_ReplicationDataIsSetUp) && PropertyLink != NULL)
+	if (!HasAnyClassFlags(CLASS_ReplicationDataIsSetUp))
 	{
 		NetFields.Empty();
 
@@ -4508,7 +4743,7 @@ void UClass::SetUpRuntimeReplicationData()
 					NetProperties.Add(Prop);
 				}
 			}
-			}
+		}
 
 		for(TFieldIterator<UField> It(this,EFieldIteratorFlags::ExcludeSuper); It; ++It)
 		{
@@ -4529,22 +4764,22 @@ void UClass::SetUpRuntimeReplicationData()
 		const bool bIsNativeClass = HasAnyClassFlags(CLASS_Native);
 		if (!bIsNativeClass)
 		{
-		// Sort NetProperties so that their ClassReps are sorted by memory offset
+			// Sort NetProperties so that their ClassReps are sorted by memory offset
 			struct FComparePropertyOffsets
-		{
-				FORCEINLINE bool operator()(FProperty& A, FProperty& B) const
 			{
-				// Ensure stable sort
-					if (A.GetOffset_ForGC() == B.GetOffset_ForGC())
+				FORCEINLINE bool operator()(FProperty* A, FProperty* B) const
 				{
-					return A.GetName() < B.GetName();
+					// Ensure stable sort
+					if (A->GetOffset_ForGC() == B->GetOffset_ForGC())
+					{
+						return A->GetName() < B->GetName();
+					}
+
+					return A->GetOffset_ForGC() < B->GetOffset_ForGC();
 				}
+			};
 
-				return A.GetOffset_ForGC() < B.GetOffset_ForGC();
-			}
-		};
-
-			Sort(NetProperties.GetData(), NetProperties.Num(), FComparePropertyOffsets());
+			Algo::Sort(NetProperties, FComparePropertyOffsets());
 		}
 
 		ClassReps.Reserve(ClassReps.Num() + NetProperties.Num());
@@ -4553,7 +4788,7 @@ void UClass::SetUpRuntimeReplicationData()
 			NetProperties[i]->RepIndex = (uint16)ClassReps.Num();
 			for (int32 j = 0; j < NetProperties[i]->ArrayDim; j++)
 			{
-				new(ClassReps)FRepRecord(NetProperties[i], j);
+				ClassReps.Emplace(NetProperties[i], j);
 			}
 		}
 		check(ClassReps.Num() <= 65535);
@@ -4564,15 +4799,8 @@ void UClass::SetUpRuntimeReplicationData()
 		}
 
 		NetFields.Shrink();
-
-		struct FCompareUFieldNames
-		{
-			FORCEINLINE bool operator()(UField& A, UField& B) const
-			{
-				return A.GetName() < B.GetName();
-			}
-		};
-		Sort(NetFields.GetData(), NetFields.Num(), FCompareUFieldNames());
+		
+		Algo::SortBy(NetFields, &UField::GetFName, FNameLexicalLess());
 
 		ClassFlags |= CLASS_ReplicationDataIsSetUp;
 
@@ -4855,7 +5083,7 @@ void UClass::Serialize( FArchive& Ar )
 	// serialize the function map
 	//@TODO: UCREMOVAL: Should we just regenerate the FuncMap post load, instead of serializing it?
 	{
-		FWriteScopeLock ScopeLock(FuncMapLock);
+	 	FUClassFuncScopeWriteLock ScopeLock(FuncMapLock);
 		Ar << FuncMap;
 	}
 
@@ -5276,7 +5504,7 @@ void UClass::PurgeClass(bool bRecompilingOnLoad)
 	DeleteUnresolvedScriptProperties();
 
 	{
-		FWriteScopeLock ScopeLock(FuncMapLock);
+		FUClassFuncScopeWriteLock ScopeLock(FuncMapLock);
 		FuncMap.Empty();
 	}
 	ClearFunctionMapsCaches();
@@ -5805,7 +6033,7 @@ void UClass::AddNativeFunction(const ANSICHAR* InName, FNativeFuncPtr InPointer)
 		}
 	}
 #endif
-	new(NativeFunctionLookupTable) FNativeFunctionLookup(InFName,InPointer);
+	NativeFunctionLookupTable.Emplace(InFName,InPointer);
 }
 
 void UClass::AddNativeFunction(const WIDECHAR* InName, FNativeFuncPtr InPointer)
@@ -5826,7 +6054,7 @@ void UClass::AddNativeFunction(const WIDECHAR* InName, FNativeFuncPtr InPointer)
 		}
 	}
 #endif
-	new(NativeFunctionLookupTable)FNativeFunctionLookup(InFName, InPointer);
+	NativeFunctionLookupTable.Emplace(InFName, InPointer);
 }
 
 void UClass::CreateLinkAndAddChildFunctionsToMap(const FClassFunctionLinkInfo* Functions, uint32 NumFunctions)
@@ -5845,8 +6073,8 @@ void UClass::CreateLinkAndAddChildFunctionsToMap(const FClassFunctionLinkInfo* F
 
 void UClass::ClearFunctionMapsCaches()
 {
-	FWriteScopeLock ScopeLock(SuperFuncMapLock);
-	SuperFuncMap.Empty();
+	FUClassFuncScopeWriteLock ScopeLock(AllFunctionsCacheLock);
+	AllFunctionsCache.Empty();
 }
 
 UFunction* UClass::FindFunctionByName(FName InName, EIncludeSuperFlag::Type IncludeSuper) const
@@ -5854,47 +6082,78 @@ UFunction* UClass::FindFunctionByName(FName InName, EIncludeSuperFlag::Type Incl
 	LLM_SCOPE(ELLMTag::UObject);
 
 	UFunction* Result = nullptr;
-	{
-		FReadScopeLock ScopeLock(FuncMapLock);
-		Result = FuncMap.FindRef(InName);
-	}
 
-	if (Result == nullptr && IncludeSuper == EIncludeSuperFlag::IncludeSuper)
+	UE_AUTORTFM_OPEN(
 	{
 		UClass* SuperClass = GetSuperClass();
-		if (SuperClass || Interfaces.Num() > 0)
+		if (IncludeSuper == EIncludeSuperFlag::ExcludeSuper || ( Interfaces.Num() == 0 && SuperClass == nullptr ) )
 		{
-			bool bFoundInSuperFuncMap = false;
+			// Trivial case: just look up in this class's function map and don't involve the cache
+			FUClassFuncScopeReadLock ScopeLock(FuncMapLock);
+			Result = FuncMap.FindRef(InName);
+		}
+		else
+		{
+			// Check the cache
+			bool bFoundInCache = false;
 			{
-				FReadScopeLock ScopeLock(SuperFuncMapLock);
-				if (UFunction** SuperResult = SuperFuncMap.Find(InName))
+				FUClassFuncScopeReadLock ScopeLock(AllFunctionsCacheLock);
+				if (UFunction** SuperResult = AllFunctionsCache.Find(InName))
 				{
 					Result = *SuperResult;
-					bFoundInSuperFuncMap = true;
+					bFoundInCache = true;
 				}
 			}
 
-			if (!bFoundInSuperFuncMap)
+			if (!bFoundInCache)
 			{
-				for (const FImplementedInterface& Inter : Interfaces)
+				// Try this class's FuncMap first
 				{
-					Result = Inter.Class ? Inter.Class->FindFunctionByName(InName) : nullptr;
-					if (Result)
+					FUClassFuncScopeReadLock ScopeLock(FuncMapLock);
+					Result = FuncMap.FindRef(InName);
+				}
+
+				if (Result)
+				{
+					// Cache the result
+					FUClassFuncScopeWriteLock ScopeLock(AllFunctionsCacheLock);
+					AllFunctionsCache.Add(InName, Result);
+				}
+				else
+				{
+					// Check superclass and interfaces
+					if (Interfaces.Num() > 0)
 					{
-						break;
+						for (const FImplementedInterface& Inter : Interfaces)
+						{
+							Result = Inter.Class ? Inter.Class->FindFunctionByName(InName) : nullptr;
+							if (Result)
+							{
+								break;
+							}
+						}
+					}
+
+					if (Result == nullptr && SuperClass != nullptr )
+					{
+						Result = SuperClass->FindFunctionByName(InName);
+					}
+
+					{
+						// Do a final check to make sure the function still doesn't exist in this class before we add it to the cache, in case the function was added by another thread since we last checked
+						// This avoids us writing null (or a superclass func with the same name) to the cache if the function was just added
+						FUClassFuncScopeReadLock ScopeLockFuncMap(FuncMapLock);
+						if (FuncMap.FindRef(InName) == nullptr)
+						{
+							// Cache the result (even if it's nullptr)
+							FUClassFuncScopeWriteLock ScopeLock(AllFunctionsCacheLock);
+							AllFunctionsCache.Add(InName, Result);
+						}
 					}
 				}
-
-				if (SuperClass && Result == nullptr)
-				{
-					Result = SuperClass->FindFunctionByName(InName);
-				}
-
-				FWriteScopeLock ScopeLock(SuperFuncMapLock);
-				SuperFuncMap.Add(InName, Result);
 			}
 		}
-	}
+	});
 
 	return Result;
 }
@@ -6048,7 +6307,9 @@ FTopLevelAssetPath UClass::TryConvertShortTypeNameToPathName(UClass* TypeClass, 
 	}
 }
 
-bool UClass::TryFixShortClassNameExportPath(FString& InOutExportPathToFix, ELogVerbosity::Type AmbiguousMessageVerbosity /*= ELogVerbosity::NoLogging*/, const TCHAR* AmbiguousClassMessage /*= nullptr*/)
+bool UClass::TryFixShortClassNameExportPath(FString& InOutExportPathToFix,
+	ELogVerbosity::Type AmbiguousMessageVerbosity /*= ELogVerbosity::NoLogging*/,
+	const TCHAR* AmbiguousClassMessage /*= nullptr*/, bool bClearOnError /* = false */)
 {
 	FString ClassName;
 	FString ObjectPath;
@@ -6057,9 +6318,9 @@ bool UClass::TryFixShortClassNameExportPath(FString& InOutExportPathToFix, ELogV
 		if (FPackageName::IsShortPackageName(ClassName))
 		{
 			FTopLevelAssetPath ClassPathName = UClass::TryConvertShortTypeNameToPathName<UClass>(ClassName, AmbiguousMessageVerbosity, AmbiguousClassMessage);
-			if (!ClassPathName.IsNull())
+			if (!ClassPathName.IsNull() || bClearOnError)
 			{
-				InOutExportPathToFix = FObjectPropertyBase::GetExportPath(ClassPathName, ObjectPath);
+				InOutExportPathToFix = !ClassPathName.IsNull() ? FObjectPropertyBase::GetExportPath(ClassPathName, ObjectPath) : FString();
 				return true;
 			}
 		}
@@ -6223,29 +6484,21 @@ bool UClass::IsClassGroupName(const TCHAR* InGroupName) const
 
 
 #if WITH_EDITORONLY_DATA
-IMPLEMENT_CORE_INTRINSIC_CLASS(UClass, UStruct,
-	{
-		Class->CppClassStaticFunctions = UOBJECT_CPPCLASS_STATICFUNCTIONS_FORCLASS(UClass);
-
-		UE::GC::FTokenStreamBuilder& Builder = UE::GC::FIntrinsicClassTokens::AllocateBuilder(Class);
-		Builder.EmitObjectReference(STRUCT_OFFSET(UClass, ClassDefaultObject), TEXT("ClassDefaultObject"));
-		Builder.EmitObjectReference(STRUCT_OFFSET(UClass, ClassWithin), TEXT("ClassWithin"));
-		Builder.EmitObjectReference(STRUCT_OFFSET(UClass, ClassGeneratedBy), TEXT("ClassGeneratedBy"));
-		Builder.EmitObjectArrayReference(STRUCT_OFFSET(UClass, NetFields), TEXT("NetFields"));
-	}
-);
+#define UCLASS_EDITOR_GC_MEMBERS UE_GC_MEMBER(UClass, ClassGeneratedBy)
 #else
+#define UCLASS_EDITOR_GC_MEMBERS
+#endif
+
 IMPLEMENT_CORE_INTRINSIC_CLASS(UClass, UStruct,
 	{
 		Class->CppClassStaticFunctions = UOBJECT_CPPCLASS_STATICFUNCTIONS_FORCLASS(UClass);
 
-		UE::GC::FTokenStreamBuilder& Builder = UE::GC::FIntrinsicClassTokens::AllocateBuilder(Class);
-		Builder.EmitObjectReference(STRUCT_OFFSET(UClass, ClassDefaultObject), TEXT("ClassDefaultObject"));
-		Builder.EmitObjectReference(STRUCT_OFFSET(UClass, ClassWithin), TEXT("ClassWithin"));
-		Builder.EmitObjectArrayReference(STRUCT_OFFSET(UClass, NetFields), TEXT("NetFields"));
+		UE::GC::DeclareIntrinsicMembers(Class, {	UE_GC_MEMBER(UClass, ClassDefaultObject),
+													UE_GC_MEMBER(UClass, ClassWithin), 
+													UE_GC_MEMBER(UClass, NetFields),
+													UCLASS_EDITOR_GC_MEMBERS} );
 	}
 );
-#endif
 
 void GetPrivateStaticClassBody(
 	const TCHAR* PackageName,
@@ -6370,29 +6623,30 @@ void UFunction::InitializeDerivedMembers()
 	NumParms = 0;
 	ParmsSize = 0;
 	ReturnValueOffset = MAX_uint16;
+	FProperty** ConstructLink = &FirstPropertyToInit;
 
 	for (FProperty* Property = CastField<FProperty>(ChildProperties); Property; Property = CastField<FProperty>(Property->Next))
 	{
 		if (Property->PropertyFlags & CPF_Parm)
 		{
 			NumParms++;
-			ParmsSize = Property->GetOffset_ForUFunction() + Property->GetSize();
+			ParmsSize = IntCastChecked<uint16>(Property->GetOffset_ForUFunction() + Property->GetSize());
 			if (Property->PropertyFlags & CPF_ReturnParm)
 			{
-				ReturnValueOffset = Property->GetOffset_ForUFunction();
+				ReturnValueOffset = IntCastChecked<uint16>(Property->GetOffset_ForUFunction());
 			}
 		}
-		else if ((FunctionFlags & FUNC_HasDefaults) != 0)
+		else if ((FunctionFlags & FUNC_HasDefaults) == 0)
 		{
-			if (!Property->HasAnyPropertyFlags(CPF_ZeroConstructor))
-			{
-				FirstPropertyToInit = Property;
-				break;
-			}
-		}
-		else
-		{
+			// we're done with parms and we've not been tagged as FUNC_HasDefaults, so we can abort
+			// this potentially costly loop:
 			break;
+		}
+		else if (!Property->HasAnyPropertyFlags(CPF_ZeroConstructor))
+		{
+			*ConstructLink = Property;
+			Property->PostConstructLinkNext = nullptr;
+			ConstructLink = &Property->PostConstructLinkNext;
 		}
 	}
 }
@@ -6864,6 +7118,12 @@ UScriptStruct* TBaseStructure<FAssetBundleData>::Get()
 UScriptStruct* TBaseStructure<FTestUninitializedScriptStructMembersTest>::Get()
 {
 	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("TestUninitializedScriptStructMembersTest"));
+	return ScriptStruct;
+}
+
+UScriptStruct* TBaseStructure<FTestUndeclaredScriptStructObjectReferencesTest>::Get()
+{
+	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("TestUndeclaredScriptStructObjectReferencesTest"));
 	return ScriptStruct;
 }
 

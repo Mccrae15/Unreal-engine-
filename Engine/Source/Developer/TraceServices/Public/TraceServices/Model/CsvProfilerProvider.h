@@ -6,8 +6,7 @@
 #include "HAL/Platform.h"
 #include "Templates/Function.h"
 #include "TraceServices/Model/AnalysisSession.h"
-
-template <typename FuncType> class TFunctionRef;
+#include "UObject/NameTypes.h"
 
 namespace TraceServices
 {
@@ -16,7 +15,7 @@ class IUntypedTable;
 
 struct FCaptureInfo
 {
-	const TMap<const TCHAR*, const TCHAR*>& Metadata;
+	const TMap<const TCHAR*, const TCHAR*, FDefaultSetAllocator, TStringPointerMapKeyFuncs_DEPRECATED<const TCHAR*, const TCHAR*>>& Metadata;
 	const TCHAR* Filename = nullptr;
 	uint32 Id = uint32(-1);
 	uint32 FrameCount = 0;
@@ -31,6 +30,7 @@ public:
 	virtual const IUntypedTable& GetTable(uint32 CaptureId) const = 0;
 };
 
-const ICsvProfilerProvider* ReadCsvProfilerProvider(const IAnalysisSession& Session);
+TRACESERVICES_API FName GetCsvProfilerProviderName();
+TRACESERVICES_API const ICsvProfilerProvider* ReadCsvProfilerProvider(const IAnalysisSession& Session);
 
 } // namespace TraceServices

@@ -4,6 +4,7 @@
 #include "SlateGlobals.h"
 #include "Rendering/RenderingCommon.h"
 #include "RHI.h"
+#include "RHICommandList.h"
 
 DECLARE_MEMORY_STAT(TEXT("Index Buffer Memory (GPU)"), STAT_SlateIndexBufferMemory, STATGROUP_SlateMemory);
 
@@ -24,7 +25,7 @@ void FSlateElementIndexBuffer::Init( int32 MinNumIndices )
 
 	if ( IsInRenderingThread() )
 	{
-		InitResource();
+		InitResource(FRHICommandListImmediate::Get());
 	}
 	else
 	{
@@ -45,7 +46,7 @@ void FSlateElementIndexBuffer::Destroy()
 }
 
 /** Initializes the index buffers RHI resource. */
-void FSlateElementIndexBuffer::InitDynamicRHI()
+void FSlateElementIndexBuffer::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	checkSlow( IsInRenderingThread() );
 
@@ -54,7 +55,7 @@ void FSlateElementIndexBuffer::InitDynamicRHI()
 	SetBufferSize(MinBufferSize);
 
 	FRHIResourceCreateInfo CreateInfo(TEXT("FSlateElementIndexBuffer"));
-	IndexBufferRHI = RHICreateIndexBuffer( sizeof(SlateIndex), MinBufferSize, BUF_Dynamic, CreateInfo );
+	IndexBufferRHI = RHICmdList.CreateIndexBuffer( sizeof(SlateIndex), MinBufferSize, BUF_Dynamic, CreateInfo );
 	check( IsValidRef(IndexBufferRHI) );
 }
 
@@ -69,7 +70,7 @@ void FSlateElementIndexBuffer::ResizeBuffer( int32 NewSizeBytes )
 	{
 		IndexBufferRHI.SafeRelease();
 		FRHIResourceCreateInfo CreateInfo(TEXT("FSlateElementIndexBuffer"));
-		IndexBufferRHI = RHICreateIndexBuffer( sizeof(SlateIndex), FinalSize, BUF_Dynamic, CreateInfo );
+		IndexBufferRHI = FRHICommandListImmediate::Get().CreateIndexBuffer( sizeof(SlateIndex), FinalSize, BUF_Dynamic, CreateInfo );
 		check(IsValidRef(IndexBufferRHI));
 
 		SetBufferSize(FinalSize);
@@ -98,7 +99,7 @@ void FSlateElementIndexBuffer::PreFillBuffer(int32 RequiredIndexCount, bool bShr
 }
 
 /** Releases the index buffers RHI resource. */
-void FSlateElementIndexBuffer::ReleaseDynamicRHI()
+void FSlateElementIndexBuffer::ReleaseRHI()
 {
 	IndexBufferRHI.SafeRelease();
 	SetBufferSize(0);

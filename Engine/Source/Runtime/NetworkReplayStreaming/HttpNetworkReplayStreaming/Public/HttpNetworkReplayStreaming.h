@@ -388,7 +388,7 @@ public:
 
 	TSet< FString >						EventGroupSet;
 
-	uint32								TotalUploadBytes;
+	uint64								TotalUploadBytes;
 
 	TMap< FString, FCachedResponse >	ResponseCache;
 
@@ -407,7 +407,12 @@ public:
 	virtual void Tick( float DeltaTime ) override;
 	virtual ETickableTickType GetTickableTickType() const override { return ETickableTickType::Always; }
 	virtual TStatId GetStatId() const override;
-	bool IsTickableWhenPaused() const override { return true; }
+	virtual bool IsTickableWhenPaused() const override { return true; }
+	virtual void Flush() override;
+
+	virtual void ShutdownModule() override;
+
+	bool HasPendingHttpRequests() const;
 
 	TArray< TSharedPtr< FHttpNetworkReplayStreamer > > HttpStreamers;
 };

@@ -2,22 +2,51 @@
 
 #include "Text3DComponent.h"
 
-#include "Glyph.h"
-#include "MeshCreator.h"
-#include "Text3DEngineSubsystem.h"
-#include "Text3DPrivate.h"
-#include "TextShaper.h"
 #include "Algo/Count.h"
+#include "Algo/IndexOf.h"
 #include "Async/Async.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
 #include "Engine/StaticMesh.h"
+#include "Fonts/SlateTextShaper.h"
+#include "Framework/Text/PlainTextLayoutMarshaller.h"
+#include "Glyph.h"
 #include "Materials/Material.h"
+#include "MeshCreator.h"
 #include "Misc/ScopeExit.h"
+#include "Misc/TransactionObjectEvent.h"
+#include "Styling/StyleDefaults.h"
+#include "Text3DEngineSubsystem.h"
+#include "Text3DPrivate.h"
+#include "TextShaper.h"
 #include "UObject/ConstructorHelpers.h"
 
 #define LOCTEXT_NAMESPACE "Text3D"
+
+#if WITH_EDITOR
+namespace UE::Text3D::Private
+{
+	/** Get the Group Type according to the material name. */
+	static TMap<FName, EText3DGroupType> MaterialToGroup =
+	{
+		{ TEXT("FrontMaterial"), EText3DGroupType::Front },
+		{ TEXT("BackMaterial"), EText3DGroupType::Back },
+		{ TEXT("ExtrudeMaterial"), EText3DGroupType::Extrude },
+		{ TEXT("BevelMaterial"), EText3DGroupType::Bevel }
+	};
+
+	/** Sets the material based on the group name. */
+	using FGetter = TMemFunPtrType<true, UText3DComponent, UMaterialInterface*()>::Type;
+	static TMap<FName, FGetter> GroupToMaterial =
+	{
+		{ TEXT("FrontMaterial"), &UText3DComponent::GetFrontMaterial },
+		{ TEXT("BackMaterial"), &UText3DComponent::GetBackMaterial },
+		{ TEXT("ExtrudeMaterial"), &UText3DComponent::GetExtrudeMaterial },
+		{ TEXT("BevelMaterial"), &UText3DComponent::GetBevelMaterial }
+	};
+}
+#endif
 
 struct FText3DShapedText
 {
@@ -47,9 +76,7 @@ UText3DComponent::UText3DComponent()
 	, ShapedText(new FText3DShapedText())
 {
 	TextRoot = CreateDefaultSubobject<USceneComponent>(TEXT("TextRoot"));
-#if WITH_EDITOR
-	TextRoot->SetIsVisualizationComponent(true);
-#endif
+	TextRoot->SetupAttachment(this);
 
 	if (!IsRunningDedicatedServer())
 	{
@@ -93,25 +120,71 @@ UText3DComponent::UText3DComponent()
 	MaxHeight = 500.0f;
 	bScaleProportionally = true;
 
-	bPendingBuild = false;
 	bFreezeBuild = false;
+	ModifyFlags = EText3DModifyFlags::All;
 
 	TextScale = FVector::ZeroVector;
+}
+
+void UText3DComponent::PostLoad()
+{
+	// Reset so it's rebuilt (needed if re-using the component!)
+	ModifyFlags = EText3DModifyFlags::All;
+	
+	Super::PostLoad();
+}
+
+void UText3DComponent::BeginDestroy()
+{
+	ClearTextMesh();
+
+	Super::BeginDestroy();
+}
+
+bool UText3DComponent::NeedsMeshRebuild() const
+{
+	return EnumHasAnyFlags(ModifyFlags,EText3DModifyFlags::Geometry);
+}
+
+bool UText3DComponent::NeedsLayoutUpdate() const
+{
+	return EnumHasAnyFlags(ModifyFlags, EText3DModifyFlags::Layout);
+}
+
+void UText3DComponent::MarkForGeometryUpdate()
+{
+	ModifyFlags |= EText3DModifyFlags::Geometry;
+}
+
+void UText3DComponent::MarkForLayoutUpdate()
+{
+	ModifyFlags |= EText3DModifyFlags::Layout;
+}
+
+void UText3DComponent::ClearUpdateFlags()
+{
+	ModifyFlags = EText3DModifyFlags::None;
 }
 
 void UText3DComponent::OnRegister()
 {
 	Super::OnRegister();
-	TextRoot->AttachToComponent(this, FAttachmentTransformRules::KeepRelativeTransform);
 
-	// Forces rebuild (if build is in progress)
-	bIsBuilding = false;
-	BuildTextMesh();
+	if (!TextRoot->IsAttachedTo(this))
+	{
+		TextRoot->AttachToComponent(this, FAttachmentTransformRules::KeepRelativeTransform);
+	}
+
+	RebuildInternal();
 }
 
 void UText3DComponent::OnUnregister()
 {
-	ClearTextMesh();
+	if (IsBeingDestroyed())
+	{
+		ClearTextMesh();
+	}
+
 	Super::OnUnregister();
 }
 
@@ -119,11 +192,11 @@ void UText3DComponent::OnUnregister()
 void UText3DComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
-	
-	static FName BevelTypePropertyName = GET_MEMBER_NAME_CHECKED(UText3DComponent, BevelType);
-	static FName BevelSegmentsPropertyName = GET_MEMBER_NAME_CHECKED(UText3DComponent, BevelSegments);
 
 	const FName Name = PropertyChangedEvent.GetPropertyName();
+
+	static FName BevelTypePropertyName = GET_MEMBER_NAME_CHECKED(UText3DComponent, BevelType);
+	static FName BevelSegmentsPropertyName = GET_MEMBER_NAME_CHECKED(UText3DComponent, BevelSegments);
 	if (Name == BevelTypePropertyName)
 	{
 		switch (BevelType)
@@ -148,40 +221,117 @@ void UText3DComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyCha
 			break;
 		}
 		}
+
+		MarkForGeometryUpdate();
 	}
 	else if (Name == BevelSegmentsPropertyName)
 	{
 		// Force minimum bevel segments based on the BevelType
 		SetBevelSegments(BevelSegments);
 	}
+	else if (Name == GET_MEMBER_NAME_CHECKED(UText3DComponent, Font) ||
+			 Name == GET_MEMBER_NAME_CHECKED(UText3DComponent, Text) ||
+			 Name == GET_MEMBER_NAME_CHECKED(UText3DComponent, OutlineExpand) ||
+			 Name == GET_MEMBER_NAME_CHECKED(UText3DComponent, bOutline) ||
+			 Name == GET_MEMBER_NAME_CHECKED(UText3DComponent, Extrude) ||
+			 Name == GET_MEMBER_NAME_CHECKED(UText3DComponent, Bevel))
+	{
+		MarkForGeometryUpdate();
+	}
+	else if (Name == GET_MEMBER_NAME_CHECKED(UText3DComponent, HorizontalAlignment) ||
+			 Name == GET_MEMBER_NAME_CHECKED(UText3DComponent, VerticalAlignment) ||
+			 Name == GET_MEMBER_NAME_CHECKED(UText3DComponent, Kerning) ||
+			 Name == GET_MEMBER_NAME_CHECKED(UText3DComponent, LineSpacing) ||
+			 Name == GET_MEMBER_NAME_CHECKED(UText3DComponent, WordSpacing) ||
+			 Name == GET_MEMBER_NAME_CHECKED(UText3DComponent, bHasMaxWidth) ||
+			 Name == GET_MEMBER_NAME_CHECKED(UText3DComponent, MaxWidth) ||
+			 Name == GET_MEMBER_NAME_CHECKED(UText3DComponent, bHasMaxHeight) ||
+			 Name == GET_MEMBER_NAME_CHECKED(UText3DComponent, MaxHeight) ||
+			 Name == GET_MEMBER_NAME_CHECKED(UText3DComponent, bScaleProportionally))
+	{
+		MarkForLayoutUpdate();
+	}
+	else if (const EText3DGroupType* MaterialGroup = UE::Text3D::Private::MaterialToGroup.Find(Name))
+	{
+		UpdateMaterial(*MaterialGroup, Invoke(UE::Text3D::Private::GroupToMaterial[Name], this));
+	}
+
+	RebuildInternal();
+}
+
+void UText3DComponent::PostTransacted(const FTransactionObjectEvent& TransactionEvent)
+{
+	Super::PostTransacted(TransactionEvent);
+
+	if (TransactionEvent.GetEventType() == ETransactionObjectEventType::UndoRedo)
+	{
+		ModifyFlags |= EText3DModifyFlags::All;
+		RebuildInternal();
+	}
 }
 #endif
 
-void UText3DComponent::SetText(const FText& Value)
+bool UText3DComponent::RefreshesOnChange() const
 {
-	if (!Text.EqualTo(Value))
+	return bRefreshOnChange;
+}
+
+void UText3DComponent::SetRefreshOnChange(const bool Value)
+{
+	if (bRefreshOnChange != Value)
 	{
-		Text = Value;
-		Rebuild();
+		bRefreshOnChange = Value;
 	}
 }
 
-void UText3DComponent::SetFont(UFont* const InFont)
+const FText& UText3DComponent::GetText() const
+{
+	return Text;
+}
+
+void UText3DComponent::SetText(const FText& Value)
+{	
+	if (!Text.EqualTo(Value))
+	{
+		Text = Value;
+		MarkForGeometryUpdate();
+		RebuildInternal();
+	}
+}
+
+const UFont* UText3DComponent::GetFont() const
+{
+	return Font;
+}
+
+void UText3DComponent::SetFont(UFont* InFont)
 {
 	if (Font != InFont)
 	{
 		Font = InFont;
-		Rebuild();
+		MarkForGeometryUpdate();
+		RebuildInternal();
 	}
 }
 
-void UText3DComponent::SetOutline(const bool bValue)
+bool UText3DComponent::HasOutline() const
+{
+	return bOutline;
+}
+
+void UText3DComponent::SetHasOutline(const bool bValue)
 {
 	if (bOutline != bValue)
 	{
-		bOutline = bValue;		
-		Rebuild();
+		bOutline = bValue;
+		MarkForGeometryUpdate();	
+		RebuildInternal();
 	}
+}
+
+float UText3DComponent::GetOutlineExpand() const
+{
+	return OutlineExpand;
 }
 
 void UText3DComponent::SetOutlineExpand(const float Value)
@@ -190,8 +340,14 @@ void UText3DComponent::SetOutlineExpand(const float Value)
 	if (!FMath::IsNearlyEqual(OutlineExpand, NewValue))
 	{
 		OutlineExpand = NewValue;
-		Rebuild();
+		MarkForGeometryUpdate();
+		RebuildInternal();
 	}
+}
+
+float UText3DComponent::GetExtrude() const
+{
+	return Extrude;
 }
 
 void UText3DComponent::SetExtrude(const float Value)
@@ -200,20 +356,31 @@ void UText3DComponent::SetExtrude(const float Value)
 	if (!FMath::IsNearlyEqual(Extrude, NewValue))
 	{
 		Extrude = NewValue;
+		MarkForGeometryUpdate();
 		CheckBevel();
-		Rebuild();
+		RebuildInternal();
 	}
+}
+
+float UText3DComponent::GetBevel() const
+{
+	return Bevel;
 }
 
 void UText3DComponent::SetBevel(const float Value)
 {
 	const float NewValue = FMath::Clamp(Value, 0.f, MaxBevel());
-
 	if (!FMath::IsNearlyEqual(Bevel, NewValue))
 	{
 		Bevel = NewValue;
-		Rebuild();
+		MarkForGeometryUpdate();
+		RebuildInternal();
 	}
+}
+
+EText3DBevelType UText3DComponent::GetBevelType() const
+{
+	return BevelType;
 }
 
 void UText3DComponent::SetBevelType(const EText3DBevelType Value)
@@ -221,8 +388,14 @@ void UText3DComponent::SetBevelType(const EText3DBevelType Value)
 	if (BevelType != Value)
 	{
 		BevelType = Value;
-		Rebuild();
+		MarkForGeometryUpdate();
+		RebuildInternal();
 	}
+}
+
+int32 UText3DComponent::GetBevelSegments() const
+{
+	return BevelSegments;
 }
 
 void UText3DComponent::SetBevelSegments(const int32 Value)
@@ -237,8 +410,14 @@ void UText3DComponent::SetBevelSegments(const int32 Value)
 	if (BevelSegments != NewValue)
 	{
 		BevelSegments = NewValue;
-		Rebuild();
+		MarkForGeometryUpdate();
+		RebuildInternal();
 	}
+}
+
+UMaterialInterface* UText3DComponent::GetFrontMaterial() const
+{
+	return FrontMaterial;
 }
 
 void UText3DComponent::SetFrontMaterial(UMaterialInterface* Value)
@@ -246,14 +425,29 @@ void UText3DComponent::SetFrontMaterial(UMaterialInterface* Value)
 	SetMaterial(EText3DGroupType::Front, Value);
 }
 
+UMaterialInterface* UText3DComponent::GetBevelMaterial() const
+{
+	return BevelMaterial;
+}
+
 void UText3DComponent::SetBevelMaterial(UMaterialInterface* Value)
 {
 	SetMaterial(EText3DGroupType::Bevel, Value);
 }
 
+UMaterialInterface* UText3DComponent::GetExtrudeMaterial() const
+{
+	return ExtrudeMaterial;
+}
+
 void UText3DComponent::SetExtrudeMaterial(UMaterialInterface* Value)
 {
 	SetMaterial(EText3DGroupType::Extrude, Value);
+}
+
+UMaterialInterface* UText3DComponent::GetBackMaterial() const
+{
+	return BackMaterial;
 }
 
 void UText3DComponent::SetBackMaterial(UMaterialInterface* Value)
@@ -294,7 +488,6 @@ bool UText3DComponent::AllocateGlyphs(int32 Num)
 			StaticMeshComponent->SetCastShadow(bCastShadow);
 			CharacterMeshes.Add(StaticMeshComponent);
 
-			GetOwner()->AddInstanceComponent(StaticMeshComponent);
 			StaticMeshComponent->AttachToComponent(CharacterKerningComponent, FAttachmentTransformRules::KeepRelativeTransform);
 		}
 	}
@@ -312,9 +505,7 @@ bool UText3DComponent::AllocateGlyphs(int32 Num)
 				CharacterKerningComponent->DetachFromComponent(FDetachmentTransformRules::KeepRelativeTransform);
 				CharacterKerningComponent->UnregisterComponent();
 				CharacterKerningComponent->DestroyComponent();
-				OwnerActor->RemoveInstanceComponent(CharacterKerningComponent);
 			}
-
 			
 			UStaticMeshComponent* StaticMeshComponent = CharacterMeshes[CharacterIndex];
 			if (IsValid(StaticMeshComponent))
@@ -322,7 +513,6 @@ bool UText3DComponent::AllocateGlyphs(int32 Num)
 				StaticMeshComponent->DetachFromComponent(FDetachmentTransformRules::KeepRelativeTransform);
 				StaticMeshComponent->UnregisterComponent();
 				StaticMeshComponent->DestroyComponent();
-				OwnerActor->RemoveInstanceComponent(StaticMeshComponent);
 			}
 		}
 		
@@ -369,7 +559,7 @@ void UText3DComponent::SetMaterial(const EText3DGroupType Type, UMaterialInterfa
 	UMaterialInterface* OldMaterial = GetMaterial(Type);
 	if (Value != OldMaterial)
 	{
-		switch(Type)
+		switch (Type)
 		{
 		case EText3DGroupType::Front:
 		{
@@ -405,6 +595,11 @@ void UText3DComponent::SetMaterial(const EText3DGroupType Type, UMaterialInterfa
 	}
 }
 
+float UText3DComponent::GetKerning() const
+{
+	return Kerning;
+}
+
 void UText3DComponent::SetKerning(const float Value)
 {
 	if (!FMath::IsNearlyEqual(Kerning, Value))
@@ -412,6 +607,11 @@ void UText3DComponent::SetKerning(const float Value)
 		Kerning = Value;
 		UpdateTransforms();
 	}
+}
+
+float UText3DComponent::GetLineSpacing() const
+{
+	return LineSpacing;
 }
 
 void UText3DComponent::SetLineSpacing(const float Value)
@@ -423,6 +623,11 @@ void UText3DComponent::SetLineSpacing(const float Value)
 	}
 }
 
+float UText3DComponent::GetWordSpacing() const
+{
+	return WordSpacing;
+}
+
 void UText3DComponent::SetWordSpacing(const float Value)
 {
 	if (!FMath::IsNearlyEqual(WordSpacing, Value))
@@ -430,6 +635,11 @@ void UText3DComponent::SetWordSpacing(const float Value)
 		WordSpacing = Value;
 		UpdateTransforms();
 	}
+}
+
+EText3DHorizontalTextAlignment UText3DComponent::GetHorizontalAlignment() const
+{
+	return HorizontalAlignment;
 }
 
 void UText3DComponent::SetHorizontalAlignment(const EText3DHorizontalTextAlignment Value)
@@ -441,6 +651,11 @@ void UText3DComponent::SetHorizontalAlignment(const EText3DHorizontalTextAlignme
 	}
 }
 
+EText3DVerticalTextAlignment UText3DComponent::GetVerticalAlignment() const
+{
+	return VerticalAlignment;
+}
+
 void UText3DComponent::SetVerticalAlignment(const EText3DVerticalTextAlignment Value)
 {
 	if (VerticalAlignment != Value)
@@ -450,6 +665,11 @@ void UText3DComponent::SetVerticalAlignment(const EText3DVerticalTextAlignment V
 	}
 }
 
+bool UText3DComponent::HasMaxWidth() const
+{
+	return bHasMaxWidth;
+}
+
 void UText3DComponent::SetHasMaxWidth(const bool Value)
 {
 	if (bHasMaxWidth != Value)
@@ -457,6 +677,11 @@ void UText3DComponent::SetHasMaxWidth(const bool Value)
 		bHasMaxWidth = Value;
 		UpdateTransforms();
 	}
+}
+
+float UText3DComponent::GetMaxWidth() const
+{
+	return MaxWidth;
 }
 
 void UText3DComponent::SetMaxWidth(const float Value)
@@ -469,6 +694,11 @@ void UText3DComponent::SetMaxWidth(const float Value)
 	}
 }
 
+bool UText3DComponent::HasMaxHeight() const
+{
+	return bHasMaxHeight;
+}
+
 void UText3DComponent::SetHasMaxHeight(const bool Value)
 {
 	if (bHasMaxHeight != Value)
@@ -476,6 +706,11 @@ void UText3DComponent::SetHasMaxHeight(const bool Value)
 		bHasMaxHeight = Value;
 		UpdateTransforms();
 	}
+}
+
+float UText3DComponent::GetMaxHeight() const
+{
+	return MaxHeight;
 }
 
 void UText3DComponent::SetMaxHeight(const float Value)
@@ -488,6 +723,11 @@ void UText3DComponent::SetMaxHeight(const float Value)
 	}
 }
 
+bool UText3DComponent::ScalesProportionally() const
+{
+	return bScaleProportionally;
+}
+
 void UText3DComponent::SetScaleProportionally(const bool Value)
 {
 	if (bScaleProportionally != Value)
@@ -497,17 +737,27 @@ void UText3DComponent::SetScaleProportionally(const bool Value)
 	}
 }
 
+bool UText3DComponent::IsFrozen() const
+{
+	return bFreezeBuild;
+}
+
 void UText3DComponent::SetFreeze(const bool bFreeze)
 {
 	bFreezeBuild = bFreeze;
 	if (bFreeze)
 	{
-		bPendingBuild = false;
+		ModifyFlags |= EText3DModifyFlags::Unfreeze;
 	}
-	else if (bPendingBuild)
+	else if (EnumHasAnyFlags(ModifyFlags,EText3DModifyFlags::Unfreeze))
 	{
-		Rebuild();
+		RebuildInternal();
 	}
+}
+
+bool UText3DComponent::CastsShadow() const
+{
+	return bCastShadow;
 }
 
 void UText3DComponent::SetCastShadow(bool NewCastShadow)
@@ -560,12 +810,27 @@ const TArray<UStaticMeshComponent*>& UText3DComponent::GetGlyphMeshComponents()
 	return CharacterMeshes;
 }
 
-void UText3DComponent::Rebuild(const bool bCleanCache)
+void UText3DComponent::Rebuild()
 {
-	bPendingBuild = true;
-	if (!bFreezeBuild)
+	// Rebuild, ignoring RefreshOnChange
+	RebuildInternal(false);
+}
+
+void UText3DComponent::RebuildInternal(const bool& bIsAutoUpdate, const bool& bCleanCache)
+{
+	// If this is an auto update, but the flag is off, ignore this rebuild request
+	if (bIsAutoUpdate && bRefreshOnChange == false)
+	{
+		return;
+	}
+
+	if (NeedsMeshRebuild() && !bFreezeBuild)
 	{
 		BuildTextMesh(bCleanCache);
+	}
+	else if (NeedsLayoutUpdate())
+	{
+		UpdateTransforms();
 	}
 }
 
@@ -685,7 +950,7 @@ void UText3DComponent::UpdateTransforms()
 		for (int32 LineGlyph = 0; LineGlyph < Line.GlyphsToRender.Num(); LineGlyph++)
 		{
 			const FVector CharLocation = Location;
-			Location.Y += Line.GetAdvanced(LineGlyph, Kerning, WordSpacing);
+			Location.Y += Line.GetAdvance(LineGlyph, Kerning, WordSpacing);
 			if (!Line.GlyphsToRender[LineGlyph].bIsVisible)
 			{
 				continue;
@@ -700,6 +965,8 @@ void UText3DComponent::UpdateTransforms()
 			GlyphIndex++;
 		}
 	}
+
+	ModifyFlags &= EText3DModifyFlags::Layout; 
 }
 
 void UText3DComponent::ClearTextMesh()
@@ -727,27 +994,39 @@ void UText3DComponent::ClearTextMesh()
 	}
 	CharacterKernings.Reset();
 
-	constexpr bool bIncludeChildDescendants = true;
-	TArray<USceneComponent*> ChildComponents;
-	TextRoot->GetChildrenComponents(bIncludeChildDescendants, ChildComponents);
-
-	for (USceneComponent* ChildComponent : ChildComponents)
+	if (TextRoot)
 	{
-		if (IsValid(ChildComponent))
+		TArray<USceneComponent*> ChildComponents;
+		constexpr bool bIncludeChildDescendants = true;
+		TextRoot->GetChildrenComponents(bIncludeChildDescendants, ChildComponents);
+
+		for (USceneComponent* ChildComponent : ChildComponents)
 		{
-			ChildComponent->DetachFromComponent(FDetachmentTransformRules::KeepRelativeTransform);
-			ChildComponent->DestroyComponent();	
+			if (IsValid(ChildComponent))
+			{
+				ChildComponent->DetachFromComponent(FDetachmentTransformRules::KeepRelativeTransform);
+				ChildComponent->DestroyComponent();	
+			}
 		}
-	}
-
-	if (AActor* OwnerActor = GetOwner())
-	{
-		constexpr bool bAlsoDestroyComponents = false; // already destroyed!
-		OwnerActor->ClearInstanceComponents(bAlsoDestroyComponents);
 	}
 }
 
-void UText3DComponent::BuildTextMesh(const bool bCleanCache)
+void UText3DComponent::TriggerInternalRebuild(const EText3DModifyFlags InModifyFlags)
+{
+	if (EnumHasAnyFlags(InModifyFlags, EText3DModifyFlags::Geometry))
+	{
+		MarkForGeometryUpdate();
+	}
+
+	if (EnumHasAnyFlags(ModifyFlags, EText3DModifyFlags::Layout))
+	{
+		MarkForLayoutUpdate();
+	}
+
+	RebuildInternal();
+}
+
+void UText3DComponent::BuildTextMesh(const bool& bCleanCache)
 {
 	// If we're already building, or have a build pending, don't do anything.
 	if (bIsBuilding)
@@ -772,7 +1051,7 @@ void UText3DComponent::BuildTextMesh(const bool bCleanCache)
 	});
 }
 
-void UText3DComponent::BuildTextMeshInternal(const bool bCleanCache)
+void UText3DComponent::BuildTextMeshInternal(const bool& bCleanCache)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(TEXT("UText3DComponent::Rebuild"));
 
@@ -783,7 +1062,6 @@ void UText3DComponent::BuildTextMeshInternal(const bool bCleanCache)
 		return;
 	}
 
-	bPendingBuild = false;
 	CheckBevel();
 
 	ClearTextMesh();
@@ -808,7 +1086,60 @@ void UText3DComponent::BuildTextMeshInternal(const bool bCleanCache)
 	ShapedText->LineHeight = Face->size->metrics.height * FontInverseScale;
 	ShapedText->FontAscender = Face->size->metrics.ascender * FontInverseScale;
 	ShapedText->FontDescender = Face->size->metrics.descender * FontInverseScale;
-	FTextShaper::Get()->ShapeBidirectionalText(Face, Text.ToString(), ShapedText->Lines);
+
+	constexpr int32 AdjustedFontSize = 48; // Magic number that makes font scale consistent with previous implementation
+	FSlateFontInfo FontInfo(Font, AdjustedFontSize);
+	FontInfo.CompositeFont = FStyleDefaults::GetFontInfo().CompositeFont;
+	
+	FTextBlockStyle Style;
+	Style.SetFont(FontInfo);
+
+	if (!TextLayout.IsValid())
+	{
+		TextLayout = MakeShared<FText3DLayout>(Style);
+	}
+
+	if (!TextLayoutMarshaller.IsValid())
+	{
+		TextLayoutMarshaller = FPlainTextLayoutMarshaller::Create();
+	}
+
+	FText FormattedText = Text;
+	FormatText(FormattedText);
+	FTextShaper::Get()->ShapeBidirectionalText(Style, FormattedText.ToString(), TextLayout, TextLayoutMarshaller, ShapedText->Lines);
+
+	const int32 ApproximateGlyphNum = Algo::TransformAccumulate(ShapedText->Lines,
+		[](const FShapedGlyphLine& InLine)
+		{
+			return InLine.GlyphsToRender.Num();
+		},
+		0);
+
+	TMap<uint32, const FFreeTypeFace*> GlyphIndexToFontFace;
+	GlyphIndexToFontFace.Reserve(ApproximateGlyphNum);
+
+	for (int32 LineIndex = 0; LineIndex < ShapedText->Lines.Num(); ++LineIndex)
+	{
+		for (const FShapedGlyphEntry& GlyphEntry : ShapedText->Lines[LineIndex].GlyphsToRender)
+		{
+			if (!GlyphEntry.FontFaceData.IsValid())
+			{
+				// Add as nullptr if not already in map
+				if (!GlyphIndexToFontFace.Contains(GlyphEntry.GlyphIndex))
+				{
+					GlyphIndexToFontFace.Add(GlyphEntry.GlyphIndex, nullptr);
+				}
+				
+				continue;
+			}
+
+			if (const TSharedPtr<FFreeTypeFace> FontFacePtr = GlyphEntry.FontFaceData->FontFace.Pin();
+				FontFacePtr.IsValid())
+			{
+				GlyphIndexToFontFace.FindOrAdd(GlyphEntry.GlyphIndex, FontFacePtr.Get());	
+			}
+		}
+	}
 	
 	CalculateTextWidth();
 	CalculateTextScale();
@@ -828,12 +1159,12 @@ void UText3DComponent::BuildTextMeshInternal(const bool bCleanCache)
 	for (int32 LineIndex = 0; LineIndex < ShapedText->Lines.Num(); LineIndex++)
 	{
 		const FShapedGlyphLine& ShapedLine = ShapedText->Lines[LineIndex];
-		FVector Location = GetLineLocation(LineIndex);
+		FVector LineLocation = GetLineLocation(LineIndex);
 
 		for (int32 LineGlyph = 0; LineGlyph < ShapedLine.GlyphsToRender.Num(); LineGlyph++)
 		{
-			FVector GlyphLocation = Location;
-			Location.Y += ShapedLine.GetAdvanced(LineGlyph, Kerning, WordSpacing);
+			FVector GlyphLocation = LineLocation;
+			LineLocation.Y += ShapedLine.GetAdvance(LineGlyph, Kerning, WordSpacing);
 
 			const FShapedGlyphEntry& ShapedGlyph = ShapedLine.GlyphsToRender[LineGlyph];
 			if (!ShapedGlyph.bIsVisible)
@@ -844,7 +1175,8 @@ void UText3DComponent::BuildTextMeshInternal(const bool bCleanCache)
 			// Count even when mesh is nullptr (allocation still creates components to avoid mesh building in allocation step)
 			const int32 GlyphId = GlyphIndex++;
 
-			UStaticMesh* CachedMesh = CachedFontData.GetGlyphMesh(ShapedGlyph.GlyphIndex, FGlyphMeshParameters{Extrude, Bevel, BevelType, BevelSegments, bOutline, OutlineExpand});
+			const FFreeTypeFace* FontFace = GlyphIndexToFontFace[ShapedGlyph.GlyphIndex];
+			UStaticMesh* CachedMesh = CachedFontData.GetGlyphMesh(ShapedGlyph.GlyphIndex, FGlyphMeshParameters{Extrude, Bevel, BevelType, BevelSegments, bOutline, OutlineExpand}, FontFace);
 			if (!CachedMesh || FMath::IsNearlyZero(CachedMesh->GetBounds().SphereRadius))
 			{
 				continue;
@@ -887,6 +1219,8 @@ void UText3DComponent::BuildTextMeshInternal(const bool bCleanCache)
 
 	TextGeneratedNativeDelegate.Broadcast();
 	TextGeneratedDelegate.Broadcast();
+	
+	ClearUpdateFlags();
 
 	if (bCleanCache)
 	{
@@ -930,6 +1264,14 @@ void UText3DComponent::UpdateMaterial(const EText3DGroupType Type, UMaterialInte
 	{
 		StaticMeshComponent->SetMaterial(Index, Material);
 	}
+}
+
+FText UText3DComponent::GetFormattedText() const
+{
+	FText FormattedText = Text;
+	FormatText(FormattedText);
+
+	return FormattedText;
 }
 
 void UText3DComponent::OnVisibilityChanged()

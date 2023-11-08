@@ -2,6 +2,7 @@
 
 #include "StereoLayerShapes.h"
 #include "OculusXRPassthroughMesh.h"
+#include "Misc/EngineVersionComparison.h"
 #include "OculusXRPassthroughLayerShapes.generated.h"
 
 UENUM()
@@ -99,9 +100,20 @@ private:
 	TArray<uint8> GenerateBrightnessContrastSaturationColorMap();
 };
 
-class OCULUSXRHMD_API FReconstructedLayer : public IStereoLayerShape
+#if UE_VERSION_OLDER_THAN(5, 3, 0)
+#define OCULUSXRHMD_API_CLASS OCULUSXRHMD_API
+#define OCULUSXRHMD_API_MEMBER
+#else
+#define OCULUSXRHMD_API_CLASS
+#define OCULUSXRHMD_API_MEMBER OCULUSXRHMD_API
+#endif
+
+class OCULUSXRHMD_API_CLASS FReconstructedLayer : public IStereoLayerShape
 {
-	STEREO_LAYER_SHAPE_BOILERPLATE(FReconstructedLayer)
+public:
+	OCULUSXRHMD_API_MEMBER static const FName ShapeName;
+	virtual FName GetShapeName() override { return ShapeName; }
+	virtual IStereoLayerShape* Clone() const override { return new FReconstructedLayer(*this); }
 
 public:
 	FReconstructedLayer(){};
@@ -125,9 +137,12 @@ struct FUserDefinedGeometryDesc
 	bool bUpdateTransform;
 };
 
-class OCULUSXRHMD_API FUserDefinedLayer : public IStereoLayerShape
+class OCULUSXRHMD_API_CLASS FUserDefinedLayer : public IStereoLayerShape
 {
-	STEREO_LAYER_SHAPE_BOILERPLATE(FUserDefinedLayer)
+public:
+	OCULUSXRHMD_API_MEMBER static const FName ShapeName;
+	virtual FName GetShapeName() override { return ShapeName; }
+	virtual IStereoLayerShape* Clone() const override { return new FUserDefinedLayer(*this); }
 
 public:
 	FUserDefinedLayer(){};

@@ -8,13 +8,38 @@ using System.IO;
 using System.Reflection;
 using EpicGames.Core;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
+
+using static AutomationTool.CommandUtils;
 
 namespace AutomationTool
 {
+	[ParamHelp("platform", "Platform of the target", ParamType = typeof(string))]
+	[ParamHelp("config", "Config of the target", ParamType = typeof(string))]
+	[ParamHelp("project", "Config of the target", ParamType = typeof(string))]
+	[ParamHelp("client", "Build, cook and run a client and a server, uses client target configuration", ParamType = typeof(bool))]
+	[ParamHelp("noclient", "Do not run the client, just run the server", ParamType = typeof(bool))]
+	[ParamHelp("server", "Is this a server target?", ParamType = typeof(bool))]
+	[ParamHelp("build", "True if build step should be executed", ParamType = typeof(bool))]
+	[ParamHelp("ubtargs", "Extra options to pass to ubt")]
+	[ParamHelp("cook", "Determines if the build is going to use cooked data", ParamType = typeof(bool))]
+	[ParamHelp("AdditionalCookerOptions", "Additional arguments sent to the cooking step", ParamType = typeof(string))]
+	[ParamHelp("pak", "Generate a pak file", ParamType = typeof(bool))]
+	[ParamHelp("deploy", "Deploy the project for the target platform", ParamType = typeof(bool))]
+	[ParamHelp("stage", "Put this build in a stage director", ParamType = typeof(bool))]
+	[ParamHelp("run", "Run the game after it is built (including server, if -server)", ParamType = typeof(bool))]
+	[ParamHelp("zenstore", "Save cooked output data to the Zen storage server", ParamType = typeof(bool))]
+	[ParamHelp("iterate", "Uses the iterative cooking/deploy", ParamType = typeof(bool))]
+	public interface IProjectParamsHelpers
+	{
+	}
+
 	[Help("targetplatform=PlatformName", "target platform for building, cooking and deployment (also -Platform)")]
 	[Help("servertargetplatform=PlatformName", "target platform for building, cooking and deployment of the dedicated server (also -ServerPlatform)")]
 	public class ProjectParams
 	{
+		static ILogger Logger => Log.Logger;
+
 		/// <summary>
 		/// Gets a parameter from the command line if it hasn't been specified in the constructor. 
 		/// If the command line is not available, default value will be used.
@@ -111,12 +136,12 @@ namespace AutomationTool
 			{
 				if (SpecifiedValue == null)
 				{
-					Log.TraceWarning($"Value was provided for \"{ParamName}\" using obsolete name \"{ObsoleteParamName}\"");
+					Logger.LogWarning("Value was provided for \"{ParamName}\" using obsolete name \"{ObsoleteParamName}\"", ParamName, ObsoleteParamName);
 					Result = SpecifiedValue;
 				}
 				else
 				{
-					Log.TraceWarning($"Value provided for obsolete name \"{ObsoleteParamName}\" will be ignored as \"{ParamName}\" was provided");
+					Logger.LogWarning("Value provided for obsolete name \"{ObsoleteParamName}\" will be ignored as \"{ParamName}\" was provided", ObsoleteParamName, ParamName);
 				}
 			}
 			else if (SpecifiedValue != null)
@@ -135,14 +160,14 @@ namespace AutomationTool
 						// Didn't find the new name on the command line. If the obsolete name was found, use it, and warn.
 						if (ParsedObsolete != null)
 						{
-							Log.TraceWarning($"Obsolete argument \"{ObsoleteParamName}\" on command line - use \"{ParamName}\" instead");
+							Logger.LogWarning("Obsolete argument \"{ObsoleteParamName}\" on command line - use \"{ParamName}\" instead", ObsoleteParamName, ParamName);
 							Parsed = ParsedObsolete;
 						}
 					}
 					else if (ParsedObsolete != null)
 					{
 						// Did find the new name on the command line - check for the obsolete name. If found, do not use it, and warn.
-						Log.TraceWarning($"Obsolete argument \"{ObsoleteParamName}\" will be ignored as \"{ParamName}\" was provided");
+						Logger.LogWarning("Obsolete argument \"{ObsoleteParamName}\" will be ignored as \"{ParamName}\" was provided", ObsoleteParamName, ParamName);
 					}
 				}
 
@@ -288,6 +313,7 @@ namespace AutomationTool
 			this.DLCOverrideCookedSubDir = InParams.DLCOverrideCookedSubDir;
 			this.DLCOverrideStagedSubDir = InParams.DLCOverrideStagedSubDir;
 			this.DiffCookedContentPath = InParams.DiffCookedContentPath;
+            this.AdditionalBuildOptions = InParams.AdditionalBuildOptions;
             this.AdditionalCookerOptions = InParams.AdditionalCookerOptions;
 			this.ClientCookedTargets = InParams.ClientCookedTargets;
 			this.ServerCookedTargets = InParams.ServerCookedTargets;
@@ -298,6 +324,7 @@ namespace AutomationTool
             this.ClientDependentPlatformMap = InParams.ClientDependentPlatformMap;
 			this.ServerTargetPlatforms = InParams.ServerTargetPlatforms;
             this.ServerDependentPlatformMap = InParams.ServerDependentPlatformMap;
+			this.ConfigOverrideParams = InParams.ConfigOverrideParams;
 			this.Build = InParams.Build;
 			this.SkipBuildClient = InParams.SkipBuildClient;
 			this.SkipBuildEditor = InParams.SkipBuildEditor;
@@ -319,7 +346,6 @@ namespace AutomationTool
 			this.Pak = InParams.Pak;
 			this.IgnorePaksFromDifferentCookSource = InParams.IgnorePaksFromDifferentCookSource;
 			this.IoStore = InParams.IoStore;
-			this.Cook4IoStore = InParams.Cook4IoStore;
 			this.ZenStore = InParams.ZenStore;
 			this.NoZenAutoLaunch = InParams.NoZenAutoLaunch;
 			this.GenerateOptimizationData = InParams.GenerateOptimizationData;
@@ -396,6 +422,7 @@ namespace AutomationTool
 			this.ForceUncompressed = InParams.ForceUncompressed;
 			this.AdditionalPakOptions = InParams.AdditionalPakOptions;
 			this.AdditionalIoStoreOptions = InParams.AdditionalIoStoreOptions;
+			this.ForceOodleDllVersion = InParams.ForceOodleDllVersion;
 			this.Archive = InParams.Archive;
 			this.ArchiveDirectoryParam = InParams.ArchiveDirectoryParam;
 			this.ArchiveMetaData = InParams.ArchiveMetaData;
@@ -454,6 +481,7 @@ namespace AutomationTool
             Dictionary<TargetPlatformDescriptor, TargetPlatformDescriptor> ClientDependentPlatformMap = null,
 			List<TargetPlatformDescriptor> ServerTargetPlatforms = null,
             Dictionary<TargetPlatformDescriptor, TargetPlatformDescriptor> ServerDependentPlatformMap = null,
+			List<string> ConfigOverrideParams = null,
 			bool? Build = null,
 			bool? SkipBuildClient = null,
 			bool? SkipBuildEditor = null,
@@ -465,6 +493,7 @@ namespace AutomationTool
 			bool? ForceUncompressed = null,
 			string AdditionalPakOptions = null,
 			string AdditionalIoStoreOptions = null,
+			string ForceOodleDllVersion = null,
             bool? IterativeCooking = null,
 			string IterateSharedCookedBuild = null,
 			bool? IterateSharedBuildUsePrecompiledExe = null,
@@ -522,7 +551,6 @@ namespace AutomationTool
 			bool? Pak = null,
 			bool? IgnorePaksFromDifferentCookSource = null,
 			bool? IoStore = null,
-			bool? Cook4IoStore = null,
 			bool? ZenStore = null,
 			string NoZenAutoLaunch = null,
 			bool? SkipIoStore = null,
@@ -727,12 +755,6 @@ namespace AutomationTool
 			this.IgnorePaksFromDifferentCookSource = GetParamValueIfNotSpecified(Command, IgnorePaksFromDifferentCookSource, this.IgnorePaksFromDifferentCookSource, "IgnorePaksFromDifferentCookSource");
 			this.IoStore = GetParamValueIfNotSpecified(Command, IoStore, this.IoStore, "iostore");
 			this.SkipIoStore = GetParamValueIfNotSpecified(Command, SkipIoStore, this.SkipIoStore, "skipiostore");
-			this.Cook4IoStore = GetParamValueIfNotSpecified(Command, Cook4IoStore, this.Cook4IoStore, "cook4iostore");
-			if (this.Cook4IoStore)
-			{
-				this.IoStore = true;
-				this.AdditionalCookerOptions += " -IoStore";
-			}
 			this.ZenStore = GetParamValueIfNotSpecified(Command, ZenStore, this.ZenStore, "zenstore");
 			if (this.ZenStore && this.Cook && !this.SkipCook)
 			{
@@ -774,6 +796,7 @@ namespace AutomationTool
 			this.ForceUncompressed = GetParamValueIfNotSpecified(Command, ForceUncompressed, this.ForceUncompressed, "ForceUncompressed");
 			this.AdditionalPakOptions = ParseParamValueIfNotSpecified(Command, AdditionalPakOptions, "AdditionalPakOptions");
 			this.AdditionalIoStoreOptions = ParseParamValueIfNotSpecified(Command, AdditionalIoStoreOptions, "AdditionalIoStoreOptions");
+			this.ForceOodleDllVersion = ParseParamValueIfNotSpecified(Command, ForceOodleDllVersion, "ForceOodleDllVersion");
 			this.IterativeCooking = GetParamValueIfNotSpecified(Command, IterativeCooking, this.IterativeCooking, new string[] { "iterativecooking", "iterate" });
 			this.IterateSharedCookedBuild = GetParamValueIfNotSpecified(Command, false, false, "iteratesharedcookedbuild") ? "usesyncedbuild" : null;
 			this.IterateSharedCookedBuild = ParseParamValueIfNotSpecified(Command, IterateSharedCookedBuild, "IterateSharedCookedBuild", String.Empty);
@@ -1237,6 +1260,10 @@ namespace AutomationTool
                 this.RunTimeoutSeconds = Command.ParseParamInt("runtimeoutseconds");
             }
 
+			if (ConfigOverrideParams != null)
+			{
+				this.ConfigOverrideParams = ConfigOverrideParams;
+			}
 			// Gather up any '-ini:' arguments and save them. We'll pass these along to other tools that may be spawned in a new process as part of the command.
 			if(Command != null)
 			{
@@ -1381,12 +1408,6 @@ namespace AutomationTool
 		/// </summary>
 		[Help("iostore", "generate I/O store container file(s)")]
 		public bool IoStore { private set; get; }
-
-		/// <summary>
-		/// Shared: True if the cooker should write directly to container file(s)
-		/// </summary>
-		[Help("cook4iostore", "generate I/O store container file(s)")]
-		public bool Cook4IoStore { private set; get; }
 		
 		/// <summary>
 		/// Shared: True if the cooker should store the cooked output to the Zen storage server
@@ -1846,10 +1867,15 @@ namespace AutomationTool
 		/// </summary>
 		public string DiffCookedContentPath;
 
-        /// <summary>
-        /// Cook: Additional cooker options to include on the cooker commandline
-        /// </summary>
-        public string AdditionalCookerOptions;
+		/// <summary>
+		/// Build: Additional build options to include on the build commandline
+		/// </summary>
+		public string AdditionalBuildOptions;
+
+		/// <summary>
+		/// Cook: Additional cooker options to include on the cooker commandline
+		/// </summary>
+		public string AdditionalCookerOptions;
 
         /// <summary>
         /// Cook: List of cultures to cook.
@@ -1880,6 +1906,11 @@ namespace AutomationTool
 		/// Additional parameters when generating iostore container files
 		/// </summary>
 		public string AdditionalIoStoreOptions;
+
+		/// <summary>
+		/// If not empty, this is the dll file to use for Oodle compression. Can be "Latest" to use latest version.
+		/// </summary>
+		public string ForceOodleDllVersion;
 
         /// <summary>
         /// Cook: Do not include a version number in the cooked content
@@ -1927,11 +1958,6 @@ namespace AutomationTool
         /// </summary>
 		[Help("SkipCookingEditorContent", "Skips content under /Engine/Editor when cooking")]
         public bool SkipCookingEditorContent;
-
-        /// <summary>
-        /// Cook: number of additional cookers to spawn while cooking
-        /// </summary>
-        public int NumCookersToSpawn;
 
 		/// <summary>
 		/// Cook: Uses the iterative deploy, command line: -iterativedeploy or -iterate
@@ -2072,7 +2098,7 @@ namespace AutomationTool
 
 
 		/// <summary>
-		/// Run: The client runs with cooked data provided by UnrealFileServer, command line: -fileserver
+		/// Run: The client runs with cooked data provided by UnrealFileServer, command line: -fileserver = CookByTheBook with ZenServer (zenstore)
 		/// </summary>
 		[Help("fileserver", "run the client with cooked data provided by UnrealFileServer")]
 		public bool FileServer { private set; get; }
@@ -2146,7 +2172,7 @@ namespace AutomationTool
 		/// <summary>
 		/// Run: Additional command line arguments to pass to the program
 		/// </summary>
-		[Help("addcmdline", "Additional command line arguments for the program")]
+		[Help("addcmdline", "Additional command line arguments for the program, which will not be staged in UECommandLine.txt in most cases")]
 		public string RunCommandline;
 
         /// <summary>
@@ -2490,7 +2516,7 @@ namespace AutomationTool
 
 				SelectDefaultTarget(AvailableEditorTargets, TargetType.Editor, ref EditorTarget);
 
-				if (AvailableServerTargets.Count > 0 && (DedicatedServer || Cook || CookOnTheFly)) // only if server is needed
+				if (AvailableServerTargets.Count > 0 && DedicatedServer) // only if server is needed
 				{
 					SelectDefaultTarget(AvailableServerTargets, TargetType.Server, ref ServerTarget);
 				}
@@ -3080,132 +3106,132 @@ namespace AutomationTool
 			if (!bLogged)
 			{
 				// In alphabetical order.
-				CommandUtils.LogLog("Project Params **************");
+				Logger.LogDebug("Project Params **************");
 
-				CommandUtils.LogLog("AdditionalServerMapParams={0}", AdditionalServerMapParams);
-				CommandUtils.LogLog("Archive={0}", Archive);
-				CommandUtils.LogLog("ArchiveMetaData={0}", ArchiveMetaData);
-				CommandUtils.LogLog("CreateAppBundle={0}", CreateAppBundle);
-				CommandUtils.LogLog("BaseArchiveDirectory={0}", BaseArchiveDirectory);
-				CommandUtils.LogLog("BaseStageDirectory={0}", BaseStageDirectory);
-				CommandUtils.LogLog("Build={0}", Build);
-				CommandUtils.LogLog("SkipBuildClient={0}", SkipBuildClient);
-				CommandUtils.LogLog("SkipBuildEditor={0}", SkipBuildEditor);
-				CommandUtils.LogLog("Cook={0}", Cook);
-				CommandUtils.LogLog("Clean={0}", Clean);
-				CommandUtils.LogLog("Client={0}", Client);
-				CommandUtils.LogLog("ClientConfigsToBuild={0}", string.Join(",", ClientConfigsToBuild));
-				CommandUtils.LogLog("ClientCookedTargets={0}", ClientCookedTargets.ToString());
-				CommandUtils.LogLog("ClientTargetPlatform={0}", string.Join(",", ClientTargetPlatforms));
-				CommandUtils.LogLog("Compressed={0}", Compressed);
-				CommandUtils.LogLog("ForceUncompressed={0}", ForceUncompressed);
-				CommandUtils.LogLog("AdditionalPakOptions={0}", AdditionalPakOptions);
-				CommandUtils.LogLog("AdditionalIoStoreOptions={0}", AdditionalIoStoreOptions);
-				CommandUtils.LogLog("CookOnTheFly={0}", CookOnTheFly);
-				CommandUtils.LogLog("CookOnTheFlyStreaming={0}", CookOnTheFlyStreaming);
-				CommandUtils.LogLog("UnversionedCookedContent={0}", UnversionedCookedContent);
-				CommandUtils.LogLog("OptionalContent={0}", OptionalContent);
-				CommandUtils.LogLog("SkipCookingEditorContent={0}", SkipCookingEditorContent);
-                CommandUtils.LogLog("NumCookersToSpawn={0}", NumCookersToSpawn);
-                CommandUtils.LogLog("GeneratePatch={0}", GeneratePatch);
-				CommandUtils.LogLog("AddPatchLevel={0}", AddPatchLevel);
-				CommandUtils.LogLog("StageBaseReleasePaks={0}", StageBaseReleasePaks);
-				CommandUtils.LogLog("DiscVersion={0}", DiscVersion);
-				CommandUtils.LogLog("CreateReleaseVersion={0}", CreateReleaseVersion);
-                CommandUtils.LogLog("BasedOnReleaseVersion={0}", BasedOnReleaseVersion);
-				CommandUtils.LogLog("OriginalReleaseVersion={0}", OriginalReleaseVersion);
-				CommandUtils.LogLog("DLCFile={0}", DLCFile);
-                CommandUtils.LogLog("DLCIncludeEngineContent={0}", DLCIncludeEngineContent);
-				CommandUtils.LogLog("DLCPakPluginFile={0}", DLCPakPluginFile);
-				CommandUtils.LogLog("DLCOverrideCookedSubDir={0}", DLCOverrideCookedSubDir);
-				CommandUtils.LogLog("DLCOverrideStagedSubDir={0}", DLCOverrideStagedSubDir);
-				CommandUtils.LogLog("DiffCookedContentPath={0}", DiffCookedContentPath);
-                CommandUtils.LogLog("AdditionalCookerOptions={0}", AdditionalCookerOptions);
-				CommandUtils.LogLog("DedicatedServer={0}", DedicatedServer);
-				CommandUtils.LogLog("DirectoriesToCook={0}", DirectoriesToCook.ToString());
-                CommandUtils.LogLog("DDCGraph={0}", DDCGraph);
-                CommandUtils.LogLog("CulturesToCook={0}", CommandUtils.IsNullOrEmpty(CulturesToCook) ? "<Not Specified> (Use Defaults)" : CulturesToCook.ToString());
-				CommandUtils.LogLog("EditorTargets={0}", EditorTargets?.ToString());
-				CommandUtils.LogLog("Foreign={0}", Foreign);
-				CommandUtils.LogLog("IsCodeBasedProject={0}", IsCodeBasedProject.ToString());
-				CommandUtils.LogLog("IsProgramTarget={0}", IsProgramTarget.ToString());
-				CommandUtils.LogLog("IterativeCooking={0}", IterativeCooking);
-				CommandUtils.LogLog("IterateSharedCookedBuild={0}", IterateSharedCookedBuild);
-				CommandUtils.LogLog("IterateSharedBuildUsePrecompiledExe={0}", IterateSharedBuildUsePrecompiledExe);
-				CommandUtils.LogLog("CookAll={0}", CookAll);
-				CommandUtils.LogLog("CookPartialGC={0}", CookPartialGC);
-				CommandUtils.LogLog("CookInEditor={0}", CookInEditor);
-				CommandUtils.LogLog("CookMapsOnly={0}", CookMapsOnly);
-                CommandUtils.LogLog("Deploy={0}", Deploy);
-				CommandUtils.LogLog("IterativeDeploy={0}", IterativeDeploy);
-				CommandUtils.LogLog("FastCook={0}", FastCook);
-				CommandUtils.LogLog("LogWindow={0}", LogWindow);
-				CommandUtils.LogLog("Manifests={0}", Manifests);
-				CommandUtils.LogLog("MapToRun={0}", MapToRun);
-				CommandUtils.LogLog("NoClient={0}", NoClient);
-				CommandUtils.LogLog("NumClients={0}", NumClients);                
-				CommandUtils.LogLog("NoDebugInfo={0}", NoDebugInfo);
-				CommandUtils.LogLog("SeparateDebugInfo={0}", SeparateDebugInfo);
-				CommandUtils.LogLog("MapFile={0}", MapFile);
-				CommandUtils.LogLog("NoCleanStage={0}", NoCleanStage);
-				CommandUtils.LogLog("NoXGE={0}", NoXGE);
-				CommandUtils.LogLog("MapsToCook={0}", MapsToCook.ToString());
-				CommandUtils.LogLog("MapIniSectionsToCook={0}", MapIniSectionsToCook.ToString());
-				CommandUtils.LogLog("Pak={0}", Pak);
-				CommandUtils.LogLog("IgnorePaksFromDifferentCookSource={0}", IgnorePaksFromDifferentCookSource);
-				CommandUtils.LogLog("IoStore={0}", IoStore);
-				CommandUtils.LogLog("SkipIoStore={0}", SkipIoStore);
-				CommandUtils.LogLog("Cook4IoStore={0}", Cook4IoStore);
-				CommandUtils.LogLog("ZenStore={0}", ZenStore);
-				CommandUtils.LogLog("NoZenAutoLaunch={0}", NoZenAutoLaunch);
-				CommandUtils.LogLog("SkipEncryption={0}", SkipEncryption);
-				CommandUtils.LogLog("GenerateOptimizationData={0}", GenerateOptimizationData);
-				CommandUtils.LogLog("SkipPackage={0}", SkipPackage);
-				CommandUtils.LogLog("NeverPackage={0}", NeverPackage);
-				CommandUtils.LogLog("Package={0}", Package);
-				CommandUtils.LogLog("ForcePackageData={0}", ForcePackageData);
-				CommandUtils.LogLog("NullRHI={0}", NullRHI);
-				CommandUtils.LogLog("WriteBackMetadataToAssetRegistry={0}", WriteBackMetadataToAssetRegistry);
-				CommandUtils.LogLog("RetainStagedDirectory={0}", RetainStagedDirectory);
-				CommandUtils.LogLog("FakeClient={0}", FakeClient);
-                CommandUtils.LogLog("EditorTest={0}", EditorTest);
-                CommandUtils.LogLog("RunAutomationTests={0}", RunAutomationTests); 
-                CommandUtils.LogLog("RunAutomationTest={0}", RunAutomationTest);
-                CommandUtils.LogLog("RunTimeoutSeconds={0}", RunTimeoutSeconds);
-                CommandUtils.LogLog("CrashIndex={0}", CrashIndex);
-				CommandUtils.LogLog("ProgramTargets={0}", ProgramTargets.ToString());
-				CommandUtils.LogLog("ProjectPlatformBinariesPaths={0}", string.Join(",", ProjectPlatformBinariesPaths));
-				CommandUtils.LogLog("ProjectExePaths={0}", string.Join(",", ProjectExePaths));
-				CommandUtils.LogLog("Distribution={0}", Distribution);
-				CommandUtils.LogLog("PackageEncryptionKeyFile={0}", PackageEncryptionKeyFile);
-				CommandUtils.LogLog("Prebuilt={0}", Prebuilt);
-				CommandUtils.LogLog("Prereqs={0}", Prereqs);
-				CommandUtils.LogLog("AppLocalDirectory={0}", AppLocalDirectory);
-				CommandUtils.LogLog("NoBootstrapExe={0}", NoBootstrapExe);
-				CommandUtils.LogLog("RawProjectPath={0}", RawProjectPath);
-				CommandUtils.LogLog("Run={0}", Run);
-				CommandUtils.LogLog("ServerConfigsToBuild={0}", string.Join(",", ServerConfigsToBuild));
-				CommandUtils.LogLog("ServerCookedTargets={0}", ServerCookedTargets.ToString());
-				CommandUtils.LogLog("ServerTargetPlatform={0}", string.Join(",", ServerTargetPlatforms));
-				CommandUtils.LogLog("ShortProjectName={0}", ShortProjectName.ToString());
-				CommandUtils.LogLog("SignedPak={0}", SignedPak);
-				CommandUtils.LogLog("SignPak={0}", SignPak);				
-				CommandUtils.LogLog("SkipCook={0}", SkipCook);
-				CommandUtils.LogLog("SkipCookOnTheFly={0}", SkipCookOnTheFly);
-				CommandUtils.LogLog("SkipPak={0}", SkipPak);
-                CommandUtils.LogLog("PrePak={0}", PrePak);
-                CommandUtils.LogLog("SkipStage={0}", SkipStage);
-				CommandUtils.LogLog("Stage={0}", Stage);
-				CommandUtils.LogLog("RehydrateAssets={0}", RehydrateAssets);
-				CommandUtils.LogLog("DeploySoToDevice={0}", DeploySoToDevice);
-				CommandUtils.LogLog("bTreatNonShippingBinariesAsDebugFiles={0}", bTreatNonShippingBinariesAsDebugFiles);
-				CommandUtils.LogLog("bUseExtraFlavor={0}", bUseExtraFlavor);
-                CommandUtils.LogLog("StageDirectoryParam={0}", StageDirectoryParam);
-				CommandUtils.LogLog("AdditionalPackageOptions={0}", AdditionalPackageOptions);
-				CommandUtils.LogLog("Trace={0}", Trace);
-				CommandUtils.LogLog("TraceHost={0}", TraceHost);
-				CommandUtils.LogLog("TraceFile={0}", TraceFile);
-				CommandUtils.LogLog("Project Params **************");
+				Logger.LogDebug("AdditionalServerMapParams={AdditionalServerMapParams}", AdditionalServerMapParams);
+				Logger.LogDebug("Archive={Archive}", Archive);
+				Logger.LogDebug("ArchiveMetaData={ArchiveMetaData}", ArchiveMetaData);
+				Logger.LogDebug("CreateAppBundle={CreateAppBundle}", CreateAppBundle);
+				Logger.LogDebug("BaseArchiveDirectory={BaseArchiveDirectory}", BaseArchiveDirectory);
+				Logger.LogDebug("BaseStageDirectory={BaseStageDirectory}", BaseStageDirectory);
+				Logger.LogDebug("ConfigOverrideParams=-{Arg0}", string.Join(" -", ConfigOverrideParams));
+				Logger.LogDebug("Build={Build}", Build);
+				Logger.LogDebug("SkipBuildClient={SkipBuildClient}", SkipBuildClient);
+				Logger.LogDebug("SkipBuildEditor={SkipBuildEditor}", SkipBuildEditor);
+				Logger.LogDebug("Cook={Cook}", Cook);
+				Logger.LogDebug("Clean={Clean}", Clean);
+				Logger.LogDebug("Client={Client}", Client);
+				Logger.LogDebug("ClientConfigsToBuild={Arg0}", string.Join(",", ClientConfigsToBuild));
+				Logger.LogDebug("ClientCookedTargets={Arg0}", ClientCookedTargets.ToString());
+				Logger.LogDebug("ClientTargetPlatform={Arg0}", string.Join(",", ClientTargetPlatforms));
+				Logger.LogDebug("Compressed={Compressed}", Compressed);
+				Logger.LogDebug("ForceUncompressed={ForceUncompressed}", ForceUncompressed);
+				Logger.LogDebug("AdditionalPakOptions={AdditionalPakOptions}", AdditionalPakOptions);
+				Logger.LogDebug("AdditionalIoStoreOptions={AdditionalIoStoreOptions}", AdditionalIoStoreOptions);
+				Logger.LogDebug("ForceOodleDllVersion={ForceOodleDllVersion}", ForceOodleDllVersion);
+				Logger.LogDebug("CookOnTheFly={CookOnTheFly}", CookOnTheFly);
+				Logger.LogDebug("CookOnTheFlyStreaming={CookOnTheFlyStreaming}", CookOnTheFlyStreaming);
+				Logger.LogDebug("UnversionedCookedContent={UnversionedCookedContent}", UnversionedCookedContent);
+				Logger.LogDebug("OptionalContent={OptionalContent}", OptionalContent);
+				Logger.LogDebug("SkipCookingEditorContent={SkipCookingEditorContent}", SkipCookingEditorContent);
+                Logger.LogDebug("GeneratePatch={GeneratePatch}", GeneratePatch);
+				Logger.LogDebug("AddPatchLevel={AddPatchLevel}", AddPatchLevel);
+				Logger.LogDebug("StageBaseReleasePaks={StageBaseReleasePaks}", StageBaseReleasePaks);
+				Logger.LogDebug("DiscVersion={DiscVersion}", DiscVersion);
+				Logger.LogDebug("CreateReleaseVersion={CreateReleaseVersion}", CreateReleaseVersion);
+                Logger.LogDebug("BasedOnReleaseVersion={BasedOnReleaseVersion}", BasedOnReleaseVersion);
+				Logger.LogDebug("OriginalReleaseVersion={OriginalReleaseVersion}", OriginalReleaseVersion);
+				Logger.LogDebug("DLCFile={DLCFile}", DLCFile);
+                Logger.LogDebug("DLCIncludeEngineContent={DLCIncludeEngineContent}", DLCIncludeEngineContent);
+				Logger.LogDebug("DLCPakPluginFile={DLCPakPluginFile}", DLCPakPluginFile);
+				Logger.LogDebug("DLCOverrideCookedSubDir={DLCOverrideCookedSubDir}", DLCOverrideCookedSubDir);
+				Logger.LogDebug("DLCOverrideStagedSubDir={DLCOverrideStagedSubDir}", DLCOverrideStagedSubDir);
+				Logger.LogDebug("DiffCookedContentPath={DiffCookedContentPath}", DiffCookedContentPath);
+                Logger.LogDebug("AdditionalCookerOptions={AdditionalCookerOptions}", AdditionalCookerOptions);
+				Logger.LogDebug("DedicatedServer={DedicatedServer}", DedicatedServer);
+				Logger.LogDebug("DirectoriesToCook={Arg0}", DirectoriesToCook.ToString());
+                Logger.LogDebug("DDCGraph={DDCGraph}", DDCGraph);
+                Logger.LogDebug("CulturesToCook={Arg0}", CommandUtils.IsNullOrEmpty(CulturesToCook) ? "<Not Specified> (Use Defaults)" : CulturesToCook.ToString());
+				Logger.LogDebug("EditorTargets={Arg0}", EditorTargets?.ToString());
+				Logger.LogDebug("Foreign={Foreign}", Foreign);
+				Logger.LogDebug("IsCodeBasedProject={Arg0}", IsCodeBasedProject.ToString());
+				Logger.LogDebug("IsProgramTarget={Arg0}", IsProgramTarget.ToString());
+				Logger.LogDebug("IterativeCooking={IterativeCooking}", IterativeCooking);
+				Logger.LogDebug("IterateSharedCookedBuild={IterateSharedCookedBuild}", IterateSharedCookedBuild);
+				Logger.LogDebug("IterateSharedBuildUsePrecompiledExe={IterateSharedBuildUsePrecompiledExe}", IterateSharedBuildUsePrecompiledExe);
+				Logger.LogDebug("CookAll={CookAll}", CookAll);
+				Logger.LogDebug("CookPartialGC={CookPartialGC}", CookPartialGC);
+				Logger.LogDebug("CookInEditor={CookInEditor}", CookInEditor);
+				Logger.LogDebug("CookMapsOnly={CookMapsOnly}", CookMapsOnly);
+                Logger.LogDebug("Deploy={Deploy}", Deploy);
+				Logger.LogDebug("IterativeDeploy={IterativeDeploy}", IterativeDeploy);
+				Logger.LogDebug("FastCook={FastCook}", FastCook);
+				Logger.LogDebug("LogWindow={LogWindow}", LogWindow);
+				Logger.LogDebug("Manifests={Manifests}", Manifests);
+				Logger.LogDebug("MapToRun={MapToRun}", MapToRun);
+				Logger.LogDebug("NoClient={NoClient}", NoClient);
+				Logger.LogDebug("NumClients={NumClients}", NumClients);
+				Logger.LogDebug("NoDebugInfo={NoDebugInfo}", NoDebugInfo);
+				Logger.LogDebug("SeparateDebugInfo={SeparateDebugInfo}", SeparateDebugInfo);
+				Logger.LogDebug("MapFile={MapFile}", MapFile);
+				Logger.LogDebug("NoCleanStage={NoCleanStage}", NoCleanStage);
+				Logger.LogDebug("NoXGE={NoXGE}", NoXGE);
+				Logger.LogDebug("MapsToCook={Arg0}", MapsToCook.ToString());
+				Logger.LogDebug("MapIniSectionsToCook={Arg0}", MapIniSectionsToCook.ToString());
+				Logger.LogDebug("Pak={Pak}", Pak);
+				Logger.LogDebug("IgnorePaksFromDifferentCookSource={IgnorePaksFromDifferentCookSource}", IgnorePaksFromDifferentCookSource);
+				Logger.LogDebug("IoStore={IoStore}", IoStore);
+				Logger.LogDebug("SkipIoStore={SkipIoStore}", SkipIoStore);
+				Logger.LogDebug("ZenStore={ZenStore}", ZenStore);
+				Logger.LogDebug("NoZenAutoLaunch={NoZenAutoLaunch}", NoZenAutoLaunch);
+				Logger.LogDebug("SkipEncryption={SkipEncryption}", SkipEncryption);
+				Logger.LogDebug("GenerateOptimizationData={GenerateOptimizationData}", GenerateOptimizationData);
+				Logger.LogDebug("SkipPackage={SkipPackage}", SkipPackage);
+				Logger.LogDebug("NeverPackage={NeverPackage}", NeverPackage);
+				Logger.LogDebug("Package={Package}", Package);
+				Logger.LogDebug("ForcePackageData={ForcePackageData}", ForcePackageData);
+				Logger.LogDebug("NullRHI={NullRHI}", NullRHI);
+				Logger.LogDebug("WriteBackMetadataToAssetRegistry={WriteBackMetadataToAssetRegistry}", WriteBackMetadataToAssetRegistry);
+				Logger.LogDebug("RetainStagedDirectory={RetainStagedDirectory}", RetainStagedDirectory);
+				Logger.LogDebug("FakeClient={FakeClient}", FakeClient);
+                Logger.LogDebug("EditorTest={EditorTest}", EditorTest);
+                Logger.LogDebug("RunAutomationTests={RunAutomationTests}", RunAutomationTests);
+                Logger.LogDebug("RunAutomationTest={RunAutomationTest}", RunAutomationTest);
+                Logger.LogDebug("RunTimeoutSeconds={RunTimeoutSeconds}", RunTimeoutSeconds);
+                Logger.LogDebug("CrashIndex={CrashIndex}", CrashIndex);
+				Logger.LogDebug("ProgramTargets={Arg0}", ProgramTargets.ToString());
+				Logger.LogDebug("ProjectPlatformBinariesPaths={Arg0}", string.Join(",", ProjectPlatformBinariesPaths));
+				Logger.LogDebug("ProjectExePaths={Arg0}", string.Join(",", ProjectExePaths));
+				Logger.LogDebug("Distribution={Distribution}", Distribution);
+				Logger.LogDebug("PackageEncryptionKeyFile={PackageEncryptionKeyFile}", PackageEncryptionKeyFile);
+				Logger.LogDebug("Prebuilt={Prebuilt}", Prebuilt);
+				Logger.LogDebug("Prereqs={Prereqs}", Prereqs);
+				Logger.LogDebug("AppLocalDirectory={AppLocalDirectory}", AppLocalDirectory);
+				Logger.LogDebug("NoBootstrapExe={NoBootstrapExe}", NoBootstrapExe);
+				Logger.LogDebug("RawProjectPath={RawProjectPath}", RawProjectPath);
+				Logger.LogDebug("Run={Run}", Run);
+				Logger.LogDebug("ServerConfigsToBuild={Arg0}", string.Join(",", ServerConfigsToBuild));
+				Logger.LogDebug("ServerCookedTargets={Arg0}", ServerCookedTargets.ToString());
+				Logger.LogDebug("ServerTargetPlatform={Arg0}", string.Join(",", ServerTargetPlatforms));
+				Logger.LogDebug("ShortProjectName={Arg0}", ShortProjectName.ToString());
+				Logger.LogDebug("SignedPak={SignedPak}", SignedPak);
+				Logger.LogDebug("SignPak={SignPak}", SignPak);
+				Logger.LogDebug("SkipCook={SkipCook}", SkipCook);
+				Logger.LogDebug("SkipCookOnTheFly={SkipCookOnTheFly}", SkipCookOnTheFly);
+				Logger.LogDebug("SkipPak={SkipPak}", SkipPak);
+                Logger.LogDebug("PrePak={PrePak}", PrePak);
+                Logger.LogDebug("SkipStage={SkipStage}", SkipStage);
+				Logger.LogDebug("Stage={Stage}", Stage);
+				Logger.LogDebug("RehydrateAssets={RehydrateAssets}", RehydrateAssets);
+				Logger.LogDebug("DeploySoToDevice={0}", DeploySoToDevice);
+				Logger.LogDebug("bTreatNonShippingBinariesAsDebugFiles={bTreatNonShippingBinariesAsDebugFiles}", bTreatNonShippingBinariesAsDebugFiles);
+				Logger.LogDebug("bUseExtraFlavor={bUseExtraFlavor}", bUseExtraFlavor);
+                Logger.LogDebug("StageDirectoryParam={StageDirectoryParam}", StageDirectoryParam);
+				Logger.LogDebug("AdditionalPackageOptions={AdditionalPackageOptions}", AdditionalPackageOptions);
+				Logger.LogDebug("Trace={Trace}", Trace);
+				Logger.LogDebug("TraceHost={TraceHost}", TraceHost);
+				Logger.LogDebug("TraceFile={TraceFile}", TraceFile);
+				Logger.LogDebug("Project Params **************");
 			}
 			bLogged = true;
 

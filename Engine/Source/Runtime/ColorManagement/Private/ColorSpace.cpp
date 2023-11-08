@@ -75,9 +75,17 @@ FColorSpace::FColorSpace(const FVector2d& InRed, const FVector2d& InGreen, const
 }
 
 FColorSpace::FColorSpace(EColorSpace ColorSpaceType)
-	: Chromaticities(InPlace, FVector2d::Zero())
+	: Chromaticities(MakeChromaticities(ColorSpaceType))
 	, bIsSRGB(ColorSpaceType == EColorSpace::sRGB)
 {
+	RgbToXYZ = CalcRgbToXYZ();
+	XYZToRgb = RgbToXYZ.Inverse();
+}
+
+TStaticArray<FVector2d, 4> FColorSpace::MakeChromaticities(UE::Color::EColorSpace ColorSpaceType)
+{
+	TStaticArray<FVector2d, 4> Chromaticities(InPlace, FVector2d::Zero());
+
 	switch (ColorSpaceType)
 	{
 	case EColorSpace::None:
@@ -172,8 +180,7 @@ FColorSpace::FColorSpace(EColorSpace ColorSpaceType)
 		break;
 	}
 
-	RgbToXYZ = CalcRgbToXYZ();
-	XYZToRgb = RgbToXYZ.Inverse();
+	return Chromaticities;
 }
 
 FMatrix44d FColorSpace::CalcRgbToXYZ() const
@@ -201,10 +208,15 @@ FMatrix44d FColorSpace::CalcRgbToXYZ() const
 
 bool FColorSpace::Equals(const FColorSpace& ColorSpace, double Tolerance) const
 {
-	return	Chromaticities[0].Equals(ColorSpace.Chromaticities[0], Tolerance) &&
-		Chromaticities[1].Equals(ColorSpace.Chromaticities[1], Tolerance) &&
-		Chromaticities[2].Equals(ColorSpace.Chromaticities[2], Tolerance) &&
-		Chromaticities[3].Equals(ColorSpace.Chromaticities[3], Tolerance);
+	return Equals(ColorSpace.Chromaticities, Tolerance);
+}
+
+bool FColorSpace::Equals(const TStaticArray<FVector2d, 4>& InChromaticities, double Tolerance) const
+{
+	return Chromaticities[0].Equals(InChromaticities[0], Tolerance) &&
+		Chromaticities[1].Equals(InChromaticities[1], Tolerance) &&
+		Chromaticities[2].Equals(InChromaticities[2], Tolerance) &&
+		Chromaticities[3].Equals(InChromaticities[3], Tolerance);
 }
 
 bool FColorSpace::IsSRGB() const
@@ -234,6 +246,11 @@ float FColorSpace::GetLuminance(const FLinearColor& Color) const
 {
 	//Note: Equivalent to the dot product of Color and RgbToXYZ.GetColumn(1).
 	return Color.R * RgbToXYZ.M[0][1] + Color.G * RgbToXYZ.M[1][1] + Color.B * RgbToXYZ.M[2][1];
+}
+
+FLinearColor FColorSpace::GetLuminanceFactors() const
+{
+	return FLinearColor(RgbToXYZ.GetColumn(1));
 }
 
 

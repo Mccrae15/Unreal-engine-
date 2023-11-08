@@ -20,7 +20,7 @@
 #include "NiagaraScript.h"
 #include "NiagaraScriptSource.h"
 #include "NiagaraScriptVariable.h"
-#include "SNiagaraGraphNodeFunctionCallWithSpecifiers.h"
+#include "Widgets/SNiagaraGraphNodeFunctionCallWithSpecifiers.h"
 #include "Misc/SecureHash.h"
 #include "Modules/ModuleManager.h"
 #include "UObject/UnrealType.h"
@@ -29,6 +29,7 @@
 #include "NiagaraNodeStaticSwitch.h"
 #include "NiagaraSettings.h"
 #include "ScopedTransaction.h"
+#include "Widgets/Input/SComboButton.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraNodeFunctionCall)
 
@@ -164,6 +165,15 @@ void UNiagaraNodeFunctionCall::PostLoad()
 	if (FunctionDisplayName.IsEmpty())
 	{
 		ComputeNodeName();
+	}
+
+	if (MessageKeyToMessageMap_DEPRECATED.IsEmpty() == false)
+	{
+		for (auto KeyMessagePair : MessageKeyToMessageMap_DEPRECATED)
+		{
+			MessageStore.AddMessage(KeyMessagePair.Key, KeyMessagePair.Value);
+		}
+		MessageKeyToMessageMap_DEPRECATED.Empty();
 	}
 }
 
@@ -425,7 +435,10 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS;
 		TArray<FNiagaraVariable> SwitchNodeInputs = Graph->FindStaticSwitchInputs();
 		for (FNiagaraVariable& Input : SwitchNodeInputs)
 		{
-			AddStaticSwitchInputPin(Input);
+			if (ensureMsgf(Input.IsValid(), TEXT("Static switch input %s on function call node %s is invalid"), *Input.GetName().ToString(), *GetPathName()))
+			{
+				AddStaticSwitchInputPin(Input);
+			}
 		}
 
 		for (FNiagaraVariable& Output : Outputs)
@@ -682,14 +695,16 @@ static FText GetFormattedDeprecationMessage(const FVersionedNiagaraScriptData* S
 	return FText::Format(FormatString, Args);
 }
 
-void UNiagaraNodeFunctionCall::Compile(class FHlslNiagaraTranslator* Translator, TArray<int32>& Outputs)
+void UNiagaraNodeFunctionCall::Compile(FTranslator* Translator, TArray<int32>& Outputs) const
 {
+	// this is dirty, but we'll continue doing this for now because it's all going to go away with Digested graphs
+	UNiagaraNodeFunctionCall* MutableThis = const_cast<UNiagaraNodeFunctionCall*>(this);
+
 	TArray<int32> Inputs;
 
 	bool bError = false;
 
 	const UEdGraphSchema_Niagara* Schema = CastChecked<UEdGraphSchema_Niagara>(GetSchema());
-	UNiagaraGraph* CallerGraph = GetNiagaraGraph();
 	FVersionedNiagaraScriptData* ScriptData = GetScriptData();
 	if (ScriptData && HasValidScriptAndGraph())
 	{
@@ -763,6 +778,8 @@ void UNiagaraNodeFunctionCall::Compile(class FHlslNiagaraTranslator* Translator,
 					ENiagaraInputNodeUsage AutBoundUsage = ENiagaraInputNodeUsage::Undefined;
 					if (FindAutoBoundInput(FunctionInputNode, CallerPin, AutoBoundVar, AutBoundUsage))
 					{
+						UNiagaraGraph* CallerGraph = MutableThis->GetNiagaraGraph();
+
 						UNiagaraNodeInput* NewNode = NewObject<UNiagaraNodeInput>(CallerGraph);
 						NewNode->Input = PinVar;
 						NewNode->Usage = AutBoundUsage;
@@ -777,7 +794,7 @@ void UNiagaraNodeFunctionCall::Compile(class FHlslNiagaraTranslator* Translator,
 			if (CallerLinkedTo)
 			{
 				//Param is provided by the caller. Typical case.
-				Inputs.Add(Translator->CompilePin(CallerPin));
+				Inputs.Add(Translator->CompileInputPin(CallerPin));
 				continue;
 			}
 			else
@@ -796,7 +813,7 @@ void UNiagaraNodeFunctionCall::Compile(class FHlslNiagaraTranslator* Translator,
 					else
 					{
 						//We also compile the pin anyway if it is required as we'll be attempting to use it's inline default.
-						Inputs.Add(Translator->CompilePin(CallerPin));
+						Inputs.Add(Translator->CompileInputPin(CallerPin));
 					}
 				}
 				else
@@ -811,13 +828,13 @@ void UNiagaraNodeFunctionCall::Compile(class FHlslNiagaraTranslator* Translator,
 		FNiagaraEditorUtilities::SetStaticSwitchConstants(GetCalledGraph(), CallerInputPins, ConstantResolver);
 		Translator->ExitFunctionCallNode();
 	}
-	else if (Signature.IsValid())
+	else if (MutableThis->Signature.IsValid())
 	{
-		if (Signature.Inputs.Num() > 0)
+		if (MutableThis->Signature.Inputs.Num() > 0)
 		{
-			if (Signature.Inputs[0].GetType().IsDataInterface() && GetValidateDataInterfaces())
+			if (MutableThis->Signature.Inputs[0].GetType().IsDataInterface() && GetValidateDataInterfaces())
 			{
-				UClass* DIClass = Signature.Inputs[0].GetType().GetClass();
+				UClass* DIClass = MutableThis->Signature.Inputs[0].GetType().GetClass();
 				if (UNiagaraDataInterface* DataInterfaceCDO = Cast<UNiagaraDataInterface>(DIClass->GetDefaultObject()))
 				{
 					TArray<FText> ValidationErrors;
@@ -838,7 +855,7 @@ void UNiagaraNodeFunctionCall::Compile(class FHlslNiagaraTranslator* Translator,
 			}
 		}
 		Translator->EnterFunctionCallNode(TSet<FName>());
-		Signature.FunctionSpecifiers = FunctionSpecifiers;
+		MutableThis->Signature.FunctionSpecifiers = FunctionSpecifiers;
 		bError = CompileInputPins(Translator, Inputs);
 		Translator->ExitFunctionCallNode();
 	}		
@@ -1186,6 +1203,94 @@ void UNiagaraNodeFunctionCall::GetNodeContextMenuActions(class UToolMenu* Menu, 
 	}
 }
 
+TSharedRef<SWidget> UNiagaraNodeFunctionCall::CreateTitleRightWidget()
+{
+	if ( FunctionScript != nullptr || Signature.Inputs.Num() == 0 )
+	{
+		return SNullWidget::NullWidget;
+	}
+
+	if ( Signature.Inputs[0].GetType().IsDataInterface() == false )
+	{
+		return SNullWidget::NullWidget;
+	}
+
+	if ( UClass* DIClass = Cast<UClass>(Signature.Inputs[0].GetType().GetClass()) )
+	{
+		FString MenuBaseName = "GraphEditor.Niagara.InlinePrimaryActions.";
+		FString MenuName = MenuBaseName.Append(DIClass->GetName());
+
+		if(UToolMenus::Get()->IsMenuRegistered(FName(*MenuName)) == false)
+		{
+			UToolMenu* InlinePrimaryMenu = UToolMenus::Get()->RegisterMenu(FName(*MenuName));
+			InlinePrimaryMenu->AddDynamicSection("GetInlineNodeContextActions", FNewToolMenuDelegate::CreateLambda([DIClass, this](UToolMenu* InMenu)
+			{
+				// it's important to pass in the menu from the lambda parameter instead of using the original menu
+				INiagaraDataInterfaceNodeActionProvider::GetInlineNodeContextMenuActions(DIClass, InMenu);
+			}));
+		}
+
+		TSharedPtr<SWidget> ButtonContentWidget = nullptr;
+
+		INiagaraDataInterfaceNodeActionProvider::FInlineMenuDisplayOptions DisplayOptions = INiagaraDataInterfaceNodeActionProvider::GetInlineMenuDisplayOptions(DIClass, this);
+
+		if(DisplayOptions.bDisplayInline == false)
+		{
+			return SNullWidget::NullWidget;
+		}
+		
+		if(DisplayOptions.DisplayBrush != nullptr)
+		{
+			ButtonContentWidget = SNew(SImage)
+				.Image(DisplayOptions.DisplayBrush);
+		}
+		else
+		{
+			ButtonContentWidget = SNew(STextBlock)
+				.Text(DisplayOptions.DisplayName.IsEmpty() ? LOCTEXT("NodeInlineOptionsMenuLabel", "Options") : DisplayOptions.DisplayName);
+		}
+
+		TSharedRef<SWidget> Result = SNew(SComboButton)
+		.ComboButtonStyle(&FAppStyle::GetWidgetStyle<FComboButtonStyle>("SimpleComboButton"))
+		.OnGetMenuContent(FOnGetContent::CreateLambda([this, MenuName, DIClass]()
+		{
+			UGraphNodeContextMenuContext* ContextObject = NewObject<UGraphNodeContextMenuContext>();
+			ContextObject->Init(this->GetGraph(), this, nullptr, false);
+			FToolMenuContext Context(ContextObject);
+
+			// we generate the menu instead of using FindMenu as this will cause the 'instance' of this menu to be created, with dynamic sections being generated.
+			UToolMenu* GeneratedMenu = UToolMenus::Get()->GenerateMenu(FName(*MenuName), Context);
+			return UToolMenus::Get()->GenerateWidget(GeneratedMenu);
+		}))
+		.ButtonContent()
+		[
+			ButtonContentWidget.ToSharedRef()
+		];
+
+		if(DisplayOptions.TooltipText.IsEmpty() == false)
+		{
+			Result->SetToolTipText(DisplayOptions.TooltipText);
+		}
+		
+		return Result;
+	}
+
+	return SNullWidget::NullWidget;
+}
+
+void UNiagaraNodeFunctionCall::CollectAddPinActions(FNiagaraMenuActionCollector& Collector, UEdGraphPin* AddPin)const
+{
+	Super::CollectAddPinActions(Collector, AddPin);
+	if (FunctionScript == nullptr && Signature.Inputs.Num() > 0)
+	{
+		UClass* DIClass = Cast<UClass>(Signature.Inputs[0].GetType().GetClass());
+		if (DIClass)
+		{
+			INiagaraDataInterfaceNodeActionProvider::CollectAddPinActions(DIClass, Collector, AddPin);
+		}
+	}
+}
+
 bool UNiagaraNodeFunctionCall::HasValidScriptAndGraph() const
 {
 	return FunctionScript != nullptr && GetCalledGraph() != nullptr;
@@ -1261,11 +1366,11 @@ void UNiagaraNodeFunctionCall::BuildParameterMapHistory(FNiagaraParameterMapHist
 			// Make sure to register pin constants
 			if (Pin->LinkedTo.Num() == 0 && Schema->IsPinStatic(Pin) && Pin->DefaultValue.Len() != 0)
 			{
-				OutHistory.RegisterConstantFromInputPin(Pin);
+				OutHistory.RegisterConstantFromInputPin(Pin, Pin->DefaultValue);
 			}
 		}
 
-		FCompileConstantResolver FunctionResolver = OutHistory.ConstantResolver.WithDebugState(DebugState);
+		FCompileConstantResolver FunctionResolver = OutHistory.ConstantResolver->WithDebugState(DebugState);
 		if (OutHistory.HasCurrentUsageContext())
 		{
 			// if we traverse a full emitter graph the usage might change during the traversal, so we need to update the constant resolver
@@ -1281,7 +1386,7 @@ void UNiagaraNodeFunctionCall::BuildParameterMapHistory(FNiagaraParameterMapHist
 			ParamMapIdx = OutHistory.TraceParameterMapOutputPin((ParamMapPin->LinkedTo[0]));
 		}
 
-		OutHistory.EnterFunction(GetFunctionName(), FunctionScript, FunctionGraph, this);
+		OutHistory.EnterFunction(GetFunctionName(), FunctionGraph, this);
 		if (ParamMapIdx != INDEX_NONE)
 		{
 			NodeIdx = OutHistory.BeginNodeVisitation(ParamMapIdx, this);
@@ -1362,7 +1467,7 @@ void UNiagaraNodeFunctionCall::BuildParameterMapHistory(FNiagaraParameterMapHist
 			OutHistory.EndNodeVisitation(ParamMapIdx, NodeIdx);
 		}
 
-		OutHistory.ExitFunction(GetFunctionName(), FunctionScript, this);
+		OutHistory.ExitFunction(this);
 
 		if (DoDepthTraversal)
 		{
@@ -1643,7 +1748,7 @@ void UNiagaraNodeFunctionCall::RefreshSignature()
 					UEdGraphPin* InputPin = FoundPins[i];
 					FNiagaraVariable InputVariable = UEdGraphSchema_Niagara::PinToNiagaraVariable(InputPin);
 
-					if(!BaseSig->Inputs.Contains(InputVariable))
+					if(!BaseSig->Inputs.Contains(InputVariable) && IsAddPin(InputPin) == false && IsExecPin(InputPin) == false)
 					{
 						Signature.AddInput(InputVariable, FText::FromString(InputPin->PinToolTip));
 					}
@@ -1656,7 +1761,7 @@ void UNiagaraNodeFunctionCall::RefreshSignature()
 					UEdGraphPin* OutputPin = FoundPins[i];
 					FNiagaraVariable InputVariable = UEdGraphSchema_Niagara::PinToNiagaraVariable(OutputPin);
 
-					if(!BaseSig->Outputs.Contains(InputVariable))
+					if(!BaseSig->Outputs.Contains(InputVariable) && IsAddPin(OutputPin) == false && IsExecPin(OutputPin) == false)
 					{
 						Signature.AddOutput(UEdGraphSchema_Niagara::PinToNiagaraVariable(OutputPin), FText::FromString(OutputPin->PinToolTip));
 					}
@@ -1680,6 +1785,11 @@ bool UNiagaraNodeFunctionCall::IsBaseSignatureOfDataInterfaceFunction(const UEdG
 		{
 			FPinCollectorArray FoundPins;
 			TArray<FNiagaraVariable> InputOrOutputVariables;
+
+			if(BaseSig->bRequiresExecPin && IsExecPin(Pin))
+			{
+				return true;
+			}
 
 			if(Pin->Direction == EGPD_Input)
 			{
@@ -1804,7 +1914,7 @@ bool UNiagaraNodeFunctionCall::IsValidPropagatedVariable(const FNiagaraVariable&
 	return false;
 }
 
-bool UNiagaraNodeFunctionCall::FindAutoBoundInput(UNiagaraNodeInput* InputNode, UEdGraphPin* PinToAutoBind, FNiagaraVariable& OutFoundVar, ENiagaraInputNodeUsage& OutNodeUsage)
+bool UNiagaraNodeFunctionCall::FindAutoBoundInput(const UNiagaraNodeInput* InputNode, const UEdGraphPin* PinToAutoBind, FNiagaraVariable& OutFoundVar, ENiagaraInputNodeUsage& OutNodeUsage) const
 {
 	check(InputNode);
 	if (PinToAutoBind->LinkedTo.Num() > 0 || !InputNode->CanAutoBind())
@@ -1817,7 +1927,7 @@ bool UNiagaraNodeFunctionCall::FindAutoBoundInput(UNiagaraNodeInput* InputNode, 
 	FNiagaraVariable PinVar = Schema->PinToNiagaraVariable(PinToAutoBind);
 
 	//See if we can auto bind this pin to something in the caller script.
-	UNiagaraGraph* CallerGraph = GetNiagaraGraph();
+	const UNiagaraGraph* CallerGraph = GetNiagaraGraph();
 	check(CallerGraph);
 	UNiagaraNodeOutput* CallerOutputNodeSpawn = CallerGraph->FindOutputNode(ENiagaraScriptUsage::ParticleSpawnScript);
 	UNiagaraNodeOutput* CallerOutputNodeUpdate = CallerGraph->FindOutputNode(ENiagaraScriptUsage::ParticleUpdateScript);

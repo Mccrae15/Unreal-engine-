@@ -11,6 +11,7 @@
 // In ordinary scenes, the most likely occurance of this problem is when combining hair and volumetric atmosphere as rays from several Km can travel back towards the hair and cause long delays or even TDRs
 #define PATH_TRACING_SKIP_HAIR_DISTANCE      1e6
 
+#include "../HeterogeneousVolumes/HeterogeneousVolumesVoxelGridTypes.ush"
 #include "../Common.ush"
 #include "../PostProcessCommon.ush"
 #include "../RectLight.ush"
@@ -35,6 +36,7 @@ uint TemporalSeed;
 uint MaxSamples;
 uint MaxBounces;
 uint MaxSSSBounces;
+float SSSGuidingRatio;
 
 // 0: only Material sampling
 // 1: only Light sampling
@@ -50,6 +52,7 @@ uint EnableCameraBackfaceCulling;
 uint SamplerType;
 uint VisualizeLightGrid;
 uint VisualizeDecalGrid;
+uint EnableDBuffer;
 uint ApplyDiffuseSpecularOverrides;
 uint EnabledDirectLightingContributions;
 uint EnabledIndirectLightingContributions;
@@ -59,7 +62,6 @@ float MeshDecalBias;
 float MaxPathIntensity;
 float MaxNormalBias;
 float FilterWidth;
-float AbsorptionScale; // inverse distance at which we hit BaseColor - exposed mainly so we can disable absorption handling and experiment with the default scale factor
 float CameraFocusDistance;
 float2 CameraLensRadius;
 
@@ -85,6 +87,10 @@ struct FPathState
 	float3 SigmaT; // Extinction    //  6 bytes // half precision 
 	uint FirstScatterType;          //  3 bits - packed in sign bits of SigmaT
 									// 80 bytes total (see FPathTracingPackedPathState)
+
+	// Temporary parameters not stored				
+	bool DepthResamplingWeight;		
+	int2 PrimaryRayTextureIndex;		// texture index cache to write to the frame buffer for primary ray operation like depth.	
 
 	bool HasMadeContributionScatter()
 	{
@@ -172,7 +178,27 @@ struct FPathState
 		const float4 PixelValue = float4(Radiance, saturate(BackgroundVisibility));
 		RadianceTexture[TextureIndex] = lerp(OldPixel, PixelValue, BlendFactor);
 		AlbedoTexture[TextureIndex] = lerp(OldAlbedo, float4(Albedo, 0), BlendFactor);
-		NormalTexture[TextureIndex] = lerp(OldNormal, float4(Normal, 0), BlendFactor);
+		NormalTexture[TextureIndex].xyz = lerp(OldNormal.xyz,Normal.xyz, BlendFactor);
+	}
+
+	void WritePixel()
+	{
+		WritePixel(PrimaryRayTextureIndex);
+	}
+
+	void WriteDepth(FDepthContext DepthContext)
+	{
+		float OldDepth = Iteration > 0 ? NormalTexture[PrimaryRayTextureIndex].w : 0;
+		
+		float Depth = 0;
+		
+		if (DepthContext.HitCount > 0)
+		{
+			const float3 ViewZ = View.ViewToTranslatedWorld[2].xyz;
+			Depth = dot(DepthContext.TranslatedWorldPos, ViewZ);
+		}
+
+		NormalTexture[PrimaryRayTextureIndex].w = lerp(OldDepth, max(OldDepth, ConvertToDeviceZ(Depth)), DepthResamplingWeight);
 	}
 };
 
@@ -191,91 +217,188 @@ void AccumulateRadiance(inout float3 TotalRadiance, float3 PathRadiance, bool bI
 	TotalRadiance += PathRadiance;
 }
 
-void ApplyDecal(inout FPathTracingPayload HitPayload, FDecalShaderPayload DecalPayload)
+struct FDecalData
+{
+	float4 BaseColor;
+	float4 WorldNormal;
+	float4 MetallicSpecularRoughness;
+	float3 Emissive;
+
+	bool HasData()
+	{
+		return min3(BaseColor.a, WorldNormal.a, MetallicSpecularRoughness.a) < 1.0;
+	}
+
+	bool ApplyDecal(inout FPathTracingPayload HitPayload)
+	{
+#if PATHTRACING_STRATA_PAYLOAD
+		float Roughness = HitPayload.RoughnessData.x;
+		float Metallic = F0RGBToMetallic(HitPayload.SpecularColor);
+		float Specular = F0RGBToDielectricSpecular(HitPayload.SpecularColor);
+		float3 BaseColor = lerp(HitPayload.DiffuseColor, HitPayload.SpecularColor, Metallic);
+#else
+		float3 BaseColor = HitPayload.BaseColor;
+		float Metallic = HitPayload.Metallic;
+		float Specular = HitPayload.Specular;
+		float Roughness = HitPayload.Roughness;
+#endif // PATHTRACING_STRATA_PAYLOAD
+
+		bool bHasColorResponse = HitPayload.HasDecalResponseColor() && this.BaseColor.a < 1.0;
+		bool bHasNormalResponse = HitPayload.HasDecalResponseNormal() && this.WorldNormal.a < 1.0;
+		bool bHasRoughnessResponse = HitPayload.HasDecalResponseRoughness() && this.MetallicSpecularRoughness.a < 1.0;
+
+		if (bHasColorResponse)
+		{
+			BaseColor = BaseColor * this.BaseColor.a + this.BaseColor.rgb;
+		}
+
+		if (bHasNormalResponse)
+		{
+			// We normalize the normal to get smoother visual result (it helps to avoid having D_GGX explodes toward infinity, and matches ApplyDBufferData(...))
+			HitPayload.WorldNormal = normalize(HitPayload.WorldNormal * this.WorldNormal.a + this.WorldNormal.rgb);
+		}
+
+		if (bHasRoughnessResponse)
+		{
+			Metallic = Metallic * this.MetallicSpecularRoughness.a + this.MetallicSpecularRoughness.x;
+			Specular = Specular * this.MetallicSpecularRoughness.a + this.MetallicSpecularRoughness.y;
+			Roughness = Roughness * this.MetallicSpecularRoughness.a + this.MetallicSpecularRoughness.z;
+		}
+
+		HitPayload.Radiance += this.Emissive;
+
+#if PATHTRACING_STRATA_PAYLOAD
+		if (bHasColorResponse || bHasRoughnessResponse)
+		{
+			// the encode-decode is potentially lossy, so only do it if we actually need to
+			HitPayload.DiffuseColor = BaseColor - BaseColor * Metallic;
+			HitPayload.SpecularColor = lerp(DielectricSpecularToF0(Specular), BaseColor, Metallic);
+			HitPayload.RoughnessData.x = Roughness;
+		}
+#else
+		// no need for an encode-decode here, so safe to overwrite even if nothing changes
+		HitPayload.BaseColor = BaseColor;
+		HitPayload.Metallic = Metallic;
+		HitPayload.Specular = Specular;
+		HitPayload.Roughness = Roughness;
+#endif
+		return HasData();
+	}
+};
+
+void CombineDecal(FDecalShaderPayload DecalPayload, inout FDecalData DecalData)
 {
 	const float DecalTransparency = DecalPayload.GetTransparency();
 	const uint DecalFlags = DecalPayload.GetFlags();
 
 	if (DecalFlags & DECAL_WRITE_BASE_COLOR_FLAG)
 	{
-		HitPayload.BaseColor = HitPayload.BaseColor * DecalTransparency + DecalPayload.GetBaseColor();
+		DecalData.BaseColor.rgb = DecalData.BaseColor.rgb * DecalTransparency + DecalPayload.GetBaseColor();
+		DecalData.BaseColor.a *= DecalTransparency;
 	}
 
 	if (DecalFlags & DECAL_WRITE_NORMAL_FLAG)
 	{
-		HitPayload.WorldNormal = HitPayload.WorldNormal * DecalTransparency + DecalPayload.GetWorldNormal();
+		DecalData.WorldNormal.rgb = DecalData.WorldNormal.rgb * DecalTransparency + DecalPayload.GetWorldNormal();
+		DecalData.WorldNormal.a *= DecalTransparency;
 	}
 
 	if (DecalFlags & DECAL_WRITE_ROUGHNESS_SPECULAR_METALLIC_FLAG)
 	{
-		const float3 MetallicSpecularRoughness = DecalPayload.GetMetallicSpecularRoughness();
-
-		HitPayload.Metallic = HitPayload.Metallic * DecalTransparency + MetallicSpecularRoughness.x;
-		HitPayload.Specular = HitPayload.Specular * DecalTransparency + MetallicSpecularRoughness.y;
-		HitPayload.Roughness = HitPayload.Roughness * DecalTransparency + MetallicSpecularRoughness.z;
+		DecalData.MetallicSpecularRoughness.rgb = DecalData.MetallicSpecularRoughness.rgb * DecalTransparency + DecalPayload.GetMetallicSpecularRoughness();
+		DecalData.MetallicSpecularRoughness.a *= DecalTransparency;
 	}
 
 	if (DecalFlags & DECAL_WRITE_EMISSIVE_FLAG)
 	{
-		HitPayload.Radiance += DecalPayload.GetEmissive();
+		DecalData.Emissive += DecalPayload.GetEmissive();
 	}
-
-	// TODO: Payload.Opacity?
 }
 
-void TraceDecalRay(FRayDesc DecalRay, bool bReverseCulling, uint InstanceInclusionMask, inout FPathTracingPayload HitPayload, inout float DecalThroughput)
+void EvaluateDecals(FPathState PathState, uint InstanceInclusionMask, FPackedPathTracingPayload PackedPayload, inout FDecalData DecalData)
 {
-	const uint MissShaderIndex = 0; // TODO
+	const float3 HitTranslatedWorldPos = PathState.Ray.Origin + PackedPayload.HitT * PathState.Ray.Direction;
 
-	for (;;)
+	if (PathState.PathRoughness < MeshDecalRoughnessCutoff)
 	{
-		FDecalShaderPayload DecalPayload = (FDecalShaderPayload)0;
-		DecalPayload.SetInputTranslatedWorldPosition(HitPayload.TranslatedWorldPos);
-		DecalPayload.SetMiss();
-		TraceRay(
-			DecalTLAS,
-			bReverseCulling ? RAY_FLAG_CULL_FRONT_FACING_TRIANGLES : RAY_FLAG_CULL_BACK_FACING_TRIANGLES,
-			InstanceInclusionMask,
-			RAY_TRACING_SHADER_SLOT_MATERIAL,
-			RAY_TRACING_NUM_SHADER_SLOTS,
-			MissShaderIndex,
-			DecalRay.GetNativeDesc(),
-			DecalPayload);
+		FRayDesc DecalRay = (FRayDesc)0;
+		// go a bit further than the current hit, to handle decals partially inside the model
+		DecalRay.Direction = -PathState.Ray.Direction;
+		DecalRay.Origin = HitTranslatedWorldPos - DecalRay.Direction * MeshDecalBias;
+		DecalRay.TMin = 0.0f;
+		DecalRay.TMax = PackedPayload.HitT + MeshDecalBias;
 
-		if (DecalPayload.IsMiss())
+		const bool bReverseCulling = true;
+		const uint MissShaderIndex = 0; // TODO
+
+		for (;;)
 		{
-			break;
-		}
+			FDecalShaderPayload DecalPayload = (FDecalShaderPayload)0;
+			DecalPayload.SetInputTranslatedWorldPosition(HitTranslatedWorldPos);
+			DecalPayload.SetMiss();
+			TraceRay(
+				DecalTLAS,
+				bReverseCulling ? RAY_FLAG_CULL_FRONT_FACING_TRIANGLES : RAY_FLAG_CULL_BACK_FACING_TRIANGLES,
+				InstanceInclusionMask,
+				RAY_TRACING_SHADER_SLOT_MATERIAL,
+				RAY_TRACING_NUM_SHADER_SLOTS,
+				MissShaderIndex,
+				DecalRay.GetNativeDesc(),
+				DecalPayload);
 
-		if (bReverseCulling)
-		{
-			// also reverse normal
-			DecalPayload.SetWorldNormal(-DecalPayload.GetWorldNormal());
-		}
-		
-		ApplyDecal(HitPayload, DecalPayload);
-		
-		DecalThroughput *= DecalPayload.GetTransparency();
+			if (DecalPayload.IsMiss())
+			{
+				break;
+			}
 
-		// prepare next step around the loop
-		// retrace the exact same ray with TMin one ulp past the hit we just found
-		DecalRay.TMin = asfloat(asuint(DecalPayload.HitT) + 1);
+			if (bReverseCulling)
+			{
+				// also reverse normal
+				DecalPayload.SetWorldNormal(-DecalPayload.GetWorldNormal());
+			}
+
+			CombineDecal(DecalPayload, DecalData);
+
+			// prepare next step around the loop
+			// retrace the exact same ray with TMin one ulp past the hit we just found
+			DecalRay.TMin = asfloat(asuint(DecalPayload.HitT) + 1);
+		}
 	}
+
+#if PLATFORM_SUPPORTS_CALLABLE_SHADERS
+	if (PathState.PathRoughness < DecalRoughnessCutoff)
+	{
+		FDecalLoopCount DecalLoopCount = DecalGridLookup(HitTranslatedWorldPos);
+		for (uint Index = 0, Num = DecalLoopCount.NumDecals; Index < Num; ++Index)
+		{
+			uint DecalId = GetDecalId(Index, DecalLoopCount);
+
+			FDecalShaderPayload DecalPayload = (FDecalShaderPayload)0;
+			DecalPayload.SetInputTranslatedWorldPosition(HitTranslatedWorldPos);
+
+			CallShader(DecalId, DecalPayload);
+
+			CombineDecal(DecalPayload, DecalData);
+		}
+	}
+#endif
 }
 
-FPathTracingPayload TraceTransparentRay(inout FPathState PathState, bool bIsCameraRay, bool bLastBounce, bool bIncludeEmission, uint NumVisibleLights, inout FVolumeSegment VolumeSegment)
+FPathTracingPayload TraceTransparentRay(inout FPathState PathState, int Bounce, bool bIsCameraRay, bool bLastBounce, bool bIncludeEmission, uint NumVisibleLights, inout FVolumeSegment VolumeSegment)
 {
 	const uint RayFlags = bIsCameraRay && EnableCameraBackfaceCulling ? RAY_FLAG_CULL_BACK_FACING_TRIANGLES : 0;
-	uint InstanceInclusionMask = bIsCameraRay ? PATHTRACER_MASK_CAMERA : PATHTRACER_MASK_INDIRECT;
+	const bool bUseCameraRayType = !PathState.HasMadeContributionScatter();
+	uint InstanceInclusionMask = bUseCameraRayType ? PATHTRACER_MASK_CAMERA : PATHTRACER_MASK_INDIRECT;
 	if (length2(PathState.Ray.Origin) < Pow2(PATH_TRACING_SKIP_HAIR_DISTANCE))
 	{
-		InstanceInclusionMask |= bIsCameraRay ? PATHTRACER_MASK_HAIR_CAMERA : PATHTRACER_MASK_HAIR_INDIRECT;
+		InstanceInclusionMask |= bUseCameraRayType ? PATHTRACER_MASK_HAIR_CAMERA : PATHTRACER_MASK_HAIR_INDIRECT;
 	}
 	
 	const uint MissShaderIndex = 0;
 	float2 RISRandSample = RandomSequence_GenerateSample2D(PathState.RandSequence);
 	FRISContext HitSample = InitRISContext(RISRandSample.x);
 	FRISContext VolSample = InitRISContext(RISRandSample.y);
+	FDepthContext DepthContext = InitDepthContext();
 
 	float3 PayloadThroughput = PathState.PathThroughput;
 	FPathTracingPayload Payload;
@@ -295,6 +418,12 @@ FPathTracingPayload TraceTransparentRay(inout FPathState PathState, bool bIsCame
 	for (;;)
 	{
 		FPackedPathTracingPayload PackedPayload = InitPathTracingPayload(PathState.FirstScatterType, ApproximateCaustics ? PathState.PathRoughness : 0.0);
+		PackedPayload.SetDBufferA(float4(0, 0, 0, 1));
+		PackedPayload.SetDBufferB(float4(0, 0, 0, 1));
+		PackedPayload.SetDBufferC(float4(0, 0, 0, 1));
+#if PATHTRACING_STRATA_PAYLOAD
+		PackedPayload.SetStochasticSlabRand(RandomSequence_GenerateSample1D(PathState.RandSequence));
+#endif
 		// Trace the ray
 		TraceRay(
 			TLAS,
@@ -305,6 +434,48 @@ FPathTracingPayload TraceTransparentRay(inout FPathState PathState, bool bIsCame
 			MissShaderIndex,
 			PathState.Ray.GetNativeDesc(),
 			PackedPayload);
+
+		FDecalData DecalData;
+		DecalData.BaseColor = float4(0, 0, 0, 1);
+		DecalData.WorldNormal = float4(0, 0, 0, 1);
+		DecalData.MetallicSpecularRoughness = float4(0, 0, 0, 1);
+		DecalData.Emissive = 0;
+
+		if (!PackedPayload.IsMiss() && PackedPayload.IsDecalReceiver())
+		{
+			EvaluateDecals(PathState, InstanceInclusionMask, PackedPayload, DecalData);
+
+#if USE_DBUFFER
+			if (PackedPayload.UsesDBufferLookup() && DecalData.HasData())
+			{
+				if (EnableDBuffer)
+				{
+					// Retrace ray with DBuffer data
+					PackedPayload = InitPathTracingPayload(PathState.FirstScatterType, ApproximateCaustics ? PathState.PathRoughness : 0.0);
+
+					PackedPayload.SetDBufferA(DecalData.BaseColor);
+					PackedPayload.SetDBufferB(DecalData.WorldNormal);
+					PackedPayload.SetDBufferC(DecalData.MetallicSpecularRoughness);
+					TraceRay(
+						TLAS,
+						RayFlags,
+						InstanceInclusionMask,
+						RAY_TRACING_SHADER_SLOT_MATERIAL,
+						RAY_TRACING_NUM_SHADER_SLOTS,
+						MissShaderIndex,
+						PathState.Ray.GetNativeDesc(),
+						PackedPayload);
+				}
+				else
+				{
+					// The user asked for a dbuffer lookup, but we have disabled the double-trace.
+					// Set all the decal response flags so we at least pickup some kind of response
+					// even if it won't be exactly what the user had in mind.
+					PackedPayload.SetFlag(PATH_TRACING_PAYLOAD_OUTPUT_FLAG_DECAL_RESPONSE_COLOR | PATH_TRACING_PAYLOAD_OUTPUT_FLAG_DECAL_RESPONSE_NORMAL | PATH_TRACING_PAYLOAD_OUTPUT_FLAG_DECAL_RESPONSE_ROUGHNESS);
+				}
+			}
+#endif
+		}
 
 		if (PackedPayload.IsMiss() && VolumeIsectList.HitBlocker())
 		{
@@ -330,8 +501,9 @@ FPathTracingPayload TraceTransparentRay(inout FPathState PathState, bool bIsCame
 				LightHitPayload.HitT = LightHit.HitT;
 				LightHitPayload.Radiance = LightHit.Radiance;
 				LightHitPayload.ShadingModelID = SHADINGMODELID_UNLIT;
-				// alpha composite assumes premult, which allows emissive hits that are fully transparent
-				LightHitPayload.BlendingMode = RAY_TRACING_BLEND_MODE_ALPHA_COMPOSITE;
+				// light hits are fully transparent to match how the light loop works (the light surface does not cast a shadow)
+				LightHitPayload.BSDFOpacity = 1.0;
+				LightHitPayload.TransparencyColor = 1.0;
 				LightHitPayload.PrimitiveLightingChannelMask = 7;
 				LightHitPayload.SetFrontFace();
 				PackedPayload = PackPathTracingPayload(LightHitPayload);
@@ -371,10 +543,9 @@ FPathTracingPayload TraceTransparentRay(inout FPathState PathState, bool bIsCame
 				}
 			}
 
-#if PATH_TRACING_USE_TRANSMITTANCE_FUNC
 			// NOTE: when using analytic raymarching, we can skip all raymarching on the last bounce because we know we don't need a scattering point
-			if (!bLastBounce)
-#endif
+			const uint UseNullTrackingTransmittance = !UseAnalyticTransmittance;
+			if (UseNullTrackingTransmittance || (UseAnalyticTransmittance && !bLastBounce))
 			{
 				// remember the start of our interval before ray marching messes with it
 				float StartVolumeTMin = Interval.VolumeTMin;
@@ -383,32 +554,16 @@ FPathTracingPayload TraceTransparentRay(inout FPathState PathState, bool bIsCame
 				// Limit number of steps to prevent timeouts // FIXME: This biases the result!
 				for (int Step = 0; Step < MaxRaymarchSteps; Step++)
 				{
-					// figure out optimal bounds for the current ray segment
-					float3 SigmaBar = VolumeGetDensityBounds(PathState.Ray.Origin, PathState.Ray.Direction, Interval).SigmaMax;
-#if PATH_TRACING_USE_TRANSMITTANCE_FUNC == 0
-					// if we are not using analytical transmittance, a tight majorant could prevent us from "seeing" hits that match the density exactly
-					// leading to heavy noise on bright objects embedded in the volume
-					// however if we can track transmittance analytically, this workaround is not needed as we will re-compute a precise answer after ray marching
-					SigmaBar *= bIsCameraRay ? 2 : 1;
-#endif
-
-					// there is some atmosphere present along the current ray, ray march until we get to the current hit (or exit the atmosphere)
-					float3 ColorChannelPdf = PathThroughput;
-
-					// Sample the distance to the next interaction
-					float RandValue = RandomSequence_GenerateSample1D(PathState.RandSequence);
-					float DeltaT = SampleSpectralTransmittance(RandValue, SigmaBar, ColorChannelPdf);
-					if (DeltaT < 0.0)
+					FVolumeTrackingResult TrackingResult = VolumeSampleDistance(PathThroughput, PathState.Ray.Origin, PathState.Ray.Direction, Interval, bIsCameraRay, PathState.RandSequence);
+					if (TrackingResult.Distance < 0)
 					{
-						// no more energy left in the path
 						break;
 					}
 
-					if (Interval.VolumeTMin + DeltaT < Interval.VolumeTMax)
+					if (TrackingResult.bIsCollision)
 					{
-						Interval.VolumeTMin += DeltaT;
-						// our ray marching step stayed inside the atmo and is still in front of the next hit
-						PathThroughput *= EvaluateSpectralTransmittanceHit(DeltaT, SigmaBar, ColorChannelPdf).xyz;
+						Interval.VolumeTMin = TrackingResult.Distance;
+						PathThroughput = TrackingResult.Throughput;
 
 						// find out how much volume exists at the current point
 						float3 Ro = PathState.Ray.Origin;
@@ -417,12 +572,10 @@ FPathTracingPayload TraceTransparentRay(inout FPathState PathState, bool bIsCame
 						FVolumeShadedResult Result = VolumeGetDensity(TranslatedWorldPos, Interval);
 
 						// clamp to make sure we never exceed the majorant (should not be the case, but need to avoid any possible numerical issues)
-						float3 SigmaT = min(Result.SigmaT, SigmaBar);
-						float3 SigmaN = SigmaBar - SigmaT;
+						float3 SigmaT = min(Result.SigmaT, TrackingResult.SigmaBar);
+						float3 SigmaN = TrackingResult.SigmaBar - SigmaT;
 
-#if PATH_TRACING_USE_TRANSMITTANCE_FUNC == 0
-						if (!bLastBounce) // check now if this loop is also computing transmittance
-#endif
+						if (UseAnalyticTransmittance || (UseNullTrackingTransmittance && !bLastBounce)) // check now if this loop is also computing transmittance
 						{
 							float3 SigmaS = min(Result.SigmaSRayleigh + Result.SigmaSHG, SigmaT);
 							// accumulate a signal for the denoiser
@@ -437,28 +590,33 @@ FPathTracingPayload TraceTransparentRay(inout FPathState PathState, bool bIsCame
 							}
 						}
 
+						PathState.Radiance += Result.Emission * PathThroughput;
 						// keep tracing through the volume
 						PathThroughput *= SigmaN;
 					}
 					else
 					{
 						// update the path throughput, knowing that we escaped the medium
-						PathThroughput *= EvaluateSpectralTransmittanceMiss(Interval.VolumeTMax - Interval.VolumeTMin, SigmaBar, ColorChannelPdf).xyz;
+						PathThroughput = TrackingResult.Throughput;
 						// exit the ray marching loop
 						break;
 					}
 				}
 				// restore interval start now that we are finished with ray marching
 				Interval.VolumeTMin = StartVolumeTMin;
-#if PATH_TRACING_USE_TRANSMITTANCE_FUNC == 0
-				// record the change in transmittance since we already computed it
-				PathState.PathThroughput = PathThroughput;
-#endif
+				if (UseNullTrackingTransmittance)
+				{
+					// record the change in transmittance since we already computed it
+					PathState.PathThroughput = PathThroughput;
+				}
 			}
-#if PATH_TRACING_USE_TRANSMITTANCE_FUNC
-			// analytically handle the transmittance to the next surface (which will be higher quality than the transmittance implicitly computed above and prevent noise with emissive surfaces in volumes)
-			PathState.PathThroughput = VolumeGetTransmittance(PathState.PathThroughput, PathState.Ray.Origin, PathState.Ray.Direction, Interval, PathState.RandSequence);
-#endif
+			
+			if (UseAnalyticTransmittance)
+			{
+				// analytically handle the transmittance to the next surface (which will be higher quality than the transmittance implicitly computed above and prevent noise with emissive surfaces in volumes)
+				PathState.PathThroughput = VolumeGetTransmittance(PathState.PathThroughput, PathState.Ray.Origin, PathState.Ray.Direction, Interval, PathState.RandSequence);
+			}
+
 			// Update our current volume intersection list to reflect the fact that we have made it to the end of this interval
 			// This will either clip the finished portions of active segments, or remove the segments we have fully marched through
 			VolumeIsectList = VolumeIsectList.Update(Interval.VolumeTMax);
@@ -477,78 +635,38 @@ FPathTracingPayload TraceTransparentRay(inout FPathState PathState, bool bIsCame
 		}
 
 		// Unpack the payload
-		FPathTracingPayload HitPayload = UnpackPathTracingPayloadMaterial(PackedPayload, PathState.Ray, bIsCameraRay && ApplyDiffuseSpecularOverrides);
-
-		float DecalThroughput = 1.0f;
-		if (PathState.PathRoughness < MeshDecalRoughnessCutoff && HitPayload.IsDecalReceiver())
-		{
-			FRayDesc DecalRay = (FRayDesc)0;
-			// go a bit further than the current hit, to handle decals partially inside the model
-			DecalRay.Direction = -PathState.Ray.Direction;
-			DecalRay.Origin = HitPayload.TranslatedWorldPos - DecalRay.Direction * MeshDecalBias;
-			DecalRay.TMin = 0.0f;
-			DecalRay.TMax = HitPayload.HitT + MeshDecalBias;
-
-			const bool bReverseCulling = true;
-			TraceDecalRay(DecalRay, bReverseCulling, InstanceInclusionMask, HitPayload, DecalThroughput);
-		}
-
-#if PLATFORM_SUPPORTS_CALLABLE_SHADERS
-		if (PathState.PathRoughness < DecalRoughnessCutoff && HitPayload.IsDecalReceiver())
-		{
-			const float3 TranslatedWorldPos = HitPayload.TranslatedWorldPos;
-
-			FDecalLoopCount DecalLoopCount = DecalGridLookup(TranslatedWorldPos);
-			for (uint Index = 0, Num = DecalLoopCount.NumDecals; Index < Num; ++Index)
-			{
-				uint DecalId = GetDecalId(Index, DecalLoopCount);
-
-				FDecalShaderPayload DecalPayload = (FDecalShaderPayload)0;
-				DecalPayload.SetInputTranslatedWorldPosition(TranslatedWorldPos);
-
-				CallShader(DecalId, DecalPayload);
-
-				ApplyDecal(HitPayload, DecalPayload);
-
-				DecalThroughput *= DecalPayload.GetTransparency();
-			}
-		}
-#endif
-		if (DecalThroughput < 1.0f)
+		FPathTracingPayload HitPayload = UnpackPathTracingPayload(PackedPayload, PathState.Ray);
+		if (DecalData.ApplyDecal(HitPayload))
 		{
 			// if we ran any decal logic, update the payload
 			if (ApproximateCaustics)
 			{
+#if PATHTRACING_STRATA_PAYLOAD
+				Payload.RoughnessData.x = max(Payload.RoughnessData.x, PathState.PathRoughness);
+#else
 				Payload.Roughness = max(Payload.Roughness, PathState.PathRoughness);
+#endif
 			}
 			HitPayload.WorldNormal = AdjustShadingNormal(HitPayload.WorldNormal, HitPayload.WorldGeoNormal, PathState.Ray.Direction);
+#if !PATHTRACING_STRATA_PAYLOAD
 			HitPayload.DiffuseColor = HitPayload.BaseColor - HitPayload.BaseColor * HitPayload.Metallic;
 			HitPayload.SpecularColor = ComputeF0(HitPayload.Specular, HitPayload.BaseColor, HitPayload.Metallic);
-			if (bIsCameraRay)
-			{
-				HitPayload.DiffuseColor = HitPayload.DiffuseColor * View.DiffuseOverrideParameter.w + View.DiffuseOverrideParameter.xyz;
-				HitPayload.SpecularColor = HitPayload.SpecularColor * View.SpecularOverrideParameter.w + View.SpecularOverrideParameter.xyz;
-			}
+#endif
 		}
+		AdjustPayloadAfterUnpack(HitPayload, bIsCameraRay && ApplyDiffuseSpecularOverrides);
+
 
 		// account for Beer's law through the currently active medium
 		// TODO: merge this with the volume raymarching?
 		PathState.PathThroughput *= select(PathState.SigmaT > 0.0, exp(-PathState.SigmaT * (HitPayload.HitT - PathState.Ray.TMin)), 1.0);
 
-		if (HitPayload.BlendingMode == RAY_TRACING_BLEND_MODE_ADDITIVE ||
-			HitPayload.BlendingMode == RAY_TRACING_BLEND_MODE_TRANSLUCENT)
+		if (HitPayload.IsHoldout() && bIsCameraRay)
 		{
-			// emission needs to be pre-multiplied by the opacity
-			HitPayload.Radiance *= HitPayload.Opacity;
+			PathState.BackgroundVisibility += Luminance(PathState.PathThroughput * HitPayload.BSDFOpacity);
 		}
 
-		if (HitPayload.BlendingMode == RAY_TRACING_BLEND_MODE_ALPHA_HOLDOUT && bIsCameraRay)
-		{
-			PathState.BackgroundVisibility += Luminance(PathState.PathThroughput * HitPayload.Opacity);
-		}
-
-		// add in surface emission (except for modulate blend mode which uses Radiance as the transparency multiplier)
-		if (bIncludeEmission && HitPayload.BlendingMode != RAY_TRACING_BLEND_MODE_MODULATE)
+		// add in surface emission
+		if (bIncludeEmission)
 		{
 			AccumulateRadiance(PathState.Radiance, PathState.PathThroughput * HitPayload.Radiance, bIsCameraRay);
 		}
@@ -557,6 +675,11 @@ FPathTracingPayload TraceTransparentRay(inout FPathState PathState, bool bIsCame
 		{
 			// if our hit was against an infinite light, exit now
 			break;
+		}
+
+		if (bIsCameraRay)
+		{
+			DepthContext.AddHit(HitPayload);
 		}
 
 		if (!bLastBounce)
@@ -576,7 +699,7 @@ FPathTracingPayload TraceTransparentRay(inout FPathState PathState, bool bIsCame
 		}
 
 		// account for local transparency change
-		PathState.PathThroughput *= GetMaterialTransparency(HitPayload, PathState.Ray.Direction);;
+		PathState.PathThroughput *= HitPayload.TransparencyColor;
 
 		// prepare next step around the loop
 		// retrace the exact same ray with TMin one ulp past the hit we just found
@@ -601,12 +724,18 @@ FPathTracingPayload TraceTransparentRay(inout FPathState PathState, bool bIsCame
 		PathState.PathThroughput = 0;
 		Payload.SetMiss();
 	}
+
+	if (bIsCameraRay)
+	{
+		PathState.WriteDepth(DepthContext);
+	}
+
 	return Payload;
 }
 
 #define PATH_TRACING_DEBUG_TRANSPARENCY_RAY 0
 
-float3 TraceTransparentVisibilityRay(FRayDesc Ray, float PathRoughness, uint MissShaderIndex, bool bCastShadows, inout RandomSequence RandSequence)
+float3 TraceTransparentVisibilityRay(FRayDesc Ray, int Bounce, float PathRoughness, uint MissShaderIndex, bool bCastShadows, inout RandomSequence RandSequence)
 {
 	if (!bCastShadows && MissShaderIndex == 0)
 	{
@@ -691,8 +820,7 @@ float3 TraceTransparentVisibilityRay(FRayDesc Ray, float PathRoughness, uint Mis
 			Throughput = VolumeGetTransmittance(Throughput, Ray.Origin, Ray.Direction, VolumeIsectList, RandSequence);
 		}
 		// add in the medium extinction
-		const float3 Tau = PackedPayload.GetTau() * AbsorptionScale;
-		Throughput *= exp(-max(Tau, 0.0));
+		Throughput *= exp(-max(PackedPayload.GetTau(), 0.0));
 	}
 	return Throughput;
 #endif
@@ -709,56 +837,255 @@ struct FProbeResult
 	bool IsMiss() { return HitT <= 0; }
 };
 
-FProbeResult TraceProbeRay(FRayDesc Ray)
+FProbeResult TraceSSSProbeRay(FRayDesc Ray, inout int InterfaceCounter)
 {
-	// Trace a short ray to see if we escaped the surface
-	// NOTE: we leave these rays tagged as "camera" because we are interested in getting the same shading normal the camera saw (on the off chance the material does some ray-simplfiication)
-	//      Since the SSS code mostly runs on camera rays, this is a reasonable approximation
-	FPackedPathTracingPayload PackedPayload = InitPathTracingPayload(PATHTRACER_SCATTER_CAMERA, 1.0);
-	// TODO: use smaller payload + flag to skip shading work? (only want smooth+geo normals)
-	//       however supporting blockers would require some shading ...
-	const uint RayFlags = 0;
-	const uint InstanceInclusionMask = PATHTRACER_MASK_ALL
-										- PATHTRACER_MASK_HAIR_SHADOW 
-										- PATHTRACER_MASK_HAIR_INDIRECT
-										- PATHTRACER_MASK_HAIR_CAMERA; // Ignore hair strands for SSS rays
-	const uint MissShaderIndex = 0;
-	TraceRay(
-		TLAS,
-		RayFlags,
-		InstanceInclusionMask,
-		RAY_TRACING_SHADER_SLOT_MATERIAL,
-		RAY_TRACING_NUM_SHADER_SLOTS,
-		MissShaderIndex,
-		Ray.GetNativeDesc(),
-		PackedPayload);
+	// Use the technique mentioned in "A Hero Beneath the Surface" (Section 6.3.2)
+	// https://jo.dreggn.org/home/2021_spectral_imaging.pdf
+	// This allows multiple overlapping meshes to be treated as a single "volume" by discarding internal hits until we have
+	// crossed the appropriate number of interfaces
+#define SSS_USE_INTERFACE_COUNTING 1
 
-	if (PackedPayload.IsMiss())
+#if SSS_USE_INTERFACE_COUNTING
+	for (;;)
+#endif
 	{
-		return (FProbeResult)0;
+		// Trace a short ray to see if we escaped the surface
+		// NOTE: we leave these rays tagged as "camera" because we are interested in getting the same shading normal the camera saw (on the off chance the material does some ray-simplfiication)
+		//      Since the SSS code mostly runs on camera rays, this is a reasonable approximation
+		FPackedPathTracingPayload PackedPayload = InitPathTracingPayload(PATHTRACER_SCATTER_CAMERA, 1.0);
+		// TODO: use smaller payload + flag to skip shading work? (only want smooth+geo normals)
+		//       however supporting blockers would require some shading ...
+		//       
+		const uint RayFlags = 0;
+		const uint InstanceInclusionMask = PATHTRACER_MASK_ALL
+			- PATHTRACER_MASK_HAIR_SHADOW
+			- PATHTRACER_MASK_HAIR_INDIRECT
+			- PATHTRACER_MASK_HAIR_CAMERA; // Ignore hair strands for SSS rays
+		const uint MissShaderIndex = 0;
+		TraceRay(
+			TLAS,
+			RayFlags,
+			InstanceInclusionMask,
+			RAY_TRACING_SHADER_SLOT_MATERIAL,
+			RAY_TRACING_NUM_SHADER_SLOTS,
+			MissShaderIndex,
+			Ray.GetNativeDesc(),
+			PackedPayload);
+
+		if (PackedPayload.IsMiss())
+		{
+			// we did not hit anything
+			return (FProbeResult)0;
+		}
+
+#if SSS_USE_INTERFACE_COUNTING
+		// update counter
+		InterfaceCounter += PackedPayload.IsFrontFace() ? +1 : -1;
+		if (InterfaceCounter != 0)
+		{
+			// we have not yet crossed the right number of interfaces, so ignore the current hit and try the segment again
+			Ray.TMin = asfloat(asuint(PackedPayload.HitT) + 1);
+			continue;
+		}
+#endif
+
+		FPathTracingPayload Payload = UnpackPathTracingPayload(PackedPayload, Ray);
+		FProbeResult Result;
+		Result.HitT = PackedPayload.HitT;
+		Result.WorldNormal = Payload.WorldNormal;
+		Result.WorldSmoothNormal = Payload.WorldSmoothNormal;
+		Result.WorldGeoNormal = Payload.WorldGeoNormal;
+		Result.FrontFace = Payload.IsFrontFace();
+		return Result;
 	}
-	FPathTracingPayload Payload = UnpackPathTracingPayload(PackedPayload, Ray);
-	FProbeResult Result;
-	Result.HitT = PackedPayload.HitT;
-	Result.WorldNormal = Payload.WorldNormal;
-	Result.WorldSmoothNormal = Payload.WorldSmoothNormal;
-	Result.WorldGeoNormal = Payload.WorldGeoNormal;
-	Result.FrontFace = Payload.IsFrontFace();
-	return Result;
 }
 
 void ApplyRayBias(inout FRayDesc Ray, float HitT, float3 Normal)
 {
-#if 1
 	// Take maximum of position or hit distance to determine "radius" of hit avoidance
 	const float RefValue = max(max(abs(Ray.Origin.x), abs(Ray.Origin.y)), max(abs(Ray.Origin.z), HitT));
 	const uint UlpRadius = 16; // number of floating point ulps to skip around an intersection
 	const float RelativeOffset = asfloat(asuint(RefValue) + UlpRadius) - RefValue;
 	const float BaseOffset = 0.001; // 0.01mm (avoid precision issues very close to the origin where ulps become tiny)
 	Ray.Origin += max(BaseOffset, RelativeOffset) * Normal;
-#else
-	ApplyPositionBias(Ray.Origin, Ray.Direction, Normal, MaxNormalBias);
-#endif
+}
+
+float3 ComputeDwivediScale(float3 Albedo)
+{
+	// "Zero-Variance Theory for Efficient Subsurface Scattering"
+	// Eugene d'Eon and Jaroslav Krivanek (SIGGRAPH 2020)
+	// http://www.eugenedeon.com/project/zerovar2020/
+	// Eq. 67
+	const float3 ClampedAlbedo = clamp(Albedo, 0.001, 0.999); // avoid singularities at the extremeties
+	return rsqrt(1.0 - pow(ClampedAlbedo, 2.44294 - 0.0215813 * ClampedAlbedo + 0.578637 / ClampedAlbedo));
+}
+
+float SampleGuidedSpectralTransmittance(float RandValue, float SlabCosine, float3 DwivediScale, float GuidingFactor, float3 Sigma, float3 ProbT, float3 ColorChannelPdf)
+{
+	float3 ColorChannelCdf = float3(
+		ColorChannelPdf.x,
+		ColorChannelPdf.x + ColorChannelPdf.y,
+		ColorChannelPdf.x + ColorChannelPdf.y + ColorChannelPdf.z);
+	if (ColorChannelCdf.z > 0)
+	{
+		
+		// choose guided vs non-guided
+		if (RandValue < GuidingFactor)
+		{
+			// dwivedi walk, stretch sigma
+			RandValue = RescaleRandomNumber(RandValue, 0.0, GuidingFactor);
+		}
+		else
+		{
+			// classic walk, use unmodified sigma
+			SlabCosine = 0;
+			RandValue = RescaleRandomNumber(RandValue, GuidingFactor, 1.0);
+
+		}
+		const float q = RandValue * ColorChannelCdf.z;
+		if (q < ColorChannelCdf.x)
+		{
+			const float RescaleRand1 = RescaleRandomNumber(q, 0.0, ColorChannelCdf.x);
+			const float RescaleRand2 = RescaleRand1 < ProbT.x ? RescaleRandomNumber(RescaleRand1, 0.0, ProbT.x) : RescaleRandomNumber(RescaleRand1, ProbT.x, 1.0);
+			SlabCosine *= RescaleRand1 < ProbT.x ? -1.0 : 1.0;
+			const float StretchedSigma = Sigma.x * (1 - SlabCosine / DwivediScale.x);
+			return -log(1 - RescaleRand2) / StretchedSigma;
+		}
+		else if (q < ColorChannelCdf.y)
+		{
+			const float RescaleRand1 = RescaleRandomNumber(q, ColorChannelCdf.x, ColorChannelCdf.y);
+			const float RescaleRand2 = RescaleRand1 < ProbT.y ? RescaleRandomNumber(RescaleRand1, 0.0, ProbT.y) : RescaleRandomNumber(RescaleRand1, ProbT.y, 1.0);
+			SlabCosine *= RescaleRand1 < ProbT.y ? -1.0 : 1.0;
+			const float StretchedSigma = Sigma.y * (1 - SlabCosine / DwivediScale.y);
+			return -log(1 - RescaleRand2) / StretchedSigma;
+
+		}
+		else
+		{
+			const float RescaleRand1 = RescaleRandomNumber(q, ColorChannelCdf.y, ColorChannelCdf.z);
+			const float RescaleRand2 = RescaleRand1 < ProbT.z ? RescaleRandomNumber(RescaleRand1, 0.0, ProbT.z) : RescaleRandomNumber(RescaleRand1, ProbT.z, 1.0);
+			SlabCosine *= RescaleRand1 < ProbT.z ? -1.0 : 1.0;
+			const float StretchedSigma = Sigma.z * (1 - SlabCosine / DwivediScale.z);
+			return -log(1 - RescaleRand2) / StretchedSigma;
+		}
+	}
+	// all channels have 0 probability
+	return -1.0;
+}
+
+float4 EvaluateGuidedSpectralTransmittanceHit(float SampledT, float SlabCosine, float3 DwivediScale, float GuidingFactor, float3 Sigma, float3 ProbT, float3 ColorChannelPdf)
+{
+	// normalize the pdf (to match code above)
+	ColorChannelPdf *= rcp(ColorChannelPdf.x + ColorChannelPdf.y + ColorChannelPdf.z);
+	float3 Transmittance = exp(-SampledT * Sigma);
+	// probability of reaching the sampled point with classic sampling
+	float3 TransmittancePdf = Sigma * Transmittance;
+	// probability of reaching the sampled point with guiding
+	float3 GuidedSigmaR = (1 - SlabCosine / DwivediScale) * Sigma;
+	float3 GuidedSigmaT = (1 + SlabCosine / DwivediScale) * Sigma;
+	float3 GuidedPdfR = GuidedSigmaR * exp(-SampledT * GuidedSigmaR);
+	float3 GuidedPdfT = GuidedSigmaT * exp(-SampledT * GuidedSigmaT);
+	float3 GuidedPdf = lerp(GuidedPdfR, GuidedPdfT, ProbT);
+	float MisPdf = dot(ColorChannelPdf, lerp(TransmittancePdf, GuidedPdf, GuidingFactor));
+	return MisPdf > 0 ? float4(Transmittance / MisPdf, MisPdf) : 0.0;
+}
+
+float4 EvaluateGuidedSpectralTransmittanceMiss(float MaxT, float SlabCosine, float3 DwivediScale, float GuidingFactor, float3 Sigma, float3 ProbT, float3 ColorChannelPdf)
+{
+	// normalize the pdf (to match code above)
+	ColorChannelPdf *= rcp(ColorChannelPdf.x + ColorChannelPdf.y + ColorChannelPdf.z);
+	float3 Transmittance = exp(-MaxT * Sigma);
+	float3 TransmittancePdf = Transmittance; // probability of going past MaxT with classic sampling
+
+	// probability of going past MaxT (integral of the pdf from MaxT to infinity) with guiding
+	float3 GuidedSigmaR = (1 - SlabCosine / DwivediScale) * Sigma;
+	float3 GuidedSigmaT = (1 + SlabCosine / DwivediScale) * Sigma;
+	float3 GuidedPdfR = exp(-MaxT * GuidedSigmaR);
+	float3 GuidedPdfT = exp(-MaxT * GuidedSigmaT);
+	float3 GuidedPdf = lerp(GuidedPdfR, GuidedPdfT, ProbT);
+	
+	float MisPdf = dot(ColorChannelPdf, lerp(TransmittancePdf, GuidedPdf, GuidingFactor));
+	return MisPdf > 0 ? float4(Transmittance / MisPdf, MisPdf) : 0.0;
+}
+
+// returns: xyz: world space direction, w: throughput scale
+float4 SampleDwivediPhaseFunction(float3 ColorChannelPdf, float3 DwivediScale, float GuidingFraction, float3 ProbT, float3 DwivediSlabNormal, float3 RayDirection, float G, float2 RandSample)
+{
+	float4 Result = 0;
+	float3 ColorChannelCdf = float3(
+		ColorChannelPdf.x,
+		ColorChannelPdf.x + ColorChannelPdf.y,
+		ColorChannelPdf.x + ColorChannelPdf.y + ColorChannelPdf.z);
+	if (ColorChannelCdf.z > 0)
+	{
+		const float3 PhaseLog = log((DwivediScale + 1.0) / (DwivediScale - 1.0));
+		const float OneMinusEpsilon = 0.99999994; // 32-bit float just before 1.0
+		if (RandSample.x < GuidingFraction)
+		{
+			// sample the dwivedi guiding pdf
+			RandSample.x = RescaleRandomNumber(RandSample.x, 0.0, GuidingFraction);
+			const float q = RandSample.x * ColorChannelCdf.z;
+			float CosineZ = 0;
+			float Sign = 1;
+			if (q < ColorChannelCdf.x)
+			{
+				const float RescaleRand1 = RescaleRandomNumber(q, 0.0, ColorChannelCdf.x);
+				const float RescaleRand2 = RescaleRand1 < ProbT.x ? RescaleRandomNumber(RescaleRand1, 0.0, ProbT.x) : RescaleRandomNumber(RescaleRand1, ProbT.x, 1.0);
+				CosineZ = (DwivediScale.x - (DwivediScale.x + 1) * exp(-RescaleRand2 * PhaseLog.x));
+				Sign = RescaleRand1 < ProbT.x ? -1.0 : +1.0;
+			}
+			else if (q < ColorChannelCdf.y)
+			{
+				const float RescaleRand1 = RescaleRandomNumber(q, ColorChannelCdf.x, ColorChannelCdf.y);
+				const float RescaleRand2 = RescaleRand1 < ProbT.y ? RescaleRandomNumber(RescaleRand1, 0.0, ProbT.y) : RescaleRandomNumber(RescaleRand1, ProbT.y, 1.0);
+				CosineZ = (DwivediScale.y - (DwivediScale.y + 1) * exp(-RescaleRand2 * PhaseLog.y));
+				Sign = RescaleRand1 < ProbT.y ? -1.0 : +1.0;
+			}
+			else
+			{
+				const float RescaleRand1 = RescaleRandomNumber(q, ColorChannelCdf.y, ColorChannelCdf.z);
+				const float RescaleRand2 = RescaleRand1 < ProbT.z ? RescaleRandomNumber(RescaleRand1, 0.0, ProbT.z) : RescaleRandomNumber(RescaleRand1, ProbT.z, 1.0);
+				CosineZ = (DwivediScale.z - (DwivediScale.z + 1) * exp(-RescaleRand2 * PhaseLog.z));
+				Sign = RescaleRand1 < ProbT.z ? -1.0 : +1.0;
+
+			}
+			float3 PhasePdfR = rcp((DwivediScale - CosineZ) * PhaseLog * (2 * PI));
+			float3 PhasePdfT = rcp((DwivediScale + CosineZ) * PhaseLog * (2 * PI));
+			float3 PhasePdf = lerp(PhasePdfR, PhasePdfT, ProbT);
+			ColorChannelPdf *= rcp(ColorChannelCdf.z);
+			float MisPdf = dot(ColorChannelPdf, PhasePdf);
+
+
+			float SineZ = sqrt(saturate(1 - CosineZ * CosineZ));
+			float Phi = (2 * PI) * RandSample.y;
+			// produce output direction in slab tangent frame
+			Result.xyz = normalize(TangentToWorld(float3(SineZ * cos(Phi), SineZ * sin(Phi), Sign * CosineZ), DwivediSlabNormal));
+			// final throughput is the phase function divided by pdf
+			float PhaseCosine = -dot(RayDirection, Result.xyz);
+			float PhaseEval = HenyeyGreensteinPhase(G, PhaseCosine);
+			Result.w = PhaseEval / lerp(PhaseEval, MisPdf, GuidingFraction);
+		}
+		else
+		{
+			// sample the classic HG lobe directly (but include probability of sampling the guided lobe)
+			RandSample.x = RescaleRandomNumber(RandSample.x, GuidingFraction, 1.0);
+			float4 DirectionAndPhase = ImportanceSampleHenyeyGreensteinPhase(RandSample, G);
+			Result.xyz = normalize(TangentToWorld(DirectionAndPhase.xyz, RayDirection));
+
+			float CosineZ = dot(Result.xyz, DwivediSlabNormal);
+
+			float3 GuidedPhasePdfR = rcp((DwivediScale - CosineZ) * PhaseLog * (2 * PI));
+			float3 GuidedPhasePdfT = rcp((DwivediScale + CosineZ) * PhaseLog * (2 * PI));
+			float3 GuidedPhasePdf = lerp(GuidedPhasePdfR, GuidedPhasePdfT, ProbT);
+			ColorChannelPdf *= rcp(ColorChannelCdf.z);
+			float MisPdf = dot(ColorChannelPdf, GuidedPhasePdf);
+
+			// final throughput is the phase function divided by pdf
+			float PhaseEval = DirectionAndPhase.w;
+			Result.w = PhaseEval / lerp(PhaseEval, MisPdf, GuidingFraction);
+		}
+	}
+	return Result;
 }
 
 bool ProcessSubsurfaceRandomWalk(inout FPathTracingPayload Payload, inout float3 PathThroughput, inout RandomSequence RandSequence, float3 RayDirection, bool SimplifySSS)
@@ -770,57 +1097,30 @@ bool ProcessSubsurfaceRandomWalk(inout FPathTracingPayload Payload, inout float3
 		return true;
 	}
 
-	float3 SSSColor = Payload.SubsurfaceColor;
-	float3 SSSRadius = Payload.SubsurfaceRadius;
+	FSSSRandomWalkInfo SSS = GetMaterialSSSInfo(Payload, -RayDirection);
 
-	if (SimplifySSS || all(SSSRadius == 0) || all(SSSColor == 0) || MaxSSSBounces == 0)
+
+	if (SimplifySSS || all(SSS.Radius == 0) || all(SSS.Color == 0) || MaxSSSBounces == 0)
 	{
 		// if we are running in a context that won't see the SSS directly -- just turn it into diffuse and skip the random walk
 		// we can also skip random walk if the radius or color is 0
 		// or if the user decided not to perform any SSS bounces
-		Payload.DiffuseColor += SSSColor;
-		Payload.DiffuseColor = saturate(Payload.DiffuseColor);
-		Payload.SubsurfaceColor = 0.0;
+		RemoveMaterialSSS(Payload);
 		return true;
 	}
 	
-	// Support SSS for mfp smaller than 1mm.
-	SSSRadius = max(SSSRadius, 0.0009); // 0.009mm minimum to make sure random walk can move forward and to keep SigmaT finite
-
-
 	// decide randomly to evaluate the SSS part of the material, or keep shading the current part
-	// This also computes the energy conservation to take out the portion of lighting reflected away by the specular layer
-	const float NoV = saturate(dot(Payload.WorldNormal, -RayDirection));
-	float3 SpecE = 0;
-	if (Payload.ShadingModelID == SHADINGMODELID_SUBSURFACE_PROFILE)
-	{
-		// dual spec
-		const float3 DualRoughnessData = Payload.GetDualRoughnessSpecular();
-		const float3 SpecE0 = ComputeGGXSpecEnergyTermsRGB(DualRoughnessData.x, NoV, Payload.SpecularColor).E;
-		const float3 SpecE1 = ComputeGGXSpecEnergyTermsRGB(DualRoughnessData.y, NoV, Payload.SpecularColor).E;
-		SpecE = lerp(SpecE0, SpecE1, DualRoughnessData.z);
-	}
-	else
-	{
-		// single spec
-		SpecE = ComputeGGXSpecEnergyTermsRGB(Payload.Roughness, NoV, Payload.SpecularColor).E;
-	}
-
-	const float3 SSSLobeAlbedo = (1 - SpecE) * SSSColor;
-	const float3 DiffLobeAlbedo = (1 - SpecE) * Payload.DiffuseColor;
-	const float3 SpecLobeAlbedo = SpecE;
-	float SSSProb = LobeSelectionProb(SSSLobeAlbedo, DiffLobeAlbedo + SpecLobeAlbedo);
 	float3 RandSample = RandomSequence_GenerateSample3D(RandSequence);
-	if (RandSample.x < SSSProb)
+	if (RandSample.x < SSS.Prob)
 	{
 		// do random walk (and adjust throughput to remove energy reflected away by the specular lobe)
-		PathThroughput *= (1 - SpecE) / SSSProb;
-		RandSample.x /= SSSProb;
+		PathThroughput *= SSS.Weight / SSS.Prob;
+		RandSample.x /= SSS.Prob;
 	}
 	else
 	{
 		// skip random walk and shade current point instead
-		PathThroughput *= 1 / (1 - SSSProb);
+		PathThroughput *= 1 / (1 - SSS.Prob);
 		return true;
 	}
 
@@ -831,11 +1131,9 @@ bool ProcessSubsurfaceRandomWalk(inout FPathTracingPayload Payload, inout float3
 	Ray.TMin = 0;
 	ApplyRayBias(Ray, Payload.HitT, -Payload.WorldGeoNormal);
 
-    // Use the technique mentioned in "A Hero Beneath the Surface" (Section 6.3.2)
-	// https://jo.dreggn.org/home/2021_spectral_imaging.pdf
-	// This allows multiple overlapping meshes to be treated as a single "volume" by discarding internal hits until we have
-	// crossed the appropriate number of interfaces
-#define SSS_USE_INTERFACE_COUNTING 1
+	// Support SSS for mfp smaller than 1mm.
+	SSS.Radius = max(SSS.Radius, 0.0009); // 0.009mm minimum to make sure random walk can move forward and to keep SigmaT finite
+
 
 	int InterfaceCounter = Payload.IsFrontFace() ? +1 : -1;
 
@@ -846,113 +1144,185 @@ bool ProcessSubsurfaceRandomWalk(inout FPathTracingPayload Payload, inout float3
 
 
 #if SSS_USE_TIR
-	float3 Albedo = 1 - exp(SSSColor * (-11.43 + SSSColor * (15.38 - 13.91 * SSSColor)));
+	float3 Albedo = 1 - exp(SSS.Color * (-11.43 + SSS.Color * (15.38 - 13.91 * SSS.Color)));
 #else
 	// Van de-Hulst inverse mapping
 	// https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_slides_v2.pdf (Slide 44)
 	// http://www.eugenedeon.com/project/a-hitchhikers-guide-to-multiple-scattering/ (Section 7.5.3 of v0.1.3)
-	float3 Albedo = 1 - Pow2(4.09712 + 4.20863 * SSSColor - sqrt(9.59217 + SSSColor * (41.6808 + 17.7126 * SSSColor)));
-	SSSRadius *= 2.0; // roughly match parameterization above
+	float3 Albedo = 1 - Pow2(4.09712 + 4.20863 * SSS.Color - sqrt(9.59217 + SSS.Color * (41.6808 + 17.7126 * SSS.Color)));
+	SSS.Radius *= 2.0; // roughly match parameterization above
 #endif
 
-	// Apply albedo remapping for anisotropic scattering 
-	float G = Payload.GetSubsurfacePhaseFunction();
+	// Subsurface guiding is implemented following the Dwivedi random walk technique described here:
+	// https://cgg.mff.cuni.cz/~jaroslav/papers/2014-zerovar/
+	// http://www.eugenedeon.com/project/zerovar2020/
+	// A thin-slab approximation is used to improve the guiding in thin regions as well as described in the video presentation (slides 37-39).
+#define SSS_USE_DWIVEDI 1
+#define SSS_USE_DWIVEDI_USE_THIN_SLABS 1 // Probe the geometry to have an estimate of thickness - and use this to guide toward front or backside, depending on which is closer
 
 	// Revisiting Physically Based Shading at Imageworks.
 	// https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_slides_v2.pdf
+	float G = SSS.G;
 	Albedo = Albedo / (1 - G * (1 - Albedo));
 
+#if SSS_USE_DWIVEDI
+	// Setup an oriented slab to approximate the surface. This is used to guide paths back towards the surface so they can escape
+	const float3 DwivediScale = ComputeDwivediScale(Albedo);
+	float3 DwivediSlabNormal = Payload.WorldSmoothNormal;
+	float3 DwivediSlabOrigin = Payload.TranslatedWorldPos;
+	// Guiding only works for isotropic phase functions - limit the guiding to a narrow range of phase functions around G=0.0
+	// This heuristic was compared to the one from:
+	// https://jo.dreggn.org/home/2016_dwivedi.pdf (see Equation 15)
+	// but the latter does not appear sufficient for G > 0.25 or so. This is potentially explained by the lack of Closest point or incident illumination guiding.
+	const float GuidedRatio = SSSGuidingRatio * (1.0 - pow(saturate(abs(G * 4)), 0.0625));
+
+#if SSS_USE_DWIVEDI_USE_THIN_SLABS
+	bool bDoSlabSearch = GuidedRatio > 0;
+	float SlabThickness = -1.0; // negative means we didn't find a valid thickness
+#endif
+
+#endif // SSS_USE_DWIVEDI
+
+
 	const int MAX_SSS_BOUNCES = MaxSSSBounces;
-	const float3 SigmaT = 1.0 / SSSRadius;
+	const float3 SigmaT = rcp(SSS.Radius);
 	const float3 SigmaS = Albedo * SigmaT;
 	for (int i = 0; i < MAX_SSS_BOUNCES; i++)
 	{
-		// TODO: add Dwivedi sampling for faster escape in low albedo media ...
-
 		float3 ColorChannelPdf = PathThroughput * Albedo;
+#if SSS_USE_DWIVEDI
+		float SlabCosine = dot(Ray.Direction, DwivediSlabNormal);
+#if SSS_USE_DWIVEDI_USE_THIN_SLABS
+		if (bDoSlabSearch)
+		{
+			FRayDesc ProbeRay;
+			ProbeRay.Origin = Ray.Origin;
+			ProbeRay.Direction = -DwivediSlabNormal;
+			ProbeRay.TMin = 0.0;
+			ProbeRay.TMax = 10 * max3(SSS.Radius.x, SSS.Radius.y, SSS.Radius.z);
+			int ProbeInterfaceCounter = InterfaceCounter;
+			FProbeResult Result = TraceSSSProbeRay(ProbeRay, ProbeInterfaceCounter);
+			if (Result.IsMiss())
+			{
+				// didn't find a hit, register missing slab
+				SlabThickness = -1.0;
+			}
+			else
+			{
+				// got a valid hit -- use it as our thickness
+				SlabThickness = Result.HitT;
+			}
+			bDoSlabSearch = false;
+		}
+
+		// Instead of only guiding towards the slab front (reflection), also guide toward the slack back (tranmission) when the surface is thin
+		// The heuristic to choose between guiding front or back is determined by the following probability, given in [2] on slide 37 of the video
+		// Note that the depths in the video presentation are optical depths, so have to be multiplied by SigmaT
+		float SlabZ = clamp(dot(DwivediSlabOrigin - Ray.Origin, DwivediSlabNormal), 0.0, SlabThickness);
+		float3 ProbT = SlabThickness > 0.0 ? rcp(1 + exp(SigmaT * (SlabThickness - 2 * SlabZ) / DwivediScale)) : 0.0;
+#else
+		float3 ProbT = 0.0;
+#endif
+		Ray.TMax = SampleGuidedSpectralTransmittance(RandSample.z, SlabCosine, DwivediScale, GuidedRatio, SigmaT, ProbT, ColorChannelPdf);
+#else // SSS_USE_DWIVEDI
 		Ray.TMax = SampleSpectralTransmittance(RandSample.z, SigmaT, ColorChannelPdf);
+#endif
 		if (Ray.TMax < 0.0)
 		{
 			// no more energy left in the path
 			break;
 		}
-		for (;;)
+
+		FProbeResult ProbeResult = TraceSSSProbeRay(Ray, InterfaceCounter);
+
+		RandSample = RandomSequence_GenerateSample3D(RandSequence);
+		if (ProbeResult.IsMiss())
 		{
-			FProbeResult ProbeResult = TraceProbeRay(Ray);
-			if (ProbeResult.IsMiss())
-			{
-				// we didn't hit anything, so scatter according to the scattering distribution in the volume and keep tracing
-				RandSample = RandomSequence_GenerateSample3D(RandSequence);
-				Ray.Origin += Ray.TMax * Ray.Direction;
-				
-				float4 DirectionAndPhase = ImportanceSampleHenyeyGreensteinPhase(RandSample.xy, G);
-				Ray.Direction = TangentToWorld(DirectionAndPhase.xyz, Ray.Direction);
-				Ray.TMin = 0;
-				// account for transmittance and scattering up to this point
-				PathThroughput *= SigmaS * EvaluateSpectralTransmittanceHit(Ray.TMax, SigmaT, ColorChannelPdf).xyz;
-				// NOTE: phase function cancels out since it is being perfectly importance sampled
+			// we didn't hit anything, so scatter according to the scattering distribution in the volume and keep tracing
+			Ray.Origin += Ray.TMax * Ray.Direction;
 
-				// exit the Interface counting loop and keep scattering
-				break;
-			}
-#if SSS_USE_INTERFACE_COUNTING
-			// update counter
-			InterfaceCounter += ProbeResult.FrontFace ? +1 : -1;
-			if (InterfaceCounter != 0)
-			{
-				// we have not yet crossed the right number of interfaces, so ignore the current hit and try the segment again
-				Ray.TMin = asfloat(asuint(ProbeResult.HitT) + 1);
-			}
-			else
+#if SSS_USE_DWIVEDI
+			// account for transmittance and scattering up to this point
+			PathThroughput *= SigmaS * EvaluateGuidedSpectralTransmittanceHit(Ray.TMax, SlabCosine, DwivediScale, GuidedRatio, SigmaT, ProbT, ColorChannelPdf).xyz;
+
+#if SSS_USE_DWIVEDI_USE_THIN_SLABS
+			// Recompute ProbT to account for new position before choosing a new direction
+			// NOTE: this does not appear to help much, so leave it off for now
+			//SlabZ = clamp(dot(DwivediSlabOrigin - Ray.Origin, DwivediSlabNormal), 0.0, SlabThickness);
+			//ProbT = SlabThickness > 0.0 ? rcp(1 + exp(SigmaT * (SlabThickness - 2 * SlabZ) / DwivediScale)) : 0.0;
 #endif
-			{
-				// account for transmittance to the boundary
-				PathThroughput *= EvaluateSpectralTransmittanceMiss(ProbeResult.HitT, SigmaT, ColorChannelPdf).xyz;
 
-				// our short ray hit the geomtry - decide if we should exit or not
+			float4 Result = SampleDwivediPhaseFunction(ColorChannelPdf, DwivediScale, GuidedRatio, ProbT, DwivediSlabNormal, Ray.Direction, G, RandSample.xy);
+			Ray.Direction = Result.xyz;
+			PathThroughput *= Result.w;
+#else
+			// importance sample the phase function
+			float4 DirectionAndPhase = ImportanceSampleHenyeyGreensteinPhase(RandSample.xy, G);
+			Ray.Direction = TangentToWorld(DirectionAndPhase.xyz, Ray.Direction);
+			// NOTE: phase function cancels out since it is being perfectly importance sampled
+			// account for transmittance and scattering up to this point
+			PathThroughput *= SigmaS * EvaluateSpectralTransmittanceHit(Ray.TMax, SigmaT, ColorChannelPdf).xyz;
+#endif
+			// keep scattering
+			continue;
+		}
+		else
+		{
+#if SSS_USE_DWIVEDI
+            // account for transmittance to the boundary as well as the guiding probability
+			PathThroughput *= EvaluateGuidedSpectralTransmittanceMiss(ProbeResult.HitT, SlabCosine, DwivediScale, GuidedRatio, SigmaT, ProbT, ColorChannelPdf).xyz;
+#else
+			// account for transmittance to the boundary
+			PathThroughput *= EvaluateSpectralTransmittanceMiss(ProbeResult.HitT, SigmaT, ColorChannelPdf).xyz;
+#endif
+			// our short ray hit the geometry - decide if we should exit or not
 #if SSS_USE_TIR
-				RandSample = RandomSequence_GenerateSample2D(RandSequence).xxy;
-				float3 WorldNormal = ProbeResult.WorldNormal;
-				float CosTheta = abs(dot(Ray.Direction, WorldNormal));
-				float Fresnel = FresnelReflectance(CosTheta, 1.0 / 1.4);
-				if (RandSample.x < Fresnel)
-				{
-					// internal reflection occured -- reflect and keep tracing
-					// NOTE: weight and probability cancel out, so no throughput adjustment is needed
-					Ray.Origin += ProbeResult.HitT * Ray.Direction;
-					Ray.Direction = reflect(Ray.Direction, WorldNormal);
-					Ray.TMin = 0;
-					ApplyRayBias(Ray, ProbeResult.HitT, ProbeResult.WorldGeoNormal);
-					// Reset interface counter as if we had just entered the model (taking into account that we are seeing it from the opposite side now)
-					InterfaceCounter = ProbeResult.FrontFace ? -1 : +1;
-					// exit from the interface counting loop and keep scattering
-					break;
-				}
+			float3 WorldNormal = ProbeResult.WorldNormal;
+			float CosTheta = abs(dot(Ray.Direction, WorldNormal));
+			float Fresnel = FresnelReflectance(CosTheta, 1.0 / 1.4);
+			if (RandSample.x < Fresnel)
+			{
+				// internal reflection occured -- reflect and keep tracing
+				// NOTE: weight and probability cancel out, so no throughput adjustment is needed
+				Ray.Origin += ProbeResult.HitT * Ray.Direction;
+				Ray.Direction = reflect(Ray.Direction, WorldNormal);
+
+#if SSS_USE_DWIVEDI && SSS_USE_DWIVEDI_USE_THIN_SLABS
+				// we hit the boundary, so reset the slab origin and look for a new one
+				DwivediSlabOrigin = Ray.Origin;
+				DwivediSlabNormal = ProbeResult.WorldSmoothNormal * ((ProbeResult.FrontFace != Payload.IsFrontFace()) ? -1.0 : 1.0);
+				bDoSlabSearch = GuidedRatio > 0;
 #endif
-				// we hit the boundary! overwrite the current payload and exit the walk with a diffuse scattering event
-				Payload.TranslatedWorldPos = Ray.Origin + ProbeResult.HitT * Ray.Direction;
-				Payload.WorldNormal = ProbeResult.WorldNormal;
-				Payload.WorldSmoothNormal = ProbeResult.WorldSmoothNormal;
-				Payload.WorldGeoNormal = ProbeResult.WorldGeoNormal;
-				// make sure normal is pointed outward from the object so we capture illumination from the exterior
-				if (ProbeResult.FrontFace != Payload.IsFrontFace())
-				{
-					Payload.WorldNormal *= -1.0;
-					Payload.WorldSmoothNormal *= -1.0;
-					Payload.WorldGeoNormal *= -1.0;
-				}
-				Payload.ShadingModelID = SHADINGMODELID_NUM; // invalid value so that we get diffuse shading
-				Payload.BlendingMode = RAY_TRACING_BLEND_MODE_OPAQUE;
-				Payload.BaseColor = 1;
-				return true;
+
+				ApplyRayBias(Ray, ProbeResult.HitT, ProbeResult.WorldGeoNormal);
+
+				// Reset interface counter as if we had just entered the model (taking into account that we are seeing it from the opposite side now)
+				InterfaceCounter = ProbeResult.FrontFace ? -1 : +1;
+				// keep scattering
+				continue;
 			}
+#endif // SSS_USE_TIR
+
+			// we hit the boundary! overwrite the current payload and exit the walk with a diffuse scattering event
+			Payload.TranslatedWorldPos = Ray.Origin + ProbeResult.HitT * Ray.Direction;
+			// make sure normal is pointed outward from the object so we capture illumination from the exterior
+			float SignFlip = (ProbeResult.FrontFace != Payload.IsFrontFace()) ? -1.0 : 1.0;
+			Payload.WorldNormal       = SignFlip * ProbeResult.WorldNormal;
+			Payload.WorldSmoothNormal = SignFlip * ProbeResult.WorldSmoothNormal;
+			Payload.WorldGeoNormal    = SignFlip * ProbeResult.WorldGeoNormal;
+			
+			Payload.ShadingModelID = SHADINGMODELID_NUM; // invalid value so that we get diffuse shading
+			Payload.BSDFOpacity = 1;
+			Payload.SetBaseColor(1.0);
+			Payload.TransparencyColor = 0;
+			return true;
 		}
 	}
 	// we scattered a bunch of times and never hit anything -- give up
 	return false;
 }
 
-FPathState CreatePathState(int2 PixelIndex)
+FPathState CreatePathState(int2 PixelIndex, int2 PrimaryRayTextureIndex)
 {
 	FPathState Output = (FPathState)0;
 
@@ -982,6 +1352,9 @@ FPathState CreatePathState(int2 PixelIndex)
 
 		float2 ViewportUV = (LaunchIndex + AAJitter) * View.BufferSizeAndInvSize.zw;
 		Output.Ray = CreatePrimaryRay(ViewportUV);
+
+		// only record the depth within a square.
+		Output.DepthResamplingWeight = all(AAJitter >= 0.0) && all(AAJitter <= 1.0) ? 1 : 0;
 	}
 
 	if (CameraLensRadius.y > 0)
@@ -1011,6 +1384,7 @@ FPathState CreatePathState(int2 PixelIndex)
 	Output.PathRoughness = 0;
 	Output.SigmaT = float3(StartingExtinctionCoefficient[0], StartingExtinctionCoefficient[1], StartingExtinctionCoefficient[2]);
 	Output.FirstScatterType = PATHTRACER_SCATTER_CAMERA;
+	Output.PrimaryRayTextureIndex = PrimaryRayTextureIndex;
 
 	return Output;
 }
@@ -1022,7 +1396,7 @@ bool PathTracingKernel(inout FPathState PathState, int Bounce)
 
 #if PATH_TRACING_DEBUG_TRANSPARENCY_RAY
 	// visualize the shadow ray handling directly
-	PathState.Radiance = TraceTransparentVisibilityRay(PathState.Ray, 0.0, 0, true, PathState.RandSequence);
+	PathState.Radiance = TraceTransparentVisibilityRay(PathState.Ray, Bounce, 0.0, 0, true, PathState.RandSequence);
 	return false;
 #endif
 
@@ -1038,6 +1412,7 @@ bool PathTracingKernel(inout FPathState PathState, int Bounce)
 	FVolumeSegment VolumeSegment = CreateEmptyVolumeSegment();
 	FPathTracingPayload Payload = TraceTransparentRay(
 		PathState,
+		Bounce,
 		bIsCameraRay,
 		bIsLastBounce,
 		bIncludeEmissive,
@@ -1116,7 +1491,7 @@ bool PathTracingKernel(inout FPathState PathState, int Bounce)
 						LightRay.TMin = 0;
 						LightRay.Direction = LightSample.Direction;
 						LightRay.TMax = LightSample.Distance;
-						LightSample.RadianceOverPdf *= TraceTransparentVisibilityRay(LightRay, 1.0, MissShaderIndex, bCastShadows, PathState.RandSequence);
+						LightSample.RadianceOverPdf *= TraceTransparentVisibilityRay(LightRay, Bounce, 1.0, MissShaderIndex, bCastShadows, PathState.RandSequence);
 						// #dxr_todo: Is it cheaper to fire the ray first? Or eval the material first?
 						if (any(LightSample.RadianceOverPdf > 0))
 						{
@@ -1153,7 +1528,7 @@ bool PathTracingKernel(inout FPathState PathState, int Bounce)
 								LightContrib *= MISWeightRobust(MaterialSample.Pdf, LightResult.Pdf);
 							}
 							MaterialRay.TMax = LightResult.HitT;
-							LightContrib *= TraceTransparentVisibilityRay(MaterialRay, MaterialSample.Roughness, MissShaderIndex, bCastShadows, PathState.RandSequence);
+							LightContrib *= TraceTransparentVisibilityRay(MaterialRay, Bounce, MaterialSample.Roughness, MissShaderIndex, bCastShadows, PathState.RandSequence);
 							AccumulateRadiance(PathState.Radiance, LightContrib, bIsCameraRay);
 						}
 					}
@@ -1183,8 +1558,10 @@ bool PathTracingKernel(inout FPathState PathState, int Bounce)
 		return false;
 	}
 
+	const bool bIsVolumeSample = Payload.ShadingModelID == SHADINGMODELID_MEDIUM;
+
 	FLightLoopCount LightLoopCount = LightGridLookup(Payload.TranslatedWorldPos);
-	if (Payload.ShadingModelID == SHADINGMODELID_MEDIUM && VolumeMISMode != 0)
+	if (bIsVolumeSample && VolumeMISMode != 0)
 	{
 		// if we are using the volume segment for local lights, exclude them from the light loop below
 		LightLoopCount.NumLights = SceneInfiniteLightCount;
@@ -1212,8 +1589,6 @@ bool PathTracingKernel(inout FPathState PathState, int Bounce)
 
 	// Choose a random number for both Light sampling and BxDF sampling
 	float4 RandSample = RandomSequence_GenerateSample4D(PathState.RandSequence);
-
-	const bool bIsVolumeSample = Payload.ShadingModelID == SHADINGMODELID_MEDIUM;
 
 	const float2 DiffuseSpecularScale = PathState.GetDiffuseSpecularScale(bIsVolumeSample);
 
@@ -1270,9 +1645,9 @@ bool PathTracingKernel(inout FPathState PathState, int Bounce)
 
 				float AvgRoughness = ApproximateCaustics ? GetAverageRoughness(Payload) : 0.0;
 
-				const bool bCastShadows = CastsShadow(LightId);
+				const bool bCastShadows = bIsVolumeSample ? CastsVolumeShadow(LightId) : CastsShadow(LightId);
 				const uint MissShaderIndex = GetLightMissShaderIndex(LightId);
-				LightSample.RadianceOverPdf *= TraceTransparentVisibilityRay(LightRay, AvgRoughness, MissShaderIndex, bCastShadows, PathState.RandSequence);
+				LightSample.RadianceOverPdf *= TraceTransparentVisibilityRay(LightRay, Bounce, AvgRoughness, MissShaderIndex, bCastShadows, PathState.RandSequence);
 
 				if (bIsVolumeSample)
 				{
@@ -1360,12 +1735,9 @@ bool PathTracingKernel(inout FPathState PathState, int Bounce)
 	// update the current extinction if we are crossing a boundary on glass or water
 	// summing the local extinction gives a rudimentary way of dealing with overlapping regions
 	// long term we will probably want a stack with priorities
-	if (MaterialSample.PositionBiasSign < 0 && (Payload.IsMaterialSolidGlass() || Payload.ShadingModelID == SHADINGMODELID_SINGLELAYERWATER))
+	if (MaterialSample.PositionBiasSign < 0 && Payload.IsMaterialSolidGlass())
 	{
-		const float3 LocalSigmaT =
-			Payload.ShadingModelID == SHADINGMODELID_SINGLELAYERWATER ?
-			Payload.GetWaterExtinction() :
-			-log(max(Payload.GetTransmittanceColor(), 1e-8f)) * AbsorptionScale;
+		const float3 LocalSigmaT = Payload.GetExtinction();
 		if (Payload.IsFrontFace())
 		{
 			// entering
@@ -1440,9 +1812,9 @@ bool PathTracingKernel(inout FPathState PathState, int Bounce)
 			{
 				FRayDesc LightRay = PathState.Ray;
 				LightRay.TMax = LightResult.HitT;
-				const bool bCastShadows = CastsShadow(LightId);
+				const bool bCastShadows = bIsVolumeSample ? CastsVolumeShadow(LightId) : CastsShadow(LightId);
 				const uint MissShaderIndex = GetLightMissShaderIndex(LightId);
-				LightContrib *= TraceTransparentVisibilityRay(LightRay, ShadowRayRoughness, MissShaderIndex, bCastShadows, PathState.RandSequence);
+				LightContrib *= TraceTransparentVisibilityRay(LightRay, Bounce, ShadowRayRoughness, MissShaderIndex, bCastShadows, PathState.RandSequence);
 				// the light made some contribution, and there was nothing along the shadow ray
 				AccumulateRadiance(PathState.Radiance, LightContrib, bIsCameraRay);
 			}

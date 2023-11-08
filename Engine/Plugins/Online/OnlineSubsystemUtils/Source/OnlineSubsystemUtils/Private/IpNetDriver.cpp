@@ -266,7 +266,7 @@ private:
 
 	~FPacketIterator()
 	{
-		const float DeltaReceiveTime = FPlatformTime::Seconds() - StartReceiveTime;
+		const float DeltaReceiveTime = float(FPlatformTime::Seconds() - StartReceiveTime);
 
 		if (DeltaReceiveTime > GIpNetDriverLongFramePrintoutThresholdSecs)
 		{
@@ -846,8 +846,15 @@ FUniqueSocket UIpNetDriver::CreateAndBindSocket(TSharedRef<FInternetAddr> BindAd
 	{
 		Error = FString::Printf(TEXT("%s: binding to port %i failed (%i)"), SocketSubsystem->GetSocketAPIName(), AttemptPort,
 			(int32)SocketSubsystem->GetLastErrorCode());
+
+		if (bExitOnBindFailure)
+		{
+			UE_LOG(LogNet, Fatal, TEXT("Fatal error: %s"), *Error);
+		}
+
 		return nullptr;
 	}
+
 	if (NewSocket->SetNonBlocking() == false)
 	{
 		Error = FString::Printf(TEXT("%s: SetNonBlocking failed (%i)"), SocketSubsystem->GetSocketAPIName(),
@@ -1177,7 +1184,7 @@ void UIpNetDriver::TickDispatch(float DeltaTime)
 
 		if (Connection == nullptr)
 		{
-			UNetConnection** Result = MappedClientConnections.Find(FromAddr);
+			auto* Result = MappedClientConnections.Find(FromAddr);
 
 			if (Result != nullptr)
 			{
@@ -1360,11 +1367,10 @@ UNetConnection* UIpNetDriver::ProcessConnectionlessPacket(FReceivedPacketView& P
 
 					if (FoundConn != nullptr)
 					{
-						UNetConnection* RemovedConn = nullptr;
+						TObjectPtr<UNetConnection> RemovedConn = nullptr;
 						TSharedRef<FInternetAddr> RemoteAddrRef = FoundConn->RemoteAddr.ToSharedRef();
 
-						verify(MappedClientConnections.RemoveAndCopyValue(RemoteAddrRef, RemovedConn) && RemovedConn == FoundConn);
-
+						//verify(MappedClientConnections.RemoveAndCopyValue(RemoteAddrRef, RemovedConn) && RemovedConn == FoundConn);
 
 						// @todo: There needs to be a proper/standardized copy API for this. Also in IpConnection.cpp
 						bool bIsValid = false;
@@ -1641,7 +1647,7 @@ bool UIpNetDriver::HandlePauseReceiveCommand(const TCHAR* Cmd, FOutputDevice& Ar
 	{
 		Ar.Logf(TEXT("Pausing Socket Receives for '%i' seconds."), PauseTime);
 
-		PauseReceiveEnd = FPlatformTime::Seconds() + (double)PauseTime;
+		PauseReceiveEnd = float(FPlatformTime::Seconds() + (double)PauseTime);
 	}
 	else
 	{
@@ -1656,7 +1662,15 @@ bool UIpNetDriver::HandleRecreateSocketCommand(const TCHAR* Cmd, FOutputDevice& 
 {
 	using namespace UE::Net;
 
-	ERecreateSocketResult Result = RecreateSocket();
+	FString PortStr;
+	int32 OverridePort = INDEX_NONE;
+
+	if (FParse::Token(Cmd, PortStr, false))
+	{
+		OverridePort = FCString::Atoi(*PortStr);
+	}
+
+	ERecreateSocketResult Result = RecreateSocket(OverridePort);
 
 	if (Result == ERecreateSocketResult::BeganRecreate)
 	{
@@ -1703,6 +1717,7 @@ void UIpNetDriver::TestSuddenPortChange(uint32 NumConnections)
 }
 #endif
 
+#if UE_ALLOW_EXEC_COMMANDS
 bool UIpNetDriver::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 {
 	if (FParse::Command(&Cmd,TEXT("SOCKETS")))
@@ -1720,6 +1735,7 @@ bool UIpNetDriver::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 
 	return UNetDriver::Exec( InWorld, Cmd,Ar);
 }
+#endif // UE_ALLOW_EXEC_COMMANDS
 
 UIpConnection* UIpNetDriver::GetServerConnection() 
 {
@@ -1869,7 +1885,7 @@ void UIpNetDriver::TickNewIPTracking(float DeltaTime)
 	}
 }
 
-UE::Net::ERecreateSocketResult UIpNetDriver::RecreateSocket()
+UE::Net::ERecreateSocketResult UIpNetDriver::RecreateSocket(int32 OverridePort)
 {
 	using namespace UE::Net;
 	using namespace UE::Net::Private;
@@ -1885,8 +1901,10 @@ UE::Net::ERecreateSocketResult UIpNetDriver::RecreateSocket()
 
 		if (CurState == ESocketState::Ready)
 		{
+			const int32 BindPort = OverridePort != INDEX_NONE ? OverridePort : GetClientPort();
+
 			FString Error;
-			FUniqueSocket NewSocket = CreateAndBindSocket(LocalAddr.ToSharedRef(), GetClientPort(), false, ClientDesiredSocketReceiveBufferBytes,
+			FUniqueSocket NewSocket = CreateAndBindSocket(LocalAddr.ToSharedRef(), BindPort, false, ClientDesiredSocketReceiveBufferBytes,
 															ClientDesiredSocketSendBufferBytes, Error);
 
 			if (NewSocket.IsValid())

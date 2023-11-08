@@ -2,19 +2,21 @@
 
 #pragma once
 
-#if WITH_EDITOR
-
 #include "CoreMinimal.h"
+
+#if WITH_EDITORONLY_DATA
+
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "BoneIndices.h"
+#include "Animation/AnimCurveTypes.h"
 
 struct FReferenceSkeleton;
 
-struct ENGINE_API FAnimNodePoseWatch
+struct FAnimNodePoseWatch
 {
 public:
-	FAnimNodePoseWatch();
+	ENGINE_API FAnimNodePoseWatch();
 
 	// Object (anim instance) that this pose came from
 	const UObject* Object;
@@ -22,7 +24,9 @@ public:
 	class UPoseWatchPoseElement* PoseWatchPoseElement;
 	int32 NodeID;
 
-	bool IsValid() const;
+	ENGINE_API bool IsValid() const;
+
+	ENGINE_API void SetCurves(const FBlendedCurve& InCurves);
 
 	template<class TAllocator>
 	bool SetPose(const TArray<FBoneIndexType>& InRequiredBones, const TArray<FTransform, TAllocator>& InBoneTransforms)
@@ -32,33 +36,36 @@ public:
 		return true;
 	}
 
-	void SetWorldTransform(const FTransform& InWorldTransform);
+	ENGINE_API void SetWorldTransform(const FTransform& InWorldTransform);
 
 	/**
 	 * Take a snapshot of the pose watch properties that this struct represents
 	 * to be used when drawing the debug skeleton
 	 */
-	void CopyPoseWatchData(const FReferenceSkeleton& RefSkeleton);
+	ENGINE_API void CopyPoseWatchData(const FReferenceSkeleton& RefSkeleton);
 
-	const TArray<FBoneIndexType>& GetRequiredBones() const;
+	ENGINE_API const TArray<FBoneIndexType>& GetRequiredBones() const;
 
-	const TArray<FTransform>& GetBoneTransforms() const;
+	ENGINE_API const TArray<FTransform>& GetBoneTransforms() const;
 
-	const FTransform& GetWorldTransform() const;
+	ENGINE_API const FBlendedHeapCurve& GetCurves() const;
+	
+	ENGINE_API const FTransform& GetWorldTransform() const;
 
-	FLinearColor GetBoneColor() const;
+	ENGINE_API FLinearColor GetBoneColor() const;
 
-	FVector GetViewportOffset() const;
+	ENGINE_API FVector GetViewportOffset() const;
 
-	const TArray<int32>& GetViewportAllowList() const;
+	ENGINE_API const TArray<int32>& GetViewportAllowList() const;
 
-	const TArray<int32>& GetParentIndices() const;
+	ENGINE_API const TArray<int32>& GetParentIndices() const;
 
 private:
 	FTransform WorldTransform;
 	TArray<FBoneIndexType> RequiredBones;
 	TArray<FTransform> BoneTransforms;
-
+	FBlendedHeapCurve Curves;
+	
 	// Mirrored properties updated on CopyPoseWatchData
 	FLinearColor BoneColor;
 	FVector ViewportOffset;

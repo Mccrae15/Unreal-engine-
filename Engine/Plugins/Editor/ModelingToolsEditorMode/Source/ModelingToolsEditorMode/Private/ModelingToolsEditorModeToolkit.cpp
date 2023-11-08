@@ -2,6 +2,7 @@
 
 #include "ModelingToolsEditorModeToolkit.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
+#include "EditorModeManager.h"
 #include "IGeometryProcessingInterfacesModule.h"
 #include "GeometryProcessingInterfaces/IUVEditorModularFeature.h"
 #include "EdModeInteractiveToolsContext.h"
@@ -9,6 +10,7 @@
 #include "InteractiveToolManager.h"
 #include "ModelingToolsEditorModeSettings.h"
 #include "ModelingToolsEditorModeStyle.h"
+#include "ModelingToolsEditorMode.h"
 
 #include "Modules/ModuleManager.h"
 #include "IDetailsView.h"
@@ -39,14 +41,30 @@
 #include "SPrimaryButton.h"
 #include "Dialogs/DlgPickPath.h"
 #include "ModelingModeAssetUtils.h"
+#include "ModelingToolsEditablePaletteConfig.h"
+
+// for showing toast notifications
+#include "Widgets/Notifications/SNotificationList.h"
+#include "Framework/Notifications/NotificationManager.h"
 
 // for presets
-#include "PresetAsset.h"
+#include "ToolPresetAsset.h"
 #include "PropertyCustomizationHelpers.h"
 
 #include "LevelEditorViewport.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/STextComboBox.h"
+#include "ToolMenus.h"
+#include "ToolkitBuilder.h"
+#include "Dialogs/Dialogs.h"
+#include "Widgets/Input/SComboButton.h"
+#include "IToolPresetEditorModule.h"
+#include "ToolPresetSettings.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "ModelingWidgets/SToolInputAssetComboPanel.h"
+#include "Fonts/SlateFontInfo.h"
+#include "ToolPresetAssetSubsystem.h"
+#include "Widgets/Input/SMultiLineEditableTextBox.h"
 
 
 #define LOCTEXT_NAMESPACE "FModelingToolsEditorModeToolkit"
@@ -63,18 +81,48 @@ static TAutoConsoleVariable<int32> CVarEnablePolyModeling(
 	TEXT("Enable prototype PolyEdit tab"));
 static TAutoConsoleVariable<int32> CVarEnableToolPresets(
 	TEXT("modeling.EnablePresets"),
-	0,
+	1,
 	TEXT("Enable tool preset features and UX"));
 
 namespace FModelingToolsEditorModeToolkitLocals
 {
 	typedef TFunction<void(UInteractiveToolsPresetCollectionAsset& Preset, UInteractiveTool& Tool)> PresetAndToolFunc;
+	typedef TFunction<void(UInteractiveToolsPresetCollectionAsset& Preset)> PresetOnlyFunc;
 
-	void ExecuteWithPresetAndTool(UEdMode& EdMode, EToolSide ToolSide, FSoftObjectPath& PresetPath, PresetAndToolFunc Function)
+	void ExecuteWithPreset(const FSoftObjectPath& PresetPath, PresetOnlyFunc Function)
+	{
+		UInteractiveToolsPresetCollectionAsset* Preset = nullptr;
+
+		UToolPresetAssetSubsystem* PresetAssetSubsystem = GEditor->GetEditorSubsystem<UToolPresetAssetSubsystem>();
+
+		if (PresetPath.IsNull() && ensure(PresetAssetSubsystem))
+		{
+			Preset = PresetAssetSubsystem->GetDefaultCollection();
+		}
+		if (PresetPath.IsAsset())
+		{
+			Preset = Cast<UInteractiveToolsPresetCollectionAsset>(PresetPath.TryLoad());
+		}
+		if (!Preset)
+		{
+			return;
+		}
+		Function(*Preset);
+
+
+	}
+
+	void ExecuteWithPresetAndTool(UEdMode& EdMode, EToolSide ToolSide, const FSoftObjectPath& PresetPath, PresetAndToolFunc Function)
 	{
 		UInteractiveToolsPresetCollectionAsset* Preset = nullptr;		
 		UInteractiveTool* Tool = EdMode.GetToolManager()->GetActiveTool(EToolSide::Left);
 
+		UToolPresetAssetSubsystem* PresetAssetSubsystem = GEditor->GetEditorSubsystem<UToolPresetAssetSubsystem>();
+
+		if (PresetPath.IsNull() && ensure(PresetAssetSubsystem))
+		{
+			Preset = PresetAssetSubsystem->GetDefaultCollection();
+		}
 		if (PresetPath.IsAsset())
 		{
 			Preset = Cast<UInteractiveToolsPresetCollectionAsset>(PresetPath.TryLoad());
@@ -98,14 +146,29 @@ namespace FModelingToolsEditorModeToolkitLocals
 	}
 }
 
+class FRecentPresetCollectionProvider : public SToolInputAssetComboPanel::IRecentAssetsProvider
+{
+	public:
+		//~ SToolInputAssetComboPanel::IRecentAssetsProvider interface		
+		virtual TArray<FAssetData> GetRecentAssetsList() override { return RecentPresetCollectionList; }		
+		virtual void NotifyNewAsset(const FAssetData& NewAsset) {
+			RecentPresetCollectionList.AddUnique(NewAsset);
+		};
+
+	protected:
+		TArray<FAssetData> RecentPresetCollectionList;
+};
+
 FModelingToolsEditorModeToolkit::FModelingToolsEditorModeToolkit()
 {
-	PresetSettings = NewObject<UPresetSettingsProperties>();
-}
+	UModelingModeEditableToolPaletteConfig::Initialize();
+	UModelingModeEditableToolPaletteConfig::Get()->LoadEditorConfig();
 
-FString FModelingToolsEditorModeToolkit::GetReferencerName() const
-{
-	return TEXT("FModelingToolsEditorModeToolkit");
+	UToolPresetUserSettings::Initialize();
+	UToolPresetUserSettings::Get()->LoadEditorConfig();
+
+	RecentPresetCollectionProvider = MakeShared< FRecentPresetCollectionProvider>();
+	CurrentPreset = MakeShared<FAssetData>();
 }
 
 FModelingToolsEditorModeToolkit::~FModelingToolsEditorModeToolkit()
@@ -124,13 +187,12 @@ FModelingToolsEditorModeToolkit::~FModelingToolsEditorModeToolkit()
 			GizmoNumericalUIOverlayWidget.Reset();
 		}
 	}
-
 	UModelingToolsEditorModeSettings* Settings = GetMutableDefault<UModelingToolsEditorModeSettings>();
 	Settings->OnModified.Remove(AssetSettingsModifiedHandle);
 	GetScriptableEditorMode()->GetInteractiveToolsContext(EToolsContextScope::EdMode)->OnToolNotificationMessage.RemoveAll(this);
 	GetScriptableEditorMode()->GetInteractiveToolsContext(EToolsContextScope::EdMode)->OnToolWarningMessage.RemoveAll(this);
 
-	PresetSettings = nullptr;
+	RecentPresetCollectionProvider = nullptr;
 }
 
 
@@ -151,20 +213,332 @@ TSharedPtr<SWidget> FModelingToolsEditorModeToolkit::GetInlineContent() const
 		];
 }
 
+void FModelingToolsEditorModeToolkit::RegisterPalettes()
+{
+	const FModelingToolsManagerCommands& Commands = FModelingToolsManagerCommands::Get();
+	const TSharedPtr<FUICommandList> CommandList = GetToolkitCommands();
+
+	UEdMode* ScriptableMode = GetScriptableEditorMode().Get();
+	UModelingToolsModeCustomizationSettings* UISettings = GetMutableDefault<UModelingToolsModeCustomizationSettings>();
+	UModelingToolsEditorModeSettings* ModelingModeSettings = GetMutableDefault<UModelingToolsEditorModeSettings>();
+	UISettings->OnSettingChanged().AddSP(SharedThis(this), &FModelingToolsEditorModeToolkit::UpdateCategoryButtonLabelVisibility);
+	
+	ToolkitSections = MakeShared<FToolkitSections>();
+	FToolkitBuilderArgs ToolkitBuilderArgs(ScriptableMode->GetModeInfo().ToolbarCustomizationName);
+	ToolkitBuilderArgs.ToolkitCommandList = GetToolkitCommands();
+	ToolkitBuilderArgs.ToolkitSections = ToolkitSections;
+	ToolkitBuilderArgs.SelectedCategoryTitleVisibility = EVisibility::Collapsed;
+	// This lets us re-show the buttons if the user clicks a category with a tool still active.
+	ToolkitBuilderArgs.CategoryReclickBehavior = FToolkitBuilder::ECategoryReclickBehavior::TreatAsChanged;
+	ToolkitBuilder = MakeShared<FToolkitBuilder>(ToolkitBuilderArgs);
+	ToolkitBuilder->SetCategoryButtonLabelVisibility(UISettings->bShowCategoryButtonLabels);
+
+	// We need to specify the modeling mode specific config instance because this cannot exist at the base toolkit level due to dependency issues currently
+	FGetEditableToolPaletteConfigManager GetConfigManager = FGetEditableToolPaletteConfigManager::CreateStatic(&UModelingModeEditableToolPaletteConfig::GetAsConfigManager);
+
+	FavoritesPalette =
+		MakeShareable(new FEditablePalette(
+			Commands.LoadFavoritesTools.ToSharedRef(),
+			Commands.AddToFavorites.ToSharedRef(),
+			Commands.RemoveFromFavorites.ToSharedRef(),
+			"ModelingToolsEditorModeFavoritesPalette",
+			GetConfigManager));
+	
+	ToolkitBuilder->AddPalette(StaticCastSharedPtr<FEditablePalette>(FavoritesPalette));
+
+
+	TArray<TSharedPtr<FUICommandInfo>> CreatePaletteItems({
+		Commands.BeginAddBoxPrimitiveTool,
+		Commands.BeginAddSpherePrimitiveTool,
+		Commands.BeginAddCylinderPrimitiveTool,
+		Commands.BeginAddConePrimitiveTool,
+		Commands.BeginAddTorusPrimitiveTool,
+		Commands.BeginAddArrowPrimitiveTool,
+		Commands.BeginAddRectanglePrimitiveTool,
+		Commands.BeginAddDiscPrimitiveTool,
+		Commands.BeginAddStairsPrimitiveTool,
+		Commands.BeginCubeGridTool,
+
+		Commands.BeginDrawPolygonTool,
+		Commands.BeginDrawPolyPathTool,
+		Commands.BeginDrawAndRevolveTool,
+		Commands.BeginRevolveSplineTool,
+		Commands.BeginDrawSplineTool,
+		Commands.BeginTriangulateSplinesTool
+	});
+	ToolkitBuilder->AddPalette(
+		MakeShareable( new FToolPalette( Commands.LoadCreateTools.ToSharedRef(), CreatePaletteItems ) ) );
+
+	if ( ModelingModeSettings && ModelingModeSettings->GetMeshSelectionsEnabled() )
+	{
+		TArray<TSharedPtr<FUICommandInfo>> SelectionPaletteItems({
+			Commands.BeginSelectionAction_Delete,
+			Commands.BeginSelectionAction_Extrude,
+			Commands.BeginSelectionAction_Offset,
+			Commands.BeginPolyModelTool_PushPull,
+
+			Commands.BeginPolyModelTool_Inset,
+			Commands.BeginPolyModelTool_Outset,
+			Commands.BeginPolyModelTool_CutFaces,
+			Commands.BeginPolyModelTool_Bevel,
+
+			Commands.BeginPolyModelTool_InsertEdgeLoop,
+			Commands.BeginSelectionAction_Retriangulate,
+
+			Commands.BeginPolyModelTool_PolyEd,
+			Commands.BeginPolyModelTool_TriSel
+		});
+		ToolkitBuilder->AddPalette( 
+			MakeShareable( new FToolPalette( Commands.LoadSelectionTools.ToSharedRef(), SelectionPaletteItems ) ) );
+	}
+
+
+	TArray<TSharedPtr<FUICommandInfo>> TransformPaletteItems({
+		Commands.BeginTransformMeshesTool,
+		Commands.BeginAlignObjectsTool,
+
+		Commands.BeginCombineMeshesTool,
+		Commands.BeginDuplicateMeshesTool,
+
+		Commands.BeginEditPivotTool,
+		Commands.BeginBakeTransformTool,
+
+		Commands.BeginTransferMeshTool,
+		Commands.BeginConvertMeshesTool,
+
+		Commands.BeginSplitMeshesTool,
+		Commands.BeginPatternTool,
+		
+		Commands.BeginISMEditorTool
+	});
+	ToolkitBuilder->AddPalette(
+		MakeShareable( new FToolPalette( Commands.LoadTransformTools.ToSharedRef(), TransformPaletteItems ) ) );
+
+
+
+	TArray<TSharedPtr<FUICommandInfo>> DeformPaletteItems({
+		Commands.BeginSculptMeshTool,
+		Commands.BeginRemeshSculptMeshTool,
+		Commands.BeginSmoothMeshTool,
+		Commands.BeginOffsetMeshTool,
+		Commands.BeginMeshSpaceDeformerTool,
+		Commands.BeginLatticeDeformerTool,
+		Commands.BeginDisplaceMeshTool,
+		Commands.BeginPolyDeformTool
+	});
+	ToolkitBuilder->AddPalette(
+		MakeShareable( new FToolPalette( Commands.LoadDeformTools.ToSharedRef(), DeformPaletteItems ) ) );
+	
+
+
+	TArray<TSharedPtr<FUICommandInfo>> PolyToolsPaletteItems({
+		Commands.BeginPolyEditTool,
+		Commands.BeginSubdividePolyTool,
+
+		Commands.BeginMeshBooleanTool,
+		Commands.BeginPolygonCutTool,
+
+		Commands.BeginPlaneCutTool,
+		Commands.BeginMirrorTool,
+
+		Commands.BeginCutMeshWithMeshTool,
+		Commands.BeginMeshTrimTool
+
+		});
+	ToolkitBuilder->AddPalette(
+		MakeShareable( new FToolPalette( Commands.LoadPolyTools.ToSharedRef(), PolyToolsPaletteItems ) ) );
+
+
+
+	TArray<TSharedPtr<FUICommandInfo>> TriToolsPaletteItems({
+		Commands.BeginMeshSelectionTool,
+		Commands.BeginTriEditTool,
+
+		Commands.BeginHoleFillTool,
+		Commands.BeginWeldEdgesTool,
+
+		Commands.BeginSelfUnionTool,
+		Commands.BeginRemoveOccludedTrianglesTool,
+
+		Commands.BeginSimplifyMeshTool,
+		Commands.BeginRemeshMeshTool,
+
+		Commands.BeginProjectToTargetTool,
+		Commands.BeginMeshInspectorTool
+		});
+	ToolkitBuilder->AddPalette(
+		MakeShareable( new FToolPalette( Commands.LoadMeshOpsTools.ToSharedRef(), TriToolsPaletteItems ) ) );
+
+
+
+	TArray<TSharedPtr<FUICommandInfo>> VoxelPaletteItems({
+		Commands.BeginVoxelSolidifyTool,
+		Commands.BeginVoxelBlendTool,
+		Commands.BeginVoxelMorphologyTool
+	});
+#if WITH_PROXYLOD
+	VoxelPaletteItems.Add(Commands.BeginVoxelBooleanTool);
+	VoxelPaletteItems.Add(Commands.BeginVoxelMergeTool);
+#endif	// WITH_PROXYLOD
+	ToolkitBuilder->AddPalette(
+		MakeShareable( new FToolPalette( Commands.LoadVoxOpsTools.ToSharedRef(), VoxelPaletteItems ) ) );
+
+
+
+	TArray<TSharedPtr<FUICommandInfo>> BakingPaletteItems({
+		Commands.BeginBakeMeshAttributeMapsTool,
+		Commands.BeginBakeMultiMeshAttributeMapsTool,
+		Commands.BeginBakeMeshAttributeVertexTool,
+		Commands.BeginBakeRenderCaptureTool
+	});
+	BakingPaletteItems.Add(Commands.BeginMeshInspectorTool);
+	BakingPaletteItems.Add(Commands.BeginEditTangentsTool);
+	ToolkitBuilder->AddPalette(
+		MakeShareable( new FToolPalette( Commands.LoadBakingTools.ToSharedRef(), BakingPaletteItems ) ) );
+
+
+
+	TArray<TSharedPtr<FUICommandInfo>> UVPaletteItems({
+		Commands.BeginGlobalUVGenerateTool,
+		Commands.BeginGroupUVGenerateTool,
+		Commands.BeginUVProjectionTool,
+		Commands.BeginUVSeamEditTool,
+		Commands.BeginTransformUVIslandsTool,
+		Commands.BeginUVLayoutTool
+	});
+	if (IModularFeatures::Get().IsModularFeatureAvailable(IUVEditorModularFeature::GetModularFeatureName()))
+	{
+		UVPaletteItems.Add(Commands.LaunchUVEditor);
+	}
+	UVPaletteItems.Add(Commands.BeginMeshInspectorTool);
+	UVPaletteItems.Add(Commands.BeginMeshGroupPaintTool);
+
+	ToolkitBuilder->AddPalette(
+		MakeShareable( new FToolPalette( Commands.LoadUVsTools.ToSharedRef(), UVPaletteItems)) );
+
+
+
+	TArray<TSharedPtr<FUICommandInfo>> AttributesToolsPaletteItems({
+		Commands.BeginMeshInspectorTool,
+		Commands.BeginLODManagerTool,
+
+		Commands.BeginEditNormalsTool,
+		Commands.BeginEditTangentsTool,
+
+		Commands.BeginPolyGroupsTool,
+		Commands.BeginMeshGroupPaintTool,
+
+		Commands.BeginAttributeEditorTool,
+		Commands.BeginEditMeshMaterialsTool,
+
+		Commands.BeginMeshVertexPaintTool,
+		Commands.BeginMeshAttributePaintTool,
+
+		Commands.BeginPhysicsInspectorTool,
+		Commands.BeginSimpleCollisionEditorTool,
+		Commands.BeginSetCollisionGeometryTool,
+		Commands.BeginExtractCollisionGeometryTool
+	});
+	ToolkitBuilder->AddPalette(
+		MakeShareable( new FToolPalette( Commands.LoadAttributesTools.ToSharedRef(), AttributesToolsPaletteItems ) ) );
+
+
+
+	TArray<TSharedPtr<FUICommandInfo>> LODPaletteItems({
+		Commands.BeginGenerateStaticMeshLODAssetTool,
+		Commands.BeginAddPivotActorTool,
+		Commands.BeginRevolveBoundaryTool,
+		Commands.BeginVolumeToMeshTool,
+		Commands.BeginMeshToVolumeTool
+	});
+	if (Commands.BeginBspConversionTool)
+	{
+		LODPaletteItems.Add(Commands.BeginBspConversionTool);
+	}
+	ToolkitBuilder->AddPalette(
+		MakeShareable( new FToolPalette( Commands.LoadLodsTools.ToSharedRef(), LODPaletteItems)) );
+
+	ToolkitBuilder->SetActivePaletteOnLoad(Commands.LoadCreateTools.Get());
+	ToolkitBuilder->UpdateWidget();
+
+
+	if (IModularFeatures::Get().IsModularFeatureAvailable(IModelingModeToolExtension::GetModularFeatureName()))
+	{
+		TArray<IModelingModeToolExtension*> Extensions = IModularFeatures::Get().GetModularFeatureImplementations<IModelingModeToolExtension>(
+			IModelingModeToolExtension::GetModularFeatureName());
+		for (int32 k = 0; k < Extensions.Num(); ++k)
+		{
+			FText ExtensionName = Extensions[k]->GetExtensionName();
+			FText SectionName = Extensions[k]->GetToolSectionName();
+
+			FModelingModeExtensionExtendedInfo ExtensionExtendedInfo;
+			bool bHasExtendedInfo = Extensions[k]->GetExtensionExtendedInfo(ExtensionExtendedInfo);
+
+			TSharedPtr<FUICommandInfo> PaletteCommand;
+			if (bHasExtendedInfo && ExtensionExtendedInfo.ExtensionCommand.IsValid())
+			{
+				PaletteCommand = ExtensionExtendedInfo.ExtensionCommand;
+			}
+			else
+			{
+				FText UseTooltipText = (bHasExtendedInfo && ExtensionExtendedInfo.ToolPaletteButtonTooltip.IsEmpty() == false) ?
+					ExtensionExtendedInfo.ToolPaletteButtonTooltip : SectionName;
+				PaletteCommand = FModelingToolsManagerCommands::RegisterExtensionPaletteCommand(
+					FName(ExtensionName.ToString()),
+					SectionName, UseTooltipText, FSlateIcon());
+			}
+
+			TArray<TSharedPtr<FUICommandInfo>> PaletteItems;
+			FExtensionToolQueryInfo ExtensionQueryInfo;
+			ExtensionQueryInfo.bIsInfoQueryOnly = true;
+			TArray<FExtensionToolDescription> ToolSet;
+			Extensions[k]->GetExtensionTools(ExtensionQueryInfo, ToolSet);
+			for (const FExtensionToolDescription& ToolInfo : ToolSet)
+			{
+				PaletteItems.Add(ToolInfo.ToolCommand);
+			}
+
+			ToolkitBuilder->AddPalette(
+				MakeShareable(new FToolPalette(PaletteCommand.ToSharedRef(), PaletteItems)));
+		}
+	}
+
+
+
+	// if selected palette changes, make sure we are showing the palette command buttons, which may be hidden by active Tool
+	ActivePaletteChangedHandle = ToolkitBuilder->OnActivePaletteChanged.AddLambda([this]()
+	{
+		ToolkitBuilder->SetActivePaletteCommandsVisibility(EVisibility::Visible);
+	});
+}
+
+
+
+
+
+
 
 void FModelingToolsEditorModeToolkit::Init(const TSharedPtr<IToolkitHost>& InitToolkitHost, TWeakObjectPtr<UEdMode> InOwningMode)
 {
+	const UModelingToolsModeCustomizationSettings* UISettings = GetDefault<UModelingToolsModeCustomizationSettings>();
+	bUsesToolkitBuilder = !UISettings->bUseLegacyModelingPalette;
+	
 	// Have to create the ToolkitWidget here because FModeToolkit::Init() is going to ask for it and add
 	// it to the Mode panel, and not ask again afterwards. However we have to call Init() to get the 
 	// ModeDetailsView created, that we need to add to the ToolkitWidget. So, we will create the Widget
 	// here but only add the rows to it after we call Init()
-	TSharedPtr<SVerticalBox> ToolkitWidgetVBox = SNew(SVerticalBox);
-	SAssignNew(ToolkitWidget, SBorder)
-		.HAlign(HAlign_Fill)
-		.Padding(4)
-		[
-			ToolkitWidgetVBox->AsShared()
-		];
+
+	const TSharedPtr<SVerticalBox> ToolkitWidgetVBox = SNew(SVerticalBox);
+	
+	if ( !bUsesToolkitBuilder )
+	{
+		SAssignNew(ToolkitWidget, SBorder)
+			.HAlign(HAlign_Fill)
+			.Padding(4)
+			[
+				ToolkitWidgetVBox->AsShared()
+			];
+	}
 
 	FModeToolkit::Init(InitToolkitHost, InOwningMode);
 
@@ -190,34 +564,61 @@ void FModelingToolsEditorModeToolkit::Init(const TSharedPtr<IToolkitHost>& InitT
 		.ColorAndOpacity(FSlateColor(FLinearColor(0.9f, 0.15f, 0.15f)));
 	ToolWarningArea->SetText(FText::GetEmpty());
 
+	ToolPresetArea = MakePresetPanel();
+
 	// add the various sections to the mode toolbox
 	ToolkitWidgetVBox->AddSlot().AutoHeight().HAlign(HAlign_Fill).Padding(5)
 		[
-			MakePresetPanel()->AsShared()
+			ToolPresetArea->AsShared()
 		];
 	ToolkitWidgetVBox->AddSlot().AutoHeight().HAlign(HAlign_Fill).Padding(5)
 		[
 			ModeWarningArea->AsShared()
 		];
-	ToolkitWidgetVBox->AddSlot().AutoHeight().HAlign(HAlign_Fill).Padding(5)
-		[
-			ModeHeaderArea->AsShared()
-		];
-	ToolkitWidgetVBox->AddSlot().AutoHeight().HAlign(HAlign_Fill).Padding(5)
+
+	if (bUsesToolkitBuilder)
+	{
+		RegisterPalettes();
+	}
+	else
+	{
+		ToolkitWidgetVBox->AddSlot().AutoHeight().HAlign(HAlign_Fill).Padding(5)
+			[
+				ModeHeaderArea->AsShared()
+			];
+		ToolkitWidgetVBox->AddSlot().AutoHeight().HAlign(HAlign_Fill).Padding(5)
 		[
 			ToolWarningArea->AsShared()
-		];
-	ToolkitWidgetVBox->AddSlot().HAlign(HAlign_Fill).FillHeight(1.f)
+		];	
+		ToolkitWidgetVBox->AddSlot().HAlign(HAlign_Fill).FillHeight(1.f)
 		[
 			ModeDetailsView->AsShared()
 		];
-	ToolkitWidgetVBox->AddSlot().AutoHeight().HAlign(HAlign_Fill).VAlign(VAlign_Bottom).Padding(5)
+		ToolkitWidgetVBox->AddSlot().AutoHeight().HAlign(HAlign_Fill).VAlign(VAlign_Bottom).Padding(5)
 		[
-			MakeAssetConfigPanel()->AsShared()
-		];
+		MakeAssetConfigPanel()->AsShared()];
+	}
+		
 
 	ClearNotification();
 	ClearWarning();
+
+	if (HasToolkitBuilder())
+	{
+		ToolkitSections->ModeWarningArea = ModeWarningArea;
+		ToolkitSections->ToolPresetArea = ToolPresetArea;
+		ToolkitSections->DetailsView = ModeDetailsView;
+		ToolkitSections->ToolWarningArea = ToolWarningArea;
+		ToolkitSections->Footer = MakeAssetConfigPanel();
+
+		SAssignNew(ToolkitWidget, SBorder)
+		.HAlign(HAlign_Fill)
+		.Padding(0)
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
+		[
+			ToolkitBuilder->GenerateWidget()->AsShared()
+		];	
+	}
 
 	ActiveToolName = FText::GetEmpty();
 	ActiveToolMessage = FText::GetEmpty();
@@ -234,23 +635,23 @@ void FModelingToolsEditorModeToolkit::Init(const TSharedPtr<IToolkitHost>& InitT
 	MakeGizmoNumericalUIOverlayWidget();
 	GetToolkitHost()->AddViewportOverlayWidget(GizmoNumericalUIOverlayWidget.ToSharedRef());
 
-	const UModelingToolsEditorModeSettings* ModelingModeSettings = GetDefault<UModelingToolsEditorModeSettings>();
-	bool bEnableSelectionUI = ModelingModeSettings && ModelingModeSettings->GetMeshSelectionsEnabled();
-	if ( bEnableSelectionUI )
-	{
-		MakeSelectionPaletteOverlayWidget();
-		GetToolkitHost()->AddViewportOverlayWidget(SelectionPaletteOverlayWidget.ToSharedRef());
-	}
-}
+	MakeSelectionPaletteOverlayWidget();
+	GetToolkitHost()->AddViewportOverlayWidget(SelectionPaletteOverlayWidget.ToSharedRef());
 
-void FModelingToolsEditorModeToolkit::AddReferencedObjects(FReferenceCollector& Collector)
-{
-	Collector.AddReferencedObject(PresetSettings);
+	CurrentPresetPath = FSoftObjectPath(); // Default to the default collection by leaving this null.
 }
-
 
 void FModelingToolsEditorModeToolkit::MakeToolShutdownOverlayWidget()
 {
+	const FSlateBrush* OverlayBrush = FAppStyle::Get().GetBrush("EditorViewport.OverlayBrush");
+	// If there is another mode, it might also have an overlay, and we would like ours to be opaque in that case
+	// to draw on top cleanly (e.g., level instance editing mode has an overlay in the same place. Note that level
+	// instance mode currently marks itself as not visible despite the overlay, so we shouldn't use IsOnlyVisibleActiveMode)
+	if (!GetEditorModeManager().IsOnlyActiveMode(UModelingToolsEditorMode::EM_ModelingToolsEditorModeId))
+	{
+		OverlayBrush = FModelingToolsEditorModeStyle::Get()->GetBrush("ModelingMode.OpaqueOverlayBrush");
+	}
+
 	SAssignNew(ToolShutdownViewportOverlayWidget, SHorizontalBox)
 
 	+SHorizontalBox::Slot()
@@ -259,7 +660,7 @@ void FModelingToolsEditorModeToolkit::MakeToolShutdownOverlayWidget()
 	.Padding(FMargin(0.0f, 0.0f, 0.f, 15.f))
 	[
 		SNew(SBorder)
-		.BorderImage(FAppStyle::Get().GetBrush("EditorViewport.OverlayBrush"))
+		.BorderImage(OverlayBrush)
 		.Padding(8.f)
 		[
 			SNew(SHorizontalBox)
@@ -425,11 +826,12 @@ TSharedPtr<SWidget> FModelingToolsEditorModeToolkit::MakeAssetConfigPanel()
 
 	const TSharedPtr<SVerticalBox> Content = SNew(SVerticalBox)
 	+ SVerticalBox::Slot().HAlign(HAlign_Fill)
+	.Padding(0, 8, 0, 4)
 		[
 			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot().Padding(0, 2, 2, 2).HAlign(HAlign_Right).VAlign(VAlign_Center).AutoWidth()
+			+ SHorizontalBox::Slot().Padding(0).HAlign(HAlign_Left).VAlign(VAlign_Center).FillWidth(2.f)
 				[ AssetLODModeLabel->AsShared() ]
-			+ SHorizontalBox::Slot().Padding(0).FillWidth(4.0f)
+			+ SHorizontalBox::Slot().Padding(0).HAlign(HAlign_Fill).Padding(0).FillWidth(4.f)
 				[ AssetLODMode->AsShared() ]
 		];
 
@@ -441,69 +843,64 @@ TSharedPtr<SWidget> FModelingToolsEditorModeToolkit::MakeAssetConfigPanel()
 		.OnTextCommitted(this, &FModelingToolsEditorModeToolkit::OnRestrictiveModeAutoGeneratedAssetPathTextCommitted);
 
 		AssetOptionsArgs
-		+ SHorizontalBox::Slot().Padding(0, 2, 2, 2).HAlign(HAlign_Right).VAlign(VAlign_Center).AutoWidth()
+		+ SHorizontalBox::Slot()
+		.HAlign(HAlign_Fill)
+		.Padding(0, 0, 0, 0)
 		[
-			SNew(STextBlock)
-			.Text(LOCTEXT("NewAssetPathLabel", "New Asset Path"))
-			.ToolTipText(LOCTEXT("NewAssetPathToolTip", "Path used for storing newly generated assets within the project folder."))
-		]
-		+ SHorizontalBox::Slot().HAlign(HAlign_Fill).Padding(0).FillWidth(1.0f)
-		[
-			NewAssetPath->AsShared()
-		]
-		+ SHorizontalBox::Slot().HAlign(HAlign_Right).Padding(0, 0, 0, 0).AutoWidth()
-		[
-			SNew(SSimpleButton)
-			.OnClicked_Lambda( [this]() { SelectNewAssetPath(); return FReply::Handled(); } )
-			.Icon(FAppStyle::Get().GetBrush("Icons.FolderOpen"))
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().Padding(0).HAlign(HAlign_Left).VAlign(VAlign_Center).FillWidth(2.f)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("NewAssetPathLabel", "New Asset Path"))
+				.ToolTipText(LOCTEXT("NewAssetPathToolTip", "Path used for storing newly generated assets within the project folder."))
+			]
+			+ SHorizontalBox::Slot()
+			.HAlign(HAlign_Fill).
+			FillWidth(4.f)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().HAlign(HAlign_Fill).Padding(0).FillWidth(9.0f)
+					[
+						NewAssetPath->AsShared()
+					]
+					+ SHorizontalBox::Slot().HAlign(HAlign_Right).Padding(0, 0, 0, 0).AutoWidth()
+					[
+						SNew(SSimpleButton)
+						.OnClicked_Lambda( [this]() { SelectNewAssetPath(); return FReply::Handled(); } )
+						.Icon(FAppStyle::Get().GetBrush("Icons.FolderOpen"))
+					]
+			]
+
 		];
 	}
 	else
 	{
 		AssetOptionsArgs
-		+ SHorizontalBox::Slot().Padding(0, 2, 2, 2).HAlign(HAlign_Right).VAlign(VAlign_Center).AutoWidth()
+		+ SHorizontalBox::Slot()
+		.HAlign(HAlign_Fill)
+		.Padding(0, 0, 0, 0)
 		[
-			SNew(STextBlock)
-			.Text(LOCTEXT("AssetLocationLabel", "New Asset Location"))
-		]
-		+ SHorizontalBox::Slot().HAlign(HAlign_Fill).Padding(0).FillWidth(1.0f)
-		[
-			AssetLocationMode->AsShared()
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().HAlign(HAlign_Left).VAlign(VAlign_Center).FillWidth(2.f)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("AssetLocationLabel", "New Asset Location"))
+			]
+			+ SHorizontalBox::Slot().HAlign(HAlign_Fill).FillWidth(4.f)
+			[
+				AssetLocationMode->AsShared()
+			]
 		];
 	}
-	
-	// Regardless of restrictive mode or not, we add a cog icon to the same row with some common settings.
-	AssetOptionsArgs
-	+ SHorizontalBox::Slot().HAlign(HAlign_Right).Padding(0, 0, 0, 0).AutoWidth()
-	[
-		SNew(SComboButton)
-		.HasDownArrow(false)
-		.MenuPlacement(EMenuPlacement::MenuPlacement_MenuRight)
-		.ComboButtonStyle(FAppStyle::Get(), "SimpleComboButton")
-		.OnGetMenuContent(FOnGetContent::CreateLambda([this]()
-		{
-			return MakeMenu_ModelingModeConfigSettings();
-		}))
-		.ContentPadding(FMargin(3.0f, 1.0f))
-		.ButtonContent()
-		[
-			SNew(SImage)
-			.Image(FModelingToolsEditorModeStyle::Get()->GetBrush("ModelingMode.DefaultSettings"))
-			.ColorAndOpacity(FSlateColor::UseForeground())
-		]
-	];
 
 	Content->AddSlot()[
 		SArgumentNew(AssetOptionsArgs, SHorizontalBox)
 	];
 
-
 	TSharedPtr<SExpandableArea> AssetConfigPanel = SNew(SExpandableArea)
-		.HeaderPadding(FMargin(2.0f))
-		.Padding(FMargin(2.f))
+		.HeaderPadding(FMargin(0.f))
+		.Padding(FMargin(8.f))
 		.BorderImage(FAppStyle::Get().GetBrush("DetailsView.CategoryTop"))
-		.BorderBackgroundColor(FLinearColor(.6, .6, .6, 1.0f))
-		.BodyBorderBackgroundColor(FLinearColor::Transparent)
 		.AreaTitleFont(FAppStyle::Get().GetFontStyle("EditorModesPanel.CategoryFontStyle"))
 		.BodyContent()
 		[
@@ -511,10 +908,33 @@ TSharedPtr<SWidget> FModelingToolsEditorModeToolkit::MakeAssetConfigPanel()
 		]
 		.HeaderContent()
 		[
-			SNew(STextBlock)
-			.Text(LOCTEXT("ModelingSettingsPanelHeader", "Modeling Mode Quick Settings"))
-			.Justification(ETextJustify::Center)
-			.Font(FAppStyle::Get().GetFontStyle("EditorModesPanel.CategoryFontStyle"))
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().HAlign(HAlign_Left).VAlign(VAlign_Center).FillWidth(2.f)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("ModelingSettingsPanelHeader", "Modeling Mode Quick Settings"))
+					
+				]
+
+				+ SHorizontalBox::Slot().HAlign(HAlign_Right).VAlign(VAlign_Center).AutoWidth()
+				[
+					SNew(SComboButton)
+						.HasDownArrow(false)
+						.MenuPlacement(EMenuPlacement::MenuPlacement_MenuRight)
+						.ComboButtonStyle(FAppStyle::Get(), "SimpleComboButton")
+						.OnGetMenuContent(FOnGetContent::CreateLambda([this]()
+						{
+							return MakeMenu_ModelingModeConfigSettings();
+						}))
+						.ContentPadding(FMargin(3.0f, 1.0f))
+						.ButtonContent()
+						[
+							SNew(SImage)
+							.Image(FModelingToolsEditorModeStyle::Get()->GetBrush("ModelingMode.DefaultSettings"))
+							.ColorAndOpacity(FSlateColor::UseForeground())
+						]
+				]
+				
 		];
 
 	return AssetConfigPanel;
@@ -533,7 +953,7 @@ TSharedPtr<SWidget> FModelingToolsEditorModeToolkit::MakePresetPanel()
 	const TSharedPtr<SVerticalBox> Content = SNew(SVerticalBox);
 	UModelingToolsEditorModeSettings* Settings = GetMutableDefault<UModelingToolsEditorModeSettings>();
 
-	bool bEnableToolPresets = (CVarEnableToolPresets.GetValueOnGameThread() > 0);
+	bool bEnableToolPresets = (CVarEnableToolPresets.GetValueOnGameThread() > 0);	
 	if (!bEnableToolPresets || Settings->InRestrictiveMode())
 	{
 		return SNew(SVerticalBox);
@@ -541,24 +961,24 @@ TSharedPtr<SWidget> FModelingToolsEditorModeToolkit::MakePresetPanel()
 
 	const TSharedPtr<SHorizontalBox> NewContent = SNew(SHorizontalBox);
 	
+	auto IsToolActive = [this]() {
+		if (this->OwningEditorMode.IsValid())
+		{
+			return this->OwningEditorMode->GetToolManager()->GetActiveTool(EToolSide::Left) != nullptr ? EVisibility::Visible : EVisibility::Collapsed;
+		}
+		return EVisibility::Collapsed;
+	};
+
 	NewContent->AddSlot().HAlign(HAlign_Right)
 	[
 		SNew(SComboButton)
 		.ComboButtonStyle(&FAppStyle::Get().GetWidgetStyle<FComboButtonStyle>("SimpleComboButton"))
 		.OnGetMenuContent(this, &FModelingToolsEditorModeToolkit::GetPresetCreateButtonContent)
 		.HasDownArrow(true)
+		.Visibility_Lambda(IsToolActive)
 		.ButtonContent()
 		[
 			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.VAlign(VAlign_Center)
-			.Padding(4.0, 0.0f)
-			[
-				SNew(SImage)
-				.ColorAndOpacity(FSlateColor::UseForeground())
-				.Image(FAppStyle::Get().GetBrush("Icons.Plus"))
-			]
 			+ SHorizontalBox::Slot()
 			.AutoWidth()
 			.VAlign(VAlign_Center)
@@ -573,28 +993,6 @@ TSharedPtr<SWidget> FModelingToolsEditorModeToolkit::MakePresetPanel()
 		]
 	];
 
-	NewContent->AddSlot().HAlign(HAlign_Right).AutoWidth()
-		[
-			SNew(SComboButton)
-			.ComboButtonStyle(&FAppStyle::Get().GetWidgetStyle<FComboButtonStyle>("SimpleComboButton"))
-		.OnGetMenuContent(this, &FModelingToolsEditorModeToolkit::GetPresetSettingsButtonContent)
-		.OnMenuOpenChanged(this, &FModelingToolsEditorModeToolkit::RebuildPresetListForTool)
-		.HasDownArrow(false)
-		.ButtonContent()
-		[
-			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot()
-		.AutoWidth()
-		.VAlign(VAlign_Center)
-		.Padding(4.0, 0.0f)
-		[
-			SNew(SImage)
-			.ColorAndOpacity(FSlateColor::UseForeground())
-		.Image(FAppStyle::Get().GetBrush("Icons.Settings"))
-		]
-		]
-		];
-
 	TSharedPtr<SHorizontalBox> AssetConfigPanel = SNew(SHorizontalBox)
 		+ SHorizontalBox::Slot()
 		[
@@ -606,39 +1004,131 @@ TSharedPtr<SWidget> FModelingToolsEditorModeToolkit::MakePresetPanel()
 
 bool FModelingToolsEditorModeToolkit::IsPresetEnabled() const
 {
-	return CurrentPreset.IsAsset();
+	return CurrentPresetPath.IsAsset();
 }
 
-TSharedRef<SWidget> FModelingToolsEditorModeToolkit::GetPresetSettingsButtonContent()
-{
-    const TSharedPtr<SVerticalBox> Content = SNew(SVerticalBox);
-
-	FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
-
-	TSharedPtr<IDetailsView> PresetSettingsDetailsView;
-
-	FDetailsViewArgs DetailsViewArgs;
-	DetailsViewArgs.bAllowSearch = false;
-	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
-	DetailsViewArgs.bHideSelectionTip = true;
-	DetailsViewArgs.DefaultsOnlyVisibility = EEditDefaultsOnlyNodeVisibility::Automatic;
-	DetailsViewArgs.bShowOptions = false;
-	DetailsViewArgs.bAllowMultipleTopLevelObjects = true;
-
-	PresetSettingsDetailsView = PropertyEditorModule.CreateDetailView(DetailsViewArgs);
-	
-	PresetSettingsDetailsView->SetObject(PresetSettings);
-
-	Content->AddSlot()
-	[
-		PresetSettingsDetailsView->AsShared()
-	];
-
-	return Content->AsShared();
-}
 
 TSharedRef<SWidget> FModelingToolsEditorModeToolkit::GetPresetCreateButtonContent()
 {
+	RebuildPresetListForTool(false);
+
+		auto OpenNewPresetDialog = [this]()
+	{
+		NewPresetLabel.Empty();
+		NewPresetTooltip.Empty();
+
+		// Set the result if they just click Ok
+		SGenericDialogWidget::FArguments FolderDialogArguments;
+		FolderDialogArguments.OnOkPressed_Lambda([this]()
+			{
+				CreateNewPresetInCollection(NewPresetLabel,
+					CurrentPresetPath,
+					NewPresetTooltip,
+					NewPresetIcon);
+			});
+
+		// Present the Dialog
+		SGenericDialogWidget::OpenDialog(LOCTEXT("ToolPresets_CreatePreset", "Create new preset from active tool's settings"),
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(5.0f)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("ToolPresets_CreatePresetLabel", "Label"))
+				]
+				+ SHorizontalBox::Slot()
+				.MaxWidth(300)
+				[
+					SNew(SEditableTextBox)
+					// Cap the number of characters sent out of the text box, so we don't overflow menus and tooltips
+					.OnTextCommitted_Lambda([this](const FText& NewLabel, const ETextCommit::Type&) { NewPresetLabel = NewLabel.ToString().Left(255); })
+					.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+					.ToolTipText(LOCTEXT("ToolPresets_CreatePresetLabel_Tooltip", "A short, descriptive identifier for the new preset."))
+				]
+			]
+		+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(5.0f)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("ToolPresets_CreatePresetTooltip", "Tooltip"))
+				]
+				+ SHorizontalBox::Slot()
+				.MaxWidth(300)
+				[
+					SNew(SBox)
+					.MinDesiredHeight(44.f)
+					.MaxDesiredHeight(44.0f)
+					[
+						SNew(SMultiLineEditableTextBox)
+						// Cap the number of characters sent out of the text box, so we don't overflow menus and tooltips
+						.OnTextCommitted_Lambda([this](const FText& NewToolTip, const ETextCommit::Type&) { NewPresetTooltip = NewToolTip.ToString().Left(2048); })
+						.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+						.AllowMultiLine(false)
+						.AutoWrapText(true)
+						.WrappingPolicy(ETextWrappingPolicy::DefaultWrapping)
+						.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+						.ToolTipText(LOCTEXT("ToolPresets_CreatePresetTooltip_Tooltip", "A descriptive tooltip for the new preset."))
+					]
+				]
+			]
+		+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(5.0f)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				[
+					SNew(SToolInputAssetComboPanel)
+					.AssetClassType(UInteractiveToolsPresetCollectionAsset::StaticClass())
+					.OnSelectionChanged(this, &FModelingToolsEditorModeToolkit::HandlePresetAssetChanged)
+					.ToolTipText(LOCTEXT("ToolPresets_CreatePresetCollection_Tooltip", "The asset in which to store this new preset."))
+					//.RecentAssetsProvider(RecentPresetCollectionProvider) // TODO: Improve this widget before enabling this feature
+					.InitiallySelectedAsset(*CurrentPreset)
+					.FlyoutTileSize(FVector2D(80, 80))
+					.ComboButtonTileSize(FVector2D(80, 80))
+					.AssetThumbnailLabel(EThumbnailLabel::AssetName)
+					.bForceShowPluginContent(true)
+					.bForceShowEngineContent(true)
+				]
+				+ SHorizontalBox::Slot()
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(10, 5)
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("ToolPresets_CreatePresetCollection", "Collection"))
+						.Font(FSlateFontInfo(FCoreStyle::GetDefaultFont(),12, "Bold"))
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(10, 5)
+					[
+						SNew(STextBlock)
+						.Text_Lambda([this](){
+						if (CurrentPresetLabel.IsEmpty())
+						{
+							return LOCTEXT("NewPresetNoCollectionSpecifiedMessage", "None - Preset will be added to the default Personal Presets Collection.");
+						}
+						else {
+							return CurrentPresetLabel;
+						}})
+					]
+
+				]					
+			],
+			FolderDialogArguments, true);
+	};
 
 	constexpr bool bShouldCloseMenuAfterSelection = true;
 	FMenuBuilder MenuBuilder(bShouldCloseMenuAfterSelection, nullptr);
@@ -649,74 +1139,67 @@ TSharedRef<SWidget> FModelingToolsEditorModeToolkit::GetPresetCreateButtonConten
 
 
 	{
-		MenuBuilder.BeginSection(NoExtensionHook, LOCTEXT("ListPresetMenu", "Presets for Tool"));
 		FMenuEntryParams MenuEntryParams;
 
+		typedef TMap<FString, TArray<TSharedPtr<FToolPresetOption>>> FPresetsByNameMap;
+		FPresetsByNameMap PresetsByCollectionName;
 		for (TSharedPtr<FToolPresetOption> ToolPresetOption : AvailablePresetsForTool)
 		{
-			FUIAction ApplyPresetAction;
-			ApplyPresetAction.ExecuteAction = FExecuteAction::CreateLambda([this, ToolPresetOption]()
-				{
-					LoadPresetFromCollection(ToolPresetOption->PresetName, ToolPresetOption->PresetCollection);
+			FModelingToolsEditorModeToolkitLocals::ExecuteWithPreset(ToolPresetOption->PresetCollection,
+				[this, &PresetsByCollectionName, &ToolPresetOption](UInteractiveToolsPresetCollectionAsset& Preset) {
+					PresetsByCollectionName.FindOrAdd(Preset.CollectionLabel.ToString()).Add(ToolPresetOption);
 				});
-
-			ApplyPresetAction.CanExecuteAction = FCanExecuteAction::CreateLambda([this]()
-				{
-					return this->OwningEditorMode->GetToolManager()->GetActiveTool(EToolSide::Left) != nullptr;
-				});
-
-			MenuBuilder.AddMenuEntry(
-				FText::FromString(ToolPresetOption->PresetLabel),
-				FText::FromString(ToolPresetOption->PresetTooltip),
-				ToolPresetOption->PresetIcon,
-				ApplyPresetAction);
 		}
 
-		MenuBuilder.EndSection();
-	}
-
-	{
-		MenuBuilder.BeginSection(NoExtensionHook, LOCTEXT("CreatePresetMenu", "Create New Preset"));
-		FMenuEntryParams MenuEntryParams;
-
-		TSharedRef<SWidget> PresetName = SNew(SEditableTextBox)
-			.OnTextCommitted_Lambda([this](const FText& NewLabel, ETextCommit::Type&) { NewPresetLabel = NewLabel.ToString(); });
-
-		MenuBuilder.AddWidget(PresetName, LOCTEXT("NewPresetLabelLabel", "Label"), bNoIndent, bSearchable, LOCTEXT("NewPresetLabelTooltip", "A label that identifies the preset in the preset dropdown."));
-
-		TSharedRef<SObjectPropertyEntryBox> PresetCollection = SNew(SObjectPropertyEntryBox)
-			.AllowedClass(UInteractiveToolsPresetCollectionAsset::StaticClass())
-			.ObjectPath_Lambda([this]() {return FModelingToolsEditorModeToolkit::GetCurrentPresetPath(); })
-			.OnShouldFilterAsset(this, &FModelingToolsEditorModeToolkit::HandleFilterPresetAsset)
-			.OnObjectChanged(this, &FModelingToolsEditorModeToolkit::HandlePresetAssetChanged);
-
-		MenuBuilder.AddWidget(PresetCollection, LOCTEXT("NewPresetCollectionLabel", "Collection"), bNoIndent, bSearchable, LOCTEXT("NewPresetCollectionTooltip", "The preset collection asset that should store this preset."));
-
-		TSharedRef<SEditableTextBox> PresetToolTip = SNew(SEditableTextBox)
-			.OnTextCommitted_Lambda([this](const FText& NewToolTip, ETextCommit::Type&) { NewPresetTooltip = NewToolTip.ToString(); });
-
-		MenuBuilder.AddWidget(PresetToolTip, LOCTEXT("NewPresetTooltipLabel", "Tooltip"), bNoIndent, bSearchable, LOCTEXT("NewPresetTiooltipTooltip", "A descriptive tooltip that describes the purpose of this preset."));
-
-		FUIAction AddPresetAction;
-		AddPresetAction.ExecuteAction = FExecuteAction::CreateLambda([this, &PresetName, &MenuBuilder]()
+		for (FPresetsByNameMap::TConstIterator Iterator = PresetsByCollectionName.CreateConstIterator(); Iterator; ++Iterator)
+		{
+			MenuBuilder.BeginSection(NoExtensionHook, FText::FromString(Iterator.Key()));
+			for (const TSharedPtr<FToolPresetOption>& ToolPresetOption : Iterator.Value())
 			{
-				CreateNewPresetInCollection(NewPresetLabel,
-					CurrentPreset,
-					NewPresetTooltip,
-					NewPresetIcon);
-			});
+				FUIAction ApplyPresetAction;
+				ApplyPresetAction.ExecuteAction = FExecuteAction::CreateLambda([this, ToolPresetOption]()
+					{
+						LoadPresetFromCollection(ToolPresetOption->PresetIndex, ToolPresetOption->PresetCollection);
+					});
 
-		AddPresetAction.CanExecuteAction = FCanExecuteAction::CreateLambda([this]()
-			{
-				return this->OwningEditorMode->GetToolManager()->GetActiveTool(EToolSide::Left) != nullptr && CurrentPreset.IsValid();
-			});
+				ApplyPresetAction.CanExecuteAction = FCanExecuteAction::CreateLambda([this, ToolPresetOption]()
+					{
+						return this->OwningEditorMode->GetToolManager()->GetActiveTool(EToolSide::Left) != nullptr;
+					});
 
-		MenuBuilder.AddMenuEntry(LOCTEXT("CreatePresetEntry", "Create Preset"),
-			LOCTEXT("CreatePresetToolTip", "Add a new preset for this tool from current settings."),
-			FSlateIcon(FAppStyle::Get().GetStyleSetName(), "Icons.Plus"),
-			AddPresetAction);
+				MenuBuilder.AddMenuEntry(
+					FText::FromString(ToolPresetOption->PresetLabel),
+					FText::FromString(ToolPresetOption->PresetTooltip),
+					ToolPresetOption->PresetIcon,
+					ApplyPresetAction);
+			}
+			MenuBuilder.EndSection();
+		}
+
+		MenuBuilder.BeginSection(NoExtensionHook, LOCTEXT("ModelingPresetPanelHeaderManagePresets", "Manage Presets"));
+
+
+		FUIAction CreateNewPresetAction;
+		CreateNewPresetAction.ExecuteAction = FExecuteAction::CreateLambda(OpenNewPresetDialog);
+		MenuBuilder.AddMenuEntry(
+			FText(LOCTEXT("ModelingPresetPanelCreateNewPreset", "Create New Preset")),
+			FText(LOCTEXT("ModelingPresetPanelCreateNewPresetTooltip", "Create New Preset in specified Collection")),
+			FSlateIcon( FAppStyle::Get().GetStyleSetName(), "Icons.Plus"),
+			CreateNewPresetAction);
+
+
+		FUIAction OpenPresetManangerAction;
+		OpenPresetManangerAction.ExecuteAction = FExecuteAction::CreateLambda([this]() {
+			IToolPresetEditorModule::Get().ExecuteOpenPresetEditor();
+		});
+		MenuBuilder.AddMenuEntry(
+			FText(LOCTEXT("ModelingPresetPanelOpenPresetMananger", "Manage Presets...")),
+			FText(LOCTEXT("ModelingPresetPanelOpenPresetManagerTooltip", "Open Preset Manager to manage presets and their collections")),
+			FSlateIcon(FAppStyle::Get().GetStyleSetName(), "Icons.Settings"),
+			OpenPresetManangerAction);
 
 		MenuBuilder.EndSection();
+
 	}
 
 	return MenuBuilder.MakeWidget();
@@ -728,14 +1211,42 @@ void FModelingToolsEditorModeToolkit::ClearPresetComboList()
 }
 
 void FModelingToolsEditorModeToolkit::RebuildPresetListForTool(bool bSettingsOpened)
-{
-	if (bSettingsOpened)
-	{
-		return;
+{	
+	TObjectPtr<UToolPresetUserSettings> UserSettings = UToolPresetUserSettings::Get();
+	UserSettings->LoadEditorConfig();
+
+	// We need to generate a combined list of Project Loaded and User available presets to intersect the enabled set against...
+	const UToolPresetProjectSettings* ProjectSettings = GetDefault<UToolPresetProjectSettings>();
+	TSet<FSoftObjectPath> AllUserPresets;
+	
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	
+	TArray<FAssetData> AssetData;
+	FARFilter Filter;
+	Filter.ClassPaths.Add(UInteractiveToolsPresetCollectionAsset::StaticClass()->GetClassPathName());
+	Filter.PackagePaths.Add(FName("/ToolPresets"));
+	Filter.bRecursiveClasses = false;
+	Filter.bRecursivePaths = true;
+	Filter.bIncludeOnlyOnDiskAssets = false;
+	
+	AssetRegistryModule.Get().GetAssets(Filter, AssetData);
+	for (int i = 0; i < AssetData.Num(); i++) {
+		UInteractiveToolsPresetCollectionAsset* Object = Cast<UInteractiveToolsPresetCollectionAsset>(AssetData[i].GetAsset());
+		if (Object)
+		{
+			AllUserPresets.Add(Object->GetPathName());
+		}
 	}
 
+	TSet<FSoftObjectPath> AvailablePresetCollections = UserSettings->EnabledPresetCollections.Intersect( ProjectSettings->LoadedPresetCollections.Union(AllUserPresets));
+	if (UserSettings->bDefaultCollectionEnabled)
+	{
+		AvailablePresetCollections.Add(FSoftObjectPath());
+	}
+
+
 	AvailablePresetsForTool.Empty();
-	for (FSoftObjectPath& PresetCollection : PresetSettings->ActivePresetCollectionsPaths)
+	for (const FSoftObjectPath& PresetCollection : AvailablePresetCollections)
 	{
 		FModelingToolsEditorModeToolkitLocals::ExecuteWithPresetAndTool(*OwningEditorMode, EToolSide::Left, PresetCollection,
 			[this, PresetCollection](UInteractiveToolsPresetCollectionAsset& Preset, UInteractiveTool& Tool) {
@@ -744,16 +1255,32 @@ void FModelingToolsEditorModeToolkit::RebuildPresetListForTool(bool bSettingsOpe
 				{
 					return;
 				}
-				TArray<FString> PresetsForTool;
-				Preset.PerToolPresets[Tool.GetClass()->GetName()].NamedPresets.GenerateKeyArray(PresetsForTool);
-				AvailablePresetsForTool.Reserve(PresetsForTool.Num());
-				for (FString& PresetEntry : PresetsForTool)
+				AvailablePresetsForTool.Reserve(Preset.PerToolPresets[Tool.GetClass()->GetName()].NamedPresets.Num());
+				for (int32 PresetIndex = 0; PresetIndex < Preset.PerToolPresets[Tool.GetClass()->GetName()].NamedPresets.Num(); ++PresetIndex)
 				{
+					const FInteractiveToolPresetDefinition& PresetDef = Preset.PerToolPresets[Tool.GetClass()->GetName()].NamedPresets[PresetIndex];
+					if (!PresetDef.IsValid())
+					{
+						continue;
+					}
 					TSharedPtr<FToolPresetOption> NewOption = MakeShared<FToolPresetOption>();
-					NewOption->PresetLabel = Preset.PerToolPresets[Tool.GetClass()->GetName()].NamedPresets[PresetEntry].Label;
-					NewOption->PresetTooltip = Preset.PerToolPresets[Tool.GetClass()->GetName()].NamedPresets[PresetEntry].Tooltip;
-					//NewOption->PresetIcon = Preset.PerToolPresets[Tool.GetClass()->GetName()].Store[PresetEntry].Icon;
-					NewOption->PresetName = PresetEntry;
+					if (PresetDef.Label.Len() > 50)
+					{
+						NewOption->PresetLabel = PresetDef.Label.Left(50) + FString("...");
+					}
+					else
+					{
+						NewOption->PresetLabel = PresetDef.Label;
+					}
+					if (PresetDef.Tooltip.Len() > 2048)
+					{
+						NewOption->PresetTooltip = PresetDef.Tooltip.Left(2048) + FString("...");
+					}
+					else
+					{
+						NewOption->PresetTooltip = PresetDef.Tooltip;
+					}
+					NewOption->PresetIndex = PresetIndex;
 					NewOption->PresetCollection = PresetCollection;
 
 					AvailablePresetsForTool.Add(NewOption);
@@ -764,7 +1291,20 @@ void FModelingToolsEditorModeToolkit::RebuildPresetListForTool(bool bSettingsOpe
 
 void FModelingToolsEditorModeToolkit::HandlePresetAssetChanged(const FAssetData& InAssetData)
 {
-	CurrentPreset.SetPath(InAssetData.GetObjectPathString());
+	CurrentPresetPath.SetPath(InAssetData.GetObjectPathString());
+	CurrentPresetLabel = FText();
+	*CurrentPreset = InAssetData;
+
+	UInteractiveToolsPresetCollectionAsset* Preset = nullptr;
+	if (CurrentPresetPath.IsAsset())
+	{
+		Preset = Cast<UInteractiveToolsPresetCollectionAsset>(CurrentPresetPath.TryLoad());
+	}
+	if (Preset)
+	{
+		CurrentPresetLabel = Preset->CollectionLabel;
+	}
+	
 }
 
 bool FModelingToolsEditorModeToolkit::HandleFilterPresetAsset(const FAssetData& InAssetData)
@@ -772,127 +1312,129 @@ bool FModelingToolsEditorModeToolkit::HandleFilterPresetAsset(const FAssetData& 
 	return false;
 }
 
-void FModelingToolsEditorModeToolkit::LoadPresetFromCollection(const FString& PresetName, FSoftObjectPath CollectionPath)
+void FModelingToolsEditorModeToolkit::LoadPresetFromCollection(const int32 PresetIndex, FSoftObjectPath CollectionPath)
 {
 	FModelingToolsEditorModeToolkitLocals::ExecuteWithPresetAndTool(*OwningEditorMode, EToolSide::Left, CollectionPath,
-	[this, PresetName](UInteractiveToolsPresetCollectionAsset& Preset, UInteractiveTool& Tool) {
+	[this, PresetIndex](UInteractiveToolsPresetCollectionAsset& Preset, UInteractiveTool& Tool) {
 		TArray<UObject*> PropertySets = Tool.GetToolProperties();
+
+		// We only want to load the properties that are actual property sets, since the tool might have added other types of objects we don't
+		// want to deserialize.
+		PropertySets.RemoveAll([this](UObject* Object) {
+			return Cast<UInteractiveToolPropertySet>(Object) == nullptr;
+		});
+
 		if (!Preset.PerToolPresets.Contains(Tool.GetClass()->GetName()))			
 		{
 			return;
 		}
-		if(!Preset.PerToolPresets[Tool.GetClass()->GetName()].NamedPresets.Contains(PresetName))
+		if(PresetIndex < 0 || PresetIndex >= Preset.PerToolPresets[Tool.GetClass()->GetName()].NamedPresets.Num())
 		{
 			return;
 		}
 
-		TArray<TObjectPtr<UObject>>& PropertyStore = Preset.PerToolPresets[Tool.GetClass()->GetName()].NamedPresets.Find(*PresetName)->Properties;
+		Preset.PerToolPresets[Tool.GetClass()->GetName()].NamedPresets[PresetIndex].LoadStoredPropertyData(PropertySets);
 
-		for (UObject* PropertySet : PropertySets)
-		{
-			UObject* StoredPropertySet = nullptr;
-			for (UObject* PotentialStoredPropertySet : PropertyStore)
-			{
-				if (PotentialStoredPropertySet && PotentialStoredPropertySet->GetClass() == PropertySet->GetClass())
-				{
-					StoredPropertySet = PotentialStoredPropertySet;
-				}
-			}
-			if(StoredPropertySet != nullptr)
-			{
-				for (FProperty* Prop : TFieldRange<FProperty>(PropertySet->GetClass()))
-				{
-					void* DestValue = Prop->ContainerPtrToValuePtr<void>(PropertySet);
-					void* SrcValue = Prop->ContainerPtrToValuePtr<void>(StoredPropertySet);
-					if (!Prop->Identical(DestValue, SrcValue))
-					{
-						Prop->CopySingleValue(DestValue, SrcValue);
-						Tool.OnPropertyModified(PropertySet, Prop);
-					}
-				}
-			}
-		}
 	});
 }
 
 void FModelingToolsEditorModeToolkit::CreateNewPresetInCollection(const FString& PresetLabel, FSoftObjectPath CollectionPath, const FString& ToolTip, FSlateIcon Icon)
 {
-	FModelingToolsEditorModeToolkitLocals::ExecuteWithPresetAndTool(*OwningEditorMode, EToolSide::Left, CurrentPreset,
+	FModelingToolsEditorModeToolkitLocals::ExecuteWithPresetAndTool(*OwningEditorMode, EToolSide::Left, CurrentPresetPath,
 	[this, PresetLabel, ToolTip, Icon, CollectionPath](UInteractiveToolsPresetCollectionAsset& Preset, UInteractiveTool& Tool) {
 
 		TArray<UObject*> PropertySets = Tool.GetToolProperties();
-		FString NewPresetName = FString::Printf(TEXT("NewPreset_%d"), Preset.PerToolPresets.FindOrAdd(Tool.GetClass()->GetName()).NamedPresets.Num());
-		FInteractiveToolPresetDefintion PresetValuesToCreate;
-		PresetValuesToCreate.Label = PresetLabel;
+
+		// We only want to add the properties that are actual property sets, since the tool might have added other types of objects we don't
+		// want to serialize.
+		PropertySets.RemoveAll([this](UObject* Object) {
+			return Cast<UInteractiveToolPropertySet>(Object) == nullptr;
+		});
+
+		Preset.PerToolPresets.FindOrAdd(Tool.GetClass()->GetName()).ToolLabel = ActiveToolName;
+		if (ensure(ActiveToolIcon))
+		{
+			Preset.PerToolPresets.FindOrAdd(Tool.GetClass()->GetName()).ToolIcon = *ActiveToolIcon;
+		}
+		FInteractiveToolPresetDefinition PresetValuesToCreate;
+		if (PresetLabel.IsEmpty())
+		{
+			PresetValuesToCreate.Label = FString::Printf(TEXT("Unnamed_Preset-%d"), Preset.PerToolPresets.FindOrAdd(Tool.GetClass()->GetName()).NamedPresets.Num()+1);
+		}
+		else
+		{
+			PresetValuesToCreate.Label = PresetLabel;
+		}
 		PresetValuesToCreate.Tooltip = ToolTip;
 		//PresetValuesToCreate.Icon = Icon;
 
-		TArray<TObjectPtr<UObject>>& PropertyStore = PresetValuesToCreate.Properties;
-		PropertyStore.Empty();
+		PresetValuesToCreate.SetStoredPropertyData(PropertySets);
 
-		for (UObject* PropertySet : PropertySets)
-		{
-			UObject* StoredPropertySet = NewObject<UObject>(&Preset, PropertySet->GetClass());			
-			if (StoredPropertySet != nullptr)
-			{
-				StoredPropertySet->ClearFlags(EObjectFlags::RF_Transient);
-				for (FProperty* Prop : TFieldRange<FProperty>(PropertySet->GetClass()))
-				{
-					void* SrcValue = Prop->ContainerPtrToValuePtr<void>(PropertySet);
-					void* DestValue = Prop->ContainerPtrToValuePtr<void>(StoredPropertySet);
-					Prop->CopySingleValue(DestValue, SrcValue);
-				}
-				PropertyStore.Add(StoredPropertySet);
-			}
-			
-		}
 
-		Preset.PerToolPresets[Tool.GetClass()->GetName()].NamedPresets.Add(NewPresetName, PresetValuesToCreate);
+		Preset.PerToolPresets[Tool.GetClass()->GetName()].NamedPresets.Add(PresetValuesToCreate);
 		Preset.MarkPackageDirty();
 
 		// Finally add this to the current tool's preset list, since we know it should be there.
 		TSharedPtr<FToolPresetOption> NewOption = MakeShared<FToolPresetOption>();
 		NewOption->PresetLabel = PresetLabel;
 		NewOption->PresetTooltip = ToolTip;
-		NewOption->PresetName = NewPresetName;
+		NewOption->PresetIndex = Preset.PerToolPresets[Tool.GetClass()->GetName()].NamedPresets.Num() - 1;
 		NewOption->PresetCollection = CollectionPath;
 
 		AvailablePresetsForTool.Add(NewOption);
 		
 	});
+
+	UToolPresetAssetSubsystem* PresetAssetSubsystem = GEditor->GetEditorSubsystem<UToolPresetAssetSubsystem>();
+	if (CollectionPath.IsNull() && ensure(PresetAssetSubsystem))
+	{
+		ensure(PresetAssetSubsystem->SaveDefaultCollection());
+	}
 }
 
-void FModelingToolsEditorModeToolkit::SaveActivePreset()
+void FModelingToolsEditorModeToolkit::UpdatePresetInCollection(const FToolPresetOption& PresetToEditIn, bool bUpdateStoredPresetValues)
 {
-	
-	// Saving presets has been disabled for the moment until the 3rd UI generation is done, but we'll want this logic then.
-#if 0
-	FModelingToolsEditorModeToolkitLocals::ExecuteWithPresetAndTool(*OwningEditorMode, EToolSide::Left, CurrentPreset,
-	[this](UInteractiveToolsPresetCollectionAsset& Preset, UInteractiveTool& Tool) {
-		TArray<UObject*> PropertySets = Tool.GetToolProperties();
-		TArray<TObjectPtr<UObject>>& PropertyStore = Preset.PerToolPresets.FindOrAdd(Tool.GetClass()->GetName()).NamedPresets.FindOrAdd(*ActiveNamedPreset).Properties;
-		PropertyStore.Empty();
+	FModelingToolsEditorModeToolkitLocals::ExecuteWithPresetAndTool(*OwningEditorMode, EToolSide::Left, PresetToEditIn.PresetCollection,
+		[this, PresetToEditIn, bUpdateStoredPresetValues](UInteractiveToolsPresetCollectionAsset& Preset, UInteractiveTool& Tool) {
+			TArray<UObject*> PropertySets = Tool.GetToolProperties();
 
-		for (UObject* PropertySet : PropertySets)
-		{
-			UObject* StoredPropertySet = NewObject<UObject>(&Preset, PropertySet->GetClass());
-			StoredPropertySet->ClearFlags(EObjectFlags::RF_Transient);
-			if (StoredPropertySet != nullptr)
+			// We only want to add the properties that are actual property sets, since the tool might have added other types of objects we don't
+			// want to serialize.
+			PropertySets.RemoveAll([this](UObject* Object) {
+				return Cast<UInteractiveToolPropertySet>(Object) == nullptr;
+			});
+
+			if (!Preset.PerToolPresets.Contains(Tool.GetClass()->GetName()))
 			{
-				for (FProperty* Prop : TFieldRange<FProperty>(PropertySet->GetClass()))
-				{
-					void* SrcValue = Prop->ContainerPtrToValuePtr<void>(PropertySet);
-					void* DestValue = Prop->ContainerPtrToValuePtr<void>(StoredPropertySet);
-					Prop->CopySingleValue(DestValue, SrcValue);
-				}
+				return;
 			}
-			PropertyStore.Add(StoredPropertySet);
-		}	
+			if (PresetToEditIn.PresetIndex < 0 || PresetToEditIn.PresetIndex >= Preset.PerToolPresets[Tool.GetClass()->GetName()].NamedPresets.Num() )
+			{
+				return;
+			}
 
-		Preset.MarkPackageDirty();
-	});
-#endif
+			if (bUpdateStoredPresetValues)
+			{
+				Preset.PerToolPresets.FindOrAdd(Tool.GetClass()->GetName()).NamedPresets[PresetToEditIn.PresetIndex].SetStoredPropertyData(PropertySets);
+				Preset.MarkPackageDirty();
+			}
+
+			Preset.PerToolPresets.FindOrAdd(Tool.GetClass()->GetName()).NamedPresets[PresetToEditIn.PresetIndex].Label = PresetToEditIn.PresetLabel;
+			Preset.PerToolPresets.FindOrAdd(Tool.GetClass()->GetName()).NamedPresets[PresetToEditIn.PresetIndex].Tooltip = PresetToEditIn.PresetTooltip;
+
+		});
+
+	RebuildPresetListForTool(false);
+
+	UToolPresetAssetSubsystem* PresetAssetSubsystem = GEditor->GetEditorSubsystem<UToolPresetAssetSubsystem>();
+	if (PresetToEditIn.PresetCollection.IsNull() && ensure(PresetAssetSubsystem))
+	{
+		ensure(PresetAssetSubsystem->SaveDefaultCollection());
+	}
 }
+
+
+
 
 void FModelingToolsEditorModeToolkit::InitializeAfterModeSetup()
 {
@@ -985,8 +1527,6 @@ void FModelingToolsEditorModeToolkit::ClearWarning()
 	ToolWarningArea->SetText(FText());
 	ToolWarningArea->SetVisibility(EVisibility::Collapsed);
 }
-
-
 
 FName FModelingToolsEditorModeToolkit::GetToolkitFName() const
 {
@@ -1101,7 +1641,7 @@ void FModelingToolsEditorModeToolkit::GetToolPaletteNames(TArray<FName>& Palette
 	}
 
 	// if user has provided a list of favorite tools, add that palette to the list
-	if (UISettings->ToolFavorites.Num() > 0)
+	if (FavoritesPalette && FavoritesPalette->GetPaletteCommandNames().Num() > 0)
 	{
 		PaletteNames.Insert(ModelingFavoritesTabName, 0);
 	}
@@ -1116,24 +1656,24 @@ FText FModelingToolsEditorModeToolkit::GetToolPaletteDisplayName(FName Palette) 
 
 void FModelingToolsEditorModeToolkit::BuildToolPalette(FName PaletteIndex, class FToolBarBuilder& ToolbarBuilder) 
 {
+
+	if (HasToolkitBuilder())
+	{
+		return;
+	}
+	
 	const FModelingToolsManagerCommands& Commands = FModelingToolsManagerCommands::Get();
 	UModelingToolsModeCustomizationSettings* UISettings = GetMutableDefault<UModelingToolsModeCustomizationSettings>();
 
 	if (PaletteIndex == ModelingFavoritesTabName)
 	{
 		// build Favorites tool palette
-		for (FString ToolName : UISettings->ToolFavorites)
+		TArray<TSharedPtr<const FUICommandInfo>> FavoriteCommands;
+		ToolkitBuilder->GetCommandsForEditablePalette(FavoritesPalette.ToSharedRef(), FavoriteCommands);
+		
+		for (const TSharedPtr<const FUICommandInfo>& ToolCommand : FavoriteCommands)
 		{
-			bool bFound = false;
-			TSharedPtr<FUICommandInfo> FoundToolCommand = Commands.FindToolByName(ToolName, bFound);
-			if ( bFound )
-			{ 
-				ToolbarBuilder.AddToolBarButton(FoundToolCommand);
-			}
-			else
-			{
-				UE_LOG(LogTemp, Display, TEXT("ModelingMode: could not find Favorited Tool %s"), *ToolName);
-			}
+			ToolbarBuilder.AddToolBarButton(ToolCommand);
 		}
 	}
 	else if (PaletteIndex == SelectionActionsTabName)
@@ -1173,6 +1713,7 @@ void FModelingToolsEditorModeToolkit::BuildToolPalette(FName PaletteIndex, class
 		ToolbarBuilder.AddToolBarButton(Commands.BeginDrawPolygonTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginDrawPolyPathTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginDrawAndRevolveTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginRevolveSplineTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginRevolveBoundaryTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginCombineMeshesTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginDuplicateMeshesTool);
@@ -1350,6 +1891,12 @@ void FModelingToolsEditorModeToolkit::InvokeUI()
 	// of FModeToolkit::InlineContentHolder so we can just replace it here
 	InlineContentHolder->SetContent(GetInlineContent().ToSharedRef());
 
+	// if the ToolkitBuilder is being used, it will make up the UI
+	if (HasToolkitBuilder())
+	{
+		return;
+	}
+
 	//
 	// Apply custom section header colors.
 	// See comments below, this is done via directly manipulating Slate widgets generated deep inside BaseToolkit.cpp,
@@ -1357,14 +1904,6 @@ void FModelingToolsEditorModeToolkit::InvokeUI()
 	//
 
 	UModelingToolsModeCustomizationSettings* UISettings = GetMutableDefault<UModelingToolsModeCustomizationSettings>();
-
-	// look up default radii for palette toolbar expandable area headers
-	FVector4 HeaderRadii(4, 4, 0, 0);
-	const FSlateBrush* BaseBrush = FAppStyle::Get().GetBrush("PaletteToolbar.ExpandableAreaHeader");
-	if (BaseBrush != nullptr)
-	{
-		HeaderRadii = BaseBrush->OutlineSettings.CornerRadii;
-	}
 
 	// Generate a map for tool specific colors
 	TMap<FString, FLinearColor> SectionIconColorMap;
@@ -1414,7 +1953,13 @@ void FModelingToolsEditorModeToolkit::InvokeUI()
 							TSharedPtr<SBorder> TopBorder = StaticCastSharedPtr<SBorder>(SlotWidgetPtr);
 							if (TopBorder.IsValid())
 							{
-								TopBorder->SetBorderImage(new FSlateRoundedBoxBrush(FSlateColor(ToolColor.Color), HeaderRadii));
+								// The border image needs to be swapped to a white one so that the color applied to it is
+								// not darkened by the usual brush. Note that we can't just create a new FSlateRoundedBoxBrush
+								// with the proper color in-line because a brush needs to be associated with a style set that
+								// is responsible for freeing it, else it will leak (or we could own the brush in the toolkit,
+								// but this is frowned upon).
+								TopBorder->SetBorderImage(FModelingToolsEditorModeStyle::Get()->GetBrush("ModelingMode.WhiteExpandableAreaHeader"));
+								TopBorder->SetBorderBackgroundColor(FSlateColor(ToolColor.Color));
 							}
 						}
 					}
@@ -1531,6 +2076,15 @@ void FModelingToolsEditorModeToolkit::BindGizmoNumericalUI()
 }
 
 
+UGeometrySelectionManager* FModelingToolsEditorModeToolkit::GetMeshSelectionManager()
+{
+	if (CachedSelectionManager == nullptr)
+	{
+		CachedSelectionManager = Cast<UModelingToolsEditorMode>(GetScriptableEditorMode())->GetSelectionManager();
+	}
+	return CachedSelectionManager;
+}
+
 void FModelingToolsEditorModeToolkit::OnToolPaletteChanged(FName PaletteName) 
 {
 }
@@ -1562,6 +2116,8 @@ void FModelingToolsEditorModeToolkit::ShowRealtimeAndModeWarnings(bool bShowReal
 
 void FModelingToolsEditorModeToolkit::OnToolStarted(UInteractiveToolManager* Manager, UInteractiveTool* Tool)
 {
+	bInActiveTool = true;
+
 	UpdateActiveToolProperties();
 
 	UInteractiveTool* CurTool = GetScriptableEditorMode()->GetToolManager(EToolsContextScope::EdMode)->GetActiveTool(EToolSide::Left);
@@ -1570,6 +2126,18 @@ void FModelingToolsEditorModeToolkit::OnToolStarted(UInteractiveToolManager* Man
 
 	ModeHeaderArea->SetVisibility(EVisibility::Collapsed);
 	ActiveToolName = CurTool->GetToolInfo().ToolDisplayName;
+
+	if (HasToolkitBuilder())
+	{
+		ToolkitBuilder->SetActiveToolDisplayName(ActiveToolName);
+		if (const UModelingToolsModeCustomizationSettings* Settings = GetDefault<UModelingToolsModeCustomizationSettings>())
+		{
+			if (Settings->bAlwaysShowToolButtons == false)
+			{
+				ToolkitBuilder->SetActivePaletteCommandsVisibility(EVisibility::Collapsed);
+			}
+		}
+	}
 
 	// try to update icon
 	FString ActiveToolIdentifier = GetScriptableEditorMode()->GetToolManager(EToolsContextScope::EdMode)->GetActiveToolName(EToolSide::Left);
@@ -1598,6 +2166,8 @@ void FModelingToolsEditorModeToolkit::OnToolStarted(UInteractiveToolManager* Man
 
 void FModelingToolsEditorModeToolkit::OnToolEnded(UInteractiveToolManager* Manager, UInteractiveTool* Tool)
 {
+	bInActiveTool = false;
+
 	if (IsHosted())
 	{
 		GetToolkitHost()->RemoveViewportOverlayWidget(ToolShutdownViewportOverlayWidget.ToSharedRef());
@@ -1605,6 +2175,12 @@ void FModelingToolsEditorModeToolkit::OnToolEnded(UInteractiveToolManager* Manag
 
 	ModeDetailsView->SetObject(nullptr);
 	ActiveToolName = FText::GetEmpty();
+	if (HasToolkitBuilder())
+	{
+		ToolkitBuilder->SetActiveToolDisplayName(FText::GetEmpty());		
+		ToolkitBuilder->SetActivePaletteCommandsVisibility(EVisibility::Visible);
+	}
+
 	ModeHeaderArea->SetVisibility(EVisibility::Visible);
 	ModeHeaderArea->SetText(LOCTEXT("SelectToolLabel", "Select a Tool from the Toolbar"));
 	ClearNotification();
@@ -1637,6 +2213,11 @@ void FModelingToolsEditorModeToolkit::OnActiveViewportChanged(TSharedPtr<IAssetV
 			{
 				GetToolkitHost()->RemoveViewportOverlayWidget(GizmoNumericalUIOverlayWidget.ToSharedRef(), OldViewport);
 			}
+
+			if (SelectionPaletteOverlayWidget.IsValid())
+			{
+				GetToolkitHost()->RemoveViewportOverlayWidget(SelectionPaletteOverlayWidget.ToSharedRef(), OldViewport);
+			}
 		}
 
 		// Add the hud to the new viewport
@@ -1645,6 +2226,11 @@ void FModelingToolsEditorModeToolkit::OnActiveViewportChanged(TSharedPtr<IAssetV
 		if (GizmoNumericalUIOverlayWidget.IsValid())
 		{
 			GetToolkitHost()->AddViewportOverlayWidget(GizmoNumericalUIOverlayWidget.ToSharedRef(), NewViewport);
+		}
+
+		if (SelectionPaletteOverlayWidget.IsValid())
+		{
+			GetToolkitHost()->AddViewportOverlayWidget(SelectionPaletteOverlayWidget.ToSharedRef(), NewViewport);
 		}
 	}
 }
@@ -1788,6 +2374,13 @@ void FModelingToolsEditorModeToolkit::SelectNewAssetPath() const
 	}
 }
 
+void FModelingToolsEditorModeToolkit::UpdateCategoryButtonLabelVisibility(UObject* Obj, FPropertyChangedEvent& ChangeEvent)
+{
+	UModelingToolsModeCustomizationSettings* UISettings = GetMutableDefault<UModelingToolsModeCustomizationSettings>();
+	ToolkitBuilder->SetCategoryButtonLabelVisibility(UISettings != nullptr  ? UISettings->bShowCategoryButtonLabels : true);
+	ToolkitBuilder->RefreshCategoryToolbarWidget();
+}
+
 
 FText FModelingToolsEditorModeToolkit::GetRestrictiveModeAutoGeneratedAssetPathText() const
 {
@@ -1800,6 +2393,28 @@ void FModelingToolsEditorModeToolkit::OnRestrictiveModeAutoGeneratedAssetPathTex
 	UModelingToolsEditorModeSettings* Settings = GetMutableDefault<UModelingToolsEditorModeSettings>();
 	Settings->SetRestrictiveModeAutoGeneratedAssetPath(InNewText.ToString());
 }
+
+void FModelingToolsEditorModeToolkit::NotifySelectionSystemEnabledStateModified()
+{
+	if (UModelingToolsEditorMode* ModelingMode = Cast<UModelingToolsEditorMode>(GetScriptableEditorMode()))
+	{
+		ModelingMode->NotifySelectionSystemEnabledStateModified();
+	}
+	
+	//if (bUsesToolkitBuilder && ToolkitBuilder.IsValid())
+	//{
+	//	ToolkitBuilder->InitCategoryToolbarContainerWidget();
+	//}
+	//else
+	//{
+		// required due to above
+		FNotificationInfo Info(LOCTEXT("ChangeSelectionEnabledToast",
+			"You should exit and re-enter Modeling Mode after toggling Mesh Element Selection Support to fully update the UI"));
+		Info.ExpireDuration = 5.0f;
+		FSlateNotificationManager::Get().AddNotification(Info);
+	//}
+}
+
 
 
 #undef LOCTEXT_NAMESPACE

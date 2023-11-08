@@ -47,6 +47,7 @@
 #define LOCTEXT_NAMESPACE "AnimInstance"
 
 const FName NAME_AnimBlueprintLog(TEXT("AnimBlueprintLog"));
+const FName NAME_PIELog(TEXT("PIE"));
 const FName NAME_Evaluate(TEXT("Evaluate"));
 const FName NAME_Update(TEXT("Update"));
 const FName NAME_AnimGraph(TEXT("AnimGraph"));
@@ -65,6 +66,7 @@ FAnimInstanceProxy::FAnimInstanceProxy()
 	, RootMotionMode(ERootMotionMode::NoRootMotionExtraction)
 	, FrameCounterForUpdate(0)
 	, FrameCounterForNodeUpdate(0)
+	, RequiredBones(MakeShared<FBoneContainer>())	// We sometime query for this before RecalcRequiredBones has been called
 	, CacheBonesRecursionCounter(0)
 	, bUpdatingRoot(false)
 	, bBoneCachesInvalidated(false)
@@ -72,6 +74,7 @@ FAnimInstanceProxy::FAnimInstanceProxy()
 	, bDeferRootNodeInitialization(false)
 #if WITH_EDITORONLY_DATA
 	, bIsBeingDebugged(false)
+	, bIsGameWorld(false)
 #endif
 	, bInitializeSubsystems(false)
 	, bUseMainInstanceMontageEvaluationData(false)
@@ -92,6 +95,7 @@ FAnimInstanceProxy::FAnimInstanceProxy(UAnimInstance* Instance)
 	, RootMotionMode(ERootMotionMode::NoRootMotionExtraction)
 	, FrameCounterForUpdate(0)
 	, FrameCounterForNodeUpdate(0)
+	, RequiredBones(MakeShared<FBoneContainer>())	// We sometime query for this before RecalcRequiredBones has been called
 	, CacheBonesRecursionCounter(0)
 	, bUpdatingRoot(false)
 	, bBoneCachesInvalidated(false)
@@ -408,19 +412,33 @@ FGuid MakeGuidForMessage(const FText& Message)
 	return FGuid(Hash[0] ^ Hash[4], Hash[1], Hash[2], Hash[3]);
 }
 
-void FAnimInstanceProxy::LogMessage(FName InLogType, EMessageSeverity::Type InSeverity, const FText& InMessage) const
+FName FAnimInstanceProxy::GetTargetLogNameForCurrentWorldType() const
+{
+#if WITH_EDITORONLY_DATA
+	return bIsGameWorld ? NAME_PIELog : NAME_AnimBlueprintLog;
+#else
+	return NAME_AnimBlueprintLog;
+#endif
+}
+
+void FAnimInstanceProxy::LogMessage(FName InLogType, const TSharedRef<FTokenizedMessage>& InMessage) const
 {
 #if ENABLE_ANIM_LOGGING
-	FGuid CurrentMessageGuid = MakeGuidForMessage(InMessage);
+	FGuid CurrentMessageGuid = MakeGuidForMessage(InMessage->ToText());
 	if(!PreviouslyLoggedMessages.Contains(CurrentMessageGuid))
 	{
 		PreviouslyLoggedMessages.Add(CurrentMessageGuid);
 		if (TArray<FLogMessageEntry>* LoggedMessages = LoggedMessagesMap.Find(InLogType))
 		{
-			LoggedMessages->Emplace(InSeverity, InMessage);
+			LoggedMessages->Emplace(InMessage);
 		}
 	}
 #endif
+}
+
+void FAnimInstanceProxy::LogMessage(FName InLogType, EMessageSeverity::Type InSeverity, const FText& InMessage) const
+{
+	LogMessage(InLogType, FTokenizedMessage::Create(InSeverity, InMessage));
 }
 
 void FAnimInstanceProxy::Uninitialize(UAnimInstance* InAnimInstance)
@@ -433,6 +451,7 @@ void FAnimInstanceProxy::Uninitialize(UAnimInstance* InAnimInstance)
 	ResetAnimationCurves();
 	MaterialParametersToClear.Reset();
 	ActiveAnimNotifiesSinceLastTick.Reset();
+	Sync.ResetAll();
 }
 
 void FAnimInstanceProxy::UpdateActiveAnimNotifiesSinceLastTick(const FAnimNotifyQueue& AnimInstanceQueue)
@@ -456,6 +475,8 @@ void FAnimInstanceProxy::PreUpdate(UAnimInstance* InAnimInstance, float DeltaSec
 	bShouldExtractRootMotion = InAnimInstance->ShouldExtractRootMotion();
 
 #if WITH_EDITORONLY_DATA
+	bIsGameWorld = World ? World->IsGameWorld() : false;
+
 	if (FAnimBlueprintDebugData* DebugData = GetAnimBlueprintDebugData())
 	{
 		DebugData->ResetNodeVisitSites();
@@ -592,7 +613,7 @@ void FAnimInstanceProxy::PostUpdate(UAnimInstance* InAnimInstance) const
 			{
 				if (!PoseWatch.PoseWatchPoseElement->GetIsEnabled())
 				{
-					TRACE_ANIM_POSE_WATCH(*this, PoseWatch.NodeID, TArray<FTransform>(), TArray<uint16>(), FTransform::Identity, false);
+					TRACE_ANIM_POSE_WATCH(*this, PoseWatch.PoseWatchPoseElement, PoseWatch.NodeID, TArray<FTransform>(), FBlendedHeapCurve(), TArray<uint16>(), FTransform::Identity, false);
 				}
 			}
 		}
@@ -640,6 +661,7 @@ void FAnimInstanceProxy::PostUpdate(UAnimInstance* InAnimInstance) const
 		switch (DebugItem.ItemType)
 		{
 			case EDrawDebugItemType::OnScreenMessage: GEngine->AddOnScreenDebugMessage(INDEX_NONE, 0.f, DebugItem.Color, DebugItem.Message, false, DebugItem.TextScale); break;
+			case EDrawDebugItemType::InWorldMessage: DrawDebugString(InAnimInstance->GetSkelMeshComponent()->GetWorld(), DebugItem.StartLoc, DebugItem.Message, InAnimInstance->GetSkelMeshComponent()->GetOwner(), DebugItem.Color, DebugItem.LifeTime, false /*bDrawShadow*/, DebugItem.TextScale.X); break;
 			case EDrawDebugItemType::DirectionalArrow: DrawDebugDirectionalArrow(InAnimInstance->GetSkelMeshComponent()->GetWorld(), DebugItem.StartLoc, DebugItem.EndLoc.Value, DebugItem.Size, DebugItem.Color, DebugItem.bPersistentLines, DebugItem.LifeTime, DebugItem.DepthPriority, DebugItem.Thickness); break;
 			case EDrawDebugItemType::Sphere: DrawDebugSphere(InAnimInstance->GetSkelMeshComponent()->GetWorld(), DebugItem.Center, DebugItem.Radius, DebugItem.Segments, DebugItem.Color, DebugItem.bPersistentLines, DebugItem.LifeTime, DebugItem.DepthPriority, DebugItem.Thickness); break;
 			case EDrawDebugItemType::Line: DrawDebugLine(InAnimInstance->GetSkelMeshComponent()->GetWorld(), DebugItem.StartLoc, DebugItem.EndLoc.Value, DebugItem.Color, DebugItem.bPersistentLines, DebugItem.LifeTime, DebugItem.DepthPriority, DebugItem.Thickness); break;
@@ -659,13 +681,13 @@ void FAnimInstanceProxy::PostUpdate(UAnimInstance* InAnimInstance) const
 #endif
 
 #if ENABLE_ANIM_LOGGING
-	FMessageLog MessageLog(NAME_AnimBlueprintLog);
+	FMessageLog MessageLog(GetTargetLogNameForCurrentWorldType());
 	const TArray<FLogMessageEntry>* Messages = LoggedMessagesMap.Find(NAME_Update);
 	if (ensureMsgf(Messages, TEXT("PreUpdate isn't called. This could potentially cause other issues.")))
 	{
 		for (const FLogMessageEntry& Message : *Messages)
 		{
-			MessageLog.Message(Message.Key, Message.Value);
+			MessageLog.AddMessage(Message);
 		}
 	}
 #endif
@@ -678,12 +700,12 @@ void FAnimInstanceProxy::PostEvaluate(UAnimInstance* InAnimInstance)
 	ClearObjects();
 
 #if ENABLE_ANIM_LOGGING
-	FMessageLog MessageLog(NAME_AnimBlueprintLog);
+	FMessageLog MessageLog(GetTargetLogNameForCurrentWorldType());
 	if(const TArray<FLogMessageEntry>* Messages = LoggedMessagesMap.Find(NAME_Evaluate))
 	{
 		for (const FLogMessageEntry& Message : *Messages)
 		{
-			MessageLog.Message(Message.Key, Message.Value);
+			MessageLog.AddMessage(Message);
 		}
 	}
 #endif
@@ -1115,19 +1137,37 @@ void FAnimInstanceProxy::RecalcRequiredBones(USkeletalMeshComponent* Component, 
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 
-	RequiredBones.InitializeTo(Component->RequiredBones, FCurveEvaluationOption(Component->GetAllowedAnimCurveEvaluate(), &Component->GetDisallowedAnimCurvesEvaluation(), Component->GetPredictedLODLevel()), *Asset);
+	// Use the shared bone container
+	RequiredBones = Component->GetSharedRequiredBones();
 
-	// If there is a ref pose override, we want to replace ref pose in RequiredBones
-	// Update ref pose in required bones structure (either set it, or clear it, depending on if one is set on the Component)
-	RequiredBones.SetRefPoseOverride(Component->GetRefPoseOverride());
-
-	// If this instance can accept input poses, initialise the input pose container
-	if(DefaultLinkedInstanceInputNode)
+	// The first anim instance will initialize the required bones, all others will re-use it
+	if (!RequiredBones->IsValid())
 	{
-		DefaultLinkedInstanceInputNode->CachedInputPose.SetBoneContainer(&RequiredBones);
+		RequiredBones->InitializeTo(Component->RequiredBones, Component->GetCurveFilterSettings(), *Asset);
+
+		// If there is a ref pose override, we want to replace ref pose in RequiredBones
+		// Update ref pose in required bones structure (either set it, or clear it, depending on if one is set on the Component)
+		RequiredBones->SetRefPoseOverride(Component->GetRefPoseOverride());
 	}
 
-	// When RequiredBones mapping has changed, AnimNodes need to update their bones caches. 
+	// If this instance can accept input poses, initialise the input pose container
+	if (DefaultLinkedInstanceInputNode)
+	{
+		DefaultLinkedInstanceInputNode->CachedInputPose.SetBoneContainer(RequiredBones.Get());
+		
+		// SetBoneContainer allocates space for bone data but leaves it uninitalized.
+		DefaultLinkedInstanceInputNode->bIsCachedInputPoseInitialized = false;
+	}
+
+	// When RequiredBones mapping has changed, AnimNodes need to update their bones caches.
+	bBoneCachesInvalidated = true;
+}
+
+void FAnimInstanceProxy::RecalcRequiredCurves(const UE::Anim::FCurveFilterSettings& CurveFilterSettings)
+{
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
+	RequiredBones->CacheRequiredAnimCurves(CurveFilterSettings);
 	bBoneCachesInvalidated = true;
 }
 
@@ -1135,7 +1175,9 @@ void FAnimInstanceProxy::RecalcRequiredCurves(const FCurveEvaluationOption& Curv
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 
-	RequiredBones.CacheRequiredAnimCurveUids(CurveEvalOption);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	RequiredBones->CacheRequiredAnimCurveUids(CurveEvalOption);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	bBoneCachesInvalidated = true;
 }
 
@@ -1145,14 +1187,6 @@ void FAnimInstanceProxy::UpdateAnimation()
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 
 	FMemMark Mark(FMemStack::Get());
-
-#if WITH_EDITORONLY_DATA
-	UpdatedNodesThisFrame.Reset();
-	NodeInputAttributesThisFrame.Reset();
-	NodeOutputAttributesThisFrame.Reset();
-	NodeSyncsThisFrame.Reset();
-#endif
-
 	FAnimationUpdateSharedContext SharedContext;
 	FAnimationUpdateContext Context(this, CurrentDeltaSeconds, &SharedContext);
 
@@ -1172,10 +1206,16 @@ void FAnimInstanceProxy::UpdateAnimation_WithRoot(const FAnimationUpdateContext&
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 
 	ANIM_MT_SCOPE_CYCLE_COUNTER(ProxyUpdateAnimation, !IsInGameThread());
-	FScopeCycleCounterUObject AnimScope(GetAnimInstanceObject());
+	FScopeCycleCounterUObject AnimScope(bUpdatingRoot ? nullptr : GetAnimInstanceObject());
 
 	if(InRootNode == RootNode)
 	{
+#if WITH_EDITORONLY_DATA
+	    UpdatedNodesThisFrame.Reset();
+	    NodeInputAttributesThisFrame.Reset();
+	    NodeOutputAttributesThisFrame.Reset();
+	    NodeSyncsThisFrame.Reset();
+#endif
 		if(bInitializeSubsystems && AnimClassInterface)
 		{
 			AnimClassInterface->ForEachSubsystem(GetAnimInstanceObject(), [this](const FAnimSubsystemInstanceContext& InContext)
@@ -1467,7 +1507,7 @@ void FAnimInstanceProxy::SlotEvaluatePoseWithBlendProfiles(const FName& SlotNode
 	TArray<float>& PerBoneWeightTotals = BlendProfileScratchData.PerBoneWeightTotals;
 	TArray<float>& PerBoneWeightTotalsAdditive = BlendProfileScratchData.PerBoneWeightTotalsAdditive;
 	TArray<float>& BoneBlendProfileScales = BlendProfileScratchData.BoneBlendProfileScales;
-	const int32 NumBones = RequiredBones.GetCompactPoseNumBones();
+	const int32 NumBones = RequiredBones->GetCompactPoseNumBones();
 	PerBoneWeightTotals.Reset(NumBones);
 	PerBoneWeightTotals.AddUninitialized(NumBones);
 	for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
@@ -1518,8 +1558,8 @@ void FAnimInstanceProxy::SlotEvaluatePoseWithBlendProfiles(const FName& SlotNode
 
 			// Bone array has to be allocated prior to calling GetPoseFromAnimTrack.
 			FSlotEvaluationPose NewPose(EvalState.BlendInfo.GetBlendedValue(), AdditiveAnimType);
-			NewPose.Pose.SetBoneContainer(&RequiredBones);
-			NewPose.Curve.InitFrom(RequiredBones);
+			NewPose.Pose.SetBoneContainer(RequiredBones.Get());
+			NewPose.Curve.InitFrom(*RequiredBones);
 
 			// Extract pose from Track.
 			FAnimExtractContext ExtractionContext(static_cast<double>(EvalState.MontagePosition), Montage->HasRootMotion() && RootMotionMode != ERootMotionMode::NoRootMotionExtraction, EvalState.DeltaTimeRecord);
@@ -1528,7 +1568,7 @@ void FAnimInstanceProxy::SlotEvaluatePoseWithBlendProfiles(const FName& SlotNode
 
 			// Add montage curves.
 			FBlendedCurve MontageCurve;
-			MontageCurve.InitFrom(RequiredBones);
+			MontageCurve.InitFrom(*RequiredBones);
 			Montage->EvaluateCurveData(MontageCurve, EvalState.MontagePosition);
 			NewPose.Curve.Combine(MontageCurve);
 
@@ -1552,7 +1592,7 @@ void FAnimInstanceProxy::SlotEvaluatePoseWithBlendProfiles(const FName& SlotNode
 			const float PoseWeight = EvalState.BlendInfo.GetBlendedValue();
 			if (BlendProfile)
 			{
-				BlendProfile->FillBoneScalesArray(BoneBlendProfileScales, RequiredBones);
+				BlendProfile->FillBoneScalesArray(BoneBlendProfileScales, *RequiredBones);
 				for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
 				{
 					PerBoneWeights[CurrentPoseIndex][BoneIndex] = BlendProfile->CalculateBoneWeight(BoneBlendProfileScales[BoneIndex], BlendProfile->Mode, EvalState.BlendInfo, EvalState.BlendStartAlpha, NewPose.Weight, false);
@@ -1857,8 +1897,8 @@ void FAnimInstanceProxy::SlotEvaluatePose(const FName& SlotNodeName, const FAnim
 			FSlotEvaluationPose NewPose(MontageWeight, AdditiveAnimType);
 			
 			// Bone array has to be allocated prior to calling GetPoseFromAnimTrack
-			NewPose.Pose.SetBoneContainer(&RequiredBones);
-			NewPose.Curve.InitFrom(RequiredBones);
+			NewPose.Pose.SetBoneContainer(RequiredBones.Get());
+			NewPose.Curve.InitFrom(*RequiredBones);
 
 			// Extract pose from Track
 			FAnimExtractContext ExtractionContext(static_cast<double>(EvalState.MontagePosition), Montage->HasRootMotion() && RootMotionMode != ERootMotionMode::NoRootMotionExtraction, EvalState.DeltaTimeRecord);
@@ -1868,7 +1908,7 @@ void FAnimInstanceProxy::SlotEvaluatePose(const FName& SlotNodeName, const FAnim
 
 			// add montage curves 
 			FBlendedCurve MontageCurve;
-			MontageCurve.InitFrom(RequiredBones);
+			MontageCurve.InitFrom(*RequiredBones);
 			Montage->EvaluateCurveData(MontageCurve, EvalState.MontagePosition);
 			NewPose.Curve.Combine(MontageCurve);
 
@@ -2096,6 +2136,19 @@ void FAnimInstanceProxy::AnimDrawDebugOnScreenMessage(const FString& DebugMessag
 	DrawDebugItem.Color = Color;
 	DrawDebugItem.TextScale = TextScale;
 	DrawDebugItem.DepthPriority = DepthPriority;
+
+	QueuedDrawDebugItems.Add(DrawDebugItem);
+}
+
+void FAnimInstanceProxy::AnimDrawDebugInWorldMessage(const FString& DebugMessage, const FVector& TextLocation, const FColor& Color, float TextScale)
+{
+	FQueuedDrawDebugItem DrawDebugItem;
+
+	DrawDebugItem.ItemType = EDrawDebugItemType::InWorldMessage;
+	DrawDebugItem.Message = DebugMessage;
+	DrawDebugItem.StartLoc = TextLocation;
+	DrawDebugItem.Color = Color;
+	DrawDebugItem.TextScale.X = TextScale;
 
 	QueuedDrawDebugItems.Add(DrawDebugItem);
 }
@@ -3260,6 +3313,11 @@ void FAnimInstanceProxy::RecordNodeAttribute(const FAnimInstanceProxy& InSourceP
 
 void FAnimInstanceProxy::RegisterWatchedPose(const FCompactPose& Pose, int32 LinkID)
 {
+	RegisterWatchedPose(Pose, FBlendedCurve(), LinkID);
+}
+
+void FAnimInstanceProxy::RegisterWatchedPose(const FCompactPose& Pose, const FBlendedCurve& InCurve, int32 LinkID)
+{
 	if (bIsBeingDebugged)
 	{
 		FAnimBlueprintDebugData* DebugData = GetAnimBlueprintDebugData();
@@ -3308,9 +3366,10 @@ void FAnimInstanceProxy::RegisterWatchedPose(const FCompactPose& Pose, int32 Lin
 						}
 
 						PoseWatch.SetPose(TmpRequiredBones, BoneTransforms);
+						PoseWatch.SetCurves(InCurve);
 						PoseWatch.SetWorldTransform(SkelMeshComponent->GetComponentTransform());
 
-						TRACE_ANIM_POSE_WATCH(*this, PoseWatch.NodeID, PoseWatch.GetBoneTransforms(), PoseWatch.GetRequiredBones(), PoseWatch.GetWorldTransform(), true);
+						TRACE_ANIM_POSE_WATCH(*this, PoseWatch.PoseWatchPoseElement, PoseWatch.NodeID, PoseWatch.GetBoneTransforms(), PoseWatch.GetCurves(), PoseWatch.GetRequiredBones(), PoseWatch.GetWorldTransform(), PoseWatch.PoseWatchPoseElement->GetIsVisible());
 						break;
 					}
 				}
@@ -3320,6 +3379,11 @@ void FAnimInstanceProxy::RegisterWatchedPose(const FCompactPose& Pose, int32 Lin
 }
 
 void FAnimInstanceProxy::RegisterWatchedPose(const FCSPose<FCompactPose>& Pose, int32 LinkID)
+{
+	RegisterWatchedPose(Pose, FBlendedCurve(), LinkID);
+}
+
+void FAnimInstanceProxy::RegisterWatchedPose(const FCSPose<FCompactPose>& Pose, const FBlendedCurve& InCurve, int32 LinkID)
 {
 	if (bIsBeingDebugged)
 	{
@@ -3340,9 +3404,10 @@ void FAnimInstanceProxy::RegisterWatchedPose(const FCSPose<FCompactPose>& Pose, 
 						const TArray<FTransform, FAnimStackAllocator>& BoneTransforms = TempPose.GetBones();
 						const TArray<FBoneIndexType>& TmpRequiredBones = TempPose.GetBoneContainer().GetBoneIndicesArray();
 						PoseWatch.SetPose(TmpRequiredBones, BoneTransforms);
+						PoseWatch.SetCurves(InCurve);
 						PoseWatch.SetWorldTransform(SkelMeshComponent->GetComponentTransform());
 
-						TRACE_ANIM_POSE_WATCH(*this, PoseWatch.NodeID, PoseWatch.GetBoneTransforms(), PoseWatch.GetRequiredBones(), PoseWatch.GetWorldTransform(), true);
+						TRACE_ANIM_POSE_WATCH(*this, PoseWatch.PoseWatchPoseElement, PoseWatch.NodeID, PoseWatch.GetBoneTransforms(), PoseWatch.GetCurves(), PoseWatch.GetRequiredBones(), PoseWatch.GetWorldTransform(), PoseWatch.PoseWatchPoseElement->GetIsVisible());
 						break;
 					}
 				}
@@ -3406,50 +3471,25 @@ void FAnimInstanceProxy::UpdateCurvesToEvaluationContext(const FAnimationEvaluat
 
 	ResetAnimationCurves();
 
-	if(InContext.Curve.UIDToArrayIndexLUT != nullptr && InContext.Curve.UIDToArrayIndexLUT->Num() > 0)
+	InContext.Curve.ForEachElement([this](const UE::Anim::FCurveElement& InCurveElement)
 	{
-		const TArray<uint16>& UIDToArrayIndexLookupTable = RequiredBones.GetUIDToArrayLookupTable();
-		const FSmartNameMapping* Mapping = RequiredBones.GetSkeletonAsset()->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
-		
-		check(UIDToArrayIndexLookupTable.Num() == InContext.Curve.UIDToArrayIndexLUT->Num());
+		AnimationCurves[(uint8)EAnimCurveType::AttributeCurve].Add(InCurveElement.Name, InCurveElement.Value);
+	});
 
-		for (int32 CurveUID = 0; CurveUID < UIDToArrayIndexLookupTable.Num(); ++CurveUID)
+	UE::Anim::FNamedValueArrayUtils::Intersection(InContext.Curve, RequiredBones->GetCurveFlags(), 
+		[this](const UE::Anim::FCurveElement& InCurveElement, const UE::Anim::FCurveElementFlags& InCurveFlagsElement)
 		{
-			uint16 ArrayIndex = UIDToArrayIndexLookupTable[CurveUID];
-		
-			if (ArrayIndex != MAX_uint16 && 
-				ensureAlwaysMsgf(InContext.Curve.CurveWeights.IsValidIndex(ArrayIndex), TEXT("%s Animation Instance contains out of bound UIDList."), *AnimInstanceObject->GetClass()->GetName()) &&
-				InContext.Curve.ValidCurveWeights[ArrayIndex])
+			if(EnumHasAnyFlags(InCurveFlagsElement.Flags | InCurveElement.Flags, UE::Anim::ECurveElementFlags::MorphTarget))
 			{
-				FName CurveName;
-				if (Mapping->GetName(CurveUID, CurveName))
-				{
-#if !WITH_EDITOR
-					const FCurveMetaData* CurveMetaData = &Mapping->GetCurveMetaData(CurveUID);
-#else
-					if (const FCurveMetaData* CurveMetaData = Mapping->GetCurveMetaData(CurveName))
-#endif
-					{
-						const FAnimCurveType& CurveType = CurveMetaData->Type;
-						const float CurveWeight = InContext.Curve.CurveWeights[ArrayIndex];
-					
-						AnimationCurves[(uint8)EAnimCurveType::AttributeCurve].Add(CurveName, CurveWeight);
-
-						if(CurveType.bMorphtarget)
-						{
-							AnimationCurves[(uint8)EAnimCurveType::MorphTargetCurve].Add(CurveName, CurveWeight);
-						}
-
-						if(CurveType.bMaterial)
-						{
-							MaterialParametersToClear.Remove(CurveName);
-							AnimationCurves[(uint8)EAnimCurveType::MaterialCurve].Add(CurveName, CurveWeight);
-						}
-					}	
-				}
+				AnimationCurves[(uint8)EAnimCurveType::MorphTargetCurve].Add(InCurveElement.Name, InCurveElement.Value);
 			}
-		}
-	}
+
+			if(EnumHasAnyFlags(InCurveFlagsElement.Flags | InCurveElement.Flags, UE::Anim::ECurveElementFlags::Material))
+			{
+				MaterialParametersToClear.Remove(InCurveElement.Name);
+				AnimationCurves[(uint8)EAnimCurveType::MaterialCurve].Add(InCurveElement.Name, InCurveElement.Value);
+			}
+		});
 }
 
 void FAnimInstanceProxy::UpdateCurvesPostEvaluation(USkeletalMeshComponent* SkelMeshComp)
@@ -3487,7 +3527,7 @@ bool FAnimInstanceProxy::HasActiveCurves() const
 	return false;
 }
 
-void FAnimInstanceProxy::AddCurveValue(const FSmartNameMapping& Mapping, const FName& CurveName, float Value)
+void FAnimInstanceProxy::AddCurveValue(const FName& CurveName, float Value, bool bMorphtarget, bool bMaterial)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 
@@ -3505,35 +3545,31 @@ void FAnimInstanceProxy::AddCurveValue(const FSmartNameMapping& Mapping, const F
 		AnimationCurves[(uint8)EAnimCurveType::AttributeCurve].Add(CurveName, Value);
 	}
 
-	const FCurveMetaData* CurveMetaData = Mapping.GetCurveMetaData(CurveName);
-	if (CurveMetaData)
+	if (bMorphtarget)
 	{
-		if (CurveMetaData->Type.bMorphtarget)
+		CurveValPtr = AnimationCurves[(uint8)EAnimCurveType::MorphTargetCurve].Find(CurveName);
+		if (CurveValPtr)
 		{
-			CurveValPtr = AnimationCurves[(uint8)EAnimCurveType::MorphTargetCurve].Find(CurveName);
-			if (CurveValPtr)
-			{
-				// sum up, in the future we might normalize, but for now this just sums up
-				// this won't work well if all of them have full weight - i.e. additive 
-				*CurveValPtr = Value;
-			}
-			else
-			{
-				AnimationCurves[(uint8)EAnimCurveType::MorphTargetCurve].Add(CurveName, Value);
-			}
+			// sum up, in the future we might normalize, but for now this just sums up
+			// this won't work well if all of them have full weight - i.e. additive 
+			*CurveValPtr = Value;
 		}
-		if (CurveMetaData->Type.bMaterial)
+		else
 		{
-			MaterialParametersToClear.RemoveSwap(CurveName);
-			CurveValPtr = AnimationCurves[(uint8)EAnimCurveType::MaterialCurve].Find(CurveName);
-			if (CurveValPtr)
-			{
-				*CurveValPtr = Value;
-			}
-			else
-			{
-				AnimationCurves[(uint8)EAnimCurveType::MaterialCurve].Add(CurveName, Value);
-			}
+			AnimationCurves[(uint8)EAnimCurveType::MorphTargetCurve].Add(CurveName, Value);
+		}
+	}
+	if (bMaterial)
+	{
+		MaterialParametersToClear.RemoveSwap(CurveName);
+		CurveValPtr = AnimationCurves[(uint8)EAnimCurveType::MaterialCurve].Find(CurveName);
+		if (CurveValPtr)
+		{
+			*CurveValPtr = Value;
+		}
+		else
+		{
+			AnimationCurves[(uint8)EAnimCurveType::MaterialCurve].Add(CurveName, Value);
 		}
 	}
 }

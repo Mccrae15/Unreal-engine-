@@ -10,14 +10,13 @@
 #include "RenderResource.h"
 #include "RenderGraphResources.h"
 #include "HairStrandsInterface.h"
-#include "HairStrandsRendering.h"
 #include "HairStrandsMeshProjection.h"
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Misc/Helpers
 
-struct FHairStrandClusterCullingData;
+struct FHairStrandClusterData;
 class FRDGPooledBuffer;
 struct IPooledRenderTarget;
 struct FRWBuffer;
@@ -27,15 +26,6 @@ class  FRDGShaderResourceView;
 class  FResourceArrayInterface;
 class  FSceneView;
 class  UTexture2D;
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Hair/Mesh projection & interpolation
-
-enum class EHairStrandsInterpolationType
-{
-	RenderStrands,
-	SimulationStrands
-};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Mesh transfer and hair projection debug infos

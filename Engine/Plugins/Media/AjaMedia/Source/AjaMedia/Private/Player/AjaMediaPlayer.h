@@ -29,6 +29,7 @@ namespace AJA
 	class AJAInputChannel;
 }
 
+
 /**
  * Implements a media player using AJA.
  *
@@ -104,20 +105,19 @@ protected:
 
 	virtual bool IsHardwareReady() const override;
 
-	//~ FMediaIOCorePlayerBase interface
+	//~ Begin FMediaIOCorePlayerBase interface
 	virtual void SetupSampleChannels() override;
-
 	virtual uint32 GetNumVideoFrameBuffers() const override
 	{
 		return MaxNumVideoFrameBuffer;
 	}
-
 	virtual EMediaIOCoreColorFormat GetColorFormat() const override
 	{
 		return AjaColorFormat == EAjaMediaSourceColorFormat::YUV2_8bit ? EMediaIOCoreColorFormat::YUV8 : EMediaIOCoreColorFormat::YUV10;
 	}
 
-	virtual void AddVideoSample(const TSharedRef<FMediaIOCoreTextureSampleBase>& InSample) override;
+	virtual TSharedPtr<FMediaIOCoreTextureSampleBase> AcquireTextureSample_AnyThread() const override;
+	//~ End FMediaIOCorePlayerBase interface
 
 private:
 	bool Open_Internal(const FString& Url, const IMediaOptions* Options, AJA::AJAInputOutputChannelOptions AjaOptions);
@@ -137,49 +137,49 @@ private:
 	TSharedPtr<FAjaMediaTextureSample, ESPMode::ThreadSafe> AjaThreadCurrentTextureSample;
 
 	/** The media sample cache. */
-	int32 MaxNumAudioFrameBuffer;
-	int32 MaxNumMetadataFrameBuffer;
-	int32 MaxNumVideoFrameBuffer;
+	int32 MaxNumAudioFrameBuffer    = 0;
+	int32 MaxNumMetadataFrameBuffer = 0;
+	int32 MaxNumVideoFrameBuffer    = 0;
 
 	/** Current state of the media player. */
-	EMediaState AjaThreadNewState;
+	EMediaState AjaThreadNewState = EMediaState::Closed;
 
 	/** The media event handler. */
 	IMediaEventSink& EventSink;
 
 	/** Number of audio channels in the last received sample. */
-	int32 AjaThreadAudioChannels;
+	int32 AjaThreadAudioChannels = 0;
 
 	/** Audio sample rate in the last received sample. */
-	int32 AjaThreadAudioSampleRate;
+	int32 AjaThreadAudioSampleRate = 0;
 
 	/** Number of frames drop from the last tick. */
-	int32 AjaThreadFrameDropCount;
-	int32 PreviousMetadataFrameDropCount;
-	int32 PreviousAudioFrameDropCount;
-	int32 PreviousVideoFrameDropCount;
+	int32 AjaThreadFrameDropCount = 0;
+	int32 PreviousMetadataFrameDropCount = 0;
+	int32 PreviousAudioFrameDropCount = 0;
+	int32 PreviousVideoFrameDropCount = 0;
 
 	/** Number of frames drop from the last tick. */
-	uint32 LastFrameDropCount;
-	uint32 PreviousFrameDropCount;
+	uint32 LastFrameDropCount     = 0;
+	uint32 PreviousFrameDropCount = 0;
 
 	/** Whether to use the time code embedded in AJA frames. */
-	bool bEncodeTimecodeInTexel;
+	bool bEncodeTimecodeInTexel = false;
 
 	/** Whether to use the timecode embedded in a frame. */
-	bool bUseFrameTimecode;
+	bool bUseFrameTimecode = false;
 
 	/** Whether the input is in sRGB and can have a ToLinear conversion. */
-	bool bIsSRGBInput;
+	bool bIsSRGBInput = false;
 
 	/** Which field need to be capture. */
-	bool bUseAncillary;
-	bool bUseAudio;
-	bool bUseVideo;
-	bool bVerifyFrameDropCount;
+	bool bUseAncillary = false;
+	bool bUseAudio = false;
+	bool bUseVideo = false;
+	bool bVerifyFrameDropCount = true;
 
 	/** Maps to the current input Device */
-	AJA::AJAInputChannel* InputChannel;
+	AJA::AJAInputChannel* InputChannel = nullptr;
 
 	/** Used to flag which sample types we advertise as supported for timed data monitoring */
 	EMediaIOSampleType SupportedSampleTypes;
@@ -188,9 +188,21 @@ private:
 	AJA::FTimecode AjaThreadPreviousFrameTimecode;
 
 	/** Flag to indicate that pause is being requested */
-	std::atomic<bool> bPauseRequested;
+	std::atomic<bool> bPauseRequested = false;
 
 	EAjaMediaSourceColorFormat AjaColorFormat = EAjaMediaSourceColorFormat::YUV2_8bit;
+
+	/** Whether to override the source encoding or to use the metadata embedded in the ancillary data of the signal. */
+	bool bOverrideSourceEncoding = true;
+
+	/** Encoding of the source texture. */
+	ETextureSourceEncoding OverrideSourceEncoding = ETextureSourceEncoding::TSE_Linear;
+
+	/** Whether to override the source color space or to use the metadata embedded in the ancillary data of the signal. */
+	bool bOverrideSourceColorSpace = true;
+
+	/** Color space of the source texture. */
+	ETextureColorSpace OverrideSourceColorSpace = ETextureColorSpace::TCS_None;
 
 	/** Device provider used to autodetect input format. */
 	TPimplPtr<class FAjaDeviceProvider> DeviceProvider;

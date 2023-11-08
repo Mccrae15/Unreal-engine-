@@ -38,6 +38,27 @@ struct FLevelReadOnlyData
 // Map to link the level data with a level
 static TMap<ULevel*, FLevelReadOnlyData> LevelReadOnlyCache;
 
+namespace LevelUtilsInternal
+{
+	static void ApplyEditorTransform(ULevel* LoadedLevel, bool bDoPostEditMove, AActor* Actor, const FTransform& Transform)
+	{
+		if (LoadedLevel)
+		{
+			FLevelUtils::FApplyLevelTransformParams TransformParams(LoadedLevel, Transform);
+
+			while (AActor* AttachParent = Actor ? Actor->GetAttachParentActor() : nullptr)
+			{
+				Actor = AttachParent;
+			}
+
+			TransformParams.bDoPostEditMove = bDoPostEditMove;
+			TransformParams.Actor = Actor;
+
+			FLevelUtils::ApplyLevelTransform(TransformParams);
+		}
+	}
+}
+
 #endif
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -114,12 +135,20 @@ bool FLevelUtils::IsServerStreamingLevelVisible(UWorld* InWorld, const FName& In
 		return true;
 	}
 
-	if (const AServerStreamingLevelsVisibility* ServerStreamingLevelsVisibility = InWorld->GetServerStreamingLevelsVisibility())
-	{
-		return ServerStreamingLevelsVisibility && ServerStreamingLevelsVisibility->Contains(InPackageName);
-	}
+	const AServerStreamingLevelsVisibility* ServerStreamingLevelsVisibility = InWorld->GetServerStreamingLevelsVisibility();
+	return ServerStreamingLevelsVisibility && ServerStreamingLevelsVisibility->Contains(InPackageName);
+}
 
-	return false;
+ULevelStreaming* FLevelUtils::GetServerVisibleStreamingLevel(UWorld* InWorld, const FName& InPackageName)
+{
+	if (SupportsMakingVisibleTransactionRequests(InWorld))
+	{
+		if (const AServerStreamingLevelsVisibility* ServerStreamingLevelsVisibility = InWorld->GetServerStreamingLevelsVisibility())
+		{
+			return ServerStreamingLevelsVisibility->GetVisibleStreamingLevel(InPackageName);
+		}
+	}
+	return nullptr;
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -348,26 +377,13 @@ void FLevelUtils::SetEditorTransform(ULevelStreaming* StreamingLevel, const FTra
 void FLevelUtils::ApplyEditorTransform(const ULevelStreaming* StreamingLevel, bool bDoPostEditMove, AActor* Actor)
 {
 	check(StreamingLevel);
-	if (ULevel* LoadedLevel = StreamingLevel->GetLoadedLevel())
-	{	
-		FApplyLevelTransformParams TransformParams(LoadedLevel, StreamingLevel->LevelTransform);
-		TransformParams.Actor = Actor;
-		TransformParams.bDoPostEditMove = bDoPostEditMove;
-		ApplyLevelTransform(TransformParams);
-	}
+	LevelUtilsInternal::ApplyEditorTransform(StreamingLevel->GetLoadedLevel(), bDoPostEditMove, Actor, StreamingLevel->LevelTransform);
 }
 
 void FLevelUtils::RemoveEditorTransform(const ULevelStreaming* StreamingLevel, bool bDoPostEditMove, AActor* Actor)
 {
 	check(StreamingLevel);
-	if (ULevel* LoadedLevel = StreamingLevel->GetLoadedLevel())
-	{
-		const FTransform InverseTransform = StreamingLevel->LevelTransform.Inverse();
-		FApplyLevelTransformParams TransformParams(LoadedLevel, InverseTransform);
-		TransformParams.Actor = Actor;
-		TransformParams.bDoPostEditMove = bDoPostEditMove;
-		ApplyLevelTransform(TransformParams);
-	}
+	LevelUtilsInternal::ApplyEditorTransform(StreamingLevel->GetLoadedLevel(), bDoPostEditMove, Actor, StreamingLevel->LevelTransform.Inverse());
 }
 
 void FLevelUtils::ApplyPostEditMove( ULevel* Level )
@@ -525,6 +541,7 @@ void FLevelUtils::ApplyLevelTransform(const FLevelUtils::FApplyLevelTransformPar
 #endif // WITH_EDITOR
 
 		TransformParams.Level->OnApplyLevelTransform.Broadcast(TransformParams.LevelTransform);
+		FWorldDelegates::PostApplyLevelTransform.Broadcast(TransformParams.Level, TransformParams.LevelTransform);
 	}
 }
 

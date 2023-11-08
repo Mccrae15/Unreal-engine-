@@ -25,8 +25,6 @@ struct FAssetManagerDependencyQuery
 	}
 
 	FAssetManagerDependencyQuery() = default;
-	UE_DEPRECATED(4.26, "Helper for backwards compatibility functions")
-	ASSETMANAGEREDITOR_API FAssetManagerDependencyQuery(EAssetRegistryDependencyType::Type DependencyType);
 
 	static FAssetManagerDependencyQuery All()
 	{
@@ -217,6 +215,25 @@ public:
 		}
 	}
 
+	template <typename ValueType>
+	bool GetAssetTagByObjectPath(const FSoftObjectPath& InObjectPath, FName InTagName, ValueType& OutTagValue) const
+	{
+		if (bIsEditor)
+		{
+			return AssetRegistryPrivate->GetAssetByObjectPath(InObjectPath, true /* bIncludeOnlyOnDiskAssets */).GetTagValue(InTagName, OutTagValue);
+		}
+		else if (RegistryStatePrivate)
+		{
+			const FAssetData* AssetData = RegistryStatePrivate->GetAssetByObjectPath(InObjectPath);
+			if (AssetData)
+			{
+				return AssetData->GetTagValue(InTagName, OutTagValue);
+			}
+			return false;
+		}
+		return false;
+	}
+
 	UE_DEPRECATED(5.1, "Asset path FNames have been deprecated, use FSoftObjectPath instead.")
 	FAssetData GetAssetByObjectPath(FName ObjectPath) const
 	{
@@ -364,15 +381,18 @@ public:
 	static const FName TotalUsageName;
 	static const FName CookRuleName;
 	static const FName ChunksName;
+	static const FName StageChunkSizeName;
+	static const FName StageChunkCompressedSizeName;
+	static const FName PluginName;
 
 	/** Gets the value of a "virtual" column for an asset data, this will query the AssetManager for you and takes current platform into account. Returns true and sets out parameter if found */
-	virtual bool GetStringValueForCustomColumn(const FAssetData& AssetData, FName ColumnName, FString& OutValue) = 0;
+	virtual bool GetStringValueForCustomColumn(const FAssetData& AssetData, FName ColumnName, FString& OutValue, const FAssetManagerEditorRegistrySource* OverrideRegistrySource = nullptr) = 0;
 
-	/** Gets a display text value for a vritual column. Returns true and sets out parameter if found */
-	virtual bool GetDisplayTextForCustomColumn(const FAssetData& AssetData, FName ColumnName, FText& OutValue) = 0;
+	/** Gets a display text value for a virtual column. Returns true and sets out parameter if found */
+	virtual bool GetDisplayTextForCustomColumn(const FAssetData& AssetData, FName ColumnName, FText& OutValue, const FAssetManagerEditorRegistrySource* OverrideRegistrySource = nullptr) = 0;
 
 	/** Gets the value of a "virtual" column for an asset data, this will query the AssetManager for you and takes current platform into account. Returns true and sets out parameter if found */
-	virtual bool GetIntegerValueForCustomColumn(const FAssetData& AssetData, FName ColumnName, int64& OutValue) = 0;
+	virtual bool GetIntegerValueForCustomColumn(const FAssetData& AssetData, FName ColumnName, int64& OutValue, const FAssetManagerEditorRegistrySource* OverrideRegistrySource = nullptr) = 0;
 
 	/** Returns the set of asset packages managed the given asset data, returns true if any found. This handles the fake chunk/primary asset types above */
 	virtual bool GetManagedPackageListForAssetData(const FAssetData& AssetData, TSet<FName>& ManagedPackageSet) = 0;
@@ -386,14 +406,14 @@ public:
 	/** Sets the current registry source, this loads the asset registry state if needed and may spawn a file load dialog for custom */
 	virtual void SetCurrentRegistrySource(const FString& SourceName) = 0;
 
+	/** Sets up a registry source. If InOutRegistrySource->SourceName is CustomSourceName, a dialog will be presented to select the asset registry to load */
+	virtual bool PopulateRegistrySource(FAssetManagerEditorRegistrySource* InOutRegistrySource) = 0;
+
 	/** Refreshes the management dictionary and all sources */
 	virtual void RefreshRegistryData() = 0;
 
 	/** Returns true if this package exists in the current registry source, optionally setting a redirected package name */
 	virtual bool IsPackageInCurrentRegistrySource(FName PackageName) = 0;
-
-	UE_DEPRECATED(4.26, "Use the version that takes a FAssetManagerDependencyQuery instead")
-	bool FilterAssetIdentifiersForCurrentRegistrySource(TArray<FAssetIdentifier>& AssetIdentifiers, EAssetRegistryDependencyType::Type DependencyType, bool bForwardDependency = true);
 
 	/** Filters list of identifiers and removes ones that do not exist in this registry source. Handles replacing redirectors as well */
 	virtual bool FilterAssetIdentifiersForCurrentRegistrySource(TArray<FAssetIdentifier>& AssetIdentifiers,	const FAssetManagerDependencyQuery& DependencyQuery = FAssetManagerDependencyQuery::None(), bool bForwardDependency = true) = 0;
@@ -410,10 +430,13 @@ public:
 	virtual void OpenReferenceViewerUI(const TArray<FAssetIdentifier> SelectedIdentifiers, const FReferenceViewerParams ReferenceViewerParams = FReferenceViewerParams()) = 0;
 	virtual void OpenReferenceViewerUI(const TArray<FName> SelectedPackages, const FReferenceViewerParams ReferenceViewerParams = FReferenceViewerParams()) = 0;
 
+	/** Returns false if should not open reference viewer for items */
+	DECLARE_DELEGATE_RetVal_TwoParams(bool, FCanOpenReferenceViewerUI, const TArray<FAssetIdentifier>&, FText*);
+	virtual FCanOpenReferenceViewerUI& OnCanOpenReferenceViewerUI() = 0;
+
 	/** Spawns size map with selected packages */
 	virtual void OpenSizeMapUI(TArray<FAssetIdentifier> SelectedIdentifiers) = 0;
 	virtual void OpenSizeMapUI(TArray<FName> SelectedPackages) = 0;
-
 
 	/** Open the Shader cook stats */
 	virtual void OpenShaderCookStatistics(TArray<FName> SelectedIdentifiers) = 0;

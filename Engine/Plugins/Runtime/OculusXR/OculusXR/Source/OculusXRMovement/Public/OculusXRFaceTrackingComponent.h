@@ -69,10 +69,22 @@ public:
 	TMap<EOculusXRFaceExpression, FName> ExpressionNames;
 
 	/**
+	 * An array of optional expression modifiers that can be applied.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "OculusXR|Movement")
+	TArray<FOculusXRFaceExpressionModifier> ExpressionModifiers;
+
+	/**
 	* This flag determines if the face should be updated or not during the components tick.
 	*/
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Oculus|Movement")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OculusXR|Movement")
 	bool bUpdateFace;
+
+	/**
+	* This flag determines if the face should be modified with Expression Modifiers or not during the components tick.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OculusXR|Movement")
+	bool bUseModifiers;
 
 private:
 	bool InitializeFaceTracking();

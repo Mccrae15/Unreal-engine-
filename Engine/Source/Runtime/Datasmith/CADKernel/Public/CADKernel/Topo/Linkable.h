@@ -150,7 +150,7 @@ public:
 		return ((States & EHaveStates::ThinZone) == EHaveStates::ThinZone);
 	}
 
-	virtual void SetThinZone()
+	virtual void SetThinZoneMarker()
 	{
 		States |= EHaveStates::ThinZone;
 	}
@@ -159,6 +159,12 @@ public:
 	{
 		States &= ~EHaveStates::ThinZone;
 	}
+
+	virtual void ResetMarkersRecursively() const override
+	{
+		TopologicalLink->ResetMarkersRecursively();
+	}
+
 
 protected:
 

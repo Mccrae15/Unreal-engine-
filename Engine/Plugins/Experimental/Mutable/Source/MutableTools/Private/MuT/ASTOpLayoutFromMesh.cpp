@@ -77,7 +77,7 @@ namespace mu
 	}
 
 
-	void ASTOpLayoutFromMesh::Link(FProgram& program, const FLinkerOptions*)
+	void ASTOpLayoutFromMesh::Link(FProgram& program, FLinkerOptions*)
 	{
 		// Already linked?
 		if (!linkedAddress)
@@ -155,7 +155,7 @@ namespace mu
 				switch (at->GetOpType())
 				{
 
-				case OP_TYPE::ME_MORPH2:
+				case OP_TYPE::ME_MORPH:
 				{
 					// Sink, ignoring the op
 					const ASTOpMeshMorph* Typed = dynamic_cast<const ASTOpMeshMorph*>(at.get());

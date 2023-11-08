@@ -85,7 +85,7 @@ FStrataLegacyParameters InitStrataLegacyParameters(FStrataPixelFootprint InPixel
 }
 
 FStrataData CreateLegacySlab(
-	FStrataLegacyParameters In, inout uint SharedLocalBasisTypes, inout FStrataTree StrataTree)
+	FStrataLegacyParameters In, inout uint SharedLocalBasisTypes)
 {
 	const float3 Zeros = float3(0, 0, 0);
 	const float3 Ones  = float3(1, 1, 1);
@@ -120,8 +120,11 @@ FStrataData CreateLegacySlab(
 		In.FuzzAmount,										// FuzzAmount
 		In.FuzzColor,										// FuzzColor
 		In.Roughness,										// FuzzRoughness
+		0.0f, 0.0f.xx,										// GlintData
+		0.0f,												// Specular profile
 		In.Thickness,
 		In.bIsThinSurface,
+		true,												// bIsAtTheBottomOfTopology, legacy always has a single BSDF being at the bottom and top at teh same time.
 		In.SharedLocalBasisIndex, SharedLocalBasisTypes);
 }
 
@@ -147,8 +150,7 @@ FStrataData StrataConvertLegacyMaterialDynamic(
 	float3 RawCustomTangent,
 	uint SharedLocalBasisIndex,
 	uint ClearCoatBottomNormal_SharedLocalBasisIndex,
-	inout uint SharedLocalBasisTypes,
-	inout FStrataTree StrataTree)
+	inout uint SharedLocalBasisTypes)
 {
 	const float DefaultThickness = STRATA_LAYER_DEFAULT_THICKNESS_CM;
 	const float3 Zeros = float3(0, 0, 0);
@@ -176,7 +178,7 @@ FStrataData StrataConvertLegacyMaterialDynamic(
 			ColorScaleBehindWater,	// ColorScaleBehindWater
 			SharedLocalBasisIndex);
 	}
-	#endif
+	#endif // MATERIAL_SHADINGMODEL_SINGLELAYERWATER
 	#if MATERIAL_SHADINGMODEL_HAIR
 	if (ShadingModel == SHADINGMODELID_HAIR)
 	{
@@ -189,7 +191,7 @@ FStrataData StrataConvertLegacyMaterialDynamic(
 			Emissive,	   // EmissiveColor
 			SharedLocalBasisIndex);
 	}
-	#endif
+	#endif // MATERIAL_SHADINGMODEL_HAIR
 	#if MATERIAL_SHADINGMODEL_EYE
 	if (ShadingModel == SHADINGMODELID_EYE)
 	{
@@ -211,7 +213,7 @@ FStrataData StrataConvertLegacyMaterialDynamic(
 				Emissive,	         // EmissiveColor
 				SharedLocalBasisIndex);
 	}
-	#endif
+	#endif // MATERIAL_SHADINGMODEL_EYE
 
 	FStrataLegacyParameters LegacySlab = InitStrataLegacyParameters(PixelFootprint, SharedLocalBasisIndex, 1.0f);
 
@@ -396,10 +398,10 @@ FStrataData StrataConvertLegacyMaterialDynamic(
 		// Because we are using a single slab for simulating a 'coverage mix' between two BSDFs (a opaque metallic/conductor and a non-scattering translucent medium), 
 		// we need to do some approximation. In order to reduce avoid hue shift due to difference between 'solid' base-color/diffuse-albedo and 'transparent' transmission 
 		// color, we lerp BaseColor with transmittance color in LAB space so that the interpolated color minized its 'distance' 
-		const float3 BaseColor_LAB			= LinearRGB_2_LAB(BaseColor, XYZ_WHITE_REF_D65_NOMINAL);
-		const float3 TransmittanceColor_LAB = LinearRGB_2_LAB(TransmittanceColor, XYZ_WHITE_REF_D65_NOMINAL);
+		const float3 BaseColor_LAB			= LinearRGB_2_LAB(BaseColor);
+		const float3 TransmittanceColor_LAB = LinearRGB_2_LAB(TransmittanceColor);
 		const float3 Color_LAB			    = lerp(TransmittanceColor_LAB, BaseColor_LAB, Opacity);
-		const float3 Color					= LAB_2_LinearRGB(Color_LAB, XYZ_WHITE_REF_D65_NOMINAL);
+		const float3 Color					= LAB_2_LinearRGB(Color_LAB);
 
 		// Lerp the transmittance color rather than MFP as it is more perceptually linear
 		const float3 MFP = TransmittanceToMeanFreePath(lerp(Color, Zeros, Opacity), Thickness * CENTIMETER_TO_METER) * METER_TO_CENTIMETER;
@@ -432,14 +434,10 @@ FStrataData StrataConvertLegacyMaterialDynamic(
 	}
 
 	// Fixed layer structure for helping compiler to unroll and optimize shader
-	FStrataData Slab = CreateLegacySlab(LegacySlab, SharedLocalBasisTypes, StrataTree);
+	FStrataData Slab = CreateLegacySlab(LegacySlab, SharedLocalBasisTypes);
 #if STRATA_INLINE_SHADING
 	Slab.InlinedBSDF.Coverage = LegacySlab.Weight * FinalWeight;	//////////////////// Remove FinalWeight? Do that in CreateLegacySlab?
 #endif
-
-	#if STRATA_LEGACY_PREMULT_ALPHA_OVERRIDE
-	Slab.PreMultipliedAlphaOverrideCoverage = Opacity;
-	#endif
 
 	return Slab;
 }
@@ -465,8 +463,7 @@ FStrataData StrataConvertLegacyMaterialStatic(
 	float3 RawCustomTangent,
 	uint SharedLocalBasisIndex,
 	uint ClearCoatBottomNormal_SharedLocalBasisIndex,
-	inout uint SharedLocalBasisTypes,
-	inout FStrataTree StrataTree)
+	inout uint SharedLocalBasisTypes)
 {
 	FStrataData Out = GetInitialisedStrataData();
 
@@ -474,36 +471,42 @@ FStrataData StrataConvertLegacyMaterialStatic(
 	const float3 Zeros = float3(0, 0, 0);
 	const float3 Ones = float3(1, 1, 1);
 
+#if STRATA_USE_PREMULTALPHA_OVERRIDE
+	// Opacity is applied using the "Opacity Override" pin on the root node when using alpha composite (pre multiplied alpha).
+	// This is needed because some material might have the pin plugged in and the blending mode overriden on the material instance.
+	Opacity = 1.0f;
+#endif
+
 	if (ShadingModel == SHADINGMODELID_UNLIT)
 	{
 		const float GreyTransmittance = saturate(1.0f - Opacity);
 	#if MATERIALBLENDING_SOLID || MATERIALBLENDING_MASKED
 		// Opaque materials only write emissive.
-		Out = GetStrataUnlitBSDF(Emissive, 0.0f);
+		Out = GetStrataUnlitBSDF(Emissive, 0.0f, RawNormal);
 	#elif MATERIALBLENDING_ALPHACOMPOSITE
 		// Uses (Luminance, black transmittance) for premultiplied alpha blending. Opacity is controled using coverage
-		Out = GetStrataUnlitBSDF(Emissive, 0.0f);
+		Out = GetStrataUnlitBSDF(Emissive, 0.0f, RawNormal);
 		#if STRATA_INLINE_SHADING
 			Out.InlinedBSDF.Coverage = Opacity;
 		#endif
 	#elif MATERIALBLENDING_ALPHAHOLDOUT
 		// The MATERIALBLENDING_ALPHAHOLDOUT case needs to be before the MATERIALBLENDING_TRANSLUCENT case, as alphaholdout material have both cases defined
-		Out = GetStrataUnlitBSDF(0.0f, GreyTransmittance);
+		Out = GetStrataUnlitBSDF(0.0f, GreyTransmittance, RawNormal);
 	#elif MATERIALBLENDING_TRANSLUCENT
 		// Uses (Luminance, black transmittance) for translucency blending. Opacity is controled using coverage
-		Out = GetStrataUnlitBSDF(Emissive * Opacity, 0.0f);
+		Out = GetStrataUnlitBSDF(Emissive * Opacity, 0.0f, RawNormal);
 		#if STRATA_INLINE_SHADING
 			Out.InlinedBSDF.Coverage = Opacity;
 		#endif
 	#elif MATERIALBLENDING_ADDITIVE
 		// Emissive is weighted by opacity in the legacy material.
-		Out = GetStrataUnlitBSDF(Emissive * Opacity, 1.0f);
+		Out = GetStrataUnlitBSDF(Emissive * Opacity, 1.0f, RawNormal);
 	#elif MATERIALBLENDING_MODULATE
 		// Setting up emissive as the transmittance color. It is not clamped in case brightening is required.
-		Out = GetStrataUnlitBSDF(0.0f, Emissive);
+		Out = GetStrataUnlitBSDF(0.0f, Emissive, RawNormal);
 	#else
 		// Required default for some materials such as Editor UI
-		Out = GetStrataUnlitBSDF(Emissive, 0.0f);
+		Out = GetStrataUnlitBSDF(Emissive, 0.0f, RawNormal);
 	#endif
 	}
 	else if (ShadingModel == SHADINGMODELID_HAIR)
@@ -574,8 +577,7 @@ FStrataData StrataConvertLegacyMaterialStatic(
 			RawCustomTangent,
 			SharedLocalBasisIndex,
 			ClearCoatBottomNormal_SharedLocalBasisIndex,
-			SharedLocalBasisTypes,
-			StrataTree);
+			SharedLocalBasisTypes);
 	}
 
 	return Out;

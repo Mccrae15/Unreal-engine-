@@ -29,8 +29,24 @@ namespace AutomationTest
 		TEXT("Automation.CaptureLogEvents"),
 		bCaptureLogEvents,
 		TEXT("Consider warning/error log events during a test as impacting the test itself"));
+
+	static bool bSkipStackWalk = false;
+	static FAutoConsoleVariableRef CVarAutomationSkipStackWalk(
+		TEXT("Automation.SkipStackWalk"),
+		bSkipStackWalk,
+		TEXT("Whether to skip any stack issues that the automation test framework triggers"));
+
+	static bool bLogBPTestMetadata = false;
+	static FAutoConsoleVariableRef CVarAutomationLogBPTestMetadata(
+		TEXT("Automation.LogBPTestMetadata"),
+		bLogBPTestMetadata,
+		TEXT("Whether to output blueprint functional test metadata to the log when test is running"));
 };
 
+bool FAutomationTestBase::bSuppressLogWarnings = false;
+bool FAutomationTestBase::bSuppressLogErrors = false;
+bool FAutomationTestBase::bElevateLogWarningsToErrors = false;
+TArray<FString> FAutomationTestBase::SuppressedLogCategories;
 
 CORE_API const TMap<FString, EAutomationTestFlags::Type>& EAutomationTestFlags::GetTestFlagsMap()
 {
@@ -76,10 +92,6 @@ CORE_API ELogVerbosity::Type GetAutomationLogLevel(ELogVerbosity::Type LogVerbos
 	// agrant-todo: these should be controlled by FAutomationTestBase for 4.27 with the same project-level override that
 	// FunctionalTest has. Now that warnings are correctly associated with tests they need to be something all tests
 	// can leverage, not just functional tests
-	static bool bSuppressLogWarnings = false;
-	static bool bSuppressLogErrors = false;
-	static bool bElevateLogWarningsToErrors = false;
-	static TArray<FString> SuppressedLogCategories;
 	static FAutomationTestBase* LastTest = nullptr;
 
 	if (AutomationTest::bCaptureLogEvents == false)
@@ -87,20 +99,16 @@ CORE_API ELogVerbosity::Type GetAutomationLogLevel(ELogVerbosity::Type LogVerbos
 		return ELogVerbosity::NoLogging;
 	}
 
-	if (CurrentTest != LastTest)
+	if (CurrentTest != LastTest) 
 	{
-		// These can be changed in the editor so can't just be cached for the whole session
-		SuppressedLogCategories.Empty();
-		GConfig->GetBool(TEXT("/Script/AutomationController.AutomationControllerSettings"), TEXT("bSuppressLogErrors"), bSuppressLogErrors, GEngineIni);
-		GConfig->GetBool(TEXT("/Script/AutomationController.AutomationControllerSettings"), TEXT("bSuppressLogWarnings"), bSuppressLogWarnings, GEngineIni);
-		GConfig->GetBool(TEXT("/Script/AutomationController.AutomationControllerSettings"), TEXT("bElevateLogWarningsToErrors"), bElevateLogWarningsToErrors, GEngineIni);
-		GConfig->GetArray(TEXT("/Script/AutomationController.AutomationControllerSettings"), TEXT("SuppressedLogCategories"), SuppressedLogCategories, GEngineIni);
+		FAutomationTestBase::SuppressedLogCategories.Empty();
+		FAutomationTestBase::LoadDefaultLogSettings();
 		LastTest = CurrentTest;
 	}
 
 	if (CurrentTest)
 	{
-		if (CurrentTest->SuppressLogs() || SuppressedLogCategories.Contains(LogCategory.ToString()))
+		if (CurrentTest->SuppressLogs() || CurrentTest->GetSuppressedLogCategories().Contains(LogCategory.ToString()))
 		{
 			EffectiveVerbosity = ELogVerbosity::NoLogging;
 		}
@@ -108,11 +116,11 @@ CORE_API ELogVerbosity::Type GetAutomationLogLevel(ELogVerbosity::Type LogVerbos
 		{
 			if (EffectiveVerbosity == ELogVerbosity::Warning)
 			{
-				if (CurrentTest->SuppressLogWarnings() || bSuppressLogWarnings)
+				if (CurrentTest->SuppressLogWarnings())
 				{
 					EffectiveVerbosity = ELogVerbosity::NoLogging;
 				}
-				else if (CurrentTest->ElevateLogWarningsToErrors() || bElevateLogWarningsToErrors)
+				else if (CurrentTest->ElevateLogWarningsToErrors())
 				{
 					EffectiveVerbosity = ELogVerbosity::Error;
 				}
@@ -120,7 +128,7 @@ CORE_API ELogVerbosity::Type GetAutomationLogLevel(ELogVerbosity::Type LogVerbos
 
 			if (EffectiveVerbosity == ELogVerbosity::Error)
 			{
-				if (CurrentTest->SuppressLogErrors() ||  bSuppressLogErrors)
+				if (CurrentTest->SuppressLogErrors())
 				{
 					EffectiveVerbosity = ELogVerbosity::NoLogging;
 				}
@@ -147,7 +155,8 @@ void FAutomationTestFramework::FAutomationTestOutputDevice::Serialize( const TCH
 	{
 		FScopeLock Lock(&ActionCS);
 		bool CaptureLog = !LocalCurTest->SuppressLogs()
-			&& (Verbosity == ELogVerbosity::Error || Verbosity == ELogVerbosity::Warning || Verbosity == ELogVerbosity::Display);
+			&& (Verbosity == ELogVerbosity::Error || Verbosity == ELogVerbosity::Warning || Verbosity == ELogVerbosity::Display)
+			&& LocalCurTest->ShouldCaptureLogCategory(Category);
 
 		if (CaptureLog)
 		{
@@ -256,6 +265,17 @@ FString FAutomationTestFramework::GetUserAutomationDirectory() const
 {
 	const FString DefaultAutomationSubFolder = TEXT("Unreal Automation");
 	return FString(FPlatformProcess::UserDir()) + DefaultAutomationSubFolder;
+}
+
+bool FAutomationTestFramework::NeedSkipStackWalk()
+{
+	return AutomationTest::bSkipStackWalk;
+}
+
+
+bool FAutomationTestFramework::NeedLogBPTestMetadata()
+{
+	return AutomationTest::bLogBPTestMetadata;
 }
 
 bool FAutomationTestFramework::RegisterAutomationTest( const FString& InTestNameToRegister, FAutomationTestBase* InTestToRegister )
@@ -898,6 +918,45 @@ bool FAutomationTestFramework::InternalStopTest(FAutomationTestExecutionInfo& Ou
 	return bTestSuccessful;
 }
 
+bool FAutomationTestFramework::CanRunTestInEnvironment(const FString& InTestToRun, FString* OutReason, bool* OutWarn) const
+{
+	FString TestClassName;
+	FString TestParameters;
+	if (!InTestToRun.Split(TEXT(" "), &TestClassName, &TestParameters, ESearchCase::CaseSensitive))
+	{
+		TestClassName = InTestToRun;
+	}
+
+	if (!ContainsTest(TestClassName))
+	{
+		return false;
+	}
+
+	const FAutomationTestBase* const Test = *(AutomationTestClassNameToInstanceMap.Find(TestClassName));
+
+	if (nullptr == Test)
+	{
+		return false;
+	}
+
+	if (!Test->CanRunInEnvironment(TestParameters, OutReason, OutWarn))
+	{
+		if (nullptr != OutReason)
+		{
+			if (OutReason->IsEmpty())
+			{
+				*OutReason = TEXT("unknown reason");
+			}
+
+			*OutReason += TEXT(" [code]");
+		}
+		
+		return false;
+	}
+
+	return true;
+}
+
 void FAutomationTestFramework::AddAnalyticsItemToCurrentTest( const FString& AnalyticsItem )
 {
 	if( CurrentTest != nullptr )
@@ -952,7 +1011,16 @@ FString FAutomationExecutionEntry::ToString() const
 	FString ComplexString;
 
 	ComplexString = Event.Message;
-	
+
+	if (!Event.Context.IsEmpty())
+	{
+		ComplexString += TEXT(" [");
+		ComplexString += Event.Context;
+		ComplexString += TEXT("] ");
+	}
+
+	// Place the filename at the end so it can be extracted by the SAutomationWindow widget
+	// Expectation is "[filename(line)]"
 	if ( !Filename.IsEmpty() && LineNumber > 0 )
 	{
 		ComplexString += TEXT(" [");
@@ -962,16 +1030,33 @@ FString FAutomationExecutionEntry::ToString() const
 		ComplexString += TEXT(")]");
 	}
 
-	if ( !Event.Context.IsEmpty() )
+	return ComplexString;
+}
+
+FString FAutomationExecutionEntry::ToStringFormattedEditorLog() const
+{
+	FString ComplexString;
+
+	ComplexString = Event.Message;
+
+	if (!Event.Context.IsEmpty())
 	{
 		ComplexString += TEXT(" [");
 		ComplexString += Event.Context;
 		ComplexString += TEXT("] ");
 	}
 
+	if (!Filename.IsEmpty() && LineNumber > 0)
+	{
+		ComplexString += TEXT(" ");
+		ComplexString += Filename;
+		ComplexString += TEXT("(");
+		ComplexString += FString::FromInt(LineNumber);
+		ComplexString += TEXT(")");
+	}
+
 	return ComplexString;
 }
-
 //------------------------------------------------------------------------------
 
 void FAutomationTestExecutionInfo::Clear()
@@ -1118,12 +1203,13 @@ void FAutomationTestBase::AddError(const FString& InError, int32 StackOffset)
 	}
 }
 
-void FAutomationTestBase::AddErrorIfFalse(bool bCondition, const FString& InError, int32 StackOffset)
+bool FAutomationTestBase::AddErrorIfFalse(bool bCondition, const FString& InError, int32 StackOffset)
 {
 	if (!bCondition)
 	{
 		AddError(InError, StackOffset);
 	}
+	return bCondition;
 }
 
 void FAutomationTestBase::AddErrorS(const FString& InError, const FString& InFilename, int32 InLineNumber)
@@ -1408,6 +1494,14 @@ bool FAutomationTestBase::LogCategoryMatchesSeverityInclusive(
 	return Actual == ELogVerbosity::All || MaximumVerbosity == ELogVerbosity::All || Actual <= MaximumVerbosity;
 }
 
+void FAutomationTestBase::LoadDefaultLogSettings()
+{
+	GConfig->GetBool(TEXT("/Script/AutomationController.AutomationControllerSettings"), TEXT("bSuppressLogErrors"), bSuppressLogErrors, GEngineIni);
+	GConfig->GetBool(TEXT("/Script/AutomationController.AutomationControllerSettings"), TEXT("bSuppressLogWarnings"), bSuppressLogWarnings, GEngineIni);
+	GConfig->GetBool(TEXT("/Script/AutomationController.AutomationControllerSettings"), TEXT("bElevateLogWarningsToErrors"), bElevateLogWarningsToErrors, GEngineIni);
+	GConfig->GetArray(TEXT("/Script/AutomationController.AutomationControllerSettings"), TEXT("SuppressedLogCategories"), SuppressedLogCategories, GEngineIni);
+}
+
 // --------------------------------------------------------------------------------------
 
 bool FAutomationTestBase::TestEqual(const TCHAR* What, const int32 Actual, const int32 Expected)
@@ -1530,6 +1624,31 @@ bool FAutomationTestBase::TestEqualInsensitive(const TCHAR* What, const TCHAR* A
 		return false;
 	}
 	return true;
+}
+
+bool FAutomationTestBase::TestNearlyEqual(const TCHAR* What, const float Actual, const float Expected, float Tolerance)
+{
+	return TestEqual(What, Actual, Expected, Tolerance);
+}
+
+bool FAutomationTestBase::TestNearlyEqual(const TCHAR* What, const double Actual, const double Expected, double Tolerance)
+{
+	return TestEqual(What, Actual, Expected, Tolerance);
+}
+
+bool FAutomationTestBase::TestNearlyEqual(const TCHAR* What, const FVector Actual, const FVector Expected, float Tolerance)
+{
+	return TestEqual(What, Actual, Expected, Tolerance);
+}
+
+bool FAutomationTestBase::TestNearlyEqual(const TCHAR* What, const FTransform Actual, const FTransform Expected, float Tolerance)
+{
+	return TestEqual(What, Actual, Expected, Tolerance);
+}
+
+bool FAutomationTestBase::TestNearlyEqual(const TCHAR* What, const FRotator Actual, const FRotator Expected, float Tolerance)
+{
+	return TestEqual(What, Actual, Expected, Tolerance);
 }
 
 bool FAutomationTestBase::TestFalse(const TCHAR* What, bool Value)

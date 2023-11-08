@@ -76,6 +76,10 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, config, Category=Mesh, meta=(ImportType="SkeletalMesh|GeoOnly"))
 	uint32 bPreserveSmoothingGroups:1;
 
+	/** If checked, sections with matching materials are kept separate and will not get combined. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, config, Category=Mesh, meta=(ImportType="SkeletalMesh|GeoOnly"))
+	uint32 bKeepSectionsSeparate:1;
+
 	/** If checked, meshes nested in bone hierarchies will be imported instead of being converted to bones. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, config, Category=Mesh, meta=(ImportType="SkeletalMesh"))
 	uint32 bImportMeshesInBoneHierarchy:1;
@@ -83,6 +87,10 @@ public:
 	/** True to import morph target meshes from the FBX file */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, config, Category=Mesh, meta=(ImportType="SkeletalMesh|GeoOnly", ToolTip="If enabled, creates Unreal morph objects for the imported meshes"))
 	uint32 bImportMorphTargets:1;
+	
+	/** True to import per-vertex attributes from the FBX file */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, config, Category=Mesh, meta=(ImportType="SkeletalMesh|GeoOnly", ToolTip="If enabled, creates a named vertex attribute for each single-channel weight map of the imported mesh."))
+	uint32 bImportVertexAttributes:1;
 
 	/** Threshold to compare vertex position equality. */
 	UPROPERTY(EditAnywhere, config, Category="Mesh", meta = (ImportType = "SkeletalMesh|GeoOnly", SubCategory = "Thresholds", NoSpinbox = "true", ClampMin = "0.0"))

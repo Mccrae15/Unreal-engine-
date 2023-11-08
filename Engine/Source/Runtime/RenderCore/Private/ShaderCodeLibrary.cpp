@@ -7,22 +7,21 @@ ShaderCodeLibrary.cpp: Bound shader state cache implementation.
 #include "ShaderCodeLibrary.h"
 
 #include "Algo/Replace.h"
-#include "Async/AsyncFileHandle.h"
 #include "Async/ParallelFor.h"
 #include "Containers/HashTable.h"
 #include "Containers/Set.h"
 #include "Containers/StringView.h"
 #include "FileCache/FileCache.h"
-#include "HAL/FileManagerGeneric.h"
+#include "HAL/FileManager.h"
 #include "HAL/LowLevelMemTracker.h"
-#include "HAL/PlatformSplash.h"
+#include "HAL/PlatformFileManager.h"
+#include "HAL/PlatformSplash.h" // IWYU pragma: keep
 #include "Hash/CityHash.h"
 #include "Interfaces/IPluginManager.h"
 #include "Math/UnitConversion.h"
 #include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/CoreDelegates.h"
-#include "Misc/FileHelper.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeLock.h"
@@ -31,8 +30,7 @@ ShaderCodeLibrary.cpp: Bound shader state cache implementation.
 #include "Misc/StringBuilder.h"
 #include "PipelineFileCache.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
-#include "Serialization/LargeMemoryWriter.h"
-#include "Serialization/MemoryReader.h"
+#include "RenderingThread.h"
 #include "Shader.h"
 #include "ShaderCodeArchive.h"
 #include "ShaderPipelineCache.h"
@@ -41,10 +39,8 @@ ShaderCodeLibrary.cpp: Bound shader state cache implementation.
 
 #if WITH_EDITORONLY_DATA
 #include "Interfaces/IShaderFormat.h"
-#include "Interfaces/IShaderFormatModule.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
-#include "Modules/ModuleManager.h"
 #endif
 
 #if WITH_EDITOR
@@ -97,6 +93,8 @@ namespace UE
 			static FDelegateHandle OnPakFileMountedDelegateHandle;
 			static FDelegateHandle OnPluginMountedDelegateHandle;
 			static FDelegateHandle OnPluginUnmountedDelegateHandle;
+
+			static TSet<FString> PluginsToIgnoreOnMount;
 
 			/** Helper function shared between the cooker and runtime */
 			FString GetShaderLibraryNameForChunk(FString const& BaseName, int32 ChunkId)
@@ -1232,10 +1230,11 @@ void FShaderMapResource_SharedCode::ReleaseRHI()
 	// on assumption that we aren't going to get resurrected
 	LibraryInstance = nullptr;
 
-	if (GetNumRefs()> 0)
+	if (GetNumRefs() > 0)
 	{
-		ensureMsgf(false, TEXT("FShaderMapResource_SharedCode::ReleaseRHI is still referenced (Num of references %d). Invoking OnSharedShaderMapResourceExplicitRelease delegate."), GetNumRefs());
-		UE_LOG(LogShaderLibrary, Warning, TEXT("FShaderMapResource_SharedCode::ReleaseRHI is still referenced (Num of references %d). Invoking OnSharedShaderMapResourceExplicitRelease delegate."), GetNumRefs());
+		ensureMsgf(false, TEXT("FShaderMapResource_SharedCode::ReleaseRHI is still referenced (Num of references %d, owner %s). Invoking OnSharedShaderMapResourceExplicitRelease delegate."), GetNumRefs(), *GetOwnerName().ToString());
+		UE_LOG(LogShaderLibrary, Warning, TEXT("FShaderMapResource_SharedCode::ReleaseRHI is still referenced (Num of references %d, owner %s). Invoking OnSharedShaderMapResourceExplicitRelease delegate."), 
+			GetNumRefs(), *GetOwnerName().ToString());
 		
 		// Invoke delegate to notify shader map resource needs to be forced released
 		OnSharedShaderMapResourceExplicitRelease.ExecuteIfBound(this);
@@ -1385,12 +1384,8 @@ struct FEditorShaderCodeArchive
 		return bHasCopiedAndCleared ? !ShaderMapsToCopy.IsEmpty() : !SerializedShaders.ShaderMapHashes.IsEmpty();
 	}
 
-	void CopyToCompactBinaryAndClear(FCbWriter& Writer)
+	void CopyToCompactBinary(FCbWriter& Writer, FSerializedShaderArchive& TransferArchive, TArray<uint8>& TransferCode)
 	{
-		FSerializedShaderArchive TransferArchive;
-		TArray<uint8> TransferCode;
-		CopyToArchiveAndClear(TransferArchive, TransferCode);
-
 		Writer.BeginObject();
 		Writer << "SerializedShaders" << TransferArchive;
 		Writer << "ShaderCode";
@@ -1411,8 +1406,10 @@ struct FEditorShaderCodeArchive
 		return AppendFromArchive(MoveTemp(TransferArchive), TransferCode, CodeStats);
 	}
 
-	void CopyToArchiveAndClear(FSerializedShaderArchive& TargetArchive, TArray<uint8>& TargetFlatShaderCode)
+	void CopyToArchiveAndClear(FSerializedShaderArchive& TargetArchive, TArray<uint8>& TargetFlatShaderCode,
+		bool& bOutRanOutOfRoom, int64 MaxShaderSize, int64 MaxShaderCount)
 	{
+		bOutRanOutOfRoom = false;
 		if (!bHasCopiedAndCleared)
 		{
 			// First CopyAndClear adds all shadermaps to ShaderMapsToCopy, because as an optimization we do not write to
@@ -1425,6 +1422,7 @@ struct FEditorShaderCodeArchive
 
 		TArray<int32> LocalShaderMapsToCopy = ShaderMapsToCopy.Array();
 		LocalShaderMapsToCopy.Sort(); // Maintain the same order that the shadermaps were added in
+		int32 NumShadersSentWithCode = 0;
 
 		const FSerializedShaderArchive& SourceArchive = this->SerializedShaders;
 		TArray<TArray<uint8>>& SourceShaderCodes = this->ShaderCode;
@@ -1456,6 +1454,10 @@ struct FEditorShaderCodeArchive
 				TargetArchive.ShaderIndices[TargetEntry.ShaderIndicesOffset + ShaderIndexIndex] = TargetShaderIndex;
 				if (bIsNewShader)
 				{
+					// We rely on the index of the newly added shader being at the end of the list of ShaderEntries,
+					// so we can pop off the added index if we overflow below
+					check(TargetShaderIndex == TargetArchive.ShaderEntries.Num() - 1);
+
 					const FShaderCodeEntry& SourceShaderEntry = SourceArchive.ShaderEntries[SourceShaderIndex];
 					TArray<uint8>& SourceShaderCode = SourceShaderCodes[SourceShaderIndex];
 					FShaderCodeEntry& TargetShaderEntry = TargetArchive.ShaderEntries[TargetShaderIndex];
@@ -1465,6 +1467,23 @@ struct FEditorShaderCodeArchive
 					{
 						TargetShaderEntry.Offset = TargetFlatShaderCode.Num();
 						check(SourceShaderEntry.Size == SourceShaderCode.Num());
+						if ((MaxShaderSize > 0 && TargetFlatShaderCode.Num() + SourceShaderCode.Num() > MaxShaderSize) ||
+							(MaxShaderCount > 0 && NumShadersSentWithCode > MaxShaderCount))
+						{
+							// We have to stop here to avoid overflowing the shader limit. Send the shaders we have accumulated
+							// but do not send&clear any other data.
+							// Remove all ShaderMap data
+							TargetArchive.EmptyShaderMaps();
+							// Remove the ShaderEntry we just added; we are not adding its code so we have to remove it from the
+							// list of shaders contained by the targetarchive
+							check(TargetShaderIndex == TargetArchive.ShaderHashes.Num() - 1);
+							TargetArchive.RemoveLastAddedShader();
+							bOutRanOutOfRoom = true;
+							// Keep any shaders we added before the one we just added
+							return;
+						}
+						++NumShadersSentWithCode;
+
 						TargetFlatShaderCode.Append(SourceShaderCode);
 
 						// Empty the ShaderCode to save memory in the local process. The consumer of the TargetArchive and
@@ -1475,7 +1494,6 @@ struct FEditorShaderCodeArchive
 					{
 						// The shadercode was already copied in an earlier CopyAndClear operation; we just need to note that
 						// ShaderMaps in this call to CopyAndClear reference it.
-						check(bHasCopiedAndCleared);
 						TargetShaderEntry.Offset = INDEX_NONE;
 					}
 				}
@@ -1493,6 +1511,54 @@ struct FEditorShaderCodeArchive
 		FSerializedShaderArchive& TargetArchive = this->SerializedShaders;
 		TArray<TArray<uint8>>& TargetShaderCodes = this->ShaderCode;
 
+		// Add all the shaders; we can sometimes get messages that send the shaders in advance without sending the shadermaps that use them
+		for (int32 SourceShaderIndex = 0; SourceShaderIndex < SourceArchive.ShaderHashes.Num(); ++SourceShaderIndex)
+		{
+			const FSHAHash& SourceShaderHash = SourceArchive.ShaderHashes[SourceShaderIndex];
+			int32 TargetShaderIndex = INDEX_NONE;
+			const bool bShaderIsNew = TargetArchive.FindOrAddShader(SourceShaderHash, TargetShaderIndex);
+			if (!bShaderIsNew)
+			{
+				continue;
+			}
+			check(TargetShaderIndex == TargetArchive.ShaderEntries.Num() - 1 &&
+				TargetShaderCodes.Num() == TargetArchive.ShaderEntries.Num() - 1);
+			TArray<uint8>& TargetShaderCode = TargetShaderCodes.Emplace_GetRef();
+
+			const FShaderCodeEntry& SourceShaderEntry = SourceArchive.ShaderEntries[SourceShaderIndex];
+			FShaderCodeEntry& TargetShaderEntry = TargetArchive.ShaderEntries[TargetShaderIndex];
+			TargetShaderEntry = SourceShaderEntry;
+			TargetShaderEntry.Offset = 0;
+
+			CodeStats.NumUniqueShaders++;
+			CodeStats.ShadersUniqueSize += SourceShaderEntry.Size;
+
+			if (SourceShaderEntry.Offset == INDEX_NONE)
+			{
+				UE_LOG(LogShaderLibrary, Error, TEXT("ShaderMapLibrary transfer received from a remote machine has incomplete record for Shader %s. ")
+					TEXT("The remote machine thought this machine already had the shader and did not send the ShaderCode for the Shader, but the shader is not found. ")
+					TEXT("The ShaderMaps using the shader will be corrupt."),
+					*SourceShaderHash.ToString());
+				bOk = false;
+				TargetShaderEntry.Size = 0;
+			}
+			else if (SourceShaderEntry.Offset + SourceShaderEntry.Size > static_cast<uint64>(SourceFlatShaderCode.Num()))
+			{
+				UE_LOG(LogShaderLibrary, Error, TEXT("ShaderMapLibrary transfer received from a remote machine has corrupt record for Shader %s. ")
+					TEXT("The (Offset, Size) specified by the ShaderEntry does not fit in the TransferCode (an array of bytes that should contain the shader code for all transferred shaders. ")
+					TEXT("The ShaderMaps using the shader will be corrupt."),
+					*SourceShaderHash.ToString());
+				bOk = false;
+				TargetShaderEntry.Size = 0;
+			}
+			else
+			{
+				const TConstArrayView<uint8> SourceShaderCode(SourceFlatShaderCode.GetData() + SourceShaderEntry.Offset, SourceShaderEntry.Size);
+				TargetShaderCode = SourceShaderCode; // Copy from source's flat list to the target's separate TArray<uint8> for each shader
+			}
+		}
+
+		// Add all the shadermaps
 		for (int32 SourceShaderMapIndex = 0; SourceShaderMapIndex < SourceArchive.ShaderMapHashes.Num(); ++SourceShaderMapIndex)
 		{
 			const FSHAHash& SourceShaderMapHash = SourceArchive.ShaderMapHashes[SourceShaderMapIndex];
@@ -1520,46 +1586,8 @@ struct FEditorShaderCodeArchive
 				int32 TargetShaderIndex;
 				const bool bShaderIsNew = TargetArchive.FindOrAddShader(SourceShaderHash, TargetShaderIndex);
 				TargetArchive.ShaderIndices[TargetEntry.ShaderIndicesOffset + ShaderIndexIndex] = TargetShaderIndex;
-				if (!bShaderIsNew)
-				{
-					// Shader has already been loaded for another ShaderMap
-					continue;
-				}
-				check(TargetShaderIndex == TargetArchive.ShaderEntries.Num() - 1 &&
-					TargetShaderCodes.Num() == TargetArchive.ShaderEntries.Num() - 1);
-				TArray<uint8>& TargetShaderCode = TargetShaderCodes.Emplace_GetRef();
-
-				const FShaderCodeEntry& SourceShaderEntry = SourceArchive.ShaderEntries[SourceShaderIndex];
-				FShaderCodeEntry& TargetShaderEntry = TargetArchive.ShaderEntries[TargetShaderIndex];
-				TargetShaderEntry = SourceShaderEntry;
-				TargetShaderEntry.Offset = 0;
-
-				CodeStats.NumUniqueShaders++;
-				CodeStats.ShadersUniqueSize += SourceShaderEntry.Size;
-
-				if (SourceShaderEntry.Offset == INDEX_NONE)
-				{
-					UE_LOG(LogShaderLibrary, Error, TEXT("ShaderMapLibrary transfer received from a remote machine has incomplete record for ShaderMap %s, Shader %s. ")
-						TEXT("The remote machine thought this machine already had the shader and did not send the ShaderCode for the Shader, but the shader is not found. ")
-						TEXT("The ShaderMap will be corrupt."),
-						*SourceShaderMapHash.ToString(), *SourceShaderHash.ToString());
-					bOk = false;
-					TargetShaderEntry.Size = 0;
-				}
-				else if (SourceShaderEntry.Offset + SourceShaderEntry.Size > static_cast<uint64>(SourceFlatShaderCode.Num()))
-				{
-					UE_LOG(LogShaderLibrary, Error, TEXT("ShaderMapLibrary transfer received from a remote machine has corrupt record for ShaderMap %s, Shader %s. ")
-						TEXT("The (Offset, Size) specified by the ShaderEntry does not fit in the TransferCode (an array of bytes that should contain the shader code for all transferred shaders. ")
-						TEXT("The ShaderMap will be corrupt."),
-						*SourceShaderMapHash.ToString(), *SourceShaderHash.ToString());
-					bOk = false;
-					TargetShaderEntry.Size = 0;
-				}
-				else
-				{
-					const TConstArrayView<uint8> SourceShaderCode(SourceFlatShaderCode.GetData() + SourceShaderEntry.Offset, SourceShaderEntry.Size);
-					TargetShaderCode = SourceShaderCode; // Copy from source's flat list to the target's separate TArray<uint8> for each shader
-				}
+				// Every shader in the SourceArchive should have already been added by the loop above over SourceArchive.ShaderHashes
+				check(!bShaderIsNew);
 			}
 
 			CodeStats.NumShaders += TargetEntry.NumShaders; // Sum of shader counts used by each ShaderMap, without removing duplicates
@@ -2167,12 +2195,19 @@ struct FEditorShaderStableInfo
 		check(LibraryName.Len() > 0);
 		OutSCLCSVPath = FString();
 
+		if (StableMap.IsEmpty())
+		{
+			// Do not touch the disk if empty, but also don't consider this a failure.
+			// It is entirely possible that during the cook no assets with shaders were cooked.
+			return true;
+		}
+
 		bool bSuccess = IFileManager::Get().MakeDirectory(*OutputDir, true);
 
 		EShaderPlatform Platform = ShaderFormatToLegacyShaderPlatform(FormatName);
 
 		// Shader library
-		if (bSuccess && StableMap.Num() > 0)
+		if (bSuccess)
 		{
 			// Write to a intermediate file
 			FString IntermediateFormatPath = GetStableInfoArchiveFilename(FPaths::ProjectSavedDir() / TEXT("Shaders") / FormatName.ToString(), LibraryName, FormatName);
@@ -2358,6 +2393,8 @@ class FShaderLibrariesCollection
 	FShaderCodeStats EditorShaderCodeStats[EShaderPlatform::SP_NumPlatforms];
 	// At cook time, whether the shader archive supports pipelines (only OpenGL should)
 	bool EditorArchivePipelines[EShaderPlatform::SP_NumPlatforms];
+	bool bIsEditorShaderCodeArchiveEmpty = true;
+	bool bIsEditorShaderStableInfoEmpty = true;
 #endif //WITH_EDITOR
 	bool bSupportsPipelines;
 	bool bNativeFormat;
@@ -2439,8 +2476,10 @@ public:
 #endif
 	}
 
-	bool OpenLibrary(FString const& Name, FString const& Directory)
+	bool OpenLibrary(FString const& Name, FString const& Directory, const bool bMonolithicOnly = false)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(OpenShaderLibrary);
+
 		using namespace UE::ShaderLibrary::Private;
 
 		bool bResult = false;
@@ -2467,21 +2506,22 @@ public:
 					Library = new FNamedShaderLibrary(Name, ShaderPlatform, Directory);
 				}
 			}
+			check(Library);
 			// note, that since we're out of NamedLibrariesMutex locks now, other threads may arrive at the same point and acquire the same Library pointer
 			// (or create yet another new named library). In the latter case, the duplicate library will be deleted later, since we will re-check (under a lock)
 			// the presence of the same name in NamedLibrariesStack.  In the former case (two threads sharing the same Library pointer), we rely on FNamedShaderLibrary::OpenShaderCode
 			// implementation being thread-safe (which it is).
 
+			// more info for better logging
+			bool bOpenedAsMonolithic = false;
+
 			// if we're able to open the library by name, it's not chunked
 			if (Library->OpenShaderCode(Directory, Name))
 			{
 				bResult = true;
-
-				// Attempt to open the shared-cooked override code library if there is one.
-				// This is probably not ideal, but it should get shared-cooks working.
-				Library->OpenShaderCode(Directory, Name + TEXT("_SC"));
+				bOpenedAsMonolithic = true;
 			}
-			else // attempt to open a chunked library
+			else if (!bMonolithicOnly) // attempt to open a chunked library
 			{
 				TSet<int32> PrevComponentSet = Library->PresentChunks;
 				{
@@ -2493,7 +2533,6 @@ public:
 				}
 				NewComponentIDs = Library->PresentChunks.Difference(PrevComponentSet);
 				bResult = !NewComponentIDs.IsEmpty();
-				UE_LOG(LogShaderLibrary, Display, TEXT("Logical shader library '%s' component count %d, new components: %d"), *Name, Library->GetNumComponents(), NewComponentIDs.Num());
 
 #if UE_SHADERLIB_SUPPORT_CHUNK_DISCOVERY
 				if (!bResult)
@@ -2550,7 +2589,14 @@ public:
 					TUniquePtr<FNamedShaderLibrary>* LibraryPtr = NamedLibrariesStack.Find(Name);
 					if (LibraryPtr == nullptr)
 					{
-						UE_LOG(LogShaderLibrary, Display, TEXT("Logical shader library '%s' has been created, components %d"), *Name, Library->GetNumComponents());
+						if (bOpenedAsMonolithic)
+						{
+							UE_LOG(LogShaderLibrary, Display, TEXT("Logical shader library '%s' has been created as a monolithic library"), *Name, Library->GetNumComponents());
+						}
+						else
+						{
+							UE_LOG(LogShaderLibrary, Display, TEXT("Logical shader library '%s' has been created, components %d"), *Name, Library->GetNumComponents());
+						}
 						NamedLibrariesStack.Emplace(Name, Library);
 					}
 					else 
@@ -2559,6 +2605,10 @@ public:
 						delete Library;
 						Library = nullptr;
 					}
+				}
+				else
+				{
+					UE_LOG(LogShaderLibrary, Display, TEXT("Discovered new %d components for logical shader library '%s' (total number of components is now %d)"), NewComponentIDs.Num(), *Name, Library->GetNumComponents());
 				}
 
 				// Inform the pipeline cache that the state of loaded libraries has changed (unless we had to delete the duplicate)
@@ -2571,23 +2621,44 @@ public:
 					}
 				}
 			}
+			else
+			{
+				if (bAddNewNamedLibrary)
+				{
+					UE_LOG(LogShaderLibrary, Display, TEXT("Tried to open shader library '%s', but could not find it neither as a monolithic library nor as a chunked one."), *Name);
+
+					check(Library->GetNumComponents() == 0);
+					delete Library;
+					Library = nullptr;
+				}
+				else
+				{
+					UE_LOG(LogShaderLibrary, Display, TEXT("Tried to open again shader library '%s', but could not find new components for it (existing components: %d)."), *Name, Library->GetNumComponents());
+				}
+			}
 		}
 
 #if WITH_EDITOR
-		for (uint32 i = 0; i < EShaderPlatform::SP_NumPlatforms; i++)
+		if (!bIsEditorShaderCodeArchiveEmpty)
 		{
-			FEditorShaderCodeArchive* CodeArchive = EditorShaderCodeArchive[i];
-			if (CodeArchive)
+			for (uint32 i = 0; i < EShaderPlatform::SP_NumPlatforms; i++)
 			{
-				CodeArchive->OpenLibrary(Name);
+				FEditorShaderCodeArchive* CodeArchive = EditorShaderCodeArchive[i];
+				if (CodeArchive)
+				{
+					CodeArchive->OpenLibrary(Name);
+				}
 			}
 		}
-		for (uint32 i = 0; i < EShaderPlatform::SP_NumPlatforms; i++)
+		if (!bIsEditorShaderStableInfoEmpty)
 		{
-			FEditorShaderStableInfo* StableArchive = EditorShaderStableInfo[i];
-			if (StableArchive)
+			for (uint32 i = 0; i < EShaderPlatform::SP_NumPlatforms; i++)
 			{
-				StableArchive->OpenLibrary(Name);
+				FEditorShaderStableInfo* StableArchive = EditorShaderStableInfo[i];
+				if (StableArchive)
+				{
+					StableArchive->OpenLibrary(Name);
+				}
 			}
 		}
 #endif
@@ -2833,6 +2904,7 @@ public:
 			FEditorShaderCodeArchive* CodeArchive = EditorShaderCodeArchive[Platform];
 			if (!CodeArchive)
 			{
+				bIsEditorShaderCodeArchiveEmpty = false;
 				CodeArchive = new FEditorShaderCodeArchive(FName(FormatAndPlatformName), Descriptor.bNeedsDeterministicOrder);
 				EditorShaderCodeArchive[Platform] = CodeArchive;
 				EditorArchivePipelines[Platform] = !bNativeFormat;
@@ -2854,6 +2926,7 @@ public:
 			FEditorShaderStableInfo* StableArchive = EditorShaderStableInfo[Platform];
 			if (!StableArchive && bUseStableKeys)
 			{
+				bIsEditorShaderStableInfoEmpty = false;
 				StableArchive = new FEditorShaderStableInfo(PossiblyAdjustedFormat);
 				EditorShaderStableInfo[Platform] = StableArchive;
 				ShaderFormatsThatNeedStableKeys[(int)Platform] = true;
@@ -2885,8 +2958,10 @@ public:
 	}
 
 #if WITH_EDITOR
-	void CopyToCompactBinaryAndClear(FCbWriter& Writer, bool& bOutHasData)
+	void CopyToCompactBinaryAndClear(FCbWriter& Writer, bool& bOutHasData, bool& bOutRanOutOfRoom, int64 MaxShaderSize)
 	{
+		bOutRanOutOfRoom = false;
+
 		TArray<EShaderPlatform, TInlineAllocator<10>> PlatformsToCopy;
 		FScopeLock ScopeLock(&ShaderCodeCS);
 		for (EShaderPlatform Platform = (EShaderPlatform)0; Platform < (EShaderPlatform)UE_ARRAY_COUNT(EditorShaderCodeStats);
@@ -2906,9 +2981,14 @@ public:
 			return;
 		}
 		bOutHasData = true;
+		int64 RemainingSize = MaxShaderSize;
 		Writer.BeginArray();
 		for (EShaderPlatform Platform : PlatformsToCopy)
 		{
+			if (bOutRanOutOfRoom)
+			{
+				break;
+			}
 			Writer.BeginObject();
 			{
 				Writer << "Platform" << (uint32)Platform;
@@ -2917,10 +2997,32 @@ public:
 
 				if ((CodeArchive && CodeArchive->HasDataToCopy()))
 				{
-					Writer.SetName("EditorShaderCodeArchive");
-					CodeArchive->CopyToCompactBinaryAndClear(Writer);
+					FSerializedShaderArchive TransferArchive;
+					TArray<uint8> TransferCode;
+					int64 MaxShaderSizeThisCall = RemainingSize;
+					int64 MaxShaderCount = -1;
+					bool bRanOutOfRoom;
+					CodeArchive->CopyToArchiveAndClear(TransferArchive, TransferCode, bRanOutOfRoom, MaxShaderSizeThisCall, MaxShaderCount);
+					bOutRanOutOfRoom |= bRanOutOfRoom;
+					if (bRanOutOfRoom && TransferCode.IsEmpty() && RemainingSize == MaxShaderSize)
+					{
+						UE_LOG(LogShaderLibrary, Error,
+							TEXT("MaxShaderSize %" INT64_FMT " is too small to read even a single shader. We will ignore it and allow uncapped size, which will possibly cause an overflow in the caller."),
+							MaxShaderSize);
+						MaxShaderSizeThisCall = -1;
+						MaxShaderCount = 1;
+						TransferArchive.Empty();
+						CodeArchive->CopyToArchiveAndClear(TransferArchive, TransferCode, bRanOutOfRoom, MaxShaderSizeThisCall, MaxShaderCount);
+					}
+					if (!TransferArchive.IsEmpty())
+					{
+						RemainingSize -= TransferCode.Num();
+						Writer.SetName("EditorShaderCodeArchive");
+						CodeArchive->CopyToCompactBinary(Writer, TransferArchive, TransferCode);
+					}
+
 				}
-				if (StableInfo && StableInfo->HasDataToCopy())
+				if (!bOutRanOutOfRoom && StableInfo && StableInfo->HasDataToCopy())
 				{
 					Writer.SetName("EditorShaderStableInfo");
 					StableInfo->CopyToCompactBinary(Writer);
@@ -3062,7 +3164,12 @@ public:
 				// Stable shader info is not saved per-chunk (it is not needed at runtime), so save it always
 				FString SCLCSVPath;
 				bOk &= StableArchive->SaveToDisk(MetaOutputDir, SCLCSVPath);
-				OutSCLCSVPath.Add(SCLCSVPath);
+				
+				// Only add output files if they were actually written to disk (if there were no shaders in the library it is not a failure).
+				if (!SCLCSVPath.IsEmpty())
+				{
+					OutSCLCSVPath.Add(SCLCSVPath);
+				}
 			}
 		}
 
@@ -3201,19 +3308,35 @@ FShaderLibrariesCollection* FShaderLibrariesCollection::Impl = nullptr;
 
 static void FShaderCodeLibraryPluginMountedCallback(IPlugin& Plugin)
 {
-	if (Plugin.CanContainContent() && Plugin.IsEnabled())
+	if (UE::ShaderLibrary::Private::PluginsToIgnoreOnMount.Remove(Plugin.GetName()) == 0)
 	{
-		// load any shader libraries that may exist in this plugin
-		FShaderCodeLibrary::OpenLibrary(Plugin.GetName(), Plugin.GetContentDir());
+		FShaderCodeLibrary::OpenPluginShaderLibrary(Plugin);
 	}
 }
 
 static void FShaderCodeLibraryPluginUnmountedCallback(IPlugin& Plugin)
 {
+	class FShaderCodeLibraryCleanup : public FDeferredCleanupInterface
+	{
+	public:
+		FShaderCodeLibraryCleanup(const FString& Name)
+			: Name(Name)
+		{
+		}
+
+		virtual ~FShaderCodeLibraryCleanup()
+		{
+			FShaderCodeLibrary::CloseLibrary(Name);
+		}
+
+	private:
+		FString Name;
+	};
+
 	if (Plugin.CanContainContent() && Plugin.IsEnabled())
 	{
 		// unload any shader libraries that may exist in this plugin
-		FShaderCodeLibrary::CloseLibrary(Plugin.GetName());
+		BeginCleanup(new FShaderCodeLibraryCleanup(Plugin.GetName()));
 	}
 }
 
@@ -3244,7 +3367,7 @@ static void FShaderLibraryPakFileMountedCallback(const IPakFile& PakFile)
 void FShaderCodeLibrary::PreInit()
 {
 	// add a callback for opening later chunks
-	UE::ShaderLibrary::Private::OnPakFileMountedDelegateHandle = FCoreDelegates::OnPakFileMounted2.AddStatic(&FShaderLibraryPakFileMountedCallback);
+	UE::ShaderLibrary::Private::OnPakFileMountedDelegateHandle = FCoreDelegates::GetOnPakFileMounted2().AddStatic(&FShaderLibraryPakFileMountedCallback);
 }
 
 void FShaderCodeLibrary::InitForRuntime(EShaderPlatform ShaderPlatform)
@@ -3284,7 +3407,7 @@ void FShaderCodeLibrary::InitForRuntime(EShaderPlatform ShaderPlatform)
 			auto Plugins = IPluginManager::Get().GetEnabledPluginsWithContent();
 			ParallelFor(Plugins.Num(), [&](int32 Index)
 			{
-				FShaderCodeLibraryPluginMountedCallback(*Plugins[Index]);
+				FShaderCodeLibrary::OpenPluginShaderLibrary(*Plugins[Index]);
 			});
 		}
 		else
@@ -3305,7 +3428,7 @@ void FShaderCodeLibrary::InitForRuntime(EShaderPlatform ShaderPlatform)
                 FMessageDialog::Open(EAppMsgType::Ok, NSLOCTEXT("MessageDialog", "MissingGlobalShaderLibraryFilesClient_Body", "Game files required to initialize the global shader and cooked content are most likely missing. Refer to Engine log for details."));
 				UE_LOG(LogShaderLibrary, Fatal, TEXT("Failed to initialize ShaderCodeLibrary required by the project because part of the Global shader library is missing from %s."), *FPaths::ProjectContentDir());
 			}
-			FPlatformMisc::RequestExit(true);
+			FPlatformMisc::RequestExit(true, TEXT("FShaderCodeLibrary::InitForRuntime"));
 #endif // !WITH_EDITOR	
 		}
 	}
@@ -3315,7 +3438,7 @@ void FShaderCodeLibrary::Shutdown()
 {
 	if (UE::ShaderLibrary::Private::OnPakFileMountedDelegateHandle.IsValid())
 	{
-		FCoreDelegates::OnPakFileMounted2.Remove(UE::ShaderLibrary::Private::OnPakFileMountedDelegateHandle);
+		FCoreDelegates::GetOnPakFileMounted2().Remove(UE::ShaderLibrary::Private::OnPakFileMountedDelegateHandle);
 		UE::ShaderLibrary::Private::OnPakFileMountedDelegateHandle.Reset();
 	}
 	if (UE::ShaderLibrary::Private::OnPluginMountedDelegateHandle.IsValid())
@@ -3328,6 +3451,8 @@ void FShaderCodeLibrary::Shutdown()
 		IPluginManager::Get().OnPluginUnmounted().Remove(UE::ShaderLibrary::Private::OnPluginUnmountedDelegateHandle);
 		UE::ShaderLibrary::Private::OnPluginUnmountedDelegateHandle.Reset();
 	}
+
+	UE::ShaderLibrary::Private::PluginsToIgnoreOnMount.Empty();
 
 	if (FShaderLibrariesCollection::Impl)
 	{
@@ -3503,12 +3628,12 @@ void FShaderCodeLibrary::AddKnownChunkIDs(const int32* IDs, const int32 NumChunk
 	}
 }
 
-bool FShaderCodeLibrary::OpenLibrary(FString const& Name, FString const& Directory)
+bool FShaderCodeLibrary::OpenLibrary(FString const& Name, FString const& Directory, bool bMonolithicOnly)
 {
 	bool bResult = false;
 	if (FShaderLibrariesCollection::Impl)
 	{
-		bResult = FShaderLibrariesCollection::Impl->OpenLibrary(Name, Directory);
+		bResult = FShaderLibrariesCollection::Impl->OpenLibrary(Name, Directory, bMonolithicOnly);
 	}
 	return bResult;
 }
@@ -3591,11 +3716,13 @@ bool FShaderLibraryCooker::AddShaderCode(EShaderPlatform ShaderPlatform, const F
 }
 
 #if WITH_EDITOR
-void FShaderLibraryCooker::CopyToCompactBinaryAndClear(FCbWriter& Writer, bool& bOutHasData)
+void FShaderLibraryCooker::CopyToCompactBinaryAndClear(FCbWriter& Writer, bool& bOutHasData,
+	bool& bOutRanOutOfRoom, int64 MaxShaderSize)
 {
 	if (FShaderLibrariesCollection::Impl)
 	{
-		FShaderLibrariesCollection::Impl->CopyToCompactBinaryAndClear(Writer, bOutHasData);
+		FShaderLibrariesCollection::Impl->CopyToCompactBinaryAndClear(Writer, bOutHasData,
+			bOutRanOutOfRoom, MaxShaderSize);
 	}
 }
 
@@ -3754,6 +3881,21 @@ FDelegateHandle FShaderCodeLibrary::RegisterSharedShaderCodeRequestDelegate_Hand
 void FShaderCodeLibrary::UnregisterSharedShaderCodeRequestDelegate_Handle(FDelegateHandle Handle)
 {
 	OnSharedShaderCodeRequest.Remove(Handle);
+}
+
+void FShaderCodeLibrary::DontOpenPluginShaderLibraryOnMount(const FString& PluginName)
+{
+	check(IsInGameThread());
+	UE::ShaderLibrary::Private::PluginsToIgnoreOnMount.Add(PluginName);
+}
+
+void FShaderCodeLibrary::OpenPluginShaderLibrary(IPlugin& Plugin, bool bMonolithicOnly)
+{
+	if (Plugin.CanContainContent() && Plugin.IsEnabled())
+	{
+		// load any shader libraries that may exist in this plugin
+		FShaderCodeLibrary::OpenLibrary(Plugin.GetName(), Plugin.GetContentDir(), bMonolithicOnly);
+	}
 }
 
 // FNamedShaderLibrary methods

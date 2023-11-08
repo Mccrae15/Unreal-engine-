@@ -2,8 +2,10 @@
 
 #include "GameplayDebuggerCategory_SmartObject.h"
 #include "SmartObjectSubsystem.h"
+#include "SmartObjectAnnotation.h"
 #include "Math/ColorList.h"
 #include "Engine/World.h"
+#include "Misc/EnumerateRange.h"
 
 #if WITH_GAMEPLAY_DEBUGGER && WITH_SMARTOBJECT_DEBUG
 
@@ -73,63 +75,108 @@ void FGameplayDebuggerCategory_SmartObject::CollectData(APlayerController* Owner
 	const FColor SlotDisabledColor = FColorList::LightGrey;
 	const FColor ObjectDisabledColor = FColorList::DimGrey;
 
-	const TMap<FSmartObjectSlotHandle, FSmartObjectRuntimeSlot>& Entries = Subsystem->DebugGetRuntimeSlots();
-	for (auto& LookupEntry : Entries)
+	const TMap<FSmartObjectHandle, FSmartObjectRuntime>& RuntimeSmartObjects = Subsystem->DebugGetRuntimeObjects();
+
+	for (auto& RuntimeSmartObjectEntry : RuntimeSmartObjects)
 	{
-		const FSmartObjectSlotHandle SlotHandle = LookupEntry.Key;
-		const FSmartObjectRuntimeSlot& SlotState = LookupEntry.Value;
+		const FSmartObjectHandle SmartObjectHandle = RuntimeSmartObjectEntry.Key;
+		const FSmartObjectRuntime& SmartObjectRuntime = RuntimeSmartObjectEntry.Value;
 
-		FSmartObjectSlotView View = Subsystem->GetSlotView(LookupEntry.Key);
-		const FSmartObjectRuntime* ObjectRuntime = SmartObjectInstances.Find(SlotState.GetOwnerRuntimeObject());
-
-		const FSmartObjectSlotTransform& SlotTransform = View.GetStateData<FSmartObjectSlotTransform>();
-		FTransform Transform = SlotTransform.GetTransform();
-		if (bApplyCulling && !IsLocationInViewCone(ViewLocation, ViewDirection, Transform.GetLocation()))
+		for (TConstEnumerateRef<FSmartObjectRuntimeSlot> RuntimeSlot : EnumerateRange(SmartObjectRuntime.GetSlots()))
 		{
-			continue;
-		}
+			const FTransform SlotTransform = RuntimeSlot->GetSlotWorldTransform(SmartObjectRuntime.GetTransform());
 
-		constexpr float DebugArrowThickness = 2.f;
-		constexpr float DebugCircleRadius = 40.f;
-		constexpr float DebugArrowHeadSize = 10.f;
-#if WITH_EDITORONLY_DATA
-		DebugColor = View.GetDefinition().DEBUG_DrawColor;
-#endif
-		const FVector Pos = Transform.GetLocation() + FVector(0.0f, 0.0f, 25.0f);
-		const FVector Dir = Transform.GetRotation().GetForwardVector();
-
-		FColor StateColor = FColor::Silver;
-		if (!SlotState.IsEnabled())
-		{
-			StateColor = (ObjectRuntime != nullptr && !ObjectRuntime->IsEnabled()) ? ObjectDisabledColor : SlotDisabledColor;
-		}
-		else
-		{
-			switch (SlotState.GetState())
+			if (bApplyCulling && !IsLocationInViewCone(ViewLocation, ViewDirection, SlotTransform.GetLocation()))
 			{
-			case ESmartObjectSlotState::Free:
-				StateColor = FreeColor;
-				break;
-			case ESmartObjectSlotState::Claimed:
-				StateColor = ClaimedColor;
-				break;
-			case ESmartObjectSlotState::Occupied:
-				StateColor = OccupiedColor;
-				break;
-			default:
-				ensureMsgf(false, TEXT("Unsupported value: %s"), *UEnum::GetValueAsString(SlotState.GetState()));
+				continue;
 			}
-		}
 
-		AddShape(FGameplayDebuggerShape::MakeCircle(Pos, FVector::UpVector, DebugCircleRadius, DebugColor));
-		AddShape(FGameplayDebuggerShape::MakeCircle(Pos, FVector::UpVector, 0.75f * DebugCircleRadius, /* Thickness */5.f, StateColor));
-		AddShape(FGameplayDebuggerShape::MakeArrow(Pos, Pos + Dir * 2.0f * DebugCircleRadius, DebugArrowHeadSize, DebugArrowThickness, DebugColor));
-		
-		FString TagsAsString = SlotState.GetTags().ToStringSimple();
-		if (!TagsAsString.IsEmpty())
-		{
-			// Using small dummy shape to display tags
-			AddShape(FGameplayDebuggerShape::MakePoint(Pos, /*Radius*/ 1.0f, FColorList::White, TagsAsString));
+			constexpr float DebugArrowThickness = 2.f;
+			constexpr float DebugCircleRadius = 40.f;
+			constexpr float DebugArrowHeadSize = 10.f;
+			float SlotSize = DebugCircleRadius;
+			ESmartObjectSlotShape SlotShape = ESmartObjectSlotShape::Circle;
+
+			const FSmartObjectSlotDefinition& SlotDefinition = SmartObjectRuntime.GetDefinition().GetSlot(RuntimeSlot.GetIndex());
+
+#if WITH_EDITORONLY_DATA
+			DebugColor = SlotDefinition.DEBUG_DrawColor;
+			SlotShape = SlotDefinition.DEBUG_DrawShape;
+			SlotSize = SlotDefinition.DEBUG_DrawSize;
+#endif
+			const FVector Pos = SlotTransform.GetLocation() + FVector(0.0f, 0.0f, 2.0f);
+			const FVector Dir = SlotTransform.GetRotation().GetForwardVector();
+
+			FColor StateColor = FColor::Silver;
+			if (!RuntimeSlot->IsEnabled())
+			{
+				StateColor = !SmartObjectRuntime.IsEnabled() ? ObjectDisabledColor : SlotDisabledColor;
+			}
+			else
+			{
+				switch (RuntimeSlot->GetState())
+				{
+				case ESmartObjectSlotState::Free:
+					StateColor = FreeColor;
+					break;
+				case ESmartObjectSlotState::Claimed:
+					StateColor = ClaimedColor;
+					break;
+				case ESmartObjectSlotState::Occupied:
+					StateColor = OccupiedColor;
+					break;
+				default:
+					ensureMsgf(false, TEXT("Unsupported value: %s"), *UEnum::GetValueAsString(RuntimeSlot->GetState()));
+				}
+			}
+
+			const FVector AxisX = SlotTransform.GetUnitAxis(EAxis::X);
+			const FVector AxisY = SlotTransform.GetUnitAxis(EAxis::Y);
+			if (SlotShape == ESmartObjectSlotShape::Circle)
+			{
+				AddShape(FGameplayDebuggerShape::MakeCircle(Pos, AxisX, AxisY, SlotSize, DebugColor));
+				AddShape(FGameplayDebuggerShape::MakeCircle(Pos, AxisX, AxisY, 0.75f * SlotSize, /* Thickness */5.f, StateColor));
+			}
+			else if (SlotShape == ESmartObjectSlotShape::Rectangle)
+			{
+				AddShape(FGameplayDebuggerShape::MakeRectangle(Pos, AxisX, AxisY, SlotSize * 2.0f, SlotSize * 2.0f, DebugColor));
+				AddShape(FGameplayDebuggerShape::MakeRectangle(Pos, AxisX, AxisY, .75f * SlotSize * 2.0f, .75f * SlotSize * 2.0f, /* Thickness */5.f, StateColor));
+			}
+			
+			AddShape(FGameplayDebuggerShape::MakeArrow(Pos, Pos + Dir * 2.0f * SlotSize, DebugArrowHeadSize, DebugArrowThickness, DebugColor));
+			
+			FString TagsAsString = RuntimeSlot->GetTags().ToStringSimple();
+			if (!TagsAsString.IsEmpty())
+			{
+				// Using small dummy shape to display tags
+				AddShape(FGameplayDebuggerShape::MakePoint(Pos, /*Radius*/ 1.0f, FColorList::White, TagsAsString));
+			}
+
+			// Let annotations debug draw too
+
+			FSmartObjectAnnotationGameplayDebugContext DebugContext(*this, SmartObjectRuntime.GetDefinition());
+			DebugContext.SmartObjectOwnerActor = SmartObjectRuntime.GetOwnerActor();
+			DebugContext.DebugActor = DebugActor;
+			DebugContext.SlotTransform = SlotTransform;
+			DebugContext.ViewLocation = ViewLocation;
+			DebugContext.ViewDirection = ViewDirection;
+			
+			for (const FInstancedStruct& Data : SlotDefinition.Data)
+			{
+				if (const FSmartObjectSlotAnnotation* Annotation = Data.GetPtr<FSmartObjectSlotAnnotation>())
+				{
+					Annotation->CollectDataForGameplayDebugger(DebugContext);
+				}
+			}
+			
+			// Look if the slot has an active user; if so and it's an actor then display a segment between it and the slot.
+			if (const FSmartObjectActorUserData* ActorUser = RuntimeSlot->GetUserData().GetPtr<const FSmartObjectActorUserData>())
+			{
+				if (const AActor* Actor = ActorUser->UserActor.Get())
+				{
+					AddShape(FGameplayDebuggerShape::MakeSegment(Pos, Actor->GetActorLocation(), DebugArrowThickness, DebugColor, GetNameSafe(Actor)));
+				}
+			}
 		}
 	}
 }

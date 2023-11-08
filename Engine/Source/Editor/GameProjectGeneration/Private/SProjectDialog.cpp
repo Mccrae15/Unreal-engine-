@@ -1307,6 +1307,21 @@ TSharedPtr<FTemplateItem> SProjectDialog::GetSelectedTemplateItem() const
 	return nullptr;
 }
 
+namespace
+{
+	FString MakeSortKey(const FString& TemplateKey)
+	{
+		FString Output = TemplateKey;
+
+#if PLATFORM_LINUX
+		// Paths with a leading "/" would get sorted before the magic value used for blank projects: "_1"
+		Output.RemoveFromStart("/");
+#endif
+
+		return Output;
+	}
+}
+
 TMap<FName, TArray<TSharedPtr<FTemplateItem>> > SProjectDialog::FindTemplateProjects()
 {
 	// Clear the list out first - or we could end up with duplicates
@@ -1465,7 +1480,7 @@ TMap<FName, TArray<TSharedPtr<FTemplateItem>> > SProjectDialog::FindTemplateProj
 		Template->SortKey = TemplateDefs->SortKey;
 		if (Template->SortKey.IsEmpty())
 		{
-			Template->SortKey = TemplateKey;
+			Template->SortKey = MakeSortKey(TemplateKey);
 		}
 
 		FoundTemplates.Add(Template);
@@ -1805,8 +1820,29 @@ void SProjectDialog::DisplayError(const FText& ErrorText)
 bool SProjectDialog::OpenCodeIDE(const FString& ProjectFile)
 {
 	FText FailReason;
-
-	if (GameProjectUtils::OpenCodeIDE(ProjectFile, FailReason))
+    
+#if PLATFORM_MAC
+    // Modern Xcode projects are different based on Desktop/Mobile
+    FString Extension = FPaths::GetExtension(ProjectFile);
+    FString ModernXcodeProjectFile = ProjectFile;
+    if (SelectedHardwareClassTarget == EHardwareClass::Desktop)
+    {
+        ModernXcodeProjectFile.RemoveFromEnd(TEXT(".") + Extension);
+        ModernXcodeProjectFile += TEXT(" (Mac).") + Extension;
+    }
+    else if (SelectedHardwareClassTarget == EHardwareClass::Mobile)
+    {
+        ModernXcodeProjectFile.RemoveFromEnd(TEXT(".") + Extension);
+        ModernXcodeProjectFile += TEXT(" (IOS).") + Extension;
+    }
+#endif
+    
+	if (
+#if PLATFORM_MAC
+        GameProjectUtils::OpenCodeIDE(ModernXcodeProjectFile, FailReason) ||
+        // if modern failed, try again with legacy project name
+#endif
+        GameProjectUtils::OpenCodeIDE(ProjectFile, FailReason))
 	{
 		// Successfully opened code editing IDE, the editor is closing
 		// Close this window in case something prevents the editor from closing (save dialog, quit confirmation, etc)

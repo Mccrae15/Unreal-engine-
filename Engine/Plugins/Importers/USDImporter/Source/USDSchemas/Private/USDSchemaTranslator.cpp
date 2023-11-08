@@ -206,9 +206,9 @@ bool FUsdSchemaTranslator::IsCollapsed( ECollapsingType CollapsingType ) const
 #if USE_USD_SDK
 	TRACE_CPUPROFILER_EVENT_SCOPE( FUsdSchemaTranslator::IsCollapsed );
 
-	if ( Context->InfoCache.IsValid() )
+	if (!Context->bIsBuildingInfoCache)
 	{
-		return Context->InfoCache->IsPathCollapsed( PrimPath, CollapsingType );
+		return Context->InfoCache->IsPathCollapsed(PrimPath, CollapsingType);
 	}
 
 	// This is merely a fallback, and we should never need this

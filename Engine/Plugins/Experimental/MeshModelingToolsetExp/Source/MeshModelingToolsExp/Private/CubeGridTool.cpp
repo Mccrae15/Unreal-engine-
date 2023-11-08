@@ -1104,11 +1104,11 @@ void UCubeGridTool::Shutdown(EToolShutdownType ShutdownType)
 	// the changes instead" message.
 	if (ShutdownType == EToolShutdownType::Cancel && bChangesMade && (Target || CurrentMesh->TriangleCount() > 0))
 	{
-		FText Title = LOCTEXT("AcceptChangesTitle", "Accept changes instead?");
 		EAppReturnType::Type Ret = FMessageDialog::Open(EAppMsgType::YesNo,
 			LOCTEXT("AcceptChangesQuestion", "The tool is being cancelled, which normally discards all changes. "
 				"Would you like to apply the changes instead?\n\n Selecting \"No\" or closing this window will "
-				"discard the tool's current work."), &Title);
+				"discard the tool's current work."), 
+			LOCTEXT("AcceptChangesTitle", "Accept changes instead?"));
 		if (Ret == EAppReturnType::Yes)
 		{
 			ShutdownType = EToolShutdownType::Accept;
@@ -1132,13 +1132,13 @@ void UCubeGridTool::Shutdown(EToolShutdownType ShutdownType)
 			}
 			else if (!Target->IsValid() && CurrentMesh->TriangleCount() > 0)
 			{
-				FText Title = LOCTEXT("RecreateAssetTitle", "Recreate Mesh Asset?");
 				EAppReturnType::Type Ret = FMessageDialog::Open(EAppMsgType::YesNo,
 					LOCTEXT("RecreateAssetQuestion", "The underlying asset that this tool was "
 						"operating on seems to no longer be valid (it was likely forcibly removed). "
 						"Would you like to recreate a new asset from the tool's current working "
 						"mesh? Selecting \"No\" or closing this window will discard the tool's "
-						"current work."), &Title);
+						"current work."), 
+					LOCTEXT("RecreateAssetTitle", "Recreate Mesh Asset?"));
 				if (Ret == EAppReturnType::Yes)
 				{
 					bCreatingNewAsset = true;
@@ -2277,7 +2277,9 @@ void UCubeGridTool::ApplyAction(ECubeGridToolAction ActionType)
 	case ECubeGridToolAction::ResetFromActor:
 		if (ToolActions->GridSourceActor)
 		{
-			UpdateGridGizmo(ToolActions->GridSourceActor->GetTransform());
+			FTransform TransformToUse = ToolActions->GridSourceActor->GetTransform();
+			TransformToUse.SetScale3D(FVector::OneVector);
+			UpdateGridGizmo(TransformToUse);
 		}
 		break;
 	}
@@ -2317,13 +2319,23 @@ void UCubeGridTool::RegisterActions(FInteractiveToolActionSet& ActionSet)
 		TEXT("DecreaseGridPower"),
 		LOCTEXT("DecreaseGridPowerAction", "Decrease Grid Power"),
 		LOCTEXT("DecreaseGridPowerTooltip", ""),
+		// Note that we can't use Ctrl+Q on Mac because that is mapped to Cmd+Q which kills the editor.
+		// At the same time we can't use Option+E because Mac consumes that for typing accented letters
+#if PLATFORM_MAC
+		EModifierKey::Alt, EKeys::A,
+#else
 		EModifierKey::Control, EKeys::Q,
+#endif
 		[this]() { RequestAction(ECubeGridToolAction::DecreaseGridPower); });
 	ActionSet.RegisterAction(this, ActionID++,
 		TEXT("IncreaseGridPower"),
 		LOCTEXT("IncreaseGridPowerAction", "Increase Grid Power"),
 		LOCTEXT("IncreaseGridPowerTooltip", ""),
+#if PLATFORM_MAC
+		EModifierKey::Alt, EKeys::D,
+#else
 		EModifierKey::Control, EKeys::E,
+#endif
 		[this]() { RequestAction(ECubeGridToolAction::IncreaseGridPower); });
 
 	ActionSet.RegisterAction(this, ActionID++,

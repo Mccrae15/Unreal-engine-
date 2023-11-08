@@ -17,6 +17,7 @@ public class FontEditor : ModuleRules
 				"DesktopWidgets",
 				"Engine",
                 "InputCore",
+				"RenderCore",
 				"Slate",
 				"SlateCore",
 				"UnrealEd",
@@ -27,10 +28,7 @@ public class FontEditor : ModuleRules
 
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
-				"DesktopPlatform",
-				"MainFrame",
 				"EditorFramework",
-				"UnrealEd",
 			}
 		);
 

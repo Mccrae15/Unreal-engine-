@@ -17,7 +17,7 @@ FTextProperty::FTextProperty(FFieldVariant InOwner, const UECodeGen_Private::FTe
 {
 }
 
-EConvertFromTypeResult FTextProperty::ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct)
+EConvertFromTypeResult FTextProperty::ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, const uint8* Defaults)
 {
 	// Convert serialized string to text.
 	if (Tag.Type==NAME_StrProperty)
@@ -50,10 +50,17 @@ EConvertFromTypeResult FTextProperty::ConvertFromType(const FPropertyTag& Tag, F
 
 bool FTextProperty::Identical_Implementation(const FText& ValueA, const FText& ValueB, uint32 PortFlags)
 {
+	// We compare the display strings in editor (as we author in the native language)
+	return Identical_Implementation(ValueA, ValueB, PortFlags, GIsEditor ? EIdenticalLexicalCompareMethod::DisplayString : EIdenticalLexicalCompareMethod::None);
+}
+
+bool FTextProperty::Identical_Implementation(const FText& ValueA, const FText& ValueB, uint32 PortFlags, EIdenticalLexicalCompareMethod LexicalCompareMethod)
+{
 	// A culture variant text is never equal to a culture invariant text
 	// A transient text is never equal to a non-transient text
 	// An empty text is never equal to a non-empty text
-	if (ValueA.IsCultureInvariant() != ValueB.IsCultureInvariant() || ValueA.IsTransient() != ValueB.IsTransient() || ValueA.IsEmpty() != ValueB.IsEmpty())
+	// Text from a string table is never equal to text not from a string table
+	if (ValueA.IsCultureInvariant() != ValueB.IsCultureInvariant() || ValueA.IsTransient() != ValueB.IsTransient() || ValueA.IsEmpty() != ValueB.IsEmpty() || ValueA.IsFromStringTable() != ValueB.IsFromStringTable())
 	{
 		return false;
 	}
@@ -64,34 +71,39 @@ bool FTextProperty::Identical_Implementation(const FText& ValueA, const FText& V
 		return true;
 	}
 
+	// String table entries should only be considered equal if they're using the same string table and key.
+	if (ValueA.IsFromStringTable())
+	{
+		FName ValueAStringTableId;
+		FTextKey ValueAStringTableEntryKey;
+		FTextInspector::GetTableIdAndKey(ValueA, ValueAStringTableId, ValueAStringTableEntryKey);
+
+		FName ValueBStringTableId;
+		FTextKey ValueBStringTableEntryKey;
+		FTextInspector::GetTableIdAndKey(ValueB, ValueBStringTableId, ValueBStringTableEntryKey);
+
+		return ValueAStringTableId == ValueBStringTableId && ValueAStringTableEntryKey == ValueBStringTableEntryKey;
+	}
+
 	// If both texts share the same pointer, then they must be equal
 	if (ValueA.IdenticalTo(ValueB))
 	{
-		// Placeholder string table entries will have the same pointer, but should only be considered equal if they're using the same string table and key
-		if (ValueA.IsFromStringTable() && FTextInspector::GetSourceString(ValueA) == &FStringTableEntry::GetPlaceholderSourceString())
-		{
-			FName ValueAStringTableId;
-			FString ValueAStringTableEntryKey;
-			FTextInspector::GetTableIdAndKey(ValueA, ValueAStringTableId, ValueAStringTableEntryKey);
-
-			FName ValueBStringTableId;
-			FString ValueBStringTableEntryKey;
-			FTextInspector::GetTableIdAndKey(ValueB, ValueBStringTableId, ValueBStringTableEntryKey);
-
-			return ValueAStringTableId == ValueBStringTableId && ValueAStringTableEntryKey.Equals(ValueBStringTableEntryKey, ESearchCase::CaseSensitive);
-		}
-
-		// Otherwise they're equal
 		return true;
 	}
 
-	// We compare the display strings in editor (as we author in the native language)
+	// We compare the display strings if asked
 	// We compare the display string for culture invariant and transient texts as they don't have an identity
-	if (GIsEditor || ValueA.IsCultureInvariant() || ValueA.IsTransient())
+	if (LexicalCompareMethod == EIdenticalLexicalCompareMethod::DisplayString || ValueA.IsCultureInvariant() || ValueA.IsTransient())
 	{
 		return FTextInspector::GetDisplayString(ValueA).Equals(FTextInspector::GetDisplayString(ValueB), ESearchCase::CaseSensitive);
 	}
 	
+	// We compare the source strings if asked
+	if (LexicalCompareMethod == EIdenticalLexicalCompareMethod::SourceString)
+	{
+		return FTextInspector::GetSourceString(ValueA)->Equals(*FTextInspector::GetSourceString(ValueB), ESearchCase::CaseSensitive);
+	}
+
 	// If we got this far then the texts don't share the same pointer, which means that they can't share the same identity
 	return false;
 }

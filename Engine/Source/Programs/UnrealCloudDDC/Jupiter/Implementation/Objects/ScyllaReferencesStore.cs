@@ -1,12 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Cassandra;
 using Cassandra.Mapping;
 using EpicGames.Horde.Storage;
+using Jupiter.Common;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OpenTelemetry.Trace;
@@ -18,16 +20,22 @@ namespace Jupiter.Implementation
         private readonly ISession _session;
         private readonly IMapper _mapper;
         private readonly IOptionsMonitor<ScyllaSettings> _settings;
+        private readonly INamespacePolicyResolver _namespacePolicyResolver;
         private readonly Tracer _tracer;
         private readonly ILogger _logger;
         private readonly PreparedStatement _getObjectsStatement;
+        private readonly PreparedStatement _getObjectsLastAccessStatement;
         private readonly PreparedStatement _getNamespacesStatement;
+        private readonly PreparedStatement _getNamespacesOldStatement;
         private readonly PreparedStatement _getObjectsForPartitionRangeStatement;
+        private readonly PreparedStatement _getObjectsLastAccessForPartitionRangeStatement;
+        private readonly ConcurrentDictionary<NamespaceId, ConcurrentBag<BucketId>> _addedBuckets = new ConcurrentDictionary<NamespaceId, ConcurrentBag<BucketId>>();
 
-        public ScyllaReferencesStore(IScyllaSessionManager scyllaSessionManager, IOptionsMonitor<ScyllaSettings> settings, Tracer tracer, ILogger<ScyllaReferencesStore> logger)
+        public ScyllaReferencesStore(IScyllaSessionManager scyllaSessionManager, IOptionsMonitor<ScyllaSettings> settings, INamespacePolicyResolver namespacePolicyResolver, Tracer tracer, ILogger<ScyllaReferencesStore> logger)
         {
             _session = scyllaSessionManager.GetSessionForReplicatedKeyspace();
             _settings = settings;
+            _namespacePolicyResolver = namespacePolicyResolver;
             _tracer = tracer;
             _logger = logger;
 
@@ -44,7 +52,23 @@ namespace Jupiter.Implementation
                 PRIMARY KEY ((namespace, bucket, name))
             );"
             ));
+
+            _session.Execute(new SimpleStatement(@"CREATE TABLE IF NOT EXISTS object_last_access_v2 (
+                namespace text, 
+                bucket text, 
+                name text, 
+                last_access_time timestamp,
+                PRIMARY KEY ((namespace, bucket, name))
+            );"
+            ));
             
+            _session.Execute(new SimpleStatement(@"CREATE TABLE IF NOT EXISTS buckets_v2 (
+                namespace text, 
+                bucket text, 
+                PRIMARY KEY ((namespace), bucket)
+            );"
+            ));
+
             _session.Execute(new SimpleStatement(@"CREATE TABLE IF NOT EXISTS buckets (
                 namespace text, 
                 bucket set<text>, 
@@ -54,10 +78,13 @@ namespace Jupiter.Implementation
 
             // BYPASS CACHE is a scylla specific extension to disable populating the cache, should be ignored by other cassandra dbs
             string cqlOptions = scyllaSessionManager.IsScylla ? "BYPASS CACHE" : "";
-            _getObjectsStatement = _session.Prepare($"SELECT bucket, name, last_access_time FROM objects WHERE namespace = ? ALLOW FILTERING {cqlOptions}");
-            _getNamespacesStatement = _session.Prepare("SELECT DISTINCT namespace FROM buckets");
+            _getObjectsStatement = _session.Prepare($"SELECT namespace, bucket, name, last_access_time FROM objects ALLOW FILTERING {cqlOptions}");
+            _getObjectsLastAccessStatement = _session.Prepare($"SELECT namespace, bucket, name, last_access_time FROM object_last_access_v2 ALLOW FILTERING {cqlOptions}");
+            _getNamespacesStatement = _session.Prepare("SELECT DISTINCT namespace FROM buckets_v2");
+            _getNamespacesOldStatement = _session.Prepare("SELECT DISTINCT namespace FROM buckets");
 
             _getObjectsForPartitionRangeStatement = _session.Prepare($"SELECT namespace, bucket, name, last_access_time FROM objects WHERE token(namespace, bucket, name) >= ? AND token(namespace, bucket, name) <= ? {cqlOptions}");
+            _getObjectsLastAccessForPartitionRangeStatement = _session.Prepare($"SELECT namespace, bucket, name, last_access_time FROM object_last_access_v2 WHERE token(namespace, bucket, name) >= ? AND token(namespace, bucket, name) <= ? {cqlOptions}");
         }
 
         public async Task<ObjectRecord> Get(NamespaceId ns, BucketId bucket, IoHashKey name, IReferencesStore.FieldFlags flags)
@@ -83,7 +110,7 @@ namespace Jupiter.Implementation
 
             try
             {
-                o.ThrowIfRequiredFieldIsMissing(includePayload);
+                o.ThrowIfRequiredFieldIsMissing();
             }
             catch (Exception e)
             {
@@ -105,9 +132,24 @@ namespace Jupiter.Implementation
             }
 
             // add the bucket in parallel with inserting the actual object
-            Task addBucketTask = MaybeAddBucket(ns, bucket);
+            Task addBucketTask = AddBucket(ns, bucket);
 
-            await _mapper.InsertAsync<ScyllaObject>(new ScyllaObject(ns, bucket, name, blob, blobHash, isFinalized));
+            int? ttl = null;
+            NamespacePolicy policy = _namespacePolicyResolver.GetPoliciesForNs(ns);
+            if (policy.GcMethod == NamespacePolicy.StoragePoolGCMethod.TTL)
+            {
+                ttl = (int)policy.DefaultTTL.TotalSeconds;
+            }
+
+            Task? insertLastAccess = policy.GcMethod == NamespacePolicy.StoragePoolGCMethod.LastAccess ? _mapper.InsertAsync<ScyllaObjectLastAccess>(new ScyllaObjectLastAccess(ns, bucket, name, DateTime.Now)) : null;
+
+            await _mapper.InsertAsync<ScyllaObject>(new ScyllaObject(ns, bucket, name, blob, blobHash, isFinalized), ttl: ttl, insertNulls: false);
+
+            if (insertLastAccess != null)
+            {
+                await insertLastAccess;
+            }
+
             await addBucketTask;
         }
 
@@ -122,10 +164,18 @@ namespace Jupiter.Implementation
         {
             using TelemetrySpan scope = _tracer.BuildScyllaSpan("scylla.update_last_access_time");
 
-            await _mapper.UpdateAsync<ScyllaObject>("SET last_access_time = ? WHERE namespace = ? AND bucket = ? AND name = ?", lastAccessTime, ns.ToString(), bucket.ToString(), name.ToString());
+            Task? updateObjectLastAccessTask = null;
+            updateObjectLastAccessTask = _mapper.InsertAsync<ScyllaObjectLastAccess>(new ScyllaObjectLastAccess(ns, bucket, name, lastAccessTime));
+
+            if (_settings.CurrentValue.UpdateLegacyLastAccessField)
+            {
+                await _mapper.UpdateAsync<ScyllaObject>("SET last_access_time = ? WHERE namespace = ? AND bucket = ? AND name = ?", lastAccessTime, ns.ToString(), bucket.ToString(), name.ToString());
+            }
+
+            await updateObjectLastAccessTask;
         }
 
-        public async IAsyncEnumerable<(BucketId, IoHashKey, DateTime)> GetRecords(NamespaceId ns)
+        public async IAsyncEnumerable<(NamespaceId, BucketId, IoHashKey, DateTime)> GetRecords()
         {
             using TelemetrySpan scope = _tracer.BuildScyllaSpan("scylla.get_records");
 
@@ -135,17 +185,16 @@ namespace Jupiter.Implementation
 
                 await foreach ((NamespaceId, BucketId, IoHashKey, DateTime) record in enumerable)
                 {
-                    if (!record.Item1.Equals(ns))
-                    {
-                        continue;
-                    }
-                    yield return (record.Item2, record.Item3, record.Item4);
+                    yield return (record.Item1, record.Item2, record.Item3, record.Item4);
                 }
             }
             else
             {
+                PreparedStatement getObjectStatement = _settings.CurrentValue.ListObjectsFromLastAccessTable
+                    ? _getObjectsLastAccessStatement
+                    : _getObjectsStatement;
                 const int MaxRetryAttempts = 3;
-                RowSet rowSet = await _session.ExecuteAsync(_getObjectsStatement.Bind(ns.ToString()));
+                RowSet rowSet = await _session.ExecuteAsync(getObjectStatement.Bind());
 
                 do
                 {
@@ -155,6 +204,7 @@ namespace Jupiter.Implementation
 
                     foreach (Row row in localRows)
                     {
+                        string ns = row.GetValue<string>("namespace");
                         string bucket = row.GetValue<string>("bucket");
                         string name = row.GetValue<string>("name");
                         DateTime? lastAccessTime = row.GetValue<DateTime?>("last_access_time");
@@ -167,7 +217,7 @@ namespace Jupiter.Implementation
 
                         // if last access time is missing we treat it as being very old
                         lastAccessTime ??= DateTime.MinValue;
-                        yield return (new BucketId(bucket), new IoHashKey(name), lastAccessTime.Value);
+                        yield return (new NamespaceId(ns), new BucketId(bucket), new IoHashKey(name), lastAccessTime.Value);
                     }
 
                     int retryAttempts = 0;
@@ -211,11 +261,13 @@ namespace Jupiter.Implementation
         private async IAsyncEnumerable<(NamespaceId, BucketId, IoHashKey, DateTime)> GetRecordsPerShard()
         {
             using TelemetrySpan scope = _tracer.BuildScyllaSpan("scylla.get_records_per_shard");
-            
+            PreparedStatement getObjectStatement = _settings.CurrentValue.ListObjectsFromLastAccessTable
+                ? _getObjectsLastAccessForPartitionRangeStatement
+                : _getObjectsForPartitionRangeStatement;
+
             foreach ((long, long) range in ScyllaUtils.GetTableRanges(_settings.CurrentValue.CountOfNodes, _settings.CurrentValue.CountOfCoresPerNode, 3))
             {
-                RowSet rowSet = await _session.ExecuteAsync(_getObjectsForPartitionRangeStatement.Bind(range.Item1, range.Item2));
-                
+                RowSet rowSet = await _session.ExecuteAsync(getObjectStatement.Bind(range.Item1, range.Item2));
                 foreach (Row row in rowSet)
                 {
                     string ns = row.GetValue<string>("namespace");
@@ -239,16 +291,37 @@ namespace Jupiter.Implementation
         public async IAsyncEnumerable<NamespaceId> GetNamespaces()
         {
             using TelemetrySpan scope = _tracer.BuildScyllaSpan("scylla.get_namespaces");
-            RowSet rowSet = await _session.ExecuteAsync(_getNamespacesStatement.Bind());
 
-            foreach (Row row in rowSet)
             {
-                if (rowSet.GetAvailableWithoutFetching() == 0)
-                {
-                    await rowSet.FetchMoreResultsAsync();
-                }
+                RowSet rowSet = await _session.ExecuteAsync(_getNamespacesStatement.Bind());
 
-                yield return new NamespaceId(row.GetValue<string>(0));
+                foreach (Row row in rowSet)
+                {
+                    if (rowSet.GetAvailableWithoutFetching() == 0)
+                    {
+                        await rowSet.FetchMoreResultsAsync();
+                    }
+
+                    yield return new NamespaceId(row.GetValue<string>(0));
+                }
+            }
+
+            if (_settings.CurrentValue.ListObjectsFromOldNamespaceTable)
+            {
+                // this will likely generate duplicates from the statements above but that is not a huge issue
+                using TelemetrySpan _ = _tracer.BuildScyllaSpan("scylla.get_old_namespaces");
+
+                RowSet rowSet = await _session.ExecuteAsync(_getNamespacesOldStatement.Bind());
+
+                foreach (Row row in rowSet)
+                {
+                    if (rowSet.GetAvailableWithoutFetching() == 0)
+                    {
+                        await rowSet.FetchMoreResultsAsync();
+                    }
+
+                    yield return new NamespaceId(row.GetValue<string>(0));
+                }
             }
         }
 
@@ -290,6 +363,7 @@ namespace Jupiter.Implementation
         public async Task<long> DeleteBucket(NamespaceId ns, BucketId bucket)
         {
             using TelemetrySpan scope = _tracer.BuildScyllaSpan("scylla.delete_bucket");
+
             RowSet rowSet = await _session.ExecuteAsync(new SimpleStatement("SELECT name FROM objects WHERE namespace = ? AND bucket = ? ALLOW FILTERING;", ns.ToString(), bucket.ToString()));
             long deletedCount = 0;
             foreach (Row row in rowSet)
@@ -301,15 +375,24 @@ namespace Jupiter.Implementation
             }
 
             // remove the tracking in the buckets table as well
-            await _mapper.UpdateAsync<ScyllaBucket>("SET bucket = bucket - ? WHERE namespace = ?", new string[] {bucket.ToString()}, ns.ToString());
+            await _mapper.DeleteAsync<ScyllaBucket>(new ScyllaBucket(ns, bucket));
 
             return deletedCount;
         }
 
-        private async Task MaybeAddBucket(NamespaceId ns, BucketId bucket)
+        private async Task AddBucket(NamespaceId ns, BucketId bucket)
         {
             using TelemetrySpan scope = _tracer.BuildScyllaSpan("scylla.add_bucket");
-            await _mapper.UpdateAsync<ScyllaBucket>("SET bucket = bucket + ? WHERE namespace = ?", new string[] {bucket.ToString()}, ns.ToString());
+
+            ConcurrentBag<BucketId> addedBuckets = _addedBuckets.GetOrAdd(ns, id => new ConcurrentBag<BucketId>());
+
+            bool alreadyAdded = addedBuckets.Contains(bucket);
+            if (!alreadyAdded)
+            {
+                Task addTask = _mapper.InsertAsync<ScyllaBucket>(new ScyllaBucket(ns, bucket));
+                addedBuckets.Add(bucket);
+                await addTask;
+            }
         }
     }
 
@@ -405,7 +488,7 @@ namespace Jupiter.Implementation
         [Cassandra.Mapping.Attributes.Column("last_access_time")]
         public DateTime LastAccessTime { get; set; }
 
-        public void ThrowIfRequiredFieldIsMissing(bool includePayload)
+        public void ThrowIfRequiredFieldIsMissing()
         {
             if (string.IsNullOrEmpty(Namespace))
             {
@@ -422,7 +505,7 @@ namespace Jupiter.Implementation
                 throw new InvalidOperationException("Name was not valid");
             }
 
-            if (PayloadHash == null && includePayload)
+            if (PayloadHash == null)
             {
                 throw new ArgumentException("PayloadHash was not valid");
             }
@@ -434,24 +517,50 @@ namespace Jupiter.Implementation
         }
     }
 
-    [Cassandra.Mapping.Attributes.Table("buckets")]
+    [Cassandra.Mapping.Attributes.Table("buckets_v2")]
     public class ScyllaBucket
     {
-        public ScyllaBucket()
-        {
-
-        }
-
-        public ScyllaBucket(NamespaceId ns, BucketId[] buckets)
+        public ScyllaBucket(NamespaceId ns, BucketId bucket)
         {
             Namespace = ns.ToString();
-            Buckets = buckets.Select(b => b.ToString()).ToList();
+            Bucket = bucket.ToString();
         }
 
         [Cassandra.Mapping.Attributes.PartitionKey]
         public string? Namespace { get; set; }
 
-        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "Used by serialization")]
-        public List<string> Buckets { get; set; } = new List<string>();
+        [Cassandra.Mapping.Attributes.ClusteringKey]
+        public string Bucket { get; set; }
+    }
+
+    
+    [Cassandra.Mapping.Attributes.Table("object_last_access_v2")]
+    public class ScyllaObjectLastAccess
+    {
+        public ScyllaObjectLastAccess()
+        {
+
+        }
+
+        public ScyllaObjectLastAccess(NamespaceId ns, BucketId bucket, IoHashKey name, DateTime lastAccessTime)
+        {
+            Namespace = ns.ToString();
+            Bucket = bucket.ToString();
+            Name = name.ToString();
+
+            LastAccessTime = lastAccessTime;
+        }
+
+        [Cassandra.Mapping.Attributes.PartitionKey(0)]
+        public string? Namespace { get; set; }
+
+        [Cassandra.Mapping.Attributes.PartitionKey(1)]
+        public string? Bucket { get; set; }
+
+        [Cassandra.Mapping.Attributes.PartitionKey(2)]
+        public string? Name { get; set; }
+
+        [Cassandra.Mapping.Attributes.Column("last_access_time")]
+        public DateTime LastAccessTime { get; set; }
     }
 }

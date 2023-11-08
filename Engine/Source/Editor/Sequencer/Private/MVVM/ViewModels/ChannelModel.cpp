@@ -20,6 +20,7 @@
 #include "MVVM/ViewModels/ViewModelIterators.h"
 #include "MVVM/ViewModels/OutlinerViewModel.h"
 #include "MVVM/ViewModels/TrackModel.h"
+#include "MVVM/Selection/Selection.h"
 #include "MVVM/Views/SOutlinerView.h"
 #include "MVVM/Views/SOutlinerItemViewBase.h"
 #include "MVVM/Views/SSequencerKeyNavigationButtons.h"
@@ -33,7 +34,6 @@
 #include "SKeyAreaEditorSwitcher.h"
 #include "SequencerCoreFwd.h"
 #include "SequencerSectionPainter.h"
-#include "SequencerSelection.h"
 #include "SequencerSettings.h"
 #include "SlotBase.h"
 #include "Styling/AppStyle.h"
@@ -309,7 +309,7 @@ void FChannelGroupModel::OnChannelOverridesChanged()
 
 void FChannelGroupModel::CleanupChannels()
 {
-	const int32 NumRemoved = Channels.RemoveAll([](TWeakViewModelPtr<FChannelModel> Item) { return !Item.IsValid(); });
+	const int32 NumRemoved = Channels.RemoveAll([](TWeakViewModelPtr<FChannelModel> Item) { return !Item.Pin().IsValid(); });
 	if (NumRemoved > 0)
 	{
 		++ChannelsSerialNumber;
@@ -451,16 +451,12 @@ bool FChannelGroupOverrideHelper::GetChannelsFromOutlinerSelection(TSharedPtr<FS
 		return false;
 	}
 
-	// Get all selected outliner items. We will filter out those that aren't channel groups.
-	TArray<TSharedRef<FViewModel>> SelectedItems;
-	Sequencer->GetSelection().GetSelectedOutlinerItems(SelectedItems);
-
 	// The selected items could either be channel groups, or tracks/track-rows with top-level channel groups that
 	// don't explicitly show up in the outliner (they are view-models that live under the track or row, but the
 	// user interface shows them as the track or row itself).
-	for (TSharedRef<FViewModel> SelectedItem : SelectedItems)
+	for (FViewModelPtr ViewModel : Sequencer->GetViewModel()->GetSelection()->Outliner)
 	{
-		if (FChannelGroupModel* ChannelGroup = SelectedItem->CastThis<FChannelGroupModel>())
+		if (TViewModelPtr<FChannelGroupModel> ChannelGroup = ViewModel.ImplicitCast())
 		{
 			const int32 NumChannels = ChannelGroup->GetChannels().Num();
 			for (int32 ChannelIndex = 0; ChannelIndex < NumChannels; ++ChannelIndex)
@@ -474,7 +470,7 @@ bool FChannelGroupOverrideHelper::GetChannelsFromOutlinerSelection(TSharedPtr<FS
 		else
 		{
 			const EViewModelListType ListType = FTrackModel::GetTopLevelChannelGroupType();
-			TOptional<FViewModelChildren> TopLevelChannels = SelectedItem->FindChildList(ListType);
+			TOptional<FViewModelChildren> TopLevelChannels = ViewModel->FindChildList(ListType);
 			if (TopLevelChannels.IsSet())
 			{
 				for (auto It(TopLevelChannels->IterateSubList<FChannelGroupModel>()); It; ++It)
@@ -582,7 +578,7 @@ void FChannelGroupOverrideHelper::BuildChannelOverrideMenu(FMenuBuilder& MenuBui
 		if (ExistingOverrides.Num() > 0)
 		{
 			MenuBuilder.AddMenuEntry(
-				LOCTEXT("RemoveOverrideChannelLabel", "Remove override"),
+				LOCTEXT("RemoveOverrideChannelLabel", "Remove Override"),
 				LOCTEXT("RemoveOverrideChannelTooltip", "Removes the channel override and revert back to the default channel type"),
 				FSlateIcon(),
 				FUIAction(
@@ -827,7 +823,7 @@ bool FChannelGroupOutlinerModel::CanDelete(FText* OutErrorMessage) const
 void FChannelGroupOutlinerModel::Delete()
 {
 	TArray<FName> PathFromTrack;
-	TViewModelPtr<ITrackExtension> Track = GetParentTrackNodeAndNamePath(this, PathFromTrack);
+	TViewModelPtr<ITrackExtension> Track = GetParentTrackNodeAndNamePath(SharedThis(this), PathFromTrack);
 
 	Track->GetTrack()->Modify();
 

@@ -20,52 +20,54 @@
 #endif
 #include "WorldPartitionLevelStreamingDynamic.generated.h"
 
-UCLASS()
-class ENGINE_API UWorldPartitionLevelStreamingDynamic : public ULevelStreamingDynamic
+UCLASS(NotPlaceable, NotBlueprintable, HideDropdown, MinimalAPI)
+class UWorldPartitionLevelStreamingDynamic : public ULevelStreamingDynamic
 {
 	GENERATED_UCLASS_BODY()
 
-	void Load();
-	void Unload();
-	void Activate();
-	void Deactivate();
-	UWorld* GetStreamingWorld() const override;
+	ENGINE_API void Load();
+	ENGINE_API void Unload();
+	ENGINE_API void Activate();
+	ENGINE_API void Deactivate();
+	ENGINE_API UWorld* GetStreamingWorld() const override;
 	void SetShouldBeAlwaysLoaded(bool bInShouldBeAlwaysLoaded) { bShouldBeAlwaysLoaded = bInShouldBeAlwaysLoaded; }
 	const UWorldPartitionRuntimeCell* GetWorldPartitionRuntimeCell() const { return StreamingCell.Get(); }
 
 	virtual bool ShouldBeAlwaysLoaded() const override { return bShouldBeAlwaysLoaded; }
-	virtual bool ShouldBlockOnUnload() const override;
+	ENGINE_API virtual bool ShouldBlockOnUnload() const override;
 	virtual bool ShouldRequireFullVisibilityToRender() const override { return true; }
-
-	virtual bool CanMakeVisible() override;
-	virtual bool CanMakeInvisible() override;
+	ENGINE_API virtual bool RequestVisibilityChange(bool bVisible) override;
+	virtual const IWorldPartitionCell* GetWorldPartitionCell() const override { return GetWorldPartitionRuntimeCell(); }
 
 #if !WITH_EDITOR
-	virtual void PostLoad();
+	ENGINE_API virtual void PostLoad();
 #endif
 
-	void Initialize(const UWorldPartitionRuntimeLevelStreamingCell& InCell);
+	ENGINE_API void Initialize(const UWorldPartitionRuntimeLevelStreamingCell& InCell);
+	ENGINE_API void SetLevelTransform(const FTransform& InLevelTransform);
 
 	virtual bool CanReplicateStreamingStatus() const override { return false; }
 
 #if WITH_EDITOR
-	static UWorldPartitionLevelStreamingDynamic* LoadInEditor(UWorld* World, FName LevelStreamingName, const TArray<FWorldPartitionRuntimeCellObjectMapping>& InPackages);
-	static void UnloadFromEditor(UWorldPartitionLevelStreamingDynamic* InLevelStreaming);
+	static ENGINE_API UWorldPartitionLevelStreamingDynamic* LoadInEditor(UWorld* World, FName LevelStreamingName, const TArray<FWorldPartitionRuntimeCellObjectMapping>& InPackages);
+	static ENGINE_API void UnloadFromEditor(UWorldPartitionLevelStreamingDynamic* InLevelStreaming);
 
 	// Override ULevelStreaming
-	virtual bool RequestLevel(UWorld* PersistentWorld, bool bAllowLevelLoadRequests, EReqLevelBlock BlockPolicy) override;
-	virtual void BeginDestroy() override;
-	virtual TOptional<FFolder::FRootObject> GetFolderRootObject() const override;
+	ENGINE_API virtual bool RequestLevel(UWorld* PersistentWorld, bool bAllowLevelLoadRequests, EReqLevelBlock BlockPolicy) override;
+	ENGINE_API virtual void BeginDestroy() override;
+	ENGINE_API virtual TOptional<FFolder::FRootObject> GetFolderRootObject() const override;
 
 	bool GetLoadSucceeded() const { return bLoadSucceeded; }
 
-private:
-	void CreateRuntimeLevel();
-	bool IssueLoadRequests();
-	void FinalizeRuntimeLevel();
-	void OnCleanupLevel();
+	void SetShouldPerformStandardLevelLoading(bool bInShouldPerformStandardLevelLoading) { bShouldPerformStandardLevelLoading = bInShouldPerformStandardLevelLoading; }
 
-	void Initialize(UWorld* OuterWorld, const TArray<FWorldPartitionRuntimeCellObjectMapping>& InPackages);
+private:
+	ENGINE_API void CreateRuntimeLevel();
+	ENGINE_API bool IssueLoadRequests();
+	ENGINE_API void FinalizeRuntimeLevel();
+	ENGINE_API void OnCleanupLevel();
+
+	ENGINE_API void Initialize(UWorld* OuterWorld, const TArray<FWorldPartitionRuntimeCellObjectMapping>& InPackages);
 
 	FName OriginalLevelPackageName;
 	TArray<FWorldPartitionRuntimeCellObjectMapping> ChildPackages;
@@ -83,13 +85,18 @@ private:
 #endif
 
 private:
-	void UpdateShouldSkipMakingVisibilityTransactionRequest();
-	bool CanChangeVisibility(bool bMakeVisible) const;
+	ENGINE_API void UpdateShouldSkipMakingVisibilityTransactionRequest();
+	ENGINE_API bool CanChangeVisibility(bool bMakeVisible) const;
 
 	UPROPERTY()
 	bool bShouldBeAlwaysLoaded;
 
+	bool bHasSetLevelTransform;
+
 #if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	bool bShouldPerformStandardLevelLoading;
+
 	UPROPERTY()
 	TObjectPtr<UActorContainer> UnsavedActorsContainer;
 #endif
@@ -98,5 +105,5 @@ private:
 	TWeakObjectPtr<const UWorldPartitionRuntimeLevelStreamingCell> StreamingCell;
 
 	UPROPERTY()
-	TWeakObjectPtr<UWorldPartition> OuterWorldPartition;
+	TObjectPtr<UWorldPartition> OuterWorldPartition;
 };

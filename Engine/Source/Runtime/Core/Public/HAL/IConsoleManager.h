@@ -107,6 +107,16 @@ enum EConsoleVariableFlags
 	/* CVars with this flag will be excluded from the device profile previews. */
 	ECVF_ExcludeFromPreview = 0x1000,
 
+	/**
+	 * CVars with this flag will be saved into local temp file for next boot after hotfixed. Normally use for feature switch which is too early, even before launching the hotfix http request
+	 * Use it carefully with these constrains in mind: 
+	 *  - WARNING: This exposes the config to end user who could change it through the local temp file in shipping client, it's your responsibility to make sure client can't "legally" cheat through this type of CVar;
+	 *  - For the first time get hotfixed, the value will change from default value during boot to the hotfixed value after the hotfix http request, so make sure caching it when boot if the logic doesn't support to change at runtime;
+	 *  - When there is a new released game version, the saved local temp file of last version could still be there. So it will still got read once. Keep the logic work well with the old value, or remove the CVar if the old value no longer supported;
+	 *  - It will only work for game client, not for dedicated servers which will be dynamically allocated on different server instances.
+	 */
+	ECVF_SaveForNextBoot = 0x2000,
+
 	// ------------------------------------------------
 
 	/* Set flags */
@@ -138,16 +148,22 @@ enum EConsoleVariableFlags
 	ECVF_SetByGameOverride =		0x06000000,
 	// Set by local consolevariables.ini, mostly used for testing multiple projects
 	ECVF_SetByConsoleVariablesIni = 0x07000000,
+	// Set by hotfix
+	ECVF_SetByHotfix =				0x08000000,
 	// Used by some command line parameters, others use the Console priority instead
-	ECVF_SetByCommandline =			0x08000000,
+	ECVF_SetByCommandline =			0x09000000,
 	// Used for high priority temporary debugging or operation modes 
-	ECVF_SetByCode =				0x09000000,
+	ECVF_SetByCode =				0x0A000000,
 	// Highest priority used via editor UI or or game/editor interactive console
-	ECVF_SetByConsole =				0x0A000000,
+	ECVF_SetByConsole =				0x0B000000,
 
 
 	// ------------------------------------------------
 };
+
+/** Returns human readable ECVF_SetByMask bits of the console variable flags. */
+extern CORE_API const TCHAR* GetConsoleVariableSetByName(EConsoleVariableFlags ConsoleVariableFlags);
+
 
 class IConsoleVariable;
 
@@ -196,6 +212,12 @@ struct FNullConsoleVariableDelegate
 
 	template<typename FunctorType, typename... VarTypes>
 	inline static DerivedType CreateLambda(FunctorType&&, VarTypes...)
+	{
+		return {};
+	}
+
+	template<typename UserClass, typename FunctorType, typename... VarTypes>
+	inline static DerivedType CreateSPLambda(UserClass*, FunctorType&&, VarTypes...)
 	{
 		return {};
 	}
@@ -698,7 +720,7 @@ public:
 /**
  * handles console commands and variables, registered console variables are released on destruction
  */
-struct CORE_API IConsoleManager
+struct IConsoleManager
 {
 	/**
 	 * Create a bool console variable
@@ -1022,7 +1044,7 @@ struct CORE_API IConsoleManager
 	 * @param DeviceProfileName If this is non-empty, the given deviceprofile will be loaded from the platform's inis and inserted into the CVars
 	 * @param Visit the callback to run for each CVar found
 	 */
-	static bool VisitPlatformCVarsForEmulation(FName PlatformName, const FString& DeviceProfileName, TFunctionRef<void(const FString& CVarName, const FString& CVarValue, EConsoleVariableFlags SetBy)> Visit);
+	static CORE_API bool VisitPlatformCVarsForEmulation(FName PlatformName, const FString& DeviceProfileName, TFunctionRef<void(const FString& CVarName, const FString& CVarValue, EConsoleVariableFlags SetBy)> Visit);
 #endif
 
 	virtual FConsoleVariableMulticastDelegate& OnCVarUnregistered() = 0;
@@ -1032,17 +1054,17 @@ protected:
 
 private:
 	/** Singleton for the console manager **/
-	static IConsoleManager* Singleton;
+	static CORE_API IConsoleManager* Singleton;
 
 	/** Function to create the singleton **/
-	static void SetupSingleton();
+	static CORE_API void SetupSingleton();
 };
 
 
 /**
  * auto registering console variable sinks (register a callback function that is called when ever a cvar is changes by the user, changes are grouped and happen in specific engine spots during the frame/main loop)
  */
-class CORE_API FAutoConsoleVariableSink
+class FAutoConsoleVariableSink
 {
 public:
 	/** Constructor, saves the argument for future removal from the console variable system **/
@@ -1065,7 +1087,7 @@ public:
 /**
  * Base class for autoregistering console commands.
  */
-class CORE_API FAutoConsoleObject
+class FAutoConsoleObject
 {
 protected:
 	/** Constructor, saves the argument for future removal from the console variable system **/
@@ -1093,9 +1115,9 @@ public:
 		IConsoleManager::Get().UnregisterConsoleObject(Target);
 	}
 
-	static TArray<const FAutoConsoleObject*>& AccessGeneralShaderChangeCvars();
-	static TArray<const FAutoConsoleObject*>& AccessMobileShaderChangeCvars();
-	static TArray<const FAutoConsoleObject*>& AccessDesktopShaderChangeCvars();
+	static CORE_API TArray<const FAutoConsoleObject*>& AccessGeneralShaderChangeCvars();
+	static CORE_API TArray<const FAutoConsoleObject*>& AccessMobileShaderChangeCvars();
+	static CORE_API TArray<const FAutoConsoleObject*>& AccessDesktopShaderChangeCvars();
 
 	/** returns the contained console object as an IConsoleVariable **/
 	FORCEINLINE IConsoleVariable* AsVariable()
@@ -1119,7 +1141,7 @@ private:
 /**
  * Autoregistering float, int or string console variable
  */
-class CORE_API FAutoConsoleVariable : private FAutoConsoleObject
+class FAutoConsoleVariable : private FAutoConsoleObject
 {
 public:
 	/**
@@ -1235,7 +1257,7 @@ public:
 	}
 };
 #else
-class CORE_API FAutoConsoleVariable
+class FAutoConsoleVariable
 {
 public:
 	FAutoConsoleVariable(const TCHAR* Name, int32 DefaultValue, const TCHAR* Help, uint32 Flags = ECVF_Default)
@@ -1256,7 +1278,7 @@ public:
 /**
  * Autoregistering float, int, bool, FString REF variable class...this changes that value when the console variable is changed. 
  */
-class CORE_API FAutoConsoleVariableRef : private FAutoConsoleObject
+class FAutoConsoleVariableRef : private FAutoConsoleObject
 {
 public:
 	/**
@@ -1375,7 +1397,7 @@ public:
 	}
 };
 #else
-class CORE_API FAutoConsoleVariableRef
+class FAutoConsoleVariableRef
 {
 public:
 	FAutoConsoleVariableRef(const TCHAR* Name, int32& RefValue, const TCHAR* Help, uint32 Flags = ECVF_Default)
@@ -1682,29 +1704,31 @@ private:
 	EConsoleVariableFlags Flags = EConsoleVariableFlags::ECVF_Default;
 
 	template<class Y>
-	typename TEnableIf<!std::is_same_v<T, Y>, Y>::Type GetImpl() const
+	Y GetImpl() const
 	{
-		check(false);
-		return Y();
+		if constexpr (std::is_same_v<T, Y>)
+		{
+			return GetValueOnAnyThread();
+		}
+		else
+		{
+			check(false);
+			return Y();
+		}
 	}
 
 	template<class Y>
-	typename TEnableIf<std::is_same_v<T, Y>, Y>::Type GetImpl() const
+	TConsoleVariableData<T>* AsImpl()
 	{
-		return GetValueOnAnyThread();
-	}
-
-	template<class Y>
-	typename TEnableIf<!std::is_same_v<T, Y>, TConsoleVariableData<Y>*>::Type AsImpl()
-	{
-		check(false);
-		return nullptr;
-	}
-
-	template<class Y>
-	typename TEnableIf<std::is_same_v<T, Y>, TConsoleVariableData<T>*>::Type AsImpl()
-	{
-		return &Value;
+		if constexpr (std::is_same_v<T, Y>)
+		{
+			return &Value;
+		}
+		else
+		{
+			check(false);
+			return nullptr;
+		}
 	}
 };
 #endif // NO_CVARS
@@ -1713,7 +1737,7 @@ private:
 /**
  * Autoregistering console command
  */
-class CORE_API FAutoConsoleCommand : private FAutoConsoleObject
+class FAutoConsoleCommand : private FAutoConsoleObject
 {
 public:
 	/**
@@ -1743,6 +1767,32 @@ public:
 	}
 
 	/**
+	* Register a console command that takes an output device
+	*
+	* @param	Name		The name of this command (must not be nullptr)
+	* @param	Help		Help text for this command
+	* @param	Command		The user function to call when this command is executed
+	* @param	Flags		Optional flags bitmask
+	*/
+	FAutoConsoleCommand(const TCHAR* Name, const TCHAR* Help, const FConsoleCommandWithOutputDeviceDelegate& Command, uint32 Flags = ECVF_Default)
+		: FAutoConsoleObject(IConsoleManager::Get().RegisterConsoleCommand(Name, Help, Command, Flags))
+	{
+	}
+
+	/**
+	* Register a console command that takes a world argument
+	*
+	* @param	Name		The name of this command (must not be nullptr)
+	* @param	Help		Help text for this command
+	* @param	Command		The user function to call when this command is executed
+	* @param	Flags		Optional flags bitmask
+	*/
+	FAutoConsoleCommand(const TCHAR* Name, const TCHAR* Help, const FConsoleCommandWithWorldDelegate& Command, uint32 Flags = ECVF_Default)
+		: FAutoConsoleObject(IConsoleManager::Get().RegisterConsoleCommand(Name, Help, Command, Flags))
+	{
+	}
+
+	/**
 	* Register a console command that takes arguments, a world argument and an output device
 	*
 	* @param	Name		The name of this command (must not be nullptr)
@@ -1756,7 +1806,7 @@ public:
 	}
 };
 #else
-class CORE_API FAutoConsoleCommand
+class FAutoConsoleCommand
 {
 public:
 	FAutoConsoleCommand(const TCHAR* Name, const TCHAR* Help, const FConsoleCommandDelegate& Command, uint32 Flags = ECVF_Default)
@@ -1778,7 +1828,7 @@ public:
 /**
  * Autoregistering console command with a world
  */
-class CORE_API FAutoConsoleCommandWithWorld : private FAutoConsoleObject
+class FAutoConsoleCommandWithWorld : private FAutoConsoleObject
 {
 public:
 	/**
@@ -1800,7 +1850,7 @@ public:
 /**
  * Autoregistering console command with a world and arguments
  */
-class CORE_API FAutoConsoleCommandWithWorldAndArgs : private FAutoConsoleObject
+class FAutoConsoleCommandWithWorldAndArgs : private FAutoConsoleObject
 {
 public:	
 	/**
@@ -1820,7 +1870,7 @@ public:
 /**
  * Autoregistering console command with args and an output device
  */
-class CORE_API FAutoConsoleCommandWithArgsAndOutputDevice : private FAutoConsoleObject
+class FAutoConsoleCommandWithArgsAndOutputDevice : private FAutoConsoleObject
 {
 public:
 	
@@ -1833,7 +1883,7 @@ public:
 /**
  * Autoregistering console command with an output device
  */
-class CORE_API FAutoConsoleCommandWithOutputDevice : private FAutoConsoleObject
+class FAutoConsoleCommandWithOutputDevice : private FAutoConsoleObject
 {
 public:
 	/**
@@ -1853,7 +1903,7 @@ public:
 /**
  * Autoregistering console command with world, args, an output device
  */
-class CORE_API FAutoConsoleCommandWithWorldArgsAndOutputDevice : private FAutoConsoleObject
+class FAutoConsoleCommandWithWorldArgsAndOutputDevice : private FAutoConsoleObject
 {
 public:
 	/**

@@ -26,7 +26,7 @@ enum class EIsoSegmentStates : uint8
 {
 	None = 0x00u,	// No flags.
 
-	CandidateFlag = 0x01u,
+	Candidate = 0x01u,
 
 	LeftCycle = 0x02u,
 	RightCycle = 0x04u,
@@ -37,10 +37,9 @@ enum class EIsoSegmentStates : uint8
 	RightTriangle = 0x20u,
 	SegmentComplete = 0x30u,
 
-	StatusIsoU = 0x40u,
-	StatusIsoV = 0x80u,
+	Final = 0x40u,
+	Delete = 0x80u,
 
-	Delete = 0xFFu,
 	All = 0xFFu
 };
 
@@ -87,22 +86,16 @@ public:
 		}
 	}
 
-	void ConnectToNode()
+	bool ConnectToNode()
 	{
-		TFunction<bool()> CheckExistingSegment = [&]()
+		if (IsItAlreadyDefined(FirstNode, SecondNode))
 		{
-			if (IsItAlreadyDefined(FirstNode, SecondNode))
-			{
-				//Wait();
-				return false;
-			}
-			return true;
-		};
-
-		ensureCADKernel(CheckExistingSegment());
+			return false;
+		}
 
 		FirstNode->ConnectSegment(*this);
 		SecondNode->ConnectSegment(*this);
+		return true;
 	}
 
 	static bool	IsItAlreadyDefined(const FIsoNode* StartNode, const FIsoNode* EndNode)
@@ -140,17 +133,27 @@ public:
 
 	void SetSelected()
 	{
-		States &= ~EIsoSegmentStates::CandidateFlag;
+		States &= ~EIsoSegmentStates::Candidate;
 	}
 
 	void SetCandidate()
 	{
-		States |= EIsoSegmentStates::CandidateFlag;
+		States |= EIsoSegmentStates::Candidate;
 	}
 
-	bool IsACandidate() const // [0 Pi/2]
+	bool IsACandidate() const 
 	{
-		return (States & EIsoSegmentStates::CandidateFlag) == EIsoSegmentStates::CandidateFlag;
+		return (States & EIsoSegmentStates::Candidate) == EIsoSegmentStates::Candidate;
+	}
+
+	void SetFinalMarker()
+	{
+		States |= EIsoSegmentStates::Final;
+	}
+
+	bool IsAFinalSegment() const
+	{
+		return (States & EIsoSegmentStates::Final) == EIsoSegmentStates::Final;
 	}
 
 	bool HasCycleOnLeft()
@@ -178,19 +181,9 @@ public:
 		return (States & Side) == Side;
 	}
 
-	void SetHasTriangleOn(EIsoSegmentStates Side)
-	{
-		States |= Side;
-	}
-
 	bool HasTriangleOnLeft()
 	{
 		return (States & EIsoSegmentStates::LeftTriangle) == EIsoSegmentStates::LeftTriangle;
-	}
-
-	void SetHasTriangleOnLeft()
-	{
-		States |= EIsoSegmentStates::LeftTriangle;
 	}
 
 	bool HasTriangleOnRight()
@@ -198,9 +191,26 @@ public:
 		return (States & EIsoSegmentStates::RightTriangle) == EIsoSegmentStates::RightTriangle;
 	}
 
+	bool HasntTriangle()
+	{
+		constexpr EIsoSegmentStates BoothSides = EIsoSegmentStates::RightTriangle | EIsoSegmentStates::LeftTriangle;
+		return (States & BoothSides) == EIsoSegmentStates::None;
+	}
+
 	bool HasTriangleOnRightAndLeft()
 	{
-		return (States & EIsoSegmentStates::RightTriangle) == EIsoSegmentStates::RightTriangle && (States & EIsoSegmentStates::LeftTriangle) == EIsoSegmentStates::LeftTriangle;
+		constexpr EIsoSegmentStates BoothSides = EIsoSegmentStates::RightTriangle | EIsoSegmentStates::LeftTriangle;
+		return (States & BoothSides) == BoothSides;
+	}
+
+	void SetHasTriangleOn(EIsoSegmentStates Side)
+	{
+		States |= Side;
+	}
+
+	void SetHasTriangleOnLeft()
+	{
+		States |= EIsoSegmentStates::LeftTriangle;
 	}
 
 	void SetHasTriangleOnRight()
@@ -208,29 +218,21 @@ public:
 		States |= EIsoSegmentStates::RightTriangle;
 	}
 
+	void SetHasInnerTriangle(bool bOrientation)
+	{
+		if (bOrientation)
+		{
+			SetHasTriangleOnLeft();
+		}
+		else
+		{
+			SetHasTriangleOnRight();
+		}
+	}
+
 	void ResetHasTriangle()
 	{
 		States &= ~EIsoSegmentStates::SegmentComplete;
-	}
-
-	void SetAsIsoU()
-	{
-		States |= EIsoSegmentStates::StatusIsoU;
-	}
-
-	bool IsIsoU() const
-	{
-		return (States & EIsoSegmentStates::StatusIsoU) == EIsoSegmentStates::StatusIsoU;
-	}
-
-	void SetAsIsoV()
-	{
-		States |= EIsoSegmentStates::StatusIsoV;
-	}
-
-	bool IsIsoV() const
-	{
-		return (States & EIsoSegmentStates::StatusIsoV) == EIsoSegmentStates::StatusIsoV;
 	}
 
 	void SetAsDegenerated()
@@ -246,6 +248,11 @@ public:
 	bool IsDegenerated() const
 	{
 		return (States & EIsoSegmentStates::Degenerate) == EIsoSegmentStates::Degenerate;
+	}
+
+	bool IsFirstNode(const FIsoNode* Node) const
+	{
+		return FirstNode == Node;
 	}
 
 	const FIsoNode& GetFirstNode() const
@@ -368,6 +375,11 @@ inline uint32 GetTypeHash(const FIsoSegment& Segment0, const FIsoSegment& Segmen
 
 inline FIsoSegment* FIsoNode::GetSegmentConnectedTo(const FIsoNode* Node) const
 {
+	if (this == Node)
+	{
+		return nullptr;
+	}
+
 	for (FIsoSegment* Segment : ConnectedSegments)
 	{
 		if (&Segment->GetFirstNode() == Node)

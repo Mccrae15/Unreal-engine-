@@ -2,6 +2,22 @@
 
 #pragma once
 
+#include "Async/TaskGraphInterfaces.h"
+#include "D3D12RHICommon.h"
+#include "Templates/RefCounting.h"
+
+enum class ED3D12QueueType;
+
+class FD3D12CommandAllocator;
+class FD3D12CommandList;
+class FD3D12DynamicRHI;
+class FD3D12QueryHeap;
+class FD3D12Queue;
+class FD3D12Timing;
+
+class FD3D12SyncPoint;
+using FD3D12SyncPointRef = TRefCountPtr<FD3D12SyncPoint>;
+
 enum class ED3D12SyncPointType
 {
 	// Sync points of this type do not include an FGraphEvent, so cannot
@@ -43,11 +59,10 @@ struct FD3D12ResolvedFence
 // Sync points are one-shot, meaning they represent a single timeline point, and are released after use, via ref-counting.
 // Use FD3D12SyncPoint::Create() to make a new sync point and hold a reference to it via a FD3D12SyncPointRef object.
 //
-typedef TRefCountPtr<class FD3D12SyncPoint> FD3D12SyncPointRef;
 class FD3D12SyncPoint final : public FThreadSafeRefCountedObject
 {
-	friend class FD3D12DynamicRHI;
-	friend class FD3D12Queue;
+	friend FD3D12DynamicRHI;
+	friend FD3D12Queue;
 
 	static TLockFreePointerListUnordered<void, PLATFORM_CACHE_LINE_SIZE> MemoryPool;
 
@@ -117,6 +132,7 @@ enum class ED3D12QueryType
 	None,
 	CommandListBegin,
 	CommandListEnd,
+	PipelineStats,
 	IdleBegin,
 	IdleEnd,
 	AdjustedMicroseconds,
@@ -128,7 +144,7 @@ enum class ED3D12QueryType
 struct FD3D12QueryLocation
 {
 	// The heap in which the result is contained.
-	class FD3D12QueryHeap* Heap = nullptr;
+	FD3D12QueryHeap* Heap = nullptr;
 
 	// The index of the query within the heap.
 	uint32 Index = 0;
@@ -136,13 +152,16 @@ struct FD3D12QueryLocation
 	ED3D12QueryType Type = ED3D12QueryType::None;
 
 	// The location into which the result is written by the interrupt thread.
-	uint64* Target = nullptr;
+	void* Target = nullptr;
 
 	// Reads the query result from the heap
-	inline uint64 GetResult() const;
+	inline void CopyResultTo(void* Dst) const;
+
+	template <typename TValueType>
+	inline TValueType GetResult() const;
 
 	FD3D12QueryLocation() = default;
-	FD3D12QueryLocation(class FD3D12QueryHeap* Heap, uint32 Index, ED3D12QueryType Type, uint64* Target)
+	FD3D12QueryLocation(FD3D12QueryHeap* Heap, uint32 Index, ED3D12QueryType Type, void* Target)
 		: Heap	(Heap  )
 		, Index	(Index )
 		, Type	(Type  )
@@ -150,6 +169,33 @@ struct FD3D12QueryLocation
 	{}
 
 	operator bool() const { return Heap != nullptr; }
+};
+
+struct FBreadcrumbStack
+{
+	struct FScope
+	{
+		uint32 NameCRC;
+		uint32 MarkerIndex;
+		uint32 Child;
+		uint32 Sibling;
+	};
+
+	FD3D12Queue* Queue = nullptr;
+	uint32 NextIdx{ 0 };
+	int32 ContextId;
+	uint32 MaxMarkers{ 0 };
+	D3D12_GPU_VIRTUAL_ADDRESS WriteAddress;
+	void* CPUAddress;
+
+	TArray<FScope> Scopes;
+	TArray<uint32> ScopeStack;
+	bool bTopIsOpen{ false };
+
+	FBreadcrumbStack();
+	~FBreadcrumbStack();
+
+	void Initialize(TUniquePtr<struct FD3D12DiagnosticBuffer>& DiagnosticBuffer);
 };
 
 struct FD3D12QueryRange
@@ -197,11 +243,11 @@ struct FD3D12PayloadBase
 	TArray<FManualFence> FencesToWait;
 
 	// Execute
-	TArray<class FD3D12CommandList*> CommandListsToExecute;
+	TArray<FD3D12CommandList*> CommandListsToExecute;
 
 	// Signal
 	TArray<FManualFence> FencesToSignal;
-	TOptional<class FD3D12Timing*> Timing;
+	TOptional<FD3D12Timing*> Timing;
 	TArray<FD3D12SyncPointRef> SyncPointsToSignal;
 	uint64 CompletionFenceValue = 0;
 	FGraphEventRef SubmissionEvent;
@@ -211,13 +257,19 @@ struct FD3D12PayloadBase
 	bool bAlwaysSignal = false;
 
 	// Cleanup
-	TArray<class FD3D12CommandAllocator*> AllocatorsToRelease;
+	TArray<FD3D12CommandAllocator*> AllocatorsToRelease;
 	TArray<FD3D12QueryLocation> TimestampQueries;
 	TArray<FD3D12QueryLocation> OcclusionQueries;
+	TArray<FD3D12QueryLocation> PipelineStatsQueries;
 	TArray<FD3D12QueryRange> QueryRanges;
+
+	// GPU crash breadcrumbs stack
+	TArray<TSharedPtr<FBreadcrumbStack>> BreadcrumbStacks;
 
 	virtual ~FD3D12PayloadBase();
 
 protected:
-	FD3D12PayloadBase(FD3D12Device* const Device, ED3D12QueueType const QueueType);
+	FD3D12PayloadBase(FD3D12Device* Device, ED3D12QueueType QueueType);
 };
+
+#include COMPILED_PLATFORM_HEADER(D3D12Submission.h)

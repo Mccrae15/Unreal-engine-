@@ -108,6 +108,12 @@ void SCurveEditorView::RemoveCurve(FCurveModelID CurveID)
 	}
 }
 
+void SCurveEditorView::FrameVertical(double InOutputMin, double InOutputMax)
+{
+	//default just set's output if it can
+	SetOutputBounds(InOutputMin, InOutputMax);
+}
+
 void SCurveEditorView::SetOutputBounds(double InOutputMin, double InOutputMax)
 {
 	if (!bFixedOutputBounds)
@@ -150,8 +156,9 @@ void SCurveEditorView::ZoomAround(const FVector2D& Amount, double InputOrigin, d
 	}
 }
 
-void SCurveEditorView::GetCurveDrawParams(TArray<FCurveDrawParams>& OutDrawParams) const
+void SCurveEditorView::GetCurveDrawParams(TArray<FCurveDrawParams>& OutDrawParams) 
 {
+
 	TSharedPtr<FCurveEditor> CurveEditor = WeakCurveEditor.Pin();
 	if (!CurveEditor)
 	{
@@ -161,6 +168,9 @@ void SCurveEditorView::GetCurveDrawParams(TArray<FCurveDrawParams>& OutDrawParam
 	// Get the Min/Max values on the X axis, for Time
 	double InputMin = 0, InputMax = 1;
 	GetInputBounds(InputMin, InputMax);
+
+	//make sure the transform is set up
+	UpdateViewToTransformCurves(InputMin,InputMax);
 
 	OutDrawParams.Reset(CurveInfoByID.Num());
 
@@ -221,6 +231,9 @@ void SCurveEditorView::GetCurveDrawParam(TSharedPtr<FCurveEditor>& CurveEditor,c
 	TArray<FKeyHandle> VisibleKeys;
 	CurveModel->GetKeys(*CurveEditor, InputMin, InputMax, TNumericLimits<double>::Lowest(), TNumericLimits<double>::Max(), VisibleKeys);
 
+	// Always reset the points to cover case going from 1 to 0 keys
+	Params.Points.Reset(VisibleKeys.Num());
+	
 	if (VisibleKeys.Num())
 	{
 		ECurveEditorTangentVisibility TangentVisibility = CurveEditor->GetSettings()->GetTangentVisibility();
@@ -230,7 +243,6 @@ void SCurveEditorView::GetCurveDrawParam(TSharedPtr<FCurveEditor>& CurveEditor,c
 
 		AllKeyPositions.SetNum(VisibleKeys.Num());
 		AllKeyAttributes.SetNum(VisibleKeys.Num());
-		Params.Points.Reset(VisibleKeys.Num());
 
 		CurveModel->GetKeyPositions(VisibleKeys, AllKeyPositions);
 		CurveModel->GetKeyAttributes(VisibleKeys, AllKeyAttributes);

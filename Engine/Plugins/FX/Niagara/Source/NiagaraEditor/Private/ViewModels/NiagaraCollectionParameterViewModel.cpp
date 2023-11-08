@@ -15,7 +15,19 @@ FNiagaraCollectionParameterViewModel::FNiagaraCollectionParameterViewModel(FNiag
 	, CollectionInst(CollectionInstance)
 	, Parameter(Variable)
 {
-	DefaultValueType = Variable.IsDataInterface() ? INiagaraParameterViewModel::EDefaultValueType::Object : INiagaraParameterViewModel::EDefaultValueType::Struct;
+	if (Variable.IsDataInterface())
+	{
+		DefaultValueType = INiagaraParameterViewModel::EDefaultValueType::DataInterface;
+	}
+	else if (Variable.IsUObject())
+	{
+		DefaultValueType = INiagaraParameterViewModel::EDefaultValueType::ObjectAsset;
+	}
+	else
+	{
+		DefaultValueType = INiagaraParameterViewModel::EDefaultValueType::Struct;
+	}
+
 	RefreshParameterValue();
 }
 
@@ -24,6 +36,11 @@ void FNiagaraCollectionParameterViewModel::Reset()
 	OnNameChanged().RemoveAll(this);
 	OnTypeChanged().RemoveAll(this);
 	OnDefaultValueChanged().RemoveAll(this);
+}
+
+FNiagaraVariable FNiagaraCollectionParameterViewModel::GetVariable() const
+{
+	return Parameter;
 }
 
 FName FNiagaraCollectionParameterViewModel::GetName() const
@@ -43,7 +60,7 @@ FText FNiagaraCollectionParameterViewModel::GetTypeDisplayName() const
 	return FText::Format(LOCTEXT("TypeTextFormat", "Type: {0}"), Parameter.GetType().GetNameText());
 }
 
-void FNiagaraCollectionParameterViewModel::NameTextComitted(const FText& Name, ETextCommit::Type CommitInfo)
+void FNiagaraCollectionParameterViewModel::NameTextCommitted(const FText& Name, ETextCommit::Type CommitInfo)
 {
 	FName NewName = *CollectionInst->GetParent()->ParameterNameFromFriendlyName(*Name.ToString());
 
@@ -79,9 +96,9 @@ bool FNiagaraCollectionParameterViewModel::VerifyNodeNameTextChanged(const FText
 	return true;
 }
 
-TSharedPtr<FNiagaraTypeDefinition> FNiagaraCollectionParameterViewModel::GetType() const
+FNiagaraTypeDefinition FNiagaraCollectionParameterViewModel::GetType() const
 {
-	return MakeShareable(new FNiagaraTypeDefinition(Parameter.GetType()));
+	return Parameter.GetType();
 }
 
 bool FNiagaraCollectionParameterViewModel::CanChangeParameterType()const
@@ -166,9 +183,19 @@ TSharedRef<FStructOnScope> FNiagaraCollectionParameterViewModel::GetDefaultValue
 	return ParameterValue.ToSharedRef();
 }
 
-UObject* FNiagaraCollectionParameterViewModel::GetDefaultValueObject()
+UNiagaraDataInterface* FNiagaraCollectionParameterViewModel::GetDefaultValueDataInterface()
 {
 	return CollectionInst->GetParameterStore().GetDataInterface(Parameter);
+}
+
+UObject* FNiagaraCollectionParameterViewModel::GetDefaultValueObjectAsset()
+{
+	return CollectionInst->GetParameterStore().GetUObject(Parameter);
+}
+
+void FNiagaraCollectionParameterViewModel::SetDefaultValueObjectAsset(UObject* Object)
+{
+	CollectionInst->GetParameterStore().SetUObject(Object, Parameter);
 }
 
 void FNiagaraCollectionParameterViewModel::NotifyDefaultValuePropertyChanged(const FPropertyChangedEvent& PropertyChangedEvent)
@@ -177,16 +204,24 @@ void FNiagaraCollectionParameterViewModel::NotifyDefaultValuePropertyChanged(con
 	{
 		FScopedTransaction ScopedTransaction(LOCTEXT("EditParameterValueProperty", "Edit parameter value"));
 		CollectionInst->Modify();
-		if (DefaultValueType == INiagaraParameterViewModel::EDefaultValueType::Struct)
+		switch (DefaultValueType)
 		{
-			CollectionInst->GetParameterStore().SetParameterData(ParameterValue->GetStructMemory(), Parameter);
-		}
-		else
-		{
-			if (UNiagaraDataInterface* Interface = CollectionInst->GetParameterStore().GetDataInterface(Parameter))
-			{
-		 		Interface->Modify();
-			}
+
+			case INiagaraParameterViewModel::EDefaultValueType::Struct:
+				CollectionInst->GetParameterStore().SetParameterData(ParameterValue->GetStructMemory(), Parameter);
+				break;
+
+			case INiagaraParameterViewModel::EDefaultValueType::DataInterface:
+				if (UNiagaraDataInterface* Interface = CollectionInst->GetParameterStore().GetDataInterface(Parameter))
+				{
+					Interface->Modify();
+				}
+				break;
+
+			case INiagaraParameterViewModel::EDefaultValueType::ObjectAsset:
+			default:
+				checkNoEntry();
+				break;
 		}
 		OnDefaultValueChangedDelegate.Broadcast();
 	}
@@ -225,7 +260,7 @@ void FNiagaraCollectionParameterViewModel::NotifyDefaultValueChanged()
 {
 	if (!IsOptional() || IsProvided() == ECheckBoxState::Checked)
 	{
-		if (!Parameter.GetType().IsDataInterface())
+		if (!Parameter.GetType().IsDataInterface() && !Parameter.GetType().IsUObject())
 		{
 			const uint8* ParamData = CollectionInst->GetParameterStore().GetParameterData(Parameter);
 			check(ParamData);
@@ -248,7 +283,8 @@ FNiagaraCollectionParameterViewModel::FOnNameChanged& FNiagaraCollectionParamete
 void FNiagaraCollectionParameterViewModel::RefreshParameterValue()
 {
 	FNiagaraTypeDefinition Type = Parameter.GetType();
-	if (!Type.IsDataInterface())
+
+	if (!Type.IsDataInterface() && !Type.IsUObject())
 	{
 		ParameterValue = MakeShareable(new FStructOnScope(Parameter.GetType().GetStruct()));
 

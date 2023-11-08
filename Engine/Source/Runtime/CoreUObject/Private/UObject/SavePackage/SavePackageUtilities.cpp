@@ -182,14 +182,15 @@ namespace UE
 	}
 }
 
- FSavePackageSettings& FSavePackageSettings::GetDefaultSettings()
+FSavePackageSettings& FSavePackageSettings::GetDefaultSettings()
 {
 	static FSavePackageSettings Default;
 	return Default;
 }
 
-namespace SavePackageUtilities
+namespace UE::SavePackageUtilities
 {
+
 const FName NAME_World("World");
 const FName NAME_Level("Level");
 const FName NAME_PrestreamPackage("PrestreamPackage");
@@ -594,7 +595,7 @@ void GetCDOSubobjects(UObject* CDO, TArray<UObject*>& Subobjects)
 	}
 }
 	
-bool IsStrippedEditorOnlyObject(const UObject* InObject, bool bCheckRecursive, bool bCheckMarks)
+bool IsStrippedEditorOnlyObject(const UObject* InObject, EEditorOnlyObjectFlags Flags)
 {
 #if WITH_EDITOR
 	// Configurable via ini setting
@@ -613,16 +614,11 @@ bool IsStrippedEditorOnlyObject(const UObject* InObject, bool bCheckRecursive, b
 		return false;
 	}
 	
-	return IsEditorOnlyObject(InObject, bCheckRecursive, bCheckMarks);
+	return IsEditorOnlyObjectInternal(InObject, Flags);
 #else
 	return true;
 #endif
 }
-	
-} // end namespace SavePackageUtilities
-
-namespace UE::SavePackageUtilities
-{
 
 bool IsUpdatingLoadedPath(bool bIsCooking, const FPackagePath& TargetPackagePath, uint32 SaveFlags)
 {
@@ -764,14 +760,49 @@ void FObjectSaveContextData::Set(UPackage* Package, const ITargetPlatform* InTar
 	bUpdatingLoadedPath = UE::SavePackageUtilities::IsUpdatingLoadedPath(InTargetPlatform != nullptr, TargetPath, InSaveFlags);
 }
 
+bool IsEditorOnlyObject(const UObject* InObject, bool bCheckRecursive)
+{
+	using namespace UE::SavePackageUtilities;
+	EEditorOnlyObjectFlags Flags = EEditorOnlyObjectFlags::None;
+	Flags |= bCheckRecursive ? EEditorOnlyObjectFlags::CheckRecursive : EEditorOnlyObjectFlags::None;
+	return IsEditorOnlyObjectInternal(InObject, Flags);
+}
+
 bool IsEditorOnlyObject(const UObject* InObject, bool bCheckRecursive, bool bCheckMarks)
 {
+	using namespace UE::SavePackageUtilities;
+	EEditorOnlyObjectFlags Flags = EEditorOnlyObjectFlags::None;
+	Flags |= bCheckRecursive ? EEditorOnlyObjectFlags::CheckRecursive : EEditorOnlyObjectFlags::None;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+	Flags |= bCheckMarks ? EEditorOnlyObjectFlags::CheckMarks : EEditorOnlyObjectFlags::None;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+	return IsEditorOnlyObjectInternal(InObject, Flags);
+}
+
+namespace UE::SavePackageUtilities
+{
+
+bool IsEditorOnlyObjectInternal(const UObject* InObject, EEditorOnlyObjectFlags Flags)
+{
+	bool bCheckRecursive = EnumHasAnyFlags(Flags, EEditorOnlyObjectFlags::CheckRecursive);
+	bool bIgnoreEditorOnlyClass = EnumHasAnyFlags(Flags, EEditorOnlyObjectFlags::ApplyHasNonEditorOnlyReferences) &&
+		InObject->HasNonEditorOnlyReferences();
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+	bool bCheckMarks = EnumHasAnyFlags(Flags, EEditorOnlyObjectFlags::CheckMarks);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("IsEditorOnlyObject"), STAT_IsEditorOnlyObject, STATGROUP_LoadTime);
 	check(InObject);
 
-	if ((bCheckMarks && InObject->HasAnyMarks(OBJECTMARK_EditorOnly)) || InObject->IsEditorOnly())
+	// CDOs must be included if their class and archetype and outer are included.
+	// Ignore their value of IsEditorOnly
+	if (!InObject->HasAnyFlags(RF_ClassDefaultObject))
 	{
-		return true;
+		if (!bIgnoreEditorOnlyClass &&
+			((bCheckMarks && InObject->HasAnyMarks(OBJECTMARK_EditorOnly)) || InObject->IsEditorOnly()))
+		{
+			return true;
+		}
 	}
 
 	// If this is a package that is editor only or the object is in editor-only package,
@@ -807,121 +838,134 @@ bool IsEditorOnlyObject(const UObject* InObject, bool bCheckRecursive, bool bChe
 		UObject* Outer = InObject->GetOuter();
 		if (Outer && Outer != Package)
 		{
-			if (IsEditorOnlyObject(Outer, true, bCheckMarks))
+			if (IsEditorOnlyObjectInternal(Outer, Flags))
 			{
 				return true;
 			}
 		}
-		const UStruct* InStruct = Cast<UStruct>(InObject);
-		if (InStruct)
+		if (!bIgnoreEditorOnlyClass)
 		{
-			const UStruct* SuperStruct = InStruct->GetSuperStruct();
-			if (SuperStruct && IsEditorOnlyObject(SuperStruct, true, bCheckMarks))
+			const UStruct* InStruct = Cast<UStruct>(InObject);
+			if (InStruct)
 			{
-				return true;
+				const UStruct* SuperStruct = InStruct->GetSuperStruct();
+				if (SuperStruct && IsEditorOnlyObjectInternal(SuperStruct, Flags))
+				{
+					return true;
+				}
 			}
-		}
-		else
-		{
-			if (IsEditorOnlyObject(InObject->GetClass(), true, bCheckMarks))
+			else
 			{
-				return true;
-			}
+				if (IsEditorOnlyObjectInternal(InObject->GetClass(), Flags))
+				{
+					return true;
+				}
 
-			UObject* Archetype = InObject->GetArchetype();
-			if (Archetype && IsEditorOnlyObject(Archetype, true, bCheckMarks))
-			{
-				return true;
+				UObject* Archetype = InObject->GetArchetype();
+				if (Archetype && IsEditorOnlyObjectInternal(Archetype, Flags))
+				{
+					return true;
+				}
 			}
 		}
 	}
 	return false;
 }
 
-bool FObjectImportSortHelper::operator()(const FObjectImport& A, const FObjectImport& B) const
-{
-	int32 Result = 0;
-	if (A.XObject == nullptr)
-	{
-		Result = 1;
-	}
-	else if (B.XObject == nullptr)
-	{
-		Result = -1;
-	}
-	else
-	{
-		const FString* FullNameA = ObjectToFullNameMap.Find(A.XObject);
-		const FString* FullNameB = ObjectToFullNameMap.Find(B.XObject);
-		checkSlow(FullNameA);
-		checkSlow(FullNameB);
-
-		Result = FCString::Stricmp(**FullNameA, **FullNameB);
-	}
-
-	return Result < 0;
-}
+} // namespace UE::SavePackageUtilities
 
 void FObjectImportSortHelper::SortImports(FLinkerSave* Linker)
 {
 	TArray<FObjectImport>& Imports = Linker->ImportMap;
-	ObjectToFullNameMap.Reserve(Linker->ImportMap.Num());
-	for (int32 ImportIndex = 0; ImportIndex < Linker->ImportMap.Num(); ImportIndex++)
+	if (Imports.IsEmpty())
 	{
-		const FObjectImport& Import = Linker->ImportMap[ImportIndex];
+		return;
+	}
+
+	// Map of UObject => full name; optimization for sorting.
+	TMap<TObjectPtr<UObject>, FString> ObjectToFullNameMap;
+	ObjectToFullNameMap.Reserve(Imports.Num());
+
+	for (const FObjectImport& Import : Imports)
+	{
 		if (Import.XObject)
 		{
 			ObjectToFullNameMap.Add(Import.XObject, Import.XObject->GetFullName());
 		}
 	}
 
-	if (Linker->ImportMap.Num())
+	auto CompareObjectImports = [&ObjectToFullNameMap](const FObjectImport& A, const FObjectImport& B)
 	{
-		Sort(&Linker->ImportMap[0], Linker->ImportMap.Num(), *this);
-	}
-}
+		int32 Result = 0;
+		if (A.XObject == nullptr)
+		{
+			Result = 1;
+		}
+		else if (B.XObject == nullptr)
+		{
+			Result = -1;
+		}
+		else
+		{
+			const FString* FullNameA = ObjectToFullNameMap.Find(A.XObject);
+			const FString* FullNameB = ObjectToFullNameMap.Find(B.XObject);
+			checkSlow(FullNameA);
+			checkSlow(FullNameB);
 
-bool FObjectExportSortHelper::operator()(const FObjectExport& A, const FObjectExport& B) const
-{
-	int32 Result = 0;
-	if (A.Object == nullptr)
-	{
-		Result = 1;
-	}
-	else if (B.Object == nullptr)
-	{
-		Result = -1;
-	}
-	else
-	{
-		const FString* FullNameA = ObjectToFullNameMap.Find(A.Object);
-		const FString* FullNameB = ObjectToFullNameMap.Find(B.Object);
-		checkSlow(FullNameA);
-		checkSlow(FullNameB);
+			Result = FCString::Stricmp(**FullNameA, **FullNameB);
+		}
 
-		Result = FCString::Stricmp(**FullNameA, **FullNameB);
-	}
-
-	return Result < 0;
+		return Result < 0;
+	};
+	
+	Algo::Sort(Linker->ImportMap, CompareObjectImports);
 }
 
 void FObjectExportSortHelper::SortExports(FLinkerSave* Linker)
 {
-	ObjectToFullNameMap.Reserve(Linker->ExportMap.Num());
-
-	for ( int32 ExportIndex = 0; ExportIndex < Linker->ExportMap.Num(); ExportIndex++ )
+	TArray<FObjectExport>& Exports = Linker->ExportMap;
+	if (Exports.IsEmpty())
 	{
-		const FObjectExport& Export = Linker->ExportMap[ExportIndex];
+		return;
+	}
+	
+	// Map of UObject => full name; optimization for sorting.
+	TMap<UObject*, FString> ObjectToFullNameMap;
+	ObjectToFullNameMap.Reserve(Exports.Num());
+
+	for (const FObjectExport& Export : Exports)
+	{
 		if (Export.Object)
 		{
 			ObjectToFullNameMap.Add(Export.Object, Export.Object->GetFullName());
 		}
 	}
 
-	if (Linker->ExportMap.Num())
+	auto CompareObjectExports = [&ObjectToFullNameMap](const FObjectExport& A, const FObjectExport& B)
 	{
-		Sort(&Linker->ExportMap[0], Linker->ExportMap.Num(), *this);
-	}
+		int32 Result = 0;
+		if (A.Object == nullptr)
+		{
+			Result = 1;
+		}
+		else if (B.Object == nullptr)
+		{
+			Result = -1;
+		}
+		else
+		{
+			const FString* FullNameA = ObjectToFullNameMap.Find(A.Object);
+			const FString* FullNameB = ObjectToFullNameMap.Find(B.Object);
+			checkSlow(FullNameA);
+			checkSlow(FullNameB);
+
+			Result = FCString::Stricmp(**FullNameA, **FullNameB);
+		}
+
+		return Result < 0;
+	};
+	
+	Algo::Sort(Linker->ExportMap, CompareObjectExports);
 }
 
 FEDLCookChecker::FEDLNodeHash::FEDLNodeHash()
@@ -936,7 +980,7 @@ FEDLCookChecker::FEDLNodeHash::FEDLNodeHash(const TArray<FEDLNodeData>* InNodes,
 {
 }
 
-FEDLCookChecker::FEDLNodeHash::FEDLNodeHash(const UObject* InObject, EObjectEvent InObjectEvent)
+FEDLCookChecker::FEDLNodeHash::FEDLNodeHash(TObjectPtr<UObject> InObject, EObjectEvent InObjectEvent)
 	: Object(InObject)
 	, bIsNode(false)
 	, ObjectEvent(InObjectEvent)
@@ -952,8 +996,8 @@ bool FEDLCookChecker::FEDLNodeHash::operator==(const FEDLNodeHash& Other) const
 
 	uint32 LocalNodeID;
 	uint32 OtherNodeID;
-	const UObject* LocalObject;
-	const UObject* OtherObject;
+	TObjectPtr<const UObject> LocalObject;
+	TObjectPtr<const UObject> OtherObject;
 	FName LocalName = ObjectNameFirst(*this, LocalNodeID, LocalObject);
 	FName OtherName = ObjectNameFirst(Other, OtherNodeID, OtherObject);
 
@@ -974,7 +1018,7 @@ uint32 GetTypeHash(const FEDLCookChecker::FEDLNodeHash& A)
 	uint32 Hash = 0;
 
 	uint32 LocalNodeID;
-	const UObject* LocalObject;
+	TObjectPtr<const UObject> LocalObject;
 	FName LocalName = FEDLCookChecker::FEDLNodeHash::ObjectNameFirst(A, LocalNodeID, LocalObject);
 	do
 	{
@@ -993,7 +1037,7 @@ FName FEDLCookChecker::FEDLNodeHash::GetName() const
 	}
 	else
 	{
-		return Object->GetFName();
+		return Object.GetFName();
 	}
 }
 
@@ -1011,7 +1055,7 @@ bool FEDLCookChecker::FEDLNodeHash::TryGetParent(FEDLCookChecker::FEDLNodeHash& 
 	}
 	else
 	{
-		UObject* ParentObject = Object->GetOuter();
+		TObjectPtr<UObject> ParentObject = Object.GetOuter();
 		if (ParentObject)
 		{
 			Parent = FEDLNodeHash(ParentObject, ParentObjectEvent);
@@ -1034,7 +1078,7 @@ void FEDLCookChecker::FEDLNodeHash::SetNodes(const TArray<FEDLNodeData>* InNodes
 	}
 }
 
-FName FEDLCookChecker::FEDLNodeHash::ObjectNameFirst(const FEDLNodeHash& InNode, uint32& OutNodeID, const UObject*& OutObject)
+FName FEDLCookChecker::FEDLNodeHash::ObjectNameFirst(const FEDLNodeHash& InNode, uint32& OutNodeID,  TObjectPtr<const UObject>& OutObject)
 {
 	if (InNode.bIsNode)
 	{
@@ -1044,11 +1088,11 @@ FName FEDLCookChecker::FEDLNodeHash::ObjectNameFirst(const FEDLNodeHash& InNode,
 	else
 	{
 		OutObject = InNode.Object;
-		return OutObject->GetFName();
+		return OutObject.GetFName();
 	}
 }
 
-FName FEDLCookChecker::FEDLNodeHash::ObjectNameNext(const FEDLNodeHash& InNode, uint32& OutNodeID, const UObject*& OutObject)
+FName FEDLCookChecker::FEDLNodeHash::ObjectNameNext(const FEDLNodeHash& InNode, uint32& OutNodeID, TObjectPtr<const UObject>& OutObject)
 {
 	if (InNode.bIsNode)
 	{
@@ -1057,8 +1101,8 @@ FName FEDLCookChecker::FEDLNodeHash::ObjectNameNext(const FEDLNodeHash& InNode, 
 	}
 	else
 	{
-		OutObject = OutObject->GetOuter();
-		return OutObject ? OutObject->GetFName() : NAME_None;
+		OutObject = OutObject.GetOuter();
+		return OutObject ? OutObject.GetFName() : NAME_None;
 	}
 }
 
@@ -1156,15 +1200,15 @@ void FEDLCookChecker::Reset()
 {
 	check(!GIsSavingPackage);
 
-	Nodes.Empty();
-	NodeHashToNodeID.Empty();
-	NodePrereqs.Empty();
+	Nodes.Reset();
+	NodeHashToNodeID.Reset();
+	NodePrereqs.Reset();
 	bIsActive = false;
 }
 
 LLM_DEFINE_TAG(EDLCookChecker);
 
-void FEDLCookChecker::AddImport(UObject* Import, UPackage* ImportingPackage)
+void FEDLCookChecker::AddImport(TObjectPtr<UObject> Import, UPackage* ImportingPackage)
 {
 	if (bIsActive)
 	{
@@ -1527,7 +1571,12 @@ bool FEDLCookChecker::ReadFromCompactBinary(FCbFieldView Field)
 	};
 
 	FCbFieldView NodesField = Field["Nodes"];
-	Nodes.Reserve(NodesField.AsArrayView().Num() / 5);
+	const uint64 NumNodes = NodesField.AsArrayView().Num() / 5;
+	if (NumNodes > MAX_int32)
+	{
+		return false;
+	}
+	Nodes.Reserve(static_cast<int32>(NumNodes));
 	if (NodesField.HasError())
 	{
 		return false;
@@ -1554,7 +1603,12 @@ bool FEDLCookChecker::ReadFromCompactBinary(FCbFieldView Field)
 	}
 
 	FCbFieldView PrereqsField = Field["NodePrereqs"];
-	NodePrereqs.Reserve(PrereqsField.AsArrayView().Num() / 2);
+	const int64 NumNodePrereqs = PrereqsField.AsArrayView().Num() / 2;
+	if (NumNodePrereqs > MAX_int32)
+	{
+		return false;
+	}
+	NodePrereqs.Reserve(static_cast<int32>(NumNodePrereqs));
 	if (PrereqsField.HasError())
 	{
 		return false;
@@ -1572,7 +1626,12 @@ bool FEDLCookChecker::ReadFromCompactBinary(FCbFieldView Field)
 	}
 
 	FCbFieldView PackagesWithUnknownExportsField = Field["PackagesWithUnknownExports"];
-	PackagesWithUnknownExports.Reserve(PackagesWithUnknownExportsField.AsArrayView().Num());
+	const int64 NumPackagesWithUnknownExports = PackagesWithUnknownExportsField.AsArrayView().Num();
+	if (NumPackagesWithUnknownExports > MAX_int32)
+	{
+		return false;
+	}
+	PackagesWithUnknownExports.Reserve(static_cast<int32>(NumPackagesWithUnknownExports));
 	if (PackagesWithUnknownExportsField.HasError())
 	{
 		return false;
@@ -1623,6 +1682,13 @@ void EDLCookInfoAddIterativelySkippedPackage(FName LongPackageName)
 
 void EDLCookInfoMoveToCompactBinaryAndClear(FCbWriter& Writer, bool& bOutHasData)
 {
+	LLM_SCOPE_BYTAG(EDLCookChecker);
+	FEDLCookChecker::MoveToCompactBinaryAndClear(Writer, bOutHasData);
+}
+
+void EDLCookInfoMoveToCompactBinaryAndClear(FCbWriter& Writer, bool& bOutHasData, FName PackageName)
+{
+	// For simplicity, instead of sending only information related to the given Package, we send all data.
 	LLM_SCOPE_BYTAG(EDLCookChecker);
 	FEDLCookChecker::MoveToCompactBinaryAndClear(Writer, bOutHasData);
 }
@@ -1687,14 +1753,20 @@ FScopedSavingFlag::~FScopedSavingFlag()
 }
 
 FCanSkipEditorReferencedPackagesWhenCooking::FCanSkipEditorReferencedPackagesWhenCooking()
-	: bCanSkipEditorReferencedPackagesWhenCooking(true)
+	: bCanSkipEditorReferencedPackagesWhenCooking(UE::SavePackageUtilities::CanSkipEditorReferencedPackagesWhenCooking())
 {
-	GConfig->GetBool(TEXT("Core.System"), TEXT("CanSkipEditorReferencedPackagesWhenCooking"), bCanSkipEditorReferencedPackagesWhenCooking, GEngineIni);
 }
 
-
-namespace SavePackageUtilities
+namespace UE::SavePackageUtilities
 {
+
+bool CanSkipEditorReferencedPackagesWhenCooking()
+{
+	bool bResult = true;
+	GConfig->GetBool(TEXT("Core.System"), TEXT("CanSkipEditorReferencedPackagesWhenCooking"), bResult, GEngineIni);
+	return bResult;
+}
+
 /**
  * Static: Saves thumbnail data for the specified package outer and linker
  *
@@ -1889,49 +1961,24 @@ ESavePackageResult CreatePayloadSidecarFile(FLinkerSave& Linker, const FPackageP
 	checkf(!Linker.IsCooking(), TEXT("Cannot write a sidecar file during cooking! (%s)"), *PackagePath.GetDebugName());
 	IPackageWriter* PackageWriter = SavePackageContext ? SavePackageContext->PackageWriter : nullptr;
 
-	FLargeMemoryWriter Ar(0, true /* bIsPersistent */);
+	UE::FPackageTrailerBuilder Builder;
 
-	uint32 VersionNumber = UE::Serialization::FTocEntry::PayloadSidecarFileVersion;
-	Ar << VersionNumber;
-
-	int64 TocPosition = Ar.Tell();
-
-	TArray<UE::Serialization::FTocEntry> TableOfContents;
-	TableOfContents.SetNum(Linker.SidecarDataToAppend.Num());
-
-	// First we write an empty table of contents to the file to reserve the space
-	Ar << TableOfContents;
-
-	int32 Index = 0;
 	for (FLinkerSave::FSidecarStorageInfo& Info : Linker.SidecarDataToAppend)
 	{
-		// Fill out the entry to the table of contents
-		TableOfContents[Index].Identifier = Info.Identifier;
-		TableOfContents[Index].OffsetInFile = Ar.Tell();
-		TableOfContents[Index].UncompressedSize = Info.Payload.GetRawSize();
-
-		Index++;
-
-		// Now write the payload to the archive
-		for (const FSharedBuffer& Buffer : Info.Payload.GetCompressed().GetSegments())
-		{
-			// Const cast because FArchive requires a non-const pointer!
-			Ar.Serialize(const_cast<void*>(Buffer.GetData()), static_cast<int64>(Buffer.GetSize()));
-		}
-
-		// Reset each payload reference after it has been written to the archive, this could
-		// potentially release memory and keep our high water mark down.
-		Info.Payload.Reset();
+		Builder.AddPayload(Info.Identifier, Info.Payload, UE::Virtualization::EPayloadFilterReason::None);
 	}
 
-	// Now write out the table of contents again but with valid data
-	int64 EndPos = Ar.Tell();
-	Ar.Seek(TocPosition);
-	Ar << TableOfContents;
-	Ar.Seek(EndPos); 
+	Linker.SidecarDataToAppend.Empty();
+
+	FLargeMemoryWriter Ar(0, true /* bIsPersistent */);
+	if (!Builder.BuildAndAppendTrailer(nullptr, Ar))
+	{
+		UE_LOG(LogSavePackage, Error, TEXT("Failed to build sidecar package trailer for '%s'"), *PackagePath.GetDebugName());
+		return ESavePackageResult::Error;
+	}
 
 	const int64 DataSize = Ar.TotalSize();
-	checkf(DataSize > 0, TEXT("The archive should not be empty at this point!"));
+	checkf(DataSize > 0, TEXT("Sidecar archive should not be empty! (%s)"), *PackagePath.GetDebugName());
 
 	FString TargetFilePath = PackagePath.GetLocalFullPath(EPackageSegment::PayloadSidecar);
 
@@ -1939,7 +1986,7 @@ ESavePackageResult CreatePayloadSidecarFile(FLinkerSave& Linker, const FPackageP
 	{
 		IPackageWriter::FAdditionalFileInfo SidecarSegmentInfo;
 		SidecarSegmentInfo.PackageName = PackagePath.GetPackageFName();
-		SidecarSegmentInfo.Filename = TargetFilePath;
+		SidecarSegmentInfo.Filename = MoveTemp(TargetFilePath);
 		FIoBuffer FileData(FIoBuffer::AssumeOwnership, Ar.ReleaseOwnership(), DataSize);
 		PackageWriter->WriteAdditionalFile(SidecarSegmentInfo, FileData);
 	}
@@ -1958,8 +2005,6 @@ ESavePackageResult CreatePayloadSidecarFile(FLinkerSave& Linker, const FPackageP
 		AdditionalPackageFiles.Emplace(MoveTemp(TargetFilePath), MoveTemp(TempFilePath), DataSize);		
 	}
 
-	Linker.SidecarDataToAppend.Empty();
-
 	return ESavePackageResult::Success;
 }
 
@@ -1974,7 +2019,7 @@ void SaveWorldLevelInfo(UPackage* InOuter, FLinkerSave* Linker, FStructuredArchi
 	}
 }
 
-} // end namespace SavePackageUtilities
+} // end namespace UE::SavePackageUtilities
 
 void UPackage::WaitForAsyncFileWrites()
 {
@@ -2023,161 +2068,160 @@ bool UPackage::IsEmptyPackage(UPackage* Package, const UObject* LastReferencer)
 }
 
 
-namespace UE
+namespace UE::AssetRegistry
 {
-namespace AssetRegistry
+
+// See the corresponding ReadPackageDataMain and ReadPackageDataDependencies defined in PackageReader.cpp in AssetRegistry module
+void WritePackageData(FStructuredArchiveRecord& ParentRecord, bool bIsCooking, const UPackage* Package,
+		FLinkerSave* Linker, const TSet<TObjectPtr<UObject>>& ImportsUsedInGame, const TSet<FName>& SoftPackagesUsedInGame,
+	const ITargetPlatform* TargetPlatform, TArray<FAssetData>* OutAssetDatas)
 {
-	// See the corresponding ReadPackageDataMain and ReadPackageDataDependencies defined in PackageReader.cpp in AssetRegistry module
-	void WritePackageData(FStructuredArchiveRecord& ParentRecord, bool bIsCooking, const UPackage* Package,
-		FLinkerSave* Linker, const TSet<UObject*>& ImportsUsedInGame, const TSet<FName>& SoftPackagesUsedInGame,
-		const ITargetPlatform* TargetPlatform, TArray<FAssetData>* OutAssetDatas)
+	// To avoid large patch sizes, we have frozen cooked package format at the format before VER_UE4_ASSETREGISTRY_DEPENDENCYFLAGS
+	bool bPreDependencyFormat = bIsCooking;
+
+	// WritePackageData is currently only called if not bTextFormat; we rely on that to save offsets
+	FArchive& BinaryArchive = ParentRecord.GetUnderlyingArchive();
+	check(!BinaryArchive.IsTextFormat());
+
+	// Store the asset registry offset in the file and enter a record for the asset registry data
+	Linker->Summary.AssetRegistryDataOffset = (int32)BinaryArchive.Tell();
+	FStructuredArchiveRecord AssetRegistryRecord = ParentRecord.EnterField(TEXT("AssetRegistry")).EnterRecord();
+
+	// Offset to Dependencies
+	int64 OffsetToAssetRegistryDependencyDataOffset = INDEX_NONE;
+	if (!bPreDependencyFormat)
 	{
-		// To avoid large patch sizes, we have frozen cooked package format at the format before VER_UE4_ASSETREGISTRY_DEPENDENCYFLAGS
-		bool bPreDependencyFormat = bIsCooking;
+		// Write placeholder data for the offset to the separately-serialized AssetRegistryDependencyData
+		OffsetToAssetRegistryDependencyDataOffset = BinaryArchive.Tell();
+		int64 AssetRegistryDependencyDataOffset = 0;
+		AssetRegistryRecord << SA_VALUE(TEXT("AssetRegistryDependencyDataOffset"), AssetRegistryDependencyDataOffset);
+		check(BinaryArchive.Tell() == OffsetToAssetRegistryDependencyDataOffset + sizeof(AssetRegistryDependencyDataOffset));
+	}
 
-		// WritePackageData is currently only called if not bTextFormat; we rely on that to save offsets
-		FArchive& BinaryArchive = ParentRecord.GetUnderlyingArchive();
-		check(!BinaryArchive.IsTextFormat());
-
-		// Store the asset registry offset in the file and enter a record for the asset registry data
-		Linker->Summary.AssetRegistryDataOffset = (int32)BinaryArchive.Tell();
-		FStructuredArchiveRecord AssetRegistryRecord = ParentRecord.EnterField(TEXT("AssetRegistry")).EnterRecord();
-
-		// Offset to Dependencies
-		int64 OffsetToAssetRegistryDependencyDataOffset = INDEX_NONE;
-		if (!bPreDependencyFormat)
+	// Collect the tag map
+	TArray<UObject*> AssetObjects;
+	if (!(Linker->Summary.GetPackageFlags() & PKG_FilterEditorOnly))
+	{
+		// Find any exports which are not in the tag map
+		for (int32 i = 0; i < Linker->ExportMap.Num(); i++)
 		{
-			// Write placeholder data for the offset to the separately-serialized AssetRegistryDependencyData
-			OffsetToAssetRegistryDependencyDataOffset = BinaryArchive.Tell();
-			int64 AssetRegistryDependencyDataOffset = 0;
-			AssetRegistryRecord << SA_VALUE(TEXT("AssetRegistryDependencyDataOffset"), AssetRegistryDependencyDataOffset);
-			check(BinaryArchive.Tell() == OffsetToAssetRegistryDependencyDataOffset + sizeof(AssetRegistryDependencyDataOffset));
-		}
-
-		// Collect the tag map
-		TArray<UObject*> AssetObjects;
-		if (!(Linker->Summary.GetPackageFlags() & PKG_FilterEditorOnly))
-		{
-			// Find any exports which are not in the tag map
-			for (int32 i = 0; i < Linker->ExportMap.Num(); i++)
+			FObjectExport& Export = Linker->ExportMap[i];
+			if (Export.Object && Export.Object->IsAsset())
 			{
-				FObjectExport& Export = Linker->ExportMap[i];
-				if (Export.Object && Export.Object->IsAsset())
-				{
-					AssetObjects.Add(Export.Object);
-				}
+				AssetObjects.Add(Export.Object);
 			}
 		}
-		int32 ObjectCount = AssetObjects.Num();
-		FStructuredArchive::FArray AssetArray = AssetRegistryRecord.EnterArray(TEXT("TagMap"), ObjectCount);
-		if (OutAssetDatas)
-		{
-			OutAssetDatas->Reset();
-		}
-		FString PackageName = Package->GetName();
+	}
+	int32 ObjectCount = AssetObjects.Num();
+	FStructuredArchive::FArray AssetArray = AssetRegistryRecord.EnterArray(TEXT("TagMap"), ObjectCount);
+	if (OutAssetDatas)
+	{
+		OutAssetDatas->Reset();
+	}
+	FString PackageName = Package->GetName();
 
-		for (int32 ObjectIdx = 0; ObjectIdx < AssetObjects.Num(); ++ObjectIdx)
-		{
-			const UObject* Object = AssetObjects[ObjectIdx];
+	for (int32 ObjectIdx = 0; ObjectIdx < AssetObjects.Num(); ++ObjectIdx)
+	{
+		const UObject* Object = AssetObjects[ObjectIdx];
 
-			// Exclude the package name in the object path, we just need to know the path relative to the package we are saving
-			FString ObjectPath = Object->GetPathName(Package);
-			FString ObjectClassName = Object->GetClass()->GetPathName();
+		// Exclude the package name in the object path, we just need to know the path relative to the package we are saving
+		FString ObjectPath = Object->GetPathName(Package);
+		FString ObjectClassName = Object->GetClass()->GetPathName();
 
-			TArray<UObject::FAssetRegistryTag> SourceTags;
-			Object->GetAssetRegistryTags(SourceTags);
+		TArray<UObject::FAssetRegistryTag> SourceTags;
+		Object->GetAssetRegistryTags(SourceTags);
 #if WITH_EDITOR
-			Object->GetExtendedAssetRegistryTagsForSave(TargetPlatform, SourceTags);
+		Object->GetExtendedAssetRegistryTagsForSave(TargetPlatform, SourceTags);
 #endif // WITH_EDITOR
 
-			TArray<UObject::FAssetRegistryTag> Tags;
-			for (UObject::FAssetRegistryTag& SourceTag : SourceTags)
+		TArray<UObject::FAssetRegistryTag> Tags;
+		for (UObject::FAssetRegistryTag& SourceTag : SourceTags)
+		{
+			UObject::FAssetRegistryTag* Existing = Tags.FindByPredicate([SourceTag](const UObject::FAssetRegistryTag& InTag) { return InTag.Name == SourceTag.Name; });
+			if (Existing)
 			{
-				UObject::FAssetRegistryTag* Existing = Tags.FindByPredicate([SourceTag](const UObject::FAssetRegistryTag& InTag) { return InTag.Name == SourceTag.Name; });
-				if (Existing)
-				{
-					Existing->Value = SourceTag.Value;
-				}
-				else
-				{
-					Tags.Add(SourceTag);
-				}
+				Existing->Value = SourceTag.Value;
 			}
-
-			int32 TagCount = Tags.Num();
-
-			FStructuredArchive::FRecord AssetRecord = AssetArray.EnterElement().EnterRecord();
-			AssetRecord << SA_VALUE(TEXT("Path"), ObjectPath) << SA_VALUE(TEXT("Class"), ObjectClassName);
-
-			FStructuredArchive::FMap TagMap = AssetRecord.EnterField(TEXT("Tags")).EnterMap(TagCount);
-
-			for (TArray<UObject::FAssetRegistryTag>::TConstIterator TagIter(Tags); TagIter; ++TagIter)
+			else
 			{
-				FString Key = TagIter->Name.ToString();
-				FString Value = TagIter->Value;
-
-				TagMap.EnterElement(Key) << Value;
-			}
-
-			if (OutAssetDatas)
-			{
-				FAssetDataTagMap TagsAndValues;
-				for (UObject::FAssetRegistryTag& Tag : Tags)
-				{
-					if (!Tag.Name.IsNone() && !Tag.Value.IsEmpty())
-					{
-						TagsAndValues.Add(Tag.Name, MoveTemp(Tag.Value));
-					}
-				}
-				// if we do not have a full object path already, build it
-				const bool bFullObjectPath = ObjectPath.StartsWith(TEXT("/"), ESearchCase::CaseSensitive);
-				if (!bFullObjectPath)
-				{
-					// if we do not have a full object path, ensure that we have a top level object for the package and not a sub object
-					if (!ensureMsgf(!ObjectPath.Contains(TEXT("."), ESearchCase::CaseSensitive),
-						TEXT("Cannot make FAssetData for sub object %s in package %s!"), *ObjectPath, *PackageName))
-					{
-						continue;
-					}
-					ObjectPath = PackageName + TEXT(".") + ObjectPath;
-				}
-
-				OutAssetDatas->Emplace(PackageName, ObjectPath, FTopLevelAssetPath(ObjectClassName),
-					MoveTemp(TagsAndValues), Package->GetChunkIDs(), Package->GetPackageFlags());
+				Tags.Add(SourceTag);
 			}
 		}
-		if (bPreDependencyFormat)
+
+		int32 TagCount = Tags.Num();
+
+		FStructuredArchive::FRecord AssetRecord = AssetArray.EnterElement().EnterRecord();
+		AssetRecord << SA_VALUE(TEXT("Path"), ObjectPath) << SA_VALUE(TEXT("Class"), ObjectClassName);
+
+		FStructuredArchive::FMap TagMap = AssetRecord.EnterField(TEXT("Tags")).EnterMap(TagCount);
+
+		for (TArray<UObject::FAssetRegistryTag>::TConstIterator TagIter(Tags); TagIter; ++TagIter)
 		{
-			// The legacy format did not write the other sections, or the offsets to those other sections
-			return;
+			FString Key = TagIter->Name.ToString();
+			FString Value = TagIter->Value;
+
+			TagMap.EnterElement(Key) << Value;
 		}
 
-		// Overwrite the placeholder offset for the AssetRegistryDependencyData and enter a record for the asset registry dependency data
+		if (OutAssetDatas)
 		{
-			int64 AssetRegistryDependencyDataOffset = Linker->Tell();
-			BinaryArchive.Seek(OffsetToAssetRegistryDependencyDataOffset);
-			BinaryArchive << AssetRegistryDependencyDataOffset;
-			BinaryArchive.Seek(AssetRegistryDependencyDataOffset);
-		}
-		FStructuredArchiveRecord DependencyDataRecord = ParentRecord.EnterField(TEXT("AssetRegistryDependencyData")).EnterRecord();
+			FAssetDataTagMap TagsAndValues;
+			for (UObject::FAssetRegistryTag& Tag : Tags)
+			{
+				if (!Tag.Name.IsNone() && !Tag.Value.IsEmpty())
+				{
+					TagsAndValues.Add(Tag.Name, MoveTemp(Tag.Value));
+				}
+			}
+			// if we do not have a full object path already, build it
+			const bool bFullObjectPath = ObjectPath.StartsWith(TEXT("/"), ESearchCase::CaseSensitive);
+			if (!bFullObjectPath)
+			{
+				// if we do not have a full object path, ensure that we have a top level object for the package and not a sub object
+				if (!ensureMsgf(!ObjectPath.Contains(TEXT("."), ESearchCase::CaseSensitive),
+					TEXT("Cannot make FAssetData for sub object %s in package %s!"), *ObjectPath, *PackageName))
+				{
+					continue;
+				}
+				ObjectPath = PackageName + TEXT(".") + ObjectPath;
+			}
 
-		// Convert the IsUsedInGame sets into a bitarray with a value per import/softpackagereference
-		TBitArray<> ImportUsedInGameBits;
-		TBitArray<> SoftPackageUsedInGameBits;
-		ImportUsedInGameBits.Reserve(Linker->ImportMap.Num());
-		for (int32 ImportIndex = 0; ImportIndex < Linker->ImportMap.Num(); ++ImportIndex)
-		{
-			ImportUsedInGameBits.Add(ImportsUsedInGame.Contains(Linker->ImportMap[ImportIndex].XObject));
+			OutAssetDatas->Emplace(PackageName, ObjectPath, FTopLevelAssetPath(ObjectClassName),
+				MoveTemp(TagsAndValues), Package->GetChunkIDs(), Package->GetPackageFlags());
 		}
-		SoftPackageUsedInGameBits.Reserve(Linker->SoftPackageReferenceList.Num());
-		for (int32 SoftPackageIndex = 0; SoftPackageIndex < Linker->SoftPackageReferenceList.Num(); ++SoftPackageIndex)
-		{
-			SoftPackageUsedInGameBits.Add(SoftPackagesUsedInGame.Contains(Linker->SoftPackageReferenceList[SoftPackageIndex]));
-		}
-
-		// Serialize the Dependency section
-		DependencyDataRecord << SA_VALUE(TEXT("ImportUsedInGame"), ImportUsedInGameBits);
-		DependencyDataRecord << SA_VALUE(TEXT("SoftPackageUsedInGame"), SoftPackageUsedInGameBits);
 	}
+	if (bPreDependencyFormat)
+	{
+		// The legacy format did not write the other sections, or the offsets to those other sections
+		return;
+	}
+
+	// Overwrite the placeholder offset for the AssetRegistryDependencyData and enter a record for the asset registry dependency data
+	{
+		int64 AssetRegistryDependencyDataOffset = Linker->Tell();
+		BinaryArchive.Seek(OffsetToAssetRegistryDependencyDataOffset);
+		BinaryArchive << AssetRegistryDependencyDataOffset;
+		BinaryArchive.Seek(AssetRegistryDependencyDataOffset);
+	}
+	FStructuredArchiveRecord DependencyDataRecord = ParentRecord.EnterField(TEXT("AssetRegistryDependencyData")).EnterRecord();
+
+	// Convert the IsUsedInGame sets into a bitarray with a value per import/softpackagereference
+	TBitArray<> ImportUsedInGameBits;
+	TBitArray<> SoftPackageUsedInGameBits;
+	ImportUsedInGameBits.Reserve(Linker->ImportMap.Num());
+	for (int32 ImportIndex = 0; ImportIndex < Linker->ImportMap.Num(); ++ImportIndex)
+	{
+		ImportUsedInGameBits.Add(ImportsUsedInGame.Contains(Linker->ImportMap[ImportIndex].XObject));
+	}
+	SoftPackageUsedInGameBits.Reserve(Linker->SoftPackageReferenceList.Num());
+	for (int32 SoftPackageIndex = 0; SoftPackageIndex < Linker->SoftPackageReferenceList.Num(); ++SoftPackageIndex)
+	{
+		SoftPackageUsedInGameBits.Add(SoftPackagesUsedInGame.Contains(Linker->SoftPackageReferenceList[SoftPackageIndex]));
+	}
+
+	// Serialize the Dependency section
+	DependencyDataRecord << SA_VALUE(TEXT("ImportUsedInGame"), ImportUsedInGameBits);
+	DependencyDataRecord << SA_VALUE(TEXT("SoftPackageUsedInGame"), SoftPackageUsedInGameBits);
 }
+
 }

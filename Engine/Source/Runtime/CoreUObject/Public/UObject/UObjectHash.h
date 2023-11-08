@@ -27,9 +27,9 @@ class UPackage;
 
 DECLARE_STATS_GROUP_VERBOSE(TEXT("UObject Hash"), STATGROUP_UObjectHash, STATCAT_Advanced);
 
-#if UE_GC_TRACK_OBJ_AVAILABLE
+#if !UE_BUILD_TEST && !UE_BUILD_SHIPPING
 DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("NumObjects"), STAT_Hash_NumObjects, STATGROUP_UObjectHash, COREUOBJECT_API);
-#endif
+#endif // !UE_BUILD_TEST && !UE_BUILD_SHIPPING
 
 /**
  * Private internal version of StaticFindObjectFast that allows using 0 exclusion flags.
@@ -197,7 +197,7 @@ COREUOBJECT_API void ForEachObjectOfClass(const UClass* ClassToLookFor, TFunctio
  * @param	bIncludeDerivedClasses		If true, the results will include objects of child classes as well.
  * @param	AdditionalExcludeFlags		Objects with any of these flags will be excluded from the results.
  */
-COREUOBJECT_API void ForEachObjectOfClasses(TArrayView<const UClass*> ClassesToLookFor, TFunctionRef<void(UObject*)> Operation, EObjectFlags ExcludeFlags = RF_ClassDefaultObject, EInternalObjectFlags ExclusionInternalFlags = EInternalObjectFlags::None);
+COREUOBJECT_API void ForEachObjectOfClasses(TArrayView<const UClass* const> ClassesToLookFor, TFunctionRef<void(UObject*)> Operation, EObjectFlags ExcludeFlags = RF_ClassDefaultObject, EInternalObjectFlags ExclusionInternalFlags = EInternalObjectFlags::None);
 
 /**
  * Returns an array of classes that were derived from the specified class.

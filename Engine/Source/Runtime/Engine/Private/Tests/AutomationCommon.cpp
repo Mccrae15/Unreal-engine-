@@ -38,12 +38,14 @@ static TAutoConsoleVariable<int32> CVarAutomationAllowFrameTraceCapture(
 
 //declare static variable
 FOnEditorAutomationMapLoad AutomationCommon::OnEditorAutomationMapLoad;
+#endif
 
 ///////////////////////////////////////////////////////////////////////
 // Common Latent commands
 
 namespace AutomationCommon
 {
+#if WITH_AUTOMATION_TESTS
 	FString GetRenderDetailsString()
 	{
 		FString HardwareDetailsString;
@@ -86,8 +88,6 @@ namespace AutomationCommon
 
 		return HardwareDetailsString;
 	}
-
-#if WITH_AUTOMATION_TESTS
 
 	/** Gets a path used for automation testing (PNG sent to the AutomationTest folder) */
 	FString GetScreenshotName(const FString& TestName)
@@ -313,8 +313,6 @@ namespace AutomationCommon
 		bool TaskCompleted;
 	};
 
-#endif
-
 	/** These save a PNG and get sent over the network */
 	static void SaveWindowAsScreenshot(TSharedRef<SWindow> Window, const FString& ScreenshotName)
 	{
@@ -349,8 +347,43 @@ namespace AutomationCommon
 
 		return TestWorld;
 	}
+#endif
+
+	UGameViewportClient* GetAnyGameViewportClient()
+	{
+		if (GEngine->GameViewport)
+		{
+			return GEngine->GameViewport;
+		}
+		// Then Game viewport is attached to another world context than the main Engine one. (ie: PIE Net mode set to As Client)
+		const TIndirectArray<FWorldContext>& WorldContexts = GEngine->GetWorldContexts();
+		for (const FWorldContext& Context : WorldContexts)
+		{
+			if ((Context.WorldType == EWorldType::PIE) && Context.World() != nullptr && Context.GameViewport != nullptr)
+			{
+				return Context.GameViewport;
+			}
+		}
+
+		return nullptr;
+	}
+	
+	FString GetWorldContext(UWorld* InWorld)
+	{
+		FString Result = InWorld->GetName();
+
+		// Rely on the package loading path to avoid FName case inconsistencies with individual level names.
+		if (UPackage* Package = InWorld->GetPackage())
+		{
+			Result = FPaths::GetBaseFilename(Package->GetLoadedPath().GetPackageName());
+			checkf(FCString::Stricmp(*InWorld->GetName(), *Result) == 0, TEXT("Unexpected inconsistency between world and package path: expected \"%s\" got \"%s\""), *InWorld->GetName(), *Result);
+		}
+
+		return Result;
+	}
 }
 
+#if WITH_AUTOMATION_TESTS
 bool AutomationOpenMap(const FString& MapName, bool bForceReload)
 {
 	bool bCanProceed = true;
@@ -439,7 +472,7 @@ bool FExitGameCommand::Update()
 
 bool FRequestExitCommand::Update()
 {
-	FPlatformMisc::RequestExit(true);
+	FPlatformMisc::RequestExit(true, TEXT("FRequestExitCommand"));
 	return true;
 }
 
@@ -675,7 +708,15 @@ bool FWaitForInteractiveFrameRate::Update()
 	return false;
 }
 
+bool FWaitForNextEngineFrameCommand::Update()
+{
+	if (LastFrame == 0)
+	{
+		LastFrame = GFrameCounter;
+	}
 
+	return LastFrame != GFrameCounter;
+}
 
 ///////////////////////////////////////////////////////////////////////
 // Common Latent commands which are used across test type. I.e. Engine, Network, etc...

@@ -13,12 +13,14 @@ namespace UnrealBuildTool.Rules
 					"CoreUObject",
 					"Engine",
 					"AssetTools",
+					"AssetDefinition",
 					"Chooser",
 					"ChooserEditor",
 					"ProxyTable",
 					"UnrealEd",
 					"EditorWidgets",
 					"ToolWidgets",
+					"ToolMenus",
 					"SlateCore",
 					"Slate",
 					"PropertyEditor",
@@ -29,7 +31,8 @@ namespace UnrealBuildTool.Rules
 					"GraphEditor",
 					"GameplayTags",
 					"GameplayTagsEditor",
-					"StructUtils"
+					"StructUtils",
+					"StructUtilsEditor"
 					// ... add private dependencies that you statically link with here ...
 				}
 			);

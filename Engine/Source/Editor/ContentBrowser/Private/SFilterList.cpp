@@ -84,6 +84,7 @@ void SFilterList::Construct( const FArguments& InArgs )
 	AllFrontendFilters_Internal.Add(MakeShareable(new FFrontendFilter_Recent(DefaultCategory)));
 	AllFrontendFilters_Internal.Add( MakeShareable(new FFrontendFilter_NotSourceControlled(DefaultCategory)) );
 	AllFrontendFilters_Internal.Add(MakeShareable(new FFrontendFilter_VirtualizedData(DefaultCategory)));
+	AllFrontendFilters_Internal.Add(MakeShared<FFrontendFilter_Unsupported>(DefaultCategory));
 
 	// Add any global user-defined frontend filters
 	for (TObjectIterator<UContentBrowserFrontEndFilterExtension> ExtensionIt(RF_NoFlags); ExtensionIt; ++ExtensionIt)
@@ -229,9 +230,13 @@ void SFilterList::DisableFiltersThatHideItems(TArrayView<const FContentBrowserIt
 				}
 
 				FContentBrowserItem::FItemDataArrayView InternalItems = Item.GetInternalItems();
-				for (const FContentBrowserItemData& InternalItem : InternalItems)
+				for (const FContentBrowserItemData& InternalItemRef : InternalItems)
 				{
-					UContentBrowserDataSource* ItemDataSource = InternalItem.GetOwnerDataSource();
+					UContentBrowserDataSource* ItemDataSource = InternalItemRef.GetOwnerDataSource();
+
+					FContentBrowserItemData InternalItem = InternalItemRef;
+					ItemDataSource->ConvertItemForFilter(InternalItem, CompiledDataFilter);
+
 					if (!ItemDataSource->DoesItemPassFilter(InternalItem, CompiledDataFilter))
 					{
 						bDisableAllBackendFilters = true;

@@ -26,7 +26,7 @@ class FBaseDynamicMeshSceneProxy;
  * sending it off for rendering.
  * NOTE: This is called whenever the Mesh is updated and before rendering, so performance matters.
  */
-class GEOMETRYFRAMEWORK_API IRenderMeshPostProcessor
+class IRenderMeshPostProcessor
 {
 public:
 	virtual ~IRenderMeshPostProcessor() = default;
@@ -59,8 +59,8 @@ enum class EDynamicMeshComponentRenderUpdateMode
  * See comment sections below for details.
  * 
  */
-UCLASS(hidecategories = (LOD), meta = (BlueprintSpawnableComponent), ClassGroup = Rendering)
-class GEOMETRYFRAMEWORK_API UDynamicMeshComponent : public UBaseDynamicMeshComponent, public IInterface_CollisionDataProvider
+UCLASS(hidecategories = (LOD), meta = (BlueprintSpawnableComponent), ClassGroup = Rendering, MinimalAPI)
+class UDynamicMeshComponent : public UBaseDynamicMeshComponent, public IInterface_CollisionDataProvider
 {
 	GENERATED_UCLASS_BODY()
 
@@ -89,33 +89,34 @@ public:
 	virtual UDynamicMesh* GetDynamicMesh() override { return MeshObject; }
 
 	/**
-	 * Set the child UDynamicMesh. This can be used to 'share' a UDynamicMesh between Component instances.
-	 * @warning Currently this is somewhat risky, it is on the caller/clients to make sure that the actual mesh is not being simultaneously modified on multiple threads
+	 * Replace the current UDynamicMesh with a new one, and transfer ownership of NewMesh to this Component.
+	 * This can be used to (eg) assign a UDynamicMesh created with NewObject in the Transient Package to this Component.
+	 * @warning If NewMesh is owned/Outer'd to another DynamicMeshComponent, a GLEO error may occur if that Component is serialized.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Dynamic Mesh Component")
-	void SetDynamicMesh(UDynamicMesh* NewMesh);
+	GEOMETRYFRAMEWORK_API void SetDynamicMesh(UDynamicMesh* NewMesh);
 
 	/**
 	 * initialize the internal mesh from a DynamicMesh
 	 */
-	virtual void SetMesh(UE::Geometry::FDynamicMesh3&& MoveMesh) override;
+	GEOMETRYFRAMEWORK_API virtual void SetMesh(UE::Geometry::FDynamicMesh3&& MoveMesh) override;
 
 	/**
 	 * Allow external code to read the internal mesh.
 	 */
-	virtual void ProcessMesh(TFunctionRef<void(const UE::Geometry::FDynamicMesh3&)> ProcessFunc) const;
+	GEOMETRYFRAMEWORK_API virtual void ProcessMesh(TFunctionRef<void(const UE::Geometry::FDynamicMesh3&)> ProcessFunc) const;
 
 	/**
 	 * Allow external code to to edit the internal mesh.
 	 */
-	virtual void EditMesh(TFunctionRef<void(UE::Geometry::FDynamicMesh3&)> EditFunc,
+	GEOMETRYFRAMEWORK_API virtual void EditMesh(TFunctionRef<void(UE::Geometry::FDynamicMesh3&)> EditFunc,
 						  EDynamicMeshComponentRenderUpdateMode UpdateMode = EDynamicMeshComponentRenderUpdateMode::FullUpdate);
 
 	/**
 	 * Apply transform to internal mesh. In some cases this can be more efficient than a general edit.
 	 * @param bInvert if true, inverse tranform is applied instead of forward transform
 	 */
-	virtual void ApplyTransform(const FTransform3d& Transform, bool bInvert) override;
+	GEOMETRYFRAMEWORK_API virtual void ApplyTransform(const FTransform3d& Transform, bool bInvert) override;
 
 
 
@@ -141,55 +142,55 @@ public:
 	 * Call this if you update the mesh via GetMesh(). This will destroy the existing RenderProxy and create a new one.
 	 * @todo should provide a function that calls a lambda to modify the mesh, and only return const mesh pointer
 	 */
-	virtual void NotifyMeshUpdated() override;
+	GEOMETRYFRAMEWORK_API virtual void NotifyMeshUpdated() override;
 
 	/**
 	 * Call this instead of NotifyMeshUpdated() if you have only updated the vertex colors (or triangle color function).
 	 * This function will update the existing RenderProxy buffers if possible
 	 */
-	void FastNotifyColorsUpdated();
+	GEOMETRYFRAMEWORK_API void FastNotifyColorsUpdated();
 
 	/**
 	 * Call this instead of NotifyMeshUpdated() if you have only updated the vertex positions (and possibly some attributes).
 	 * This function will update the existing RenderProxy buffers if possible
 	 */
-	void FastNotifyPositionsUpdated(bool bNormals = false, bool bColors = false, bool bUVs = false);
+	GEOMETRYFRAMEWORK_API void FastNotifyPositionsUpdated(bool bNormals = false, bool bColors = false, bool bUVs = false);
 
 	/**
 	 * Call this instead of NotifyMeshUpdated() if you have only updated the vertex attributes (but not positions).
 	 * This function will update the existing RenderProxy buffers if possible, rather than create new ones.
 	 */
-	void FastNotifyVertexAttributesUpdated(bool bNormals, bool bColors, bool bUVs);
+	GEOMETRYFRAMEWORK_API void FastNotifyVertexAttributesUpdated(bool bNormals, bool bColors, bool bUVs);
 
 	/**
 	 * Call this instead of NotifyMeshUpdated() if you have only updated the vertex positions/attributes
 	 * This function will update the existing RenderProxy buffers if possible, rather than create new ones.
 	 */
-	void FastNotifyVertexAttributesUpdated(EMeshRenderAttributeFlags UpdatedAttributes);
+	GEOMETRYFRAMEWORK_API void FastNotifyVertexAttributesUpdated(EMeshRenderAttributeFlags UpdatedAttributes);
 
 	/**
 	 * Call this instead of NotifyMeshUpdated() if you have only updated the vertex uvs.
 	 * This function will update the existing RenderProxy buffers if possible
 	 */
-	void FastNotifyUVsUpdated();
+	GEOMETRYFRAMEWORK_API void FastNotifyUVsUpdated();
 
 	/**
 	 * Call this instead of NotifyMeshUpdated() if you have only updated secondary triangle sorting.
 	 * This function will update the existing buffers if possible, without rebuilding entire RenderProxy.
 	 */
-	void FastNotifySecondaryTrianglesChanged();
+	GEOMETRYFRAMEWORK_API void FastNotifySecondaryTrianglesChanged();
 
 	/**
 	 * This function updates vertex positions/attributes of existing SceneProxy render buffers if possible, for the given triangles.
 	 * If a FMeshRenderDecomposition has not been explicitly set, call is forwarded to FastNotifyVertexAttributesUpdated()
 	 */
-	void FastNotifyTriangleVerticesUpdated(const TArray<int32>& Triangles, EMeshRenderAttributeFlags UpdatedAttributes);
+	GEOMETRYFRAMEWORK_API void FastNotifyTriangleVerticesUpdated(const TArray<int32>& Triangles, EMeshRenderAttributeFlags UpdatedAttributes);
 
 	/**
 	 * This function updates vertex positions/attributes of existing SceneProxy render buffers if possible, for the given triangles.
 	 * If a FMeshRenderDecomposition has not been explicitly set, call is forwarded to FastNotifyVertexAttributesUpdated()
 	 */
-	void FastNotifyTriangleVerticesUpdated(const TSet<int32>& Triangles, EMeshRenderAttributeFlags UpdatedAttributes);
+	GEOMETRYFRAMEWORK_API void FastNotifyTriangleVerticesUpdated(const TSet<int32>& Triangles, EMeshRenderAttributeFlags UpdatedAttributes);
 
 	/**
 	 * If a Decomposition is set on this Component, and everything is currently valid (proxy/etc), precompute the set of
@@ -197,7 +198,7 @@ public:
 	 * Use FastNotifyTriangleVerticesUpdated_ApplyPrecompute() with the returned future to apply this precomputation.
 	 * @return a future that will (eventually) return true if the precompute is OK, and (immediately) false if it is not
 	 */
-	TFuture<bool> FastNotifyTriangleVerticesUpdated_TryPrecompute(const TArray<int32>& Triangles, TArray<int32>& UpdateSetsOut, UE::Geometry::FAxisAlignedBox3d& BoundsOut);
+	GEOMETRYFRAMEWORK_API TFuture<bool> FastNotifyTriangleVerticesUpdated_TryPrecompute(const TArray<int32>& Triangles, TArray<int32>& UpdateSetsOut, UE::Geometry::FAxisAlignedBox3d& BoundsOut);
 
 	/**
 	 * This function updates vertex positions/attributes of existing SceneProxy render buffers if possible, for the given triangles.
@@ -206,12 +207,40 @@ public:
 	 * passed to FastNotifyTriangleVerticesUpdated_TryPrecompute). 
 	 * If the Precompute future returns false, then we forward the call to FastNotifyTriangleVerticesUpdated(), which will do more work.
 	 */
-	void FastNotifyTriangleVerticesUpdated_ApplyPrecompute(const TArray<int32>& Triangles, EMeshRenderAttributeFlags UpdatedAttributes,
+	GEOMETRYFRAMEWORK_API void FastNotifyTriangleVerticesUpdated_ApplyPrecompute(const TArray<int32>& Triangles, EMeshRenderAttributeFlags UpdatedAttributes,
 		TFuture<bool>& Precompute, const TArray<int32>& UpdateSets, const UE::Geometry::FAxisAlignedBox3d& UpdateSetBounds);
 
 
+	//===============================================================================================================
+	// RenderBuffer Update Blueprint API. 
+public:
 
+	/**
+	 * Notify the Component that it's DynamicMesh has been modified externally. This will result in all Rendering Data
+	 * for the Component being rebuilt on the next frame (internally the Scene Proxy is fully destroyed and rebuilt).
+	 *
+	 * You must use this function if the mesh triangulation has been modified, or if polygroups or material assignments
+	 * have been changed, or if Normal/UV/Color topology has changed (ie new split-vertices have been introduced).
+	 * If only vertex attribute values (position, normals, UVs, colors) have been modified, then 
+	 * Notify Vertex Attributes Updated can be used to do a faster update.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Dynamic Mesh Component|Rendering", DisplayName = "Notify Mesh Updated")
+	GEOMETRYFRAMEWORK_API virtual void NotifyMeshModified();
 
+	/**
+	 * Notify the Component that vertex attribute values of it's DynamicMesh have been modified externally. This will result in
+	 * Rendering vertex buffers being updated. This update path is more efficient than doing a full Notify Mesh Updated.
+	 * 
+	 * @warning it is invalid to call this function if (1) the mesh triangulation has also been changed, (2) triangle MaterialIDs have been changed,
+	 * or (3) any attribute overlay (normal, color, UV) topology has been modified, ie split-vertices have been added/removed.
+	 * Behavior of this function is undefined in these cases and may crash. If you are unsure, use Notify Mesh Updated.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Dynamic Mesh Component|Rendering", DisplayName = "Notify Vertex Attributes Updated")
+	GEOMETRYFRAMEWORK_API virtual void NotifyMeshVertexAttributesModified(
+		bool bPositions = true, 
+		bool bNormals = true,
+		bool bUVs = true,
+		bool bColors = true);
 
 	//===============================================================================================================
 	// Change Support. These changes are primarily used for Undo/Redo, however there is no strict assumption
@@ -223,17 +252,17 @@ public:
 	/**
 	 * Apply a vertex deformation change to the mesh
 	 */
-	virtual void ApplyChange(const FMeshVertexChange* Change, bool bRevert) override;
+	GEOMETRYFRAMEWORK_API virtual void ApplyChange(const FMeshVertexChange* Change, bool bRevert) override;
 
 	/**
 	 * Apply a general mesh change to the mesh
 	 */
-	virtual void ApplyChange(const FMeshChange* Change, bool bRevert) override;
+	GEOMETRYFRAMEWORK_API virtual void ApplyChange(const FMeshChange* Change, bool bRevert) override;
 
 	/**
 	* Apply a mesh replacement change to mesh
 	*/
-	virtual void ApplyChange(const FMeshReplacementChange* Change, bool bRevert) override;
+	GEOMETRYFRAMEWORK_API virtual void ApplyChange(const FMeshReplacementChange* Change, bool bRevert) override;
 
 	/**
 	 * This delegate fires when the mesh has been changed
@@ -252,7 +281,7 @@ public:
 	 * (eg using one of the FastXYZ functions above). To allow for that, the full proxy invalidation on change can be (temporarily!) disabled 
 	 * using this function. 
 	 */
-	void SetInvalidateProxyOnChangeEnabled(bool bEnabled);
+	GEOMETRYFRAMEWORK_API void SetInvalidateProxyOnChangeEnabled(bool bEnabled);
 
 	/** @return true if InvalidateProxyOnChange is enabled (default) */
 	bool GetInvalidateProxyOnChangeEnabled() const { return bInvalidateProxyOnChange; }
@@ -265,7 +294,7 @@ protected:
 	FDelegateHandle MeshObjectChangedHandle;
 
 	/** Called whenever internal MeshObject is modified, fires OnMeshChanged and OnMeshVerticesChanged above */
-	void OnMeshObjectChanged(UDynamicMesh* ChangedMeshObject, FDynamicMeshChangeInfo ChangeInfo);
+	GEOMETRYFRAMEWORK_API void OnMeshObjectChanged(UDynamicMesh* ChangedMeshObject, FDynamicMeshChangeInfo ChangeInfo);
 
 
 
@@ -278,26 +307,50 @@ protected:
 	// minimal vertex buffer updates necessary in the RenderProxy
 	//
 public:
-	/** Clear an active triangle color function if one exists, and update the mesh */
-	virtual void SetTriangleColorFunction(TUniqueFunction<FColor(const FDynamicMesh3*, int)> TriangleColorFuncIn,
+	/** Set an active triangle color function if one exists, and update the mesh */
+	GEOMETRYFRAMEWORK_API virtual void SetTriangleColorFunction(TUniqueFunction<FColor(const FDynamicMesh3*, int)> TriangleColorFuncIn,
 										  EDynamicMeshComponentRenderUpdateMode UpdateMode = EDynamicMeshComponentRenderUpdateMode::FastUpdate);
 
 	/** Clear an active triangle color function if one exists, and update the mesh */
-	virtual void ClearTriangleColorFunction(EDynamicMeshComponentRenderUpdateMode UpdateMode = EDynamicMeshComponentRenderUpdateMode::FastUpdate);
+	GEOMETRYFRAMEWORK_API virtual void ClearTriangleColorFunction(EDynamicMeshComponentRenderUpdateMode UpdateMode = EDynamicMeshComponentRenderUpdateMode::FastUpdate);
 
 	/** @return true if a triangle color function is configured */
-	virtual bool HasTriangleColorFunction();
+	GEOMETRYFRAMEWORK_API virtual bool HasTriangleColorFunction();
 
 protected:
 	/** If this function is set, we will use these colors instead of vertex colors */
 	TUniqueFunction<FColor(const FDynamicMesh3*, int)> TriangleColorFunc = nullptr;
 
 	/** This function is passed via lambda to the RenderProxy to be able to access TriangleColorFunc */
-	FColor GetTriangleColor(const FDynamicMesh3* Mesh, int TriangleID);
+	GEOMETRYFRAMEWORK_API FColor GetTriangleColor(const FDynamicMesh3* Mesh, int TriangleID);
 
 	/** This function is passed via lambda to the RenderProxy when BaseDynamicMeshComponent::ColorMode == Polygroups */
-	FColor GetGroupColor(const FDynamicMesh3* Mesh, int TriangleID) const;
+	GEOMETRYFRAMEWORK_API FColor GetGroupColor(const FDynamicMesh3* Mesh, int TriangleID) const;
 
+
+	//===============================================================================================================
+	// Support for Vertex Color remapping/filtering. This allows external code to modulate the existing 
+	// Vertex Colors on the rendered mesh. The remapping is only applied to FVector4f Color Overlay attribute buffers.
+	// The lambda that is passed is held for the lifetime of the Component and
+	// must remain valid. If the Vertex Colors are modified, FastNotifyColorsUpdated() can be used to do the 
+	// minimal vertex buffer updates necessary in the RenderProxy
+public:
+	/** Set an active VertexColor Remapping function if one exists, and update the mesh */
+	GEOMETRYFRAMEWORK_API virtual void SetVertexColorRemappingFunction(TUniqueFunction<void(FVector4f&)> ColorMapFuncIn,
+		EDynamicMeshComponentRenderUpdateMode UpdateMode = EDynamicMeshComponentRenderUpdateMode::FastUpdate);
+
+	/** Clear an active VertexColor Remapping function if one exists, and update the mesh */
+	GEOMETRYFRAMEWORK_API virtual void ClearVertexColorRemappingFunction(EDynamicMeshComponentRenderUpdateMode UpdateMode = EDynamicMeshComponentRenderUpdateMode::FastUpdate);
+
+	/** @return true if a VertexColor Remapping function is configured */
+	GEOMETRYFRAMEWORK_API virtual bool HasVertexColorRemappingFunction();
+
+protected:
+	/** If this function is set, DynamicMesh Attribute Color Overlay colors will be passed through this function before sending to render buffers */
+	TUniqueFunction<void(FVector4f&)> VertexColorMappingFunc = nullptr;
+
+	/** This function is passed via lambda to the RenderProxy to be able to access VertexColorMappingFunc */
+	GEOMETRYFRAMEWORK_API void RemapVertexColor(FVector4f& VertexColorInOut);
 
 
 
@@ -314,12 +367,12 @@ public:
 	 * function into a second index buffer. These triangles will be drawn with the Secondary render material
 	 * that is set in the BaseDynamicMeshComponent. Calling this function invalidates the SceneProxy.
 	 */
-	virtual void EnableSecondaryTriangleBuffers(TUniqueFunction<bool(const FDynamicMesh3*, int32)> SecondaryTriFilterFunc);
+	GEOMETRYFRAMEWORK_API virtual void EnableSecondaryTriangleBuffers(TUniqueFunction<bool(const FDynamicMesh3*, int32)> SecondaryTriFilterFunc);
 
 	/**
 	 * Disable secondary triangle buffers. This invalidates the SceneProxy.
 	 */
-	virtual void DisableSecondaryTriangleBuffers();
+	GEOMETRYFRAMEWORK_API virtual void DisableSecondaryTriangleBuffers();
 
 protected:
 	TUniqueFunction<bool(const FDynamicMesh3*, int32)> SecondaryTriFilterFunc = nullptr;
@@ -339,7 +392,7 @@ public:
 	 * Configure a decomposition of the mesh, which will result in separate render buffers for each 
 	 * decomposition triangle group. Invalidates existing SceneProxy.
 	 */
-	virtual void SetExternalDecomposition(TUniquePtr<FMeshRenderDecomposition> Decomposition);
+	GEOMETRYFRAMEWORK_API virtual void SetExternalDecomposition(TUniquePtr<FMeshRenderDecomposition> Decomposition);
 
 protected:
 	TUniquePtr<FMeshRenderDecomposition> Decomposition;
@@ -357,17 +410,17 @@ public:
 	/**
 	 * Add a render mesh processor, to be called before the mesh is sent for rendering.
 	 */
-	virtual void SetRenderMeshPostProcessor(TUniquePtr<IRenderMeshPostProcessor> Processor);
+	GEOMETRYFRAMEWORK_API virtual void SetRenderMeshPostProcessor(TUniquePtr<IRenderMeshPostProcessor> Processor);
 
 	/**
 	 * The SceneProxy should call these functions to get the post-processed RenderMesh. (See IRenderMeshPostProcessor.)
 	 */
-	virtual FDynamicMesh3* GetRenderMesh();
+	GEOMETRYFRAMEWORK_API virtual FDynamicMesh3* GetRenderMesh();
 
 	/**
 	 * The SceneProxy should call these functions to get the post-processed RenderMesh. (See IRenderMeshPostProcessor.)
 	 */
-	virtual const FDynamicMesh3* GetRenderMesh() const;
+	GEOMETRYFRAMEWORK_API virtual const FDynamicMesh3* GetRenderMesh() const;
 
 protected:
 	TUniquePtr<IRenderMeshPostProcessor> RenderMeshPostProcessor;
@@ -402,7 +455,7 @@ public:
 	 * different Material IDs on the mesh MaterialID attribute
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Dynamic Mesh Component")
-	void ConfigureMaterialSet(const TArray<UMaterialInterface*>& NewMaterialSet);
+	GEOMETRYFRAMEWORK_API void ConfigureMaterialSet(const TArray<UMaterialInterface*>& NewMaterialSet);
 
 	/**
 	 * Compute the maximum MaterialID on the DynamicMesh, and ensure that Material Slots match.
@@ -412,36 +465,54 @@ public:
 	 * @return true if at the end of this function, Material Slot Count == Max MaterialID
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Dynamic Mesh Component")
-	bool ValidateMaterialSlots(bool bCreateIfMissing = true, bool bDeleteExtraSlots = true);
+	GEOMETRYFRAMEWORK_API bool ValidateMaterialSlots(bool bCreateIfMissing = true, bool bDeleteExtraSlots = true);
 
 
 	//===============================================================================================================
-	// Triangle-Vertex Tangents support. The default behavior is to not use Tangents, this will lead to incorrect
-	// rendering for any material with Normal Maps and some other shaders.
+	// Triangle-Vertex Tangents support. The default behavior is to use the provided external Tangents.
 	// If TangentsType == EDynamicMeshComponentTangentsMode::ExternallyProvided, the Tangent and Bitangent attributes of
 	//   the FDynamicMesh3 AttributeSet are used at the SceneProxy level, the Component is not involved
 	// If TangentsType == EDynamicMeshComponentTangentsMode::AutoCalculated, the Tangents are computed internally using
 	//   a fast MikkT approximation via FMeshTangentsf. They will be recomputed when the mesh is modified, however
 	//   they are *not* recomputed when using the Fast Update functions above (in that case InvalidateAutoCalculatedTangents() 
 	//   can be used to force recomputation)
+	// If TangentsType == EDynamicMeshComponentTangentsMode::NoTangents, the Component will not use Tangents, which will
+	//   lead to incorrect rendering for any material with Normal Maps and some other shaders.
 	//
+private:
+	// Default what the 'Default' tangent type should map to
+	static constexpr EDynamicMeshComponentTangentsMode UseDefaultTangentsType = EDynamicMeshComponentTangentsMode::ExternallyProvided;
+
 public:
 	UFUNCTION(BlueprintCallable, Category = "Dynamic Mesh Component")
-	void SetTangentsType(EDynamicMeshComponentTangentsMode NewTangentsType);
+	GEOMETRYFRAMEWORK_API void SetTangentsType(EDynamicMeshComponentTangentsMode NewTangentsType);
 
 	UFUNCTION(BlueprintCallable, Category = "Dynamic Mesh Component")
-	EDynamicMeshComponentTangentsMode GetTangentsType() const { return TangentsType; }
+	EDynamicMeshComponentTangentsMode GetTangentsType() const
+	{
+		return TangentsType == EDynamicMeshComponentTangentsMode::Default ? UseDefaultTangentsType : TangentsType;
+	}
+
+private:
+	// pure version of GetTangentsType, so it can be used as a getter below (getters must be BlueprintPure)
+	UFUNCTION(BlueprintCallable, BlueprintPure, BlueprintInternalUseOnly, Category = "Dynamic Mesh Component")
+	EDynamicMeshComponentTangentsMode GetTangentsTypePure() const
+	{
+		return GetTangentsType();
+	}
+
+public:
 
 	/** This function marks the auto tangents as dirty, they will be recomputed before they are used again */
-	virtual void InvalidateAutoCalculatedTangents();
+	GEOMETRYFRAMEWORK_API virtual void InvalidateAutoCalculatedTangents();
 
 	/** @return AutoCalculated Tangent Set, which may require that they be recomputed, or nullptr if not enabled/available */
-	const UE::Geometry::FMeshTangentsf* GetAutoCalculatedTangents();
+	GEOMETRYFRAMEWORK_API const UE::Geometry::FMeshTangentsf* GetAutoCalculatedTangents();
 
 protected:
-	/** How should Tangents be calculated/handled */
-	UPROPERTY()
-	EDynamicMeshComponentTangentsMode TangentsType = EDynamicMeshComponentTangentsMode::NoTangents;
+	/** Tangent source defines whether we use the provided tangents on the Dynamic Mesh, autogenerate tangents, or do not use tangents */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter=SetTangentsType, BlueprintGetter=GetTangentsTypePure, Category = "Dynamic Mesh Component|Rendering")
+	EDynamicMeshComponentTangentsMode TangentsType = EDynamicMeshComponentTangentsMode::Default;
 
 	/** true if AutoCalculatedTangents has been computed for current mesh */
 	bool bAutoCalculatedTangentsValid = false;
@@ -449,7 +520,7 @@ protected:
 	/** Set of per-triangle-vertex tangents computed for the current mesh. Only valid if bAutoCalculatedTangentsValid == true */
 	UE::Geometry::FMeshTangentsf AutoCalculatedTangents;
 
-	void UpdateAutoCalculatedTangents();
+	GEOMETRYFRAMEWORK_API void UpdateAutoCalculatedTangents();
 
 
 
@@ -462,7 +533,7 @@ public:
 	 * calls SetComplexAsSimpleCollisionEnabled(true, true)
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Dynamic Mesh Component")
-	void EnableComplexAsSimpleCollision();
+	GEOMETRYFRAMEWORK_API void EnableComplexAsSimpleCollision();
 
 	/**
 	 * If bEnabled=true, sets bEnableComplexCollision=true and CollisionType=CTF_UseComplexAsSimple
@@ -470,31 +541,31 @@ public:
 	 * @param bImmediateUpdate if true, UpdateCollision(true) is called
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Dynamic Mesh Component")
-	void SetComplexAsSimpleCollisionEnabled(bool bEnabled, bool bImmediateUpdate = true);
+	GEOMETRYFRAMEWORK_API void SetComplexAsSimpleCollisionEnabled(bool bEnabled, bool bImmediateUpdate = true);
 
 	/**
 	 * Set value of bDeferCollisionUpdates, when enabled, collision is not automatically recomputed each time the mesh changes.
 	 * @param bImmediateUpdate if true, UpdateCollision(true) is called if bEnabled=false, ie to force a collision rebuild
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Dynamic Mesh Component")
-	void SetDeferredCollisionUpdatesEnabled(bool bEnabled, bool bImmediateUpdate = true);
+	GEOMETRYFRAMEWORK_API void SetDeferredCollisionUpdatesEnabled(bool bEnabled, bool bImmediateUpdate = true);
 
 
-	virtual bool GetPhysicsTriMeshData(struct FTriMeshCollisionData* CollisionData, bool InUseAllTriData) override;
-	virtual bool ContainsPhysicsTriMeshData(bool InUseAllTriData) const override;
-	virtual bool WantsNegXTriMesh() override;
+	GEOMETRYFRAMEWORK_API virtual bool GetPhysicsTriMeshData(struct FTriMeshCollisionData* CollisionData, bool InUseAllTriData) override;
+	GEOMETRYFRAMEWORK_API virtual bool ContainsPhysicsTriMeshData(bool InUseAllTriData) const override;
+	GEOMETRYFRAMEWORK_API virtual bool WantsNegXTriMesh() override;
 
 	/** @return current BodySetup for this Component, or nullptr if it does not exist */
 	virtual const UBodySetup* GetBodySetup() const { return MeshBodySetup; }
 	/** @return BodySetup for this Component. A new BodySetup will be created if one does not exist. */
-	virtual UBodySetup* GetBodySetup() override;
+	GEOMETRYFRAMEWORK_API virtual UBodySetup* GetBodySetup() override;
 
 	/**
 	 * Force an update of the Collision/Physics data for this Component.
 	 * @param bOnlyIfPending only update if a collision update is pending, ie the underlying DynamicMesh changed and bDeferCollisionUpdates is enabled
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Dynamic Mesh Component")
-	virtual void UpdateCollision(bool bOnlyIfPending = true);
+	GEOMETRYFRAMEWORK_API virtual void UpdateCollision(bool bOnlyIfPending = true);
 
 	/** Type of Collision Geometry to use for this Mesh */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dynamic Mesh Component|Collision")
@@ -506,9 +577,9 @@ public:
 	 * @param AggGeom				New simple collision shapes to be used
 	 * @param bUpdateCollision		Whether to automatically call UpdateCollision() -- if false, manually call it to register the change with the physics system
 	 */
-	virtual void SetSimpleCollisionShapes(const struct FKAggregateGeom& AggGeom, bool bUpdateCollision);
+	GEOMETRYFRAMEWORK_API virtual void SetSimpleCollisionShapes(const struct FKAggregateGeom& AggGeom, bool bUpdateCollision);
 
-	virtual struct FKAggregateGeom& GetSimpleCollisionShapes()
+	const FKAggregateGeom& GetSimpleCollisionShapes() const
 	{
 		return AggGeom;
 	}
@@ -517,7 +588,7 @@ public:
 	 * Clear the simple collision shapes associated with this mesh component
 	 * @param bUpdateCollision		Whether to automatically call UpdateCollision() -- if false, manually call it to register the change with the physics system
 	 */
-	virtual void ClearSimpleCollisionShapes(bool bUpdateCollision);
+	GEOMETRYFRAMEWORK_API virtual void ClearSimpleCollisionShapes(bool bUpdateCollision);
 
 	/**
 	 *	Controls whether the physics cooking should be done off the game thread.
@@ -543,14 +614,14 @@ public:
 	 * want to defer collision updates during the user interaction, but not change the serialized property. 
 	 * In this case a non-serialized version of the flag can be *temporarily* set via this function in C++. 
 	 */
-	void SetTransientDeferCollisionUpdates(bool bEnabled);
+	GEOMETRYFRAMEWORK_API void SetTransientDeferCollisionUpdates(bool bEnabled);
 
 protected:
 	UPROPERTY(Instanced)
 	TObjectPtr<UBodySetup> MeshBodySetup;
 
-	virtual void InvalidatePhysicsData();
-	virtual void RebuildPhysicsData();
+	GEOMETRYFRAMEWORK_API virtual void InvalidatePhysicsData();
+	GEOMETRYFRAMEWORK_API virtual void RebuildPhysicsData();
 
 	bool bTransientDeferCollisionUpdates = false;
 	bool bCollisionUpdatePending = false;
@@ -565,7 +636,7 @@ protected:
 	UE::Geometry::FAxisAlignedBox3d LocalBounds;
 
 	/** Recompute LocalBounds from the current Mesh */
-	void UpdateLocalBounds();
+	GEOMETRYFRAMEWORK_API void UpdateLocalBounds();
 
 	//
 	// Internals for managing collision representation and setup
@@ -580,18 +651,18 @@ protected:
 	TArray<TObjectPtr<UBodySetup>> AsyncBodySetupQueue;
 
 	/** Once async physics cook is done, create needed state */
-	virtual void FinishPhysicsAsyncCook(bool bSuccess, UBodySetup* FinishedBodySetup);
+	GEOMETRYFRAMEWORK_API virtual void FinishPhysicsAsyncCook(bool bSuccess, UBodySetup* FinishedBodySetup);
 
-	virtual UBodySetup* CreateBodySetupHelper();
+	GEOMETRYFRAMEWORK_API virtual UBodySetup* CreateBodySetupHelper();
 	
 	/** @return Set new BodySetup for this Component. */
-	virtual void SetBodySetup(UBodySetup* NewSetup);
+	GEOMETRYFRAMEWORK_API virtual void SetBodySetup(UBodySetup* NewSetup);
 
 	/**
 	 * This is called to tell our RenderProxy about modifications to the material set.
 	 * We need to pass this on for things like material validation in the Editor.
 	 */
-	virtual void NotifyMaterialSetUpdated();
+	GEOMETRYFRAMEWORK_API virtual void NotifyMaterialSetUpdated();
 
 	/**
 	 * If the render proxy is invalidated (eg by MarkRenderStateDirty()), it will be destroyed at the end of
@@ -615,32 +686,33 @@ protected:
 	/** 
 	 * @return current render proxy, if valid, otherwise nullptr 
 	 */
-	FDynamicMeshSceneProxy* GetCurrentSceneProxy();
+	GEOMETRYFRAMEWORK_API FDynamicMeshSceneProxy* GetCurrentSceneProxy();
 
 
 	/**
 	 * Fully invalidate all rendering data for this Component. Current Proxy will be discarded, Bounds and possibly Tangents recomputed, etc
 	 */
-	void ResetProxy();
+	GEOMETRYFRAMEWORK_API void ResetProxy();
 
 	//~ Begin UPrimitiveComponent Interface.
-	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
+	GEOMETRYFRAMEWORK_API virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
 
 	//~ USceneComponent Interface.
-	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
-	virtual void OnChildAttached(USceneComponent* ChildComponent) override;
-	virtual void OnChildDetached(USceneComponent* ChildComponent) override;
+	GEOMETRYFRAMEWORK_API virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
+	GEOMETRYFRAMEWORK_API virtual void OnChildAttached(USceneComponent* ChildComponent) override;
+	GEOMETRYFRAMEWORK_API virtual void OnChildDetached(USceneComponent* ChildComponent) override;
 
 	//~ UObject Interface.
-	virtual void PostLoad() override;
-	virtual void BeginDestroy() override;
+	GEOMETRYFRAMEWORK_API virtual void Serialize(FArchive& Ar) override;
+	GEOMETRYFRAMEWORK_API virtual void PostLoad() override;
+	GEOMETRYFRAMEWORK_API virtual void BeginDestroy() override;
 #if WITH_EDITOR
-	void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	GEOMETRYFRAMEWORK_API void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 
 public:
 	/** Set whether or not to validate mesh batch materials against the component materials. */
-	void SetSceneProxyVerifyUsedMaterials(bool bState);
+	GEOMETRYFRAMEWORK_API void SetSceneProxyVerifyUsedMaterials(bool bState);
 
 
 };

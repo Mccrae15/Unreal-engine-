@@ -17,8 +17,10 @@
 #include "Tracks/MovieSceneSubTrack.h"
 #include "Tracks/MovieSceneCameraCutTrack.h"
 #include "Tracks/MovieSceneCinematicShotTrack.h"
+#include "Tracks/MovieSceneSpawnTrack.h"
 #include "Sections/MovieSceneCinematicShotSection.h"
 #include "Sections/MovieSceneCameraCutSection.h"
+#include "Sections/MovieSceneSpawnSection.h"
 #include "MovieSceneTimeHelpers.h"
 #include "MoviePipelineQueue.h"
 #include "MoviePipelineSetting.h"
@@ -579,33 +581,64 @@ void UMoviePipelineBlueprintLibrary::UpdateJobShotListFromSequence(ULevelSequenc
 
 					if (ValidBinding.IsValid())
 					{
-						FMoviePipelineSidecarCamera& SidecarCamera = Entity.SidecarCameras.AddDefaulted_GetRef();
+						FMoviePipelineSidecarCamera SidecarCamera;
 						SidecarCamera.BindingId = ValidBinding;
-						SidecarCamera.SequenceId = Entity.SequenceID;
+						SidecarCamera.SequenceId = Entity.SequenceID; 
+						bool bAddCamera = true;
 						
+						// We break out of the while loop below when the parent guid is invalid, so we track
+						// the last known valid GUID too, so we can compare the root binding against the camera.
+						FGuid LastValidGuid = Possessable.GetGuid();
 						FGuid ParentGuid = Possessable.GetParent();
 						while (ParentGuid.IsValid())
 						{
-							// This comparison doesn't support cross-sequence references, technically we should create a 
-							// FMovieSceneObjectBindingID etc, but because we only support finding sidecar cameras in the
-							// same sequence as the main camera cut track, this is fine for now.
-							if (ParentGuid == MainBinding.GetGuid())
-							{
-								// We want to know which sidecar camera this is, not the possessable index.
-								MainCameraIndex = Entity.SidecarCameras.Num() - 1;
-							}
-
 							if (FMovieScenePossessable* ParentAsPossessable = LeafNode->MovieScene->FindPossessable(ParentGuid))
 							{
+								LastValidGuid = ParentGuid;
 								ParentGuid = ParentAsPossessable->GetParent();
 								SidecarCamera.Name = ParentAsPossessable->GetName();
 							}
 							else if (FMovieSceneSpawnable* ParentAsSpawnable = LeafNode->MovieScene->FindSpawnable(ParentGuid))
 							{
+								FMovieSceneBinding* Binding = LeafNode->MovieScene->FindBinding(ParentAsSpawnable->GetGuid());
+								if (Binding)
+								{
+									const TArray<UMovieSceneTrack*> AllBindingTracks = Binding->GetTracks();
+									for (const UMovieSceneTrack* Track : AllBindingTracks)
+									{
+										if (const UMovieSceneSpawnTrack* SpawnTrack = Cast<UMovieSceneSpawnTrack>(Track))
+										{
+											for (const UMovieSceneSection* Section : SpawnTrack->GetAllSections())
+											{
+												if (const UMovieSceneSpawnSection* BoolSection = Cast<UMovieSceneSpawnSection>(Section))
+												{
+													bAddCamera = BoolSection->GetChannel().GetDefault().Get(true);
+												}
+											}
+										}
+									}
+								}
+
 								// Spawnables will never have a parent
+								LastValidGuid = ParentGuid;
 								ParentGuid.Invalidate(); 
+								
 								SidecarCamera.Name = ParentAsSpawnable->GetName();
 							}
+						}
+
+						if (bAddCamera)
+						{
+							// This comparison doesn't support cross-sequence references, technically we should create a 
+							// FMovieSceneObjectBindingID etc, but because we only support finding sidecar cameras in the
+							// same sequence as the main camera cut track, this is fine for now.
+							if (LastValidGuid == MainBinding.GetGuid())
+							{
+								// We want to know which sidecar camera this is, not the possessable index.
+								MainCameraIndex = Entity.SidecarCameras.Num();
+							}
+
+							Entity.SidecarCameras.Add(SidecarCamera);
 						}
 					}
 				}
@@ -867,25 +900,29 @@ FIntPoint UMoviePipelineBlueprintLibrary::GetEffectiveOutputResolution(UMoviePip
 {
 	if (InPrimaryConfig && InPipelineExecutorShot)
 	{
-		UMoviePipelineOutputSetting* OutputSetting = InPrimaryConfig->FindSetting<UMoviePipelineOutputSetting>();
+		const UMoviePipelineOutputSetting* OutputSetting = InPrimaryConfig->FindSetting<UMoviePipelineOutputSetting>();
 		const UMoviePipelineCameraSetting* CameraSetting = Cast<const UMoviePipelineCameraSetting>(UMoviePipelineBlueprintLibrary::FindOrGetDefaultSettingForShot(UMoviePipelineCameraSetting::StaticClass(), InPrimaryConfig, InPipelineExecutorShot));
 		check(OutputSetting);
 		check(CameraSetting);
-		FIntPoint EffectiveResolution(OutputSetting->OutputResolution);
-		float ClampedOverscanPercentage = FMath::Clamp(CameraSetting->OverscanPercentage, 0.0f, 1.0f);
-		if (ClampedOverscanPercentage > 0.f)
-		{
-			float Scale = 1.f + ClampedOverscanPercentage;
-			EffectiveResolution.X = FMath::CeilToInt(((float)EffectiveResolution.X) * Scale);
-			EffectiveResolution.Y = FMath::CeilToInt(((float)EffectiveResolution.Y) * Scale);
-		}
-
-		return EffectiveResolution;
+		return Utility_GetEffectiveOutputResolution(CameraSetting->OverscanPercentage, OutputSetting->OutputResolution);
 	}
 
 	return FIntPoint();
 }
 
+FIntPoint UMoviePipelineBlueprintLibrary::Utility_GetEffectiveOutputResolution(const float OverscanPercentage, const FIntPoint& InOutputResolution)
+{
+	const float ClampedOverscanPercentage = FMath::Clamp(OverscanPercentage, 0.0f, 1.0f);
+	FIntPoint EffectiveResolution(InOutputResolution);
+	if (ClampedOverscanPercentage > 0.f)
+	{
+		const float Scale = 1.f + ClampedOverscanPercentage;
+		EffectiveResolution.X = FMath::CeilToInt(static_cast<float>(EffectiveResolution.X) * Scale);
+		EffectiveResolution.Y = FMath::CeilToInt(static_cast<float>(EffectiveResolution.Y) * Scale);
+	}
+
+	return EffectiveResolution;
+}
 
 UMoviePipelineSetting* UMoviePipelineBlueprintLibrary::FindOrGetDefaultSettingForShot(TSubclassOf<UMoviePipelineSetting> InSettingType, const UMoviePipelinePrimaryConfig* InPrimaryConfig, const UMoviePipelineExecutorShot* InShot)
 {
@@ -915,31 +952,6 @@ UMoviePipelineSetting* UMoviePipelineBlueprintLibrary::FindOrGetDefaultSettingFo
 	return InSettingType->GetDefaultObject<UMoviePipelineSetting>();
 }
 
-static bool CanWriteToFile(const TCHAR* InFilename, bool bOverwriteExisting)
-{
-	// Check if there is space on the output disk.
-	bool bIsFreeSpace = true;
-
-	uint64 TotalNumberOfBytes, NumberOfFreeBytes;
-	if (FPlatformMisc::GetDiskTotalAndFreeSpace(InFilename, TotalNumberOfBytes, NumberOfFreeBytes))
-	{
-		bIsFreeSpace = NumberOfFreeBytes > 64 * 1024 * 1024; // 64mb minimum
-	}
-	// ToDO: Infinite loop possible.
-	return bIsFreeSpace && (bOverwriteExisting || IFileManager::Get().FileSize(InFilename) == -1);
-}
-
-static FString GetPaddingFormatString(int32 InZeroPadCount, const int32 InFrameNumber)
-{
-	// Printf takes the - sign into account when you specify the number of digits to pad to
-	// so we bump it by one to make the negative sign come first (ie: -0001 instead of -001)
-	if (InFrameNumber < 0)
-	{
-		InZeroPadCount++;
-	}
-
-	return FString::Printf(TEXT("%0*d"), InZeroPadCount, InFrameNumber);
-}
 
 void UMoviePipelineBlueprintLibrary::ResolveFilenameFormatArguments(const FString& InFormatString, const FMoviePipelineFilenameResolveParams& InParams, FString& OutFinalPath, FMoviePipelineFormatArgs& OutMergedFormatArgs)
 {
@@ -969,10 +981,10 @@ void UMoviePipelineBlueprintLibrary::ResolveFilenameFormatArguments(const FStrin
 		// when your sequence starts at zero and you use handle frames (which would cause negative output frame 
 		// numbers), so we allow the user to add a fixed amount to all output to ensure they are positive.
 		int32 FrameNumberOffset = OutputSetting->FrameNumberOffset + InParams.AdditionalFrameNumberOffset;
-		FString FrameNumber = GetPaddingFormatString(OutputSetting->ZeroPadFrameNumbers, InParams.FrameNumber + FrameNumberOffset); // Sequence Frame #
-		FString FrameNumberShot = GetPaddingFormatString(OutputSetting->ZeroPadFrameNumbers, InParams.FrameNumberShot + FrameNumberOffset); // Shot Frame #
-		FString FrameNumberRel = GetPaddingFormatString(OutputSetting->ZeroPadFrameNumbers, InParams.FrameNumberRel + FrameNumberOffset); // Relative to 0
-		FString FrameNumberShotRel = GetPaddingFormatString(OutputSetting->ZeroPadFrameNumbers, InParams.FrameNumberShotRel + FrameNumberOffset); // Relative to 0 within the shot.
+		FString FrameNumber = UE::MoviePipeline::GetPaddingFormatString(OutputSetting->ZeroPadFrameNumbers, InParams.FrameNumber + FrameNumberOffset); // Sequence Frame #
+		FString FrameNumberShot = UE::MoviePipeline::GetPaddingFormatString(OutputSetting->ZeroPadFrameNumbers, InParams.FrameNumberShot + FrameNumberOffset); // Shot Frame #
+		FString FrameNumberRel = UE::MoviePipeline::GetPaddingFormatString(OutputSetting->ZeroPadFrameNumbers, InParams.FrameNumberRel + FrameNumberOffset); // Relative to 0
+		FString FrameNumberShotRel = UE::MoviePipeline::GetPaddingFormatString(OutputSetting->ZeroPadFrameNumbers, InParams.FrameNumberShotRel + FrameNumberOffset); // Relative to 0 within the shot.
 
 		// Ensure they used relative frame numbers in the output so they get the right number of output frames.
 		if (InParams.bForceRelativeFrameNumbers)
@@ -994,7 +1006,7 @@ void UMoviePipelineBlueprintLibrary::ResolveFilenameFormatArguments(const FStrin
 			ShotName = InParams.ShotNameOverride;
 		}
 
-		MoviePipeline::GetOutputStateFormatArgs(OutMergedFormatArgs, FrameNumber, FrameNumberShot, FrameNumberRel, FrameNumberShotRel, CameraName, ShotName);
+		MoviePipeline::GetOutputStateFormatArgs(OutMergedFormatArgs.FilenameArguments, OutMergedFormatArgs.FileMetadata, FrameNumber, FrameNumberShot, FrameNumberRel, FrameNumberShotRel, CameraName, ShotName);
 	}
 
 
@@ -1056,7 +1068,7 @@ void UMoviePipelineBlueprintLibrary::ResolveFilenameFormatArguments(const FStrin
 
 	FString ThisTry = BaseFilename + Extension;
 
-	if (CanWriteToFile(*ThisTry, OutputSetting->bOverrideExistingOutput))
+	if (UE::MoviePipeline::CanWriteToFile(*ThisTry, OutputSetting->bOverrideExistingOutput))
 	{
 		OutFinalPath = ThisTry;
 		return;
@@ -1071,7 +1083,7 @@ void UMoviePipelineBlueprintLibrary::ResolveFilenameFormatArguments(const FStrin
 		ThisTry = FString::Format(*FileNameFormatString, NamedArgs) + Extension;
 
 		// If the file doesn't exist, we can use that, else, increment the index and try again
-		if (CanWriteToFile(*ThisTry, OutputSetting->bOverrideExistingOutput))
+		if (UE::MoviePipeline::CanWriteToFile(*ThisTry, OutputSetting->bOverrideExistingOutput))
 		{
 			OutFinalPath = ThisTry;
 			return;

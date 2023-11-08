@@ -6,14 +6,11 @@ namespace UnrealBuildTool.Rules
 	{
 		public SkeletalMeshDescription(ReadOnlyTargetRules Target) : base(Target)
 		{
-            // For GPUSkinPublicDefs.h
-            PublicIncludePaths.Add("Runtime/Engine/Public");
-            
-            // For BoneWeights
 			PublicIncludePathModuleNames.AddRange(
 				new string[]
 				{
-					"AnimationCore"
+					"AnimationCore",	// For BoneWeights
+					"Engine",			// For GPUSkinPublicDefs.h
 				}
 			);
 
@@ -24,13 +21,6 @@ namespace UnrealBuildTool.Rules
 					"CoreUObject",
 					"MeshDescription",
 					"StaticMeshDescription"
-				}
-			);
-
-			PrivateDependencyModuleNames.AddRange(
-				new string[]
-				{
-					"MeshUtilitiesCommon"
 				}
 			);
 

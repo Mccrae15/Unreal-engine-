@@ -21,12 +21,12 @@
 #include "ProfilingDebugging/ScopedTimers.h"
 namespace MaterialInstanceCookStats
 {
-static double UpdateCachedExpressionDataSec = 0.0;
+static double MaterialInstanceUpdateCachedExpressionDataSec = 0.0;
 
 static FCookStatsManager::FAutoRegisterCallback RegisterCookStats([](FCookStatsManager::AddStatFuncRef AddStat)
 	{
-		AddStat(TEXT("MaterialInstance"), FCookStatsManager::CreateKeyValueArray(
-			TEXT("UpdateCachedExpressionDataSec"), UpdateCachedExpressionDataSec
+		AddStat(TEXT("Material"), FCookStatsManager::CreateKeyValueArray(
+			TEXT("MaterialInstanceUpdateCachedExpressionDataSec"), MaterialInstanceUpdateCachedExpressionDataSec
 		));
 	});
 }
@@ -91,6 +91,7 @@ void UMaterialInstanceConstant::SetParentEditorOnly(UMaterialInterface* NewParen
 
 	if (SetParentInternal(NewParent, RecacheShader))
 	{
+		ValidateStaticPermutationAllowed();
 		UpdateCachedData();
 	}
 }
@@ -186,7 +187,7 @@ void FMaterialInstanceCachedData::InitializeForConstant(const FMaterialLayersFun
 
 void UMaterialInstanceConstant::UpdateCachedData()
 {
-	COOK_STAT(FScopedDurationTimer BlockingTimer(MaterialInstanceCookStats::UpdateCachedExpressionDataSec));
+	COOK_STAT(FScopedDurationTimer BlockingTimer(MaterialInstanceCookStats::MaterialInstanceUpdateCachedExpressionDataSec));
 
 	// Don't need to rebuild cached data if it was serialized
 	if (!bLoadedCachedData)
@@ -259,8 +260,14 @@ void UMaterialInstanceConstant::UpdateCachedData()
 void UMaterialInstanceConstant::SetNaniteOverrideMaterial(bool bInEnableOverride, UMaterialInterface* InOverrideMaterial)
 {
 	NaniteOverrideMaterial.bEnableOverride = bInEnableOverride;
-	NaniteOverrideMaterial.OverrideMaterialRef = InOverrideMaterial;
-	NaniteOverrideMaterial.PostEditChange();
+	NaniteOverrideMaterial.OverrideMaterialEditor = InOverrideMaterial;
+}
+
+uint32 UMaterialInstanceConstant::ComputeAllStateCRC() const
+{
+	uint32 CRC = Super::ComputeAllStateCRC();
+	CRC = FCrc::TypeCrc32(ParameterStateId, CRC);
+	return CRC;
 }
 
 #endif // #if WITH_EDITOR

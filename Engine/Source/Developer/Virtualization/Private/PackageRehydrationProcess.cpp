@@ -140,35 +140,41 @@ bool TryRehydrateBuilder(const FString& FilePath, FPackageTrailer& OutTrailer, F
 
 	IVirtualizationSystem& System = IVirtualizationSystem::Get();
 
+	TArray<FPullRequest> Requests;
+	Requests.Reserve(VirtualizedPayloads.Num());
+
 	for (const FIoHash& Id : VirtualizedPayloads)
 	{
-		FCompressedBuffer Payload = System.PullData(Id);
-		if (!Payload.IsNull())
-		{
-			if (OutBuilder.UpdatePayloadAsLocal(Id, Payload))
-			{
-				PayloadsHydrated++;
-			}
-			else
-			{
-				FText Message = FText::Format(LOCTEXT("VAHydration_UpdateStatusFailed", "Unable to update the status for the payload '{0}' in the package '{1}'"),
-					FText::FromString(LexToString(Id)),
-					FText::FromString(FilePath));
-				OutErrors.Add(Message);
+		Requests.Emplace(FPullRequest(Id));
+	}
 
-				return false;
-			}
+	if (!System.PullData(Requests))
+	{
+		FText Message = FText::Format(LOCTEXT("VAHydration_PullFailed", "Unable to pull the data for the package '{0}'"),
+			FText::FromString(FilePath));
+		OutErrors.Add(Message);
+
+		return false;
+	}
+
+	for (const FPullRequest& Request : Requests)
+	{
+		if (OutBuilder.UpdatePayloadAsLocal(Request.GetIdentifier(), Request.GetPayload()))
+		{
+			PayloadsHydrated++;
 		}
 		else
 		{
-			FText Message = FText::Format(LOCTEXT("VAHydration_PullFailed", "Unable to pull the data for the payload '{0}' for the package '{1}'"),
-				FText::FromString(LexToString(Id)),
+			FText Message = FText::Format(LOCTEXT("VAHydration_UpdateStatusFailed", "Unable to update the status for the payload '{0}' in the package '{1}'"),
+				FText::FromString(LexToString(Request.GetIdentifier())),
 				FText::FromString(FilePath));
 			OutErrors.Add(Message);
 
 			return false;
 		}
 	}
+
+	check(OutBuilder.GetNumVirtualizedPayloads() == 0);
 
 	return PayloadsHydrated > 0;
 }
@@ -195,9 +201,24 @@ void RehydratePackages(TConstArrayView<FString> PackagePaths, ERehydrationOption
 	//       Running this over a large project would be much faster if we could batch. An easy way
 	//       to do this might be to gather all of the payloads needed and do a prefetch first?
 
+	double Time = FPlatformTime::Seconds();
+
+	TSet<FString> ConsideredPackages;
+	ConsideredPackages.Reserve(PackagePaths.Num());
+
 	// Attempt to rehydrate the packages
-	for (const FString& FilePath : PackagePaths)
+	for(int32 Index = 0; Index < PackagePaths.Num(); ++Index)
 	{
+		const FString& FilePath = PackagePaths[Index];
+
+		bool bIsDuplicate = false;
+		ConsideredPackages.Add(FilePath, &bIsDuplicate);
+		if (bIsDuplicate)
+		{
+			UE_LOG(LogVirtualization, Verbose, TEXT("Skipping duplicate package entry '%s'"), *FilePath);
+			continue; // Skip duplicate packages
+		}
+
 		FPackageTrailer Trailer;
 		FPackageTrailerBuilder Builder;
 
@@ -215,7 +236,20 @@ void RehydratePackages(TConstArrayView<FString> PackagePaths, ERehydrationOption
 				return;
 			}
 		}
+
+		if (FPlatformTime::Seconds() - Time > 10.0)
+		{
+			const float ProgressPercent = ((float)Index / (float)PackagePaths.Num()) * 100.0f;
+			UE_LOG(LogVirtualization, Display, TEXT("%d/%d - %.1f%%"), Index, PackagePaths.Num(), ProgressPercent);
+
+			Time = FPlatformTime::Seconds();
+		}
 	}
+
+	const int32 NumSkippedPackages = PackagePaths.Num() - ConsideredPackages.Num();
+	ConsideredPackages.Empty();
+
+	UE_CLOG(NumSkippedPackages > 0, LogVirtualization, Warning, TEXT("Discarded %d duplicate package paths"), NumSkippedPackages);
 
 	// We need to reset the loader of any loaded package that should have its package file replaced
 	for (const TPair<FString, FString>& Pair : PackagesToReplace)

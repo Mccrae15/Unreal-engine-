@@ -4,14 +4,33 @@
 #include "ISourceControlModule.h"
 #include "SourceControlOperations.h"
 #include "Misc/MessageDialog.h"
+#include "HAL/IConsoleManager.h"
 #include "FileHelpers.h"
 #include "SourceControlWindows.h"
 #include "ISourceControlWindowsModule.h"
 #include "UncontrolledChangelistsModule.h"
 #include "AssetViewUtils.h"
+#include "LevelEditor.h"
 #include "RevisionControlStyle/RevisionControlStyle.h"
+#include "Bookmarks/BookmarkScoped.h"
 
 #define LOCTEXT_NAMESPACE "FSceneOutlinerSCCHandler"
+
+FSceneOutlinerSCCHandler::FSceneOutlinerSCCHandler()
+{
+	if (FLevelEditorModule* LevelEditorModule = FModuleManager::LoadModulePtr<FLevelEditorModule>("LevelEditor"))
+	{
+		LevelEditorModule->OnMapChanged().AddRaw(this, &FSceneOutlinerSCCHandler::OnMapChanged);
+	}
+}
+
+FSceneOutlinerSCCHandler::~FSceneOutlinerSCCHandler()
+{
+	if (FLevelEditorModule* LevelEditorModule = FModuleManager::LoadModulePtr<FLevelEditorModule>("LevelEditor"))
+	{
+		LevelEditorModule->OnMapChanged().RemoveAll(this);
+	}
+}
 
 TSharedPtr<FSceneOutlinerTreeItemSCC> FSceneOutlinerSCCHandler::GetItemSourceControl(const FSceneOutlinerTreeItemPtr& InItem) const
 {
@@ -74,6 +93,29 @@ bool FSceneOutlinerSCCHandler::AddSourceControlMenuOptions(UToolMenu* Menu, TArr
 	return false;
 }
 
+bool FSceneOutlinerSCCHandler::AllowExecuteSourceControlRevert() const
+{
+	if (IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("SourceControl.Revert.EnableFromSceneOutliner")))
+	{
+		return CVar->GetBool();
+	}
+	else
+	{
+		return false;
+	}
+}
+
+bool FSceneOutlinerSCCHandler::AllowExecuteSourceControlRevertUnsaved() const
+{
+	if (IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("SourceControl.RevertUnsaved.Enable")))
+	{
+		return CVar->GetBool();
+	}
+	else
+	{
+		return false;
+	}
+}
 
 bool FSceneOutlinerSCCHandler::CanExecuteSourceControlActions() const
 {
@@ -89,6 +131,9 @@ void FSceneOutlinerSCCHandler::CacheCanExecuteVars()
 	bCanExecuteSCCHistory = false;
 	bUsesSnapshots = false;
 	bUsesChangelists = false;
+
+	const bool bAllowRevert = AllowExecuteSourceControlRevert();
+	const bool bAllowRevertUnsaved = AllowExecuteSourceControlRevertUnsaved();
 
 	if ( ISourceControlModule::Get().IsEnabled() || FUncontrolledChangelistsModule::Get().IsEnabled())
 	{
@@ -131,18 +176,21 @@ void FSceneOutlinerSCCHandler::CacheCanExecuteVars()
 					bCanExecuteSCCCheckIn = true;
 				}
 
-				if (SourceControlState->CanRevert())
+				if ( bAllowRevert )
 				{
-					bCanExecuteSCCRevert = true;
-				}
-				else
-				{
-					// If the package is dirty, allow a revert of the in-memory changes that have not yet been saved to disk.
-					if (UPackage* Package = SourceControl->GetPackage())
+					if ( SourceControlState->CanRevert() )
 					{
-						if (Package->IsDirty())
+						bCanExecuteSCCRevert = true;
+					}
+					else if ( bAllowRevertUnsaved )
+					{
+						// If the package is dirty, allow a revert of the in-memory changes that have not yet been saved to disk.
+						if (UPackage* Package = SourceControl->GetPackage())
 						{
-							bCanExecuteSCCRevert = true;
+							if (Package->IsDirty())
+							{
+								bCanExecuteSCCRevert = true;
+							}
 						}
 					}
 				}
@@ -339,7 +387,7 @@ void FSceneOutlinerSCCHandler::ExecuteSCCCheckOut()
 
 	if ( PackagesToCheckOut.Num() > 0 )
 	{
-		FEditorFileUtils::CheckoutPackages(PackagesToCheckOut);
+		FEditorFileUtils::CheckoutPackages(PackagesToCheckOut, nullptr, /*bErrorIfAlreadyCheckedOut=*/false);
 	}
 }
 
@@ -395,6 +443,7 @@ void FSceneOutlinerSCCHandler::ExecuteSCCRevert()
 
 	if (PackagesToRevert.Num() > 0)
 	{
+		FBookmarkScoped BookmarkScoped;
 		SourceControlHelpers::RevertAndReloadPackages(PackagesToRevert, /*bRevertAll=*/false, /*bReloadWorld=*/true);
 	}
 }
@@ -405,6 +454,14 @@ void FSceneOutlinerSCCHandler::ExecuteSCCHistory()
 	GetSelectedPackageNames(PackageNames);
 
 	FSourceControlWindows::DisplayRevisionHistory(PackageNames);
+}
+
+void FSceneOutlinerSCCHandler::OnMapChanged(UWorld* InWorld, EMapChangeType MapChangedType)
+{
+	if (MapChangedType == EMapChangeType::NewMap)
+	{
+		ItemSourceControls.Empty();
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

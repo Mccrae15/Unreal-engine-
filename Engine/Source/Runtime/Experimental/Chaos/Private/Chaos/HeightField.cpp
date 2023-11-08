@@ -3,7 +3,6 @@
 #include "Chaos/HeightField.h"
 #include "Chaos/Collision/ContactPoint.h"
 #include "Chaos/Collision/ContactPointsMiscShapes.h"
-#include "Chaos/Collision/ContactTriangles.h"
 #include "Chaos/Collision/TriangleOverlap.h"
 #include "Chaos/Collision/PBDCollisionConstraint.h"
 #include "Chaos/CollisionOneShotManifolds.h"
@@ -19,7 +18,7 @@
 #include "Chaos/Triangle.h"
 #include "Chaos/TriangleRegister.h"
 
-//PRAGMA_DISABLE_OPTIMIZATION
+//UE_DISABLE_OPTIMIZATION
 
 namespace Chaos
 {
@@ -450,7 +449,7 @@ namespace Chaos
 	{
 	public:
 
-		THeightfieldSweepVisitorCCD(const typename FHeightField::FDataType* InData, const GeomQueryType& InQueryGeom, const FRigidTransform3& InStartTM, const FVec3& InDir, const FReal Length, const FReal InIgnorePenetration, const FReal InTargetPenetration)
+		THeightfieldSweepVisitorCCD(const typename FHeightField::FDataType* InData, const GeomQueryType& InQueryGeom, const FAABB3& RotatedQueryBounds, const FRigidTransform3& InStartTM, const FVec3& InDir, const FReal Length, const FReal InIgnorePenetration, const FReal InTargetPenetration)
 			: OutDistance(TNumericLimits<FReal>::Max())
 			, OutPhi(TNumericLimits<FReal>::Max())
 			, OutPosition(0)
@@ -462,10 +461,9 @@ namespace Chaos
 			, IgnorePenetration(InIgnorePenetration)
 			, TargetPenetration(InTargetPenetration)
 		{
-			const FAABB3 QueryBounds = InQueryGeom.BoundingBox();
-			const FVec3 BoundsStartPoint = StartTM.TransformPositionNoScale(QueryBounds.Center());
 			const FVec3 StartPoint = StartTM.GetTranslation();
-			const FVec3 Inflation3D = QueryBounds.Extents() * FReal(0.5);
+			const FVec3 BoundsStartPoint = StartPoint + RotatedQueryBounds.Center();
+			const FVec3 Inflation3D = RotatedQueryBounds.Extents() * FReal(0.5);
 
 			const VectorRegister4Float LengthSimd = MakeVectorRegisterFloatFromDouble(VectorSetFloat1(Length));
 			BoundsStartPointSimd = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(BoundsStartPoint.X, BoundsStartPoint.Y, BoundsStartPoint.Z, 0.0));
@@ -596,7 +594,7 @@ namespace Chaos
 
 
 	template<typename BufferType>
-	void BuildGeomData(TArrayView<BufferType> BufferView, TArrayView<uint8> MaterialIndexView, int32 NumRows, int32 NumCols, const FVec3& InScale, TUniqueFunction<FReal(const BufferType)> ToRealFunc, typename FHeightField::FDataType& OutData, FAABB3& OutBounds)
+	void BuildGeomData(TArrayView<BufferType> BufferView, TArrayView<const uint8> MaterialIndexView, int32 NumRows, int32 NumCols, const FVec3& InScale, TUniqueFunction<FReal(const BufferType)> ToRealFunc, typename FHeightField::FDataType& OutData, FAABB3& OutBounds)
 	{
 		using FDataType = typename FHeightField::FDataType;
 
@@ -771,7 +769,7 @@ namespace Chaos
 		SetScale(InScale);
 	}
 
-	Chaos::FHeightField::FHeightField(TArrayView<const uint16> InHeights, TArrayView<uint8> InMaterialIndices, int32 InNumRows, int32 InNumCols, const FVec3& InScale)
+	Chaos::FHeightField::FHeightField(TArrayView<const uint16> InHeights, TArrayView<const uint8> InMaterialIndices, int32 InNumRows, int32 InNumCols, const FVec3& InScale)
 		: FImplicitObject(EImplicitObject::HasBoundingBox, ImplicitObjectType::HeightField)
 	{
 		TUniqueFunction<FReal(const uint16)> ConversionFunc = [](const uint16 InVal) -> FReal
@@ -849,6 +847,18 @@ namespace Chaos
 		return TNumericLimits<FReal>::Max();
 	}
 
+
+	FVec3 FHeightField::GetPointScaled(int32 InIndex) const
+	{
+		if (CHAOS_ENSURE(InIndex >= 0 && InIndex < GeomData.Heights.Num()))
+		{
+			return GeomData.GetPointScaled(InIndex);
+		}
+		
+		return FVec3::ZeroVector;
+	}
+
+
 	FReal Chaos::FHeightField::GetHeight(int32 InX, int32 InY) const
 	{
 		const int32 Index = InY * GeomData.NumCols + InX;
@@ -873,7 +883,8 @@ namespace Chaos
 
 	bool Chaos::FHeightField::IsHole(int32 InIndex) const
 	{
-		return GetMaterialIndex(InIndex) == TNumericLimits<uint8>::Max();
+		const bool bHasMaterials = GeomData.MaterialIndices.Num() > 0;
+		return bHasMaterials && GetMaterialIndex(InIndex) == TNumericLimits<uint8>::Max();
 	}
 
 	bool Chaos::FHeightField::IsHole(int32 InCellX, int32 InCellY) const
@@ -1409,7 +1420,14 @@ namespace Chaos
 		FVec2 ClippedStart;
 		FVec2 ClippedEnd;
 
-		if (InflatedBounds.ClipLine(StartPoint, StartPoint + Dir * Length, ClippedStart, ClippedEnd))
+		FVec3 SignDir(0);
+		SignDir[0] = FMath::Sign(Dir[0]);
+		SignDir[1] = FMath::Sign(Dir[1]);
+		const FVec3 InflateStartEnd = SignDir * InHalfExtents;
+		const FVec3 InflateStartPoint = StartPoint - InflateStartEnd;
+		const FVec3 InflateEndPoint = StartPoint + Dir * Length + InflateStartEnd;
+
+		if (InflatedBounds.ClipLine(InflateStartPoint, InflateEndPoint, ClippedStart, ClippedEnd))
 		{
 			// Rasterize the line over the grid
 			TVec2<int32> StartCell = FlatGrid.Cell(ClippedStart / Scale2D);
@@ -1967,7 +1985,7 @@ namespace Chaos
 					const int32 SingleIndex = Cell[1] * (GeomData.NumCols) + Cell[0];
 					GeomData.GetPointsAndBoundsScaled(SingleIndex, Points, CellBounds);
 
-					if(CellBounds.Intersects(QueryBounds))
+					if(CellBounds.Intersects(QueryBounds) && !IsHole(Cell[0], Cell[1]))
 					{
 						bOverlaps |= OverlapTriangleMTD(Points[0], Points[1], Points[3], OutMTD);
 						bOverlaps |= OverlapTriangleMTD(Points[0], Points[3], Points[2], OutMTD);
@@ -2028,7 +2046,7 @@ namespace Chaos
 				{
 					const int32 SingleIndex = Cell[1] * (GeomData.NumCols) + Cell[0];
 					GeomData.GetPointsAndBoundsScaledSimd(SingleIndex, Points, CellBounds);
-					if (CellBounds.Intersects(QueryBoundsSimd))
+					if (CellBounds.Intersects(QueryBoundsSimd) && !IsHole(Cell[0], Cell[1]))
 					{
 						// pre-transform the triangle in overlap geometry space
 						for (int32 Index = 0; Index < 4; ++Index)
@@ -2204,9 +2222,10 @@ namespace Chaos
 		const FReal IgnorePenetration = CVars::bCCDNewTargetDepthMode ? InIgnorePenetration : 0;
 		const FReal TargetPenetration = CVars::bCCDNewTargetDepthMode ? InTargetPenetration : 0;
 
+		const FAABB3 QueryBounds = QueryGeom.BoundingBox().TransformedAABB(FRigidTransform3(FVec3(0), StartTM.GetRotation()));
+
 		bool bHit = false;
-		THeightfieldSweepVisitorCCD<QueryGeomType> SQVisitor(&GeomData, QueryGeom, StartTM, Dir, Length, IgnorePenetration, TargetPenetration);
-		const FAABB3 QueryBounds = QueryGeom.BoundingBox();
+		THeightfieldSweepVisitorCCD<QueryGeomType> SQVisitor(&GeomData, QueryGeom, QueryBounds, StartTM, Dir, Length, IgnorePenetration, TargetPenetration);
 		const FVec3 StartPoint = StartTM.TransformPositionNoScale(QueryBounds.Center());
 
 		const FVec3 Inflation3D = QueryBounds.Extents() * FReal(0.5);

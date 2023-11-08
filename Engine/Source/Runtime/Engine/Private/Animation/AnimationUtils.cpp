@@ -16,6 +16,7 @@
 #include "Animation/AnimBoneCompressionCodec.h"
 #include "Animation/AnimBoneCompressionSettings.h"
 #include "Animation/AnimCurveCompressionSettings.h"
+#include "Animation/VariableFrameStrippingSettings.h"
 #include "AnimationCompression.h"
 #include "Engine/SkeletalMeshSocket.h"
 #include "UObject/LinkerLoad.h"
@@ -844,6 +845,7 @@ void FAnimationUtils::TallyErrorsFromPerturbation(
 static UAnimBoneCompressionSettings* DefaultBoneCompressionSettings = nullptr;
 static UAnimBoneCompressionSettings* DefaultRecorderBoneCompressionSettings = nullptr;
 static UAnimCurveCompressionSettings* DefaultCurveCompressionSettings = nullptr;
+static UVariableFrameStrippingSettings* DefaultVariableFrameStrippingSettings = nullptr;
 
 static void EnsureDependenciesAreLoaded(UObject* Object)
 {
@@ -881,14 +883,22 @@ static void EnsureDependenciesAreLoaded(UObject* Object)
 
 
 
-UObject* GetDefaultAnimationCompressionSettings(const TCHAR* IniValueName)
+UObject* GetDefaultAnimationCompressionSettings(const TCHAR* IniValueName, bool bIsFatal)
 {
 	FConfigSection* AnimDefaultObjectSettingsSection = GConfig->GetSectionPrivate(TEXT("Animation.DefaultObjectSettings"), false, true, GEngineIni);
 	const FConfigValue* Value = AnimDefaultObjectSettingsSection != nullptr ? AnimDefaultObjectSettingsSection->Find(IniValueName) : nullptr;
 
 	if (Value == nullptr)
 	{
-		UE_LOG(LogAnimationCompression, Fatal, TEXT("Couldn't find default compression setting for '%s' under '[Animation.DefaultObjectSettings]'"), IniValueName);
+		if (bIsFatal)
+		{
+			UE_LOG(LogAnimationCompression, Fatal, TEXT("Couldn't find default compression setting for '%s' under '[Animation.DefaultObjectSettings]'"), IniValueName);
+		}
+		else
+		{
+			UE_LOG(LogAnimationCompression, Warning, TEXT("Couldn't find default compression setting for '%s' under '[Animation.DefaultObjectSettings]'"), IniValueName);
+		}
+
 		return nullptr;
 	}
 
@@ -897,7 +907,16 @@ UObject* GetDefaultAnimationCompressionSettings(const TCHAR* IniValueName)
 
 	if (DefaultCompressionSettings == nullptr)
 	{
-		UE_LOG(LogAnimationCompression, Fatal, TEXT("Couldn't load default compression settings asset with path '%s'"), *CompressionSettingsName);
+		if (bIsFatal)
+		{
+			UE_LOG(LogAnimationCompression, Fatal, TEXT("Couldn't load default compression settings asset with path '%s'"), *CompressionSettingsName);
+		}
+		else
+		{
+			UE_LOG(LogAnimationCompression, Warning, TEXT("Couldn't load default compression settings asset with path '%s'"), *CompressionSettingsName);
+		}
+
+		return nullptr;
 	}
 
 	// Force load the default settings and all its dependencies just in case it hasn't happened yet
@@ -915,6 +934,7 @@ void FAnimationUtils::PreloadCompressionSettings()
 	GetDefaultAnimationBoneCompressionSettings();
 	GetDefaultAnimationRecorderBoneCompressionSettings();
 	GetDefaultAnimationCurveCompressionSettings();
+	GetDefaultVariableFrameStrippingSettings();
 }
 
 #endif
@@ -923,7 +943,12 @@ UAnimBoneCompressionSettings* FAnimationUtils::GetDefaultAnimationBoneCompressio
 {
 	if (DefaultBoneCompressionSettings == nullptr)
 	{
-		DefaultBoneCompressionSettings = Cast<UAnimBoneCompressionSettings>(GetDefaultAnimationCompressionSettings(TEXT("BoneCompressionSettings")));
+		DefaultBoneCompressionSettings = Cast<UAnimBoneCompressionSettings>(GetDefaultAnimationCompressionSettings(TEXT("BoneCompressionSettings"), false));
+
+		if (DefaultBoneCompressionSettings == nullptr)
+		{
+			DefaultBoneCompressionSettings = Cast<UAnimBoneCompressionSettings>(GetDefaultAnimationCompressionSettings(TEXT("BoneCompressionSettingsFallback"), true));
+		}
 	}
 
 	return DefaultBoneCompressionSettings;
@@ -933,7 +958,7 @@ UAnimBoneCompressionSettings* FAnimationUtils::GetDefaultAnimationRecorderBoneCo
 {
 	if (DefaultRecorderBoneCompressionSettings == nullptr)
 	{
-		DefaultRecorderBoneCompressionSettings = Cast<UAnimBoneCompressionSettings>(GetDefaultAnimationCompressionSettings(TEXT("AnimationRecorderBoneCompressionSettings")));
+		DefaultRecorderBoneCompressionSettings = Cast<UAnimBoneCompressionSettings>(GetDefaultAnimationCompressionSettings(TEXT("AnimationRecorderBoneCompressionSettings"), true));
 	}
 
 	return DefaultRecorderBoneCompressionSettings;
@@ -943,10 +968,20 @@ UAnimCurveCompressionSettings* FAnimationUtils::GetDefaultAnimationCurveCompress
 {
 	if (DefaultCurveCompressionSettings == nullptr)
 	{
-		DefaultCurveCompressionSettings = Cast<UAnimCurveCompressionSettings>(GetDefaultAnimationCompressionSettings(TEXT("CurveCompressionSettings")));
+		DefaultCurveCompressionSettings = Cast<UAnimCurveCompressionSettings>(GetDefaultAnimationCompressionSettings(TEXT("CurveCompressionSettings"), true));
 	}
 
 	return DefaultCurveCompressionSettings;
+}
+
+UVariableFrameStrippingSettings* FAnimationUtils::GetDefaultVariableFrameStrippingSettings()
+{
+	if (DefaultVariableFrameStrippingSettings == nullptr)
+	{
+		DefaultVariableFrameStrippingSettings = Cast<UVariableFrameStrippingSettings>(GetDefaultAnimationCompressionSettings(TEXT("VariableFrameStrippingSettings"), true));
+	}
+
+	return DefaultVariableFrameStrippingSettings;
 }
 
 void FAnimationUtils::EnsureAnimSequenceLoaded(UAnimSequence& AnimSeq)
@@ -956,6 +991,7 @@ void FAnimationUtils::EnsureAnimSequenceLoaded(UAnimSequence& AnimSeq)
 	EnsureDependenciesAreLoaded(AnimSeq.BoneCompressionSettings);
 	EnsureDependenciesAreLoaded(AnimSeq.CurveCompressionSettings);
 	EnsureDependenciesAreLoaded(AnimSeq.RefPoseSeq);
+	EnsureDependenciesAreLoaded(AnimSeq.VariableFrameStrippingSettings);
 }
 
 void FAnimationUtils::ExtractTransformForFrameFromTrackSafe(const FRawAnimSequenceTrack& RawTrack, int32 Frame, FTransform& OutAtom)

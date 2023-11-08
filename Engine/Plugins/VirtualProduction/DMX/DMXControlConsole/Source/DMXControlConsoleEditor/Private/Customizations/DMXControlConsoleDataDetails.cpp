@@ -2,15 +2,15 @@
 
 #include "DMXControlConsoleDataDetails.h"
 
-#include "DMXControlConsoleData.h"
-#include "DMXControlConsoleEditorManager.h"
-#include "Widgets/SDMXControlConsoleEditorPortSelector.h"
-
 #include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
+#include "DMXControlConsoleData.h"
+#include "Editor.h"
 #include "IPropertyUtilities.h"
 #include "PropertyHandle.h"
+#include "Widgets/SDMXControlConsoleEditorLayoutPicker.h"
+#include "Widgets/Text/STextBlock.h"
 
 
 #define LOCTEXT_NAMESPACE "DMXControlConsoleDataDetails"
@@ -18,32 +18,23 @@
 void FDMXControlConsoleDataDetails::CustomizeDetails(IDetailLayoutBuilder& InDetailLayout)
 {
 	PropertyUtilities = InDetailLayout.GetPropertyUtilities();
-
-	IDetailCategoryBuilder& ControlConsoleCategory = InDetailLayout.EditCategory("DMX Control Console", FText::GetEmpty());
-	const TSharedPtr<IPropertyHandle> FaderGroupRowsHandle = InDetailLayout.GetProperty(UDMXControlConsoleData::GetFaderGroupRowsPropertyName());
-	InDetailLayout.HideProperty(FaderGroupRowsHandle);
 	
 	const TSharedPtr<IPropertyHandle> DMXLibraryHandle = InDetailLayout.GetProperty(UDMXControlConsoleData::GetDMXLibraryPropertyName());
-	InDetailLayout.HideProperty(DMXLibraryHandle);
-	ControlConsoleCategory.AddProperty(DMXLibraryHandle);
-	DMXLibraryHandle->SetOnPropertyValueChanged(FSimpleDelegate::CreateSP(this, &FDMXControlConsoleDataDetails::ForceRefresh));
-	DMXLibraryHandle->SetOnChildPropertyValueChanged(FSimpleDelegate::CreateSP(this, &FDMXControlConsoleDataDetails::ForceRefresh));
+	InDetailLayout.AddPropertyToCategory(DMXLibraryHandle);
 
-	GeneratePortSelectorRow(InDetailLayout);
-}
-
-void FDMXControlConsoleDataDetails::GeneratePortSelectorRow(IDetailLayoutBuilder& InDetailLayout)
-{
+	// Layout Mode selection section
 	IDetailCategoryBuilder& ControlConsoleCategory = InDetailLayout.EditCategory("DMX Control Console", FText::GetEmpty());
-
 	ControlConsoleCategory.AddCustomRow(FText::GetEmpty())
-		.WholeRowContent()
+		.NameContent()
 		[
-			SAssignNew(PortSelector, SDMXControlConsoleEditorPortSelector)
-			.OnPortsSelected(this, &FDMXControlConsoleDataDetails::OnSelectedPortsChanged)
+			SNew(STextBlock)
+			.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+			.Text(LOCTEXT("LayoutLabel", "Layout"))
+		]
+		.ValueContent()
+		[
+			SNew(SDMXControlConsoleEditorLayoutPicker)
 		];
-
-	OnSelectedPortsChanged();
 }
 
 void FDMXControlConsoleDataDetails::ForceRefresh() const
@@ -54,23 +45,6 @@ void FDMXControlConsoleDataDetails::ForceRefresh() const
 	}
 	
 	PropertyUtilities->ForceRefresh();
-}
-
-void FDMXControlConsoleDataDetails::OnSelectedPortsChanged()
-{
-	UDMXControlConsoleData* ConsoleData = FDMXControlConsoleEditorManager::Get().GetEditorConsoleData();
-	if (!ConsoleData)
-	{
-		return;
-	}
-
-	if (!PortSelector.IsValid())
-	{
-		return;
-	}
-
-	const TArray<FDMXOutputPortSharedRef> SelectedOutputPorts = PortSelector->GetSelectedOutputPorts();
-	ConsoleData->UpdateOutputPorts(SelectedOutputPorts);
 }
 
 #undef LOCTEXT_NAMESPACE

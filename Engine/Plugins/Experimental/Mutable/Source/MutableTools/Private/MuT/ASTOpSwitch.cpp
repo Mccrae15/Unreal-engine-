@@ -75,6 +75,7 @@ namespace mu
 		case OP_TYPE::ME_SWITCH:
 		case OP_TYPE::LA_SWITCH:
 		case OP_TYPE::IN_SWITCH:
+		case OP_TYPE::ED_SWITCH:
 			break;
 		default:
 			// Unexpected type
@@ -168,7 +169,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void ASTOpSwitch::Link(FProgram& program, const FLinkerOptions*)
+	void ASTOpSwitch::Link(FProgram& program, FLinkerOptions*)
 	{
 		// Already linked?
 		if (!linkedAddress)
@@ -411,7 +412,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	mu::Ptr<ASTOp> ASTOpSwitch::OptimiseSemantic(const FModelOptimizationOptions&) const
+	mu::Ptr<ASTOp> ASTOpSwitch::OptimiseSemantic(const FModelOptimizationOptions&, int32 Pass) const
 	{
 		// Constant condition?
 		if (variable->GetOpType() == OP_TYPE::NU_CONSTANT)

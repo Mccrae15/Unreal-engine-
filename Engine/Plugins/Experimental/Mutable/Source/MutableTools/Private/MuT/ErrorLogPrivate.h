@@ -22,49 +22,34 @@ namespace mu
 		{
 		}
 
-        struct DATA
+        struct FErrorData
         {
             TArray< float > m_unassignedUVs;
         };
 
-		struct MSG
+		struct FMessage
 		{
-			MSG()
-			{
-                m_type = ELMT_NONE;
-				m_context = 0;
-			}
-
-			ErrorLogMessageType m_type;
+			ErrorLogMessageType m_type = ELMT_NONE;
+			ErrorLogMessageSpamBin m_spam = ELMSB_ALL;
 			FString m_text;
-            std::shared_ptr< DATA > m_data;
-			const void* m_context;
+            TSharedPtr<FErrorData> m_data;
+			const void* m_context = nullptr;
 		};
 
-		TArray< MSG > m_messages;
+		TArray<FMessage> m_messages;
 
 
 		//-----------------------------------------------------------------------------------------
 
 		//!
-		void Add(const FString& Message, ErrorLogMessageType Type, const void* Context);
-
-		//!
-		void Add(const char* strMessage, ErrorLogMessageType type, const void* context);
+		void Add(const FString& Message, ErrorLogMessageType Type, const void* Context, ErrorLogMessageSpamBin SpamBin = ELMSB_ALL);
 
         //!
-        void Add( const char* strMessage, const ErrorLogMessageAttachedDataView& data, 
-                  ErrorLogMessageType type, const void* context );
+        void Add(const FString& Message, const ErrorLogMessageAttachedDataView& Data, ErrorLogMessageType Type, const void* Context, ErrorLogMessageSpamBin SpamBin = ELMSB_ALL);
 	};
 
 
-	//---------------------------------------------------------------------------------------------
-	class Model;
-	typedef Ptr<Model> ModelPtr;
-	typedef Ptr<const Model> ModelPtrConst;
-
     extern const TCHAR* GetOpName( OP_TYPE type );
-    extern FString GetOpDesc( const FProgram& program, OP::ADDRESS at );
 
 }
 

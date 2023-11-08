@@ -4,7 +4,6 @@
 #include "ChaosClothAsset/ClothEditorMode.h"
 #include "ChaosClothAsset/ClothEditorCommands.h"
 #include "ChaosClothAsset/ClothEditorStyle.h"
-#include "ChaosClothAsset/ClothDataflowNodes.h"
 #include "ContentBrowserMenuContexts.h"
 #include "EditorModeRegistry.h"
 #include "Selection.h"
@@ -15,8 +14,8 @@
 
 #define LOCTEXT_NAMESPACE "FChaosClothAssetEditorModule"
 
-using namespace UE::Chaos::ClothAsset;
-
+namespace UE::Chaos::ClothAsset
+{
 void FChaosClothAssetEditorModule::StartupModule()
 {
 	FChaosClothAssetEditorStyle::Get(); // Causes the constructor to be called
@@ -26,8 +25,6 @@ void FChaosClothAssetEditorModule::StartupModule()
 	// Register asset actions
 	FAssetToolsModule& AssetToolsModule = FAssetToolsModule::GetModule();
 	IAssetTools& AssetTools = AssetToolsModule.Get();
-
-	Dataflow::RegisterClothDataflowNodes();
 
 	// TODO: Register details view customizations
 }
@@ -40,7 +37,8 @@ void FChaosClothAssetEditorModule::ShutdownModule()
 
 	// TODO: Unregister details view customizations
 }
+} // namespace UE::Chaos::ClothAsset
 
 #undef LOCTEXT_NAMESPACE
 	
-IMPLEMENT_MODULE(FChaosClothAssetEditorModule, ChaosClothAssetEditor)
+IMPLEMENT_MODULE(UE::Chaos::ClothAsset::FChaosClothAssetEditorModule, ChaosClothAssetEditor)

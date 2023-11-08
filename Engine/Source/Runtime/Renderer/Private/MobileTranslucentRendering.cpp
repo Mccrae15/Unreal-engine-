@@ -4,7 +4,7 @@
 #include "RenderCore.h"
 #include "TranslucentRendering.h"
 
-void FMobileSceneRenderer::RenderTranslucency(FRHICommandListImmediate& RHICmdList, const FViewInfo& View)
+void FMobileSceneRenderer::RenderTranslucency(FRHICommandList& RHICmdList, const FViewInfo& View)
 {	
 	const bool bShouldRenderTranslucency = ShouldRenderTranslucency(StandardTranslucencyPass) && ViewFamily.EngineShowFlags.Translucency;
 	if (bShouldRenderTranslucency)
@@ -14,7 +14,10 @@ void FMobileSceneRenderer::RenderTranslucency(FRHICommandListImmediate& RHICmdLi
 		SCOPED_DRAW_EVENT(RHICmdList, Translucency);
 		SCOPED_GPU_STAT(RHICmdList, Translucency);
 
-		RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
+		// BEGIN META SECTION - Multi-View Per View Viewports / Render Areas
+		SetViewport(RHICmdList, View);
+		// END META SECTION - Multi-View Per View Viewports / Render Areas
+
 		View.ParallelMeshDrawCommandPasses[StandardTranslucencyMeshPass].DispatchDraw(nullptr, RHICmdList, &MeshPassInstanceCullingDrawParams[StandardTranslucencyMeshPass]);
 	}
 }

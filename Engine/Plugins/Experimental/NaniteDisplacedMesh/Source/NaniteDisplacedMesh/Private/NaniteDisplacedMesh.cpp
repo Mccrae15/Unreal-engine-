@@ -7,23 +7,25 @@
 #include "Engine/StaticMesh.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
+#include "Rendering/NaniteResources.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NaniteDisplacedMesh)
 
 #if WITH_EDITOR
 #include "DerivedDataCache.h"
 #include "DerivedDataRequestOwner.h"
-#include "RenderUtils.h"
-#include "Serialization/MemoryHasher.h"
-#include "Serialization/MemoryReader.h"
-#include "StaticMeshAttributes.h"
-#include "Serialization/MemoryWriter.h"
-#include "StaticMeshBuilder.h"
 #include "Experimental/Misc/ExecutionResource.h"
 #include "MeshDescriptionHelper.h"
 #include "NaniteBuilder.h"
 #include "NaniteDisplacedMeshAlgo.h"
 #include "NaniteDisplacedMeshCompiler.h"
+#include "RenderUtils.h"
+#include "Serialization/MemoryHasher.h"
+#include "Serialization/MemoryReader.h"
+#include "Serialization/MemoryWriter.h"
+#include "StaticMeshAttributes.h"
+#include "StaticMeshBuilder.h"
+#include "StaticMeshCompiler.h"
 #endif
 
 static bool DoesTargetPlatformSupportNanite(const ITargetPlatform* TargetPlatform)
@@ -90,6 +92,11 @@ public:
 
 	inline void Wait()
 	{
+		if (bIsWaitingOnMeshCompilation)
+		{
+			WaitForDependenciesAndBeginCache();
+		}
+
 		if (BuildTask != nullptr)
 		{
 			BuildTask->EnsureCompletion();
@@ -98,8 +105,14 @@ public:
 		Owner.Wait();
 	}
 
-	inline bool Poll() const
+	inline bool Poll()
 	{
+		if (bIsWaitingOnMeshCompilation)
+		{
+			BeginCacheIfDependenciesAreFree();
+			return false;
+		}
+
 		if (BuildTask && !BuildTask->IsDone())
 		{
 			return false;
@@ -109,7 +122,10 @@ public:
 	}
 
 	inline void Cancel()
-	{ 
+	{
+		// Cancel the waiting on the static mesh build
+		bIsWaitingOnMeshCompilation = false;
+
 		if (BuildTask)
 		{
 			BuildTask->Cancel();
@@ -121,6 +137,11 @@ public:
 	void Reschedule(FQueuedThreadPool* InThreadPool, EQueuedWorkPriority InPriority);
 
 private:
+	bool ShouldWaitForBaseMeshCompilation() const;
+
+	void BeginCacheIfDependenciesAreFree();
+	void WaitForDependenciesAndBeginCache();
+
 	void BeginCache(const FIoHash& KeyHash);
 	void EndCache(UE::DerivedData::FCacheGetValueResponse&& Response);
 	bool BuildData(const UE::DerivedData::FSharedString& Name, const UE::DerivedData::FCacheKey& Key);
@@ -136,6 +157,9 @@ private:
 
 	UE::DerivedData::FRequestOwner Owner;
 	TRefCountPtr<IExecutionResource> ExecutionResource;
+
+	bool bIsWaitingOnMeshCompilation;
+	FIoHash KeyHash;
 };
 
 FNaniteBuildAsyncCacheTask::FNaniteBuildAsyncCacheTask(
@@ -151,8 +175,19 @@ FNaniteBuildAsyncCacheTask::FNaniteBuildAsyncCacheTask(
 	// to avoid holding on to memory for a long time. We use the highest priority for all
 	// subsequent task.
 	, Owner(UE::DerivedData::EPriority::Highest)
+	, bIsWaitingOnMeshCompilation(ShouldWaitForBaseMeshCompilation())
+	, KeyHash(InKeyHash)
 {
-	BeginCache(InKeyHash);
+	/**
+	 * Unfortunately our async builds are not made to handle the assets that use data from other assets
+	 * This will delay the start of the actual cache until the build of the base static is done
+	 * This will fix a race condition with the static mesh build without blocking the game thread by default.
+	 * Note: This is not a perfect solution since it also delay the DDC data pull.
+	 */
+	if (!bIsWaitingOnMeshCompilation)
+	{
+		BeginCache(InKeyHash);
+	}
 }
 
 void FNaniteDisplacedMeshAsyncBuildWorker::DoWork()
@@ -170,7 +205,60 @@ void FNaniteDisplacedMeshAsyncBuildWorker::DoWork()
 	}
 }
 
-void FNaniteBuildAsyncCacheTask::BeginCache(const FIoHash& KeyHash)
+bool FNaniteBuildAsyncCacheTask::ShouldWaitForBaseMeshCompilation() const 
+{
+	if (UNaniteDisplacedMesh* DisplacedMesh = WeakDisplacedMesh.Get())
+	{
+		// If the mesh is still waiting for a post load call, let it build it stuff first to avoid blocking the Game Thread
+		if (DisplacedMesh->Parameters.BaseMesh->HasAnyFlags(RF_NeedPostLoad))
+		{
+			return true;
+		}
+
+		return DisplacedMesh->Parameters.BaseMesh->IsCompiling();
+	}
+
+	return false;
+}
+
+void FNaniteBuildAsyncCacheTask::BeginCacheIfDependenciesAreFree()
+{
+	if (UNaniteDisplacedMesh* DisplacedMesh = WeakDisplacedMesh.Get())
+	{
+		if (!ShouldWaitForBaseMeshCompilation())
+		{
+			bIsWaitingOnMeshCompilation = false;
+			BeginCache(KeyHash);
+		}
+	}
+	else
+	{
+		bIsWaitingOnMeshCompilation = false;
+	}
+}
+
+void FNaniteBuildAsyncCacheTask::WaitForDependenciesAndBeginCache()
+{
+	if (UNaniteDisplacedMesh* DisplacedMesh = WeakDisplacedMesh.Get())
+	{
+		if (DisplacedMesh->Parameters.BaseMesh->HasAnyFlags(RF_NeedPostLoad))
+		{
+			DisplacedMesh->Parameters.BaseMesh->ConditionalPostLoad();
+		}
+
+		FStaticMeshCompilingManager::Get().FinishCompilation({DisplacedMesh->Parameters.BaseMesh});
+
+		bIsWaitingOnMeshCompilation = false;
+		BeginCache(KeyHash);
+	}
+	else
+	{
+		bIsWaitingOnMeshCompilation = false;
+	}
+
+}
+
+void FNaniteBuildAsyncCacheTask::BeginCache(const FIoHash& InKeyHash)
 {
 	using namespace UE::DerivedData;
 
@@ -181,11 +269,11 @@ void FNaniteBuildAsyncCacheTask::BeginCache(const FIoHash& KeyHash)
 		EQueuedWorkPriority BasePriority = FNaniteDisplacedMeshCompilingManager::Get().GetBasePriority(DisplacedMesh);
 
 		// TODO DC Use the default for now but provide a better estimate for memory usage of displacement build.
-		int64 RequiredMemory = -1;
+		int64 RequiredMemory = -1; // @todo RequiredMemory
 
 		check(BuildTask == nullptr);
-		BuildTask = MakeUnique<FNaniteDisplacedMeshAsyncBuildTask>(this, KeyHash);
-		BuildTask->StartBackgroundTask(ThreadPool, BasePriority, EQueuedWorkFlags::DoNotRunInsideBusyWait, RequiredMemory);
+		BuildTask = MakeUnique<FNaniteDisplacedMeshAsyncBuildTask>(this, InKeyHash);
+		BuildTask->StartBackgroundTask(ThreadPool, BasePriority, EQueuedWorkFlags::DoNotRunInsideBusyWait, RequiredMemory, TEXT("NaniteDisplacedMesh"));
 	}
 }
 
@@ -204,7 +292,7 @@ void FNaniteBuildAsyncCacheTask::EndCache(UE::DerivedData::FCacheGetValueRespons
 			{
 				FSharedBuffer RecordData = Value.GetData().Decompress();
 				FMemoryReaderView Ar(RecordData, /*bIsPersistent*/ true);
-				Data->Resources.Serialize(Ar, DisplacedMesh, /*bCooked*/ false);
+				Data->ResourcesPtr->Serialize(Ar, DisplacedMesh, /*bCooked*/ false);
 				Ar << Data->MeshSections;
 
 				// The initialization of the resources is done by FNaniteDisplacedMeshCompilingManager to avoid race conditions
@@ -224,9 +312,11 @@ void FNaniteBuildAsyncCacheTask::EndCache(UE::DerivedData::FCacheGetValueRespons
 			}
 			if (UNaniteDisplacedMesh* DisplacedMesh = WeakDisplacedMesh.Get())
 			{
+				InitNaniteResources(Data->ResourcesPtr);
+
 				TArray64<uint8> RecordData;
 				FMemoryWriter64 Ar(RecordData, /*bIsPersistent*/ true);
-				Data->Resources.Serialize(Ar, DisplacedMesh, /*bCooked*/ false);
+				Data->ResourcesPtr->Serialize(Ar, DisplacedMesh, /*bCooked*/ false);
 				Ar << Data->MeshSections;
 
 				GetCache().PutValue({ {Name, Key, FValue::Compress(MakeSharedBufferFromArray(MoveTemp(RecordData)))} }, Owner);
@@ -262,7 +352,7 @@ bool FNaniteBuildAsyncCacheTask::BuildData(const UE::DerivedData::FSharedString&
 
 	Nanite::IBuilderModule& NaniteBuilderModule = Nanite::IBuilderModule::Get();
 
-	Data->Resources = {};
+	ClearNaniteResources(Data->ResourcesPtr);
 	Data->MeshSections.Empty();
 
 	UStaticMesh* BaseMesh = Parameters.BaseMesh;
@@ -281,28 +371,34 @@ bool FNaniteBuildAsyncCacheTask::BuildData(const UE::DerivedData::FSharedString&
 
 	FStaticMeshSourceModel& SourceModel = GetBaseMeshSourceModel(*BaseMesh);
 	
-	FMeshDescription MeshDescription = *SourceModel.GetOrCacheMeshDescription();
-
-	FMeshBuildSettings& BuildSettings = SourceModel.BuildSettings;
-	FMeshDescriptionHelper MeshDescriptionHelper(&BuildSettings);
-	MeshDescriptionHelper.SetupRenderMeshDescription(BaseMesh, MeshDescription, true, false);
-
-	const FMeshSectionInfoMap BeforeBuildSectionInfoMap = BaseMesh->GetSectionInfoMap();
-	const FMeshSectionInfoMap BeforeBuildOriginalSectionInfoMap = BaseMesh->GetOriginalSectionInfoMap();
+	FMeshDescription MeshDescription; 
+	if (!SourceModel.CloneMeshDescription(MeshDescription))
+	{
+		UE_LOG(LogNaniteDisplacedMesh, Error, TEXT("Cannot find a valid mesh description to build the displaced mesh asset."));
+		return false;
+	}
 
 	// Note: We intentionally ignore BaseMesh->NaniteSettings so we don't couple against a mesh that may
 	// not ever render as Nanite directly. It is expected that anyone using a Nanite displaced mesh asset
 	// will always want Nanite unless the platform, runtime, or "Disallow Nanite" on SMC prevents it.
 	FMeshNaniteSettings NaniteSettings;
 	NaniteSettings.bEnabled = true;
+	NaniteSettings.bExplicitTangents = BaseMesh->NaniteSettings.bExplicitTangents;	// TODO: Expose directly instead of inheriting from base mesh?
 	NaniteSettings.TrimRelativeError = Parameters.RelativeError;
+
+	FMeshBuildSettings& BuildSettings = SourceModel.BuildSettings;
+	FMeshDescriptionHelper MeshDescriptionHelper(&BuildSettings);
+	MeshDescriptionHelper.SetupRenderMeshDescription(BaseMesh, MeshDescription, true, NaniteSettings.bExplicitTangents);
+
+	const FMeshSectionInfoMap BeforeBuildSectionInfoMap = BaseMesh->GetSectionInfoMap();
+	const FMeshSectionInfoMap BeforeBuildOriginalSectionInfoMap = BaseMesh->GetOriginalSectionInfoMap();
 
 	const int32 NumSourceModels = BaseMesh->GetNumSourceModels();
 
 	TArray<FMeshDescription> MeshDescriptions;
 	MeshDescriptions.SetNum(NumSourceModels);
 
-	Nanite::IBuilderModule::FVertexMeshData InputMeshData;
+	Nanite::IBuilderModule::FInputMeshData InputMeshData;
 
 	TArray<int32> RemapVerts;
 	TArray<int32> WedgeMap;
@@ -310,6 +406,8 @@ bool FNaniteBuildAsyncCacheTask::BuildData(const UE::DerivedData::FSharedString&
 	TArray<TArray<uint32>> PerSectionIndices;
 	PerSectionIndices.AddDefaulted(MeshDescription.PolygonGroups().Num());
 	InputMeshData.Sections.Empty(MeshDescription.PolygonGroups().Num());
+
+	FBoxSphereBounds MeshBounds;
 
 	UE::Private::StaticMeshBuilder::BuildVertexBuffer(
 		BaseMesh,
@@ -321,7 +419,9 @@ bool FNaniteBuildAsyncCacheTask::BuildData(const UE::DerivedData::FSharedString&
 		InputMeshData.Vertices,
 		MeshDescriptionHelper.GetOverlappingCorners(),
 		RemapVerts,
-		false
+		MeshBounds,
+		NaniteSettings.bExplicitTangents /* bNeedTangents */,
+		false /* bNeedWedgeMap */
 	);
 
 	if (Owner.IsCanceled())
@@ -330,9 +430,6 @@ bool FNaniteBuildAsyncCacheTask::BuildData(const UE::DerivedData::FSharedString&
 	}
 
 	const uint32 NumTextureCoord = MeshDescription.VertexInstanceAttributes().GetAttributesRef<FVector2f>(MeshAttribute::VertexInstance::TextureCoordinate).GetNumChannels();
-
-	// Make sure to not keep the large WedgeMap from the input mesh around.
-	WedgeMap.Empty();
 
 	// Only the render data and vertex buffers will be used from now on unless we have more than one source models
 	// This will help with memory usage for Nanite Mesh by releasing memory before doing the build
@@ -359,9 +456,8 @@ bool FNaniteBuildAsyncCacheTask::BuildData(const UE::DerivedData::FSharedString&
 		InputMeshData.Sections[SectionIndex].MaterialIndex = BaseMesh->GetSectionInfoMap().Get(0, SectionIndex).MaterialIndex;
 	}
 	
-	TArray< int32 > MaterialIndexes;
 	{
-		MaterialIndexes.Reserve( InputMeshData.TriangleIndices.Num() / 3 );
+		InputMeshData.MaterialIndices.Reserve( InputMeshData.TriangleIndices.Num() / 3 );
 
 		for (FStaticMeshSection& Section : InputMeshData.Sections)
 		{
@@ -371,7 +467,7 @@ bool FNaniteBuildAsyncCacheTask::BuildData(const UE::DerivedData::FSharedString&
 			}
 
 			for( uint32 i = 0; i < Section.NumTriangles; i++ )
-				MaterialIndexes.Add( Section.MaterialIndex );
+				InputMeshData.MaterialIndices.Add( Section.MaterialIndex );
 		}
 	}
 
@@ -381,7 +477,8 @@ bool FNaniteBuildAsyncCacheTask::BuildData(const UE::DerivedData::FSharedString&
 			NumTextureCoord,
 			InputMeshData.Vertices,
 			InputMeshData.TriangleIndices,
-			MaterialIndexes )
+			InputMeshData.MaterialIndices,
+			InputMeshData.VertexBounds)
 		)
 	{
 		UE_LOG(LogNaniteDisplacedMesh, Error, TEXT("Failed to build perform displacement mapping for Nanite displaced mesh asset."));
@@ -393,23 +490,29 @@ bool FNaniteBuildAsyncCacheTask::BuildData(const UE::DerivedData::FSharedString&
 		return false;
 	}
 
-	// Compute mesh bounds after displacement has run
-	// TODO: Do we need this? The base mesh bounds will not exactly match the displaced mesh bounds (but cluster bounds will be correct).
-	//FBoxSphereBounds MeshBounds;
-	//ComputeBoundsFromVertexList(InputMeshData.Vertices, MeshBounds);
+	InputMeshData.TriangleCounts.Add(InputMeshData.TriangleIndices.Num() / 3);
+	InputMeshData.NumTexCoords = NumTextureCoord;
 
-	TArray<uint32> MeshTriangleCounts;
-	MeshTriangleCounts.Add(InputMeshData.TriangleIndices.Num() / 3);
+	auto OnFreeInputMeshData = Nanite::IBuilderModule::FOnFreeInputMeshData::CreateLambda([&InputMeshData](bool bFallbackIsReduced)
+	{
+		if (bFallbackIsReduced)
+		{
+			InputMeshData.Vertices.Empty();
+			InputMeshData.TriangleIndices.Empty();
+		}
+
+		InputMeshData.MaterialIndices.Empty();
+	});
+
+	TArrayView<Nanite::IBuilderModule::FOutputMeshData> OutputLODMeshData;
 
 	// Pass displaced mesh over to Nanite to build the bulk data
 	if (!NaniteBuilderModule.Build(
-			Data->Resources,
-			InputMeshData.Vertices,
-			InputMeshData.TriangleIndices,
-			MaterialIndexes,
-			MeshTriangleCounts,
-			NumTextureCoord,
-			NaniteSettings)
+			*Data->ResourcesPtr.Get(),
+			InputMeshData,
+			OutputLODMeshData,
+			NaniteSettings,
+			OnFreeInputMeshData)
 		)
 	{
 		UE_LOG(LogNaniteDisplacedMesh, Error, TEXT("Failed to build Nanite for displaced mesh asset."));
@@ -457,6 +560,7 @@ UNaniteDisplacedMesh::FOnNaniteDisplacmentMeshDependenciesChanged UNaniteDisplac
 UNaniteDisplacedMesh::UNaniteDisplacedMesh(const FObjectInitializer& Init)
 : Super(Init)
 {
+	ClearNaniteResources(Data.ResourcesPtr);
 }
 
 void UNaniteDisplacedMesh::Serialize(FArchive& Ar)
@@ -474,13 +578,14 @@ void UNaniteDisplacedMesh::Serialize(FArchive& Ar)
 			}
 
 			FNaniteData& CookedData = CacheDerivedData(Ar.CookingTarget());
-			CookedData.Resources.Serialize(Ar, this, /*bCooked*/ true);
+			CookedData.ResourcesPtr->Serialize(Ar, this, /*bCooked*/ true);
 			Ar << CookedData.MeshSections;
 		}
 		else
 	#endif
 		{
-			Data.Resources.Serialize(Ar, this, /*bCooked*/ true);
+			InitNaniteResources(Data.ResourcesPtr);
+			Data.ResourcesPtr->Serialize(Ar, this, /*bCooked*/ true);
 			Ar << Data.MeshSections;
 		}
 	}
@@ -488,10 +593,12 @@ void UNaniteDisplacedMesh::Serialize(FArchive& Ar)
 
 void UNaniteDisplacedMesh::PostLoad()
 {
+	InitNaniteResources(Data.ResourcesPtr);
+
 	if (FApp::CanEverRender())
 	{
 		// Only valid for cooked builds
-		if (Data.Resources.PageStreamingStates.Num() > 0)
+		if (Data.ResourcesPtr->PageStreamingStates.Num() > 0)
 		{
 			InitResources();
 		}
@@ -571,8 +678,7 @@ void UNaniteDisplacedMesh::InitResources()
 
 	if (!bIsInitialized)
 	{
-		Data.Resources.InitResources(this);
-
+		Data.ResourcesPtr->InitResources(this);
 		bIsInitialized = true;
 	}
 }
@@ -584,7 +690,7 @@ void UNaniteDisplacedMesh::ReleaseResources()
 		return;
 	}
 
-	if (Data.Resources.ReleaseResources())
+	if (Data.ResourcesPtr->ReleaseResources())
 	{
 		// Make sure the renderer is done processing the command,
 		// and done using the Nanite resources before we overwrite the data.
@@ -596,7 +702,7 @@ void UNaniteDisplacedMesh::ReleaseResources()
 
 bool UNaniteDisplacedMesh::HasValidNaniteData() const
 {
-	return bIsInitialized && Data.Resources.PageStreamingStates.Num() > 0;
+	return bIsInitialized && Data.ResourcesPtr->PageStreamingStates.Num() > 0;
 }
 
 #if WITH_EDITOR
@@ -675,7 +781,7 @@ FIoHash UNaniteDisplacedMesh::CreateDerivedDataKeyHash(const ITargetPlatform* Ta
 
 	FMemoryHasherBlake3 Writer;
 
-	FGuid DisplacedMeshVersionGuid(0x5E01B289, 0xE19EACCA, 0x883133BE, 0x2B899C10);
+	FGuid DisplacedMeshVersionGuid(0x9725551B, 0xF79443C1, 0x84F3ED2D, 0xD65499BA);
 	Writer << DisplacedMeshVersionGuid;
 
 	FGuid NaniteVersionGuid = FDevSystemGuids::GetSystemGuid(FDevSystemGuids::Get().NANITE_DERIVEDDATA_VER);
@@ -733,7 +839,7 @@ FIoHash UNaniteDisplacedMesh::BeginCacheDerivedData(const ITargetPlatform* Targe
 	// Make sure the GPU is no longer referencing the current Nanite resource data.
 	ReleaseResources();
 	ReleaseResourcesFence.Wait();
-	Data.Resources = {};
+	ClearNaniteResources(Data.ResourcesPtr);
 	Data.MeshSections.Empty();
 
 	NotifyOnRenderingDataChanged();
@@ -749,6 +855,7 @@ FIoHash UNaniteDisplacedMesh::BeginCacheDerivedData(const ITargetPlatform* Targe
 		TargetData = DataByPlatformKeyHash.Emplace(KeyHash, MakeUnique<FNaniteData>()).Get();
 	}
 
+	InitNaniteResources(TargetData->ResourcesPtr);
 	CacheTasksByKeyHash.Emplace(KeyHash, MakePimpl<FNaniteBuildAsyncCacheTask>(KeyHash, TargetData, *this, TargetPlatform));
 
 	// The compiling manager provides throttling, notification manager, etc... for the asset being built.
@@ -842,7 +949,9 @@ FNaniteData& UNaniteDisplacedMesh::CacheDerivedData(const ITargetPlatform* Targe
 {
 	const FIoHash KeyHash = BeginCacheDerivedData(TargetPlatform);
 	EndCacheDerivedData(KeyHash);
-	return DataKeyHash == KeyHash ? Data : *DataByPlatformKeyHash[KeyHash];
+	FNaniteData& NaniteData = (DataKeyHash == KeyHash) ? Data : *DataByPlatformKeyHash[KeyHash];
+	InitNaniteResources(NaniteData.ResourcesPtr);
+	return NaniteData;
 }
 
 #endif // WITH_EDITOR

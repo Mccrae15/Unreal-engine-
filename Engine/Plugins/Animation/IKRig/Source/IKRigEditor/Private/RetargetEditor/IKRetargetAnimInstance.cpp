@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RetargetEditor/IKRetargetAnimInstance.h"
+#include "Animation/AnimStats.h"
 #include "Engine/SkeletalMesh.h"
 #include "RetargetEditor/IKRetargetAnimInstanceProxy.h"
 #include "RetargetEditor/IKRetargeterController.h"
@@ -52,6 +53,7 @@ void FAnimNode_PreviewRetargetPose::CacheBones_AnyThread(const FAnimationCacheBo
 void FAnimNode_PreviewRetargetPose::Evaluate_AnyThread(FPoseContext& Output)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Evaluate_AnyThread)
+	ANIM_MT_SCOPE_CYCLE_COUNTER_VERBOSE(PreviewRetargetPose, !IsInGameThread());
 
 	Output.Pose.ResetToRefPose();
 	

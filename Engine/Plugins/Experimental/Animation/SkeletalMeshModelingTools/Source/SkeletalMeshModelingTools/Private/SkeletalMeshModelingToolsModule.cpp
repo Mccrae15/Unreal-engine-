@@ -12,9 +12,13 @@
 #include "Engine/SkeletalMesh.h"
 #include "ISkeletalMeshEditor.h"
 #include "ISkeletalMeshEditorModule.h"
+#include "ModelingToolsEditorModeStyle.h"
+#include "ModelingToolsManagerActions.h"
 #include "Modules/ModuleManager.h"
 #include "SkeletalMeshToolMenuContext.h"
 #include "ToolMenus.h"
+#include "DetailCustomization/SkeletonEditingToolPropertyCustomizations.h"
+#include "SkeletalMesh/SkeletonEditingTool.h"
 #include "Styling/SlateIconFinder.h"
 #include "WorkflowOrientedApp/ApplicationMode.h"
 
@@ -36,25 +40,43 @@ void FSkeletalMeshModelingToolsModule::StartupModule()
 		FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FSkeletalMeshModelingToolsModule::RegisterMenusAndToolbars));
 
 	ISkeletalMeshEditorModule& SkelMeshEditorModule = FModuleManager::Get().LoadModuleChecked<ISkeletalMeshEditorModule>("SkeletalMeshEditor");
+	// register toolbar extender with skeletal mesh editor
 	TArray<ISkeletalMeshEditorModule::FSkeletalMeshEditorToolbarExtender>& ToolbarExtenders = SkelMeshEditorModule.GetAllSkeletalMeshEditorToolbarExtenders();
-
 	ToolbarExtenders.Add(ISkeletalMeshEditorModule::FSkeletalMeshEditorToolbarExtender::CreateRaw(this, &FSkeletalMeshModelingToolsModule::ExtendSkelMeshEditorToolbar));
 	SkelMeshEditorExtenderHandle = ToolbarExtenders.Last().GetHandle();
+	// register post-init callback with skeletal mesh editor
+	TArray<ISkeletalMeshEditorModule::FOnSkeletalMeshEditorInitialized>& PostInitDelegates = SkelMeshEditorModule.GetPostEditorInitDelegates();
+	PostInitDelegates.Add(ISkeletalMeshEditorModule::FOnSkeletalMeshEditorInitialized::CreateRaw(this, &FSkeletalMeshModelingToolsModule::OnToggleEditingToolsMode));
+	SkelMeshEditorPostInitHandle = PostInitDelegates.Last().GetHandle();
+
+	FCoreDelegates::OnPostEngineInit.AddRaw(this, &FSkeletalMeshModelingToolsModule::OnPostEngineInit);
+
+	RegisterPropertyCustomizations();
 }
 
 void FSkeletalMeshModelingToolsModule::ShutdownModule()
 {
+	UnregisterPropertyCustomizations();
+	
 	if (ISkeletalMeshEditorModule* SkelMeshEditorModule = FModuleManager::GetModulePtr<ISkeletalMeshEditorModule>("SkeletalMeshEditor"))
 	{
+		// un-register toolbar extender delegates
 		TArray<ISkeletalMeshEditorModule::FSkeletalMeshEditorToolbarExtender>& Extenders = SkelMeshEditorModule->GetAllSkeletalMeshEditorToolbarExtenders();
+		Extenders.RemoveAll([this](const ISkeletalMeshEditorModule::FSkeletalMeshEditorToolbarExtender& InDelegate) { return InDelegate.GetHandle() == SkelMeshEditorExtenderHandle; });
 
-		Extenders.RemoveAll([=](const ISkeletalMeshEditorModule::FSkeletalMeshEditorToolbarExtender& InDelegate) { return InDelegate.GetHandle() == SkelMeshEditorExtenderHandle; });
+		// un-register post-init delegates
+		TArray<ISkeletalMeshEditorModule::FOnSkeletalMeshEditorInitialized>& PostInitDelegates = SkelMeshEditorModule->GetPostEditorInitDelegates();
+		PostInitDelegates.RemoveAll([this](const ISkeletalMeshEditorModule::FOnSkeletalMeshEditorInitialized& InDelegate) { return InDelegate.GetHandle() == SkelMeshEditorPostInitHandle; });
 	}
 
 	UToolMenus::UnregisterOwner(this);
 
 	FSkeletalMeshModelingToolsCommands::Unregister();
 	FSkeletalMeshModelingToolsStyle::Unregister();
+	FModelingToolsManagerCommands::Unregister();
+	
+	FCoreDelegates::OnPostEngineInit.RemoveAll(this);
+	FSkeletalMeshModelingToolsActionCommands::UnregisterAllToolActions();
 }
 
 
@@ -70,9 +92,9 @@ void FSkeletalMeshModelingToolsModule::RegisterMenusAndToolbars()
 			if (Context && Context->SkeletalMeshEditor.IsValid())
 			{
 				InSection.AddEntry(FToolMenuEntry::InitToolBarButton(
-				    FSkeletalMeshModelingToolsCommands::Get().ToggleModelingToolsMode,
-					LOCTEXT("SkeletalMeshEditorModelingMode", "Modeling Tools"),
-				    LOCTEXT("SkeletalMeshEditorModelingModeTooltip", "Opens the Modeling Tools palette that provides selected mesh modification tools."),
+				    FSkeletalMeshModelingToolsCommands::Get().ToggleEditingToolsMode,
+					LOCTEXT("SkeletalMeshEditorModelingMode", "Editing Tools"),
+				    LOCTEXT("SkeletalMeshEditorModelingModeTooltip", "Opens the Editing Tools palette that provides selected skeletal mesh modification tools, including skeleton, skin weights and attributes editing."),
 				    FSlateIcon("ModelingToolsStyle", "LevelEditor.ModelingToolsMode")));
 			}
 		}));
@@ -91,7 +113,7 @@ void FSkeletalMeshModelingToolsModule::RegisterMenusAndToolbars()
 			{
 				if (const UContentBrowserAssetContextMenuContext* Context = InMenuContext.FindContext<UContentBrowserAssetContextMenuContext>())
 				{
-					ConvertStaticMeshToSkeletalMeshInteractive(
+					ConvertStaticMeshAssetsToSkeletalMeshesInteractive(
 						Context->GetSelectedAssetsOfType(UStaticMesh::StaticClass()));
 				}
 			});
@@ -107,39 +129,100 @@ TSharedRef<FExtender> FSkeletalMeshModelingToolsModule::ExtendSkelMeshEditorTool
 	// Add toolbar extender
 	TSharedPtr<FExtender> ToolbarExtender = MakeShareable(new FExtender);
 
-	TWeakPtr<ISkeletalMeshEditor> Ptr(InSkeletalMeshEditor);
+	TWeakPtr<ISkeletalMeshEditor> EditorPtr(InSkeletalMeshEditor);
 
-	InCommandList->MapAction(FSkeletalMeshModelingToolsCommands::Get().ToggleModelingToolsMode,
-	    FExecuteAction::CreateRaw(this, &FSkeletalMeshModelingToolsModule::OnToggleModelingToolsMode, Ptr),
+	InCommandList->MapAction(FSkeletalMeshModelingToolsCommands::Get().ToggleEditingToolsMode,
+	    FExecuteAction::CreateRaw(this, &FSkeletalMeshModelingToolsModule::OnToggleEditingToolsMode, EditorPtr),
 	    FCanExecuteAction(),
-	    FIsActionChecked::CreateRaw(this, &FSkeletalMeshModelingToolsModule::IsModelingToolModeActive, Ptr));
+	    FIsActionChecked::CreateRaw(this, &FSkeletalMeshModelingToolsModule::IsEditingToolModeActive, EditorPtr));
 
 	return ToolbarExtender.ToSharedRef();
 }
 
 
-bool FSkeletalMeshModelingToolsModule::IsModelingToolModeActive(TWeakPtr<ISkeletalMeshEditor> InSkeletalMeshEditor) const
+bool FSkeletalMeshModelingToolsModule::IsEditingToolModeActive(TWeakPtr<ISkeletalMeshEditor> InSkeletalMeshEditor) const
 {
 	TSharedPtr<ISkeletalMeshEditor> SkeletalMeshEditor = InSkeletalMeshEditor.Pin();
 	return SkeletalMeshEditor.IsValid() && SkeletalMeshEditor->GetEditorModeManager().IsModeActive(USkeletalMeshModelingToolsEditorMode::Id);
 }
 
 
-void FSkeletalMeshModelingToolsModule::OnToggleModelingToolsMode(TWeakPtr<ISkeletalMeshEditor> InSkeletalMeshEditor)
+void FSkeletalMeshModelingToolsModule::OnToggleEditingToolsMode(TWeakPtr<ISkeletalMeshEditor> InSkeletalMeshEditor)
 {
 	TSharedPtr<ISkeletalMeshEditor> SkeletalMeshEditor = InSkeletalMeshEditor.Pin();
 	if (SkeletalMeshEditor.IsValid())
 	{
-		if (!IsModelingToolModeActive(InSkeletalMeshEditor))
+		FEditorModeTools& EditorModeManager = SkeletalMeshEditor->GetEditorModeManager();
+		if (!IsEditingToolModeActive(InSkeletalMeshEditor))
 		{
-			SkeletalMeshEditor->GetEditorModeManager().ActivateMode(USkeletalMeshModelingToolsEditorMode::Id, true);
+			EditorModeManager.ActivateMode(USkeletalMeshModelingToolsEditorMode::Id, true);
+
+			// bind notifications to skeletal mesh modeling editor mode
+			UEdMode* ActiveMode = EditorModeManager.GetActiveScriptableMode(USkeletalMeshModelingToolsEditorMode::Id);
+			if (USkeletalMeshModelingToolsEditorMode* SkeletalMeshMode = CastChecked<USkeletalMeshModelingToolsEditorMode>(ActiveMode))
+			{
+				SkeletalMeshMode->SetEditorBinding(SkeletalMeshEditor);
+			}
 		}
 		else
 		{
-			SkeletalMeshEditor->GetEditorModeManager().ActivateDefaultMode();
+			EditorModeManager.ActivateDefaultMode();
 		}
 	}
 }
 
+void FSkeletalMeshModelingToolsModule::OnPostEngineInit()
+{
+	FSkeletalMeshModelingToolsActionCommands::RegisterAllToolActions();
+	FModelingToolsEditorModeStyle::Initialize();
+	FModelingToolsManagerCommands::Register();
+}
+
+void FSkeletalMeshModelingToolsModule::RegisterPropertyCustomizations()
+{
+	FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+
+	auto RegisterPropertyCustomization = [&](FName InStructName, auto InCustomizationFactory)
+	{
+		PropertyModule.RegisterCustomPropertyTypeLayout(
+			InStructName, 
+			FOnGetPropertyTypeCustomizationInstance::CreateStatic(InCustomizationFactory)
+			);
+		CustomizedProperties.Add(InStructName);
+	};
+
+	auto RegisterDetailCustomization = [&](FName InStructName, auto InCustomizationFactory)
+	{
+		PropertyModule.RegisterCustomClassLayout(
+			InStructName,
+			FOnGetDetailCustomizationInstance::CreateStatic(InCustomizationFactory)
+		);
+		CustomizedClasses.Add(InStructName);
+	};
+
+	RegisterDetailCustomization(USkeletonEditingTool::StaticClass()->GetFName(), &FSkeletonEditingToolDetailCustomization::MakeInstance);
+	RegisterDetailCustomization(USkeletonEditingProperties::StaticClass()->GetFName(), &FSkeletonEditingPropertiesDetailCustomization::MakeInstance);
+	RegisterDetailCustomization(UMirroringProperties::StaticClass()->GetFName(), &FMirroringPropertiesDetailCustomization::MakeInstance);
+	RegisterDetailCustomization(UOrientingProperties::StaticClass()->GetFName(), &FOrientingPropertiesDetailCustomization::MakeInstance);
+	RegisterDetailCustomization(UProjectionProperties::StaticClass()->GetFName(), &FProjectionPropertiesDetailCustomization::MakeInstance);
+
+	PropertyModule.NotifyCustomizationModuleChanged();
+}
+
+void FSkeletalMeshModelingToolsModule::UnregisterPropertyCustomizations()
+{
+	if (FPropertyEditorModule* PropertyModule = FModuleManager::GetModulePtr<FPropertyEditorModule>("PropertyEditor"))
+	{
+		for (const FName& PropertyName: CustomizedProperties)
+		{
+			PropertyModule->UnregisterCustomPropertyTypeLayout(PropertyName);
+		}
+		for (const FName& ClassName : CustomizedClasses)
+		{
+			PropertyModule->UnregisterCustomClassLayout(ClassName);
+		}
+		PropertyModule->NotifyCustomizationModuleChanged();
+	}
+}
 
 #undef LOCTEXT_NAMESPACE

@@ -19,17 +19,6 @@ FActorInstanceHandle::FActorInstanceHandle(AActor* InActor)
 	, InstanceIndex(INDEX_NONE)
 	, InstanceUID(0)
 {
-	if (InActor)
-	{
-#if WITH_EDITOR
-		// use the first data layer the actor is in if it's in multiple layers
-		TArray<const UDataLayerInstance*> DataLayerInstances = InActor->GetDataLayerInstances();
-		const UDataLayerInstance* DataLayerInstance = DataLayerInstances.Num() > 0 ? DataLayerInstances[0] : nullptr;
-#else
-		const UDataLayerInstance* DataLayerInstance = nullptr;
-#endif // WITH_EDITOR
-		Manager = FLightWeightInstanceSubsystem::Get().FindLightWeightInstanceManager(InActor->StaticClass(), DataLayerInstance);
-	}
 }
 
 FActorInstanceHandle::FActorInstanceHandle(ALightWeightInstanceManager* InManager, int32 InInstanceIndex)
@@ -41,10 +30,7 @@ FActorInstanceHandle::FActorInstanceHandle(ALightWeightInstanceManager* InManage
 	if (Manager.IsValid())
 	{
 		InstanceIndex = Manager->ConvertCollisionIndexToLightWeightIndex(InInstanceIndex);
-		if (AActor* const* FoundActor = Manager->Actors.Find(InstanceIndex))
-		{
-			Actor = *FoundActor;
-		}
+		Actor = Manager->FindActorForInstanceIndex(InstanceIndex);
 
 		UWorld* World = Manager->GetWorld();
 		if (ensure(World))
@@ -70,21 +56,10 @@ bool FActorInstanceHandle::IsValid() const
 
 bool FActorInstanceHandle::DoesRepresentClass(const UClass* OtherClass) const
 {
-	if (OtherClass == nullptr)
+	if (const UClass* RepresentedClass = GetRepresentedClass())
 	{
-		return false;
+		return RepresentedClass->IsChildOf(OtherClass);
 	}
-
-	if (IsActorValid())
-	{
-		return Actor->IsA(OtherClass);
-	}
-
-	if (Manager.IsValid())
-	{
-		return Manager->DoesRepresentClass(OtherClass);
-	}
-
 	return false;
 }
 
@@ -117,7 +92,7 @@ FVector FActorInstanceHandle::GetLocation() const
 
 	if (Manager.IsValid())
 	{
-		Manager->GetLocation(*this);
+		return Manager->GetLocation(*this);
 	}
 
 	return FVector();
@@ -132,7 +107,7 @@ FRotator FActorInstanceHandle::GetRotation() const
 
 	if (Manager.IsValid())
 	{
-		Manager->GetRotation(*this);
+		return Manager->GetRotation(*this);
 	}
 
 	return FRotator();
@@ -147,7 +122,7 @@ FTransform FActorInstanceHandle::GetTransform() const
 
 	if (Manager.IsValid())
 	{
-		Manager->GetTransform(*this);
+		return Manager->GetTransform(*this);
 	}
 
 	return FTransform();
@@ -172,7 +147,7 @@ FString FActorInstanceHandle::GetName() const
 
 	if (Manager.IsValid())
 	{
-		Manager->GetName(*this);
+		return Manager->GetName(*this);
 	}
 
 	return FString();
@@ -291,7 +266,7 @@ bool FActorInstanceHandle::operator==(const AActor* OtherActor) const
 	const UDataLayerInstance* DataLayerInstance = nullptr;
 #endif // WITH_EDITOR
 
-	if (ALightWeightInstanceManager* LWIManager = FLightWeightInstanceSubsystem::Get().FindLightWeightInstanceManager(OtherActor->StaticClass(), DataLayerInstance))
+	if (ALightWeightInstanceManager* LWIManager = FLightWeightInstanceSubsystem::Get().FindLightWeightInstanceManager(*OtherActor->GetClass(), *OtherActor->GetWorld(), OtherActor->GetActorLocation(), DataLayerInstance))
 	{
 		if (Manager.Get() != LWIManager)
 		{

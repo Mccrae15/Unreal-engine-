@@ -6,12 +6,12 @@
 #include "NiagaraSimCacheCapture.h"
 
 #include "Kismet/BlueprintFunctionLibrary.h"
-#include "Kismet/BlueprintAsyncActionBase.h"
+#include "Engine/CancellableAsyncAction.h"
 
 #include "NiagaraSimCacheFunctionLibrary.generated.h"
 
 UCLASS()
-class UAsyncNiagaraCaptureSimCache : public UBlueprintAsyncActionBase
+class UAsyncNiagaraCaptureSimCache : public UCancellableAsyncAction
 {
 	GENERATED_BODY()
 
@@ -27,13 +27,13 @@ public:
 	UPROPERTY(BlueprintAssignable)
 	FOnCaptureComplete CaptureComplete;
 
+	bool bIsRunning = false;
 	FNiagaraSimCacheCapture SimCacheCapture;
-
 	FNiagaraSimCacheCaptureParameters CaptureParameters;
-
 	FNiagaraSimCacheCreateParameters CreateParameters;
 
 	virtual void Activate() override;
+	virtual void Cancel() override;
 	virtual void SetReadyToDestroy() override;
 
 	/**
@@ -54,14 +54,20 @@ public:
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", Category=NiagaraSimCache, AdvancedDisplay = "CaptureRate, bAdvanceSimulation, AdvanceDeltaTime"))
 	static UAsyncNiagaraCaptureSimCache* CaptureNiagaraSimCacheUntilComplete(UNiagaraSimCache* SimCache, FNiagaraSimCacheCreateParameters CreateParameters, UNiagaraComponent* NiagaraComponent, UNiagaraSimCache*& OutSimCache, int32 CaptureRate = 1, bool bAdvanceSimulation=false, float AdvanceDeltaTime=0.01666f);
 
+	/**
+	Capture a simulation cache with customizable capture parameters.
+	*/
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", Category = NiagaraSimCache))
+	static UAsyncNiagaraCaptureSimCache* CaptureNiagaraSimCache(UNiagaraSimCache* SimCache, FNiagaraSimCacheCreateParameters CreateParameters, UNiagaraComponent* NiagaraComponent, FNiagaraSimCacheCaptureParameters CaptureParameters, UNiagaraSimCache*& OutSimCache);
+
 private:
-	static UAsyncNiagaraCaptureSimCache* CaptureNiagaraSimCacheImpl(UNiagaraSimCache* SimCache, FNiagaraSimCacheCreateParameters CreateParameters, UNiagaraComponent* NiagaraComponent, UNiagaraSimCache*& OutSimCache, FNiagaraSimCacheCaptureParameters CaptureParameters);
+	static UAsyncNiagaraCaptureSimCache* CaptureNiagaraSimCacheImpl(UNiagaraSimCache* SimCache, const FNiagaraSimCacheCreateParameters& CreateParameters, UNiagaraComponent* NiagaraComponent, const FNiagaraSimCacheCaptureParameters& CaptureParameters, UNiagaraSimCache*& OutSimCache);
 
 	void CaptureFinished(UNiagaraSimCache* CapturedSimCache);
 };
 
-UCLASS()
-class NIAGARA_API UNiagaraSimCacheFunctionLibrary : public UBlueprintFunctionLibrary
+UCLASS(MinimalAPI)
+class UNiagaraSimCacheFunctionLibrary : public UBlueprintFunctionLibrary
 {
 	GENERATED_UCLASS_BODY()
 
@@ -73,11 +79,11 @@ public:
 	When AdvanceSimulation is true we will manually advance the simulation one frame using the provided AdvanceDeltaTime before capturing.
 	*/
 	UFUNCTION(BlueprintCallable, Category=NiagaraSimCache, meta=(ReturnDisplayName="Success"))
-	static bool CaptureNiagaraSimCacheImmediate(UNiagaraSimCache* SimCache, FNiagaraSimCacheCreateParameters CreateParameters, UNiagaraComponent* NiagaraComponent, UNiagaraSimCache*& OutSimCache, bool bAdvanceSimulation=false, float AdvanceDeltaTime=0.01666f);
+	static NIAGARA_API bool CaptureNiagaraSimCacheImmediate(UNiagaraSimCache* SimCache, FNiagaraSimCacheCreateParameters CreateParameters, UNiagaraComponent* NiagaraComponent, UNiagaraSimCache*& OutSimCache, bool bAdvanceSimulation=false, float AdvanceDeltaTime=0.01666f);
 
 	/**
 	Captures the simulation cache object that can be captured into using the various API calls.
 	*/
 	UFUNCTION(BlueprintCallable, Category=NiagaraSimCache, meta=(WorldContext="WorldContextObject", ReturnDisplayName="SimCache"))
-	static UNiagaraSimCache* CreateNiagaraSimCache(UObject* WorldContextObject);
+	static NIAGARA_API UNiagaraSimCache* CreateNiagaraSimCache(UObject* WorldContextObject);
 };

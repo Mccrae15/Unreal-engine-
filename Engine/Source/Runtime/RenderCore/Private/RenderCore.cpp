@@ -5,12 +5,15 @@
 =============================================================================*/
 
 #include "RenderCore.h"
+#include "DynamicRHI.h"
 #include "HAL/IConsoleManager.h"
-#include "UniformBuffer.h"
+#include "Misc/CommandLine.h"
 #include "Modules/ModuleManager.h"
-#include "Shader.h"
 #include "HDRHelper.h"
+#include "RHI.h"
+#include "RenderTimer.h"
 #include "RenderCounters.h"
+#include "RenderingThread.h"
 
 void UpdateShaderDevelopmentMode();
 
@@ -115,7 +118,6 @@ DEFINE_STAT(STAT_ViewRelevance);
 DEFINE_STAT(STAT_ComputeViewRelevance);
 DEFINE_STAT(STAT_OcclusionCull);
 DEFINE_STAT(STAT_UpdatePrimitiveFading);
-DEFINE_STAT(STAT_PrimitiveCull);
 DEFINE_STAT(STAT_DecompressPrecomputedOcclusion);
 DEFINE_STAT(STAT_ViewVisibilityTime);
 
@@ -323,6 +325,19 @@ RENDERCORE_API int32 GetCVarForceLODShadow_AnyThread()
 	return Ret;
 }
 
+//Setter function to keep GNearClippingPlane and GNearClippingPlane_RenderThread in sync
+RENDERCORE_API void SetNearClipPlaneGlobals(float NewNearClipPlane)
+{
+	GNearClippingPlane = NewNearClipPlane;
+
+	//Set GNearClippingPlane_RenderThread in a render command to be RT safe
+	ENQUEUE_RENDER_COMMAND(SetNearClipPlane_RenderThread)(
+		[NewNearClipPlane](FRHICommandListImmediate& RHICmdList)
+		{
+			GNearClippingPlane_RenderThread = NewNearClipPlane;
+		});
+}
+
 // Note: Enables or disables HDR support for a project. Typically this would be set on a per-project/per-platform basis in defaultengine.ini
 TAutoConsoleVariable<int32> CVarAllowHDR(
 	TEXT("r.AllowHDR"),
@@ -519,15 +534,15 @@ RENDERCORE_API void HDRGetMetaData(EDisplayOutputFormat& OutDisplayOutputFormat,
 	OutDisplayOutputFormat = HDRMetaData.DisplayOutputFormat;
 	OutDisplayColorGamut = HDRMetaData.DisplayColorGamut;
 	OutbHDRSupported = HDRMetaData.bHDRSupported;
-	if (!IsHDREnabled() || OSWindow == nullptr)
+	if (!IsHDREnabled())
 	{
 		return;
 	}
 
 	FDisplayInformationArray DisplayList;
 	RHIGetDisplaysInformation(DisplayList);
-	// In case we have 1 display or less, the CVars that were setup do represent the state of the displays
-	if (DisplayList.Num() <= 1)
+	// In case we have no display registered, use the CVars
+	if (DisplayList.Num() == 0)
 	{
 		return;
 	}
@@ -553,7 +568,7 @@ RENDERCORE_API void HDRGetMetaData(EDisplayOutputFormat& OutDisplayOutputFormat,
 	if (OutbHDRSupported)
 	{
 		FPlatformMisc::ChooseHDRDeviceAndColorGamut(GRHIVendorId, CVarHDRDisplayMaxLuminance.GetValueOnAnyThread(), OutDisplayOutputFormat, OutDisplayColorGamut);
-	}
+}
 
 }
 
@@ -575,7 +590,7 @@ RENDERCORE_API void HDRConfigureCVars(bool bIsHDREnabled, uint32 DisplayNits, bo
 {
 	if (bIsHDREnabled && !GRHISupportsHDROutput)
 	{
-		UE_LOG(LogRendererCore, Warning, TEXT("Trying to enable HDR but it is not supported by the RHI: IsHDREnabled will return false"));
+		// In case we request HDR but no display supports it, we still need to setup Gamut / OETF properly for the tonemapper to work
 		bIsHDREnabled = false;
 	}
 
@@ -592,12 +607,10 @@ RENDERCORE_API void HDRConfigureCVars(bool bIsHDREnabled, uint32 DisplayNits, bo
 	//CVarHDRDisplayMaxLuminance is ECVF_SetByCode as it's only a mean of communicating the information from UGameUserSettings to the rest of the engine
 	if (bIsHDREnabled)
 	{
-		CVarHDROutputEnabled->Set(1, bFromGameSettings ? ECVF_SetByGameSetting : ECVF_SetByCode);
 		CVarHDRDisplayMaxLuminance->Set((int32)DisplayNits, ECVF_SetByCode);
 	}
 	else
 	{
-		CVarHDROutputEnabled->Set(0, bFromGameSettings ? ECVF_SetByGameSetting : ECVF_SetByCode);
 		CVarHDRDisplayMaxLuminance->Set(0, ECVF_SetByCode);
 	}
 

@@ -42,6 +42,7 @@ namespace BTGraphVersion
 UBehaviorTreeGraph::UBehaviorTreeGraph(const FObjectInitializer& ObjectInitializer) : Super(ObjectInitializer)
 {
 	Schema = UEdGraphSchema_BehaviorTree::StaticClass();
+	RootNodeClass = UBehaviorTreeGraphNode_Root::StaticClass();
 }
 
 void UBehaviorTreeGraph::UpdateBlackboardChange()
@@ -919,7 +920,7 @@ void UBehaviorTreeGraph::CreateBTFromGraph(UBehaviorTreeGraphNode* RootEdNode)
 		uint16 DummyExecutionIndex = MAX_uint16;
 		BTGraphHelpers::CollectDecorators(BTAsset
 			, RootEdNode
-			, BTAsset->RootDecorators
+			, MutableView(BTAsset->RootDecorators)
 			, BTAsset->RootDecoratorOps
 			, /*bInitializeNodes*/false
 			, /*RootNode*/nullptr

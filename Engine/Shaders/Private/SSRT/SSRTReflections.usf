@@ -144,7 +144,7 @@ void ScreenSpaceReflections(
 	float DeviceZ = SampleDeviceZFromSceneTextures(UV);
 	float SceneDepth = ConvertFromDeviceZ(DeviceZ);
 
-	const float3 PositionTranslatedWorld = mul(float4(ScreenPos * SceneDepth, SceneDepth, 1), View.ScreenToTranslatedWorld).xyz;
+	const float3 PositionTranslatedWorld = mul(float4(GetScreenPositionForProjectionType(ScreenPos, SceneDepth), SceneDepth, 1), View.ScreenToTranslatedWorld).xyz;
 	const float3 V = normalize(View.TranslatedWorldCameraOrigin - PositionTranslatedWorld);
 
 	// STRATA_TODO Handle anisotropy using ModifyGGXAnisotropicNormalRoughness or similar approach. 
@@ -156,7 +156,7 @@ void ScreenSpaceReflections(
 
 	float3 N = GBuffer.WorldNormal;
 	const float SceneDepth = GBuffer.Depth;
-	const float3 PositionTranslatedWorld = mul(float4(ScreenPos * SceneDepth, SceneDepth, 1), View.ScreenToTranslatedWorld).xyz;
+	const float3 PositionTranslatedWorld = mul(float4(GetScreenPositionForProjectionType(ScreenPos, SceneDepth), SceneDepth, 1), View.ScreenToTranslatedWorld).xyz;
 	const float3 V = normalize(View.TranslatedWorldCameraOrigin - PositionTranslatedWorld);
 
 #if SUPPORTS_ANISOTROPIC_MATERIALS
@@ -254,7 +254,7 @@ void ScreenSpaceReflections(
 			float2 E = Hammersley16( i, NumRays, Random );
 
 #if 1
-			float3 H = mul( ImportanceSampleVisibleGGX(UniformSampleDisk(E), a2, TangentV ).xyz, TangentBasis );
+			float3 H = mul(ImportanceSampleVisibleGGX(E, a, TangentV ).xyz, TangentBasis );
 			float3 L = 2 * dot( V, H ) * H - V;
 #elif 0
 			float3 H = mul( ImportanceSampleGGX( E, a2 ).xyz, TangentBasis );
@@ -370,7 +370,7 @@ void ScreenSpaceReflections(
 			float3x3 TangentBasis = GetTangentBasis( N );
 			float3 TangentV = mul( TangentBasis, V );
 
-			float3 H = mul( ImportanceSampleVisibleGGX(UniformSampleDisk(E), a2, TangentV ).xyz, TangentBasis );
+			float3 H = mul(ImportanceSampleVisibleGGX(E, a, TangentV ).xyz, TangentBasis );
 			L = 2 * dot( V, H ) * H - V;
 		}
 		else

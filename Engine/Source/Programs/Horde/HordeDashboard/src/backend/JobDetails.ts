@@ -1,13 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+import { getTheme, mergeStyleSets, mergeStyles } from '@fluentui/react/lib/Styling';
 import { action, makeObservable, observable } from 'mobx';
-import { getTheme, mergeStyles, mergeStyleSets } from '@fluentui/react/lib/Styling';
-import backend from '.';
-import { getBatchInitElapsed, getNiceTime, getStepElapsed, getStepETA, getStepFinishTime, getStepTimingDelta } from '../base/utilities/timeUtils';
-import { getBatchText } from '../components/JobDetailCommon';
-import { AgentData, ArtifactData, BatchData, EventData, GetGroupResponse, GetJobStepRefResponse, GetJobTimingResponse, GetLabelResponse, GetLabelStateResponse, GetLabelTimingInfoResponse, GroupData, IssueData, JobData, JobState, JobStepBatchState, JobStepError, JobStepOutcome, JobStepState, LabelState, NodeData, ReportPlacement, StepData, StreamData, TestData } from './Api';
-import { projectStore } from './ProjectStore';
 import moment from 'moment';
+import backend from '.';
+import { getBatchInitElapsed, getNiceTime, getStepETA, getStepElapsed, getStepFinishTime, getStepTimingDelta } from '../base/utilities/timeUtils';
+import { getBatchText } from '../components/JobDetailCommon';
+import { AgentData, ArtifactData, BatchData, EventData, GetGroupResponse, GetJobTimingResponse, GetLabelResponse, GetLabelStateResponse, GetLabelTimingInfoResponse, GroupData, IssueData, JobData, JobState, JobStepBatchState, JobStepError, JobStepOutcome, JobStepState, LabelState, NodeData, ReportPlacement, StepData, StreamData, TestData } from './Api';
+import { projectStore } from './ProjectStore';
 
 const theme = getTheme();
 
@@ -20,7 +20,7 @@ export type JobLabel = GetLabelResponse & {
 const defaultUpdateMS = 5000;
 
 /**
- * @deprecated This class evolved over time to be a fragile grab bag of methods related to jobs.  
+ * @deprecated This class evolved over time to be a fragile grab bag of methods related to jobs.
  */
 export class JobDetails {
 
@@ -95,21 +95,12 @@ export class JobDetails {
 
             const requests = [];
 
-            let historyIdx = -1;
-
             if (this.stepId !== stepId || this.labelIdx !== labelIdx) {
 
                 this.stepId = stepId;
                 this.labelIdx = labelIdx;
                 if (!this.suppressIssues) {
                     requests.push(this.getIssues());
-                }
-
-                this.history = undefined;
-
-                if (stepId) {
-                    historyIdx = requests.length;
-                    requests.push(backend.getJobStepHistory(this.jobdata!.streamId, this.getStepName(stepId, false), 1024, this.jobdata!.templateId!));
                 }
             }
 
@@ -124,9 +115,6 @@ export class JobDetails {
             if (requests.length) {
                 await Promise.all(requests as any).then(async (values) => {
 
-                    if (historyIdx !== -1) {
-                        this.history = values[historyIdx] as GetJobStepRefResponse[];
-                    }
                 }).catch(reason => {
                     console.error(reason);
                 });
@@ -561,7 +549,6 @@ export class JobDetails {
         this.batches = [];
         this.events = [];
         this.issues = [];
-        this.history = undefined;
         this.labels = [];
         this.fatalError = undefined;
         this.state = JobStepState.Waiting;
@@ -642,12 +629,12 @@ export class JobDetails {
 
         const batch = this.batches.find((b) => b.logId === logId);
         if (batch) {
-            return batch.state === JobStepBatchState.Running;
+            return !batch.finishTime;
         }
 
         const step = this.getSteps().find(s => s.logId === logId);
         if (step) {
-            return step.state === JobStepState.Running;
+            return !step.finishTime;
         }
 
         return false;
@@ -764,7 +751,7 @@ export class JobDetails {
             }
 
         });
-        
+
         this.jobdata?.batches?.forEach(b => {
             b.steps.forEach(s => s.reports?.forEach(r => {
                 if (s.id === this.stepId) {
@@ -819,9 +806,26 @@ export class JobDetails {
 
             // job timing is very expensive, don't delay load for it until we have job data
             if (this.jobdata) {
-                doTiming = !this.updateTimingInfo;
-                this.updateTimingInfo++;
-                this.updateTimingInfo %= 3;
+
+                let skip = false;
+                if (this.isLogView && this.logId) {
+
+                    if (!this.getLogActive(this.logId)) {
+                        // skippinng timing info on finished log, it is only used for projected finish time
+                        skip = true;                        
+                    }
+
+                    if (this.updateTimingInfo) {
+                        //skippinng timing info already loaded
+                        skip = true;
+                    }
+                }
+
+                if (!skip) {
+                    doTiming = !this.updateTimingInfo;
+                    this.updateTimingInfo++;
+                    this.updateTimingInfo %= 3;
+                }
             }
 
             if (doTiming) {
@@ -876,15 +880,8 @@ export class JobDetails {
                 }
             }
 
-            let stepName = "";
             const batch = jobdata.batches?.find(b => b.steps.find(s => s.id === this.stepId));
             const stepNode = batch?.steps.find(s => s.id === this.stepId);
-            const groups = this.jobdata?.graphRef?.groups;
-            if (groups && stepNode && batch) {
-                stepName = groups[batch.groupIdx]?.nodes[stepNode.nodeIdx]?.name;
-            }
-
-            requests.push(backend.getJobArtifacts(this.id!));
 
             if (!this.isLogView) {
                 requests.push(backend.getJobTestData(this.id!));
@@ -905,10 +902,10 @@ export class JobDetails {
                 requests.push(this.getLogEvents(logId));
             }
 
-            let historyIdx = -1;
-            if (stepName) {
-                historyIdx = requests.length;
-                requests.push(backend.getJobStepHistory(jobdata.streamId, stepName, 1024, jobdata.templateId!));
+            let artifactsIdx = -1;
+            if (!jobdata.useArtifactsV2 && !this.artifacts?.length) {
+                artifactsIdx = requests.length;
+                requests.push(backend.getJobArtifacts(this.id!));
             }
 
             Promise.all(requests as any).then(async (values) => {
@@ -917,14 +914,12 @@ export class JobDetails {
                     return;
                 }
 
-                this.artifacts = values[0] as any;
-
                 if (!this.isLogView) {
                     this.testdata = values[1] as any;
                 }
 
-                if (historyIdx !== -1) {
-                    this.history = values[historyIdx] as any;
+                if (artifactsIdx !== -1) {
+                    this.artifacts = values[artifactsIdx] as any;
                 }
 
                 this.process();
@@ -997,7 +992,6 @@ export class JobDetails {
     artifacts: ArtifactData[] = []
     testdata: TestData[] = []
     issues: IssueData[] = [];
-    history?: GetJobStepRefResponse[] = undefined;
     private timing?: GetJobTimingResponse;
     agents: Map<string, AgentData> = new Map();
 
@@ -1188,16 +1182,16 @@ export const getStepSummaryMarkdown = (jobDetails: JobDetails, stepId: string): 
         eta.display = eta.server = "";
         let aborted = "";
         if (step.abortedByUserInfo) {
-            aborted = "This step was aborted";
+            aborted = "This step was canceled";
             aborted += ` by ${step.abortedByUserInfo.name}.`;
         } else if (jobDetails.jobdata?.abortedByUserInfo) {
-            aborted = "The job was aborted";
+            aborted = "The job was canceled";
             aborted += ` by ${jobDetails.jobdata?.abortedByUserInfo.name}.`;
         } else {
-            aborted = "The step was aborted";
-            
+            aborted = "The step was canceled";
+
             if (step.error === JobStepError.TimedOut) {
-                aborted = "The step was aborted due to reaching the maximum run time limit";
+                aborted = "The step was canceled due to reaching the maximum run time limit";
             }
         }
         text.push(aborted);

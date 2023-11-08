@@ -29,13 +29,13 @@ public:
 	FTexture2DArrayResource(UTexture2DArray* InOwner, const FTexture2DArrayResource* InProxiedResource);
 
 	// Dynamic cast methods.
-	ENGINE_API virtual FTexture2DArrayResource* GetTexture2DArrayResource() { return this; }
+	virtual FTexture2DArrayResource* GetTexture2DArrayResource() { return this; }
 	// Dynamic cast methods (const).
-	ENGINE_API virtual const FTexture2DArrayResource* GetTexture2DArrayResource() const { return this; }
+	virtual const FTexture2DArrayResource* GetTexture2DArrayResource() const { return this; }
 
 	virtual uint64 GetPlatformMipsSize(uint32 NumMips) const override;
 
-	virtual void InitRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 	virtual bool IsProxy() const override { return ProxiedResource != nullptr; }
 
 protected:

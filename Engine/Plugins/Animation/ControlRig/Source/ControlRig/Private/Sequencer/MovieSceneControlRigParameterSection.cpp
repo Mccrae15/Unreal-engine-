@@ -22,6 +22,7 @@
 #include "UObject/UE5MainStreamObjectVersion.h"
 #include "TransformConstraint.h"
 #include "TransformableHandle.h"
+#include "AnimationCoreLibrary.h"
 #include "UObject/ObjectSaveContext.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneControlRigParameterSection)
@@ -570,26 +571,8 @@ struct FParameterTransformChannelEditorData
 			FRigControlElement* ControlElement = ControlRig->FindControl(ParameterName);
 			if (ControlElement)
 			{
-				if (ControlElement->Settings.ControlType == ERigControlType::Transform)
+				auto GetTranslationFromTransform = [&](const FVector& InTranslation)
 				{
-					const FRigControlValue::FTransform_Float Transform = 
-						ControlRig->GetHierarchy()
-						->GetControlValue(ControlElement, ERigControlValueType::Current).Get<FRigControlValue::FTransform_Float>();
-					return FVector(Transform.GetTranslation());
-				}
-				else if  (ControlElement->Settings.ControlType == ERigControlType::TransformNoScale)
-				{
-					const FRigControlValue::FTransformNoScale_Float Transform = 
-						ControlRig->GetHierarchy()
-						->GetControlValue(ControlElement, ERigControlValueType::Current).Get<FRigControlValue::FTransformNoScale_Float>();
-					return FVector(Transform.GetTranslation());
-				}
-				else if (ControlElement->Settings.ControlType == ERigControlType::EulerTransform)
-				{
-					const FRigControlValue::FEulerTransform_Float Euler = 
-						ControlRig->GetHierarchy()
-						->GetControlValue(ControlElement, ERigControlValueType::Current).Get<FRigControlValue::FEulerTransform_Float>();
-
 					// switch translation to constraint space if needed
 					const uint32 ControlHash = UTransformableControlHandle::ComputeHash(ControlRig, ControlElement->GetName());
 					TOptional<FTransform> ConstraintSpaceTransform = FTransformConstraintUtils::GetRelativeTransform(ControlRig->GetWorld(), ControlHash);
@@ -597,8 +580,37 @@ struct FParameterTransformChannelEditorData
 					{
 						return ConstraintSpaceTransform->GetTranslation();
 					}
-					
-					return FVector(Euler.GetTranslation());
+					return InTranslation;
+				};
+				
+				if (ControlElement->Settings.ControlType == ERigControlType::Transform)
+				{
+					const FRigControlValue::FTransform_Float Transform = 
+						ControlRig->GetHierarchy()
+						->GetControlValue(ControlElement, ERigControlValueType::Current).Get<FRigControlValue::FTransform_Float>();
+
+					return GetTranslationFromTransform( FVector(Transform.GetTranslation()) );
+				}
+				else if  (ControlElement->Settings.ControlType == ERigControlType::TransformNoScale)
+				{
+					const FRigControlValue::FTransformNoScale_Float Transform = 
+						ControlRig->GetHierarchy()
+						->GetControlValue(ControlElement, ERigControlValueType::Current).Get<FRigControlValue::FTransformNoScale_Float>();
+
+					return GetTranslationFromTransform( FVector(Transform.GetTranslation()) );
+				}
+				else if (ControlElement->Settings.ControlType == ERigControlType::EulerTransform)
+				{
+					const FRigControlValue::FEulerTransform_Float Euler = 
+						ControlRig->GetHierarchy()
+						->GetControlValue(ControlElement, ERigControlValueType::Current).Get<FRigControlValue::FEulerTransform_Float>();
+
+					return GetTranslationFromTransform( FVector(Euler.GetTranslation()) );
+				}
+				else if(ControlElement->Settings.ControlType == ERigControlType::Position)
+				{
+					FVector3f Vector = ControlRig->GetHierarchy()->GetControlValue(ControlElement, ERigControlValueType::Current).Get<FVector3f>();
+					return FVector(Vector.X, Vector.Y, Vector.Z);
 				}
 			}
 		}
@@ -608,6 +620,7 @@ struct FParameterTransformChannelEditorData
 	static TOptional<FRotator> GetRotator(UControlRig* ControlRig, FName ParameterName, UObject& InObject, FTrackInstancePropertyBindings* Bindings)
 	{
 		if (ControlRig)
+
 		{
 			FRigControlElement* ControlElement = ControlRig->FindControl(ParameterName);
 			if (ControlElement)
@@ -623,7 +636,9 @@ struct FParameterTransformChannelEditorData
 					}
 				}
 				
-				return ControlRig->GetHierarchy()->GetControlPreferredRotator(ControlElement);
+				FVector Vector = ControlRig->GetHierarchy()->GetControlSpecifiedEulerAngle(ControlElement);
+				FRotator Rotation = FRotator(Vector.Y, Vector.Z, Vector.X);
+				return Rotation;
 			}
 		}
 		return TOptional<FRotator>();
@@ -636,19 +651,8 @@ struct FParameterTransformChannelEditorData
 			FRigControlElement* ControlElement = ControlRig->FindControl(ParameterName);
 			if (ControlElement)
 			{
-				if (ControlElement->Settings.ControlType == ERigControlType::Transform)
+				auto GetScaleFromTransform = [&](const FVector& InScale3D)
 				{
-					const FRigControlValue::FTransform_Float Transform = 
-						ControlRig->GetHierarchy()
-						->GetControlValue(ControlElement, ERigControlValueType::Current).Get<FRigControlValue::FTransform_Float>();
-					return FVector(Transform.GetScale3D());
-				}
-				else if (ControlElement->Settings.ControlType == ERigControlType::EulerTransform)
-				{
-					const FRigControlValue::FEulerTransform_Float Transform = 
-						ControlRig->GetHierarchy()
-						->GetControlValue(ControlElement, ERigControlValueType::Current).Get<FRigControlValue::FEulerTransform_Float>();
-
 					// switch scale to constraint space if needed
 					const uint32 ControlHash = UTransformableControlHandle::ComputeHash(ControlRig, ControlElement->GetName());
 					TOptional<FTransform> ConstraintSpaceTransform = FTransformConstraintUtils::GetRelativeTransform(ControlRig->GetWorld(), ControlHash);
@@ -656,8 +660,29 @@ struct FParameterTransformChannelEditorData
 					{
 						return ConstraintSpaceTransform->GetScale3D();
 					}
-					
-					return FVector(Transform.GetScale3D());
+					return InScale3D;
+				};
+				
+				if (ControlElement->Settings.ControlType == ERigControlType::Transform)
+				{
+					const FRigControlValue::FTransform_Float Transform = 
+						ControlRig->GetHierarchy()
+						->GetControlValue(ControlElement, ERigControlValueType::Current).Get<FRigControlValue::FTransform_Float>();
+
+					return GetScaleFromTransform( FVector(Transform.GetScale3D()) );
+				}
+				else if (ControlElement->Settings.ControlType == ERigControlType::EulerTransform)
+				{
+					const FRigControlValue::FEulerTransform_Float Transform = 
+						ControlRig->GetHierarchy()
+						->GetControlValue(ControlElement, ERigControlValueType::Current).Get<FRigControlValue::FEulerTransform_Float>();
+
+					return GetScaleFromTransform( FVector(Transform.GetScale3D()) );
+				}
+				else if (ControlElement->Settings.ControlType == ERigControlType::Scale)
+				{
+					FVector3f Vector = ControlRig->GetHierarchy()->GetControlValue(ControlElement, ERigControlValueType::Current).Get<FVector3f>();
+					return FVector(Vector.X, Vector.Y, Vector.Z);
 				}
 			}
 		}
@@ -1022,15 +1047,6 @@ void UMovieSceneControlRigParameterSection::PostLoad()
 					Handle->ControlRig = ControlRig;
 				}
 			}
-			/*
-			if (ConstraintChannel.Constraint.IsValid() == false && ConstraintChannel.ConstraintCopyToSpawn)
-			{
-				const FConstraintsManagerController& Controller = FConstraintsManagerController::Get(ControlRig->GetWorld());
-				UTickableConstraint* NewOne = Controller.AddConstraintFromCopy(ConstraintChannel.ConstraintCopyToSpawn);
-				ConstraintChannel.Constraint = NewOne;
-				ReconstructChannelProxy();
-			}
-			*/
 		}
 	}
 }
@@ -2320,7 +2336,7 @@ float UMovieSceneControlRigParameterSection::GetTotalWeightValue(FFrameTime InTi
 	return WeightVal;
 }
 
-void UMovieSceneControlRigParameterSection::KeyZeroValue(FFrameNumber InFrame, bool bSelectedControls)
+void UMovieSceneControlRigParameterSection::KeyZeroValue(FFrameNumber InFrame, EMovieSceneKeyInterpolation DefaultInterpolation, bool bSelectedControls)
 {
 	TArray<FName> SelectedControls;
 	if (bSelectedControls && ControlRig)
@@ -2338,7 +2354,7 @@ void UMovieSceneControlRigParameterSection::KeyZeroValue(FFrameNumber InFrame, b
 	{
 		if (SelectedControls.Num() == 0 || SelectedControls.Contains(Scalar.ParameterName))
 		{
-			Scalar.ParameterCurve.AddCubicKey(InFrame, 0.0f, ERichCurveTangentMode::RCTM_Auto);
+			AddKeyToChannel(&Scalar.ParameterCurve, InFrame, 0.0f, DefaultInterpolation);
 			Scalar.ParameterCurve.AutoSetTangents();
 		}
 	}
@@ -2346,9 +2362,9 @@ void UMovieSceneControlRigParameterSection::KeyZeroValue(FFrameNumber InFrame, b
 	{
 		if (SelectedControls.Num() == 0 || SelectedControls.Contains(Vector2D.ParameterName))
 		{
-			Vector2D.XCurve.AddCubicKey(InFrame, 0.0f, ERichCurveTangentMode::RCTM_Auto);
+			AddKeyToChannel(&Vector2D.XCurve, InFrame, 0.0f, DefaultInterpolation);
 			Vector2D.XCurve.AutoSetTangents();
-			Vector2D.YCurve.AddCubicKey(InFrame, 0.0f, ERichCurveTangentMode::RCTM_Auto);
+			AddKeyToChannel(&Vector2D.YCurve, InFrame, 0.0f, DefaultInterpolation);
 			Vector2D.YCurve.AutoSetTangents();
 		}
 	}
@@ -2356,11 +2372,11 @@ void UMovieSceneControlRigParameterSection::KeyZeroValue(FFrameNumber InFrame, b
 	{
 		if (SelectedControls.Num() == 0 || SelectedControls.Contains(Vector.ParameterName))
 		{
-			Vector.XCurve.AddCubicKey(InFrame, 0.0f, ERichCurveTangentMode::RCTM_Auto);
+			AddKeyToChannel(&Vector.XCurve, InFrame, 0.0f, DefaultInterpolation);
 			Vector.XCurve.AutoSetTangents();
-			Vector.YCurve.AddCubicKey(InFrame, 0.0f, ERichCurveTangentMode::RCTM_Auto);
+			AddKeyToChannel(&Vector.YCurve, InFrame, 0.0f, DefaultInterpolation);
 			Vector.YCurve.AutoSetTangents();
-			Vector.ZCurve.AddCubicKey(InFrame, 0.0f, ERichCurveTangentMode::RCTM_Auto);
+			AddKeyToChannel(&Vector.ZCurve, InFrame, 0.0f, DefaultInterpolation);
 			Vector.ZCurve.AutoSetTangents();
 		}
 	}
@@ -2370,17 +2386,17 @@ void UMovieSceneControlRigParameterSection::KeyZeroValue(FFrameNumber InFrame, b
 		{
 			for (int32 Index = 0; Index < 3; ++Index)
 			{
-				Transform.Translation[Index].AddCubicKey(InFrame, 0.0f, ERichCurveTangentMode::RCTM_Auto);
+				AddKeyToChannel(&Transform.Translation[Index], InFrame, 0.0f, DefaultInterpolation);
 				Transform.Translation[Index].AutoSetTangents();
-				Transform.Rotation[Index].AddCubicKey(InFrame, 0.0f, ERichCurveTangentMode::RCTM_Auto);
+				AddKeyToChannel(&Transform.Rotation[Index], InFrame, 0.0f, DefaultInterpolation);
 				Transform.Rotation[Index].AutoSetTangents();
 				if (GetBlendType() == EMovieSceneBlendType::Additive)
 				{
-					Transform.Scale[Index].AddCubicKey(InFrame, 0.0f, ERichCurveTangentMode::RCTM_Auto);
+					AddKeyToChannel(&Transform.Scale[Index], InFrame, 0.0f, DefaultInterpolation);
 				}
 				else
 				{
-					Transform.Scale[Index].AddCubicKey(InFrame, 1.0f, ERichCurveTangentMode::RCTM_Auto);
+					AddKeyToChannel(&Transform.Scale[Index], InFrame, 1.0f, DefaultInterpolation);
 				}
 				Transform.Scale[Index].AutoSetTangents();
 
@@ -2389,9 +2405,9 @@ void UMovieSceneControlRigParameterSection::KeyZeroValue(FFrameNumber InFrame, b
 	}
 }
 
-void UMovieSceneControlRigParameterSection::KeyWeightValue(FFrameNumber InFrame, float InVal)
+void UMovieSceneControlRigParameterSection::KeyWeightValue(FFrameNumber InFrame, EMovieSceneKeyInterpolation DefaultInterpolation, float InVal)
 {
-	Weight.AddCubicKey(InFrame, InVal, ERichCurveTangentMode::RCTM_Auto);
+	AddKeyToChannel(&Weight, InFrame, InVal, DefaultInterpolation);
 	Weight.AutoSetTangents();
 }
 
@@ -2583,7 +2599,95 @@ void UMovieSceneControlRigParameterSection::SetControlRig(UControlRig* InControl
 	ControlRigClass = ControlRig ? ControlRig->GetClass() : nullptr;
 }
 
-void UMovieSceneControlRigParameterSection::FixRotationWinding(FName ControlName, FFrameNumber StartFrame, FFrameNumber EndFrame)
+void UMovieSceneControlRigParameterSection::ChangeControlRotationOrder(const FName& InControlName, const  TOptional<EEulerRotationOrder>& OldOrder,
+	const  TOptional<EEulerRotationOrder>& NewOrder, EMovieSceneKeyInterpolation Interpolation)
+{
+	FChannelMapInfo* pChannelIndex = ControlChannelMap.Find(InControlName);
+	if (pChannelIndex == nullptr || GetControlRig() == nullptr)
+	{
+		return;
+	}
+	int32 ChannelIndex = pChannelIndex->ChannelIndex;
+	TArrayView<FMovieSceneFloatChannel*> FloatChannels = GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
+	if (FRigControlElement* ControlElement = GetControlRig()->FindControl(InControlName))
+	{
+		if (ControlElement->Settings.ControlType == ERigControlType::Rotator ||
+			ControlElement->Settings.ControlType == ERigControlType::EulerTransform ||
+			ControlElement->Settings.ControlType == ERigControlType::Transform ||
+			ControlElement->Settings.ControlType == ERigControlType::TransformNoScale)
+		{
+
+			auto AddArrayToSortedMap = [](const TArray<FFrameNumber>& InFrames, TSortedMap<FFrameNumber, FFrameNumber>& OutFrameMap)
+			{
+				for (const FFrameNumber& Frame : InFrames)
+				{
+					OutFrameMap.Add(Frame, Frame);
+				}
+			};
+
+			const int32 StartIndex = (ControlElement->Settings.ControlType == ERigControlType::Rotator) ? 0 : 3;
+			const int32 XIndex = StartIndex + ChannelIndex;
+			const int32 YIndex = XIndex + 1;
+			const int32 ZIndex = XIndex + 2;
+
+			TSortedMap<FFrameNumber, FFrameNumber> AllKeys;
+			TArray<FFrameNumber> KeyTimes;
+			TArray<FKeyHandle> Handles;
+			for (int32 Index = XIndex; Index < XIndex + 3; ++Index)
+			{
+				KeyTimes.SetNum(0);
+				Handles.SetNum(0);
+				FloatChannels[Index]->GetKeys(TRange<FFrameNumber>(), &KeyTimes, &Handles);
+				AddArrayToSortedMap(KeyTimes, AllKeys);
+			}
+			KeyTimes.SetNum(0);
+			AllKeys.GenerateKeyArray(KeyTimes);
+			if (KeyTimes.Num() <= 0)
+			{
+				//no keys so bail
+				return;
+			}
+			FRotator Rotator(0.0f, 0.0f, 0.0f);
+			const FFrameNumber StartFrame = KeyTimes[0];
+			const FFrameNumber EndFrame = KeyTimes[KeyTimes.Num() - 1];
+			for (const FFrameNumber& Frame : KeyTimes)
+			{
+				float Roll = 0.0f, Pitch = 0.0f, Yaw = 0.0f;
+				FloatChannels[XIndex]->Evaluate(Frame, Roll);
+				FloatChannels[YIndex]->Evaluate(Frame, Pitch);
+				FloatChannels[ZIndex]->Evaluate(Frame, Yaw);
+				Rotator = FRotator(Pitch, Yaw, Roll);
+				FQuat Quat;
+				//if set use animation core conversion, else use rotator conversion
+				if (OldOrder.IsSet())
+				{
+					FVector Vector = Rotator.Euler();
+					Quat = AnimationCore::QuatFromEuler(Vector, OldOrder.GetValue(),true);
+				}
+				else
+				{
+					Quat = FQuat(Rotator);
+				}
+				if (NewOrder.IsSet())
+				{
+					FVector Vector = AnimationCore::EulerFromQuat(Quat, NewOrder.GetValue(), true);
+					Rotator = FRotator::MakeFromEuler(Vector);
+				}
+				else
+				{
+					Rotator = FRotator(Quat);
+				}
+				//this will reuse tangent like we want and only add if new
+				AddKeyToChannel(FloatChannels[XIndex], Frame, Rotator.Roll, Interpolation);
+				AddKeyToChannel(FloatChannels[YIndex], Frame, Rotator.Pitch, Interpolation);
+				AddKeyToChannel(FloatChannels[ZIndex], Frame, Rotator.Yaw, Interpolation);
+			}
+			FixRotationWinding(InControlName, StartFrame, EndFrame);
+		}
+	}
+}
+
+void UMovieSceneControlRigParameterSection::FixRotationWinding(const FName& ControlName, FFrameNumber StartFrame, FFrameNumber EndFrame)
 {
 	FChannelMapInfo* pChannelIndex = ControlChannelMap.Find(ControlName);
 	if (pChannelIndex == nullptr || GetControlRig() == nullptr)
@@ -2630,6 +2734,107 @@ void UMovieSceneControlRigParameterSection::FixRotationWinding(FName ControlName
 	}
 }
 
+void UMovieSceneControlRigParameterSection::OptimizeSection(const FName& ControlName, const FKeyDataOptimizationParams& Params)
+{
+	TArrayView<FMovieSceneFloatChannel*> FloatChannels = GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
+	FChannelMapInfo* pChannelIndex = ControlChannelMap.Find(ControlName);
+	if (pChannelIndex != nullptr)
+	{
+		int32 ChannelIndex = pChannelIndex->ChannelIndex;
+
+		if (FRigControlElement* ControlElement = ControlRig->FindControl(ControlName))
+		{
+			switch (ControlElement->Settings.ControlType)
+			{
+				case ERigControlType::Position:
+				case ERigControlType::Scale:
+				case ERigControlType::Rotator:
+				{
+					FloatChannels[ChannelIndex]->Optimize(Params);
+					FloatChannels[ChannelIndex + 1]->Optimize(Params);
+					FloatChannels[ChannelIndex + 2]->Optimize(Params);
+					break;
+				}
+
+				case ERigControlType::Transform:
+				case ERigControlType::TransformNoScale:
+				case ERigControlType::EulerTransform:
+				{
+
+					FloatChannels[ChannelIndex]->Optimize(Params);
+					FloatChannels[ChannelIndex + 1]->Optimize(Params);
+					FloatChannels[ChannelIndex + 2]->Optimize(Params);
+					FloatChannels[ChannelIndex + 3]->Optimize(Params);
+					FloatChannels[ChannelIndex + 4]->Optimize(Params);
+					FloatChannels[ChannelIndex + 5]->Optimize(Params);
+
+					if (ControlElement->Settings.ControlType == ERigControlType::Transform ||
+						ControlElement->Settings.ControlType == ERigControlType::EulerTransform)
+					{
+						FloatChannels[ChannelIndex + 6]->Optimize(Params);
+						FloatChannels[ChannelIndex + 7]->Optimize(Params);
+						FloatChannels[ChannelIndex + 8]->Optimize(Params);
+					}
+					break;
+
+				}
+				default:
+					break;
+			}
+		}
+	}
+}
+
+void UMovieSceneControlRigParameterSection::AutoSetTangents(const FName& ControlName)
+{
+	TArrayView<FMovieSceneFloatChannel*> FloatChannels = GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
+	FChannelMapInfo* pChannelIndex = ControlChannelMap.Find(ControlName);
+	if (pChannelIndex != nullptr)
+	{
+		int32 ChannelIndex = pChannelIndex->ChannelIndex;
+
+		if (FRigControlElement* ControlElement = ControlRig->FindControl(ControlName))
+		{
+			switch (ControlElement->Settings.ControlType)
+			{
+			case ERigControlType::Position:
+			case ERigControlType::Scale:
+			case ERigControlType::Rotator:
+			{
+				FloatChannels[ChannelIndex]->AutoSetTangents();
+				FloatChannels[ChannelIndex + 1]->AutoSetTangents();
+				FloatChannels[ChannelIndex + 2]->AutoSetTangents();
+				break;
+			}
+
+			case ERigControlType::Transform:
+			case ERigControlType::TransformNoScale:
+			case ERigControlType::EulerTransform:
+			{
+
+				FloatChannels[ChannelIndex]->AutoSetTangents();
+				FloatChannels[ChannelIndex + 1]->AutoSetTangents();
+				FloatChannels[ChannelIndex + 2]->AutoSetTangents();
+				FloatChannels[ChannelIndex + 3]->AutoSetTangents();
+				FloatChannels[ChannelIndex + 4]->AutoSetTangents();
+				FloatChannels[ChannelIndex + 5]->AutoSetTangents();
+
+				if (ControlElement->Settings.ControlType == ERigControlType::Transform ||
+					ControlElement->Settings.ControlType == ERigControlType::EulerTransform)
+				{
+					FloatChannels[ChannelIndex + 6]->AutoSetTangents();
+					FloatChannels[ChannelIndex + 7]->AutoSetTangents();
+					FloatChannels[ChannelIndex + 8]->AutoSetTangents();
+				}
+				break;
+
+			}
+			default:
+				break;
+			}
+		}
+	}
+}
 #if WITH_EDITOR
 
 void UMovieSceneControlRigParameterSection::RecordControlRigKey(FFrameNumber FrameNumber, bool bSetDefault, ERichCurveInterpMode InInterpMode)
@@ -2981,7 +3186,7 @@ bool UMovieSceneControlRigParameterSection::LoadAnimSequenceIntoThisSection(UAni
 		for (const FFloatCurve& Curve : CurveData.FloatCurves)
 		{
 			const float Val = Curve.FloatCurve.Eval(SequenceSecond);
-			SourceHierarchy->SetCurveValue(FRigElementKey(Curve.Name.DisplayName, ERigElementType::Curve), Val);
+			SourceHierarchy->SetCurveValue(FRigElementKey(Curve.GetName(), ERigElementType::Curve), Val);
 		}
 
 		// retrieve the pose using the services that persona and sequencer rely on

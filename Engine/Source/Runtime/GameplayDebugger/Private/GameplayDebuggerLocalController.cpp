@@ -202,8 +202,9 @@ void UGameplayDebuggerLocalController::OnDebugDraw(class UCanvas* Canvas, class 
 
 		CanvasContext.FontRenderInfo.bEnableShadow = bEnableTextShadow;
 
-		CanvasContext.PlayerController = CachedReplicator->GetReplicationOwner();
-		CanvasContext.World = CachedReplicator->GetReplicationOwner() ? CachedReplicator->GetReplicationOwner()->GetWorld() : CachedReplicator->GetWorld();
+		APlayerController* ReplicationOwner = CachedReplicator->GetReplicationOwner();
+		CanvasContext.PlayerController = ReplicationOwner;
+		CanvasContext.World = ReplicationOwner ? ReplicationOwner->GetWorld() : CachedReplicator->GetWorld();
 
 		DrawHeader(CanvasContext);
 
@@ -227,12 +228,20 @@ void UGameplayDebuggerLocalController::OnDebugDraw(class UCanvas* Canvas, class 
 			TSharedRef<FGameplayDebuggerCategory> Category = CachedReplicator->GetCategory(Idx);
 			if (Category->ShouldDrawCategory(bHasDebugActor))
 			{
+				// this is a special-case collection mode. If we want to collect data on the client this is the 
+				// place to do it, after the data got potentially replicated over from the server, and just 
+				// before drawing, so that new replicated data won't come in as we draw.
+				if ((Category->IsCategoryAuth() == false) && Category->ShouldCollectDataOnClient())
+				{
+					Category->CollectData(ReplicationOwner, CachedReplicator->GetDebugActor());
+				}
+
 				if (Category->IsCategoryHeaderVisible())
 				{
 					DrawCategoryHeader(Idx, Category, CanvasContext);
 				}
 
-				Category->DrawCategory(CachedReplicator->GetReplicationOwner(), CanvasContext);
+				Category->DrawCategory(ReplicationOwner, CanvasContext);
 			}
 		}
 	}
@@ -555,7 +564,7 @@ void UGameplayDebuggerLocalController::OnActivationPressed()
 {
 	if (CachedReplicator)
 	{
-		const double HoldTimeThr = 0. * (FApp::UseFixedTimeStep() ? (FApp::GetFixedDeltaTime() * 60.) : 1.);
+		const double HoldTimeThr = 0.2 * (FApp::UseFixedTimeStep() ? (FApp::GetFixedDeltaTime() * 60.) : 1.);
 
 		CachedReplicator->GetWorldTimerManager().SetTimer(StartSelectingActorHandle, this, &UGameplayDebuggerLocalController::OnStartSelectingActor, static_cast<float>(HoldTimeThr));
 	}
@@ -930,6 +939,23 @@ private:
 		return Controller;
 	}
 
+	static void EnableGameplayDebugger(const TArray<FString>& Args, UWorld* InWorld)
+	{
+		if (UGameplayDebuggerLocalController* Controller = GetController(InWorld))
+		{
+			bool bEnable = true;
+			if (Args.Num() > 0)
+			{
+				LexFromString(bEnable, *Args[0]);
+			}
+
+			if (Controller->bIsLocallyEnabled != bEnable)
+			{
+				Controller->ToggleActivation();	
+			}
+		}
+	}
+
 	static void ToggleGameplayDebugger(UWorld* InWorld)
 	{
 		if (UGameplayDebuggerLocalController* Controller = GetController(InWorld))
@@ -1056,9 +1082,10 @@ private:
 	}
 
 	/** For legacy command: EnableGDT */
-	static FAutoConsoleCommandWithWorld EnableDebuggerCmd;
+	static FAutoConsoleCommandWithWorld LegacyEnableDebuggerCmd;
 
 	/** Various gameplay debugger commands: gdt.<command> */
+	static FAutoConsoleCommandWithWorldAndArgs EnableDebuggerCmd;
 	static FAutoConsoleCommandWithWorld ToggleDebuggerCmd;
 	static FAutoConsoleCommandWithWorld SelectLocalPlayerCmd;
 	static FAutoConsoleCommandWithWorld SelectPreviousRowCmd;
@@ -1068,10 +1095,16 @@ private:
 	static FAutoConsoleCommandWithWorldAndArgs SetFontSizeCmd;
 };
 
-FAutoConsoleCommandWithWorld FGameplayDebuggerConsoleCommands::EnableDebuggerCmd(
+FAutoConsoleCommandWithWorld FGameplayDebuggerConsoleCommands::LegacyEnableDebuggerCmd(
 	TEXT("EnableGDT"),
 	TEXT("Toggles Gameplay Debugger Tool"),
 	FConsoleCommandWithWorldDelegate::CreateStatic(&FGameplayDebuggerConsoleCommands::ToggleGameplayDebugger)
+);
+
+FAutoConsoleCommandWithWorldAndArgs FGameplayDebuggerConsoleCommands::EnableDebuggerCmd(
+	TEXT("gdt.Enable"),
+	TEXT("Enable Gameplay Debugger Tool"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&FGameplayDebuggerConsoleCommands::EnableGameplayDebugger)
 );
 
 FAutoConsoleCommandWithWorld FGameplayDebuggerConsoleCommands::ToggleDebuggerCmd(

@@ -58,12 +58,12 @@ namespace UnrealGameSync
 	{
 		class WorkspaceIssueMonitor
 		{
-			public IssueMonitor IssueMonitor;
-			public int RefCount;
+			public IssueMonitor _issueMonitor;
+			public int _refCount;
 
 			public WorkspaceIssueMonitor(IssueMonitor issueMonitor)
 			{
-				this.IssueMonitor = issueMonitor;
+				_issueMonitor = issueMonitor;
 			}
 		}
 
@@ -74,74 +74,75 @@ namespace UnrealGameSync
 			Quiet,
 		}
 
+		/// <summary>
+		/// Minimum version of the launcher that should be installed. Users will be prompted to upgrade it if the installed version is older than this.
+		/// </summary>
+		static readonly int s_minLauncherVersion = MakeLauncherVersion(1, 19);
+
 		[DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
 		static extern int SetWindowTheme(IntPtr hWnd, string pszSubAppName, string pszSubIdList);
 
 		[DllImport("user32.dll")]
-		public static extern int SendMessage(IntPtr hWnd, Int32 wMsg, Int32 wParam, Int32 lParam);
+		public static extern int SendMessage(IntPtr hWnd, int wMsg, int wParam, int lParam);
 
-		private const int WmSetredraw = 11; 
+		private const int WmSetredraw = 11;
 
-		UpdateMonitor _updateMonitor;
-		SynchronizationContext _mainThreadSynchronizationContext;
-		List<IssueMonitor> _defaultIssueMonitors = new List<IssueMonitor>();
-		List<WorkspaceIssueMonitor> _workspaceIssueMonitors = new List<WorkspaceIssueMonitor>();
+		readonly UpdateMonitor _updateMonitor;
+		readonly SynchronizationContext _mainThreadSynchronizationContext;
+		readonly List<IssueMonitor> _defaultIssueMonitors = new List<IssueMonitor>();
+		readonly List<WorkspaceIssueMonitor> _workspaceIssueMonitors = new List<WorkspaceIssueMonitor>();
 
-		string? _apiUrl;
-		DirectoryReference _dataFolder;
-		DirectoryReference _cacheFolder;
-		IPerforceSettings _defaultPerforceSettings;
-		IServiceProvider _serviceProvider;
-		ILogger _logger;
-		UserSettings _settings;
+		readonly string? _apiUrl;
+		readonly DirectoryReference _dataFolder;
+		readonly IPerforceSettings _defaultPerforceSettings;
+		readonly IServiceProvider _serviceProvider;
+		readonly ILogger _logger;
+		readonly UserSettings _settings;
 		int _tabMenuTabIdx = -1;
 		int _changingWorkspacesRefCount;
 
 		bool _allowClose = false;
 
-		bool _restoreStateOnLoad;
-
-		OidcTokenManager? _oidcTokenManager;
+		readonly OidcTokenManager _oidcTokenManager;
 
 		System.Threading.Timer? _scheduleTimer;
 		System.Threading.Timer? _scheduleSettledTimer;
 
-		string _originalExecutableFileName;
-		bool _preview;
+		readonly string _originalExecutableFileName;
+		readonly bool _preview;
 
 		IMainWindowTabPanel? _currentTabPanel;
 
 		AutomationServer _automationServer;
 
-		bool _allowCreatingHandle;
+		readonly bool _allowCreatingHandle;
 
 		Rectangle _primaryWorkArea;
-		List<IssueAlertWindow> _alertWindows = new List<IssueAlertWindow>();
+		readonly List<IssueAlertWindow> _alertWindows = new List<IssueAlertWindow>();
 
 		public ToolUpdateMonitor ToolUpdateMonitor { get; private set; }
 
-		public MainWindow(UpdateMonitor inUpdateMonitor, string? inApiUrl, DirectoryReference inDataFolder, DirectoryReference inCacheFolder, bool inRestoreStateOnLoad, string inOriginalExecutableFileName, bool inPreview, List<(UserSelectedProjectSettings, ModalTask<OpenProjectInfo>)> startupTasks, IPerforceSettings inDefaultPerforceSettings, IServiceProvider inServiceProvider, UserSettings inSettings, string? inUri, OidcTokenManager? inOidcTokenManager)
+		public MainWindow(UpdateMonitor inUpdateMonitor, string? apiUrl, DirectoryReference dataFolder, string originalExecutableFileName, bool preview, List<(UserSelectedProjectSettings, ModalTask<OpenProjectInfo>)> startupTasks, IPerforceSettings defaultPerforceSettings, IServiceProvider serviceProvider, UserSettings settings, string? uri)
 		{
-			_serviceProvider = inServiceProvider;
+			_serviceProvider = serviceProvider;
 			_logger = _serviceProvider.GetRequiredService<ILogger<MainWindow>>();
 
-			_logger.LogInformation("Opening Main Window for {NumProject} projects. Last Project {LastProject}", startupTasks.Count, inSettings.LastProject);
+			_logger.LogInformation("Opening Main Window for {NumProject} projects. Last Project {LastProject}", startupTasks.Count, settings.LastProject);
 
 			InitializeComponent();
+			Font = new Font("Segoe UI", 8.25F, FontStyle.Regular, GraphicsUnit.Point, ((byte)(0)));
 
 			_updateMonitor = inUpdateMonitor;
 			_mainThreadSynchronizationContext = SynchronizationContext.Current!;
-			_apiUrl = inApiUrl;
-			_dataFolder = inDataFolder;
-			_cacheFolder = inCacheFolder;
-			_restoreStateOnLoad = inRestoreStateOnLoad;
-			_originalExecutableFileName = inOriginalExecutableFileName;
-			_preview = inPreview;
-			_defaultPerforceSettings = inDefaultPerforceSettings;
-			ToolUpdateMonitor = new ToolUpdateMonitor(_defaultPerforceSettings, _dataFolder, inSettings, _serviceProvider);
+			_apiUrl = apiUrl;
+			_dataFolder = dataFolder;
+			_originalExecutableFileName = originalExecutableFileName;
+			_preview = preview;
+			_defaultPerforceSettings = defaultPerforceSettings;
+			ToolUpdateMonitor = new ToolUpdateMonitor(_defaultPerforceSettings, _dataFolder, settings, _serviceProvider);
 
-			_settings = inSettings;
-			_oidcTokenManager = inOidcTokenManager;
+			_settings = settings;
+			_oidcTokenManager = _serviceProvider.GetRequiredService<OidcTokenManager>();
 
 			// While creating tab controls during startup, we need to prevent layout calls resulting in the window handle being created too early. Disable layout calls here.
 			SuspendLayout();
@@ -194,22 +195,22 @@ namespace UnrealGameSync
 			}
 
 			ILogger<AutomationServer> automationLogger = _serviceProvider.GetRequiredService<ILogger<AutomationServer>>();
-			_automationServer = new AutomationServer(request => { _mainThreadSynchronizationContext.Post(obj => PostAutomationRequest(request), null); }, inUri, automationLogger);
+			_automationServer = new AutomationServer(request => { _mainThreadSynchronizationContext.Post(obj => PostAutomationRequest(request), null); }, uri, automationLogger);
 
 			// Allow creating controls from now on
 			TabPanel.ResumeLayout(false);
 			ResumeLayout(false);
 
-			foreach (string defaultIssueApiUrl in DeploymentSettings.DefaultIssueApiUrls)
+			foreach (string defaultIssueApiUrl in DeploymentSettings.Instance.DefaultIssueApiUrls)
 			{
-				_defaultIssueMonitors.Add(CreateIssueMonitor(defaultIssueApiUrl, inDefaultPerforceSettings.UserName));
+				_defaultIssueMonitors.Add(CreateIssueMonitor(defaultIssueApiUrl, defaultPerforceSettings.UserName));
 			}
 
 			_allowCreatingHandle = true;
 
 			foreach(WorkspaceIssueMonitor workspaceIssueMonitor in _workspaceIssueMonitors)
 			{
-				workspaceIssueMonitor.IssueMonitor.Start();
+				workspaceIssueMonitor._issueMonitor.Start();
 			}
 
 			ToolUpdateMonitor.Start();
@@ -268,7 +269,7 @@ namespace UnrealGameSync
 
 		AutomationRequestOutput StartExecCommand(AutomationRequest request)
 		{
-			BinaryReader reader = new BinaryReader(new MemoryStream(request.Input.Data));
+			using BinaryReader reader = new BinaryReader(new MemoryStream(request.Input.Data));
 			string streamName = reader.ReadString();
 			int changelist = reader.ReadInt32();
 			string command = reader.ReadString();
@@ -290,7 +291,7 @@ namespace UnrealGameSync
 			return new AutomationRequestOutput(AutomationRequestResult.Ok);
 		}
 
-		private void StartExecCommandAfterStartup(WorkspaceControl workspace, bool cancel, int changelist, string command)
+		private static void StartExecCommandAfterStartup(WorkspaceControl workspace, bool cancel, int changelist, string command)
 		{
 			if (!cancel)
 			{
@@ -305,7 +306,7 @@ namespace UnrealGameSync
 			}
 		}
 
-		private void StartExecCommandAfterSync(WorkspaceControl workspace, WorkspaceUpdateResult result, string command)
+		private static void StartExecCommandAfterSync(WorkspaceControl workspace, WorkspaceUpdateResult result, string command)
 		{
 			if (result == WorkspaceUpdateResult.Success && command != null)
 			{
@@ -318,7 +319,7 @@ namespace UnrealGameSync
 		{
 			ShowAndActivate();
 
-			BinaryReader reader = new BinaryReader(new MemoryStream(request.Input.Data));
+			using BinaryReader reader = new BinaryReader(new MemoryStream(request.Input.Data));
 			string streamName = reader.ReadString();
 			string projectPath = reader.ReadString();
 
@@ -351,7 +352,7 @@ namespace UnrealGameSync
 				for (int existingTabIdx = 0; existingTabIdx < TabControl.GetTabCount(); existingTabIdx++)
 				{
 					WorkspaceControl? existingWorkspace = TabControl.GetTabData(existingTabIdx) as WorkspaceControl;
-					if (existingWorkspace != null && existingWorkspace.ClientName.Equals(workspaceInfo.WorkspaceName))
+					if (existingWorkspace != null && existingWorkspace.ClientName.Equals(workspaceInfo.WorkspaceName, StringComparison.OrdinalIgnoreCase))
 					{
 						TabControl.RemoveTab(existingTabIdx);
 						break;
@@ -359,15 +360,15 @@ namespace UnrealGameSync
 				}
 
 				// Switch the stream
-				Func<IPerforceConnection, CancellationToken, Task> switchTask = async (connection, cancellationToken) =>
+				async Task SwitchTask(IPerforceConnection perforce, CancellationToken cancellationToken)
 				{
-					await connection.SwitchClientToStreamAsync(streamName, SwitchClientOptions.None, cancellationToken);
-				};
+					await perforce.SwitchClientToStreamAsync(streamName, SwitchClientOptions.None, cancellationToken);
+				}
 
 				PerforceSettings settings = new PerforceSettings(workspaceInfo.ServerAndPort, workspaceInfo.UserName);
 				settings.ClientName = workspaceInfo.WorkspaceName;
 
-				ModalTask? result = PerforceModalTask.Execute(Owner, "Please wait", "Switching streams, please wait...", settings, switchTask, _logger, ModalTaskFlags.Quiet);
+				ModalTask? result = PerforceModalTask.Execute(Owner, "Please wait", "Switching streams, please wait...", settings, SwitchTask, _logger, ModalTaskFlags.Quiet);
 				if (result == null || !result.Succeeded)
 				{
 					_logger.LogError("Unable to switch stream ({Message})", result?.Error ?? "Operation cancelled");
@@ -399,7 +400,7 @@ namespace UnrealGameSync
 			return true;
 		}
 
-		private void StartAutomatedSyncAfterStartup(WorkspaceControl workspace, bool cancel, AutomationRequest request)
+		private static void StartAutomatedSyncAfterStartup(WorkspaceControl workspace, bool cancel, AutomationRequest request)
 		{
 			if(cancel)
 			{
@@ -411,7 +412,7 @@ namespace UnrealGameSync
 			}
 		}
 
-		void CompleteAutomatedSync(WorkspaceUpdateResult result, FileReference selectedFileName, AutomationRequest request)
+		static void CompleteAutomatedSync(WorkspaceUpdateResult result, FileReference selectedFileName, AutomationRequest request)
 		{
 			if(result == WorkspaceUpdateResult.Success)
 			{
@@ -429,23 +430,23 @@ namespace UnrealGameSync
 
 		AutomationRequestOutput FindProject(AutomationRequest request)
 		{
-			BinaryReader reader = new BinaryReader(new MemoryStream(request.Input.Data));
+			using BinaryReader reader = new BinaryReader(new MemoryStream(request.Input.Data));
 			string streamName = reader.ReadString();
 			string projectPath = reader.ReadString();
 
 			for(int existingTabIdx = 0; existingTabIdx < TabControl.GetTabCount(); existingTabIdx++)
 			{
 				WorkspaceControl? existingWorkspace = TabControl.GetTabData(existingTabIdx) as WorkspaceControl;
-				if(existingWorkspace != null && String.Compare(existingWorkspace.StreamName, streamName, StringComparison.OrdinalIgnoreCase) == 0 && existingWorkspace.SelectedProject != null)
+				if(existingWorkspace != null && String.Equals(existingWorkspace.StreamName, streamName, StringComparison.OrdinalIgnoreCase) && existingWorkspace.SelectedProject != null)
 				{
 					string? clientPath = existingWorkspace.SelectedProject.ClientPath;
-					if(clientPath != null && clientPath.StartsWith("//"))
+					if(clientPath != null && clientPath.StartsWith("//", StringComparison.Ordinal))
 					{
 						int slashIdx = clientPath.IndexOf('/', 2);
 						if(slashIdx != -1)
 						{
 							string existingProjectPath = clientPath.Substring(slashIdx);
-							if(String.Compare(existingProjectPath, projectPath, StringComparison.OrdinalIgnoreCase) == 0)
+							if (String.Equals(existingProjectPath, projectPath, StringComparison.OrdinalIgnoreCase))
 							{
 								return new AutomationRequestOutput(AutomationRequestResult.Ok, Encoding.UTF8.GetBytes(existingWorkspace.SelectedFileName.FullName));
 							}
@@ -459,7 +460,7 @@ namespace UnrealGameSync
 
 		AutomationRequestOutput OpenIssue(AutomationRequest request)
 		{
-			BinaryReader reader = new BinaryReader(new MemoryStream(request.Input.Data));
+			using BinaryReader reader = new BinaryReader(new MemoryStream(request.Input.Data));
 			int issueId = reader.ReadInt32();
 
 			for (int existingTabIdx = 0; existingTabIdx < TabControl.GetTabCount(); existingTabIdx++)
@@ -468,13 +469,14 @@ namespace UnrealGameSync
 				if (existingWorkspace != null)
 				{
 					IssueMonitor issueMonitor = existingWorkspace.GetIssueMonitor();
-					if (issueMonitor != null && (DeploymentSettings.UrlHandleIssueApi == null || String.Compare(issueMonitor.ApiUrl, DeploymentSettings.UrlHandleIssueApi, StringComparison.OrdinalIgnoreCase) == 0))
+					if (issueMonitor != null && (DeploymentSettings.Instance.UrlHandleIssueApi == null || String.Equals(issueMonitor.ApiUrl, DeploymentSettings.Instance.UrlHandleIssueApi, StringComparison.OrdinalIgnoreCase)))
 					{
 						issueMonitor.AddRef();
 						try
 						{
-							Func<CancellationToken, Task<IssueData>> func = x => RestApi.GetAsync<IssueData>($"{issueMonitor.ApiUrl}/api/issues/{issueId}", x);
-							ModalTask<IssueData>? issueTask = ModalTask.Execute(this, "Finding Issue", "Querying issue data, please wait...", func);
+							Task<IssueData> Func(CancellationToken cancellationToken) => RestApi.GetAsync<IssueData>($"{issueMonitor.ApiUrl}/api/issues/{issueId}", cancellationToken);
+							
+							ModalTask<IssueData>? issueTask = ModalTask.Execute(this, "Finding Issue", "Querying issue data, please wait...", Func);
 							if (issueTask == null)
 							{
 								_logger.LogInformation("Operation cancelled");
@@ -487,7 +489,7 @@ namespace UnrealGameSync
 							}
 							else
 							{
-								_logger.LogError(issueTask?.Exception, "Unable to query issue {IssueId} from {ApiUrl}: {Error}", issueId, issueMonitor.ApiUrl, issueTask?.Error);
+								_logger.LogError(issueTask.Exception, "Unable to query issue {IssueId} from {ApiUrl}: {Error}", issueId, issueMonitor.ApiUrl, issueTask.Error);
 								return new AutomationRequestOutput(AutomationRequestResult.Error);
 							}
 						}
@@ -540,10 +542,14 @@ namespace UnrealGameSync
 					}
 				}
 
+				TabMenu_OpenProject.Enabled = _tabMenuTabIdx != -1;
+
 				foreach(UserSelectedProjectSettings recentProject in _settings.RecentProjects)
 				{
+#pragma warning disable CA2000 // warning CA2000: Call System.IDisposable.Dispose on object created by 'new ToolStripMenuItem(recentProject.ToString(), null, new EventHandler((o, e) => TabMenu_OpenRecentProject_Click(recentProject, _tabMenuTabIdx)))' before all references to it are out of scope
 					ToolStripMenuItem item = new ToolStripMenuItem(recentProject.ToString(), null, new EventHandler((o, e) => TabMenu_OpenRecentProject_Click(recentProject, _tabMenuTabIdx)));
 					TabMenu_RecentProjects.DropDownItems.Insert(insertIdx, item);
+#pragma warning restore CA2000
 					insertIdx++;
 				}
 
@@ -735,11 +741,20 @@ namespace UnrealGameSync
 			lines.Add(new StatusLine(){ LineHeight = 0.5f });
 
 			StatusLine actionLine = new StatusLine();
-			actionLine.AddLink("Retry", FontStyle.Bold | FontStyle.Underline, () => { BeginInvoke(new MethodInvoker(() => { TryOpenProject(project, TabControl.FindTabIndex(errorPanel)); })); });
+			actionLine.AddLink("Retry", FontStyle.Bold | FontStyle.Underline, () => 
+			{ 
+				BeginInvoke(new MethodInvoker(() => TryOpenProject(project, TabControl.FindTabIndex(errorPanel)))); 
+			});
 			actionLine.AddText(" | ");
-			actionLine.AddLink("Settings", FontStyle.Bold | FontStyle.Underline, () => { BeginInvoke(new MethodInvoker(() => { EditSelectedProject(errorPanel); })); });
+			actionLine.AddLink("Settings", FontStyle.Bold | FontStyle.Underline, () => 
+			{ 
+				BeginInvoke(new MethodInvoker(() => EditSelectedProject(errorPanel))); 
+			});
 			actionLine.AddText(" | ");
-			actionLine.AddLink("Close", FontStyle.Bold | FontStyle.Underline, () => { BeginInvoke(new MethodInvoker(() => { TabControl.RemoveTab(TabControl.FindTabIndex(errorPanel)); })); });
+			actionLine.AddLink("Close", FontStyle.Bold | FontStyle.Underline, () => 
+			{ 
+				BeginInvoke(new MethodInvoker(() => TabControl.RemoveTab(TabControl.FindTabIndex(errorPanel)))); 
+			});
 			lines.Add(actionLine);
 
 			errorPanel.Set(lines, null, null, null);
@@ -793,7 +808,7 @@ namespace UnrealGameSync
 
 		public bool CanPerformUpdate()
 		{
-			if(ContainsFocus || Form.ActiveForm == this)
+			if (ContainsFocus || Form.ActiveForm == this || !CanFocus)
 			{
 				return false;
 			}
@@ -822,18 +837,12 @@ namespace UnrealGameSync
 
 		public void SyncLatestChange()
 		{
-			if(_currentTabPanel != null)
-			{
-				_currentTabPanel.SyncLatestChange();
-			}
+			_currentTabPanel?.SyncLatestChange();
 		}
 
 		public void LaunchEditor()
 		{
-			if(_currentTabPanel != null)
-			{
-				_currentTabPanel.LaunchEditor();
-			}
+			_currentTabPanel?.LaunchEditor();
 		}
 
 		public void ForceClose()
@@ -844,18 +853,12 @@ namespace UnrealGameSync
 
 		private void MainWindow_Activated(object sender, EventArgs e)
 		{
-			if(_currentTabPanel != null)
-			{
-				_currentTabPanel.Activate();
-			}
+			_currentTabPanel?.Activate();
 		}
 
 		private void MainWindow_Deactivate(object sender, EventArgs e)
 		{
-			if(_currentTabPanel != null)
-			{
-				_currentTabPanel.Deactivate();
-			}
+			_currentTabPanel?.Deactivate();
 		}
 
 		public void SetupScheduledSync()
@@ -879,10 +882,10 @@ namespace UnrealGameSync
 				}
 			}
 
-			ScheduleWindow schedule = new ScheduleWindow(_settings.ScheduleEnabled, _settings.ScheduleTime, _settings.ScheduleAnyOpenProject, _settings.ScheduleProjects, openProjects, projectToLatestChangeTypes);
+			using ScheduleWindow schedule = new ScheduleWindow(_settings.ScheduleEnabled, _settings.ScheduleTime, _settings.ScheduleAnyOpenProject, _settings.ScheduleProjects, openProjects, projectToLatestChangeTypes);
 			if(schedule.ShowDialog() == System.Windows.Forms.DialogResult.OK)
 			{
-				schedule.CopySettings(out _settings.ScheduleEnabled, out _settings.ScheduleTime, out _settings.ScheduleAnyOpenProject, out _settings.ScheduleProjects);
+				schedule.CopySettings(_settings);
 				_settings.Save(_logger);
 			}
 
@@ -900,8 +903,8 @@ namespace UnrealGameSync
 
 				// add or subtract from the schedule time to distribute scheduled syncs over a little bit more time
 				// this avoids everyone hitting the p4 server at exactly the same time.
-				const int fudgeMinutes = 10;
-				TimeSpan fudgeTime = TimeSpan.FromMinutes(rnd.Next(fudgeMinutes * -100, fudgeMinutes * 100) / 100.0);
+				const int FudgeMinutes = 10;
+				TimeSpan fudgeTime = TimeSpan.FromMinutes(rnd.Next(FudgeMinutes * -100, FudgeMinutes * 100) / 100.0);
 				DateTime nextScheduleTime = new DateTime(currentTime.Year, currentTime.Month, currentTime.Day, _settings.ScheduleTime.Hours, _settings.ScheduleTime.Minutes, _settings.ScheduleTime.Seconds);
 				nextScheduleTime += fudgeTime;
 
@@ -911,11 +914,95 @@ namespace UnrealGameSync
 				}
 
 				TimeSpan intervalToFirstTick = nextScheduleTime - currentTime;
-				_scheduleTimer = new System.Threading.Timer(x => _mainThreadSynchronizationContext.Post((o) => { if(!IsDisposed){ ScheduleTimerElapsed(); } }, null), null, intervalToFirstTick, TimeSpan.FromDays(1));
+				_scheduleTimer = new System.Threading.Timer(x => _mainThreadSynchronizationContext.Post((o) => 
+				{ 
+					if(!IsDisposed)
+					{ 
+						ScheduleTimerElapsed(); 
+					} 
+				}, null), null, intervalToFirstTick, TimeSpan.FromDays(1));
 
 				_logger.LogInformation("Schedule: Started ScheduleTimer for {Time} ({Time} remaining)", nextScheduleTime, intervalToFirstTick);
 			}
 		}
+
+		private void CheckLauncherVersionTimer_Tick(object sender, EventArgs e)
+		{
+			if (!CanPerformUpdate())
+			{
+				return;
+			}
+
+			CheckLauncherVersionTimer.Enabled = false;
+
+			FileReference executableFile = new FileReference(Assembly.GetExecutingAssembly()!.Location);
+			FileReference installerFile = FileReference.Combine(executableFile.Directory, "UnrealGameSync.msi");
+			if (!FileReference.Exists(installerFile))
+			{
+				return;
+			}
+
+			DateTime now = DateTime.UtcNow;
+			if (now.Ticks < _settings.NextLauncherVersionCheck)
+			{
+				return;
+			}
+
+			int version = GetLauncherVersion();
+			if (version >= s_minLauncherVersion)
+			{
+				return;
+			}
+
+			using (LauncherUpdateWindow update = new LauncherUpdateWindow())
+			{
+				if (update.ShowDialog(this) == DialogResult.Ignore)
+				{
+					_settings.NextLauncherVersionCheck = (now + TimeSpan.FromDays(1.0)).Ticks;
+					_settings.Save(_logger);
+
+					CheckLauncherVersionTimer.Enabled = true;
+					return;
+				}
+			}
+
+			using (Process childProcess = new Process())
+			{
+				childProcess.StartInfo.FileName = installerFile.FullName;
+				childProcess.StartInfo.UseShellExecute = true;
+				childProcess.Start();
+			}
+
+			ForceClose();
+		}
+
+		static int GetLauncherVersion()
+		{
+			try
+			{
+				DirectoryReference? programFiles = DirectoryReference.GetSpecialFolder(Environment.SpecialFolder.ProgramFilesX86);
+				if (programFiles == null)
+				{
+					return 0;
+				}
+
+				FileReference launcherFile = FileReference.Combine(programFiles, "UnrealGameSync", "UnrealGameSyncLauncher.exe");
+				if (!FileReference.Exists(launcherFile))
+				{
+					return 0;
+				}
+
+				FileVersionInfo versionInfo = FileVersionInfo.GetVersionInfo(launcherFile.FullName);
+				return MakeLauncherVersion(versionInfo.FileMajorPart, versionInfo.FileMinorPart);
+			}
+			catch (Exception ex)
+			{
+				Program.CaptureException(ex);
+				return 0;
+			}
+		}
+
+		static int MakeLauncherVersion(int major, int minor) => (major << 16) + minor;
 
 		private void StopScheduleTimer()
 		{
@@ -954,7 +1041,13 @@ namespace UnrealGameSync
 		private void StartScheduleSettledTimer()
 		{
 			StopScheduleSettledTimer();
-			_scheduleSettledTimer = new System.Threading.Timer(x => _mainThreadSynchronizationContext.Post((o) => { if(!IsDisposed){ ScheduleSettledTimerElapsed(); } }, null), null, TimeSpan.FromSeconds(20.0), TimeSpan.FromMilliseconds(-1.0));
+			_scheduleSettledTimer = new System.Threading.Timer(x => _mainThreadSynchronizationContext.Post((o) => 
+			{ 
+				if(!IsDisposed)
+				{ 
+					ScheduleSettledTimerElapsed(); 
+				} 
+			}, null), null, TimeSpan.FromSeconds(20.0), TimeSpan.FromMilliseconds(-1.0));
 			_logger.LogInformation("Schedule: Started ScheduleSettledTimer");
 		}
 
@@ -1051,7 +1144,7 @@ namespace UnrealGameSync
 
 		public void OpenNewProject()
 		{
-			OpenProjectInfo? openProjectInfo = OpenProjectWindow.ShowModal(this, null, _settings, _dataFolder, _cacheFolder, _defaultPerforceSettings, _serviceProvider, _logger);
+			OpenProjectInfo? openProjectInfo = OpenProjectWindow.ShowModal(this, null, _settings, _defaultPerforceSettings, _serviceProvider, _logger);
 			if(openProjectInfo != null)
 			{
 				int newTabIdx = TryOpenProject(openProjectInfo, -1, OpenProjectOptions.None);
@@ -1069,10 +1162,10 @@ namespace UnrealGameSync
 			_settings.RecentProjects.RemoveAll(x => x.LocalPath != null && x.LocalPath.Equals(detectedProjectSettings.LocalPath, StringComparison.OrdinalIgnoreCase));
 			_settings.RecentProjects.Insert(0, detectedProjectSettings);
 
-			const int maxRecentProjects = 10;
-			if (_settings.RecentProjects.Count > maxRecentProjects)
+			const int MaxRecentProjects = 10;
+			if (_settings.RecentProjects.Count > MaxRecentProjects)
 			{
-				_settings.RecentProjects.RemoveRange(maxRecentProjects, _settings.RecentProjects.Count - maxRecentProjects);
+				_settings.RecentProjects.RemoveRange(MaxRecentProjects, _settings.RecentProjects.Count - MaxRecentProjects);
 			}
 
 			_settings.Save(_logger);
@@ -1081,14 +1174,12 @@ namespace UnrealGameSync
 		public void EditSelectedProject(int tabIdx)
 		{
 			object tabData = TabControl.GetTabData(tabIdx);
-			if(tabData is WorkspaceControl)
+			if(tabData is WorkspaceControl workspace)
 			{
-				WorkspaceControl workspace = (WorkspaceControl)tabData;
 				EditSelectedProject(tabIdx, workspace.SelectedProject);
 			}
-			else if(tabData is ErrorPanel)
+			else if(tabData is ErrorPanel error)
 			{
-				ErrorPanel error = (ErrorPanel)tabData;
 				EditSelectedProject(tabIdx, error.SelectedProject);
 			}
 		}
@@ -1113,7 +1204,7 @@ namespace UnrealGameSync
 
 		public void EditSelectedProject(int tabIdx, UserSelectedProjectSettings selectedProject)
 		{
-			OpenProjectInfo? openProjectInfo = OpenProjectWindow.ShowModal(this, selectedProject, _settings, _dataFolder, _cacheFolder, _defaultPerforceSettings, _serviceProvider, _logger);
+			OpenProjectInfo? openProjectInfo = OpenProjectWindow.ShowModal(this, selectedProject, _settings, _defaultPerforceSettings, _serviceProvider, _logger);
 			if(openProjectInfo != null)
 			{
 				int newTabIdx = TryOpenProject(openProjectInfo, tabIdx, OpenProjectOptions.None);
@@ -1138,10 +1229,13 @@ namespace UnrealGameSync
 
 			PerforceSettings perforceSettings = Utility.OverridePerforceSettings(_defaultPerforceSettings, project.ServerAndPort, project.UserName);
 
-			ModalTask<OpenProjectInfo>? settingsTask = PerforceModalTask.Execute(this, "Opening Project", "Opening project, please wait...", perforceSettings, (p, c) => OpenProjectWindow.DetectSettingsAsync(p, project, _settings, projectLogger, c), projectLogger, taskFlags);
+			ModalTask<OpenProjectInfo>? settingsTask = PerforceModalTask.Execute(this, "Opening Project", "Opening project, please wait...", perforceSettings, (p, c) => OpenProjectWindow.DetectSettingsAsync(p, project, _settings, _oidcTokenManager, projectLogger, c), projectLogger, taskFlags);
 			if (settingsTask == null || settingsTask.Failed)
 			{
-				if(settingsTask != null) CreateErrorPanel(replaceTabIdx, project, settingsTask.Error);
+				if (settingsTask != null)
+				{
+					CreateErrorPanel(replaceTabIdx, project, settingsTask.Error);
+				}
 				return -1;
 			}
 
@@ -1171,7 +1265,7 @@ namespace UnrealGameSync
 						}
 						else if(openProjectInfo.ProjectInfo.LocalFileName.IsUnderDirectory(workspace.BranchDirectoryName))
 						{
-							if((options & OpenProjectOptions.Quiet) == 0 && MessageBox.Show(String.Format("{0} is already open under {1}.\n\nWould you like to close it?", workspace.SelectedFileName.GetFileNameWithoutExtension(), workspace.BranchDirectoryName, openProjectInfo.ProjectInfo.LocalFileName.GetFileNameWithoutExtension()), "Branch already open", MessageBoxButtons.YesNo) == System.Windows.Forms.DialogResult.Yes)
+							if((options & OpenProjectOptions.Quiet) == 0 && MessageBox.Show($"{workspace.SelectedFileName.GetFileNameWithoutExtension()} is already open under {workspace.BranchDirectoryName}.\n\nWould you like to close it?", "Branch already open", MessageBoxButtons.YesNo) == System.Windows.Forms.DialogResult.Yes)
 							{
 								_logger.LogInformation("  Another project already open in this workspace, tab {TabIdx}. Replacing.", tabIdx);
 								TabControl.RemoveTab(tabIdx);
@@ -1202,7 +1296,7 @@ namespace UnrealGameSync
 			}
 
 			// Now that we have the project settings, we can construct the tab
-			WorkspaceControl newWorkspace = new WorkspaceControl(this, _dataFolder, _apiUrl, openProjectInfo, _serviceProvider, _settings, _oidcTokenManager);
+			WorkspaceControl newWorkspace = new WorkspaceControl(this, _dataFolder, _apiUrl, openProjectInfo, _serviceProvider, _settings);
 			
 			newWorkspace.Parent = TabPanel;
 			newWorkspace.Dock = DockStyle.Fill;
@@ -1227,7 +1321,13 @@ namespace UnrealGameSync
 
 		public void StreamChanged(WorkspaceControl workspace)
 		{
-			_mainThreadSynchronizationContext.Post((o) => { if(!IsDisposed) { StreamChangedCallback(workspace); } }, null);
+			_mainThreadSynchronizationContext.Post((o) => 
+			{ 
+				if(!IsDisposed) 
+				{ 
+					StreamChangedCallback(workspace); 
+				} 
+			}, null);
 		}
 
 		public void StreamChangedCallback(WorkspaceControl workspace)
@@ -1294,7 +1394,7 @@ namespace UnrealGameSync
 			}
 
 			// if this failes, return something sensible to avoid blank tabs
-			if (string.IsNullOrEmpty(tabName))
+			if (String.IsNullOrEmpty(tabName))
 			{
 				_logger.LogInformation("No TabName for {ClientName} for setting {TabSetting}. Defaulting to client name", workspace.ClientName, _settings.TabLabels.ToString());
 				tabName = workspace.ClientName;
@@ -1477,13 +1577,13 @@ namespace UnrealGameSync
 
 		public void UpdateAlertWindows()
 		{
-			if (!DeploymentSettings.EnableAlerts)
+			if (!DeploymentSettings.Instance.EnableAlerts)
 			{
 				return;
 			}
 
 			HashSet<IssueData> allIssues = new HashSet<IssueData>();
-			foreach(IssueMonitor issueMonitor in _workspaceIssueMonitors.Select(x => x.IssueMonitor))
+			foreach(IssueMonitor issueMonitor in _workspaceIssueMonitors.Select(x => x._issueMonitor))
 			{
 				List<IssueData> issues = issueMonitor.GetIssues();
 				foreach(IssueData issue in issues)
@@ -1504,7 +1604,7 @@ namespace UnrealGameSync
 						}
 						else if(!issue.AcknowledgedAt.HasValue)
 						{
-							if(String.Compare(issue.Owner, issueMonitor.UserName, StringComparison.OrdinalIgnoreCase) == 0)
+							if(String.Equals(issue.Owner, issueMonitor.UserName, StringComparison.OrdinalIgnoreCase))
 							{
 								reason |= IssueAlertReason.Owner;
 							}
@@ -1525,7 +1625,7 @@ namespace UnrealGameSync
 						}
 					}
 
-					IssueAlertWindow alertWindow = _alertWindows.FirstOrDefault(x => x.IssueMonitor == issueMonitor && x.Issue.Id == issue.Id);
+					IssueAlertWindow? alertWindow = _alertWindows.FirstOrDefault(x => x.IssueMonitor == issueMonitor && x.Issue.Id == issue.Id);
 					if(alertWindow == null)
 					{
 						if(reason != 0)
@@ -1631,8 +1731,6 @@ namespace UnrealGameSync
 
 		void CloseAlertWindow(IssueAlertWindow alert)
 		{
-			IssueData issue = alert.Issue;
-
 			alert.Close();
 			alert.Dispose();
 
@@ -1677,7 +1775,7 @@ namespace UnrealGameSync
 
 		public IssueMonitor CreateIssueMonitor(string? apiUrl, string userName)
 		{
-			WorkspaceIssueMonitor workspaceIssueMonitor = _workspaceIssueMonitors.FirstOrDefault(x => String.Compare(x.IssueMonitor.ApiUrl, apiUrl, StringComparison.OrdinalIgnoreCase) == 0 && String.Compare(x.IssueMonitor.UserName, userName, StringComparison.OrdinalIgnoreCase) == 0);
+			WorkspaceIssueMonitor? workspaceIssueMonitor = _workspaceIssueMonitors.FirstOrDefault(x => String.Equals(x._issueMonitor.ApiUrl, apiUrl, StringComparison.OrdinalIgnoreCase) && String.Equals(x._issueMonitor.UserName, userName, StringComparison.OrdinalIgnoreCase));
 			if (workspaceIssueMonitor == null)
 			{
 				string serverId = apiUrl != null ? Regex.Replace(apiUrl, @"^.*://", "") : "noserver";
@@ -1692,25 +1790,25 @@ namespace UnrealGameSync
 				_workspaceIssueMonitors.Add(workspaceIssueMonitor);
 			}
 
-			workspaceIssueMonitor.RefCount++;
+			workspaceIssueMonitor._refCount++;
 
-			if (workspaceIssueMonitor.RefCount == 1 && _allowCreatingHandle)
+			if (workspaceIssueMonitor._refCount == 1 && _allowCreatingHandle)
 			{
-				workspaceIssueMonitor.IssueMonitor.Start();
+				workspaceIssueMonitor._issueMonitor.Start();
 			}
 
-			return workspaceIssueMonitor.IssueMonitor;
+			return workspaceIssueMonitor._issueMonitor;
 		}
 
 		public void ReleaseIssueMonitor(IssueMonitor issueMonitor)
 		{
-			int index = _workspaceIssueMonitors.FindIndex(x => x.IssueMonitor == issueMonitor);
+			int index = _workspaceIssueMonitors.FindIndex(x => x._issueMonitor == issueMonitor);
 			if(index != -1)
 			{
 				WorkspaceIssueMonitor workspaceIssueMonitor = _workspaceIssueMonitors[index];
-				workspaceIssueMonitor.RefCount--;
+				workspaceIssueMonitor._refCount--;
 
-				if (workspaceIssueMonitor.RefCount == 0)
+				if (workspaceIssueMonitor._refCount == 0)
 				{
 					for (int idx = _alertWindows.Count - 1; idx >= 0; idx--)
 					{

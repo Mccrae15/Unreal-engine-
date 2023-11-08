@@ -111,12 +111,6 @@ UObject* UHairStrandsFactory::FactoryCreateFile(UClass* InClass, UObject* InPare
 	{
 		// Load the alembic file upfront to preview & report any potential issue
 		FHairDescriptionGroups OutDescription;
-		bool bHasRootUV = false;
-		bool bHasClumpID = false;
-		bool bHasPrecomputedWeights = false;
-		bool bHasColor= false;
-		bool bHasRoughness = false;
-		bool bHasAO = false;
 		{
 			FScopedSlowTask Progress((float)1, LOCTEXT("ImportHairAssetForPreview", "Importing hair asset for preview..."), true);
 			Progress.MakeDialog(true);
@@ -128,12 +122,6 @@ UObject* UHairStrandsFactory::FactoryCreateFile(UClass* InClass, UObject* InPare
 			}
 
 			FGroomBuilder::BuildHairDescriptionGroups(HairDescription, OutDescription);
-			bHasRootUV = HairDescription.HasRootUV();
-			bHasClumpID = HairDescription.HasClumpID();
-			bHasPrecomputedWeights = HairDescription.HasGuideWeights();
-			bHasColor = HairDescription.HasColorAttributes();
-			bHasRoughness = HairDescription.HasRoughnessAttributes();
-			bHasAO = HairDescription.HasAOAttributes();
 
 			// Populate the interpolation settings based on the group count, as this is used later during the ImportHair() to define 
 			// the exact number of group to create
@@ -150,16 +138,13 @@ UObject* UHairStrandsFactory::FactoryCreateFile(UClass* InClass, UObject* InPare
 			for (const FHairDescriptionGroup& Group : OutDescription.HairGroups)
 			{
 				FGroomHairGroupPreview& OutGroup = GroupsPreview->Groups.AddDefaulted_GetRef();
-				OutGroup.GroupName  = Group.Info.GroupName;
-				OutGroup.GroupID	= Group.Info.GroupID;
-				OutGroup.CurveCount = Group.Info.NumCurves;
-				OutGroup.GuideCount = Group.Info.NumGuides;
-				OutGroup.bHasRootUV = bHasRootUV;
-				OutGroup.bHasClumpID = bHasClumpID;
-				OutGroup.bHasPrecomputedWeights = bHasPrecomputedWeights;
-				OutGroup.bHasColor = bHasColor;
-				OutGroup.bHasRoughness = bHasRoughness;
-				OutGroup.bHasAO = bHasAO;
+				OutGroup.GroupName  		= Group.Info.GroupName;
+				OutGroup.GroupID			= Group.Info.GroupID;
+				OutGroup.CurveCount 		= Group.Info.NumCurves;
+				OutGroup.GuideCount 		= Group.Info.NumGuides;
+				OutGroup.Attributes 		= Group.GetHairAttributes();
+				OutGroup.AttributeFlags 	= Group.GetHairAttributeFlags();
+				OutGroup.Flags      		= Group.Info.Flags;
 				bGuidesOnly |= (OutGroup.CurveCount == 0 && OutGroup.GuideCount > 0);
 
 				if (OutGroup.GroupID < OutDescription.HairGroups.Num())

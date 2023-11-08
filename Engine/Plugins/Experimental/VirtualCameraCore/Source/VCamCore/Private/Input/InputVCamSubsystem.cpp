@@ -2,15 +2,18 @@
 
 #include "Input/InputVCamSubsystem.h"
 
+#include "EnhancedInputDeveloperSettings.h"
 #include "Input/VCamPlayerInput.h"
 #include "LogVCamCore.h"
 #include "VCamComponent.h"
 #include "VCamInputProcessor.h"
 
 #include "Components/InputComponent.h"
+#include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/ConsoleManager.h"
+#include "UserSettings/EnhancedInputUserSettings.h"
 
 namespace UE::VCamCore::Private
 {
@@ -54,19 +57,25 @@ void UInputVCamSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	
 	// Create and register the input preprocessor, this is what will call our "InputKey"
 	// function to drive input instead of a player controller
-	if (ensure(FSlateApplication::IsInitialized()))
+	if (FSlateApplication::IsInitialized())
 	{
 		// It's dangerous to consume input in editor (imagine typing something into search boxes but all L keys were consumed by VCam input)
 		// whereas probably expected by gameplay code.
 		using namespace UE::VCamCore::Private;
-		InputPreprocessor = MakeShared<FVCamInputProcessor>(*this, EInputConsumptionRule::DoNotConsume);
-		FSlateApplication::Get().RegisterInputPreProcessor(InputPreprocessor, 0);	
-	}
+		InputPreprocessor = MakeShared<FVCamInputProcessor>(*this);
+		FSlateApplication::Get().RegisterInputPreProcessor(InputPreprocessor, 0);
 
+		// The below things should only be done in Slate applications. Slate is disabled e.g. in commandlets. It makes no sense to have VCam input in such cases.
 #if WITH_EDITOR
-	// Use-case: Person A using gamepad to drive VCam input while Person B clicks stuff in editor > Gamepad may start navigating editor widgets. This CVar prevents that.
-	UE::VCamCore::Private::IncrementAndSetEnableGamepadEditorNavigation();
+		// Use-case: Person A using gamepad to drive VCam input while Person B clicks stuff in editor > Gamepad may start navigating editor widgets. This CVar prevents that.
+		UE::VCamCore::Private::IncrementAndSetEnableGamepadEditorNavigation();
 #endif
+		
+		if (GetDefault<UEnhancedInputDeveloperSettings>()->bEnableUserSettings)
+		{
+			InitalizeUserSettings();
+		}
+	}
 }
 
 void UInputVCamSubsystem::Deinitialize()
@@ -77,13 +86,22 @@ void UInputVCamSubsystem::Deinitialize()
 	if (FSlateApplication::IsInitialized())
 	{
 		FSlateApplication::Get().UnregisterInputPreProcessor(InputPreprocessor);
-	}
-
-	PlayerInput = nullptr;
+		
+		PlayerInput = nullptr;
 
 #if WITH_EDITOR
-	UE::VCamCore::Private::DecrementAndResetEnableGamepadEditorNavigation();
+		UE::VCamCore::Private::DecrementAndResetEnableGamepadEditorNavigation();
 #endif
+	}
+}
+
+void UInputVCamSubsystem::InitalizeUserSettings()
+{
+	UserSettings = NewObject<UEnhancedInputUserSettings>(this, TEXT("UserSettings"), RF_Transient);
+	// UEnhancedInputUserSettings's API is designed to work with ULocalPlayers. However, we won't be making any calls to functions that internally call GetOwningPlayer().
+	ULocalPlayer* LocalPlayerHack = GetMutableDefault<ULocalPlayer>();
+	UserSettings->Initialize(LocalPlayerHack);
+	BindUserSettingDelegates();
 }
 
 void UInputVCamSubsystem::OnUpdate(float DeltaTime)
@@ -92,10 +110,6 @@ void UInputVCamSubsystem::OnUpdate(float DeltaTime)
 	{
 		return;
 	}
-
-	FModifyContextOptions Options;
-	Options.bForceImmediately = true;
-	RequestRebuildControlMappings(Options);
 
 	TArray<UInputComponent*> InputStack;
 	for (auto It = CurrentInputStack.CreateIterator(); It; ++It)
@@ -164,15 +178,6 @@ bool UInputVCamSubsystem::PopInputComponent(UInputComponent* InInputComponent)
 	return false;
 }
 
-void UInputVCamSubsystem::SetShouldConsumeGamepadInput(EVCamGamepadInputMode GamepadInputMode)
-{
-	check(InputPreprocessor && PlayerInput);
-	
-	FVCamInputDeviceConfig InputSettings = PlayerInput->GetInputSettings();
-	InputSettings.GamepadInputMode = GamepadInputMode;
-	SetInputSettings(InputSettings);
-}
-
 const FVCamInputDeviceConfig& UInputVCamSubsystem::GetInputSettings() const
 {
 	// Undefined behaviour returning from dereferenced nullptr, let's make sure to assert.
@@ -184,11 +189,6 @@ void UInputVCamSubsystem::SetInputSettings(const FVCamInputDeviceConfig& Input)
 {
 	check(PlayerInput);
 	PlayerInput->SetInputSettings(Input);
-
-	const bool bShouldConsumeGamepad = Input.GamepadInputMode == EVCamGamepadInputMode::IgnoreAndConsume || Input.GamepadInputMode == EVCamGamepadInputMode::AllowAndConsume;
-	InputPreprocessor->SetInputConsumptionRule(
-		bShouldConsumeGamepad ? UE::VCamCore::Private::EInputConsumptionRule::ConsumeOnlyGamepadIfUsed : UE::VCamCore::Private::EInputConsumptionRule::DoNotConsume
-		);
 }
 
 UEnhancedPlayerInput* UInputVCamSubsystem::GetPlayerInput() const

@@ -37,6 +37,7 @@ namespace OculusXRHMD
 		, CurrentFeatureLevel(GMaxRHIFeatureLevel)
 		, bLateLatching(false)
 		, bSupportExperimentalFeatures(false)
+		, ProcessorFavor(EProcessorFavor::FavorEqually)
 	{
 		Flags.Raw = 0;
 		Flags.bHMDEnabled = true;
@@ -59,6 +60,7 @@ namespace OculusXRHMD
 		Flags.bRequiresSystemKeyboard = false;
 		Flags.bInsightPassthroughEnabled = false;
 		Flags.bAnchorSupportEnabled = false;
+		Flags.bAnchorSharingEnabled = false;
 		Flags.bSceneSupportEnabled = false;
 		Flags.bBodyTrackingEnabled = false;
 		Flags.bEyeTrackingEnabled = false;
@@ -66,6 +68,7 @@ namespace OculusXRHMD
 		EyeRenderViewport[0] = EyeRenderViewport[1] = FIntRect(0, 0, 0, 0);
 
 		RenderTargetSize = FIntPoint(0, 0);
+
 	}
 
 	TSharedPtr<FSettings, ESPMode::ThreadSafe> FSettings::Clone() const

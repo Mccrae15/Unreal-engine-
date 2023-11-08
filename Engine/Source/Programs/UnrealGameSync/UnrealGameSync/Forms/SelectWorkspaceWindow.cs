@@ -5,13 +5,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.Data;
-using System.Drawing;
-using System.IO;
 using System.Linq;
-using System.Net;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -29,8 +24,8 @@ namespace UnrealGameSync
 
 			public EnumerateWorkspaces(InfoRecord info, List<ClientsRecord> clients)
 			{
-				this.Info = info;
-				this.Clients = clients;
+				Info = info;
+				Clients = clients;
 			}
 
 			public static async Task<EnumerateWorkspaces> RunAsync(IPerforceConnection perforce, CancellationToken cancellationToken)
@@ -41,17 +36,18 @@ namespace UnrealGameSync
 			}
 		}
 
-		InfoRecord _info;
-		List<ClientsRecord> _clients;
+		readonly InfoRecord _info;
+		readonly List<ClientsRecord> _clients;
 		string? _workspaceName;
 
 		private SelectWorkspaceWindow(InfoRecord info, List<ClientsRecord> clients, string? workspaceName)
 		{
 			InitializeComponent();
+			Font = new System.Drawing.Font("Segoe UI", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
 
-			this._info = info;
-			this._clients = clients;
-			this._workspaceName = workspaceName;
+			_info = info;
+			_clients = clients;
+			_workspaceName = workspaceName;
 
 			UpdateListView();
 			UpdateOkButton();
@@ -72,7 +68,7 @@ namespace UnrealGameSync
 
 			foreach(ClientsRecord client in _clients.OrderBy(x => x.Name))
 			{
-				if(!OnlyForThisComputer.Checked || String.Compare(client.Host, _info.ClientHost, StringComparison.InvariantCultureIgnoreCase) == 0)
+				if(!OnlyForThisComputer.Checked || String.Equals(client.Host, _info.ClientHost, StringComparison.OrdinalIgnoreCase))
 				{
 					ListViewItem item = new ListViewItem(client.Name);
 					item.SubItems.Add(new ListViewItem.ListViewSubItem(item, client.Host));
@@ -98,7 +94,7 @@ namespace UnrealGameSync
 				return false;
 			}
 
-			SelectWorkspaceWindow selectWorkspace = new SelectWorkspaceWindow(task.Result.Info, task.Result.Clients, workspaceName);
+			using SelectWorkspaceWindow selectWorkspace = new SelectWorkspaceWindow(task.Result.Info, task.Result.Clients, workspaceName);
 			if(selectWorkspace.ShowDialog(owner) == DialogResult.OK)
 			{
 				newWorkspaceName = selectWorkspace._workspaceName;

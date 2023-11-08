@@ -8,9 +8,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
-using System.Drawing;
 using System.Linq;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -25,22 +23,22 @@ namespace UnrealGameSync
 		{
 			public delegate void OnCompleteDelegate(string userName, List<DescribeRecord> changes);
 
-			IPerforceSettings _perforceSettings;
-			SynchronizationContext _mainThreadSyncContext;
-			AsyncEvent _wakeEvent;
+			readonly IPerforceSettings _perforceSettings;
+			readonly SynchronizationContext _mainThreadSyncContext;
+			readonly AsyncEvent _wakeEvent;
 			string? _requestedUserName;
-			CancellationTokenSource _cancellationSource;
+			readonly CancellationTokenSource _cancellationSource;
 			Task _backgroundTask;
 			OnCompleteDelegate? _onComplete;
-			ILogger _logger;
+			readonly ILogger _logger;
 
 			public FindChangesWorker(IPerforceSettings perforceSettings, OnCompleteDelegate? onComplete, ILogger logger)
 			{
-				this._perforceSettings = perforceSettings;
-				this._mainThreadSyncContext = SynchronizationContext.Current!;
+				_perforceSettings = perforceSettings;
+				_mainThreadSyncContext = SynchronizationContext.Current!;
 				_wakeEvent = new AsyncEvent();
-				this._onComplete = onComplete;
-				this._logger = logger;
+				_onComplete = onComplete;
+				_logger = logger;
 
 				_cancellationSource = new CancellationTokenSource();
 				_backgroundTask = Task.Run(() => DoWork(_cancellationSource.Token));
@@ -48,7 +46,7 @@ namespace UnrealGameSync
 
 			public void Stop()
 			{
-				_ = StopAsync();
+				StopAsync().Wait();
 			}
 
 			Task StopAsync()
@@ -59,7 +57,7 @@ namespace UnrealGameSync
 					_onComplete = null;
 
 					_cancellationSource.Cancel();
-					stopTask = _backgroundTask.ContinueWith(_ => _cancellationSource.Dispose());
+					stopTask = _backgroundTask;
 
 					_backgroundTask = null!;
 				}
@@ -77,6 +75,8 @@ namespace UnrealGameSync
 				base.Dispose(disposing);
 
 				Stop();
+
+				_cancellationSource.Dispose();
 			}
 
 			public async Task DoWork(CancellationToken cancellationToken)
@@ -108,18 +108,21 @@ namespace UnrealGameSync
 			}
 		}
 
-		IPerforceSettings _perforceSettings;
+		readonly IPerforceSettings _perforceSettings;
 		int _changeNumber;
-		FindChangesWorker _worker;
-		IServiceProvider _serviceProvider;
+#pragma warning disable CA2213 // warning CA2213: 'IssueFixedWindow' contains field '_worker' that is of IDisposable type 'FindChangesWorker', but it is never disposed. Change the Dispose method on 'IssueFixedWindow' to call Close or Dispose on this field.
+		readonly FindChangesWorker _worker;
+#pragma warning restore CA2213
+		readonly IServiceProvider _serviceProvider;
 	
 		public IssueFixedWindow(IPerforceSettings perforceSettings, int initialChangeNumber, IServiceProvider serviceProvider)
 		{
 			InitializeComponent();
+			Font = new System.Drawing.Font("Segoe UI", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
 
-			this._perforceSettings = perforceSettings;
-			this._worker = new FindChangesWorker(perforceSettings, PopulateChanges, serviceProvider.GetRequiredService<ILogger<FindChangesWorker>>());
-			this._serviceProvider = serviceProvider;
+			_perforceSettings = perforceSettings;
+			_worker = new FindChangesWorker(perforceSettings, PopulateChanges, serviceProvider.GetRequiredService<ILogger<FindChangesWorker>>());
+			_serviceProvider = serviceProvider;
 			components!.Add(_worker);
 
 			UserNameTextBox.Text = perforceSettings.UserName;
@@ -203,7 +206,7 @@ namespace UnrealGameSync
 				{
 					foreach(DescribeRecord change in changes)
 					{
-						if(change.Description != null && change.Description.IndexOf("#ROBOMERGE-SOURCE", 0) == -1)
+						if(change.Description != null && !change.Description.Contains("#ROBOMERGE-SOURCE", StringComparison.Ordinal))
 						{
 							string stream = "";
 							if(change.Files.Count > 0)
@@ -301,7 +304,7 @@ namespace UnrealGameSync
 		{
 			if(SpecifyChangeRadioButton.Checked)
 			{
-				return int.TryParse(ChangeNumberTextBox.Text, out changeNumber);
+				return Int32.TryParse(ChangeNumberTextBox.Text, out changeNumber);
 			}
 			else if(SystemicFixRadioButton.Checked)
 			{
@@ -326,8 +329,7 @@ namespace UnrealGameSync
 
 		private void UpdateOkButton()
 		{
-			int changeNumber;
-			OkBtn.Enabled = TryGetSelectedChange(out changeNumber);
+			OkBtn.Enabled = TryGetSelectedChange(out _);
 		}
 
 		private void SpecifyChangeRadioButton_CheckedChanged(object sender, EventArgs e)

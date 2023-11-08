@@ -182,6 +182,19 @@ void AActor::DestroyConstructedComponents()
 				}
 			}
 
+			if (!bDestroyComponent)
+			{
+				// check for orphaned natively created components:
+				if (Component->CreationMethod == EComponentCreationMethod::Native && Component->HasAnyFlags(RF_DefaultSubObject))
+				{
+					UObject* ComponentArchetype = Component->GetArchetype();
+					if (ComponentArchetype == ComponentArchetype->GetClass()->ClassDefaultObject)
+					{
+						bDestroyComponent = true;
+					}
+				}
+			}
+
 			if (bDestroyComponent)
 			{
 				if (Component == RootComponent)
@@ -279,6 +292,21 @@ void AActor::RerunConstructionScripts()
 		// Temporarily suspend the undo buffer; we don't need to record reconstructed component objects into the current transaction
 		ITransaction* CurrentTransaction = GUndo;
 		GUndo = nullptr;
+
+		// Keep track of non-dirty packages, so we can clear the dirty state after reconstruction.
+		TSet<UPackage*> CleanPackageList;
+		auto CheckAndSaveOuterPackageToCleanList = [&CleanPackageList](const UObject* InObject)
+		{
+			check(InObject);
+			UPackage* ObjectPackage = InObject->GetPackage();
+			if (ObjectPackage && !ObjectPackage->IsDirty() && ObjectPackage != GetTransientPackage())
+			{
+				CleanPackageList.Add(ObjectPackage);
+			}
+		};
+
+		// Mark package as clean on exit if not transient and not already dirty.
+		CheckAndSaveOuterPackageToCleanList(this);
 		
 		// Create cache to store component data across rerunning construction scripts
 		FComponentInstanceDataCache* InstanceDataCache;
@@ -324,6 +352,18 @@ void AActor::RerunConstructionScripts()
 			}
 		}
 
+		// Generate name to node lookup maps for each SCS.  This used to be done just during ExecuteConstruction, but it also optimizes
+		// calls to GetArchetype elsewhere during RerunConstructionScripts, so it's advantageous to run it here.
+		TArray<const UBlueprintGeneratedClass*> ParentBPClassStack;
+		UBlueprintGeneratedClass::GetGeneratedClassesHierarchy(GetClass(), ParentBPClassStack);
+		for (const UBlueprintGeneratedClass* BPClass : ParentBPClassStack)
+		{
+			if (BPClass->SimpleConstructionScript)
+			{
+				BPClass->SimpleConstructionScript->CreateNameToSCSNodeMap();
+			}
+		}
+
 		if (!CurrentTransactionAnnotation.IsValid())
 		{
 			CurrentTransactionAnnotation = FActorTransactionAnnotation::Create(this, false);
@@ -349,6 +389,10 @@ void AActor::RerunConstructionScripts()
 				AActor* AttachedActor = CachedAttachInfo.Actor.Get();
 				if (AttachedActor)
 				{
+					// Detaching will mark the attached actor's package as dirty, but we don't actually need
+					// it to be re-saved after reconstruction since attachment relationships will be restored.
+					CheckAndSaveOuterPackageToCleanList(AttachedActor);
+
 					FAttachedActorInfo Info;
 					Info.AttachedActor = AttachedActor;
 					Info.AttachedToSocket = CachedAttachInfo.SocketName;
@@ -371,6 +415,10 @@ void AActor::RerunConstructionScripts()
 
 			for (AActor* AttachedActor : AttachedActors)
 			{
+				// Detaching will mark the attached actor's package as dirty, but we don't actually need
+				// it to be re-saved after reconstruction since attachment relationships will be restored.
+				CheckAndSaveOuterPackageToCleanList(AttachedActor);
+
 				// We don't need to detach child actors, that will be handled by component tear down
 				if (!AttachedActor->IsChildActor())
 				{
@@ -524,8 +572,20 @@ void AActor::RerunConstructionScripts()
 			ExchangeNetRoles(true);
 		}
 
+		// Determine if we already have the correct world transform on the RootComponent. If so, we don't want to try to set it again in ExecuteConstruction()
+		// or else a re-computation of the relative transform can cause error accumulation on the RelativeLocation/etc which is supposed to derive the ComponentToWorld.
+		bool bIsDefaultTransform = false;
+		if (RootComponent != nullptr && bUseRootComponentProperties)
+		{
+			const double TransformTolerance = 0.0;
+			if (OldTransform.Equals(RootComponent->GetComponentTransform(), TransformTolerance))
+			{
+				bIsDefaultTransform = true;
+			}
+		}
+
 		// Run the construction scripts
-		const bool bErrorFree = ExecuteConstruction(OldTransform, &OldTransformRotationCache, InstanceDataCache);
+		const bool bErrorFree = ExecuteConstruction(OldTransform, &OldTransformRotationCache, InstanceDataCache, bIsDefaultTransform);
 
 		if(Parent)
 		{
@@ -584,6 +644,16 @@ void AActor::RerunConstructionScripts()
 				}
 			}
 		}
+
+		// If any of the code above caused a package dirty state to change, we reset it back to a "clean" state now. Note that we have to do this
+		// before we restore the undo buffer below - otherwise, the state change will become part of the current transaction, and we don't want that.
+		for (UPackage* PackageToMarkAsClean : CleanPackageList)
+		{
+			check(PackageToMarkAsClean);
+			PackageToMarkAsClean->SetDirtyFlag(false);
+		}
+
+		CleanPackageList.Empty();
 
 		// Restore the undo buffer
 		GUndo = CurrentTransaction;
@@ -706,6 +776,15 @@ void AActor::RerunConstructionScripts()
 		{
 			CurrentTransactionAnnotation = nullptr;
 		}
+
+		// Remove the name to SCS node maps now that we're done constructing
+		for (const UBlueprintGeneratedClass* BPClass : ParentBPClassStack)
+		{
+			if (BPClass->SimpleConstructionScript)
+			{
+				BPClass->SimpleConstructionScript->RemoveNameToSCSNodeMap();
+			}
+		}
 	}
 }
 #endif
@@ -767,11 +846,21 @@ bool AActor::ExecuteConstruction(const FTransform& Transform, const FRotationCon
 					if (SceneComponent->CreationMethod == EComponentCreationMethod::Native && SceneComponent->GetOuter()->IsA<AActor>())
 					{
 						// If RootComponent is not set, the first unattached native scene component will be used as root. This matches what's done in FixupNativeActorComponents().
-						// @TODO - consider removing this; keeping here as a fallback just in case it wasn't set prior to SCS execution, but in most cases now this should be valid. 
+												// In cases like BP reparenting between native classes, this is needed to fix up changes in root component type
 						if (RootComponent == nullptr && SceneComponent->GetAttachParent() == nullptr)
 						{
 							// Note: All native scene components should already have been registered at this point, so we don't need to register the component here.
 							SetRootComponent(SceneComponent);
+
+							// Update the transform on the newly set root component
+							if (ensure(RootComponent) && !bIsDefaultTransform)
+							{
+								if (TransformRotationCache)
+								{
+									RootComponent->SetRelativeRotationCache(*TransformRotationCache);
+								}
+								RootComponent->SetWorldTransform(Transform, /*bSweep=*/false, /*OutSweepHitResult=*/nullptr, ETeleportType::TeleportPhysics);
+							}
 						}
 
 						NativeSceneComponents.Add(SceneComponent);
@@ -788,7 +877,6 @@ bool AActor::ExecuteConstruction(const FTransform& Transform, const FRotationCon
 				USimpleConstructionScript* SCS = CurrentBPGClass->SimpleConstructionScript;
 				if (SCS)
 				{
-					SCS->CreateNameToSCSNodeMap();
 					SCS->ExecuteScriptOnActor(this, NativeSceneComponents, Transform, TransformRotationCache, bIsDefaultTransform, TransformScaleMethod);
 				}
 				// Now that the construction scripts have been run, we can create timelines and hook them up
@@ -851,17 +939,6 @@ bool AActor::ExecuteConstruction(const FTransform& Transform, const FRotationCon
 			if (InstanceDataCache)
 			{
 				InstanceDataCache->ApplyToActor(this, ECacheApplyPhase::PostUserConstructionScript);
-			}
-
-			// Remove name to SCS_Node cached map
-			for (const UBlueprintGeneratedClass* CurrentBPGClass : ParentBPClassStack)
-			{
-				check(CurrentBPGClass);
-				USimpleConstructionScript* SCS = CurrentBPGClass->SimpleConstructionScript;
-				if (SCS)
-				{
-					SCS->RemoveNameToSCSNodeMap();
-				}
 			}
 		}
 		else

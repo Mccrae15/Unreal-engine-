@@ -3,10 +3,10 @@
 #include "HttpClient.h"
 
 #include "Async/InheritedContext.h"
+#include "Async/ManualResetEvent.h"
 #include "Containers/ConsumeAllMpmcQueue.h"
 #include "Containers/LockFreeList.h"
 #include "Containers/StringView.h"
-#include "HAL/Event.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/Thread.h"
 #include "Memory/CompositeBuffer.h"
@@ -220,6 +220,7 @@ private:
 	~FCurlHttpClient() final;
 	void Destroy() final { delete this; }
 
+	static long ConvertVersion(EHttpVersion Version);
 	static long ConvertTlsLevel(EHttpTlsLevel Level);
 
 	FCurlHttpConnectionPool& ConnectionPool;
@@ -294,7 +295,7 @@ public:
 	TRefCountPtr<IHttpResponseMonitor> GetMonitor() final { return this; }
 
 	void Cancel() final;
-	void Wait() const final { CompleteEvent->Wait(); }
+	void Wait() const final { CompleteEvent.Wait(); }
 	bool Poll() const final { return EnumHasAnyFlags(State.load(), ECurlHttpResponseState::Complete); }
 	bool IsCanceled() const { return EnumHasAnyFlags(State.load(std::memory_order_relaxed), ECurlHttpResponseState::Canceled); }
 
@@ -340,7 +341,7 @@ private:
 	FAnsiStringView Error;
 	ANSICHAR ErrorBuffer[CURL_ERROR_SIZE]{};
 	FHttpResponseStats Stats;
-	FEventRef CompleteEvent{EEventMode::ManualReset};
+	mutable FManualResetEvent CompleteEvent;
 
 	enum class EHttpReceiverFunction : uint8
 	{
@@ -627,7 +628,7 @@ void FCurlHttpClient::SetDefaultOptions(CURL* Curl, FCurlHttpHeaders& Headers) c
 {
 	ConnectionPool.SetDefaultOptions(Curl, Headers);
 
-	curl_easy_setopt(Curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_0);
+	curl_easy_setopt(Curl, CURLOPT_HTTP_VERSION, ConvertVersion(Params.Version));
 
 	curl_easy_setopt(Curl, CURLOPT_DNS_CACHE_TIMEOUT, FMath::Min<long>(Params.DnsCacheTimeout, MAX_int32));
 	curl_easy_setopt(Curl, CURLOPT_CONNECTTIMEOUT_MS, long(Params.ConnectTimeout));
@@ -640,6 +641,19 @@ void FCurlHttpClient::SetDefaultOptions(CURL* Curl, FCurlHttpHeaders& Headers) c
 		(Params.bFollow302Post ? CURL_REDIR_POST_302 : 0) |
 		(Params.bFollow303Post ? CURL_REDIR_POST_303 : 0)));
 	curl_easy_setopt(Curl, CURLOPT_VERBOSE, long(Params.bVerbose));
+}
+
+long FCurlHttpClient::ConvertVersion(const EHttpVersion Version)
+{
+	switch (Version)
+	{
+	case EHttpVersion::None:   return CURL_HTTP_VERSION_NONE;
+	case EHttpVersion::V1_0:   return CURL_HTTP_VERSION_1_0;
+	case EHttpVersion::V1_1:   return CURL_HTTP_VERSION_1_1;
+	case EHttpVersion::V2:     return CURL_HTTP_VERSION_2_0;
+	case EHttpVersion::V2Only: return CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE;
+	default: checkNoEntry();   return CURL_HTTP_VERSION_NONE;
+	}
 }
 
 long FCurlHttpClient::ConvertTlsLevel(const EHttpTlsLevel Level)
@@ -1138,7 +1152,7 @@ void FCurlHttpResponse::SetComplete(CURLcode Code)
 	}
 
 	CurlHttp::Private::AtomicFetchOr(State, ECurlHttpResponseState::Complete);
-	CompleteEvent->Trigger();
+	CompleteEvent.Notify();
 
 	if (UE_LOG_ACTIVE(LogHttp, Verbose))
 	{
@@ -1184,7 +1198,7 @@ void FCurlHttpResponse::Cancel()
 	// Waiting within a receiver function would prevent the response from completing.
 	if (LocalReceiverFunction == EHttpReceiverFunction::None)
 	{
-		CompleteEvent->Wait();
+		CompleteEvent.Wait();
 	}
 }
 

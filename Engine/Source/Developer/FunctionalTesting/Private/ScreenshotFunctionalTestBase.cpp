@@ -49,9 +49,14 @@ void AScreenshotFunctionalTestBase::PrepareTest()
 {
 	Super::PrepareTest();
 
-	APlayerController* PlayerController = UGameplayStatics::GetPlayerController(GetWorld(), 0);
+	UGameViewportClient* GameViewportClient = AutomationCommon::GetAnyGameViewportClient();
+	check(GameViewportClient);
+
+	APlayerController* PlayerController = UGameplayStatics::GetPlayerController(GameViewportClient->GetWorld(), 0);
 	if (PlayerController)
 	{
+		// Make sure the camera target is not auto managed
+		PlayerController->bAutoManageActiveCameraTarget = false;
 		PlayerController->SetViewTarget(this, FViewTargetTransitionParams());
 	}
 
@@ -88,17 +93,18 @@ void AScreenshotFunctionalTestBase::OnScreenshotTakenAndCompared()
 
 void AScreenshotFunctionalTestBase::PrepareForScreenshot()
 {
-	check(GEngine->GameViewport && GEngine->GameViewport->GetGameViewport());
+	UGameViewportClient* GameViewportClient = AutomationCommon::GetAnyGameViewportClient();
+	check(GameViewportClient);
 	check(IsInGameThread());
 	check(!bNeedsViewSettingsRestore && !bNeedsViewportRestore);
 
 #if WITH_AUTOMATION_TESTS
 	bool bApplyScreenshotSettings = true;
-	FSceneViewport* GameViewport = GEngine->GameViewport->GetGameViewport();
+	FSceneViewport* GameViewport = GameViewportClient->GetGameViewport();
 
 #if WITH_EDITOR_AUTOMATION_TESTS
 	// In the editor we can only attempt to resize a standalone viewport
-	UWorld* World = GetWorld();
+	UWorld* World = GameViewportClient->GetWorld();
 	UEditorEngine* EditorEngine = Cast<UEditorEngine>(GEngine);	
 
 	const bool bIsPIEViewport = GameViewport->IsPlayInEditorViewport();
@@ -109,7 +115,7 @@ void AScreenshotFunctionalTestBase::PrepareForScreenshot()
 
 	if (bApplyScreenshotSettings)
 	{
-		ScreenshotEnvSetup->Setup(GetWorld(), ScreenshotOptions);
+		ScreenshotEnvSetup->Setup(GameViewportClient->GetWorld(), ScreenshotOptions);
 		FlushRenderingCommands();
 		bNeedsViewSettingsRestore = true;
 
@@ -129,7 +135,7 @@ void AScreenshotFunctionalTestBase::PrepareForScreenshot()
 	if (GDumpGPUDumpOnScreenshotTest.GetValueOnGameThread() != 0)
 	{
 		FlushRenderingCommands();
-		UKismetSystemLibrary::ExecuteConsoleCommand(GEngine->GameViewport->GetWorld(), TEXT("r.ResetRenderTargetsExtent"), nullptr);
+		UKismetSystemLibrary::ExecuteConsoleCommand(GameViewportClient->GetWorld(), TEXT("r.ResetRenderTargetsExtent"), nullptr);
 	}
 #endif
 #endif
@@ -137,14 +143,17 @@ void AScreenshotFunctionalTestBase::PrepareForScreenshot()
 
 void AScreenshotFunctionalTestBase::OnScreenShotCaptured(int32 InSizeX, int32 InSizeY, const TArray<FColor>& InImageData)
 {
-	check(GEngine->GameViewport);
+	UGameViewportClient* GameViewportClient = AutomationCommon::GetAnyGameViewportClient();
+	check(GameViewportClient);
 
-	GEngine->GameViewport->OnScreenshotCaptured().RemoveAll(this);
+	GameViewportClient->OnScreenshotCaptured().RemoveAll(this);
 
 #if WITH_AUTOMATION_TESTS
-	TArray<uint8> CapturedFrameTrace = AutomationCommon::CaptureFrameTrace(GetWorld()->GetName(), TestLabel);
+	const FString Context = AutomationCommon::GetWorldContext(GetWorld());
 
-	FAutomationScreenshotData Data = UAutomationBlueprintFunctionLibrary::BuildScreenshotData(GetWorld()->GetName(), TestLabel, InSizeX, InSizeY);
+	TArray<uint8> CapturedFrameTrace = AutomationCommon::CaptureFrameTrace(Context, TestLabel);
+
+	FAutomationScreenshotData Data = UAutomationBlueprintFunctionLibrary::BuildScreenshotData(Context, TestLabel, InSizeX, InSizeY);
 
 	// Copy the relevant data into the metadata for the screenshot.
 	Data.bHasComparisonRules = true;
@@ -176,12 +185,12 @@ void AScreenshotFunctionalTestBase::OnScreenShotCaptured(int32 InSizeX, int32 In
 void AScreenshotFunctionalTestBase::RequestScreenshot()
 {
 	check(IsInGameThread());
-	check(GEngine->GameViewport);
+	UGameViewportClient* GameViewportClient = AutomationCommon::GetAnyGameViewportClient();
+	check(GameViewportClient);
 
 	// Make sure any screenshot request has been processed
 	FlushRenderingCommands();
 
-	UGameViewportClient* GameViewportClient = GEngine->GameViewport;
 	GameViewportClient->OnScreenshotCaptured().AddUObject(this, &AScreenshotFunctionalTestBase::OnScreenShotCaptured);
 
 #if WITH_AUTOMATION_TESTS && WITH_DUMPGPU
@@ -206,7 +215,8 @@ void AScreenshotFunctionalTestBase::OnComparisonComplete(const FAutomationScreen
 
 void AScreenshotFunctionalTestBase::RestoreViewSettings()
 {
-	check(GEngine->GameViewport && GEngine->GameViewport->GetGameViewport());
+	UGameViewportClient* GameViewportClient = AutomationCommon::GetAnyGameViewportClient();
+	check(GameViewportClient && GameViewportClient->GetGameViewport());
 	check(IsInGameThread());
 	
 #if WITH_AUTOMATION_TESTS
@@ -217,7 +227,7 @@ void AScreenshotFunctionalTestBase::RestoreViewSettings()
 
 	if (!FPlatformProperties::HasFixedResolution() && bNeedsViewportRestore)
 	{	
-		FSceneViewport* GameViewport = GEngine->GameViewport->GetGameViewport();
+		FSceneViewport* GameViewport = GameViewportClient->GetGameViewport();
 		GameViewport->SetViewportSize(ViewportRestoreSize.X, ViewportRestoreSize.Y);
 	}
 #endif

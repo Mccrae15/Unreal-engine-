@@ -147,5 +147,18 @@ public:
 	 */
 	virtual bool AllocateMotionVectorTexture(uint32 Index, uint8 Format, uint32 NumMips, ETextureCreateFlags InTexFlags, ETextureCreateFlags InTargetableTextureFlags, FTexture2DRHIRef& OutTexture, FIntPoint& OutTextureSize, FTexture2DRHIRef& OutDepthTexture, FIntPoint& OutDepthTextureSize) { return false; }
 
+	// BEGIN META SECTION - XR Soft Occlusions
+	/**
+	 * Find the environment depth texture.
+	 * The default implementation always returns false to indicate that the texture is not available.
+	 *
+	 * @param OutTexture				(out) The environment depth texture
+	 * @param OutDepthFactors			(out) The depth factors used to transform Z coordinates
+	 * @param OutScreenToDepthMatrices	(out) The screen to depth matrices used to transform UV coordinates
+	 * @return							true, if texture was found; false, if the texture was not available.
+	 */
+	virtual bool FindEnvironmentDepthTexture_RenderThread(FTextureRHIRef& OutTexture, FVector2f& OutDepthFactors, FMatrix44f OutScreenToDepthMatrices[2]) { return false; }
+	// END META SECTION - XR Soft Occlusions
+
 	static EPixelFormat GetStereoLayerPixelFormat() { return PF_B8G8R8A8; }
 };

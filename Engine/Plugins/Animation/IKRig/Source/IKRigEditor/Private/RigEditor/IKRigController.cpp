@@ -3,9 +3,9 @@
 #include "RigEditor/IKRigController.h"
 
 #include "IKRigEditor.h"
-#include "IKRigDefinition.h"
-#include "IKRigProcessor.h"
-#include "IKRigSolver.h"
+#include "Rig/IKRigDefinition.h"
+#include "Rig/IKRigProcessor.h"
+#include "Rig/Solvers/IKRigSolver.h"
 
 #include "Engine/SkeletalMesh.h"
 #include "ScopedTransaction.h"
@@ -32,6 +32,11 @@ UIKRigController* UIKRigController::GetController(const UIKRigDefinition* InIKRi
 }
 
 UIKRigDefinition* UIKRigController::GetAsset() const
+{
+	return Asset;
+}
+
+TObjectPtr<UIKRigDefinition>& UIKRigController::GetAssetPtr()
 {
 	return Asset;
 }
@@ -542,7 +547,7 @@ FName UIKRigController::GetRetargetChainFromGoal(const FName GoalName) const
 	if (GoalName == NAME_None)
 	{
 		return NAME_None;
-	}
+	}
 	
 	const TArray<FBoneChain>& Chains = GetRetargetChains();
 	for (const FBoneChain& Chain : Chains)
@@ -917,12 +922,6 @@ FName UIKRigController::AddNewGoal(const FName GoalName, const FName BoneName) c
 	// set initial transform
 	NewGoal->InitialTransform = GetRefPoseTransformOfBone(NewGoal->BoneName);
 	NewGoal->CurrentTransform = NewGoal->InitialTransform;
-
-	// connect the new goal to all the solvers
-	for (int32 SolverIndex=0; SolverIndex<GetNumSolvers(); ++SolverIndex)
-	{
-		ConnectGoalToSolver(NewGoal->GoalName, SolverIndex);
-	}
  
 	BroadcastNeedsReinitialized();
 	BroadcastGoalsChange();
@@ -1105,7 +1104,7 @@ FName UIKRigController::GetBoneForGoal(const FName GoalName) const
 
 FName UIKRigController::GetGoalNameForBone(const FName BoneName) const
 {
-	TArray<UIKRigEffectorGoal*>& AllGoals = GetAllGoals();
+	const TArray<UIKRigEffectorGoal*>& AllGoals = GetAllGoals();
 	for (UIKRigEffectorGoal* Goal : AllGoals)
 	{
 		if (Goal->BoneName == BoneName)
@@ -1197,7 +1196,7 @@ bool UIKRigController::IsGoalConnectedToAnySolver(const FName GoalName) const
 	return false;
 }
 
-TArray<UIKRigEffectorGoal*>& UIKRigController::GetAllGoals() const
+const TArray<UIKRigEffectorGoal*>& UIKRigController::GetAllGoals() const
 {
 	return Asset->Goals;
 }
@@ -1338,4 +1337,3 @@ void UIKRigController::BroadcastNeedsReinitialized() const
 }
 
 #undef LOCTEXT_NAMESPACE
-

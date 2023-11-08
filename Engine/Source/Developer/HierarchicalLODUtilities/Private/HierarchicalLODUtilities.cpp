@@ -52,6 +52,7 @@
 #include "LevelUtils.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstance.h"
+#include "UObject/ICookInfo.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogHierarchicalLODUtilities, Verbose, All);
 
@@ -109,6 +110,13 @@ static FString GetHLODPackageName(const FString& InLevelPackageName, const uint3
 	const FString PathName = FPackageName::GetLongPackagePath(InLevelPackageName);
 	InOutHLODProxyName = GetHLODProxyName(InLevelPackageName, InHLODLevelIndex);
 	return FString::Printf(TEXT("%s/HLOD/%s"), *PathName, *InOutHLODProxyName);
+}
+
+FString FHierarchicalLODUtilities::GetWildcardOfHLODPackagesForPackage(const FString& PackageName)
+{
+	const FString PathName = FPackageName::GetLongPackagePath(PackageName);
+	const FString BaseName = FPackageName::GetShortName(PackageName);
+	return FString::Printf(TEXT("%s/HLOD/%s_*_HLOD"), *PathName, *BaseName);
 }
 
 static FString GetHLODPackageName(const ULevel* InLevel, const uint32 InHLODLevelIndex, FString& InOutHLODProxyName)
@@ -199,6 +207,7 @@ UHLODProxy* FHierarchicalLODUtilities::RetrieveLevelHLODProxy(const ULevel* InLe
 {
 	checkf(InLevel != nullptr, TEXT("Invalid Level supplied"));
 	FString HLODProxyName;
+	FCookLoadScope CookLoadScope(ECookLoadType::UsedInGame);
 	const FString HLODLevelPackageName = GetHLODPackageName(InLevel, HLODLevelIndex, HLODProxyName);
 
 	UHLODProxy* HLODProxy = LoadObject<UHLODProxy>(nullptr, *HLODLevelPackageName, nullptr, LOAD_Quiet | LOAD_NoWarn);
@@ -837,21 +846,21 @@ bool FHierarchicalLODUtilities::BuildStaticMeshForLODActor(ALODActor* LODActor, 
 
 			FLODInstanceBatch& LODInstanceBatch = InstancesBatches.FindOrAdd(Key);
 
+			FTransform ComponentTransformWS = SMC->GetComponentTransform();
+
 			// If we have an ISMC, ensure we include all its instances
 			if (UInstancedStaticMeshComponent* InstancedSMC = Cast<UInstancedStaticMeshComponent>(SMC))
 			{
-				FTransform ActorTransformWS = InstancedSMC->GetOwner()->GetActorTransform();
-
 				LODInstanceBatch.Transforms.Reserve(LODInstanceBatch.Transforms.Num() + InstancedSMC->GetInstanceCount());
 				for (const FInstancedStaticMeshInstanceData& InstanceData : InstancedSMC->PerInstanceSMData)
 				{
-					FTransform InstanceTransformWS = FTransform(InstanceData.Transform) * ActorTransformWS;
+					FTransform InstanceTransformWS = FTransform(InstanceData.Transform) * ComponentTransformWS;
 					LODInstanceBatch.Transforms.Add(InstanceTransformWS);
 				}
 			}
 			else
 			{
-				LODInstanceBatch.Transforms.Add(SMC->GetOwner()->GetActorTransform());
+				LODInstanceBatch.Transforms.Add(ComponentTransformWS);
 				LODInstanceBatch.CustomPrimitiveData.Add(SMC->GetCustomPrimitiveData());
 			}
 
@@ -950,7 +959,6 @@ EClusterGenerationError FHierarchicalLODUtilities::ShouldGenerateCluster(AActor*
 
 ALODActor* FHierarchicalLODUtilities::GetParentLODActor(const AActor* InActor)
 {
-	ALODActor* ParentActor = nullptr;
 	if (InActor)
 	{
 		TArray<UStaticMeshComponent*> ComponentArray;
@@ -960,13 +968,15 @@ ALODActor* FHierarchicalLODUtilities::GetParentLODActor(const AActor* InActor)
 			UPrimitiveComponent* ParentComponent = Component->GetLODParentPrimitive();
 			if (ParentComponent)
 			{
-				ParentActor = CastChecked<ALODActor>(ParentComponent->GetOwner());
-				break;
+				if (ALODActor* ParentActor = Cast<ALODActor>(ParentComponent->GetOwner()))
+				{
+					return ParentActor;
+				}
 			}
 		}
 	}
 
-	return ParentActor;
+	return nullptr;
 }
 
 void FHierarchicalLODUtilities::DestroyCluster(ALODActor* InActor)
@@ -1315,6 +1325,7 @@ int32 FHierarchicalLODUtilities::ComputeStaticMeshLODLevel(const TArray<FStaticM
 	// Walk backwards and return the first matching LOD
 	for (int32 LODIndex = NumLODs - 1; LODIndex >= 0; --LODIndex)
 	{
+		// For HLOD generation we want the default values and not the per platform overrides
 		if (SourceModels[LODIndex].ScreenSize.Default > ScreenSize || ((SourceModels[LODIndex].ScreenSize.Default == 0.0f) && (RenderData->ScreenSize[LODIndex].Default != SourceModels[LODIndex].ScreenSize.Default) && (RenderData->ScreenSize[LODIndex].Default > ScreenSize)))
 		{
 			return FMath::Max(LODIndex, 0);

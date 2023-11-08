@@ -24,6 +24,7 @@
 #include "NavigationDataHandler.h"
 
 #if WITH_EDITOR
+#include "EditorSupportDelegates.h"
 #include "ObjectEditorUtils.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionEditorLoaderAdapter.h"
@@ -36,6 +37,7 @@
 #endif // WITH_RECAST
 
 #include "NavMesh/NavMeshRenderingComponent.h"
+#include "UObject/FortniteMainBranchObjectVersion.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(RecastNavMesh)
 
@@ -82,6 +84,7 @@ namespace UE::NavMesh::Private
 		return FMath::Clamp(CellSize, ArbitraryMinCellSize, ArbitraryMaxCellSize);
 	}
 
+#if WITH_RECAST
 	FNavTileRef GetTileRefFromPolyRef(const dtNavMesh& DetourMesh, const NavNodeRef PolyRef)
 	{
 		unsigned int Salt = 0;
@@ -91,10 +94,12 @@ namespace UE::NavMesh::Private
 		const dtTileRef TileRef = DetourMesh.encodePolyId(Salt, TileIndex, 0);
 		return FNavTileRef(TileRef);
 	}
+#endif // WITH_RECAST
 } // namespace UE::NavMesh::Private
 
 FDetourTileLayout::FDetourTileLayout(const dtMeshTile& tile)
 {
+#if WITH_RECAST
 	const dtMeshHeader* header = tile.header;
 
 	if (header && (header->version == DT_NAVMESH_VERSION))
@@ -121,6 +126,7 @@ FDetourTileLayout::FDetourTileLayout(const dtMeshTile& tile)
 
 		InitFromSizeInfo(SizeInfo);
 	}
+#endif // WITH_RECAST
 }
 
 FDetourTileLayout::FDetourTileLayout(const FDetourTileSizeInfo& SizeInfo)
@@ -130,6 +136,7 @@ FDetourTileLayout::FDetourTileLayout(const FDetourTileSizeInfo& SizeInfo)
 
 void FDetourTileLayout::InitFromSizeInfo(const FDetourTileSizeInfo& SizeInfo)
 {
+#if WITH_RECAST
 	// Patch header pointers.
 	HeaderSize = dtAlign(sizeof(dtMeshHeader));
 	VertsSize = dtAlign(sizeof(dtReal) * 3 * SizeInfo.VertCount);
@@ -152,6 +159,7 @@ void FDetourTileLayout::InitFromSizeInfo(const FDetourTileSizeInfo& SizeInfo)
 
 	TileSize = HeaderSize + VertsSize + PolysSize + LinksSize + DetailMeshesSize + DetailVertsSize + DetailTrisSize
 		+ BvTreeSize + OffMeshConsSize + OffMeshSegsSize + ClustersSize + PolyClustersSize;
+#endif // WITH_RECAST
 }
 
 
@@ -244,6 +252,8 @@ void ARecastNavMesh::Serialize( FArchive& Ar )
 	uint32 NavMeshVersion;
 	Ar << NavMeshVersion;
 
+	Ar.UsingCustomVersion(FFortniteMainBranchObjectVersion::GUID);
+
 	//@todo: How to handle loading nav meshes saved w/ recast when recast isn't present????
 
 	// when writing, write a zero here for now.  will come back and fill it in later.
@@ -264,6 +274,13 @@ void ARecastNavMesh::Serialize( FArchive& Ar )
 ARecastNavMesh::~ARecastNavMesh()
 {
 }
+
+#if WITH_EDITOR
+bool ARecastNavMesh::CanEditChange(const FProperty* InPropery) const
+{
+	return false;
+}
+#endif // WITH_EDITOR
 
 #else // WITH_RECAST
 
@@ -392,6 +409,8 @@ namespace FNavMeshConfig
 	}
 }
 
+#endif // WITH_RECAST
+
 // Deprecated
 FRecastNavMeshGenerationProperties::FRecastNavMeshGenerationProperties()
 {
@@ -421,6 +440,8 @@ FRecastNavMeshGenerationProperties::FRecastNavMeshGenerationProperties()
 	bIsWorldPartitioned = false;
 }
 
+#if WITH_RECAST
+
 // Deprecated
 FRecastNavMeshGenerationProperties::FRecastNavMeshGenerationProperties(const ARecastNavMesh& RecastNavMesh)
 {
@@ -432,7 +453,7 @@ FRecastNavMeshGenerationProperties::FRecastNavMeshGenerationProperties(const ARe
 	AgentRadius = RecastNavMesh.AgentRadius;
 	AgentHeight = RecastNavMesh.AgentHeight;
 	AgentMaxSlope = RecastNavMesh.AgentMaxSlope;
-	AgentMaxStepHeight = RecastNavMesh.AgentMaxStepHeight;
+	AgentMaxStepHeight = RecastNavMesh.GetAgentMaxStepHeight(ENavigationDataResolution::Default); //FRecastNavMeshGenerationProperties is getting deprecated 
 	MinRegionArea = RecastNavMesh.MinRegionArea;
 	MergeRegionSize = RecastNavMesh.MergeRegionSize;
 	MaxSimplificationError = RecastNavMesh.MaxSimplificationError;
@@ -450,6 +471,8 @@ FRecastNavMeshGenerationProperties::FRecastNavMeshGenerationProperties(const ARe
 	bFixedTilePoolSize = RecastNavMesh.bFixedTilePoolSize;
 	bIsWorldPartitioned = RecastNavMesh.bIsWorldPartitioned;
 }
+
+#endif // WITH_RECAST
 
 FRecastNavMeshTileGenerationDebug::FRecastNavMeshTileGenerationDebug()
 {
@@ -472,6 +495,8 @@ FRecastNavMeshTileGenerationDebug::FRecastNavMeshTileGenerationDebug()
 	bTileCachePolyMesh = false;
 	bTileCacheDetailMesh = false;
 }
+
+#if WITH_RECAST
 
 ARecastNavMesh::FNavPolyFlags ARecastNavMesh::NavLinkFlag = ARecastNavMesh::FNavPolyFlags(0);
 
@@ -571,6 +596,9 @@ void ARecastNavMesh::UpdateNavMeshDrawing()
 	if (NavMeshRenderComp != nullptr && NavMeshRenderComp->GetVisibleFlag() && (NavMeshRenderComp->IsForcingUpdate() || UNavMeshRenderingComponent::IsNavigationShowFlagSet(GetWorld())))
 	{
 		RenderingComp->MarkRenderStateDirty();
+#if WITH_EDITOR
+		FEditorSupportDelegates::RedrawAllViewports.Broadcast();
+#endif
 	}
 #endif // UE_BUILD_SHIPPING
 }
@@ -649,6 +677,15 @@ void ARecastNavMesh::PostLoad()
 		for (int i = 0; i < (uint8)ENavigationDataResolution::MAX; ++i)
 		{
 			SetCellHeight((ENavigationDataResolution)i, CellHeight);
+		}
+	}
+
+	// If needed, initialize AgentMaxStepHeight from the deprecated value.
+	if (NavMeshVersion < NAVMESHVER_TILE_RESOLUTIONS_AGENTMAXSTEPHEIGHT)
+	{
+		for (int i = 0; i < (uint8)ENavigationDataResolution::MAX; ++i)
+		{
+			SetAgentMaxStepHeight((ENavigationDataResolution)i, AgentMaxStepHeight);
 		}
 	}
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
@@ -759,6 +796,16 @@ void ARecastNavMesh::PostInitProperties()
 
 				NavMeshResolutionParams[i].CellHeight = DefaultObjectCellHeight;
 			}
+
+			const float CurrentAgentMaxStepHeight = NavMeshResolutionParams[i].AgentMaxStepHeight;
+			const float DefaultObjectAgentMaxStepHeight = DefOb->NavMeshResolutionParams[i].AgentMaxStepHeight;
+			if (CurrentAgentMaxStepHeight != DefaultObjectAgentMaxStepHeight)
+			{
+				UE_LOG(LogNavigation, Warning, TEXT("%s param: AgentMaxStepHeight(%f) differs from config settings, forcing value %f so it can be used with voxel cache!"),
+					*GetNameSafe(this), CurrentAgentMaxStepHeight, DefaultObjectAgentMaxStepHeight);
+
+				NavMeshResolutionParams[i].AgentMaxStepHeight = DefaultObjectAgentMaxStepHeight;
+			}			
 		}
 
 		if (AgentMaxSlope != DefOb->AgentMaxSlope)
@@ -767,14 +814,6 @@ void ARecastNavMesh::PostInitProperties()
 				*GetNameSafe(this), AgentMaxSlope, DefOb->AgentMaxSlope);
 
 			AgentMaxSlope = DefOb->AgentMaxSlope;
-		}
-
-		if (AgentMaxStepHeight != DefOb->AgentMaxStepHeight)
-		{
-			UE_LOG(LogNavigation, Warning, TEXT("%s param: AgentMaxStepHeight(%f) differs from config settings, forcing value %f so it can be used with voxel cache!"),
-				*GetNameSafe(this), AgentMaxStepHeight, DefOb->AgentMaxStepHeight);
-
-			AgentMaxStepHeight = DefOb->AgentMaxStepHeight;
 		}
 	}
 	
@@ -1042,14 +1081,19 @@ void ARecastNavMesh::Serialize( FArchive& Ar )
 			CleanUpAndMarkPendingKill();
 		};
 
+		if (NavMeshVersion >= NAVMESHVER_MIN_COMPATIBLE && NavMeshVersion < NAVMESHVER_LATEST)
+		{
+			UE_LOG(LogNavigation, Display, TEXT("%s: ARecastNavMesh: Navmesh version %d is compatible but not at latest (%d). Rebuild navmesh to use the latest features. \n"), *GetFullName(), NavMeshVersion, NAVMESHVER_LATEST);
+		}
+
 		if (NavMeshVersion < NAVMESHVER_MIN_COMPATIBLE)
 		{
-			UE_LOG(LogNavigation, Warning, TEXT("%s: ARecastNavMesh: Nav mesh version %d < Min compatible %d. Nav mesh needs to be rebuilt. \n"), *GetFullName(), NavMeshVersion, NAVMESHVER_MIN_COMPATIBLE);
+			UE_LOG(LogNavigation, Warning, TEXT("%s: ARecastNavMesh: Navmesh version %d < Min compatible %d. Navmesh needs to be rebuilt. \n"), *GetFullName(), NavMeshVersion, NAVMESHVER_MIN_COMPATIBLE);
 			CleanUpBadVersion();
 		}
 		else if (NavMeshVersion > NAVMESHVER_LATEST)
 		{
-			UE_LOG(LogNavigation, Warning, TEXT("%s: ARecastNavMesh: Nav mesh version %d > NAVMESHVER_LATEST %d. Newer nav mesh should not be loaded by older code. At a minimum the nav mesh needs to be rebuilt. \n"), *GetFullName(), NavMeshVersion, NAVMESHVER_LATEST);
+			UE_LOG(LogNavigation, Warning, TEXT("%s: ARecastNavMesh: Navmesh version %d > NAVMESHVER_LATEST %d. Newer navmesh should not be loaded by older code. At a minimum the nav mesh needs to be rebuilt. \n"), *GetFullName(), NavMeshVersion, NAVMESHVER_LATEST);
 			CleanUpBadVersion();
 		}
 		else if (RecastNavMeshSizeBytes > 4)
@@ -1111,7 +1155,11 @@ void ARecastNavMesh::SetConfig(const FNavDataConfig& Src)
 
 	if (Src.HasStepHeightOverride())
 	{
-		AgentMaxStepHeight = Src.AgentStepHeight;
+		// If there is an override, apply it to all resolutions
+		for (int32 Index = 0; Index < (int32)ENavigationDataResolution::MAX; Index++)
+		{
+			SetAgentMaxStepHeight((ENavigationDataResolution)Index, Src.AgentStepHeight);
+		}
 	}
 }
 
@@ -1120,7 +1168,7 @@ void ARecastNavMesh::FillConfig(FNavDataConfig& Dest)
 	Dest = NavDataConfig;
 	Dest.AgentHeight = AgentHeight;
 	Dest.AgentRadius = AgentRadius;
-	Dest.AgentStepHeight = AgentMaxStepHeight;
+	Dest.AgentStepHeight = GetAgentMaxStepHeight(ENavigationDataResolution::Default);
 }
 
 void ARecastNavMesh::BeginBatchQuery() const
@@ -1156,7 +1204,7 @@ FBox ARecastNavMesh::GetNavMeshBounds() const
 
 FBox ARecastNavMesh::GetNavMeshTileBounds(int32 TileIndex) const
 {
-	FBox Bounds;
+	FBox Bounds(ForceInit);
 	if (RecastNavMeshImpl)
 	{
 		Bounds = RecastNavMeshImpl->GetNavMeshTileBounds(TileIndex);
@@ -2038,7 +2086,7 @@ FVector::FReal ARecastNavMesh::FindDistanceToWall(const FVector& StartLoc, FShar
 void ARecastNavMesh::UpdateCustomLink(const INavLinkCustomInterface* CustomLink)
 {
 	TSubclassOf<UNavArea> AreaClass = CustomLink->GetLinkAreaClass();
-	const int32 UserId = CustomLink->GetLinkId();
+	const FNavLinkId UserId = CustomLink->GetId();
 	const int32 AreaId = GetAreaID(AreaClass);
 	if (AreaId >= 0 && RecastNavMeshImpl)
 	{
@@ -2047,7 +2095,8 @@ void ARecastNavMesh::UpdateCustomLink(const INavLinkCustomInterface* CustomLink)
 
 		RecastNavMeshImpl->UpdateNavigationLinkArea(UserId, IntCastChecked<uint8>(AreaId), PolyFlags);
 #if WITH_NAVMESH_SEGMENT_LINKS
-		RecastNavMeshImpl->UpdateSegmentLinkArea(UserId, IntCastChecked<uint8>(AreaId), PolyFlags);
+		// SegmentLinks are an unsupported feature that was never completed to production quality, for now at least FNavLinkId ids are not supported here.
+		RecastNavMeshImpl->UpdateSegmentLinkArea((int32)UserId.GetId(), IntCastChecked<uint8>(AreaId), PolyFlags);
 #endif // WITH_NAVMESH_SEGMENT_LINKS
 
 #if !UE_BUILD_SHIPPING
@@ -2056,7 +2105,7 @@ void ARecastNavMesh::UpdateCustomLink(const INavLinkCustomInterface* CustomLink)
 	}
 }
 
-void ARecastNavMesh::UpdateNavigationLinkArea(int32 UserId, TSubclassOf<UNavArea> AreaClass) const
+void ARecastNavMesh::UpdateNavigationLinkArea(FNavLinkId UserId, TSubclassOf<UNavArea> AreaClass) const
 {
 	int32 AreaId = GetAreaID(AreaClass);
 	if (AreaId >= 0 && RecastNavMeshImpl)
@@ -3055,15 +3104,9 @@ bool ARecastNavMesh::IsSegmentOnNavmesh(const FVector& SegmentStart, const FVect
 	return Result.bIsRaycastEndInCorridor && !Result.HasHit();
 }
 
-bool ARecastNavMesh::FindStraightPath(const FVector& StartLoc, const FVector& EndLoc, const TArray<NavNodeRef>& PathCorridor, TArray<FNavPathPoint>& PathPoints, TArray<uint32>* CustomLinks) const
+bool ARecastNavMesh::FindStraightPath(const FVector& StartLoc, const FVector& EndLoc, const TArray<NavNodeRef>& PathCorridor, TArray<FNavPathPoint>& PathPoints, TArray<FNavLinkId>* CustomLinks) const
 {
-	bool bResult = false;
-	if (RecastNavMeshImpl)
-	{
-		bResult = RecastNavMeshImpl->FindStraightPath(StartLoc, EndLoc, PathCorridor, PathPoints, CustomLinks);
-	}
-
-	return bResult;
+	return RecastNavMeshImpl && RecastNavMeshImpl->FindStraightPath(StartLoc, EndLoc, PathCorridor, PathPoints, CustomLinks);
 }
 
 int32 ARecastNavMesh::DebugPathfinding(const FPathFindingQuery& Query, TArray<FRecastDebugPathfindingData>& Steps)
@@ -3335,7 +3378,9 @@ void ARecastNavMesh::UpdateGenerationProperties(const FRecastNavMeshGenerationPr
 	AgentRadius = GenerationProps.AgentRadius;
 	AgentHeight = GenerationProps.AgentHeight;
 	AgentMaxSlope = GenerationProps.AgentMaxSlope;
+
 	AgentMaxStepHeight = GenerationProps.AgentMaxStepHeight;
+
 	MinRegionArea = GenerationProps.MinRegionArea;
 	MergeRegionSize = GenerationProps.MergeRegionSize;
 	MaxSimplificationError = GenerationProps.MaxSimplificationError;
@@ -3463,10 +3508,12 @@ void ARecastNavMesh::UpdateActiveTiles(const TArray<FNavigationInvokerRaw>& Invo
 
 	TArray<FIntPoint>& ActiveTiles = GetActiveTiles();
 	TArray<FIntPoint> OldActiveSet = ActiveTiles;
-	TArray<FIntPoint> TilesInMinDistance;
+	TArray<FNavMeshDirtyTileElement> TilesInMinDistance;
 	TArray<FIntPoint> TilesInMaxDistance;
+	TArray<FIntPoint> TileToAppend;
 	TilesInMinDistance.Reserve(ActiveTiles.Num());
 	TilesInMaxDistance.Reserve(ActiveTiles.Num());
+	TileToAppend.Reserve(ActiveTiles.Num());
 	ActiveTiles.Reset();
 
 	for (const FNavigationInvokerRaw& Invoker : InvokerLocations)
@@ -3496,14 +3543,25 @@ void ARecastNavMesh::UpdateActiveTiles(const TArray<FNavigationInvokerRaw>& Invo
 
 					if (DistanceSq < TileCenterDistanceToAddSq)
 					{
-						TilesInMinDistance.AddUnique(FIntPoint(X, Y));
+						// Add unique tile 
+						FNavMeshDirtyTileElement* FoundTile = TilesInMinDistance.FindByPredicate([X, Y](const FNavMeshDirtyTileElement& Tile){ return Tile.Coordinates == FIntPoint(X, Y);});
+						if (FoundTile)
+						{
+							// Update the priority if already existing
+							FoundTile->InvokerPriority = FMath::Max(FoundTile->InvokerPriority, Invoker.Priority);
+						}
+						else
+						{
+							TilesInMinDistance.Add(FNavMeshDirtyTileElement{FIntPoint(X,Y), DistanceSq, Invoker.Priority});
+							TileToAppend.Add(FIntPoint(X,Y));
+						}
 					}
 				}
 			}
 		}
 	}
 
-	ActiveTiles.Append(TilesInMinDistance);
+	ActiveTiles.Append(TileToAppend);
 
 	TArray<FIntPoint> TilesToRemove;
 	TilesToRemove.Reserve(OldActiveSet.Num());
@@ -3522,19 +3580,25 @@ void ARecastNavMesh::UpdateActiveTiles(const TArray<FNavigationInvokerRaw>& Invo
 	}
 
 	// Find tiles to update
-	TArray<FIntPoint> TilesToUpdate;
+	TArray<FNavMeshDirtyTileElement> TilesToUpdate;
 	TilesToUpdate.Reserve(ActiveTiles.Num());
 	for (int32 Index = TilesInMinDistance.Num() - 1; Index >= 0; --Index)
 	{
 		// Check if it's a new tile (not in the active set)
-		const FIntPoint& Tile = TilesInMinDistance[Index];
-		if (OldActiveSet.Find(Tile) == INDEX_NONE)
+		const FNavMeshDirtyTileElement& Tile = TilesInMinDistance[Index];
+		if (OldActiveSet.Find(Tile.Coordinates) == INDEX_NONE)
 		{
 			TilesToUpdate.Add(Tile);
 		}
 	}
 
-	UE_VLOG(this, LogNavigation, Log, TEXT("Updating active tiles: %d to remove, %d to update"), TilesToRemove.Num(), TilesToUpdate.Num());
+	UE_SUPPRESS(LogNavigation, Log,
+	{
+		if (TilesToRemove.Num() != 0 || TilesToUpdate.Num() != 0)
+		{
+			UE_VLOG(this, LogNavigation, Log, TEXT("Updating active tiles: %d to remove, %d to update"), TilesToRemove.Num(), TilesToUpdate.Num());
+		}
+	});
 
 	RemoveTiles(TilesToRemove);
 	RebuildTile(TilesToUpdate);
@@ -3557,7 +3621,19 @@ void ARecastNavMesh::RemoveTiles(const TArray<FIntPoint>& Tiles)
 	}
 }
 
+// Deprecated
 void ARecastNavMesh::RebuildTile(const TArray<FIntPoint>& Tiles)
+{
+	TArray<FNavMeshDirtyTileElement> ActiveTiles;
+	ActiveTiles.Reserve(Tiles.Num());
+	for (const FIntPoint& Point : Tiles)
+	{
+		ActiveTiles.Add(FNavMeshDirtyTileElement{Point, TNumericLimits<FVector::FReal>::Max(), ENavigationInvokerPriority::Default});
+	}
+	RebuildTile(ActiveTiles);
+}
+
+void ARecastNavMesh::RebuildTile(const TArray<FNavMeshDirtyTileElement>& Tiles)
 {
 	if (Tiles.Num() > 0)
 	{
@@ -3605,7 +3681,7 @@ void ARecastNavMesh::DirtyTilesInBounds(const FBox& Bounds)
 	if (OverlappingBounds.IsValid)
 	{
 		// Add tiles within the overlapping bounds
-		TArray<FIntPoint> Points;
+		TArray<FNavMeshDirtyTileElement> Tiles;
 		const FVector RcNavMeshOrigin = Unreal2RecastPoint(NavMeshOriginOffset);
 		const float TileSizeInWorldUnits = GetTileSizeUU();
 		const FRcTileBox TileBox(OverlappingBounds, RcNavMeshOrigin, TileSizeInWorldUnits);
@@ -3616,10 +3692,11 @@ void ARecastNavMesh::DirtyTilesInBounds(const FBox& Bounds)
 		{
 			for (int32 TileX = TileBox.XMin; TileX <= TileBox.XMax; ++TileX)
 			{
-				Points.Add(FIntPoint(TileX, TileY));
+				// For now, new dirtiness is made with default priority.
+				Tiles.Add(FNavMeshDirtyTileElement{FIntPoint(TileX, TileY), TNumericLimits<FVector::FReal>::Max(), ENavigationInvokerPriority::Default});
 			}
 		}
-		RebuildTile(Points);
+		RebuildTile(Tiles);
 	}
 }
 
@@ -3706,9 +3783,9 @@ void FRecastNavMeshCachedData::OnAreaRemoved(const UClass* AreaClass)
 	}
 }
 
-uint32 ARecastNavMesh::GetLinkUserId(NavNodeRef LinkPolyID) const
+FNavLinkId ARecastNavMesh::GetNavLinkUserId(NavNodeRef LinkPolyID) const
 {
-	return RecastNavMeshImpl ? RecastNavMeshImpl->GetLinkUserId(LinkPolyID) : 0;
+	return RecastNavMeshImpl ? RecastNavMeshImpl->GetNavLinkUserId(LinkPolyID) : FNavLinkId::Invalid;
 }
 
 dtNavMesh* ARecastNavMesh::GetRecastMesh()
@@ -3727,11 +3804,14 @@ const dtNavMesh* ARecastNavMesh::GetRecastMesh() const
 //----------------------------------------------------------------------//
 bool ARecastNavMesh::K2_ReplaceAreaInTileBounds(FBox Bounds, TSubclassOf<UNavArea> OldArea, TSubclassOf<UNavArea> NewArea, bool ReplaceLinks)
 {
-	bool bReplaced = ReplaceAreaInTileBounds(Bounds, OldArea, NewArea, ReplaceLinks) > 0;
+	bool bReplaced = false;
+#if WITH_RECAST
+	bReplaced = ReplaceAreaInTileBounds(Bounds, OldArea, NewArea, ReplaceLinks) > 0;
 	if (bReplaced)
 	{
 		RequestDrawingUpdate();
 	}
+#endif // WITH_RECAST
 	return bReplaced;
 }
 

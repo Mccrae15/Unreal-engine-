@@ -4,11 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using EpicGames.Core;
-using UnrealBuildTool;
 using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
@@ -28,22 +24,22 @@ namespace UnrealBuildTool
 		/// </summary>
 		Add,
 
-        /// <summary>
-        /// Remove the key without having to match value (denoted with !X in config files)
-        /// </summary>
-        RemoveKey,
+		/// <summary>
+		/// Remove the key without having to match value (denoted with !X in config files)
+		/// </summary>
+		RemoveKey,
 
-        /// <summary>
-        /// Remove the matching key and value (denoted with -X=Y in config files)
-        /// </summary>
-        RemoveKeyValue
+		/// <summary>
+		/// Remove the matching key and value (denoted with -X=Y in config files)
+		/// </summary>
+		RemoveKeyValue
 
-    }
+	}
 
-    /// <summary>
-    /// Contains a pre-parsed raw config line, consisting of action, key and value components.
-    /// </summary>
-    public class ConfigLine
+	/// <summary>
+	/// Contains a pre-parsed raw config line, consisting of action, key and value components.
+	/// </summary>
+	public class ConfigLine
 	{
 		/// <summary>
 		/// The action to take when merging this key/value pair with an existing value
@@ -79,7 +75,7 @@ namespace UnrealBuildTool
 		/// <returns>The original config line</returns>
 		public override string ToString()
 		{
-			string Prefix = (Action == ConfigLineAction.Add)? "+" : (Action == ConfigLineAction.RemoveKey)? "!" : (Action == ConfigLineAction.RemoveKeyValue) ? "-" : "";
+			string Prefix = (Action == ConfigLineAction.Add) ? "+" : (Action == ConfigLineAction.RemoveKey) ? "!" : (Action == ConfigLineAction.RemoveKeyValue) ? "-" : "";
 			return String.Format("{0}{1}={2}", Prefix, Key, Value);
 		}
 	}
@@ -116,7 +112,7 @@ namespace UnrealBuildTool
 		/// <returns>return true if the line is retrieved return false and null OutLine if Name isn't found in this section</returns>
 		public bool TryGetLine(string Name, [NotNullWhen(true)] out ConfigLine? OutLine)
 		{
-			foreach ( ConfigLine Line in Lines)
+			foreach (ConfigLine Line in Lines)
 			{
 				if (Line.Key.Equals(Name))
 				{
@@ -139,13 +135,12 @@ namespace UnrealBuildTool
 		/// </summary>
 		Dictionary<string, ConfigFileSection> Sections = new Dictionary<string, ConfigFileSection>(StringComparer.InvariantCultureIgnoreCase);
 
-
 		// Remap of config names/sections
-		static private Dictionary<string, string> SectionNameRemap = new();
-		static private Dictionary<string, Dictionary<string, string>> SectionKeyRemap = new();
-		static private HashSet<string> WarnedKeys = new(StringComparer.InvariantCultureIgnoreCase);
+		private static Dictionary<string, string> SectionNameRemap = new();
+		private static Dictionary<string, Dictionary<string, string>> SectionKeyRemap = new();
+		private static HashSet<string> WarnedKeys = new(StringComparer.InvariantCultureIgnoreCase);
 
-		static private string Remap(Dictionary<string, string>? Remap, string Key, string Context)
+		private static string RemapSectionOrKey(Dictionary<string, string>? Remap, string Key, string Context)
 		{
 			if (Remap != null)
 			{
@@ -163,7 +158,6 @@ namespace UnrealBuildTool
 			return Key;
 		}
 
-
 		/// <summary>
 		/// Static (class) constructor which is called before any ConfigFile instance is created
 		/// </summary>
@@ -174,14 +168,17 @@ namespace UnrealBuildTool
 			{
 				// read the special ConfigRemap.ini file into sections
 				FileReference ConfigRemapFile = FileReference.Combine(UnrealBuildBase.Unreal.EngineDirectory, "Config", "ConfigRedirects.ini");
-				ReadIntoSections(ConfigRemapFile, Sections, ConfigLineAction.Set);
+				if (FileReference.Exists(ConfigRemapFile))
+				{
+					ReadIntoSections(ConfigRemapFile, Sections, ConfigLineAction.Set);
+				}
 			}
 			catch (Exception)
 			{
 				// Make ConfigFile when EngineDirectory is unknown a warning since ConfigRemapFile cannot be read in this case; e.g. Assemblies outside Engine that depend on ConfigFile
 				Log.Logger.LogWarning("Failed to read ConfigRemapFile into Sections");
 			}
-			
+
 			// walk over the sections, where all but the special SectionNameRemap section is a section of keys to remap in that same section
 			foreach (KeyValuePair<string, ConfigFileSection> Pair in Sections)
 			{
@@ -231,7 +228,7 @@ namespace UnrealBuildTool
 				ConfigFileSection? CurrentSection = null;
 				Dictionary<string, string>? CurrentRemap = null;
 
-				for (; ;)
+				for (; ; )
 				{
 					string? Line = Reader.ReadLine();
 					if (Line == null)
@@ -248,10 +245,10 @@ namespace UnrealBuildTool
 							int EndIdx = Line.Length;
 							while (EndIdx > StartIdx)
 							{
-								if(Line[EndIdx - 1] == '\\')
+								if (Line[EndIdx - 1] == '\\')
 								{
 									string? NextLine = Reader.ReadLine();
-									if(NextLine == null)
+									if (NextLine == null)
 									{
 										break;
 									}
@@ -259,7 +256,7 @@ namespace UnrealBuildTool
 									EndIdx = Line.Length;
 									continue;
 								}
-								if(Line[EndIdx - 1] != ' ' && Line[EndIdx - 1] != '\t')
+								if (Line[EndIdx - 1] != ' ' && Line[EndIdx - 1] != '\t')
 								{
 									break;
 								}
@@ -268,25 +265,25 @@ namespace UnrealBuildTool
 							}
 
 							// Break out if we've got a comment
-							if(Line[StartIdx] == ';')
+							if (Line[StartIdx] == ';')
 							{
 								break;
 							}
-							if(Line[StartIdx] == '/' && StartIdx + 1 < Line.Length && Line[StartIdx + 1] == '/')
+							if (Line[StartIdx] == '/' && StartIdx + 1 < Line.Length && Line[StartIdx + 1] == '/')
 							{
 								break;
 							}
 
 							// Check if it's the start of a new section
-							if(Line[StartIdx] == '[')
+							if (Line[StartIdx] == '[')
 							{
 								CurrentSection = null;
-								if(Line[EndIdx - 1] == ']')
+								if (Line[EndIdx - 1] == ']')
 								{
 									string SectionName = Line.Substring(StartIdx + 1, EndIdx - StartIdx - 2);
-									
+
 									// lookup remaps
-									SectionName = Remap(SectionNameRemap, SectionName, $"which is a config section in '{Location.FullName}'");
+									SectionName = RemapSectionOrKey(SectionNameRemap, SectionName, $"which is a config section in '{Location.FullName}'");
 									SectionKeyRemap.TryGetValue(SectionName, out CurrentRemap);
 
 									if (!Sections.TryGetValue(SectionName, out CurrentSection))
@@ -299,9 +296,9 @@ namespace UnrealBuildTool
 							}
 
 							// Otherwise add it to the current section or add a new one
-							if(CurrentSection != null)
+							if (CurrentSection != null)
 							{
-								TryAddConfigLine(CurrentSection, CurrentRemap, Location.FullName, Line, StartIdx, EndIdx, DefaultAction);
+								TryAddConfigLine(CurrentSection, CurrentRemap, Location.FullName, Line, StartIdx, EndIdx, DefaultAction, Sections);
 								break;
 							}
 
@@ -329,7 +326,7 @@ namespace UnrealBuildTool
 				// Locate and break off the section name
 				string SectionName = Setting.Remove(Setting.IndexOf(':')).Trim(new char[] { '[', ']' });
 				// lookup remaps
-				Remap(SectionNameRemap, SectionName, $"which is a config section (found in a string in code - search your .ini files for it, the source file is unknown)");
+				RemapSectionOrKey(SectionNameRemap, SectionName, $"which is a config section (found in a string in code - search your .ini files for it, the source file is unknown)");
 				SectionKeyRemap.TryGetValue(SectionName, out CurrentRemap);
 
 				if (SectionName.Length > 0)
@@ -344,7 +341,7 @@ namespace UnrealBuildTool
 					if (CurrentSection != null)
 					{
 						string IniKeyValue = Setting.Substring(Setting.IndexOf(':') + 1);
-						TryAddConfigLine(CurrentSection, CurrentRemap, "unknown source file", IniKeyValue, 0, IniKeyValue.Length, DefaultAction);
+						TryAddConfigLine(CurrentSection, CurrentRemap, "unknown source file", IniKeyValue, 0, IniKeyValue.Length, DefaultAction, Sections);
 					}
 				}
 			}
@@ -360,12 +357,13 @@ namespace UnrealBuildTool
 		/// <param name="StartIdx">Index of the first non-whitespace character in this line</param>
 		/// <param name="EndIdx">Index of the last (exclusive) non-whitespace character in this line</param>
 		/// <param name="DefaultAction">The default action to take if '+' or '-' is not specified on a config line</param>
+		/// <param name="Sections">The sections to find the redirected section for receiving the config line</param>
 		/// <returns>True if the line was parsed correctly, false otherwise</returns>
-		static bool TryAddConfigLine(ConfigFileSection Section, Dictionary<string, string>? KeyRemap, string Filename, string Line, int StartIdx, int EndIdx, ConfigLineAction DefaultAction)
+		static bool TryAddConfigLine(ConfigFileSection Section, Dictionary<string, string>? KeyRemap, string Filename, string Line, int StartIdx, int EndIdx, ConfigLineAction DefaultAction, Dictionary<string, ConfigFileSection> Sections)
 		{
 			// Find the '=' character separating key and value
 			int EqualsIdx = Line.IndexOf('=', StartIdx, EndIdx - StartIdx);
-			if(EqualsIdx == -1 && Line[StartIdx] != '!')
+			if (EqualsIdx == -1 && Line[StartIdx] != '!')
 			{
 				return false;
 			}
@@ -375,44 +373,44 @@ namespace UnrealBuildTool
 
 			// Remove the +/-/! prefix, if present
 			ConfigLineAction Action = DefaultAction;
-			if(Line[KeyStartIdx] == '+' || Line[KeyStartIdx] == '-' || Line[KeyStartIdx] == '!')
+			if (Line[KeyStartIdx] == '+' || Line[KeyStartIdx] == '-' || Line[KeyStartIdx] == '!')
 			{
-				Action = (Line[KeyStartIdx] == '+')? ConfigLineAction.Add : (Line[KeyStartIdx] == '!') ? ConfigLineAction.RemoveKey : ConfigLineAction.RemoveKeyValue;
+				Action = (Line[KeyStartIdx] == '+') ? ConfigLineAction.Add : (Line[KeyStartIdx] == '!') ? ConfigLineAction.RemoveKey : ConfigLineAction.RemoveKeyValue;
 				KeyStartIdx++;
-				while(Line[KeyStartIdx] == ' ' || Line[KeyStartIdx] == '\t')
+				while (Line[KeyStartIdx] == ' ' || Line[KeyStartIdx] == '\t')
 				{
 					KeyStartIdx++;
 				}
 			}
 
-            // RemoveKey actions do not require a value
-            if (Action == ConfigLineAction.RemoveKey && EqualsIdx == -1)
-            {
-                Section.Lines.Add(new ConfigLine(Action, Line.Substring(KeyStartIdx).Trim(), ""));
-                return true;
-            }
-
-            // Remove trailing spaces after the name of the key
-            int KeyEndIdx = EqualsIdx;
-			for(; KeyEndIdx > KeyStartIdx; KeyEndIdx--)
+			// RemoveKey actions do not require a value
+			if (Action == ConfigLineAction.RemoveKey && EqualsIdx == -1)
 			{
-				if(Line[KeyEndIdx - 1] != ' ' && Line[KeyEndIdx - 1] != '\t')
+				Section.Lines.Add(new ConfigLine(Action, Line.Substring(KeyStartIdx).Trim(), ""));
+				return true;
+			}
+
+			// Remove trailing spaces after the name of the key
+			int KeyEndIdx = EqualsIdx;
+			for (; KeyEndIdx > KeyStartIdx; KeyEndIdx--)
+			{
+				if (Line[KeyEndIdx - 1] != ' ' && Line[KeyEndIdx - 1] != '\t')
 				{
 					break;
 				}
 			}
 
 			// Make sure there's a non-empty key name
-			if(KeyStartIdx == EqualsIdx)
+			if (KeyStartIdx == EqualsIdx)
 			{
 				return false;
 			}
 
 			// Skip whitespace between the '=' and the start of the value
 			int ValueStartIdx = EqualsIdx + 1;
-			for(; ValueStartIdx < EndIdx; ValueStartIdx++)
+			for (; ValueStartIdx < EndIdx; ValueStartIdx++)
 			{
-				if(Line[ValueStartIdx] != ' ' && Line[ValueStartIdx] != '\t')
+				if (Line[ValueStartIdx] != ' ' && Line[ValueStartIdx] != '\t')
 				{
 					break;
 				}
@@ -420,7 +418,7 @@ namespace UnrealBuildTool
 
 			// Strip quotes around the value if present
 			int ValueEndIdx = EndIdx;
-			if(ValueEndIdx >= ValueStartIdx + 2 && Line[ValueStartIdx] == '"' && Line[ValueEndIdx - 1] == '"')
+			if (ValueEndIdx >= ValueStartIdx + 2 && Line[ValueStartIdx] == '"' && Line[ValueEndIdx - 1] == '"')
 			{
 				ValueStartIdx++;
 				ValueEndIdx--;
@@ -431,19 +429,33 @@ namespace UnrealBuildTool
 			string Value = Line.Substring(ValueStartIdx, ValueEndIdx - ValueStartIdx);
 
 			// remap the key if needed
-			Key = Remap(KeyRemap, Key, $"which is a config key in section [{Section.Name}], in '{Filename}'");
+			string NewKey = RemapSectionOrKey(KeyRemap, Key, $"which is a config key in section [{Section.Name}], in '{Filename}'");
 
-			Section.Lines.Add(new ConfigLine(Action, Key, Value));
+			// look for a section:name remap
+			if (!NewKey.Equals(Key) && NewKey.IndexOf(":") != -1)
+			{
+				string SectionName = NewKey.Substring(0, NewKey.IndexOf(':'));
+				ConfigFileSection? CurrentSection;
+				if (!Sections.TryGetValue(SectionName, out CurrentSection))
+				{
+					CurrentSection = new ConfigFileSection(SectionName);
+					Sections.Add(SectionName, CurrentSection);
+				}
+
+				string KeyName = NewKey.Substring(NewKey.IndexOf(':') + 1);
+				CurrentSection.Lines.Add(new ConfigLine(Action, KeyName, Value));
+
+				return true;
+			}
+
+			Section.Lines.Add(new ConfigLine(Action, NewKey, Value));
 			return true;
 		}
 
 		/// <summary>
 		/// Names of sections in this file
 		/// </summary>
-		public IEnumerable<string> SectionNames
-		{
-			get { return Sections.Keys; }
-		}
+		public IEnumerable<string> SectionNames => Sections.Keys;
 
 		/// <summary>
 		/// Tries to get a config section by name, or creates one if it doesn't exist
@@ -453,7 +465,7 @@ namespace UnrealBuildTool
 		public ConfigFileSection FindOrAddSection(string SectionName)
 		{
 			ConfigFileSection? Section;
-			if(!Sections.TryGetValue(SectionName, out Section))
+			if (!Sections.TryGetValue(SectionName, out Section))
 			{
 				Section = new ConfigFileSection(SectionName);
 				Sections.Add(SectionName, Section);

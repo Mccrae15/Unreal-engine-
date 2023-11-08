@@ -33,3 +33,21 @@ bool UInterchangeMeshActorFactoryNode::RemoveSlotMaterialDependencyUid(const FSt
 	return SlotMaterialDependencies.RemoveKey(SlotName);
 }
 
+bool UInterchangeMeshActorFactoryNode::SetCustomAnimationAssetUidToPlay(const FString& AttributeValue)
+{
+	IMPLEMENT_NODE_ATTRIBUTE_SETTER_NODELEGATE(AnimationAssetUidToPlay, FString);
+}
+bool UInterchangeMeshActorFactoryNode::GetCustomAnimationAssetUidToPlay(FString& AttributeValue) const
+{
+	IMPLEMENT_NODE_ATTRIBUTE_GETTER(AnimationAssetUidToPlay, FString);
+}
+
+bool UInterchangeMeshActorFactoryNode::GetCustomGeometricTransform(FTransform& AttributeValue) const
+{
+	IMPLEMENT_NODE_ATTRIBUTE_GETTER(GeometricTransform, FTransform);
+}
+
+bool UInterchangeMeshActorFactoryNode::SetCustomGeometricTransform(const FTransform& AttributeValue)
+{
+	IMPLEMENT_NODE_ATTRIBUTE_SETTER_NODELEGATE(GeometricTransform, FTransform);
+}

@@ -82,6 +82,84 @@ struct FMetalCommandDebug
 	FMetalCommandData Data;
 };
 
+namespace EMetalFenceWaitStage
+{
+	enum Type
+	{
+		None			= 0,
+		BeforeVertex	= 1 << 0, // Wait fence before VS/CS is executed
+		BeforeFragment	= 1 << 1, // Wait fence before PS is executed
+	};
+};
+
+// An emulator of MTLBarrierScope that is supported since IOS 16.0
+struct FMetalBarrierScope
+{
+	EMetalFenceWaitStage::Type BuffersWaitStage;
+	EMetalFenceWaitStage::Type RenderTargetsWaitStage;
+	EMetalFenceWaitStage::Type TexturesWaitStage;
+
+	FMetalBarrierScope()
+	{
+		Reset();
+	}
+
+	void Reset()
+	{
+		BuffersWaitStage = EMetalFenceWaitStage::None;
+		RenderTargetsWaitStage = EMetalFenceWaitStage::None;
+		TexturesWaitStage = EMetalFenceWaitStage::None;
+	}
+
+	EMetalFenceWaitStage::Type GetFenceWaitStage()
+	{
+		if (BuffersWaitStage == EMetalFenceWaitStage::BeforeVertex
+			|| TexturesWaitStage == EMetalFenceWaitStage::BeforeVertex)
+		{
+			return EMetalFenceWaitStage::BeforeVertex;
+		}
+		else
+		{
+			return EMetalFenceWaitStage::BeforeFragment;
+		}
+	}
+};
+
+struct FMetalCommandEncoderFence
+{
+	// Resources produced in the prologue pass
+	TSet<mtlpp::Resource::Type> FenceResources;
+	// Fence written by the prologue pass
+	TRefCountPtr<FMetalFence> Fence;
+	// The barrier state for the current pass
+	FMetalBarrierScope BarrierScope;
+
+	FMetalCommandEncoderFence() = default;
+
+	FMetalCommandEncoderFence(FMetalCommandEncoderFence&& In)
+	{
+		FenceResources = MoveTemp(In.FenceResources);
+		Fence = In.Fence;
+	}
+
+	FMetalCommandEncoderFence& operator=(FMetalCommandEncoderFence&& lhs)
+	{
+		if (this != &lhs)
+		{
+			FenceResources = MoveTemp(lhs.FenceResources);
+			Fence = lhs.Fence;
+		}
+		return *this;
+	}
+
+	void Reset()
+	{
+		FenceResources.Empty();
+		Fence = nullptr;
+		BarrierScope.Reset();
+	}
+};
+
 class FMetalCommandBufferMarkers : public ns::Object<FMetalCommandBufferDebug*, ns::CallingConvention::ObjectiveC>
 {
 public:
@@ -163,9 +241,6 @@ public:
 
 #pragma mark - Public Command Encoder Accessors -
 	
-	/** @returns True if and only if there is an active parallel render command encoder, otherwise false. */
-	bool IsParallelRenderCommandEncoderActive(void) const;
-	
 	/** @returns True if and only if there is an active render command encoder, otherwise false. */
 	bool IsRenderCommandEncoderActive(void) const;
 	
@@ -180,29 +255,11 @@ public:
 	bool IsAccelerationStructureCommandEncoderActive(void) const;
 #endif // METAL_RHI_RAYTRACING
 
-	/**
-	 * True iff the command-encoder submits immediately to the command-queue, false if it performs any buffering.
-	 * @returns True iff the command-list submits immediately to the command-queue, false if it performs any buffering.
-	 */
-	bool IsImmediate(void) const;
-	
-	/**
-	 * True iff the command-encoder encodes only to a child of a parallel render command encoder, false if it is standalone.
-	 * @returns True iff the command-encoder encodes only to a child of a parallel render command encoder, false if it is standalone.
-	 */
-	bool IsParallel(void) const;
-
 	/** @returns True if and only if there is valid render pass descriptor set on the encoder, otherwise false. */
 	bool IsRenderPassDescriptorValid(void) const;
 	
 	/** @returns The current render pass descriptor. */
 	mtlpp::RenderPassDescriptor const& GetRenderPassDescriptor(void) const;
-	
-	/** @returns The active render command encoder or nil if there isn't one. */
-	mtlpp::ParallelRenderCommandEncoder& GetParallelRenderCommandEncoder(void);
-	
-	/** @returns The child render command encoder of the current parallel render encoder for Index. */
-	mtlpp::RenderCommandEncoder& GetChildRenderCommandEncoder(uint32 Index);
 
 	/** @returns The active render command encoder or nil if there isn't one. */
 	mtlpp::RenderCommandEncoder& GetRenderCommandEncoder(void);
@@ -225,12 +282,6 @@ public:
 	uint32 NumEncodedPasses(void) const { return EncoderNum; }
 	
 #pragma mark - Public Command Encoder Mutators -
-
-	/**
- 	 * Begins encoding rendering commands into the current command buffer. No other encoder may be active & the mtlpp::RenderPassDescriptor must previously have been set.
-	 * @param NumChildren The number of child render-encoders to create. 
-	 */
-	void BeginParallelRenderCommandEncoding(uint32 NumChildren);
 
 	/**
  	 * Begins encoding rendering commands into the current command buffer. No other encoder may be active & the mtlpp::RenderPassDescriptor must previously have been set.
@@ -262,12 +313,6 @@ public:
 	
 	/** Prevent further GPU work until the event is reached. */
 	void WaitForFence(FMetalFence* Fence);
-	
-	/**
-	 * Prevent further GPU work until the event is reached and then kick the fence again so future encoders may wait on it.
-	 * Unlike the functions above this is not guarded and the caller must ensure proper matching waits & updates.
-	 */
-	void WaitAndUpdateFence(FMetalFence* Fence);
 
 #pragma mark - Public Debug Support -
 	
@@ -306,9 +351,6 @@ public:
 	
 	/** @returns The active blit command encoder or nil if there isn't one. */
 	FMetalBlitCommandEncoderDebugging& GetBlitCommandEncoderDebugging(void) { return BlitEncoderDebug; }
-	
-	/** @returns The active blit command encoder or nil if there isn't one. */
-	FMetalParallelRenderCommandEncoderDebugging& GetParallelRenderCommandEncoderDebugging(void) { return ParallelEncoderDebug; }
 #endif
 	
 #pragma mark - Public Render State Mutators -
@@ -511,13 +553,6 @@ public:
 	FMetalSubBufferRing& GetRingBuffer(void);
 	
 #pragma mark - Public Resource query Access -
-
-	/*
-	 * Returns True if the Resource has been bound to a command encoder, otherwise false.  History will be cleared after a commit operation
-	 * @returns True if the Resource has been bound to a command encoder, otherwise false.
-	 */
-	bool HasTextureBindingHistory(FMetalTexture const& Texture) const;
-	bool HasBufferBindingHistory(FMetalBuffer const& Buffer) const;
 	
 private:
 #pragma mark - Private Functions -
@@ -532,8 +567,8 @@ private:
 	
 	void SetShaderBufferInternal(mtlpp::FunctionType Function, uint32 Index);
 	
-	void FenceResource(mtlpp::Texture const& Resource);
-	void FenceResource(mtlpp::Buffer const& Resource);
+	void FenceResource(mtlpp::Texture const& Resource, mtlpp::FunctionType Function, bool bIsRenderTarget = false);
+	void FenceResource(mtlpp::Buffer const& Resource, mtlpp::FunctionType Function);
 
 	void UseResource(mtlpp::Resource const& Resource, mtlpp::ResourceUsage const Usage);
 	
@@ -604,47 +639,33 @@ public:
 	mtlpp::RenderPassDescriptor RenderPassDesc;
 	
 	mtlpp::CommandBuffer CommandBuffer;
-	mtlpp::ParallelRenderCommandEncoder ParallelRenderCommandEncoder;
 	mtlpp::RenderCommandEncoder RenderCommandEncoder;
 	mtlpp::ComputeCommandEncoder ComputeCommandEncoder;
 	mtlpp::BlitCommandEncoder BlitCommandEncoder;
 #if METAL_RHI_RAYTRACING
 	mtlpp::AccelerationStructureCommandEncoder AccelerationStructureCommandEncoder;
 #endif // METAL_RHI_RAYTRACING
-	TArray<mtlpp::RenderCommandEncoder> ChildRenderCommandEncoders;
 	FMetalCommandBufferMarkers CommandBufferMarkers;
 	
 	METAL_DEBUG_ONLY(FMetalCommandBufferDebugging CommandBufferDebug);
 	METAL_DEBUG_ONLY(FMetalRenderCommandEncoderDebugging RenderEncoderDebug);
 	METAL_DEBUG_ONLY(FMetalComputeCommandEncoderDebugging ComputeEncoderDebug);
 	METAL_DEBUG_ONLY(FMetalBlitCommandEncoderDebugging BlitEncoderDebug);
-	METAL_DEBUG_ONLY(FMetalParallelRenderCommandEncoderDebugging ParallelEncoderDebug);
 	
 	TRefCountPtr<FMetalFence> EncoderFence;
 #if ENABLE_METAL_GPUPROFILE
 	FMetalCommandBufferStats* CommandBufferStats;
-#endif
-#if METAL_DEBUG_OPTIONS
-	uint8 WaitCount;
-	uint8 UpdateCount;
 #endif
 
 	TArray<ns::Object<mtlpp::CommandBufferHandler>> CompletionHandlers;
 	NSMutableArray* DebugGroups;
     
     TSet<ns::AutoReleased<FMetalBuffer>> ActiveBuffers;
-    
-	TSet<ns::AutoReleased<FMetalBuffer>> BufferBindingHistory;
-	TSet<ns::AutoReleased<FMetalTexture>> TextureBindingHistory;
 	
 	TMap<mtlpp::Resource::Type, mtlpp::ResourceUsage> ResourceUsage;
 	
 	TSet<mtlpp::Resource::Type> TransitionedResources;
-	TSet<mtlpp::Resource::Type> FenceResources;
-	
-	TSet<TRefCountPtr<FMetalFence>> FragmentFences;
-	
-	mtlpp::RenderStages FenceStage;
+	FMetalCommandEncoderFence CommandEncoderFence;
 	uint32 EncoderNum;
 	uint32 CmdBufIndex;
 	EMetalCommandEncoderType Type;

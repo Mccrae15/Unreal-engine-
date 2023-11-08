@@ -16,6 +16,8 @@
 #include "Serialization/CompactBinaryWriter.h"
 #include "Serialization/CompactBinarySerialization.h"
 #include "Serialization/LargeMemoryWriter.h" 
+#include "SocketSubsystem.h"
+#include "IPAddress.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFileManager.h"
 #include "IO/IoDispatcher.h"
@@ -27,6 +29,7 @@
 #include "Misc/Paths.h"
 #include "GenericPlatform/GenericPlatformFile.h"
 #include "UObject/SavePackage.h"
+#include "Misc/PathViews.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogZenStoreWriter, Log, All);
 
@@ -58,6 +61,16 @@ FMD5Hash IoHashToMD5(const FIoHash& IoHash)
 	Hash.Set(MD5Gen);
 
 	return Hash;
+}
+
+FZenStoreWriter::FPackageDataEntry::~FPackageDataEntry()
+{
+
+}
+
+FZenStoreWriter::FPendingPackageState::~FPendingPackageState()
+{
+
 }
 
 struct FZenStoreWriter::FZenCommitInfo
@@ -152,7 +165,6 @@ FZenStoreWriter::FZenStoreWriter(
 	, TargetPlatformFName(*InTargetPlatform->PlatformName())
 	, OutputPath(InOutputPath)
 	, MetadataDirectoryPath(InMetadataDirectoryPath)
-	, PackageStoreManifest(InOutputPath)
 	, PackageStoreOptimizer(new FPackageStoreOptimizer())
 	, CookMode(ICookedPackageWriter::FCookInfo::CookByTheBookMode)
 	, bInitialized(false)
@@ -191,15 +203,6 @@ FZenStoreWriter::FZenStoreWriter(
 
 	PackageStoreOptimizer->Initialize();
 
-	FPackageStoreManifest::FZenServerInfo& ZenServerInfo = PackageStoreManifest.EditZenServerInfo();
-
-#if UE_WITH_ZEN
-	const UE::Zen::FZenServiceInstance& ZenServiceInstance = HttpClient->GetZenServiceInstance();
-	ZenServerInfo.Settings = ZenServiceInstance.GetServiceSettings();
-#endif
-	ZenServerInfo.ProjectId = ProjectId;
-	ZenServerInfo.OplogId = OplogId;
-
 	ZenFileSystemManifest = MakeUnique<FZenFileSystemManifest>(TargetPlatform, OutputPath);
 	
 	CommitQueue = MakeUnique<FCommitQueue>();
@@ -210,6 +213,13 @@ FZenStoreWriter::FZenStoreWriter(
 
 FZenStoreWriter::~FZenStoreWriter()
 {
+	if (CommitThread.IsValid())
+	{
+		UE_LOG(LogZenStoreWriter, Display, TEXT("Aborted, flushing..."));
+		CommitQueue->CompleteAdding();
+		CommitThread.Wait();
+	}
+
 	FScopeLock _(&PackagesCriticalSection);
 
 	if (PendingPackages.Num())
@@ -221,37 +231,43 @@ FZenStoreWriter::~FZenStoreWriter()
 void FZenStoreWriter::WritePackageData(const FPackageInfo& Info, FLargeMemoryWriter& ExportsArchive, const TArray<FFileRegion>& FileRegions)
 {
 	check(Info.ChunkId.IsValid());
-	int64 DataSize = ExportsArchive.TotalSize();
-	FIoBuffer PackageData(FIoBuffer::AssumeOwnership, ExportsArchive.ReleaseOwnership(), DataSize);
+	FPendingPackageState& ExistingState = GetPendingPackage(Info.PackageName);
+	FPackageDataEntry& Entry = ExistingState.PackageData.AddDefaulted_GetRef();
 
 	TRACE_CPUPROFILER_EVENT_SCOPE(FZenStoreWriter::WritePackageData);
 
-	FIoBuffer CookedHeaderBuffer = FIoBuffer(PackageData.Data(), Info.HeaderSize, PackageData);
-	FIoBuffer CookedExportsBuffer = FIoBuffer(PackageData.Data() + Info.HeaderSize, PackageData.DataSize() - Info.HeaderSize, PackageData);
-	TUniquePtr<FPackageStorePackage> Package{PackageStoreOptimizer->CreatePackageFromCookedHeader(Info.PackageName, CookedHeaderBuffer)};
-	PackageStoreOptimizer->FinalizePackage(Package.Get());
-	TArray<FFileRegion> FileRegionsCopy(FileRegions);
-	for (FFileRegion& Region : FileRegionsCopy)
+	FIoBuffer PackageBuffer;
+	if (ExistingState.PreOptimizedPackage.IsValid())
 	{
-		// Adjust regions so they are relative to the start of the exports buffer
-		Region.Offset -= Info.HeaderSize;
+		// If we are writing output data after having done a diff operation, we may already have pre-optimized package data in memory and
+		// we should use that instead of generating it again.
+		Entry.OptimizedPackage = MoveTemp(ExistingState.PreOptimizedPackage);
+		PackageBuffer = FIoBuffer(FIoBuffer::Clone, ExportsArchive.GetData(), Info.HeaderSize);
 	}
-	FIoBuffer PackageBuffer = PackageStoreOptimizer->CreatePackageBuffer(Package.Get(), CookedExportsBuffer, &FileRegionsCopy);
-	PackageStoreManifest.AddPackageData(Info.PackageName, Info.LooseFilePath, Info.ChunkId);
-	for (FFileRegion& Region : FileRegionsCopy)
+	else
 	{
-		// Adjust regions once more so they are relative to the exports bundle buffer
-		Region.Offset -= Package->GetHeaderSize();
+		ExistingState.OriginalHeaderSize = Info.HeaderSize;
+
+		int64 DataSize = ExportsArchive.TotalSize();
+		FIoBuffer PackageData(FIoBuffer::AssumeOwnership, ExportsArchive.ReleaseOwnership(), DataSize);
+
+		FIoBuffer CookedHeaderBuffer = FIoBuffer(PackageData.Data(), Info.HeaderSize, PackageData);
+		FIoBuffer CookedExportsBuffer = FIoBuffer(PackageData.Data() + Info.HeaderSize, PackageData.DataSize() - Info.HeaderSize, PackageData);
+		Entry.OptimizedPackage.Reset(PackageStoreOptimizer->CreatePackageFromCookedHeader(Info.PackageName, CookedHeaderBuffer));
+		PackageBuffer = PackageStoreOptimizer->CreatePackageBuffer(Entry.OptimizedPackage.Get(), CookedExportsBuffer);
 	}
-	//WriteFileRegions(*FPaths::ChangeExtension(Info.LooseFilePath, FString(".uexp") + FFileRegion::RegionsFileExtension), FileRegionsCopy);
+
+	Entry.FileRegions = FileRegions;
+	for (FFileRegion& Region : Entry.FileRegions)
+	{
+		// Adjust regions so they are relative to the start of the export bundle buffer
+		Region.Offset -= ExistingState.OriginalHeaderSize;
+		Region.Offset += Entry.OptimizedPackage->GetHeaderSize();
+	}
 
 	// Commit to Zen build store
 
 	FCbObjectId ChunkOid = ToObjectId(Info.ChunkId);
-
-	FPendingPackageState& ExistingState = GetPendingPackage(Info.PackageName);
-
-	FPackageDataEntry& Entry = ExistingState.PackageData;
 
 	Entry.CompressedPayload = Async(EAsyncExecution::TaskGraph, [this, PackageBuffer]()
 	{ 
@@ -260,18 +276,7 @@ void FZenStoreWriter::WritePackageData(const FPackageInfo& Info, FLargeMemoryWri
 
 	Entry.Info				= Info;
 	Entry.ChunkId			= ChunkOid;
-	Entry.PackageStoreEntry = PackageStoreOptimizer->CreatePackageStoreEntry(Package.Get(), nullptr); // TODO: Can we separate out the optional segment package store entry and do this when we commit instead?
 	Entry.IsValid			= true;
-
-	if (EntryCreatedEvent.IsBound())
-	{
-		IPackageStoreWriter::FEntryCreatedEventArgs EntryCreatedEventArgs
-		{
-			TargetPlatformFName,
-			Entry.PackageStoreEntry
-		};
-		EntryCreatedEvent.Broadcast(EntryCreatedEventArgs);
-	}
 }
 
 void FZenStoreWriter::WriteIoStorePackageData(const FPackageInfo& Info, const FIoBuffer& PackageData, const FPackageStoreEntryResource& PackageStoreEntry, const TArray<FFileRegion>& FileRegions)
@@ -280,14 +285,13 @@ void FZenStoreWriter::WriteIoStorePackageData(const FPackageInfo& Info, const FI
 
 	TRACE_CPUPROFILER_EVENT_SCOPE(WriteIoStorePackageData);
 
-	PackageStoreManifest.AddPackageData(Info.PackageName, Info.LooseFilePath, Info.ChunkId);
 	//WriteFileRegions(*FPaths::ChangeExtension(Info.LooseFilePath, FString(".uexp") + FFileRegion::RegionsFileExtension), FileRegionsCopy);
 
 	FCbObjectId ChunkOid = ToObjectId(Info.ChunkId);
 
 	FPendingPackageState& ExistingState = GetPendingPackage(Info.PackageName);
 
-	FPackageDataEntry& Entry = ExistingState.PackageData;
+	FPackageDataEntry& Entry = ExistingState.PackageData.AddDefaulted_GetRef();
 
 	PackageData.EnsureOwned();
 
@@ -298,7 +302,6 @@ void FZenStoreWriter::WriteIoStorePackageData(const FPackageInfo& Info, const FI
 
 	Entry.Info				= Info;
 	Entry.ChunkId			= ChunkOid;
-	Entry.PackageStoreEntry = PackageStoreEntry;
 	Entry.IsValid			= true;
 }
 
@@ -322,10 +325,7 @@ void FZenStoreWriter::WriteBulkData(const FBulkDataInfo& Info, const FIoBuffer& 
 	BulkEntry.Info		= Info;
 	BulkEntry.ChunkId	= ChunkOid;
 	BulkEntry.IsValid	= true;
-
-	PackageStoreManifest.AddBulkData(Info.PackageName, Info.LooseFilePath, Info.ChunkId);
-
-	//	WriteFileRegions(*(Info.LooseFilePath + FFileRegion::RegionsFileExtension), FileRegions);
+	BulkEntry.FileRegions = FileRegions;
 }
 
 void FZenStoreWriter::WriteAdditionalFile(const FAdditionalFileInfo& Info, const FIoBuffer& FileData)
@@ -336,8 +336,37 @@ void FZenStoreWriter::WriteAdditionalFile(const FAdditionalFileInfo& Info, const
 	
 	FileData.EnsureOwned();
 
-	FileEntry.CompressedPayload = Async(EAsyncExecution::TaskGraph, [this, FileData]()
-	{ 
+	auto WriteToFile = [](const FString& Filename, const FIoBuffer& FileData)
+	{
+		IFileManager& FileManager = IFileManager::Get();
+		int64 DataSize = IntCastChecked<int64>(FileData.DataSize());
+
+		for (int Tries = 0; Tries < 3; ++Tries)
+		{
+			if (FArchive* Ar = FileManager.CreateFileWriter(*Filename))
+			{
+				Ar->Serialize(const_cast<uint8*>(FileData.GetData()), DataSize);
+				bool bArchiveError = Ar->IsError();
+				delete Ar;
+
+				int64 ActualSize = FileManager.FileSize(*Filename);
+				if (ActualSize != DataSize)
+				{
+					FileManager.Delete(*Filename);
+
+					UE_LOG(LogZenStoreWriter, Fatal, TEXT("Could not save to %s! Tried to write %" INT64_FMT " bytes but resultant size was %" INT64_FMT ".%s"),
+						*Filename, DataSize, ActualSize, bArchiveError ? TEXT(" Ar->Serialize failed.") : TEXT(""));
+				}
+				return;
+			}
+		}
+
+		UE_LOG(LogZenStoreWriter, Fatal, TEXT("Could not write to %s!"), *Filename);
+	};
+
+	FileEntry.CompressedPayload = Async(EAsyncExecution::TaskGraph, [this, Info, FileData, WriteToFile]()
+	{
+		WriteToFile(Info.Filename, FileData);
 		return FCompressedBuffer::Compress(FSharedBuffer::MakeView(FileData.GetView()), Compressor, CompressionLevel);
 	});
 
@@ -380,10 +409,47 @@ void FZenStoreWriter::Initialize(const FCookInfo& Info)
 			IFileManager::Get().DeleteDirectory(*OutputPath, bRequireExists, bTree);
 		}
 
-		FString OplogLifetimeMarkerPath = OutputPath / (ProjectId + TEXT(".") + OplogId + TEXT(".projectstore"));
+		FString OplogLifetimeMarkerPath = OutputPath / TEXT(".projectstore");
 		TUniquePtr<FArchive> OplogMarker(IFileManager::Get().CreateFileWriter(*OplogLifetimeMarkerPath));
 
-		bool bOplogEstablished = HttpClient->TryCreateOplog(ProjectId, OplogId, OplogLifetimeMarkerPath, Info.bFullBuild);
+		bool bOplogEstablished = HttpClient->TryCreateOplog(ProjectId, OplogId, OplogLifetimeMarkerPath, CleanBuild);
+
+		if (bOplogEstablished && OplogMarker)
+		{
+			FCbWriter ManifestWriter;
+			ManifestWriter.BeginObject();
+			ManifestWriter.BeginObject("zenserver");
+			bool IsRunningLocally = false;
+#if UE_WITH_ZEN
+			IsRunningLocally = HttpClient->GetZenServiceInstance().IsServiceRunningLocally();
+#endif
+			ManifestWriter << "islocalhost" << IsRunningLocally;
+			ManifestWriter << "hostname" << HttpClient->GetHostName();
+			if (IsRunningLocally)
+			{
+				ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get();
+				if (SocketSubsystem != nullptr)
+				{
+					TArray<TSharedPtr<FInternetAddr>> Addresses;
+					if (SocketSubsystem->GetLocalAdapterAddresses(Addresses))
+					{
+						ManifestWriter.BeginArray("remotehostnames");
+						for (const TSharedPtr<FInternetAddr>& Address : Addresses)
+						{
+							ManifestWriter << Address->ToString(false);
+						}
+						ManifestWriter.EndArray();
+					}
+				}
+			}
+			ManifestWriter << "hostport" << HttpClient->GetPort();
+			ManifestWriter << "projectid" << ProjectId;
+			ManifestWriter << "oplogid" << OplogId;
+			ManifestWriter.EndObject();
+			ManifestWriter.EndObject();
+			SaveCompactBinary(*OplogMarker, ManifestWriter.Save());
+		}
+
 		OplogMarker.Reset();
 
 		if (!bOplogEstablished && CleanBuild)
@@ -411,23 +477,15 @@ void FZenStoreWriter::Initialize(const FCookInfo& Info)
 						{
 							FCbObject OplogObj = OplogEntry.AsObject();
 
-							if (OplogObj["package"])
+							if (OplogObj["packagestoreentry"])
 							{
-								FCbObject PackageObj = OplogObj["package"].AsObject();
-
-								const FGuid PkgGuid = PackageObj["guid"].AsUuid();
-								const FIoHash PkgHash = PackageObj["data"].AsHash();
-								const int64	PkgDiskSize = PackageObj["disksize"].AsUInt64();
 								FPackageStoreEntryResource Entry = FPackageStoreEntryResource::FromCbObject(OplogObj["packagestoreentry"].AsObject());
 								const FName PackageName = Entry.PackageName;
 
 								const int32 Index = PackageStoreEntries.Num();
 
 								PackageStoreEntries.Add(MoveTemp(Entry));
-								FOplogCookInfo& CookInfo = CookedPackagesInfo.Add_GetRef(
-									FOplogCookInfo{
-										FCookedPackageInfo {PackageName, IoHashToMD5(PkgHash), PkgGuid, PkgDiskSize }
-									});
+								FOplogCookInfo& CookInfo = CookedPackagesInfo.Add_GetRef({ PackageName });
 								PackageNameToIndex.Add(PackageName, Index);
 
 								for (FCbFieldView Field : OplogObj)
@@ -504,13 +562,8 @@ void FZenStoreWriter::Initialize(const FCookInfo& Info)
 
 void FZenStoreWriter::BeginCook(const FCookInfo& Info)
 {
-	if (!Info.bWorkerOnSharedSandbox)
+	if (Info.bWorkerOnSharedSandbox)
 	{
-		PackageStoreManifest.Load(*(MetadataDirectoryPath / TEXT("packagestore.manifest")));
-	}
-	else
-	{
-		PackageStoreManifest.SetTrackPackageData(true);
 		bProvidePerPackageResults = true;
 	}
 	AllPackageHashes.Empty();
@@ -559,6 +612,7 @@ void FZenStoreWriter::EndCook(const FCookInfo& Info)
 	
 	CommitQueue->CompleteAdding();
 	CommitThread.Wait();
+	CommitThread.Reset();
 
 	if (!Info.bWorkerOnSharedSandbox)
 	{
@@ -578,23 +632,94 @@ void FZenStoreWriter::EndCook(const FCookInfo& Info)
 		TIoStatusOr<uint64> Status = HttpClient->EndBuildPass(Pkg);
 		UE_CLOG(!Status.IsOk(), LogZenStoreWriter, Fatal, TEXT("Failed to append OpLog and end the build pass"));
 
-		PackageStoreManifest.Save(*(MetadataDirectoryPath / TEXT("packagestore.manifest")));
+		FCbWriter ManifestWriter;
+		ManifestWriter.BeginObject();
+		ManifestWriter.BeginObject("zenserver");
+#if UE_WITH_ZEN
+		ManifestWriter.BeginObject("settings");
+		const UE::Zen::FZenServiceInstance& ZenServiceInstance = HttpClient->GetZenServiceInstance();
+		ZenServiceInstance.GetServiceSettings().WriteToCompactBinary(ManifestWriter);
+		ManifestWriter.EndObject();
+#endif
+		ManifestWriter << "projectid" << ProjectId;
+		ManifestWriter << "oplogid" << OplogId;
+		ManifestWriter.EndObject();
+		ManifestWriter.EndObject();
+
+		FString PackageStoreManifestFilePath = FPaths::Combine(MetadataDirectoryPath, TEXT("packagestore.manifest"));
+		TUniquePtr<FArchive> Ar(IFileManager::Get().CreateFileWriter(*PackageStoreManifestFilePath));
+		if (Ar)
+		{
+			SaveCompactBinary(*Ar, ManifestWriter.Save());
+		}
+		else
+		{
+			UE_LOG(LogSavePackage, Error, TEXT("Failed saving package store manifest file '%s'"), *PackageStoreManifestFilePath);
+		}
+
+		{
+			// Temporary solution until we can reliably read the oplog from UAT
+			TArray<FString> CookedFiles;
+			TIoStatusOr<FCbObject> OplogStatus = HttpClient->GetOplog().Get();
+			if (OplogStatus.IsOk())
+			{
+				FCbObject Oplog = OplogStatus.ConsumeValueOrDie();
+				for (FCbField& OplogEntry : Oplog["entries"].AsArray())
+				{
+					FCbObject OplogObj = OplogEntry.AsObject();
+					for (FCbField& ChunkEntry : OplogEntry["packagedata"].AsArray())
+					{
+						FCbObject ChunkObj = ChunkEntry.AsObject();
+						if (ChunkObj["filename"])
+						{
+							CookedFiles.Add(FString(ChunkObj["filename"].AsString()));
+						}
+					}
+					for (FCbField& ChunkEntry : OplogEntry["bulkdata"].AsArray())
+					{
+						FCbObject ChunkObj = ChunkEntry.AsObject();
+						if (ChunkObj["filename"])
+						{
+							CookedFiles.Add(FString(ChunkObj["filename"].AsString()));
+						}
+					}
+				}
+				if (!FFileHelper::SaveStringArrayToFile(CookedFiles, *FPaths::Combine(MetadataDirectoryPath, TEXT("cookedfiles.manifest"))))
+				{
+					UE_LOG(LogSavePackage, Error, TEXT("Failed writing UAT file manifest"));
+				}
+			}
+			else
+			{
+				UE_LOG(LogSavePackage, Error, TEXT("Failed reading oplog"));
+			}
+		}
 	}
 
-	UE_LOG(LogZenStoreWriter, Display, TEXT("Input:\t%d Packages"), PackageStoreOptimizer->GetTotalPackageCount());
-	UE_LOG(LogZenStoreWriter, Display, TEXT("Output:\t%d Export bundles"), PackageStoreOptimizer->GetTotalExportBundleCount());
-	UE_LOG(LogZenStoreWriter, Display, TEXT("Output:\t%d Export bundle entries"), PackageStoreOptimizer->GetTotalExportBundleEntryCount());
-	UE_LOG(LogZenStoreWriter, Display, TEXT("Output:\t%d Internal export bundle arcs"), PackageStoreOptimizer->GetTotalInternalBundleArcsCount());
-	UE_LOG(LogZenStoreWriter, Display, TEXT("Output:\t%d External export bundle arcs"), PackageStoreOptimizer->GetTotalExternalBundleArcsCount());
 	UE_LOG(LogZenStoreWriter, Display, TEXT("Output:\t%d Public runtime script objects"), PackageStoreOptimizer->GetTotalScriptObjectCount());
+}
+
+FZenStoreWriter::ZenHostInfo FZenStoreWriter::GetHostInfo() const
+{
+	FZenStoreWriter::ZenHostInfo Info;
+	Info.ProjectId = ProjectId;
+	Info.OplogId = OplogId;
+	if (IsLocalConnection)
+	{
+		Info.HostName = "localhost";
+	}
+	else
+	{
+		Info.HostName = HttpClient->GetHostName();
+	}
+	Info.HostPort = HttpClient->GetPort();
+	return Info;
 }
 
 void FZenStoreWriter::BeginPackage(const FBeginPackageInfo& Info)
 {
 	FPendingPackageState& State = AddPendingPackage(Info.PackageName);
 	State.PackageName = Info.PackageName;
-
-	PackageStoreManifest.BeginPackage(Info.PackageName);
 }
 
 bool FZenStoreWriter::IsReservedOplogKey(FUtf8StringView Key)
@@ -677,12 +802,30 @@ void FZenStoreWriter::CommitPackageInternal(FZenCommitInfo&& ZenCommitInfo)
 
 	if (CommitInfo.Status == ECommitStatus::Success && bWritePackage)
 	{
-		FPackageDataEntry& PkgData = PackageState->PackageData;
-		checkf(PkgData.IsValid, TEXT("CommitPackage called with bSucceeded but without first calling WritePackageData"))
+		checkf(!PackageState->PackageData.IsEmpty(), TEXT("CommitPackage called with bSucceeded but without first calling WritePackageData"))
 		checkf(EnumHasAllFlags(CommitInfo.WriteOptions, EWriteOptions::Write), TEXT("Partial EWriteOptions::Write options are not yet implemented."));
 		checkf(!EnumHasAnyFlags(CommitInfo.WriteOptions, EWriteOptions::SaveForDiff), TEXT("-diffonly -savefordiff is not yet implemented."));
 
+		FPackageStoreEntryResource PackageStoreEntry;
 		{
+			FPackageDataEntry* PkgData = nullptr;
+			FPackageDataEntry* OptionalSegmentPkgData = nullptr;
+			for (FPackageDataEntry& PackageDataEntry : PackageState->PackageData)
+			{
+				check(PackageDataEntry.Info.MultiOutputIndex <= 1);
+				if (PackageDataEntry.Info.MultiOutputIndex == 0)
+				{
+					check(!PkgData);
+					PkgData = &PackageDataEntry;
+				}
+				else if (PackageDataEntry.Info.MultiOutputIndex == 1)
+				{
+					check(!OptionalSegmentPkgData);
+					OptionalSegmentPkgData = &PackageDataEntry;
+				}
+			}
+			PackageStoreEntry = PackageStoreOptimizer->CreatePackageStoreEntry(PkgData->OptimizedPackage.Get(), OptionalSegmentPkgData ? OptionalSegmentPkgData->OptimizedPackage.Get() : nullptr);
+
 			FWriteScopeLock _(EntriesLock);
 			CommitEventArgs.EntryIndex = PackageNameToIndex.FindOrAdd(CommitInfo.PackageName, PackageStoreEntries.Num());
 			if (CommitEventArgs.EntryIndex == PackageStoreEntries.Num())
@@ -690,30 +833,23 @@ void FZenStoreWriter::CommitPackageInternal(FZenCommitInfo&& ZenCommitInfo)
 				PackageStoreEntries.Emplace();
 				CookedPackagesInfo.Emplace();
 			}
+			PackageStoreEntries[CommitEventArgs.EntryIndex] = PackageStoreEntry;
 		}
 		
-		PackageStoreEntries[CommitEventArgs.EntryIndex] = PkgData.PackageStoreEntry;
+		if (EntryCreatedEvent.IsBound())
+		{
+			IPackageStoreWriter::FEntryCreatedEventArgs EntryCreatedEventArgs
+			{
+				TargetPlatformFName,
+				PackageStoreEntry
+			};
+			EntryCreatedEvent.Broadcast(EntryCreatedEventArgs);
+		}
 		
 		FMD5 PkgHashGen;
 		FCbPackage OplogEntry;
-
-		FCbAttachment PkgDataAttachment = FCbAttachment(PkgData.CompressedPayload.Get());
-		PkgHashGen.Update(PkgDataAttachment.GetHash().GetBytes(), sizeof(FIoHash::ByteArray));
-		OplogEntry.AddAttachment(PkgDataAttachment);
-		
 		// Commit attachments
 		FOplogCookInfo& CookInfo = CookedPackagesInfo[CommitEventArgs.EntryIndex];
-		CookInfo = FOplogCookInfo
-		{
-			FCookedPackageInfo
-			{ 
-				CommitInfo.PackageName,
-				IoHashToMD5(PkgDataAttachment.GetHash()),
-				CommitInfo.PackageGuid,
-				int64(PkgDataAttachment.AsCompressedBinary().GetRawSize())
-			}
-		};
-
 		CookInfo.bUpToDate = true;
 
 		const int32 NumAttachments = CommitInfo.Attachments.Num();
@@ -756,17 +892,48 @@ void FZenStoreWriter::CommitPackageInternal(FZenCommitInfo&& ZenCommitInfo)
 		FString PackageNameKey = CommitInfo.PackageName.ToString();
 		PackageNameKey.ToLowerInline();
 		OplogEntryDesc << "key" << PackageNameKey;
-
-		// NOTE: The package GUID and disk size are used for legacy iterative cooks when comparing asset registry package data
-		OplogEntryDesc.BeginObject("package");
-		OplogEntryDesc << "id" << PkgData.ChunkId;
-		OplogEntryDesc << "guid" << CommitInfo.PackageGuid;
-		OplogEntryDesc << "data" << PkgDataAttachment;
-		OplogEntryDesc << "disksize" << PkgDataAttachment.AsCompressedBinary().GetRawSize();
-		OplogEntryDesc.EndObject();
-
-		OplogEntryDesc << "packagestoreentry" << PkgData.PackageStoreEntry;
+		OplogEntryDesc << "packagestoreentry" << PackageStoreEntry;
 		
+		auto AppendFileNameAndRegionsToOplog = [this, &OplogEntryDesc](const FString& LooseFilePath, const TArray<FFileRegion>& FileRegions)
+		{
+			FStringView RelativePathView;
+			if (FPathViews::TryMakeChildPathRelativeTo(LooseFilePath, OutputPath, RelativePathView))
+			{
+				OplogEntryDesc << "filename" << RelativePathView;
+			}
+			if (!FileRegions.IsEmpty())
+			{
+				OplogEntryDesc.BeginArray("fileregions");
+				for (const FFileRegion& FileRegion : FileRegions)
+				{
+					OplogEntryDesc << FileRegion;
+				}
+				OplogEntryDesc.EndArray();
+			}
+		};
+
+		OplogEntryDesc.BeginArray("packagedata");
+		
+		for (FPackageDataEntry& PkgData : PackageState->PackageData)
+		{
+			if (bComputeHash)
+			{
+				PackageState->PackageHashes->ChunkHashes.Add(PkgData.Info.ChunkId, PkgData.CompressedPayload.Get().GetRawHash());
+			}
+
+			FCbAttachment PkgDataAttachment = FCbAttachment(PkgData.CompressedPayload.Get());
+			PkgHashGen.Update(PkgDataAttachment.GetHash().GetBytes(), sizeof(FIoHash::ByteArray));
+			OplogEntry.AddAttachment(PkgDataAttachment);
+
+			OplogEntryDesc.BeginObject();
+			OplogEntryDesc << "id" << PkgData.ChunkId;
+			OplogEntryDesc << "data" << PkgDataAttachment;
+			AppendFileNameAndRegionsToOplog(PkgData.Info.LooseFilePath, PkgData.FileRegions);
+			OplogEntryDesc.EndObject();
+		}
+
+		OplogEntryDesc.EndArray();
+
 		if (PackageState->BulkData.Num())
 		{
 			OplogEntryDesc.BeginArray("bulkdata");
@@ -786,6 +953,7 @@ void FZenStoreWriter::CommitPackageInternal(FZenCommitInfo&& ZenCommitInfo)
 				OplogEntryDesc << "id" << Bulk.ChunkId;
 				OplogEntryDesc << "type" << LexToString(Bulk.Info.BulkDataType);
 				OplogEntryDesc << "data" << BulkAttachment;
+				AppendFileNameAndRegionsToOplog(Bulk.Info.LooseFilePath, Bulk.FileRegions);
 				OplogEntryDesc.EndObject();
 			}
 
@@ -845,11 +1013,11 @@ void FZenStoreWriter::CommitPackageInternal(FZenCommitInfo&& ZenCommitInfo)
 	}
 	else if (CommitInfo.Status == ECommitStatus::Success && bComputeHash)
 	{
-		FPackageDataEntry& PkgData = PackageState->PackageData;
-		checkf(PkgData.IsValid, TEXT("CommitPackage called with bSucceeded but without first calling WritePackageData"));
+		checkf(!PackageState->PackageData.IsEmpty(), TEXT("CommitPackage called with bSucceeded but without first calling WritePackageData"));
 		
 		FMD5 PkgHashGen;
 		
+		for (FPackageDataEntry& PkgData : PackageState->PackageData)
 		{
 			FCompressedBuffer Payload = PkgData.CompressedPayload.Get();
 			FIoHash IoHash = Payload.GetRawHash();
@@ -1020,7 +1188,7 @@ void FZenStoreWriter::RemoveCookedPackages(TArrayView<const FName> PackageNamesT
 		int32 EntryIndex = 0;
 		for (int32 Idx : PackageIndicesToKeep)
 		{
-			const FName PackageName = PreviousCookedPackageInfo[Idx].CookInfo.PackageName;
+			const FName PackageName = PreviousCookedPackageInfo[Idx].PackageName;
 
 			PackageStoreEntries.Add(MoveTemp(PreviousPackageStoreEntries[Idx]));
 			CookedPackagesInfo.Add(MoveTemp(PreviousCookedPackageInfo[Idx]));
@@ -1069,12 +1237,63 @@ void FZenStoreWriter::MarkPackagesUpToDate(TArrayView<const FName> UpToDatePacka
 	}
 }
 
+bool FZenStoreWriter::GetPreviousCookedBytes(const FPackageInfo& Info, FPreviousCookedBytesData& OutData)
+{
+	if (!Info.ChunkId.IsValid())
+	{
+		return false;
+	}
+
+	FIoReadOptions ReadOptions;
+	TIoStatusOr<FIoBuffer> Status = HttpClient->ReadChunk(Info.ChunkId, ReadOptions.GetOffset(), ReadOptions.GetSize());
+	if (!Status.IsOk())
+	{
+		return false;
+	}
+
+	FIoBuffer Buffer = Status.ConsumeValueOrDie();
+	OutData.HeaderSize = reinterpret_cast<const FZenPackageSummary*>(Buffer.Data())->HeaderSize;
+	OutData.Size = Buffer.GetSize();
+	OutData.StartOffset = 0;
+	Buffer.EnsureOwned();
+	OutData.Data.Reset(Buffer.Release().ConsumeValueOrDie());
+
+	return true;
+}
+
+void FZenStoreWriter::CompleteExportsArchiveForDiff(FPackageInfo& Info, FLargeMemoryWriter& ExportsArchive)
+{
+	check(Info.ChunkId.IsValid());
+	FPendingPackageState& ExistingState = GetPendingPackage(Info.PackageName);
+
+	uint64 OptimizedHeaderSize = 0;
+	TUniquePtr<FPackageStorePackage> PackageStorePackage;
+	FIoBuffer PackageBuffer;
+	{
+		FIoBuffer CookedHeaderBuffer(FIoBuffer::Wrap, ExportsArchive.GetData(), Info.HeaderSize);
+		FIoBuffer CookedExportsBuffer(FIoBuffer::Wrap, ExportsArchive.GetData() + Info.HeaderSize, ExportsArchive.TotalSize() - Info.HeaderSize);
+		PackageStorePackage.Reset(PackageStoreOptimizer->CreatePackageFromCookedHeader(Info.PackageName, CookedHeaderBuffer));
+		OptimizedHeaderSize = PackageStorePackage->GetHeaderSize();
+		PackageBuffer = PackageStoreOptimizer->CreatePackageBuffer(PackageStorePackage.Get(), CookedExportsBuffer);
+	}
+
+	ExistingState.OriginalHeaderSize = Info.HeaderSize;
+	ExportsArchive.Seek(0);
+	FMemory::Free(ExportsArchive.ReleaseOwnership());
+	ExportsArchive.Reserve(PackageBuffer.DataSize());
+	ExportsArchive.Serialize(PackageBuffer.GetData(), PackageBuffer.DataSize());
+	Info.HeaderSize = OptimizedHeaderSize;
+	ExistingState.PreOptimizedPackage = MoveTemp(PackageStorePackage);
+}
+
+EPackageWriterResult FZenStoreWriter::BeginCacheForCookedPlatformData(
+	FBeginCacheForCookedPlatformDataInfo& Info)
+{
+	return BeginCacheCallback(Info);
+}
+
 TFuture<FCbObject> FZenStoreWriter::WriteMPCookMessageForPackage(FName PackageName)
 {
-	FCbWriter ManifestWriter;
-	PackageStoreManifest.WritePackage(ManifestWriter, PackageName);
-	FCbFieldIterator ManifestField = ManifestWriter.Save();
-
 	TArray<FString> AdditionalFiles;
 	PackageAdditionalFiles.RemoveAndCopyValue(PackageName, AdditionalFiles);
 
@@ -1082,11 +1301,10 @@ TFuture<FCbObject> FZenStoreWriter::WriteMPCookMessageForPackage(FName PackageNa
 	AllPackageHashes.RemoveAndCopyValue(PackageName, PackageHashes);
 
 	auto ComposeMessage =
-	[ManifestField = MoveTemp(ManifestField), AdditionalFiles=MoveTemp(AdditionalFiles)](FPackageHashes* PackageHashes)
+	[AdditionalFiles=MoveTemp(AdditionalFiles)](FPackageHashes* PackageHashes)
 	{
 		FCbWriter Writer;
 		Writer.BeginObject();
-		Writer << "Manifest" << ManifestField;
 		if (!AdditionalFiles.IsEmpty())
 		{
 			Writer << "AdditionalFiles" << AdditionalFiles;
@@ -1121,12 +1339,6 @@ TFuture<FCbObject> FZenStoreWriter::WriteMPCookMessageForPackage(FName PackageNa
 
 bool FZenStoreWriter::TryReadMPCookMessageForPackage(FName PackageName, FCbObjectView Message)
 {
-	bool bOk = PackageStoreManifest.TryReadPackage(Message["Manifest"], PackageName);
-	if (!bOk)
-	{
-		return false;
-	}
-
 	TArray<FString> AdditionalFiles;
 	if (LoadFromCompactBinary(Message["AdditionalFiles"], AdditionalFiles))
 	{
@@ -1136,6 +1348,7 @@ bool FZenStoreWriter::TryReadMPCookMessageForPackage(FName PackageName, FCbObjec
 		}
 	}
 
+	bool bOk = true;
 	TRefCountPtr<FPackageHashes> ThisPackageHashes(new FPackageHashes());
 	if (LoadFromCompactBinary(Message["PackageHash"], ThisPackageHashes->PackageHash))
 	{
@@ -1153,13 +1366,22 @@ bool FZenStoreWriter::TryReadMPCookMessageForPackage(FName PackageName, FCbObjec
 			ExistingPackageHashes = ThisPackageHashes;
 			if (bAlreadyExisted)
 			{
-				UE_LOG(LogSavePackage, Error, TEXT("FLooseCookedPackageWriter encountered the same package twice in a cook! (%s)"),
+				UE_LOG(LogSavePackage, Error, TEXT("FZenStoreWriter encountered the same package twice in a cook! (%s)"),
 					*PackageName.ToString());
 			}
 		}
 	}
 
 	return bOk;
+}
+
+FZenStoreWriter::FPendingPackageState& FZenStoreWriter::AddPendingPackage(const FName& PackageName)
+{
+	FScopeLock _(&PackagesCriticalSection);
+	checkf(!PendingPackages.Contains(PackageName), TEXT("Trying to add package that is already pending"));
+	TUniquePtr<FPendingPackageState>& Package = PendingPackages.Add(PackageName, MakeUnique<FPendingPackageState>());
+	check(Package.IsValid());
+	return *Package;
 }
 
 void FZenStoreWriter::CreateProjectMetaData(FCbPackage& Pkg, FCbWriter& PackageObj)

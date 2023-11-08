@@ -84,14 +84,16 @@ public:
 
 	/** true when we are routing ConditionalPostLoad/PostLoad to objects										*/
 	bool IsRoutingPostLoad;
-	/** The object we are routing PostLoad from the Async Loading code for */
-	UObject* CurrentlyPostLoadedObjectByALT;
 	/** true when FLinkerManager deletes linkers */
 	bool IsDeletingLinkers;
+	/* Global int to track how many nested loads we're doing by triggering an async load and immediately flushing that request. */
+	int32 SyncLoadUsingAsyncLoaderCount;
 	/* Global flag so that FObjectFinders know if they are called from inside the UObject constructors or not. */
 	int32 IsInConstructor;
 	/* Object that is currently being constructed with ObjectInitializer */
 	UObject* ConstructedObject;
+	/** The object we are routing PostLoad from the Async Loading code for */
+	UObject* CurrentlyPostLoadedObjectByALT;
 	/** Async Package currently processing objects */
 	void* AsyncPackage;
 	/** Async package loader currently processing objects */
@@ -123,17 +125,17 @@ private:
 };
 
 /** Structure that holds the current serialization state of UObjects */
-struct COREUOBJECT_API FUObjectSerializeContext
+struct FUObjectSerializeContext
 {
 	friend class FUObjectThreadContext;
 
 private:
 
 	/** Constructor */
-	FUObjectSerializeContext();
+	COREUOBJECT_API FUObjectSerializeContext();
 
 	/** Destructor */
-	~FUObjectSerializeContext();
+	COREUOBJECT_API ~FUObjectSerializeContext();
 
 	/** Reference count of this context */
 	int32 RefCount;
@@ -167,8 +169,8 @@ public:
 	FLinkerLoad* SerializedExportLinker;
 
 	/** Adds a new loaded object */
-	void AddLoadedObject(UObject* InObject);
-	void AddUniqueLoadedObjects(const TArray<UObject*>& InObjects);
+	COREUOBJECT_API void AddLoadedObject(UObject* InObject);
+	COREUOBJECT_API void AddUniqueLoadedObjects(const TArray<UObject*>& InObjects);
 
 	/** Checks if object loading has started */
 	bool HasStartedLoading() const
@@ -180,8 +182,8 @@ public:
 		return ObjBeginLoadCount;
 	}
 
-	int32 IncrementBeginLoadCount();
-	int32 DecrementBeginLoadCount();
+	COREUOBJECT_API int32 IncrementBeginLoadCount();
+	COREUOBJECT_API int32 DecrementBeginLoadCount();
 
 	int32 IncrementImportCount()
 	{
@@ -211,7 +213,7 @@ public:
 		return !!ObjectsLoaded.Num();
 	}
 
-	bool PRIVATE_PatchNewObjectIntoExport(UObject* OldObject, UObject* NewObject);
+	COREUOBJECT_API bool PRIVATE_PatchNewObjectIntoExport(UObject* OldObject, UObject* NewObject);
 
 	/** This is only meant to be used by FAsyncPackage for performance reasons. The ObjectsLoaded array should not be manipulated directly! */
 	TArray<UObject*>& PRIVATE_GetObjectsLoadedInternalUseOnly()
@@ -251,13 +253,13 @@ public:
 	}
 
 	/** Attaches a linker to this context */
-	void AttachLinker(FLinkerLoad* InLinker);
+	COREUOBJECT_API void AttachLinker(FLinkerLoad* InLinker);
 	
 	/** Detaches a linker from this context */
-	void DetachLinker(FLinkerLoad* InLinker);
+	COREUOBJECT_API void DetachLinker(FLinkerLoad* InLinker);
 
 	/** Detaches all linkers from this context */
-	void DetachFromLinkers();
+	COREUOBJECT_API void DetachFromLinkers();
 
 	//~ TRefCountPtr interface
 	int32 AddRef()

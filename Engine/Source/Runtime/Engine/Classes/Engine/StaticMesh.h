@@ -594,7 +594,7 @@ private:
 
 public:
 #if WITH_EDITOR
-	ENGINE_API bool IsCompiling() const override { return AsyncTask != nullptr || LockedProperties.load(std::memory_order_relaxed) != 0; }
+	bool IsCompiling() const override { return AsyncTask != nullptr || LockedProperties.load(std::memory_order_relaxed) != 0; }
 #else
 	FORCEINLINE bool IsCompiling() const { return false; }
 #endif
@@ -860,6 +860,26 @@ public:
 		MinLOD.PerPlatform.Add(PlatformName, InMinLOD);
 		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #endif
+	}
+
+#if WITH_EDITORONLY_DATA
+	/**
+	 * Returns true if this SM should have Nanite built for it.
+	 * This also includes the result of IsNaniteForceEnabled().
+	 */
+	ENGINE_API bool IsNaniteEnabled() const;
+
+	/**
+	 * Returns true if this SM should always have Nanite data built.
+	 * This forces the SM to be Nanite even if the flag in the editor is set to false.
+	 */
+	ENGINE_API bool IsNaniteForceEnabled() const;
+#endif
+
+	// TODO: Temp/deprecated hack - Do not call
+	inline bool IsNaniteLandscape() const
+	{
+		return GetName().StartsWith(TEXT("LandscapeNaniteMesh"));
 	}
 
 private:
@@ -1530,6 +1550,7 @@ public:
 	ENGINE_API virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
 	ENGINE_API virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	ENGINE_API virtual void PostEditUndo() override;
+	ENGINE_API virtual EDataValidationResult IsDataValid(class FDataValidationContext& Context) const override;
 	ENGINE_API virtual void GetAssetRegistryTagMetadata(TMap<FName, FAssetRegistryTagMetadata>& OutMetadata) const override;
 	
 	ENGINE_API virtual void WillNeverCacheCookedPlatformDataAgain() override;
@@ -1851,6 +1872,11 @@ public:
 	 */
 	ENGINE_API void CreateNavCollision(const bool bIsUpdate = false);
 
+	/**
+	 * Delete current NavCollision and create a new one if needed
+	 */
+	ENGINE_API void RecreateNavCollision();
+
 	/** Configures this SM as bHasNavigationData = false and clears stored NavCollision */
 	ENGINE_API void MarkAsNotHavingNavigationData();
 
@@ -2063,7 +2089,7 @@ private:
 class FStaticMeshCompilationContext
 {
 public:
-	FStaticMeshCompilationContext() = default;
+	FStaticMeshCompilationContext();
 	// Non-copyable
 	FStaticMeshCompilationContext(const FStaticMeshCompilationContext&) = delete;
 	FStaticMeshCompilationContext& operator=(const FStaticMeshCompilationContext&) = delete;
@@ -2072,6 +2098,7 @@ public:
 	FStaticMeshCompilationContext& operator=(FStaticMeshCompilationContext&&) = default;
 
 	bool bShouldComputeExtendedBounds = false;
+	bool bIsEditorLoadingPackage = false;
 };
 
 class FStaticMeshPostLoadContext : public FStaticMeshCompilationContext

@@ -2,10 +2,12 @@
 
 #include "NiagaraRendererComponents.h"
 #include "Engine/World.h"
-#include "NiagaraConstants.h"
+#include "Components/PrimitiveComponent.h"
 #include "NiagaraDataSet.h"
+#include "NiagaraEmitterInstance.h"
 #include "NiagaraStats.h"
 #include "NiagaraComponentRendererProperties.h"
+#include "NiagaraSystem.h"
 #include "NiagaraSystemInstance.h"
 #include "Async/Async.h"
 
@@ -598,6 +600,11 @@ void FNiagaraRendererComponents::PostSystemTick_GameThread(const UNiagaraRendere
 			{
 				SceneComponent->SetVisibility(true, true);
 				SceneComponent->Activate(false);
+				if (UPrimitiveComponent* PrimitiveComponent = Cast<UPrimitiveComponent>(SceneComponent))
+				{
+					// prevent motion blur when reusing components
+					PrimitiveComponent->ResetSceneVelocity();
+				}
 			}
 		}
 

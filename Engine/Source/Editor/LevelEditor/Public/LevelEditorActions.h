@@ -48,6 +48,7 @@ public:
 	TSharedPtr< FUICommandInfo > Save;
 	TSharedPtr< FUICommandInfo > SaveAs;
 	TSharedPtr< FUICommandInfo > SaveAllLevels;
+	TSharedPtr< FUICommandInfo > BrowseLevel;
 
 	static const int32 MaxRecentFiles = 10;
 	TArray< TSharedPtr< FUICommandInfo > > OpenRecentFileCommands;
@@ -69,6 +70,9 @@ public:
 
 	
 	/** Build commands */
+	static constexpr int32 MaxExternalBuildTypes = 10;
+	TArray<TSharedPtr< FUICommandInfo >> ExternalBuildTypeCommands;
+
 	TSharedPtr< FUICommandInfo > Build;
 	TSharedPtr< FUICommandInfo > BuildAndSubmitToSourceControl;
 	TSharedPtr< FUICommandInfo > BuildLightingOnly;
@@ -122,6 +126,9 @@ public:
 
 	/** Edits associated asset(s) */
 	TSharedPtr< FUICommandInfo > EditAssetNoConfirmMultiple;
+
+	/** Opens the associated asset(s) in the property matrix */
+	TSharedPtr< FUICommandInfo > OpenSelectionInPropertyMatrix;
 
 	/** Moves the camera to the current mouse position */
 	TSharedPtr< FUICommandInfo > GoHere;
@@ -308,7 +315,7 @@ public:
 	/** Reverse a merge */
 	TSharedPtr< FUICommandInfo > SeparatePolys;
 
-	/** Align brush verticies to the grid */
+	/** Align brush vertices to the grid */
 	TSharedPtr<FUICommandInfo> AlignBrushVerticesToGrid;
 
 	/**
@@ -625,6 +632,8 @@ public:
         // Open merge actor command
 	TSharedPtr< FUICommandInfo > OpenMergeActor;
 
+	TSharedPtr< FUICommandInfo > FixupGroupActor;
+
 };
 
 /**
@@ -709,6 +718,10 @@ public:
 	/** Saves all unsaved maps (but not packages) */
 	static void SaveAllLevels();
 
+	/** Browses to the current map */
+	static void Browse();
+	static bool CanBrowse();
+
 
 	/**
 	 * Called when import scene is selected
@@ -765,6 +778,8 @@ public:
 	static void BuildTextureStreamingOnly_Execute();
 	static void BuildVirtualTextureOnly_Execute();
 	static void BuildAllLandscape_Execute();
+	static bool BuildExternalType_CanExecute( int32 Index );
+	static void BuildExternalType_Execute( int32 Index );
 	static void SetLightingQuality( ELightingBuildQuality NewQuality );
 	static bool IsLightingQualityChecked( ELightingBuildQuality TestQuality );
 	static float GetLightingDensityIdeal();
@@ -900,6 +915,11 @@ public:
 	/** Called to when "Edit Asset" is clicked */
 	static void EditAsset_Clicked( const EToolkitMode::Type ToolkitMode, TWeakPtr< class SLevelEditor > LevelEditor, bool bAskMultiple );
 	static bool EditAsset_CanExecute();
+
+	/** Called to when "Open Selection in Property Matrix" is clicked */
+	static void OpenSelectionInPropertyMatrix_Clicked();
+	static bool OpenSelectionInPropertyMatrix_IsVisible();
+
 
 	/** Called when 'detach' is clicked */
 	static void DetachActor_Clicked();
@@ -1340,7 +1360,7 @@ public:
 	static void SnapElementsToElement_Clicked( bool InAlign, bool InUseLineTrace, bool InUseBounds, bool InUsePivot );
 
 	/**
-	 * Aligns brush verticies to the nearest grid point.
+	 * Aligns brush vertices to the nearest grid point.
 	 */
 	static void AlignBrushVerticesToGrid_Execute();
 
@@ -1412,5 +1432,8 @@ private:
 	 * @param SimActor		Simulating Actor in PIE or SIE
 	 */
 	static bool SaveAnimationFromSkeletalMeshComponent(AActor * EditorActor, AActor * SimActor, TArray<class USkeletalMeshComponent*> & OutEditorComponents);
+
+public:
+	static void FixupGroupActor_Clicked();
 };
 

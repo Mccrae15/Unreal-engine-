@@ -29,6 +29,21 @@ protected:
 	TSharedPtr<UE::PoseSearch::SDatabaseAssetTree> AssetTreeWidget;
 };
 
+USTRUCT()
+struct FPoseSearchDatabaseSequenceEx : public FPoseSearchDatabaseSequence
+{
+	GENERATED_BODY()
+
+	// Is this animation set as looping? If you want to change this you need to change it in the base Anim Sequence.
+	// Changing the sampling range will disable looping
+	UPROPERTY(VisibleAnywhere, Category="Sequence", meta = (DisplayPriority = 10))
+	bool bLooping = false;
+
+	// Does this animation have root motion enabled ? If you want to change this you need to change it in the base Anim Sequence.
+	UPROPERTY(VisibleAnywhere, Category="Sequence", meta = (DisplayPriority = 11))
+	bool bHasRootMotion = false;
+};
+
 UCLASS()
 class UPoseSearchDatabaseSequenceReflection : public UPoseSearchDatabaseReflectionBase
 {
@@ -36,11 +51,26 @@ class UPoseSearchDatabaseSequenceReflection : public UPoseSearchDatabaseReflecti
 
 public:
 	UPROPERTY(EditAnywhere, Category = "Selected Sequence")
-	FPoseSearchDatabaseSequence Sequence;
+	FPoseSearchDatabaseSequenceEx Sequence;
 
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
+};
+
+USTRUCT()
+struct FPoseSearchDatabaseBlendSpaceEx : public FPoseSearchDatabaseBlendSpace
+{
+	GENERATED_BODY()
+
+	// Is this animation set as looping? If you want to change this you need to change it in the base Anim Sequence.
+	// Changing the sampling range will disable looping
+	UPROPERTY(VisibleAnywhere, Category="Sequence", meta = (DisplayPriority = 10))
+	bool bLooping = false;
+
+	// Does this animation have root motion enabled ? If you want to change this you need to change it in the base Anim Sequence.
+	UPROPERTY(VisibleAnywhere, Category="Sequence", meta = (DisplayPriority = 11))
+	bool bHasRootMotion = false;
 };
 
 UCLASS()
@@ -50,11 +80,26 @@ class UPoseSearchDatabaseBlendSpaceReflection : public UPoseSearchDatabaseReflec
 
 public:
 	UPROPERTY(EditAnywhere, Category = "Selected Blend Space")
-	FPoseSearchDatabaseBlendSpace BlendSpace;
+	FPoseSearchDatabaseBlendSpaceEx BlendSpace;
 
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
+};
+
+USTRUCT()
+struct FPoseSearchDatabaseAnimCompositeEx : public FPoseSearchDatabaseAnimComposite
+{
+	GENERATED_BODY()
+
+	// Is this animation set as looping? If you want to change this you need to change it in the base Anim Sequence.
+	// Changing the sampling range will disable looping
+	UPROPERTY(VisibleAnywhere, Category="Sequence", meta = (DisplayPriority = 10))
+	bool bLooping = false;
+
+	// Does this animation have root motion enabled ? If you want to change this you need to change it in the base Anim Sequence.
+	UPROPERTY(VisibleAnywhere, Category="Sequence", meta = (DisplayPriority = 11))
+	bool bHasRootMotion = false;
 };
 
 UCLASS()
@@ -64,7 +109,36 @@ class UPoseSearchDatabaseAnimCompositeReflection : public UPoseSearchDatabaseRef
 
 public:
 	UPROPERTY(EditAnywhere, Category = "Selected Anim Composite")
-	FPoseSearchDatabaseAnimComposite AnimComposite;
+	FPoseSearchDatabaseAnimCompositeEx AnimComposite;
+
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
+};
+
+USTRUCT()
+struct FPoseSearchDatabaseAnimMontageEx : public FPoseSearchDatabaseAnimMontage
+{
+	GENERATED_BODY()
+
+	// Is this animation set as looping? If you want to change this you need to change it in the base Anim Sequence.
+	// Changing the sampling range will disable looping
+	UPROPERTY(VisibleAnywhere, Category="Sequence", meta = (DisplayPriority = 10))
+	bool bLooping = false;
+
+	// Does this animation have root motion enabled ? If you want to change this you need to change it in the base Anim Sequence.
+	UPROPERTY(VisibleAnywhere, Category="Sequence", meta = (DisplayPriority = 11))
+	bool bHasRootMotion = false;
+};
+
+UCLASS()
+class UPoseSearchDatabaseAnimMontageReflection : public UPoseSearchDatabaseReflectionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(EditAnywhere, Category = "Selected Anim Montage")
+	FPoseSearchDatabaseAnimMontageEx AnimMontage;
 
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
@@ -95,7 +169,6 @@ struct FPoseSearchDatabaseMemoryStats
 	FText AssetsSize;
 	
 	void Initialize(const UPoseSearchDatabase* PoseSearchDatabase);
-	static FText ToMemoryBudgetText(int32 Size);
 };
 
 UCLASS()
@@ -105,59 +178,72 @@ class UPoseSearchDatabaseStatistics : public UObject
 
 public:
 	
-	// General information
-
+	// Number of Animation Sequences in the database.
 	UPROPERTY(VisibleAnywhere, Category = "General Information")
 	uint32 AnimationSequences;
 
+	// Number of total animation poses in frames in the database.
 	UPROPERTY(VisibleAnywhere, Category = "General Information")
 	uint32 TotalAnimationPosesInFrames;
 
+	// Number of total animation poses in time in the database.
 	UPROPERTY(VisibleAnywhere, Category = "General Information")
 	FText TotalAnimationPosesInTime;
 
+	// Amount of animation frames that are searchable in the database (this will exclude frames that have been removed using Sampling Range).
 	UPROPERTY(VisibleAnywhere, Category = "General Information")
 	uint32 SearchableFrames;
 
+	// Amount of animation in time that are searchable in the database (this will exclude time that have been removed using Sampling Range).
 	UPROPERTY(VisibleAnywhere, Category = "General Information")
 	FText SearchableTime;
 
-	// Velocity Information
+	// Cardinality for the database config (how many floats per pose to store the pose features data)
+	UPROPERTY(VisibleAnywhere, Category = "General Information")
+	uint32 ConfigCardinality;
 
-	UPROPERTY(VisibleAnywhere, Category = "Velocity Information")
-	double AverageVelocity;
+	// Average speed of the characters trajectory across all animations in the database.
+	UPROPERTY(VisibleAnywhere, Category = "Kinematic Information")
+	FText AverageSpeed;
 
-	UPROPERTY(VisibleAnywhere, Category = "Velocity Information")
-	double MaxVelocity;
+	// Highest speed of the characters trajectory across all animations in the database.
+	UPROPERTY(VisibleAnywhere, Category = "Kinematic Information")
+	FText MaxSpeed;
 
-	UPROPERTY(VisibleAnywhere, Category = "Velocity Information")
-	double AverageAcceleration;
+	// The average acceleration of the characters trajectory across all the animations in the database.
+	UPROPERTY(VisibleAnywhere, Category = "Kinematic Information")
+	FText AverageAcceleration;
 
-	UPROPERTY(VisibleAnywhere, Category = "Velocity Information")
-	double MaxAcceleration;
+	// The max acceleration of the characters trajectory across all the animations in the database.
+	UPROPERTY(VisibleAnywhere, Category = "Kinematic Information")
+	FText MaxAcceleration;
 
-	// Principal Component Analysis (PCA) Information
-
-	UPROPERTY(VisibleAnywhere, Category = "Principal Component Analysis (PCA) Information")
+	// When Pose Search Mode is set to PCAKDTree this value represents how well the variance of the dataset is explained within the chosen Number Of Principal Components:
+	// the higher, the better the quality (statistically more significant result) out of the kdtree search.
+	UPROPERTY(VisibleAnywhere, Category = "Principal Component Analysis Information", meta = (Units = "Percent"))
 	float ExplainedVariance;
 
-	// Memory information
-	
+	// aggregated total memory used by this database.
 	UPROPERTY(VisibleAnywhere, Category = "Memory Information")
 	FText EstimatedDatabaseSize;
 
+	// partial memory size used to store the pose feature vectors.
 	UPROPERTY(VisibleAnywhere, Category = "Memory Information")
 	FText ValuesSize;
 
+	// partial memory size used to store the pose feature vectors in PCA space.
 	UPROPERTY(VisibleAnywhere, Category = "Memory Information")
 	FText PCAValuesSize;
 
+	// partial memory size used by the kdtree.
 	UPROPERTY(VisibleAnywhere, Category = "Memory Information")
 	FText KDTreeSize;
 
+	// partial memory size used to store database metadata.
 	UPROPERTY(VisibleAnywhere, Category = "Memory Information")
 	FText PoseMetadataSize;
 	
+	// partial memory size used to animation data sub ranges, mirror state, blend parameters.
 	UPROPERTY(VisibleAnywhere, Category = "Memory Information")
 	FText AssetsSize;
 

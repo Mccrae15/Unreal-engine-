@@ -2,23 +2,20 @@
 
 #include "NiagaraShader.h"
 #include "NiagaraShared.h"
-#include "NiagaraShaderMap.h"
 #include "NiagaraScriptBase.h"
+#include "RenderingThread.h"
 #include "Stats/StatsMisc.h"
 #include "Serialization/MemoryWriter.h"
 #include "Serialization/MemoryReader.h"
-#include "ProfilingDebugging/DiagnosticTable.h"
 #include "ShaderCompiler.h"
 #include "DataDrivenShaderPlatformInfo.h"
 #include "UObject/DevObjectVersion.h"
 #include "NiagaraShaderCompilationManager.h"
-#include "UObject/CoreRedirects.h"
 #if WITH_EDITOR
 	#include "Interfaces/ITargetPlatformManagerModule.h"
-	#include "TickableEditorObject.h"
 	#include "DerivedDataCacheInterface.h"
+	#include "DerivedDataCacheKey.h"
 	#include "Interfaces/ITargetPlatformManagerModule.h"
-	#include "Interfaces/ITargetPlatform.h"
 #endif
 #include "ProfilingDebugging/CookStats.h"
 
@@ -266,6 +263,9 @@ void FNiagaraShaderMapId::AppendKeyString(FString& KeyString) const
 		KeyString.AppendChar('_');
 	}
 
+	// include the LayoutParams to differentiate between the frozen memory layout differences between platforms
+	LayoutParams.AppendKeyString(KeyString);
+
 	FName FeatureLevelName;
 	GetFeatureLevelName(FeatureLevel, FeatureLevelName);
 
@@ -390,7 +390,7 @@ void FNiagaraShaderType::BeginCompileShader(
 	NewJobs.Add(FShaderCommonCompileJobPtr(NewJob));
 }
 
-void FNiagaraShaderType::CacheUniformBufferIncludes(TMap<const TCHAR*, FCachedUniformBufferDeclaration>& Cache, EShaderPlatform Platform) const
+void FNiagaraShaderType::CacheUniformBufferIncludes(TMap<const TCHAR*, FCachedUniformBufferDeclaration, FDefaultSetAllocator, TStringPointerMapKeyFuncs_DEPRECATED<const TCHAR*, FCachedUniformBufferDeclaration>>& Cache, EShaderPlatform Platform) const
 {
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	::CacheUniformBufferIncludes(Cache, Platform);
@@ -460,6 +460,7 @@ static FString GetNiagaraShaderMapKeyString(const FNiagaraShaderMapId& ShaderMap
 	NiagaraShaderMapAppendKeyString(Platform, ShaderMapKeyString);
 	ShaderMapAppendKeyString(Platform, ShaderMapKeyString);
 	ShaderMapId.AppendKeyString(ShaderMapKeyString);
+	static UE::DerivedData::FCacheBucket LegacyBucket(TEXTVIEW("LegacyNIAGARASM"), TEXTVIEW("NiagaraShader"));
 	return FDerivedDataCacheInterface::BuildCacheKey(TEXT("NIAGARASM"), *NIAGARASHADERMAP_DERIVEDDATA_VER, *ShaderMapKeyString);
 }
 
@@ -491,7 +492,7 @@ void FNiagaraShaderMap::LoadFromDerivedDataCache(const FNiagaraShaderScript* Scr
 				// Deserialize from the cached data
 				if (InOutShaderMap->Serialize(Ar))
 				{
-					checkSlow(InOutShaderMap->GetShaderMapId() == ShaderMapId);
+					check(InOutShaderMap->GetShaderMapId() == ShaderMapId);
 
 					// Register in the global map
 					InOutShaderMap->Register(Platform);
@@ -1053,6 +1054,7 @@ FNiagaraShader::FNiagaraShader(const FNiagaraShaderType::CompiledShaderInitializ
 	);
 
 	// Gather data interface bindings
+	MiscUsageBitMask = 0;
 	DataInterfaceParameters.Empty(InitializerParameters->ScriptParametersMetadata->DataInterfaceParamInfo.Num());
 	for (const FNiagaraDataInterfaceGPUParamInfo& DataInterfaceParamInfo : InitializerParameters->ScriptParametersMetadata->DataInterfaceParamInfo)
 	{
@@ -1063,6 +1065,11 @@ FNiagaraShader::FNiagaraShader(const FNiagaraShaderType::CompiledShaderInitializ
 		if (CDODataInterface == nullptr)
 		{
 			continue;
+		}
+
+		for (auto& GeneratedFunction : DataInterfaceParamInfo.GeneratedFunctions)
+		{
+			MiscUsageBitMask |= GeneratedFunction.MiscUsageBitMask;
 		}
 
 		DataInterfaceParamRef.DIType = TIndexedPtr<UNiagaraDataInterfaceBase>(CDODataInterface);

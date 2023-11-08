@@ -35,6 +35,13 @@ FOculusXRFaceState::FOculusXRFaceState()
 	ExpressionWeightConfidences.SetNum(static_cast<int32>(EOculusXRFaceConfidence::COUNT));
 }
 
+FOculusXRFaceExpressionModifier::FOculusXRFaceExpressionModifier()
+	: MinValue(0.f)
+	, MaxValue(1.f)
+	, Multiplier(1.f)
+{
+}
+
 FOculusXREyeGazeState::FOculusXREyeGazeState()
 	: Orientation(FRotator::ZeroRotator)
 	, Position(FVector::ZeroVector)

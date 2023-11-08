@@ -6,9 +6,7 @@
 #include "IMovieRendererInterface.h"
 #include "Delegates/IDelegateInstance.h"
 
-class UMoviePipelineShotConfig;
-class UMoviePipelinePrimaryConfig;
-class UMoviePipelineExecutorBase;
+class FMovieGraphPanelPinFactory;
 
 class FMovieRenderPipelineEditorModule : public IMovieRenderPipelineEditorModule
 {
@@ -24,8 +22,11 @@ private:
 	void RegisterMovieRenderer();
 	void UnregisterMovieRenderer();
 
-	TSharedPtr<class FAssetTypeActions_PipelinePrimaryConfig> PrimaryConfigAssetActions;
-	TSharedPtr<class FAssetTypeActions_PipelineShotConfig> ShotConfigAssetActions;
-	TSharedPtr<class FAssetTypeActions_PipelineQueue> QueueAssetActions;
+	void RegisterTypeCustomizations();
+	void UnregisterTypeCustomizations();
+
 	FDelegateHandle MovieRendererDelegate;
+
+	/** Pin factory for the render graph. */
+	TSharedPtr<FMovieGraphPanelPinFactory> GraphPanelPinFactory;
 };

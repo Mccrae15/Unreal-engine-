@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "Compression/OodleDataCompression.h"
 #include "Containers/Array.h"
 #include "Containers/ArrayView.h"
 #include "Containers/ContainerAllocationPolicies.h"
@@ -23,6 +24,7 @@
 #include "Misc/Optional.h"
 #include "Misc/Paths.h"
 #include "Misc/SecureHash.h"
+#include "Misc/TVariant.h"
 #include "PixelFormat.h"
 #include "RHIDefinitions.h"
 #include "Serialization/Archive.h"
@@ -42,6 +44,8 @@ class Error;
 class FMemoryImageWriter;
 class FMemoryUnfreezeContent;
 class FPointerTableBase;
+class FShaderCompileUtilities;
+class FShaderPreprocessorUtilities;
 class FSHA1;
 class ITargetPlatform;
 
@@ -131,14 +135,8 @@ extern RENDERCORE_API bool AllowDebugViewmodes();
 /** Returns true if debug viewmodes are allowed for the given platform. */
 extern RENDERCORE_API bool AllowDebugViewmodes(EShaderPlatform Platform);
 
-/** Returns the shader compression format (passing ShaderFormat for future proofing, but as of now the setting is global for all formats). */
-extern RENDERCORE_API FName GetShaderCompressionFormat(const FName& ShaderFormat = NAME_None);
-
-namespace FOodleDataCompression
-{
-	enum class ECompressor : uint8;
-	enum class ECompressionLevel : int8;
-}
+/** Returns the shader compression format. Oodle is used exclusively now. r.Shaders.SkipCompression configures Oodle to be uncompressed instead of returning NAME_None.*/
+extern RENDERCORE_API FName GetShaderCompressionFormat();
 
 /** Returns Oodle-specific shader compression format settings (passing ShaderFormat for future proofing, but as of now the setting is global for all formats). */
 extern RENDERCORE_API void GetShaderCompressionOodleSettings(FOodleDataCompression::ECompressor& OutCompressor, FOodleDataCompression::ECompressionLevel& OutLevel, const FName& ShaderFormat = NAME_None);
@@ -434,9 +432,14 @@ inline FArchive& operator<<(FArchive& Ar, FShaderResourceTable& SRT)
 	return Ar;
 }
 
-inline FArchive& operator<<(FArchive& Ar, FResourceTableEntry& Entry)
+inline FArchive& operator<<(FArchive& Ar, FUniformResourceEntry& Entry)
 {
-	Ar << Entry.UniformBufferName;
+	if (Ar.IsLoading())
+	{
+		// Filled in later in FShaderResourceTableMap::FixupOnLoad
+		Entry.UniformBufferMemberName = nullptr;
+	}
+	Ar << Entry.UniformBufferNameLength;
 	Ar << Entry.Type;
 	Ar << Entry.ResourceIndex;
 	return Ar;
@@ -448,10 +451,16 @@ inline FArchive& operator<<(FArchive& Ar, FUniformBufferEntry& Entry)
 	Ar << Entry.LayoutHash;
 	Ar << Entry.BindingFlags;
 	Ar << Entry.bNoEmulatedUniformBuffer;
+	if (Ar.IsLoading())
+	{
+		Entry.MemberNameBuffer = MakeShareable(new TArray<TCHAR>());
+	}
+	Ar << *Entry.MemberNameBuffer.Get();
 	return Ar;
 }
 
 using FThreadSafeSharedStringPtr = TSharedPtr<FString, ESPMode::ThreadSafe>;
+using FThreadSafeNameBufferPtr = TSharedPtr<TArray<TCHAR>, ESPMode::ThreadSafe>;
 
 // Simple wrapper for a uint64 bitfield; doesn't use TBitArray as it is fixed size and doesn't need dynamic memory allocations
 class FShaderCompilerFlags
@@ -509,6 +518,14 @@ private:
 	uint64 Data;
 };
 
+struct FShaderResourceTableMap
+{
+	TArray<FUniformResourceEntry> Resources;
+
+	RENDERCORE_API void Append(const FShaderResourceTableMap& Other);
+	RENDERCORE_API void FixupOnLoad(const TMap<FString, FUniformBufferEntry>& UniformBufferMap);
+};
+
 /** The environment used to compile a shader. */
 struct FShaderCompilerEnvironment
 {
@@ -520,8 +537,10 @@ struct FShaderCompilerEnvironment
 
 	FShaderCompilerFlags CompilerFlags;
 	TMap<uint32,uint8> RenderTargetOutputFormatsMap;
-	TMap<FString, FResourceTableEntry> ResourceTableMap;
+	FShaderResourceTableMap ResourceTableMap;
 	TMap<FString, FUniformBufferEntry> UniformBufferMap;
+
+	UE_DEPRECATED(5.3, "RemoteServerData field is deprecated (no longer used in compilation backends).")
 	TMap<FString, FString> RemoteServerData;
 
 	const ITargetPlatform* TargetPlatform = nullptr;
@@ -542,9 +561,20 @@ struct FShaderCompilerEnvironment
 	{
 	}
 
-	// Used as a baseclasss, make sure we're not incorrectly destroyed through a baseclass pointer
+	// Used as a baseclass, make sure we're not incorrectly destroyed through a baseclass pointer
 	// This will be expensive to destroy anyway, additional vcall overhead should be small
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	// Temporarily disable deprecation warnings for this default destructor triggering due to the 
+	// deprecated RemoteServerData field. When the field is removed warning disable should be as 
+	// well, but the defaulted destructor should remain due to the above comment.
 	virtual ~FShaderCompilerEnvironment() = default;
+
+	// Explicitly default assignment operator and copy constructor operator with warnings disabled
+	// to avoid warnings in implicitly-generated functions due to deprecation of RemoteServerData. 
+	// These can be removed entirely (revert to implicitly-generated) when the field itself is.
+	FShaderCompilerEnvironment(const FShaderCompilerEnvironment&) = default;
+	FShaderCompilerEnvironment& operator=(const FShaderCompilerEnvironment&) = default;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/**
 	 * Works for TCHAR
@@ -559,6 +589,67 @@ struct FShaderCompilerEnvironment
 	void SetDefine(const TCHAR* Name, bool Value)			{ Definitions.SetDefine(Name, Value); }
 	void SetDefine(const TCHAR* Name, float Value)			{ Definitions.SetFloatDefine(Name, Value); }
 
+	template <typename ValueType> void SetDefineIfUnset(const TCHAR* Name, ValueType Value)
+	{
+		if (!Definitions.GetDefinitionMap().Contains(Name))
+		{
+			SetDefine(Name, Value);
+		}
+	}
+
+
+	// Sets a generic parameter which can be read in the various shader format backends to modify compilation
+	// behaviour. Intended to replace any usage of definitions after shader preprocessing.
+	template <typename ValueType> void SetCompileArgument(const TCHAR* Name, ValueType Value)
+	{
+		CompileArgs.Add(Name, TVariant<bool, float, int32, uint32, FString>(TInPlaceType<ValueType>(), Value));
+	}
+
+	// Helper to set both a define and a compile argument to the same value. Useful for various parameters which
+	// need to be consumed both by preprocessing and in the shader format backends to modify compilation behaviour.
+	template <typename ValueType> void SetDefineAndCompileArgument(const TCHAR* Name, ValueType Value)
+	{
+		SetDefine(Name, Value);
+		SetCompileArgument(Name, Value);
+	}
+
+	// If a compile argument with the given name exists, returns true. 
+	bool HasCompileArgument(const TCHAR* Name) const
+	{
+		if (CompileArgs.Contains(Name))
+		{
+			return true;
+		}
+		return false;
+	}
+
+	// If a compile argument with the given name exists and is of the specified type, returns its value. Otherwise, 
+	// either the named argument doesn't exist or the type does not match, and the default value will be returned.
+	template <typename ValueType> ValueType GetCompileArgument(const TCHAR* Name, const ValueType& DefaultValue) const
+	{
+		const TVariant<bool, float, int32, uint32, FString>* StoredValue = CompileArgs.Find(Name);
+		if (StoredValue && StoredValue->IsType<ValueType>())
+		{
+			return StoredValue->Get<ValueType>();
+		}
+		return DefaultValue;
+	}
+
+	// If a compile argument with the given name exists and is of the specified type, its value will be assigned to OutValue
+	// and the function will return true. Otherwise, either the named argument doesn't exist or the type does not match, the
+	// OutValue will be left unmodified and the function will return false.
+	template <typename ValueType> bool GetCompileArgument(const TCHAR* Name, ValueType& OutValue) const
+	{
+		const TVariant<bool, float, int32, uint32, FString>* StoredValue = CompileArgs.Find(Name);
+		if (StoredValue && StoredValue->IsType<ValueType>())
+		{
+			OutValue = StoredValue->Get<ValueType>();
+			return true;
+		}
+		return false;
+	}
+
+	UE_DEPRECATED(5.3, "GetDefinitions is deprecated; preprocessor defines must now only be accessed by core shader system code. Use Get/SetCompileArgument for generic params instead.")
 	const TMap<FString,FString>& GetDefinitions() const
 	{
 		return Definitions.GetDefinitionMap();
@@ -573,12 +664,30 @@ struct FShaderCompilerEnvironment
 	inline void SerializeEverythingButFiles(FArchive& Ar)
 	{
 		Ar << Definitions;
+		Ar << CompileArgs;
 		Ar << CompilerFlags;
 		Ar << RenderTargetOutputFormatsMap;
-		Ar << ResourceTableMap;
+		Ar << ResourceTableMap.Resources;
 		Ar << UniformBufferMap;
-		Ar << RemoteServerData;
 		Ar << FullPrecisionInPS;
+		if (Ar.IsLoading())
+		{
+			ResourceTableMap.FixupOnLoad(UniformBufferMap);
+		}
+	}
+
+	// Serializes the portions of the environment that are used as input to the backend compilation process (i.e. after all preprocessing)
+	inline void SerializeCompilationDependencies(FArchive& Ar)
+	{
+		Ar << CompileArgs;
+		Ar << CompilerFlags;
+		Ar << ResourceTableMap.Resources;
+		Ar << UniformBufferMap;
+		Ar << FullPrecisionInPS;
+		if (Ar.IsLoading())
+		{
+			ResourceTableMap.FixupOnLoad(UniformBufferMap);
+		}
 	}
 
 	friend FArchive& operator<<(FArchive& Ar,FShaderCompilerEnvironment& Environment)
@@ -616,14 +725,18 @@ struct FShaderCompilerEnvironment
 		ResourceTableMap.Append(Other.ResourceTableMap);
 		UniformBufferMap.Append(Other.UniformBufferMap);
 		Definitions.Merge(Other.Definitions);
+		CompileArgs.Append(Other.CompileArgs);
 		RenderTargetOutputFormatsMap.Append(Other.RenderTargetOutputFormatsMap);
-		RemoteServerData.Append(Other.RemoteServerData);
 		FullPrecisionInPS |= Other.FullPrecisionInPS;
 	}
 
 private:
 
+	friend class FShaderCompileUtilities;
+	friend class FShaderPreprocessorUtilities;
+
 	FShaderCompilerDefinitions Definitions;
+	TMap<FString, TVariant<bool, float, int32, uint32, FString>> CompileArgs;
 };
 
 struct FSharedShaderCompilerEnvironment final : public FShaderCompilerEnvironment, public FRefCountBase
@@ -703,11 +816,11 @@ struct FShaderCodeVendorExtension
 	// for FindOptionalData() and AddOptionalData()
 	static const uint8 Key = 'v';
 
-	uint32 VendorId = 0;
+	EGpuVendorId VendorId = EGpuVendorId::NotQueried;
 	FParameterAllocation Parameter;
 
 	FShaderCodeVendorExtension() = default;
-	FShaderCodeVendorExtension(uint32 InVendorId, uint16 InBufferIndex, uint16 InBaseIndex, uint16 InSize, EShaderParameterType InType)
+	FShaderCodeVendorExtension(EGpuVendorId InVendorId, uint16 InBufferIndex, uint16 InBaseIndex, uint16 InSize, EShaderParameterType InType)
 		: VendorId(InVendorId)
 		, Parameter(InBufferIndex, InBaseIndex, InSize, InType)
 	{
@@ -728,6 +841,29 @@ struct FShaderCodeVendorExtension
 		return !(A == B);
 	}
 
+};
+
+
+inline FArchive& operator<<(FArchive& Ar, FShaderCodeValidationStride& ShaderCodeValidationStride)
+{
+	return Ar << ShaderCodeValidationStride.BindPoint << ShaderCodeValidationStride.Stride;
+}
+
+struct FShaderCodeValidationExtension
+{
+	// for FindOptionalData() and AddOptionalData()
+	static constexpr uint8 Key = 'V';
+	static constexpr uint16 StaticVersion = 0;
+
+	TArray<FShaderCodeValidationStride> ShaderCodeValidationStride;
+	uint16 Version = StaticVersion;
+
+	friend FArchive& operator<<(FArchive& Ar, FShaderCodeValidationExtension& Extension)
+	{
+		Ar << Extension.Version;
+		Ar << Extension.ShaderCodeValidationStride;
+		return Ar;
+	}
 };
 
 #ifndef RENDERCORE_ATTRIBUTE_UNALIGNED
@@ -913,6 +1049,8 @@ public:
 	: OptionalDataSize(0)
 	, UncompressedSize(0)
 	, CompressionFormat(NAME_None)
+	, OodleCompressor(FOodleDataCompression::ECompressor::NotSet)
+	, OodleLevel(FOodleDataCompression::ECompressionLevel::None)
 	, ShaderCodeSize(0)
 	{
 	}
@@ -1112,7 +1250,7 @@ extern void GenerateReferencedUniformBufferNames(
 	const TCHAR* SourceFilename,
 	const TCHAR* ShaderTypeName,
 	const TMap<FString, TArray<const TCHAR*> >& ShaderFileToUniformBufferVariables,
-	TSet<const TCHAR*>& UniformBufferNames);
+	TSet<const TCHAR*, TStringPointerSetKeyFuncs_DEPRECATED<const TCHAR*>>& UniformBufferNames);
 
 struct FUniformBufferNameSortOrder
 {

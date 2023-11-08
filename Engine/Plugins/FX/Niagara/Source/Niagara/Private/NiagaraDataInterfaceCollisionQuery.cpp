@@ -2,22 +2,20 @@
 
 #include "NiagaraDataInterfaceCollisionQuery.h"
 
-#include "DistanceFieldLightingShared.h"
+#include "FXRenderingUtils.h"
 #include "GlobalDistanceFieldParameters.h"
-#include "NiagaraAsyncGpuTraceHelper.h"
+#include "NiagaraCompileHashVisitor.h"
 #include "NiagaraDistanceFieldHelper.h"
-#include "NiagaraComponent.h"
+#include "NiagaraEmitter.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraGpuComputeDispatch.h"
 #include "NiagaraShaderParametersBuilder.h"
-#include "NiagaraStats.h"
+#include "NiagaraSystem.h"
 #include "NiagaraTypes.h"
-#include "NiagaraWorldManager.h"
-#include "SceneRendering.h"
+#include "NiagaraSystemInstance.h"
 #include "Shader.h"
 #include "ShaderCore.h"
 #include "ShaderCompilerCore.h"
-#include "ShaderParameterUtils.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceCollisionQuery)
 
@@ -29,6 +27,7 @@ namespace NDICollisionQueryLocal
 	static const TCHAR* TemplateShaderFile = TEXT("/Plugin/FX/Niagara/Private/NiagaraDataInterfaceCollisionQueryTemplate.ush");
 
 	static const FName SceneDepthName(TEXT("QuerySceneDepthGPU"));
+	static const FName ScenePartialDepthName(TEXT("QueryScenePartialDepthGPU"));
 	static const FName CustomDepthName(TEXT("QueryCustomDepthGPU"));
 	static const FName DistanceFieldName(TEXT("QueryMeshDistanceFieldGPU"));
 	static const FName SyncTraceName(TEXT("PerformCollisionQuerySyncCPU"));
@@ -228,8 +227,28 @@ void UNiagaraDataInterfaceCollisionQuery::GetFunctions(TArray<FNiagaraFunctionSi
 		SigDepth.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("IsInsideView")), IsInsideViewDescription);
 		SigDepth.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetPositionDef(), TEXT("SamplePosWorld")), SamplePosWorldDescription);
 		SigDepth.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("SampleWorldNormal")), SampleWorldNormalDescription);
-	
 		OutFunctions.Add(SigDepth);
+
+
+		FNiagaraFunctionSignature SigPartialDepth;
+		SigPartialDepth.Name = NDICollisionQueryLocal::ScenePartialDepthName;
+		SigPartialDepth.bMemberFunction = true;
+		SigPartialDepth.bSupportsCPU = false;
+		SigPartialDepth.MiscUsageBitMask = (uint16)ENiagaraScriptMiscUsageMask::UsesPartialDepthCollisionQuery;
+#if WITH_EDITORONLY_DATA
+		SigPartialDepth.FunctionVersion = FNiagaraCollisionDIFunctionVersion::LatestVersion;
+		SigPartialDepth.Description = LOCTEXT("ScenePartialDepthSignatureDescription", "Projects a given world position to view space and then queries the partial depth buffer (opaque emitter using this function are not in this depth buffer) with that position.");
+		SigPartialDepth.ExperimentalMessage = LOCTEXT("ScenePartialDepthSignatureEpxMessage", "Careful: using this node involve a scene depth copy that might slow down the base pass on some platform.");
+#endif
+		SigPartialDepth.bExperimental = true;
+		SigPartialDepth.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("CollisionQuery")));
+		SigPartialDepth.AddInput(FNiagaraVariable(FNiagaraTypeDefinition::GetPositionDef(), TEXT("DepthSamplePosWorld")), DepthSamplePosWorldDescription);
+		SigPartialDepth.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("SceneDepth")), SceneDepthDescription);
+		SigPartialDepth.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetPositionDef(), TEXT("CameraPosWorld")), CameraPosWorldDescription);
+		SigPartialDepth.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("IsInsideView")), IsInsideViewDescription);
+		SigPartialDepth.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetPositionDef(), TEXT("SamplePosWorld")), SamplePosWorldDescription);
+		SigPartialDepth.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("SampleWorldNormal")), SampleWorldNormalDescription);
+		OutFunctions.Add(SigPartialDepth);
 
 		
 		FNiagaraFunctionSignature SigCustomDepth;
@@ -423,6 +442,7 @@ void UNiagaraDataInterfaceCollisionQuery::GetFunctions(TArray<FNiagaraFunctionSi
 bool UNiagaraDataInterfaceCollisionQuery::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)
 {
 	if ( (FunctionInfo.DefinitionName == NDICollisionQueryLocal::SceneDepthName) ||
+		 (FunctionInfo.DefinitionName == NDICollisionQueryLocal::ScenePartialDepthName) ||
 		 (FunctionInfo.DefinitionName == NDICollisionQueryLocal::CustomDepthName) ||
 		 (FunctionInfo.DefinitionName == NDICollisionQueryLocal::DistanceFieldName) ||
 		// DEPRECATE_BEGIN
@@ -547,11 +567,7 @@ void UNiagaraDataInterfaceCollisionQuery::SetShaderParameters(const FNiagaraData
 	FGlobalDistanceFieldParameters2* ShaderGDFParameters = Context.GetParameterIncludedStruct<FGlobalDistanceFieldParameters2>();
 	if (Context.IsStructBound(ShaderGDFParameters))
 	{
-		TConstArrayView<FViewInfo> SimulationViewInfos = Context.GetComputeDispatchInterface().GetSimulationViewInfos();
-		FNiagaraDistanceFieldHelper::SetGlobalDistanceFieldParameters(
-			SimulationViewInfos.Num() > 0 ? &SimulationViewInfos[0].GlobalDistanceFieldInfo.ParameterData : nullptr,
-			*ShaderGDFParameters
-		);
+		FNiagaraDistanceFieldHelper::SetGlobalDistanceFieldParameters(Context.GetComputeDispatchInterface().GetGlobalDistanceFieldData(), *ShaderGDFParameters);
 	}
 }
 

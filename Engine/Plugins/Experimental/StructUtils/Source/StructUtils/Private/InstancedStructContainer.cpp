@@ -1,6 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "InstancedStructContainer.h"
 
+#if WITH_ENGINE && WITH_EDITOR
+#include "Engine/UserDefinedStruct.h"
+#include "Serialization/MemoryWriter.h"
+#include "Serialization/MemoryReader.h"
+#include "Serialization/ArchiveUObject.h"
+#include "Serialization/ObjectAndNameAsStringProxyArchive.h"
+#endif
+
 #include UE_INLINE_GENERATED_CPP_BY_NAME(InstancedStructContainer)
 
 FInstancedStructContainer::FInstancedStructContainer()
@@ -62,6 +70,13 @@ FInstancedStructContainer& FInstancedStructContainer::operator=(TConstArrayView<
 	return *this;
 }
 
+FInstancedStructContainer& FInstancedStructContainer::operator=(TConstArrayView<FStructView> InItems)
+{
+	Reset();
+	InsertAt(0, InItems);
+	return *this;
+}
+
 FInstancedStructContainer& FInstancedStructContainer::operator=(TConstArrayView<FConstStructView> InItems)
 {
 	Reset();
@@ -111,6 +126,17 @@ void FInstancedStructContainer::InsertAt(const int32 InsertAtIndex, TConstArrayV
 	TArray<FConstStructView> Views;
 	Views.Reserve(NewItemValues.Num());
 	for (const FInstancedStruct& Value : NewItemValues)
+	{
+		Views.Add(Value);
+	}
+	InsertAt(InsertAtIndex, Views);
+}
+
+void FInstancedStructContainer::InsertAt(const int32 InsertAtIndex, TConstArrayView<FStructView> NewItemValues)
+{
+	TArray<FConstStructView> Views;
+	Views.Reserve(NewItemValues.Num());
+	for (const FStructView Value : NewItemValues)
 	{
 		Views.Add(Value);
 	}
@@ -347,8 +373,71 @@ void FInstancedStructContainer::Empty()
 	AllocatedSize = 0;
 }
 
-void FInstancedStructContainer::AddStructReferencedObjects(FReferenceCollector& Collector) const
+void FInstancedStructContainer::AddStructReferencedObjects(FReferenceCollector& Collector)
 {
+#if WITH_ENGINE && WITH_EDITOR
+	if (const UUserDefinedStruct* StructureToReinstance = UE::StructUtils::Private::GetStructureToReinstance())
+	{
+		bool bContainsUserDefineStruct = false;
+		for (int32 Index = 0, Num = NumItems; Index < Num; Index++)
+		{
+			FItem& Item = GetItem(Index);
+			if (const UUserDefinedStruct* UserDefinedStruct = Cast<UUserDefinedStruct>(Item.ScriptStruct))
+			{
+				if (UserDefinedStruct == StructureToReinstance
+					|| UserDefinedStruct == StructureToReinstance->PrimaryStruct
+					|| UserDefinedStruct->PrimaryStruct == StructureToReinstance
+					|| UserDefinedStruct->PrimaryStruct == StructureToReinstance->PrimaryStruct)
+				{
+					bContainsUserDefineStruct = true;
+					break;
+				}
+			}
+		}
+		
+		if (bContainsUserDefineStruct)
+		{
+			if (StructureToReinstance->Status == EUserDefinedStructureStatus::UDSS_Duplicate)
+			{
+				// On the first pass we replace the UDS with a duplicate that represents the currently allocated struct.
+				// StructureToReinstance is the duplicated struct, and StructureToReinstance->PrimaryStruct is the UDS that is being reinstanced.
+				for (int32 Index = 0, Num = NumItems; Index < Num; Index++)
+				{
+					FItem& Item = GetItem(Index);
+					if (Item.ScriptStruct == StructureToReinstance->PrimaryStruct)
+					{
+						Item.ScriptStruct = StructureToReinstance;
+					}
+				}
+			}
+			else
+			{
+				// On the second pass we reinstantiate the data using serialization.
+				// When saving, the UDSs are written using the duplicate which represents current layout, but PrimaryStruct is serialized as the type.
+				// When reading, the data is initialized with the new type, and the serialization will take care of reading from the old data.
+				
+				if (UObject* Outer = UE::StructUtils::Private::GetCurrentReinstanceOuterObject())
+				{
+					if (!Outer->IsA<UClass>() && !Outer->HasAnyFlags(RF_ClassDefaultObject))
+					{
+						Outer->MarkPackageDirty();
+					}
+				}
+				
+				TArray<uint8> Data;
+
+				FMemoryWriter Writer(Data);
+				FObjectAndNameAsStringProxyArchive WriterProxy(Writer, /*bInLoadIfFindFails*/true);
+				Serialize(WriterProxy);
+
+				FMemoryReader Reader(Data);
+				FObjectAndNameAsStringProxyArchive ReaderProxy(Reader, /*bInLoadIfFindFails*/true);
+				Serialize(ReaderProxy);
+			}
+		}
+	}
+#endif
+	
 	for (int32 Index = 0, Num = NumItems; Index < Num; Index++)
 	{
 		FItem& Item = GetItem(Index);
@@ -428,7 +517,7 @@ bool FInstancedStructContainer::Serialize(FArchive& Ar)
 
 	if (Version > EVersion::LatestVersion)
 	{
-		UE_LOG(LogCore, Error, TEXT("Invalid Version: %hhu"), Version);
+		UE_LOG(LogCore, Error, TEXT("Invalid Version: %hhu"), int(Version));
 		Ar.SetError();
 		return false;
 	}
@@ -464,7 +553,7 @@ bool FInstancedStructContainer::Serialize(FArchive& Ar)
 			for (int32 Index = 0; Index < NumItemsSerialized; Index++)
 			{
 				const FItem& Item = GetItem(Index);
-				UScriptStruct* NonConstStruct = const_cast<UScriptStruct*>(Item.ScriptStruct);
+				auto& NonConstStruct = ConstCast(Item.ScriptStruct);
 
 				check(NonConstStruct == Item.ScriptStruct);
 				
@@ -494,15 +583,30 @@ bool FInstancedStructContainer::Serialize(FArchive& Ar)
 			for (int32 Index = 0; Index < NumItems; Index++)
 			{
 				const FItem& Item = GetItem(Index);
-				UScriptStruct* NonConstStruct = const_cast<UScriptStruct*>(Item.ScriptStruct);
-				Ar << NonConstStruct;
+				
+#if WITH_ENGINE && WITH_EDITOR
+				UUserDefinedStruct* UserDefinedStruct = Cast<UUserDefinedStruct>(ConstCast(Item.ScriptStruct));
+				if (UserDefinedStruct
+					&& UserDefinedStruct->Status == EUserDefinedStructureStatus::UDSS_Duplicate
+					&& UserDefinedStruct->PrimaryStruct.IsValid())
+				{
+					// If saving a duplicated UDS, save the primary type instead, so that the data is loaded with the original struct.
+					// This is used as part of the user defined struct reinstancing logic.
+					UUserDefinedStruct* PrimaryUserDefinedStruct = UserDefinedStruct->PrimaryStruct.Get(); 
+					Ar << PrimaryUserDefinedStruct;
+				}
+				else
+#endif			
+				{
+					Ar << ConstCast(Item.ScriptStruct);
+				}
 			}
 
 			// Save item values
 			for (int32 Index = 0; Index < NumItemsSerialized; Index++)
 			{
 				const FItem& Item = GetItem(Index);
-				UScriptStruct* NonConstStruct = const_cast<UScriptStruct*>(Item.ScriptStruct);
+				auto& NonConstStruct = ConstCast(Item.ScriptStruct);
 
 				// Size of the serialized memory (reserve location)
 				const int64 SizeOffset = Ar.Tell(); // Position to write the actual size after struct serialization
@@ -530,15 +634,14 @@ bool FInstancedStructContainer::Serialize(FArchive& Ar)
 			for (int32 Index = 0; Index < NumItems; Index++)
 			{
 				const FItem& Item = GetItem(Index);
-				UScriptStruct* NonConstStruct = const_cast<UScriptStruct*>(Item.ScriptStruct);
-				Ar << NonConstStruct;
+				Ar << ConstCast(Item.ScriptStruct);
 			}
 
 			// Report item values
 			for (int32 Index = 0; Index < NumItemsSerialized; Index++)
 			{
 				const FItem& Item = GetItem(Index);
-				UScriptStruct* NonConstStruct = const_cast<UScriptStruct*>(Item.ScriptStruct);
+				auto& NonConstStruct = ConstCast(Item.ScriptStruct);
 				if (NonConstStruct != nullptr)
 				{
 					NonConstStruct->SerializeItem(Ar, Memory + Item.Offset, /* Defaults */ nullptr);
@@ -555,10 +658,27 @@ void FInstancedStructContainer::GetPreloadDependencies(TArray<UObject*>& OutDeps
 	for (int32 Index = 0; Index < NumItems; Index++)
 	{
 		FItem& Item = GetItem(Index);
-		if (UScriptStruct* NonConstStruct = const_cast<UScriptStruct*>(Item.ScriptStruct))
+		if (auto& NonConstStruct = ConstCast(Item.ScriptStruct))
 		{
 			OutDeps.Add(NonConstStruct);
+
+			// Report direct dependencies of the instanced struct
+			if (UScriptStruct::ICppStructOps* CppStructOps = Item.ScriptStruct->GetCppStructOps())
+			{
+				CppStructOps->GetPreloadDependencies(Memory + Item.Offset, OutDeps);
+			}
+
+			// Report indirect dependencies of the instanced struct
+			// The iterator will recursively loop through all structs in structs/containers too
+			for (TPropertyValueIterator<FStructProperty> It(Item.ScriptStruct, Memory + Item.Offset); It; ++It)
+			{
+				const UScriptStruct* StructType = It.Key()->Struct;
+				if (UScriptStruct::ICppStructOps* CppStructOps = StructType->GetCppStructOps())
+				{
+					void* StructDataPtr = const_cast<void*>(It.Value());
+					CppStructOps->GetPreloadDependencies(StructDataPtr, OutDeps);
+				}
+			}
 		}
 	}
 }
-

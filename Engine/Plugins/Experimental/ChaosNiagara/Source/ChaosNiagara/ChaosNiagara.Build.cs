@@ -8,31 +8,19 @@ public class ChaosNiagara : ModuleRules
 	public ChaosNiagara(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PrivateIncludePaths.AddRange(new string[] {
-			System.IO.Path.Combine(GetModuleDirectory("ControlRig"), "Private"),
-			System.IO.Path.Combine(GetModuleDirectory("Niagara"), "Private"),
 		});
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
-				"Core",
-				"CoreUObject",
 				"Engine",
 				"Projects",
 				"Slate",
 				"SlateCore",
-				"NiagaraCore",
-				"Niagara",
-				"NiagaraShader",
 				"RenderCore",
-				"VectorVM",
-				"RHI",
-				"ChaosSolverEngine",
                 "Chaos",
 				"PhysicsCore",
-                "GeometryCollectionEngine",
 				"PhysicsCore",
-				"FieldSystemEngine",
 			}
         );
 					

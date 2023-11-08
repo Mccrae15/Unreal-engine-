@@ -6,7 +6,7 @@
 #include "Logging/LogCategory.h"
 #include "Logging/LogMacros.h"
 #include "Math/IntPoint.h"
-#include "Math/UnrealMathSSE.h"
+#include "Math/UnrealMathUtility.h"
 #include "MuR/ImagePrivate.h"
 #include "MuR/Layout.h"
 #include "MuR/MutableTrace.h"
@@ -14,6 +14,7 @@
 #include "MuR/ParametersPrivate.h"
 #include "MuR/Platform.h"
 #include "MuT/ASTOpAddLOD.h"
+#include "MuT/ASTOpAddExtensionData.h"
 #include "MuT/ASTOpConditional.h"
 #include "MuT/ASTOpConstantBool.h"
 #include "MuT/ASTOpConstantResource.h"
@@ -22,6 +23,7 @@
 #include "MuT/ASTOpImagePixelFormat.h"
 #include "MuT/ASTOpImageLayer.h"
 #include "MuT/ASTOpImageLayerColor.h"
+#include "MuT/ASTOpImagePatch.h"
 #include "MuT/ASTOpInstanceAdd.h"
 #include "MuT/ASTOpMeshBindShape.h"
 #include "MuT/ASTOpMeshClipDeform.h"
@@ -70,7 +72,6 @@
 #include "MuT/NodeObject.h"
 #include "MuT/NodeObjectGroupPrivate.h"
 #include "MuT/NodeObjectNewPrivate.h"
-#include "MuT/NodeObjectStatePrivate.h"
 #include "MuT/NodePatchImagePrivate.h"
 #include "MuT/NodePatchMesh.h"
 #include "MuT/NodePrivate.h"
@@ -91,179 +92,160 @@
 namespace mu
 {
 
-    //---------------------------------------------------------------------------------------------
-    //---------------------------------------------------------------------------------------------
-    //---------------------------------------------------------------------------------------------
-    CodeGenerator::CodeGenerator( CompilerOptions::Private* options )
-    {
-        m_compilerOptions = options;
+	//---------------------------------------------------------------------------------------------
+	//---------------------------------------------------------------------------------------------
+	//---------------------------------------------------------------------------------------------
+	CodeGenerator::CodeGenerator(CompilerOptions::Private* options)
+	{
+		m_compilerOptions = options;
 
-        // Create the message log
-        m_pErrorLog = new ErrorLog;
+		// Create the message log
+		m_pErrorLog = new ErrorLog;
 
-        // Add the parent at the top of the hierarchy
-        m_currentParents.Add( FParentKey() );
-    }
+		// Add the parent at the top of the hierarchy
+		m_currentParents.Add(FParentKey());
+	}
 
-    //---------------------------------------------------------------------------------------------
-    void CodeGenerator::GenerateRoot(const NodePtrConst pNode )
-    {
-        MUTABLE_CPUPROFILER_SCOPE(Generate);
-
-//        UE_LOG(LogMutableCore,Warning,"astop %9u#  %9u+  %9u- generate root start", size_t(ASTOp::s_count), size_t(ASTOp::s_created), size_t(ASTOp::s_destroyed) );
+	//---------------------------------------------------------------------------------------------
+	void CodeGenerator::GenerateRoot(const NodePtrConst pNode)
+	{
+		MUTABLE_CPUPROFILER_SCOPE(Generate);
 
 		// First pass
-        m_firstPass.Generate( m_pErrorLog, pNode->GetBasePrivate(), m_compilerOptions->m_ignoreStates );
-
-//        UE_LOG(LogMutableCore,Warning,"astop %9u#  %9u+  %9u- first pass completed", size_t(ASTOp::s_count), size_t(ASTOp::s_created), size_t(ASTOp::s_destroyed) );
+		m_firstPass.Generate(m_pErrorLog, pNode->GetBasePrivate(), m_compilerOptions->bIgnoreStates);
 
 		// Second pass
-		SecondPassGenerator secondPass( &m_firstPass, m_compilerOptions );
-		bool success = secondPass.Generate(m_pErrorLog, pNode->GetBasePrivate() );
-		if (!success)
+		SecondPassGenerator SecondPass(&m_firstPass, m_compilerOptions);
+		bool bSuccess = SecondPass.Generate(m_pErrorLog, pNode->GetBasePrivate());
+		if (!bSuccess)
 		{
-            return;
+			return;
 		}
 
-//        UE_LOG(LogMutableCore,Warning,"astop %9u#  %9u+  %9u- second pass completed ", size_t(ASTOp::s_count), size_t(ASTOp::s_created), size_t(ASTOp::s_destroyed) );
-
-        // Main pass for each state
-        {
-            MUTABLE_CPUPROFILER_SCOPE(MainPass);
+		// Main pass for each state
+		{
+			MUTABLE_CPUPROFILER_SCOPE(MainPass);
 
             m_currentStateIndex = 0;
-            for( const auto& s: m_firstPass.m_states )
-            {
-                MUTABLE_CPUPROFILER_SCOPE(MainPassState);
+			for (const TPair<FObjectState, const Node::Private*>& s : m_firstPass.m_states)
+			{
+				MUTABLE_CPUPROFILER_SCOPE(MainPassState);
 
-                Ptr<ASTOp> stateRoot = Generate(pNode);
-                m_states.Emplace( s.Key, stateRoot );
+				Ptr<ASTOp> stateRoot = Generate(pNode);
+				m_states.Emplace(s.Key, stateRoot);
 
-                ++m_currentStateIndex;
-            }
-        }
+				++m_currentStateIndex;
+			}
+		}
 
-//        UE_LOG(LogMutableCore,Warning,"astop %9u#  %9u+  %9u- before cache clear", size_t(ASTOp::s_count), size_t(ASTOp::s_created), size_t(ASTOp::s_destroyed) );
-
-        // Free caches
-        m_compiled.Reset();
-        m_constantMeshes.Empty();
+		// Free caches
+		m_compiled.Reset();
+		m_constantMeshes.Empty();
 		m_generatedLayouts.Empty();
-        m_nodeVariables.clear();
-        m_generatedMeshes.Reset();
-        m_generatedProjectors.Reset();
-        m_generatedRanges.Reset();
-        m_generatedTables.clear();
-        m_firstPass = FirstPassGenerator();
-        m_currentBottomUpState = BOTTOM_UP_STATE();
-        m_imageState.Empty();
-        m_currentParents.Empty();
-        m_currentObject.Empty();
-        m_additionalComponents.clear();
-
-//        UE_LOG(LogMutableCore,Warning,"astop %9u#  %9u+  %9u- exiting generate root", size_t(ASTOp::s_count), size_t(ASTOp::s_created), size_t(ASTOp::s_destroyed) );
+		m_nodeVariables.clear();
+		m_generatedMeshes.Reset();
+		m_generatedProjectors.Reset();
+		m_generatedRanges.Reset();
+		m_generatedTables.clear();
+		m_firstPass = FirstPassGenerator();
+		m_currentBottomUpState = BOTTOM_UP_STATE();
+		m_currentParents.Empty();
+		m_currentObject.Empty();
+		m_additionalComponents.clear();
 	}
 
 
 	//---------------------------------------------------------------------------------------------
-    Ptr<ASTOp> CodeGenerator::Generate(const NodePtrConst pNode)
+	Ptr<ASTOp> CodeGenerator::Generate(const NodePtrConst pNode)
 	{
-        if (!pNode)
-        {
-            return nullptr;
-        }
+		if (!pNode)
+		{
+			return nullptr;
+		}
 
 		// Clear bottom-up state
 		m_currentBottomUpState.m_address = nullptr;
 
         // Temp by-passes while we remove the visitor pattern
-		if (auto ScalarNode = dynamic_cast<const NodeScalar*>(pNode.get()))
+		if (const NodeScalar* ScalarNode = dynamic_cast<const NodeScalar*>(pNode.get()))
 		{
 			FScalarGenerationResult ScalarResult;
 			GenerateScalar(ScalarResult, ScalarNode);
 			return ScalarResult.op;
 		}
 
-		if (auto ColorNode = dynamic_cast<const NodeColour*>(pNode.get()))
+		if (const NodeColour* ColorNode = dynamic_cast<const NodeColour*>(pNode.get()))
 		{
 			FColorGenerationResult Result;
 			GenerateColor(Result, ColorNode);
 			return Result.op;
 		}
 
-		if (auto ImageNode = dynamic_cast<const NodeImage*>(pNode.get()))
+		if (const NodeImage* ImageNode = dynamic_cast<const NodeImage*>(pNode.get()))
 		{
-			FImageGenerationResult Result;
-			GenerateImage(Result, ImageNode);
-			return Result.op;
+			// This should never be called for images. Use GenerateImage.
+			check(false);
 		}
 
-		if (auto MeshNode = dynamic_cast<const NodeMesh*>(pNode.get()))
+		if (const NodeMesh* MeshNode = dynamic_cast<const NodeMesh*>(pNode.get()))
 		{
-			// This should only happen with mesh root nodes
-			FMeshGenerationOptions MeshOptions;
-			MeshOptions.bUniqueVertexIDs = true;
-			MeshOptions.bLayouts = true;
-			MeshOptions.State = m_currentStateIndex;
-
-			FMeshGenerationResult MeshResult;
-			GenerateMesh(MeshOptions, MeshResult, MeshNode);
-			return MeshResult.meshOp;
+			// This should never be called for meshes. Use GenerateMesh.
+			check(false);
 		}
 
-		if ( auto projNode = dynamic_cast<const NodeProjector*>(pNode.get()) )
-        {
-            FProjectorGenerationResult ProjResult;
-            GenerateProjector( ProjResult, projNode );
-            return ProjResult.op;
-        }
+		if (const NodeProjector* projNode = dynamic_cast<const NodeProjector*>(pNode.get()))
+		{
+			FProjectorGenerationResult ProjResult;
+			GenerateProjector(ProjResult, projNode);
+			return ProjResult.op;
+		}
 
-        if ( auto surfNode = dynamic_cast<const NodeSurfaceNew*>(pNode.get()) )
-        {
-            // This happens only if we generate a node graph that has a NodeSurfaceNew at the root.
-            FSurfaceGenerationResult surfResult;
-            const TArray<FirstPassGenerator::SURFACE::EDIT> edits;
-            GenerateSurface( surfResult, surfNode, edits );
-            return surfResult.surfaceOp;
-        }
+		if (const NodeSurfaceNew* surfNode = dynamic_cast<const NodeSurfaceNew*>(pNode.get()))
+		{
+			// This happens only if we generate a node graph that has a NodeSurfaceNew at the root.
+			FSurfaceGenerationResult surfResult;
+			const TArray<FirstPassGenerator::SURFACE::EDIT> edits;
+			GenerateSurface(surfResult, surfNode, edits);
+			return surfResult.surfaceOp;
+		}
 
-        else if ( dynamic_cast<const NodeSurfaceVariation*>(pNode.get()) )
-        {
-            // This happens only if we generate a node graph that has a NodeSurfaceVariation at the root.
-            return nullptr;
-        }
+		else if (dynamic_cast<const NodeSurfaceVariation*>(pNode.get()))
+		{
+			// This happens only if we generate a node graph that has a NodeSurfaceVariation at the root.
+			return nullptr;
+		}
 
-        else if ( dynamic_cast<const NodeSurfaceEdit*>(pNode.get()) )
-        {
-            // This happens only if we generate a node graph that has a NodeSurfaceEdit at the root.
-            return nullptr;
-        }
+		else if (dynamic_cast<const NodeSurfaceEdit*>(pNode.get()))
+		{
+			// This happens only if we generate a node graph that has a NodeSurfaceEdit at the root.
+			return nullptr;
+		}
 
-        else if (  dynamic_cast<const NodeModifier*>(pNode.get()) )
-        {
-            // This happens only if we generate a node graph that has a modifier at the root.
-            return nullptr;
-        }
+		else if (dynamic_cast<const NodeModifier*>(pNode.get()))
+		{
+			// This happens only if we generate a node graph that has a modifier at the root.
+			return nullptr;
+		}
 
 
-        Ptr<ASTOp> result;
+		Ptr<ASTOp> result;
 
-        // See if it was already generated
+		// See if it was already generated
 		FVisitedKeyMap key = GetCurrentCacheKey(pNode);
-        VisitedMap::ValueType* it = m_compiled.Find( key );
-        if ( it )
-        {
-            m_currentBottomUpState = *it;
-            result = m_currentBottomUpState.m_address;
-        }
-        else
-        {
+		VisitedMap::ValueType* it = m_compiled.Find(key);
+		if (it)
+		{
+			m_currentBottomUpState = *it;
+			result = m_currentBottomUpState.m_address;
+		}
+		else
+		{
 			result = pNode->GetBasePrivate()->Accept(*this);
 			m_currentBottomUpState.m_address = result;
 			m_compiled.Add(key, m_currentBottomUpState);
 		}
 
-        // debug: expensive check of all code generation
+		// debug: expensive check of all code generation
 //        if (result)
 //        {
 //            ASTOpList roots;
@@ -271,52 +253,52 @@ namespace mu
 //            ASTOp::FullAssert(roots);
 //        }
 
-        return result;
-    }
+		return result;
+	}
 
 
-    //---------------------------------------------------------------------------------------------
-    void CodeGenerator::GenerateRange( FRangeGenerationResult& Result,
-                                      NodeRangePtrConst Untyped)
-    {
-        if (!Untyped)
-        {
+	//---------------------------------------------------------------------------------------------
+	void CodeGenerator::GenerateRange(FRangeGenerationResult& Result,
+		NodeRangePtrConst Untyped)
+	{
+		if (!Untyped)
+		{
 			Result = FRangeGenerationResult();
-            return;
-        }
+			return;
+		}
 
-        // See if it was already generated
+		// See if it was already generated
 		FVisitedKeyMap Key = GetCurrentCacheKey(Untyped);
 		GeneratedRangeMap::ValueType* it = m_generatedRanges.Find(Key);
-        if ( it  )
-        {
+		if (it)
+		{
 			Result = *it;
-            return;
-        }
+			return;
+		}
 
 
-        // Generate for each different type of node
-        if (const NodeRangeFromScalar* FromScalar = dynamic_cast<const NodeRangeFromScalar*>(Untyped.get()) )
-        {
+		// Generate for each different type of node
+		if (const NodeRangeFromScalar* FromScalar = dynamic_cast<const NodeRangeFromScalar*>(Untyped.get()))
+		{
 			Result = FRangeGenerationResult();
 			Result.rangeName = FromScalar->GetName();
 			Result.sizeOp = Generate(FromScalar->GetSize());
-        }
-        else
-        {
-            check(false);
-        }
+		}
+		else
+		{
+			check(false);
+		}
 
 
-        // Cache the result
-        m_generatedRanges.Add( Key, Result);
-    }
+		// Cache the result
+		m_generatedRanges.Add(Key, Result);
+	}
 
-	
-    //---------------------------------------------------------------------------------------------
-    Ptr<ASTOp> CodeGenerator::GenerateTableVariable( TablePtr pTable, const string& strName )
-    {
-        Ptr<ASTOp> result;
+
+	//---------------------------------------------------------------------------------------------
+	Ptr<ASTOp> CodeGenerator::GenerateTableVariable(TablePtr pTable, const string& strName)
+	{
+		Ptr<ASTOp> result;
 
         FParameterDesc param;
         param.m_name = strName;
@@ -325,21 +307,21 @@ namespace mu
             param.m_name = pTable->GetName();
         }
         param.m_type = PARAMETER_TYPE::T_INT;
-        param.m_defaultValue.m_int = 0;
+        param.m_defaultValue.Set<ParamIntType>(0);
 
-        // Add the possible values
-        {
-            // See if there is a string column. If there is one, we will use it as names for the
-            // options. Only the first string column will be used.
-            int nameCol = -1;
-            int32 cols = pTable->GetPrivate()->m_columns.Num();
-            for ( int32 c=0; c<cols && nameCol<0; ++c )
-            {
-                if ( pTable->GetPrivate()->m_columns[c].m_type==TCT_STRING )
-                {
-                    nameCol = c;
-                }
-            }
+		// Add the possible values
+		{
+			// See if there is a string column. If there is one, we will use it as names for the
+			// options. Only the first string column will be used.
+			int nameCol = -1;
+			int32 cols = pTable->GetPrivate()->m_columns.Num();
+			for (int32 c = 0; c < cols && nameCol < 0; ++c)
+			{
+				if (pTable->GetPrivate()->m_columns[c].m_type == TCT_STRING)
+				{
+					nameCol = c;
+				}
+			}
 
 			if (pTable->GetPrivate()->m_NoneOption)
 			{
@@ -347,353 +329,401 @@ namespace mu
 				nullValue.m_value = -1;
 				nullValue.m_name = "None";
 				param.m_possibleValues.Add(nullValue);
-				param.m_defaultValue.m_int = nullValue.m_value;
+				param.m_defaultValue.Set<ParamIntType>(nullValue.m_value);
 			}
 
-            // Add every row
-            int32 rows = pTable->GetPrivate()->m_rows.Num();
-			for (size_t i = 0; i<rows; ++i)
-            {
-                FParameterDesc::INT_VALUE_DESC value;
-                value.m_value = (int16_t)pTable->GetPrivate()->m_rows[i].m_id;
+			// Add every row
+			int32 rows = pTable->GetPrivate()->m_rows.Num();
+			for (size_t i = 0; i < rows; ++i)
+			{
+				FParameterDesc::INT_VALUE_DESC value;
+				value.m_value = (int16_t)pTable->GetPrivate()->m_rows[i].m_id;
 
-                if (nameCol>-1)
-                {
-                    value.m_name = pTable->GetPrivate()->m_rows[i].m_values[nameCol].m_string;
-                }
+				if (nameCol > -1)
+				{
+					value.m_name = pTable->GetPrivate()->m_rows[i].m_values[nameCol].m_string;
+				}
 
-                param.m_possibleValues.Add( value );
+				param.m_possibleValues.Add(value);
 
                 // The first row is the default one
                 if (i==0)
                 {
-                    param.m_defaultValue.m_int = value.m_value;
+                    param.m_defaultValue.Set<ParamIntType>(value.m_value);
                 }
             }
         }
 
-        Ptr<ASTOpParameter> op = new ASTOpParameter();
-        op->type = OP_TYPE::NU_PARAMETER;
-        op->parameter = param;
+		Ptr<ASTOpParameter> op = new ASTOpParameter();
+		op->type = OP_TYPE::NU_PARAMETER;
+		op->parameter = param;
 
-        return op;
-    }
+		return op;
+	}
 
 
-    //---------------------------------------------------------------------------------------------
-	Ptr<const Layout> CodeGenerator::AddLayout(Ptr<const Layout> SourceLayout )
-    {
+	//---------------------------------------------------------------------------------------------
+	Ptr<const Layout> CodeGenerator::AddLayout(Ptr<const Layout> SourceLayout)
+	{
 		// The layout we are adding must be a source layout, without block ids yet.
 		check(SourceLayout->m_blocks.IsEmpty() || SourceLayout->m_blocks[0].m_id == -1);
-		
-		Ptr<const Layout>* it = m_generatedLayouts.Find(SourceLayout.get() );
 
-        if ( it )
-        {
-            return *it;
-        }
+		Ptr<const Layout>* it = m_generatedLayouts.Find(SourceLayout.get());
+
+		if (it)
+		{
+			return *it;
+		}
 
 		// Assign unique ids to each layout block
 		Ptr<Layout> ClonedLayout = SourceLayout->Clone();
-        for (int32 b=0;b< ClonedLayout->m_blocks.Num();++b)
-        {
+		for (int32 b = 0; b < ClonedLayout->m_blocks.Num(); ++b)
+		{
 			// This is a hard limit due to layout block index data being stored in 16 bit.
-			check(m_absoluteLayoutIndex<65536);
+			check(m_absoluteLayoutIndex < 65536);
 			ClonedLayout->m_blocks[b].m_id = m_absoluteLayoutIndex++;
-        }
+		}
 		check(SourceLayout->m_blocks.Num() == ClonedLayout->m_blocks.Num());
 		check(ClonedLayout->m_blocks.IsEmpty() || ClonedLayout->m_blocks[0].m_id != -1);
 		m_generatedLayouts.Add(SourceLayout.get(), ClonedLayout);
 
-        return ClonedLayout;
-    }
+		return ClonedLayout;
+	}
 
 
-    //---------------------------------------------------------------------------------------------
-    Ptr<ASTOp> CodeGenerator::GenerateImageBlockPatch( Ptr<ASTOp> blockAd,
-                                                        const NodePatchImage* pPatch,
-                                                        Ptr<ASTOp> conditionAd )
-    {
-        // Blend operation
-         Ptr<ASTOp> blendAd;
-         {
-             MUTABLE_CPUPROFILER_SCOPE(PatchBlend);
+	//---------------------------------------------------------------------------------------------
+	Ptr<ASTOp> CodeGenerator::GenerateImageBlockPatch(Ptr<ASTOp> blockAd,
+		const NodePatchImage* pPatch,
+		Ptr<ASTOp> conditionAd,
+		const FImageGenerationOptions& ImageOptions )
+	{
+		// Blend operation
+		Ptr<ASTOp> blendAd;
+		{
+			MUTABLE_CPUPROFILER_SCOPE(PatchBlend);
 
-             Ptr<ASTOpImageLayer> op = new ASTOpImageLayer();
-			 op->blendType = pPatch->GetPrivate()->m_blendType;
-             op->base = blockAd;
+			Ptr<ASTOpImageLayer> op = new ASTOpImageLayer();
+			op->blendType = pPatch->GetPrivate()->m_blendType;
+			op->base = blockAd;
 
-             // When we patch from edit nodes, we want to apply it to all the channels.
-             // \todo: since we can choose the patch function, maybe we want to be able to
-             // select this as well.
-             op->Flags = pPatch->GetPrivate()->m_applyToAlpha
-                     ? OP::ImageLayerArgs::F_APPLY_TO_ALPHA
-                     : 0;
+			// When we patch from edit nodes, we want to apply it to all the channels.
+			// \todo: since we can choose the patch function, maybe we want to be able to
+			// select this as well.
+			op->Flags = pPatch->GetPrivate()->m_applyToAlpha
+				? OP::ImageLayerArgs::F_APPLY_TO_ALPHA
+				: 0;
 
-             NodeImage* pImage = pPatch->GetPrivate()->m_pImage.get();
-             Ptr<ASTOp> blend;
-             if ( pImage )
-             {
-                 blend = Generate( pImage );
-             }
-             else
-             {
-                 blend = GenerateMissingImageCode( "Blend top image", EImageFormat::IF_RGB_UBYTE,
-                                                   pPatch->GetPrivate()->m_errorContext );
-             }
-             blend = GenerateImageFormat( blend, blockAd->GetImageDesc().m_format );
-             blend = GenerateImageSize
-                 (
-                     blend,
-                     FImageSize( (uint16)m_imageState.Last().m_imageRect.size[0],
-                                 (uint16)m_imageState.Last().m_imageRect.size[1] )
-                 );
-             op->blend = blend;
+			NodeImage* pImage = pPatch->GetPrivate()->m_pImage.get();
+			Ptr<ASTOp> blend;
+			if (pImage)
+			{
+				FImageGenerationResult BlendResult;
+				GenerateImage(ImageOptions, BlendResult, pImage);
+				blend = BlendResult.op;
+			}
+			else
+			{
+				blend = GenerateMissingImageCode(TEXT("Blend top image"), EImageFormat::IF_RGB_UBYTE, pPatch->GetPrivate()->m_errorContext, ImageOptions);
+			}
+			blend = GenerateImageFormat(blend, blockAd->GetImageDesc().m_format);
+			blend = GenerateImageSize(blend, ImageOptions.RectSize);
+			op->blend = blend;
 
-             NodeImage* pMask = pPatch->GetPrivate()->m_pMask.get();
-             Ptr<ASTOp> mask;
-             if ( pMask )
-             {
-                 mask = Generate( pMask );
-             }
-             else
-             {
-                 // Set the argument default value: affect all pixels.
-                 // TODO: Special operation code without mask
-                 mask = GeneratePlainImageCode( vec3<float>( 1,1,1 ) );
-             }
-             mask = GenerateImageFormat( mask, EImageFormat::IF_L_UBYTE );
-             mask = GenerateImageSize
-                 (
-                     mask,
-                     FImageSize( (uint16)m_imageState.Last().m_imageRect.size[0],
-                                 (uint16)m_imageState.Last().m_imageRect.size[1] )
-                 );
-             op->mask = mask;
+			NodeImage* pMask = pPatch->GetPrivate()->m_pMask.get();
+			Ptr<ASTOp> mask;
+			if (pMask)
+			{
+				FImageGenerationResult MaskResult;
+				GenerateImage(ImageOptions, MaskResult, pMask);
+				mask = MaskResult.op;
+			}
+			else
+			{
+				// Set the argument default value: affect all pixels.
+				// TODO: Special operation code without mask
+				FImageGenerationOptions MissingMaskOptions;
+				mask = GeneratePlainImageCode(FVector4f(1,1,1,1), MissingMaskOptions);
+			}
+			mask = GenerateImageFormat(mask, EImageFormat::IF_L_UBYTE);
+			mask = GenerateImageSize(mask, ImageOptions.RectSize);
+			op->mask = mask;
 
-             blendAd = op;
-         }
+			blendAd = op;
+		}
 
-         // Condition to enable this patch
-         if (conditionAd)
-         {
-             Ptr<ASTOp> conditionalAd;
-             {
-                 Ptr<ASTOpConditional> op = new ASTOpConditional();
-                 op->type = OP_TYPE::IM_CONDITIONAL;
-                 op->no = blockAd;
-                 op->yes = blendAd;
-                 op->condition = conditionAd;
-                 conditionalAd = op;
-             }
+		// Condition to enable this patch
+		if (conditionAd)
+		{
+			Ptr<ASTOp> conditionalAd;
+			{
+				Ptr<ASTOpConditional> op = new ASTOpConditional();
+				op->type = OP_TYPE::IM_CONDITIONAL;
+				op->no = blockAd;
+				op->yes = blendAd;
+				op->condition = conditionAd;
+				conditionalAd = op;
+			}
 
-             blockAd = conditionalAd;
-         }
-         else
-         {
-             blockAd = blendAd;
-         }
+			blockAd = conditionalAd;
+		}
+		else
+		{
+			blockAd = blendAd;
+		}
 
-         return blockAd;
-    }
+		return blockAd;
+	}
 
 
-    //---------------------------------------------------------------------------------------------
-    const NodeMeshConstant* FindSourceMesh( const Node* pNode )
-    {
-        const NodeMeshConstant* pResult = nullptr;
+	//---------------------------------------------------------------------------------------------
+	const NodeMeshConstant* FindSourceMesh(const Node* pNode)
+	{
+		const NodeMeshConstant* pResult = nullptr;
 
-        if (!pNode)
-        {
-            return pResult;
-        }
+		if (!pNode)
+		{
+			return pResult;
+		}
 
-        if ( auto pTypedSN = dynamic_cast<const NodeSurfaceNew*>( pNode ) )
+		if (const NodeSurfaceNew* pTypedSN = dynamic_cast<const NodeSurfaceNew*>(pNode))
         {
             // TODO: 0...
             pResult = FindSourceMesh( pTypedSN->GetMesh(0).get() );
         }
-        else if ( auto pTypedSE = dynamic_cast<const NodeSurfaceEdit*>(pNode) )
+ 		else if (const NodeSurfaceEdit* pTypedSE = dynamic_cast<const NodeSurfaceEdit*>(pNode))
 		{
-            NodePatchMesh* pPatch = pTypedSE->GetMesh();
+			NodePatchMesh* pPatch = pTypedSE->GetMesh();
 			if (pPatch)
 			{
 				pResult = FindSourceMesh(pPatch->GetAdd());
 			}
 		}
-        else if ( auto pTypedSV = dynamic_cast<const NodeSurfaceVariation*>(pNode) )
+		else if (const NodeSurfaceVariation* pTypedSV = dynamic_cast<const NodeSurfaceVariation*>(pNode))
 		{
-            if (pTypedSV->GetPrivate()->m_defaultSurfaces.Num())
+			if (pTypedSV->GetPrivate()->m_defaultSurfaces.Num())
 			{
-                pResult = FindSourceMesh(pTypedSV->GetPrivate()->m_defaultSurfaces[0].get());
+				pResult = FindSourceMesh(pTypedSV->GetPrivate()->m_defaultSurfaces[0].get());
 			}
 		}
-        else if ( auto pTypedMI = dynamic_cast<const NodeMeshInterpolate*>( pNode ) )
+		else if (const NodeMeshInterpolate* pTypedMI = dynamic_cast<const NodeMeshInterpolate*>(pNode))
         {
             if ( pTypedMI->GetTargetCount()>0 )
             {
                 pResult = FindSourceMesh( pTypedMI->GetTarget(0).get() );
             }
         }
-        else if ( auto pTypedMM = dynamic_cast<const NodeMeshMorph*>( pNode ) )
+		else if (const NodeMeshMorph* pTypedMM = dynamic_cast<const NodeMeshMorph*>(pNode))
         {
             pResult = FindSourceMesh( pTypedMM->GetBase().get() );
         }
-		else if (auto pTypedGO = dynamic_cast<const NodeMeshGeometryOperation*>(pNode))
+		else if (const NodeMeshGeometryOperation* pTypedGO = dynamic_cast<const NodeMeshGeometryOperation*>(pNode))
 		{
 			pResult = FindSourceMesh(pTypedGO->GetMeshA().get());
 		}
-		else if (auto pTypedR = dynamic_cast<const NodeMeshReshape*>(pNode))
+		else if (const NodeMeshReshape* pTypedR = dynamic_cast<const NodeMeshReshape*>(pNode))
 		{
 			pResult = FindSourceMesh(pTypedR->GetBaseMesh().get());
 		}
-		else if ( auto pTypedMF = dynamic_cast<const NodeMeshFormat*>( pNode ) )
+		else if (const NodeMeshFormat* pTypedMF = dynamic_cast<const NodeMeshFormat*>(pNode))
         {
             if ( pTypedMF->GetSource() )
             {
                 pResult = FindSourceMesh( pTypedMF->GetSource().get() );
             }
         }
-        else if ( auto pTypedMFrag = dynamic_cast<const NodeMeshFragment*>( pNode ) )
+ 		else if (const NodeMeshFragment* pTypedMFrag = dynamic_cast<const NodeMeshFragment*>(pNode))
         {
             if ( pTypedMFrag->GetMesh() )
             {
                 pResult = FindSourceMesh( pTypedMFrag->GetMesh().get() );
             }
         }
-        else if ( auto pCasted = dynamic_cast<const NodeMeshConstant*>( pNode ) )
+		else if (const NodeMeshConstant* pCasted = dynamic_cast<const NodeMeshConstant*>(pNode))
         {
             pResult = pCasted;
         }
-        else if ( auto pTypedCMP = dynamic_cast<const NodeMeshClipMorphPlane*>(pNode) )
+ 		else if (const NodeMeshClipMorphPlane* pTypedCMP = dynamic_cast<const NodeMeshClipMorphPlane*>(pNode))
 		{
-            pResult = FindSourceMesh(pTypedCMP->GetSource().get());
+			pResult = FindSourceMesh(pTypedCMP->GetSource().get());
 		}
-        else if ( auto pTypedCWM = dynamic_cast<const NodeMeshClipWithMesh*>(pNode) )
+		else if (const NodeMeshClipWithMesh* pTypedCWM = dynamic_cast<const NodeMeshClipWithMesh*>(pNode))
 		{
-            pResult = FindSourceMesh(pTypedCWM->GetSource().get());
+			pResult = FindSourceMesh(pTypedCWM->GetSource().get());
 		}
 		else
-        {
-            check( false );
-        }
+		{
+			check(false);
+		}
 
-        return pResult;
-    }
-
-
-    //---------------------------------------------------------------------------------------------
-    Ptr<ASTOp> CodeGenerator::Visit( const NodePatchImage::Private& node )
-    {
-        // Get the parent component layout
-        const NodeObjectNew::Private* pParent = nullptr;
-        if (m_currentParents.Num()>2)
-        {
-            pParent = m_currentParents[m_currentParents.Num()-2].m_pObject;
-        }
-
-        const NodeLayout* pNodeLayout = nullptr;
-        if (pParent)
-        {
-            pNodeLayout = pParent->GetLayout
-                (
-                    m_currentParents.Last().m_lod,
-                    m_currentParents.Last().m_component,
-                    m_currentParents.Last().m_surface,
-                    m_currentParents.Last().m_texture
-                ).get();
-        }
-
-        if (!pNodeLayout)
-        {
-            char buf[256];
-            mutable_snprintf
-                (
-                    buf, 256,
-                    "In object [%s] NodePatchImage couldn't find the layout in parent.",
-                    m_currentParents.Last().m_pObject->m_name.c_str()
-                );
-
-            m_pErrorLog->GetPrivate()->Add( buf, ELMT_ERROR, node.m_errorContext );
-        }
-
-        return 0;
-    }
+		return pResult;
+	}
 
 
-    //---------------------------------------------------------------------------------------------
-    Ptr<ASTOp> CodeGenerator::Visit( const NodeLOD::Private& node )
-    {
-        // Build a series of operations to assemble all the LOD components
-        Ptr<ASTOp> lastCompOp;
+	//---------------------------------------------------------------------------------------------
+	Ptr<ASTOp> CodeGenerator::Visit(const NodePatchImage::Private& node)
+	{
+		// Get the parent component layout
+		const NodeObjectNew::Private* pParent = nullptr;
+		if (m_currentParents.Num() > 2)
+		{
+			pParent = m_currentParents[m_currentParents.Num() - 2].m_pObject;
+		}
 
-        // Create the expression for each component in this object
-        // TODO: More components per operation
-        for ( int32 t=0; t<node.m_components.Num(); ++t )
-        {
-            if ( const NodeComponent* pComponentNode = node.m_components[t].get() )
-            {
-                m_currentParents.Last().m_component = (int)t;
+		const NodeLayout* pNodeLayout = nullptr;
+		if (pParent)
+		{
+			pNodeLayout = pParent->GetLayout
+			(
+				m_currentParents.Last().m_lod,
+				m_currentParents.Last().m_component,
+				m_currentParents.Last().m_surface,
+				m_currentParents.Last().m_texture
+			).get();
+		}
 
-                Ptr<ASTOp> componentOp = Generate( pComponentNode );
+		if (!pNodeLayout)
+		{
+			FString Msg = FString::Printf(TEXT("In object [%s] NodePatchImage couldn't find the layout in parent."),
+				m_currentParents.Last().m_pObject->m_name.c_str()
+			);
 
-                if (componentOp)
-                {
-                    check( componentOp->GetOpType() == OP_TYPE::IN_ADDCOMPONENT );
+			m_pErrorLog->GetPrivate()->Add(Msg, ELMT_ERROR, node.m_errorContext);
+		}
 
-                    auto typedOp = dynamic_cast<ASTOpInstanceAdd*>( componentOp.get() );
+		return 0;
+	}
 
-                    // Complete the instruction adding the base
-                    typedOp->instance = lastCompOp;
 
-                    lastCompOp = componentOp;
-                }
-            }
-        }
+	//---------------------------------------------------------------------------------------------
+	Ptr<ASTOp> CodeGenerator::Visit(const NodeLOD::Private& node)
+	{
+		// Build a series of operations to assemble all the LOD components
+		Ptr<ASTOp> lastCompOp;
 
-        // Add components from child objects
-        ADDITIONAL_COMPONENT_KEY thisKey;
-        thisKey.m_lod = m_currentParents.Last().m_lod;
-        thisKey.m_pObject = m_currentParents.Last().m_pObject;
-        auto addIt = m_additionalComponents.find( thisKey );
-        if (addIt!=m_additionalComponents.end())
-        {
-            for( const auto& cop: addIt->second )
-            {
-                // Add the additional components after the main ones, this means higher up in the
-                // op tree.
+		// Create the expression for each component in this object
+		// TODO: More components per operation
+		for (int32 t = 0; t < node.m_components.Num(); ++t)
+		{
+			if (const NodeComponent* pComponentNode = node.m_components[t].get())
+			{
+				m_currentParents.Last().m_component = (int)t;
+
+				Ptr<ASTOp> componentOp = Generate(pComponentNode);
+
+				if (componentOp)
+				{
+					check(componentOp->GetOpType() == OP_TYPE::IN_ADDCOMPONENT);
+
+					ASTOpInstanceAdd* typedOp = dynamic_cast<ASTOpInstanceAdd*>(componentOp.get());
+
+					// Complete the instruction adding the base
+					typedOp->instance = lastCompOp;
+
+					lastCompOp = componentOp;
+				}
+			}
+		}
+
+		// Add components from child objects
+		ADDITIONAL_COMPONENT_KEY thisKey;
+		thisKey.m_lod = m_currentParents.Last().m_lod;
+		thisKey.m_pObject = m_currentParents.Last().m_pObject;
+		auto addIt = m_additionalComponents.find(thisKey);
+		if (addIt != m_additionalComponents.end())
+		{
+			for (const auto& cop : addIt->second)
+			{
+				// Add the additional components after the main ones, this means higher up in the
+				// op tree.
 
                 // First find the last op in the chain of IN_ADDCOMPONENT operations
                 check( cop->GetOpType() == OP_TYPE::IN_ADDCOMPONENT );
-                auto typedOp = dynamic_cast<ASTOpInstanceAdd*>( cop.get() );
-                auto bottomOp = typedOp;
-                while( bottomOp->instance )
-                {
-                    // Step down
-                    check( bottomOp->instance->GetOpType() == OP_TYPE::IN_ADDCOMPONENT );
-                    bottomOp = dynamic_cast<ASTOpInstanceAdd*>( bottomOp->instance.child().get() );
-                }
+				ASTOpInstanceAdd* typedOp = dynamic_cast<ASTOpInstanceAdd*>(cop.get());
+				ASTOpInstanceAdd* bottomOp = typedOp;
+				while (bottomOp->instance)
+				{
+					// Step down
+					check(bottomOp->instance->GetOpType() == OP_TYPE::IN_ADDCOMPONENT);
+					bottomOp = dynamic_cast<ASTOpInstanceAdd*>(bottomOp->instance.child().get());
+				}
 
-                // Chain
-                bottomOp->instance = lastCompOp;
-                lastCompOp = typedOp;
-            }
-        }
+				// Chain
+				bottomOp->instance = lastCompOp;
+				lastCompOp = typedOp;
+			}
+		}
 
-        // Store for possible parent objects if necessary
-        // 2 is because there must be a parent and there is always a null element as well.
-        if (lastCompOp && m_currentParents.Num()>2)
-        {
-            const auto& parentObjectKey = m_currentParents[ m_currentParents.Num()-2 ];
-            ADDITIONAL_COMPONENT_KEY parentKey;
-            parentKey.m_lod = m_currentParents.Last().m_lod;
-            parentKey.m_pObject = parentObjectKey.m_pObject;
-            m_additionalComponents[parentKey].Add( lastCompOp );
-        }
+		// Store for possible parent objects if necessary
+		// 2 is because there must be a parent and there is always a null element as well.
+		if (lastCompOp && m_currentParents.Num() > 2)
+		{
+			const auto& parentObjectKey = m_currentParents[m_currentParents.Num() - 2];
+			ADDITIONAL_COMPONENT_KEY parentKey;
+			parentKey.m_lod = m_currentParents.Last().m_lod;
+			parentKey.m_pObject = parentObjectKey.m_pObject;
+			m_additionalComponents[parentKey].Add(lastCompOp);
+		}
 
-        return lastCompOp;
-    }
+		return lastCompOp;
+	}
 
+
+	//---------------------------------------------------------------------------------------------
+	Ptr<ASTOp> CodeGenerator::ApplyTiling(Ptr<ASTOp> Source, UE::Math::TIntVector2<int32> Size, EImageFormat Format)
+	{
+		// For now always apply tiling
+		if (m_compilerOptions->ImageTiling==0)
+		{
+			return Source;
+		}
+
+		int32 TileSize = m_compilerOptions->ImageTiling;
+
+		int32 TilesX = FMath::DivideAndRoundUp<int32>(Size[0], TileSize);
+		int32 TilesY = FMath::DivideAndRoundUp<int32>(Size[1], TileSize);
+		if (TilesX * TilesY <= 2)
+		{
+			return Source;
+		}
+
+		Ptr<ASTOpFixed> BaseImage = new ASTOpFixed;
+		BaseImage->op.type = OP_TYPE::IM_PLAINCOLOUR;
+		BaseImage->op.args.ImagePlainColour.size[0] = Size[0];
+		BaseImage->op.args.ImagePlainColour.size[1] = Size[1];
+		BaseImage->op.args.ImagePlainColour.format = Format;
+		BaseImage->op.args.ImagePlainColour.LODs = 1;
+
+		Ptr<ASTOp> CurrentImage = BaseImage;
+
+		for (int32 Y = 0; Y < TilesY; ++Y)
+		{
+			for (int32 X = 0; X < TilesX; ++X)
+			{
+				int32 MinX = X * TileSize;
+				int32 MinY = Y * TileSize;
+				int32 TileSizeX = FMath::Min(TileSize, Size[0] - MinX);
+				int32 TileSizeY = FMath::Min(TileSize, Size[1] - MinY);
+
+				Ptr<ASTOpFixed> TileImage = new ASTOpFixed();
+				TileImage->op.type = OP_TYPE::IM_CROP;
+				TileImage->SetChild(TileImage->op.args.ImageCrop.source, Source);
+				TileImage->op.args.ImageCrop.minX = MinX;
+				TileImage->op.args.ImageCrop.minY = MinY;
+				TileImage->op.args.ImageCrop.sizeX = TileSizeX;
+				TileImage->op.args.ImageCrop.sizeY = TileSizeY;
+
+				Ptr<ASTOpImagePatch> PatchedImage = new ASTOpImagePatch();
+				PatchedImage->base = CurrentImage;
+				PatchedImage->patch = TileImage;
+				PatchedImage->location[0] = MinX;
+				PatchedImage->location[1] = MinY;
+
+				CurrentImage = PatchedImage;
+			}
+		}
+
+		return CurrentImage;
+	}
 
 
     //---------------------------------------------------------------------------------------------
@@ -703,7 +733,7 @@ namespace mu
     {
         //MUTABLE_CPUPROFILER_SCOPE(GenerateSurface);
 
-        const auto& node = *surfaceNode->GetPrivate();
+        const NodeSurfaceNew::Private& node = *surfaceNode->GetPrivate();
 
         // Clear the surface generation state
 //        m_generatedLayouts.Empty();
@@ -770,6 +800,12 @@ namespace mu
             return;
         }
 
+		// This assumes that the lods are processed in order. It checks it this way because some platforms may have empty lods at the top.
+		const bool bIsBaseForSharedSurface = node.SharedSurfaceId != INDEX_NONE && !SharedMeshOptionsMap.Contains(node.SharedSurfaceId);
+
+		// If this is true, we will reuse the surface properties from a higher LOD, se we can skip the generation of material properties and images.
+		const bool bShareSurface = node.SharedSurfaceId != INDEX_NONE && !bIsBaseForSharedSurface;
+
         if ( pMesh )
         {
             MUTABLE_CPUPROFILER_SCOPE(SurfaceMesh);
@@ -784,7 +820,27 @@ namespace mu
 			MeshOptions.bUniqueVertexIDs = true;
 			MeshOptions.bLayouts = true;
 			MeshOptions.State = m_currentStateIndex;
-			MeshOptions.ActiveTags = m_activeTags.Last();
+			MeshOptions.ActiveTags = node.m_tags;
+
+			const FMeshGenerationResult* SharedMeshResults = nullptr;
+			if (bShareSurface)
+			{
+				// Do we have the surface we need to share it with?
+				SharedMeshResults = SharedMeshOptionsMap.Find(node.SharedSurfaceId);
+				check(SharedMeshResults);
+
+				// Override the layouts with the ones from the surface we share
+				MeshOptions.OverrideLayouts = SharedMeshResults->GeneratedLayouts;
+			}
+
+			// Ensure UV islands remain within their main layout block on lower LODs to avoid unexpected reordering 
+			// of the layout blocks when reusing a surface between LODs. Used to fix small displacements on vertices
+			// that may cause them to fall on a different block.
+			MeshOptions.bClampUVIslands = bShareSurface;
+
+			// Normalize UVs if we're going to work with images and layouts.
+			const bool bNormalizeUVs = node.m_images.Num() && edits.Num();
+			MeshOptions.bNormalizeUVs = bNormalizeUVs;
 
             GenerateMesh(MeshOptions, meshResults, pMesh );
             lastMeshOp = meshResults.meshOp;
@@ -800,7 +856,7 @@ namespace mu
             // Apply mesh merges from child objects "edit surface" nodes
             for ( int32 editIndex=0; editIndex<edits.Num(); ++editIndex )
             {
-                const auto& e = edits[editIndex];
+                const FirstPassGenerator::SURFACE::EDIT& e = edits[editIndex];
 
                 if ( e.node->m_pMesh )
                 {
@@ -812,8 +868,17 @@ namespace mu
 						FMeshGenerationOptions MergedMeshOptions;
 						MergedMeshOptions.bUniqueVertexIDs = true;
 						MergedMeshOptions.bLayouts = true;
+						MergedMeshOptions.bClampUVIslands = bShareSurface;
+						MergedMeshOptions.bNormalizeUVs = bNormalizeUVs;
 						MergedMeshOptions.State = m_currentStateIndex;
-						MergedMeshOptions.ActiveTags = m_activeTags.Last();
+						MergedMeshOptions.ActiveTags = e.node->m_tags;
+
+						if (SharedMeshResults)
+						{
+							check(SharedMeshResults->extraMeshLayouts.Num()>editIndex);
+							MergedMeshOptions.OverrideLayouts = SharedMeshResults->extraMeshLayouts[editIndex].GeneratedLayouts;
+						}
+
 						FMeshGenerationResult addResults;
                         GenerateMesh(MergedMeshOptions, addResults, pAdd);
 
@@ -861,8 +926,9 @@ namespace mu
             // Apply mesh removes from child objects "edit surface" nodes.
             // "Removes" need to come after "Adds" because some removes may refer to added meshes,
             // and not the base.
+			// \TODO: Apply base removes first, and then "added meshes" removes here. It may have lower memory footprint during generation.
             Ptr<ASTOpMeshRemoveMask> rop;
-            for ( const auto& e: edits )
+            for ( const FirstPassGenerator::SURFACE::EDIT& e: edits )
             {
                 if ( e.node->m_pMesh )
                 {
@@ -873,10 +939,7 @@ namespace mu
 						RemoveMeshOptions.bUniqueVertexIDs = false;
 						RemoveMeshOptions.bLayouts = false;
 						RemoveMeshOptions.State = m_currentStateIndex;
-						if (!m_activeTags.IsEmpty())
-						{
-							RemoveMeshOptions.ActiveTags = m_activeTags.Last();
-						}
+						RemoveMeshOptions.ActiveTags = e.node->m_tags;
 
                         GenerateMesh(RemoveMeshOptions, removeResults, pRemove );
 
@@ -884,7 +947,7 @@ namespace mu
                         maskOp->op.type = OP_TYPE::ME_MASKDIFF;
 
                         // By default, remove from the base
-                        auto removeFrom = meshResults.baseMeshOp;
+                        Ptr<ASTOp> removeFrom = meshResults.baseMeshOp;
                         // See if we want to remove from an added mesh instead.
                         if ( e.node->m_pParent )
                         {
@@ -915,7 +978,7 @@ namespace mu
             }
 
             // Apply mesh morphs from child objects "edit surface" nodes
-            for ( const auto& e: edits )
+            for ( const FirstPassGenerator::SURFACE::EDIT& e: edits )
             {
                 if ( NodeMeshPtr pMorph = e.node->m_pMorph )
                 {
@@ -932,21 +995,6 @@ namespace mu
 
                     FMeshGenerationResult morphResult;
                     GenerateMesh(MorphTargetMeshOptions, morphResult, pMorph );
-
-					// BaseMorph generation through mesh diff
-					Ptr<ASTOpMeshDifference> diffBase;
-					{
-						// \TODO: Optimize by setting the identity morph constant instead.
-						Ptr<ASTOpMeshDifference> op = new ASTOpMeshDifference();
-						op->Base = meshResults.meshOp;
-						op->Target = meshResults.meshOp;
-
-						// Morphing tex coords here is not supported:
-						// Generating the homogoneous UVs is difficult since we don't have the base
-						// layout yet.                       
-						op->bIgnoreTextureCoords = true;
-						diffBase = op;
-					}
 
 					// Morph generation through mesh diff
 					Ptr<ASTOp> targetAd = morphResult.meshOp;
@@ -986,8 +1034,7 @@ namespace mu
 						op->Base = lastMeshOp;
 
 						// Targets
-						op->AddTarget(diffBase);
-						op->AddTarget(diffAd);
+						op->Target = diffAd;
                         morphAd = op;
                     }
 
@@ -1014,89 +1061,92 @@ namespace mu
 				bModifiersForBeforeOperations, node.m_errorContext);
 
             // Layouts
-            for ( int32 l=0; l<meshResults.GeneratedLayouts.Num(); ++l )
+            for ( int32 LayoutIndex=0; LayoutIndex <meshResults.GeneratedLayouts.Num(); ++LayoutIndex)
             {
-                Ptr<ASTOp> layoutOp = nullptr;
+                Ptr<ASTOp> layoutOp;
 
-				Ptr<const Layout> pLayout = meshResults.GeneratedLayouts[l].get();
+				Ptr<const Layout> pLayout = meshResults.GeneratedLayouts[LayoutIndex].get();
                 if ( pLayout )
                 {
-                    // Create the layout expression
+					if (SharedMeshResults)
+					{
+						check(SharedMeshResults->layoutOps.Num()>LayoutIndex);
+						layoutOp = SharedMeshResults->layoutOps[LayoutIndex];
+					}
+					else
+					{
+						// Create a new layout expression
 
-                    // Constant layout to start with
-                    {
-                        Ptr<ASTOpConstantResource> op = new ASTOpConstantResource();
-                        op->type = OP_TYPE::LA_CONSTANT;                       
+						// Constant layout to start with
+						{
+							Ptr<ASTOpConstantResource> op = new ASTOpConstantResource();
+							op->type = OP_TYPE::LA_CONSTANT;
 
-                        op->SetValue(pLayout, m_compilerOptions->m_optimisationOptions.m_useDiskCache );
-                        layoutOp = op;
-                    }
+							op->SetValue(pLayout, m_compilerOptions->OptimisationOptions.bUseDiskCache);
+							layoutOp = op;
+						}
 
-                    // Add children merged meshes layouts
-                    for ( const auto& data : meshResults.extraMeshLayouts )
-                    {
-                        if ( !data.meshFragment )
-                        {
-                            // No mesh to add, we assume there are no layouts to add either.
-                            check(data.GeneratedLayouts.IsEmpty());
-                            continue;
-                        }
+						// Add children merged meshes layouts
+						for (const FMeshGenerationResult::FExtraLayouts& data : meshResults.extraMeshLayouts)
+						{
+							if (!data.meshFragment)
+							{
+								// No mesh to add, we assume there are no layouts to add either.
+								check(data.GeneratedLayouts.IsEmpty());
+								continue;
+							}
 
-                        if ( data.GeneratedLayouts.Num() != meshResults.GeneratedLayouts.Num() )
-                        {
-                            m_pErrorLog->GetPrivate()->Add
-                                ( "Merged layout has been ignored because the number of layouts"
-                                    " is different.",
-                                  ELMT_ERROR, node.m_errorContext );
-                        }
-                        else
-                        {
-                            // Constant layout to start with
-                            Ptr<ASTOp> layoutFragmentAd;
-                            {
-                                Ptr<ASTOpConstantResource> op = new ASTOpConstantResource();
-                                op->type = OP_TYPE::LA_CONSTANT;
+							if (data.GeneratedLayouts.Num() != meshResults.GeneratedLayouts.Num())
+							{
+								m_pErrorLog->GetPrivate()->Add(TEXT("Merged layout has been ignored because the number of layouts is different."), ELMT_ERROR, node.m_errorContext);
+							}
+							else
+							{
+								// Constant layout to start with
+								Ptr<ASTOp> layoutFragmentAd;
+								{
+									Ptr<ASTOpConstantResource> op = new ASTOpConstantResource();
+									op->type = OP_TYPE::LA_CONSTANT;
 
-								Ptr<const Layout> pCloned = data.GeneratedLayouts[l];
-                                op->SetValue( pCloned, m_compilerOptions->m_optimisationOptions.m_useDiskCache );
+									Ptr<const Layout> pCloned = data.GeneratedLayouts[LayoutIndex];
+									op->SetValue(pCloned, m_compilerOptions->OptimisationOptions.bUseDiskCache);
 
-                                layoutFragmentAd = op;
-                            }
+									layoutFragmentAd = op;
+								}
 
-                            // Merge operation
-                            Ptr<ASTOpLayoutMerge> mergeAd = new ASTOpLayoutMerge();
-                            mergeAd->Base = layoutOp;
-	                        mergeAd->Added = layoutFragmentAd;
+								// Merge operation
+								Ptr<ASTOpLayoutMerge> mergeAd = new ASTOpLayoutMerge();
+								mergeAd->Base = layoutOp;
+								mergeAd->Added = layoutFragmentAd;
 
-                            // Condition to apply
-                            if (data.condition)
-                            {
-                                Ptr<ASTOpConditional> conditionalAd = new ASTOpConditional();
-                                conditionalAd->type = OP_TYPE::LA_CONDITIONAL;
-                                conditionalAd->no = layoutOp;
-                                conditionalAd->yes = mergeAd;
-                                conditionalAd->condition = data.condition;
-                                layoutOp = conditionalAd;
-                            }
-                            else
-                            {
-                                layoutOp = mergeAd;
-                            }
-                        }
-                    }
+								// Condition to apply
+								if (data.condition)
+								{
+									Ptr<ASTOpConditional> conditionalAd = new ASTOpConditional();
+									conditionalAd->type = OP_TYPE::LA_CONDITIONAL;
+									conditionalAd->no = layoutOp;
+									conditionalAd->yes = mergeAd;
+									conditionalAd->condition = data.condition;
+									layoutOp = conditionalAd;
+								}
+								else
+								{
+									layoutOp = mergeAd;
+								}
+							}
+						}
+					}
 
-
-                    if ( m_compilerOptions->m_textureLayoutStrategy
-                         ==
-                         CompilerOptions::TextureLayoutStrategy::Pack )
+                    if ( layoutOp )
                     {
                         // Add layout packing instructions
-                        {
+						if (!SharedMeshResults)
+						{
                             // Make sure we removed unnecessary blocks
                             Ptr<ASTOpLayoutFromMesh> ExtractOp = new ASTOpLayoutFromMesh();
 							ExtractOp->Mesh = lastMeshOp;
-							check(l<256);
-							ExtractOp->LayoutIndex = uint8( l );
+							check(LayoutIndex<256);
+							ExtractOp->LayoutIndex = uint8(LayoutIndex);
 
 							Ptr<ASTOpLayoutRemoveBlocks> RemoveOp = new ASTOpLayoutRemoveBlocks();
 							RemoveOp->Source = layoutOp;
@@ -1115,7 +1165,7 @@ namespace mu
                             op->op.type = OP_TYPE::ME_APPLYLAYOUT;
                             op->SetChild(op->op.args.MeshApplyLayout.mesh, lastMeshOp );
                             op->SetChild(op->op.args.MeshApplyLayout.layout, layoutOp );
-                            op->op.args.MeshApplyLayout.channel = (uint16)l;
+                            op->op.args.MeshApplyLayout.channel = (uint16)LayoutIndex;
                             lastMeshOp = op;
                         }
                     }
@@ -1130,554 +1180,549 @@ namespace mu
         }
 
 
-        // Create the expression for each texture
+        // Create the expression for each texture, if we are not reusing the surface from another LOD.
         //------------------------------------------------------------------------
-        for ( int32 t=0; t<node.m_images.Num(); ++t )
-        {
-            //MUTABLE_CPUPROFILER_SCOPE(SurfaceTexture);
+		if (!bShareSurface)
+		{
+			for (int32 t = 0; t < node.m_images.Num(); ++t)
+			{
+				//MUTABLE_CPUPROFILER_SCOPE(SurfaceTexture);
 
-            if ( NodeImagePtr pImageNode = node.m_images[t].m_pImage )
-            {
-                // Any image-specific format or mipmapping needs to be applied at the end
-                NodeImageMipmapPtr mipmapNode;
-                NodeImageFormatPtr formatNode;
-                bool found = false;
-                while ( !found)
-                {
-                    if (NodeImageMipmap* tm = dynamic_cast<NodeImageMipmap*>(pImageNode.get()))
-                    {
-                        if (!mipmapNode) mipmapNode = tm;
-                        pImageNode = tm->GetSource();
-                    }
-                    else if (NodeImageFormat* tf = dynamic_cast<NodeImageFormat*>(pImageNode.get()))
-                    {
-                        if (!formatNode) formatNode = tf;
-                        pImageNode = tf->GetSource();
-                    }
-                    else
-                    {
-                        found = true;
-                    }
-                }
-
-                // Find out the size of the image
-                // TODO: What if the image is empty and everything is added?
-                //       Look in the extending images.
-                FImageDesc desc;
-                if (pImageNode)
-                {
-                    MUTABLE_CPUPROFILER_SCOPE(CalculateImageDesc);
-                    desc = CalculateImageDesc( *pImageNode->GetBasePrivate() );
-                }
-
-				// If the image format doesn't come bottom-up, it may come top-down
-				if (desc.m_format == EImageFormat::IF_NONE && formatNode)
+				if (NodeImagePtr pImageNode = node.m_images[t].m_pImage)
 				{
-					desc.m_format = formatNode->GetFormat();
-				}
-
-				const int layout = node.m_images[t].m_layoutIndex;
-
-				if (desc.m_size[0] == 0 || desc.m_size[1] == 0)
-				{
-					int currentLOD = m_currentParents.Last().m_lod;
-					char buf[256];
-					mutable_snprintf(buf, 256, "An image block for [%s] [%s] [%s] at lod [%d] has zero size and will not be generated. ", 
-						node.m_images[t].m_name.c_str(),
-						node.m_images[t].m_materialName.c_str(),
-						node.m_images[t].m_materialParameterName.c_str(),
-						currentLOD
-					);
-					m_pErrorLog->GetPrivate()->Add(buf, ELMT_INFO, node.m_errorContext);
-				}
-
-                else if ( desc.m_format == EImageFormat::IF_NONE )
-                {
-					char buf[256];
-					mutable_snprintf(buf, 256, "An image [%s] has an unidentified pixel format. ", node.m_images[t].m_name.c_str() );
-                    m_pErrorLog->GetPrivate()->Add(buf, ELMT_ERROR, node.m_errorContext);
-                }
-
-                else if ( 
-					// If the layout index has been set to negative, it means we should ignore the layout node.
-					(layout<0)
-					||
-					(m_compilerOptions->m_textureLayoutStrategy == CompilerOptions::TextureLayoutStrategy::None) 
-					)
-                {
-					check( desc.m_format!= EImageFormat::IF_NONE );
-
-                    // Generate the image
-                    IMAGE_STATE newState;
-                    newState.m_imageSize = desc.m_size;
-                    newState.m_imageRect = box<vec2<int>>::FromMinSize( vec2<int>(0,0), desc.m_size );
-                    newState.m_layoutBlockId = -1;
-                    newState.m_pLayout = nullptr;
-                    m_imageState.Add( newState );
-
-                    Ptr<ASTOp> imageAd = Generate( pImageNode );
-
-                    // Look for patches to this block
-                    for( int32 editIndex=0; editIndex<edits.Num(); ++editIndex )
-                    {
-                        const auto& e = edits[editIndex];
-                        if ( t<e.node->m_textures.Num() )
-                        {
-                            if ( const NodePatchImage* pPatch = e.node->m_textures[t].m_pPatch.get() )
-                            {
-                                imageAd = GenerateImageBlockPatch(imageAd,pPatch,e.condition);
-                            }
-                        }
-
-                    }
-
-                    check(imageAd);
-
-                    m_imageState.Pop();
-
-                    if (mipmapNode)
-                    {
-                        Ptr<ASTOpImageMipmap> op = new ASTOpImageMipmap();
-                        op->Levels = 0;
-                        op->Source = imageAd;
-                        op->BlockLevels = 0;
-
-						op->AddressMode = mipmapNode->GetPrivate()->m_settings.m_addressMode;
-						op->FilterType = mipmapNode->GetPrivate()->m_settings.m_filterType;
-						op->SharpenFactor = mipmapNode->GetPrivate()->m_settings.m_sharpenFactor;
-						op->DitherMipmapAlpha = mipmapNode->GetPrivate()->m_settings.m_ditherMipmapAlpha;
-                        imageAd = op;
-                    }
-
-                    if (formatNode)
-                    {
-                        Ptr<ASTOpImagePixelFormat> fop = new ASTOpImagePixelFormat();
-                        fop->Format = formatNode->GetPrivate()->m_format;
-                        fop->FormatIfAlpha = formatNode->GetPrivate()->m_formatIfAlpha;
-                        fop->Source = imageAd;
-                        check(fop->Format != EImageFormat::IF_NONE);
-                        imageAd = fop;
-                    }
-
-                    Ptr<ASTOpInstanceAdd> op = new ASTOpInstanceAdd();
-                    op->type = OP_TYPE::IN_ADDIMAGE;
-                    op->instance = lastSurfOp;
-                    op->value = imageAd;
-                    op->name = node.m_images[t].m_name;
-
-                    lastSurfOp = op;
-                }
-
-                else if ( m_compilerOptions->m_textureLayoutStrategy
-                          ==
-                          CompilerOptions::TextureLayoutStrategy::Pack )
-                {
-                    if( layout >= meshResults.GeneratedLayouts.Num() ||
-                        layout >= meshResults.layoutOps.Num() )
-                    {
-                        m_pErrorLog->GetPrivate()->Add("Missing layout in object, or its parent.",
-                                                       ELMT_ERROR, node.m_errorContext);
-                    }
-                    else
-                    {
-                        const Layout* pLayout = meshResults.GeneratedLayouts[ layout ].get();
-                        check(pLayout);
-
-                        Ptr<ASTOpInstanceAdd> op = new ASTOpInstanceAdd();
-                        op->type = OP_TYPE::IN_ADDIMAGE;
-                        op->instance = lastSurfOp;
-
-                        // Image
-                        //-------------------------------------
-
-                        // Size of a layout block in pixels
-                        FIntPoint grid = pLayout->GetGridSize();
-
-                        check( desc.m_format!= EImageFormat::IF_NONE );
-
-                        // If the image is too small or not a multiple of the the layout size, 
-						// resize it, but raise a warning.
-						if ( (desc.m_size[0] % grid[0] != 0) || (desc.m_size[1] % grid[1] != 0) )
+					// Any image-specific format or mipmapping needs to be applied at the end
+					NodeImageMipmapPtr mipmapNode;
+					NodeImageFormatPtr formatNode;
+					bool found = false;
+					while (!found)
+					{
+						if (NodeImageMipmap* tm = dynamic_cast<NodeImageMipmap*>(pImageNode.get()))
 						{
-							FImageSize oldSize = desc.m_size;
-							desc.m_size[0] = grid[0] * FMath::Max(1, desc.m_size[0] / grid[0]);
-							desc.m_size[1] = grid[1] * FMath::Max(1, desc.m_size[1] / grid[1]);
+							if (!mipmapNode) mipmapNode = tm;
+							pImageNode = tm->GetSource();
+						}
+						else if (NodeImageFormat* tf = dynamic_cast<NodeImageFormat*>(pImageNode.get()))
+						{
+							if (!formatNode) formatNode = tf;
+							pImageNode = tf->GetSource();
+						}
+						else
+						{
+							found = true;
+						}
+					}
 
-							// It is already visible in the error log
-							//UE_LOG( LogMutableCore, Warning, TEXT("A texture [%s] has been resized from [%d x %d] to [%d x %d] because it didn't fit the layout [%d x %d]. "),
-							//	ANSI_TO_TCHAR(node.m_images[t].m_name.c_str()), oldSize[0], oldSize[1], desc.m_size[0], desc.m_size[1], grid[0], grid[1] );
+					// Find out the size of the image
+					// TODO: What if the image is empty and everything is added?
+					//       Look in the extending images.
+					FImageDesc desc;
+					if (pImageNode)
+					{
+						MUTABLE_CPUPROFILER_SCOPE(CalculateImageDesc);
+						desc = CalculateImageDesc(*pImageNode->GetBasePrivate());
+					}
 
-							int currentLOD = m_currentParents.Last().m_lod;
-							char buf[256];
-							mutable_snprintf(buf, 256, "A texture [%s] for material [%s] parameter [%s] in LOD [%d] has been resized from [%d x %d] to [%d x %d] because it didn't fit the layout [%d x %d]. ",
-								node.m_images[t].m_name.c_str(), 
-								node.m_images[t].m_materialName.c_str(),
-								node.m_images[t].m_materialParameterName.c_str(),
-								currentLOD,
-								oldSize[0], oldSize[1], desc.m_size[0], desc.m_size[1], grid[0], grid[1] );
-							m_pErrorLog->GetPrivate()->Add(buf, ELMT_INFO, node.m_errorContext);
+					// If the image format doesn't come bottom-up, it may come top-down
+					if (desc.m_format == EImageFormat::IF_NONE && formatNode)
+					{
+						desc.m_format = formatNode->GetFormat();
+					}
+
+					const int LayoutIndex = node.m_images[t].m_layoutIndex;
+
+					// If the layout index has been set to negative, it means we should ignore the layout for this image.
+					CompilerOptions::TextureLayoutStrategy ImageLayoutStrategy = (LayoutIndex < 0)
+						? CompilerOptions::TextureLayoutStrategy::None
+						: CompilerOptions::TextureLayoutStrategy::Pack
+						;
+
+					if (desc.m_size[0] == 0 || desc.m_size[1] == 0)
+					{
+						int currentLOD = m_currentParents.Last().m_lod;
+						FString Msg = FString::Printf( TEXT("An image block for [%s] [%s] [%s] at lod [%d] has zero size and will not be generated. "),
+							node.m_images[t].m_name.c_str(),
+							node.m_images[t].m_materialName.c_str(),
+							node.m_images[t].m_materialParameterName.c_str(),
+							currentLOD
+						);
+						m_pErrorLog->GetPrivate()->Add(Msg, ELMT_INFO, node.m_errorContext);
+					}
+
+					else if (desc.m_format == EImageFormat::IF_NONE)
+					{
+						FString Msg = FString::Printf(TEXT("An image [%s] has an unidentified pixel format. "), node.m_images[t].m_name.c_str());
+						m_pErrorLog->GetPrivate()->Add(Msg, ELMT_ERROR, node.m_errorContext);
+					}
+
+					else if (ImageLayoutStrategy == CompilerOptions::TextureLayoutStrategy::None)
+					{
+						check(desc.m_format != EImageFormat::IF_NONE);
+
+						// Generate the image
+						FImageGenerationOptions ImageOptions;
+						ImageOptions.CurrentStateIndex = m_currentStateIndex;
+						ImageOptions.ImageLayoutStrategy = ImageLayoutStrategy;
+						ImageOptions.ActiveTags = node.m_tags;
+						ImageOptions.RectSize = UE::Math::TIntVector2<int32>(desc.m_size);
+						FImageGenerationResult Result;
+						GenerateImage(ImageOptions, Result, pImageNode);
+						Ptr<ASTOp> imageAd = Result.op;
+
+						// Look for patches to this block
+						for (int32 editIndex = 0; editIndex < edits.Num(); ++editIndex)
+						{
+							const FirstPassGenerator::SURFACE::EDIT& e = edits[editIndex];
+							if (t < e.node->m_textures.Num())
+							{
+								if (const NodePatchImage* pPatch = e.node->m_textures[t].m_pPatch.get())
+								{
+									imageAd = GenerateImageBlockPatch(imageAd, pPatch, e.condition, ImageOptions);
+								}
+							}
+
 						}
 
-                        int blockSizeX = FMath::Max( 1, desc.m_size[0] / grid[0]);
-                        int blockSizeY = FMath::Max( 1, desc.m_size[1] / grid[1]);
+						check(imageAd);
 
-						bool bBlocksHaveMips = desc.m_lods > 1;
-
-                        // Start with a blank image
-                        Ptr<ASTOp> imageAd;
-                        {
-                            Ptr<ASTOpFixed> bop = new ASTOpFixed();
-                            bop->op.type = OP_TYPE::IM_BLANKLAYOUT;
-                            bop->SetChild(bop->op.args.ImageBlankLayout.layout, meshResults.layoutOps[ layout ] );
-                            bop->op.args.ImageBlankLayout.blockSize[0] = uint16(blockSizeX);
-                            bop->op.args.ImageBlankLayout.blockSize[1] = uint16(blockSizeY);
-                            // We support block compression directly here, but not non-block compression
-                            if ( GetImageFormatData(desc.m_format).m_pixelsPerBlockX == 0 )
-                            {
-                                // It's something like RLE
-                                bop->op.args.ImageBlankLayout.format = GetUncompressedFormat(desc.m_format);
-                            }
-                            else
-                            {
-                                // Directly supported
-                                bop->op.args.ImageBlankLayout.format = desc.m_format;
-                            }
-                            bop->op.args.ImageBlankLayout.generateMipmaps = bBlocksHaveMips;
-                            bop->op.args.ImageBlankLayout.mipmapCount = 0;
-                            imageAd = bop;
-                        }
-
-                        for( int b=0; b<pLayout->GetBlockCount(); ++b )
-                        {
-                            // Block in layout grid units
-                            box< vec2<int> > rectInCells;
-                            pLayout->GetBlock
-                                (
-                                    b,
-                                    &rectInCells.min[0], &rectInCells.min[1],
-                                    &rectInCells.size[0], &rectInCells.size[1]
-                                );
-
-                            // Transform to pixels
-                            box< vec2<int> > rect = rectInCells;
-                            rect.min[0] *= blockSizeX;
-                            rect.min[1] *= blockSizeY;
-                            rect.size[0] *= blockSizeX;
-                            rect.size[1] *= blockSizeY;
-
-                            // Generate the image
-                            IMAGE_STATE newState;
-                            newState.m_imageSize = desc.m_size;
-                            newState.m_imageRect = rect;
-                            newState.m_layoutBlockId = pLayout->m_blocks[b].m_id;
-                            newState.m_pLayout = pLayout;
-                            m_imageState.Add( newState );
-
-                            Ptr<ASTOp> blockAd = Generate( pImageNode );
-
-                            // Look for patches to this block
-                            for( int32 editIndex=0; editIndex<edits.Num(); ++editIndex )
-                            {
-                                const auto& e = edits[editIndex];
-                                if ( t<e.node->m_textures.Num() )
-                                {
-                                    if ( const NodePatchImage* pPatch = e.node->m_textures[t].m_pPatch.get() )
-                                    {
-                                        // Is the current block to be patched?
-                                        if (pPatch->GetPrivate()->m_blocks.Contains(b))
-                                        {
-                                            blockAd = GenerateImageBlockPatch(blockAd,pPatch,e.condition);
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Compose layout operation
-                            Ptr<ASTOpImageCompose> composeOp = new ASTOpImageCompose();
-                            composeOp->Layout = meshResults.layoutOps[ layout ];
-                            // Direct compression support
-                            //composeOp.args.ImageCompose.base = GenerateImageUncompressed( imageAd );
-                            composeOp->Base = imageAd;
-							EImageFormat baseFormat = imageAd->GetImageDesc().m_format;
-                            composeOp->BlockImage = GenerateImageFormat( blockAd, baseFormat );
-
-                            // Set the absolute block index.
-                            check( pLayout->m_blocks[b].m_id>=0 );
-                            composeOp->BlockIndex = pLayout->m_blocks[b].m_id;
-
-                            imageAd = composeOp;
-
-                            m_imageState.Pop();
-                        }
-                        check(imageAd);
-
-                        // Apply composition of blocks coming from child objects
-                        for( int32 editIndex=0; editIndex<edits.Num(); ++editIndex )
-                        {
-                            const auto& e = edits[editIndex];
-                            if ( t<e.node->m_textures.Num() )
-                            {
-                                auto pExtend = e.node->m_textures[t].m_pExtend;
-                                if (pExtend)
-                                {
-                                    if ( layout>=meshResults.extraMeshLayouts[editIndex].GeneratedLayouts.Num()
-                                         ||
-                                         !meshResults.extraMeshLayouts[editIndex].GeneratedLayouts[layout] )
-                                    {
-                                        char buf[256];
-                                        mutable_snprintf
-                                            (
-                                                buf, 256,
-                                                "Trying to extend a layout that doesn't exist in object [%s].",
-                                                m_currentParents.Last().m_pObject->m_name.c_str()
-                                            );
-
-                                        m_pErrorLog->GetPrivate()->Add( buf, ELMT_ERROR, node.m_errorContext );
-                                    }
-                                    else
-                                    {
-                                        Ptr<const Layout> pExtendLayout = meshResults.extraMeshLayouts[editIndex].GeneratedLayouts[layout];
-
-                                        // Find out the size of the image
-                                        // TODO: What if the image is empty and everything is added?
-                                        //       Look in the extending images.
-                                        FImageDesc extendDesc = CalculateImageDesc( *pExtend->GetBasePrivate() );
-
-                                        // Size of a layout block in pixels
-                                        FIntPoint extlayout = pExtendLayout->GetGridSize();
-
-                                        Ptr<ASTOp> lastBase = imageAd;
-
-                                        for (int b=0; b<pExtendLayout->GetBlockCount(); ++b)
-                                        {
-                                            // Block in layout grid units
-                                            box< vec2<int> > blockRect;
-                                            pExtendLayout->GetBlock
-                                                (
-                                                    b,
-                                                    &blockRect.min[0], &blockRect.min[1],
-                                                    &blockRect.size[0], &blockRect.size[1]
-                                                );
-
-                                            // Transform to pixels
-                                            box< vec2<int> > rect = blockRect;
-                                            rect.min[0] = (rect.min[0] * extendDesc.m_size[0]) / extlayout[0];
-                                            rect.min[1] = (rect.min[1] * extendDesc.m_size[1]) / extlayout[1];
-                                            rect.size[0] = (rect.size[0] * extendDesc.m_size[0]) / extlayout[0];
-                                            rect.size[1] = (rect.size[1] * extendDesc.m_size[1]) / extlayout[1];
-
-                                            // Generate the image block
-                                            IMAGE_STATE newState;
-                                            newState.m_imageSize = extendDesc.m_size;
-                                            newState.m_imageRect = rect;
-                                            newState.m_layoutBlockId = pExtendLayout->m_blocks[b].m_id;
-                                            newState.m_pLayout = pExtendLayout;
-                                            m_imageState.Add( newState );
-
-                                            Ptr<ASTOp> fragmentAd = Generate( pExtend );
-
-                                            m_imageState.Pop();
-
-                                            // Adjust the format and size of the block to be added
-                                            Ptr<ASTOp> formatted = GenerateImageFormat( fragmentAd, GetUncompressedFormat(desc.m_format) );
-                                            FImageSize expectedSize;
-                                            expectedSize[0] = (uint16)(blockSizeX * blockRect.size[0]);
-                                            expectedSize[1] = (uint16)(blockSizeY * blockRect.size[1]);
-                                            formatted = GenerateImageSize( formatted, expectedSize );
-                                            // Direct compression support
-                                            // formatted = GenerateImageUncompressed( formatted );
-                                            //formatted = formatted;
-                                            fragmentAd = formatted;
-
-
-                                            // Compose operation
-                                            Ptr<ASTOpImageCompose> composeOp = new ASTOpImageCompose();
-                                            composeOp->Layout = meshResults.layoutOps[layout];
-                                            composeOp->Base = lastBase;
-                                            // Direct compression support
-                                            // composeOp.args.ImageCompose.blockImage = GenerateImageUncompressed( fragmentAd );
-                                            composeOp->BlockImage = fragmentAd;
-
-                                            // Set the absolute block index.
-                                            check( pExtendLayout->m_blocks[b].m_id>=0 );
-                                            composeOp->BlockIndex = pExtendLayout->m_blocks[b].m_id;
-
-                                            lastBase = composeOp;
-                                        }
-
-                                        // Condition to enable this image extension
-                                        if (e.condition)
-                                        {
-                                            Ptr<ASTOp> conditionalAd;
-                                            Ptr<ASTOpConditional> cop = new ASTOpConditional();
-                                            cop->type = OP_TYPE::IM_CONDITIONAL;
-                                            cop->no = imageAd;
-                                            cop->yes = lastBase;
-                                            cop->condition = e.condition;
-                                            conditionalAd = cop;
-                                            imageAd = conditionalAd;
-                                        }
-                                        else
-                                        {
-                                            imageAd = lastBase;
-                                        }
-
-                                    }
-                                }
-                            }
-                        }
-
-
-                        // Apply mipmap and format if necessary
-                        if (mipmapNode)
-                        {
-                            Ptr<ASTOpImageMipmap> mop = new ASTOpImageMipmap();
-
-                            // At the end of the day, we want all the mipmaps. Maybe the code
-                            // optimiser will split the process later.
-                            mop->Levels = 0;
-							mop->bOnlyTail = false;
-							mop->Source = imageAd;
-
-                            // We have to avoid mips smaller than the image format block size, so
-                            // we will devide the layout block by the format block
-                            const FImageFormatData& finfo = GetImageFormatData( desc.m_format );
-
-                            int mipsX = (int)ceilf( logf( (float)blockSizeX/finfo.m_pixelsPerBlockX )/logf(2.0f) );
-                            int mipsY = (int)ceilf( logf( (float)blockSizeY/finfo.m_pixelsPerBlockY )/logf(2.0f) );
-                            mop->BlockLevels = (uint8_t)FMath::Max( mipsX, mipsY );
-
-							mop->AddressMode	   = mipmapNode->GetPrivate()->m_settings.m_addressMode;
-							mop->FilterType		   = mipmapNode->GetPrivate()->m_settings.m_filterType;
-							mop->SharpenFactor	   = mipmapNode->GetPrivate()->m_settings.m_sharpenFactor;
-							mop->DitherMipmapAlpha = mipmapNode->GetPrivate()->m_settings.m_ditherMipmapAlpha;
-
-                            imageAd = mop;
-                        }
-
-						else if (bBlocksHaveMips)
+						if (mipmapNode)
 						{
-							// If the blocks had mipmaps, we still need to generate them after the compose, to have the full chain
-							Ptr<ASTOpImageMipmap> mop = new ASTOpImageMipmap();
+							Ptr<ASTOpImageMipmap> op = new ASTOpImageMipmap();
+							op->Levels = 0;
+							op->Source = imageAd;
+							op->BlockLevels = 0;
 
-							// At the end of the day, we want all the mipmaps. Maybe the code
-							// optimiser will split the process later.
-							mop->Levels = 0;
-							mop->bOnlyTail = false;
-							mop->Source = imageAd;
+							op->AddressMode = mipmapNode->GetPrivate()->m_settings.m_addressMode;
+							op->FilterType = mipmapNode->GetPrivate()->m_settings.m_filterType;
+							op->SharpenFactor = mipmapNode->GetPrivate()->m_settings.m_sharpenFactor;
+							op->DitherMipmapAlpha = mipmapNode->GetPrivate()->m_settings.m_ditherMipmapAlpha;
+							imageAd = op;
+						}
 
-							// We have to avoid mips smaller than the image format block size, so
-							// we will devide the layout block by the format block
-							const FImageFormatData& finfo = GetImageFormatData(desc.m_format);
+						if (formatNode)
+						{
+							Ptr<ASTOpImagePixelFormat> fop = new ASTOpImagePixelFormat();
+							fop->Format = formatNode->GetPrivate()->m_format;
+							fop->FormatIfAlpha = formatNode->GetPrivate()->m_formatIfAlpha;
+							fop->Source = imageAd;
+							check(fop->Format != EImageFormat::IF_NONE);
+							imageAd = fop;
+						}
 
-							int mipsX = (int)ceilf(logf((float)blockSizeX / finfo.m_pixelsPerBlockX) / logf(2.0f));
-							int mipsY = (int)ceilf(logf((float)blockSizeY / finfo.m_pixelsPerBlockY) / logf(2.0f));
-							mop->BlockLevels = (uint8_t)FMath::Max(mipsX, mipsY);
+						Ptr<ASTOpInstanceAdd> op = new ASTOpInstanceAdd();
+						op->type = OP_TYPE::IN_ADDIMAGE;
+						op->instance = lastSurfOp;
+						op->value = imageAd;
+						op->name = node.m_images[t].m_name;
+
+						lastSurfOp = op;
+					}
+
+					else if (ImageLayoutStrategy == CompilerOptions::TextureLayoutStrategy::Pack)
+					{
+						if (LayoutIndex >= meshResults.GeneratedLayouts.Num() ||
+							LayoutIndex >= meshResults.layoutOps.Num())
+						{
+							m_pErrorLog->GetPrivate()->Add("Missing layout in object, or its parent.", ELMT_ERROR, node.m_errorContext);
+						}
+						else
+						{
+							const Layout* pLayout = meshResults.GeneratedLayouts[LayoutIndex].get();
+							check(pLayout);
+
+							Ptr<ASTOpInstanceAdd> op = new ASTOpInstanceAdd();
+							op->type = OP_TYPE::IN_ADDIMAGE;
+							op->instance = lastSurfOp;
+
+							// Image
+							//-------------------------------------
+
+							// Size of a layout block in pixels
+							FIntPoint grid = pLayout->GetGridSize();
+
+							check(desc.m_format != EImageFormat::IF_NONE);
+
+							// If the image is too small or not a multiple of the the layout size, 
+							// resize it, but raise a warning.
+							if ((desc.m_size[0] % grid[0] != 0) || (desc.m_size[1] % grid[1] != 0))
+							{
+								FImageSize oldSize = desc.m_size;
+								desc.m_size[0] = grid[0] * FMath::Max(1, desc.m_size[0] / grid[0]);
+								desc.m_size[1] = grid[1] * FMath::Max(1, desc.m_size[1] / grid[1]);
+
+								int currentLOD = m_currentParents.Last().m_lod;
+								FString Msg = FString::Printf( TEXT("A texture [%s] for material [%s] parameter [%s] in LOD [%d] has been resized from [%d x %d] to [%d x %d] because it didn't fit the layout [%d x %d]. "),
+									node.m_images[t].m_name.c_str(),
+									node.m_images[t].m_materialName.c_str(),
+									node.m_images[t].m_materialParameterName.c_str(),
+									currentLOD,
+									oldSize[0], oldSize[1], desc.m_size[0], desc.m_size[1], grid[0], grid[1]);
+								m_pErrorLog->GetPrivate()->Add(Msg, ELMT_INFO, node.m_errorContext);
+							}
+
+							int blockSizeX = FMath::Max(1, desc.m_size[0] / grid[0]);
+							int blockSizeY = FMath::Max(1, desc.m_size[1] / grid[1]);
+
+							bool bBlocksHaveMips = desc.m_lods > 1;
+
+							// Start with a blank image
+							Ptr<ASTOp> imageAd;
+							{
+								Ptr<ASTOpFixed> bop = new ASTOpFixed();
+								bop->op.type = OP_TYPE::IM_BLANKLAYOUT;
+								bop->SetChild(bop->op.args.ImageBlankLayout.layout, meshResults.layoutOps[LayoutIndex]);
+								bop->op.args.ImageBlankLayout.blockSize[0] = uint16(blockSizeX);
+								bop->op.args.ImageBlankLayout.blockSize[1] = uint16(blockSizeY);
+								// We support block compression directly here, but not non-block compression
+								if (GetImageFormatData(desc.m_format).PixelsPerBlockX == 0)
+								{
+									// It's something like RLE
+									bop->op.args.ImageBlankLayout.format = GetUncompressedFormat(desc.m_format);
+								}
+								else
+								{
+									// Directly supported
+									bop->op.args.ImageBlankLayout.format = desc.m_format;
+								}
+								bop->op.args.ImageBlankLayout.generateMipmaps = bBlocksHaveMips;
+								bop->op.args.ImageBlankLayout.mipmapCount = 0;
+								imageAd = bop;
+							}
+
+							for (int b = 0; b < pLayout->GetBlockCount(); ++b)
+							{
+								// Block in layout grid units
+								box< UE::Math::TIntVector2<uint16> > rectInCells;
+								pLayout->GetBlock
+								(
+									b,
+									&rectInCells.min[0], &rectInCells.min[1],
+									&rectInCells.size[0], &rectInCells.size[1]
+								);
+
+								// Transform to pixels
+								box< UE::Math::TIntVector2<uint16> > rect = rectInCells;
+								rect.min[0] *= blockSizeX;
+								rect.min[1] *= blockSizeY;
+								rect.size[0] *= blockSizeX;
+								rect.size[1] *= blockSizeY;
+
+								// Generate the image
+								FImageGenerationOptions ImageOptions;
+								ImageOptions.CurrentStateIndex = m_currentStateIndex;
+								ImageOptions.ImageLayoutStrategy = ImageLayoutStrategy;
+								ImageOptions.ActiveTags = node.m_tags;
+								ImageOptions.RectSize = UE::Math::TIntVector2<int32>(rect.size);
+								ImageOptions.LayoutToApply = pLayout;
+								ImageOptions.LayoutBlockId = pLayout->m_blocks[b].m_id;
+								FImageGenerationResult Result;
+								GenerateImage(ImageOptions, Result, pImageNode);
+								Ptr<ASTOp> blockAd = Result.op;
+
+								// Look for patches to this block
+								for (int32 editIndex = 0; editIndex < edits.Num(); ++editIndex)
+								{
+									const FirstPassGenerator::SURFACE::EDIT& e = edits[editIndex];
+									if (t < e.node->m_textures.Num())
+									{
+										if (const NodePatchImage* pPatch = e.node->m_textures[t].m_pPatch.get())
+										{
+											// Is the current block to be patched?
+											if (pPatch->GetPrivate()->m_blocks.Contains(b))
+											{
+												blockAd = GenerateImageBlockPatch(blockAd, pPatch, e.condition, ImageOptions);
+											}
+										}
+									}
+								}
+
+								EImageFormat baseFormat = imageAd->GetImageDesc().m_format;
+								Ptr<ASTOp> FormattedBlock = GenerateImageFormat(blockAd, baseFormat);
+
+								// Apply tiling to avoid generating chunks of image that are too big.
+								FormattedBlock = ApplyTiling(FormattedBlock, ImageOptions.RectSize, desc.m_format);
+
+								// Compose layout operation
+								Ptr<ASTOpImageCompose> composeOp = new ASTOpImageCompose();
+								composeOp->Layout = meshResults.layoutOps[LayoutIndex];
+								composeOp->Base = imageAd;
+								composeOp->BlockImage = FormattedBlock;
+
+								// Set the absolute block index.
+								check(pLayout->m_blocks[b].m_id >= 0);
+								composeOp->BlockIndex = pLayout->m_blocks[b].m_id;
+
+								imageAd = composeOp;
+							}
+							check(imageAd);
+
+							// Apply composition of blocks coming from child objects
+							for (int32 editIndex = 0; editIndex < edits.Num(); ++editIndex)
+							{
+								const FirstPassGenerator::SURFACE::EDIT& e = edits[editIndex];
+								if (t < e.node->m_textures.Num())
+								{
+									Ptr<NodeImage> pExtend = e.node->m_textures[t].m_pExtend;
+									if (pExtend)
+									{
+										if (LayoutIndex >= meshResults.extraMeshLayouts[editIndex].GeneratedLayouts.Num()
+											||
+											!meshResults.extraMeshLayouts[editIndex].GeneratedLayouts[LayoutIndex])
+										{
+											FString Msg = FString::Printf(TEXT("Trying to extend a layout that doesn't exist in object [%s]."),
+												m_currentParents.Last().m_pObject->m_name.c_str()
+											);
+
+											m_pErrorLog->GetPrivate()->Add(Msg, ELMT_ERROR, node.m_errorContext);
+										}
+										else
+										{
+											Ptr<const Layout> pExtendLayout = meshResults.extraMeshLayouts[editIndex].GeneratedLayouts[LayoutIndex];
+
+											// Find out the size of the image
+											// TODO: What if the image is empty and everything is added?
+											//       Look in the extending images.
+											FImageDesc extendDesc = CalculateImageDesc(*pExtend->GetBasePrivate());
+
+											// Size of a layout block in pixels
+											FIntPoint extlayout = pExtendLayout->GetGridSize();
+
+											Ptr<ASTOp> lastBase = imageAd;
+
+											for (int b = 0; b < pExtendLayout->GetBlockCount(); ++b)
+											{
+												// Block in layout grid units
+												box< UE::Math::TIntVector2<uint16> > blockRect;
+												pExtendLayout->GetBlock
+												(
+													b,
+													&blockRect.min[0], &blockRect.min[1],
+													&blockRect.size[0], &blockRect.size[1]
+												);
+
+												// Transform to pixels
+												box< UE::Math::TIntVector2<int32> > rect;
+												rect.min[0] = (blockRect.min[0] * extendDesc.m_size[0]) / extlayout[0];
+												rect.min[1] = (blockRect.min[1] * extendDesc.m_size[1]) / extlayout[1];
+												rect.size[0] = (blockRect.size[0] * extendDesc.m_size[0]) / extlayout[0];
+												rect.size[1] = (blockRect.size[1] * extendDesc.m_size[1]) / extlayout[1];
+
+												// Generate the image block
+												FImageGenerationOptions ImageOptions;
+												ImageOptions.CurrentStateIndex = m_currentStateIndex;
+												ImageOptions.ImageLayoutStrategy = ImageLayoutStrategy;
+												ImageOptions.ActiveTags = node.m_tags;
+												ImageOptions.RectSize = UE::Math::TIntVector2<int32>(extendDesc.m_size);
+												ImageOptions.LayoutToApply = pExtendLayout;
+												ImageOptions.LayoutBlockId = pExtendLayout->m_blocks[b].m_id;
+												FImageGenerationResult ExtendResult;
+												GenerateImage(ImageOptions, ExtendResult, pExtend);
+												Ptr<ASTOp> fragmentAd = ExtendResult.op;
+
+												// Adjust the format and size of the block to be added
+												Ptr<ASTOp> formatted = GenerateImageFormat(fragmentAd, GetUncompressedFormat(desc.m_format));
+												UE::Math::TIntVector2<int32> expectedSize;
+												expectedSize[0] = blockSizeX * blockRect.size[0];
+												expectedSize[1] = blockSizeY * blockRect.size[1];
+												formatted = GenerateImageSize(formatted, expectedSize);
+												fragmentAd = formatted;
+
+												// Apply tiling to avoid generating chunks of image that are too big.
+												fragmentAd = ApplyTiling(fragmentAd, expectedSize, desc.m_format);
+
+												// Compose operation
+												Ptr<ASTOpImageCompose> composeOp = new ASTOpImageCompose();
+												composeOp->Layout = meshResults.layoutOps[LayoutIndex];
+												composeOp->Base = lastBase;
+												composeOp->BlockImage = fragmentAd;
+
+												// Set the absolute block index.
+												check(pExtendLayout->m_blocks[b].m_id >= 0);
+												composeOp->BlockIndex = pExtendLayout->m_blocks[b].m_id;
+
+												lastBase = composeOp;
+											}
+
+											// Condition to enable this image extension
+											if (e.condition)
+											{
+												Ptr<ASTOp> conditionalAd;
+												Ptr<ASTOpConditional> cop = new ASTOpConditional();
+												cop->type = OP_TYPE::IM_CONDITIONAL;
+												cop->no = imageAd;
+												cop->yes = lastBase;
+												cop->condition = e.condition;
+												conditionalAd = cop;
+												imageAd = conditionalAd;
+											}
+											else
+											{
+												imageAd = lastBase;
+											}
+
+										}
+									}
+								}
+							}
+
+
+							// Apply mipmap and format if necessary
+							if (mipmapNode)
+							{
+								Ptr<ASTOpImageMipmap> mop = new ASTOpImageMipmap();
+
+								// At the end of the day, we want all the mipmaps. Maybe the code
+								// optimiser will split the process later.
+								mop->Levels = 0;
+								mop->bOnlyTail = false;
+								mop->Source = imageAd;
+
+								// We have to avoid mips smaller than the image format block size, so
+								// we will devide the layout block by the format block
+								const FImageFormatData& finfo = GetImageFormatData(desc.m_format);
+
+								int mipsX = (int)ceilf(logf((float)blockSizeX / finfo.PixelsPerBlockX) / logf(2.0f));
+								int mipsY = (int)ceilf(logf((float)blockSizeY / finfo.PixelsPerBlockY) / logf(2.0f));
+								mop->BlockLevels = (uint8_t)FMath::Max(mipsX, mipsY);
+
+								mop->AddressMode = mipmapNode->GetPrivate()->m_settings.m_addressMode;
+								mop->FilterType = mipmapNode->GetPrivate()->m_settings.m_filterType;
+								mop->SharpenFactor = mipmapNode->GetPrivate()->m_settings.m_sharpenFactor;
+								mop->DitherMipmapAlpha = mipmapNode->GetPrivate()->m_settings.m_ditherMipmapAlpha;
+
+								imageAd = mop;
+							}
+
+							else if (bBlocksHaveMips)
+							{
+								// If the blocks had mipmaps, we still need to generate them after the compose, to have the full chain
+								Ptr<ASTOpImageMipmap> mop = new ASTOpImageMipmap();
+
+								// At the end of the day, we want all the mipmaps. Maybe the code
+								// optimiser will split the process later.
+								mop->Levels = 0;
+								mop->bOnlyTail = false;
+								mop->Source = imageAd;
+
+								// We have to avoid mips smaller than the image format block size, so
+								// we will devide the layout block by the format block
+								const FImageFormatData& finfo = GetImageFormatData(desc.m_format);
+
+								int mipsX = (int)ceilf(logf((float)blockSizeX / finfo.PixelsPerBlockX) / logf(2.0f));
+								int mipsY = (int)ceilf(logf((float)blockSizeY / finfo.PixelsPerBlockY) / logf(2.0f));
+								mop->BlockLevels = (uint8_t)FMath::Max(mipsX, mipsY);
 
 							// Not important for the end of the mip tail?
-							mop->AddressMode = EAddressMode::AM_CLAMP;
+							mop->AddressMode = EAddressMode::ClampToEdge;
 							mop->FilterType = EMipmapFilterType::MFT_SimpleAverage;
 							mop->SharpenFactor = 0;
 							mop->DitherMipmapAlpha = false;
 
-							imageAd = mop;
+								imageAd = mop;
+							}
+
+							if (formatNode)
+							{
+								Ptr<ASTOpImagePixelFormat> fop = new ASTOpImagePixelFormat();
+								fop->Format = formatNode->GetPrivate()->m_format;
+								fop->FormatIfAlpha = formatNode->GetPrivate()->m_formatIfAlpha;
+								fop->Source = imageAd;
+								check(fop->Format != EImageFormat::IF_NONE);
+								imageAd = fop;
+							}
+
+							op->value = imageAd;
+
+							// Name
+							op->name = node.m_images[t].m_name.c_str();
+
+							lastSurfOp = op;
 						}
+					}
 
-                        if (formatNode)
-                        {
-                            Ptr<ASTOpImagePixelFormat> fop = new ASTOpImagePixelFormat();
-                            fop->Format = formatNode->GetPrivate()->m_format;
-                            fop->FormatIfAlpha = formatNode->GetPrivate()->m_formatIfAlpha;
-                            fop->Source = imageAd;
-                            check(fop->Format != EImageFormat::IF_NONE);
-                            imageAd = fop;
-                        }
+					else
+					{
+						// Unimplemented texture layout strategy
+						check(false);
+					}
+				}
+			}
 
-                        op->value = imageAd;
+			// Create the expression for each vector
+			//------------------------------------------------------------------------
+			for (int32 t = 0; t < node.m_vectors.Num(); ++t)
+			{
+				//MUTABLE_CPUPROFILER_SCOPE(SurfaceVector);
 
-                        // Name
-                        op->name = node.m_images[t].m_name.c_str();
+				if (NodeColourPtr pVectorNode = node.m_vectors[t].m_pVector)
+				{
+					Ptr<ASTOpInstanceAdd> op = new ASTOpInstanceAdd();
+					op->type = OP_TYPE::IN_ADDVECTOR;
+					op->instance = lastSurfOp;
 
-                        lastSurfOp = op;
-                    }
-                }
+					// Vector
+					Ptr<ASTOp> vectorAd = Generate(pVectorNode);
+					op->value = vectorAd;
 
-                else
-                {
-                    // Unimplemented texture layout strategy
-                    check(false);
-                }
-            }
-        }
+					// Name
+					op->name = node.m_vectors[t].m_name;
 
-        // Create the expression for each vector
-        //------------------------------------------------------------------------
-        for (int32 t = 0; t<node.m_vectors.Num(); ++t)
-        {
-            //MUTABLE_CPUPROFILER_SCOPE(SurfaceVector);
+					lastSurfOp = op;
+				}
+			}
 
-            if (NodeColourPtr pVectorNode = node.m_vectors[t].m_pVector)
-            {
-                Ptr<ASTOpInstanceAdd> op = new ASTOpInstanceAdd();
-                op->type = OP_TYPE::IN_ADDVECTOR;
-                op->instance = lastSurfOp;
+			// Create the expression for each scalar
+			//------------------------------------------------------------------------
+			for (int32 t = 0; t < node.m_scalars.Num(); ++t)
+			{
+				// MUTABLE_CPUPROFILER_SCOPE(SurfaceScalar);
 
-                // Vector
-                Ptr<ASTOp> vectorAd = Generate(pVectorNode);
-                op->value = vectorAd;
+				if (NodeScalarPtr pScalarNode = node.m_scalars[t].m_pScalar)
+				{
+					Ptr<ASTOpInstanceAdd> op = new ASTOpInstanceAdd();
+					op->type = OP_TYPE::IN_ADDSCALAR;
+					op->instance = lastSurfOp;
 
-                // Name
-                op->name = node.m_vectors[t].m_name;
+					// Scalar
+					Ptr<ASTOp> scalarAd = Generate(pScalarNode);
+					op->value = scalarAd;
 
-                lastSurfOp = op;
-            }
-        }
+					// Name
+					op->name = node.m_scalars[t].m_name;
 
-        // Create the expression for each scalar
-        //------------------------------------------------------------------------
-        for ( int32 t = 0; t < node.m_scalars.Num(); ++t )
-        {
-            // MUTABLE_CPUPROFILER_SCOPE(SurfaceScalar);
+					lastSurfOp = op;
+				}
+			}
 
-            if ( NodeScalarPtr pScalarNode = node.m_scalars[t].m_pScalar )
-            {
-                Ptr<ASTOpInstanceAdd> op = new ASTOpInstanceAdd();
-                op->type = OP_TYPE::IN_ADDSCALAR;
-                op->instance = lastSurfOp;
+			// Create the expression for each string
+			//------------------------------------------------------------------------
+			for (int32 t = 0; t < node.m_strings.Num(); ++t)
+			{
+				if (NodeStringPtr pStringNode = node.m_strings[t].m_pString)
+				{
+					Ptr<ASTOpInstanceAdd> op = new ASTOpInstanceAdd();
+					op->type = OP_TYPE::IN_ADDSTRING;
+					op->instance = lastSurfOp;
 
-                // Scalar
-                Ptr<ASTOp> scalarAd = Generate( pScalarNode );
-                op->value = scalarAd;
+					Ptr<ASTOp> stringAd = Generate(pStringNode);
+					op->value = stringAd;
 
-                // Name
-                op->name = node.m_scalars[t].m_name;
+					// Name
+					op->name = node.m_strings[t].m_name;
 
-                lastSurfOp = op;
-            }
-        }
-
-        // Create the expression for each string
-        //------------------------------------------------------------------------
-        for ( int32 t = 0; t < node.m_strings.Num(); ++t )
-        {
-            if ( NodeStringPtr pStringNode = node.m_strings[t].m_pString )
-            {
-                Ptr<ASTOpInstanceAdd> op = new ASTOpInstanceAdd();
-                op->type = OP_TYPE::IN_ADDSTRING;
-                op->instance = lastSurfOp;
-
-                Ptr<ASTOp> stringAd = Generate( pStringNode );
-                op->value = stringAd;
-
-                // Name
-                op->name = node.m_strings[t].m_name;
-
-                lastSurfOp = op;
-            }
-        }
+					lastSurfOp = op;
+				}
+			}
+		}
 
         result.surfaceOp = lastSurfOp;
         targetSurface->resultSurfaceOp = lastSurfOp;
+
+		// If we are going to share this surface properties, remember it.
+		if (bIsBaseForSharedSurface)
+		{
+			check(!SharedMeshOptionsMap.Contains(node.SharedSurfaceId));
+			SharedMeshOptionsMap.Add( node.SharedSurfaceId, meshResults );
+		}
     }
 
 
@@ -1699,7 +1744,7 @@ namespace mu
         // Look for all surfaces that belong to this component
 		for (int32 i = 0; i<m_firstPass.surfaces.Num(); ++i, ++surfaceID)
 		{
-			const auto& its = m_firstPass.surfaces[i];
+			const FirstPassGenerator::SURFACE& its = m_firstPass.surfaces[i];
 			if (its.component==&node)
 			{
                 // Apply state conditions: only generate it if it enabled in this state
@@ -1728,7 +1773,8 @@ namespace mu
                 sop->value = surfaceGenerationResult.surfaceOp;
 
                 sop->id = surfaceID;
-                sop->externalId = its.node->GetPrivate()->m_customID;
+                sop->ExternalId = its.node->GetPrivate()->ExternalId;
+                sop->SharedSurfaceId = its.node->GetPrivate()->SharedSurfaceId;
                 Ptr<ASTOp> surfaceAt = sop;
 
 				// TODO: This could be done earlier?
@@ -1835,22 +1881,6 @@ namespace mu
 
 
     //---------------------------------------------------------------------------------------------
-    Ptr<ASTOp> CodeGenerator::Visit( const NodeObjectState::Private& node )
-    {
-        // Generate the source object
-        Ptr<ASTOp> source;
-
-        if (node.m_pSource)
-        {
-            // Generate the base object where we will add the state.
-            source = Generate( node.m_pSource );
-        }
-
-        return source;
-    }
-
-
-    //---------------------------------------------------------------------------------------------
     Ptr<ASTOp> CodeGenerator::Visit( const NodeObjectNew::Private& node )
     {
         MUTABLE_CPUPROFILER_SCOPE(NodeObjectNew);
@@ -1907,6 +1937,62 @@ namespace mu
         }
         Ptr<ASTOp> rootOp = lodsOp;
 
+		// Add an ASTOpAddExtensionData for each connected ExtensionData node
+		for (const NodeObjectNew::Private::NamedExtensionDataNode& NamedNode : node.m_extensionDataNodes)
+		{
+			if (!NamedNode.Node.get())
+			{
+				// No node connected
+				continue;
+			}
+
+			// Name must be valid
+			check(NamedNode.Name.length() > 0);
+
+			FExtensionDataGenerationResult Result;
+			GenerateExtensionData(Result, NamedNode.Node);
+
+			if (!Result.Op.get())
+			{
+				// Failed to generate anything for this node
+				continue;
+			}
+
+			FConditionalExtensionDataOp& SavedOp = m_conditionalExtensionDataOps.AddDefaulted_GetRef();
+			if (m_currentObject.Num() > 0)
+			{
+				SavedOp.Condition = m_currentObject.Last().m_condition;
+			}
+			SavedOp.ExtensionDataOp = Result.Op;
+			SavedOp.ExtensionDataName = NamedNode.Name;
+		}
+
+		if (m_currentObject.Num() == 0)
+		{
+			for (const FConditionalExtensionDataOp& SavedOp : m_conditionalExtensionDataOps)
+			{
+				Ptr<ASTOpAddExtensionData> ExtensionPinOp = new ASTOpAddExtensionData();
+				ExtensionPinOp->Instance = ASTChild(ExtensionPinOp, rootOp);
+				ExtensionPinOp->ExtensionData = ASTChild(ExtensionPinOp, SavedOp.ExtensionDataOp);
+				ExtensionPinOp->ExtensionDataName = SavedOp.ExtensionDataName;
+
+				if (SavedOp.Condition.get())
+				{
+					Ptr<ASTOpConditional> ConditionOp = new ASTOpConditional();
+					ConditionOp->type = OP_TYPE::IN_CONDITIONAL;
+					ConditionOp->no = rootOp;
+					ConditionOp->yes = ExtensionPinOp;
+					ConditionOp->condition = ASTChild(ConditionOp, SavedOp.Condition);
+					
+					rootOp = ConditionOp;
+				}
+				else
+				{
+					rootOp = ExtensionPinOp;
+				}
+			}
+		}
+
         m_currentParents.Pop();
 
         return rootOp;
@@ -1928,7 +2014,7 @@ namespace mu
 				bool found = false;
                 for( int32 i = 0; !found && i != m_firstPass.objects.Num(); i++ )
 				{
-					auto& it = m_firstPass.objects[i];
+					FirstPassGenerator::OBJECT& it = m_firstPass.objects[i];
 					if (it.node == pChildNode->GetBasePrivate())
 					{
 						found = true;
@@ -1957,14 +2043,10 @@ namespace mu
 					!=
 					usedNames.end() )
 				{
-					char buf[256];
-					mutable_snprintf
-					(
-						buf, 256,
-						"Object group has more than one children with the same name [%s].",
+					FString Msg = FString::Printf(TEXT("Object group has more than one children with the same name [%s]."),
 						strChildName
 					);
-					m_pErrorLog->GetPrivate()->Add(buf, ELMT_WARNING, node.m_errorContext);
+					m_pErrorLog->GetPrivate()->Add(Msg, ELMT_WARNING, node.m_errorContext);
 				}
 				else
 				{
@@ -1977,19 +2059,13 @@ namespace mu
     }
 
     //---------------------------------------------------------------------------------------------
-    Ptr<ASTOp> CodeGenerator::GenerateMissingBoolCode( const char* strWhere,
+    Ptr<ASTOp> CodeGenerator::GenerateMissingBoolCode(const TCHAR* strWhere,
                                                       bool value,
                                                       const void* errorContext )
     {
         // Log a warning
-        char buf[256];
-        mutable_snprintf
-            (
-                buf, 256,
-                "Required connection not found: %s",
-                strWhere
-            );
-        m_pErrorLog->GetPrivate()->Add( buf, ELMT_ERROR, errorContext );
+		FString Msg = FString::Printf(TEXT("Required connection not found: %s"), strWhere );
+        m_pErrorLog->GetPrivate()->Add( Msg, ELMT_ERROR, errorContext );
 
         // Create a constant node
         NodeBoolConstantPtr pNode = new NodeBoolConstant();
@@ -2011,7 +2087,7 @@ namespace mu
 
 		if (tags.Num())
 		{
-			for (const auto& m: m_firstPass.modifiers)
+			for (const FirstPassGenerator::MODIFIER& m: m_firstPass.modifiers)
 			{
 				// Correct LOD?
 				if (m.lod != LOD)
@@ -2074,7 +2150,7 @@ namespace mu
 		Ptr<ASTOpMeshRemoveMask> removeOp;
 		for (const FirstPassGenerator::MODIFIER& m : modifiers)
 		{
-			if (auto TypedClipNode = dynamic_cast<const NodeModifierMeshClipWithMesh::Private*>(m.node))
+			if (const NodeModifierMeshClipWithMesh::Private* TypedClipNode = dynamic_cast<const NodeModifierMeshClipWithMesh::Private*>(m.node))
 			{
 				Ptr<ASTOpMeshMaskClipMesh> op = new ASTOpMeshMaskClipMesh();
 				op->source = preModifiersMesh;
@@ -2121,7 +2197,7 @@ namespace mu
 		{
 			Ptr<ASTOp> modifiedMeshOp;
 
-			if (auto TypedNode = dynamic_cast<const NodeModifierMeshClipMorphPlane::Private*>(m.node))
+			if (const NodeModifierMeshClipMorphPlane::Private* TypedNode = dynamic_cast<const NodeModifierMeshClipMorphPlane::Private*>(m.node))
 			{
 				Ptr<ASTOpMeshClipMorphPlane> op = new ASTOpMeshClipMorphPlane();
 				op->source = lastMeshOp;

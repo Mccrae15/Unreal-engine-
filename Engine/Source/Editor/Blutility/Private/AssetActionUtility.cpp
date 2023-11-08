@@ -8,6 +8,7 @@
 #include "JsonObjectConverter.h"
 #include "Misc/DataValidation.h"
 #include "Serialization/JsonSerializerMacros.h"
+#include "UObject/UObjectThreadContext.h"
 
 #define LOCTEXT_NAMESPACE "AssetActionUtility"
 
@@ -25,7 +26,10 @@ void UAssetActionUtility::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTag
 	
 	FAssetActionUtilityPrototype::AddTagsFor_SupportedClasses(SupportedClasses, OutTags);
 	FAssetActionUtilityPrototype::AddTagsFor_SupportedConditions(SupportedConditions, OutTags);
-	FAssetActionUtilityPrototype::AddTagsFor_IsActionForBlueprints(IsActionForBlueprints(), OutTags);
+	if (!FUObjectThreadContext::Get().IsRoutingPostLoad)
+	{
+		FAssetActionUtilityPrototype::AddTagsFor_IsActionForBlueprints(IsActionForBlueprints(), OutTags);
+	}
 	FAssetActionUtilityPrototype::AddTagsFor_CallableFunctions(this, OutTags);
 }
 			

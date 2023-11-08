@@ -2,6 +2,7 @@
 
 #include "Elements/Metadata/PCGMetadataVectorOpElement.h"
 
+#include "Elements/Metadata/PCGMetadataElementCommon.h"
 #include "Metadata/PCGMetadataAttributeTpl.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PCGMetadataVectorOpElement)
@@ -303,7 +304,7 @@ bool UPCGMetadataVectorSettings::IsSupportedInputType(uint16 TypeId, uint32 Inpu
 	}
 }
 
-FPCGAttributePropertySelector UPCGMetadataVectorSettings::GetInputSource(uint32 Index) const
+FPCGAttributePropertyInputSelector UPCGMetadataVectorSettings::GetInputSource(uint32 Index) const
 {
 	switch (Index)
 	{
@@ -314,13 +315,13 @@ FPCGAttributePropertySelector UPCGMetadataVectorSettings::GetInputSource(uint32 
 	case 2:
 		return InputSource3;
 	default:
-		return FPCGAttributePropertySelector();
+		return FPCGAttributePropertyInputSelector();
 	}
 }
 
 FName UPCGMetadataVectorSettings::AdditionalTaskName() const
 {
-	if (const UEnum* EnumPtr = FindObject<UEnum>(nullptr, TEXT("/Script/PCG.EPCGMedadataVectorOperation"), true))
+	if (const UEnum* EnumPtr = StaticEnum<EPCGMedadataVectorOperation>())
 	{
 		return FName(FString("Vector: ") + EnumPtr->GetNameStringByValue(static_cast<int>(Operation)));
 	}
@@ -340,7 +341,23 @@ FText UPCGMetadataVectorSettings::GetDefaultNodeTitle() const
 {
 	return NSLOCTEXT("PCGMetadataVectorSettings", "NodeTitle", "Attribute Vector Op");
 }
+
+TArray<FPCGPreConfiguredSettingsInfo> UPCGMetadataVectorSettings::GetPreconfiguredInfo() const
+{
+	return PCGMetadataElementCommon::FillPreconfiguredSettingsInfoFromEnum<EPCGMedadataVectorOperation>({ EPCGMedadataVectorOperation::VectorOp, EPCGMedadataVectorOperation::TransformOp });
+}
 #endif // WITH_EDITOR
+
+void UPCGMetadataVectorSettings::ApplyPreconfiguredSettings(const FPCGPreConfiguredSettingsInfo& PreconfiguredInfo)
+{
+	if (const UEnum* EnumPtr = StaticEnum<EPCGMedadataVectorOperation>())
+	{
+		if (EnumPtr->IsValidEnumValue(PreconfiguredInfo.PreconfiguredIndex))
+		{
+			Operation = EPCGMedadataVectorOperation(PreconfiguredInfo.PreconfiguredIndex);
+		}
+	}
+}
 
 FPCGElementPtr UPCGMetadataVectorSettings::CreateElement() const
 {

@@ -3,6 +3,7 @@
 #include "SlatePostProcessResource.h"
 #include "RenderUtils.h"
 #include "RHI.h"
+#include "RHICommandList.h"
 
 DECLARE_MEMORY_STAT(TEXT("PostProcess RenderTargets"), STAT_SLATEPPRenderTargetMem, STATGROUP_SlateMemory);
 
@@ -24,7 +25,7 @@ void FSlatePostProcessResource::Update(const FIntPoint& NewSize, EPixelFormat Re
 	{
 		if(!IsInitialized())
 		{
-			InitResource();
+			InitResource(FRHICommandListImmediate::Get());
 		}
 
 		FIntPoint NewMaxSize(FMath::Max(NewSize.X, RenderTargetSize.X), FMath::Max(NewSize.Y, RenderTargetSize.Y));
@@ -68,11 +69,11 @@ void FSlatePostProcessResource::CleanUp()
 	BeginCleanup(this);
 }
 
-void FSlatePostProcessResource::InitDynamicRHI()
+void FSlatePostProcessResource::InitRHI(FRHICommandListBase& RHICmdList)
 {
 }
 
-void FSlatePostProcessResource::ReleaseDynamicRHI()
+void FSlatePostProcessResource::ReleaseRHI()
 {
 	SET_MEMORY_STAT(STAT_SLATEPPRenderTargetMem, 0);
 

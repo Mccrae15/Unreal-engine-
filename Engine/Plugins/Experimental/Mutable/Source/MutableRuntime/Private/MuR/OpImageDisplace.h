@@ -3,6 +3,7 @@
 #pragma once
 
 #include "MuR/ImagePrivate.h"
+#include "MuR/ModelPrivate.h"
 #include "MuR/Platform.h"
 #include "MuR/ConvertData.h"
 #include "Async/ParallelFor.h"
@@ -179,11 +180,15 @@ namespace mu
 					{
 						int dx, dy;
 						MutableDecodeOffset(*pMapData, dx, dy);
-						check(x + dx >= 0 && x + dx < sizeX);
-						check(y + dy >= 0 && y + dy < sizeY);
 
-						int offset = ((y + dy) * sizeX + (x + dx));
-						FMemory::Memcpy(pResultData, &pSourceData[offset], 1);
+						// This could actually happen since we enable the crop+displace optimization
+						//check(x + dx >= 0 && x + dx < sizeX);
+						//check(y + dy >= 0 && y + dy < sizeY);
+						if ((x + dx >= 0 && x + dx < sizeX) && (y + dy >= 0 && y + dy < sizeY))
+						{
+							int offset = ((y + dy) * sizeX + (x + dx));
+							FMemory::Memcpy(pResultData, &pSourceData[offset], 1);
+						}
 
 						++pResultData;
 						++pMapData;
@@ -209,11 +214,14 @@ namespace mu
 					{
 						int dx, dy;
 						MutableDecodeOffset(*pMapData, dx, dy);
-						check(x + dx >= 0 && x + dx < sizeX);
-						check(y + dy >= 0 && y + dy < sizeY);
-
-						int offset = ((y + dy) * sizeX + (x + dx)) * 3;
-						FMemory::Memcpy(pResultData, &pSourceData[offset], 3);
+						// This could actually happen since we enable the crop+displace optimization
+						//check(x + dx >= 0 && x + dx < sizeX);
+						//check(y + dy >= 0 && y + dy < sizeY);
+						if ((x + dx >= 0 && x + dx < sizeX) && (y + dy >= 0 && y + dy < sizeY))
+						{
+							int offset = ((y + dy) * sizeX + (x + dx)) * 3;
+							FMemory::Memcpy(pResultData, &pSourceData[offset], 3);
+						}
 
 						pResultData += 3;
 						++pMapData;
@@ -228,7 +236,7 @@ namespace mu
 			default:
 			{
 				// Generic
-				int pixelSize = GetImageFormatData( pResult->GetFormat() ).m_bytesPerBlock;
+				int pixelSize = GetImageFormatData( pResult->GetFormat() ).BytesPerBlock;
 				//for ( int y=0; y<sizeY; ++y )
 				const auto ProcessRow = [
 					pSourceData, pMap, pResult, sizeX, sizeY, pixelSize
@@ -241,11 +249,14 @@ namespace mu
 					{
 						int dx, dy;
 						MutableDecodeOffset(*pMapData, dx, dy);
-						check(x + dx >= 0 && x + dx < sizeX);
-						check(y + dy >= 0 && y + dy < sizeY);
-
-						int offset = ((y + dy) * sizeX + (x + dx)) * pixelSize;
-						FMemory::Memcpy(pResultData, &pSourceData[offset], pixelSize);
+						// This could actually happen since we enable the crop+displace optimization
+						//check(x + dx >= 0 && x + dx < sizeX);
+						//check(y + dy >= 0 && y + dy < sizeY);
+						if ((x + dx >= 0 && x + dx < sizeX) && (y + dy >= 0 && y + dy < sizeY))
+						{
+							int offset = ((y + dy) * sizeX + (x + dx)) * pixelSize;
+							FMemory::Memcpy(pResultData, &pSourceData[offset], pixelSize);
+						}
 
 						pResultData += pixelSize;
 						++pMapData;
@@ -261,7 +272,7 @@ namespace mu
 
         else if (mapFormat==EImageFormat::IF_L_UBYTE_RLE )
 		{
-            int pixelSize = GetImageFormatData( pResult->GetFormat() ).m_bytesPerBlock;
+            int pixelSize = GetImageFormatData( pResult->GetFormat() ).BytesPerBlock;
 
 			const uint8* pMapData = pMap->GetData();
 			uint8* pResultData = pResult->GetData();
@@ -337,6 +348,14 @@ namespace mu
 			checkf( false, TEXT("Unsupported mask format.") );
 		}
 
+
+		// Update the relevancy data of the image for the worst case. 
+		if (pResult->m_flags & Image::EImageFlags::IF_HAS_RELEVANCY_MAP)
+		{
+			// Displace can encode at max MUTABLE_GROW_BORDER_VALUE pixels away according to "border" in MakeGrowMap.
+			pResult->RelevancyMinY = FMath::Max(int32(pResult->RelevancyMinY) - MUTABLE_GROW_BORDER_VALUE, 0);
+			pResult->RelevancyMaxY = FMath::Min(pResult->RelevancyMaxY + MUTABLE_GROW_BORDER_VALUE, pResult->GetSizeY() - 1);
+		}
 
 	}
 

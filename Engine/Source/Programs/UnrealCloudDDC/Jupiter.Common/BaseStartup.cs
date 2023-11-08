@@ -3,20 +3,24 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using System.Diagnostics.Metrics;
 using System.IdentityModel.Tokens.Jwt;
 using System.IO;
 using System.Net.Mime;
 using System.Reflection;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Amazon;
 using EpicGames.AspNet;
+using EpicGames.Horde.Storage;
 using Jupiter.Common;
+using Jupiter.Implementation;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
@@ -24,16 +28,13 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using Microsoft.Extensions.Primitives;
 using Microsoft.Net.Http.Headers;
 using Microsoft.OpenApi.Models;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Serialization;
 using Okta.AspNet.Abstractions;
 using Okta.AspNetCore;
 using OpenTelemetry.Logs;
+using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using Serilog;
@@ -92,14 +93,7 @@ namespace Jupiter
 
             services.AddSingleton(typeof(INamespacePolicyResolver), typeof(NamespacePolicyResolver));
 
-            // this is the same as invoke MvcBuilder.AddJsonOptions but with a service provider passed so we can use DI in the options creation
-            // see https://stackoverflow.com/questions/53288633/net-core-api-custom-json-resolver-based-on-request-values
-            // inject our custom json options and then pass a DI context to customize the serialization
-            services.Configure<MvcNewtonsoftJsonOptions>(OnJsonOptions);
-            services.AddTransient<IConfigureOptions<MvcNewtonsoftJsonOptions>, MvcJsonOptionsWrapper>();
-
             services.AddControllers()
-                .AddNewtonsoftJson()
                 .AddMvcOptions(options =>
                 {
                     options.InputFormatters.Add(new CbInputFormatter());
@@ -121,7 +115,7 @@ namespace Jupiter
 
                         return result;
                     };
-                });
+                }).AddJsonOptions(jsonOptions => ConfigureJsonOptions(jsonOptions.JsonSerializerOptions));
 
             services.AddHttpContextAccessor();
 
@@ -258,6 +252,11 @@ namespace Jupiter
 
             string otelServiceName = Configuration["OTEL_SERVICE_NAME"] ?? "unreal-cloud-ddc";
             string otelServiceVersion = Configuration["OTEL_SERVICE_VERSION"];
+
+            ResourceBuilder appResourceBuilder = ResourceBuilder.CreateDefault()
+                .AddService("UnrealCloudDDC", serviceNamespace: "Jupiter", serviceVersion: otelServiceVersion)
+                .AddEnvironmentVariableDetector();
+
             services.AddOpenTelemetryTracing(builder =>
             {
                 builder.AddHttpClientInstrumentation(options =>
@@ -275,13 +274,8 @@ namespace Jupiter
                 });
                 builder.AddAspNetCoreInstrumentation();
 
+                builder.SetResourceBuilder(appResourceBuilder);
                 builder.AddOtlpExporter();
-
-                builder.ConfigureResource(resourceBuilder =>
-                {
-                    resourceBuilder.AddService("UnrealCloudDDC", serviceNamespace: "Jupiter", serviceVersion: otelServiceVersion);
-                    resourceBuilder.AddEnvironmentVariableDetector();
-                });
 
                 builder.AddSource("UnrealCloudDDC", "ScyllaDB");
             });
@@ -293,6 +287,18 @@ namespace Jupiter
             });
 
             services.AddSingleton<Tracer>(CreateTracer);
+
+            services.AddSingleton<Meter>(CreateMeter);
+
+            services.AddOpenTelemetryMetrics(metricProviderBuilder =>
+            {
+                metricProviderBuilder
+                    .AddMeter("UnrealCloudDDC", "ScyllaDB")
+                    .AddOtlpExporter()
+                    .SetResourceBuilder(appResourceBuilder)
+                    .AddAspNetCoreInstrumentation()
+                    .AddHttpClientInstrumentation();
+            });
 
             services.Configure<ForwardedHeadersOptions>(options =>
             {
@@ -326,6 +332,20 @@ namespace Jupiter
             OnAddHealthChecks(services);
         }
 
+        public static void ConfigureJsonOptions(JsonSerializerOptions options)
+        {
+            options.AllowTrailingCommas = true;
+            options.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
+            options.PropertyNameCaseInsensitive = true;
+
+            options.Converters.Add(new JsonStringEnumConverter());
+        }
+
+        private Meter CreateMeter(IServiceProvider provider)
+        {
+            return new Meter("UnrealCloudDDC");
+        }
+
         private Tracer CreateTracer(IServiceProvider provider)
         {
             Tracer tracer = TracerProvider.Default.GetTracer("UnrealCloudDDC");
@@ -355,10 +375,6 @@ namespace Jupiter
         protected abstract void OnAddHealthChecks(IServiceCollection services, IHealthChecksBuilder healthChecks);
 
         protected abstract void OnAddAuthorization(AuthorizationOptions authorizationOptions, List<string> defaultSchemes);
-
-        protected virtual void OnJsonOptions(MvcNewtonsoftJsonOptions options)
-        {
-        }
 
         protected virtual void OnAddControllers(MvcOptions options)
         {
@@ -465,7 +481,7 @@ namespace Jupiter
         }
     }
 
-    public class MvcJsonOptionsWrapper : IConfigureOptions<MvcNewtonsoftJsonOptions>
+    /*public class MvcJsonOptionsWrapper : IConfigureOptions<MvcNewtonsoftJsonOptions>
     {
         readonly IServiceProvider ServiceProvider;
 
@@ -477,9 +493,9 @@ namespace Jupiter
         {
             options.SerializerSettings.ContractResolver = new FieldFilteringResolver(ServiceProvider);
         }
-    }
+    }*/
 
-    public class FieldFilteringResolver : DefaultContractResolver
+    /*public class FieldFilteringResolver : DefaultContractResolver
     {
         private readonly IHttpContextAccessor _httpContextAccessor;
 
@@ -530,7 +546,7 @@ namespace Jupiter
 
             return property;
         }
-    }
+    }*/
 
     public enum SchemeImplementations
     {
@@ -616,6 +632,11 @@ namespace Jupiter
         /// </summary>
         public bool Enabled { get; set; } = true;
 
+        /// <summary>
+        /// Can be set to require acls to be used even if auth is disabled, mostly used for testing
+        /// </summary>
+        public bool RequireAcls { get; set; } = false;
+
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "Used by the configuration system")]
         public Dictionary<string, AuthSchemeEntry> Schemes { get; set; } = new Dictionary<string, AuthSchemeEntry>();
 
@@ -687,6 +708,26 @@ namespace Jupiter
         [Required]
         [Key]
         public string CurrentSite { get; set; } = "";
+
+        /// <summary>
+        /// Used to move where domain sockets are allocated
+        /// </summary>
+        public string DomainSocketsRoot { get; set; } = "/tmp/sockets";
+
+        /// <summary>
+        /// Enable to create unix domain sockets for inter process communication
+        /// </summary>
+        public bool UseDomainSockets { get; set; } = false;
+
+        /// <summary>
+        /// Enable to change access (chmod) the sockets to allow for anyone to access them
+        /// </summary>
+        public bool ChmodDomainSockets { get; set; } = false;
+
+        /// <summary>
+        /// Assumes that any local connection should have full access, this is used only for tests
+        /// </summary>
+        public bool AssumeLocalConnectionsHasFullAccess { get; set; }
     }
 
     public class NamespaceSettings
@@ -706,5 +747,33 @@ namespace Jupiter
         public bool UseBlobIndexForExists { get; set; } = false;
         public bool UseBlobIndexForSlowExists { get; set; } = false;
         public bool IsPublicNamespace { get; set; } = true;
+        public NamespaceId? FallbackNamespace { get; set; } = null;
+        public bool PopulateFallbackNamespaceOnUpload { get; set; } = true;
+
+        public bool UseContentAddressedStorage { get; set; } = true;
+
+        public enum StoragePoolGCMethod  {
+            /// <summary>
+            /// Never run GC on this namespace
+            /// </summary>
+            None, 
+            /// <summary>
+            /// Apply last access deletion, objects not used for a duration set in GCSettings will be removed
+            /// </summary>
+            LastAccess, 
+            /// <summary>
+            /// Objects are removed after DefaultTTL time has passed, no matter if they are used or not
+            /// </summary>
+            TTL,
+            /// <summary>
+            /// Always GC references to this namespace, used to opt in to cleaning out old data
+            /// </summary>
+            Always
+        };
+
+        public StoragePoolGCMethod GcMethod { get; set; } = StoragePoolGCMethod.LastAccess;
+
+        public TimeSpan DefaultTTL { get; set; } = TimeSpan.FromDays(14);
+        public bool AllowRedirectUris { get; set; } = false;
     }
 }

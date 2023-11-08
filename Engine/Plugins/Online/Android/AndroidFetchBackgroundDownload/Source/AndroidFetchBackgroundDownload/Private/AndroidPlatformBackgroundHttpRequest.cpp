@@ -19,13 +19,23 @@ const FString FAndroidPlatformBackgroundHttpRequest::IndividualURLRetryCountKey 
 const FString FAndroidPlatformBackgroundHttpRequest::RequestPriorityKey = "RequestPriority";
 const FString FAndroidPlatformBackgroundHttpRequest::GroupIDKey = "GroupId";
 const FString FAndroidPlatformBackgroundHttpRequest::bHasCompletedKey = "bHasCompleted";
+const FString FAndroidPlatformBackgroundHttpRequest::bIsPausedKey = "bIsPaused";
 
 FAndroidPlatformBackgroundHttpRequest::FAndroidPlatformBackgroundHttpRequest()
-	: bIsCompleted(false)
-	, bIsPaused(false)
+	: bIsPaused(false)
+	, bIsCompleted(false)
 	, DownloadProgress(0)
 	, DownloadProgressSinceLastUpdateSent(0)
 {
+}
+
+void FAndroidPlatformBackgroundHttpRequest::CancelRequest()
+{
+	FAndroidPlatformBackgroundHttpManagerPtr AndroidBGManagerPtr = StaticCastSharedPtr<FAndroidPlatformBackgroundHttpManager>(FBackgroundHttpModule::Get().GetBackgroundHttpManager());
+	if (ensureAlwaysMsgf(AndroidBGManagerPtr.IsValid(), TEXT("Found a BackgroundHttpManager that wasn't the AndroidBackgroundHttpManager! This is not supported or expected!")))
+	{
+		AndroidBGManagerPtr->CancelRequest(SharedThis(this));
+	}
 }
 
 void FAndroidPlatformBackgroundHttpRequest::PauseRequest()
@@ -62,6 +72,11 @@ FString FAndroidPlatformBackgroundHttpRequest::ToJSon() const
 		const FString HasCompletedString = bIsCompletedCopy ? TEXT("true") : TEXT("false");
 		Writer->WriteValue(bHasCompletedKey, HasCompletedString);
 
+		//Write this bool as either true/false so it can be parsed in JSON as a java Boolean object
+		const bool bIsPausedCopy = FPlatformAtomics::AtomicRead(&bIsPaused);
+		const FString IsPausedString = bIsPausedCopy ? TEXT("true") : TEXT("false");
+		Writer->WriteValue(bIsPausedKey, bIsPausedCopy);
+
 		//TODO: The intent of this key is to allow multiple download notifications to be active at once and this group would mean all notifications with the same key
 		//are lumped together. For now everything is just expected to be in the same group, but if we want to support this we can implement a more meaningful groupID here.
 		Writer->WriteValue(GroupIDKey, 0);
@@ -82,7 +97,7 @@ FString FAndroidPlatformBackgroundHttpRequest::ToJSon() const
 	Writer->WriteObjectEnd();
 	Writer->Close();
 	
-	return JsonOutput;
+	return MoveTemp(JsonOutput);
 }
 
 FString FAndroidPlatformBackgroundHttpRequest::GetDestinationLocation() const

@@ -3,8 +3,8 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Text;
 using System.IO;
+using System.Text;
 using EpicGames.Core;
 using Microsoft.Extensions.Logging;
 using UnrealBuildBase;
@@ -118,41 +118,6 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
-		/// Return any custom property group lines
-		/// </summary>
-		/// <param name="InPlatform">  The UnrealTargetPlatform being built</param>
-		/// <param name="ProjectFileFormat"></param>
-		/// <returns>string    The custom property import lines for the project file; Empty string if it doesn't require one</returns>
-		public override string GetVisualStudioPlatformConfigurationType(UnrealTargetPlatform InPlatform, VCProjectFileFormat ProjectFileFormat)
-		{
-			string ConfigurationType = "";
-
-			if (AGDEInstalled)
-			{
-				ConfigurationType = "Makefile";
-			}
-			else
-			{
-				ConfigurationType = base.GetVisualStudioPlatformConfigurationType(InPlatform, ProjectFileFormat);
-			}
-
-			return ConfigurationType;
-		}
-
-		/// <summary>
-		/// Return the platform toolset string to write into the project configuration
-		/// </summary>
-		/// <param name="InPlatform">  The UnrealTargetPlatform being built</param>
-		/// <param name="InConfiguration"> The UnrealTargetConfiguration being built</param>
-		/// <param name="InProjectFileFormat">The version of Visual Studio to target</param>
-		/// <param name="ProjectFileBuilder">String builder for the project file</param>
-		/// <returns>string    The custom configuration section for the project file; Empty string if it doesn't require one</returns>
-		public override void GetVisualStudioPlatformToolsetString(UnrealTargetPlatform InPlatform, UnrealTargetConfiguration InConfiguration, VCProjectFileFormat InProjectFileFormat, StringBuilder ProjectFileBuilder)
-		{
-			VCProjectFileGenerator.AppendPlatformToolsetProperty(ProjectFileBuilder, InProjectFileFormat);
-		}
-
-		/// <summary>
 		/// Return any custom paths for VisualStudio this platform requires
 		/// This include ReferencePath, LibraryPath, LibraryWPath, IncludePath and ExecutablePath.
 		/// </summary>
@@ -193,16 +158,16 @@ namespace UnrealBuildTool
 		public override string GetVisualStudioUserFileStrings(UnrealTargetPlatform InPlatform, UnrealTargetConfiguration InConfiguration,
 			string InConditionString, TargetRules InTargetRules, FileReference TargetRulesPath, FileReference ProjectFilePath)
 		{
-			if (AGDEInstalled 
+			if (AGDEInstalled
 				&& (InPlatform == UnrealTargetPlatform.Android)
 				&& ((InTargetRules.Type == TargetRules.TargetType.Client) || (InTargetRules.Type == TargetRules.TargetType.Game)))
 			{
 				string UserFileEntry = "<PropertyGroup " + InConditionString + ">\n";
-				UserFileEntry		+= "	<AndroidLldbStartupCommands>" +
+				UserFileEntry += "	<AndroidLldbStartupCommands>" +
 												"command script import \"" + Path.Combine(Unreal.EngineDirectory.FullName, "Extras", "LLDBDataFormatters", "UEDataFormatters_2ByteChars.py") + "\";" +
 												"$(AndroidLldbStartupCommands)" +
 											"</AndroidLldbStartupCommands>\n";
-				UserFileEntry		+= "</PropertyGroup>\n";
+				UserFileEntry += "</PropertyGroup>\n";
 				return UserFileEntry;
 			}
 

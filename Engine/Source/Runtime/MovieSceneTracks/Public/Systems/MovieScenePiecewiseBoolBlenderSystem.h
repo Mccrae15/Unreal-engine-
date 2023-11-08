@@ -14,16 +14,17 @@
 class UObject;
 
 
-UCLASS()
-class MOVIESCENETRACKS_API UMovieScenePiecewiseBoolBlenderSystem : public UMovieSceneBlenderSystem
+UCLASS(MinimalAPI)
+class UMovieScenePiecewiseBoolBlenderSystem : public UMovieSceneBlenderSystem
 {
 public:
 
 	GENERATED_BODY()
 
-	UMovieScenePiecewiseBoolBlenderSystem(const FObjectInitializer& ObjInit);
+	MOVIESCENETRACKS_API UMovieScenePiecewiseBoolBlenderSystem(const FObjectInitializer& ObjInit);
 
-	virtual void OnRun(FSystemTaskPrerequisites& InPrerequisites, FSystemSubsequentTasks& Subsequents) override;
+	MOVIESCENETRACKS_API virtual void OnSchedulePersistentTasks(UE::MovieScene::IEntitySystemScheduler* TaskScheduler) override;
+	MOVIESCENETRACKS_API virtual void OnRun(FSystemTaskPrerequisites& InPrerequisites, FSystemSubsequentTasks& Subsequents) override;
 
 private:
 

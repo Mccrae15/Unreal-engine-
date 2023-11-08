@@ -101,6 +101,8 @@ public:
 		SerialNumber = 0;
 		RequestedTime = 0.0f;
 	}
+
+	bool IsFinished() const { return SpawnStatus == ESpawnRequestStatus::Failed || SpawnStatus == ESpawnRequestStatus::Succeeded; }
 };
 
 /**
@@ -194,11 +196,11 @@ protected:
 	 *  @return the next best handle to spawn. */
 	virtual FMassActorSpawnRequestHandle GetNextRequestToSpawn() const;
 
-	virtual AActor* SpawnOrRetrieveFromPool(FConstStructView SpawnRequest);
+	virtual ESpawnRequestStatus SpawnOrRetrieveFromPool(FConstStructView SpawnRequestView, TObjectPtr<AActor>& OutSpawnedActor);
 
 	/** Actual code that will spawn the actor, overridable by subclass if need to be.
 	 *  @return spawned actor if succeeded. */
-	virtual AActor* SpawnActor(FConstStructView SpawnRequest) const;
+	virtual ESpawnRequestStatus SpawnActor(FConstStructView SpawnRequestView, TObjectPtr<AActor>& OutSpawnedActor) const;
 
 	/** Go through the spawning request and spawn them until we reach the budget 
 	 * @param MaxTimeSlicePerTick is the budget in seconds allowed to do spawning */
@@ -230,7 +232,7 @@ protected:
 
 	bool bActorPoolingEnabled = true;
 
-	TMap<TSubclassOf<AActor>, TArray<AActor*>> PooledActors;
+	TMap<TSubclassOf<AActor>, TArray<TObjectPtr<AActor>>> PooledActors;
 
 	FMassEntityHandleManager_ActorSpawnRequest SpawnRequestHandleManager;
 

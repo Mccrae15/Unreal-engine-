@@ -16,7 +16,7 @@
 
 class UAbilitySystemComponent;
 class UGameplayAbility;
-
+struct FGameplayEventData;
 
 /** Describes the status of activating this ability, this is updated as prediction is handled */
 UENUM(BlueprintType)
@@ -93,6 +93,9 @@ struct FGameplayAbilitySpecDef
 	/** This handle can be set if the SpecDef is used to create a real FGameplaybilitySpec */
 	UPROPERTY()
 	FGameplayAbilitySpecHandle	AssignedHandle;
+
+	bool operator==(const FGameplayAbilitySpecDef& Other) const;
+	bool operator!=(const FGameplayAbilitySpecDef& Other) const;
 };
 
 /**
@@ -163,6 +166,14 @@ struct GAMEPLAYABILITIES_API FGameplayAbilitySpec : public FFastArraySerializerI
 {
 	GENERATED_USTRUCT_BODY()
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	FGameplayAbilitySpec(const FGameplayAbilitySpec&) = default;
+	FGameplayAbilitySpec(FGameplayAbilitySpec&&) = default;
+	FGameplayAbilitySpec& operator=(const FGameplayAbilitySpec&) = default;
+	FGameplayAbilitySpec& operator=(FGameplayAbilitySpec&&) = default;
+	~FGameplayAbilitySpec() = default;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	FGameplayAbilitySpec()
 		: Ability(nullptr), Level(1), InputID(INDEX_NONE), SourceObject(nullptr), ActiveCount(0), InputPressed(false), RemoveAfterActivation(false), PendingRemove(false), bActivateOnce(false)
 	{ }
@@ -216,6 +227,9 @@ struct GAMEPLAYABILITIES_API FGameplayAbilitySpec : public FFastArraySerializerI
 	UPROPERTY(NotReplicated)
 	uint8 bActivateOnce : 1;
 
+	/** Cached GameplayEventData if this ability was pending for add and activate due to scope lock */
+	TSharedPtr<FGameplayEventData> GameplayEventData = nullptr;
+
 	/** Activation state of this ability. This is not replicated since it needs to be overwritten locally on clients during prediction. */
 	UPROPERTY(NotReplicated)
 	FGameplayAbilityActivationInfo	ActivationInfo;
@@ -232,7 +246,10 @@ struct GAMEPLAYABILITIES_API FGameplayAbilitySpec : public FFastArraySerializerI
 	UPROPERTY()
 	TArray<TObjectPtr<UGameplayAbility>> ReplicatedInstances;
 
-	/** Handle to GE that granted us (usually invalid) */
+	/**
+	 * Handle to GE that granted us (usually invalid). FActiveGameplayEffectHandles are not synced across the network and this is valid only on Authority.
+	 * If you need FGameplayAbilitySpec -> FActiveGameplayEffectHandle, then use AbilitySystemComponent::FindActiveGameplayEffectHandle.
+	 */
 	UPROPERTY(NotReplicated)
 	FActiveGameplayEffectHandle	GameplayEffectHandle;
 

@@ -6,9 +6,11 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionTextureCoordinate.h"
 #include "Materials/MaterialExpressionTextureSample.h"
+#include "Materials/MaterialInstance.h"
 #include "MuCOE/CustomizableObjectEditor_Deprecated.h"
 #include "MuCOE/EdGraphSchema_CustomizableObject.h"
 #include "MuCOE/GraphTraversal.h"
+#include "MuCOE/UnrealEditorPortabilityHelpers.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeCopyMaterial.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeSkeletalMesh.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeStaticMesh.h"
@@ -32,22 +34,22 @@ const TArray<EMaterialParameterType> UCustomizableObjectNodeMaterial::ParameterT
 	EMaterialParameterType::Scalar };
 
 
-bool UCustomizableObjectNodeMaterialRemapPinsByName::Equal(const UEdGraphPin& OldPin, const UEdGraphPin& NewPin) const
+bool UCustomizableObjectNodeMaterialRemapPinsByName::Equal(const UCustomizableObjectNode& Node, const UEdGraphPin& OldPin, const UEdGraphPin& NewPin) const
 {
-	const UCustomizableObjectNodeMaterialPinDataParameter* PinDataOldPin = Cast<UCustomizableObjectNodeMaterialPinDataParameter>(Node->GetPinData(OldPin));
-	const UCustomizableObjectNodeMaterialPinDataParameter* PinDataNewPin = Cast<UCustomizableObjectNodeMaterialPinDataParameter>(Node->GetPinData(NewPin));
+	const UCustomizableObjectNodeMaterialPinDataParameter* PinDataOldPin = Cast<UCustomizableObjectNodeMaterialPinDataParameter>(Node.GetPinData(OldPin));
+	const UCustomizableObjectNodeMaterialPinDataParameter* PinDataNewPin = Cast<UCustomizableObjectNodeMaterialPinDataParameter>(Node.GetPinData(NewPin));
 	if (PinDataOldPin && PinDataNewPin)
 	{
 		return PinDataOldPin->ParameterId == PinDataNewPin->ParameterId;
 	}
 	else
 	{
-		return Super::Equal(OldPin, NewPin);
+		return Super::Equal(Node, OldPin, NewPin);
 	}
 }
 
 
-void UCustomizableObjectNodeMaterialRemapPinsByName::RemapPins(const TArray<UEdGraphPin*>& OldPins, const TArray<UEdGraphPin*>& NewPins, TMap<UEdGraphPin*, UEdGraphPin*>& PinsToRemap, TArray<UEdGraphPin*>& PinsToOrphan)
+void UCustomizableObjectNodeMaterialRemapPinsByName::RemapPins(const UCustomizableObjectNode& Node, const TArray<UEdGraphPin*>& OldPins, const TArray<UEdGraphPin*>& NewPins, TMap<UEdGraphPin*, UEdGraphPin*>& PinsToRemap, TArray<UEdGraphPin*>& PinsToOrphan)
 {
 	for (UEdGraphPin* OldPin : OldPins)
 	{
@@ -55,7 +57,7 @@ void UCustomizableObjectNodeMaterialRemapPinsByName::RemapPins(const TArray<UEdG
 
 		for (UEdGraphPin* NewPin : NewPins)
 		{
-			if (Equal(*OldPin, *NewPin))
+			if (Equal(Node, *OldPin, *NewPin))
 			{
 				bFound = true;
 
@@ -64,7 +66,7 @@ void UCustomizableObjectNodeMaterialRemapPinsByName::RemapPins(const TArray<UEdG
 			}
 		}
 
-		if (!bFound && (OldPin->LinkedTo.Num() || HasSavedPinData(*OldPin)))
+		if (!bFound && (OldPin->LinkedTo.Num() || HasSavedPinData(Node, *OldPin)))
 		{
 			PinsToOrphan.Add(OldPin);
 		}
@@ -72,9 +74,9 @@ void UCustomizableObjectNodeMaterialRemapPinsByName::RemapPins(const TArray<UEdG
 }
 
 
-bool UCustomizableObjectNodeMaterialRemapPinsByName::HasSavedPinData(const UEdGraphPin &Pin) const
+bool UCustomizableObjectNodeMaterialRemapPinsByName::HasSavedPinData(const UCustomizableObjectNode& Node, const UEdGraphPin &Pin) const
 {
-	if (const UCustomizableObjectNodeMaterialPinDataParameter* PinData = Cast<UCustomizableObjectNodeMaterialPinDataParameter>(Node->GetPinData(Pin)))
+	if (const UCustomizableObjectNodeMaterialPinDataParameter* PinData = Cast<UCustomizableObjectNodeMaterialPinDataParameter>(Node.GetPinData(Pin)))
 	{
 		return !PinData->IsDefault();
 	}
@@ -137,6 +139,7 @@ int32 UCustomizableObjectNodeMaterial::GetExpressionTextureCoordinate(UMaterial*
 	}
 }
 
+
 EPinMode UCustomizableObjectNodeMaterial::NodePinModeToImagePinMode(const ENodePinMode NodePinMode)
 {
 	switch (NodePinMode)
@@ -154,23 +157,16 @@ EPinMode UCustomizableObjectNodeMaterial::NodePinModeToImagePinMode(const ENodeP
 
 EPinMode UCustomizableObjectNodeMaterial::GetImagePinMode(const UEdGraphPin& Pin) const
 {
-	if (FollowInputPin(Pin))
+	const UEdGraphSchema_CustomizableObject* Schema = GetDefault<UEdGraphSchema_CustomizableObject>();
+
+	if (UEdGraphPin *FollowedPin = FollowInputPin(Pin))
 	{
-		return EPinMode::Mutable;
-	}
-	else if (const UEdGraphPin* MaterialAssetPin = GetMaterialAssetPin())
-	{
-		if (const UEdGraphPin* ConnectedPin = FollowInputPin(*MaterialAssetPin))
+		if (FollowedPin->PinType.PinCategory == Schema->PC_PassThroughImage)
 		{
-			if (const UCustomizableObjectNodeTable* TableNode = Cast<UCustomizableObjectNodeTable>(ConnectedPin->GetOwningNode()))
-			{
-				const FGuid ParameterGuid = GetPinData<UCustomizableObjectNodeMaterialPinDataImage>(Pin).ParameterId;
-				if (TableNode->ForceImageMutableMode(ConnectedPin, ParameterGuid))
-				{
-					return EPinMode::Mutable;
-				}
-			}
+			return EPinMode::Passthrough;
 		}
+
+		return EPinMode::Mutable;
 	}
 	
 	switch (GetPinData<UCustomizableObjectNodeMaterialPinDataImage>(Pin).GetPinMode())
@@ -183,7 +179,7 @@ EPinMode UCustomizableObjectNodeMaterial::GetImagePinMode(const UEdGraphPin& Pin
 		return EPinMode::Passthrough;
 	default:
 		check(false); // Missing case.
-		return EPinMode::Mutable;		
+		return EPinMode::Mutable;
 	}
 }
 
@@ -230,11 +226,6 @@ void UCustomizableObjectNodeMaterialPinDataImage::PostEditChangeProperty(FProper
 
 void UCustomizableObjectNodeMaterial::AllocateDefaultPins(UCustomizableObjectNodeRemapPins* RemapPins)
 {
-	if (UCustomizableObjectNodeMaterialRemapPinsByName* RemapPinsByNameCustom = Cast<UCustomizableObjectNodeMaterialRemapPinsByName>(RemapPins))
-	{
-		RemapPinsByNameCustom->Node = this;
-	}
-	
 	const UEdGraphSchema_CustomizableObject* Schema = GetDefault<UEdGraphSchema_CustomizableObject>();
 
 	{
@@ -467,7 +458,65 @@ void UCustomizableObjectNodeMaterial::BackwardsCompatibleFixup()
 	{
 		Super::ReconstructNode();
 	}
+
+	if (CustomizableObjectCustomVersion < FCustomizableObjectCustomVersion::AddedTableMaterialSwitch)
+	{
+		UMaterialInstance* DefaultPinValue = nullptr;
+
+		if (const UEdGraphPin* MaterialAssetPin = GetMaterialAssetPin())
+		{
+			if (const UEdGraphPin* ConnectedPin = FollowInputPin(*MaterialAssetPin))
+			{
+				if (const UCustomizableObjectNodeTable* TableNode = Cast<UCustomizableObjectNodeTable>(ConnectedPin->GetOwningNode()))
+				{
+					DefaultPinValue = TableNode->GetColumnDefaultAssetByType<UMaterialInstance>(ConnectedPin);
+				}
+			}
+		}
+
+		if (DefaultPinValue && DefaultPinValue->TextureParameterValues.Num())
+		{
+			const uint32 NumTextureParameters = GetNumParameters(EMaterialParameterType::Texture);
+			for (uint32 ImageIndex = 0; ImageIndex < NumTextureParameters; ++ImageIndex)
+			{
+				if (const UEdGraphPin* ImagePin = GetParameterPin(EMaterialParameterType::Texture, ImageIndex))
+				{
+					FGuid ParameterId = GetParameterId(EMaterialParameterType::Texture, ImageIndex);
+
+					TArray<FMaterialParameterInfo> TextureParameterInfo;
+					TArray<FGuid> TextureGuids;
+
+					// Getting parent's texture infos
+					DefaultPinValue->GetMaterial()->GetAllTextureParameterInfo(TextureParameterInfo, TextureGuids);
+
+					int32 TextureIndex = TextureGuids.Find(ParameterId);
+
+					if (TextureIndex == INDEX_NONE)
+					{
+						continue;
+					}
+
+					FName TextureName = TextureParameterInfo[TextureIndex].Name;
+
+					// Checking if the pin's texture has been modified in the material instance
+					for (const FTextureParameterValue Texture : DefaultPinValue->TextureParameterValues)
+					{
+						if (TextureName == Texture.ParameterInfo.Name)
+						{
+							if (UCustomizableObjectNodeMaterialPinDataImage* PinDataImage = Cast<UCustomizableObjectNodeMaterialPinDataImage>(GetPinData(*ImagePin)))
+							{
+								PinDataImage->PinMode = EPinMode::Mutable;
+
+								PinsImagePinMode.Add(ImagePin->PinId, GetImagePinMode(*ImagePin));
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 }
+
 
 void UCustomizableObjectNodeMaterial::PostBackwardsCompatibleFixup()
 {
@@ -691,7 +740,7 @@ TArray<UCustomizableObjectLayout*> UCustomizableObjectNodeMaterial::GetLayouts()
 			{
 				if (const UCustomizableObjectNodeSkeletalMesh* MeshNode = Cast<UCustomizableObjectNodeSkeletalMesh>(SourceMeshPin->GetOwningNode()))
 				{
-					Result = MeshNode->GetLayouts(SourceMeshPin);
+					Result = MeshNode->GetLayouts(*SourceMeshPin);
 				}
 				else if (const UCustomizableObjectNodeTable* TableNode = Cast<UCustomizableObjectNodeTable>(SourceMeshPin->GetOwningNode()))
 				{
@@ -754,7 +803,11 @@ int32 UCustomizableObjectNodeMaterial::GetNumParameters(const EMaterialParameter
 {
 	if (Material)
 	{
+#if ENGINE_MAJOR_VERSION==5 && ENGINE_MINOR_VERSION>=1
 		return Material->GetCachedExpressionData().GetParameterTypeEntry(Type).ParameterInfoSet.Num();
+#else
+		return Material->GetCachedExpressionData().Parameters.GetNumParameters(Type);
+#endif
 	}
 	else
 	{
@@ -767,6 +820,7 @@ FGuid UCustomizableObjectNodeMaterial::GetParameterId(const EMaterialParameterTy
 {
 	const FMaterialCachedExpressionData& Data = Material->GetCachedExpressionData();
 
+#if ENGINE_MAJOR_VERSION==5 && ENGINE_MINOR_VERSION>=1
 	if (Data.EditorOnlyData)
 	{
 		if (Data.EditorOnlyData->EditorEntries[(int32)Type].EditorInfo.Num() != 0)
@@ -774,6 +828,10 @@ FGuid UCustomizableObjectNodeMaterial::GetParameterId(const EMaterialParameterTy
 			return Data.EditorOnlyData->EditorEntries[(int32)Type].EditorInfo[ParameterIndex].ExpressionGuid;
 		}
 	}
+#else
+	const FMaterialCachedParameterEntry& Entry = Data.Parameters.GetParameterTypeEntry(Type);
+	return Entry.EditorInfo[ParameterIndex].ExpressionGuid;
+#endif
 	
 	return FGuid();
 }
@@ -781,6 +839,13 @@ FGuid UCustomizableObjectNodeMaterial::GetParameterId(const EMaterialParameterTy
 
 FName UCustomizableObjectNodeMaterial::GetParameterName(const EMaterialParameterType Type, const int32 ParameterIndex) const
 {
+	if (!Material)
+	{
+		return FName();
+	}
+
+#if ENGINE_MAJOR_VERSION==5 && ENGINE_MINOR_VERSION>=1
+
 	const FMaterialCachedParameterEntry& Entry = Material->GetCachedExpressionData().GetParameterTypeEntry(Type);
 
 	for (TSet<FMaterialParameterInfo>::TConstIterator It(Entry.ParameterInfoSet); It; ++It)
@@ -796,12 +861,29 @@ FName UCustomizableObjectNodeMaterial::GetParameterName(const EMaterialParameter
 	// The parameter should exist
 	check(false);
 
+#else
+
+	TArray<FGuid> ParameterIds;
+	TArray<FMaterialParameterInfo> ParameterInfo;
+	Material->GetAllParameterInfoOfType(Type, ParameterInfo, ParameterIds);
+
+	return ParameterInfo.IsValidIndex(ParameterIndex) ? ParameterInfo[ParameterIndex].Name : FName();
+
+#endif
+
 	return FName();
 }
 
 
 int32 UCustomizableObjectNodeMaterial::GetParameterLayerIndex(const EMaterialParameterType Type, const int32 ParameterIndex) const
 {
+	if (!Material)
+	{
+		return -1;
+	}
+
+#if ENGINE_MAJOR_VERSION==5 && ENGINE_MINOR_VERSION>=1
+
 	const FMaterialCachedParameterEntry& Entry = Material->GetCachedExpressionData().GetParameterTypeEntry(Type);
 
 	for (TSet<FMaterialParameterInfo>::TConstIterator It(Entry.ParameterInfoSet); It; ++It)
@@ -817,60 +899,102 @@ int32 UCustomizableObjectNodeMaterial::GetParameterLayerIndex(const EMaterialPar
 	// The parameter should exist
 	check(false);
 
+#else
+
+	TArray<FGuid> ParameterIds;
+	TArray<FMaterialParameterInfo> ParameterInfo;
+	Material->GetAllParameterInfoOfType(Type, ParameterInfo, ParameterIds);
+
+	return ParameterInfo.IsValidIndex(ParameterIndex) ? ParameterInfo[ParameterIndex].Index : -1;
+
+#endif
+
 	return -1;
 }
 
 
 FText UCustomizableObjectNodeMaterial::GetParameterLayerName(const EMaterialParameterType Type, const int32 ParameterIndex) const
 {
-	const FMaterialCachedParameterEntry& Entry = Material->GetCachedExpressionData().GetParameterTypeEntry(Type);
-
-	for (TSet<FMaterialParameterInfo>::TConstIterator It(Entry.ParameterInfoSet); It; ++It)
+	ensure(Material);
+	if (!Material)
 	{
-		const int32 IteratorIndex = It.GetId().AsInteger();
-
-		if (IteratorIndex == ParameterIndex)
-		{
-			FMaterialLayersFunctions LayersValue;
-			Material->GetMaterialLayers(LayersValue);
-
-			return LayersValue.EditorOnly.LayerNames[(*It).Index];
-		}
+		return FText();
 	}
-	
-	// The parameter should exist
-	check(false);
 
-	return FText();
+	int32 LayerIndex = GetParameterLayerIndex(Type,ParameterIndex);
+
+	FMaterialLayersFunctions LayersValue;
+	Material->GetMaterialLayers(LayersValue);
+
+#if ENGINE_MAJOR_VERSION==5 && ENGINE_MINOR_VERSION>=1
+
+	return LayersValue.EditorOnly.LayerNames.IsValidIndex(LayerIndex) ? LayersValue.EditorOnly.LayerNames[LayerIndex] : FText();
+
+#else
+
+	return LayersValue.LayerNames.IsValidIndex(LayerIndex) ? LayersValue.LayerNames[LayerIndex] : FText();
+
+#endif
 }
 
 
 bool UCustomizableObjectNodeMaterial::HasParameter(const FGuid& ParameterId) const
 {
-	if (Material)
+	ensure(Material);
+	if (!Material)
 	{
-		for (const EMaterialParameterType Type : ParameterTypes)
+		return false;
+	}
+
+#if ENGINE_MAJOR_VERSION==5 && ENGINE_MINOR_VERSION>=1
+
+	for (const EMaterialParameterType Type : ParameterTypes)
+	{
+		const FMaterialCachedExpressionData& Data = Material->GetCachedExpressionData();
+		const FMaterialCachedParameterEntry& Entry = Data.GetParameterTypeEntry(Type);
+
+		if (!Data.EditorOnlyData || Data.EditorOnlyData->EditorEntries[(int32)Type].EditorInfo.IsEmpty())
 		{
-			const FMaterialCachedExpressionData& Data = Material->GetCachedExpressionData();
-			const FMaterialCachedParameterEntry& Entry = Data.GetParameterTypeEntry(Type);
+			continue;
+		}
 
-			if (!Data.EditorOnlyData || Data.EditorOnlyData->EditorEntries[(int32)Type].EditorInfo.IsEmpty())
+		for (TSet<FMaterialParameterInfo>::TConstIterator It(Entry.ParameterInfoSet); It; ++It)
+		{
+			const int32 IteratorIndex = It.GetId().AsInteger();
+			const FGuid& ParamGUid = Data.EditorOnlyData->EditorEntries[(int32)Type].EditorInfo[IteratorIndex].ExpressionGuid;
+
+			if (ParamGUid == ParameterId)
 			{
-				continue;
-			}
-
-			for (TSet<FMaterialParameterInfo>::TConstIterator It(Entry.ParameterInfoSet); It; ++It)
-			{
-				const int32 IteratorIndex = It.GetId().AsInteger();
-				const FGuid& ParamGUid = Data.EditorOnlyData->EditorEntries[(int32)Type].EditorInfo[IteratorIndex].ExpressionGuid;
-
-				if (ParamGUid == ParameterId)
-				{
-					return true;
-				}
+				return true;
 			}
 		}
 	}
+
+#else
+
+	const FMaterialCachedExpressionData& Data = Material->GetCachedExpressionData();
+	for (const FMaterialCachedParameterEntry& Entry : Data.Parameters.RuntimeEntries)
+	{
+		for (const FMaterialCachedParameterEditorInfo& Info : Entry.EditorInfo)
+		{
+			if (Info.ExpressionGuid == ParameterId)
+			{
+				return true;
+			}
+		}
+	}
+	for (const FMaterialCachedParameterEntry& Entry : Data.Parameters.EditorOnlyEntries)
+	{
+		for (const FMaterialCachedParameterEditorInfo& Info : Entry.EditorInfo)
+		{
+			if (Info.ExpressionGuid == ParameterId)
+			{
+				return true;
+			}
+		}
+	}
+
+#endif
 
 	return false;
 }
@@ -916,7 +1040,7 @@ TSharedPtr<SWidget> UCustomizableObjectNodeMaterial::CustomizePinDetails(UEdGrap
 {
 	if (UCustomizableObjectNodeMaterialPinDataImage* PinData = Cast<UCustomizableObjectNodeMaterialPinDataImage>(GetPinData(Pin)))
 	{
-		return SNew(SPinViewerNodeMaterialPinImageDetails).PinData(PinData);
+		return SNew(SPinViewerNodeMaterialPinImageDetails).Pin(&Pin).PinData(PinData);
 	}
 	else
 	{
@@ -1125,6 +1249,20 @@ void UCustomizableObjectNodeMaterial::PostPasteNode()
 {
 	Super::PostPasteNode();
 	SetDefaultMaterial();
+}
+
+
+bool UCustomizableObjectNodeMaterial::CanConnect(const UEdGraphPin* InOwnedInputPin, const UEdGraphPin* InOutputPin, bool& bOutIsOtherNodeBlocklisted, bool& bOutArePinsCompatible) const
+{
+	const UEdGraphSchema_CustomizableObject* Schema = GetDefault<UEdGraphSchema_CustomizableObject>();
+
+	if (InOwnedInputPin && InOwnedInputPin->PinType.PinCategory == Schema->PC_Image &&
+		InOutputPin && InOutputPin->PinType.PinCategory == Schema->PC_PassThroughImage)
+	{
+		return true;
+	}
+	
+	return Super::CanConnect(InOwnedInputPin, InOutputPin, bOutIsOtherNodeBlocklisted, bOutArePinsCompatible);
 }
 
 

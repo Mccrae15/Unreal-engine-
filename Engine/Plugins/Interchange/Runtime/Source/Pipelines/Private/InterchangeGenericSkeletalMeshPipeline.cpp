@@ -87,18 +87,23 @@ void UInterchangeGenericMeshPipeline::ExecutePreImportPipelineSkeletalMesh()
 
 #if WITH_EDITOR
 	//Make sure the generic pipeline we cover all skeletalmesh build settings by asserting when we import
-	{
-		TArray<const UClass*> Classes;
-		Classes.Add(UInterchangeGenericCommonMeshesProperties::StaticClass());
-		Classes.Add(UInterchangeGenericMeshPipeline::StaticClass());
-		if (!ensure(DoClassesIncludeAllEditableStructProperties(Classes, FSkeletalMeshBuildSettings::StaticStruct())))
+	Async(EAsyncExecution::TaskGraphMainThread, []()
 		{
-			UE_LOG(LogInterchangePipeline, Log, TEXT("UInterchangeGenericMeshPipeline: The generic pipeline does not cover all skeletal mesh build options."));
-		}
-	}
+			static bool bVerifyBuildProperties = false;
+			if (!bVerifyBuildProperties)
+			{
+				bVerifyBuildProperties = true;
+				TArray<const UClass*> Classes;
+				Classes.Add(UInterchangeGenericCommonMeshesProperties::StaticClass());
+				Classes.Add(UInterchangeGenericMeshPipeline::StaticClass());
+				if (!DoClassesIncludeAllEditableStructProperties(Classes, FSkeletalMeshBuildSettings::StaticStruct()))
+				{
+					UE_LOG(LogInterchangePipeline, Log, TEXT("UInterchangeGenericMeshPipeline: The generic pipeline does not cover all skeletal mesh build options."));
+				}
+			}
+		});
 #endif
 
-	const bool bConvertStaticMeshToSkeletalMesh = (CommonMeshesProperties->ForceAllMeshAsType == EInterchangeForceMeshType::IFMT_SkeletalMesh);
 	TMap<FString, TArray<FString>> SkeletalMeshFactoryDependencyOrderPerSkeletonRootNodeUid;
 
 	auto SetSkeletalMeshDependencies = [&SkeletalMeshFactoryDependencyOrderPerSkeletonRootNodeUid](const FString& JointNodeUid, UInterchangeSkeletalMeshFactoryNode* SkeletalMeshFactoryNode)
@@ -126,7 +131,7 @@ void UInterchangeGenericMeshPipeline::ExecutePreImportPipelineSkeletalMesh()
 			{
 				const FString& SkeletonRootUid = SkeletonRootUidAndMeshUids.Key;
 				//Every iteration is a skeletalmesh asset that combine all MeshInstances sharing the same skeleton root node
-				UInterchangeSkeletonFactoryNode* SkeletonFactoryNode = CreateSkeletonFactoryNode(SkeletonRootUid);
+				UInterchangeSkeletonFactoryNode* SkeletonFactoryNode = CommonSkeletalMeshesAndAnimationsProperties->CreateSkeletonFactoryNode(BaseNodeContainer, SkeletonRootUid);
 				//The MeshUids can represent a SceneNode pointing on a MeshNode or directly a MeshNode;
 				TMap<int32, TArray<FString>> MeshUidsPerLodIndex;
 				const TArray<FString>& MeshUids = SkeletonRootUidAndMeshUids.Value;
@@ -168,18 +173,10 @@ void UInterchangeGenericMeshPipeline::ExecutePreImportPipelineSkeletalMesh()
 			return bFoundInstances;
 		};
 
-		PipelineMeshesUtilities->GetCombinedSkinnedMeshInstances(BaseNodeContainer, MeshUidsPerSkeletonRootUid, bConvertStaticMeshToSkeletalMesh);
-		bool bUseMeshInstance = true;
-		bool bFoundMeshes = CreatePerSkeletonRootUidCombinedSkinnedMesh(bUseMeshInstance);
 
-		if (!bFoundMeshes)
-		{
-			//Fall back to support mesh not reference by any scene node
-			MeshUidsPerSkeletonRootUid.Empty();
-			PipelineMeshesUtilities->GetCombinedSkinnedMeshGeometries(MeshUidsPerSkeletonRootUid);
-			bUseMeshInstance = false;
-			CreatePerSkeletonRootUidCombinedSkinnedMesh(bUseMeshInstance);
-		}
+		PipelineMeshesUtilities->GetCombinedSkinnedMeshInstances(MeshUidsPerSkeletonRootUid);
+		bool bUseMeshInstance = true;
+		CreatePerSkeletonRootUidCombinedSkinnedMesh(bUseMeshInstance);
 	}
 	else
 	{
@@ -202,10 +199,17 @@ void UInterchangeGenericMeshPipeline::ExecutePreImportPipelineSkeletalMesh()
 				SkeletonRootUid = (bUseInstanceMesh ? PipelineMeshesUtilities->GetMeshInstanceSkeletonRootUid(MeshUid) : PipelineMeshesUtilities->GetMeshGeometrySkeletonRootUid(MeshUid));
 				if (SkeletonRootUid.IsEmpty())
 				{
-					//Log an error
-					continue;
+					if (CommonSkeletalMeshesAndAnimationsProperties->bConvertStaticsWithMorphTargetsToSkeletals)
+					{
+						SkeletonRootUid = MeshUid;
+					}
+					else
+					{
+						//Log an error
+						continue;
+					}
 				}
-				UInterchangeSkeletonFactoryNode* SkeletonFactoryNode = CreateSkeletonFactoryNode(SkeletonRootUid);
+				UInterchangeSkeletonFactoryNode* SkeletonFactoryNode = CommonSkeletalMeshesAndAnimationsProperties->CreateSkeletonFactoryNode(BaseNodeContainer, SkeletonRootUid);
 				if (bUseInstanceMesh)
 				{
 					const FInterchangeMeshInstance& MeshInstance = PipelineMeshesUtilities->GetMeshInstanceByUid(MeshUid);
@@ -239,76 +243,10 @@ void UInterchangeGenericMeshPipeline::ExecutePreImportPipelineSkeletalMesh()
 			return bFoundInstances;
 		};
 		
-		PipelineMeshesUtilities->GetAllSkinnedMeshInstance(MeshUids, bConvertStaticMeshToSkeletalMesh);
+		PipelineMeshesUtilities->GetAllSkinnedMeshInstance(MeshUids);
 		bool bUseMeshInstance = true;
-		bool bFoundMeshes = CreatePerSkeletonRootUidSkinnedMesh(bUseMeshInstance);
-
-		if (!bFoundMeshes)
-		{
-			MeshUids.Empty();
-			PipelineMeshesUtilities->GetAllSkinnedMeshGeometry(MeshUids);
-			bUseMeshInstance = false;
-			CreatePerSkeletonRootUidSkinnedMesh(bUseMeshInstance);
-		}
+		CreatePerSkeletonRootUidSkinnedMesh(bUseMeshInstance);
 	}
-}
-
-
-UInterchangeSkeletonFactoryNode* UInterchangeGenericMeshPipeline::CreateSkeletonFactoryNode(const FString& RootJointUid)
-{
-	check(CommonSkeletalMeshesAndAnimationsProperties.IsValid());
-	const UInterchangeBaseNode* RootJointNode = BaseNodeContainer->GetNode(RootJointUid);
-	if (!RootJointNode)
-	{
-		return nullptr;
-	}
-
-	FString DisplayLabel = RootJointNode->GetDisplayLabel() + TEXT("_Skeleton");
-	FString SkeletonUid = UInterchangeFactoryBaseNode::BuildFactoryNodeUid(RootJointNode->GetUniqueID());
-
-	UInterchangeSkeletonFactoryNode* SkeletonFactoryNode = nullptr;
-	if (BaseNodeContainer->IsNodeUidValid(SkeletonUid))
-	{
-		//The node already exist, just return it
-		SkeletonFactoryNode = Cast<UInterchangeSkeletonFactoryNode>(BaseNodeContainer->GetFactoryNode(SkeletonUid));
-		if (!ensure(SkeletonFactoryNode))
-		{
-			//Log an error
-			return nullptr;
-		}
-		FString ExistingSkeletonRootJointUid;
-		SkeletonFactoryNode->GetCustomRootJointUid(ExistingSkeletonRootJointUid);
-		if (!ensure(ExistingSkeletonRootJointUid.Equals(RootJointUid)))
-		{
-			//Log an error
-			return nullptr;
-		}
-	}
-	else
-	{
-		SkeletonFactoryNode = NewObject<UInterchangeSkeletonFactoryNode>(BaseNodeContainer, NAME_None);
-		if (!ensure(SkeletonFactoryNode))
-		{
-			return nullptr;
-		}
-		SkeletonFactoryNode->InitializeSkeletonNode(SkeletonUid, DisplayLabel, USkeleton::StaticClass()->GetName());
-		SkeletonFactoryNode->SetCustomRootJointUid(RootJointNode->GetUniqueID());
-		SkeletonFactoryNode->SetCustomUseTimeZeroForBindPose(CommonSkeletalMeshesAndAnimationsProperties->bUseT0AsRefPose);
-		BaseNodeContainer->AddNode(SkeletonFactoryNode);
-	}
-
-	//If we have a specified skeleton
-	if (CommonSkeletalMeshesAndAnimationsProperties->Skeleton.IsValid())
-	{
-		SkeletonFactoryNode->SetEnabled(false);
-		SkeletonFactoryNode->SetCustomReferenceObject(FSoftObjectPath(CommonSkeletalMeshesAndAnimationsProperties->Skeleton.Get()));
-	}
-#if WITH_EDITOR
-	//Iterate all joints to set the meta data value in the skeleton node
-	UE::Interchange::Private::FSkeletonHelper::RecursiveAddSkeletonMetaDataValues(BaseNodeContainer, SkeletonFactoryNode, RootJointUid);
-#endif //WITH_EDITOR
-
-	return SkeletonFactoryNode;
 }
 
 UInterchangeSkeletalMeshFactoryNode* UInterchangeGenericMeshPipeline::CreateSkeletalMeshFactoryNode(const FString& RootJointUid, const TMap<int32, TArray<FString>>& MeshUidsPerLodIndex)
@@ -424,7 +362,7 @@ UInterchangeSkeletalMeshFactoryNode* UInterchangeGenericMeshPipeline::CreateSkel
 
 		//TODO: support skeleton helper in runtime
 #if WITH_EDITOR
-		bSkeletonCompatible = UE::Interchange::Private::FSkeletonHelper::IsCompatibleSkeleton(CommonSkeletalMeshesAndAnimationsProperties->Skeleton.Get(), RootJointNode->GetUniqueID(), BaseNodeContainer);
+		bSkeletonCompatible = UE::Interchange::Private::FSkeletonHelper::IsCompatibleSkeleton(CommonSkeletalMeshesAndAnimationsProperties->Skeleton.Get(), RootJointNode->GetUniqueID(), BaseNodeContainer, CommonSkeletalMeshesAndAnimationsProperties->bConvertStaticsWithMorphTargetsToSkeletals || CommonMeshesProperties->ForceAllMeshAsType == EInterchangeForceMeshType::IFMT_SkeletalMesh);
 #endif
 		if (bSkeletonCompatible)
 		{

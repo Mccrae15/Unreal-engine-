@@ -7,6 +7,7 @@
 #include "ScreenPass.h"
 #include "OverridePassSequence.h"
 
+class FSceneUniformBuffer;
 namespace Nanite
 {
 	struct FRasterResults;
@@ -27,6 +28,11 @@ struct FSelectionOutlineInputs
 	FSceneTextureShaderParameters SceneTextures;
 };
 
-FScreenPassTexture AddSelectionOutlinePass(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FSelectionOutlineInputs& Inputs, const Nanite::FRasterResults *NaniteRasterResults);
+FScreenPassTexture AddSelectionOutlinePass(
+	FRDGBuilder& GraphBuilder,
+	const FViewInfo& View,
+	FSceneUniformBuffer &SceneUniformBuffer,
+	const FSelectionOutlineInputs& Inputs,
+	const Nanite::FRasterResults* NaniteRasterResults);
 
 #endif

@@ -45,7 +45,6 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OculusXR|Movement")
 	EOculusXRBodyTrackingMode BodyTrackingMode;
 
-
 	/**
 	 * The bone name associated with each bone ID.
 	 */
@@ -72,5 +71,4 @@ private:
 
 	// Stop the tracker just once.
 	static int TrackingInstanceCount;
-
 };

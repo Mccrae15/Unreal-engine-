@@ -81,6 +81,7 @@ public:
 		, _SupportDynamicSliderMinValue(false)
 		, _SliderExponent(1.f)
 		, _EnableWheel(true)
+		, _BroadcastValueChangesPerKey(false)
 		, _Font(FCoreStyle::Get().GetFontStyle(TEXT("NormalFont")))
 		, _ContentPadding(FMargin(2.0f, 1.0f))
 		, _OnValueChanged()
@@ -131,6 +132,8 @@ public:
 		SLATE_ATTRIBUTE(NumericType, SliderExponentNeutralValue)
 		/** Whether this spin box should have mouse wheel feature enabled, defaults to true */
 		SLATE_ARGUMENT(bool, EnableWheel)
+		/** True to broadcast every time we type */
+		SLATE_ARGUMENT(bool, BroadcastValueChangesPerKey)
 		/** Step to increment or decrement the value by when scrolling the mouse wheel. If not specified will determine automatically */
 		SLATE_ATTRIBUTE(TOptional< NumericType >, WheelStep)
 		/** Font used to display text in the slider */
@@ -182,6 +185,11 @@ public:
 		SetForegroundColor(InArgs._Style->ForegroundColor);
 		Interface = InArgs._TypeInterface.IsValid() ? InArgs._TypeInterface : MakeShareable(new TDefaultNumericTypeInterface<NumericType>);
 
+		if (InArgs._TypeInterface.IsValid() && Interface->GetOnSettingChanged())
+		{
+			Interface->GetOnSettingChanged()->AddSP(this, &SSpinBox::ResetCachedValueString);
+		}
+
 		ValueAttribute = InArgs._Value;
 		OnValueChanged = InArgs._OnValueChanged;
 		OnValueCommitted = InArgs._OnValueCommitted;
@@ -208,6 +216,7 @@ public:
 		OnDynamicSliderMinValueChanged = InArgs._OnDynamicSliderMinValueChanged;
 
 		bEnableWheel = InArgs._EnableWheel;
+		bBroadcastValueChangesPerKey = InArgs._BroadcastValueChangesPerKey;
 		WheelStep = InArgs._WheelStep;
 
 		bPreventThrottling = InArgs._PreventThrottling;
@@ -564,7 +573,7 @@ public:
 				const int32 CachedShiftMouseMovePixelPerDelta = ShiftMouseMovePixelPerDelta.Get();
 				if (CachedShiftMouseMovePixelPerDelta > 1 && MouseEvent.IsShiftDown())
 				{
-					SliderWidthInSlateUnits *= CachedShiftMouseMovePixelPerDelta;
+					SliderWidthInSlateUnits *= (float)CachedShiftMouseMovePixelPerDelta;
 				}
 
 				if (MouseEvent.IsControlDown())
@@ -638,19 +647,18 @@ public:
 					const double Sign = (MouseEvent.GetCursorDelta().X > 0) ? 1.0 : -1.0;
 					if (LinearDeltaSensitivity.IsSet() && LinearDeltaSensitivity.Get() != 0 && Delta.IsSet() && Delta.Get() > 0)
 					{
-						const double MouseDelta = FMath::Abs(MouseEvent.GetCursorDelta().X / LinearDeltaSensitivity.Get());
-						NewValue = InternalValue + (Sign * MouseDelta * FMath::Pow((double)Delta.Get(), SliderExponent.Get()));
+						const double MouseDelta = FMath::Abs(MouseEvent.GetCursorDelta().X / (float)LinearDeltaSensitivity.Get());
+						NewValue = InternalValue + (Sign * MouseDelta * FMath::Pow((double)Delta.Get(), (double)SliderExponent.Get()));
 					}
 					else
 					{
 						const double MouseDelta = FMath::Abs(MouseEvent.GetCursorDelta().X / SliderWidthInSlateUnits);
 						const double CurrentValue = FMath::Clamp<double>(FMath::Abs(InternalValue), 1.0, (double)std::numeric_limits<NumericType>::max());
-						NewValue = InternalValue + (Sign * MouseDelta * FMath::Pow((float)CurrentValue, SliderExponent.Get()));
+						NewValue = InternalValue + (Sign * MouseDelta * FMath::Pow((double)CurrentValue, (double)SliderExponent.Get()));
 					}
 				}
 
 				NumericType RoundedNewValue = RoundIfIntegerValue(NewValue);
-				//UE_LOG(LogSlate, Warning, TEXT("A - %llx B - %f  C - %llx"), RoundedNewValue, NewValue, static_cast<NumericType>(NewValue));
 				CommitValue(RoundedNewValue, NewValue, CommittedViaSpin, ETextCommit::OnEnter);
 			}
 
@@ -941,6 +949,15 @@ protected:
 				FString ValidData = NumValidChars > 0 ? Data.Left(NumValidChars) : GetValueAsString();
 				EditableText->SetText(FText::FromString(ValidData));
 			}
+
+			if (bBroadcastValueChangesPerKey)
+			{
+				TOptional<NumericType> NewValue = Interface->FromString(NewText.ToString(), ValueAttribute.Get());
+				if (NewValue.IsSet())
+				{
+					CommitValue(NewValue.GetValue(), (double)NewValue.GetValue(), CommittedViaCode, ETextCommit::Default);
+				}
+			}
 		}
 	}
 
@@ -1208,6 +1225,14 @@ private:
 	/** Used to prevent per-frame re-conversion of the cached numeric value to a string. */
 	FString CachedValueString;
 
+	/** Reset the cached string when the value is the same but the display format changed (through the callback). */
+	void ResetCachedValueString() 
+	{ 
+		const NumericType CurrentValue = ValueAttribute.Get();
+		CachedExternalValue = CurrentValue;
+		CachedValueString = Interface->ToString(CachedExternalValue);
+	}
+
 	/** Whetever the interfaced setting changed and the CachedValueString needs to be recomputed. */
 	mutable bool bCachedValueStringDirty;
 
@@ -1225,6 +1250,9 @@ private:
 
 	/** Does this spin box have the mouse wheel feature enabled? */
 	bool bEnableWheel = true;
+
+	/** True to broadcast every time we type. */
+	bool bBroadcastValueChangesPerKey = false;
 };
 
 template<typename NumericType>

@@ -1,28 +1,38 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Converters/GLTFBoneUtilities.h"
-#include "BonePose.h"
-#include "Sections/MovieScene3DTransformSection.h"
 #include "Animation/AnimationPoseData.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AttributesRuntime.h"
 #include "ReferenceSkeleton.h"
+#include "BonePose.h"
 
-FTransform FGLTFBoneUtilities::GetBindTransform(const FReferenceSkeleton& RefSkeleton, int32 BoneIndex)
+FTransform FGLTFBoneUtilities::GetBindTransform(const FReferenceSkeleton& ReferenceSkeleton, int32 BoneIndex)
 {
-	const TArray<FMeshBoneInfo>& BoneInfos = RefSkeleton.GetRefBoneInfo();
-	const TArray<FTransform>& BonePoses = RefSkeleton.GetRefBonePose();
+	const TArray<FMeshBoneInfo>& BoneInfos = ReferenceSkeleton.GetRefBoneInfo();
+	const TArray<FTransform>& BonePoses = ReferenceSkeleton.GetRefBonePose();
 
-	int32 CurBoneIndex = BoneIndex;
-	FTransform BindTransform = FTransform::Identity;
+	FTransform BindTransform = BonePoses[BoneIndex];
+	int32 ParentBoneIndex = BoneInfos[BoneIndex].ParentIndex;
 
-	do
+	while (ParentBoneIndex != INDEX_NONE)
 	{
-		BindTransform = BindTransform * BonePoses[CurBoneIndex];
-		CurBoneIndex = BoneInfos[CurBoneIndex].ParentIndex;
-	} while (CurBoneIndex != INDEX_NONE);
+		BindTransform = BindTransform * BonePoses[ParentBoneIndex];
+		ParentBoneIndex = BoneInfos[ParentBoneIndex].ParentIndex;
+	}
 
 	return BindTransform;
+}
+
+void FGLTFBoneUtilities::GetBoneIndices(const FReferenceSkeleton& ReferenceSkeleton, TArray<FBoneIndexType>& OutBoneIndices)
+{
+	const int32 BoneCount = ReferenceSkeleton.GetNum();
+	OutBoneIndices.AddUninitialized(BoneCount);
+
+	for (int32 BoneIndex = 0; BoneIndex < BoneCount; ++BoneIndex)
+	{
+		OutBoneIndices[BoneIndex] = static_cast<FBoneIndexType>(BoneIndex);
+	}
 }
 
 void FGLTFBoneUtilities::GetFrameTimestamps(const UAnimSequence* AnimSequence, TArray<float>& OutFrameTimestamps)
@@ -39,25 +49,13 @@ void FGLTFBoneUtilities::GetFrameTimestamps(const UAnimSequence* AnimSequence, T
 	}
 }
 
-void FGLTFBoneUtilities::GetBoneIndices(const USkeleton* Skeleton, TArray<FBoneIndexType>& OutBoneIndices)
+void FGLTFBoneUtilities::GetBoneTransformsByFrame(const UObject* SkeletalMeshOrSkeleton, const UAnimSequence* AnimSequence, const TArray<FBoneIndexType>& BoneIndices, const TArray<float>& FrameTimestamps, TArray<TArray<FTransform>>& OutBoneTransformsByFrame)
 {
-	const int32 BoneCount = Skeleton->GetReferenceSkeleton().GetNum();
-	OutBoneIndices.AddUninitialized(BoneCount);
-
-	for (int32 BoneIndex = 0; BoneIndex < BoneCount; ++BoneIndex)
-	{
-		OutBoneIndices[BoneIndex] = BoneIndex;
-	}
-}
-
-void FGLTFBoneUtilities::GetBoneTransformsByFrame(const UAnimSequence* AnimSequence, const TArray<float>& FrameTimestamps, const TArray<FBoneIndexType>& BoneIndices, TArray<TArray<FTransform>>& OutBoneTransformsByFrame)
-{
-
 	// Make sure to free stack allocations made by FCompactPose, FBlendedCurve, and FStackCustomAttributes when end of scope
 	FMemMark Mark(FMemStack::Get());
 
 	FBoneContainer BoneContainer;
-	BoneContainer.InitializeTo(BoneIndices, FCurveEvaluationOption(true), *AnimSequence->GetSkeleton());
+	BoneContainer.InitializeTo(BoneIndices, UE::Anim::FCurveFilterSettings(UE::Anim::ECurveFilterMode::DisallowAll), *const_cast<UObject*>(SkeletalMeshOrSkeleton));
 
 	const int32 FrameCount = FrameTimestamps.Num();
 	OutBoneTransformsByFrame.AddDefaulted(FrameCount);

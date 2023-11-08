@@ -21,6 +21,7 @@
 #include "RHIGPUReadback.h"
 #include "RenderGraphUtils.h"
 #include "RenderCaptureInterface.h"
+#include "SceneRendererInterface.h"
 
 DECLARE_GPU_STAT_NAMED(LandscapePhysicalMaterial_Draw, TEXT("LandscapePhysicalMaterial"));
 
@@ -41,7 +42,7 @@ public:
 	FLandscapePhysicalMaterial(const FMeshMaterialShaderType::CompiledShaderInitializerType& Initializer)
 		: FMeshMaterialShader(Initializer)
 	{
-		PassUniformBuffer.Bind(Initializer.ParameterMap, FSceneTextureUniformParameters::StaticStructMetadata.GetShaderVariableName());
+		PassUniformBuffer.Bind(Initializer.ParameterMap, FSceneTextureUniformParameters::FTypeInfo::GetStructMetadata()->GetShaderVariableName());
 	}
 
 	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
@@ -195,6 +196,7 @@ namespace
 	
 	BEGIN_SHADER_PARAMETER_STRUCT(FLandscapePhysicalMaterialPassParameters, )
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, Scene)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FInstanceCullingDrawParams, InstanceCullingDrawParams)
 		RENDER_TARGET_BINDING_SLOTS()
 	END_SHADER_PARAMETER_STRUCT()
@@ -240,6 +242,7 @@ namespace
 
 		auto* PassParameters = GraphBuilder.AllocParameters<FLandscapePhysicalMaterialPassParameters>();
 		PassParameters->View = View->ViewUniformBuffer;
+		PassParameters->Scene = GetSceneUniformBufferRef(GraphBuilder, *View);
 		PassParameters->RenderTargets[0] = FRenderTargetBinding(OutputTexture, ERenderTargetLoadAction::EClear);
 
 		AddSimpleMeshPass(GraphBuilder, PassParameters, SceneInterface->GetRenderScene(), *View, nullptr, RDG_EVENT_NAME("LandscapePhysicalMaterial"), View->UnscaledViewRect,
@@ -547,13 +550,14 @@ public:
 static TGlobalResource< FLandscapePhysicalMaterialRenderTaskPool > GTaskPool;
 
 
-bool FLandscapePhysicalMaterialRenderTask::Init(ULandscapeComponent const* LandscapeComponent)
+bool FLandscapePhysicalMaterialRenderTask::Init(ULandscapeComponent const* LandscapeComponent, uint32 InHash)
 {
 	check(IsInGameThread());
 	if (IsValid())
 	{
 		GTaskPool.Free(*this);
 	}
+	Hash = InHash;
 	return GTaskPool.Allocate(*this, LandscapeComponent);
 }
 
@@ -563,6 +567,7 @@ void FLandscapePhysicalMaterialRenderTask::Release()
 	if (IsValid())
 	{
 		GTaskPool.Free(*this);
+		Hash = 0;
 	}
 }
 
@@ -577,6 +582,11 @@ bool FLandscapePhysicalMaterialRenderTask::IsComplete() const
 	check(IsInGameThread());
 	check(IsValid());
 	return GTaskPool.Pool[PoolHandle].CompletionState == ECompletionState::Complete;
+}
+
+bool FLandscapePhysicalMaterialRenderTask::IsInProgress() const
+{
+	return IsValid() && !IsComplete();
 }
 
 void FLandscapePhysicalMaterialRenderTask::Tick()

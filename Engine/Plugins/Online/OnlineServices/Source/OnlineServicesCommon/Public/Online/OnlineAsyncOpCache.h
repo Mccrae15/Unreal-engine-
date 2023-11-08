@@ -5,6 +5,7 @@
 #include "Online/CoreOnline.h"
 #include "Online/OnlineAsyncOp.h"
 #include "Online/OnlineMeta.h" // IWYU pragma: keep
+#include "Containers/Ticker.h"
 
 namespace UE::Online {
 
@@ -162,7 +163,7 @@ struct TJoinableOpParamsFuncs
 		bool bResult = true;
 		Meta::VisitFields<typename OpType::Params>([&bResult, &First, &Second](const auto& Field)
 		{
-			bResult = bResult && (First.*Field.Pointer) != (Second.*Field.Pointer);
+			bResult = bResult && (First.*Field.Pointer) == (Second.*Field.Pointer);
 		});
 		return bResult;
 	}
@@ -175,7 +176,7 @@ struct TJoinableOpParamsFuncs
 		Meta::VisitFields(Params,
 			[&CombinedHash](const TCHAR* FieldName, const auto& Field)
 			{
-				HashCombine(CombinedHash, GetTypeHash(Field));
+				CombinedHash = HashCombine(CombinedHash, GetTypeHash(Field));
 			});
 		return CombinedHash;
 	}
@@ -191,7 +192,7 @@ struct TMergeableOpParamsFuncs
 		Meta::VisitFields<typename OpType::Params>([&bResult, &First, &Second](const auto& Field)
 			{
 				constexpr bool bIsMutationFieldType = std::is_same_v<decltype(Field.Pointer), decltype(&OpType::Params::Mutations)>;
-				if constexpr (TModels<Private::COnlineGetTypeHashable, decltype(First.*Field.Pointer)>::Value || !bIsMutationFieldType)
+				if constexpr (TModels_V<Private::COnlineGetTypeHashable, decltype(First.*Field.Pointer)> || !bIsMutationFieldType)
 				{
 					if constexpr (bIsMutationFieldType)
 					{
@@ -200,7 +201,7 @@ struct TMergeableOpParamsFuncs
 							return;
 						}
 					}
-					bResult = bResult && (First.*Field.Pointer) != (Second.*Field.Pointer);
+					bResult = bResult && (First.*Field.Pointer) == (Second.*Field.Pointer);
 				}
 			});
 		return bResult;
@@ -214,7 +215,7 @@ struct TMergeableOpParamsFuncs
 		Meta::VisitFields<typename OpType::Params>([&Params, &CombinedHash](const auto& Field)
 			{
 				constexpr bool bIsMutationFieldType = std::is_same_v<decltype(Field.Pointer), decltype(&OpType::Params::Mutations)>;
-				if constexpr (TModels<Private::COnlineGetTypeHashable, decltype(Params.*Field.Pointer)>::Value || !bIsMutationFieldType)
+				if constexpr (TModels_V<Private::COnlineGetTypeHashable, decltype(Params.*Field.Pointer)> || !bIsMutationFieldType)
 				{
 					if constexpr (bIsMutationFieldType)
 					{
@@ -223,7 +224,7 @@ struct TMergeableOpParamsFuncs
 							return;
 						}
 					}
-					HashCombine(CombinedHash, GetTypeHash(Params.*Field.Pointer));
+					CombinedHash = HashCombine(CombinedHash, GetTypeHash(Params.*Field.Pointer));
 				}
 			});
 		return CombinedHash;
@@ -249,7 +250,7 @@ public:
 	{
 		TSharedRef<TOnlineAsyncOp<OpType>> Op = MakeShared<TOnlineAsyncOp<OpType>>(Services, MoveTemp(Params));
 
-		if constexpr (TModels<CLocalAccountIdDefined, typename OpType::Params>::Value)
+		if constexpr (TModels_V<CLocalAccountIdDefined, typename OpType::Params>)
 		{
 			// add LocalAccountId to the Op Data
 			Op->Data.template Set<decltype(Params.LocalAccountId)>(TEXT("LocalAccountId"), Op->GetParams().LocalAccountId);
@@ -265,7 +266,7 @@ public:
 		TSharedPtr<TOnlineAsyncOp<OpType>> Op;
 
 		// find existing op
-		if constexpr (TModels<CLocalAccountIdDefined, typename OpType::Params>::Value)
+		if constexpr (TModels_V<CLocalAccountIdDefined, typename OpType::Params>)
 		{
 			if (TUniquePtr<IWrappedOperation>* OpPtr = UserOperations.FindOrAdd(Params.LocalAccountId).Find(FWrappedOperationKey::Create<OpType, ParamsFuncsType>(Params)))
 			{
@@ -293,12 +294,13 @@ public:
 			LoadConfigFn(Config, ConfigSectionHeiarchy);
 			
 			Op = CreateOp<OpType, ParamsFuncsType>(MoveTemp(Params));
-			FOnlineEventDelegateHandle Handle = Op->OnComplete().Add(GetSharedThis(), [this](const TOnlineAsyncOp<OpType>& ThisOp, const TOnlineResult<OpType>&)
+			Op->OpCacheHandle = Op->OnComplete().Add(GetSharedThis(), [this, Config](const TOnlineAsyncOp<OpType>& ThisOp, const TOnlineResult<OpType>& Result)
 				{
-					// remove from cache if operation was canceled
-					if (ThisOp.GetState() == EAsyncOpState::Cancelled)
+					if ((ThisOp.GetState() == EAsyncOpState::Cancelled && !Config.bCacheError) ||
+						(Result.IsError() && !Config.bCacheError) ||
+						(Config.CacheExpiration == EOperationCacheExpirationPolicy::UponCompletion))
 					{
-						if constexpr (TModels<CLocalAccountIdDefined, typename OpType::Params>::Value)
+						if constexpr (TModels_V<CLocalAccountIdDefined, typename OpType::Params>)
 						{
 							UserOperations.FindOrAdd(ThisOp.GetParams().LocalAccountId).Remove(FWrappedOperationKey::Create<OpType, ParamsFuncsType>(ThisOp.GetParams()));
 						}
@@ -306,6 +308,26 @@ public:
 						{
 							Operations.Remove(FWrappedOperationKey::Create<OpType, ParamsFuncsType>(ThisOp.GetParams()));
 						}
+					}
+					else if (Config.CacheExpiration == EOperationCacheExpirationPolicy::Duration)
+					{
+						// Set timer with duration to remove cached operation
+						FTSTicker::GetCoreTicker().AddTicker(TEXT("OnlineAsyncOpCacheExpiry"), Config.CacheExpirySeconds,
+							[this, WeakOp = ThisOp.AsWeak()](float) {
+								TSharedPtr<const TOnlineAsyncOp<OpType>> PinnedOp = WeakOp.Pin();
+								if (PinnedOp.IsValid())
+								{
+									if constexpr (TModels_V<CLocalAccountIdDefined, typename OpType::Params>)
+									{
+										UserOperations.FindOrAdd(PinnedOp->GetParams().LocalAccountId).Remove(FWrappedOperationKey::Create<OpType, ParamsFuncsType>(PinnedOp->GetParams()));
+									}
+									else
+									{
+										Operations.Remove(FWrappedOperationKey::Create<OpType, ParamsFuncsType>(PinnedOp->GetParams()));
+									}
+								}
+ 								return false;
+							});
 					}
 				});
 		}
@@ -320,7 +342,7 @@ public:
 		TSharedPtr<TOnlineAsyncOp<OpType>> Op;
 
 		// find existing op
-		if constexpr (TModels<CLocalAccountIdDefined, typename OpType::Params>::Value)
+		if constexpr (TModels_V<CLocalAccountIdDefined, typename OpType::Params>)
 		{
 			if (TUniquePtr<IWrappedOperation>* OpPtr = UserOperations.FindOrAdd(Params.LocalAccountId).Find(FWrappedOperationKey::Create<OpType, ParamsFuncsType>(Params)))
 			{
@@ -347,9 +369,9 @@ public:
 
 			Op = CreateOp<OpType, ParamsFuncsType>(MoveTemp(Params));
 			// remove from cache once operation has started. It is no longer mergeable at that point
-			FOnlineEventDelegateHandle Handle = Op->OnStart().Add(GetSharedThis(), [this](const TOnlineAsyncOp<OpType>& ThisOp)
+			Op->OpCacheHandle = Op->OnStart().Add(GetSharedThis(), [this](const TOnlineAsyncOp<OpType>& ThisOp)
 				{
-					if constexpr (TModels<CLocalAccountIdDefined, typename OpType::Params>::Value)
+					if constexpr (TModels_V<CLocalAccountIdDefined, typename OpType::Params>)
 					{
 						UserOperations.FindOrAdd(ThisOp.GetParams().LocalAccountId).Remove(FWrappedOperationKey::Create<OpType, ParamsFuncsType>(ThisOp.GetParams()));
 					}
@@ -382,7 +404,7 @@ private:
 
 		TSharedRef<TOnlineAsyncOp<OpType>> Op = WrappedOp->GetDataRef();
 
-		if constexpr (TModels<CLocalAccountIdDefined, typename OpType::Params>::Value)
+		if constexpr (TModels_V<CLocalAccountIdDefined, typename OpType::Params>)
 		{
 			// add LocalAccountId to the Op Data
 			Op->Data.template Set<decltype(Params.LocalAccountId)>(TEXT("LocalAccountId"), Op->GetParams().LocalAccountId);
@@ -420,7 +442,7 @@ private:
 				return true;
 			}
 
-			// other expiry conditions
+			// other expiry conditions are handled by removing the cached entry
 
 			return false;
 		}

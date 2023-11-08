@@ -12,6 +12,7 @@
 #include "LODUtilities.h"
 #include "MeshDescription.h"
 #include "MeshUtilities.h"
+#include "Misc/Guid.h"
 #include "Modules/ModuleManager.h"
 #include "ReferenceSkeleton.h"
 #include "Rendering/SkeletalMeshLODImporterData.h"
@@ -226,6 +227,7 @@ static bool AddLODFromMeshDescription(
 	}
 	
 	InSkeletalMesh->SaveLODImportedData(LODIndex, SkeletalMeshImportGeometry);
+	InSkeletalMesh->SetLODImportedDataVersions(LODIndex, ESkeletalMeshGeoImportVersions::LatestVersion, ESkeletalMeshSkinningImportVersions::LatestVersion);
 	
 	return true;
 }
@@ -245,6 +247,9 @@ static bool AddLODFromStaticMeshSourceModel(
 	CopyBuildSettings(InStaticMeshSourceModel.BuildSettings, SkeletalLODInfo.BuildSettings);
 	CopyReductionSettings(InStaticMeshSourceModel.ReductionSettings, SkeletalLODInfo.ReductionSettings);
 
+	FSkeletalMeshModel* ImportedModels = InSkeletalMesh->GetImportedModel();
+	const int32 LODIndex = ImportedModels->LODModels.Num(); 
+
 	if (InStaticMeshSourceModel.IsMeshDescriptionValid())
 	{
 		FMeshDescription SkeletalMeshGeometry;
@@ -255,7 +260,7 @@ static bool AddLODFromStaticMeshSourceModel(
 		
 		FSkeletalMeshAttributes SkeletalMeshAttributes(SkeletalMeshGeometry);
 		SkeletalMeshAttributes.Register();
-
+		
 		// Full binding to the root bone.
 		FSkinWeightsVertexAttributesRef SkinWeights = SkeletalMeshAttributes.GetVertexSkinWeights();
 		UE::AnimationCore::FBoneWeight RootInfluence(InBoneIndex, 1.0f);
@@ -273,10 +278,8 @@ static bool AddLODFromStaticMeshSourceModel(
 	}
 	else
 	{
-		FSkeletalMeshModel* ImportedModels = InSkeletalMesh->GetImportedModel();
-		const int32 LODIndex = ImportedModels->LODModels.Num(); 
 		ImportedModels->LODModels.Add(new FSkeletalMeshLODModel);
-			
+		
 		FSkeletalMeshUpdateContext UpdateContext;
 		UpdateContext.SkeletalMesh = InSkeletalMesh;
 		
@@ -284,6 +287,27 @@ static bool AddLODFromStaticMeshSourceModel(
 	}
 	
 	return true;
+}
+
+
+static bool HasVertexColors(
+	const USkeletalMesh* InSkeletalMesh
+	)
+{
+	for (const FSkeletalMeshLODModel& LODModel: InSkeletalMesh->GetImportedModel()->LODModels)
+	{
+		for (const FSkelMeshSection& Section: LODModel.Sections)
+		{
+			for (const FSoftSkinVertex& Vertex: Section.SoftVertices)
+			{
+				if (Vertex.Color != FColor::White)
+				{
+					return true;
+				}
+			}
+		}
+	}
+	return false;
 }
 
 
@@ -362,6 +386,12 @@ bool FStaticToSkeletalMeshConverter::InitializeSkeletalMeshFromStaticMesh(
 	}
 
 	InSkeletalMesh->SetMaterials(Materials);
+
+	if (HasVertexColors(InSkeletalMesh))
+	{
+		InSkeletalMesh->SetHasVertexColors(true);	
+		InSkeletalMesh->SetVertexColorGuid(FGuid::NewGuid());
+	}
 	
 	// Set the bounds from the static mesh, including the extensions, otherwise it won't render properly (among other things).
 	InSkeletalMesh->SetImportedBounds( InStaticMesh->GetBounds() );
@@ -510,6 +540,12 @@ bool FStaticToSkeletalMeshConverter::InitializeSkeletalMeshFromMeshDescriptions(
 		InSkeletalMesh->SetMaterials(NewMaterials);
 	}
 
+	if (HasVertexColors(InSkeletalMesh))
+	{
+		InSkeletalMesh->SetHasVertexColors(true);	
+		InSkeletalMesh->SetVertexColorGuid(FGuid::NewGuid());
+	}
+	
 	InSkeletalMesh->SetImportedBounds( FBox3d{BoundingBox} );
 
 	return true;

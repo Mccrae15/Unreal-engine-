@@ -15,14 +15,10 @@
 #include "UObject/UObjectGlobals.h"
 
 #if WITH_EDITOR
+	#include "OpenColorIOWrapper.h"
 	#include "DerivedDataCacheInterface.h"
 	#include "Interfaces/ITargetPlatformManagerModule.h"
 	#include "TickableEditorObject.h"
-
-#if WITH_OCIO
-	#include "OpenColorIO/OpenColorIO.h"
-#endif //WITH_OCIO
-
 #endif
 
 
@@ -209,6 +205,13 @@ FShader* FOpenColorIOShaderType::FinishCompileShader(
 	return Shader;
 }
 
+void FOpenColorIOShaderType::SetupCompileEnvironment(EShaderPlatform InPlatform, const FOpenColorIOTransformResource* InColorTransform, FShaderCompilerEnvironment& OutEnvironment) const
+{
+	ModifyCompilationEnvironment(FOpenColorIOShaderPermutationParameters(GetFName(), InPlatform, InColorTransform), OutEnvironment);
+
+	OutEnvironment.SetDefine(TEXT("WORKING_COLOR_SPACE_TRANSFORM_TYPE"), (int32)InColorTransform->GetWorkingColorSpaceTransformType());
+}
+
 #endif // WITH_EDITOR
 
 /**
@@ -227,12 +230,10 @@ FOpenColorIOShaderMap* FOpenColorIOShaderMap::FindId(const FOpenColorIOShaderMap
 
 void OpenColorIOShaderMapAppendKeyString(EShaderPlatform InPlatform, FString& OutKeyString)
 {
-#if WITH_OCIO
 	//Keep library version in the DDC key to invalidate it once we move to a new library
 	OutKeyString += TEXT("OCIOVersion");
-	OutKeyString += TEXT(OCIO_VERSION);
+	OutKeyString += OpenColorIOWrapper::GetVersion();
 	OutKeyString += TEXT("_");
-#endif // WITH_OCIO
 }
 
 /** Creates a string key for the derived data cache given a shader map id. */

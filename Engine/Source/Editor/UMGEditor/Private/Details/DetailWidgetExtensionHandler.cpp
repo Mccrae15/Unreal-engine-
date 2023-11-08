@@ -3,9 +3,9 @@
 #include "Details/DetailWidgetExtensionHandler.h"
 #include "Binding/WidgetBinding.h"
 #include "Customizations/UMGDetailCustomizations.h"
+#include "Details/WidgetPropertyDragDropHandler.h"
 #include "Engine/Blueprint.h"
 #include "UMGEditorModule.h"
-#include "UMGEditorProjectSettings.h"
 #include "WidgetBlueprint.h"
 #include "WidgetBlueprintEditor.h"
 
@@ -88,7 +88,7 @@ bool FDetailWidgetExtensionHandler::IsPropertyExtendable(const UClass* ObjectCla
 	}
 
 	TSharedPtr<FWidgetBlueprintEditor> BPEd = BlueprintEditor.Pin();
-	if (BPEd == nullptr || Objects[0] == BPEd->GetPreview())
+	if (BPEd == nullptr)
 	{
 		return false;
 	}
@@ -138,10 +138,12 @@ void FDetailWidgetExtensionHandler::ExtendWidgetRow(
 			return !FBlueprintWidgetCustomization::HasPropertyBindings(BlueprintEditorPtr, PropertyHandleRef);
 		}));
 
-	const UWidgetBlueprint* WidgetBlueprint = BlueprintEditor.Pin()->GetWidgetBlueprintObj();
+	UWidgetBlueprint* WidgetBlueprint = BlueprintEditor.Pin()->GetWidgetBlueprintObj();
+
+	bool bShouldShowOldBindingWidget = Private::ShouldShowOldBindingWidget(WidgetBlueprint, PropertyHandleRef.Get());
 
 	bool bShouldShowWidget = false;
-	bShouldShowWidget |= Private::ShouldShowOldBindingWidget(WidgetBlueprint, PropertyHandleRef.Get());
+	bShouldShowWidget |= bShouldShowOldBindingWidget;
 	
 	TArray<UObject*> Objects;
 	InPropertyHandle->GetOuterObjects(Objects);
@@ -166,14 +168,25 @@ void FDetailWidgetExtensionHandler::ExtendWidgetRow(
 		return;
 	}
 
-	UFunction* SignatureFunction = nullptr;
-	if (FDelegateProperty* DelegateProperty = Private::FindDelegateProperty(PropertyHandleRef.Get()))
+	if (Objects.Num() > 0)
 	{
-		SignatureFunction = DelegateProperty->SignatureFunction;
-	}
+		if (UWidget* Widget = Cast<UWidget>(Objects[0]))
+		{
+			InWidgetRow.DragDropHandler(MakeShared<FWidgetPropertyDragDropHandler>(Widget, InPropertyHandle, WidgetBlueprint));
 
-	InWidgetRow.ExtensionContent()
-	[
-		FBlueprintWidgetCustomization::MakePropertyBindingWidget(BlueprintEditor, SignatureFunction, InPropertyHandle.ToSharedRef(), true)
-	];
+			if (Widget != BlueprintEditor.Pin()->GetPreview())
+			{
+				UFunction* SignatureFunction = nullptr;
+				if (FDelegateProperty* DelegateProperty = Private::FindDelegateProperty(PropertyHandleRef.Get()))
+				{
+					SignatureFunction = DelegateProperty->SignatureFunction;
+				}
+
+				InWidgetRow.ExtensionContent()
+					[
+						FBlueprintWidgetCustomization::MakePropertyBindingWidget(BlueprintEditor, SignatureFunction, InPropertyHandle.ToSharedRef(), true, bShouldShowOldBindingWidget)
+					];
+			}
+		}
+	}
 }

@@ -21,6 +21,7 @@ public:
 
 	//~ Begin UObject Interface.
 	virtual void Serialize(FArchive& Ar) override;
+	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const;
 	//~ End UObject Interface.
 
 	void Initialize(EGroomCacheType Type);
@@ -57,6 +58,18 @@ public:
 	UPROPERTY(Category = ImportSettings, VisibleAnywhere, Instanced)
 	TObjectPtr<class UAssetImportData> AssetImportData;	
 #endif
+
+public:
+	/** Array of user data stored with the asset */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Instanced, Category = Hidden)
+	TArray<TObjectPtr<UAssetUserData>> AssetUserData;
+
+	//~ Begin IInterface_AssetUserData Interface
+	virtual void AddAssetUserData(UAssetUserData* InUserData) override;
+	virtual void RemoveUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass) override;
+	virtual UAssetUserData* GetAssetUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass) override;
+	virtual const TArray<UAssetUserData*>* GetAssetUserDataArray() const override;
+	//~ End IInterface_AssetUserData Interface
 
 protected:
 	UPROPERTY(VisibleAnywhere, Category = GroomCache)

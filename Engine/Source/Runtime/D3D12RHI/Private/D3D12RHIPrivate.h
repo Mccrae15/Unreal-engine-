@@ -6,6 +6,9 @@
 
 #pragma once
 
+#include "D3D12RHICommon.h"
+#include "ID3D12DynamicRHI.h"
+
 #include "CoreMinimal.h"
 #include "Misc/CommandLine.h"
 #include "Misc/App.h"
@@ -21,98 +24,21 @@
 #include "EngineGlobals.h"
 #include "StaticBoundShaderState.h"
 
-#define D3D12_RHI_RAYTRACING (RHI_RAYTRACING)
-
 // Dependencies.
-#include "CoreMinimal.h"
-#include "ID3D12DynamicRHI.h"
+#include "DXGIUtilities.h"
 #include "GPUProfiler.h"
 #include "ShaderCore.h"
 #include "HDRHelper.h"
 
-DECLARE_LOG_CATEGORY_EXTERN(LogD3D12RHI, Log, All);
-DECLARE_LOG_CATEGORY_EXTERN(LogD3D12GapRecorder, Log, All);
-
-#include "D3D12RHI.h"
-#include "D3D12RHICommon.h"
-
-// Defines a unique command queue type within a FD3D12Device (owner by the command list managers).
-enum class ED3D12QueueType
-{
-	Direct = 0,
-	Copy,
-	Async,
-
-	Count,
-};
-
 #include "D3D12Submission.h"
+#include "D3D12RHIDefinitions.h"
 
-#if PLATFORM_WINDOWS
-#include "Windows/D3D12RHIBasePrivate.h"
-#else
-#include "D3D12RHIBasePrivate.h"
-#endif
+// TODO reorder includes so we just include D3D12PipelineState.h here
+#include COMPILED_PLATFORM_HEADER(D3D12PipelineState.h)
 
-static constexpr uint32 GD3D12MaxNumQueues = MAX_NUM_GPUS * (uint32)ED3D12QueueType::Count;
-
-inline ED3D12QueueType GetD3DCommandQueueType(ERHIPipeline Pipeline)
-{
-	switch (Pipeline)
-	{
-	default: checkNoEntry(); // fallthrough
-	case ERHIPipeline::Graphics    : return ED3D12QueueType::Direct;
-	case ERHIPipeline::AsyncCompute: return ED3D12QueueType::Async;
-	}
-}
-
-inline D3D12_COMMAND_LIST_TYPE GetD3DCommandListType(ED3D12QueueType QueueType)
-{
-	switch (QueueType)
-	{
-	default: checkNoEntry(); // fallthrough
-	case ED3D12QueueType::Direct: return D3D12_COMMAND_LIST_TYPE_DIRECT;
-	case ED3D12QueueType::Copy  : return D3D12RHI_PLATFORM_COPY_COMMAND_LIST_TYPE;
-	case ED3D12QueueType::Async : return D3D12_COMMAND_LIST_TYPE_COMPUTE;
-	}
-}
-
-inline const TCHAR* GetD3DCommandQueueTypeName(ED3D12QueueType QueueType)
-{
-	switch (QueueType)
-	{
-	default: checkNoEntry(); // fallthrough
-	case ED3D12QueueType::Direct: return TEXT("3D");
-	case ED3D12QueueType::Async : return TEXT("Compute");
-	case ED3D12QueueType::Copy  : return TEXT("Copy");
-	}
-}
-
-#if NV_AFTERMATH
-
-	#define GFSDK_Aftermath_WITH_DX12 1
-		#include "GFSDK_Aftermath.h"
-		#include "GFSDK_Aftermath_GpuCrashdump.h"
-	#undef GFSDK_Aftermath_WITH_DX12
-
-	extern bool GDX12NVAfterMathModuleLoaded;
-	extern int32 GDX12NVAfterMathEnabled;
-	extern int32 GDX12NVAfterMathTrackResources;
-	extern int32 GDX12NVAfterMathMarkers;
-
-#endif // NV_AFTERMATH
-
-#if INTEL_EXTENSIONS
-	extern bool GDX12INTCAtomicUInt64Emulation;
-
-	struct INTCExtensionContext;
-	struct INTCExtensionInfo;
-
-	void DestroyIntelExtensionsContext(INTCExtensionContext* IntelExtensionContext);
-	INTCExtensionContext* CreateIntelExtensionsContext(ID3D12Device* Device, INTCExtensionInfo& INTCExtensionInfo);
-	bool EnableIntelAtomic64Support(INTCExtensionContext* IntelExtensionContext, INTCExtensionInfo& INTCExtensionInfo);
-#endif //INTEL_EXTENSIONS
-
+#include "D3D12DiskCache.h"
+#include "D3D12NvidiaExtensions.h"
+#include "D3D12IntelExtensions.h"
 #include "D3D12Residency.h"
 
 // D3D RHI public headers.
@@ -137,65 +63,6 @@ inline const TCHAR* GetD3DCommandQueueTypeName(ED3D12QueueType QueueType)
 #include "D3D12Device.h"
 #include "D3D12Adapter.h"
 
-#define EXECUTE_DEBUG_COMMAND_LISTS 0
-#define NAME_OBJECTS !(UE_BUILD_SHIPPING || UE_BUILD_TEST)	// Name objects in all builds except shipping
-#define LOG_PSO_CREATES (0 && STATS)	// Logs Create Pipeline State timings (also requires STATS)
-#define TRACK_RESOURCE_ALLOCATIONS (PLATFORM_WINDOWS && !UE_BUILD_SHIPPING && !UE_BUILD_TEST)
-
-//@TODO: Improve allocator efficiency so we can increase these thresholds and improve performance
-// We measured 149MB of wastage in 340MB of allocations with DEFAULT_BUFFER_POOL_MAX_ALLOC_SIZE set to 512KB
-#if !defined(DEFAULT_BUFFER_POOL_MAX_ALLOC_SIZE)
-	#if D3D12_RHI_RAYTRACING
-		// #dxr_todo: Reevaluate these values. Currently optimized to reduce number of CreateCommitedResource() calls, at the expense of memory use.
-		#define DEFAULT_BUFFER_POOL_MAX_ALLOC_SIZE    (64 * 1024 * 1024)
-		#define DEFAULT_BUFFER_POOL_DEFAULT_POOL_SIZE (16 * 1024 * 1024)
-	#else
-		// On PC, buffers are 64KB aligned, so anything smaller should be sub-allocated
-		#define DEFAULT_BUFFER_POOL_MAX_ALLOC_SIZE    (64 * 1024)
-		#define DEFAULT_BUFFER_POOL_DEFAULT_POOL_SIZE (8 * 1024 * 1024)
-	#endif //D3D12_RHI_RAYTRACING
-#endif //DEFAULT_BUFFER_POOL_MAX_ALLOC_SIZE
-
-#define READBACK_BUFFER_POOL_MAX_ALLOC_SIZE (64 * 1024)
-#define READBACK_BUFFER_POOL_DEFAULT_POOL_SIZE (4 * 1024 * 1024)
-
-#define TEXTURE_POOL_SIZE (8 * 1024 * 1024)
-
-#define MAX_GPU_BREADCRUMB_DEPTH 1024
-
-#ifndef FD3D12_HEAP_FLAG_CREATE_NOT_ZEROED
-#define FD3D12_HEAP_FLAG_CREATE_NOT_ZEROED D3D12_HEAP_FLAG_CREATE_NOT_ZEROED
-#endif
-
-#if DEBUG_RESOURCE_STATES
-	#define LOG_EXECUTE_COMMAND_LISTS 1
-	#define ASSERT_RESOURCE_STATES 0	// Disabled for now.
-	#define LOG_PRESENT 1
-#else
-	#define LOG_EXECUTE_COMMAND_LISTS 0
-	#define ASSERT_RESOURCE_STATES 0
-	#define LOG_PRESENT 0
-#endif
-
-#define DEBUG_FRAME_TIMING 0
-#if DEBUG_FRAME_TIMING
-	#define LOG_VIEWPORT_EVENTS 1
-	#define LOG_PRESENT 1
-	#define LOG_EXECUTE_COMMAND_LISTS 1
-#else
-	#define LOG_VIEWPORT_EVENTS 0
-#endif
-
-#if EXECUTE_DEBUG_COMMAND_LISTS
-	#define DEBUG_EXECUTE_COMMAND_LIST(scope) if (scope##->ActiveQueries == 0) { scope##->FlushCommands(ED3D12FlushFlags::WaitForCompletion); }
-	#define DEBUG_EXECUTE_COMMAND_CONTEXT(context) if (context.ActiveQueries == 0) { context##.FlushCommands(ED3D12FlushFlags::WaitForCompletion); }
-	#define DEBUG_RHI_EXECUTE_COMMAND_LIST(scope) if (scope##->GetRHIDevice(0)->GetDefaultCommandContext().ActiveQueries == 0) { scope##->GetRHIDevice(0)->GetDefaultCommandContext().FlushCommands(ED3D12FlushFlags::WaitForCompletion); }
-#else
-	#define DEBUG_EXECUTE_COMMAND_LIST(scope) 
-	#define DEBUG_EXECUTE_COMMAND_CONTEXT(context) 
-	#define DEBUG_RHI_EXECUTE_COMMAND_LIST(scope) 
-#endif
-
 template< typename t_A, typename t_B >
 inline t_A RoundUpToNextMultiple(const t_A& a, const t_B& b)
 {
@@ -204,15 +71,7 @@ inline t_A RoundUpToNextMultiple(const t_A& a, const t_B& b)
 
 using namespace D3D12RHI;
 
-static bool D3D12RHI_ShouldCreateWithD3DDebug()
-{
-	// Use a debug device if specified on the command line.
-	static bool bCreateWithD3DDebug =
-		FParse::Param(FCommandLine::Get(), TEXT("d3ddebug")) ||
-		FParse::Param(FCommandLine::Get(), TEXT("d3debug")) ||
-		FParse::Param(FCommandLine::Get(), TEXT("dxdebug"));
-	return bCreateWithD3DDebug;
-}
+extern TAutoConsoleVariable<int32> GD3D12DebugCvar;
 
 static bool D3D12RHI_ShouldCreateWithWarp()
 {
@@ -289,6 +148,12 @@ struct FD3D12WorkaroundFlags
 	* This is less efficient and can also trigger another known issue with D3D12 Agility version <= 4.
 	*/
 	bool bAllowGetShaderIdentifierOnCollectionSubObject = true;
+
+	/**
+	* Certain drivers can cause texture corruption when sub allocating textures from a shared heap. Committed resource
+	* allocations are used then
+	*/
+	bool bForceCommittedResourceTextureAllocation = false;
 };
 
 extern FD3D12WorkaroundFlags GD3D12WorkaroundFlags;
@@ -374,21 +239,7 @@ public:
 	FGraphEventRef EopTask;
 
 	// Enumerates all queues across all devices and active adapters
-	void ForEachQueue(TFunctionRef<void(FD3D12Queue&)> Callback)
-	{
-		for (uint32 AdapterIndex = 0; AdapterIndex < GetNumAdapters(); ++AdapterIndex)
-		{
-			FD3D12Adapter& Adapter = GetAdapter(AdapterIndex);
-
-			for (FD3D12Device* Device : Adapter.GetDevices())
-			{
-				for (FD3D12Queue& Queue : Device->GetQueues())
-				{
-					Callback(Queue);
-				}
-			}
-		}
-	}
+	void ForEachQueue(TFunctionRef<void(FD3D12Queue&)> Callback);
 
 	/** Initialization constructor. */
 	FD3D12DynamicRHI(const TArray<TSharedPtr<FD3D12Adapter>>& ChosenAdaptersIn, bool bInPixEventEnabled);
@@ -424,8 +275,6 @@ public:
 		return false;
 	}
 
-	virtual void RHIPerFrameRHIFlushComplete() override;
-
 	virtual FSamplerStateRHIRef RHICreateSamplerState(const FSamplerStateInitializerRHI& Initializer) final override;
 	virtual FRasterizerStateRHIRef RHICreateRasterizerState(const FRasterizerStateInitializerRHI& Initializer) final override;
 	virtual FDepthStencilStateRHIRef RHICreateDepthStencilState(const FDepthStencilStateInitializerRHI& Initializer) final override;
@@ -448,37 +297,29 @@ public:
 	virtual void RHIReleaseTransition(FRHITransition* Transition) final override;
 	virtual FUniformBufferRHIRef RHICreateUniformBuffer(const void* Contents, const FRHIUniformBufferLayout* Layout, EUniformBufferUsage Usage, EUniformBufferValidation Validation) final override;
 	virtual void RHIUpdateUniformBuffer(FRHICommandListBase& RHICmdList, FRHIUniformBuffer* UniformBufferRHI, const void* Contents) final override;
-	virtual FBufferRHIRef RHICreateBuffer(FRHICommandListBase& RHICmdList, uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo) final override;
+	virtual FBufferRHIRef RHICreateBuffer(FRHICommandListBase& RHICmdList, FRHIBufferDesc const& Desc, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo) final override;
 	virtual void RHITransferBufferUnderlyingResource(FRHIBuffer* DestBuffer, FRHIBuffer* SrcBuffer) final override;
 	virtual void RHICopyBuffer(FRHIBuffer* SourceBuffer, FRHIBuffer* DestBuffer) final override;
 	virtual void* RHILockBuffer(FRHICommandListBase& RHICmdList, FRHIBuffer* Buffer, uint32 Offset, uint32 Size, EResourceLockMode LockMode) final override;
 	virtual void* RHILockBufferMGPU(FRHICommandListBase& RHICmdList, FRHIBuffer* Buffer, uint32 GPUIndex, uint32 Offset, uint32 Size, EResourceLockMode LockMode) final override;
 	virtual void RHIUnlockBuffer(FRHICommandListBase& RHICmdList, FRHIBuffer* Buffer) final override;
 	virtual void RHIUnlockBufferMGPU(FRHICommandListBase& RHICmdList, FRHIBuffer* Buffer, uint32 GPUIndex) final override;
-	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FRHIBuffer* Buffer, bool bUseUAVCounter, bool bAppendBuffer) final override;
-	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FRHITexture* Texture, uint32 MipLevel, uint16 FirstArraySlice, uint16 NumArraySlices) final override;
-	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FRHITexture* Texture, uint32 MipLevel, uint8 Format, uint16 FirstArraySlice, uint16 NumArraySlices) final override;
-	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FRHIBuffer* Buffer, uint8 Format) final override;
-	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(FRHIBuffer* Buffer) final override;
-	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(FRHIBuffer* Buffer, uint32 Stride, uint8 Format) final override;
-	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(const FShaderResourceViewInitializer& Initializer) final override;
-	virtual void RHIUpdateShaderResourceView(FRHIShaderResourceView* SRV, FRHIBuffer* Buffer, uint32 Stride, uint8 Format) final override;
-	virtual void RHIUpdateShaderResourceView(FRHIShaderResourceView* SRV, FRHIBuffer* Buffer) final override;
+	virtual void RHIUpdateTextureReference(FRHICommandListBase& RHICmdList, FRHITextureReference* TextureRef, FRHITexture* NewTexture) final override;
 	virtual FRHICalcTextureSizeResult RHICalcTexturePlatformSize(const FRHITextureDesc& Desc, uint32 FirstMipIndex) override;
-	virtual uint64 RHIGetMinimumAlignmentForBufferBackedSRV(EPixelFormat Format) final override;
 	virtual void RHIGetTextureMemoryStats(FTextureMemoryStats& OutStats) final override;
 	virtual bool RHIGetTextureMemoryVisualizeData(FColor* TextureData, int32 SizeX, int32 SizeY, int32 Pitch, int32 PixelSize) final override;
-	virtual FTextureRHIRef RHIAsyncCreateTexture2D(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, void** InitialMipData, uint32 NumInitialMips) final override;
+	virtual FTextureRHIRef RHIAsyncCreateTexture2D(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, void** InitialMipData, uint32 NumInitialMips, FGraphEventRef& OutCompletionEvent) final override;
 	virtual FTextureRHIRef RHICreateTexture(const FRHITextureCreateDesc& CreateDesc) override;
-	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(FRHITexture* Texture, const FRHITextureSRVCreateInfo& CreateInfo) final override;
 	virtual uint32 RHIComputeMemorySize(FRHITexture* TextureRHI) final override;
 	virtual FTexture2DRHIRef RHIAsyncReallocateTexture2D(FRHITexture2D* Texture2D, int32 NewMipCount, int32 NewSizeX, int32 NewSizeY, FThreadSafeCounter* RequestStatus) override;
 	virtual ETextureReallocationStatus RHIFinalizeAsyncReallocateTexture2D(FRHITexture2D* Texture2D, bool bBlockUntilCompleted) final override;
 	virtual ETextureReallocationStatus RHICancelAsyncReallocateTexture2D(FRHITexture2D* Texture2D, bool bBlockUntilCompleted) final override;
-	virtual void* RHILockTexture2D(FRHITexture2D* Texture, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail) final override;
+	virtual void* RHILockTexture2D(FRHITexture2D* Texture, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail, uint64* OutLockedByteCount = nullptr) final override;
 	virtual void RHIUnlockTexture2D(FRHITexture2D* Texture, uint32 MipIndex, bool bLockWithinMiptail) final override;
 	virtual void* RHILockTexture2DArray(FRHITexture2DArray* Texture, uint32 TextureIndex, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail) final override;
 	virtual void RHIUnlockTexture2DArray(FRHITexture2DArray* Texture, uint32 TextureIndex, uint32 MipIndex, bool bLockWithinMiptail) final override;
+	virtual void* RHILockTextureCubeFace_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITextureCube* TextureRHI, uint32 FaceIndex, uint32 ArrayIndex, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail) final override;
+	virtual void RHIUnlockTextureCubeFace_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITextureCube* TextureRHI, uint32 FaceIndex, uint32 ArrayIndex, uint32 MipIndex, bool bLockWithinMiptail) final override;
 	virtual void RHIUpdateTexture2D(FRHICommandListBase& RHICmdList, FRHITexture2D* Texture, uint32 MipIndex, const struct FUpdateTextureRegion2D& UpdateRegion, uint32 SourcePitch, const uint8* SourceData) final override;
 	virtual void RHIUpdateTexture3D(FRHICommandListBase& RHICmdList, FRHITexture3D* Texture, uint32 MipIndex, const struct FUpdateTextureRegion3D& UpdateRegion, uint32 SourceRowPitch, uint32 SourceDepthPitch, const uint8* SourceData) final override;
 	virtual FUpdateTexture3DData RHIBeginUpdateTexture3D(FRHICommandListBase& RHICmdList, FRHITexture3D* Texture, uint32 MipIndex, const struct FUpdateTextureRegion3D& UpdateRegion) final override;
@@ -527,8 +368,6 @@ public:
 	virtual void RHISubmitCommandsAndFlushGPU() final override;
 	virtual bool RHIGetAvailableResolutions(FScreenResolutionArray& Resolutions, bool bIgnoreRefreshRate) final override;
 	virtual void RHIGetSupportedResolution(uint32& Width, uint32& Height) final override;
-	virtual void RHIVirtualTextureSetFirstMipInMemory(FRHITexture2D* Texture, uint32 FirstMip) override;
-	virtual void RHIVirtualTextureSetFirstMipVisible(FRHITexture2D* Texture, uint32 FirstMip) override;
 	virtual void* RHIGetNativeDevice() final override;
 	virtual void* RHIGetNativeGraphicsQueue() final override;
 	virtual void* RHIGetNativeComputeQueue() final override;
@@ -537,11 +376,15 @@ public:
 	virtual class IRHIComputeContext* RHIGetDefaultAsyncComputeContext() final override;
 	virtual IRHIComputeContext* RHIGetCommandContext(ERHIPipeline Pipeline, FRHIGPUMask GPUMask) final override;
 	virtual IRHIPlatformCommandList* RHIFinalizeContext(IRHIComputeContext* Context) final override;
-	virtual void RHISubmitCommandLists(TArrayView<IRHIPlatformCommandList*> CommandLists) final override;
+	virtual void RHISubmitCommandLists(TArrayView<IRHIPlatformCommandList*> CommandLists, bool bFlushResources) final override;
 
 	virtual IRHITransientResourceAllocator* RHICreateTransientResourceAllocator() override;
 
 	virtual void RHIWriteGPUFence_TopOfPipe(FRHICommandListBase& RHICmdList, FRHIGPUFence* FenceRHI) final override;
+
+	// SRV / UAV creation functions
+	virtual FShaderResourceViewRHIRef  RHICreateShaderResourceView (class FRHICommandListBase& RHICmdList, FRHIViewableResource* Resource, FRHIViewDesc const& ViewDesc) override;
+	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(class FRHICommandListBase& RHICmdList, FRHIViewableResource* Resource, FRHIViewDesc const& ViewDesc) override;
 
 	// ID3D12DynamicRHI interface.
 	virtual TArray<FD3D12MinimalAdapterDesc> RHIGetAdapterDescs() const final override;
@@ -567,13 +410,14 @@ public:
 	virtual void RHITransitionResource(FRHICommandList& RHICmdList, FRHITexture* InTexture, D3D12_RESOURCE_STATES InState, uint32 InSubResource) final override;
 	virtual void RHISignalManualFence(FRHICommandList& RHICmdList, ID3D12Fence* Fence, uint64 Value) final override;
 	virtual void RHIWaitManualFence(FRHICommandList& RHICmdList, ID3D12Fence* Fence, uint64 Value) final override;
+	virtual void RHIVerifyResult(ID3D12Device* Device, HRESULT Result, const ANSICHAR* Code, const ANSICHAR* Filename, uint32 Line, FString Message = FString()) const final override;
 
 	//
 	// The Following functions are the _RenderThread version of the above functions. They allow the RHI to control the thread synchronization for greater efficiency.
 	// These will be un-commented as they are implemented.
 	//
 
-	virtual void* LockTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* Texture, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail, bool bNeedsDefaultRHIFlush = true) override final;
+	virtual void* LockTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* Texture, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail, bool bNeedsDefaultRHIFlush = true, uint64* OutLockedByteCount = nullptr) override final;
 	virtual void UnlockTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* Texture, uint32 MipIndex, bool bLockWithinMiptail, bool bNeedsDefaultRHIFlush = true) override final;
 
 	virtual void* LockTexture2DArray_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2DArray* Texture, uint32 ArrayIndex, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail) override final;
@@ -591,20 +435,6 @@ public:
 
 	virtual FTextureRHIRef RHICreateTexture_RenderThread(class FRHICommandListImmediate& RHICmdList, const FRHITextureCreateDesc& CreateDesc) override;
 
-	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, bool bUseUAVCounter, bool bAppendBuffer) override final;
-	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture* Texture, uint32 MipLevel, uint16 FirstArraySlice, uint16 NumArraySlices) override final;
-	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture* Texture, uint32 MipLevel, uint8 Format, uint16 FirstArraySlice, uint16 NumArraySlices) override final;
-	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint8 Format) override final;
-	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture* Texture, const FRHITextureSRVCreateInfo& CreateInfo) override final;
-	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint32 Stride, uint8 Format) override final;
-	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, const FShaderResourceViewInitializer& Initializer) override final;
-	virtual FShaderResourceViewRHIRef RHICreateShaderResourceViewWriteMask_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* Texture2D) override final;
-
-	virtual FShaderResourceViewRHIRef CreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint32 Stride, uint8 Format) override final;
-	virtual FShaderResourceViewRHIRef CreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer) override final;
-	virtual FShaderResourceViewRHIRef CreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, const FShaderResourceViewInitializer& Initializer) override final;
-	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer) override final;
-
 	void RHICalibrateTimers() override;
 
 #if D3D12_RHI_RAYTRACING
@@ -612,7 +442,7 @@ public:
 	virtual FRayTracingAccelerationStructureSize RHICalcRayTracingSceneSize(uint32 MaxInstances, ERayTracingAccelerationStructureFlags Flags) final override;
 	virtual FRayTracingAccelerationStructureSize RHICalcRayTracingGeometrySize(const FRayTracingGeometryInitializer& Initializer) final override;
 
-	virtual FRayTracingGeometryRHIRef RHICreateRayTracingGeometry(const FRayTracingGeometryInitializer& Initializer) final override;
+	virtual FRayTracingGeometryRHIRef RHICreateRayTracingGeometry(FRHICommandListBase& RHICmdList, const FRayTracingGeometryInitializer& Initializer) final override;
 	virtual FRayTracingSceneRHIRef RHICreateRayTracingScene(FRayTracingSceneInitializer2 Initializer) final override;
 	virtual FRayTracingShaderRHIRef RHICreateRayTracingShader(TArrayView<const uint8> Code, const FSHAHash& Hash, EShaderFrequency ShaderFrequency) final override;
 	virtual FRayTracingPipelineStateRHIRef RHICreateRayTracingPipelineState(const FRayTracingPipelineStateInitializer& Initializer) final override;
@@ -629,31 +459,17 @@ public:
 	bool IsQuadBufferStereoEnabled() const;
 	void DisableQuadBufferStereo();
 
-	FBufferRHIRef CreateBuffer(FRHICommandListBase& RHICmdList, uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo);
+	FBufferRHIRef CreateBuffer(FRHICommandListBase& RHICmdList, FRHIBufferDesc const& BufferDesc, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo);
+
 	void* LockBuffer(FRHICommandListBase& RHICmdList, FD3D12Buffer* Buffer, uint32 BufferSize, EBufferUsageFlags BufferUsage, uint32 Offset, uint32 Size, EResourceLockMode LockMode);
 	void UnlockBuffer(FRHICommandListBase& RHICmdList, FD3D12Buffer* Buffer, EBufferUsageFlags BufferUsage);
-
-	static inline bool ShouldDeferBufferLockOperation(FRHICommandListBase* RHICmdList)
-	{
-		if (RHICmdList == nullptr)
-		{
-			return false;
-		}
-
-		if (RHICmdList->IsBottomOfPipe())
-		{
-			return false;
-		}
-
-		return true;
-	}
 
 	virtual bool BeginUpdateTexture3D_ComputeShader(FUpdateTexture3DData& UpdateData, FD3D12UpdateTexture3DData* UpdateDataD3D12)
 	{
 		// Not supported on PC
 		return false;
 	}
-	virtual void EndUpdateTexture3D_ComputeShader(FRHICommandListBase& RHICmdList, FUpdateTexture3DData& UpdateData, FD3D12UpdateTexture3DData* UpdateDataD3D12)
+	virtual void EndUpdateTexture3D_ComputeShader(FRHIComputeCommandList& RHICmdList, FUpdateTexture3DData& UpdateData, FD3D12UpdateTexture3DData* UpdateDataD3D12)
 	{
 		// Not supported on PC
 	}
@@ -661,15 +477,13 @@ public:
 	FUpdateTexture3DData BeginUpdateTexture3D_Internal(FRHITexture3D* Texture, uint32 MipIndex, const struct FUpdateTextureRegion3D& UpdateRegion);
 	void EndUpdateTexture3D_Internal(FRHICommandListBase& RHICmdList, FUpdateTexture3DData& UpdateData);
 
-	void UpdateBuffer(FD3D12ResourceLocation* Dest, uint32 DestOffset, FD3D12ResourceLocation* Source, uint32 SourceOffset, uint32 NumBytes);
-
 public:
 
 #if	PLATFORM_SUPPORTS_VIRTUAL_TEXTURES
 	virtual void* CreateVirtualTexture(ETextureCreateFlags InFlags, D3D12_RESOURCE_DESC& ResourceDesc, const struct FD3D12TextureLayout& TextureLayout, FD3D12Resource** ppResource, FPlatformMemory::FPlatformVirtualMemoryBlock& RawTextureBlock, D3D12_RESOURCE_STATES InitialUsage = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) = 0;
 	virtual void DestroyVirtualTexture(ETextureCreateFlags InFlags, void* RawTextureMemory, FPlatformMemory::FPlatformVirtualMemoryBlock& RawTextureBlock, uint64 CommittedTextureSize) = 0;
 #endif
-	virtual bool HandleSpecialLock(void*& MemoryOut, uint32 MipIndex, uint32 ArrayIndex, FD3D12Texture* InTexture, EResourceLockMode LockMode, uint32& DestStride) { return false; }
+	virtual bool HandleSpecialLock(void*& MemoryOut, uint32 MipIndex, uint32 ArrayIndex, FD3D12Texture* InTexture, EResourceLockMode LockMode, uint32& DestStride, uint64* OutLockedByteCount = nullptr) { return false; }
 	virtual bool HandleSpecialUnlock(FRHICommandListBase* RHICmdList, uint32 MipIndex, FD3D12Texture* InTexture) { return false; }
 
 	FD3D12Adapter& GetAdapter(uint32_t Index = 0) { return *ChosenAdapters[Index]; }
@@ -680,21 +494,7 @@ public:
 	bool IsPixEventEnabled() const { return bPixEventEnabled; }
 
 	template<typename PerDeviceFunction>
-	void ForEachDevice(ID3D12Device* inDevice, const PerDeviceFunction& pfPerDeviceFunction)
-	{
-		for (uint32 AdapterIndex = 0; AdapterIndex < GetNumAdapters(); ++AdapterIndex)
-		{
-			FD3D12Adapter& D3D12Adapter = GetAdapter(AdapterIndex);
-			for (uint32 GPUIndex : FRHIGPUMask::All())
-			{
-				FD3D12Device* D3D12Device = D3D12Adapter.GetDevice(GPUIndex);
-				if (inDevice == nullptr || D3D12Device->GetDevice() == inDevice)
-				{
-					pfPerDeviceFunction(D3D12Device);
-				}
-			}
-		}
-	}
+	void ForEachDevice(ID3D12Device* inDevice, const PerDeviceFunction& pfPerDeviceFunction);
 
 	AGSContext* GetAmdAgsContext() { return AmdAgsContext; }
 	void SetAmdSupportedExtensionFlags(uint32 Flags) { AmdSupportedExtensionFlags = Flags; }
@@ -739,7 +539,7 @@ public:
 	virtual FD3D12ResourceDesc GetResourceDesc(const FRHITextureDesc& CreateInfo) const;
 
 	virtual FD3D12Texture* CreateD3D12Texture(const FRHITextureCreateDesc& CreateDesc, class FRHICommandListImmediate* RHICmdList, ID3D12ResourceAllocator* ResourceAllocator = nullptr);
-	FD3D12Buffer* CreateD3D12Buffer(class FRHICommandListBase* RHICmdList, uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo, ID3D12ResourceAllocator* ResourceAllocator = nullptr);
+	FD3D12Buffer* CreateD3D12Buffer(class FRHICommandListBase* RHICmdList, FRHIBufferDesc const& BufferDesc, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo, ID3D12ResourceAllocator* ResourceAllocator = nullptr);
 	virtual FD3D12Texture* CreateNewD3D12Texture(const FRHITextureCreateDesc& CreateDesc, class FD3D12Device* Device);
 
 	FRHIBuffer* CreateBuffer(const FRHIBufferCreateInfo& CreateInfo, const TCHAR* DebugName, ERHIAccess InitialState, ID3D12ResourceAllocator* ResourceAllocator);
@@ -775,19 +575,17 @@ protected:
 
 	void ReadSurfaceDataMSAARaw(FRHITexture* TextureRHI, FIntRect Rect, TArray<uint8>& OutData, FReadSurfaceDataFlags InFlags);
 
-	void SetupRecursiveResources();
-
 	// This should only be called by Dynamic RHI member functions
-	inline FD3D12Device* GetRHIDevice(uint32 GPUIndex) const
-	{
-		return GetAdapter().GetDevice(GPUIndex);
-	}
+	FD3D12Device* GetRHIDevice(uint32 GPUIndex) const;
 
 	HANDLE FlipEvent;
 
 	const bool bAllowVendorDevice;
 
 	FDisplayInformationArray DisplayList;
+
+	void ProcessDeferredDeletionQueue();
+	void ProcessDeferredDeletionQueue_Platform();
 };
 
 ENUM_CLASS_FLAGS(FD3D12DynamicRHI::EQueueStatus);
@@ -878,230 +676,5 @@ public:
 	}
 };
 
-// This namespace is needed to avoid a name clash with D3D11 RHI when linked together in monolithic builds. Otherwise the linker will just pick any variant instead of each RHI using their own version.
-namespace D3D12RHI
-{
-
-inline DXGI_FORMAT FindSharedResourceDXGIFormat(DXGI_FORMAT InFormat, bool bSRGB)
-{
-	if (bSRGB)
-	{
-		switch (InFormat)
-		{
-		case DXGI_FORMAT_B8G8R8X8_TYPELESS:    return DXGI_FORMAT_B8G8R8X8_UNORM_SRGB;
-		case DXGI_FORMAT_B8G8R8A8_TYPELESS:    return DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
-		case DXGI_FORMAT_R8G8B8A8_TYPELESS:    return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-		case DXGI_FORMAT_BC1_TYPELESS:         return DXGI_FORMAT_BC1_UNORM_SRGB;
-		case DXGI_FORMAT_BC2_TYPELESS:         return DXGI_FORMAT_BC2_UNORM_SRGB;
-		case DXGI_FORMAT_BC3_TYPELESS:         return DXGI_FORMAT_BC3_UNORM_SRGB;
-		case DXGI_FORMAT_BC7_TYPELESS:         return DXGI_FORMAT_BC7_UNORM_SRGB;
-		};
-	}
-	else
-	{
-		switch (InFormat)
-		{
-		case DXGI_FORMAT_B8G8R8X8_TYPELESS:    return DXGI_FORMAT_B8G8R8X8_UNORM;
-		case DXGI_FORMAT_B8G8R8A8_TYPELESS: return DXGI_FORMAT_B8G8R8A8_UNORM;
-		case DXGI_FORMAT_R8G8B8A8_TYPELESS: return DXGI_FORMAT_R8G8B8A8_UNORM;
-		case DXGI_FORMAT_BC1_TYPELESS:      return DXGI_FORMAT_BC1_UNORM;
-		case DXGI_FORMAT_BC2_TYPELESS:      return DXGI_FORMAT_BC2_UNORM;
-		case DXGI_FORMAT_BC3_TYPELESS:      return DXGI_FORMAT_BC3_UNORM;
-		case DXGI_FORMAT_BC7_TYPELESS:      return DXGI_FORMAT_BC7_UNORM;
-		};
-	}
-	switch (InFormat)
-	{
-	case DXGI_FORMAT_R32G32B32A32_TYPELESS: return DXGI_FORMAT_R32G32B32A32_UINT;
-	case DXGI_FORMAT_R32G32B32_TYPELESS:    return DXGI_FORMAT_R32G32B32_UINT;
-	case DXGI_FORMAT_R16G16B16A16_TYPELESS: return DXGI_FORMAT_R16G16B16A16_UNORM;
-	case DXGI_FORMAT_R32G32_TYPELESS:       return DXGI_FORMAT_R32G32_UINT;
-	case DXGI_FORMAT_R10G10B10A2_TYPELESS:  return DXGI_FORMAT_R10G10B10A2_UNORM;
-	case DXGI_FORMAT_R16G16_TYPELESS:       return DXGI_FORMAT_R16G16_UNORM;
-	case DXGI_FORMAT_R8G8_TYPELESS:         return DXGI_FORMAT_R8G8_UNORM;
-	case DXGI_FORMAT_R8_TYPELESS:           return DXGI_FORMAT_R8_UNORM;
-
-	case DXGI_FORMAT_BC4_TYPELESS:         return DXGI_FORMAT_BC4_UNORM;
-	case DXGI_FORMAT_BC5_TYPELESS:         return DXGI_FORMAT_BC5_UNORM;
-
-
-
-	case DXGI_FORMAT_R24G8_TYPELESS: return DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
-	case DXGI_FORMAT_R32_TYPELESS: return DXGI_FORMAT_R32_FLOAT;
-	case DXGI_FORMAT_R16_TYPELESS: return DXGI_FORMAT_R16_UNORM;
-		// Changing Depth Buffers to 32 bit on Dingo as D24S8 is actually implemented as a 32 bit buffer in the hardware
-	case DXGI_FORMAT_R32G8X24_TYPELESS: return DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
-	}
-	return InFormat;
-}
-
-inline DXGI_FORMAT FindDepthStencilResourceDXGIFormat(DXGI_FORMAT InFormat)
-{
-	switch (InFormat)
-	{
-	case DXGI_FORMAT_R32_FLOAT: return DXGI_FORMAT_R32_TYPELESS;
-	case DXGI_FORMAT_R16_FLOAT: return DXGI_FORMAT_R16_TYPELESS;
-	}
-
-	return InFormat;
-}
-
-inline DXGI_FORMAT GetPlatformTextureResourceFormat(DXGI_FORMAT InFormat, ETextureCreateFlags InFlags)
-{
-	// Find valid shared texture format
-	if (EnumHasAnyFlags(InFlags, TexCreate_Shared))
-	{
-		return FindSharedResourceDXGIFormat(InFormat, EnumHasAnyFlags(InFlags, TexCreate_SRGB));
-	}
-	if (EnumHasAnyFlags(InFlags, TexCreate_DepthStencilTargetable))
-	{
-		return FindDepthStencilResourceDXGIFormat(InFormat);
-	}
-
-	return InFormat;
-}
-
-/** Find an appropriate DXGI format for the input format and SRGB setting. */
-inline DXGI_FORMAT FindShaderResourceDXGIFormat(DXGI_FORMAT InFormat, bool bSRGB)
-{
-	if (bSRGB)
-	{
-		switch (InFormat)
-		{
-		case DXGI_FORMAT_B8G8R8A8_TYPELESS:    return DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
-		case DXGI_FORMAT_R8G8B8A8_TYPELESS:    return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-		case DXGI_FORMAT_BC1_TYPELESS:         return DXGI_FORMAT_BC1_UNORM_SRGB;
-		case DXGI_FORMAT_BC2_TYPELESS:         return DXGI_FORMAT_BC2_UNORM_SRGB;
-		case DXGI_FORMAT_BC3_TYPELESS:         return DXGI_FORMAT_BC3_UNORM_SRGB;
-		case DXGI_FORMAT_BC7_TYPELESS:         return DXGI_FORMAT_BC7_UNORM_SRGB;
-		};
-	}
-	else
-	{
-		switch (InFormat)
-		{
-		case DXGI_FORMAT_B8G8R8A8_TYPELESS: return DXGI_FORMAT_B8G8R8A8_UNORM;
-		case DXGI_FORMAT_R8G8B8A8_TYPELESS: return DXGI_FORMAT_R8G8B8A8_UNORM;
-		case DXGI_FORMAT_BC1_TYPELESS:      return DXGI_FORMAT_BC1_UNORM;
-		case DXGI_FORMAT_BC2_TYPELESS:      return DXGI_FORMAT_BC2_UNORM;
-		case DXGI_FORMAT_BC3_TYPELESS:      return DXGI_FORMAT_BC3_UNORM;
-		case DXGI_FORMAT_BC7_TYPELESS:      return DXGI_FORMAT_BC7_UNORM;
-		};
-	}
-	switch (InFormat)
-	{
-	case DXGI_FORMAT_R24G8_TYPELESS: return DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
-	case DXGI_FORMAT_R32_TYPELESS: return DXGI_FORMAT_R32_FLOAT;
-	case DXGI_FORMAT_R16_TYPELESS: return DXGI_FORMAT_R16_UNORM;
-		// Changing Depth Buffers to 32 bit on Dingo as D24S8 is actually implemented as a 32 bit buffer in the hardware
-	case DXGI_FORMAT_R32G8X24_TYPELESS: return DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
-	}
-	return InFormat;
-}
-
-/** Find an appropriate DXGI format unordered access of the raw format. */
-inline DXGI_FORMAT FindUnorderedAccessDXGIFormat(DXGI_FORMAT InFormat)
-{
-	switch (InFormat)
-	{
-	case DXGI_FORMAT_B8G8R8A8_TYPELESS: return DXGI_FORMAT_B8G8R8A8_UNORM;
-	case DXGI_FORMAT_R8G8B8A8_TYPELESS: return DXGI_FORMAT_R8G8B8A8_UNORM;
-	}
-	return InFormat;
-}
-
-/** Find the appropriate depth-stencil targetable DXGI format for the given format. */
-inline DXGI_FORMAT FindDepthStencilDXGIFormat(DXGI_FORMAT InFormat)
-{
-	switch (InFormat)
-	{
-	case DXGI_FORMAT_R24G8_TYPELESS:
-		return DXGI_FORMAT_D24_UNORM_S8_UINT;
-		// Changing Depth Buffers to 32 bit on Dingo as D24S8 is actually implemented as a 32 bit buffer in the hardware
-	case DXGI_FORMAT_R32G8X24_TYPELESS:
-		return DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
-	case DXGI_FORMAT_R32_TYPELESS:
-		return DXGI_FORMAT_D32_FLOAT;
-	case DXGI_FORMAT_R16_TYPELESS:
-		return DXGI_FORMAT_D16_UNORM;
-	};
-	return InFormat;
-}
-
-/**
-* Returns whether the given format contains stencil information.
-* Must be passed a format returned by FindDepthStencilDXGIFormat, so that typeless versions are converted to their corresponding depth stencil view format.
-*/
-inline bool HasStencilBits(DXGI_FORMAT InFormat)
-{
-	switch (InFormat)
-	{
-	case DXGI_FORMAT_D24_UNORM_S8_UINT:
-		// Changing Depth Buffers to 32 bit on Dingo as D24S8 is actually implemented as a 32 bit buffer in the hardware
-	case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
-		return true;
-	};
-
-	return false;
-}
-
-static void TranslateRenderTargetFormats(
-	const FGraphicsPipelineStateInitializer &PsoInit,
-	D3D12_RT_FORMAT_ARRAY& RTFormatArray,
-	DXGI_FORMAT& DSVFormat)
-{
-	RTFormatArray.NumRenderTargets = PsoInit.ComputeNumValidRenderTargets();
-
-	for (uint32 RTIdx = 0; RTIdx < PsoInit.RenderTargetsEnabled; ++RTIdx)
-	{
-		checkSlow(PsoInit.RenderTargetFormats[RTIdx] == PF_Unknown || GPixelFormats[PsoInit.RenderTargetFormats[RTIdx]].Supported);
-
-		DXGI_FORMAT PlatformFormat = (DXGI_FORMAT)GPixelFormats[PsoInit.RenderTargetFormats[RTIdx]].PlatformFormat;
-		ETextureCreateFlags Flags = PsoInit.RenderTargetFlags[RTIdx];
-
-		RTFormatArray.RTFormats[RTIdx] = D3D12RHI::FindShaderResourceDXGIFormat( GetPlatformTextureResourceFormat(PlatformFormat, Flags), EnumHasAnyFlags(Flags, TexCreate_SRGB) );
-	}
-
-	checkSlow(PsoInit.DepthStencilTargetFormat == PF_Unknown || GPixelFormats[PsoInit.DepthStencilTargetFormat].Supported);
-
-	DXGI_FORMAT PlatformFormat = (DXGI_FORMAT)GPixelFormats[PsoInit.DepthStencilTargetFormat].PlatformFormat;
-
-	DSVFormat = D3D12RHI::FindDepthStencilDXGIFormat( GetPlatformTextureResourceFormat(PlatformFormat, PsoInit.DepthStencilTargetFlag) );
-}
-
-} // namespace D3D12RHI
-
 // Returns the given format as a string. Unsupported formats are treated as DXGI_FORMAT_UNKNOWN.
 const TCHAR* LexToString(DXGI_FORMAT Format);
-
-#if (PLATFORM_WINDOWS || PLATFORM_HOLOLENS)
-
-#ifndef DXGI_PRESENT_ALLOW_TEARING
-#define DXGI_PRESENT_ALLOW_TEARING          0x00000200UL
-#define DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING  2048
-
-#endif
-
-
-
-#define EMBED_DXGI_ERROR_LIST(PerEntry, Terminator)	\
-	PerEntry(DXGI_ERROR_UNSUPPORTED) Terminator \
-	PerEntry(DXGI_ERROR_NOT_CURRENT) Terminator \
-	PerEntry(DXGI_ERROR_MORE_DATA) Terminator \
-	PerEntry(DXGI_ERROR_MODE_CHANGE_IN_PROGRESS) Terminator \
-	PerEntry(DXGI_ERROR_ALREADY_EXISTS) Terminator \
-	PerEntry(DXGI_ERROR_SESSION_DISCONNECTED) Terminator \
-	PerEntry(DXGI_ERROR_ACCESS_DENIED) Terminator \
-	PerEntry(DXGI_ERROR_NON_COMPOSITED_UI) Terminator \
-	PerEntry(DXGI_ERROR_CACHE_FULL) Terminator \
-	PerEntry(DXGI_ERROR_NOT_CURRENTLY_AVAILABLE) Terminator \
-	PerEntry(DXGI_ERROR_CACHE_CORRUPT) Terminator \
-	PerEntry(DXGI_ERROR_WAIT_TIMEOUT) Terminator \
-	PerEntry(DXGI_ERROR_FRAME_STATISTICS_DISJOINT) Terminator \
-	PerEntry(DXGI_ERROR_DYNAMIC_CODE_POLICY_VIOLATION) Terminator \
-	PerEntry(DXGI_ERROR_REMOTE_OUTOFMEMORY) Terminator \
-	PerEntry(DXGI_ERROR_ACCESS_LOST) Terminator
-
-
-
-#endif //(PLATFORM_WINDOWS || PLATFORM_HOLOLENS)

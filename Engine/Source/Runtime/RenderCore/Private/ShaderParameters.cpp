@@ -6,7 +6,6 @@
 
 #include "ShaderParameters.h"
 #include "Containers/List.h"
-#include "UniformBuffer.h"
 #include "ShaderCore.h"
 #include "Shader.h"
 #include "VertexFactory.h"
@@ -16,7 +15,9 @@
 
 IMPLEMENT_TYPE_LAYOUT(FShaderParameter);
 IMPLEMENT_TYPE_LAYOUT(FShaderResourceParameter);
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 IMPLEMENT_TYPE_LAYOUT(FRWShaderParameter);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 IMPLEMENT_TYPE_LAYOUT(FShaderUniformBufferParameter);
 
 void FShaderParameter::Bind(const FShaderParameterMap& ParameterMap,const TCHAR* ParameterName,EShaderParameterFlags Flags)
@@ -385,9 +386,9 @@ static FShaderParametersMetadata* FindShaderParametersMetadataWithVariableName(c
 }
 
 /* deprecated */
-void CacheUniformBufferIncludes(TMap<const TCHAR*, FCachedUniformBufferDeclaration>& Cache, EShaderPlatform Platform)
+void CacheUniformBufferIncludes(TMap<const TCHAR*, FCachedUniformBufferDeclaration, FDefaultSetAllocator, TStringPointerMapKeyFuncs_DEPRECATED<const TCHAR*, FCachedUniformBufferDeclaration>>& Cache, EShaderPlatform Platform)
 {
-	for (TMap<const TCHAR*, FCachedUniformBufferDeclaration>::TIterator It(Cache); It; ++It)
+	for (TMap<const TCHAR*, FCachedUniformBufferDeclaration, FDefaultSetAllocator, TStringPointerMapKeyFuncs_DEPRECATED<const TCHAR*, FCachedUniformBufferDeclaration>>::TIterator It(Cache); It; ++It)
 	{
 		const TCHAR* UniformBufferName = It.Key();
 		FCachedUniformBufferDeclaration& BufferDeclaration = It.Value();
@@ -402,7 +403,7 @@ void CacheUniformBufferIncludes(TMap<const TCHAR*, FCachedUniformBufferDeclarati
 	}
 }
 
-void UE::ShaderParameters::AddUniformBufferIncludesToEnvironment(FShaderCompilerEnvironment& OutEnvironment, const TSet<const TCHAR*>& InUniformBufferNames)
+void UE::ShaderParameters::AddUniformBufferIncludesToEnvironment(FShaderCompilerEnvironment& OutEnvironment, const TSet<const TCHAR*, TStringPointerSetKeyFuncs_DEPRECATED<const TCHAR*>>& InUniformBufferNames)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UE::ShaderParameters::AddUniformBufferIncludesToEnvironment);
 
@@ -410,20 +411,22 @@ void UE::ShaderParameters::AddUniformBufferIncludesToEnvironment(FShaderCompiler
 
 	for (const TCHAR* UniformBufferName : InUniformBufferNames)
 	{
-		if (const FShaderParametersMetadata* Metadata = FindShaderParametersMetadataWithVariableName(UniformBufferName))
+		FStringView UniformBufferNameView(UniformBufferName);
+		if (!OutEnvironment.UniformBufferMap.FindByHash(FCrc::Strihash_DEPRECATED(UniformBufferName), UniformBufferName))
 		{
-			const FThreadSafeSharedStringPtr UniformBufferDeclaration = Metadata->GetUniformBufferDeclarationPtr();
+			if (const FShaderParametersMetadata* Metadata = FindShaderParametersMetadataWithVariableName(UniformBufferName))
+			{
+				const FThreadSafeSharedStringPtr UniformBufferDeclaration = Metadata->GetUniformBufferDeclarationPtr();
 
-			check(UniformBufferDeclaration.Get() != NULL);
-			check(!UniformBufferDeclaration.Get()->IsEmpty());
+				check(UniformBufferDeclaration.Get() != NULL);
+				check(!UniformBufferDeclaration.Get()->IsEmpty());
 
-			const FString UniformBufferPath = FString::Printf(TEXT("/Engine/Generated/UniformBuffers/%s.ush"), UniformBufferName);
+				UniformBufferIncludes += Metadata->GetUniformBufferInclude();
 
-			UniformBufferIncludes += FString::Printf(TEXT("#include \"%s\"") LINE_TERMINATOR, *UniformBufferPath);
+				OutEnvironment.IncludeVirtualPathToExternalContentsMap.AddByHash(Metadata->GetUniformBufferPathHash(), Metadata->GetUniformBufferPath(), UniformBufferDeclaration);
 
-			OutEnvironment.IncludeVirtualPathToExternalContentsMap.Add(UniformBufferPath, UniformBufferDeclaration);
-
-			Metadata->AddResourceTableEntries(OutEnvironment.ResourceTableMap, OutEnvironment.UniformBufferMap);
+				Metadata->AddResourceTableEntries(OutEnvironment.ResourceTableMap, OutEnvironment.UniformBufferMap);
+			}
 		}
 	}
 

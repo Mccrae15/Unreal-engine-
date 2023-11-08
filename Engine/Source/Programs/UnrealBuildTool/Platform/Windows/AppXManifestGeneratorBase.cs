@@ -2,33 +2,26 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.IO;
-using System.Text.RegularExpressions;
-using System.Xml;
-using EpicGames.Core;
-using System.Xml.Linq;
-using System.Text;
-using System.Diagnostics;
-using UnrealBuildBase;
 using System.Diagnostics.CodeAnalysis;
+using System.Linq;
+using System.Text.RegularExpressions;
+using System.Xml.Linq;
+using EpicGames.Core;
 using Microsoft.Extensions.Logging;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
 	/// <summary>
 	/// Base class for VC appx manifest generation
 	/// </summary>
-	abstract public class AppXManifestGeneratorBase
+	public abstract class AppXManifestGeneratorBase
 	{
-		/// default schema namespace
-        protected virtual string Schema2010NS { get { return "http://schemas.microsoft.com/appx/2010/manifest"; } }
-
 		/// config section for platform-specific target settings
-		protected virtual string IniSection_PlatformTargetSettings { get { return string.Format( "/Script/{0}PlatformEditor.{0}TargetSettings", Platform.ToString() ); } }
-		
+		protected virtual string IniSection_PlatformTargetSettings => String.Format("/Script/{0}PlatformEditor.{0}TargetSettings", Platform.ToString());
+
 		/// config section for general target settings
-		protected virtual string IniSection_GeneralProjectSettings { get { return "/Script/EngineSettings.GeneralProjectSettings"; } }
+		protected virtual string IniSection_GeneralProjectSettings => "/Script/EngineSettings.GeneralProjectSettings";
 
 		/// default subdirectory for build resources
 		protected const string BuildResourceSubPath = "Resources";
@@ -36,11 +29,8 @@ namespace UnrealBuildTool
 		/// default subdirectory for engine resources
 		protected const string EngineResourceSubPath = "DefaultImages";
 
-		/// platform to use for reading configuration
-		protected virtual UnrealTargetPlatform ConfigPlatform { get { return Platform; } }
-
-        /// Manifest compliance values
-        protected const int MaxResourceEntries = 200;
+		/// Manifest compliance values
+		protected const int MaxResourceEntries = 200;
 
 		/// cached engine ini
 		protected ConfigHierarchy? EngineIni;
@@ -48,17 +38,14 @@ namespace UnrealBuildTool
 		/// cached game ini
 		protected ConfigHierarchy? GameIni;
 
+		/// AppX package resource generator
+		protected UEAppXResources? AppXResources;
+
 		/// the default culture to use
-		protected string? DefaultCulture;
+		protected string? DefaultAppXCultureId;
 
-		/// all cultures that will be staged
-		protected List<string>? CulturesToStage;
-
-		/// resource writer for the default culture
-		protected UEResXWriter? DefaultResourceWriter;
-
-		/// resource writers for each culture
-		protected Dictionary<string, UEResXWriter>? PerCultureResourceWriters;
+		/// lookup table for UE's CultureToStage StageId to AppX CultureId
+		protected Dictionary<string, string> UEStageIdToAppXCultureId = new Dictionary<string, string>();
 
 		/// the platform to generate the manifest for
 		protected UnrealTargetPlatform Platform;
@@ -66,121 +53,23 @@ namespace UnrealBuildTool
 		/// project file to use
 		protected FileReference? ProjectFile;
 
-		/// directory containing the project
-		protected string? ProjectPath;
+		/// target name to use
+		protected string? TargetName;
 
-		/// output path - where the manifest will be created
-		protected string? OutputPath;
-
-		/// intermediate path - used for temporary files
-		protected string? IntermediatePath;
-
-		/// files that should be included in the manifest output folder and where to source them from
-		protected Dictionary<string,string>? ManifestFiles; // Dst, Src
-
-		/// <summary>
 		/// Logger for output
-		/// </summary>
 		protected readonly ILogger Logger;
+		
+		/// Whether we have logged the deprecation warning for PerCultureResources CultureId being replaced by StageIdOverrides
+		protected static bool bHasWarnedAboutDeprecatedCultureId = false;
 
 		/// <summary>
 		/// Create a manifest generator for the given platform variant.
 		/// </summary>
-		public AppXManifestGeneratorBase( UnrealTargetPlatform InPlatform, ILogger InLogger )
+		public AppXManifestGeneratorBase(UnrealTargetPlatform InPlatform, ILogger InLogger)
 		{
 			Platform = InPlatform;
 			Logger = InLogger;
 		}
-
-		/// <summary>
-		/// Lookup a switch in a dictionary
-		/// </summary>
-        protected static bool SafeGetBool(IDictionary<string, string> InDictionary, string Key, bool DefaultValue = false)
-		{
-			if (InDictionary.ContainsKey(Key))
-			{
-				var Value = InDictionary[Key].Trim().ToLower();
-				return Value == "true" || Value == "1" || Value == "yes";
-			}
-
-			return DefaultValue;
-		}
-
-		/// <summary>
-		/// Attempts to create the given directory
-		/// </summary>
-		protected static bool CreateCheckDirectory(string TargetDirectory, ILogger Logger)
-		{
-			if (!Directory.Exists(TargetDirectory))
-			{
-				try
-				{
-					Directory.CreateDirectory(TargetDirectory);
-				}
-				catch (Exception)
-				{
-					Logger.LogError("Could not create directory {TargetDir}.", TargetDirectory);
-					return false;
-				}
-				if (!Directory.Exists(TargetDirectory))
-				{
-					Logger.LogError("Path {TargetDir} does not exist or is not a directory.", TargetDirectory);
-					return false;
-				}
-			}
-			return true;
-		}
-
-
-        /// <summary>
-        /// Runs Makepri. Blocking
-        /// </summary>
-        /// <param name="CommandLine">Commandline</param>
-        /// <returns>bool    Application ran successfully</returns>
-        protected bool RunMakePri(string CommandLine)
-        {
-			string PriExecutable = GetMakePriBinaryPath();
-
-			if (File.Exists(PriExecutable) == false)
-			{
-				throw new BuildException("BUILD FAILED: Couldn't find the makepri executable: {0}", PriExecutable);
-			}
-
-			StringBuilder ProcessOutput = new StringBuilder();
-			void LocalProcessOutput(DataReceivedEventArgs Args)
-			{
-				if (Args != null && Args.Data != null)
-				{
-					ProcessOutput.AppendLine(Args.Data.TrimEnd());
-				}
-			}
-
-			ProcessStartInfo StartInfo = new ProcessStartInfo(PriExecutable, CommandLine);			
-			StartInfo.UseShellExecute = false;
-			StartInfo.CreateNoWindow = true;
-			StartInfo.StandardOutputEncoding = Encoding.Unicode;
-			StartInfo.StandardErrorEncoding = Encoding.Unicode;
-
-			Process LocalProcess = new Process();
-			LocalProcess.StartInfo = StartInfo;
-			LocalProcess.OutputDataReceived += (Sender, Args) => { LocalProcessOutput(Args); };
-			LocalProcess.ErrorDataReceived += (Sender, Args) => { LocalProcessOutput(Args); };
-			int ExitCode = Utils.RunLocalProcess(LocalProcess);
-
-			if (ExitCode == 0)
-			{
-				Logger.LogDebug("Output", ProcessOutput.ToString());
-				return true;
-			}
-			else
-			{
-				Logger.LogInformation("Output", ProcessOutput.ToString());
-				Logger.LogError("{File} returned an error.", Path.GetFileName(PriExecutable));
-				Logger.LogError("Exit code: {Code}", ExitCode);
-				return false;
-			}
-        }
-
 
 		/// <summary>
 		/// Returns a valid version of the given package version string
@@ -197,7 +86,7 @@ namespace UnrealBuildTool
 				{
 					string QuadElement = SplitVersionString[VersionElement];
 					int QuadValue = 0;
-					if (QuadElement.Length == 0 || !int.TryParse(QuadElement, out QuadValue))
+					if (QuadElement.Length == 0 || !Int32.TryParse(QuadElement, out QuadValue))
 					{
 						CompletedVersionString += "0";
 					}
@@ -257,17 +146,23 @@ namespace UnrealBuildTool
 		/// Reads an integer from the cached ini files
 		/// </summary>
 		[return: NotNullIfNotNull("DefaultValue")]
-        protected string? ReadIniString(string? Key, string Section, string? DefaultValue = null)
+		protected string? ReadIniString(string? Key, string Section, string? DefaultValue = null)
 		{
 			if (Key == null)
+			{
 				return DefaultValue;
+			}
 
 			string Value;
-			if (GameIni!.GetString(Section, Key, out Value) && !string.IsNullOrWhiteSpace(Value))
+			if (GameIni!.GetString(Section, Key, out Value) && !String.IsNullOrWhiteSpace(Value))
+			{
 				return Value;
+			}
 
-			if (EngineIni!.GetString(Section, Key, out Value) && !string.IsNullOrWhiteSpace(Value))
+			if (EngineIni!.GetString(Section, Key, out Value) && !String.IsNullOrWhiteSpace(Value))
+			{
 				return Value;
+			}
 
 			return DefaultValue;
 		}
@@ -276,7 +171,7 @@ namespace UnrealBuildTool
 		/// Reads a string from the cached ini files
 		/// </summary>
 		[return: NotNullIfNotNull("DefaultValue")]
-        protected string? GetConfigString(string PlatformKey, string? GenericKey, string? DefaultValue = null)
+		protected string? GetConfigString(string PlatformKey, string? GenericKey, string? DefaultValue = null)
 		{
 			string? GenericValue = ReadIniString(GenericKey, IniSection_GeneralProjectSettings, DefaultValue);
 			return ReadIniString(PlatformKey, IniSection_PlatformTargetSettings, GenericValue);
@@ -287,11 +182,13 @@ namespace UnrealBuildTool
 		/// </summary>
 		protected bool GetConfigBool(string PlatformKey, string? GenericKey, bool DefaultValue = false)
 		{
-			var GenericValue = ReadIniString(GenericKey, IniSection_GeneralProjectSettings, null);
-			var ResultStr = ReadIniString(PlatformKey, IniSection_PlatformTargetSettings, GenericValue);
+			string? GenericValue = ReadIniString(GenericKey, IniSection_GeneralProjectSettings, null);
+			string? ResultStr = ReadIniString(PlatformKey, IniSection_PlatformTargetSettings, GenericValue);
 
 			if (ResultStr == null)
+			{
 				return DefaultValue;
+			}
 
 			ResultStr = ResultStr.Trim().ToLower();
 
@@ -303,16 +200,18 @@ namespace UnrealBuildTool
 		/// </summary>
 		protected string GetConfigColor(string PlatformConfigKey, string DefaultValue)
 		{
-			var ConfigValue = GetConfigString(PlatformConfigKey, null, null);
+			string? ConfigValue = GetConfigString(PlatformConfigKey, null, null);
 			if (ConfigValue == null)
+			{
 				return DefaultValue;
+			}
 
 			Dictionary<string, string>? Pairs;
 			int R, G, B;
 			if (ConfigHierarchy.TryParse(ConfigValue, out Pairs) &&
-				int.TryParse(Pairs["R"], out R) &&
-				int.TryParse(Pairs["G"], out G) &&
-				int.TryParse(Pairs["B"], out B))
+				Int32.TryParse(Pairs["R"], out R) &&
+				Int32.TryParse(Pairs["G"], out G) &&
+				Int32.TryParse(Pairs["B"], out B))
 			{
 				return "#" + R.ToString("X2") + G.ToString("X2") + B.ToString("X2");
 			}
@@ -321,348 +220,111 @@ namespace UnrealBuildTool
 			return DefaultValue;
 		}
 
-
-
-
-		private bool RemoveStaleResourceFiles()
-		{
-			// remove all resource files that should not be included
-			string TargetResourceDir = Path.Combine(OutputPath!, BuildResourceSubPath);
-			var TargetResourceInstances = Directory.EnumerateFiles(TargetResourceDir, "*.*", SearchOption.AllDirectories);
-
-			var StaleResourceFiles = TargetResourceInstances.Where(X => !ManifestFiles!.ContainsKey(X)).ToList();
-			if (StaleResourceFiles.Any())
-			{
-				Logger.LogDebug("Removing stale manifest resource files...");
-				foreach (string StaleResourceFile in StaleResourceFiles)
-				{
-					// try to delete the file & the directory that contains it
-					try
-					{
-						Logger.LogDebug("    removing {Path}", Utils.MakePathRelativeTo(StaleResourceFile, OutputPath!));
-						FileUtils.ForceDeleteFile(StaleResourceFile);
-						if (!Directory.EnumerateFileSystemEntries(Path.GetDirectoryName(StaleResourceFile)!).Any())
-						{
-							Directory.Delete(Path.GetDirectoryName(StaleResourceFile)!, false);
-						}
-					}
-					catch (Exception E)
-					{
-						Logger.LogError("    Could not remove {StaleResourceFile} - {Message}.", StaleResourceFile, E.Message);
-					}
-				}
-			}
-
-			return StaleResourceFiles.Any();
-		}
-
-
 		/// <summary>
-		/// Attempts to locate the given resource binary file in several known folder locations
+		/// Create all the localization data. Returns whether there is any per-culture data set up
 		/// </summary>
-		protected virtual bool FindResourceBinaryFile( out string SourcePath, string ResourceFileName, bool AllowEngineFallback = true)
+		protected virtual bool BuildLocalizationData()
 		{
-			// look in project normal Build location
-			SourcePath = Path.Combine(ProjectPath!, "Build", Platform.ToString(), BuildResourceSubPath);
-			bool bFileExists = File.Exists(Path.Combine(SourcePath, ResourceFileName));
+			bool bHasPerCultureResources = false;
 
-			// look in Platform Extensions next
-			if (!bFileExists)
+			// reset per-culture strings and make sure the default culture entry exists
+			AppXResources!.ClearStrings();
+
+			// add all default strings
+			if (EngineIni!.GetString(IniSection_PlatformTargetSettings, "CultureStringResources", out string DefaultCultureScratchValue) && ConfigHierarchy.TryParse(DefaultCultureScratchValue, out Dictionary<string, string>? DefaultStrings))
 			{
-				SourcePath = Path.Combine(ProjectPath!, "Platforms", Platform.ToString(), "Build", BuildResourceSubPath);
-				bFileExists = File.Exists(Path.Combine(SourcePath, ResourceFileName));
+				AppXResources!.AddDefaultStrings(DefaultStrings);
 			}
 
-			// look in Engine, if allowed
-			if (!bFileExists && AllowEngineFallback)
+			// read StageId overrides
+			bool bHasStageIdOverrides = false;
+			if (EngineIni!.GetString(IniSection_PlatformTargetSettings, "StageIdOverrides", out string? StageIdOverridesString) && 
+				ConfigHierarchy.TryParseAsMap(StageIdOverridesString, out Dictionary<string,string>? StageIdOverrides))
 			{
-				SourcePath = Path.Combine(Unreal.EngineDirectory.FullName, "Build", Platform.ToString(), EngineResourceSubPath);
-				bFileExists = File.Exists(Path.Combine(SourcePath, ResourceFileName));
+				bHasStageIdOverrides = true;
+				UEStageIdToAppXCultureId = StageIdOverrides;
+				AppXResources!.AddCultures(UEStageIdToAppXCultureId.Values);
+			}
 
-				// look in Platform extensions too
-				if (!bFileExists)
+
+			// add per culture strings
+			if (EngineIni.GetArray(IniSection_PlatformTargetSettings, "PerCultureResources", out List<string>? PerCultureResources))
+			{
+				bHasPerCultureResources = true;
+
+				foreach (string CultureResources in PerCultureResources)
 				{
-					SourcePath = Path.Combine(Unreal.EngineDirectory.FullName, "Platforms", Platform.ToString(), "Build", EngineResourceSubPath);
-					bFileExists = File.Exists(Path.Combine(SourcePath, ResourceFileName));
-				}
-			}
-
-			return bFileExists;
-		}
-
-		/// <summary>
-		/// Determines whether the given resource binary file can be found in one of the known folder locations
-		/// </summary>
-		protected bool DoesResourceBinaryFileExist(string ResourceFileName, bool AllowEngineFallback = true)
-		{
-			string SourcePath;
-			return FindResourceBinaryFile( out SourcePath, ResourceFileName, AllowEngineFallback );
-		}
-
-
-		/// <summary>
-		/// Adds the given resource binary file(s) to the manifest files
-		/// </summary>
-		protected bool AddResourceBinaryFileReference(string ResourceFileName, bool AllowEngineFallback = true)
-		{
-			string TargetPath = Path.Combine(OutputPath!, BuildResourceSubPath);
-			string SourcePath;
-			bool bFileExists = FindResourceBinaryFile(out SourcePath, ResourceFileName, AllowEngineFallback);
-
-			// At least the default culture entry for any resource binary must always exist
-			if (!bFileExists)
-			{
-				return false;
-			}
-
-			// If the target resource folder doesn't exist yet, create it
-			if (!CreateCheckDirectory(TargetPath, Logger))
-			{
-				return false;
-			}
-
-			// Find all copies of the resource file in the source directory (could be up to one for each culture and the default).
-			List<string> SourceResourceInstances = new List<string>();
-			SourceResourceInstances.Add( Path.Combine( SourcePath, ResourceFileName) );
-			foreach( string CultureId in CulturesToStage!)
-			{
-				string CultureResourceFile = Path.Combine(SourcePath, CultureId, ResourceFileName);
-				if (File.Exists(CultureResourceFile))
-				{
-					SourceResourceInstances.Add( CultureResourceFile );
-				}
-			}
-
-			// Copy new resource files
-			foreach (string SourceResourceFile in SourceResourceInstances)
-			{
-				string TargetResourcePath = Path.Combine(TargetPath, SourceResourceFile.Substring(SourcePath.Length + 1));
-				if (!CreateCheckDirectory(Path.GetDirectoryName(TargetResourcePath)!, Logger))
-				{
-					Logger.LogError("Unable to create intermediate directory {IntDir}.", Path.GetDirectoryName(TargetResourcePath));
-					continue;
-				}
-				AddFileReference(SourceResourceFile, TargetResourcePath, bIsGeneratedFile:false);
-			}
-
-			return true;
-		}
-
-
-		/// <summary>
-		/// Adds the given file to the manifest files
-		/// </summary>
-		protected void AddFileReference(string SourcePath, string TargetPath, bool bIsGeneratedFile)
-		{
-			// check if the file is unchanged
-			if (File.Exists(TargetPath) && !string.IsNullOrEmpty(SourcePath) )
-			{
-				FileInfo SrcFileInfo = new FileInfo(SourcePath);
-				FileInfo DstFileInfo = new FileInfo(TargetPath);
-
-				bool bFileIsUnchanged = (SrcFileInfo.Length == DstFileInfo.Length);
-				if (bFileIsUnchanged)
-				{
-					if (bIsGeneratedFile)
+					if (!ConfigHierarchy.TryParse(CultureResources, out Dictionary<string, string>? CultureProperties)
+						|| !CultureProperties.ContainsKey("CultureStringResources")
+						|| !CultureProperties.ContainsKey("StageId"))
 					{
-						// this file is auto-generated - we need to compare the contents
-						byte[] OriginalContents = File.ReadAllBytes(TargetPath);
-						byte[] NewContents = File.ReadAllBytes(SourcePath);
-						bFileIsUnchanged = Enumerable.SequenceEqual(OriginalContents, NewContents);
-					}
-					else
-					{
-						// this file is not generated, just copied from somewhere else - can check the time to confirm if they're different
-						bFileIsUnchanged = (SrcFileInfo.CreationTime == DstFileInfo.CreationTime);
-					}
-				}
-
-				if (bFileIsUnchanged)
-				{
-					// use an empty source string if the file doesn't need changing
-					SourcePath = "";
-				}
-			}
-
-			ManifestFiles!.Add(TargetPath, SourcePath);
-		}
-
-
-		/// <summary>
-		/// Copies all of the generated files to the output folder
-		/// </summary>
-		private List<string> CopyFilesToOutput()
-		{
-			List<string> UpdatedFiles = new List<string>();
-
-			// early out if there's nothing to copy
-			if (ManifestFiles == null || !ManifestFiles.Any(X => !string.IsNullOrEmpty(X.Value)))
-			{
-				return UpdatedFiles;
-			}
-
-			Logger.LogDebug("Updating manifest resource files...");
-
-			// copy over any new or updated files
-			foreach ( var ManifestFilePair in ManifestFiles! )
-			{
-				string TargetPath = ManifestFilePair.Key;
-				string SourcePath = ManifestFilePair.Value;
-				if (string.IsNullOrEmpty(SourcePath))
-				{
-					// if source is an empty string then the file is up-to-date
-					continue;
-				}
-				
-				// remove old version, if any
-				bool bFileExists = File.Exists(TargetPath);
-				if (bFileExists)
-				{
-					try
-					{
-						FileUtils.ForceDeleteFile(TargetPath);
-					}
-					catch (Exception E)
-					{
-						Logger.LogError("    Could not replace file {TargetPath} - {Message}", TargetPath, E.Message);
-					}
-				}
-
-				// copy new version
-				try
-				{
-					if (bFileExists)
-					{
-						Logger.LogDebug("    updating {Path}", Utils.MakePathRelativeTo(TargetPath, OutputPath!));
-					}
-					else
-					{
-						Logger.LogDebug("    adding {Path}", Utils.MakePathRelativeTo(TargetPath, OutputPath!));
-					}
-
-					Directory.CreateDirectory(Path.GetDirectoryName(TargetPath)!);
-					File.Copy(SourcePath, TargetPath);
-					File.SetAttributes(TargetPath, FileAttributes.Normal);
-					File.SetCreationTime(TargetPath, File.GetCreationTime(SourcePath));
-
-					UpdatedFiles.Add(TargetPath);
-				}
-				catch (Exception E)
-				{
-					Logger.LogError("    Unable to copy file {TargetPath} - {Message}", TargetPath, E.Message);
-				}
-			}
-
-			return UpdatedFiles;
-		}
-
-
-		/// <summary>
-		/// Adds the given string to the culture string writers
-		/// </summary>
-		protected string AddResourceEntry(string ResourceEntryName, string ConfigKey, string GenericINISection, string GenericINIKey, string DefaultValue, string ValueSuffix = "")
-		{
-			string? ConfigScratchValue = null;
-
-			// Get the default culture value
-			string DefaultCultureScratchValue;
-			if (EngineIni!.GetString(IniSection_PlatformTargetSettings, "CultureStringResources", out DefaultCultureScratchValue))
-			{
-				Dictionary<string, string>? Values;
-				if (!ConfigHierarchy.TryParse(DefaultCultureScratchValue, out Values))
-				{
-					Logger.LogError("Invalid default culture string resources: \"{Culture}\". Unable to add resource entry.", DefaultCultureScratchValue);
-					return "";
-				}
-
-				ConfigScratchValue = Values[ConfigKey];
-			}
-
-			if (string.IsNullOrEmpty(ConfigScratchValue))
-			{
-				// No platform specific value is provided. Use the generic config or default value
-				ConfigScratchValue = ReadIniString(GenericINIKey, GenericINISection, DefaultValue);
-			}
-
-			DefaultResourceWriter!.AddResource(ResourceEntryName, ConfigScratchValue + ValueSuffix);
-
-			// Find the default value
-			List<string>? PerCultureValues;
-			if (EngineIni.GetArray(IniSection_PlatformTargetSettings, "PerCultureResources", out PerCultureValues))
-			{
-				foreach (string CultureCombinedValues in PerCultureValues)
-				{
-					Dictionary<string, string>? SeparatedCultureValues;
-					if (!ConfigHierarchy.TryParse(CultureCombinedValues, out SeparatedCultureValues)
-						|| !SeparatedCultureValues.ContainsKey("CultureStringResources")
-						|| !SeparatedCultureValues.ContainsKey("CultureId"))
-					{
-						Logger.LogError("Invalid per-culture resource: \"{Culture}\". Unable to add resource entry.", CultureCombinedValues);
+						Logger.LogWarning("Invalid per-culture resource value: {Culture}", CultureResources);
 						continue;
 					}
 
-					var CultureId = SeparatedCultureValues["CultureId"];
-					if (CulturesToStage!.Contains(CultureId))
+					string StageId = CultureProperties["StageId"];
+					if (String.IsNullOrEmpty(StageId))
 					{
-						Dictionary<string, string>? CultureStringResources;
-						if (!ConfigHierarchy.TryParse(SeparatedCultureValues["CultureStringResources"], out CultureStringResources))
+						Logger.LogWarning("Missing StageId value: {Culture}", CultureResources);
+						continue;
+					}
+
+					string CultureId = "";
+					if (bHasStageIdOverrides)
+					{
+						CultureId = UEStageIdToAppXCultureId.ContainsKey(StageId) ? UEStageIdToAppXCultureId[StageId] : StageId;
+					}
+					else if (!CultureProperties.ContainsKey("CultureId"))
+					{
+						Logger.LogWarning("Invalid per-culture resource value: {Culture}", CultureResources);
+					}
+					else
+					{
+						CultureId = CultureProperties["CultureId"];
+						if (String.IsNullOrEmpty(CultureId))
 						{
-							Logger.LogError("Invalid culture string resources: \"{Culture}\". Unable to add resource entry.", CultureCombinedValues);
+							Logger.LogWarning("Missing CultureId value: {Culture}", CultureResources);
 							continue;
 						}
 
-						var Value = CultureStringResources[ConfigKey];
-
-						if (CulturesToStage.Contains(CultureId) && !string.IsNullOrEmpty(Value))
+						// PerCultureResources CultureId is deprecated in favor of new StageIdOverrides property
+						// if the CultureId field contains an overridden property, warn they need to update the data
+						if (CultureId != StageId && !bHasWarnedAboutDeprecatedCultureId)
 						{
-							var Writer = PerCultureResourceWriters![CultureId];
-							Writer.AddResource(ResourceEntryName, Value + ValueSuffix);
+							Logger.LogWarning("PerCultureResources is out of date - please re-save this project's {Platform}Engine.ini in the editor to update StageIdOverrides. This must be done before UE5.5 to avoid losing data to deprecation", Platform);
+							bHasWarnedAboutDeprecatedCultureId = true;
 						}
+
+						UEStageIdToAppXCultureId[StageId] = CultureId;
 					}
+					AppXResources.AddCulture(CultureId);
+
+					// read culture strings
+					if (!ConfigHierarchy.TryParse(CultureProperties["CultureStringResources"], out Dictionary<string, string>? CultureStringResources))
+					{
+						Logger.LogError("Invalid culture string resources: \"{Culture}\". Unable to add resource entry.", CultureResources);
+						continue;
+					}
+					AppXResources!.AddCultureStrings(CultureId, CultureStringResources);
 				}
 			}
 
-			return "ms-resource:" + ResourceEntryName;
+			return bHasPerCultureResources;
 		}
 
 		/// <summary>
-		/// Adds an additional string to all culture resource writers
+		/// Register the locations where resource binary files can be found
 		/// </summary>
-		protected string AddExternalResourceEntry(string ResourceEntryName, string DefaultValue, Dictionary<string,string> CultureIdToCultureValues)
+		protected virtual void PrepareResourceBinaryPaths()
 		{
-			DefaultResourceWriter!.AddResource(ResourceEntryName, DefaultValue);
-
-			foreach( KeyValuePair<string,string> CultureIdToCultureValue in CultureIdToCultureValues)
+			if (ProjectFile != null)
 			{
-				var Writer = PerCultureResourceWriters![CultureIdToCultureValue.Key];
-				Writer.AddResource(ResourceEntryName, CultureIdToCultureValue.Value);
+				AppXResources!.ProjectBinaryResourceDirectories.Add(DirectoryReference.Combine(ProjectFile.Directory, "Build", Platform.ToString(), BuildResourceSubPath));
+				AppXResources!.ProjectBinaryResourceDirectories.Add(DirectoryReference.Combine(ProjectFile.Directory, "Platforms", Platform.ToString(), "Build", BuildResourceSubPath));
 			}
 
-			return "ms-resource:" + ResourceEntryName;
-		}
-
-		/// <summary>
-		/// Adds a debug-only string to all resource writers
-		/// </summary>
-		protected string AddDebugResourceString(string ResourceEntryName, string Value)
-		{
-			DefaultResourceWriter!.AddResource(ResourceEntryName, Value);
-
-			foreach (var CultureId in CulturesToStage!)
-			{
-				var Writer = PerCultureResourceWriters![CultureId];
-				Writer.AddResource(ResourceEntryName, Value);
-			}
-
-			return "ms-resource:" + ResourceEntryName;
-		}
-
-		/// <summary>
-		/// Get the XName from a given string and schema pair
-		/// </summary>
-		protected virtual XName GetName( string BaseName, string SchemaName )
-		{
-			return XName.Get(BaseName);
+			AppXResources!.EngineFallbackBinaryResourceDirectories.Add(DirectoryReference.Combine(Unreal.EngineDirectory, "Build", Platform.ToString(), EngineResourceSubPath));
+			AppXResources!.EngineFallbackBinaryResourceDirectories.Add(DirectoryReference.Combine(Unreal.EngineDirectory, "Platforms", Platform.ToString(), "Build", EngineResourceSubPath));
 		}
 
 		/// <summary>
@@ -670,43 +332,44 @@ namespace UnrealBuildTool
 		/// </summary>
 		protected XElement GetResources()
 		{
-			List<string> ResourceCulturesList = new List<string>(CulturesToStage!);
+			List<string> ResourceCulturesList = AppXResources!.GetAllCultureIds().ToList();
+
 			// Move the default culture to the front of the list
-			ResourceCulturesList.Remove(DefaultCulture!);
-			ResourceCulturesList.Insert(0, DefaultCulture!);
+			ResourceCulturesList.Remove(DefaultAppXCultureId!);
+			ResourceCulturesList.Insert(0, DefaultAppXCultureId!);
 
 			// Check that we have a valid number of cultures
-			if (CulturesToStage!.Count < 1 || CulturesToStage.Count >= MaxResourceEntries)
+			if (ResourceCulturesList!.Count < 1 || ResourceCulturesList.Count >= MaxResourceEntries)
 			{
 				Logger.LogWarning("Incorrect number of cultures to stage. There must be between 1 and {MaxCultures} cultures selected.", MaxResourceEntries);
 			}
 
 			// Create the culture list. This list is unordered except that the default language must be first which we already took care of above.
-			var CultureElements = ResourceCulturesList.Select(c =>
-				new XElement(GetName("Resource", Schema2010NS), new XAttribute("Language", c)));
+			IEnumerable<XElement> CultureElements = ResourceCulturesList.Select(c =>
+				new XElement("Resource", new XAttribute("Language", c)));
 
-			return new XElement(GetName("Resources", Schema2010NS), CultureElements);
+			return new XElement("Resources", CultureElements);
 		}
 
 		/// <summary>
 		/// Get the package identity name string
 		/// </summary>
-		protected string GetIdentityPackageName(string? TargetName)
+		protected virtual string GetIdentityPackageName()
 		{
-            // Read the PackageName from config
-			var DefaultName = (ProjectFile != null) ? ProjectFile.GetFileNameWithoutAnyExtensions() : (TargetName ?? "DefaultUEProject");
-            var PackageName = Regex.Replace(GetConfigString("PackageName", "ProjectName", DefaultName), "[^-.A-Za-z0-9]", "");
-            if (string.IsNullOrWhiteSpace(PackageName))
-            {
-                Logger.LogError("Invalid package name {Name}. Package names must only contain letters, numbers, dash, and period and must be at least one character long.", PackageName);
-                Logger.LogError("Consider using the setting [{IniSection}]:PackageName to provide a specific value.", IniSection_PlatformTargetSettings);
-            }
+			// Read the PackageName from config
+			string DefaultName = (ProjectFile != null) ? ProjectFile.GetFileNameWithoutAnyExtensions() : (TargetName ?? "DefaultUEProject");
+			string PackageName = Regex.Replace(GetConfigString("PackageName", "ProjectName", DefaultName), "[^-.A-Za-z0-9]", "");
+			if (String.IsNullOrWhiteSpace(PackageName))
+			{
+				Logger.LogError("Invalid package name {Name}. Package names must only contain letters, numbers, dash, and period and must be at least one character long.", PackageName);
+				Logger.LogError("Consider using the setting [{IniSection}]:PackageName to provide a specific value.", IniSection_PlatformTargetSettings);
+			}
 
 			// If specified in the project settings append the users machine name onto the package name to allow sharing of devkits without stomping of deploys
 			bool bPackageNameUseMachineName;
 			if (EngineIni!.GetBool(IniSection_PlatformTargetSettings, "bPackageNameUseMachineName", out bPackageNameUseMachineName) && bPackageNameUseMachineName)
 			{
-				var MachineName = Regex.Replace(Environment.MachineName.ToString(), "[^-.A-Za-z0-9]", "");
+				string MachineName = Regex.Replace(Environment.MachineName.ToString(), "[^-.A-Za-z0-9]", "");
 				PackageName = PackageName + ".NOT.SHIPPABLE." + MachineName;
 			}
 
@@ -716,26 +379,26 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Get the publisher name string
 		/// </summary>
-		protected string GetIdentityPublisherName()
+		protected virtual string GetIdentityPublisherName()
 		{
-            var PublisherName = GetConfigString("PublisherName", "CompanyDistinguishedName", "CN=NoPublisher");
+			string PublisherName = GetConfigString("PublisherName", "CompanyDistinguishedName", "CN=NoPublisher");
 			return PublisherName;
 		}
 
 		/// <summary>
 		/// Get the package version string
 		/// </summary>
-		protected string? GetIdentityVersionNumber()
+		protected virtual string? GetIdentityVersionNumber()
 		{
-            var VersionNumber = GetConfigString("PackageVersion", "ProjectVersion", "1.0.0.0");
-            VersionNumber = ValidatePackageVersion(VersionNumber);
+			string? VersionNumber = GetConfigString("PackageVersion", "ProjectVersion", "1.0.0.0");
+			VersionNumber = ValidatePackageVersion(VersionNumber);
 
-            // If specified in the project settings attempt to retrieve the current build number and increment the version number by that amount, accounting for overflows
-            bool bIncludeEngineVersionInPackageVersion;
-            if (EngineIni!.GetBool(IniSection_PlatformTargetSettings, "bIncludeEngineVersionInPackageVersion", out bIncludeEngineVersionInPackageVersion) && bIncludeEngineVersionInPackageVersion)
-            {
+			// If specified in the project settings attempt to retrieve the current build number and increment the version number by that amount, accounting for overflows
+			bool bIncludeEngineVersionInPackageVersion;
+			if (EngineIni!.GetBool(IniSection_PlatformTargetSettings, "bIncludeEngineVersionInPackageVersion", out bIncludeEngineVersionInPackageVersion) && bIncludeEngineVersionInPackageVersion)
+			{
 				VersionNumber = IncludeBuildVersionInPackageVersion(VersionNumber);
-            }
+			}
 
 			return VersionNumber;
 		}
@@ -743,19 +406,19 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Get the package identity element
 		/// </summary>
-		protected XElement GetIdentity(string? TargetName, out string IdentityName)
-        {
-            string PackageName = GetIdentityPackageName(TargetName);
-            string PublisherName = GetIdentityPublisherName();
-            string? VersionNumber = GetIdentityVersionNumber();
+		protected XElement GetIdentity(out string IdentityName)
+		{
+			string PackageName = GetIdentityPackageName();
+			string PublisherName = GetIdentityPublisherName();
+			string? VersionNumber = GetIdentityVersionNumber();
 
-            IdentityName = PackageName;
+			IdentityName = PackageName;
 
-            return new XElement(GetName("Identity", Schema2010NS),
-                new XAttribute("Name", PackageName),
-                new XAttribute("Publisher", PublisherName),
-                new XAttribute("Version", VersionNumber!));
-        }
+			return new XElement("Identity",
+				new XAttribute("Name", PackageName),
+				new XAttribute("Publisher", PublisherName),
+				new XAttribute("Version", VersionNumber!));
+		}
 
 		/// <summary>
 		/// Updates the given package version to include the engine build version, if requested
@@ -767,7 +430,7 @@ namespace UnrealBuildTool
 			{
 				// Break apart the version number into individual elements
 				string[] SplitVersionString = VersionNumber.Split('.');
-				VersionNumber = string.Format("{0}.{1}.{2}.{3}",
+				VersionNumber = String.Format("{0}.{1}.{2}.{3}",
 					SplitVersionString[0],
 					SplitVersionString[1],
 					BuildVersionForPackage.Changelist / 10000,
@@ -780,7 +443,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Get the path to the makepri.exe tool
 		/// </summary>
-		protected abstract string GetMakePriBinaryPath();
+		protected abstract FileReference GetMakePriBinaryPath();
 
 		/// <summary>
 		/// Get any additional platform-specific parameters for makepri.exe
@@ -793,247 +456,115 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Return the entire manifest element
 		/// </summary>
-		protected abstract XElement GetManifest(List<UnrealTargetConfiguration> TargetConfigs, List<string> Executables, string? TargetName, out string IdentityName);
+		protected abstract XElement GetManifest(Dictionary<UnrealTargetConfiguration, string> InExecutablePairs, out string IdentityName);
 
 		/// <summary>
 		/// Perform any platform-specific processing on the manifest before it is saved
 		/// </summary>
-		protected virtual void ProcessManifest(List<UnrealTargetConfiguration> TargetConfigs, List<string> Executables, string ManifestName, string ManifestTargetPath, string ManifestIntermediatePath)
-        {
+		protected virtual void ProcessManifest(Dictionary<UnrealTargetConfiguration, string> InExecutablePairs, string ManifestName, string ManifestTargetPath, string ManifestIntermediatePath)
+		{
+		}
+
+		/// <summary>
+		/// Perform any additional initialization once all parameters and configuration are ready
+		/// </summary>
+		protected virtual void PostConfigurationInit()
+		{
 		}
 
 		/// <summary>
 		/// Create a manifest and return the list of modified files
 		/// </summary>
-		public List<string>? CreateManifest(string InManifestName, string InOutputPath, string InIntermediatePath, string? InTargetName, FileReference? InProjectFile, string InProjectDirectory, List<UnrealTargetConfiguration> InTargetConfigs, List<string> InExecutables)
+		public List<string>? CreateManifest(string InManifestName, DirectoryReference OutputDirectory, string? InTargetName, FileReference? InProjectFile, Dictionary<UnrealTargetConfiguration, string> InExecutablePairs)
 		{
 			// Check parameter values are valid.
-			if (InTargetConfigs.Count != InExecutables.Count)
-			{
-				Logger.LogError("The number of target configurations ({NumConfigs}) and executables ({NumExes}) passed to manifest generation do not match.", InTargetConfigs.Count, InExecutables.Count);
-				return null;
-			}
-			if (InTargetConfigs.Count < 1)
+			if (InExecutablePairs.Count < 1)
 			{
 				Logger.LogError("The number of target configurations is zero, so we cannot generate a manifest.");
 				return null;
 			}
 
-			if (!CreateCheckDirectory(InOutputPath, Logger))
-			{
-				Logger.LogError("Failed to create output directory \"{OutputDir}\".", InOutputPath);
-				return null;
-			}
-			if (!CreateCheckDirectory(InIntermediatePath, Logger))
-			{
-				Logger.LogError("Failed to create intermediate directory \"{IntDir}\".", InIntermediatePath);
-				return null;
-			}
+			FileUtils.CreateDirectoryTree(OutputDirectory);
 
-			OutputPath = InOutputPath;
-			IntermediatePath = InIntermediatePath;
+			DirectoryReference ProjectRoot = (InProjectFile != null) ? InProjectFile.Directory : Unreal.EngineDirectory;
+			DirectoryReference IntermediateDirectory = DirectoryReference.Combine(ProjectRoot, "Intermediate", "Manifest", Platform.ToString());
+			FileUtils.ForceDeleteDirectory(IntermediateDirectory);
+			FileUtils.CreateDirectoryTree(IntermediateDirectory);
+
+			TargetName = InTargetName;
 			ProjectFile = InProjectFile;
-			ProjectPath = InProjectDirectory;
-			ManifestFiles = new Dictionary<string, string>();
+			AppXResources = new(Logger, GetMakePriBinaryPath());
+			PrepareResourceBinaryPaths();
 
 			// Load up INI settings. We'll use engine settings to retrieve the manifest configuration, but these may reference
 			// values in either game or engine settings, so we'll keep both.
-			GameIni = ConfigCache.ReadHierarchy(ConfigHierarchyType.Game, DirectoryReference.FromFile(InProjectFile), ConfigPlatform);
-			EngineIni = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, DirectoryReference.FromFile(InProjectFile), ConfigPlatform);
+			GameIni = ConfigCache.ReadHierarchy(ConfigHierarchyType.Game, DirectoryReference.FromFile(InProjectFile), Platform);
+			EngineIni = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, DirectoryReference.FromFile(InProjectFile), Platform);
+			PostConfigurationInit();
 
 			// Load and verify/clean culture list
+			List<string>? SelectedUECultureIds;
+			string DefaultUECultureId;
+			GameIni.GetArray("/Script/UnrealEd.ProjectPackagingSettings", "CulturesToStage", out SelectedUECultureIds);
+			GameIni.GetString("/Script/UnrealEd.ProjectPackagingSettings", "DefaultCulture", out DefaultUECultureId);
+			if (SelectedUECultureIds == null || SelectedUECultureIds.Count < 1)
 			{
-				List<string>? CulturesToStageWithDuplicates;
-				GameIni.GetArray("/Script/UnrealEd.ProjectPackagingSettings", "CulturesToStage", out CulturesToStageWithDuplicates);
-				GameIni.GetString("/Script/UnrealEd.ProjectPackagingSettings", "DefaultCulture", out DefaultCulture);
-				if (CulturesToStageWithDuplicates == null || CulturesToStageWithDuplicates.Count < 1)
-				{
-					Logger.LogError("At least one culture must be selected to stage.");
-					return null;
-				}
-
-				CulturesToStage = CulturesToStageWithDuplicates.Distinct().ToList();
-			}
-			if (DefaultCulture == null || DefaultCulture.Length < 1)
-			{
-				DefaultCulture = CulturesToStage[0];
-				Logger.LogWarning("A default culture must be selected to stage. Using {DefaultCulture}.", DefaultCulture);
-			}
-			if (!CulturesToStage.Contains(DefaultCulture))
-			{
-				DefaultCulture = CulturesToStage[0];
-				Logger.LogWarning("The default culture must be one of the staged cultures. Using {DefaultCulture}.", DefaultCulture);
-			}
-
-			List<string>? PerCultureValues;
-			if (EngineIni.GetArray(IniSection_PlatformTargetSettings, "PerCultureResources", out PerCultureValues))
-			{
-				foreach (string CultureCombinedValues in PerCultureValues)
-				{
-					Dictionary<string, string>? SeparatedCultureValues;
-					if (!ConfigHierarchy.TryParse(CultureCombinedValues, out SeparatedCultureValues))
-					{
-						Logger.LogWarning("Invalid per-culture resource value: {Culture}", CultureCombinedValues);
-						continue;
-					}
-
-					string StageId = SeparatedCultureValues["StageId"];
-					int CultureIndex = CulturesToStage.FindIndex(x => x == StageId);
-					if (CultureIndex >= 0)
-					{
-						CulturesToStage[CultureIndex] = SeparatedCultureValues["CultureId"];
-						if (DefaultCulture == StageId)
-						{
-							DefaultCulture = SeparatedCultureValues["CultureId"];
-						}
-					}
-				}
-			}
-			// Only warn if shipping, we can run without translated cultures they're just needed for cert
-			else if (InTargetConfigs.Contains(UnrealTargetConfiguration.Shipping))
-			{
-				Logger.LogInformation("Staged culture mappings not setup in the editor. See Per Culture Resources in the {Platform} Target Settings.", Platform.ToString() );
-			}
-
-			// Clean out the resources intermediate path so that we know there are no stale binary files.
-			string IntermediateResourceDirectory = Path.Combine(IntermediatePath, BuildResourceSubPath);
-			FileUtils.ForceDeleteDirectory(IntermediateResourceDirectory);
-			if (!CreateCheckDirectory(IntermediateResourceDirectory, Logger))
-			{
-				Logger.LogError("Could not create directory {IntDir}.", IntermediateResourceDirectory);
+				Logger.LogError("At least one culture must be selected to stage.");
 				return null;
 			}
+			SelectedUECultureIds = SelectedUECultureIds.Distinct().ToList();
 
-			// Construct a single resource writer for the default (no-culture) values
-			string DefaultResourceIntermediatePath = Path.Combine(IntermediateResourceDirectory, "resources.resw");
-			DefaultResourceWriter = new UEResXWriter(DefaultResourceIntermediatePath);
-
-			// Construct the ResXWriters for each culture
-			PerCultureResourceWriters = new Dictionary<string, UEResXWriter>();
-			foreach (string Culture in CulturesToStage)
+			if (DefaultUECultureId == null || DefaultUECultureId.Length < 1)
 			{
-				string IntermediateStringResourcePath = Path.Combine(IntermediateResourceDirectory, Culture);
-				string IntermediateStringResourceFile = Path.Combine(IntermediateStringResourcePath, "resources.resw");
-				if (!CreateCheckDirectory(IntermediateStringResourcePath, Logger))
-				{
-					Logger.LogWarning("Culture {Culture} resources not staged.", Culture);
-					CulturesToStage.Remove(Culture);
-					if (Culture == DefaultCulture)
-					{
-						DefaultCulture = CulturesToStage[0];
-						Logger.LogWarning("Default culture skipped. Using {DefaultCulture} as default culture.", DefaultCulture);
-					}
-					continue;
-				}
-				PerCultureResourceWriters.Add(Culture, new UEResXWriter(IntermediateStringResourceFile));
+				DefaultUECultureId = SelectedUECultureIds[0];
+				Logger.LogWarning("A default culture must be selected to stage. Using {DefaultCulture}.", DefaultUECultureId);
+			}
+			if (!SelectedUECultureIds.Contains(DefaultUECultureId))
+			{
+				DefaultUECultureId = SelectedUECultureIds[0];
+				Logger.LogWarning("The default culture must be one of the staged cultures. Using {DefaultCulture}.", DefaultUECultureId);
 			}
 
+			BuildLocalizationData();
 
+			// generate the list of AppX cultures to stage
+			foreach (string UEStageId in SelectedUECultureIds)
+			{
+				if (!UEStageIdToAppXCultureId.TryGetValue(UEStageId, out string? AppXCultureId) || String.IsNullOrEmpty(AppXCultureId))
+				{
+					// use the culture directly - no remapping required
+					AppXCultureId = UEStageId;
+					UEStageIdToAppXCultureId[UEStageId] = AppXCultureId;
+					AppXResources.AddCulture(UEStageId);
+				}
+			}
+
+			// look up the default AppX culture
+			if (!UEStageIdToAppXCultureId.TryGetValue(DefaultUECultureId, out DefaultAppXCultureId) || String.IsNullOrEmpty(DefaultAppXCultureId))
+			{
+				// use the default culture directly - no remapping required
+				DefaultAppXCultureId = DefaultUECultureId;
+				UEStageIdToAppXCultureId[DefaultUECultureId] = DefaultAppXCultureId;
+			}
 
 			// Create the manifest document
 			string? IdentityName = null;
-			var ManifestXmlDocument = new XDocument(GetManifest(InTargetConfigs, InExecutables, InTargetName, out IdentityName));
+			XDocument ManifestXmlDocument = new XDocument(GetManifest(InExecutablePairs, out IdentityName));
 
-			// Export manifest to the intermediate directory then compare the contents to any existing target manifest
-			// and replace if there are differences.
-			string ManifestIntermediatePath = Path.Combine(IntermediatePath, InManifestName);
-			string ManifestTargetPath = Path.Combine(OutputPath, InManifestName);
-			ManifestXmlDocument.Save(ManifestIntermediatePath);
-			AddFileReference(ManifestIntermediatePath, ManifestTargetPath, bIsGeneratedFile: true);
-			ProcessManifest(InTargetConfigs, InExecutables, InManifestName, ManifestTargetPath, ManifestIntermediatePath);
+			// Export manifest to the intermediate directory and add it to the manifest resources files for copying
+			FileReference ManifestIntermediateFile = FileReference.Combine(IntermediateDirectory, InManifestName);
+			FileReference ManifestTargetFile = FileReference.Combine(OutputDirectory, InManifestName);
+			ManifestXmlDocument.Save(ManifestIntermediateFile.FullName);
+			AppXResources.AddFileReference(ManifestIntermediateFile, InManifestName);
+			ProcessManifest(InExecutablePairs, InManifestName, ManifestTargetFile.FullName, ManifestIntermediateFile.FullName);
 
-			// Export the resource tables starting with the default culture
-			string DefaultResourceTargetPath = Path.Combine(OutputPath, BuildResourceSubPath, "resources.resw");
-			DefaultResourceWriter.Close();
-			AddFileReference(DefaultResourceIntermediatePath, DefaultResourceTargetPath, bIsGeneratedFile: true);
+			// Generate the package resource index and copy all resource files to the output
+			FileReference ManifestTargetPath = FileReference.Combine(OutputDirectory, InManifestName);
+			List<FileReference> UpdatedFiles = AppXResources.GenerateAppXResources(OutputDirectory, IntermediateDirectory, ManifestTargetFile, DefaultAppXCultureId, IdentityName);
 
-			foreach (var Writer in PerCultureResourceWriters)
-			{
-				Writer.Value.Close();
-
-				string IntermediateStringResourceFile = Path.Combine(IntermediateResourceDirectory, Writer.Key, "resources.resw");
-				string TargetStringResourceFile = Path.Combine(OutputPath, BuildResourceSubPath, Writer.Key, "resources.resw");
-
-				AddFileReference(IntermediateStringResourceFile, TargetStringResourceFile, bIsGeneratedFile: true);
-			}
-
-
-			// include a reference to the Package Resource Index so it isn't removed by RemoveStaleResourceFiles
-			string TargetResourceIndexFile = Path.Combine(OutputPath, "resources.pri");
-			AddFileReference("", TargetResourceIndexFile, bIsGeneratedFile: true);
-
-			// The resource database is dependent on everything else calculated here (manifest, resource string tables, binary resources).
-			// So if any file has been updated we'll need to run the config.
-			bool bHadStaleResources = RemoveStaleResourceFiles();
-			List<string> UpdatedFilePaths = CopyFilesToOutput();
-
-			if (bHadStaleResources || UpdatedFilePaths.Any())
-			{
-				// Create resource index configuration
-				string ResourceConfigFile = Path.Combine(IntermediatePath, "priconfig.xml");
-				RunMakePri("createconfig /cf \"" + ResourceConfigFile + "\" /dq " + DefaultCulture + " /o " + GetMakePriExtraCommandLine());
-
-				// Load the new resource index configuration
-				XmlDocument PriConfig = new XmlDocument();
-				PriConfig.Load(ResourceConfigFile);
-
-				// remove the packaging node - we do not want to split the pri & only want one .pri file
-				XmlNode PackagingNode = PriConfig.SelectSingleNode("/resources/packaging")!;
-				PackagingNode.ParentNode!.RemoveChild(PackagingNode);
-
-				// all required resources are explicitly listed in resources.resfiles, rather than relying on makepri to discover them
-				string ResourcesResFile = Path.Combine(IntermediatePath, "resources.resfiles");
-				XmlNode PriIndexNode = PriConfig.SelectSingleNode("/resources/index")!;
-				XmlAttribute PriStartIndex = PriIndexNode.Attributes!["startIndexAt"]!;
-				PriStartIndex.Value = ResourcesResFile;
-
-				// swap the folder indexer-config to a RESFILES indexer-config.
-				XmlElement FolderIndexerConfigNode = (XmlElement)PriConfig.SelectSingleNode("/resources/index/indexer-config[@type='folder']")!;
-				FolderIndexerConfigNode.SetAttribute("type", "RESFILES");
-				FolderIndexerConfigNode.RemoveAttribute("foldernameAsQualifier");
-				FolderIndexerConfigNode.RemoveAttribute("filenameAsQualifier");
-
-				PriConfig.Save(ResourceConfigFile);
-
-				// generate resources.resfiles
-				IEnumerable<string> Resources = Directory.EnumerateFiles(Path.Combine(OutputPath, BuildResourceSubPath), "*.*", SearchOption.AllDirectories);
-				System.Text.StringBuilder ResourcesList = new System.Text.StringBuilder();
-				foreach (string Resource in Resources)
-				{
-					ResourcesList.AppendLine( Utils.MakePathRelativeTo( Resource, OutputPath ) );
-				}
-				File.WriteAllText(ResourcesResFile, ResourcesList.ToString());
-
-				// remove old Package Resource Index
-				try
-				{
-					FileUtils.ForceDeleteFile(TargetResourceIndexFile);
-				}
-				catch (Exception E)
-				{
-					Logger.LogError("cannot remove old pri file: {TargetResourceIndexFile} - {Message}", TargetResourceIndexFile, E.Message);
-				}
-
-				// Generate the Package Resource Index
-				string ResourceLogFile = Path.Combine(IntermediatePath, "ResIndexLog.xml");
-				string MakePriCommandLine = "new /pr \"" + OutputPath + "\" /cf \"" + ResourceConfigFile + "\" /mn \"" + ManifestTargetPath + "\" /il \"" + ResourceLogFile + "\" /of \"" + TargetResourceIndexFile + "\" /o";
-				if (IdentityName != null)
-				{
-					MakePriCommandLine += " /indexName \"" + IdentityName + "\"";
-				}
-
-				Logger.LogDebug("    generating {Path}", Utils.MakePathRelativeTo(TargetResourceIndexFile, OutputPath!));
-				RunMakePri(MakePriCommandLine);
-				UpdatedFilePaths.Add(TargetResourceIndexFile);
-			}
-
-			// Report if nothing was changed
-			if (!bHadStaleResources && !UpdatedFilePaths.Any())
-			{
-				Logger.LogDebug($"Manifest resource files are up to date");
-			}
-
-			return UpdatedFilePaths;
+			// Clean up and reutrn the list of updated files
+			FileUtils.ForceDeleteDirectory(IntermediateDirectory);
+			return UpdatedFiles.ConvertAll(X => X.FullName);
 		}
 	}
 }

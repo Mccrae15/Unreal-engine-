@@ -16,8 +16,8 @@
 #include "Animation/AnimationPoseData.h"
 #include "Animation/BlendProfile.h"
 #include "Animation/MirrorDataTable.h"
-#include "SkeletonRemappingRegistry.h"
-#include "SkeletonRemapping.h"
+#include "Animation/SkeletonRemappingRegistry.h"
+#include "Animation/SkeletonRemapping.h"
 
 DEFINE_LOG_CATEGORY(LogAnimation);
 DEFINE_LOG_CATEGORY(LogRootMotion);
@@ -223,7 +223,7 @@ FORCEINLINE void BlendCurves(const TArrayView<const FBlendedCurve> SourceCurves,
 {
 	if (SourceCurves.Num() > 0)
 	{
-#if INTEL_ISPC
+/*#if INTEL_ISPC
 		if (bAnim_BlendCurves_ISPC_Enabled)
 		{
 			OutCurve.InitFrom(SourceCurves[0]);
@@ -241,7 +241,7 @@ FORCEINLINE void BlendCurves(const TArrayView<const FBlendedCurve> SourceCurves,
 			}
 		}
 		else
-#endif
+#endif*/
 		{
 			OutCurve.Override(SourceCurves[0], SourceWeights[0]);
 			for (int32 CurveIndex = 1; CurveIndex < SourceCurves.Num(); ++CurveIndex)
@@ -1176,55 +1176,11 @@ void FAnimationRuntime::AccumulateMeshSpaceRotationAdditiveToLocalPoseInternal(F
 	}
 }
 
-void  FAnimationRuntime::MirrorCurves(FBlendedCurve& Curves, const UMirrorDataTable& MirrorDataTable)
+void FAnimationRuntime::MirrorCurves(FBlendedCurve& Curves, const UMirrorDataTable& MirrorDataTable)
 {
-	if (Curves.UIDToArrayIndexLUT == nullptr)
+	for(const TPair<FName, FName>& MirrorPair : MirrorDataTable.CurveToMirrorCurveMap)
 	{
-		return;
-	}
-
-	int32 NumMirrorUIDs = MirrorDataTable.CurveMirrorSourceUIDArray.Num();
-
-	for (int32 MirrorIndex = 0; MirrorIndex < NumMirrorUIDs; ++MirrorIndex)
-	{
-		SmartName::UID_Type SourceMirrorUID = MirrorDataTable.CurveMirrorSourceUIDArray[MirrorIndex];
-		SmartName::UID_Type TargetMirrorUID = MirrorDataTable.CurveMirrorTargetUIDArray[MirrorIndex];
-		int32 SourceMirrorIndex = Curves.GetArrayIndexByUID(SourceMirrorUID);
-		int32 TargetMirrorIndex = Curves.GetArrayIndexByUID(TargetMirrorUID);
-		if (SourceMirrorIndex != INDEX_NONE && TargetMirrorIndex != INDEX_NONE)
-		{
-			if (Curves.ValidCurveWeights[SourceMirrorIndex])
-			{
-				if (Curves.ValidCurveWeights[TargetMirrorIndex])
-				{
-					// Determine if we should swap or overwrite values. If the map has a paired entries (left->right and right->left) 
-					// these entries will appear beside each other in the arrays
-					SmartName::UID_Type NextSourceMirrorUID = INDEX_NONE; 
-					if (MirrorIndex + 1 < NumMirrorUIDs)
-					{
-						NextSourceMirrorUID = MirrorDataTable.CurveMirrorSourceUIDArray[MirrorIndex + 1];
-					}
-					if (NextSourceMirrorUID == TargetMirrorUID)
-					{
-						float SwapWeight = Curves.CurveWeights[TargetMirrorIndex];
-						Curves.CurveWeights[TargetMirrorIndex] = Curves.CurveWeights[SourceMirrorIndex];
-						Curves.CurveWeights[SourceMirrorIndex] = SwapWeight;
-						// skip over the next entry since it is swapped 
-						MirrorIndex++;
-					}
-					else
-					{
-						Curves.CurveWeights[TargetMirrorIndex] = Curves.CurveWeights[SourceMirrorIndex];
-					}
-				}
-				else
-				{
-					Curves.CurveWeights[TargetMirrorIndex] = Curves.CurveWeights[SourceMirrorIndex];
-					Curves.ValidCurveWeights[TargetMirrorIndex] = true;
-					Curves.ValidCurveWeights[SourceMirrorIndex] = false;
-				}
-			}
-		}
+		Curves.Mirror(MirrorPair.Key, MirrorPair.Value);
 	}
 }
 
@@ -1598,6 +1554,7 @@ void FAnimationRuntime::FillWithRefPose(TArray<FTransform>& OutAtoms, const FBon
 }
 
 #if WITH_EDITOR
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 void FAnimationRuntime::FillWithRetargetBaseRefPose(FCompactPose& OutPose, const USkeletalMesh* Mesh)
 {
 	// Copy Target Asset's ref pose.
@@ -1613,6 +1570,7 @@ void FAnimationRuntime::FillWithRetargetBaseRefPose(FCompactPose& OutPose, const
 		}
 	}
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #endif // WITH_EDITOR
 
 void FAnimationRuntime::ConvertPoseToMeshSpace(const TArray<FTransform>& LocalTransforms, TArray<FTransform>& MeshSpaceTransforms, const FBoneContainer& RequiredBones)
@@ -2451,6 +2409,7 @@ void FAnimationRuntime::FillUpComponentSpaceTransformsRefPose(const USkeleton* S
 	FillUpComponentSpaceTransforms(RefSkeleton, ReferencePose, ComponentSpaceTransforms);
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 void FAnimationRuntime::FillUpComponentSpaceTransformsRetargetBasePose(const USkeletalMesh* Mesh, TArray<FTransform> &ComponentSpaceTransforms)
 {
 	if (Mesh)
@@ -2472,6 +2431,7 @@ void FAnimationRuntime::FillUpComponentSpaceTransformsRetargetBasePose(const USk
 		FillUpComponentSpaceTransformsRetargetBasePose(PreviewMesh, ComponentSpaceTransforms);
 	}
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #endif // WITH_EDITOR
 
 void FAnimationRuntime::AppendActiveMorphTargets(

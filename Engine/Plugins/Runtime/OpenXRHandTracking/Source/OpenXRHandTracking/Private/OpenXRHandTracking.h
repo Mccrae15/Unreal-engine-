@@ -60,8 +60,7 @@ public:
 
 	/** IMotionController interface */
 	virtual bool GetControllerOrientationAndPosition(const int32 ControllerIndex, const FName MotionSource, FRotator& OutOrientation, FVector& OutPosition, float WorldToMetersScale) const override;
-	virtual bool GetControllerOrientationAndPosition(const int32 ControllerIndex, const EControllerHand DeviceHand, FRotator& OutOrientation, FVector& OutPosition, float WorldToMetersScale) const override;
-	virtual ETrackingStatus GetControllerTrackingStatus(const int32 ControllerIndex, const EControllerHand DeviceHand) const override;
+	virtual ETrackingStatus GetControllerTrackingStatus(const int32 ControllerIndex, const FName MotionSource) const override;
 	virtual FName GetMotionControllerDeviceTypeName() const override;
 	virtual void EnumerateSources(TArray<FMotionControllerSource>& SourcesOut) const override;
 
@@ -108,6 +107,7 @@ public:
 
 private:
 	void AddKeys();
+	void BuildMotionSourceToKeypointMap();
 	
 	void SetupLiveLinkData();
 	void UpdateLiveLink();
@@ -128,6 +128,9 @@ private:
 
 	TArray<int32> BoneParents;
 	TArray<EHandKeypoint> BoneKeypoints;
+	typedef TPair<EHandKeypoint, bool> MotionSourceInfo; // bool true == left, false == right
+	TMap<FName, MotionSourceInfo> MotionSourceToKeypointMap;
+	bool bSupportLegacyControllerMotionSources = true;
 
 	FHandState HandStates[2];
 

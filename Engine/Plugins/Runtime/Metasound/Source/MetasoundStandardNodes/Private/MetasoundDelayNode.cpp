@@ -40,7 +40,7 @@ namespace Metasound
 		static const FVertexInterface& GetVertexInterface();
 		static TUniquePtr<IOperator> CreateOperator(const FBuildOperatorParams& InParams, FBuildResults& OutResults);
 
-		FDelayOperator(const FOperatorSettings& InSettings, 
+		FDelayOperator(const FBuildOperatorParams& InParams, 
 			const FAudioBufferReadRef& InAudioInput, 
 			const FTimeReadRef& InDelayTime, 
 			const FFloatReadRef& InDryLevel, 
@@ -48,9 +48,11 @@ namespace Metasound
 			const FFloatReadRef& InFeedback,
 			float InMaxDelayTimeSeconds);
 
-		virtual void Bind(FVertexInterfaceData& InVertexData) const override;
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override;
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override;
 		virtual FDataReferenceCollection GetInputs() const override;
 		virtual FDataReferenceCollection GetOutputs() const override;
+		void Reset(const IOperator::FResetParams& InParams);
 		void Execute();
 
 	private:
@@ -87,7 +89,7 @@ namespace Metasound
 		float MaxDelayTimeSeconds = Delay::DefaultMaxDelaySeconds;
 	};
 
-	FDelayOperator::FDelayOperator(const FOperatorSettings& InSettings,
+	FDelayOperator::FDelayOperator(const FBuildOperatorParams& InParams,
 		const FAudioBufferReadRef& InAudioInput,
 		const FTimeReadRef& InDelayTime,
 		const FFloatReadRef& InDryLevel,
@@ -100,58 +102,64 @@ namespace Metasound
 		, DryLevel(InDryLevel)
 		, WetLevel(InWetLevel)
 		, Feedback(InFeedback)
-		, AudioOutput(FAudioBufferWriteRef::CreateNew(InSettings))
+		, AudioOutput(FAudioBufferWriteRef::CreateNew(InParams.OperatorSettings))
 	{
 		MaxDelayTimeSeconds = FMath::Clamp(InMaxDelayTimeSeconds, Delay::MinMaxDelaySeconds, Delay::MaxMaxDelaySeconds);
-		PrevDelayTimeMsec = GetInputDelayTimeMsec();
 
-		DelayBuffer.Init(InSettings.GetSampleRate(), MaxDelayTimeSeconds);
-		DelayBuffer.SetDelayMsec(PrevDelayTimeMsec);
+		Reset(InParams);
 	}
 
-	void FDelayOperator::Bind(FVertexInterfaceData& InVertexData) const
+
+	void FDelayOperator::BindInputs(FInputVertexInterfaceData& InOutVertexData)
 	{
 		using namespace Delay;
 
-		FInputVertexInterfaceData& Inputs = InVertexData.GetInputs();
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InParamAudioInput), AudioInput);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InParamDelayTime), DelayTime);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InParamDryLevel), DryLevel);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InParamWetLevel), WetLevel);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InParamFeedbackAmount), Feedback);
+		InOutVertexData.SetValue(METASOUND_GET_PARAM_NAME(InParamMaxDelayTime), FTime::FromSeconds(MaxDelayTimeSeconds));
+	}
 
-		Inputs.BindReadVertex(METASOUND_GET_PARAM_NAME(InParamAudioInput), FAudioBufferReadRef(AudioInput));
-		Inputs.BindReadVertex(METASOUND_GET_PARAM_NAME(InParamDelayTime), FTimeReadRef(DelayTime));
-		Inputs.BindReadVertex(METASOUND_GET_PARAM_NAME(InParamDryLevel), FFloatReadRef(DryLevel));
-		Inputs.BindReadVertex(METASOUND_GET_PARAM_NAME(InParamWetLevel), FFloatReadRef(WetLevel));
-		Inputs.BindReadVertex(METASOUND_GET_PARAM_NAME(InParamFeedbackAmount), FFloatReadRef(Feedback));
-		Inputs.SetValue(METASOUND_GET_PARAM_NAME(InParamMaxDelayTime), FTime::FromSeconds(MaxDelayTimeSeconds));
-
-		FOutputVertexInterfaceData& Outputs = InVertexData.GetOutputs();
-		Outputs.BindReadVertex(METASOUND_GET_PARAM_NAME(OutParamAudio), AudioOutput);
+	void FDelayOperator::BindOutputs(FOutputVertexInterfaceData& InOutVertexData)
+	{
+		using namespace Delay;
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutParamAudio), AudioOutput);
 	}
 
 	FDataReferenceCollection FDelayOperator::GetInputs() const
 	{
 		// This should never be called. Bind(...) is called instead. This method
-		// exists as a stop-gap until the API can be deprecated and removed. 
+		// exists as a stop-gap until the API can be deprecated and removed.
 		checkNoEntry();
-
-		FDataReferenceCollection InputDataReferences;
-		return InputDataReferences;
+		return {};
 	}
 
 	FDataReferenceCollection FDelayOperator::GetOutputs() const
 	{
 		// This should never be called. Bind(...) is called instead. This method
-		// exists as a stop-gap until the API can be deprecated and removed. 
+		// exists as a stop-gap until the API can be deprecated and removed.
 		checkNoEntry();
-
-		using namespace Delay;
-
-		FDataReferenceCollection OutputDataReferences;
-		return OutputDataReferences;
+		return {};
 	}
 
 	float FDelayOperator::GetInputDelayTimeMsec() const
 	{
 		// Clamp the delay time to the max delay allowed
 		return 1000.0f * FMath::Clamp((float)DelayTime->GetSeconds(), 0.0f, MaxDelayTimeSeconds);
+	}
+
+	void FDelayOperator::Reset(const IOperator::FResetParams& InParams)
+	{
+		FeedbackSample = 0.f;
+		PrevDelayTimeMsec = GetInputDelayTimeMsec();
+
+		DelayBuffer.Reset();
+		DelayBuffer.Init(InParams.OperatorSettings.GetSampleRate(), MaxDelayTimeSeconds);
+		DelayBuffer.SetDelayMsec(PrevDelayTimeMsec);
+
+		AudioOutput->Zero();
 	}
 
 	void FDelayOperator::Execute()
@@ -255,7 +263,7 @@ namespace Metasound
 		FFloatReadRef Feedback = InputData.GetOrCreateDefaultDataReadReference<float>(METASOUND_GET_PARAM_NAME(InParamFeedbackAmount), InParams.OperatorSettings);
 		FTime MaxDelayTime = InputData.GetOrCreateDefaultValue<FTime>(METASOUND_GET_PARAM_NAME(InParamMaxDelayTime), InParams.OperatorSettings);
 
-		return MakeUnique<FDelayOperator>(InParams.OperatorSettings, AudioIn, DelayTime, DryLevel, WetLevel, Feedback, MaxDelayTime.GetSeconds());
+		return MakeUnique<FDelayOperator>(InParams, AudioIn, DelayTime, DryLevel, WetLevel, Feedback, MaxDelayTime.GetSeconds());
 	}
 
 	class FDelayNode : public FNodeFacade

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "InstancedReferenceSubobjectHelper.h"
+#include "UObject/PropertyOptional.h"
 #include "UObject/Package.h"
 #include "UObject/Package.h"
 	
@@ -89,6 +90,18 @@ UObject* FInstancedPropertyPath::Resolve(const UObject* Container) const
 			{
 				ValuePtr = MapHelper.GetValuePtr(TargetIndex);
 				CurrentProp = MapProperty->ValueProp;
+			}
+			else
+			{
+				CurrentProp = nullptr;
+			}
+		}
+		else if(const FOptionalProperty* OptionalProperty = CastField<FOptionalProperty>(CurrentProp))
+		{
+			if(const uint8* InnerValuePtr = static_cast<const uint8*>(OptionalProperty->GetValuePointerForReadIfSet(ValuePtr)))
+			{
+				ValuePtr = InnerValuePtr;
+				CurrentProp = OptionalProperty->GetValueProperty();
 			}
 			else
 			{
@@ -194,6 +207,21 @@ void FFindInstancedReferenceSubobjectHelper::ForEachInstancedSubObject(FInstance
 			}
 		}
 	}
+	else if (const FOptionalProperty* OptionalProperty = CastField<FOptionalProperty>(TargetProp))
+	{
+		// Exit early if the optional does not contain any instanced references.
+		if (!OptionalProperty->HasAnyPropertyFlags(CPF_ContainsInstancedReference))
+		{
+			return;
+		}
+		
+		if (T ValueAddress = static_cast<T>(OptionalProperty->GetValuePointerForReadOrReplaceIfSet(ContainerAddress)))
+		{
+			PropertyPath.Push(OptionalProperty->GetValueProperty());
+			ForEachInstancedSubObject(PropertyPath, ValueAddress, ObjRefFunc);
+			PropertyPath.Pop();
+		}
+	}
 	else if (const FStructProperty* StructProperty = CastField<const FStructProperty>(TargetProp))
 	{
 		// Exit early if the struct does not contain any instanced references or if the struct is invalid.
@@ -225,13 +253,23 @@ void FFindInstancedReferenceSubobjectHelper::ForEachInstancedSubObject(FInstance
 				ObjRefFunc(FInstancedSubObjRef(ObjectValue, PropertyPath), ContainerAddress);
 			}
 		}
+		else
+		{
+			// @todo figure out how to support verse property types
+			//UE_LOG(LogBlueprint, Error, TEXT("%s: Skipping unknow property type(%s)"), ANSI_TO_TCHAR(__FUNCTION__), *TargetProp->GetName());
+		}
 	}
 }
 
 template ENGINE_API void FFindInstancedReferenceSubobjectHelper::ForEachInstancedSubObject<void*>(FInstancedPropertyPath& PropertyPath, void* ContainerAddress, TFunctionRef<void(const FInstancedSubObjRef&, void*)> ObjRefFunc);
 template ENGINE_API void FFindInstancedReferenceSubobjectHelper::ForEachInstancedSubObject<const void*>(FInstancedPropertyPath& PropertyPath, const void* ContainerAddress, TFunctionRef<void(const FInstancedSubObjRef&, const void*)> ObjRefFunc);
 
-void FFindInstancedReferenceSubobjectHelper::Duplicate(UObject* OldObject, UObject* NewObject, TMap<UObject*, UObject*>& ReferenceReplacementMap, TArray<UObject*>& DuplicatedObjects)
+void FFindInstancedReferenceSubobjectHelper::Duplicate(
+	UObject* OldObject, 
+	UObject* NewObject, 
+	TMap<UObject*, UObject*>& ReferenceReplacementMap, 
+	TArray<UObject*>& DuplicatedObjects, 
+	TMap<UObject*, UObject*>* OptionalMappings)
 {
 	if (OldObject->GetClass()->HasAnyClassFlags(CLASS_HasInstancedReference) &&
 		NewObject->GetClass()->HasAnyClassFlags(CLASS_HasInstancedReference))
@@ -248,7 +286,8 @@ void FFindInstancedReferenceSubobjectHelper::Duplicate(UObject* OldObject, UObje
 				if (bNewObjectHasOldOuter)
 				{
 					const bool bKeptByOld = OldInstancedSubObjects.Contains(Obj);
-					const bool bNotHandledYet = !ReferenceReplacementMap.Contains(Obj);
+					const bool bNotHandledYet = !ReferenceReplacementMap.Contains(Obj) &&
+						(!OptionalMappings || !OptionalMappings->Contains(Obj));
 					if (bKeptByOld)
 					{
 						if (bNotHandledYet)
@@ -268,6 +307,10 @@ void FFindInstancedReferenceSubobjectHelper::Duplicate(UObject* OldObject, UObje
 
 							UObject* NewEditInlineSubobject = StaticDuplicateObject(Obj, NewObject, Obj->GetFName());
 							ReferenceReplacementMap.Add(Obj, NewEditInlineSubobject);
+							if(OptionalMappings)
+							{
+								OptionalMappings->Add(Obj, NewEditInlineSubobject);
+							}
 
 							// NOTE: we cannot patch OldObject's linker table here, since we don't 
 							//       know the relation between the two objects (one could be of a 
@@ -280,7 +323,20 @@ void FFindInstancedReferenceSubobjectHelper::Duplicate(UObject* OldObject, UObje
 						{
 							// make sure the object is outered correctly:
 							check(bNewObjectHasOldOuter);
-							UObject* RealNewSubobject = ReferenceReplacementMap.FindChecked(Obj);
+							UObject* RealNewSubobject = nullptr;
+							if (OptionalMappings)
+							{
+								UObject* const* Entry = OptionalMappings->Find(Obj);
+								if (Entry)
+								{
+									RealNewSubobject = *Entry;
+								}
+							}
+
+							if (!RealNewSubobject)
+							{
+								RealNewSubobject = ReferenceReplacementMap.FindChecked(Obj);
+							}
 							if (RealNewSubobject->GetOuter() != NewObject)
 							{
 								UObject* ExistingObject = StaticFindObjectFast(UObject::StaticClass(), NewObject, RealNewSubobject->GetFName());

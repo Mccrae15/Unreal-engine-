@@ -14,6 +14,7 @@ class UPCGSettingsInterface;
 class UPCGSpatialData;
 struct FPCGGraphCache;
 struct FPCGSettingsOverridableParam;
+struct FPCGStack;
 
 namespace PCGContextHelpers
 {
@@ -61,11 +62,17 @@ struct PCG_API FPCGContext
 	FPCGTaskId CompiledTaskId = InvalidPCGTaskId;
 	bool bIsPaused = false;
 
-	// Used to preven settings override being deleted, needs to be false when going through blueprint calls with a context
+	// Used to prevent settings override being deleted, needs to be false when going through blueprint calls with a context
 	bool bShouldUnrootSettingsOnDelete = true;
 
 	EPCGExecutionPhase CurrentPhase = EPCGExecutionPhase::NotExecuted;
 	int32 BypassedOutputCount = 0;
+
+	/** Used by grid size data linkages to store/retrieve data. */
+	EPCGHiGenGrid GenerationGrid = EPCGHiGenGrid::Uninitialized;
+
+	/** The current call stack. */
+	const FPCGStack* Stack = nullptr;
 
 	const UPCGSettingsInterface* GetInputSettingsInterface() const;
 	
@@ -76,6 +83,9 @@ struct PCG_API FPCGContext
 	// If we any any parameter override, it will read from the params and override matching values
 	// in the settings copy.
 	void OverrideSettings();
+
+	// Returns true if the given property has been overriden
+	bool IsValueOverriden(const FName PropertyName);
 
 	// Return the seed, possibly overriden by params, and combined with the source component (if any).
 	int GetSeed() const;
@@ -115,4 +125,7 @@ private:
 
 	// Copy of the settings that will be used to apply overrides.
 	TObjectPtr<UPCGSettings> SettingsWithOverride = nullptr;
+
+	// List of params that were in effect overriden
+	TArray<const FPCGSettingsOverridableParam*> OverriddenParams;
 };

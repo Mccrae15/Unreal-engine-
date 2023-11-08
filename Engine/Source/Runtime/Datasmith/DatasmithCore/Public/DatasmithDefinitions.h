@@ -5,8 +5,12 @@
 #include "Misc/CoreMiscDefines.h"
 #include "Misc/EnumClassFlags.h"
 
-#ifdef WITH_COREUOBJECT
-	#include "UObject/ObjectMacros.h"
+#ifndef WITH_COREUOBJECT
+	#define WITH_COREUOBJECT 0
+#endif
+
+#if WITH_COREUOBJECT
+	#include "DatasmithDefinitions.generated.h"
 #else
 	#define UENUM(...)
 #endif // WITH_COREUOBJECT
@@ -155,6 +159,7 @@ enum class EDatasmithLightUnits
 	Unitless,
 	Candelas,
 	Lumens,
+	EV,
 };
 
 /** Different usage for textures.  Note: Preserve enum order. */
@@ -445,6 +450,12 @@ static const TCHAR* KeyValuePropertyTypeStrings[] = { TEXT("String"), TEXT("Colo
 #define DATASMITH_EXPORT						TEXT("Export")
 #define DATASMITH_EXPORTDURATION				TEXT("Duration")
 #define DATASMITH_RESOURCEPATH					TEXT("ResourcePath")
+
+// SCENE GEOLOCATION
+#define DATASMITH_GEOLOCATION					TEXT("Geolocation")
+#define DATASMITH_GEOLOCATION_LATITUDE			TEXT("lat")
+#define DATASMITH_GEOLOCATION_LONGITUDE			TEXT("lon")
+#define DATASMITH_GEOLOCATION_ELEVATION			TEXT("ele")
 
 //ELEMENTS
 #define DATASMITH_HASH							TEXT("Hash")

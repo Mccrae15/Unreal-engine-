@@ -2,11 +2,12 @@
 
 #include "Gltf/InterchangeGltfPrivate.h"
 
-#include "Animation/InterchangeAnimationPayload.h"
+#include "InterchangeCommonAnimationPayload.h"
 #include "GLTFAccessor.h"
 #include "GLTFAnimation.h"
 #include "GLTFAsset.h"
 #include "GLTFNode.h"
+#include "GLTFMesh.h"
 #include "InterchangeImportLog.h"
 #include "Animation/AnimTypes.h"
 
@@ -200,7 +201,7 @@ namespace UE::Interchange::Gltf::Private
 		return ChannelIndices.Num() != 0;
 	}
 
-	bool GetAnimationTransformPayloadData(const FString& PayLoadKey, const GLTF::FAsset& GltfAsset, FAnimationCurvePayloadData& OutPayloadData)
+	bool GetTransformAnimationPayloadData(const FString& PayLoadKey, const GLTF::FAsset& GltfAsset, FAnimationPayloadData& OutPayloadData)
 	{
 		//translation, rotation, scale time 3 channels:
 		OutPayloadData.Curves.SetNum(9);
@@ -213,7 +214,7 @@ namespace UE::Interchange::Gltf::Private
 			return false;
 		}
 		const GLTF::FAnimation& Animation = GltfAsset.Animations[AnimationIndex];
-		
+
 		for (const int32 ChannelIndex : ChannelIndices)
 		{
 			const GLTF::FAnimation::FChannel& Channel = Animation.Channels[ChannelIndex];
@@ -339,7 +340,7 @@ namespace UE::Interchange::Gltf::Private
 						}
 
 						Helper.Heading = Rotator;
-						
+
 						return Rotator.Euler();
 					}, 3, 4, true);
 				break;
@@ -356,7 +357,7 @@ namespace UE::Interchange::Gltf::Private
 			}
 			case GLTF::FAnimation::EPath::Weights:
 			{
-				UE_LOG(LogInterchangeImport, Warning, TEXT("Morph Animation type not supported yet."));
+				UE_LOG(LogInterchangeImport, Warning, TEXT("Animation[%d]:Channel[%d] : Morph Animation (Weight path) type not supported for Transform like Animations. (Morph Animations should be handled via \"GetMorphTargetAnimationPayloadData\" function."), AnimationIndex, ChannelIndex);
 				break;
 			}
 			default:
@@ -367,7 +368,88 @@ namespace UE::Interchange::Gltf::Private
 		return true;
 	}
 
-	bool GetBakedAnimationTransformPayloadData(const FString& PayLoadKey, const GLTF::FAsset& GltfAsset, FAnimationBakeTransformPayloadData& PayloadData)
+	bool GetMorphTargetAnimationPayloadData(const FString& PayLoadKey, const GLTF::FAsset& GltfAsset, FAnimationPayloadData& OutPayloadData)
+	{
+		OutPayloadData.Curves.SetNum(1);
+
+		TArray<FString> PayLoadKeys;
+		PayLoadKey.ParseIntoArray(PayLoadKeys, TEXT(":"));
+
+		if (PayLoadKeys.Num() != 4)
+		{
+			return false;
+		}
+
+		int32 AnimationIndex;
+		int32 ChannelIndex;
+		int32 MeshIndex;
+		int32 MorphTargetIndex;
+
+		LexFromString(AnimationIndex, *PayLoadKeys[0]);
+		LexFromString(ChannelIndex, *PayLoadKeys[1]);
+		LexFromString(MeshIndex, *PayLoadKeys[2]);
+		LexFromString(MorphTargetIndex, *PayLoadKeys[3]);
+
+		if (GltfAsset.Animations.Num() <= AnimationIndex
+			|| GltfAsset.Animations[AnimationIndex].Channels.Num() <= ChannelIndex
+			|| GltfAsset.Meshes.Num() <= MeshIndex
+			|| GltfAsset.Meshes[MeshIndex].MorphTargetNames.Num() <= MorphTargetIndex)
+		{
+			return false;
+		}
+
+		const GLTF::FAnimation& Animation = GltfAsset.Animations[AnimationIndex];
+		const GLTF::FAnimation::FChannel& Channel = Animation.Channels[ChannelIndex];
+		const GLTF::FAnimation::FSampler& Sampler = Animation.Samplers[Channel.Sampler];
+		const GLTF::FMesh& Mesh = GltfAsset.Meshes[MeshIndex];
+
+		TArray<float> FrameTimeBuffer;
+		TArray<float> FrameDataBuffer;
+
+		Sampler.Input.GetFloatArray(FrameTimeBuffer);
+
+		ERichCurveInterpMode InterpolationMode = static_cast<ERichCurveInterpMode>(Sampler.Interpolation);
+
+		if (uint32(MorphTargetIndex * FrameDataBuffer.Num()) > Sampler.Output.Count)
+		{
+			return false;
+		}
+
+		//framebuffer is :
+		//morphTarget(n)_frame0 morphTarget(n+1)_frame0 morphTarget(n+2)_frame0 .... morphTarget(n)_frame1 morphTarget(n+1)_frame1 morphTarget(n+2)_frame1 .....
+		// CUBIC:
+		//morphTarget(n)_frame0_in morphTarget(n)_frame0 morphTarget(n)_frame0_out morphTarget(n+1)_frame0_in morphTarget(n+1)_frame0 morphTarget(n+1)_frame0_out morphTarget(n+2)_frame0_in morphTarget(n+2)_frame0 morphTarget(n+2)_frame0_out
+		//in/out values are currently ignored (in Interchange pipelines)
+		FrameDataBuffer.SetNumUninitialized(Sampler.Output.Count * (InterpolationMode == ERichCurveInterpMode::RCIM_Cubic ? 3 : 1));
+		Sampler.Output.GetFloatArray(reinterpret_cast<float*>(FrameDataBuffer.GetData()));
+
+		FRichCurve& Curve = OutPayloadData.Curves[0];
+
+		int32 RowMultiplier = Mesh.MorphTargetNames.Num() * (InterpolationMode == ERichCurveInterpMode::RCIM_Cubic ? 3 : 1);
+
+		for (int32 SampleIndex = 0; SampleIndex < FrameTimeBuffer.Num(); SampleIndex++)
+		{
+			if (InterpolationMode == ERichCurveInterpMode::RCIM_Cubic)
+			{
+				FKeyHandle Key = Curve.AddKey(FrameTimeBuffer[SampleIndex], FrameDataBuffer[MorphTargetIndex + (SampleIndex * RowMultiplier) + 1]);
+				FRichCurveKey& CurveKey = Curve.GetKey(Key);
+				CurveKey.ArriveTangent = FrameDataBuffer[MorphTargetIndex + (SampleIndex * RowMultiplier) + 0];
+				CurveKey.LeaveTangent = FrameDataBuffer[MorphTargetIndex + (SampleIndex * RowMultiplier) + 2];
+
+				Curve.SetKeyInterpMode(Key, InterpolationMode);
+			}
+			else
+			{
+				FKeyHandle Key = Curve.AddKey(FrameTimeBuffer[SampleIndex], FrameDataBuffer[MorphTargetIndex + (SampleIndex * RowMultiplier)]);
+
+				Curve.SetKeyInterpMode(Key, InterpolationMode);
+			}
+		}
+
+		return true;
+	}
+
+	bool GetBakedAnimationTransformPayloadData(const FString& PayLoadKey, const GLTF::FAsset& GltfAsset, FAnimationPayloadData& PayloadData)
 	{
 		TArray<int32> ChannelIndices;
 		int32 AnimationIndex;
@@ -380,7 +462,8 @@ namespace UE::Interchange::Gltf::Private
 		
 		const double BakeInterval = 1.0 / PayloadData.BakeFrequency;
 		const double SequenceLength = FMath::Max<double>(PayloadData.RangeEndTime - PayloadData.RangeStartTime, MINIMUM_ANIMATION_LENGTH);
-		int32 BakeKeyCount = (SequenceLength / BakeInterval) + 1;
+		int32 FrameCount = FMath::RoundToInt32(SequenceLength * PayloadData.BakeFrequency);
+		int32 BakeKeyCount = FrameCount + 1;
 
 		//buffers to use for final Transform:
 		TArray<FVector3f> TranslationData;

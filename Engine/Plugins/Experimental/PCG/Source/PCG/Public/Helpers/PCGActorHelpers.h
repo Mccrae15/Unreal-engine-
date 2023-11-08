@@ -3,6 +3,7 @@
 #pragma once
 
 #include "Engine/EngineTypes.h"
+#include "Engine/World.h"
 #include "ISMPartition/ISMComponentDescriptor.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Templates/SubclassOf.h"
@@ -41,14 +42,6 @@ public:
 	static UInstancedStaticMeshComponent* GetOrCreateISMC(AActor* InTargetActor, UPCGComponent* SourceComponent, uint64 SettingsUID, const FPCGISMCBuilderParameters& Params);
 	static UPCGManagedISMComponent* GetOrCreateManagedISMC(AActor* InTargetActor, UPCGComponent* SourceComponent, uint64 SettingsUID, const FPCGISMCBuilderParameters& Params);
 	static bool DeleteActors(UWorld* World, const TArray<TSoftObjectPtr<AActor>>& ActorsToDelete);
-
-	/**
-	* Fetches all the components of ActorClass's CDO, including the ones added via the BP editor (which AActor.GetComponents fails to do)
-	* @param ActorClass class of AActor for which we will retrieve all components
-	* @param OutComponents this is where the found components will end up. Note that the preexisting contents of OutComponents will get overridden.
-	* @param InComponentClass if supplied will be used to filter the results
-	*/
-	static void GetActorClassDefaultComponents(const TSubclassOf<AActor>& ActorClass, TArray<UActorComponent*>& OutComponents, const TSubclassOf<UActorComponent>& InComponentClass = TSubclassOf<UActorComponent>());
 
 	template <typename T, typename = typename std::enable_if_t<std::is_base_of_v<AActor, T>>>
 	inline static void ForEachActorInLevel(ULevel* Level, TFunctionRef<bool(AActor*)> Callback)
@@ -102,9 +95,22 @@ public:
 	static AActor* SpawnDefaultActor(UWorld* World, TSubclassOf<AActor> ActorClass, FName BaseName, const FTransform& Transform, AActor* Parent = nullptr);
 
 	/**
+	* Spawn a new actor and attach it to the parent (if not null)
+	* @param World The world
+	* @param ActorClass Class of the actor to spawn
+	* @param Transform The transform for the new actor
+	* @param SpawnParams The spawn parameters
+	* @param Parent Optional parent to attach to.
+	*/
+	static AActor* SpawnDefaultActor(UWorld* World, TSubclassOf<AActor> ActorClass, const FTransform& Transform, const FActorSpawnParameters& SpawnParams, AActor* Parent = nullptr);
+
+	/**
 	 * Return the grid cell coordinates on the PCG partition grid given a position and the grid size.
 	 */
 	static FIntVector GetCellCoord(FVector InPosition, int InGridSize, bool bUse2DGrid);
+
+	UE_DEPRECATED(5.3, "Please use UE::BlueprintTools::GetActorClassDefaultComponents() instead")
+	static void GetActorClassDefaultComponents(const TSubclassOf<AActor>& ActorClass, TArray<UActorComponent*>& OutComponents, const TSubclassOf<UActorComponent>& InComponentClass = TSubclassOf<UActorComponent>());
 };
 
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2

@@ -14,7 +14,6 @@
 #include "Misc/SecureHash.h"
 #include "Factories/FbxSkeletalMeshImportData.h"
 #include "Factories/FbxTextureImportData.h"
-
 #include "Materials/MaterialInterface.h"
 #include "Rendering/SkeletalMeshLODImporterData.h"
 #include "Logging/TokenizedMessage.h"
@@ -39,6 +38,10 @@
 #include "IMeshReductionInterfaces.h"
 #include "ObjectTools.h"
 #include "Misc/AutomationTest.h"
+#include "AssetToolsModule.h"
+#include "IAssetTools.h"
+#include "Misc/NamePermissionList.h"
+#include "PhysicsEngine/PhysicsAsset.h"
 
 DEFINE_LOG_CATEGORY(LogFbx);
 
@@ -47,10 +50,6 @@ DEFINE_LOG_CATEGORY(LogFbx);
 #define GeneratedLODNameSuffix "_GeneratedLOD_"
 namespace UnFbx
 {
-
-static bool GDisableAutomaticPhysicsAssetCreation = false;
-static FAutoConsoleVariableRef DisableAutomaticPhysicsAssetCreationCVar(TEXT("FbxImport.DisableAutomaticPhysicsAssetCreation"),
-	GDisableAutomaticPhysicsAssetCreation, TEXT("Prevents physics assets from being created automatically by FBX import (False: disabled, True: enabled"));
 
 TSharedPtr<FFbxImporter> FFbxImporter::StaticInstance;
 
@@ -130,7 +129,7 @@ FBXImportOptions* GetImportOptions( UnFbx::FFbxImporter* FbxImporter, UFbxImport
 			ImportUI->PhysicsAsset = NULL;
 		}
 
-		if (GDisableAutomaticPhysicsAssetCreation)
+		if (!FbxImporter->CanCreateClass(UPhysicsAsset::StaticClass()))
 		{
 			ImportUI->bCreatePhysicsAsset = false;
 		}
@@ -430,6 +429,7 @@ void ApplyImportUIToImportOptions(UFbxImportUI* ImportUI, FBXImportOptions& InOu
 		InOutImportOptions.VertexColorImportOption		= SkeletalMeshData->VertexColorImportOption;
 		InOutImportOptions.VertexOverrideColor			= SkeletalMeshData->VertexOverrideColor;
 		InOutImportOptions.bReorderMaterialToFbxOrder	= SkeletalMeshData->bReorderMaterialToFbxOrder;
+		InOutImportOptions.bImportVertexAttributes		= SkeletalMeshData->bImportVertexAttributes;
 
 		if(ImportUI->bImportAnimations)
 		{
@@ -465,6 +465,7 @@ void ApplyImportUIToImportOptions(UFbxImportUI* ImportUI, FBXImportOptions& InOu
 		InOutImportOptions.bImportRigidMesh				= ImportUI->OriginalImportType == FBXIT_StaticMesh && ImportUI->MeshTypeToImport == FBXIT_SkeletalMesh;
 		InOutImportOptions.bUseT0AsRefPose				= ImportUI->SkeletalMeshImportData->bUseT0AsRefPose;
 		InOutImportOptions.bPreserveSmoothingGroups		= ImportUI->SkeletalMeshImportData->bPreserveSmoothingGroups;
+		InOutImportOptions.bKeepSectionsSeparate		= ImportUI->SkeletalMeshImportData->bKeepSectionsSeparate;
 		InOutImportOptions.OverlappingThresholds.ThresholdPosition = ImportUI->SkeletalMeshImportData->ThresholdPosition;
 		InOutImportOptions.OverlappingThresholds.ThresholdTangentNormal = ImportUI->SkeletalMeshImportData->ThresholdTangentNormal;
 		InOutImportOptions.OverlappingThresholds.ThresholdUV = ImportUI->SkeletalMeshImportData->ThresholdUV;
@@ -502,8 +503,20 @@ void ApplyImportUIToImportOptions(UFbxImportUI* ImportUI, FBXImportOptions& InOu
 		InOutImportOptions.bDeleteExistingNonCurveCustomAttributes = ImportUI->AnimSequenceImportData->bDeleteExistingNonCurveCustomAttributes;
 		InOutImportOptions.bImportBoneTracks			= ImportUI->AnimSequenceImportData->bImportBoneTracks;
 		InOutImportOptions.bSetMaterialDriveParameterOnCustomAttribute = ImportUI->AnimSequenceImportData->bSetMaterialDriveParameterOnCustomAttribute;
+		InOutImportOptions.bAddCurveMetadataToSkeleton	= ImportUI->AnimSequenceImportData->bAddCurveMetadataToSkeleton;
 		InOutImportOptions.MaterialCurveSuffixes		= ImportUI->AnimSequenceImportData->MaterialCurveSuffixes;
 	}
+}
+
+static bool AssetClassPassesFilter(UClass* Class, EAssetClassAction AssetClassAction)
+{
+	IAssetTools& AssetTools = FAssetToolsModule::GetModule().Get();
+	TSharedPtr<FPathPermissionList> AssetClassPermissionList = AssetTools.GetAssetClassPathPermissionList(AssetClassAction);
+	if (Class && AssetClassPermissionList && AssetClassPermissionList->HasFiltering())
+	{
+		return AssetClassPermissionList->PassesFilter(Class->GetPathName());
+	}
+	return true;
 }
 
 void FImportedMaterialData::AddImportedMaterial( const FbxSurfaceMaterial& FbxMaterial, UMaterialInterface& UnrealMaterial )
@@ -647,6 +660,16 @@ void FFbxImporter::ReleaseScene()
 	CurPhase = NOTSTARTED;
 	bFirstMesh = true;
 	LastMergeBonesChoice = EAppReturnType::Ok;
+}
+
+bool FFbxImporter::CanImportClass(UClass* Class) const
+{
+	return AssetClassPassesFilter(Class, EAssetClassAction::ImportAsset);
+}
+
+bool FFbxImporter::CanCreateClass(UClass* Class) const
+{
+	return AssetClassPassesFilter(Class, EAssetClassAction::CreateAsset);
 }
 
 FBXImportOptions* UnFbx::FFbxImporter::GetImportOptions() const
@@ -1720,6 +1743,7 @@ bool FFbxImporter::ImportFromFile(const FString& Filename, const FString& Type, 
 							Attribs.Add(FAnalyticsEventAttribute(TEXT("SkeletalMeshOpt ImportMorph"), CaptureImportOptions->bImportMorph));
 							Attribs.Add(FAnalyticsEventAttribute(TEXT("SkeletalMeshOpt ImportSkeletalMeshLODs"), CaptureImportOptions->bImportSkeletalMeshLODs));
 							Attribs.Add(FAnalyticsEventAttribute(TEXT("SkeletalMeshOpt PreserveSmoothingGroups"), CaptureImportOptions->bPreserveSmoothingGroups));
+							Attribs.Add(FAnalyticsEventAttribute(TEXT("SkeletalMeshOpt KeepSectionsSeparate"), CaptureImportOptions->bKeepSectionsSeparate));
 							Attribs.Add(FAnalyticsEventAttribute(TEXT("SkeletalMeshOpt UpdateSkeletonReferencePose"), CaptureImportOptions->bUpdateSkeletonReferencePose));
 							Attribs.Add(FAnalyticsEventAttribute(TEXT("SkeletalMeshOpt UseT0AsRefPose"), CaptureImportOptions->bUseT0AsRefPose));
 							Attribs.Add(FAnalyticsEventAttribute(TEXT("SkeletalMeshOpt OverlappingThresholds.ThresholdPosition"), CaptureImportOptions->OverlappingThresholds.ThresholdPosition));

@@ -9,6 +9,7 @@ LICENSE file in the root directory of this source tree.
 #pragma once
 
 #include "Kismet/BlueprintFunctionLibrary.h"
+#include "Kismet/BlueprintAsyncActionBase.h"
 #include "OculusXRAnchorTypes.h"
 #include "OculusXRAnchorComponents.h"
 #include "OculusXRAnchorBPFunctionLibrary.generated.h"
@@ -51,4 +52,7 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "OculusXR|SpatialAnchor")
 	static const UOculusXRBaseAnchorComponent* GetAnchorComponent(const FOculusXRSpaceQueryResult& QueryResult, EOculusXRSpaceComponentType ComponentType, UObject* Outer);
+
+	UFUNCTION(BlueprintCallable, Category = "OculusXR|SpatialAnchor")
+	static bool GetRoomLayout(FOculusXRUInt64 Space, FOculusXRRoomLayout& RoomLayoutOut, int32 MaxWallsCapacity = 64);
 };

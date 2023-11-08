@@ -1,28 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using System.IO;
 using UnrealBuildTool;
 
 public class ColorCorrectRegions : ModuleRules
 {
 	public ColorCorrectRegions(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PublicIncludePaths.AddRange(
-			new string[] {
-			}
-			);
-				
 		PrivateIncludePaths.AddRange(
 			new string[] {
 				//Used in ColorCorrectRegionsPostProcessMaterial.h
-				"../../../../Source/Runtime/Renderer/Private",
+				Path.Combine(GetModuleDirectory("Renderer"), "Private"),
 			}
 		);
 		
 		PublicDependencyModuleNames.AddRange(
 			new string[]
 			{
-				"Core",
-				"RenderCore",
 				"DisplayClusterLightCardExtender"
 			}
 		);
@@ -33,11 +27,7 @@ public class ColorCorrectRegions : ModuleRules
 				"Core",
 				"CoreUObject",
 				"Engine",
-				"MovieSceneCapture",
-				"RenderCore",
 				"RHI",
-				"Slate",
-				"SlateCore",
 				"Renderer",
 				"Projects",
 				"RenderCore",
@@ -46,14 +36,8 @@ public class ColorCorrectRegions : ModuleRules
 
 		if (Target.Type == TargetType.Editor)
 		{
-			PublicDependencyModuleNames.Add("UnrealEd");
 			PrivateDependencyModuleNames.Add("UnrealEd");
+			PrivateDependencyModuleNames.Add("EditorWidgets");
 		}
-
-		DynamicallyLoadedModuleNames.AddRange(
-			new string[]
-			{
-			}
-		);
 	}
 }

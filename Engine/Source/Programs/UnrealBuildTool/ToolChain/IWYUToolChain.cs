@@ -14,7 +14,7 @@ namespace UnrealBuildTool
 	{
 		private List<string> CrossCompilingArguments = new();
 		private FileReference IWYUMappingFile;
-		private string RelativePathToIWYUDirectory = @"Restricted\NotForLicensees\Source\ThirdParty\IWYU";
+		private string RelativePathToIWYUDirectory = @"Binaries\ThirdParty\IWYU";
 
 		public static void ValidateTarget(TargetRules Target)
 		{
@@ -40,7 +40,7 @@ namespace UnrealBuildTool
 
 		protected override ClangToolChainInfo GetToolChainInfo()
 		{
-			var PlatformSDK = new LinuxPlatformSDK(Logger);
+			LinuxPlatformSDK PlatformSDK = new LinuxPlatformSDK(Logger);
 			DirectoryReference? BaseLinuxPath = PlatformSDK.GetBaseLinuxPathForArchitecture(LinuxPlatform.DefaultHostArchitecture);
 
 			CrossCompilingArguments.Add($"--sysroot=\"{NormalizeCommandLinePath(BaseLinuxPath!)}\"");
@@ -48,7 +48,9 @@ namespace UnrealBuildTool
 			FileReference ClangPath = FileReference.Combine(BaseLinuxPath!, "bin", $"clang++{BuildHostPlatform.Current.BinarySuffix}");
 			ClangToolChainInfo CompilerToolChainInfo = new ClangToolChainInfo(ClangPath, null!, Logger);
 
-			DirectoryReference SystemPath = DirectoryReference.Combine(BaseLinuxPath!, "lib", "clang", CompilerToolChainInfo.ClangVersion.ToString(), "include");
+			// starting with clang 16.x the directory naming changed to include major version only
+			string ClangVersionString = (CompilerToolChainInfo.ClangVersion.Major >= 16) ? CompilerToolChainInfo.ClangVersion.Major.ToString() : CompilerToolChainInfo.ClangVersion.ToString();
+			DirectoryReference SystemPath = DirectoryReference.Combine(BaseLinuxPath!, "lib", "clang", ClangVersionString, "include");
 			CrossCompilingArguments.Add(GetSystemIncludePathArgument(SystemPath));
 
 			string DevPath = ""; //@"include-what-you-use-0.19\vs_projects\bin\RelWithDebInfo";
@@ -60,16 +62,6 @@ namespace UnrealBuildTool
 		protected override string GetFileNameFromExtension(string AbsolutePath, string Extension)
 		{
 			string FileName = Path.GetFileName(AbsolutePath);
-			if (AbsolutePath.EndsWith(".h"))
-			{
-				string HashString = ContentHash.MD5(AbsolutePath).GetHashCode().ToString("X4");
-				FileName = Path.GetFileNameWithoutExtension(FileName) + "_" + HashString + ".h";
-
-				if (Extension != ".d" && Extension != ".o")
-				{
-					throw new NotImplementedException($"Files with extension {Extension} not handled by IWYUToolChain");
-				}
-			}
 
 			if (Extension == ".o")
 			{
@@ -88,20 +80,16 @@ namespace UnrealBuildTool
 
 			Dictionary<FileItem, List<FileItem>> GenCppLookup = CompileEnvironment.FileInlineGenCPPMap;
 
-			CompileEnvironment = new(CompileEnvironment);
-			CompileEnvironment.Definitions.Add("SUPPRESS_MONOLITHIC_HEADER_WARNINGS=1");
-			CompileEnvironment.Definitions.Add("PLATFORM_COMPILER_IWYU=1");
-
-			// Remove this once c++20 linux compile errors are fixed
-			CompileEnvironment.CppStandard = CppStandardVersion.Cpp17;
-
 			List<string> GlobalArguments = new();
-			GetCompileArguments_Global(CompileEnvironment, GlobalArguments);
+			if (CompileEnvironment.UserIncludePaths.Count != 0)
+			{
+				GetCompileArguments_Global(CompileEnvironment, GlobalArguments);
+			}
 
 			// Need to add these on cmd line.. IWYU is not parsing commands after response file expansion.
 			string CommonCommandLineArgs = " -Xiwyu --mapping_file=" + IWYUMappingFile.FullName +
 										   " -Xiwyu --prefix_header_includes=keep" +
-//										   " -Xiwyu --transitive_includes_only" +  // Since we are building headers separately (not together with their cpp) we don't need this
+										   //										   " -Xiwyu --transitive_includes_only" +  // Since we are building headers separately (not together with their cpp) we don't need this
 										   " -Xiwyu --no_check_matching_header" +
 										   " -Xiwyu --cxx17ns";
 
@@ -114,7 +102,9 @@ namespace UnrealBuildTool
 
 				Action Action = CompileCPPFile(CompileEnvironment, SourceFile, OutputDir, ModuleName, Graph, GlobalArguments, new CPPOutput());
 
-				string CommandLineArgs = CommonCommandLineArgs + " -Xiwyu --write_json_path=\"" + Action.ProducedItems.First() + "\" ";
+				FileItem IwyuItem = Action.ProducedItems.First(i => i.Name.EndsWith(".iwyu"));
+
+				string CommandLineArgs = CommonCommandLineArgs + " -Xiwyu --write_json_path=\"" + IwyuItem + "\" ";
 				if (SourceFile.HasExtension(".cpp"))
 				{
 					List<FileItem>? InlinedFiles;
@@ -126,9 +116,14 @@ namespace UnrealBuildTool
 						}
 					}
 				}
+				else
+				{
+					// We want to build header files first
+					Action.bIsHighPriority = true;
+				}
 
 				Action.CommandArguments = CommandLineArgs + Action.CommandArguments;
-				IwyuFiles.Add(Action.ProducedItems.First());
+				IwyuFiles.Add(IwyuItem);
 			}
 
 			return new CPPOutput() { ObjectFiles = IwyuFiles };
@@ -155,7 +150,7 @@ namespace UnrealBuildTool
 		{
 			// set UE_LINUX_USE_LIBCXX to either 0 or 1. If unset, defaults to 1.
 			string? UseLibcxxEnvVarOverride = Environment.GetEnvironmentVariable("UE_LINUX_USE_LIBCXX");
-			if (string.IsNullOrEmpty(UseLibcxxEnvVarOverride) || UseLibcxxEnvVarOverride == "1")
+			if (String.IsNullOrEmpty(UseLibcxxEnvVarOverride) || UseLibcxxEnvVarOverride == "1")
 			{
 				return true;
 			}
@@ -164,6 +159,9 @@ namespace UnrealBuildTool
 
 		protected override void GetCompileArguments_Global(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
 		{
+			Arguments.Add(GetPreprocessorDefinitionArgument("SUPPRESS_MONOLITHIC_HEADER_WARNINGS=1"));
+			Arguments.Add(GetPreprocessorDefinitionArgument("PLATFORM_COMPILER_IWYU=1"));
+
 			base.GetCompileArguments_Global(CompileEnvironment, Arguments);
 
 			if (ShouldUseLibcxx(CompileEnvironment.Architecture))
@@ -190,11 +188,6 @@ namespace UnrealBuildTool
 			}
 		}
 
-		protected override void GetCompileArguments_FileType(CppCompileEnvironment CompileEnvironment, FileItem SourceFile, DirectoryReference OutputDir, List<string> Arguments, Action CompileAction, CPPOutput CompileResult)
-		{
-			base.GetCompileArguments_FileType(CompileEnvironment, SourceFile, OutputDir, Arguments, CompileAction, CompileResult);
-		}
-
 		protected override void GetCompileArguments_WarningsAndErrors(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
 		{
 			CompileEnvironment.ShadowVariableWarningLevel = WarningLevel.Off;
@@ -210,6 +203,7 @@ namespace UnrealBuildTool
 		{
 			return new CPPOutput();
 		}
+
 		public override CPPOutput CompileISPCFiles(CppCompileEnvironment CompileEnvironment, List<FileItem> InputFiles, DirectoryReference OutputDir, IActionGraphBuilder Graph)
 		{
 			return new CPPOutput();

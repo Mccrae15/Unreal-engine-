@@ -11,6 +11,7 @@ using Jupiter.Common;
 using Microsoft.Extensions.Options;
 using OpenTelemetry.Trace;
 using Microsoft.Extensions.Logging;
+using System.Diagnostics.Metrics;
 
 namespace Jupiter.Implementation
 {
@@ -25,8 +26,11 @@ namespace Jupiter.Implementation
         private readonly Tracer _tracer;
         private readonly ILogger _logger;
 
+        private readonly Counter<long> _consideredBlobCounter;
+        private readonly Counter<long> _deletedBlobCounter;
+
         // ReSharper disable once UnusedMember.Global
-        public OrphanBlobCleanupRefs(IOptionsMonitor<GCSettings> gcSettings, IBlobService blobService, IObjectService objectService, IBlobIndex blobIndex, ILeaderElection leaderElection, INamespacePolicyResolver namespacePolicyResolver, Tracer tracer, ILogger<OrphanBlobCleanupRefs> logger)
+        public OrphanBlobCleanupRefs(IOptionsMonitor<GCSettings> gcSettings, IBlobService blobService, IObjectService objectService, IBlobIndex blobIndex, ILeaderElection leaderElection, INamespacePolicyResolver namespacePolicyResolver, Tracer tracer, ILogger<OrphanBlobCleanupRefs> logger, Meter meter)
         {
             _gcSettings = gcSettings;
             _blobService = blobService;
@@ -36,6 +40,8 @@ namespace Jupiter.Implementation
             _namespacePolicyResolver = namespacePolicyResolver;
             _tracer = tracer;
             _logger = logger;
+            _consideredBlobCounter = meter.CreateCounter<long>("gc.blob.considered");
+            _deletedBlobCounter = meter.CreateCounter<long>("gc.blob.deleted");
         }
 
         public bool ShouldRun()
@@ -109,7 +115,7 @@ namespace Jupiter.Implementation
                 TimeSpan storagePoolGcDuration = DateTime.Now - startTime;
                 _logger.LogInformation("Finished running Orphan GC For StoragePool: {StoragePool}. Took {Duration}", policy.StoragePool, storagePoolGcDuration);
             }
-
+            
             _logger.LogInformation("Finished running Orphan GC");
             return countOfBlobsRemoved;
         }
@@ -136,28 +142,51 @@ namespace Jupiter.Implementation
                     break;
                 }
 
-                BlobInfo? blobIndex = await _blobIndex.GetBlobInfo(blobNamespace, blob, BlobIndexFlags.IncludeReferences);
+                IAsyncEnumerable<BaseBlobReference> references = _blobIndex.GetBlobReferences(blobNamespace, blob);
 
-                if (blobIndex == null)
+                List<BaseBlobReference> oldReferences = new List<BaseBlobReference>();
+
+                await foreach (BaseBlobReference baseBlobReference in references.WithCancellation(cancellationToken))
                 {
-                    continue;
-                }
-
-                List<(BucketId, IoHashKey)> oldReferences = new List<(BucketId, IoHashKey)>();
-
-                foreach ((BucketId, IoHashKey) tuple in blobIndex.References!)
-                {
-                    try
+                    if (found)
                     {
-                        (BucketId bucket, IoHashKey key) = tuple;
-                        (ObjectRecord, BlobContents?) _ = await _objectService.Get(blobNamespace, bucket, key, new string[] { "name" }, doLastAccessTracking: false);
-                        found = true;
                         break;
                     }
-                    catch (ObjectNotFoundException)
+
+                    if (baseBlobReference is RefBlobReference refBlobReference)
                     {
-                        // this is not a valid reference so we should delete
-                        oldReferences.Add(tuple);
+                        BucketId bucket = refBlobReference.Bucket;
+                        IoHashKey key = refBlobReference.Key;
+
+                        try
+                        {
+                            (ObjectRecord, BlobContents?) _ = await _objectService.Get(blobNamespace, bucket, key, new string[] { "name" }, doLastAccessTracking: false);
+                            found = true;
+                            break;
+                        }
+                        catch (ObjectNotFoundException)
+                        {
+                            // this is not a valid reference so we should delete
+                            oldReferences.Add(refBlobReference);
+                        }
+                    }
+                    else if (baseBlobReference is BlobToBlobReference blobReference)
+                    {
+                        BlobIdentifier referringBlob = blobReference.Blob;
+                        bool blobFound = await _blobService.Exists(blobNamespace, referringBlob);
+                        if (blobFound)
+                        {
+                            found = true;
+                            break;
+                        }
+                        else
+                        {
+                            oldReferences.Add(blobReference);
+                        }
+                    }
+                    else
+                    {
+                        throw new NotImplementedException($"Unknown blob reference type {baseBlobReference.GetType().Name}");
                     }
                 }
 
@@ -175,24 +204,28 @@ namespace Jupiter.Implementation
 
             removeBlobScope.SetAttribute("removed", (!found).ToString());
 
+            _consideredBlobCounter.Add(1);
+
             // something is still referencing this blob, we should not delete it
             if (found)
             {
                 return false;
             }
 
+            _deletedBlobCounter.Add(1);
+            _logger.LogInformation("GC Orphan blob {Blob} from {StoragePool} which was last modified at {LastModifiedTime}", blob, storagePoolName, lastModifiedTime);
+
             // if the blob was not found to have a reference in any of the namespace that share a storage pool then the blob is not used anymore and should be deleted from all the namespaces
             await Parallel.ForEachAsync(namespacesThatSharePool, cancellationToken, async (ns, _) =>
             {
-                await RemoveBlob(ns, blob, lastModifiedTime);
+                await RemoveBlob(ns, blob);
             });
             return true;
 
         }
 
-        private async Task RemoveBlob(NamespaceId ns, BlobIdentifier blob, DateTime lastModifiedTime)
+        private async Task RemoveBlob(NamespaceId ns, BlobIdentifier blob)
         {
-            _logger.LogInformation("Attempting to GC Orphan blob {Blob} from {Namespace} which was last modified at {LastModifiedTime}", blob, ns, lastModifiedTime);
             try
             {
                 await _blobService.DeleteObject(ns, blob);

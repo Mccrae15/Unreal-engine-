@@ -63,13 +63,11 @@ class FLightmapPathTracingRGS : public FGlobalShader
 		OutEnvironment.SetDefine(TEXT("USE_RECT_LIGHT_TEXTURES"), 1);
 		OutEnvironment.CompilerFlags.Add(CFLAG_ForceDXC);
 		OutEnvironment.CompilerFlags.Add(CFLAG_WarningsAsErrors);
-		// @todo - Working around DXC compiler crash UE-165154, should be removed after DXC is updated with a fix.
-		OutEnvironment.CompilerFlags.Add(CFLAG_ForceOptimization);
 	}
 
 	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
 	{
-		return ERayTracingPayloadType::PathTracingMaterial;
+		return ERayTracingPayloadType::GPULightmass;
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
@@ -100,10 +98,8 @@ class FLightmapPathTracingRGS : public FGlobalShader
 		SHADER_PARAMETER(int32, SkylightMipCount)
 
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, Scene)
 		SHADER_PARAMETER_STRUCT_REF(FIrradianceCachingParameters, IrradianceCachingParameters)
-
-		// Subsurface data
-		SHADER_PARAMETER_TEXTURE(Texture2D, SSProfilesTexture)
 	END_SHADER_PARAMETER_STRUCT()
 };
 
@@ -128,13 +124,11 @@ class FVolumetricLightmapPathTracingRGS : public FGlobalShader
 		OutEnvironment.SetDefine(TEXT("USE_RECT_LIGHT_TEXTURES"), 1);
 		OutEnvironment.CompilerFlags.Add(CFLAG_ForceDXC);
 		OutEnvironment.CompilerFlags.Add(CFLAG_WarningsAsErrors);
-		// @todo - Working around DXC compiler crash UE-165154, should be removed after DXC is updated with a fix.
-		OutEnvironment.CompilerFlags.Add(CFLAG_ForceOptimization);
 	}
 
 	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
 	{
-		return ERayTracingPayloadType::PathTracingMaterial;
+		return ERayTracingPayloadType::GPULightmass;
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
@@ -169,8 +163,6 @@ class FVolumetricLightmapPathTracingRGS : public FGlobalShader
 
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER_STRUCT_REF(FIrradianceCachingParameters, IrradianceCachingParameters)
-		// Subsurface data
-		SHADER_PARAMETER_TEXTURE(Texture2D, SSProfilesTexture)
 
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<FLightShaderConstants>, LightShaderParametersArray)
 	END_SHADER_PARAMETER_STRUCT()
@@ -195,11 +187,12 @@ class FStationaryLightShadowTracingRGS : public FGlobalShader
 
 	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
 	{
-		return ERayTracingPayloadType::PathTracingMaterial;
+		return ERayTracingPayloadType::GPULightmass;
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, Scene)
 		SHADER_PARAMETER_SRV(RaytracingAccelerationStructure, TLAS)
 		SHADER_PARAMETER_SRV(Buffer<int>, LightTypeArray)
 		SHADER_PARAMETER_SRV(Buffer<int>, ChannelIndexArray)
@@ -267,7 +260,7 @@ class FStaticShadowDepthMapTracingRGS : public FGlobalShader
 
 	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
 	{
-		return ERayTracingPayloadType::PathTracingMaterial;
+		return ERayTracingPayloadType::GPULightmass;
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )

@@ -254,48 +254,69 @@ FGetObjectResult GetObject(const FConcertObjectId& InObjectId, const FName InNew
 	// different mechanism for that would be needed here.
 	if (UObject* ExistingObjectOuter = FSoftObjectPath(ObjectOuterPathToFind.ToString()).ResolveObject())
 	{
+		UClass* ObjectClass = FindOrLoadClass(InObjectId.ObjectClassPathName);
+		UObject* ExistingObject = nullptr;
+
 		// We need the object class to find or create the object
-		if (UClass* ObjectClass = FindOrLoadClass(InObjectId.ObjectClassPathName))
+		if (ObjectClass)
 		{
 			// Find the existing object
-			if (UObject* ExistingObject = StaticFindObject(ObjectClass, ExistingObjectOuter, *ObjectNameToFind.ToString(), /*bExactClass*/true))
+			ExistingObject = StaticFindObject(ObjectClass, ExistingObjectOuter, *ObjectNameToFind.ToString(), /*bExactClass*/true);
+		}
+
+		if (!ExistingObject)
+		{
+			// Find the existing object through the outer and potentially load if not loaded
+			if (ExistingObjectOuter->ResolveSubobject(*ObjectNameToFind.ToString(), ExistingObject, /*bLoadIfExists*/true))
 			{
-				EGetObjectResultFlags ResultFlags = EGetObjectResultFlags::None;
+				ObjectClass = FindOrLoadClass(InObjectId.ObjectClassPathName);
 
-				// Perform any renames or outer changes
-				if (bIsRename || bIsOuterChange)
+				if (!ObjectClass || (ExistingObject->GetClass() != ObjectClass))
 				{
-					UObject* NewObjectOuter = nullptr;
-					if (bIsOuterChange)
-					{
-						//@todo FH: what if our new outer isn't loaded yet?
-						NewObjectOuter = StaticFindObject(UObject::StaticClass(), nullptr, *ObjectOuterPathToCreate.ToString());
-					}
+					ExistingObject = nullptr;
+				}
+			}
+		}
+		
+		if (ExistingObject)
+		{
+			check(ObjectClass);
 
-					// Find the new object (in case something already created it)
-					if (UObject* NewObject = StaticFindObject(ObjectClass, NewObjectOuter ? NewObjectOuter : ExistingObjectOuter, *ObjectNameToCreate.ToString(), /*bExactClass*/true))
-					{
-						UE_LOG(LogConcert, Warning, TEXT("Attempted to rename '%s' over '%s'. Re-using the found object instead of performing the rename!"), *ExistingObject->GetPathName(), *NewObject->GetPathName());
-						UpdatePendingKillState(ExistingObject, /*bIsPendingKill*/true);
-						ResultFlags |= EGetObjectResultFlags::NeedsGC;
+			EGetObjectResultFlags ResultFlags = EGetObjectResultFlags::None;
 
-						ExistingObject = NewObject;
-					}
-					else
-					{
-						ExistingObject->Rename(*ObjectNameToCreate.ToString(), NewObjectOuter);
-					}
+			// Perform any renames or outer changes
+			if (bIsRename || bIsOuterChange)
+			{
+				UObject* NewObjectOuter = nullptr;
+				if (bIsOuterChange)
+				{
+					//@todo FH: what if our new outer isn't loaded yet?
+					NewObjectOuter = StaticFindObject(UObject::StaticClass(), nullptr, *ObjectOuterPathToCreate.ToString());
 				}
 
-				// Update the object flags
-				ExistingObject->SetFlags((EObjectFlags)InObjectId.ObjectPersistentFlags);
+				// Find the new object (in case something already created it)
+				if (UObject* NewObject = StaticFindObject(ObjectClass, NewObjectOuter ? NewObjectOuter : ExistingObjectOuter, *ObjectNameToCreate.ToString(), /*bExactClass*/true))
+				{
+					UE_LOG(LogConcert, Warning, TEXT("Attempted to rename '%s' over '%s'. Re-using the found object instead of performing the rename!"), *ExistingObject->GetPathName(), *NewObject->GetPathName());
+					UpdatePendingKillState(ExistingObject, /*bIsPendingKill*/true);
+					ResultFlags |= EGetObjectResultFlags::NeedsGC;
 
-				// if we have any package assignment, do it here
-				AssignExternalPackage(ExistingObject);
-
-				// We found the object, return it
-				return FGetObjectResult(ExistingObject, ResultFlags);
+					ExistingObject = NewObject;
+				}
+				else
+				{
+					ExistingObject->Rename(*ObjectNameToCreate.ToString(), NewObjectOuter);
+				}
 			}
+
+			// Update the object flags
+			ExistingObject->SetFlags((EObjectFlags)InObjectId.ObjectPersistentFlags);
+
+			// if we have any package assignment, do it here
+			AssignExternalPackage(ExistingObject);
+
+			// We found the object, return it
+			return FGetObjectResult(ExistingObject, ResultFlags);
 		}
 	}
 
@@ -336,13 +357,22 @@ FGetObjectResult GetObject(const FConcertObjectId& InObjectId, const FName InNew
 
 						if (OwnerWorld)
 						{
-							FActorSpawnParameters SpawnParams;
-							SpawnParams.Name = ObjectNameToCreate;
-							SpawnParams.OverrideLevel = OuterLevel;
-							SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-							SpawnParams.bNoFail = true;
-							SpawnParams.ObjectFlags = (EObjectFlags)InObjectId.ObjectPersistentFlags;
-							ObjectResult = FGetObjectResult(OwnerWorld->SpawnActor<AActor>(ObjectClass, FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams), EGetObjectResultFlags::NewlyCreated);
+							UObject* ExistingObjectOfDifferentClass = StaticFindObjectFast(nullptr, OuterLevel, ObjectNameToCreate);
+							if (!ExistingObjectOfDifferentClass)
+							{
+								FActorSpawnParameters SpawnParams;
+								SpawnParams.Name = ObjectNameToCreate;
+								SpawnParams.OverrideLevel = OuterLevel;
+								SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+								SpawnParams.bNoFail = true;
+								SpawnParams.ObjectFlags = (EObjectFlags)InObjectId.ObjectPersistentFlags;
+								ObjectResult = FGetObjectResult(OwnerWorld->SpawnActor<AActor>(ObjectClass, FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams), EGetObjectResultFlags::NewlyCreated);
+							}
+							else
+							{
+								UE_LOG(LogConcert, Warning, TEXT("Actor '%s' already exists! Expected class: '%s'"), *ExistingObjectOfDifferentClass->GetFullName(), *ObjectClass->GetPathName()); 
+								ensureMsgf(!ExistingObjectOfDifferentClass, TEXT("Actor '%s' already exists! Expected class: '%s'"), *ExistingObjectOfDifferentClass->GetFullName(), *ObjectClass->GetPathName());
+							}
 						}
 						else
 						{
@@ -546,8 +576,6 @@ void HotReloadPackages(TArrayView<const FName> InPackageNames)
 		}
 	}
 
-	FlushRenderingCommands();
-
 	bool bAddPersistentLevel = false;
 
 	// Find the packages in-memory to content hot-reload
@@ -583,6 +611,8 @@ void HotReloadPackages(TArrayView<const FName> InPackageNames)
 
 	if (ExistingPackages.Num() > 0)
 	{
+		FlushRenderingCommands();
+
 		FText ErrorMessage;
 		UPackageTools::ReloadPackages(ExistingPackages, ErrorMessage, GetDefault<UConcertSyncConfig>()->bInteractiveHotReload ? UPackageTools::EReloadPackagesInteractionMode::Interactive : UPackageTools::EReloadPackagesInteractionMode::AssumePositive);
 
@@ -693,6 +723,20 @@ UWorld* GetCurrentWorld()
 		CurrentWorld = GameEngine->GetGameWorld();
 	}
 	return CurrentWorld;
+}
+
+ULevel* GetExternalPersistentWorld()
+{
+	UWorld* CurrentWorld = ConcertSyncClientUtil::GetCurrentWorld();
+	if (CurrentWorld)
+	{
+		ULevel* PersistentLevel = CurrentWorld->PersistentLevel;
+		if (PersistentLevel && PersistentLevel->IsUsingExternalObjects())
+		{
+			return PersistentLevel;
+		}
+	}
+	return nullptr;
 }
 
 void FillPackageInfo(UPackage* InPackage, UObject* InAsset, const EConcertPackageUpdateType InPackageUpdateType, FConcertPackageInfo& OutPackageInfo)

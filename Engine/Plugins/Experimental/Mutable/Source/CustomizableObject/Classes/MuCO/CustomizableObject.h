@@ -2,10 +2,13 @@
  
 #pragma once
 
-#include "MuCO/CustomizableObjectClothingTypes.h"
-#include "MuCO/CustomizableObjectIdentifier.h"
-#include "MuCO/CustomizableObjectUIData.h"
 #include "RHIDefinitions.h"
+#include "MuCO/CustomizableObjectClothingTypes.h"
+#include "MuCO/CustomizableObjectExtensionData.h"
+#include "MuCO/CustomizableObjectStreamedExtensionData.h"
+#include "MuCO/CustomizableObjectIdentifier.h"
+#include "MuCO/CustomizableObjectParameterTypeDefinitions.h"
+#include "MuCO/CustomizableObjectUIData.h"
 
 class FReply;
 
@@ -23,6 +26,7 @@ class FText;
 class IAsyncReadFileHandle;
 class ITargetPlatform;
 class UAnimInstance;
+class UAssetUserData;
 class UCustomizableObject;
 class UEdGraph;
 class UMaterialInterface;
@@ -30,6 +34,7 @@ class UPhysicsAsset;
 class USkeletalMesh;
 class USkeleton;
 struct FFrame;
+struct FStreamableHandle;
 template <typename FuncType> class TFunctionRef;
 
 DECLARE_MULTICAST_DELEGATE(FPostCompileDelegate)
@@ -42,7 +47,26 @@ namespace mu
 }
 
 
-CUSTOMIZABLEOBJECT_API DECLARE_LOG_CATEGORY_EXTERN(LogMutable, Warning, All);
+CUSTOMIZABLEOBJECT_API DECLARE_LOG_CATEGORY_EXTERN(LogMutable, Log, All);
+
+struct FMergedSkeleton
+{
+	FMergedSkeleton(TObjectPtr<USkeleton> InSkeleton, const int32 InComponentIndex, const TArray<uint16>& InSkeletonIds);
+
+	// Merged skeleton
+	TWeakObjectPtr<USkeleton> Skeleton;
+	
+	// Component Index and Ids of the Skeletons involved in the merge. Used to identify the skeleton
+	uint16 ComponentIndex;
+	TArray<uint16> SkeletonIds;
+
+	bool operator==(const FMergedSkeleton& Other) const
+	{
+		return ComponentIndex == Other.ComponentIndex
+			&& SkeletonIds == Other.SkeletonIds;
+	}
+};
+
 
 USTRUCT()
 struct FFParameterOptionsTags
@@ -117,6 +141,16 @@ struct FProfileParameterDat
 	TArray<FCustomizableObjectProjectorParameterValue> ProjectorParameters;
 };
 
+UENUM()
+enum class ECustomizableObjectNumBoneInfluences : uint8
+{
+	// The enum values can be used as the real numeric value of number of bone influences
+	Four = 4,
+	// 
+	Eight = 8,
+	//
+	Twelve = 12 // This is essentially the same as "Unlimited", but UE ultimately limits to 12
+};
 
 USTRUCT()
 struct FCompilationOptions
@@ -131,19 +165,13 @@ struct FCompilationOptions
 	UPROPERTY()
 	int32 OptimizationLevel = 1;
 
-	// If enable, multi-threaded compilation will be used when compiling this models.
-	// For some memory-heavy models, this may need to be disabled, since it may multiply the
-	// use of memory during compilation for each thread.
-	UPROPERTY()
-	bool bUseParallelCompilation = true;
-
 	// Use the disk to store intermediate compilation data. This slows down the object compilation
 	// but it may be necessary for huge objects.
 	UPROPERTY()
 	bool bUseDiskCompilation = false;
 
 	// Did we have the extra bones enabled when we compiled?
-	bool bExtraBoneInfluencesEnabled = false;
+	ECustomizableObjectNumBoneInfluences CustomizableObjectNumBoneInfluences = ECustomizableObjectNumBoneInfluences::Four;
 
 	// Compiling for cook
 	bool bIsCooking = false;
@@ -173,7 +201,10 @@ struct FCompilationOptions
 	bool bSkinWeightProfilesEnabled = true;
 
 	// Used to enable physics asset merge.
-	bool bPhysicsAssetMergeEnebled = false;
+	bool bPhysicsAssetMergeEnabled = false;
+
+	// Used to enable AnimBp override physics mainipualtion.  
+	bool bAnimBpPhysicsManipulationEnabled = false;
 
 	// Used to reduce the number of notifications when compiling objects
 	bool bSilentCompilation = true;
@@ -181,6 +212,9 @@ struct FCompilationOptions
 	/** Force a very big number on the mips to skip during compilation. Useful to debug special cooks of the data. */
 	bool bForceLargeLODBias = false;
 	int32 DebugBias = 0;
+
+	// Control image tiled generation
+	int32 ImageTiling = 0;
 
 };
 
@@ -374,9 +408,6 @@ struct FMutableModelParameterProperties
 	EMutableParameterType Type = EMutableParameterType::None;
 
 	UPROPERTY()
-	int ImageDescriptionCount = 0;
-
-	UPROPERTY()
 	TArray<FMutableModelParameterValue> PossibleValues;
 };
 
@@ -419,6 +450,57 @@ private:
 	TArray<uint32> Data; // Only alpha channel of PF_R8G8B8A8 is stored as binary bits
 };
 
+
+
+USTRUCT()
+struct CUSTOMIZABLEOBJECT_API FAnimBpOverridePhysicsAssetsInfo
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TSoftClassPtr<UAnimInstance> AnimInstanceClass;
+	
+	UPROPERTY()
+	TSoftObjectPtr<UPhysicsAsset> SourceAsset;
+	
+	UPROPERTY()
+	int32 PropertyIndex = -1;
+
+	friend FArchive& operator<<(FArchive& Ar, FAnimBpOverridePhysicsAssetsInfo& Info)
+	{
+		FString AnimInstanceClassPathString;
+		FString PhysicsAssetPathString;
+
+		if (Ar.IsLoading())
+		{	
+			Ar << AnimInstanceClassPathString;
+			Ar << PhysicsAssetPathString;
+			Ar << Info.PropertyIndex;
+
+			Info.AnimInstanceClass = TSoftClassPtr<UAnimInstance>(AnimInstanceClassPathString);
+			Info.SourceAsset = TSoftObjectPtr<UPhysicsAsset>(PhysicsAssetPathString);
+		}
+
+		if (Ar.IsSaving())
+		{
+			AnimInstanceClassPathString = Info.AnimInstanceClass.ToString();
+			PhysicsAssetPathString = Info.SourceAsset.ToString();
+
+			Ar << AnimInstanceClassPathString;
+			Ar << PhysicsAssetPathString;
+			Ar << Info.PropertyIndex;
+		}
+
+		return Ar;
+	}
+
+	friend bool operator==(const FAnimBpOverridePhysicsAssetsInfo& Lhs, const FAnimBpOverridePhysicsAssetsInfo& Rhs)
+	{
+		return Lhs.AnimInstanceClass == Rhs.AnimInstanceClass && 
+			   Lhs.SourceAsset	     == Rhs.SourceAsset       && 
+		 	   Lhs.PropertyIndex     == Rhs.PropertyIndex;
+	}
+};
 
 USTRUCT()
 struct FMorphTargetInfo
@@ -615,6 +697,7 @@ struct FMutableSkinWeightProfileInfo
 };
 
 
+
 UCLASS()
 class CUSTOMIZABLEOBJECT_API UMutableMaskOutCache : public UObject
 {
@@ -666,13 +749,24 @@ struct CUSTOMIZABLEOBJECT_API FMutableCachedPlatformData
 };
 
 
+USTRUCT()
 struct FMutableRefLODInfo
 {
+	GENERATED_BODY()
+
+	UPROPERTY()
 	float ScreenSize = 0.f;
+
+	UPROPERTY()
 	float LODHysteresis = 0.f;
+
+	UPROPERTY()
 	bool bSupportUniformlyDistributedSampling = false;
+
+	UPROPERTY()
 	bool bAllowCPUAccess = false;
 
+#if WITH_EDITORONLY_DATA
 	friend FArchive& operator<<(FArchive& Ar, FMutableRefLODInfo& Data)
 	{
 		Ar << Data.ScreenSize;
@@ -682,14 +776,22 @@ struct FMutableRefLODInfo
 
 		return Ar;
 	}
+#endif
 };
 
 
+USTRUCT()
 struct FMutableRefLODRenderData
 {
+	GENERATED_BODY()
+
+	UPROPERTY()
 	bool bIsLODOptional = false;
+
+	UPROPERTY()
 	bool bStreamedDataInlined = false;
 	
+#if WITH_EDITORONLY_DATA
 	friend FArchive& operator<<(FArchive& Ar, FMutableRefLODRenderData& Data)
 	{
 		Ar << Data.bIsLODOptional;
@@ -697,15 +799,22 @@ struct FMutableRefLODRenderData
 
 		return Ar;
 	}
+#endif
 };
 
 
+USTRUCT()
 struct FMutableRefLODData
 {
+	GENERATED_BODY()
+
+	UPROPERTY()
 	FMutableRefLODInfo LODInfo;
 
+	UPROPERTY()
 	FMutableRefLODRenderData RenderData;
 	
+#if WITH_EDITORONLY_DATA
 	friend FArchive& operator<<(FArchive& Ar, FMutableRefLODData& Data)
 	{
 		Ar << Data.LODInfo;
@@ -713,6 +822,7 @@ struct FMutableRefLODData
 		
 		return Ar;
 	}
+#endif
 };
 
 
@@ -727,11 +837,11 @@ struct FMutableRefSocket
 	FName BoneName;
 
 	UPROPERTY()
-	FVector RelativeLocation;
+	FVector RelativeLocation = FVector::ZeroVector;
 	UPROPERTY()
-	FRotator RelativeRotation;
+	FRotator RelativeRotation = FRotator::ZeroRotator;
 	UPROPERTY()
-	FVector RelativeScale;
+	FVector RelativeScale = FVector::ZeroVector;;
 
 	UPROPERTY()
 	bool bForceAlwaysAnimated = false;
@@ -757,6 +867,7 @@ struct FMutableRefSocket
 		return false;
 	}
 	
+#if WITH_EDITORONLY_DATA
 	friend FArchive& operator<<(FArchive& Ar, FMutableRefSocket& Data)
 	{
 		Ar << Data.SocketName;
@@ -769,15 +880,22 @@ struct FMutableRefSocket
 
 		return Ar;
 	}
+#endif
 };
 
 
+USTRUCT()
 struct FMutableRefSkeletalMeshSettings
 {
+	GENERATED_BODY()
+
+	UPROPERTY()
 	bool bEnablePerPolyCollision = false;
 
+	UPROPERTY()
 	float DefaultUVChannelDensity = 0.f;
 
+#if WITH_EDITORONLY_DATA
 	friend FArchive& operator<<(FArchive& Ar, FMutableRefSkeletalMeshSettings& Data)
 	{
 		Ar << Data.bEnablePerPolyCollision;
@@ -785,86 +903,84 @@ struct FMutableRefSkeletalMeshSettings
 
 		return Ar;
 	}
+#endif
 };
+
+
+USTRUCT()
+struct FMutableRefAssetUserData
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TObjectPtr<UAssetUserData> AssetUserData;
+
+#if WITH_EDITORONLY_DATA
+	FString ClassPath;
+	TArray<uint8> Bytes;
+
+	friend FArchive& operator<<(FArchive& Ar, FMutableRefAssetUserData& Data);
+
+	void InitResources(UCustomizableObject* InOuter);
+#endif
+
+};
+
 
 USTRUCT()
 struct FMutableRefSkeletalMeshData
 {
 	GENERATED_BODY()
-	
+
+	// Reference Skeletal Mesh
+	UPROPERTY()
+	TObjectPtr<USkeletalMesh> SkeletalMesh;
+
+	// Path to load the ReferenceSkeletalMesh
+	UPROPERTY()
+	FSoftObjectPath SkeletalMeshAssetPath;
+
 	// LOD info
+	UPROPERTY()
 	TArray<FMutableRefLODData> LODData;
 	
 	// Sockets
+	UPROPERTY()
 	TArray<FMutableRefSocket> Sockets;
 
 	// Bounding Box
-	FBoxSphereBounds Bounds;
+	UPROPERTY()
+	FBoxSphereBounds Bounds = FBoxSphereBounds(ForceInitToZero);
 
 	// Settings
+	UPROPERTY()
 	FMutableRefSkeletalMeshSettings Settings;
 
 	// Skeleton, must be stored in the ReferencedSkeletons too
-	UPROPERTY(Transient)
+	UPROPERTY()
 	TSoftObjectPtr<USkeleton> Skeleton;
 	
 	// PhysicsAsset, must be stored in the PhysicsAssetMap too
-	UPROPERTY(Transient)
+	UPROPERTY()
 	TSoftObjectPtr<UPhysicsAsset> PhysicsAsset;
 	
 	// Post Processing AnimBP, must be stored in the AnimBPAssetsMap too
-	UPROPERTY(Transient) 
+	UPROPERTY() 
 	TSoftClassPtr<UAnimInstance> PostProcessAnimInst;
 	
 	// Shadow PhysicsAsset, must be stored in the PhysicsAssetMap too
-	UPROPERTY(Transient)
+	UPROPERTY()
 	TSoftObjectPtr<UPhysicsAsset> ShadowPhysicsAsset;
 
+	// Asset user data
+	UPROPERTY()
+	TArray<FMutableRefAssetUserData> AssetUserData;
 
-	friend FArchive& operator<<(FArchive& Ar, FMutableRefSkeletalMeshData& Data)
-	{
-		Ar << Data.LODData;
-		Ar << Data.Sockets;
-		Ar << Data.Bounds;
-		Ar << Data.Settings;
+#if WITH_EDITORONLY_DATA
+	friend FArchive& operator<<(FArchive& Ar, FMutableRefSkeletalMeshData& Data);
 
-
-		if(Ar.IsSaving())
-		{
-			FString AssetPath = Data.Skeleton.ToSoftObjectPath().ToString();
-			Ar << AssetPath;
-
-			AssetPath = Data.PhysicsAsset.ToSoftObjectPath().ToString();
-			Ar << AssetPath;
-
-			AssetPath = Data.PostProcessAnimInst.ToSoftObjectPath().ToString();
-			Ar << AssetPath;
-
-			AssetPath = Data.ShadowPhysicsAsset.ToSoftObjectPath().ToString();
-			Ar << AssetPath;
-		
-		}
-		else
-		{
-			FString SkeletonAssetPath;
-			Ar << SkeletonAssetPath;
-			Data.Skeleton = TSoftObjectPtr<USkeleton>(FSoftObjectPath(SkeletonAssetPath));
-
-			FString PhysicsAssetPath;
-			Ar << PhysicsAssetPath;
-			Data.PhysicsAsset = TSoftObjectPtr<UPhysicsAsset>(FSoftObjectPath(PhysicsAssetPath));
-			
-			FString PostProcessAnimInstAssetPath;
-			Ar << PostProcessAnimInstAssetPath;
-			Data.PostProcessAnimInst = TSoftClassPtr<UAnimInstance>(FSoftObjectPath(PostProcessAnimInstAssetPath));
-			
-			FString ShadowPhysicsAssetPath;
-			Ar << ShadowPhysicsAssetPath;
-			Data.ShadowPhysicsAsset = TSoftObjectPtr<UPhysicsAsset>(FSoftObjectPath(ShadowPhysicsAssetPath));
-		}
-
-		return Ar;
-	}
+	void InitResources(UCustomizableObject* InOuter);
+#endif
 
 };
 
@@ -929,7 +1045,7 @@ public:
 
 	/** Creates and returns an array with IAsyncReadFileHandles for each BulkData file.
 	 * Used by Mutable to stream in resources when generating instances. Must be deleted by the caller. */
-	TArray<IAsyncReadFileHandle*> GetAsyncReadFileHandles() const;
+	TArray<TSharedPtr<IAsyncReadFileHandle>> GetAsyncReadFileHandles() const;
 
 #if WITH_EDITOR
 
@@ -970,6 +1086,7 @@ public:
 
 	UCustomizableObject();
 
+#if WITH_EDITORONLY_DATA
 	/** All the SkeletalMeshes generated for this CustomizableObject instances will use the Reference Skeletal Mesh 
 	* properties for everything that Mutable doesn't create or modify. This includes data like LOD distances, Physics
 	* properties, Bounding Volumes, Skeleton, etc.
@@ -997,19 +1114,15 @@ public:
 	*/
 	UPROPERTY(EditAnywhere, Category=CustomizableObject)
 	TArray< TObjectPtr<class USkeletalMesh> > ReferenceSkeletalMeshes;
+#endif
 
 	/** All the SkeletalMeshes generated for this CustomizableObject instances will use the Reference Skeletal Mesh
 	 * properties for everything that Mutable doesn't create or modify. This struct stores the information used from
 	 * the Reference Skeletal Meshes to avoid having them loaded at all times. This includes data like LOD distances,
 	 * LOD render data settings, Mesh sockets, Bounding volumes, etc.
 	 */
-	UPROPERTY(Transient)
-	TArray<FMutableRefSkeletalMeshData> ReferenceSkeletalMeshesData;
-
-	// Hide for now, since it is not supported yet
-	//UPROPERTY(EditAnywhere, Category = CustomizableObject)
 	UPROPERTY()
-	TObjectPtr<class UStaticMesh> ReferenceStaticMesh;
+	TArray<FMutableRefSkeletalMeshData> ReferenceSkeletalMeshesData;
 
 	/** List of Materials referenced by this or any child customizable object. */
 	UPROPERTY()
@@ -1024,6 +1137,9 @@ public:
 	 */
 	UPROPERTY()
 	TArray<TSoftObjectPtr<USkeleton>> ReferencedSkeletons;
+
+	UPROPERTY()
+	TArray<TSoftObjectPtr<UTexture>> ReferencedPassThroughTextures;
 
 	UPROPERTY(EditAnywhere, Category = CustomizableObject, meta = (DisplayName = "LOD Settings"))
 	FMutableLODSettings LODSettings;
@@ -1049,7 +1165,22 @@ public:
 	UPROPERTY()
 	TArray<FMutableSkinWeightProfileInfo> SkinWeightProfilesInfo;
 
+	// mu::ExtensionData::Index is an index into this array when mu::ExtensionData::Origin is ConstantAlwaysLoaded
+	UPROPERTY()
+	TArray<FCustomizableObjectExtensionData> AlwaysLoadedExtensionData;
+
+	// mu::ExtensionData::Index is an index into this array when mu::ExtensionData::Origin is ConstantStreamed
+	UPROPERTY()
+	TArray<FCustomizableObjectStreamedExtensionData> StreamedExtensionData;
+
 #if WITH_EDITORONLY_DATA
+
+	/** Use the SkeletalMesh of reference as a placeholder until the custom mesh is ready to use.
+	  * 
+	  * Note: If disabled, a null mesh will be used to replace the discarded mesh due to 'ReplaceDiscardedWithReferenceMesh' being enabled.
+	  */
+	UPROPERTY(EditAnywhere, Category = CustomizableObject)
+	bool bEnableUseRefSkeletalMeshAsPlaceholder = true;
 
 	// Hide this property because it is not used yet.
 	//UPROPERTY(EditAnywhere, Category = CustomizableObject)
@@ -1059,10 +1190,6 @@ public:
 	// Compilation options to use in editor and for packaging for this object.
 	UPROPERTY()
 	FCompilationOptions CompileOptions;
-
-	// 
-	UPROPERTY(EditAnywhere, Category = CompileOptions)
-	bool bDisableTextureLayoutManagement = false;
 
 	//
 	UPROPERTY(EditAnywhere, Category = CompileOptions)
@@ -1083,6 +1210,9 @@ public:
 	//
 	UPROPERTY(EditAnywhere, Category = CompileOptions)
 	bool bEnablePhysicsAssetMerge = false;
+
+	UPROPERTY(EditAnywhere, Category = CompileOptions)
+	bool bEnableAnimBpPhysicsAssetsManipualtion = false;
 
 	// Options when compiling this customizable object (see EMutableCompileMeshType declaration for info)
 	UPROPERTY(EditAnywhere, Category = CompileOptions)
@@ -1150,10 +1280,7 @@ public:
 	const FString& GetParameterName(int32 ParamIndex) const;
 
 	// Get the number of description images available for a parameter
-	int32 GetParameterDescriptionCount(int32 ParamIndex) const;
-
-	// Get the number of description images available for a parameter
-	UFUNCTION(BlueprintCallable, Category = CustomizableObject)
+	UFUNCTION(BlueprintCallable, Category = CustomizableObject, meta = (DeprecatedFunction, DeprecationMessage = "Parameter decorations have been removed. This method will be removed in future versions."))
 	int32 GetParameterDescriptionCount(const FString& ParamName) const;
 
 	// Returns how many possible options an int parameter has
@@ -1178,6 +1305,15 @@ public:
 	
 	TSoftObjectPtr<UMaterialInterface> GetReferencedMaterialAssetPtr(uint32 Index);
 
+	// Return a valid Skeletons if cached. ComponentIndex and SkeletonIds are used as a key to find the skeleton.
+	TObjectPtr<USkeleton> GetCachedMergedSkeleton(int32 ComponentIndex, const TArray<uint16>& SkeletonIds) const;
+
+	// Add merged skeleton to the cache. It'll be cached as a TWeakObjPtr.
+	void CacheMergedSkeleton(const int32 ComponentIndex, const TArray<uint16>& SkeletonIds, TObjectPtr<USkeleton> Skeleton);
+
+	// Remove skeletons that have been destroyed by the garbage collector from the cache.
+	void UnCacheInvalidSkeletons();
+
 	// Call before using Mutable's Projector testing with mask out features. It should only be loaded when needed because it can spend quite a lot of memory
 	// Can cause a loading hitch
 	UFUNCTION(BlueprintCallable, Category = CustomizableObject)
@@ -1187,6 +1323,106 @@ public:
 	UFUNCTION(BlueprintCallable, Category = CustomizableObject)
 	void UnloadMaskOutCache();
 
+	// Called to load the reference SkeletalMesh if it needs to be used as a placeholder and it's not loaded.
+	UFUNCTION(BlueprintCallable, Category = CustomizableObject)
+	void LoadReferenceSkeletalMeshesAsync();
+
+	UFUNCTION(BlueprintCallable, Category = CustomizableObject)
+	void UnloadReferenceSkeletalMeshes();
+
+	// Callback of LoadReferenceSkeletalMeshesAsync
+	void OnReferenceSkeletalMeshesAsyncLoaded();
+
+private:
+
+#if !WITH_EDITORONLY_DATA
+	// Handle used to store a streaming request operation.
+	TSharedPtr<FStreamableHandle> RefSkeletalMeshStreamingHandle;
+#endif
+
+	
+	/** Returns true or false if the parameter with name can be located and it has the type the caller is looking for. It will also
+	 * check if the model has been set to ensure access to it can take place at the calculated parameter index.
+	 * @param InParameterName The name of the parameter to look for.
+	 * @param InParameterType The type the parameter we are looking for we know has. If the name does not match this type this check will fail and return false.
+	 * @param OutParameterIndex The index of the parameter.
+	 * @return True if the parameter can be accessed for it's default values, false if it can not be accessed.
+	 */
+	bool CanDefaultParameterBeAccessed(const FString& InParameterName,const EMutableParameterType& InParameterType, int32& OutParameterIndex) const;
+
+public:
+	/** Get the default value of a parameter of type Float.
+	 * @param InParameterName The name of the Float parameter to get the default value of.
+	 * @return The default value of the provided parameter name.
+	 */
+	UFUNCTION(BlueprintCallable, Category = CustomizableObject)
+	float GetFloatParameterDefaultValue(UPARAM(DisplayName = "Parameter Name") const FString& InParameterName) const;
+	
+	/** Get the default value of a parameter of type Int. 
+	 * @param InParameterName The name of the Int parameter to get the default value of.
+	 * @return The default value of the provided parameter name.
+	 */
+	UFUNCTION(BlueprintCallable, Category = CustomizableObject)
+	int32 GetIntParameterDefaultValue(UPARAM(DisplayName = "Parameter Name") const FString& InParameterName) const;
+ 
+	/** Get the default value of a parameter of type Bool.
+	 * @param InParameterName The name of the Bool parameter to get the default value of.
+	 * @return The default value of the provided parameter name.
+	 */
+	UFUNCTION(BlueprintCallable, Category = CustomizableObject)
+	bool GetBoolParameterDefaultValue(UPARAM(DisplayName = "Parameter Name") const FString& InParameterName) const;
+
+	/** Get the default value of a parameter of type Color.
+	 * @param InParameterName The name of the Color parameter to get the default value of.
+	 * @return The default value of the provided parameter name.
+	*/
+	UFUNCTION(BlueprintCallable, Category = CustomizableObject)
+	FLinearColor GetColorParameterDefaultValue(UPARAM(DisplayName = "Parameter Name") const FString& InParameterName) const;
+	
+	/** Get the default value of a parameter of type Projector.
+	 * @param InParameterName The name of the Projector parameter to get the default value of.
+	 * @param OutPos The default position of the Projector.
+	 * @param OutDirection The default projection direction of the Projector.
+	 * @param OutUp The default up vector of the Projector.
+	 * @param OutScale The default scale of the Projector.
+	 * @param OutAngle The default angle of the Projector.
+	 * @param OutType The default type of the Projector.
+	 */
+	UFUNCTION(BlueprintCallable, Category = CustomizableObject)
+	void GetProjectorParameterDefaultValue (
+		UPARAM(DisplayName = "Parameter Name") const FString& InParameterName,
+		UPARAM(DisplayName = "Possition") FVector3f& OutPos,
+		UPARAM(DisplayName = "Direction") FVector3f& OutDirection,
+		UPARAM(DisplayName = "Up") FVector3f& OutUp,
+		UPARAM(DisplayName = "Scale") FVector3f& OutScale,
+		UPARAM(DisplayName = "Angle") float& OutAngle,
+		UPARAM(DisplayName = "Type") ECustomizableObjectProjectorType& OutType) const;
+
+	/** Get the default value of a projector with the provided name
+	 * @param InParameterName The name of the parameter to get the default value of.
+	 * @return A data structure containing all the default data for the targeted projector parameter.
+	 */
+	FCustomizableObjectProjector GetProjectorParameterDefaultValue ( const FString& InParameterName) const;
+	
+	/** Get the default value of a parameter of type Texture.
+	 * @param InParameterName The name of the Projector parameter to get the default value of.
+	 * @return An id representing the default parameter's texture.
+	 */
+	FName GetTextureParameterDefaultValue (const FString& InParameterName) const;
+
+	/** Return true or false depending if the parameter at the index provided is multidimensional or not.
+	 * @param InParamIndex The index of the parameter to check.
+	 * @return True if the parameter is multidimensional and false if it is not.
+	 */
+	bool IsParameterMultidimensional(const int32& InParamIndex) const;
+	
+	/** Return true or false depending if the parameter at the index provided is multidimensional or not.
+	 * @param InParameterName The name of the parameter to check.
+	 * @return True if the parameter is multidimensional and false if it is not.
+	 */
+	UFUNCTION(BlueprintCallable, Category = CustomizableObject)
+	bool IsParameterMultidimensional ( UPARAM(DisplayName = "Parameter Name") const FString& InParameterName) const;
+	
 private: 
 
 	// This is information about the parameters in the model that is generated at model compile time.
@@ -1203,9 +1439,11 @@ private:
 	// This is a manual version number for the binary blobs in this asset.
 	// Increasing it invalidates all the previously compiled models.
 	// Warning: If while merging code both versions have changed, take the highest+1.
-	static const int32 CurrentSupportedVersion = 366;
+	static const int32 CurrentSupportedVersion = 399;
 
 public:
+
+	void AddUncompiledCOWarning(const FString& AdditionalLoggingInfo);
 
 #if WITH_EDITOR
 	
@@ -1220,13 +1458,13 @@ public:
 	void UpdateVersionId();
 	FGuid GetVersionId() const { return VersionId; }
 
-	int GetCurrentSupportedVersion() const { return CurrentSupportedVersion; };
+	int32 GetCurrentSupportedVersion() const { return CurrentSupportedVersion; };
 
 	// Compose folder name where the data is stored
 	FString GetCompiledDataFolderPath(bool bIsEditorData) const;
 
 	// Compose file name 
-	FString GetCompiledDataFileName(bool bIsModel, const ITargetPlatform* InTargetPlatform = nullptr) const;
+	FString GetCompiledDataFileName(bool bIsModel, const ITargetPlatform* InTargetPlatform = nullptr, bool bIsDiskStreamer = false);
 
 	/** Used to set the flag IsRoot */
 	void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
@@ -1235,9 +1473,6 @@ public:
 	FString GetDesc() override;
 
 	bool IsEditorOnly() const override;
-
-	// Initialize if not set.
-	void InitializeIdentifier();
 
 	// Begin UObject interface.
 	void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
@@ -1285,6 +1520,7 @@ public:
 	void LoadEmbeddedData(FArchive& Ar);
 
 	void PostLoad() override;
+	void BeginDestroy() override;
 
 	void Serialize(FArchive& Ar) override;
 
@@ -1292,6 +1528,7 @@ public:
 	void SerializeClothingDerivedData(FMemoryWriter64& Ar);
 	void DeserializeClothingDerivedData(FMemoryReaderView& Ar);
 
+	FGuid GetCompilationGuid() const;
 
 	int32 FindState( const FString& Name ) const;
 
@@ -1329,6 +1566,11 @@ public:
 	UPROPERTY()
 	TMap<FString, FParameterUIData> ParameterUIDataMap;
 
+	/** Textures marked as low priority will generate defaulted resident mips (if texture streaming is enabled).
+	  * Generating defaulted resident mips greatly reduce initial generation times. */
+	UPROPERTY(EditAnywhere, Category = CustomizableObject)
+	TArray<FName> LowPriorityTextures;
+
 	/** Stores all the state UI metadata information for all the dependencies of this Customizable Object */
 	UPROPERTY()
 	TMap<FString, FParameterUIData> StateUIDataMap;
@@ -1340,6 +1582,9 @@ public:
 	/** Stores the UAnimBlueprint assets gathered from the SkeletalMesh nodes during compilation, to be used in mesh generation in-game */
 	UPROPERTY()
 	TMap<FString, TSoftClassPtr<UAnimInstance>> AnimBPAssetsMap;
+
+	UPROPERTY()
+	TArray<FAnimBpOverridePhysicsAssetsInfo> AnimBpOverridePhysiscAssetsInfo;
 
 	UPROPERTY()
 	/** Stores the sockets provided by the part skeletal meshes, to be merged in the generated meshes */
@@ -1377,6 +1622,12 @@ public:
 	UPROPERTY()
 	bool bIsChildObject = false;
 
+	/** Unique Identifier - used to locate Model and Streamable data on disk. Should not be modified. */
+	UPROPERTY(Transient)
+	FGuid Identifier;
+
+	ECustomizableObjectCompilationState CompilationState = ECustomizableObjectCompilationState::None;
+
 	FPostCompileDelegate PostCompileDelegate;
 
 	void PostCompile();
@@ -1388,7 +1639,7 @@ public:
 	// Return a pointer to the BulkData subobject, only valid in packaged builds
 	const UCustomizableObjectBulk* GetStreamableBulkData() const { return BulkData; }
 
-	FCustomizableObjectPrivateData* GetPrivate() const { return PrivateData.Get(); }
+	FCustomizableObjectPrivateData* GetPrivate() const;
 
 	// This will always return true in a packaged game
 	UFUNCTION(BlueprintCallable, Category = CustomizableObject)
@@ -1401,6 +1652,8 @@ public:
 
 #if WITH_EDITOR
 	void SetModel(TSharedPtr<mu::Model, ESPMode::ThreadSafe> Model);
+
+	void SetBoneNamesArray(const TArray<FName>& BoneNames);
 #endif
 
 	int32 GetNumLODs() const;
@@ -1408,52 +1661,28 @@ public:
 	/** Modify the provided mutable parameters so that the forced values for the given customizable object state are applied. */
 	void ApplyStateForcedValuesToParameters(int32 State, mu::Parameters* Parameters);
 
-#if WITH_EDITOR
+	/** Return the names used by mutable to identify which mu::Image should be considered of LowPriority. */
+	void GetLowPriorityTextureNames(TArray<FString>& OutTextureNames);
 
-	// UObject Interface -> Data validation
-	virtual EDataValidationResult IsDataValid(class FDataValidationContext& Context) override;
-	// End of UObject Interface
-
-private:
-
-	/** Cached handle to be able later to remove the bound method from the FEditorDelegates::OnPostAssetValidation delegate */
-	inline static FDelegateHandle OnPostCOValidationHandle;
-	
-	/** Collection with all root objects tested during this IsDataValidRun. Shared with all COs */
-	inline static TArray<UCustomizableObject*> AlreadyValidatedRootObjects;
-	
-	/** Method invoked once the validation of all assets has been completed. */
-	static void OnPostCOsValidation();
-
-public:
-	// UObject Interface -> Asset saving
-	virtual void PreSaveRoot(FObjectPreSaveRootContext ObjectSaveContext) override;
-	// End of UObject Interface
+	const TArray<FName>& GetBoneNamesArray() const;
 
 private:
-	/** Flag that tells us if the validation of the asset has been triggered by the saving of it.
-	 * It gets consumed by IsDataValid and it is that same function the one that resets the value of this flag.
-	 */
-	bool bIsValidationTriggeredBySave = false;
+	
+	/** Stores the bone names of all the bones that can possibly use the generated meshes */
+	UPROPERTY()
+	TArray<FName> BoneNames;
 
-#endif
+	/** Cache of merged skeletons */
+	TArray<FMergedSkeleton> MergedSkeletons;
 
 	/** Used to prevent GC of MaskOutCache and keep it in memory while it's needed */
 	UPROPERTY(Transient)
 	TObjectPtr<UMutableMaskOutCache> MaskOutCache_HardRef;
 
-	/** Unique Identifier - used to locate Model and Streamable data on disk. Should not be modified. */
-	UPROPERTY()
-	FGuid Identifier;
-
 	/** Unique identifier. Regenerated each time the object is compiled. */
 	UPROPERTY()
 	FGuid CompilationGuid;
 
-public:
-	FGuid GetCompilationGuid() const;
-
-private:
 	/** BulkData that stores all in-game resources used by Mutable when generating instances.
 	  * Only valid in packaged builds */
 	UPROPERTY()

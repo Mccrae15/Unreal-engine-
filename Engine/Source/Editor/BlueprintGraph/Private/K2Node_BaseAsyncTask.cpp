@@ -57,6 +57,7 @@ UK2Node_BaseAsyncTask::UK2Node_BaseAsyncTask(const FObjectInitializer& ObjectIni
 	, ProxyActivateFunctionName(NAME_None)
 	, bPinTooltipsValid(false)
 {
+	OrphanedPinSaveMode = ESaveOrphanPinMode::SaveAll;
 }
 
 FText UK2Node_BaseAsyncTask::GetTooltipText() const
@@ -537,13 +538,13 @@ bool UK2Node_BaseAsyncTask::HasExternalDependencies(TArray<class UStruct*>* Opti
 {
 	const UBlueprint* SourceBlueprint = GetBlueprint();
 
-	const bool bProxyFactoryResult = (ProxyFactoryClass != NULL) && (ProxyFactoryClass->ClassGeneratedBy != SourceBlueprint);
+	const bool bProxyFactoryResult = (ProxyFactoryClass != NULL) && (ProxyFactoryClass->ClassGeneratedBy.Get() != SourceBlueprint);
 	if (bProxyFactoryResult && OptionalOutput)
 	{
 		OptionalOutput->AddUnique(ProxyFactoryClass);
 	}
 
-	const bool bProxyResult = (ProxyClass != NULL) && (ProxyClass->ClassGeneratedBy != SourceBlueprint);
+	const bool bProxyResult = (ProxyClass != NULL) && (ProxyClass->ClassGeneratedBy.Get() != SourceBlueprint);
 	if (bProxyResult && OptionalOutput)
 	{
 		OptionalOutput->AddUnique(ProxyClass);

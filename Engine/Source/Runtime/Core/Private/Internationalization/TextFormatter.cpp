@@ -17,7 +17,6 @@
 #include "Misc/Char.h"
 #include "Misc/EnumClassFlags.h"
 #include "Misc/ExpressionParser.h"
-#include "Misc/ExpressionParserTypes.inl"
 #include "Misc/Guid.h"
 #include "Misc/Optional.h"
 #include "Misc/ScopeLock.h"
@@ -29,6 +28,7 @@
 #include "Templates/UnrealTemplate.h"
 #include "Templates/ValueOrError.h"
 #include "Trace/Detail/Channel.h"
+#include "AutoRTFM/AutoRTFM.h"
 
 #define LOCTEXT_NAMESPACE "TextFormatter"
 
@@ -938,8 +938,13 @@ FTextFormatPatternDefinition::FTextFormatPatternDefinition()
 
 FTextFormatPatternDefinitionConstRef FTextFormatPatternDefinition::GetDefault()
 {
-	static FTextFormatPatternDefinitionConstRef DefaultFormatPatternDefinition = MakeShared<FTextFormatPatternDefinition, ESPMode::ThreadSafe>();
-	return DefaultFormatPatternDefinition;
+	FTextFormatPatternDefinitionConstRef* Result;
+	AutoRTFM::Open([&Result]()
+	{
+		static FTextFormatPatternDefinitionConstRef DefaultFormatPatternDefinition = MakeShared<FTextFormatPatternDefinition, ESPMode::ThreadSafe>();
+		Result = &DefaultFormatPatternDefinition;
+	});
+	return *Result;
 }
 
 const FTokenDefinitions& FTextFormatPatternDefinition::GetTextFormatDefinitions() const

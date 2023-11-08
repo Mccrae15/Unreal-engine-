@@ -7,25 +7,28 @@ using Serilog;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Reflection;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using EpicGames.OIDC;
 using Microsoft.Extensions.Configuration;
 using UnrealGameSync;
+using System.Text;
+using System.Globalization;
+using System.Net.Http;
+using System.Net.Http.Json;
+using System.IO.Compression;
 
 namespace UnrealGameSyncCmd
 {
 	using ILogger = Microsoft.Extensions.Logging.ILogger;
 
-	sealed class UserErrorException : Exception
+	public sealed class UserErrorException : Exception
 	{
 		public LogEvent Event { get; }
 		public int Code { get; }
@@ -33,8 +36,8 @@ namespace UnrealGameSyncCmd
 		public UserErrorException(LogEvent evt)
 			: base(evt.ToString())
 		{
-			this.Event = evt;
-			this.Code = 1;
+			Event = evt;
+			Code = 1;
 		}
 
 		public UserErrorException(string message, params object[] args)
@@ -43,7 +46,7 @@ namespace UnrealGameSyncCmd
 		}
 	}
 
-	public class Program
+	public static class Program
 	{
 		static BuildConfig EditorConfig => BuildConfig.Development;
 
@@ -51,68 +54,78 @@ namespace UnrealGameSyncCmd
 		{
 			public string Name { get; }
 			public Type Type { get; }
-			public string Usage { get; }
-			public string Brief { get; }
+			public Type? OptionsType { get; }
+			public string? Usage { get; }
+			public string? Brief { get; }
 
-			public CommandInfo(string name, Type type, string usage, string brief)
+			public CommandInfo(string name, Type type, Type? optionsType, string? usage, string? brief)
 			{
-				this.Name = name;
-				this.Type = type;
-				this.Usage = usage;
-				this.Brief = brief;
+				Name = name;
+				Type = type;
+				OptionsType = optionsType;
+				Usage = usage;
+				Brief = brief;
 			}
 		}
 
-		static CommandInfo[] _commands =
+		static readonly CommandInfo[] _commands =
 		{
-			new CommandInfo("init", typeof(InitCommand),
-				"ugs init [stream-path] [-client=..] [-server=..] [-user=..] [-branch=..] [-project=..]",
+			new CommandInfo("init", typeof(InitCommand), typeof(InitCommandOptions),
+				"ugs init [stream-path]",
 				"Create a client for the given stream, or initializes an existing client for use by UGS."
 			),
-			new CommandInfo("switch", typeof(SwitchCommand),
+			new CommandInfo("switch", typeof(SwitchCommand), typeof(SwitchCommandOptions),
 				"ugs switch [project name|project path|stream]",
 				"Changes the active project to the one in the workspace with the given name, or switches to a new stream."
 			),
-			new CommandInfo("changes", typeof(ChangesCommand),
+			new CommandInfo("changes", typeof(ChangesCommand), typeof(ChangesCommandOptions),
 				"ugs changes",
 				"List recently submitted changes to the current branch."
 			),
-			new CommandInfo("config", typeof(ConfigCommand),
+			new CommandInfo("config", typeof(ConfigCommand), typeof(ConfigCommandOptions),
 				"ugs config",
 				"Updates the configuration for the current workspace."
 			),
-			new CommandInfo("filter", typeof(FilterCommand),
-				"ugs filter [-reset] [-include=..] [-exclude=..] [-view=..] [-addview=..] [-removeview=..] [-global]",
+			new CommandInfo("filter", typeof(FilterCommand), typeof(FilterCommandOptions),
+				"ugs filter",
 				"Displays or updates the workspace or global sync filter"
 			),
-			new CommandInfo("sync", typeof(SyncCommand),
-				"ugs sync [change|'latest'] [-build] [-binaries] [-remove] [-only]",
+			new CommandInfo("sync", typeof(SyncCommand), typeof(SyncCommandOptions),
+				"ugs sync [change|'latest']",
 				"Syncs the current workspace to the given changelist, optionally removing all local state."
 			),
-			new CommandInfo("clients", typeof(ClientsCommand),
+			new CommandInfo("clients", typeof(ClientsCommand), typeof(ClientsCommandOptions),
 				"ugs clients",
 				"Lists all clients suitable for use on the current machine."
 			),
-			new CommandInfo("run", typeof(RunCommand),
+			new CommandInfo("run", typeof(RunCommand), null,
 				"ugs run",
 				"Runs the editor for the current branch."
 			),
-			new CommandInfo("build", typeof(BuildCommand),
-				"ugs build [id] [-list]",
+			new CommandInfo("build", typeof(BuildCommand), typeof(BuildCommandOptions),
+				"ugs build [id]",
 				"Runs the default build steps for the current project, or a particular step referenced by id."
 			),
-			new CommandInfo("status", typeof(StatusCommand),
+			new CommandInfo("status", typeof(StatusCommand), null,
 				"ugs status [-update]",
 				"Shows the status of the currently synced branch."
 			),
-			new CommandInfo("login", typeof(LoginCommand),
+			new CommandInfo("login", typeof(LoginCommand), null,
 				"ugs login",
 				"Starts a interactive login flow against the configured Identity Provider"
 			),
-			new CommandInfo("version", typeof(VersionCommand),
+			new CommandInfo("version", typeof(VersionCommand), null,
 				"ugs version",
 				"Prints the current application version"
 			),
+			new CommandInfo("install", typeof(InstallCommand), null, 
+				null, 
+				null
+			),
+			new CommandInfo("upgrade", typeof(UpgradeCommand), typeof(UpgradeCommandOptions),
+				"ugs upgrade",
+				"Upgrades the current installation with the latest build of UGS."
+			)
 		};
 
 		class CommandContext
@@ -124,10 +137,10 @@ namespace UnrealGameSyncCmd
 
 			public CommandContext(CommandLineArguments arguments, ILogger logger, ILoggerFactory loggerFactory, GlobalSettingsFile userSettings)
 			{
-				this.Arguments = arguments;
-				this.Logger = logger;
-				this.LoggerFactory = loggerFactory;
-				this.UserSettings = userSettings;
+				Arguments = arguments;
+				Logger = logger;
+				LoggerFactory = loggerFactory;
+				UserSettings = userSettings;
 			}
 		}
 
@@ -140,7 +153,7 @@ namespace UnrealGameSyncCmd
 			public string? UserName { get; set; }
 		}
 
-		class ProjectConfigOptions : ServerOptions
+		class ConfigCommandOptions : ServerOptions
 		{
 			public void ApplyTo(UserWorkspaceSettings settings)
 			{
@@ -155,7 +168,7 @@ namespace UnrealGameSyncCmd
 			}
 		}
 
-		class ProjectInitOptions : ProjectConfigOptions
+		class InitCommandOptions : ConfigCommandOptions
 		{
 			[CommandLine("-Client=")]
 			public string? ClientName { get; set; }
@@ -165,6 +178,12 @@ namespace UnrealGameSyncCmd
 
 			[CommandLine("-Project=")]
 			public string? ProjectName { get; set; }
+		}
+
+		class UpdateState
+		{
+			public string? LatestVersion { get; set; }
+			public DateTime LastVersionCheck { get; set; }
 		}
 
 		public static async Task<int> Main(string[] rawArgs)
@@ -230,10 +249,55 @@ namespace UnrealGameSyncCmd
 				CommandInfo? command = _commands.FirstOrDefault(x => x.Name.Equals(commandName, StringComparison.OrdinalIgnoreCase));
 				if (command == null)
 				{
-					logger.LogError($"unknown command '{commandName}'");
+					logger.LogError("Unknown command '{Command}'", commandName);
 					Console.WriteLine();
 					PrintHelp();
 					return 1;
+				}
+
+				// On Windows this is distributed with the GUI client, so we don't need to check for upgrades
+				if (command.Type != typeof(InstallCommand) && command.Type != typeof(UpgradeCommand) && !RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+				{
+					string version = GetVersion();
+
+					DateTime utcNow = DateTime.UtcNow;
+					if (settings.Global.LastVersionCheck < utcNow - TimeSpan.FromDays(1.0) || IsUpgradeAvailable(settings, version))
+					{
+						using (CancellationTokenSource cancellationSource = new CancellationTokenSource(TimeSpan.FromSeconds(10.0)))
+						{
+							Task<string?> latestVersionTask = GetLatestVersionAsync(null, cancellationSource.Token);
+
+							Task delay = Task.Delay(TimeSpan.FromSeconds(2.0));
+							await Task.WhenAny(latestVersionTask, delay);
+
+							if (!latestVersionTask.IsCompleted)
+							{
+								logger.LogInformation("Checking for UGS updates...");
+							}
+
+							try
+							{
+								settings.Global.LatestVersion = await latestVersionTask;
+							}
+							catch (OperationCanceledException)
+							{
+								logger.LogInformation("Request timed out.");
+							}
+							catch (Exception ex)
+							{
+								logger.LogInformation(ex, "Upgrade check failed: {Message}", ex.Message);
+							}
+						}
+
+						settings.Global.LastVersionCheck = utcNow;
+						settings.Save(logger);
+					}
+
+					if (IsUpgradeAvailable(settings, version))
+					{
+						logger.LogWarning("A newer version of UGS is available ({LatestVersion} > {Version}). Run {Command} to update.", settings.Global.LatestVersion, version, "ugs upgrade");
+						logger.LogInformation("");
+					}
 				}
 
 				Command instance = (Command)Activator.CreateInstance(command.Type)!;
@@ -257,14 +321,117 @@ namespace UnrealGameSyncCmd
 			}
 		}
 
+		static bool IsUpgradeAvailable(GlobalSettingsFile settings, string version)
+		{
+			return settings.Global.LatestVersion != null && !settings.Global.LatestVersion.Equals(version, StringComparison.OrdinalIgnoreCase);
+		}
+
 		static void PrintHelp()
 		{
 			Console.WriteLine("Usage:");
 			foreach (CommandInfo command in _commands)
 			{
-				Console.WriteLine();
-				ConsoleUtils.WriteLineWithWordWrap(command.Usage, 2, 8);
-				ConsoleUtils.WriteLineWithWordWrap(command.Brief, 4, 4);
+				if (command.Usage != null && command.Brief != null)
+				{
+					Console.WriteLine();
+					ConsoleUtils.WriteLineWithWordWrap(GetUsage(command), 2, 8);
+					ConsoleUtils.WriteLineWithWordWrap(command.Brief, 4, 4);
+				}
+			}
+		}
+
+		static string GetUsage(CommandInfo commandInfo)
+		{
+			StringBuilder result = new StringBuilder(commandInfo.Usage);
+			if (commandInfo.OptionsType != null)
+			{
+				foreach (PropertyInfo propertyInfo in commandInfo.OptionsType.GetProperties(BindingFlags.Instance | BindingFlags.Public))
+				{
+					List<string> names = new List<string>();
+					foreach (CommandLineAttribute attribute in propertyInfo.GetCustomAttributes<CommandLineAttribute>())
+					{
+						string name = (attribute.Prefix ?? propertyInfo.Name).ToLower(CultureInfo.InvariantCulture);
+						if (propertyInfo.PropertyType == typeof(bool) || propertyInfo.PropertyType == typeof(bool?))
+						{
+							names.Add(name);
+						}
+						else
+						{
+							names.Add($"{name}..");
+						}
+					}
+					if (names.Count > 0)
+					{
+						result.Append($" [{String.Join('|', names)}]");
+					}
+				}
+			}
+			return result.ToString();
+		}
+
+		static string GetVersion()
+		{
+			AssemblyInformationalVersionAttribute? version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>();
+			return version?.InformationalVersion ?? "Unknown";
+		}
+
+		class DeploymentInfo
+		{
+			public string Version { get; set; } = String.Empty;
+		}
+
+		static string? GetUpgradeToolName()
+		{
+			if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+			{
+				return "ugs-mac";
+			}
+			else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+			{
+				return "ugs-linux";
+			}
+			else
+			{
+				return null;
+			}
+		}
+
+		static async Task<string?> GetLatestVersionAsync(ILogger? logger, CancellationToken cancellationToken)
+		{
+			string? hordeUrl = DeploymentSettings.Instance.HordeUrl;
+			if (hordeUrl == null)
+			{
+				logger?.LogError("Horde URL is not set in deployment config file. Cannot upgrade.");
+				return null;
+			}
+
+			string? toolName = GetUpgradeToolName();
+			if (toolName == null)
+			{
+				logger?.LogError("Command-line upgrades are not supported on this platform.");
+				return null;
+			}
+
+			using (HttpClient httpClient = new HttpClient())
+			{
+				Uri baseUrl = new Uri(hordeUrl);
+
+				DeploymentInfo? deploymentInfo;
+				try
+				{
+					deploymentInfo = await httpClient.GetFromJsonAsync<DeploymentInfo>(new Uri(baseUrl, $"api/v1/tools/{toolName}/deployments"), cancellationToken);
+				}
+				catch (Exception ex)
+				{
+					logger?.LogError(ex, "Failed to query for deployment info: {Message}", ex.Message);
+					return null;
+				}
+				if (deploymentInfo == null)
+				{
+					logger?.LogError("Failed to query for deployment info.");
+					return null;
+				}
+				return deploymentInfo.Version;
 			}
 		}
 
@@ -299,15 +466,14 @@ namespace UnrealGameSyncCmd
 			return settings;
 		}
 
-		public static async Task<UserWorkspaceState> ReadWorkspaceState(IPerforceConnection perforceClient, UserWorkspaceSettings settings, GlobalSettingsFile userSettings, ILogger logger)
+		public static async Task<WorkspaceStateWrapper> ReadWorkspaceState(IPerforceConnection perforceClient, UserWorkspaceSettings settings, GlobalSettingsFile userSettings, ILogger logger)
 		{
-			UserWorkspaceState state = userSettings.FindOrAddWorkspaceState(settings, logger);
-			if (state.SettingsTimeUtc != settings.LastModifiedTimeUtc)
+			WorkspaceStateWrapper state = userSettings.FindOrAddWorkspaceState(settings);
+			if (state.Current.SettingsTimeUtc != settings.LastModifiedTimeUtc)
 			{
 				logger.LogDebug("Updating state due to modified settings timestamp");
 				ProjectInfo info = await ProjectInfo.CreateAsync(perforceClient, settings, CancellationToken.None);
-				state.UpdateCachedProjectInfo(info, settings.LastModifiedTimeUtc);
-				state.Save(logger);
+				state.Modify(x => x.UpdateCachedProjectInfo(info, settings.LastModifiedTimeUtc));
 			}
 			return state;
 		}
@@ -337,14 +503,9 @@ namespace UnrealGameSyncCmd
 		static string[] ReadSyncFilter(UserWorkspaceSettings workspaceSettings, GlobalSettingsFile userSettings, ConfigFile projectConfig)
 		{
 			Dictionary<Guid, WorkspaceSyncCategory> syncCategories = ConfigUtils.GetSyncCategories(projectConfig);
-			string[] combinedSyncFilter = GlobalSettingsFile.GetCombinedSyncFilter(syncCategories, userSettings.Global.Filter, workspaceSettings.Filter);
+			ConfigSection? perforceSection = projectConfig.FindSection("Perforce");
 
-			ConfigSection perforceSection = projectConfig.FindSection("Perforce");
-			if (perforceSection != null)
-			{
-				IEnumerable<string> additionalPaths = perforceSection.GetValues("AdditionalPathsToSync", new string[0]);
-				combinedSyncFilter = additionalPaths.Union(combinedSyncFilter).ToArray();
-			}
+			string[] combinedSyncFilter = GlobalSettingsFile.GetCombinedSyncFilter(syncCategories, userSettings.Global.Filter, workspaceSettings.Filter, perforceSection);
 
 			return combinedSyncFilter;
 		}
@@ -359,7 +520,7 @@ namespace UnrealGameSyncCmd
 			{
 				searchPath = $"//{clientName}{branchPath}/*.uprojectdirs";
 			}
-			else if (projectName.Contains('.'))
+			else if (projectName.Contains('.', StringComparison.Ordinal))
 			{
 				searchPath = $"//{clientName}{branchPath}/{projectName.TrimStart('/')}";
 			}
@@ -401,7 +562,7 @@ namespace UnrealGameSyncCmd
 				context.Arguments.TryGetPositionalArgument(out initName);
 
 				// Get the config settings from the command line
-				ProjectInitOptions options = new ProjectInitOptions();
+				InitCommandOptions options = new InitCommandOptions();
 				context.Arguments.ApplyTo(options);
 				context.Arguments.CheckAllArgumentsUsed();
 
@@ -413,15 +574,15 @@ namespace UnrealGameSyncCmd
 				// Create the perforce connection
 				if (initName != null)
 				{
-					await InitNewClientAsync(perforce, context, initName, hostName, options, logger);
+					await InitNewClientAsync(perforce, initName, hostName, options, logger);
 				}
 				else
 				{
-					await InitExistingClientAsync(perforce, context, hostName, options, logger);
+					await InitExistingClientAsync(perforce, hostName, options, logger);
 				}
 			}
 
-			async Task InitNewClientAsync(IPerforceConnection perforce, CommandContext context, string streamName, string hostName, ProjectInitOptions options, ILogger logger)
+			static async Task InitNewClientAsync(IPerforceConnection perforce, string streamName, string hostName, InitCommandOptions options, ILogger logger)
 			{
 				logger.LogInformation("Checking stream...");
 
@@ -487,7 +648,7 @@ namespace UnrealGameSyncCmd
 				}
 			}
 
-			async Task InitExistingClientAsync(IPerforceConnection perforce, CommandContext context, string hostName, ProjectInitOptions options, ILogger logger)
+			static async Task InitExistingClientAsync(IPerforceConnection perforce, string hostName, InitCommandOptions options, ILogger logger)
 			{
 				DirectoryReference currentDir = DirectoryReference.GetCurrentDirectory();
 
@@ -515,7 +676,7 @@ namespace UnrealGameSyncCmd
 
 				// If a project path was specified in local syntax, try to convert it to client-relative syntax
 				string? projectName = options.ProjectName;
-				if (options.ProjectName != null && options.ProjectName.Contains('.'))
+				if (options.ProjectName != null && options.ProjectName.Contains('.', StringComparison.Ordinal))
 				{
 					options.ProjectName = FileReference.Combine(currentDir, options.ProjectName).MakeRelativeTo(clientDir).Replace('\\', '/');
 				}
@@ -541,7 +702,7 @@ namespace UnrealGameSyncCmd
 				List<ClientsRecord> clients = await perforce.GetClientsAsync(ClientsOptions.None, perforce.Settings.UserName);
 				foreach (ClientsRecord client in clients)
 				{
-					if (!String.IsNullOrEmpty(client.Root) && !String.IsNullOrEmpty(client.Host) && String.Compare(hostName, client.Host, StringComparison.OrdinalIgnoreCase) == 0)
+					if (!String.IsNullOrEmpty(client.Root) && !String.IsNullOrEmpty(client.Host) && String.Equals(hostName, client.Host, StringComparison.OrdinalIgnoreCase))
 					{
 						DirectoryReference? rootDir;
 						try
@@ -564,37 +725,40 @@ namespace UnrealGameSyncCmd
 			}
 		}
 
+		class SyncCommandOptions
+		{
+			[CommandLine("-Clean")]
+			public bool Clean { get; set; }
+
+			[CommandLine("-Build")]
+			public bool Build { get; set; }
+
+			[CommandLine("-Binaries")]
+			public bool Binaries { get; set; }
+
+			[CommandLine("-NoGPF", Value = "false")]
+			[CommandLine("-NoProjectFiles", Value = "false")]
+			public bool ProjectFiles { get; set; } = true;
+
+			[CommandLine("-Clobber")]
+			public bool Clobber { get; set; }
+
+			[CommandLine("-Refilter")]
+			public bool Refilter { get; set; }
+
+			[CommandLine("-Only")]
+			public bool SingleChange { get; set; }
+		}
+
 		class SyncCommand : Command
 		{
-			class SyncOptions
-			{
-				[CommandLine("-Only")]
-				public bool SingleChange { get; set; }
-
-				[CommandLine("-Build")]
-				public bool Build { get; set; }
-
-				[CommandLine("-Binaries")]
-				public bool Binaries { get; set; }
-
-				[CommandLine("-NoGPF", Value = "false")]
-				[CommandLine("-NoProjectFiles", Value = "false")]
-				public bool ProjectFiles { get; set; } = true;
-
-				[CommandLine("-Clobber")]
-				public bool Clobber { get; set; }
-
-				[CommandLine("-Refilter")]
-				public bool Refilter { get; set; }
-			}
-
-			async Task<bool> IsCodeChangeAsync(IPerforceConnection perforce, int change)
+			static async Task<bool> IsCodeChangeAsync(IPerforceConnection perforce, int change)
 			{
 				DescribeRecord describeRecord = await perforce.DescribeAsync(change);
 				return IsCodeChange(describeRecord);
 			}
 
-			bool IsCodeChange(DescribeRecord describeRecord)
+			static bool IsCodeChange(DescribeRecord describeRecord)
 			{
 				foreach (DescribeFileRecord file in describeRecord.Files)
 				{
@@ -611,18 +775,18 @@ namespace UnrealGameSyncCmd
 				ILogger logger = context.Logger;
 				context.Arguments.TryGetPositionalArgument(out string? changeString);
 
-				SyncOptions syncOptions = new SyncOptions();
+				SyncCommandOptions syncOptions = new SyncCommandOptions();
 				context.Arguments.ApplyTo(syncOptions);
 
 				context.Arguments.CheckAllArgumentsUsed();
 
 				UserWorkspaceSettings settings = ReadRequiredUserWorkspaceSettings();
 				using IPerforceConnection perforceClient = await ConnectAsync(settings, context.LoggerFactory);
-				UserWorkspaceState state = await ReadWorkspaceState(perforceClient, settings, context.UserSettings, logger);
+				WorkspaceStateWrapper state = await ReadWorkspaceState(perforceClient, settings, context.UserSettings, logger);
 
 				changeString ??= "latest";
 
-				ProjectInfo projectInfo = state.CreateProjectInfo();
+				ProjectInfo projectInfo = new ProjectInfo(settings.RootDir, state.Current);
 				UserProjectSettings projectSettings = context.UserSettings.FindOrAddProjectSettings(projectInfo, settings, logger);
 
 				ConfigFile projectConfig = await ConfigUtils.ReadProjectConfigFileAsync(perforceClient, projectInfo, logger, CancellationToken.None);
@@ -630,7 +794,7 @@ namespace UnrealGameSyncCmd
 				bool syncLatest = String.Equals(changeString, "latest", StringComparison.OrdinalIgnoreCase);
 
 				int change;
-				if (!int.TryParse(changeString, out change))
+				if (!Int32.TryParse(changeString, out change))
 				{
 					if (syncLatest)
 					{
@@ -644,6 +808,10 @@ namespace UnrealGameSyncCmd
 				}
 
 				WorkspaceUpdateOptions options = syncOptions.SingleChange? WorkspaceUpdateOptions.SyncSingleChange : WorkspaceUpdateOptions.Sync;
+				if (syncOptions.Clean)
+				{
+					options |= WorkspaceUpdateOptions.Clean;
+				}
 				if (syncOptions.Build)
 				{
 					options |= WorkspaceUpdateOptions.Build;
@@ -660,14 +828,24 @@ namespace UnrealGameSyncCmd
 				{
 					options |= WorkspaceUpdateOptions.Refilter;
 				}
+				options |= WorkspaceUpdateContext.GetOptionsFromConfig(context.UserSettings.Global, settings);
 				options |= WorkspaceUpdateOptions.RemoveFilteredFiles;
 
 				string[] syncFilter = ReadSyncFilter(settings, context.UserSettings, projectConfig);
 
+				using WorkspaceLock? workspaceLock = CreateWorkspaceLock(settings.RootDir);
+				if(workspaceLock != null && !await workspaceLock.TryAcquireAsync())
+				{
+					logger.LogError("Another process is already syncing this workspace.");
+					return;
+				}
+
 				WorkspaceUpdateContext updateContext = new WorkspaceUpdateContext(change, options, BuildConfig.Development, syncFilter, projectSettings.BuildSteps, null);
+				updateContext.PerforceSyncOptions = context.UserSettings.Global.Perforce;
+
 				if (syncOptions.Binaries)
 				{
-					List<PerforceArchiveInfo> archives = await PerforceArchive.EnumerateAsync(perforceClient, projectConfig, state.ProjectIdentifier, CancellationToken.None);
+					List<PerforceArchiveInfo> archives = await PerforceArchive.EnumerateAsync(perforceClient, projectConfig, state.Current.ProjectIdentifier, CancellationToken.None);
 
 					PerforceArchiveInfo? editorArchiveInfo = archives.FirstOrDefault(x => x.Name == IArchiveInfo.EditorArchiveType);
 					if (editorArchiveInfo == null)
@@ -719,27 +897,39 @@ namespace UnrealGameSyncCmd
 					}
 					logger.LogWarning("Use -Clobber to overwrite");
 				}
-				else if (result != WorkspaceUpdateResult.Success)
-				{
-					logger.LogError("{Message} (Result: {Result})", message, result);
-				}
 
-				state.SetLastSyncState(result, updateContext, message);
-				state.Save(logger);
+				state.Modify(x => x.SetLastSyncState(result, updateContext, message));
+
+				if (result != WorkspaceUpdateResult.Success)
+				{
+					throw new UserErrorException("{Message} (Result: {Result})", message, result);
+				}
 			}
+
+			static WorkspaceLock? CreateWorkspaceLock(DirectoryReference rootDir)
+			{
+				if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+				{
+					return new WorkspaceLock(rootDir);
+				}
+				else
+				{
+					return null;
+				}
+			}
+		}
+
+		class ClientsCommandOptions : ServerOptions
+		{
 		}
 
 		class ClientsCommand : Command
 		{
-			public class ClientsOptions : ServerOptions
-			{
-			}
-
 			public override async Task ExecuteAsync(CommandContext context)
 			{
 				ILogger logger = context.Logger;
 
-				ClientsOptions options = context.Arguments.ApplyTo<ClientsOptions>(logger);
+				ClientsCommandOptions options = context.Arguments.ApplyTo<ClientsCommandOptions>(logger);
 				context.Arguments.CheckAllArgumentsUsed();
 
 				using IPerforceConnection perforceClient = await ConnectAsync(options.ServerAndPort, options.UserName, null, context.LoggerFactory);
@@ -764,9 +954,9 @@ namespace UnrealGameSyncCmd
 
 				UserWorkspaceSettings settings = ReadRequiredUserWorkspaceSettings();
 				using IPerforceConnection perforceClient = await ConnectAsync(settings, context.LoggerFactory);
-				UserWorkspaceState state = await ReadWorkspaceState(perforceClient, settings, context.UserSettings, logger);
+				WorkspaceStateWrapper state = await ReadWorkspaceState(perforceClient, settings, context.UserSettings, logger);
 
-				ProjectInfo projectInfo = state.CreateProjectInfo();
+				ProjectInfo projectInfo = new ProjectInfo(settings.RootDir, state.Current);
 				ConfigFile projectConfig = await ConfigUtils.ReadProjectConfigFileAsync(perforceClient, projectInfo, logger, CancellationToken.None);
 
 				FileReference receiptFile = ConfigUtils.GetEditorReceiptFile(projectInfo, projectConfig, EditorConfig);
@@ -803,9 +993,18 @@ namespace UnrealGameSyncCmd
 
 				if (!Utility.SpawnProcess(receipt.Launch, commandLine))
 				{
-					logger.LogError("Unable to spawn {0} {1}", receipt.Launch, launchArguments.ToString());
+					logger.LogError("Unable to spawn {App} {Args}", receipt.Launch, launchArguments.ToString());
 				}
 			}
+		}
+
+		class ChangesCommandOptions
+		{
+			[CommandLine("-Count=")]
+			public int Count { get; set; } = 10;
+
+			[CommandLine("-Lines=")]
+			public int LineCount { get; set; } = 3;
 		}
 
 		class ChangesCommand : Command
@@ -814,14 +1013,14 @@ namespace UnrealGameSyncCmd
 			{
 				ILogger logger = context.Logger;
 
-				int count = context.Arguments.GetIntegerOrDefault("-Count=", 10);
-				int lineCount = context.Arguments.GetIntegerOrDefault("-Lines=", 3);
+				ChangesCommandOptions options = new ChangesCommandOptions();
+				context.Arguments.ApplyTo(options);
 				context.Arguments.CheckAllArgumentsUsed(context.Logger);
 
 				UserWorkspaceSettings settings = ReadRequiredUserWorkspaceSettings();
 				using IPerforceConnection perforceClient = await ConnectAsync(settings, context.LoggerFactory);
 
-				List<ChangesRecord> changes = await perforceClient.GetChangesAsync(ChangesOptions.None, count, ChangeStatus.Submitted, $"//{settings.ClientName}/...");
+				List<ChangesRecord> changes = await perforceClient.GetChangesAsync(EpicGames.Perforce.ChangesOptions.None, options.Count, ChangeStatus.Submitted, $"//{settings.ClientName}/...");
 				foreach(IEnumerable<ChangesRecord> changesBatch in changes.Batch(10))
 				{
 					List<DescribeRecord> describeRecords = await perforceClient.DescribeAsync(changesBatch.Select(x => x.Number).ToArray());
@@ -863,7 +1062,7 @@ namespace UnrealGameSyncCmd
 							lines.Add(String.Empty);
 						}
 
-						lineCount = Math.Min(lineCount, lines.Count);
+						int lineCount = Math.Min(options.LineCount, lines.Count);
 
 						logger.LogInformation("  {Change,-9} {Type,-8} {Author,-15} {Description}", describeRecord.Number, type, author, lines[0]);
 						for (int lineIndex = 1; lineIndex < lineCount; lineIndex++)
@@ -897,7 +1096,7 @@ namespace UnrealGameSyncCmd
 				}
 				else
 				{
-					ProjectConfigOptions options = new ProjectConfigOptions();
+					ConfigCommandOptions options = new ConfigCommandOptions();
 					context.Arguments.ApplyTo(options);
 					context.Arguments.CheckAllArgumentsUsed(context.Logger);
 
@@ -911,48 +1110,48 @@ namespace UnrealGameSyncCmd
 			}
 		}
 
+		class FilterCommandOptions
+		{
+			[CommandLine("-Reset")]
+			public bool Reset { get; set; } = false;
+
+			[CommandLine("-Include=")]
+			public List<string> Include { get; set; } = new List<string>();
+
+			[CommandLine("-Exclude=")]
+			public List<string> Exclude { get; set; } = new List<string>();
+
+			[CommandLine("-View=", ListSeparator = ';')]
+			public List<string>? View { get; set; }
+
+			[CommandLine("-AddView=", ListSeparator = ';')]
+			public List<string> AddView { get; set; } = new List<string>();
+
+			[CommandLine("-RemoveView=", ListSeparator = ';')]
+			public List<string> RemoveView { get; set; } = new List<string>();
+
+			[CommandLine("-AllProjects", Value = "true")]
+			[CommandLine("-OnlyCurrent", Value = "false")]
+			public bool? AllProjects { get; set; } = null;
+
+			[CommandLine("-GpfAllProjects", Value = "true")]
+			[CommandLine("-GpfOnlyCurrent", Value = "false")]
+			public bool? AllProjectsInSln { get; set; } = null;
+
+			[CommandLine("-Global")]
+			public bool Global { get; set; }
+		}
+
 		class FilterCommand : Command
 		{
-			class FilterCommandOptions
-			{
-				[CommandLine("-Reset")]
-				public bool Reset = false;
-
-				[CommandLine("-Include=")]
-				public List<string> Include { get; set; } = new List<string>();
-
-				[CommandLine("-Exclude=")]
-				public List<string> Exclude { get; set; } = new List<string>();
-
-				[CommandLine("-View=", ListSeparator = ';')]
-				public List<string>? View { get; set; } 
-
-				[CommandLine("-AddView=", ListSeparator = ';')]
-				public List<string> AddView { get; set; } = new List<string>();
-
-				[CommandLine("-RemoveView=", ListSeparator = ';')]
-				public List<string> RemoveView { get; set; } = new List<string>();
-
-				[CommandLine("-AllProjects", Value = "true")]
-				[CommandLine("-OnlyCurrent", Value = "false")]
-				public bool? AllProjects = null;
-
-				[CommandLine("-GpfAllProjects", Value ="true")]
-				[CommandLine("-GpfOnlyCurrent", Value = "false")]
-				public bool? AllProjectsInSln = null;
-
-				[CommandLine("-Global")]
-				public bool Global { get; set; }
-			}
-
 			public override async Task ExecuteAsync(CommandContext context)
 			{
 				ILogger logger = context.Logger;
 
 				UserWorkspaceSettings workspaceSettings = ReadRequiredUserWorkspaceSettings();
 				using IPerforceConnection perforceClient = await ConnectAsync(workspaceSettings, context.LoggerFactory);
-				UserWorkspaceState workspaceState = await ReadWorkspaceState(perforceClient, workspaceSettings, context.UserSettings, logger);
-				ProjectInfo projectInfo = workspaceState.CreateProjectInfo();
+				WorkspaceStateWrapper workspaceState = await ReadWorkspaceState(perforceClient, workspaceSettings, context.UserSettings, logger);
+				ProjectInfo projectInfo = new ProjectInfo(workspaceSettings.RootDir, workspaceState.Current);
 
 				ConfigFile projectConfig = await ConfigUtils.ReadProjectConfigFileAsync(perforceClient, projectInfo, logger, CancellationToken.None);
 				Dictionary<Guid, WorkspaceSyncCategory> syncCategories = ConfigUtils.GetSyncCategories(projectConfig);
@@ -1053,7 +1252,8 @@ namespace UnrealGameSyncCmd
 
 				if (commandOptions.View != null)
 				{
-					settings.View = commandOptions.View;
+					settings.View.Clear();
+					settings.View.AddRange(commandOptions.View);
 				}
 				if (commandOptions.RemoveView.Count > 0)
 				{
@@ -1088,22 +1288,30 @@ namespace UnrealGameSyncCmd
 			}
 		}
 
+		class BuildCommandOptions
+		{
+			[CommandLine("-List")]
+			public bool ListOnly { get; set; }
+		}
+
 		class BuildCommand : Command
 		{
 			public override async Task ExecuteAsync(CommandContext context)
 			{
 				ILogger logger = context.Logger;
 				context.Arguments.TryGetPositionalArgument(out string? target);
-				bool listOnly = context.Arguments.HasOption("-List");
+
+				BuildCommandOptions options = new BuildCommandOptions();
+				context.Arguments.ApplyTo(options);
 				context.Arguments.CheckAllArgumentsUsed();
 
 				UserWorkspaceSettings settings = ReadRequiredUserWorkspaceSettings();
 				using IPerforceConnection perforceClient = await ConnectAsync(settings, context.LoggerFactory);
-				UserWorkspaceState state = await ReadWorkspaceState(perforceClient, settings, context.UserSettings, logger);
+				WorkspaceStateWrapper state = await ReadWorkspaceState(perforceClient, settings, context.UserSettings, logger);
 
-				ProjectInfo projectInfo = state.CreateProjectInfo();
+				ProjectInfo projectInfo = new ProjectInfo(settings.RootDir, state.Current);
 
-				if (listOnly)
+				if (options.ListOnly)
 				{
 					ConfigFile projectConfig = await ConfigUtils.ReadProjectConfigFileAsync(perforceClient, projectInfo, logger, CancellationToken.None);
 
@@ -1133,10 +1341,15 @@ namespace UnrealGameSyncCmd
 					steps = new HashSet<Guid> { id };
 				}
 
-				WorkspaceUpdateContext updateContext = new WorkspaceUpdateContext(state.CurrentChangeNumber, WorkspaceUpdateOptions.Build, BuildConfig.Development, null, new List<ConfigObject>(), steps);
+				WorkspaceUpdateContext updateContext = new WorkspaceUpdateContext(state.Current.CurrentChangeNumber, WorkspaceUpdateOptions.Build, BuildConfig.Development, null, new List<ConfigObject>(), steps);
 
 				WorkspaceUpdate update = new WorkspaceUpdate(updateContext);
-				await update.ExecuteAsync(perforceClient.Settings, projectInfo, state, context.Logger, CancellationToken.None);
+				(WorkspaceUpdateResult result, string message) = await update.ExecuteAsync(perforceClient.Settings, projectInfo, state, context.Logger, CancellationToken.None);
+
+				if (result != WorkspaceUpdateResult.Success)
+				{
+					throw new UserErrorException("{Message}", message); 
+				}
 			}
 		}
 
@@ -1155,25 +1368,25 @@ namespace UnrealGameSyncCmd
 
 				using IPerforceConnection perforceClient = await ConnectAsync(settings, context.LoggerFactory);
 
-				UserWorkspaceState state = await ReadWorkspaceState(perforceClient, settings, context.UserSettings, logger);
+				WorkspaceStateWrapper state = await ReadWorkspaceState(perforceClient, settings, context.UserSettings, logger);
 				if (update)
 				{
 					ProjectInfo newProjectInfo = await ProjectInfo.CreateAsync(perforceClient, settings, CancellationToken.None);
-					state.UpdateCachedProjectInfo(newProjectInfo, settings.LastModifiedTimeUtc);
+					state.Modify(x => x.UpdateCachedProjectInfo(newProjectInfo, settings.LastModifiedTimeUtc));
 				}
 
-				string streamOrBranchName = state.StreamName ?? settings.BranchPath.TrimStart('/');
-				if (state.LastSyncResultMessage == null)
+				string streamOrBranchName = state.Current.StreamName ?? settings.BranchPath.TrimStart('/');
+				if (state.Current.LastSyncResultMessage == null)
 				{
 					logger.LogInformation("Not currently synced to {Stream}", streamOrBranchName);
 				}
-				else if (state.LastSyncResult == WorkspaceUpdateResult.Success)
+				else if (state.Current.LastSyncResult == WorkspaceUpdateResult.Success)
 				{
-					logger.LogInformation("Synced to {Stream} CL {Change}", streamOrBranchName, state.LastSyncChangeNumber);
+					logger.LogInformation("Synced to {Stream} CL {Change}", streamOrBranchName, state.Current.LastSyncChangeNumber);
 				}
 				else
 				{
-					logger.LogWarning("Last sync to {Stream} CL {Change} failed: {Result}", streamOrBranchName, state.LastSyncChangeNumber, state.LastSyncResultMessage);
+					logger.LogWarning("Last sync to {Stream} CL {Change} failed: {Result}", streamOrBranchName, state.Current.LastSyncChangeNumber, state.Current.LastSyncResultMessage);
 				}
 			}
 		}
@@ -1205,6 +1418,12 @@ namespace UnrealGameSyncCmd
 			}
 		}
 
+		class SwitchCommandOptions
+		{
+			[CommandLine("-Force")]
+			public bool Force { get; set; }
+		}
+
 		class SwitchCommand : Command
 		{
 			public override async Task ExecuteAsync(CommandContext context)
@@ -1216,10 +1435,15 @@ namespace UnrealGameSyncCmd
 					throw new UserErrorException("Missing stream or project name to switch to.");
 				}
 
-				bool force = targetName.StartsWith("//", StringComparison.Ordinal) && context.Arguments.HasOption("-Force");
-
 				// Finish argument parsing
+				SwitchCommandOptions options = new SwitchCommandOptions();
+				context.Arguments.ApplyTo(options);
 				context.Arguments.CheckAllArgumentsUsed();
+
+				if (targetName.StartsWith("//", StringComparison.Ordinal))
+				{
+					options.Force = true;
+				}
 
 				// Get a connection to the client for this workspace
 				UserWorkspaceSettings settings = ReadRequiredUserWorkspaceSettings();
@@ -1228,7 +1452,7 @@ namespace UnrealGameSyncCmd
 				// Check whether we're switching stream or project
 				if (targetName.StartsWith("//", StringComparison.Ordinal))
 				{
-					await SwitchStreamAsync(perforceClient, targetName, force, context.Logger);
+					await SwitchStreamAsync(perforceClient, targetName, options.Force, context.Logger);
 				}
 				else
 				{
@@ -1236,7 +1460,7 @@ namespace UnrealGameSyncCmd
 				}
 			}
 
-			public async Task SwitchStreamAsync(IPerforceConnection perforceClient, string streamName, bool force, ILogger logger)
+			public static async Task SwitchStreamAsync(IPerforceConnection perforceClient, string streamName, bool force, ILogger logger)
 			{
 				if (!force && await perforceClient.OpenedAsync(OpenedOptions.None, FileSpecList.Any).AnyAsync())
 				{
@@ -1248,7 +1472,7 @@ namespace UnrealGameSyncCmd
 				logger.LogInformation("Switched to stream {StreamName}", streamName);
 			}
 
-			public async Task SwitchProjectAsync(IPerforceConnection perforceClient, UserWorkspaceSettings settings, string projectName, ILogger logger)
+			public static async Task SwitchProjectAsync(IPerforceConnection perforceClient, UserWorkspaceSettings settings, string projectName, ILogger logger)
 			{
 				settings.ProjectPath = await FindProjectPathAsync(perforceClient, settings.ClientName, settings.BranchPath, projectName);
 				settings.Save(logger);
@@ -1261,11 +1485,129 @@ namespace UnrealGameSyncCmd
 			public override Task ExecuteAsync(CommandContext context)
 			{
 				ILogger logger = context.Logger;
- 
-				AssemblyInformationalVersionAttribute? version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>();
-				logger.LogInformation("UnrealGameSync {Version}", version?.InformationalVersion ?? "Unknown");
+
+				string version = GetVersion();
+				logger.LogInformation("UnrealGameSync {Version}", version);
 
 				return Task.CompletedTask;
+			}
+		}
+
+		class InstallCommand : Command
+		{
+			public override async Task ExecuteAsync(CommandContext context)
+			{
+				ILogger logger = context.Logger;
+
+				if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+				{
+					DirectoryReference? userDir = DirectoryReference.GetSpecialFolder(Environment.SpecialFolder.UserProfile);
+					if (userDir != null)
+					{
+						FileReference configFile = FileReference.Combine(userDir, ".zshrc");
+						await AddAliasAsync(configFile, logger);
+					}
+				}
+				else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+				{
+					DirectoryReference? userDir = DirectoryReference.GetSpecialFolder(Environment.SpecialFolder.UserProfile);
+					if (userDir != null)
+					{
+						FileReference configFile = FileReference.Combine(userDir, ".bashrc");
+						await AddAliasAsync(configFile, logger);
+					}
+				}
+			}
+
+			static async Task AddAliasAsync(FileReference configFile, ILogger logger)
+			{
+				DirectoryReference currentDir = new FileReference(Assembly.GetExecutingAssembly().Location).Directory;
+
+				List<string> lines = new List<string>();
+				if (FileReference.Exists(configFile))
+				{
+					lines.AddRange(await FileReference.ReadAllLinesAsync(configFile));
+					lines.RemoveAll(x => Regex.IsMatch(x, @"^\s*alias\s+ugs\s*="));
+				}
+				lines.Add($"alias ugs={FileReference.Combine(currentDir, "ugs")}");
+
+				await FileReference.WriteAllLinesAsync(configFile, lines);
+				logger.LogInformation("Added 'ugs' alias to {ConfigFile}", configFile);
+			}
+		}
+
+		class UpgradeCommandOptions
+		{
+			[CommandLine("-Check")]
+			public bool Check { get; set; }
+
+			[CommandLine("-Force")]
+			public bool Force { get; set; }
+		}
+
+		class UpgradeCommand : Command
+		{
+			public override async Task ExecuteAsync(CommandContext context)
+			{
+				ILogger logger = context.Logger;
+				
+				UpgradeCommandOptions options = new UpgradeCommandOptions();
+				context.Arguments.ApplyTo(options);
+				string? targetDirStr = context.Arguments.GetStringOrDefault("-TargetDir=", null);
+				context.Arguments.CheckAllArgumentsUsed(logger);
+
+				string currentVersion = GetVersion();
+
+				string? latestVersion = await GetLatestVersionAsync(logger, CancellationToken.None);
+				if (latestVersion == null)
+				{
+					return;
+				}
+				if (latestVersion.Equals(currentVersion, StringComparison.OrdinalIgnoreCase) && !options.Force)
+				{
+					logger.LogInformation("You are running the latest version ({Version})", currentVersion);
+					return;
+				}
+				if (options.Check)
+				{
+					logger.LogWarning("A newer version of UGS is available ({NewVersion})", latestVersion);
+					return;
+				}
+
+				using (HttpClient httpClient = new HttpClient())
+				{
+					Uri baseUrl = new Uri(DeploymentSettings.Instance.HordeUrl ?? String.Empty);
+
+					DirectoryReference currentDir = new FileReference(Assembly.GetExecutingAssembly().Location).Directory;
+
+					DirectoryReference targetDir = (targetDirStr == null)? currentDir : DirectoryReference.Combine(currentDir, targetDirStr);
+					DirectoryReference.CreateDirectory(targetDir);
+
+					FileReference tempFile = FileReference.Combine(targetDir, "update.zip");
+					using (Stream requestStream = await httpClient.GetStreamAsync(new Uri(baseUrl, $"api/v1/tools/{GetUpgradeToolName()}?action=download")))
+					{
+						using (Stream tempFileStream = FileReference.Open(tempFile, FileMode.Create, FileAccess.Write, FileShare.None))
+						{
+							await requestStream.CopyToAsync(tempFileStream);
+						}
+					}
+
+					using (FileStream stream = FileReference.Open(tempFile, FileMode.Open, FileAccess.Read, FileShare.Read))
+					{
+						using (ZipArchive archive = new ZipArchive(stream, ZipArchiveMode.Read, true))
+						{
+							foreach (ZipArchiveEntry entry in archive.Entries)
+							{
+								FileReference targetFile = FileReference.Combine(targetDir, entry.Name);
+								if (!targetFile.IsUnderDirectory(targetDir))
+								{
+									throw new InvalidDataException("Attempt to extract file outside source directory");
+								}
+								entry.ExtractToFile_CrossPlatform(targetFile.FullName, true);
+							}
+						}
+					}
+				}
 			}
 		}
 	}

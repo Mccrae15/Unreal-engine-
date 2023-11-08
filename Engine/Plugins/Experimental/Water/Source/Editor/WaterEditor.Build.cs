@@ -7,8 +7,6 @@ public class WaterEditor : ModuleRules
 	public WaterEditor(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
-		
-        PrivateIncludePaths.Add("Editor/Private");
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
@@ -21,19 +19,17 @@ public class WaterEditor : ModuleRules
 				"SlateCore",
 				"Slate",
 				"UnrealEd",
+				"AssetDefinition",
 				"Water",
                 "Projects",
 				"PropertyEditor",
 				"Landscape",
 				"LandscapeEditorUtilities",
-				"Landmass",
 				"EditorFramework",
 				"EditorSubsystem",
 				"ComponentVisualizers",
 				"DeveloperSettings",
 				"AdvancedPreviewScene",
-				"RenderCore",
-				"RHI"
 			});
 
 		PublicDependencyModuleNames.AddRange(

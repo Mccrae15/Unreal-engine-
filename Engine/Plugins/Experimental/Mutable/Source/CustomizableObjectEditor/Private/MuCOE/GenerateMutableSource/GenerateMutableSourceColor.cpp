@@ -54,7 +54,7 @@ mu::NodeColourPtr GenerateMutableSourceColor(const UEdGraphPin* Pin, FMutableGra
 		mu::NodeColourConstantPtr ColorNode = new mu::NodeColourConstant();
 		Result = ColorNode;
 
-		ColorNode->SetValue(TypedNodeColorConst->Value.R, TypedNodeColorConst->Value.G, TypedNodeColorConst->Value.B);
+		ColorNode->SetValue(TypedNodeColorConst->Value);
 	}
 
 	else if (const UCustomizableObjectNodeColorParameter* TypedNodeColorParam = Cast<UCustomizableObjectNodeColorParameter>(Node))
@@ -64,8 +64,8 @@ mu::NodeColourPtr GenerateMutableSourceColor(const UEdGraphPin* Pin, FMutableGra
 
 		GenerationContext.AddParameterNameUnique(Node, TypedNodeColorParam->ParameterName);
 
-		ColorNode->SetName(TCHAR_TO_ANSI(*TypedNodeColorParam->ParameterName));
-		ColorNode->SetUid(TCHAR_TO_ANSI(*GenerationContext.GetNodeIdUnique(Node).ToString()));
+		ColorNode->SetName(StringCast<ANSICHAR>(*TypedNodeColorParam->ParameterName).Get());
+		ColorNode->SetUid(StringCast<ANSICHAR>(*GenerationContext.GetNodeIdUnique(Node).ToString()).Get());
 		ColorNode->SetDefaultValue(TypedNodeColorParam->DefaultValue.R, TypedNodeColorParam->DefaultValue.G, TypedNodeColorParam->DefaultValue.B);
 
 		GenerationContext.ParameterUIDataMap.Add(TypedNodeColorParam->ParameterName, FParameterUIData(
@@ -258,7 +258,7 @@ mu::NodeColourPtr GenerateMutableSourceColor(const UEdGraphPin* Pin, FMutableGra
 			const UEdGraphPin* VariationPin = TypedNodeColorVar->VariationPin(VariationIndex);
 			if (!VariationPin) continue;
 
-			ColorNode->SetVariationTag(VariationIndex, TCHAR_TO_ANSI(*TypedNodeColorVar->Variations[VariationIndex].Tag));
+			ColorNode->SetVariationTag(VariationIndex, StringCast<ANSICHAR>(*TypedNodeColorVar->Variations[VariationIndex].Tag).Get());
 			if (const UEdGraphPin* ConnectedPin = FollowInputPin(*VariationPin))
 			{
 				mu::NodeColourPtr ChildNode = GenerateMutableSourceColor(ConnectedPin, GenerationContext);
@@ -269,46 +269,71 @@ mu::NodeColourPtr GenerateMutableSourceColor(const UEdGraphPin* Pin, FMutableGra
 
 	else if (const UCustomizableObjectNodeTable* TypedNodeTable = Cast<UCustomizableObjectNodeTable>(Node))
 	{
-		mu::NodeColourTablePtr ColorTableNode = new mu::NodeColourTable();
-		Result = ColorTableNode;
+		//This node will add a white color in case of error
+		mu::NodeColourConstantPtr WhiteColorNode = new mu::NodeColourConstant();
+		WhiteColorNode->SetValue(FVector4f(1.0f, 1.0f, 1.0f, 1.0f));
 
-		mu::TablePtr Table;
+		Result = WhiteColorNode;
+
+		bool bSuccess = true;
+
 		if (TypedNodeTable->Table)
 		{
 			FString ColumnName = Pin->PinFriendlyName.ToString();
+			FProperty* Property = TypedNodeTable->Table->FindTableProperty(FName(*ColumnName));
 
-			if (Pin->PinType.PinCategory == Schema->PC_MaterialAsset)
+			if (!Property)
 			{
-				ColumnName = GenerationContext.CurrentMaterialTableParameterId;
-			}
-
-			// Generating a new data table if not exists
-			Table = GenerateMutableSourceTable(TypedNodeTable->Table->GetName(), Pin, GenerationContext);
-
-			// Generating a new Color column if not exists
-			if (Table && Table->FindColumn(TCHAR_TO_ANSI(*ColumnName)) == INDEX_NONE)
-			{
-				GenerateTableColumn(TypedNodeTable, Pin, Table, ColumnName, GenerationContext.CurrentLOD, GenerationContext);
-			}
-
-			ColorTableNode->SetTable(Table);
-			ColorTableNode->SetColumn(TCHAR_TO_ANSI(*ColumnName));
-			ColorTableNode->SetParameterName(TCHAR_TO_ANSI(*TypedNodeTable->ParameterName));
-
-			GenerationContext.AddParameterNameUnique(Node, TypedNodeTable->ParameterName);
-
-			if (Table->FindColumn(TCHAR_TO_ANSI(*ColumnName)) == INDEX_NONE)
-			{
-				FString Msg = FString::Printf(TEXT("Couldn't find pin column with name %s"), *ColumnName);
+				FString Msg = FString::Printf(TEXT("Couldn't find the column [%s] in the data table's struct."), *ColumnName);
 				GenerationContext.Compiler->CompilerLog(FText::FromString(Msg), Node);
+
+				bSuccess = false;
 			}
 
+			if (bSuccess)
+			{
+				// Generating a new data table if not exists
+				mu::TablePtr Table;
+				Table = GenerateMutableSourceTable(TypedNodeTable->Table->GetName(), Pin, GenerationContext);
+
+				if (Table)
+				{
+					mu::NodeColourTablePtr ColorTableNode = new mu::NodeColourTable();
+
+					// Generating a new Color column if not exists
+					if (Table->FindColumn(StringCast<ANSICHAR>(*ColumnName).Get()) == INDEX_NONE)
+					{
+						int32 Dummy = -1; // TODO MTBL-1512
+						bool Dummy2 = false;
+						bSuccess = GenerateTableColumn(TypedNodeTable, Pin, Table, ColumnName, Property, Dummy, Dummy, GenerationContext.CurrentLOD, Dummy, Dummy2, GenerationContext);
+
+						if (!bSuccess)
+						{
+							FString Msg = FString::Printf(TEXT("Failed to generate the mutable table column [%s]"), *ColumnName);
+							GenerationContext.Compiler->CompilerLog(FText::FromString(Msg), Node);
+						}
+					}
+
+					if (bSuccess)
+					{
+						Result = ColorTableNode;
+
+						ColorTableNode->SetTable(Table);
+						ColorTableNode->SetColumn(StringCast<ANSICHAR>(*ColumnName).Get());
+						ColorTableNode->SetParameterName(StringCast<ANSICHAR>(*TypedNodeTable->ParameterName).Get());
+
+						GenerationContext.AddParameterNameUnique(Node, TypedNodeTable->ParameterName);
+					}
+				}
+				else
+				{
+					FString Msg = FString::Printf(TEXT("Couldn't generate a mutable table."), *ColumnName);
+					GenerationContext.Compiler->CompilerLog(FText::FromString(Msg), Node);
+				}
+			}
 		}
 		else
 		{
-			Table = new mu::Table();
-			ColorTableNode->SetTable(Table);
-
 			GenerationContext.Compiler->CompilerLog(LOCTEXT("ColorTableError", "Couldn't find the data table of the node."), Node);
 		}
 	}

@@ -55,11 +55,24 @@ FText UPCGAttributeFilterSettings::GetDefaultNodeTitle() const
 }
 #endif
 
+EPCGDataType UPCGAttributeFilterSettings::GetCurrentPinTypes(const UPCGPin* InPin) const
+{
+	check(InPin);
+	if (!InPin->IsOutputPin())
+	{
+		return Super::GetCurrentPinTypes(InPin);
+	}
+
+	// Output pin narrows to union of inputs on first pin
+	const EPCGDataType InputTypeUnion = GetTypeUnionOfIncidentEdges(PCGPinConstants::DefaultInputLabel);
+	return (InputTypeUnion != EPCGDataType::None) ? InputTypeUnion : EPCGDataType::Any;
+}
+
 FName UPCGAttributeFilterSettings::AdditionalTaskName() const
 {
 	TArray<FString> AttributesToKeep = PCGHelpers::GetStringArrayFromCommaSeparatedString(SelectedAttributes);
 
-	FString NodeName = PCGAttributeFilterConstants::NodeName.ToString();
+	FString NodeName = PCGAttributeFilterConstants::NodeTitle.ToString();
 
 	switch (Operation)
 	{
@@ -80,6 +93,14 @@ FName UPCGAttributeFilterSettings::AdditionalTaskName() const
 	{
 		return FName(NodeName);
 	}
+}
+
+TArray<FPCGPinProperties> UPCGAttributeFilterSettings::InputPinProperties() const
+{
+	TArray<FPCGPinProperties> PinProperties;
+	PinProperties.Emplace(PCGPinConstants::DefaultInputLabel, EPCGDataType::Any);
+
+	return PinProperties;
 }
 
 TArray<FPCGPinProperties> UPCGAttributeFilterSettings::OutputPinProperties() const

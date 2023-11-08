@@ -89,6 +89,10 @@ enum class EPartyJoinDenialReason : uint8
 	MissingPartyClassForTypeId,
 	/** The target user is blocked by the local user on one or more of the active subsystems */
 	TargetUserBlocked,
+	/** Failed to get party join info from target user */
+	InvalidJoinInfo,
+	/** The join method doesn't support non-friends */
+	NotFriends,
 
 	/**
 	* Customizable denial reasons.
@@ -209,6 +213,15 @@ inline const TCHAR* ToString(EPartyJoinDenialReason Type)
 	case EPartyJoinDenialReason::MissingPartyClassForTypeId:
 		return TEXT("MissingPartyClassForTypeId");
 		break;
+	case EPartyJoinDenialReason::TargetUserBlocked:
+		return TEXT("TargetUserBlocked");
+		break;
+	case EPartyJoinDenialReason::InvalidJoinInfo:
+		return TEXT("InvalidJoinInfo");
+		break;
+	case EPartyJoinDenialReason::NotFriends:
+		return TEXT("NotFriends");
+		break;
 	default:
 		return TEXT("CustomReason");
 		break;
@@ -231,8 +244,21 @@ enum class ESocialPartyInviteMethod : uint8
 	Other = 0,
 	/** Invite was sent from a toast */
 	Notification,
-	/** Invite was sent with a custom method */
-	Custom1
+	/** Invite was sent via accepting "Request To Join" */
+	AcceptRequestToJoin,
+	/** Custom methods */
+	Custom0,
+	Custom1,
+	Custom2,
+	Custom3,
+	Custom4,
+	Custom5,
+	Custom6,
+	Custom7,
+	Custom8,
+	Custom9,
+
+	MAX
 };
 
 UENUM()
@@ -471,30 +497,29 @@ protected:
 // Boilerplate for exposing RepData properties
 //////////////////////////////////////////////////////////////////////////
 
-/** Simplest option - exposes getter and events, but no default setter */
-#define EXPOSE_REP_DATA_PROPERTY_NO_SETTER(Owner, PropertyType, PropertyName, PropertyAccess)	\
+#define EXPOSE_REP_DATA_PROPERTY_NO_SETTER_IMPL(Owner, PropertyType, PropertyName, PropertyAccess, GetterAccess, OnChangedAccess)	\
 public:	\
 	/** If the property is a POD or ptr type, we'll work with it by copy. Otherwise, by const ref */	\
-	using Mutable##PropertyName##Type = typename TRemoveConst<PropertyType>::Type;	\
+	using Mutable##PropertyName##Type = std::remove_const_t<PropertyType>;	\
 	using PropertyName##ArgType = typename TChooseClass<TOr<TIsPODType<PropertyType>, TIsPointer<PropertyType>>::Value, PropertyType, const Mutable##PropertyName##Type&>::Result;	\
 	\
 private:	\
 	/** Bummer to have two signatures, but cases that want both the old and new values are much rarer, so most don't want to bother with a handler that takes an extra unused param */	\
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOn##PropertyName##Changed, PropertyName##ArgType /*NewValue*/);	\
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOn##PropertyName##ChangedDif, PropertyName##ArgType /*NewValue*/, PropertyName##ArgType /*OldValue*/);	\
-public:	\
+OnChangedAccess:	\
 	/** Bind to receive the new property value only on changes */	\
 	FOn##PropertyName##Changed& On##PropertyName##Changed() const { return On##PropertyName##ChangedEvent; }	\
 	/** Bind to receive both the new and old property value on changes */	\
 	FOn##PropertyName##ChangedDif& On##PropertyName##ChangedDif() const { return On##PropertyName##ChangedDifEvent; }	\
-	\
+GetterAccess: \
 	PropertyName##ArgType Get##PropertyName() const { return PropertyAccess; }	\
 private:	\
 	void Compare##PropertyName(const Owner& OldData) const	\
 	{	\
 		Compare##PropertyName(OldData.PropertyAccess); \
 	}	\
-	void Compare##PropertyName(const typename TRemoveConst<PropertyType>::Type& OldData) const	\
+	void Compare##PropertyName(const std::remove_const_t<PropertyType>& OldData) const	\
 	{	\
 		if (PropertyAccess != OldData)	\
 		{	\
@@ -505,6 +530,10 @@ private:	\
 	}	\
 	mutable FOn##PropertyName##Changed On##PropertyName##ChangedEvent;	\
 	mutable FOn##PropertyName##ChangedDif On##PropertyName##ChangedDifEvent
+
+/** Simplest option - exposes getter and events, but no default setter */
+#define EXPOSE_REP_DATA_PROPERTY_NO_SETTER(Owner, PropertyType, PropertyName, PropertyAccess)	\
+	EXPOSE_REP_DATA_PROPERTY_NO_SETTER_IMPL(Owner, PropertyType, PropertyName, PropertyAccess, public, public)
 
 #define EXPOSE_REP_DATA_PROPERTY_SETTER_ONLY(Owner, PropertyType, PropertyName, PropertyAccess, SetterPrivacy)	\
 SetterPrivacy:	\
@@ -547,6 +576,10 @@ private: //
 #define EXPOSE_REP_DATA_PROPERTY_SETTER_ACCESS(Owner, PropertyType, PropertyName, PropertyAccess, SetterPrivacy)	\
 EXPOSE_REP_DATA_PROPERTY_NO_SETTER(Owner, PropertyType, PropertyName, PropertyAccess);	\
 EXPOSE_REP_DATA_PROPERTY_SETTER_ONLY(Owner, PropertyType, PropertyName, PropertyAccess, SetterPrivacy)
+
+/** Expose ustruct property for access without using StructProperty in the property name. */
+#define EXPOSE_PRIVATE_USTRUCT_REP_DATA_PROPERTY_DIRECT(Owner, PropertyType, StructProperty, ChildProperty)	\
+EXPOSE_REP_DATA_PROPERTY_SETTER_ACCESS(Owner, PropertyType, ChildProperty, StructProperty.ChildProperty, private);
 
 /** Expose ustruct property for access without using StructProperty in the property name. */
 #define EXPOSE_USTRUCT_REP_DATA_PROPERTY_DIRECT(Owner, PropertyType, StructProperty, ChildProperty)	\

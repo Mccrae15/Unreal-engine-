@@ -144,6 +144,8 @@
 #include "Editor/ActorPositioning.h"
 
 #include "Elements/Framework/TypedElementSelectionSet.h"
+#include "Elements/Framework/EngineElementsLibrary.h"
+#include "Elements/Framework/TypedElementList.h"
 #include "Elements/Actor/ActorElementEditorViewportInteractionCustomization.h"
 #include "Elements/Component/ComponentElementEditorViewportInteractionCustomization.h"
 
@@ -1039,7 +1041,7 @@ void UEditorEngine::Init(IEngineLoop* InEngineLoop)
 
 	check(!HasAnyFlags(RF_ClassDefaultObject));
 
-	FCoreDelegates::ModalErrorMessage.BindUObject(this, &UEditorEngine::OnModalMessageDialog);
+	FCoreDelegates::ModalMessageDialog.BindUObject(this, &UEditorEngine::OnModalMessageDialog);
 	FCoreUObjectDelegates::ShouldLoadOnTop.BindUObject(this, &UEditorEngine::OnShouldLoadOnTop);
 	FCoreDelegates::PreWorldOriginOffset.AddUObject(this, &UEditorEngine::PreWorldOriginOffset);
 	FCoreUObjectDelegates::OnAssetLoaded.AddUObject(this, &UEditorEngine::OnAssetLoaded);
@@ -1121,7 +1123,6 @@ void UEditorEngine::Init(IEngineLoop* InEngineLoop)
 			TEXT("TextureCompressor"),
 			TEXT("MeshUtilities"),
 			TEXT("MovieSceneTools"),
-			TEXT("NaniteTools"),
 			TEXT("ClassViewer"),
 			TEXT("StructViewer"),
 			TEXT("ContentBrowser"),
@@ -1149,6 +1150,7 @@ void UEditorEngine::Init(IEngineLoop* InEngineLoop)
 			TEXT("EditorSettingsViewer"),
 			TEXT("ProjectSettingsViewer"),
 			TEXT("Blutility"),
+			TEXT("ScriptableEditorWidgets"),
 			TEXT("XmlParser"),
 			TEXT("UndoHistory"),
 			TEXT("DeviceProfileEditor"),
@@ -1212,6 +1214,7 @@ void UEditorEngine::Init(IEngineLoop* InEngineLoop)
 		}
 
 		FModuleManager::Get().LoadModule(TEXT("LogVisualizer"));
+		FModuleManager::Get().LoadModule(TEXT("WidgetRegistration"));
 		FModuleManager::Get().LoadModule(TEXT("HotReload"));
 
 		FModuleManager::Get().LoadModuleChecked(TEXT("ClothPainter"));
@@ -1395,7 +1398,7 @@ void UEditorEngine::FinishDestroy()
 
 		// Unregister events
 		FEditorDelegates::MapChange.RemoveAll(this);
-		FCoreDelegates::ModalErrorMessage.Unbind();
+		FCoreDelegates::ModalMessageDialog.Unbind();
 		FCoreUObjectDelegates::ShouldLoadOnTop.Unbind();
 		FCoreDelegates::PreWorldOriginOffset.RemoveAll(this);
 		FCoreUObjectDelegates::OnAssetLoaded.RemoveAll(this);
@@ -1541,6 +1544,22 @@ void UEditorEngine::Tick( float DeltaSeconds, bool bIdleMode )
 	// By default we tick the editor world.  
 	// When in PIE if we are in immersive we do not tick the editor world unless there is a visible editor viewport.
 	bool bShouldTickEditorWorld = true;
+
+	// Conditionally disable all viewport rendering when the editor is in the background.
+	// This aims to improve GPU performance of other applications when the editor is not actively used.
+	{
+		const UEditorPerformanceSettings* PerformanceSettings = GetDefault<UEditorPerformanceSettings>();
+		const bool bShouldDisableRendering = !FApp::HasFocus() && PerformanceSettings->bThrottleCPUWhenNotForeground;
+		const FText SystemDisplayName = LOCTEXT("RealtimeOverrideMessage_BackgroundProcess", "Background Process");
+		for (FEditorViewportClient* const ViewportClient : AllViewportClients)
+		{
+			ViewportClient->RemoveRealtimeOverride(SystemDisplayName, false /*bCheckMissingOverride*/);
+			if (bShouldDisableRendering)
+			{
+				ViewportClient->AddRealtimeOverride(false /*bShouldBeRealtime*/, SystemDisplayName);
+			}
+		}
+	}
 
 	//@todo Multiple Worlds: Do we need to consider what world we are in here?
 
@@ -2097,9 +2116,7 @@ void UEditorEngine::Tick( float DeltaSeconds, bool bIdleMode )
 					// Only update ortho viewports if that mode is turned on, the viewport client we are about to update is orthographic and the current editing viewport is orthographic and tracking mouse movement.
 					bUpdateLinkedOrthoViewports = GetDefault<ULevelEditorViewportSettings>()->bUseLinkedOrthographicViewports && ViewportClient->IsOrtho() && GCurrentLevelEditingViewportClient && GCurrentLevelEditingViewportClient->IsOrtho() && GCurrentLevelEditingViewportClient->IsTracking();
 
-					const bool bIsViewParent = ViewportClient->ViewState.GetReference()->IsViewParent();
-					if ((bRenderingChildren && !bIsViewParent) ||
-						(!bRenderingChildren && bIsViewParent) || bUpdateLinkedOrthoViewports)
+					if (bRenderingChildren || bUpdateLinkedOrthoViewports)
 					{
 						//if we haven't drawn a non-realtime viewport OR not one of the main viewports
 						bool bAllowNonRealtimeViewports = (!bEditorFrameNonRealtimeViewportDrawn) || !(ViewportClient->IsLevelEditorClient());
@@ -3007,17 +3024,27 @@ void UEditorEngine::LoadMapListFromIni(const FString& InSectionName, TArray<FStr
 	}
 }
 
-void UEditorEngine::SyncBrowserToObjects( TArray<UObject*>& InObjectsToSync, bool bFocusContentBrowser )
+void UEditorEngine::SyncBrowserToObjects( const TArray<UObject*>& InObjectsToSync, bool bFocusContentBrowser )
 {
 	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
 	ContentBrowserModule.Get().SyncBrowserToAssets( InObjectsToSync, false, bFocusContentBrowser );
 
 }
 
-void UEditorEngine::SyncBrowserToObjects( TArray<struct FAssetData>& InAssetsToSync, bool bFocusContentBrowser )
+void UEditorEngine::SyncBrowserToObjects( const TArray<struct FAssetData>& InAssetsToSync, bool bFocusContentBrowser )
 {
 	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
 	ContentBrowserModule.Get().SyncBrowserToAssets( InAssetsToSync, false, bFocusContentBrowser );
+}
+
+void UEditorEngine::SyncBrowserToObject( const UObject* InObjectToSync, bool bFocusContentBrowser )
+{
+	SyncBrowserToObjects({ InObjectToSync }, bFocusContentBrowser);
+}
+
+void UEditorEngine::SyncBrowserToObject( const FAssetData& InAssetToSync, bool bFocusContentBrowser )
+{
+	SyncBrowserToObjects({ InAssetToSync }, bFocusContentBrowser);
 }
 
 
@@ -3959,7 +3986,7 @@ void UEditorEngine::BuildReflectionCaptures(UWorld* World)
 
 	// Only the cubemap array path supports reading back from the GPU
 	// Calling code should not allow building reflection captures on lower feature levels
-	check(World->FeatureLevel >= ERHIFeatureLevel::SM5);
+	check(World->GetFeatureLevel() >= ERHIFeatureLevel::SM5);
 
 	// Only reset reflection captures if we had hit an OOM condition, and there is a chance we could fit in memory if we rebuild from scratch
 	const bool bOnlyIfOOM = true;
@@ -4169,8 +4196,8 @@ void UEditorEngine::BuildReflectionCaptures(UWorld* World)
 
 void UEditorEngine::EditorAddModalWindow( TSharedRef<SWindow> InModalWindow ) const
 {
-	// If there is already a modal window active, parent this new modal window to the existing window so that it doesnt fall behind
-	TSharedPtr<SWindow> ParentWindow = FSlateApplication::Get().GetActiveModalWindow();
+	// If there is already a window active, parent this new modal window to the existing window so that it doesnt fall behind
+	TSharedPtr<SWindow> ParentWindow = FSlateApplication::Get().GetActiveTopLevelRegularWindow();
 
 	if( !ParentWindow.IsValid() )
 	{
@@ -4538,24 +4565,6 @@ void UEditorEngine::CleanupPhysicsSceneThatWasInitializedForSave(UWorld* World, 
 	}
 }
 
-FSavePackageResultStruct UEditorEngine::Save(UPackage* InOuter, UObject* InBase, EObjectFlags TopLevelFlags,
-	const TCHAR* Filename, FOutputDevice* Error, FLinkerNull* Conform, bool bForceByteSwapping,
-	bool bWarnOfLongFilename, uint32 SaveFlags, const ITargetPlatform* TargetPlatform,
-	const FDateTime& FinalTimeStamp, bool bSlowTask, FArchiveDiffMap* InOutDiffMap,
-	FSavePackageContext* SavePackageContext)
-{
-	// CookData can only be nonzero if we are cooking.
-	TOptional<FArchiveCookData> CookData;
-	FArchiveCookContext CookContext(InOuter, FArchiveCookContext::ECookTypeUnknown);
-	if (TargetPlatform != nullptr)
-	{
-		CookData.Emplace(*TargetPlatform, CookContext);
-	}
-	FSavePackageArgs SaveArgs = { nullptr /* deprecated target platform */, CookData.GetPtrOrNull(), TopLevelFlags, SaveFlags, bForceByteSwapping,
-		bWarnOfLongFilename, bSlowTask, FinalTimeStamp, Error, SavePackageContext };
-	return Save(InOuter, InBase, Filename, SaveArgs);
-}
-
 FSavePackageResultStruct UEditorEngine::Save(UPackage* InOuter, UObject* InAsset, const TCHAR* Filename,
 	const FSavePackageArgs& InSaveArgs)
 {
@@ -4618,9 +4627,6 @@ FSavePackageResultStruct UEditorEngine::Save(UPackage* InOuter, UObject* InAsset
 				}
 			}
 
-			PRAGMA_DISABLE_DEPRECATION_WARNINGS;
-			OnPreSaveWorld(ObjectSaveContext.SaveFlags, World);
-			PRAGMA_ENABLE_DEPRECATION_WARNINGS;
 			OnPreSaveWorld(World, FObjectPreSaveContext(ObjectSaveContext));
 		}
 
@@ -4676,9 +4682,6 @@ FSavePackageResultStruct UEditorEngine::Save(UPackage* InOuter, UObject* InAsset
 
 		if (!bSavingConcurrent)
 		{
-			PRAGMA_DISABLE_DEPRECATION_WARNINGS;
-			OnPostSaveWorld(ObjectSaveContext.SaveFlags, World, ObjectSaveContext.OriginalPackageFlags, ObjectSaveContext.bSaveSucceeded);
-			PRAGMA_ENABLE_DEPRECATION_WARNINGS;
 			OnPostSaveWorld(World, FObjectPostSaveContext(ObjectSaveContext));
 
 			if (bInitializedPhysicsSceneForSave)
@@ -4704,22 +4707,6 @@ FSavePackageResultStruct UEditorEngine::Save(UPackage* InOuter, UObject* InAsset
 	return Result;
 }
 
-bool UEditorEngine::SavePackage(UPackage* InOuter, UObject* InBase, EObjectFlags TopLevelFlags, const TCHAR* Filename,
-	FOutputDevice* Error, FLinkerNull* Conform, bool bForceByteSwapping, bool bWarnOfLongFilename,
-	uint32 SaveFlags, const ITargetPlatform* TargetPlatform, const FDateTime& FinalTimeStamp, bool bSlowTask)
-{
-	// CookData should only be nonzero if we are cooking.
-	TOptional<FArchiveCookData> CookData;
-	FArchiveCookContext CookContext(InOuter, FArchiveCookContext::ECookTypeUnknown);
-	if (TargetPlatform != nullptr)
-	{
-		CookData.Emplace(*TargetPlatform, CookContext);
-	}
-	FSavePackageArgs SaveArgs = { nullptr /* deprecated target platform */, CookData.GetPtrOrNull(), TopLevelFlags, SaveFlags, bForceByteSwapping,
-		bWarnOfLongFilename, bSlowTask, FinalTimeStamp, Error };
-	return SavePackage(InOuter, InBase, Filename, SaveArgs);
-}
-
 bool UEditorEngine::SavePackage(UPackage* InOuter, UObject* InAsset, const TCHAR* Filename,
 	const FSavePackageArgs& SaveArgs)
 {
@@ -4728,10 +4715,6 @@ bool UEditorEngine::SavePackage(UPackage* InOuter, UObject* InAsset, const TCHAR
 	// Workaround to avoid function signature change while keeping both bool and ESavePackageResult versions of SavePackage
 	const FSavePackageResultStruct Result = Save(InOuter, InAsset, Filename, SaveArgs);
 	return Result == ESavePackageResult::Success;
-}
-
-void UEditorEngine::OnPreSaveWorld(uint32 SaveFlags, UWorld* World)
-{
 }
 
 void UEditorEngine::OnPreSaveWorld(UWorld* World, FObjectPreSaveContext ObjectSaveContext)
@@ -4750,9 +4733,6 @@ void UEditorEngine::OnPreSaveWorld(UWorld* World, FObjectPreSaveContext ObjectSa
 	check(World->PersistentLevel);
 
 	// Pre save world event
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
-	FEditorDelegates::PreSaveWorld.Broadcast(ObjectSaveContext.GetSaveFlags(), World);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
 	FEditorDelegates::PreSaveWorldWithContext.Broadcast(World, ObjectSaveContext);
 
 	// Update cull distance volumes (and associated primitives).
@@ -4818,10 +4798,6 @@ void UEditorEngine::OnPreSaveWorld(UWorld* World, FObjectPreSaveContext ObjectSa
 
 	// Make sure the public and standalone flags are set on this world to allow it to work properly with the editor
 	World->SetFlags(RF_Public | RF_Standalone);
-}
-
-void UEditorEngine::OnPostSaveWorld(uint32 SaveFlags, UWorld* World, uint32 OriginalPackageFlags, bool bSuccess)
-{
 }
 
 void UEditorEngine::OnPostSaveWorld(UWorld* World, FObjectPostSaveContext ObjectSaveContext)
@@ -4909,9 +4885,6 @@ void UEditorEngine::OnPostSaveWorld(UWorld* World, FObjectPostSaveContext Object
 	}
 
 	// Post save world event
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
-	FEditorDelegates::PostSaveWorld.Broadcast(ObjectSaveContext.GetSaveFlags(), World, bSuccess);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
 	FEditorDelegates::PostSaveWorldWithContext.Broadcast(World, ObjectSaveContext);
 }
 
@@ -4936,11 +4909,11 @@ void UEditorEngine::CloseEntryPopupWindow()
 	}
 }
 
-EAppReturnType::Type UEditorEngine::OnModalMessageDialog(EAppMsgType::Type InMessage, const FText& InText, const FText& InTitle)
+EAppReturnType::Type UEditorEngine::OnModalMessageDialog(EAppMsgCategory InMessageCategory, EAppMsgType::Type InMessage, const FText& InText, const FText& InTitle)
 {
 	if( IsInGameThread() && FSlateApplication::IsInitialized() && FSlateApplication::Get().CanAddModalWindow() )
 	{
-		return OpenMessageDialog_Internal(InMessage, InText, InTitle);
+		return OpenMessageDialog_Internal(InMessageCategory, InMessage, InText, InTitle);
 	}
 	else
 	{
@@ -6178,7 +6151,7 @@ void UEditorEngine::DoConvertActors( const TArray<AActor*>& ActorsToConvert, UCl
 				UActorGroupingUtils::SetGroupingActive(bGroupingActiveSaved);
 			}
 
-
+			// Attempt normal spawning if a new actor hasn't been spawned yet via a special case
 			if (!NewActor)
 			{
 				// Set the current level to the level where the convertible actor resides
@@ -6191,17 +6164,20 @@ void UEditorEngine::DoConvertActors( const TArray<AActor*>& ActorsToConvert, UCl
 				const UClass* CommonBaseClass = ActorToConvert->FindNearestCommonBaseClass( ConvertToClass );
 				check ( CommonBaseClass );	
 
-				// Take the old actors location always, not rotation.  If rotation was changed on the source actor, it will be copied below.
-				FVector SpawnLoc = ActorToConvert->GetActorLocation();
-				FRotator SpawnRot = ActorToConvert->GetActorRotation();
+				const FTransform& SpawnTransform = ActorToConvert->GetActorTransform();
 				{
 					FActorSpawnParameters SpawnInfo;
 					SpawnInfo.OverrideLevel = ActorLevel;
 					SpawnInfo.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-					NewActor = World->SpawnActor( ConvertToClass, &SpawnLoc, &SpawnRot, SpawnInfo );
+					SpawnInfo.bDeferConstruction = true;
+					NewActor = World->SpawnActor(ConvertToClass, &SpawnTransform, SpawnInfo);
 
 					if (NewActor)
 					{
+						// Deferred spawning and finishing with !bIsDefaultTransform results in scale being applied for both native and simple construction script created root components
+						constexpr bool bIsDefaultTransform = false;
+						NewActor->FinishSpawning(SpawnTransform, bIsDefaultTransform);
+						
 						// Copy non component properties from the old actor to the new actor
 						for( FProperty* Property = CommonBaseClass->PropertyLink; Property != NULL; Property = Property->PropertyLinkNext )
 						{
@@ -6552,6 +6528,8 @@ AActor* UEditorEngine::AddActor(ULevel* InLevel, UClass* Class, const FTransform
 
 		if (Actor)
 		{
+			FActorLabelUtilities::SetActorLabelUnique(Actor, Actor->GetDefaultActorLabel());
+
 			if (bSelectActor)
 			{
 				SelectActor(Actor, 1, 0);
@@ -7312,7 +7290,7 @@ void UEditorEngine::CheckAndHandleStaleWorldObjectReferences(FWorldContext* InWo
 				UE_LOG(LogLoad, Error, TEXT("Previously active world %s not cleaned up by garbage collection!"), *World->GetPathName());
 				UE_LOG(LogLoad, Error, TEXT("Once a world has become active, it cannot be reused and must be destroyed and reloaded. World referenced by:"));
 			
-				FindAndPrintStaleReferencesToObject(World, 
+				FReferenceChainSearch::FindAndPrintStaleReferencesToObject(World,
 					UObjectBaseUtility::IsPendingKillEnabled() ? EPrintStaleReferencesOptions::Fatal : (EPrintStaleReferencesOptions::Error | EPrintStaleReferencesOptions::Ensure));
 			}
 		}
@@ -7326,7 +7304,7 @@ void UEditorEngine::CheckAndHandleStaleWorldObjectReferences(FWorldContext* InWo
 			{
 				UE_LOG(LogLoad, Error, TEXT("Object %s not cleaned up by garbage collection!"), *Object->GetPathName());
 			
-				FindAndPrintStaleReferencesToObject(Object, 
+				FReferenceChainSearch::FindAndPrintStaleReferencesToObject(Object,
 					UObjectBaseUtility::IsPendingKillEnabled() ? EPrintStaleReferencesOptions::Fatal : (EPrintStaleReferencesOptions::Error | EPrintStaleReferencesOptions::Ensure));
 			}
 		}
@@ -7730,7 +7708,7 @@ void UEditorEngine::OnModuleCompileFinished(const FString& CompilationOutput, EC
 
 bool UEditorEngine::IsEditorShaderPlatformEmulated(UWorld* World)
 {
-	const EShaderPlatform ShaderPlatform = GetFeatureLevelShaderPlatform(World->FeatureLevel);
+	const EShaderPlatform ShaderPlatform = GetFeatureLevelShaderPlatform(World->GetFeatureLevel());
 
 	bool bIsSimulated = IsSimulatedPlatform(ShaderPlatform);
 
@@ -7739,7 +7717,7 @@ bool UEditorEngine::IsEditorShaderPlatformEmulated(UWorld* World)
 
 bool UEditorEngine::IsOfflineShaderCompilerAvailable(UWorld* World)
 {
-	const auto ShaderPlatform = GetFeatureLevelShaderPlatform(World->FeatureLevel);
+	const auto ShaderPlatform = GetFeatureLevelShaderPlatform(World->GetFeatureLevel());
 
 	const auto RealPlatform = GetSimulatedPlatform(ShaderPlatform);
 
@@ -7778,7 +7756,7 @@ void UEditorEngine::SetPreviewPlatform(const FPreviewPlatformInfo& NewPreviewPla
 	if (NewPreviewPlatform.PreviewShaderFormatName != NAME_None)
 	{
 		// Force generation of the autogen files if they don't already exist
-		FShaderCompileUtilities::WriteGBufferInfoAutogen(ShaderPlatform, MaxFeatureLevel);
+		FShaderCompileUtilities::GenerateBrdfHeaders(ShaderPlatform);
 	}
 
 	// Record the new preview platform
@@ -8024,7 +8002,7 @@ namespace
 		virtual bool IsExternalContentLoaded(const FString& ExternalContentId) const override { return false; }
 		virtual TArray<FString> GetExternalContentIds() const override { return {}; }
 		virtual void AddExternalContent(const FString& ExternalContentId, FAddExternalContentComplete CompleteCallback) override { CompleteCallback.ExecuteIfBound(false, /*Plugins=*/{}); }
-		virtual void RemoveExternalContent(const FString& ExternalContentId, FRemoveExternalContentComplete CompleteCallback) override { CompleteCallback.ExecuteIfBound(false); }
+		virtual void RemoveExternalContent(TConstArrayView<FString> ExternalContentIds, FRemoveExternalContentComplete CompleteCallback) override { CompleteCallback.ExecuteIfBound(false); }
 	};
 
 	FProjectExternalContentDefault ProjectExternalContentDefault;

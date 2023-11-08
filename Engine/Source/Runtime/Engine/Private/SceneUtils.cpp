@@ -113,6 +113,36 @@ ENGINE_API EAntiAliasingMethod GetDefaultAntiAliasingMethod(const FStaticFeature
 	return AntiAliasingMethod;
 }
 
+ENGINE_API const TCHAR* GetShortAntiAliasingName(EAntiAliasingMethod AntiAliasingMethod)
+{
+	if (AntiAliasingMethod == AAM_None)
+	{
+		return TEXT("None");
+	}
+	else if (AntiAliasingMethod == AAM_FXAA)
+	{
+		return TEXT("FXAA");
+	}
+	else if (AntiAliasingMethod == AAM_TemporalAA)
+	{
+		return TEXT("TAA");
+	}
+	else if (AntiAliasingMethod == AAM_MSAA)
+	{
+		return TEXT("MSAA");
+	}
+	else if (AntiAliasingMethod == AAM_TSR)
+	{
+		return TEXT("TSR");
+	}
+	else
+	{
+		ensure(0);
+	}
+
+	return TEXT("UnknownAA");
+}
+
 ENGINE_API uint32 GetDefaultMSAACount(const FStaticFeatureLevel InFeatureLevel, uint32 PlatformMaxSampleCount/* = 8*/)
 {
 	uint32 NumSamples = 1;
@@ -151,17 +181,14 @@ ENGINE_API uint32 GetDefaultMSAACount(const FStaticFeatureLevel InFeatureLevel, 
 			{
 				bool bMobilePixelProjectedReflection = IsUsingMobilePixelProjectedReflection(ShaderPlatform);
 				
-				static const auto MobileEarlyZPassCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.EarlyZPass"));
-				const bool bMobileAmbientOcclusion = IsMobileAmbientOcclusionEnabled(ShaderPlatform);
-				const bool bMobileUsesShadowMaskTexture = MobileUsesShadowMaskTexture(ShaderPlatform);
-				bool bIsFullDepthPrepassEnabled = bMobileAmbientOcclusion || bMobileUsesShadowMaskTexture || MobileEarlyZPassCVar->GetValueOnAnyThread() > 0;
+				bool bIsFullDepthPrepassEnabled = MobileUsesFullDepthPrepass(ShaderPlatform);
 				bool bEmulatedTonemapSubpass = !IsVulkanPlatform(ShaderPlatform) && IsMobileTonemapSubpassEnabled();
 
 				bRendererSupportMSAA = bRHISupportsMSAA && !bMobilePixelProjectedReflection && !bIsFullDepthPrepassEnabled && !bEmulatedTonemapSubpass;
 
 				if (!bRendererSupportMSAA)
 				{
-					FailedReason = FString::Printf(TEXT("RHISupportsMSAA %d, MobilePixelProjectedReflection %d, MobileAmbientOcclusion %d, MobileUsesShadowMaskTexture %d, MobileEarlyZPass %d, EmulatedTonemapSubpass %d"), bRHISupportsMSAA ? 1 : 0, bMobilePixelProjectedReflection ? 1 : 0, bMobileAmbientOcclusion ? 1 : 0, bMobileUsesShadowMaskTexture? 1 : 0, MobileEarlyZPassCVar->GetValueOnAnyThread(), bEmulatedTonemapSubpass ? 1 : 0);
+					FailedReason = FString::Printf(TEXT("RHISupportsMSAA %d, MobilePixelProjectedReflection %d, MobileFullDepthPrepass %d, EmulatedTonemapSubpass %d"), bRHISupportsMSAA ? 1 : 0, bMobilePixelProjectedReflection ? 1 : 0, bIsFullDepthPrepassEnabled ? 1 : 0, bEmulatedTonemapSubpass ? 1 : 0);
 				}
 			}
 			else

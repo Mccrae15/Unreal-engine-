@@ -6,9 +6,9 @@
 #include "Modules/ModuleManager.h"
 
 #include "GeometryProcessingInterfaces/ApproximateActors.h"
+#include "GeometryProcessingInterfaces/CombineMeshInstances.h"
+#include "GeometryProcessingInterfaces/MeshAutoUV.h"
 
-
-//DEFINE_LOG_CATEGORY_STATIC(LogMeshReduction, Verbose, All);
 
 IMPLEMENT_MODULE(FGeometryProcessingInterfacesModule, GeometryProcessingInterfaces);
 
@@ -18,22 +18,49 @@ void FGeometryProcessingInterfacesModule::StartupModule()
 
 }
 
-
 void FGeometryProcessingInterfacesModule::ShutdownModule()
 {
 	ApproximateActors = nullptr;
+	CombineMeshInstances = nullptr;
+	MeshAutoUV = nullptr;
 }
 
+namespace
+{
+	template <typename TModularFeatureInterface>
+	TModularFeatureInterface* GetModularFeatureImplementation()
+	{
+		TArray<TModularFeatureInterface*> AvailableImplementations =
+			IModularFeatures::Get().GetModularFeatureImplementations<TModularFeatureInterface>(TModularFeatureInterface::GetModularFeatureName());
+
+		return (AvailableImplementations.Num() > 0) ? AvailableImplementations[0] : nullptr;
+	}
+}
 
 IGeometryProcessing_ApproximateActors* FGeometryProcessingInterfacesModule::GetApproximateActorsImplementation()
 {
 	if (ApproximateActors == nullptr)
 	{
-		TArray<IGeometryProcessing_ApproximateActors*> ApproximateActorsOptions =
-			IModularFeatures::Get().GetModularFeatureImplementations<IGeometryProcessing_ApproximateActors>(IGeometryProcessing_ApproximateActors::GetModularFeatureName());
-
-		ApproximateActors = (ApproximateActorsOptions.Num() > 0) ? ApproximateActorsOptions[0] : nullptr;
+		ApproximateActors = GetModularFeatureImplementation<IGeometryProcessing_ApproximateActors>();
 	}
-
 	return ApproximateActors;
 }
+IGeometryProcessing_CombineMeshInstances* FGeometryProcessingInterfacesModule::GetCombineMeshInstancesImplementation()
+{
+	if (CombineMeshInstances == nullptr)
+	{
+		CombineMeshInstances = GetModularFeatureImplementation<IGeometryProcessing_CombineMeshInstances>();
+	}
+	return CombineMeshInstances;
+}
+
+IGeometryProcessing_MeshAutoUV* FGeometryProcessingInterfacesModule::GetMeshAutoUVImplementation()
+{
+	if (MeshAutoUV == nullptr)
+	{
+		MeshAutoUV = GetModularFeatureImplementation<IGeometryProcessing_MeshAutoUV>();
+	}
+	return MeshAutoUV;
+}
+
+

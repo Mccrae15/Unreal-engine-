@@ -90,12 +90,36 @@ namespace UE::Interchange
 			FString& PayloadFilepath = ResultPayloads.FindOrAdd(PayloadKey);
 			//To avoid file path with too many character, we hash the payloadKey so we have a deterministic length for the file path.
 			FString PayloadKeyHash = Private::HashString(PayloadKey);
-			PayloadFilepath = ResultFolder + TEXT("/") + PayloadKeyHash + TEXT(".payload");
+			PayloadFilepath = ResultFolder + TEXT("/") + PayloadKeyHash + FString::FromInt(UniqueIdCounter.IncrementExchange()) + TEXT(".payload");
 
 			//Copy the map filename key because we are multithreaded and the TMap can be reallocated
 			PayloadFilepathCopy = PayloadFilepath;
 		}
 		if (!FbxParserPrivate->FetchPayloadData(PayloadKey, PayloadFilepathCopy))
+		{
+			UInterchangeResultError_Generic* Error = AddMessage<UInterchangeResultError_Generic>();
+			Error->SourceAssetName = SourceFilename;
+			Error->Text = LOCTEXT("CantFetchPayload", "Cannot fetch FBX payload data.");
+			return;
+		}
+	}
+
+	void FInterchangeFbxParser::FetchMeshPayload(const FString& PayloadKey, const FTransform& MeshGlobalTransform, const FString& ResultFolder)
+	{
+		check(FbxParserPrivate.IsValid());
+		ResultsContainer->Empty();
+		FString PayloadFilepathCopy;
+		{
+			FScopeLock Lock(&ResultPayloadsCriticalSection);
+			FString& PayloadFilepath = ResultPayloads.FindOrAdd(PayloadKey);
+			//To avoid file path with too many character, we hash the payloadKey so we have a deterministic length for the file path.
+			FString PayloadKeyHash = Private::HashString(PayloadKey);
+			PayloadFilepath = ResultFolder + TEXT("/") + PayloadKeyHash + FString::FromInt(UniqueIdCounter.IncrementExchange()) + TEXT(".payload");
+
+			//Copy the map filename key because we are multithreaded and the TMap can be reallocated
+			PayloadFilepathCopy = PayloadFilepath;
+		}
+		if (!FbxParserPrivate->FetchMeshPayloadData(PayloadKey, MeshGlobalTransform, PayloadFilepathCopy))
 		{
 			UInterchangeResultError_Generic* Error = AddMessage<UInterchangeResultError_Generic>();
 			Error->SourceAssetName = SourceFilename;
@@ -114,7 +138,7 @@ namespace UE::Interchange
 			FString& PayloadFilepath = ResultPayloads.FindOrAdd(PayloadKey);
 			//To avoid file path with too many character, we hash the payloadKey so we have a deterministic length for the file path.
 			FString PayloadKeyHash = Private::HashString(PayloadKey);
-			PayloadFilepath = ResultFolder + TEXT("/") + PayloadKeyHash + TEXT(".payload");
+			PayloadFilepath = ResultFolder + TEXT("/") + PayloadKeyHash + FString::FromInt(UniqueIdCounter.IncrementExchange()) + TEXT(".payload");
 
 			//Copy the map filename key because we are multithreaded and the TMap can be reallocated
 			PayloadFilepathCopy = PayloadFilepath;

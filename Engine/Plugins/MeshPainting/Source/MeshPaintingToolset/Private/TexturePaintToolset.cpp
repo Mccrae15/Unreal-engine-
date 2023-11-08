@@ -207,7 +207,7 @@ bool UTexturePaintToolset::GenerateSeamMask(UMeshComponent* MeshComponent, int32
 
 	{
 		// Create a canvas for the render target and clear it to white
-		FCanvas Canvas(RenderTargetResource, nullptr, FGameTime(), GEditor->GetEditorWorldContext().World()->FeatureLevel);
+		FCanvas Canvas(RenderTargetResource, nullptr, FGameTime(), GEditor->GetEditorWorldContext().World()->GetFeatureLevel());
 		Canvas.Clear(FLinearColor::White);
 
 		TArray<FCanvasUVTri> TriList;
@@ -333,6 +333,9 @@ UTexture2D* UTexturePaintToolset::CreateScratchUncompressedTexture(UTexture2D* S
 {
 	check(SourceTexture->Source.IsValid());
 
+	// bad: this code assumes the TextureSource is RGBA8
+	//	use GetMipImage instead of GetMipData
+
 	// Decompress PNG image
 	TArray64<uint8> RawData;
 	SourceTexture->Source.GetMipData(RawData, 0);
@@ -353,6 +356,7 @@ UTexture2D* UTexturePaintToolset::CreateScratchUncompressedTexture(UTexture2D* S
 	for (int32 y = 0; y < Height; y++)
 	{
 		uint8* DestPtr = &MipData[(Height - 1 - y) * Width * sizeof(FColor)];
+		//bad: very unsafe cast and un-checked access of memory :
 		const FColor* SrcPtr = &((FColor*)(RawData.GetData()))[(Height - 1 - y) * Width];
 		for (int32 x = 0; x < Width; x++)
 		{
@@ -376,6 +380,37 @@ UTexture2D* UTexturePaintToolset::CreateScratchUncompressedTexture(UTexture2D* S
 	return NewTexture2D;
 }
 
+// Keep old legacy method of initializing render target data for the paint brush texture; @todo MeshPaint: Migrate to the method with texture re-use
+void UTexturePaintToolset::SetupInitialRenderTargetData(UTexture2D* InTextureSource, UTextureRenderTarget2D* InRenderTarget)
+{
+	check(InTextureSource != nullptr);
+	check(InRenderTarget != nullptr);
+
+	if (InTextureSource->Source.IsValid())
+	{
+		// Great, we have source data!  We'll use that as our image source.
+
+		// Create a texture in memory from the source art
+		{
+			// @todo MeshPaint: This generates a lot of memory thrash -- try to cache this texture and reuse it?
+			UTexture2D* TempSourceArtTexture = CreateScratchUncompressedTexture(InTextureSource);
+			check(TempSourceArtTexture != nullptr);
+
+			// Copy the texture to the render target using the GPU
+			CopyTextureToRenderTargetTexture(TempSourceArtTexture, InRenderTarget, GEditor->GetEditorWorldContext().World()->GetFeatureLevel());
+
+			// NOTE: TempSourceArtTexture is no longer needed (will be GC'd)
+		}
+	}
+	else
+	{
+		// Just copy (render) the texture in GPU memory to our render target.  Hopefully it's not
+		// compressed already!
+		check(InTextureSource->IsFullyStreamedIn());
+		CopyTextureToRenderTargetTexture(InTextureSource, InRenderTarget, GEditor->GetEditorWorldContext().World()->GetFeatureLevel());
+	}
+}
+
 void UTexturePaintToolset::SetupInitialRenderTargetData(FPaintTexture2DData& PaintTextureData)
 {
 	check(PaintTextureData.PaintingTexture2D != nullptr);
@@ -394,7 +429,7 @@ void UTexturePaintToolset::SetupInitialRenderTargetData(FPaintTexture2DData& Pai
 				check(PaintTextureData.ScratchTexture != nullptr);
 
 				// Copy the texture to the render target using the GPU
-				CopyTextureToRenderTargetTexture(PaintTextureData.ScratchTexture, PaintTextureData.PaintRenderTargetTexture, GEditor->GetEditorWorldContext().World()->FeatureLevel);
+				CopyTextureToRenderTargetTexture(PaintTextureData.ScratchTexture, PaintTextureData.PaintRenderTargetTexture, GEditor->GetEditorWorldContext().World()->GetFeatureLevel());
 			}
 			
 			// No need to update the render target if the scratch texture exist the paint operations and the undo/redo keep the render target up to date
@@ -405,7 +440,7 @@ void UTexturePaintToolset::SetupInitialRenderTargetData(FPaintTexture2DData& Pai
 		// Just copy (render) the texture in GPU memory to our render target.  Hopefully it's not
 		// compressed already!
 		check(PaintTextureData.PaintingTexture2D->IsFullyStreamedIn());
-		CopyTextureToRenderTargetTexture(PaintTextureData.PaintingTexture2D, PaintTextureData.PaintRenderTargetTexture, GEditor->GetEditorWorldContext().World()->FeatureLevel);
+		CopyTextureToRenderTargetTexture(PaintTextureData.PaintingTexture2D, PaintTextureData.PaintRenderTargetTexture, GEditor->GetEditorWorldContext().World()->GetFeatureLevel());
 	}
 }
 
@@ -439,7 +474,7 @@ void UTexturePaintToolset::UpdateRenderTargetData(FPaintTexture2DData& PaintText
 	PaintTextureData.ScratchTexture->GetPlatformData()->Mips[0].BulkData.Unlock();
 	PaintTextureData.ScratchTexture->UpdateResource();
 
-	CopyTextureToRenderTargetTexture(PaintTextureData.ScratchTexture, PaintTextureData.PaintRenderTargetTexture, GEditor->GetEditorWorldContext().World()->FeatureLevel);
+	CopyTextureToRenderTargetTexture(PaintTextureData.ScratchTexture, PaintTextureData.PaintRenderTargetTexture, GEditor->GetEditorWorldContext().World()->GetFeatureLevel());
 }
 
 void UTexturePaintToolset::FindMaterialIndicesUsingTexture(const UTexture* Texture, const UMeshComponent* MeshComponent, TArray<int32>& OutIndices)

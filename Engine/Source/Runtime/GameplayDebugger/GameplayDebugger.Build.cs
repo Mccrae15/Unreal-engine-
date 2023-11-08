@@ -15,9 +15,8 @@ namespace UnrealBuildTool.Rules
 
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
-					"RenderCore",
 					"InputCore",
-					"SlateCore",
+					"RenderCore",
 					"Slate",
 					"DeveloperSettings",
 				});
@@ -27,20 +26,14 @@ namespace UnrealBuildTool.Rules
 				PrivateDependencyModuleNames.Add("DrawPrimitiveDebugger");
 			}
 
-			PrivateIncludePaths.AddRange(
-				new string[] {
-					"Developer/Settings/Public",
-				});
+			PrivateIncludePathModuleNames.Add("Settings");
 
 			if (Target.bBuildEditor)
 			{
 				PrivateDependencyModuleNames.AddRange(
 					new string[] {
-						
-						"EditorFramework",
-						"UnrealEd",
 						"LevelEditor",
-						"PropertyEditor",
+						"UnrealEd",
 					});
 			}
 

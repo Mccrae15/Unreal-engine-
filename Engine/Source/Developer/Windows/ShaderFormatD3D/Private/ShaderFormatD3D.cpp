@@ -11,25 +11,18 @@
 static FName NAME_PCD3D_SM6(TEXT("PCD3D_SM6"));
 static FName NAME_PCD3D_SM5(TEXT("PCD3D_SM5"));
 static FName NAME_PCD3D_ES3_1(TEXT("PCD3D_ES31"));
-static FName NAME_D3D_ES3_1_HOLOLENS(TEXT("D3D_ES3_1_HOLOLENS"));
 
-class FShaderFormatD3D : public IShaderFormat
+class FShaderFormatD3D : public UE::ShaderCompilerCommon::FBaseShaderFormat 
 {
 	enum EVersion
 	{
 		UE_SHADER_PCD3D_SHARED_VER = 5,
 
 		/** Version for shader format, this becomes part of the DDC key. */
-		UE_SHADER_PCD3D_SM6_VER = 7,
-		UE_SHADER_PCD3D_SM5_VER = 12,
+		UE_SHADER_PCD3D_SM6_VER = 8,
+		UE_SHADER_PCD3D_SM5_VER = 13,
 		UE_SHADER_PCD3D_ES3_1_VER = 8,
-		UE_SHADER_D3D_ES3_1_HOLOLENS_VER = UE_SHADER_PCD3D_ES3_1_VER,
 	};
-
-	void CheckFormat(FName Format) const
-	{
-		check(Format == NAME_PCD3D_SM6 || Format == NAME_PCD3D_SM5 || Format == NAME_PCD3D_ES3_1 || Format == NAME_D3D_ES3_1_HOLOLENS);
-	}
 
 	uint32 DxcVersionHash = 0;
 
@@ -46,13 +39,7 @@ public:
 		uint32 VersionHash = GetTypeHash(InVersion);
 
 	#if UE_D3D_SHADER_COMPILER_ALLOW_DEAD_CODE_REMOVAL
-		{
-			static const auto CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shader.RemoveDeadCode"));
-			if (CVar && CVar->GetInt() != 0)
-			{
-				VersionHash = HashCombine(VersionHash, 0x75E2FE85);
-			}
-		}
+		VersionHash = HashCombine(VersionHash, 0x75E2FE85);
 	#endif // UE_D3D_SHADER_COMPILER_ALLOW_DEAD_CODE_REMOVAL
 
 		return HashCombine(BaseHash, VersionHash);
@@ -60,7 +47,6 @@ public:
 
 	virtual uint32 GetVersion(FName Format) const override
 	{
-		CheckFormat(Format);
 		if (Format == NAME_PCD3D_SM6)
 		{
 			uint32 ShaderModelHash = GetVersionHash(UE_SHADER_PCD3D_SM6_VER);
@@ -90,11 +76,6 @@ public:
 			// Shader DXC signature is intentionally not included, as ES3_1 target always uses legacy compiler.
 			return GetVersionHash(UE_SHADER_PCD3D_ES3_1_VER);
 		}
-		else if (Format == NAME_D3D_ES3_1_HOLOLENS)
-		{
-			// Shader DXC signature is intentionally not included, as ES3_1 target always uses legacy compiler.
-			return GetVersionHash(UE_SHADER_D3D_ES3_1_HOLOLENS_VER);
-		}
 		checkf(0, TEXT("Unknown Format %s"), *Format.ToString());
 		return 0;
 	}
@@ -104,32 +85,46 @@ public:
 		OutFormats.Add(NAME_PCD3D_SM6);
 		OutFormats.Add(NAME_PCD3D_SM5);
 		OutFormats.Add(NAME_PCD3D_ES3_1);
-		OutFormats.Add(NAME_D3D_ES3_1_HOLOLENS);
 	}
 
-	virtual void CompileShader(FName Format, const struct FShaderCompilerInput& Input, struct FShaderCompilerOutput& Output,const FString& WorkingDirectory) const
+	ELanguage FormatToLanguage(FName Format) const
 	{
-		CheckFormat(Format);
 		if (Format == NAME_PCD3D_SM6)
 		{
-			CompileShader_Windows(Input, Output, WorkingDirectory, ELanguage::SM6);
+			return ELanguage::SM6;
 		}
-		else if(Format == NAME_PCD3D_SM5)
+		else if (Format == NAME_PCD3D_SM5)
 		{
-			CompileShader_Windows(Input, Output, WorkingDirectory, ELanguage::SM5);
+			return ELanguage::SM5;
 		}
 		else if (Format == NAME_PCD3D_ES3_1)
 		{
-			CompileShader_Windows(Input, Output, WorkingDirectory, ELanguage::ES3_1);
-		}
-		else if (Format == NAME_D3D_ES3_1_HOLOLENS)
-		{
-			CompileShader_Windows(Input, Output, WorkingDirectory, ELanguage::ES3_1);
+			return ELanguage::ES3_1;
 		}
 		else
 		{
 			checkf(0, TEXT("Unknown format %s"), *Format.ToString());
+			return ELanguage::Invalid;
 		}
+	}
+
+	virtual bool PreprocessShader(const struct FShaderCompilerInput& Input, const struct FShaderCompilerEnvironment& MergedEnvironment, class FShaderPreprocessOutput& PreprocessOutput) const
+	{
+		return PreprocessD3DShader(Input, MergedEnvironment, PreprocessOutput, FormatToLanguage(Input.ShaderFormat));
+	}
+
+	virtual void CompilePreprocessedShader(
+		const struct FShaderCompilerInput& Input, 
+		const class FShaderPreprocessOutput& PreprocessOutput, 
+		struct FShaderCompilerOutput& Output,
+		const FString& WorkingDirectory) const
+	{
+		CompileD3DShader(Input, PreprocessOutput, Output, WorkingDirectory, FormatToLanguage(Input.ShaderFormat));
+	}
+
+	virtual bool SupportsIndependentPreprocessing() const
+	{
+		return true;
 	}
 
 	void AddShaderTargetDefines(FShaderCompilerInput& Input, uint32 ShaderTargetMajor, uint32 ShaderTargetMinor) const
@@ -141,7 +136,6 @@ public:
 
 	void ModifyShaderCompilerInput(FShaderCompilerInput& Input) const final
 	{
-		CheckFormat(Input.ShaderFormat);
 		if (Input.ShaderFormat == NAME_PCD3D_SM6 || Input.IsRayTracingShader())
 		{
 			Input.Environment.SetDefine(TEXT("SM6_PROFILE"), 1);
@@ -175,13 +169,6 @@ public:
 			}
 		}
 		else if (Input.ShaderFormat == NAME_PCD3D_ES3_1)
-		{
-			Input.Environment.SetDefine(TEXT("ES3_1_PROFILE"), 1);
-			Input.Environment.SetDefine(TEXT("COMPILER_DXC"), 0);
-			Input.Environment.SetDefine(TEXT("__SHADER_TARGET_MAJOR"), 5);
-			Input.Environment.SetDefine(TEXT("__SHADER_TARGET_MINOR"), 0);
-		}
-		else if (Input.ShaderFormat == NAME_D3D_ES3_1_HOLOLENS)
 		{
 			Input.Environment.SetDefine(TEXT("ES3_1_PROFILE"), 1);
 			Input.Environment.SetDefine(TEXT("COMPILER_DXC"), 0);

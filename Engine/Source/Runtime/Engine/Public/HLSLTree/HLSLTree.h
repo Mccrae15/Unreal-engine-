@@ -136,17 +136,22 @@ private:
  * This is especially useful when dealing with struct types, which are internally represented as a flattened list of components of all fields.  In many cases only certain fields of a struct type will be relevant, which can be tracked by
  * setting the bits associated with those fields.
  */
-class ENGINE_API FRequestedType
+class FRequestedType
 {
 public:
 	FRequestedType() = default;
-	FRequestedType(const Shader::FType& InType, bool bDefaultRequest = true);
-	FRequestedType(const FRequestedType& InType, bool bDefaultRequest = true);
+	FRequestedType(FRequestedType&&) = default;
+	FRequestedType(const FRequestedType&) = default;
+	FRequestedType& operator=(FRequestedType&&) = default;
+	FRequestedType& operator=(const FRequestedType&) = default;
+
+	ENGINE_API FRequestedType(const Shader::FType& InType, bool bDefaultRequest = true);
+	ENGINE_API FRequestedType(const FRequestedType& InType, bool bDefaultRequest);
 	FRequestedType(Shader::EValueType InType, bool bDefaultRequest = true) : FRequestedType(Shader::FType(InType), bDefaultRequest) {}
 	FRequestedType(const Shader::FStructType* InType, bool bDefaultRequest = true) : FRequestedType(Shader::FType(InType), bDefaultRequest) {}
 	FRequestedType(const FName& InType, bool bDefaultRequest = true) : FRequestedType(Shader::FType(InType), bDefaultRequest) {}
 
-	Shader::EValueComponentType GetValueComponentType() const;
+	ENGINE_API Shader::EValueComponentType GetValueComponentType() const;
 
 	bool IsComponentRequested(int32 Index) const
 	{
@@ -167,20 +172,20 @@ public:
 	/** No requested components */
 	bool IsEmpty() const { return !Type.IsAny() && !RequestedComponents.Contains(true); }
 
-	void SetComponentRequest(int32 Index, bool bRequest = true);
+	ENGINE_API void SetComponentRequest(int32 Index, bool bRequest = true);
 
 	/** Marks the given field as requested (or not) */
-	void SetFieldRequested(const Shader::FStructField* Field, bool bRequest = true);
+	ENGINE_API void SetFieldRequested(const Shader::FStructField* Field, bool bRequest = true);
 	void ClearFieldRequested(const Shader::FStructField* Field)
 	{
 		SetFieldRequested(Field, false);
 	}
 
 	/** Marks the given field as requested, based on the input request type (which should match the field type) */
-	void SetFieldRequested(const Shader::FStructField* Field, const FRequestedType& InRequest);
+	ENGINE_API void SetFieldRequested(const Shader::FStructField* Field, const FRequestedType& InRequest);
 
 	/** Returns the requested type of the given field */
-	FRequestedType GetField(const Shader::FStructField* Field) const;
+	ENGINE_API FRequestedType GetField(const Shader::FStructField* Field) const;
 
 	/**
 	 * The actual type that was requested.  Specific componets of this type are requested by setting RequestedComponents
@@ -502,6 +507,8 @@ private:
 	friend class FTree;
 	friend class FEmitContext;
 	friend class FExpressionForward;
+	friend class FExpressionFunctionCall;
+	friend class FExpressionOperation;
 };
 
 /**
@@ -629,6 +636,7 @@ public:
 	const FExpression* NewSwizzle(const FSwizzleParameters& Params, const FExpression* Input);
 	const FExpression* NewUnaryOp(EOperation Op, const FExpression* Input);
 	const FExpression* NewBinaryOp(EOperation Op, const FExpression* Lhs, const FExpression* Rhs);
+	const FExpression* NewTernaryOp(EOperation Op, const FExpression* Input0, const FExpression* Input1, const FExpression* Input2);
 
 	const FExpression* NewAbs(const FExpression* Input) { return NewUnaryOp(EOperation::Abs, Input); }
 	const FExpression* NewNeg(const FExpression* Input) { return NewUnaryOp(EOperation::Neg, Input); }
@@ -638,6 +646,7 @@ public:
 	const FExpression* NewSqrt(const FExpression* Input) { return NewUnaryOp(EOperation::Sqrt, Input); }
 	const FExpression* NewRsqrt(const FExpression* Input) { return NewUnaryOp(EOperation::Rsqrt, Input); }
 	const FExpression* NewLog2(const FExpression* Input) { return NewUnaryOp(EOperation::Log2, Input); }
+	const FExpression* NewExp(const FExpression* Input) { return NewUnaryOp(EOperation::Exp, Input); }
 	const FExpression* NewExp2(const FExpression* Input) { return NewUnaryOp(EOperation::Exp2, Input); }
 	const FExpression* NewFrac(const FExpression* Input) { return NewUnaryOp(EOperation::Frac, Input); }
 	const FExpression* NewLength(const FExpression* Input) { return NewUnaryOp(EOperation::Length, Input); }
@@ -650,6 +659,7 @@ public:
 	const FExpression* NewMul(const FExpression* Lhs, const FExpression* Rhs) { return NewBinaryOp(EOperation::Mul, Lhs, Rhs); }
 	const FExpression* NewDiv(const FExpression* Lhs, const FExpression* Rhs) { return NewBinaryOp(EOperation::Div, Lhs, Rhs); }
 	const FExpression* NewFmod(const FExpression* Lhs, const FExpression* Rhs) { return NewBinaryOp(EOperation::Fmod, Lhs, Rhs); }
+	const FExpression* NewStep(const FExpression* Lhs, const FExpression* Rhs) { return NewBinaryOp(EOperation::Step, Lhs, Rhs); }
 	const FExpression* NewPowClamped(const FExpression* Lhs, const FExpression* Rhs) { return NewBinaryOp(EOperation::PowPositiveClamped, Lhs, Rhs); }
 	const FExpression* NewMin(const FExpression* Lhs, const FExpression* Rhs) { return NewBinaryOp(EOperation::Min, Lhs, Rhs); }
 	const FExpression* NewMax(const FExpression* Lhs, const FExpression* Rhs) { return NewBinaryOp(EOperation::Max, Lhs, Rhs); }
@@ -657,6 +667,8 @@ public:
 	const FExpression* NewGreater(const FExpression* Lhs, const FExpression* Rhs) { return NewBinaryOp(EOperation::Greater, Lhs, Rhs); }
 	const FExpression* NewLessEqual(const FExpression* Lhs, const FExpression* Rhs) { return NewBinaryOp(EOperation::LessEqual, Lhs, Rhs); }
 	const FExpression* NewGreaterEqual(const FExpression* Lhs, const FExpression* Rhs) { return NewBinaryOp(EOperation::GreaterEqual, Lhs, Rhs); }
+
+	const FExpression* NewSmoothStep(const FExpression* Input0, const FExpression* Input1, const FExpression* Input2) { return NewTernaryOp(EOperation::SmoothStep, Input0,	Input1, Input2); }
 
 	const FExpression* NewLog(const FExpression* Input);
 	const FExpression* NewPow2(const FExpression* Input) { return NewMul(Input, Input); }
@@ -688,6 +700,9 @@ private:
 	TArray<UObject*, TInlineAllocator<8>> OwnerStack;
 	TMap<FXxHash64, FExpression*> ExpressionMap;
 	TArray<FExpressionLocalPHI*> PHIExpressions;
+
+	TMap<const FExpression*, FExpressionDerivatives> ExpressionDerivativesMap;
+	TMap<FXxHash64, const FExpression*> PreviousFrameExpressionMap;
 
 	friend class FExpressionLocalPHI;
 };

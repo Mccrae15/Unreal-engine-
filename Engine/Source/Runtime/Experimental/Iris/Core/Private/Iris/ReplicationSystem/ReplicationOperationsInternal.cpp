@@ -1,7 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ReplicationOperationsInternal.h"
+
 #include "Iris/Core/IrisLog.h"
+#include "Iris/Core/IrisProfiler.h"
+
+#include "Net/Core/Trace/NetTrace.h"
+#include "Net/Core/Trace/NetDebugName.h"
+
 #include "Iris/ReplicationSystem/ChangeMaskCache.h"
 #include "Iris/ReplicationSystem/ChangeMaskUtil.h"
 #include "Iris/ReplicationSystem/NetRefHandleManager.h"
@@ -19,9 +25,18 @@
 #include "Iris/Serialization/NetSerializers.h"
 #include "Iris/Serialization/InternalNetSerializers.h"
 #include "Math/NumericLimits.h"
+#include "HAL/IConsoleManager.h"
+#include "Iris/Core/IrisProfiler.h"
+#include "Net/Core/Trace/NetDebugName.h"
 
 namespace UE::Net::Private
 {
+
+static bool bCVarForceFullCopyAndQuantize = false;
+static FAutoConsoleVariableRef CVarForceFullCopyAndQuantize(
+	TEXT("net.iris.ForceFullCopyAndQuantize"),
+	bCVarForceFullCopyAndQuantize,
+	TEXT("When enabled a full copy and quantize will be used, if disabled we will only copy and quantize dirty state data."));
 
 void FReplicationInstanceOperationsInternal::BindInstanceProtocol(FNetHandle NetHandle, FReplicationInstanceProtocol* InstanceProtocol, const FReplicationProtocol* Protocol)
 {
@@ -57,12 +72,19 @@ uint32 FReplicationInstanceOperationsInternal::CopyObjectStateData(FNetBitStream
 {
 	if (NetRefHandleManager.IsScopableIndex(InternalIndex))
 	{
-		const FNetRefHandleManager::FReplicatedObjectData& Object = NetRefHandleManager.GetReplicatedObjectDataNoCheck(InternalIndex);
+		FNetRefHandleManager::FReplicatedObjectData& Object = NetRefHandleManager.GetReplicatedObjectDataNoCheck(InternalIndex);
 
 		// We cannot copy state data for zero sized objects or objects that no longer has an instance protocol.
 		if (Object.InstanceProtocol && Object.Protocol->InternalTotalSize > 0U)
 		{
+			IRIS_PROFILER_PROTOCOL_NAME(Object.Protocol->DebugName->Name);
+
+			// if the object was scopable prev frame we can do partial copy
 			bool bShouldPropagateChangedStates = Object.bShouldPropagateChangedStates;
+
+			// We do a full CopyAndQunatize if the cvar bCVarForceFullCopyAndQuantize is set or that the object is marked as needing a FullCopyAndQuantize
+			const bool bUseFullCopyAndQuantize = bCVarForceFullCopyAndQuantize || Object.bNeedsFullCopyAndQuantize;
+			Object.bNeedsFullCopyAndQuantize = 0U;
 
 			// Copy dirty state
 			{
@@ -73,7 +95,14 @@ uint32 FReplicationInstanceOperationsInternal::CopyObjectStateData(FNetBitStream
 				ChangeMaskWriter.InitBytes(ChangeMaskData, ChangeMaskByteCount);
 
 				//UE_LOG(LogIris, Log, TEXT("Copying state data for ( InternalIndex: %u ) with NetRefHandle (Id=%u)"), InternalIndex, Object.RefHandle.GetId());
-				FReplicationInstanceOperations::CopyAndQuantize(SerializationContext, NetRefHandleManager.GetReplicatedObjectStateBufferNoCheck(InternalIndex), &ChangeMaskWriter, Object.InstanceProtocol, Object.Protocol);
+				if (bUseFullCopyAndQuantize)
+				{
+					FReplicationInstanceOperations::CopyAndQuantize(SerializationContext, NetRefHandleManager.GetReplicatedObjectStateBufferNoCheck(InternalIndex), &ChangeMaskWriter, Object.InstanceProtocol, Object.Protocol);					
+				}
+				else
+				{
+					FReplicationInstanceOperations::CopyAndQuantizeIfDirty(SerializationContext, NetRefHandleManager.GetReplicatedObjectStateBufferNoCheck(InternalIndex), &ChangeMaskWriter, Object.InstanceProtocol, Object.Protocol);
+				}
 
 				Info.bHasDirtyChangeMask = MakeNetBitArrayView(ChangeMaskData, ChangeMaskByteCount * 8U).FindFirstOne() != FNetBitArrayView::InvalidIndex;
 			}
@@ -82,8 +111,8 @@ uint32 FReplicationInstanceOperationsInternal::CopyObjectStateData(FNetBitStream
 			if (const uint32 SubObjectOwnerIndex = Object.SubObjectRootIndex)
 			{
 				const bool bIsOwnerScopable = NetRefHandleManager.IsScopableIndex(SubObjectOwnerIndex);
-				// Dependent objects should not ensure if the owner isn't scopable.
-				ensureMsgf(bIsOwnerScopable || Object.IsDependentObject(), TEXT("SubObject ( InternaIndex: %u ) with NetRefHandle (Id=%u) is trying to dirty parent ( InternalIndex: %u ) not in scope."), InternalIndex, Object.RefHandle.GetId(), SubObjectOwnerIndex);
+				// Dependent objects should not ensure if the owner isn't scopable. Subobjects pending tear off is ok too.
+				ensureAlwaysMsgf(bIsOwnerScopable || Object.IsDependentObject() || Object.bTearOff, TEXT("SubObject ( InternaIndex: %u ) with NetRefHandle (Id=%u) is trying to dirty parent ( InternalIndex: %u ) not in scope."), InternalIndex, Object.RefHandle.GetId(), SubObjectOwnerIndex);
 				if (bIsOwnerScopable)
 				{
 					// Do we want to control this separately for subobjects? Or should they respect the setting on the owner?

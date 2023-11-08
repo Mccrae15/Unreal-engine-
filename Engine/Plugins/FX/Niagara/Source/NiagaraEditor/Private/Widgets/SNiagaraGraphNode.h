@@ -22,10 +22,28 @@ public:
 	virtual void CreateInputSideAddButton(TSharedPtr<SVerticalBox> InputBox) override;
 	virtual void CreateOutputSideAddButton(TSharedPtr<SVerticalBox> OutputBox) override;
 	virtual void UpdateErrorInfo() override;
+	virtual void CreatePinWidgets() override;
+	virtual TSharedRef<SWidget> CreateTitleRightWidget() override;
 
 protected:
+	void UpdateGraphNodeCompact();
+	virtual bool ShouldDrawCompact() const { return CompactTitle.IsEmpty() == false; }
+	
+	FText GetNodeCompactTitle() const { return CompactTitle; }
+	/** To allow customization of the node title font size */
+	TAttribute<FSlateFontInfo> GetCompactNodeTitleFont();
+
+	void LoadCachedIcons();
+
 	void RegisterNiagaraGraphNode(UEdGraphNode* InNode);
 	void HandleNiagaraNodeChanged(UNiagaraNode* InNode);
 	TWeakObjectPtr<UNiagaraNode> NiagaraNode;
 	FGuid LastSyncedNodeChangeId;
+	
+	FText CompactTitle;
+	bool bShowPinNamesInCompactMode = false;
+	TOptional<float> CompactNodeTitleFontSizeOverride;
+	
+	static const FSlateBrush* CachedOuterIcon;
+	static const FSlateBrush* CachedInnerIcon;
 };

@@ -13,11 +13,17 @@
 
 extern ENGINE_API bool GRuntimeSpatialHashUseAlignedGridLevels;
 extern ENGINE_API bool GRuntimeSpatialHashSnapNonAlignedGridLevelsToLowerLevels;
+extern ENGINE_API bool GRuntimeSpatialHashPlaceSmallActorsUsingLocation;
+extern ENGINE_API bool GRuntimeSpatialHashPlacePartitionActorsUsingLocation;
+extern ENGINE_API bool GRuntimeSpatialHashUseAlignedGridLevelsEffective;
+extern ENGINE_API bool GRuntimeSpatialHashSnapNonAlignedGridLevelsToLowerLevelsEffective;
+extern ENGINE_API bool GRuntimeSpatialHashPlaceSmallActorsUsingLocationEffective;
+extern ENGINE_API bool GRuntimeSpatialHashPlacePartitionActorsUsingLocationEffective;
 
 /**
   * Square 2D grid helper
   */
-struct ENGINE_API FSquare2DGridHelper
+struct FSquare2DGridHelper
 {
 	struct FGrid2D
 	{
@@ -285,6 +291,7 @@ struct ENGINE_API FSquare2DGridHelper
 			FDataLayersID DataLayersID;
 			FGuid ContentBundleID;
 		};
+#endif
 
 		struct FGridCell
 		{
@@ -292,6 +299,7 @@ struct ENGINE_API FSquare2DGridHelper
 				: Coords(InCoords)
 			{}
 
+#if WITH_EDITOR
 			void AddActorSetInstance(const IStreamingGenerationContext::FActorSetInstance* ActorSetInstance)
 			{
 				const FDataLayersID DataLayersID = FDataLayersID(ActorSetInstance->DataLayers);
@@ -315,6 +323,7 @@ struct ENGINE_API FSquare2DGridHelper
 				}
 				return nullptr;
 			}
+#endif
 
 			FGridCellCoord GetCoords() const
 			{
@@ -323,18 +332,16 @@ struct ENGINE_API FSquare2DGridHelper
 
 		private:
 			FGridCellCoord Coords;
+#if WITH_EDITOR
 			TSet<FGridCellDataChunk> DataChunks;
-		};
 #endif
+		};
 
 		inline FGridLevel(const FVector2D& InOrigin, int64 InCellSize, int64 InGridSize, int32 InLevel)
 			: FGrid2D(InOrigin, InCellSize, InGridSize)
-#if WITH_EDITOR
 			, Level(InLevel)
-#endif
 		{}
 
-#if WITH_EDITOR
 		/**
 		 * Returns the cell at the specified grid coordinate
 		 *
@@ -384,12 +391,10 @@ struct ENGINE_API FSquare2DGridHelper
 		int32 Level;
 		TArray<FGridCell> Cells;
 		TMap<int64, int64> CellsMapping;
-#endif
 	};
 
-	FSquare2DGridHelper(const FBox& InWorldBounds, const FVector& InOrigin, int64 InCellSize);
+	ENGINE_API FSquare2DGridHelper(const FBox& InWorldBounds, const FVector& InOrigin, int64 InCellSize);
 
-#if WITH_EDITOR
 	// Returns the lowest grid level
 	inline FGridLevel& GetLowestLevel() { return Levels[0]; }
 
@@ -401,7 +406,6 @@ struct ENGINE_API FSquare2DGridHelper
 
 	// Returns the cell at the given coord
 	inline const FGridLevel::FGridCell& GetCell(const FGridCellCoord& InCoords) const { return Levels[InCoords.Z].GetCell(FGridCellCoord2(InCoords.X, InCoords.Y)); }
-#endif
 
 	/**
 	 * Returns the cell bounds
@@ -439,31 +443,29 @@ struct ENGINE_API FSquare2DGridHelper
 		return false;
 	}
 
-#if WITH_EDITOR
 	// Runs a function on all cells
-	void ForEachCells(TFunctionRef<void(const FSquare2DGridHelper::FGridLevel::FGridCell&)> InOperation) const;
-#endif
+	ENGINE_API void ForEachCells(TFunctionRef<void(const FSquare2DGridHelper::FGridLevel::FGridCell&)> InOperation) const;
 
 	/**
 	 * Runs a function on all intersecting cells for the provided box
 	 *
 	 * @return the number of intersecting cells
 	 */
-	int32 ForEachIntersectingCells(const FBox& InBox, TFunctionRef<void(const FGridCellCoord&)> InOperation, int32 InStartLevel = 0) const;
+	ENGINE_API int32 ForEachIntersectingCells(const FBox& InBox, TFunctionRef<void(const FGridCellCoord&)> InOperation, int32 InStartLevel = 0) const;
 
 	/**
 	 * Runs a function on all intersecting cells for the provided sphere
 	 *
 	 * @return the number of intersecting cells
 	 */
-	int32 ForEachIntersectingCells(const FSphere& InSphere, TFunctionRef<void(const FGridCellCoord&)> InOperation, int32 InStartLevel = 0) const;
+	ENGINE_API int32 ForEachIntersectingCells(const FSphere& InSphere, TFunctionRef<void(const FGridCellCoord&)> InOperation, int32 InStartLevel = 0) const;
 
 	/**
 	 * Runs a function on all intersecting cells for the provided spherical sector
 	 *
 	 * @return the number of intersecting cells
 	 */
-	int32 ForEachIntersectingCells(const FSphericalSector& InShape, TFunctionRef<void(const FGridCellCoord&)> InOperation, int32 InStartLevel = 0) const;
+	ENGINE_API int32 ForEachIntersectingCells(const FSphericalSector& InShape, TFunctionRef<void(const FGridCellCoord&)> InOperation, int32 InStartLevel = 0) const;
 
 public:
 	FBox WorldBounds;
@@ -473,6 +475,6 @@ public:
 };
 
 #if WITH_EDITOR
-FSquare2DGridHelper GetGridHelper(const FBox& WorldBounds, int64 GridCellSize);
+FSquare2DGridHelper GetGridHelper(const FBox& WorldBounds, const FVector& GridOrigin, int64 GridCellSize);
 FSquare2DGridHelper GetPartitionedActors(const FBox& WorldBounds, const FSpatialHashRuntimeGrid& Grid, const TArray<const IStreamingGenerationContext::FActorSetInstance*>& ActorSetInstances);
 #endif // #if WITH_EDITOR

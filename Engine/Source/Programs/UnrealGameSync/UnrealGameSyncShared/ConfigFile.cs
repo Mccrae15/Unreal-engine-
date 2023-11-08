@@ -20,7 +20,7 @@ namespace UnrealGameSync
 	{
 		const string ConfigSeparatorCharacters = "(),= \t\"";
 
-		public List<KeyValuePair<string, string>> Pairs;
+		public List<KeyValuePair<string, string>> Pairs { get; }
 
 		public ConfigObject()
 		{
@@ -115,14 +115,14 @@ namespace UnrealGameSync
 				}
 				return token.ToString();
 			}
-			else if (ConfigSeparatorCharacters.IndexOf(text[idx]) != -1)
+			else if (ConfigSeparatorCharacters.IndexOf(text[idx], StringComparison.Ordinal) != -1)
 			{
 				return text[idx++].ToString();
 			}
 			else
 			{
 				int startIdx = idx;
-				while (idx < text.Length && ConfigSeparatorCharacters.IndexOf(text[idx]) == -1)
+				while (idx < text.Length && !ConfigSeparatorCharacters.Contains(text[idx], StringComparison.Ordinal))
 				{
 					idx++;
 				}
@@ -154,7 +154,7 @@ namespace UnrealGameSync
 		{
 			for(int idx = 0; idx < Pairs.Count; idx++)
 			{
-				if(Pairs[idx].Key.Equals(key, StringComparison.InvariantCultureIgnoreCase))
+				if(Pairs[idx].Key.Equals(key, StringComparison.OrdinalIgnoreCase))
 				{
 					return Pairs[idx].Value;
 				}
@@ -182,7 +182,7 @@ namespace UnrealGameSync
 			if(stringValue != null)
 			{
 				int value;
-				if(int.TryParse(stringValue, out value))
+				if(Int32.TryParse(stringValue, out value))
 				{
 					return value;
 				}
@@ -196,7 +196,7 @@ namespace UnrealGameSync
 			if(stringValue != null)
 			{
 				bool value;
-				if(bool.TryParse(stringValue, out value))
+				if(Boolean.TryParse(stringValue, out value))
 				{
 					return value;
 				}
@@ -241,8 +241,8 @@ namespace UnrealGameSync
 
 		public string? this[string key]
 		{
-			get { return GetValue(key); }
-			set { SetValue(key, value); }
+			get => GetValue(key);
+			set => SetValue(key, value);
 		}
 
 		public void SetDefaults(ConfigObject other)
@@ -270,7 +270,7 @@ namespace UnrealGameSync
 		public string ToString(ConfigObject? baseObject)
 		{
 			StringBuilder result = new StringBuilder();
-			result.Append("(");
+			result.Append('(');
 			foreach(KeyValuePair<string, string> pair in Pairs)
 			{
 				if(baseObject == null || baseObject.GetValue(pair.Key) != pair.Value)
@@ -280,18 +280,18 @@ namespace UnrealGameSync
 						result.Append(", ");
 					}
 					result.Append(pair.Key);
-					result.Append("=");
+					result.Append('=');
 					if(pair.Value == null)
 					{
 						result.Append("\"\"");
 					}
 					else
 					{
-						result.AppendFormat("\"{0}\"", pair.Value.Replace("\\", "\\\\").Replace("\"", "\\\""));
+						result.AppendFormat("\"{0}\"", pair.Value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal));
 					}
 				}
 			}
-			result.Append(")");
+			result.Append(')');
 			return result.ToString();
 		}
  
@@ -337,8 +337,8 @@ namespace UnrealGameSync
 	[DebuggerDisplay("{Name}")]
 	public class ConfigSection
 	{
-		public string Name;
-		public Dictionary<string, string> Pairs = new Dictionary<string,string>();
+		public string Name { get; set; }
+		public Dictionary<string, string> Pairs { get; } = new Dictionary<string, string>();
 
 		public ConfigSection(string inName)
 		{
@@ -351,6 +351,11 @@ namespace UnrealGameSync
 		}
 
 		public void SetValue(string key, int value)
+		{
+			Pairs[key] = value.ToString();
+		}
+
+		public void SetValue(string key, long value)
 		{
 			Pairs[key] = value.ToString();
 		}
@@ -414,13 +419,29 @@ namespace UnrealGameSync
 			Pairs.Remove(key);
 		}
 
-		public int GetValue(string key, int defaultValue)
+		public int GetValue(string key, int defaultValue) => GetOptionalIntValue(key, defaultValue) ?? defaultValue;
+
+		public int? GetOptionalIntValue(string key, int? defaultValue)
 		{
 			string? valueString = GetValue(key);
 			if(valueString != null)
 			{
 				int value;
-				if(int.TryParse(valueString, out value))
+				if(Int32.TryParse(valueString, out value))
+				{
+					return value;
+				}
+			}
+			return defaultValue;
+		}
+
+		public long GetValue(string key, long defaultValue)
+		{
+			string? valueString = GetValue(key);
+			if (valueString != null)
+			{
+				long value;
+				if (Int64.TryParse(valueString, out value))
 				{
 					return value;
 				}
@@ -442,6 +463,16 @@ namespace UnrealGameSync
 				value = defaultValue;
 			}
 			return value;
+		}
+
+		public TEnum GetEnumValue<TEnum>(string key, TEnum defaultValue) where TEnum : struct
+		{
+			string? str = GetValue(key, null);
+			if (str != null && Enum.TryParse(str, true, out TEnum value))
+			{
+				return value;
+			}
+			return defaultValue;
 		}
 
 		[return: NotNullIfNotNull("defaultValue")]
@@ -483,13 +514,13 @@ namespace UnrealGameSync
 
 	public class ConfigFile
 	{
-		List<ConfigSection> _sections = new List<ConfigSection>();
+		readonly List<ConfigSection> _sections = new List<ConfigSection>();
 
 		public ConfigFile()
 		{
 		}
 
-		FileReference GetTempFileName(FileReference fileName)
+		static FileReference GetTempFileName(FileReference fileName)
 		{
 			return fileName + ".tmp";
 		}
@@ -529,20 +560,20 @@ namespace UnrealGameSync
 			foreach(string line in lines)
 			{
 				string trimLine = line.Trim();
-				if(!trimLine.StartsWith(";"))
+				if(!trimLine.StartsWith(";", StringComparison.Ordinal))
 				{
-					if(trimLine.StartsWith("[") && trimLine.EndsWith("]"))
+					if(trimLine.StartsWith("[", StringComparison.Ordinal) && trimLine.EndsWith("]", StringComparison.Ordinal))
 					{
 						string sectionName = trimLine.Substring(1, trimLine.Length - 2).Trim();
 						currentSection = FindOrAddSection(sectionName);
 					}
 					else if(currentSection != null)
 					{
-						int equalsIdx = trimLine.IndexOf('=');
+						int equalsIdx = trimLine.IndexOf('=', StringComparison.Ordinal);
 						if(equalsIdx != -1)
 						{
 							string value = line.Substring(equalsIdx + 1).TrimStart();
-							if(trimLine.StartsWith("+"))
+							if(trimLine.StartsWith("+", StringComparison.Ordinal))
 							{
 								currentSection.AppendValue(trimLine.Substring(1, equalsIdx - 1).Trim(), value);
 							}
@@ -568,7 +599,7 @@ namespace UnrealGameSync
 					writer.WriteLine("[{0}]", _sections[idx].Name);
 					foreach(KeyValuePair<string, string> pair in _sections[idx].Pairs)
 					{
-						if(pair.Value.Contains('\n'))
+						if(pair.Value.Contains('\n', StringComparison.Ordinal))
 						{
 							foreach(string line in pair.Value.Split('\n'))
 							{
@@ -591,14 +622,14 @@ namespace UnrealGameSync
 			FileReference.Move(tempFileName, fileName);
 		}
 
-		public ConfigSection FindSection(string name)
+		public ConfigSection? FindSection(string name)
 		{
-			return _sections.FirstOrDefault(x => String.Compare(x.Name, name, true) == 0);
+			return _sections.FirstOrDefault(x => String.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase));
 		}
 
 		public ConfigSection FindOrAddSection(string name)
 		{
-			ConfigSection section = FindSection(name);
+			ConfigSection? section = FindSection(name);
 			if(section == null)
 			{
 				section = new ConfigSection(name);
@@ -607,69 +638,92 @@ namespace UnrealGameSync
 			return section;
 		}
 
+		public void RemoveSection(string name)
+		{
+			ConfigSection? section = FindSection(name);
+			if (section != null)
+			{
+				_sections.Remove(section);
+			}
+		}
+
 		public void SetValue(string key, int value)
 		{
-			int dotIdx = key.IndexOf('.');
+			int dotIdx = key.IndexOf('.', StringComparison.Ordinal);
 			ConfigSection section = FindOrAddSection(key.Substring(0, dotIdx));
 			section.SetValue(key.Substring(dotIdx + 1), value);
 		}
 
 		public void SetValue(string key, bool value)
 		{
-			int dotIdx = key.IndexOf('.');
+			int dotIdx = key.IndexOf('.', StringComparison.Ordinal);
 			ConfigSection section = FindOrAddSection(key.Substring(0, dotIdx));
 			section.SetValue(key.Substring(dotIdx + 1), value);
 		}
 
 		public void SetValue(string key, string value)
 		{
-			int dotIdx = key.IndexOf('.');
+			int dotIdx = key.IndexOf('.', StringComparison.Ordinal);
 			ConfigSection section = FindOrAddSection(key.Substring(0, dotIdx));
 			section.SetValue(key.Substring(dotIdx + 1), value);
 		}
 
 		public void SetValues(string key, string[] values)
 		{
-			int dotIdx = key.IndexOf('.');
+			int dotIdx = key.IndexOf('.', StringComparison.Ordinal);
 			ConfigSection section = FindOrAddSection(key.Substring(0, dotIdx));
 			section.SetValues(key.Substring(dotIdx + 1), values);
 		}
 
 		public bool GetValue(string key, bool defaultValue)
 		{
-			int dotIdx = key.IndexOf('.');
-			ConfigSection section = FindSection(key.Substring(0, dotIdx));
+			int dotIdx = key.IndexOf('.', StringComparison.Ordinal);
+			ConfigSection? section = FindSection(key.Substring(0, dotIdx));
 			return (section == null)? defaultValue : section.GetValue(key.Substring(dotIdx + 1), defaultValue);
 		}
 
 		public int GetValue(string key, int defaultValue)
 		{
-			int dotIdx = key.IndexOf('.');
-			ConfigSection section = FindSection(key.Substring(0, dotIdx));
+			int dotIdx = key.IndexOf('.', StringComparison.Ordinal);
+			ConfigSection? section = FindSection(key.Substring(0, dotIdx));
 			return (section == null)? defaultValue : section.GetValue(key.Substring(dotIdx + 1), defaultValue);
+		}
+
+		public int? GetOptionalIntValue(string key, int? defaultValue)
+		{
+			int dotIdx = key.IndexOf('.', StringComparison.Ordinal);
+			ConfigSection? section = FindSection(key.Substring(0, dotIdx));
+			return (section == null) ? defaultValue : section.GetOptionalIntValue(key.Substring(dotIdx + 1), defaultValue);
 		}
 
 		[return: NotNullIfNotNull("defaultValue")]
 		public string? GetValue(string key, string? defaultValue)
 		{
-			int dotIdx = key.IndexOf('.');
-			ConfigSection section = FindSection(key.Substring(0, dotIdx));
+			int dotIdx = key.IndexOf('.', StringComparison.Ordinal);
+			ConfigSection? section = FindSection(key.Substring(0, dotIdx));
 			return (section == null)? defaultValue : section.GetValue(key.Substring(dotIdx + 1), defaultValue);
+		}
+
+		public TEnum GetEnumValue<TEnum>(string key, TEnum defaultValue) where TEnum : struct
+		{
+			int dotIdx = key.IndexOf('.', StringComparison.Ordinal);
+			ConfigSection? section = FindSection(key.Substring(0, dotIdx));
+			return (section == null) ? defaultValue : section.GetEnumValue(key.Substring(dotIdx + 1), defaultValue);
 		}
 
 		[return: NotNullIfNotNull("defaultValue")]
 		public string[]? GetValues(string key, string[]? defaultValue)
 		{
-			int dotIdx = key.IndexOf('.');
-			ConfigSection section = FindSection(key.Substring(0, dotIdx));
+			int dotIdx = key.IndexOf('.', StringComparison.Ordinal);
+			ConfigSection? section = FindSection(key.Substring(0, dotIdx));
 			return (section == null)? defaultValue : section.GetValues(key.Substring(dotIdx + 1), defaultValue);
 		}
 
 		[return: NotNullIfNotNull("defaultValue")]
 		public Guid[]? GetGuidValues(string key, Guid[]? defaultValue)
 		{
-			int dotIdx = key.IndexOf('.');
-			ConfigSection section = FindSection(key.Substring(0, dotIdx));
+			int dotIdx = key.IndexOf('.', StringComparison.Ordinal);
+			ConfigSection? section = FindSection(key.Substring(0, dotIdx));
 			return (section == null)? defaultValue : section.GetValues(key.Substring(dotIdx + 1), defaultValue);
 		}
 	}

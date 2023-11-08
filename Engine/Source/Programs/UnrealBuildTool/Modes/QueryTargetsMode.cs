@@ -3,11 +3,10 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 using EpicGames.Core;
-using UnrealBuildBase;
 using Microsoft.Extensions.Logging;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -34,14 +33,14 @@ namespace UnrealBuildTool
 		/// </summary>
 		[CommandLine("-IncludeAllTargets")]
 		bool bIncludeAllTargets = false;
-		
+
 		/// <summary>
 		/// Execute the mode
 		/// </summary>
 		/// <param name="Arguments">Command line arguments</param>
 		/// <returns></returns>
 		/// <param name="Logger"></param>
-		public override int Execute(CommandLineArguments Arguments, ILogger Logger)
+		public override Task<int> ExecuteAsync(CommandLineArguments Arguments, ILogger Logger)
 		{
 			Arguments.ApplyTo(this);
 
@@ -51,7 +50,7 @@ namespace UnrealBuildTool
 			Arguments.ApplyTo(BuildConfiguration);
 
 			// Ensure the path to the output file is valid
-			if(OutputFile == null)
+			if (OutputFile == null)
 			{
 				OutputFile = GetDefaultOutputFile(ProjectFile);
 			}
@@ -70,7 +69,7 @@ namespace UnrealBuildTool
 			// Write information about these targets
 			WriteTargetInfo(ProjectFile, Assembly, OutputFile, Arguments, Logger, bIncludeAllTargets);
 			Logger.LogInformation("Written {OutputFile}", OutputFile);
-			return 0;
+			return Task.FromResult(0);
 		}
 
 		/// <summary>
@@ -114,8 +113,8 @@ namespace UnrealBuildTool
 				foreach (string TargetName in TargetNames)
 				{
 					// skip target rules that are platform extension or platform group specializations
-					string[] TargetPathSplit = TargetName.Split(new char[]{'_'}, StringSplitOptions.RemoveEmptyEntries );
-					if (TargetPathSplit.Length > 1 && (UnrealTargetPlatform.IsValidName(TargetPathSplit.Last()) || UnrealPlatformGroup.IsValidName(TargetPathSplit.Last()) ) )
+					string[] TargetPathSplit = TargetName.Split(new char[] { '_' }, StringSplitOptions.RemoveEmptyEntries);
+					if (TargetPathSplit.Length > 1 && (UnrealTargetPlatform.IsValidName(TargetPathSplit.Last()) || UnrealPlatformGroup.IsValidName(TargetPathSplit.Last())))
 					{
 						continue;
 					}
@@ -133,22 +132,42 @@ namespace UnrealBuildTool
 						Logger.LogDebug("{Ex}", ExceptionUtils.FormatException(Ex));
 						continue;
 					}
-					
-					// Skip non-default targets if one is specified.
-					if (ProjectFile != null && !bIncludeAllTargets)
+
+					// Is this a default target?
+					bool? bIsDefaultTarget = null;
+					if (ProjectFile != null)
 					{
 						string? DefaultTargetName = ProjectFileGenerator.GetProjectDefaultTargetNameForType(ProjectFile.Directory, TargetRules.Type);
-						if (DefaultTargetName != null && DefaultTargetName != TargetName)
+						
+						// GetProjectDefaultTargetNameForType returns
+						if (DefaultTargetName != null)
 						{
-							continue;
+							bIsDefaultTarget = DefaultTargetName == TargetName;   
 						}
 					}
-					
+
+					// If we don't want all targets, skip over non-defaults.
+					if (!bIncludeAllTargets && bIsDefaultTarget.HasValue && !bIsDefaultTarget.Value)
+					{
+						continue;
+					}
+
+					// Get the path to the target
+					FileReference? path = Assembly.GetTargetFileName(TargetName);
+
 					// Write the target info
 					Writer.WriteObjectStart();
 					Writer.WriteValue("Name", TargetName);
-					Writer.WriteValue("Path", Assembly.GetTargetFileName(TargetName)?.ToString());
+					if (path != null)
+					{
+						Writer.WriteValue("Path", path.MakeRelativeTo(OutputFile.Directory));
+					}
 					Writer.WriteValue("Type", TargetRules.Type.ToString());
+
+					if (bIncludeAllTargets && bIsDefaultTarget.HasValue)
+					{
+						Writer.WriteValue("DefaultTarget", bIsDefaultTarget.Value);
+					}
 					Writer.WriteObjectEnd();
 				}
 				Writer.WriteArrayEnd();

@@ -23,19 +23,10 @@ namespace UnrealBuildTool.Rules
 
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
-					"Core",
-					"CoreUObject",
-					"Engine",
 					"Media",
 					"MediaAssets",
 					"RenderCore",
 					"RHI",
-				});
-
-			PrivateIncludePaths.AddRange(
-				new string[] {
-					"MediaCompositing/Private",
-					"MediaCompositing/Private/MovieScene",
 				});
 		}
 	}

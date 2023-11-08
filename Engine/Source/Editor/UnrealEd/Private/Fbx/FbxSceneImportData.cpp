@@ -1,11 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Factories/FbxSceneImportData.h"
-#include "Serialization/JsonReader.h"
-#include "Serialization/JsonSerializer.h"
+
+#include "EditorFramework/AssetImportData.h"
 #include "Factories/FbxSceneImportOptions.h"
 #include "FbxImporter.h"
-
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 
 UFbxSceneImportData::UFbxSceneImportData(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -118,8 +119,10 @@ UnFbx::FBXImportOptions *JSONToFbxOption(TSharedPtr<FJsonValue> OptionJsonValue,
 	//OptionObj->TryGetBoolField("bUseT0AsRefPose", Option->bUseT0AsRefPose);
 	Option->bUseT0AsRefPose = false;
 	OptionObj->TryGetBoolField("bPreserveSmoothingGroups", Option->bPreserveSmoothingGroups);
+	OptionObj->TryGetBoolField("bKeepSectionsSeparate", Option->bKeepSectionsSeparate);
 	OptionObj->TryGetBoolField("bImportMeshesInBoneHierarchy", Option->bImportMeshesInBoneHierarchy);
 	OptionObj->TryGetBoolField("bImportMorphTargets", Option->bImportMorph);
+	OptionObj->TryGetBoolField("bImportVertexAttributes", Option->bImportVertexAttributes);
 	
 	if (OptionObj->TryGetObjectField("OverlappingThresholds", DataObj))
 	{
@@ -202,13 +205,14 @@ FString FbxOptionToJSON(FString OptionName, UnFbx::FBXImportOptions *Option)
 		Option->bImportStaticMeshLODs ? 1 : 0
 		);
 
-	//Skeletal mesh options
-	JsonString += FString::Printf(TEXT("\"bUpdateSkeletonReferencePose\" : \"%d\", \"bUseT0AsRefPose\" : \"%d\", \"bPreserveSmoothingGroups\" : \"%d\", \"bImportMeshesInBoneHierarchy\" : \"%d\", \"bImportMorphTargets\" : \"%d\", \"OverlappingThresholds\" : {\"ThresholdPosition\" : \"%f\", \"ThresholdTangentNormal\" : \"%f\", \"ThresholdUV\" : \"%f\", \"MorphThresholdPosition\" : \"%f\"},"),
+	JsonString += FString::Printf(TEXT("\"bUpdateSkeletonReferencePose\" : \"%d\", \"bUseT0AsRefPose\" : \"%d\", \"bPreserveSmoothingGroups\" : \"%d\", \"bKeepSectionsSeparate\" : \"%d\", \"bImportMeshesInBoneHierarchy\" : \"%d\", \"bImportMorphTargets\" : \"%d\", , \"bImportVertexAttributes\" : \"%d\", \"OverlappingThresholds\" : {\"ThresholdPosition\" : \"%f\", \"ThresholdTangentNormal\" : \"%f\", \"ThresholdUV\" : \"%f\", \"MorphThresholdPosition\" : \"%f\"},"),
 		Option->bUpdateSkeletonReferencePose ? 1 : 0,
 		Option->bUseT0AsRefPose ? 1 : 0,
 		Option->bPreserveSmoothingGroups ? 1 : 0,
+		Option->bKeepSectionsSeparate ? 1 : 0,
 		Option->bImportMeshesInBoneHierarchy ? 1 : 0,
 		Option->bImportMorph ? 1 : 0,
+		Option->bImportVertexAttributes ? 1 : 0,
 		Option->OverlappingThresholds.ThresholdPosition,
 		Option->OverlappingThresholds.ThresholdTangentNormal,
 		Option->OverlappingThresholds.ThresholdUV,
@@ -561,6 +565,15 @@ void UFbxSceneImportData::FromJson(FString InJsonString)
 			}
 		}
 	}
+}
+
+void UFbxSceneImportData::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
+{
+	FAssetImportInfo AssetImportInfo;
+	FAssetImportInfo::FSourceFile SourceFile(SourceFbxFile);
+	AssetImportInfo.Insert(SourceFile);
+	OutTags.Add(FAssetRegistryTag(SourceFileTagName(), AssetImportInfo.ToJson(), FAssetRegistryTag::TT_Hidden));
+	Super::GetAssetRegistryTags(OutTags);
 }
 
 void UFbxSceneImportData::Serialize(FArchive& Ar)

@@ -23,7 +23,7 @@ public:
 		};
 
 		UE_DEPRECATED(all, "For internal use only")
-			double XYZ[3];
+		double XYZ[3];
 	};
 
 public:
@@ -57,16 +57,16 @@ public:
 
 	constexpr double& operator[](int32 Index)
 	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			return XYZ[Index];
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return XYZ[Index];
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	constexpr double operator[](int32 Index) const
 	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			return XYZ[Index];
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return XYZ[Index];
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	bool operator==(const FPoint& Point) const
@@ -390,7 +390,7 @@ public:
 		};
 
 		UE_DEPRECATED(all, "For internal use only")
-			double XYZW[4];
+		double XYZW[4];
 	};
 
 public:
@@ -425,16 +425,16 @@ public:
 
 	constexpr double& operator[](int32 Index)
 	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			return XYZW[Index];
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return XYZW[Index];
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	constexpr double operator[](int32 Index) const
 	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			return XYZW[Index];
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return XYZW[Index];
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	FPointH operator+(const FPointH& Point) const
@@ -467,8 +467,18 @@ public:
 class CADKERNEL_API FPoint2D
 {
 public:
-	double U;
-	double V;
+	union
+	{
+		struct
+		{
+			double U;
+			double V;
+		};
+
+		UE_DEPRECATED(all, "For internal use only")
+		double UV[2];
+	};
+
 
 public:
 
@@ -519,7 +529,7 @@ public:
 
 	double Distance(const FPoint2D& Point) const
 	{
-		return FMath::Sqrt(FMath::Square(Point.U - U) + FMath::Square(Point.V - V));
+		return FMath::Sqrt(SquareDistance(Point));
 	}
 
 	double SquareDistance(const FPoint2D& Point) const
@@ -529,7 +539,7 @@ public:
 
 	double Length() const
 	{
-		return FMath::Sqrt(FMath::Square(U) + FMath::Square(V));
+		return FMath::Sqrt(SquareLength());
 	}
 
 	double SquareLength() const
@@ -537,9 +547,9 @@ public:
 		return FMath::Square(U) + FMath::Square(V);
 	}
 
-	FPoint2D& Normalize()
+	FPoint2D& Normalize(double& Norm)
 	{
-		double Norm = Length();
+		Norm = Length();
 		if (FMath::IsNearlyZero(Norm))
 		{
 			U = V = 0.0;
@@ -552,14 +562,24 @@ public:
 		return *this;
 	}
 
+	FPoint2D& Normalize()
+	{
+		double Norm = 0;
+		return Normalize(Norm);
+	}
+
 	constexpr double& operator[](int32 Index)
 	{
-		return *(&U + Index);
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return UV[Index];
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	constexpr double operator[](int32 Index) const
 	{
-		return *(&U + Index);
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return UV[Index];
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	bool operator==(const FPoint2D& Point) const
@@ -734,7 +754,7 @@ public:
 		};
 
 		UE_DEPRECATED(all, "For internal use only")
-			float XYZ[3];
+		float XYZ[3];
 	};
 
 	/** A zero point (0,0,0)*/
@@ -758,16 +778,16 @@ public:
 
 	constexpr float& operator[](int32 Index)
 	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			return XYZ[Index];
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return XYZ[Index];
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	constexpr float operator[](int32 Index) const
 	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			return XYZ[Index];
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return XYZ[Index];
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	FFPoint& operator=(const FPoint& Point)
@@ -787,9 +807,21 @@ inline FPoint operator*(double Scale, const FPoint& Point)
 	return FPoint(Point.X * Scale, Point.Y * Scale, Point.Z * Scale);
 }
 
-inline FPoint2D operator*(double s, const FPoint2D& Point)
+inline FPoint operator*(float Scale, const FPoint& Point)
 {
-	return FPoint2D(Point.U * s, Point.V * s);
+	double ScaleD = static_cast<double>(Scale);
+	return FPoint(Point.X * ScaleD, Point.Y * ScaleD, Point.Z * ScaleD);
+}
+
+inline FPoint2D operator*(double Scale, const FPoint2D& Point)
+{
+	return FPoint2D(Point.U * Scale, Point.V * Scale);
+}
+
+inline FPoint2D operator*(float Scale, const FPoint2D& Point)
+{
+	double ScaleD = static_cast<double>(Scale);
+	return FPoint2D(Point.U * ScaleD, Point.V * ScaleD);
 }
 
 }

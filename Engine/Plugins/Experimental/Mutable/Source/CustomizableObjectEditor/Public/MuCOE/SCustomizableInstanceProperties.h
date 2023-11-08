@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "MuR/Types.h"
 #include "Widgets/Input/SSpinBox.h"
 
 enum class ECheckBoxState : uint8;
@@ -97,8 +98,8 @@ private:
 
 	// These arrays store the textures available for texture parameters of the model.
 	// These come from the texture generators registered in the CustomizableObjectSystem
-	TArray< TSharedPtr<FString> > TextureParameterValueNames;
-	TArray< uint64_t > TextureParameterValues;
+	TArray<TSharedPtr<FString>> TextureParameterValueNames;
+	TArray<FName> TextureParameterValues;
 
 	struct FSliderData
 	{
@@ -229,6 +230,12 @@ private:
 
 	/*Search box that filters the Customizable Instance Properties*/
 	TSharedPtr<SSearchBox> SB_Properties;
+
+	/** Sets a parameter to its default value */
+	bool SetParameterValueToDefault(int32 ParameterIndex);
+
+	/** Callback for the OnButtonPressed of the parameter's reset button */
+	FReply OnResetParameterButtonClicked(int32 ParameterIndex);
 
 /*Profiles*/
 

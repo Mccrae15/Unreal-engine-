@@ -588,7 +588,7 @@ public:
 			Compact();
 
 			// Sort the elements according to the provided comparison class.
-			::Sort( (FElementOrFreeListLink*)Data.GetData(), Num(), FElementCompareClass< PREDICATE_CLASS >( Predicate ) );
+			Algo::Sort(TArrayView<FElementOrFreeListLink>(Data.GetData(), Num()), FElementCompareClass< PREDICATE_CLASS >( Predicate ) );
 		}
 	}
 
@@ -608,7 +608,7 @@ public:
 			CompactStable();
 
 			// Sort the elements according to the provided comparison class.
-			::StableSort((FElementOrFreeListLink*)Data.GetData(), Num(), FElementCompareClass< PREDICATE_CLASS >(Predicate));
+			Algo::StableSort(TArrayView<FElementOrFreeListLink>(Data.GetData(), Num()), FElementCompareClass< PREDICATE_CLASS >(Predicate));
 		}
 	}
 
@@ -794,8 +794,11 @@ public:
 			}
 			else
 			{
-				// Use the much faster path for types that allow it
-				FMemory::Memcpy(DestData, SrcData, sizeof(FElementOrFreeListLink) * SrcMax);
+				if (SrcMax)
+				{
+					// Use the much faster path for types that allow it
+					FMemory::Memcpy(DestData, SrcData, sizeof(FElementOrFreeListLink) * SrcMax);
+				}
 			}
 		}
 		return *this;
@@ -1290,6 +1293,11 @@ public:
 		return AllocationFlags.IsValidIndex(Index) && AllocationFlags[Index];
 	}
 
+	bool IsAllocated(int32 Index) const
+	{
+		return AllocationFlags[Index];
+	}
+
 	bool IsEmpty() const
 	{
 		return Data.Num() == NumFreeIndices;
@@ -1303,6 +1311,11 @@ public:
 	int32 GetMaxIndex() const
 	{
 		return Data.Num();
+	}
+
+	bool IsCompact() const
+	{
+		return NumFreeIndices == 0;
 	}
 
 	void* GetData(int32 Index, const FScriptSparseArrayLayout& Layout)

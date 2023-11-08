@@ -1,16 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraDataInterfaceDebugDraw.h"
+#include "NiagaraCompileHashVisitor.h"
 #include "NiagaraTypes.h"
+#include "NiagaraEmitter.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraGpuComputeDebug.h"
-#include "NiagaraWorldManager.h"
 #include "NiagaraShaderParametersBuilder.h"
+#include "NiagaraSystem.h"
 #include "NiagaraSystemInstance.h"
 
-#include "Async/Async.h"
-#include "DrawDebugHelpers.h"
-#include "ShaderParameterUtils.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceDebugDraw)
 
@@ -2947,6 +2946,26 @@ void UNiagaraDataInterfaceDebugDraw::GetParameterDefinitionHLSL(const FNiagaraDa
 
 bool UNiagaraDataInterfaceDebugDraw::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)
 {
+	static const TSet<FName> PersistentFunctions =
+	{
+		NDIDebugDrawLocal::DrawLinePersistentName,
+		NDIDebugDrawLocal::DrawRectanglePersistentName,
+		NDIDebugDrawLocal::DrawCirclePersistentName,
+		NDIDebugDrawLocal::DrawBoxPersistentName,
+		NDIDebugDrawLocal::DrawSpherePersistentName,
+		NDIDebugDrawLocal::DrawCylinderPersistentName,
+		NDIDebugDrawLocal::DrawConePersistentName,
+		NDIDebugDrawLocal::DrawTorusPersistentName,
+		NDIDebugDrawLocal::DrawCoordinateSystemPersistentName,
+		NDIDebugDrawLocal::DrawGrid2DPersistentName,
+		NDIDebugDrawLocal::DrawGrid3DPersistentName,
+	};
+	if (PersistentFunctions.Contains(FunctionInfo.DefinitionName))
+	{
+		OutHLSL.Appendf(TEXT("Make%s(%s)\r\n"), *FunctionInfo.DefinitionName.ToString(), *FunctionInfo.InstanceName);
+		return true;
+	}
+
 	static const TSet<FName> ValidGpuFunctions =
 	{
 		NDIDebugDrawLocal::DrawLineName,
@@ -2960,19 +2979,7 @@ bool UNiagaraDataInterfaceDebugDraw::GetFunctionHLSL(const FNiagaraDataInterface
 		NDIDebugDrawLocal::DrawCoordinateSystemName,
 		NDIDebugDrawLocal::DrawGrid2DName,
 		NDIDebugDrawLocal::DrawGrid3DName,
-		NDIDebugDrawLocal::DrawLinePersistentName,
-		NDIDebugDrawLocal::DrawRectanglePersistentName,
-		NDIDebugDrawLocal::DrawCirclePersistentName,
-		NDIDebugDrawLocal::DrawBoxPersistentName,
-		NDIDebugDrawLocal::DrawSpherePersistentName,
-		NDIDebugDrawLocal::DrawCylinderPersistentName,
-		NDIDebugDrawLocal::DrawConePersistentName,
-		NDIDebugDrawLocal::DrawTorusPersistentName,
-		NDIDebugDrawLocal::DrawCoordinateSystemPersistentName,
-		NDIDebugDrawLocal::DrawGrid2DPersistentName,
-		NDIDebugDrawLocal::DrawGrid3DPersistentName,
 	};
-
 	return ValidGpuFunctions.Contains(FunctionInfo.DefinitionName);
 }
 

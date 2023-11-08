@@ -61,6 +61,7 @@ class USkyAtmosphereComponent;
 class FSkyAtmosphereRenderSceneInfo;
 class USkyLightComponent;
 class UTexture2D;
+class UTexture;
 class UTextureLightProfile;
 struct FDynamicMeshVertex;
 class ULightMapVirtualTexture2D;
@@ -70,6 +71,7 @@ class FRayTracingGeometry;
 struct FViewMatrices;
 struct FEngineShowFlags;
 class FViewport;
+class FLandscapeRayTracingStateList;
 
 namespace UE { namespace Color { class FColorSpace; } }
 
@@ -85,7 +87,7 @@ DECLARE_LOG_CATEGORY_EXTERN(LogMultiView, Log, All);
 /**
  * struct to hold the temporal LOD state within a view state
  */
-struct ENGINE_API FTemporalLODState
+struct FTemporalLODState
 {
 	/** The last two camera origin samples collected for stateless temporal LOD transitions */
 	FVector	TemporalLODViewOrigin[2];
@@ -111,7 +113,7 @@ struct ENGINE_API FTemporalLODState
 		return FMath::Clamp((LastRenderTime - TemporalLODLag - TemporalLODTime[0]) / (TemporalLODTime[1] - TemporalLODTime[0]), 0.0f, 1.0f);
 	}
 
-	void UpdateTemporalLODTransition(const class FViewInfo& View, float LastRenderTime);
+	ENGINE_API void UpdateTemporalLODTransition(const FSceneView& View, float LastRenderTime);
 };
 
 enum ESequencerState
@@ -130,59 +132,12 @@ public:
 	FSceneViewStateInterface()
 		:	bValidEyeAdaptationTexture(0)
 		,	bValidEyeAdaptationBuffer(0)
-		,	ViewParent(NULL)
-		,	NumChildren( 0 )
 	{}
 	
 	/** Called in the game thread to destroy the view state. */
 	virtual void Destroy() = 0;
 
 public:
-	/** Sets the view state's scene parent. */
-	void SetViewParent(FSceneViewStateInterface* InViewParent)
-	{
-		if ( ViewParent )
-		{
-			// Assert that the existing parent does not have a parent.
-			check( !ViewParent->HasViewParent() );
-			// Decrement ref ctr of existing parent.
-			--ViewParent->NumChildren;
-		}
-
-		if ( InViewParent && InViewParent != this )
-		{
-			// Assert that the incoming parent does not have a parent.
-			check( !InViewParent->HasViewParent() );
-			ViewParent = InViewParent;
-			// Increment ref ctr of new parent.
-			InViewParent->NumChildren++;
-		}
-		else
-		{
-			ViewParent = NULL;
-		}
-	}
-	/** @return			The view state's scene parent, or NULL if none present. */
-	FSceneViewStateInterface* GetViewParent()
-	{
-		return ViewParent;
-	}
-	/** @return			The view state's scene parent, or NULL if none present. */
-	const FSceneViewStateInterface* GetViewParent() const
-	{
-		return ViewParent;
-	}
-	/** @return			true if the scene state has a parent, false otherwise. */
-	bool HasViewParent() const
-	{
-		return GetViewParent() != NULL;
-	}
-	/** @return			true if this scene state is a parent, false otherwise. */
-	bool IsViewParent() const
-	{
-		return NumChildren > 0;
-	}
-	
 	/** @return	the derived view state object */
 	virtual FSceneViewState* GetConcreteViewState () = 0;
 
@@ -203,7 +158,7 @@ public:
 	/**
 	 * Clears the pool of mids being referenced by this view state 
 	 */
-	virtual void ClearMIDPool() = 0;
+	virtual void ClearMIDPool(FStringView MidParentRootPath = {}) = 0;
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	/** If frozen view matrices are available, return a pointer to them */
@@ -285,6 +240,9 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	* returns the path tracer sample count
 	*/
 	virtual uint32 GetPathTracingSampleCount() const = 0;
+
+	virtual void SetLandscapeRayTracingStates(TPimplPtr<FLandscapeRayTracingStateList>&& InLandscapeRayTracingStates) = 0;
+	virtual FLandscapeRayTracingStateList* GetLandscapeRayTracingStates() const = 0;
 #endif
 
 	/**
@@ -299,7 +257,22 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	virtual void AddLumenSceneData(FSceneInterface* InScene, float SurfaceCacheResolution = 1.0f) {}
 	virtual void RemoveLumenSceneData(FSceneInterface* InScene) {}
 	virtual bool HasLumenSceneData() const = 0;
+	
+	UE_DEPRECATED(5.3, "SetViewParent is deprecated")
+	void SetViewParent(FSceneViewStateInterface*) {}
 
+	UE_DEPRECATED(5.3, "GetViewParent is deprecated")
+	FSceneViewStateInterface* GetViewParent() { return nullptr; }
+
+	UE_DEPRECATED(5.3, "GetViewParent is deprecated")
+	const FSceneViewStateInterface* GetViewParent() const { return nullptr; }
+
+	UE_DEPRECATED(5.3, "HasViewParent is deprecated")
+	bool HasViewParent() const { return false; }
+
+	UE_DEPRECATED(5.3, "IsViewParent is deprecated")
+	bool IsViewParent() const { return false; }
+	
 protected:
 	// Don't allow direct deletion of the view state, Destroy should be called instead.
 	virtual ~FSceneViewStateInterface() {}
@@ -309,20 +282,15 @@ protected:
 	uint8 bValidEyeAdaptationBuffer : 1;
 
 private:
-	/** This scene state's view parent; NULL if no parent present. */
-	FSceneViewStateInterface*	ViewParent;
-	/** Reference counts the number of children parented to this state. */
-	int32							NumChildren;
-
 	virtual FVirtualShadowMapArrayCacheManager* GetVirtualShadowMapCache(const FScene* InScene) const { return nullptr; }
 	friend class FScene;
 };
 
-class ENGINE_API FFrozenSceneViewMatricesGuard
+class FFrozenSceneViewMatricesGuard
 {
 public:
-	FFrozenSceneViewMatricesGuard(FSceneView& SV);
-	~FFrozenSceneViewMatricesGuard();
+	ENGINE_API FFrozenSceneViewMatricesGuard(FSceneView& SV);
+	ENGINE_API ~FFrozenSceneViewMatricesGuard();
 
 private:
 	FSceneView& SceneView;
@@ -847,7 +815,7 @@ class FDefaultLightmapResourceClusterUniformBuffer : public TUniformBuffer< FLig
 {
 	typedef TUniformBuffer< FLightmapResourceClusterShaderParameters > Super;
 public:
-	virtual void InitDynamicRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 };
 
 ENGINE_API extern TGlobalResource< FDefaultLightmapResourceClusterUniformBuffer > GDefaultLightmapResourceClusterUniformBuffer;
@@ -1040,7 +1008,7 @@ public:
 };
 
 /** A projected shadow transform. */
-class ENGINE_API FProjectedShadowInitializer
+class FProjectedShadowInitializer
 {
 public:
 
@@ -1075,14 +1043,14 @@ public:
 };
 
 /** Information needed to create a per-object projected shadow. */
-class ENGINE_API FPerObjectProjectedShadowInitializer : public FProjectedShadowInitializer
+class FPerObjectProjectedShadowInitializer : public FProjectedShadowInitializer
 {
 public:
 
 };
 
 /** Information needed to create a whole scene projected shadow. */
-class ENGINE_API FWholeSceneProjectedShadowInitializer : public FProjectedShadowInitializer
+class FWholeSceneProjectedShadowInitializer : public FProjectedShadowInitializer
 {
 public:
 	FShadowCascadeSettings CascadeSettings;
@@ -1142,20 +1110,20 @@ class FDefaultMobileReflectionCaptureUniformBuffer : public TUniformBuffer<FMobi
 {
 	typedef TUniformBuffer<FMobileReflectionCaptureShaderParameters> Super;
 public:
-	virtual void InitDynamicRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 };
 
 ENGINE_API extern TGlobalResource<FDefaultMobileReflectionCaptureUniformBuffer> GDefaultMobileReflectionCaptureUniformBuffer;
 
 /** Represents a USkyLightComponent to the rendering thread. */
-class ENGINE_API FSkyLightSceneProxy
+class FSkyLightSceneProxy
 {
 public:
 
 	/** Initialization constructor. */
-	FSkyLightSceneProxy(const class USkyLightComponent* InLightComponent);
+	ENGINE_API FSkyLightSceneProxy(const class USkyLightComponent* InLightComponent);
 
-	void Initialize(
+	ENGINE_API void Initialize(
 		float InBlendFraction, 
 		const FSHVectorRGB3* InIrradianceEnvironmentMap, 
 		const FSHVectorRGB3* BlendDestinationIrradianceEnvironmentMap,
@@ -1205,7 +1173,7 @@ public:
 	{
 		LightColor = InColor;
 	}
-	FLinearColor GetEffectiveLightColor() const;
+	ENGINE_API FLinearColor GetEffectiveLightColor() const;
 
 #if WITH_EDITOR
 	float SecondsToNextIncompleteCapture;
@@ -1222,13 +1190,13 @@ private:
 };
 
 /** Represents a USkyAtmosphereComponent to the rendering thread. */
-class ENGINE_API FSkyAtmosphereSceneProxy
+class FSkyAtmosphereSceneProxy
 {
 public:
 
 	// Initialization constructor.
-	FSkyAtmosphereSceneProxy(const USkyAtmosphereComponent* InComponent);
-	~FSkyAtmosphereSceneProxy();
+	ENGINE_API FSkyAtmosphereSceneProxy(const USkyAtmosphereComponent* InComponent);
+	ENGINE_API ~FSkyAtmosphereSceneProxy();
 
 	FLinearColor GetSkyLuminanceFactor() const { return SkyLuminanceFactor; }
 	float GetAerialPespectiveViewDistanceScale() const { return AerialPespectiveViewDistanceScale; }
@@ -1241,7 +1209,7 @@ public:
 	void UpdateTransform(const FTransform& ComponentTransform, uint8 TranformMode) { AtmosphereSetup.UpdateTransform(ComponentTransform, TranformMode); }
 	void ApplyWorldOffset(const FVector3f& InOffset) { AtmosphereSetup.ApplyWorldOffset((FVector)InOffset); }
 
-	FVector GetAtmosphereLightDirection(int32 AtmosphereLightIndex, const FVector& DefaultDirection) const;
+	ENGINE_API FVector GetAtmosphereLightDirection(int32 AtmosphereLightIndex, const FVector& DefaultDirection) const;
 
 	bool bStaticLightingBuilt;
 	FSkyAtmosphereRenderSceneInfo* RenderSceneInfo;
@@ -1392,24 +1360,24 @@ extern ENGINE_API void ComputeShadowCullingVolume(bool bReverseCulling, const FV
 
 
 /** Encapsulates the data which is used to render a decal parallel to the game thread. */
-class ENGINE_API FDeferredDecalProxy
+class FDeferredDecalProxy
 {
 public:
 	/** constructor */
-	FDeferredDecalProxy(const UDecalComponent* InComponent);
-	FDeferredDecalProxy(const USceneComponent* InComponent, UMaterialInterface* InMaterial);
+	ENGINE_API FDeferredDecalProxy(const UDecalComponent* InComponent);
+	ENGINE_API FDeferredDecalProxy(const USceneComponent* InComponent, UMaterialInterface* InMaterial);
 
 	/**
 	 * Updates the decal proxy's cached transform and bounds.
 	 * @param InComponentToWorldIncludingDecalSize - The new component-to-world transform including the DecalSize
 	 * @param InBounds - The new world-space bounds including the DecalSize
 	 */
-	void SetTransformIncludingDecalSize(const FTransform& InComponentToWorldIncludingDecalSize, const FBoxSphereBounds& InBounds);
+	ENGINE_API void SetTransformIncludingDecalSize(const FTransform& InComponentToWorldIncludingDecalSize, const FBoxSphereBounds& InBounds);
 
-	void InitializeFadingParameters(float AbsSpawnTime, float FadeDuration, float FadeStartDelay, float FadeInDuration, float FadeInStartDelay);
+	ENGINE_API void InitializeFadingParameters(float AbsSpawnTime, float FadeDuration, float FadeStartDelay, float FadeInDuration, float FadeInStartDelay);
 
 	/** @return True if the decal is visible in the given view. */
-	bool IsShown( const FSceneView* View ) const;
+	ENGINE_API bool IsShown( const FSceneView* View ) const;
 
 	inline const FBoxSphereBounds& GetBounds() const { return Bounds; }
 
@@ -1492,7 +1460,7 @@ namespace EReflectionCaptureShape
 }
 
 /** Represents a reflection capture to the renderer. */
-class ENGINE_API FReflectionCaptureProxy
+class FReflectionCaptureProxy
 {
 public:
 	const class UReflectionCaptureComponent* Component;
@@ -1526,14 +1494,17 @@ public:
 
 	bool bUsingPreviewCaptureData;
 
-	FReflectionCaptureProxy(const class UReflectionCaptureComponent* InComponent);
+	ENGINE_API FReflectionCaptureProxy(const class UReflectionCaptureComponent* InComponent);
 
-	void SetTransform(const FMatrix& InTransform);
-	void UpdateMobileUniformBuffer();
+	ENGINE_API void SetTransform(const FMatrix& InTransform);
+	ENGINE_API void UpdateMobileUniformBuffer(FRHICommandListBase& RHICmdList);
+	
+	UE_DEPRECATED(5.3, "UpdateMobileUniformBuffer now takes a command list.")
+	ENGINE_API void UpdateMobileUniformBuffer();
 };
 
 /** Calculated wind data with support for accumulating other weighted wind data */
-class ENGINE_API FWindData
+class FWindData
 {
 public:
 	FWindData()
@@ -1544,9 +1515,9 @@ public:
 	{
 	}
 
-	void PrepareForAccumulate();
-	void AddWeighted(const FWindData& InWindData, float Weight);
-	void NormalizeByTotalWeight(float TotalWeight);
+	ENGINE_API void PrepareForAccumulate();
+	ENGINE_API void AddWeighted(const FWindData& InWindData, float Weight);
+	ENGINE_API void NormalizeByTotalWeight(float TotalWeight);
 
 	float Speed;
 	float MinGustAmt;
@@ -1555,7 +1526,7 @@ public:
 };
 
 /** Represents a wind source component to the scene manager in the rendering thread. */
-class ENGINE_API FWindSourceSceneProxy
+class FWindSourceSceneProxy
 {
 public:	
 
@@ -1583,9 +1554,9 @@ public:
 		  bIsPointSource(true)
 	  {}
 
-	  bool GetWindParameters(const FVector& EvaluatePosition, FWindData& WindData, float& Weight) const;
-	  bool GetDirectionalWindParameters(FWindData& WindData, float& Weight) const;
-	  void ApplyWorldOffset(FVector InOffset);
+	  ENGINE_API bool GetWindParameters(const FVector& EvaluatePosition, FWindData& WindData, float& Weight) const;
+	  ENGINE_API bool GetDirectionalWindParameters(FWindData& WindData, float& Weight) const;
+	  ENGINE_API void ApplyWorldOffset(FVector InOffset);
 
 private:
 
@@ -1608,8 +1579,10 @@ private:
 class FDynamicPrimitiveResource
 {
 public:
+	UE_DEPRECATED(5.3, "InitPrimitiveResource now requires a command list.")
+	ENGINE_API void InitPrimitiveResource();
 
-	virtual void InitPrimitiveResource() = 0;
+	virtual void InitPrimitiveResource(FRHICommandListBase& RHICmdList) = 0;
 	virtual void ReleasePrimitiveResource() = 0;
 };
 
@@ -1694,7 +1667,7 @@ public:
 /**
  * An interface to a scene interaction.
  */
-class ENGINE_API FViewElementDrawer
+class FViewElementDrawer
 {
 public:
 
@@ -1727,17 +1700,17 @@ public:
 
 
 /** Primitive draw interface implementation used to store primitives requested to be drawn when gathering dynamic mesh elements. */
-class ENGINE_API FSimpleElementCollector : public FPrimitiveDrawInterface
+class FSimpleElementCollector : public FPrimitiveDrawInterface
 {
 public:
 
-	FSimpleElementCollector();
-	~FSimpleElementCollector();
+	ENGINE_API FSimpleElementCollector();
+	ENGINE_API ~FSimpleElementCollector();
 
-	virtual void SetHitProxy(HHitProxy* HitProxy) override;
+	ENGINE_API virtual void SetHitProxy(HHitProxy* HitProxy) override;
 	virtual void AddReserveLines(uint8 DepthPriorityGroup, int32 NumLines, bool bDepthBiased = false, bool bThickLines = false) override {}
 
-	virtual void DrawSprite(
+	ENGINE_API virtual void DrawSprite(
 		const FVector& Position,
 		float SizeX,
 		float SizeY,
@@ -1752,7 +1725,7 @@ public:
 		float OpacityMaskRevVal = .5f
 	) override;
 
-	virtual void DrawLine(
+	ENGINE_API virtual void DrawLine(
 		const FVector& Start,
 		const FVector& End,
 		const FLinearColor& Color,
@@ -1762,7 +1735,7 @@ public:
 		bool bScreenSpace = false
 		) override;
 
-	virtual void DrawTranslucentLine(
+	ENGINE_API virtual void DrawTranslucentLine(
 		const FVector& Start,
 		const FVector& End,
 		const FLinearColor& Color,
@@ -1772,14 +1745,14 @@ public:
 		bool bScreenSpace = false
 	) override;
 
-	virtual void DrawPoint(
+	ENGINE_API virtual void DrawPoint(
 		const FVector& Position,
 		const FLinearColor& Color,
 		float PointSize,
 		uint8 DepthPriorityGroup
 		) override;
 
-	virtual void RegisterDynamicResource(FDynamicPrimitiveResource* DynamicResource) override;
+	ENGINE_API virtual void RegisterDynamicResource(FDynamicPrimitiveResource* DynamicResource) override;
 
 	// Not supported
 	virtual bool IsHitTesting() override
@@ -1809,7 +1782,12 @@ public:
 		return 0;
 	}
 
-	void DrawBatchedElements(FRHICommandList& RHICmdList, const FMeshPassProcessorRenderState& DrawRenderState, const FSceneView& InView, EBlendModeFilter::Type Filter, ESceneDepthPriorityGroup DPG) const;
+	ENGINE_API void DrawBatchedElements(FRHICommandList& RHICmdList, const FMeshPassProcessorRenderState& DrawRenderState, const FSceneView& InView, EBlendModeFilter::Type Filter, ESceneDepthPriorityGroup DPG) const;
+
+	bool HasAnyPrimitives() const
+	{
+		return BatchedElements.HasPrimsToDraw() || TopBatchedElements.HasPrimsToDraw();
+	}
 
 	bool HasPrimitives(ESceneDepthPriorityGroup DPG) const
 	{
@@ -1881,7 +1859,7 @@ public:
 /** 
  * Encapsulates the gathering of meshes from the various FPrimitiveSceneProxy classes. 
  */
-class ENGINE_API FMeshElementCollector
+class FMeshElementCollector
 {
 public:
 
@@ -1890,6 +1868,13 @@ public:
 	{
 		return SimpleElementCollectors[ViewIndex];
 	}
+
+#if UE_ENABLE_DEBUG_DRAWING
+	inline FPrimitiveDrawInterface* GetDebugPDI(int32 ViewIndex)
+	{
+		return DebugSimpleElementCollectors[ViewIndex];
+	}
+#endif
 
 	/** 
 	 * Allocates an FMeshBatch that can be safely referenced by the collector (lifetime will be long enough).
@@ -1937,7 +1922,7 @@ public:
 	/** 
 	 * Adds a mesh batch to the collector for the specified view so that it can be rendered.
 	 */
-	void AddMesh(int32 ViewIndex, FMeshBatch& MeshBatch);
+	ENGINE_API void AddMesh(int32 ViewIndex, FMeshBatch& MeshBatch);
 
 	/** Add a material render proxy that will be cleaned up automatically */
 	void RegisterOneFrameMaterialProxy(FMaterialRenderProxy* Proxy)
@@ -1951,23 +1936,21 @@ public:
 	{
 		return *OneFrameResources.Create<T>(Forward<ARGS>(Args)...);
 	}
-
+	
+	UE_DEPRECATED(5.3, "ShouldUseTasks has been deprecated.")
 	FORCEINLINE bool ShouldUseTasks() const
 	{
-		return bUseAsyncTasks;
+		return false;
 	}
+	
+	UE_DEPRECATED(5.3, "AddTask has been deprecated.")
+	FORCEINLINE void AddTask(TFunction<void()>&& Task) {}
 
-	FORCEINLINE void AddTask(TFunction<void()>&& Task)
-	{
-		ParallelTasks.Emplace(MoveTemp(Task));
-	}
+	UE_DEPRECATED(5.3, "AddTask has been deprecated.")
+	FORCEINLINE void AddTask(const TFunction<void()>& Task) {}
 
-	FORCEINLINE void AddTask(const TFunction<void()>& Task)
-	{
-		ParallelTasks.Emplace(Task);
-	}
-
-	void ProcessTasks();
+	UE_DEPRECATED(5.3, "ProcessTasks has been deprecated.")
+	void ProcessTasks() {}
 
 	FORCEINLINE ERHIFeatureLevel::Type GetFeatureLevel() const
 	{
@@ -1976,17 +1959,17 @@ public:
 
 protected:
 
-	FMeshElementCollector(ERHIFeatureLevel::Type InFeatureLevel, FSceneRenderingBulkObjectAllocator& InBulkAllocator);
+	ENGINE_API FMeshElementCollector(ERHIFeatureLevel::Type InFeatureLevel, FSceneRenderingBulkObjectAllocator& InBulkAllocator);
 
-	~FMeshElementCollector();
+	ENGINE_API ~FMeshElementCollector();
 
-	void DeleteTemporaryProxies();
+	ENGINE_API void DeleteTemporaryProxies();
 
-	void SetPrimitive(const FPrimitiveSceneProxy* InPrimitiveSceneProxy, FHitProxyId DefaultHitProxyId);
+	ENGINE_API void SetPrimitive(const FPrimitiveSceneProxy* InPrimitiveSceneProxy, FHitProxyId DefaultHitProxyId);
 
-	void ClearViewMeshArrays();
+	ENGINE_API void ClearViewMeshArrays();
 
-	void AddViewMeshArrays(
+	ENGINE_API void AddViewMeshArrays(
 		FSceneView* InView,
 		TArray<FMeshBatchAndRelevance, SceneRenderingAllocator>* ViewMeshes,
 		FSimpleElementCollector* ViewSimpleElementCollector,
@@ -1994,7 +1977,11 @@ protected:
 		ERHIFeatureLevel::Type InFeatureLevel,
 		FGlobalDynamicIndexBuffer* InDynamicIndexBuffer,
 		FGlobalDynamicVertexBuffer* InDynamicVertexBuffer,
-		FGlobalDynamicReadBuffer* InDynamicReadBuffer);
+		FGlobalDynamicReadBuffer* InDynamicReadBuffer
+#if UE_ENABLE_DEBUG_DRAWING
+		,FSimpleElementCollector* InDebugSimpleElementCollector = nullptr
+#endif
+	);
 
 	/** 
 	 * Using TChunkedArray which will never realloc as new elements are added
@@ -2010,6 +1997,10 @@ protected:
 
 	/** PDIs */
 	TArray<FSimpleElementCollector*, TInlineAllocator<2, SceneRenderingAllocator> > SimpleElementCollectors;
+
+#if UE_ENABLE_DEBUG_DRAWING
+	TArray<FSimpleElementCollector*, TInlineAllocator<2, SceneRenderingAllocator> > DebugSimpleElementCollectors;
+#endif
 
 	/** Views being collected for */
 	TArray<FSceneView*, TInlineAllocator<2, SceneRenderingAllocator>> Views;
@@ -2033,15 +2024,10 @@ protected:
 
 	ERHIFeatureLevel::Type FeatureLevel;
 
-	/** This is related to some cvars and FApp stuff and if true means calling code should use async tasks. */
-	const bool bUseAsyncTasks;
-
-	/** Tasks to wait for at the end of gathering dynamic mesh elements. */
-	TArray<TFunction<void()>, SceneRenderingAllocator> ParallelTasks;
-
 	/** Tracks dynamic primitive data for upload to GPU Scene for every view, when enabled. */
 	TArray<FGPUScenePrimitiveCollector*, TInlineAllocator<2, SceneRenderingAllocator>> DynamicPrimitiveCollectorPerView;
 
+	friend class FVisibilityTaskData;
 	friend class FSceneRenderer;
 	friend class FDeferredShadingSceneRenderer;
 	friend class FProjectedShadowInfo;
@@ -2117,22 +2103,22 @@ struct FRayTracingMaterialGatheringContext
 	GraphBuilder(InGraphBuilder),
 	RayTracingMeshResourceCollector(InRayTracingMeshResourceCollector){}
 
-	ENGINE_API virtual ~FRayTracingMaterialGatheringContext() {}
-	ENGINE_API virtual FRayTracingMaskAndFlags BuildInstanceMaskAndFlags(const FRayTracingInstance& Instance, const FPrimitiveSceneProxy& ScenePrimitive) = 0;
+	virtual ~FRayTracingMaterialGatheringContext() {}
+	virtual FRayTracingMaskAndFlags BuildInstanceMaskAndFlags(const FRayTracingInstance& Instance, const FPrimitiveSceneProxy& ScenePrimitive) = 0;
 };
 #endif
 
-class ENGINE_API FDynamicPrimitiveUniformBuffer : public FOneFrameResource
+class FDynamicPrimitiveUniformBuffer : public FOneFrameResource
 {
 public:
-	FDynamicPrimitiveUniformBuffer();
+	ENGINE_API FDynamicPrimitiveUniformBuffer();
 	// FDynamicPrimitiveUniformBuffer is non-copyable
 	FDynamicPrimitiveUniformBuffer(const FDynamicPrimitiveUniformBuffer&) = delete;
-	virtual ~FDynamicPrimitiveUniformBuffer();
+	ENGINE_API virtual ~FDynamicPrimitiveUniformBuffer();
 
 	TUniformBuffer<FPrimitiveUniformShaderParameters> UniformBuffer;
 
-	void Set(
+	ENGINE_API void Set(
 		const FMatrix& LocalToWorld,
 		const FMatrix& PreviousLocalToWorld,
 		const FVector& ActorPositionWS, 
@@ -2144,7 +2130,7 @@ public:
 		bool bOutputVelocity,
 		const FCustomPrimitiveData* CustomPrimitiveData);
 
-	void Set(
+	ENGINE_API void Set(
 		const FMatrix& LocalToWorld,
 		const FMatrix& PreviousLocalToWorld,
 		const FBoxSphereBounds& WorldBounds,
@@ -2155,7 +2141,7 @@ public:
 		bool bOutputVelocity,
 		const FCustomPrimitiveData* CustomPrimitiveData);
 
-	void Set(
+	ENGINE_API void Set(
 		const FMatrix& LocalToWorld,
 		const FMatrix& PreviousLocalToWorld,
 		const FBoxSphereBounds& WorldBounds,
@@ -2166,7 +2152,7 @@ public:
 		bool bOutputVelocity);
 
 	/** Pass-through implementation which calls the overloaded Set function with LocalBounds for PreSkinnedLocalBounds. */
-	void Set(
+	ENGINE_API void Set(
 		const FMatrix& LocalToWorld,
 		const FMatrix& PreviousLocalToWorld,
 		const FBoxSphereBounds& WorldBounds,
@@ -2665,6 +2651,10 @@ namespace EVertexColorViewMode
 
 /** Global vertex color view mode setting when SHOW_VertexColors show flag is set */
 extern ENGINE_API EVertexColorViewMode::Type GVertexColorViewMode;
+extern ENGINE_API TWeakObjectPtr<UTexture> GVertexViewModeOverrideTexture;
+extern ENGINE_API float GVertexViewModeOverrideUVChannel;
+extern ENGINE_API FString GVertexViewModeOverrideOwnerName;
+extern ENGINE_API bool ShouldProxyUseVertexColorVisualization(FName OwnerName);
 
 /**
  * Returns true if the given view is "rich", and all primitives should be forced down the dynamic drawing path so that ApplyViewModeOverrides can implement the rich view feature.
@@ -2847,7 +2837,7 @@ public:
 		bWrap(bInWrap)
 	{}
 
-	virtual void InitRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 
 	virtual void ReleaseRHI() override
 	{

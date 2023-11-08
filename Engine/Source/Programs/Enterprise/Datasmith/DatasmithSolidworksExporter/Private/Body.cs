@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using SolidWorks.Interop.swconst;
 using System.Threading.Tasks;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 
 namespace DatasmithSolidworks
 {
@@ -94,7 +95,10 @@ namespace DatasmithSolidworks
 					}
 				} while (Body != null);
 			}
-			catch { }
+			catch
+			{
+				Debug.Assert(false);
+			}
 
 			return Bodies;
 		}
@@ -119,15 +123,13 @@ namespace DatasmithSolidworks
 				}
 			}
 
-			Parallel.ForEach(AllBodies, ObjBody =>
+			foreach(object ObjBody in AllBodies)
 			{
-				Body2 Body = ObjBody as Body2;
-
-				if (Body != null && Body.Visible && !Body.IsTemporaryBody())
+				if (ObjBody is Body2 Body && Body.Visible && !Body.IsTemporaryBody())
 				{
 					ResultBodies.Add(new FBody(Body));
 				}
-			});
+			}
 
 			return ResultBodies;
 		}

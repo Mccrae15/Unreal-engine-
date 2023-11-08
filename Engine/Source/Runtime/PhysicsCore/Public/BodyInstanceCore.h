@@ -12,15 +12,15 @@
 class UBodySetupCore;
 
 USTRUCT(BlueprintType)
-struct PHYSICSCORE_API FBodyInstanceCore
+struct FBodyInstanceCore
 {
 	GENERATED_USTRUCT_BODY()
 
 	/** BodySetupCore pointer that this instance is initialized from */
 	TWeakObjectPtr<UBodySetupCore> BodySetup;
 
-	FBodyInstanceCore();
-	virtual ~FBodyInstanceCore() = default;
+	PHYSICSCORE_API FBodyInstanceCore();
+	virtual ~FBodyInstanceCore() {}
 
 	/** 
 	 * If true, this body will use simulation. If false, will be 'fixed' (ie kinematic) and move where it is told. 
@@ -38,6 +38,10 @@ struct PHYSICSCORE_API FBodyInstanceCore
 	/** If object should have the force of gravity applied */
 	UPROPERTY(EditAnywhere,BlueprintReadOnly,Category = Physics)
 	uint8 bEnableGravity : 1;
+
+	/** When kinematic, whether the actor transform should be updated as a result of movement in the simulation, rather than immediately whenever a target transform is set. */
+	UPROPERTY(EditAnywhere,BlueprintReadOnly,Category = Physics)
+	uint8 bUpdateKinematicFromSimulation : 1;
 
 	/** If true and is attached to a parent, the two bodies will be joined into a single rigid body. Physical settings like collision profile and body settings are determined by the root */
 	UPROPERTY(EditAnywhere,AdvancedDisplay,BlueprintReadWrite,Category = Physics,meta = (editcondition = "!bSimulatePhysics"))
@@ -59,5 +63,5 @@ struct PHYSICSCORE_API FBodyInstanceCore
 	uint8 bDirtyMassProps : 1;
 
 	/** Should Simulate Physics **/
-	bool ShouldInstanceSimulatingPhysics() const;
+	PHYSICSCORE_API bool ShouldInstanceSimulatingPhysics() const;
 };

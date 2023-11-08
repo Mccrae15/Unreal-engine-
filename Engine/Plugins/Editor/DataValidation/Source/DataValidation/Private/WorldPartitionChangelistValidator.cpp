@@ -36,9 +36,9 @@ EDataValidationResult UWorldPartitionChangelistValidator::ValidateLoadedAsset_Im
 	
 	Errors = &ValidationErrors;
 	
-	EDataValidationResult Result = ValidateActorsAndDataLayersFromChangeList(ChangeList);
+	EDataValidationResult ValidateActorAndDataLayerResult = ValidateActorsAndDataLayersFromChangeList(ChangeList);
 
-	if (Result == EDataValidationResult::Invalid)
+	if (ValidateActorAndDataLayerResult == EDataValidationResult::Invalid)
 	{
 		AssetFails(InAsset, LOCTEXT("WorldPartitionValidationFail", "This changelist contains modifications that aren't valid at the world partition level. Please see revision control log and correct the errors."), ValidationErrors);
 	}
@@ -46,8 +46,8 @@ EDataValidationResult UWorldPartitionChangelistValidator::ValidateLoadedAsset_Im
 	{
 		AssetPasses(InAsset);
 	}
-		
-	return Result;
+
+	return Errors->IsEmpty() ? EDataValidationResult::Valid : EDataValidationResult::Invalid;
 }
 
 // Extract all Actors/Map from Changelist (in OFPA this should be one Actor per Package, and we'll discard all Actors from non WorldPartition maps)
@@ -55,6 +55,8 @@ EDataValidationResult UWorldPartitionChangelistValidator::ValidateLoadedAsset_Im
 // from memory (if loaded) or request it to be loaded, we then build a Set of objects that interest us from the Actors in the CL 
 EDataValidationResult UWorldPartitionChangelistValidator::ValidateActorsAndDataLayersFromChangeList(UDataValidationChangelist* Changelist)
 {
+	int32 NumErrorsOnEntry = Errors->Num();
+
 	ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
 	FSourceControlChangelistStatePtr ChangelistState = SourceControlProvider.GetState(Changelist->Changelist->AsShared(), EStateCacheUsage::Use);
 
@@ -122,14 +124,17 @@ EDataValidationResult UWorldPartitionChangelistValidator::ValidateActorsAndDataL
 						FARFilter Filter;
 						Filter.bIncludeOnlyOnDiskAssets = true;
 						Filter.PackageNames = MoveTemp(ReferencerNames);
-						Filter.ClassPaths.Add(AWorldDataLayers::StaticClass()->GetClassPathName());
 
 						TArray<FAssetData> DataLayerReferencers;
 						AssetRegistry.GetAssets(Filter, DataLayerReferencers);
 
 						for (const FAssetData& DataLayerReferencer : DataLayerReferencers)
 						{
-							TryAssociateActorToMap(DataLayerReferencer);
+							UClass* ReferencerAssetClass = DataLayerReferencer.GetClass();
+							if (ReferencerAssetClass && ReferencerAssetClass->IsChildOf<AWorldDataLayers>())
+							{
+								TryAssociateActorToMap(DataLayerReferencer);
+							}
 						}
 			
 						RelevantDataLayerAssets.Add(AssetData.PackageName.ToString());
@@ -184,13 +189,13 @@ EDataValidationResult UWorldPartitionChangelistValidator::ValidateActorsAndDataL
 		for (const FAssetData& ActorData : ActorsData)
 		{
 			FString ActorPackagePath = ActorData.PackagePath.ToString();
-			if (ContentBundlePaths::IsAContentBundlePackagePath(ActorPackagePath))
+			if (ContentBundlePaths::IsAContentBundleExternalActorPackagePath(ActorPackagePath))
 			{
 				FStringView ContentBundleMountPoint = FPathViews::GetMountPointNameFromPath(ActorPackagePath);
 				FGuid ContentBundleGuid = ContentBundlePaths::GetContentBundleGuidFromExternalActorPackagePath(ActorPackagePath);
 				
 				FString ContentBundleContainerPackagePath;
-				verify(ContentBundlePaths::BuildActorDescContainerPackgePath(FString(ContentBundleMountPoint), ContentBundleGuid, MapPath.GetPackageName().ToString(), ContentBundleContainerPackagePath));
+				verify(ContentBundlePaths::BuildActorDescContainerPackagePath(FString(ContentBundleMountPoint), ContentBundleGuid, MapPath.GetPackageName().ToString(), ContentBundleContainerPackagePath));
 
 				RegisterContainerToValidate(World, FName(*ContentBundleContainerPackagePath), ContainersToValidate);
 			}
@@ -206,10 +211,8 @@ EDataValidationResult UWorldPartitionChangelistValidator::ValidateActorsAndDataL
 
 		for (const FAssetData& ActorData : ActorsData)
 		{
-			// Get the FWorldPartitionActor			
-			const FWorldPartitionActorDesc* ActorDesc = ContainersToValidate.GetActorDesc(ActorData.AssetName.ToString());
-
-			if (ActorDesc != nullptr)
+			// Get the actor descriptor
+			if (const FWorldPartitionActorDesc* ActorDesc = ContainersToValidate.GetActorDescByName(ActorData.AssetName.ToString()))
 			{
 				RelevantActorGuids.Add(ActorDesc->GetGuid());
 			}
@@ -236,7 +239,7 @@ EDataValidationResult UWorldPartitionChangelistValidator::ValidateActorsAndDataL
 		});
 	}
 
-	if (Errors->Num())
+	if (Errors->Num() > NumErrorsOnEntry)
 	{
 		return EDataValidationResult::Invalid;
 	}
@@ -428,8 +431,19 @@ void UWorldPartitionChangelistValidator::OnLevelInstanceInvalidWorldAsset(const 
 		case ELevelInstanceInvalidReason::WorldAssetHasInvalidContainer:
 			// We cannot treat that error as a validation error as it's possible to validate changelists without loading the world
 			break;
+		case ELevelInstanceInvalidReason::CirculalReference:
+			CurrentError = FText::Format(LOCTEXT("DataValidation.Changelist.WorldPartition.LevelInstanceCircularReference", "Level instance {0} has a circular reference {1}."),
+				FText::FromString(GetFullActorName(ActorDescView)),
+				FText::FromName(WorldAsset));
+			Errors->Add(CurrentError);
+			break;
 		};
 	}
+}
+
+void UWorldPartitionChangelistValidator::OnInvalidActorFilterReference(const FWorldPartitionActorDescView& ActorDescView, const FWorldPartitionActorDescView& ReferenceActorDescView)
+{
+	// Not a validation error
 }
 
 #undef LOCTEXT_NAMESPACE

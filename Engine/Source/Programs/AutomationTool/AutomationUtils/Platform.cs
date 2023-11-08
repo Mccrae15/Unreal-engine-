@@ -9,6 +9,9 @@ using System.Reflection;
 using UnrealBuildTool;
 using EpicGames.Core;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
+
+using static AutomationTool.CommandUtils;
 
 namespace AutomationTool
 {
@@ -31,12 +34,19 @@ namespace AutomationTool
 
 	public class DeviceInfo
 	{
+		public enum AutoSoftwareUpdateMode
+		{
+			Unknown,
+			Disabled,
+			Enabled
+		}
+
 		public DeviceInfo(UnrealTargetPlatform Platform)
 		{
 			this.Platform = Platform;
 		}
 
-		public DeviceInfo(UnrealTargetPlatform Platform, string Name, string Id, string SoftwareVersion, string Type, bool bIsDefault, bool bCanConnect, Dictionary<string, string> PlatformValues=null)
+		public DeviceInfo(UnrealTargetPlatform Platform, string Name, string Id, string SoftwareVersion, string Type, bool bIsDefault, bool bCanConnect, Dictionary<string, string> PlatformValues = null, AutoSoftwareUpdateMode AutoSoftwareUpdates = AutoSoftwareUpdateMode.Unknown)
 		{
 			this.Platform = Platform;
 			this.Name = Name;
@@ -45,6 +55,7 @@ namespace AutomationTool
 			this.Type = Type;
 			this.bIsDefault = bIsDefault;
 			this.bCanConnect = bCanConnect;
+			this.AutoSoftwareUpdates = AutoSoftwareUpdates;
 			if (PlatformValues != null)
 			{
 				this.PlatformValues = new Dictionary<string, string>(PlatformValues);
@@ -58,10 +69,11 @@ namespace AutomationTool
 		public string Type;
 		public bool bIsDefault = false;
 		// is the device able to be connected to (this is more about able to flash SDK or run, not about matching SDK version)
-		// if false, any of the above fields are suspect, especually SoftwareVersion
+		// if false, any of the above fields are suspect, especially SoftwareVersion
 		public bool bCanConnect = true;
+		public AutoSoftwareUpdateMode AutoSoftwareUpdates = AutoSoftwareUpdateMode.Unknown;
 
-		// case insesitive platform value dictionary. turnkey doesn't use this, but the platform can look up the device during deployment, etc to get this out
+		// case insensitive platform value dictionary. turnkey doesn't use this, but the platform can look up the device during deployment, etc to get this out
 		public Dictionary<string, string> PlatformValues = new Dictionary<string, string>(StringComparer.InvariantCultureIgnoreCase);
 	}
 
@@ -98,7 +110,7 @@ namespace AutomationTool
 		private static Dictionary<TargetPlatformDescriptor, Platform> AllPlatforms = new Dictionary<TargetPlatformDescriptor, Platform>();
 		internal static void InitializePlatforms(HashSet<Assembly> AssembliesWithPlatforms)
 		{
-			LogVerbose("Creating platforms.");
+			Logger.LogDebug("Creating platforms.");
 
 			// Create all available platforms.
 			foreach (var ScriptAssembly in AssembliesWithPlatforms)
@@ -112,7 +124,7 @@ namespace AutomationTool
 				Platform ExistingInstance;
 				if (AllPlatforms.TryGetValue(TargetDesc, out ExistingInstance) == false)
 				{
-					LogVerbose("Creating placeholder platform for target: {0}", TargetDesc.Type);
+					Logger.LogDebug("Creating placeholder platform for target: {TargetType}", TargetDesc.Type);
 					AllPlatforms.Add(TargetDesc, new Platform(TargetDesc.Type));
 				}
 			}
@@ -120,7 +132,7 @@ namespace AutomationTool
 
 		private static void CreatePlatformsFromAssembly(Assembly ScriptAssembly)
 		{
-			LogVerbose("Looking for platforms in {0}", ScriptAssembly.Location);
+			Logger.LogDebug("Looking for platforms in {Location}", ScriptAssembly.Location);
 			Type[] AllTypes = null;
 			try
 			{
@@ -128,21 +140,21 @@ namespace AutomationTool
 			}
 			catch (Exception Ex)
 			{
-				LogError("Failed to get assembly types for {0}", ScriptAssembly.Location);
+				Logger.LogError("Failed to get assembly types for {Location}", ScriptAssembly.Location);
 				if (Ex is ReflectionTypeLoadException)
 				{
 					var TypeLoadException = (ReflectionTypeLoadException)Ex;
 					if (!IsNullOrEmpty(TypeLoadException.LoaderExceptions))
 					{
-						LogError("Loader Exceptions:");
+						Logger.LogError("Loader Exceptions:");
 						foreach (var LoaderException in TypeLoadException.LoaderExceptions)
 						{
-							LogError(LogUtils.FormatException(LoaderException));
+							Logger.LogError(LoaderException, "{Text}", LogUtils.FormatException(LoaderException));
 						}
 					}
 					else
 					{
-						LogError("No Loader Exceptions available.");
+						Logger.LogError("No Loader Exceptions available.");
 					}
 				}
 				// Re-throw, this is still a critical error!
@@ -152,7 +164,7 @@ namespace AutomationTool
 			{
 				if (PotentialPlatformType != typeof(Platform) && typeof(Platform).IsAssignableFrom(PotentialPlatformType) && !PotentialPlatformType.IsAbstract)
 				{
-					LogVerbose("Creating platform {0} from {1}.", PotentialPlatformType.Name, ScriptAssembly.Location);
+					Logger.LogDebug("Creating platform {Platform} from {Location}.", PotentialPlatformType.Name, ScriptAssembly.Location);
 					var PlatformInstance = Activator.CreateInstance(PotentialPlatformType) as Platform;
 					var PlatformDesc = PlatformInstance.GetTargetPlatformDescriptor();
 
@@ -165,7 +177,7 @@ namespace AutomationTool
 					{
 						if (ExistingInstance.GetType() != PlatformInstance.GetType())
 						{
-							LogWarning("Platform {0} already exists", PotentialPlatformType.Name);
+							Logger.LogWarning("Platform {Platform} already exists", PotentialPlatformType.Name);
 						}
 					}
 				}
@@ -268,10 +280,12 @@ namespace AutomationTool
 			Params = null;
 			return false;
 		}
+
 		public virtual bool GetSDKInstallCommand(out string Command, out string Params, ref bool bRequiresPrivilegeElevation, ref bool bCreateWindow, ITurnkeyContext TurnkeyContext, bool bSdkAlreadyInstalled)
 		{
 			return GetSDKInstallCommand(out Command, out Params, ref bRequiresPrivilegeElevation, ref bCreateWindow, TurnkeyContext);
 		}
+
 		public virtual bool GetDeviceUpdateSoftwareCommand(out string Command, out string Params, ref bool bRequiresPrivilegeElevation, ref bool bCreateWindow, ITurnkeyContext TurnkeyContext, DeviceInfo Device = null)
 		{
 			Command = null;
@@ -303,6 +317,12 @@ namespace AutomationTool
 		public virtual bool UpdateDevicePrerequisites(DeviceInfo Device, BuildCommand Command, ITurnkeyContext TurnkeyContext, bool bVerifyOnly)
 		{
 			return true;
+		}
+
+		public virtual bool SetDeviceAutoSoftwareUpdateMode(DeviceInfo Device, bool bEnableAutoSoftwareUpdates)
+		{
+			Logger.LogWarning("{PlatformType} does not implement SetDeviceAutoSoftwareUpdateMode", PlatformType);
+			return false;
 		}
 
 		#endregion
@@ -344,7 +364,7 @@ namespace AutomationTool
 		public virtual void GetConnectedDevices(ProjectParams Params, out List<string> Devices)
 		{
 			Devices = null;
-			LogWarning("{0} does not implement GetConnectedDevices", PlatformType);
+			Logger.LogWarning("{PlatformType} does not implement GetConnectedDevices", PlatformType);
 		}
 
 		/// <summary>
@@ -365,7 +385,7 @@ namespace AutomationTool
 		/// <param name="SC"></param>
 		public virtual void Deploy(ProjectParams Params, DeploymentContext SC)
 		{
-			LogWarning("{0} does not implement Deploy...", PlatformType);
+			Logger.LogWarning("{PlatformType} does not implement Deploy...", PlatformType);
 		}
 
 		/// <summary>
@@ -445,6 +465,14 @@ namespace AutomationTool
 		public virtual void GetFilesToDeployOrStage(ProjectParams Params, DeploymentContext SC)
 		{
 			throw new AutomationException("{0} does not yet implement GetFilesToDeployOrStage.", PlatformType);
+		}
+
+		/// <summary>
+		/// Get additional platform specific files to stage when staging DLC
+		/// </summary>
+		/// <param name="SC">Deployment Context</param>
+		public virtual void GetFilesToStageForDLC(ProjectParams Params, DeploymentContext SC)
+		{
 		}
 
 		/// <summary>
@@ -715,9 +743,9 @@ namespace AutomationTool
 		/// <summary>
 		///  Returns whether the platform requires a package to deploy to a device
 		/// </summary>
-		public virtual bool RequiresPackageToDeploy
+		public virtual bool RequiresPackageToDeploy(ProjectParams Params)
 		{
-			get { return false; }
+			return false;
 		}
 
 		/// <summary>
@@ -743,11 +771,11 @@ namespace AutomationTool
 		{
 			if (SourceFile == TargetFile)
 			{
-				CommandUtils.LogWarning("StripSymbols() has not been implemented for {0}", PlatformType.ToString());
+				Logger.LogWarning("StripSymbols() has not been implemented for {Arg0}", PlatformType.ToString());
 			}
 			else
 			{
-				CommandUtils.LogWarning("StripSymbols() has not been implemented for {0}; copying files", PlatformType.ToString());
+				Logger.LogWarning("StripSymbols() has not been implemented for {Arg0}; copying files", PlatformType.ToString());
 				File.Copy(SourceFile.FullName, TargetFile.FullName, true);
 			}
 		}
@@ -756,7 +784,7 @@ namespace AutomationTool
 			bool bIndexSources, List<FileReference> SourceFiles,
 			string Product, string Branch, int Change, string BuildVersion = null)
 		{
-			CommandUtils.LogWarning("PublishSymbols() has not been implemented for {0}", PlatformType.ToString());
+			Logger.LogWarning("PublishSymbols() has not been implemented for {Arg0}", PlatformType.ToString());
 			return false;
 		}
 
@@ -870,7 +898,12 @@ namespace AutomationTool
 
 		public virtual void PrepareForDebugging(string SourcePackage, string ProjectFilePath, string ClientPlatform)
 		{
-			LogError("Not implemented for the %s platform.", ClientPlatform);
+			Logger.LogError("Not implemented for the {Platform} platform.", ClientPlatform);
+		}
+
+		public virtual void SetSecondaryRemoteMac(string ProjectFilePath, string ClientPlatform)
+		{
+			Logger.LogError("Not implemented for this platform.");
 		}
 
 		// let the platform set the exe extension if it chooses (otherwise, use

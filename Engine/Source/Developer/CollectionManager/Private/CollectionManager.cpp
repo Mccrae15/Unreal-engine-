@@ -5,6 +5,7 @@
 #include "Misc/Paths.h"
 #include "Containers/Ticker.h"
 #include "CollectionManagerLog.h"
+#include "CollectionManagerModule.h"
 #include "FileCache.h"
 #include "Misc/FileHelper.h"
 #include "Misc/ScopeRWLock.h"
@@ -1028,7 +1029,7 @@ bool FCollectionManager::AddToCollection(FName CollectionName, ECollectionShareT
 		LastError = LOCTEXT("Error_AddNeedsStaticCollection", "Objects can only be added to static collections.");
 		return false;
 	}
-
+	
 	int32 NumAdded = 0;
 	for (const FSoftObjectPath& ObjectPath : ObjectPaths)
 	{
@@ -1113,7 +1114,7 @@ bool FCollectionManager::RemoveFromCollection(FName CollectionName, ECollectionS
 		LastError = LOCTEXT("Error_RemoveNeedsStaticCollection", "Objects can only be removed from static collections.");
 		return false;
 	}
-
+	
 	TArray<FSoftObjectPath> RemovedAssets;
 	for (const FSoftObjectPath& ObjectPath : ObjectPaths)
 	{

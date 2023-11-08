@@ -6,20 +6,19 @@
 
 UVCamOutputMediaOutput::UVCamOutputMediaOutput()
 {
-	DisplayType = EVPWidgetDisplayType::PostProcess;
-	InitViewTargetPolicyInSubclass();
+	DisplayType = EVPWidgetDisplayType::PostProcessWithBlendMaterial;
 }
 
-void UVCamOutputMediaOutput::Activate()
+void UVCamOutputMediaOutput::OnActivate()
 {
 	StartCapturing();
-	Super::Activate();
+	Super::OnActivate();
 }
 
-void UVCamOutputMediaOutput::Deactivate()
+void UVCamOutputMediaOutput::OnDeactivate()
 {
 	StopCapturing();
-	Super::Deactivate();
+	Super::OnDeactivate();
 }
 
 void UVCamOutputMediaOutput::StartCapturing()
@@ -30,7 +29,7 @@ void UVCamOutputMediaOutput::StartCapturing()
 		if (MediaCapture)
 		{
 			FMediaCaptureOptions Options;
-			Options.bResizeSourceBuffer = true;
+			Options.ResizeMethod = EMediaCaptureResizeMethod::ResizeSource;
 
 			// If we are rendering from a ComposureOutputProvider, get the requested render target and use that instead of the viewport
 			if (UVCamOutputComposure* ComposureProvider = Cast<UVCamOutputComposure>(GetOtherOutputProviderByIndex(FromComposureOutputProviderIndex)))

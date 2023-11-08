@@ -7,11 +7,7 @@
 #define NANITE_SUBPIXEL_MASK								(NANITE_SUBPIXEL_SAMPLES - 1)
 #define NANITE_SUBPIXEL_DILATE								0	// To correct for mismatch with HW rasterizer
 
-// Enable to constrain clusters to no more than 256 vertices and no index references outside of trailing window of NANITE_CONSTRAINED_CLUSTER_CACHE_SIZE vertices.
-#define NANITE_USE_CONSTRAINED_CLUSTERS						1
-
-// This requires contrained clusters because it reuses a small part of GroupVerts during SW rasterization. The reuse is not safe without the constraint.
-#define NANITE_LATE_VSM_PAGE_TRANSLATION					NANITE_USE_CONSTRAINED_CLUSTERS
+#define NANITE_LATE_VSM_PAGE_TRANSLATION					1
 #define NANITE_VSM_PAGE_TABLE_CACHE_DIM						8
 
 #define NANITE_USE_UNCOMPRESSED_VERTEX_DATA					0
@@ -37,12 +33,14 @@
 // Adds frame counter dependent magic values to streaming requests to help verify their integrity.
 #define NANITE_SANITY_CHECK_STREAMING_REQUESTS				0
 
+#define NANITE_FIXUP_MAGIC									0x464Eu
+
 #define NANITE_STREAMING_REQUEST_MAGIC_BITS					8
 #define NANITE_STREAMING_REQUEST_MAGIC_MASK					((1 << NANITE_STREAMING_REQUEST_MAGIC_BITS) - 1)
 
 #define NANITE_STREAMING_PAGE_GPU_SIZE_BITS					17
 #define NANITE_STREAMING_PAGE_GPU_SIZE						(1u << NANITE_STREAMING_PAGE_GPU_SIZE_BITS)
-#define NANITE_MAX_PAGE_DISK_SIZE							(NANITE_STREAMING_PAGE_GPU_SIZE * 2)	
+#define NANITE_MAX_PAGE_DISK_SIZE							(NANITE_STREAMING_PAGE_GPU_SIZE * 2)
 
 #define NANITE_MAX_CLUSTERS_PER_PAGE_BITS					8
 #define NANITE_MAX_CLUSTERS_PER_PAGE_MASK					((1 << NANITE_MAX_CLUSTERS_PER_PAGE_BITS) - 1)
@@ -51,6 +49,7 @@
 #define NANITE_MAX_CLUSTERS_PER_GROUP_MASK					((1 << NANITE_MAX_CLUSTERS_PER_GROUP_BITS) - 1)
 #define NANITE_MAX_CLUSTERS_PER_GROUP						((1 << NANITE_MAX_CLUSTERS_PER_GROUP_BITS) - 1)
 #define NANITE_MAX_CLUSTERS_PER_GROUP_TARGET				128
+#define NANITE_MAX_CLUSTER_HIERARCHY_DEPTH					14
 
 #define NANITE_MAX_HIERACHY_CHILDREN_BITS					6
 #define NANITE_MAX_HIERACHY_CHILDREN						(1 << NANITE_MAX_HIERACHY_CHILDREN_BITS)
@@ -89,6 +88,7 @@
 
 #define NANITE_NUM_STREAMING_PRIORITY_CATEGORY_BITS			2
 #define NANITE_STREAMING_PRIORITY_CATEGORY_MASK				((1 << NANITE_NUM_STREAMING_PRIORITY_CATEGORY_BITS) - 1)
+#define NANITE_MAX_PRIORITY_BEFORE_PARENTS					0xFFFFFFE0u
 
 #define NANITE_VIEW_FLAG_HZBTEST							0x1
 #define NANITE_VIEW_FLAG_NEAR_CLIP							0x2
@@ -98,7 +98,10 @@
 
 #define NANITE_MAX_STATE_BUCKET_ID							((1 << 14) - 1)
 
-#define NANITE_CLUSTER_FLAG_LEAF							0x1
+#define NANITE_CLUSTER_FLAG_ROOT_LEAF						0x1		// Cluster is leaf when only root pages are streamed in
+#define NANITE_CLUSTER_FLAG_STREAMING_LEAF					0x2		// Cluster is a leaf in the current streaming state
+#define NANITE_CLUSTER_FLAG_FULL_LEAF						0x4		// Cluster is a leaf when fully streamed in
+#define NANITE_CLUSTER_FLAG_ROOT_GROUP						0x8		// Cluster is in a group that is fully inside the root pages
 
 #define NANITE_MAX_TRANSCODE_GROUPS_PER_PAGE				128
 
@@ -111,7 +114,7 @@
 #define NANITE_MAX_POSITION_PRECISION						23
 
 #define NANITE_MAX_NORMAL_QUANTIZATION_BITS					15
-
+#define NANITE_MAX_TANGENT_QUANTIZATION_BITS				12
 #define NANITE_MAX_TEXCOORD_QUANTIZATION_BITS				15
 #define NANITE_MAX_COLOR_QUANTIZATION_BITS					8
 
@@ -127,7 +130,6 @@
 #define NANITE_CULLING_TYPE_CLUSTERS						1
 #define NANITE_CULLING_TYPE_PERSISTENT_NODES_AND_CLUSTERS	2
 
-
 #define NANITE_VERTEX_COLOR_MODE_WHITE						0
 #define NANITE_VERTEX_COLOR_MODE_CONSTANT					1
 #define NANITE_VERTEX_COLOR_MODE_VARIABLE					2
@@ -139,8 +141,9 @@
 #define NANITE_RESOURCE_FLAG_HAS_VERTEX_COLOR				0x1
 #define NANITE_RESOURCE_FLAG_HAS_IMPOSTER					0x2
 #define NANITE_RESOURCE_FLAG_STREAMING_DATA_IN_DDC			0x4
+#define NANITE_RESOURCE_FLAG_FORCE_ENABLED					0x8
 
-#define NANITE_RENDER_FLAG_PROGRAMMABLE_RASTER				0x1
+#define NANITE_RENDER_FLAG_DISABLE_PROGRAMMABLE				0x1
 #define NANITE_RENDER_FLAG_FORCE_HW_RASTER					0x2
 #define NANITE_RENDER_FLAG_PRIMITIVE_SHADER					0x4
 #define NANITE_RENDER_FLAG_MESH_SHADER						0x8
@@ -152,15 +155,16 @@
 #define NANITE_RENDER_FLAG_EDITOR_SHOW_FLAG_ENABLED			0x200
 #define NANITE_RENDER_FLAG_IS_LUMEN_CAPTURE					0x400
 #define NANITE_RENDER_FLAG_ADD_CLUSTER_OFFSET				0x800
-#define NANITE_RENDER_FLAG_HAS_RASTER_BIN					0x1000
-#define NANITE_RENDER_FLAG_HAS_PREV_DRAW_DATA				0x2000
+#define NANITE_RENDER_FLAG_HAS_PREV_DRAW_DATA				0x1000
+#define NANITE_RENDER_FLAG_INVALIDATE_VSM_ON_LOD_DELTA		0x2000
 
 #define NANITE_MATERIAL_FLAG_WORLD_POSITION_OFFSET			0x1
 #define NANITE_MATERIAL_FLAG_PIXEL_DEPTH_OFFSET				0x2
 #define NANITE_MATERIAL_FLAG_PIXEL_DISCARD					0x4
-#define NANITE_MATERIAL_FLAG_DYNAMIC_TESSELLATION			0x8
+#define NANITE_MATERIAL_FLAG_DISPLACEMENT					0x8
+#define NANITE_MATERIAL_FLAG_SPLINE_MESH					0x10
 
-#define NANITE_MATERIAL_VERTEX_PROGRAMMABLE_FLAGS			(NANITE_MATERIAL_FLAG_WORLD_POSITION_OFFSET)
+#define NANITE_MATERIAL_VERTEX_PROGRAMMABLE_FLAGS			(NANITE_MATERIAL_FLAG_WORLD_POSITION_OFFSET | NANITE_MATERIAL_FLAG_DISPLACEMENT)
 #define NANITE_MATERIAL_PIXEL_PROGRAMMABLE_FLAGS			(NANITE_MATERIAL_FLAG_PIXEL_DEPTH_OFFSET | NANITE_MATERIAL_FLAG_PIXEL_DISCARD)
 
 // Only available with the DEBUG_FLAGS permutation active.
@@ -172,48 +176,55 @@
 #define NANITE_DEBUG_FLAG_DISABLE_CULL_GLOBAL_CLIP_PLANE	0x10
 #define NANITE_DEBUG_FLAG_DISABLE_WPO_DISABLE_DISTANCE		0x20
 #define NANITE_DEBUG_FLAG_DRAW_ONLY_VSM_INVALIDATING		0x40
+#define NANITE_DEBUG_FLAG_DRAW_ONLY_ROOT_DATA				0x80
 
-#define NANITE_RASTER_BIN_CLASSIFY		0
-#define NANITE_RASTER_BIN_SCATTER		1
-#define NANITE_RASTER_BIN_RESERVE		2
+#define NANITE_RASTER_BIN_COUNT			0
+#define NANITE_RASTER_BIN_RESERVE		1
+#define NANITE_RASTER_BIN_SCATTER		2
+#define NANITE_RASTER_BIN_FINALIZE		3
+
+#define NANITE_SHADING_BIN_COUNT		0
+#define NANITE_SHADING_BIN_RESERVE		1
+#define NANITE_SHADING_BIN_SCATTER		2
 
 // 3x for SW, 1x for padding, 4x for HW
 #define NANITE_RASTERIZER_ARG_COUNT 8u
 
 // Debug Visualization Modes
 #define NANITE_VISUALIZE_OVERVIEW							0u
-#define NANITE_VISUALIZE_TRIANGLES							(1u << 0u)
-#define NANITE_VISUALIZE_CLUSTERS							(1u << 1u)
-#define NANITE_VISUALIZE_PRIMITIVES							(1u << 2u)
-#define NANITE_VISUALIZE_INSTANCES							(1u << 3u)
-#define NANITE_VISUALIZE_GROUPS								(1u << 4u)
-#define NANITE_VISUALIZE_PAGES								(1u << 5u)
-#define NANITE_VISUALIZE_OVERDRAW							(1u << 6u)
-#define NANITE_VISUALIZE_RASTER_MODE						(1u << 7u)
-#define NANITE_VISUALIZE_RASTER_BINS						(1u << 8u)
-#define NANITE_VISUALIZE_SHADING_BINS						(1u << 9u)
-#define NANITE_VISUALIZE_SCENE_Z_MIN						(1u << 10u)
-#define NANITE_VISUALIZE_SCENE_Z_MAX						(1u << 11u)
-#define NANITE_VISUALIZE_SCENE_Z_DELTA						(1u << 12u)
-#define NANITE_VISUALIZE_SCENE_Z_DECODED					(1u << 13u)
-#define NANITE_VISUALIZE_MATERIAL_Z_MIN						(1u << 14u)
-#define NANITE_VISUALIZE_MATERIAL_Z_MAX						(1u << 15u)
-#define NANITE_VISUALIZE_MATERIAL_Z_DELTA					(1u << 16u)
-#define NANITE_VISUALIZE_MATERIAL_Z_DECODED					(1u << 17u)
-#define NANITE_VISUALIZE_MATERIAL_COUNT						(1u << 18u)
-#define NANITE_VISUALIZE_MATERIAL_MODE						(1u << 19u)
-#define NANITE_VISUALIZE_MATERIAL_INDEX						(1u << 20u)
-#define NANITE_VISUALIZE_MATERIAL_DEPTH						(1u << 21u)
-#define NANITE_VISUALIZE_HIT_PROXY_DEPTH					(1u << 22u)
-#define NANITE_VISUALIZE_NANITE_MASK						(1u << 23u)
-#define NANITE_VISUALIZE_LIGHTMAP_UVS						(1u << 24u)
-#define NANITE_VISUALIZE_LIGHTMAP_UV_INDEX					(1u << 25u)
-#define NANITE_VISUALIZE_LIGHTMAP_DATA_INDEX				(1u << 26u)
-#define NANITE_VISUALIZE_HIERARCHY_OFFSET					(1u << 27u)
-#define NANITE_VISUALIZE_POSITION_BITS						(1u << 28u)
-#define NANITE_VISUALIZE_VSM_STATIC_CACHING					(1u << 29u)
-#define NANITE_VISUALIZE_EVALUATE_WORLD_POSITION_OFFSET		(1u << 30u)
-#define NANITE_VISUALIZE_PICKING							(1u << 31u)
+#define NANITE_VISUALIZE_TRIANGLES							1u
+#define NANITE_VISUALIZE_CLUSTERS							2u
+#define NANITE_VISUALIZE_PRIMITIVES							3u
+#define NANITE_VISUALIZE_INSTANCES							4u
+#define NANITE_VISUALIZE_GROUPS								5u
+#define NANITE_VISUALIZE_PAGES								6u
+#define NANITE_VISUALIZE_OVERDRAW							7u
+#define NANITE_VISUALIZE_RASTER_MODE						8u
+#define NANITE_VISUALIZE_RASTER_BINS						9u
+#define NANITE_VISUALIZE_SHADING_BINS						10u
+#define NANITE_VISUALIZE_SCENE_Z_MIN						11u
+#define NANITE_VISUALIZE_SCENE_Z_MAX						12u
+#define NANITE_VISUALIZE_SCENE_Z_DELTA						13u
+#define NANITE_VISUALIZE_SCENE_Z_DECODED					14u
+#define NANITE_VISUALIZE_MATERIAL_Z_MIN						15u
+#define NANITE_VISUALIZE_MATERIAL_Z_MAX						16u
+#define NANITE_VISUALIZE_MATERIAL_Z_DELTA					17u
+#define NANITE_VISUALIZE_MATERIAL_Z_DECODED					18u
+#define NANITE_VISUALIZE_MATERIAL_COUNT						19u
+#define NANITE_VISUALIZE_MATERIAL_MODE						20u
+#define NANITE_VISUALIZE_MATERIAL_INDEX						21u
+#define NANITE_VISUALIZE_MATERIAL_DEPTH						22u
+#define NANITE_VISUALIZE_HIT_PROXY_DEPTH					23u
+#define NANITE_VISUALIZE_NANITE_MASK						24u
+#define NANITE_VISUALIZE_LIGHTMAP_UVS						25u
+#define NANITE_VISUALIZE_LIGHTMAP_UV_INDEX					26u
+#define NANITE_VISUALIZE_LIGHTMAP_DATA_INDEX				27u
+#define NANITE_VISUALIZE_HIERARCHY_OFFSET					28u
+#define NANITE_VISUALIZE_POSITION_BITS						29u
+#define NANITE_VISUALIZE_VSM_STATIC_CACHING					30u
+#define NANITE_VISUALIZE_EVALUATE_WORLD_POSITION_OFFSET		31u
+#define NANITE_VISUALIZE_PICKING							32u
+#define NANITE_VISUALIZE_SHADING_WRITE_MASK					33u
 
 #define NANITE_PICKING_DOMAIN_TRIANGLE		0
 #define NANITE_PICKING_DOMAIN_CLUSTER		1
@@ -223,10 +234,84 @@
 #if defined(__cplusplus)
 #define UINT_TYPE unsigned int
 #define  INT_TYPE int
+#define INLINE_ATTR inline
 #else
 #define UINT_TYPE uint
 #define  INT_TYPE int
+#define INLINE_ATTR 
 #endif
+
+struct FNaniteMaterialFlags
+{
+	bool bWorldPositionOffset;
+	bool bPixelDepthOffset;
+	bool bPixelDiscard;
+	bool bDisplacement;
+	bool bSplineMesh;
+
+	bool bVertexProgrammable;
+	bool bPixelProgrammable;
+};
+
+INLINE_ATTR FNaniteMaterialFlags UnpackNaniteMaterialFlags(UINT_TYPE Packed)
+{
+	FNaniteMaterialFlags MaterialFlags;
+	MaterialFlags.bWorldPositionOffset = (Packed & NANITE_MATERIAL_FLAG_WORLD_POSITION_OFFSET) != 0u;
+	MaterialFlags.bPixelDepthOffset = (Packed & NANITE_MATERIAL_FLAG_PIXEL_DEPTH_OFFSET) != 0u;
+	MaterialFlags.bPixelDiscard = (Packed & NANITE_MATERIAL_FLAG_PIXEL_DISCARD) != 0u;
+	MaterialFlags.bDisplacement = (Packed & NANITE_MATERIAL_FLAG_DISPLACEMENT) != 0u;
+	MaterialFlags.bSplineMesh = (Packed & NANITE_MATERIAL_FLAG_SPLINE_MESH) != 0u;
+	MaterialFlags.bVertexProgrammable = (Packed & NANITE_MATERIAL_VERTEX_PROGRAMMABLE_FLAGS) != 0u;
+	MaterialFlags.bPixelProgrammable = (Packed & NANITE_MATERIAL_PIXEL_PROGRAMMABLE_FLAGS) != 0u;
+	return MaterialFlags;
+}
+
+INLINE_ATTR bool IsNaniteMaterialVertexProgrammable(FNaniteMaterialFlags MaterialFlags)
+{
+	return MaterialFlags.bWorldPositionOffset || MaterialFlags.bDisplacement;
+}
+
+INLINE_ATTR bool IsNaniteMaterialPixelProgrammable(FNaniteMaterialFlags MaterialFlags)
+{
+	return MaterialFlags.bPixelDepthOffset || MaterialFlags.bPixelDiscard;
+}
+
+INLINE_ATTR bool IsNaniteMaterialProgrammable(FNaniteMaterialFlags MaterialFlags)
+{
+	return IsNaniteMaterialVertexProgrammable(MaterialFlags) || IsNaniteMaterialPixelProgrammable(MaterialFlags);
+}
+
+INLINE_ATTR UINT_TYPE PackNaniteMaterialBitFlags(FNaniteMaterialFlags Flags)
+{
+	UINT_TYPE MaterialBitFlags = 0x00000000u;
+
+	if (Flags.bPixelDiscard)
+	{
+		MaterialBitFlags |= NANITE_MATERIAL_FLAG_PIXEL_DISCARD;
+	}
+
+	if (Flags.bPixelDepthOffset)
+	{
+		MaterialBitFlags |= NANITE_MATERIAL_FLAG_PIXEL_DEPTH_OFFSET;
+	}
+
+	if (Flags.bWorldPositionOffset)
+	{
+		MaterialBitFlags |= NANITE_MATERIAL_FLAG_WORLD_POSITION_OFFSET;
+	}
+
+	if (Flags.bDisplacement)
+	{
+		MaterialBitFlags |= NANITE_MATERIAL_FLAG_DISPLACEMENT;
+	}
+
+	if (Flags.bSplineMesh)
+	{
+		MaterialBitFlags |= NANITE_MATERIAL_FLAG_SPLINE_MESH;
+	}
+
+	return MaterialBitFlags;
+}
 
 struct FNaniteStats
 {
@@ -248,8 +333,13 @@ struct FNaniteStats
 	UINT_TYPE NumEmptyRasterBins;
 	UINT_TYPE NumTotalShadingBins;
 	UINT_TYPE NumEmptyShadingBins;
+	UINT_TYPE NumShadedQuads;
+	UINT_TYPE NumShadedPixels;
+	UINT_TYPE NumHelperLanes;
 	UINT_TYPE NumMainPassIndirections;
 	UINT_TYPE NumPostPassIndirections;
+	UINT_TYPE NumMainHierarchyCellsPreCull;
+	UINT_TYPE NumPostHierarchyCellsPreCull;
 };
 
 struct FNanitePickingFeedback
@@ -280,5 +370,39 @@ struct FNanitePickingFeedback
 	UINT_TYPE LegacyShadingId;
 };
 
+struct FNaniteRasterBinMeta
+{
+	UINT_TYPE BinSWCount;
+	UINT_TYPE BinHWCount;
+	UINT_TYPE ClusterOffset;
+	UINT_TYPE MaterialFlags;
+
+	float MinMaterialDisplacement;
+	float MaxMaterialDisplacement;
+};
+
+struct FNaniteShadingBinMeta
+{
+	// Quad count shaded by bin
+	UINT_TYPE QuadCount;
+
+	// Pixel count shaded by bin
+	UINT_TYPE PixelCount;
+
+	// Quad/pixel coord range start
+	UINT_TYPE RangeStart;
+
+	// 0:23 Material bit flags, 24:31 Bound Target Mask
+	UINT_TYPE MaterialFlags;
+};
+
+struct FNaniteShadingBinStats
+{
+	UINT_TYPE TotalQuadCount;
+	UINT_TYPE TotalPixelCount;
+	UINT_TYPE TotalHelperCount;
+};
+
 #undef  INT_TYPE
 #undef UINT_TYPE
+#undef INLINE_ATTR

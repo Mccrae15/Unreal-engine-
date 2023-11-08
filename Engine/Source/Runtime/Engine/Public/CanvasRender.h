@@ -16,12 +16,26 @@ public:
 		GraphBuilder.AddPass(Forward<FRDGEventName>(PassName), PassParameters, ERDGPassFlags::Raster,
 			[LocalScissorRect = ScissorRect, LocalViewportRect = ViewportRect, LocalExecuteLambda = Forward<ExecuteLambdaType&&>(ExecuteLambda)](FRHICommandListImmediate& RHICmdList)
 		{
-			RHICmdList.SetViewport(static_cast<float>(LocalViewportRect.Min.X), static_cast<float>(LocalViewportRect.Min.Y), 0.0f, static_cast<float>(LocalViewportRect.Max.X), static_cast<float>(LocalViewportRect.Max.Y), 1.0f);
+				// BEGIN META SECTION - Multi-View Per View Viewports / Render Areas
+				if (!GSupportsMultiViewPerViewViewports)
+				{
+					RHICmdList.SetViewport(static_cast<float>(LocalViewportRect.Min.X), static_cast<float>(LocalViewportRect.Min.Y), 0.0f, static_cast<float>(LocalViewportRect.Max.X), static_cast<float>(LocalViewportRect.Max.Y), 1.0f);
 
-			if (LocalScissorRect.Area() > 0)
-			{
-				RHICmdList.SetScissorRect(true, static_cast<uint32>(LocalScissorRect.Min.X), static_cast<uint32>(LocalScissorRect.Min.Y), static_cast<uint32>(LocalScissorRect.Max.X), static_cast<uint32>(LocalScissorRect.Max.Y));
-			}
+					if (LocalScissorRect.Area() > 0)
+					{
+						RHICmdList.SetScissorRect(true, static_cast<uint32>(LocalScissorRect.Min.X), static_cast<uint32>(LocalScissorRect.Min.Y), static_cast<uint32>(LocalScissorRect.Max.X), static_cast<uint32>(LocalScissorRect.Max.Y));
+					}
+				}
+				else
+				{
+					RHICmdList.SetStereoViewport(static_cast<float>(LocalViewportRect.Min.X), static_cast<float>(LocalViewportRect.Min.X), static_cast<float>(LocalViewportRect.Min.Y), static_cast<float>(LocalViewportRect.Min.Y), 0.0f, static_cast<float>(LocalViewportRect.Max.X), static_cast<float>(LocalViewportRect.Max.X), static_cast<float>(LocalViewportRect.Max.Y), static_cast<float>(LocalViewportRect.Max.Y), 1.0f);
+
+					if (LocalScissorRect.Area() > 0)
+					{
+						RHICmdList.SetStereoScissor(static_cast<uint32>(LocalScissorRect.Min.X), static_cast<uint32>(LocalScissorRect.Min.X), static_cast<uint32>(LocalScissorRect.Min.Y), static_cast<uint32>(LocalScissorRect.Min.Y), static_cast<uint32>(LocalScissorRect.Max.X), static_cast<uint32>(LocalScissorRect.Max.X), static_cast<uint32>(LocalScissorRect.Max.Y), static_cast<uint32>(LocalScissorRect.Max.Y));
+					}
+				}
+				// END META SECTION - Multi-View Per View Viewports / Render Areas
 		
 			LocalExecuteLambda(RHICmdList);
 		});

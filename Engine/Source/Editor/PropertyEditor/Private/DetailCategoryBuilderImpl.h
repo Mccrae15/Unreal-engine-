@@ -56,6 +56,8 @@ struct FDetailLayoutCustomization
 	TSharedPtr<FPropertyNode> GetPropertyNode() const;
 	/** @return The row to display from this customization */
 	FDetailWidgetRow GetWidgetRow() const;
+	/** @return properties being customized */
+	TArrayView<TSharedPtr<IPropertyHandle>> GetPropertyHandles() const;
 	/** Whether or not this customization is considered an advanced property. */
 	bool bAdvanced { false };
 	/** Whether or not this customization is custom or a default one. */
@@ -185,6 +187,10 @@ public:
 	virtual void SetShowAdvanced(bool bShowAdvanced) override;
 	virtual int32 GetSortOrder() const override;
 	virtual void SetSortOrder(int32 InSortOrder) override;
+	virtual void AddPropertyDisableInstancedReference(TSharedPtr<IPropertyHandle> PropertyHandle) override;
+	
+	/** Delegate handling pasting an optionally tagged text snippet */
+	virtual TSharedPtr<FOnPasteFromText> OnPasteFromText() const override { return PasteFromTextDelegate; }
 
 	/** FDetailTreeNode interface */
 	virtual IDetailsView* GetNodeDetailsView() const override { return GetDetailsView(); }
@@ -198,7 +204,7 @@ public:
 	virtual void GetFilterStrings(TArray<FString>& OutFilterStrings) const override;
 	virtual bool GetInitiallyCollapsed() const override;
 
-	virtual void GetChildren(FDetailNodeList& OutChildren) override;
+	virtual void GetChildren(FDetailNodeList& OutChildren, const bool& bInIgnoreVisibility = false) override;
 	virtual bool ShouldBeExpanded() const override;
 	virtual ENodeVisibility GetVisibility() const override;
 	virtual void FilterNode(const FDetailFilter& DetailFilter) override;
@@ -407,6 +413,9 @@ private:
 	TSharedPtr<FDetailTreeNode> InlinePropertyNode;
 	/** The parent detail builder */
 	TWeakPtr<FDetailLayoutBuilderImpl> DetailLayoutBuilder;
+	/** Delegate handling pasting an optionally tagged text snippet */
+	TSharedPtr<FOnPasteFromText> PasteFromTextDelegate;
+
 	/** The category identifier */
 	FName CategoryName;
 	/** The sort order of this category (amongst all categories) */

@@ -12,6 +12,20 @@
 
 class FGeometryCollection;
 
+// Control the default asset folder presented when using the "New" tool to create a Geometry Collection in Fracture Mode
+UENUM()
+enum class EFractureModeNewAssetLocation
+{
+	/** Default to creating rest collections in the same folder as the source asset. */
+	SourceAssetFolder,
+
+	/** Default to creating rest collections in the last folder selected this session. If no folder was selected yet, use the Source Asset Folder. */
+	LastUsedFolder,
+
+	/** Default to creating reset collections in the currently-visible Asset Browser folder if available, otherwise use the Last Used Folder. */
+	ContentBrowserFolder
+};
+
 /**
  * Settings for the Fracture Editor Mode.
  */
@@ -32,6 +46,10 @@ public:
 	virtual FText GetSectionDescription() const override { return NSLOCTEXT("FractureModeSettings", "FractureModeSettingsDescription", "Configure the Fracture Editor Mode plugin"); }
 
 public:
+
+	/** The default asset folder presented when using the "New" tool to create a Geometry Collection in Fracture Mode */
+	UPROPERTY(config, EditAnywhere, Category = "Fracture Mode|Asset Location")
+	EFractureModeNewAssetLocation NewAssetLocation = EFractureModeNewAssetLocation::SourceAssetFolder;
 
 	/** Default fraction of geometry volume by which a cluster's convex hull volume can exceed the actual geometry volume before instead using the hulls of the children.  0 means the convex volume cannot exceed the geometry volume; 1 means the convex volume is allowed to be 100% larger (2x) the geometry volume. */
 	UPROPERTY(config, EditAnywhere, Category = "Fracture Mode|Convex Generation Defaults", meta = (ClampMin = "0", DisplayName = "Allow Larger Hull Fraction"))
@@ -66,8 +84,12 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = "Fracture Mode|Proximity Detection Defaults", meta = (DisplayName = "Use As Connection Graph"))
 	bool bProximityUseAsConnectionGraph = false;
 
-	// Method to use to determine the contact between two pieces, if the Contact Threshold is greater than 0
-	UPROPERTY(config, EditAnywhere, Category = "Fracture Mode|Proximity Detection Defaults", meta = (DisplayName = "Contact Method"))
+	// Method to use to determine the area of the contact for transforms that are connected in the connection graph used for simulation. Only used if "Use As Connection Graph" is enabled.
+	UPROPERTY(config, EditAnywhere, Category = "Fracture Mode|Proximity Detection Defaults", meta = (DisplayName = "Connection Contact Method"))
+	EConnectionContactMethod ProximityConnectionContactAreaMethod = EConnectionContactMethod::None;
+
+	// Method to use to determine the contact between two pieces, if the Contact Threshold is greater than 0, for the purpose of filtering out too-small contacts
+	UPROPERTY(config, EditAnywhere, Category = "Fracture Mode|Proximity Detection Defaults", meta = (DisplayName = "Contact Filter Method"))
 	EProximityContactMethod ProximityContactMethod = EProximityContactMethod::MinOverlapInProjectionToMajorAxes;
 
 	// If greater than zero, proximity will be additionally filtered by a 'contact' threshold, in cm, to exclude grazing / corner proximity

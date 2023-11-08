@@ -97,6 +97,10 @@ public:
 
 	UNiagaraNodeConvert();
 
+	//~ Begin UObject interface
+	virtual void PostLoad() override;
+	//~ End UObject interface
+
 	//~ UEdGraphNode interface
 	virtual void AllocateDefaultPins() override;
 	virtual TSharedPtr<SGraphNode> CreateVisualWidget() override;
@@ -104,12 +108,13 @@ public:
 	virtual FText GetNodeTitle(ENodeTitleType::Type TitleType) const override;
 
 	//~ UNiagaraNode interface
-	virtual void Compile(class FHlslNiagaraTranslator* Translator, TArray<int32>& Outputs) override;
+	virtual void Compile(FTranslator* Translator, TArray<int32>& Outputs) const override;
 
 	virtual bool RefreshFromExternalChanges() override;
 
 	/** Gets the nodes inner connection. */
 	TArray<FNiagaraConvertConnection>& GetConnections();
+	const TArray<FNiagaraConvertConnection>& GetConnections() const;
 
 	/** Initializes this node as a swizzle by component string. */
 	void InitAsSwizzle(FString Swiz);
@@ -135,11 +140,13 @@ public:
 	void AddExpandedRecord(const FNiagaraConvertPinRecord& InRecord);
 	/** Is this socket expanded?*/
 	bool HasExpandedRecord(const FNiagaraConvertPinRecord& InRecord);
+
+	/** Returns true if the node has a constant value input and a single output */
+	bool IsLocalConstantValue() const;
+	
 private:
 	//~ EdGraphNode interface
 	virtual void OnPinRemoved(UEdGraphPin* Pin) override;
-
-private:
 
 	//A swizzle string set externally to instruct the autowiring code.
 	UPROPERTY()

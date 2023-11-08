@@ -11,6 +11,24 @@
 class FRDGBuilder;
 struct FSceneTextures;
 
+enum class ESceneTexture
+{
+	Color,
+	Depth,
+	SmallDepth,
+	Velocity,
+	GBufferA,
+	GBufferB,
+	GBufferC,
+	GBufferD,
+	GBufferE,
+	GBufferF,
+	SSAO,
+	CustomDepth,
+};
+
+RENDERER_API FRDGTextureRef GetSceneTexture(const FSceneTextures& SceneTextures, ESceneTexture InSceneTexture);
+
 enum class ESceneTextureSetupMode : uint32
 {
 	None			= 0,
@@ -45,6 +63,12 @@ extern RENDERER_API TRDGUniformBufferRef<FSceneTextureUniformParameters> CreateS
 	ERHIFeatureLevel::Type FeatureLevel,
 	ESceneTextureSetupMode SetupMode = ESceneTextureSetupMode::All);
 
+/** Returns RDG scene texture uniform buffer for a specified View. */
+extern RENDERER_API TRDGUniformBufferRef<FSceneTextureUniformParameters> CreateSceneTextureUniformBuffer(
+	FRDGBuilder& GraphBuilder,
+	const FSceneView& View,
+	ESceneTextureSetupMode SetupMode = ESceneTextureSetupMode::All);
+
 enum class EMobileSceneTextureSetupMode : uint32
 {
 	None			= 0,
@@ -75,6 +99,12 @@ extern RENDERER_API TRDGUniformBufferRef<FMobileSceneTextureUniformParameters> C
 	const FSceneTextures* SceneTextures,
 	EMobileSceneTextureSetupMode SetupMode = EMobileSceneTextureSetupMode::All);
 
+/** Creates the RDG mobile scene texture uniform buffer. */
+extern RENDERER_API TRDGUniformBufferRef<FMobileSceneTextureUniformParameters> CreateMobileSceneTextureUniformBuffer(
+	FRDGBuilder& GraphBuilder,
+	const FSceneView& View,
+	EMobileSceneTextureSetupMode SetupMode = EMobileSceneTextureSetupMode::All);
+
 /** Returns scene texture shader parameters containing the RDG uniform buffer for either mobile or deferred shading. */
 extern RENDERER_API FSceneTextureShaderParameters CreateSceneTextureShaderParameters(
 	FRDGBuilder& GraphBuilder,
@@ -82,11 +112,19 @@ extern RENDERER_API FSceneTextureShaderParameters CreateSceneTextureShaderParame
 	ERHIFeatureLevel::Type FeatureLevel,
 	ESceneTextureSetupMode SetupMode = ESceneTextureSetupMode::All);
 
+/** Returns scene texture shader parameters containing the RDG uniform buffer for either mobile or deferred shading. */
+extern RENDERER_API FSceneTextureShaderParameters CreateSceneTextureShaderParameters(
+	FRDGBuilder& GraphBuilder,
+	const FSceneView& View,
+	ESceneTextureSetupMode SetupMode = ESceneTextureSetupMode::All);
+
+extern RENDERER_API FSceneTextureShaderParameters GetSceneTextureShaderParameters(const FSceneView& View);
+
 /** Struct containing references to extracted RHI resources after RDG execution. All textures are
  *  left in an SRV read state, so they can safely be used for read without being re-imported into
  *  RDG. Likewise, the uniform buffer is non-RDG and can be used as is.
  */
-class RENDERER_API FSceneTextureExtracts : public FRenderResource
+class FSceneTextureExtracts : public FRenderResource
 {
 public:
 	FRHIUniformBuffer* GetUniformBuffer() const
@@ -109,14 +147,17 @@ public:
 		return Depth ? Depth->GetRHI() : nullptr;
 	}
 
-	void QueueExtractions(FRDGBuilder& GraphBuilder, const FSceneTextures& SceneTextures);
+	RENDERER_API void QueueExtractions(FRDGBuilder& GraphBuilder, const FSceneTextures& SceneTextures);
 
 private:
-	void Release();
-	void ReleaseDynamicRHI() override { Release(); }
+	RENDERER_API void Release();
+	void ReleaseRHI() override { Release(); }
 
 	// Contains the resolved scene depth target.
 	TRefCountPtr<IPooledRenderTarget> Depth;
+
+	// Contains the resolved scene depth target.
+	TRefCountPtr<IPooledRenderTarget> PartialDepth;
 
 	// Contains the custom depth targets.
 	TRefCountPtr<IPooledRenderTarget> CustomDepth;

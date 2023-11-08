@@ -11,14 +11,16 @@
  * Finds all packages in the project and attempts to rehydrate them. If revision control
  * is enabled then the commandlet will attempt to checkout the packages that need modification.
  *
- * Because the commmandlet is the VirtualizationEditor module it needs to be invoked
+ * Because the commandlet is the VirtualizationEditor module it needs to be invoked
  * with the command line:
- * -run=VirtualizationEditor.RehydrateProject
+ * -run="VirtualizationEditor.RehydrateProject"
  */
 UCLASS()
 class URehydrateProjectCommandlet
 	: public UCommandlet
 {
+private:
+
 	GENERATED_UCLASS_BODY()
 
 	//~ Begin UCommandlet Interface
@@ -26,4 +28,10 @@ class URehydrateProjectCommandlet
 	//~ End UCommandlet Interface
 
 	static int32 StaticMain(const FString& Params);
+
+	bool ParseCmdline(const FString& Params);
+
+private:
+
+	bool bAutoCheckIn = false;
 };

@@ -4,14 +4,16 @@
 
 #include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "IDetailChildrenBuilder.h"
 #include "IDetailCustomization.h"
 #include "IDetailGroup.h"
 #include "MoviePipelineConsoleVariableSetting.h"
 #include "PropertyCustomizationHelpers.h"
-#include "PropertyEditor/Private/PropertyNode.h"
 #include "PropertyHandle.h"
 #include "Sections/MovieSceneConsoleVariableTrackInterface.h"
+#include "Widgets/Input/SComboButton.h"
+#include "Widgets/Input/SEditableTextBox.h"
 
 #define LOCTEXT_NAMESPACE "SMoviePipelineEditor"
 
@@ -70,8 +72,8 @@ protected:
 		static const FText ConsoleVariableDisabledText = LOCTEXT("DisabledConsoleVariable", "This console variable is disabled.");
 
 		// Add the preset asset chooser as the group header
-		const FString& PropName = ElementProperty->GetPropertyNode()->GetPropertyPath();
-		IDetailGroup& Group = ChildrenBuilder.AddGroup(FName(PropName), FText::FromString(PropName));
+		FStringView PropName = ElementProperty->GetPropertyPath();
+		IDetailGroup& Group = ChildrenBuilder.AddGroup(FName(PropName), FText::FromStringView(PropName));
 		Group.HeaderRow()
 		[
 			ElementProperty->CreatePropertyValueWidget()

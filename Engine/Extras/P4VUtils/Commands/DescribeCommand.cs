@@ -15,6 +15,7 @@ using System.Diagnostics;
 
 namespace P4VUtils.Commands
 {
+	[Command("describe", CommandCategory.Root, 0)]
 	class DescribeCommand : Command
 	{
 		public override string Description => "Prints out a description of the given changelist";
@@ -47,6 +48,7 @@ namespace P4VUtils.Commands
 		}
 	}
 
+	[Command("describedirectory", CommandCategory.Toolbox, 8)]
 	class DescribeDirectoryCommand : Command
 	{
 		public override string Description => "Prints out a description of last 30 days of CL's in the given directory to txt and csv";
@@ -55,22 +57,6 @@ namespace P4VUtils.Commands
 
 		private int MaxDaysHistory = 30;
 		private int MaxChangeListCount = 10000;
-
-		static void OSOpenFile(string FilePath)
-		{
-			if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-			{
-				Process.Start(new ProcessStartInfo(FilePath) { UseShellExecute = true });
-			}
-			else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-			{
-				Process.Start("xdg-open", FilePath);
-			}
-			else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-			{
-				Process.Start("open", FilePath);
-			}
-		}
 
 		public override async Task<int> Execute(string[] Args, IReadOnlyDictionary<string, string> ConfigValues, ILogger Logger)
 		{
@@ -180,7 +166,7 @@ namespace P4VUtils.Commands
 				await Writer.WriteLineAsync(CSVFormat.ToString());
 			}
 
-			OSOpenFile(PlainTextPath);
+			ProcessUtils.OpenInNewProcess(PlainTextPath);
 
 			Logger.LogInformation("Complete");
 			Logger.LogInformation("PlainText: {PlainText}", PlainTextPath);

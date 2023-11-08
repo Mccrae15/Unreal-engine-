@@ -164,7 +164,7 @@ bool FInterfaceProperty::NetSerializeItem( FArchive& Ar, UPackageMap* Map, void*
 	if (Ar.EngineNetVer() >= FEngineNetworkCustomVersion::InterfacePropertySerialization)
 	{ 
 		FScriptInterface* InterfaceValue = (FScriptInterface*)Data;
-		bool Result = Map->SerializeObject(Ar, InterfaceClass, InterfaceValue->GetObjectRef());
+		bool Result = Map->SerializeObject(Ar, InterfaceClass, MutableView(InterfaceValue->GetObjectRef()));
 		if (Ar.IsLoading())
 		{
 			if (InterfaceValue->GetObject() != nullptr)
@@ -230,7 +230,7 @@ void FInterfaceProperty::ExportText_Internal( FString& ValueStr, const void* Pro
 const TCHAR* FInterfaceProperty::ImportText_Internal( const TCHAR* InBuffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* Parent, int32 PortFlags, FOutputDevice* ErrorText) const
 {
 	FScriptInterface* InterfaceValue = (FScriptInterface*)PointerToValuePtr(ContainerOrPropertyPtr, PropertyPointerType);
-	UObject* ResolvedObject = InterfaceValue->GetObject();
+	TObjectPtr<UObject> ResolvedObject = InterfaceValue->GetObject();
 
 	auto SetInterfaceValue = [InterfaceValue, ContainerOrPropertyPtr, PropertyPointerType, this](UObject* NewObject, void* NewInterfaceAddress)
 	{

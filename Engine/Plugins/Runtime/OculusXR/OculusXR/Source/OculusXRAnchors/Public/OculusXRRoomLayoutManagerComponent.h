@@ -10,19 +10,8 @@ LICENSE file in the root directory of this source tree.
 
 #include "CoreMinimal.h"
 #include "OculusXRSpatialAnchorComponent.h"
+#include "OculusXRAnchorBPFunctionLibrary.h"
 #include "OculusXRRoomLayoutManagerComponent.generated.h"
-
-// Represents a room layout within a specific space
-USTRUCT(BlueprintType)
-struct OCULUSXRANCHORS_API FOculusXRRoomLayout
-{
-	GENERATED_USTRUCT_BODY()
-
-	FOculusXRUUID FloorUuid;
-	FOculusXRUUID CeilingUuid;
-	TArray<FOculusXRUUID> WallsUuid;
-	TArray<FOculusXRUUID> RoomObjectUUIDs;
-};
 
 UCLASS(meta = (DisplayName = "OculusXR Room Layout Manager Component", BlueprintSpawnableComponent))
 class OCULUSXRANCHORS_API UOculusXRRoomLayoutManagerComponent : public UActorComponent
@@ -56,6 +45,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "OculusXR|Room Layout Manager")
 	bool GetRoomLayout(FOculusXRUInt64 Space, UPARAM(ref) FOculusXRRoomLayout& RoomLayoutOut, int32 MaxWallsCapacity = 64);
 
+	// Loads mesh data (vertices, indeces) associated with the space into UProceduralMeshComponent
+	UFUNCTION(BlueprintCallable, Category = "OculusXR|Room Layout Manager")
+	bool LoadTriangleMesh(FOculusXRUInt64 Space, class UProceduralMeshComponent* Mesh, bool CreateCollision) const;
 
 protected:
 	UPROPERTY(Transient)

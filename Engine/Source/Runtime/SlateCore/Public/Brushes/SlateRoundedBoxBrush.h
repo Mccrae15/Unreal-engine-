@@ -6,7 +6,7 @@
 #include "Styling/SlateBrush.h"
 #include "Types/SlateVector2.h"
 
-struct SLATECORE_API FSlateRoundedBoxBrush
+struct FSlateRoundedBoxBrush
 	: public FSlateBrush
 {
 
@@ -35,11 +35,14 @@ struct SLATECORE_API FSlateRoundedBoxBrush
 		: FSlateRoundedBoxBrush(InColor, UE::Slate::FDeprecateVector2DParameter(InImageSize))
 	{ 
 	}
+
+#if UE_ENABLE_SLATE_VECTOR_DEPRECATION_MECHANISMS
 	template<typename FillColorType>
 	FORCENOINLINE FSlateRoundedBoxBrush(const FillColorType& InColor, const FVector2D& InImageSize)
 		: FSlateRoundedBoxBrush(InColor, UE::Slate::FDeprecateVector2DParameter(UE::Slate::CastToVector2f(InImageSize)))
 	{ 
 	}
+#endif
 	template<typename FillColorType>
 	FORCENOINLINE FSlateRoundedBoxBrush(const FillColorType& InColor, const FVector2f& InImageSize)
 		: FSlateRoundedBoxBrush(InColor, UE::Slate::FDeprecateVector2DParameter(InImageSize))

@@ -3,9 +3,9 @@ import { action, makeObservable, observable } from "mobx";
 import { observer } from "mobx-react-lite";
 import moment from "moment";
 import React, { useState } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import backend from "../../backend";
-import { BatchData, GetJobTimingResponse, GetLabelResponse, GetTemplateRefResponse, GroupData, JobData, JobState, LabelState, NodeData, ReportPlacement, StepData, StreamData } from "../../backend/Api";
+import { BatchData, GetArtifactResponseV2, GetJobTimingResponse, GetLabelResponse, GetTemplateRefResponse, GroupData, JobData, JobState, LabelState, NodeData, ReportPlacement, StepData, StreamData } from "../../backend/Api";
 import { JobLabel } from "../../backend/JobDetails";
 import { PollBase } from "../../backend/PollBase";
 import { projectStore } from "../../backend/ProjectStore";
@@ -16,9 +16,11 @@ import { useQuery } from "../JobDetailCommon";
 import { LabelStatusIcon, StepStatusIcon } from "../StatusIcon";
 
 export abstract class JobDataView {
-   
-   constructor(details: JobDetailsV2) {
-      makeObservable(this);
+
+   constructor(details: JobDetailsV2, initObservable?:boolean) {
+      if (initObservable === undefined || initObservable) {
+         makeObservable(this);   
+      }      
       this.details = details;
    }
 
@@ -122,7 +124,7 @@ export abstract class JobDataView {
 const defaultUpdateMS = 5000;
 export class JobDetailsV2 extends PollBase {
 
-   constructor(jobId: string) {      
+   constructor(jobId: string) {
       super(defaultUpdateMS)
       makeObservable(this);
       this.jobId = jobId;
@@ -153,6 +155,7 @@ export class JobDetailsV2 extends PollBase {
    clear() {
       super.stop();
       this.jobId = undefined;
+      this.jobError = undefined;
       this.jobData = undefined;
       this.stream = undefined;
       this.template = undefined;
@@ -604,7 +607,7 @@ export class JobDetailsV2 extends PollBase {
 
    async poll() {
 
-      if (!this.jobId) {
+      if (!this.jobId || this.jobError) {
          return;
       }
 
@@ -618,7 +621,13 @@ export class JobDetailsV2 extends PollBase {
 
       await Promise.all(requests as any).then(r => results = r).catch(reason => {
          console.error(reason);
+         this.jobError = reason;
       });
+
+      if (this.jobError) {
+         this.setRootUpdated();
+         return;
+      }
 
       const lastUpdateTime = this.jobData?.updateTime;
 
@@ -697,6 +706,7 @@ export class JobDetailsV2 extends PollBase {
    }
 
    jobId?: string;
+   jobError?: string;
 
    overview?: boolean;
 
@@ -707,6 +717,9 @@ export class JobDetailsV2 extends PollBase {
    nodes: NodeData[] = [];
    batches: BatchData[] = [];
    template?: GetTemplateRefResponse;
+   
+   // stepId => artifacts
+   stepArtifacts = new Map<string, GetArtifactResponseV2[]>();
 
    // artifact id => report contents (markdown)
    private reportData = new Map<string, string>();
@@ -720,6 +733,45 @@ export class JobDetailsV2 extends PollBase {
 
    removeDataView(view: JobDataView) {
       this.views = this.views.filter(v => v !== view);
+   }
+
+   getStepDependencies(stepId: string): StepData[] {
+
+      const step = this.stepById(stepId);
+
+      if (!step) {
+         return [];
+      }
+
+      const steps: StepData[] = [];
+
+      const nodes: NodeData[] = [];
+
+      const getStepsRecursive = (stepId: string) => {
+
+         const stepNode = this.nodeByStepId(stepId);
+
+         if (!stepNode || nodes.find(n => stepNode === n)) {
+            return;
+         }
+
+         nodes.push(stepNode);
+
+         [stepNode.inputDependencies, stepNode.orderDependencies].flat().forEach(name => {
+            const s = this.stepByName(name);
+            if (s) {
+               steps.push(s);
+               getStepsRecursive(s.id);
+            }
+         });
+      };
+
+      getStepsRecursive(stepId);
+
+      steps.push(step);
+      
+      return steps;
+
    }
 
    getDataView<T extends JobDataView>(name: string): T {
@@ -1062,6 +1114,16 @@ export const JobFilterBar: React.FC<{ jobDetails: JobDetailsV2 }> = observer(({ 
       };
    });
 
+   stateItems.forEach(item => {
+      if (item.state === "Aborted") {
+         item.text = "Canceled";
+      }
+      else if (item.state === "Failure") {
+         item.text = "Errors";
+      }
+
+   });
+
    // steps
    /*
    const step = selected?.step;
@@ -1261,7 +1323,7 @@ export const JobFilterBar: React.FC<{ jobDetails: JobDetailsV2 }> = observer(({ 
                   if (idx >= 0) {
                      navigate(location.pathname + `?label=${idx}`);
                   } else {
-                     navigate(location.pathname, {replace: true});
+                     navigate(location.pathname, { replace: true });
                   }
                }
 

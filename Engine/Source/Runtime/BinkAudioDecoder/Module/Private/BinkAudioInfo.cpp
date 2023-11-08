@@ -113,10 +113,11 @@ void FBinkAudioInfo::PrepareToLoop()
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
 void FBinkAudioInfo::SeekToTime(const float SeekTimeSeconds)
-{
+{	
+	// If there's no seek table on the header, fall-back to Super implementation.
 	if (Decoder->SeekTableCount == 0)
 	{
-		// Can't seek without a seek table.
+		Super::SeekToTime(SeekTimeSeconds);
 		return;
 	}
 

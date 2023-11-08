@@ -1,7 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimNodes/AnimNode_CopyPoseFromMesh.h"
+
+#include "Animation/AnimCurveUtils.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "Animation/AnimStats.h"
 #include "Animation/AnimTrace.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
@@ -144,13 +147,14 @@ void FAnimNode_CopyPoseFromMesh::PreUpdate(const UAnimInstance* InAnimInstance)
 				UAnimInstance* SourceAnimInstance = CurrentMeshComponent->GetAnimInstance();
 				if (SourceAnimInstance)
 				{
-					// attribute curve contains all list
-					SourceCurveList.Reset();
-					SourceCurveList.Append(SourceAnimInstance->GetAnimationCurveList(EAnimCurveType::AttributeCurve));
+					// Potential optimization/tradeoff: If we stored the curve results on the mesh component in non-editor scenarios, this would be
+					// much faster (but take more memory). As it is, we need to translate the map stored on the anim instance.
+					const TMap<FName, float>& AnimCurveList = SourceAnimInstance->GetAnimationCurveList(EAnimCurveType::AttributeCurve);
+					UE::Anim::FCurveUtils::BuildUnsorted(SourceCurves, AnimCurveList);
 				}
 				else
 				{
-					SourceCurveList.Reset();
+					SourceCurves.Empty();
 				}
 			}
 
@@ -180,6 +184,8 @@ void FAnimNode_CopyPoseFromMesh::Update_AnyThread(const FAnimationUpdateContext&
 void FAnimNode_CopyPoseFromMesh::Evaluate_AnyThread(FPoseContext& Output)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Evaluate_AnyThread)
+	ANIM_MT_SCOPE_CYCLE_COUNTER_VERBOSE(CopyPoseFromMesh, !IsInGameThread());
+
 	FCompactPose& OutPose = Output.Pose;
 	OutPose.ResetToRefPose();
 	USkeletalMesh* CurrentMesh = CurrentlyUsedMesh.IsValid() ? CurrentlyUsedMesh.Get() : nullptr;
@@ -234,15 +240,7 @@ void FAnimNode_CopyPoseFromMesh::Evaluate_AnyThread(FPoseContext& Output)
 
 	if (bCopyCurves)
 	{
-		for (auto Iter = SourceCurveList.CreateConstIterator(); Iter; ++Iter)
-		{
-			const SmartName::UID_Type* UID = CurveNameToUIDMap.Find(Iter.Key());
-			if (UID)
-			{
-				// set source value to output curve
-				Output.Curve.Set(*UID, Iter.Value());
-			}
-		}
+		Output.Curve.CopyFrom(SourceCurves);
 	}
 
 	if (bCopyCustomAttributes)
@@ -268,7 +266,6 @@ void FAnimNode_CopyPoseFromMesh::ReinitializeMeshComponent(USkeletalMeshComponen
 	CurrentlyUsedSourceMesh.Reset();
 	CurrentlyUsedTargetMesh.Reset();
 	BoneMapToSource.Reset();
-	CurveNameToUIDMap.Reset();
 
 	if (TargetMeshComponent && IsValid(NewSourceMeshComponent) && NewSourceMeshComponent->GetSkeletalMeshAsset())
 	{
@@ -299,33 +296,6 @@ void FAnimNode_CopyPoseFromMesh::ReinitializeMeshComponent(USkeletalMeshComponen
 					{
 						FName BoneName = TargetSkelMesh->GetRefSkeleton().GetBoneName(ComponentSpaceBoneId);
 						BoneMapToSource.Add(ComponentSpaceBoneId, SourceSkelMesh->GetRefSkeleton().FindBoneIndex(BoneName));
-					}
-				}
-			}
-		
-			if (bCopyCurves)
-			{
-				USkeleton* SourceSkeleton = SourceSkelMesh->GetSkeleton();
-				USkeleton* TargetSkeleton = TargetSkelMesh->GetSkeleton();
-
-				// you shouldn't be here if this happened
-				if (ensureMsgf(SourceSkeleton, TEXT("Invalid null source skeleton : %s"), *GetNameSafe(SourceSkelMesh))
-					&& ensureMsgf(TargetSkeleton, TEXT("Invalid null target skeleton : %s"), *GetNameSafe(TargetSkelMesh)))
-				{
-					const FSmartNameMapping* SourceContainer = SourceSkeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
-					const FSmartNameMapping* TargetContainer = TargetSkeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
-
-					TArray<FName> SourceCurveNames;
-					SourceContainer->FillNameArray(SourceCurveNames);
-					for (int32 Index = 0; Index < SourceCurveNames.Num(); ++Index)
-					{
-						SmartName::UID_Type UID = TargetContainer->FindUID(SourceCurveNames[Index]);
-						if (UID != SmartName::MaxUID)
-						{
-							// has a valid UID, add to the list
-							SmartName::UID_Type& Value = CurveNameToUIDMap.Add(SourceCurveNames[Index]);
-							Value = UID;
-						}
 					}
 				}
 			}

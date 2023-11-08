@@ -57,9 +57,13 @@ namespace Metasound
 			const FFloatReadRef& InPanningAmount,
 			const FPanningLawReadRef& InPanningLaw);
 
+
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override;
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override;
 		virtual FDataReferenceCollection GetInputs() const override;
 		virtual FDataReferenceCollection GetOutputs() const override;
 		void Execute();
+		void Reset(const IOperator::FResetParams& InParams);
 
 	private:
 		float GetInputDelayTimeMsec() const;
@@ -98,27 +102,38 @@ namespace Metasound
 		ComputePanGains(PrevPanningAmount, PrevLeftPan, PrevRightPan);
 	}
 
-	FDataReferenceCollection FStereoPannerOperator::GetInputs() const
+
+	void FStereoPannerOperator::BindInputs(FInputVertexInterfaceData& InOutVertexData)
 	{
 		using namespace StereoPannerVertexNames;
 
-		FDataReferenceCollection InputDataReferences;
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputAudio), AudioInput);
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputPanAmount), PanningAmount);
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputPanningLaw), PanningLaw);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputAudio), AudioInput);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputPanAmount), PanningAmount);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputPanningLaw), PanningLaw);
+	}
 
-		return InputDataReferences;
+	void FStereoPannerOperator::BindOutputs(FOutputVertexInterfaceData& InOutVertexData)
+	{
+		using namespace StereoPannerVertexNames;
+
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputAudioLeft), AudioLeftOutput);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputAudioRight), AudioRightOutput);
+	}
+
+	FDataReferenceCollection FStereoPannerOperator::GetInputs() const
+	{
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
 	}
 
 	FDataReferenceCollection FStereoPannerOperator::GetOutputs() const
 	{
-		using namespace StereoPannerVertexNames;
-
-		FDataReferenceCollection OutputDataReferences;
-		OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputAudioLeft), AudioLeftOutput);
-		OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputAudioRight), AudioRightOutput);
-
-		return OutputDataReferences;
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
 	}
 
 	void FStereoPannerOperator::ComputePanGains(float InPanningAmmount, float& OutLeftGain, float& OutRightGain) const
@@ -179,6 +194,15 @@ namespace Metasound
 		}
 	}
 
+	void FStereoPannerOperator::Reset(const IOperator::FResetParams& InParams)
+	{
+		AudioLeftOutput->Zero();
+		AudioRightOutput->Zero();
+
+		PrevPanningAmount = FMath::Clamp(*PanningAmount, -1.0f, 1.0f);
+		ComputePanGains(PrevPanningAmount, PrevLeftPan, PrevRightPan);
+	}
+
 	const FVertexInterface& FStereoPannerOperator::GetVertexInterface()
 	{
 		using namespace StereoPannerVertexNames;
@@ -187,7 +211,7 @@ namespace Metasound
 			FInputVertexInterface(
 				TInputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputAudio)),
 				TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputPanAmount), 0.0f),
-				TInputDataVertex<FEnumPanningLaw>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputPanningLaw))
+				TInputDataVertex<FEnumPanningLaw>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputPanningLaw), (int32)EPanningLaw::EqualPower)
 			),
 			FOutputVertexInterface(
 				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioLeft)),
@@ -229,7 +253,7 @@ namespace Metasound
 
 		FAudioBufferReadRef AudioIn = InputCollection.GetDataReadReferenceOrConstruct<FAudioBuffer>(METASOUND_GET_PARAM_NAME(InputAudio), InParams.OperatorSettings);
 		FFloatReadRef PanningAmount = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, METASOUND_GET_PARAM_NAME(InputPanAmount), InParams.OperatorSettings);
-		FPanningLawReadRef PanningLaw = InputCollection.GetDataReadReferenceOrConstruct<FEnumPanningLaw>(METASOUND_GET_PARAM_NAME(InputPanningLaw));
+		FPanningLawReadRef PanningLaw = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<FEnumPanningLaw>(InputInterface, METASOUND_GET_PARAM_NAME(InputPanningLaw), InParams.OperatorSettings);
 
 		return MakeUnique<FStereoPannerOperator>(InParams.OperatorSettings, AudioIn, PanningAmount, PanningLaw);
 	}

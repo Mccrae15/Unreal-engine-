@@ -95,6 +95,8 @@ registerIcons({
       "Cross": IconContents.CROSS,
       "ChevronUp": IconContents.CHEVRON_UP,
       "ChevronDown": IconContents.CHEVRON_DOWN,
+      "ChevronLeft": IconContents.CHEVRON_LEFT,
+      "ChevronRight": IconContents.CHEVRON_RIGHT,
       "Refresh": IconContents.REFRESH,
       "Warning": IconContents.WARNING_SIGN,
       "LayoutCircle": IconContents.LAYOUT_CIRCLE,
@@ -122,7 +124,15 @@ registerIcons({
       "More": IconContents.MORE,
       "Share": IconContents.SHARE,
       "Wrench": IconContents.WRENCH,
-      "Dashboard": IconContents.DASHBOARD
+      "Dashboard": IconContents.DASHBOARD,
+      "Document": IconContents.DOCUMENT,
+      "Folder": IconContents.FOLDER_CLOSE,
+      "CloudDownload": IconContents.CLOUD_DOWNLOAD,
+      "Eye": IconContents.EYE_OPEN,
+      "ArrowLeft": IconContents.ARROW_LEFT,
+      "ArrowRight": IconContents.ARROW_RIGHT,
+      "ArrowUp": IconContents.ARROW_UP,
+      "Repeat": IconContents.REPEAT
    }
 });
 
@@ -259,8 +269,8 @@ export const hordeClasses = mergeStyleSets({
             minWidth: 0,
             paddingTop: 6,
             paddingBottom: 6,
-            paddingLeft: 3,
-            paddingRight: 3,
+            paddingLeft: 1,
+            paddingRight: 1,
             height: 18
          },
          '.ms-Button:hover': {
@@ -268,7 +278,7 @@ export const hordeClasses = mergeStyleSets({
             filter: "brightness(1.15)"
          },
          '.ms-Button-label': {
-            fontSize: '10px',
+            fontSize: '9px',
             fontFamily: "Horde Open Sans SemiBold",
             whiteSpace: "nowrap"
          }

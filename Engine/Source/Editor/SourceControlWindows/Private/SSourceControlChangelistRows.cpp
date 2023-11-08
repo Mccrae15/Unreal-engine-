@@ -71,10 +71,6 @@ void SChangelistTableRow::Construct(const FArguments& InArgs, const TSharedRef<S
 	TreeItem = static_cast<FChangelistTreeItem*>(InArgs._TreeItemToVisualize.Get());
 	OnPostDrop = InArgs._OnPostDrop;
 
-	const FSlateBrush* IconBrush = (TreeItem != nullptr) ?
-		FAppStyle::GetBrush(TreeItem->ChangelistState->GetSmallIconName()) :
-		FAppStyle::GetBrush("SourceControl.Changelist");
-
 	SetToolTipText(GetChangelistDescriptionText());
 
 	STableRow<FChangelistTreeItemPtr>::Construct(
@@ -87,7 +83,10 @@ void SChangelistTableRow::Construct(const FArguments& InArgs, const TSharedRef<S
 			.AutoWidth()
 			[
 				SNew(SImage)
-				.Image(IconBrush)
+				.Image_Lambda([this]()
+				{
+					return (TreeItem != nullptr) ?FAppStyle::GetBrush(TreeItem->ChangelistState->GetSmallIconName()) : FAppStyle::GetBrush("SourceControl.Changelist");
+				})
 			]
 			+SHorizontalBox::Slot() // Changelist number.
 			.Padding(2, 0, 0, 0)
@@ -562,13 +561,16 @@ TSharedRef<SWidget> SOfflineFileTableRow::GenerateWidgetForColumn(const FName& C
 						}
 					}
 					// Validate we have a saved map
-					UPackage* LevelPackage = FindPackage(nullptr, *PackageName)->GetOutermost();
-					if (LevelPackage == GetTransientPackage()
-						|| LevelPackage->HasAnyFlags(RF_Transient)
-						|| !FPackageName::IsValidLongPackageName(LevelPackage->GetName()))
+					if (UPackage* Package = FindPackage(nullptr, *PackageName))
 					{
-						FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("DiscardUnsavedChangesSaveMap", "You need to save the level before discarding unsaved changes."));
-						return FReply::Handled();
+						UPackage* LevelPackage = Package->GetOutermost();
+						if (LevelPackage == GetTransientPackage()
+							|| LevelPackage->HasAnyFlags(RF_Transient)
+							|| !FPackageName::IsValidLongPackageName(LevelPackage->GetName()))
+						{
+							FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("DiscardUnsavedChangesSaveMap", "You need to save the level before discarding unsaved changes."));
+							return FReply::Handled();
+						}
 					}
 					
 					DiscardSwitcher->SetActiveWidgetIndex(1);

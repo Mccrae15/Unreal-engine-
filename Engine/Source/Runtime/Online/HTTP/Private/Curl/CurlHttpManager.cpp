@@ -14,8 +14,12 @@
 #include "Misc/Fork.h"
 
 #include "Curl/CurlHttpThread.h"
+#include "Curl/CurlMultiPollEventLoopHttpThread.h"
+#include "Curl/CurlMultiWaitEventLoopHttpThread.h"
+#include "Curl/CurlSocketEventLoopHttpThread.h"
 #include "Curl/CurlHttp.h"
 #include "Misc/OutputDeviceRedirector.h"
+#include "HAL/IConsoleManager.h"
 #include "HttpModule.h"
 
 #if WITH_SSL
@@ -32,6 +36,13 @@
 #ifndef DISABLE_UNVERIFIED_CERTIFICATE_LOADING
 #define DISABLE_UNVERIFIED_CERTIFICATE_LOADING 0
 #endif
+
+TAutoConsoleVariable<int32> CVarCurlEventLoopEnableChance(
+	TEXT("http.CurlEventLoopEnableChance"),
+	0,
+	TEXT("Enable chance of curl event loop, from 0 to 100"),
+	ECVF_SaveForNextBoot
+);
 
 CURLM* FCurlHttpManager::GMultiHandle = nullptr;
 #if !WITH_CURL_XCURL
@@ -341,7 +352,7 @@ void FCurlHttpManager::ShutdownCurl()
 	if (GShareHandle != nullptr)
 	{
 		CURLSHcode ShareCleanupCode = curl_share_cleanup(GShareHandle);
-		ensureMsgf(ShareCleanupCode == CURLSHE_OK, TEXT("CurlShareCleanup failed. ReturnValue=[%d]"), static_cast<int32>(ShareCleanupCode));
+		UE_CLOG(ShareCleanupCode != CURLSHE_OK, LogHttp, Warning, TEXT("curl_share_cleanup failed. ReturnValue=[%d]"), static_cast<int32>(ShareCleanupCode));
 		GShareHandle = nullptr;
 	}
 #endif
@@ -349,7 +360,7 @@ void FCurlHttpManager::ShutdownCurl()
 	if (GMultiHandle != nullptr)
 	{
 		CURLMcode MutliCleanupCode = curl_multi_cleanup(GMultiHandle);
-		ensureMsgf(MutliCleanupCode == CURLM_OK, TEXT("CurlMultiCleanup failed. ReturnValue=[%d]"), static_cast<int32>(MutliCleanupCode));
+		UE_CLOG(MutliCleanupCode != CURLM_OK, LogHttp, Warning, TEXT("curl_multi_cleanup failed. ReturnValue=[%d]"), static_cast<int32>(MutliCleanupCode));
 		GMultiHandle = nullptr;
 	}
 
@@ -439,8 +450,28 @@ void FCurlHttpManager::UpdateConfigs()
 	}
 }
 
-FHttpThread* FCurlHttpManager::CreateHttpThread()
+FHttpThreadBase* FCurlHttpManager::CreateHttpThread()
 {
+	bool bUseEventLoop = (FMath::RandRange(0, 99) < CVarCurlEventLoopEnableChance.GetValueOnGameThread());
+	if (bUseEventLoop)
+	{
+#if WITH_CURL_MULTIPOLL
+		UE_LOG(LogHttp, Log, TEXT("CreateHttpThread using FCurlMultiPollEventLoopHttpThread"));
+		return new FCurlMultiPollEventLoopHttpThread();
+#endif // WITH_CURL_MULTIPOLL
+
+#if WITH_CURL_MULTISOCKET
+		UE_LOG(LogHttp, Log, TEXT("CreateHttpThread using FCurlSocketEventLoopHttpThread"));
+		return new FCurlSocketEventLoopHttpThread();
+#endif // WITH_CURL_MULTISOCKET
+
+#if WITH_CURL_MULTIWAIT
+		UE_LOG(LogHttp, Log, TEXT("CreateHttpThread using FCurlMultiWaitEventLoopHttpThread"));
+		return new FCurlMultiWaitEventLoopHttpThread();
+#endif // WITH_CURL_MULTIWAIT
+	}
+
+	UE_LOG(LogHttp, Log, TEXT("CreateHttpThread using FCurlHttpThread"));
 	return new FCurlHttpThread();
 }
 

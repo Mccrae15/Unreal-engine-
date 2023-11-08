@@ -97,8 +97,11 @@ struct FSpatializationParams
 	/** The distance used to compute attenuation. Maybe different from the distance between listener and emitter if it's overridden. */
 	float AttenuationDistance;
 
-	/** The normalized omni radius, or the radius that will blend a sound to non-3d */
+	/** Deprecated */
 	float NormalizedOmniRadius;
+
+	/** The amount of non-spatialized this source is. 1.0 means fully 2D, 0.0 means fully 3D. */
+	float NonSpatializedAmount;
 
 	/** The time when this spatialization params was built. */
 	double AudioClock;
@@ -115,6 +118,7 @@ struct FSpatializationParams
 		, Distance(0.0f)
 		, AttenuationDistance(0.0f)
 		, NormalizedOmniRadius(0.0f)
+		, NonSpatializedAmount(0.0f)
 		, AudioClock(0.0)
 	{}
 };
@@ -176,8 +180,8 @@ struct FAudioPluginSourceOutputData
 };
 
 /** This is a class which should be overridden to provide users with settings to use for individual sounds */
-UCLASS(config = Engine, abstract, editinlinenew, BlueprintType)
-class AUDIOEXTENSIONS_API USpatializationPluginSourceSettingsBase : public UObject
+UCLASS(config = Engine, abstract, editinlinenew, BlueprintType, MinimalAPI)
+class USpatializationPluginSourceSettingsBase : public UObject
 {
 	GENERATED_BODY()
 };
@@ -376,8 +380,8 @@ public:
 
 
 /** This is a class which should be overridden to provide users with settings to use for individual sounds */
-UCLASS(config = Engine, abstract, editinlinenew, BlueprintType)
-class AUDIOEXTENSIONS_API USourceDataOverridePluginSourceSettingsBase : public UObject
+UCLASS(config = Engine, abstract, editinlinenew, BlueprintType, MinimalAPI)
+class USourceDataOverridePluginSourceSettingsBase : public UObject
 {
 	GENERATED_BODY()
 };
@@ -461,8 +465,8 @@ public:
 };
 
 /** This is a class which should be overridden to provide users with settings to use for individual sounds */
-UCLASS(config = Engine, abstract, editinlinenew, BlueprintType)
-class AUDIOEXTENSIONS_API UOcclusionPluginSourceSettingsBase : public UObject
+UCLASS(config = Engine, abstract, editinlinenew, BlueprintType, MinimalAPI)
+class UOcclusionPluginSourceSettingsBase : public UObject
 {
 	GENERATED_BODY()
 };
@@ -576,8 +580,8 @@ public:
 
 
 /** This is a class which should be overridden to provide users with settings to use for individual sounds */
-UCLASS(config = Engine, abstract, editinlinenew, BlueprintType)
-class AUDIOEXTENSIONS_API UReverbPluginSourceSettingsBase : public UObject
+UCLASS(config = Engine, abstract, editinlinenew, BlueprintType, MinimalAPI)
+class UReverbPluginSourceSettingsBase : public UObject
 {
 	GENERATED_BODY()
 };

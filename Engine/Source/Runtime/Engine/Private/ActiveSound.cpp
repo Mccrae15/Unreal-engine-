@@ -6,6 +6,7 @@
 #include "AudioDevice.h"
 #include "AudioLinkSettingsAbstract.h"
 #include "Sound/SoundCue.h"
+#include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Sound/SoundNodeAttenuation.h"
 #include "IAudioParameterTransmitter.h"
@@ -224,7 +225,7 @@ void FActiveSound::AddReferencedObjects(FReferenceCollector& Collector)
 		Sound->SourceEffectChain->AddReferencedEffects(Collector);
 	}
 
-	for (USoundConcurrency* Concurrency : ConcurrencySet)
+	for (auto& Concurrency : ConcurrencySet)
 	{
 		if (Concurrency)
 		{
@@ -234,10 +235,9 @@ void FActiveSound::AddReferencedObjects(FReferenceCollector& Collector)
 
 	if (InstanceTransmitter.IsValid())
 	{
-		TArray<UObject*> InstanceReferences = InstanceTransmitter->GetReferencedObjects();
-		for (UObject* Object : InstanceReferences)
+		for (auto* Object : InstanceTransmitter->GetReferencedObjects())
 		{
-			Collector.AddReferencedObject(Object);
+			Collector.AddReferencedObject(const_cast<TObjectPtr<UObject>&>(*Object));
 		}
 	}
 }
@@ -600,11 +600,33 @@ void FActiveSound::UpdateInterfaceParameters(const TArray<FListener>& InListener
 
 	FParameterInterfacePtr AttenuationInterface = AttenuationInterface::GetInterface();
 	FParameterInterfacePtr SpatializationInterface = SpatializationInterface::GetInterface();
+	FParameterInterfacePtr SourceOrientationInterface = SourceOrientationInterface::GetInterface();
+	FParameterInterfacePtr ListenerOrientationInterface = ListenerOrientationInterface::GetInterface();
 
-	const bool bImplementsAttenuation = Sound->ImplementsParameterInterface(AttenuationInterface);
-	const bool bImplementsSpatialization = Sound->ImplementsParameterInterface(SpatializationInterface);
+	bool bImplementsAttenuation = Sound->ImplementsParameterInterface(AttenuationInterface);
+	bool bImplementsSpatialization = Sound->ImplementsParameterInterface(SpatializationInterface);
+	bool bImplementsSourceOrientation = Sound->ImplementsParameterInterface(SourceOrientationInterface);
+	bool bImplementsListenerOrientation = Sound->ImplementsParameterInterface(ListenerOrientationInterface);
+	
+	for (const TPair<UPTRINT, FWaveInstance*>& InstancePair : WaveInstances)
+	{
+		const FWaveInstance* Instance = InstancePair.Value;
 
-	if (!bImplementsAttenuation && !bImplementsSpatialization)
+		if (Instance == nullptr || Instance->WaveData == Sound)
+		{
+			continue;
+		}
+
+		if (const USoundBase* SoundInstance = Instance->WaveData)
+		{
+			bImplementsAttenuation |= SoundInstance->ImplementsParameterInterface(AttenuationInterface);
+			bImplementsSpatialization |= SoundInstance->ImplementsParameterInterface(SpatializationInterface);
+			bImplementsSourceOrientation |= SoundInstance->ImplementsParameterInterface(SourceOrientationInterface);
+			bImplementsListenerOrientation |= SoundInstance->ImplementsParameterInterface(ListenerOrientationInterface);
+		}
+	}
+
+	if (false == (bImplementsAttenuation || bImplementsSpatialization || bImplementsSourceOrientation || bImplementsListenerOrientation))
 	{
 		return;
 	}
@@ -613,6 +635,7 @@ void FActiveSound::UpdateInterfaceParameters(const TArray<FListener>& InListener
 
 	const FListener& Listener = InListeners[ClosestListenerIndex];
 	const FVector SourceDirection = Transform.GetLocation() - Listener.Transform.GetLocation();
+	
 	if (bImplementsAttenuation)
 	{
 		const float Distance = SourceDirection.Size();
@@ -629,6 +652,33 @@ void FActiveSound::UpdateInterfaceParameters(const TArray<FListener>& InListener
 		{
 			{ SpatializationInterface::Inputs::Azimuth, Azimuth },
 			{ SpatializationInterface::Inputs::Elevation, Elevation }
+		});
+	}
+
+	if (bImplementsSourceOrientation)
+	{
+		const FVector ListenerDirectionNormal = Transform.InverseTransformVectorNoScale(-SourceDirection).GetSafeNormal();
+		const FVector2D ListenerAzimuthAndElevation = FMath::GetAzimuthAndElevation(ListenerDirectionNormal, FVector::ForwardVector, FVector::RightVector, FVector::UpVector);
+		const float Azimuth = FMath::RadiansToDegrees(ListenerAzimuthAndElevation.X);
+		const float Elevation = FMath::RadiansToDegrees(ListenerAzimuthAndElevation.Y);
+		ParamsToUpdate.Append(
+		{
+			{ SourceOrientationInterface::Inputs::Azimuth, Azimuth },
+			{ SourceOrientationInterface::Inputs::Elevation, Elevation }
+		});
+	}
+
+	if (bImplementsListenerOrientation)
+	{
+		const FVector ListenerDirectionNormal = Listener.Transform.GetRotation().GetForwardVector();
+		const FVector2D ListenerAzimuthAndElevation = FMath::GetAzimuthAndElevation(ListenerDirectionNormal, FVector::ForwardVector, FVector::RightVector, FVector::UpVector);
+		const float Azimuth = FMath::RadiansToDegrees(ListenerAzimuthAndElevation.X);
+		const float Elevation = FMath::RadiansToDegrees(ListenerAzimuthAndElevation.Y);
+		
+		ParamsToUpdate.Append(
+		{
+			{ ListenerOrientationInterface::Inputs::Azimuth, Azimuth },
+			{ ListenerOrientationInterface::Inputs::Elevation, Elevation }
 		});
 	}
 
@@ -963,7 +1013,7 @@ void FActiveSound::MarkPendingDestroy(bool bDestroyNow)
 		if (Source)
 		{
 			bool bStopped = false;
-			if (AudioDevice->IsAudioMixerEnabled() && AudioDevice->IsStoppingVoicesEnabled())
+			if (AudioDevice->IsStoppingVoicesEnabled())
 			{
 				if (bDestroyNow || !AudioDevice->GetNumFreeSources())
 				{
@@ -1816,7 +1866,9 @@ void FActiveSound::UpdateAttenuation(float DeltaTime, FSoundParseParameters& Par
 		}
 	}
 
-	ParseParams.OmniRadius = Settings->OmniRadius;
+	ParseParams.NonSpatializedRadiusStart = Settings->NonSpatializedRadiusStart;
+	ParseParams.NonSpatializedRadiusEnd = Settings->NonSpatializedRadiusEnd;
+	ParseParams.NonSpatializedRadiusMode = Settings->NonSpatializedRadiusMode;
 	ParseParams.StereoSpread = Settings->StereoSpread;
 	ParseParams.bApplyNormalizationToStereoSounds = Settings->bApplyNormalizationToStereoSounds;
 	ParseParams.bUseSpatialization |= Settings->bSpatialize;

@@ -154,7 +154,7 @@ EAbcImportError FAbcFile::Open()
 	Alembic::Abc::TimeSamplingPtr TimeSampler = Archive.getTimeSampling(TimeSamplingIndex);
 	if (TimeSampler)
 	{
-		ArchiveSecondsPerFrame = TimeSampler->getTimeSamplingType().getTimePerCycle();
+		ArchiveSecondsPerFrame = static_cast<float>(TimeSampler->getTimeSamplingType().getTimePerCycle());
 	}
 
 	MeshUtilities = FModuleManager::Get().LoadModulePtr<IMeshUtilities>("MeshUtilities");
@@ -254,24 +254,24 @@ EAbcImportError FAbcFile::Import(UAbcImportSettings* InImportSettings)
 
 	SecondsPerFrame = TimeStep;
 	FramesPerSecond = TimeStep > 0.f ? FMath::RoundToInt(1.f / TimeStep) : 30;
-	ImportLength = FrameSpan * TimeStep;
+	ImportLength = static_cast<float>(FrameSpan) * TimeStep;
 
 	// Calculate time offset from start of import animation range
-	ImportTimeOffset = StartFrameIndex * SecondsPerFrame;
+	ImportTimeOffset = static_cast<float>(StartFrameIndex) / static_cast<float>(FramesPerSecond);
 
 	// Read first-frames for both the transforms and poly meshes
 
 	bool bValidFirstFrames = true;
 	for (FAbcTransform* Transform : Transforms)
 	{
-		bValidFirstFrames &= Transform->ReadFirstFrame(StartFrameIndex * SecondsPerFrame, StartFrameIndex);
+		bValidFirstFrames &= Transform->ReadFirstFrame(static_cast<float>(StartFrameIndex) / static_cast<float>(FramesPerSecond), StartFrameIndex);
 	}
 
 	for (FAbcPolyMesh* PolyMesh : PolyMeshes)
 	{
 		if (PolyMesh->bShouldImport)
 		{
-			bValidFirstFrames &= PolyMesh->ReadFirstFrame(StartFrameIndex * SecondsPerFrame, StartFrameIndex);
+			bValidFirstFrames &= PolyMesh->ReadFirstFrame(static_cast<float>(StartFrameIndex) / static_cast<float>(FramesPerSecond), StartFrameIndex);
 		}
 	}	
 
@@ -281,14 +281,16 @@ EAbcImportError FAbcFile::Import(UAbcImportSettings* InImportSettings)
 	}
 
 	// Add up all poly mesh bounds
-	FBoxSphereBounds MeshBounds(EForceInit::ForceInitToZero);
+	FBoxSphereBounds::Builder MeshBoundsBuilder;
 	for (const FAbcPolyMesh* PolyMesh : PolyMeshes)
 	{
 		if (PolyMesh->bShouldImport)
 		{
-			MeshBounds = MeshBounds + PolyMesh->SelfBounds + PolyMesh->ChildBounds;
+			MeshBoundsBuilder += PolyMesh->SelfBounds;
+			MeshBoundsBuilder += PolyMesh->ChildBounds;
 		}
 	}
+	FBoxSphereBounds MeshBounds(MeshBoundsBuilder);
 
 	// If there were not bounds available at the archive level or the mesh bounds are larger than the archive bounds use those
 	if (FMath::IsNearlyZero(ArchiveBounds.SphereRadius) || MeshBounds.SphereRadius >ArchiveBounds.SphereRadius )
@@ -499,7 +501,7 @@ void FAbcFile::ReadFrame(int32 FrameIndex, const EFrameReadFlags InFlags, const 
 {
 	for (IAbcObject* Object : Objects)
 	{
-		Object->SetFrameAndTime(FrameIndex * SecondsPerFrame, FrameIndex, InFlags, ReadIndex);
+		Object->SetFrameAndTime(static_cast<float>(FrameIndex) / static_cast<float>(FramesPerSecond), FrameIndex, InFlags, ReadIndex);
 	}
 }
 

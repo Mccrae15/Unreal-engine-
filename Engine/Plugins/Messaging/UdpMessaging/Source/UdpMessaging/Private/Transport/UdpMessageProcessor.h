@@ -4,6 +4,8 @@
 
 #include "Containers/Queue.h"
 
+#include "ModuleDescriptor.h"
+
 #include "HAL/Runnable.h"
 
 #include "INetworkMessagingExtension.h"
@@ -568,6 +570,10 @@ public:
 	 */
 	FMessageTransportStatistics GetStats(FGuid Node) const;
 
+	void SetShareKnownNodesState(bool bInShareKnownNodes)
+	{
+		bShareKnownNodes = bInShareKnownNodes;
+	}
 public:
 
 	// @todo gmp: remove the need for this typedef
@@ -771,6 +777,14 @@ protected:
 	void ProcessTimeoutSegment(FInboundSegment& Segment, FNodeInfo& NodeInfo);
 
 	/**
+	 * Processes a Mesh segment.
+	 *
+	 * @param Segment The segment to process.
+	 * @param NodeInfo Details for the node that sent the segment.
+	 */
+	void ProcessMeshSegment(FInboundSegment& Segment, FNodeInfo& NodeInfo);
+
+	/**
 	 * Processes an unknown segment type.
 	 *
 	 * @param Segment The segment to process.
@@ -825,6 +839,18 @@ protected:
 
 private:
 
+	/** Send our list of known nodes to the known nodes. */
+	void SendKnownNodesToKnownNodes();
+
+	/** Do we support sending known nodes to our known nodes. */
+	bool CanSendKnownNodesToKnownNodes() const;
+
+	/** Start the message processor thread. */
+	void StartThread();
+
+	/** Delegate invoke when plugin phase has been completed. */
+	void OnPluginLoadingPhaseComplete(ELoadingPhase::Type LoadingPhase, bool bPhaseSuccessful);
+
 	/** Handles a communication error to a particular endpoint.*/
 	void HandleSocketError(const FNodeInfo& NodeInfo) const;
 
@@ -841,7 +867,7 @@ private:
 	TQueue<FOutboundMessage, EQueueMode::Mpsc> OutboundMessages;
 
 	/** Holds the hello sender. */
-	FUdpMessageBeacon* Beacon;
+	TUniquePtr<FUdpMessageBeacon> Beacon;
 
 	/** Holds the current time. */
 	FDateTime CurrentTime;
@@ -867,6 +893,9 @@ private:
 	/** Holds the collection of known remote nodes. */
 	TMap<FGuid, FNodeInfo> KnownNodes;
 
+	/** Indicate if we added new nodes during this frame. */
+	bool bAddedNewKnownNodes = false;
+
 	/** Holds the local node identifier. */
 	FGuid LocalNodeId;
 
@@ -879,8 +908,11 @@ private:
 	/** Holds the network socket used to transport messages. */
 	FSocket* Socket;
 
-	/** Holds the socket sender. volatile pointer because used to validate thread shutdown. */
-	FUdpSocketSender* volatile SocketSender;
+	/** Holds the socket sender.*/
+	TUniquePtr<FUdpSocketSender> SocketSender;
+
+	/** Enable sharing of our known nodes. */
+	bool bShareKnownNodes = false;
 
 	/** Holds a flag indicating that the thread is stopping. */
 	bool bStopping;
@@ -889,7 +921,7 @@ private:
 	bool bIsInitialized;
 
 	/** Holds the thread object. */
-	FRunnableThread* Thread;
+	TUniquePtr<FRunnableThread> Thread;
 
 	/** Holds an event signaling that inbound messages need to be processed. */
 	TSharedPtr<FEvent, ESPMode::ThreadSafe> WorkEvent;

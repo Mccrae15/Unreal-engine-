@@ -3,13 +3,11 @@
 #pragma once
 
 #include "CoreTypes.h"
-#include "Delegates/DelegateMacros.h"
 #include "Misc/AssertionMacros.h"
 #include "UObject/NameTypes.h"
 #include "Templates/SharedPointer.h"
 #include "UObject/WeakObjectPtrTemplates.h"
 #include "Delegates/MulticastDelegateBase.h" // IWYU pragma: export
-#include "Delegates/TSMulticastDelegateBase.h"
 #include "Delegates/IntegerSequence.h" // IWYU pragma: export
 
 /**
@@ -185,6 +183,7 @@
  *	BindThreadSafeSP(SharedPtr, &FClass::Function)		|	Call a native class member function via a TWeakPtr, will not be called if shared pointer is invalid
  *	BindRaw(RawPtr, &FClass::Function)					|	Call a native class member function with no safety checks. You MUST call Unbind or Remove when object dies to avoid crashes!
  *	BindLambda(Lambda)									|	Call a lambda function with no safety checks. You MUST make sure all captures will be safe at a later point to avoid crashes!
+ *	BindSPLambda(SharedPtr, Lambda)						|	Call a lambda function only if shared pointer is still valid. Captured 'this' will always be valid but any other captures may not be
  *	BindWeakLambda(UObject, Lambda)						|	Call a lambda function only if UObject is still valid. Captured 'this' will always be valid but any other captures may not be
  *	BindUFunction(UObject, FName("FunctionName"))		|	Usable for both native and dynamic delegates, will call a UFUNCTION with specified name
  *	BindDynamic(UObject, &UClass::FunctionName)			|	Convenience wrapper only available for dynamic delegates, FunctionName must be declared as a UFUNCTION
@@ -212,7 +211,7 @@
 #define FUNC_DECLARE_MULTICAST_DELEGATE( MulticastDelegateName, ReturnType, ... ) \
 	typedef TMulticastDelegate<ReturnType(__VA_ARGS__)> MulticastDelegateName;
 
-  /** Declares a broadcast thread-safe delegate that can bind to multiple native functions simultaneously */
+/** Declares a broadcast thread-safe delegate that can bind to multiple native functions simultaneously */
 #define FUNC_DECLARE_TS_MULTICAST_DELEGATE( MulticastDelegateName, ReturnType, ... ) \
 	typedef TMulticastDelegate<ReturnType(__VA_ARGS__), FDefaultTSDelegateUserPolicy> MulticastDelegateName;
 
@@ -232,8 +231,8 @@
 	class EventName : public BaseTypeEvent { friend class OwningType; };
 
 /** Declare user's dynamic delegate, with wrapper proxy method for executing the delegate */
-#define FUNC_DECLARE_DYNAMIC_DELEGATE( TWeakPtr, DynamicDelegateClassName, ExecFunction, FuncParamList, FuncParamPassThru, ... ) \
-	class DynamicDelegateClassName : public TBaseDynamicDelegate<TWeakPtr, __VA_ARGS__> \
+#define FUNC_DECLARE_DYNAMIC_DELEGATE( DynamicDelegateClassName, ExecFunction, FuncParamList, FuncParamPassThru, ... ) \
+	class DynamicDelegateClassName : public TBaseDynamicDelegate<FNotThreadSafeDelegateMode, __VA_ARGS__> \
 	{ \
 	public: \
 		/** Default constructor */ \
@@ -243,7 +242,7 @@
 		\
 		/** Construction from an FScriptDelegate must be explicit.  This is really only used by UObject system internals. */ \
 		explicit DynamicDelegateClassName( const TScriptDelegate<>& InScriptDelegate ) \
-			: TBaseDynamicDelegate<TWeakPtr, __VA_ARGS__>( InScriptDelegate ) \
+			: TBaseDynamicDelegate<FNotThreadSafeDelegateMode, __VA_ARGS__>( InScriptDelegate ) \
 		{ \
 		} \
 		\
@@ -267,8 +266,8 @@
 	};
 
 /** Declare user's dynamic delegate with return value, with wrapper proxy method for executing the delegate */
-#define FUNC_DECLARE_DYNAMIC_DELEGATE_RETVAL(TWeakPtr, DynamicDelegateRetValClassName, ExecFunction, RetValType, FuncParamList, FuncParamPassThru, ...) \
-	class DynamicDelegateRetValClassName : public TBaseDynamicDelegate<TWeakPtr, __VA_ARGS__> \
+#define FUNC_DECLARE_DYNAMIC_DELEGATE_RETVAL(DynamicDelegateRetValClassName, ExecFunction, RetValType, FuncParamList, FuncParamPassThru, ...) \
+	class DynamicDelegateRetValClassName : public TBaseDynamicDelegate<FNotThreadSafeDelegateMode, __VA_ARGS__> \
 	{ \
 	public: \
 		/** Default constructor */ \
@@ -278,7 +277,7 @@
 		\
 		/** Construction from an FScriptDelegate must be explicit.  This is really only used by UObject system internals. */ \
 		explicit DynamicDelegateRetValClassName( const TScriptDelegate<>& InScriptDelegate ) \
-			: TBaseDynamicDelegate<TWeakPtr, __VA_ARGS__>( InScriptDelegate ) \
+			: TBaseDynamicDelegate<FNotThreadSafeDelegateMode, __VA_ARGS__>( InScriptDelegate ) \
 		{ \
 		} \
 		\
@@ -293,8 +292,8 @@
 
 
 /** Declare user's dynamic multi-cast delegate, with wrapper proxy method for executing the delegate */
-#define FUNC_DECLARE_DYNAMIC_MULTICAST_DELEGATE(TWeakPtr, DynamicMulticastDelegateClassName, ExecFunction, FuncParamList, FuncParamPassThru, ...) \
-class DynamicMulticastDelegateClassName : public TBaseDynamicMulticastDelegate<TWeakPtr, __VA_ARGS__> \
+#define FUNC_DECLARE_DYNAMIC_MULTICAST_DELEGATE(DynamicMulticastDelegateClassName, ExecFunction, FuncParamList, FuncParamPassThru, ...) \
+class DynamicMulticastDelegateClassName : public TBaseDynamicMulticastDelegate<FNotThreadSafeDelegateMode, __VA_ARGS__> \
 	{ \
 	public: \
 		/** Default constructor */ \
@@ -304,7 +303,7 @@ class DynamicMulticastDelegateClassName : public TBaseDynamicMulticastDelegate<T
 		\
 		/** Construction from an FMulticastScriptDelegate must be explicit.  This is really only used by UObject system internals. */ \
 		explicit DynamicMulticastDelegateClassName( const TMulticastScriptDelegate<>& InMulticastScriptDelegate ) \
-			: TBaseDynamicMulticastDelegate<TWeakPtr, __VA_ARGS__>( InMulticastScriptDelegate ) \
+			: TBaseDynamicMulticastDelegate<FNotThreadSafeDelegateMode, __VA_ARGS__>( InMulticastScriptDelegate ) \
 		{ \
 		} \
 		\
@@ -502,11 +501,3 @@ DECLARE_DELEGATE( FSimpleDelegate );
 DECLARE_MULTICAST_DELEGATE( FSimpleMulticastDelegate );
 DECLARE_TS_MULTICAST_DELEGATE( FTSSimpleMulticastDelegate );
 
-// Legacy typedefs
-template <typename RetType, typename... ArgTypes>
-using TBaseDelegate UE_DEPRECATED(4.26, "TBaseDelegate<ReturnType, ArgTypes...> is deprecated - use TDelegate<ReturnType(ArgTypes...)> instead.")
-	= TDelegate<RetType(ArgTypes...)>;
-
-template <typename RetType, typename... ArgTypes>
-using TBaseMulticastDelegate UE_DEPRECATED(4.26, "TBaseMulticastDelegate<ReturnType, ArgTypes...> is deprecated - use TMulticastDelegate<ReturnType(ArgTypes...)> instead.")
-	= TMulticastDelegate<RetType(ArgTypes...)>;

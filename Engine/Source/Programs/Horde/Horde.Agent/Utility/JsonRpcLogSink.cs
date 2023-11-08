@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using EpicGames.Core;
@@ -46,13 +47,13 @@ namespace Horde.Agent.Utility
 		/// <inheritdoc/>
 		public async Task WriteEventsAsync(List<CreateEventRequest> events, CancellationToken cancellationToken)
 		{
-			await _rpcClient.InvokeAsync((HordeRpc.HordeRpcClient x) => x.CreateEventsAsync(new CreateEventsRequest(events)), cancellationToken);
+			await _rpcClient.InvokeAsync((JobRpc.JobRpcClient x) => x.CreateEventsAsync(new CreateEventsRequest(events)), cancellationToken);
 		}
 
 		/// <inheritdoc/>
 		public async Task WriteOutputAsync(WriteOutputRequest request, CancellationToken cancellationToken)
 		{
-			await _rpcClient.InvokeAsync((HordeRpc.HordeRpcClient x) => x.WriteOutputAsync(request), cancellationToken);
+			await _rpcClient.InvokeAsync((JobRpc.JobRpcClient x) => x.WriteOutputAsync(request), cancellationToken);
 		}
 
 		/// <inheritdoc/>
@@ -63,7 +64,7 @@ namespace Horde.Agent.Utility
 			{
 				try
 				{
-					await _rpcClient.InvokeAsync((HordeRpc.HordeRpcClient x) => x.UpdateStepAsync(new UpdateStepRequest(_jobId, _jobBatchId, _jobStepId, JobStepState.Unspecified, outcome)), cancellationToken);
+					await _rpcClient.InvokeAsync((JobRpc.JobRpcClient x) => x.UpdateStepAsync(new UpdateStepRequest(_jobId, _jobBatchId, _jobStepId, JobStepState.Unspecified, outcome)), cancellationToken);
 				}
 				catch (Exception ex)
 				{
@@ -81,7 +82,7 @@ namespace Horde.Agent.Utility
 		readonly string _logId;
 		readonly LogBuilder _builder;
 		readonly IJsonRpcLogSink? _inner;
-		readonly TreeWriter _writer;
+		readonly IStorageWriter _writer;
 		readonly ILogger _logger;
 
 		int _bufferLength;
@@ -100,7 +101,7 @@ namespace Horde.Agent.Utility
 			_logId = logId;
 			_builder = new LogBuilder(LogFormat.Json, logger);
 			_inner = inner;
-			_writer = new TreeWriter(store);
+			_writer = store.CreateWriter();
 			_logger = logger;
 
 			_tailTaskStop = new AsyncEvent();
@@ -112,6 +113,8 @@ namespace Horde.Agent.Utility
 			if (_tailTaskStop != null)
 			{
 				_tailTaskStop.Latch();
+				_newTailDataEvent.Latch();
+
 				try
 				{
 					await _tailTask;
@@ -133,7 +136,7 @@ namespace Horde.Agent.Utility
 
 			if (_writer != null)
 			{
-				_writer.Dispose();
+				await _writer.DisposeAsync();
 			}
 		}
 
@@ -159,18 +162,43 @@ namespace Horde.Agent.Utility
 				// If we don't have any updates for the server, wait until we do.
 				if (tailNext != -1 && tailData.IsEmpty)
 				{
+					_logger.LogInformation("No tail data available for log {LogId} after {TailNext}; waiting for more...", _logId, tailNext);
 					await newTailDataTask;
 					continue;
 				}
 
+				string start = "";
+				if (tailData.Length > 0)
+				{
+					start = Encoding.UTF8.GetString(tailData.Slice(0, Math.Min(tailData.Length, 256)).Span);
+				}
+
 				// Update the next tailing position
+				int numLines = CountLines(tailData.Span);
+				_logger.LogInformation("Setting log {LogId} tail = {TailNext}, data = {TailDataSize} bytes, {NumLines} lines ('{Start}')", _logId, tailNext, tailData.Length, numLines, start);
+
 				int newTailNext = await UpdateLogTailAsync(tailNext, tailData);
+				_logger.LogInformation("Log {LogId} tail next = {TailNext}", _logId, newTailNext);
+
 				if (newTailNext != tailNext)
 				{
 					tailNext = newTailNext;
 					_logger.LogInformation("Modified tail position for log {LogId} to {TailNext}", _logId, tailNext);
 				}
 			}
+		}
+
+		static int CountLines(ReadOnlySpan<byte> data)
+		{
+			int lines = 0;
+			for (int idx = 0; idx < data.Length; idx++)
+			{
+				if (data[idx] == '\n')
+				{
+					lines++;
+				}
+			}
+			return lines;
 		}
 
 		/// <inheritdoc/>
@@ -194,18 +222,13 @@ namespace Horde.Agent.Utility
 		/// <inheritdoc/>
 		public async Task WriteOutputAsync(WriteOutputRequest request, CancellationToken cancellationToken)
 		{
-			if (_inner != null)
-			{
-				await _inner.WriteOutputAsync(request, cancellationToken);
-			}
-
 			_builder.WriteData(request.Data.Memory);
 			_bufferLength += request.Data.Length;
 
 			if (request.Flush || _bufferLength > FlushLength)
 			{
-				NodeHandle target = await _builder.FlushAsync(_writer, request.Flush, cancellationToken);
-				await UpdateLogAsync(target, _builder.LineCount, cancellationToken);
+				NodeRef<LogNode> target = await _builder.FlushAsync(_writer, request.Flush, cancellationToken);
+				await UpdateLogAsync(target.Handle, _builder.LineCount, request.Flush, cancellationToken);
 				_bufferLength = 0;
 			}
 
@@ -214,14 +237,15 @@ namespace Horde.Agent.Utility
 
 		#region RPC calls
 
-		protected virtual async Task UpdateLogAsync(NodeHandle target, int lineCount, CancellationToken cancellationToken)
+		protected virtual async Task UpdateLogAsync(BlobHandle target, int lineCount, bool complete, CancellationToken cancellationToken)
 		{
-			_logger.LogDebug("Updating log {LogId} to line {LineCount}, target {Locator}", _logId, lineCount, target);
+			_logger.LogInformation("Updating log {LogId} to line {LineCount}, target {Locator}", _logId, lineCount, target);
 
 			UpdateLogRequest request = new UpdateLogRequest();
 			request.LogId = _logId;
 			request.LineCount = lineCount;
-			request.Target = target.ToString();
+			request.Target = target.GetLocator().ToString();
+			request.Complete = complete;
 			await _connection.InvokeAsync((LogRpcClient client) => client.UpdateLogAsync(request, cancellationToken: cancellationToken), cancellationToken);
 		}
 
@@ -238,6 +262,7 @@ namespace Horde.Agent.Utility
 					request.TailNext = tailNext;
 					request.TailData = UnsafeByteOperations.UnsafeWrap(tailData);
 					await call.RequestStream.WriteAsync(request);
+					_logger.LogInformation("Writing log data: {LogId}, {TailNext}, {TailData} bytes", _logId, tailNext, tailData.Length);
 
 					// Wait until the server responds or we need to trigger a new update
 					Task<bool> moveNextAsync = call.ResponseStream.MoveNext();
@@ -245,11 +270,11 @@ namespace Horde.Agent.Utility
 					Task task = await Task.WhenAny(moveNextAsync, clientRef.DisposingTask, _tailTaskStop.Task, Task.Delay(TimeSpan.FromMinutes(1.0), CancellationToken.None));
 					if (task == clientRef.DisposingTask)
 					{
-						_logger.LogDebug("Cancelling long poll from client side (server migration)");
+						_logger.LogInformation("Cancelling long poll from client side (server migration)");
 					}
 					else if (task == _tailTaskStop.Task)
 					{
-						_logger.LogDebug("Cancelling long poll from client side (complete)");
+						_logger.LogInformation("Cancelling long poll from client side (complete)");
 					}
 
 					// Close the request stream to indicate that we're finished

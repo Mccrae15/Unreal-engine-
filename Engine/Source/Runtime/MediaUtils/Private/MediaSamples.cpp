@@ -7,9 +7,6 @@
 #include "IMediaOverlaySample.h"
 #include "IMediaTextureSample.h"
 
-const uint32 MaxNumberOfQueuedVideoSamples = 4;
-const uint32 MaxNumberOfQueuedAudioSamples = 4;
-
 /* Local helpers
 *****************************************************************************/
 
@@ -63,6 +60,16 @@ bool FetchSample(TMediaSampleQueue<SampleType, SinkType>& SampleQueue, TRange<FM
 /* IMediaSamples interface
 *****************************************************************************/
 
+FMediaSamples::FMediaSamples(uint32 InMaxNumberOfQueuedAudioSamples, uint32 InMaxNumberOfQueuedVideoSamples, uint32 InMaxNumberOfQueuedCaptionSamples, uint32 InMaxNumberOfQueuedSubtitlesSamples, uint32 InMaxNumberOfQueuedMetaDataSamples)
+	: AudioSampleQueue(InMaxNumberOfQueuedAudioSamples)
+	, CaptionSampleQueue(InMaxNumberOfQueuedCaptionSamples)
+	, MetadataSampleQueue(InMaxNumberOfQueuedMetaDataSamples)
+	, SubtitleSampleQueue(InMaxNumberOfQueuedSubtitlesSamples)
+	, VideoSampleQueue(InMaxNumberOfQueuedVideoSamples)
+{
+}
+
+
 bool FMediaSamples::FetchAudio(TRange<FTimespan> TimeRange, TSharedPtr<IMediaAudioSample, ESPMode::ThreadSafe>& OutSample)
 {
 	return FetchSample(AudioSampleQueue, TimeRange, OutSample);
@@ -107,6 +114,11 @@ bool FMediaSamples::FetchSubtitle(TRange<FMediaTimeStamp> TimeRange, TSharedPtr<
 	return FetchSample(SubtitleSampleQueue, TimeRange, OutSample);
 }
 
+bool FMediaSamples::FetchMetadata(TRange<FMediaTimeStamp> TimeRange, TSharedPtr<IMediaBinarySample, ESPMode::ThreadSafe>& OutSample)
+{
+	return FetchSample(MetadataSampleQueue, TimeRange, OutSample);
+}
+
 bool FMediaSamples::FetchVideo(TRange<FMediaTimeStamp> TimeRange, TSharedPtr<IMediaTextureSample, ESPMode::ThreadSafe>& OutSample)
 {
 	return FetchSample(VideoSampleQueue, TimeRange, OutSample);
@@ -139,17 +151,33 @@ FMediaSamples::EFetchBestSampleResult FMediaSamples::FetchBestVideoSampleForTime
 /**
  * Remove any video samples from the queue that have no chance of being displayed anymore
  */
-uint32 FMediaSamples::PurgeOutdatedVideoSamples(const FMediaTimeStamp & ReferenceTime, bool bReversed)
+uint32 FMediaSamples::PurgeOutdatedVideoSamples(const FMediaTimeStamp & ReferenceTime, bool bReversed, FTimespan MaxAge)
 {
-	return VideoSampleQueue.PurgeOutdatedSamples(ReferenceTime, bReversed);
+	return VideoSampleQueue.PurgeOutdatedSamples(ReferenceTime, bReversed, MaxAge);
 }
 
 /**
  * Remove any subtitle samples from the queue that have no chance of being displayed anymore
  */
-uint32 FMediaSamples::PurgeOutdatedSubtitleSamples(const FMediaTimeStamp & ReferenceTime, bool bReversed)
+uint32 FMediaSamples::PurgeOutdatedSubtitleSamples(const FMediaTimeStamp & ReferenceTime, bool bReversed, FTimespan MaxAge)
 {
-	return SubtitleSampleQueue.PurgeOutdatedSamples(ReferenceTime, bReversed);
+	return SubtitleSampleQueue.PurgeOutdatedSamples(ReferenceTime, bReversed, MaxAge);
+}
+
+/**
+ * Remove any caption samples from the queue that have no chance of being displayed anymore
+ */
+uint32 FMediaSamples::PurgeOutdatedCaptionSamples(const FMediaTimeStamp& ReferenceTime, bool bReversed, FTimespan MaxAge)
+{
+	return CaptionSampleQueue.PurgeOutdatedSamples(ReferenceTime, bReversed, MaxAge);
+}
+
+/**
+ * Remove any caption samples from the queue that have no chance of being displayed anymore
+ */
+uint32 FMediaSamples::PurgeOutdatedMetadataSamples(const FMediaTimeStamp& ReferenceTime, bool bReversed, FTimespan MaxAge)
+{
+	return MetadataSampleQueue.PurgeOutdatedSamples(ReferenceTime, bReversed, MaxAge);
 }
 
 /**
@@ -157,7 +185,7 @@ uint32 FMediaSamples::PurgeOutdatedSubtitleSamples(const FMediaTimeStamp & Refer
  */
 bool FMediaSamples::CanReceiveVideoSamples(uint32 Num) const
 {
-	return (VideoSampleQueue.Num() + Num) <= MaxNumberOfQueuedVideoSamples;
+	return VideoSampleQueue.CanAcceptSamples(Num);
 }
 
 /**
@@ -165,5 +193,29 @@ bool FMediaSamples::CanReceiveVideoSamples(uint32 Num) const
  */
 bool FMediaSamples::CanReceiveAudioSamples(uint32 Num) const
 {
-	return (AudioSampleQueue.Num() + Num) <= MaxNumberOfQueuedAudioSamples;
+	return AudioSampleQueue.CanAcceptSamples(Num);
+}
+
+/**
+ * Check if can receive more subtitle samples
+ */
+bool  FMediaSamples::CanReceiveSubtitleSamples(uint32 Num) const
+{
+	return SubtitleSampleQueue.CanAcceptSamples(Num);
+}
+
+/**
+ * Check if can receive more caption samples
+ */
+bool  FMediaSamples::CanReceiveCaptionSamples(uint32 Num) const
+{
+	return CaptionSampleQueue.CanAcceptSamples(Num);
+}
+
+/**
+ * Check if can receive more metadata samples
+ */
+bool  FMediaSamples::CanReceiveMetadataSamples(uint32 Num) const
+{
+	return MetadataSampleQueue.CanAcceptSamples(Num);
 }

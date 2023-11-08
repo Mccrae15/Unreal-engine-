@@ -63,7 +63,17 @@ namespace mu
 		else
 		{
 			i -= (int)m_pD->m_lods.Num();
-			pResult = m_pD->m_children[i].get();
+			
+			if ( i<(int) m_pD->m_children.Num() )
+			{
+				pResult = m_pD->m_children[i].get();
+			}
+			else
+			{
+				i -= (int)m_pD->m_children.Num();
+
+				pResult = m_pD->m_extensionDataNodes[i].Node.get();
+			}
 		}
 
 		return pResult;
@@ -82,7 +92,15 @@ namespace mu
 		else
 		{
 			i -= (int)m_pD->m_lods.Num();
-			m_pD->m_children[i] = dynamic_cast<NodeObject*>( pNode.get() );
+
+			if (i < (int) m_pD->m_children.Num())
+			{
+				m_pD->m_children[i] = dynamic_cast<NodeObject*>( pNode.get() );
+			}
+			else
+			{
+				checkf(false, TEXT("Trying to set an input node for an extension input data. Please use AddExtensionDataNode for this"));
+			}
 		}
 	}
 
@@ -317,15 +335,28 @@ namespace mu
 
 
     //---------------------------------------------------------------------------------------------
-    void NodeObjectNew::SetStateProperties( int s, bool avoidRuntimeCompression, bool onlyFirstLOD, int firstLOD )
+    void NodeObjectNew::SetStateProperties( int32 StateIndex, 
+		ETextureCompressionStrategy TextureCompressionStrategy, 
+		bool bOnlyFirstLOD, 
+		uint8 FirstLOD, 
+		uint8 NumExtraLODsToBuildAfterFirstLOD )
     {
-        check( s>=0 && s<GetStateCount() );
+        check(StateIndex >=0 && StateIndex<GetStateCount() );
 
-        m_pD->m_states[s].m_optimisation.m_avoidRuntimeCompression = avoidRuntimeCompression;
-        m_pD->m_states[s].m_optimisation.m_onlyFirstLOD = onlyFirstLOD;
-        m_pD->m_states[s].m_optimisation.m_firstLOD = firstLOD;
+		FStateOptimizationOptions& Data = m_pD->m_states[StateIndex].m_optimisation;
+        Data.TextureCompressionStrategy = TextureCompressionStrategy;
+		Data.bOnlyFirstLOD = bOnlyFirstLOD;
+		Data.FirstLOD = FirstLOD;
+		Data.NumExtraLODsToBuildAfterFirstLOD = NumExtraLODsToBuildAfterFirstLOD;
     }
 
+    //---------------------------------------------------------------------------------------------
+	void NodeObjectNew::AddExtensionDataNode(NodeExtensionDataPtr Node, const char* Name)
+	{
+		NodeObjectNew::Private::NamedExtensionDataNode& Entry = m_pD->m_extensionDataNodes.AddDefaulted_GetRef();
+		Entry.Node = Node;
+		Entry.Name = Name;
+	}
 }
 
 

@@ -64,6 +64,27 @@ DEFINE_STAT(STAT_FrameTime);
 DEFINE_STAT(STAT_NamedMarker);
 DEFINE_STAT(STAT_SecondsPerCycle);
 
+#if !(defined(DISABLE_THREAD_IDLE_STATS) && DISABLE_THREAD_IDLE_STATS)
+#if CPUPROFILERTRACE_ENABLED
+	UE_TRACE_CHANNEL_DEFINE(ThreadIdleScopeChannel);
+	TRACE_CPUPROFILER_EVENT_DECLARE(ThreadIdleScopeTraceEventId);
+#endif
+
+CORE_API FThreadIdleStats::FScopeIdle::FScopeIdle(bool bInIgnore /* = false */)
+	: Start(FPlatformTime::Cycles())
+	, bIgnore(bInIgnore || FThreadIdleStats::Get().bInIdleScope)
+#if CPUPROFILERTRACE_ENABLED
+	, TraceEventScope(ThreadIdleScopeTraceEventId, TEXT("FThreadIdleStats::FScopeIdle"), ThreadIdleScopeChannel, !bIgnore, __FILE__, __LINE__)
+#endif
+{
+	if (!bIgnore)
+	{
+		FThreadIdleStats& IdleStats = FThreadIdleStats::Get();
+		IdleStats.bInIdleScope = true;
+	}
+}
+#endif // #if !(defined(DISABLE_THREAD_IDLE_STATS) && DISABLE_THREAD_IDLE_STATS)
+
 /*-----------------------------------------------------------------------------
 	DebugLeakTest, for the stats based memory profiler
 -----------------------------------------------------------------------------*/
@@ -331,8 +352,8 @@ void FStartupMessages::AddMetadata( FName InStatName, const TCHAR* InStatDesc, c
 	LLM_SCOPE(ELLMTag::Stats);
 	FScopeLock Lock( &CriticalSection );
 
-	new (DelayedMessages)FStatMessage( InGroupName, EStatDataType::ST_None, "Groups", InGroupCategory, InGroupDesc, false, false, bSortByName );
-	new (DelayedMessages)FStatMessage( InStatName, InStatType, InGroupName, InGroupCategory, InStatDesc, bShouldClearEveryFrame, bCycleStat, bSortByName, InMemoryRegion );
+	DelayedMessages.Emplace( InGroupName, EStatDataType::ST_None, "Groups", InGroupCategory, InGroupDesc, false, false, bSortByName );
+	DelayedMessages.Emplace( InStatName, InStatType, InGroupName, InGroupCategory, InStatDesc, bShouldClearEveryFrame, bCycleStat, bSortByName, InMemoryRegion );
 }
 
 
@@ -1280,6 +1301,7 @@ void FThreadStats::CheckForCollectingStartupStats()
 		DirectStatsCommand( TEXT( "stat dumpsum -start" ), true );
 	}
 
+#if UE_STATS_MEMORY_PROFILER_ENABLED
 	// Now we can safely enable malloc profiler.
 	if (FStatsMallocProfilerProxy::HasMemoryProfilerToken())
 	{
@@ -1288,6 +1310,7 @@ void FThreadStats::CheckForCollectingStartupStats()
 		FStatsMallocProfilerProxy::Get()->SetState( true );
 		DirectStatsCommand( TEXT( "stat startfileraw" ), true );
 	}
+#endif //UE_STATS_MEMORY_PROFILER_ENABLED
 
 	STAT_ADD_CUSTOMMESSAGE_NAME( STAT_NamedMarker, TEXT("CheckForCollectingStartupStats") );
 }

@@ -24,7 +24,8 @@
 #include <sys/mman.h>
 #include <sys/mount.h>
 #include <objc/runtime.h>
-#if PLATFORM_IOS && defined(__IPHONE_13_0)
+#if PLATFORM_IOS
+#include "IOS/IOSPlatformMisc.h"
 #include <os/proc.h>
 #endif
 #include <CoreFoundation/CFBase.h>
@@ -286,60 +287,96 @@ void FApplePlatformMemory::Init()
 	
 }
 
-// Set rather to use BinnedMalloc2 for binned malloc, can be overridden below
-#define USE_MALLOC_BINNED2 (PLATFORM_MAC)
+// Use MallocBinned2 as default, can be overriden below.
+#define USE_MALLOC_BINNED2 1
+
+void FApplePlatformMemory::SetAllocatorToUse()
+{
+    // force Ansi allocator in particular cases
+    if(getenv("UE4_FORCE_MALLOC_ANSI") != nullptr)
+    {
+        UE_LOG(LogTemp, Display, TEXT("Using Ansi allocator."));
+        AllocatorToUse = EMemoryAllocatorToUse::Ansi;
+        return;
+    }
+    if (FORCE_ANSI_ALLOCATOR)
+    {
+        UE_LOG(LogTemp, Display, TEXT("Using Ansi allocator."));
+        AllocatorToUse = EMemoryAllocatorToUse::Ansi;
+        return;
+    }
+    if (USE_MALLOC_BINNED2)
+    {
+ #if PLATFORM_IOS || PLATFORM_TVOS
+        if(!FIOSPlatformMisc::IsEntitlementEnabled("com.apple.developer.kernel.extended-virtual-addressing"))
+        {
+            UE_LOG(LogTemp, Warning, TEXT("MallocBinned2 requested but Virtual Address Space entitlement not found. Check your entitlements. Falling back to Ansi."));
+            AllocatorToUse = EMemoryAllocatorToUse::Ansi;
+            return;
+        }
+        else
+        {
+            UE_LOG(LogTemp, Warning, TEXT("Virtual Address Space entitlement found. Using MallocBinned2 allocator"));
+        }
+#endif
+        UE_LOG(LogTemp, Display, TEXT("Using MallocBinned2 allocator."));
+        AllocatorToUse = EMemoryAllocatorToUse::Binned2;
+        return;
+    }
+    else
+    {
+        UE_LOG(LogTemp, Display, TEXT("Defaulting to Ansi allocator."));
+        AllocatorToUse = EMemoryAllocatorToUse::Ansi;
+        return;
+    }
+}
 
 FMalloc* FApplePlatformMemory::BaseAllocator()
 {
+	static FMalloc* Instance = nullptr;
+	if (Instance != nullptr)
+	{
+		return Instance;
+	}
+
 #if ENABLE_LOW_LEVEL_MEM_TRACKER
 	FPlatformMemoryStats MemStats = FApplePlatformMemory::GetStats();
 	FLowLevelMemTracker::Get().SetProgramSize(MemStats.UsedPhysical);
 #endif
+    
+    SetAllocatorToUse();
+    
+    switch (AllocatorToUse)
+    {
+        case EMemoryAllocatorToUse::Ansi:
+        {
+            Instance = new FMallocAnsi();
+            break;
+        }
 
-	if (FORCE_ANSI_ALLOCATOR)
-	{
-		AllocatorToUse = EMemoryAllocatorToUse::Ansi;
-	}
-	else if (USE_MALLOC_BINNED2)
-	{
-		AllocatorToUse = EMemoryAllocatorToUse::Binned2;
-	}
-	else
-	{
-		AllocatorToUse = EMemoryAllocatorToUse::Binned;
-	}
-	
-	// Force ansi malloc in some cases
-	if(getenv("UE4_FORCE_MALLOC_ANSI") != nullptr)
-	{
-		AllocatorToUse = EMemoryAllocatorToUse::Ansi;
-	}
-	
-	switch (AllocatorToUse)
-	{
-		case EMemoryAllocatorToUse::Ansi:
-			return new FMallocAnsi();
+        case EMemoryAllocatorToUse::Binned2:
+        {
+            Instance = new FMallocBinned2();
+            break;
+        }
 
-		case EMemoryAllocatorToUse::Binned2:
-			return new FMallocBinned2();
-			
-		default:	// intentional fall-through
-		case EMemoryAllocatorToUse::Binned:
-		{
-			// get free memory
-			vm_statistics Stats;
-			mach_msg_type_number_t StatsSize = sizeof(Stats);
-			host_statistics(mach_host_self(), HOST_VM_INFO, (host_info_t)&Stats, &StatsSize);
-			// 1 << FMath::CeilLogTwo(MemoryConstants.TotalPhysical) should really be FMath::RoundUpToPowerOfTwo,
-			// but that overflows to 0 when MemoryConstants.TotalPhysical is close to 4GB, since CeilLogTwo returns 32
-			// this then causes the MemoryLimit to be 0 and crashing the app
-			uint64 MemoryLimit = FMath::Min<uint64>( uint64(1) << FMath::CeilLogTwo((Stats.free_count + Stats.inactive_count) * GetConstants().PageSize), 0x100000000);
-			
-			// [RCL] 2017-03-06 FIXME: perhaps BinnedPageSize should be used here, but leaving this change to the Mac platform owner.
-			return new FMallocBinned((uint32)(GetConstants().PageSize&MAX_uint32), MemoryLimit);
-		}
-	}
-	
+        default:    // intentional fall-through
+        case EMemoryAllocatorToUse::Binned:
+        {
+            // get free memory
+            vm_statistics Stats;
+            mach_msg_type_number_t StatsSize = sizeof(Stats);
+            host_statistics(mach_host_self(), HOST_VM_INFO, (host_info_t)&Stats, &StatsSize);
+            // 1 << FMath::CeilLogTwo(MemoryConstants.TotalPhysical) should really be FMath::RoundUpToPowerOfTwo,
+            // but that overflows to 0 when MemoryConstants.TotalPhysical is close to 4GB, since CeilLogTwo returns 32
+            // this then causes the MemoryLimit to be 0 and crashing the app
+            uint64 MemoryLimit = FMath::Min<uint64>( uint64(1) << FMath::CeilLogTwo((Stats.free_count + Stats.inactive_count) * GetConstants().PageSize), 0x100000000);
+
+            // [RCL] 2017-03-06 FIXME: perhaps BinnedPageSize should be used here, but leaving this change to the Mac platform owner.
+            Instance = new FMallocBinned((uint32)(GetConstants().PageSize&MAX_uint32), MemoryLimit);
+        }
+    }
+	return Instance;
 }
 
 FPlatformMemoryStats FApplePlatformMemory::GetStats()

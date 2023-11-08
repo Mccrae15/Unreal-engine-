@@ -5,12 +5,14 @@
 =============================================================================*/
 
 #include "ParticleEmitterInstances.h"
+#include "EngineModule.h"
 #include "PrimitiveSceneProxy.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialRenderProxy.h"
 #include "Particles/Orientation/ParticleModuleOrientationAxisLock.h"
 #include "UObject/UObjectIterator.h"
 #include "MaterialDomain.h"
+#include "MaterialShared.h"
 #include "MeshParticleVertexFactory.h"
 #include "Particles/ParticleEmitter.h"
 #include "Particles/ParticleSystemComponent.h"
@@ -26,13 +28,13 @@
 #include "Particles/ParticleModuleRequired.h"
 #include "ParticleBeamTrailVertexFactory.h"
 #include "SceneInterface.h"
-#include "SceneRendering.h"
 #include "Particles/ParticleLODLevel.h"
 #include "Engine/StaticMesh.h"
 #include "Stats/StatsTrace.h"
 #include "UnrealEngine.h"
 #include "RenderCore.h"
 #include "DataDrivenShaderPlatformInfo.h"
+#include "PrimitiveUniformShaderParametersBuilder.h"
 
 DECLARE_CYCLE_STAT(TEXT("ParticleSystemSceneProxy Create GT"), STAT_FParticleSystemSceneProxy_Create, STATGROUP_Particles);
 DECLARE_CYCLE_STAT(TEXT("ParticleSystemSceneProxy GetMeshElements RT"), STAT_FParticleSystemSceneProxy_GetMeshElements, STATGROUP_Particles);
@@ -42,6 +44,38 @@ DECLARE_CYCLE_STAT(TEXT("DynamicSpriteEmitterData GetDynamicMeshElementsEmitter 
 
 
 #include "InGamePerformanceTracker.h"
+
+static bool GFXCascadeSpriteRenderingEnabled = true;
+static FAutoConsoleVariableRef CVarFXCascadeSpriteRenderingEnabled(
+	TEXT("fx.Cascade.SpriteRenderingEnabled"),
+	GFXCascadeSpriteRenderingEnabled,
+	TEXT("Controls if sprite rendering is enabled for Cascade"),
+	ECVF_Default
+);
+
+static bool GFXCascadeMeshRenderingEnabled = true;
+static FAutoConsoleVariableRef CVarFXCascadeMeshRenderingEnabled(
+	TEXT("fx.Cascade.MeshRenderingEnabled"),
+	GFXCascadeMeshRenderingEnabled,
+	TEXT("Controls if mesh rendering is enabled for Cascade"),
+	ECVF_Default
+);
+
+static bool GFXCascadeBeamRenderingEnabled = true;
+static FAutoConsoleVariableRef CVarFXCascadeBeamRenderingEnabled(
+	TEXT("fx.Cascade.BeamRenderingEnabled"),
+	GFXCascadeBeamRenderingEnabled,
+	TEXT("Controls if beam rendering is enabled for Cascade"),
+	ECVF_Default
+);
+
+static bool GFXCascadeTrailRenderingEnabled = true;
+static FAutoConsoleVariableRef CVarFXCascadeTrailRenderingEnabled(
+	TEXT("fx.Cascade.TrailRenderingEnabled"),
+	GFXCascadeTrailRenderingEnabled,
+	TEXT("Controls if trail rendering is enabled for Cascade"),
+	ECVF_Default
+);
 
 static int32 GFXAllowParticleMeshLODs = 0;
 static FAutoConsoleVariableRef CVarFXAllowParticleMeshLODs(
@@ -175,15 +209,6 @@ void FDynamicSpriteEmitterDataBase::SortSpriteParticles(int32 SortMode, bool bLo
 {
 	SCOPE_CYCLE_COUNTER(STAT_SortingTime);
 
-	struct FCompareParticleOrderZ
-	{
-		FORCEINLINE bool operator()( const FParticleOrder& A, const FParticleOrder& B ) const { return B.Z < A.Z; }
-	};
-	struct FCompareParticleOrderC
-	{
-		FORCEINLINE bool operator()( const FParticleOrder& A, const FParticleOrder& B ) const { return B.C < A.C; }
-	};
-
 	if (SortMode == PSORTMODE_ViewProjDepth)
 	{
 		for (int32 ParticleIndex = 0; ParticleIndex < ParticleCount; ParticleIndex++)
@@ -202,7 +227,7 @@ void FDynamicSpriteEmitterDataBase::SortSpriteParticles(int32 SortMode, bool bLo
 
 			ParticleOrder[ParticleIndex].Z = InZ;
 		}
-		Sort( ParticleOrder, ParticleCount, FCompareParticleOrderZ() );
+		Algo::SortBy(MakeArrayView(ParticleOrder, ParticleCount), &FParticleOrder::Z, TGreater<>());
 	}
 	else if (SortMode == PSORTMODE_DistanceToView)
 	{
@@ -223,7 +248,7 @@ void FDynamicSpriteEmitterDataBase::SortSpriteParticles(int32 SortMode, bool bLo
 			ParticleOrder[ParticleIndex].ParticleIndex = ParticleIndex;
 			ParticleOrder[ParticleIndex].Z = InZ;
 		}
-		Sort( ParticleOrder, ParticleCount, FCompareParticleOrderZ() );
+		Algo::SortBy(MakeArrayView(ParticleOrder, ParticleCount), &FParticleOrder::Z, TGreater<>());
 	}
 	else if (SortMode == PSORTMODE_Age_OldestFirst)
 	{
@@ -233,7 +258,7 @@ void FDynamicSpriteEmitterDataBase::SortSpriteParticles(int32 SortMode, bool bLo
 			ParticleOrder[ParticleIndex].ParticleIndex = ParticleIndex;
 			ParticleOrder[ParticleIndex].C = Particle.Flags & STATE_CounterMask;
 		}
-		Sort( ParticleOrder, ParticleCount, FCompareParticleOrderC() );
+		Algo::SortBy(MakeArrayView(ParticleOrder, ParticleCount), &FParticleOrder::C, TGreater<>());
 	}
 	else if (SortMode == PSORTMODE_Age_NewestFirst)
 	{
@@ -243,7 +268,7 @@ void FDynamicSpriteEmitterDataBase::SortSpriteParticles(int32 SortMode, bool bLo
 			ParticleOrder[ParticleIndex].ParticleIndex = ParticleIndex;
 			ParticleOrder[ParticleIndex].C = (~Particle.Flags) & STATE_CounterMask;
 		}
-		Sort( ParticleOrder, ParticleCount, FCompareParticleOrderC() );
+		Algo::SortBy(MakeArrayView(ParticleOrder, ParticleCount), &FParticleOrder::C, TGreater<>());
 	}
 }
 
@@ -823,7 +848,7 @@ void FDynamicSpriteEmitterData::GetDynamicMeshElementsEmitter(const FParticleSys
 	// Sort and generate particles for this view.
 	const FDynamicSpriteEmitterReplayDataBase* SourceData = GetSourceData();
 
-	if (bValid && SourceData)
+	if (bValid && SourceData && GFXCascadeSpriteRenderingEnabled)
 	{
 		if (SourceData->EmitterRenderMode == ERM_Normal)
 		{
@@ -851,7 +876,7 @@ void FDynamicSpriteEmitterData::GetDynamicMeshElementsEmitter(const FParticleSys
 			SpriteVertexFactory->SetParticleFactoryType(PVFT_Sprite);
 			SpriteVertexFactory->SetNumVertsInInstanceBuffer(SourceData->RequiredModule->bCutoutTexureIsValid ? SourceData->RequiredModule->NumBoundingVertices : 4);
 			SpriteVertexFactory->SetUsesDynamicParameter(bUsesDynamicParameter, bUsesDynamicParameter ? GetDynamicParameterVertexStride() : 0);
-			SpriteVertexFactory->InitResource();
+			SpriteVertexFactory->InitResource(FRHICommandListImmediate::Get());
 
 			if (SourceData->bUseLocalSpace == false)
 			{
@@ -899,29 +924,6 @@ void FDynamicSpriteEmitterData::GetDynamicMeshElementsEmitter(const FParticleSys
 				}
 				{
 					SCOPE_CYCLE_COUNTER(STAT_FDynamicSpriteEmitterData_PerParticleWorkOrTasks);
-					if (Collector.ShouldUseTasks())
-					{
-						Collector.AddTask(
-							[this, SourceData, View, Proxy, Allocation, DynamicParameterAllocation, bSort, ParticleCount, NumVerticesPerParticleInBuffer, InstanceFactor]()
-							{
-								SCOPE_CYCLE_COUNTER(STAT_FDynamicSpriteEmitterData_GetDynamicMeshElementsEmitter_Task);
-								SCOPE_CYCLE_COUNTER(STAT_ParticlesOverview_RT_CNC);
-
-								FMemMark Mark(FMemStack::Get());
-								FParticleOrder* ParticleOrder = NULL;
-								if (bSort)
-								{
-									ParticleOrder = (FParticleOrder*)FMemStack::Get().Alloc(sizeof(FParticleOrder)* ParticleCount, alignof(FParticleOrder));
-									SortSpriteParticles(SourceData->SortMode, SourceData->bUseLocalSpace, SourceData->ActiveParticleCount, 
-										SourceData->DataContainer.ParticleData, SourceData->ParticleStride, SourceData->DataContainer.ParticleIndices,
-										View, Proxy->GetLocalToWorld(), ParticleOrder);
-								}
-								// Fill vertex buffers.
-								GetVertexAndIndexData(Allocation.Buffer, DynamicParameterAllocation.Buffer, NULL, ParticleOrder, View->ViewMatrices.GetViewOrigin(), Proxy->GetLocalToWorld(), InstanceFactor);
-							}
-						);
-					}
-					else
 					{
 						FParticleOrder* ParticleOrder = NULL;
 
@@ -1043,6 +1045,7 @@ void FDynamicSpriteEmitterData::UpdateRenderThreadResourcesEmitter(const FPartic
 		UniformParameters.TangentSelector = FVector4f(0.0f, 0.0f, 0.0f, 0.0f);
 		UniformParameters.InvDeltaSeconds = SourceData->InvDeltaSeconds;
 		UniformParameters.LWCTile = SourceData->LWCTile;
+		UniformParameters.UseVelocityForMotionBlur = Source.RequiredModule->bUseVelocityForMotionBlur ? 1.0f : 0.0f;
 
 		// Parameters for computing sprite tangents.
 		const FMatrix& LocalToWorld = InOwnerProxy->GetLocalToWorld();
@@ -1338,10 +1341,12 @@ void FDynamicMeshEmitterData::GetDynamicMeshElementsEmitter(const FParticleSyste
 {
 	SCOPE_CYCLE_COUNTER(STAT_MeshRenderingTime);
 
-	if (bValid)
+	if (bValid && GFXCascadeMeshRenderingEnabled)
 	{
 		if (Source.EmitterRenderMode == ERM_Normal)
 		{
+			FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
+
 			const auto FeatureLevel = ViewFamily.GetFeatureLevel();
 			const auto ShaderPlatform = GShaderPlatformForFeatureLevel[FeatureLevel];
 
@@ -1367,7 +1372,7 @@ void FDynamicMeshEmitterData::GetDynamicMeshElementsEmitter(const FParticleSyste
 			SetupVertexFactory(MeshVertexFactory, LODModel, ChosenLODIdx);
 
 			MeshVertexFactory->SetStrides(InstanceVertexStride, bUsesDynamicParameter ? DynamicParameterVertexStride : 0);
-			MeshVertexFactory->InitResource();
+			MeshVertexFactory->InitResource(FRHICommandListImmediate::Get());
 
 			const FDynamicSpriteEmitterReplayDataBase* SourceData = GetSourceData();
 			FMeshParticleUniformParameters UniformParameters;
@@ -1383,6 +1388,7 @@ void FDynamicMeshEmitterData::GetDynamicMeshElementsEmitter(const FParticleSyste
 			UniformParameters.PrevTransformAvailable = Source.MeshMotionBlurOffset ? 1 : 0;
 			UniformParameters.bUseLocalSpace = Source.bUseLocalSpace;
 			UniformParameters.LWCTile = Source.LWCTile;
+			UniformParameters.UseVelocityForMotionBlur = Source.RequiredModule->bUseVelocityForMotionBlur ? 1.0f : 0.0f;
 
 			CollectorResources.UniformBuffer = FMeshParticleUniformBufferRef::CreateUniformBufferImmediate(UniformParameters, UniformBuffer_MultiFrame);
 			MeshVertexFactory->SetUniformBuffer(CollectorResources.UniformBuffer);
@@ -1411,7 +1417,7 @@ void FDynamicMeshEmitterData::GetDynamicMeshElementsEmitter(const FParticleSyste
 
 			if (bGeneratePrevTransformBuffer)
 			{
-				PrevTransformBuffer = MeshVertexFactory->LockPreviousTransformBuffer(ParticleCount);
+				PrevTransformBuffer = MeshVertexFactory->LockPreviousTransformBuffer(RHICmdList, ParticleCount);
 			}
 				
 			// todo: mobile Note hat if the allocation fails, PrevTransformBuffer SRV buffer wont be filled. Assuming this is ok since there is nothing to draw at that point.
@@ -1454,25 +1460,12 @@ void FDynamicMeshEmitterData::GetDynamicMeshElementsEmitter(const FParticleSyste
 
 			if (Allocation.IsValid() && (!bUsesDynamicParameter || DynamicParameterAllocation.IsValid()))
 			{
-				// Fill instance buffer.
-				if (Collector.ShouldUseTasks())
-				{
-					Collector.AddTask(
-						[this, View, Proxy, Allocation, DynamicParameterAllocation, PrevTransformBuffer, InstanceFactor]()
-						{
-							GetInstanceData(Allocation.Buffer, DynamicParameterAllocation.Buffer, PrevTransformBuffer, Proxy, View, InstanceFactor);
-						}
-					);
-				}
-				else
-				{
-					GetInstanceData(Allocation.Buffer, DynamicParameterAllocation.Buffer, PrevTransformBuffer, Proxy, View, InstanceFactor);
-				}
+				GetInstanceData(Allocation.Buffer, DynamicParameterAllocation.Buffer, PrevTransformBuffer, Proxy, View, InstanceFactor);
 			}
 
 			if (bGeneratePrevTransformBuffer)
 			{
-				MeshVertexFactory->UnlockPreviousTransformBuffer();
+				MeshVertexFactory->UnlockPreviousTransformBuffer(RHICmdList);
 			}
 
 			MeshVertexFactory->SetInstanceBuffer(Allocation.VertexBuffer, Allocation.VertexOffset, InstanceVertexStride);
@@ -1658,13 +1651,16 @@ void FDynamicMeshEmitterData::GetParticlePrevTransform(
 	const FMeshRotationPayloadData* RotationPayload = (const FMeshRotationPayloadData*)((const uint8*)&InParticle + Source.MeshRotationOffset);
 	const FMeshMotionBlurPayloadData* MotionBlurPayload = (const FMeshMotionBlurPayloadData*)((const uint8*)&InParticle + Source.MeshMotionBlurOffset);
 
-	const auto* ViewInfo = static_cast<const FViewInfo*>(View);
+	const FViewMatrices& PreviousViewMatrices = GetRendererModule().GetPreviousViewMatrices(*View);
+
+	const FVector PreviousViewOrigin = PreviousViewMatrices.GetViewOrigin();
+	const FVector PreviousViewDirection = PreviousViewMatrices.GetViewMatrix().GetColumn(2);
 
 	FVector CameraPayloadCameraOffset = FVector::ZeroVector;
 	if (Source.CameraPayloadOffset != 0)
 	{
 		// Put the camera origin in the appropriate coordinate space.
-		FVector CameraPosition = ViewInfo->PrevViewInfo.ViewMatrices.GetViewOrigin();
+		FVector CameraPosition = PreviousViewOrigin;
 		if (Source.bUseLocalSpace)
 		{
 			const FMatrix InvLocalToWorld = Proxy->GetLocalToWorld().Inverse();
@@ -1690,8 +1686,8 @@ void FDynamicMeshEmitterData::GetParticlePrevTransform(
 		MotionBlurPayload->PayloadPrevRotation,
 		CameraPayloadCameraOffset,
 		MotionBlurPayload->PayloadPrevOrbitOffset,
-		ViewInfo->PrevViewInfo.ViewMatrices.GetViewOrigin(),
-		(FVector3f)ViewInfo->GetPrevViewDirection(),
+		PreviousViewOrigin,
+		(FVector3f)PreviousViewDirection,
 		OutTransformMat
 		);
 }
@@ -2227,66 +2223,70 @@ void FDynamicMeshEmitterData::GetInstanceData(void* InstanceData, void* DynamicP
 	}
 }
 
+void InitMeshParticleVertexFactoryComponents(FMeshParticleVertexFactory* InVertexFactory, const FStaticMeshLODResources& LODResources, FMeshParticleVertexFactory::FDataType& Data)
+{
+	LODResources.VertexBuffers.PositionVertexBuffer.BindPositionVertexBuffer(InVertexFactory, Data);
+	LODResources.VertexBuffers.StaticMeshVertexBuffer.BindTangentVertexBuffer(InVertexFactory, Data);
+	LODResources.VertexBuffers.StaticMeshVertexBuffer.BindTexCoordVertexBuffer(InVertexFactory, Data, MAX_TEXCOORDS);
+	LODResources.VertexBuffers.ColorVertexBuffer.BindColorVertexBuffer(InVertexFactory, Data);
+
+	// Initialize instanced data. Vertex buffer and stride are set before render.
+	// Particle color
+	Data.ParticleColorComponent = FVertexStreamComponent(
+		NULL,
+		STRUCT_OFFSET(FMeshParticleInstanceVertex, Color),
+		0,
+		VET_Float4,
+		EVertexStreamUsage::Instancing
+	);
+
+	// Particle transform matrix
+	for (int32 MatrixRow = 0; MatrixRow < 3; MatrixRow++)
+	{
+		Data.TransformComponent[MatrixRow] = FVertexStreamComponent(
+			NULL,
+			STRUCT_OFFSET(FMeshParticleInstanceVertex, Transform) + sizeof(FVector4f) * MatrixRow, 
+			0,
+			VET_Float4,
+			EVertexStreamUsage::Instancing
+		);
+	}
+
+	Data.VelocityComponent = FVertexStreamComponent(
+		NULL,
+		STRUCT_OFFSET(FMeshParticleInstanceVertex,Velocity),
+		0,
+		VET_Float4,
+		EVertexStreamUsage::Instancing
+	);
+
+	// SubUVs.
+	Data.SubUVs = FVertexStreamComponent(
+		NULL,
+		STRUCT_OFFSET(FMeshParticleInstanceVertex, SubUVParams), 
+		0,
+		VET_Short4,
+		EVertexStreamUsage::Instancing
+	);
+
+	// Pack SubUV Lerp and the particle's relative time
+	Data.SubUVLerpAndRelTime = FVertexStreamComponent(
+		NULL,
+		STRUCT_OFFSET(FMeshParticleInstanceVertex, SubUVLerp), 
+		0,
+		VET_Float2,
+		EVertexStreamUsage::Instancing
+	);
+
+	Data.bInitialized = true;
+}
+
 void FDynamicMeshEmitterData::SetupVertexFactory( FMeshParticleVertexFactory* InVertexFactory, const FStaticMeshLODResources& LODResources, uint32 LODIdx) const
 {
-		FMeshParticleVertexFactory::FDataType Data;
-
-		LODResources.VertexBuffers.PositionVertexBuffer.BindPositionVertexBuffer(InVertexFactory, Data);
-		LODResources.VertexBuffers.StaticMeshVertexBuffer.BindTangentVertexBuffer(InVertexFactory, Data);
-		LODResources.VertexBuffers.StaticMeshVertexBuffer.BindTexCoordVertexBuffer(InVertexFactory, Data, MAX_TEXCOORDS);
-		LODResources.VertexBuffers.ColorVertexBuffer.BindColorVertexBuffer(InVertexFactory, Data);
-
-		// Initialize instanced data. Vertex buffer and stride are set before render.
-		// Particle color
-		Data.ParticleColorComponent = FVertexStreamComponent(
-			NULL,
-			STRUCT_OFFSET(FMeshParticleInstanceVertex, Color),
-			0,
-			VET_Float4,
-			EVertexStreamUsage::Instancing
-			);
-
-		// Particle transform matrix
-		for (int32 MatrixRow = 0; MatrixRow < 3; MatrixRow++)
-		{
-			Data.TransformComponent[MatrixRow] = FVertexStreamComponent(
-				NULL,
-				STRUCT_OFFSET(FMeshParticleInstanceVertex, Transform) + sizeof(FVector4f) * MatrixRow, 
-				0,
-				VET_Float4,
-				EVertexStreamUsage::Instancing
-				);
-		}
-
-		Data.VelocityComponent = FVertexStreamComponent(
-			NULL,
-			STRUCT_OFFSET(FMeshParticleInstanceVertex,Velocity),
-			0,
-			VET_Float4,
-			EVertexStreamUsage::Instancing
-			);
-
-		// SubUVs.
-		Data.SubUVs = FVertexStreamComponent(
-			NULL,
-			STRUCT_OFFSET(FMeshParticleInstanceVertex, SubUVParams), 
-			0,
-			VET_Short4,
-			EVertexStreamUsage::Instancing
-			);
-
-		// Pack SubUV Lerp and the particle's relative time
-		Data.SubUVLerpAndRelTime = FVertexStreamComponent(
-			NULL,
-			STRUCT_OFFSET(FMeshParticleInstanceVertex, SubUVLerp), 
-			0,
-			VET_Float2,
-			EVertexStreamUsage::Instancing
-			);
-
-		Data.bInitialized = true;
-		InVertexFactory->SetData(Data);
-		InVertexFactory->SetLODIdx((uint8)LODIdx);
+	FMeshParticleVertexFactory::FDataType Data;
+	InitMeshParticleVertexFactoryComponents(InVertexFactory, LODResources, Data);
+	InVertexFactory->SetData(Data);
+	InVertexFactory->SetLODIdx((uint8)LODIdx);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -2401,6 +2401,12 @@ void FDynamicBeam2EmitterData::GetDynamicMeshElementsEmitter(const FParticleSyst
 	{
 		return;
 	}
+
+	if (!GFXCascadeBeamRenderingEnabled)
+	{
+		return;
+	}
+
 	FIndexBuffer* IndexBuffer = nullptr;
 	uint32 FirstIndex = 0;
 	int32 OutTriangleCount = 0;
@@ -2433,7 +2439,7 @@ void FDynamicBeam2EmitterData::GetDynamicMeshElementsEmitter(const FParticleSyst
 	FParticleBeamTrailVertexFactory* BeamTrailVertexFactory = &CollectorResources.VertexFactory;
 	BeamTrailVertexFactory->SetParticleFactoryType(PVFT_BeamTrail);
 	BeamTrailVertexFactory->SetUsesDynamicParameter(bUsesDynamicParameter);
-	BeamTrailVertexFactory->InitResource();
+	BeamTrailVertexFactory->InitResource(FRHICommandListImmediate::Get());
 
 	// Create and set the uniform buffer for this emitter.
 	BeamTrailVertexFactory->SetBeamTrailUniformBuffer(CreateBeamTrailUniformBuffer(Proxy, &Source, View));
@@ -5155,6 +5161,12 @@ void FDynamicTrailsEmitterData::GetDynamicMeshElementsEmitter(const FParticleSys
 	{
 		return;
 	}
+
+	if (!GFXCascadeTrailRenderingEnabled)
+	{
+		return;
+	}
+
 	const bool bIsWireframe = ViewFamily.EngineShowFlags.Wireframe;
 	FIndexBuffer* IndexBuffer = nullptr;
 	uint32 FirstIndex = 0;
@@ -5192,7 +5204,7 @@ void FDynamicTrailsEmitterData::GetDynamicMeshElementsEmitter(const FParticleSys
 	FParticleBeamTrailVertexFactory* BeamTrailVertexFactory = &CollectorResources.VertexFactory;
 	BeamTrailVertexFactory->SetParticleFactoryType(PVFT_BeamTrail);
 	BeamTrailVertexFactory->SetUsesDynamicParameter(bUsesDynamicParameter);
-	BeamTrailVertexFactory->InitResource();
+	BeamTrailVertexFactory->InitResource(FRHICommandListImmediate::Get());
 
 	// Create and set the uniform buffer for this emitter.
 	BeamTrailVertexFactory->SetBeamTrailUniformBuffer(CreateBeamTrailUniformBuffer(Proxy, SourcePointer, View));
@@ -6868,13 +6880,24 @@ FPrimitiveViewRelevance FParticleSystemSceneProxy::GetViewRelevance(const FScene
 void FParticleSystemSceneProxy::OnTransformChanged()
 {
 	WorldSpacePrimitiveUniformBuffer.ReleaseResource();
+	WorldSpaceUBHash = 0;
 }
 
 void FParticleSystemSceneProxy::UpdateWorldSpacePrimitiveUniformBuffer() const
 {
-	check(IsInRenderingThread());
-	if (!WorldSpacePrimitiveUniformBuffer.IsInitialized())
+	// Hash custom floats because we need to invalidate this UB if they don't match otherwise updates to the buffer won't work
+	uint32 NewWorldSpaceUBHash = 0;
+	const FCustomPrimitiveData* LocalCustomPrimitiveData = GetCustomPrimitiveData();
+	if (LocalCustomPrimitiveData && LocalCustomPrimitiveData->Data.Num())
 	{
+		NewWorldSpaceUBHash = FCrc::MemCrc32(LocalCustomPrimitiveData->Data.GetData(), LocalCustomPrimitiveData->Data.Num() * LocalCustomPrimitiveData->Data.GetTypeSize());
+	}
+
+	const bool bNeedsInit = !WorldSpacePrimitiveUniformBuffer.IsInitialized();
+
+	if (bNeedsInit || (WorldSpaceUBHash != NewWorldSpaceUBHash))
+	{
+		WorldSpaceUBHash = NewWorldSpaceUBHash;
 		WorldSpacePrimitiveUniformBuffer.SetContents(
 			FPrimitiveUniformShaderParametersBuilder{}
 			.Defaults()
@@ -6887,9 +6910,14 @@ void FParticleSystemSceneProxy::UpdateWorldSpacePrimitiveUniformBuffer() const
 				.LightingChannelMask(GetLightingChannelMask())
 				.UseSingleSampleShadowFromStationaryLights(UseSingleSampleShadowFromStationaryLights())
 				.UseVolumetricLightmap(GetScene().HasPrecomputedVolumetricLightmap_RenderThread())
+				.CustomPrimitiveData(GetCustomPrimitiveData())
 			.Build()
 		);
-		WorldSpacePrimitiveUniformBuffer.InitResource();
+	}
+
+	if ( bNeedsInit)
+	{
+		WorldSpacePrimitiveUniformBuffer.InitResource(FRHICommandListImmediate::Get());
 	}
 }
 
@@ -6928,7 +6956,7 @@ FPrimitiveSceneProxy* UParticleSystemComponent::CreateSceneProxy()
 			PrecacheAssetPSOs(Template);
 		}
 
-		if (IsPSOPrecaching())
+		if (CheckPSOPrecachingAndBoostPriority() && GetPSOPrecacheProxyCreationStrategy() != EPSOPrecacheProxyCreationStrategy::AlwaysCreate)
 		{
 			UE_LOG(LogParticles, Verbose, TEXT("Skipping CreateSceneProxy for UParticleSystemComponent %s (UParticleSystem PSOs are still compiling)"), *GetFullName());
 			return nullptr;

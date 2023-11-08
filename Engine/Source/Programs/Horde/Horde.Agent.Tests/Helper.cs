@@ -10,8 +10,10 @@ using Grpc.Net.Client;
 using Horde.Agent.Execution;
 using Horde.Agent.Services;
 using Horde.Agent.Utility;
+using Horde.Common.Rpc;
 using HordeCommon;
 using HordeCommon.Rpc;
+using HordeCommon.Rpc.Messages;
 using HordeCommon.Rpc.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -54,13 +56,16 @@ namespace Horde.Agent.Tests
 	{
 		private readonly GrpcChannel _grpcChannel;
 		private readonly HordeRpc.HordeRpcClient _hordeRpcClient;
+		private readonly JobRpc.JobRpcClient _jobRpcClient;
 
+		public bool Healthy => true;
 		public ILogger Logger => NullLogger.Instance;
 
-		public RpcConnectionStub(GrpcChannel grpcChannel, HordeRpc.HordeRpcClient hordeRpcClient)
+		public RpcConnectionStub(GrpcChannel grpcChannel, HordeRpc.HordeRpcClient hordeRpcClient, JobRpc.JobRpcClient jobRpcClient)
 		{
 			_grpcChannel = grpcChannel;
 			_hordeRpcClient = hordeRpcClient;
+			_jobRpcClient = jobRpcClient;
 		}
 
 		public IRpcClientRef<TClient>? TryGetClientRef<TClient>() where TClient : ClientBase<TClient>
@@ -70,7 +75,19 @@ namespace Horde.Agent.Tests
 
 		public Task<IRpcClientRef<TClient>> GetClientRefAsync<TClient>(CancellationToken cancellationToken) where TClient : ClientBase<TClient>
 		{
-			IRpcClientRef<TClient> rpcClientRefStub = (IRpcClientRef<TClient>)(object)new RpcClientRefStub<HordeRpc.HordeRpcClient>(_grpcChannel, _hordeRpcClient);
+			IRpcClientRef<TClient> rpcClientRefStub;
+			if (typeof(TClient) == typeof(HordeRpc.HordeRpcClient))
+			{
+				rpcClientRefStub = (IRpcClientRef<TClient>)(object)new RpcClientRefStub<HordeRpc.HordeRpcClient>(_grpcChannel, _hordeRpcClient);
+			}
+			else if (typeof(TClient) == typeof(JobRpc.JobRpcClient))
+			{
+				rpcClientRefStub = (IRpcClientRef<TClient>)(object)new RpcClientRefStub<JobRpc.JobRpcClient>(_grpcChannel, _jobRpcClient);
+			}
+			else
+			{
+				throw new NotImplementedException();
+			}
 			return Task.FromResult(rpcClientRefStub);
 		}
 
@@ -80,7 +97,7 @@ namespace Horde.Agent.Tests
 		}
 	}
 
-	class HordeRpcClientStub : HordeRpc.HordeRpcClient
+	class JobRpcClientStub : JobRpc.JobRpcClient
 	{
 		public readonly Queue<BeginStepResponse> BeginStepResponses = new Queue<BeginStepResponse>();
 		public readonly List<UpdateStepRequest> UpdateStepRequests = new List<UpdateStepRequest>();
@@ -88,7 +105,7 @@ namespace Horde.Agent.Tests
 		public Func<GetStepRequest, GetStepResponse>? _getStepFunc = null;
 		private readonly ILogger _logger;
 
-		public HordeRpcClientStub(ILogger logger)
+		public JobRpcClientStub(ILogger logger)
 		{
 			_logger = logger;
 		}
@@ -101,6 +118,7 @@ namespace Horde.Agent.Tests
 
 			res.AgentType = "agentType1";
 			res.LogId = "logId1";
+			res.Change = 1;
 
 			return Wrap(res);
 		}
@@ -181,59 +199,47 @@ namespace Horde.Agent.Tests
 		}
 	}
 
-	class SimpleTestExecutor : JobExecutor
+	class SimpleTestExecutor : IJobExecutor
 	{
 		public const string Name = "Simple";
 
 		private readonly Func<BeginStepResponse, ILogger, CancellationToken, Task<JobStepOutcome>> _func;
 
 		public SimpleTestExecutor(Func<BeginStepResponse, ILogger, CancellationToken, Task<JobStepOutcome>> func)
-			: base(null!, null!, null!, null!, null!, NullLogger.Instance)
 		{
 			_func = func;
 		}
 
-		public override Task InitializeAsync(ILogger logger, CancellationToken cancellationToken)
+		public Task InitializeAsync(ILogger logger, CancellationToken cancellationToken)
 		{
 			logger.LogDebug("SimpleTestExecutor.InitializeAsync()");
 			return Task.CompletedTask;
 		}
 
-		public override Task<JobStepOutcome> RunAsync(BeginStepResponse step, ILogger logger,
-			CancellationToken cancellationToken)
+		public Task<JobStepOutcome> RunAsync(BeginStepResponse step, ILogger logger, CancellationToken cancellationToken)
 		{
 			logger.LogDebug("SimpleTestExecutor.RunAsync(Step: {Step})", step);
 			return _func(step, logger, cancellationToken);
 		}
 
-		public override Task FinalizeAsync(ILogger logger, CancellationToken cancellationToken)
+		public Task FinalizeAsync(ILogger logger, CancellationToken cancellationToken)
 		{
 			logger.LogDebug("SimpleTestExecutor.FinalizeAsync()");
 			return Task.CompletedTask;
 		}
-
-		protected override Task<bool> SetupAsync(BeginStepResponse step, ILogger logger, CancellationToken cancellationToken)
-		{
-			throw new NotImplementedException();
-		}
-
-		protected override Task<bool> ExecuteAsync(BeginStepResponse step, ILogger logger, CancellationToken cancellationToken)
-		{
-			throw new NotImplementedException();
-		}
 	}
 
-	class SimpleTestExecutorFactory : JobExecutorFactory
+	class SimpleTestExecutorFactory : IJobExecutorFactory
 	{
-		readonly JobExecutor _executor;
+		readonly IJobExecutor _executor;
 
-		public override string Name => SimpleTestExecutor.Name;
+		public string Name => SimpleTestExecutor.Name;
 
-		public SimpleTestExecutorFactory(JobExecutor executor)
+		public SimpleTestExecutorFactory(IJobExecutor executor)
 		{
 			_executor = executor;
 		}
 
-		public override JobExecutor CreateExecutor(ISession session, ExecuteJobTask executeJobTask, BeginBatchResponse beginBatchResponse) => _executor;
+		public IJobExecutor CreateExecutor(AgentWorkspace? workspaceInfo, AgentWorkspace? autoSdkWorkspaceInfo, JobExecutorOptions options) => _executor;
 	}
 }

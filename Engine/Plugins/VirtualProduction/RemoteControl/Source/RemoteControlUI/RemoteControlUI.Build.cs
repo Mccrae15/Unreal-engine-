@@ -7,14 +7,6 @@ public class RemoteControlUI : ModuleRules
 {
 	public RemoteControlUI(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePaths.AddRange(new string[] {
-			Path.Combine(GetModuleDirectory("PropertyEditor"), "Private"),
-		});
-
-		PublicDependencyModuleNames.AddRange(
-			new string[] {}
-		);
-
         PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"ApplicationCore",
@@ -25,6 +17,7 @@ public class RemoteControlUI : ModuleRules
 				"Core",
 				"CoreUObject",
 				"ContentBrowser",
+				"DesktopWidgets",
 				"DeveloperSettings",
 				"EditorWidgets",
 				"EditorStyle",
@@ -43,6 +36,7 @@ public class RemoteControlUI : ModuleRules
 				"RemoteControlProtocol",
 				"RemoteControlProtocolWidgets",
 				"SceneOutliner",
+				"Serialization",
 				"Slate",
 				"SlateCore",
 				"StructUtils",

@@ -43,6 +43,7 @@ namespace Insights
 {
 	class ITimingViewExtender;
 	class FTimeMarker;
+	class FTimingRegionsSharedState;
 	class FQuickFind;
 	class SQuickFind;
 	enum class ETimingEventsColoringMode : uint32;
@@ -271,6 +272,9 @@ public:
 	virtual Insights::FHoveredEventChangedDelegate& OnHoveredEventChanged() override { return OnHoveredEventChangedDelegate; }
 	virtual Insights::FSelectedTrackChangedDelegate& OnSelectedTrackChanged() override { return OnSelectedTrackChangedDelegate; }
 	virtual Insights::FSelectedEventChangedDelegate& OnSelectedEventChanged() override { return OnSelectedEventChangedDelegate; }
+	virtual Insights::FTrackVisibilityChangedDelegate& OnTrackVisibilityChanged() override { return OnTrackVisibilityChangedDelegate; }
+	virtual Insights::FTrackAddedDelegate& OnTrackAdded() override { return OnTrackAddedDelegate; }
+	virtual Insights::FTrackRemovedDelegate& OnTrackRemoved() override { return OnTrackRemovedDelegate; }
 
 	virtual void ResetSelectedEvent() override
 	{
@@ -316,7 +320,7 @@ public:
 
 	void HideAllScrollableTracks();
 
-	void OnTrackVisibilityChanged();
+	void HandleTrackVisibilityChanged();
 
 	bool IsGpuTrackVisible() const;
 	bool IsCpuTrackVisible(uint32 InThreadId) const;
@@ -344,6 +348,7 @@ public:
 	void ZoomOnTimeInterval(double IntervalStartTime, double IntervalDuration);
 	void BringIntoView(double StartTime, double EndTime);
 	void SelectTimeInterval(double IntervalStartTime, double IntervalDuration);
+	void SnapToFrameBound(double& IntervalStartTime, double& IntervalDuration);
 	void SelectToTimeMarker(double InTimeMarker);
 
 	//bool AreTimeMarkersVisible() { return MarkersTrack->IsVisible(); }
@@ -425,6 +430,8 @@ protected:
 
 	////////////////////////////////////////////////////////////////////////////////////////////////////
 	// Auto-Scroll
+
+	void SetAutoScroll(bool bOnOff);
 
 	void AutoScroll_OnCheckStateChanged(ECheckBoxState NewRadioState);
 	ECheckBoxState AutoScroll_IsChecked() const;
@@ -508,6 +515,8 @@ protected:
 	typedef TFunctionRef<void(TSharedPtr<FBaseTimingTrack>& Track)> EnumerateFilteredTracksCallback;
 	void EnumerateFilteredTracks(TSharedPtr<Insights::FFilterConfigurator> FilterConfigurator, EnumerateFilteredTracksCallback Callback);
 
+	ETraceFrameType GetFrameTypeToSnapTo();
+
 protected:
 	/** The name of the view. */
 	FName ViewName;
@@ -544,6 +553,9 @@ protected:
 	// Shared state for File Activity (I/O) tracks
 	TSharedPtr<FFileActivitySharedState> FileActivitySharedState;
 
+	// Shared state for Regions tracks
+	TSharedPtr<Insights::FTimingRegionsSharedState> TimingRegionsSharedState;
+	
 	////////////////////////////////////////////////////////////
 
 	/** The time ruler track. It includes the custom time markers (ones user can drag with mouse). */
@@ -708,6 +720,9 @@ protected:
 	Insights::FHoveredEventChangedDelegate OnHoveredEventChangedDelegate;
 	Insights::FSelectedTrackChangedDelegate OnSelectedTrackChangedDelegate;
 	Insights::FSelectedEventChangedDelegate OnSelectedEventChangedDelegate;
+	Insights::FTrackVisibilityChangedDelegate OnTrackVisibilityChangedDelegate;
+	Insights::FTrackAddedDelegate OnTrackAddedDelegate;
+	Insights::FTrackRemovedDelegate OnTrackRemovedDelegate;
 
 	TSharedPtr<FUICommandList> CommandList;
 

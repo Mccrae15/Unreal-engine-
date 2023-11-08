@@ -1,8 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using EpicGames.Core;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
+using EpicGames.Core;
 
 namespace UnrealBuildTool
 {
@@ -17,15 +18,28 @@ namespace UnrealBuildTool
 		};
 
 		/// <summary>
+		/// The minimum Windows SDK version to be used. If this is null then it means there is no minimum version
+		/// </summary>
+		static readonly VersionNumber? MinimumWindowsSDKVersion = new VersionNumber(10, 0, 18362, 0);
+
+		/// <summary>
+		/// The maximum Windows SDK version to be used. If this is null then it means "Latest"
+		/// </summary>
+		static readonly VersionNumber? MaximumWindowsSDKVersion = null;
+
+		/// <summary>
 		/// The default compiler version to be used, if installed. 
 		/// </summary>
 		static readonly VersionNumberRange[] PreferredClangVersions =
 		{
-			VersionNumberRange.Parse("14.0.0", "14.999"), // VS2022 17.4.x runtime requires Clang 14
-			VersionNumberRange.Parse("13.0.0", "13.999"), // VS2019 16.11 runtime requires Clang 13
+			VersionNumberRange.Parse("16.0.0", "16.999"), // VS2022 17.7.x runtime requires Clang 16
+			VersionNumberRange.Parse("15.0.0", "15.999"), // VS2022 17.5.x runtime requires Clang 15
 		};
 
-		static readonly VersionNumber MinimumClangVersion = new VersionNumber(13, 0, 0);
+		/// <summary>
+		/// The minimum supported Clang compiler
+		/// </summary>
+		static readonly VersionNumber MinimumClangVersion = new VersionNumber(15, 0, 0);
 
 		/// <summary>
 		/// Ranges of tested compiler toolchains to be used, in order of preference. If multiple toolchains in a range are present, the latest version will be preferred.
@@ -33,8 +47,22 @@ namespace UnrealBuildTool
 		/// </summary>
 		static readonly VersionNumberRange[] PreferredVisualCppVersions = new VersionNumberRange[]
 		{
+			VersionNumberRange.Parse("14.36.32532", "14.36.99999"), // VS2022 17.6.x
+			VersionNumberRange.Parse("14.35.32215", "14.35.99999"), // VS2022 17.5.x
 			VersionNumberRange.Parse("14.34.31933", "14.34.99999"), // VS2022 17.4.x
 			VersionNumberRange.Parse("14.29.30133", "14.29.99999"), // VS2019 16.11.x
+		};
+
+		/// <summary>
+		/// Minimum Clang version required for MSVC toolchain versions
+		/// </summary>
+		static readonly IReadOnlyDictionary<VersionNumber, VersionNumber> MinimumRequiredClangVersion = new Dictionary<VersionNumber, VersionNumber>()
+		{
+			{ new VersionNumber(14, 37), new VersionNumber(16) }, // VS2022 17.7.x
+			{ new VersionNumber(14, 35), new VersionNumber(15) }, // VS2022 17.5.x - 17.6.x
+			{ new VersionNumber(14, 34), new VersionNumber(14) }, // VS2022 17.4.x
+			{ new VersionNumber(14, 29), new VersionNumber(13) }, // VS2019 16.11.x
+
 		};
 
 		/// <summary>
@@ -42,8 +70,12 @@ namespace UnrealBuildTool
 		/// </summary>
 		static readonly VersionNumberRange[] BannedVisualCppVersions = new VersionNumberRange[]
 		{
+			VersionNumberRange.Parse("14.30.0", "14.33.99999"), // VS2022 17.0.x - 17.3.x
 		};
 
+		/// <summary>
+		/// The minimum supported MSVC compiler
+		/// </summary>
 		static readonly VersionNumber MinimumVisualCppVersion = new VersionNumber(14, 29, 30133);
 
 		/// <summary>
@@ -52,127 +84,68 @@ namespace UnrealBuildTool
 		/// </summary>
 		static readonly VersionNumberRange[] PreferredIntelOneApiVersions =
 		{
-			VersionNumberRange.Parse("2022.2.0", "2022.9999"),
-		};
-
-		static readonly VersionNumber MinimumIntelOneApiVersion = new VersionNumber(2022, 2, 0);
-
-		/// <summary>
-		/// The default set of components that should be suggested to be installed for Visual Studio 2019 or 2022.
-		/// This or the 2019\2022 specific components should be updated if the preferred visual cpp version changes
-		/// </summary>
-		static readonly string[] VisualStudioSuggestedComponents = new string[]
-		{
-			"Microsoft.VisualStudio.Workload.CoreEditor",
-			"Microsoft.VisualStudio.Workload.NativeDesktop",
-			"Microsoft.VisualStudio.Workload.NativeGame",
-			"Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-			"Microsoft.VisualStudio.Component.Windows10SDK",
+			VersionNumberRange.Parse("2023.1.0", "2023.9999"),
 		};
 
 		/// <summary>
-		/// Additional set of components that should be suggested to be installed for Visual Studio 2019 or 2022
-		/// to support the HoloLens platform.
+		/// The minimum supported Intel compiler
 		/// </summary>
-		static readonly string[] VisualStudioSuggestedHololensComponents = new string[]
-		{
-			"Microsoft.VisualStudio.Workload.Universal",
-			"Microsoft.VisualStudio.Component.VC.Tools.ARM64",
-		};
+		static readonly VersionNumber MinimumIntelOneApiVersion = new VersionNumber(2023, 0, 0);
 
-		/// <summary>
-		/// Additional set of components that should be suggested to be installed for Visual Studio 2019 or 2022
-		/// to support the Linux platform.
-		/// </summary>
-		static readonly string[] VisualStudioSuggestedLinuxComponents = new string[]
-		{
-			"Microsoft.VisualStudio.Workload.NativeCrossPlat",
-		};
-
-		/// <summary>
-		/// Additional set of components that should be suggested to be installed for Visual Studio 2019.
-		/// </summary>
-		static readonly string[] VisualStudio2019SuggestedComponents = new string[]
-		{
-		};
-
-		/// <summary>
-		/// Additional set of components that should be suggested to be installed for Visual Studio 2022.
-		/// </summary>
-		static readonly string[] VisualStudio2022SuggestedComponents = new string[]
-		{
-			"Microsoft.VisualStudio.Workload.ManagedDesktop",
-			"Microsoft.VisualStudio.Component.VC.14.34.17.4.x86.x64",
-			"Microsoft.Net.Component.4.6.2.TargetingPack",
-		};
-
-		/// <summary>
-		/// Additional set of components that should be suggested to be installed for Visual Studio 2022
-		/// to support the HoloLens platform.
-		/// </summary>
-		static readonly string[] VisualStudio2022SuggestedHololensComponents = new string[]
-		{
-			"Microsoft.VisualStudio.Component.VC.14.34.17.4.ARM64",
-		};
-
-		/// <summary>
-		/// Returns the list of suggested of components that should be suggested to be installed for Visual Studio.
-		/// Used to generate a .vsconfig file which will prompt Visual Studio to ask the user to install these components.
-		/// </summary>
-		public static IEnumerable<string> GetVisualStudioSuggestedComponents(VCProjectFileFormat Format)
-		{
-			bool LinuxValid = InstalledPlatformInfo.IsValidPlatform(UnrealTargetPlatform.Linux) && UEBuildPlatform.IsPlatformAvailable(UnrealTargetPlatform.Linux);
-			bool HololensValid = InstalledPlatformInfo.IsValidPlatform(UnrealTargetPlatform.HoloLens) && UEBuildPlatform.IsPlatformAvailable(UnrealTargetPlatform.HoloLens);
-
-			SortedSet<string> Components = new SortedSet<string>();
-			Components.UnionWith(VisualStudioSuggestedComponents);
-
-			switch (Format)
-			{
-				case VCProjectFileFormat.VisualStudio2019:
-					Components.UnionWith(VisualStudio2019SuggestedComponents);
-					break;
-				case VCProjectFileFormat.VisualStudio2022:
-					Components.UnionWith(VisualStudio2022SuggestedComponents);
-					if (HololensValid)
-					{
-						Components.UnionWith(VisualStudio2022SuggestedHololensComponents);
-					}
-					break;
-				default:
-					throw new BuildException("Unsupported Visual Studio version");
-			}
-
-			if (LinuxValid)
-			{
-				Components.UnionWith(VisualStudioSuggestedLinuxComponents);
-			}
-
-			if (HololensValid)
-			{
-				Components.UnionWith(VisualStudioSuggestedHololensComponents);
-			}
-
-			return Components;
-		}
-
-		public override string GetMainVersion()
+		/// <inheritdoc/>
+		protected override string GetMainVersionInternal()
 		{
 			// preferred/main version is the top of the Preferred list - 
 			return PreferredWindowsSdkVersions.First().ToString();
 		}
 
+		/// <inheritdoc/>
 		protected override void GetValidVersionRange(out string MinVersion, out string MaxVersion)
 		{
 			MinVersion = "10.0.00000.0";
 			MaxVersion = "10.9.99999.0";
 		}
 
+		/// <inheritdoc/>
 		protected override void GetValidSoftwareVersionRange(out string? MinVersion, out string? MaxVersion)
 		{
-			// minimum version is the oldest version in the Preferred list -
-			MinVersion = PreferredWindowsSdkVersions.Min()?.ToString();
-			MaxVersion = null;
+			MinVersion = MinimumWindowsSDKVersion?.ToString();
+			MaxVersion = MaximumWindowsSDKVersion?.ToString();
+		}
+
+		/// <summary>
+		/// The minimum supported Clang version for a given MSVC toolchain
+		/// </summary>
+		/// <param name="VcVersion"></param>
+		/// <returns></returns>
+		public static VersionNumber GetMinimumClangVersionForVcVersion(VersionNumber VcVersion)
+		{
+			foreach (KeyValuePair<VersionNumber, VersionNumber> Item in MinimumRequiredClangVersion)
+			{
+				if (VcVersion >= Item.Key)
+				{
+					return Item.Value;
+				}
+			}
+			return MinimumClangVersion;
+		}
+
+		/// <summary>
+		/// The base Clang version for a given Intel toolchain
+		/// </summary>
+		/// <param name="IntelCompilerPath"></param>
+		/// <returns></returns>
+		public static VersionNumber GetClangVersionForIntelCompiler(FileReference IntelCompilerPath)
+		{
+			FileReference LdLLdPath = FileReference.Combine(IntelCompilerPath.Directory, "..", "bin-llvm", "ld.lld.exe");
+			if (FileReference.Exists(LdLLdPath))
+			{
+				FileVersionInfo VersionInfo = FileVersionInfo.GetVersionInfo(LdLLdPath.FullName);
+				VersionNumber Version = new VersionNumber(VersionInfo.FileMajorPart, VersionInfo.FileMinorPart, VersionInfo.FileBuildPart);
+				return Version;
+			}
+
+			return MinimumClangVersion;
 		}
 
 		/// <summary>

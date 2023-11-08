@@ -15,6 +15,14 @@ struct FSkeletalMeshInfo
 	uint32 BoneCount = 0;
 };
 
+struct FAnimNodeInfo
+{
+	int32 Id = 0;
+	uint64 AnimInstanceId = 0;
+	const TCHAR* Name = nullptr;
+	const TCHAR* TypeName = nullptr;
+};
+
 struct FSkeletalMeshNamedCurve
 {
 	uint32 Id = 0;
@@ -38,14 +46,19 @@ struct FSkeletalMeshPoseMessage
 
 struct FPoseWatchMessage
 {
+	FTransform WorldTransform;
+	FColor Color = FColor::Black;
 	double RecordingTime = 0.0;
+	uint64 ComponentId = 0;
 	uint64 AnimInstanceId = 0;
 	uint64 PoseWatchId = 0;
 	uint64 BoneTransformsStartIndex = 0;
-	uint16 NumBoneTransforms = 0;
-	FTransform WorldTransform;
+	uint64 CurveStartIndex = 0;
 	uint64 RequiredBonesStartIndex = 0;
+	uint32 NameId = 0;
+	uint16 NumBoneTransforms = 0;
 	uint16 NumRequiredBones = 0;
+	uint16 NumCurves = 0;
 	bool bIsEnabled = false;
 };
 
@@ -102,6 +115,7 @@ struct FAnimNodeMessage
 	float RootMotionWeight = 0.0f;
 	uint16 FrameCounter = 0;
 	EAnimGraphPhase Phase = EAnimGraphPhase::Initialize;
+	const TCHAR* NodeTypeName = nullptr;
 };
 
 enum class EAnimNodeValueType : uint8
@@ -114,6 +128,7 @@ enum class EAnimNodeValueType : uint8
 	String,
 	Object,
 	Class,
+	AnimNode,
 };
 
 struct FVariantValue
@@ -174,6 +189,11 @@ struct FVariantValue
 		{
 			uint64 Value;
 		} Class;
+		struct
+		{
+			int32 Value;
+			uint64 AnimInstanceId;
+		} AnimNode;
 	};
 
 	EAnimNodeValueType Type = EAnimNodeValueType::Bool;
@@ -186,6 +206,7 @@ struct FAnimNodeValueMessage
 	FVariantValue Value;
 	int32 NodeId = -1;
 	uint16 FrameCounter = 0;
+	double RecordingTime = 0.0f;
 };
 
 struct FAnimSequencePlayerMessage
@@ -291,6 +312,7 @@ public:
 	virtual void EnumerateSkeletalMeshCurveIds(uint64 InObjectId, TFunctionRef<void(uint32)> Callback) const = 0;
 	virtual void GetPoseWatchData(const FPoseWatchMessage& InMessage, TArray<FTransform>& BoneTransforms, TArray<uint16>& RequiredBones) const = 0;
 	virtual void EnumerateSkeletalMeshCurves(const FSkeletalMeshPoseMessage& InMessage, TFunctionRef<void(const FSkeletalMeshNamedCurve&)> Callback) const = 0;
+	virtual void EnumeratePoseWatchCurves(const FPoseWatchMessage& InMessage, TFunctionRef<void(const FSkeletalMeshNamedCurve&)> Callback) const = 0;
 	virtual bool ReadTickRecordTimeline(uint64 InObjectId, TFunctionRef<void(const TickRecordTimeline&)> Callback) const = 0;
 	virtual void EnumerateTickRecordIds(uint64 InObjectId, TFunctionRef<void(uint64, int32)> Callback) const = 0;
 	virtual void EnumerateAnimGraphTimelines(TFunctionRef<void(uint64 ObjectId, const AnimGraphTimeline&)> Callback) const =0;
@@ -308,6 +330,7 @@ public:
 	virtual bool ReadAnimSyncTimeline(uint64 InObjectId, TFunctionRef<void(const AnimSyncTimeline&)> Callback) const = 0;
 	virtual bool ReadPoseWatchTimeline(uint64 InObjectId, TFunctionRef<void(const PoseWatchTimeline&)> Callback) const = 0;
 	virtual const FSkeletalMeshInfo* FindSkeletalMeshInfo(uint64 InObjectId) const = 0;
+	virtual const FAnimNodeInfo* FindAnimNodeInfo(int32 InNodeId, uint64 InAnimInstanceId) const = 0;
 	virtual const TCHAR* GetName(uint32 InId) const = 0;
 	virtual FText FormatNodeKeyValue(const FAnimNodeValueMessage& InMessage) const = 0;
 	virtual FText FormatNodeValue(const FAnimNodeValueMessage& InMessage) const = 0;

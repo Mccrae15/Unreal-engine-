@@ -3,7 +3,6 @@
 using EpicGames.Core;
 using EpicGames.Perforce;
 using Microsoft.Extensions.Logging;
-using Microsoft.Win32;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -14,7 +13,6 @@ using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -26,15 +24,15 @@ namespace UnrealGameSync
 
 		public UserErrorException(string message, int code = 1) : base(message)
 		{
-			this.Code = code;
+			Code = code;
 		}
 	}
 
 	public class PerforceChangeDetails
 	{
-		public string Description;
-		public bool ContainsCode;
-		public bool ContainsContent;
+		public string Description { get; }
+		public bool ContainsCode { get; }
+		public bool ContainsContent { get; }
 
 		public PerforceChangeDetails(DescribeRecord describeRecord, Func<string, bool>? isCodeFile = null)
 		{
@@ -104,15 +102,28 @@ namespace UnrealGameSync
 			}
 		}
 
+		public static T? TryDeserializeJson<T>(byte[] data) where T : class
+		{
+			try
+			{
+				return JsonSerializer.Deserialize<T>(data, DefaultJsonSerializerOptions)!;
+			}
+			catch (Exception ex)
+			{
+				TraceException?.Invoke(ex);
+				return null;
+			}
+		}
+
 		public static T LoadJson<T>(FileReference file)
 		{
 			byte[] data = FileReference.ReadAllBytes(file);
 			return JsonSerializer.Deserialize<T>(data, DefaultJsonSerializerOptions)!;
 		}
 
-		public static void SaveJson<T>(FileReference file, T obj)
+		public static byte[] SerializeJson<T>(T obj)
 		{
-			JsonSerializerOptions options = new JsonSerializerOptions { IgnoreNullValues = true, WriteIndented = true };
+			JsonSerializerOptions options = new JsonSerializerOptions { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull, WriteIndented = true };
 			options.Converters.Add(new JsonStringEnumConverter());
 
 			byte[] buffer;
@@ -125,12 +136,18 @@ namespace UnrealGameSync
 				buffer = stream.ToArray();
 			}
 
+			return buffer;
+		}
+
+		public static void SaveJson<T>(FileReference file, T obj)
+		{
+			byte[] buffer = SerializeJson(obj);
 			FileReference.WriteAllBytes(file, buffer);
 		}
 
 		public static string GetPathWithCorrectCase(FileInfo info)
 		{
-			DirectoryInfo parentInfo = info.Directory;
+			DirectoryInfo parentInfo = info.Directory!;
 			if(info.Exists)
 			{
 				return Path.Combine(GetPathWithCorrectCase(parentInfo), parentInfo.GetFiles(info.Name)[0].Name); 
@@ -143,7 +160,7 @@ namespace UnrealGameSync
 
 		public static string GetPathWithCorrectCase(DirectoryInfo info)
 		{
-			DirectoryInfo parentInfo = info.Parent;
+			DirectoryInfo? parentInfo = info.Parent;
 			if(parentInfo == null)
 			{
 				return info.FullName.ToUpperInvariant();
@@ -240,10 +257,10 @@ namespace UnrealGameSync
 		public static string ExpandVariables(string inputString, Dictionary<string, string>? additionalVariables = null)
 		{
 			string result = inputString;
-			for (int idx = result.IndexOf("$("); idx != -1; idx = result.IndexOf("$(", idx))
+			for (int idx = result.IndexOf("$(", StringComparison.Ordinal); idx != -1; idx = result.IndexOf("$(", idx, StringComparison.Ordinal))
 			{
 				// Find the end of the variable name
-				int endIdx = result.IndexOf(')', idx + 2);
+				int endIdx = result.IndexOf(")", idx + 2, StringComparison.Ordinal);
 				if (endIdx == -1)
 				{
 					break;
@@ -254,7 +271,7 @@ namespace UnrealGameSync
 
 				// Strip the format from the name
 				string? format = null;
-				int formatIdx = name.IndexOf(':');
+				int formatIdx = name.IndexOf(':', StringComparison.Ordinal);
 				if(formatIdx != -1)
 				{ 
 					format = name.Substring(formatIdx + 1);
@@ -276,7 +293,7 @@ namespace UnrealGameSync
 				// Encode the variable if necessary
 				if(format != null)
 				{
-					if(String.Equals(format, "URI", StringComparison.InvariantCultureIgnoreCase))
+					if(String.Equals(format, "URI", StringComparison.OrdinalIgnoreCase))
 					{
 						value = Uri.EscapeDataString(value);
 					}
@@ -372,7 +389,7 @@ namespace UnrealGameSync
 
 			if (projectFile.Name.EndsWith(".uproject", StringComparison.OrdinalIgnoreCase))
 			{
-				AddLocalConfigPaths_WithExtensionDirs(projectFile.Directory, "Build", "UnrealGameSync.ini", searchPaths);
+				AddLocalConfigPaths_WithExtensionDirs(projectFile.Directory!, "Build", "UnrealGameSync.ini", searchPaths);
 			}
 			else
 			{
@@ -418,10 +435,10 @@ namespace UnrealGameSync
 		{
 			if(digest == null)
 			{
-				PerforceResponse<PrintRecord<string[]>> response = await perforce.TryPrintLinesAsync(depotPath, cancellationToken);
-				if (response.Succeeded)
+				PerforceResponse<PrintRecord<string[]>> printLinesResponse = await perforce.TryPrintLinesAsync(depotPath, cancellationToken);
+				if (printLinesResponse.Succeeded)
 				{
-					return response.Data.Contents;
+					return printLinesResponse.Data.Contents;
 				}
 				else
 				{
@@ -433,48 +450,54 @@ namespace UnrealGameSync
 			if(FileReference.Exists(cacheFile))
 			{
 				logger.LogDebug("Reading cached copy of {DepotFile} from {LocalFile}", depotPath, cacheFile);
-				string[] lines = FileReference.ReadAllLines(cacheFile);
 				try
 				{
-					FileReference.SetLastWriteTimeUtc(cacheFile, DateTime.UtcNow);
-				}
-				catch(Exception ex)
-				{
-					logger.LogWarning(ex, "Exception touching cache file {LocalFile}", cacheFile);
-				}
-				return lines;
-			}
-			else
-			{
-				DirectoryReference.CreateDirectory(cacheFolder);
-
-				FileReference tempFile = new FileReference(String.Format("{0}.{1}.temp", cacheFile.FullName, Guid.NewGuid()));
-				PerforceResponseList<PrintRecord> response = await perforce.TryPrintAsync(tempFile.FullName, depotPath, cancellationToken);
-				if (!response.Succeeded)
-				{
-					return null;
-				}
-				else
-				{
-					string[] lines = await FileReference.ReadAllLinesAsync(tempFile);
+					string[] lines = await FileReference.ReadAllLinesAsync(cacheFile, cancellationToken);
 					try
 					{
-						FileReference.SetAttributes(tempFile, FileAttributes.Normal);
-						FileReference.SetLastWriteTimeUtc(tempFile, DateTime.UtcNow);
-						FileReference.Move(tempFile, cacheFile);
+						FileReference.SetLastWriteTimeUtc(cacheFile, DateTime.UtcNow);
 					}
-					catch
+					catch (Exception ex)
 					{
-						try
-						{
-							FileReference.Delete(tempFile);
-						}
-						catch
-						{
-						}
+						logger.LogWarning(ex, "Exception touching cache file {LocalFile}", cacheFile);
 					}
 					return lines;
 				}
+				catch (Exception ex)
+				{
+					logger.LogWarning(ex, "Error while reading cache file {LocalFile}: {Message}", cacheFile, ex.Message);
+				}
+			}
+
+
+			DirectoryReference.CreateDirectory(cacheFolder);
+
+			FileReference tempFile = new FileReference(String.Format("{0}.{1}.temp", cacheFile.FullName, Guid.NewGuid()));
+			PerforceResponseList<PrintRecord> printResponse = await perforce.TryPrintAsync(tempFile.FullName, depotPath, cancellationToken);
+			if (!printResponse.Succeeded)
+			{
+				return null;
+			}
+			else
+			{
+				string[] lines = await FileReference.ReadAllLinesAsync(tempFile, cancellationToken);
+				try
+				{
+					FileReference.SetAttributes(tempFile, FileAttributes.Normal);
+					FileReference.SetLastWriteTimeUtc(tempFile, DateTime.UtcNow);
+					FileReference.Move(tempFile, cacheFile);
+				}
+				catch
+				{
+					try
+					{
+						FileReference.Delete(tempFile);
+					}
+					catch
+					{
+					}
+				}
+				return lines;
 			}
 		}
 
@@ -501,9 +524,9 @@ namespace UnrealGameSync
 			}
 		}
 
-		public static Color Blend(Color first, Color second, float T)
+		public static Color Blend(Color first, Color second, float t)
 		{
-			return Color.FromArgb((int)(first.R + (second.R - first.R) * T), (int)(first.G + (second.G - first.G) * T), (int)(first.B + (second.B - first.B) * T));
+			return Color.FromArgb((int)(first.R + (second.R - first.R) * t), (int)(first.G + (second.G - first.G) * t), (int)(first.B + (second.B - first.B) * t));
 		}
 
 		public static PerforceSettings OverridePerforceSettings(IPerforceSettings defaultConnection, string? serverAndPort, string? userName)
@@ -596,7 +619,7 @@ namespace UnrealGameSync
 			ProcessStartInfo startInfo = new ProcessStartInfo();
 			startInfo.FileName = url;
 			startInfo.UseShellExecute = true;
-			using Process _ = Process.Start(startInfo);
+			using Process? _ = Process.Start(startInfo);
 		}
 	}
 }

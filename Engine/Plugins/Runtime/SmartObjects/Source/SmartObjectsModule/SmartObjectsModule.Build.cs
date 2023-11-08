@@ -20,10 +20,10 @@ namespace UnrealBuildTool.Rules
 				"AIModule",
 				"GameplayTags",
 				"GameplayAbilities",
-				"MassEntity",
 				"RHI",
 				"StructUtils",
-				"WorldConditions"
+				"WorldConditions",
+				"NavigationSystem"
 			}
 			);
 

@@ -10,6 +10,7 @@
 #include "Misc/PackageName.h"
 #include "Serialization/BufferArchive.h"
 #include "RHIContext.h"
+#include "RHIUtilities.h"
 #include "RenderingThread.h"
 #include "Engine/Engine.h"
 #include "Engine/Canvas.h"
@@ -23,6 +24,7 @@
 #include "Engine/Texture2D.h"
 #include "UObject/Package.h"
 #include "EngineModule.h"
+#include "SceneInterface.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(KismetRenderingLibrary)
 
@@ -195,7 +197,7 @@ void UKismetRenderingLibrary::DrawMaterialToRenderTarget(UObject* WorldContextOb
 			RenderTargetResource, 
 			nullptr, 
 			World,
-			World->FeatureLevel);
+			World->GetFeatureLevel());
 
 		Canvas->Init(TextureRenderTarget->SizeX, TextureRenderTarget->SizeY, nullptr, &RenderCanvas);
 
@@ -596,7 +598,7 @@ UTexture2D* UKismetRenderingLibrary::RenderTargetCreateStaticTexture2DEditorOnly
 		UObject* NewObj = nullptr;
 
 		// create a static 2d texture
-		NewObj = RenderTarget->ConstructTexture2D(CreatePackage( *PackageName), Name, RenderTarget->GetMaskedFlags() | RF_Public | RF_Standalone, CTF_Default | CTF_AllowMips, nullptr);
+		NewObj = RenderTarget->ConstructTexture2D(CreatePackage( *PackageName), Name, RenderTarget->GetMaskedFlags() | RF_Public | RF_Standalone, CTF_Default | CTF_AllowMips | CTF_SkipPostEdit, nullptr);
 		UTexture2D* NewTex = Cast<UTexture2D>(NewObj);
 
 		if (NewTex != nullptr)
@@ -604,13 +606,13 @@ UTexture2D* UKismetRenderingLibrary::RenderTargetCreateStaticTexture2DEditorOnly
 			// package needs saving
 			NewObj->MarkPackageDirty();
 
-			// Notify the asset registry
-			FAssetRegistryModule::AssetCreated(NewObj);
-
 			// Update Compression and Mip settings
 			NewTex->CompressionSettings = CompressionSettings;
 			NewTex->MipGenSettings = MipSettings;
 			NewTex->PostEditChange();
+
+			// Notify the asset registry
+			FAssetRegistryModule::AssetCreated(NewObj);
 
 			return NewTex;
 		}
@@ -749,7 +751,7 @@ void UKismetRenderingLibrary::BeginDrawCanvasToRenderTarget(UObject* WorldContex
 			RenderTargetResource,
 			nullptr, 
 			World,
-			World->FeatureLevel, 
+			World->GetFeatureLevel(),
 			// Draw immediately so that interleaved SetVectorParameter (etc) function calls work as expected
 			FCanvas::CDM_ImmediateDrawing);
 		Canvas->Init(TextureRenderTarget->SizeX, TextureRenderTarget->SizeY, nullptr, NewCanvas);
@@ -901,6 +903,18 @@ ENGINE_API void UKismetRenderingLibrary::EnablePathTracing(bool bEnablePathTrace
 		if (EngineShowFlags != nullptr)
 		{
 			EngineShowFlags->SetPathTracing(bEnablePathTracer);
+		}
+	}
+}
+
+ENGINE_API void UKismetRenderingLibrary::RefreshPathTracingOutput()
+{
+	if (GEngine != nullptr && GEngine->GameViewport != nullptr)
+	{
+		UWorld* World = GEngine->GameViewport->GetWorld();
+		if (World != nullptr && World->Scene != nullptr)
+		{
+			World->Scene->InvalidatePathTracedOutput();
 		}
 	}
 }

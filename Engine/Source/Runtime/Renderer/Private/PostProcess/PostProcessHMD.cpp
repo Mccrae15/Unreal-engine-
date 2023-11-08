@@ -5,6 +5,7 @@
 #include "Engine/Engine.h"
 #include "IHeadMountedDisplay.h"
 #include "IXRTrackingSystem.h"
+#include "SceneRendering.h"
 
 /** The filter vertex declaration resource type. */
 class FDistortionVertexDeclaration : public FRenderResource
@@ -15,7 +16,7 @@ public:
 	/** Destructor. */
 	virtual ~FDistortionVertexDeclaration() {}
 
-	virtual void InitRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		uint16 Stride = sizeof(FDistortionVertex);
 		FVertexDeclarationElementList Elements;

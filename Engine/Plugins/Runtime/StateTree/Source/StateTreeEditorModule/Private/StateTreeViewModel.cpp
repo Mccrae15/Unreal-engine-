@@ -4,15 +4,175 @@
 #include "StateTree.h"
 #include "StateTreeEditorData.h"
 #include "StateTreeDelegates.h"
+#include "Debugger/StateTreeDebugger.h"
 #include "Editor.h"
 #include "ScopedTransaction.h"
+#include "HAL/PlatformApplicationMisc.h"
+#include "UnrealExporter.h"
+#include "Exporters/Exporter.h"
+#include "Factories.h"
 
 
 #define LOCTEXT_NAMESPACE "StateTreeEditor"
 
-
 namespace UE::StateTree::Editor
 {
+	class FStateTreeStateTextFactory : public FCustomizableTextObjectFactory
+	{
+	public:
+		FStateTreeStateTextFactory()
+			: FCustomizableTextObjectFactory(GWarn)
+		{}
+
+		virtual bool CanCreateClass(UClass* InObjectClass, bool& bOmitSubObjs) const override
+		{
+			UE_LOG(LogTemp, Error, TEXT("*** CanCreateClass: %s"), *GetNameSafe(InObjectClass));
+			return InObjectClass->IsChildOf(UStateTreeState::StaticClass())
+				|| InObjectClass->IsChildOf(UStateTreeClipboardBindings::StaticClass());
+		}
+
+		virtual void ProcessConstructedObject(UObject* NewObject) override
+		{
+			if (UStateTreeState* State = Cast<UStateTreeState>(NewObject))
+			{
+				States.Add(State);
+			}
+			else if (UStateTreeClipboardBindings* Bindings = Cast<UStateTreeClipboardBindings>(NewObject))
+			{
+				ClipboardBindings = Bindings;
+			}
+		}
+
+	public:
+		TArray<UStateTreeState*> States;
+		UStateTreeClipboardBindings* ClipboardBindings = nullptr;
+	};
+
+
+	void CollectBindingsRecursive(UStateTreeEditorData* TreeData, UStateTreeState* State, TArray<FStateTreePropertyPathBinding>& AllBindings)
+	{
+		if (!State)
+		{
+			return;
+		}
+		
+		TreeData->VisitStateNodes(*State, [TreeData, &AllBindings](const UStateTreeState* State, const FStateTreeBindableStructDesc& Desc, const FStateTreeDataView Value)
+		{
+			TArray<FStateTreePropertyPathBinding> NodeBindings;
+			TreeData->GetPropertyEditorBindings()->GetPropertyBindingsFor(Desc.ID, NodeBindings);
+			AllBindings.Append(NodeBindings);
+			return EStateTreeVisitor::Continue;				
+		});
+
+		for (UStateTreeState* ChildState : State->Children)
+		{
+			CollectBindingsRecursive(TreeData, ChildState, AllBindings);
+		}
+	}
+
+	FString ExportStatesToText(UStateTreeEditorData* TreeData, const TArrayView<UStateTreeState*> States)
+	{
+		if (States.IsEmpty())
+		{
+			return FString();
+		}
+
+		// Clear the mark state for saving.
+		UnMarkAllObjects(EObjectMark(OBJECTMARK_TagExp | OBJECTMARK_TagImp));
+
+		FStringOutputDevice Archive;
+		const FExportObjectInnerContext Context;
+
+		UStateTreeClipboardBindings* ClipboardBindings = NewObject<UStateTreeClipboardBindings>();
+		check(ClipboardBindings);
+
+		for (UStateTreeState* State : States)
+		{
+			UObject* ThisOuter = State->GetOuter();
+			UExporter::ExportToOutputDevice(&Context, State, nullptr, Archive, TEXT("copy"), 0, PPF_ExportsNotFullyQualified | PPF_Copy | PPF_Delimited, false, ThisOuter);
+
+			CollectBindingsRecursive(TreeData, State, ClipboardBindings->Bindings);
+		}
+
+		UExporter::ExportToOutputDevice(&Context, ClipboardBindings, nullptr, Archive, TEXT("copy"), 0, PPF_ExportsNotFullyQualified | PPF_Copy | PPF_Delimited, false);
+
+		return *Archive;
+	}
+
+	void CollectStateLinks(const UStruct* Struct, void* Memory, TArray<FStateTreeStateLink*>& Links)
+	{
+		for (TPropertyValueIterator<FStructProperty> It(Struct, Memory); It; ++It)
+		{
+			if (It->Key->Struct == TBaseStructure<FStateTreeStateLink>::Get())
+			{
+				FStateTreeStateLink* StateLink = static_cast<FStateTreeStateLink*>(const_cast<void*>(It->Value));
+				Links.Add(StateLink);
+			}
+		}
+	}
+
+	void FixNodesAfterDuplication(TArrayView<FStateTreeEditorNode> Nodes, TMap<FGuid, FGuid>& IDsMap, TArray<FStateTreeStateLink*>& Links)
+	{
+		for (FStateTreeEditorNode& Node : Nodes)
+		{
+			const FGuid NewNodeID = FGuid::NewGuid();
+			IDsMap.Emplace(Node.ID, NewNodeID);
+			Node.ID = NewNodeID;
+
+			if (Node.Node.IsValid())
+			{
+				CollectStateLinks(Node.Node.GetScriptStruct(), Node.Node.GetMutableMemory(), Links);
+			}
+			if (Node.Instance.IsValid())
+			{
+				CollectStateLinks(Node.Instance.GetScriptStruct(), Node.Instance.GetMutableMemory(), Links);
+			}
+			if (Node.InstanceObject)
+			{
+				CollectStateLinks(Node.InstanceObject->GetClass(), Node.InstanceObject, Links);
+			}
+		}
+	}
+
+	void FixStateAfterDuplication(UStateTreeState* State, UStateTreeState* NewParentState, TMap<FGuid, FGuid>& IDsMap, TArray<FStateTreeStateLink*>& Links, TArray<UStateTreeState*>& NewStates)
+	{
+		State->Modify();
+
+		const FGuid NewStateID = FGuid::NewGuid();
+		IDsMap.Emplace(State->ID, NewStateID);
+		State->ID = NewStateID;
+		
+		const FGuid NewParametersID = FGuid::NewGuid();
+		IDsMap.Emplace(State->Parameters.ID, NewParametersID);
+		State->Parameters.ID = NewParametersID;
+		
+		State->Parent = NewParentState;
+		NewStates.Add(State);
+		
+		if (State->Type == EStateTreeStateType::Linked)
+		{
+			Links.Emplace(&State->LinkedSubtree);
+		}
+
+		FixNodesAfterDuplication(TArrayView<FStateTreeEditorNode>(&State->SingleTask, 1), IDsMap, Links);
+		FixNodesAfterDuplication(State->Tasks, IDsMap, Links);
+		FixNodesAfterDuplication(State->EnterConditions, IDsMap, Links);
+
+		for (FStateTreeTransition& Transition : State->Transitions)
+		{
+			// Transition Ids are not used by nodes so no need to add to 'IDsMap'
+			Transition.ID = FGuid::NewGuid();
+
+			FixNodesAfterDuplication(Transition.Conditions, IDsMap, Links);
+			Links.Emplace(&Transition.State);
+		}
+
+		for (UStateTreeState* Child : State->Children)
+		{
+			FixStateAfterDuplication(Child, State, IDsMap, Links, NewStates);
+		}
+	}
+
 	// Removes states from the array which are children of any other state.
 	void RemoveContainedChildren(TArray<UStateTreeState*>& States)
 	{
@@ -73,6 +233,9 @@ namespace UE::StateTree::Editor
 
 FStateTreeViewModel::FStateTreeViewModel()
 	: TreeDataWeak(nullptr)
+#if WITH_STATETREE_DEBUGGER
+	, Debugger(MakeShareable(new FStateTreeDebugger))
+#endif // WITH_STATETREE_DEBUGGER
 {
 }
 
@@ -90,17 +253,91 @@ void FStateTreeViewModel::Init(UStateTreeEditorData* InTreeData)
 	GEditor->RegisterForUndo(this);
 
 	UE::StateTree::Delegates::OnIdentifierChanged.AddSP(this, &FStateTreeViewModel::HandleIdentifierChanged);
+	
+#if WITH_STATETREE_DEBUGGER
+	UE::StateTree::Delegates::OnBreakpointsChanged.AddSP(this, &FStateTreeViewModel::HandleBreakpointsChanged);
+	UE::StateTree::Delegates::OnPostCompile.AddSP(this, &FStateTreeViewModel::HandlePostCompile);
+
+	Debugger->SetAsset(GetStateTree());
+	BindToDebuggerDelegates();
+	RefreshDebuggerBreakpoints();
+#endif // WITH_STATETREE_DEBUGGER	
+}
+
+const UStateTree* FStateTreeViewModel::GetStateTree() const
+{
+	if (const UStateTreeEditorData* TreeData = TreeDataWeak.Get())
+	{
+		return TreeData->GetTypedOuter<UStateTree>();
+	}
+
+	return nullptr;
 }
 
 void FStateTreeViewModel::HandleIdentifierChanged(const UStateTree& StateTree) const
 {
-	UStateTreeEditorData* TreeData = TreeDataWeak.Get();
-	const UStateTree* OuterStateTree = TreeData ? Cast<UStateTree>(TreeData->GetOuter()) : nullptr;
-	if (OuterStateTree == &StateTree)
+	if (GetStateTree() == &StateTree)
 	{
 		OnAssetChanged.Broadcast();
 	}
 }
+
+#if WITH_STATETREE_DEBUGGER
+void FStateTreeViewModel::HandleBreakpointsChanged(const UStateTree& StateTree)
+{
+	if (GetStateTree() == &StateTree)
+	{
+		RefreshDebuggerBreakpoints();
+	}
+}
+
+void FStateTreeViewModel::HandlePostCompile(const UStateTree& StateTree)
+{
+	if (GetStateTree() == &StateTree)
+	{
+		RefreshDebuggerBreakpoints();
+	}
+}
+
+void FStateTreeViewModel::RefreshDebuggerBreakpoints()
+{
+	const UStateTree* StateTree = GetStateTree();
+	const UStateTreeEditorData* TreeData = TreeDataWeak.Get();
+	if (StateTree != nullptr && TreeData != nullptr)
+	{
+		Debugger->ClearAllBreakpoints();
+
+		for (const FStateTreeEditorBreakpoint& Breakpoint : TreeData->Breakpoints)
+		{
+			// Test if the ID is associated to a task
+			const FStateTreeIndex16 Index = StateTree->GetNodeIndexFromId(Breakpoint.ID);
+			if (Index.IsValid())
+			{
+				Debugger->SetTaskBreakpoint(Index, Breakpoint.BreakpointType);
+			}
+			else
+			{
+				// Then test if the ID is associated to a State
+				FStateTreeStateHandle StateHandle = StateTree->GetStateHandleFromId(Breakpoint.ID);
+				if (StateHandle.IsValid())
+				{
+					Debugger->SetStateBreakpoint(StateHandle, Breakpoint.BreakpointType);
+				}
+				else
+				{
+					// Then test if the ID is associated to a transition
+					const FStateTreeIndex16 TransitionIndex = StateTree->GetTransitionIndexFromId(Breakpoint.ID);
+					if (TransitionIndex.IsValid())
+					{
+						Debugger->SetTransitionBreakpoint(TransitionIndex, Breakpoint.BreakpointType);
+					}
+				}
+			}
+		}
+	}
+}
+
+#endif // WITH_STATETREE_DEBUGGER
 
 void FStateTreeViewModel::NotifyAssetChangedExternally() const
 {
@@ -112,10 +349,10 @@ void FStateTreeViewModel::NotifyStatesChangedExternally(const TSet<UStateTreeSta
 	OnStatesChanged.Broadcast(ChangedStates, PropertyChangedEvent);
 }
 
-TArray<UStateTreeState*>* FStateTreeViewModel::GetSubTrees() const
+TArray<TObjectPtr<UStateTreeState>>* FStateTreeViewModel::GetSubTrees() const
 {
 	UStateTreeEditorData* TreeData = TreeDataWeak.Get();
-	return TreeData != nullptr ? &ToRawPtrTArrayUnsafe(TreeData->SubTrees) : nullptr;
+	return TreeData != nullptr ? &TreeData->SubTrees : nullptr;
 }
 
 int32 FStateTreeViewModel::GetSubTreeCount() const
@@ -208,10 +445,10 @@ bool FStateTreeViewModel::IsChildOfSelection(const UStateTreeState* State) const
 	return false;
 }
 
-void FStateTreeViewModel::GetSelectedStates(TArray<UStateTreeState*>& OutSelectedStates)
+void FStateTreeViewModel::GetSelectedStates(TArray<UStateTreeState*>& OutSelectedStates) const
 {
 	OutSelectedStates.Reset();
-	for (TWeakObjectPtr<UStateTreeState>& WeakState : SelectedStates)
+	for (const TWeakObjectPtr<UStateTreeState>& WeakState : SelectedStates)
 	{
 		if (UStateTreeState* State = WeakState.Get())
 		{
@@ -220,10 +457,10 @@ void FStateTreeViewModel::GetSelectedStates(TArray<UStateTreeState*>& OutSelecte
 	}
 }
 
-void FStateTreeViewModel::GetSelectedStates(TArray<TWeakObjectPtr<UStateTreeState>>& OutSelectedStates)
+void FStateTreeViewModel::GetSelectedStates(TArray<TWeakObjectPtr<UStateTreeState>>& OutSelectedStates) const
 {
 	OutSelectedStates.Reset();
-	for (TWeakObjectPtr<UStateTreeState>& WeakState : SelectedStates)
+	for (const TWeakObjectPtr<UStateTreeState>& WeakState : SelectedStates)
 	{
 		if (WeakState.Get())
 		{
@@ -327,7 +564,7 @@ void FStateTreeViewModel::AddState(UStateTreeState* AfterState)
 			TreeData->Modify();
 		}
 
-		TArray<UStateTreeState*>& ParentArray = ParentState ? ParentState->Children : TreeData->SubTrees;
+		TArray<TObjectPtr<UStateTreeState>>& ParentArray = ParentState ? ParentState->Children : TreeData->SubTrees;
 
 		const int32 TargetIndex = ParentArray.Find(AfterState);
 		if (TargetIndex != INDEX_NONE)
@@ -425,7 +662,7 @@ void FStateTreeViewModel::RemoveSelectedStates()
 					TreeData->Modify();
 				}
 				
-				TArray<UStateTreeState*>& ArrayToRemoveFrom = ParentState ? ParentState->Children : TreeData->SubTrees;
+				TArray<TObjectPtr<UStateTreeState>>& ArrayToRemoveFrom = ParentState ? ParentState->Children : TreeData->SubTrees;
 				const int32 ItemIndex = ArrayToRemoveFrom.Find(StateToRemove);
 				if (ItemIndex != INDEX_NONE)
 				{
@@ -442,6 +679,169 @@ void FStateTreeViewModel::RemoveSelectedStates()
 	}
 }
 
+void FStateTreeViewModel::CopySelectedStates()
+{
+	UStateTreeEditorData* TreeData = TreeDataWeak.Get();
+	if (TreeData == nullptr)
+	{
+		return;
+	}
+
+	TArray<UStateTreeState*> States;
+	GetSelectedStates(States);
+	UE::StateTree::Editor::RemoveContainedChildren(States);
+	
+	FString ExportedText = UE::StateTree::Editor::ExportStatesToText(TreeData, States);
+	
+	FPlatformApplicationMisc::ClipboardCopy(*ExportedText);
+}
+
+bool FStateTreeViewModel::CanPasteStatesFromClipboard() const
+{
+	FString TextToImport;
+	FPlatformApplicationMisc::ClipboardPaste(TextToImport);
+
+	UE::StateTree::Editor::FStateTreeStateTextFactory Factory;
+	return Factory.CanCreateObjectsFromText(TextToImport);
+}
+
+void FStateTreeViewModel::PasteStatesFromClipboard(UStateTreeState* AfterState)
+{
+	UStateTreeEditorData* TreeData = TreeDataWeak.Get();
+	if (TreeData == nullptr)
+	{
+		return;
+	}
+	
+	if (AfterState)
+	{
+		const int32 Index = AfterState->Parent ? AfterState->Parent->Children.Find(AfterState) : TreeData->SubTrees.Find(AfterState);
+		if (Index != INDEX_NONE)
+		{
+			FString TextToImport;
+			FPlatformApplicationMisc::ClipboardPaste(TextToImport);
+			
+			const FScopedTransaction Transaction(LOCTEXT("PasteStatesTransaction", "Paste State(s)"));
+			PasteStatesAsChildrenFromText(TextToImport, AfterState->Parent, Index + 1);
+		}
+	}
+}
+
+void FStateTreeViewModel::PasteStatesAsChildrenFromClipboard(UStateTreeState* ParentState)
+{
+	UStateTreeEditorData* TreeData = TreeDataWeak.Get();
+	if (TreeData == nullptr)
+	{
+		return;
+	}
+	
+	FString TextToImport;
+	FPlatformApplicationMisc::ClipboardPaste(TextToImport);
+
+	const FScopedTransaction Transaction(LOCTEXT("PasteStatesTransaction", "Paste State(s)"));
+	PasteStatesAsChildrenFromText(TextToImport, ParentState, INDEX_NONE);
+}
+
+void FStateTreeViewModel::PasteStatesAsChildrenFromText(const FString& TextToImport, UStateTreeState* ParentState, const int32 IndexToInsertAt)
+{
+	UStateTreeEditorData* TreeData = TreeDataWeak.Get();
+	if (TreeData == nullptr)
+	{
+		return;
+	}
+
+	UObject* Outer = ParentState ? static_cast<UObject*>(ParentState) : static_cast<UObject*>(TreeData);
+	Outer->Modify();
+
+	UE::StateTree::Editor::FStateTreeStateTextFactory Factory;
+	Factory.ProcessBuffer(Outer, RF_Transactional, TextToImport);
+
+	TArray<TObjectPtr<UStateTreeState>>& ParentArray = ParentState ? ParentState->Children : TreeData->SubTrees;
+	const int32 TargetIndex = (IndexToInsertAt == INDEX_NONE) ? ParentArray.Num() : IndexToInsertAt;
+	ParentArray.Insert(Factory.States, TargetIndex);
+
+	TArray<FStateTreeStateLink*> Links;
+	TMap<FGuid, FGuid> IDsMap;
+	TArray<UStateTreeState*> NewStates;
+
+	for (UStateTreeState* State : Factory.States)
+	{		
+		UE::StateTree::Editor::FixStateAfterDuplication(State, ParentState, IDsMap, Links, NewStates);
+	}
+
+	// Copy property bindings for the duplicated states.
+	if (Factory.ClipboardBindings)
+	{
+		for (const TPair<FGuid, FGuid>& Entry : IDsMap)
+		{
+			const FGuid OldTargetID = Entry.Key;
+			const FGuid NewTargetID = Entry.Value;
+			
+			for (const FStateTreePropertyPathBinding& Binding : Factory.ClipboardBindings->Bindings)
+			{
+				if (Binding.GetTargetPath().GetStructID() == OldTargetID)
+				{
+					FStateTreePropertyPath TargetPath(Binding.GetTargetPath());
+					TargetPath.SetStructID(NewTargetID);
+					
+					FStateTreePropertyPath SourcePath(Binding.GetSourcePath());
+					if (const FGuid* NewSourceID = IDsMap.Find(Binding.GetSourcePath().GetStructID()))
+					{
+						SourcePath.SetStructID(*NewSourceID);
+					}
+					
+					TreeData->GetPropertyEditorBindings()->AddPropertyBinding(SourcePath, TargetPath);
+				}
+			}
+		}
+	}
+
+	// Patch IDs in state links.
+	for (FStateTreeStateLink* Link : Links)
+	{
+		if (FGuid* NewID = IDsMap.Find(Link->ID))
+		{
+			Link->ID = *NewID;
+		}
+	}
+
+	for (UStateTreeState* State : NewStates)
+	{
+		OnStateAdded.Broadcast(State->Parent, State);
+	}
+}
+
+void FStateTreeViewModel::DuplicateSelectedStates()
+{
+	UStateTreeEditorData* TreeData = TreeDataWeak.Get();
+	if (TreeData == nullptr)
+	{
+		return;
+	}
+
+	TArray<UStateTreeState*> States;
+	GetSelectedStates(States);
+	UE::StateTree::Editor::RemoveContainedChildren(States);
+
+	if (States.IsEmpty())
+	{
+		return;
+	}
+	
+	FString ExportedText = UE::StateTree::Editor::ExportStatesToText(TreeData, States);
+
+	// Place duplicates after first selected state.
+	UStateTreeState* AfterState = States[0];
+	
+	const int32 Index = AfterState->Parent ? AfterState->Parent->Children.Find(AfterState) : TreeData->SubTrees.Find(AfterState);
+	if (Index != INDEX_NONE)
+	{
+		const FScopedTransaction Transaction(LOCTEXT("DuplicateStatesTransaction", "Duplicate State(s)"));
+		PasteStatesAsChildrenFromText(ExportedText, AfterState->Parent, Index + 1);
+	}
+}
+
+
 void FStateTreeViewModel::MoveSelectedStatesBefore(UStateTreeState* TargetState)
 {
 	MoveSelectedStates(TargetState, FStateTreeViewModelInsert::Before);
@@ -455,6 +855,59 @@ void FStateTreeViewModel::MoveSelectedStatesAfter(UStateTreeState* TargetState)
 void FStateTreeViewModel::MoveSelectedStatesInto(UStateTreeState* TargetState)
 {
 	MoveSelectedStates(TargetState, FStateTreeViewModelInsert::Into);
+}
+
+bool FStateTreeViewModel::CanEnableStates() const
+{
+	TArray<UStateTreeState*> States;
+	GetSelectedStates(States);
+
+	for (const UStateTreeState* State : States)
+	{
+		// Stop if at least one state can be enabled
+		if (State->bEnabled == false)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool FStateTreeViewModel::CanDisableStates() const
+{
+	TArray<UStateTreeState*> States;
+	GetSelectedStates(States);
+
+	for (const UStateTreeState* State : States)
+	{
+		// Stop if at least one state can be disabled
+		if (State->bEnabled)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void FStateTreeViewModel::SetSelectedStatesEnabled(const bool bEnable)
+{
+	TArray<UStateTreeState*> States;
+	GetSelectedStates(States);
+
+	if (States.Num() > 0)
+	{
+		const FScopedTransaction Transaction(LOCTEXT("SetStatesEnabledTransaction", "Set State Enabled"));
+
+		for (UStateTreeState* State : States)
+		{
+			State->Modify();
+			State->bEnabled = bEnable;
+		}
+
+		OnAssetChanged.Broadcast();
+	}
 }
 
 void FStateTreeViewModel::MoveSelectedStates(UStateTreeState* TargetState, const FStateTreeViewModelInsert RelativeLocation)
@@ -534,7 +987,7 @@ void FStateTreeViewModel::MoveSelectedStates(UStateTreeState* TargetState, const
 				UStateTreeState* SelectedParent = SelectedState->Parent;
 
 				// Remove from current parent
-				TArray<UStateTreeState*>& ArrayToRemoveFrom = SelectedParent ? SelectedParent->Children : TreeData->SubTrees;
+				TArray<TObjectPtr<UStateTreeState>>& ArrayToRemoveFrom = SelectedParent ? SelectedParent->Children : TreeData->SubTrees;
 				const int32 ItemIndex = ArrayToRemoveFrom.Find(SelectedState);
 				if (ItemIndex != INDEX_NONE)
 				{
@@ -551,7 +1004,7 @@ void FStateTreeViewModel::MoveSelectedStates(UStateTreeState* TargetState, const
 				}
 				else
 				{
-					TArray<UStateTreeState*>& ArrayToMoveTo = TargetParent ? TargetParent->Children : TreeData->SubTrees;
+					TArray<TObjectPtr<UStateTreeState>>& ArrayToMoveTo = TargetParent ? TargetParent->Children : TreeData->SubTrees;
 					const int32 TargetIndex = ArrayToMoveTo.Find(TargetState);
 					if (TargetIndex != INDEX_NONE)
 					{
@@ -591,5 +1044,32 @@ void FStateTreeViewModel::MoveSelectedStates(UStateTreeState* TargetState, const
 	}
 }
 
+
+void FStateTreeViewModel::BindToDebuggerDelegates()
+{
+#if WITH_STATETREE_DEBUGGER
+	Debugger->OnActiveStatesChanged.BindLambda([this](const TConstArrayView<FStateTreeStateHandle> NewActiveStates)
+	{
+		if (const UStateTree* OuterStateTree = GetStateTree())
+		{
+			ActiveStates.Reset(NewActiveStates.Num());
+
+			for (const FStateTreeStateHandle Handle : NewActiveStates)
+			{
+				ActiveStates.Add(OuterStateTree->GetStateIdFromHandle(Handle));
+			}
+		}
+	});
+#endif // WITH_STATETREE_DEBUGGER
+}
+
+bool FStateTreeViewModel::IsStateActiveInDebugger(const UStateTreeState& State) const
+{
+#if WITH_STATETREE_DEBUGGER
+	return ActiveStates.Contains(State.ID);
+#else
+	return false;
+#endif // WITH_STATETREE_DEBUGGER
+}
 
 #undef LOCTEXT_NAMESPACE

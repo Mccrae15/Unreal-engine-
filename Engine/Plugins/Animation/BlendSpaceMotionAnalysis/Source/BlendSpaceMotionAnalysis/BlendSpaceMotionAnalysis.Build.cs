@@ -8,13 +8,7 @@ namespace UnrealBuildTool.Rules
 	{
 		public BlendSpaceMotionAnalysis(ReadOnlyTargetRules Target) : base(Target)
 		{
-			UnsafeTypeCastWarningLevel = WarningLevel.Warning;
-
-			PublicDependencyModuleNames.AddRange(
-				new string[]
-				{
-				}
-			);
+			UnsafeTypeCastWarningLevel = WarningLevel.Error;
 
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
@@ -25,13 +19,6 @@ namespace UnrealBuildTool.Rules
 					"Persona",
 				}
 			);
-
-			PrivateIncludePathModuleNames.AddRange(
-				new string[]
-				{
-				}
-			);
-
 		}
 	}
 }

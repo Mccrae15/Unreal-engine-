@@ -2,24 +2,21 @@
 
 set -e
 
-USD_VERSION=22.08
+USD_VERSION=23.02
 
 # This path may be adjusted to point to wherever the USD source is located.
 # It is typically obtained by either downloading a zip/tarball of the source
 # code, or more commonly by cloning the GitHub repository, e.g. for the
 # current engine USD version:
-#     git clone --branch v22.08 https://github.com/PixarAnimationStudios/USD.git USD_src
-# Note that a small patch to the USD CMake build is currently necessary for
-# the usdAbc plugin to require and link against Imath instead of OpenEXR:
-#     git apply USD_v2208_usdAbc_Imath.patch
-# We also apply a patch for the usdMtlx plugin to ensure that we do not
+#     git clone --branch v23.02 https://github.com/PixarAnimationStudios/USD.git USD_src
+# We apply a patch for the usdMtlx plugin to ensure that we do not
 # bake a hard-coded path to the MaterialX standard data libraries into the
 # built plugin:
-#     git apply USD_v2208_usdMtlx_undef_stdlib_dir.patch
+#     git apply USD_v2302_usdMtlx_undef_stdlib_dir.patch
 # Specifically for Linux when building with clang, an additional patch is
 # needed to ensure that type comparisons work correctly across shared library
 # boundaries:
-#     git apply USD_v2208_Linux_clang_TfSafeTypeCompare.patch
+#     git apply USD_v2302_Linux_clang_TfSafeTypeCompare.patch
 # Note also that this path may be emitted as part of USD error messages, so
 # it is suggested that it not reveal any sensitive information.
 SOURCE_LOCATION="/tmp/USD_src"
@@ -40,6 +37,9 @@ BOOST_LIB_LOCATION="$BOOST_LOCATION/lib/Unix/$ARCH_NAME"
 IMATH_LOCATION="$UE_THIRD_PARTY_LOCATION/Imath/Deploy/Imath-3.1.3"
 IMATH_LIB_LOCATION="$IMATH_LOCATION/Unix/$ARCH_NAME"
 IMATH_CMAKE_LOCATION="$IMATH_LIB_LOCATION/lib/cmake/Imath"
+OPENSUBDIV_LOCATION="$UE_THIRD_PARTY_LOCATION/OpenSubdiv/Deploy/OpenSubdiv-3.4.4"
+OPENSUBDIV_INCLUDE_DIR="$OPENSUBDIV_LOCATION/include"
+OPENSUBDIV_LIB_LOCATION="$OPENSUBDIV_LOCATION/Unix/$ARCH_NAME/lib"
 ALEMBIC_LOCATION="$UE_THIRD_PARTY_LOCATION/Alembic/Deploy/alembic-1.8.2"
 ALEMBIC_INCLUDE_LOCATION="$ALEMBIC_LOCATION/include"
 ALEMBIC_LIB_LOCATION="$ALEMBIC_LOCATION/Unix/$ARCH_NAME"
@@ -68,7 +68,7 @@ pushd $BUILD_LOCATION > /dev/null
 
 # Run Engine/Build/BatchFiles/Linux/SetupToolchain.sh first to ensure
 # that the toolchain is setup and verify that this name matches.
-TOOLCHAIN_NAME=v20_clang-13.0.1-centos7
+TOOLCHAIN_NAME=v21_clang-15.0.1-centos7
 
 UE_TOOLCHAIN_LOCATION="$UE_ENGINE_LOCATION/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/$TOOLCHAIN_NAME/$ARCH_NAME"
 
@@ -96,11 +96,13 @@ CMAKE_ARGS=(
     -DBOOST_INCLUDEDIR="$BOOST_INCLUDE_LOCATION"
     -DBOOST_LIBRARYDIR="$BOOST_LIB_LOCATION"
     -DPXR_USE_PYTHON_3=ON
-    -DPYTHON_EXECUTABLE="$PYTHON_EXECUTABLE_LOCATION"
-    -DPYTHON_INCLUDE_DIR="$PYTHON_INCLUDE_LOCATION"
-    -DPYTHON_LIBRARY="$PYTHON_LIBRARY_LOCATION"
+    -DPython3_EXECUTABLE="$PYTHON_EXECUTABLE_LOCATION"
+    -DPython3_INCLUDE_DIR="$PYTHON_INCLUDE_LOCATION"
+    -DPython3_LIBRARY="$PYTHON_LIBRARY_LOCATION"
     -DPXR_BUILD_ALEMBIC_PLUGIN=ON
     -DPXR_ENABLE_HDF5_SUPPORT=OFF
+    -DOPENSUBDIV_INCLUDE_DIR="$OPENSUBDIV_INCLUDE_DIR"
+    -DOPENSUBDIV_ROOT_DIR="$OPENSUBDIV_LIB_LOCATION"
     -DALEMBIC_INCLUDE_DIR="$ALEMBIC_INCLUDE_LOCATION"
     -DALEMBIC_DIR="$ALEMBIC_LIB_LOCATION"
     -DPXR_ENABLE_MATERIALX_SUPPORT=ON
@@ -109,8 +111,9 @@ CMAKE_ARGS=(
     -DPXR_BUILD_EXAMPLES=OFF
     -DPXR_BUILD_TUTORIALS=OFF
     -DPXR_BUILD_USD_TOOLS=OFF
-    -DPXR_BUILD_IMAGING=OFF
-    -DPXR_BUILD_USD_IMAGING=OFF
+    -DPXR_BUILD_IMAGING=ON
+    -DPXR_BUILD_USD_IMAGING=ON
+    -DPXR_ENABLE_GL_SUPPORT=OFF
     -DPXR_BUILD_USDVIEW=OFF
 )
 
@@ -127,8 +130,13 @@ cmake --install .
 
 popd > /dev/null
 
-echo Moving built-in USD plugins to UsdResources plugins directory...
+INSTALL_BIN_LOCATION="$INSTALL_LOCATION/bin"
 INSTALL_LIB_LOCATION="$INSTALL_LOCATION/lib"
+
+echo Removing command-line tools...
+rm -rf "$INSTALL_BIN_LOCATION"
+
+echo Moving built-in USD plugins to UsdResources plugins directory...
 INSTALL_RESOURCES_LOCATION="$INSTALL_LOCATION/Resources/UsdResources/Linux"
 INSTALL_RESOURCES_PLUGINS_LOCATION="$INSTALL_RESOURCES_LOCATION/plugins"
 mkdir -p $INSTALL_RESOURCES_LOCATION
@@ -142,8 +150,10 @@ mv $INSTALL_PLUGIN_USD_LOCATION/*.so "$INSTALL_LIB_LOCATION"
 echo Removing top-level USD plugins plugInfo.json file...
 rm -f "$INSTALL_PLUGIN_USD_LOCATION/plugInfo.json"
 
-echo Moving UsdAbc plugin directory to UsdResources plugins directory
+echo Moving USD plugin resource directories to UsdResources plugins directory
+mv "$INSTALL_PLUGIN_USD_LOCATION/sdrGlslfx" "$INSTALL_RESOURCES_PLUGINS_LOCATION"
 mv "$INSTALL_PLUGIN_USD_LOCATION/usdAbc" "$INSTALL_RESOURCES_PLUGINS_LOCATION"
+mv "$INSTALL_PLUGIN_USD_LOCATION/usdShaders" "$INSTALL_RESOURCES_PLUGINS_LOCATION"
 
 rmdir "$INSTALL_PLUGIN_USD_LOCATION"
 rmdir "$INSTALL_PLUGIN_LOCATION"
@@ -164,6 +174,9 @@ mkdir -p "$INSTALL_CONTENT_LOCATION"
 mv "$INSTALL_LOCATION/lib/python/pxr" "$INSTALL_CONTENT_LOCATION"
 rmdir "$INSTALL_LOCATION/lib/python"
 
+echo Removing share directory...
+rm -rf "$INSTALL_LOCATION/share"
+
 echo Cleaning @rpath entries for shared libraries...
 # The locations of the shared libraries where they will live when ultimately
 # deployed are used to generate relative paths for use as rpaths.
@@ -175,8 +188,8 @@ ENGINE_BINARIES_LOCATION="$UE_ENGINE_LOCATION/Binaries/Linux"
 
 # The USD Python modules link first against the USD libraries within the plugin
 # directory followed by libraries in the engine binaries.
-PYTHON_TO_USD_LIBS_REL_PATH=`python -c "import os.path; print os.path.relpath('$USD_LIBS_LOCATION', '$USD_PYTHON_MODULE_LOCATION')"`
-PYTHON_TO_ENGINE_BINARIES_REL_PATH=`python -c "import os.path; print os.path.relpath('$ENGINE_BINARIES_LOCATION', '$USD_PYTHON_MODULE_LOCATION')"`
+PYTHON_TO_USD_LIBS_REL_PATH=`python -c "import os.path; print(os.path.relpath('$USD_LIBS_LOCATION', '$USD_PYTHON_MODULE_LOCATION'))"`
+PYTHON_TO_ENGINE_BINARIES_REL_PATH=`python -c "import os.path; print(os.path.relpath('$ENGINE_BINARIES_LOCATION', '$USD_PYTHON_MODULE_LOCATION'))"`
 
 for PY_SHARED_LIB in `find $INSTALL_CONTENT_LOCATION -name '*.so'`
 do
@@ -185,7 +198,7 @@ done
 
 # The USD libraries link first against sibling libraries in the same directory
 # followed by libraries in the engine binaries.
-USD_LIBS_TO_ENGINE_BINARIES_REL_PATH=`python -c "import os.path; print os.path.relpath('$ENGINE_BINARIES_LOCATION', '$USD_LIBS_LOCATION')"`
+USD_LIBS_TO_ENGINE_BINARIES_REL_PATH=`python -c "import os.path; print(os.path.relpath('$ENGINE_BINARIES_LOCATION', '$USD_LIBS_LOCATION'))"`
 
 for USD_SHARED_LIB in `find $INSTALL_LIB_LOCATION -name '*.so'`
 do

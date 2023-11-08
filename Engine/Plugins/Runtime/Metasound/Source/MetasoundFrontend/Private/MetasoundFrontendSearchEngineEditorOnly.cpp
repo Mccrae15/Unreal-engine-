@@ -4,7 +4,7 @@
 #include "MetasoundFrontendSearchEngineEditorOnly.h"
 
 #include "Containers/Array.h"
-#include "MetasoundFrontendArchetypeRegistry.h"
+#include "Interfaces/MetasoundFrontendInterfaceRegistry.h"
 #include "MetasoundFrontendDocument.h"
 #include "MetasoundFrontendQuery.h"
 #include "MetasoundFrontendQuerySteps.h"
@@ -112,44 +112,6 @@ namespace Metasound
 			return BuildSingleClassFromPartition(InPartition);
 		}
 
-		FFrontendQuery FFindAllInterfacesQueryPolicy::CreateQuery()
-		{
-			using namespace SearchEngineQuerySteps;
-			FFrontendQuery Query;
-			Query.AddStep<FInterfaceRegistryTransactionSource>()
-				.AddStep<FMapInterfaceRegistryTransactionsToInterfaceRegistryKeys>()
-				.AddStep<FReduceInterfaceRegistryTransactionsToCurrentStatus>()
-				.AddStep<FTransformInterfaceRegistryTransactionToInterface>()
-				.AddStep<FMapInterfaceToInterfaceNameAndMajorVersion>()
-				.AddStep<FReduceInterfacesToHighestVersion>()
-				.AddStep<FMapToNull>();
-			return Query;
-		}
-
-		TArray<FMetasoundFrontendInterface> FFindAllInterfacesQueryPolicy::BuildResult(const FFrontendQueryPartition& InPartition)
-		{
-			using namespace SearchEngineQuerySteps;
-			return BuildArrayOfInterfacesFromPartition(InPartition);
-		}
-
-		FFrontendQuery FFindAllInterfacesIncludingAllVersionsQueryPolicy::CreateQuery()
-		{
-			using namespace SearchEngineQuerySteps;
-			FFrontendQuery Query;
-			Query.AddStep<FInterfaceRegistryTransactionSource>()
-				.AddStep<FMapInterfaceRegistryTransactionsToInterfaceRegistryKeys>()
-				.AddStep<FReduceInterfaceRegistryTransactionsToCurrentStatus>()
-				.AddStep<FTransformInterfaceRegistryTransactionToInterface>()
-				.AddStep<FMapToNull>();
-			return Query;
-		}
-
-		TArray<FMetasoundFrontendInterface> FFindAllInterfacesIncludingAllVersionsQueryPolicy::BuildResult(const FFrontendQueryPartition& InPartition)
-		{
-			using namespace SearchEngineQuerySteps;
-			return BuildArrayOfInterfacesFromPartition(InPartition);
-		}
-
 		void FSearchEngineEditorOnly::Prime()
 		{
 			Super::Prime();
@@ -219,7 +181,6 @@ namespace Metasound
 				return FindAllInterfacesQuery.UpdateAndFindResult(NullKey);
 			}
 		}
-
 	}
 }
 

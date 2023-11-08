@@ -163,6 +163,10 @@ namespace PlmXml
 	TArray<FIdRef> GetAttributeIDREFS(const FXmlNode* Node, const FString Name)
 	{
 		FString IdRefsText = Node->GetAttribute(*Name);
+		if (IdRefsText.IsEmpty())
+		{
+			return TArray<FIdRef>();
+		}
 
 		TArray<FString> IdRefs;
 		IdRefsText.ParseIntoArray(IdRefs, TEXT(" "), false);
@@ -249,14 +253,17 @@ namespace PlmXml
 			// Setup of import parameters for DatasmithDispatcher copied from FDatasmithCADTranslator's setup
 			ImportParameters.SetTesselationParameters(TessellationOptions.ChordTolerance, TessellationOptions.MaxEdgeLength, TessellationOptions.NormalTolerance, (CADLibrary::EStitchingTechnique) TessellationOptions.StitchingTechnique);
 
-			DatasmithDispatcher = MakeUnique<DatasmithDispatcher::FDatasmithDispatcher>(ImportParameters, CacheDir, FPlatformMisc::NumberOfCores(), CADFileToUEFileMap, CADFileToUEGeomMap);
+			DatasmithDispatcher = MakeUnique<DatasmithDispatcher::FDatasmithDispatcher>(ImportParameters, CacheDir, CADFileToUEFileMap, CADFileToUEGeomMap);
 		}
 
 		// Adds geom file to load and returns Id to use in InstantiateMesh later(after all is loaded)
 		int32 AddMeshToLoad(const FString& FullPath)
 		{
-			CADLibrary::FFileDescriptor FileDescription(*FullPath);
-			DatasmithDispatcher->AddTask(FileDescription);
+			using namespace CADLibrary;
+			const EMesher Mesher = FImportParameters::bGDisableCADKernelTessellation ? EMesher::TechSoft : EMesher::CADKernel;
+
+			FFileDescriptor FileDescription(*FullPath);
+			DatasmithDispatcher->AddTask(FileDescription, Mesher);
 			return FilePaths.Add(FullPath);
 		}
 
@@ -277,7 +284,7 @@ namespace PlmXml
 
 		void Process(const FDatasmithSceneSource& Source)
 		{
-			DatasmithDispatcher->Process(true);
+			DatasmithDispatcher->Process(CADLibrary::GMaxImportThreads != 1);
 			SceneGraphBuilder = MakeUnique<FDatasmithSceneGraphBuilder>(CADFileToUEFileMap, CacheDir, DatasmithScene, Source, ImportParameters);
 			SceneGraphBuilder->LoadSceneGraphDescriptionFiles();
 			MeshBuilderPtr = MakeUnique<FDatasmithMeshBuilder>(CADFileToUEGeomMap, CacheDir, ImportParameters);
@@ -1171,7 +1178,7 @@ namespace PlmXml
 
 		PlmXml::FParsedProductDef ProductDef;
 
-		// Read all ProductInstance, ProductRevisionView, ProductView and memoize them, they are refernced in PlmXml graph by their 'id's
+		// Read all ProductInstance, ProductRevisionView, ProductView and memorize them, they are referenced in PlmXml graph by their 'id's
 		for (const FXmlNode* InstanceGraphChildNode : InstanceGraphNode->GetChildrenNodes())
 		{
 			FString IdText = PlmXml::GetAttributeId(InstanceGraphChildNode);

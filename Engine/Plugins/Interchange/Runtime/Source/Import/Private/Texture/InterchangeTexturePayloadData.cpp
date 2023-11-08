@@ -7,11 +7,11 @@
 #include "HAL/IConsoleManager.h"
 #include "Misc/MessageDialog.h"
 #include "RHI.h"
+#include "ImageCoreUtils.h"
 
-bool UE::Interchange::FImportImageHelper::IsImportResolutionValid(int32 Width, int32 Height, bool bAllowNonPowerOfTwo, FText* OutErrorMessage)
+bool UE::Interchange::FImportImageHelper::IsImportResolutionValid(int64 Width, int64 Height, bool bAllowNonPowerOfTwo, FText* OutErrorMessage)
 {
-	// VT res is currently limited by pixel count fitting in int32
-	const int64 MaximumSupportedVirtualTextureResolution = 32768;
+	// code dupe from: UTextureFactory::IsImportResolutionValid
 
 	// limit on current rendering RHI : == GetMax2DTextureDimension()
 	const int64 CurrentRHIMaxResolution = int64(1) << (GMaxTextureMipCount - 1);
@@ -36,35 +36,13 @@ bool UE::Interchange::FImportImageHelper::IsImportResolutionValid(int32 Width, i
 		return false;
 	}
 
-	bool bTextureTooLargeOrInvalidResolution = false;
-
 	// Dimensions must fit in signed int32
 	//  could be negative here if it was over 2G and int32 was used earlier
-	if (Width < 0 || Height < 0 || Width > MAX_int32 || Height > MAX_int32)
-	{
-		bTextureTooLargeOrInvalidResolution = true;
-	}
-
-	// pixel count must fit in int32 :
-	//  mip surface could still be larger than 2 GB, that's allowed
-	//	eg. 16k RGBA float = 4 GB
-	if (Width * Height > MAX_int32)
-	{
-		bTextureTooLargeOrInvalidResolution = true;
-	}
-
-	if ((Width * Height) > FMath::Square(MaximumSupportedVirtualTextureResolution))
-	{
-		bTextureTooLargeOrInvalidResolution = true;
-	}
-
-	if (bTextureTooLargeOrInvalidResolution)
+	if ( ! FImageCoreUtils::IsImageImportPossible(Width,Height) )
 	{
 		if (OutErrorMessage)
 		{
-			*OutErrorMessage = FText::Format(
-				NSLOCTEXT("Interchange", "Warning_TextureSizeTooLargeOrInvalid", "Texture is too large to import or it has an invalid resolution. The current maximum is {0} pixels"),
-				FText::AsNumber(FMath::Square(MaximumSupportedVirtualTextureResolution)));
+			*OutErrorMessage = NSLOCTEXT("Interchange", "Warning_TextureSizeTooLargeOrInvalid", "Texture is too large to import or it has an invalid resolution.");
 		}
 
 		return false;
@@ -94,7 +72,10 @@ bool UE::Interchange::FImportImageHelper::IsImportResolutionValid(int32 Width, i
 		const bool bIsPowerOfTwo = FMath::IsPowerOfTwo(Width) && FMath::IsPowerOfTwo(Height);
 		if (!bIsPowerOfTwo)
 		{
-			*OutErrorMessage = NSLOCTEXT("Interchange", "Warning_TextureNotAPowerOfTwo", "Cannot import texture with non-power of two dimensions");
+			if ( OutErrorMessage )
+			{
+				*OutErrorMessage = NSLOCTEXT("Interchange", "Warning_TextureNotAPowerOfTwo", "Cannot import texture with non-power of two dimensions");
+			}
 			return false;
 		}
 	}

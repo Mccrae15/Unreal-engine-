@@ -1,8 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HeterogeneousVolumes.h"
+#include "HeterogeneousVolumeInterface.h"
 
 #include "LocalVertexFactory.h"
+#include "MeshPassUtils.h"
 #include "PixelShaderUtils.h"
 #include "RayTracingDefinitions.h"
 #include "RayTracingInstance.h"
@@ -18,6 +20,7 @@ class FHeterogeneousVolumesBakeMaterialCS : public FMeshMaterialShader
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		// Scene data
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, Scene)
 
 		// Object data
 		SHADER_PARAMETER(FMatrix44f, LocalToWorld)
@@ -89,18 +92,6 @@ class FHeterogeneousVolumesBakeMaterialCS : public FMeshMaterialShader
 		OutEnvironment.SetDefine(TEXT("GET_PRIMITIVE_DATA_OVERRIDE"), 1);
 	}
 
-	void SetParameters(
-		FRHIComputeCommandList& RHICmdList,
-		FRHIComputeShader* ShaderRHI,
-		const FViewInfo& View,
-		const FMaterialRenderProxy* MaterialProxy,
-		const FMaterial& Material
-	)
-	{
-		FMaterialShader::SetViewParameters(RHICmdList, ShaderRHI, View, View.ViewUniformBuffer);
-		FMaterialShader::SetParameters(RHICmdList, ShaderRHI, MaterialProxy, Material, View);
-	}
-
 	static int32 GetThreadGroupSize1D() { return GetThreadGroupSize2D() * GetThreadGroupSize2D(); }
 	static int32 GetThreadGroupSize2D() { return 8; }
 	static int32 GetThreadGroupSize3D() { return 4; }
@@ -114,7 +105,7 @@ void ComputeHeterogeneousVolumeBakeMaterial(
 	const FScene* Scene,
 	const FViewInfo& View,
 	// Object data
-	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+	const IHeterogeneousVolumeInterface* HeterogeneousVolumeInterface,
 	const FMaterialRenderProxy* MaterialRenderProxy,
 	const int32 PrimitiveId,
 	const FBoxSphereBounds LocalBoxSphereBounds,
@@ -144,9 +135,10 @@ void ComputeHeterogeneousVolumeBakeMaterial(
 	{
 		// Scene data
 		PassParameters->View = View.ViewUniformBuffer;
+		PassParameters->Scene = View.GetSceneUniforms().GetBuffer(GraphBuilder);
 
 		// Object data
-		FMatrix44f LocalToWorld = FMatrix44f(PrimitiveSceneProxy->GetLocalToWorld());
+		FMatrix44f LocalToWorld = FMatrix44f(HeterogeneousVolumeInterface->GetLocalToWorld());
 		PassParameters->LocalToWorld = LocalToWorld;
 		PassParameters->WorldToLocal = LocalToWorld.Inverse();
 		PassParameters->LocalBoundsOrigin = FVector3f(LocalBoxSphereBounds.Origin);
@@ -199,11 +191,8 @@ void ComputeHeterogeneousVolumeBakeMaterial(
 
 					ShaderBindings.Finalize(&PassShaders);
 				}
-				SetComputePipelineState(RHICmdList, ComputeShader.GetComputeShader());
-				ShaderBindings.SetOnCommandList(RHICmdList, ComputeShader.GetComputeShader());
 
-				FComputeShaderUtils::Dispatch(RHICmdList, ComputeShader, *PassParameters, GroupCount);
-				//FComputeShaderUtils::DispatchIndirect(RHICmdList, ComputeShader, *PassParameters, IndirectArgs->GetIndirectRHICallBuffer(), IndirectOffset);
+				UE::MeshPassUtils::Dispatch(RHICmdList, ComputeShader, ShaderBindings, *PassParameters, GroupCount);
 			}
 		}
 	);

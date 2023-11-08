@@ -31,6 +31,7 @@
 #include "Misc/MemStack.h"
 #include "PreviewScene.h"
 #include "ReferenceSkeleton.h"
+#include "Engine/SkeletalMeshSocket.h"
 #include "Templates/Casts.h"
 #include "Trace/Detail/Channel.h"
 #include "UObject/Object.h"
@@ -91,7 +92,8 @@ void FAnimPose::GetPose(FCompactPose& InOutCompactPose) const
 		for (int32 Index = 0; Index < BoneNames.Num(); ++Index)
 		{
 			const FName& BoneName = BoneNames[Index];
-			const FCompactPoseBoneIndex PoseBoneIndex = FCompactPoseBoneIndex(InOutCompactPose.GetBoneContainer().GetPoseBoneIndexForBoneName(BoneName));
+			const int32 MeshBoneIndex = InOutCompactPose.GetBoneContainer().GetPoseBoneIndexForBoneName(BoneName);
+			const FCompactPoseBoneIndex PoseBoneIndex = InOutCompactPose.GetBoneContainer().MakeCompactPoseIndex(FMeshPoseBoneIndex(MeshBoneIndex));
 			if (PoseBoneIndex != INDEX_NONE)
 			{
 				InOutCompactPose[PoseBoneIndex] = LocalSpacePoses[Index];
@@ -168,23 +170,34 @@ void FAnimPose::SetPose(const FAnimationPoseData& PoseData)
 		GenerateWorldSpaceTransforms();
 
 		const FBlendedCurve& Curve = PoseData.GetCurve();
-		for (TConstSetBitIterator It(Curve.ValidCurveWeights); It; ++It)
+		Curve.ForEachElement([&CurveNames = CurveNames, &CurveValues = CurveValues](const UE::Anim::FCurveElement& InElement)
 		{
-			const int32 EntryIndex = It.GetIndex();
-			const uint16 CurveNameUID = (*Curve.UIDToArrayIndexLUT).IsValidIndex(EntryIndex) ? (*Curve.UIDToArrayIndexLUT)[EntryIndex] : INDEX_NONE;
+			CurveNames.Add(InElement.Name);
+			CurveValues.Add(InElement.Value);
+		});
 
-			FSmartName CurveSmartName;
-			const USkeleton* Skeleton = ContextBoneContainer.GetSkeletonAsset();
-			if(Skeleton->GetSmartNameByUID(USkeleton::AnimCurveMappingName, CurveNameUID, CurveSmartName))
-			{
-				CurveNames.Add(CurveSmartName.DisplayName);
-				CurveValues.Add(Curve.CurveWeights[EntryIndex]);
-			}
-			else
-			{
-				ensureMsgf(false, TEXT("Unable to find SmartName for Curve with UID %i from Skeleton %s"), CurveNameUID, *Skeleton->GetPathName());
-			}
+		TArray<USkeletalMeshSocket*> Sockets;
+		const USkeleton* Skeleton = ContextBoneContainer.GetSkeletonAsset();
+		const USkeletalMesh* SkeletalMesh = ContextBoneContainer.GetSkeletalMeshAsset();
+		if (SkeletalMesh)
+		{
+			Sockets = SkeletalMesh->GetActiveSocketList();
 		}
+		else if (Skeleton)
+		{
+			Sockets = Skeleton->Sockets;
+		}
+
+		for (const USkeletalMeshSocket* Socket : Sockets)
+		{
+			const int32 PoseBoneIndex = ContextBoneContainer.GetPoseBoneIndexForBoneName(Socket->BoneName);
+			if (PoseBoneIndex != INDEX_NONE)
+			{
+				SocketNames.Add(Socket->SocketName);
+				SocketParentBoneNames.Add(Socket->BoneName);
+				SocketTransforms.Add(Socket->GetSocketLocalTransform());
+			}
+		}		
 	}
 	else
 	{
@@ -396,6 +409,38 @@ FTransform UAnimPoseExtensions::GetRefPoseRelativeTransform(const FAnimPose& Pos
 	return FTransform::Identity;
 }
 
+void UAnimPoseExtensions::GetSocketNames(const FAnimPose& Pose, TArray<FName>& Sockets)
+{
+	if (Pose.IsValid())
+	{
+		Sockets = Pose.SocketNames;
+	}
+}
+
+FTransform UAnimPoseExtensions::GetSocketPose(const FAnimPose& Pose, FName SocketName, EAnimPoseSpaces Space)
+{
+	if (Pose.IsValid())
+	{
+		const int32 SocketIndex = Pose.SocketNames.IndexOfByKey(SocketName);			
+		if (SocketIndex != INDEX_NONE)
+		{
+			const int32 BoneIndex = Pose.BoneNames.IndexOfByKey(Pose.SocketParentBoneNames[SocketIndex]);
+			const FTransform BoneTransform = Space == EAnimPoseSpaces::Local ? Pose.LocalSpacePoses[BoneIndex] : Pose.WorldSpacePoses[BoneIndex];
+			return Pose.SocketTransforms[SocketIndex] * BoneTransform;
+		}
+		else
+		{
+			UE_LOG(LogAnimationPoseScripting, Warning, TEXT("No socket with name %s was found"), *SocketName.ToString());
+		}
+	}
+	else
+	{		
+		UE_LOG(LogAnimationPoseScripting, Error, TEXT("Provided Pose is not valid"));	
+	}
+		
+	return FTransform::Identity;
+}
+
 void UAnimPoseExtensions::EvaluateAnimationBlueprintWithInputPose(const FAnimPose& Pose, USkeletalMesh* TargetSkeletalMesh, UAnimBlueprint* AnimationBlueprint, FAnimPose& OutPose)
 {
 	if (Pose.IsValid())
@@ -497,7 +542,7 @@ void UAnimPoseExtensions::GetReferencePose(USkeleton* Skeleton, FAnimPose& OutPo
 		}
 
 		FBoneContainer RequiredBones;
-		RequiredBones.InitializeTo(RequiredBoneIndexArray, FCurveEvaluationOption(false), *Skeleton);
+		RequiredBones.InitializeTo(RequiredBoneIndexArray, UE::Anim::FCurveFilterSettings(UE::Anim::ECurveFilterMode::DisallowAll), *Skeleton);
 
 		OutPose.Init(RequiredBones);
 		OutPose.SetToRefPose();
@@ -527,8 +572,11 @@ float UAnimPoseExtensions::GetCurveWeight(const FAnimPose& Pose, const FName& Cu
 
 void UAnimPoseExtensions::GetAnimPoseAtFrame(const UAnimSequenceBase* AnimationSequenceBase, int32 FrameIndex, FAnimPoseEvaluationOptions EvaluationOptions, FAnimPose& Pose)
 {
-	const double Time = AnimationSequenceBase->GetDataModel()->GetFrameRate().AsSeconds(FrameIndex);
-	GetAnimPoseAtTime(AnimationSequenceBase, Time, EvaluationOptions, Pose);
+	if (AnimationSequenceBase)
+	{
+		const double Time = AnimationSequenceBase->GetDataModel()->GetFrameRate().AsSeconds(FrameIndex);
+		GetAnimPoseAtTime(AnimationSequenceBase, Time, EvaluationOptions, Pose);
+	}
 }
 
 void UAnimPoseExtensions::GetAnimPoseAtTime(const UAnimSequenceBase* AnimationSequenceBase, double Time, FAnimPoseEvaluationOptions EvaluationOptions, FAnimPose& Pose)
@@ -571,7 +619,7 @@ void UAnimPoseExtensions::GetAnimPoseAtTimeIntervals(const UAnimSequenceBase* An
 		}
 
 		FBoneContainer RequiredBones;
-		RequiredBones.InitializeTo(RequiredBoneIndexArray, FCurveEvaluationOption(EvaluationOptions.bEvaluateCurves), *AssetToUse);
+		RequiredBones.InitializeTo(RequiredBoneIndexArray, UE::Anim::FCurveFilterSettings(EvaluationOptions.bEvaluateCurves ? UE::Anim::ECurveFilterMode::None : UE::Anim::ECurveFilterMode::DisallowAll), *AssetToUse);
 		
 		RequiredBones.SetUseRAWData(EvaluationOptions.EvaluationType == EAnimDataEvalType::Raw);
 		RequiredBones.SetUseSourceData(EvaluationOptions.EvaluationType == EAnimDataEvalType::Source);
@@ -584,6 +632,9 @@ void UAnimPoseExtensions::GetAnimPoseAtTimeIntervals(const UAnimSequenceBase* An
 
         FAnimationPoseData PoseData(CompactPose, Curve, Attributes);
         FAnimExtractContext Context(0.0, EvaluationOptions.bExtractRootMotion);
+#if WITH_EDITOR
+		Context.bIgnoreRootLock = EvaluationOptions.bIncorporateRootMotionIntoPose;
+#endif // WITH_EDITOR
     
         FCompactPose BasePose;
         BasePose.SetBoneContainer(&RequiredBones);

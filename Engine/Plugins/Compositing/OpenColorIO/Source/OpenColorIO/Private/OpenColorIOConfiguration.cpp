@@ -11,7 +11,6 @@
 #include "Modules/ModuleManager.h"
 #include "OpenColorIOColorTransform.h"
 #include "OpenColorIOModule.h"
-#include "OpenColorIONativeConfiguration.h"
 #include "OpenColorIOSettings.h"
 #include "TextureResource.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -24,13 +23,12 @@
 
 
 #if WITH_EDITOR
+#include "OpenColorIOWrapper.h"
 #include "DerivedDataCacheInterface.h"
 #include "DirectoryWatcherModule.h"
 #include "IDirectoryWatcher.h"
 #include "Interfaces/ITargetPlatform.h"
-#endif //WITH_EDITOR
 
-#if WITH_EDITOR && WITH_OCIO
 namespace OCIODirectoryWatcher
 {
 	/** OCIO supported extensions we should be checking for when something changes in the OCIO config folder. */
@@ -50,7 +48,6 @@ namespace OCIODirectoryWatcher
 
 UOpenColorIOConfiguration::UOpenColorIOConfiguration(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
-	, NativeConfig(MakePimpl<FOpenColorIONativeConfiguration>())
 {
 	
 }
@@ -76,24 +73,6 @@ bool UOpenColorIOConfiguration::GetRenderResources(ERHIFeatureLevel::Type InFeat
 	if (const TObjectPtr<UOpenColorIOColorTransform>* TransformPtr = FindTransform(InSettings))
 	{
 		return (*TransformPtr)->GetRenderResources(InFeatureLevel, OutShaderResource, OutTextureResources);
-	}
-
-	return false;
-}
-
-bool UOpenColorIOConfiguration::GetShaderAndLUTResources(ERHIFeatureLevel::Type InFeatureLevel, const FString& InSourceColorSpace, const FString& InDestinationColorSpace, FOpenColorIOTransformResource*& OutShaderResource, FTextureResource*& OutLUT3dResource)
-{
-	TSortedMap<int32, FTextureResource*> TextureResources;
-	FOpenColorIOColorConversionSettings Settings;
-	Settings.SourceColorSpace.ColorSpaceName = InSourceColorSpace;
-	Settings.DestinationColorSpace.ColorSpaceName = InDestinationColorSpace;
-	if (GetRenderResources(InFeatureLevel, Settings, OutShaderResource, TextureResources))
-	{
-		if (TextureResources.Contains(0))
-		{
-			OutLUT3dResource = TextureResources[0];
-			return true;
-		}
 	}
 
 	return false;
@@ -141,104 +120,152 @@ bool UOpenColorIOConfiguration::HasDesiredDisplayView(const FOpenColorIODisplayV
 
 bool UOpenColorIOConfiguration::Validate() const
 {
-#if WITH_EDITOR 
-
-#if WITH_OCIO
-	if (!ConfigurationFile.FilePath.IsEmpty())
+#if WITH_EDITOR
+	if (!ConfigurationFile.FilePath.IsEmpty() && Config.IsValid())
 	{
 		//When loading the configuration file, if any errors are detected, it will throw an exception. Thus, our pointer won't be valid.
-		return NativeConfig->Get() != nullptr;
+		return Config->IsValid();
 	}
 
 	return false;
-#else
-	return false;
-#endif // WITH_OCIO
-
 #else
 	return true;
 #endif // WITH_EDITOR
 }
 
+#if WITH_EDITOR
+bool UOpenColorIOConfiguration::TransformImage(const FOpenColorIOColorConversionSettings& InSettings, const FImageView& InOutImage) const
+{
+	if (const TObjectPtr<UOpenColorIOColorTransform>* TransformPtr = FindTransform(InSettings))
+	{
+		return (*TransformPtr)->TransformImage(InOutImage);
+	}
+
+	return false;
+}
+
+bool UOpenColorIOConfiguration::TransformImage(const FOpenColorIOColorConversionSettings& InSettings, const FImageView& SrcImage, const FImageView& DestImage) const
+{
+	if (const TObjectPtr<UOpenColorIOColorTransform>* TransformPtr = FindTransform(InSettings))
+	{
+		return (*TransformPtr)->TransformImage(SrcImage, DestImage);
+	}
+
+	return false;
+}
+#endif
+
 void UOpenColorIOConfiguration::ReloadExistingColorspaces()
 {
-#if WITH_EDITOR && WITH_OCIO
-	TArray<FOpenColorIOColorSpace> ColorSpacesToBeReloaded = DesiredColorSpaces;
-	TArray<FOpenColorIODisplayView> DisplayViewsToBeReloaded = DesiredDisplayViews;
-	DesiredColorSpaces.Reset();
-	DesiredDisplayViews.Reset();
-	CleanupTransforms();
+#if WITH_EDITOR
 	LoadConfiguration();
 
-	OCIO_NAMESPACE::ConstConfigRcPtr LoadedConfig = NativeConfig->Get();
-	if (!LoadedConfig)
+	if (Config && Config->IsValid())
 	{
-		return;
-	}
-	// This will make sure that all colorspaces are up to date in case an index, family or name is changed.
-	for (const FOpenColorIOColorSpace& ExistingColorSpace : ColorSpacesToBeReloaded)
-	{
-		const auto ColorSpaceName = StringCast<ANSICHAR>(*ExistingColorSpace.ColorSpaceName);
-		int ColorSpaceIndex = LoadedConfig->getIndexForColorSpace(ColorSpaceName.Get());
-		OCIO_NAMESPACE::ConstColorSpaceRcPtr LibColorSpace = LoadedConfig->getColorSpace(ColorSpaceName.Get());
-		if (!LibColorSpace)
+		FString LoadedConfigHash = Config->GetCacheID() + FString(OpenColorIOWrapper::GetVersion());
+		
+		const UOpenColorIOSettings* Settings = GetDefault<UOpenColorIOSettings>();
+		if (Settings->bSupportInverseViewTransforms)
 		{
-			// Name not found, therefore we don't need to re-add this colorspace.
-			continue;
+			LoadedConfigHash += FString(TEXT("_Inv"));
 		}
 
-		FOpenColorIOColorSpace ColorSpace;
-		ColorSpace.ColorSpaceIndex = ColorSpaceIndex;
-		ColorSpace.ColorSpaceName = ExistingColorSpace.ColorSpaceName;
-		ColorSpace.FamilyName = StringCast<TCHAR>(LibColorSpace->getFamily()).Get();
-		DesiredColorSpaces.Add(ColorSpace);
-	}
-
-	for (const FOpenColorIODisplayView& ExistingDisplayView : DisplayViewsToBeReloaded)
-	{
-		const auto DisplayName = StringCast<ANSICHAR>(*ExistingDisplayView.Display);
-		const auto ViewName = StringCast<ANSICHAR>(*ExistingDisplayView.View);
-		const auto TransformName = LoadedConfig->getDisplayViewTransformName(DisplayName.Get(), ViewName.Get());
-		if (TransformName == nullptr)
+		// Hash is different, proceed with the regeneration...
+		if (ConfigHash != LoadedConfigHash)
 		{
-			// Name not found, therefore we don't need to re-add this display-view.
-			continue;
-		}
+			ConfigHash = LoadedConfigHash;
 
-		DesiredDisplayViews.Add(ExistingDisplayView);
-	}
+			TArray<FOpenColorIOColorSpace> ColorSpacesToBeReloaded = DesiredColorSpaces;
+			TArray<FOpenColorIODisplayView> DisplayViewsToBeReloaded = DesiredDisplayViews;
+			DesiredColorSpaces.Reset();
+			DesiredDisplayViews.Reset();
+			ColorTransforms.Reset();
 
-	const UOpenColorIOSettings* Settings = GetDefault<UOpenColorIOSettings>();
-
-	// Genereate new shaders.
-	for (int32 indexTop = 0; indexTop < DesiredColorSpaces.Num(); ++indexTop)
-	{
-		const FOpenColorIOColorSpace& TopColorSpace = DesiredColorSpaces[indexTop];
-
-		for (int32 indexOther = indexTop + 1; indexOther < DesiredColorSpaces.Num(); ++indexOther)
-		{
-			const FOpenColorIOColorSpace& OtherColorSpace = DesiredColorSpaces[indexOther];
-
-			CreateColorTransform(TopColorSpace.ColorSpaceName, OtherColorSpace.ColorSpaceName);
-			CreateColorTransform(OtherColorSpace.ColorSpaceName, TopColorSpace.ColorSpaceName);
-		}
-
-		for (const FOpenColorIODisplayView& DisplayView : DesiredDisplayViews)
-		{
-			CreateColorTransform(TopColorSpace.ColorSpaceName, DisplayView.Display, DisplayView.View, EOpenColorIOViewTransformDirection::Forward);
-
-			if (Settings->bSupportInverseViewTransforms)
+			// This will make sure that all colorspaces are up to date in case an index, family or name is changed.
+			for (const FOpenColorIOColorSpace& ExistingColorSpace : ColorSpacesToBeReloaded)
 			{
-				CreateColorTransform(TopColorSpace.ColorSpaceName, DisplayView.Display, DisplayView.View, EOpenColorIOViewTransformDirection::Inverse);
+				int ColorSpaceIndex = Config->GetColorSpaceIndex(*ExistingColorSpace.ColorSpaceName);
+				if (ColorSpaceIndex < 0)
+				{
+					// Name not found, therefore we don't need to re-add this colorspace.
+					UE_LOG(LogOpenColorIO, Display, TEXT("Removing %s, not found."), *ExistingColorSpace.ToString());
+					continue;
+				}
+
+				FOpenColorIOColorSpace ColorSpace;
+				ColorSpace.ColorSpaceIndex = ColorSpaceIndex;
+				ColorSpace.ColorSpaceName = ExistingColorSpace.ColorSpaceName;
+				ColorSpace.FamilyName = Config->GetColorSpaceFamilyName(*ExistingColorSpace.ColorSpaceName);
+				DesiredColorSpaces.Add(ColorSpace);
+			}
+
+			for (const FOpenColorIODisplayView& ExistingDisplayView : DisplayViewsToBeReloaded)
+			{
+				bool bDisplayViewFound = false;
+				for (int32 ViewIndex = 0; ViewIndex < Config->GetNumViews(*ExistingDisplayView.Display); ++ViewIndex)
+				{
+					const FString ViewName = Config->GetViewName(*ExistingDisplayView.Display, ViewIndex);
+
+					if (ViewName == ExistingDisplayView.View)
+					{
+						DesiredDisplayViews.Add(ExistingDisplayView);
+						bDisplayViewFound = true;
+						break;
+					}
+				}
+
+				if (!bDisplayViewFound)
+				{
+					UE_LOG(LogOpenColorIO, Display, TEXT("Removing %s, not found."), *ExistingDisplayView.ToString());
+				}
+			}
+
+			// Genereate new shaders.
+			for (int32 indexTop = 0; indexTop < DesiredColorSpaces.Num(); ++indexTop)
+			{
+				const FOpenColorIOColorSpace& TopColorSpace = DesiredColorSpaces[indexTop];
+
+				for (int32 indexOther = indexTop + 1; indexOther < DesiredColorSpaces.Num(); ++indexOther)
+				{
+					const FOpenColorIOColorSpace& OtherColorSpace = DesiredColorSpaces[indexOther];
+
+					CreateColorTransform(TopColorSpace.ColorSpaceName, OtherColorSpace.ColorSpaceName);
+					CreateColorTransform(OtherColorSpace.ColorSpaceName, TopColorSpace.ColorSpaceName);
+				}
+
+				for (const FOpenColorIODisplayView& DisplayView : DesiredDisplayViews)
+				{
+					CreateColorTransform(TopColorSpace.ColorSpaceName, DisplayView.Display, DisplayView.View, EOpenColorIOViewTransformDirection::Forward);
+
+					if (Settings->bSupportInverseViewTransforms)
+					{
+						CreateColorTransform(TopColorSpace.ColorSpaceName, DisplayView.Display, DisplayView.View, EOpenColorIOViewTransformDirection::Inverse);
+					}
+				}
 			}
 		}
+		else
+		{
+			UE_LOG(LogOpenColorIO, Verbose, TEXT("Reload skipped, no differences identified."));
+		}
+	}
+	else
+	{
+		DesiredColorSpaces.Reset();
+		DesiredDisplayViews.Reset();
+		ColorTransforms.Reset();
+	}
+
+	if (!MarkPackageDirty())
+	{
+		UE_LOG(LogOpenColorIO, Display, TEXT("%s should be resaved for faster loads. Changes in the config or the library version were detected."), *GetPathName());
 	}
 #endif
 }
 
 void UOpenColorIOConfiguration::ConfigPathChangedEvent(const TArray<FFileChangeData>& InFileChanges, const FString InFileMountPath)
 {
-#if WITH_EDITOR && WITH_OCIO
+#if WITH_EDITOR
 	// We want to stop reacting to these events while the message is still up.
 	if (WatchedDirectoryInfo.RawConfigChangedToast.IsValid())
 	{
@@ -285,14 +312,18 @@ void UOpenColorIOConfiguration::ConfigPathChangedEvent(const TArray<FFileChangeD
 #endif
 }
 
-FOpenColorIONativeConfiguration* UOpenColorIOConfiguration::GetNativeConfig_Internal() const
+FOpenColorIOWrapperConfig* UOpenColorIOConfiguration::GetConfigWrapper() const
 {
-	return NativeConfig.Get();
+#if WITH_EDITOR
+	return Config.Get();
+#else
+	return nullptr;
+#endif
 }
 
 void UOpenColorIOConfiguration::StartDirectoryWatch(const FString& FilePath)
 {
-#if WITH_EDITOR && WITH_OCIO
+#if WITH_EDITOR
 	FDirectoryWatcherModule& DirectoryWatcherModule = FModuleManager::LoadModuleChecked<FDirectoryWatcherModule>(OCIODirectoryWatcher::NAME_DirectoryWatcher);
 	if (IDirectoryWatcher* DirectoryWatcher = DirectoryWatcherModule.Get())
 	{
@@ -315,7 +346,7 @@ void UOpenColorIOConfiguration::StartDirectoryWatch(const FString& FilePath)
 
 void UOpenColorIOConfiguration::StopDirectoryWatch()
 {
-#if WITH_EDITOR && WITH_OCIO
+#if WITH_EDITOR
 	FDirectoryWatcherModule& DirectoryWatcherModule = FModuleManager::LoadModuleChecked<FDirectoryWatcherModule>(OCIODirectoryWatcher::NAME_DirectoryWatcher);
 	if (IDirectoryWatcher* DirectoryWatcher = DirectoryWatcherModule.Get())
 	{
@@ -345,6 +376,7 @@ const TObjectPtr<UOpenColorIOColorTransform>* UOpenColorIOConfiguration::FindTra
 		});
 }
 
+#if WITH_EDITOR
 void UOpenColorIOConfiguration::CreateColorTransform(const FString& InSourceColorSpace, const FString& InDestinationColorSpace)
 {
 	if (InSourceColorSpace.IsEmpty() || InDestinationColorSpace.IsEmpty())
@@ -359,7 +391,7 @@ void UOpenColorIOConfiguration::CreateColorTransform(const FString& InSourceColo
 	}
 
 	UOpenColorIOColorTransform* NewTransform = NewObject<UOpenColorIOColorTransform>(this, NAME_None, RF_NoFlags);
-	const bool bSuccess = NewTransform->Initialize(this, InSourceColorSpace, InDestinationColorSpace);
+	const bool bSuccess = NewTransform->Initialize(InSourceColorSpace, InDestinationColorSpace);
 
 	if (bSuccess)
 	{
@@ -385,7 +417,7 @@ void UOpenColorIOConfiguration::CreateColorTransform(const FString& InSourceColo
 	}
 
 	UOpenColorIOColorTransform* NewTransform = NewObject<UOpenColorIOColorTransform>(this, NAME_None, RF_NoFlags);
-	const bool bSuccess = NewTransform->Initialize(this, InSourceColorSpace, InDisplay, InView, InDirection);
+	const bool bSuccess = NewTransform->Initialize(InSourceColorSpace, InDisplay, InView, InDirection);
 
 	if (bSuccess)
 	{
@@ -396,6 +428,7 @@ void UOpenColorIOConfiguration::CreateColorTransform(const FString& InSourceColo
 		UE_LOG(LogOpenColorIO, Warning, TEXT("Could not create color space transform from %s to %s - %s. Verify your OCIO config file, it may have errors in it."), *InSourceColorSpace, *InDisplay, *InView);
 	}
 }
+#endif
 
 void UOpenColorIOConfiguration::CleanupTransforms()
 {
@@ -446,13 +479,14 @@ void UOpenColorIOConfiguration::PostInitProperties()
 {
 	Super::PostInitProperties();
 
+#if WITH_EDITOR
 	if (!HasAnyFlags(RF_NeedLoad | RF_ClassDefaultObject))
 	{
 		ConfigurationFile.FilePath = TEXT("ocio://default");
-
 		// Ensure the default built-in configuration is loaded.
 		LoadConfiguration();
 	}
+#endif //WITH_EDITOR
 }
 
 void UOpenColorIOConfiguration::PostLoad()
@@ -527,7 +561,8 @@ void UOpenColorIOConfiguration::PostEditChangeProperty(FPropertyChangedEvent& Pr
 
 	if (PropertyChangedEvent.MemberProperty && PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UOpenColorIOConfiguration, ConfigurationFile))
 	{
-		LoadConfiguration();
+		// Note: Reload calls LoadConfiguration() internally.
+		ReloadExistingColorspaces();
 	}
 	else if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UOpenColorIOConfiguration, DesiredColorSpaces))
 	{
@@ -587,65 +622,48 @@ void UOpenColorIOConfiguration::PostEditChangeProperty(FPropertyChangedEvent& Pr
 	}
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
-#endif //WITH_EDITOR
 
 void UOpenColorIOConfiguration::LoadConfiguration()
 {
-#if WITH_EDITOR && WITH_OCIO
-	if (!ConfigurationFile.FilePath.IsEmpty())
+	Config.Reset();
+
+	if (ConfigurationFile.FilePath.IsEmpty())
 	{
-#if !PLATFORM_EXCEPTIONS_DISABLED
-		try
-#endif
-		{
-			FString ConfigurationFilePath = ConfigurationFile.FilePath;
-			if (ConfigurationFilePath.StartsWith(TEXT("ocio://")))
-			{
-				NativeConfig->Set(OCIO_NAMESPACE::Config::CreateFromFile(StringCast<ANSICHAR>(*ConfigurationFilePath).Get()));
-				UE_LOG(LogOpenColorIO, Verbose, TEXT("Loaded built-in OCIO configuration file %s"), *ConfigurationFilePath);
-			}
-			else
-			{
-				FString FullPath;
-				if (ConfigurationFilePath.Contains(TEXT("{Engine}")))
-				{
-					ConfigurationFilePath = FPaths::ConvertRelativePathToFull(ConfigurationFilePath.Replace(TEXT("{Engine}"), *FPaths::EngineDir()));
-				}
-
-				if (!FPaths::IsRelative(ConfigurationFilePath))
-				{
-					FullPath = ConfigurationFilePath;
-				}
-				else
-				{
-					const FString AbsoluteGameDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
-					FullPath = FPaths::ConvertRelativePathToFull(FPaths::Combine(AbsoluteGameDir, ConfigurationFilePath));
-				}
-
-				OCIO_NAMESPACE::ConstConfigRcPtr NewConfig = OCIO_NAMESPACE::Config::CreateFromFile(StringCast<ANSICHAR>(*FullPath).Get());
-				if (NewConfig)
-				{
-					UE_LOG(LogOpenColorIO, Verbose, TEXT("Loaded OCIO configuration file %s"), *FullPath);
-					NativeConfig->Set(NewConfig);
-					
-					StartDirectoryWatch(FullPath);
-				}
-				else
-				{
-					NativeConfig->Set(nullptr);
-
-					UE_LOG(LogOpenColorIO, Error, TEXT("Could not load OCIO configuration file %s. Verify that the path is good or that the file is valid."), *ConfigurationFile.FilePath);
-				}
-			}
-		}
-#if !PLATFORM_EXCEPTIONS_DISABLED
-		catch (OCIO_NAMESPACE::Exception& exception)
-		{
-			UE_LOG(LogOpenColorIO, Error, TEXT("Could not create OCIO configuration file for %s. Error message: %s."), *ConfigurationFile.FilePath, StringCast<TCHAR>(exception.what()).Get());
-		}
-#endif
+		return;
 	}
-#endif
+
+	bool bIsBuiltIn = false;
+	FString FilePath = ConfigurationFile.FilePath;
+
+	if (ConfigurationFile.FilePath.StartsWith(TEXT("ocio://")))
+	{
+		bIsBuiltIn = true;
+	}
+	else if(ConfigurationFile.FilePath.Contains(TEXT("{Engine}")))
+	{
+		FilePath = FPaths::ConvertRelativePathToFull(ConfigurationFile.FilePath.Replace(TEXT("{Engine}"), *FPaths::EngineDir()));
+	}
+	else if (FPaths::IsRelative(ConfigurationFile.FilePath))
+	{
+		const FString AbsoluteGameDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+		FilePath = FPaths::ConvertRelativePathToFull(FPaths::Combine(AbsoluteGameDir, ConfigurationFile.FilePath));
+	}
+
+	Config = MakePimpl<FOpenColorIOWrapperConfig>(FilePath, FOpenColorIOWrapperConfig::WCS_AsInterchangeSpace);
+
+	if (Config->IsValid())
+	{
+		if (!bIsBuiltIn)
+		{
+			StartDirectoryWatch(FilePath);
+		}
+
+		UE_LOG(LogOpenColorIO, Verbose, TEXT("Loaded OCIO configuration file %s"), *FilePath);
+	}
+	else
+	{
+		UE_LOG(LogOpenColorIO, Error, TEXT("Could not load OCIO configuration file %s. Verify that the path is good or that the file is valid."), *FilePath);
+	}
 }
 
 void UOpenColorIOConfiguration::OnToastCallback(bool bInReloadColorspaces)
@@ -659,9 +677,53 @@ void UOpenColorIOConfiguration::OnToastCallback(bool bInReloadColorspaces)
 
 	if (bInReloadColorspaces)
 	{
+		OpenColorIOWrapper::ClearAllCaches();
+
 		ReloadExistingColorspaces();
 	}
 }
 
-#undef LOCTEXT_NAMESPACE
 
+FOpenColorIOEditorConfigurationInspector::FOpenColorIOEditorConfigurationInspector(const UOpenColorIOConfiguration& InConfiguration)
+	: Configuration(InConfiguration)
+{
+}
+
+int32 FOpenColorIOEditorConfigurationInspector::GetNumColorSpaces() const
+{
+	return Configuration.GetConfigWrapper()->GetNumColorSpaces();
+}
+
+FString FOpenColorIOEditorConfigurationInspector::GetColorSpaceName(int32 Index) const
+{
+	return Configuration.GetConfigWrapper()->GetColorSpaceName(Index);
+}
+
+FString FOpenColorIOEditorConfigurationInspector::GetColorSpaceFamilyName(const TCHAR* InColorSpaceName) const
+{
+	return Configuration.GetConfigWrapper()->GetColorSpaceFamilyName(InColorSpaceName);
+}
+
+int32 FOpenColorIOEditorConfigurationInspector::GetNumDisplays() const
+{
+	return Configuration.GetConfigWrapper()->GetNumDisplays();
+}
+
+FString FOpenColorIOEditorConfigurationInspector::GetDisplayName(int32 Index) const
+{
+	return Configuration.GetConfigWrapper()->GetDisplayName(Index);
+}
+
+int32 FOpenColorIOEditorConfigurationInspector::GetNumViews(const TCHAR* InDisplayName) const
+{
+	return Configuration.GetConfigWrapper()->GetNumViews(InDisplayName);
+}
+
+FString FOpenColorIOEditorConfigurationInspector::GetViewName(const TCHAR* InDisplayName, int32 Index) const
+{
+	return Configuration.GetConfigWrapper()->GetViewName(InDisplayName, Index);
+}
+#endif //WITH_EDITOR
+
+
+#undef LOCTEXT_NAMESPACE

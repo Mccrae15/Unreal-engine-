@@ -5,7 +5,12 @@
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
 
-#include "GeometryProcessing/ApproximateActorsImpl.h"
+namespace UE::Geometry
+{
+	class FApproximateActorsImpl;
+	class FCombineMeshInstancesImpl;
+	class FMeshAutoUVImpl;
+}
 
 class FGeometryProcessingAdaptersModule : public IModuleInterface
 {
@@ -18,4 +23,6 @@ public:
 	
 protected:
 	TSharedPtr<UE::Geometry::FApproximateActorsImpl> ApproximateActors;
+	TSharedPtr<UE::Geometry::FCombineMeshInstancesImpl> CombineMeshInstances;
+	TSharedPtr<UE::Geometry::FMeshAutoUVImpl> MeshAutoUV;
 };

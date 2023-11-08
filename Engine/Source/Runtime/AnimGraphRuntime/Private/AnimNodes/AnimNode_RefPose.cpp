@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimNodes/AnimNode_RefPose.h"
+#include "Animation/AnimStats.h"
 #include "Animation/AnimTrace.h"
 
 /////////////////////////////////////////////////////
@@ -50,6 +51,8 @@ ERefPoseType FAnimNode_RefPose::GetRefPoseType() const
 void FAnimNode_MeshSpaceRefPose::EvaluateComponentSpace_AnyThread(FComponentSpacePoseContext& Output)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(EvaluateComponentSpace_AnyThread)
+	ANIM_MT_SCOPE_CYCLE_COUNTER_VERBOSE(MeshSpaceRefPose, !IsInGameThread());
+
 	Output.ResetToRefPose();
 }
 

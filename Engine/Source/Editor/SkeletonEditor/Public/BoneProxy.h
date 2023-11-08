@@ -7,6 +7,7 @@
 #include "TickableEditorObject.h"
 #include "UObject/Object.h"
 #include "UObject/WeakObjectPtr.h"
+#include "IPersonaPreviewScene.h"
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "SAdvancedTransformInputBox.h"
 #endif
@@ -92,6 +93,8 @@ public:
 	UPROPERTY()
 	TWeakObjectPtr<UDebugSkelMeshComponent> SkelMeshComponent;
 
+	TWeakPtr<IPersonaPreviewScene> WeakPreviewScene;
+
 	/** Whether to use local or world location */
 	bool bLocalLocation;
 
@@ -111,6 +114,9 @@ public:
 
 	/** Flag indicating whether this FTickableEditorObject should actually tick */
 	bool bIsTickable;
+
+	/** Flag indicating whether this bone's transform is editable */
+	bool bIsTransformEditable;
 
 	/** Method to react to retrieval of numeric values for the widget */
 	TOptional<FVector::FReal> GetNumericValue(

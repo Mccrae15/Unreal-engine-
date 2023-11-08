@@ -10,20 +10,27 @@
 #include "IAnalyticsProviderET.h"
 #include "GeneralProjectSettings.h"
 #include "Misc/EngineVersion.h"
+#include "BuildSettings.h"
 #include "RHI.h"
+#include "RHIStats.h"
 #include "GenericPlatform/GenericPlatformCrashContext.h"
 #include "StudioAnalytics.h"
 #include "UObject/Class.h"
+#include "Containers/Set.h"
+#include "Internationalization/Culture.h"
+#include "Internationalization/Internationalization.h"
 
 #if WITH_EDITOR
 #include "AnalyticsSessionSummaryManager.h"
 #include "AnalyticsSessionSummarySender.h"
 #include "Analytics/EditorAnalyticsSessionSummary.h"
 #include "EditorAnalyticsSession.h" // DEPRECATED: kept around to clean up expired old sessions.
+#include "Horde.h"
 #endif
 
 bool FEngineAnalytics::bIsInitialized;
 TSharedPtr<IAnalyticsProviderET> FEngineAnalytics::Analytics;
+TSet<FString> FEngineAnalytics::SessionEpicAccountIds;
 
 #if WITH_EDITOR
 static TUniquePtr<FAnalyticsSessionSummaryManager> AnalyticsSessionSummaryManager;
@@ -73,6 +80,11 @@ static TSharedPtr<IAnalyticsProviderET> CreateEpicAnalyticsProvider()
 	return FAnalyticsET::Get().CreateAnalyticsProvider(Config);
 }
 
+FString CreateAnalyticsUserId(const FString& EpicAccountId)
+{
+	return FString::Printf(TEXT("%s|%s|%s"), *FPlatformMisc::GetLoginId(), *EpicAccountId, *FPlatformMisc::GetOperatingSystemId());
+}
+
 IAnalyticsProviderET& FEngineAnalytics::GetProvider()
 {
 	checkf(bIsInitialized && IsAvailable(), TEXT("FEngineAnalytics::GetProvider called outside of Initialize/Shutdown."));
@@ -116,51 +128,15 @@ void FEngineAnalytics::Initialize()
 
 		if (Analytics.IsValid())
 		{
+			Analytics->SetUserID(CreateAnalyticsUserId(FPlatformMisc::GetEpicAccountId()));
+
 			if (UE::Analytics::Private::EngineAnalyticsConfigOverride)
 			{
-				UE::Analytics::Private::EngineAnalyticsConfigOverride->OnProviderCreated(*Analytics);
+				UE::Analytics::Private::EngineAnalyticsConfigOverride->OnInitialized(*Analytics, UE::Analytics::Private::FOnEpicAccountIdChanged::CreateStatic(&FEngineAnalytics::OnEpicAccountIdChanged));
 			}
-			else
-			{
-				Analytics->SetUserID(FString::Printf(TEXT("%s|%s|%s"), *FPlatformMisc::GetLoginId(), *FPlatformMisc::GetEpicAccountId(), *FPlatformMisc::GetOperatingSystemId()));
-			}
-
-			const UGeneralProjectSettings& ProjectSettings = *GetDefault<UGeneralProjectSettings>();
 
 			TArray<FAnalyticsEventAttribute> StartSessionAttributes;
-			GEngine->CreateStartupAnalyticsAttributes( StartSessionAttributes );
-			// Add project info whether we are in editor or game.
-			FString OSMajor;
-			FString OSMinor;
-			FPlatformMemoryStats Stats = FPlatformMemory::GetStats();
-			StartSessionAttributes.Emplace(TEXT("ProjectName"), ProjectSettings.ProjectName);
-			StartSessionAttributes.Emplace(TEXT("ProjectID"), ProjectSettings.ProjectID);
-			StartSessionAttributes.Emplace(TEXT("ProjectDescription"), ProjectSettings.Description);
-			StartSessionAttributes.Emplace(TEXT("ProjectVersion"), ProjectSettings.ProjectVersion);
-			StartSessionAttributes.Emplace(TEXT("GPUVendorID"), GRHIVendorId);
-			StartSessionAttributes.Emplace(TEXT("GPUDeviceID"), GRHIDeviceId);
-			StartSessionAttributes.Emplace(TEXT("GRHIDeviceRevision"), GRHIDeviceRevision);
-			StartSessionAttributes.Emplace(TEXT("GRHIAdapterInternalDriverVersion"), GRHIAdapterInternalDriverVersion);
-			StartSessionAttributes.Emplace(TEXT("GRHIAdapterUserDriverVersion"), GRHIAdapterUserDriverVersion);
-			StartSessionAttributes.Emplace(TEXT("TotalPhysicalRAM"), static_cast<uint64>(Stats.TotalPhysical));
-			StartSessionAttributes.Emplace(TEXT("CPUPhysicalCores"), FPlatformMisc::NumberOfCores());
-			StartSessionAttributes.Emplace(TEXT("CPULogicalCores"), FPlatformMisc::NumberOfCoresIncludingHyperthreads());
-			StartSessionAttributes.Emplace(TEXT("DesktopGPUAdapter"), FPlatformMisc::GetPrimaryGPUBrand());
-			StartSessionAttributes.Emplace(TEXT("RenderingGPUAdapter"), GRHIAdapterName);
-			StartSessionAttributes.Emplace(TEXT("CPUVendor"), FPlatformMisc::GetCPUVendor());
-			StartSessionAttributes.Emplace(TEXT("CPUBrand"), FPlatformMisc::GetCPUBrand());
-			FPlatformMisc::GetOSVersions(/*out*/ OSMajor, /*out*/ OSMinor);
-			StartSessionAttributes.Emplace(TEXT("OSMajor"), OSMajor);
-			StartSessionAttributes.Emplace(TEXT("OSMinor"), OSMinor);
-			StartSessionAttributes.Emplace(TEXT("OSVersion"), FPlatformMisc::GetOSVersion());
-			StartSessionAttributes.Emplace(TEXT("Is64BitOS"), FPlatformMisc::Is64bitOperatingSystem());
-#if PLATFORM_MAC
-#if PLATFORM_MAC_ARM64
-            StartSessionAttributes.Emplace(TEXT("UEBuildArch"), FString(TEXT("AppleSilicon")));
-#else
-            StartSessionAttributes.Emplace(TEXT("UEBuildArch"), FString(TEXT("Intel(Mac)")));
-#endif
-#endif
+			AppendMachineStats(StartSessionAttributes);
 
 			// allow editor events to be correlated to StudioAnalytics events (if there is a studio analytics provider)
 			if (FStudioAnalytics::IsAvailable())
@@ -169,7 +145,7 @@ void FEngineAnalytics::Initialize()
 			}
 
 			Analytics->StartSession(MoveTemp(StartSessionAttributes));
-
+			SendMachineInfoForAccount(FPlatformMisc::GetEpicAccountId());
 			bIsInitialized = true;
 		}
 
@@ -260,4 +236,122 @@ void FEngineAnalytics::LowDriveSpaceDetected()
 		EditorAnalyticSessionSummary->LowDriveSpaceDetected();
 	}
 #endif
+}
+
+void FEngineAnalytics::AppendMachineStats(TArray<FAnalyticsEventAttribute>& EventAttributes)
+{
+	const UGeneralProjectSettings& ProjectSettings = *GetDefault<UGeneralProjectSettings>();
+	const FPlatformMemoryStats Stats = FPlatformMemory::GetStats();
+
+	FString OSMajor;
+	FString OSMinor;
+	FPlatformMisc::GetOSVersions(/*out*/ OSMajor, /*out*/ OSMinor);
+
+	FTextureMemoryStats TextureMemStats;
+	RHIGetTextureMemoryStats(TextureMemStats);
+
+	GEngine->CreateStartupAnalyticsAttributes( EventAttributes );
+
+	// Add project info whether we are in editor or game.
+	EventAttributes.Emplace(TEXT("ProjectName"), ProjectSettings.ProjectName);
+	EventAttributes.Emplace(TEXT("ProjectID"), ProjectSettings.ProjectID);
+	EventAttributes.Emplace(TEXT("ProjectDescription"), ProjectSettings.Description);
+	EventAttributes.Emplace(TEXT("ProjectVersion"), ProjectSettings.ProjectVersion);
+	EventAttributes.Emplace(TEXT("Application.Commandline"), FCommandLine::Get());
+	EventAttributes.Emplace(TEXT("Build.Configuration"), LexToString(FApp::GetBuildConfiguration()));
+	EventAttributes.Emplace(TEXT("Build.IsInternalBuild"), FEngineBuildSettings::IsInternalBuild());
+	EventAttributes.Emplace(TEXT("Build.IsPerforceBuild"), FEngineBuildSettings::IsPerforceBuild());
+	EventAttributes.Emplace(TEXT("Build.IsPromotedBuild"), FApp::GetEngineIsPromotedBuild() == 0 ? false : true);
+	EventAttributes.Emplace(TEXT("Build.BranchName"), FApp::GetBranchName());
+	EventAttributes.Emplace(TEXT("Build.Changelist"), BuildSettings::GetCurrentChangelist());
+	EventAttributes.Emplace(TEXT("Config.IsEditor"), GIsEditor);
+	EventAttributes.Emplace(TEXT("Config.IsUnattended"), FApp::IsUnattended());
+	EventAttributes.Emplace(TEXT("Config.IsBuildMachine"), GIsBuildMachine);
+	EventAttributes.Emplace(TEXT("Config.IsRunningCommandlet"), IsRunningCommandlet());
+	EventAttributes.Emplace(TEXT("Platform.IsRemoteSession"), FPlatformMisc::IsRemoteSession());
+	EventAttributes.Emplace(TEXT("OSMajor"), OSMajor);
+	EventAttributes.Emplace(TEXT("OSMinor"), OSMinor);
+	EventAttributes.Emplace(TEXT("OSVersion"), FPlatformMisc::GetOSVersion());
+	EventAttributes.Emplace(TEXT("Is64BitOS"), FPlatformMisc::Is64bitOperatingSystem());
+	EventAttributes.Emplace(TEXT("GPUVendorID"), GRHIVendorId);
+	EventAttributes.Emplace(TEXT("GPUDeviceID"), GRHIDeviceId);
+	EventAttributes.Emplace(TEXT("GPUMemory"), static_cast<uint64>(TextureMemStats.DedicatedVideoMemory));
+	EventAttributes.Emplace(TEXT("GRHIDeviceRevision"), GRHIDeviceRevision);
+	EventAttributes.Emplace(TEXT("GRHIAdapterInternalDriverVersion"), GRHIAdapterInternalDriverVersion);
+	EventAttributes.Emplace(TEXT("GRHIAdapterUserDriverVersion"), GRHIAdapterUserDriverVersion);
+	EventAttributes.Emplace(TEXT("TotalPhysicalRAM"), static_cast<uint64>(Stats.TotalPhysical));
+	EventAttributes.Emplace(TEXT("CPUPhysicalCores"), FPlatformMisc::NumberOfCores());
+	EventAttributes.Emplace(TEXT("CPULogicalCores"), FPlatformMisc::NumberOfCoresIncludingHyperthreads());
+	EventAttributes.Emplace(TEXT("DesktopGPUAdapter"), FPlatformMisc::GetPrimaryGPUBrand());
+	EventAttributes.Emplace(TEXT("RenderingGPUAdapter"), GRHIAdapterName);
+	EventAttributes.Emplace(TEXT("CPUVendor"), FPlatformMisc::GetCPUVendor());
+	EventAttributes.Emplace(TEXT("CPUBrand"), FPlatformMisc::GetCPUBrand());
+
+	// Send Internationalization setting of the editor
+	EventAttributes.Emplace(TEXT("Internationalization.Language"), FInternationalization::Get().GetCurrentLanguage()->GetName());
+	EventAttributes.Emplace(TEXT("Internationalization.Locale"), FInternationalization::Get().GetCurrentLocale()->GetName());
+
+#if WITH_EDITOR
+	EventAttributes.Emplace(TEXT("Horde.TemplateID"), FHorde::GetTemplateId());
+	EventAttributes.Emplace(TEXT("Horde.TemplateName"), FHorde::GetTemplateName());
+	EventAttributes.Emplace(TEXT("Horde.JobURL"), FHorde::GetJobURL());
+	EventAttributes.Emplace(TEXT("Horde.JobID"), FHorde::GetJobId());
+	EventAttributes.Emplace(TEXT("Horde.StepName"), FHorde::GetStepName());
+	EventAttributes.Emplace(TEXT("Horde.StepID"), FHorde::GetStepId());
+	EventAttributes.Emplace(TEXT("Horde.StepURL"), FHorde::GetStepURL());
+	EventAttributes.Emplace(TEXT("Horde.BatchID"), FHorde::GetBatchId());
+#endif
+
+#if PLATFORM_MAC
+#if PLATFORM_MAC_ARM64
+	EventAttributes.Emplace(TEXT("UEBuildArch"), FString(TEXT("AppleSilicon")));
+#else
+	EventAttributes.Emplace(TEXT("UEBuildArch"), FString(TEXT("Intel(Mac)")));
+#endif
+#endif
+}
+
+void FEngineAnalytics::SendMachineInfoForAccount(const FString& EpicAccountId)
+{
+	// Note: EpicAccountId may be empty when the user has not signed in to the epic games launcher.
+	// The intention here is to only send SessionMachineStats once per unique user including when
+	// no user has logged in.
+	if (Analytics && !SessionEpicAccountIds.Contains(EpicAccountId))
+	{
+		SessionEpicAccountIds.Add(EpicAccountId);
+
+		TArray<FAnalyticsEventAttribute> EventAttributes;
+		AppendMachineStats(EventAttributes);
+
+		// When the user id is changed send a SessionMachineStats event.
+		static const FString SZEventName = TEXT("SessionMachineStats");
+		Analytics->RecordEvent(SZEventName, EventAttributes);
+	}
+}
+
+void FEngineAnalytics::OnEpicAccountIdChanged(const FString& EpicAccountId)
+{
+	// For analytics reporting ignore changes to an empty account id when the user logs out.
+	if (!EpicAccountId.IsEmpty())
+	{
+		const FString NewAnalyticsUserId = CreateAnalyticsUserId(EpicAccountId);
+
+		// Update analytics provider user.
+		if (Analytics)
+		{
+			Analytics->SetUserID(NewAnalyticsUserId);
+			SendMachineInfoForAccount(EpicAccountId);
+		}
+
+#if WITH_EDITOR
+		// Update the summary manager and all of the data stores.
+		if (AnalyticsSessionSummaryManager)
+		{
+			AnalyticsSessionSummaryManager->SetUserId(NewAnalyticsUserId);
+		}
+#endif
+
+		// Update the crash context so the user id will be sent with runtime events to CRCEditor.
+		FGenericCrashContext::SetEpicAccountId(EpicAccountId);
+	}
 }

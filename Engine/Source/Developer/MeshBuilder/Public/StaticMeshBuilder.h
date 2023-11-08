@@ -60,10 +60,12 @@ namespace UE::Private::StaticMeshBuilder
 		TArray<int32>& OutWedgeMap,
 		FStaticMeshSectionArray& OutSections,
 		TArray<TArray<uint32>>& OutPerSectionIndices,
-		TArray<FStaticMeshBuildVertex>& StaticMeshBuildVertices,
+		FMeshBuildVertexData& BuildVertexData,
 		const FOverlappingCorners& OverlappingCorners,
 		TArray<int32>& RemapVerts,
-		bool bNeedTangents
+		FBoxSphereBounds& MeshBounds,
+		bool bNeedTangents,
+		bool bNeedWedgeMap
 	);
 
 	MESHBUILDER_API void BuildCombinedSectionIndices(

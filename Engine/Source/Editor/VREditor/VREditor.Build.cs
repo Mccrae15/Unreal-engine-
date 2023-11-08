@@ -12,8 +12,6 @@ namespace UnrealBuildTool.Rules
 				}
 			);
 
-			PublicIncludePaths.Add(ModuleDirectory);
-
             PrivateDependencyModuleNames.AddRange(
                 new string[] {
                     "AppFramework",
@@ -24,7 +22,7 @@ namespace UnrealBuildTool.Rules
                     "InputCore",
 				    "Slate",
 					"SlateCore",
-                    
+                    "RenderCore",
 					"EditorFramework",
 					"UnrealEd",
 					"UMG",
@@ -40,14 +38,14 @@ namespace UnrealBuildTool.Rules
 
 			PublicDependencyModuleNames.AddRange(
 				new string[] {
-					"ViewportInteraction"
+					"ViewportInteraction",
+					"HeadMountedDisplay"
 				}
 			);
 
 			PrivateIncludePathModuleNames.AddRange(
 				new string[] {
 					"AssetTools",
-					"LevelEditor",
 					"PlacementMode",
 				}
 			);

@@ -177,7 +177,6 @@ void FVulkanCmdBuffer::EndRenderPass()
 		VkSubpassEndInfo SubpassInfo;
 		ZeroVulkanStruct(SubpassInfo, VK_STRUCTURE_TYPE_SUBPASS_END_INFO);
 
-#if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP_OFFSET
 		VkOffset2D Offsets[2];
 		VkSubpassFragmentDensityMapOffsetEndInfoQCOM offsetInfo;
 		if (Device->GetOptionalExtensions().HasQcomFragmentDensityMapOffset && GVulkanUseQcomFragmentDensityMapOffsets && RenderPassProperties.bHasFragmentDensityMap)
@@ -194,7 +193,6 @@ void FVulkanCmdBuffer::EndRenderPass()
 
 			SubpassInfo.pNext = &offsetInfo;
 		}
-#endif // VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP_OFFSET
 		VulkanRHI::vkCmdEndRenderPass2KHR(CommandBufferHandle, &SubpassInfo);
 	}
 	else
@@ -207,8 +205,11 @@ void FVulkanCmdBuffer::EndRenderPass()
 	RenderPassProperties = {};
 }
 
-void FVulkanCmdBuffer::BeginRenderPass(const FVulkanRenderTargetLayout& Layout, FVulkanRenderPass* RenderPass, FVulkanFramebuffer* Framebuffer, const VkClearValue* AttachmentClearValues, const VkRect2D& RenderArea)
+// BEGIN META SECTION - Multi-View Per View Viewports / Render Areas
+void FVulkanCmdBuffer::BeginRenderPass(const FVulkanRenderTargetLayout& Layout, FVulkanRenderPass* RenderPass, FVulkanFramebuffer* Framebuffer, const VkClearValue* AttachmentClearValues, const VkRect2D* RenderAreas, const uint32 NumRenderAreas)
 {
+	// END META SECTION - Multi-View Per View Viewports / Render Areas
+
 	if (bIsUniformBufferBarrierAdded)
 	{
 		EndUniformUpdateBarrier();
@@ -219,7 +220,9 @@ void FVulkanCmdBuffer::BeginRenderPass(const FVulkanRenderTargetLayout& Layout, 
 	ZeroVulkanStruct(Info, VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
 	Info.renderPass = RenderPass->GetHandle();
 	Info.framebuffer = Framebuffer->GetHandle();
-	Info.renderArea = RenderArea;
+	// BEGIN META SECTION - Multi-View Per View Viewports / Render Areas
+	Info.renderArea = RenderAreas[0];
+	// END META SECTION - Multi-View Per View Viewports / Render Areas
 	Info.clearValueCount = Layout.GetNumUsedClearValues();
 	Info.pClearValues = AttachmentClearValues;
 
@@ -235,6 +238,37 @@ void FVulkanCmdBuffer::BeginRenderPass(const FVulkanRenderTargetLayout& Layout, 
 		Info.pNext = &RPTransformBeginInfoQCOM;
 	}
 #endif
+
+	// BEGIN META SECTION - Multi-View Per View Viewports / Render Areas
+#if VULKAN_SUPPORTS_MULTIVIEW_PER_VIEW_RENDER_AREAS
+	if (NumRenderAreas > 1)
+	{
+		if (RenderAreas[0].offset.x != RenderAreas[1].offset.x ||
+			RenderAreas[0].offset.y != RenderAreas[1].offset.y ||
+			RenderAreas[0].extent.width != RenderAreas[1].extent.width ||
+			RenderAreas[0].extent.height != RenderAreas[1].extent.height)
+		{
+			ZeroVulkanStruct(RenderAreaInfo, (VkStructureType)VK_STRUCTURE_TYPE_MULTIVIEW_PER_VIEW_RENDER_AREAS_RENDER_PASS_BEGIN_INFO_QCOM);
+
+			RenderAreaRects = { RenderAreas[0], RenderAreas[1] };
+
+			RenderAreaInfo.perViewRenderAreaCount = 2;
+			RenderAreaInfo.pPerViewRenderAreas = RenderAreaRects.GetData();
+
+			RenderAreaInfo.pNext = Info.pNext;
+			Info.pNext = &RenderAreaInfo;
+
+			// Update Info.renderArea to the union of the two render areas
+			// Assuming first render area is left of second and they do not overlap
+			VkRect2D renderAreaUnion = RenderAreas[0];
+			renderAreaUnion.extent.width = (RenderAreas[1].offset.x - renderAreaUnion.offset.x) + RenderAreas[1].extent.width;
+			renderAreaUnion.extent.height = (RenderAreas[1].offset.y - renderAreaUnion.offset.y) + RenderAreas[1].extent.height;
+
+			Info.renderArea = renderAreaUnion;
+		}
+	}
+#endif
+	// END META SECTION - Multi-View Per View Viewports / Render Areas
 
 	if (Device->GetOptionalExtensions().HasKHRRenderPass2)
 	{

@@ -198,7 +198,7 @@ private:
 		}
 	}
 
-	virtual void PostRenderBasePassMobile_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView) override
+	virtual void PostRenderBasePassMobile_RenderThread(FRHICommandList& RHICmdList, FSceneView& InView) override
 	{
 		if (ARKitSystem.RenderThreadFrame.IsValid())
 		{
@@ -490,10 +490,10 @@ void FAppleARKitSystem::UpdateFrame()
 			if (FAppleARKitAvailability::SupportsARKit40() && GameThreadFrame->SceneDepth)
 			{
 				FImageBlurParams BlurParam = { SceneDepthBufferBlurAmount, SceneDepthBufferSizeScale };
-				UpdateCameraImageFromPixelBuffer(SceneDepthMap, GameThreadFrame->SceneDepth.depthMap, EARTextureType::SceneDepthMap, GameThreadFrame->Timestamp, PF_R32_FLOAT, kCGColorSpaceGenericRGBLinear, BlurParam);
+				UpdateCameraImageFromPixelBuffer(MutableView(SceneDepthMap), GameThreadFrame->SceneDepth.depthMap, EARTextureType::SceneDepthMap, GameThreadFrame->Timestamp, PF_R32_FLOAT, kCGColorSpaceGenericRGBLinear, BlurParam);
 				
 				// For some reason int8 texture needs to use the sRGB color space to ensure the values are intact after CIImage processing
-				UpdateCameraImageFromPixelBuffer(SceneDepthConfidenceMap, GameThreadFrame->SceneDepth.confidenceMap, EARTextureType::SceneDepthConfidenceMap, GameThreadFrame->Timestamp, PF_G8, kCGColorSpaceSRGB, BlurParam);
+				UpdateCameraImageFromPixelBuffer(MutableView(SceneDepthConfidenceMap), GameThreadFrame->SceneDepth.confidenceMap, EARTextureType::SceneDepthConfidenceMap, GameThreadFrame->Timestamp, PF_G8, kCGColorSpaceSRGB, BlurParam);
 				
 				if (FAppleARKitXRCamera* Camera = GetARKitXRCamera())
 				{
@@ -564,8 +564,8 @@ bool FAppleARKitSystem::OnStartGameFrame(FWorldContext& WorldContext)
 {
 	FXRTrackingSystemBase::OnStartGameFrame(WorldContext);
 	
-	CachedTrackingToWorld = ComputeTrackingToWorldTransform(WorldContext);
-	
+	RefreshTrackingToWorldTransform(WorldContext);
+
 	if (GameThreadFrame.IsValid())
 	{
 		if (GameThreadFrame->LightEstimate.bIsValid)
@@ -705,7 +705,7 @@ TArray<FARTraceResult> FAppleARKitSystem::OnLineTraceTrackedObjects( const FVect
 {
 	const float WorldToMetersScale = GetWorldToMetersScale();
 	TArray<FARTraceResult> Results;
-	
+
 	// Sanity check
 	if (IsRunning())
 	{
@@ -744,22 +744,17 @@ TArray<FARTraceResult> FAppleARKitSystem::OnLineTraceTrackedObjects( const FVect
 				
 				// GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Blue, FString::Printf(TEXT("Hit Test At Screen Position: x: %f, y: %f"), NormalizedImagePosition.X, NormalizedImagePosition.Y));
 
-				//
-				// TODO: Re-enable deprecation warnings after updating the following code to use raycasting.
-				//
-				//   - 'ARHitTestResult' is deprecated: first deprecated in iOS 14.0 - Use raycasting
-				//   - 'hitTest:types:' is deprecated: first deprecated in iOS 14.0 - Use [ARSession raycast:]
-				//
-				PRAGMA_DISABLE_DEPRECATION_WARNINGS
-
 				// First run hit test against existing planes with extents (converting & filtering results as we go)
 				if (!!(TraceChannels & EARLineTraceChannels::PlaneUsingExtent) || !!(TraceChannels & EARLineTraceChannels::PlaneUsingBoundaryPolygon))
 				{
 					// First run hit test against existing planes with extents (converting & filtering results as we go)
-					NSArray< ARHitTestResult* >* PlaneHitTestResults = [HitTestFrame hitTest:CGPointMake(NormalizedImagePosition.X, NormalizedImagePosition.Y) types:ARHitTestResultTypeExistingPlaneUsingExtent];
-					for ( ARHitTestResult* HitTestResult in PlaneHitTestResults )
+					ARRaycastQuery* RaycastQuery = [HitTestFrame raycastQueryFromPoint: CGPointMake(NormalizedImagePosition.X, NormalizedImagePosition.Y) allowingTarget: ARRaycastTarget::ARRaycastTargetExistingPlaneGeometry alignment: ARRaycastTargetAlignment::ARRaycastTargetAlignmentAny];
+					NSArray< ARRaycastResult* >* PlaneHitTestResults = [Session raycast: RaycastQuery];
+					for (ARRaycastResult* HitTestResult in PlaneHitTestResults )
 					{
-						const float UnrealHitDistance = HitTestResult.distance * WorldToMetersScale;
+						FVector CameraPos = FAppleARKitConversion::ToFTransform(HitTestFrame.camera.transform).GetTranslation();
+						FVector IntersectionPos = FAppleARKitConversion::ToFTransform(HitTestResult.worldTransform).GetTranslation();
+						const float UnrealHitDistance = FVector::Dist(CameraPos, IntersectionPos);
 						if ( IsHitInRange( UnrealHitDistance ) )
 						{
 							// Hit result has passed and above filtering, add it to the list
@@ -772,10 +767,13 @@ TArray<FARTraceResult> FAppleARKitSystem::OnLineTraceTrackedObjects( const FVect
 				// If there were no valid results, fall back to hit testing against one shot plane
 				if (!!(TraceChannels & EARLineTraceChannels::GroundPlane))
 				{
-					NSArray< ARHitTestResult* >* PlaneHitTestResults = [HitTestFrame hitTest:CGPointMake(NormalizedImagePosition.X, NormalizedImagePosition.Y) types:ARHitTestResultTypeEstimatedHorizontalPlane];
-					for ( ARHitTestResult* HitTestResult in PlaneHitTestResults )
+					ARRaycastQuery* RaycastQuery = [HitTestFrame raycastQueryFromPoint : CGPointMake(NormalizedImagePosition.X, NormalizedImagePosition.Y) allowingTarget : ARRaycastTarget::ARRaycastTargetExistingPlaneInfinite alignment : ARRaycastTargetAlignment::ARRaycastTargetAlignmentHorizontal];
+					NSArray< ARRaycastResult* >* PlaneHitTestResults = [Session raycast : RaycastQuery];
+					for (ARRaycastResult* HitTestResult in PlaneHitTestResults )
 					{
-						const float UnrealHitDistance = HitTestResult.distance * WorldToMetersScale;
+						FVector CameraPos = FAppleARKitConversion::ToFTransform(HitTestFrame.camera.transform).GetTranslation();
+						FVector IntersectionPos = FAppleARKitConversion::ToFTransform(HitTestResult.worldTransform).GetTranslation();
+						const float UnrealHitDistance = FVector::Dist(CameraPos, IntersectionPos);
 						if ( IsHitInRange( UnrealHitDistance ) )
 						{
 							// Hit result has passed and above filtering, add it to the list
@@ -790,10 +788,13 @@ TArray<FARTraceResult> FAppleARKitSystem::OnLineTraceTrackedObjects( const FVect
 				{
 					// GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red, FString::Printf(TEXT("No results for plane hit test - reverting to feature points"), NormalizedImagePosition.X, NormalizedImagePosition.Y));
 					
-					NSArray< ARHitTestResult* >* FeatureHitTestResults = [HitTestFrame hitTest:CGPointMake(NormalizedImagePosition.X, NormalizedImagePosition.Y) types:ARHitTestResultTypeFeaturePoint];
-					for ( ARHitTestResult* HitTestResult in FeatureHitTestResults )
+					ARRaycastQuery* RaycastQuery = [HitTestFrame raycastQueryFromPoint : CGPointMake(NormalizedImagePosition.X, NormalizedImagePosition.Y) allowingTarget : ARRaycastTarget::ARRaycastTargetEstimatedPlane alignment : ARRaycastTargetAlignment::ARRaycastTargetAlignmentAny];
+					NSArray< ARRaycastResult* >*PlaneHitTestResults = [Session raycast : RaycastQuery];
+					for (ARRaycastResult* HitTestResult in PlaneHitTestResults)
 					{
-						const float UnrealHitDistance = HitTestResult.distance * WorldToMetersScale;
+						FVector CameraPos = FAppleARKitConversion::ToFTransform(HitTestFrame.camera.transform).GetTranslation();
+						FVector IntersectionPos = FAppleARKitConversion::ToFTransform(HitTestResult.worldTransform).GetTranslation();
+						const float UnrealHitDistance = FVector::Dist(CameraPos, IntersectionPos);
 						if ( IsHitInRange( UnrealHitDistance ) )
 						{
 							// Hit result has passed and above filtering, add it to the list
@@ -802,8 +803,6 @@ TArray<FARTraceResult> FAppleARKitSystem::OnLineTraceTrackedObjects( const FVect
 						}
 					}
 				}
-
-				PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			}
 		}
 #endif
@@ -842,7 +841,7 @@ TArray<UARTrackedGeometry*> FAppleARKitSystem::OnGetAllTrackedGeometries() const
 
 TArray<UARPin*> FAppleARKitSystem::OnGetAllPins() const
 {
-	return Pins;
+	return ObjectPtrDecay(Pins);
 }
 
 UARTexture* FAppleARKitSystem::OnGetARTexture(EARTextureType TextureType) const
@@ -880,14 +879,14 @@ UARLightEstimate* FAppleARKitSystem::OnGetCurrentLightEstimate() const
 
 UARPin* FAppleARKitSystem::FindARPinByComponent(const USceneComponent* Component) const
 {
-	return ARKitUtil::PinFromComponent(Component, Pins);
+	return ARKitUtil::PinFromComponent(Component, ObjectPtrDecay(Pins));
 }
 
 UARPin* FAppleARKitSystem::OnPinComponent( USceneComponent* ComponentToPin, const FTransform& PinToWorldTransform, UARTrackedGeometry* TrackedGeometry, const FName DebugName )
 {
 	if ( ensureMsgf(ComponentToPin != nullptr, TEXT("Cannot pin component.")) )
 	{
-		if (UARPin* FindResult = ARKitUtil::PinFromComponent(ComponentToPin, Pins))
+		if (UARPin* FindResult = ARKitUtil::PinFromComponent(ComponentToPin, ObjectPtrDecay(Pins)))
 		{
 			UE_LOG(LogAppleARKit, Warning, TEXT("Component %s is already pinned. Unpin it first."), *ComponentToPin->GetReadableName());
 			OnRemovePin(FindResult);
@@ -1492,7 +1491,7 @@ UARTrackedGeometry* FAppleARKitSystem::TryCreateTrackedGeometry(TSharedRef<FAppl
         {
             NewAnchorDebugName = FString::Printf(TEXT("IMG-%02d"), LastTrackedGeometry_DebugId++);
             UARTrackedImage* NewImage = NewObject<UARTrackedImage>();
-            UARCandidateImage** CandidateImage = CandidateImages.Find(AnchorData->DetectedAnchorName);
+            auto* CandidateImage = CandidateImages.Find(AnchorData->DetectedAnchorName);
             ensure(CandidateImage != nullptr);
             FVector2D PhysicalSize((*CandidateImage)->GetPhysicalWidth(), (*CandidateImage)->GetPhysicalHeight());
             NewImage->UpdateTrackedGeometry(ARComponent.ToSharedRef(), AnchorData->FrameNumber, AnchorData->Timestamp, AnchorData->Transform, AlignmentTransform, PhysicalSize, *CandidateImage);
@@ -1513,7 +1512,7 @@ UARTrackedGeometry* FAppleARKitSystem::TryCreateTrackedGeometry(TSharedRef<FAppl
         {
             NewAnchorDebugName = FString::Printf(TEXT("OBJ-%02d"), LastTrackedGeometry_DebugId++);
             UARTrackedObject* NewTrackedObject = NewObject<UARTrackedObject>();
-            UARCandidateObject** CandidateObject = CandidateObjects.Find(AnchorData->DetectedAnchorName);
+            auto* CandidateObject = CandidateObjects.Find(AnchorData->DetectedAnchorName);
             ensure(CandidateObject != nullptr);
             NewTrackedObject->UpdateTrackedGeometry(ARComponent.ToSharedRef(), AnchorData->FrameNumber, AnchorData->Timestamp, AnchorData->Transform, GetARCompositionComponent()->GetAlignmentTransform(), *CandidateObject);
             NewGeometry = NewTrackedObject;
@@ -1629,7 +1628,7 @@ bool FAppleARKitSystem::Run(UARSessionConfig* SessionConfig)
 		}
 		else
 		{
-			Configuration = FAppleARKitConversion::ToARConfiguration(SessionConfig, CandidateImages, ConvertedCandidateImages, CandidateObjects, InitialAlignmentTransform);
+			Configuration = FAppleARKitConversion::ToARConfiguration(SessionConfig, MutableView(CandidateImages), ConvertedCandidateImages, MutableView(CandidateObjects), InitialAlignmentTransform);
 		}
 
 		// Not all session types are supported by all devices
@@ -2425,7 +2424,7 @@ void FAppleARKitSystem::SessionDidUpdateAnchors_Internal( TSharedRef<FAppleARKit
             {
 				if (UARTrackedImage* ImageAnchor = Cast<UARTrackedImage>(FoundGeometry))
 				{
-					UARCandidateImage** CandidateImage = CandidateImages.Find(AnchorData->DetectedAnchorName);
+					auto* CandidateImage = CandidateImages.Find(AnchorData->DetectedAnchorName);
 					ensure(CandidateImage != nullptr);
 					FVector2D PhysicalSize((*CandidateImage)->GetPhysicalWidth(), (*CandidateImage)->GetPhysicalHeight());
 					ImageAnchor->UpdateTrackedGeometry(ARComponent.ToSharedRef(), AnchorData->FrameNumber, AnchorData->Timestamp, AnchorData->Transform, AlignmentTransform, PhysicalSize, *CandidateImage);
@@ -2912,7 +2911,7 @@ int32 UAppleARKitSettings::GetRenderThreadPriorityOverride()
 	return RenderThreadPriorityOverride;
 }
 
-bool UAppleARKitSettings::Exec(UWorld*, const TCHAR* Cmd, FOutputDevice& Ar)
+bool UAppleARKitSettings::Exec_Runtime(UWorld*, const TCHAR* Cmd, FOutputDevice& Ar)
 {
 	if (FParse::Command(&Cmd, TEXT("ARKitSettings")))
 	{

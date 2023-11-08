@@ -298,11 +298,11 @@ public:
 	UPROPERTY(meta = (DataflowInput, DataflowOutput, DataflowPassthrough = "Collection", DataflowIntrinsic))
 	FManagedArrayCollection Collection;
 
-	/** Space separated list of bone indicies to specify the selection */
-	UPROPERTY(EditAnywhere, Category = "Selection")
+	/** Space separated list of bone indices to specify the selection */
+	UPROPERTY(EditAnywhere, Category = "Selection", meta=(DisplayName="Bone Indices"))
 	FString BoneIndicies = FString();
 
-	/** Array of the selected bone indicies */
+	/** Array of the selected bone indices */
 	UPROPERTY(meta = (DataflowOutput, DisplayName = "TransformSelection"))
 	FDataflowTransformSelection TransformSelection;
 
@@ -311,6 +311,44 @@ public:
 	{
 		RegisterInputConnection(&Collection);
 		RegisterInputConnection(&BoneIndicies);
+		RegisterOutputConnection(&TransformSelection);
+		RegisterOutputConnection(&Collection, &Collection);
+	}
+
+	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
+
+};
+
+/**
+ *
+ * Convert index array to a transform selection
+ *
+ */
+USTRUCT(meta = (DataflowGeometryCollection))
+struct FCollectionTransformSelectionFromIndexArrayDataflowNode : public FDataflowNode
+{
+	GENERATED_USTRUCT_BODY()
+	DATAFLOW_NODE_DEFINE_INTERNAL(FCollectionTransformSelectionFromIndexArrayDataflowNode, "CollectionTransformSelectionFromIndexArray", "GeometryCollection|Selection|Array", "")
+
+public:
+
+	/** Collection to use for the selection. Note only valid bone indices for the collection will be included in the output selection. */
+	UPROPERTY(meta = (DataflowInput, DataflowOutput, DataflowPassthrough = "Collection", DataflowIntrinsic))
+	FManagedArrayCollection Collection;
+
+	/** Array of bone indices to convert to a trannsform selection */
+	UPROPERTY(EditAnywhere, Category = "Selection", meta = (DataflowInput))
+	TArray<int32> BoneIndices;
+
+	/** Array of the selected bone indices */
+	UPROPERTY(meta = (DataflowOutput, DisplayName = "TransformSelection"))
+	FDataflowTransformSelection TransformSelection;
+
+	FCollectionTransformSelectionFromIndexArrayDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
+		: FDataflowNode(InParam, InGuid)
+	{
+		RegisterInputConnection(&Collection);
+		RegisterInputConnection(&BoneIndices);
 		RegisterOutputConnection(&TransformSelection);
 		RegisterOutputConnection(&Collection, &Collection);
 	}
@@ -467,17 +505,17 @@ public:
 
 /**
  *
- * Selects the level of the selected bones
+ * Expand the selection to include all nodes with the same level as the selected nodes
  *
  */
 USTRUCT(meta = (DataflowGeometryCollection))
 struct FCollectionTransformSelectionLevelDataflowNode : public FDataflowNode
 {
 	GENERATED_USTRUCT_BODY()
-	DATAFLOW_NODE_DEFINE_INTERNAL(FCollectionTransformSelectionLevelDataflowNode, "CollectionTransformSelectLevel", "GeometryCollection|Selection|Transform", "")
+	DATAFLOW_NODE_DEFINE_INTERNAL(FCollectionTransformSelectionLevelDataflowNode, "CollectionTransformSelectLevels", "GeometryCollection|Selection|Transform", "")
 
 public:
-	/** Array of the selected bone indicies */
+	/** Array of the selected bone indices */
 	UPROPERTY(meta = (DataflowInput, DataflowOutput, DisplayName = "TransformSelection", DataflowPassthrough = "TransformSelection", DataflowIntrinsic))
 	FDataflowTransformSelection TransformSelection;
 
@@ -497,6 +535,49 @@ public:
 	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
 
 };
+
+
+/**
+ *
+ * Selects the root bones in the Collection
+ *
+ */
+USTRUCT(meta = (DataflowGeometryCollection))
+struct FCollectionTransformSelectionTargetLevelDataflowNode : public FDataflowNode
+{
+	GENERATED_USTRUCT_BODY()
+	DATAFLOW_NODE_DEFINE_INTERNAL(FCollectionTransformSelectionTargetLevelDataflowNode, "CollectionTransformSelectTargetLevel", "GeometryCollection|Selection|Transform", "")
+
+public:
+	/** GeometryCollection for the selection */
+	UPROPERTY(meta = (DataflowInput, DataflowOutput, DataflowPassthrough = "Collection", DataflowIntrinsic))
+	FManagedArrayCollection Collection;
+
+	/** Level to select */
+	UPROPERTY(EditAnywhere, Category = Options, meta = (DataflowInput, ClampMin = 0))
+	int32 TargetLevel = 1;
+
+	/** Whether to avoid embedded geometry in the selection (i.e., only select rigid and cluster nodes) */
+	UPROPERTY(EditAnywhere, Category = Options)
+	bool bSkipEmbedded = false;
+
+	/** Array of the selected bone indices */
+	UPROPERTY(meta = (DataflowOutput, DisplayName = "TransformSelection"))
+	FDataflowTransformSelection TransformSelection;
+
+	FCollectionTransformSelectionTargetLevelDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
+		: FDataflowNode(InParam, InGuid)
+	{
+		RegisterInputConnection(&Collection);
+		RegisterInputConnection(&TargetLevel);
+		RegisterOutputConnection(&TransformSelection);
+		RegisterOutputConnection(&Collection, &Collection);
+	}
+
+	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
+
+};
+
 
 
 /**
@@ -611,6 +692,57 @@ enum class ERangeSettingEnum : uint8
 	Dataflow_Max                UMETA(Hidden)
 };
 
+
+/**
+ *
+ * Selects indices of a float array by range
+ *
+ */
+USTRUCT(meta = (DataflowGeometryCollection))
+struct FSelectFloatArrayIndicesInRangeDataflowNode : public FDataflowNode
+{
+	GENERATED_USTRUCT_BODY()
+	DATAFLOW_NODE_DEFINE_INTERNAL(FSelectFloatArrayIndicesInRangeDataflowNode, "SelectFloatArrayIndicesInRange", "GeometryCollection|Selection|Array", "")
+
+public:
+	/** GeometryCollection for the selection */
+	UPROPERTY(meta = (DataflowInput))
+	TArray<float> Values;
+
+	/** Minimum value for the selection */
+	UPROPERTY(EditAnywhere, Category = "Attribute", meta = (UIMin = 0.f, UIMax = 1000000000.f))
+	float Min = 0.f;
+
+	/** Maximum value for the selection */
+	UPROPERTY(EditAnywhere, Category = "Attribute", meta = (UIMin = 0.f, UIMax = 1000000000.f))
+	float Max = 1000.f;
+
+	/** Values for the selection has to be inside or outside [Min, Max] range */
+	UPROPERTY(EditAnywhere, Category = "Attribute")
+	ERangeSettingEnum RangeSetting = ERangeSettingEnum::Dataflow_RangeSetting_InsideRange;
+
+	/** If true then range includes Min and Max values */
+	UPROPERTY(EditAnywhere, Category = "Attribute")
+	bool bInclusive = true;
+
+	/** Indices of float Values matching the specified range */
+	UPROPERTY(meta = (DataflowOutput))
+	TArray<int> Indices;
+
+	FSelectFloatArrayIndicesInRangeDataflowNode(const Dataflow::FNodeParameters& InParam, FGuid InGuid = FGuid::NewGuid())
+		: FDataflowNode(InParam, InGuid)
+	{
+		RegisterInputConnection(&Values);
+		RegisterInputConnection(&Min);
+		RegisterInputConnection(&Max);
+		RegisterOutputConnection(&Indices);
+	}
+
+	virtual void Evaluate(Dataflow::FContext& Context, const FDataflowOutput* Out) const override;
+
+};
+
+
 /**
  *
  * Selects pieces based on their size
@@ -642,6 +774,10 @@ public:
 	/** If true then range includes Min and Max values */
 	UPROPERTY(EditAnywhere, Category = "Size")
 	bool bInclusive = true;
+
+	/** Whether to use the 'Relative Size' -- i.e., the Size / Largest Bone Size. Otherwise, Size is the cube root of Volume. */
+	UPROPERTY(EditAnywhere, Category = "Size")
+	bool bUseRelativeSize = true;
 
 	/** Array of the selected bone indicies */
 	UPROPERTY(meta = (DataflowOutput, DisplayName = "TransformSelection"))

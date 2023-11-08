@@ -22,6 +22,8 @@ public:
 	uint32				GetTraceId() const;
 	uint32				GetIpAddress() const;
 	uint32				GetControlPort() const;
+	const FGuid&		GetSessionGuid() const;
+	const FGuid&		GetTraceGuid() const;
 
 private:
 	virtual void		OnIoComplete(uint32 Id, int32 Size) override;
@@ -35,6 +37,8 @@ private:
 	uint8*				PreambleCursor;
 	uint32				TraceId = 0;
 	uint16				ControlPort = 0;
+	FGuid				SessionGuid;
+	FGuid				TraceGuid;
 	uint8				FillDrainCounter = 1;
 	uint32				BufferPolarity = 0;
 	uint8*				Buffer[2];
@@ -88,6 +92,18 @@ FRecorderRelay::FRecorderRelay(asio::ip::tcp::socket& Socket, FStore& InStore)
 		nullptr,
 		nullptr
 	);
+#elif TS_USING(TS_PLATFORM_MAC)
+    int Enabled = 1, Secs = 3;
+    
+    setsockopt(Socket.native_handle(), SOL_SOCKET,  SO_KEEPALIVE, &Enabled, sizeof(Enabled));
+    setsockopt(Socket.native_handle(), IPPROTO_TCP, TCP_KEEPALIVE, &Secs, sizeof(Secs));
+#elif TS_USING(TS_PLATFORM_LINUX)
+    int Enabled = 1, KeepCnt = 5, KeepIdle = 3, KeepIntvl = 1;
+
+    setsockopt(Socket.native_handle(), SOL_SOCKET,  SO_KEEPALIVE, &Enabled, sizeof Enabled);
+    setsockopt(Socket.native_handle(), IPPROTO_TCP, TCP_KEEPCNT, &KeepCnt, sizeof(int));
+    setsockopt(Socket.native_handle(), IPPROTO_TCP, TCP_KEEPIDLE, &KeepIdle, sizeof(int));
+    setsockopt(Socket.native_handle(), IPPROTO_TCP, TCP_KEEPINTVL, &KeepIntvl, sizeof(int));
 #endif
 
 	// Kick things off by reading the magic four bytes at the start of the stream
@@ -147,6 +163,18 @@ uint32 FRecorderRelay::GetIpAddress() const
 uint32 FRecorderRelay::GetControlPort() const
 {
 	return ControlPort;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+const FGuid& FRecorderRelay::GetSessionGuid() const
+{
+	return SessionGuid;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+const FGuid& FRecorderRelay::GetTraceGuid() const
+{
+	return TraceGuid;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -223,9 +251,17 @@ bool FRecorderRelay::ReadMetadata(int32 Size)
 			return false;
 		}
 
-		if (MetadataField.Id == 0) /* ControlPortFieldId */
+		switch (MetadataField.Id) 
 		{
+		case 0: /* ControlPortFieldId */ 
 			ControlPort = *(const uint16*)Cursor;
+			break;
+		case 1: /* SessionGuid */ 
+			SessionGuid = *(const FGuid*)Cursor;
+			break;
+		case 2: /* TraceGuid */
+			TraceGuid = *(const FGuid*)Cursor;
+			break;
 		}
 
 		Cursor += MetadataField.Size;
@@ -329,6 +365,18 @@ uint32 FRecorder::FSession::GetIpAddress() const
 uint32 FRecorder::FSession::GetControlPort() const
 {
 	return Relay->GetControlPort();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+const FGuid& FRecorder::FSession::GetSessionGuid() const
+{
+	return Relay->GetSessionGuid();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+const FGuid& FRecorder::FSession::GetTraceGuid() const
+{
+	return Relay->GetTraceGuid();
 }
 
 

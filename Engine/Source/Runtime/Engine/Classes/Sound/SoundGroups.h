@@ -71,14 +71,14 @@ struct FSoundGroup
 };
 
 // This class is a singleton initialized from the ini
-UCLASS(config=Engine, abstract)
+UCLASS(config=Engine, abstract, MinimalAPI)
 class USoundGroups : public UObject
 {
 	GENERATED_UCLASS_BODY()
 
-	void Initialize() const;
+	ENGINE_API void Initialize() const;
 
-	const FSoundGroup& GetSoundGroup(const ESoundGroup SoundGroup) const;
+	ENGINE_API const FSoundGroup& GetSoundGroup(const ESoundGroup SoundGroup) const;
 
 private:
 

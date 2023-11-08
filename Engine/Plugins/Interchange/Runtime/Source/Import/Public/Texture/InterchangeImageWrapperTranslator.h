@@ -9,6 +9,7 @@
 #include "Nodes/InterchangeBaseNodeContainer.h"
 #include "Texture/InterchangeTexturePayloadData.h"
 #include "Texture/InterchangeTexturePayloadInterface.h"
+#include "TextureImportSettings.h"
 
 #include "InterchangeImageWrapperTranslator.generated.h"
 
@@ -40,16 +41,16 @@ public:
 	 * Once the translation is done, the import process need a way to retrieve payload data.
 	 * This payload will be use by the factories to create the asset.
 	 *
-	 * @param PayloadSourceData - The source data containing the data to translate
-	 * @param PayloadKey - The key to retrieve the a particular payload contain into the specified source data.
+	 * @param PayloadKey - Unused. The translator uses its SourceData property to extract the payload.
+	 * @param AlternateTexturePath - Unused. The translator uses its SourceData property to extract the payload.
 	 * @return a PayloadData containing the import image data. The TOptional will not be set if there is an error.
 	 */
-	virtual TOptional<UE::Interchange::FImportImage> GetTexturePayloadData(const UInterchangeSourceData* PayloadSourceData, const FString& PayLoadKey) const override;
+	virtual TOptional<UE::Interchange::FImportImage> GetTexturePayloadData(const FString& PayloadKey, TOptional<FString>& AlternateTexturePath) const override;
 
 	/* IInterchangeTexturePayloadInterface End */
 
 	TOptional<UE::Interchange::FImportImage> GetTexturePayloadDataFromBuffer(const TArray64<uint8>& SourceDataBuffer) const;
 
 private:
-	TOptional<bool> bFillPNGZeroAlpha; // Set on the CDO only
+	ETextureImportPNGInfill PNGInfill;
 };

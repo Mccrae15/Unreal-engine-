@@ -32,19 +32,6 @@ enum class ECameraShakePlaySpace : uint8
 	UserDefined,
 };
 
-/** Backwards compatible name for the camera shake play space enum, for C++ code. */
-namespace ECameraAnimPlaySpace
-{
-	UE_DEPRECATED(4.26, "Please use ECameraShakePlaySpace")
-	typedef ECameraShakePlaySpace Type;
-	UE_DEPRECATED(4.26, "Please use ECameraShakePlaySpace")
-	static const ECameraShakePlaySpace CameraLocal = ECameraShakePlaySpace::CameraLocal;
-	UE_DEPRECATED(4.26, "Please use ECameraShakePlaySpace")
-	static const ECameraShakePlaySpace World = ECameraShakePlaySpace::World;
-	UE_DEPRECATED(4.26, "Please use ECameraShakePlaySpace")
-	static const ECameraShakePlaySpace UserDefined = ECameraShakePlaySpace::UserDefined;
-}
-
 USTRUCT(BlueprintType)
 struct FMinimalViewInfo
 {
@@ -85,6 +72,9 @@ struct FMinimalViewInfo
 	// Aspect Ratio (Width/Height)
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Camera)
 	float AspectRatio;
+
+	// Aspect ratio axis constraint override
+	TOptional<EAspectRatioAxisConstraint> AspectRatioAxisConstraint;
 
 	// If bConstrainAspectRatio is true, black bars will be added if the destination view has a different aspect ratio than this camera requested.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Camera)
@@ -149,9 +139,11 @@ struct FMinimalViewInfo
 
 	/** Calculates the projection matrix (and potentially a constrained view rectangle) given a FMinimalViewInfo and partially configured projection data (must have the view rect already set) */
 	ENGINE_API static void CalculateProjectionMatrixGivenView(const FMinimalViewInfo& ViewInfo, TEnumAsByte<enum EAspectRatioAxisConstraint> AspectRatioAxisConstraint, class FViewport* Viewport, struct FSceneViewProjectionData& InOutProjectionData);
+	/** Calculates the projection matrix (and potentially a constrained view rectangle) given a FMinimalViewInfo and partially configured projection data (must have the view rect already set). ConstrainedViewRectangle is only used if the ViewInfo.bConstrainAspectRatio is set. */
+	ENGINE_API static void CalculateProjectionMatrixGivenViewRectangle(const FMinimalViewInfo& ViewInfo, TEnumAsByte<enum EAspectRatioAxisConstraint> AspectRatioAxisConstraint, const FIntRect& ConstrainedViewRectangle, FSceneViewProjectionData& InOutProjectionData);
 
 	/** The near plane distance of the perspective view (in world units). Returns the value of PerspectiveNearClipPlane if positive, and GNearClippingPlane otherwise */
-	ENGINE_API FORCEINLINE float GetFinalPerspectiveNearClipPlane() const
+	FORCEINLINE float GetFinalPerspectiveNearClipPlane() const
 	{
 		return PerspectiveNearClipPlane > 0.0f ? PerspectiveNearClipPlane : GNearClippingPlane;
 	}

@@ -13,17 +13,6 @@ public class VectorVM : ModuleRules
             }
         );
 
-        PrivateDependencyModuleNames.AddRange(
-            new string[] {
-                "Core",
-                "CoreUObject"
-            });
-
-        PrivateIncludePaths.AddRange(
-            new string[] {
-                "Runtime/Engine/Classes/Curves"
-            });
-
         PublicDefinitions.AddRange(
             new string[]
             {

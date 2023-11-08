@@ -4,21 +4,23 @@
 
 #if WITH_EDITOR
 
+#include "WorldPartition/WorldPartitionHelpers.h"
 #include "WorldPartition/DataLayer/WorldDataLayers.h"
 #include "WorldPartition/DataLayer/DataLayerInstanceWithAsset.h"
 #include "WorldPartition/WorldPartitionActorContainerID.h"
-#include "UObject/FortniteNCBranchObjectVersion.h"
+#include "UObject/FortniteSeasonBranchObjectVersion.h"
+#include "UObject/FortniteMainBranchObjectVersion.h"
 
 FArchive& operator<<(FArchive& Ar, FDataLayerInstanceDesc& Desc)
 {
 	Ar << Desc.Name << Desc.ParentName << Desc.bIsUsingAsset;
 
-	if (Ar.CustomVer(FFortniteNCBranchObjectVersion::GUID) < FFortniteNCBranchObjectVersion::FixedDataLayerInstanceDesc)
+	if (Ar.CustomVer(FFortniteSeasonBranchObjectVersion::GUID) < FFortniteSeasonBranchObjectVersion::FixedDataLayerInstanceDesc)
 	{
-		Ar << Desc.ShortName;
+		Ar << Desc.PrivateShortName;
 		if (Desc.bIsUsingAsset)
 		{
-			Ar << Desc.AssetPath << Desc.bIsRuntime;
+			Ar << Desc.AssetPath << Desc.bDeprecatedIsRuntime;
 		}
 	}
 	else
@@ -29,9 +31,32 @@ FArchive& operator<<(FArchive& Ar, FDataLayerInstanceDesc& Desc)
 		}
 		else
 		{
-			Ar << Desc.bIsRuntime << Desc.ShortName;
+			Ar << Desc.bDeprecatedIsRuntime << Desc.PrivateShortName;
 		}
 	}
+
+	// Fixup redirected data layer asset path
+	if (Ar.IsLoading() && Desc.bIsUsingAsset)
+	{
+		FWorldPartitionHelpers::FixupRedirectedAssetPath(Desc.AssetPath);
+	}
+
+	if (Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) >= FFortniteMainBranchObjectVersion::WorldPartitionActorFilter)
+	{
+		Ar << Desc.bIsIncludedInActorFilterDefault;
+	}
+
+	if (Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) >= FFortniteMainBranchObjectVersion::WorldPartitionPrivateDataLayers)
+	{
+		Ar << Desc.bIsPrivate;
+
+		if (Desc.bIsPrivate)
+		{
+			Ar << Desc.PrivateShortName;
+			Ar << Desc.bPrivateDataLayerSupportsActorFilter;
+		}
+	}
+
 	return Ar;
 }
 
@@ -41,8 +66,11 @@ bool operator == (const FDataLayerInstanceDesc& Lhs, const FDataLayerInstanceDes
 		(Lhs.ParentName == Rhs.ParentName) &&
 		(Lhs.bIsUsingAsset == Rhs.bIsUsingAsset) &&
 		(Lhs.AssetPath == Rhs.AssetPath) &&
-		(Lhs.bIsRuntime == Rhs.bIsRuntime) &&
-		(Lhs.ShortName == Rhs.ShortName);
+		(Lhs.bDeprecatedIsRuntime == Rhs.bDeprecatedIsRuntime) &&
+		(Lhs.PrivateShortName == Rhs.PrivateShortName) &&
+		(Lhs.bIsIncludedInActorFilterDefault == Rhs.bIsIncludedInActorFilterDefault) &&
+		(Lhs.bIsPrivate == Rhs.bIsPrivate) &&
+		(Lhs.bPrivateDataLayerSupportsActorFilter == Rhs.bPrivateDataLayerSupportsActorFilter);
 }
 
 bool operator < (const FDataLayerInstanceDesc& Lhs, const FDataLayerInstanceDesc& Rhs)
@@ -55,11 +83,25 @@ bool operator < (const FDataLayerInstanceDesc& Lhs, const FDataLayerInstanceDesc
 			{
 				if (Lhs.AssetPath == Rhs.AssetPath)
 				{
-					if (Lhs.bIsRuntime == Rhs.bIsRuntime)
+					if (Lhs.bDeprecatedIsRuntime == Rhs.bDeprecatedIsRuntime)
 					{
-						return Lhs.ShortName < Rhs.ShortName;
+						if (Lhs.PrivateShortName == Rhs.PrivateShortName)
+						{
+							if (Lhs.bIsIncludedInActorFilterDefault == Rhs.bIsIncludedInActorFilterDefault)
+							{
+								if (Lhs.bIsPrivate == Rhs.bIsPrivate)
+								{
+									return (int)Lhs.bPrivateDataLayerSupportsActorFilter == (int)Rhs.bPrivateDataLayerSupportsActorFilter;
+								}
+
+								return (int)Lhs.bIsPrivate < (int)Rhs.bIsPrivate;
+							}
+							
+							return (int)Lhs.bIsIncludedInActorFilterDefault < (int)Rhs.bIsIncludedInActorFilterDefault;
+						}
+						return Lhs.PrivateShortName < Rhs.PrivateShortName;
 					}
-					return (int)Lhs.bIsRuntime < (int)Rhs.bIsRuntime;
+					return (int)Lhs.bDeprecatedIsRuntime < (int)Rhs.bDeprecatedIsRuntime;
 				}
 				return Lhs.AssetPath.LexicalLess(Rhs.AssetPath);
 			}
@@ -72,7 +114,7 @@ bool operator < (const FDataLayerInstanceDesc& Lhs, const FDataLayerInstanceDesc
 
 UDataLayerAsset* FDataLayerInstanceDesc::GetAsset() const
 {
-	if (IsUsingAsset() && !AssetPath.IsNone())
+	if (!bIsPrivate && IsUsingAsset() && !AssetPath.IsNone())
 	{
 		UDataLayerAsset* Asset = LoadObject<UDataLayerAsset>(nullptr, *AssetPath.ToString());
 		return Asset;
@@ -82,6 +124,11 @@ UDataLayerAsset* FDataLayerInstanceDesc::GetAsset() const
 
 EDataLayerType FDataLayerInstanceDesc::GetDataLayerType() const
 {
+	if (bIsPrivate)
+	{
+		return EDataLayerType::Editor;
+	}
+
 	if (IsUsingAsset())
 	{
 		if (UDataLayerAsset* DataLayerAsset = GetAsset())
@@ -90,23 +137,44 @@ EDataLayerType FDataLayerInstanceDesc::GetDataLayerType() const
 		}
 		return EDataLayerType::Unknown;
 	}
-	return bIsRuntime ? EDataLayerType::Runtime : EDataLayerType::Editor;
+	return bDeprecatedIsRuntime ? EDataLayerType::Runtime : EDataLayerType::Editor;
 }
 
 FString FDataLayerInstanceDesc::GetShortName() const
 {
-	if (IsUsingAsset())
+	if (!bIsPrivate && IsUsingAsset())
 	{
 		static FString UnknownString(TEXT("Unknown"));
 		UDataLayerAsset* DataLayerAsset = GetAsset();
 		return DataLayerAsset ? DataLayerAsset->GetName() : UnknownString;
 	}
-	return ShortName;
+	return PrivateShortName;
+}
+
+bool FDataLayerInstanceDesc::SupportsActorFilters() const
+{
+	if (bIsPrivate)
+	{
+		return bPrivateDataLayerSupportsActorFilter;
+	}
+
+	if (IsUsingAsset())
+	{
+		if (UDataLayerAsset* DataLayerAsset = GetAsset())
+		{
+			return DataLayerAsset->SupportsActorFilters();
+		}
+	}
+	
+	return false;
 }
 
 FDataLayerInstanceDesc::FDataLayerInstanceDesc()
 : bIsUsingAsset(false)
-, bIsRuntime(false)
+, bIsIncludedInActorFilterDefault(true)
+, bIsPrivate(false)
+, bPrivateDataLayerSupportsActorFilter(false)
+, bDeprecatedIsRuntime(false)
 {
 }
 
@@ -115,16 +183,18 @@ void FDataLayerInstanceDesc::Init(UDataLayerInstance* InDataLayerInstance)
 	Name = InDataLayerInstance->GetDataLayerFName();
 	ParentName = InDataLayerInstance->GetParent() ? InDataLayerInstance->GetParent()->GetDataLayerFName() : NAME_None;
 	const UDataLayerInstanceWithAsset* DataLayerWithAsset = Cast<UDataLayerInstanceWithAsset>(InDataLayerInstance);
-	bIsUsingAsset = (DataLayerWithAsset != nullptr);
-	if (bIsUsingAsset)
+	const UDataLayerAsset* DataLayerAsset = InDataLayerInstance->GetAsset();
+	bIsUsingAsset = InDataLayerInstance->Implements<UDataLayerInstanceWithAsset>() || (DataLayerAsset != nullptr);
+	if (bIsUsingAsset && DataLayerAsset)
 	{
-		if (const UDataLayerAsset* DataLayerAsset = DataLayerWithAsset->GetAsset())
-		{
-			AssetPath = FName(DataLayerAsset->GetPathName());
-		}
+		AssetPath = FName(DataLayerAsset->GetPathName());
+		bIsPrivate = DataLayerAsset->IsPrivate();
 	}
-	ShortName = InDataLayerInstance->GetDataLayerShortName();
-	bIsRuntime = InDataLayerInstance->IsRuntime();
+	
+	bIsIncludedInActorFilterDefault = InDataLayerInstance->IsIncludedInActorFilterDefault();
+	bPrivateDataLayerSupportsActorFilter = InDataLayerInstance->SupportsActorFilters();
+	PrivateShortName = InDataLayerInstance->GetDataLayerShortName();
+	bDeprecatedIsRuntime = InDataLayerInstance->IsRuntime();
 }
 
 FWorldDataLayersActorDesc::FWorldDataLayersActorDesc()
@@ -158,20 +228,19 @@ bool FWorldDataLayersActorDesc::Equals(const FWorldPartitionActorDesc* Other) co
 
 void FWorldDataLayersActorDesc::Serialize(FArchive& Ar)
 {
-	Ar.UsingCustomVersion(FFortniteNCBranchObjectVersion::GUID);
+	Ar.UsingCustomVersion(FFortniteSeasonBranchObjectVersion::GUID);
+	Ar.UsingCustomVersion(FFortniteMainBranchObjectVersion::GUID);
 
 	FWorldPartitionActorDesc::Serialize(Ar);
 
-	if (Ar.CustomVer(FFortniteNCBranchObjectVersion::GUID) >= FFortniteNCBranchObjectVersion::AddedWorldDataLayersActorDesc)
+	if (!bIsDefaultActorDesc)
 	{
-		Ar << DataLayerInstances;
-		bIsValid = true;
+		if (Ar.CustomVer(FFortniteSeasonBranchObjectVersion::GUID) >= FFortniteSeasonBranchObjectVersion::AddedWorldDataLayersActorDesc)
+		{
+			Ar << DataLayerInstances;
+			bIsValid = true;
+		}
 	}
-}
-
-bool FWorldDataLayersActorDesc::IsRuntimeRelevant(const FActorContainerID& InContainerID) const
-{
-	return InContainerID.IsMainContainer();
 }
 
 const FDataLayerInstanceDesc* FWorldDataLayersActorDesc::GetDataLayerInstanceFromInstanceName(FName InDataLayerInstanceName) const

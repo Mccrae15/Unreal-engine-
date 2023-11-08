@@ -2,7 +2,7 @@
 
 #include "ProfilingDebugging/RealtimeGPUProfiler.h"
 #include "ProfilingDebugging/CsvProfiler.h"
-#include "ProfilingDebugging/TracingProfiler.h"
+#include "RHI.h"
 #include "RenderCore.h"
 #include "RenderingThread.h"
 #include "GPUProfiler.h"
@@ -539,9 +539,10 @@ public:
 
 			if (!Event.GatherQueryResults(RHICmdList))
 			{
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-				UE_LOG(LogRendererCore, Warning, TEXT("Query '%s' not ready."), *Event.GetName().ToString());
-#endif
+                // TODO: clloyd - Commmented out for now to stop spam on Mac
+//#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+				//UE_LOG(LogRendererCore, Warning, TEXT("Query '%s' not ready."), *Event.GetName().ToString());
+//#endif
 				// The frame isn't ready yet. Don't update stats - we'll try again next frame. 
 				return false;
 			}
@@ -585,8 +586,17 @@ public:
 				TotalUs += IncExcTime.ExclusiveTimeUs;
 
 #if STATS
-				const EStatOperation::Type StatOp = bKnownStat ? EStatOperation::Add : EStatOperation::Set;
-				FThreadStats::AddMessage(Event.GetStatName(), StatOp, EventTimeUs / 1000.);
+				const double EventTimeMs = EventTimeUs / 1000.;
+				if (bKnownStat)
+				{
+					FThreadStats::AddMessage(Event.GetStatName(), EStatOperation::Add, EventTimeMs);
+					TRACE_STAT_ADD(Event.GetStatName(), EventTimeMs);
+				}
+				else
+				{
+					FThreadStats::AddMessage(Event.GetStatName(), EStatOperation::Set, EventTimeMs);
+					TRACE_STAT_SET(Event.GetStatName(), EventTimeMs);
+				}
 #endif
 
 #if CSV_PROFILER
@@ -597,29 +607,13 @@ public:
 				}
 #endif
 			}
-
-#if TRACING_PROFILER
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			const bool bTracingStatsEnabled = !!CVarGPUTracingStatsEnabled.GetValueOnRenderThread();
-			if (bTracingStatsEnabled)
-			{
-				for (uint32 GPUIndex : Event.GetGPUMask())
-				{
-					FTracingProfiler::Get()->AddGPUEvent(
-						Event.GetName(),
-						Event.GetStartResultMicroseconds(GPUIndex),
-						Event.GetEndResultMicroseconds(GPUIndex),
-						GPUIndex,
-						Event.GetFrameNumber());
-				}
-			}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-#endif //TRACING_PROFILER
 		}
 
 #if STATS
-		FThreadStats::AddMessage(GET_STATFNAME(Stat_GPU_Total), EStatOperation::Set, TotalUs / 1000.);
-#endif 
+		const double TotalMs = TotalUs / 1000.;
+		FThreadStats::AddMessage(GET_STATFNAME(Stat_GPU_Total), EStatOperation::Set, TotalMs);
+		TRACE_STAT_SET(GET_STATFNAME(Stat_GPU_Total), TotalMs);
+#endif
 
 #if CSV_PROFILER
 		if (CsvProfiler)

@@ -43,7 +43,7 @@ namespace ManagedStorageInternal
 	// Same as FPaths::IsUnderDirectory, but assume the paths are already full
 	// Also is *always* case insensitive since we are concerned with filtering and 
 	// not whether a directory actually exists.
-	bool IsUnderDirectory(const FString& InPath, const FString& InDirectory);
+	CORE_API bool IsUnderDirectory(const FString& InPath, const FString& InDirectory);
 }
 
 struct FPersistentManagedFile
@@ -826,7 +826,7 @@ private:
 // NOTE: This is templated rather than a polymorphic wrapper because a lot code expects the physical layer not to be a wrapper.
 // It also has the benefit of not needing updating every time a new function is added to IPlatformFile.
 template<class BaseClass>
-class CORE_API TManagedStoragePlatformFile : public BaseClass
+class TManagedStoragePlatformFile : public BaseClass
 {
 private:
 	static bool IsReady()

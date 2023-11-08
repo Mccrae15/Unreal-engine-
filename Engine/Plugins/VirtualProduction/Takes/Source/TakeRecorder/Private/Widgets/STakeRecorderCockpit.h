@@ -14,7 +14,6 @@ struct FFrameRate;
 class ULevelSequence;
 class UTakeMetaData;
 class UTakeRecorder;
-class FUICommandList;
 struct FDigitsTypeInterface;
 
 /**
@@ -154,10 +153,10 @@ private:
 private:
 
 	/** Take meta-data cached from the level sequence if it exists. Referenced by AddReferencedObjects. */
-	UTakeMetaData* TakeMetaData;
+	TObjectPtr<UTakeMetaData> TakeMetaData;
 
 	/** Transient take meta data owned by this widget and kept alive by AddReferencedObjects. Only used if none exists on the level sequence already. */
-	UTakeMetaData* TransientTakeMetaData;
+	TObjectPtr<UTakeMetaData> TransientTakeMetaData;
 
 	/** The index of a pending transaction initiated by this widget, or INDEX_NONE if none is pending */
 	int32 TransactionIndex;
@@ -177,8 +176,6 @@ private:
 
 	FDelegateHandle OnAssetRegistryFilesLoadedHandle;
 	FDelegateHandle OnRecordingInitializedHandle, OnRecordingFinishedHandle;
-
-	TSharedPtr<FUICommandList> CommandList;
 
 	TSharedPtr<FDigitsTypeInterface> DigitsTypeInterface;
 

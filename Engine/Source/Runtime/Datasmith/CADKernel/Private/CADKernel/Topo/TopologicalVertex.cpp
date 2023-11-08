@@ -9,17 +9,6 @@
 namespace UE::CADKernel
 {
 
-#ifdef CADKERNEL_DEV
-FInfoEntity& FTopologicalVertex::GetInfo(FInfoEntity& Info) const
-{
-	return FTopologicalEntity::GetInfo(Info)
-		.Add(TEXT("Link"), TopologicalLink)
-		.Add(TEXT("Position"), Coordinates)
-		.Add(TEXT("ConnectedEdges"), ConnectedEdges)
-		.Add(TEXT("mesh"), Mesh);
-}
-#endif
-
 void FTopologicalVertex::AddConnectedEdge(FTopologicalEdge& Edge)
 {
 	ConnectedEdges.Add(&Edge);
@@ -42,7 +31,7 @@ void FTopologicalVertex::RemoveConnectedEdge(FTopologicalEdge& Edge)
 	}
 }
 
-bool FTopologicalVertex::IsBorderVertex()
+bool FTopologicalVertex::IsBorderVertex() const
 {
 	for (FTopologicalVertex* Vertex : GetTwinEntities())
 	{
@@ -62,6 +51,16 @@ bool FTopologicalVertex::IsBorderVertex()
 	}
 	return false;
 }
+
+const FTopologicalFace* FTopologicalVertex::GetFace() const
+{
+	if (ConnectedEdges.IsEmpty())
+	{
+		return nullptr;
+	}
+	return ConnectedEdges[0]->GetFace();
+}
+
 
 void FTopologicalVertex::GetConnectedEdges(const FTopologicalVertex& OtherVertex, TArray<FTopologicalEdge*>& OutEdges) const
 {
@@ -170,14 +169,11 @@ void FVertexLink::DefineActiveEntity()
 				break;
 			}
 		}
-#ifdef CADKERNEL_DEV
-		ensureCADKernel(Square < 0.01);
-#endif
 	}
 	ActiveEntity = ClosedVertex;
 }
 
-TSharedRef<FVertexMesh> FTopologicalVertex::GetOrCreateMesh(FModelMesh& MeshModel)
+FVertexMesh& FTopologicalVertex::GetOrCreateMesh(FModelMesh& MeshModel)
 {
 	if (!IsActiveEntity())
 	{
@@ -190,10 +186,10 @@ TSharedRef<FVertexMesh> FTopologicalVertex::GetOrCreateMesh(FModelMesh& MeshMode
 
 		Mesh->GetNodeCoordinates().Emplace(GetBarycenter());
 		Mesh->RegisterCoordinates();
-		MeshModel.AddMesh(Mesh.ToSharedRef());
-		SetMeshed();
+		MeshModel.AddMesh(*Mesh);
+		SetMeshedMarker();
 	}
-	return Mesh.ToSharedRef();
+	return *Mesh;
 }
 
 void FTopologicalVertex::SpawnIdent(FDatabase& Database)
@@ -214,20 +210,5 @@ void FTopologicalVertex::SpawnIdent(FDatabase& Database)
 	}
 }
 
-
-#ifdef CADKERNEL_DEV
-FInfoEntity& TTopologicalLink<FTopologicalVertex>::GetInfo(FInfoEntity& Info) const
-{
-	return FEntity::GetInfo(Info)
-		.Add(TEXT("active Entity"), ActiveEntity)
-		.Add(TEXT("twin Entities"), TwinEntities);
-}
-
-FInfoEntity& FVertexLink::GetInfo(FInfoEntity& Info) const
-{
-	return TTopologicalLink<FTopologicalVertex>::GetInfo(Info)
-		.Add(TEXT("barycenter"), Barycenter);
-}
-#endif
 
 } // namespace UE::CADKernel

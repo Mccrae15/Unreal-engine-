@@ -107,6 +107,14 @@ struct TIntVector3
 	{
 	}
 
+	// Workaround for clang deprecation warnings for deprecated XYZ member in implicitly-defined special member functions
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	TIntVector3(TIntVector3&&) = default;
+	TIntVector3(const TIntVector3&) = default;
+	TIntVector3& operator=(TIntVector3&&) = default;
+	TIntVector3& operator=(const TIntVector3&) = default;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	/**
 	 * Gets specific component of a point.
 	 *
@@ -603,6 +611,14 @@ struct TIntVector2
 	{
 	}
 
+	// Workaround for clang deprecation warnings for deprecated XY member in implicitly-defined special member functions
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	TIntVector2(TIntVector2&&) = default;
+	TIntVector2(const TIntVector2&) = default;
+	TIntVector2& operator=(TIntVector2&&) = default;
+	TIntVector2& operator=(const TIntVector2&) = default;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	const IntType& operator[](int32 ComponentIndex) const
 	{
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
@@ -625,6 +641,156 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	bool operator!=(const TIntVector2& Other) const
 	{
 		return X!=Other.X || Y!=Other.Y;
+	}
+
+	/**
+	 * Multiplies this vector with another vector, using component-wise multiplication.
+	 *
+	 * @param Other The point to multiply with.
+	 * @return Reference to this point after multiplication.
+	 */
+	TIntVector2& operator*=(const TIntVector2& Other)
+	{
+		X *= Other.X;
+		Y *= Other.Y;
+
+		return *this;
+	}
+
+	/**
+	 * Scales this point.
+	 *
+	 * @param Scale What to multiply the point by.
+	 * @return Reference to this point after multiplication.
+	 */
+	TIntVector2& operator*=(IntType Scale)
+	{
+		X *= Scale;
+		Y *= Scale;
+
+		return *this;
+	}
+
+	/**
+	 * Divides this point.
+	 *
+	 * @param Divisor What to divide the point by.
+	 * @return Reference to this point after division.
+	 */
+	TIntVector2& operator/=(IntType Divisor)
+	{
+		X /= Divisor;
+		Y /= Divisor;
+
+		return *this;
+	}
+
+	/**
+	 * Remainder of division of this point.
+	 *
+	 * @param Divisor What to divide the point by.
+	 * @return Reference to this point after remainder.
+	 */
+	TIntVector2& operator%=(IntType Divisor)
+	{
+		X %= Divisor;
+		Y %= Divisor;
+
+		return *this;
+	}
+
+	/**
+	 * Adds to this point.
+	 *
+	 * @param Other The point to add to this point.
+	 * @return Reference to this point after addition.
+	 */
+	TIntVector2& operator+=(const TIntVector2& Other)
+	{
+		X += Other.X;
+		Y += Other.Y;
+
+		return *this;
+	}
+
+	/**
+	 * Subtracts from this point.
+	 *
+	 * @param Other The point to subtract from this point.
+	 * @return Reference to this point after subtraction.
+	 */
+	TIntVector2& operator-=(const TIntVector2& Other)
+	{
+		X -= Other.X;
+		Y -= Other.Y;
+
+		return *this;
+	}
+
+	/**
+	 * Gets the result of component-wise multiplication of this point by another.
+	 *
+	 * @param Other The point to multiply with.
+	 * @return The result of multiplication.
+	 */
+	TIntVector2 operator*(const TIntVector2& Other) const
+	{
+		return TIntVector2(*this) *= Other;
+	}
+
+	/**
+	 * Gets the result of scaling on this point.
+	 *
+	 * @param Scale What to multiply the point by.
+	 * @return A new scaled int point.
+	 */
+	TIntVector2 operator*(IntType Scale) const
+	{
+		return TIntVector2(*this) *= Scale;
+	}
+
+	/**
+	 * Gets the result of division on this point.
+	 *
+	 * @param Divisor What to divide the point by.
+	 * @return A new divided int point.
+	 */
+	TIntVector2 operator/(IntType Divisor) const
+	{
+		return TIntVector2(*this) /= Divisor;
+	}
+
+	/**
+	 * Gets the remainder of division on this point.
+	 *
+	 * @param Divisor What to divide the point by.
+	 * @return A new remainder int point.
+	 */
+	TIntVector2 operator%(IntType Divisor) const
+	{
+		return TIntVector2(*this) %= Divisor;
+	}
+
+	/**
+	 * Gets the result of addition on this point.
+	 *
+	 * @param Other The other point to add to this.
+	 * @return A new combined int point.
+	 */
+	TIntVector2 operator+(const TIntVector2& Other) const
+	{
+		return TIntVector2(*this) += Other;
+	}
+
+	/**
+	 * Gets the result of subtraction from this point.
+	 *
+	 * @param Other The other point to subtract from this.
+	 * @return A new subtracted int point.
+	 */
+	TIntVector2 operator-(const TIntVector2& Other) const
+	{
+		return TIntVector2(*this) -= Other;
 	}
 
 	/**
@@ -712,6 +878,14 @@ struct TIntVector4
 		, W(IntCastChecked<IntType>(Other.W))
 	{
 	}
+
+	// Workaround for clang deprecation warnings for deprecated XYZW member in implicitly-defined special member functions
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	TIntVector4(TIntVector4&&) = default;
+	TIntVector4(const TIntVector4&) = default;
+	TIntVector4& operator=(TIntVector4&&) = default;
+	TIntVector4& operator=(const TIntVector4&) = default;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/**
 	 * Gets specific component of a point.
@@ -879,22 +1053,6 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		Y -= Other.Y;
 		Z -= Other.Z;
 		W -= Other.W;
-
-		return *this;
-	}
-
-	/**
-	 * Assigns another point to this one.
-	 *
-	 * @param Other The point to assign this point from.
-	 * @return Reference to this point after assignment.
-	 */
-	TIntVector4& operator=(const TIntVector4& Other)
-	{
-		X = Other.X;
-		Y = Other.Y;
-		Z = Other.Z;
-		W = Other.W;
 
 		return *this;
 	}

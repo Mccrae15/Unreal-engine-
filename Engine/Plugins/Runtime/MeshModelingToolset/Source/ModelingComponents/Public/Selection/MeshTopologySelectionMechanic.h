@@ -78,6 +78,11 @@ public:
 	// Used to avoid showing some of the selection filter buttons in triedit (in the detail customization)
 	bool bDisplayPolygroupReliantControls = true;
 
+	// Whether to enable the different selection modes (in the detail customization)
+	bool bCanSelectVertices = true;
+	bool bCanSelectEdges = true;
+	bool bCanSelectFaces = true;
+
 	/** Invert current selection. If selection is empty, has same effect as Select All, and is similarly dependent on selection filter. */
 	UFUNCTION(CallInEditor, Category = SelectionActions)
 	void InvertSelection();
@@ -339,6 +344,17 @@ public:
 	 */
 	bool IsCurrentlyMarqueeDragging() { return bCurrentlyMarqueeDragging; }
 
+	/**
+	* Render only the MarqueeMechanic, without rendering the current selection
+	*/
+	void RenderMarquee(IToolsContextRenderAPI* RenderAPI);
+
+	/**
+	* Toggle rendering of edges
+	*/
+	void SetShowEdges(const bool bRenderEdges) { bShowEdges = bRenderEdges; };
+	
+
 	// TODO: Is it worth issuing separate callbacks in normal selection changes and in FChange ones, to
 	// allow the user to bundle in some FChanges into the normal callback?
 
@@ -427,6 +443,7 @@ protected:
 	static const int32 CtrlModifierID = 2;
 
 	bool bShowSelectableCorners = true;
+	bool bShowEdges = true;
 public:
 	FToolDataVisualizer PolyEdgesRenderer;
 	FToolDataVisualizer HilightRenderer;

@@ -4,6 +4,7 @@
 
 #include "MuT/Platform.h"
 #include "MuR/Image.h"
+#include "MuR/Mesh.h"
 #include "MuR/ModelPrivate.h"
 #include "MuR/MutableMath.h"
 #include "MuR/MutableMemory.h"
@@ -79,7 +80,7 @@ namespace mu
         } type;
 
         // For constant sizes
-        FImageSize size;
+        FImageSize size = FImageSize(0, 0);
 
         // For layout factor sizes
         Ptr<class ASTOp> layout;
@@ -180,19 +181,19 @@ namespace mu
     //! Detailed optimization flags
     struct FModelOptimizationOptions
     {
-        bool m_enabled = true;
-        bool m_optimiseOverlappedMasks = false;
-        bool m_constReduction = true;
+        bool bEnabled = true;
+        bool bOptimiseOverlappedMasks = false;
+        bool bConstReduction = true;
 
         //! Preprocess all mesh fragments so that they use the same skeleton, even if not all bones
         //! are relevant for all fragments.
-        bool m_uniformizeSkeleton = true;
+        bool bUniformizeSkeleton = true;
 
         //! Maximum number of iterations when optimising models. If 0 as many as necessary will be performed.
-        int m_maxOptimisationLoopCount = 8;
+        int32 MaxOptimisationLoopCount = 8;
 
         //! Store resource data in disk instead of memory
-        bool m_useDiskCache = false;
+        bool bUseDiskCache = false;
 
 		/** Compile optimizing for the generation of smaller mipmaps of every image. */
 		bool bEnableProgressiveImages = false;
@@ -201,16 +202,36 @@ namespace mu
         //---------------------------------------------------------------------
 
         //! Ratio used to decide if it is worth to generate a crop operation
-        float m_acceptableCropRatio = 0.5f;
+        float AcceptableCropRatio = 0.5f;
 
         //! Ratio used to decide if it is worth to generate a crop operation
-        float m_minRLECompressionGain = 1.2f;
+        float MinRLECompressionGain = 1.2f;
     };
 
 
 	struct FLinkerOptions
 	{
-		int MinTextureResidentMipCount = 0;
+		int32 MinTextureResidentMipCount = 0;
+
+		/** */
+		struct FDeduplicationMeshFuncs : TDefaultMapHashableKeyFuncs<mu::Ptr<const mu::Mesh>, int32, false>
+		{
+			static FORCEINLINE bool Matches(KeyInitType A, KeyInitType B)
+			{
+				return *A == *B;
+			}
+
+			static FORCEINLINE uint32 GetKeyHash(KeyInitType Key)
+			{
+				const mu::Mesh* Data = Key.get();
+				return HashCombine(
+					::GetTypeHash(Data->m_VertexBuffers.GetElementCount()),
+					::GetTypeHash(Data->m_IndexBuffers.GetElementCount())
+				);
+			}
+		};
+
+		TMap<mu::Ptr<const mu::Mesh>, int32, FDefaultSetAllocator, FDeduplicationMeshFuncs> MeshConstantMap;
 	};
 
 
@@ -449,7 +470,7 @@ namespace mu
 
         //!
         virtual Ptr<ASTOp> OptimiseSize() const { return nullptr; }
-        virtual Ptr<ASTOp> OptimiseSemantic(const FModelOptimizationOptions&) const { return nullptr; }
+        virtual Ptr<ASTOp> OptimiseSemantic(const FModelOptimizationOptions&, int32 Pass) const { return nullptr; }
         virtual Ptr<ASTOp> OptimiseSink(const FModelOptimizationOptions&, FOptimizeSinkContext& ) const { return nullptr; }
         virtual Ptr<ImageSizeExpression> GetImageSizeExpression() const
         {
@@ -462,7 +483,7 @@ namespace mu
         //---------------------------------------------------------------------------------------------
 
         //!
-        static void FullLink( Ptr<ASTOp>& root, FProgram&, const FLinkerOptions*);
+        static void FullLink( Ptr<ASTOp>& root, FProgram&, FLinkerOptions*);
 
         //!
         static void ClearLinkData( Ptr<ASTOp>& root );
@@ -473,7 +494,7 @@ namespace mu
     private:
 
         //!
-        virtual void Link( FProgram& program, const FLinkerOptions* Options ) = 0;
+        virtual void Link( FProgram& program, FLinkerOptions* Options ) = 0;
 
     protected:
 
@@ -980,13 +1001,13 @@ namespace mu
 
         Ptr<ASTOp> Clone( MapChildFuncRef mapChild ) const override;
         void ForEachChild( const TFunctionRef<void(ASTChild&)> f ) override;
-        void Link( FProgram& program, const FLinkerOptions* Options) override;
+        void Link( FProgram& program, FLinkerOptions* Options) override;
         bool IsEqual(const ASTOp& otherUntyped) const override;
 		uint64 Hash() const override;
 		FImageDesc GetImageDesc( bool returnBestOption, FGetImageDescContext* context ) const override;
         void GetLayoutBlockSize( int* pBlockX, int* pBlockY ) override;
         Ptr<ASTOp> OptimiseSize() const override;
-        Ptr<ASTOp> OptimiseSemantic(const FModelOptimizationOptions&) const override;
+        Ptr<ASTOp> OptimiseSemantic(const FModelOptimizationOptions&, int32 Pass) const override;
         Ptr<ASTOp> OptimiseSink(const FModelOptimizationOptions&, FOptimizeSinkContext&) const override;
         FBoolEvalResult EvaluateBool( ASTOpList& facts, FEvaluateBoolCache* cache ) const override;
         int EvaluateInt( ASTOpList& facts, bool &unknown ) const override;
@@ -1120,13 +1141,6 @@ namespace mu
             }
         }
     };
-
-
-    //
-    extern void DebugLogAST(const Ptr<ASTOp>& at,
-                            int indent=0,
-                            ASTOpList* done=nullptr,
-                            const char* label=nullptr);
 
 }
 

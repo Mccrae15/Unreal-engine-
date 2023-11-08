@@ -376,7 +376,7 @@ void ReleaseOpenGLFramebuffers(FRHITexture* TextureRHI)
 {
 	VERIFY_GL_SCOPE();
 
-	const FOpenGLTexture* Texture = GetOpenGLTextureFromRHITexture(TextureRHI);
+	const FOpenGLTexture* Texture = FOpenGLDynamicRHI::ResourceCast(TextureRHI);
 
 	if (Texture)
 	{
@@ -442,158 +442,11 @@ void FOpenGLDynamicRHI::PurgeFramebufferFromCaches( GLuint Framebuffer )
 	}
 }
 
-void FOpenGLDynamicRHI::RHICopyToResolveTarget(FRHITexture* SourceTextureRHI, FRHITexture* DestTextureRHI, const FResolveParams& ResolveParams)
-{
-	if (!SourceTextureRHI || !DestTextureRHI)
-	{
-		// no need to do anything (silently ignored)
-		return;
-	}
-
-	FOpenGLTexture* SourceTexture = GetOpenGLTextureFromRHITexture(SourceTextureRHI);
-	FOpenGLTexture* DestTexture = GetOpenGLTextureFromRHITexture(DestTextureRHI);
-
-	if (SourceTexture != DestTexture)
-	{
-		const FRHITextureDesc& SrcDesc = SourceTexture->GetDesc();
-		const FRHITextureDesc& DstDesc = DestTexture->GetDesc();
-
-		VERIFY_GL_SCOPE();
-
-		check(GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5 || ResolveParams.SourceArrayIndex == 0);
-		check(GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5 || ResolveParams.DestArrayIndex == 0);
-
-		const bool bSrcCubemap  = SourceTextureRHI->GetTextureCube() != NULL;
-		const bool bDestCubemap = DestTextureRHI->GetTextureCube() != NULL;
-
-		uint32 DestIndex = ResolveParams.DestArrayIndex * (bDestCubemap ? 6 : 1) + (bDestCubemap ? uint32(ResolveParams.CubeFace) : 0);
-		uint32 SrcIndex  = ResolveParams.SourceArrayIndex * (bSrcCubemap ? 6 : 1) + (bSrcCubemap ? uint32(ResolveParams.CubeFace) : 0);
-
-		FIntRect SrcRect(ResolveParams.Rect.X1, ResolveParams.Rect.Y1, ResolveParams.Rect.X2, ResolveParams.Rect.Y2);
-		if (SrcRect.IsEmpty())
-		{
-			// Empty rect mans that the entire source is to be copied. Note that we can't use ResolveParams.Rect.IsValid(), because it
-			// returns false if the rectangle is "inside out" (e.g. X1 > X2), and we want to perform flipping when that's the case.
-			SrcRect.Min.X = 0;
-			SrcRect.Min.Y = 0;
-			SrcRect.Max.X = SrcDesc.Extent.X;
-			SrcRect.Max.Y = SrcDesc.Extent.Y;
-			SrcRect.Max.X = FMath::Max<int32>(1, SrcRect.Max.X >> ResolveParams.MipIndex);
-			SrcRect.Max.Y = FMath::Max<int32>(1, SrcRect.Max.Y >> ResolveParams.MipIndex);
-		}
-
-		FIntRect DestRect(ResolveParams.DestRect.X1, ResolveParams.DestRect.Y1, ResolveParams.DestRect.X2, ResolveParams.DestRect.Y2);
-		if(DestRect.IsEmpty())
-		{
-			DestRect.Min.X = 0;
-			DestRect.Min.Y = 0;
-			DestRect.Max.X = DstDesc.Extent.X;
-			DestRect.Max.Y = DstDesc.Extent.Y;
-			DestRect.Max.X = FMath::Max<int32>(1, DestRect.Max.X >> ResolveParams.MipIndex);
-			DestRect.Max.Y = FMath::Max<int32>(1, DestRect.Max.Y >> ResolveParams.MipIndex);
-		}
-
-		GPUProfilingData.RegisterGPUWork();
-		const uint32 MipmapLevel = ResolveParams.MipIndex;
-
-		const bool bTrueBlit = !SourceTextureRHI->IsMultisampled()
-			&& !DestTextureRHI->IsMultisampled()
-			&& SourceTextureRHI->GetFormat() == DestTextureRHI->GetFormat()
-			&& SrcRect.Size() == DestRect.Size()
-			&& SrcRect.Width() > 0
-			&& SrcRect.Height() > 0
-			&& SourceTexture->Target == DestTexture->Target // glCopyImageSubData() doesn't like copying from a texture to a renderbuffer on Android
-			;
-		
-		if ( !bTrueBlit)
-		{
-			// Color buffers can be GL_NONE for attachment purposes if they aren't used as render targets
-			const bool bIsColorBuffer = SourceTexture->Attachment != GL_DEPTH_STENCIL_ATTACHMENT
-																	&& SourceTexture->Attachment != GL_DEPTH_ATTACHMENT;
-			check( bIsColorBuffer || (SrcIndex == 0 && DestIndex == 0));
-			check( bIsColorBuffer || MipmapLevel == 0);
-			GLuint SrcFramebuffer = bIsColorBuffer ?
-				GetOpenGLFramebuffer(1, &SourceTexture, &SrcIndex, &MipmapLevel, NULL) :
-				GetOpenGLFramebuffer(0, NULL, NULL, NULL, SourceTexture);
-			GLuint DestFramebuffer = bIsColorBuffer ?
-				GetOpenGLFramebuffer(1, &DestTexture, &DestIndex, &MipmapLevel, NULL) :
-				GetOpenGLFramebuffer(0, NULL, NULL, NULL, DestTexture);
-
-			glBindFramebuffer(UGL_DRAW_FRAMEBUFFER, DestFramebuffer);
-			FOpenGL::DrawBuffer(bIsColorBuffer ? GL_COLOR_ATTACHMENT0 : GL_NONE);
-			glBindFramebuffer(UGL_READ_FRAMEBUFFER, SrcFramebuffer);
-			FOpenGL::ReadBuffer(bIsColorBuffer ? GL_COLOR_ATTACHMENT0 : GL_NONE);
-
-			// ToDo - Scissor and possibly color mask can impact blits
-			//  These should be disabled
-
-			GLbitfield Mask = GL_NONE;
-			if (bIsColorBuffer)
-			{
-				Mask = GL_COLOR_BUFFER_BIT;
-			}
-			else if (SourceTexture->Attachment == GL_DEPTH_ATTACHMENT)
-			{
-				Mask = GL_DEPTH_BUFFER_BIT;
-			}
-			else
-			{
-				Mask = GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT;
-			}
-
-			FOpenGL::BlitFramebuffer(
-				SrcRect.Min.X, SrcRect.Min.Y, SrcRect.Max.X, SrcRect.Max.Y,
-				DestRect.Min.X, DestRect.Min.Y, DestRect.Max.X, DestRect.Max.Y,
-				Mask,
-				GL_NEAREST
-				);
-		}
-		else
-		{
-			// CopyImageSubData seems like a better analog to what UE wants in most cases
-			// It has no interactions with any other state, and there is no filtering/conversion
-			// It does not support MSAA resolves though
-			FOpenGL::CopyImageSubData(	SourceTexture->GetResource(),
-										SourceTexture->Target,
-										MipmapLevel,
-										SrcRect.Min.X,
-										SrcRect.Min.Y,
-										SrcIndex,
-										DestTexture->GetResource(),
-										DestTexture->Target,
-										MipmapLevel,
-										DestRect.Min.X,
-										DestRect.Min.Y,
-										DestIndex,
-										SrcRect.Width(),
-										SrcRect.Height(),
-										1);
-		}
-
-	
-		// For CPU readback resolve targets we should issue the resolve to the internal PBO immediately.
-		// This makes any subsequent locking of that texture much cheaper as it won't have to stall on a pixel pack op.
-		bool bLockableTarget = DestTextureRHI->GetTexture2D() && EnumHasAnyFlags(DestTextureRHI->GetFlags(), TexCreate_CPUReadback) && !EnumHasAnyFlags(DestTextureRHI->GetFlags(), TexCreate_RenderTargetable|TexCreate_DepthStencilTargetable) && !DestTextureRHI->IsMultisampled();
-		if(bLockableTarget && !ResolveParams.Rect.IsValid())
-		{
-			DestTexture->Resolve(MipmapLevel, DestIndex);
-		}
-
-		GetContextStateForCurrentContext().Framebuffer = (GLuint)-1;
-	}
-	else
-	{
-		// no need to do anything (silently ignored)
-	}
-}
-
-
-
 void FOpenGLDynamicRHI::ReadSurfaceDataRaw(FOpenGLContextState& ContextState, FRHITexture* TextureRHI,FIntRect Rect,TArray<uint8>& OutData, FReadSurfaceDataFlags InFlags)
 {
 	VERIFY_GL_SCOPE();
 
-	FOpenGLTexture* Texture = GetOpenGLTextureFromRHITexture(TextureRHI);
+	FOpenGLTexture* Texture = ResourceCast(TextureRHI);
 	if( !Texture)
 	{
 		return;	// just like in D3D11
@@ -888,10 +741,12 @@ void FOpenGLDynamicRHI::ReadSurfaceDataRaw(FOpenGLContextState& ContextState, FR
 
 void FOpenGLDynamicRHI::RHIReadSurfaceData(FRHITexture* TextureRHI,FIntRect Rect,TArray<FColor>& OutData, FReadSurfaceDataFlags InFlags)
 {
+	const uint32 Size = Rect.Width() * Rect.Height();
+	OutData.SetNumUninitialized(Size);
+
 	if (!ensure(TextureRHI))
 	{
-		OutData.Empty();
-		OutData.AddZeroed(Rect.Width() * Rect.Height());
+		FMemory::Memzero(OutData.GetData(), Size * sizeof(FColor));
 		return;
 	}
 
@@ -901,14 +756,9 @@ void FOpenGLDynamicRHI::RHIReadSurfaceData(FRHITexture* TextureRHI,FIntRect Rect
 	TArray<uint8> Temp;
 
 	FOpenGLContextState& ContextState = GetContextStateForCurrentContext();
-	OutData.Empty();
 	if (&ContextState != &InvalidContextState)
 	{
 		ReadSurfaceDataRaw(ContextState, TextureRHI, Rect, Temp, InFlags);
-
-		uint32 Size = Rect.Width() * Rect.Height();
-
-		OutData.AddUninitialized(Size);
 
 		FMemory::Memcpy(OutData.GetData(), Temp.GetData(), Size * sizeof(FColor));
 	}
@@ -929,7 +779,7 @@ void FOpenGLDynamicRHI::RHIReadSurfaceData(FRHITexture* TextureRHI, FIntRect Rec
 	RHITHREAD_GLCOMMAND_PROLOGUE();
 	VERIFY_GL_SCOPE();
 
-	FOpenGLTexture* Texture = GetOpenGLTextureFromRHITexture(TextureRHI);
+	FOpenGLTexture* Texture = ResourceCast(TextureRHI);
 	if (!ensure(Texture))
 	{
 		return;
@@ -943,8 +793,7 @@ void FOpenGLDynamicRHI::RHIReadSurfaceData(FRHITexture* TextureRHI, FIntRect Rec
 	uint32 SizeY = Rect.Height();
 
 	// Initialize output
-	OutData.Empty(SizeX * SizeY);
-	OutData.AddUninitialized(SizeX * SizeY);
+	OutData.SetNumUninitialized(SizeX * SizeY);
 
 	// Bind the framebuffer
 	// @TODO: Do we need to worry about multisampling?
@@ -970,7 +819,7 @@ void FOpenGLDynamicRHI::RHIMapStagingSurface(FRHITexture* TextureRHI, FRHIGPUFen
 
 	VERIFY_GL_SCOPE();
 	
-	FOpenGLTexture* Texture = GetOpenGLTextureFromRHITexture(TextureRHI->GetTexture2D());
+	FOpenGLTexture* Texture = ResourceCast(TextureRHI->GetTexture2D());
 	check(Texture);
 	check(EnumHasAnyFlags(Texture->GetDesc().Flags, TexCreate_CPUReadback));
 
@@ -990,7 +839,7 @@ void FOpenGLDynamicRHI::RHIUnmapStagingSurface(FRHITexture* TextureRHI, uint32 G
 
 	VERIFY_GL_SCOPE();
 	
-	FOpenGLTexture* Texture = GetOpenGLTextureFromRHITexture(TextureRHI->GetTexture2D());
+	FOpenGLTexture* Texture = ResourceCast(TextureRHI->GetTexture2D());
 	check(Texture);
 
 	Texture->Unlock( 0, 0 );
@@ -1007,7 +856,7 @@ void FOpenGLDynamicRHI::RHIReadSurfaceFloatData(FRHITexture* TextureRHI,FIntRect
 
 	//reading from arrays only supported on SM5 and up.
 	check(FOpenGL::SupportsFloatReadSurface() && (ArrayIndex == 0 || GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5));	
-	FOpenGLTexture* Texture = GetOpenGLTextureFromRHITexture(TextureRHI);
+	FOpenGLTexture* Texture = ResourceCast(TextureRHI);
 	check(TextureRHI->GetFormat() == PF_FloatRGBA);
 
 	const uint32 MipmapLevel = MipIndex;
@@ -1036,8 +885,7 @@ void FOpenGLDynamicRHI::RHIReadSurfaceFloatData(FRHITexture* TextureRHI,FIntRect
 	uint32 SizeX = Rect.Width();
 	uint32 SizeY = Rect.Height();
 
-	OutData.Empty(SizeX * SizeY);
-	OutData.AddUninitialized(SizeX * SizeY);
+	OutData.SetNumUninitialized(SizeX * SizeY);
 
 	glBindFramebuffer(UGL_READ_FRAMEBUFFER, SourceFramebuffer);
 	FOpenGL::ReadBuffer(SourceFramebuffer == 0 ? GL_BACK : GL_COLOR_ATTACHMENT0);
@@ -1085,15 +933,14 @@ void FOpenGLDynamicRHI::RHIRead3DSurfaceFloatData(FRHITexture* TextureRHI,FIntRe
 	check( FOpenGL::SupportsTexture3D() );
 	check( TextureRHI->GetFormat() == PF_FloatRGBA );
 
-	FOpenGLTexture* Texture = GetOpenGLTextureFromRHITexture(TextureRHI);
+	FOpenGLTexture* Texture = ResourceCast(TextureRHI);
 
 	uint32 SizeX = Rect.Width();
 	uint32 SizeY = Rect.Height();
 	uint32 SizeZ = ZMinMax.Y - ZMinMax.X;
 
 	// Allocate the output buffer.
-	OutData.Empty(SizeX * SizeY * SizeZ * sizeof(FFloat16Color));
-	OutData.AddZeroed(SizeX * SizeY * SizeZ);
+	OutData.SetNumUninitialized(SizeX * SizeY * SizeZ);
 
 	// Set up the source as a temporary FBO
 	uint32 MipmapLevel = 0;

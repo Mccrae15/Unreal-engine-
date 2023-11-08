@@ -13,8 +13,7 @@
 
 namespace mu
 {
-
-	MUTABLE_DEFINE_ENUM_SERIALISABLE( TABLE_COLUMN_TYPE )
+	MUTABLE_DEFINE_ENUM_SERIALISABLE(TABLE_COLUMN_TYPE)
 
 
 	struct TABLE_COLUMN
@@ -29,7 +28,7 @@ namespace mu
 	{
 		// TODO: Union
 		float m_scalar;
-		vec3<float> m_colour;
+		FVector4f m_colour;
 		Ptr<ResourceProxy<Image>> m_pProxyImage;
 		MeshPtr m_pMesh;
 		string m_string;
@@ -53,11 +52,10 @@ namespace mu
 		TArray<TABLE_ROW> m_rows;
 		bool m_NoneOption = false;
 
-
 		//!
 		void Serialise( OutputArchive& arch ) const
 		{
-            uint32_t ver = 1;
+            uint32_t ver = 2;
 			arch << ver;
 
             arch << (uint32_t)m_columns.Num();
@@ -98,16 +96,14 @@ namespace mu
 			}
 
 			arch << m_NoneOption;
-
 		}
-
 
 		//!
 		void Unserialise( InputArchive& arch )
 		{
             uint32_t ver;
 			arch >> ver;
-			check(ver<=1);
+			check(ver<=2);
 
             uint32_t columnCount;
 			arch >> columnCount;
@@ -133,7 +129,21 @@ namespace mu
 					switch (m_columns[c].m_type)
 					{
 					case TCT_SCALAR:	arch >> v.m_scalar; break;
-					case TCT_COLOUR:	arch >> v.m_colour; break;
+					case TCT_COLOUR:
+					{
+						if (ver <= 1)
+						{
+							vec3<float> Value;
+							arch >> Value;
+
+							v.m_colour = FVector4f(Value[0], Value[1], Value[2], 1.0f);
+						}
+						else
+						{
+							arch >> v.m_colour;
+						}
+						break;
+					}
 					case TCT_MESH:		arch >> v.m_pMesh; break;
 					case TCT_IMAGE:		
 					{

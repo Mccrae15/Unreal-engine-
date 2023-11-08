@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -9,6 +9,8 @@ using AutomationTool;
 using UnrealBuildTool;
 using UnrealBuildBase;
 using EpicGames.Core;
+using Microsoft.Extensions.Logging;
+using System.Security.Cryptography;
 
 public class MacPlatform : ApplePlatform
 {
@@ -172,8 +174,8 @@ public class MacPlatform : ApplePlatform
 			SC.StageFile(StagedFileType.NonUFS, SplashImage);
 		}
 
-		// Stage the bootstrap executable
-		if (!Params.NoBootstrapExe)
+		// Stage the bootstrap executable (modern doesn't need it with full .apps)
+		if (!Params.NoBootstrapExe && !AppleExports.UseModernXcode(Params.RawProjectPath))
 		{
 			foreach (StageTarget Target in SC.StageTargets)
 			{
@@ -389,18 +391,48 @@ public class MacPlatform : ApplePlatform
 		}
 	}
 
-	public override void Package(ProjectParams Params, DeploymentContext SC, int WorkingCL)
+	private void FixupFrameworks(string TargetPath)
 	{
-		// package up the program, potentially with an installer for Mac
-		PrintRunTime();
+		DirectoryReference TargetCEFDir = DirectoryReference.Combine(new DirectoryReference(TargetPath), "Engine/Binaries/ThirdParty/CEF3/Mac");
+		DirectoryReference X86Framework = DirectoryReference.Combine(TargetCEFDir, "Chromium Embedded Framework x86.framework");
+		DirectoryReference X86Versions = DirectoryReference.Combine(X86Framework, "Versions");
+		DirectoryReference Arm64Framework = DirectoryReference.Combine(TargetCEFDir, "Chromium Embedded Framework arm64.framework");
+		DirectoryReference Arm64Versions = DirectoryReference.Combine(Arm64Framework, "Versions");
+
+		DirectoryReference EngineCEFDir = DirectoryReference.Combine(Unreal.EngineDirectory, "Binaries/ThirdParty/CEF3/Mac");
+		FileReference X86Zip = FileReference.Combine(EngineCEFDir, "Chromium Embedded Framework x86.framework.zip");
+		FileReference Arm64Zip = FileReference.Combine(EngineCEFDir, "Chromium Embedded Framework arm64.framework.zip");
+
+		// if the archive has a framework without Versions directory, it won't be allowed for App Store submission, so replace it with the zipped version
+		// that has the proper symlinks 
+		if (DirectoryReference.Exists(X86Framework) && !DirectoryReference.Exists(X86Versions))
+		{
+			Logger.LogInformation($"Replacing {X86Framework} with {X86Zip}...");
+
+			DirectoryReference.Delete(X86Framework, true);
+			Utils.RunLocalProcessAndLogOutput("/usr/bin/unzip", $"-q -o \"{X86Zip}\" -d \"{TargetCEFDir}\" -x \"__MACOSX/*\" \"*.DS_Store\"", Logger);
+		}
+		if (DirectoryReference.Exists(Arm64Framework) && !DirectoryReference.Exists(Arm64Versions))
+		{
+			Logger.LogInformation($"Replacing {Arm64Framework} with {Arm64Zip}...");
+
+			DirectoryReference.Delete(Arm64Framework, true);
+			Utils.RunLocalProcessAndLogOutput("/usr/bin/unzip", $"-q -o \"{Arm64Zip}\" -d \"{TargetCEFDir}\" -x \"__MACOSX/*\" \"*.DS_Store\"", Logger);
+		}
 	}
 
 	public override void ProcessArchivedProject(ProjectParams Params, DeploymentContext SC)
 	{
+		// nothing to do with modern
+		if (AppleExports.UseModernXcode(Params.RawProjectPath))
+		{
+			return;
+		}
+
 		if (Params.CreateAppBundle)
 		{
 			string ExeName = SC.StageExecutables[0];
-			string BundlePath = SC.IsCodeBasedProject ? CombinePaths(SC.ArchiveDirectory.FullName, ExeName + ".app") : BundlePath = CombinePaths(SC.ArchiveDirectory.FullName, SC.ShortProjectName + ".app");
+			string BundlePath = SC.IsCodeBasedProject ? CombinePaths(SC.ArchiveDirectory.FullName, ExeName + ".app") : CombinePaths(SC.ArchiveDirectory.FullName, SC.ShortProjectName + ".app");
 
 			if (SC.bIsCombiningMultiplePlatforms)
 			{
@@ -450,6 +482,8 @@ public class MacPlatform : ApplePlatform
 						RenameDirectory(DirPath, TargetDirPath, true);
 					}
 				}
+
+				FixupFrameworks(TargetPath);
 			}
 
 			// Update executable name, icon and entry in Info.plist
@@ -488,6 +522,11 @@ public class MacPlatform : ApplePlatform
 				Utils.RunLocalProcessAndReturnStdOut("/usr/bin/codesign", $"-f -s \"Developer ID Application\" \"{BundlePath}\"", null);
 			}
 
+			// we now need to re-sign the .app because we modified the .plist
+			// we codesign with ad-hoc, and if the Developer ID Application cert exists, attempt to use it, ignore any errors
+			Utils.RunLocalProcessAndReturnStdOut("/usr/bin/codesign", $"-f -s - \"{BundlePath}\"", null);
+			Utils.RunLocalProcessAndReturnStdOut("/usr/bin/codesign", $"-f -s \"Developer ID Application\" \"{BundlePath}\"", null);
+
 			if (!SC.bIsCombiningMultiplePlatforms)
 			{
 				// creating these directories when the content isn't moved into the application causes it 
@@ -518,7 +557,7 @@ public class MacPlatform : ApplePlatform
 
 							RenameFile(FoundDebugFile, MovedDebugFile);
 
-							Log.TraceInformation("Moving debug file: '{0}')", FoundDebugFile);
+							Logger.LogInformation("Moving debug file: '{FoundDebugFile}')", FoundDebugFile);
 							ManifestLines.RemoveAt(ManifestLineIndex);
 							ModifyManifest = true;
 						}
@@ -548,7 +587,15 @@ public class MacPlatform : ApplePlatform
 
 	public override IProcessResult RunClient(ERunOptions ClientRunFlags, string ClientApp, string ClientCmdLine, ProjectParams Params)
 	{
-		if (!File.Exists(ClientApp))
+		if (AppleExports.UseModernXcode(Params.RawProjectPath))
+		{
+			// moden creates a full .app in the root of the Staged dir, but ClientApp as passed in is in Staged/Project/Binaries/Mac, which exists, but is not a full app
+			string ExeName = Path.GetFileNameWithoutExtension(ClientApp);
+			Int32 BaseDirLen = Params.BaseStageDirectory.Length;
+			string StageSubDir = ClientApp.Substring(BaseDirLen, ClientApp.IndexOf("/", BaseDirLen + 1) - BaseDirLen);
+			ClientApp = CombinePaths(Params.BaseStageDirectory, StageSubDir, $"{ExeName}.app/Contents/MacOS/{ExeName}");
+		}
+		else if (!File.Exists(ClientApp))
 		{
 			if (Directory.Exists(ClientApp + ".app"))
 			{
@@ -587,7 +634,8 @@ public class MacPlatform : ApplePlatform
 
 	public override bool ShouldStageCommandLine(ProjectParams Params, DeploymentContext SC)
 	{
-		return false; // !String.IsNullOrEmpty(Params.StageCommandline) || !String.IsNullOrEmpty(Params.RunCommandline) || (!Params.IsCodeBasedProject && Params.NoBootstrapExe);
+		// modern mode doesn't use the Bootstrap wrapper app, so we always insert the commandline file into the .app so double-clicking the .app works
+		return AppleExports.UseModernXcode(Params.RawProjectPath); // !String.IsNullOrEmpty(Params.StageCommandline) || !String.IsNullOrEmpty(Params.RunCommandline) || (!Params.IsCodeBasedProject && Params.NoBootstrapExe);
 	}
 
 	public override bool SignExecutables(DeploymentContext SC, ProjectParams Params)
@@ -597,29 +645,29 @@ public class MacPlatform : ApplePlatform
 			if (Params.Archive)
 			{
 				// Remove extra RPATHs if we will be archiving the project
-				LogInformation("Removing extraneous rpath entries");
+				Logger.LogInformation("Removing extraneous rpath entries");
 				RemoveExtraRPaths(Params, SC);
 			}
 
 			// Sign everything we built
 			List<FileReference> FilesToSign = GetExecutableNames(SC);
-			LogInformation("RuntimeProjectRootDir: " + SC.RuntimeProjectRootDir);
+			Logger.LogInformation("{Text}", "RuntimeProjectRootDir: " + SC.RuntimeProjectRootDir);
 			foreach (var Exe in FilesToSign)
 			{
-				LogInformation("Signing: " + Exe);
+				Logger.LogInformation("{Text}", "Signing: " + Exe);
 				string AppBundlePath = "";
 				if (Exe.IsUnderDirectory(DirectoryReference.Combine(SC.RuntimeProjectRootDir, "Binaries", SC.PlatformDir)))
 				{
-					LogInformation("Starts with Binaries");
+					Logger.LogInformation("Starts with Binaries");
 					AppBundlePath = CombinePaths(SC.RuntimeProjectRootDir.FullName, "Binaries", SC.PlatformDir, Path.GetFileNameWithoutExtension(Exe.FullName) + ".app");
 				}
 				else if (Exe.IsUnderDirectory(DirectoryReference.Combine(SC.RuntimeRootDir, "Engine/Binaries", SC.PlatformDir)))
 				{
-					LogInformation("Starts with Engine/Binaries");
+					Logger.LogInformation("Starts with Engine/Binaries");
 					AppBundlePath = CombinePaths("Engine/Binaries", SC.PlatformDir, Path.GetFileNameWithoutExtension(Exe.FullName) + ".app");
 				}
 
-				LogInformation("Signing: " + AppBundlePath);
+				Logger.LogInformation("{Text}", "Signing: " + AppBundlePath);
 				CodeSign.SignMacFileOrFolder(AppBundlePath);
 			}
 

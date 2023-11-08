@@ -13,8 +13,11 @@
 
 #include "Demuxer/ParserISO14496-12.h"
 #include "Decoder/SubtitleDecoder.h"
+#include "Decoder/AudioDecoder.h"
+#include "Decoder/VideoDecoder.h"
 
 #include "Player/AdaptiveStreamingPlayerResourceRequest.h"
+#include "Player/ExternalDataReader.h"
 #include "Player/PlayerStreamReader.h"
 #include "Player/PlaylistReader.h"
 #include "Player/PlayerStreamFilter.h"
@@ -38,6 +41,7 @@
 #define INTERR_FRAGMENT_READER_REQUEST			0x102
 #define INTERR_CREATE_FRAGMENT_READER			0x103
 #define INTERR_REBUFFER_SHALL_THROW_ERROR		0x200
+
 
 
 namespace Electra
@@ -197,6 +201,10 @@ struct FPlaybackState
 		LoopState = {};
 		ActivePlaybackRange.Reset();
 		NewPlaybackRange.Reset();
+		UnthinnedPlaybackRates.Empty();
+		ThinnedPlaybackRates.Empty();
+		CurrentPlaybackRate = 0.0;
+		DesiredPlaybackRate = 0.0;
 		bHaveMetadata = false;
 		bHasEnded = false;
 		bIsSeeking = false;
@@ -219,6 +227,10 @@ struct FPlaybackState
 	IAdaptiveStreamingPlayer::FLoopState	LoopState;
 	FTimeRange								ActivePlaybackRange;
 	FTimeRange								NewPlaybackRange;
+	TRangeSet<double>						UnthinnedPlaybackRates;
+	TRangeSet<double>						ThinnedPlaybackRates;
+	double									CurrentPlaybackRate;
+	double									DesiredPlaybackRate;
 	bool									bHaveMetadata;
 	bool									bHasEnded;
 	bool									bIsSeeking;
@@ -393,6 +405,13 @@ struct FPlaybackState
 		FScopeLock lock(&Lock);
 		bIsPaused  = bInIsPaused;
 		bIsPlaying = bInIsPlaying;
+		// If asked to play, but no desired playback rate has been set yet, assume 1.0.
+		// It is thought to be a user error to resume playback with no play rate.
+		if (bIsPlaying && DesiredPlaybackRate == 0.0)
+		{
+			DesiredPlaybackRate = 1.0;
+		}
+		CurrentPlaybackRate = bIsPaused ? 0.0 : bIsPlaying ? DesiredPlaybackRate : 0.0;
 	}
 
 	bool SetTrackMetadata(const TArray<FTrackMetadata> &InVideoTracks, const TArray<FTrackMetadata>& InAudioTracks, const TArray<FTrackMetadata>& InSubtitleTracks)
@@ -507,6 +526,45 @@ struct FPlaybackState
 	{
 		FScopeLock lock(&Lock);
 		return bPlayrangeHasChanged;
+	}
+
+	void SetPlaybackRates(IAdaptiveStreamingPlayer::EPlaybackRateType InForType, const TRangeSet<double>& InRates)
+	{
+		FScopeLock lock(&Lock);
+		if (InForType == IAdaptiveStreamingPlayer::EPlaybackRateType::Unthinned)
+		{
+			UnthinnedPlaybackRates = InRates;
+		}
+		else
+		{
+			ThinnedPlaybackRates = InRates;
+		}
+	}
+	TRangeSet<double> GetPlaybackRates(IAdaptiveStreamingPlayer::EPlaybackRateType InForType)
+	{
+		FScopeLock lock(&Lock);
+		return InForType == IAdaptiveStreamingPlayer::EPlaybackRateType::Unthinned ? UnthinnedPlaybackRates : ThinnedPlaybackRates;
+	}
+
+	void SetDesiredPlayRate(double InDesiredPlayRate, const IAdaptiveStreamingPlayer::FTrickplayParams& /*InParameters*/)
+	{
+		FScopeLock lock(&Lock);
+		DesiredPlaybackRate = InDesiredPlayRate;
+	}
+	double GetDesiredPlayRate() const
+	{
+		FScopeLock lock(&Lock);
+		return DesiredPlaybackRate;
+	}
+	void SetCurrentPlayRate(double InRate)
+	{
+		FScopeLock lock(&Lock);
+		CurrentPlaybackRate = InRate;
+	}
+	double GetCurrentPlayRate() const
+	{
+		FScopeLock lock(&Lock);
+		return CurrentPlaybackRate;
 	}
 
 
@@ -907,6 +965,7 @@ public:
 
 	void SetStaticResourceProviderCallback(const TSharedPtr<IAdaptiveStreamingPlayerResourceProvider, ESPMode::ThreadSafe>& InStaticResourceProvider) override;
 	void SetVideoDecoderResourceDelegate(const TSharedPtr<IVideoDecoderResourceDelegate, ESPMode::ThreadSafe>& ResourceDelegate) override;
+	void SetPlayerDataCache(const TSharedPtr<IElectraPlayerDataCache, ESPMode::ThreadSafe>& InPlayerDataCache) override;
 
 	void AddMetricsReceiver(IAdaptiveStreamingPlayerMetrics* InMetricsReceiver) override;
 	void RemoveMetricsReceiver(IAdaptiveStreamingPlayerMetrics* InMetricsReceiver) override;
@@ -950,6 +1009,9 @@ public:
 	void SetPlaybackRange(const FPlaybackRange& InPlaybackRange) override;
 	void GetPlaybackRange(FPlaybackRange& OutPlaybackRange) override;
 	void SetLooping(const FLoopParam& InLoopParams) override;
+	TRangeSet<double> GetSupportedRates(EPlaybackRateType InForPlayRateType) override;
+	void SetPlayRate(double InDesiredPlayRate, const FTrickplayParams& InParameters) override;
+	double GetPlayRate() const override;
 
 	FErrorDetail GetError() const override;
 
@@ -978,11 +1040,7 @@ public:
 	void DeselectTrack(EStreamType StreamType) override;
 	bool IsTrackDeselected(EStreamType StreamType) override;
 
-#if PLATFORM_ANDROID
-	void Android_UpdateSurface(const TSharedPtr<IOptionPointerValueContainer>& Surface) override;
-	void Android_SuspendOrResumeDecoder(bool bSuspend) override;
-	static FParamDict& Android_Workarounds(FStreamCodecInformation::ECodec InForCodec);
-#endif
+	void SuspendOrResumeDecoders(bool bSuspend, const FParamDict& InOptions) override;
 
 	void DebugPrint(void* pPlayer, void (*debugDrawPrintf)(void* pPlayer, const char *pFmt, ...));
 	static void DebugHandle(void* pPlayer, void (*debugDrawPrintf)(void* pPlayer, const char *pFmt, ...));
@@ -996,6 +1054,7 @@ private:
 	ISynchronizedUTCTime* GetSynchronizedUTCTime() override;
 	TSharedPtr<IAdaptiveStreamingPlayerResourceProvider, ESPMode::ThreadSafe> GetStaticResourceProvider() override;
 	TSharedPtrTS<IElectraHttpManager> GetHTTPManager() override;
+	TSharedPtrTS<IExternalDataReader> GetExternalDataReader() override;
 	TSharedPtrTS<IAdaptiveStreamSelector> GetStreamSelector() override;
 	IPlayerStreamFilter* GetStreamFilter() override;
 	const FCodecSelectionPriorities& GetCodecSelectionPriorities(EStreamType ForStream) override;
@@ -1177,13 +1236,11 @@ private:
 				Decoder->AUdataClearEOD();
 			}
 		}
-		void SuspendOrResume(bool bInSuspend)
+		void SuspendOrResume(bool bInSuspend, const FParamDict& InOptions)
 		{
 			if (Decoder && ((bInSuspend && !bSuspended) || (!bInSuspend && bSuspended)))
 			{
-#if PLATFORM_ANDROID
-				Decoder->Android_SuspendOrResumeDecoder(bInSuspend);
-#endif
+				Decoder->SuspendOrResumeDecoder(bInSuspend, InOptions);
 			}
 			bSuspended = bInSuspend;
 		}
@@ -1191,9 +1248,7 @@ private:
 		{
 			if (Decoder && bSuspended)
 			{
-#if PLATFORM_ANDROID
-				Decoder->Android_SuspendOrResumeDecoder(bSuspended);
-#endif
+				Decoder->SuspendOrResumeDecoder(true, FParamDict());
 			}
 		}
 		virtual void DecoderInputNeeded(const IAccessUnitBufferListener::FBufferStats& currentInputBufferStats)
@@ -1215,10 +1270,9 @@ private:
 		FStreamCodecInformation CurrentCodecInfo;
 		TSharedPtrTS<FAccessUnit::CodecData> LastSentAUCodecData;
 		FAdaptiveStreamingPlayer* Parent = nullptr;
-		IVideoDecoderBase* Decoder = nullptr;
+		IVideoDecoder* Decoder = nullptr;
 		bool bDrainingForCodecChange = false;
 		bool bDrainingForCodecChangeDone = false;
-		bool bApplyNewLimits = false;
 		bool bSuspended = false;
 	};
 
@@ -1249,13 +1303,11 @@ private:
 				Decoder->AUdataClearEOD();
 			}
 		}
-		void SuspendOrResume(bool bInSuspend)
+		void SuspendOrResume(bool bInSuspend, const FParamDict& InOptions)
 		{
 			if (Decoder && ((bInSuspend && !bSuspended) || (!bInSuspend && bSuspended)))
 			{
-#if PLATFORM_ANDROID
-				Decoder->Android_SuspendOrResumeDecoder(bInSuspend);
-#endif
+				Decoder->SuspendOrResumeDecoder(bInSuspend, InOptions);
 			}
 			bSuspended = bInSuspend;
 		}
@@ -1263,9 +1315,7 @@ private:
 		{
 			if (Decoder && bSuspended)
 			{
-#if PLATFORM_ANDROID
-				Decoder->Android_SuspendOrResumeDecoder(bSuspended);
-#endif
+				Decoder->SuspendOrResumeDecoder(true, FParamDict());
 			}
 		}
 		virtual void DecoderInputNeeded(const IAccessUnitBufferListener::FBufferStats& currentInputBufferStats)
@@ -1287,7 +1337,7 @@ private:
 		FStreamCodecInformation CurrentCodecInfo;
 		TSharedPtrTS<FAccessUnit::CodecData> LastSentAUCodecData;
 		FAdaptiveStreamingPlayer* Parent = nullptr;
-		IAudioDecoderAAC* Decoder = nullptr;
+		IAudioDecoder* Decoder = nullptr;
 		bool bSuspended = false;
 	};
 
@@ -1776,7 +1826,9 @@ private:
 		void Reset()
 		{
 			FScopeLock lock(&Lock);
-			PendingRequest.Reset();
+			// Note: Do _not_ reset the pending request created by a user induced seek, or it may get lost if
+			//       triggered while already processing a seek due to the asynchronous processing of the request.
+			//PendingRequest.Reset();
 			ActiveRequest.Reset();
 			LastFinishedRequest.Reset();
 			PlayrangeOnRequest.Reset();
@@ -1798,6 +1850,7 @@ private:
 		bool	bForScrubbing = false;
 		bool	bScrubPrerollDone = false;
 		bool	bIsPlayStart = true;
+		int32	NumSeekToCallsSinceLastSeen = 0;
 
 		TOptional<FSeekParam> ActiveRequest;
 		TOptional<FSeekParam> LastFinishedRequest;
@@ -1969,7 +2022,7 @@ private:
 
 	int32 CreateDecoder(EStreamType type);
 	void DestroyDecoders();
-	bool FindMatchingStreamInfo(FStreamCodecInformation& OutStreamInfo, const FString& InPeriodID, const FTimeValue& AtTime, int32 MaxWidth, int32 MaxHeight);
+	bool FindMatchingStreamInfo(FStreamCodecInformation& OutStreamInfo, const FString& InPeriodID, const FTimeValue& AtTime, const FStreamCodecInformation& InForCodec);
 	void UpdateStreamResolutionLimit();
 	void AddUpcomingPeriod(TSharedPtrTS<IManifest::IPlayPeriod> InUpcomingPeriod);
 	void RequestNewPeriodStreams(EStreamType InType, FPendingSegmentRequest& InOutCurrentRequest);
@@ -1986,6 +2039,9 @@ private:
 	bool OnFragmentAccessUnitReceived(FAccessUnit* pAccessUnit) override;
 	void OnFragmentReachedEOS(EStreamType InStreamType, TSharedPtr<const FBufferSourceInfo, ESPMode::ThreadSafe> InStreamSourceInfo) override;
 	void OnFragmentClose(TSharedPtrTS<IStreamSegment> pRequest) override;
+
+	void Deprecate_InternalInitializeDecoderLimits();
+	bool Deprecate_InternalStreamAllowedAsPerLimits(const FStreamCodecInformation& InStreamCodecInfo) const;
 
 	void InternalInitialize();
 	void InternalHandleOnce();
@@ -2094,6 +2150,7 @@ private:
 
 	TWeakPtr<IAdaptiveStreamingPlayerResourceProvider, ESPMode::ThreadSafe> StaticResourceProvider;
 	TWeakPtr<IVideoDecoderResourceDelegate, ESPMode::ThreadSafe>		VideoDecoderResourceDelegate;
+	TSharedPtr<IElectraPlayerDataCache, ESPMode::ThreadSafe>			ExternalCache;
 
 	TSharedPtrTS<FAdaptiveStreamingPlayerEventHandler>					EventDispatcher;
 	TSharedPtrTS<FAdaptiveStreamingPlayerWorkerThread>					SharedWorkerThread;
@@ -2110,6 +2167,7 @@ private:
 	TSharedPtrTS<IElectraHttpManager>									HttpManager;
 	TSharedPtrTS<IPlayerEntityCache>									EntityCache;
 	TSharedPtrTS<IHTTPResponseCache>									HttpResponseCache;
+	TSharedPtrTS<IExternalDataReader>									ExternalDataReader;
 
 	TSharedPtrTS<FDRMManager>											DrmManager;
 
@@ -2164,7 +2222,6 @@ private:
 	FPostrollVars														PostrollVars;
 	FSeekVars															SeekVars;
 	EPlayerState														LastBufferingState;
-	double																PlaybackRate;
 	double																RenderRateScale;
 	FTimeValue															RebufferDetectedAtPlayPos;
 	ERebufferCause														RebufferCause;

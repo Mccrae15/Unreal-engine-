@@ -168,7 +168,7 @@ class FVTableHelper
 {
 public:
 	/** DO NOT USE. This constructor is for internal usage only for hot-reload purposes. */
-	COREUOBJECT_API FVTableHelper()
+	FVTableHelper()
 	{
 		EnsureRetrievingVTablePtrDuringCtor(TEXT("FVTableHelper()"));
 	}
@@ -374,6 +374,7 @@ enum EClassCastFlags : uint64
 	CASTCLASS_FObjectPtrProperty			= 0x0020000000000000,
 	CASTCLASS_FClassPtrProperty				= 0x0040000000000000,
 	CASTCLASS_FLargeWorldCoordinatesRealProperty = 0x0080000000000000,
+	CASTCLASS_FOptionalProperty				= 0x0100000000000000,
 };
 
 #define CASTCLASS_AllFlags ((EClassCastFlags)0xFFFFFFFFFFFFFFFF)
@@ -418,7 +419,7 @@ enum EPropertyFlags : uint64
 	//CPF_								= 0x0000000000400000,	///< 
 	//CPF_    							= 0x0000000000800000,	///< 
 	CPF_SaveGame						= 0x0000000001000000,	///< Property should be serialized for save games, this is only checked for game-specific archives with ArIsSaveGame
-	CPF_NoClear							= 0x0000000002000000,	///< Hide clear (and browse) button.
+	CPF_NoClear							= 0x0000000002000000,	///< Hide clear button.
 	//CPF_  							= 0x0000000004000000,	///<
 	CPF_ReferenceParm					= 0x0000000008000000,	///< Value is passed by reference; CPF_OutParam and CPF_Param should also be set.
 	CPF_BlueprintAssignable				= 0x0000000010000000,	///< MC Delegates only.  Property should be exposed for assigning in blueprint code
@@ -480,7 +481,7 @@ ENUM_CLASS_FLAGS(EPropertyFlags)
 /**
  * Extra flags for array properties.
  */
-enum class EArrayPropertyFlags
+enum class EArrayPropertyFlags : uint8
 {
 	None,
 	UsesMemoryImageAllocator
@@ -491,13 +492,28 @@ ENUM_CLASS_FLAGS(EArrayPropertyFlags)
 /**
  * Extra flags for map properties.
  */
-enum class EMapPropertyFlags
+enum class EMapPropertyFlags : uint8
 {
 	None,
 	UsesMemoryImageAllocator
 };
 
 ENUM_CLASS_FLAGS(EMapPropertyFlags)
+
+enum class EPropertyObjectReferenceType : uint32
+{
+	None = 0,
+	Strong = 1 << 0, // Hard reference to a UObject, keeps the object from being garbage collected
+	Weak = 1 << 1,   // Weak reference to a UObject, does not keep the object from being garbage collected, does not become valid again after object is unloaded and reloaded.
+	Soft = 1 << 2,	 // Soft path/identity-based reference to a UObject, does not keep the object from being garbage collected, does become valid again after object is unloaded and reloaded.
+	Conservative = 1 << 3,	 // Not a real reference type, used to mark native struct serializers which may serialize unknown reference types and to conservatively populate RefLink with such struct properties.
+	
+	MAX = Conservative << 1, // Marker for iterating over all flags
+	Any = Strong | Weak | Soft | Conservative,
+};
+ENUM_CLASS_FLAGS(EPropertyObjectReferenceType);
+
+COREUOBJECT_API const TCHAR* LexToString(EPropertyObjectReferenceType Type);
 
 /**
  * Flags describing an object instance
@@ -611,7 +627,7 @@ ENUM_CLASS_FLAGS(EInternalObjectFlags);
  * This MUST be kept in sync with EEnumFlags defined in
  * Engine\Source\Programs\Shared\EpicGames.Core\UnrealEngineTypes.cs
  */
-enum class EEnumFlags
+enum class EEnumFlags : uint8
 {
 	None,
 
@@ -629,7 +645,7 @@ class UObject;
 class FProperty;
 class FObjectInitializer; 
 
-struct COREUOBJECT_API FReferencerInformation 
+struct FReferencerInformation 
 {
 	/** the object that is referencing the target */
 	UObject*				Referencer;
@@ -640,17 +656,17 @@ struct COREUOBJECT_API FReferencerInformation
 	/** the array of UProperties in Referencer which hold references to target */
 	TArray<const FProperty*>		ReferencingProperties;
 
-	FReferencerInformation( UObject* inReferencer );
-	FReferencerInformation( UObject* inReferencer, int32 InReferences, const TArray<const FProperty*>& InProperties );
+	COREUOBJECT_API FReferencerInformation( UObject* inReferencer );
+	COREUOBJECT_API FReferencerInformation( UObject* inReferencer, int32 InReferences, const TArray<const FProperty*>& InProperties );
 };
 
-struct COREUOBJECT_API FReferencerInformationList
+struct FReferencerInformationList
 {
 	TArray<FReferencerInformation>		InternalReferences;
 	TArray<FReferencerInformation>		ExternalReferences;
 
-	FReferencerInformationList();
-	FReferencerInformationList( const TArray<FReferencerInformation>& InternalRefs, const TArray<FReferencerInformation>& ExternalRefs );
+	COREUOBJECT_API FReferencerInformationList();
+	COREUOBJECT_API FReferencerInformationList( const TArray<FReferencerInformation>& InternalRefs, const TArray<FReferencerInformation>& ExternalRefs );
 };
 
 /*----------------------------------------------------------------------------
@@ -680,11 +696,7 @@ struct COREUOBJECT_API FReferencerInformationList
 
 // Used to inline generated cpp files from UObject headers
 #define UE_INLINE_STRINGIFY(name) #name
-#if UE_DISABLE_INLINE_GEN_CPP
-	#define UE_INLINE_GENERATED_CPP_BY_NAME(name) UE_INLINE_STRINGIFY(CoreTypes.h)
-#else
-	#define UE_INLINE_GENERATED_CPP_BY_NAME(name) UE_INLINE_STRINGIFY(name.gen.cpp)
-#endif
+#define UE_INLINE_GENERATED_CPP_BY_NAME(name) UE_INLINE_STRINGIFY(name.gen.cpp)
 
 // This pair of macros is used to help implement GENERATED_BODY() and GENERATED_USTRUCT_BODY()
 #define BODY_MACRO_COMBINE_INNER(A,B,C,D) A##B##C##D
@@ -727,10 +739,10 @@ namespace UC
 		/// Declares that instances of this class should always have an outer of the specified class.  This is inherited by subclasses unless overridden.
 		Within, /* =OuterClassName */
 
-		/// Exposes this class as a type that can be used for variables in blueprints
+		/// Exposes this class as a type that can be used for variables in blueprints. This is inherited by subclasses unless overridden.
 		BlueprintType,
 
-		/// Prevents this class from being used for variables in blueprints
+		/// Prevents this class from being used for variables in blueprints. This is inherited by subclasses unless overridden.
 		NotBlueprintType,
 
 		/// Exposes this class as an acceptable base class for creating blueprints. The default is NotBlueprintable, unless inherited otherwise. This is inherited by subclasses.
@@ -1005,7 +1017,7 @@ namespace UP
 		/// Object property can be exported with it's owner.
 		Export,
 
-		/// Hide clear (and browse) button in the editor.
+		/// Hide clear button in the editor.
 		NoClear,
 
 		/// Indicates that elements of an array can be modified, but its size cannot be changed.

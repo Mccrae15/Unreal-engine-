@@ -4,6 +4,7 @@
 
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/ScopeRWLock.h"
+#include "Misc/CoreDelegates.h"
 
 #include "UEWorkManagerNativeWrapper.h"
 #include "PlatformBackgroundHttp.h"
@@ -17,7 +18,11 @@
 #include "Android/AndroidJNI.h"
 #include "Android/AndroidApplication.h"
 
+#include "Containers/UnrealString.h"
+
 #include "Misc/Paths.h"
+
+#include "HAL/IConsoleManager.h"
 
 #if UE_BUILD_SHIPPING
 // always clear any exceptions in shipping
@@ -40,16 +45,34 @@
 
 #define LOCTEXT_NAMESPACE "AndroidBackgroundHttpManager"
 
+static TAutoConsoleVariable<bool> CVarEnableCellularHandling(
+	TEXT("bgdl.EnableCellularHandling"),
+	false,
+	TEXT("Enable/disable Cellular handling in the Java layer"),
+	ECVF_Default);
+
+//Call backs called by the JNI java systems to call back into C++ code in this AndroidPlatformBackgroundHttpManager
+namespace FAndroidBackgroundDownloadDelegates
+{
+	DECLARE_DELEGATE_TwoParams(FAndroidBackgroundDownload_OnWorkerStart, FString /*WorkID*/, jobject /*UnderlyingWorker*/);
+	DECLARE_DELEGATE_TwoParams(FAndroidBackgroundDownload_OnWorkerStop, FString /*WorkID*/, jobject /*UnderlyingWorker*/);
+	DECLARE_DELEGATE_FourParams(FAndroidBackgroundDownload_OnProgress, jobject /*UnderlyingWorker*/, FString /*RequestID*/, int64_t /*BytesWrittenSinceLastCall*/, int64_t /*TotalBytesWritten*/);
+	DECLARE_DELEGATE_FourParams(FAndroidBackgroundDownload_OnComplete, jobject /*UnderlyingWorker*/, FString /*RequestID*/, FString /*CompleteLocation*/, bool /*bWasSuccess*/);
+	DECLARE_DELEGATE_TwoParams(FAndroidBackgroundDownload_OnAllComplete, jobject /*UnderlyingWorker*/, bool /*bDidAllRequestsSucceed*/);
+	DECLARE_DELEGATE_TwoParams(FAndroidBackgroundDownload_OnTickWorkerThread, JNIEnv*, jobject /*UnderlyingWorker*/);
+
+	//Delegates called by JNI functions to bubble up underlying java work to the manager
+	FAndroidBackgroundDownload_OnWorkerStart AndroidBackgroundDownload_OnWorkerStart;
+	FAndroidBackgroundDownload_OnWorkerStop AndroidBackgroundDownload_OnWorkerStop;
+	FAndroidBackgroundDownload_OnProgress AndroidBackgroundDownload_OnProgress;
+	FAndroidBackgroundDownload_OnComplete AndroidBackgroundDownload_OnComplete;
+	FAndroidBackgroundDownload_OnAllComplete AndroidBackgroundDownload_OnAllComplete;
+	FAndroidBackgroundDownload_OnTickWorkerThread AndroidBackgroundDownload_OnTickWorkerThread;
+};
+
 const FString FAndroidPlatformBackgroundHttpManager::BackgroundHTTPWorkID = TEXT("BackgroundHttpDownload");
 const FString FAndroidPlatformBackgroundHttpManager::AndroidBackgroundDownloadConfigRulesSettingKey = TEXT("AndroidBackgroundDownloadSetting");
 volatile int32 FAndroidPlatformBackgroundHttpManager::bHasManagerScheduledBGWork = false;
-
-FAndroidBackgroundDownloadDelegates::FAndroidBackgroundDownload_OnWorkerStart FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnWorkerStart;
-FAndroidBackgroundDownloadDelegates::FAndroidBackgroundDownload_OnWorkerStop FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnWorkerStop;
-FAndroidBackgroundDownloadDelegates::FAndroidBackgroundDownload_OnProgress FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnProgress;
-FAndroidBackgroundDownloadDelegates::FAndroidBackgroundDownload_OnComplete FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnComplete;
-FAndroidBackgroundDownloadDelegates::FAndroidBackgroundDownload_OnAllComplete FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnAllComplete;
-FAndroidBackgroundDownloadDelegates::FAndroidBackgroundDownload_OnTickWorkerThread FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnTickWorkerThread;
 
 const FString FAndroidNativeDownloadWorkerParameterKeys::DOWNLOAD_DESCRIPTION_LIST_KEY = TEXT("DownloadDescriptionList");
 const FString FAndroidNativeDownloadWorkerParameterKeys::DOWNLOAD_MAX_CONCURRENT_REQUESTS_KEY = TEXT("MaxConcurrentDownloadRequests");
@@ -63,10 +86,15 @@ const FString FAndroidNativeDownloadWorkerParameterKeys::NOTIFICATION_ID_KEY = T
 //random value that our NOTIFICATION_ID is set to if not provided using the above key. KEEP IN SYNC WITH DownloadWorkerParameterKeys.java
 const int FAndroidNativeDownloadWorkerParameterKeys::NOTIFICATION_DEFAULT_ID_KEY = 1923901283;
 
+const FString FAndroidNativeDownloadWorkerParameterKeys::CELLULAR_HANDLE_KEY = TEXT("CellularHandleKey");
+
 const FString FAndroidNativeDownloadWorkerParameterKeys::NOTIFICATION_CONTENT_TITLE_KEY = TEXT("NotificationContentTitle");
 const FString FAndroidNativeDownloadWorkerParameterKeys::NOTIFICATION_CONTENT_TEXT_KEY = TEXT("NotificationContentText");
 const FString FAndroidNativeDownloadWorkerParameterKeys::NOTIFICATION_CONTENT_CANCEL_DOWNLOAD_TEXT_KEY = TEXT("NotificationContentCancelDownloadText");
+const FString FAndroidNativeDownloadWorkerParameterKeys::NOTIFICATION_CONTENT_NO_INTERNET_TEXT_KEY = TEXT("NotificationContentNoInternetDownloadText");
 const FString FAndroidNativeDownloadWorkerParameterKeys::NOTIFICATION_CONTENT_COMPLETE_TEXT_KEY = TEXT("NotificationContentCompleteText");
+const FString FAndroidNativeDownloadWorkerParameterKeys::NOTIFICATION_CONTENT_WAITING_FOR_CELLULAR_TEXT_KEY = TEXT("NotificationContentWaitingForCellularText");
+const FString FAndroidNativeDownloadWorkerParameterKeys::NOTIFICATION_CONTENT_APPROVE_TEXT_KEY = TEXT("NotificationContentApproveText");
 
 const FString FAndroidNativeDownloadWorkerParameterKeys::NOTIFICATION_RESOURCE_CANCEL_ICON_NAME = TEXT("NotificationResourceCancelIconName");
 const FString FAndroidNativeDownloadWorkerParameterKeys::NOTIFICATION_RESOURCE_CANCEL_ICON_TYPE = TEXT("NotificationResourceCancelIconType");
@@ -78,13 +106,38 @@ const FString FAndroidNativeDownloadWorkerParameterKeys::NOTIFICATION_RESOURCE_S
 
 FAndroidPlatformBackgroundHttpManager::FJavaClassInfo FAndroidPlatformBackgroundHttpManager::JavaInfo = FAndroidPlatformBackgroundHttpManager::FJavaClassInfo();
 
+static bool bNetworkConnected = false;
+
+static bool GetNetworkConnected()
+{
+	switch (FPlatformMisc::GetNetworkConnectionType())
+	{
+		case ENetworkConnectionType::Ethernet:
+		case ENetworkConnectionType::Cell:
+		case ENetworkConnectionType::WiFi:
+		case ENetworkConnectionType::WiMAX:
+			return true;
+	}
+	return false;
+}
+
 FAndroidPlatformBackgroundHttpManager::FAndroidPlatformBackgroundHttpManager()
 	: bHasPendingCompletes(false)
 	, bIsModifyingPauseList(false)
 	, bIsModifyingResumeList(false)
 	, bIsModifyingCancelList(false)
+	, bHasPendingExpectedWorkStart(false)
+	, bShouldForceWorkerRequeue(false)
+	, bWorkerHadTerminalFinish(false)
 	, AndroidBackgroundHTTPManagerDefaultLocalizedText()
 {
+	if (!OnNetworkConnectionChangedDelegateHandle.IsValid())
+	{
+		OnNetworkConnectionChangedDelegateHandle = FPlatformMisc::AddNetworkListener(
+			FCoreDelegates::FOnNetworkConnectionChanged::FDelegate::CreateRaw(this, &FAndroidPlatformBackgroundHttpManager::OnNetworkConnectionChanged));
+	}
+
+	bNetworkConnected = GetNetworkConnected();
 }
 
 bool FAndroidPlatformBackgroundHttpManager::HandleRequirementsCheck()
@@ -117,11 +170,16 @@ bool FAndroidPlatformBackgroundHttpManager::HandleConfigRulesSettings()
 
 void FAndroidPlatformBackgroundHttpManager::Initialize()
 {	
-	Java_OnWorkerStopHandle = FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnWorkerStop.AddRaw(this, &FAndroidPlatformBackgroundHttpManager::Java_OnWorkerStop);
-	Java_OnDownloadProgressHandle = FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnProgress.AddRaw(this, &FAndroidPlatformBackgroundHttpManager::Java_OnDownloadProgress);
-	Java_OnDownloadCompleteHandle = FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnComplete.AddRaw(this, &FAndroidPlatformBackgroundHttpManager::Java_OnDownloadComplete);
-	Java_OnAllDownloadsCompleteHandle = FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnAllComplete.AddRaw(this, &FAndroidPlatformBackgroundHttpManager::Java_OnAllDownloadsComplete);
-	Java_OnTickHandle = FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnTickWorkerThread.AddRaw(this, &FAndroidPlatformBackgroundHttpManager::Java_OnTick);
+	//Cancel any initial BackgroundHttpWork that is still running as this was kicked off by a previous run of the game
+	//and now that we are foregrounded we should wait to do that work until requested again.
+	FUEWorkManagerNativeWrapper::CancelBackgroundWork(BackgroundHTTPWorkID);
+
+	FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnWorkerStart.BindSP(this, &FAndroidPlatformBackgroundHttpManager::Java_OnWorkerStart);
+	FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnWorkerStop.BindSP(this, &FAndroidPlatformBackgroundHttpManager::Java_OnWorkerStop);
+	FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnProgress.BindSP(this, &FAndroidPlatformBackgroundHttpManager::Java_OnDownloadProgress);
+	FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnComplete.BindSP(this, &FAndroidPlatformBackgroundHttpManager::Java_OnDownloadComplete);
+	FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnAllComplete.BindSP(this, &FAndroidPlatformBackgroundHttpManager::Java_OnAllDownloadsComplete);
+	FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnTickWorkerThread.BindSP(this, &FAndroidPlatformBackgroundHttpManager::Java_OnTick);
 
 	AndroidBackgroundHTTPManagerDefaultLocalizedText.InitFromIniSettings("AndroidFetchBackgroundDownload");
 	FBackgroundHttpManagerImpl::Initialize();
@@ -129,11 +187,8 @@ void FAndroidPlatformBackgroundHttpManager::Initialize()
 
 void FAndroidPlatformBackgroundHttpManager::Shutdown()
 {
-	FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnWorkerStop.Remove(Java_OnWorkerStopHandle);
-	FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnProgress.Remove(Java_OnDownloadProgressHandle);
-	FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnComplete.Remove(Java_OnDownloadCompleteHandle);
-	FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnAllComplete.Remove(Java_OnAllDownloadsCompleteHandle);
-	FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnTickWorkerThread.Remove(Java_OnTickHandle);
+	FPlatformMisc::RemoveNetworkListener(OnNetworkConnectionChangedDelegateHandle);
+	OnNetworkConnectionChangedDelegateHandle.Reset();
 
 	FBackgroundHttpManagerImpl::Shutdown();
 }
@@ -141,6 +196,8 @@ void FAndroidPlatformBackgroundHttpManager::Shutdown()
 bool FAndroidPlatformBackgroundHttpManager::Tick(float DeltaTime)
 {
 	FBackgroundHttpManagerImpl::Tick(DeltaTime);
+
+	HandleJavaWorkerReconciliation();
 
 	HandlePendingCompletes();
 	HandleRequestsWaitingOnJavaThreadsafety();
@@ -152,6 +209,19 @@ bool FAndroidPlatformBackgroundHttpManager::Tick(float DeltaTime)
 void FAndroidPlatformBackgroundHttpManager::ActivatePendingRequests()
 {
 	UE_LOG(LogBackgroundHttpManager, VeryVerbose, TEXT("ActivatePendingRequests called"));
+
+	const bool bForceRequeueFlagged = FPlatformAtomics::InterlockedExchange(&bShouldForceWorkerRequeue, false);
+	bool bForceActiveRequestsToRequeue = false;
+	if (bForceRequeueFlagged)
+	{
+		FRWScopeLock ScopeLock(ActiveRequestLock, SLT_ReadOnly);
+		{
+			int32 ActiveRequestCount = ActiveRequests.Num();
+			bForceActiveRequestsToRequeue = (ActiveRequestCount > 0);
+			UE_LOG(LogBackgroundHttpManager, Display, TEXT("Found %d active requests to force requeue."), ActiveRequestCount);
+		}
+	}
+	
 	bool bHasPendingRequests = false;
 	{
 		FRWScopeLock ScopeLock(PendingRequestLock, SLT_ReadOnly);
@@ -159,10 +229,13 @@ void FAndroidPlatformBackgroundHttpManager::ActivatePendingRequests()
 
 		UE_LOG(LogBackgroundHttpManager, VeryVerbose, TEXT("bHasPendingRequests: %d"), static_cast<int>(bHasPendingRequests));
 	}
-		
-	if (bHasPendingRequests)
+
+	//Queue up all PendingRequests and ActiveRequests with the underlying UEDownloadWorker layer
+	//Requires us to have PendingRequests or have flagged ActiveRequests for a re-queue
+	if (bHasPendingRequests || bForceActiveRequestsToRequeue)
 	{
-		UE_LOG(LogBackgroundHttpManager, Display, TEXT("Found PendingRequests to activate"));
+		UE_CLOG(bHasPendingRequests, LogBackgroundHttpManager, Display, TEXT("Found PendingRequests to activate"));
+		UE_CLOG(bForceActiveRequestsToRequeue, LogBackgroundHttpManager, Display, TEXT("Forcing Found ActiveRequests to requeue"));
 
 		const bool bIsOptional = false;
 
@@ -239,26 +312,27 @@ void FAndroidPlatformBackgroundHttpManager::ActivatePendingRequests()
 			UE_LOG(LogBackgroundHttpManager, Display, TEXT("Adding %d requests to UEDownloadableWorker's DownloadDescription list for active work to be done."), RequestsToSendToJavaLayer.Num());
 			for (FAndroidBackgroundHttpRequestPtr& Request : RequestsToSendToJavaLayer)
 			{
-				if (IsValidRequestToEnqueue(Request))
-				{
-					FScopedJavaObject<jstring> JavaJSONString = FJavaHelper::ToJavaString(Env, Request->ToJSon());
-					FScopedJavaObject<jobject> Description = NewScopedJavaObject(Env, Env->CallStaticObjectMethod(FAndroidPlatformBackgroundHttpManager::JavaInfo.DownloadDescriptionClass, FAndroidPlatformBackgroundHttpManager::JavaInfo.CreateDownloadDescriptionFromJsonMethod, *JavaJSONString));
+				const FString RequestJSONString = Request->ToJSon();
+				FScopedJavaObject<jstring> JavaJSONString = FJavaHelper::ToJavaString(Env, RequestJSONString);
+				FScopedJavaObject<jobject> Description = NewScopedJavaObject(Env, Env->CallStaticObjectMethod(FAndroidPlatformBackgroundHttpManager::JavaInfo.DownloadDescriptionClass, FAndroidPlatformBackgroundHttpManager::JavaInfo.CreateDownloadDescriptionFromJsonMethod, *JavaJSONString));
+				UE_LOG(LogBackgroundHttpManager, VeryVerbose, TEXT("Generated JSON for request %s. || %s"), *Request->GetRequestID(), *RequestJSONString);
 
-					bool bAddedRequestAsDescription = FJavaWrapper::CallBooleanMethod(Env, *DescriptionArray, ArrayPutMethod, *Description);
-					if (!bAddedRequestAsDescription)
-					{
-						ensureAlwaysMsgf(false, TEXT("Failed to create and add valid DownloadDescription for request %s"), *Request->GetRequestID());
-						//We failed to add this request to our download worker so just mark it as completed so it can send a failure completion
-						MarkUnderlyingJavaRequestAsCompleted(Request, false);
-					}
-				}				
+				bool bAddedRequestAsDescription = FJavaWrapper::CallBooleanMethod(Env, *DescriptionArray, ArrayPutMethod, *Description);
+				if (!bAddedRequestAsDescription)
+				{
+					ensureAlwaysMsgf(false, TEXT("Failed to create and add valid DownloadDescription for request %s"), *Request->GetRequestID());
+					//We failed to add this request to our download worker so just mark it as completed so it can send a failure completion
+					MarkUnderlyingJavaRequestAsCompleted(Request, false);
+				}
 			}
 				
 			//Call JNI function that saves our passed in ArrayList<DownloadDescription> to a file
 			const FString FileNameForDownloadDescList = GetFullFileNameForDownloadDescriptionList();
 			FScopedJavaObject<jstring> JavaFileNameString = FJavaHelper::ToJavaString(Env, FileNameForDownloadDescList);	
 			bool bDidWriteSucceed = Env->CallStaticBooleanMethod(FAndroidPlatformBackgroundHttpManager::JavaInfo.DownloadDescriptionClass, FAndroidPlatformBackgroundHttpManager::JavaInfo.WriteDownloadDescriptionListToFileMethod, *JavaFileNameString, *DescriptionArray);
-				
+			// Calling this to signal to the worker that it was spawned by a forgrounded app
+			Env->CallStaticVoidMethod(FAndroidPlatformBackgroundHttpManager::JavaInfo.UEDownloadWorkerClass, FAndroidPlatformBackgroundHttpManager::JavaInfo.GameThreadIsActive);	
+
 			bool bDidSuccessfullyScheduleWork = false;
 
 			//If we successfully created the JSON DownloadDescription file, 
@@ -267,7 +341,8 @@ void FAndroidPlatformBackgroundHttpManager::ActivatePendingRequests()
 			{
 				FUEWorkManagerNativeWrapper::FWorkRequestParametersNative WorkParams;
 				WorkParams.WorkerJavaClass = FAndroidPlatformBackgroundHttpManager::JavaInfo.UEDownloadWorkerClass;
-				WorkParams.bRequireAnyInternet = true;
+				//Setting this to false to avoid notifications clearing when dropping Internet connection.
+				WorkParams.bRequireAnyInternet = false;
 				WorkParams.bStartAsForegroundService = true;
 					
 				//Set our DownloadDescription file so that it can be parsed by the worker
@@ -276,10 +351,15 @@ void FAndroidPlatformBackgroundHttpManager::ActivatePendingRequests()
 				//Set our MaxActiveDownloads in the underlying java layer to match our expectation
 				WorkParams.AddDataToWorkerParameters(FAndroidNativeDownloadWorkerParameterKeys::DOWNLOAD_MAX_CONCURRENT_REQUESTS_KEY, MaxActiveDownloads);
 
+				WorkParams.AddDataToWorkerParameters(FAndroidNativeDownloadWorkerParameterKeys::CELLULAR_HANDLE_KEY, CVarEnableCellularHandling.GetValueOnGameThread());
+
 				//Make sure we pass in localized notification text bits for the important worker keys
 				WorkParams.AddDataToWorkerParameters(FAndroidNativeDownloadWorkerParameterKeys::NOTIFICATION_CONTENT_TITLE_KEY, AndroidBackgroundHTTPManagerDefaultLocalizedText.DefaultNotificationText_Title.GetText());
 				WorkParams.AddDataToWorkerParameters(FAndroidNativeDownloadWorkerParameterKeys::NOTIFICATION_CONTENT_COMPLETE_TEXT_KEY, AndroidBackgroundHTTPManagerDefaultLocalizedText.DefaultNotificationText_Complete.GetText());
 				WorkParams.AddDataToWorkerParameters(FAndroidNativeDownloadWorkerParameterKeys::NOTIFICATION_CONTENT_CANCEL_DOWNLOAD_TEXT_KEY, AndroidBackgroundHTTPManagerDefaultLocalizedText.DefaultNotificationText_Cancel.GetText());
+				WorkParams.AddDataToWorkerParameters(FAndroidNativeDownloadWorkerParameterKeys::NOTIFICATION_CONTENT_NO_INTERNET_TEXT_KEY, AndroidBackgroundHTTPManagerDefaultLocalizedText.DefaultNotificationText_NoInternet.GetText());
+				WorkParams.AddDataToWorkerParameters(FAndroidNativeDownloadWorkerParameterKeys::NOTIFICATION_CONTENT_WAITING_FOR_CELLULAR_TEXT_KEY, AndroidBackgroundHTTPManagerDefaultLocalizedText.DefaultNotificationText_WaitingForCellular.GetText());
+				WorkParams.AddDataToWorkerParameters(FAndroidNativeDownloadWorkerParameterKeys::NOTIFICATION_CONTENT_APPROVE_TEXT_KEY, AndroidBackgroundHTTPManagerDefaultLocalizedText.DefaultNotificationText_Approve.GetText());
 
 				//Expect our ContentText to have a {DownloadPercent} argument in it by default, so this will replace that with the Java string format argument so Java can insert the appropriate value
 				FFormatNamedArguments Arguments;
@@ -287,18 +367,27 @@ void FAndroidPlatformBackgroundHttpManager::ActivatePendingRequests()
 				FText UpdatedContentText = FText::Format(AndroidBackgroundHTTPManagerDefaultLocalizedText.DefaultNotificationText_Content.GetText(), Arguments);
 				WorkParams.AddDataToWorkerParameters(FAndroidNativeDownloadWorkerParameterKeys::NOTIFICATION_CONTENT_TEXT_KEY, UpdatedContentText);
 
-				UE_LOG(LogBackgroundHttpManager, Display, TEXT("Attempting to schedule UEDownloadableWorker for background work"));
+				UE_LOG(LogBackgroundHttpManager, Display, TEXT("Attempting to schedule UEDownloadableWorker for background work. DownloadDescriptionList FileName:%s"), *FileNameForDownloadDescList);
 				bDidSuccessfullyScheduleWork  = FUEWorkManagerNativeWrapper::ScheduleBackgroundWork(BackgroundHTTPWorkID, WorkParams);
 			}
-			
+			else
+			{
+				UE_LOG(LogBackgroundHttpManager, Error, TEXT("Failed to write DownloadDescriptionList FileName:%s"), *FileNameForDownloadDescList);
+			}
+
 			if (ensureAlwaysMsgf(bDidSuccessfullyScheduleWork, TEXT("Failure to schedule background download worker!")))
 			{
 				//We have now scheduled some BG work so make sure we know its safe to call delegates
 				FPlatformAtomics::InterlockedExchange(&bHasManagerScheduledBGWork, true);
+
+				//Since we just scheduled new work, we can expect to get a call into OnWorkStart or OnWorkStop
+				FPlatformAtomics::InterlockedExchange(&bHasPendingExpectedWorkStart, true);
 			}
 			//We failed to schedule our background worker due to some error, so need to handle error case
 			else
 			{
+				UE_LOG(LogBackgroundHttpManager, Error, TEXT("Failed to schedule background download worker!"));
+
 				//Go through and mark all requests as completed so that they can all send failure completions since our worker failed to schedule
 				for (FAndroidBackgroundHttpRequestPtr& Request : RequestsToSendToJavaLayer)
 				{
@@ -309,6 +398,32 @@ void FAndroidPlatformBackgroundHttpManager::ActivatePendingRequests()
 	}
 
 	UE_LOG(LogBackgroundHttpManager, VeryVerbose, TEXT("ActivatePendingRequests complete"));
+}
+
+void FAndroidPlatformBackgroundHttpManager::HandleJavaWorkerReconciliation()
+{
+	//Check if we ended the last worker in a terminal fashion, and thus might need to fix up some underlying work requests
+	//if their state doesn't match this terminal state
+	const bool bWorkerHadTerminalFinishCopy = FPlatformAtomics::InterlockedExchange(&bWorkerHadTerminalFinish, false);
+	const bool bNewWorkerQueued = FPlatformAtomics::AtomicRead(&bHasPendingExpectedWorkStart);
+	if (bWorkerHadTerminalFinishCopy && !bNewWorkerQueued)
+	{
+		//if we are going to force requeue this worker that takes precedent here instead of forcing them to error out
+		const bool bShouldForceWorkerRequeueCopy = FPlatformAtomics::AtomicRead(&bShouldForceWorkerRequeue);
+		if (!bShouldForceWorkerRequeueCopy)
+		{
+			UE_LOG(LogBackgroundHttpManager, Display, TEXT("Completing all still active requests with an error as our worker ended with a terminal state while it was still downloading..."));
+			ForceCompleteAllUnderlyingJavaActiveRequestsWithError();
+		}
+		else
+		{
+			UE_LOG(LogBackgroundHttpManager, Display, TEXT("bWorkerHadTerminalFinish set but ignored as Worker is pending forced requeue"));
+		}
+	}
+	else if (bWorkerHadTerminalFinishCopy)
+	{
+		UE_LOG(LogBackgroundHttpManager, Display, TEXT("bWorkerHadTerminalFinish set but ignored as Worker is pending a new worker start"));
+	}
 }
 
 void FAndroidPlatformBackgroundHttpManager::HandlePendingCompletes()
@@ -384,7 +499,8 @@ void FAndroidPlatformBackgroundHttpManager::PauseRequest(FBackgroundHttpRequestP
 	if (ensureAlwaysMsgf(IsInGameThread(), TEXT("Should only ever call PauseRequest from GameThread! Can not pause!")))
 	{
 		const FString RequestID = Request->GetRequestID();
-		
+		UE_LOG(LogBackgroundHttpManager, Verbose, TEXT("PauseRequest called on %s"), *RequestID);
+
 		//Flag our request as paused
 		FAndroidBackgroundHttpRequestPtr AndroidRequest = StaticCastSharedPtr<FAndroidPlatformBackgroundHttpRequest>(Request);
 		if (ensureAlwaysMsgf(AndroidRequest.IsValid(), TEXT("Invalid request in Active Requests!")))
@@ -414,6 +530,7 @@ void FAndroidPlatformBackgroundHttpManager::ResumeRequest(FBackgroundHttpRequest
 	if (ensureAlwaysMsgf(IsInGameThread(), TEXT("Should only ever call ResumeRequest from GameThread! Can not Resume!")))
 	{
 		const FString RequestID = Request->GetRequestID();
+		UE_LOG(LogBackgroundHttpManager, Verbose, TEXT("ResumeRequest called on %s"), *RequestID);
 
 		//Flag our request as resumed
 		FAndroidBackgroundHttpRequestPtr AndroidRequest = StaticCastSharedPtr<FAndroidPlatformBackgroundHttpRequest>(Request);
@@ -444,6 +561,7 @@ void FAndroidPlatformBackgroundHttpManager::CancelRequest(FBackgroundHttpRequest
 	if (ensureAlwaysMsgf(IsInGameThread(), TEXT("Should only ever call CancelRequest from GameThread! Can not Cancel!")))
 	{
 		const FString RequestID = Request->GetRequestID();
+		UE_LOG(LogBackgroundHttpManager, Verbose, TEXT("CancelRequest called on %s"), *RequestID);
 
 		//Go ahead and remove our request since its cancelled
 		RemoveRequest(Request);
@@ -592,7 +710,7 @@ void FAndroidPlatformBackgroundHttpManager::MarkUnderlyingJavaRequestAsCompleted
 	FAndroidBackgroundHttpRequestPtr AndroidRequest = StaticCastSharedPtr<FAndroidPlatformBackgroundHttpRequest>(Request);
 	if (ensureAlwaysMsgf((AndroidRequest.IsValid()), TEXT("Invalid Non-Android request!")))
 	{
-		return MarkUnderlyingJavaRequestAsCompleted(AndroidRequest);
+		return MarkUnderlyingJavaRequestAsCompleted(AndroidRequest, bSuccess);
 	}
 }
 
@@ -632,23 +750,23 @@ bool FAndroidPlatformBackgroundHttpManager::HasUnderlyingJavaCompletedRequest(FA
 	return false;
 }
 
-bool FAndroidPlatformBackgroundHttpManager::IsValidRequestToEnqueue(FBackgroundHttpRequestPtr Request)
+void FAndroidPlatformBackgroundHttpManager::Java_OnWorkerStart(FString WorkID, jobject UnderlyingWorker)
 {
-	FAndroidBackgroundHttpRequestPtr AndroidRequest = StaticCastSharedPtr<FAndroidPlatformBackgroundHttpRequest>(Request);
-	if (ensureAlwaysMsgf((AndroidRequest.IsValid()), TEXT("Invalid Non-Android request checked for valid request! Returning false")))
+	const bool bShouldRespondToDelegate = FPlatformAtomics::AtomicRead(&bHasManagerScheduledBGWork);
+	if (bShouldRespondToDelegate)
 	{
-		return IsValidRequestToEnqueue(AndroidRequest);
+		UE_LOG(LogBackgroundHttpManager, Log, TEXT("OnWorkerStart for %s"), *WorkID);
+
+		//With a new worker started flush this result if it hasn't been processed from the previous worker finishing
+		FPlatformAtomics::InterlockedExchange(&bWorkerHadTerminalFinish, false);
+
+		//Remove expected work start as workers have started
+		FPlatformAtomics::InterlockedExchange(&bHasPendingExpectedWorkStart, false);
+
+		//Remove forced requeue as another worker started and thus we can discard forcing a new worker start now
+		//that we have an active worker again
+		FPlatformAtomics::InterlockedExchange(&bShouldForceWorkerRequeue, false);
 	}
-
-	return false;
-}
-
-bool FAndroidPlatformBackgroundHttpManager::IsValidRequestToEnqueue(FAndroidBackgroundHttpRequestPtr Request)
-{
-	const bool bIsComplete = HasUnderlyingJavaCompletedRequest(Request);
-	const bool bIsPaused = FPlatformAtomics::AtomicRead(&(Request->bIsPaused));
-
-	return (!bIsComplete && !bIsPaused);
 }
 
 void FAndroidPlatformBackgroundHttpManager::Java_OnWorkerStop(FString WorkID, jobject UnderlyingWorker)
@@ -659,10 +777,23 @@ void FAndroidPlatformBackgroundHttpManager::Java_OnWorkerStop(FString WorkID, jo
 		UE_LOG(LogBackgroundHttpManager, Log, TEXT("OnWorkerStop for %s"), *WorkID);
 
 		FUEWorkManagerNativeWrapper::EAndroidBackgroundWorkResult WorkResult = FUEWorkManagerNativeWrapper::GetWorkResultOnWorker(UnderlyingWorker);
-		if (WorkResult == FUEWorkManagerNativeWrapper::EAndroidBackgroundWorkResult::Failure)
+		if (WorkResult == FUEWorkManagerNativeWrapper::EAndroidBackgroundWorkResult::NotSet)
 		{
-			UE_LOG(LogBackgroundHttpManager, Log, TEXT("Worker Ended in Failure for %s. Completing ActiveRequests remaining with failure due to error."), *WorkID);
-			ForceCompleteAllUnderlyingJavaActiveRequestsWithError();
+			//Check if our work is stopping unexpectedly (we expect Stop to be called in the event of us scheduling new work)
+			//We know this is unexpected as we didn't set a WorkResult yet to denote the worker's state
+			bool bHasPendingStart = FPlatformAtomics::AtomicRead(&bHasPendingExpectedWorkStart);
+			if (!bHasPendingStart)
+			{
+				UE_LOG(LogBackgroundHttpManager, Warning, TEXT("Worker forced to end unexpectidly. Setting bShouldForceWorkerRequeue to force a new worker with all existing and pending work"));
+				FPlatformAtomics::InterlockedExchange(&bShouldForceWorkerRequeue, true);
+			}
+		}
+		else if (WorkResult != FUEWorkManagerNativeWrapper::EAndroidBackgroundWorkResult::Retry)
+		{
+			//WorkResult was terminal so we need to make sure we reconcile all work as worker is
+			//finished on next GameThread tick
+			UE_LOG(LogBackgroundHttpManager, Log, TEXT("Worker Ended with Terminal Result for %s"), *WorkID);
+			FPlatformAtomics::InterlockedExchange(&bWorkerHadTerminalFinish, true);
 		}
 	}
 }
@@ -688,8 +819,8 @@ void FAndroidPlatformBackgroundHttpManager::Java_OnAllDownloadsComplete(jobject 
 			FUEWorkManagerNativeWrapper::SetWorkResultOnWorker(UnderlyingWorker, FUEWorkManagerNativeWrapper::EAndroidBackgroundWorkResult::Failure);
 		}
 
-		//Our underlying worker has finished all work, so mark all as complete and error if any still were waiting on complete
-		ForceCompleteAllUnderlyingJavaActiveRequestsWithError();
+		//Our underlying worker has finished all work, so this should be the same as a terminal finish
+		FPlatformAtomics::InterlockedExchange(&bWorkerHadTerminalFinish, true);
 	}
 }
 
@@ -825,6 +956,12 @@ void FAndroidPlatformBackgroundHttpManager::FJavaClassInfo::Initialize()
 				CHECK_JNI_RESULT(DownloadDescriptionClass);
 			}
 
+			//find jmethodID for checking if the worker was created using the Android WorkManager
+			{
+				GameThreadIsActive = FJavaWrapper::FindStaticMethod(Env, UEDownloadWorkerClass, "AndroidThunkJava_GameThreadIsActive",  "()V", bIsOptional);
+				CHECK_JNI_RESULT(GameThreadIsActive);
+			}
+
 			//find jmethodID for DownloadDescription methods
 			{
 				//Grab a bunch of necessary JNI methods we will need to create our DownloadDescriptions
@@ -902,6 +1039,9 @@ FAndroidPlatformBackgroundHttpManager::FAndroidBackgroundHTTPManagerDefaultLocal
 	, DefaultNotificationText_Content()
 	, DefaultNotificationText_Complete()
 	, DefaultNotificationText_Cancel()
+	, DefaultNotificationText_NoInternet()
+	, DefaultNotificationText_WaitingForCellular()
+	, DefaultNotificationText_Approve()
 {
 }
 
@@ -941,6 +1081,28 @@ void FAndroidPlatformBackgroundHttpManager::FAndroidBackgroundHTTPManagerDefault
 				Config->GetArray(*TextConfigSection, TEXT("DefaultNotificationText_Cancel"), CancelTextStrings);
 				ParsePolyglotTextItem(DefaultNotificationText_Cancel, TEXT("Notification.CancelText"), CancelTextStrings);
 			}
+
+			//DefaultNotificationText_NoInternet
+			{
+				TArray<FString> NoInternetTextStrings;
+				Config->GetArray(*TextConfigSection, TEXT("DefaultNotificationText_NoInternet"), NoInternetTextStrings);
+				ParsePolyglotTextItem(DefaultNotificationText_NoInternet, TEXT("Notification.NoInternetText"), NoInternetTextStrings);
+			}
+
+			//DefaultNotificationText_WaitingForCellular
+			{
+				TArray<FString> WaitingForCellularTextStrings;
+				Config->GetArray(*TextConfigSection, TEXT("DefaultNotificationText_WaitingForCellular"), WaitingForCellularTextStrings);
+				ParsePolyglotTextItem(DefaultNotificationText_WaitingForCellular, TEXT("Notification.WaitingForCellularText"), WaitingForCellularTextStrings);
+			}
+
+			//DefaultNotificationText_Approve
+			{
+				TArray<FString> ApproveTextStrings;
+				Config->GetArray(*TextConfigSection, TEXT("DefaultNotificationText_Approve"), ApproveTextStrings);
+				ParsePolyglotTextItem(DefaultNotificationText_Approve, TEXT("Notification.ApproveText"), ApproveTextStrings);
+			}
+
 		}
 	}
 
@@ -949,6 +1111,9 @@ void FAndroidPlatformBackgroundHttpManager::FAndroidBackgroundHTTPManagerDefault
 	ForceValidPolyglotText(DefaultNotificationText_Content, TEXT("DefaultNotificationText_Content"));
 	ForceValidPolyglotText(DefaultNotificationText_Complete, TEXT("DefaultNotificationText_Complete"));
 	ForceValidPolyglotText(DefaultNotificationText_Cancel, TEXT("DefaultNotificationText_Cancel"));
+	ForceValidPolyglotText(DefaultNotificationText_NoInternet, TEXT("DefaultNotificationText_NoInternet"));
+	ForceValidPolyglotText(DefaultNotificationText_WaitingForCellular, TEXT("DefaultNotificationText_WaitingForCellular"));
+	ForceValidPolyglotText(DefaultNotificationText_Approve, TEXT("DefaultNotificationText_Approve"));
 }
 
 void FAndroidPlatformBackgroundHttpManager::FAndroidBackgroundHTTPManagerDefaultLocalizedText::ForceValidPolyglotText(FPolyglotTextData& TextDataOut, const FString& DebugPolyglotTextName)
@@ -1007,6 +1172,24 @@ void FAndroidPlatformBackgroundHttpManager::FAndroidBackgroundHTTPManagerDefault
 	}
 }
 
+void FAndroidPlatformBackgroundHttpManager::OnNetworkConnectionChanged(ENetworkConnectionType ConnectionType)
+{
+	bool bNewNetworkConnected = GetNetworkConnected();
+
+	if (bNewNetworkConnected != bNetworkConnected)
+	{
+		bNetworkConnected = bNewNetworkConnected;
+
+		UE_LOG(LogBackgroundHttpManager, Display, TEXT("Flagging worker for requeue due to network connection re-establishing."));
+		//On reconnecting to the network flag our worker to force requeue to make sure our work is continued
+		//Don't requeue the worker if there is no Internet.
+		if (ConnectionType != ENetworkConnectionType::None)
+		{
+			FPlatformAtomics::InterlockedExchange(&bShouldForceWorkerRequeue, true);
+		}
+	}
+}
+
 //
 //JNI methods coming from UEDownloadWorker
 //
@@ -1019,7 +1202,7 @@ JNI_METHOD void Java_com_epicgames_unreal_download_UEDownloadWorker_nativeAndroi
 	if (ensureAlwaysMsgf(bIsMatchingWorkID, TEXT("Unexpected WorkID %s sent back in OnWorkerStart! Ignoring un-related worker!"), *UEWorkID))
 	{
 		UE_LOG(LogBackgroundHttpManager, Display, TEXT("Called OnWorkerStart for %s"), *UEWorkID);
-		FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnWorkerStart.Broadcast(UEWorkID, thiz);
+		FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnWorkerStart.ExecuteIfBound(UEWorkID, thiz);
 	}
 }
 
@@ -1031,7 +1214,7 @@ JNI_METHOD void Java_com_epicgames_unreal_download_UEDownloadWorker_nativeAndroi
 	if (ensureAlwaysMsgf(bIsMatchingWorkID, TEXT("Unexpected WorkID %s sent back in OnWorkerStop! Ignoring un-related worker!"), *UEWorkID))
 	{
 		UE_LOG(LogBackgroundHttpManager, Display, TEXT("Called OnWorkerStop for %s"), *UEWorkID);
-		FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnWorkerStop.Broadcast(UEWorkID, thiz);
+		FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnWorkerStop.ExecuteIfBound(UEWorkID, thiz);
 	}
 }
 
@@ -1041,7 +1224,7 @@ JNI_METHOD void Java_com_epicgames_unreal_download_UEDownloadWorker_nativeAndroi
 	int64_t ConvertedBytesWrittenSinceLastCall = static_cast<uint64_t>(BytesWrittenSinceLastCall);
 	int64_t ConvertedTotalBytesWritten = static_cast<uint64_t>(TotalBytesWritten);
 
-	FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnProgress.Broadcast(thiz, RequestID, ConvertedBytesWrittenSinceLastCall, ConvertedTotalBytesWritten);
+	FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnProgress.ExecuteIfBound(thiz, RequestID, ConvertedBytesWrittenSinceLastCall, ConvertedTotalBytesWritten);
 }
 
 JNI_METHOD void Java_com_epicgames_unreal_download_UEDownloadWorker_nativeAndroidBackgroundDownloadOnComplete(JNIEnv* jenv, jobject thiz, jstring TaskID, jstring CompleteLocation, jboolean bWasSuccess)
@@ -1050,18 +1233,18 @@ JNI_METHOD void Java_com_epicgames_unreal_download_UEDownloadWorker_nativeAndroi
 	FString ConvertedCompleteLocation = FJavaHelper::FStringFromParam(jenv, CompleteLocation);
 	bool ConvertedbWasSuccess = static_cast<bool>(bWasSuccess);
 
-	FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnComplete.Broadcast(thiz, RequestID, ConvertedCompleteLocation, ConvertedbWasSuccess);
+	FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnComplete.ExecuteIfBound(thiz, RequestID, ConvertedCompleteLocation, ConvertedbWasSuccess);
 }
 
 JNI_METHOD void Java_com_epicgames_unreal_download_UEDownloadWorker_nativeAndroidBackgroundDownloadOnAllComplete(JNIEnv* jenv, jobject thiz, jboolean bDidAllRequestsSucceed)
 {
 	bool ConvertedbDidAllRequestsSucceed = static_cast<bool>(bDidAllRequestsSucceed);
-	FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnAllComplete.Broadcast(thiz, bDidAllRequestsSucceed);
+	FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnAllComplete.ExecuteIfBound(thiz, bDidAllRequestsSucceed);
 }
 
 JNI_METHOD void Java_com_epicgames_unreal_download_UEDownloadWorker_nativeAndroidBackgroundDownloadOnTick(JNIEnv* jenv, jobject thiz)
 {
-	FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnTickWorkerThread.Broadcast(jenv, thiz);
+	FAndroidBackgroundDownloadDelegates::AndroidBackgroundDownload_OnTickWorkerThread.ExecuteIfBound(jenv, thiz);
 }
 
 

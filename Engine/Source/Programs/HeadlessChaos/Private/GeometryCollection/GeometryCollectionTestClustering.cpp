@@ -397,7 +397,7 @@ namespace GeometryCollectionTest
 		Params.Simulating = true;
 		Params.EnableClustering = true;
 		Params.DamageThreshold = { 0.1f };
-		Params.ClusterGroupIndex = 1;
+		Params.ClusterGroupIndex = 0;
 		FGeometryCollectionWrapper* Collection = TNewSimulationObject<GeometryType::GeometryCollectionWithSuppliedRestCollection>::Init(Params)->template As<FGeometryCollectionWrapper>();
 
 
@@ -1783,6 +1783,8 @@ namespace GeometryCollectionTest
 		UnitTest.Initialize();
 
 		auto& Clustering = UnitTest.Solver->GetEvolution()->GetRigidClustering();
+		Chaos::FClusterUnionManager& ClusterUnionManager = Clustering.GetClusterUnionManager();
+
 		const auto& ClusterMap = Clustering.GetChildrenMap();
 
 		TSharedPtr<FGeometryDynamicCollection> DynamicCollection1 = Collection1->DynamicCollection;
@@ -1809,6 +1811,19 @@ namespace GeometryCollectionTest
 		EXPECT_EQ(SovlerParticleHandles.Size(), 7);
 		EXPECT_EQ(ClusterMap.Num(), 1);
 		EXPECT_TRUE(ClusterMapContains(ClusterMap, SovlerParticleHandles.Handle(6)->CastToRigidParticle(), { Collection1Handles[1],Collection1Handles[0], Collection2Handles[1],Collection2Handles[0] }));
+		EXPECT_TRUE(ClusterUnionManager.FindClusterUnionFromExplicitIndex(1) != nullptr);
+
+		Chaos::FClusterUnion& ClusterUnion = *ClusterUnionManager.FindClusterUnionFromExplicitIndex(1);
+		EXPECT_EQ(ClusterUnion.InternalCluster, SovlerParticleHandles.Handle(6).Get());
+		// A bit of an assumption that the root particle is the 2nd index in these arrays.
+		EXPECT_TRUE(ClusterUnion.ChildParticles.Contains(Collection1Handles[0]));
+		EXPECT_TRUE(ClusterUnion.ChildParticles.Contains(Collection1Handles[1]));
+		EXPECT_TRUE(ClusterUnion.ChildParticles.Contains(Collection2Handles[0]));
+		EXPECT_TRUE(ClusterUnion.ChildParticles.Contains(Collection2Handles[1]));
+		EXPECT_EQ(ClusterUnion.ChildParticles.Num(), 4);
+		EXPECT_EQ(ClusterUnion.ExplicitIndex, 1);
+		EXPECT_TRUE(ClusterMapContains(ClusterMap, ClusterUnion.InternalCluster, { Collection1Handles[0], Collection1Handles[1], Collection2Handles[0], Collection2Handles[1] }));
+		EXPECT_EQ(ClusterMap[ClusterUnion.InternalCluster].Num(), 4);
 
 		TArray<FTransform> Collection1_PreReleaseTM; GeometryCollectionAlgo::GlobalMatrices(DynamicCollection1->Transform, DynamicCollection1->Parent, Collection1_PreReleaseTM);
 		TArray<FTransform> Collection2_PreReleaseTM; GeometryCollectionAlgo::GlobalMatrices(DynamicCollection2->Transform, DynamicCollection2->Parent, Collection2_PreReleaseTM);
@@ -1818,16 +1833,22 @@ namespace GeometryCollectionTest
 		}
 
 		UnitTest.Solver->GetEvolution()->GetRigidClustering().ReleaseClusterParticles({ Collection1Handles[0],Collection1Handles[1] });
+		ClusterUnionManager.HandleDeferredClusterUnionUpdateProperties();
 
-		EXPECT_EQ(SovlerParticleHandles.Size(), 8);
-		EXPECT_EQ(ClusterMap.Num(), 1);
-		EXPECT_TRUE(ClusterMapContains(ClusterMap, SovlerParticleHandles.Handle(7)->CastToRigidParticle(), { Collection2Handles[1],Collection2Handles[0] }));
+		EXPECT_EQ(SovlerParticleHandles.Size(), 7);
+		EXPECT_FALSE(ClusterUnion.ChildParticles.Contains(Collection1Handles[0]));
+		EXPECT_FALSE(ClusterUnion.ChildParticles.Contains(Collection1Handles[1]));
+		EXPECT_TRUE(ClusterUnion.ChildParticles.Contains(Collection2Handles[0]));
+		EXPECT_TRUE(ClusterUnion.ChildParticles.Contains(Collection2Handles[1]));
+		EXPECT_EQ(ClusterUnion.ChildParticles.Num(), 2);
+		EXPECT_EQ(ClusterUnion.ExplicitIndex, 1);
+		EXPECT_FALSE(ClusterMapContains(ClusterMap, ClusterUnion.InternalCluster, { Collection1Handles[0], Collection1Handles[1] }));
+		EXPECT_TRUE(ClusterMapContains(ClusterMap, ClusterUnion.InternalCluster, { Collection2Handles[0], Collection2Handles[1] }));
+		EXPECT_EQ(ClusterMap[ClusterUnion.InternalCluster].Num(), 2);
 
 		UnitTest.Advance();
 
-		EXPECT_EQ(SovlerParticleHandles.Size(), 8);
-		EXPECT_EQ(ClusterMap.Num(), 1);
-		EXPECT_TRUE(ClusterMapContains(ClusterMap, SovlerParticleHandles.Handle(7)->CastToRigidParticle(), {Collection2Handles[1],Collection2Handles[0] }));
+		EXPECT_EQ(SovlerParticleHandles.Size(), 7);
 
 		TArray<FTransform> Collection1_PostReleaseTM; GeometryCollectionAlgo::GlobalMatrices(DynamicCollection1->Transform, DynamicCollection1->Parent, Collection1_PostReleaseTM);
 		TArray<FTransform> Collection2_PostReleaseTM; GeometryCollectionAlgo::GlobalMatrices(DynamicCollection2->Transform, DynamicCollection2->Parent, Collection2_PostReleaseTM);
@@ -1882,6 +1903,7 @@ namespace GeometryCollectionTest
 		UnitTest.Initialize();
 
 		auto& Clustering = UnitTest.Solver->GetEvolution()->GetRigidClustering();
+		Chaos::FClusterUnionManager& ClusterUnionManager = Clustering.GetClusterUnionManager();
 		const auto& ClusterMap = Clustering.GetChildrenMap();
 
 		TArray<FTransform> Collection1_InitialTM; GeometryCollectionAlgo::GlobalMatrices(DynamicCollection1->Transform, DynamicCollection1->Parent, Collection1_InitialTM);
@@ -1904,6 +1926,19 @@ namespace GeometryCollectionTest
 		EXPECT_EQ(SovlerParticleHandles.Size(), 7);
 		EXPECT_EQ(ClusterMap.Num(), 1);
 		EXPECT_TRUE(ClusterMapContains(ClusterMap, SovlerParticleHandles.Handle(6)->CastToRigidParticle(), { Collection1Handles[1],Collection1Handles[0], Collection2Handles[1],Collection2Handles[0] }));
+		EXPECT_TRUE(ClusterUnionManager.FindClusterUnionFromExplicitIndex(1) != nullptr);
+
+		Chaos::FClusterUnion& ClusterUnion = *ClusterUnionManager.FindClusterUnionFromExplicitIndex(1);
+		EXPECT_EQ(ClusterUnion.InternalCluster, SovlerParticleHandles.Handle(6).Get());
+		// A bit of an assumption that the root particle is the 2nd index in these arrays.
+		EXPECT_TRUE(ClusterUnion.ChildParticles.Contains(Collection1Handles[0]));
+		EXPECT_TRUE(ClusterUnion.ChildParticles.Contains(Collection1Handles[1]));
+		EXPECT_TRUE(ClusterUnion.ChildParticles.Contains(Collection2Handles[0]));
+		EXPECT_TRUE(ClusterUnion.ChildParticles.Contains(Collection2Handles[1]));
+		EXPECT_EQ(ClusterUnion.ChildParticles.Num(), 4);
+		EXPECT_EQ(ClusterUnion.ExplicitIndex, 1);
+		EXPECT_TRUE(ClusterMapContains(ClusterMap, ClusterUnion.InternalCluster, { Collection1Handles[0], Collection1Handles[1], Collection2Handles[0], Collection2Handles[1] }));
+		EXPECT_EQ(ClusterMap[ClusterUnion.InternalCluster].Num(), 4);
 
 		TArray<FTransform> Collection1_PreReleaseTM; GeometryCollectionAlgo::GlobalMatrices(DynamicCollection1->Transform, DynamicCollection1->Parent, Collection1_PreReleaseTM);
 		TArray<FTransform> Collection2_PreReleaseTM; GeometryCollectionAlgo::GlobalMatrices(DynamicCollection2->Transform, DynamicCollection2->Parent, Collection2_PreReleaseTM);
@@ -1914,16 +1949,22 @@ namespace GeometryCollectionTest
 		}
 
 		UnitTest.Solver->GetEvolution()->GetRigidClustering().ReleaseClusterParticles({ Collection1Handles[0],Collection1Handles[1] });
+		ClusterUnionManager.HandleDeferredClusterUnionUpdateProperties();
 
-		EXPECT_EQ(SovlerParticleHandles.Size(), 8);
-		EXPECT_EQ(ClusterMap.Num(), 1);
-		EXPECT_TRUE(ClusterMapContains(ClusterMap, SovlerParticleHandles.Handle(7)->CastToRigidParticle(), { Collection2Handles[1],Collection2Handles[0] }));
+		EXPECT_EQ(SovlerParticleHandles.Size(), 7);
+		EXPECT_FALSE(ClusterUnion.ChildParticles.Contains(Collection1Handles[0]));
+		EXPECT_FALSE(ClusterUnion.ChildParticles.Contains(Collection1Handles[1]));
+		EXPECT_TRUE(ClusterUnion.ChildParticles.Contains(Collection2Handles[0]));
+		EXPECT_TRUE(ClusterUnion.ChildParticles.Contains(Collection2Handles[1]));
+		EXPECT_EQ(ClusterUnion.ChildParticles.Num(), 2);
+		EXPECT_EQ(ClusterUnion.ExplicitIndex, 1);
+		EXPECT_FALSE(ClusterMapContains(ClusterMap, ClusterUnion.InternalCluster, { Collection1Handles[0], Collection1Handles[1] }));
+		EXPECT_TRUE(ClusterMapContains(ClusterMap, ClusterUnion.InternalCluster, { Collection2Handles[0], Collection2Handles[1] }));
+		EXPECT_EQ(ClusterMap[ClusterUnion.InternalCluster].Num(), 2);
 
 		UnitTest.Advance();
 
-		EXPECT_EQ(SovlerParticleHandles.Size(), 8);
-		EXPECT_EQ(ClusterMap.Num(), 1);
-		EXPECT_TRUE(ClusterMapContains(ClusterMap, SovlerParticleHandles.Handle(7)->CastToRigidParticle(), { Collection2Handles[1],Collection2Handles[0] }));
+		EXPECT_EQ(SovlerParticleHandles.Size(), 7);
 
 		// validate that DynamicCollection2 became dynamic and fell from the cluster. 
 
@@ -2062,6 +2103,8 @@ namespace GeometryCollectionTest
 		UnitTest.Advance();
 
 		FRigidClustering& Clustering = UnitTest.Solver->GetEvolution()->GetRigidClustering();
+		Chaos::FClusterUnionManager& ClusterUnionManager = Clustering.GetClusterUnionManager();
+
 		const FRigidClustering::FClusterMap& ClusterMap = Clustering.GetChildrenMap();
 		const Chaos::TArrayCollectionArray<Chaos::ClusterId>& ClusterIdsArray = Clustering.GetClusterIdsArray();
 
@@ -2071,6 +2114,10 @@ namespace GeometryCollectionTest
 			EXPECT_TRUE(ClusterMapContains(ClusterMap,ParticleHandles[2],{ParticleHandles[0],ParticleHandles[1]}));
 			EXPECT_TRUE(ClusterMapContains(ClusterMap,ParticleHandles[4],{ParticleHandles[2]}));
 		});
+
+		EXPECT_TRUE(ClusterUnionManager.FindClusterUnionFromExplicitIndex(1) != nullptr);
+
+		Chaos::FClusterUnion& ClusterUnion = *ClusterUnionManager.FindClusterUnionFromExplicitIndex(1);
 
 		// Test releasing a specific unioned cluster
 		// We end up with the following cluster tree
@@ -2096,6 +2143,13 @@ namespace GeometryCollectionTest
 				EXPECT_NE(ClusterIdsArray[0].Id, nullptr);
 				EXPECT_EQ(ClusterIdsArray[1].Id, nullptr);
 				EXPECT_EQ(ClusterIdsArray[2].Id, nullptr);
+
+				EXPECT_TRUE(ClusterUnion.ChildParticles.Contains(ParticleHandles[2]));
+				EXPECT_EQ(ClusterUnion.ChildParticles.Num(), 1);
+				EXPECT_EQ(ClusterUnion.ExplicitIndex, 1);
+				EXPECT_TRUE(ClusterMapContains(ClusterMap, ClusterUnion.InternalCluster, { ParticleHandles[2] }));
+				EXPECT_EQ(ClusterMap[ClusterUnion.InternalCluster].Num(), 1);
+				EXPECT_EQ(ClusterMap.Num(), 2);
 			}
 			else
 			{
@@ -2104,7 +2158,12 @@ namespace GeometryCollectionTest
 				EXPECT_EQ(ClusterIdsArray[1].Id, nullptr);
 				EXPECT_EQ(ClusterIdsArray[2].Id, nullptr);
 
-				EXPECT_EQ(ClusterMap.Num(), 1);
+				EXPECT_FALSE(ClusterUnion.ChildParticles.Contains(ParticleHandles[2]));
+				EXPECT_EQ(ClusterUnion.ChildParticles.Num(), 0);
+				EXPECT_EQ(ClusterUnion.ExplicitIndex, 1);
+				EXPECT_FALSE(ClusterMapContains(ClusterMap, ClusterUnion.InternalCluster, { ParticleHandles[2] }));
+				EXPECT_EQ(ClusterMap[ClusterUnion.InternalCluster].Num(), 0);
+				EXPECT_EQ(ClusterMap.Num(), 2);
 				EXPECT_TRUE(ClusterMapContains(ClusterMap, ParticleHandles[2], { ParticleHandles[0], ParticleHandles[1] }));
 			}				
 		}

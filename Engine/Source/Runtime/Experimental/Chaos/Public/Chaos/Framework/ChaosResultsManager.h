@@ -10,19 +10,25 @@ namespace Chaos
 	extern FRealSingle SecondChannelDelay;
 	extern int32 DefaultNumActiveChannels;
 
-	struct CHAOS_API FChaosRigidInterpolationData
+	struct FChaosRigidInterpolationData
 	{
 		FDirtyRigidParticleData Prev;
 		FDirtyRigidParticleData Next;
 	};
 
-	struct CHAOS_API FChaosGeometryCollectionInterpolationData
+	struct FChaosGeometryCollectionInterpolationData
 	{
 		FDirtyGeometryCollectionData Prev;
 		FDirtyGeometryCollectionData Next;
 	};
+
+	struct FChaosClusterUnionInterpolationData
+	{
+		FDirtyClusterUnionData Prev;
+		FDirtyClusterUnionData Next;
+	};
 	
-	struct CHAOS_API FChaosInterpolationResults
+	struct FChaosInterpolationResults
 	{
 		FChaosInterpolationResults()
 			: Prev(nullptr)
@@ -34,6 +40,7 @@ namespace Chaos
 		FChaosInterpolationResults(FChaosInterpolationResults&& Other)
 			: RigidInterpolations(MoveTemp(Other.RigidInterpolations))
 			, GeometryCollectionInterpolations(MoveTemp(Other.GeometryCollectionInterpolations))
+			, ClusterUnionInterpolations(MoveTemp(Other.ClusterUnionInterpolations))
 			, Prev(Other.Prev)
 			, Next(Other.Next)
 			, Alpha(Other.Alpha)
@@ -42,10 +49,11 @@ namespace Chaos
 			Other.Next = nullptr;
 		}
 
-		void Reset();
+		CHAOS_API void Reset();
 		
 		TArray<FChaosRigidInterpolationData> RigidInterpolations;
 		TArray<FChaosGeometryCollectionInterpolationData> GeometryCollectionInterpolations;
+		TArray<FChaosClusterUnionInterpolationData> ClusterUnionInterpolations;
 		FPullPhysicsData* Prev;
 		FPullPhysicsData* Next;
 		FRealSingle Alpha;
@@ -53,26 +61,26 @@ namespace Chaos
 
 	struct FChaosResultsChannel;
 
-	class CHAOS_API FChaosResultsManager
+	class FChaosResultsManager
 	{
 	public:
-		FChaosResultsManager(FChaosMarshallingManager& InMarshallingManager);
+		CHAOS_API FChaosResultsManager(FChaosMarshallingManager& InMarshallingManager);
 		FChaosResultsManager(const FChaosResultsManager& Other) = delete;
 		FChaosResultsManager(FChaosResultsManager&& Other) = default;
 		
-		~FChaosResultsManager();
+		CHAOS_API ~FChaosResultsManager();
 
-		const FChaosInterpolationResults& PullSyncPhysicsResults_External();
-		TArray<const FChaosInterpolationResults*> PullAsyncPhysicsResults_External(const FReal ResultsTime);
+		CHAOS_API const FChaosInterpolationResults& PullSyncPhysicsResults_External();
+		CHAOS_API TArray<const FChaosInterpolationResults*> PullAsyncPhysicsResults_External(const FReal ResultsTime);
 
-		void RemoveProxy_External(FSingleParticlePhysicsProxy* Proxy);
+		CHAOS_API void RemoveProxy_External(FSingleParticlePhysicsProxy* Proxy);
 
 	private:
 
 		friend FChaosResultsChannel;
 
-		FPullPhysicsData* PopPullData_External(int32 ChannelIdx);
-		void FreePullData_External(FPullPhysicsData* PullData, int32 ChannelIdx);
+		CHAOS_API FPullPhysicsData* PopPullData_External(int32 ChannelIdx);
+		CHAOS_API void FreePullData_External(FPullPhysicsData* PullData, int32 ChannelIdx);
 
 		TArray<FChaosResultsChannel*> Channels;
 		FChaosMarshallingManager& MarshallingManager;

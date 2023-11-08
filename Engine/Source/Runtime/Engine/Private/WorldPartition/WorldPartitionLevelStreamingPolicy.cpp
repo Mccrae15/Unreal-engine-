@@ -13,38 +13,20 @@
 #include "Engine/Level.h"
 #include "Engine/Canvas.h"
 #include "Engine/LevelStreamingGCHelper.h"
-
-#include UE_INLINE_GENERATED_CPP_BY_NAME(WorldPartitionLevelStreamingPolicy)
-
 #if WITH_EDITOR
 #include "Misc/PackageName.h"
 #endif
 
-int32 UWorldPartitionLevelStreamingPolicy::GetCellLoadingCount() const
-{
-	int32 CellLoadingCount = 0;
-
-	ForEachActiveRuntimeCell([&CellLoadingCount](const UWorldPartitionRuntimeCell* Cell)
-	{
-		if (Cell->IsLoading())
-		{
-			++CellLoadingCount;
-		}
-	});
-	return CellLoadingCount;
-}
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WorldPartitionLevelStreamingPolicy)
 
 void UWorldPartitionLevelStreamingPolicy::ForEachActiveRuntimeCell(TFunctionRef<void(const UWorldPartitionRuntimeCell*)> Func) const
 {
 	UWorld* World = WorldPartition->GetWorld();
 	for (ULevelStreaming* LevelStreaming : World->GetStreamingLevels())
 	{
-		if (UWorldPartitionLevelStreamingDynamic* WorldPartitionLevelStreaming = Cast<UWorldPartitionLevelStreamingDynamic>(LevelStreaming))
+		if (const UWorldPartitionRuntimeCell* Cell = Cast<const UWorldPartitionRuntimeCell>(LevelStreaming->GetWorldPartitionCell()))
 		{
-			if (const UWorldPartitionRuntimeCell* Cell = WorldPartitionLevelStreaming->GetWorldPartitionRuntimeCell())
-			{
-				Func(Cell);
-			}
+			Func(Cell);
 		}
 	}
 }
@@ -98,136 +80,139 @@ TSubclassOf<UWorldPartitionRuntimeCell> UWorldPartitionLevelStreamingPolicy::Get
 
 void UWorldPartitionLevelStreamingPolicy::PrepareActorToCellRemapping()
 {
+	FString SourceWorldPath, DummyUnusedPath;
+	WorldPartition->GetTypedOuter<UWorld>()->GetSoftObjectPathMapping(SourceWorldPath, DummyUnusedPath);
+	SourceWorldAssetPath = FTopLevelAssetPath(SourceWorldPath);
+	
 	// Build Actor-to-Cell remapping
-	WorldPartition->RuntimeHash->ForEachStreamingCells([this](const UWorldPartitionRuntimeCell* Cell)
+	WorldPartition->RuntimeHash->ForEachStreamingCells([this, &SourceWorldPath](const UWorldPartitionRuntimeCell* Cell)
 	{
 		const UWorldPartitionRuntimeLevelStreamingCell* StreamingCell = Cast<const UWorldPartitionRuntimeLevelStreamingCell>(Cell);
 		check(StreamingCell);
 		for (const FWorldPartitionRuntimeCellObjectMapping& CellObjectMap : StreamingCell->GetPackages())
 		{
-			FString RemappedActorPath;
-			FString CellActorPath = CellObjectMap.Path.ToString();
-
-			// Add actor container id to actor path so that we can distinguish between actors of different Level Instances
-			const bool ActorPathNeedsRemapping = FWorldPartitionLevelHelper::RemapActorPath(CellObjectMap.ContainerID, CellActorPath, RemappedActorPath);
-
-			if (ActorPathNeedsRemapping || Cell->NeedsActorToCellRemapping())
+			// The use cases for remapping are the following:
+			//
+			// - Spatially loaded or Datalayer Actors from the main World Partition map that get moved into a Streaming Cell. In thise case an actor path like:
+			//		- '/Game/SomePath/WorldName.WorldName:PersistentLevel.ActorA' would be mapped to a cell name ex: 'WorldName_MainGrid_L0_X5_Y-4'
+			// - Always loaded Actors from the main World:
+			//		- In PIE they get remapped to the top level Cell 'WorldName_MainGrid_L{MAX}_X0_Y0'
+			//		- In Cook they don't need remapping as the top level Cell is the PersistentLevel (Cell->NeedsActorToCellRemapping() returns false)
+			if (Cell->NeedsActorToCellRemapping())
 			{
-				const FString& ActorPath = ActorPathNeedsRemapping ? RemappedActorPath : CellActorPath;
-
-				ActorToCellRemapping.Add(FName(*ActorPath), StreamingCell->GetFName());
-
+				const FSoftObjectPath CellActorPath = FWorldPartitionLevelHelper::RemapActorPath(CellObjectMap.ContainerID, SourceWorldPath, FSoftObjectPath(CellObjectMap.Path.ToString()));
+				
+				const FString ActorPath = CellActorPath.ToString();
+				const FName CellName = StreamingCell->GetFName();
 				const int32 LastDotPos = ActorPath.Find(TEXT("."), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
 				check(LastDotPos != INDEX_NONE);
-
-				SubObjectsToCellRemapping.Add(FName(*ActorPath.Mid(LastDotPos + 1)), StreamingCell->GetFName());
+				SubObjectsToCellRemapping.Add(FName(*ActorPath.Mid(LastDotPos + 1)), CellName);
 			}
 		}
 		return true;
 	});
 }
 
-void UWorldPartitionLevelStreamingPolicy::RemapSoftObjectPath(FSoftObjectPath& ObjectPath)
+void UWorldPartitionLevelStreamingPolicy::RemapSoftObjectPath(FSoftObjectPath& ObjectPath) const
 {
-	// Make sure to work on non-PIE path (can happen for modified actors in PIE)
-	int32 PIEInstanceID = INDEX_NONE;
-	FString SrcPath = UWorld::RemovePIEPrefix(ObjectPath.ToString(), &PIEInstanceID);
-	const FSoftObjectPath SrcObjectPath(SrcPath);
-
-	FName* CellName = ActorToCellRemapping.Find(FName(*SrcPath));
-	if (!CellName)
-	{
-		const FString& SubPathString = ObjectPath.GetSubPathString();
-		constexpr const TCHAR PersistenLevelName[] = TEXT("PersistentLevel.");
-		constexpr const int32 DotPos = UE_ARRAY_COUNT(PersistenLevelName);
-		if (SubPathString.StartsWith(PersistenLevelName))
-		{
-			const int32 SubObjectPos = SubPathString.Find(TEXT("."), ESearchCase::IgnoreCase, ESearchDir::FromStart, DotPos);
-			if (SubObjectPos != INDEX_NONE)
-			{
-				const FString ActorSubPathString = SubPathString.Left(SubObjectPos);
-				FSoftObjectPath ActorObjectPath(SrcObjectPath);
-				ActorObjectPath.SetSubPathString(ActorSubPathString);
-				CellName = ActorToCellRemapping.Find(FName(*ActorObjectPath.ToString()));
-			}
-		}
-	}
-
-	if (CellName)
-	{
-		if (!SrcObjectPath.GetSubPathString().IsEmpty())
-		{
-			UWorld* OuterWorld = WorldPartition->GetTypedOuter<UWorld>();
-			const FString PackagePath = UWorldPartitionLevelStreamingPolicy::GetCellPackagePath(*CellName, OuterWorld);
-			FString PrefixPath;
-			if (IsRunningCookCommandlet())
-			{
-				//@todo_ow: Temporary workaround. This information should be provided by the COTFS
-				const UPackage* Package = OuterWorld->GetPackage();
-				PrefixPath = FString::Printf(TEXT("%s/%s/_Generated_"), *FPackageName::GetLongPackagePath(Package->GetPathName()), *FPackageName::GetShortName(Package->GetName()));
-			}
-
-			// Use the WorldPartition world name here instead of using the world name from the path to support converting level instance paths to main world paths.
-			ObjectPath = FSoftObjectPath(FTopLevelAssetPath(FString::Printf(TEXT("%s%s.%s"), *PrefixPath, *PackagePath, *OuterWorld->GetName())), SrcObjectPath.GetSubPathString());
-			// Put back PIE prefix
-			if (OuterWorld->IsPlayInEditor() && (PIEInstanceID != INDEX_NONE))
-			{
-				ObjectPath.FixupForPIE(PIEInstanceID);
-			}
-		}
-	}
+	const FSoftObjectPath SrcPath(ObjectPath);
+	ConvertEditorPathToRuntimePath(SrcPath, ObjectPath);
 }
+
+bool UWorldPartitionLevelStreamingPolicy::StoreToExternalStreamingObject(URuntimeHashExternalStreamingObjectBase& OutExternalStreamingObject)
+{
+	if (Super::StoreToExternalStreamingObject(OutExternalStreamingObject))
+	{
+		OutExternalStreamingObject.SubObjectsToCellRemapping = MoveTemp(SubObjectsToCellRemapping);
+		return true;
+	}
+
+	return false;
+}
+
+#endif
 
 bool UWorldPartitionLevelStreamingPolicy::ConvertEditorPathToRuntimePath(const FSoftObjectPath& InPath, FSoftObjectPath& OutPath) const
 {
+	// Make sure to work on non-PIE path (can happen for modified actors in PIE)
 	const UWorld* OuterWorld = WorldPartition->GetTypedOuter<UWorld>();
 	const UPackage* OuterWorldPackage = OuterWorld->GetPackage();
-	const FTopLevelAssetPath WorldAssetPath(OuterWorld);
+	FTopLevelAssetPath WorldAssetPath(OuterWorld);
 
-	if (!OuterWorldPackage->HasAnyPackageFlags(PKG_PlayInEditor))
+#if WITH_EDITOR
+	const int32 PIEInstanceID = OuterWorldPackage->GetPIEInstanceID();
+	check(PIEInstanceID == INDEX_NONE || OuterWorld->IsPlayInEditor());
+	int32 PathPIEInstanceID = INDEX_NONE;
+	WorldAssetPath = UWorld::RemovePIEPrefix(WorldAssetPath.ToString(), &PathPIEInstanceID);
+	check(PathPIEInstanceID == INDEX_NONE || OuterWorldPackage->HasAnyPackageFlags(PKG_PlayInEditor));
+	check(PathPIEInstanceID == PIEInstanceID);
+
+	FString SrcPath = UWorld::RemovePIEPrefix(InPath.ToString(), &PathPIEInstanceID);
+	check(PathPIEInstanceID == INDEX_NONE || PathPIEInstanceID == PIEInstanceID);
+	const FSoftObjectPath SrcObjectPath(SrcPath);
+#else
+	const FSoftObjectPath SrcObjectPath(InPath);
+#endif
+
+	// Allow remapping of instanced source path or non-instanced source path
+	if (SrcObjectPath.GetAssetPath() != SourceWorldAssetPath && 
+		SrcObjectPath.GetAssetPath() != WorldAssetPath)
 	{
-		if (InPath.GetAssetPath() == WorldAssetPath)
+		return false;
+	}
+
+	// In the editor, the _LevelInstance_ID is appended to the persistent level, while at runtime it is appended to each cell package, so we need to remap it there if present.
+	// Also handle prefixes like "/Temp"
+	FString LevelInstanceSuffix;
+	FString LevelInstancePrefix;
+	const FString WorldAssetPackageName = WorldAssetPath.GetPackageName().ToString();
+	const FString SourceWorldAssetPackageName = SourceWorldAssetPath.GetPackageName().ToString();
+	if (WorldAssetPackageName.Len() > SourceWorldAssetPackageName.Len())
+	{
+		if (const int32 Index = WorldAssetPackageName.Find(SourceWorldAssetPackageName); Index != INDEX_NONE)
 		{
-			FString SubAssetName;
-			FString SubAssetContext;
-			if (InPath.GetSubPathString().Split(TEXT("."), &SubAssetContext, &SubAssetName))
+			LevelInstancePrefix = WorldAssetPackageName.Mid(0, Index);
+			LevelInstanceSuffix = WorldAssetPackageName.Mid(Index + SourceWorldAssetPackageName.Len());
+		}
+	}
+
+	FString SubAssetName;
+	FString SubAssetContext;
+	if (SrcObjectPath.GetSubPathString().Split(TEXT("."), &SubAssetContext, &SubAssetName))
+	{
+		if (SubAssetContext == TEXT("PersistentLevel"))
+		{
+			FString SubObjectName;
+			FString SubObjectContext(SubAssetName);
+			SubAssetName.Split(TEXT("."), &SubObjectContext, &SubObjectName);
+
+			// Try to find the corresponding streaming cell, if it doesn't exists the actor must be in the persistent level.
+			const FName* CellName = FindCellNameForSubObject(*SubObjectContext);
+			if (!CellName)
 			{
-				if (SubAssetContext == TEXT("PersistentLevel"))
-				{
-					FString SubObjectName;
-					FString SubObjectContext(SubAssetName);
-					SubAssetName.Split(TEXT("."), &SubObjectContext, &SubObjectName);
-
-					FString LevelInstanceTag;
-					FString WorldAssetPackageName = *WorldAssetPath.GetPackageName().ToString();
-					FString WorldAssetName = WorldAssetPath.GetAssetName().ToString();
-
-					// In the editor, the _LevelInstance_ID is appended to the persistent level, while at runtime it is appended to each cell package, so we need to remap it there if present.
-					const int32 LevelInstancePos = WorldAssetPackageName.Find(TEXT("_LevelInstance_"), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
-					if (LevelInstancePos != INDEX_NONE)
-					{
-						LevelInstanceTag = WorldAssetPackageName.RightChop(LevelInstancePos);
-						WorldAssetPackageName.LeftInline(LevelInstancePos);
-					}
-
-					// Try to find the corresponding streaming cell, if it doesn't exists the actor must be in the persistent level.
-					if (const FName* CellName = SubObjectsToCellRemapping.Find(*SubObjectContext))
-					{
-						OutPath = FString::Printf(TEXT("%s/_Generated_/%s%s.%s:%s"), *WorldAssetPackageName, *(CellName->ToString()), *LevelInstanceTag, *WorldAssetPath.GetAssetName().ToString(), *InPath.GetSubPathString());
-					}
-					else
-					{
-						OutPath = FString::Printf(TEXT("%s/_Generated_/%s%s.%s:%s"), *WorldAssetPackageName, *WorldAssetName, *LevelInstanceTag, *WorldAssetPath.GetAssetName().ToString(), *InPath.GetSubPathString());
-					}
-					return true;
-				}
+				OutPath = FSoftObjectPath(WorldAssetPath, InPath.GetSubPathString());
 			}
+#if WITH_EDITOR
+			else if (OuterWorld->IsGameWorld())
+			{
+				const FString PackagePath = UWorldPartitionLevelStreamingPolicy::GetCellPackagePath(*CellName, OuterWorld);
+				OutPath = FString::Printf(TEXT("%s.%s:%s"), *PackagePath, *OuterWorld->GetName(), *InPath.GetSubPathString());
+			}
+#endif
+			else
+			{
+				OutPath = FString::Printf(TEXT("%s%s/_Generated_/%s%s.%s:%s"), *LevelInstancePrefix, *SourceWorldAssetPackageName, *(CellName->ToString()), *LevelInstanceSuffix, *WorldAssetPath.GetAssetName().ToString(), *InPath.GetSubPathString());
+			}
+
+#if WITH_EDITOR
+			OutPath.FixupForPIE(PIEInstanceID);
+#endif
+			return true;
 		}
 	}
 
 	return false;
 }
-#endif
 
 UObject* UWorldPartitionLevelStreamingPolicy::GetSubObject(const TCHAR* SubObjectPath)
 {
@@ -235,29 +220,47 @@ UObject* UWorldPartitionLevelStreamingPolicy::GetSubObject(const TCHAR* SubObjec
 
 	// Support for subobjects such as Actor.Component
 	FString SubObjectName;
-	FString SubObjectContext;	
+	FString SubObjectContext;
 	if (!FString(SubObjectPath).Split(TEXT("."), &SubObjectContext, &SubObjectName))
 	{
 		SubObjectContext = SubObjectPath;
 	}
 
 	const FString SrcPath = UWorld::RemovePIEPrefix(*SubObjectContext);
-	if (FName* CellName = SubObjectsToCellRemapping.Find(FName(*SrcPath)))
+	if (const UWorldPartitionRuntimeLevelStreamingCell* Cell = FindCellForSubObject(*SrcPath))
 	{
-		if (UWorldPartitionRuntimeLevelStreamingCell* Cell = (UWorldPartitionRuntimeLevelStreamingCell*)StaticFindObject(UWorldPartitionRuntimeLevelStreamingCell::StaticClass(), GetOuterUWorldPartition()->RuntimeHash, *(CellName->ToString())))
+		if (UWorldPartitionLevelStreamingDynamic* LevelStreaming = Cell->GetLevelStreaming())
 		{
-			if (UWorldPartitionLevelStreamingDynamic* LevelStreaming = Cell->GetLevelStreaming())
+			if (LevelStreaming->GetLoadedLevel())
 			{
-				if (LevelStreaming->GetLoadedLevel())
-				{
-					return StaticFindObject(UObject::StaticClass(), LevelStreaming->GetLoadedLevel(), SubObjectPath);
-				}
+				return StaticFindObject(UObject::StaticClass(), LevelStreaming->GetLoadedLevel(), SubObjectPath);
 			}
 		}
 	}
 
 	return nullptr;
 }
+
+bool UWorldPartitionLevelStreamingPolicy::InjectExternalStreamingObject(URuntimeHashExternalStreamingObjectBase* ExternalStreamingObject)
+{
+	if (Super::InjectExternalStreamingObject(ExternalStreamingObject))
+	{
+		ExternalStreamingObjects.Add(ExternalStreamingObject);
+		return true;
+	}
+
+	return false;
+}
+
+bool UWorldPartitionLevelStreamingPolicy::RemoveExternalStreamingObject(URuntimeHashExternalStreamingObjectBase* ExternalStreamingObject)
+{
+	bool bSuccess = Super::RemoveExternalStreamingObject(ExternalStreamingObject);
+
+	ExternalStreamingObjects.RemoveSwap(ExternalStreamingObject);
+
+	return bSuccess;
+}
+
 
 void UWorldPartitionLevelStreamingPolicy::DrawRuntimeCellsDetails(UCanvas* Canvas, FVector2D& Offset)
 {
@@ -326,43 +329,59 @@ void UWorldPartitionLevelStreamingPolicy::DrawRuntimeCellsDetails(UCanvas* Canva
 	Offset.Y = MaxPosY;
 }
 
-/**
- * Debug Draw Streaming Status Legend
- */
-void UWorldPartitionLevelStreamingPolicy::DrawStreamingStatusLegend(UCanvas* Canvas, FVector2D& Offset)
+const FName* UWorldPartitionLevelStreamingPolicy::FindCellNameForSubObject(FName SubObjectName) const
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(UWorldPartitionLevelStreamingPolicy::DrawStreamingStatusLegend);
-
-	check(Canvas);
-
-	// Cumulate counter stats
-	int32 StatusCount[(int32)LEVEL_StreamingStatusCount] = { 0 };
-	ForEachActiveRuntimeCell([&StatusCount](const UWorldPartitionRuntimeCell* Cell)
+	if (const FName* CellName = SubObjectsToCellRemapping.Find(SubObjectName))
 	{
-		StatusCount[(int32)Cell->GetStreamingStatus()]++;
-	});
-
-	// @todo_ow: This is not exactly the good value, as we could have pending unload level from Level Instances, etc.
-	//           We could modify GetNumLevelsPendingPurge to return the number of pending purge levels from the grid, 
-	//           bu that will do for now.
-	StatusCount[LEVEL_UnloadedButStillAround] = FLevelStreamingGCHelper::GetNumLevelsPendingPurge();
-
-	// Draw legend
-	FVector2D Pos = Offset;
-	float MaxTextWidth = 0.f;
-	FWorldPartitionDebugHelper::DrawText(Canvas, TEXT("Streaming Status Legend"), GEngine->GetSmallFont(), FColor::Yellow, Pos, &MaxTextWidth);
-	
-	for (int32 i = 0; i < (int32)LEVEL_StreamingStatusCount; ++i)
-	{
-		EStreamingStatus Status = (EStreamingStatus)i;
-		const FColor& StatusColor = ULevelStreaming::GetLevelStreamingStatusColor(Status);
-		FString DebugString = *FString::Printf(TEXT("%d) %s"), i, ULevelStreaming::GetLevelStreamingStatusDisplayName(Status));
-		if (Status != LEVEL_Unloaded)
-		{
-			DebugString += *FString::Printf(TEXT(" (%d)"), StatusCount[(int32)Status]);
-		}
-		FWorldPartitionDebugHelper::DrawLegendItem(Canvas, *DebugString, GEngine->GetSmallFont(), StatusColor, FColor::White, Pos, &MaxTextWidth);
+		return CellName;
 	}
 
-	Offset.X += MaxTextWidth + 10;
+	for (const TWeakObjectPtr<URuntimeHashExternalStreamingObjectBase>& ExternalStreamingObject : ExternalStreamingObjects)
+	{
+		if (ExternalStreamingObject.IsValid())
+		{
+			if (const FName* CellName = ExternalStreamingObject.Get()->SubObjectsToCellRemapping.Find(SubObjectName))
+			{
+				return CellName;
+			}
+		}
+	}
+	
+	return nullptr;
+}
+
+const UWorldPartitionRuntimeLevelStreamingCell* UWorldPartitionLevelStreamingPolicy::FindCellForSubObject(FName SubObjectName) const
+{
+	FName CellName;
+	UObject* CellPackage = nullptr;
+	if (const FName* FoundCell = SubObjectsToCellRemapping.Find(SubObjectName))
+	{
+		CellName = *FoundCell;
+		CellPackage = GetOuterUWorldPartition()->RuntimeHash;
+	}
+
+	if (!CellPackage)
+	{
+		for (const TWeakObjectPtr<URuntimeHashExternalStreamingObjectBase>& ExternalStreamingObject : ExternalStreamingObjects)
+		{
+			if (ExternalStreamingObject.IsValid())
+			{
+				if (const FName* FoundCell = ExternalStreamingObject->SubObjectsToCellRemapping.Find(SubObjectName))
+				{
+					CellName = *FoundCell;
+					CellPackage = ExternalStreamingObject.Get();
+					break;
+				}
+			}
+		}
+	}
+	
+
+	if (CellPackage)
+	{
+		check(CellName.IsValid());
+		return (UWorldPartitionRuntimeLevelStreamingCell*)StaticFindObject(UWorldPartitionRuntimeLevelStreamingCell::StaticClass(), CellPackage, *(CellName.ToString()));
+	}
+
+	return nullptr;
 }

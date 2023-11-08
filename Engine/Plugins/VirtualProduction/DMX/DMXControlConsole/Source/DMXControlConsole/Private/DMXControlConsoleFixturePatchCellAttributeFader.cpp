@@ -2,16 +2,9 @@
 
 #include "DMXControlConsoleFixturePatchCellAttributeFader.h"
 
-#include "DMXProtocolTypes.h"
 #include "DMXControlConsoleFixturePatchMatrixCell.h"
 #include "Library/DMXEntityFixtureType.h"
 
-
-#define LOCTEXT_NAMESPACE "DMXControlConsoleFixturePatchCellAttributeFader"
-
-UDMXControlConsoleFixturePatchCellAttributeFader::UDMXControlConsoleFixturePatchCellAttributeFader()
-	: DataType(EDMXFixtureSignalFormat::E8Bit)
-{}
 
 UDMXControlConsoleFaderGroup& UDMXControlConsoleFixturePatchCellAttributeFader::GetOwnerFaderGroupChecked() const
 {
@@ -30,6 +23,27 @@ int32 UDMXControlConsoleFixturePatchCellAttributeFader::GetIndex() const
 	const TArray<UDMXControlConsoleFaderBase*> CellAttributeFaders = Outer->GetFaders();
 	return CellAttributeFaders.IndexOfByKey(this);
 }
+
+#if WITH_EDITOR
+void UDMXControlConsoleFixturePatchCellAttributeFader::SetIsMatchingFilter(bool bMatches)
+{
+	bIsMatchingFilter = bMatches;
+
+	UDMXControlConsoleFixturePatchMatrixCell& MatrixCell = GetOwnerMatrixCellChecked();
+	// Set Matrix Cell to not visible if it has no more visible CellAttributeFaders
+	if (MatrixCell.IsMatchingFilter() && !bIsMatchingFilter)
+	{
+		if (!MatrixCell.HasVisibleInEditorCellAttributeFaders())
+		{
+			MatrixCell.SetIsMatchingFilter(false);
+		}
+	}
+	else if (!MatrixCell.IsMatchingFilter() && bIsMatchingFilter)
+	{
+		MatrixCell.SetIsMatchingFilter(true);
+	}
+}
+#endif // WITH_EDITOR
 
 void UDMXControlConsoleFixturePatchCellAttributeFader::Destroy()
 {
@@ -58,7 +72,8 @@ void UDMXControlConsoleFixturePatchCellAttributeFader::SetPropertiesFromFixtureC
 
 	UniverseID = InUniverseID;
 	StartingAddress = StartingChannel;
-	Value = FixtureCellAttribute.DefaultValue;
+	DefaultValue = FixtureCellAttribute.DefaultValue;
+	Value = DefaultValue;
 	MinValue = 0;
 
 	SetDataType(FixtureCellAttribute.DataType);
@@ -73,25 +88,3 @@ UDMXControlConsoleFixturePatchMatrixCell& UDMXControlConsoleFixturePatchCellAttr
 
 	return *Outer;
 }
-
-void UDMXControlConsoleFixturePatchCellAttributeFader::SetValueRange()
-{
-	const uint8 NumChannels = static_cast<uint8>(DataType) + 1;
-	MaxValue = MinValue + ((uint32)FMath::Pow(2.f, 8.f * NumChannels) - 1);
-}
-
-void UDMXControlConsoleFixturePatchCellAttributeFader::SetDataType(EDMXFixtureSignalFormat InDataType)
-{
-	DataType = InDataType;
-	SetAddressRange(StartingAddress);
-	SetValueRange();
-}
-
-void UDMXControlConsoleFixturePatchCellAttributeFader::SetAddressRange(int32 InStartingAddress)
-{
-	const uint8 NumChannels = static_cast<uint8>(DataType);
-	StartingAddress = FMath::Clamp(InStartingAddress, 1, DMX_MAX_ADDRESS - NumChannels);
-	EndingAddress = StartingAddress + NumChannels;
-}
-
-#undef LOCTEXT_NAMESPACE

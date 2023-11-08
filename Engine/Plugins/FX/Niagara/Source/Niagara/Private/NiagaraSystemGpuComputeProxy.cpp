@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraSystemGpuComputeProxy.h"
+#include "NiagaraSystem.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraEmitterInstance.h"
 #include "NiagaraComputeExecutionContext.h"
@@ -73,7 +74,7 @@ void FNiagaraSystemGpuComputeProxy::AddToRenderThread(FNiagaraGpuComputeDispatch
 	DebugOwnerComputeDispatchInterface = ComputeDispatchInterface;
 
 	ENQUEUE_RENDER_COMMAND(AddProxyToComputeDispatchInterface)(
-		[=](FRHICommandListImmediate& RHICmdList)
+		[this, ComputeDispatchInterface](FRHICommandListImmediate& RHICmdList)
 		{
 			ComputeDispatchInterface->AddGpuComputeProxy(this);
 
@@ -103,10 +104,10 @@ void FNiagaraSystemGpuComputeProxy::RemoveFromRenderThread(FNiagaraGpuComputeDis
 	DebugOwnerComputeDispatchInterface = nullptr;
 
 	ENQUEUE_RENDER_COMMAND(RemoveFromRenderThread)(
-		[=](FRHICommandListImmediate& RHICmdList)
+		[this, ComputeDispatchInterface, bDeleteProxy](FRHICommandListImmediate& RHICmdList)
 		{
 			ComputeDispatchInterface->RemoveGpuComputeProxy(this);
-			ReleaseTicks(ComputeDispatchInterface->GetGPUInstanceCounterManager(), TNumericLimits<int32>::Max());
+			ReleaseTicks(ComputeDispatchInterface->GetGPUInstanceCounterManager(), TNumericLimits<int32>::Max(), true);
 
 			for (FNiagaraComputeExecutionContext* ComputeContext : ComputeContexts)
 			{
@@ -136,9 +137,9 @@ void FNiagaraSystemGpuComputeProxy::ClearTicksFromRenderThread(FNiagaraGpuComput
 	check(DebugOwnerComputeDispatchInterface == ComputeDispatchInterface);
 
 	ENQUEUE_RENDER_COMMAND(ClearTicksFromProxy)(
-		[=](FRHICommandListImmediate& RHICmdList)
+		[this, ComputeDispatchInterface](FRHICommandListImmediate& RHICmdList)
 		{
-			ReleaseTicks(ComputeDispatchInterface->GetGPUInstanceCounterManager(), TNumericLimits<int32>::Max());
+			ReleaseTicks(ComputeDispatchInterface->GetGPUInstanceCounterManager(), TNumericLimits<int32>::Max(), true);
 		}
 	);
 }
@@ -171,7 +172,7 @@ void FNiagaraSystemGpuComputeProxy::QueueTick(const FNiagaraGPUSystemTick& Tick)
 	}
 }
 
-void FNiagaraSystemGpuComputeProxy::ReleaseTicks(FNiagaraGPUInstanceCountManager& GPUInstanceCountManager, int32 NumTicksToRelease)
+void FNiagaraSystemGpuComputeProxy::ReleaseTicks(FNiagaraGPUInstanceCountManager& GPUInstanceCountManager, int32 NumTicksToRelease, bool bLastViewFamily)
 {
 	check(IsInRenderingThread());
 
@@ -190,10 +191,14 @@ void FNiagaraSystemGpuComputeProxy::ReleaseTicks(FNiagaraGPUInstanceCountManager
 		ComputeContext->bHasTickedThisFrame_RT = false;
 		ComputeContext->CurrentMaxInstances_RT = 0;
 
-		// Clear counter offsets
-		for (int i = 0; i < UE_ARRAY_COUNT(ComputeContext->DataBuffers_RT); ++i)
+		// This logic is deferred to the Niagara::MultiViewPreviousDataClear Pass for multi-view rendering
+		if (bLastViewFamily)
 		{
-			ComputeContext->DataBuffers_RT[i]->ClearGPUInstanceCount();
+			// Clear counter offsets
+			for (int i = 0; i < UE_ARRAY_COUNT(ComputeContext->DataBuffers_RT); ++i)
+			{
+				ComputeContext->DataBuffers_RT[i]->ClearGPUInstanceCount();
+			}
 		}
 	}
 }

@@ -2,13 +2,19 @@
 
 #pragma once
 
+#include "PCGCommon.h"
 #include "PCGNode.h"
 #include "PCGSettings.h"
+#include "Graph/PCGStackContext.h"
 
 #include "PropertyBag.h"
 #include "UObject/ObjectPtr.h"
 
 #include "PCGGraph.generated.h"
+
+#if WITH_EDITOR
+struct FEdGraphPinType;
+#endif // WITH_EDITOR
 
 enum class EPCGGraphParameterEvent
 {
@@ -18,12 +24,15 @@ enum class EPCGGraphParameterEvent
 	Removed,
 	PropertyModified,
 	ValueModifiedLocally,
-	ValueModifiedByParent
+	ValueModifiedByParent,
+	MultiplePropertiesAdded
 };
 
 #if WITH_EDITOR
-	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPCGGraphChanged, UPCGGraphInterface* /*Graph*/, EPCGChangeType /*ChangeType*/);
-	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnPCGGraphParametersChanged, UPCGGraphInterface* /*Graph*/, EPCGGraphParameterEvent /*ChangeType*/, FName /*ChangedPropertyName*/);
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPCGGraphChanged, UPCGGraphInterface* /*Graph*/, EPCGChangeType /*ChangeType*/);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnPCGGraphGridSizesChanged, UPCGGraphInterface* /*Graph*/);
+DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnPCGGraphParametersChanged, UPCGGraphInterface* /*Graph*/, EPCGGraphParameterEvent /*ChangeType*/, FName /*ChangedPropertyName*/);
+DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnPCGGraphDynamicallyExecuted, UPCGGraphInterface* /*Graph*/, const TWeakObjectPtr<UPCGComponent> /*SourceComponent*/, FPCGStack /*InvocationStack*/);
 #endif // WITH_EDITOR
 
 /**
@@ -87,14 +96,20 @@ public:
 
 	virtual const FInstancedPropertyBag* GetUserParametersStruct() const PURE_VIRTUAL(UPCGGraphInterface::GetUserParametersStruct, return nullptr;)
 
+	// Mutable version should not be used outside of testing, since there are callbacks fired when parameters changes.
+	// TODO: Make it safe to change parameters from the outside.
+	FInstancedPropertyBag* GetMutableUserParametersStruct_Unsafe() const { return const_cast<FInstancedPropertyBag*>(GetUserParametersStruct()); }
+
 	bool IsInstance() const;
 
-	/** A graph interface is equivalent to another graph interface if they are the same (same ptr), or if they have the same graph. Will be overriden when graph instance supports overrides. */
+	/** A graph interface is equivalent to another graph interface if they are the same (same ptr), or if they have the same graph. Will be overridden when graph instance supports overrides. */
 	virtual bool IsEquivalent(const UPCGGraphInterface* Other) const;
 
 #if WITH_EDITOR
 	FOnPCGGraphChanged OnGraphChangedDelegate;
+	FOnPCGGraphGridSizesChanged OnGraphGridSizesChangedDelegate;
 	FOnPCGGraphParametersChanged OnGraphParametersChangedDelegate;
+	FOnPCGGraphDynamicallyExecuted OnGraphDynamicallyExecutedDelegate;
 #endif // WITH_EDITOR
 };
 
@@ -103,6 +118,7 @@ class PCG_API UPCGGraph : public UPCGGraphInterface
 {
 #if WITH_EDITOR
 	friend class FPCGEditor;
+	friend class FPCGSubgraphHelpers;
 #endif // WITH_EDITOR
 
 	GENERATED_BODY()
@@ -128,6 +144,11 @@ public:
 	virtual const UPCGGraph* GetGraph() const override { return this; }
 	/** ~End UPCGGraphInterface interface */
 
+	// Default grid size for generation. For hierarchical generation, nodes outside of grid size graph ranges will generate on this grid.
+	EPCGHiGenGrid GetDefaultGrid() const { ensure(IsHierarchicalGenerationEnabled()); return HiGenGridSize; }
+	uint32 GetDefaultGridSize() const;
+	bool IsHierarchicalGenerationEnabled() const { return bUseHierarchicalGeneration; }
+
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = AssetInfo, AssetRegistrySearchable)
 	bool bExposeToLibrary = false;
@@ -148,6 +169,9 @@ public:
 	/** Creates a default node based on the settings class wanted. Returns the newly created node. */
 	UFUNCTION(BlueprintCallable, Category = Graph, meta=(DeterminesOutputType = "InSettingsClass", DynamicOutputParam = "DefaultNodeSettings"))
 	UPCGNode* AddNodeOfType(TSubclassOf<class UPCGSettings> InSettingsClass, UPCGSettings*& DefaultNodeSettings);
+
+	template <typename T, typename = typename std::enable_if_t<std::is_base_of_v<UPCGSettings, T>>>
+	UPCGNode* AddNodeOfType(T*& DefaultNodeSettings);
 
 	/** Creates a node containing an instance to the given settings. Returns the created node. */
 	UFUNCTION(BlueprintCallable, Category = Graph)
@@ -190,10 +214,11 @@ public:
 	/** Calls the lambda on every node in graph. */
 	void ForEachNode(const TFunction<void(UPCGNode*)>& Action);
 
-	bool RemoveAllInboundEdges(UPCGNode* InNode);
-	bool RemoveAllOutboundEdges(UPCGNode* InNode);
 	bool RemoveInboundEdges(UPCGNode* InNode, const FName& InboundLabel);
 	bool RemoveOutboundEdges(UPCGNode* InNode, const FName& OutboundLabel);
+
+	/** Determine the relevant grid sizes by inspecting all HiGenGridSize nodes. */
+	void GetGridSizes(PCGHiGenGrid::FSizeArray& OutGridSizes, bool& bOutHasUnbounded) const;
 
 #if WITH_EDITOR
 	void DisableNotificationsForEditor();
@@ -209,16 +234,28 @@ public:
 
 	const TArray<TObjectPtr<UObject>>& GetExtraEditorNodes() const { return ExtraEditorNodes; }
 	void SetExtraEditorNodes(const TArray<TObjectPtr<const UObject>>& InNodes);
+
+	bool IsInspecting() const { return bIsInspecting; }
+	void EnableInspection() { bIsInspecting = true; }
+	void DisableInspection() { bIsInspecting = false; }
+	bool DebugFlagAppliesToIndividualComponents() const { return bDebugFlagAppliesToIndividualComponents; }
+	void RemoveExtraEditorNode(const UObject* InNode);
 #endif
 
 #if WITH_EDITOR
-	FPCGTagToSettingsMap GetTrackedTagsToSettings() const;
-	void GetTrackedTagsToSettings(FPCGTagToSettingsMap& OutTagsToSettings, TArray<TObjectPtr<const UPCGGraph>>& OutVisitedGraphs) const;
+	FPCGActorSelectionKeyToSettingsMap GetTrackedActorKeysToSettings() const;
+	void GetTrackedActorKeysToSettings(FPCGActorSelectionKeyToSettingsMap& OutKeysToSettings, TArray<TObjectPtr<const UPCGGraph>>& OutVisitedGraphs) const;
 #endif
+
+	/** Size of grid on which this node should be executed. Nodes execute at the minimum of all input grid sizes. */
+	uint32 GetNodeGenerationGridSize(const UPCGNode* InNode, uint32 InDefaultGridSize) const;
 
 protected:
 	void OnNodeAdded(UPCGNode* InNode);
 	void OnNodeRemoved(UPCGNode* InNode);
+
+	/** Calculates node grid size. Not thread safe, called within write lock. */
+	uint32 CalculateNodeGridSizeRecursive_Unsafe(const UPCGNode* InNode, uint32 InDefaultGridSize) const;
 
 	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = Graph)
 	TArray<TObjectPtr<UPCGNode>> Nodes;
@@ -237,11 +274,43 @@ protected:
 #endif // WITH_EDITORONLY_DATA
 
 	// Parameters
-	UPROPERTY(EditAnywhere, Category = Instance, meta = (DisplayName = "Parameters", NoResetToDefault))
+	UPROPERTY(EditAnywhere, Category = Instance, meta = (DisplayName = "Parameters", NoResetToDefault, DefaultType = "EPropertyBagPropertyType::Double", AllowArrays = "false", IsPinTypeAccepted = "UserParametersIsPinTypeAccepted", CanRemoveProperty = "UserParametersCanRemoveProperty"))
 	FInstancedPropertyBag UserParameters;
+
+#if WITH_EDITOR
+	UFUNCTION(BlueprintInternalUseOnly)
+	bool UserParametersIsPinTypeAccepted(FEdGraphPinType InPinType);
+	
+	UFUNCTION(BlueprintInternalUseOnly)
+	bool UserParametersCanRemoveProperty(FGuid InPropertyID, FName InPropertyName);
+#endif // WITH_EDITOR
+
+	UPROPERTY(EditAnywhere, Category = Settings)
+	bool bUseHierarchicalGeneration = false;
+
+	UPROPERTY(EditAnywhere, Category = Settings, meta = (DisplayName = "HiGen Default Grid Size", EditCondition = "bUseHierarchicalGeneration"))
+	EPCGHiGenGrid HiGenGridSize = EPCGHiGenGrid::Grid256;
+
+	/** Execution grid size for nodes. */
+	mutable TMap<const UPCGNode*, uint32> NodeToGridSize;
+	mutable FRWLock NodeToGridSizeLock;
+
+#if WITH_EDITORONLY_DATA
+	/** When true the Debug flag in the graph editor will display debug information contextually for the selected debug object. Otherwise
+	* debug information is displayed for all components using a graph (requires regenerate).
+	*/
+	UPROPERTY(EditAnywhere, Category = Debug)
+	bool bDebugFlagAppliesToIndividualComponents = true;
+#endif // WITH_EDITORONLY_DATA
 
 public:
 	virtual const FInstancedPropertyBag* GetUserParametersStruct() const override { return &UserParameters; }
+
+	// Add new user parameters using an array of descriptors. Can also provide an original graph to copy the values.
+	// Original Graph needs to have the properties.
+	// Be careful if there is any overlap between existing parameters, that also exists in the original graph, they will be overridden by the original.
+	// Best used on a brand new PCG Graph.
+	void AddUserParameters(const TArray<FPropertyBagPropertyDesc>& InDescs, const UPCGGraph* InOptionalOriginalGraph = nullptr);
 
 #if WITH_EDITOR
 private:
@@ -257,7 +326,7 @@ private:
 	bool bIsNotifying = false;
 	bool bUserPausedNotificationsInGraphEditor = false;
 	int32 NumberOfUserParametersPreEdit = 0;
-	FName UserParameterModifiedName = NAME_None;
+	bool bIsInspecting = false;
 #endif // WITH_EDITOR
 };
 
@@ -273,6 +342,8 @@ public:
 
 	// ~Begin UObject interface
 	virtual void PostLoad() override;
+	virtual void PostDuplicate(bool bDuplicateForPIE) override;
+	virtual void PostEditImport() override;
 	virtual void BeginDestroy() override;
 
 #if WITH_EDITOR
@@ -283,15 +354,14 @@ public:
 	virtual void PostEditUndo() override;
 	// ~End UObject interface
 
-	// Reconstruction script specific, to fix callbacks on reconstructed component
-	// and teardown callback on trashed component.
-	void FixCallbacks();
+	void SetupCallbacks();
 	void TeardownCallbacks();
 #endif
 
 protected:
 #if WITH_EDITOR
 	void OnGraphChanged(UPCGGraphInterface* InGraph, EPCGChangeType ChangeType);
+	void OnGraphGridSizesChanged(UPCGGraphInterface* InGraph);
 	void NotifyGraphParametersChanged(EPCGGraphParameterEvent InChangeType, FName InChangedPropertyName);
 	void OnGraphParametersChanged(UPCGGraphInterface* InGraph, EPCGGraphParameterEvent InChangeType, FName InChangedPropertyName);
 #endif
@@ -319,10 +389,17 @@ private:
 #if WITH_EDITORONLY_DATA
 	// Transient, to keep track the undo/redo changed the graph.
 	UPCGGraphInterface* UndoRedoGraphCache = nullptr;
-
-	FName UserParameterModifiedName = NAME_None;
 #endif // WITH_EDITORONLY_DATA
 };
+
+template <typename T, typename>
+UPCGNode* UPCGGraph::AddNodeOfType(T*& DefaultNodeSettings)
+{
+	UPCGSettings* TempSettings = DefaultNodeSettings;
+	UPCGNode* Node = AddNodeOfType(T::StaticClass(), TempSettings);
+	DefaultNodeSettings = Cast<T>(TempSettings);
+	return Node;
+}
 
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "CoreMinimal.h"

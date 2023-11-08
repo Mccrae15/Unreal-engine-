@@ -475,7 +475,7 @@ void UDiffAssetRegistriesCommandlet::ConsistencyCheck(const FString& OldPath, co
 	{
 		const FAssetPackageData* Data = PackageMap[Package];
 
-		if (!GuidModified.Contains(Package))
+		if (!GuidModified.Contains(Package) && Data->DiskSize >= 0)
 		{
 			++Changes;
 			ChangeBytes += Data->DiskSize;
@@ -504,7 +504,7 @@ void UDiffAssetRegistriesCommandlet::ConsistencyCheck(const FString& OldPath, co
 	Rescale(ChangeBytes, ChangeValue, ChangeExp);
 
 	UE_LOG(LogDiffAssets, Display, TEXT("Summary:"));
-	UE_LOG(LogDiffAssets, Display, TEXT("%d nondeterministic cooks, %8.3f %cB"), Changes, ChangeValue, " KMGTP"[ChangeExp]);
+	UE_LOG(LogDiffAssets, Display, TEXT("%d nondeterministic cooks, %8.3f %cB"), Changes, ChangeValue, TCHAR(" KMGTP"[ChangeExp]));
 }
 
 bool	UDiffAssetRegistriesCommandlet::IsInRelevantChunk(FAssetRegistryState& InRegistryState, FName InAssetPath)
@@ -883,34 +883,13 @@ void UDiffAssetRegistriesCommandlet::LogChangedFiles(FArchive *CSVFile, FString 
 
 			if (CSVFile)
 			{
-				CSVFile->Logf(TEXT("%c,%s,%s,%d,%d,%d,%s"), classification, *AssetPath.ToString(), *ClassName.ToString(), ChangeInfo.ChangedBytes, PrevData->DiskSize, Changelist, *GetChunkIDString(NewState));
+				CSVFile->Logf(TEXT("%c,%s,%s,%d,%d,%d,%s"), TCHAR(classification), *AssetPath.ToString(), *ClassName.ToString(), ChangeInfo.ChangedBytes, PrevData->DiskSize, Changelist, *GetChunkIDString(NewState));
 			}
 
 			if (bIsVerbose)
 			{
-				UE_LOG(LogDiffAssets, Display, TEXT("%c %s : (Class=%s,NewSize=%d bytes,OldSize=%d bytes)"), classification, *AssetPath.ToString(), *ClassName.ToString(), ChangeInfo.ChangedBytes, PrevData->DiskSize);
+				UE_LOG(LogDiffAssets, Display, TEXT("%c %s : (Class=%s,NewSize=%d bytes,OldSize=%d bytes)"), TCHAR(classification), *AssetPath.ToString(), *ClassName.ToString(), ChangeInfo.ChangedBytes, PrevData->DiskSize);
 			}
-			//UE_LOG(LogDiffAssets, Display, TEXT("Source file changed: %s"), (flags & EAssetFlags::GuidChange) ? TEXT("true") : TEXT("false"));
-			/*if ((flags & EAssetFlags::GuidChange) && bMatchChangelists)
-			{
-				UE_LOG(LogDiffAssets, Display, TEXT("Last change: %d"), Changelist);
-			}*/
-#if 0			
-			TArray<FAssetIdentifier> Dependencies;
-			NewState.GetDependencies(AssetPath, Dependencies, EAssetRegistryDependencyType::Hard);
-			if (Dependencies.Num() > 0)
-			{
-				UE_LOG(LogDiffAssets, Display, TEXT("Dependency changes:"));
-
-				for (const FAssetIdentifier& Dependency : Dependencies)
-				{
-					if (AssetPathToSourceChanged.FindOrAdd(Dependency.PackageName))
-					{
-						UE_LOG(LogDiffAssets, Display, TEXT("  %s: %d"), *Dependency.PackageName.ToString(), AssetPathToChangelist.FindOrAdd(Dependency.PackageName));
-					}
-				}
-			}
-#endif
 		}
 		else if (ChangeInfo.Deletes)
 		{

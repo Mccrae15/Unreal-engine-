@@ -35,12 +35,16 @@ public:
 	struct FUsdInfoCacheImpl;
 
 	FUsdInfoCache();
+	FUsdInfoCache(const FUsdInfoCache& Other);
 	virtual ~FUsdInfoCache();
 
 	bool Serialize(FArchive& Ar);
 
 	// Returns whether we contain any info about prim at 'Path' at all
 	bool ContainsInfoAboutPrim(const UE::FSdfPath& Path) const;
+
+	// Returns a list of all prims we have generic info about
+	TSet<UE::FSdfPath> GetKnownPrims() const;
 
 	void RebuildCacheForSubtree(const UE::FUsdPrim& Prim, FUsdSchemaTranslationContext& Context);
 
@@ -55,6 +59,20 @@ public:
 	UE::FSdfPath UnwindToNonCollapsedPath(const UE::FSdfPath& Path, ECollapsingType CollapsingType) const;
 
 public:
+	// Returns the paths to prims that, when translated into assets or components, also require reading the prim at
+	// 'Path'. e.g. providing the path to a Shader prim will return the paths to all Material prims for which the
+	// translation involves reading that particular Shader.
+	TSet<UE::FSdfPath> GetMainPrims(const UE::FSdfPath& AuxPrimPath) const;
+
+	// The inverse of the function above: Provide it with the path to a Material prim and it will return the set of
+	// paths to all Shader prims that need to be read to translate that Material prim into material assets
+	TSet<UE::FSdfPath> GetAuxiliaryPrims(const UE::FSdfPath& MainPrimPath) const;
+
+public:
+	// Returns the set of paths to all prims that have a material:binding relationship to the particular material at
+	// 'Path', if any.
+	// Returns a copy for thread safety.
+	TSet<UE::FSdfPath> GetMaterialUsers(const UE::FSdfPath& Path) const;
 	bool IsMaterialUsed(const UE::FSdfPath& Path) const;
 
 public:
@@ -66,20 +84,27 @@ public:
 	TOptional<uint64> GetSubtreeMaterialSlotCount(const UE::FSdfPath& Path);
 	TOptional<TArray<UsdUtils::FUsdPrimMaterialSlot>> GetSubtreeMaterialSlots(const UE::FSdfPath& Path);
 
+	// Returns true if Path could potentially be collapsed as a Geometry Cache asset
+	bool IsPotentialGeometryCacheRoot(const UE::FSdfPath& Path) const;
+
 public:
 	void LinkAssetToPrim(const UE::FSdfPath& Path, UObject* Asset);
 
-	TSet<TWeakObjectPtr<UObject>> RemoveAllAssetPrimLinks(const UE::FSdfPath& Path);
+	TArray<TWeakObjectPtr<UObject>> RemoveAllAssetPrimLinks(const UE::FSdfPath& Path);
+	void RemoveAllAssetPrimLinks();
 
-	TSet<TWeakObjectPtr<UObject>> GetAllAssetsForPrim(const UE::FSdfPath& Path) const;
+	TArray<TWeakObjectPtr<UObject>> GetAllAssetsForPrim(const UE::FSdfPath& Path) const;
 
 	template<typename T = UObject>
 	T* GetSingleAssetForPrim(const UE::FSdfPath& Path) const
 	{
-		TSet<TWeakObjectPtr<UObject>> Assets = GetAllAssetsForPrim(Path);
-		for (const TWeakObjectPtr<UObject>& Asset : Assets)
+		TArray<TWeakObjectPtr<UObject>> Assets = GetAllAssetsForPrim(Path);
+
+		// Search back to front so that if we generate a new version of an asset type we prefer
+		// returning that
+		for (int32 Index = Assets.Num() - 1; Index >= 0; --Index)
 		{
-			if (T* CastAsset = Cast<T>(Asset.Get()))
+			if (T* CastAsset = Cast<T>(Assets[Index].Get()))
 			{
 				return CastAsset;
 			}
@@ -89,11 +114,11 @@ public:
 	}
 
 	template<typename T>
-	TSet<T*> GetAssetsForPrim(const UE::FSdfPath& Path) const
+	TArray<T*> GetAssetsForPrim(const UE::FSdfPath& Path) const
 	{
-		TSet<TWeakObjectPtr<UObject>> Assets = GetAllAssetsForPrim(Path);
+		TArray<TWeakObjectPtr<UObject>> Assets = GetAllAssetsForPrim(Path);
 
-		TSet<T*> CastAssets;
+		TArray<T*> CastAssets;
 		CastAssets.Reserve(Assets.Num());
 
 		for (const TWeakObjectPtr<UObject>& Asset : Assets)
@@ -107,8 +132,8 @@ public:
 		return CastAssets;
 	}
 
-	UE::FSdfPath GetPrimForAsset(UObject* Asset) const;
-	TMap<UE::FSdfPath, TSet<TWeakObjectPtr<UObject>>> GetAllAssetPrimLinks() const;
+	TArray<UE::FSdfPath> GetPrimsForAsset(UObject* Asset) const;
+	TMap<UE::FSdfPath, TArray<TWeakObjectPtr<UObject>>> GetAllAssetPrimLinks() const;
 
 private:
 	TUniquePtr<FUsdInfoCacheImpl> Impl;

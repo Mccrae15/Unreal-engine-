@@ -137,20 +137,18 @@ public:
 		Elements.Add(FVertexElement(0, Offset, VET_Float2, 0, InitialStride, false));
 	}
 
-	virtual void InitDynamicRHI()
+	virtual void InitRHI(FRHICommandListBase& RHICmdList)
 	{
 		FVertexDeclarationElementList Elements;
 		int32	Offset = 0;
 
 		FillDeclElements(Elements, Offset);
 
-		// Create the vertex declaration for rendering the factory normally.
-		// This is done in InitDynamicRHI instead of InitRHI to allow FParticleSpriteVertexFactory::InitRHI
-		// to rely on it being initialized, since InitDynamicRHI is called before InitRHI.
+		// Create the vertex declaration for rendering the factory normally
 		VertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration(Elements);
 	}
 
-	virtual void ReleaseDynamicRHI()
+	virtual void ReleaseRHI()
 	{
 		VertexDeclarationRHI.SafeRelease();
 	}
@@ -191,7 +189,7 @@ void FNiagaraSpriteVertexFactory::GetPSOPrecacheVertexFetchElements(EVertexInput
 /**
  *	Initialize the Render Hardware Interface for this vertex factory
  */
-void FNiagaraSpriteVertexFactory::InitRHI()
+void FNiagaraSpriteVertexFactory::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	InitStreams();
 	SetDeclaration(GParticleSpriteVertexDeclaration.VertexDeclarationRHI);

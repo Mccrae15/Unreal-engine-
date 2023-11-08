@@ -10,6 +10,7 @@
 #include "MuCOE/Nodes/CustomizableObjectNodeMaterial.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeMorphMaterial.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeSkeletalMesh.h"
+#include "MuCOE/UnrealEditorPortabilityHelpers.h"
 #include "PropertyCustomizationHelpers.h"
 #include "Widgets/Input/STextComboBox.h"
 
@@ -50,14 +51,17 @@ void FCustomizableObjectNodeMorphMaterialDetails::CustomizeDetails( IDetailLayou
 			{
 				if ( const UCustomizableObjectNodeSkeletalMesh* TypedSourceNode = Cast<UCustomizableObjectNodeSkeletalMesh>(BaseSourcePin->GetOwningNode()) )
 				{
-					for (int m = 0; m < TypedSourceNode->SkeletalMesh->GetMorphTargets().Num(); ++m )
+					if (TypedSourceNode->SkeletalMesh)
 					{
-						FString MorphName = *TypedSourceNode->SkeletalMesh->GetMorphTargets()[m]->GetName();
-						MorphTargetComboOptions.Add( MakeShareable( new FString( MorphName ) ) );
-
-						if (Node->MorphTargetName == MorphName)
+						for (int m = 0; m < TypedSourceNode->SkeletalMesh->GetMorphTargets().Num(); ++m )
 						{
-							ItemToSelect = MorphTargetComboOptions.Last();
+							FString MorphName = *TypedSourceNode->SkeletalMesh->GetMorphTargets()[m]->GetName();
+							MorphTargetComboOptions.Add( MakeShareable( new FString( MorphName ) ) );
+
+							if (Node->MorphTargetName == MorphName)
+							{
+								ItemToSelect = MorphTargetComboOptions.Last();
+							}
 						}
 					}
 				}
@@ -74,7 +78,7 @@ void FCustomizableObjectNodeMorphMaterialDetails::CustomizeDetails( IDetailLayou
 			.CustomWidget()
 			[
 				SNew(SBorder)
-				.BorderImage(FAppStyle::GetBrush("NoBorder"))
+				.BorderImage(UE_MUTABLE_GET_BRUSH("NoBorder"))
 				.Padding(FMargin(0.0f, 0.0f, 10.0f, 0.0f))
 				[
 					SNew( SHorizontalBox )

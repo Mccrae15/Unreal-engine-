@@ -21,6 +21,7 @@
 #include "SkeletalMeshToolMenuContext.h"
 #include "Components/MeshComponent.h"
 #include "RawIndexBuffer.h"
+#include "Components/InstancedStaticMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/ShapeComponent.h"
 #include "Engine/SkinnedAssetCommon.h"
@@ -423,6 +424,20 @@ static void StaticMeshToRawMeshes(UStaticMeshComponent* InStaticMeshComponent, i
 
 	const int32 NumLODs = InStaticMeshComponent->GetStaticMesh()->GetRenderData()->LODResources.Num();
 
+	const UInstancedStaticMeshComponent* ISMC = Cast<UInstancedStaticMeshComponent>(InStaticMeshComponent);
+	const int32 NumInstances = ISMC ? ISMC->GetInstanceCount() : 1;
+	auto GetInstanceTransformMatrix = [ISMC, InStaticMeshComponent, NumInstances](int32 InstanceIndex)
+		{
+			if (ISMC && InstanceIndex <= NumInstances)
+			{
+				FTransform InstanceTransform;
+				ISMC->GetInstanceTransform(InstanceIndex, InstanceTransform);
+				return InstanceTransform.ToMatrixWithScale();
+			}
+
+			return FMatrix::Identity;
+		};
+
 	for (int32 OverallLODIndex = 0; OverallLODIndex < InOverallMaxLODs; OverallLODIndex++)
 	{
 		int32 LODIndexRead = FMath::Min(OverallLODIndex, NumLODs - 1);
@@ -430,61 +445,66 @@ static void StaticMeshToRawMeshes(UStaticMeshComponent* InStaticMeshComponent, i
 		FRawMesh& RawMesh = OutRawMeshes[OverallLODIndex];
 		FRawMeshTracker& RawMeshTracker = OutRawMeshTrackers[OverallLODIndex];
 		const FStaticMeshLODResources& LODResource = InStaticMeshComponent->GetStaticMesh()->GetRenderData()->LODResources[LODIndexRead];
-		const int32 BaseVertexIndex = RawMesh.VertexPositions.Num();
 
-		for (int32 VertIndex = 0; VertIndex < LODResource.GetNumVertices(); ++VertIndex)
+		for (int32 InstanceIndex = 0; InstanceIndex < NumInstances; InstanceIndex++)
 		{
-			RawMesh.VertexPositions.Add(FVector4f(InComponentToWorld.TransformPosition((FVector)LODResource.VertexBuffers.PositionVertexBuffer.VertexPosition((uint32)VertIndex))));
-		}
+			const FMatrix InstanceToWorld = GetInstanceTransformMatrix(InstanceIndex) * InComponentToWorld;
+			const int32 BaseVertexIndex = RawMesh.VertexPositions.Num();
 
-		const FIndexArrayView IndexArrayView = LODResource.IndexBuffer.GetArrayView();
-		const FStaticMeshVertexBuffer& StaticMeshVertexBuffer = LODResource.VertexBuffers.StaticMeshVertexBuffer;
-		const int32 NumTexCoords = FMath::Min(StaticMeshVertexBuffer.GetNumTexCoords(), (uint32)MAX_MESH_TEXTURE_COORDS);
-		const int32 NumSections = LODResource.Sections.Num();
-
-		for (int32 SectionIndex = 0; SectionIndex < NumSections; SectionIndex++)
-		{
-			const FStaticMeshSection& StaticMeshSection = LODResource.Sections[SectionIndex];
-
-			const int32 NumIndices = StaticMeshSection.NumTriangles * 3;
-			for (int32 IndexIndex = 0; IndexIndex < NumIndices; IndexIndex++)
+			for (int32 VertIndex = 0; VertIndex < LODResource.GetNumVertices(); ++VertIndex)
 			{
-				int32 Index = IndexArrayView[StaticMeshSection.FirstIndex + IndexIndex];
-				RawMesh.WedgeIndices.Add(BaseVertexIndex + Index);
+				RawMesh.VertexPositions.Add(FVector4f(InstanceToWorld.TransformPosition((FVector)LODResource.VertexBuffers.PositionVertexBuffer.VertexPosition((uint32)VertIndex))));
+			}
 
-				RawMesh.WedgeTangentX.Add(FVector4f(InComponentToWorld.TransformVector(FVector(StaticMeshVertexBuffer.VertexTangentX(Index)))));
-				RawMesh.WedgeTangentY.Add(FVector4f(InComponentToWorld.TransformVector(FVector(StaticMeshVertexBuffer.VertexTangentY(Index)))));
-				RawMesh.WedgeTangentZ.Add(FVector4f(InComponentToWorld.TransformVector(FVector(StaticMeshVertexBuffer.VertexTangentZ(Index)))));
+			const FIndexArrayView IndexArrayView = LODResource.IndexBuffer.GetArrayView();
+			const FStaticMeshVertexBuffer& StaticMeshVertexBuffer = LODResource.VertexBuffers.StaticMeshVertexBuffer;
+			const int32 NumTexCoords = FMath::Min(StaticMeshVertexBuffer.GetNumTexCoords(), (uint32)MAX_MESH_TEXTURE_COORDS);
+			const int32 NumSections = LODResource.Sections.Num();
 
-				for (int32 TexCoordIndex = 0; TexCoordIndex < MAX_MESH_TEXTURE_COORDS; TexCoordIndex++)
+			for (int32 SectionIndex = 0; SectionIndex < NumSections; SectionIndex++)
+			{
+				const FStaticMeshSection& StaticMeshSection = LODResource.Sections[SectionIndex];
+
+				const int32 NumIndices = StaticMeshSection.NumTriangles * 3;
+				for (int32 IndexIndex = 0; IndexIndex < NumIndices; IndexIndex++)
 				{
-					if (TexCoordIndex >= NumTexCoords)
+					int32 Index = IndexArrayView[StaticMeshSection.FirstIndex + IndexIndex];
+					RawMesh.WedgeIndices.Add(BaseVertexIndex + Index);
+
+					RawMesh.WedgeTangentX.Add(FVector4f(InstanceToWorld.TransformVector(FVector(StaticMeshVertexBuffer.VertexTangentX(Index)))));
+					RawMesh.WedgeTangentY.Add(FVector4f(InstanceToWorld.TransformVector(FVector(StaticMeshVertexBuffer.VertexTangentY(Index)))));
+					RawMesh.WedgeTangentZ.Add(FVector4f(InstanceToWorld.TransformVector(FVector(StaticMeshVertexBuffer.VertexTangentZ(Index)))));
+
+					for (int32 TexCoordIndex = 0; TexCoordIndex < MAX_MESH_TEXTURE_COORDS; TexCoordIndex++)
 					{
-						RawMesh.WedgeTexCoords[TexCoordIndex].AddDefaulted();
+						if (TexCoordIndex >= NumTexCoords)
+						{
+							RawMesh.WedgeTexCoords[TexCoordIndex].AddDefaulted();
+						}
+						else
+						{
+							RawMesh.WedgeTexCoords[TexCoordIndex].Add(StaticMeshVertexBuffer.GetVertexUV(Index, TexCoordIndex));
+							RawMeshTracker.bValidTexCoords[TexCoordIndex] = true;
+						}
+					}
+
+					if (LODResource.VertexBuffers.ColorVertexBuffer.IsInitialized())
+					{
+						RawMesh.WedgeColors.Add(LODResource.VertexBuffers.ColorVertexBuffer.VertexColor(Index));
+						RawMeshTracker.bValidColors = true;
 					}
 					else
 					{
-						RawMesh.WedgeTexCoords[TexCoordIndex].Add(StaticMeshVertexBuffer.GetVertexUV(Index, TexCoordIndex));
-						RawMeshTracker.bValidTexCoords[TexCoordIndex] = true;
+						RawMesh.WedgeColors.Add(FColor::White);
 					}
 				}
 
-				if (LODResource.VertexBuffers.ColorVertexBuffer.IsInitialized())
+				// copy face info
+				for (uint32 TriIndex = 0; TriIndex < StaticMeshSection.NumTriangles; TriIndex++)
 				{
-					RawMesh.WedgeColors.Add(LODResource.VertexBuffers.ColorVertexBuffer.VertexColor(Index));
-					RawMeshTracker.bValidColors = true;
+					RawMesh.FaceMaterialIndices.Add(BaseMaterialIndex + StaticMeshSection.MaterialIndex);
+					RawMesh.FaceSmoothingMasks.Add(0); // Assume this is ignored as bRecomputeNormals is false
 				}
-				else
-				{
-					RawMesh.WedgeColors.Add(FColor::White);
-				}
-			}
-
-			// copy face info
-			for (uint32 TriIndex = 0; TriIndex < StaticMeshSection.NumTriangles; TriIndex++)
-			{
-				RawMesh.FaceMaterialIndices.Add(BaseMaterialIndex + StaticMeshSection.MaterialIndex);
-				RawMesh.FaceSmoothingMasks.Add(0); // Assume this is ignored as bRecomputeNormals is false
 			}
 		}
 	}
@@ -5577,6 +5597,7 @@ void FMeshUtilities::StartupModule()
 {
 	FModuleManager::Get().LoadModule("MaterialBaking");
 	FModuleManager::Get().LoadModule(TEXT("MeshMergeUtilities"));
+	FModuleManager::Get().LoadModule(TEXT("MeshBoneReduction"));
 
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::Get().LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 
@@ -5754,6 +5775,56 @@ void FMeshUtilities::CalculateOverlappingCorners(const TArray<FVector3f>& InVert
 }
 
 
+struct FHashableSkinWeight
+{
+	FHashableSkinWeight() = default;
+	FHashableSkinWeight(const FHashableSkinWeight&) = default;
+	FHashableSkinWeight(FHashableSkinWeight&&) = default;
+	FHashableSkinWeight(const FRawSkinWeight& InRawWeight, const int32 InNumInfluences) :
+		NumInfluences(InNumInfluences),
+		InfluenceBones(InRawWeight.InfluenceBones),
+		InfluenceWeights(InRawWeight.InfluenceWeights)
+	{
+	}
+	
+	const int32 NumInfluences = 0;
+	const FBoneIndexType *InfluenceBones = nullptr;
+	const uint16 *InfluenceWeights = nullptr;
+};
+
+struct FHashableSkinWeightKeyFuncs : BaseKeyFuncs<TPair<FHashableSkinWeight, int32>, FHashableSkinWeight>
+{
+	static const FHashableSkinWeight& GetSetKey(const TPair<FHashableSkinWeight, int32>& Element)
+	{
+		return Element.Key;
+	}
+
+	static bool Matches(const FHashableSkinWeight& A, const FHashableSkinWeight& B)
+	{
+		for (int32 Index = 0; Index < A.NumInfluences; Index++)
+		{
+			if (A.InfluenceBones[Index] != B.InfluenceBones[Index] ||
+				A.InfluenceWeights[Index] != B.InfluenceWeights[Index])
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+	
+	static uint32 GetKeyHash(const FHashableSkinWeight& Key)
+	{
+		uint32 Hash = GetTypeHash(Key.NumInfluences);
+		for (int32 Index = 0; Index < Key.NumInfluences; Index++)
+		{
+			Hash = HashCombineFast(Hash, GetTypeHash(Key.InfluenceBones[Index]));
+			Hash = HashCombineFast(Hash, GetTypeHash(Key.InfluenceWeights[Index]));
+		}
+		return Hash;
+	}
+};
+
+
 void FMeshUtilities::GenerateRuntimeSkinWeightData(
 	const FSkeletalMeshLODModel* ImportedModel,
 	const TArray<FRawSkinWeight>& InRawSkinWeights,
@@ -5776,7 +5847,9 @@ void FMeshUtilities::GenerateRuntimeSkinWeightData(
 		const bool b16BitBoneIndices = TargetLODModel.DoSectionsUse16BitBoneIndex();
 		InOutSkinWeightOverrideData.b16BitBoneIndices = b16BitBoneIndices;
 
-		TArray<FRawSkinWeight> UniqueWeights;
+		TMap<FHashableSkinWeight, int32, FDefaultSetAllocator, FHashableSkinWeightKeyFuncs> UniqueWeights;
+		int32 OverrideCount = 0;
+		
 		for (int32 VertexIndex = 0; VertexIndex < TargetVertices.Num(); ++VertexIndex)
 		{
 			// Take each original skin weight from the LOD and compare it with supplied alternative weight data
@@ -5796,23 +5869,17 @@ void FMeshUtilities::GenerateRuntimeSkinWeightData(
 
 			if (bIsDifferent)
 			{
-				// Check whether or not there is already an override store which matches the new skin weight data
-				int32 OverrideIndex = UniqueWeights.IndexOfByPredicate([SourceSkinWeight, NumInfluences](const FRawSkinWeight& InOverride)
-				{
-					bool bSame = true;
-					for (int32 InfluenceIndex = 0; InfluenceIndex < NumInfluences; ++InfluenceIndex)
-					{
-						bSame &= (InOverride.InfluenceBones[InfluenceIndex] == SourceSkinWeight.InfluenceBones[InfluenceIndex]);
-						bSame &= (InOverride.InfluenceWeights[InfluenceIndex] == SourceSkinWeight.InfluenceWeights[InfluenceIndex]);
-					}
-
-					return bSame;
-				});
-
+				const int32* OverrideIndexPtr = UniqueWeights.Find({SourceSkinWeight, NumInfluences});
+				
 				// If one hasn't been added yet, create a new one
-				if (OverrideIndex == INDEX_NONE)
+				int32 OverrideIndex;
+				if (OverrideIndexPtr == nullptr)
 				{
-					OverrideIndex = UniqueWeights.Num();
+					// When writing out 8-bit weights, we want to collect the resulting deviation from fully normalized
+					// weight sum. Once all values are copied, we alter the first, and most prominent, weight, by the 
+					// deviation value so that we end up with completely normalized 8-bit weights.
+					const int32 FirstWeightOffset = InOutSkinWeightOverrideData.BoneWeights.Num();
+					int32 Accumulated8BitDeviation = 255;
 
 					// Write out non-zero weighted influences only
 					for (int32 InfluenceIndex = 0; InfluenceIndex < NumInfluences; ++InfluenceIndex)
@@ -5840,10 +5907,22 @@ void FMeshUtilities::GenerateRuntimeSkinWeightData(
 						else
 						{
 							BoneWeights.Add(static_cast<uint8>(Weight >> 8));
+							Accumulated8BitDeviation -= BoneWeights.Last();
 						}
 					}
 
-					UniqueWeights.Add(SourceSkinWeight);
+					OverrideIndex = OverrideCount;
+					UniqueWeights.Add({SourceSkinWeight, NumInfluences}, OverrideCount);
+					OverrideCount++;
+
+					if (!bInUseHighPrecisionWeights)
+					{
+						InOutSkinWeightOverrideData.BoneWeights[FirstWeightOffset] += Accumulated8BitDeviation;
+					}
+				}
+				else
+				{
+					OverrideIndex = *OverrideIndexPtr;
 				}
 
 				InOutSkinWeightOverrideData.VertexIndexToInfluenceOffset.Add(VertexIndex, OverrideIndex);
@@ -5941,6 +6020,7 @@ void FMeshUtilities::CreateImportDataFromLODModel(USkeletalMesh* SkeletalMesh) c
 		ImportData.bHasTangents = true;
 		ImportData.bUseT0AsRefPose = false;
 		ImportData.bHasVertexColors = SkeletalMesh->GetHasVertexColors();
+		ImportData.bKeepSectionsSeparate = false;
 
 		TArray<FSkeletalMaterial>& SKMaterials = SkeletalMesh->GetMaterials();
 		ImportData.Materials.Reserve(SkeletalMesh->GetMaterials().Num());
@@ -6195,7 +6275,7 @@ void FMeshUtilities::RemoveLevelViewportMenuExtender()
 		if (LevelEditorModule)
 		{
 			typedef FLevelEditorModule::FLevelViewportMenuExtender_SelectedActors DelegateType;
-			LevelEditorModule->GetAllLevelViewportContextMenuExtenders().RemoveAll([=](const DelegateType& In) { return In.GetHandle() == LevelViewportExtenderHandle; });
+			LevelEditorModule->GetAllLevelViewportContextMenuExtenders().RemoveAll([this](const DelegateType& In) { return In.GetHandle() == LevelViewportExtenderHandle; });
 		}
 	}
 }

@@ -47,7 +47,8 @@ public class TextureShareSDKTarget : TargetRules
 	public TextureShareSDKTarget(TargetInfo Target)
 		: base(Target)
 	{
-		DefaultBuildSettings = BuildSettingsVersion.V2;
+		DefaultBuildSettings = BuildSettingsVersion.Latest;
+		IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
 
 		Type = TargetType.Program;
 		LinkType = TargetLinkType.Monolithic;
@@ -72,9 +73,6 @@ public class TextureShareSDKTarget : TargetRules
 		// Logs and asserts are still useful to report results
 		bUseLoggingInShipping = true;
 		bUseChecksInShipping = true;
-
-		// Disable memory profiling in the build
-		bUseMallocProfiler = false;
 
 		// Whether to include ICU unicode/i18n support in Core
 		bCompileICU = false;

@@ -15,7 +15,6 @@
 #include "Templates/RefCounting.h"
 #include "PixelFormat.h"
 #include "Async/TaskGraphFwd.h"
-#include "Serialization/MemoryImage.h"
 #include "RHIFwd.h"
 #include "RHIImmutableSamplerState.h"
 #include "RHITransition.h"
@@ -23,18 +22,7 @@
 #include "Math/IntPoint.h"
 #include "Math/IntRect.h"
 #include "Math/IntVector.h"
-
-#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
-#include "TextureProfiler.h"
-#include "Containers/LockFreeList.h"
-#include "Misc/CoreDelegates.h"
 #include "Misc/SecureHash.h"
-#include "Hash/CityHash.h"
-#include "Async/TaskGraphInterfaces.h"
-#include "Experimental/Containers/HazardPointer.h"
-#include "Containers/ClosableMpscQueue.h"
-#include "Containers/ConsumeAllMpmcQueue.h"
-#endif
 
 #include <atomic>
 
@@ -89,6 +77,7 @@ public:
 		return uint32(CurrentValue);
 	}
 
+	UE_DEPRECATED(5.3, "FlushPendingDeletes is deprecated, please use FRHICommandListExecutor::GetImmediateCommandList().ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources)")
 	RHI_API static int32 FlushPendingDeletes(FRHICommandListImmediate& RHICmdList);
 
 	RHI_API static bool Bypass();
@@ -251,6 +240,14 @@ struct FClearValueBinding
 		: ColorBinding(NoBinding)
 	{
 		check(ColorBinding == EClearBinding::ENoneBound);
+
+		Value.Color[0] = 0.0f;
+		Value.Color[1] = 0.0f;
+		Value.Color[2] = 0.0f;
+		Value.Color[3] = 0.0f;
+
+		Value.DSValue.Depth = 0.0f;
+		Value.DSValue.Stencil = 0;
 	}
 
 	explicit FClearValueBinding(const FLinearColor& InClearColor)
@@ -391,6 +388,8 @@ struct FRHIResourceCreateInfo
 		ExtData = InExtData;
 	}
 
+	FName GetTraceClassName() const									{ const static FLazyName FRHIBufferName(TEXT("FRHIBuffer")); return ClassName == NAME_None ? FRHIBufferName : ClassName; }
+
 	// for CreateTexture calls
 	FResourceBulkDataInterface* BulkData;
 
@@ -409,6 +408,9 @@ struct FRHIResourceCreateInfo
 
 	// optional data that would have come from an offline cooker or whatever - general purpose
 	uint32 ExtData;
+
+	FName ClassName = NAME_None;	// The owner class of FRHIBuffer used for Insight asset metadata tracing
+	FName OwnerName = NAME_None;	// The owner name used for Insight asset metadata tracing
 };
 
 class FExclusiveDepthStencil
@@ -779,6 +781,8 @@ public:
 			: TEXT("<unknown>");
 	}
 
+	TArray<FShaderCodeValidationStride> DebugStrideValidationData;
+
 #else
 
 	const TCHAR* GetShaderName() const { return TEXT("<unknown>"); }
@@ -873,13 +877,13 @@ public:
 	FRHIRayHitGroupShader() : FRHIRayTracingShader(SF_RayHitGroup) {}
 };
 
-class RHI_API FRHIComputeShader : public FRHIShader
+class FRHIComputeShader : public FRHIShader
 {
 public:
 	FRHIComputeShader() : FRHIShader(RRT_ComputeShader, SF_Compute), Stats(nullptr) {}
 	
 	inline void SetStats(struct FPipelineStateStats* Ptr) { Stats = Ptr; }
-	void UpdateStats();
+	RHI_API void UpdateStats();
 	
 private:
 	struct FPipelineStateStats* Stats;
@@ -934,16 +938,13 @@ public:
 // Enabling this requires -norhithread to work correctly since FRHIResource lifetime is managed by both the RT and RHIThread
 #define VALIDATE_UNIFORM_BUFFER_LIFETIME 0
 
-/** Data structure to store information about resource parameter in a shader parameter structure. */
 struct FRHIUniformBufferResource
 {
-	DECLARE_EXPORTED_TYPE_LAYOUT(FRHIUniformBufferResource, RHI_API, NonVirtual);
-
 	/** Byte offset to each resource in the uniform buffer memory. */
-	LAYOUT_FIELD(uint16, MemberOffset);
+	uint16 MemberOffset;
 
 	/** Type of the member that allow (). */
-	LAYOUT_FIELD(EUniformBufferBaseType, MemberType);
+	EUniformBufferBaseType MemberType;
 
 	/** Compare two uniform buffer layout resources. */
 	friend inline bool operator==(const FRHIUniformBufferResource& A, const FRHIUniformBufferResource& B)
@@ -953,198 +954,16 @@ struct FRHIUniformBufferResource
 	}
 };
 
-inline FArchive& operator<<(FArchive& Ar, FRHIUniformBufferResource& Ref)
-{
-	uint8 Type = (uint8)Ref.MemberType;
-	Ar << Ref.MemberOffset;
-	Ar << Type;
-	Ref.MemberType = (EUniformBufferBaseType)Type;
-	return Ar;
-}
-
 inline constexpr uint16 kUniformBufferInvalidOffset = TNumericLimits<uint16>::Max();
 
-/** Initializer for the layout of a uniform buffer in memory. */
-struct FRHIUniformBufferLayoutInitializer
-{
-	DECLARE_EXPORTED_TYPE_LAYOUT(FRHIUniformBufferLayoutInitializer, RHI_API, NonVirtual);
-
-	FRHIUniformBufferLayoutInitializer() = default;
-
-	explicit FRHIUniformBufferLayoutInitializer(const TCHAR * InName)
-		: Name(InName)
-	{}
-	explicit FRHIUniformBufferLayoutInitializer(const TCHAR * InName, uint32 InConstantBufferSize)
-		: Name(InName)
-		, ConstantBufferSize(InConstantBufferSize)
-	{
-		ComputeHash();
-	}
-
-	inline uint32 GetHash() const
-	{
-		checkSlow(Hash != 0);
-		return Hash;
-	}
-
-	void ComputeHash()
-	{
-		// Static slot is not stable. Just track whether we have one at all.
-		uint32 TmpHash = ConstantBufferSize << 16 | static_cast<uint32>(BindingFlags) << 8 | static_cast<uint32>(StaticSlot != MAX_UNIFORM_BUFFER_STATIC_SLOTS);
-
-		for (int32 ResourceIndex = 0; ResourceIndex < Resources.Num(); ResourceIndex++)
-		{
-			// Offset and therefore hash must be the same regardless of pointer size
-			checkSlow(Resources[ResourceIndex].MemberOffset == Align(Resources[ResourceIndex].MemberOffset, SHADER_PARAMETER_POINTER_ALIGNMENT));
-			TmpHash ^= Resources[ResourceIndex].MemberOffset;
-		}
-
-		uint32 N = Resources.Num();
-		while (N >= 4)
-		{
-			TmpHash ^= (Resources[--N].MemberType << 0);
-			TmpHash ^= (Resources[--N].MemberType << 8);
-			TmpHash ^= (Resources[--N].MemberType << 16);
-			TmpHash ^= (Resources[--N].MemberType << 24);
-		}
-		while (N >= 2)
-		{
-			TmpHash ^= Resources[--N].MemberType << 0;
-			TmpHash ^= Resources[--N].MemberType << 16;
-		}
-		while (N > 0)
-		{
-			TmpHash ^= Resources[--N].MemberType;
-		}
-		Hash = TmpHash;
-	}
-
-	void CopyFrom(const FRHIUniformBufferLayoutInitializer& Source)
-	{
-		ConstantBufferSize = Source.ConstantBufferSize;
-		StaticSlot = Source.StaticSlot;
-		BindingFlags = Source.BindingFlags;
-		Resources = Source.Resources;
-		Name = Source.Name;
-		Hash = Source.Hash;
-	}
-
-	const FMemoryImageString& GetDebugName() const
-	{
-		return Name;
-	}
-
-	bool HasRenderTargets() const
-	{
-		return RenderTargetsOffset != kUniformBufferInvalidOffset;
-	}
-
-	bool HasExternalOutputs() const
-	{
-		return bHasNonGraphOutputs;
-	}
-
-	bool HasStaticSlot() const
-	{
-		return IsUniformBufferStaticSlotValid(StaticSlot);
-	}
-
-	friend FArchive& operator<<(FArchive& Ar, FRHIUniformBufferLayoutInitializer& Ref)
-	{
-		Ar << Ref.ConstantBufferSize;
-		Ar << Ref.StaticSlot;
-		Ar << Ref.RenderTargetsOffset;
-		Ar << Ref.bHasNonGraphOutputs;
-		Ar << Ref.BindingFlags;
-		Ar << Ref.Resources;
-		Ar << Ref.GraphResources;
-		Ar << Ref.GraphTextures;
-		Ar << Ref.GraphBuffers;
-		Ar << Ref.GraphUniformBuffers;
-		Ar << Ref.UniformBuffers;
-		Ar << Ref.Name;
-		Ar << Ref.Hash;
-		Ar << Ref.bNoEmulatedUniformBuffer;
-		return Ar;
-	}
-
-private:
-	// for debugging / error message
-	LAYOUT_FIELD(FMemoryImageString, Name);
-
-public:
-	/** The list of all resource inlined into the shader parameter structure. */
-	LAYOUT_FIELD(TMemoryImageArray<FRHIUniformBufferResource>, Resources);
-
-	/** The list of all RDG resource references inlined into the shader parameter structure. */
-	LAYOUT_FIELD(TMemoryImageArray<FRHIUniformBufferResource>, GraphResources);
-
-	/** The list of all RDG texture references inlined into the shader parameter structure. */
-	LAYOUT_FIELD(TMemoryImageArray<FRHIUniformBufferResource>, GraphTextures);
-
-	/** The list of all RDG buffer references inlined into the shader parameter structure. */
-	LAYOUT_FIELD(TMemoryImageArray<FRHIUniformBufferResource>, GraphBuffers);
-
-	/** The list of all RDG uniform buffer references inlined into the shader parameter structure. */
-	LAYOUT_FIELD(TMemoryImageArray<FRHIUniformBufferResource>, GraphUniformBuffers);
-
-	/** The list of all non-RDG uniform buffer references inlined into the shader parameter structure. */
-	LAYOUT_FIELD(TMemoryImageArray<FRHIUniformBufferResource>, UniformBuffers);
-
-private:
-	LAYOUT_FIELD_INITIALIZED(uint32, Hash, 0);
-
-public:
-	/** The size of the constant buffer in bytes. */
-	LAYOUT_FIELD_INITIALIZED(uint32, ConstantBufferSize, 0);
-
-	/** The render target binding slots offset, if it exists. */
-	LAYOUT_FIELD_INITIALIZED(uint16, RenderTargetsOffset, kUniformBufferInvalidOffset);
-
-	/** The static slot (if applicable). */
-	LAYOUT_FIELD_INITIALIZED(FUniformBufferStaticSlot, StaticSlot, MAX_UNIFORM_BUFFER_STATIC_SLOTS);
-
-	/** The binding flags describing how this resource can be bound to the RHI. */
-	LAYOUT_FIELD_INITIALIZED(EUniformBufferBindingFlags, BindingFlags, EUniformBufferBindingFlags::Shader);
-
-	/** Whether this layout may contain non-render-graph outputs (e.g. RHI UAVs). */
-	LAYOUT_FIELD_INITIALIZED(bool, bHasNonGraphOutputs, false);
-
-	/** Used for platforms which use emulated ub's, forces a real uniform buffer instead */
-	LAYOUT_FIELD_INITIALIZED(bool, bNoEmulatedUniformBuffer, false);
-
-	/** Compare two uniform buffer layout initializers. */
-	friend inline bool operator==(const FRHIUniformBufferLayoutInitializer& A, const FRHIUniformBufferLayoutInitializer& B)
-	{
-		return A.ConstantBufferSize == B.ConstantBufferSize
-			&& A.StaticSlot == B.StaticSlot
-			&& A.BindingFlags == B.BindingFlags
-			&& A.Resources == B.Resources;
-	}
-};
+struct FRHIUniformBufferLayoutInitializer;
 
 /** The layout of a uniform buffer in memory. */
 struct FRHIUniformBufferLayout : public FRHIResource
 {
 	FRHIUniformBufferLayout() = delete;
 
-	explicit FRHIUniformBufferLayout(const FRHIUniformBufferLayoutInitializer& Initializer)
-		: FRHIResource(RRT_UniformBufferLayout)
-		, Name(Initializer.GetDebugName())
-		, Resources(Initializer.Resources)
-		, GraphResources(Initializer.GraphResources)
-		, GraphTextures(Initializer.GraphTextures)
-		, GraphBuffers(Initializer.GraphBuffers)
-		, GraphUniformBuffers(Initializer.GraphUniformBuffers)
-		, UniformBuffers(Initializer.UniformBuffers)
-		, Hash(Initializer.GetHash())
-		, ConstantBufferSize(Initializer.ConstantBufferSize)
-		, RenderTargetsOffset(Initializer.RenderTargetsOffset)
-		, StaticSlot(Initializer.StaticSlot)
-		, BindingFlags(Initializer.BindingFlags)
-		, bHasNonGraphOutputs(Initializer.bHasNonGraphOutputs)
-		, bNoEmulatedUniformBuffer(Initializer.bNoEmulatedUniformBuffer)
-	{}
+	RHI_API explicit FRHIUniformBufferLayout(const FRHIUniformBufferLayoutInitializer& Initializer);
 
 	inline const FString& GetDebugName() const
 	{
@@ -1267,7 +1086,7 @@ public:
 	const FRHIUniformBufferLayout* GetLayoutPtr() const { return Layout; }
 
 #if VALIDATE_UNIFORM_BUFFER_LIFETIME
-	mutable int32 NumMeshCommandReferencesForDebugging = 0;
+	mutable std::atomic<int32> NumMeshCommandReferencesForDebugging = 0;
 #endif
 
 	const TArray<TRefCountPtr<FRHIResource>>& GetResourceTable() const { return ResourceTable; }
@@ -1306,9 +1125,14 @@ protected:
 		, TrackedAccess(InAccess)
 	{}
 
-	void Swap(FRHIViewableResource& Other)
+	void TakeOwnership(FRHIViewableResource& Other)
 	{
-		::Swap(TrackedAccess, Other.TrackedAccess);
+		TrackedAccess = Other.TrackedAccess;
+	}
+
+	void ReleaseOwnership()
+	{
+		TrackedAccess = ERHIAccess::Unknown;
 	}
 
 	FName Name;
@@ -1320,31 +1144,59 @@ private:
 	friend class IRHIComputeContext;
 };
 
+struct FRHIBufferDesc
+{
+	uint32 Size{};
+	uint32 Stride{};
+	EBufferUsageFlags Usage{};
+
+	FRHIBufferDesc() = default;
+	FRHIBufferDesc(uint32 InSize, uint32 InStride, EBufferUsageFlags InUsage)
+		: Size  (InSize)
+		, Stride(InStride)
+		, Usage (InUsage)
+	{}
+
+	static FRHIBufferDesc Null()
+	{
+		return FRHIBufferDesc(0, 0, BUF_NullResource);
+	}
+
+	bool IsNull() const
+	{
+		if (EnumHasAnyFlags(Usage, BUF_NullResource))
+		{
+			// The null resource descriptor should have its other fields zeroed, and no additional flags.
+			check(Size == 0 && Stride == 0 && Usage == BUF_NullResource);
+			return true;
+		}
+
+		return false;
+	}
+};
+
 class FRHIBuffer : public FRHIViewableResource
 #if ENABLE_RHI_VALIDATION
 	, public RHIValidation::FBufferResource
 #endif
 {
 public:
-	FRHIBuffer() : FRHIViewableResource(RRT_Buffer, ERHIAccess::Unknown) {}
-
 	/** Initialization constructor. */
-	FRHIBuffer(uint32 InSize, EBufferUsageFlags InUsage, uint32 InStride)
+	FRHIBuffer(FRHIBufferDesc const& InDesc)
 		: FRHIViewableResource(RRT_Buffer, ERHIAccess::Unknown /* TODO (RemoveUnknowns): Use InitialAccess from descriptor after refactor. */)
-		, Size(InSize)
-		, Stride(InStride)
-		, Usage(InUsage)
-	{
-	}
+		, Desc(InDesc)
+	{}
+
+	FRHIBufferDesc const& GetDesc() const { return Desc; }
 
 	/** @return The number of bytes in the buffer. */
-	uint32 GetSize() const { return Size; }
+	uint32 GetSize() const { return Desc.Size; }
 
 	/** @return The stride in bytes of the buffer. */
-	uint32 GetStride() const { return Stride; }
+	uint32 GetStride() const { return Desc.Stride; }
 
 	/** @return The usage flags used to create the buffer. */
-	EBufferUsageFlags GetUsage() const { return Usage; }
+	EBufferUsageFlags GetUsage() const { return Desc.Usage; }
 
 	void SetName(const FName& InName) { Name = InName; }
 
@@ -1358,43 +1210,40 @@ public:
 #endif
 
 protected:
-	void Swap(FRHIBuffer& Other)
-	{
-		FRHIViewableResource::Swap(Other);
-		::Swap(Stride, Other.Stride);
-		::Swap(Size, Other.Size);
-		::Swap(Usage, Other.Usage);
-	}
-
 	// Used by RHI implementations that may adjust internal usage flags during object construction.
 	void SetUsage(EBufferUsageFlags InUsage)
 	{
-		Usage = InUsage;
+		Desc.Usage = InUsage;
 	}
 
-	void ReleaseUnderlyingResource()
+	void TakeOwnership(FRHIBuffer& Other)
 	{
-		Stride = Size = 0;
-		Usage = EBufferUsageFlags::None;
+		FRHIViewableResource::TakeOwnership(Other);
+		Desc = Other.Desc;
+	}
+
+	void ReleaseOwnership()
+	{
+		FRHIViewableResource::ReleaseOwnership();
+		Desc = FRHIBufferDesc::Null();
 	}
 
 private:
-	uint32 Size{};
-	uint32 Stride{};
-	EBufferUsageFlags Usage{};
+	FRHIBufferDesc Desc;
 };
 
 //
 // Textures
 //
 
-class RHI_API FLastRenderTimeContainer
+class FLastRenderTimeContainer
 {
 public:
 	FLastRenderTimeContainer() : LastRenderTime(-FLT_MAX) {}
 
 	double GetLastRenderTime() const { return LastRenderTime; }
-	FORCEINLINE_DEBUGGABLE void SetLastRenderTime(double InLastRenderTime) 
+
+	void SetLastRenderTime(double InLastRenderTime) 
 	{ 
 		// avoid dirty caches from redundant writes
 		if (LastRenderTime != InLastRenderTime)
@@ -1410,105 +1259,18 @@ private:
 
 
 /** Descriptor used to create a texture resource */
-struct RHI_API FRHITextureDesc
+struct FRHITextureDesc
 {
-	UE_DEPRECATED(5.1, "FRHITextureDesc Create functions have been moved to FRHITextureCreateDesc.")
-	static FRHITextureDesc Create2D(
-		  FIntPoint           Size
-		, EPixelFormat        Format
-		, FClearValueBinding  ClearValue
-		, ETextureCreateFlags Flags
-		, uint8               NumMips    = 1
-		, uint8               NumSamples = 1
-		, uint32              ExtData    = 0
-		)
+	FRHITextureDesc() = default;
+
+	FRHITextureDesc(const FRHITextureDesc& Other)
 	{
-		const uint16 Depth     = 1;
-		const uint16 ArraySize = 1;
-		return FRHITextureDesc(ETextureDimension::Texture2D, Flags, Format, ClearValue, { Size.X, Size.Y }, Depth, ArraySize, NumMips, NumSamples, ExtData);
+		*this = Other;
 	}
-
-	UE_DEPRECATED(5.1, "FRHITextureDesc Create functions have been moved to FRHITextureCreateDesc.")
-	static FRHITextureDesc Create2DArray(
-		  FIntPoint           Size
-		, EPixelFormat        Format
-		, FClearValueBinding  ClearValue
-		, ETextureCreateFlags Flags
-		, uint16              ArraySize
-		, uint8               NumMips    = 1
-		, uint8               NumSamples = 1
-		, uint32              ExtData    = 0
-		)
-	{
-		const uint16 Depth   = 1;
-		return FRHITextureDesc(ETextureDimension::Texture2DArray, Flags, Format, ClearValue, { Size.X, Size.Y }, Depth, ArraySize, NumMips, NumSamples, ExtData);
-	}
-
-	UE_DEPRECATED(5.1, "FRHITextureDesc Create functions have been moved to FRHITextureCreateDesc.")
-	static FRHITextureDesc Create3D(
-		  FIntVector          Size
-		, EPixelFormat        Format
-		, FClearValueBinding  ClearValue
-		, ETextureCreateFlags Flags
-		, uint8               NumMips    = 1
-		, uint32              ExtData    = 0
-		)
-	{
-		const uint16 Depth = (uint16)Size.Z;
-		const uint16 ArraySize  = 1;
-		const uint16 LocalNumSamples = 1;
-
-		checkf(Size.Z <= TNumericLimits<decltype(FRHITextureDesc::Depth)>::Max(), TEXT("Depth parameter (Size.Z) exceeds valid range"));
-
-		return FRHITextureDesc(ETextureDimension::Texture3D, Flags, Format, ClearValue, { Size.X, Size.Y }, Depth, ArraySize, NumMips, LocalNumSamples, ExtData);
-	}
-
-	UE_DEPRECATED(5.1, "FRHITextureDesc Create functions have been moved to FRHITextureCreateDesc.")
-	static FRHITextureDesc CreateCube(
-		  uint32              Size
-		, EPixelFormat        Format
-		, FClearValueBinding  ClearValue
-		, ETextureCreateFlags Flags
-		, uint8               NumMips    = 1
-		, uint8               NumSamples = 1
-		, uint32              ExtData    = 0
-		)
-	{
-		checkf(Size <= (uint32)TNumericLimits<int32>::Max(), TEXT("Size parameter exceeds valid range"));
-
-		const uint16 Depth     = 1;
-		const uint16 ArraySize = 1;
-		return FRHITextureDesc(ETextureDimension::TextureCube, Flags, Format, ClearValue, { (int32)Size, (int32)Size }, Depth, ArraySize, NumMips, NumSamples, ExtData);
-	}
-
-	UE_DEPRECATED(5.1, "FRHITextureDesc Create functions have been moved to FRHITextureCreateDesc.")
-	static FRHITextureDesc CreateCubeArray(
-		  uint32              Size
-		, EPixelFormat        Format
-		, FClearValueBinding  ClearValue
-		, ETextureCreateFlags Flags
-		, uint16              ArraySize
-		, uint8               NumMips    = 1
-		, uint8               NumSamples = 1
-		, uint32              ExtData    = 0
-		)
-	{
-		checkf(Size <= (uint32)TNumericLimits<int32>::Max(), TEXT("Size parameter exceeds valid range"));
-
-		const uint16 Depth   = 1;
-		return FRHITextureDesc(ETextureDimension::TextureCubeArray, Flags, Format, ClearValue, { (int32)Size, (int32)Size }, Depth, ArraySize, NumMips, NumSamples, ExtData);
-	}
-
-	FRHITextureDesc()
-		: NumSamples(1)
-		, Dimension(ETextureDimension::Texture2D)
-	{}
 
 	FRHITextureDesc(ETextureDimension InDimension)
-		: NumSamples(1)
-		, Dimension(InDimension)
-	{
-	}
+		: Dimension(InDimension)
+	{}
 
 	FRHITextureDesc(
 		  ETextureDimension   InDimension
@@ -1534,33 +1296,6 @@ struct RHI_API FRHITextureDesc
 		, Format    (InFormat    )
 	{}
 
-	UE_DEPRECATED(5.1, "Prefer using FRHITextureCreateDesc rather than this FRHITextureDesc constructor. Otherwise use the FRHITextureDesc constructor that does not take optional arguments.")
-	FRHITextureDesc(
-		  ETextureDimension   InDimension
-		, ETextureCreateFlags InFlags
-		, EPixelFormat        InFormat
-		, FIntPoint           InExtent
-		, FClearValueBinding  InClearValue
-		, uint16              InDepth      = 1
-		, uint16              InArraySize  = 1
-		, uint8               InNumMips    = 1
-		, uint8               InNumSamples = 1
-		, uint32              InExtData    = 0
-		)
-		: FRHITextureDesc(
-		  InDimension
-		, InFlags
-		, InFormat
-		, InClearValue
-		, InExtent
-		, InDepth
-		, InArraySize
-		, InNumMips
-		, InNumSamples
-		, InExtData
-		)
-	{}
-
 	friend uint32 GetTypeHash(const FRHITextureDesc& Desc)
 	{
 		uint32 Hash = GetTypeHash(Desc.Dimension);
@@ -1572,8 +1307,10 @@ struct RHI_API FRHITextureDesc
 		Hash = HashCombine(Hash, GetTypeHash(Desc.ArraySize	));
 		Hash = HashCombine(Hash, GetTypeHash(Desc.NumMips	));
 		Hash = HashCombine(Hash, GetTypeHash(Desc.NumSamples));
+		Hash = HashCombine(Hash, GetTypeHash(Desc.FastVRAMPercentage));
 		Hash = HashCombine(Hash, GetTypeHash(Desc.ClearValue));
 		Hash = HashCombine(Hash, GetTypeHash(Desc.ExtData   ));
+		Hash = HashCombine(Hash, GetTypeHash(Desc.GPUMask.GetNative()));
 		return Hash;
 	}
 
@@ -1588,13 +1325,34 @@ struct RHI_API FRHITextureDesc
 			&& ArraySize  == Other.ArraySize
 			&& NumMips    == Other.NumMips
 			&& NumSamples == Other.NumSamples
+			&& FastVRAMPercentage == Other.FastVRAMPercentage
 			&& ClearValue == Other.ClearValue
-			&& ExtData    == Other.ExtData;
+			&& ExtData    == Other.ExtData
+			&& GPUMask    == Other.GPUMask;
 	}
 
 	bool operator != (const FRHITextureDesc& Other) const
 	{
 		return !(*this == Other);
+	}
+
+	FRHITextureDesc& operator=(const FRHITextureDesc& Other)
+	{
+		Dimension			= Other.Dimension;
+		Flags				= Other.Flags;
+		Format				= Other.Format;
+		UAVFormat			= Other.UAVFormat;
+		Extent				= Other.Extent;
+		Depth				= Other.Depth;
+		ArraySize			= Other.ArraySize;
+		NumMips				= Other.NumMips;
+		NumSamples			= Other.NumSamples;
+		ClearValue			= Other.ClearValue;
+		ExtData				= Other.ExtData;
+		FastVRAMPercentage	= Other.FastVRAMPercentage;
+		GPUMask				= Other.GPUMask;
+
+		return *this;
 	}
 
 	bool IsTexture2D() const
@@ -1654,6 +1412,9 @@ struct RHI_API FRHITextureDesc
 	/** Clear value to use when fast-clearing the texture. */
 	FClearValueBinding ClearValue;
 
+	/* A mask representing which GPUs to create the resource on, in a multi-GPU system. */
+	FRHIGPUMask GPUMask = FRHIGPUMask::All();
+
 	/** Platform-specific additional data. Used for offline processed textures on some platforms. */
 	uint32 ExtData = 0;
 
@@ -1670,10 +1431,10 @@ struct RHI_API FRHITextureDesc
 	uint8 NumMips = 1;
 
 	/** Number of samples in the texture. >1 for MSAA. */
-	uint8 NumSamples : 5;
+	uint8 NumSamples = 1;
 
 	/** Texture dimension to use when creating the RHI texture. */
-	ETextureDimension Dimension : 3;
+	ETextureDimension Dimension = ETextureDimension::Texture2D;
 
 	/** Pixel format used to create RHI texture. */
 	EPixelFormat Format = PF_Unknown;
@@ -1683,9 +1444,6 @@ struct RHI_API FRHITextureDesc
 
 	/** Resource memory percentage which should be allocated onto fast VRAM (hint-only). (encoding into 8bits, 0..255 -> 0%..100%) */
 	uint8 FastVRAMPercentage = 0xFF;
-
-	/* A mask representing which GPUs to create the resource on, in a multi-GPU system. */
-	FRHIGPUMask GPUMask = FRHIGPUMask::All();
 
 	/** Check the validity. */
 	static bool CheckValidity(const FRHITextureDesc& Desc, const TCHAR* Name)
@@ -1703,14 +1461,15 @@ struct RHI_API FRHITextureDesc
 	 * @param FirstMipIndex - the index of the most detailed mip to consider in the memory size calculation. Must be < NumMips and <= LastMipIndex.
 	 * @param LastMipIndex  - the index of the least detailed mip to consider in the memory size calculation. Must be < NumMips and >= FirstMipIndex.
 	 */
-	uint64 CalcMemorySizeEstimate(uint32 FirstMipIndex, uint32 LastMipIndex) const;
+	RHI_API uint64 CalcMemorySizeEstimate(uint32 FirstMipIndex, uint32 LastMipIndex) const;
+
 	uint64 CalcMemorySizeEstimate(uint32 FirstMipIndex = 0) const
 	{
 		return CalcMemorySizeEstimate(FirstMipIndex, NumMips - 1);
 	}
 
 private:
-	static bool Validate(const FRHITextureDesc& Desc, const TCHAR* Name, bool bFatal);
+	RHI_API static bool Validate(const FRHITextureDesc& Desc, const TCHAR* Name, bool bFatal);
 };
 
 // @todo deprecate
@@ -1860,6 +1619,9 @@ struct FRHITextureCreateDesc : public FRHITextureDesc
 	FRHITextureCreateDesc& SetBulkData(FResourceBulkDataInterface* InBulkData) { BulkData = InBulkData;                    return *this; }
 	FRHITextureCreateDesc& DetermineInititialState()                           { if (InitialState == ERHIAccess::Unknown) InitialState = RHIGetDefaultResourceState(Flags, BulkData != nullptr); return *this; }
 	FRHITextureCreateDesc& SetFastVRAMPercentage(float In)                     { FastVRAMPercentage = uint8(FMath::Clamp(In, 0.f, 1.0f) * 0xFF); return *this; }
+	FRHITextureCreateDesc& SetClassName(const FName& InClassName)			   { ClassName = InClassName;				   return *this; }
+	FRHITextureCreateDesc& SetOwnerName(const FName& InOwnerName)			   { OwnerName = InOwnerName;                  return *this; }
+	FName GetTraceClassName() const											   { const static FLazyName FRHITextureName(TEXT("FRHITexture")); return ClassName == NAME_None ? FRHITextureName : ClassName; }
 
 	/* The RHI access state that the resource will be created in. */
 	ERHIAccess InitialState = ERHIAccess::Unknown;
@@ -1869,16 +1631,19 @@ struct FRHITextureCreateDesc : public FRHITextureDesc
 
 	/* Optional initial data to fill the resource with. */
 	FResourceBulkDataInterface* BulkData = nullptr;
+
+	FName ClassName = NAME_None;	// The owner class of FRHITexture used for Insight asset metadata tracing
+	FName OwnerName = NAME_None;	// The owner name used for Insight asset metadata tracing
 };
 
-class RHI_API FRHITexture : public FRHIViewableResource
+class FRHITexture : public FRHIViewableResource
 #if ENABLE_RHI_VALIDATION
 	, public RHIValidation::FTextureResource
 #endif
 {
 protected:
 	/** Initialization constructor. Should only be called by platform RHI implementations. */
-	FRHITexture(const FRHITextureCreateDesc& InDesc);
+	RHI_API FRHITexture(const FRHITextureCreateDesc& InDesc);
 
 public:
 	/**
@@ -2027,7 +1792,7 @@ public:
 		return LastRenderTime.GetLastRenderTime();
 	}
 
-	void SetName(const FName& InName);
+	RHI_API void SetName(const FName& InName);
 
 	///
 	/// Deprecated functions
@@ -2100,7 +1865,7 @@ private:
 // Misc
 //
 
-class RHI_API FRHITimestampCalibrationQuery : public FRHIResource
+class FRHITimestampCalibrationQuery : public FRHIResource
 {
 public:
 	FRHITimestampCalibrationQuery() : FRHIResource(RRT_TimestampCalibrationQuery) {}
@@ -2115,7 +1880,7 @@ public:
 * The default implementation always returns false for Poll until the next frame from the frame the fence was inserted
 * because not all APIs have a GPU/CPU sync object, we need to fake it.
 */
-class RHI_API FRHIGPUFence : public FRHIResource
+class FRHIGPUFence : public FRHIResource
 {
 public:
 	FRHIGPUFence(FName InName) : FRHIResource(RRT_GPUFence), FenceName(InName) {}
@@ -2143,17 +1908,17 @@ protected:
 };
 
 // Generic implementation of FRHIGPUFence
-class RHI_API FGenericRHIGPUFence : public FRHIGPUFence
+class FGenericRHIGPUFence : public FRHIGPUFence
 {
 public:
-	FGenericRHIGPUFence(FName InName);
+	RHI_API FGenericRHIGPUFence(FName InName);
 
-	virtual void Clear() final override;
+	RHI_API virtual void Clear() final override;
 
 	/** @discussion RHI implementations must be thread-safe and must correctly handle being called before RHIInsertFence if an RHI thread is active. */
-	virtual bool Poll() const final override;
+	RHI_API virtual bool Poll() const final override;
 
-	void WriteInternal();
+	RHI_API void WriteInternal();
 
 private:
 	uint32 InsertedFrameNumber;
@@ -2166,7 +1931,8 @@ public:
 };
 
 class FRHIRenderQueryPool;
-class RHI_API FRHIPooledRenderQuery
+
+class FRHIPooledRenderQuery
 {
 	TRefCountPtr<FRHIRenderQuery> Query;
 	FRHIRenderQueryPool* QueryPool = nullptr;
@@ -2194,7 +1960,7 @@ public:
 	void ReleaseQuery();
 };
 
-class RHI_API FRHIRenderQueryPool : public FRHIResource
+class FRHIRenderQueryPool : public FRHIResource
 {
 public:
 	FRHIRenderQueryPool() : FRHIResource(RRT_RenderQueryPool) {}
@@ -2311,56 +2077,728 @@ public:
 	virtual void WaitForFrameEventCompletion() { }
 
 	virtual void IssueFrameEvent() { }
-
-	virtual bool NeedFlushBeforeEndDrawing() { return true; }
 };
+
+/** Used to specify a texture metadata plane when creating a view. */
+enum class ERHITexturePlane : uint8
+{
+	// The primary plane is used with default compression behavior.
+	Primary = 0,
+
+	// The primary plane is used without decompressing it.
+	PrimaryCompressed = 1,
+
+	// The depth plane is used with default compression behavior.
+	Depth = 2,
+
+	// The stencil plane is used with default compression behavior.
+	Stencil = 3,
+
+	// The HTile plane is used.
+	HTile = 4,
+
+	// the FMask plane is used.
+	FMask = 5,
+
+	// the CMask plane is used.
+	CMask = 6,
+
+	// This enum is packed into various structures. Avoid adding new 
+	// members without verifying structure sizes aren't increased.
+	Num,
+	NumBits = 3,
+
+	// @todo deprecate
+	None = Primary,
+	CompressedSurface = PrimaryCompressed,
+};
+static_assert((1u << uint32(ERHITexturePlane::NumBits)) >= uint32(ERHITexturePlane::Num), "Not enough bits in the ERHITexturePlane enum");
+
+//UE_DEPRECATED(5.3, "Use ERHITexturePlane.")
+using ERHITextureMetaDataAccess = ERHITexturePlane;
 
 //
 // Views
 //
 
+template <typename TType>
+struct TRHIRange
+{
+	TType First = 0;
+	TType Num = 0;
+
+	TRHIRange() = default;
+	TRHIRange(uint32 InFirst, uint32 InNum)
+		: First(InFirst)
+		, Num  (InNum)
+	{
+		check( InFirst < TNumericLimits<TType>::Max()
+			&& InNum   < TNumericLimits<TType>::Max()
+			&& (InFirst + InNum) < TNumericLimits<TType>::Max());
+	}
+
+	TType ExclusiveLast() const { return First + Num; }
+	TType InclusiveLast() const { return First + Num - 1; }
+
+	bool IsInRange(uint32 Value) const
+	{
+		check(Value < TNumericLimits<TType>::Max());
+		return Value >= First && Value < ExclusiveLast();
+	}
+};
+
+using FRHIRange8  = TRHIRange<uint8>;
+using FRHIRange16 = TRHIRange<uint16>;
+
+//
+// The unified RHI view descriptor. These are stored in the base FRHIView type, and packed to minimize memory usage.
+// Platform RHI implementations use the GetViewInfo() functions to convert an FRHIViewDesc into the required info to make a view / descriptor for the GPU.
+//
+struct FRHIViewDesc
+{
+	enum class EViewType : uint8
+	{
+		BufferSRV,
+		BufferUAV,
+		TextureSRV,
+		TextureUAV
+	};
+
+	enum class EBufferType : uint8
+	{
+		Unknown               = 0,
+
+		Typed                 = 1,
+		Structured            = 2,
+		AccelerationStructure = 3,
+		Raw                   = 4
+	};
+
+	enum class EDimension : uint8
+	{
+		Unknown          = 0,
+
+		Texture2D        = 1,
+		Texture2DArray   = 2,
+		TextureCube      = 3,
+		TextureCubeArray = 4,
+		Texture3D        = 5,
+
+		NumBits          = 3
+	};
+
+	// Properties that apply to all views.
+	struct FCommon
+	{
+		EViewType    ViewType;
+		EPixelFormat Format;
+	};
+
+	// Properties shared by buffer views. Some fields are SRV or UAV specific.
+	struct FBuffer : public FCommon
+	{
+		EBufferType BufferType;
+		uint8       bAtomicCounter : 1; // UAV only
+		uint8       bAppendBuffer  : 1; // UAV only
+		uint8       /* padding */  : 6;
+		uint32      OffsetInBytes;
+		uint32      NumElements;
+		uint32      Stride;
+
+		struct FViewInfo;
+	protected:
+		FViewInfo GetViewInfo(FRHIBuffer* TargetBuffer) const;
+	};
+
+	// Properties shared by texture views. Some fields are SRV or UAV specific.
+	struct FTexture : public FCommon
+	{
+		ERHITexturePlane Plane        : uint32(ERHITexturePlane::NumBits);
+		uint8            bDisableSRGB : 1; // SRV only
+		EDimension       Dimension    : uint32(EDimension::NumBits);
+		FRHIRange8       MipRange;    // UAVs only support 1 mip
+		FRHIRange16      ArrayRange;
+
+		struct FViewInfo;
+	protected:
+		FViewInfo GetViewInfo(FRHITexture* TargetTexture) const;
+	};
+
+	struct FBufferSRV : public FBuffer
+	{
+		struct FInitializer;
+		struct FViewInfo;
+		RHI_API FViewInfo GetViewInfo(FRHIBuffer* TargetBuffer) const;
+	};
+
+	struct FBufferUAV : public FBuffer
+	{
+		struct FInitializer;
+		struct FViewInfo;
+		RHI_API FViewInfo GetViewInfo(FRHIBuffer* TargetBuffer) const;
+	};
+
+	struct FTextureSRV : public FTexture
+	{
+		struct FInitializer;
+		struct FViewInfo;
+		RHI_API FViewInfo GetViewInfo(FRHITexture* TargetTexture) const;
+	};
+
+	struct FTextureUAV : public FTexture
+	{
+		struct FInitializer;
+		struct FViewInfo;
+		RHI_API FViewInfo GetViewInfo(FRHITexture* TargetTexture) const;
+	};
+
+	union
+	{
+		FCommon Common;
+		union
+		{
+			FBufferSRV SRV;
+			FBufferUAV UAV;
+		} Buffer;
+		union
+		{
+			FTextureSRV SRV;
+			FTextureUAV UAV;
+		} Texture;
+	};
+
+	static inline FBufferSRV::FInitializer CreateBufferSRV();
+	static inline FBufferUAV::FInitializer CreateBufferUAV();
+
+	static inline FTextureSRV::FInitializer CreateTextureSRV();
+	static inline FTextureUAV::FInitializer CreateTextureUAV();
+
+	bool IsSRV() const { return Common.ViewType == EViewType::BufferSRV || Common.ViewType == EViewType::TextureSRV; }
+	bool IsUAV() const { return !IsSRV(); }
+
+	bool IsBuffer () const { return Common.ViewType == EViewType::BufferSRV || Common.ViewType == EViewType::BufferUAV; }
+	bool IsTexture() const { return !IsBuffer(); }
+
+	bool operator == (FRHIViewDesc const& RHS) const
+	{
+		return FMemory::Memcmp(this, &RHS, sizeof(*this)) == 0;
+	}
+
+	bool operator != (FRHIViewDesc const& RHS) const
+	{
+		return !(*this == RHS);
+	}
+
+	FRHIViewDesc()
+		: FRHIViewDesc(EViewType::BufferSRV)
+	{
+		FMemory::Memzero(*this);
+	}
+
+protected:
+	FRHIViewDesc(EViewType ViewType)
+	{
+		FMemory::Memzero(*this);
+		Common.ViewType = ViewType;
+	}
+};
+
+// These static asserts are to ensure the descriptor is minimal in size and can be copied around by-value.
+// If they fail, consider re-packing the struct.
+static_assert(sizeof(FRHIViewDesc) == 16, "Packing of FRHIViewDesc is unexpected.");
+static_assert(TIsTrivial<FRHIViewDesc>::Value, "FRHIViewDesc must be a trivial type.");
+
+struct FRHIViewDesc::FBufferSRV::FInitializer : private FRHIViewDesc
+{
+	friend FRHIViewDesc;
+	friend FRHICommandListBase;
+	friend struct FShaderResourceViewInitializer;
+	friend struct FRawBufferShaderResourceViewInitializer;
+
+protected:
+	FInitializer()
+		: FRHIViewDesc(EViewType::BufferSRV)
+	{}
+
+public:
+	FInitializer& SetType(EBufferType Type)
+	{
+		check(Type != EBufferType::Unknown);
+		Buffer.SRV.BufferType = Type;
+		return *this;
+	}
+
+	//
+	// Provided for back-compat with existing code. Consider using SetType() instead for more direct control over the view.
+	// For example, it is possible to create a typed view of a BUF_ByteAddress buffer, but not using this function which always choses raw access.
+	//
+	FInitializer& SetTypeFromBuffer(FRHIBuffer* TargetBuffer)
+	{
+		check(TargetBuffer);
+		checkf(!TargetBuffer->GetDesc().IsNull(), TEXT("Null buffer resources are placeholders for the streaming system. They do not contain a valid descriptor for this function to use. Call SetType() instead."));
+
+		Buffer.SRV.BufferType =
+			EnumHasAnyFlags(TargetBuffer->GetUsage(), BUF_ByteAddressBuffer    ) ? EBufferType::Raw                   :
+			EnumHasAnyFlags(TargetBuffer->GetUsage(), BUF_StructuredBuffer     ) ? EBufferType::Structured            :
+			EnumHasAnyFlags(TargetBuffer->GetUsage(), BUF_AccelerationStructure) ? EBufferType::AccelerationStructure :
+			EBufferType::Typed;
+		return *this;
+	}
+
+	FInitializer& SetFormat(EPixelFormat InFormat)
+	{
+		Buffer.SRV.Format = InFormat;
+		return *this;
+	}
+
+	FInitializer& SetOffsetInBytes(uint32 InOffsetBytes)
+	{
+		Buffer.SRV.OffsetInBytes = InOffsetBytes;
+		return *this;
+	}
+
+	FInitializer& SetStride(uint32 InStride)
+	{
+		Buffer.SRV.Stride = InStride;
+		return *this;
+	}
+
+	FInitializer& SetNumElements(uint32 InNumElements)
+	{
+		Buffer.SRV.NumElements = InNumElements;
+		return *this;
+	}
+};
+
+struct FRHIViewDesc::FBufferUAV::FInitializer : private FRHIViewDesc
+{
+	friend FRHIViewDesc;
+	friend FRHICommandListBase;
+
+protected:
+	FInitializer()
+		: FRHIViewDesc(EViewType::BufferUAV)
+	{}
+
+public:
+	FInitializer& SetType(EBufferType Type)
+	{
+		check(Type != EBufferType::Unknown);
+		Buffer.UAV.BufferType = Type;
+		return *this;
+	}
+
+	//
+	// Provided for back-compat with existing code. Consider using SetType() instead for more direct control over the view.
+	// For example, it is possible to create a typed view of a BUF_ByteAddress buffer, but not using this function which always choses raw access.
+	//
+	FInitializer& SetTypeFromBuffer(FRHIBuffer* TargetBuffer)
+	{
+		check(TargetBuffer);
+		checkf(!TargetBuffer->GetDesc().IsNull(), TEXT("Null buffer resources are placeholders for the streaming system. They do not contain a valid descriptor for this function to use. Call SetType() instead."));
+
+		Buffer.UAV.BufferType =
+			EnumHasAnyFlags(TargetBuffer->GetUsage(), BUF_ByteAddressBuffer    ) ? EBufferType::Raw                   :
+			EnumHasAnyFlags(TargetBuffer->GetUsage(), BUF_StructuredBuffer     ) ? EBufferType::Structured            :
+			EnumHasAnyFlags(TargetBuffer->GetUsage(), BUF_AccelerationStructure) ? EBufferType::AccelerationStructure :
+			EBufferType::Typed;
+		return *this;
+	}
+
+	FInitializer& SetFormat(EPixelFormat InFormat)
+	{
+		Buffer.UAV.Format = InFormat;
+		return *this;
+	}
+
+	FInitializer& SetOffsetInBytes(uint32 InOffsetBytes)
+	{
+		Buffer.UAV.OffsetInBytes = InOffsetBytes;
+		return *this;
+	}
+
+	FInitializer& SetStride(uint32 InStride)
+	{
+		Buffer.UAV.Stride = InStride;
+		return *this;
+	}
+
+	FInitializer& SetNumElements(uint32 InNumElements)
+	{
+		Buffer.UAV.NumElements = InNumElements;
+		return *this;
+	}
+
+	FInitializer& SetAtomicCounter(bool InAtomicCounter)
+	{
+		Buffer.UAV.bAtomicCounter = InAtomicCounter;
+		return *this;
+	}
+
+	FInitializer& SetAppendBuffer(bool InAppendBuffer)
+	{
+		Buffer.UAV.bAppendBuffer = InAppendBuffer;
+		return *this;
+	}
+};
+
+struct FRHIViewDesc::FTextureSRV::FInitializer : private FRHIViewDesc
+{
+	friend FRHIViewDesc;
+	friend FRHICommandListBase;
+
+protected:
+	FInitializer()
+		: FRHIViewDesc(EViewType::TextureSRV)
+	{}
+
+public:
+	//
+	// Specifies the type of view to create. Must match the shader parameter this view will be bound to.
+	// 
+	// The dimension is allowed to differ from the underlying resource's dimensions, e.g. to create a view
+	// compatible with a Texture2D<> shader parameter, but where the underlying resource is a texture 2D array.
+	//
+	// Some combinations are not valid, e.g. 3D textures can only have 3D views.
+	//
+	FInitializer& SetDimension(ETextureDimension InDimension)
+	{
+		switch (InDimension)
+		{
+		default: checkNoEntry(); break;
+		case ETextureDimension::Texture2D       : Texture.SRV.Dimension = EDimension::Texture2D       ; break;
+		case ETextureDimension::Texture2DArray  : Texture.SRV.Dimension = EDimension::Texture2DArray  ; break;
+		case ETextureDimension::Texture3D       : Texture.SRV.Dimension = EDimension::Texture3D       ; break;
+		case ETextureDimension::TextureCube     : Texture.SRV.Dimension = EDimension::TextureCube     ; break;
+		case ETextureDimension::TextureCubeArray: Texture.SRV.Dimension = EDimension::TextureCubeArray; break;
+		}
+		return *this;
+	}
+
+	//
+	// Provided for back-compat with existing code. Consider using SetDimension() instead for more direct control over the view.
+	// For example, it is possible to create a 2D view of a 2DArray texture, but not using this function which always choses 2DArray dimension.
+	//
+	FInitializer& SetDimensionFromTexture(FRHITexture* TargetTexture)
+	{
+		check(TargetTexture);
+		SetDimension(TargetTexture->GetDesc().Dimension);
+		return *this;
+	}
+
+	FInitializer& SetFormat(EPixelFormat InFormat)
+	{
+		Texture.SRV.Format = InFormat;
+		return *this;
+	}
+
+	FInitializer& SetPlane(ERHITexturePlane InPlane)
+	{
+		Texture.SRV.Plane = InPlane;
+		return *this;
+	}
+
+	FInitializer& SetMipRange(uint8 InFirstMip, uint8 InNumMips)
+	{
+		Texture.SRV.MipRange.First = InFirstMip;
+		Texture.SRV.MipRange.Num = InNumMips;
+		return *this;
+	}
+
+	//
+	// The meaning of array "elements" is given by the dimension of the underlying resource.
+	// I.e. a view of a TextureCubeArray resource indexes the array in whole cubes.
+	// 
+	//     [0] = the first cube (2D slices 0 to 5)
+	//     [1] = the second cube (2D slices 6 to 11)
+	// 
+	// If the view dimension is smaller than the resource dimension, the array range will be further limited.
+	// E.g. creating a Texture2D dimension view of a TextureCubeArray resource
+	//
+	FInitializer& SetArrayRange(uint16 InFirstElement, uint16 InNumElements)
+	{
+		Texture.SRV.ArrayRange.First = InFirstElement;
+		Texture.SRV.ArrayRange.Num = InNumElements;
+		return *this;
+	}
+
+	FInitializer& SetDisableSRGB(bool InDisableSRGB)
+	{
+		Texture.SRV.bDisableSRGB = InDisableSRGB;
+		return *this;
+	}
+};
+
+struct FRHIViewDesc::FTextureUAV::FInitializer : private FRHIViewDesc
+{
+	friend FRHIViewDesc;
+	friend FRHICommandListBase;
+
+protected:
+	FInitializer()
+		: FRHIViewDesc(EViewType::TextureUAV)
+	{
+		// Texture UAVs only support 1 mip
+		Texture.UAV.MipRange.Num = 1;
+	}
+
+public:
+	//
+	// Specifies the type of view to create. Must match the shader parameter this view will be bound to.
+	// 
+	// The dimension is allowed to differ from the underlying resource's dimensions, e.g. to create a view
+	// compatible with an RWTexture2D<> shader parameter, but where the underlying resource is a texture 2D array.
+	//
+	// Some combinations are not valid, e.g. 3D textures can only have 3D views.
+	//
+	FInitializer& SetDimension(ETextureDimension InDimension)
+	{
+		switch (InDimension)
+		{
+		default: checkNoEntry(); break;
+		case ETextureDimension::Texture2D       : Texture.UAV.Dimension = EDimension::Texture2D       ; break;
+		case ETextureDimension::Texture2DArray  : Texture.UAV.Dimension = EDimension::Texture2DArray  ; break;
+		case ETextureDimension::Texture3D       : Texture.UAV.Dimension = EDimension::Texture3D       ; break;
+		case ETextureDimension::TextureCube     : Texture.UAV.Dimension = EDimension::TextureCube     ; break;
+		case ETextureDimension::TextureCubeArray: Texture.UAV.Dimension = EDimension::TextureCubeArray; break;
+		}
+		return *this;
+	}
+
+	//
+	// Provided for back-compat with existing code. Consider using SetDimension() instead for more direct control over the view.
+	// For example, it is possible to create a 2D view of a 2DArray texture, but not using this function which always choses 2DArray dimension.
+	//
+	FInitializer& SetDimensionFromTexture(FRHITexture* TargetTexture)
+	{
+		check(TargetTexture);
+		SetDimension(TargetTexture->GetDesc().Dimension);
+		return *this;
+	}
+
+	FInitializer& SetFormat(EPixelFormat InFormat)
+	{
+		Texture.UAV.Format = InFormat;
+		return *this;
+	}
+
+	FInitializer& SetPlane(ERHITexturePlane InPlane)
+	{
+		Texture.UAV.Plane = InPlane;
+		return *this;
+	}
+
+	FInitializer& SetMipLevel(uint8 InMipLevel)
+	{
+		Texture.UAV.MipRange.First = InMipLevel;
+		return *this;
+	}
+
+	//
+	// The meaning of array "elements" is given by the dimension of the underlying resource.
+	// I.e. a view of a TextureCubeArray resource indexes the array in whole cubes.
+	// 
+	//     [0] = the first cube (2D slices 0 to 5)
+	//     [1] = the second cube (2D slices 6 to 11)
+	// 
+	// If the view dimension is smaller than the resource dimension, the array range will be further limited.
+	// E.g. creating a Texture2D dimension view of a TextureCubeArray resource
+	//
+	FInitializer& SetArrayRange(uint16 InFirstElement, uint16 InNumElements)
+	{
+		Texture.UAV.ArrayRange.First = InFirstElement;
+		Texture.UAV.ArrayRange.Num = InNumElements;
+		return *this;
+	}
+};
+
+inline FRHIViewDesc::FBufferSRV::FInitializer FRHIViewDesc::CreateBufferSRV()
+{
+	return FRHIViewDesc::FBufferSRV::FInitializer();
+}
+
+inline FRHIViewDesc::FBufferUAV::FInitializer FRHIViewDesc::CreateBufferUAV()
+{
+	return FRHIViewDesc::FBufferUAV::FInitializer();
+}
+
+inline FRHIViewDesc::FTextureSRV::FInitializer FRHIViewDesc::CreateTextureSRV()
+{
+	return FRHIViewDesc::FTextureSRV::FInitializer();
+}
+
+inline FRHIViewDesc::FTextureUAV::FInitializer FRHIViewDesc::CreateTextureUAV()
+{
+	return FRHIViewDesc::FTextureUAV::FInitializer();
+}
+
+//
+// Used by platform RHIs to create views of buffers. The data in this structure is computed in GetViewInfo(),
+// and is specific to a particular buffer resource. It is not intended to be stored in a view instance.
+//
+struct FRHIViewDesc::FBuffer::FViewInfo
+{
+	// The offset in bytes from the beginning of the viewed buffer resource.
+	uint32 OffsetInBytes;
+
+	// The size in bytes of a single element in the view.
+	uint32 StrideInBytes;
+
+	// The number of elements visible in the view.
+	uint32 NumElements;
+
+	// The total number of bytes the data visible in the view covers (i.e. stride * numelements).
+	uint32 SizeInBytes;
+
+	// Whether this is a typed / structured / raw view etc.
+	EBufferType BufferType;
+
+	// The format of the data exposed by this view. PF_Unknown for all buffer types except typed buffer views.
+	EPixelFormat Format;
+
+	// When true, the view is refering to a BUF_NullResource, so a null descriptor should be created.
+	bool bNullView;
+};
+
+// Buffer SRV specific info
+struct FRHIViewDesc::FBufferSRV::FViewInfo : public FRHIViewDesc::FBuffer::FViewInfo
+{};
+
+// Buffer UAV specific info
+struct FRHIViewDesc::FBufferUAV::FViewInfo : public FRHIViewDesc::FBuffer::FViewInfo
+{
+	bool bAtomicCounter = false;
+	bool bAppendBuffer = false;
+};
+
+//
+// Used by platform RHIs to create views of textures. The data in this structure is computed in GetViewInfo(),
+// and is specific to a particular texture resource. It is not intended to be stored in a view instance.
+//
+struct FRHIViewDesc::FTexture::FViewInfo
+{
+	//
+	// The range of array "elements" the view covers.
+	// 
+	// The meaning of "elements" is given by the view dimension.
+	// I.e. a view with "Dimension == CubeArray" indexes the array in whole cubes.
+	// 
+	//		- [0]: the first cube (2D slices 0 to 5)
+	//		- [1]: the second cube (2D slices 6 to 11)
+	// 
+	// 3D textures always have ArrayRange.Num == 1 because there are no "3D texture arrays".
+	//
+	FRHIRange16 ArrayRange;
+
+	// Which plane of a texture to access (i.e. color, depth, stencil etc). 
+	ERHITexturePlane Plane;
+
+	// The typed format to use when reading / writing data in the viewed texture.
+	EPixelFormat Format;
+
+	// Specifies how to treat the texture resource when creating the view.
+	// E.g. it is possible to create a 2DArray view of a 2D or Cube texture.
+	EDimension Dimension : uint32(EDimension::NumBits);
+
+	// True when the view covers every mip of the resource.
+	uint8 bAllMips : 1;
+
+	// True when the view covers every array slice of the resource.
+	// This includes depth slices for 3D textures, and faces of texture cubes.
+	uint8 bAllSlices : 1;
+};
+
+// Texture SRV specific info
+struct FRHIViewDesc::FTextureSRV::FViewInfo : public FRHIViewDesc::FTexture::FViewInfo
+{
+	// The range of texture mips the view covers.
+	FRHIRange8 MipRange;
+
+	// Indicates if this view should use an sRGB variant of the typed format.
+	uint8 bSRGB : 1;
+};
+
+
+// Texture UAV specific info
+struct FRHIViewDesc::FTextureUAV::FViewInfo : public FRHIViewDesc::FTexture::FViewInfo
+{
+	// The single mip level covered by this view.
+	uint8 MipLevel;
+};
+
 class FRHIView : public FRHIResource
 {
 public:
-	FRHIView(ERHIResourceType InResourceType, FRHIViewableResource* InParentResource)
+	FRHIView(ERHIResourceType InResourceType, FRHIViewableResource* InResource, FRHIViewDesc const& InViewDesc)
 		: FRHIResource(InResourceType)
-		, ParentResource(InParentResource)
-	{}
-
-	virtual FRHIDescriptorHandle GetBindlessHandle() const { return FRHIDescriptorHandle(); }
-
-	FRHIViewableResource* GetParentResource() const { return ParentResource; }
-
-protected:
-	void SetParentResource(FRHIViewableResource* InParentResource)
+		, Resource(InResource)
+		, ViewDesc(InViewDesc)
 	{
-		ParentResource = InParentResource;
+		checkf(InResource, TEXT("Cannot create a view of a nullptr resource."));
+	}
+
+	virtual FRHIDescriptorHandle GetBindlessHandle() const
+	{
+		return FRHIDescriptorHandle();
+	}
+
+	FRHIViewableResource* GetResource() const
+	{
+		return Resource;
+	}
+
+	FRHIBuffer* GetBuffer() const
+	{
+		check(ViewDesc.IsBuffer());
+		return static_cast<FRHIBuffer*>(Resource.GetReference());
+	}
+
+	FRHITexture* GetTexture() const
+	{
+		check(ViewDesc.IsTexture());
+		return static_cast<FRHITexture*>(Resource.GetReference());
+	}
+
+	bool IsBuffer () const { return ViewDesc.IsBuffer (); }
+	bool IsTexture() const { return ViewDesc.IsTexture(); }
+
+#if ENABLE_RHI_VALIDATION
+	RHIValidation::FViewIdentity GetViewIdentity()
+	{
+		return RHIValidation::FViewIdentity(Resource, ViewDesc);
+	}
+#endif
+
+	FRHIViewDesc const& GetDesc() const
+	{
+		return ViewDesc;
 	}
 
 private:
-	FRHIViewableResource* ParentResource;
+	TRefCountPtr<FRHIViewableResource> Resource;
+
+protected:
+	FRHIViewDesc const ViewDesc;
 };
 
 class FRHIUnorderedAccessView : public FRHIView
-#if ENABLE_RHI_VALIDATION
-	, public RHIValidation::FUnorderedAccessView
-#endif
 {
 public:
-	explicit FRHIUnorderedAccessView(FRHIViewableResource* InParentResource)
-		: FRHIView(RRT_UnorderedAccessView, InParentResource)
-	{}
+	explicit FRHIUnorderedAccessView(FRHIViewableResource* InResource, FRHIViewDesc const& InViewDesc)
+		: FRHIView(RRT_UnorderedAccessView, InResource, InViewDesc)
+	{
+		check(ViewDesc.IsUAV());
+	}
 };
 
 class FRHIShaderResourceView : public FRHIView
-#if ENABLE_RHI_VALIDATION
-	, public RHIValidation::FShaderResourceView
-#endif
 {
 public:
-	explicit FRHIShaderResourceView(FRHIViewableResource* InParentResource)
-		: FRHIView(RRT_ShaderResourceView, InParentResource)
-	{}
+	explicit FRHIShaderResourceView(FRHIViewableResource* InResource, FRHIViewDesc const& InViewDesc)
+		: FRHIView(RRT_ShaderResourceView, InResource, InViewDesc)
+	{
+		check(ViewDesc.IsSRV());
+	}
 };
 
 /**
@@ -2371,25 +2809,22 @@ public:
  * It is not comparable or convertible to other name types to encourage its use only for debugging and avoid using more storage than necessary
  * for the primary use cases of FName (names of objects, assets etc which are widely used and therefor deduped in the name table).
  */
-class RHI_API FDebugName
+class FDebugName
 {
-	DECLARE_INLINE_TYPE_LAYOUT(FDebugName, NonVirtual);
-
 public:
-	FDebugName();
-	FDebugName(FName InName);
-	FDebugName(FName InName, int32 InNumber);
-	FDebugName(FMemoryImageName InName, int32 InNumber);
+	RHI_API FDebugName();
+	RHI_API FDebugName(FName InName);
+	RHI_API FDebugName(FName InName, int32 InNumber);
 
-	FDebugName& operator=(FName Other);
+	RHI_API FDebugName& operator=(FName Other);
 
-	FString ToString() const;
+	RHI_API FString ToString() const;
 	bool IsNone() const { return Name.IsNone() && Number == NAME_NO_NUMBER_INTERNAL; }
-	void AppendString(FStringBuilderBase& Builder) const;
+	RHI_API void AppendString(FStringBuilderBase& Builder) const;
 
 private:
-	LAYOUT_FIELD(FMemoryImageName, Name);
-	LAYOUT_FIELD(uint32, Number);
+	FName Name;
+	uint32 Number;
 };
 
 //
@@ -2412,9 +2847,8 @@ class FRHIRayTracingGeometry;
 * All instances covered by this descriptor will share shader bindings, but may have different transforms and user data.
 */
 struct FRayTracingGeometryInstance
-{
-	// TODO: UE-130819 Ref counting is a temporary workaround for a very rare streaming crash.
-	TRefCountPtr<FRHIRayTracingGeometry> GeometryRHI = nullptr;
+{	
+	FRHIRayTracingGeometry* GeometryRHI = nullptr;
 
 	// A single physical mesh may be duplicated many times in the scene with different transforms and user data.
 	// All copies share the same shader binding table entries and therefore will have the same material and shader resources.
@@ -2487,71 +2921,69 @@ DECLARE_INTRINSIC_TYPE_LAYOUT(ERayTracingGeometryInitializerType);
 
 struct FRayTracingGeometrySegment
 {
-	DECLARE_TYPE_LAYOUT(FRayTracingGeometrySegment, NonVirtual);
 public:
-	LAYOUT_FIELD_INITIALIZED(FBufferRHIRef, VertexBuffer, nullptr);
-	LAYOUT_FIELD_INITIALIZED(EVertexElementType, VertexBufferElementType, VET_Float3);
+	FBufferRHIRef VertexBuffer = nullptr;
+	EVertexElementType VertexBufferElementType = VET_Float3;
 
 	// Offset in bytes from the base address of the vertex buffer.
-	LAYOUT_FIELD_INITIALIZED(uint32, VertexBufferOffset, 0);
+	uint32 VertexBufferOffset = 0;
 
 	// Number of bytes between elements of the vertex buffer (sizeof VET_Float3 by default).
 	// Must be equal or greater than the size of the position vector.
-	LAYOUT_FIELD_INITIALIZED(uint32, VertexBufferStride, 12);
+	uint32 VertexBufferStride = 12;
 
 	// Number of vertices (positions) in VertexBuffer.
 	// If an index buffer is present, this must be at least the maximum index value in the index buffer + 1.
-	LAYOUT_FIELD_INITIALIZED(uint32, MaxVertices, 0);
+	uint32 MaxVertices = 0;
 
 	// Primitive range for this segment.
-	LAYOUT_FIELD_INITIALIZED(uint32, FirstPrimitive, 0);
-	LAYOUT_FIELD_INITIALIZED(uint32, NumPrimitives, 0);
+	uint32 FirstPrimitive = 0;
+	uint32 NumPrimitives = 0;
 
 	// Indicates whether any-hit shader could be invoked when hitting this geometry segment.
 	// Setting this to `false` turns off any-hit shaders, making the section "opaque" and improving ray tracing performance.
-	LAYOUT_FIELD_INITIALIZED(bool, bForceOpaque, false);
+	bool bForceOpaque = false;
 
 	// Any-hit shader may be invoked multiple times for the same primitive during ray traversal.
 	// Setting this to `false` guarantees that only a single instance of any-hit shader will run per primitive, at some performance cost.
-	LAYOUT_FIELD_INITIALIZED(bool, bAllowDuplicateAnyHitShaderInvocation, true);
+	bool bAllowDuplicateAnyHitShaderInvocation = true;
 
 	// Indicates whether this section is enabled and should be taken into account during acceleration structure creation
-	LAYOUT_FIELD_INITIALIZED(bool, bEnabled, true);
+	bool bEnabled = true;
 };
 
 struct FRayTracingGeometryInitializer
 {
-	DECLARE_EXPORTED_TYPE_LAYOUT(FRayTracingGeometryInitializer, RHI_API, NonVirtual);
 public:
-	LAYOUT_FIELD_INITIALIZED(FBufferRHIRef, IndexBuffer, nullptr);
+	FBufferRHIRef IndexBuffer = nullptr;
 
 	// Offset in bytes from the base address of the index buffer.
-	LAYOUT_FIELD_INITIALIZED(uint32, IndexBufferOffset, 0);
+	uint32 IndexBufferOffset = 0;
 
-	LAYOUT_FIELD_INITIALIZED(ERayTracingGeometryType, GeometryType, RTGT_Triangles);
+	ERayTracingGeometryType GeometryType = RTGT_Triangles;
 
 	// Total number of primitives in all segments of the geometry. Only used for validation.
-	LAYOUT_FIELD_INITIALIZED(uint32, TotalPrimitiveCount, 0);
+	uint32 TotalPrimitiveCount = 0;
 
 	// Partitions of geometry to allow different shader and resource bindings.
 	// All ray tracing geometries must have at least one segment.
-	LAYOUT_FIELD(TMemoryImageArray<FRayTracingGeometrySegment>, Segments);
+	TArray<FRayTracingGeometrySegment> Segments;
 
 	// Offline built geometry data. If null, the geometry will be built by the RHI at runtime.
-	LAYOUT_FIELD_INITIALIZED(FResourceArrayInterface*, OfflineData, nullptr);
+	FResourceArrayInterface* OfflineData = nullptr;
 
 	// Pointer to an existing ray tracing geometry which the new geometry is built from.
-	LAYOUT_FIELD_INITIALIZED(FRHIRayTracingGeometry*, SourceGeometry, nullptr);
+	FRHIRayTracingGeometry* SourceGeometry = nullptr;
 
-	LAYOUT_FIELD_INITIALIZED(bool, bFastBuild, false);
-	LAYOUT_FIELD_INITIALIZED(bool, bAllowUpdate, false);
-	LAYOUT_FIELD_INITIALIZED(bool, bAllowCompaction, true);
-	LAYOUT_FIELD_INITIALIZED(ERayTracingGeometryInitializerType, Type, ERayTracingGeometryInitializerType::Rendering);
+	bool bFastBuild = false;
+	bool bAllowUpdate = false;
+	bool bAllowCompaction = true;
+	ERayTracingGeometryInitializerType Type = ERayTracingGeometryInitializerType::Rendering;
 
 	// Use FDebugName for auto-generated debug names with numbered suffixes, it is a variation of FMemoryImageName with optional number postfix.
-	LAYOUT_FIELD(FDebugName, DebugName);
+	FDebugName DebugName;
 	// Store the path name of the owner object for resource tracking. FMemoryImageName allows a conversion to/from FName.
-	LAYOUT_FIELD(FMemoryImageName, OwnerName);
+	FName OwnerName;
 };
 
 enum ERayTracingSceneLifetime
@@ -2686,7 +3118,7 @@ public:
 	// Returns a buffer view for RHI-specific system parameters associated with this scene.
 	// This may be needed to access ray tracing geometry data in shaders that use ray queries.
 	// Returns NULL if current RHI does not require this buffer.
-	virtual FRHIShaderResourceView* GetMetadataBufferSRV() const
+	virtual FRHIShaderResourceView* GetOrCreateMetadataBufferSRV(FRHICommandListImmediate& RHICmdList)
 	{
 		return nullptr;
 	}
@@ -2697,7 +3129,7 @@ public:
 /* Generic staging buffer class used by FRHIGPUMemoryReadback
 * RHI specific staging buffers derive from this
 */
-class RHI_API FRHIStagingBuffer : public FRHIResource
+class FRHIStagingBuffer : public FRHIResource
 {
 public:
 	FRHIStagingBuffer()
@@ -2717,7 +3149,7 @@ protected:
 	bool bIsLocked;
 };
 
-class RHI_API FGenericRHIStagingBuffer : public FRHIStagingBuffer
+class FGenericRHIStagingBuffer : public FRHIStagingBuffer
 {
 public:
 	FGenericRHIStagingBuffer()
@@ -2726,8 +3158,8 @@ public:
 
 	~FGenericRHIStagingBuffer() {}
 
-	virtual void* Lock(uint32 Offset, uint32 NumBytes) final override;
-	virtual void Unlock() final override;
+	RHI_API virtual void* Lock(uint32 Offset, uint32 NumBytes) final override;
+	RHI_API virtual void Unlock() final override;
 	virtual uint64 GetGPUSizeBytes() const final override { return ShadowBuffer.IsValid() ? ShadowBuffer->GetSize() : 0; }
 
 	FBufferRHIRef ShadowBuffer;
@@ -2737,30 +3169,20 @@ public:
 class FRHIRenderTargetView
 {
 public:
-	FRHITexture* Texture;
-	uint32 MipIndex;
+	FRHITexture* Texture = nullptr;
+	uint32 MipIndex = 0;
 
 	/** Array slice or texture cube face.  Only valid if texture resource was created with TexCreate_TargetArraySlicesIndependently! */
-	uint32 ArraySliceIndex;
-	
-	ERenderTargetLoadAction LoadAction;
-	ERenderTargetStoreAction StoreAction;
+	uint32 ArraySliceIndex = -1;
 
-	FRHIRenderTargetView() : 
-		Texture(NULL),
-		MipIndex(0),
-		ArraySliceIndex(-1),
-		LoadAction(ERenderTargetLoadAction::ENoAction),
-		StoreAction(ERenderTargetStoreAction::ENoAction)
-	{}
+	ERenderTargetLoadAction LoadAction = ERenderTargetLoadAction::ENoAction;
+	ERenderTargetStoreAction StoreAction = ERenderTargetStoreAction::ENoAction;
 
-	FRHIRenderTargetView(const FRHIRenderTargetView& Other) :
-		Texture(Other.Texture),
-		MipIndex(Other.MipIndex),
-		ArraySliceIndex(Other.ArraySliceIndex),
-		LoadAction(Other.LoadAction),
-		StoreAction(Other.StoreAction)
-	{}
+	FRHIRenderTargetView() = default;
+	FRHIRenderTargetView(FRHIRenderTargetView&&) = default;
+	FRHIRenderTargetView(const FRHIRenderTargetView&) = default;
+	FRHIRenderTargetView& operator=(FRHIRenderTargetView&&) = default;
+	FRHIRenderTargetView& operator=(const FRHIRenderTargetView&) = default;
 
 	//common case
 	explicit FRHIRenderTargetView(FRHITexture* InTexture, ERenderTargetLoadAction InLoadAction) :
@@ -2910,6 +3332,8 @@ public:
 	bool bClearDepth;
 	bool bClearStencil;
 
+	FRHIDepthRenderTargetView DepthStencilResolveRenderTarget;
+
 	FRHITexture* ShadingRateTexture;
 	EVRSRateCombiner ShadingRateTextureCombiner;
 
@@ -2959,8 +3383,11 @@ public:
 		// Need a separate struct so we can memzero/remove dependencies on reference counts
 		struct FHashableStruct
 		{
-			// *2 for color and resolves, depth goes in the second-to-last slot, shading rate goes in the last slot
-			FRHITexture* Texture[MaxSimultaneousRenderTargets*2 + 2];
+			// *2 for color and resolves
+			// depth goes in the third-to-last slot
+			// depth resolve goes in the second-to-last slot
+			// shading rate goes in the last slot
+			FRHITexture* Texture[MaxSimultaneousRenderTargets * 2 + 3];
 			uint32 MipIndex[MaxSimultaneousRenderTargets];
 			uint32 ArraySliceIndex[MaxSimultaneousRenderTargets];
 			ERenderTargetLoadAction LoadAction[MaxSimultaneousRenderTargets];
@@ -2985,15 +3412,16 @@ public:
 				for (int32 Index = 0; Index < RTInfo.NumColorRenderTargets; ++Index)
 				{
 					Texture[Index] = RTInfo.ColorRenderTarget[Index].Texture;
-					Texture[MaxSimultaneousRenderTargets+Index] = RTInfo.ColorResolveRenderTarget[Index].Texture;
+					Texture[MaxSimultaneousRenderTargets + Index] = RTInfo.ColorResolveRenderTarget[Index].Texture;
 					MipIndex[Index] = RTInfo.ColorRenderTarget[Index].MipIndex;
 					ArraySliceIndex[Index] = RTInfo.ColorRenderTarget[Index].ArraySliceIndex;
 					LoadAction[Index] = RTInfo.ColorRenderTarget[Index].LoadAction;
 					StoreAction[Index] = RTInfo.ColorRenderTarget[Index].StoreAction;
 				}
 
-				Texture[MaxSimultaneousRenderTargets] = RTInfo.DepthStencilRenderTarget.Texture;
-				Texture[MaxSimultaneousRenderTargets + 1] = RTInfo.ShadingRateTexture;
+				Texture[MaxSimultaneousRenderTargets * 2] = RTInfo.DepthStencilRenderTarget.Texture;
+				Texture[MaxSimultaneousRenderTargets * 2 + 1] = RTInfo.DepthStencilResolveRenderTarget.Texture;
+				Texture[MaxSimultaneousRenderTargets * 2 + 2] = RTInfo.ShadingRateTexture;
 				DepthLoadAction = RTInfo.DepthStencilRenderTarget.DepthLoadAction;
 				DepthStoreAction = RTInfo.DepthStencilRenderTarget.DepthStoreAction;
 				StencilLoadAction = RTInfo.DepthStencilRenderTarget.StencilLoadAction;
@@ -3328,8 +3756,7 @@ public:
 		bool						bInDepthBounds,
 		uint8						InMultiViewCount,
 		bool						bInHasFragmentDensityAttachment,
-		EVRSShadingRate				InShadingRate,
-		uint64						InStatePrecachePSOHash)
+		EVRSShadingRate				InShadingRate)
 		: BoundShaderState(InBoundShaderState)
 		, BlendState(InBlendState)
 		, RasterizerState(InRasterizerState)
@@ -3355,7 +3782,7 @@ public:
 		, bHasFragmentDensityAttachment(bInHasFragmentDensityAttachment)
 		, ShadingRate(InShadingRate)
 		, Flags(InFlags)
-		, StatePrecachePSOHash(InStatePrecachePSOHash)
+		, StatePrecachePSOHash(0)
 	{
 	}
 
@@ -3380,7 +3807,7 @@ public:
 			RenderTargetFormats != rhs.RenderTargetFormats || 
 			!RelevantRenderTargetFlagsEqual(RenderTargetFlags, rhs.RenderTargetFlags) || 
 			DepthStencilTargetFormat != rhs.DepthStencilTargetFormat || 
-			DepthStencilTargetFlag != rhs.DepthStencilTargetFlag ||
+			!RelevantDepthStencilFlagsEqual(DepthStencilTargetFlag, rhs.DepthStencilTargetFlag) ||
 			DepthTargetLoadAction != rhs.DepthTargetLoadAction ||
 			DepthTargetStoreAction != rhs.DepthTargetStoreAction ||
 			StencilTargetLoadAction != rhs.StencilTargetLoadAction ||
@@ -3401,6 +3828,10 @@ public:
 	// In most RHIs, the format is only influenced by TexCreate_SRGB. D3D12 additionally uses TexCreate_Shared in its format selection logic.
 	static constexpr ETextureCreateFlags RelevantRenderTargetFlagMask = ETextureCreateFlags::SRGB | ETextureCreateFlags::Shared;
 
+	// We care about flags that influence DS formats (which is the only thing the underlying API cares about).
+	// D3D12 shares the format choice function with the RT, so preserving all the flags used there out of abundance of caution.
+	static constexpr ETextureCreateFlags RelevantDepthStencilFlagMask = ETextureCreateFlags::SRGB | ETextureCreateFlags::Shared | ETextureCreateFlags::DepthStencilTargetable;
+
 	static bool RelevantRenderTargetFlagsEqual(const TRenderTargetFlags& A, const TRenderTargetFlags& B)
 	{
 		for (int32 Index = 0; Index < A.Num(); ++Index)
@@ -3413,6 +3844,13 @@ public:
 			}
 		}
 		return true;
+	}
+
+	static bool RelevantDepthStencilFlagsEqual(const ETextureCreateFlags A, const ETextureCreateFlags B)
+	{
+		ETextureCreateFlags FlagsA = (A & RelevantDepthStencilFlagMask);
+		ETextureCreateFlags FlagsB = (B & RelevantDepthStencilFlagMask);
+		return (FlagsA == FlagsB);
 	}
 
 	uint32 ComputeNumValidRenderTargets() const
@@ -3732,13 +4170,6 @@ struct FResolveRect
 		, Y2(InY2)
 	{}
 
-	FResolveRect(const FResolveRect& Other)
-		: X1(Other.X1)
-		, Y1(Other.Y1)
-		, X2(Other.X2)
-		, Y2(Other.Y2)
-	{}
-
 	explicit FResolveRect(FIntRect Other)
 		: X1(Other.Min.X)
 		, Y1(Other.Min.Y)
@@ -3760,51 +4191,6 @@ struct FResolveRect
 	{
 		return X1 >= 0 && Y1 >= 0 && X2 - X1 > 0 && Y2 - Y1 > 0;
 	}
-};
-
-struct FResolveParams
-{
-	/** used to specify face when resolving to a cube map texture */
-	ECubeFace CubeFace;
-	/** resolve RECT bounded by [X1,Y1]..[X2,Y2]. Or -1 for fullscreen */
-	FResolveRect Rect;
-	FResolveRect DestRect;
-	/** The mip index to resolve in both source and dest. */
-	int32 MipIndex;
-	/** Array index to resolve in the source. */
-	int32 SourceArrayIndex;
-	/** Array index to resolve in the dest. */
-	int32 DestArrayIndex;
-	/** States to transition to at the end of the resolve operation. */
-	ERHIAccess SourceAccessFinal = ERHIAccess::SRVMask;
-	ERHIAccess DestAccessFinal = ERHIAccess::SRVMask;
-
-	/** constructor */
-	FResolveParams(
-		const FResolveRect& InRect = FResolveRect(),
-		ECubeFace InCubeFace = CubeFace_PosX,
-		int32 InMipIndex = 0,
-		int32 InSourceArrayIndex = 0,
-		int32 InDestArrayIndex = 0,
-		const FResolveRect& InDestRect = FResolveRect())
-		: CubeFace(InCubeFace)
-		, Rect(InRect)
-		, DestRect(InDestRect)
-		, MipIndex(InMipIndex)
-		, SourceArrayIndex(InSourceArrayIndex)
-		, DestArrayIndex(InDestArrayIndex)
-	{}
-
-	FORCEINLINE FResolveParams(const FResolveParams& Other)
-		: CubeFace(Other.CubeFace)
-		, Rect(Other.Rect)
-		, DestRect(Other.DestRect)
-		, MipIndex(Other.MipIndex)
-		, SourceArrayIndex(Other.SourceArrayIndex)
-		, DestArrayIndex(Other.DestArrayIndex)
-		, SourceAccessFinal(Other.SourceAccessFinal)
-		, DestAccessFinal(Other.DestAccessFinal)
-	{}
 };
 
 struct FRHIRenderPassInfo
@@ -3831,8 +4217,10 @@ struct FRHIRenderPassInfo
 	// Controls the area for a multisample resolve or raster UAV (i.e. no fixed-function targets) operation.
 	FResolveRect ResolveRect;
 
-	UE_DEPRECATED(5.1, "ResolveParameters is deprecated. Use ResolveRect")
-	FResolveParams ResolveParameters;
+	// BEGIN META SECTION - Multi-View Per View Viewports / Render Areas
+	// For Multiview per view RenderAreas
+	FResolveRect ResolveRect2;
+	// END META SECTION - Multi-View Per View Viewports / Render Areas
 
 	// Some RHIs can use a texture to control the sampling and/or shading resolution of different areas 
 	FTextureRHIRef ShadingRateTexture = nullptr;
@@ -3848,14 +4236,10 @@ struct FRHIRenderPassInfo
 	// Hint for some RHI's that renderpass will have specific sub-passes 
 	ESubpassHint SubpassHint = ESubpassHint::None;
 
-	// Optional Render Area extent : this renderpass will only execute on pixels within this area (scissor/viewport doesn't cover clear/loads on mobile)
-	FIntRect RenderArea = FIntRect();
-
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FRHIRenderPassInfo() = default;
 	FRHIRenderPassInfo(const FRHIRenderPassInfo&) = default;
 	FRHIRenderPassInfo& operator=(const FRHIRenderPassInfo&) = default;
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	// Color, no depth, optional resolve, optional mip, optional array slice
 	explicit FRHIRenderPassInfo(FRHITexture* ColorRT, ERenderTargetActions ColorAction, FRHITexture* ResolveRT = nullptr, uint8 InMipIndex = 0, int32 InArraySlice = -1)
@@ -4100,59 +4484,20 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	RHI_API void Validate() const;
 #else
-	RHI_API void Validate() const {}
+	void Validate() const {}
 #endif
 	RHI_API void ConvertToRenderTargetsInfo(FRHISetRenderTargetsInfo& OutRTInfo) const;
-
-	//////////////////////////////////////////////////////////////////////////
-	// Deprecated
-	//////////////////////////////////////////////////////////////////////////
-
-	UE_DEPRECATED(5.1, "IsMSAA is deprecated.")
-	inline bool IsMSAA() const { return false; }
-
-	UE_DEPRECATED(5.1, "bIsMSAA is deprecated")
-	bool bIsMSAA = false;
-
-	UE_DEPRECATED(5.1, "bTooManyUAVs is deprecated")
-	bool bTooManyUAVs = false;
-
-	UE_DEPRECATED(5.1, "bGeneratingMips is deprecated")
-	bool bGeneratingMips = false;
 };
 
-/** Used to specify a texture metadata plane when creating a view. */
-enum class ERHITextureMetaDataAccess : uint8
-{
-	/** The primary plane is used with default compression behavior. */
-	None = 0,
-
-	/** The primary plane is used without decompressing it. */
-	CompressedSurface,
-
-	/** The depth plane is used with default compression behavior. */
-	Depth,
-
-	/** The stencil plane is used with default compression behavior. */
-	Stencil,
-
-	/** The HTile plane is used. */
-	HTile,
-
-	/** the FMask plane is used. */
-	FMask,
-
-	/** the CMask plane is used. */
-	CMask
-};
-
+//UE_DEPRECATED(5.3, "Use FRHITextureSRVCreateDesc::SetDisableSRGB to create a view which explicitly disables SRGB.")
 enum ERHITextureSRVOverrideSRGBType : uint8
 {
 	SRGBO_Default,
 	SRGBO_ForceDisable,
 };
 
-struct RHI_API FRHITextureSRVCreateInfo
+//UE_DEPRECATED(5.3, "Use FRHITextureSRVCreateDesc rather than FRHITextureSRVCreateInfo.")
+struct FRHITextureSRVCreateInfo
 {
 	explicit FRHITextureSRVCreateInfo(uint8 InMipLevel = 0u, uint8 InNumMipLevels = 1u, EPixelFormat InFormat = PF_Unknown)
 		: Format(InFormat)
@@ -4192,6 +4537,9 @@ struct RHI_API FRHITextureSRVCreateInfo
 
 	/** Specify the metadata plane to use when creating a view. */
 	ERHITextureMetaDataAccess MetaData = ERHITextureMetaDataAccess::None;
+    
+    /** Specify a dimension to use which overrides the default  */
+    TOptional<ETextureDimension> DimensionOverride;
 
 	FORCEINLINE bool operator==(const FRHITextureSRVCreateInfo& Other)const
 	{
@@ -4202,7 +4550,8 @@ struct RHI_API FRHITextureSRVCreateInfo
 			SRGBOverride == Other.SRGBOverride &&
 			FirstArraySlice == Other.FirstArraySlice &&
 			NumArraySlices == Other.NumArraySlices &&
-			MetaData == Other.MetaData);
+			MetaData == Other.MetaData &&
+            DimensionOverride == Other.DimensionOverride);
 	}
 
 	FORCEINLINE bool operator!=(const FRHITextureSRVCreateInfo& Other)const
@@ -4214,6 +4563,7 @@ struct RHI_API FRHITextureSRVCreateInfo
 	{
 		uint32 Hash = uint32(Info.Format) | uint32(Info.MipLevel) << 8 | uint32(Info.NumMipLevels) << 16 | uint32(Info.SRGBOverride) << 24;
 		Hash = HashCombine(Hash, uint32(Info.FirstArraySlice) | uint32(Info.NumArraySlices) << 16);
+        Hash = HashCombine(Hash, Info.DimensionOverride.IsSet() ? uint32(*Info.DimensionOverride) : MAX_uint32);
 		Hash = HashCombine(Hash, uint32(Info.MetaData));
 		return Hash;
 	}
@@ -4225,7 +4575,7 @@ struct RHI_API FRHITextureSRVCreateInfo
 	}
 
 protected:
-	static bool Validate(const FRHITextureDesc& TextureDesc, const FRHITextureSRVCreateInfo& TextureSRVDesc, const TCHAR* TextureName, bool bFatal);
+	RHI_API static bool Validate(const FRHITextureDesc& TextureDesc, const FRHITextureSRVCreateInfo& TextureSRVDesc, const TCHAR* TextureName, bool bFatal);
 };
 
 struct FRHITextureUAVCreateInfo
@@ -4246,7 +4596,9 @@ public:
 
 	FORCEINLINE bool operator==(const FRHITextureUAVCreateInfo& Other)const
 	{
-		return Format == Other.Format && MipLevel == Other.MipLevel && MetaData == Other.MetaData && FirstArraySlice == Other.FirstArraySlice && NumArraySlices == Other.NumArraySlices;
+		return Format == Other.Format && MipLevel == Other.MipLevel && MetaData == Other.MetaData &&
+                FirstArraySlice == Other.FirstArraySlice && NumArraySlices == Other.NumArraySlices &&
+                DimensionOverride == Other.DimensionOverride;
 	}
 
 	FORCEINLINE bool operator!=(const FRHITextureUAVCreateInfo& Other)const
@@ -4257,6 +4609,7 @@ public:
 	friend uint32 GetTypeHash(const FRHITextureUAVCreateInfo& Info)
 	{
 		uint32 Hash = uint32(Info.Format) | uint32(Info.MipLevel) << 8 | uint32(Info.FirstArraySlice) << 16;
+        Hash = HashCombine(Hash, Info.DimensionOverride.IsSet() ? uint32(*Info.DimensionOverride) : MAX_uint32);
 		Hash = HashCombine(Hash, uint32(Info.NumArraySlices) | uint32(Info.MetaData) << 16);
 		return Hash;
 	}
@@ -4266,6 +4619,9 @@ public:
 	uint16 FirstArraySlice = 0;
 	uint16 NumArraySlices = 0;	// When 0, the default behavior will be used, e.g. all slices mapped.
 	ERHITextureMetaDataAccess MetaData = ERHITextureMetaDataAccess::None;
+    
+    /** Specify a dimension to use which overrides the default  */
+    TOptional<ETextureDimension> DimensionOverride;
 };
 
 /** Descriptor used to create a buffer resource */
@@ -4300,16 +4656,18 @@ struct FRHIBufferSRVCreateInfo
 
 	explicit FRHIBufferSRVCreateInfo(EPixelFormat InFormat)
 		: Format(InFormat)
-	{
-		if (InFormat != PF_Unknown)
-		{
-			BytesPerElement = GPixelFormats[Format].BlockBytes;
-		}
-	}
+	{}
+
+	FRHIBufferSRVCreateInfo(uint32 InStartOffsetBytes, uint32 InNumElements)
+		: StartOffsetBytes(InStartOffsetBytes)
+		, NumElements(InNumElements)
+	{}
 
 	FORCEINLINE bool operator==(const FRHIBufferSRVCreateInfo& Other)const
 	{
-		return BytesPerElement == Other.BytesPerElement && Format == Other.Format;
+		return Format == Other.Format
+			&& StartOffsetBytes == Other.StartOffsetBytes
+			&& NumElements == Other.NumElements;
 	}
 
 	FORCEINLINE bool operator!=(const FRHIBufferSRVCreateInfo& Other)const
@@ -4319,14 +4677,20 @@ struct FRHIBufferSRVCreateInfo
 
 	friend uint32 GetTypeHash(const FRHIBufferSRVCreateInfo& Desc)
 	{
-		return HashCombine(uint32(Desc.BytesPerElement), uint32(Desc.Format));
+		return HashCombine(
+			HashCombine(GetTypeHash(Desc.Format), GetTypeHash(Desc.StartOffsetBytes)),
+			GetTypeHash(Desc.NumElements)
+		);
 	}
-
-	/** Number of bytes per element. */
-	uint32 BytesPerElement = 1;
 
 	/** Encoding format for the element. */
 	EPixelFormat Format = PF_Unknown;
+
+	/** Offset in bytes from the beginning of buffer */
+	uint32 StartOffsetBytes = 0;
+
+	/** Number of elements (whole buffer by default) */
+	uint32 NumElements = UINT32_MAX;
 };
 
 struct FRHIBufferUAVCreateInfo
@@ -4360,18 +4724,23 @@ struct FRHIBufferUAVCreateInfo
 	bool bSupportsAppendBuffer = false;
 };
 
-class RHI_API FRHITextureViewCache
+class FRHITextureViewCache
 {
 public:
 	// Finds a UAV matching the descriptor in the cache or creates a new one and updates the cache.
-	FRHIUnorderedAccessView* GetOrCreateUAV(FRHITexture* Texture, const FRHITextureUAVCreateInfo& CreateInfo);
+	RHI_API FRHIUnorderedAccessView* GetOrCreateUAV(FRHICommandListBase& RHICmdList, FRHITexture* Texture, const FRHITextureUAVCreateInfo& CreateInfo);
 
 	// Finds a SRV matching the descriptor in the cache or creates a new one and updates the cache.
-	FRHIShaderResourceView* GetOrCreateSRV(FRHITexture* Texture, const FRHITextureSRVCreateInfo& CreateInfo);
+	RHI_API FRHIShaderResourceView* GetOrCreateSRV(FRHICommandListBase& RHICmdList, FRHITexture* Texture, const FRHITextureSRVCreateInfo& CreateInfo);
+
+	UE_DEPRECATED(5.3, "GetOrCreateUAV now requires a command list.")
+	RHI_API FRHIUnorderedAccessView* GetOrCreateUAV(FRHITexture* Texture, const FRHITextureUAVCreateInfo& CreateInfo);
+	UE_DEPRECATED(5.3, "GetOrCreateSRV now requires a command list.")
+	RHI_API FRHIShaderResourceView* GetOrCreateSRV(FRHITexture* Texture, const FRHITextureSRVCreateInfo& CreateInfo);
 
 	// Sets the debug name of the RHI view resources.
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-	void SetDebugName(const TCHAR* DebugName);
+	RHI_API void SetDebugName(const TCHAR* DebugName);
 #else
 	void SetDebugName(const TCHAR* DebugName) {}
 #endif
@@ -4381,18 +4750,23 @@ private:
 	TArray<TPair<FRHITextureSRVCreateInfo, FShaderResourceViewRHIRef>, TInlineAllocator<1>> SRVs;
 };
 
-class RHI_API FRHIBufferViewCache
+class FRHIBufferViewCache
 {
 public:
 	// Finds a UAV matching the descriptor in the cache or creates a new one and updates the cache.
-	FRHIUnorderedAccessView* GetOrCreateUAV(FRHIBuffer* Buffer, const FRHIBufferUAVCreateInfo& CreateInfo);
+	RHI_API FRHIUnorderedAccessView* GetOrCreateUAV(FRHICommandListBase& RHICmdList, FRHIBuffer* Buffer, const FRHIBufferUAVCreateInfo& CreateInfo);
 
 	// Finds a SRV matching the descriptor in the cache or creates a new one and updates the cache.
-	FRHIShaderResourceView* GetOrCreateSRV(FRHIBuffer* Buffer, const FRHIBufferSRVCreateInfo& CreateInfo);
+	RHI_API FRHIShaderResourceView* GetOrCreateSRV(FRHICommandListBase& RHICmdList, FRHIBuffer* Buffer, const FRHIBufferSRVCreateInfo& CreateInfo);
+
+	UE_DEPRECATED(5.3, "GetOrCreateUAV now requires a command list.")
+	RHI_API FRHIUnorderedAccessView* GetOrCreateUAV(FRHIBuffer* Buffer, const FRHIBufferUAVCreateInfo& CreateInfo);
+	UE_DEPRECATED(5.3, "GetOrCreateSRV now requires a command list.")
+	RHI_API FRHIShaderResourceView* GetOrCreateSRV(FRHIBuffer* Buffer, const FRHIBufferSRVCreateInfo& CreateInfo);
 
 	// Sets the debug name of the RHI view resources.
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-	void SetDebugName(const TCHAR* DebugName);
+	RHI_API void SetDebugName(const TCHAR* DebugName);
 #else
 	void SetDebugName(const TCHAR* DebugName) {}
 #endif
@@ -4402,66 +4776,20 @@ private:
 	TArray<TPair<FRHIBufferSRVCreateInfo, FShaderResourceViewRHIRef>, TInlineAllocator<1>> SRVs;
 };
 
-struct FRHIShaderParameter
-{
-	FRHIShaderParameter(uint16 InBufferIndex, uint16 InBaseIndex, uint16 InByteOffset, uint16 InByteSize)
-		: BufferIndex(InBufferIndex)
-		, BaseIndex(InBaseIndex)
-		, ByteOffset(InByteOffset)
-		, ByteSize(InByteSize)
-	{
-	}
-	uint16 BufferIndex;
-	uint16 BaseIndex;
-	uint16 ByteOffset;
-	uint16 ByteSize;
-};
-
-struct FRHIShaderParameterResource
-{
-	enum class EType : uint8
-	{
-		Texture,
-		ResourceView,
-		UnorderedAccessView,
-		Sampler,
-		UniformBuffer,
-	};
-
-	FRHIShaderParameterResource() = default;
-	FRHIShaderParameterResource(EType InType, FRHIResource* InResource, uint16 InIndex)
-		: Resource(InResource)
-		, Index(InIndex)
-		, Type(InType)
-	{
-	}
-	FRHIShaderParameterResource(FRHITexture* InTexture, uint16 InIndex)
-		: FRHIShaderParameterResource(FRHIShaderParameterResource::EType::Texture, InTexture, InIndex)
-	{
-	}
-	FRHIShaderParameterResource(FRHIShaderResourceView* InView, uint16 InIndex)
-		: FRHIShaderParameterResource(FRHIShaderParameterResource::EType::ResourceView, InView, InIndex)
-	{
-	}
-	FRHIShaderParameterResource(FRHIUnorderedAccessView* InUAV, uint16 InIndex)
-		: FRHIShaderParameterResource(FRHIShaderParameterResource::EType::UnorderedAccessView, InUAV, InIndex)
-	{
-	}
-	FRHIShaderParameterResource(FRHISamplerState* InSamplerState, uint16 InIndex)
-		: FRHIShaderParameterResource(FRHIShaderParameterResource::EType::Sampler, InSamplerState, InIndex)
-	{
-	}
-	FRHIShaderParameterResource(FRHIUniformBuffer* InUniformBuffer, uint16 InIndex)
-		: FRHIShaderParameterResource(FRHIShaderParameterResource::EType::UniformBuffer, InUniformBuffer, InIndex)
-	{
-	}
-
-	FRHIResource* Resource = nullptr;
-	uint16        Index = 0;
-	EType         Type = EType::Texture;
-};
-
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Async/TaskGraphInterfaces.h"
+#include "Containers/ClosableMpscQueue.h"
+#include "Containers/ConsumeAllMpmcQueue.h"
+#include "Containers/LockFreeList.h"
+#include "Experimental/Containers/HazardPointer.h"
+#include "Hash/CityHash.h"
+#include "Misc/CoreDelegates.h"
+#include "Misc/SecureHash.h"
 #include "RHIShaderLibrary.h"
 #include "RHITextureReference.h"
+#include "TextureProfiler.h"
+#endif
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_3
+#include "Serialization/MemoryImage.h"
 #endif

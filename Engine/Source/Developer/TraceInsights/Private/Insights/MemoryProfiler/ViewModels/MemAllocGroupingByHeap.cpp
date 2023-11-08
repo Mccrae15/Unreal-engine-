@@ -1,11 +1,13 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MemAllocGroupingByHeap.h"
-#include "CallstackFormatting.h"
+
+#include "Common/ProviderLock.h" // TraceServices
 #include "Internationalization/Internationalization.h"
 
 // Insights
 #include "Insights/Common/AsyncOperationProgress.h"
+#include "Insights/MemoryProfiler/ViewModels/CallstackFormatting.h"
 #include "Insights/MemoryProfiler/ViewModels/MemAllocNode.h"
 
 #define LOCTEXT_NAMESPACE "Insights::FMemAllocGroupingByHeap"
@@ -38,14 +40,39 @@ FMemAllocGroupingByHeap::~FMemAllocGroupingByHeap()
 
 FTableTreeNodePtr MakeGroupNodeHierarchy(const TraceServices::IAllocationsProvider::FHeapSpec& Spec, TWeakPtr<FTable>& InParentTable, TArray<FTableTreeNodePtr>& NodeTable)
 {
-	auto Node = MakeShared<FTableTreeNode>(FName(Spec.Name), InParentTable);
-	NodeTable[Spec.Id] = Node;
+	const FSlateBrush* IconBrush = FBaseTreeNode::GetDefaultIcon(true);
+	const FLinearColor Color(1.0f, 0.7f, 0.3f, 1.0f);
+
+	auto HeapGroup = MakeShared<FCustomTableTreeNode>(FName(Spec.Name), InParentTable, IconBrush, Color);
+	if (int32(Spec.Id) >= NodeTable.Num())
+	{
+		NodeTable.AddDefaulted(int32(Spec.Id) - NodeTable.Num() + 1);
+	}
+
+	FTableTreeNodePtr HeapsSubGroup;
+	if (uint32(Spec.Flags) & uint32(EMemoryTraceHeapFlags::Root))
+	{
+		HeapsSubGroup = MakeShared<FTableTreeNode>(FName(TEXT("Heaps")), InParentTable);
+		HeapGroup->AddChildAndSetParent(HeapsSubGroup);
+
+		auto AllocsSubGroup = MakeShared<FTableTreeNode>(FName(TEXT("Allocs")), InParentTable);
+		HeapGroup->AddChildAndSetParent(AllocsSubGroup);
+
+		NodeTable[int32(Spec.Id)] = AllocsSubGroup;
+	}
+	else
+	{
+		HeapsSubGroup = HeapGroup;
+		NodeTable[int32(Spec.Id)] = HeapGroup;
+	}
+
 	for (TraceServices::IAllocationsProvider::FHeapSpec* ChildSpec : Spec.Children)
 	{
 		auto ChildNode = MakeGroupNodeHierarchy(*ChildSpec, InParentTable, NodeTable);
-		Node->AddChildAndSetGroupPtr(ChildNode);
+		HeapsSubGroup->AddChildAndSetParent(ChildNode);
 	}
-	return Node;
+
+	return HeapGroup;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -57,12 +84,15 @@ void FMemAllocGroupingByHeap::GroupNodes(const TArray<FTableTreeNodePtr>& Nodes,
 
 	// Build heap hierarchy
 	TArray<FTableTreeNodePtr> HeapNodes;
-	HeapNodes.AddZeroed(256);
 
-	AllocProvider.EnumerateRootHeaps([&](HeapId Id, const TraceServices::IAllocationsProvider::FHeapSpec& Spec)
 	{
-		ParentGroup.AddChildAndSetGroupPtr(MakeGroupNodeHierarchy(Spec, InParentTable, HeapNodes));
-	});
+		TraceServices::FProviderReadScopeLock _(AllocProvider);
+		AllocProvider.EnumerateRootHeaps([&](HeapId Id, const TraceServices::IAllocationsProvider::FHeapSpec& Spec)
+		{
+			FTableTreeNodePtr RootHeapGroup = MakeGroupNodeHierarchy(Spec, InParentTable, HeapNodes);
+			ParentGroup.AddChildAndSetParent(RootHeapGroup);
+		});
+	}
 
 	// Add allocations nodes to heaps
 	for (FTableTreeNodePtr NodePtr : Nodes)
@@ -74,7 +104,7 @@ void FMemAllocGroupingByHeap::GroupNodes(const TArray<FTableTreeNodePtr>& Nodes,
 
 		if (NodePtr->IsGroup())
 		{
-			ParentGroup.AddChildAndSetGroupPtr(NodePtr);
+			ParentGroup.AddChildAndSetParent(NodePtr);
 			continue;
 		}
 
@@ -86,9 +116,18 @@ void FMemAllocGroupingByHeap::GroupNodes(const TArray<FTableTreeNodePtr>& Nodes,
 			//TODO: Calculating the real HeapId when the allocation is first added to the provider was too expensive, so deferring that operation to here could make sense.
 			//const HeapId Heap = AllocProvider.GetParentBlock(Alloc->GetAddress());
 			const uint8 HeapId = static_cast<uint8>(Alloc->GetRootHeap());
-			if (FTableTreeNodePtr GroupPtr = HeapNodes[HeapId])
+			FTableTreeNodePtr GroupPtr = HeapNodes[HeapId];
+			if (ensure(GroupPtr.IsValid()))
 			{
-				GroupPtr->AddChildAndSetGroupPtr(NodePtr);
+				constexpr uint32 MaxRootHeaps = 16; // see TraceServices\Private\Model\AllocationsProvider.h
+				if (Alloc->IsHeap() && HeapId < MaxRootHeaps)
+				{
+					GroupPtr->GetParent()->GetChildren()[0]->AddChildAndSetParent(NodePtr);
+				}
+				else
+				{
+					GroupPtr->AddChildAndSetParent(NodePtr);
+				}
 			}
 		}
 	}

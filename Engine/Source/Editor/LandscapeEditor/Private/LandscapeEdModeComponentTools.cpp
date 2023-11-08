@@ -31,13 +31,15 @@
 //
 class FLandscapeToolStrokeSelect : public FLandscapeToolStrokeBase
 {
+	using Super = FLandscapeToolStrokeBase;
+
 	bool bInitializedComponentInvert;
 	bool bInvert;
 	bool bNeedsSelectionUpdate;
 
 public:
 	FLandscapeToolStrokeSelect(FEdModeLandscape* InEdMode, FEditorViewportClient* InViewportClient, const FLandscapeToolTarget& InTarget)
-		: FLandscapeToolStrokeBase(InEdMode, InViewportClient, InTarget)
+		: Super(InEdMode, InViewportClient, InTarget)
 		, bInitializedComponentInvert(false)
 		, bNeedsSelectionUpdate(false)
 		, Cache(InTarget)
@@ -62,6 +64,8 @@ public:
 
 	void Apply(FEditorViewportClient* ViewportClient, FLandscapeBrush* Brush, const ULandscapeEditorObject* UISettings, const TArray<FLandscapeToolInteractorPosition>& InteractorPositions)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FLandscapeToolStrokeSelect_Apply);
+
 		if (LandscapeInfo)
 		{
 			LandscapeInfo->Modify();
@@ -83,8 +87,8 @@ public:
 			if (!bInitializedComponentInvert)
 			{
 				// Get the component under the mouse location. Copied from FLandscapeBrushComponent::ApplyBrush()
-				const float MouseX = InteractorPositions[0].Position.X;
-				const float MouseY = InteractorPositions[0].Position.Y;
+				const float MouseX = static_cast<float>(InteractorPositions[0].Position.X);
+				const float MouseY = static_cast<float>(InteractorPositions[0].Position.Y);
 				const int32 MouseComponentIndexX = (MouseX >= 0.0f) ? FMath::FloorToInt(MouseX / LandscapeInfo->ComponentSizeQuads) : FMath::CeilToInt(MouseX / LandscapeInfo->ComponentSizeQuads);
 				const int32 MouseComponentIndexY = (MouseY >= 0.0f) ? FMath::FloorToInt(MouseY / LandscapeInfo->ComponentSizeQuads) : FMath::CeilToInt(MouseY / LandscapeInfo->ComponentSizeQuads);
 				ULandscapeComponent* MouseComponent = LandscapeInfo->XYtoComponentMap.FindRef(FIntPoint(MouseComponentIndexX, MouseComponentIndexY));
@@ -125,9 +129,11 @@ protected:
 
 class FLandscapeToolSelect : public FLandscapeToolBase<FLandscapeToolStrokeSelect>
 {
+	using Super = FLandscapeToolBase<FLandscapeToolStrokeSelect>;
+
 public:
 	FLandscapeToolSelect(FEdModeLandscape* InEdMode)
-		: FLandscapeToolBase<FLandscapeToolStrokeSelect>(InEdMode)
+		: Super(InEdMode)
 	{
 	}
 
@@ -161,15 +167,19 @@ public:
 //
 class FLandscapeToolStrokeMask : public FLandscapeToolStrokeBase
 {
+	using Super = FLandscapeToolStrokeBase;
+
 public:
 	FLandscapeToolStrokeMask(FEdModeLandscape* InEdMode, FEditorViewportClient* InViewportClient, const FLandscapeToolTarget& InTarget)
-		: FLandscapeToolStrokeBase(InEdMode, InViewportClient, InTarget)
+		: Super(InEdMode, InViewportClient, InTarget)
 		, Cache(InTarget)
 	{
 	}
 
 	void Apply(FEditorViewportClient* ViewportClient, FLandscapeBrush* Brush, const ULandscapeEditorObject* UISettings, const TArray<FLandscapeToolInteractorPosition>& InteractorPositions)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FLandscapeToolStrokeMask_Apply);
+
 		if (LandscapeInfo)
 		{
 			LandscapeInfo->Modify();
@@ -229,7 +239,7 @@ public:
 							LandscapeInfo->SelectedRegion.Remove(Key);
 						}
 
-						DataScanline[X] = FMath::Clamp<int32>(FMath::RoundToInt(Value * 255), 0, 255);
+						DataScanline[X] = static_cast<uint8>(FMath::Clamp<int32>(FMath::RoundToInt(Value * 255), 0, 255));
 					}
 				}
 			}
@@ -245,9 +255,11 @@ protected:
 
 class FLandscapeToolMask : public FLandscapeToolBase<FLandscapeToolStrokeMask>
 {
+	using Super = FLandscapeToolBase<FLandscapeToolStrokeMask>;
+
 public:
 	FLandscapeToolMask(FEdModeLandscape* InEdMode)
-		: FLandscapeToolBase<FLandscapeToolStrokeMask>(InEdMode)
+		: Super(InEdMode)
 	{
 	}
 
@@ -268,15 +280,19 @@ public:
 //
 class FLandscapeToolStrokeVisibility : public FLandscapeToolStrokeBase
 {
+	using Super = FLandscapeToolStrokeBase;
+
 public:
 	FLandscapeToolStrokeVisibility(FEdModeLandscape* InEdMode, FEditorViewportClient* InViewportClient, const FLandscapeToolTarget& InTarget)
-		: FLandscapeToolStrokeBase(InEdMode, InViewportClient, InTarget)
+		: Super(InEdMode, InViewportClient, InTarget)
 		, Cache(InTarget)
 	{
 	}
 
 	void Apply(FEditorViewportClient* ViewportClient, FLandscapeBrush* Brush, const ULandscapeEditorObject* UISettings, const TArray<FLandscapeToolInteractorPosition>& InteractorPositions)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FLandscapeToolStrokeVisibility_Apply);
+
 		if (LandscapeInfo)
 		{
 			LandscapeInfo->Modify();
@@ -328,15 +344,17 @@ protected:
 
 class FLandscapeToolVisibility : public FLandscapeToolBase<FLandscapeToolStrokeVisibility>
 {
+	using Super = FLandscapeToolBase<FLandscapeToolStrokeVisibility>;
+
 public:
 	FLandscapeToolVisibility(FEdModeLandscape* InEdMode)
-		: FLandscapeToolBase<FLandscapeToolStrokeVisibility>(InEdMode)
+		: Super(InEdMode)
 	{
 	}
 
 	virtual bool BeginTool(FEditorViewportClient* ViewportClient, const FLandscapeToolTarget& InTarget, const FVector& InHitLocation) override
 	{
-		return FLandscapeToolBase<FLandscapeToolStrokeVisibility>::BeginTool(ViewportClient, InTarget, InHitLocation);
+		return Super::BeginTool(ViewportClient, InTarget, InHitLocation);
 	}
 
 	virtual const TCHAR* GetToolName() const override { return TEXT("Visibility"); }
@@ -357,14 +375,18 @@ public:
 //
 class FLandscapeToolStrokeMoveToLevel : public FLandscapeToolStrokeBase
 {
+	using Super = FLandscapeToolStrokeBase;
+
 public:
 	FLandscapeToolStrokeMoveToLevel(FEdModeLandscape* InEdMode, FEditorViewportClient* InViewportClient, const FLandscapeToolTarget& InTarget)
-		: FLandscapeToolStrokeBase(InEdMode, InViewportClient, InTarget)
+		: Super(InEdMode, InViewportClient, InTarget)
 	{
 	}
 
 	void Apply(FEditorViewportClient* ViewportClient, FLandscapeBrush* Brush, const ULandscapeEditorObject* UISettings, const TArray<FLandscapeToolInteractorPosition>& InteractorPositions)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FLandscapeToolStrokeMoveToLevel_Apply);
+
 		ALandscape* Landscape = LandscapeInfo ? LandscapeInfo->LandscapeActor.Get() : nullptr;
 
 		if (Landscape)
@@ -494,9 +516,11 @@ public:
 
 class FLandscapeToolMoveToLevel : public FLandscapeToolBase<FLandscapeToolStrokeMoveToLevel>
 {
+	using Super = FLandscapeToolBase<FLandscapeToolStrokeMoveToLevel>;
+
 public:
 	FLandscapeToolMoveToLevel(FEdModeLandscape* InEdMode)
-		: FLandscapeToolBase<FLandscapeToolStrokeMoveToLevel>(InEdMode)
+		: Super(InEdMode)
 	{
 	}
 	virtual bool AffectsEditLayers() const override { return false; }
@@ -512,11 +536,112 @@ public:
 //
 // FLandscapeToolAddComponent
 //
+
+namespace
+{
+	void AddComponents(ULandscapeInfo* LandscapeInfo, ULandscapeSubsystem* LandscapeSubsystem, const TArray<FIntPoint>& ComponentCoordinates)
+	{
+		TArray<ULandscapeComponent*> NewComponents;
+		LandscapeInfo->Modify();
+		for (const auto& ComponentCoordinate : ComponentCoordinates)
+		{
+			ULandscapeComponent* LandscapeComponent = LandscapeInfo->XYtoComponentMap.FindRef(ComponentCoordinate);
+			if (LandscapeComponent)
+			{
+				continue;
+			}
+
+			// Add New component...
+			FIntPoint ComponentBase = ComponentCoordinate * LandscapeInfo->ComponentSizeQuads;
+
+			ALandscapeProxy* LandscapeProxy = LandscapeSubsystem->FindOrAddLandscapeProxy(LandscapeInfo, ComponentBase);
+			if (!LandscapeProxy)
+			{
+				continue;
+			}
+
+			LandscapeComponent = NewObject<ULandscapeComponent>(LandscapeProxy, NAME_None, RF_Transactional);
+			NewComponents.Add(LandscapeComponent);
+			LandscapeComponent->Init(
+				ComponentBase.X, ComponentBase.Y,
+				LandscapeProxy->ComponentSizeQuads,
+				LandscapeProxy->NumSubsections,
+				LandscapeProxy->SubsectionSizeQuads
+			);
+
+			TArray<FColor> HeightData;
+			const int32 ComponentVerts = (LandscapeComponent->SubsectionSizeQuads + 1) * LandscapeComponent->NumSubsections;
+			HeightData.Empty(FMath::Square(ComponentVerts));
+			HeightData.AddZeroed(FMath::Square(ComponentVerts));
+			LandscapeComponent->InitHeightmapData(HeightData, true);
+			LandscapeComponent->UpdateMaterialInstances();
+
+			LandscapeInfo->XYtoComponentMap.Add(ComponentCoordinate, LandscapeComponent);
+			LandscapeInfo->XYtoAddCollisionMap.Remove(ComponentCoordinate);
+		}
+
+		// Need to register to use general height/xyoffset data update
+		for (int32 Idx = 0; Idx < NewComponents.Num(); Idx++)
+		{
+			NewComponents[Idx]->RegisterComponent();
+		}
+
+		const bool bHasXYOffset = false;
+		ALandscape* Landscape = LandscapeInfo->LandscapeActor.Get();
+
+		bool bHasLandscapeLayersContent = Landscape && Landscape->HasLayersContent();
+
+		if (bHasLandscapeLayersContent)
+		{
+			Landscape->RequestLayersInitialization();
+		}
+
+		for (ULandscapeComponent* NewComponent : NewComponents)
+		{
+			if (bHasLandscapeLayersContent)
+			{
+				TArray<ULandscapeComponent*> ComponentsUsingHeightmap;
+				ComponentsUsingHeightmap.Add(NewComponent);
+
+				for (const FLandscapeLayer& Layer : Landscape->LandscapeLayers)
+				{
+					// Since we do not share heightmap when adding new component, we will provided the required array, but they will only be used for 1 component
+					TMap<UTexture2D*, UTexture2D*> CreatedHeightmapTextures;
+					NewComponent->AddDefaultLayerData(Layer.Guid, ComponentsUsingHeightmap, CreatedHeightmapTextures);
+				}
+			}
+
+			// Update Collision
+			NewComponent->UpdateCachedBounds();
+			NewComponent->UpdateBounds();
+			NewComponent->MarkRenderStateDirty();
+
+			if (!bHasLandscapeLayersContent)
+			{
+				ULandscapeHeightfieldCollisionComponent* CollisionComp = NewComponent->GetCollisionComponent();
+				if (CollisionComp && !bHasXYOffset)
+				{
+					CollisionComp->MarkRenderStateDirty();
+					CollisionComp->RecreateCollision();
+				}
+			}
+		}
+
+		if (Landscape)
+		{
+			GEngine->BroadcastOnActorMoved(Landscape);
+		}
+
+	}
+}
+
 class FLandscapeToolStrokeAddComponent : public FLandscapeToolStrokeBase
 {
+	using Super = FLandscapeToolStrokeBase;
+
 public:
 	FLandscapeToolStrokeAddComponent(FEdModeLandscape* InEdMode, FEditorViewportClient* InViewportClient, const FLandscapeToolTarget& InTarget)
-		: FLandscapeToolStrokeBase(InEdMode, InViewportClient, InTarget)
+		: Super(InEdMode, InViewportClient, InTarget)
 		, HeightCache(InTarget)
 		, XYOffsetCache(InTarget)
 	{
@@ -531,6 +656,8 @@ public:
 
 	virtual void Apply(FEditorViewportClient* ViewportClient, FLandscapeBrush* Brush, const ULandscapeEditorObject* UISettings, const TArray<FLandscapeToolInteractorPosition>& InteractorPositions)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FLandscapeToolStrokeAddComponent_Apply);
+
 		if (LandscapeInfo)
 		{
 			check(Brush->GetBrushType() == ELandscapeBrushType::Component);
@@ -784,9 +911,11 @@ protected:
 
 class FLandscapeToolAddComponent : public FLandscapeToolBase<FLandscapeToolStrokeAddComponent>
 {
+	using Super = FLandscapeToolBase<FLandscapeToolStrokeAddComponent>;
+
 public:
 	FLandscapeToolAddComponent(FEdModeLandscape* InEdMode)
-		: FLandscapeToolBase<FLandscapeToolStrokeAddComponent>(InEdMode)
+		: Super(InEdMode)
 		, bIsToolActionResolutionCompliant(true)
 	{
 	}
@@ -804,7 +933,7 @@ public:
 
 	virtual bool CanToolBeActivated() const override
 	{ 
-		return FLandscapeToolBase<FLandscapeToolStrokeAddComponent>::CanToolBeActivated() && bIsToolActionResolutionCompliant;
+		return Super::CanToolBeActivated() && bIsToolActionResolutionCompliant;
 	}
 
 	virtual void Tick(FEditorViewportClient* ViewportClient, float DeltaTime) override
@@ -814,12 +943,12 @@ public:
 			bIsToolActionResolutionCompliant = EdMode->IsLandscapeResolutionCompliant();
 		}
 
-		FLandscapeToolBase<FLandscapeToolStrokeAddComponent>::Tick(ViewportClient, DeltaTime);
+		Super::Tick(ViewportClient, DeltaTime);
 	}
 	
 	virtual void EnterTool() override
 	{
-		FLandscapeToolBase<FLandscapeToolStrokeAddComponent>::EnterTool();
+		Super::EnterTool();
 		AddCollision.Reset();
 		if(ULandscapeInfo* LandscapeInfo = EdMode->CurrentToolTarget.LandscapeInfo.Get())
 		{
@@ -829,7 +958,7 @@ public:
 
 	virtual void ExitTool() override
 	{
-		FLandscapeToolBase<FLandscapeToolStrokeAddComponent>::ExitTool();
+		Super::ExitTool();
 
 		AddCollision.Reset();
 	}
@@ -904,28 +1033,33 @@ public:
 		TOptional<FVector2D> LastMousePosition = CurrentBrush->GetLastMousePosition();
 		FIntRect LandscapeIndices;
 
-		if (ToolTarget.LandscapeInfo.IsValid() && LastMousePosition.IsSet() && ToolTarget.LandscapeInfo->GetLandscapeXYComponentBounds(LandscapeIndices))
+		ULandscapeInfo* LandscapeInfo = EdMode->CurrentToolTarget.LandscapeInfo.Get();
+
+		if ( LandscapeInfo != nullptr && ToolTarget.LandscapeInfo.IsValid() && LastMousePosition.IsSet() && ToolTarget.LandscapeInfo->GetLandscapeXYComponentBounds(LandscapeIndices))
 		{
 			const int32 BrushSize = FMath::Max(EdMode->UISettings->BrushComponentSize, 0);
 			const int32 ComponentSizeQuads = ToolTarget.LandscapeInfo->ComponentSizeQuads;
-			const float BrushOriginX = LastMousePosition.GetValue().X / ComponentSizeQuads - (BrushSize - 1) / 2.0f;
-			const float BrushOriginY = LastMousePosition.GetValue().Y / ComponentSizeQuads - (BrushSize - 1) / 2.0f;
+			const float BrushOriginX = static_cast<float>(LastMousePosition.GetValue().X / ComponentSizeQuads - (BrushSize - 1) / 2.0);
+			const float BrushOriginY = static_cast<float>(LastMousePosition.GetValue().Y / ComponentSizeQuads - (BrushSize - 1) / 2.0);
 			const int32 ComponentIndexX = FMath::FloorToInt(BrushOriginX);
 			const int32 ComponentIndexY = FMath::FloorToInt(BrushOriginY);
-			FIntPoint CurrentResolution = ToolTarget.LandscapeInfo->GetLandscapeProxy()->GetBoundingRect().Size() + 1;
 
-			if ((ComponentIndexX < LandscapeIndices.Min.X) || (ComponentIndexX > LandscapeIndices.Max.X))
+			int32 NumNewComponents = 0;
+			
+			int32 HalfBrushSize = BrushSize / 2;
+			FIntRect BrushSupport{ ComponentIndexX - HalfBrushSize, ComponentIndexY - HalfBrushSize, ComponentIndexX + HalfBrushSize, ComponentIndexY + HalfBrushSize };
+			for (int32 Y = BrushSupport.Min.Y; Y <= BrushSupport.Max.Y; Y++)
 			{
-				ResolutionDelta += CurrentResolution.Y * BrushSize * ComponentSizeQuads;
+				for (int32 X = BrushSupport.Min.X; X <= BrushSupport.Max.X; X++)
+				{
+					NumNewComponents += LandscapeInfo->XYtoComponentMap.FindRef(FIntPoint(X, Y)) == nullptr ? 1 : 0;
+				}
 			}
-
-			if ((ComponentIndexY < LandscapeIndices.Min.Y) || (ComponentIndexY > LandscapeIndices.Max.Y))
-			{
-				ResolutionDelta += CurrentResolution.X * BrushSize * ComponentSizeQuads;
-			}
+			
+			return NumNewComponents * ComponentSizeQuads * ComponentSizeQuads;
 		}
 
-		return ResolutionDelta;
+		return 0;
 	}
 
 private:
@@ -958,14 +1092,18 @@ private:
 //
 class FLandscapeToolStrokeDeleteComponent : public FLandscapeToolStrokeBase
 {
+	using Super = FLandscapeToolStrokeBase;
+
 public:
 	FLandscapeToolStrokeDeleteComponent(FEdModeLandscape* InEdMode, FEditorViewportClient* InViewportClient, const FLandscapeToolTarget& InTarget)
-		: FLandscapeToolStrokeBase(InEdMode, InViewportClient, InTarget)
+		: Super(InEdMode, InViewportClient, InTarget)
 	{
 	}
 
 	void Apply(FEditorViewportClient* ViewportClient, FLandscapeBrush* Brush, const ULandscapeEditorObject* UISettings, const TArray<FLandscapeToolInteractorPosition>& InteractorPositions)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FLandscapeToolStrokeDeleteComponent_Apply);
+
 		if (LandscapeInfo)
 		{
 			auto SelectedComponents = LandscapeInfo->GetSelectedComponents();
@@ -994,9 +1132,11 @@ public:
 
 class FLandscapeToolDeleteComponent : public FLandscapeToolBase<FLandscapeToolStrokeDeleteComponent>
 {
+	using Super = FLandscapeToolBase<FLandscapeToolStrokeDeleteComponent>;
+
 public:
 	FLandscapeToolDeleteComponent(FEdModeLandscape* InEdMode)
-		: FLandscapeToolBase<FLandscapeToolStrokeDeleteComponent>(InEdMode)
+		: Super(InEdMode)
 	{
 	}
 
@@ -1016,9 +1156,11 @@ public:
 template<class ToolTarget>
 class FLandscapeToolStrokeCopy : public FLandscapeToolStrokeBase
 {
+	using Super = FLandscapeToolStrokeBase;
+
 public:
 	FLandscapeToolStrokeCopy(FEdModeLandscape* InEdMode, FEditorViewportClient* InViewportClient, const FLandscapeToolTarget& InTarget)
-		: FLandscapeToolStrokeBase(InEdMode, InViewportClient, InTarget)
+		: Super(InEdMode, InViewportClient, InTarget)
 		, Cache(InTarget)
 		, HeightCache(InTarget)
 		, WeightCache(InTarget)
@@ -1033,6 +1175,8 @@ public:
 
 	void Apply(FEditorViewportClient* ViewportClient, FLandscapeBrush* Brush, const ULandscapeEditorObject* UISettings, const TArray<FLandscapeToolInteractorPosition>& InteractorPositions)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FLandscapeToolStrokeCopy_Apply);
+
 		//ULandscapeInfo* LandscapeInfo = EdMode->CurrentToolTarget.LandscapeInfo;
 		ALandscapeGizmoActiveActor* Gizmo = EdMode->CurrentGizmoActor.Get();
 		if (LandscapeInfo && Gizmo && Gizmo->GizmoTexture && Gizmo->GetRootComponent())
@@ -1080,7 +1224,7 @@ public:
 				Cache.GetCachedData(X1, Y1, X2, Y2, Data);
 			}
 
-			const float ScaleXY = LandscapeInfo->DrawScale.X;
+			const float ScaleXY = static_cast<float>(LandscapeInfo->DrawScale.X);
 			float Width = Gizmo->GetWidth();
 			float Height = Gizmo->GetHeight();
 
@@ -1112,8 +1256,8 @@ public:
 				for (int32 X = 0; X < SizeX; ++X)
 				{
 					FVector LandscapeLocal = GizmoLocalToLandscape.TransformPosition(FVector(-W + X, -H + Y, 0));
-					int32 LX = FMath::FloorToInt(LandscapeLocal.X);
-					int32 LY = FMath::FloorToInt(LandscapeLocal.Y);
+					const int32 LX = FMath::FloorToInt32(LandscapeLocal.X);
+					const int32 LY = FMath::FloorToInt32(LandscapeLocal.Y);
 
 					{
 						for (int32 i = -1; (!bApplyToAll && i < 0) || i < LayerNum; ++i)
@@ -1163,8 +1307,8 @@ public:
 							}
 
 							FGizmoPreData LerpedData;
-							float FracX = LandscapeLocal.X - LX;
-							float FracY = LandscapeLocal.Y - LY;
+							const float FracX = static_cast<float>(LandscapeLocal.X - LX);
+							const float FracY = static_cast<float>(LandscapeLocal.Y - LY);
 							LerpedData.Ratio = bFullCopy ? 1.0f :
 								FMath::Lerp(
 								FMath::Lerp(GizmoPreData[0].Ratio, GizmoPreData[1].Ratio, FracX),
@@ -1321,9 +1465,11 @@ protected:
 template<class ToolTarget>
 class FLandscapeToolCopy : public FLandscapeToolBase<FLandscapeToolStrokeCopy<ToolTarget>>
 {
+	using Super = FLandscapeToolBase<FLandscapeToolStrokeCopy<ToolTarget>>;
+
 public:
 	FLandscapeToolCopy(FEdModeLandscape* InEdMode)
-		: FLandscapeToolBase<FLandscapeToolStrokeCopy<ToolTarget> >(InEdMode)
+		: Super(InEdMode)
 		, BackupCurrentBrush(nullptr)
 	{
 	}
@@ -1353,12 +1499,12 @@ public:
 		BackupCurrentBrush = this->EdMode->CurrentBrush;
 		this->EdMode->CurrentBrush = this->EdMode->GizmoBrush;
 
-		return FLandscapeToolBase<FLandscapeToolStrokeCopy<ToolTarget>>::BeginTool(ViewportClient, InTarget, InHitLocation);
+		return Super::BeginTool(ViewportClient, InTarget, InHitLocation);
 	}
 
 	virtual void EndTool(FEditorViewportClient* ViewportClient) override
 	{
-		FLandscapeToolBase<FLandscapeToolStrokeCopy<ToolTarget>>::EndTool(ViewportClient);
+		Super::EndTool(ViewportClient);
 
 		this->EdMode->CurrentBrush = BackupCurrentBrush;
 	}
@@ -1373,9 +1519,11 @@ protected:
 template<class ToolTarget>
 class FLandscapeToolStrokePaste : public FLandscapeToolStrokeBase
 {
+	using Super = FLandscapeToolStrokeBase;
+
 public:
 	FLandscapeToolStrokePaste(FEdModeLandscape* InEdMode, FEditorViewportClient* InViewportClient, const FLandscapeToolTarget& InTarget)
-		: FLandscapeToolStrokeBase(InEdMode, InViewportClient, InTarget)
+		: Super(InEdMode, InViewportClient, InTarget)
 		, Cache(InTarget)
 		, HeightCache(InTarget)
 		, WeightCache(InTarget)
@@ -1384,6 +1532,8 @@ public:
 
 	void Apply(FEditorViewportClient* ViewportClient, FLandscapeBrush* Brush, const ULandscapeEditorObject* UISettings, const TArray<FLandscapeToolInteractorPosition>& InteractorPositions)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FLandscapeToolStrokePaste_Apply);
+
 		//ULandscapeInfo* LandscapeInfo = EdMode->CurrentToolTarget.LandscapeInfo;
 		ALandscapeGizmoActiveActor* Gizmo = EdMode->CurrentGizmoActor.Get();
 		// Cache and copy in Gizmo's region...
@@ -1417,7 +1567,7 @@ public:
 			}
 
 			Gizmo->TargetLandscapeInfo = LandscapeInfo;
-			float ScaleXY = LandscapeInfo->DrawScale.X;
+			float ScaleXY = static_cast<float>(LandscapeInfo->DrawScale.X);
 
 			//LandscapeInfo->Modify();
 
@@ -1504,11 +1654,11 @@ public:
 						GizmoLocal.X *= ScaleX * SignX;
 						GizmoLocal.Y *= ScaleY * SignY;
 
-						int32 LX = FMath::FloorToInt(GizmoLocal.X);
-						int32 LY = FMath::FloorToInt(GizmoLocal.Y);
+						const int32 LX = FMath::FloorToInt32(GizmoLocal.X);
+						const int32 LY = FMath::FloorToInt32(GizmoLocal.Y);
 
-						float FracX = GizmoLocal.X - LX;
-						float FracY = GizmoLocal.Y - LY;
+						const float FracX = static_cast<float>(GizmoLocal.X - LX);
+						const float FracY = static_cast<float>(GizmoLocal.Y - LY);
 
 						FGizmoSelectData* Data00 = Gizmo->SelectedData.Find(FIntPoint(LX, LY));
 						FGizmoSelectData* Data10 = Gizmo->SelectedData.Find(FIntPoint(LX + 1, LY));
@@ -1529,7 +1679,7 @@ public:
 									OriginalValue = Data[index];
 								}
 
-								float Value = LandscapeDataAccess::GetLocalHeight(OriginalValue);
+								float Value = LandscapeDataAccess::GetLocalHeight(static_cast<uint16>(OriginalValue));
 
 								float DestValue = FLandscapeHeightCache::ClampValue(
 									LandscapeDataAccess::GetTexHeight(
@@ -1556,11 +1706,11 @@ public:
 
 								if (bApplyToAll)
 								{
-									HeightData[index] = FMath::Lerp(OriginalValue, DestValue, PaintAmount);
+									HeightData[index] = static_cast<uint16>(FMath::Lerp(OriginalValue, DestValue, PaintAmount));
 								}
 								else
 								{
-									Data[index] = FMath::Lerp(OriginalValue, DestValue, PaintAmount);
+									Data[index] = static_cast<uint16>(FMath::Lerp(OriginalValue, DestValue, PaintAmount));
 								}
 							}
 							else
@@ -1578,22 +1728,22 @@ public:
 									OriginalValue = Data[index];
 								}
 
-								float DestValue = FLandscapeAlphaCache::ClampValue(
+								float DestValue = FLandscapeAlphaCache::ClampValue(static_cast<int32>(
 									FMath::Lerp(
 									FMath::Lerp(Data00 ? FMath::Lerp(OriginalValue, Data00->WeightDataMap.FindRef(LayerInfo), Data00->Ratio) : OriginalValue,
 									Data10 ? FMath::Lerp(OriginalValue, Data10->WeightDataMap.FindRef(LayerInfo), Data10->Ratio) : OriginalValue, FracX),
 									FMath::Lerp(Data01 ? FMath::Lerp(OriginalValue, Data01->WeightDataMap.FindRef(LayerInfo), Data01->Ratio) : OriginalValue,
 									Data11 ? FMath::Lerp(OriginalValue, Data11->WeightDataMap.FindRef(LayerInfo), Data11->Ratio) : OriginalValue, FracX),
 									FracY
-									));
+									)));
 
 								if (bApplyToAll)
 								{
-									WeightDatas[index*LayerNum + i] = FMath::Lerp(OriginalValue, DestValue, PaintAmount);
+									WeightDatas[index*LayerNum + i] = static_cast<uint8>(FMath::Lerp(OriginalValue, DestValue, PaintAmount));
 								}
 								else
 								{
-									Data[index] = FMath::Lerp(OriginalValue, DestValue, PaintAmount);
+									Data[index] = static_cast<typename ToolTarget::CacheClass::DataType>(FMath::Lerp(OriginalValue, DestValue, PaintAmount));
 								}
 							}
 						}
@@ -1639,9 +1789,11 @@ protected:
 template<class ToolTarget>
 class FLandscapeToolPaste : public FLandscapeToolBase<FLandscapeToolStrokePaste<ToolTarget>>
 {
+	using Super = FLandscapeToolBase<FLandscapeToolStrokePaste<ToolTarget>>;
+
 public:
 	FLandscapeToolPaste(FEdModeLandscape* InEdMode)
-		: FLandscapeToolBase<FLandscapeToolStrokePaste<ToolTarget>>(InEdMode)
+		: Super(InEdMode)
 		, bUseGizmoRegion(false)
 		, BackupCurrentBrush(nullptr)
 	{
@@ -1685,12 +1837,12 @@ public:
 			this->EdMode->CurrentBrush = this->EdMode->GizmoBrush;
 		}
 
-		return FLandscapeToolBase<FLandscapeToolStrokePaste<ToolTarget>>::BeginTool(ViewportClient, InTarget, InHitLocation);
+		return Super::BeginTool(ViewportClient, InTarget, InHitLocation);
 	}
 
 	virtual void EndTool(FEditorViewportClient* ViewportClient) override
 	{
-		FLandscapeToolBase<FLandscapeToolStrokePaste<ToolTarget>>::EndTool(ViewportClient);
+		Super::EndTool(ViewportClient);
 
 		if (bUseGizmoRegion)
 		{
@@ -1980,13 +2132,13 @@ public:
 			auto DragEdge = [&UISettings, &HitLocation, &Transform](const ELandscapeEdge::Type Edge)
 			{
 				int32& ComponentCount = Edge == ELandscapeEdge::X_Negative || Edge == ELandscapeEdge::X_Positive ? UISettings->NewLandscape_ComponentCount.X : UISettings->NewLandscape_ComponentCount.Y;
-				const float Hit = Edge == ELandscapeEdge::X_Negative || Edge == ELandscapeEdge::X_Positive ? HitLocation.X : HitLocation.Y;
+				const float Hit = static_cast<float>(Edge == ELandscapeEdge::X_Negative || Edge == ELandscapeEdge::X_Positive ? HitLocation.X : HitLocation.Y);
 				const float PosOrNeg = Edge == ELandscapeEdge::X_Negative || Edge == ELandscapeEdge::Y_Negative ? -1.0f : 1.0f;
 				const FVector XOrY = Edge == ELandscapeEdge::X_Negative || Edge == ELandscapeEdge::X_Positive ? FVector(1, 0, 0) : FVector(0, 1, 0);
 				
 				const int32 InitialComponentCount = ComponentCount;
 				const int32 Delta = FMath::RoundToInt(Hit - PosOrNeg * static_cast<float>(InitialComponentCount) / 2.0f);
-				ComponentCount = InitialComponentCount + PosOrNeg * Delta;
+				ComponentCount = static_cast<int32>(InitialComponentCount + PosOrNeg * Delta);
 				UISettings->NewLandscape_ClampSize();
 				const float ActualDelta = static_cast<float>(ComponentCount - InitialComponentCount) / 2.0f;
 				UISettings->NewLandscape_Location += PosOrNeg * XOrY * Transform.TransformVector(FVector(ActualDelta, ActualDelta, 0));
@@ -2042,7 +2194,7 @@ public:
 			const int32 ComponentCountX = EdMode->UISettings->NewLandscape_ComponentCount.X;
 			const int32 ComponentCountY = EdMode->UISettings->NewLandscape_ComponentCount.Y;
 			const int32 QuadsPerComponent = EdMode->UISettings->NewLandscape_SectionsPerComponent * EdMode->UISettings->NewLandscape_QuadsPerSection;
-			const float ComponentSize = QuadsPerComponent;
+			const float ComponentSize = static_cast<float>(QuadsPerComponent);
 			const int32 GridSize = EdMode->UISettings->WorldPartitionGridSize;
 			const FVector Offset = EdMode->UISettings->NewLandscape_Location + FTransform(EdMode->UISettings->NewLandscape_Rotation, FVector::ZeroVector, EdMode->UISettings->NewLandscape_Scale).TransformVector(FVector(-ComponentCountX * ComponentSize / 2, -ComponentCountY * ComponentSize / 2, 0));
 			const FTransform Transform = FTransform(EdMode->UISettings->NewLandscape_Rotation, Offset, EdMode->UISettings->NewLandscape_Scale);
@@ -2093,8 +2245,8 @@ public:
 						const int32 ImportX = FMath::Clamp<int32>(X - OffsetX, 0, ImportSizeX - 1);
 						const int32 ImportY0 = FMath::Clamp<int32>(Y0 - OffsetY, 0, ImportSizeY - 1);
 						const int32 ImportY1 = FMath::Clamp<int32>(Y1 - OffsetY, 0, ImportSizeY - 1);
-						const float Z0 = (static_cast<float>(ImportHeights[ImportX + ImportY0 * ImportSizeX]) - 32768.0f) * LANDSCAPE_ZSCALE;
-						const float Z1 = (static_cast<float>(ImportHeights[ImportX + ImportY1 * ImportSizeX]) - 32768.0f) * LANDSCAPE_ZSCALE;
+						const float Z0 = LandscapeDataAccess::GetLocalHeight(ImportHeights[ImportX + ImportY0 * ImportSizeX]);
+						const float Z1 = LandscapeDataAccess::GetLocalHeight(ImportHeights[ImportX + ImportY1 * ImportSizeX]);
 						return LineCoords{FVector(X, Y0, Z0), FVector(X, Y1, Z1)};
 					};
 
@@ -2107,8 +2259,8 @@ public:
 						const int32 ImportY = FMath::Clamp<int32>(Y - OffsetY, 0, ImportSizeY - 1);
 						const int32 ImportX0 = FMath::Clamp<int32>(X0 - OffsetX, 0, ImportSizeX - 1);
 						const int32 ImportX1 = FMath::Clamp<int32>(X1 - OffsetX, 0, ImportSizeX - 1);
-						const float Z0 = (static_cast<float>(ImportHeights[ImportX0 + ImportY * ImportSizeX]) - 32768.0f) * LANDSCAPE_ZSCALE;
-						const float Z1 = (static_cast<float>(ImportHeights[ImportX1 + ImportY * ImportSizeX]) - 32768.0f) * LANDSCAPE_ZSCALE;
+						const float Z0 = LandscapeDataAccess::GetLocalHeight(ImportHeights[ImportX0 + ImportY * ImportSizeX]);
+						const float Z1 = LandscapeDataAccess::GetLocalHeight(ImportHeights[ImportX1 + ImportY * ImportSizeX]);
 						return LineCoords{FVector(X0, Y, Z0), FVector(X1, Y, Z1)};
 					};
 
@@ -2268,7 +2420,7 @@ public:
 					for (int32 X = 1; X < ComponentCountX * QuadsPerComponent; ++X)
 					{
 						const FLinearColor CurrentColor = GetColor(X);
-						const uint8 DepthPriority = CurrentColor == InnerColor ? SDPG_World : SDPG_Foreground;
+						const uint8 DepthPriority = static_cast<uint8>(CurrentColor == InnerColor ? SDPG_World : SDPG_Foreground);
 						DrawLine({FVector(X, 0, 0), FVector(X, ComponentCountY * ComponentSize, 0)}, CurrentColor, DepthPriority);
 					}
 
@@ -2276,7 +2428,7 @@ public:
 					for (int32 Y = 1; Y < ComponentCountY * QuadsPerComponent; ++Y)
 					{
 						const FLinearColor CurrentColor = GetColor(Y);
-						const uint8 DepthPriority = CurrentColor == InnerColor ? SDPG_World : SDPG_Foreground;
+						const uint8 DepthPriority = static_cast<uint8>(CurrentColor == InnerColor ? SDPG_World : SDPG_Foreground);
 						DrawLine({FVector(0, Y, 0), FVector(ComponentCountX * ComponentSize, Y, 0)}, CurrentColor, DepthPriority);
 					}
 				}
@@ -2523,7 +2675,7 @@ public:
 		const ELevelViewportType ViewportType = ((FEditorViewportClient*)Viewport->GetClient())->ViewportType;
 
 		const int32 ComponentSizeInt = EdMode->UISettings->NewLandscape_SectionsPerComponent * EdMode->UISettings->NewLandscape_QuadsPerSection;
-		const float ComponentSize = ComponentSizeInt;
+		const float ComponentSize = static_cast<float>(ComponentSizeInt);
 		const FTransform GizmoTransform = FTransform(FRotator(0,0,0), GetWidgetLocation(), LandscapeInfo->DrawScale);
 		const int32 Height = EdMode->UISettings->ImportType == ELandscapeImportTransformType::None ? EdMode->UISettings->ImportLandscape_Height : (LandscapeExtent.Height()+1);
 		const int32 Width = EdMode->UISettings->ImportType == ELandscapeImportTransformType::None ? EdMode->UISettings->ImportLandscape_Width: (LandscapeExtent.Width()+1);

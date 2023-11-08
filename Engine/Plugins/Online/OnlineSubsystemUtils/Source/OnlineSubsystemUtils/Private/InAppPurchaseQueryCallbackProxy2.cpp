@@ -36,13 +36,13 @@ void UInAppPurchaseQueryCallbackProxy2::TriggerQuery(APlayerController* PlayerCo
 			IOnlineStoreV2Ptr StoreInterface = OnlineSub->GetStoreV2Interface();
 			if (StoreInterface.IsValid())
 			{
-				FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::TriggerQuery - GetUniqueNetIdFromCachedControllerId"), ELogVerbosity::Warning);
+				FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::TriggerQuery - GetUniqueNetIdFromCachedControllerId"), ELogVerbosity::Log);
 				check(PlayerController);
 				FUniqueNetIdRepl QueryingPlayer = PlayerController->GetLocalPlayer()->GetUniqueNetIdFromCachedControllerId();
 
 				if (QueryingPlayer.IsValid())
 				{
-					FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::TriggerQuery - Querying Store Interface"), ELogVerbosity::Warning);
+					FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::TriggerQuery - Querying Store Interface"), ELogVerbosity::Log);
 					bFailedToEvenSubmit = false;
 					StoreInterface->QueryOffersById(*QueryingPlayer, ProductIdentifiers, FOnQueryOnlineStoreOffersComplete::CreateUObject(this, &UInAppPurchaseQueryCallbackProxy2::OnInAppPurchaseRead));
 				}
@@ -75,11 +75,11 @@ void UInAppPurchaseQueryCallbackProxy2::TriggerQuery(APlayerController* PlayerCo
 
 void UInAppPurchaseQueryCallbackProxy2::CreateProxyProductInformation(TArray<FOnlineStoreOfferRef>& SourceArray, TArray<FOnlineProxyStoreOffer>& TargetArray)
 {
-	FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::TriggerQuery - CreateProxyInformation"), ELogVerbosity::Warning);
+	FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::TriggerQuery - CreateProxyInformation"), ELogVerbosity::Log);
 	TargetArray.Empty();
 	for (FOnlineStoreOfferRef SourceProduct : SourceArray)
 	{
-		FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::TriggerQuery - CreateProxyInformation In Loop"), ELogVerbosity::Warning);
+		FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::TriggerQuery - CreateProxyInformation In Loop"), ELogVerbosity::Log);
 		FOnlineProxyStoreOffer CurrentProduct;
 
 		CurrentProduct.OfferId = SourceProduct->OfferId;
@@ -87,40 +87,40 @@ void UInAppPurchaseQueryCallbackProxy2::CreateProxyProductInformation(TArray<FOn
 		CurrentProduct.Description = SourceProduct->Description;
 		CurrentProduct.LongDescription = SourceProduct->LongDescription;
 		CurrentProduct.RegularPriceText = SourceProduct->RegularPriceText;
-		CurrentProduct.RegularPrice = SourceProduct->RegularPrice;
+		CurrentProduct.RegularPrice = int32(SourceProduct->RegularPrice);
 		CurrentProduct.PriceText = SourceProduct->PriceText;
-		CurrentProduct.NumericPrice = SourceProduct->NumericPrice;
+		CurrentProduct.NumericPrice = int32(SourceProduct->NumericPrice);
 		CurrentProduct.CurrencyCode = SourceProduct->CurrencyCode;
 		CurrentProduct.ReleaseDate = SourceProduct->ReleaseDate;
 		CurrentProduct.ExpirationDate = SourceProduct->ExpirationDate;
 		CurrentProduct.DiscountType = (EOnlineProxyStoreOfferDiscountType)SourceProduct->DiscountType;
 		CurrentProduct.DynamicFields = SourceProduct->DynamicFields;
 
-		FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::TriggerQuery - Adding Product"), ELogVerbosity::Warning);
+		FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::TriggerQuery - Adding Product"), ELogVerbosity::Log);
 		TargetArray.Add(CurrentProduct);
-		FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::TriggerQuery - Done Adding Product"), ELogVerbosity::Warning);
+		FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::TriggerQuery - Done Adding Product"), ELogVerbosity::Log);
 	}
 }
 
 void UInAppPurchaseQueryCallbackProxy2::OnInAppPurchaseRead(bool bWasSuccessful, const TArray<FUniqueOfferId>& OfferIds, const FString& Error)
 {
-	FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::OnInAppPurchaseRead - Start"), ELogVerbosity::Warning);
+	FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::OnInAppPurchaseRead - Start"), ELogVerbosity::Log);
 	bSavedWasSuccessful = false;
 	if (bWasSuccessful)
 	{
-		FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::OnInAppPurchaseRead - WasSuccessful"), ELogVerbosity::Warning);
+		FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::OnInAppPurchaseRead - WasSuccessful"), ELogVerbosity::Log);
 		if (IOnlineSubsystem* const OnlineSub = IOnlineSubsystem::IsLoaded() ? IOnlineSubsystem::Get() : nullptr)
 		{
 			IOnlineStoreV2Ptr StoreInterface = OnlineSub->GetStoreV2Interface();
 			if (StoreInterface.IsValid())
 			{
-				FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::OnInAppPurchaseRead - Interface is good"), ELogVerbosity::Warning);
+				FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::OnInAppPurchaseRead - Interface is good"), ELogVerbosity::Log);
 				TArray<FOnlineStoreOfferRef> LocalProductInformation;
-				FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::OnInAppPurchaseRead - Getting Cached Offers"), ELogVerbosity::Warning);
+				FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::OnInAppPurchaseRead - Getting Cached Offers"), ELogVerbosity::Log);
 				StoreInterface->GetOffers(LocalProductInformation);
-				FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::OnInAppPurchaseRead - Converting to proxy store offer"), ELogVerbosity::Warning);
+				FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::OnInAppPurchaseRead - Converting to proxy store offer"), ELogVerbosity::Log);
 				CreateProxyProductInformation(LocalProductInformation, SavedProductInformation);
-				FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::OnInAppPurchaseRead - Done"), ELogVerbosity::Warning);
+				FFrame::KismetExecutionMessage(TEXT("UInAppPurchaseQueryCallbackProxy2::OnInAppPurchaseRead - Done"), ELogVerbosity::Log);
 				bSavedWasSuccessful = true;
 			}
 		}
@@ -131,7 +131,7 @@ void UInAppPurchaseQueryCallbackProxy2::OnInAppPurchaseRead(bool bWasSuccessful,
 		DECLARE_CYCLE_STAT(TEXT("FSimpleDelegateGraphTask.DelayInAppPurchaseRead"), STAT_FSimpleDelegateGraphTask_DelayInAppPurchaseRead, STATGROUP_TaskGraphTasks);
 
 		FSimpleDelegateGraphTask::CreateAndDispatchWhenReady(
-			FSimpleDelegateGraphTask::FDelegate::CreateLambda([=](){
+			FSimpleDelegateGraphTask::FDelegate::CreateLambda([this](){
 
 				OnInAppPurchaseRead_Delayed();
 

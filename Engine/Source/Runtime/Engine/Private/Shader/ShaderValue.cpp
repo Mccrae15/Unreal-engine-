@@ -974,6 +974,9 @@ struct FOpFrac : public FOpBaseNoInt { template<typename T> T operator()(T Value
 struct FOpFractional : public FOpBaseNoInt { template<typename T> T operator()(T Value) const { return FMath::Fractional(Value); } };
 struct FOpSqrt : public FOpBaseNoInt { template<typename T> T operator()(T Value) const { return FMath::Sqrt(Value); } };
 struct FOpRcp : public FOpBaseNoInt { template<typename T> T operator()(T Value) const { return (T)1 / GetSafeDivisor(Value); } };
+struct FOpExp : public FOpBaseNoInt { template<typename T> T operator()(T Value) const { return FMath::Exp(Value); } };
+struct FOpExp2 : public FOpBaseNoInt { template<typename T> T operator()(T Value) const { return FMath::Exp2(Value); } };
+struct FOpLog : public FOpBaseNoInt { template<typename T> T operator()(T Value) const { return FMath::Loge(Value); } };
 struct FOpLog2 : public FOpBaseNoInt { template<typename T> T operator()(T Value) const { return FMath::Log2(Value); } };
 struct FOpLog10 : public FOpBaseNoInt
 {
@@ -995,7 +998,7 @@ struct FOpMul : public FOpBase { template<typename T> T operator()(T Lhs, T Rhs)
 struct FOpDiv : public FOpBase { template<typename T> T operator()(T Lhs, T Rhs) const { return Lhs / GetSafeDivisor(Rhs); } };
 struct FOpMin : public FOpBase { template<typename T> T operator()(T Lhs, T Rhs) const { return FMath::Min(Lhs, Rhs); } };
 struct FOpMax : public FOpBase { template<typename T> T operator()(T Lhs, T Rhs) const { return FMath::Max(Lhs, Rhs); } };
-struct FOpFmod : public FOpBaseNoInt { template<typename T> T operator()(T Lhs, T Rhs) const { return FMath::Fmod(Lhs, Rhs); } };
+struct FOpFmod : public FOpBaseNoInt { template<typename T> T operator()(T Lhs, T Rhs) const { return FMath::Fmod(Lhs, GetSafeDivisor(Rhs)); } };
 struct FOpAtan2 : public FOpBaseNoInt { template<typename T> T operator()(T Lhs, T Rhs) const { return FMath::Atan2(Lhs, Rhs); } };
 struct FOpLess : public FOpBase { template<typename T> bool operator()(T Lhs, T Rhs) const { return Lhs < Rhs; } };
 struct FOpGreater : public FOpBase { template<typename T> bool operator()(T Lhs, T Rhs) const { return Lhs > Rhs; } };
@@ -1432,6 +1435,21 @@ FValue Rcp(const FValue& Value)
 	return Private::UnaryOp(Private::FOpRcp(), Value);
 }
 
+FValue Exp(const FValue& Value)
+{
+	return Private::UnaryOp(Private::FOpExp(), Value);
+}
+
+FValue Exp2(const FValue& Value)
+{
+	return Private::UnaryOp(Private::FOpExp2(), Value);
+}
+
+FValue Log(const FValue& Value)
+{
+	return Private::UnaryOp(Private::FOpLog(), Value);
+}
+
 FValue Log2(const FValue& Value)
 {
 	return Private::UnaryOp(Private::FOpLog2(), Value);
@@ -1783,6 +1801,21 @@ EValueType SqrtInPlace(EValueType Type, TArrayView<FValueComponent> Component)
 EValueType RcpInPlace(EValueType Type, TArrayView<FValueComponent> Component)
 {
 	return Private::UnaryOpInPlace(Private::FOpRcp(), Type, Component);
+}
+
+EValueType ExpInPlace(EValueType Type, TArrayView<FValueComponent> Component)
+{
+	return Private::UnaryOpInPlace(Private::FOpExp(), Type, Component);
+}
+
+EValueType Exp2InPlace(EValueType Type, TArrayView<FValueComponent> Component)
+{
+	return Private::UnaryOpInPlace(Private::FOpExp2(), Type, Component);
+}
+
+EValueType LogInPlace(EValueType Type, TArrayView<FValueComponent> Component)
+{
+	return Private::UnaryOpInPlace(Private::FOpLog(), Type, Component);
 }
 
 EValueType Log2InPlace(EValueType Type, TArrayView<FValueComponent> Component)

@@ -1,7 +1,4 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
-/*=============================================================================
-	ShadowSceneRenderer.h:
-=============================================================================*/
 #pragma once
 
 #include "CoreMinimal.h"
@@ -18,6 +15,7 @@ class FWholeSceneProjectedShadowInitializer;
 class FRDGBuilder;
 class FVirtualShadowMapPerLightCacheEntry;
 struct FNaniteVisibilityQuery;
+class FShadowScene;
 
 /**
  * Transient scope for per-frame rendering resources for the shadow rendering.
@@ -50,11 +48,16 @@ public:
 	 */
 	void PostInitDynamicShadowsSetup();
 
+	/**
+	 * Call to kick off culling tasks for VSMs & prepare views for rendering.
+	 */
+	void DispatchVirtualShadowMapViewAndCullingSetup(FRDGBuilder& GraphBuilder, TConstArrayView<FProjectedShadowInfo*> VirtualShadowMapShadows);
+
 	void PostSetupDebugRender();
 
 	/**
 	 */
-	void RenderVirtualShadowMaps(FRDGBuilder& GraphBuilder, bool bNaniteEnabled, bool bUpdateNaniteStreaming, bool bNaniteProgrammableRaster);
+	void RenderVirtualShadowMaps(FRDGBuilder& GraphBuilder, bool bNaniteEnabled, bool bUpdateNaniteStreaming);
 
 	/* Does any one pass shadow projection and generates screen space shadow mask bits
 	 * Call before beginning light loop/shadow projection, but after shadow map rendering
@@ -84,26 +87,24 @@ public:
 	}
 
 private:
+	FVirtualShadowMapProjectionShaderData GetLocalLightProjectionShaderData(float ResolutionLODBiasLocal, const FProjectedShadowInfo* ProjectedShadowInfo, int32 MapIndex) const;
+
 	/**
 	 * Select the budgeted set of distant lights to update this frame.
 	 */
 	void UpdateDistantLightPriorityRender();
 
-	// TODO: void RenderVirtualShadowMaps(FRDGBuilder& GraphBuilder, bool bNaniteEnabled);
-
 	struct FLocalLightShadowFrameSetup
 	{
-		TArray<FVirtualShadowMap*, TInlineAllocator<6>> VirtualShadowMaps;
+		TSharedPtr<FVirtualShadowMapPerLightCacheEntry> PerLightCacheEntry;
 		// link to legacy system stuff, to be removed in due time
 		FProjectedShadowInfo* ProjectedShadowInfo = nullptr;
 		FLightSceneInfo* LightSceneInfo = nullptr;
-		TSharedPtr<FVirtualShadowMapPerLightCacheEntry> PerLightCacheEntry;
 	};
 
 	// TODO: maybe we want to keep these in a 1:1 sparse array wrt the light scene infos, for easy crossreference & GPU access (maybe)?
 	//       tradeoff is easy to look up (given light ID) but not compact, but OTOH can keep compact lists of indices for various purposes
 	TArray<FLocalLightShadowFrameSetup, SceneRenderingAllocator> LocalLights;
-
 
 	struct FDirectionalLightShadowFrameSetup
 	{
@@ -120,7 +121,10 @@ private:
 	// Links to other systems etc.
 	FDeferredShadingSceneRenderer& SceneRenderer;
 	FScene& Scene;
+	FShadowScene& ShadowScene;
 	FVirtualShadowMapArray& VirtualShadowMapArray;
 
 	FNaniteVisibilityQuery* NaniteVisibilityQuery = nullptr;
+	Nanite::FPackedViewArray* VirtualShadowMapViews = nullptr;
+	FSceneInstanceCullingQuery *SceneInstanceCullingQuery = nullptr;
 };

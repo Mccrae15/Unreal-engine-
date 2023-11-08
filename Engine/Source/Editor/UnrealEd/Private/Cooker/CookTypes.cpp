@@ -3,8 +3,10 @@
 #include "CookTypes.h"
 
 #include "CompactBinaryTCP.h"
+#include "CookPackageData.h"
 #include "Containers/StringView.h"
 #include "DerivedDataRequest.h"
+#include "Editor.h"
 #include "HAL/PlatformTLS.h"
 #include "HAL/PlatformTime.h"
 #include "Interfaces/ITargetPlatform.h"
@@ -14,6 +16,7 @@
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "PackageTracker.h"
+#include "Serialization/PackageWriterToSharedBuffer.h"
 
 LLM_DEFINE_TAG(Cooker_CachedPlatformData);
 
@@ -33,8 +36,34 @@ const TCHAR* LexToString(EReleaseSaveReason Reason)
 	}
 }
 
+const TCHAR* LexToString(ESuppressCookReason Reason)
+{
+	switch (Reason)
+	{
+	case ESuppressCookReason::Invalid: return TEXT("Invalid");
+	case ESuppressCookReason::NotSuppressed: return TEXT("NotSuppressed");
+	case ESuppressCookReason::AlreadyCooked: return TEXT("AlreadyCooked");
+	case ESuppressCookReason::NeverCook: return TEXT("NeverCook");
+	case ESuppressCookReason::DoesNotExistInWorkspaceDomain: return TEXT("DoesNotExistInWorkspaceDomain");
+	case ESuppressCookReason::ScriptPackage: return TEXT("ScriptPackage");
+	case ESuppressCookReason::NotInCurrentPlugin: return TEXT("NotInCurrentPlugin");
+	case ESuppressCookReason::Redirected: return TEXT("Redirected");
+	case ESuppressCookReason::OrphanedGenerated: return TEXT("OrphanedGenerated");
+	case ESuppressCookReason::LoadError: return TEXT("LoadError");
+	case ESuppressCookReason::SaveError: return TEXT("SaveError");
+	case ESuppressCookReason::OnlyEditorOnly: return TEXT("OnlyEditorOnly");
+	case ESuppressCookReason::CookCanceled: return TEXT("CookCanceled");
+	case ESuppressCookReason::MultiprocessAssignmentError: return TEXT("MultiprocessAssignmentError");
+	case ESuppressCookReason::RetractedByCookDirector: return TEXT("RetractedByCookDirector");
+	case ESuppressCookReason::CookFilter: return TEXT("CookFilter");
+	default: return TEXT("Invalid");
+	}
+}
+
+
 FCookerTimer::FCookerTimer(float InTimeSlice)
-	: StartTime(FPlatformTime::Seconds()), TimeSlice(InTimeSlice)
+	: TickStartTime(FPlatformTime::Seconds()), ActionStartTime(TickStartTime)
+	, TickTimeSlice(InTimeSlice), ActionTimeSlice(InTimeSlice)
 {
 }
 
@@ -48,29 +77,82 @@ FCookerTimer::FCookerTimer(ENoWait)
 {
 }
 
-double FCookerTimer::GetTimeTillNow() const
+float FCookerTimer::GetTickTimeSlice() const
 {
-	return FPlatformTime::Seconds() - StartTime;
+	return TickTimeSlice;
 }
 
-double FCookerTimer::GetEndTimeSeconds() const
+double FCookerTimer::GetTickEndTimeSeconds() const
 {
-	return FMath::Min(StartTime + TimeSlice,  MAX_flt);
+	return FMath::Min(TickStartTime + TickTimeSlice, MAX_flt);
 }
 
-bool FCookerTimer::IsTimeUp() const
+bool FCookerTimer::IsTickTimeUp() const
 {
-	return IsTimeUp(FPlatformTime::Seconds());
+	return IsTickTimeUp(FPlatformTime::Seconds());
 }
 
-bool FCookerTimer::IsTimeUp(double CurrentTimeSeconds) const
+bool FCookerTimer::IsTickTimeUp(double CurrentTimeSeconds) const
 {
-	return CurrentTimeSeconds - StartTime > TimeSlice;
+	return CurrentTimeSeconds - TickStartTime > TickTimeSlice;
 }
 
-double FCookerTimer::GetTimeRemain() const
+double FCookerTimer::GetTickTimeRemain() const
 {
-	return TimeSlice - (FPlatformTime::Seconds() - StartTime);
+	return TickTimeSlice - (FPlatformTime::Seconds() - TickStartTime);
+}
+
+double FCookerTimer::GetTickTimeTillNow() const
+{
+	return FPlatformTime::Seconds() - TickStartTime;
+}
+
+float FCookerTimer::GetActionTimeSlice() const
+{
+	return ActionTimeSlice;
+}
+
+void FCookerTimer::SetActionTimeSlice(float InTimeSlice)
+{
+	double TickEndTime = GetTickEndTimeSeconds();
+	ActionTimeSlice = FMath::Min(InTimeSlice, FMath::Max(0, TickEndTime - ActionStartTime));
+}
+
+void FCookerTimer::SetActionStartTime()
+{
+	SetActionStartTime(FPlatformTime::Seconds());
+}
+
+void FCookerTimer::SetActionStartTime(double CurrentTimeSeconds)
+{
+	ActionStartTime = CurrentTimeSeconds;
+	double TickEndTime = GetTickEndTimeSeconds();
+	ActionTimeSlice = FMath::Min(ActionTimeSlice, FMath::Max(0, TickEndTime - ActionStartTime));
+}
+
+double FCookerTimer::GetActionEndTimeSeconds() const
+{
+	return FMath::Min(ActionStartTime + ActionTimeSlice, MAX_flt);
+}
+
+bool FCookerTimer::IsActionTimeUp() const
+{
+	return IsActionTimeUp(FPlatformTime::Seconds());
+}
+
+bool FCookerTimer::IsActionTimeUp(double CurrentTimeSeconds) const
+{
+	return CurrentTimeSeconds - ActionStartTime > ActionTimeSlice;
+}
+
+double FCookerTimer::GetActionTimeRemain() const
+{
+	return ActionTimeSlice - (FPlatformTime::Seconds() - ActionStartTime);
+}
+
+double FCookerTimer::GetActionTimeTillNow() const
+{
+	return FPlatformTime::Seconds() - ActionStartTime;
 }
 
 static uint32 SchedulerThreadTlsSlot = 0;
@@ -171,6 +253,349 @@ bool IsCookIgnoreTimeouts()
 	return bIsIgnoreCookTimeouts;
 }
 
+FDiscoveredPlatformSet::FDiscoveredPlatformSet(EDiscoveredPlatformSet InSource)
+	: Source(InSource)
+{
+	ConstructUnion();
+}
+
+FDiscoveredPlatformSet::FDiscoveredPlatformSet(TConstArrayView<const ITargetPlatform*> InPlatforms)
+	: FDiscoveredPlatformSet(EDiscoveredPlatformSet::EmbeddedList)
+{
+	Platforms.Append(InPlatforms);
+}
+
+FDiscoveredPlatformSet::FDiscoveredPlatformSet(const TBitArray<>& InOrderedPlatformBits)
+	: FDiscoveredPlatformSet(EDiscoveredPlatformSet::EmbeddedBitField)
+{
+	OrderedPlatformBits = InOrderedPlatformBits;
+}
+
+FDiscoveredPlatformSet::~FDiscoveredPlatformSet()
+{
+	DestructUnion();
+}
+
+FDiscoveredPlatformSet::FDiscoveredPlatformSet(const FDiscoveredPlatformSet& Other)
+	: FDiscoveredPlatformSet(Other.Source)
+{
+	*this = Other;
+}
+
+FDiscoveredPlatformSet::FDiscoveredPlatformSet(FDiscoveredPlatformSet&& Other)
+	: FDiscoveredPlatformSet(Other.Source)
+{
+	*this = MoveTemp(Other);
+}
+
+FDiscoveredPlatformSet& FDiscoveredPlatformSet::operator=(const FDiscoveredPlatformSet& Other)
+{
+	if (Source != Other.Source)
+	{
+		DestructUnion();
+		Source = Other.Source;
+		ConstructUnion();
+	}
+	switch (Source)
+	{
+	case EDiscoveredPlatformSet::EmbeddedBitField:
+		OrderedPlatformBits = Other.OrderedPlatformBits;
+		break;
+	default:
+		Platforms = Other.Platforms;
+		break;
+	}
+	return *this;
+}
+
+FDiscoveredPlatformSet& FDiscoveredPlatformSet::operator=(FDiscoveredPlatformSet&& Other)
+{
+	if (Source != Other.Source)
+	{
+		DestructUnion();
+		Source = Other.Source;
+		ConstructUnion();
+	}
+	switch (Other.Source)
+	{
+	case EDiscoveredPlatformSet::EmbeddedBitField:
+		OrderedPlatformBits = MoveTemp(Other.OrderedPlatformBits);
+		break;
+	default:
+		Platforms = MoveTemp(Other.Platforms);
+		break;
+	}
+	return *this;
+}
+
+void FDiscoveredPlatformSet::ConstructUnion()
+{
+	switch (Source)
+	{
+	case EDiscoveredPlatformSet::EmbeddedBitField:
+		new (&OrderedPlatformBits) TBitArray<>();
+		break;
+	default:
+		new (&Platforms) TArray<const ITargetPlatform*>();
+		break;
+	}
+}
+
+void FDiscoveredPlatformSet::DestructUnion()
+{
+	switch (Source)
+	{
+	case EDiscoveredPlatformSet::EmbeddedBitField:
+		OrderedPlatformBits.~TBitArray<>();
+		break;
+	default:
+		Platforms.~TArray<const ITargetPlatform*>();
+		break;
+	}
+}
+
+void FDiscoveredPlatformSet::RemapTargetPlatforms(const TMap<ITargetPlatform*, ITargetPlatform*>& Remap)
+{
+	if (Source != EDiscoveredPlatformSet::EmbeddedBitField)
+	{
+		for (const ITargetPlatform*& Existing : Platforms)
+		{
+			Existing = Remap[Existing];
+		}
+	}
+}
+
+void FDiscoveredPlatformSet::OnRemoveSessionPlatform(const ITargetPlatform* Platform, int32 RemovedIndex)
+{
+	if (Source == EDiscoveredPlatformSet::EmbeddedBitField)
+	{
+		int32 OldNumPlatforms = OrderedPlatformBits.Num();
+		check(OldNumPlatforms > RemovedIndex);
+		TBitArray<> NewBits(false, OldNumPlatforms - 1);
+		int32 ReadIndex;
+		for (ReadIndex = 0; ReadIndex < RemovedIndex; ++ReadIndex)
+		{
+			NewBits[ReadIndex] = OrderedPlatformBits[ReadIndex];
+		}
+		for (++ReadIndex; ReadIndex < OldNumPlatforms; ++ReadIndex)
+		{
+			NewBits[ReadIndex - 1] = OrderedPlatformBits[ReadIndex];
+		}
+		OrderedPlatformBits = MoveTemp(NewBits);
+	}
+	else
+	{
+		Platforms.Remove(Platform);
+	}
+}
+
+void FDiscoveredPlatformSet::OnPlatformAddedToSession(const ITargetPlatform* Platform)
+{
+	if (Source == EDiscoveredPlatformSet::EmbeddedBitField)
+	{
+		OrderedPlatformBits.Add(false);
+	}
+}
+
+void FDiscoveredPlatformSet::ConvertFromBitfield(TConstArrayView<const ITargetPlatform*> OrderedPlatforms)
+{
+	if (Source == EDiscoveredPlatformSet::EmbeddedBitField)
+	{
+		TArray<const ITargetPlatform*> LocalPlatforms;
+		int32 NumPlatforms = OrderedPlatformBits.Num();
+		check(NumPlatforms == OrderedPlatforms.Num());
+		for (int32 Index = 0; Index < NumPlatforms; ++Index)
+		{
+			if (OrderedPlatformBits[Index])
+			{
+				LocalPlatforms.Add(OrderedPlatforms[Index]);
+			}
+		}
+		DestructUnion();
+		Source = EDiscoveredPlatformSet::EmbeddedList;
+		ConstructUnion();
+		Platforms = MoveTemp(LocalPlatforms);
+	}
+}
+
+void FDiscoveredPlatformSet::ConvertToBitfield(TConstArrayView<const ITargetPlatform*> OrderedPlatforms)
+{
+	if (Source == EDiscoveredPlatformSet::EmbeddedBitField)
+	{
+		check(OrderedPlatformBits.Num() == OrderedPlatforms.Num());
+	}
+	else if (Source == EDiscoveredPlatformSet::EmbeddedList)
+	{
+		TArray<const ITargetPlatform*> LocalPlatforms = MoveTemp(Platforms);
+		DestructUnion();
+		Source = EDiscoveredPlatformSet::EmbeddedBitField;
+		ConstructUnion();
+		int32 NumPlatforms = OrderedPlatforms.Num();
+		OrderedPlatformBits.Init(false, NumPlatforms);
+		for (int32 Index = 0; Index < NumPlatforms; ++Index)
+		{
+			OrderedPlatformBits[Index] = LocalPlatforms.Contains(OrderedPlatforms[Index]);
+		}
+	}
+}
+
+TConstArrayView<const ITargetPlatform*> FDiscoveredPlatformSet::GetPlatforms(UCookOnTheFlyServer& COTFS,
+	FInstigator* Instigator, TConstArrayView<const ITargetPlatform*> OrderedPlatforms,
+	TArray<const ITargetPlatform*, TInlineAllocator<ExpectedMaxNumPlatforms>>* OutBuffer)
+{
+	switch (Source)
+	{
+	case EDiscoveredPlatformSet::EmbeddedList:
+		return Platforms;
+	case EDiscoveredPlatformSet::EmbeddedBitField:
+	{
+		check(OutBuffer);
+		OutBuffer->Reset();
+		int32 NumPlatforms = OrderedPlatformBits.Num();
+		check(NumPlatforms == OrderedPlatforms.Num());
+		for (int32 Index = 0; Index < NumPlatforms; ++Index)
+		{
+			if (OrderedPlatformBits[Index])
+			{
+				OutBuffer->Add(OrderedPlatforms[Index]);
+			}
+		}
+		return *OutBuffer;
+	}
+	case EDiscoveredPlatformSet::CopyFromInstigator:
+		Platforms.Reset();
+		check(Instigator);
+		FPackageData::GetReachablePlatformsForInstigator(COTFS, Instigator->Referencer, Platforms);
+		return Platforms;
+	default:
+		checkNoEntry();
+		return Platforms;
+	}
+}
+
+void WriteToCompactBinary(FCbWriter& Writer, const FDiscoveredPlatformSet& Value,
+	TConstArrayView<const ITargetPlatform*> OrderedReplicationPlatforms)
+{
+	Writer.BeginArray();
+	Writer << static_cast<uint8>(Value.Source);
+	switch (Value.Source)
+	{
+	case EDiscoveredPlatformSet::EmbeddedList:
+	{
+		TArray<uint8, TInlineAllocator<ExpectedMaxNumPlatforms>> PlatformIntegers;
+		for (const ITargetPlatform* Platform : Value.Platforms)
+		{
+			if (Platform == CookerLoadingPlatformKey)
+			{
+				PlatformIntegers.Add(MAX_uint8);
+			}
+			else
+			{
+				int32 PlatformIndex = OrderedReplicationPlatforms.IndexOfByKey(Platform);
+				check(0 <= PlatformIndex && PlatformIndex < MAX_uint8);
+				PlatformIntegers.Add(static_cast<uint8>(PlatformIndex));
+			}
+		}
+		Writer << PlatformIntegers;
+		break;
+	}
+	case EDiscoveredPlatformSet::EmbeddedBitField:
+	{
+		int32 NumPlatforms = Value.OrderedPlatformBits.Num();
+		check(OrderedReplicationPlatforms.Num() == NumPlatforms);
+		Writer.BeginArray();
+		for (int32 Index = 0; Index < NumPlatforms; ++Index)
+		{
+			Writer.AddBool(Value.OrderedPlatformBits[Index]);
+		}
+		Writer.EndArray();
+		break;
+	}
+	case EDiscoveredPlatformSet::CopyFromInstigator:
+		break;
+	default:
+		checkNoEntry();
+		break;
+	}
+	Writer.EndArray();
+}
+
+bool LoadFromCompactBinary(FCbFieldView Field, FDiscoveredPlatformSet& OutValue,
+	TConstArrayView<const ITargetPlatform*> OrderedReplicationPlatforms)
+{
+	FCbArrayView FieldAsArray = Field.AsArrayView();
+	if (Field.HasError())
+	{
+		return false;
+	}
+	FCbFieldViewIterator It = FieldAsArray.CreateViewIterator();
+	uint8 SourceAsInt;
+	if (!LoadFromCompactBinary(*It++, SourceAsInt) || SourceAsInt >= static_cast<uint8>(EDiscoveredPlatformSet::Count))
+	{
+		return false;
+	}
+	OutValue = FDiscoveredPlatformSet(static_cast<EDiscoveredPlatformSet>(SourceAsInt));
+
+	bool bOk = true;
+	switch (OutValue.Source)
+	{
+	case EDiscoveredPlatformSet::EmbeddedList:
+	{
+		TArray<uint8, TInlineAllocator<ExpectedMaxNumPlatforms>> PlatformIntegers;
+		if (!LoadFromCompactBinary(*It++, PlatformIntegers))
+		{
+			bOk = false;
+		}
+		OutValue.Platforms.Reserve(PlatformIntegers.Num());
+		for (uint8 PlatformInteger : PlatformIntegers)
+		{
+			if (PlatformInteger == MAX_uint8)
+			{
+				OutValue.Platforms.Add(CookerLoadingPlatformKey);
+			}
+			else
+			{
+				if (PlatformInteger < OrderedReplicationPlatforms.Num())
+				{
+					OutValue.Platforms.Add(OrderedReplicationPlatforms[PlatformInteger]);
+				}
+				else
+				{
+					bOk = false;
+				}
+			}
+		}
+		break;
+	}
+	case EDiscoveredPlatformSet::EmbeddedBitField:
+	{
+		FCbArrayView BitArrayField = (*It++).AsArrayView();
+		int32 NumPlatforms = BitArrayField.Num();
+		if (NumPlatforms != OrderedReplicationPlatforms.Num())
+		{
+			bOk = false;
+			OutValue = FDiscoveredPlatformSet(EDiscoveredPlatformSet::EmbeddedList);
+		}
+		else
+		{
+			OutValue.OrderedPlatformBits.Init(false, NumPlatforms);
+			int32 Index = 0;
+			for (FCbFieldView BoolField : BitArrayField)
+			{
+				OutValue.OrderedPlatformBits[Index++] = BoolField.AsBool(false);
+			}
+		}
+		break;
+	}
+	case EDiscoveredPlatformSet::CopyFromInstigator:
+		break;
+	default:
+		checkNoEntry();
+		break;
+	}
+	return bOk;
+}
+
 }
 
 FCbWriter& operator<<(FCbWriter& Writer, const UE::Cook::FInitializeConfigSettings& Value)
@@ -194,7 +619,6 @@ FCbWriter& operator<<(FCbWriter& Writer, const UE::Cook::FInitializeConfigSettin
 	Writer << "MaxNumPackagesBeforePartialGC" << Value.MaxNumPackagesBeforePartialGC;
 	Writer << "ConfigSettingDenyList" << Value.ConfigSettingDenyList;
 	Writer << "MaxAsyncCacheForType" << Value.MaxAsyncCacheForType;
-	Writer << "bHybridIterativeDebug" << Value.bHybridIterativeDebug;
 	// Make sure new values are added to LoadFromCompactBinary and MoveOrCopy
 	Writer.EndObject();
 	return Writer;
@@ -230,7 +654,6 @@ bool LoadFromCompactBinary(FCbFieldView Field, UE::Cook::FInitializeConfigSettin
 	bOk = LoadFromCompactBinary(Field["MaxNumPackagesBeforePartialGC"], OutValue.MaxNumPackagesBeforePartialGC) & bOk;
 	bOk = LoadFromCompactBinary(Field["ConfigSettingDenyList"], OutValue.ConfigSettingDenyList) & bOk;
 	bOk = LoadFromCompactBinary(Field["MaxAsyncCacheForType"], OutValue.MaxAsyncCacheForType) & bOk;
-	bOk = LoadFromCompactBinary(Field["bHybridIterativeDebug"], OutValue.bHybridIterativeDebug) & bOk;
 	// Make sure new values are added to MoveOrCopy and operator<<
 	return bOk;
 }
@@ -259,7 +682,6 @@ void FInitializeConfigSettings::MoveOrCopy(SourceType&& Source, TargetType&& Tar
 	Target.MaxNumPackagesBeforePartialGC = Source.MaxNumPackagesBeforePartialGC;
 	Target.ConfigSettingDenyList = MoveTempIfPossible(Source.ConfigSettingDenyList);
 	Target.MaxAsyncCacheForType = MoveTempIfPossible(Source.MaxAsyncCacheForType);
-	Target.bHybridIterativeDebug = Source.bHybridIterativeDebug;
 	// Make sure new values are added to operator<< and LoadFromCompactBinary
 }
 
@@ -276,6 +698,7 @@ void FInitializeConfigSettings::MoveToLocal(UCookOnTheFlyServer& COTFS)
 void FBeginCookConfigSettings::CopyFromLocal(const UCookOnTheFlyServer& COTFS)
 {
 	bHybridIterativeEnabled = COTFS.bHybridIterativeEnabled;
+	bHybridIterativeAllowAllClasses = COTFS.bHybridIterativeAllowAllClasses;
 	FParse::Value(FCommandLine::Get(), TEXT("-CookShowInstigator="), CookShowInstigator); // We don't store this on COTFS, so reparse it from commandLine
 	TSet<FName> COTFSNeverCookPackageList;
 	COTFS.PackageTracker->NeverCookPackageList.GetValues(COTFSNeverCookPackageList);
@@ -311,6 +734,7 @@ FCbWriter& operator<<(FCbWriter& Writer, const UE::Cook::FBeginCookConfigSetting
 {
 	Writer.BeginObject();
 	Writer << "HybridIterativeEnabled" << Value.bHybridIterativeEnabled;
+	Writer << "HybridIterativeAllowAllClasses" << Value.bHybridIterativeAllowAllClasses;
 	Writer << "CookShowInstigator" << Value.CookShowInstigator;
 	Writer << "NeverCookPackageList" << Value.NeverCookPackageList;
 	
@@ -332,6 +756,7 @@ bool LoadFromCompactBinary(FCbFieldView Field, UE::Cook::FBeginCookConfigSetting
 {
 	bool bOk = Field.IsObject();
 	bOk = LoadFromCompactBinary(Field["HybridIterativeEnabled"], OutValue.bHybridIterativeEnabled) & bOk;
+	bOk = LoadFromCompactBinary(Field["HybridIterativeAllowAllClasses"], OutValue.bHybridIterativeAllowAllClasses) & bOk;
 	bOk = LoadFromCompactBinary(Field["CookShowInstigator"], OutValue.CookShowInstigator) & bOk;
 	bOk = LoadFromCompactBinary(Field["NeverCookPackageList"], OutValue.NeverCookPackageList) & bOk;
 
@@ -390,7 +815,6 @@ FCbWriter& operator<<(FCbWriter& Writer, const UE::Cook::FCookByTheBookOptions& 
 	Writer << "AllowUncookedAssetReferences" << Value.bAllowUncookedAssetReferences;
 	Writer << "SkipHardReferences" << Value.bSkipHardReferences;
 	Writer << "SkipSoftReferences" << Value.bSkipSoftReferences;
-	Writer << "FullLoadAndSave" << Value.bFullLoadAndSave;
 	Writer << "CookAgainstFixedBase" << Value.bCookAgainstFixedBase;
 	Writer << "DlcLoadMainAssetRegistry" << Value.bDlcLoadMainAssetRegistry;
 	Writer.EndObject();
@@ -420,7 +844,6 @@ bool LoadFromCompactBinary(FCbFieldView Field, UE::Cook::FCookByTheBookOptions& 
 	bOk = LoadFromCompactBinary(Field["AllowUncookedAssetReferences"], OutValue.bAllowUncookedAssetReferences) & bOk;
 	bOk = LoadFromCompactBinary(Field["SkipHardReferences"], OutValue.bSkipHardReferences) & bOk;
 	bOk = LoadFromCompactBinary(Field["SkipSoftReferences"], OutValue.bSkipSoftReferences) & bOk;
-	bOk = LoadFromCompactBinary(Field["FullLoadAndSave"], OutValue.bFullLoadAndSave) & bOk;
 	bOk = LoadFromCompactBinary(Field["CookAgainstFixedBase"], OutValue.bCookAgainstFixedBase) & bOk;
 	bOk = LoadFromCompactBinary(Field["DlcLoadMainAssetRegistry"], OutValue.bDlcLoadMainAssetRegistry) & bOk;
 
@@ -493,4 +916,51 @@ FCbWriter& operator<<(FCbWriter& Writer, const FBeginCookContextForWorker& Value
 bool LoadFromCompactBinary(FCbFieldView Field, FBeginCookContextForWorker& OutValue)
 {
 	return LoadFromCompactBinary(Field, OutValue.PlatformContexts);
+}
+
+FMultiPackageReaderResults GetSaveExportsAndImports(UPackage* Package, UObject* Asset, FSavePackageArgs SaveArgs)
+{
+	uint32 OriginalPackageFlags = Package->GetPackageFlags();
+	ON_SCOPE_EXIT{ Package->SetPackageFlagsTo(OriginalPackageFlags); };
+
+	FPackageWriterToRecord* PackageWriter = new FPackageWriterToRecord(); // SavePackageContext deletes it
+	const ITargetPlatform* TargetPlatform = SaveArgs.SavePackageContext ? SaveArgs.SavePackageContext->TargetPlatform : nullptr;
+	FSavePackageContext SavePackageContext(TargetPlatform, PackageWriter);
+	SaveArgs.SavePackageContext = &SavePackageContext;
+
+	IPackageWriter::FBeginPackageInfo BeginInfo;
+	BeginInfo.PackageName = Package->GetFName();
+	PackageWriter->BeginPackage(BeginInfo);
+
+	FString FileName = Package->GetName();
+	FSavePackageResultStruct SaveResult = GEditor->Save(Package, Asset, *FileName, SaveArgs);
+	FMultiPackageReaderResults Result;
+	Result.Result = SaveResult.Result;
+	if (Result.Result != ESavePackageResult::Success)
+	{
+		return Result;
+	}
+
+	ICookedPackageWriter::FCommitPackageInfo Info;
+	Info.Status = IPackageWriter::ECommitStatus::Success;
+	Info.PackageName = Package->GetFName();
+	Info.WriteOptions = IPackageWriter::EWriteOptions::Write;
+	PackageWriter->CommitPackage(MoveTemp(Info));
+
+	for (int32 MultiOutputIndex = 0; MultiOutputIndex < PackageWriter->SavedRecord.Packages.Num(); ++MultiOutputIndex)
+	{
+		if (MultiOutputIndex > UE_ARRAY_COUNT(Result.Realms))
+		{
+			break;
+		}
+		FPackageReaderResults& Realm = Result.Realms[MultiOutputIndex];
+
+		FMemoryReaderView HeaderArchive(PackageWriter->SavedRecord.Packages[MultiOutputIndex].Buffer.GetView());
+		FPackageReader PackageReader;
+
+		Realm.bValid = PackageReader.OpenPackageFile(&HeaderArchive) &&
+			PackageReader.ReadLinkerObjects(Realm.Exports, Realm.Imports, Realm.SoftPackageReferences);
+	}
+
+	return Result;
 }

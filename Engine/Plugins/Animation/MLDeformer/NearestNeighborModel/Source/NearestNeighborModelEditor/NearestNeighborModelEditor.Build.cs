@@ -33,7 +33,6 @@ namespace UnrealBuildTool.Rules
 					"NearestNeighborModel",
 					"Projects",
 					"PropertyEditor",
-					"NeuralNetworkInference",
 					"ToolWidgets",
 					"ComputeFramework",
 					"RenderCore",

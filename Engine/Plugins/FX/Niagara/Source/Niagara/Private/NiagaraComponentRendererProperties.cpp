@@ -1,7 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraComponentRendererProperties.h"
+#include "Misc/PackageName.h"
 #include "NiagaraEmitterInstance.h"
+#include "NiagaraModule.h"
 #include "NiagaraRenderer.h"
 #include "NiagaraConstants.h"
 #include "NiagaraRendererComponents.h"
@@ -12,7 +14,6 @@
 #include "Widgets/Images/SImage.h"
 #include "Styling/SlateIconFinder.h"
 #include "Widgets/SWidget.h"
-#include "AssetThumbnail.h"
 #include "Widgets/Text/STextBlock.h"
 #endif
 #include "NiagaraCustomVersion.h"
@@ -198,9 +199,11 @@ UNiagaraComponentRendererProperties::UNiagaraComponentRendererProperties()
 	FCoreUObjectDelegates::OnObjectsReplaced.AddUObject(this, &UNiagaraComponentRendererProperties::OnObjectsReplacedCallback);
 #endif
 
-	AttributeBindings.Reserve(2);
-	AttributeBindings.Add(&EnabledBinding);
-	AttributeBindings.Add(&RendererVisibilityTagBinding);
+	AttributeBindings =
+	{
+		&EnabledBinding,
+		&RendererVisibilityTagBinding,
+	};
 	IsSetterMappingDirty.store(true);
 }
 

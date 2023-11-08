@@ -2,6 +2,10 @@
 
 #include "FractureEngineClustering.h"
 #include "GeometryCollection/GeometryCollection.h"
+#include "GeometryCollection/GeometryCollectionUtility.h"
+#include "GeometryCollection/Facades/CollectionTransformSelectionFacade.h"
+#include "GeometryCollection/Facades/CollectionTransformFacade.h"
+#include "GeometryCollection/Facades/CollectionHierarchyFacade.h"
 #include "GeometryCollection/GeometryCollectionClusteringUtility.h"
 #include "GeometryCollection/GeometryCollectionAlgo.h"
 #include "Math/BoxSphereBounds.h"
@@ -15,12 +19,17 @@ FVoronoiPartitioner::FVoronoiPartitioner(const FGeometryCollection* GeometryColl
 	GenerateCentroids(GeometryCollection);
 }
 
-void FVoronoiPartitioner::KMeansPartition(int32 InPartitionCount)
+void FVoronoiPartitioner::KMeansPartition(int32 InPartitionCount, int32 MaxIterations, TArrayView<const FVector> InitialCenters)
 {
 	PartitionCount = InPartitionCount;
+	if (InitialCenters.Num())
+	{
+		PartitionCount = InitialCenters.Num();
+	}
 
-	InitializePartitions();
-	for (int32 Iteration = 0; Iteration < MaxKMeansIterations; Iteration++)
+	InitializePartitions(InitialCenters);
+	// Note: We run max iterations + 1 here because the first iteration just applies the initial cluster assignment
+	for (int32 Iteration = 0; Iteration < MaxIterations + 1; Iteration++)
 	{
 		// Refinement is complete when no nodes change partition.
 		if (!Refine())
@@ -64,6 +73,91 @@ void FVoronoiPartitioner::MergeSingleElementPartitions(FGeometryCollection* Geom
 				Partitions[ElIdx] = SmallestNbrPartition;
 				PartitionSize[Partition]--;
 				PartitionSize[SmallestNbrPartition]++;
+			}
+		}
+	}
+}
+
+void FVoronoiPartitioner::MergeSmallPartitions(FGeometryCollection* GeometryCollection, float SizeThreshold)
+{
+	if (Connectivity.IsEmpty())
+	{
+		GenerateConnectivity(GeometryCollection);
+	}
+
+	FGeometryCollectionConvexUtility::SetVolumeAttributes(GeometryCollection);
+	const TManagedArray<float>& Volumes = GeometryCollection->GetAttribute<float>("Volume", FTransformCollection::TransformGroup);
+
+	float VolumeThreshold = SizeThreshold * SizeThreshold * SizeThreshold;
+	TArray<float> PartitionVolumes;
+	PartitionVolumes.Init(0, PartitionSize.Num());
+	
+	int32 NonEmptyPartitions = GetNonEmptyPartitionCount();
+
+	for (int32 ElIdx = 0; ElIdx < TransformIndices.Num(); ElIdx++)
+	{
+		int32 Partition = Partitions[ElIdx];
+		PartitionVolumes[Partition] += Volumes[TransformIndices[ElIdx]];
+	}
+
+	TArray<int32> ToConsider;
+	ToConsider.Reserve(Partitions.Num());
+	for (int32 Partition = 0; Partition < PartitionVolumes.Num(); ++Partition)
+	{
+		if (PartitionVolumes[Partition] < VolumeThreshold)
+		{
+			ToConsider.Emplace(Partition);
+		}
+	}
+	while (!ToConsider.IsEmpty())
+	{
+		int32 Partition = ToConsider.Pop(false);
+		if (NonEmptyPartitions < 3)
+		{
+			break; // if we only have two partitions, stop merging
+		}
+		if (PartitionVolumes[Partition] < VolumeThreshold)
+		{
+			int32 SmallestNbrPartition = INDEX_NONE;
+			float SmallestNbrVolume = FMathf::MaxReal;
+			for (int32 ElIdx = 0; ElIdx < TransformIndices.Num(); ++ElIdx)
+			{
+				if (Partitions[ElIdx] == Partition)
+				{
+					for (int32 NbrEl : Connectivity[ElIdx])
+					{
+						int32 NbrPartition = Partitions[NbrEl];
+						if (NbrPartition != Partition)
+						{
+							if (SmallestNbrPartition == INDEX_NONE || PartitionVolumes[NbrPartition] < SmallestNbrVolume)
+							{
+								SmallestNbrVolume = PartitionVolumes[NbrPartition];
+								SmallestNbrPartition = NbrPartition;
+							}
+						}
+					}
+				}
+			}
+			if (SmallestNbrPartition != INDEX_NONE)
+			{
+				PartitionVolumes[SmallestNbrPartition] += PartitionVolumes[Partition];
+				PartitionVolumes[Partition] = 0;
+				float CombinedSize = PartitionSize[SmallestNbrPartition] + PartitionSize[Partition];
+				PartitionSize[SmallestNbrPartition] = CombinedSize;
+				if (CombinedSize < VolumeThreshold)
+				{
+					ToConsider.Push(SmallestNbrPartition);
+					Swap(ToConsider.Last(), ToConsider[0]); // make sure we don't always merge to the same cluster
+				}
+				PartitionSize[Partition] = 0;
+				NonEmptyPartitions--;
+				for (int32 ElIdx = 0; ElIdx < TransformIndices.Num(); ++ElIdx)
+				{
+					if (Partitions[ElIdx] == Partition)
+					{
+						Partitions[ElIdx] = SmallestNbrPartition;
+					}
+				}
 			}
 		}
 	}
@@ -195,7 +289,7 @@ FVector FVoronoiPartitioner::GenerateCentroid(const FGeometryCollection* Geometr
 	return Bounds.GetCenter();
 }
 
-FBox FVoronoiPartitioner::GenerateBounds(const FGeometryCollection* GeometryCollection, int32 TransformIndex) const
+FBox FVoronoiPartitioner::GenerateBounds(const FGeometryCollection* GeometryCollection, int32 TransformIndex)
 {
 	check(GeometryCollection->IsRigid(TransformIndex) || GeometryCollection->IsClustered(TransformIndex));
 
@@ -241,18 +335,26 @@ FBox FVoronoiPartitioner::GenerateBounds(const FGeometryCollection* GeometryColl
 	}
 }
 
-void FVoronoiPartitioner::InitializePartitions()
+void FVoronoiPartitioner::InitializePartitions(TArrayView<const FVector> InitialCenters)
 {
 	check(PartitionCount > 0);
 
-	PartitionCount = FMath::Min(PartitionCount, TransformIndices.Num());
-
-	// Set initial partition centers as selects from the vertex set
-	PartitionCenters.SetNum(PartitionCount);
-	int32 TransformStride = FMath::Max(1,FMath::FloorToInt(float(TransformIndices.Num()) / float(PartitionCount)));
-	for (int32 PartitionIndex = 0; PartitionIndex < PartitionCount; ++PartitionIndex)
+	if (InitialCenters.Num() > 0)
 	{
-		PartitionCenters[PartitionIndex] = Centroids[TransformStride * PartitionIndex];
+		PartitionCenters.Reset();
+		PartitionCenters.Append(InitialCenters);
+	}
+	else
+	{
+		PartitionCount = FMath::Min(PartitionCount, TransformIndices.Num());
+
+		// Set initial partition centers as selects from the vertex set
+		PartitionCenters.SetNum(PartitionCount);
+		int32 TransformStride = FMath::Max(1, FMath::FloorToInt(float(TransformIndices.Num()) / float(PartitionCount)));
+		for (int32 PartitionIndex = 0; PartitionIndex < PartitionCount; ++PartitionIndex)
+		{
+			PartitionCenters[PartitionIndex] = Centroids[TransformStride * PartitionIndex];
+		}
 	}
 
 	// At beginning, all nodes belong to first partition.
@@ -436,7 +538,13 @@ void FFractureEngineClustering::AutoCluster(FGeometryCollection& GeometryCollect
 	const float SiteCountFraction,
 	const float SiteSize,
 	const bool bEnforceConnectivity,
-	const bool bAvoidIsolated)
+	const bool bAvoidIsolated,
+	const bool bEnforceSiteParameters,
+	const int32 GridX,
+	const int32 GridY,
+	const int32 GridZ,
+	const float MinimumClusterSize,
+	const int32 KMeansIterations)
 {
 	FFractureEngineBoneSelection Selection(GeometryCollection, BoneIndices);
 
@@ -444,7 +552,8 @@ void FFractureEngineClustering::AutoCluster(FGeometryCollection& GeometryCollect
 
 	for (const int32 ClusterIndex : Selection.GetSelectedBones())
 	{
-		AutoCluster(GeometryCollection, ClusterIndex, ClusterSizeMethod, SiteCount, SiteCountFraction, SiteSize, bEnforceConnectivity, bAvoidIsolated);
+		AutoCluster(GeometryCollection, ClusterIndex, ClusterSizeMethod, SiteCount, SiteCountFraction, SiteSize, 
+			bEnforceConnectivity, bAvoidIsolated, bEnforceSiteParameters, GridX, GridY, GridZ, MinimumClusterSize, KMeansIterations);
 	}
 }
 
@@ -455,50 +564,86 @@ void FFractureEngineClustering::AutoCluster(FGeometryCollection& GeometryCollect
 	const float SiteCountFraction,
 	const float SiteSize,
 	const bool bEnforceConnectivity,
-	const bool bAvoidIsolated)
+	const bool bAvoidIsolated,
+	const bool bEnforceSiteParameters,
+	const int32 InGridX,
+	const int32 InGridY,
+	const int32 InGridZ,
+	const float MinimumClusterSize,
+	const int32 KMeansIterations)
 {
 	FVoronoiPartitioner VoronoiPartition(&GeometryCollection, ClusterIndex);
 	int32 NumChildren = GeometryCollection.Children[ClusterIndex].Num();
 
-	int32 SiteCountToUse = 1;
+	// Used by the ByGrid method, which manually distributes initial positions
+	TArray<FVector> PartitionPositions;
+
+	int32 DesiredSiteCountToUse = 1;
+	int32 IterationsToUse = KMeansIterations;
 	if (ClusterSizeMethod == EFractureEngineClusterSizeMethod::ByNumber)
 	{
-		SiteCountToUse = SiteCount;
+		DesiredSiteCountToUse = SiteCount;
 	}
 	else if (ClusterSizeMethod == EFractureEngineClusterSizeMethod::ByFractionOfInput)
 	{
-		SiteCountToUse = FMath::Max(2, NumChildren * SiteCountFraction);
+		DesiredSiteCountToUse = FMath::Max(2, NumChildren * SiteCountFraction);
 	}
 	else if (ClusterSizeMethod == EFractureEngineClusterSizeMethod::BySize)
 	{
 		float TotalVolume = GeometryCollection.GetBoundingBox().GetBox().GetVolume();
 		float DesiredVolume = FMath::Pow(SiteSize, 3);
-		SiteCountToUse = FMath::Max(1, TotalVolume / DesiredVolume);
+		DesiredSiteCountToUse = FMath::Max(1, TotalVolume / DesiredVolume);
+	}
+	else if (ClusterSizeMethod == EFractureEngineClusterSizeMethod::ByGrid)
+	{
+		PartitionPositions = GenerateGridSites(GeometryCollection, ClusterIndex, InGridX, InGridY, InGridZ);
 	}
 
-	VoronoiPartition.KMeansPartition(SiteCountToUse);
-	if (VoronoiPartition.GetPartitionCount() == 0)
+	int32 SiteCountToUse = DesiredSiteCountToUse;
+	int32 PreviousPartitionCount = TNumericLimits<int32>::Max();
+	bool bIterate = false;
+	do
 	{
-		return;
-	}
+		VoronoiPartition.KMeansPartition(SiteCountToUse, IterationsToUse, PartitionPositions);
+		if (VoronoiPartition.GetPartitionCount() == 0)
+		{
+			return;
+		}
 
-	bool bNeedProximity = bEnforceConnectivity || bAvoidIsolated;
-	if (bNeedProximity)
-	{
-		FGeometryCollectionProximityUtility ProximityUtility(&GeometryCollection);
-		ProximityUtility.UpdateProximity();
-	}
+		bool bNeedProximity = bEnforceConnectivity || bAvoidIsolated;
+		if (bNeedProximity)
+		{
+			FGeometryCollectionProximityUtility ProximityUtility(&GeometryCollection);
+			ProximityUtility.UpdateProximity();
+		}
 
-	if (bEnforceConnectivity)
-	{
-		VoronoiPartition.SplitDisconnectedPartitions(&GeometryCollection);
-	}
+		if (bEnforceConnectivity)
+		{
+			VoronoiPartition.SplitDisconnectedPartitions(&GeometryCollection);
+		}
 
-	if (bAvoidIsolated)
-	{
-		// attempt to remove isolated via merging (may not succeed, as it only merges if there is a cluster in proximity)
-		VoronoiPartition.MergeSingleElementPartitions(&GeometryCollection);
-	}
+		// Note: Previously if bAvoidIsolated was set, we'd attempt to merge clusters of one here via
+		//  VoronoiPartition.MergeSingleElementPartitions(&GeometryCollection);
+		// However this results in some overly-large clusters, especially with grid clustering,
+		// so we prefer to simply skip clustering in such cases.
+
+		if (MinimumClusterSize > 0)
+		{
+			// attempt to remove isolated via cluster merging (may not succeed, as it only merges if there is a cluster in proximity)
+			VoronoiPartition.MergeSmallPartitions(&GeometryCollection, MinimumClusterSize);
+		}
+		const int32 IsolatedPartitionToIgnore = bAvoidIsolated ? VoronoiPartition.GetIsolatedPartitionCount() : 0;
+		const int32 PartitionCount = VoronoiPartition.GetNonEmptyPartitionCount() - IsolatedPartitionToIgnore;
+		bIterate = bEnforceSiteParameters				 // Is the feature enabled?
+			&& PartitionPositions.IsEmpty()				 // Is the explicit position array empty? (otherwise, site count is ignored)
+			&& (PartitionCount > DesiredSiteCountToUse)  // Have we reached the desired outcome
+			&& (SiteCountToUse > 1)						 // Is SiteCount large enough ?
+			&& (PartitionCount < PreviousPartitionCount);// Are we progressing ?
+		if(bIterate)
+		{
+			SiteCountToUse--;
+		}
+	} while (bIterate);
 
 	int32 NonEmptyPartitionCount = VoronoiPartition.GetNonEmptyPartitionCount();
 	bool bHasEmptyClusters = NonEmptyPartitionCount > 0;
@@ -538,5 +683,164 @@ void FFractureEngineClustering::AutoCluster(FGeometryCollection& GeometryCollect
 	FGeometryCollectionClusteringUtility::ValidateResults(&GeometryCollection);
 }
 
+TArray<FVector> FFractureEngineClustering::GenerateGridSites(
+	const FGeometryCollection& GeometryCollection,
+	const TArray<int32>& BoneIndices,
+	const int32 GridX,
+	const int32 GridY,
+	const int32 GridZ)
+{
+	TArray<FVector> AllPoints;
+	FFractureEngineBoneSelection Selection(GeometryCollection, BoneIndices);
+
+	Selection.ConvertSelectionToClusterNodes();
+
+	for (const int32 ClusterIndex : Selection.GetSelectedBones())
+	{
+		AllPoints.Append(GenerateGridSites(GeometryCollection, ClusterIndex, GridX, GridY, GridZ));
+	}
+	return AllPoints;
+}
+
+TArray<FVector> FFractureEngineClustering::GenerateGridSites(
+	const FGeometryCollection& GeometryCollection,
+	const int32 ClusterIndex,
+	const int32 InGridX,
+	const int32 InGridY,
+	const int32 InGridZ,
+	FBox* OutBounds)
+{
+	TArray<FVector> PartitionPositions;
+
+	FBox Bounds = FVoronoiPartitioner::GenerateBounds(&GeometryCollection, ClusterIndex);
+	if (OutBounds)
+	{
+		*OutBounds = Bounds;
+	}
+	int32 GridX = FMath::Max(1, InGridX);
+	int32 GridY = FMath::Max(1, InGridY);
+	int32 GridZ = FMath::Max(1, InGridZ);
+	PartitionPositions.Reserve(GridX * GridY * GridZ);
+
+	auto StepToParam = [](int32 Step, int32 NumSteps) -> double
+	{
+		return (double(Step) + .5) / double(NumSteps);
+	};
+
+	for (int32 StepX = 0; StepX < GridX; ++StepX)
+	{
+		double Xt = StepToParam(StepX, GridX);
+		double X = FMath::Lerp(Bounds.Min.X, Bounds.Max.X, Xt);
+		for (int32 StepY = 0; StepY < GridY; ++StepY)
+		{
+			double Yt = StepToParam(StepY, GridY);
+			double Y = FMath::Lerp(Bounds.Min.Y, Bounds.Max.Y, Yt);
+			for (int32 StepZ = 0; StepZ < GridZ; ++StepZ)
+			{
+				double Zt = StepToParam(StepZ, GridZ);
+				double Z = FMath::Lerp(Bounds.Min.Z, Bounds.Max.Z, Zt);
+				PartitionPositions.Emplace(X, Y, Z);
+			}
+		}
+	}
+
+	return PartitionPositions;
+}
 
 
+bool FFractureEngineClustering::ClusterSelected(
+	FGeometryCollection& GeometryCollection,
+	TArray<int32>& Selection)
+{
+	GeometryCollection::Facades::FCollectionTransformSelectionFacade SelectionFacade(GeometryCollection);
+	SelectionFacade.RemoveRootNodes(Selection);
+	SelectionFacade.Sanitize(Selection);
+
+	if (Selection.Num() <= 1)
+	{
+		// Don't make a cluster of 1
+		return false;
+	}
+
+	Chaos::Facades::FCollectionHierarchyFacade HierarchyFacade(GeometryCollection);
+	int32 StartTransformCount = GeometryCollection.NumElements(FGeometryCollection::TransformGroup);
+	int32 LowestCommonAncestor = FGeometryCollectionClusteringUtility::FindLowestCommonAncestor(&GeometryCollection, Selection);
+	// Cluster selected bones beneath common parent
+	if (LowestCommonAncestor != INDEX_NONE)
+	{
+		FGeometryCollectionClusteringUtility::ClusterBonesUnderNewNodeWithParent(&GeometryCollection, LowestCommonAncestor, Selection, true);
+		GeometryCollection::GenerateTemporaryGuids(&GeometryCollection, StartTransformCount, true);
+		FGeometryCollectionClusteringUtility::RemoveDanglingClusters(&GeometryCollection);
+		HierarchyFacade.GenerateLevelAttribute();
+
+		return true;
+	}
+
+	return false;
+}
+
+bool FFractureEngineClustering::MergeSelectedClusters(FGeometryCollection& GeometryCollection, TArray<int32>& Selection)
+{
+	Chaos::Facades::FCollectionHierarchyFacade HierarchyFacade(GeometryCollection);
+
+	GeometryCollection::Facades::FCollectionTransformSelectionFacade SelectionFacade(GeometryCollection);
+	SelectionFacade.ConvertEmbeddedSelectionToParents(Selection); // embedded geo must stay attached to parent
+
+	// Collect children of context clusters
+	TArray<int32> ChildBones;
+	int32 StartTransformCount = GeometryCollection.NumElements(FGeometryCollection::TransformGroup);
+	ChildBones.Reserve(StartTransformCount);
+	bool bHasClusters = false;
+	for (int32 Select : Selection)
+	{
+		if (GeometryCollection.SimulationType[Select] == FGeometryCollection::ESimulationTypes::FST_Clustered)
+		{
+			bHasClusters = true;
+			ChildBones.Append(HierarchyFacade.GetChildrenAsArray(Select));
+		}
+		else
+		{
+			ChildBones.Add(Select);
+		}
+	}
+
+	// If there were no clusters in the selection, we create a cluster
+	if (!bHasClusters)
+	{
+		// Cluster selected bones beneath common parent
+		int32 LowestCommonAncestor = FGeometryCollectionClusteringUtility::FindLowestCommonAncestor(&GeometryCollection, Selection);
+		if (LowestCommonAncestor != INDEX_NONE)
+		{
+			FGeometryCollectionClusteringUtility::ClusterBonesUnderNewNodeWithParent(&GeometryCollection, LowestCommonAncestor, Selection, true);
+			GeometryCollection::GenerateTemporaryGuids(&GeometryCollection, StartTransformCount, true);
+			Selection.SetNum(1);
+			Selection[0] = LowestCommonAncestor;
+			if (FGeometryCollectionClusteringUtility::RemoveDanglingClusters(&GeometryCollection))
+			{
+				// Bone index is unreliable after removal of some bones
+				Selection.Empty();
+			}
+			HierarchyFacade.GenerateLevelAttribute();
+			return true;
+		}
+	}
+	else
+	{
+		int32 MergeNode = FGeometryCollectionClusteringUtility::PickBestNodeToMergeTo(&GeometryCollection, Selection);
+		if (MergeNode >= 0)
+		{
+			FGeometryCollectionClusteringUtility::ClusterBonesUnderExistingNode(&GeometryCollection, MergeNode, ChildBones);
+			Selection.SetNum(1);
+			Selection[0] = MergeNode;
+			if (FGeometryCollectionClusteringUtility::RemoveDanglingClusters(&GeometryCollection))
+			{
+				// Bone index is unreliable after removal of some bones
+				Selection.Empty();
+			}
+			HierarchyFacade.GenerateLevelAttribute();
+			return true;
+		}
+	}
+
+	return false;
+}

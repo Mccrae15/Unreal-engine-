@@ -10,7 +10,8 @@
 #endif
 
 #define STRATA_SSS_MATERIAL_OVERRIDE 0
-#define STRATA_SSS_TRANSMISSION 0  // Disable for now, as the SSS profile texture need to be bound
+#define STRATA_SSS_TRANSMISSION 0				// Disable for now, as the SSS profile texture need to be bound
+#define STRATA_COMPLEXSPECIALPATH 1				// Allow to read data from complex special path
 #include "/Engine/Private/Strata/StrataEvaluation.ush"
 #include "/Engine/Private/Strata/StrataTile.ush"
 
@@ -59,10 +60,8 @@ void AddDrawPixelFootprint(float3 P, float3 dPdx, float3 dPdy, float2 Scale, boo
 void DrawPixelFootprint(float3 P, float3 dPdx, float3 dPdy, uint2 PixelCoord)
 {
 	const FStrataSubsurfaceHeader SSSHeader = StrataLoadSubsurfaceHeader(Strata.MaterialTextureArray, Strata.FirstSliceStoringStrataSSSData, PixelCoord);
-	const uint SubsurfaceProfileInt = StrataSubSurfaceHeaderGetProfileId(SSSHeader);
 	const bool bIsValid = StrataSubSurfaceHeaderGetIsValid(SSSHeader);
 	const bool bIsProfile = StrataSubSurfaceHeaderGetIsProfile(SSSHeader);
-	const float PixelRadiusScale = StrataSubSurfaceHeaderGetProfileRadiusScale(SSSHeader);
 
 	if (bIsValid)
 	{
@@ -93,22 +92,23 @@ RWBuffer<uint> RWPositionOffsetBuffer;
 
 void PrintPixelType(inout FShaderPrintContext Ctx, in FStrataPixelHeader Header, FFontColor InColor)
 {
-	if (IsSimpleMaterial(Header))			Print(Ctx, TEXT("Simple  "), InColor);
-	else if (IsSingleMaterial(Header))		Print(Ctx, TEXT("Single  "), InColor);
-	else if (IsComplexMaterial(Header))		Print(Ctx, TEXT("Complex "), InColor);
-	else if (IsSingleLayerWater(Header))	Print(Ctx, TEXT("SLWater "), InColor);
-	else if (IsHair(Header))				Print(Ctx, TEXT("Hair    "), InColor);
-	else if (IsEye(Header))					Print(Ctx, TEXT("Eye     "), InColor);
-	else									Print(Ctx, TEXT("Error - Unkown pixel type"), FontRed);
+	if (Header.IsSimpleMaterial())						Print(Ctx, TEXT("Simple  "), InColor);
+	else if (Header.IsSingleMaterial())					Print(Ctx, TEXT("Single  "), InColor);
+	else if (Header.GetUsesComplexSpecialRenderPath())	Print(Ctx, TEXT("Complex Special "), InColor);
+	else if (Header.IsComplexMaterial())				Print(Ctx, TEXT("Complex "), InColor);
+	else if (Header.IsSingleLayerWater())				Print(Ctx, TEXT("SLWater "), InColor);
+	else if (Header.IsHair())							Print(Ctx, TEXT("Hair    "), InColor);
+	else if (Header.IsEye())							Print(Ctx, TEXT("Eye     "), InColor);
+	else												Print(Ctx, TEXT("Error - Unkown pixel type"), FontRed);
 }
 
-void PrintSSSType(inout FShaderPrintContext Ctx, uint SSSType, bool bSimpleVolume, bool bThin, FFontColor InColor)
+void PrintSSSType(inout FShaderPrintContext Ctx, uint SSSType, bool bThin, FFontColor InColor)
 {
 		 if (SSSType == SSS_TYPE_WRAP && bThin)		Print(Ctx, TEXT("Wrap & Thin"), InColor);
 	else if (SSSType == SSS_TYPE_WRAP)				Print(Ctx, TEXT("Wrap"), InColor);
 	else if (SSSType == SSS_TYPE_DIFFUSION)			Print(Ctx, TEXT("Diffusion"), InColor);
 	else if (SSSType == SSS_TYPE_DIFFUSION_PROFILE)	Print(Ctx, TEXT("Diffusion Profile"), InColor);
-	else if (bSimpleVolume)							Print(Ctx, TEXT("Simple Volume"), InColor);
+	else if (SSSType == SSS_TYPE_SIMPLEVOLUME)		Print(Ctx, TEXT("Simple Volume"), InColor);
 	else if (bThin)									Print(Ctx, TEXT("Thin"), InColor);
 	else /*	(SSSType == SSS_TYPE_INVALID) */		Print(Ctx, TEXT("Invalid"), InColor);
 }
@@ -129,6 +129,15 @@ void Newline(inout FShaderPrintContext Context, inout float2 MaxRect)
 	Newline(Context);
 }
 
+void PrintAddress(inout FShaderPrintContext Context, inout FStrataAddressing StrataAddressing)
+{
+	FFontColor Font;
+	Font.Color = lerp(FontEmerald.Color, FontSilver.Color, 0.75f);
+	Print(Context, TEXT("[Address="), Font);
+	Print(Context, StrataAddressing.CurrentIndex, Font, 2, 0);
+	Print(Context, TEXT("]"), Font);
+}
+
 void PrintBSDF(inout FShaderPrintContext Context, inout FStrataAddressing StrataAddressing, FStrataPixelHeader Header, float3 WorldPosition, float3 V, inout float2 RectMax)
 {
 	const FFontColor FontBSDF         = FontSilver;
@@ -136,6 +145,8 @@ void PrintBSDF(inout FShaderPrintContext Context, inout FStrataAddressing Strata
 	const FFontColor FontBSDFStateName= FontWhite;
 	const FFontColor FontBSDFPropName = FontOrange;
 	const FFontColor FontBSDFPropValu = FontWhite;
+
+	Newline(Context, RectMax);
 
 	const FStrataBSDF BSDF = UnpackStrataBSDFIn(Strata.MaterialTextureArray, StrataAddressing, Header);
 
@@ -155,8 +166,9 @@ void PrintBSDF(inout FShaderPrintContext Context, inout FStrataAddressing Strata
 			const bool bGreyTopTrans = BSDF.TransmittanceAboveAlongN.x == BSDF.TransmittanceAboveAlongN.y && BSDF.TransmittanceAboveAlongN.x == BSDF.TransmittanceAboveAlongN.z;
 
 			Print(Context, TEXT("Slab "), FontBSDFType);
+			PrintAddress(Context, StrataAddressing);
 			Newline(Context, RectMax);
-			Print(Context, TEXT(" NormalID Aniso TopLayer Scattering SimpleVolume IsThin WeightV "), FontBSDFStateName);
+			Print(Context, TEXT(" NormalID BasisType Aniso TopLayer Scattering IsThin WeightV "), FontBSDFStateName);
 			if (!bGreyWeightV)
 			{
 				Print(Context, TEXT("            "), FontBSDFStateName);
@@ -172,12 +184,21 @@ void PrintBSDF(inout FShaderPrintContext Context, inout FStrataAddressing Strata
 			}
 			Newline(Context, RectMax);
 
+			const uint BasisType  = StrataGetSharedLocalBasisType(Header.SharedLocalBasesTypes_PackedHeader, BSDF_GETSHAREDLOCALBASISID(BSDF));
+
 			Print(Context, TEXT(" "), FontSilver);
 			Print(Context, BSDF_GETSHAREDLOCALBASISID(BSDF), FontBSDF, 2, 1);	Print(Context, TEXT("       "), FontSilver);
+			if (BasisType == 0)
+			{
+				Print(Context, TEXT("Normal"), FontBSDF);	Print(Context, TEXT("    "), FontSilver);
+			}
+			else
+			{
+				Print(Context, TEXT("Tangent"), FontBSDF);	Print(Context, TEXT("   "), FontSilver);
+			}
 			PrintBool(Context, BSDF_GETHASANISOTROPY(BSDF));					Print(Context, TEXT("  "));
 			PrintBool(Context, BSDF_GETISTOPLAYER(BSDF));						Print(Context, TEXT("     "));
 			PrintBool(Context, BSDF_GETSSSTYPE(BSDF) != SSS_TYPE_INVALID);		Print(Context, TEXT("       "));
-			PrintBool(Context, BSDF_GETISSIMPLEVOLUME(BSDF));					Print(Context, TEXT("         "));
 			PrintBool(Context, BSDF_GETISTHIN(BSDF));							Print(Context, TEXT("   "));
 
 			// View Weight
@@ -258,29 +279,61 @@ void PrintBSDF(inout FShaderPrintContext Context, inout FStrataAddressing Strata
 				Print(Context, TEXT("  - SimpleClearCoat "),	FontBSDFPropName);	Print(Context, Haziness.bSimpleClearCoat?1u:0u,	FontBSDFPropValu);	Newline(Context, RectMax);
 			}
 
-			if (BSDF_GETSSSTYPE(BSDF) != SSS_TYPE_INVALID || BSDF_GETISSIMPLEVOLUME(BSDF) || BSDF_GETISTHIN(BSDF))
+			if (BSDF_GETSSSTYPE(BSDF) != SSS_TYPE_INVALID || BSDF_GETISTHIN(BSDF))
 			{
+				const bool bIsThin = BSDF_GETISTHIN(BSDF);
 				const FStrataSubsurfaceHeader SSSHeader = StrataLoadSubsurfaceHeader(Strata.MaterialTextureArray, Strata.FirstSliceStoringStrataSSSData, StrataAddressing.PixelCoords);
-				Print(Context, TEXT(" SSS Type    "), FontBSDFPropName);	PrintSSSType(Context, BSDF_GETSSSTYPE(BSDF), BSDF_GETISSIMPLEVOLUME(BSDF), BSDF_GETISTHIN(BSDF), FontYellow);	Newline(Context, RectMax);
+				Print(Context, TEXT(" SSS Type    "), FontBSDFPropName);	PrintSSSType(Context, BSDF_GETSSSTYPE(BSDF), BSDF_GETISTHIN(BSDF), FontYellow);	Newline(Context, RectMax);
 				if (BSDF_GETSSSTYPE(BSDF) == SSS_TYPE_WRAP)
 				{
 					const float Opacity = StrataSubSurfaceHeaderGetWrapOpacity(SSSHeader);
-					Print(Context, TEXT(" SSS Opacity "), FontBSDFPropName);	Print(Context, Opacity, FontBSDFPropValu);	Newline(Context, RectMax);
+					Print(Context, TEXT(" SSS Opacity "), FontBSDFPropName);	Print(Context, Opacity, FontBSDFPropValu);						Newline(Context, RectMax);
+					Print(Context, TEXT(" SSS MFP     "), FontBSDFPropName);	Print(Context, SLAB_SSSMFP(BSDF), FontBSDFPropValu);			Newline(Context, RectMax);
+					Print(Context, TEXT(" SSS Phase   "), FontBSDFPropName);	Print(Context, SLAB_SSSPHASEANISOTROPY(BSDF), FontBSDFPropValu);Newline(Context, RectMax);
+					Print(Context, TEXT(" SSS Thicknes"), FontBSDFPropName);	Print(Context, BSDF_GETTHICKNESSCM(BSDF), FontBSDFPropValu);	Newline(Context, RectMax);
 				}
-				if (BSDF_GETSSSTYPE(BSDF) == SSS_TYPE_DIFFUSION_PROFILE && BSDF_GETISSIMPLEVOLUME(BSDF) == 0)
+				else if (BSDF_GETSSSTYPE(BSDF) == SSS_TYPE_SIMPLEVOLUME)
+				{
+					const float Opacity = StrataSubSurfaceHeaderGetWrapOpacity(SSSHeader);
+					Print(Context, TEXT(" SSS Opacity "), FontBSDFPropName);	Print(Context, Opacity, FontBSDFPropValu);						Newline(Context, RectMax);
+					Print(Context, TEXT(" SSS MFP     "), FontBSDFPropName);	Print(Context, SLAB_SSSMFP(BSDF), FontBSDFPropValu);			Newline(Context, RectMax);
+					Print(Context, TEXT(" SSS Phase   "), FontBSDFPropName);	Print(Context, SLAB_SSSPHASEANISOTROPY(BSDF), FontBSDFPropValu);Newline(Context, RectMax);
+					Print(Context, TEXT(" SSS Thicknes"), FontBSDFPropName);	Print(Context, BSDF_GETTHICKNESSCM(BSDF), FontBSDFPropValu);	Newline(Context, RectMax);
+				}
+				else if (BSDF_GETSSSTYPE(BSDF) == SSS_TYPE_DIFFUSION_PROFILE)
 				{
 					const uint ProfileId = StrataSubSurfaceHeaderGetProfileId(SSSHeader);
 					const float RadiusScale = StrataSubSurfaceHeaderGetProfileRadiusScale(SSSHeader);
+					const float3 DiffuseMFP = GetSubsurfaceProfileMFPInCm(ProfileId).xyz * RadiusScale;
+					const float Phase = GetTransmissionProfileParams(ProfileId).ScatteringDistribution;
 
 					Print(Context, TEXT(" SSS ID.     "), FontBSDFPropName);	Print(Context, ProfileId, FontBSDFPropValu);	Newline(Context, RectMax);
 					Print(Context, TEXT(" SSS Radius  "), FontBSDFPropName);	Print(Context, RadiusScale, FontBSDFPropValu);	Newline(Context, RectMax);
+					Print(Context, TEXT(" SSS MFP     "), FontBSDFPropName);	Print(Context, DiffuseMFP, FontBSDFPropValu);	Newline(Context, RectMax);
+					Print(Context, TEXT(" SSS Phase   "), FontBSDFPropName);	Print(Context, Phase, FontBSDFPropValu);		Newline(Context, RectMax);
+					if (bIsThin)
+					{
+					Print(Context, TEXT(" SSS Thicknes"), FontBSDFPropName);	Print(Context, SLAB_SSSPROFILETHICKNESSCM(BSDF), FontBSDFPropValu);		Newline(Context, RectMax);
+					}
 				}
-				else
+				else if (BSDF_GETSSSTYPE(BSDF) == SSS_TYPE_DIFFUSION)
 				{
-					Print(Context, TEXT(" SSS MFP     "), FontBSDFPropName);	Print(Context, SLAB_SSSMFP(BSDF), FontBSDFPropValu);				Newline(Context, RectMax);
-				}
+					const float3 OriginalMFP = StrataSubSurfaceHeaderGetMFP(SSSHeader);
+					const float3 RescaledMFP = SLAB_SSSMFP(BSDF);
 
-				Print(Context, TEXT(" SSS Phase   "), FontBSDFPropName);	Print(Context, SLAB_SSSPHASEANISOTROPY(BSDF), FontBSDFPropValu);		Newline(Context, RectMax);
+					if (bIsThin)
+					{
+						Print(Context, TEXT(" SSS MFP     "), FontBSDFPropName);	Print(Context, OriginalMFP, FontBSDFPropValu);				Newline(Context, RectMax);
+						Print(Context, TEXT(" SSS MFP Norm"), FontBSDFPropName);	Print(Context, RescaledMFP, FontBSDFPropValu);				Newline(Context, RectMax);
+						Print(Context, TEXT(" SSS Thicknes"), FontBSDFPropName);	Print(Context, BSDF_GETTHICKNESSCM(BSDF), FontBSDFPropValu);Newline(Context, RectMax);
+					}
+					else
+					{
+						Print(Context, TEXT(" SSS MFP     "), FontBSDFPropName);	Print(Context, OriginalMFP, FontBSDFPropValu);				Newline(Context, RectMax);
+					}
+
+					Print(Context, TEXT(" SSS Phase   "), FontBSDFPropName);	Print(Context, SLAB_SSSPHASEANISOTROPY(BSDF), FontBSDFPropValu);Newline(Context, RectMax);
+				}
 			} // SSS
 
 			if (BSDF_GETHASFUZZ(BSDF))
@@ -289,12 +342,32 @@ void PrintBSDF(inout FShaderPrintContext Context, inout FStrataAddressing Strata
 				Print(Context, TEXT(" Fuzz Color  "), FontBSDFPropName);	Print(Context, SLAB_FUZZ_COLOR(BSDF), FontBSDFPropValu);				Newline(Context, RectMax);
 				Print(Context, TEXT(" Fuzz Rough. "), FontBSDFPropName);	Print(Context, SLAB_FUZZ_ROUGHNESS(BSDF), FontBSDFPropValu);			Newline(Context, RectMax);
 			}
+#if STRATA_COMPLEXSPECIALPATH
+			if (BSDF_GETHASGLINT(BSDF))
+			{
+				Print(Context, TEXT(" Glint Value "), FontBSDFPropName);	Print(Context, SLAB_GLINT_VALUE(BSDF), FontBSDFPropValu);				Newline(Context, RectMax);
+				Print(Context, TEXT(" Glint UVs   "), FontBSDFPropName);	Print(Context, SLAB_GLINT_UV(BSDF), FontBSDFPropValu);					Newline(Context, RectMax);
+			}
+			if (BSDF_GETHASSPECPROFILE(BSDF))
+			{
+				Print(Context, TEXT(" SpecID      "), FontBSDFPropName);	Print(Context, GetSpecularProfileId(SLAB_SPECPROFILEID(BSDF)), FontBSDFPropValu);Newline(Context, RectMax);
+				if (GetSpecularProfileParameterization(SLAB_SPECPROFILEID(BSDF)) == 0)
+				{
+				Print(Context, TEXT(" Spec Param. "), FontBSDFPropName);	Print(Context, TEXT("View/Light angles"), FontBSDFPropValu);			Newline(Context, RectMax);
+				}
+				else
+				{
+				Print(Context, TEXT(" Spec Param. "), FontBSDFPropName);	Print(Context, TEXT("Half angles"), FontBSDFPropValu);					Newline(Context, RectMax);
+				}
+			}
+#endif
 		}
 		break;
 
 		case STRATA_BSDF_TYPE_HAIR:
 		{
 			Print(Context, TEXT("Hair"), FontBSDFType);
+			PrintAddress(Context, StrataAddressing);
 			Newline(Context, RectMax);
 			Print(Context, TEXT(" NormalID Aniso IsTopLayer LuminanceWeight"), FontBSDFStateName);
 			Newline(Context, RectMax);
@@ -327,6 +400,7 @@ void PrintBSDF(inout FShaderPrintContext Context, inout FStrataAddressing Strata
 		case STRATA_BSDF_TYPE_EYE:
 		{
 			Print(Context, TEXT("Eye"), FontBSDFType);
+			PrintAddress(Context, StrataAddressing);
 			Newline(Context, RectMax);
 			Print(Context, TEXT(" NormalID IsTopLayer LuminanceWeight"), FontBSDFStateName);
 			Newline(Context, RectMax);
@@ -360,7 +434,7 @@ void PrintBSDF(inout FShaderPrintContext Context, inout FStrataAddressing Strata
 			const float3x3 IrisPlaneTangentBasis = GetTangentBasis(EYE_IRISPLANENORMAL(BSDF));
 			DrawReferentialTWS(WorldPosition, IrisPlaneTangentBasis[0], IrisPlaneTangentBasis[1], IrisPlaneTangentBasis[2], float3(1, 0, 1));
 
-			const bool bHasSSS = HasSubsurface(Header);
+			const bool bHasSSS = Header.HasSubsurface();
 			const FStrataSubsurfaceHeader SSSHeader = StrataLoadSubsurfaceHeader(Strata.MaterialTextureArray, Strata.FirstSliceStoringStrataSSSData, StrataAddressing.PixelCoords);
 			const bool bIsValid = StrataSubSurfaceHeaderGetIsValid(SSSHeader);
 			const bool bIsProfile = StrataSubSurfaceHeaderGetIsProfile(SSSHeader);
@@ -375,8 +449,9 @@ void PrintBSDF(inout FShaderPrintContext Context, inout FStrataAddressing Strata
 		case STRATA_BSDF_TYPE_SINGLELAYERWATER:
 		{
 			Print(Context, TEXT("Water"), FontBSDFType);
-
+			PrintAddress(Context, StrataAddressing);
 			Newline(Context);
+
 			Print(Context, TEXT(" BaseColor            "), FontBSDFPropName);	Print(Context, SLW_BASECOLOR(BSDF), FontBSDFPropValu);			Newline(Context, RectMax);
 			Print(Context, TEXT(" Metallic             "), FontBSDFPropName);	Print(Context, SLW_METALLIC(BSDF), FontBSDFPropValu);			Newline(Context, RectMax);
 			Print(Context, TEXT(" Specular             "), FontBSDFPropName);	Print(Context, SLW_SPECULAR(BSDF), FontBSDFPropValu);			Newline(Context, RectMax);
@@ -431,8 +506,8 @@ void PrintPixel(uint2 InCoord, float3 InWorldPosition, float3 V)
 		const FStrataTopLayerData TopLayerData = StrataUnpackTopLayerData((STRATA_TOP_LAYER_TYPE)Strata.TopLayerTexture.Load(uint3(InCoord, 0)));
 
 		const bool bStrataMaterial = Header.BSDFCount > 0;
-		const bool bIsSimpleMaterial = IsSimpleMaterial(Header) || Header.BSDFCount == 0;
-		const bool bIsSingleMaterial = !IsSimpleMaterial(Header) && IsSingleMaterial(Header);
+		const bool bIsSimpleMaterial = Header.IsSimpleMaterial() || Header.BSDFCount == 0;
+		const bool bIsSingleMaterial = !Header.IsSimpleMaterial() && Header.IsSingleMaterial();
 
 		FStrataIrradianceAndOcclusion IrradianceAndOcclusion = StrataGetIrradianceAndAO(Header);
 
@@ -476,11 +551,11 @@ void PrintPixel(uint2 InCoord, float3 InWorldPosition, float3 V)
 		Print(Context, IrradianceAndOcclusion.MaterialAO, FontHeaderPropValue, 5, 3);					Print(Context, TEXT(" "));
 		Print(Context, IrradianceAndOcclusion.IndirectIrradiance, FontHeaderPropValue, 6, 3);			Print(Context, TEXT(" "));
 		Print(Context, TopLayerData.Roughness, FontHeaderPropValue, 5, 3);								Print(Context, TEXT("        "));
-		PrintBool(Context, HasPrecShadowMask(Header));													Print(Context, TEXT("      "));
-		PrintBool(Context, HasZeroPrecShadowMask(Header));												Print(Context, TEXT("       "));
-		PrintBool(Context, DoesCastContactShadow(Header));												Print(Context, TEXT("         "));
-		PrintBool(Context, HasDynamicIndirectShadowCasterRepresentation(Header));						Print(Context, TEXT("         "));
-		PrintBool(Context, HasSubsurface(Header));
+		PrintBool(Context, Header.HasPrecShadowMask());													Print(Context, TEXT("      "));
+		PrintBool(Context, Header.HasZeroPrecShadowMask());												Print(Context, TEXT("       "));
+		PrintBool(Context, Header.DoesCastContactShadow());												Print(Context, TEXT("         "));
+		PrintBool(Context, Header.HasDynamicIndirectShadowCasterRepresentation());						Print(Context, TEXT("         "));
+		PrintBool(Context, Header.HasSubsurface());
 		Newline(Context, RectMax);
 		Newline(Context);
 		
@@ -509,8 +584,8 @@ void PrintPixel(uint2 InCoord, float3 InWorldPosition, float3 V)
 	if (BSDFIndex+1 == Header.BSDFCount)
 	{
 		const bool bStrataMaterial = Header.BSDFCount > 0;
-		const bool bIsSimpleMaterial = IsSimpleMaterial(Header) || Header.BSDFCount == 0;
-		const bool bIsSingleMaterial = !IsSimpleMaterial(Header) && IsSingleMaterial(Header);
+		const bool bIsSimpleMaterial = Header.IsSimpleMaterial() || Header.BSDFCount == 0;
+		const bool bIsSingleMaterial = !Header.IsSimpleMaterial() && Header.IsSingleMaterial();
 
 		const uint FootPrint_PostBSDFs = StrataAddressing.ReadBytes;
 
@@ -527,13 +602,13 @@ void PrintPixel(uint2 InCoord, float3 InWorldPosition, float3 V)
 		RectMin = Context.Pos;
 		RectMax = Context.StartPos;
 		Print(Context, TEXT("Memory"), FontEmerald); Newline(Context, RectMax);
-		if (bIsSingleMaterial || IsEye(Header) || IsHair(Header))
+		if (bIsSingleMaterial || Header.IsEye() || Header.IsHair())
 		{
 			Print(Context, TEXT(" Header       "), FontSilver); Print(Context, HeaderSize - TopLayerDataBytes,				FontSilver, 3, 0); Print(Context, TEXT("bytes"), FontSilver); Newline(Context, RectMax);
 			Print(Context, TEXT(" TopNormalTex "), FontSilver); Print(Context, TopLayerDataBytes,							FontSilver, 3, 0); Print(Context, TEXT("bytes"), FontSilver); Newline(Context, RectMax);
 			Print(Context, TEXT(" BSDF         "), FontSilver); Print(Context, BSDFsSize,									FontSilver, 3, 0); Print(Context, TEXT("bytes"), FontSilver); Newline(Context, RectMax);
 		}
-		else if (bIsSimpleMaterial || IsSingleLayerWater(Header))
+		else if (bIsSimpleMaterial || Header.IsSingleLayerWater())
 		{
 			Print(Context, TEXT(" Header+BSDF  "), FontSilver); Print(Context, HeaderSize + BSDFsSize - TopLayerDataBytes,	FontSilver, 3, 0); Print(Context, TEXT("bytes"), FontSilver); Newline(Context, RectMax);
 			Print(Context, TEXT(" TopNormalTex "), FontSilver); Print(Context, TopLayerDataBytes,							FontSilver, 3, 0); Print(Context, TEXT("bytes"), FontSilver); Newline(Context, RectMax);
@@ -590,6 +665,28 @@ void MaterialPrintInfoCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 uint ViewMode;
 
+float3 BytePerPixelToColor(uint In)
+{
+	float3 Out = 0;
+	// 16->32  : Blue -> green
+	// 32->64  : Green -> Orange
+	// 64->128 : Orange -> Red
+	if (In < 32)
+	{
+		Out = ColorMapTurbo(saturate((In-16.f) / 32.f) * 0.25f + 0.25f);
+	}
+	else if (In < 64)
+	{
+		Out = ColorMapTurbo(saturate((In-32.f) / 32.f) * 0.25f + 0.5f);
+	}
+	else
+	{
+		Out = ColorMapTurbo(saturate((In-64.f) / 64.f) * 0.25f + 0.75f);
+	}
+
+	return Out;
+}
+
 void VisualizeMaterialPS(
 	float4 SVPos : SV_POSITION,
 	out float4 OutColor : SV_Target0)
@@ -605,28 +702,67 @@ void VisualizeMaterialPS(
 	const float3 V = -normalize(WorldPosition - PrimaryView.TranslatedWorldCameraOrigin);
 
 	FStrataAddressing StrataAddressing = GetStrataPixelDataByteOffset(PixelPosDynRes, uint2(View.BufferSizeAndInvSize.xy), Strata.MaxBytesPerPixel);
+	const uint FootPrint_Start = StrataAddressing.ReadBytes;
 	FStrataPixelHeader Header = UnpackStrataHeaderIn(Strata.MaterialTextureArray, StrataAddressing, Strata.TopLayerTexture);
 	const bool bStrataMaterial = Header.BSDFCount > 0;
 
 	OutColor = 0;
 	OutColor.w = 0.1f;
-
-	// BSDF count
-	const float MaxBSDFCount = 4.f;
-	if (Header.BSDFCount > 0)
+	if (ViewMode == 2)
 	{
-		const float BSDFCost = saturate(float(Header.BSDFCount) / MaxBSDFCount);
-		OutColor.xyz = ColorMapTurbo(BSDFCost);
+		// BSDF count
+		const float MaxBSDFCount = 4.f;
+		if (Header.BSDFCount > 0)
+		{
+			const float BSDFCost = saturate(float(Header.BSDFCount) / MaxBSDFCount);
+			OutColor.xyz = ColorMapTurbo(BSDFCost);
+		}
+	
+		// Print Legend
+		if (all(uint2(SVPos.xy) == uint2(0,0)))
+		{
+			FShaderPrintContext Context = InitShaderPrintContext(true, uint2(50, 50));
+			Print(Context, TEXT("1 BSDF"), InitFontColor(ColorMapTurbo(1 / MaxBSDFCount))); Newline(Context);
+			Print(Context, TEXT("2 BSDF"), InitFontColor(ColorMapTurbo(2 / MaxBSDFCount))); Newline(Context);
+			Print(Context, TEXT("3 BSDF"), InitFontColor(ColorMapTurbo(3 / MaxBSDFCount))); Newline(Context);
+			Print(Context, TEXT("4 BSDF"), InitFontColor(ColorMapTurbo(4 / MaxBSDFCount))); Newline(Context);
+		}
 	}
-
-	// Print Legend
-	if (all(uint2(SVPos.xy) == uint2(0,0)))
+	else if (ViewMode == 3)
 	{
-		FShaderPrintContext Context = InitShaderPrintContext(true, uint2(50, 50));
-		Print(Context, TEXT("1 BSDF"), InitFontColor(ColorMapTurbo(1 / MaxBSDFCount))); Newline(Context);
-		Print(Context, TEXT("2 BSDF"), InitFontColor(ColorMapTurbo(2 / MaxBSDFCount))); Newline(Context);
-		Print(Context, TEXT("3 BSDF"), InitFontColor(ColorMapTurbo(3 / MaxBSDFCount))); Newline(Context);
-		Print(Context, TEXT("4 BSDF"), InitFontColor(ColorMapTurbo(4 / MaxBSDFCount))); Newline(Context);
+		FStrataAddressing StrataAddressing = GetStrataPixelDataByteOffset(PixelPosDynRes, uint2(View.BufferSizeAndInvSize.xy), Strata.MaxBytesPerPixel);
+		FStrataPixelHeader Header = UnpackStrataHeaderIn(Strata.MaterialTextureArray, StrataAddressing, Strata.TopLayerTexture);
+
+		uint MaterialBytePerPixel = 0;
+		Strata_for (uint BSDFIndex = 0, BSDFIndex < Header.BSDFCount, ++BSDFIndex)
+		{
+			// Unpack BSDF data
+			FStrataBSDF BSDF = UnpackStrataBSDF(Strata.MaterialTextureArray, StrataAddressing, Header);
+			MaterialBytePerPixel = StrataAddressing.ReadBytes;
+		}
+			
+		OutColor.xyz = BytePerPixelToColor(MaterialBytePerPixel);
+	
+		// Print Legend
+		if (all(uint2(SVPos.xy) == uint2(0,0)))
+		{
+			FShaderPrintContext Context = InitShaderPrintContext(true, uint2(50, 50));
+			Print(Context, TEXT("16  Bytes"), InitFontColor(BytePerPixelToColor(16))); Newline(Context);	
+			Print(Context, TEXT("32  Bytes"), InitFontColor(BytePerPixelToColor(32))); Newline(Context);
+			Print(Context, TEXT("64  Bytes"), InitFontColor(BytePerPixelToColor(64))); Newline(Context);
+			Print(Context, TEXT("96  Bytes"), InitFontColor(BytePerPixelToColor(96))); Newline(Context);
+			Print(Context, TEXT("128 Bytes"), InitFontColor(BytePerPixelToColor(128))); Newline(Context);
+		}
+
+		// Cursor
+		if (all(PixelPosDynRes == ShaderPrintData.CursorCoord))
+		{
+			FShaderPrintContext Context = InitShaderPrintContext(true, uint2(250, 50));
+			Print(Context, MaterialBytePerPixel, InitFontColor(BytePerPixelToColor(MaterialBytePerPixel)), 3, 0); 
+			Print(Context, TEXT("/"), FontWhite); 
+			Print(Context, Strata.MaxBytesPerPixel, FontYellow, 3, 0); 
+			Print(Context, TEXT(" Bytes"), FontWhite); 
+		}
 	}
 }
 #endif // SHADER_MATERIALCOUNT
@@ -1034,7 +1170,7 @@ void EvaluateLighting(
 
 	const float3 N = TangentBasis[2];
 
-	if (BSDF_GETISSIMPLEVOLUME(BSDF))
+	if (BSDF_GETSSSTYPE(BSDF) == SSS_TYPE_SIMPLEVOLUME)
 	{
 		// Apply transmittance on the background
 
@@ -1415,8 +1551,10 @@ uint ClassificationAsync;
 uint Classification8bits;
 uint bRoughRefraction;
 uint bTileOverflowUseMaterialData;
-uint ProjectMaxBytePerPixel;
+uint ViewsMaxBytesPerPixel;
+uint ProjectMaxBytesPerPixel;
 uint MaterialBufferAllocationInBytes;
+uint MaterialBufferAllocationMode;
 
 float TileOverflowRatio;
 Buffer<uint> ClassificationTileDrawIndirectBuffer;
@@ -1444,10 +1582,26 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		Print(Context, TEXT(" Max byte per pixel : "), LegendColor); 
 		Print(Context, Strata.MaxBytesPerPixel, ValueColor, 3, 0);
 		Print(Context, TEXT(" / "), FontWhite); 
-		Print(Context, ProjectMaxBytePerPixel, ValueColor, 3, 0);
+		Print(Context, ProjectMaxBytesPerPixel, ValueColor, 3, 0);
 		Print(Context, TEXT(" ["), FontWhite); 
 		Print(Context, uint(DivideAndRoundUp(MaterialBufferAllocationInBytes, 1000000.f)), ValueColor, 4, 0);
 		Print(Context, TEXT("Mb]"), FontWhite);
+		Newline(Context);
+
+		Print(Context, TEXT(" Views max. byte    : "), LegendColor); 
+		Print(Context, ViewsMaxBytesPerPixel, ValueColor, 3, 0);
+		Print(Context, TEXT(" / "), FontWhite); 
+		Print(Context, ProjectMaxBytesPerPixel, ValueColor, 3, 0);
+		Newline(Context);
+
+		Print(Context, TEXT(" Allocation Mode    : "), LegendColor);
+		switch (MaterialBufferAllocationMode)
+		{
+			case 0: Print(Context, TEXT("View based"), ValueColor); break;
+			case 1: Print(Context, TEXT("View based | Growing-only"), ValueColor); break;
+			case 2: Print(Context, TEXT("Setting based"), ValueColor); break;
+			default: Print(Context, TEXT("Unknown: "), ValueColor); break;
+		}
 		Newline(Context);
 
 		Print(Context, TEXT(" Shading quality    : "), LegendColor);
@@ -1531,6 +1685,10 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 		Print(Context, TEXT(" # Complex tiles    : "), LegendColor);
 		Print(Context, GetTileCount(STRATA_TILE_TYPE_COMPLEX), ValueColor);
+		Newline(Context);
+
+		Print(Context, TEXT(" # Complex Special tiles: "), LegendColor);
+		Print(Context, GetTileCount(STRATA_TILE_TYPE_COMPLEX_SPECIAL), ValueColor);
 		Newline(Context);
 
 		Newline(Context);

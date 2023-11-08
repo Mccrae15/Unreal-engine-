@@ -17,6 +17,8 @@ using System.Text;
 using Microsoft.Extensions.Logging;
 using Logging = Microsoft.Extensions.Logging;
 
+using static AutomationTool.CommandUtils;
+
 namespace Gauntlet
 {
 	public static class Globals
@@ -267,7 +269,7 @@ namespace Gauntlet
 			{
 				if (CommandUtils.IsBuildMachine)
 				{
-					CommandUtils.LogInformation("<-- Suspend Log Parsing -->");
+					Logger.LogInformation("<-- Suspend Log Parsing -->");
 				}
 			}
 		}
@@ -278,7 +280,7 @@ namespace Gauntlet
 			{
 				if (CommandUtils.IsBuildMachine)
 				{
-					CommandUtils.LogInformation("<-- Resume Log Parsing -->");
+					Logger.LogInformation("<-- Resume Log Parsing -->");
 				}
 			}
 		}
@@ -1220,10 +1222,7 @@ namespace Gauntlet
 							}
 							else
 							{
-								using (var PauseEC = new ScopedSuspendECErrorParsing())
-								{
-									Log.Error("File Copy failed with {0}.", ex.Message);
-								}
+								Log.Info("File Copy failed with {0}.", ex.Message);
 
 								// Warn with message if we're exceeding long path, otherwise throw an exception
 								const int MAX_PATH = 260;
@@ -1860,26 +1859,51 @@ namespace Gauntlet
 		}
 
 		/// <summary>
-		/// Returns files that match the specified regular expression in the provided folder, searching up to a maximum depth
+		/// Returns files, that match the specified regular expression, ignoring case, in the provided folder,
+		/// searching up to a maximum depth
 		/// </summary>
 		/// <param name="BaseDir">Directory to start searching in</param>
-		/// <param name="RegexPattern">Regular expression to match on</param>
-		/// <param name="RecursionDepth">Depth to search (-1 = unlimited)</param>
+		/// <param name="RegexPattern">Regular expression pattern to match on</param>
+		/// <param name="RecursionDepth">Optional depth to search (-1 = unlimited)</param>
 		/// <returns></returns>
 		public static IEnumerable<FileInfo> FindMatchingFiles(string BaseDir, string RegexPattern, int RecursionDepth = 0)
+		{
+			Regex RegExObj = new Regex(RegexPattern, RegexOptions.IgnoreCase);
+
+			return MatchFiles(BaseDir, RegExObj, RecursionDepth);
+		}
+
+		/// <summary>
+		/// Returns files that match a specified regular expression in the provided folder, searching up to a maximum depth
+		/// </summary>
+		/// <param name="BaseDir">Directory to start searching in</param>
+		/// <param name="RegExObj">RegEx to match on</param>
+		/// <param name="RecursionDepth">Optional depth to search (-1 = unlimited)</param>
+		/// <returns></returns>
+		public static IEnumerable<FileInfo> FindMatchingFiles(string BaseDir, Regex RegExObj, int RecursionDepth = 0)
+		{
+			return MatchFiles(BaseDir, RegExObj, RecursionDepth);
+		}
+
+		/// <summary>
+		/// Returns files that match the given RegEx from the provided folder, searching up to a maximum depth
+		/// </summary>
+		/// <param name="BaseDir">Directory to start searching in</param>
+		/// <param name="RegExObj">RegEx to match on</param>
+		/// <param name="RecursionDepth">Depth to search (-1 = unlimited)</param>
+		/// <returns></returns>
+		private static IEnumerable<FileInfo> MatchFiles(string BaseDir, Regex RegExObj, int RecursionDepth)
 		{
 			List<FileInfo> Found = new List<FileInfo>();
 
 			IEnumerable<DirectoryInfo> CandidateDirs = new DirectoryInfo[] { new DirectoryInfo(BaseDir) };
-
-			Regex Pattern = new Regex(RegexPattern, RegexOptions.IgnoreCase);
 
 			int CurrentDepth = 0;
 
 			do
 			{
 				// check for matching files in this set of directories
-				IEnumerable<FileInfo> MatchingFiles = CandidateDirs.SelectMany(D => Utils.SystemHelpers.GetFiles(D)).Where(F => Pattern.IsMatch(F.Name));
+				IEnumerable<FileInfo> MatchingFiles = CandidateDirs.SelectMany(D => Utils.SystemHelpers.GetFiles(D)).Where(F => RegExObj.IsMatch(F.Name));
 
 				Found.AddRange(MatchingFiles);
 

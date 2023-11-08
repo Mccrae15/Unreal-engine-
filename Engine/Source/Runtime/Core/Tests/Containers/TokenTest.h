@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreTypes.h"
+#include "Serialization/StructuredArchive.h"
 #include "Templates/UnrealTemplate.h"
 
 template <typename InValueType>
@@ -151,4 +152,16 @@ template <typename InValueType>
 inline bool operator!=(const TTestToken<InValueType>& left, const InValueType& right)
 {
 	return !operator==(left, right);
+}
+
+template <typename InValueType>
+inline FArchive& operator<<(FArchive& Ar, TTestToken<InValueType>& TestToken)
+{
+	return Ar << TestToken.Value;
+}
+
+template <typename InValueType>
+inline void operator<<(FStructuredArchive::FSlot Slot, TTestToken<InValueType>& TestToken)
+{
+	Slot.EnterRecord() << SA_VALUE(TEXT("Value"), TestToken.Value);
 }

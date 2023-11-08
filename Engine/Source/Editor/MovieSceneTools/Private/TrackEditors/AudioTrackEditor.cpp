@@ -9,6 +9,7 @@
 #include "RenderUtils.h"
 #include "RenderingThread.h"
 #include "Modules/ModuleManager.h"
+#include "AnimatedRange.h"
 #include "Audio.h"
 #include "Sound/SoundBase.h"
 #include "Sound/SoundWave.h"
@@ -650,9 +651,18 @@ UMovieSceneSection* FAudioSection::GetSectionObject()
 FText FAudioSection::GetSectionTitle() const
 {
 	UMovieSceneAudioSection* AudioSection = Cast<UMovieSceneAudioSection>(&Section);
-	if (AudioSection && AudioSection->GetSound())
+	if (AudioSection)
 	{
-		return FText::FromString(AudioSection->GetSound()->GetName());
+		if (AudioSection->GetSound())
+		{
+			// Return the asset name if it exists
+			return FText::FromString(AudioSection->GetSound()->GetName());
+		}
+		else
+		{
+			// There is no asset during record so return empty string
+			return FText();
+		}
 	}
 	
 	return NSLOCTEXT("FAudioSection", "NoAudioTitleName", "No Audio");
@@ -697,7 +707,11 @@ FText FAudioSection::GetSectionToolTip() const
 
 float FAudioSection::GetSectionHeight() const
 {
-	return Section.GetTypedOuter<UMovieSceneAudioTrack>()->GetRowHeight();
+	if (UMovieSceneAudioTrack* Track = Section.GetTypedOuter<UMovieSceneAudioTrack>())
+	{
+		return Track->GetRowHeight();
+	}
+	return ISequencerSection::GetSectionHeight();
 }
 
 int32 FAudioSection::OnPaintSection( FSequencerSectionPainter& Painter ) const
@@ -775,6 +789,20 @@ int32 FAudioSection::OnPaintSection( FSequencerSectionPainter& Painter ) const
 
 void FAudioSection::Tick( const FGeometry& AllottedGeometry, const FGeometry& ParentGeometry, const double InCurrentTime, const float InDeltaTime )
 {
+	// Defer regenerating waveforms if playing or scrubbing
+	TSharedPtr<ISequencer> SequencerPin = Sequencer.Pin();
+	if (!SequencerPin.IsValid())
+	{
+		return;
+	}
+	
+	EMovieScenePlayerStatus::Type PlaybackState = SequencerPin->GetPlaybackStatus();
+
+	if (PlaybackState == EMovieScenePlayerStatus::Playing || PlaybackState == EMovieScenePlayerStatus::Scrubbing)
+	{
+		return;
+	}
+
 	UMovieSceneAudioSection* AudioSection = Cast<UMovieSceneAudioSection>(&Section);
 	UMovieSceneTrack* Track = Section.GetTypedOuter<UMovieSceneTrack>();
 
@@ -815,11 +843,7 @@ void FAudioSection::Tick( const FGeometry& AllottedGeometry, const FGeometry& Pa
 			float DisplayScale = XSize / DrawRange.Size<float>();
 
 			// Use the view range if possible, as it's much more stable than using the texture size and draw range
-			TSharedPtr<ISequencer> SequencerPin = Sequencer.Pin();
-			if (SequencerPin.IsValid())
-			{
-				DisplayScale = SequencerPin->GetViewRange().Size<float>() / ParentGeometry.GetLocalSize().X;
-			}
+			DisplayScale = SequencerPin->GetViewRange().Size<float>() / ParentGeometry.GetLocalSize().X;	
 
 			RegenerateWaveforms(DrawRange, XOffset, XSize, Track->GetColorTint(), DisplayScale);
 			StoredSoundWave = SoundWave;

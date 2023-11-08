@@ -4,6 +4,7 @@
 #include "RenderGraphBuilder.h"
 #include "RenderGraphPrivate.h"
 #include "RenderGraphPass.h"
+#include "RenderResource.h"
 
 class FRDGTimingPool : public FRenderResource
 {
@@ -13,14 +14,14 @@ public:
 	// Destructor
 	virtual ~FRDGTimingPool() = default;
 
-	virtual void InitDynamicRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		check(IsInRenderingThread());
 		bIsBudgetRecordingEnabled.SetAll(false);
 		LastTimings.SetAll(uint64(0));
 	}
 
-	virtual void ReleaseDynamicRHI() override
+	virtual void ReleaseRHI() override
 	{
 		check(IsInRenderingThread());
 

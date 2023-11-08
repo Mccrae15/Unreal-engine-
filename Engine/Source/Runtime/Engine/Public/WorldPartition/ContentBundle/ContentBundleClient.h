@@ -31,53 +31,52 @@ enum class EWorldContentState
 	ContentBundleInjected
 };
 
-class ENGINE_API FContentBundleClient
+class FContentBundleClient
 {
 	friend class UContentBundleEngineSubsystem;
 	friend class FContentBundleBase;
 
 public:
-	static TSharedPtr<FContentBundleClient> CreateClient(const UContentBundleDescriptor* InContentBundleDescriptor, FString const& InDisplayName);
+	static ENGINE_API TSharedPtr<FContentBundleClient> CreateClient(const UContentBundleDescriptor* InContentBundleDescriptor, FString const& InDisplayName);
 
-	FContentBundleClient(const UContentBundleDescriptor* InContentBundleDescriptor, FString const& InDisplayName);
+	ENGINE_API FContentBundleClient(const UContentBundleDescriptor* InContentBundleDescriptor, FString const& InDisplayName);
 	virtual ~FContentBundleClient() = default;
 
 	const UContentBundleDescriptor* GetDescriptor() const { return ContentBundleDescriptor.Get(); }
 
-	void RequestContentInjection();
-	void RequestRemoveContent();
+	ENGINE_API void RequestContentInjection();
+	ENGINE_API void RequestRemoveContent();
 	
-	void RequestUnregister();
-
-#if WITH_EDITOR
-	void RequestForceInject(UWorld* WorldToInject);
-	void RequestRemoveForceInjectedContent(UWorld *WorldToInject);
-#endif 
+	ENGINE_API void RequestUnregister();
 
 	EContentBundleClientState GetState() const { return State; }
 
 	FString const& GetDisplayName() const { return DisplayName; }
 
-	bool ShouldInjectContent(UWorld* World) const;
-	bool ShouldRemoveContent(UWorld* World) const;
+	ENGINE_API virtual bool ShouldInjectContent(UWorld* World) const;
+	ENGINE_API virtual bool ShouldRemoveContent(UWorld* World) const;
+
+protected:
+	virtual void DoOnContentRegisteredInWorld(UWorld* InjectedWorld) {};
+	virtual void DoOnContentInjectedInWorld(EContentBundleStatus InjectionStatus, UWorld* InjectedWorld) {};
+	virtual void DoOnContentRemovedFromWorld(UWorld* InjectedWorld) {};
+
+	virtual void DoOnClientToUnregister() {};
 
 private:
-	bool HasContentToRemove() const;
+	ENGINE_API bool HasContentToRemove() const;
 
-	void SetState(EContentBundleClientState State);
-	void SetWorldContentState(UWorld* World, EWorldContentState State);
-	EWorldContentState GetWorldContentState(UWorld* World) const;
+	ENGINE_API void OnContentRegisteredInWorld(EContentBundleStatus ContentBundleStatus, UWorld* World);
+	ENGINE_API void OnContentInjectedInWorld(EContentBundleStatus InjectionStatus, UWorld* InjectedWorld);
+	ENGINE_API void OnContentRemovedFromWorld(EContentBundleStatus RemovalStatus, UWorld* InjectedWorld);
 
-	void OnContentInjectedInWorld(EContentBundleStatus InjectionStatus, UWorld* InjectedWorld);
-	void OnContentRemovedFromWorld(EContentBundleStatus RemovalStatus, UWorld* InjectedWorld);
+	ENGINE_API void SetState(EContentBundleClientState State);
+	ENGINE_API void SetWorldContentState(UWorld* World, EWorldContentState State);
+	ENGINE_API EWorldContentState GetWorldContentState(UWorld* World) const;
 
 	TWeakObjectPtr<const UContentBundleDescriptor> ContentBundleDescriptor;
 	
 	TMap<TWeakObjectPtr<UWorld>, EWorldContentState> WorldContentStates;
-
-#if WITH_EDITOR
-	TSet<TWeakObjectPtr<UWorld>> ForceInjectedWorlds;
-#endif
 
 	FString DisplayName;
 

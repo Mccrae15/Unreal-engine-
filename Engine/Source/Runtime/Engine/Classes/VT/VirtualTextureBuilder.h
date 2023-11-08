@@ -6,6 +6,8 @@
 #include "Engine/Texture.h"
 #include "VirtualTextureBuilder.generated.h"
 
+enum class EShadingPath;
+
 #if WITH_EDITOR
 
 /** Description object used to build the contents of a UVirtualTextureBuilder. */
@@ -40,28 +42,40 @@ struct FVirtualTextureBuildDesc
  * This has a simple BuildTexture() interface but we may want to extend in the future to support partial builds
  * or other more blueprint driven approaches for data generation.
  */
-UCLASS(ClassGroup = Rendering, BlueprintType)
-class ENGINE_API UVirtualTextureBuilder : public UObject
+UCLASS(ClassGroup = Rendering, BlueprintType, MinimalAPI)
+class UVirtualTextureBuilder : public UObject
 {
 public:
 	GENERATED_UCLASS_BODY()
-	~UVirtualTextureBuilder();
+	ENGINE_API ~UVirtualTextureBuilder();
 
 	/** The UTexture object. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Texture)
 	TObjectPtr<class UVirtualTexture2D> Texture;
 
+	/** The UTexture object for Mobile rendering. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Texture)
+	TObjectPtr<class UVirtualTexture2D> TextureMobile;
+
 	/** Some client defined hash of that defines how the Texture was built. */
 	UPROPERTY()
 	uint64 BuildHash;
 
+	/** Virtual texture for a specific shading path */
+	ENGINE_API UVirtualTexture2D* GetVirtualTexture(EShadingPath ShadingPath) const;
+
+	/** Whether to use a separate texture for Mobile rendering. A separate texure will be built using mobile preview editor mode */
+	UPROPERTY(EditAnywhere, Category = Texture)
+	bool bSeparateTextureForMobile = false;
+
 #if WITH_EDITOR
 	/** Creates a new UVirtualTexture2D and stores it in the contained Texture. */
-	void BuildTexture(FVirtualTextureBuildDesc const& BuildDesc);
+	ENGINE_API void BuildTexture(EShadingPath ShadingPath, FVirtualTextureBuildDesc const& BuildDesc);
 #endif
 
 protected:
 	//~ Begin UObject Interface
-	virtual void Serialize(FArchive& Ar) override;
+	ENGINE_API virtual void Serialize(FArchive& Ar) override;
+	ENGINE_API virtual void PostLoad() override;
 	//~ End UObject Interface
 };

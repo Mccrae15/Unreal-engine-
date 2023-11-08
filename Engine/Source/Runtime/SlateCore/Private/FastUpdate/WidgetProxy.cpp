@@ -51,6 +51,10 @@ FWidgetProxy::FUpdateResult FWidgetProxy::Update(const FPaintArgs& PaintArgs, FS
 
 	// If Outgoing layer id remains index none, there was no change
 	FUpdateResult Result;
+
+	if (!CurrentWidget.IsValid())
+		return Result;
+		
 	if (CurrentWidget->HasAnyUpdateFlags(EWidgetUpdateFlags::NeedsRepaint|EWidgetUpdateFlags::NeedsVolatilePaint))
 	{
 		Result = Repaint(PaintArgs, OutDrawElements);
@@ -247,6 +251,12 @@ FWidgetProxy::FUpdateResult FWidgetProxy::Repaint(const FPaintArgs& PaintArgs, F
 			}
 		}
 	}
+
+	if (MyState.InitialPixelSnappingMethod != EWidgetPixelSnapping::Inherit)
+	{
+		OutDrawElements.PushPixelSnappingMethod(MyState.InitialPixelSnappingMethod);
+	}
+	
 	const int32 NewLayerId = WidgetPtr->Paint(UpdatedArgs, MyState.AllottedGeometry, MyState.CullingBounds, OutDrawElements, MyState.LayerId, MyState.WidgetStyle, MyState.bParentEnabled);
 
 	PaintArgs.GetHittestGrid().SetUserIndex(PrevUserIndex);
@@ -258,6 +268,11 @@ FWidgetProxy::FUpdateResult FWidgetProxy::Repaint(const FPaintArgs& PaintArgs, F
 		check(StartingClipIndex == OutDrawElements.GetClippingIndex());
 	}
 	
+	if (MyState.InitialPixelSnappingMethod != EWidgetPixelSnapping::Inherit)
+	{
+		OutDrawElements.PopPixelSnappingMethod();
+	}
+
 	OutDrawElements.SetIsInGameLayer(MyState.bIsInGameLayer);
 	return FUpdateResult{ PrevLayerId, NewLayerId };
 }

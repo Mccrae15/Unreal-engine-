@@ -9,10 +9,16 @@
 #include "GameFramework/PlayerController.h"
 #include "GameplayCamerasModule.h"
 #include "Kismet/GameplayStatics.h"
+#include "UObject/Object.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(CameraAnimationCameraModifier)
 
 DECLARE_CYCLE_STAT(TEXT("Camera Animation Eval"), CameraAnimationEval_Total, STATGROUP_CameraAnimation);
+
+TAutoConsoleVariable<bool> GCameraAnimationLegacyPostProcessBlending(
+	TEXT("r.CameraAnimation.LegacyPostProcessBlending"),
+	true,
+	TEXT("Blend camera animation post process settings under the main camera instead of over it"));
 
 FCameraAnimationHandle FCameraAnimationHandle::Invalid(MAX_uint16, 0);
 
@@ -52,10 +58,6 @@ float UCameraAnimationCameraModifier::EvaluateEasing(ECameraAnimationEasingType 
 {
 	using namespace CameraAnimationCameraModifierImpl;
 	
-	// Used for in-out easing
-	const float InTime = Interp * 2.f;
-	const float OutTime = (Interp - .5f) * 2.f;
-
 	switch (EasingType)
 	{
 	case ECameraAnimationEasingType::Sinusoidal: 	return Sinusoidal(Interp);
@@ -112,7 +114,7 @@ FCameraAnimationHandle UCameraAnimationCameraModifier::PlayCameraAnimation(UCame
 	NewCameraAnimation.Player->SetBoundObjectOverride(NewCameraAnimation.CameraStandIn);
 
 	// Initialize it and start playing.
-	NewCameraAnimation.Player->Initialize(Sequence);
+	NewCameraAnimation.Player->Initialize(Sequence, Params.StartOffset);
 	NewCameraAnimation.Player->Play(Params.bLoop, Params.bRandomStartTime);
 
 	return InstanceHandle;
@@ -183,10 +185,10 @@ UCameraAnimationCameraModifier* UCameraAnimationCameraModifier::GetCameraAnimati
 
 UCameraAnimationCameraModifier* UCameraAnimationCameraModifier::GetCameraAnimationCameraModifierFromPlayerController(const APlayerController* PlayerController)
 {
-	if (ensure(PlayerController))
+	if (PlayerController)
 	{
 		UCameraModifier* CameraModifier = PlayerController->PlayerCameraManager->FindCameraModifierByClass(UCameraAnimationCameraModifier::StaticClass());
-		return CastChecked<UCameraAnimationCameraModifier>(CameraModifier);
+		return CastChecked<UCameraAnimationCameraModifier>(CameraModifier, ECastCheckedType::NullAllowed);
 	}
 	return nullptr;
 }
@@ -215,12 +217,13 @@ void UCameraAnimationCameraModifier::DisplayDebug(class UCanvas* Canvas, const F
 
 		if (ActiveAnimation.IsValid())
 		{
-			const FFrameRate InputRate = ActiveAnimation.Player->GetInputRate();
-			const FFrameNumber DurationFrames = ActiveAnimation.Player->GetDuration();
+			const FFrameRate DisplayRate = ActiveAnimation.Player->GetInputRate();
+			const FFrameTime DurationFrames = ActiveAnimation.Player->GetDuration();
 			const FFrameTime CurrentPosition = ActiveAnimation.Player->GetCurrentPosition();
+			const FFrameTime StartFrame = ActiveAnimation.Player->GetStartFrame();
 
-			const float CurrentTime = InputRate.AsSeconds(CurrentPosition);
-			const float DurationSeconds = InputRate.AsSeconds(DurationFrames);
+			const float ElapsedTime = DisplayRate.AsSeconds(CurrentPosition - StartFrame);
+			const float DurationSeconds = DisplayRate.AsSeconds(DurationFrames);
 
 			const FString LoopString = ActiveAnimation.Params.bLoop ? TEXT(" Looping") : TEXT("");
 			const FString EaseInString = ActiveAnimation.bIsEasingIn ? FString::Printf(TEXT(" Easing In: %f / %f"), ActiveAnimation.EaseInCurrentTime, ActiveAnimation.Params.EaseInDuration) : TEXT("");
@@ -230,7 +233,7 @@ void UCameraAnimationCameraModifier::DisplayDebug(class UCanvas* Canvas, const F
 					FString::Printf(
 						TEXT("[%d] %s PlayRate: %f Duration: %f Elapsed: %f%s%s"),
 						Index, *GetNameSafe(ActiveAnimation.Sequence), 
-						ActiveAnimation.Params.PlayRate, DurationSeconds, CurrentTime, *EaseInString, *EaseOutString),
+						ActiveAnimation.Params.PlayRate, DurationSeconds, ElapsedTime, *EaseInString, *EaseOutString),
 					Indentation* YL, (LineNumber++)* YL);
 		}
 	}
@@ -321,15 +324,11 @@ void UCameraAnimationCameraModifier::TickAnimation(FActiveCameraAnimationInfo& C
 	UCameraAnimationSequencePlayer* Player = CameraAnimation.Player;
 	UCameraAnimationSequenceCameraStandIn* CameraStandIn = CameraAnimation.CameraStandIn;
 
-	const FFrameRate InputRate = Player->GetInputRate();
+	const FFrameRate DisplayRate = Player->GetInputRate();
 	const FFrameTime CurrentPosition = Player->GetCurrentPosition();
-	const float CurrentTime = InputRate.AsSeconds(CurrentPosition);
-	const float DurationTime = InputRate.AsSeconds(Player->GetDuration()) * Params.PlayRate;
 
 	const float ScaledDeltaTime = DeltaTime * Params.PlayRate;
-
-	const float NewTime = CurrentTime + ScaledDeltaTime;
-	const FFrameTime NewPosition = CurrentPosition + DeltaTime * Params.PlayRate * InputRate;
+	const FFrameTime NewPosition = CurrentPosition + ScaledDeltaTime * DisplayRate;
 
 	// Advance any easing times.
 	if (CameraAnimation.bIsEasingIn)
@@ -344,11 +343,13 @@ void UCameraAnimationCameraModifier::TickAnimation(FActiveCameraAnimationInfo& C
 	// Start easing out if we're nearing the end.
 	if (!Player->GetIsLooping())
 	{
+		const float ElapsedTime = DisplayRate.AsSeconds(NewPosition - Player->GetStartFrame());
+		const float DurationTime = DisplayRate.AsSeconds(Player->GetDuration()) * Params.PlayRate;
 		const float BlendOutStartTime = DurationTime - Params.EaseOutDuration;
-		if (NewTime > BlendOutStartTime)
+		if (ElapsedTime > BlendOutStartTime)
 		{
 			CameraAnimation.bIsEasingOut = true;
-			CameraAnimation.EaseOutCurrentTime = NewTime - BlendOutStartTime;
+			CameraAnimation.EaseOutCurrentTime = ElapsedTime - BlendOutStartTime;
 		}
 	}
 
@@ -433,13 +434,15 @@ void UCameraAnimationCameraModifier::TickAnimation(FActiveCameraAnimationInfo& C
 	// Add the post-process settings.
 	if (CameraOwner != nullptr && CameraStandIn->PostProcessBlendWeight > 0.f)
 	{
-		CameraOwner->AddCachedPPBlend(CameraStandIn->PostProcessSettings, CameraStandIn->PostProcessBlendWeight);
+		const float TotalPostProcessBlendWeight = CameraStandIn->PostProcessBlendWeight * Scale;
+		EViewTargetBlendOrder CameraShakeBlendOrder = GCameraAnimationLegacyPostProcessBlending.GetValueOnGameThread() ? VTBlendOrder_Base : VTBlendOrder_Override;
+		CameraOwner->AddCachedPPBlend(CameraStandIn->PostProcessSettings, TotalPostProcessBlendWeight, CameraShakeBlendOrder);
 	}
 }
 
 UCameraAnimationCameraModifier* UGameplayCamerasFunctionLibrary::Conv_CameraAnimationCameraModifier(APlayerCameraManager* PlayerCameraManager)
 {
-	return Cast<UCameraAnimationCameraModifier>(PlayerCameraManager->FindCameraModifierByClass(UCameraAnimationCameraModifier::StaticClass()));
+	return PlayerCameraManager ? Cast<UCameraAnimationCameraModifier>(PlayerCameraManager->FindCameraModifierByClass(UCameraAnimationCameraModifier::StaticClass())) : nullptr;
 }
 
 ECameraShakePlaySpace UGameplayCamerasFunctionLibrary::Conv_CameraShakePlaySpace(ECameraAnimationPlaySpace CameraAnimationPlaySpace)

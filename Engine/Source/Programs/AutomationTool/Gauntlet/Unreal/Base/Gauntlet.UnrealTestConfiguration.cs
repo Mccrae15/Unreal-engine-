@@ -213,9 +213,59 @@ namespace Gauntlet
 			return Params[ParamName];
 		}
 
+		/// <summary>
+		/// Get a collection of all sub paremeters
+		/// Useful for group arguments like ExecCmds
+		/// </summary>
+		/// <param name="GroupName"></param>
+		/// <param name="SubParamDelimeter">Which separator to use when distinguishing the group's sub parameters</param>
+		/// <param name="SubValueDelimeter">Which separator to use when splitting the sub parameter from the corresponding value</param>
+		/// <returns>A dictionary containing the group's sub parameters of parameter values</returns>
+		public Dictionary<string, string> GetGroupParamValues(string GroupName, string SubParamDelimeter = ",", string SubValueDelimeter = " ")
+		{
+			Dictionary<string, string> Group = new Dictionary<string, string>();
+
+			string FullArgument = GetParamValue(GroupName).ToString();
+			string[] SubParams = FullArgument.Split(SubParamDelimeter);
+			foreach (string SubParam in SubParams)
+			{
+				int Index = SubParam.IndexOf(SubValueDelimeter);
+
+				if (Index < 1)
+				{
+					// No value, this is just a boolean param
+					Group.Add(SubParam, string.Empty);
+				}
+				else
+				{
+					Group.Add(SubParam.Substring(0, Index), SubParam.Substring(Index + 1));
+				}
+			}
+
+			return Group;
+		}
+
+		/// <summary>
+		/// Checks if a parameter is present
+		/// </summary>
+		/// <param name="ParamName">The name of the parameter</param>
+		/// <returns>True if the parameter has already been added</returns>
 		public bool HasParam(string ParamName)
 		{
 			return (Params != null && Params.ContainsKey(ParamName));
+		}
+
+		/// <summary>
+		/// Checks if a parameter group has a subparameter
+		/// </summary>
+		/// <param name="GroupName">The name of the param group, like "ExecCmds"</param>
+		/// <param name="SubParamName">A component of the group, like "sg.TextureQuality"</param>
+		/// <param name="SubParamDelimeter">Which separator to use when distinguishing the group's sub parameters</param>
+		/// <param name="SubValueDelimeter">Which separator to use when splitting the sub parameter from the corresponding value</param>
+		/// <returns>True if a group parameter exists and contains a matching sub parameter</returns>
+		public bool HasGroupParam(string GroupName, string SubParamName, string SubParamDelimeter = ",", string SubValueDelimeter = " ")
+		{
+			return HasParam(GroupName) && GetGroupParamValues(GroupName, SubParamDelimeter, SubValueDelimeter).ContainsKey(SubParamName);
 		}
 
 		/// <summary>
@@ -313,9 +363,9 @@ namespace Gauntlet
 	/// <summary>
 	/// This class represents a process-role in a test and defines the type, command line,
 	/// and controllers that are needed.
-	/// 
+	///
 	/// TODO - can this be removed and UnrealSessionRole used directly?
-	/// 
+	///
 	/// </summary>
 	public class UnrealTestRole
 	{
@@ -333,9 +383,11 @@ namespace Gauntlet
 			ExplicitClientCommandLine = string.Empty;
 			Controllers = new List<string>();
 			FilesToCopy = new List<UnrealFileToCopy>();
+			RoleConfigurations = new List<IUnrealRoleConfiguration>();
 			AdditionalArtifactDirectories = new List<EIntendedBaseCopyDirectory>();
 			RoleType = ERoleModifier.None;
 			InstallOnly = false;
+			DeferredLaunch = false;
 			CommandLineParams = new GauntletCommandLine();
 		}
 
@@ -345,6 +397,11 @@ namespace Gauntlet
 		/// Whether this role should be responsible only for installing the build and not monitoring a process.
 		/// </summary>
 		public bool InstallOnly { get; set; }
+
+		/// <summary>
+		/// Whether this role will launched by the test node at a later time, typically during TickTest(). By default, all roles are launched immediately.
+		/// </summary>
+		public bool DeferredLaunch { get; set; }
 
 		/// <summary>
 		/// Type of process this role represents
@@ -382,7 +439,6 @@ namespace Gauntlet
 			}
 		}
 
-
 		/// <summary>
 		/// Dictionary of commandline arguments that are turned into a commandline at the end.
 		/// For flags, leave the value set to null. Created and then passed through to the Session Role's Commandline Object
@@ -394,6 +450,11 @@ namespace Gauntlet
 		/// Controllers for this role
 		/// </summary>
 		public List<string> Controllers { get; set; }
+
+		/// <summary>
+		/// Collection of modular configurations applied to this role
+		/// </summary>
+		public List<IUnrealRoleConfiguration> RoleConfigurations { get; set; }
 
 		/// <summary>
 		/// Explicit command line for this role. If this is set no other
@@ -628,6 +689,11 @@ namespace Gauntlet
 		/// Whether the test expects all roles to exit
 		/// </summary>
 		public bool AllRolesExit { get; set; }
+
+		/// <summary>
+		/// Whether a given role should attempt login to a device platform service
+		/// </summary>
+		public bool VerifyLogin { get; set; }
 
 		/// <summary>
 		/// The collection of options which define heartbeat behavior
@@ -931,7 +997,17 @@ namespace Gauntlet
 					AppConfig.CommandLineParams.GameMap = MapChoice;
 				}
 			}
-		}			
+
+			if (ConfigRole.RoleType.IsClient())
+			{
+				VerifyLogin = Globals.Params.ParseParam("VerifyLogin");
+			}
+
+			if (CommandUtils.IsBuildMachine)
+			{
+				AppConfig.CommandLineParams.AddUnique("BUILDMACHINE");
+			}
+		}
 	}
 
 }

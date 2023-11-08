@@ -1,46 +1,49 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Windows/WindowsPlatformCrashContext.h"
-#include "HAL/PlatformMallocCrash.h"
-#include "HAL/ExceptionHandling.h"
-#include "Misc/EngineVersion.h"
-#include "Misc/EngineBuildSettings.h"
-#include "HAL/ExceptionHandling.h"
-#include "HAL/ThreadHeartBeat.h"
-#include "HAL/PlatformProcess.h"
-#include "HAL/FileManager.h"
-#include "HAL/PlatformOutputDevices.h"
-#include "HAL/PlatformTLS.h"
-#include "HAL/PlatformTime.h"
-#include "Internationalization/Internationalization.h"
-#include "Misc/App.h"
-#include "Misc/Paths.h"
-#include "Misc/FeedbackContext.h"
-#include "Misc/MessageDialog.h"
-#include "Misc/CoreDelegates.h"
-#include "Misc/ConfigCacheIni.h"
-#include "Misc/OutputDeviceRedirector.h"
-#include "Misc/OutputDeviceFile.h"
-#include "Serialization/Archive.h"
-#include "Windows/WindowsPlatformStackWalk.h"
-#include "Templates/UniquePtr.h"
-#include "Templates/UnrealTemplate.h"
-#include "Misc/OutputDeviceArchiveWrapper.h"
-#include "HAL/ThreadManager.h"
+
 #include "BuildSettings.h"
 #include "CoreGlobals.h"
+#include "HAL/ExceptionHandling.h"
+#include "HAL/FileManager.h"
+#include "HAL/IConsoleManager.h"
+#include "HAL/PlatformMallocCrash.h"
+#include "HAL/PlatformOutputDevices.h"
+#include "HAL/PlatformProcess.h"
+#include "HAL/PlatformTime.h"
+#include "HAL/PlatformTLS.h"
+#include "HAL/ThreadHeartBeat.h"
+#include "HAL/ThreadManager.h"
+#include "Internationalization/Internationalization.h"
+#include "Misc/App.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/CoreDelegates.h"
+#include "Misc/EngineBuildSettings.h"
+#include "Misc/EngineVersion.h"
+#include "Misc/FeedbackContext.h"
+#include "Misc/MessageDialog.h"
+#include "Misc/OutputDeviceArchiveWrapper.h"
+#include "Misc/OutputDeviceFile.h"
+#include "Misc/OutputDeviceRedirector.h"
+#include "Misc/Paths.h"
+#include "Serialization/Archive.h"
+#include "Templates/UniquePtr.h"
+#include "Templates/UnrealTemplate.h"
+#include "Windows/WindowsPlatformStackWalk.h"
 #include <atomic>
 #include <signal.h>
 
 #include "Windows/WindowsHWrapper.h"
 #include "Windows/AllowWindowsPlatformTypes.h"
+THIRD_PARTY_INCLUDES_START
 #include <strsafe.h>
 #include <dbghelp.h>
 #include <Shlwapi.h>
 #include <psapi.h>
 #include <tlhelp32.h>
 #include <shellapi.h>
-// Windows platform types intentionall not hidden til later
+THIRD_PARTY_INCLUDES_END
+// Windows platform types intentionally not hidden till later
 
 #ifndef UE_LOG_CRASH_CALLSTACK
 	#define UE_LOG_CRASH_CALLSTACK 1
@@ -61,6 +64,10 @@
 #ifndef HANDLE_ABORT_SIGNALS
 #define HANDLE_ABORT_SIGNALS 1
 #endif
+
+#ifndef WINDOWS_USE_WER
+#define WINDOWS_USE_WER 0
+#endif 
 
 #define CR_CLIENT_MAX_PATH_LEN 265
 #define CR_CLIENT_MAX_ARGS_LEN 256
@@ -160,6 +167,15 @@ struct FAssertInfo
 
 const TCHAR* const FWindowsPlatformCrashContext::UEGPUAftermathMinidumpName = TEXT("UEAftermathD3D12.nv-gpudmp");
 
+namespace UE::Core::Private
+{
+	static TAutoConsoleVariable<bool> CVarForceCrashReportDialogOff(
+		TEXT("WindowsPlatformCrashContext.ForceCrashReportDialogOff"),
+		false,
+		TEXT("If true, force the crash report dialog to not be displayed in the event of a crash."),
+		ECVF_Default);
+}
+
 /**
 * Implement platform specific static cleanup function
 */
@@ -190,10 +206,32 @@ void FWindowsPlatformCrashContext::CopyPlatformSpecificFiles(const TCHAR* Output
 {
 	FGenericCrashContext::CopyPlatformSpecificFiles(OutputDirectory, Context);
 
-	// Save minidump
-	LPEXCEPTION_POINTERS ExceptionInfo = (LPEXCEPTION_POINTERS)Context;
-	const FString MinidumpFileName = FPaths::Combine(OutputDirectory, FGenericCrashContext::UEMinidumpName);
-	WriteMinidump(ProcessHandle.Get(), CrashedThreadId, *this, *MinidumpFileName, ExceptionInfo);
+	bool bRecordCrashDump = true;
+	switch (Type)
+	{
+		case ECrashContextType::Stall:
+			GConfig->GetBool(TEXT("CrashReportClient"), TEXT("Stall.RecordDump"), bRecordCrashDump, GEngineIni);
+			break;
+		case ECrashContextType::Ensure:
+			GConfig->GetBool(TEXT("CrashReportClient"), TEXT("Ensure.RecordDump"), bRecordCrashDump, GEngineIni);
+			break;
+		case ECrashContextType::AbnormalShutdown:
+		case ECrashContextType::Assert:
+		case ECrashContextType::Crash:
+		case ECrashContextType::GPUCrash:
+		case ECrashContextType::Hang:
+		case ECrashContextType::OutOfMemory:
+		default:
+			break;
+	}
+
+	if (bRecordCrashDump)
+	{
+		// Save minidump
+		LPEXCEPTION_POINTERS ExceptionInfo = (LPEXCEPTION_POINTERS)Context;
+		const FString MinidumpFileName = FPaths::Combine(OutputDirectory, FGenericCrashContext::UEMinidumpName);
+		WriteMinidump(ProcessHandle.Get(), CrashedThreadId, *this, *MinidumpFileName, ExceptionInfo);
+	}
 
 	// If present, include the crash video
 	const FString CrashVideoPath = FPaths::ProjectLogDir() / TEXT("CrashVideo.avi");
@@ -515,9 +553,11 @@ int32 ReportCrashForMonitor(
 	SharedContext->ExceptionProgramCounter = ExceptionInfo->ExceptionRecord->ExceptionAddress;
 
 	// Determine UI settings for the crash report. Suppress the user input dialog if we're running in unattended mode
+	// or if it is forced of through the WindowsPlatformCrashContext.ForceCrashReportDialogOff console variable.
 	// Usage data controls if we want analytics in the crash report client
 	// Finally we cannot call some of these functions if we crash during static init, so check if they are initialized.
 	bool bNoDialog = ReportUI == EErrorReportUI::ReportInUnattendedMode;
+	bNoDialog |= UE::Core::Private::CVarForceCrashReportDialogOff.GetValueOnAnyThread() == true;
 	bool bSendUnattendedBugReports = true;
 	bool bSendUsageData = true;
 	bool bCanSendCrashReport = true;
@@ -725,8 +765,10 @@ int32 ReportCrashUsingCrashReportClient(FWindowsPlatformCrashContext& InContext,
 	const TCHAR* ExecutableName = FPlatformProcess::ExecutableName();
 	bool bCanRunCrashReportClient = FCString::Stristr( ExecutableName, TEXT( "CrashReportClient" ) ) == nullptr;
 
-	// Suppress the user input dialog if we're running in unattended mode
+	// Suppress the user input dialog if we're running in unattended mode or if it is forced of through the 
+	// WindowsPlatformCrashContext.ForceCrashReportDialogOff console variable.
 	bool bNoDialog = FApp::IsUnattended() || ReportUI == EErrorReportUI::ReportInUnattendedMode || IsRunningDedicatedServer();
+	bNoDialog |= UE::Core::Private::CVarForceCrashReportDialogOff.GetValueOnAnyThread() == true;
 
 	bool bImplicitSend = false;
 #if !UE_EDITOR
@@ -794,7 +836,7 @@ int32 ReportCrashUsingCrashReportClient(FWindowsPlatformCrashContext& InContext,
 			FGenericCrashContext::DumpLog(CrashFolderAbsolute);
 
 			// Build machines do not upload these automatically since it is not okay to have lingering processes after the build completes.
-			if (GIsBuildMachine)
+			if (GIsBuildMachine && !FParse::Param(FCommandLine::Get(), TEXT("AllowCrashReportClientOnBuildMachine")))
 			{
 				return EXCEPTION_CONTINUE_EXECUTION;
 			}
@@ -898,7 +940,7 @@ int32 ReportCrashUsingCrashReportClient(FWindowsPlatformCrashContext& InContext,
 					FText::FromString(AppName),
 					FText::FromString(FPlatformMisc::GetEngineMode())
 					));
-				FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(GErrorHist), &MessageTitle);
+				FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(GErrorHist), MessageTitle);
 			}
 		}
 	}
@@ -915,8 +957,10 @@ int32 ReportCrashUsingCrashReportClient(FWindowsPlatformCrashContext& InContext,
 // Original code below
 
 #include "Windows/AllowWindowsPlatformTypes.h"
+THIRD_PARTY_INCLUDES_START
 	#include <ErrorRep.h>
 	#include <DbgHelp.h>
+THIRD_PARTY_INCLUDES_END
 #include "Windows/HideWindowsPlatformTypes.h"
 
 #pragma comment(lib, "Faultrep.lib")
@@ -985,7 +1029,7 @@ static void AbortHandler(int Signal)
 	__except(ReportCrash(GetExceptionInformation()))
 	{
 		GIsCriticalError = true;
-		FPlatformMisc::RequestExit(true);
+		FPlatformMisc::RequestExit(true, TEXT("WindowsPlatformCrashContext.AbortHandler"));
 	}
 #endif
 }
@@ -1126,6 +1170,12 @@ public:
 		{
 			::SetUnhandledExceptionFilter(UnhandledStaticInitException);
 		}
+
+#if WINDOWS_USE_WER
+		// disable the internal crash handling when we're using Windows Error Reporting. This means that all exceptions go
+		// to the unhandled exception filter and will be re-thrown out of WinMain to be picked up by Windows Error Reporting
+		FPlatformMisc::SetCrashHandlingType(ECrashHandlingType::Disabled);
+#endif
 
 #if USE_CRASH_REPORTER_MONITOR
 		if (!FPlatformProperties::IsServerOnly())
@@ -1451,11 +1501,7 @@ private:
 TOptional<FCrashReportingThread> GCrashReportingThread(InPlace);
 #endif
 
-#if WINDOWS_CRASHCONTEXT_WITH_CUSTOM_HANDLERS
-LONG WINAPI DefaultUnhandledStaticInitException(LPEXCEPTION_POINTERS ExceptionInfo)
-#else
 LONG WINAPI UnhandledStaticInitException(LPEXCEPTION_POINTERS ExceptionInfo)
-#endif
 {
 #if !NOINITCRASHREPORTER
 	// If we get an exception during static init we hope that the crash reporting thread
@@ -1532,25 +1578,23 @@ LONG WINAPI UnhandledStaticInitException(LPEXCEPTION_POINTERS ExceptionInfo)
  * The engine hooks itself in the unhandled exception filter. This is the best place to be as it runs after structured exception handlers and
  * it can be easily overriden externally (because there can only be one) to do something else.
  */
-#if WINDOWS_CRASHCONTEXT_WITH_CUSTOM_HANDLERS
-LONG WINAPI DefaultEngineUnhandledExceptionFilter(LPEXCEPTION_POINTERS ExceptionInfo)
-#else
 LONG WINAPI EngineUnhandledExceptionFilter(LPEXCEPTION_POINTERS ExceptionInfo)
-#endif
 {
 	ReportCrash(ExceptionInfo);
+
+#if WINDOWS_USE_WER
+	return EXCEPTION_CONTINUE_SEARCH;
+#else
+
 	GIsCriticalError = true;
-	FPlatformMisc::RequestExit(true);
+	FPlatformMisc::RequestExit(true, TEXT("WindowsPlatformCrashContext.EngineUnhandledExceptionFilter"));
 
 	return EXCEPTION_CONTINUE_SEARCH; // Not really important, RequestExit() terminates the process just above.
+#endif // WINDOWS_USE_WER
 }
 
 // #CrashReport: 2015-05-28 This should be named EngineCrashHandler
-#if WINDOWS_CRASHCONTEXT_WITH_CUSTOM_HANDLERS
-int32 DefaultReportCrash( LPEXCEPTION_POINTERS ExceptionInfo )
-#else
 int32 ReportCrash( LPEXCEPTION_POINTERS ExceptionInfo )
-#endif
 {
 #if !NOINITCRASHREPORTER
 	// Only create a minidump the first time this function is called.
@@ -1573,7 +1617,11 @@ int32 ReportCrash( LPEXCEPTION_POINTERS ExceptionInfo )
 	}
 #endif
 
+#if WINDOWS_USE_WER
+	return EXCEPTION_CONTINUE_SEARCH;
+#else
 	return EXCEPTION_EXECUTE_HANDLER;
+#endif // WINDOWS_USE_WER
 }
 
 static FCriticalSection EnsureLock;
@@ -1733,7 +1781,7 @@ FORCENOINLINE void ReportGPUCrash(const TCHAR* ErrorMessage, void* ProgramCounte
 	}
 	__except (ReportCrash(GetExceptionInformation()))
 	{
-		FPlatformMisc::RequestExit(false);
+		FPlatformMisc::RequestExit(false, TEXT("WindowsPlatformCrashContext.ReportGPUCrash"));
 	}
 #endif
 }

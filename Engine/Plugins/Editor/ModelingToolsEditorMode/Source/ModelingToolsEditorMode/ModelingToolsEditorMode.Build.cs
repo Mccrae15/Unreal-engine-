@@ -46,10 +46,14 @@ public class ModelingToolsEditorMode : ModuleRules
 				"ToolWidgets",
 				"EditorWidgets",
 				"ModelingEditorUI",
-				"StylusInput",
+				"WidgetRegistration",
 				"DeveloperSettings",
 				"PropertyEditor",
-				"PresetAsset"
+				"ToolMenus",
+				"EditorConfig",
+				"ToolPresetAsset",
+				"ToolPresetEditor",
+				"EditorConfig",
 				// ... add private dependencies that you statically link with here ...	
 			}
 		);

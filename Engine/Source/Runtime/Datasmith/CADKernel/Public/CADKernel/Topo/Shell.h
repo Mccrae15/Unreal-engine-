@@ -21,16 +21,16 @@ class FTopologicalFace;
 class FTopologyReport;
 struct FFaceSubset;
 
+namespace ShellTools
+{
+void UnlinkFromOther(TArray<FTopologicalFace*>& Faces, TArray<FTopologicalVertex*>& VerticesToLink);
+}
+
 class CADKERNEL_API FOrientedFace : public TOrientedEntity<FTopologicalFace>
 {
 public:
 	FOrientedFace(TSharedPtr<FTopologicalFace>& InEntity, EOrientation InOrientation)
 		: TOrientedEntity(InEntity, InOrientation)
-	{
-	}
-
-	FOrientedFace(const FOrientedFace& OrientiredEntity)
-		: TOrientedEntity(OrientiredEntity)
 	{
 	}
 
@@ -42,8 +42,7 @@ public:
 
 class CADKERNEL_API FShell : public FTopologicalShapeEntity
 {
-	friend FEntity;
-	friend class FBody;
+	friend class FEntity;
 
 private:
 	TArray<FOrientedFace> TopologicalFaces;
@@ -67,7 +66,7 @@ private:
 
 public:
 
-	virtual ~FShell()
+	virtual ~FShell() override
 	{
 		FShell::Empty();
 	}
@@ -88,17 +87,20 @@ public:
 		SpawnIdentOnEntities((TArray<TOrientedEntity<FEntity>>&) TopologicalFaces, Database);
 	}
 
-	virtual void ResetMarkersRecursively() override
+	virtual void ResetMarkersRecursively() const override
 	{
 		ResetMarkers();
 		ResetMarkersRecursivelyOnEntities((TArray<TOrientedEntity<FEntity>>&) TopologicalFaces);
 	}
 
 	void RemoveFaces();
+
+	void RemoveDeletedOrDegeneratedFaces();
+
 	virtual void Empty() override;
 
 	void Add(TSharedRef<FTopologicalFace> InTopologicalFace, EOrientation InOrientation);
-	void Add(TArray<FTopologicalFace*> Faces);
+	void Add(TArray<FTopologicalFace*>& Faces);
 
 #ifdef CADKERNEL_DEV
 	virtual FInfoEntity& GetInfo(FInfoEntity&) const override;
@@ -117,7 +119,7 @@ public:
 	void ReplaceFaces(TArray<FOrientedFace>& NewFaces)
 	{
 		Swap(TopologicalFaces, NewFaces);
-		NewFaces.Empty();
+		NewFaces.Reset();
 	}
 
 	const TArray<FOrientedFace>& GetFaces() const
@@ -134,7 +136,9 @@ public:
 
 	virtual void Merge(TSharedPtr<FShell>& Shell);
 
-	virtual void SpreadBodyOrientation() override;
+	virtual void PropagateBodyOrientation() override;
+
+	virtual void CompleteMetaData() override;
 
 	/**
 	 * Update each FOrientedFace::Direction according to FOrientedFace::Entity->IsBackOriented() flag
@@ -142,6 +146,13 @@ public:
 	virtual void UpdateShellOrientation();
 
 	void CheckTopology(TArray<FFaceSubset>& Subshells);
+
+	void UnlinkFromOther(TArray<FTopologicalVertex*>& OutVerticesToLink)
+	{
+		TArray<FTopologicalFace*> Faces;
+		GetFaces(Faces);
+		ShellTools::UnlinkFromOther(Faces, OutVerticesToLink);
+	}
 
 #ifdef CADKERNEL_DEV
 	virtual void FillTopologyReport(FTopologyReport& Report) const override;
@@ -157,7 +168,7 @@ public:
 		return ((States & EHaveStates::IsInner) == EHaveStates::IsInner);
 	}
 
-	bool IsOutter() const
+	bool IsOuter() const
 	{
 		return ((States & EHaveStates::IsInner) != EHaveStates::IsInner);
 	}
@@ -167,7 +178,7 @@ public:
 		States |= EHaveStates::IsInner;
 	}
 
-	void SetOutter()
+	void SetOuter()
 	{
 		States &= ~EHaveStates::IsInner;
 	}

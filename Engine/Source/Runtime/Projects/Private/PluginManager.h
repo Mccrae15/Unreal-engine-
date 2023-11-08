@@ -116,7 +116,6 @@ public:
 	void SetIsMounted(bool bInIsMounted) { bIsMounted = bInIsMounted; }
 };
 
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
 /**
  * FPluginManager manages available code and content extensions (both loaded and not loaded.)
  */
@@ -145,14 +144,15 @@ public:
 	virtual bool CheckModuleCompatibility(TArray<FString>& OutIncompatibleModules, TArray<FString>& OutIncompatibleEngineModules) override;
 #endif
 	virtual TSharedPtr<IPlugin> FindPlugin(const FStringView Name) override;
-
 	virtual TSharedPtr<IPlugin> FindPlugin(const ANSICHAR* Name) override
 	{
 		FString NameString(Name);
 		return FindPlugin(FStringView(NameString));
 	}
-
 	virtual TSharedPtr<IPlugin> FindPluginFromPath(const FString& PluginPath) override;
+	virtual TSharedPtr<IPlugin> FindPluginFromDescriptor(const FPluginReferenceDescriptor& PluginDesc) override;
+
+	virtual void FindPluginsUnderDirectory(const FString& Directory, TArray<FString>& OutPluginFilePaths) override;
 
 	virtual TArray<TSharedRef<IPlugin>> GetEnabledPlugins() override;
 	virtual TArray<TSharedRef<IPlugin>> GetEnabledPluginsWithContent() const override;
@@ -177,16 +177,25 @@ public:
 	virtual bool MountExplicitlyLoadedPlugin_FromFileName(const FString& PluginFileName) override;
 	virtual bool MountExplicitlyLoadedPlugin_FromDescriptor(const FPluginReferenceDescriptor& PluginDescriptor) override;
 	virtual bool UnmountExplicitlyLoadedPlugin(const FString& PluginName, FText* OutReason) override;
+	virtual bool GetPluginDependencies(const FString& PluginName, TArray<FPluginReferenceDescriptor>& PluginDependencies) override;
+	virtual bool GetPluginDependencies_FromFileName(const FString& PluginFileName, TArray<FPluginReferenceDescriptor>& PluginDependencies) override;
+	virtual bool GetPluginDependencies_FromDescriptor(const FPluginReferenceDescriptor& PluginDescriptor, TArray<FPluginReferenceDescriptor>& PluginDependencies) override;
 	virtual FName PackageNameFromModuleName(FName ModuleName) override;
 #if UE_USE_VERSE_PATHS
 	virtual bool TrySplitVersePath(const UE::Core::FVersePath& VersePath, FName& OutPackageName, FString& OutLeafPath) override;
 #endif // #if UE_USE_VERSE_PATHS
 	virtual bool RequiresTempTargetForCodePlugin(const FProjectDescriptor* ProjectDescriptor, const FString& Platform, EBuildConfiguration Configuration, EBuildTargetType TargetType, FText& OutReason) override;
 
-	virtual bool IntegratePluginsIntoConfig(FConfigCacheIni& ConfigSystem, const TCHAR* EngineIniName, const TCHAR* PlatformName, const TCHAR* StagedPluginsFile);
+	virtual bool IntegratePluginsIntoConfig(FConfigCacheIni& ConfigSystem, const TCHAR* EngineIniName, const TCHAR* PlatformName, const TCHAR* StagedPluginsFile) override;
+
+	virtual void SetBinariesRootDirectories(const FString& EngineBinariesRootDir, const FString& ProjectBinariesRootDir) override;
+	virtual void SetPreloadBinaries() override;
+	virtual bool GetPreloadBinaries() override;
 
 private:
 	using FDiscoveredPluginMap = TMap<FString, TArray<TSharedRef<FPlugin>>>;
+
+	struct FConfigurePluginResultInfo;
 
 	/** Searches for all plugins on disk and builds up the array of plugin objects.  Doesn't load any plugins. 
 	    This is called when the plugin manager singleton is first accessed. */
@@ -202,13 +211,13 @@ private:
 	static void CreatePluginObject(const FString& FileName, const FPluginDescriptor& Descriptor, const EPluginType Type, FDiscoveredPluginMap& Plugins, TArray<TSharedRef<FPlugin>>& ChildPlugins);
 
 	/** Finds all the plugin descriptors underneath a given directory */
-	static void FindPluginsInDirectory(const FString& PluginsDirectory, TArray<FString>& FileNames);
+	static void FindPluginsInDirectory(const FString& PluginsDirectory, TArray<FString>& FileNames, IPlatformFile& PlatformFile);
 
 	/** Finds all the plugin manifests in a given directory */
 	static void FindPluginManifestsInDirectory(const FString& PluginManifestDirectory, TArray<FString>& FileNames);
 
 	/** Gets all the code plugins that are enabled for a content only project */
-	static bool GetCodePluginsForProject(const FProjectDescriptor* ProjectDescriptor, const FString& Platform, EBuildConfiguration Configuration, EBuildTargetType TargetType, FDiscoveredPluginMap& AllPlugins, TSet<FString>& CodePluginNames, const FPluginReferenceDescriptor*& OutMissingPlugin);
+	static bool GetCodePluginsForProject(const FProjectDescriptor* ProjectDescriptor, const FString& Platform, EBuildConfiguration Configuration, EBuildTargetType TargetType, FDiscoveredPluginMap& AllPlugins, TSet<FString>& CodePluginNames, FConfigurePluginResultInfo& OutResultInfo);
 
 	/** Sets the bPluginEnabled flag on all plugins found from DiscoverAllPlugins that are enabled in config */
 	bool ConfigureEnabledPlugins();
@@ -217,10 +226,16 @@ private:
 	bool ConfigureEnabledPluginForCurrentTarget(const FPluginReferenceDescriptor& FirstReference, TMap<FString, FPlugin*>& EnabledPlugins);
 
 	/** Adds a single enabled plugin and all its dependencies. */
-	static bool ConfigureEnabledPluginForTarget(const FPluginReferenceDescriptor& FirstReference, const FProjectDescriptor* ProjectDescriptor, const FString& TargetName, const FString& Platform, EBuildConfiguration Configuration, EBuildTargetType TargetType, bool bLoadPluginsForTargetPlatforms, FDiscoveredPluginMap& AllPlugins, TMap<FString, FPlugin*>& EnabledPlugins, const FPluginReferenceDescriptor*& OutMissingPlugin);
+	static bool ConfigureEnabledPluginForTarget(const FPluginReferenceDescriptor& FirstReference, const FProjectDescriptor* ProjectDescriptor, const FString& TargetName, const FString& Platform, EBuildConfiguration Configuration, EBuildTargetType TargetType, bool bLoadPluginsForTargetPlatforms, FDiscoveredPluginMap& AllPlugins, TMap<FString, FPlugin*>& EnabledPlugins, FConfigurePluginResultInfo& OutResultInfo);
 
 	/** Prompts the user to download a missing plugin from the given URL */
 	static bool PromptToDownloadPlugin(const FString& PluginName, const FString& MarketplaceURL);
+
+	/** Prompts the user to disable a plugin */
+	static bool PromptToDisableSealedPlugin(const FString& PluginName, const FString& SealedPluginName);
+
+	/** Prompts the user to disable a plugin */
+	static bool PromptToDisableDisalowedPlugin(const FString& PluginName, const FString& DisallowedPluginName);
 
 	/** Prompts the user to disable a plugin */
 	static bool PromptToDisableMissingPlugin(const FString& PluginName, const FString& MissingPluginName);
@@ -297,6 +312,8 @@ private:
 	/** Set if we were asked to load all plugins via the command line */
 	bool bAllPluginsEnabledViaCommandLine = false;
 
+	bool bPreloadedBinaries = false;
+
 	/** List of additional directory paths to search for plugins within */
 	TSet<FString> PluginDiscoveryPaths;
 
@@ -311,7 +328,9 @@ private:
 
 	/** The highest LoadingPhase that has so far completed */
 	ELoadingPhase::Type LastCompletedLoadingPhase = ELoadingPhase::None;
+
+	FString EngineBinariesRootDir;
+	FString ProjectBinariesRootDir;
 };
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 

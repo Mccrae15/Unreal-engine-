@@ -113,6 +113,14 @@ static TAutoConsoleVariable<int32> CVarPSOFileCacheReportPSO(
 														   ECVF_Default | ECVF_RenderThreadSafe
 														   );
 
+static int32 GPSOExcludePrecachePSOsInFileCache = 0;
+static FAutoConsoleVariableRef CVarPSOFileCacheExcludePrecachePSO(
+														   TEXT("r.ShaderPipelineCache.ExcludePrecachePSO"),
+														   GPSOExcludePrecachePSOsInFileCache,
+														   TEXT("1 excludes saving runtime-precached graphics PSOs in the file cache, 0 (default) includes them. Excluding precached PSOs currently requires r.PSOPrecaching = 1 and r.PSOPrecache.Validation != 0."),
+														   ECVF_ReadOnly
+														   );
+
 static int32 GPSOFileCachePrintNewPSODescriptors = 0;
 static FAutoConsoleVariableRef CVarPSOFileCachePrintNewPSODescriptors(
 														   TEXT("r.ShaderPipelineCache.PrintNewPSODescriptors"),
@@ -177,6 +185,8 @@ FPipelineFileCacheManager::PSOOrder FPipelineFileCacheManager::RequestedOrder = 
 bool FPipelineFileCacheManager::FileCacheEnabled = false;
 FPipelineFileCacheManager::FPipelineStateLoggedEvent FPipelineFileCacheManager::PSOLoggedEvent;
 uint64 FPipelineFileCacheManager::GameUsageMask = 0;
+bool FPipelineFileCacheManager::GameUsageMaskSet = false;
+bool FPipelineFileCacheManager::LogNewPSOsToConsoleAndCSV = true;
 
 static int64 GetCurrentUnixTime()
 {
@@ -448,15 +458,25 @@ void FPipelineCacheFileFormatPSO::GraphicsDescriptor::AddShadersToReadableString
 		OutBuilder << TEXT(" VS:");
 		OutBuilder << VertexShader;
 	}
-	if (FragmentShader != FSHAHash())
+	if (MeshShader != FSHAHash())
 	{
-		OutBuilder << TEXT(" PS:");
-		OutBuilder << FragmentShader;
+		OutBuilder << TEXT(" MS:");
+		OutBuilder << MeshShader;
 	}
 	if (GeometryShader != FSHAHash())
 	{
 		OutBuilder << TEXT(" GS:");
 		OutBuilder << GeometryShader;
+	}
+	if (AmplificationShader != FSHAHash())
+	{
+		OutBuilder << TEXT(" AS:");
+		OutBuilder << AmplificationShader;
+	}
+	if (FragmentShader != FSHAHash())
+	{
+		OutBuilder << TEXT(" PS:");
+		OutBuilder << FragmentShader;
 	}
 }
 
@@ -562,12 +582,12 @@ void FPipelineCacheFileFormatPSO::GraphicsDescriptor::AddStateToReadableString(T
 	OutBuilder << DepthStencilState.ToString();
 	OutBuilder << TEXT("\n");
 
-	OutBuilder << TEXT(" MSAA:");
+	OutBuilder << TEXT(" NumMSAA:");
 	OutBuilder << MSAASamples;
 	OutBuilder << TEXT(" DSfmt:");
 	OutBuilder << uint32(DepthStencilFormat);
 	OutBuilder << TEXT(" DSflags:");
-	OutBuilder << uint32(DepthStencilFlags);
+	OutBuilder << uint64(DepthStencilFlags);
 	OutBuilder << TEXT("\n");
 
 	OutBuilder << TEXT(" DL:");
@@ -596,7 +616,7 @@ void FPipelineCacheFileFormatPSO::GraphicsDescriptor::AddStateToReadableString(T
 			OutBuilder << TEXT(":fmt=");
 			OutBuilder << uint32(RenderTargetFormats[Index]);
 			OutBuilder << TEXT(" flg=");
-			OutBuilder << uint32(RenderTargetFlags[Index]);
+			OutBuilder << uint64(RenderTargetFlags[Index]);
 		}
 		OutBuilder << TEXT("\n");
 	}
@@ -660,7 +680,9 @@ bool FPipelineCacheFileFormatPSO::GraphicsDescriptor::StateFromString(const FStr
 	check(PartEnd - PartIt >= 3); //not a very robust parser
 	LexFromString(MSAASamples, *PartIt++);
 	LexFromString((uint32&)DepthStencilFormat, *PartIt++);
-	LexFromString(DepthStencilFlags, *PartIt++);
+	ETextureCreateFlags DSFlags;
+	LexFromString(DSFlags, *PartIt++);
+	DepthStencilFlags = ReduceDSFlags(DSFlags);
 
 	check(PartEnd - PartIt >= 5); //not a very robust parser
 	LexFromString((uint32&)DepthLoad, *PartIt++);
@@ -760,6 +782,11 @@ ETextureCreateFlags FPipelineCacheFileFormatPSO::GraphicsDescriptor::ReduceRTFla
 	// We care about flags that influence RT formats (which is the only thing the underlying API cares about).
 	// In most RHIs, the format is only influenced by TexCreate_SRGB. D3D12 additionally uses TexCreate_Shared in its format selection logic.
 	return (InFlags & FGraphicsPipelineStateInitializer::RelevantRenderTargetFlagMask);
+}
+
+ETextureCreateFlags FPipelineCacheFileFormatPSO::GraphicsDescriptor::ReduceDSFlags(ETextureCreateFlags InFlags)
+{
+	return (InFlags & FGraphicsPipelineStateInitializer::RelevantDepthStencilFlagMask);
 }
 
 FString FPipelineCacheFileFormatPSO::GraphicsDescriptor::StateHeaderLine()
@@ -871,7 +898,7 @@ FString FPipelineCacheFileFormatPSO::CommonToString() const
 	return FString::Printf(TEXT("\"%d,%llu\""), Count, Mask);
 }
 
-FString FPipelineCacheFileFormatPSO::ToStringReadable()
+FString FPipelineCacheFileFormatPSO::ToStringReadable() const
 {
 	TReadableStringBuilder Builder;
 
@@ -1048,99 +1075,96 @@ bool FPipelineCacheFileFormatPSO::Verify() const
 
 /*friend*/ uint32 GetTypeHash(const FPipelineCacheFileFormatPSO &Key)
 {
-	if(FPlatformAtomics::AtomicRead((volatile int32*)&Key.Hash) == 0)
+	uint32 KeyHash = GetTypeHash(Key.Type);
+	switch(Key.Type)
 	{
-		uint32 KeyHash = GetTypeHash(Key.Type);
-		switch(Key.Type)
+		case FPipelineCacheFileFormatPSO::DescriptorType::Compute:
 		{
-			case FPipelineCacheFileFormatPSO::DescriptorType::Compute:
-			{
-				KeyHash ^= GetTypeHash(Key.ComputeDesc.ComputeShader);
-				break;
-			}
-			case FPipelineCacheFileFormatPSO::DescriptorType::Graphics:
-			{
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.RenderTargetsActive, sizeof(Key.GraphicsDesc.RenderTargetsActive), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.MSAASamples, sizeof(Key.GraphicsDesc.MSAASamples), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.PrimitiveType, sizeof(Key.GraphicsDesc.PrimitiveType), KeyHash);
-				
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.VertexShader.Hash, sizeof(Key.GraphicsDesc.VertexShader.Hash), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.FragmentShader.Hash, sizeof(Key.GraphicsDesc.FragmentShader.Hash), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.GeometryShader.Hash, sizeof(Key.GraphicsDesc.GeometryShader.Hash), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.MeshShader.Hash, sizeof(Key.GraphicsDesc.MeshShader.Hash), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.AmplificationShader.Hash, sizeof(Key.GraphicsDesc.AmplificationShader.Hash), KeyHash);
-
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilFormat, sizeof(Key.GraphicsDesc.DepthStencilFormat), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilFlags, sizeof(Key.GraphicsDesc.DepthStencilFlags), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthLoad, sizeof(Key.GraphicsDesc.DepthLoad), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.StencilLoad, sizeof(Key.GraphicsDesc.StencilLoad), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStore, sizeof(Key.GraphicsDesc.DepthStore), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.StencilStore, sizeof(Key.GraphicsDesc.StencilStore), KeyHash);
-
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.BlendState.bUseIndependentRenderTargetBlendStates, sizeof(Key.GraphicsDesc.BlendState.bUseIndependentRenderTargetBlendStates), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.BlendState.bUseAlphaToCoverage, sizeof(Key.GraphicsDesc.BlendState.bUseAlphaToCoverage), KeyHash);
-				for( uint32 i = 0; i < MaxSimultaneousRenderTargets; i++ )
-				{
-					KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.BlendState.RenderTargets[i].ColorBlendOp, sizeof(Key.GraphicsDesc.BlendState.RenderTargets[i].ColorBlendOp), KeyHash);
-					KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.BlendState.RenderTargets[i].ColorSrcBlend, sizeof(Key.GraphicsDesc.BlendState.RenderTargets[i].ColorSrcBlend), KeyHash);
-					KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.BlendState.RenderTargets[i].ColorDestBlend, sizeof(Key.GraphicsDesc.BlendState.RenderTargets[i].ColorDestBlend), KeyHash);
-					KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.BlendState.RenderTargets[i].ColorWriteMask, sizeof(Key.GraphicsDesc.BlendState.RenderTargets[i].ColorWriteMask), KeyHash);
-					KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.BlendState.RenderTargets[i].AlphaBlendOp, sizeof(Key.GraphicsDesc.BlendState.RenderTargets[i].AlphaBlendOp), KeyHash);
-					KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.BlendState.RenderTargets[i].AlphaSrcBlend, sizeof(Key.GraphicsDesc.BlendState.RenderTargets[i].AlphaSrcBlend), KeyHash);
-					KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.BlendState.RenderTargets[i].AlphaDestBlend, sizeof(Key.GraphicsDesc.BlendState.RenderTargets[i].AlphaDestBlend), KeyHash);
-				}
-
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.RenderTargetFormats, sizeof(Key.GraphicsDesc.RenderTargetFormats), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.RenderTargetFlags, sizeof(Key.GraphicsDesc.RenderTargetFlags), KeyHash);
-				
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.SubpassHint, sizeof(Key.GraphicsDesc.SubpassHint), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.SubpassIndex, sizeof(Key.GraphicsDesc.SubpassIndex), KeyHash);
-				
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.MultiViewCount, sizeof(Key.GraphicsDesc.MultiViewCount), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.bHasFragmentDensityAttachment, sizeof(Key.GraphicsDesc.bHasFragmentDensityAttachment), KeyHash);
-
-				for(auto const& Element : Key.GraphicsDesc.VertexDescriptor)
-				{
-					KeyHash = FCrc::MemCrc32(&Element, sizeof(FVertexElement), KeyHash);
-				}
-				
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.RasterizerState.DepthBias, sizeof(Key.GraphicsDesc.RasterizerState.DepthBias), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.RasterizerState.SlopeScaleDepthBias, sizeof(Key.GraphicsDesc.RasterizerState.SlopeScaleDepthBias), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.RasterizerState.FillMode, sizeof(Key.GraphicsDesc.RasterizerState.FillMode), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.RasterizerState.CullMode, sizeof(Key.GraphicsDesc.RasterizerState.CullMode), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.RasterizerState.bAllowMSAA, sizeof(Key.GraphicsDesc.RasterizerState.bAllowMSAA), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.RasterizerState.bEnableLineAA, sizeof(Key.GraphicsDesc.RasterizerState.bEnableLineAA), KeyHash);
-				
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.bEnableDepthWrite, sizeof(Key.GraphicsDesc.DepthStencilState.bEnableDepthWrite), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.DepthTest, sizeof(Key.GraphicsDesc.DepthStencilState.DepthTest), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.bEnableFrontFaceStencil, sizeof(Key.GraphicsDesc.DepthStencilState.bEnableFrontFaceStencil), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.FrontFaceStencilTest, sizeof(Key.GraphicsDesc.DepthStencilState.FrontFaceStencilTest), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.FrontFaceStencilFailStencilOp, sizeof(Key.GraphicsDesc.DepthStencilState.FrontFaceStencilFailStencilOp), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.FrontFaceDepthFailStencilOp, sizeof(Key.GraphicsDesc.DepthStencilState.FrontFaceDepthFailStencilOp), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.FrontFacePassStencilOp, sizeof(Key.GraphicsDesc.DepthStencilState.FrontFacePassStencilOp), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.bEnableBackFaceStencil, sizeof(Key.GraphicsDesc.DepthStencilState.bEnableBackFaceStencil), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.BackFaceStencilTest, sizeof(Key.GraphicsDesc.DepthStencilState.BackFaceStencilTest), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.BackFaceStencilFailStencilOp, sizeof(Key.GraphicsDesc.DepthStencilState.BackFaceStencilFailStencilOp), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.BackFaceDepthFailStencilOp, sizeof(Key.GraphicsDesc.DepthStencilState.BackFaceDepthFailStencilOp), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.BackFacePassStencilOp, sizeof(Key.GraphicsDesc.DepthStencilState.BackFacePassStencilOp), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.StencilReadMask, sizeof(Key.GraphicsDesc.DepthStencilState.StencilReadMask), KeyHash);
-				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.StencilWriteMask, sizeof(Key.GraphicsDesc.DepthStencilState.StencilWriteMask), KeyHash);
-				
-				break;
-			}
-			case FPipelineCacheFileFormatPSO::DescriptorType::RayTracing:
-			{
-				KeyHash ^= GetTypeHash(Key.RayTracingDesc);
-				break;
-			}
-			default:
-			{
-				checkNoEntry();
-			}
+			KeyHash ^= GetTypeHash(Key.ComputeDesc.ComputeShader);
+			break;
 		}
-		FPlatformAtomics::InterlockedCompareExchange((volatile int32*)&Key.Hash, KeyHash, 0);
+		case FPipelineCacheFileFormatPSO::DescriptorType::Graphics:
+		{
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.RenderTargetsActive, sizeof(Key.GraphicsDesc.RenderTargetsActive), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.MSAASamples, sizeof(Key.GraphicsDesc.MSAASamples), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.PrimitiveType, sizeof(Key.GraphicsDesc.PrimitiveType), KeyHash);
+				
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.VertexShader.Hash, sizeof(Key.GraphicsDesc.VertexShader.Hash), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.FragmentShader.Hash, sizeof(Key.GraphicsDesc.FragmentShader.Hash), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.GeometryShader.Hash, sizeof(Key.GraphicsDesc.GeometryShader.Hash), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.MeshShader.Hash, sizeof(Key.GraphicsDesc.MeshShader.Hash), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.AmplificationShader.Hash, sizeof(Key.GraphicsDesc.AmplificationShader.Hash), KeyHash);
+
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilFormat, sizeof(Key.GraphicsDesc.DepthStencilFormat), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilFlags, sizeof(Key.GraphicsDesc.DepthStencilFlags), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthLoad, sizeof(Key.GraphicsDesc.DepthLoad), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.StencilLoad, sizeof(Key.GraphicsDesc.StencilLoad), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStore, sizeof(Key.GraphicsDesc.DepthStore), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.StencilStore, sizeof(Key.GraphicsDesc.StencilStore), KeyHash);
+
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.BlendState.bUseIndependentRenderTargetBlendStates, sizeof(Key.GraphicsDesc.BlendState.bUseIndependentRenderTargetBlendStates), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.BlendState.bUseAlphaToCoverage, sizeof(Key.GraphicsDesc.BlendState.bUseAlphaToCoverage), KeyHash);
+			for( uint32 i = 0; i < MaxSimultaneousRenderTargets; i++ )
+			{
+				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.BlendState.RenderTargets[i].ColorBlendOp, sizeof(Key.GraphicsDesc.BlendState.RenderTargets[i].ColorBlendOp), KeyHash);
+				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.BlendState.RenderTargets[i].ColorSrcBlend, sizeof(Key.GraphicsDesc.BlendState.RenderTargets[i].ColorSrcBlend), KeyHash);
+				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.BlendState.RenderTargets[i].ColorDestBlend, sizeof(Key.GraphicsDesc.BlendState.RenderTargets[i].ColorDestBlend), KeyHash);
+				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.BlendState.RenderTargets[i].ColorWriteMask, sizeof(Key.GraphicsDesc.BlendState.RenderTargets[i].ColorWriteMask), KeyHash);
+				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.BlendState.RenderTargets[i].AlphaBlendOp, sizeof(Key.GraphicsDesc.BlendState.RenderTargets[i].AlphaBlendOp), KeyHash);
+				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.BlendState.RenderTargets[i].AlphaSrcBlend, sizeof(Key.GraphicsDesc.BlendState.RenderTargets[i].AlphaSrcBlend), KeyHash);
+				KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.BlendState.RenderTargets[i].AlphaDestBlend, sizeof(Key.GraphicsDesc.BlendState.RenderTargets[i].AlphaDestBlend), KeyHash);
+			}
+
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.RenderTargetFormats, sizeof(Key.GraphicsDesc.RenderTargetFormats), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.RenderTargetFlags, sizeof(Key.GraphicsDesc.RenderTargetFlags), KeyHash);
+				
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.SubpassHint, sizeof(Key.GraphicsDesc.SubpassHint), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.SubpassIndex, sizeof(Key.GraphicsDesc.SubpassIndex), KeyHash);
+				
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.MultiViewCount, sizeof(Key.GraphicsDesc.MultiViewCount), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.bHasFragmentDensityAttachment, sizeof(Key.GraphicsDesc.bHasFragmentDensityAttachment), KeyHash);
+
+			for(auto const& Element : Key.GraphicsDesc.VertexDescriptor)
+			{
+				KeyHash = FCrc::MemCrc32(&Element, sizeof(FVertexElement), KeyHash);
+			}
+				
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.RasterizerState.DepthBias, sizeof(Key.GraphicsDesc.RasterizerState.DepthBias), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.RasterizerState.SlopeScaleDepthBias, sizeof(Key.GraphicsDesc.RasterizerState.SlopeScaleDepthBias), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.RasterizerState.FillMode, sizeof(Key.GraphicsDesc.RasterizerState.FillMode), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.RasterizerState.CullMode, sizeof(Key.GraphicsDesc.RasterizerState.CullMode), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.RasterizerState.bAllowMSAA, sizeof(Key.GraphicsDesc.RasterizerState.bAllowMSAA), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.RasterizerState.bEnableLineAA, sizeof(Key.GraphicsDesc.RasterizerState.bEnableLineAA), KeyHash);
+				
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.bEnableDepthWrite, sizeof(Key.GraphicsDesc.DepthStencilState.bEnableDepthWrite), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.DepthTest, sizeof(Key.GraphicsDesc.DepthStencilState.DepthTest), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.bEnableFrontFaceStencil, sizeof(Key.GraphicsDesc.DepthStencilState.bEnableFrontFaceStencil), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.FrontFaceStencilTest, sizeof(Key.GraphicsDesc.DepthStencilState.FrontFaceStencilTest), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.FrontFaceStencilFailStencilOp, sizeof(Key.GraphicsDesc.DepthStencilState.FrontFaceStencilFailStencilOp), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.FrontFaceDepthFailStencilOp, sizeof(Key.GraphicsDesc.DepthStencilState.FrontFaceDepthFailStencilOp), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.FrontFacePassStencilOp, sizeof(Key.GraphicsDesc.DepthStencilState.FrontFacePassStencilOp), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.bEnableBackFaceStencil, sizeof(Key.GraphicsDesc.DepthStencilState.bEnableBackFaceStencil), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.BackFaceStencilTest, sizeof(Key.GraphicsDesc.DepthStencilState.BackFaceStencilTest), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.BackFaceStencilFailStencilOp, sizeof(Key.GraphicsDesc.DepthStencilState.BackFaceStencilFailStencilOp), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.BackFaceDepthFailStencilOp, sizeof(Key.GraphicsDesc.DepthStencilState.BackFaceDepthFailStencilOp), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.BackFacePassStencilOp, sizeof(Key.GraphicsDesc.DepthStencilState.BackFacePassStencilOp), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.StencilReadMask, sizeof(Key.GraphicsDesc.DepthStencilState.StencilReadMask), KeyHash);
+			KeyHash = FCrc::MemCrc32(&Key.GraphicsDesc.DepthStencilState.StencilWriteMask, sizeof(Key.GraphicsDesc.DepthStencilState.StencilWriteMask), KeyHash);
+				
+			break;
+		}
+		case FPipelineCacheFileFormatPSO::DescriptorType::RayTracing:
+		{
+			KeyHash ^= GetTypeHash(Key.RayTracingDesc);
+			break;
+		}
+		default:
+		{
+			checkNoEntry();
+		}
 	}
-	return FPlatformAtomics::AtomicRead((volatile int32*)&Key.Hash);
+
+	return KeyHash;
 }
 
 /*friend*/ FArchive& operator<<( FArchive& Ar, FPipelineCacheFileFormatPSO& Info )
@@ -1259,7 +1283,7 @@ bool FPipelineCacheFileFormatPSO::Verify() const
 				else
 				{
 					static_assert(sizeof(uint64) == sizeof(Info.GraphicsDesc.RenderTargetFlags[i]), "ETextureCreateFlags size changed, please change serialization");
-					uint64 RTFlags = static_cast<uint64>(Info.GraphicsDesc.RenderTargetFlags[i]);
+					uint64 RTFlags = static_cast<uint64>(FPipelineCacheFileFormatPSO::GraphicsDescriptor::ReduceRTFlags(Info.GraphicsDesc.RenderTargetFlags[i]));
 					Ar << RTFlags;
 					Info.GraphicsDesc.RenderTargetFlags[i] = FPipelineCacheFileFormatPSO::GraphicsDescriptor::ReduceRTFlags(static_cast<ETextureCreateFlags>(RTFlags));
 				}
@@ -1279,12 +1303,14 @@ bool FPipelineCacheFileFormatPSO::Verify() const
 			{
 				uint32 DepthStencilFlags = 0;
 				Ar << DepthStencilFlags;
-				Info.GraphicsDesc.DepthStencilFlags = static_cast<ETextureCreateFlags>(DepthStencilFlags);
+				Info.GraphicsDesc.DepthStencilFlags = FPipelineCacheFileFormatPSO::GraphicsDescriptor::ReduceDSFlags(static_cast<ETextureCreateFlags>(DepthStencilFlags));
 			}
 			else
 			{
 				static_assert(sizeof(uint64) == sizeof(Info.GraphicsDesc.DepthStencilFlags), "ETextureCreateFlags size changed, please change serialization");
-				Ar << Info.GraphicsDesc.DepthStencilFlags;
+				uint64 DepthStencilFlags = static_cast<uint64>(FPipelineCacheFileFormatPSO::GraphicsDescriptor::ReduceDSFlags(Info.GraphicsDesc.DepthStencilFlags));
+				Ar << DepthStencilFlags;
+				Info.GraphicsDesc.DepthStencilFlags = FPipelineCacheFileFormatPSO::GraphicsDescriptor::ReduceDSFlags(static_cast<ETextureCreateFlags>(DepthStencilFlags));
 			}
 			Ar << Info.GraphicsDesc.DepthLoad;
 			Ar << Info.GraphicsDesc.StencilLoad;
@@ -1313,7 +1339,9 @@ bool FPipelineCacheFileFormatPSO::Verify() const
 		case FPipelineCacheFileFormatPSO::DescriptorType::RayTracing:
 		{
 			Ar << Info.RayTracingDesc.ShaderHash;
-			Ar << Info.RayTracingDesc.MaxPayloadSizeInBytes;
+
+			// Not used, kept for binary format compatibility
+			Ar << Info.RayTracingDesc.DeprecatedMaxPayloadSizeInBytes;
 
 			uint32 Frequency = uint32(Info.RayTracingDesc.Frequency);
 			Ar << Frequency;
@@ -1332,9 +1360,8 @@ bool FPipelineCacheFileFormatPSO::Verify() const
 }
 
 FPipelineCacheFileFormatPSO::FPipelineCacheFileFormatPSO()
-: Hash(0)
 #if PSO_COOKONLY_DATA
-, UsageMask(0)
+: UsageMask(0)
 , BindCount(0)
 #endif
 {
@@ -1344,7 +1371,6 @@ FPipelineCacheFileFormatPSO::FPipelineCacheFileFormatPSO()
 {
 	check(Init);
 
-	PSO.Hash = 0;
 	PSO.Type = DescriptorType::Compute;
 #if PSO_COOKONLY_DATA
 	PSO.UsageMask = 0;
@@ -1369,7 +1395,6 @@ FPipelineCacheFileFormatPSO::FPipelineCacheFileFormatPSO()
 {
 	bool bOK = true;
 	
-	PSO.Hash = 0;
 	PSO.Type = DescriptorType::Graphics;
 #if PSO_COOKONLY_DATA
 	PSO.UsageMask = 0;
@@ -1475,7 +1500,7 @@ FPipelineCacheFileFormatPSO::FPipelineCacheFileFormatPSO()
 	PSO.GraphicsDesc.MSAASamples = Init.NumSamples;
 	
 	PSO.GraphicsDesc.DepthStencilFormat = Init.DepthStencilTargetFormat;
-	PSO.GraphicsDesc.DepthStencilFlags = Init.DepthStencilTargetFlag;
+	PSO.GraphicsDesc.DepthStencilFlags = FPipelineCacheFileFormatPSO::GraphicsDescriptor::ReduceDSFlags(Init.DepthStencilTargetFlag);
 	PSO.GraphicsDesc.DepthLoad = Init.DepthTargetLoadAction;
 	PSO.GraphicsDesc.StencilLoad = Init.StencilTargetLoadAction;
 	PSO.GraphicsDesc.DepthStore = Init.DepthTargetStoreAction;
@@ -1507,7 +1532,7 @@ bool FPipelineCacheFileFormatPSO::operator==(const FPipelineCacheFileFormatPSO& 
 	if (this != &Other)
 	{
 		bSame = Type == Other.Type;
-		/* Ignore: [Hash == Other.Hash] in this test. */
+
 #if PSO_COOKONLY_DATA
 		/* Ignore: [UsageMask == UsageMask] in this test. */
 		/* Ignore: [BindCount == BindCount] in this test. */
@@ -1569,7 +1594,6 @@ bool FPipelineCacheFileFormatPSO::operator==(const FPipelineCacheFileFormatPSO& 
 
 FPipelineCacheFileFormatPSO::FPipelineCacheFileFormatPSO(const FPipelineCacheFileFormatPSO& Other)
 : Type(Other.Type)
-, Hash(Other.Hash)
 #if PSO_COOKONLY_DATA
 , UsageMask(Other.UsageMask)
 , BindCount(Other.BindCount)
@@ -1607,7 +1631,6 @@ FPipelineCacheFileFormatPSO& FPipelineCacheFileFormatPSO::operator=(const FPipel
 	if(this != &Other)
 	{
 		Type = Other.Type;
-		Hash = Other.Hash;
 #if PSO_COOKONLY_DATA
 		UsageMask = Other.UsageMask;
 		BindCount = Other.BindCount;
@@ -1649,7 +1672,7 @@ struct FPipelineCacheFileFormatTOC
 	
 	FPipelineFileCacheManager::PSOOrder SortedOrder;
 	TMap<uint32, FPipelineCacheFileFormatPSOMetaData> MetaData;
-	void DumpToLog()
+	void DumpToLog() const
 	{
 		for (TMap<uint32, FPipelineCacheFileFormatPSOMetaData>::TConstIterator It(MetaData); It; ++It)
 		{
@@ -2137,7 +2160,7 @@ public:
 
 		UE_LOG(LogRHI, VeryVerbose, TEXT("-- opened bundled %s cache:"), *NameIn);
 		TOC.DumpToLog();
-		UE_LOG(LogRHI, VeryVerbose, TEXT("-- opened bundled %s cache:"), *NameIn);
+		UE_LOG(LogRHI, VeryVerbose, TEXT("-- end of dump (%s)"), *NameIn);
 
 		return bGameFileOk;
 	}
@@ -2737,6 +2760,7 @@ public:
 	bool IsPSOEntryCachedInternal(FPipelineCacheFileFormatPSO const& NewEntry, FPSOUsageData* EntryData = nullptr) const
 	{
 		uint32 PSOHash = GetTypeHash(NewEntry);
+		check(!EntryData || EntryData->PSOHash == PSOHash);
 		FPipelineCacheFileFormatPSOMetaData const * const Existing = TOC.MetaData.Find(PSOHash);
 		
 		if(Existing != nullptr && EntryData != nullptr)
@@ -3178,6 +3202,7 @@ uint64 FPipelineFileCacheManager::SetGameUsageMaskWithComparison(uint64 InGameUs
 		}
 		
 		FPipelineFileCacheManager::MaskComparisonFn = InComparisonFnPtr;
+		FPipelineFileCacheManager::GameUsageMaskSet = true;
 	}
 	
 	return OldMask;
@@ -3352,7 +3377,65 @@ void FPipelineFileCacheManager::RegisterPSOUsageDataUpdateForNextSave(FPSOUsageD
 	CurrentEntry.EngineFlags |= UsageData.EngineFlags;
 }  
 
-void FPipelineFileCacheManager::CacheGraphicsPSO(uint32 RunTimeHash, FGraphicsPipelineStateInitializer const& Initializer)
+void FPipelineFileCacheManager::LogNewGraphicsPSOToConsoleAndCSV(FPipelineCacheFileFormatPSO& PSO, uint32 PSOHash, bool bWasPSOPrecached)
+{
+	if (!LogNewPSOsToConsoleAndCSV)
+	{
+		return;
+	}
+
+	if (!bWasPSOPrecached)
+	{
+		CSV_EVENT(PSO, TEXT("Encountered new graphics PSO"));
+		UE_LOG(LogRHI, Display, TEXT("Encountered a new graphics PSO: %u"), PSOHash);
+		int32 LogDetailLevel = LogPSODetails() ? 2 : GPSOFileCachePrintNewPSODescriptors;
+		if (LogDetailLevel > 0)
+		{
+			UE_LOG(LogRHI, Display, TEXT("New Graphics PSO (%u)"), PSOHash);
+			if (LogDetailLevel > 1)
+			{
+				UE_LOG(LogRHI, Display, TEXT("%s"), *PSO.ToStringReadable());
+			}
+		}
+
+	}
+	else
+	{
+		UE_LOG(LogRHI, Log, TEXT("Encountered a new graphics PSO for the file cache but it was already precached at runtime: %u"), PSOHash);
+	}
+}
+
+void FPipelineFileCacheManager::LogNewComputePSOToConsoleAndCSV(FPipelineCacheFileFormatPSO& PSO, uint32 PSOHash)
+{
+	if (!LogNewPSOsToConsoleAndCSV)
+	{
+		return;
+	}
+
+	CSV_EVENT(PSO, TEXT("Encountered new compute PSO"));
+	UE_LOG(LogRHI, Display, TEXT("Encountered a new compute PSO: %u"), PSOHash);
+	if (GPSOFileCachePrintNewPSODescriptors > 0)
+	{
+		UE_LOG(LogRHI, Display, TEXT("New compute PSO (%u) Description: %s"), PSOHash, *PSO.ComputeDesc.ComputeShader.ToString());
+	}
+}
+
+void FPipelineFileCacheManager::LogNewRaytracingPSOToConsole(FPipelineCacheFileFormatPSO& PSO, uint32 PSOHash, bool bIsNonBlockingPSO)
+{
+	// When non-blocking creation is used, encountering a non-cached RTPSO is not likely to cause a hitch and so the logging is not useful/actionable.
+	if (!LogNewPSOsToConsoleAndCSV || bIsNonBlockingPSO)
+	{
+		return;
+	}
+
+	UE_LOG(LogRHI, Display, TEXT("Encountered a new ray tracing PSO: %u"), PSOHash);
+	if (GPSOFileCachePrintNewPSODescriptors > 0)
+	{
+		UE_LOG(LogRHI, Display, TEXT("New ray tracing PSO (%u) Description: %s"), PSOHash, *PSO.RayTracingDesc.ToString());
+	}
+}
+
+void FPipelineFileCacheManager::CacheGraphicsPSO(uint32 RunTimeHash, FGraphicsPipelineStateInitializer const& Initializer, bool bWasPSOPrecached)
 {
 	if(IsPipelineFileCacheEnabled() && (LogPSOtoFileCache() || ReportNewPSOs()))
 	{
@@ -3372,27 +3455,34 @@ void FPipelineFileCacheManager::CacheGraphicsPSO(uint32 RunTimeHash, FGraphicsPi
 					
 				uint32 PSOHash = GetTypeHash(NewEntry);
 				FPSOUsageData CurrentUsageData(PSOHash, 0, 0);
-					
+
 				if (!FPipelineFileCacheManager::IsPSOEntryCached(NewEntry, &CurrentUsageData))
 				{
 					bool bActuallyNewPSO = !NewPSOHashes.Contains(PSOHash);
+					if (Initializer.bFromPSOFileCache)
+					{
+						// FIXME: this is a workaround. Needs proper investigation
+						UE_LOG(LogRHI, Warning, TEXT("PSO from the cache was not found in the cache! PSOHash: %u"), PSOHash);
+						bActuallyNewPSO = false;
+					}
+
 					if (bActuallyNewPSO && IsOpenGLPlatform(GMaxRHIShaderPlatform)) // OpenGL is a BSS platform and so we don't report BSS matches as missing.
 					{
 						bActuallyNewPSO = !FPipelineFileCacheManager::IsBSSEquivalentPSOEntryCached(NewEntry);
 					}
+
 					if (bActuallyNewPSO)
 					{
-						CSV_EVENT(PSO, TEXT("Encountered new graphics PSO"));
-						UE_LOG(LogRHI, Display, TEXT("Encountered a new graphics PSO: %u"), PSOHash);
-						int32 LogDetailLevel = LogPSODetails() ? 2 : GPSOFileCachePrintNewPSODescriptors;
-						if (LogDetailLevel > 0)
+						LogNewGraphicsPSOToConsoleAndCSV(NewEntry, PSOHash, bWasPSOPrecached);
+
+						if (bWasPSOPrecached)
 						{
-							UE_LOG(LogRHI, Display, TEXT("New Graphics PSO (%u)"), PSOHash);
-							if (LogDetailLevel > 1)
-							{
-								UE_LOG(LogRHI, Display, TEXT("%s"), *NewEntry.ToStringReadable());
-							}
+							bActuallyNewPSO = !GPSOExcludePrecachePSOsInFileCache;
 						}
+					}
+
+					if (bActuallyNewPSO) 
+					{
 						if (LogPSOtoFileCache())
 						{
 							NewPSOs.Add(NewEntry);
@@ -3457,12 +3547,7 @@ void FPipelineFileCacheManager::CacheComputePSO(uint32 RunTimeHash, FRHIComputeS
 						bool bActuallyNewPSO = !NewPSOHashes.Contains(PSOHash);
 						if (bActuallyNewPSO)
 						{
-							CSV_EVENT(PSO, TEXT("Encountered new compute PSO"));
-							UE_LOG(LogRHI, Display, TEXT("Encountered a new compute PSO: %u"), PSOHash);
-							if (GPSOFileCachePrintNewPSODescriptors > 0)
-							{
-								UE_LOG(LogRHI, Display, TEXT("New compute PSO (%u) Description: %s"), PSOHash, *NewEntry.ComputeDesc.ComputeShader.ToString());
-							}
+							LogNewComputePSOToConsoleAndCSV(NewEntry, PSOHash);
 							
 							if (LogPSOtoFileCache())
 							{
@@ -3518,8 +3603,7 @@ void FPipelineFileCacheManager::CacheRayTracingPSO(const FRayTracingPipelineStat
 		Initializer.GetCallableTable()
 	};
 
-	// When non-blocking creation is used, encountering a non-cached RTPSO is not likely to cause a hitch and so the logging is not useful/actionable.
-	const bool bShouldReportNewRTPSOToLog = !EnumHasAnyFlags(Flags, ERayTracingPipelineCacheFlags::NonBlocking);
+	const bool bIsNonBlocking = !EnumHasAnyFlags(Flags, ERayTracingPipelineCacheFlags::NonBlocking);
 
 	FRWScopeLock Lock(FileCacheLock, SLT_ReadOnly);
 
@@ -3546,15 +3630,7 @@ void FPipelineFileCacheManager::CacheRayTracingPSO(const FRayTracingPipelineStat
 
 					if (!FPipelineFileCacheManager::IsPSOEntryCached(NewEntry, &CurrentUsageData))
 					{
-						//CSV_EVENT(PSO, TEXT("Encountered new ray tracing PSO"));
-						if (bShouldReportNewRTPSOToLog)
-						{
-							UE_LOG(LogRHI, Display, TEXT("Encountered a new ray tracing PSO: %u"), PSOHash);
-							if (GPSOFileCachePrintNewPSODescriptors > 0)
-							{
-								UE_LOG(LogRHI, Display, TEXT("New ray tracing PSO (%u) Description: %s"), PSOHash, *NewEntry.RayTracingDesc.ToString());
-							}
-						}
+						LogNewRaytracingPSOToConsole(NewEntry, PSOHash, bIsNonBlocking);
 
 						if (LogPSOtoFileCache())
 						{
@@ -4157,7 +4233,6 @@ bool FPipelineFileCacheManager::MergePipelineFileCaches(FString const& PathA, FS
 
 FPipelineCacheFileFormatPSO::FPipelineFileCacheRayTracingDesc::FPipelineFileCacheRayTracingDesc(const FRayTracingPipelineStateInitializer& Initializer, const FRHIRayTracingShader* ShaderRHI)
 : ShaderHash(ShaderRHI->GetHash())
-, MaxPayloadSizeInBytes(Initializer.MaxPayloadSizeInBytes)
 , Frequency(ShaderRHI->GetFrequency())
 , bAllowHitGroupIndexing(Initializer.bAllowHitGroupIndexing)
 {
@@ -4165,14 +4240,14 @@ FPipelineCacheFileFormatPSO::FPipelineFileCacheRayTracingDesc::FPipelineFileCach
 
 FString FPipelineCacheFileFormatPSO::FPipelineFileCacheRayTracingDesc::HeaderLine() const
 {
-	return FString(TEXT("RayTracingShader,MaxPayloadSizeInBytes,Frequency,bAllowHitGroupIndexing"));
+	return FString(TEXT("RayTracingShader,DeprecatedMaxPayloadSizeInBytes,Frequency,bAllowHitGroupIndexing"));
 }
 
 FString FPipelineCacheFileFormatPSO::FPipelineFileCacheRayTracingDesc::ToString() const
 {
 	return FString::Printf(TEXT("%s,%d,%d,%d")
 		, *ShaderHash.ToString()
-		, MaxPayloadSizeInBytes
+		, DeprecatedMaxPayloadSizeInBytes
 		, uint32(Frequency)
 		, uint32(bAllowHitGroupIndexing)
 	);
@@ -4197,8 +4272,6 @@ void FPipelineCacheFileFormatPSO::FPipelineFileCacheRayTracingDesc::AddToReadabl
 			break;
 	}
 	OutBuilder << ShaderHash.ToString();
-	OutBuilder << TEXT(" MPSIB ");
-	OutBuilder << MaxPayloadSizeInBytes;
 	OutBuilder << TEXT(" AHGI ");
 	OutBuilder << bAllowHitGroupIndexing;
 }
@@ -4210,7 +4283,8 @@ void FPipelineCacheFileFormatPSO::FPipelineFileCacheRayTracingDesc::FromString(c
 
 	ShaderHash.FromString(Parts[0]);
 
-	LexFromString(MaxPayloadSizeInBytes, Parts[1]);
+	// Not used, but kept for back-compatibility
+	LexFromString(DeprecatedMaxPayloadSizeInBytes, Parts[1]);
 
 	{
 		uint32 Temp = 0;
@@ -4227,7 +4301,6 @@ void FPipelineCacheFileFormatPSO::FPipelineFileCacheRayTracingDesc::FromString(c
 
 bool FPipelineCacheFileFormatPSO::Init(FPipelineCacheFileFormatPSO& PSO, FPipelineCacheFileFormatPSO::FPipelineFileCacheRayTracingDesc const& Desc)
 {
-	PSO.Hash = 0;
 	PSO.Type = DescriptorType::RayTracing;
 
 #if PSO_COOKONLY_DATA

@@ -24,7 +24,8 @@
 
 #include "SceneManagement.h"
 
-#include UE_INLINE_GENERATED_CPP_BY_NAME(PhysicsControlComponent)
+DECLARE_CYCLE_STAT(TEXT("PhysicsControl UpdateTargetCaches"), STAT_PhysicsControl_UpdateTargetCaches, STATGROUP_Anim);
+DECLARE_CYCLE_STAT(TEXT("PhysicsControl UpdateControls"), STAT_PhysicsControl_UpdateControls, STATGROUP_Anim);
 
 //======================================================================================================================
 // This is used, rather than UEnum::GetValueAsString, so that we have more control over the string returned, which 
@@ -89,36 +90,34 @@ void UPhysicsControlComponent::BeginDestroy()
 }
 
 //======================================================================================================================
-void UPhysicsControlComponent::TickComponent(
-	float                        DeltaTime, 
-	enum ELevelTick              TickType, 
-	FActorComponentTickFunction* ThisTickFunction)
+void UPhysicsControlComponent::UpdateTargetCaches(float DeltaTime)
 {
-	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+	SCOPE_CYCLE_COUNTER(STAT_PhysicsControl_UpdateTargetCaches);
+	TRACE_CPUPROFILER_EVENT_SCOPE(UPhysicsControlComponent::UpdateTargetCaches);
 
-	// We only want to continue the update if this is a "real" tick that corresponds to updating the
-	// world. We certainly don't want to tick during a pause, because part of the processing involves 
-	// (optionally) calculating target velocities based on target positions in previous ticks etc.
-	if (TickType != LEVELTICK_All)
-	{
-		return;
-	}
+	// Update the skeletal mesh caches
+	Implementation->UpdateCachedSkeletalBoneData(DeltaTime);
+}
+
+//======================================================================================================================
+void UPhysicsControlComponent::UpdateControls(float DeltaTime)
+{
+	SCOPE_CYCLE_COUNTER(STAT_PhysicsControl_UpdateControls);
+	TRACE_CPUPROFILER_EVENT_SCOPE(UPhysicsControlComponent::UpdateControls);
 
 	// Tidy up
 	Implementation->PhysicsControlRecords.Compact();
 	Implementation->PhysicsBodyModifiers.Compact();
 
-	// Update the skeletal mesh caches
-	Implementation->UpdateCachedSkeletalBoneData(DeltaTime);
-
 	for (TPair<FName, FPhysicsControlRecord>& RecordPair : Implementation->PhysicsControlRecords)
 	{
 		// New constraint requested when one doesn't exist
+		FName ControlName = RecordPair.Key;
 		FPhysicsControlRecord& Record = RecordPair.Value;
 		FConstraintInstance* ConstraintInstance = Record.PhysicsControlState.ConstraintInstance.Get();
 		if (!ConstraintInstance)
 		{
-			ConstraintInstance = Record.CreateConstraint(this);
+			ConstraintInstance = Record.CreateConstraint(this, ControlName);
 		}
 
 		if (ConstraintInstance)
@@ -157,12 +156,25 @@ void UPhysicsControlComponent::TickComponent(
 			Implementation->ApplyKinematicTarget(BodyModifier);
 			break;
 		case EPhysicsMovementType::Simulated:
-			BodyInstance->SetInstanceSimulatePhysics(true, false, true);
+			BodyInstance->SetInstanceSimulatePhysics(true, true, true);
 			break;
 		default:
-			UE_LOG(LogPhysicsControlComponent, Warning, TEXT("Invalid movement type %d"), BodyModifier.MovementType);
+			UE_LOG(LogPhysicsControlComponent, Warning, TEXT("Invalid movement type %d"), int(BodyModifier.MovementType));
 			break;
 		}
+		// We always overwrite the physics blend weight, since the functions above can still modify
+		// it (even though they all use the "maintain physics blending" option), since there is an
+		// expectation that zero blend weight means to disable physics.
+		BodyInstance->PhysicsBlendWeight = BodyModifier.PhysicsBlendWeight;
+
+		BodyInstance->SetUpdateKinematicFromSimulation(BodyModifier.bUpdateKinematicFromSimulation);
+
+		if (BodyModifier.bResetToCachedTarget)
+		{
+			BodyModifier.bResetToCachedTarget = false;
+			Implementation->ResetToCachedTarget(BodyModifier);
+		}
+
 
 		UBodySetup* BodySetup = BodyInstance->GetBodySetup();
 		if (BodySetup)
@@ -193,6 +205,27 @@ void UPhysicsControlComponent::TickComponent(
 			Record.PhysicsControlState.bEnabled = false;
 		}
 	}
+}
+
+//======================================================================================================================
+void UPhysicsControlComponent::TickComponent(
+	float                        DeltaTime,
+	enum ELevelTick              TickType,
+	FActorComponentTickFunction* ThisTickFunction)
+{
+	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+
+	// We only want to continue the update if this is a "real" tick that corresponds to updating the
+	// world. We certainly don't want to tick during a pause, because part of the processing involves 
+	// (optionally) calculating target velocities based on target positions in previous ticks etc.
+	if (TickType != LEVELTICK_All)
+	{
+		return;
+	}
+
+	UpdateTargetCaches(DeltaTime);
+
+	UpdateControls(DeltaTime);
 }
 
 //======================================================================================================================
@@ -956,7 +989,7 @@ bool UPhysicsControlComponent::ResetControlPoint(const FName Name)
 
 //======================================================================================================================
 bool UPhysicsControlComponent::SetControlTarget(
-	const FName           Name, 
+	const FName                 Name, 
 	const FPhysicsControlTarget ControlTarget, 
 	const bool                  bEnableControl)
 {
@@ -1012,7 +1045,35 @@ bool UPhysicsControlComponent::SetControlTargetPositionAndOrientation(
 			Name, Orientation, VelocityDeltaTime, bEnableControl, bApplyControlPointToTarget);
 	}
 	return false;
+}
 
+//======================================================================================================================
+void UPhysicsControlComponent::SetControlTargetPositionsAndOrientations(
+	const TArray<FName>& Names,
+	const FVector        Position,
+	const FRotator       Orientation,
+	const float          VelocityDeltaTime,
+	const bool           bEnableControl,
+	const bool           bApplyControlPointToTarget)
+{
+	for (FName Name : Names)
+	{
+		SetControlTargetPositionAndOrientation(
+			Name, Position, Orientation, VelocityDeltaTime, bEnableControl, bApplyControlPointToTarget);
+	}
+}
+
+//======================================================================================================================
+void UPhysicsControlComponent::SetControlTargetPositionsAndOrientationsInSet(
+	const FName          SetName,
+	const FVector        Position,
+	const FRotator       Orientation,
+	const float          VelocityDeltaTime,
+	const bool           bEnableControl,
+	const bool           bApplyControlPointToTarget)
+{
+	SetControlTargetPositionsAndOrientations(GetControlNamesInSet(SetName), 
+		Position, Orientation, VelocityDeltaTime, bEnableControl, bApplyControlPointToTarget);
 }
 
 //======================================================================================================================
@@ -1044,6 +1105,33 @@ bool UPhysicsControlComponent::SetControlTargetPosition(
 		return true;
 	}
 	return false;
+}
+
+//======================================================================================================================
+void UPhysicsControlComponent::SetControlTargetPositions(
+	const TArray<FName>& Names,
+	const FVector        Position,
+	const float          VelocityDeltaTime,
+	const bool           bEnableControl,
+	const bool           bApplyControlPointToTarget)
+{
+	for (FName Name : Names)
+	{
+		SetControlTargetPosition(
+			Name, Position, VelocityDeltaTime, bEnableControl, bApplyControlPointToTarget);
+	}
+}
+
+//======================================================================================================================
+void UPhysicsControlComponent::SetControlTargetPositionsInSet(
+	const FName   SetName,
+	const FVector Position,
+	const float   VelocityDeltaTime,
+	const bool    bEnableControl,
+	const bool    bApplyControlPointToTarget)
+{
+	SetControlTargetPositions(GetControlNamesInSet(SetName),
+		Position, VelocityDeltaTime, bEnableControl, bApplyControlPointToTarget);
 }
 
 //======================================================================================================================
@@ -1080,6 +1168,101 @@ bool UPhysicsControlComponent::SetControlTargetOrientation(
 		return true;
 	}
 	return false;
+}
+
+//======================================================================================================================
+void UPhysicsControlComponent::SetControlTargetOrientations(
+	const TArray<FName>& Names,
+	const FRotator Orientation,
+	const float    AngularVelocityDeltaTime,
+	const bool     bEnableControl,
+	const bool     bApplyControlPointToTarget)
+{
+	for (FName Name : Names)
+	{
+		SetControlTargetOrientation(
+			Name, Orientation, AngularVelocityDeltaTime, bEnableControl, bApplyControlPointToTarget);
+	}
+}
+
+//======================================================================================================================
+void UPhysicsControlComponent::SetControlTargetOrientationsInSet(
+	const FName    SetName,
+	const FRotator Orientation,
+	const float    AngularVelocityDeltaTime,
+	const bool     bEnableControl,
+	const bool     bApplyControlPointToTarget)
+{
+	SetControlTargetOrientations(GetControlNamesInSet(SetName),
+		Orientation, AngularVelocityDeltaTime, bEnableControl, bApplyControlPointToTarget);
+}
+
+//======================================================================================================================
+bool UPhysicsControlComponent::SetControlTargetPositionsFromArray(
+	const TArray<FName>&   Names,
+	const TArray<FVector>& Positions,
+	const float            VelocityDeltaTime,
+	const bool             bEnableControl,
+	const bool             bApplyControlPointToTarget)
+{
+	int32 NumControlNames = Names.Num();
+	int32 NumPositions = Positions.Num();
+	if (NumControlNames != NumPositions)
+	{
+		return false;
+	}
+	for (int32 Index = 0 ; Index != NumControlNames ; ++Index)
+	{
+		SetControlTargetPosition(
+			Names[Index], Positions[Index], VelocityDeltaTime, bEnableControl, bApplyControlPointToTarget);
+	}
+	return true;
+}
+
+//======================================================================================================================
+bool UPhysicsControlComponent::SetControlTargetOrientationsFromArray(
+	const TArray<FName>&    Names,
+	const TArray<FRotator>& Orientations,
+	const float             VelocityDeltaTime,
+	const bool              bEnableControl,
+	const bool              bApplyControlPointToTarget)
+{
+	int32 NumControlNames = Names.Num();
+	int32 NumOrientations = Orientations.Num();
+	if (NumControlNames != NumOrientations)
+	{
+		return false;
+	}
+	for (int32 Index = 0 ; Index != NumControlNames ; ++Index)
+	{
+		SetControlTargetOrientation(
+			Names[Index], Orientations[Index], VelocityDeltaTime, bEnableControl, bApplyControlPointToTarget);
+	}
+	return true;
+}
+
+//======================================================================================================================
+bool UPhysicsControlComponent::SetControlTargetPositionsAndOrientationsFromArray(
+	const TArray<FName>&    Names,
+	const TArray<FVector>&  Positions,
+	const TArray<FRotator>& Orientations,
+	const float             VelocityDeltaTime,
+	const bool              bEnableControl,
+	const bool              bApplyControlPointToTarget)
+{
+	int32 NumControlNames = Names.Num();
+	int32 NumPositions = Positions.Num();
+	int32 NumOrientations = Orientations.Num();
+	if (NumControlNames != NumPositions || NumControlNames != NumOrientations)
+	{
+		return false;
+	}
+	for (int32 Index = 0; Index != NumControlNames; ++Index)
+	{
+		SetControlTargetPositionAndOrientation(
+			Names[Index], Positions[Index], Orientations[Index], VelocityDeltaTime, bEnableControl, bApplyControlPointToTarget);
+	}
+	return true;
 }
 
 //======================================================================================================================
@@ -1289,11 +1472,14 @@ FName UPhysicsControlComponent::CreateBodyModifier(
 	const EPhysicsMovementType    MovementType,
 	const ECollisionEnabled::Type CollisionType,
 	const float                   GravityMultiplier,
-	const bool                    bUseSkeletalAnimation)
+	const float                   PhysicsBlendWeight,
+	const bool                    bUseSkeletalAnimation,
+	const bool                    bUpdateKinematicFromSimulation)
 {
 	const FName Name = Implementation->GetUniqueBodyModifierName(BoneName);
 	if (CreateNamedBodyModifier(
-		Name, MeshComponent, BoneName, Set, MovementType, CollisionType, GravityMultiplier, bUseSkeletalAnimation))
+		Name, MeshComponent, BoneName, Set, MovementType, CollisionType, 
+		GravityMultiplier, PhysicsBlendWeight, bUseSkeletalAnimation, bUpdateKinematicFromSimulation))
 	{
 		return Name;
 	}
@@ -1309,7 +1495,9 @@ bool UPhysicsControlComponent::CreateNamedBodyModifier(
 	const EPhysicsMovementType    MovementType,
 	const ECollisionEnabled::Type CollisionType,
 	const float                   GravityMultiplier,
-	const bool                    bUseSkeletalAnimation)
+	const float                   PhysicsBlendWeight,
+	const bool                    bUseSkeletalAnimation,
+	const bool                    bUpdateKinematicFromSimulation)
 {
 	if (Implementation->FindBodyModifier(Name))
 	{
@@ -1325,7 +1513,8 @@ bool UPhysicsControlComponent::CreateNamedBodyModifier(
 
 	FPhysicsBodyModifier& Modifier = Implementation->PhysicsBodyModifiers.Add(
 		Name, FPhysicsBodyModifier(
-			MeshComponent, BoneName, MovementType, CollisionType, GravityMultiplier, bUseSkeletalAnimation));
+			MeshComponent, BoneName, MovementType, CollisionType, 
+			GravityMultiplier, PhysicsBlendWeight, bUseSkeletalAnimation, bUpdateKinematicFromSimulation));
 
 	USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(MeshComponent);
 	if (SkeletalMeshComponent)
@@ -1348,7 +1537,9 @@ TArray<FName> UPhysicsControlComponent::CreateBodyModifiersFromSkeletalMeshBelow
 	const EPhysicsMovementType    MovementType,
 	const ECollisionEnabled::Type CollisionType,
 	const float                   GravityMultiplier,
-	const bool                    bUseSkeletalAnimation)
+	const float                   PhysicsBlendWeight,
+	const bool                    bUseSkeletalAnimation,
+	const bool                    bUpdateKinematicFromSimulation)
 {
 	TArray<FName> Result;
 	UPhysicsAsset* PhysicsAsset = SkeletalMeshComponent ? SkeletalMeshComponent->GetPhysicsAsset() : nullptr;
@@ -1361,15 +1552,15 @@ TArray<FName> UPhysicsControlComponent::CreateBodyModifiersFromSkeletalMeshBelow
 		BoneName, bIncludeSelf, /*bSkipCustomType=*/false,
 		[
 			this, PhysicsAsset, SkeletalMeshComponent, Set, MovementType, CollisionType,
-			GravityMultiplier, bUseSkeletalAnimation, &Result
+			GravityMultiplier, PhysicsBlendWeight, bUseSkeletalAnimation, bUpdateKinematicFromSimulation, &Result
 		](const FBodyInstance* BI)
 		{
 			if (USkeletalBodySetup* BodySetup = Cast<USkeletalBodySetup>(BI->BodySetup.Get()))
 			{
 				const FName BoneName = PhysicsAsset->SkeletalBodySetups[BI->InstanceBodyIndex]->BoneName;
 				const FName BodyModifierName = CreateBodyModifier(
-					SkeletalMeshComponent, BoneName, Set, MovementType, 
-					CollisionType, GravityMultiplier, bUseSkeletalAnimation);
+					SkeletalMeshComponent, BoneName, Set, MovementType, CollisionType, 
+					GravityMultiplier, PhysicsBlendWeight, bUseSkeletalAnimation, bUpdateKinematicFromSimulation);
 				Result.Add(BodyModifierName);
 			}
 		});
@@ -1384,7 +1575,9 @@ TMap<FName, FPhysicsControlNames> UPhysicsControlComponent::CreateBodyModifiersF
 	const EPhysicsMovementType                   MovementType,
 	const ECollisionEnabled::Type                CollisionType,
 	const float                                  GravityMultiplier,
-	const bool                                   bUseSkeletalAnimation)
+	const float                                  PhysicsBlendWeight,
+	const bool                                   bUseSkeletalAnimation,
+	const bool                                   bUpdateKinematicFromSimulation)
 {
 	TMap<FName, FPhysicsControlNames> Result;
 	Result.Reserve(LimbBones.Num());
@@ -1409,8 +1602,8 @@ TMap<FName, FPhysicsControlNames> UPhysicsControlComponent::CreateBodyModifiersF
 		for (const FName BoneName : BonesInLimb.BoneNames)
 		{
 			const FName BodyModifierName = CreateBodyModifier(
-				BonesInLimb.SkeletalMeshComponent, BoneName, LimbName, MovementType, 
-				CollisionType, GravityMultiplier, bUseSkeletalAnimation);
+				BonesInLimb.SkeletalMeshComponent, BoneName, LimbName, MovementType, CollisionType, 
+				GravityMultiplier, PhysicsBlendWeight, bUseSkeletalAnimation, bUpdateKinematicFromSimulation);
 			if (!BodyModifierName.IsNone())
 			{
 				LimbResult.Names.Add(BodyModifierName);
@@ -1569,6 +1762,39 @@ void UPhysicsControlComponent::SetBodyModifiersInSetGravityMultiplier(
 }
 
 //======================================================================================================================
+bool UPhysicsControlComponent::SetBodyModifierPhysicsBlendWeight(
+	const FName Name,
+	const float PhysicsBlendWeight)
+{
+	FPhysicsBodyModifier* PhysicsBodyModifier = Implementation->FindBodyModifier(Name);
+	if (PhysicsBodyModifier)
+	{
+		PhysicsBodyModifier->PhysicsBlendWeight = PhysicsBlendWeight;
+		return true;
+	}
+	return false;
+}
+
+//======================================================================================================================
+void UPhysicsControlComponent::SetBodyModifiersPhysicsBlendWeight(
+	const TArray<FName>& Names,
+	const float          PhysicsBlendWeight)
+{
+	for (FName Name : Names)
+	{
+		SetBodyModifierPhysicsBlendWeight(Name, PhysicsBlendWeight);
+	}
+}
+
+//======================================================================================================================
+void UPhysicsControlComponent::SetBodyModifiersInSetPhysicsBlendWeight(
+	const FName SetName,
+	const float PhysicsBlendWeight)
+{
+	SetBodyModifiersPhysicsBlendWeight(GetBodyModifierNamesInSet(SetName), PhysicsBlendWeight);
+}
+
+//======================================================================================================================
 bool UPhysicsControlComponent::SetBodyModifierUseSkeletalAnimation(
 	const FName Name,
 	const bool  bUseSkeletalAnimation)
@@ -1602,6 +1828,39 @@ void UPhysicsControlComponent::SetBodyModifiersInSetUseSkeletalAnimation(
 }
 
 //======================================================================================================================
+bool UPhysicsControlComponent::SetBodyModifierUpdateKinematicFromSimulation(
+	const FName Name,
+	const bool  bUpdateKinematicFromSimulation)
+{
+	FPhysicsBodyModifier* PhysicsBodyModifier = Implementation->FindBodyModifier(Name);
+	if (PhysicsBodyModifier)
+	{
+		PhysicsBodyModifier->bUpdateKinematicFromSimulation = bUpdateKinematicFromSimulation;
+		return true;
+	}
+	return false;
+}
+
+//======================================================================================================================
+void UPhysicsControlComponent::SetBodyModifiersUpdateKinematicFromSimulation(
+	const TArray<FName>& Names,
+	const bool           bUpdateKinematicFromSimulation)
+{
+	for (FName Name : Names)
+	{
+		SetBodyModifierUpdateKinematicFromSimulation(Name, bUpdateKinematicFromSimulation);
+	}
+}
+
+//======================================================================================================================
+void UPhysicsControlComponent::SetBodyModifiersInSetUpdateKinematicFromSimulation(
+	const FName SetName,
+	const bool  bUpdateKinematicFromSimulation)
+{
+	SetBodyModifiersUpdateKinematicFromSimulation(GetBodyModifierNamesInSet(SetName), bUpdateKinematicFromSimulation);
+}
+
+//======================================================================================================================
 const TArray<FName>& UPhysicsControlComponent::GetAllControlNames() const
 {
 	return GetControlNamesInSet("All");
@@ -1624,7 +1883,8 @@ void UPhysicsControlComponent::CreateControlsAndBodyModifiersFromLimbBones(
 	const FPhysicsControlSettings               ParentSpaceControlSettings,
 	const bool                                  bEnableParentSpaceControls,
 	const EPhysicsMovementType                  PhysicsMovementType,
-	const float                                 GravityMultiplier)
+	const float                                 GravityMultiplier,
+	const float                                 PhysicsBlendWeight)
 {
 	TMap<FName, FPhysicsControlLimbBones> LimbBones = 
 		GetLimbBonesFromSkeletalMesh(SkeletalMeshComponent, LimbSetupData);
@@ -1638,7 +1898,8 @@ void UPhysicsControlComponent::CreateControlsAndBodyModifiersFromLimbBones(
 		ParentSpaceControlData, ParentSpaceControlSettings, bEnableParentSpaceControls);
 
 	LimbBodyModifiers = CreateBodyModifiersFromLimbBones(
-		AllBodyModifiers, LimbBones, PhysicsMovementType, ECollisionEnabled::QueryAndPhysics, GravityMultiplier, true);
+		AllBodyModifiers, LimbBones, PhysicsMovementType, ECollisionEnabled::QueryAndPhysics, 
+		GravityMultiplier, PhysicsBlendWeight, true);
 }
 
 //======================================================================================================================
@@ -1739,6 +2000,251 @@ TArray<FName> UPhysicsControlComponent::GetSetsContainingBodyModifier(const FNam
 	}
 	return Result;
 }
+
+//======================================================================================================================
+TArray<FTransform> UPhysicsControlComponent::GetCachedBoneTransforms(
+	const USkeletalMeshComponent* SkeletalMeshComponent, 
+	const TArray<FName>&          BoneNames)
+{
+	TArray<FTransform> Result;
+	Result.Reserve(BoneNames.Num());
+	FCachedSkeletalMeshData::FBoneData BoneData;
+
+	for (const FName& BoneName : BoneNames)
+	{
+		if (Implementation->GetBoneData(BoneData, SkeletalMeshComponent, BoneName))
+		{
+			FTransform BoneTransform(BoneData.Orientation, BoneData.Position);
+			Result.Add(BoneTransform);
+		}
+		else
+		{
+			Result.Add(FTransform::Identity);
+		}
+	}
+	return Result;
+}
+
+//======================================================================================================================
+TArray<FVector> UPhysicsControlComponent::GetCachedBonePositions(
+	const USkeletalMeshComponent* SkeletalMeshComponent,
+	const TArray<FName>&          BoneNames)
+{
+	TArray<FVector> Result;
+	Result.Reserve(BoneNames.Num());
+	FCachedSkeletalMeshData::FBoneData BoneData;
+
+	for (const FName& BoneName : BoneNames)
+	{
+		if (Implementation->GetBoneData(BoneData, SkeletalMeshComponent, BoneName))
+		{
+			Result.Add(BoneData.Position);
+		}
+		else
+		{
+			Result.Add(FVector::ZeroVector);
+		}
+	}
+	return Result;
+}
+
+//======================================================================================================================
+TArray<FRotator> UPhysicsControlComponent::GetCachedBoneOrientations(
+	const USkeletalMeshComponent* SkeletalMeshComponent,
+	const TArray<FName>&          BoneNames)
+{
+	TArray<FRotator> Result;
+	Result.Reserve(BoneNames.Num());
+	FCachedSkeletalMeshData::FBoneData BoneData;
+
+	for (const FName& BoneName : BoneNames)
+	{
+		if (Implementation->GetBoneData(BoneData, SkeletalMeshComponent, BoneName))
+		{
+			Result.Add(BoneData.Orientation.Rotator());
+		}
+		else
+		{
+			Result.Add(FRotator::ZeroRotator);
+		}
+	}
+	return Result;
+}
+
+//======================================================================================================================
+TArray<FVector> UPhysicsControlComponent::GetCachedBoneVelocities(
+	const USkeletalMeshComponent* SkeletalMeshComponent,
+	const TArray<FName>&          BoneNames)
+{
+	TArray<FVector> Result;
+	Result.Reserve(BoneNames.Num());
+	FCachedSkeletalMeshData::FBoneData BoneData;
+
+	for (const FName& BoneName : BoneNames)
+	{
+		if (Implementation->GetBoneData(BoneData, SkeletalMeshComponent, BoneName))
+		{
+			Result.Add(BoneData.Velocity);
+		}
+		else
+		{
+			Result.Add(FVector::ZeroVector);
+		}
+	}
+
+	return Result;
+}
+
+//======================================================================================================================
+TArray<FVector> UPhysicsControlComponent::GetCachedBoneAngularVelocities(
+	const USkeletalMeshComponent* SkeletalMeshComponent,
+	const TArray<FName>&          BoneNames)
+{
+	TArray<FVector> Result;
+	Result.Reserve(BoneNames.Num());
+	FCachedSkeletalMeshData::FBoneData BoneData;
+
+	for (const FName& BoneName : BoneNames)
+	{
+		if (Implementation->GetBoneData(BoneData, SkeletalMeshComponent, BoneName))
+		{
+			Result.Add(BoneData.AngularVelocity);
+		}
+		else
+		{
+			Result.Add(FVector::ZeroVector);
+		}
+	}
+
+	return Result;
+}
+
+//======================================================================================================================
+FTransform UPhysicsControlComponent::GetCachedBoneTransform(
+	const USkeletalMeshComponent* SkeletalMeshComponent,
+	const FName                   BoneName)
+{
+	FCachedSkeletalMeshData::FBoneData BoneData;
+	if (Implementation->GetBoneData(BoneData, SkeletalMeshComponent, BoneName))
+	{
+		return FTransform(BoneData.Orientation, BoneData.Position);
+	}
+	return FTransform();
+}
+
+//======================================================================================================================
+FVector UPhysicsControlComponent::GetCachedBonePosition(
+	const USkeletalMeshComponent* SkeletalMeshComponent,
+	const FName                   BoneName)
+{
+	FCachedSkeletalMeshData::FBoneData BoneData;
+	if (Implementation->GetBoneData(BoneData, SkeletalMeshComponent, BoneName))
+	{
+		return BoneData.Position;
+	}
+	return FVector::ZeroVector;
+}
+
+//======================================================================================================================
+FRotator UPhysicsControlComponent::GetCachedBoneOrientation(
+	const USkeletalMeshComponent* SkeletalMeshComponent,
+	const FName                   BoneName)
+{
+	FCachedSkeletalMeshData::FBoneData BoneData;
+	if (Implementation->GetBoneData(BoneData, SkeletalMeshComponent, BoneName))
+	{
+		return BoneData.Orientation.Rotator();
+	}
+	return FRotator::ZeroRotator;
+}
+
+//======================================================================================================================
+FVector UPhysicsControlComponent::GetCachedBoneVelocity(
+	const USkeletalMeshComponent* SkeletalMeshComponent,
+	const FName                   BoneName)
+{
+	FCachedSkeletalMeshData::FBoneData BoneData;
+	if (Implementation->GetBoneData(BoneData, SkeletalMeshComponent, BoneName))
+	{
+		return BoneData.Velocity;
+	}
+	return FVector::Zero();
+}
+
+//======================================================================================================================
+FVector UPhysicsControlComponent::GetCachedBoneAngularVelocity(
+	const USkeletalMeshComponent* SkeletalMeshComponent,
+	const FName                   BoneName)
+{
+	FCachedSkeletalMeshData::FBoneData BoneData;
+	if (Implementation->GetBoneData(BoneData, SkeletalMeshComponent, BoneName))
+	{
+		return BoneData.AngularVelocity;
+	}
+	return FVector::Zero();
+}
+
+//======================================================================================================================
+bool UPhysicsControlComponent::SetCachedBoneData(
+	const USkeletalMeshComponent* SkeletalMeshComponent,
+	const FName                   BoneName,
+	const FTransform&             TM,
+	const FVector                 Velocity,
+	const FVector                 AngularVelocity)
+{
+	FCachedSkeletalMeshData::FBoneData* BoneData;
+	if (Implementation->GetModifiableBoneData(BoneData, SkeletalMeshComponent, BoneName))
+	{
+		BoneData->Position = TM.GetLocation();
+		BoneData->Orientation = TM.GetRotation();
+		BoneData->Velocity = Velocity;
+		BoneData->AngularVelocity = AngularVelocity;
+		return true;
+	}
+	return false;
+}
+
+//======================================================================================================================
+bool UPhysicsControlComponent::ResetBodyModifierToCachedBoneTransform(
+	const FName                        Name,
+	const EResetToCachedTargetBehavior Behavior)
+{
+	FPhysicsBodyModifier* PhysicsBodyModifier = Implementation->FindBodyModifier(Name);
+	if (PhysicsBodyModifier)
+	{
+		if (Behavior == EResetToCachedTargetBehavior::ResetImmediately)
+		{
+			Implementation->ResetToCachedTarget(*PhysicsBodyModifier);
+		}
+		else
+		{
+			PhysicsBodyModifier->bResetToCachedTarget = true;
+		}
+		return true;
+	}
+	return false;
+
+}
+
+//======================================================================================================================
+void UPhysicsControlComponent::ResetBodyModifiersToCachedBoneTransforms(
+	const TArray<FName>&               Names,
+	const EResetToCachedTargetBehavior Behavior)
+{
+	for (FName Name : Names)
+	{
+		ResetBodyModifierToCachedBoneTransform(Name, Behavior);
+	}
+}
+
+//======================================================================================================================
+void UPhysicsControlComponent::ResetBodyModifiersInSetToCachedBoneTransforms(
+	const FName                        SetName,
+	const EResetToCachedTargetBehavior Behavior)
+{
+	ResetBodyModifiersToCachedBoneTransforms(GetBodyModifierNamesInSet(SetName), Behavior);
+}
+
 
 #if WITH_EDITOR
 
@@ -1850,12 +2356,13 @@ void UPhysicsControlComponent::DebugDraw(FPrimitiveDrawInterface* PDI) const
 				FString ComponentName = Record.MeshComponent ? Record.MeshComponent->GetName() : TEXT("None");
 
 				FString Text = FString::Printf(
-					TEXT("%s: %s: %s %s GravityMultiplier %f"),
+					TEXT("%s: %s: %s %s GravityMultiplier %f BlendWeight %f"),
 					*Name.ToString(),
 					*ComponentName,
 					*UEnum::GetValueAsString(Record.MovementType),
 					*UEnum::GetValueAsString(Record.CollisionType),
-					Record.GravityMultiplier);
+					Record.GravityMultiplier,
+					Record.PhysicsBlendWeight);
 
 				GEngine->AddOnScreenDebugMessage(-1, 0.0f, 
 					Record.MovementType == EPhysicsMovementType::Simulated ? FColor::Green : FColor::Red, Text);

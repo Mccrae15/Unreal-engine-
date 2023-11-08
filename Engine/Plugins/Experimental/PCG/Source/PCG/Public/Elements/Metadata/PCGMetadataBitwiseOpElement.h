@@ -29,12 +29,15 @@ public:
 #if WITH_EDITOR
 	virtual FName GetDefaultNodeName() const override;
 	virtual FText GetDefaultNodeTitle() const override;
+	virtual TArray<FPCGPreConfiguredSettingsInfo> GetPreconfiguredInfo() const override;
+	virtual bool OnlyExposePreconfiguredSettings() const override { return true; }
 #endif
 	virtual FName AdditionalTaskName() const override;
+	virtual void ApplyPreconfiguredSettings(const FPCGPreConfiguredSettingsInfo& PreconfigureInfo) override;
 	//~End UPCGSettings interface
 
 	//~Begin UPCGMetadataSettingsBase interface
-	FPCGAttributePropertySelector GetInputSource(uint32 Index) const override;
+	FPCGAttributePropertyInputSelector GetInputSource(uint32 Index) const override;
 
 	virtual FName GetInputPinLabel(uint32 Index) const override;
 	virtual uint32 GetInputPinNum() const override;
@@ -53,10 +56,10 @@ public:
 	EPCGMedadataBitwiseOperation Operation = EPCGMedadataBitwiseOperation::And;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Input)
-	FPCGAttributePropertySelector InputSource1;
+	FPCGAttributePropertyInputSelector InputSource1;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Input, meta = (EditCondition = "Operation != EPCGMedadataBitwiseOperation::Not", EditConditionHides))
-	FPCGAttributePropertySelector InputSource2;
+	FPCGAttributePropertyInputSelector InputSource2;
 	
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()

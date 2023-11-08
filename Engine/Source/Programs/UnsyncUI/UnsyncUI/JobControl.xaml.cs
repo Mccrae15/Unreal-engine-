@@ -64,6 +64,8 @@ namespace UnsyncUI
     {
         public BuildPlatformModel Build { get; }
         public string DstPath { get; }
+		public string ScavengePath { get; }
+		public string DstPathBase => Path.GetDirectoryName(DstPath);
         public bool DryRun { get; }
         public string Proxy { get; }
 		public string DFS { get; }
@@ -75,7 +77,7 @@ namespace UnsyncUI
 
         public string Name => $"{Build.Name}{(DryRun ? " - Dry Run" : "")}";
 
-        private double totalProgress = 0;
+		private double totalProgress = 0;
         public double TotalProgress
         {
             get => totalProgress;
@@ -168,6 +170,7 @@ namespace UnsyncUI
 		public JobModel(
 			BuildPlatformModel build,
 			string dstPath,
+			string scavengePath,
 			bool dryRun,
 			string proxy,
 			string dfs,
@@ -178,10 +181,11 @@ namespace UnsyncUI
 			Action<JobModel> onProgress)
 		{
             Build = build;
-            DstPath = dstPath;
+            DstPath = dstPath?.TrimEnd('\\');
+			ScavengePath = scavengePath?.TrimEnd('\\');
             DryRun = dryRun;
-            Proxy = proxy;
-			DFS = dfs;
+            Proxy = proxy?.TrimEnd('\\');
+			DFS = dfs?.TrimEnd('\\');
 			AdditionalArgs = additionalArgs;
 			IncludeFilter = build.Include?.Split(',', StringSplitOptions.RemoveEmptyEntries)
 				.Select(Entry => Entry.Trim())
@@ -256,6 +260,13 @@ namespace UnsyncUI
 			ProgressMessage = null;
 			StatusColor = ConsoleColor.Red;
 			cts.Cancel();
+		}
+
+		public bool IsDuplicate(JobModel otherJob) 
+		{
+			return (Build.Build.Path == otherJob.Build.Build.Path)
+				&& (Build.Platform == otherJob.Build.Platform)
+				&& (DstPathBase == otherJob.DstPathBase);
 		}
 
         private async void RunAsync()
@@ -374,6 +385,11 @@ namespace UnsyncUI
 				if (Exclusions != null && Exclusions.Length > 0)
 				{
 					args.Add($"--exclude {string.Join(",", Exclusions)}");
+				}
+
+				if (ScavengePath != null)
+				{
+					args.Add($"--scavenge \"{ScavengePath}\"");
 				}
 
 				args.Add($"\"{Build.FullPath}\"");

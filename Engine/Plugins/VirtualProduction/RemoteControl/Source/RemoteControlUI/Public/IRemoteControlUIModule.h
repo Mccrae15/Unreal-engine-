@@ -11,15 +11,16 @@
 #include "Widgets/Layout/SSplitter.h"
 
 class FDelegateHandle;
+class FPropertyPath;
 class FRCPanelWidgetRegistry;
-struct FOnGenerateGlobalRowExtensionArgs;
-struct FRemoteControlEntity;
-class IPropertyHandle;
 class IDetailCategoryBuilder;
 class IDetailLayoutBuilder;
-struct SRCPanelTreeNode;
+class IPropertyHandle;
+class URCVirtualPropertyBase;
 class URemoteControlPreset;
-class FPropertyPath;
+struct FOnGenerateGlobalRowExtensionArgs;
+struct FRemoteControlEntity;
+struct SRCPanelTreeNode;
 
 struct FRCColumnSizeData
 {
@@ -122,6 +123,44 @@ DECLARE_DELEGATE_RetVal_OneParam(bool, FOnDisplayExposeIcon, const FRCExposesPro
  */
 DECLARE_DELEGATE_FourParams(FOnCustomizeMetadataEntry, URemoteControlPreset* /*Preset*/, const FGuid& /*DisplayedEntityId*/, IDetailLayoutBuilder& /*LayoutBuilder*/, IDetailCategoryBuilder& /*CategoryBuilder*/);
 
+/** A struct used for controllers list items columns customization */
+struct FRCControllerExtensionWidgetsInfo
+{
+	FRCControllerExtensionWidgetsInfo(URCVirtualPropertyBase* InController)
+		: Controller(InController)
+	{
+	}
+
+	/** Add a new widget, and associate it to the specified custom column */
+	bool AddColumnWidget(const FName& InColumnName, const TSharedRef<SWidget>& InWidget)
+	{
+		if (CustomWidgetsMap.Contains(InColumnName))
+		{
+			return false;
+		}
+		
+		CustomWidgetsMap.Add(InColumnName, InWidget);
+
+		return true;
+	}
+
+	/** The controller being customized */
+	URCVirtualPropertyBase* Controller;
+
+	/** A map associating each column with a widget */
+	TMap<FName, TSharedRef<SWidget>> CustomWidgetsMap;
+};
+
+/**
+ * Callback called to customize the extensible widget for controllers in controllers list
+ */
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnGenerateControllerExtensionsWidgets, FRCControllerExtensionWidgetsInfo& /*OutWidgetsInfo*/);
+
+/**
+ * Called when setting up / resetting the Controller panel list. Register to add custom column.
+ */
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnAddControllerExtensionColumn, TArray<FName>& /*OutColumnNames*/);
+
 /**
  * A Remote Control module that allows exposing objects and properties from the editor.
  */
@@ -140,6 +179,16 @@ public:
 		static const FName ModuleName = "RemoteControlUI";
 		return FModuleManager::LoadModuleChecked<IRemoteControlUIModule>(ModuleName);
 	}
+	
+	/** Delegate called when a Remote Control Preset panel is created/opened for the specified Remote Control Preset */
+    DECLARE_MULTICAST_DELEGATE_OneParam(FOnRemoteControlPresetOpened, URemoteControlPreset* /*RemoteControlPreset*/);
+    virtual FOnRemoteControlPresetOpened& OnRemoteControlPresetOpened() = 0;
+
+	/** Delegate called when a Remote Control Preset panel is created/opened for the specified Remote Control Preset */
+	virtual FOnGenerateControllerExtensionsWidgets& OnGenerateControllerExtensionsWidgets() = 0;
+
+	/** Delegate called when a Remote Control Preset panel is created/opened for the specified Remote Control Preset */
+	virtual FOnAddControllerExtensionColumn& OnAddControllerExtensionColumn() = 0;
 	
 	/** 
 	 * Get the toolbar extension generators.
@@ -206,4 +255,9 @@ public:
 	 * Set the list of selected objects.
 	 */
 	virtual void SelectObjects(const TArray<UObject*>& Objects) const = 0;
+
+	/**
+	 * Tries to retrieve a Custom Controller Widget for the specified Controller
+	 */
+	virtual TSharedPtr<SWidget> CreateCustomControllerWidget(URCVirtualPropertyBase* InController) const = 0;
 };

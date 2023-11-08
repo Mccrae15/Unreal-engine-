@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import base64
+from collections import OrderedDict
 import concurrent.futures
+from datetime import datetime
+from functools import wraps
+import hashlib
+from ipaddress import IPv4Address
 import json
 import os
 import pathlib
@@ -11,19 +16,16 @@ import re
 import socket
 import sys
 import threading
+from typing import Callable, Generator, Optional, Union
 import uuid
-from collections import OrderedDict
-from datetime import datetime
-from functools import wraps
-from ipaddress import IPv4Address
-from typing import Callable, Generator, List, Optional, Set
 
-import switchboard.switchboard_widgets as sb_widgets
 from PySide2 import QtCore, QtGui, QtWidgets
-from switchboard import config_osc as osc
-from switchboard import message_protocol, switchboard_application
-from switchboard import switchboard_dialog as sb_dialog
-from switchboard import switchboard_utils as sb_utils
+
+from switchboard import message_protocol, switchboard_application, ugs_utils
+import switchboard.config_osc as osc
+import switchboard.switchboard_dialog as sb_dialog
+import switchboard.switchboard_utils as sb_utils
+import switchboard.switchboard_widgets as sb_widgets
 from switchboard.config import (CONFIG, DEFAULT_MAP_TEXT, ENABLE_UGS_SUPPORT, SETTINGS, BoolSetting, DirectoryPathSetting,
                                 EngineSyncMethod, FilePathSetting, IntSetting, MultiOptionSetting, OptionSetting, Setting,
                                 StringListSetting, StringSetting, migrate_comma_separated_string_to_list)
@@ -33,9 +35,7 @@ from switchboard.devices.unreal.uassetparser import UassetParser
 from switchboard.listener_client import ListenerClient
 from switchboard.switchboard_logging import LOGGER
 from switchboard.tools.insights_launcher import InsightsLauncher
-
-from ...util import p4_changelist_inspection
-from ...util.p4_changelist_inspection import P4Error
+from switchboard.util import p4_changelist_inspection
 from . import version_helpers
 from .listener_watcher import ListenerWatcher
 from .redeploy_dialog import RedeployListenerDialog
@@ -97,7 +97,7 @@ class ProgramStartQueue:
         # and main thread.
         self.lock = threading.Lock()
 
-        self.queued_programs: List[ProgramStartQueueItem] = []
+        self.queued_programs: list[ProgramStartQueueItem] = []
         self.starting_programs: OrderedDict[
             uuid.UUID, ProgramStartQueueItem] = OrderedDict()
         # initialized as returned by listener
@@ -265,6 +265,7 @@ class ProgramStartQueue:
     def clear_running_programs(self):
         self.running_programs.clear()
 
+
 class LiveLinkPresetSetting(Setting):
     ''' Container of the LiveLink Preset setting
     Its main widget is a combo box that makes available the list
@@ -423,6 +424,7 @@ class LiveLinkPresetSetting(Setting):
                     combo.setCurrentIndex(item_idx)
                     break
 
+
 class MediaProfileSetting(LiveLinkPresetSetting):
     ''' Container of the MediaProfile setting.
     '''
@@ -441,9 +443,30 @@ class MediaProfileSetting(LiveLinkPresetSetting):
         return True
 
 
+class SyncCategoryOption:
+    ''' Used to represent a UGS sync filter category within a Setting. '''
+    def __init__(self, id: Union[str, uuid.UUID], name: str):
+        if isinstance(id, str):
+            id = uuid.UUID(id)
+
+        self.id = id
+        self.name = name
+
+    def __str__(self) -> str:
+        ''' Determines the text displayed in the `MultiSelectionComboBox`. '''
+        return self.name
+
+    def __eq__(self, other: object):
+        ''' Two category options compare equal if their UUIDs are equal. '''
+        if isinstance(other, SyncCategoryOption):
+            return self.id == other.id
+        else:
+            return False
+
+
 class DeviceUnreal(Device):
 
-    NDISPLAY_CLASS_NAMES =  (
+    NDISPLAY_CLASS_NAMES = (
         'DisplayClusterBlueprint',
         '/Script/DisplayCluster.DisplayClusterBlueprint',
     )
@@ -491,6 +514,14 @@ class DeviceUnreal(Device):
             nice_name="Listener Port",
             value=2980,
             tool_tip="Port of SwitchboardListener"
+        ),
+        'osc_port': IntSetting(
+            attr_name='osc_port',
+            nice_name='OSC Port',
+            value=5500,
+            tool_tip=(
+                'Must match the port on which the Unreal Editor OSC server '
+                'is configured to listen for OSC connections.'),
         ),
         'roles_filename': StringSetting(
             attr_name="roles_filename",
@@ -546,8 +577,8 @@ class DeviceUnreal(Device):
             value=':0',
             tool_tip=(
                 'Local interface binding (-UDPMESSAGING_TRANSPORT_UNICAST) of '
-                'the form {address}:{port}. If {address} is omitted, the device address '
-                'address is used.'),
+                'the form {address}:{port}. If {address} is omitted, the '
+                'device address is used.'),
         ),
         'udpmessaging_extra_static_endpoints': StringSetting(
             attr_name='udpmessaging_extra_static_endpoints',
@@ -646,6 +677,44 @@ class DeviceUnreal(Device):
             ),
             show_ui = True if sys.platform in ('win32','linux') else False, # Gpu Clocker is available in select platforms
         ),
+        'use_sync_filters': BoolSetting(
+            attr_name='use_sync_filters',
+            nice_name='Use Sync Filters',
+            value=False,
+            tool_tip=(
+                'Controls whether UnrealGameSync filter categories or custom '
+                'views specified below are used during Perforce sync')
+        ),
+        'included_sync_categories': MultiOptionSetting(
+            attr_name='included_sync_categories',
+            nice_name='Included Sync Filter Categories',
+            value=[
+                SyncCategoryOption('6703e989-d912-451d-93ad-b48de748d282',
+                                   'Content'),
+                SyncCategoryOption('f44b2d25-cbc0-4a8f-b6b3-e4a8125533dd',
+                                   'Platform Support: Linux'),
+                SyncCategoryOption('5206ccee-9024-4e36-8b89-f5f5a7d288d2',
+                                   'Platform Support: Win64'),
+                SyncCategoryOption('cfec942a-bb90-4f0c-accf-238ecaad9430',
+                                   'Source Code'),
+            ],
+            tool_tip='UnrealGameSync filter categories to include during sync',
+        ).with_get_json_override_fn(
+            lambda val_list: [(str(x.id), x.name) for x in val_list]
+        ).with_config_set_override_fn(
+            lambda val_list: [
+                SyncCategoryOption(uuid.UUID(x[0]), x[1])
+                for x in val_list]
+        ),
+        'custom_sync_view': StringSetting(
+            attr_name='custom_sync_view',
+            nice_name='Custom Sync View',
+            value='',
+            placeholder_text='-/Samples/Games/...,-.../ExcludePlatform/...',
+            tool_tip=(
+                'Comma separated. Used to specify freeform Perforce-style '
+                'wildcards to be applied during sync.'),
+        ),
     }
 
     if ENABLE_UGS_SUPPORT:
@@ -663,6 +732,7 @@ class DeviceUnreal(Device):
 
     mu_server = switchboard_application.get_multi_user_server_instance()
     rsync_server = switchboard_application.RsyncServer()
+    ugs_config: Optional[ugs_utils.IniParser] = None
 
     # Monitors the local listener executable and notifies when the file is
     # changed.
@@ -670,11 +740,87 @@ class DeviceUnreal(Device):
 
     # Every DeviceUnreal (and derived class, e.g. DevicenDisplay) instance;
     # used for listener updates.
-    active_unreal_devices: Set[DeviceUnreal] = set()
+    active_unreal_devices: set[DeviceUnreal] = set()
 
     # Flag used to batch together multiple rapid calls to
     # `_queue_notify_redeploy`.
     _pending_notify_redeploy = False
+
+    class UgsConfigRunnable(QtCore.QRunnable):
+        ''' Performs a UGS config update on the thread pool. '''
+
+        class Signals(QtCore.QObject):
+            result = QtCore.Signal(ugs_utils.IniParser)
+
+        def __init__(self, engine_dir: Optional[str], proj_dir: Optional[str]):
+            super().__init__()
+            self.engine_dir = engine_dir
+            self.proj_dir = proj_dir
+            self.signals = self.Signals()
+
+        def run(self):
+            ugs_config = ugs_utils.parse_depot_ugs_configs(
+                self.engine_dir, self.proj_dir)
+            self.signals.result.emit(ugs_config)
+
+    _ugs_config_runnable: Optional[UgsConfigRunnable] = None
+    _pending_ugs_config_refresh = False
+
+    @classmethod
+    def p4_refresh_ugs_config(cls):
+        if cls.ugs_config is None:
+            # One-time initialization
+            def refresh():
+                cls.p4_refresh_ugs_config()
+
+            CONFIG.P4_ENABLED.signal_setting_changed.connect(refresh)
+            CONFIG.P4_ENGINE_PATH.signal_setting_changed.connect(refresh)
+            CONFIG.P4_PROJECT_PATH.signal_setting_changed.connect(refresh)
+
+        if not CONFIG.P4_ENABLED.get_value():
+            cls.ugs_config = ugs_utils.IniParser()
+            return
+
+        if cls._pending_ugs_config_refresh:
+            return
+        elif cls._ugs_config_runnable:
+            cls._pending_ugs_config_refresh = True
+            return
+
+        engine_dir = CONFIG.P4_ENGINE_PATH.get_value() or None
+        project_dir = CONFIG.P4_PROJECT_PATH.get_value() or None
+        cls._ugs_config_runnable = cls.UgsConfigRunnable(
+            engine_dir, project_dir)
+
+        cls._ugs_config_runnable.signals.result.connect(
+            cls._on_updated_ugs_config)
+        QtCore.QThreadPool.globalInstance().start(cls._ugs_config_runnable)
+
+    @classmethod
+    def _on_updated_ugs_config(cls, ugs_config: ugs_utils.IniParser):
+        cls.ugs_config = ugs_config
+
+        assert cls._ugs_config_runnable is not None
+        cls._ugs_config_runnable.signals.result.disconnect(
+            cls._on_updated_ugs_config)
+        cls._ugs_config_runnable = None
+
+        if cls._pending_ugs_config_refresh:
+            cls._pending_ugs_config_refresh = False
+            cls.p4_refresh_ugs_config()
+            return
+
+        sync_filters = ugs_utils.SyncFilters()
+        sync_filters.read_categories_from_ini_parser(cls.ugs_config)
+        sync_filters.categories = dict(sorted(
+            sync_filters.categories.items(), key=lambda item: item[1].name))
+
+        # The UUIDs are stable, but the names/object identities change
+        include_setting = cls.csettings['included_sync_categories']
+        include_setting.possible_values.clear()
+        for category in sync_filters.categories.values():
+            option = SyncCategoryOption(category.id, category.name)
+            include_setting.possible_values.append(option)
 
     @classmethod
     def get_designated_local_builder(cls) -> Optional[DeviceUnreal]:
@@ -685,7 +831,7 @@ class DeviceUnreal(Device):
         listener executables.
         '''
 
-        def ips_for_host(host: str) -> List[IPv4Address]:
+        def ips_for_host(host: str) -> list[IPv4Address]:
             try:
                 (primary_name, aliases, ipstrs) = socket.gethostbyname_ex(host)
                 return [IPv4Address(ipstr) for ipstr in ipstrs]
@@ -758,6 +904,13 @@ class DeviceUnreal(Device):
             tool_tip="List of roles for this device"
         )
 
+        self.setting_ddc_build_platforms = MultiOptionSetting(
+            attr_name="ddc_build_platforms",
+            nice_name="DDC Build Platforms",
+            value=["Windows", "WindowsEditor", "Linux", "LinuxEditor"],
+            tool_tip="List of platforms for which to build the DDC cache for this device"
+        )
+
         autojoin_mu_server = kwargs.get("autojoin_mu_server", True)
         self.autojoin_mu_server = BoolSetting(
             attr_name="autojoin_mu_server",
@@ -787,6 +940,13 @@ class DeviceUnreal(Device):
             show_ui=False
         )
 
+        self.last_sync_filter_hash = StringSetting(
+            attr_name="last_sync_filter_hash",
+            nice_name="Last UGS Sync Filter Hash",
+            value=kwargs.get('last_sync_filter_hash', ''),
+            show_ui=False
+        )
+
         self.exclude_from_build = BoolSetting(
             attr_name="exclude_from_build",
             nice_name="Exclude from build",
@@ -801,11 +961,18 @@ class DeviceUnreal(Device):
         CONFIG.ENGINE_SYNC_METHOD.signal_setting_changed.connect(
             self.on_engine_sync_method_changed)
 
+        osc_port_setting = DeviceUnreal.csettings['osc_port']
+        osc_port_setting.signal_setting_changed.connect(
+            lambda: self._check_recreate_osc_client())
+        osc_port_setting.signal_setting_overridden.connect(
+            lambda: self._check_recreate_osc_client())
+
         self.auto_connect = False
 
         self.runtime_str = ""
         self.inflight_project_cl = None
         self.inflight_engine_cl = None
+        self.inflight_sync_hash: Optional[str] = None
 
         listener_qt_handler = self.unreal_client.listener_qt_handler
         listener_qt_handler.listener_connecting.connect(
@@ -884,22 +1051,24 @@ class DeviceUnreal(Device):
                 'rsync_port'].signal_setting_changed.connect(
                     launch_rsync_server)
 
+        if self.ugs_config is None:
+            self.p4_refresh_ugs_config()
+
         app = QtCore.QCoreApplication.instance()
         app.aboutToQuit.connect(self._on_about_to_quit)
 
-        self._widget_classes: Set[str] = set()
+        self._widget_classes: set[str] = set()
 
         # Notify user of any invalid settings
         self.check_settings_valid()
 
     def init(self, widget_class, icons):
         super().init(widget_class, icons)
-        
+
         self.exclude_from_build.signal_setting_changed.connect(
             lambda _, new_value: self.on_setting_exclude_from_build_changed(new_value)
         )
         self.on_setting_exclude_from_build_changed(self.exclude_from_build.get_value())
-        
 
     def should_allow_exit(self, close_req_id: int) -> bool:
         # Delegate to a class method which surveys all active devices.
@@ -985,6 +1154,7 @@ class DeviceUnreal(Device):
     def setting_overrides(self):
         overrides = super().setting_overrides() + [
             Device.csettings['is_recording_device'],
+            DeviceUnreal.csettings['osc_port'],
             DeviceUnreal.csettings['command_line_arguments'],
             DeviceUnreal.csettings['exec_cmds'],
             DeviceUnreal.csettings['dp_cvars'],
@@ -1008,11 +1178,13 @@ class DeviceUnreal(Device):
     def device_settings(self):
         return super().device_settings() + [
             self.setting_roles,
+            self.setting_ddc_build_platforms,
             self.autojoin_mu_server,
             self.last_launch_command,
             self.last_log_path,
             self.last_trace_path,
-            self.exclude_from_build
+            self.exclude_from_build,
+            self.last_sync_filter_hash,
         ]
 
     def check_settings_valid(self) -> bool:
@@ -1136,6 +1308,10 @@ class DeviceUnreal(Device):
     def on_setting_exclude_from_build_changed(self, exclude_from_build):
         self.widget.update_exclude_from_build(exclude_from_build, not self.is_disconnected)
 
+    @property
+    def device_osc_port(self) -> int:
+        return DeviceUnreal.csettings['osc_port'].get_value(self.name)
+
     def set_slate(self, value):
         if not self.is_recording_device:
             return
@@ -1163,7 +1339,7 @@ class DeviceUnreal(Device):
             os.path.dirname(uproject_path), "Config", "Tags", roles_filename)
         _, msg = message_protocol.create_copy_file_from_listener_message(roles_file_path)
         self.unreal_client.send_message(msg)
-        
+
     def _request_unreal_editor_version_file(self):
         '''
         Requests the Engine/Binaries/[platform]/UnrealEditor.version file.
@@ -1375,15 +1551,49 @@ class DeviceUnreal(Device):
         if generate_proj_files:
             sync_args += ' --generate'
 
+        if DeviceUnreal.csettings['use_sync_filters'].get_value():
+            include_str = ''
+            custom_view_str = self.csettings['custom_sync_view'].get_value()
+
+            incl_categories: list[SyncCategoryOption] = self.csettings[
+                'included_sync_categories'].get_value()
+            if incl_categories:
+                incl_categories.sort(key=lambda cat: cat.id)
+                include_str = ','.join(str(cat.id) for cat in incl_categories)
+                sync_args += f' --include-categories="{include_str}"'
+
+            if custom_view_str:
+                sync_args += f' --custom-view="{custom_view_str}"'
+
+            # If the user changes their sync filters, we need to rescan their
+            # entire workspace to ensure we remove newly-excluded files.
+            # We make this determination by concatenating and hashing their
+            # selected filters, and then comparing that hash between syncs.
+            new_hash_input_bytes = bytearray()
+            new_hash_input_bytes.extend(include_str.encode('utf-8'))
+            new_hash_input_bytes.extend(custom_view_str.encode('utf-8'))
+            new_hash = hashlib.sha1(new_hash_input_bytes).hexdigest()
+            prev_hash = self.last_sync_filter_hash.get_value()
+            if new_hash != prev_hash:
+                LOGGER.info(
+                    f'Filter has changed ({prev_hash} -> {new_hash}); '
+                    'finding files in workspace that need to be removed.')
+                sync_args += ' --remove-excluded-workspace-files'
+
+                # If the sync is interrupted, we'll be in an indeterminate
+                # state, and we should always clean next time.
+                self.last_sync_filter_hash.update_value('INVALID')
+                self.inflight_sync_hash = new_hash  # persisted on sync success
+
         if ENABLE_UGS_SUPPORT:
             if sync_using_ugs:
                 sync_args += ' --use-ugs'
                 if self.unrealgamesync_lib_dir_setting:
                     sync_args += f' --ugs-lib-dir={self.unrealgamesync_lib_dir_setting}'
-        
+
             if sync_precompiled_bins:
                 sync_args += ' --use-pcbs'
-            
+
                 # If we're syncing 'Precompiled Binaries' one of those binaries may be the SwitchboardListener executable
                 # which means (on Windows atleast) we need to move the executable to make way for the new one
                 _, msg = message_protocol.create_free_listener_bin_message()
@@ -1684,8 +1894,8 @@ class DeviceUnreal(Device):
         else:
             return ''
 
-    def build_udpmessaging_static_endpoint_list(self) -> List[str]:
-        endpoints: List[str] = []
+    def build_udpmessaging_static_endpoint_list(self) -> list[str]:
+        endpoints: list[str] = []
 
         # Multi-user server.
         if CONFIG.MUSERVER_AUTO_ENDPOINT.get_value():
@@ -1734,9 +1944,7 @@ class DeviceUnreal(Device):
     def generate_unreal_command_line_args(self, map_name):
         command_line_args = f'{self.extra_cmdline_args_setting}'
 
-        command_line_args += f' Log={self.log_filename}'
-
-        command_line_args += " "
+        command_line_args += f' Log={self.log_filename} '
 
         if CONFIG.MUSERVER_AUTO_JOIN.get_value() and self.autojoin_mu_server.get_value():
             command_line_args += (
@@ -1763,7 +1971,6 @@ class DeviceUnreal(Device):
             exec_cmds.append(self.exec_command_for_livelink_preset(livelink_preset_gamepath))
 
         # Exec Commands
-
         exec_cmds = [cmd for cmd in exec_cmds if len(cmd.strip())]
 
         if len(exec_cmds):
@@ -1846,6 +2053,14 @@ class DeviceUnreal(Device):
                 ' -UDPMESSAGING_TRANSPORT_STATIC='
                 f'"{",".join(static_endpoints)}"')
 
+        record_on_client = 'True' if self.is_recording_device else 'False'
+        ini_engine = (
+            ' -ini:Engine:'
+            '[/Script/ConcertTakeRecorder.ConcertSessionRecordSettings]:'
+            f'LocalSettings=(bRecordOnClient={record_on_client})'
+        )
+        command_line_args += ini_engine
+
         return (
             f'"{CONFIG.UPROJECT_PATH.get_value(self.name)}" {map_name} '
             f'{command_line_args}')
@@ -1854,6 +2069,50 @@ class DeviceUnreal(Device):
         return (
             self.generate_unreal_exe_path(),
             self.generate_unreal_command_line_args(map_name))
+
+    def fill_derived_data_cache(self, current_level_only=False, program_name="unreal_ddc"):
+
+        possible_platforms = self.setting_ddc_build_platforms.get_value()
+        if (len(possible_platforms) == 0):
+            LOGGER.error("No platforms selected for fill_derived_data_cache, canceling...")
+            return 0
+
+        separator = '+'
+        platform_string = ''
+
+        for platform in possible_platforms:
+            if self.setting_ddc_build_platforms.get_value(platform):
+                platform_string += platform + separator
+        platform_string = platform_string.removesuffix(separator) 
+        
+        current_level = CONFIG.CURRENT_LEVEL
+        current_level_valid = current_level_only and current_level != None and current_level != DEFAULT_MAP_TEXT
+        map_name = ' Map=' + current_level if current_level_valid else ''
+
+        args = CONFIG.UPROJECT_PATH.get_value(self.name) + map_name + " -run=DerivedDataCache -TargetPlatform=" + platform_string + " -fill -DDC=CreateInstalledEnginePak"
+        LOGGER.info('Filling ddc with arguments: ' + args)
+
+        puuid, msg = message_protocol.create_start_process_message(
+            prog_path= self.generate_unreal_exe_path(),
+            prog_args=args,
+            prog_name=program_name,
+            caller=self.name,
+            update_clients_with_stdout=True,
+            priority_modifier=sb_utils.PriorityModifier.Normal.value,
+            lock_gpu_clock=False,
+        )
+
+        self.program_start_queue.add(
+            ProgramStartQueueItem(
+                name=program_name,
+                puuid_dependency=None,
+                puuid=puuid,
+                msg_to_unreal_client=msg,
+            ),
+            unreal_client=self.unreal_client,
+        )
+
+        return puuid
 
     def launch(self, map_name, program_name="unreal"):
         if map_name == DEFAULT_MAP_TEXT:
@@ -2057,6 +2316,8 @@ class DeviceUnreal(Device):
         elif program_name == 'sync':
             if returncode == 0:
                 LOGGER.info(f"{self.name}: Sync successful")
+                self.last_sync_filter_hash.update_value(
+                    self.inflight_sync_hash)
             else:
                 LOGGER.error(f"{self.name}: Sync failed!")
                 for line in get_stdout_str().splitlines():
@@ -2081,8 +2342,7 @@ class DeviceUnreal(Device):
             self.project_changelist = self.inflight_project_cl
             self.inflight_project_cl = None
 
-            # refresh project CL
-            self.project_changelist = self.project_changelist
+            self.inflight_sync_hash = None
 
             self.status = DeviceStatus.CLOSED
 
@@ -2206,12 +2466,13 @@ class DeviceUnreal(Device):
             device.built_engine_changelist = compatible_cl
 
     def on_file_receive_failed(self, source_path, error):
-        roles = self.setting_roles.get_value()
-        if len(roles) > 0:
-            LOGGER.error(
-                f"{self.name}: Error receiving role file from listener and "
-                f"device claims to have these roles: {' | '.join(roles)}")
-            LOGGER.error(f"Error: {error}")
+        if source_path.endswith(DeviceUnreal.csettings["roles_filename"].get_value(self.name)):
+            roles = self.setting_roles.get_value()
+            if len(roles) > 0:
+                LOGGER.error(
+                    f"{self.name}: Error receiving role file from listener and "
+                    f"device claims to have these roles: {' | '.join(roles)}")
+                LOGGER.error(f"Error: {error}")
 
     def on_listener_programstdout(self, message):
         ''' Handles updates to stdout of programs
@@ -2786,6 +3047,7 @@ class DeviceWidgetUnreal(DeviceWidget):
     signal_open_last_log = QtCore.Signal(object)
     signal_open_last_trace = QtCore.Signal(object)
     signal_copy_last_launch_command = QtCore.Signal(object)
+    signal_device_widget_fill_ddc = QtCore.Signal(object, bool)
 
     def __init__(self, name, device_hash, address, icons, parent=None):
         self._autojoin_visible = True
@@ -3079,7 +3341,7 @@ class DeviceWidgetUnreal(DeviceWidget):
                     later_cl,
                     CONFIG.P4_ENGINE_PATH.get_value()
                 )
-            except P4Error as error:
+            except p4_changelist_inspection.P4Error as error:
                 LOGGER.error(f"Couldn't check {built_cl} - {built_cl} for source code changes."
                              f" Reason: {error.message}")
                 # Assume that non-equal CL numbers have source changes
@@ -3161,3 +3423,9 @@ class DeviceWidgetUnreal(DeviceWidget):
         cmenu.addAction("Open fetched trace", lambda: self.signal_open_last_trace.emit(self))
         cmenu.addAction("Copy last launch command", lambda: self.signal_copy_last_launch_command.emit(self))
 
+        # Only create DDC submenu if node is connected
+        if self.connect_button.isChecked():
+            fill_ddc_menu = cmenu.addMenu("Fill DDC (Prepare Shaders)")
+        
+            current_level_action = fill_ddc_menu.addAction("Current Level", lambda: self.signal_device_widget_fill_ddc.emit(self, True))
+            all_levels_action = fill_ddc_menu.addAction("All Levels", lambda: self.signal_device_widget_fill_ddc.emit(self, False))

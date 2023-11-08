@@ -137,12 +137,17 @@ bool AControlRigShapeActor::UpdateControlSettings(
 	if(bLookupShape)
 	{
 		const TArray<TSoftObjectPtr<UControlRigShapeLibrary>> ShapeLibraries = InControlRig->GetShapeLibraries();
-		if (const FControlRigShapeDefinition* ShapeDef = UControlRigShapeLibrary::GetShapeByName(ControlSettings.ShapeName, ShapeLibraries))
+		if (const FControlRigShapeDefinition* ShapeDef = UControlRigShapeLibrary::GetShapeByName(ControlSettings.ShapeName, ShapeLibraries, InControlRig->ShapeLibraryNameMap))
 		{
 			MeshTransform = ShapeDef->Transform;
 
 			if(bShapeNameUpdated)
 			{
+				if (!ShapeDef->StaticMesh.IsValid())
+				{
+					ShapeDef->StaticMesh.LoadSynchronous();
+				}
+
 				if(ShapeDef->StaticMesh.IsValid())
 				{
 					if(UStaticMesh* StaticMesh = ShapeDef->StaticMesh.Get())
@@ -151,6 +156,7 @@ bool AControlRigShapeActor::UpdateControlSettings(
 						{
 							StaticMeshComponent->SetStaticMesh(StaticMesh);
 							bShapeTransformChanged = true;
+							ShapeName = ControlSettings.ShapeName;
 						}
 					}
 					else
@@ -265,7 +271,11 @@ namespace FControlRigShapeHelper
 				ShapeActor->ColorParameterName = CreationParam.ColorParameterName;
 				UMaterialInstanceDynamic* MaterialInstance = UMaterialInstanceDynamic::Create(CreationParam.Material.Get(), ShapeActor);
 				MaterialInstance->SetVectorParameterValue(CreationParam.ColorParameterName, FVector(CreationParam.Color));
-				MeshComponent->SetMaterial(0, MaterialInstance);
+
+				for (int32 i=0; i<MeshComponent->GetNumMaterials(); ++i)
+				{
+					MeshComponent->SetMaterial(i, MaterialInstance);
+				}
 			}
 			return ShapeActor;
 		}

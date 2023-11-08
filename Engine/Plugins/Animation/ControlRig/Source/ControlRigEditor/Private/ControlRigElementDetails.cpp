@@ -15,7 +15,7 @@
 #include "SEnumCombo.h"
 #include "Units/Execution/RigUnit_BeginExecution.h"
 #include "Units/Execution/RigUnit_DynamicHierarchy.h"
-#include "Graph/SControlRigGraphPinVariableBinding.h"
+#include "Widgets/SRigVMGraphPinVariableBinding.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "Styling/AppStyle.h"
 #include "Editor/SRigHierarchyTreeView.h"
@@ -537,7 +537,7 @@ void FRigControlTransformChannelDetails::CustomizeHeader(TSharedRef<IPropertyHan
 	InStructPropertyHandle->GetOuterObjects(Objects);
 	for (UObject* Object : Objects)
 	{
-		if (const UDetailsViewWrapperObject* WrapperObject = Cast<UDetailsViewWrapperObject>(Object))
+		if (const URigVMDetailsViewWrapperObject* WrapperObject = Cast<URigVMDetailsViewWrapperObject>(Object))
 		{
 			if(WrapperObject->GetWrappedStruct() == FRigControlElement::StaticStruct())
 			{
@@ -672,13 +672,13 @@ void FRigBaseElementDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilde
 	DetailBuilder.GetObjectsBeingCustomized(DetailObjects);
 	for(TWeakObjectPtr<UObject> DetailObject : DetailObjects)
 	{
-		UDetailsViewWrapperObject* WrapperObject = CastChecked<UDetailsViewWrapperObject>(DetailObject.Get());
+		URigVMDetailsViewWrapperObject* WrapperObject = CastChecked<URigVMDetailsViewWrapperObject>(DetailObject.Get());
 
 		const FRigElementKey Key = WrapperObject->GetContent<FRigBaseElement>().GetKey();
 
 		FPerElementInfo Info;
 		Info.WrapperObject = WrapperObject;
-		Info.Element = Cast<URigHierarchy>(WrapperObject->GetOuter())->GetHandle(Key);
+		Info.Element = Cast<URigHierarchy>(WrapperObject->GetSubject())->GetHandle(Key);
 
 		if(!Info.Element.IsValid())
 		{
@@ -1121,9 +1121,10 @@ bool FRigBaseElementDetails::ContainsElementByPredicate(const TFunction<bool(con
 
 void FRigBaseElementDetails::RegisterSectionMappings(FPropertyEditorModule& PropertyEditorModule)
 {
-	FRigBoneElementDetails().RegisterSectionMappings(PropertyEditorModule, UDetailsViewWrapperObject::GetClassForStruct(FRigBoneElement::StaticStruct()));
-	FRigNullElementDetails().RegisterSectionMappings(PropertyEditorModule, UDetailsViewWrapperObject::GetClassForStruct(FRigNullElement::StaticStruct()));
-	FRigControlElementDetails().RegisterSectionMappings(PropertyEditorModule, UDetailsViewWrapperObject::GetClassForStruct(FRigControlElement::StaticStruct()));
+	const URigVMDetailsViewWrapperObject* CDOWrapper = CastChecked<URigVMDetailsViewWrapperObject>(UControlRigWrapperObject::StaticClass()->GetDefaultObject());
+	FRigBoneElementDetails().RegisterSectionMappings(PropertyEditorModule, CDOWrapper->GetClassForStruct(FRigBoneElement::StaticStruct()));
+	FRigNullElementDetails().RegisterSectionMappings(PropertyEditorModule, CDOWrapper->GetClassForStruct(FRigNullElement::StaticStruct()));
+	FRigControlElementDetails().RegisterSectionMappings(PropertyEditorModule, CDOWrapper->GetClassForStruct(FRigControlElement::StaticStruct()));
 }
 
 void FRigBaseElementDetails::RegisterSectionMappings(FPropertyEditorModule& PropertyEditorModule, UClass* InClass)
@@ -1543,7 +1544,7 @@ FDetailWidgetRow& FRigTransformElementDetails::CreateEulerTransformValueWidgetRo
 
 	const TSharedPtr<ESlateRotationRepresentation::Type> RotationRepresentationStorage = Settings.RotationRepresentation;
 	TransformWidgetArgs.RotationRepresentation(RotationRepresentationStorage);
-	
+
 	auto IsComponentRelative = [TransformWidgetArgs](int32 Component) -> bool
 	{
 		if(TransformWidgetArgs._OnGetIsComponentRelative.IsBound())
@@ -1892,7 +1893,8 @@ FDetailWidgetRow& FRigTransformElementDetails::CreateEulerTransformValueWidgetRo
 					case ERigControlType::Transform:
 					case ERigControlType::TransformNoScale:
 					{
-						RelativeTransform.Rotation = Hierarchy->GetControlPreferredRotator(ControlElement, bInitial);
+						FVector Vector = Hierarchy->GetControlSpecifiedEulerAngle(ControlElement, bInitial);
+						RelativeTransform.Rotation =  FRotator(Vector.Y, Vector.Z, Vector.X);
 						break;
 					}
 					default:
@@ -2066,7 +2068,8 @@ FDetailWidgetRow& FRigTransformElementDetails::CreateEulerTransformValueWidgetRo
 							case ERigControlType::Transform:
 							case ERigControlType::TransformNoScale:
 							{
-								HierarchyToUpdate->SetControlPreferredRotator(ControlElement, InTransform.Rotator(), bInitial);
+								FVector EulerAngle(InTransform.Rotator().Roll, InTransform.Rotator().Pitch, InTransform.Rotator().Yaw);
+								HierarchyToUpdate->SetControlSpecifiedEulerAngle(ControlElement, EulerAngle, bInitial);
 								break;
 							}
 							default:
@@ -2266,6 +2269,59 @@ FDetailWidgetRow& FRigTransformElementDetails::CreateEulerTransformValueWidgetRo
 
 		SliderTransaction.Reset();
 	});
+
+	TransformWidgetArgs.OnBeginSliderMovement_Lambda(
+		[
+			this
+		](
+			ESlateTransformComponent::Type Component,
+			ESlateRotationRepresentation::Type Representation,
+			ESlateTransformSubComponent::Type SubComponent)
+		{
+			if (UControlRig* DebuggedRig = Cast<UControlRig>(PerElementInfos[0].GetBlueprint()->GetObjectBeingDebugged()))
+			{
+				EControlRigInteractionType Type = EControlRigInteractionType::None;
+				switch (Component)
+				{
+					case ESlateTransformComponent::Location: Type = EControlRigInteractionType::Translate; break;
+					case ESlateTransformComponent::Rotation: Type = EControlRigInteractionType::Rotate; break;
+					case ESlateTransformComponent::Scale: Type = EControlRigInteractionType::Scale; break;
+					default: Type = EControlRigInteractionType::All;
+				}
+				DebuggedRig->InteractionType = (uint8)Type;
+				DebuggedRig->ElementsBeingInteracted.Reset();
+				for (FPerElementInfo& ElementInfo : PerElementInfos)
+				{
+					DebuggedRig->ElementsBeingInteracted.AddUnique(ElementInfo.Element.GetKey());
+				}
+				
+				FControlRigInteractionScope* InteractionScope = new FControlRigInteractionScope(DebuggedRig);
+				InteractionScopes.Add(InteractionScope);
+			}
+		});
+	TransformWidgetArgs.OnEndSliderMovement_Lambda(
+		[
+			this
+		](
+			ESlateTransformComponent::Type Component,
+			ESlateRotationRepresentation::Type Representation,
+			ESlateTransformSubComponent::Type SubComponent,
+			FVector::FReal InNumericValue)
+		{
+			if (UControlRig* DebuggedRig = Cast<UControlRig>(PerElementInfos[0].GetBlueprint()->GetObjectBeingDebugged()))
+			{
+				DebuggedRig->InteractionType = (uint8)EControlRigInteractionType::None;
+				DebuggedRig->ElementsBeingInteracted.Reset();
+			}
+			for (FControlRigInteractionScope* InteractionScope : InteractionScopes)
+			{
+				if (InteractionScope)
+				{
+					delete InteractionScope; 
+				}
+			}
+			InteractionScopes.Reset();
+		});
 
 	TransformWidgetArgs.OnCopyToClipboard_Lambda([Keys, IsComponentRelative, ConformComponentRelative, GetSingleTransform](
 		ESlateTransformComponent::Type InComponent
@@ -2970,6 +3026,20 @@ void FRigControlElementDetails::CustomizeControl(IDetailLayoutBuilder& DetailBui
 		.IsEnabled(bIsEnabled);
 	}
 
+	if(CVarControlRigHierarchyEnableRotationOrder.GetValueOnAnyThread())
+	{
+		if(IsAnyControlOfValueType(ERigControlType::EulerTransform))
+		{
+			const TSharedPtr<IPropertyHandle> UsePreferredRotationOrderHandle = SettingsHandle->GetChildHandle(TEXT("bUsePreferredRotationOrder"));
+			ControlCategory.AddProperty(UsePreferredRotationOrderHandle.ToSharedRef()).DisplayName(FText::FromString(TEXT("Use Preferred Rotation Order")))
+				.IsEnabled(bIsEnabled);
+
+			const TSharedPtr<IPropertyHandle> PreferredRotationOrderHandle = SettingsHandle->GetChildHandle(TEXT("PreferredRotationOrder"));
+			ControlCategory.AddProperty(PreferredRotationOrderHandle.ToSharedRef()).DisplayName(FText::FromString(TEXT("Preferred Rotation Order")))
+			.IsEnabled(bIsEnabled);
+		}
+	}
+
 	if(IsAnyControlOfValueType(ERigControlType::Integer))
 	{
 		const TSharedPtr<IPropertyHandle> ControlEnumHandle = SettingsHandle->GetChildHandle(TEXT("ControlEnum"));
@@ -3091,9 +3161,10 @@ void FRigControlElementDetails::CustomizeControl(IDetailLayoutBuilder& DetailBui
 
 void FRigControlElementDetails::CustomizeAnimationChannels(IDetailLayoutBuilder& DetailBuilder)
 {
-	// only show this for animation channels
-	if(IsAnyControlNotOfAnimationType(ERigControlAnimationType::AnimationChannel))
+	// We only show this section for parents of animation channels
+	if(!IsAnyControlNotOfAnimationType(ERigControlAnimationType::AnimationChannel))
 	{
+		// If all controls are animation channels, just return 
 		return;
 	}
 
@@ -3204,7 +3275,10 @@ void FRigControlElementDetails::CustomizeAnimationChannels(IDetailLayoutBuilder&
 				[
 					SNew(SInlineEditableTextBlock)
 					.Font(IDetailLayoutBuilder::GetDetailFont())
-					.Text(FText::FromName(ChildControlElement->GetDisplayName()))
+					.Text_Lambda([this, ChildElementKey]() -> FText
+					{
+						return GetDisplayNameForElement(ChildElementKey);
+					})
 					.OnTextCommitted_Lambda([this, ChildElementKey](const FText& InNewText, ETextCommit::Type InCommitType)
 					{
 						SetDisplayNameForElement(InNewText, InCommitType, ChildElementKey);
@@ -3420,7 +3494,7 @@ FReply FRigControlElementDetails::OnAddAnimationChannelClicked()
 		return FReply::Handled();
 	}
 
-	const FRigElementKey& Key = PerElementInfos[0].GetElement()->GetKey();
+	const FRigElementKey Key = PerElementInfos[0].GetElement()->GetKey();
 	URigHierarchy* HierarchyToChange = PerElementInfos[0].GetDefaultHierarchy();
 
 	static const FString ChannelName = TEXT("Channel");
@@ -3479,13 +3553,26 @@ void FRigControlElementDetails::HandleControlTypeChanged(TSharedPtr<ERigControlT
 
 void FRigControlElementDetails::HandleControlTypeChanged(ERigControlType ControlType, TArray<FRigElementKey> ControlKeys, const TSharedRef<IPropertyUtilities> PropertyUtilities)
 {
-	for(FPerElementInfo& Info : PerElementInfos)
+	if(PerElementInfos.IsEmpty())
 	{
-		URigHierarchy* Hierarchy = Info.GetHierarchy();
-		URigHierarchy* HierarchyToChange = Info.GetDefaultHierarchy();
+		return;
+	}
+	
+	if(ControlKeys.IsEmpty())
+	{
+		for(const FPerElementInfo& Info : PerElementInfos)
+		{
+			ControlKeys.Add(Info.GetDefaultElement<FRigControlElement>()->GetKey());
+		}
+	}
+
+	for(const FRigElementKey& ControlKey : ControlKeys)
+	{
+		URigHierarchy* Hierarchy = PerElementInfos[0].GetHierarchy();
+		URigHierarchy* HierarchyToChange = PerElementInfos[0].GetDefaultHierarchy();
 		HierarchyToChange->Modify();
 		
-		FRigControlElement* ControlElement = Info.GetDefaultElement<FRigControlElement>();
+		FRigControlElement* ControlElement = HierarchyToChange->FindChecked<FRigControlElement>(ControlKey);
 		
 		FRigControlValue ValueToSet;
 
@@ -3591,11 +3678,17 @@ void FRigControlElementDetails::HandleControlTypeChanged(ERigControlType Control
 		HierarchyToChange->SetControlValue(ControlElement, ValueToSet, ERigControlValueType::Initial, true, false, true);
 		HierarchyToChange->SetControlValue(ControlElement, ValueToSet, ERigControlValueType::Current, true, false, true);
 
-		Info.WrapperObject->SetContent<FRigControlElement>(*ControlElement);
+		for(const FPerElementInfo& Info : PerElementInfos)
+		{
+			if(Info.Element.Get()->GetKey() == ControlKey)
+			{
+				Info.WrapperObject->SetContent<FRigControlElement>(*ControlElement);
+			}
+		}
 
 		if (HierarchyToChange != Hierarchy)
 		{
-			if(FRigControlElement* OtherControlElement = Info.GetElement<FRigControlElement>())
+			if(FRigControlElement* OtherControlElement = Hierarchy->Find<FRigControlElement>(ControlKey))
 			{
 				OtherControlElement->Settings = ControlElement->Settings;
 				Hierarchy->SetControlSettings(OtherControlElement, OtherControlElement->Settings, true, true, true);
@@ -3605,7 +3698,7 @@ void FRigControlElementDetails::HandleControlTypeChanged(ERigControlType Control
 		}
 		else
 		{
-			Info.GetBlueprint()->PropagateHierarchyFromBPToInstances();
+			PerElementInfos[0].GetBlueprint()->PropagateHierarchyFromBPToInstances();
 		}
 	}
 	
@@ -4178,6 +4271,23 @@ void FRigControlElementDetails::SetDisplayName(const FText& InNewText, ETextComm
 	}
 }
 
+FText FRigControlElementDetails::GetDisplayNameForElement(const FRigElementKey& InKey) const
+{
+	if(PerElementInfos.IsEmpty())
+	{
+		return FText();
+	}
+
+	URigHierarchy* Hierarchy = PerElementInfos[0].GetDefaultHierarchy();
+	const FRigControlElement* ControlElement = Hierarchy->Find<FRigControlElement>(InKey);
+	if(ControlElement == nullptr)
+	{
+		return FText();
+	}
+
+	return FText::FromName(ControlElement->GetDisplayName());
+}
+
 void FRigControlElementDetails::SetDisplayNameForElement(const FText& InNewText, ETextCommit::Type InCommitType, const FRigElementKey& InKeyToRename)
 {
 	if(InCommitType == ETextCommit::OnCleared)
@@ -4185,20 +4295,25 @@ void FRigControlElementDetails::SetDisplayNameForElement(const FText& InNewText,
 		return;
 	}
 
-	const FPerElementInfo& Info = FindElement(InKeyToRename);
-	if(!Info.IsValid())
+	if(PerElementInfos.IsEmpty())
 	{
 		return;
 	}
 
-	if(Info.IsProcedural())
+	URigHierarchy* Hierarchy = PerElementInfos[0].GetDefaultHierarchy();
+	const FRigControlElement* ControlElement = Hierarchy->Find<FRigControlElement>(InKeyToRename);
+	if(ControlElement == nullptr)
+	{
+		return;
+	}
+	if(ControlElement->IsProcedural())
 	{
 		return;
 	}
 
 	const FName DisplayName = InNewText.IsEmpty() ? FName(NAME_None) : FName(*InNewText.ToString());
 	const bool bRename = IsAnyControlOfAnimationType(ERigControlAnimationType::AnimationChannel);
-	Info.GetDefaultHierarchy()->GetController(true)->SetDisplayName(InKeyToRename, DisplayName, bRename, true, true);
+	Hierarchy->GetController(true)->SetDisplayName(InKeyToRename, DisplayName, bRename, true, true);
 }
 
 bool FRigControlElementDetails::OnVerifyDisplayNameChanged(const FText& InText, FText& OutErrorMessage, const FRigElementKey& InKeyToRename)
@@ -4210,31 +4325,30 @@ bool FRigControlElementDetails::OnVerifyDisplayNameChanged(const FText& InText, 
 		return false;
 	}
 
-	const FPerElementInfo& Info = FindElement(InKeyToRename);
-	if(!Info.IsValid())
+	if(PerElementInfos.IsEmpty())
 	{
 		return false;
 	}
 
-	if(Info.IsProcedural())
+	const URigHierarchy* Hierarchy = PerElementInfos[0].GetDefaultHierarchy();
+	const FRigControlElement* ControlElement = Hierarchy->Find<FRigControlElement>(InKeyToRename);
+	if(ControlElement == nullptr)
+	{
+		return false;
+	}
+	if(ControlElement->IsProcedural())
 	{
 		return false;
 	}
 
 	// make sure there is no duplicate
-	if(const URigHierarchy* Hierarchy = Info.GetDefaultHierarchy())
+	if(const FRigBaseElement* ParentElement = Hierarchy->GetFirstParent(ControlElement))
 	{
-		if(const FRigControlElement* ControlElement = Info.GetDefaultElement<FRigControlElement>())
+		FString OutErrorString;
+		if (!Hierarchy->IsDisplayNameAvailable(ParentElement->GetKey(), NewName, &OutErrorString))
 		{
-			if(const FRigBaseElement* ParentElement = Hierarchy->GetFirstParent(ControlElement))
-			{
-				FString OutErrorString;
-				if (!Hierarchy->IsDisplayNameAvailable(ParentElement->GetKey(), NewName, &OutErrorString))
-				{
-					OutErrorMessage = FText::FromString(OutErrorString);
-					return false;
-				}
-			}
+			OutErrorMessage = FText::FromString(OutErrorString);
+			return false;
 		}
 	}
 	return true;
@@ -4503,6 +4617,35 @@ FDetailWidgetRow& FRigControlElementDetails::CreateEnumValueWidgetRow(
 				{
 					break;
 				}
+			}
+		}
+		else
+		{
+			// If the key was not found for selected elements, it might be a child channel of one of the elements
+			for (const FPerElementInfo ElementInfo : PerElementInfos)
+			{
+				if (const FRigControlElement* ControlElement = ElementInfo.GetElement<FRigControlElement>())
+				{
+					const FRigBaseElementChildrenArray Children = Hierarchy->GetChildren(ControlElement, false);
+					if (FRigBaseElement* const* Child = Children.FindByPredicate([Key](const FRigBaseElement* Info)
+					{
+						return Info->GetKey() == Key;
+					}))
+					{
+						if (const FRigControlElement* ChildElement = Cast<FRigControlElement>(*Child))
+						{
+							Enum = ChildElement->Settings.ControlEnum.Get();
+							if(Enum)
+							{
+								break;
+							}
+						}
+					}
+				}
+			}
+			if(Enum)
+			{
+				break;
 			}
 		}
 	}

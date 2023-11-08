@@ -25,12 +25,9 @@ namespace SkeletalSimplifier
 
 			FEdgeQuadric(const Vec3d& Vert0Pos, const Vec3d& Vert1Pos, const Vec3d& FaceNormal, const double EdgeWeight);
 
-			FEdgeQuadric(const FEdgeQuadric& Other) :
-				CMatrix(Other.CMatrix),
-				D0Vector(Other.D0Vector),
-				CScalar(Other.CScalar)
-			{}
-
+			FEdgeQuadric(const FEdgeQuadric&) = default;
+			FEdgeQuadric& operator=(const FEdgeQuadric&) = default;
+			
 			double Evaluate(const Vec3d& Pos) const;
 			
 
@@ -200,14 +197,9 @@ namespace SkeletalSimplifier
 				         const SparseWeightContainerType& AdditionalWeights);
 
 
-			TFaceQuadric() :
-				MyBase()
-			{}
-
-
-			TFaceQuadric(const TFaceQuadric& Other) :
-				MyBase(Other)
-			{}
+			TFaceQuadric() = default;
+			TFaceQuadric(const TFaceQuadric& Other) = default;
+			TFaceQuadric& operator=(const TFaceQuadric& Other) = default;
 
 			/**
 			*  Returns the quadric evaluation at this point  (vTr . A . v  + 2 bTr. v + c)  where A = quadric matrix, b = DVector, c = CScalar
@@ -613,10 +605,10 @@ namespace SkeletalSimplifier
 
 															// create the tool needed to compute the gradient coefficients of the attributes.
 
-			InverseGradientProjection  GradientTool(DMatrix(Vert0Pos,
-			                                            	Vert1Pos,
-				                                            Vert2Pos),
-				                                            FaceNormal);
+			InverseGradientProjection  GradientTool(Vert0Pos,
+													Vert1Pos,
+													Vert2Pos,
+													FaceNormal);
 
 			// Accumulate the terms related to the gradient of the Basic Attributes
 			{

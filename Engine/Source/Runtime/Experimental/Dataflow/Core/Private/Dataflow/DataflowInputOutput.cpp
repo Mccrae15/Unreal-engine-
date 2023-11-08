@@ -63,9 +63,9 @@ const TArray< const FDataflowOutput* > FDataflowInput::GetConnectedOutputs() con
 	return RetList;
 }
 
-void FDataflowInput::Invalidate()
+void FDataflowInput::Invalidate(const Dataflow::FTimestamp& ModifiedTimestamp)
 {
-	OwningNode->Invalidate();
+	OwningNode->Invalidate(ModifiedTimestamp);
 }
 
 //
@@ -122,16 +122,23 @@ bool FDataflowOutput::RemoveConnection(FDataflowConnection* InInput)
 	Connections.RemoveSwap((FDataflowInput*)InInput); return true;
 }
 
-void FDataflowOutput::Invalidate()
+void FDataflowOutput::Invalidate(const Dataflow::FTimestamp& ModifiedTimestamp)
 {
 	for (FDataflowConnection* Con : GetConnections())
 	{
-		Con->Invalidate();
+		Con->Invalidate(ModifiedTimestamp);
 	}
 }
 
 bool FDataflowOutput::EvaluateImpl(Dataflow::FContext& Context) const
 {
+	Dataflow::FContextScopedCallstack Callstack(Context, this);
+	if (Callstack.IsLoopDetected())
+	{ 
+		ensureMsgf(false, TEXT("Connection %s is already in the callstack, this is certainly because of a loop in the graph"), *GetName().ToString());
+		return false;
+	}
+
 	// check if the cache has a valid version
 	if(Context.HasData(CacheKey(), OwningNode->LastModifiedTimestamp))
 	{
@@ -145,5 +152,6 @@ bool FDataflowOutput::EvaluateImpl(Dataflow::FContext& Context) const
 		ensureMsgf(false, TEXT("Failed to evaluate output (%s:%s)"), *OwningNode->GetName().ToString(), *GetName().ToString());
 		return false;
 	}
+
 	return true;
 }

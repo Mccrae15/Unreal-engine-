@@ -15,13 +15,15 @@
  * removing elements is O(n), and finding is O(Log n). In practice it is faster than TMap for low element
  * counts, and slower as n increases, This map is always kept sorted by the key type so cannot be sorted manually.
  */
-template <typename KeyType, typename ValueType, typename ArrayAllocator /*= FDefaultAllocator*/, typename SortPredicate /*= TLess<KeyType>*/ >
+template <typename InKeyType, typename InValueType, typename ArrayAllocator /*= FDefaultAllocator*/, typename SortPredicate /*= TLess<KeyType>*/ >
 class TSortedMap
 {
 	template <typename OtherKeyType, typename OtherValueType, typename OtherArrayAllocator, typename OtherSortPredicate>
 	friend class TSortedMap;
 
 public:
+	typedef InKeyType      KeyType;
+	typedef InValueType    ValueType;
 	typedef typename TTypeTraits<KeyType  >::ConstPointerType KeyConstPointerType;
 	typedef typename TTypeTraits<KeyType  >::ConstInitType    KeyInitType;
 	typedef typename TTypeTraits<ValueType>::ConstInitType    ValueInitType;
@@ -344,7 +346,7 @@ public:
 	{
 		for (typename ElementArrayType::TConstIterator PairIt(Pairs); PairIt; ++PairIt)
 		{
-			new(OutKeys) KeyType(PairIt->Key);
+			OutKeys.Add(PairIt->Key);
 		}
 
 		return OutKeys.Num();
@@ -358,7 +360,7 @@ public:
 		OutArray.Empty(Pairs.Num());
 		for(typename ElementArrayType::TConstIterator PairIt(Pairs);PairIt;++PairIt)
 		{
-			new(OutArray) KeyType(PairIt->Key);
+			OutArray.Add(PairIt->Key);
 		}
 	}
 
@@ -370,7 +372,7 @@ public:
 		OutArray.Empty(Pairs.Num());
 		for(typename ElementArrayType::TConstIterator PairIt(Pairs);PairIt;++PairIt)
 		{
-			new(OutArray) ValueType(PairIt->Value);
+			OutArray.Add(PairIt->Value);
 		}
 	}
 
@@ -456,6 +458,36 @@ public:
 	FORCEINLINE       ValueType& operator[](KeyConstPointerType Key)       { return this->FindChecked(Key); }
 	FORCEINLINE const ValueType& operator[](KeyConstPointerType Key) const { return this->FindChecked(Key); }
 
+	// Interface functions to match TMap/TSet
+
+	/** @return The max valid index of the elements in the sparse storage. */
+	[[nodiscard]] FORCEINLINE int32 GetMaxIndex() const
+	{
+		return Pairs.Num() - 1;
+	}
+
+	/**
+	 * Checks whether an element id is valid.
+	 * @param Id - The element id to check.
+	 * @return true if the element identifier refers to a valid element in this map.
+	 */
+	[[nodiscard]] FORCEINLINE bool IsValidId(FSetElementId Id) const
+	{
+		return Pairs.IsValidIndex(Id.AsInteger());
+	}
+
+	/** Return a mapped pair by internal identifier. Element must be valid (see @IsValidId). */
+	[[nodiscard]] FORCEINLINE ElementType& Get(FSetElementId Id)
+	{
+		return Pairs[Id.AsInteger()];
+	}
+
+	/** Return a mapped pair by internal identifier.  Element must be valid (see @IsValidId).*/
+	[[nodiscard]] FORCEINLINE const ElementType& Get(FSetElementId Id) const
+	{
+		return Pairs[Id.AsInteger()];
+	}
+
 private:
 	typedef TArray<ElementType, ArrayAllocator> ElementArrayType;
 
@@ -472,7 +504,7 @@ private:
 	}
 
 	/** Find index of key */
-	FORCEINLINE int32 FindIndex(KeyConstPointerType Key)
+	FORCEINLINE int32 FindIndex(KeyConstPointerType Key) const
 	{
 		return Algo::BinarySearchBy(Pairs, Key, FKeyForward(), SortPredicate());
 	}
@@ -548,6 +580,11 @@ private:
 		FORCEINLINE ItKeyType&   Key()   const { return PairIt->Key; }
 		FORCEINLINE ItValueType& Value() const { return PairIt->Value; }
 
+		[[nodiscard]] FORCEINLINE FSetElementId GetId() const
+		{
+			return FSetElementId::FromInteger(PairIt.GetIndex());
+		}
+
 		FORCEINLINE PairType& operator* () const { return  *PairIt; }
 		FORCEINLINE PairType* operator->() const { return &*PairIt; }
 
@@ -594,6 +631,11 @@ private:
 
 		FORCEINLINE ItKeyType& Key()   const { return Data[Index].Key; }
 		FORCEINLINE ItValueType& Value() const { return Data[Index].Value; }
+
+		[[nodiscard]] FORCEINLINE FSetElementId GetId() const
+		{
+			return FSetElementId::FromInteger(Index);
+		}
 
 		FORCEINLINE PairType& operator* () const { return  Data[Index]; }
 		FORCEINLINE PairType* operator->() const { return &Data[Index]; }
@@ -672,25 +714,27 @@ public:
 	/** Iterates over values associated with a specified key in a const map. This will be at most one value because keys must be unique */
 	class TConstKeyIterator : public TBaseIterator<true>
 	{
+		using Super = TBaseIterator<true>;
+
 	public:
 		FORCEINLINE TConstKeyIterator(const TSortedMap& InMap, KeyInitType InKey)
-			: TBaseIterator<true>(InMap.Pairs.CreateIterator())
+			: Super(InMap.Pairs.CreateConstIterator())
 		{
-			int32 NewIndex = FindIndex(InKey);
+			int32 NewIndex = InMap.FindIndex(InKey);
 		
 			if (NewIndex != INDEX_NONE)
 			{
-				TBaseIterator<true>::PairIt += NewIndex;
+				Super::PairIt += NewIndex;
 			}
 			else
 			{
-				TBaseIterator<true>::PairIt.SetToEnd();
+				Super::PairIt.SetToEnd();
 			}
 		}
 
 		FORCEINLINE TConstKeyIterator& operator++()
 		{
-			TBaseIterator<true>::PairIt.SetToEnd();
+			Super::PairIt.SetToEnd();
 			return *this;
 		}
 	};
@@ -698,33 +742,35 @@ public:
 	/** Iterates over values associated with a specified key in a map. This will be at most one value because keys must be unique */
 	class TKeyIterator : public TBaseIterator<false>
 	{
+		using Super = TBaseIterator<false>;
+
 	public:
 		FORCEINLINE TKeyIterator(TSortedMap& InMap, KeyInitType InKey)
-			: TBaseIterator<false>(InMap.Pairs.CreateConstIterator())
+			: Super(InMap.Pairs.CreateIterator())
 		{
-			int32 NewIndex = FindIndex(InKey);
+			int32 NewIndex = InMap.FindIndex(InKey);
 
 			if (NewIndex != INDEX_NONE)
 			{
-				TBaseIterator<true>::PairIt += NewIndex;
+				Super::PairIt += NewIndex;
 			}
 			else
 			{
-				TBaseIterator<true>::PairIt.SetToEnd();
+				Super::PairIt.SetToEnd();
 			}
 		}
 
 		FORCEINLINE TKeyIterator& operator++()
 		{
-			TBaseIterator<false>::PairIt.SetToEnd();
+			Super::PairIt.SetToEnd();
 			return *this;
 		}
 
 		/** Removes the current key-value pair from the map. */
 		FORCEINLINE void RemoveCurrent()
 		{
-			TBaseIterator<false>::PairIt.RemoveCurrent();
-			TBaseIterator<false>::PairIt.SetToEnd();
+			Super::PairIt.RemoveCurrent();
+			Super::PairIt.SetToEnd();
 		}
 	};
 

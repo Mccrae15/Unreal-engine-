@@ -88,7 +88,6 @@ uint32 FNavPathType::NextUniqueId = 0;
 //----------------------------------------------------------------------//
 // FNavDataConfig
 //----------------------------------------------------------------------//
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FNavDataConfig::FNavDataConfig(float Radius, float Height)
 	: FNavAgentProperties(Radius, Height)
 	, Name(TEXT("Default"))
@@ -98,15 +97,8 @@ FNavDataConfig::FNavDataConfig(float Radius, float Height)
 {
 }
 
-FNavDataConfig::FNavDataConfig(const FNavDataConfig& Other)
-	: FNavAgentProperties(Other)
-	, Name(Other.Name)
-	, Color(Other.Color)
-	, DefaultQueryExtent(Other.DefaultQueryExtent)
-	, NavDataClass(Other.NavDataClass)
-{
-}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
+FNavDataConfig::FNavDataConfig(const FNavDataConfig& Other) = default;
+FNavDataConfig& FNavDataConfig::operator=(const FNavDataConfig& Other) = default;
 
 void FNavDataConfig::SetNavDataClass(UClass* InNavDataClass)
 {
@@ -308,21 +300,50 @@ void FNavHeightfieldSamples::Empty()
 	Holes.Empty();
 }
 
+
+namespace UE::Navigation::NavLinkIdHelpers::Private
+{
+	uint64 MakeIdFromGUID(const FGuid Guid)
+	{
+		// Create array to guarantee contiguous memory layout 
+		const uint32 GuidArray[] = { Guid.A, Guid.B, Guid.C, Guid.D };
+		return CityHash64(reinterpret_cast<const char*>(GuidArray), sizeof(GuidArray));
+	}
+
+	uint64 MakeIdFromGUID(FNavLinkAuxiliaryId AuxiliaryId, const FGuid Guid)
+	{
+		const uint64 ActorGuidHash = MakeIdFromGUID(Guid);
+		return CityHash128to64({ AuxiliaryId.GetId(), ActorGuidHash});
+	}
+} // UE::Navigation::NavLinkHelpers
+
+const FNavLinkId FNavLinkId::Invalid = FNavLinkId();
+const FNavLinkAuxiliaryId FNavLinkAuxiliaryId::Invalid = FNavLinkAuxiliaryId();
+
+FNavLinkAuxiliaryId FNavLinkAuxiliaryId::GenerateUniqueAuxiliaryId()
+{
+	const uint64 AuxiliaryId = UE::Navigation::NavLinkIdHelpers::Private::MakeIdFromGUID(FGuid::NewGuid());
+
+	return FNavLinkAuxiliaryId(AuxiliaryId);
+}
+
+FNavLinkId FNavLinkId::GenerateUniqueId(FNavLinkAuxiliaryId AuxiliaryId, FGuid ActorInstanceGuid)
+{
+	// Apply NavLinkIdBitMask to differentiate Legacy Ids (that do not have the mask set).
+	const uint64 UniqueId = UE::Navigation::NavLinkIdHelpers::Private::MakeIdFromGUID(AuxiliaryId, ActorInstanceGuid) | NavLinkIdBitMask;
+
+	UE_LOG(LogNavLink, VeryVerbose, TEXT("%hs id: %u."), __FUNCTION__, UniqueId);
+
+	return FNavLinkId(UniqueId);
+}
+
 //----------------------------------------------------------------------//
 // FNavAgentProperties
 //----------------------------------------------------------------------//
 const FNavAgentProperties FNavAgentProperties::DefaultProperties;
 
-FNavAgentProperties::FNavAgentProperties(const FNavAgentProperties& Other)
-	: Super(Other)
-	, AgentRadius(Other.AgentRadius)
-	, AgentHeight(Other.AgentHeight)
-	, AgentStepHeight(Other.AgentStepHeight)
-	, NavWalkingSearchHeightScale(Other.NavWalkingSearchHeightScale)
-	, PreferredNavData(Other.PreferredNavData)
-{
-
-}
+FNavAgentProperties::FNavAgentProperties(const FNavAgentProperties& Other) = default;
+FNavAgentProperties& FNavAgentProperties::operator=(const FNavAgentProperties& Other) = default;
 
 void FNavAgentProperties::UpdateWithCollisionComponent(UShapeComponent* CollisionComponent)
 {

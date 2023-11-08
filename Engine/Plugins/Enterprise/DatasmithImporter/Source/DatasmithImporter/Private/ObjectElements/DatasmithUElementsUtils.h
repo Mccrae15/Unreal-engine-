@@ -10,9 +10,28 @@ class IDatasmithLevelVariantSetsElement;
 
 class FDatasmithUElementsUtils
 {
+
+	template <typename T>
+	struct TFindOrAddTraits;
+
+	template <typename T>
+	struct TFindOrAddTraits<T*>
+	{
+		using TElement = T;
+	};
+
+	template <typename T>
+	struct TFindOrAddTraits<TObjectPtr<T>>
+	{
+		using TElement = T;
+	};
+
 public:
-	template<typename IElement, typename UElement, typename SetOp>
-	static UElement* FindOrAddElement(UObject* Outer, TMap<TWeakPtr<IElement>, UElement*>& Map, const TSharedPtr<IElement>& InElement, SetOp Assign)
+	template<typename IElement,
+					 typename TMapValue,
+					 typename UElement = typename TFindOrAddTraits<TMapValue>::TElement,
+					 typename SetOp>
+	static UElement* FindOrAddElement(UObject* Outer, TMap<TWeakPtr<IElement>, TMapValue>& Map, const TSharedPtr<IElement>& InElement, SetOp Assign)
 	{
 		if (InElement.IsValid())
 		{
@@ -49,11 +68,19 @@ public:
 	 * });
 	 */
 	template<typename TargetType, typename Func>
-	static inline typename TEnableIf<std::is_same_v<TargetType, IDatasmithLevelVariantSetsElement>, bool>::Type ForVariantElement(const TSharedPtr<IDatasmithScene>& RootObject, Func Function)
+	static inline bool ForVariantElement(const TSharedPtr<IDatasmithScene>& RootObject, Func Function)
 	{
 		for (int32 Index = 0; Index < RootObject->GetLevelVariantSetsCount(); ++Index)
 		{
-			bool bKeepIterating = Function(RootObject->GetLevelVariantSets(Index));
+			bool bKeepIterating;
+			if constexpr (std::is_same_v<TargetType, IDatasmithLevelVariantSetsElement>)
+			{
+				bKeepIterating = Function(RootObject->GetLevelVariantSets(Index));
+			}
+			else
+			{
+				bKeepIterating = ForVariantElement<TargetType>(RootObject->GetLevelVariantSets(Index), Function);
+			}
 			if (!bKeepIterating)
 			{
 				return false;
@@ -62,37 +89,19 @@ public:
 		return true;
 	}
 	template<typename TargetType, typename Func>
-	static inline typename TEnableIf<!std::is_same_v<TargetType, IDatasmithLevelVariantSetsElement>, bool>::Type ForVariantElement(const TSharedPtr<IDatasmithScene>& RootObject, Func Function)
-	{
-		for (int32 Index = 0; Index < RootObject->GetLevelVariantSetsCount(); ++Index)
-		{
-			bool bKeepIterating = ForVariantElement<TargetType>(RootObject->GetLevelVariantSets(Index), Function);
-			if (!bKeepIterating)
-			{
-				return false;
-			}
-		}
-		return true;
-	}
-	template<typename TargetType, typename Func>
-	static inline typename TEnableIf<std::is_same_v<TargetType, IDatasmithVariantSetElement>, bool>::Type ForVariantElement(const TSharedPtr<IDatasmithLevelVariantSetsElement>& RootObject, Func Function)
+	static inline bool ForVariantElement(const TSharedPtr<IDatasmithLevelVariantSetsElement>& RootObject, Func Function)
 	{
 		for (int32 Index = 0; Index < RootObject->GetVariantSetsCount(); ++Index)
 		{
-			bool bKeepIterating = Function(RootObject->GetVariantSet(Index));
-			if (!bKeepIterating)
+			bool bKeepIterating;
+			if constexpr (std::is_same_v<TargetType, IDatasmithVariantSetElement>)
 			{
-				return false;
+				bKeepIterating = Function(RootObject->GetVariantSet(Index));
 			}
-		}
-		return true;
-	}
-	template<typename TargetType, typename Func>
-	static inline typename TEnableIf<!std::is_same_v<TargetType, IDatasmithVariantSetElement>, bool>::Type ForVariantElement(const TSharedPtr<IDatasmithLevelVariantSetsElement>& RootObject, Func Function)
-	{
-		for (int32 Index = 0; Index < RootObject->GetVariantSetsCount(); ++Index)
-		{
-			bool bKeepIterating = ForVariantElement<TargetType>(RootObject->GetVariantSet(Index), Function);
+			else
+			{
+				bKeepIterating = ForVariantElement<TargetType>(RootObject->GetVariantSet(Index), Function);
+			}
 			if (!bKeepIterating)
 			{
 				return false;
@@ -102,11 +111,19 @@ public:
 	}
 
 	template<typename TargetType, typename Func>
-	static inline typename TEnableIf<std::is_same_v<TargetType, IDatasmithVariantElement>, bool>::Type ForVariantElement(const TSharedPtr<IDatasmithVariantSetElement>& RootObject, Func Function)
+	static inline bool ForVariantElement(const TSharedPtr<IDatasmithVariantSetElement>& RootObject, Func Function)
 	{
 		for (int32 Index = 0; Index < RootObject->GetVariantsCount(); ++Index)
 		{
-			bool bKeepIterating = Function(RootObject->GetVariant(Index));
+			bool bKeepIterating;
+			if constexpr (std::is_same_v<TargetType, IDatasmithVariantElement>)
+			{
+				bKeepIterating = Function(RootObject->GetVariant(Index));
+			}
+			else
+			{
+				bKeepIterating = ForVariantElement<TargetType>(RootObject->GetVariant(Index), Function);
+			}
 			if (!bKeepIterating)
 			{
 				return false;
@@ -115,37 +132,19 @@ public:
 		return true;
 	}
 	template<typename TargetType, typename Func>
-	static inline typename TEnableIf<!std::is_same_v<TargetType, IDatasmithVariantElement>, bool>::Type ForVariantElement(const TSharedPtr<IDatasmithVariantSetElement>& RootObject, Func Function)
-	{
-		for (int32 Index = 0; Index < RootObject->GetVariantsCount(); ++Index)
-		{
-			bool bKeepIterating = ForVariantElement<TargetType>(RootObject->GetVariant(Index), Function);
-			if (!bKeepIterating)
-			{
-				return false;
-			}
-		}
-		return true;
-	}
-	template<typename TargetType, typename Func>
-	static inline typename TEnableIf<std::is_same_v<TargetType, IDatasmithActorBindingElement>, bool>::Type ForVariantElement(const TSharedPtr<IDatasmithVariantElement>& RootObject, Func Function)
+	static inline bool ForVariantElement(const TSharedPtr<IDatasmithVariantElement>& RootObject, Func Function)
 	{
 		for (int32 Index = 0; Index < RootObject->GetActorBindingsCount(); ++Index)
 		{
-			bool bKeepIterating = Function(RootObject->GetActorBinding(Index));
-			if (!bKeepIterating)
+			bool bKeepIterating;
+			if constexpr (std::is_same_v<TargetType, IDatasmithActorBindingElement>)
 			{
-				return false;
+				bKeepIterating = Function(RootObject->GetActorBinding(Index));
 			}
-		}
-		return true;
-	}
-	template<typename TargetType, typename Func>
-	static inline typename TEnableIf<!std::is_same_v<TargetType, IDatasmithActorBindingElement>, bool>::Type ForVariantElement(const TSharedPtr<IDatasmithVariantElement>& RootObject, Func Function)
-	{
-		for (int32 Index = 0; Index < RootObject->GetActorBindingsCount(); ++Index)
-		{
-			bool bKeepIterating = ForVariantElement<TargetType>(RootObject->GetActorBinding(Index), Function);
+			else
+			{
+				bKeepIterating = ForVariantElement<TargetType>(RootObject->GetActorBinding(Index), Function);
+			}
 			if (!bKeepIterating)
 			{
 				return false;

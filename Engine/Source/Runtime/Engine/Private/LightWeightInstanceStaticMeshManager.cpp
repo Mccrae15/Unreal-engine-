@@ -1,10 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameFramework/LightWeightInstanceStaticMeshManager.h"
+
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
 #include "Components/PrimitiveComponent.h"
-#include "Net/UnrealNetwork.h"
 #include "Elements/SMInstance/SMInstanceElementId.h"
+#include "GameFramework/LightWeightInstanceSubsystem.h"
+#include "Net/UnrealNetwork.h"
 #include "Templates/Greater.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(LightWeightInstanceStaticMeshManager)
@@ -17,21 +19,18 @@
 #endif // WITH_EDITOR
 
 ALightWeightInstanceStaticMeshManager::ALightWeightInstanceStaticMeshManager(const FObjectInitializer& ObjectInitializer)
+	:Super(ObjectInitializer)
 {
-	InstancedStaticMeshComponent = ObjectInitializer.CreateDefaultSubobject<UHierarchicalInstancedStaticMeshComponent>(this, TEXT("InstancedStaticMeshComponent0"));
+	InstancedStaticMeshComponent = CreateDefaultSubobject<UHierarchicalInstancedStaticMeshComponent>(TEXT("InstancedStaticMeshComponent0"));
+	SetRootComponent(InstancedStaticMeshComponent);
+	AddInstanceComponent(InstancedStaticMeshComponent);
 
 	if (StaticMesh.IsValid())
 	{
 		OnStaticMeshSet();
 	}
-	SetInstancedStaticMeshParams();
 
-	RootComponent = InstancedStaticMeshComponent;
-	AddInstanceComponent(InstancedStaticMeshComponent);
-	if (GetWorld())
-	{
-		InstancedStaticMeshComponent->RegisterComponent();
-	}
+	SetInstancedStaticMeshParams();
 }
 
 void ALightWeightInstanceStaticMeshManager::SetRepresentedClass(UClass* ActorClass)
@@ -58,43 +57,75 @@ void ALightWeightInstanceStaticMeshManager::SetRepresentedClass(UClass* ActorCla
 
 int32 ALightWeightInstanceStaticMeshManager::ConvertCollisionIndexToLightWeightIndex(int32 InIndex) const
 {
-	return RenderingIndicesToDataIndices[InIndex];
+	if (ensureMsgf(RenderingIndicesToDataIndices.IsValidIndex(InIndex), TEXT("Invalid index [ %d ]"), InIndex))
+	{
+		return RenderingIndicesToDataIndices[InIndex];
+	}
+
+	return InIndex;
 }
 
 int32 ALightWeightInstanceStaticMeshManager::ConvertLightWeightIndexToCollisionIndex(int32 InIndex) const
 {
-	return DataIndicesToRenderingIndices[InIndex];
+	if (ensureMsgf(DataIndicesToRenderingIndices.IsValidIndex(InIndex), TEXT("Invalid index [ %d ]"), InIndex))
+	{
+		return DataIndicesToRenderingIndices[InIndex];
+	}
+
+	return InIndex;
 }
 
 void ALightWeightInstanceStaticMeshManager::AddNewInstanceAt(FLWIData* InitData, int32 Index)
 {
 	Super::AddNewInstanceAt(InitData, Index);
+	AddInstanceToRendering(Index);
+}
+
+void ALightWeightInstanceStaticMeshManager::RemoveInstance(const int32 Index)
+{
+#if WITH_EDITOR
+	Modify();
+#endif
+
+	RemoveInstanceFromRendering(Index);
+	Super::RemoveInstance(Index);
+}
+
+void ALightWeightInstanceStaticMeshManager::AddInstanceToRendering(int32 DataIndex)
+{
+	if (!ensureMsgf(RenderingIndicesToDataIndices.Contains(DataIndex) == false, TEXT("LWI rendering instance added more than once. Index: %d"), DataIndex))
+	{
+		return;
+	}
+
+	//cancel any pending deletes
+	const bool bPendingDeleteCancelled = DataIndicesToBeDeleted.RemoveSingle(DataIndex) > 0;
 
 	// The rendering indices are tightly packed so we know it's going on the end of the array
-	const int32 RenderingIdx = RenderingIndicesToDataIndices.Add(Index);
+	const int32 RenderingIdx = RenderingIndicesToDataIndices.Add(DataIndex);
+
+	UE_LOG(LogLightWeightInstance, Verbose,
+		TEXT("ALightWeightInstanceStaticMeshManager::AddInstanceToRendering - manager [ %s ] adding instance at data index [ %d ] rendering index [ %d ], did cancel pending delete? [ %s ]"),
+		*GetActorNameOrLabel(),
+		DataIndex,
+		RenderingIdx,
+		bPendingDeleteCancelled ? TEXT("true") : TEXT("false"));
 
 	// Now that we know the rendering index we can fill in the other side of the map
-	if (Index >= DataIndicesToRenderingIndices.Num())
+	if (DataIndex >= DataIndicesToRenderingIndices.Num())
 	{
-		ensure(Index == DataIndicesToRenderingIndices.Add(RenderingIdx));
+		ensure(DataIndex == DataIndicesToRenderingIndices.Add(RenderingIdx));
 	}
 	else
 	{
-		DataIndicesToRenderingIndices[Index] = RenderingIdx;
+		DataIndicesToRenderingIndices[DataIndex] = RenderingIdx;
 	}
 
 	// Update the HISMC
 	if (InstancedStaticMeshComponent)
 	{
-		ensure(RenderingIdx == InstancedStaticMeshComponent->AddInstance(InitData->Transform, /*bWorldSpace*/true));
+		ensure(RenderingIdx == InstancedStaticMeshComponent->AddInstance(InstanceTransforms[DataIndex], /*bWorldSpace*/false));
 	}
-}
-
-void ALightWeightInstanceStaticMeshManager::RemoveInstance(const int32 Index)
-{
-	RemoveInstanceFromRendering(Index);
-
-	Super::RemoveInstance(Index);
 }
 
 void ALightWeightInstanceStaticMeshManager::RemoveInstanceFromRendering(int32 DataIndex)
@@ -107,16 +138,21 @@ void ALightWeightInstanceStaticMeshManager::RemoveInstanceFromRendering(int32 Da
 #if WITH_EDITOR
 			if (GEditor)
 			{
-				GEditor->GetTimerManager()->SetTimerForNextTick([this]() { PostRemoveInstanceFromRendering(); });
+				GEditor->GetTimerManager()->SetTimerForNextTick(this, &ALightWeightInstanceStaticMeshManager::PostRemoveInstanceFromRendering);
 			}
 			else
 #endif // WITH_EDITOR
 			{
-				GetWorld()->GetTimerManager().SetTimerForNextTick([this]() { PostRemoveInstanceFromRendering(); });
+				GetWorld()->GetTimerManager().SetTimerForNextTick(this, &ALightWeightInstanceStaticMeshManager::PostRemoveInstanceFromRendering);
 			}
 		}
 
 		DataIndicesToBeDeleted.AddUnique(DataIndex);
+
+		UE_LOG(LogLightWeightInstance, Verbose,
+			TEXT("ALightWeightInstanceStaticMeshManager::RemoveInstanceFromRendering - manager [ %s ] removing instance at data index [ %d ]"),
+			*GetActorNameOrLabel(),
+			DataIndex);
 	}
 }
 
@@ -126,6 +162,12 @@ void ALightWeightInstanceStaticMeshManager::PostRemoveInstanceFromRendering()
 	for (int32 DataIndex : DataIndicesToBeDeleted)
 	{
 		RenderingIndicesToBeDeleted.Add(DataIndicesToRenderingIndices[DataIndex]);
+
+		UE_LOG(LogLightWeightInstance, Verbose,
+			TEXT("ALightWeightInstanceStaticMeshManager::PostRemoveInstanceFromRendering - manager [ %s ] removing instance at data index [ %d ] rendering index [ %d ]"),
+			*GetActorNameOrLabel(),
+			DataIndex,
+			DataIndicesToRenderingIndices[DataIndex]);
 	}
 
 	RenderingIndicesToBeDeleted.Sort();
@@ -176,7 +218,7 @@ void ALightWeightInstanceStaticMeshManager::OnRep_Transforms()
 
 	if (InstancedStaticMeshComponent)
 	{
-		InstancedStaticMeshComponent->AddInstance(InstanceTransforms.Last(), /*bWorldSpace*/true);
+		InstancedStaticMeshComponent->AddInstance(InstanceTransforms.Last(), /*bWorldSpace*/false);
 	}
 }
 
@@ -217,6 +259,10 @@ void ALightWeightInstanceStaticMeshManager::SetStaticMeshFromActor(AActor* InAct
 
 void ALightWeightInstanceStaticMeshManager::OnStaticMeshSet()
 {
+#if WITH_EDITOR
+	Modify();
+#endif
+	
 	if (InstancedStaticMeshComponent)
 	{
 		EComponentMobility::Type Mobility = InstancedStaticMeshComponent->Mobility;
@@ -243,6 +289,10 @@ void ALightWeightInstanceStaticMeshManager::OnStaticMeshSet()
 
 void ALightWeightInstanceStaticMeshManager::ClearStaticMesh()
 {
+#if WITH_EDITOR
+	Modify();
+#endif
+	
 	StaticMesh = nullptr;
 	OnStaticMeshSet();
 }
@@ -286,7 +336,7 @@ bool ALightWeightInstanceStaticMeshManager::GetSMInstanceTransform(const FSMInst
 	if (RenderingIndicesToDataIndices.IsValidIndex(InstanceId.InstanceIndex))
 	{
 		const int32 DataIndex = RenderingIndicesToDataIndices[InstanceId.InstanceIndex];
-		OutInstanceTransform = bWorldSpace ? InstanceTransforms[DataIndex] : InstanceTransforms[DataIndex].GetRelativeTransform(InstancedStaticMeshComponent->GetComponentTransform());
+		OutInstanceTransform = bWorldSpace ? InstanceTransforms[DataIndex] * GetActorTransform() : InstanceTransforms[DataIndex];
 		return true;
 	}
 	
@@ -300,7 +350,7 @@ bool ALightWeightInstanceStaticMeshManager::SetSMInstanceTransform(const FSMInst
 	if (RenderingIndicesToDataIndices.IsValidIndex(InstanceId.InstanceIndex) && InstancedStaticMeshComponent->UpdateInstanceTransform(InstanceId.InstanceIndex, InstanceTransform, bWorldSpace, bMarkRenderStateDirty, bTeleport))
 	{
 		const int32 DataIndex = RenderingIndicesToDataIndices[InstanceId.InstanceIndex];
-		InstancedStaticMeshComponent->GetInstanceTransform(InstanceId.InstanceIndex, InstanceTransforms[DataIndex], /*bWorldSpace*/true);
+		InstancedStaticMeshComponent->GetInstanceTransform(InstanceId.InstanceIndex, InstanceTransforms[DataIndex], /*bWorldSpace*/false);
 		return true;
 	}
 

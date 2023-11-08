@@ -8,6 +8,7 @@
 #include "Sections/MovieSceneEventSectionBase.h"
 #include "ISequencerChannelInterface.h"
 #include "Widgets/Input/SComboButton.h"
+#include "Widgets/Layout/SSpacer.h"
 #include "Widgets/SNullWidget.h"
 #include "IKeyArea.h"
 #include "ISequencer.h"
@@ -45,6 +46,7 @@
 #include "EntitySystem/Interrogation/MovieSceneInterrogationLinker.h"
 #include "EntitySystem/Interrogation/MovieSceneInterrogatedPropertyInstantiator.h"
 #include "Systems/MovieScenePropertyInstantiator.h"
+#include "Tracks/MovieSceneObjectPropertyTrack.h"
 #include "Tracks/MovieScenePropertyTrack.h"
 #include "Widgets/Input/SComboButton.h"
 #include "MovieSceneSpawnableAnnotation.h"
@@ -400,36 +402,87 @@ TSharedRef<SWidget> CreateKeyEditor(const TMovieSceneChannelHandle<FMovieSceneOb
 {
 	const TMovieSceneExternalValue<UObject*>* ExternalValue = Channel.GetExtendedEditorData();
 	const FMovieSceneObjectPathChannel*       RawChannel    = Channel.Get();
+	UMovieSceneObjectPropertyTrack* ObjectPathTrack = Cast<UMovieSceneObjectPropertyTrack>(Section->GetOuter());
+
 	if (ExternalValue && RawChannel)
 	{
 		TSequencerKeyEditor<FMovieSceneObjectPathChannel, UObject*> KeyEditor(InObjectBindingID, Channel, Section, InSequencer, PropertyBindings, ExternalValue->OnGetExternalValue);
 
-		auto OnSetObjectLambda = [KeyEditor](const FAssetData& Asset) mutable
+		UClass* PropertyClass = ObjectPathTrack ? ObjectPathTrack->PropertyClass : nullptr;
+		const bool bClassPicker = ObjectPathTrack ? ObjectPathTrack->bClassProperty : false;
+		if (bClassPicker)
 		{
-			FScopedTransaction Transaction(LOCTEXT("SetEnumKey", "Set Enum Key Value"));
-			KeyEditor.SetValueWithNotify(Asset.GetAsset(), EMovieSceneDataChangeType::TrackValueChangedRefreshImmediately);
-		};
+			auto OnSetClassLambda = [KeyEditor](const UClass* Class) mutable
+			{
+				FScopedTransaction Transaction(LOCTEXT("SetObjectPathKey", "Set Object Path Key Value"));
+				KeyEditor.SetValueWithNotify(const_cast<UClass*>(Class), EMovieSceneDataChangeType::TrackValueChangedRefreshImmediately);
+			};
 
-		auto GetObjectPathLambda = [KeyEditor]() -> FString
-		{
-			UObject* Obj = KeyEditor.GetCurrentValue();
-			return Obj ? Obj->GetPathName() : FString();
-		};
+			auto GetSelectedClassLambda = [KeyEditor]() -> const UClass*
+			{
+				return Cast<UClass>(KeyEditor.GetCurrentValue());
+			};
 
-		TArray<FAssetData> AssetDataArray;
-		if (InSequencer.IsValid())
-		{
-			UMovieSceneSequence* Sequence = InSequencer.Pin()->GetFocusedMovieSceneSequence();
-			AssetDataArray.Add((FAssetData)Sequence);
+			return SNew(SHorizontalBox)
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				[
+					SNew(SClassPropertyEntryBox)
+					.MetaClass(PropertyClass)
+					.SelectedClass_Lambda(GetSelectedClassLambda)
+					.OnSetClass_Lambda(OnSetClassLambda)
+				]
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(8.0f, 0.0f)
+				[
+					SNew(SSpacer)
+				];
 		}
+		else
+		{
+			auto OnSetObjectLambda = [KeyEditor](const FAssetData& Asset) mutable
+			{
+				FScopedTransaction Transaction(LOCTEXT("SetObjectPathKey", "Set Object Path Key Value"));
+				KeyEditor.SetValueWithNotify(Asset.GetAsset(), EMovieSceneDataChangeType::TrackValueChangedRefreshImmediately);
+			};
 
-		return SNew(SObjectPropertyEntryBox)
-		.DisplayBrowse(true)
-		.DisplayUseSelected(false)
-		.ObjectPath_Lambda(GetObjectPathLambda)
-		.AllowedClass(RawChannel->GetPropertyClass())
-		.OnObjectChanged_Lambda(OnSetObjectLambda)
-		.OwnerAssetDataArray(AssetDataArray);
+			auto GetObjectPathLambda = [KeyEditor]() -> FString
+			{
+				UObject* Obj = KeyEditor.GetCurrentValue();
+				return Obj ? Obj->GetPathName() : FString();
+			};
+
+			TArray<FAssetData> AssetDataArray;
+			if (InSequencer.IsValid())
+			{
+				UMovieSceneSequence* Sequence = InSequencer.Pin()->GetFocusedMovieSceneSequence();
+				AssetDataArray.Add((FAssetData)Sequence);
+			}
+
+			return SNew(SHorizontalBox)
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				[
+					SNew(SObjectPropertyEntryBox)
+					.DisplayBrowse(true)
+					.DisplayUseSelected(false)
+					.ObjectPath_Lambda(GetObjectPathLambda)
+					.AllowedClass(RawChannel->GetPropertyClass())
+					.OnObjectChanged_Lambda(OnSetObjectLambda)
+					.OwnerAssetDataArray(AssetDataArray)
+				]
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(8.0f, 0.0f)
+				[
+					SNew(SSpacer)
+				];
+		}
 	}
 
 	return SNullWidget::NullWidget;
@@ -561,7 +614,7 @@ TSharedRef<SWidget> CreateKeyEditor(const TMovieSceneChannelHandle<FMovieSceneAc
 
 	TSequencerKeyEditor<FMovieSceneActorReferenceData, FMovieSceneActorReferenceKey> KeyEditor(InObjectBindingID, Channel, Section, InSequencer, PropertyBindings, Func);
 
-	auto OnSetCurrentValueLambda = [KeyEditor](FMovieSceneActorReferenceKey& ActorKey) mutable
+	auto OnSetCurrentValueLambda = [KeyEditor](const FMovieSceneActorReferenceKey& ActorKey) mutable
 	{
 		FScopedTransaction Transaction(LOCTEXT("SetActorReferenceKey", "Set Actor Reference Key Value"));
 		KeyEditor.SetValueWithNotify(ActorKey, EMovieSceneDataChangeType::TrackValueChangedRefreshImmediately);
@@ -600,8 +653,10 @@ TSharedRef<SWidget> CreateKeyEditor(const TMovieSceneChannelHandle<FMovieSceneAc
 		TSharedPtr<SWidget> ComponentMenuWidget =
 			SNew(SComponentChooserPopup)
 			.Actor(Actor)
-			.OnComponentChosen_Lambda([=](FName InComponentName) mutable
+			.OnComponentChosen_Lambda([Actor, LevelEditor, KeyEditor, ActorKey = ActorKey](FName InComponentName) mutable
 				{
+					// ActorKey is self-captured so that the lambda can mutate its copy.
+
 					ActorKey.ComponentName = InComponentName;
 					KeyEditor.SetValueWithNotify(ActorKey, EMovieSceneDataChangeType::TrackValueChangedRefreshImmediately);
 
@@ -841,6 +896,7 @@ void DrawKeysImpl(ChannelType* Channel, TArrayView<const FKeyHandle> InKeyHandle
 
 			switch (TangentMode)
 			{
+			case RCTM_SmartAuto:  TempParams.FillTint = FLinearColor(0.759f, 0.176f, 0.67f, 1.0f);break; // little vermillion
 			case RCTM_Auto:  TempParams.FillTint = FLinearColor(0.972f, 0.2f, 0.2f, 1.0f);     break; // vermillion
 			case RCTM_Break: TempParams.FillTint = FLinearColor(0.336f, 0.703f, 0.5f, 0.91f);  break; // sky blue
 			case RCTM_User:  TempParams.FillTint = FLinearColor(0.797f, 0.473f, 0.5f, 0.652f); break; // reddish purple
@@ -963,6 +1019,18 @@ struct TCurveChannelKeyMenuExtension : TSharedFromThis<TCurveChannelKeyMenuExten
 
 		MenuBuilder.BeginSection("SequencerInterpolation", LOCTEXT("KeyInterpolationMenu", "Key Interpolation"));
 		{
+			MenuBuilder.AddMenuEntry(
+				LOCTEXT("SetKeyInterpolationSmartAuto", "Cubic (Smart Auto)"),
+				LOCTEXT("SetKeyInterpolationSmartAutoTooltip", "Set key interpolation to smart auto"),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Sequencer.IconKeySmartAuto"),
+				FUIAction(
+					FExecuteAction::CreateLambda([SharedThis] { SharedThis->SetInterpTangentMode(RCIM_Cubic, RCTM_SmartAuto); }),
+					FCanExecuteAction(),
+					FIsActionChecked::CreateLambda([SharedThis] { return SharedThis->IsInterpTangentModeSelected(RCIM_Cubic, RCTM_SmartAuto); })),
+				NAME_None,
+				EUserInterfaceActionType::ToggleButton
+			);
+
 			MenuBuilder.AddMenuEntry(
 				LOCTEXT("SetKeyInterpolationAuto", "Cubic (Auto)"),
 				LOCTEXT("SetKeyInterpolationAutoTooltip", "Set key interpolation to auto"),

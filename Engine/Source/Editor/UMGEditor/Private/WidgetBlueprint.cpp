@@ -29,6 +29,7 @@
 #include "Interfaces/ITargetPlatform.h"
 #include "Modules/ModuleManager.h"
 #include "DiffResults.h"
+#include "Misc/DataValidation.h"
 #endif
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "K2Node_CallFunction.h"
@@ -36,6 +37,7 @@
 #include "K2Node_Composite.h"
 #include "K2Node_FunctionResult.h"
 #include "Blueprint/WidgetNavigation.h"
+#include "WidgetEditingProjectSettings.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -737,16 +739,16 @@ void UWidgetBlueprint::NotifyGraphRenamed(class UEdGraph* Graph, FName OldName, 
 	});
 }
 
-EDataValidationResult UWidgetBlueprint::IsDataValid(TArray<FText>& ValidationErrors)
+EDataValidationResult UWidgetBlueprint::IsDataValid(FDataValidationContext& Context) const
 {
-	EDataValidationResult Result = UBlueprint::IsDataValid(ValidationErrors);
+	EDataValidationResult Result = UBlueprint::IsDataValid(Context);
 
-	const bool bFoundLeak = DetectSlateWidgetLeaks(ValidationErrors);
+	const bool bFoundLeak = DetectSlateWidgetLeaks(Context);
 
 	return bFoundLeak ? EDataValidationResult::Invalid : Result;
 }
 
-bool UWidgetBlueprint::DetectSlateWidgetLeaks(TArray<FText>& ValidationErrors)
+bool UWidgetBlueprint::DetectSlateWidgetLeaks(FDataValidationContext& Context) const
 {
 	// We can't safely run this in anything but a running editor, since widgets
 	// rely on a functioning slate application.
@@ -783,16 +785,16 @@ bool UWidgetBlueprint::DetectSlateWidgetLeaks(TArray<FText>& ValidationErrors)
 	//       those widgets will be handled by their own validation steps.
 
 	// Verify everything is going to be garbage collected.
-	TempUserWidget->WidgetTree->ForEachWidget([&ValidationErrors, &bFoundLeak](UWidget* Widget) {
+	TempUserWidget->WidgetTree->ForEachWidget([&Context, &bFoundLeak](UWidget* Widget) {
 		if (!bFoundLeak)
 		{
 			TWeakPtr<SWidget> PreviewChildWidget = Widget->GetCachedWidget();
 			if (PreviewChildWidget.IsValid())
 			{
 				bFoundLeak = true;
-				if (UPanelWidget* ParentWidget = Widget->GetParent())
+				if (const UPanelWidget* ParentWidget = Widget->GetParent())
 				{
-					ValidationErrors.Add(
+					Context.AddError(
 						FText::Format(
 							LOCTEXT("LeakingWidgetsWithParent_WarningFmt", "Leak Detected!  {0} ({1}) still has living Slate widgets, it or the parent {2} ({3}) is keeping them in memory.  Make sure all Slate resources (TSharedPtr<SWidget>'s) are being released in the UWidget's ReleaseSlateResources().  Also check the USlot's ReleaseSlateResources()."),
 							FText::FromString(Widget->GetName()),
@@ -804,7 +806,7 @@ bool UWidgetBlueprint::DetectSlateWidgetLeaks(TArray<FText>& ValidationErrors)
 				}
 				else
 				{
-					ValidationErrors.Add(
+					Context.AddError(
 						FText::Format(
 							LOCTEXT("LeakingWidgetsWithoutParent_WarningFmt", "Leak Detected!  {0} ({1}) still has living Slate widgets, it or the parent widget is keeping them in memory.  Make sure all Slate resources (TSharedPtr<SWidget>'s) are being released in the UWidget's ReleaseSlateResources().  Also check the USlot's ReleaseSlateResources()."),
 							FText::FromString(Widget->GetName()),
@@ -1154,7 +1156,7 @@ bool UWidgetBlueprint::IsWidgetFreeFromCircularReferences(UUserWidget* UserWidge
 			if (GeneratedByBlueprint->WidgetTree && GeneratedByBlueprint->WidgetTree->RootWidget)
 			{
 				TArray<UWidget*> ChildWidgets;
-				GeneratedByBlueprint->WidgetTree->GetChildWidgets(GeneratedByBlueprint->WidgetTree->RootWidget, ChildWidgets);
+				GeneratedByBlueprint->WidgetTree->GetAllWidgets(ChildWidgets);
 				for (UWidget* ChildWidget : ChildWidgets)
 				{
 					if (UWidgetBlueprint* ChildGeneratedBlueprint = Cast<UWidgetBlueprint>(ChildWidget->WidgetGeneratedBy))
@@ -1187,6 +1189,63 @@ bool UWidgetBlueprint::IsWidgetFreeFromCircularReferences(UUserWidget* UserWidge
 	}
 
 	return true;
+}
+
+namespace UE::UMG::Private
+{
+bool HasCircularReferences(const UClass* CurrentClass, TArray<const UClass*, TInlineAllocator<32>> DiscoveredBlueprint, UWidget*& OutResult)
+{
+	if (DiscoveredBlueprint.ContainsByPredicate([CurrentClass](const UClass* Other) { return CurrentClass->IsChildOf(Other); }))
+	{
+		return true;
+	}
+	DiscoveredBlueprint.Add(CurrentClass);
+
+	if (const UWidgetBlueprintGeneratedClass* CurrentWidgetClass = Cast<const UWidgetBlueprintGeneratedClass>(CurrentClass))
+	{
+		TArray<UWidget*> AllWidgets;
+		if (const UWidgetBlueprint* WidgetBP = Cast<const UWidgetBlueprint>(CurrentWidgetClass->ClassGeneratedBy))
+		{
+			if (WidgetBP->WidgetTree)
+			{
+				WidgetBP->WidgetTree->GetAllWidgets(AllWidgets);
+			}
+		}
+		else if (UWidgetTree* CurrentWidgetTree = CurrentWidgetClass->GetWidgetTreeArchetype())
+		{
+			CurrentWidgetTree->GetAllWidgets(AllWidgets);
+
+		}
+
+		for (UWidget* Widget : AllWidgets)
+		{
+			if (UUserWidget* UserWidget = Cast<UUserWidget>(Widget))
+			{
+				if (HasCircularReferences(UserWidget->GetClass(), DiscoveredBlueprint, OutResult))
+				{
+					OutResult = Widget;
+					return true;
+				}
+			}
+		}
+	}
+
+	return false;
+}
+}
+
+TValueOrError<void, UWidget*> UWidgetBlueprint::HasCircularReferences() const
+{
+	if (GeneratedClass)
+	{
+		TArray<const UClass*, TInlineAllocator<32>> DiscoveredBlueprint;
+		UWidget* Result = nullptr;
+		if (UE::UMG::Private::HasCircularReferences(GeneratedClass, DiscoveredBlueprint, Result))
+		{
+			return MakeError(Result);
+		}
+	}
+	return MakeValue();
 }
 
 UPackage* UWidgetBlueprint::GetWidgetTemplatePackage() const
@@ -1344,7 +1403,7 @@ void UWidgetBlueprint::UpdateTickabilityStats(bool& OutHasLatentActions, bool& O
 
 bool UWidgetBlueprint::ArePropertyBindingsAllowed() const
 {
-	return GetDefault<UUMGEditorProjectSettings>()->CompilerOption_PropertyBindingRule(this) == EPropertyBindingPermissionLevel::Allow;
+	return GetRelevantSettings()->CompilerOption_PropertyBindingRule(this) == EPropertyBindingPermissionLevel::Allow;
 }
 
 TArray<FName> UWidgetBlueprint::GetInheritedAvailableNamedSlots() const
@@ -1355,6 +1414,16 @@ TArray<FName> UWidgetBlueprint::GetInheritedAvailableNamedSlots() const
 	}
 	
 	return TArray<FName>();
+}
+
+UWidgetEditingProjectSettings* UWidgetBlueprint::GetRelevantSettings()
+{
+	return GetMutableDefault<UUMGEditorProjectSettings>();
+}
+
+const UWidgetEditingProjectSettings* UWidgetBlueprint::GetRelevantSettings() const
+{
+	return GetDefault<UUMGEditorProjectSettings>();
 }
 
 #if WITH_EDITOR

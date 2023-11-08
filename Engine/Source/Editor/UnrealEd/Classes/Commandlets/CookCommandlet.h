@@ -19,6 +19,7 @@
 class FSandboxPlatformFile;
 class ITargetPlatform;
 class UCookOnTheFlyServer;
+enum class ECookByTheBookOptions;
 
 UCLASS(config=Editor)
 class UCookCommandlet
@@ -86,8 +87,6 @@ protected:
 	/** Collect garbage if the cooker's TickResults requested it */
 	void ConditionalCollectGarbage(uint32 TickResults, UCookOnTheFlyServer& COTFS);
 
-	UE_DEPRECATED(5.1, "No longer used")
-	bool bNoShaderCooking;
 public:
 
 	//~ Begin UCommandlet Interface
@@ -96,4 +95,9 @@ public:
 	
 	//~ End UCommandlet Interface
 
+private:
+	void RunCookByTheBookList(UCookOnTheFlyServer* CookOnTheFlyServer, void* StartupOptionsAsVoid,
+		ECookByTheBookOptions CookOptions);
+	void RunCookByTheBookCook(UCookOnTheFlyServer* CookOnTheFlyServer, void* StartupOptionsAsVoid,
+		ECookByTheBookOptions CookOptions);
 };

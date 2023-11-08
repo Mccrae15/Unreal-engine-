@@ -76,7 +76,7 @@ namespace EpicGames.UHT.Parsers
 					// Consume the class specifier
 					topScope.TokenReader.Require("class");
 
-					topScope.TokenReader.SkipAlignasAndDeprecatedMacroIfNecessary();
+					topScope.TokenReader.OptionalAttributes(true);
 
 					// Read the class name and possible API macro name
 					topScope.TokenReader.TryOptionalAPIMacro(out UhtToken apiMacroToken);
@@ -110,10 +110,7 @@ namespace EpicGames.UHT.Parsers
 
 					specifiers.ParseDeferred();
 
-					if (classObj.Outer != null)
-					{
-						classObj.Outer.AddChild(classObj);
-					}
+					classObj.Outer?.AddChild(classObj);
 
 					topScope.AddModuleRelativePathToMetaData();
 

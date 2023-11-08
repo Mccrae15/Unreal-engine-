@@ -3,10 +3,13 @@
 #include "GeometryCollection/GeometryCollectionProximityUtility.h"
 
 #include "GeometryCollection/Facades/CollectionConnectionGraphFacade.h"
+#include "GeometryCollection/Facades/CollectionHierarchyFacade.h"
 #include "GeometryCollection/GeometryCollectionClusteringUtility.h"
 #include "GeometryCollection/GeometryCollectionConvexUtility.h"
 #include "Chaos/Convex.h"
 #include "Chaos/GJK.h"
+#include "CompGeom/ConvexHull3.h"
+#include "VectorUtil.h"
 
 #include "Spatial/SparseDynamicOctree3.h"
 #include "Async/ParallelFor.h"
@@ -527,7 +530,7 @@ void FGeometryCollectionProximityUtility::ClearConnectionGraph()
 	ConnectionsFacade.ClearAttributes();
 }
 
-void FGeometryCollectionProximityUtility::CopyProximityToConnectionGraph()
+void FGeometryCollectionProximityUtility::CopyProximityToConnectionGraph(const TArray<FGeometryContactEdge>* ContactEdges)
 {
 	if (!Collection->HasAttribute("Proximity", FGeometryCollection::GeometryGroup))
 	{
@@ -535,61 +538,103 @@ void FGeometryCollectionProximityUtility::CopyProximityToConnectionGraph()
 		return;
 	}
 
-	const TManagedArray<TSet<int32>>& Proximity = Collection->GetAttribute<TSet<int32>>("Proximity", FGeometryCollection::GeometryGroup);
 	GeometryCollection::Facades::FCollectionConnectionGraphFacade ConnectionsFacade(*Collection);
 	ConnectionsFacade.DefineSchema();
-	TManagedArray<TSet<int32>>& Connections = ConnectionsFacade.ConnectionsAttribute.Modify();
-	Connections.Fill(TSet<int32>());
+	ConnectionsFacade.ResetConnections();
 
-	int32 NumBones = Connections.Num();
-	TArray<int32> Depths;
-	Depths.SetNumZeroed(NumBones);
-	for (int32 BoneIdx = 0; BoneIdx < NumBones; ++BoneIdx)
-	{
-		if (Collection->SimulationType[BoneIdx] == FGeometryCollection::ESimulationTypes::FST_None)
-		{
-			Depths[BoneIdx] = -1;
-			continue;
-		}
-		int32 Depth = 0, WalkParent = BoneIdx;
-		while (Collection->Parent[WalkParent] != INDEX_NONE)
-		{
-			Depth++;
-			WalkParent = Collection->Parent[WalkParent];
-		}
-		Depths[BoneIdx] = Depth;
-	}
-	TArray<int32> AllLeaves;
-	for (int32 BoneIdx = 0; BoneIdx < NumBones; ++BoneIdx)
-	{
-		if (Collection->SimulationType[BoneIdx] == FGeometryCollection::ESimulationTypes::FST_None)
-		{
-			continue;
-		}
-		int32 BoneDepth = Depths[BoneIdx];
-		int32 BoneParent = Collection->Parent[BoneIdx];
-		AllLeaves.Reset();
+	Chaos::Facades::FCollectionHierarchyFacade HierarchyFacade(*Collection);
+	HierarchyFacade.GenerateLevelAttribute();
 
-		FGeometryCollectionClusteringUtility::GetLeafBones(Collection, BoneIdx, true, AllLeaves);
-		for (int32 LeafBone : AllLeaves)
+	TMap<UE::Geometry::FIndex2i, float> ContactSum;
+	// Helper to accumulate contact from a geometry connection to the appropriate transform connection
+	auto ProcessGeometryContact = [this, &ConnectionsFacade, &HierarchyFacade, &ContactSum](int32 GeometryA, int32 GeometryB, bool bAccumulateContactAreas = false, float Contact = 1.f)
+	{
+		int32 Bones[2]{ Collection->TransformIndex[GeometryA], Collection->TransformIndex[GeometryB] };
+		int32 Levels[2]{ HierarchyFacade.GetInitialLevel(Bones[0]), HierarchyFacade.GetInitialLevel(Bones[1]) };
+		int32 Parents[2]{ HierarchyFacade.GetParent(Bones[0]), HierarchyFacade.GetParent(Bones[1]) };
+		while (Parents[0] != INDEX_NONE && Parents[1] != INDEX_NONE)
 		{
-			int32 LeafGeo = Collection->TransformToGeometryIndex[LeafBone];
-			for (int32 NbrGeo : Proximity[LeafGeo])
+			if (Bones[0] == Bones[1]) // stop if both ends are the same bone
 			{
-				int32 NbrBone = Collection->TransformIndex[NbrGeo];
-				if (Depths[NbrBone] < BoneDepth)
+				break;
+			}
+			if (Parents[0] == Parents[1])
+			{
+				UE::Geometry::FIndex2i ConnectBones(Bones[0], Bones[1]);
+				if (Bones[0] > Bones[1])
 				{
-					continue; // cluster is closer to root than us, ignore it
+					Swap(ConnectBones.A, ConnectBones.B);
 				}
-				while (NbrBone != INDEX_NONE && Depths[NbrBone] > BoneDepth)
+				float* FoundContact = ContactSum.Find(ConnectBones);
+				if (!FoundContact)
 				{
-					NbrBone = Collection->Parent[NbrBone];
+					ContactSum.Add(ConnectBones, Contact);
 				}
-				if (NbrBone != INDEX_NONE && Collection->Parent[NbrBone] == BoneParent)
+				else if (bAccumulateContactAreas)
 				{
-					ConnectionsFacade.Connect(BoneIdx, NbrBone);
+					*FoundContact += Contact;
+				}
+				break;
+			}
+
+			bool RaiseLevels[2]{ Levels[0] >= Levels[1], Levels[1] >= Levels[0] };
+			for (int32 Idx = 0; Idx < 2; ++Idx)
+			{
+				if (RaiseLevels[Idx])
+				{
+					Bones[Idx] = Parents[Idx];
+					Parents[Idx] = HierarchyFacade.GetParent(Bones[Idx]);
+					Levels[Idx]--;
 				}
 			}
+		}
+	};
+
+	FGeometryCollectionProximityPropertiesInterface::FProximityProperties Properties = Collection->GetProximityProperties();
+	if (Properties.ContactAreaMethod == EConnectionContactMethod::ConvexHullContactArea)
+	{
+		ConnectionsFacade.EnableContactAreas(true);
+		TArray<FGeometryContactEdge> LocalContactEdges;
+		const TArray<FGeometryContactEdge>* UseContactEdges = ContactEdges;
+		if (!UseContactEdges)
+		{
+			FGeometryCollectionConvexPropertiesInterface::FConvexCreationProperties ConvexProperties = Collection->GetConvexProperties();
+			TArray<FTransform> GlobalTransformArray;
+			GeometryCollectionAlgo::GlobalMatrices(Collection->Transform, Collection->Parent, GlobalTransformArray);
+			UE::GeometryCollectionConvexUtility::FConvexHulls ComputedHulls = FGeometryCollectionConvexUtility::ComputeLeafHulls(Collection, GlobalTransformArray, ConvexProperties.SimplificationThreshold, 0.0f /* Never shrink hulls for proximity detection */);
+
+			LocalContactEdges = ComputeConvexGeometryContactFromProximity(Collection, Properties.DistanceThreshold, ComputedHulls);
+
+			UseContactEdges = &LocalContactEdges;
+		}
+		for (const FGeometryContactEdge& Edge : *UseContactEdges)
+		{
+			ProcessGeometryContact(Edge.GeometryIndices[0], Edge.GeometryIndices[1], true, Edge.ContactArea);
+		}
+	}
+	else // No contact areas
+	{
+		ConnectionsFacade.EnableContactAreas(false);
+		const TManagedArray<TSet<int32>>& Proximity = Collection->GetAttribute<TSet<int32>>("Proximity", FGeometryCollection::GeometryGroup);
+		for (int32 GeoIdx = 0; GeoIdx < Proximity.Num(); ++GeoIdx)
+		{
+			for (int32 NbrIdx : Proximity[GeoIdx])
+			{
+				ProcessGeometryContact(GeoIdx, NbrIdx, false);
+			}
+		}
+	}
+
+	// Copy out final contacts
+	for (TPair<UE::Geometry::FIndex2i, float> Contact : ContactSum)
+	{
+		if (ConnectionsFacade.HasContactAreas())
+		{
+			ConnectionsFacade.ConnectWithContact(Contact.Key.A, Contact.Key.B, Contact.Value);
+		}
+		else
+		{
+			ConnectionsFacade.Connect(Contact.Key.A, Contact.Key.B);
 		}
 	}
 }
@@ -600,22 +645,28 @@ void FGeometryCollectionProximityUtility::UpdateProximity(UE::GeometryCollection
 
 	FGeometryCollectionProximityPropertiesInterface::FProximityProperties Properties = Collection->GetProximityProperties();
 
+	bool bWantConvexContactEdges = 
+		(Properties.RequireContactAmount > 0.0f &&
+		(Properties.ContactMethod == EProximityContactMethod::ConvexHullSharpContact || Properties.ContactMethod == EProximityContactMethod::ConvexHullAreaContact))
+		||
+		(Properties.ContactAreaMethod == EConnectionContactMethod::ConvexHullContactArea);
+	bool bWantLocalHulls = Properties.Method == EProximityMethod::ConvexHull || bWantConvexContactEdges;
+
+	FGeometryCollectionConvexPropertiesInterface::FConvexCreationProperties ConvexProperties = Collection->GetConvexProperties();
+
+	UE::GeometryCollectionConvexUtility::FConvexHulls LocalComputedHulls;
+	UE::GeometryCollectionConvexUtility::FConvexHulls* UseComputedHulls = OptionalComputedHulls;
+	if (bWantLocalHulls && (!UseComputedHulls || UseComputedHulls->OverlapRemovalShrinkPercent > 0)) // If we don't have precomputed hulls or if they're shrunk, compute new hulls to use for proximity detection
+	{
+		TArray<FTransform> GlobalTransformArray;
+		GeometryCollectionAlgo::GlobalMatrices(Collection->Transform, Collection->Parent, GlobalTransformArray);
+		LocalComputedHulls = FGeometryCollectionConvexUtility::ComputeLeafHulls(Collection, GlobalTransformArray, ConvexProperties.SimplificationThreshold, 0.0f /* Never shrink hulls for proximity detection */);
+		UseComputedHulls = &LocalComputedHulls;
+	}
+
 	if (Properties.Method == EProximityMethod::ConvexHull)
 	{
-		FGeometryCollectionConvexPropertiesInterface::FConvexCreationProperties ConvexProperties = Collection->GetConvexProperties();
-
-		UE::GeometryCollectionConvexUtility::FConvexHulls LocalComputedHulls;
-		UE::GeometryCollectionConvexUtility::FConvexHulls* UseComputedHulls = OptionalComputedHulls;
-		if (!UseComputedHulls || UseComputedHulls->OverlapRemovalShrinkPercent > 0) // If we don't have precomputed hulls or if they're shrunk, compute new hulls to use for proximity detection
-		{
-			TArray<FTransform> GlobalTransformArray;
-			GeometryCollectionAlgo::GlobalMatrices(Collection->Transform, Collection->Parent, GlobalTransformArray);
-			LocalComputedHulls = FGeometryCollectionConvexUtility::ComputeLeafHulls(Collection, GlobalTransformArray, ConvexProperties.SimplificationThreshold, 0.0f /* Never shrink hulls for proximity detection */);
-			UseComputedHulls = &LocalComputedHulls;
-		}
-
 		UE::GeometryCollectionInternal::BuildProximityFromConvexHulls(Collection, *UseComputedHulls, Properties.DistanceThreshold);
-
 	}
 	else
 	{
@@ -624,6 +675,12 @@ void FGeometryCollectionProximityUtility::UpdateProximity(UE::GeometryCollection
 		constexpr float PreciseProximityThreshold = .01f;
 		FGeometryCollectionProximitySpatial Spatial(Collection, PreciseProximityThreshold);
 		Spatial.MoveProximityToCollection(Collection);
+	}
+
+	TArray<FGeometryContactEdge> ContactEdges;
+	if (bWantConvexContactEdges)
+	{
+		ContactEdges = ComputeConvexGeometryContactFromProximity(Collection, Properties.DistanceThreshold, *UseComputedHulls);
 	}
 
 	if (Properties.RequireContactAmount > 0.0f)
@@ -695,15 +752,95 @@ void FGeometryCollectionProximityUtility::UpdateProximity(UE::GeometryCollection
 				}
 			}
 		}
+		else if (Properties.ContactMethod == EProximityContactMethod::ConvexHullSharpContact)
+		{
+			TManagedArray<TSet<int32>>& Proximity = Collection->ModifyAttribute<TSet<int32>>("Proximity", FGeometryCollection::GeometryGroup);
+			for (const FGeometryContactEdge& Edge : ContactEdges)
+			{
+				if (Edge.SharpContactWidth < Properties.RequireContactAmount && Edge.SharpContactWidth < Edge.MaxSharpContact * .5)
+				{
+					Proximity[Edge.GeometryIndices[0]].Remove(Edge.GeometryIndices[1]);
+					Proximity[Edge.GeometryIndices[1]].Remove(Edge.GeometryIndices[0]);
+				}
+			}
+		}
+		else if (Properties.ContactMethod == EProximityContactMethod::ConvexHullAreaContact)
+		{
+			TManagedArray<TSet<int32>>& Proximity = Collection->ModifyAttribute<TSet<int32>>("Proximity", FGeometryCollection::GeometryGroup);
+			for (const FGeometryContactEdge& Edge : ContactEdges)
+			{
+				float RequireArea = Properties.RequireContactAmount * Properties.RequireContactAmount;
+				if (Edge.ContactArea < RequireArea && Edge.ContactArea < Edge.MaxContactArea * .5)
+				{
+					Proximity[Edge.GeometryIndices[0]].Remove(Edge.GeometryIndices[1]);
+					Proximity[Edge.GeometryIndices[1]].Remove(Edge.GeometryIndices[0]);
+				}
+			}
+		}
 	}
 
 	if (Properties.bUseAsConnectionGraph)
 	{
-		CopyProximityToConnectionGraph();
+		CopyProximityToConnectionGraph(Properties.ContactAreaMethod == EConnectionContactMethod::ConvexHullContactArea  ? &ContactEdges : nullptr);
 	}
 	else
 	{
 		// TODO: verify that the connection graph was auto-generated from proximity, rather than being custom edited, before removal
 		ClearConnectionGraph();
 	}
+}
+
+
+
+
+
+
+
+TArray<FGeometryCollectionProximityUtility::FGeometryContactEdge>
+FGeometryCollectionProximityUtility::ComputeConvexGeometryContactFromProximity(
+	FGeometryCollection* Collection, float DistanceTolerance,
+	UE::GeometryCollectionConvexUtility::FConvexHulls& LocalHulls)
+{
+	// We must already have proximity
+	const TManagedArray<TSet<int32>>* Proximity = Collection->FindAttribute<TSet<int32>>("Proximity", FGeometryCollection::GeometryGroup);
+	if (!ensureMsgf(Proximity, TEXT("ComputeGeometryContactFromProximity should only be called when a Proximity attribute has already been added")))
+	{
+		return TArray<FGeometryCollectionProximityUtility::FGeometryContactEdge>();
+	}
+	
+	TArray<FGeometryCollectionProximityUtility::FGeometryContactEdge> ContactEdges;
+	for (int32 GeoIdx = 0; GeoIdx < Proximity->Num(); ++GeoIdx)
+	{
+		int32 TransformIdx = Collection->TransformIndex[GeoIdx];
+		const TSet<int32>& GeoHulls = LocalHulls.TransformToHullsIndices[TransformIdx];
+		for (int32 NbrGeoIdx : (*Proximity)[GeoIdx])
+		{
+			// all connections should be symmetric, and no connections should be to self, so only compute lower idx->higher idx
+			if (GeoIdx >= NbrGeoIdx)
+			{
+				continue;
+			}
+			int32 NbrTransformIdx = Collection->TransformIndex[NbrGeoIdx];
+			const TSet<int32>& NbrGeoHulls = LocalHulls.TransformToHullsIndices[NbrTransformIdx];
+			float OverlapAreas = 0, OverlapMaxAreas = 0, OverlapSharpContact = 0, OverlapMaxSharpContact = 0;
+			for (int32 GeoHullIdx : GeoHulls)
+			{
+				for (int32 NbrHullIdx : NbrGeoHulls)
+				{
+					float Area, MaxArea, SharpContact, MaxSharpContact;
+					UE::GeometryCollectionConvexUtility::HullIntersectionStats(LocalHulls.Hulls[GeoHullIdx].Get(), LocalHulls.Hulls[NbrHullIdx].Get(), DistanceTolerance, Area, MaxArea, SharpContact, MaxSharpContact);
+					// Note: The sharp contact concept would be most accurately implemented by combining the intersection/overlaps of all involved hulls
+					// but taking the max values should be a reasonable conservative approximation in most cases
+					OverlapSharpContact = FMath::Max(OverlapSharpContact, SharpContact);
+					OverlapMaxSharpContact = FMath::Max(OverlapMaxSharpContact, MaxSharpContact);
+					OverlapMaxAreas += MaxArea;
+					OverlapAreas += Area;
+				}
+			}
+			// to approximate contact surface area, use half of surface area of convex hull intersection
+			ContactEdges.Emplace(GeoIdx, NbrGeoIdx, OverlapAreas * .5f, OverlapMaxAreas * .5f, OverlapSharpContact, OverlapMaxSharpContact);
+		}
+	}
+
+	return ContactEdges;
 }

@@ -12,6 +12,41 @@ class UPhysicalMaterial;
 
 namespace Chaos
 {
+	// Event Emitter flag
+	enum EventEmitterFlag
+	{
+		EmptyDispatcher = 0,
+		OwnDispatcher = 1,
+		GlobalDispatcher = 2,
+		BothDispatcher = 3,
+	};
+
+	struct FBaseEventFlag
+	{
+		FBaseEventFlag() : EmitterFlag(OwnDispatcher) {}
+
+		void SetEmitterFlag(bool LocalEmitter, bool GlobalEmitter)
+		{
+			EmitterFlag = ComputeEmitterFlag(LocalEmitter, GlobalEmitter);
+		}
+
+		static EventEmitterFlag ComputeEmitterFlag(bool LocalEmitter, bool GlobalEmitter)
+		{
+			EventEmitterFlag EmitterFlagOut = EventEmitterFlag::EmptyDispatcher;
+			if (LocalEmitter)
+			{
+				EmitterFlagOut = EventEmitterFlag::OwnDispatcher;
+			}
+			if (GlobalEmitter)
+			{
+				EmitterFlagOut = EventEmitterFlag(EmitterFlagOut | EventEmitterFlag::GlobalDispatcher);
+			}
+			return EmitterFlagOut;
+		}
+
+		EventEmitterFlag EmitterFlag;
+	};
+
 	/**
 	 * Collision event data stored for use by other systems (e.g. Niagara, gameplay events)
 	 */
@@ -37,11 +72,12 @@ namespace Chaos
 			, Proxy2(nullptr)
 			, ShapeIndex1(INDEX_NONE)
 			, ShapeIndex2(INDEX_NONE)
+			, SolverTime((FReal)0.0)
 		{}
 
 		FCollidingData(FVec3 InLocation, FVec3 InAccumulatedImpulse, FVec3 InNormal, FVec3 InVelocity1, FVec3 InVelocity2, FVec3 InDeltaVelocity1, FVec3 InDeltaVelocity2
 			, FVec3 InAngularVelocity1, FVec3 InAngularVelocity2, FReal InMass1,FReal InMass2,  FReal InPenetrationDepth, IPhysicsProxyBase* InProxy1, IPhysicsProxyBase* InProxy2
-			, int32 InShapeIndex1, int32 InShapeIndex2)
+			, int32 InShapeIndex1, int32 InShapeIndex2, FReal InSolverTime)
 			: Location(InLocation)
 			, AccumulatedImpulse(InAccumulatedImpulse)
 			, Normal(InNormal)
@@ -61,6 +97,7 @@ namespace Chaos
 			, Proxy2(InProxy2)
 			, ShapeIndex1(InShapeIndex1)
 			, ShapeIndex2(InShapeIndex2)
+			, SolverTime(InSolverTime)
 		{}
 
 		FVec3 Location;
@@ -90,6 +127,8 @@ namespace Chaos
 
 		int32 ShapeIndex1;
 		int32 ShapeIndex2;
+
+		FReal SolverTime;
 	};
 
 	/*
@@ -167,10 +206,11 @@ namespace Chaos
 	/*
 	BreakingData passed from the physics solver to subsystems
 	*/
-	struct FBreakingData
+	struct FBreakingData : public FBaseEventFlag
 	{
 		FBreakingData()
-			: Proxy(nullptr)
+			: FBaseEventFlag()
+			, Proxy(nullptr)
 			, Location(FVec3((FReal)0.0))
 			, Velocity(FVec3((FReal)0.0))
 			, AngularVelocity(FVec3((FReal)0.0))
@@ -199,10 +239,11 @@ namespace Chaos
 	/*
 	CrumblingData passed from the physics solver to subsystems
 	*/
-	struct FCrumblingData
+	struct FCrumblingData : public FBaseEventFlag
 	{
 		FCrumblingData()
-			: Proxy(nullptr)
+			: FBaseEventFlag()
+			, Proxy(nullptr)
 			, Location(FVec3::ZeroVector)
 			, Orientation(FRotation3::Identity)
 			, LinearVelocity(FVec3::ZeroVector)
@@ -211,17 +252,6 @@ namespace Chaos
 			, LocalBounds(FAABB3(FVec3((FReal)0.0), FVec3((FReal)0.0)))
 		{}
 
-		FCrumblingData(const FCrumblingData& Other)
-			: Proxy(Other.Proxy)
-			, Location(Other.Location)
-			, Orientation(Other.Orientation)
-			, LinearVelocity(Other.LinearVelocity)
-			, AngularVelocity(Other.AngularVelocity)
-			, Mass(Other.Mass)
-			, LocalBounds(Other.LocalBounds)
-			, Children(Other.Children)
-		{}
-		
 		// The pointer to the proxy should be used with caution on the Game Thread.
 		// Ideally we only ever use this as a table key when acquiring related structures.
 		// If we genuinely need to dereference the pointer for any reason, test if it is deleted (nullptr) or

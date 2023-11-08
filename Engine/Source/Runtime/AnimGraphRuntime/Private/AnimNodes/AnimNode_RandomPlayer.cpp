@@ -6,6 +6,7 @@
 #include "Animation/AnimInstanceProxy.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimTrace.h"
+#include "Animation/AnimStats.h"
 #include "Animation/AnimSyncScope.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_RandomPlayer)
@@ -265,6 +266,8 @@ void FAnimNode_RandomPlayer::Update_AnyThread(const FAnimationUpdateContext& Con
 void FAnimNode_RandomPlayer::Evaluate_AnyThread(FPoseContext& Output)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Evaluate_AnyThread)
+	ANIM_MT_SCOPE_CYCLE_COUNTER_VERBOSE(RandomPlayer, !IsInGameThread());
+
 	if (ValidEntries.Num() == 0)
 	{
 		Output.ResetToRefPose();
@@ -378,6 +381,16 @@ float FAnimNode_RandomPlayer::GetCachedBlendWeight() const
 void FAnimNode_RandomPlayer::ClearCachedBlendWeight()
 {
 	BlendWeight = 0.f;
+}
+
+const FDeltaTimeRecord* FAnimNode_RandomPlayer::GetDeltaTimeRecord() const
+{
+	if (ValidEntries.Num() > 0)
+	{
+		const FRandomAnimPlayData& CurrentPlayData = GetPlayData(ERandomDataIndexType::Current);
+		return &CurrentPlayData.DeltaTimeRecord;
+	}
+	return nullptr;
 }
 
 int32 FAnimNode_RandomPlayer::GetNextValidEntryIndex()

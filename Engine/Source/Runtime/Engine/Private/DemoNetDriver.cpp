@@ -223,6 +223,36 @@ namespace DemoNetDriverRecordingPrivate
 					}
 				}
 			}));
+
+#if !UE_BUILD_SHIPPING
+	static FAutoConsoleCommandWithWorldAndArgs DemoTestWriteEvent(
+		TEXT("Demo.TestWriteEvent"),
+		TEXT("Add or update a test replay event on the currently recording replay, with an optional argument for event size in bytes"),
+		FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(
+			[](const TArray<FString>& Params, UWorld* World)
+			{
+				if (World)
+				{
+					if (UDemoNetDriver* Driver = World->GetDemoNetDriver())
+					{
+						if (APlayerController* ViewerPC = GEngine->GetFirstLocalPlayerController(World))
+						{
+							int32 EventSize = 32;
+
+							if (Params.Num() > 0)
+							{
+								EventSize = FCString::Atoi(*Params[0]);
+							}
+
+							TArray<uint8> EventData;
+							EventData.AddZeroed(EventSize);
+
+							Driver->AddOrUpdateEvent(TEXT("Test"), TEXT("Test"), TEXT("Test"), EventData);
+						}
+					}
+				}
+			}));
+#endif
 }
 
 struct FDemoBudgetLogHelper
@@ -558,7 +588,9 @@ public:
 
 		Driver->GetReplayStreamer()->SetHighPriorityTimeRange(Driver->GetDemoCurrentTimeInMS(), TimeInMSToCheck);
 
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		Driver->SkipTimeInternal(SecondsToSkip, true, false);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	virtual bool Tick() override
@@ -843,6 +875,21 @@ bool UDemoNetDriver::InitBase(bool bInitAsClient, FNetworkNotify* InNotify, cons
 		}
 
 		ResetDemoState();
+
+		if (URL.HasOption(TEXT("MaxDesiredReplayRecordTimeMS")))
+		{
+			MaxDesiredRecordTimeMS = FCString::Atof(URL.GetOption(TEXT("MaxDesiredReplayRecordTimeMS="), nullptr));
+		}
+
+		if (URL.HasOption(TEXT("CheckpointSaveMaxMSPerFrame")))
+		{
+			CheckpointSaveMaxMSPerFrame = FCString::Atof(URL.GetOption(TEXT("CheckpointSaveMaxMSPerFrame="), nullptr));
+		}
+
+		if (URL.HasOption(TEXT("ActorPrioritizationEnabled")))
+		{
+			bPrioritizeActors = FCString::Atoi(URL.GetOption(TEXT("ActorPrioritizationEnabled="), nullptr)) != 0;
+		}
 
 		ReplayStreamer = ReplayHelper.Init(URL);
 
@@ -2269,9 +2316,7 @@ bool UDemoNetDriver::ReplicatePrioritizedActor(const FActorPriority& ActorPriori
 
 		const bool bDidReplicateActor = DemoReplicateActor(Actor, Params.Connection, false);
 
-		const bool bUpdatedExternalData = ReplayHelper.UpdateExternalDataForObject(Params.Connection, Actor);
-
-		if (bDidReplicateActor || bUpdatedExternalData)
+		if (bDidReplicateActor)
 		{
 			// Choose an optimal time, we choose 70% of the actual rate to allow frequency to go up if needed
 			ActorInfo->OptimalNetUpdateDelta = FMath::Clamp(LastReplicateDelta * 0.7f, MinOptimalDelta, MaxOptimalDelta);
@@ -2834,7 +2879,7 @@ void UDemoNetDriver::TickDemoPlayback(float DeltaSeconds)
 			{
 				if (FParse::Param(FCommandLine::Get(), TEXT("ExitAfterReplay")) && (!LocalPlaylistTracker || LocalPlaylistTracker->IsOnLastReplay()))
 				{
-					FPlatformMisc::RequestExit(false);
+					FPlatformMisc::RequestExit(false, TEXT("DemoNetDriver"));
 				}
 				else
 				{
@@ -3173,10 +3218,12 @@ void UDemoNetDriver::ReplayStreamingReady(const FStartStreamingResult& Result)
 		
 		const double StartTime = FPlatformTime::Seconds();
 
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		if (!InitConnectInternal(Error))
 		{
 			return;
 		}
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		// InitConnectInternal calls ResetDemoState which will reset this, so restore the value
 		bWasStartStreamingSuccessful = Result.WasSuccessful();
@@ -4252,7 +4299,9 @@ bool UDemoNetDriver::LoadCheckpoint(const FGotoResult& GotoResult)
 
 		if (GotoResult.ExtraTimeMS != -1)
 		{
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			SkipTimeInternal((float)GotoResult.ExtraTimeMS / 1000.0f, true, true);
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 		else
 		{
@@ -4460,8 +4509,10 @@ bool UDemoNetDriver::LoadCheckpoint(const FGotoResult& GotoResult)
 
 	if (GotoResult.ExtraTimeMS != -1)
 	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		// If we need to skip more time for fine scrubbing, set that up now
 		SkipTimeInternal((float)GotoResult.ExtraTimeMS / 1000.0f, true, true);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 	else
 	{
@@ -5077,8 +5128,6 @@ void UDemoNetDriver::NotifyActorDestroyed(AActor* Actor, bool IsSeamlessTravel)
 		{
 			// This is a stripped down version of UNetDriver::NotifyActorDestroy and UActorChannel::Close
 			// combined, and should be kept up to date with those methods.
-
-
 			if (UNetConnection* Connection = ClientConnections[0])
 			{
 				if (Actor->bNetTemporary)
@@ -5094,7 +5143,7 @@ void UDemoNetDriver::NotifyActorDestroyed(AActor* Actor, bool IsSeamlessTravel)
 					Channel->ReleaseReferences(false);
 				}
 
-				Connection->CleanupDormantReplicatorsForActor(Actor);
+				Connection->NotifyActorDestroyed(Actor, IsSeamlessTravel);
 			}
 
 			GetNetworkObjectList().Remove(Actor);
@@ -5140,19 +5189,19 @@ void UDemoNetDriver::CleanupOutstandingRewindActors()
 					// Destroy the actor before removing entries from the GuidCache so its entries are still valid in NotifyActorDestroyed.
 					World->DestroyActor(Actor, true);
 
-					ensureMsgf(GuidCache->NetGUIDLookup.Remove(CacheObject->Object) > 0, TEXT("CleanupOutstandingRewindActors: No entry found for %d in NetGUIDLookup"), NetGUID.Value);
+					ensureMsgf(GuidCache->NetGUIDLookup.Remove(CacheObject->Object) > 0, TEXT("CleanupOutstandingRewindActors: No entry found for %s in NetGUIDLookup"), *NetGUID.ToString());
 					GuidCache->ObjectLookup.Remove(NetGUID);
 					CacheObject->bNoLoad = false;
 				}
 				else
 				{
-					UE_LOG(LogDemo, Warning, TEXT("CleanupOutstandingRewindActors - Invalid object for %d, skipping."), NetGUID.Value);
+					UE_LOG(LogDemo, Warning, TEXT("CleanupOutstandingRewindActors - Invalid object for %s, skipping."), *NetGUID.ToString());
 					continue;
 				}
 			}	
 			else
 			{
-				UE_LOG(LogDemo, Warning, TEXT("CleanupOutstandingRewindActors - CacheObject not found for %s"), NetGUID.Value);
+				UE_LOG(LogDemo, Warning, TEXT("CleanupOutstandingRewindActors - CacheObject not found for %s"), *NetGUID.ToString());
 			}
 		}
 	}
@@ -5279,7 +5328,7 @@ void UDemoNetDriver::QueueNetStartupActorForRollbackViaDeletion(AActor* Actor)
 				FRepShadowDataBuffer ShadowData(ReceivingRepState->StaticBuffer.GetData());
 				FConstRepObjectDataBuffer ActorData(Actor);
 
-				if (NewReplicator->RepLayout->DiffStableProperties(nullptr, &ToRawPtrTArrayUnsafe(RollbackActor.ObjReferences), ShadowData, ActorData))
+				if (NewReplicator->RepLayout->DiffStableProperties(nullptr, ToRawPtr(MutableView(RollbackActor.ObjReferences)), ShadowData, ActorData))
 				{
 					RollbackActor.RepState = MakeShareable(NewReplicator->RepState.Release());
 				}
@@ -5300,7 +5349,7 @@ void UDemoNetDriver::QueueNetStartupActorForRollbackViaDeletion(AActor* Actor)
 					FRepShadowDataBuffer ShadowData(ReceivingRepState->StaticBuffer.GetData());
 					FConstRepObjectDataBuffer ActorCompData(ActorComp);
 
-					if (SubObjReplicator->RepLayout->DiffStableProperties(nullptr, &ToRawPtrTArrayUnsafe(RollbackActor.ObjReferences), ShadowData, ActorCompData))
+					if (SubObjReplicator->RepLayout->DiffStableProperties(nullptr, ToRawPtr(MutableView(RollbackActor.ObjReferences)), ShadowData, ActorCompData))
 					{
 						RollbackActor.SubObjRepState.Add(ActorComp->GetFullName(), MakeShareable(SubObjReplicator->RepState.Release()));
 					}
@@ -5319,13 +5368,15 @@ void UDemoNetDriver::ForceNetUpdate(AActor* Actor)
 	}
 	else
 	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		if (FNetworkObjectInfo* NetActor = FindNetworkObjectInfo(Actor))
 		{
 			// replays use update times relative to DemoCurrentTime and not World->TimeSeconds
 			NetActor->NextUpdateTime = GetDemoCurrentTime() - 0.01f;
 		}
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
-	}
+}
 
 UChannel* UDemoNetDriver::InternalCreateChannelByName(const FName& ChName)
 {

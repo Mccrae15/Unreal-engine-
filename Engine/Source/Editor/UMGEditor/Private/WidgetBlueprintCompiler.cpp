@@ -12,7 +12,7 @@
 #include "MovieScene.h"
 
 #include "FieldNotification/CustomizationHelper.h"
-#include "FieldNotification/FieldNotificationHelpers.h"
+#include "FieldNotificationHelpers.h"
 #include "Kismet2/Kismet2NameValidators.h"
 #include "Kismet2/KismetReinstanceUtilities.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -20,7 +20,7 @@
 #include "WidgetBlueprintEditorUtils.h"
 #include "WidgetGraphSchema.h"
 #include "IUMGModule.h"
-#include "UMGEditorProjectSettings.h"
+#include "WidgetEditingProjectSettings.h"
 #include "WidgetCompilerRule.h"
 #include "WidgetBlueprintExtension.h"
 #include "Editor/WidgetCompilerLog.h"
@@ -42,6 +42,11 @@ FWidgetBlueprintCompilerContext::FCreateVariableContext::FCreateVariableContext(
 FProperty* FWidgetBlueprintCompilerContext::FCreateVariableContext::CreateVariable(const FName Name, const FEdGraphPinType& Type) const
 {
 	return Context.CreateVariable(Name, Type);
+}
+
+void FWidgetBlueprintCompilerContext::FCreateVariableContext::AddGeneratedFunctionGraph(UEdGraph* Graph) const
+{
+	Context.GeneratedFunctionGraphs.Add(Graph);
 }
 
 UWidgetBlueprint* FWidgetBlueprintCompilerContext::FCreateVariableContext::GetWidgetBlueprint() const
@@ -405,7 +410,6 @@ void FWidgetBlueprintCompilerContext::CleanAndSanitizeClass(UBlueprintGeneratedC
 	NewWidgetBlueprintClass->Animations.Empty();
 	NewWidgetBlueprintClass->Bindings.Empty();
 	NewWidgetBlueprintClass->Extensions.Empty();
-	NewWidgetBlueprintClass->FieldNotifyNames.Empty();
 
 	if (UWidgetBlueprintGeneratedClass* WidgetClassToClean = Cast<UWidgetBlueprintGeneratedClass>(ClassToClean))
 	{
@@ -596,16 +600,6 @@ void FWidgetBlueprintCompilerContext::CreateClassVariablesFromBlueprint()
 		{
 			InExtension->CreateClassVariablesFromBlueprint(FCreateVariableContext(*Self));
 		});
-
-	//Add FieldNotifyNames
-	for (TFieldIterator<const FProperty> PropertyIt(NewClass, EFieldIterationFlags::None); PropertyIt; ++PropertyIt)
-	{
-		const FProperty* Property = *PropertyIt;
-		if (Property->HasMetaData(UE::FieldNotification::FCustomizationHelper::MetaData_FieldNotify))
-		{
-			NewWidgetBlueprintClass->FieldNotifyNames.Emplace(Property->GetFName());
-		}
-	}
 }
 
 void FWidgetBlueprintCompilerContext::CopyTermDefaultsToDefaultObject(UObject* DefaultObject)
@@ -767,7 +761,7 @@ void FWidgetBlueprintCompilerContext::FinishCompilingClass(UClass* Class)
 	{
 		if( !WidgetBP->bHasBeenRegenerated )
 		{
-			UBlueprint::ForceLoadMembers(WidgetBP->WidgetTree);
+			UBlueprint::ForceLoadMembers(WidgetBP->WidgetTree, WidgetBP);
 		}
 
 		FixAbandonedWidgetTree(WidgetBP);
@@ -783,6 +777,7 @@ void FWidgetBlueprintCompilerContext::FinishCompilingClass(UClass* Class)
 			FObjectDuplicationParameters DupParams(WidgetBP->WidgetTree, BPGClass);
 			DupParams.DestName = DupParams.SourceObject->GetFName();
 			DupParams.FlagMask = RF_AllFlags & ~RF_DefaultSubObject;
+			DupParams.PortFlags |= PPF_DuplicateVerbatim; // Skip resetting text IDs
 
 			// if we are recompiling the BP on load, skip post load and defer it to the loading process
 			FUObjectSerializeContext* LinkerLoadingContext = nullptr;
@@ -804,6 +799,8 @@ void FWidgetBlueprintCompilerContext::FinishCompilingClass(UClass* Class)
 				LinkerLoadingContext->AddUniqueLoadedObjects(DupObjects);
 			}
 
+			//WidgetBP->IsWidgetFreeFromCircularReferences();
+
 			BPGClass->SetWidgetTreeArchetype(NewWidgetTree);
 			if (OldWidgetTree)
 			{
@@ -812,6 +809,21 @@ void FWidgetBlueprintCompilerContext::FinishCompilingClass(UClass* Class)
 			OldWidgetTree = nullptr;
 
 			WidgetBP->WidgetTree->SetFlags(PreviousFlags);
+		}
+
+		{
+			TValueOrError<void, UWidget*> HasReference = WidgetBP->HasCircularReferences();
+			if (HasReference.HasError())
+			{
+				if (UWidget* FoundCircularWidget = BPGClass->GetWidgetTreeArchetype()->FindWidget(HasReference.GetError()->GetFName()))
+				{
+					BPGClass->GetWidgetTreeArchetype()->RemoveWidget(FoundCircularWidget);
+				}
+				MessageLog.Error(*FText::Format(LOCTEXT("WidgetTreeCircularReference", "The WidgetTree '{0}' Contains circular references. See widget '{1}'"),
+					FText::FromString(WidgetBP->WidgetTree->GetPathName()),
+					FText::FromString(HasReference.GetError()->GetName())
+					).ToString());
+			}
 		}
 
 		int32 AnimIndex = 0;
@@ -850,7 +862,7 @@ void FWidgetBlueprintCompilerContext::FinishCompilingClass(UClass* Class)
 				}
 			}
 
-			const EPropertyBindingPermissionLevel PropertyBindingRule = GetDefault<UUMGEditorProjectSettings>()->CompilerOption_PropertyBindingRule(WidgetBP);
+			const EPropertyBindingPermissionLevel PropertyBindingRule = WidgetBP->GetRelevantSettings()->CompilerOption_PropertyBindingRule(WidgetBP);
 			if (PropertyBindingRule != EPropertyBindingPermissionLevel::Allow)
 			{
 				if (WidgetBP->Bindings.Num() > 0)
@@ -878,7 +890,7 @@ void FWidgetBlueprintCompilerContext::FinishCompilingClass(UClass* Class)
 				}
 			}
 
-			if (!GetDefault<UUMGEditorProjectSettings>()->CompilerOption_AllowBlueprintTick(WidgetBP))
+			if (!WidgetBP->GetRelevantSettings()->CompilerOption_AllowBlueprintTick(WidgetBP))
 			{
 				const UFunction* ReceiveTickEvent = FKismetCompilerUtilities::FindOverriddenImplementableEvent(GET_FUNCTION_NAME_CHECKED(UUserWidget, Tick), NewWidgetBlueprintClass);
 				if (ReceiveTickEvent)
@@ -887,7 +899,7 @@ void FWidgetBlueprintCompilerContext::FinishCompilingClass(UClass* Class)
 				}
 			}
 
-			if (!GetDefault<UUMGEditorProjectSettings>()->CompilerOption_AllowBlueprintPaint(WidgetBP))
+			if (!WidgetBP->GetRelevantSettings()->CompilerOption_AllowBlueprintPaint(WidgetBP))
 			{
 				if (const UFunction* ReceivePaintEvent = FKismetCompilerUtilities::FindOverriddenImplementableEvent(GET_FUNCTION_NAME_CHECKED(UUserWidget, OnPaint), NewWidgetBlueprintClass))
 				{
@@ -897,7 +909,7 @@ void FWidgetBlueprintCompilerContext::FinishCompilingClass(UClass* Class)
 
 			// It's possible we may encounter some rules that haven't had a chance to load yet during early loading phases
 			// They're automatically removed from the returned set.
-			TArray<UWidgetCompilerRule*> CustomRules = GetDefault<UUMGEditorProjectSettings>()->CompilerOption_Rules(WidgetBP);
+			TArray<UWidgetCompilerRule*> CustomRules = WidgetBP->GetRelevantSettings()->CompilerOption_Rules(WidgetBP);
 			for (UWidgetCompilerRule* CustomRule : CustomRules)
 			{
 				CustomRule->ExecuteRule(WidgetBP, MessageLog);
@@ -1110,11 +1122,6 @@ void FWidgetBlueprintCompilerContext::FinishCompilingClass(UClass* Class)
 	Super::FinishCompilingClass(Class);
 
 	CA_ASSUME(BPGClass);
-	if (UUserWidget* UserWidget = Cast<UUserWidget>(BPGClass->GetDefaultObject()))
-	{
-		BPGClass->InitializeFieldNotification(UserWidget);
-	}
-
 	UWidgetBlueprintExtension::ForEachExtension(WidgetBlueprint(), [BPGClass](UWidgetBlueprintExtension* InExtension)
 		{
 			InExtension->FinishCompilingClass(BPGClass);
@@ -1166,9 +1173,13 @@ void FWidgetBlueprintCompilerContext::ValidateWidgetAnimations()
 			// If any of the FoundObjects is null, we do not play the animation.
 			if (FoundObject == nullptr)
 			{
-				// Notify the user of the null track in the editor
-				const FText AnimationNullTrackMessage = LOCTEXT("AnimationNullTrack", "UMG Animation '{0}' from '{1}' is trying to animate a non-existent widget through binding '{2}'. Please re-bind or delete this object from the animation.");
-				BlueprintLog.Warning(FText::Format(AnimationNullTrackMessage, InAnimation->GetDisplayName(), FText::FromString(UserWidget->GetClass()->GetName()), FText::FromName(Binding.WidgetName)));
+				FoundObject = Binding.FindRuntimeObject(*WidgetBP->WidgetTree, *UserWidget);
+				if (FoundObject == nullptr)
+				{
+					// Notify the user of the null track in the editor
+					const FText AnimationNullTrackMessage = LOCTEXT("AnimationNullTrack", "UMG Animation '{0}' from '{1}' is trying to animate a non-existent widget through binding '{2}'. Please re-bind or delete this object from the animation.");
+					BlueprintLog.Warning(FText::Format(AnimationNullTrackMessage, InAnimation->GetDisplayName(), FText::FromString(UserWidget->GetClass()->GetName()), FText::FromName(Binding.WidgetName)));
+				}
 			}
 		}
 	}
@@ -1194,6 +1205,31 @@ void FWidgetBlueprintCompilerContext::OnPostCDOCompiled(const UObject::FPostCDOC
 		FBlueprintCompilerLog BlueprintLog(MessageLog, WidgetClass);
 		WidgetClass->GetDefaultObject<UUserWidget>()->ValidateBlueprint(*WidgetBP->WidgetTree, BlueprintLog);
 		ValidateWidgetAnimations();
+	}
+
+	ValidateDesiredFocusWidgetName();
+}
+
+
+void FWidgetBlueprintCompilerContext::ValidateDesiredFocusWidgetName()
+{
+	if (UWidgetBlueprintGeneratedClass* WidgetClass = NewWidgetBlueprintClass)
+	{
+		UWidgetBlueprint* WidgetBP = WidgetBlueprint();
+		UUserWidget* UserWidgetCDO = WidgetClass->GetDefaultObject<UUserWidget>();
+		if (WidgetBP && UserWidgetCDO)
+		{
+			UWidgetTree* LatestWidgetTree = FWidgetBlueprintEditorUtils::FindLatestWidgetTree(WidgetBP, UserWidgetCDO);
+			FName DesiredFocusWidgetName = UserWidgetCDO->GetDesiredFocusWidgetName();
+
+			if (!DesiredFocusWidgetName.IsNone() && !LatestWidgetTree->FindWidget(DesiredFocusWidgetName))
+			{
+				FBlueprintCompilerLog BlueprintLog(MessageLog, WidgetClass);
+				// Notify that the desired focus widget is not found in the Widget tree, so it's invalid.
+				const FText InvalidDesiredFocusWidgetNameMessage = LOCTEXT("InvalidDesiredFocusWidgetName", "User Widget '{0}' Desired Focus is set to a non-existent widget '{1}'. Select a valid desired focus for this User Widget.");
+				BlueprintLog.Warning(FText::Format(InvalidDesiredFocusWidgetNameMessage, FText::FromString(UserWidgetCDO->GetClass()->GetName()), FText::FromName(DesiredFocusWidgetName)));
+			}
+		}
 	}
 }
 
@@ -1255,25 +1291,6 @@ void FWidgetBlueprintCompilerContext::VerifyEventReplysAreNotEmpty(FKismetFuncti
 				}
 			}
 		}
-	}
-}
-
-void FWidgetBlueprintCompilerContext::PostcompileFunction(FKismetFunctionContext& Context)
-{
-	Super::PostcompileFunction(Context);
-
-	VerifyFieldNotifyFunction(Context);
-}
-
-void FWidgetBlueprintCompilerContext::VerifyFieldNotifyFunction(FKismetFunctionContext& Context)
-{
-	if (Context.Function && Context.Function->HasMetaData(UE::FieldNotification::FCustomizationHelper::MetaData_FieldNotify))
-	{
-		if (!UE::FieldNotification::Helpers::IsValidAsField(Context.Function))
-		{
-			MessageLog.Error(*LOCTEXT("FieldNotify_IsEventGraph", "Function @@ cannot be a FieldNotify. A function needs to be const, returns a single properties, has no inputs, not be an event or a net function.").ToString(), Context.EntryPoint);
-		}
-		NewWidgetBlueprintClass->FieldNotifyNames.Emplace(Context.Function->GetFName());
 	}
 }
 

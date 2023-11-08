@@ -298,7 +298,7 @@ class FMaterialStats : public FGCObject, public TSharedFromThis<FMaterialStats>
 	/** Cached HLSL code for analyzed material */
 	FString HLSLCode;
 
-	class UMaterialStatsOptions *Options = nullptr;
+	TObjectPtr<class UMaterialStatsOptions >Options = nullptr;
 
 	/** Pointer to Material Editor or to Material Instance Editor set by Initialize() function */
 	class IMaterialEditor *MaterialEditor = nullptr;

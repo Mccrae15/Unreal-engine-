@@ -10,6 +10,9 @@ using System.Threading.Tasks;
 using AutomationTool;
 using EpicGame;
 using EpicGames.Core;
+using Microsoft.Extensions.Logging;
+
+using static AutomationTool.CommandUtils;
 
 namespace LyraTest
 {
@@ -19,7 +22,7 @@ namespace LyraTest
 	{
 		public override void ExecuteBuild()
 		{
-			LogInformation("************************* UpdateAuditCollections");
+			Logger.LogInformation("************************* UpdateAuditCollections");
 
 			// Now update what is in the InCook audit collection
 			string CollectionName = "Audit_InCook";
@@ -32,7 +35,7 @@ namespace LyraTest
 				UFSFilename = CommandUtils.CombinePaths(CommandUtils.CmdEnv.LogFolder, "..", "..", ManifestFilename);
 			}
 
-			LogInformation("Attempting to use UFS manifest {0} (exists={1})", UFSFilename, CommandUtils.FileExists_NoExceptions(UFSFilename));
+			Logger.LogInformation("Attempting to use UFS manifest {UFSFilename} (exists={Arg1})", UFSFilename, CommandUtils.FileExists_NoExceptions(UFSFilename));
 
 			UpdateInCookAuditCollection(CollectionName, UFSFilename);
 		}
@@ -53,33 +56,34 @@ namespace LyraTest
 		{
 			if (!CommandUtils.FileExists_NoExceptions(UFSFilename))
 			{
-				LogWarning("Could not update audit collection, missing file: " + UFSFilename);
+				Logger.LogWarning("{Text}", "Could not update audit collection, missing file: " + UFSFilename);
 				return;
 			}
 
 			int WorkingCL = -1;
 			if (CommandUtils.P4Enabled)
 			{
-				WorkingCL = CommandUtils.P4.CreateChange(CommandUtils.P4Env.Client, String.Format("Updated " + CollectionName + " collection using CL {0}", P4Env.Changelist));
+				WorkingCL = CommandUtils.P4.CreateChange(CommandUtils.P4Env.Client, String.Format("Updated " + CollectionName + " collection using CL {0}\n#skipci\n#okforgithub public", P4Env.Changelist));
 			}
 
 			var CollectionFilenameLocal = CommandUtils.CombinePaths(CommandUtils.CmdEnv.LocalRoot, GameProjectDirectory, "Content", "Collections", CollectionName + ".collection");
 			if (!InternalUtils.SafeCreateDirectory(Path.GetDirectoryName(CollectionFilenameLocal)))
 			{
-				LogWarning("Could not create directory {0}", Path.GetDirectoryName(CollectionFilenameLocal));
+				Logger.LogWarning("Could not create directory {Arg0}", Path.GetDirectoryName(CollectionFilenameLocal));
 				return;
 			}
 
+			bool bNeedsAdd = false;
 			if (WorkingCL > 0)
 			{
-				var CollectionFilenameP4 = CommandUtils.CombinePaths(PathSeparator.Slash, CommandUtils.P4Env.Branch, GameProjectDirectory, "Content", "Collections", CollectionName + ".collection");
+				
 				if (!CommandUtils.FileExists_NoExceptions(CollectionFilenameLocal))
 				{
-					CommandUtils.P4.Add(WorkingCL, CollectionFilenameP4);
+					bNeedsAdd = true;
 				}
 				else
 				{
-					CommandUtils.P4.Edit(WorkingCL, CollectionFilenameP4);
+					CommandUtils.P4.Edit(WorkingCL, CollectionFilenameLocal);
 				}
 			}
 
@@ -158,13 +162,13 @@ namespace LyraTest
 										}
 										else
 										{
-											LogWarning("Could not add asset to collection. No plugin name. Path:" + UFSPath);
+											Logger.LogWarning("{Text}", "Could not add asset to collection. No plugin name. Path:" + UFSPath);
 											bValidPath = false;
 										}
 									}
 									else
 									{
-										LogWarning("Could not add asset to collection. No content folder. Path:" + UFSPath);
+										Logger.LogWarning("{Text}", "Could not add asset to collection. No content folder. Path:" + UFSPath);
 										bValidPath = false;
 									}
 								}
@@ -186,7 +190,7 @@ namespace LyraTest
 			}
 			catch (Exception Ex)
 			{
-				CommandUtils.LogInformation("Did not update InCook collection. {0}", Ex.Message);
+				Logger.LogInformation("Did not update InCook collection. {Arg0}", Ex.Message);
 			}
 			finally
 			{
@@ -198,6 +202,10 @@ namespace LyraTest
 				if (CollectionFile != null)
 				{
 					CollectionFile.Close();
+					if (bNeedsAdd)
+					{
+						CommandUtils.P4.Add(WorkingCL, CollectionFilenameLocal);
+					}
 				}
 			}
 

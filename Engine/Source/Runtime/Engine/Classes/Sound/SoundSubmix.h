@@ -159,15 +159,15 @@ public:
 };
 #endif
 
-UCLASS(config = Engine, abstract, hidecategories = Object, editinlinenew, BlueprintType)
-class ENGINE_API USoundSubmixBase : public UObject
+UCLASS(config = Engine, abstract, hidecategories = Object, editinlinenew, BlueprintType, MinimalAPI)
+class USoundSubmixBase : public UObject
 {
 	GENERATED_UCLASS_BODY()
 
 public:
 #if WITH_EDITORONLY_DATA
 	/** EdGraph based representation of the SoundSubmix */
-	UEdGraph* SoundSubmixGraph;
+	TObjectPtr<UEdGraph> SoundSubmixGraph;
 #endif
 
 	// Auto-manage enabling and disabling the submix as a CPU optimization. It will be disabled if the submix and all child submixes are silent. It will re-enable if a sound is sent to the submix or a child submix is audible.
@@ -184,9 +184,9 @@ public:
 
 protected:
 	//~ Begin UObject Interface.
-	virtual FString GetDesc() override;
-	virtual void BeginDestroy() override;
-	virtual void PostLoad() override;
+	ENGINE_API virtual FString GetDesc() override;
+	ENGINE_API virtual void BeginDestroy() override;
+	ENGINE_API virtual void PostLoad() override;
 
 public:
 	// Sound Submix Editor functionality
@@ -195,7 +195,7 @@ public:
 	/**
 	* @return true if the child sound class exists in the tree
 	*/
-	bool RecurseCheckChild(const USoundSubmixBase* ChildSoundSubmix) const;
+	ENGINE_API bool RecurseCheckChild(const USoundSubmixBase* ChildSoundSubmix) const;
 
 	/**
 	* Add Referenced objects
@@ -203,27 +203,27 @@ public:
 	* @param	InThis SoundSubmix we are adding references from.
 	* @param	Collector Reference Collector
 	*/
-	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
+	static ENGINE_API void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 
 protected:
 
 #if WITH_EDITOR
-	virtual void PostDuplicate(EDuplicateMode::Type DuplicateMode) override;
-	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
-	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+	ENGINE_API virtual void PostDuplicate(EDuplicateMode::Type DuplicateMode) override;
+	ENGINE_API virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
+	ENGINE_API virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif // WITH_EDITOR
 	//~ End UObject Interface.
 
 private:
-	static TArray<USoundSubmixBase*> BackupChildSubmixes;
+	static TArray<TObjectPtr<USoundSubmixBase>> BackupChildSubmixes;
 #endif // WITH_EDITOR
 };
 
 /**
  * This submix class can be derived from for submixes that output to a parent submix.
  */
-UCLASS(config = Engine, abstract, hidecategories = Object, editinlinenew, BlueprintType)
-class ENGINE_API USoundSubmixWithParentBase : public USoundSubmixBase
+UCLASS(config = Engine, abstract, hidecategories = Object, editinlinenew, BlueprintType, MinimalAPI)
+class USoundSubmixWithParentBase : public USoundSubmixBase
 {
 	GENERATED_UCLASS_BODY()
 public:
@@ -236,13 +236,13 @@ public:
 	*
 	* @param	InParentSubmix	The New Parent Submix of this
 	*/
-	void SetParentSubmix(USoundSubmixBase* InParentSubmix);
+	ENGINE_API void SetParentSubmix(USoundSubmixBase* InParentSubmix);
 
 protected:
 
 #if WITH_EDITOR
-	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
-	virtual void PostDuplicate(EDuplicateMode::Type DuplicateMode) override;
+	ENGINE_API virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+	ENGINE_API virtual void PostDuplicate(EDuplicateMode::Type DuplicateMode) override;
 #endif 
 };
 
@@ -257,8 +257,8 @@ enum class EGainParamMode : uint8
 /**
  * Sound Submix class meant for applying an effect to the downmixed sum of multiple audio sources.
  */
-UCLASS(config = Engine, hidecategories = Object, editinlinenew, BlueprintType)
-class ENGINE_API USoundSubmix : public USoundSubmixWithParentBase
+UCLASS(config = Engine, hidecategories = Object, editinlinenew, BlueprintType, MinimalAPI)
+class USoundSubmix : public USoundSubmixWithParentBase
 {
 	GENERATED_UCLASS_BODY()
 
@@ -296,15 +296,15 @@ public:
 	float DryLevel;
 
 	/** The output volume of the submix in Decibels. Applied after submix effects and analysis are performed.*/
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SubmixLevel, meta = (DisplayName = "Output Volume (dB)", AudioParam = "Volume", AudioParamClass = "SoundModulationParameterVolume", ClampMin = "-96.0", ClampMax = "0.0", UIMin = "-96.0", UIMax = "0.0"))
+	UPROPERTY(EditAnywhere, BlueprintSetter=SetOutputVolumeModulation, Category = SubmixLevel, meta = (DisplayName = "Output Volume (dB)", AudioParam = "Volume", AudioParamClass = "SoundModulationParameterVolume", ClampMin = "-96.0", ClampMax = "0.0", UIMin = "-96.0", UIMax = "0.0"))
 	FSoundModulationDestinationSettings OutputVolumeModulation;
 
 	/** The wet level of the submixin Decibels. Applied after submix effects and analysis are performed. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SubmixLevel, meta = (DisplayName = "Wet Level (dB)", AudioParam = "Volume", AudioParamClass = "SoundModulationParameterVolume", ClampMin = "-96.0", ClampMax = "0.0", UIMin = "-96.0", UIMax = "0.0"))
+	UPROPERTY(EditAnywhere, BlueprintSetter=SetWetVolumeModulation, Category = SubmixLevel, meta = (DisplayName = "Wet Level (dB)", AudioParam = "Volume", AudioParamClass = "SoundModulationParameterVolume", ClampMin = "-96.0", ClampMax = "0.0", UIMin = "-96.0", UIMax = "0.0"))
 	FSoundModulationDestinationSettings WetLevelModulation;
 
 	/** The dry level of the submix in Decibels. Applied before submix effects and analysis are performed. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SubmixLevel, meta = (DisplayName = "Dry Level (dB)", AudioParam = "Volume", AudioParamClass = "SoundModulationParameterVolume", ClampMin = "-96.0", ClampMax = "0.0", UIMin = "-96.0", UIMax = "0.0"))
+	UPROPERTY(EditAnywhere, BlueprintSetter=SetWetVolumeModulation, Category = SubmixLevel, meta = (DisplayName = "Dry Level (dB)", AudioParam = "Volume", AudioParamClass = "SoundModulationParameterVolume", ClampMin = "-96.0", ClampMax = "0.0", UIMin = "-96.0", UIMax = "0.0"))
 	FSoundModulationDestinationSettings DryLevelModulation;
 	
 	/** Whether to send this Submix to AudioLink (when AudioLink is Enabled)*/
@@ -321,34 +321,34 @@ public:
 
 	// Start recording the audio from this submix.
 	UFUNCTION(BlueprintCallable, Category = "Audio|Bounce", meta = (WorldContext = "WorldContextObject", DisplayName = "Start Recording Submix Output"))
-	void StartRecordingOutput(const UObject* WorldContextObject, float ExpectedDuration);
+	ENGINE_API void StartRecordingOutput(const UObject* WorldContextObject, float ExpectedDuration);
 
-	void StartRecordingOutput(FAudioDevice* InDevice, float ExpectedDuration);
+	ENGINE_API void StartRecordingOutput(FAudioDevice* InDevice, float ExpectedDuration);
 
 	// Finish recording the audio from this submix and export it as a wav file or a USoundWave.
 	UFUNCTION(BlueprintCallable, Category = "Audio|Bounce", meta = (WorldContext = "WorldContextObject", DisplayName = "Finish Recording Submix Output"))
-	void StopRecordingOutput(const UObject* WorldContextObject, EAudioRecordingExportType ExportType, const FString& Name, FString Path, USoundWave* ExistingSoundWaveToOverwrite = nullptr);
+	ENGINE_API void StopRecordingOutput(const UObject* WorldContextObject, EAudioRecordingExportType ExportType, const FString& Name, FString Path, USoundWave* ExistingSoundWaveToOverwrite = nullptr);
 
-	void StopRecordingOutput(FAudioDevice* InDevice, EAudioRecordingExportType ExportType, const FString& Name, FString Path, USoundWave* ExistingSoundWaveToOverwrite = nullptr);
-
-	// Start envelope following the submix output. Register with OnSubmixEnvelope to receive envelope follower data in BP.
-	UFUNCTION(BlueprintCallable, Category = "Audio|EnvelopeFollowing", meta = (WorldContext = "WorldContextObject"))
-	void StartEnvelopeFollowing(const UObject* WorldContextObject);
-
-	void StartEnvelopeFollowing(FAudioDevice* InDevice);
+	ENGINE_API void StopRecordingOutput(FAudioDevice* InDevice, EAudioRecordingExportType ExportType, const FString& Name, FString Path, USoundWave* ExistingSoundWaveToOverwrite = nullptr);
 
 	// Start envelope following the submix output. Register with OnSubmixEnvelope to receive envelope follower data in BP.
 	UFUNCTION(BlueprintCallable, Category = "Audio|EnvelopeFollowing", meta = (WorldContext = "WorldContextObject"))
-	void StopEnvelopeFollowing(const UObject* WorldContextObject);
+	ENGINE_API void StartEnvelopeFollowing(const UObject* WorldContextObject);
 
-	void StopEnvelopeFollowing(FAudioDevice* InDevice);
+	ENGINE_API void StartEnvelopeFollowing(FAudioDevice* InDevice);
+
+	// Start envelope following the submix output. Register with OnSubmixEnvelope to receive envelope follower data in BP.
+	UFUNCTION(BlueprintCallable, Category = "Audio|EnvelopeFollowing", meta = (WorldContext = "WorldContextObject"))
+	ENGINE_API void StopEnvelopeFollowing(const UObject* WorldContextObject);
+
+	ENGINE_API void StopEnvelopeFollowing(FAudioDevice* InDevice);
 
 	/**
 	 *	Adds an envelope follower delegate to the submix when envelope following is enabled on this submix.
 	 *	@param	OnSubmixEnvelopeBP	Event to fire when new envelope data is available.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Audio|EnvelopeFollowing", meta = (WorldContext = "WorldContextObject"))
-	void AddEnvelopeFollowerDelegate(const UObject* WorldContextObject, const FOnSubmixEnvelopeBP& OnSubmixEnvelopeBP);
+	ENGINE_API void AddEnvelopeFollowerDelegate(const UObject* WorldContextObject, const FOnSubmixEnvelopeBP& OnSubmixEnvelopeBP);
 
 	/**
 	 *	Adds a spectral analysis delegate to receive notifications when this submix has spectrum analysis enabled.
@@ -364,49 +364,62 @@ public:
 	 *	@param  AutoRangeReleaseTime            The time (in seconds) it takes for the range to shrink to 90% of a smaller range.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Audio|Spectrum", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = 3))
-	void AddSpectralAnalysisDelegate(const UObject* WorldContextObject, const TArray<FSoundSubmixSpectralAnalysisBandSettings>& InBandSettings, const FOnSubmixSpectralAnalysisBP& OnSubmixSpectralAnalysisBP, float UpdateRate = 10.f, float DecibelNoiseFloor=-40.f, bool bDoNormalize = true, bool bDoAutoRange = false, float AutoRangeAttackTime = 0.1f, float AutoRangeReleaseTime = 60.f);
+	ENGINE_API void AddSpectralAnalysisDelegate(const UObject* WorldContextObject, const TArray<FSoundSubmixSpectralAnalysisBandSettings>& InBandSettings, const FOnSubmixSpectralAnalysisBP& OnSubmixSpectralAnalysisBP, float UpdateRate = 10.f, float DecibelNoiseFloor=-40.f, bool bDoNormalize = true, bool bDoAutoRange = false, float AutoRangeAttackTime = 0.1f, float AutoRangeReleaseTime = 60.f);
 
 	/**
 	 *	Remove a spectral analysis delegate.
 	 *  @param  OnSubmixSpectralAnalysisBP		The event delegate to remove.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Audio|Spectrum", meta = (WorldContext = "WorldContextObject"))
-	void RemoveSpectralAnalysisDelegate(const UObject* WorldContextObject, const FOnSubmixSpectralAnalysisBP& OnSubmixSpectralAnalysisBP);
+	ENGINE_API void RemoveSpectralAnalysisDelegate(const UObject* WorldContextObject, const FOnSubmixSpectralAnalysisBP& OnSubmixSpectralAnalysisBP);
 
 	/** Start spectrum analysis of the audio output. */
 	UFUNCTION(BlueprintCallable, Category = "Audio|Analysis", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = 1))
-	void StartSpectralAnalysis(const UObject* WorldContextObject, EFFTSize FFTSize = EFFTSize::DefaultSize, EFFTPeakInterpolationMethod InterpolationMethod = EFFTPeakInterpolationMethod::Linear, EFFTWindowType WindowType = EFFTWindowType::Hann, float HopSize = 0, EAudioSpectrumType SpectrumType = EAudioSpectrumType::MagnitudeSpectrum);
+	ENGINE_API void StartSpectralAnalysis(const UObject* WorldContextObject, EFFTSize FFTSize = EFFTSize::DefaultSize, EFFTPeakInterpolationMethod InterpolationMethod = EFFTPeakInterpolationMethod::Linear, EFFTWindowType WindowType = EFFTWindowType::Hann, float HopSize = 0, EAudioSpectrumType SpectrumType = EAudioSpectrumType::MagnitudeSpectrum);
 
-	void StartSpectralAnalysis(FAudioDevice* InDevice, EFFTSize FFTSize = EFFTSize::DefaultSize, EFFTPeakInterpolationMethod InterpolationMethod = EFFTPeakInterpolationMethod::Linear, EFFTWindowType WindowType = EFFTWindowType::Hann, float HopSize = 0, EAudioSpectrumType SpectrumType = EAudioSpectrumType::MagnitudeSpectrum);
+	ENGINE_API void StartSpectralAnalysis(FAudioDevice* InDevice, EFFTSize FFTSize = EFFTSize::DefaultSize, EFFTPeakInterpolationMethod InterpolationMethod = EFFTPeakInterpolationMethod::Linear, EFFTWindowType WindowType = EFFTWindowType::Hann, float HopSize = 0, EAudioSpectrumType SpectrumType = EAudioSpectrumType::MagnitudeSpectrum);
 
 	/** Stop spectrum analysis of the audio output. */
 	UFUNCTION(BlueprintCallable, Category = "Audio|Analysis", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = 1))
-	void StopSpectralAnalysis(const UObject* WorldContextObject);
+	ENGINE_API void StopSpectralAnalysis(const UObject* WorldContextObject);
 
-	void StopSpectralAnalysis(FAudioDevice* InDevice);
+	ENGINE_API void StopSpectralAnalysis(FAudioDevice* InDevice);
 
 	/** Sets the output volume of the submix in linear gain. This dynamic volume acts as a multiplier on the OutputVolume property of this submix.  */
 	UFUNCTION(BlueprintCallable, Category = "Audio", meta = (WorldContext = "WorldContextObject", DisplayName = "SetSubmixOutputVolume (linear gain)"))
-	void SetSubmixOutputVolume(const UObject* WorldContextObject, float InOutputVolume);
+	ENGINE_API void SetSubmixOutputVolume(const UObject* WorldContextObject, float InOutputVolume);
 
 	/** Sets the output volume of the submix in linear gain. This dynamic level acts as a multiplier on the WetLevel property of this submix.  */
 	UFUNCTION(BlueprintCallable, Category = "Audio", meta = (WorldContext = "WorldContextObject", DisplayName = "SetSubmixWetLevel (linear gain)"))
-	void SetSubmixWetLevel(const UObject* WorldContextObject, float InWetLevel);
+	ENGINE_API void SetSubmixWetLevel(const UObject* WorldContextObject, float InWetLevel);
 
 	/** Sets the output volume of the submix in linear gain. This dynamic level acts as a multiplier on the DryLevel property of this submix.  */
 	UFUNCTION(BlueprintCallable, Category = "Audio", meta = (WorldContext = "WorldContextObject", DisplayName = "SetSubmixDryLevel (linear gain)"))
-	void SetSubmixDryLevel(const UObject* WorldContextObject, float InDryLevel);
+	ENGINE_API void SetSubmixDryLevel(const UObject* WorldContextObject, float InDryLevel);
 
-	static FSoundSpectrumAnalyzerSettings GetSpectrumAnalyzerSettings(EFFTSize FFTSize, EFFTPeakInterpolationMethod InterpolationMethod, EFFTWindowType WindowType, float HopSize, EAudioSpectrumType SpectrumType);
+	static ENGINE_API FSoundSpectrumAnalyzerSettings GetSpectrumAnalyzerSettings(EFFTSize FFTSize, EFFTPeakInterpolationMethod InterpolationMethod, EFFTWindowType WindowType, float HopSize, EAudioSpectrumType SpectrumType);
 
-	static FSoundSpectrumAnalyzerDelegateSettings GetSpectrumAnalysisDelegateSettings(const TArray<FSoundSubmixSpectralAnalysisBandSettings>& InBandSettings, float UpdateRate, float DecibelNoiseFloor, bool bDoNormalize, bool bDoAutoRange, float AutoRangeAttackTime, float AutoRangeReleaseTime);
+	static ENGINE_API FSoundSpectrumAnalyzerDelegateSettings GetSpectrumAnalysisDelegateSettings(const TArray<FSoundSubmixSpectralAnalysisBandSettings>& InBandSettings, float UpdateRate, float DecibelNoiseFloor, bool bDoNormalize, bool bDoAutoRange, float AutoRangeAttackTime, float AutoRangeReleaseTime);
 protected:
 
-	virtual void Serialize(FArchive& Ar) override;
+	ENGINE_API virtual void Serialize(FArchive& Ar) override;
 
 #if WITH_EDITOR
-	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+	ENGINE_API virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
+
+	// Custom settors for Modulation Destinations
+	UFUNCTION(BlueprintCallable, BlueprintInternalUseOnly)
+	void SetOutputVolumeModulation(const FSoundModulationDestinationSettings& InVolMod);
+
+	UFUNCTION(BlueprintCallable, BlueprintInternalUseOnly)
+	void SetWetVolumeModulation(const FSoundModulationDestinationSettings& InVolMod);
+
+	UFUNCTION(BlueprintCallable, BlueprintInternalUseOnly)
+	void SetDryVolumeModulation(const FSoundModulationDestinationSettings& InVolMod);
+
+	// Send submix modulation changes to audio devices
+	void PushModulationChanges();
 
 	// State handling for bouncing output.
 	TUniquePtr<Audio::FAudioRecordingData> RecordingData;
@@ -416,15 +429,15 @@ protected:
 /**
  * Sound Submix class meant for use with soundfield formats, such as Ambisonics.
  */
-UCLASS(config = Engine, hidecategories = Object, editinlinenew, BlueprintType, Meta = (DisplayName = "Sound Submix Soundfield"))
-class ENGINE_API USoundfieldSubmix : public USoundSubmixWithParentBase
+UCLASS(config = Engine, hidecategories = Object, editinlinenew, BlueprintType, Meta = (DisplayName = "Sound Submix Soundfield"), MinimalAPI)
+class USoundfieldSubmix : public USoundSubmixWithParentBase
 {
 	GENERATED_UCLASS_BODY()
 
 public:
-	ISoundfieldFactory* GetSoundfieldFactoryForSubmix() const;
-	const USoundfieldEncodingSettingsBase* GetSoundfieldEncodingSettings() const;
-	TArray<USoundfieldEffectBase *> GetSoundfieldProcessors() const;
+	ENGINE_API ISoundfieldFactory* GetSoundfieldFactoryForSubmix() const;
+	ENGINE_API const USoundfieldEncodingSettingsBase* GetSoundfieldEncodingSettings() const;
+	ENGINE_API TArray<USoundfieldEffectBase *> GetSoundfieldProcessors() const;
 
 public:
 	/** Currently used format. */
@@ -440,20 +453,22 @@ public:
 	TArray<TObjectPtr<USoundfieldEffectBase>> SoundfieldEffectChain;
 
 	// Traverses parent submixes until we find a submix that doesn't inherit its soundfield format.
-	FName GetSubmixFormat() const;
+	ENGINE_API FName GetSubmixFormat() const;
 
 	UPROPERTY()
 	TSubclassOf<USoundfieldEncodingSettingsBase> EncodingSettingsClass;
 
 	// Traverses parent submixes until we find a submix that specifies encoding settings.
-	const USoundfieldEncodingSettingsBase* GetEncodingSettings() const;
+	ENGINE_API const USoundfieldEncodingSettingsBase* GetEncodingSettings() const;
 
 	// This function goes through every child submix and the parent submix to ensure that they have a compatible format with this submix's format.
-	void SanitizeLinks();
+	ENGINE_API void SanitizeLinks();
 
 protected:
+	ENGINE_API virtual void PostLoad() override;
+
 #if WITH_EDITOR
-	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+	ENGINE_API virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 
 };
@@ -461,14 +476,14 @@ protected:
 /**
  * Sound Submix class meant for sending audio to an external endpoint, such as controller haptics or an additional audio device.
  */
-UCLASS(config = Engine, hidecategories = Object, editinlinenew, BlueprintType, Meta = (DisplayName = "Sound Submix Endpoint"))
-class ENGINE_API UEndpointSubmix : public USoundSubmixBase
+UCLASS(config = Engine, hidecategories = Object, editinlinenew, BlueprintType, Meta = (DisplayName = "Sound Submix Endpoint"), MinimalAPI)
+class UEndpointSubmix : public USoundSubmixBase
 {
 	GENERATED_UCLASS_BODY()
 
 public:
-	IAudioEndpointFactory* GetAudioEndpointForSubmix() const;
-	const UAudioEndpointSettingsBase* GetEndpointSettings() const;
+	ENGINE_API IAudioEndpointFactory* GetAudioEndpointForSubmix() const;
+	ENGINE_API const UAudioEndpointSettingsBase* GetEndpointSettings() const;
 
 public:
 	/** Currently used format. */
@@ -481,21 +496,27 @@ public:
 	UPROPERTY(EditAnywhere, Category = Endpoint)
 	TObjectPtr<UAudioEndpointSettingsBase> EndpointSettings;
 
+#if WITH_EDITOR
+	ENGINE_API virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
+
+protected:
+	ENGINE_API virtual void PostLoad() override;
 };
 
 /**
  * Sound Submix class meant for sending soundfield-encoded audio to an external endpoint, such as a hardware binaural renderer that supports ambisonics.
  */
-UCLASS(config = Engine, hidecategories = Object, editinlinenew, BlueprintType, Meta = (DisplayName = "Sound Submix Soundfield Endpoint"))
-class ENGINE_API USoundfieldEndpointSubmix : public USoundSubmixBase
+UCLASS(config = Engine, hidecategories = Object, editinlinenew, BlueprintType, Meta = (DisplayName = "Sound Submix Soundfield Endpoint"), MinimalAPI)
+class USoundfieldEndpointSubmix : public USoundSubmixBase
 {
 	GENERATED_UCLASS_BODY()
 
 public:
-	ISoundfieldEndpointFactory* GetSoundfieldEndpointForSubmix() const;
-	const USoundfieldEndpointSettingsBase* GetEndpointSettings() const;
-	const USoundfieldEncodingSettingsBase* GetEncodingSettings() const;
-	TArray<USoundfieldEffectBase*> GetSoundfieldProcessors() const;
+	ENGINE_API ISoundfieldEndpointFactory* GetSoundfieldEndpointForSubmix() const;
+	ENGINE_API const USoundfieldEndpointSettingsBase* GetEndpointSettings() const;
+	ENGINE_API const USoundfieldEncodingSettingsBase* GetEncodingSettings() const;
+	ENGINE_API TArray<USoundfieldEffectBase*> GetSoundfieldProcessors() const;
 public:
 	/** Currently used format. */
 	UPROPERTY(EditAnywhere, Category = Endpoint, AssetRegistrySearchable)
@@ -507,10 +528,10 @@ public:
 	/**
 	* @return true if the child sound class exists in the tree
 	*/
-	bool RecurseCheckChild(const USoundSubmix* ChildSoundSubmix) const;
+	ENGINE_API bool RecurseCheckChild(const USoundSubmix* ChildSoundSubmix) const;
 
 	// This function goes through every child submix and the parent submix to ensure that they have a compatible format.
-	void SanitizeLinks();
+	ENGINE_API void SanitizeLinks();
 
 	UPROPERTY(EditAnywhere, Category = Endpoint)
 	TObjectPtr<USoundfieldEndpointSettingsBase> EndpointSettings;
@@ -525,8 +546,9 @@ public:
 	TArray<TObjectPtr<USoundfieldEffectBase>> SoundfieldEffectChain;
 
 protected:
+	ENGINE_API virtual void PostLoad() override;
 #if WITH_EDITOR
-	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+	ENGINE_API virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 };
 

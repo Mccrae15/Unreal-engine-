@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "GameplayTagContainer.h"
+
 #include "PlayerMappableKeySettings.generated.h"
 
 struct FEnhancedActionKeyMapping;
@@ -21,7 +23,17 @@ public:
 	virtual FName GetMappingName() const { return Name; }
 
 #if WITH_EDITOR
-	virtual EDataValidationResult IsDataValid(TArray<FText>& ValidationErrors) override;
+	EDataValidationResult IsDataValid(class FDataValidationContext& Context) const;
+
+	/**
+	 * Get the known mapping names that are current in use. This is a helper function if you want to use a "GetOptions" metadata on a UPROPERTY.
+	 * For example, the following will display a little drop down menu to select from all current mapping names:
+	 *
+	 *  UPROPERTY(EditAnywhere, BlueprintReadOnly, meta=(GetOptions="EnhancedInput.PlayerMappableKeySettings.GetKnownMappingNames"))
+	 *  FName MappingName;
+	 */
+	UFUNCTION()
+	static const TArray<FName>& GetKnownMappingNames();	
 #endif // WITH_EDITOR
 
 	/** Metadata that can used to store any other related items to this key mapping such as icons, ability assets, etc. */
@@ -39,4 +51,12 @@ public:
 	/** The category that this player mapping is in */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Settings")
 	FText DisplayCategory = FText::GetEmpty();
+
+	/** 
+	* If this key mapping should only be added when a specific key profile is equipped, then set those here.
+	* 
+	* If this is empty, then the key mapping will not be filtered out based on the current profile.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Settings")
+	FGameplayTagContainer SupportedKeyProfiles;
 };

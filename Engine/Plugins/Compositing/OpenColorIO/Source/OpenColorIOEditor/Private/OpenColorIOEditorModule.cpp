@@ -2,7 +2,6 @@
 
 #include "OpenColorIOEditorModule.h"
 
-#include "AssetTypeActions_OpenColorIOConfiguration.h"
 #include "Engine/World.h"
 #include "Interfaces/IPluginManager.h"
 #include "IOpenColorIOModule.h"
@@ -33,13 +32,6 @@ void FOpenColorIOEditorModule::StartupModule()
 	LLM_SCOPE_BYTAG(OpenColorIO_OpenColorIOEditor);
 
 	FWorldDelegates::OnPreWorldInitialization.AddRaw(this, &FOpenColorIOEditorModule::OnWorldInit);
-
-	// Register asset type actions for OpenColorIOConfiguration class
-	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-	TSharedRef<IAssetTypeActions> OpenColorIOConfigurationAssetTypeAction = MakeShared<FAssetTypeActions_OpenColorIOConfiguration>();
-	AssetTools.RegisterAssetTypeActions(OpenColorIOConfigurationAssetTypeAction);
-	RegisteredAssetTypeActions.Add(OpenColorIOConfigurationAssetTypeAction);
-
 	FCoreDelegates::OnFEngineLoopInitComplete.AddRaw(this, &FOpenColorIOEditorModule::OnEngineLoopInitComplete);
 	
 	RegisterCustomizations();
@@ -55,22 +47,14 @@ void FOpenColorIOEditorModule::ShutdownModule()
 	UnregisterStyle();
 	UnregisterCustomizations();
 
-	// Unregister AssetTypeActions
-	FAssetToolsModule* AssetToolsModule = FModuleManager::GetModulePtr<FAssetToolsModule>("AssetTools");
-
-	if (AssetToolsModule != nullptr)
-	{
-		IAssetTools& AssetTools = AssetToolsModule->Get();
-
-		for (const TSharedRef<IAssetTypeActions>& Action : RegisteredAssetTypeActions)
-		{
-			AssetTools.UnregisterAssetTypeActions(Action);
-		}
-	}
-
 	CleanFeatureLevelDelegate();
 	FWorldDelegates::OnPreWorldInitialization.RemoveAll(this);
 	FCoreDelegates::OnFEngineLoopInitComplete.RemoveAll(this);
+}
+
+void FOpenColorIOEditorModule::SetActiveViewportConfiguration(const FOpenColorIODisplayConfiguration& InConfiguration)
+{
+	OnDisplayConfigurationChanged(InConfiguration);
 }
 
 void FOpenColorIOEditorModule::RegisterCustomizations()

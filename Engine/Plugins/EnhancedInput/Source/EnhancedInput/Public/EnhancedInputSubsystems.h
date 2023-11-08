@@ -22,10 +22,23 @@ class ENHANCEDINPUT_API UEnhancedInputLocalPlayerSubsystem : public ULocalPlayer
 
 public:
 
+	// Begin ULocalPlayerSubsystem
+	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
+	virtual void PlayerControllerChanged(APlayerController* NewPlayerController) override;
+	// End ULocalPlayerSubsystem
+	
 	// Begin IEnhancedInputSubsystemInterface
 	virtual UEnhancedPlayerInput* GetPlayerInput() const override;
+	virtual UEnhancedInputUserSettings* GetUserSettings() const override;
+	virtual void InitalizeUserSettings() override;
 	virtual void ControlMappingsRebuiltThisFrame() override;
 	// End IEnhancedInputSubsystemInterface
+
+	template<class UserSettingClass = UEnhancedInputUserSettings>
+	inline UserSettingClass* GetUserSettings() const
+	{
+		return Cast<UserSettingClass>(GetUserSettings());
+	}
 
 	/** A delegate that will be called when control mappings have been rebuilt this frame. */
 	DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnControlMappingsRebuilt);
@@ -35,6 +48,12 @@ public:
 	 */
 	UPROPERTY(BlueprintAssignable, DisplayName=OnControlMappingsRebuilt, Category = "Input")
 	FOnControlMappingsRebuilt ControlMappingsRebuiltDelegate;
+
+protected:
+    	
+	/** The user settings for this subsystem used to store each user's input related settings */
+	UPROPERTY()
+	TObjectPtr<UEnhancedInputUserSettings> UserSettings;
 };
 
 /**

@@ -219,10 +219,43 @@ void FMaterialShader::VerifyExpressionAndShaderMaps(const FMaterialRenderProxy* 
 }
 #endif
 
-template<typename TRHIShader, typename TRHICommandList>
+void FMaterialShader::SetViewParameters(FRHIBatchedShaderParameters& BatchedParameters, const FSceneView& View, const TUniformBufferRef<FViewUniformShaderParameters>& ViewUniformBuffer)
+{
+	const auto& ViewUniformBufferParameter = GetUniformBufferParameter<FViewUniformShaderParameters>();
+	SetUniformBufferParameter(BatchedParameters, ViewUniformBufferParameter, ViewUniformBuffer);
+
+	if (View.bShouldBindInstancedViewUB)
+	{
+		// When drawing an instanced stereo scene, the instanced view UB should be taken from the same view where it will contains a copy of both left and eye values (see FViewInfo::CreateViewUniformBuffers).
+		const auto& InstancedViewUniformBufferParameter = GetUniformBufferParameter<FInstancedViewUniformShaderParameters>();
+		SetUniformBufferParameter(BatchedParameters, InstancedViewUniformBufferParameter, View.GetInstancedViewUniformBuffer());
+	}
+}
+
+static void DumpRegisteredMaterialParameterCollections(const FMaterial& Material, const FGuid& ParameterCollectionGuid)
+{
+	// Dump the currently registered parameter collections and the ID we failed to find.
+	// In a cooked project these numbers are persistent so we can track back to the original
+	// parameter collection that was being referenced and no longer exists
+	FString InstancesString;
+	TMultiMap<FGuid, FMaterialParameterCollectionInstanceResource*>::TIterator Iter = GDefaultMaterialParameterCollectionInstances.CreateIterator();
+	while (Iter)
+	{
+		FMaterialParameterCollectionInstanceResource* Instance = Iter.Value();
+		InstancesString += FString::Printf(TEXT("\n0x%p: %s: %s"),
+			Instance, Instance ? *Instance->GetOwnerName().ToString() : TEXT("None"), *Iter.Key().ToString());
+		++Iter;
+	}
+
+	UE_LOG(LogRenderer, Fatal, TEXT("Failed to find parameter collection buffer with GUID '%s' for %s.\n")
+		TEXT("Currently %i listed default instances: %s"),
+		*ParameterCollectionGuid.ToString(),
+		*Material.GetFullPath(),
+		GDefaultMaterialParameterCollectionInstances.Num(), *InstancesString);
+}
+
 void FMaterialShader::SetParameters(
-	TRHICommandList& RHICmdList,
-	TRHIShader* ShaderRHI,
+	FRHIBatchedShaderParameters& BatchedParameters,
 	const FMaterialRenderProxy* MaterialRenderProxy,
 	const FMaterial& Material,
 	const FSceneView& View)
@@ -267,7 +300,7 @@ void FMaterialShader::SetParameters(
 		MaterialRenderProxy->EvaluateUniformExpressions(*UniformExpressionCache, MaterialRenderContext);
 	}
 
-	SetUniformBufferParameter(RHICmdList, ShaderRHI, MaterialUniformBuffer, UniformExpressionCache->UniformBuffer);
+	SetUniformBufferParameter(BatchedParameters, MaterialUniformBuffer, UniformExpressionCache->UniformBuffer);
 
 #if !(UE_BUILD_TEST || UE_BUILD_SHIPPING || !WITH_EDITOR)
 	VerifyExpressionAndShaderMaps(MaterialRenderProxy, Material, UniformExpressionCache);
@@ -303,26 +336,10 @@ void FMaterialShader::SetParameters(
 
 			if (!UniformBuffer)
 			{
-				// Dump the currently registered parameter collections and the ID we failed to find.
-				// In a cooked project these numbers are persistent so we can track back to the original
-				// parameter collection that was being referenced and no longer exists
-				FString InstancesString;
-				TMultiMap<FGuid, FMaterialParameterCollectionInstanceResource*>::TIterator Iter = GDefaultMaterialParameterCollectionInstances.CreateIterator();
-				while (Iter)
-				{
-					FMaterialParameterCollectionInstanceResource* Instance = Iter.Value();
-					InstancesString += FString::Printf(TEXT("\n0x%p: %s: %s"),
-						Instance, Instance ? *Instance->GetOwnerName().ToString() : TEXT("None"), *Iter.Key().ToString());
-					++Iter;
-				}
-
-				UE_LOG(LogRenderer, Fatal, TEXT("Failed to find parameter collection buffer with GUID '%s'.\n")
-					TEXT("Currently %i listed default instances: %s"),
-					*ParameterCollections[CollectionIndex].ToString(),
-					GDefaultMaterialParameterCollectionInstances.Num(), *InstancesString);
+				DumpRegisteredMaterialParameterCollections(Material, ParameterCollections[CollectionIndex]);
 			}
 
-			SetUniformBufferParameter(RHICmdList, ShaderRHI, ParameterCollectionUniformBuffers[CollectionIndex], UniformBuffer);			
+			SetUniformBufferParameter(BatchedParameters, ParameterCollectionUniformBuffers[CollectionIndex], UniformBuffer);
 		}
 	}
 
@@ -331,27 +348,6 @@ void FMaterialShader::SetParameters(
 		delete UniformExpressionCache;
 	}
 }
-
-// Doxygen struggles to parse these explicit specializations. Just ignore them for now.
-#if !UE_BUILD_DOCS
-
-#define IMPLEMENT_MATERIAL_SHADER_SetParameters( TRHICommandList, TRHIShader ) \
-	template RENDERER_API void FMaterialShader::SetParameters< TRHIShader, TRHICommandList >( \
-		TRHICommandList& RHICmdList,				\
-		TRHIShader* ShaderRHI,							\
-		const FMaterialRenderProxy* MaterialRenderProxy,\
-		const FMaterial& Material,						\
-		const FSceneView& View							\
-	);
-
-IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHICommandList, FRHIVertexShader);
-IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHICommandList, FRHIGeometryShader);
-IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHICommandList, FRHIPixelShader);
-IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHICommandList, FRHIMeshShader);
-IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHICommandList, FRHIComputeShader);
-IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHIComputeCommandList, FRHIComputeShader);
-
-#endif
 
 void FMaterialShader::GetShaderBindings(
 	const FScene* Scene,
@@ -401,23 +397,7 @@ void FMaterialShader::GetShaderBindings(
 
 			if (!UniformBuffer)
 			{
-				// Dump the currently registered parameter collections and the ID we failed to find.
-				// In a cooked project these numbers are persistent so we can track back to the original
-				// parameter collection that was being referenced and no longer exists
-				FString InstancesString;
-				TMultiMap<FGuid, FMaterialParameterCollectionInstanceResource*>::TIterator Iter = GDefaultMaterialParameterCollectionInstances.CreateIterator();
-				while (Iter)
-				{
-					FMaterialParameterCollectionInstanceResource* Instance = Iter.Value();
-					InstancesString += FString::Printf(TEXT("\n0x%p: %s: %s"),
-						Instance, Instance ? *Instance->GetOwnerName().ToString() : TEXT("None"), *Iter.Key().ToString());
-					++Iter;
-				}
-
-				UE_LOG(LogRenderer, Fatal, TEXT("Failed to find parameter collection buffer with GUID '%s'.\n")
-					TEXT("Currently %i listed default instances: %s"),
-					*ParameterCollections[CollectionIndex].ToString(),
-					GDefaultMaterialParameterCollectionInstances.Num(), *InstancesString);
+				DumpRegisteredMaterialParameterCollections(Material, ParameterCollections[CollectionIndex]);
 			}
 
 			ShaderBindings.Add(ParameterCollectionUniformBuffers[CollectionIndex], UniformBuffer);		
@@ -537,7 +517,8 @@ void FMeshMaterialShader::GetElementShaderBindings(
 	{
 		const FShaderType* ShaderType = GetType(PointerTable);
 		ensureMsgf(!GetUniformBufferParameter<FPrimitiveUniformShaderParameters>().IsBound(), TEXT("Shader %s attempted to bind the Primitive uniform buffer even though Vertex Factory computes a PrimitiveId per-instance.  This will break auto-instancing.  Shaders should use GetPrimitiveData(PrimitiveId).Member instead of Primitive.Member."), ShaderType->GetName());
-		ensureMsgf(!BatchElement.PrimitiveUniformBuffer || (FeatureLevel == ERHIFeatureLevel::ES3_1), TEXT("FMeshBatchElement was assigned a PrimitiveUniformBuffer even though Vertex Factory %s fetches primitive shader data through a Scene buffer.  The assigned PrimitiveUniformBuffer cannot be respected.  Use PrimitiveUniformBufferResource instead for dynamic primitive data."), ShaderType->GetName());
+		// Some primitives may use several VFs with a mixed support for a GPUScene. In this case all mesh batches get Primitive UB assigned regardless of VF type 
+		ensureMsgf(!BatchElement.PrimitiveUniformBuffer || (FeatureLevel == ERHIFeatureLevel::ES3_1 || PrimitiveSceneProxy->DoesVFRequirePrimitiveUniformBuffer()), TEXT("FMeshBatchElement was assigned a PrimitiveUniformBuffer even though Vertex Factory %s fetches primitive shader data through a Scene buffer.  The assigned PrimitiveUniformBuffer cannot be respected.  Use PrimitiveUniformBufferResource instead for dynamic primitive data."), ShaderType->GetName());
 	}
 	else
 	{

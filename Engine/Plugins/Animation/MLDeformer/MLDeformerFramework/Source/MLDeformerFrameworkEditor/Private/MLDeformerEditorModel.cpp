@@ -36,6 +36,9 @@
 #include "GeometryCacheTrack.h"
 #include "BoneContainer.h"
 #include "Misc/ScopedSlowTask.h"
+#include "Animation/AnimData/IAnimationDataModel.h"
+#include "Engine/SkinnedAssetCommon.h"
+#include "SMLDeformerInputWidget.h"
 
 #define LOCTEXT_NAMESPACE "MLDeformerEditorModel"
 
@@ -43,6 +46,16 @@ namespace UE::MLDeformer
 {
 	FMLDeformerEditorModel::~FMLDeformerEditorModel()
 	{
+		if (InputObjectModifiedHandle.IsValid())
+		{
+			FCoreUObjectDelegates::OnObjectModified.Remove(InputObjectModifiedHandle);
+		}
+
+		if (InputObjectPropertyChangedHandle.IsValid())
+		{
+			FCoreUObjectDelegates::OnObjectPropertyChanged.Remove(InputObjectPropertyChangedHandle);
+		}
+
 		if (PostEditPropertyDelegateHandle.IsValid())
 		{
 			Model->OnPostEditChangeProperty().Remove(PostEditPropertyDelegateHandle);
@@ -73,7 +86,44 @@ namespace UE::MLDeformer
 		WorkingRange = TRange<double>(0.0, 100.0);
 		PlaybackRange = TRange<double>(0.0, 100.0);
 
+		// Start listening to property changes in the ML Deformer model.
 		PostEditPropertyDelegateHandle = Model->OnPostEditChangeProperty().AddRaw(this, &FMLDeformerEditorModel::OnPostEditChangeProperty);
+
+		// Start listening for object modified and object property changed events.
+		// We use this to trigger reinits of the UI and components, when one of our input assets got modified (by property changes, or reimports, etc).
+		// This listens to changes in ALL objects in the engine.
+		InputObjectModifiedHandle = FCoreUObjectDelegates::OnObjectModified.AddRaw(this, &FMLDeformerEditorModel::OnObjectModified);
+		InputObjectPropertyChangedHandle = FCoreUObjectDelegates::OnObjectPropertyChanged.AddLambda
+		(
+			[this](UObject* Object, const FPropertyChangedEvent& PropertyChangedEvent)
+			{
+				if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
+				{
+					OnObjectModified(Object);
+				}
+			}
+		);
+	}
+
+	void FMLDeformerEditorModel::OnObjectModified(UObject* Object)
+	{
+		if (Model->GetSkeletalMesh() == Object || Model->GetInputInfo()->GetSkeletalMesh() == Object)
+		{
+			UE_LOG(LogMLDeformer, Display, TEXT("Detected a modification in skeletal mesh %s, reinitializing inputs."), *Object->GetName());
+			bNeedsAssetReinit = true;
+		}
+
+		if (Model->GetAnimSequence() == Object)
+		{
+			UE_LOG(LogMLDeformer, Display, TEXT("Detected a modification in training anim sequence %s, reinitializing inputs."), *Object->GetName());
+			bNeedsAssetReinit = true;
+		}
+
+		if (Model->GetVizSettings()->GetTestAnimSequence() == Object)
+		{
+			UE_LOG(LogMLDeformer, Display, TEXT("Detected a modification in test anim sequence %s, reinitializing inputs."), *Object->GetName());
+			bNeedsAssetReinit = true;
+		}
 	}
 
 	void FMLDeformerEditorModel::AddReferencedObjects(FReferenceCollector& Collector)
@@ -310,7 +360,15 @@ namespace UE::MLDeformer
 	}
 
 	void FMLDeformerEditorModel::Tick(FEditorViewportClient* ViewportClient, float DeltaTime)
-	{
+	{		
+		if (bNeedsAssetReinit)
+		{
+			TriggerInputAssetChanged();
+			Model->InitVertexMap();
+			Model->InitGPUData();
+			bNeedsAssetReinit = false;
+		}
+
 		// Force the training sequence to use Step interpolation.
 		// We do this in the Tick, as this is reset to false in the engine sometimes.
 		UAnimSequence* TrainingAnimSequence = Model->GetAnimSequence();
@@ -324,7 +382,7 @@ namespace UE::MLDeformer
 		{
 			if (Actor && Actor->GetSkeletalMeshComponent())
 			{
-				USkeletalMeshComponent* SkelMeshComp = Actor->GetSkeletalMeshComponent();
+				USkeletalMeshComponent* SkelMeshComp = Actor->GetSkeletalMeshComponent();			
 				if (SkelMeshComp->GetAnimInstance())
 				{
 					SkelMeshComp->GetAnimInstance()->GetRequiredBones().SetUseRAWData(true);
@@ -454,6 +512,28 @@ namespace UE::MLDeformer
 		}
 	}
 
+	void FMLDeformerEditorModel::ChangeSkeletalMeshOnComponent(USkeletalMeshComponent* SkelMeshComponent, USkeletalMesh* Mesh)
+	{
+		if (Mesh != SkelMeshComponent->GetSkeletalMeshAsset())
+		{
+			// Inform the skeletal mesh component about changes to the mesh.
+			SkelMeshComponent->SetSkeletalMesh(Mesh);
+			FPropertyChangedEvent SkelMeshChangedEvent(USkeletalMeshComponent::StaticClass()->FindPropertyByName(TEXT("SkeletalMeshAsset")));
+			SkelMeshComponent->PostEditChangeProperty(SkelMeshChangedEvent);
+
+			if (Mesh)
+			{
+				// Force all materials in the Skeletal Mesh Component to be the ones coming from the Mesh to avoid issues with material slots not updating.
+				const TArray<FSkeletalMaterial>& Materials = Mesh->GetMaterials();
+				for (int32 MaterialIndex = 0; MaterialIndex < Materials.Num(); ++MaterialIndex)
+				{
+					SkelMeshComponent->SetMaterial(MaterialIndex, Materials[MaterialIndex].MaterialInterface);
+				}
+				SkelMeshComponent->MarkRenderStateDirty();
+			}
+		}
+	}
+
 	void FMLDeformerEditorModel::OnInputAssetsChanged()
 	{
 		// Force the training sequence to use Step interpolation and sample raw animation data.
@@ -464,13 +544,15 @@ namespace UE::MLDeformer
 		}
 
 		// Update the training base actor.
-		UDebugSkelMeshComponent* SkeletalMeshComponent = FindEditorActor(ActorID_Train_Base)->GetSkeletalMeshComponent();
 		UMLDeformerVizSettings* VizSettings = Model->GetVizSettings();
 		UAnimSequence* TestAnimSequence = VizSettings->GetTestAnimSequence();
 		const float TestAnimSpeed = VizSettings->GetAnimPlaySpeed();
+
+		const FMLDeformerEditorActor* TrainBaseActor = FindEditorActor(ActorID_Train_Base);
+		UDebugSkelMeshComponent* SkeletalMeshComponent = TrainBaseActor ? TrainBaseActor->GetSkeletalMeshComponent() : nullptr;
+		if (SkeletalMeshComponent)
 		{
-			check(SkeletalMeshComponent);
-			SkeletalMeshComponent->SetSkeletalMesh(Model->GetSkeletalMesh());
+			ChangeSkeletalMeshOnComponent(SkeletalMeshComponent, Model->GetSkeletalMesh());
 			if (GetEditor()->GetPersonaToolkitPointer())
 			{
 				GetEditor()->GetPersonaToolkit()->GetPreviewScene()->SetPreviewMesh(Model->GetSkeletalMesh());
@@ -488,10 +570,11 @@ namespace UE::MLDeformer
 		}
 
 		// Update the test base model.
-		SkeletalMeshComponent = FindEditorActor(ActorID_Test_Base)->GetSkeletalMeshComponent();
+		const FMLDeformerEditorActor* TestBaseActor = FindEditorActor(ActorID_Test_Base);
+		SkeletalMeshComponent = TestBaseActor ? TestBaseActor->GetSkeletalMeshComponent() : nullptr;
 		if (SkeletalMeshComponent)
 		{
-			SkeletalMeshComponent->SetSkeletalMesh(Model->GetSkeletalMesh());
+			ChangeSkeletalMeshOnComponent(SkeletalMeshComponent, Model->GetSkeletalMesh());
 			SkeletalMeshComponent->SetAnimationMode(EAnimationMode::AnimationSingleNode);
 			const float CurrentPlayTime = SkeletalMeshComponent->GetPosition();
 			SkeletalMeshComponent->SetAnimation(TestAnimSequence);
@@ -501,10 +584,11 @@ namespace UE::MLDeformer
 		}
 
 		// Update the test ML Deformed skeletal mesh component.
-		SkeletalMeshComponent = FindEditorActor(ActorID_Test_MLDeformed)->GetSkeletalMeshComponent();
+		const FMLDeformerEditorActor* TestMLActor = FindEditorActor(ActorID_Test_MLDeformed);
+		SkeletalMeshComponent = TestMLActor ? TestMLActor->GetSkeletalMeshComponent() : nullptr;
 		if (SkeletalMeshComponent)
 		{
-			SkeletalMeshComponent->SetSkeletalMesh(Model->GetSkeletalMesh());
+			ChangeSkeletalMeshOnComponent(SkeletalMeshComponent, Model->GetSkeletalMesh());
 			SkeletalMeshComponent->SetAnimationMode(EAnimationMode::AnimationSingleNode);
 			const float CurrentPlayTime = SkeletalMeshComponent->GetPosition();
 			SkeletalMeshComponent->SetAnimation(TestAnimSequence);
@@ -523,10 +607,10 @@ namespace UE::MLDeformer
 		RefreshMLDeformerComponents();
 		UpdateIsReadyForTrainingState();
 
-		const int32 TrainingFrame = GetTrainingFrameAtTime(CalcTrainingTimelinePosition());
+		const int32 TrainingFrame = Model->GetVizSettings()->GetTrainingFrameNumber();
 		SetTrainingFrame(TrainingFrame);
 
-		const int32 TestFrame = GetTestFrameAtTime(CalcTestTimelinePosition());
+		const int32 TestFrame = Model->GetVizSettings()->GetTestingFrameNumber();
 		SetTestFrame(TestFrame);
 
 		UpdateEditorInputInfo();
@@ -545,10 +629,7 @@ namespace UE::MLDeformer
 			{
 				if (EditorActor && EditorActor->IsTrainingActor())
 				{
-					if (Model->HasTrainingGroundTruth())
-					{
-						PlayOffset = GetTrainingTimeAtFrame(TargetFrame);
-					}
+					PlayOffset = GetTrainingTimeAtFrame(TargetFrame);
 					EditorActor->SetPlayPosition(PlayOffset);
 				}
 			}
@@ -572,9 +653,32 @@ namespace UE::MLDeformer
 		}
 	}
 
+	float FMLDeformerEditorModel::CorrectedFrameTime(int32 FrameNumber, float FrameTimeForFrameNumber, FFrameRate FrameRate)
+	{
+		const FFrameTime PlayOffsetCurrentTime(FrameRate.AsFrameTime(FrameTimeForFrameNumber));
+
+		if (PlayOffsetCurrentTime.FloorToFrame() != FrameNumber)
+		{
+			// correct the float for error
+			const double CorrectedPlayOffset = FrameRate.AsInterval() * (double)(FrameNumber);
+			float FloatPlayOffset = CorrectedPlayOffset;
+			FloatPlayOffset = nextafterf(FloatPlayOffset, FloatPlayOffset + 1.0f);
+			return FloatPlayOffset;
+		}
+		return FrameTimeForFrameNumber;
+	}
+
 	double FMLDeformerEditorModel::GetTrainingTimeAtFrame(int32 FrameNumber) const
 	{
-		return Model->GetAnimSequence() ? Model->GetAnimSequence()->GetTimeAtFrame(FrameNumber) : 0.0;
+		UAnimSequence* AnimSequence = Model->GetAnimSequence();
+		if (AnimSequence)
+		{
+			const FFrameRate FrameRate = AnimSequence->GetSamplingFrameRate();
+			const float UncorrectedTime = AnimSequence->GetTimeAtFrame(FrameNumber);
+			// due to floating point errors, return a double that when converted to a float cleanly maps to the value
+			return CorrectedFrameTime(FrameNumber, UncorrectedTime, FrameRate);
+		}
+		return 0.0; 
 	}
 
 	int32 FMLDeformerEditorModel::GetTrainingFrameAtTime(double TimeInSeconds) const
@@ -655,22 +759,12 @@ namespace UE::MLDeformer
 			SetResamplingInputOutputsNeeded(true);
 		}
 		else
-		if (Property->GetFName() == UMLDeformerModel::GetShouldIncludeBonesPropertyName() ||
-			Property->GetFName() == UMLDeformerModel::GetShouldIncludeCurvesPropertyName())
-		{
-			if (PropertyChangedEvent.ChangeType == EPropertyChangeType::ValueSet)
-			{
-				SetResamplingInputOutputsNeeded(true);
-				UpdateIsReadyForTrainingState();
-				GetEditor()->GetModelDetailsView()->ForceRefresh();
-			}
-		}
-		else
 		if (Property->GetFName() == UMLDeformerModel::GetBoneIncludeListPropertyName() ||
 			Property->GetFName() == UMLDeformerModel::GetCurveIncludeListPropertyName())
 		{
 			SetResamplingInputOutputsNeeded(true);
-			UpdateEditorInputInfo();
+			UpdateIsReadyForTrainingState();
+			RefreshInputWidget();
 		}
 		else if (Property->GetFName() == UMLDeformerVizSettings::GetAnimPlaySpeedPropertyName())
 		{
@@ -937,19 +1031,7 @@ namespace UE::MLDeformer
 		if (Model->GetSkeletalMesh() && GetEditorInputInfo()->IsEmpty())
 		{
 			FString ErrorString;
-			if (Model->DoesSupportBones() && Model->ShouldIncludeBonesInTraining())
-			{
-				ErrorString += FText(LOCTEXT("InputsEmptyBonesErrorText", "Your base mesh has no bones to train on.\n")).ToString();
-			}
-			else
-			if (Model->DoesSupportCurves() && Model->ShouldIncludeCurvesInTraining())
-			{
-				ErrorString += FText(LOCTEXT("InputsNoCurvesToTrainText", "Your base mesh has no curves to train on.\n")).ToString();
-			}
-			else
-			{
-				ErrorString += FText(LOCTEXT("InputsNeededErrorText", "The training process needs inputs.\n")).ToString();
-			}
+			ErrorString += FText(LOCTEXT("InputsNeededErrorText", "The training process needs inputs.\n")).ToString();
 
 			ErrorString.RemoveFromEnd("\n");
 			return FText::FromString(ErrorString);
@@ -991,103 +1073,12 @@ namespace UE::MLDeformer
 		return Result;
 	}
 
-	void FMLDeformerEditorModel::InitInputInfo(UMLDeformerInputInfo* InputInfo)
-	{
-		InputInfo->Reset();
-
-		TArray<FName>& BoneNames = InputInfo->GetBoneNames();
-		TArray<FName>& CurveNames = InputInfo->GetCurveNames();
-
-		USkeletalMesh* SkeletalMesh = Model->GetSkeletalMesh();
-		InputInfo->SetSkeletalMesh(SkeletalMesh);
-
-		BoneNames.Reset();
-		CurveNames.Reset();
-
-		InputInfo->SetNumBaseVertices(Model->GetNumBaseMeshVerts());
-		InputInfo->SetNumTargetVertices(Model->GetNumTargetMeshVerts());
-
-		const bool bIncludeBones = Model->DoesSupportBones() && Model->ShouldIncludeBonesInTraining();
-		const bool bIncludeCurves = Model->DoesSupportCurves() && Model->ShouldIncludeCurvesInTraining();
-		const USkeleton* Skeleton = Model->GetSkeletalMesh() ? Model->GetSkeletalMesh()->GetSkeleton() : nullptr;
-
-		// Handle bones.
-		if (bIncludeBones && SkeletalMesh)
-		{
-			// Include all the bones when no list was provided.
-			const FReferenceSkeleton& RefSkeleton = SkeletalMesh->GetRefSkeleton();
-			if (Model->GetBoneIncludeList().IsEmpty())
-			{
-				// Grab all bone names.
-				const int32 NumBones = RefSkeleton.GetNum();
-				BoneNames.Reserve(NumBones);
-				for (int32 Index = 0; Index < NumBones; ++Index)
-				{
-					const FName BoneName = RefSkeleton.GetBoneName(Index);
-					BoneNames.Add(BoneName);
-				}
-			}
-			else // A list of bones to include was provided.
-			{
-				for (const FBoneReference& BoneReference : Model->GetBoneIncludeList())
-				{
-					if (BoneReference.BoneName.IsValid())
-					{
-						const FName BoneName = BoneReference.BoneName;
-						if (RefSkeleton.FindBoneIndex(BoneName) == INDEX_NONE)
-						{
-							UE_LOG(LogMLDeformer, Warning, TEXT("Bone '%s' in the bones include list doesn't exist, ignoring it."), *BoneName.ToString());
-							continue;
-						}
-
-						BoneNames.Add(BoneName);
-					}
-				}
-			}
-		}
-
-		// Handle curves.
-		if (bIncludeCurves && SkeletalMesh)
-		{
-			// Anim curves.
-			const FSmartNameMapping* SmartNameMapping = Skeleton ? Skeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName) : nullptr;
-			if (SmartNameMapping) // When there are curves.
-			{
-				// Include all curves when no list was provided.
-				if (Model->GetCurveIncludeList().IsEmpty())
-				{
-					SmartNameMapping->FillNameArray(CurveNames);
-				}
-				else // A list of curve names was provided.
-				{
-					for (const FMLDeformerCurveReference& CurveReference : Model->GetCurveIncludeList())
-					{
-						if (CurveReference.CurveName.IsValid())
-						{
-							const FName CurveName = CurveReference.CurveName;
-							if (!SmartNameMapping->Exists(CurveName))
-							{
-								UE_LOG(LogMLDeformer, Warning, TEXT("Curve '%s' doesn't exist, ignoring it."), *CurveName.ToString());
-								continue;
-							}
-
-							CurveNames.Add(CurveName);
-						}
-					}
-				}
-			}
-		}
-
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		InputInfo->UpdateNameStrings();
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	}
-
-	void FMLDeformerEditorModel::InitBoneIncludeListToAnimatedBonesOnly()
+	void FMLDeformerEditorModel::AddAnimatedBonesToBonesIncludeList()
 	{
 		if (!Model->GetAnimSequence())
 		{
 			UE_LOG(LogMLDeformer, Warning, TEXT("Cannot initialize bone list as no Anim Sequence has been picked."));
+			UpdateEditorInputInfo();
 			return;
 		}
 
@@ -1095,12 +1086,14 @@ namespace UE::MLDeformer
 		if (!DataModel)
 		{
 			UE_LOG(LogMLDeformer, Warning, TEXT("Anim sequence has no data model."));
+			UpdateEditorInputInfo();
 			return;
 		}
 
 		if (!Model->GetSkeletalMesh())
 		{
 			UE_LOG(LogMLDeformer, Warning, TEXT("Skeletal Mesh has not been set."));
+			UpdateEditorInputInfo();
 			return;
 		}
 
@@ -1108,6 +1101,7 @@ namespace UE::MLDeformer
 		if (!Skeleton)
 		{
 			UE_LOG(LogMLDeformer, Warning, TEXT("Skeletal Mesh has no skeleton."));
+			UpdateEditorInputInfo();
 			return;
 		}
 
@@ -1156,31 +1150,21 @@ namespace UE::MLDeformer
 		}
 
 		// Init the bone include list using the animated bones.
-		if (!AnimatedBoneList.IsEmpty())
+		TArray<FBoneReference>& BoneList = Model->GetBoneIncludeList();
+		for (const FName BoneName : AnimatedBoneList)
 		{
-			TArray<FBoneReference>& BoneList = Model->GetBoneIncludeList();
-			BoneList.Empty();
-			BoneList.Reserve(AnimatedBoneList.Num());
-			for (FName BoneName : AnimatedBoneList)
-			{
-				BoneList.AddDefaulted();
-				FBoneReference& BoneRef = BoneList.Last();
-				BoneRef.BoneName = BoneName;
-			}
+			BoneList.AddUnique(FBoneReference(BoneName));
 		}
-		else
-		{
-			Model->GetBoneIncludeList().Empty();
-			UE_LOG(LogMLDeformer, Warning, TEXT("There are no animated bone rotations in Anim Sequence '%s'."), *(Model->GetAnimSequence()->GetName()));
-		}
+
 		UpdateEditorInputInfo();
 	}
 
-	void FMLDeformerEditorModel::InitCurveIncludeListToAnimatedCurvesOnly()
+	void FMLDeformerEditorModel::AddAnimatedCurvesToCurvesIncludeList()
 	{
 		if (!Model->GetAnimSequence())
 		{
 			UE_LOG(LogMLDeformer, Warning, TEXT("Cannot initialize curve list as no Anim Sequence has been picked."));
+			UpdateEditorInputInfo();
 			return;
 		}
 
@@ -1188,12 +1172,14 @@ namespace UE::MLDeformer
 		if (!DataModel)
 		{
 			UE_LOG(LogMLDeformer, Warning, TEXT("Anim sequence has no data model."));
+			UpdateEditorInputInfo();
 			return;
 		}
 
 		if (!Model->GetSkeletalMesh())
 		{
 			UE_LOG(LogMLDeformer, Warning, TEXT("Skeletal Mesh has not been set."));
+			UpdateEditorInputInfo();
 			return;
 		}
 
@@ -1201,63 +1187,116 @@ namespace UE::MLDeformer
 		if (!Skeleton)
 		{
 			UE_LOG(LogMLDeformer, Warning, TEXT("Skeletal Mesh has no skeleton."));
+			UpdateEditorInputInfo();
 			return;
 		}
 
-		// Iterate over all curves that are both in the skeleton and the animation.
 		TArray<FName> AnimatedCurveList;
-		const FSmartNameMapping* Mapping = Skeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
-		if (Mapping)
+		TArray<FName> SkeletonCurveNames;
+		Skeleton->GetCurveMetaDataNames(SkeletonCurveNames);
+		for (const FName SkeletonCurveName : SkeletonCurveNames)
 		{
-			TArray<FName> SkeletonCurveNames;
-			Mapping->FillNameArray(SkeletonCurveNames);
-			for (const FName& SkeletonCurveName : SkeletonCurveNames)
+			const TArray<FFloatCurve>& AnimCurves = DataModel->GetFloatCurves();
+			for (const FFloatCurve& AnimCurve : AnimCurves)
 			{
-				const TArray<FFloatCurve>& AnimCurves = DataModel->GetFloatCurves();
-				for (const FFloatCurve& AnimCurve : AnimCurves)
+				if (AnimCurve.GetName() == SkeletonCurveName)
 				{
-					if (AnimCurve.Name.IsValid() && AnimCurve.Name.DisplayName == SkeletonCurveName)
+					TArray<float> TimeValues;
+					TArray<float> KeyValues;
+					AnimCurve.GetKeys(TimeValues, KeyValues);
+					if (KeyValues.Num() > 0)
 					{
-						TArray<float> TimeValues;
-						TArray<float> KeyValues;
-						AnimCurve.GetKeys(TimeValues, KeyValues);
-						if (KeyValues.Num() > 0)
+						const float FirstKeyValue = KeyValues[0];
+						for (float CurKeyValue : KeyValues)
 						{
-							const float FirstKeyValue = KeyValues[0];					
-							for (float CurKeyValue : KeyValues)
+							if (CurKeyValue != FirstKeyValue)
 							{
-								if (CurKeyValue != FirstKeyValue)
-								{
-									AnimatedCurveList.Add(SkeletonCurveName);
-									break;
-								}
+								AnimatedCurveList.Add(SkeletonCurveName);
+								break;
 							}
 						}
-						break;
+					}
+					break;
+				}
+			}
+		}
+
+		TArray<FMLDeformerCurveReference>& CurveList = Model->GetCurveIncludeList();
+		for (const FName CurveName : AnimatedCurveList)
+		{
+			CurveList.AddUnique(FMLDeformerCurveReference(CurveName));
+		}
+		UpdateEditorInputInfo();
+	}
+
+	void FMLDeformerEditorModel::InitInputInfo(UMLDeformerInputInfo* InputInfo)
+	{
+		InputInfo->Reset();
+
+		TArray<FName>& BoneNames = InputInfo->GetBoneNames();
+		TArray<FName>& CurveNames = InputInfo->GetCurveNames();
+
+		USkeletalMesh* SkeletalMesh = Model->GetSkeletalMesh();
+		InputInfo->SetSkeletalMesh(SkeletalMesh);
+
+		BoneNames.Reset();
+		CurveNames.Reset();
+
+		InputInfo->SetNumBaseVertices(Model->GetNumBaseMeshVerts());
+		InputInfo->SetNumTargetVertices(Model->GetNumTargetMeshVerts());
+
+		const USkeleton* Skeleton = Model->GetSkeletalMesh() ? Model->GetSkeletalMesh()->GetSkeleton() : nullptr;
+
+		// Handle bones.
+		if (SkeletalMesh)
+		{
+			// Include all the bones when no list was provided.
+			const FReferenceSkeleton& RefSkeleton = SkeletalMesh->GetRefSkeleton();
+			for (const FBoneReference& BoneReference : Model->GetBoneIncludeList())
+			{
+				if (BoneReference.BoneName.IsValid())
+				{
+					const FName BoneName = BoneReference.BoneName;
+					if (RefSkeleton.FindBoneIndex(BoneName) == INDEX_NONE)
+					{
+						UE_LOG(LogMLDeformer, Warning, TEXT("Bone '%s' in the bones include list doesn't exist, ignoring it."), *BoneName.ToString());
+						continue;
+					}
+
+					BoneNames.Add(BoneName);
+				}
+			}
+
+			// Anim curves.
+			if (Skeleton)
+			{
+				for (const FMLDeformerCurveReference& CurveReference : Model->GetCurveIncludeList())
+				{
+					if (CurveReference.CurveName.IsValid())
+					{
+						CurveNames.Add(CurveReference.CurveName);
 					}
 				}
 			}
 		}
 
-		// Init the bone include list using the animated bones.
-		if (!AnimatedCurveList.IsEmpty())
-		{
-			TArray<FMLDeformerCurveReference>& CurveList = Model->GetCurveIncludeList();
-			CurveList.Empty();
-			CurveList.Reserve(AnimatedCurveList.Num());
-			for (FName CurveName : AnimatedCurveList)
-			{
-				CurveList.AddDefaulted();
-				FMLDeformerCurveReference& CurveRef = CurveList.Last();
-				CurveRef.CurveName = CurveName;
-			}
-		}
-		else
-		{
-			Model->GetCurveIncludeList().Empty();
-			UE_LOG(LogMLDeformer, Warning, TEXT("There are no animated curves in Anim Sequence '%s'."), *(Model->GetAnimSequence()->GetName()));
-		}
-		UpdateEditorInputInfo();
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		InputInfo->UpdateNameStrings();
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+
+	void FMLDeformerEditorModel::InitBoneIncludeListToAnimatedBonesOnly()
+	{
+		TArray<FBoneReference>& BoneList = Model->GetBoneIncludeList();
+		BoneList.Empty();
+		AddAnimatedBonesToBonesIncludeList();
+	}
+
+	void FMLDeformerEditorModel::InitCurveIncludeListToAnimatedCurvesOnly()
+	{
+		TArray<FMLDeformerCurveReference>& CurveList = Model->GetCurveIncludeList();
+		CurveList.Empty();
+		AddAnimatedCurvesToCurvesIncludeList();
 	}
 
 	void FMLDeformerEditorModel::Render(const FSceneView* View, FViewport* Viewport, FPrimitiveDrawInterface* PDI)
@@ -1314,7 +1353,7 @@ namespace UE::MLDeformer
 		ClampCurrentTrainingFrameIndex();
 
 		// If we have no Persona toolkit yet, then it is not yet safe to init the sampler.
-		if (Editor->GetPersonaToolkitPointer() != nullptr)
+		if (Editor->GetPersonaToolkitPointer() != nullptr && !Sampler->IsInitialized())
 		{
 			Sampler->Init(this);
 		}
@@ -1494,20 +1533,9 @@ namespace UE::MLDeformer
 
 	void FMLDeformerEditorModel::OnPostTraining(ETrainingResult TrainingResult, bool bUsePartiallyTrainedWhenAborted)
 	{
-		for (FMLDeformerEditorActor* EditorActor : EditorActors)
-		{
-			if (EditorActor && EditorActor->GetMLDeformerComponent())
-			{
-				USkeletalMeshComponent* SkelMeshComponent = EditorActor->GetSkeletalMeshComponent();
-				UMLDeformerAsset* DeformerAsset = Model->GetDeformerAsset();
-				EditorActor->GetMLDeformerComponent()->SetupComponent(DeformerAsset, SkelMeshComponent);
-			}
-		}
-
 		Sampler->SetVertexDeltaSpace(EVertexDeltaSpace::PostSkinning);
 		SampleDeltas();
 		Model->InitGPUData();
-
 		UpdateMemoryUsage();
 	}
 
@@ -1533,6 +1561,7 @@ namespace UE::MLDeformer
 			Model->GetSkeletalMesh() == nullptr ||
 			GetNumTrainingFrames() == 0)
 		{
+			UpdateEditorInputInfo();
 			return false;
 		}
 
@@ -1637,7 +1666,9 @@ namespace UE::MLDeformer
 
 		// Calculate the normals of that displaced mesh.
 		TArray<FVector3f> MorphedNormals;
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		CalcMeshNormals(MorphedVertexPositions, IndexArray, VertexMap, MorphedNormals);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		// Calculate and output the difference between the morphed normal and base normal.
 		OutDeltaNormals.Reset();
@@ -1652,7 +1683,15 @@ namespace UE::MLDeformer
 		}
 	}
 
-	void FMLDeformerEditorModel::CreateEngineMorphTargets(TArray<UMorphTarget*>& OutMorphTargets, const TArray<FVector3f>& Deltas, const FString& NamePrefix, int32 LOD, float DeltaThreshold, bool bIncludeNormals, EMLDeformerMaskChannel MaskChannel, bool bInvertMaskChannel)
+	void FMLDeformerEditorModel::CreateEngineMorphTargets(
+		TArray<UMorphTarget*>& OutMorphTargets, 
+		const TArray<FVector3f>& Deltas, 
+		const FString& NamePrefix, 
+		int32 LOD, 
+		float DeltaThreshold, 
+		bool bIncludeNormals, 
+		EMLDeformerMaskChannel MaskChannel,
+		bool bInvertMaskChannel)
 	{
 		OutMorphTargets.Reset();
 		if (Deltas.IsEmpty())
@@ -1695,7 +1734,9 @@ namespace UE::MLDeformer
 		TArray<FVector3f> BaseNormals;
 		if (bIncludeNormals)
 		{
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			CalcMeshNormals(BaseVertexPositions, IndexArray, VertexMap, BaseNormals);
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 
 		const FColorVertexBuffer& ColorBuffer = RenderData->LODRenderData[LOD].StaticVertexBuffers.ColorVertexBuffer;
@@ -1707,7 +1748,9 @@ namespace UE::MLDeformer
 		{
 			if (bIncludeNormals)
 			{
+				PRAGMA_DISABLE_DEPRECATION_WARNINGS
 				GenerateNormalsForMorphTarget(LOD, SkelMesh, MorphTargetIndex, Deltas, BaseVertexPositions, BaseNormals, DeltaNormals);
+				PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			}
 
 			const FName MorphName = *FString::Printf(TEXT("%s%.3d"), *NamePrefix, MorphTargetIndex);
@@ -1877,13 +1920,7 @@ namespace UE::MLDeformer
 			const USkeleton* Skeleton = SkelMesh->GetSkeleton();
 			if (Skeleton)
 			{
-				const FSmartNameMapping* Mapping = Skeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
-				if (Mapping)
-				{
-					TArray<FName> SkeletonCurveNames;
-					Mapping->FillNameArray(SkeletonCurveNames);
-					return SkeletonCurveNames.Num();
-				}
+				return Skeleton->GetNumCurveMetaData();
 			}
 		}
 
@@ -1898,6 +1935,20 @@ namespace UE::MLDeformer
 	FString FMLDeformerEditorModel::GetHeatMapDeformerGraphPath() const
 	{
 		return FString(TEXT("/MLDeformerFramework/Deformers/DG_MLDeformerModel_HeatMap.DG_MLDeformerModel_HeatMap"));
+	}
+
+	void FMLDeformerEditorModel::RefreshInputWidget()
+	{
+		if (InputWidget.IsValid())
+		{
+			InputWidget->Refresh();
+		}
+	}
+
+	TSharedPtr<SMLDeformerInputWidget> FMLDeformerEditorModel::CreateInputWidget()
+	{
+		return SNew(SMLDeformerInputWidget)
+			.EditorModel(this);
 	}
 
 	const UAnimSequence* FMLDeformerEditorModel::GetAnimSequence() const
@@ -1938,6 +1989,44 @@ namespace UE::MLDeformer
 	void FMLDeformerEditorModel::HandleVizModeChanged(EMLDeformerVizMode Mode)
 	{
 		UpdateRanges();
+
+		// Update the preview scene so that the debug rendering draws the skeleton for the correct actor, depending on whether we are in training or testing mode.
+		// On default we render the bones etc for the ML Deformed character.
+		// Additionally trigger the input assets changed event, as that updates the animation play offsets etc. This is needed when we switch from say training back to testing mode.
+		UpdatePreviewScene();
+		TriggerInputAssetChanged();
+	}
+
+	void FMLDeformerEditorModel::UpdatePreviewScene()
+	{
+		FMLDeformerEditorActor* EditorActor = nullptr;
+		UAnimationAsset* AnimAsset = nullptr;
+		const EMLDeformerVizMode Mode = Model->GetVizSettings()->GetVisualizationMode();
+		if (Mode == EMLDeformerVizMode::TrainingData)
+		{
+			EditorActor = FindEditorActor(ActorID_Train_Base);
+			AnimAsset = Model->GetAnimSequence();
+		}
+		else if (Mode == EMLDeformerVizMode::TestData)
+		{
+			EditorActor = FindEditorActor(ActorID_Test_MLDeformed);
+			AnimAsset = Model->GetVizSettings()->GetTestAnimSequence();
+		}
+
+		IPersonaToolkit* ToolkitPtr = GetEditor()->GetPersonaToolkitPointer();
+		if (EditorActor && ToolkitPtr)
+		{
+			IPersonaPreviewScene& Scene = ToolkitPtr->GetPreviewScene().Get();
+			Scene.SetActor(EditorActor->GetActor());
+			Scene.SetSelectedActor(EditorActor->GetActor());
+			UDebugSkelMeshComponent* SkelMeshComponent = EditorActor->GetSkeletalMeshComponent();
+			if (SkelMeshComponent)
+			{
+				Scene.SetPreviewMeshComponent(SkelMeshComponent);
+				Scene.SetPreviewMesh(SkelMeshComponent->GetSkeletalMeshAsset());
+			}
+			Scene.SetPreviewAnimationAsset(AnimAsset);
+		}
 	}
 
 	/** Get the current view range */

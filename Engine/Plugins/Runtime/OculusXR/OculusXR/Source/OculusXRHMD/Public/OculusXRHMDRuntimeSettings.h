@@ -14,6 +14,7 @@ enum class EOculusXRSupportedDevices : uint8
 	/** 0 was the deprecated Meta Quest */
 	Quest2 = 1 UMETA(DisplayName = "Meta Quest 2"),
 	QuestPro = 2 UMETA(DisplayName = "Meta Quest Pro"),
+	Quest3 = 3 UMETA(DisplayName = "Meta Quest 3"),
 };
 
 /**
@@ -33,7 +34,10 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = "Engine SplashScreen")
 	TArray<FOculusXRSplashDesc> SplashDescs;
 
-	/** This selects the XR API that the engine will use. If unsure, OVRPlugin OpenXR is the recommended API. */
+	/**
+	This selects the XR API that the engine will use. If unsure, OVRPlugin OpenXR is the recommended API.
+	The OpenXR plugin must also be enabled to use Native OpenXR.
+	*/
 	UPROPERTY(config, EditAnywhere, Category = General, meta = (DisplayName = "XR API", ConfigRestartRequired = true))
 	EOculusXRXrApi XrApi;
 
@@ -56,6 +60,12 @@ public:
 	/** Computes mipmaps for the eye buffers every frame, for a higher quality distortion */
 	UPROPERTY(config, EditAnywhere, Category = PC)
 	bool bHQDistortion;
+
+	/**
+	Path to Meta XR Simulator JSON file (meta_openxr_simulator.json).
+	*/
+	UPROPERTY(config, EditAnywhere, Category = PC, meta = (DisplayName = "Meta XR Simulator JSON File."))
+	FFilePath MetaXRJsonPath;
 
 	/** Maximum allowed pixel density. */
 	UPROPERTY(config, EditAnywhere, Category = "Mobile|Dynamic Resolution", DisplayName = "Enable Dynamic Resolution")
@@ -142,6 +152,10 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Anchor Support"))
 	bool bAnchorSupportEnabled;
 
+	/** Whether Spatial Anchor Sharing can be used with the app */
+	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Anchor Sharing"))
+	bool bAnchorSharingEnabled;
+
 	/** Whether Scene can be used with the app */
 	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Scene Support"))
 	bool bSceneSupportEnabled;
@@ -149,6 +163,7 @@ public:
 	/** Whether body tracking functionality can be used with the app */
 	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Body Tracking Enabled", EditCondition = "XrApi == EOculusXRXrApi::OVRPluginOpenXR"))
 	bool bBodyTrackingEnabled;
+
 
 	/** Whether eye tracking functionality can be used with the app */
 	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Eye Tracking Enabled", EditCondition = "XrApi == EOculusXRXrApi::OVRPluginOpenXR"))
@@ -165,6 +180,10 @@ public:
 	/** Whether experimental features listed below can be used with the app. */
 	UPROPERTY(config, EditAnywhere, Category = Experimental)
 	bool bSupportExperimentalFeatures;
+
+	/** If selected, will increase the frequency of one processor at the expense of decreasing the frequency of the other on supported devices. */
+	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Processor Favor"))
+	EProcessorFavor ProcessorFavor;
 
 private:
 #if WITH_EDITOR

@@ -355,6 +355,11 @@ public:
 	 */
 	IRISCORE_API UNetObjectFilter* GetFilter(const FName FilterName) const;
 
+	/**
+	 * Returns the name of the filter associated to this handle.
+	 */
+	IRISCORE_API FName GetFilterName(UE::Net::FNetObjectFilterHandle Filter) const;
+
 	// Group Filtering
 
 	/**
@@ -454,9 +459,16 @@ public:
 	IRISCORE_API void TearOffNextUpdate(FNetRefHandle Handle);
 
 	/**
-	 * Explicitly mark object as dirty. This will make it considered for replication this frame
-	 * if the object has any modified properties/data.
-	 * Normally an object is checked for dirtiness based on poll frequency.
+	 * Force the passed object to be considered for replication this frame.
+	 * This will also force it's sub objects, root object and any of it's dependents to also be considered for replication.
+	 * Normally an object is checked for replication only when it's poll frequency is hit.
+	 * @param Handle A valid handle to an object.
+	 * @see FObjectReplicationBridgePollConfig
+	 */
+	IRISCORE_API void ForceNetUpdate(FNetRefHandle Handle);
+
+	/**
+	 * Explicitly mark object as having dirty properties.
 	 * @param Handle A valid handle to an object.
 	 * @see FObjectReplicationBridgePollConfig
 	 */
@@ -496,7 +508,7 @@ public:
 	 */
 	IRISCORE_API UObject* GetConnectionUserData(uint32 ConnectionId) const;
 
-	IRISCORE_API int32 GetPIEInstanceID() const { return PIEInstanceID; }
+	int32 GetPIEInstanceID() const { return PIEInstanceID; }
 
 	/** Set the squared cull distance for an object. This can be used by prioritizers and filters like UNetObjectGridFilter for example. For Actors this will override, not overwrite, the NetCullDistanceSquared property. */
 	IRISCORE_API void SetCullDistanceSqrOverride(FNetRefHandle Handle, float DistSqr);
@@ -506,6 +518,9 @@ public:
 
 	/** Returns the previously set squared cull distance for an object, or DefaultValue if it wasn't or the Handle isn't valid. */
 	IRISCORE_API float GetCullDistanceSqrOverride(FNetRefHandle Handle, float DefaultValue = -1.0f) const;
+
+	/** Returns elapsed time in seconds since ReplicatonSystem was created */
+	double GetElapsedTime() const { return ElapsedTime; }
 
 public:
 	// For internal use and not exported.
@@ -531,7 +546,7 @@ private:
 	IRISCORE_API void ResetGameWorldState();
 	IRISCORE_API void NotifyStreamingLevelUnload(const UObject* Level);
 
-	IRISCORE_API void SetPIEInstanceID(int32 InPIEInstanceID) { PIEInstanceID = InPIEInstanceID; }
+	void SetPIEInstanceID(int32 InPIEInstanceID) { PIEInstanceID = InPIEInstanceID; }
 
 private:
 
@@ -545,6 +560,7 @@ private:
 	UPROPERTY(transient)
 	TObjectPtr<UReplicationBridge> ReplicationBridge;
 
+	double ElapsedTime = 0;
 	uint32 Id;
 	int32 PIEInstanceID;
 	uint32 bIsServer : 1;

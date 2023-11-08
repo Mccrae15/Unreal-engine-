@@ -235,6 +235,12 @@ void FDisplayClusterProjectionMPCDIPolicy::ApplyWarpBlend_RenderThread(FRHIComma
 		return;
 	}
 
+	const IDisplayClusterViewportManagerProxy* ViewportManagerProxyPtr = InViewportProxy->GetViewportManagerProxy_RenderThread();
+	if (!ViewportManagerProxyPtr)
+	{
+		return;
+	}
+
 	TArray<FRHITexture2D*> InputTextures, OutputTextures;
 	TArray<FIntRect> InputRects, OutputRects;
 
@@ -268,12 +274,11 @@ void FDisplayClusterProjectionMPCDIPolicy::ApplyWarpBlend_RenderThread(FRHIComma
 		for (int32 ContextNum = 0; ContextNum < InputTextures.Num(); ContextNum++)
 		{
 			// Update referenced resources and math in the ShaderICVFX.
-			ShaderICVFX.IterateViewportResourcesByPredicate([ContextNum, InViewportProxy, &ShaderICVFX](FDisplayClusterShaderParametersICVFX_ViewportResource& ViewportResourceIt)
+			ShaderICVFX.IterateViewportResourcesByPredicate([ContextNum, ViewportManagerProxyPtr, &ShaderICVFX](FDisplayClusterShaderParametersICVFX_ViewportResource& ViewportResourceIt)
 			{
 				// reset prev resource reference
 				ViewportResourceIt.Texture = nullptr;
-
-				if(const IDisplayClusterViewportProxy* SrcViewportProxy = InViewportProxy->GetOwner_RenderThread().FindViewport_RenderThread(ViewportResourceIt.ViewportId))
+				if(const IDisplayClusterViewportProxy* SrcViewportProxy = ViewportManagerProxyPtr->FindViewport_RenderThread(ViewportResourceIt.ViewportId))
 				{
 					if (!SrcViewportProxy->GetRenderSettings_RenderThread().bSkipRendering)
 					{
@@ -299,12 +304,13 @@ void FDisplayClusterProjectionMPCDIPolicy::ApplyWarpBlend_RenderThread(FRHIComma
 							// matched camera reference, update context for current eye
 							const FDisplayClusterViewport_Context& InContext = SrcViewportContexts[ContextNum];
 
-							FDisplayClusterShaderParametersICVFX_CameraContext CameraContext;
-							CameraContext.CameraViewLocation = InContext.ViewLocation;
-							CameraContext.CameraViewRotation = InContext.ViewRotation;
-							CameraContext.CameraPrjMatrix = InContext.ProjectionMatrix;
+							// The context stores data in local space. For the shader they must be converted to world space
+							FDisplayClusterShaderParametersICVFX_CameraViewProjection LocalSpaceViewProjection;
+							LocalSpaceViewProjection.ViewLocation = InContext.ViewLocation;
+							LocalSpaceViewProjection.ViewRotation = InContext.ViewRotation;
+							LocalSpaceViewProjection.PrjMatrix    = InContext.ProjectionMatrix;
 
-							CameraSettings->UpdateCameraContext(CameraContext);
+							CameraSettings->SetViewProjection(LocalSpaceViewProjection);
 						}
 					}
 				}

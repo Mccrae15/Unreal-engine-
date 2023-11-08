@@ -12,6 +12,7 @@
 #include "Math/ColorList.h"
 #include "RayTracingInstance.h"
 #include "SceneInterface.h"
+#include "RenderGraphBuilder.h"
 
 DECLARE_STATS_GROUP(TEXT("Water Mesh"), STATGROUP_WaterMesh, STATCAT_Advanced);
 
@@ -173,6 +174,7 @@ void FWaterMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*
 {
 	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(Water);
 	TRACE_CPUPROFILER_EVENT_SCOPE(FWaterMeshSceneProxy::GetDynamicMeshElements);
+	FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
 
 	// The water render groups we have to render for this batch : 
 	TArray<EWaterMeshRenderGroupType, TInlineAllocator<WaterVertexFactoryType::NumRenderGroups>> BatchRenderGroups;
@@ -292,7 +294,7 @@ void FWaterMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*
 		return;
 	}
 
-	WaterInstanceDataBuffers->Lock(TotalInstanceCount * InstanceFactor);
+	WaterInstanceDataBuffers->Lock(RHICmdList, TotalInstanceCount * InstanceFactor);
 
 	int32 InstanceDataOffset = 0;
 
@@ -426,11 +428,11 @@ void FWaterMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*
 		}
 	}
 
-	WaterInstanceDataBuffers->Unlock();
+	WaterInstanceDataBuffers->Unlock(RHICmdList);
 }
 
 #if RHI_RAYTRACING
-void FWaterMeshSceneProxy::SetupRayTracingInstances(int32 NumInstances, uint32 DensityIndex)
+void FWaterMeshSceneProxy::SetupRayTracingInstances(FRHICommandListBase& RHICmdList, int32 NumInstances, uint32 DensityIndex)
 {
 	TArray<FRayTracingWaterData>& WaterDataArray = RayTracingWaterData[DensityIndex];
 
@@ -465,7 +467,7 @@ void FWaterMeshSceneProxy::SetupRayTracingInstances(int32 NumInstances, uint32 D
 			Initializer.DebugName = FName(DebugName, Item);
 
 			WaterData.Geometry.SetInitializer(Initializer);
-			WaterData.Geometry.InitResource();
+			WaterData.Geometry.InitResource(RHICmdList);
 		}
 	}
 }
@@ -528,7 +530,7 @@ void FWaterMeshSceneProxy::GetDynamicRayTracingInstances(FRayTracingMaterialGath
 			DensityInstanceCount += InstanceCount;
 		}
 
-		SetupRayTracingInstances(DensityInstanceCount, DensityIndex);
+		SetupRayTracingInstances(Context.GraphBuilder.RHICmdList, DensityInstanceCount, DensityIndex);
 	}
 
 	// Create per-bucket prefix sum and sort instance data so we can easily access per-instance data for each density

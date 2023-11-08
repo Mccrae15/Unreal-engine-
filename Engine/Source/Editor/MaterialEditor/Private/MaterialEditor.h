@@ -117,6 +117,8 @@ public:
 	/** Entry point for compiling a specific material property.  This must call SetMaterialProperty. */
 	virtual int32 CompilePropertyAndSetMaterialProperty(EMaterialProperty Property, FMaterialCompiler* Compiler, EShaderFrequency OverrideShaderFrequency, bool bUsePreviousFrameTime) const override;
 
+	virtual UMaterialExpression* GetMaterialGraphNodePreviewExpression() const override { return Expression.Get(); }
+
 	virtual EMaterialDomain GetMaterialDomain() const override { return MD_Surface; }
 	virtual FString GetMaterialUsageDescription() const override { return FString::Printf(TEXT("FMatExpressionPreview %s"), Expression.IsValid() ? *Expression->GetName() : TEXT("NULL")); }
 	virtual bool IsTwoSided() const override { return false; }
@@ -448,31 +450,31 @@ public:
 	bool bStatsFromPreviewMaterial;
 
 	/** The material applied to the preview mesh. */
-	UMaterial* Material;
+	TObjectPtr<UMaterial> Material;
 	
 	/** The source material being edited by this material editor. Only will be updated when Material's settings are copied over this material */
-	UMaterial* OriginalMaterial;
+	TObjectPtr<UMaterial> OriginalMaterial;
 	
 	/** The material applied to the preview mesh when previewing an expression. */
-	UMaterial* ExpressionPreviewMaterial;
+	TObjectPtr<UMaterial> ExpressionPreviewMaterial;
 
 	/** An empty copy of the preview material. Allows displaying of stats about the built in cost of the current material. */
-	UMaterial* EmptyMaterial;
+	TObjectPtr<UMaterial> EmptyMaterial;
 
 	/** The expression currently being previewed.  This is NULL when not in expression preview mode. */
-	UMaterialExpression* PreviewExpression;
+	TObjectPtr<UMaterialExpression> PreviewExpression;
 
 	/** 
 	 * Material function being edited.  
 	 * If this is non-NULL, a function is being edited and Material is being used to preview it.
 	 */
-	UMaterialFunction* MaterialFunction;
+	TObjectPtr<UMaterialFunction> MaterialFunction;
 	
 	/** The original material or material function being edited by this material editor.. */
 	UObject* OriginalMaterialObject;
 
 	/** Configuration class used to store editor settings across sessions. */
-	UMaterialEditorOptions* EditorOptions;
+	TObjectPtr<UMaterialEditorOptions> EditorOptions;
 	
 	/** Document manager for workflow tabs */
 	TSharedPtr<FDocumentTracker> DocumentManager;
@@ -485,7 +487,7 @@ protected:
 	virtual void GetSaveableObjects(TArray<UObject*>& OutObjects) const override;
 	virtual void SaveAsset_Execute() override;
 	virtual void SaveAssetAs_Execute() override;
-	virtual bool OnRequestClose() override;
+	virtual bool OnRequestClose(EAssetEditorCloseReason InCloseReason) override;
 
 protected:
 	/** Called when the selection changes in the GraphEditor */
@@ -695,6 +697,8 @@ private:
 	bool IsFeaturePreviewChecked(ERHIFeatureLevel::Type TestFeatureLevel) const;
 	bool IsFeaturePreviewAvailable(ERHIFeatureLevel::Type TestFeatureLevel) const;
 
+	/** Update Substrate topology preview */
+	void UpdateStrataTopologyPreview();
 
 public:
 
@@ -1001,7 +1005,7 @@ private:
 	TSharedPtr<FExtensibilityManager> ToolBarExtensibilityManager;
 
 	/** Object that stores all of the possible parameters we can edit. */
-	class UMaterialEditorPreviewParameters* MaterialEditorInstance;
+	TObjectPtr<class UMaterialEditorPreviewParameters> MaterialEditorInstance;
 
 	/** Object used as material statistics manager */
 	TSharedPtr<class FMaterialStats> MaterialStatsManager;

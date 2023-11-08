@@ -12,6 +12,7 @@
 #include "Misc/Parse.h"
 #include "Containers/Map.h"
 #include "Misc/CoreMisc.h"
+#include "Misc/CoreDelegates.h"
 #include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/OutputDeviceHelper.h"
@@ -482,6 +483,14 @@ class FLogSuppressionImplementation: public FLogSuppressionInterface, private FS
 		}
 	}
 
+	void OnConfigSectionsChanged(const FString& IniFilename, const TSet<FString>& SectionNames)
+	{
+		if (IniFilename == GEngineIni && SectionNames.Contains(TEXT("Core.Log")))
+		{
+			ProcessConfigAndCommandLine();
+		}
+	}
+
 	virtual void ProcessConfigAndCommandLine()
 	{
 		ReverseAssociations.Reserve(PendingAssociations.Num());
@@ -554,11 +563,26 @@ class FLogSuppressionImplementation: public FLogSuppressionInterface, private FS
 			SetupSuppress(It.Value(), It.Key());
 		}
 
+		if (!bInitialized)
+		{
+			FCoreDelegates::TSOnConfigSectionsChanged().AddLambda([this](const FString& IniFilename, const TSet<FString>& SectionNames)
+			{
+				if (auto* LogSuppressionImplementation = static_cast<FLogSuppressionImplementation*>(FLogSuppressionInterface::TryGet()))
+				{
+					LogSuppressionImplementation->OnConfigSectionsChanged(IniFilename, SectionNames);
+				}
+				else
+				{
+					FCoreDelegates::TSOnConfigSectionsChanged().RemoveAll(this);
+				}
+			});
+		}
+
 		bInitialized = true;
 	}
 
 	/** Console commands, see embeded usage statement **/
-	virtual bool Exec( UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& Ar )
+	virtual bool Exec_Runtime( UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& Ar )
 	{
 		if(FParse::Command(&Cmd,TEXT("LOG")))
 		{

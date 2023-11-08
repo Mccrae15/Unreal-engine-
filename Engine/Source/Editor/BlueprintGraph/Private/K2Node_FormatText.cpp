@@ -109,13 +109,12 @@ void UK2Node_FormatText::SynchronizeArgumentPinType(UEdGraphPin* Pin)
 		if (bPinTypeChanged)
 		{
 			// Let the graph know to refresh
-			GetGraph()->NotifyGraphChanged();
+			GetGraph()->NotifyNodeChanged(this);
 
 			UBlueprint* Blueprint = GetBlueprint();
 			if (!Blueprint->bBeingCompiled)
 			{
 				FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
-				Blueprint->BroadcastChanged();
 			}
 		}
 	}
@@ -152,9 +151,9 @@ void UK2Node_FormatText::PostEditChangeProperty(struct FPropertyChangedEvent& Pr
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(UK2Node_FormatText, PinNames))
 	{
 		ReconstructNode();
-		GetGraph()->NotifyGraphChanged();
 	}
 	Super::PostEditChangeProperty(PropertyChangedEvent);
+	GetGraph()->NotifyNodeChanged(this);
 }
 
 void UK2Node_FormatText::PinConnectionListChanged(UEdGraphPin* Pin)
@@ -226,7 +225,7 @@ void UK2Node_FormatText::PinDefaultValueChanged(UEdGraphPin* Pin)
 			}
 		}
 
-		GetGraph()->NotifyGraphChanged();
+		GetGraph()->NotifyNodeChanged(this);
 	}
 }
 
@@ -308,7 +307,7 @@ void UK2Node_FormatText::PostReconstructNode()
 
 			if (NumPinsFixedUp > 0)
 			{
-				GetGraph()->NotifyGraphChanged();
+				GetGraph()->NotifyNodeChanged(this);
 				FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(GetBlueprint());
 			}
 		}
@@ -618,7 +617,7 @@ void UK2Node_FormatText::AddArgumentPin()
 	PinNames.Add(PinName);
 
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(GetBlueprint());
-	GetGraph()->NotifyGraphChanged();
+	GetGraph()->NotifyNodeChanged(this);
 }
 
 void UK2Node_FormatText::RemoveArgument(int32 InIndex)
@@ -634,7 +633,7 @@ void UK2Node_FormatText::RemoveArgument(int32 InIndex)
 	PinNames.RemoveAt(InIndex);
 
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(GetBlueprint());
-	GetGraph()->NotifyGraphChanged();
+	GetGraph()->NotifyNodeChanged(this);
 }
 
 void UK2Node_FormatText::SetArgumentName(int32 InIndex, FName InName)
@@ -653,7 +652,7 @@ void UK2Node_FormatText::SwapArguments(int32 InIndexA, int32 InIndexB)
 	PinNames.Swap(InIndexA, InIndexB);
 
 	ReconstructNode();
-	GetGraph()->NotifyGraphChanged();
+	GetGraph()->NotifyNodeChanged(this);
 
 	FBlueprintEditorUtils::MarkBlueprintAsModified(GetBlueprint());
 }

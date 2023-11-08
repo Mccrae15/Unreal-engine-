@@ -16,7 +16,7 @@ public class FreeType2 : ModuleRules
 			}
 			else if (Target.Platform == UnrealTargetPlatform.IOS ||
 				Target.Platform == UnrealTargetPlatform.Mac ||
-				Target.Platform == UnrealTargetPlatform.Win64 ||
+				Target.IsInPlatformGroup(UnrealPlatformGroup.Windows) ||
 				Target.IsInPlatformGroup(UnrealPlatformGroup.Unix)
 			)
 			{
@@ -72,15 +72,15 @@ public class FreeType2 : ModuleRules
 			PublicDefinitions.Add("WITH_FREETYPE_V210=1"); // TODO: Remove this once everything is using FreeType 2.10.0
 		}
 
-		if (Target.Platform == UnrealTargetPlatform.Win64)
+		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows))
 		{
 			LibPath = Path.Combine(FreeType2LibPath,
 					"Win64",
 					"VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName());
 
-			if (!Target.Architecture.bIsX64)
+			if (Target.WindowsPlatform.Architecture == UnrealArch.Arm64)
 			{
-				LibPath = Path.Combine(LibPath, Target.Architecture.WindowsName);
+				LibPath = Path.Combine(LibPath, Target.Architecture.WindowsLibDir);
 			}
 
 			LibPath = Target.Configuration == UnrealTargetConfiguration.Debug && Target.bDebugBuildsActuallyUseDebugCRT
@@ -100,9 +100,16 @@ public class FreeType2 : ModuleRules
 		}
 		else if (Target.Platform == UnrealTargetPlatform.IOS)
 		{
-			LibPath = Target.Configuration == UnrealTargetConfiguration.Debug && Target.bDebugBuildsActuallyUseDebugCRT
-				? Path.Combine("Debug", "libfreetyped.a")
-				: Path.Combine("Release", "libfreetype.a");
+			if (Target.Architecture != UnrealArch.IOSSimulator)
+			{
+				LibPath = Target.Configuration == UnrealTargetConfiguration.Debug && Target.bDebugBuildsActuallyUseDebugCRT
+					? Path.Combine("Debug", "libfreetyped.a")
+					: Path.Combine("Release", "libfreetype.a");
+			}
+			else
+			{
+				LibPath = Path.Combine("Simulator", "libfreetype.a");
+			}
 
 			PublicAdditionalLibraries.Add(Path.Combine(FreeType2LibPath, "IOS", LibPath));
 		}

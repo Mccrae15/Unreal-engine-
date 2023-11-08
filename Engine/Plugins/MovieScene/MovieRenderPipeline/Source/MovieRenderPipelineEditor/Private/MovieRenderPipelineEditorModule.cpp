@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MovieRenderPipelineEditorModule.h"
+
+#include "EdGraphUtilities.h"
 #include "MovieRenderPipelineCoreModule.h"
 #include "MoviePipelineExecutor.h"
 #include "WorkspaceMenuStructureModule.h"
@@ -29,8 +31,10 @@
 #include "MoviePipelineEditorBlueprintLibrary.h"
 #include "MovieSceneSection.h"
 #include "Sections/MovieSceneCinematicShotSection.h"
-#include "AssetToolsModule.h"
-#include "AssetTypeActions_PipelineConfigs.h"
+#include "MoviePipelineConsoleVariableSetting.h"
+#include "PropertyEditorModule.h"
+#include "Customizations/ConsoleVariableCustomization.h"
+#include "Graph/MovieGraphPinFactory.h"
 
 #define LOCTEXT_NAMESPACE "FMovieRenderPipelineEditorModule"
 
@@ -136,9 +140,9 @@ class FMovieRenderPipelineRenderer : public IMovieRendererInterface
 			{
 				ActiveJob->SetPresetOrigin(ProjectSettings->LastPresetOrigin.Get());
 			}
-		}
 
-		UMoviePipelineEditorBlueprintLibrary::EnsureJobHasDefaultSettings(ActiveJob);
+			UMoviePipelineEditorBlueprintLibrary::EnsureJobHasDefaultSettings(ActiveJob);
+		}
 
 		TArray<FString> ShotNames;
 		for (UMovieSceneCinematicShotSection* ShotSection : InSections)
@@ -189,6 +193,22 @@ void FMovieRenderPipelineEditorModule::UnregisterMovieRenderer()
 	}
 }
 
+void FMovieRenderPipelineEditorModule::RegisterTypeCustomizations()
+{
+	FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+	PropertyModule.RegisterCustomPropertyTypeLayout(FMoviePipelineConsoleVariableEntry::StaticStruct()->GetFName(),
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(FConsoleVariablesDetailsCustomization::MakeInstance));
+}
+
+void FMovieRenderPipelineEditorModule::UnregisterTypeCustomizations()
+{
+	FPropertyEditorModule* PropertyModule = FModuleManager::GetModulePtr<FPropertyEditorModule>("PropertyEditor");
+	if (PropertyModule)
+	{
+		PropertyModule->UnregisterCustomPropertyTypeLayout(FMoviePipelineConsoleVariableEntry::StaticStruct()->GetFName());
+	}
+}
+
 void FMovieRenderPipelineEditorModule::StartupModule()
 {
 	// Initialize our custom style
@@ -197,34 +217,25 @@ void FMovieRenderPipelineEditorModule::StartupModule()
 
 	RegisterTabImpl();
 	RegisterSettings();
+	RegisterTypeCustomizations();
 	RegisterMovieRenderer();
 
-	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-	{
-		PrimaryConfigAssetActions = MakeShared<FAssetTypeActions_PipelinePrimaryConfig>();
-		AssetTools.RegisterAssetTypeActions(PrimaryConfigAssetActions.ToSharedRef());
-
-		ShotConfigAssetActions = MakeShared<FAssetTypeActions_PipelineShotConfig>();
-		AssetTools.RegisterAssetTypeActions(ShotConfigAssetActions.ToSharedRef());
-
-		QueueAssetActions = MakeShared<FAssetTypeActions_PipelineQueue>();
-		AssetTools.RegisterAssetTypeActions(QueueAssetActions.ToSharedRef());
-	}
+	GraphPanelPinFactory = MakeShared<FMovieGraphPanelPinFactory>();
+	FEdGraphUtilities::RegisterVisualPinFactory(GraphPanelPinFactory);
 }
 
 void FMovieRenderPipelineEditorModule::ShutdownModule()
 {
-	FAssetToolsModule* AssetToolsModule = FModuleManager::GetModulePtr<FAssetToolsModule>("AssetTools");
-	if (AssetToolsModule)
-	{
-		AssetToolsModule->Get().UnregisterAssetTypeActions(PrimaryConfigAssetActions.ToSharedRef());
-		AssetToolsModule->Get().UnregisterAssetTypeActions(ShotConfigAssetActions.ToSharedRef());
-		AssetToolsModule->Get().UnregisterAssetTypeActions(QueueAssetActions.ToSharedRef());
-	}
-
 	UnregisterMovieRenderer();
+	UnregisterTypeCustomizations();
 	UnregisterSettings();
 	FMoviePipelineCommands::Unregister();
+	
+	if (GraphPanelPinFactory.IsValid())
+	{
+		FEdGraphUtilities::UnregisterVisualPinFactory(GraphPanelPinFactory);
+		GraphPanelPinFactory.Reset();
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

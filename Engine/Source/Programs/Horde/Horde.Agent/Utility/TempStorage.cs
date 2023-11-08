@@ -524,142 +524,6 @@ namespace Horde.Storage.Utility
 	}
 
 	/// <summary>
-	/// Node representing a temp storage block
-	/// </summary>
-	[TreeNode("{73AE9604-45E6-473A-95D6-2C9732A0820E}")]
-	class TempStorageBlockNode : TreeNode
-	{
-		public TempStorageBlockManifest Manifest { get; set; }
-		public TreeNodeRef<DirectoryNode> Contents { get; }
-
-		public TempStorageBlockNode(TempStorageBlockManifest manifest, TreeNodeRef<DirectoryNode> contents)
-		{
-			Manifest = manifest;
-			Contents = contents;
-		}
-
-		public TempStorageBlockNode(ITreeNodeReader reader)
-			: base(reader)
-		{
-			TempStorageFile[] files = reader.ReadVariableLengthArray(() => ReadTempStorageFile(reader));
-			Manifest = new TempStorageBlockManifest(files);
-
-			Contents = reader.ReadRef<DirectoryNode>();
-		}
-
-		static TempStorageFile ReadTempStorageFile(ITreeNodeReader reader)
-		{
-			string relativePath = reader.ReadString();
-			long lastWriteTimeUtcTicks = (long)reader.ReadUnsignedVarInt();
-			long length = (long)reader.ReadUnsignedVarInt();
-			string digest = reader.ReadString();
-			return new TempStorageFile(relativePath, lastWriteTimeUtcTicks, length, String.IsNullOrEmpty(digest) ? null : digest);
-		}
-
-		static void WriteTempStorageFile(TempStorageFile file, ITreeNodeWriter writer)
-		{
-			writer.WriteString(file.RelativePath);
-			writer.WriteUnsignedVarInt((ulong)file.LastWriteTimeUtcTicks);
-			writer.WriteUnsignedVarInt((ulong)file.Length);
-			writer.WriteString(file.Digest ?? String.Empty);
-		}
-
-		public override IEnumerable<TreeNodeRef> EnumerateRefs()
-		{
-			yield return Contents;
-		}
-
-		public override void Serialize(ITreeNodeWriter writer)
-		{
-			writer.WriteVariableLengthArray(Manifest.Files, file => WriteTempStorageFile(file, writer));
-			writer.WriteRef(Contents);
-		}
-	}
-
-	/// <summary>
-	/// Node representing a temp storage tag
-	/// </summary>
-	[TreeNode("{CB4DEA03-3FA5-42A1-890D-1BFD7435427C}")]
-	class TempStorageTagNode : TreeNode
-	{
-		public TempStorageTagManifest FileList { get; }
-
-		public TempStorageTagNode(TempStorageTagManifest fileList)
-		{
-			FileList = fileList;
-		}
-
-		public TempStorageTagNode(ITreeNodeReader reader)
-		{
-			string[] localFiles = reader.ReadVariableLengthArray(() => reader.ReadString());
-			string[] externalFiles = reader.ReadVariableLengthArray(() => reader.ReadString());
-			TempStorageBlockRef[] blocks = reader.ReadVariableLengthArray(() => ReadTempStorageBlock(reader));
-			FileList = new TempStorageTagManifest(localFiles, externalFiles, blocks);
-		}
-
-		static TempStorageBlockRef ReadTempStorageBlock(ITreeNodeReader reader)
-		{
-			string nodeName = reader.ReadString();
-			string outputName = reader.ReadString();
-			return new TempStorageBlockRef(nodeName, outputName);
-		}
-
-		static void WriteTempStorageBlock(ITreeNodeWriter writer, TempStorageBlockRef blockRef)
-		{
-			writer.WriteString(blockRef.NodeName);
-			writer.WriteString(blockRef.OutputName);
-		}
-
-		public override void Serialize(ITreeNodeWriter writer)
-		{
-			writer.WriteVariableLengthArray(FileList.LocalFiles, x => writer.WriteString(x));
-			writer.WriteVariableLengthArray(FileList.ExternalFiles, x => writer.WriteString(x));
-			writer.WriteVariableLengthArray(FileList.Blocks, x => WriteTempStorageBlock(writer, x));
-		}
-
-		public override IEnumerable<TreeNodeRef> EnumerateRefs() => Enumerable.Empty<TreeNodeRef>();
-	}
-
-	/// <summary>
-	/// Node representing all the outputs from a node
-	/// </summary>
-	[TreeNode("{A1380FBC-06DB-4CD5-9CF2-ABEB5108E406}")]
-	class TempStorageNode : TreeNode
-	{
-		public Dictionary<string, TreeNodeRef<TempStorageTagNode>> Tags { get; } = new Dictionary<string, TreeNodeRef<TempStorageTagNode>>(StringComparer.OrdinalIgnoreCase);
-		public Dictionary<string, TreeNodeRef<TempStorageBlockNode>> Blocks { get; } = new Dictionary<string, TreeNodeRef<TempStorageBlockNode>>(StringComparer.OrdinalIgnoreCase);
-
-		public TempStorageNode()
-		{
-		}
-
-		public TempStorageNode(ITreeNodeReader reader)
-			: base(reader)
-		{
-			reader.ReadDictionary(Tags, () => reader.ReadString(), () => reader.ReadRef<TempStorageTagNode>());
-			reader.ReadDictionary(Blocks, () => reader.ReadString(), () => reader.ReadRef<TempStorageBlockNode>());
-		}
-
-		public override IEnumerable<TreeNodeRef> EnumerateRefs()
-		{
-			foreach (TreeNodeRef<TempStorageTagNode> tagNode in Tags.Values)
-			{
-				yield return tagNode;
-			}
-			foreach (TreeNodeRef<TempStorageBlockNode> blockNode in Blocks.Values)
-			{
-				yield return blockNode;
-			}
-		}
-
-		public override void Serialize(ITreeNodeWriter writer)
-		{
-			writer.WriteDictionary(Tags, k => writer.WriteString(k), v => writer.WriteRef(v));
-			writer.WriteDictionary(Blocks, k => writer.WriteString(k), v => writer.WriteRef(v));
-		}
-	}
-
-	/// <summary>
 	/// Tracks the state of the current build job using the filesystem, allowing jobs to be restarted after a failure or expanded to include larger targets, and 
 	/// providing a proxy for different machines executing parts of the build in parallel to transfer build products and share state as part of a build system.
 	/// 
@@ -685,7 +549,7 @@ namespace Horde.Storage.Utility
 		/// <summary>
 		/// Reads a set of tagged files from disk
 		/// </summary>
-		/// <param name="reader">Reader for node data</param>
+		/// <param name="storageClient">Reader for node data</param>
 		/// <param name="refPrefix">Prefix for ref names</param>
 		/// <param name="nodeName">Name of the node which produced the tag set</param>
 		/// <param name="tagName">Name of the tag, with a '#' prefix</param>
@@ -693,124 +557,112 @@ namespace Horde.Storage.Utility
 		/// <param name="logger">Logger for output</param>
 		/// <param name="cancellationToken"></param>
 		/// <returns>The set of files</returns>
-		public static async Task<TempStorageTagManifest> RetrieveTagAsync(TreeReader reader, string refPrefix, string nodeName, string tagName, DirectoryReference manifestDir, ILogger logger, CancellationToken cancellationToken)
+		public static async Task<TempStorageTagManifest> RetrieveTagAsync(IStorageClient storageClient, string refPrefix, string nodeName, string tagName, DirectoryReference manifestDir, ILogger logger, CancellationToken cancellationToken)
 		{
-			TempStorageTagManifest fileList;
-
 			// Try to read the tag set from the local directory
 			FileReference localFileListLocation = GetTagManifestLocation(manifestDir, nodeName, tagName);
-			if(FileReference.Exists(localFileListLocation))
+			if (FileReference.Exists(localFileListLocation))
 			{
 				logger.LogInformation("Reading local file list from {File}", localFileListLocation.FullName);
-				fileList = TempStorageTagManifest.Load(localFileListLocation);
 			}
 			else
 			{
 				RefName refName = GetRefNameForNode(refPrefix, nodeName);
 				logger.LogInformation("Reading node \"{NodeName}\" tag \"{TagName}\" from temp storage (ref: {RefName}, localFile: {LocalFile})", nodeName, tagName, refName, localFileListLocation);
 
-				TempStorageNode node = await reader.ReadNodeAsync<TempStorageNode>(refName, cancellationToken: cancellationToken);
+				DirectoryNode node = await storageClient.ReadNodeAsync<DirectoryNode>(refName, cancellationToken: cancellationToken);
 
-				TreeNodeRef<TempStorageTagNode>? tagNodeRef;
-				if (!node.Tags.TryGetValue(tagName, out tagNodeRef))
-				{
-					throw new TempStorageException($"Missing tag {tagName} from node {nodeName}");
-				}
-
-				TempStorageTagNode tagNode = await tagNodeRef.ExpandAsync(reader, cancellationToken);
-				fileList = tagNode.FileList;
-
-				// Save the manifest locally
+				FileEntry fileEntry = node.GetFileEntry(localFileListLocation.GetFileName());
 				DirectoryReference.CreateDirectory(localFileListLocation.Directory);
-				fileList.Save(localFileListLocation);
+				await fileEntry.CopyToFileAsync(localFileListLocation.ToFileInfo(), cancellationToken);
 			}
-			return fileList;
+			return TempStorageTagManifest.Load(localFileListLocation);
 		}
 
 		/// <summary>
 		/// Saves a tag to temp storage
 		/// </summary>
-		/// <param name="writer">Writer for output</param>
+		/// <param name="manifestDir">Directory containing manifests</param>
+		/// <param name="nodeName">Name of the node to store</param>
 		/// <param name="tagName">Name of the output tag</param>
-		/// <param name="rootDir">Root directory for the build products</param>
+		/// <param name="workspaceDir">Root directory for the build products</param>
 		/// <param name="files">Files in the tag</param>
-		/// <param name="blocks">Blocks containing files in the tag</param>
+		/// <param name="blocks"></param>
+		/// <param name="writer">Writer for output</param>
 		/// <param name="logger">Logger for output</param>
 		/// <param name="cancellationToken">Cancellation token for the operation</param>
 		/// <returns></returns>
-		public static async Task<TreeNodeRef<TempStorageTagNode>> ArchiveTagAsync(TreeWriter writer, string tagName, DirectoryReference rootDir, IEnumerable<FileReference> files, IEnumerable<TempStorageBlockRef> blocks, ILogger logger, CancellationToken cancellationToken)
+		public static async Task<FileEntry> ArchiveTagAsync(DirectoryReference manifestDir, string nodeName, string tagName, DirectoryReference workspaceDir, IEnumerable<FileReference> files, TempStorageBlockRef[] blocks, IStorageWriter writer, ILogger logger, CancellationToken cancellationToken)
 		{
 			logger.LogInformation("Creating output tag \"{TagName}\"", tagName);
 
-			TempStorageTagManifest fileList = new TempStorageTagManifest(files, rootDir, blocks);
-			TreeNodeRef<TempStorageTagNode> tagNode = new TreeNodeRef<TempStorageTagNode>(new TempStorageTagNode(fileList));
-			await writer.WriteAsync(tagNode, cancellationToken);
+			TempStorageTagManifest fileList = new TempStorageTagManifest(files, workspaceDir, blocks);
 
-			return tagNode;
+			FileReference localFileListLocation = GetTagManifestLocation(manifestDir, nodeName, tagName);
+			fileList.Save(localFileListLocation);
+
+			ChunkedDataWriter fileNodeWriter = new ChunkedDataWriter(writer, new ChunkingOptions());
+			NodeRef<ChunkedDataNode> rootRef = await fileNodeWriter.CreateAsync(localFileListLocation.ToFileInfo(), cancellationToken);
+
+			return new FileEntry(localFileListLocation.GetFileName(), FileEntryFlags.None, fileNodeWriter.Length, rootRef);
+		}
+
+		/// <summary>
+		/// Gets the directory name for storing data from a block
+		/// </summary>
+		/// <param name="blockName"></param>
+		/// <returns></returns>
+		static string GetBlockDirectoryName(string blockName)
+		{
+			if (String.IsNullOrEmpty(blockName))
+			{
+				return "block";
+			}
+			else
+			{
+				return $"block-{blockName}";
+			}
 		}
 
 		/// <summary>
 		/// Saves the given files (that should be rooted at the branch root) to a shared temp storage manifest with the given temp storage node and game.
 		/// </summary>
-		/// <param name="writer">Writer for output</param>
+		/// <param name="manifestDir">Directory containing manifests</param>
+		/// <param name="nodeName">Name of the node producing the block</param>
 		/// <param name="blockName">Name of the output block</param>
-		/// <param name="rootDir">Root directory for the build products</param>
-		/// <param name="buildProducts">Array of build products to be archived</param>
+		/// <param name="workspaceDir">Root directory for the build products</param>
+		/// <param name="files">Files to add to the block</param>
+		/// <param name="writer">Writer for output</param>
 		/// <param name="logger">Logger for output</param>
 		/// <param name="cancellationToken">Cancellation token for the operation</param>
 		/// <returns>The created manifest instance (which has already been saved to disk).</returns>
-		public static async Task<TreeNodeRef<TempStorageBlockNode>> ArchiveBlockAsync(TreeWriter writer, string blockName, DirectoryReference rootDir, FileReference[] buildProducts, ILogger logger, CancellationToken cancellationToken)
+		public static async Task<DirectoryEntry> ArchiveBlockAsync(DirectoryReference manifestDir, string nodeName, string blockName, DirectoryReference workspaceDir, IEnumerable<FileReference> files, IStorageWriter writer, ILogger logger, CancellationToken cancellationToken)
 		{
-			logger.LogInformation("Creating output block \"{BlockName}\"", blockName);
+			string blockDirectoryName = GetBlockDirectoryName(blockName);
+			logger.LogInformation("Creating output block \"{BlockName}\" (as {DirectoryName})", blockName, blockDirectoryName);
 
 			// Create a manifest for the given build products
-			FileInfo[] files = buildProducts.Select(x => new FileInfo(x.FullName)).ToArray();
+			FileInfo[] fileInfos = files.Select(x => new FileInfo(x.FullName)).ToArray();
+			TempStorageBlockManifest manifest = new TempStorageBlockManifest(fileInfos, workspaceDir);
 
-			// Create the directory tree
-			DirectoryNode root = new DirectoryNode(DirectoryFlags.None);
+			FileReference manifestLocation = GetBlockManifestLocation(manifestDir, nodeName, blockName);
+			manifest.Save(manifestLocation);
 
-			Dictionary<DirectoryReference, DirectoryNode> dirRefToNode = new Dictionary<DirectoryReference, DirectoryNode>();
-			dirRefToNode.Add(rootDir, root);
+			List<FileInfo> archiveFiles = new List<FileInfo>(fileInfos);
+			archiveFiles.Add(manifestLocation.ToFileInfo());
 
-			List<(DirectoryNode, FileInfo)> filesToAdd = new List<(DirectoryNode, FileInfo)>();
-			foreach (FileInfo file in files)
-			{
-				DirectoryReference dirRef = new FileReference(file).Directory;
-				DirectoryNode dirNode = FindOrAddDirNode(dirRef, dirRefToNode);
-				filesToAdd.Add((dirNode, file));
-			}
-
-			ChunkingOptions chunkingOptions = new ChunkingOptions();
-			await DirectoryNode.CopyFromDirectoryAsync(filesToAdd, chunkingOptions, writer, cancellationToken);
-
-			// Create the block node
-			TempStorageBlockManifest manifest = new TempStorageBlockManifest(files, rootDir);
-			TempStorageBlockNode node = new TempStorageBlockNode(manifest, new TreeNodeRef<DirectoryNode>(root));
-			return new TreeNodeRef<TempStorageBlockNode>(node);
-		}
-
-		/// <summary>
-		/// Finds or adds a node for the given directory, using a cached lookup for existing nodes
-		/// </summary>
-		/// <param name="dirRef"></param>
-		/// <param name="dirRefToNode"></param>
-		/// <returns></returns>
-		static DirectoryNode FindOrAddDirNode(DirectoryReference dirRef, Dictionary<DirectoryReference, DirectoryNode> dirRefToNode)
-		{
-			DirectoryNode? dirNode;
-			if (!dirRefToNode.TryGetValue(dirRef, out dirNode))
-			{
-				DirectoryNode parentNode = FindOrAddDirNode(dirRef.ParentDirectory!, dirRefToNode);
-				dirNode = parentNode.AddDirectory(dirRef.GetDirectoryName());
-				dirRefToNode.Add(dirRef, dirNode);
-			}
-			return dirNode;
+			// Create the file tree
+			DirectoryNode rootNode = new DirectoryNode();
+			await rootNode.AddFilesAsync(workspaceDir, archiveFiles, new ChunkingOptions(), writer, new CopyStatsLogger(logger), cancellationToken);
+			
+			NodeRef<DirectoryNode> rootNodeRef = await writer.WriteNodeAsync(rootNode, cancellationToken);
+			return new DirectoryEntry(blockDirectoryName, rootNode.Length, rootNodeRef);
 		}
 
 		/// <summary>
 		/// Retrieve an output of the given node. Fetches and decompresses the files from shared storage if necessary, or validates the local files.
 		/// </summary>
-		/// <param name="reader">Store to read data from</param>
+		/// <param name="storageClient">Store to read data from</param>
 		/// <param name="refPrefix">Prefix for ref names</param>
 		/// <param name="nodeName">The node which created the storage block</param>
 		/// <param name="blockName">Name of the block to retrieve.</param>
@@ -819,7 +671,7 @@ namespace Horde.Storage.Utility
 		/// <param name="logger">Logger for output</param>
 		/// <param name="cancellationToken"></param>
 		/// <returns>Manifest of the files retrieved</returns>
-		public static async Task<TempStorageBlockManifest> RetrieveBlockAsync(TreeReader reader, string refPrefix, string nodeName, string blockName, DirectoryReference rootDir, DirectoryReference manifestDir, ILogger logger, CancellationToken cancellationToken)
+		public static async Task<TempStorageBlockManifest> RetrieveBlockAsync(IStorageClient storageClient, string refPrefix, string nodeName, string blockName, DirectoryReference rootDir, DirectoryReference manifestDir, ILogger logger, CancellationToken cancellationToken)
 		{
 			// Get the path to the local manifest
 			FileReference localManifestFile = GetBlockManifestLocation(manifestDir, nodeName, blockName);
@@ -834,42 +686,38 @@ namespace Horde.Storage.Utility
 			}
 			else
 			{
+				string blockDirectoryName = GetBlockDirectoryName(blockName);
+
 				// Read the shared manifest
 				RefName refName = GetRefNameForNode(refPrefix, nodeName);
-				logger.LogInformation("Reading node \"{NodeName}\" block \"{BlockName}\" from temp storage (ref: {RefName}, local: {LocalFile})", nodeName, blockName, refName, localManifestFile);
+				logger.LogInformation("Reading node \"{NodeName}\" block \"{BlockName}\" from temp storage (ref: {RefName}, local: {LocalFile}, blockdir: {BlockDir})", nodeName, blockName, refName, localManifestFile, blockDirectoryName);
 
-				TempStorageNode node = await reader.ReadNodeAsync<TempStorageNode>(refName, cancellationToken: cancellationToken);
-				
-				TreeNodeRef<TempStorageBlockNode>? blockNodeRef;
-				if (!node.Blocks.TryGetValue(blockName, out blockNodeRef))
+				DirectoryNode node = await storageClient.ReadNodeAsync<DirectoryNode>(refName, cancellationToken: cancellationToken);
+
+				DirectoryEntry? rootDirEntry;
+				if (!node.TryGetDirectoryEntry(blockDirectoryName, out rootDirEntry))
 				{
 					throw new TempStorageException($"Missing block \"{blockName}\" from node \"{nodeName}\"");
 				}
 
-				TempStorageBlockNode blockNode = await blockNodeRef.ExpandAsync(reader, cancellationToken);
-				manifest = blockNode.Manifest;
-
-				// Delete all the existing files. They may be read-only.
-				foreach (TempStorageFile ManifestFile in manifest.Files)
-				{
-					FileReference File = ManifestFile.ToFileReference(rootDir);
-					FileUtils.ForceDeleteFile(File);
-				}
-
 				// Add all the files and flush the ref
-				DirectoryNode rootDirNode = await blockNode.Contents.ExpandAsync(reader, cancellationToken);
-				await rootDirNode.CopyToDirectoryAsync(reader, rootDir.ToDirectoryInfo(), logger, cancellationToken);
+				DirectoryNode rootDirNode = await rootDirEntry.ExpandAsync(cancellationToken);
+				await rootDirNode.CopyToDirectoryAsync(rootDir.ToDirectoryInfo(), logger, cancellationToken);
+
+				// Read the manifest in
+				manifest = TempStorageBlockManifest.Load(localManifestFile);
 
 				// Update the timestamps to match the manifest.
-				foreach (TempStorageFile ManifestFile in manifest.Files)
+				foreach (TempStorageFile manifestFile in manifest.Files)
 				{
-					FileReference File = ManifestFile.ToFileReference(rootDir);
-					System.IO.File.SetLastWriteTimeUtc(File.FullName, new DateTime(ManifestFile.LastWriteTimeUtcTicks, DateTimeKind.Utc));
-				}
+					FileInfo fileInfo = manifestFile.ToFileReference(rootDir).ToFileInfo();
+					fileInfo.LastWriteTimeUtc = new DateTime(manifestFile.LastWriteTimeUtcTicks, DateTimeKind.Utc);
 
-				// Save the manifest locally
-				DirectoryReference.CreateDirectory(localManifestFile.Directory);
-				manifest.Save(localManifestFile);
+					if (fileInfo.Length != manifestFile.Length)
+					{
+						logger.LogError("File {File} extracted from temp storage has different size to file in manifest (manifest: {ManifestLength}, local: {LocalLength})", manifestFile.RelativePath, manifestFile.Length, fileInfo.Length);
+					}
+				}
 			}
 
 			// Check all the local files are as expected
@@ -937,7 +785,7 @@ namespace Horde.Storage.Utility
 			{
 				return true;
 			}
-			if (fileName.Equals("tbbmalloc.dll", StringComparison.OrdinalIgnoreCase) || fileName.Equals("libtbbmalloc.dylib", StringComparison.OrdinalIgnoreCase))
+			if (fileName.Equals("tbbmalloc.dll", StringComparison.OrdinalIgnoreCase) || fileName.Equals("tbbmalloc.pdb", StringComparison.OrdinalIgnoreCase) || fileName.Equals("libtbbmalloc.dylib", StringComparison.OrdinalIgnoreCase))
 			{
 				return true;
 			}

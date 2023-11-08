@@ -1,16 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "PoseSearchAssetIndexer.h"
-
 #if WITH_EDITOR
 
+#include "PoseSearch/PoseSearchAssetIndexer.h"
 #include "AnimationRuntime.h"
 #include "Animation/MirrorDataTable.h"
 #include "PoseSearch/PoseSearchAnimNotifies.h"
 #include "PoseSearch/PoseSearchAssetSampler.h"
 #include "PoseSearch/PoseSearchDefines.h"
 #include "PoseSearch/PoseSearchFeatureChannel.h"
+#include "PoseSearch/PoseSearchIndex.h"
 #include "PoseSearch/PoseSearchSchema.h"
+#include "PoseSearchDatabaseIndexingContext.h"
 
 namespace UE::PoseSearch
 {
@@ -74,78 +75,120 @@ static FSamplingParam WrapOrClampSamplingParam(bool bCanWrap, float SamplingPara
 
 //////////////////////////////////////////////////////////////////////////
 // FAssetIndexer
-void FAssetIndexer::Reset()
+FAssetIndexer::FAssetIndexer(const FBoneContainer& InBoneContainer, const FSearchIndexAsset& InSearchIndexAsset, 
+	const FAssetSamplingContext& InSamplingContext, const UPoseSearchSchema& InSchema, const FAnimationAssetSampler& InAssetSampler)
+: BoneContainer(InBoneContainer)
+, CachedEntries()
+, SearchIndexAsset(InSearchIndexAsset)
+, SamplingContext(InSamplingContext)
+, Schema(InSchema)
+, AssetSampler(InAssetSampler)
 {
-	Output.FirstIndexedSample = 0;
-	Output.LastIndexedSample = 0;
-	Output.NumIndexedPoses = 0;
-
-	Output.FeatureVectorTable.Reset(0);
-	Output.PoseMetadata.Reset(0);
-	Output.AllFeaturesNotAdded.Reset();
 }
 
-void FAssetIndexer::Init(const FAssetIndexingContext& InIndexingContext, const FBoneContainer& InBoneContainer)
+void FAssetIndexer::AssignWorkingData(TArrayView<float> InOutFeatureVectorTable, TArrayView<FPoseMetadata> InOutPoseMetadata)
 {
-	check(InIndexingContext.Schema);
-	check(InIndexingContext.Schema->IsValid());
-	check(InIndexingContext.AssetSampler);
-
-	BoneContainer = InBoneContainer;
-	IndexingContext = InIndexingContext;
-
-	Reset();
-
-	Output.FirstIndexedSample = FMath::FloorToInt(IndexingContext.RequestedSamplingRange.Min * IndexingContext.Schema->SampleRate);
-	Output.LastIndexedSample = FMath::Max(0, FMath::CeilToInt(IndexingContext.RequestedSamplingRange.Max * IndexingContext.Schema->SampleRate));
-	Output.NumIndexedPoses = Output.LastIndexedSample - Output.FirstIndexedSample + 1;
-
-	Output.FeatureVectorTable.SetNumZeroed(IndexingContext.Schema->SchemaCardinality * Output.NumIndexedPoses);
-	Output.PoseMetadata.SetNum(Output.NumIndexedPoses);
+	FeatureVectorTable = InOutFeatureVectorTable;
+	PoseMetadata = InOutPoseMetadata;
 }
 
-bool FAssetIndexer::Process()
+void FAssetIndexer::Process(int32 AssetIdx)
 {
-	check(IndexingContext.Schema);
-	check(IndexingContext.Schema->IsValid());
-	check(IndexingContext.AssetSampler);
+	check(Schema.IsValid());
 
 	FMemMark Mark(FMemStack::Get());
 
-	IndexingContext.BeginSampleIdx = Output.FirstIndexedSample;
-	IndexingContext.EndSampleIdx = Output.LastIndexedSample + 1;
-
-	if (IndexingContext.Schema->SchemaCardinality > 0)
+	// Generate pose metadata
+	const float SequenceLength = AssetSampler.GetPlayLength();
+	for (int32 SampleIdx = GetBeginSampleIdx(); SampleIdx != GetEndSampleIdx(); ++SampleIdx)
 	{
-		// Index each channel
-		for (const TObjectPtr<UPoseSearchFeatureChannel>& ChannelPtr : IndexingContext.Schema->Channels)
+		const float SampleTime = FMath::Min(CalculateSampleTime(SampleIdx), SequenceLength);
+		float CostAddend = Schema.BaseCostBias;
+		float ContinuingPoseCostAddend = Schema.ContinuingPoseCostBias;
+		bool bBlockTransition = false;
+
+		TArray<UAnimNotifyState_PoseSearchBase*> NotifyStates;
+		AssetSampler.ExtractPoseSearchNotifyStates(SampleTime, NotifyStates);
+		for (const UAnimNotifyState_PoseSearchBase* PoseSearchNotify : NotifyStates)
 		{
-			if (ChannelPtr)
+			if (PoseSearchNotify->GetClass()->IsChildOf<UAnimNotifyState_PoseSearchBlockTransition>())
 			{
-				ChannelPtr->IndexAsset(*this, Output.FeatureVectorTable);
+				bBlockTransition = true;
 			}
+			else if (const UAnimNotifyState_PoseSearchModifyCost* ModifyCostNotify = Cast<const UAnimNotifyState_PoseSearchModifyCost>(PoseSearchNotify))
+			{
+				CostAddend = ModifyCostNotify->CostAddend;
+			}
+		}
+
+		if (AssetSampler.IsLoopable())
+		{
+			CostAddend += Schema.LoopingCostBias;
+		}
+
+		PoseMetadata[GetVectorIdx(SampleIdx)].Init(AssetIdx, bBlockTransition, CostAddend);
+	}
+
+	// Generate pose features data
+	if (Schema.SchemaCardinality > 0)
+	{
+		for (const TObjectPtr<UPoseSearchFeatureChannel>& ChannelPtr : Schema.GetChannels())
+		{
+			ChannelPtr->IndexAsset(*this);
 		}
 	}
 
-	// Generate pose metadata
-	for (int32 SampleIdx = IndexingContext.BeginSampleIdx; SampleIdx != IndexingContext.EndSampleIdx; ++SampleIdx)
-	{
-		const int32 PoseIdx = SampleIdx - Output.FirstIndexedSample;
-		FPoseSearchPoseMetadata& OutputPoseMetadata = Output.PoseMetadata[PoseIdx];
-		OutputPoseMetadata = GetMetadata(SampleIdx);
-	}
+	// Computing stats
+	ComputeStats();
+}
 
-	return true;
+void FAssetIndexer::ComputeStats()
+{
+	Stats = FStats();
+
+	check(SamplingContext.FiniteDelta > UE_KINDA_SMALL_NUMBER);
+
+	for (int32 SampleIdx = GetBeginSampleIdx(); SampleIdx != GetEndSampleIdx(); ++SampleIdx)
+	{
+		const float SampleTime = FMath::Min(CalculateSampleTime(SampleIdx), AssetSampler.GetPlayLength());
+
+		bool AnyClamped = false;
+		const FTransform TrajTransformsPast = GetTransform(SampleTime - SamplingContext.FiniteDelta, AnyClamped);
+		if (!AnyClamped)
+		{
+			const FTransform TrajTransformsPresent = GetTransform(SampleTime, AnyClamped);
+			if (!AnyClamped)
+			{
+				const FTransform TrajTransformsFuture = GetTransform(SampleTime + SamplingContext.FiniteDelta, AnyClamped);
+				if (!AnyClamped)
+				{
+					// if any transform is clamped we just skip the sample entirely
+					const FVector LinearVelocityPresent = (TrajTransformsPresent.GetTranslation() - TrajTransformsPast.GetTranslation()) / SamplingContext.FiniteDelta;
+					const FVector LinearVelocityFuture = (TrajTransformsFuture.GetTranslation() - TrajTransformsPresent.GetTranslation()) / SamplingContext.FiniteDelta;
+					const FVector LinearAcceleration = (LinearVelocityFuture - LinearVelocityPresent) / SamplingContext.FiniteDelta;
+
+					const float Speed = LinearVelocityPresent.Length();
+					const float Acceleration = LinearAcceleration.Length();
+
+					Stats.AccumulatedSpeed += Speed;
+					Stats.MaxSpeed = FMath::Max(Stats.MaxSpeed, Speed);
+
+					Stats.AccumulatedAcceleration += Acceleration;
+					Stats.MaxAcceleration = FMath::Max(Stats.MaxAcceleration, Acceleration);
+
+					++Stats.NumAccumulatedSamples;
+				}
+			}
+		}
+	}
 }
 
 FAssetIndexer::FSampleInfo FAssetIndexer::GetSampleInfo(float SampleTime) const
 {
 	FSampleInfo Sample;
 
-	check(IndexingContext.AssetSampler);
-
-	const float PlayLength = IndexingContext.AssetSampler->GetPlayLength();
-	const bool bCanWrap = IndexingContext.AssetSampler->IsLoopable();
+	const float PlayLength = AssetSampler.GetPlayLength();
+	const bool bCanWrap = AssetSampler.IsLoopable();
 
 	float MainRelativeTime = SampleTime;
 	if (SampleTime < 0.0f && bCanWrap)
@@ -157,205 +200,298 @@ FAssetIndexer::FSampleInfo FAssetIndexer::GetSampleInfo(float SampleTime) const
 
 	const FSamplingParam SamplingParam = WrapOrClampSamplingParam(bCanWrap, PlayLength, MainRelativeTime);
 
-	Sample.Clip = IndexingContext.AssetSampler;
-
 	if (FMath::Abs(SamplingParam.Extrapolation) > SMALL_NUMBER)
 	{
 		Sample.bClamped = true;
 		Sample.ClipTime = SamplingParam.WrappedParam + SamplingParam.Extrapolation;
-		const FTransform ClipRootMotion = Sample.Clip->ExtractRootTransform(Sample.ClipTime);
-		const float ClipDistance = Sample.Clip->ExtractRootDistance(Sample.ClipTime);
-
-		Sample.RootTransform = ClipRootMotion;
-		Sample.RootDistance = ClipDistance;
+		Sample.RootTransform = AssetSampler.ExtractRootTransform(Sample.ClipTime);
 	}
 	else
 	{
 		Sample.ClipTime = SamplingParam.WrappedParam;
-
-		const FTransform RootMotionLast = IndexingContext.AssetSampler->GetTotalRootTransform();
-		float RootDistanceLast = IndexingContext.AssetSampler->GetTotalRootDistance();
-
-		// Determine how to accumulate motion for every cycle of the anim. If the sample
-		// had to be clamped, this motion will end up not getting applied below.
-		// Also invert the accumulation direction if the requested sample was wrapped backwards.
-		FTransform RootMotionPerCycle = RootMotionLast;
-		float RootDistancePerCycle = RootDistanceLast;
-		if (SampleTime < 0.0f)
-		{
-			RootMotionPerCycle = RootMotionPerCycle.Inverse();
-			RootDistancePerCycle *= -1.f;
-		}
+		Sample.RootTransform = FTransform::Identity;
 
 		// Find the remaining motion deltas after wrapping
-		FTransform RootMotionRemainder = Sample.Clip->ExtractRootTransform(Sample.ClipTime);
-		float RootDistanceRemainder = Sample.Clip->ExtractRootDistance(Sample.ClipTime);
+		FTransform RootMotionRemainder = AssetSampler.ExtractRootTransform(Sample.ClipTime);
 
-		// Invert motion deltas if we wrapped backwards
-		if (SampleTime < 0.0f)
+		const bool bNegativeSampleTime = SampleTime < 0.f;
+		if (SamplingParam.NumCycles > 0 || bNegativeSampleTime)
 		{
-			RootMotionRemainder.SetToRelativeTransform(RootMotionLast);
-			RootDistanceRemainder = -(RootDistanceLast - RootDistanceRemainder);
-		}
+			const FTransform RootMotionLast = AssetSampler.GetTotalRootTransform();
 
-		Sample.RootTransform = FTransform::Identity;
-		Sample.RootDistance = 0.f;
+			// Determine how to accumulate motion for every cycle of the anim. If the sample
+			// had to be clamped, this motion will end up not getting applied below.
+			// Also invert the accumulation direction if the requested sample was wrapped backwards.
+			FTransform RootMotionPerCycle = RootMotionLast;
 
-		// Note if the sample was clamped, no motion will be applied here because NumCycles will be zero
-		int32 CyclesRemaining = SamplingParam.NumCycles;
-		while (CyclesRemaining--)
-		{
-			Sample.RootTransform = RootMotionPerCycle * Sample.RootTransform;
-			Sample.RootDistance += RootDistancePerCycle;
+			if (bNegativeSampleTime)
+			{
+				RootMotionPerCycle = RootMotionPerCycle.Inverse();
+			}
+			
+			// Invert motion deltas if we wrapped backwards
+			if (bNegativeSampleTime)
+			{
+				RootMotionRemainder.SetToRelativeTransform(RootMotionLast);
+			}
+
+			// Note if the sample was clamped, no motion will be applied here because NumCycles will be zero
+			int32 CyclesRemaining = SamplingParam.NumCycles;
+			while (CyclesRemaining--)
+			{
+				Sample.RootTransform = RootMotionPerCycle * Sample.RootTransform;
+			}
 		}
 
 		Sample.RootTransform = RootMotionRemainder * Sample.RootTransform;
-		Sample.RootDistance += RootDistanceRemainder;
 	}
 
-	return Sample;
-}
-
-FAssetIndexer::FSampleInfo FAssetIndexer::GetSampleInfoRelative(float SampleTime, const FSampleInfo& Origin) const
-{
-	FSampleInfo Sample = GetSampleInfo(SampleTime);
-	Sample.RootTransform.SetToRelativeTransform(Origin.RootTransform);
-	Sample.RootDistance = Origin.RootDistance - Sample.RootDistance;
 	return Sample;
 }
 
 FTransform FAssetIndexer::MirrorTransform(const FTransform& Transform) const
 {
-	return IndexingContext.bMirrored ? IndexingContext.SamplingContext->MirrorTransform(Transform) : Transform;
+	return SearchIndexAsset.bMirrored ? SamplingContext.MirrorTransform(Transform) : Transform;
 }
 
-FPoseSearchPoseMetadata FAssetIndexer::GetMetadata(int32 SampleIdx) const
+FAssetIndexer::CachedEntry& FAssetIndexer::GetEntry(float SampleTime)
 {
-	const float SequenceLength = IndexingContext.AssetSampler->GetPlayLength();
-	const float SampleTime = FMath::Min(SampleIdx * IndexingContext.Schema->GetSamplingInterval(), SequenceLength);
+	using namespace UE::Anim;
 
-	FPoseSearchPoseMetadata Metadata;
-	Metadata.CostAddend = IndexingContext.Schema->BaseCostBias;
-	Metadata.ContinuingPoseCostAddend = IndexingContext.Schema->ContinuingPoseCostBias;
-
-	TArray<UAnimNotifyState_PoseSearchBase*> NotifyStates;
-	IndexingContext.AssetSampler->ExtractPoseSearchNotifyStates(SampleTime, NotifyStates);
-	for (const UAnimNotifyState_PoseSearchBase* PoseSearchNotify : NotifyStates)
-	{
-		if (PoseSearchNotify->GetClass()->IsChildOf<UAnimNotifyState_PoseSearchBlockTransition>())
-		{
-			EnumAddFlags(Metadata.Flags, EPoseSearchPoseFlags::BlockTransition);
-		}
-		else if (PoseSearchNotify->GetClass()->IsChildOf<UAnimNotifyState_PoseSearchModifyCost>())
-		{
-			const UAnimNotifyState_PoseSearchModifyCost* ModifyCostNotify =
-				Cast<const UAnimNotifyState_PoseSearchModifyCost>(PoseSearchNotify);
-			Metadata.CostAddend = ModifyCostNotify->CostAddend;
-		}
-		else if (PoseSearchNotify->GetClass()->IsChildOf<UAnimNotifyState_PoseSearchOverrideContinuingPoseCostBias>())
-		{
-			const UAnimNotifyState_PoseSearchOverrideContinuingPoseCostBias* ContinuingPoseCostBias =
-				Cast<const UAnimNotifyState_PoseSearchOverrideContinuingPoseCostBias>(PoseSearchNotify);
-			Metadata.ContinuingPoseCostAddend = ContinuingPoseCostBias->CostAddend;
-		}
-	}
-	return Metadata;
-}
-
-// returns the transform in character space for the bone indexed by Schema->BoneReferences[SchemaBoneIdx] 
-// at SampleTime-OriginTime seconds ahead (or behind) the pose at OriginTime
-FTransform FAssetIndexer::GetTransformAndCacheResults(float SampleTime, float OriginTime, int8 SchemaBoneIdx, bool& Clamped)
-{
-	// @todo: use an hashmap if we end up having too many entries
-	CachedEntry* Entry = CachedEntries.FindByPredicate([SampleTime, OriginTime](const FAssetIndexer::CachedEntry& Entry)
-		{
-			return Entry.SampleTime == SampleTime && Entry.OriginTime == OriginTime;
-		});
-
-	const FAssetSamplingContext* SamplingContext = IndexingContext.SamplingContext;
-
+	CachedEntry* Entry = CachedEntries.Find(SampleTime);
 	if (!Entry)
 	{
-		Entry = &CachedEntries[CachedEntries.AddDefaulted()];
-
+		Entry = &CachedEntries.Add(SampleTime);
 		Entry->SampleTime = SampleTime;
-		Entry->OriginTime = OriginTime;
 
 		if (!BoneContainer.IsValid())
 		{
 			UE_LOG(LogPoseSearch,
 				Warning,
-				TEXT("Invalid BoneContainer encountered in FAssetIndexer::GetTransformAndCacheResults. Asset: %s. Schema: %s. BoneContainerAsset: %s. NumBoneIndices: %d"),
-				*GetNameSafe(IndexingContext.AssetSampler->GetAsset()),
-				*GetNameSafe(IndexingContext.Schema),
+				TEXT("Invalid BoneContainer encountered in FAssetIndexer::GetEntry. Asset: %s. Schema: %s. BoneContainerAsset: %s. NumBoneIndices: %d"),
+				*GetNameSafe(AssetSampler.GetAsset()),
+				*GetNameSafe(&Schema),
 				*GetNameSafe(BoneContainer.GetAsset()),
 				BoneContainer.GetCompactPoseNumBones());
 		}
 
-		Entry->Pose.SetBoneContainer(&BoneContainer);
-		Entry->UnusedCurve.InitFrom(BoneContainer);
-
-		IAssetIndexer::FSampleInfo Origin = GetSampleInfo(OriginTime);
-		IAssetIndexer::FSampleInfo Sample = GetSampleInfoRelative(SampleTime, Origin);
-
+		const FAssetIndexer::FSampleInfo Sample = GetSampleInfo(SampleTime);
 		float CurrentTime = Sample.ClipTime;
-		float PreviousTime = CurrentTime - SamplingContext->FiniteDelta;
-		
-		const bool bLoopable = Sample.Clip->IsLoopable();
-		const float PlayLength = Sample.Clip->GetPlayLength();
+
+		const bool bLoopable = AssetSampler.IsLoopable();
+		const float PlayLength = AssetSampler.GetPlayLength();
+
 		if (!bLoopable)
 		{
-			// if not loopable we clamp the pose at time zero or PlayLength
-			if (PreviousTime < 0.f)
-			{
-				PreviousTime = 0.f;
-				CurrentTime = FMath::Min(SamplingContext->FiniteDelta, PlayLength);
-			}
-			else if (CurrentTime > PlayLength)
-			{
-				CurrentTime = PlayLength;
-				PreviousTime = FMath::Max(PlayLength - SamplingContext->FiniteDelta, 0.f);
-			}
+			CurrentTime = FMath::Clamp(CurrentTime, 0.f, PlayLength);
 		}
 
-		FDeltaTimeRecord DeltaTimeRecord;
-		DeltaTimeRecord.Set(PreviousTime, CurrentTime - PreviousTime);
-		// no need to extract root motion here, since we use the precalculated Sample.RootTransform as root transform for the Entry
-		FAnimExtractContext ExtractionCtx(static_cast<double>(CurrentTime), false, DeltaTimeRecord, bLoopable);
+		FCompactPose Pose;
+		Pose.SetBoneContainer(&BoneContainer);
+		AssetSampler.ExtractPose(CurrentTime, Pose);
+		Pose[FCompactPoseBoneIndex(RootBoneIndexType)].SetIdentity();
 
-		Sample.Clip->ExtractPose(ExtractionCtx, Entry->AnimPoseData);
-
-		if (IndexingContext.bMirrored)
+		if (SearchIndexAsset.bMirrored && Schema.MirrorDataTable)
 		{
 			FAnimationRuntime::MirrorPose(
-				Entry->AnimPoseData.GetPose(),
-				IndexingContext.Schema->MirrorDataTable->MirrorAxis,
-				SamplingContext->CompactPoseMirrorBones,
-				SamplingContext->ComponentSpaceRefRotations
+				Pose,
+				Schema.MirrorDataTable->MirrorAxis,
+				SamplingContext.CompactPoseMirrorBones,
+				SamplingContext.ComponentSpaceRefRotations
 			);
 			// Note curves and attributes are not used during the indexing process and therefore don't need to be mirrored
 		}
 
-		Entry->ComponentSpacePose.InitPose(Entry->Pose);
+		Entry->ComponentSpacePose.InitPose(MoveTemp(Pose));
 		Entry->RootTransform = Sample.RootTransform;
-		Entry->Clamped = Sample.bClamped;
+		Entry->bClamped = Sample.bClamped;
 	}
 
-	FTransform BoneTransform;
-	const FBoneReference& BoneReference = IndexingContext.Schema->BoneReferences[SchemaBoneIdx];
-	if (BoneReference.HasValidSetup())
+	return *Entry;
+}
+
+// returns the transform in component space for the bone indexed by Schema->BoneReferences[SchemaBoneIdx] at SampleTime seconds
+FTransform FAssetIndexer::GetComponentSpaceTransform(float SampleTime, bool& bClamped, int8 SchemaBoneIdx)
+{
+	CachedEntry& Entry = GetEntry(SampleTime);
+	bClamped = Entry.bClamped;
+
+	if (!Schema.IsRootBone(SchemaBoneIdx))
 	{
-		FCompactPoseBoneIndex CompactBoneIndex = BoneContainer.MakeCompactPoseIndex(FMeshPoseBoneIndex(BoneReference.BoneIndex));
-		BoneTransform = Entry->ComponentSpacePose.GetComponentSpaceTransform(CompactBoneIndex) * MirrorTransform(Entry->RootTransform);
+		return CalculateComponentSpaceTransform(Entry, SchemaBoneIdx);
+	}
+
+	return FTransform::Identity;
+}
+
+// returns the transform in animation space for the bone indexed by Schema->BoneReferences[SchemaBoneIdx] at SampleTime seconds
+FTransform FAssetIndexer::GetTransform(float SampleTime, bool& bClamped, int8 SchemaBoneIdx)
+{
+	CachedEntry& Entry = GetEntry(SampleTime);
+	bClamped = Entry.bClamped;
+
+	const FTransform MirroredRootTransform = MirrorTransform(Entry.RootTransform);
+	if (!Schema.IsRootBone(SchemaBoneIdx))
+	{
+		return CalculateComponentSpaceTransform(Entry, SchemaBoneIdx) * MirroredRootTransform;
+	}
+
+	return MirroredRootTransform;
+}
+
+FTransform FAssetIndexer::CalculateComponentSpaceTransform(FAssetIndexer::CachedEntry& Entry, int8 SchemaBoneIdx)
+{
+	const FBoneReference& BoneReference = Schema.BoneReferences[SchemaBoneIdx];
+	const FCompactPoseBoneIndex CompactBoneIndex = BoneContainer.MakeCompactPoseIndex(FMeshPoseBoneIndex(BoneReference.BoneIndex));
+	return Entry.ComponentSpacePose.GetComponentSpaceTransform(CompactBoneIndex);
+}
+
+float FAssetIndexer::CalculateSampleTime(int32 SampleIdx) const
+{
+	return SampleIdx / float(Schema.SampleRate);
+}
+
+FQuat FAssetIndexer::GetSampleRotation(float SampleTimeOffset, int32 SampleIdx, int8 SchemaSampleBoneIdx, int8 SchemaOriginBoneIdx, EPermutationTimeType PermutationTimeType)
+{
+	float PermutationSampleTimeOffset = 0.f;
+	float PermutationOriginTimeOffset = 0.f;
+	UPoseSearchFeatureChannel::GetPermutationTimeOffsets(PermutationTimeType, CalculatePermutationTimeOffset(), PermutationSampleTimeOffset, PermutationOriginTimeOffset);
+
+	const float Time = CalculateSampleTime(SampleIdx);
+	const float SampleTime = Time + SampleTimeOffset + PermutationSampleTimeOffset;
+	const float OriginTime = Time + PermutationOriginTimeOffset;
+
+	// @todo: add support for SchemaSampleBoneIdx
+	if (!Schema.IsRootBone(SchemaOriginBoneIdx))
+	{
+		UE_LOG(LogPoseSearch,
+			Error,
+			TEXT("FAssetIndexer::GetSampleRotation: support for non root origin bones not implemented (bone: '%s', schema: '%s'"), 
+			*Schema.BoneReferences[SchemaOriginBoneIdx].BoneName.ToString(),
+			*GetNameSafe(&Schema));
+	}
+
+	bool bUnused;
+	if (SampleTime == OriginTime)
+	{
+		return GetComponentSpaceTransform(SampleTime, bUnused, SchemaSampleBoneIdx).GetRotation();
+	}
+
+	const FTransform RootBoneTransform = GetTransform(OriginTime, bUnused, RootSchemaBoneIdx);
+	FTransform BoneTransform = GetTransform(SampleTime, bUnused, SchemaSampleBoneIdx);
+	BoneTransform.SetToRelativeTransform(RootBoneTransform);
+	return BoneTransform.GetRotation();
+}
+
+FVector FAssetIndexer::GetSamplePosition(float SampleTimeOffset, int32 SampleIdx, int8 SchemaSampleBoneIdx, int8 SchemaOriginBoneIdx, EPermutationTimeType PermutationTimeType)
+{
+	float PermutationSampleTimeOffset = 0.f;
+	float PermutationOriginTimeOffset = 0.f;
+	UPoseSearchFeatureChannel::GetPermutationTimeOffsets(PermutationTimeType, CalculatePermutationTimeOffset(), PermutationSampleTimeOffset, PermutationOriginTimeOffset);
+
+	const float Time = CalculateSampleTime(SampleIdx);
+	const float SampleTime = Time + SampleTimeOffset + PermutationSampleTimeOffset;
+	const float OriginTime = Time + PermutationOriginTimeOffset;
+	
+	bool bUnused;
+	return GetSamplePositionInternal(SampleTime, OriginTime, bUnused, SchemaSampleBoneIdx, SchemaOriginBoneIdx);
+}
+
+FVector FAssetIndexer::GetSamplePositionInternal(float SampleTime, float OriginTime, bool& bClamped, int8 SchemaSampleBoneIdx, int8 SchemaOriginBoneIdx)
+{
+	if (SampleTime == OriginTime)
+	{
+		if (Schema.IsRootBone(SchemaOriginBoneIdx))
+		{
+			return GetComponentSpaceTransform(SampleTime, bClamped, SchemaSampleBoneIdx).GetTranslation();
+		}
+
+		bool bOriginClamped;
+		const FVector SampleBonePosition = GetComponentSpaceTransform(SampleTime, bClamped, SchemaSampleBoneIdx).GetTranslation();
+		const FVector OriginBonePosition = GetComponentSpaceTransform(OriginTime, bOriginClamped, SchemaOriginBoneIdx).GetTranslation();
+		bClamped |= bOriginClamped;
+		return SampleBonePosition - OriginBonePosition;
+	}
+
+	bool Unused;
+	const FTransform RootBoneTransform = GetTransform(OriginTime, Unused, RootSchemaBoneIdx);
+	const FTransform SampleBoneTransform = GetTransform(SampleTime, bClamped, SchemaSampleBoneIdx);
+	if (Schema.IsRootBone(SchemaOriginBoneIdx))
+	{
+		return RootBoneTransform.InverseTransformPosition(SampleBoneTransform.GetTranslation());
+	}
+
+	bool bOriginClamped;
+	const FTransform OriginBoneTransform = GetTransform(OriginTime, bOriginClamped, SchemaOriginBoneIdx);
+	bClamped |= bOriginClamped;
+	const FVector DeltaBoneTranslation = SampleBoneTransform.GetTranslation() - OriginBoneTransform.GetTranslation();
+	return RootBoneTransform.InverseTransformVector(DeltaBoneTranslation);
+}
+
+FVector FAssetIndexer::GetSampleVelocity(float SampleTimeOffset, int32 SampleIdx, int8 SchemaSampleBoneIdx, int8 SchemaOriginBoneIdx, bool bUseCharacterSpaceVelocities, EPermutationTimeType PermutationTimeType)
+{
+	float PermutationSampleTimeOffset = 0.f;
+	float PermutationOriginTimeOffset = 0.f;
+	UPoseSearchFeatureChannel::GetPermutationTimeOffsets(PermutationTimeType, CalculatePermutationTimeOffset(), PermutationSampleTimeOffset, PermutationOriginTimeOffset);
+
+	const float Time = CalculateSampleTime(SampleIdx);
+	const float SampleTime = Time + SampleTimeOffset + PermutationSampleTimeOffset;
+	const float OriginTime = Time + PermutationOriginTimeOffset;
+	const float FiniteDelta = SamplingContext.FiniteDelta;
+
+	bool bClampedPast, bClampedPresent;
+	const FVector BonePositionPast = GetSamplePositionInternal(SampleTime - FiniteDelta, bUseCharacterSpaceVelocities ? OriginTime - FiniteDelta : OriginTime, bClampedPast, SchemaSampleBoneIdx, SchemaOriginBoneIdx);
+	const FVector BonePositionPresent = GetSamplePositionInternal(SampleTime, OriginTime, bClampedPresent, SchemaSampleBoneIdx, SchemaOriginBoneIdx);
+
+	FVector LinearVelocity;
+	if (!bClampedPast)
+	{
+		LinearVelocity = (BonePositionPresent - BonePositionPast) / FiniteDelta;
 	}
 	else
 	{
-		BoneTransform = MirrorTransform(Entry->RootTransform);
+		bool Unused;
+		const FVector BonePositionFuture = GetSamplePositionInternal(SampleTime + FiniteDelta, bUseCharacterSpaceVelocities ? OriginTime + FiniteDelta : OriginTime, Unused, SchemaSampleBoneIdx, SchemaOriginBoneIdx);
+		LinearVelocity = (BonePositionFuture - BonePositionPresent) / FiniteDelta;
 	}
+	return LinearVelocity;
+}
 
-	Clamped = Entry->Clamped;
+int32 FAssetIndexer::GetBeginSampleIdx() const
+{
+	return SearchIndexAsset.GetBeginSampleIdx();
+}
 
-	return BoneTransform;
+int32 FAssetIndexer::GetEndSampleIdx() const
+{
+	return SearchIndexAsset.GetEndSampleIdx();
+}
+
+int32 FAssetIndexer::GetNumIndexedPoses() const
+{
+	return SearchIndexAsset.GetNumPoses();
+}
+
+int32 FAssetIndexer::GetVectorIdx(int32 SampleIdx) const
+{
+	return SampleIdx - GetBeginSampleIdx();
+}
+
+TArrayView<float> FAssetIndexer::GetPoseVector(int32 SampleIdx) const
+{
+	return MakeArrayView(&FeatureVectorTable[GetVectorIdx(SampleIdx) * Schema.SchemaCardinality], Schema.SchemaCardinality);
+}
+
+const UPoseSearchSchema* FAssetIndexer::GetSchema() const
+{
+	return &Schema;
+}
+
+float FAssetIndexer::CalculatePermutationTimeOffset() const
+{
+	check(Schema.PermutationsSampleRate > 0 && SearchIndexAsset.IsInitialized());
+	const float PermutationTimeOffset = Schema.PermutationsTimeOffset + SearchIndexAsset.PermutationIdx / float(Schema.PermutationsSampleRate);
+	return PermutationTimeOffset;
 }
 
 } // namespace UE::PoseSearch

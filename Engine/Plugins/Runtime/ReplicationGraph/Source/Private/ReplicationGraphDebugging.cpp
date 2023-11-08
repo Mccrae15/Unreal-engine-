@@ -40,12 +40,20 @@
 
 namespace RepGraphDebugging
 {
-	UReplicationGraph* FindReplicationGraphHelper()
+	UReplicationGraph* FindReplicationGraphHelper(const TArray<FString>& Args)
 	{
+		FName NetDriverName = NAME_GameNetDriver;
+
+		const FString* DriverStr = Args.FindByPredicate([](const FString& Str) { return Str.Contains(TEXT("driver=")); });
+		if (DriverStr)
+		{
+			FParse::Value(**DriverStr, TEXT("driver="), NetDriverName);
+		}
+
 		UReplicationGraph* Graph = nullptr;
 		for (TObjectIterator<UReplicationGraph> It; It; ++It)
 		{
-			if (It->NetDriver && It->NetDriver->GetNetMode() != NM_Client)
+			if (It->NetDriver && (NetDriverName == NAME_None || It->NetDriver->NetDriverName == NetDriverName) && It->NetDriver->GetNetMode() != NM_Client)
 			{
 				Graph = *It;
 				break;
@@ -404,8 +412,8 @@ void AReplicationGraphDebugActor::ServerCellInfo_Implementation()
 			return;
 		}
 
-		int32 CellX = FMath::Max<int32>(0, (Viewer.ViewLocation.X - GridNode->SpatialBias.X) / GridNode->CellSize);
-		int32 CellY = FMath::Max<int32>(0, (Viewer.ViewLocation.Y - GridNode->SpatialBias.Y) / GridNode->CellSize);
+		const int32 CellX = FMath::Max<int32>(0, UE::LWC::FloatToIntCastChecked<int32>((Viewer.ViewLocation.X - GridNode->SpatialBias.X) / GridNode->CellSize));
+		const int32 CellY = FMath::Max<int32>(0, UE::LWC::FloatToIntCastChecked<int32>((Viewer.ViewLocation.Y - GridNode->SpatialBias.Y) / GridNode->CellSize)); 
 
 		FVector CellLocation(GridNode->SpatialBias.X + (((float)(CellX)+0.5f) * GridNode->CellSize), GridNode->SpatialBias.Y + (((float)(CellY)+0.5f) * GridNode->CellSize), Viewer.ViewLocation.Z);
 
@@ -539,8 +547,14 @@ void AReplicationGraphDebugActor::ServerSetPeriodFrameForClass_Implementation(UC
 		return;
 	}
 
+	if (PeriodFrame < 0 || PeriodFrame > MAX_uint16)
+	{
+		UE_LOG(LogReplicationGraph, Display, TEXT("Invalid PeriodFrame"));
+		return;
+	}
+
 	FClassReplicationInfo& ClassInfo = ReplicationGraph->GlobalActorReplicationInfoMap.GetClassInfo(Class);
-	ClassInfo.ReplicationPeriodFrame = PeriodFrame;
+	ClassInfo.ReplicationPeriodFrame = static_cast<uint16>(PeriodFrame);
 	UE_LOG(LogReplicationGraph, Display, TEXT("Setting ReplicationPeriodFrame for class %s to %u"), *Class->GetName(), ClassInfo.ReplicationPeriodFrame);
 
 	for (TActorIterator<AActor> ActorIt(GetWorld(), Class); ActorIt; ++ActorIt)
@@ -548,14 +562,14 @@ void AReplicationGraphDebugActor::ServerSetPeriodFrameForClass_Implementation(UC
 		AActor* Actor = *ActorIt;
 		if (FGlobalActorReplicationInfo* ActorInfo = ReplicationGraph->GlobalActorReplicationInfoMap.Find(Actor))
 		{
-			ActorInfo->Settings.ReplicationPeriodFrame = PeriodFrame;
+			ActorInfo->Settings.ReplicationPeriodFrame = static_cast<uint16>(PeriodFrame);
 			UE_LOG(LogReplicationGraph, Display, TEXT("Setting GlobalActorInfo ReplicationPeriodFrame for %s to %u"), *Actor->GetName(), ActorInfo->Settings.ReplicationPeriodFrame);
 		}
 
 
 		if (FConnectionReplicationActorInfo* ConnectionActorInfo = ConnectionManager->ActorInfoMap.Find(Actor))
 		{
-			ConnectionActorInfo->ReplicationPeriodFrame = PeriodFrame;
+			ConnectionActorInfo->ReplicationPeriodFrame = static_cast<uint16>(PeriodFrame);
 			UE_LOG(LogReplicationGraph, Display, TEXT("Setting Connection ReplicationPeriodFrame for %s to %u"), *Actor->GetName(), ConnectionActorInfo->ReplicationPeriodFrame);
 		}
 	}
@@ -585,7 +599,7 @@ FAutoConsoleCommandWithWorldAndArgs NetRepGraphSetPeriodFrame(TEXT("Net.RepGraph
 
 		for (TActorIterator<AReplicationGraphDebugActor> It(World); It; ++It)
 		{
-			It->ServerSetPeriodFrameForClass(Class, Distance);
+			It->ServerSetPeriodFrameForClass(Class, UE::LWC::FloatToIntCastChecked<int32>(Distance));
 		}
 	})
 );
@@ -879,16 +893,7 @@ FAutoConsoleCommand RepDriverStarvListCmd(TEXT("Net.RepGraph.StarvedList"), TEXT
 // --------------------------------------------------------------------------------------------------------------------------------------------
 void LogGraphHelper(FOutputDevice& Ar, const TArray< FString >& Args)
 {
-	UReplicationGraph* Graph = nullptr;
-	for (TObjectIterator<UReplicationGraph> It; It; ++It)
-	{
-		if (It->NetDriver && It->NetDriver->GetNetMode() != NM_Client)
-		{
-			Graph = *It;
-			break;
-		}
-	}
-
+	UReplicationGraph* Graph = RepGraphDebugging::FindReplicationGraphHelper(Args);
 	if (!Graph)
 	{
 		return;
@@ -1043,6 +1048,19 @@ void UReplicationGraph::CollectRepListStats(FActorRepListStatCollector& StatColl
 	}
 }
 
+void UReplicationGraph::VerifyActorReferences()
+{
+	UE_LOG(LogReplicationGraph, Verbose, TEXT("UReplicationGraph::VerifyActorReferences - %s"),
+		*GetName());
+
+	VerifyActorReferencesInternal();
+
+	for (const TObjectPtr<UReplicationGraphNode>& Node : GlobalGraphNodes)
+	{
+		Node->VerifyActorReferences();
+	}
+}
+
 #if DO_ENABLE_REPGRAPH_DEBUG_ACTOR
 AReplicationGraphDebugActor* UReplicationGraph::CreateDebugActor() const
 {
@@ -1059,6 +1077,27 @@ void UReplicationGraphNode::GetAllActorsInNode_Debugging(TArray<FActorRepListTyp
 			ChildNode->GetAllActorsInNode_Debugging(OutArray);
 		}
 	}
+}
+
+void UReplicationGraphNode::VerifyActorReferences()
+{
+	VerifyActorReferencesInternal();
+
+	for (const TObjectPtr<UReplicationGraphNode>& Node : AllChildNodes)
+	{
+		Node->VerifyActorReferencesInternal();
+	}
+}
+
+bool UReplicationGraphNode::VerifyActorReference(const FActorRepListType& Actor) const
+{
+	const bool bIsValid = IsValid(Actor);
+	UE_CLOG(!bIsValid, LogReplicationGraph, Error,
+		TEXT("Invalid Actor %s (%s) is still referenced by %s"),
+		*GetNameSafe(Actor),
+		*GetNameSafe(Actor ? Actor->GetClass() : nullptr),
+		*GetName());
+	return bIsValid;
 }
 
 void UReplicationGraphNode::LogNode(FReplicationGraphDebugInfo& DebugInfo, const FString& NodeName) const
@@ -1129,6 +1168,66 @@ void LogActorRepList(FReplicationGraphDebugInfo& DebugInfo, FString Prefix, cons
 	DebugInfo.Log(ActorListStr);
 }
 
+void UReplicationGraphNode_GridSpatialization2D::LogNode(FReplicationGraphDebugInfo& DebugInfo, const FString& NodeName) const
+{
+	DebugInfo.Log(NodeName);
+
+	DebugInfo.PushIndent();
+	
+	FString DynamicActorsHeader = FString::Printf(TEXT("Tracking %d dynamic actors:"), DynamicSpatializedActors.Num());
+	DebugInfo.Log(DynamicActorsHeader);	
+	
+	if (DebugInfo.Flags == FReplicationGraphDebugInfo::ShowActors)
+	{
+		FString ActorList; 
+		for (auto& MapIt : DynamicSpatializedActors)
+		{
+			ActorList += GetActorRepListTypeDebugString(MapIt.Key);
+			ActorList += TEXT(" ");
+		}
+
+		DebugInfo.Log(ActorList);
+	}
+	DebugInfo.PopIndent();
+
+	DebugInfo.PushIndent();
+	for (const UReplicationGraphNode* ChildNode : AllChildNodes)
+	{
+		if (DebugInfo.bShowEmptyNodes == false)
+		{
+			TArray<FActorRepListType> TempArray;
+			ChildNode->GetAllActorsInNode_Debugging(TempArray);
+			if (TempArray.Num() == 0)
+			{
+				continue;
+			}
+		}
+
+		ChildNode->LogNode(DebugInfo, ChildNode->GetDebugString());
+	}
+	DebugInfo.PopIndent();
+}
+
+void UReplicationGraphNode_GridSpatialization2D::VerifyActorReferencesInternal()
+{
+	Super::VerifyActorReferencesInternal();
+
+	for (const auto& Pair : DynamicSpatializedActors)
+	{
+		VerifyActorReference(Pair.Key);
+	}
+
+	for (const auto& Pair : StaticSpatializedActors)
+	{
+		VerifyActorReference(Pair.Key);
+	}
+
+	for (const FPendingStaticActors& Item : PendingStaticSpatializedActors)
+	{
+		VerifyActorReference(Item.Actor);
+	}
+}
+
 void UReplicationGraphNode_GridCell::LogNode(FReplicationGraphDebugInfo& DebugInfo, const FString& NodeName) const
 {
 	DebugInfo.Log(NodeName);
@@ -1157,6 +1256,16 @@ void UReplicationGraphNode_TearOff_ForConnection::LogNode(FReplicationGraphDebug
 	DebugInfo.PushIndent();
 	LogActorRepList(DebugInfo, TEXT("TearOff"), ReplicationActorList);
 	DebugInfo.PopIndent();
+}
+
+void UReplicationGraphNode_TearOff_ForConnection::VerifyActorReferencesInternal()
+{
+	Super::VerifyActorReferencesInternal();
+
+	for (const FActorRepListType& Actor : ReplicationActorList)
+	{
+		VerifyActorReference(Actor);
+	}
 }
 
 void UReplicationGraphNode_TearOff_ForConnection::OnCollectActorRepListStats(FActorRepListStatCollector& StatsCollector) const
@@ -1258,7 +1367,7 @@ TFunction<void()> LogPrioritizedListHelper(FOutputDevice& Ar, const TArray< FStr
 		}
 	};
 
-	UReplicationGraph* Graph = RepGraphDebugging::FindReplicationGraphHelper();
+	UReplicationGraph* Graph = RepGraphDebugging::FindReplicationGraphHelper(Args);
 	if (!Graph)
 	{
 		UE_LOG(LogReplicationGraph, Warning, TEXT("Could not find valid Replication Graph."));
@@ -1350,7 +1459,7 @@ FAutoConsoleCommand RepGraphPrintAllCmd(TEXT("Net.RepGraph.PrintAll"), TEXT(""),
 
 	Args = InArgs;
 
-	UReplicationGraph* Graph = RepGraphDebugging::FindReplicationGraphHelper();
+	UReplicationGraph* Graph = RepGraphDebugging::FindReplicationGraphHelper(Args);
 	if (!Graph)
 	{
 		UE_LOG(LogReplicationGraph, Warning, TEXT("Could not find valid Replication Graph."));
@@ -1405,7 +1514,7 @@ FAutoConsoleCommand RepGraphPrintAllCmd(TEXT("Net.RepGraph.PrintAll"), TEXT(""),
 
 FAutoConsoleCommand RepDriverListsStatsCmd(TEXT("Net.RepGraph.Lists.Stats"), TEXT(""), FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray< FString >& Args)
 {
-	UReplicationGraph* Graph = RepGraphDebugging::FindReplicationGraphHelper();
+	UReplicationGraph* Graph = RepGraphDebugging::FindReplicationGraphHelper(Args);
 	if (!Graph)
 	{
 		UE_LOG(LogReplicationGraph, Warning, TEXT("Could not find valid Replication Graph."));

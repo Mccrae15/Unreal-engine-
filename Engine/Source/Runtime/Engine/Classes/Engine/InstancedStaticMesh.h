@@ -35,7 +35,6 @@
 class ULightComponent;
 
 extern TAutoConsoleVariable<float> CVarFoliageMinimumScreenSize;
-extern TAutoConsoleVariable<float> CVarFoliageLODDistanceScale;
 extern TAutoConsoleVariable<float> CVarRandomLODRange;
 extern TAutoConsoleVariable<int32> CVarMinLOD;
 
@@ -46,6 +45,17 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FInstancedStaticMeshVertexFactoryUniformSha
 	SHADER_PARAMETER_SRV(Buffer<float>, InstanceCustomDataBuffer)
 	SHADER_PARAMETER(int32, NumCustomDataFloats)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
+
+BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FInstancedStaticMeshVFLooseUniformShaderParameters, ENGINE_API)
+	SHADER_PARAMETER(FVector4f, InstancingViewZCompareZero)
+	SHADER_PARAMETER(FVector4f, InstancingViewZCompareOne)
+	SHADER_PARAMETER(FVector4f, InstancingViewZConstant)
+	SHADER_PARAMETER(FVector4f, InstancingTranslatedWorldViewOriginZero)
+	SHADER_PARAMETER(FVector4f, InstancingTranslatedWorldViewOriginOne)
+	SHADER_PARAMETER(FVector4f, InstancingFadeOutParams)
+END_GLOBAL_SHADER_PARAMETER_STRUCT()
+
+typedef TUniformBufferRef<FInstancedStaticMeshVFLooseUniformShaderParameters> FInstancedStaticMeshVFLooseUniformShaderParametersRef;
 
 // This must match the maximum a user could specify in the material (see 
 // FHLSLMaterialTranslator::TextureCoordinate), otherwise the material will attempt 
@@ -119,9 +129,9 @@ public:
 	}
 
 	// FRenderResource interface.
-	virtual void InitRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 	virtual void ReleaseRHI() override;
-	virtual void InitResource() override;
+	virtual void InitResource(FRHICommandListBase& RHICmdList) override;
 	virtual void ReleaseResource() override;
 	virtual FString GetFriendlyName() const override { return TEXT("Static-mesh instances"); }
 	SIZE_T GetResourceSize() const;
@@ -132,7 +142,8 @@ public:
 	 * Call to flush any pending GPU data copies, if bFlushToGPUPending is false it does nothing. Should be called by the Proxy on the render thread
 	 * for example in CreateRenderThreadResources().
 	 */
-	void FlushGPUUpload();
+	void FlushGPUUpload(FRHICommandListBase& RHICmdList);
+
 public:
 	/** The vertex data storage type */
 	TSharedPtr<FStaticMeshInstanceData, ESPMode::ThreadSafe> InstanceData;
@@ -209,7 +220,7 @@ private:
 	/** Delete existing resources */
 	void CleanUp();
 
-	void CreateVertexBuffer(FResourceArrayInterface* InResourceArray, EBufferUsageFlags InUsage, uint32 InStride, uint8 InFormat, FBufferRHIRef& OutVertexBufferRHI, FShaderResourceViewRHIRef& OutInstanceSRV);
+	void CreateVertexBuffer(FRHICommandListBase& RHICmdList, FResourceArrayInterface* InResourceArray, EBufferUsageFlags InUsage, uint32 InStride, uint8 InFormat, FBufferRHIRef& OutVertexBufferRHI, FShaderResourceViewRHIRef& OutInstanceSRV);
 	
 	/**  */
 	void UpdateFromCommandBuffer_RenderThread(FInstanceUpdateCmdBuffer& CmdBuffer);
@@ -226,6 +237,8 @@ struct FInstancingUserData
 
 	int32 StartCullDistance;
 	int32 EndCullDistance;
+
+	float LODDistanceScale;
 
 	int32 MinLOD;
 
@@ -257,7 +270,7 @@ struct FInstancedStaticMeshDataType
 /**
  * A vertex factory for instanced static meshes
  */
-struct ENGINE_API FInstancedStaticMeshVertexFactory : public FLocalVertexFactory
+struct FInstancedStaticMeshVertexFactory : public FLocalVertexFactory
 {
 	DECLARE_VERTEX_FACTORY_TYPE(FInstancedStaticMeshVertexFactory);
 public:
@@ -266,44 +279,44 @@ public:
 	{
 	}
 
-	struct FDataType : public FInstancedStaticMeshDataType, public FLocalVertexFactory::FDataType
-	{
-	};
-
 	/**
 	 * Should we cache the material's shadertype on this platform with this vertex factory? 
 	 */
-	static bool ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters);
+	static ENGINE_API bool ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters);
 
 	/**
 	 * Modify compile environment to enable instancing
 	 * @param OutEnvironment - shader compile environment to modify
 	 */
-	static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
+	static ENGINE_API void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
 
 	/**
 	 * Get vertex elements used when during PSO precaching materials using this vertex factory type
 	 */
-	static void GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements);
+	static ENGINE_API void GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements);
+	static ENGINE_API void GetVertexElements(ERHIFeatureLevel::Type FeatureLevel, EVertexInputStreamType InputStreamType, bool bSupportsManualVertexFetch, FDataType& Data, FInstancedStaticMeshDataType& InstanceData, FVertexDeclarationElementList& Elements);
 
 	/**
 	 * An implementation of the interface used by TSynchronizedResource to update the resource with new data from the game thread.
 	 */
-	void SetData(const FDataType& InData)
+	void SetData(const FDataType& InData, const FInstancedStaticMeshDataType* InInstanceData)
 	{
-		FLocalVertexFactory::Data = InData;
 		Data = InData;
-		UpdateRHI();
+		if (InInstanceData)
+		{
+			InstanceData = *InInstanceData;
+		}
+		UpdateRHI(FRenderResource::GetCommandList());
 	}
 
 	/**
 	 * Copy the data from another vertex factory
 	 * @param Other - factory to copy from
 	 */
-	void Copy(const FInstancedStaticMeshVertexFactory& Other);
+	ENGINE_API void Copy(const FInstancedStaticMeshVertexFactory& Other);
 
 	// FRenderResource interface.
-	virtual void InitRHI() override;
+	ENGINE_API virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 
 	/** Make sure we account for changes in the signature of GetStaticBatchElementVisibility() */
 	static CONSTEXPR uint32 NumBitsForVisibilityMask()
@@ -313,36 +326,38 @@ public:
 
 	inline FRHIShaderResourceView* GetInstanceOriginSRV() const
 	{
-		return Data.InstanceOriginSRV;
+		return InstanceData.InstanceOriginSRV;
 	}
 
 	inline FRHIShaderResourceView* GetInstanceTransformSRV() const
 	{
-		return Data.InstanceTransformSRV;
+		return InstanceData.InstanceTransformSRV;
 	}
 
 	inline FRHIShaderResourceView* GetInstanceLightmapSRV() const
 	{
-		return Data.InstanceLightmapSRV;
+		return InstanceData.InstanceLightmapSRV;
 	}
 
 	inline FRHIShaderResourceView* GetInstanceCustomDataSRV() const
 	{
-		return Data.InstanceCustomDataSRV;
+		return InstanceData.InstanceCustomDataSRV;
 	}
 
 	FRHIUniformBuffer* GetUniformBuffer() const
 	{
 		return UniformBuffer.GetReference();
 	}
+protected:
+	static ENGINE_API void GetVertexElements(ERHIFeatureLevel::Type FeatureLevel, EVertexInputStreamType InputStreamType, bool bSupportsManualVertexFetch, FDataType& Data, FInstancedStaticMeshDataType& InstanceData, FVertexDeclarationElementList& Elements, FVertexStreamList& Streams);
 
 private:
-	FDataType Data;
+	FInstancedStaticMeshDataType InstanceData;
 
 	TUniformBufferRef<FInstancedStaticMeshVertexFactoryUniformShaderParameters> UniformBuffer;
 };
 
-class ENGINE_API FInstancedStaticMeshVertexFactoryShaderParameters : public FLocalVertexFactoryShaderParametersBase
+class FInstancedStaticMeshVertexFactoryShaderParameters : public FLocalVertexFactoryShaderParametersBase
 {
 	DECLARE_TYPE_LAYOUT(FInstancedStaticMeshVertexFactoryShaderParameters, NonVirtual);
 public:
@@ -350,20 +365,14 @@ public:
 	{
 		FLocalVertexFactoryShaderParametersBase::Bind(ParameterMap);
 
-		InstancingFadeOutParamsParameter.Bind(ParameterMap, TEXT("InstancingFadeOutParams"));
-		InstancingViewZCompareZeroParameter.Bind(ParameterMap, TEXT("InstancingViewZCompareZero"));
-		InstancingViewZCompareOneParameter.Bind(ParameterMap, TEXT("InstancingViewZCompareOne"));
-		InstancingViewZConstantParameter.Bind(ParameterMap, TEXT("InstancingViewZConstant"));
 		InstancingOffsetParameter.Bind(ParameterMap, TEXT("InstancingOffset"));
-		InstancingWorldViewOriginZeroParameter.Bind(ParameterMap, TEXT("InstancingTranslatedWorldViewOriginZero"));
-		InstancingWorldViewOriginOneParameter.Bind(ParameterMap, TEXT("InstancingTranslatedWorldViewOriginOne"));
 		VertexFetch_InstanceOriginBufferParameter.Bind(ParameterMap, TEXT("VertexFetch_InstanceOriginBuffer"));
 		VertexFetch_InstanceTransformBufferParameter.Bind(ParameterMap, TEXT("VertexFetch_InstanceTransformBuffer"));
 		VertexFetch_InstanceLightmapBufferParameter.Bind(ParameterMap, TEXT("VertexFetch_InstanceLightmapBuffer"));
 		InstanceOffset.Bind(ParameterMap, TEXT("InstanceOffset"));
 	}
 
-	void GetElementShaderBindings(
+	ENGINE_API void GetElementShaderBindings(
 		const class FSceneInterface* Scene,
 		const FSceneView* View,
 		const FMeshMaterialShader* Shader,
@@ -376,15 +385,7 @@ public:
 		) const;
 
 private:
-	
-	LAYOUT_FIELD(FShaderParameter, InstancingFadeOutParamsParameter)
-	LAYOUT_FIELD(FShaderParameter, InstancingViewZCompareZeroParameter)
-	LAYOUT_FIELD(FShaderParameter, InstancingViewZCompareOneParameter)
-	LAYOUT_FIELD(FShaderParameter, InstancingViewZConstantParameter)
 	LAYOUT_FIELD(FShaderParameter, InstancingOffsetParameter);
-	LAYOUT_FIELD(FShaderParameter, InstancingWorldViewOriginZeroParameter)
-	LAYOUT_FIELD(FShaderParameter, InstancingWorldViewOriginOneParameter)
-
 	LAYOUT_FIELD(FShaderResourceParameter, VertexFetch_InstanceOriginBufferParameter)
 	LAYOUT_FIELD(FShaderResourceParameter, VertexFetch_InstanceTransformBufferParameter)
 	LAYOUT_FIELD(FShaderResourceParameter, VertexFetch_InstanceLightmapBufferParameter)
@@ -450,13 +451,13 @@ private:
 	FInstancedStaticMeshRenderData
 -----------------------------------------------------------------------------*/
 
-class ENGINE_API FInstancedStaticMeshRenderData
+class FInstancedStaticMeshRenderData
 {
 public:
 
-	FInstancedStaticMeshRenderData(UInstancedStaticMeshComponent* InComponent, ERHIFeatureLevel::Type InFeatureLevel);
+	ENGINE_API FInstancedStaticMeshRenderData(UInstancedStaticMeshComponent* InComponent, ERHIFeatureLevel::Type InFeatureLevel);
 
-	void ReleaseResources(FSceneInterface* Scene, const UStaticMesh* StaticMesh);
+	ENGINE_API void ReleaseResources(FSceneInterface* Scene, const UStaticMesh* StaticMesh);
 
 	/** Source component */
 	UInstancedStaticMeshComponent* Component;
@@ -476,7 +477,7 @@ public:
 	/** Feature level used when creating instance data */
 	ERHIFeatureLevel::Type FeatureLevel;
 
-	void BindBuffersToVertexFactories();
+	ENGINE_API void BindBuffersToVertexFactories();
 
 private:
 	void InitVertexFactories();
@@ -488,10 +489,10 @@ private:
 	FInstancedStaticMeshSceneProxy
 -----------------------------------------------------------------------------*/
 
-class ENGINE_API FInstancedStaticMeshSceneProxy : public FStaticMeshSceneProxy
+class FInstancedStaticMeshSceneProxy : public FStaticMeshSceneProxy
 {
 public:
-	SIZE_T GetTypeHash() const override;
+	ENGINE_API SIZE_T GetTypeHash() const override;
 
 	FInstancedStaticMeshSceneProxy(UInstancedStaticMeshComponent* InComponent, ERHIFeatureLevel::Type InFeatureLevel)
 	:	FStaticMeshSceneProxy(InComponent, true)
@@ -520,13 +521,13 @@ public:
 	}
 
 	// FPrimitiveSceneProxy interface.
-	virtual void CreateRenderThreadResources() override;
+	ENGINE_API virtual void CreateRenderThreadResources() override;
 
-	virtual void DestroyRenderThreadResources() override;
+	ENGINE_API virtual void DestroyRenderThreadResources() override;
 
-	virtual void OnTransformChanged() override;
+	ENGINE_API virtual void OnTransformChanged() override;
 
-	virtual void UpdateInstances_RenderThread(const FInstanceUpdateCmdBuffer& CmdBuffer, const FBoxSphereBounds& InBounds, const FBoxSphereBounds& InLocalBounds, const FBoxSphereBounds& InStaticMeshBounds) override;
+	ENGINE_API virtual void UpdateInstances_RenderThread(const FInstanceUpdateCmdBuffer& CmdBuffer, const FBoxSphereBounds& InBounds, const FBoxSphereBounds& InLocalBounds, const FBoxSphereBounds& InStaticMeshBounds) override;
 
 	virtual FPrimitiveViewRelevance GetViewRelevance(const FSceneView* View) const override
 	{
@@ -554,16 +555,16 @@ public:
 		return false;
 	}
 
-	virtual bool HasRayTracingRepresentation() const override;
+	ENGINE_API virtual bool HasRayTracingRepresentation() const override;
 
-	virtual void GetDynamicRayTracingInstances(struct FRayTracingMaterialGatheringContext& Context, TArray<FRayTracingInstance>& OutRayTracingInstances) final override;
+	ENGINE_API virtual void GetDynamicRayTracingInstances(struct FRayTracingMaterialGatheringContext& Context, TArray<FRayTracingInstance>& OutRayTracingInstances) final override;
 
-	void SetupRayTracingDynamicInstances(int32 NumDynamicInstances, int32 LOD);
+	ENGINE_API void SetupRayTracingDynamicInstances(int32 NumDynamicInstances, int32 LOD);
 
 #endif
 
-	virtual void GetLightRelevance(const FLightSceneProxy* LightSceneProxy, bool& bDynamic, bool& bRelevant, bool& bLightMapped, bool& bShadowMapped) const override;
-	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override;
+	ENGINE_API virtual void GetLightRelevance(const FLightSceneProxy* LightSceneProxy, bool& bDynamic, bool& bRelevant, bool& bLightMapped, bool& bShadowMapped) const override;
+	ENGINE_API virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override;
 
 	virtual int32 GetNumMeshBatches() const override
 	{
@@ -571,16 +572,16 @@ public:
 	}
 
 	/** Sets up a shadow FMeshBatch for a specific LOD. */
-	virtual bool GetShadowMeshElement(int32 LODIndex, int32 BatchIndex, uint8 InDepthPriorityGroup, FMeshBatch& OutMeshBatch, bool bDitheredLODTransition) const override;
+	ENGINE_API virtual bool GetShadowMeshElement(int32 LODIndex, int32 BatchIndex, uint8 InDepthPriorityGroup, FMeshBatch& OutMeshBatch, bool bDitheredLODTransition) const override;
 
 	/** Sets up a FMeshBatch for a specific LOD and element. */
-	virtual bool GetMeshElement(int32 LODIndex, int32 BatchIndex, int32 ElementIndex, uint8 InDepthPriorityGroup, bool bUseSelectionOutline, bool bAllowPreCulledIndices, FMeshBatch& OutMeshBatch) const override;
+	ENGINE_API virtual bool GetMeshElement(int32 LODIndex, int32 BatchIndex, int32 ElementIndex, uint8 InDepthPriorityGroup, bool bUseSelectionOutline, bool bAllowPreCulledIndices, FMeshBatch& OutMeshBatch) const override;
 
 	/** Sets up a wireframe FMeshBatch for a specific LOD. */
-	virtual bool GetWireframeMeshElement(int32 LODIndex, int32 BatchIndex, const FMaterialRenderProxy* WireframeRenderProxy, uint8 InDepthPriorityGroup, bool bAllowPreCulledIndices, FMeshBatch& OutMeshBatch) const override;
+	ENGINE_API virtual bool GetWireframeMeshElement(int32 LODIndex, int32 BatchIndex, const FMaterialRenderProxy* WireframeRenderProxy, uint8 InDepthPriorityGroup, bool bAllowPreCulledIndices, FMeshBatch& OutMeshBatch) const override;
 
-	virtual void GetDistanceFieldAtlasData(const FDistanceFieldVolumeData*& OutDistanceFieldData, float& SelfShadowBias) const override;
-	virtual void GetDistanceFieldInstanceData(TArray<FRenderTransform>& InstanceLocalToPrimitiveTransforms) const override;
+	ENGINE_API virtual void GetDistanceFieldAtlasData(const FDistanceFieldVolumeData*& OutDistanceFieldData, float& SelfShadowBias) const override;
+	ENGINE_API virtual void GetDistanceFieldInstanceData(TArray<FRenderTransform>& InstanceLocalToPrimitiveTransforms) const override;
 
 	/**
 	 * Creates the hit proxies are used when DrawDynamicElements is called.
@@ -588,7 +589,9 @@ public:
 	 * @param OutHitProxies - Hit proxies which are created should be added to this array.
 	 * @return The hit proxy to use by default for elements drawn by DrawDynamicElements.
 	 */
-	virtual HHitProxy* CreateHitProxies(UPrimitiveComponent* Component,TArray<TRefCountPtr<HHitProxy> >& OutHitProxies) override;
+	ENGINE_API virtual HHitProxy* CreateHitProxies(UPrimitiveComponent* Component,TArray<TRefCountPtr<HHitProxy> >& OutHitProxies) override;
+
+	ENGINE_API virtual bool GetInstanceDrawDistanceMinMax(FVector2f& OutDistanceMinMax) const override;
 
 	virtual bool IsDetailMesh() const override
 	{
@@ -596,6 +599,8 @@ public:
 	}
 
 protected:
+	ENGINE_API FInstancedStaticMeshVFLooseUniformShaderParametersRef CreateLooseUniformBuffer(const FSceneView* View, const FInstancingUserData* InstancingUserData, uint32 InstancedLODRange, uint32 InstancedLODIndex, EUniformBufferUsage UniformBufferUsage) const;
+
 	/** Cache of the StaticMesh asset, needed to release SpeedTree resources*/
 	UStaticMesh* StaticMesh;
 
@@ -627,13 +632,16 @@ protected:
 #endif
 
 	/** Common path for the Get*MeshElement functions */
-	void SetupInstancedMeshBatch(int32 LODIndex, int32 BatchIndex, FMeshBatch& OutMeshBatch) const;
+	ENGINE_API void SetupInstancedMeshBatch(int32 LODIndex, int32 BatchIndex, FMeshBatch& OutMeshBatch) const;
 
 	/** Untransformed bounds of the static mesh */
 	FBoxSphereBounds StaticMeshBounds;
 private:
 
-	void SetupProxy(UInstancedStaticMeshComponent* InComponent);
+	ENGINE_API void SetupProxy(UInstancedStaticMeshComponent* InComponent);
+
+	/** Stores a loose uniform buffer per LOD, used for static view relevance. */
+	TMap<uint32, FInstancedStaticMeshVFLooseUniformShaderParametersRef> LODLooseUniformBuffers;
 };
 
 #if WITH_EDITOR

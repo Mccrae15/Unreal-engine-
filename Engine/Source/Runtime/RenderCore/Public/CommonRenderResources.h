@@ -41,7 +41,7 @@ public:
 	/** Destructor. */
 	virtual ~FFilterVertexDeclaration() {}
 
-	virtual void InitRHI()
+	virtual void InitRHI(FRHICommandListBase& RHICmdList)
 	{
 		FVertexDeclarationElementList Elements;
 		uint16 Stride = sizeof(FFilterVertex);
@@ -56,7 +56,7 @@ public:
 	}
 };
 
-extern RENDERCORE_API TGlobalResource<FFilterVertexDeclaration> GFilterVertexDeclaration;
+extern RENDERCORE_API TGlobalResource<FFilterVertexDeclaration, FRenderResource::EInitPhase::Pre> GFilterVertexDeclaration;
 
 /** The empty vertex declaration resource type. */
 class FEmptyVertexDeclaration : public FRenderResource
@@ -67,7 +67,7 @@ public:
 	/** Destructor. */
 	virtual ~FEmptyVertexDeclaration() {}
 
-	virtual void InitRHI()
+	virtual void InitRHI(FRHICommandListBase& RHICmdList)
 	{
 		FVertexDeclarationElementList Elements;
 		VertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration(Elements);
@@ -79,56 +79,66 @@ public:
 	}
 };
 
-extern RENDERCORE_API TGlobalResource<FEmptyVertexDeclaration> GEmptyVertexDeclaration;
+extern RENDERCORE_API TGlobalResource<FEmptyVertexDeclaration, FRenderResource::EInitPhase::Pre> GEmptyVertexDeclaration;
 
 /**
- * Static vertex and index buffer used for 2D screen rectangles.
- */
+* Static vertex and index buffer used for 2D screen rectangles.
+*/
 class FScreenRectangleVertexBuffer : public FVertexBuffer
 {
 public:
 	/** Initialize the RHI for this rendering resource */
-	void InitRHI() override;
+	void InitRHI(FRHICommandListBase& RHICmdList) override;
 };
 
-extern RENDERCORE_API TGlobalResource<FScreenRectangleVertexBuffer> GScreenRectangleVertexBuffer;
+extern RENDERCORE_API TGlobalResource<FScreenRectangleVertexBuffer, FRenderResource::EInitPhase::Pre> GScreenRectangleVertexBuffer;
 
 
 class FScreenRectangleIndexBuffer : public FIndexBuffer
 {
 public:
 	/** Initialize the RHI for this rendering resource */
-	void InitRHI() override;
+	void InitRHI(FRHICommandListBase& RHICmdList) override;
 };
 
-extern RENDERCORE_API TGlobalResource<FScreenRectangleIndexBuffer> GScreenRectangleIndexBuffer;
+extern RENDERCORE_API TGlobalResource<FScreenRectangleIndexBuffer, FRenderResource::EInitPhase::Pre> GScreenRectangleIndexBuffer;
 
 
 /** Vertex shader to draw a screen quad that works on all platforms. Does not have any shader parameters.
  * The pixel shader should just use SV_Position. */
-class RENDERCORE_API FScreenVertexShaderVS : public FGlobalShader
+class FScreenVertexShaderVS : public FGlobalShader
 {
-	DECLARE_GLOBAL_SHADER(FScreenVertexShaderVS);
+	DECLARE_EXPORTED_GLOBAL_SHADER(FScreenVertexShaderVS, RENDERCORE_API);
 	SHADER_USE_PARAMETER_STRUCT(FScreenVertexShaderVS, FGlobalShader);
-
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) {
-		return true;
-	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 	END_SHADER_PARAMETER_STRUCT()
 };
 
-/** Pixel shader to copy pixels from src to dst performing a format change that works on all platforms. */
-class RENDERCORE_API FCopyRectPS : public FGlobalShader
+/** Vertex shader to draw an instanced quad covering all the viewports (SV_ViewportArrayIndex is output for each SV_InstanceID). Does not have any shader parameters.
+ * The pixel shader should just use SV_Position. */
+class FInstancedScreenVertexShaderVS : public FScreenVertexShaderVS
 {
-	DECLARE_GLOBAL_SHADER(FCopyRectPS);
-	SHADER_USE_PARAMETER_STRUCT(FCopyRectPS, FGlobalShader);
+	DECLARE_GLOBAL_SHADER(FInstancedScreenVertexShaderVS);
+	SHADER_USE_PARAMETER_STRUCT(FInstancedScreenVertexShaderVS, FScreenVertexShaderVS);
 
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) 
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters);
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
-		return true;
+		FScreenVertexShaderVS::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("SCREEN_VS_FOR_INSTANCED_VIEWS"), 1);
 	}
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		END_SHADER_PARAMETER_STRUCT()
+};
+
+/** Pixel shader to copy pixels from src to dst performing a format change that works on all platforms. */
+class FCopyRectPS : public FGlobalShader
+{
+	DECLARE_EXPORTED_GLOBAL_SHADER(FCopyRectPS, RENDERCORE_API);
+	SHADER_USE_PARAMETER_STRUCT(FCopyRectPS, FGlobalShader);
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, InputTexture)

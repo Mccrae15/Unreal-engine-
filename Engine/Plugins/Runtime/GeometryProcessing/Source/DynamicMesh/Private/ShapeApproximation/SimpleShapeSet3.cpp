@@ -379,23 +379,30 @@ void FSimpleShapeSet3d::RemoveContainedGeometry()
 	LevelSets = MoveTemp(NewSet.LevelSets);
 }
 
-
-static void TransformSphereShape(FSphereShape3d& SphereShape, const FTransform3d& Transform)
+template<typename TransformType>
+static void TransformSphereShape(FSphereShape3d& SphereShape, const TransformType& Transform)
 {
 	double RadiusScale = Transform.GetScale3D().Length() / FVector3d::One().Length();
 	SphereShape.Sphere.Center = Transform.TransformPosition(SphereShape.Sphere.Center);
 	SphereShape.Sphere.Radius *= RadiusScale;
 }
-static void TransformBoxShape(FBoxShape3d& BoxShape, const FTransform3d& Transform)
+template<typename TransformType>
+static void TransformBoxShape(FBoxShape3d& BoxShape, const TransformType& Transform)
 {
-	FVector3d CornerVec = BoxShape.Box.Frame.PointAt(BoxShape.Box.Extents) - BoxShape.Box.Frame.Origin;
 	BoxShape.Box.Frame.Transform(Transform);
-	CornerVec = Transform.TransformVector(CornerVec);
-	BoxShape.Box.Extents.X = CornerVec.Dot(BoxShape.Box.AxisX());
-	BoxShape.Box.Extents.Y = CornerVec.Dot(BoxShape.Box.AxisY());
-	BoxShape.Box.Extents.Z = CornerVec.Dot(BoxShape.Box.AxisZ());
+
+	// There isn't a perfect approach to transforming the extents in the presence of non-uniform scaling.
+	// One approach we've done in the past has been to transform the corner vector, but depending on that
+	// vector's orientation relative to scaling axis, the extents could grow/shrink in unexpected ways,
+	// or not change at all if direction happened to be orthogonal.
+	// The approach we now use is to apply the scaling in the reference frame of the box itself, because
+	// this what the editor does for box collision shapes, and it is helpful to have this work the same
+	// way here.
+	// For uniform scaling, it doesn't matter which approach we use.
+	BoxShape.Box.Extents *= Transform.GetScale3D();
 }
-static void TransformCapsuleShape(UE::Geometry::FCapsuleShape3d& CapsuleShape, const FTransform3d& Transform)
+template<typename TransformType>
+static void TransformCapsuleShape(UE::Geometry::FCapsuleShape3d& CapsuleShape, const TransformType& Transform)
 {
 	FVector3d P0 = Transform.TransformPosition(CapsuleShape.Capsule.Segment.StartPoint());
 	FVector3d P1 = Transform.TransformPosition(CapsuleShape.Capsule.Segment.EndPoint());
@@ -412,37 +419,35 @@ static void TransformCapsuleShape(UE::Geometry::FCapsuleShape3d& CapsuleShape, c
 	CapsuleShape.Capsule.Radius *= RadiusScale;
 }
 
-static void TransformLevelSetShape(UE::Geometry::FLevelSetShape3d& LevelSetShape, const FTransform3d& Transform)
+template<typename TransformType>
+static void TransformLevelSetShape(UE::Geometry::FLevelSetShape3d& LevelSetShape, const TransformType& Transform)
 {
 	const FTransform3d Sub(-0.5 * LevelSetShape.CellSize * FVector3d::One());
 	const FTransform3d Add(0.5 * LevelSetShape.CellSize * FVector3d::One());
-	LevelSetShape.GridTransform = LevelSetShape.GridTransform * Sub * Transform * Add;
+	LevelSetShape.GridTransform = LevelSetShape.GridTransform * Sub * (FTransform3d)Transform * Add;
 }
 
 
-
-static void TransformSphereShape(FSphereShape3d& SphereShape, const TArray<FTransform3d>& TransformSequence)
+template<typename TransformArrayType>
+static void TransformSphereShapeByArray(FSphereShape3d& SphereShape, const TransformArrayType& TransformSequence)
 {
-	for (const FTransform3d& XForm : TransformSequence)
+	for (const auto& XForm : TransformSequence)
 	{
 		SphereShape.Sphere.Center = XForm.TransformPosition(SphereShape.Sphere.Center);
 		double RadiusScale = XForm.GetScale3D().Length() / FVector3d::One().Length();
 		SphereShape.Sphere.Radius *= RadiusScale;
 	}
 }
-static void TransformBoxShape(FBoxShape3d& BoxShape, const TArray<FTransform3d>& TransformSequence)
+template<typename TransformArrayType>
+static void TransformBoxShapeByArray(FBoxShape3d& BoxShape, const TransformArrayType& TransformSequence)
 {
-	FVector3d CornerVec = BoxShape.Box.Frame.PointAt(BoxShape.Box.Extents) - BoxShape.Box.Frame.Origin;
-	for (const FTransform3d& XForm : TransformSequence)
+	for (const auto& XForm : TransformSequence)
 	{
-		BoxShape.Box.Frame.Transform(XForm);
-		CornerVec = XForm.TransformVector(CornerVec);
+		TransformBoxShape(BoxShape, XForm);
 	}
-	BoxShape.Box.Extents.X = CornerVec.Dot(BoxShape.Box.AxisX());
-	BoxShape.Box.Extents.Y = CornerVec.Dot(BoxShape.Box.AxisY());
-	BoxShape.Box.Extents.Z = CornerVec.Dot(BoxShape.Box.AxisZ());
 }
-static void TransformCapsuleShape(UE::Geometry::FCapsuleShape3d& CapsuleShape, const TArray<FTransform3d>& TransformSequence)
+template<typename TransformArrayType>
+static void TransformCapsuleShapeByArray(UE::Geometry::FCapsuleShape3d& CapsuleShape, const TransformArrayType& TransformSequence)
 {
 	FVector3d P0 = CapsuleShape.Capsule.Segment.StartPoint();
 	FVector3d P1 = CapsuleShape.Capsule.Segment.EndPoint();
@@ -452,7 +457,7 @@ static void TransformCapsuleShape(UE::Geometry::FCapsuleShape3d& CapsuleShape, c
 	FVector3d InitialSideVec = CapsuleFrame.PointAt(FVector3d(CurRadius, CurRadius, 0)) - CapsuleFrame.Origin;
 	FVector3d NewSideVec = InitialSideVec;
 
-	for (const FTransform3d& XForm : TransformSequence)
+	for (const auto& XForm : TransformSequence)
 	{
 		P0 = XForm.TransformPosition(P0);
 		P1 = XForm.TransformPosition(P1);
@@ -465,15 +470,15 @@ static void TransformCapsuleShape(UE::Geometry::FCapsuleShape3d& CapsuleShape, c
 	double RadiusScale = NewSideVec.Length() / InitialSideVec.Length();
 	CapsuleShape.Capsule.Radius *= RadiusScale;
 }
-
-static void TransformLevelSetShape(UE::Geometry::FLevelSetShape3d& LevelSetShape, const TArray<FTransform3d>& TransformSequence)
+template<typename TransformArrayType>
+static void TransformLevelSetShapeByArray(UE::Geometry::FLevelSetShape3d& LevelSetShape, const TransformArrayType& TransformSequence)
 {
 	const FTransform3d Sub(-0.5 * LevelSetShape.CellSize * FVector3d::One());
 	const FTransform3d Add(0.5 * LevelSetShape.CellSize * FVector3d::One());
 
 	LevelSetShape.GridTransform = LevelSetShape.GridTransform * Sub;
 
-	for (const FTransform3d& XForm : TransformSequence)
+	for (const auto& XForm : TransformSequence)
 	{
 		LevelSetShape.GridTransform = LevelSetShape.GridTransform * XForm;
 	}
@@ -554,19 +559,19 @@ void FSimpleShapeSet3d::Append(const FSimpleShapeSet3d& OtherShapeSet, const TAr
 {
 	for (FSphereShape3d SphereShape : OtherShapeSet.Spheres)
 	{
-		TransformSphereShape(SphereShape, TransformSequence);
+		TransformSphereShapeByArray(SphereShape, TransformSequence);
 		Spheres.Add(SphereShape);
 	}
 
 	for (FBoxShape3d BoxShape : OtherShapeSet.Boxes)
 	{
-		TransformBoxShape(BoxShape, TransformSequence);
+		TransformBoxShapeByArray(BoxShape, TransformSequence);
 		Boxes.Add(BoxShape);
 	}
 
 	for (UE::Geometry::FCapsuleShape3d CapsuleShape : OtherShapeSet.Capsules)
 	{
-		TransformCapsuleShape(CapsuleShape, TransformSequence);
+		TransformCapsuleShapeByArray(CapsuleShape, TransformSequence);
 		Capsules.Add(CapsuleShape);
 	}
 
@@ -584,9 +589,49 @@ void FSimpleShapeSet3d::Append(const FSimpleShapeSet3d& OtherShapeSet, const TAr
 	for (const FLevelSetShape3d& LevelSetShape : OtherShapeSet.LevelSets)
 	{
 		LevelSets.Add(LevelSetShape);
-		TransformLevelSetShape(LevelSets.Last(), TransformSequence);
+		TransformLevelSetShapeByArray(LevelSets.Last(), TransformSequence);
 	}
 }
+
+
+void FSimpleShapeSet3d::Append(const FSimpleShapeSet3d& OtherShapeSet, const FTransformSequence3d& TransformSequence)
+{
+	for (FSphereShape3d SphereShape : OtherShapeSet.Spheres)
+	{
+		TransformSphereShapeByArray(SphereShape, TransformSequence.GetTransforms());
+		Spheres.Add(SphereShape);
+	}
+
+	for (FBoxShape3d BoxShape : OtherShapeSet.Boxes)
+	{
+		TransformBoxShapeByArray(BoxShape, TransformSequence.GetTransforms());
+		Boxes.Add(BoxShape);
+	}
+
+	for (UE::Geometry::FCapsuleShape3d CapsuleShape : OtherShapeSet.Capsules)
+	{
+		TransformCapsuleShapeByArray(CapsuleShape, TransformSequence.GetTransforms());
+		Capsules.Add(CapsuleShape);
+	}
+
+	Convexes.Reserve(Convexes.Num() + OtherShapeSet.Convexes.Num());
+	for (const FConvexShape3d& ConvexShape : OtherShapeSet.Convexes)
+	{
+		Convexes.Add(ConvexShape);
+		for (const FTransformSRT3d& XForm : TransformSequence.GetTransforms())
+		{
+			MeshTransforms::ApplyTransform(Convexes.Last().Mesh, XForm, true);
+		}
+	}
+
+	LevelSets.Reserve(LevelSets.Num() + OtherShapeSet.LevelSets.Num());
+	for (const FLevelSetShape3d& LevelSetShape : OtherShapeSet.LevelSets)
+	{
+		LevelSets.Add(LevelSetShape);
+		TransformLevelSetShapeByArray(LevelSets.Last(), TransformSequence.GetTransforms());
+	}
+}
+
 
 
 

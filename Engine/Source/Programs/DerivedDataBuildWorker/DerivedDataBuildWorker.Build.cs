@@ -25,7 +25,6 @@ public abstract class DerivedDataBuildWorkerTarget : TargetRules
 		bCompileICU 					= false;
 		bWithLiveCoding					= false;
 		bBuildDeveloperTools			= false;
-		bUseMallocProfiler				= false;
 		bBuildWithEditorOnlyData		= true;
 		bCompileAgainstEngine			= false;
 		bCompileAgainstCoreUObject		= false;
@@ -53,9 +52,8 @@ public class DerivedDataBuildWorker : ModuleRules
 {
 	public DerivedDataBuildWorker(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PublicIncludePaths.Add("Runtime/Launch/Public");
-		PublicIncludePaths.Add("Developer/DerivedDataCache/Public");
-		PrivateIncludePaths.Add("Runtime/Launch/Private");		// For LaunchEngineLoop.cpp include
+		PublicIncludePathModuleNames.Add("Launch");
+		PublicIncludePathModuleNames.Add("DerivedDataCache");
 
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{

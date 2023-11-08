@@ -15,6 +15,7 @@
 #include "ContentBrowserDataUtils.h"
 #include "AssetTypeActions_Base.h"
 #include "ToolMenuSection.h"
+#include "SourceControlHelpers.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ContentBrowserFileDataSource)
 
@@ -532,6 +533,11 @@ void UContentBrowserFileDataSource::RemoveFileMount(const FName InFileMountPath)
 	}
 }
 
+bool UContentBrowserFileDataSource::HasFileMount(const FName InFileMountPath) const
+{
+	return RegisteredFileMounts.Contains(InFileMountPath);
+}
+
 void UContentBrowserFileDataSource::Tick(const float InDeltaTime)
 {
 	Super::Tick(InDeltaTime);
@@ -565,6 +571,8 @@ void UContentBrowserFileDataSource::BuildRootPathVirtualTree()
 
 void UContentBrowserFileDataSource::CompileFilter(const FName InPath, const FContentBrowserDataFilter& InFilter, FContentBrowserDataCompiledFilter& OutCompiledFilter)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UContentBrowserFileDataSource::CompileFilter);
+
 	const FContentBrowserDataObjectFilter* ObjectFilter = InFilter.ExtraFilters.FindFilter<FContentBrowserDataObjectFilter>();
 	const FContentBrowserDataPackageFilter* PackageFilter = InFilter.ExtraFilters.FindFilter<FContentBrowserDataPackageFilter>();
 	const FContentBrowserDataClassFilter* ClassFilter = InFilter.ExtraFilters.FindFilter<FContentBrowserDataClassFilter>();
@@ -1055,7 +1063,7 @@ bool UContentBrowserFileDataSource::PrioritizeSearchPath(const FName InPath)
 	return true;
 }
 
-bool UContentBrowserFileDataSource::IsFolderVisibleIfHidingEmpty(const FName InPath)
+bool UContentBrowserFileDataSource::IsFolderVisible(const FName InPath, const EContentBrowserIsFolderVisibleFlags InFlags)
 {
 	FName ConvertedPath;
 	const EContentBrowserPathType ConvertedPathType = TryConvertVirtualPath(InPath, ConvertedPath);
@@ -1080,6 +1088,7 @@ bool UContentBrowserFileDataSource::IsFolderVisibleIfHidingEmpty(const FName InP
 	const uint32 InternalPathHash = GetTypeHash(InternalPathStrView);
 
 	return AlwaysVisibleFolders.ContainsByHash(InternalPathHash, InternalPathStrView)
+		|| !EnumHasAnyFlags(InFlags, EContentBrowserIsFolderVisibleFlags::HideEmptyFolders)
 		|| !EmptyFolders.ContainsByHash(InternalPathHash, InternalPathStrView);
 }
 
@@ -2075,9 +2084,10 @@ FContentBrowserItemData UContentBrowserFileDataSource::OnFinalizeDuplicateFile(c
 		const FString Extension = FPaths::GetExtension(DuplicationContext->GetFilename(), /*bIncludeDot*/true);
 		const FString NewFilename = FPaths::GetPath(DuplicationContext->GetFilename()) / InProposedName + Extension;
 
-		// TODO: SCC integration?
 		if (IFileManager::Get().Copy(*NewFilename, *DuplicationContext->GetSourceFilename(), /*bReplace*/false) == COPY_OK)
 		{
+			USourceControlHelpers::MarkFileForAdd(NewFilename, /*bSilent*/true);
+
 			const FString NewInternalPath = FPaths::GetPath(DuplicationContext->GetInternalPath().ToString()) / InProposedName + Extension;
 			return CreateFileItem(*NewInternalPath, NewFilename);
 		}

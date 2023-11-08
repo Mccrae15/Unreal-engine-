@@ -7,18 +7,19 @@
 
 #include "MuR/SerialisationPrivate.h"
 #include "MuR/Operations.h"
+#include "MuR/ExtensionData.h"
+#include "MuR/ExtensionDataStreamer.h"
 #include "MuR/ImagePrivate.h"
 #include "MuR/MeshPrivate.h"
 #include "MuR/ParametersPrivate.h"
-#include "MuR/OpImageResize.h"
-#include "MuR/OpImageMipmap.h"
 
+#define MUTABLE_MAX_RUNTIME_PARAMETERS_PER_STATE	64
+#define MUTABLE_GROW_BORDER_VALUE					2
 
 namespace mu
 {
 
 	/** Used to debug and log. */
-	constexpr bool bForceSingleThread = false;
 	constexpr bool DebugRom = false;
 	constexpr bool DebugRomAll = false;
 	constexpr int32 DebugRomIndex = 44;
@@ -47,7 +48,7 @@ namespace mu
     inline void AppendCode(TArray<uint8>& code, const DATA& data )
     {
         int32 pos = code.Num();
-        code.SetNum( pos+sizeof(DATA) );
+        code.SetNum( pos+sizeof(DATA), false );
 		FMemory::Memcpy (&code[pos], &data, sizeof(DATA));
     }
 
@@ -56,11 +57,57 @@ namespace mu
 	struct FImageLODRange
 	{
 		int32 FirstIndex = 0;
-		int32 LODCount = 0;
 		uint16 ImageSizeX = 0;
 		uint16 ImageSizeY = 0;
+		uint16 _Padding = 0;
+		uint8 LODCount = 0;
+		EImageFormat ImageFormat = EImageFormat::IF_NONE;
 	};
 	MUTABLE_DEFINE_POD_SERIALISABLE(FImageLODRange);
+
+	struct FExtensionDataConstant
+	{
+		// This should always be valid, but if the state is Unloaded it won't be usable.
+		//
+		// Avoid storing references to this Data in Memory while the state is Unloaded.
+		ExtensionDataPtrConst Data;
+
+		enum class ELoadState : uint8
+		{
+			Invalid,
+			Unloaded,
+			FailedToLoad,
+			CurrentlyLoaded,
+			AlwaysLoaded
+		};
+
+		// This should be initialized to a valid load state when Data is set
+		ELoadState LoadState = ELoadState::Invalid;
+
+		inline void Serialise(OutputArchive& arch) const
+		{
+			arch << Data;
+		}
+		
+		inline void Unserialise(InputArchive& arch)
+		{
+			arch >> Data;
+
+			check(Data.get());
+			check(Data->Origin == ExtensionData::EOrigin::ConstantAlwaysLoaded
+				|| Data->Origin == ExtensionData::EOrigin::ConstantStreamed);
+
+			if (Data->Origin == ExtensionData::EOrigin::ConstantAlwaysLoaded)
+			{
+				LoadState = ELoadState::AlwaysLoaded;
+			}
+			else
+			{
+				// Streamed constants are assumed to be unloaded to start with
+				LoadState = ELoadState::Unloaded;
+			}
+		}
+	};
 
     //!
     struct FProgram
@@ -92,6 +139,7 @@ namespace mu
             //! parameters of this state, with a mask of relevant runtime parameters.
             //! The mask has a bit on for every runtime parameter in the m_runtimeParameters
             //! vector.
+			//! The uint64 is linked to MUTABLE_MAX_RUNTIME_PARAMETERS_PER_STATE
 			TArray< TPair<OP::ADDRESS,uint64> > m_dynamicResources;
 
             //!
@@ -114,16 +162,19 @@ namespace mu
                 arch >> m_dynamicResources;
             }
 
-            //! Returns the parameters mask
+            /** Returns the mask of parameters (from the runtime parameter list of this state) including the parameters that 
+			* are relevant for the dynamic resource at the given address.
+			*/
             uint64 IsDynamic( OP::ADDRESS at ) const
             {
                 uint64 res = 0;
 
-                for ( int32 i=0; !res && i<m_dynamicResources.Num(); ++i )
+                for ( int32 i=0; i<m_dynamicResources.Num(); ++i )
                 {
                     if ( m_dynamicResources[i].Key==at )
                     {
                         res = m_dynamicResources[i].Value;
+						break;
                     }
                 }
 
@@ -159,7 +210,7 @@ namespace mu
         //! Location in the m_byteCode of the beginning of each operation
 		TArray<uint32> m_opAddress;
 
-        //! Byte-coded representation of the program, using flexible-sized ops.
+        //! Byte-coded representation of the program, using variable-sized op data.
 		TArray<uint8> m_byteCode;
 
         //!
@@ -180,6 +231,9 @@ namespace mu
         //! Constant mesh data: the first is the index in m_roms for each mesh or -1 if it is always loaded.
 		TArray<TPair<int32, Ptr<const Mesh>>> m_constantMeshes;
 
+		//! Constant ExtensionData
+		TArray<FExtensionDataConstant> m_constantExtensionData;
+
         //! Constant string data
 		TArray<string> m_constantStrings;
 
@@ -192,13 +246,13 @@ namespace mu
         //! Constant matrices, usually used for transforms
 		TArray<mat4f> m_constantMatrices;
 
-		//! Constant projectors
+		//! Constant shapes
 		TArray<FShape> m_constantShapes;
 
         //! Constant curves
 		TArray<Curve> m_constantCurves;
 
-        //! Constant curves
+        //! Constant skeletons
 		TArray<Ptr<const Skeleton>> m_constantSkeletons;
 
 		//! Constant Physics Bodies
@@ -208,7 +262,7 @@ namespace mu
         //! The value stored here is the default value.
 		TArray<FParameterDesc> m_parameters;
 
-        //! Ranges for interation of the model operations.
+        //! Ranges for iteration of the model operations.
 		TArray<FRangeDesc> m_ranges;
 
         //! List of parameter lists. These are used in several places, like storing the
@@ -228,6 +282,7 @@ namespace mu
 			arch << m_constantImageLODIndices;
 			arch << m_constantImages;
 			arch << m_constantMeshes;
+			arch << m_constantExtensionData;
 			arch << m_constantStrings;
             arch << m_constantLayouts;
             arch << m_constantProjectors;
@@ -252,6 +307,7 @@ namespace mu
 			arch >> m_constantImageLODIndices;
 			arch >> m_constantImages;
 			arch >> m_constantMeshes;
+			arch >> m_constantExtensionData;
 			arch >> m_constantStrings;
             arch >> m_constantLayouts;
             arch >> m_constantProjectors;
@@ -287,27 +343,39 @@ namespace mu
 			return false;
 		}
 
-		//! Unload a rom resource
-		inline void UnloadRom(int32 RomIndex)
+		/** Unload a rom resource. Return the size of the unloaded rom.*/
+		inline int32 UnloadRom(int32 RomIndex)
 		{
+			int32 RomSize = 0;
+
 			if (DebugRom && (DebugRomAll||RomIndex == DebugRomIndex))
 				UE_LOG(LogMutableCore, Log, TEXT("Unloading rom %d."), RomIndex);
 
 			switch (m_roms[RomIndex].ResourceType)
 			{
 			case DT_IMAGE:
-				m_constantImageLODs[m_roms[RomIndex].ResourceIndex].Value = nullptr;
+				if (m_constantImageLODs[m_roms[RomIndex].ResourceIndex].Value)
+				{
+					RomSize = m_constantImageLODs[m_roms[RomIndex].ResourceIndex].Value->GetDataSize();
+					m_constantImageLODs[m_roms[RomIndex].ResourceIndex].Value = nullptr;
+				}
 				break;
 			case DT_MESH:
-				m_constantMeshes[m_roms[RomIndex].ResourceIndex].Value = nullptr;
+				if (m_constantMeshes[m_roms[RomIndex].ResourceIndex].Value)
+				{
+					RomSize = m_constantMeshes[m_roms[RomIndex].ResourceIndex].Value->GetDataSize();
+					m_constantMeshes[m_roms[RomIndex].ResourceIndex].Value = nullptr;
+				}
 				break;
 			default:
 				check(false);
 				break;
 			}
+
+			return RomSize;
 		}
 
-        //! Adds a constant data and returns its constant index.
+        //! Adds a constant image data and returns its constant index.
 		int32 AddConstant(Ptr<const Image> pImage, int32 MinTextureResidentMipCount)
 		{
 			check(pImage->GetSizeX()*pImage->GetSizeY()>0);
@@ -338,9 +406,11 @@ namespace mu
 			// TODO:
 			int32 CompressionQuality = 4;
 
+			FImageOperator ImOp = FImageOperator::GetDefault();
+
 			// TODO: Not efficient if we don't make mips (no need to clone base)
 			// TODO: If the image already has mips, we will be duplicating them...
-			Ptr<Image> pMip = pImage->ExtractMip(0);			
+			Ptr<Image> pMip = ImOp.ExtractMip(pImage.get(),0);
 			for ( int Mip=0; Mip<MipsToStore; ++Mip )
 			{
 				check(pMip->GetFormat() == pImage->GetFormat());
@@ -378,36 +448,56 @@ namespace mu
 					if (Mip > pImage->GetLODCount())
 					{
 						// Generate from the last mip.
-						pMip = pMip->ExtractMip(1);
+						pMip = ImOp.ExtractMip(pMip.get(), 1);
 					}
 					else
 					{
-						pMip = pImage->ExtractMip(Mip+1);
+						pMip = ImOp.ExtractMip(pImage.get(),Mip+1);
 					}
 					check(pMip);
 				}
 			}
 
-			int32 ImageIndex = m_constantImages.Add({ FirstLODIndexIndex, MipsToStore, pImage->GetSizeX(), pImage->GetSizeY() });
+			FImageLODRange LODRange;
+			LODRange.FirstIndex = FirstLODIndexIndex;
+			LODRange.LODCount = MipsToStore;
+			LODRange.ImageFormat = pImage->GetFormat();
+			LODRange.ImageSizeX = pImage->GetSizeX();
+			LODRange.ImageSizeY = pImage->GetSizeY();
+			int32 ImageIndex = m_constantImages.Add(LODRange);
 			return ImageIndex;
 		}
 
 
 		int32 AddConstant(Ptr<const Mesh> pMesh)
 		{
-			// Ensure unique
-			for (int32 i = 0; i < m_constantMeshes.Num(); ++i)
-			{
-				const Mesh* pCandidate = m_constantMeshes[i].Value.get();
-				if (*pCandidate == *pMesh)
-				{
-					return i;
-				}
-			}
-
+			// Uniques needs to be ensured outside
 			return m_constantMeshes.Add(TPair<int32, Ptr<const Mesh>>( -1, pMesh.get() ));
 		}
 
+		OP::ADDRESS AddConstant(Ptr<const ExtensionData> Data)
+		{
+			// Ensure unique
+			for (int32 Index = 0; Index < m_constantExtensionData.Num(); Index++)
+			{
+				const ExtensionData* Candidate = m_constantExtensionData[Index].Data.get();
+				if (*Candidate == *Data)
+				{
+					return Index;
+				}
+			}
+
+			FExtensionDataConstant& NewConstant = m_constantExtensionData.AddDefaulted_GetRef();
+			NewConstant.Data = Data;
+
+			// The data is assumed to be loaded during compilation
+			NewConstant.LoadState =
+				Data->Origin == ExtensionData::EOrigin::ConstantAlwaysLoaded
+				? FExtensionDataConstant::ELoadState::AlwaysLoaded
+				: FExtensionDataConstant::ELoadState::CurrentlyLoaded;
+
+			return m_constantExtensionData.Num() - 1;
+		}
 
 		OP::ADDRESS AddConstant( Ptr<const Layout> pLayout )
         {
@@ -545,7 +635,8 @@ namespace mu
 
 
         //! Get a constant image, assuming it is fully loaded. The image constant will be composed with lodaded mips if necessary.
-        void GetConstant( int32 ConstantIndex, ImagePtrConst& res, int32 MipsToSkip) const
+		template <typename CreateImageFunc>
+        void GetConstant( int32 ConstantIndex, ImagePtrConst& res, int32 MipsToSkip, const CreateImageFunc& CreateImage) const
         {
 			int32 ReallySkippedLODs = FMath::Min(m_constantImages[ConstantIndex].LODCount - 1, MipsToSkip);
 			int32 FirstLODIndexIndex = m_constantImages[ConstantIndex].FirstIndex;
@@ -569,7 +660,7 @@ namespace mu
 			{
 				MUTABLE_CPUPROFILER_SCOPE(ComposeConstantImage);
 
-				Ptr<Image> Result = new Image( CurrentMip->GetSizeX(), CurrentMip->GetSizeY(), FinalLODs, CurrentMip->GetFormat() );
+				Ptr<Image> Result = CreateImage( CurrentMip->GetSizeX(), CurrentMip->GetSizeY(), FinalLODs, CurrentMip->GetFormat(), EInitializationType::NotInitialized );
 				Result->m_flags = CurrentMip->m_flags;
 
 				// Some non-block pixel formats require separate memory size calculation
@@ -616,6 +707,15 @@ namespace mu
 			res = m_constantMeshes[ConstantIndex].Value;
 		}
 
+		void GetExtensionDataConstant(int32 ConstantIndex, ExtensionDataPtrConst& Result) const
+		{
+			const FExtensionDataConstant& Constant = m_constantExtensionData[ConstantIndex];
+
+			check(Constant.LoadState != FExtensionDataConstant::ELoadState::Unloaded);
+			check(Constant.Data.get());
+
+			Result = Constant.Data;
+		}
 
         inline OP_TYPE GetOpType( OP::ADDRESS at ) const
         {
@@ -664,9 +764,6 @@ namespace mu
         //!
         FProgram m_program;
 
-        //! Non-persistent, streamer-specific location information
-        string m_location;
-
         //!
         void Serialise( OutputArchive& arch ) const
         {
@@ -685,41 +782,6 @@ namespace mu
 
             arch >> m_program;
         }
-
-        //! Management of generated resources
-        //! @{
-
-        //! This is used to uniquely identify a generated resource like meshes or images.
-        struct RESOURCE_KEY
-        {
-            //! The id assigned to the generated resource.
-            uint32 m_id;
-
-            //! The last request operation for this resource
-            uint32 m_lastRequestId;
-
-            //! The address that generated this resource
-            OP::ADDRESS m_rootAddress;
-
-            //! An opaque blob with the values of the relevant parameters
-			TArray<uint8> m_parameterValuesBlob;
-        };
-
-        //! The last id generated for a resource
-        uint32 m_lastResourceKeyId = 0;
-
-        //! The last id generated for a resource request. This is used to check the
-        //! relevancy of the resources when flushing the cache
-        uint32 m_lastResourceResquestId = 0;
-
-        //! Cached ids for returned assets
-        //! This is non-persistent runtime data
-		TArray<RESOURCE_KEY> m_generatedResources;
-
-        //! Get a resource key for a given resource with given parameter values.
-        uint32 GetResourceKey( uint32 paramListIndex, OP::ADDRESS rootAt, const Parameters* pParams );
-
-        //! @}
 
     };
 

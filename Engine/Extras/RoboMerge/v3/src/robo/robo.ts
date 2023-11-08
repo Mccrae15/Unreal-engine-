@@ -269,7 +269,7 @@ async function _initWorkspacesForGraphBot(graphBot: GraphBot, existingWorkspaces
 
 		// see if we already have this workspace
 		const clientSpec = existingWorkspaces.get(ws)
-		if (clientSpec) {
+		if (clientSpec && clientSpec.Stream === branch.stream) {
 			if (clientSpec.IsUnloaded) {
 				reloadedWorkspaces.push(robo.p4.reloadWorkspace(ws))
 			}
@@ -387,7 +387,8 @@ async function init(logger: ContextualLogger) {
 		const branchSpecsAbsPath = fs.realpathSync(args.branchSpecsDirectory)
 		const autoUpdaterConfig = {
 			rootPath: args.branchSpecsRootPath,
-			workspace: {directory: branchSpecsAbsPath, name: args.branchSpecsWorkspace}
+			workspace: {directory: branchSpecsAbsPath, name: args.branchSpecsWorkspace},
+			devMode: args.devMode
 		}
 
 		// Ensure we have a workspace for branch specs

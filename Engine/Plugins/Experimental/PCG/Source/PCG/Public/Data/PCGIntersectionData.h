@@ -9,8 +9,8 @@
 UENUM()
 enum class EPCGIntersectionDensityFunction : uint8
 {
-	Multiply,
-	Minimum
+	Multiply UMETA(ToolTip="Multiplies the density values and results in the product."),
+	Minimum UMETA(ToolTip="Chooses the minimum of the density values.")
 };
 
 /**
@@ -46,7 +46,6 @@ public:
 	virtual FBox GetStrictBounds() const override;
 	virtual bool SamplePoint(const FTransform& Transform, const FBox& Bounds, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const override;
 	virtual bool HasNonTrivialTransform() const override;
-	virtual const UPCGSpatialData* FindShapeFromNetwork(const int InDimension) const override;
 	virtual const UPCGSpatialData* FindFirstConcreteShapeFromNetwork() const override;
 
 protected:

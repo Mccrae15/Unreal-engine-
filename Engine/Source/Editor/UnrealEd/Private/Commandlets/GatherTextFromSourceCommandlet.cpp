@@ -2,6 +2,7 @@
 
 #include "Commandlets/GatherTextFromSourceCommandlet.h"
 #include "HAL/FileManager.h"
+#include "Misc/AsciiSet.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/ExpressionParserTypes.h"
@@ -76,6 +77,14 @@ int32 UGatherTextFromSourceCommandlet::Main( const FString& Params )
 		return -1;
 	}
 
+	// GatheredSourceBasePath
+	FString GatheredSourceBasePath;
+	GetPathFromConfig(*SectionName, TEXT("GatheredSourceBasePath"), GatheredSourceBasePath, GatherTextConfigPath);
+	if (GatheredSourceBasePath.IsEmpty())
+	{
+		GatheredSourceBasePath = UGatherTextCommandletBase::GetProjectBasePath();
+	}
+
 	// SearchDirectoryPaths
 	TArray<FString> SearchDirectoryPaths;
 	GetPathArrayFromConfig(*SectionName, TEXT("SearchDirectoryPaths"), SearchDirectoryPaths, GatherTextConfigPath);
@@ -144,7 +153,10 @@ int32 UGatherTextFromSourceCommandlet::Main( const FString& Params )
 	TArray<FString> IncludePathFilters;
 	Algo::Transform(SearchDirectoryPaths, IncludePathFilters, [](const FString& SearchDirectoryPath)
 	{
-		return SearchDirectoryPath / TEXT("*");
+		const TCHAR LastChar = SearchDirectoryPath.Len() > 0 ? SearchDirectoryPath[SearchDirectoryPath.Len() - 1] : 0;
+		return (LastChar == TEXT('*') || LastChar == TEXT('?'))
+			? SearchDirectoryPath								// Already a wildcard
+			: FPaths::Combine(SearchDirectoryPath, TEXT("*"));	// Add a catch-all wildcard
 	});
 
 	FGatherTextDelegates::GetAdditionalGatherPaths.Broadcast(GatherManifestHelper->GetTargetName(), IncludePathFilters, ExcludePathFilters);
@@ -153,13 +165,24 @@ int32 UGatherTextFromSourceCommandlet::Main( const FString& Params )
 	TArray<FString> FilesToProcess;
 	{
 		TArray<FString> RootSourceFiles;
+		TSet<FString, FLocKeySetFuncs> ProcessedSearchDirectoryPaths;
 		for (const FString& IncludePathFilter : IncludePathFilters)
 		{
+			constexpr FAsciiSet Wildcards("*?");
+
 			FString SearchDirectoryPath = IncludePathFilter;
-			if (SearchDirectoryPath.EndsWith(TEXT("*"), ESearchCase::CaseSensitive))
+			if (const TCHAR* FirstWildcard = FAsciiSet::FindFirstOrEnd(*SearchDirectoryPath, Wildcards); *FirstWildcard != 0)
 			{
 				// Trim the wildcard from this search path
+				SearchDirectoryPath = SearchDirectoryPath.Left(UE_PTRDIFF_TO_INT32(FirstWildcard - *SearchDirectoryPath));
 				SearchDirectoryPath = FPaths::GetPath(MoveTemp(SearchDirectoryPath));
+			}
+
+			bool bAlreadyProcessed = false;
+			ProcessedSearchDirectoryPaths.Add(SearchDirectoryPath, &bAlreadyProcessed);
+			if (bAlreadyProcessed)
+			{
+				continue;
 			}
 
 			for (const FString& UniqueSourceFileSearchFilter : UniqueSourceFileSearchFilters)
@@ -184,7 +207,7 @@ int32 UGatherTextFromSourceCommandlet::Main( const FString& Params )
 	FilesToProcess.RemoveAll([&FuzzyPathMatcher](const FString& FoundFile)
 	{
 		// Filter out assets whose package file paths do not pass the "fuzzy path" filters.
-		if (FuzzyPathMatcher.TestPath(FoundFile) != FFuzzyPathMatcher::Included)
+		if (FuzzyPathMatcher.TestPath(FoundFile) != FFuzzyPathMatcher::EPathMatch::Included)
 		{
 			return true;
 		}
@@ -224,7 +247,7 @@ int32 UGatherTextFromSourceCommandlet::Main( const FString& Params )
 		FText OutError;
 		if (!GatherManifestHelper->AddDependency(ManifestDependency, &OutError))
 		{
-			UE_LOG(LogGatherTextFromSourceCommandlet, Error, TEXT("The GatherTextFromSource commandlet couldn't load the specified manifest dependency: '%'. %s"), *ManifestDependency, *OutError.ToString());
+			UE_LOG(LogGatherTextFromSourceCommandlet, Error, TEXT("The GatherTextFromSource commandlet couldn't load the specified manifest dependency: '%s'. %s"), *ManifestDependency, *OutError.ToString());
 			return -1;
 		}
 	}
@@ -292,11 +315,9 @@ int32 UGatherTextFromSourceCommandlet::Main( const FString& Params )
 	// Parse all source files for macros and add entries to SourceParsedEntries
 	for ( FString& SourceFile : FilesToProcess)
 	{
-		const FString& ProjectBasePath = UGatherTextCommandletBase::GetProjectBasePath();
-
 		ParseCtxt.Filename = SourceFile;
 		ParseCtxt.FileTypes = ParseCtxt.Filename.EndsWith(TEXT(".ini")) ? EGatherTextSourceFileTypes::Ini : EGatherTextSourceFileTypes::Cpp;
-		FPaths::MakePathRelativeTo(ParseCtxt.Filename, *ProjectBasePath);
+		FPaths::MakePathRelativeTo(ParseCtxt.Filename, *GatheredSourceBasePath);
 		ParseCtxt.LineNumber = 0;
 		ParseCtxt.FilePlatformName = GetSplitPlatformNameFromPath(ParseCtxt.Filename);
 		ParseCtxt.LineText.Reset();

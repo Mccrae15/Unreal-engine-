@@ -5,16 +5,19 @@
 #include "EntitySystem/MovieSceneEntityMutations.h"
 #include "EntitySystem/BuiltInComponentTypes.h"
 #include "EntitySystem/MovieSceneEntitySystemTypes.h"
+#include "EntitySystem/MovieSceneTaskScheduler.h"
 #include "Evaluation/PreAnimatedState/MovieScenePreAnimatedCaptureSource.h"
 #include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
 #include "IMovieScenePlayer.h"
 #include "MovieSceneSequence.h"
 #include "Algo/Reverse.h"
+#include "Algo/Sort.h"
 #include "ProfilingDebugging/CountersTrace.h"
 
 DECLARE_CYCLE_STAT(TEXT("Runner Flush"), 				MovieSceneEval_RunnerFlush, 				STATGROUP_MovieSceneEval);
 
 DECLARE_CYCLE_STAT(TEXT("Spawn Phase"),                 MovieSceneEval_SpawnPhase,              	STATGROUP_MovieSceneECS);
+DECLARE_CYCLE_STAT(TEXT("Post Spawn Event"),            MovieSceneEval_PostSpawnEvent,            	STATGROUP_MovieSceneECS);
 DECLARE_CYCLE_STAT(TEXT("Instantiation Phase"), 		MovieSceneEval_InstantiationPhase, 			STATGROUP_MovieSceneECS);
 DECLARE_CYCLE_STAT(TEXT("Instantiation Async Tasks"), 	MovieSceneEval_AsyncInstantiationTasks,		STATGROUP_MovieSceneECS);
 DECLARE_CYCLE_STAT(TEXT("Post Instantiation"), 			MovieSceneEval_PostInstantiation, 			STATGROUP_MovieSceneECS);
@@ -115,11 +118,17 @@ void FMovieSceneEntitySystemRunner::DetachFromLinker()
 {
 	if (ensureMsgf(!WeakLinker.IsExplicitlyNull(), TEXT("This runner is not attached to any linker")))
 	{
-		if (WeakLinker.IsValid())
+		// Abandon our previous linker. We need to do so even for a linker that is pending kill, otherwise
+		// we will later get a OnLinkerAbandon call, which _could_ come _after_ we've been re-attached to a
+		// new valid linker. This would in turn trip the ensure in OnLinkerAbandon that checks that we are
+		// abandoning the linker we have, instead of an unrelated linker.
+		if (UMovieSceneEntitySystemLinker* Linker = WeakLinker.Get(true))
 		{
-			OnLinkerAbandon(WeakLinker.Get());
+			OnLinkerAbandon(Linker);
 		}
 	}
+
+	WeakLinker.Reset();
 }
 
 UMovieSceneEntitySystemLinker* FMovieSceneEntitySystemRunner::GetLinker() const
@@ -613,6 +622,8 @@ bool FMovieSceneEntitySystemRunner::GameThread_UpdateSequenceInstances(UMovieSce
 				);
 				continue;
 			}
+
+			Instance.ConditionalRecompile(Linker);
 			Instance.DissectContext(Linker, Request.Context, Dissections);
 
 			if (Dissections.Num() != 0)
@@ -661,6 +672,8 @@ bool FMovieSceneEntitySystemRunner::GameThread_UpdateSequenceInstances(UMovieSce
 				MarkForUpdate(Request.Params.InstanceHandle, Request.Params.UpdateFlags);
 			}
 		}
+
+		Algo::SortBy(DissectedUpdates, &FDissectedUpdate::Order);
 	}
 	else
 	{
@@ -685,12 +698,22 @@ bool FMovieSceneEntitySystemRunner::GameThread_UpdateSequenceInstances(UMovieSce
 		}
 	}
 
+	AccumulatedUpdateFlags = ESequenceInstanceUpdateFlags::None;
+
 	// Let sequence instances do any pre-evaluation work.
 	for (const FQueuedUpdateParams& UpdatedInstance : CurrentInstances)
 	{
 		if (!EnumHasAnyFlags(UpdatedInstance.UpdateFlags, ERunnerUpdateFlags::Destroy))
 		{
-			InstanceRegistry->MutateInstance(UpdatedInstance.InstanceHandle).PreEvaluation(Linker);
+			FSequenceInstance& SequenceInstance = InstanceRegistry->MutateInstance(UpdatedInstance.InstanceHandle);
+
+			AccumulatedUpdateFlags |= SequenceInstance.GetUpdateFlags();
+			IMovieScenePlayer::SetIsEvaluatingFlag(SequenceInstance.GetPlayerIndex(), true);
+
+			if (EnumHasAnyFlags(SequenceInstance.GetUpdateFlags(), ESequenceInstanceUpdateFlags::NeedsPreEvaluation))
+			{
+				SequenceInstance.PreEvaluation(Linker);
+			}
 		}
 	}
 
@@ -711,6 +734,9 @@ bool FMovieSceneEntitySystemRunner::GameThread_UpdateSequenceInstances(UMovieSce
 			if (Update.OnFlushed.IsBound())
 			{
 				OnFlushedDelegates.Add(MoveTemp(Update.OnFlushed));
+
+				// If we have any on-flushed delegates then we have to do a full Post-Eval phase
+				AccumulatedUpdateFlags |= ESequenceInstanceUpdateFlags::NeedsPostEvaluation;
 			}
 
 			if (EnumHasAnyFlags(Update.UpdateFlags, ERunnerUpdateFlags::Destroy))
@@ -805,8 +831,10 @@ bool FMovieSceneEntitySystemRunner::GameThread_SpawnPhase(UMovieSceneEntitySyste
 		}
 	}
 
-
-	Linker->Events.PostSpawnEvent.Broadcast(Linker);
+	{
+		SCOPE_CYCLE_COUNTER(MovieSceneEval_PostSpawnEvent);
+		Linker->Events.PostSpawnEvent.Broadcast(Linker);
+	}
 
 	// --------------------------------------------------------------------------------------------------------------------------------------------
 	// Only run the instantiation phase if there is anything to instantiate. This must come after the spawn phase because new instantiations may
@@ -874,6 +902,11 @@ bool FMovieSceneEntitySystemRunner::GameThread_PostInstantiation(UMovieSceneEnti
 	Linker->AutoUnlinkIrrelevantSystems();
 
 	EntityManager.Compact();
+
+	if (FEntitySystemScheduler::IsCustomSchedulingEnabled())
+	{
+		Linker->SystemGraph.ReconstructTaskSchedule(&Linker->EntityManager);
+	}
 	return true;
 }
 
@@ -885,7 +918,6 @@ bool FMovieSceneEntitySystemRunner::GameThread_EvaluationPhase(UMovieSceneEntity
 
 	CurrentPhase = ESystemPhase::Evaluation;
 
-	FGraphEventArray AllTasks;
 	// --------------------------------------------------------------------------------------------------------------------------------------------
 	// Step 2: Run the evaluation phase. The entity manager is locked down for this phase, meaning no changes to entity-component structure is allowed
 	//         This vastly simplifies the concurrent handling of entity component allocations
@@ -893,6 +925,12 @@ bool FMovieSceneEntitySystemRunner::GameThread_EvaluationPhase(UMovieSceneEntity
 
 	checkf(!Linker->EntityManager.ContainsComponent(FBuiltInComponentTypes::Get()->Tags.NeedsUnlink), TEXT("Stale entities remain in the entity manager during evaluation - these should have been destroyed during the instantiation phase. Did it run?"));
 
+	if (FEntitySystemScheduler::IsCustomSchedulingEnabled())
+	{
+		Linker->SystemGraph.ScheduleTasks(&Linker->EntityManager);
+	}
+
+	FGraphEventArray AllTasks;
 	Linker->SystemGraph.ExecutePhase(ESystemPhase::Evaluation, Linker, AllTasks);
 
 	if (AllTasks.Num() != 0)
@@ -904,6 +942,14 @@ bool FMovieSceneEntitySystemRunner::GameThread_EvaluationPhase(UMovieSceneEntity
 	}
 
 	Linker->EntityManager.ReleaseLockDown();
+
+	if ( !EnumHasAnyFlags(AccumulatedUpdateFlags, ESequenceInstanceUpdateFlags::HasLegacyTemplates)
+		 && Linker->SystemGraph.NumInPhase(ESystemPhase::Finalization) == 0
+		 && !EventTriggers.IsBound())
+	{
+		// Skip Finalization if there's no need for it
+		SkipFlushState(ERunnerFlushState::Finalization | ERunnerFlushState::EventTriggers);
+	}
 
 	return true;
 }
@@ -1013,7 +1059,14 @@ void FMovieSceneEntitySystemRunner::GameThread_PostEvaluationPhase(UMovieSceneEn
 			if (InstanceRegistry->IsHandleValid(UpdateParams.InstanceHandle))
 			{
 				FSequenceInstance& Instance = InstanceRegistry->MutateInstance(UpdateParams.InstanceHandle);
-				Instance.PostEvaluation(Linker);
+
+				Instance.Ledger.UnlinkOneShots(Linker);
+				IMovieScenePlayer::SetIsEvaluatingFlag(Instance.GetPlayerIndex(), false);
+
+				if (EnumHasAnyFlags(Instance.GetUpdateFlags(), ESequenceInstanceUpdateFlags::NeedsPostEvaluation))
+				{
+					Instance.PostEvaluation(Linker);
+				}
 
 				if (EnumHasAnyFlags(UpdateParams.UpdateFlags, ERunnerUpdateFlags::Destroy))
 				{
@@ -1051,6 +1104,7 @@ void FMovieSceneEntitySystemRunner::GameThread_PostEvaluationPhase(UMovieSceneEn
 	if (TmpDissectedUpdates.Num() > 0)
 	{
 		DissectedUpdates.Append(TmpDissectedUpdates);
+		// Important: we do not sort the Dissected updates here to ensure that the previously populated entries are evaluated first
 	}
 
 	// If we have any pending updates, we need to run another evaluation.
@@ -1069,10 +1123,13 @@ void FMovieSceneEntitySystemRunner::MarkForUpdate(FInstanceHandle InInstanceHand
 
 void FMovieSceneEntitySystemRunner::OnLinkerAbandon(UMovieSceneEntitySystemLinker* InLinker)
 {
+	// WARNING: this can be called with a linker that is PendingKill
+
 	if (ensure(InLinker))
 	{
 		InLinker->Events.AbandonLinker.RemoveAll(this);
 	}
+
 	WeakLinker.Reset();
 }
 

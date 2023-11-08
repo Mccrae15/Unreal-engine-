@@ -367,13 +367,11 @@ namespace mu
 	{
 	public:
 
-		inline UntypedMeshBufferIteratorConst()
-		{
-			m_format = MBF_NONE;
-			m_components = 0;
-			m_elementSize = 0;
-			m_pBuf = nullptr;
-		}
+		UntypedMeshBufferIteratorConst() = default;
+		UntypedMeshBufferIteratorConst(UntypedMeshBufferIteratorConst&&) = default;
+		UntypedMeshBufferIteratorConst(const UntypedMeshBufferIteratorConst&) = default;
+		UntypedMeshBufferIteratorConst& operator=(UntypedMeshBufferIteratorConst&&) = default;
+		UntypedMeshBufferIteratorConst& operator=(const UntypedMeshBufferIteratorConst&) = default;
 
 		inline UntypedMeshBufferIteratorConst
 			(
@@ -415,14 +413,6 @@ namespace mu
 				m_elementSize = 0;
 				m_pBuf = nullptr;
 			}
-		}
-
-		inline UntypedMeshBufferIteratorConst( const UntypedMeshBufferIteratorConst& other )
-		{
-			m_elementSize = other.m_elementSize;
-			m_pBuf = other.m_pBuf;
-			m_format = other.m_format;
-			m_components = other.m_components;
 		}
 
         inline const uint8_t* ptr() const
@@ -542,6 +532,16 @@ namespace mu
             return res;
         }
 
+		vec<int32_t, 12> GetAsVec12i() const
+		{
+			vec<int32_t, 12> res;
+			for (int c = 0; c < FMath::Min(m_components, 12); ++c)
+			{
+				ConvertData(c, &res[0], MBF_INT32, ptr(), m_format);
+			}
+			return res;
+		}
+
         inline UntypedMeshBufferIteratorConst operator+(int c) const
         {
             UntypedMeshBufferIteratorConst res = *this;
@@ -551,10 +551,10 @@ namespace mu
 
 	protected:
 
-		int m_elementSize;
-        const uint8_t* m_pBuf;
-		MESH_BUFFER_FORMAT m_format;
-		int m_components;
+		int m_elementSize = 0;
+        const uint8_t* m_pBuf = nullptr;
+		MESH_BUFFER_FORMAT m_format = MBF_NONE;
+		int m_components = 0;
 	};
 
 
@@ -621,11 +621,6 @@ namespace mu
 					m_pBuf = nullptr;
 				}
 			}
-		}
-
-		inline MeshBufferIteratorConst( const MeshBufferIteratorConst& other )
-			: UntypedMeshBufferIteratorConst( other )
-		{
 		}
 
 		inline const vec<CTYPE,COMPONENTS>& operator*() const

@@ -2,6 +2,7 @@
 
 #include "Camera/PlayerCameraManager.h"
 #include "GameFramework/Pawn.h"
+#include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Camera/CameraActor.h"
 #include "Engine/Canvas.h"
@@ -291,23 +292,33 @@ void APlayerCameraManager::ApplyCameraModifiers(float DeltaTime, FMinimalViewInf
 	}
 }
 
-void APlayerCameraManager::AddCachedPPBlend(struct FPostProcessSettings& PPSettings, float BlendWeight)
+void APlayerCameraManager::AddCachedPPBlend(struct FPostProcessSettings& PPSettings, float BlendWeight, EViewTargetBlendOrder BlendOrder)
 {
 	check(PostProcessBlendCache.Num() == PostProcessBlendCacheWeights.Num());
+	check(PostProcessBlendCache.Num() == PostProcessBlendCacheOrders.Num());
 	PostProcessBlendCache.Add(PPSettings);
 	PostProcessBlendCacheWeights.Add(BlendWeight);
+	PostProcessBlendCacheOrders.Add(BlendOrder);
 }
 
 void APlayerCameraManager::ClearCachedPPBlends()
 {
 	PostProcessBlendCache.Empty();
 	PostProcessBlendCacheWeights.Empty();
+	PostProcessBlendCacheOrders.Empty();
 }
 
-void APlayerCameraManager::GetCachedPostProcessBlends(TArray<FPostProcessSettings> const*& OutPPSettings, TArray<float> const*& OutBlendWeigthts) const
+void APlayerCameraManager::GetCachedPostProcessBlends(TArray<FPostProcessSettings> const*& OutPPSettings, TArray<float> const*& OutBlendWeights) const
 {
 	OutPPSettings = &PostProcessBlendCache;
-	OutBlendWeigthts = &PostProcessBlendCacheWeights;
+	OutBlendWeights = &PostProcessBlendCacheWeights;
+}
+
+void APlayerCameraManager::GetCachedPostProcessBlends(TArray<FPostProcessSettings> const*& OutPPSettings, TArray<float> const*& OutBlendWeights, TArray<EViewTargetBlendOrder> const*& OutBlendOrders) const
+{
+	OutPPSettings = &PostProcessBlendCache;
+	OutBlendWeights = &PostProcessBlendCacheWeights;
+	OutBlendOrders = &PostProcessBlendCacheOrders;
 }
 
 void APlayerCameraManager::UpdateViewTargetInternal(FTViewTarget& OutVT, float DeltaTime)
@@ -339,19 +350,18 @@ void APlayerCameraManager::UpdateViewTarget(FTViewTarget& OutVT, float DeltaTime
 		return;
 	}
 
-	// store previous POV, in case we need it later
+	// Store previous POV, in case we need it later
 	FMinimalViewInfo OrigPOV = OutVT.POV;
 
-	//@TODO: CAMERA: Should probably reset the view target POV fully here
+	// Reset the view target POV fully
+	static const FMinimalViewInfo DefaultViewInfo;
+	OutVT.POV = DefaultViewInfo;
 	OutVT.POV.FOV = DefaultFOV;
 	OutVT.POV.OrthoWidth = DefaultOrthoWidth;
 	OutVT.POV.AspectRatio = DefaultAspectRatio;
 	OutVT.POV.bConstrainAspectRatio = bDefaultConstrainAspectRatio;
-	OutVT.POV.bUseFieldOfViewForLOD = true;
 	OutVT.POV.ProjectionMode = bIsOrthographic ? ECameraProjectionMode::Orthographic : ECameraProjectionMode::Perspective;
-	OutVT.POV.PostProcessSettings.SetBaseValues();
 	OutVT.POV.PostProcessBlendWeight = 1.0f;
-	OutVT.POV.PreviousViewTransform.Reset();
 
 	bool bDoNotApplyModifiers = false;
 
@@ -881,6 +891,14 @@ void APlayerCameraManager::DoUpdateCamera(float DeltaTime)
 			// Update pending view target blend
 			NewPOV = ViewTarget.POV;
 			NewPOV.BlendViewInfo(PendingViewTarget.POV, BlendPct);//@TODO: CAMERA: Make sure the sense is correct!  BlendViewTargets(ViewTarget, PendingViewTarget, BlendPct);
+
+			// Add this pending view target's post-process settings as an override of the main view target's one,
+			// since it is blending on top of it.
+			const float PendingViewTargetPPWeight = PendingViewTarget.POV.PostProcessBlendWeight * BlendPct;
+			if (PendingViewTargetPPWeight > 0.f)
+			{
+				AddCachedPPBlend(PendingViewTarget.POV.PostProcessSettings, PendingViewTargetPPWeight, VTBlendOrder_Override);
+			}
 		}
 		else
 		{

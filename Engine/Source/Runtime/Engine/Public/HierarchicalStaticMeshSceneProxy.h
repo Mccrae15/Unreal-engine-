@@ -9,6 +9,7 @@
 #include "Components/InstancedStaticMeshComponent.h"
 #include "StaticMeshResources.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
+#include "Async/Mutex.h"
 
 struct FClusterNode;
 struct FFoliageElementParams;
@@ -31,7 +32,7 @@ struct FFoliageOcclusionResults
 	}
 };
 
-class ENGINE_API FHierarchicalStaticMeshSceneProxy final : public FInstancedStaticMeshSceneProxy
+class FHierarchicalStaticMeshSceneProxy final : public FInstancedStaticMeshSceneProxy
 {
 	TSharedRef<TArray<FClusterNode>, ESPMode::ThreadSafe> ClusterTreePtr;
 	const TArray<FClusterNode>& ClusterTree;
@@ -44,6 +45,7 @@ class ENGINE_API FHierarchicalStaticMeshSceneProxy final : public FInstancedStat
 	int32 LastOcclusionNode;
 	TArray<FBoxSphereBounds> OcclusionBounds;
 	TMap<uint32, FFoliageOcclusionResults> OcclusionResults;
+	UE::FMutex OcclusionResultsMutex;
 	EHISMViewRelevanceType ViewRelevance;
 	bool bDitheredLODTransitions;
 	uint32 SceneProxyCreatedFrameNumberRenderThread;
@@ -57,17 +59,17 @@ class ENGINE_API FHierarchicalStaticMeshSceneProxy final : public FInstancedStat
 #endif
 
 public:
-	SIZE_T GetTypeHash() const override;
+	ENGINE_API SIZE_T GetTypeHash() const override;
 
 	FHierarchicalStaticMeshSceneProxy(UHierarchicalInstancedStaticMeshComponent* InComponent, ERHIFeatureLevel::Type InFeatureLevel);
 
-	void SetupOcclusion(UHierarchicalInstancedStaticMeshComponent* InComponent);
+	ENGINE_API void SetupOcclusion(UHierarchicalInstancedStaticMeshComponent* InComponent);
 
 	// FPrimitiveSceneProxy interface.
 	
-	virtual void CreateRenderThreadResources() override;
+	ENGINE_API virtual void CreateRenderThreadResources() override;
 	
-	virtual FPrimitiveViewRelevance GetViewRelevance(const FSceneView* View) const override;
+	ENGINE_API virtual FPrimitiveViewRelevance GetViewRelevance(const FSceneView* View) const override;
 
 #if RHI_RAYTRACING
 	virtual bool IsRayTracingStaticRelevant() const override
@@ -76,23 +78,23 @@ public:
 	}
 #endif
 
-	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override;
+	ENGINE_API virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override;
 
-	virtual const TArray<FBoxSphereBounds>* GetOcclusionQueries(const FSceneView* View) const override;
+	ENGINE_API virtual const TArray<FBoxSphereBounds>* GetOcclusionQueries(const FSceneView* View) const override;
 	
-	virtual void AcceptOcclusionResults(const FSceneView* View, TArray<bool>* Results, int32 ResultsStart, int32 NumResults) override;
+	ENGINE_API virtual void AcceptOcclusionResults(const FSceneView* View, TArray<bool>* Results, int32 ResultsStart, int32 NumResults) override;
 	
 	virtual bool HasSubprimitiveOcclusionQueries() const override
 	{
 		return FirstOcclusionNode > 0;
 	}
 
-	virtual void DrawStaticElements(FStaticPrimitiveDrawInterface* PDI) override;
+	ENGINE_API virtual void DrawStaticElements(FStaticPrimitiveDrawInterface* PDI) override;
 
-	virtual void ApplyWorldOffset(FVector InOffset) override;
+	ENGINE_API virtual void ApplyWorldOffset(FVector InOffset) override;
 
-	void FillDynamicMeshElements(FMeshElementCollector& Collector, const FFoliageElementParams& ElementParams, const FFoliageRenderInstanceParams& Instances) const;
+	ENGINE_API void FillDynamicMeshElements(const FSceneView* View, FMeshElementCollector& Collector, const FFoliageElementParams& ElementParams, const FFoliageRenderInstanceParams& Instances) const;
 
-	template<bool TUseVector>
+	template<bool TUseVector, bool THasWPODisplacement>
 	void Traverse(const FFoliageCullInstanceParams& Params, int32 Index, int32 MinLOD, int32 MaxLOD, bool bFullyContained = false) const;
 };

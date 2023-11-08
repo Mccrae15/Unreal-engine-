@@ -2,9 +2,7 @@
 
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
-using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using EpicGames.Core;
@@ -158,7 +156,7 @@ namespace UnrealBuildTool
 			/// Config setting to enable pak encryption
 			/// </summary>
 			public bool PakSigningRequired { get; set; } = true;
-			
+
 			/// <summary>
 			/// A set of named encryption keys that can be used to encrypt different sets of data with a different key that is delivered dynamically (i.e. not embedded within the game executable)
 			/// </summary>
@@ -187,6 +185,29 @@ namespace UnrealBuildTool
 			{
 				DirectoryReference.CreateDirectory(InFile.Directory);
 				FileReference.WriteAllTextIfDifferent(InFile, JsonSerializer.Serialize(this));
+			}
+
+			/// <summary>
+			/// Returns whether the specified encryption key exist.
+			/// </summary>
+			public bool ContainsEncryptionKey(string KeyGuid)
+			{
+				if (String.IsNullOrEmpty(KeyGuid))
+				{
+					return false;
+				}
+
+				if (EncryptionKey != null && EncryptionKey.Guid == KeyGuid)
+				{
+					return true;
+				}
+
+				if (SecondaryEncryptionKeys != null)
+				{
+					return SecondaryEncryptionKeys.Any(Key => Key.Guid == KeyGuid);
+				}
+
+				return false;
 			}
 		}
 
@@ -229,7 +250,7 @@ namespace UnrealBuildTool
 		public static CryptoSettings ParseCryptoSettings(DirectoryReference? InProjectDirectory, UnrealTargetPlatform InTargetPlatform, ILogger Logger)
 		{
 			CryptoSettings Settings = new CryptoSettings();
-			
+
 			ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, InProjectDirectory, InTargetPlatform);
 			Ini.GetBool("PlatformCrypto", "PlatformRequiresDataCrypto", out bool bDataCryptoRequired);
 			Settings.bDataCryptoRequired = bDataCryptoRequired;
@@ -264,7 +285,7 @@ namespace UnrealBuildTool
 						(Settings.SigningKey.PublicKey.Exponent.Length > 64) ||
 						(Settings.SigningKey.PublicKey.Modulus.Length > 64))
 					{
-						throw new Exception(string.Format("[{0}] Signing keys parsed from encryption.ini are too long. They must be a maximum of 64 bytes long!", InProjectDirectory));
+						throw new Exception(String.Format("[{0}] Signing keys parsed from encryption.ini are too long. They must be a maximum of 64 bytes long!", InProjectDirectory));
 					}
 				}
 
@@ -299,7 +320,7 @@ namespace UnrealBuildTool
 			ConfigHierarchySection CryptoSection = Ini.FindSection(SectionName);
 
 			// If we have new format crypto keys, read them in over the top of the legacy settings
-			if (CryptoSection != null && CryptoSection.KeyNames.Count() > 0)
+			if (CryptoSection != null && CryptoSection.KeyNames.Any())
 			{
 				Ini.GetBool(SectionName, "bEnablePakSigning", out bool bEnablePakSigning);
 				Settings.bEnablePakSigning = bEnablePakSigning;
@@ -319,7 +340,7 @@ namespace UnrealBuildTool
 				// Parse encryption key
 				string EncryptionKeyString;
 				Ini.GetString(SectionName, "EncryptionKey", out EncryptionKeyString);
-				if (!string.IsNullOrEmpty(EncryptionKeyString))
+				if (!String.IsNullOrEmpty(EncryptionKeyString))
 				{
 					Settings.EncryptionKey = new EncryptionKey();
 					Settings.EncryptionKey.Key = System.Convert.FromBase64String(EncryptionKeyString);
@@ -494,7 +515,7 @@ namespace UnrealBuildTool
 				int CharsToParse = Math.Min(2, InString.Length);
 				string Value = InString.Substring(InString.Length - CharsToParse);
 				InString = InString.Substring(0, InString.Length - CharsToParse);
-				Bytes.Add(byte.Parse(Value, System.Globalization.NumberStyles.AllowHexSpecifier));
+				Bytes.Add(Byte.Parse(Value, System.Globalization.NumberStyles.AllowHexSpecifier));
 			}
 
 			while (Bytes.Count < InMinimumLength)

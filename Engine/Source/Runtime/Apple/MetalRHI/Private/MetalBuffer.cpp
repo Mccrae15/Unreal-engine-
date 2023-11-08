@@ -948,7 +948,9 @@ FMetalSubBufferRing::FMetalSubBufferRing(NSUInteger Size, NSUInteger Alignment, 
 , Storage((mtlpp::StorageMode)((Options & mtlpp::ResourceStorageModeMask) >> mtlpp::ResourceStorageModeShift))
 {
 	Options = (mtlpp::ResourceOptions)FMetalCommandQueue::GetCompatibleResourceOptions(Options);
+#if !defined(WITH_IOS_SIMULATOR) || !WITH_IOS_SIMULATOR
 	check(Storage != mtlpp::StorageMode::Private /* Private memory requires command-buffers and encoders to properly marshal! */);
+#endif
 	FMemory::Memzero(FrameSize);
 }
 
@@ -1364,7 +1366,7 @@ uint32 FMetalResourceHeap::GetMagazineIndex(uint32 Size)
 	while( Upper - Lower > 1 );
 	
 	check( Size <= MagazineSizes[Lower] );
-	check( (Lower == 0 ) || ( Size > MagazineSizes[Lower-1] ) );;
+	check( (Lower == 0 ) || ( Size > MagazineSizes[Lower-1] ) );
 	
 	return Lower;
 }
@@ -1390,7 +1392,7 @@ uint32 FMetalResourceHeap::GetHeapIndex(uint32 Size)
 	while( Upper - Lower > 1 );
 	
 	check( Size <= HeapSizes[Lower] );
-	check( (Lower == 0 ) || ( Size > HeapSizes[Lower-1] ) );;
+	check( (Lower == 0 ) || ( Size > HeapSizes[Lower-1] ) );
 	
 	return Lower;
 }

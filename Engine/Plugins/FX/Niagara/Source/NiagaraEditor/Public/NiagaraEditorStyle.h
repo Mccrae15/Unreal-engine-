@@ -5,20 +5,20 @@
 #include "Styling/SlateStyle.h"
 
 /** Manages the style which provides resources for niagara editor widgets. */
-class NIAGARAEDITOR_API FNiagaraEditorStyle : public FSlateStyleSet
+class FNiagaraEditorStyle : public FSlateStyleSet
 {
 public:
-	static void Register();
-	static void Unregister();
-	static void Shutdown();
+	static NIAGARAEDITOR_API void Register();
+	static NIAGARAEDITOR_API void Unregister();
+	static NIAGARAEDITOR_API void Shutdown();
 
 	/** reloads textures used by slate renderer */
-	static void ReloadTextures();
+	static NIAGARAEDITOR_API void ReloadTextures();
 
 	/** @return The Slate style set for niagara editor widgets */
-	static const FNiagaraEditorStyle& Get();
+	static NIAGARAEDITOR_API const FNiagaraEditorStyle& Get();
 
-	static void ReinitializeStyle();
+	static NIAGARAEDITOR_API void ReinitializeStyle();
 
 private:	
 	FNiagaraEditorStyle();
@@ -33,6 +33,7 @@ private:
 	void InitToolbarIcons();
 	void InitTabIcons();
 	void InitIcons();
+	void InitTextStyles();
 	void InitOverview();
 	void InitViewportStyle();
 	void InitEmitterDetails();
@@ -40,6 +41,7 @@ private:
 	void InitThumbnails();
 	void InitClassIcon();
 	void InitStackIcons();
+	void InitStackWidgets();
 	void InitNiagaraSequence();
 	void InitPlatformSet();
 	void InitDropTarget();

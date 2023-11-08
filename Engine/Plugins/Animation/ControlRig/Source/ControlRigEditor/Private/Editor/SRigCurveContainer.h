@@ -8,6 +8,7 @@
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/SListView.h"
 #include "Rigs/RigHierarchy.h"
+#include "ControlRigBlueprint.h"
 
 //////////////////////////////////////////////////////////////////////////
 // FDisplayedRigCurveInfo
@@ -15,7 +16,8 @@
 class SInlineEditableTextBlock;
 class FControlRigEditor;
 struct FAssetData;
-class UControlRigBlueprint;
+class URigVMBlueprint;
+class FRigVMEditor;
 
 class FDisplayedRigCurveInfo
 {
@@ -206,7 +208,7 @@ private:
 	/** Handler for context menus */
 	TSharedPtr<SWidget> OnGetContextMenuContent() const;
 
-	void OnEditorClose(const FControlRigEditor* InEditor, UControlRigBlueprint* InBlueprint);
+	void OnEditorClose(const FRigVMEditor* InEditor, URigVMBlueprint* InBlueprint);
 
 	/**
 	* Clears and rebuilds the table, according to an optional search string
@@ -236,7 +238,7 @@ private:
 
 	bool bIsChangingRigHierarchy;
 	void OnHierarchyModified(ERigHierarchyNotification InNotif, URigHierarchy* InHierarchy, const FRigBaseElement* InElement);
-	void HandleRefreshEditorFromBlueprint(UControlRigBlueprint* InBlueprint);
+	void HandleRefreshEditorFromBlueprint(URigVMBlueprint* InBlueprint);
 
 	// import curve part
 	void ImportCurve(const FAssetData& InAssetData);

@@ -113,6 +113,25 @@ void FInstallBundleCombinedProgressTracker::SetBundlesToTrackFromContentState(co
 	CachedBundleWeights.Empty();
 	BundleStatusCache.Empty();
 
+	//Go through all bundles until we hit a non-zero weight bundle. 
+	//This is to help catch instances where we pass in all zero weight bundles to track and need
+	//to thus calculate their weight dynamically based on everything having even weight
+	bool bAreAllBundlesZeroWeight = true;
+	for (const TPair<FName, FInstallBundleContentState>& IndividualBundlePair : BundleContentState.IndividualBundleStates)
+	{
+		const FInstallBundleContentState& BundleState = IndividualBundlePair.Value;
+		if (BundleState.Weight <= SMALL_NUMBER)
+		{
+			continue;
+		}
+		else
+		{
+			bAreAllBundlesZeroWeight = false;
+			break;
+		}
+	}
+		
+
 	bool bBundleNeedsUpdate = false;
 	float TotalWeight = 0.0f;
 	for (const FName& Bundle : BundlesToTrack)
@@ -120,6 +139,12 @@ void FInstallBundleCombinedProgressTracker::SetBundlesToTrackFromContentState(co
 		const FInstallBundleContentState* BundleState = BundleContentState.IndividualBundleStates.Find(Bundle);
 		if (ensureAlwaysMsgf(BundleState, TEXT("Trying to track unknown bundle %s"), *Bundle.ToString()))
 		{
+			//Filter out any bundles with effectively 0 weight (unless all bundles are 0 weight)
+			if (!bAreAllBundlesZeroWeight && (BundleState->Weight <= SMALL_NUMBER))
+			{
+				continue;
+			}
+
 			//Track if we need any kind of bundle updates
 			if (BundleState->State == EInstallBundleInstallState::NotInstalled || BundleState->State == EInstallBundleInstallState::NeedsUpdate)
 			{
@@ -128,7 +153,10 @@ void FInstallBundleCombinedProgressTracker::SetBundlesToTrackFromContentState(co
 
 			//Save required bundles and their weights
 			RequiredBundleNames.Add(Bundle);
-			CachedBundleWeights.FindOrAdd(Bundle) = BundleState->Weight;
+
+			//If all bundles are zero weight, just treat this weight as 1 so everything ends up with 1 weight and is evenly distributed
+			CachedBundleWeights.FindOrAdd(Bundle) = bAreAllBundlesZeroWeight ? 1.0f : BundleState->Weight;
+
 			TotalWeight += BundleState->Weight;
 		}
 	}
@@ -193,9 +221,12 @@ void FInstallBundleCombinedProgressTracker::UpdateCombinedStatus()
 	//if we don't yet have a bundle status cache entry for a particular requirement
 	//then we can't yet tell what work is required on that bundle yet. We need to go ahead and make sure we don't
 	//show a status like "Installed" before we know what state that bundle is in. Make sure we show at LEAST
-	//updating in that case, so start with Downloading since that is the first Updating case
+	//updating in that case, so start with Downloading since that is the first Updating case.
+	//However if all bundle progress is finished, don't just sit showing 100% and Updating when we could potentially
+	//be showing Finishing progress
 	if ((BundleStatusCache.Num() < RequiredBundleNames.Num())
-		&& (BundleStatusCache.Num() > 0))
+		&& (BundleStatusCache.Num() > 0)
+		&& (CurrentCombinedProgress.ProgressPercent < 1.0f))
 	{
 		EarliestBundleState = EInstallBundleStatus::Updating;
 	}

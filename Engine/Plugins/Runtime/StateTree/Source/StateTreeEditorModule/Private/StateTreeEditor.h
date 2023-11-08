@@ -20,13 +20,15 @@ namespace UE::StateTree::Editor
 
 	// Calculates editor data hash of the asset. 
 	uint32 CalcAssetHash(const UStateTree& StateTree);
- 
+
+	extern bool GbDisplayItemIds;
 } // UE::StateTree::Editor
 
 
 class FStateTreeEditor : public IStateTreeEditor, public FSelfRegisteringEditorUndoClient, public FGCObject
 {
 public:
+	FStateTreeEditor() : TreeViewCommandList(new FUICommandList()) {}
 
 	virtual void RegisterTabSpawners(const TSharedRef<class FTabManager>& TabManager) override;
 	virtual void UnregisterTabSpawners(const TSharedRef<class FTabManager>& TabManager) override;
@@ -90,11 +92,14 @@ private:
 
 	FText GetStatisticsText() const;
 
-	/* State Tree being edited */
-	UStateTree* StateTree = nullptr;
+	/** State Tree being edited */
+	TObjectPtr<UStateTree> StateTree = nullptr;
 
 	uint32 EditorDataHash = 0;
 	bool bLastCompileSucceeded = true;
+
+	/** The command list used by the tree view. Stored here, so that other windows (e.g. debugger) can add commands to it, even if the tree view is not spawned yet. */
+	TSharedRef<FUICommandList> TreeViewCommandList;
 	
 	/** Selection Property View */
 	TSharedPtr<class IDetailsView> SelectionDetailsView;
@@ -110,6 +115,13 @@ private:
 	TSharedPtr<class IMessageLogListing> CompilerResultsListing;
 	
 	TSharedPtr<FStateTreeViewModel> StateTreeViewModel;
+
+#if WITH_STATETREE_DEBUGGER
+	TSharedRef<SDockTab> SpawnTab_Debugger(const FSpawnTabArgs& Args);
+
+	TSharedPtr<class SStateTreeDebuggerView> DebuggerView;
+	static const FName DebuggerTabId;
+#endif // WITH_STATETREE_DEBUGGER
 
 	static const FName StateTreeViewTabId;
 	static const FName SelectionDetailsTabId;

@@ -48,11 +48,8 @@ UTextureCube* UTextureCube::CreateTransient(int32 InSizeX, int32 InSizeY, EPixel
 		// Allocate first mipmap.
 		int32 NumBlocksX = InSizeX / GPixelFormats[InFormat].BlockSizeX;
 		int32 NumBlocksY = InSizeY / GPixelFormats[InFormat].BlockSizeY;
-		FTexture2DMipMap* Mip = new FTexture2DMipMap();
+		FTexture2DMipMap* Mip = new FTexture2DMipMap(InSizeX, InSizeY, 1);
 		NewTexture->GetPlatformData()->Mips.Add(Mip);
-		Mip->SizeX = InSizeX;
-		Mip->SizeY = InSizeY;
-		Mip->SizeZ = 1;
 		Mip->BulkData.Lock(LOCK_READ_WRITE);
 		Mip->BulkData.Realloc((int64)6 * NumBlocksX * NumBlocksY * GPixelFormats[InFormat].BlockBytes);
 		Mip->BulkData.Unlock();
@@ -430,7 +427,7 @@ public:
 	/**
 	 * Called when the resource is initialized. This is only called by the rendering thread.
 	 */
-	virtual void InitRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		if (ProxiedResource)
 		{
@@ -447,6 +444,7 @@ public:
 		// Create the RHI texture.
 		const ETextureCreateFlags TexCreateFlags = (Owner->SRGB ? TexCreate_SRGB : TexCreate_None)  | (Owner->bNotOfflineProcessed ? TexCreate_None : TexCreate_OfflineProcessed);
 		const FString Name = Owner->GetPathName();
+		const static FLazyName ClassName(TEXT("FTextureCubeResource"));
 
 		const FRHITextureCreateDesc Desc =
 			FRHITextureCreateDesc::CreateCube(*Name)
@@ -454,7 +452,9 @@ public:
 			.SetFormat(Owner->GetPixelFormat())
 			.SetNumMips(Owner->GetNumMips())
 			.SetFlags(TexCreateFlags)
-			.SetExtData(Owner->GetPlatformData() ? Owner->GetPlatformData()->GetExtData() : 0);
+			.SetExtData(Owner->GetPlatformData() ? Owner->GetPlatformData()->GetExtData() : 0)
+			.SetClassName(ClassName)
+			.SetOwnerName(GetOwnerName());
 
 		TextureCubeRHI = RHICreateTexture(Desc);
 
@@ -491,8 +491,7 @@ public:
 		);
 		SamplerStateRHI = GetOrCreateSamplerState(SamplerStateInitializer);
 
-		// Set the greyscale format flag appropriately.
-		bGreyScaleFormat = ( Owner->CompressionSettings == TC_Grayscale || Owner->CompressionSettings == TC_Alpha );
+		bGreyScaleFormat = UE::TextureDefines::ShouldUseGreyScaleEditorVisualization( Owner->CompressionSettings );
 	}
 
 	virtual void ReleaseRHI() override
@@ -659,7 +658,7 @@ void UTextureCube::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
 
 bool UTextureCube::NeedsLoadForTargetPlatform(const ITargetPlatform* TargetPlatform) const
 {
-	// TC_EncodedReflectionCapture is used only for EncodedCapture for Mobile and is hidden for the user.
+	// TC_EncodedReflectionCapture is no longer used and could be deleted
 	if (CompressionSettings == TC_EncodedReflectionCapture)
 	{
 		const static FName EncodedHDR(TEXT("EncodedHDR"));

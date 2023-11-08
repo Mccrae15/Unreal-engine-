@@ -25,17 +25,16 @@ struct FLandscapeImportLayerInfo;
 /**
  * 
  */
-struct LANDSCAPE_API FLandscapeConfig
+struct FLandscapeConfig
 {
 	FLandscapeConfig(int32 InComponentNumSubSections, int32 InSubsectionSizeQuads, int32 InGridSizeInComponents)
 		: ComponentNumSubsections(InComponentNumSubSections)
 		, SubsectionSizeQuads(InSubsectionSizeQuads)
 		, GridSizeInComponents(InGridSizeInComponents)
 	{
-
 	}
 
-	FLandscapeConfig(ULandscapeInfo* InLandscapeInfo);
+	LANDSCAPE_API FLandscapeConfig(ULandscapeInfo* InLandscapeInfo);
 
 	int32 GetComponentSizeQuads() const { return SubsectionSizeQuads * ComponentNumSubsections; }
 	int32 GetComponentSizeVerts() const { return (SubsectionSizeQuads + 1) * ComponentNumSubsections; }
@@ -45,11 +44,11 @@ struct LANDSCAPE_API FLandscapeConfig
 	int32 SubsectionSizeQuads;
 	int32 GridSizeInComponents;
 
-	static int32 NumSectionValues[2];
-	static int32 SubsectionSizeQuadsValues[6];
+	static LANDSCAPE_API int32 NumSectionValues[2];
+	static LANDSCAPE_API int32 SubsectionSizeQuadsValues[6];
 };
 
-struct LANDSCAPE_API FLandscapeConfigChange : public FLandscapeConfig
+struct FLandscapeConfigChange : public FLandscapeConfig
 {
 	FLandscapeConfigChange(int32 InComponentNumSubSections, int32 InSubsectionSizeQuads, int32 InGridSize, ELandscapeResizeMode InResizeMode, bool bInZeroBased)
 		: FLandscapeConfig(InComponentNumSubSections, InSubsectionSizeQuads, InGridSize)
@@ -58,7 +57,7 @@ struct LANDSCAPE_API FLandscapeConfigChange : public FLandscapeConfig
 	{
 	}
 
-	bool Validate() const;
+	LANDSCAPE_API bool Validate() const;
 
 	ELandscapeResizeMode ResizeMode;
 	bool bZeroBased;
@@ -128,6 +127,32 @@ public:
 			for (int32 X = -OffsetX + SrcWidth; X < DestWidth; ++X)
 			{
 				OutData[Y * DestWidth + X] = PadRight;
+			}
+		}
+	}
+
+	template<typename T>
+	static void CopySubregion(const TArrayView<T>& InData, TArray<T>& OutData, const FIntRect& InSrcRegion, uint32 InSrcDataPitch)
+	{
+		check(InData.Size() >= InSrcRegion.Area());
+
+		const int32 SrcWidth = InSrcRegion.Width();
+		const int32 SrcHeight = InSrcRegion.Height();
+		
+		OutData.Empty(SrcWidth * SrcHeight);
+		OutData.AddUninitialized(SrcWidth * SrcHeight);
+
+		for (int32 Y = 0; Y < SrcHeight; ++Y)
+		{
+			for (int32 X = 0; X < SrcWidth; ++X)
+			{
+				const int32 SrcX = X + InSrcRegion.Min.X;
+				const int32 SrcY = Y + InSrcRegion.Min.Y;
+
+				const int32 SrcIndex = SrcX + SrcY * InSrcDataPitch;
+				const int32 DstIndex = X + Y * InSrcRegion.Width();
+
+				OutData[DstIndex] = InData[SrcIndex];
 			}
 		}
 	}

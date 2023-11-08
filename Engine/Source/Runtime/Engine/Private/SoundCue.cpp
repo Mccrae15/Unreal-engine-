@@ -2,6 +2,7 @@
 
 #include "Sound/SoundCue.h"
 #include "EdGraph/EdGraph.h"
+#include "Engine/Engine.h"
 #include "Misc/CoreDelegates.h"
 #include "EdGraph/EdGraphSchema.h"
 #include "UObject/UObjectIterator.h"
@@ -252,12 +253,12 @@ void USoundCue::PostLoad()
 
 bool USoundCue::CanBeClusterRoot() const
 {
-	return false;
+	return true;
 }
 
 bool USoundCue::CanBeInCluster() const
 {
-	return false;
+	return true;
 }
 
 void USoundCue::OnPostEngineInit()
@@ -631,6 +632,11 @@ void USoundCue::Parse(FAudioDevice* AudioDevice, const UPTRINT NodeWaveInstanceH
 
 		for (const FWaveInstance* Instance : WaveInstances)
 		{
+			if (!Instance)
+			{
+				continue;
+			}
+			
 			if (TSharedPtr<Audio::IParameterTransmitter>* ChildTransmitterPtr = Transmitter->Transmitters.Find(Instance->WaveInstanceHash))
 			{
 				TSharedPtr<Audio::IParameterTransmitter>& ChildTransmitter = *ChildTransmitterPtr;
@@ -638,7 +644,16 @@ void USoundCue::Parse(FAudioDevice* AudioDevice, const UPTRINT NodeWaveInstanceH
 				if (ChildTransmitter.IsValid())
 				{
 					TArray<FAudioParameter> Params = Transmitter->ParamsToSet;
-					ChildTransmitter->SetParameters(MoveTemp(Params));
+
+					if (USoundBase* Sound = Instance->WaveData)
+					{
+						Sound->InitParameters(Params);
+					}
+
+					if (!Params.IsEmpty())
+					{
+						ChildTransmitter->SetParameters(MoveTemp(Params));
+					}
 				}
 			}
 		}
@@ -801,21 +816,21 @@ TSharedPtr<ISoundCueAudioEditor> USoundCue::GetSoundCueAudioEditor()
 }
 #endif // WITH_EDITOR
 
-TArray<UObject*> FSoundCueParameterTransmitter::GetReferencedObjects() const
+TArray<const TObjectPtr<UObject>*> FSoundCueParameterTransmitter::GetReferencedObjects() const
 {
-	TArray<UObject*> Objects;
+	TArray<const TObjectPtr<UObject>*> Objects;
 	for (const FAudioParameter& Param : AudioParameters)
 	{
 		if (Param.ObjectParam)
 		{
-			Objects.Add(Param.ObjectParam);
+			Objects.Add(&Param.ObjectParam);
 		}
 
-		for (UObject* Object : Param.ArrayObjectParam)
+		for (const auto& Object : Param.ArrayObjectParam)
 		{
 			if (Object)
 			{
-				Objects.Add(Object);
+				Objects.Add(&Object);
 			}
 		}
 	}

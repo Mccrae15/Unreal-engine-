@@ -1,32 +1,39 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+
 #pragma once
 
+#include "AudioDeviceHandle.h"
+#include "AudioDynamicParameter.h"
+#include "AudioVirtualLoop.h"
+#include "Components/AudioComponent.h"
+#include "HAL/LowLevelMemStats.h"
+#include "Math/Transform.h"
+#include "Math/Vector.h"
+#include "Sound/AudioVolume.h"
+#include "Sound/SoundClass.h"
+#include "Sound/SoundMix.h"
+#include "Subsystems/AudioEngineSubsystem.h"
+#include "UObject/StrongObjectPtr.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_3
 #include "Audio.h"
 #include "AudioDeviceManager.h"
-#include "Components/AudioComponent.h"
+#include "AudioMixer.h"
 #include "CoreMinimal.h"
 #include "DSP/MultithreadedPatching.h"
 #include "Engine/Engine.h"
 #include "EngineGlobals.h"
-#include "HAL/LowLevelMemStats.h"
 #include "IAudioExtensionPlugin.h"
 #include "ISubmixBufferListener.h"
-#include "AudioDynamicParameter.h"
 #include "Sound/AudioSettings.h"
-#include "Sound/AudioVolume.h"
 #include "Sound/SoundAttenuation.h"
-#include "Sound/SoundClass.h"
 #include "Sound/SoundConcurrency.h"
-#include "Sound/SoundMix.h"
+#include "Sound/SoundModulationDestination.h"
+#include "Sound/SoundSourceBus.h"
 #include "Sound/SoundSubmix.h"
 #include "Sound/SoundSubmixSend.h"
-#include "Sound/SoundSourceBus.h"
-#include "Sound/SoundModulationDestination.h"
-#include "Subsystems/AudioEngineSubsystem.h"
 #include "Subsystems/SubsystemCollection.h"
-#include "AudioVirtualLoop.h"
-#include "AudioMixer.h"
-#include "UObject/StrongObjectPtr.h"
+#endif
 
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
 #include "DSP/SpectrumAnalyzer.h"
@@ -48,9 +55,11 @@ class FViewport;
 class FViewportClient;
 class IAudioSpatialization;
 class ICompressedAudioInfo;
+class ISubmixBufferListener;
 class UReverbEffect;
 class USoundAttenuation;
 class USoundBase;
+class USoundClass;
 class USoundConcurrency;
 class USoundEffectSourcePreset;
 class USoundEffectSubmixPreset;
@@ -65,7 +74,22 @@ struct FActiveSound;
 struct FAttenuationFocusData;
 struct FAudioComponentParam;
 struct FAudioQualitySettings;
+struct FAudioVirtualLoop;
+struct FSourceEffectChainEntry;
+struct FSoundClassDynamicProperties;
+struct FSoundClassProperties;
+struct FSoundGroup;
+struct FSoundParseParameters;
+struct FSoundSpectrumAnalyzerDelegateSettings;
+struct FSoundSpectrumAnalyzerSettings;
 struct FWaveInstance;
+
+namespace Audio
+{
+	class FPatchInput;
+	struct FPatchOutput;
+	typedef TSharedPtr<FPatchOutput, ESPMode::ThreadSafe> FPatchOutputStrongPtr;
+}
 
 namespace Audio
 {
@@ -73,6 +97,9 @@ namespace Audio
 
 	/** Returns a decoder for the sound assets's given compression type. Will return nullptr if the compression type is platform-dependent. */
 	ENGINE_API ICompressedAudioInfo* CreateSoundAssetDecoder(const FName& InRuntimeFormat);
+
+	/** Creates an ID for use by Parameter Transmitters that can differentiate between multiple voices playing on the same Audio Component. */
+	ENGINE_API uint64 GetTransmitterID(uint64 ComponentID, UPTRINT WaveInstanceHash, uint32 PlayOrder);
 }
 
 /**
@@ -417,7 +444,9 @@ class FAudioDevice : public FExec
 public:
 
 	//Begin FExec Interface
+#if UE_ALLOW_EXEC_COMMANDS
 	ENGINE_API virtual bool Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar = *GLog) override;
+#endif
 	//End FExec Interface
 
 #if !UE_BUILD_SHIPPING
@@ -498,9 +527,7 @@ public:
 	 */
 	ENGINE_API FAudioDevice();
 
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS // supress deprecation warning in default dtor
-	ENGINE_API virtual ~FAudioDevice() = default;
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	ENGINE_API virtual ~FAudioDevice();
 
 	/** Returns an array of available audio devices names for the platform */
 	virtual void GetAudioDeviceList(TArray<FString>& OutAudioDeviceNames) const
@@ -702,12 +729,12 @@ public:
 		return CurrentReverbEffect;
 	}
 
-	struct ENGINE_API FCreateComponentParams
+	struct FCreateComponentParams
 	{
-		FCreateComponentParams();
-		FCreateComponentParams(UWorld* World, AActor* Actor = nullptr);
-		FCreateComponentParams(AActor* Actor);
-		FCreateComponentParams(FAudioDevice* AudioDevice);
+		ENGINE_API FCreateComponentParams();
+		ENGINE_API FCreateComponentParams(UWorld* World, AActor* Actor = nullptr);
+		ENGINE_API FCreateComponentParams(AActor* Actor);
+		ENGINE_API FCreateComponentParams(FAudioDevice* AudioDevice);
 
 		USoundAttenuation* AttenuationSettings;
 		TSubclassOf<UAudioComponent> AudioComponentClass = UAudioComponent::StaticClass();
@@ -716,8 +743,8 @@ public:
 		bool bPlay;
 		bool bStopWhenOwnerDestroyed;
 
-		void SetLocation(FVector Location);
-		bool ShouldUseAttenuation() const;
+		ENGINE_API void SetLocation(FVector Location);
+		ENGINE_API bool ShouldUseAttenuation() const;
 
 	private:
 		UWorld* World;
@@ -727,7 +754,7 @@ public:
 		bool bLocationSet;
 		FVector Location;
 
-		void CommonInit();
+		ENGINE_API void CommonInit();
 
 		friend FAudioDevice;
 	};
@@ -842,9 +869,22 @@ public:
 	ENGINE_API void ApplyInteriorSettings(FActiveSound& ActiveSound, FSoundParseParameters& ParseParams) const;
 
 	/**
+	 * Notifies subsystems an active sound is about to be deleted (called on audio thread) - Deprecated, see NotifyPendingDeleteInternal
+	 */
+	UE_DEPRECATED(5.3, "NotifyPending is deprecated in public scope. Use IActiveSoundUpdateInterface::OnNotifyPendingDelete instead.")
+	void NotifyPendingDelete(FActiveSound& ActiveSound) const {}
+
+protected:
+
+	/**
+	 * Notifies subsystems an active sound has been added (called on audio thread)
+	 */
+	ENGINE_API void NotifyAddActiveSound(FActiveSound& ActiveSound) const;
+
+	/**
 	 * Notifies subsystems an active sound is about to be deleted (called on audio thread)
 	 */
-	ENGINE_API void NotifyPendingDelete(FActiveSound& ActiveSound) const;
+	ENGINE_API void NotifyPendingDeleteInternal(FActiveSound& ActiveSound) const;
 
 public:
 
@@ -927,25 +967,15 @@ public:
 	 * Registers the submix buffer listener with the given submix.
 	 * A nullptr for SoundSubmix will register the listener with the master submix.
 	*/
-	virtual void RegisterSubmixBufferListener(ISubmixBufferListener* InSubmixBufferListener, USoundSubmix* SoundSubmix = nullptr)
-	{
-		UE_LOG(LogAudio, Error, TEXT("Submix buffer listener only works with the audio mixer. Please run with audio mixer enabled."));
-	}
+	ENGINE_API virtual void RegisterSubmixBufferListener(ISubmixBufferListener* InSubmixBufferListener, USoundSubmix* SoundSubmix = nullptr);
 
 	/**
 	 * Unregisters the submix buffer listener with the given submix.
 	 * A nullptr for SoundSubmix will unregister the listener with the master submix.
 	*/
-	virtual void UnregisterSubmixBufferListener(ISubmixBufferListener* InSubmixBufferListener, USoundSubmix* SoundSubmix = nullptr)
-	{
-		UE_LOG(LogAudio, Error, TEXT("Submix buffer listener only works with the audio mixer. Please run with audio mixer enabled."));
-	}
+	ENGINE_API virtual void UnregisterSubmixBufferListener(ISubmixBufferListener* InSubmixBufferListener, USoundSubmix* SoundSubmix = nullptr);
 
-	virtual Audio::FPatchOutputStrongPtr AddPatchForSubmix(uint32 InObjectId, float InPatchGain)
-	{
-		UE_LOG(LogAudio, Error, TEXT("Submix patching only works with the audio mixer. Please run with audio mixer enabled."));
-		return nullptr;
-	}
+	ENGINE_API virtual Audio::FPatchOutputStrongPtr AddPatchForSubmix(uint32 InObjectId, float InPatchGain);
 
 	virtual void StartAudioBus(uint32 InAudioBusId, int32 InNumChannels, bool bInIsAutomatic)
 	{
@@ -961,16 +991,10 @@ public:
 	}
 
 	UE_DEPRECATED(5.2, "AddPatchForAudioBus is deprecated.  Use AddPatchOutputForAudioBus.")
-	virtual Audio::FPatchOutputStrongPtr AddPatchForAudioBus(uint32 InAudioBusId, float InPatchGain = 1.0f)
-	{
-		return nullptr;
-	}
+	ENGINE_API virtual Audio::FPatchOutputStrongPtr AddPatchForAudioBus(uint32 InAudioBusId, float InPatchGain = 1.0f);
 
 	UE_DEPRECATED(5.2, "AddPatchForAudioBus_GameThread is deprecated.  Use AddPatchOutputForAudioBus.")
-	virtual Audio::FPatchOutputStrongPtr AddPatchForAudioBus_GameThread(uint32 InAudioBusId, float InPatchGain = 1.0f)
-	{
-		return nullptr;
-	}
+	ENGINE_API virtual Audio::FPatchOutputStrongPtr AddPatchForAudioBus_GameThread(uint32 InAudioBusId, float InPatchGain = 1.0f);
 
 	UE_DEPRECATED(5.2, "This overload of AddPatchInputForAudioBus is deprecated.  Use the overload that takes the number of frames and channels as parameters.")
 	virtual void AddPatchInputForAudioBus(const Audio::FPatchInput& InPatchInput, uint32 InAudioBusId, float InPatchGain = 1.0f)
@@ -982,15 +1006,9 @@ public:
 	{
 	}
 
-	virtual Audio::FPatchInput AddPatchInputForAudioBus(uint32 InAudioBusId, int32 InFrames, int32 InChannels, float InGain = 1.f)
-	{
-		return Audio::FPatchInput();
-	}
+	ENGINE_API virtual Audio::FPatchInput AddPatchInputForAudioBus(uint32 InAudioBusId, int32 InFrames, int32 InChannels, float InGain = 1.f);
 
-	virtual Audio::FPatchOutputStrongPtr AddPatchOutputForAudioBus(uint32 InAudioBusId, int32 InFrames, int32 InChannels, float InGain = 1.f)
-	{
-		return Audio::FPatchOutputStrongPtr();
-	}
+	ENGINE_API virtual Audio::FPatchOutputStrongPtr AddPatchOutputForAudioBus(uint32 InAudioBusId, int32 InFrames, int32 InChannels, float InGain = 1.f);
 
 	virtual void InitSoundEffectPresets() {}
 
@@ -1298,26 +1316,10 @@ public:
 	}
 
 	/** Returns the main audio device of the engine */
-	static FAudioDeviceHandle GetMainAudioDevice()
-	{
-		// Try to get GEngine's main audio device
-		FAudioDeviceHandle AudioDevice = GEngine->GetMainAudioDevice();
-
-		// If we don't have a main audio device (maybe we're running in a non-standard mode like a commandlet)
-		if (!AudioDevice)
-		{
-			// We should have an active device for device manager
-			FAudioDeviceManager* DeviceManager = GEngine->GetAudioDeviceManager();
-			return DeviceManager->GetActiveAudioDevice();
-		}
-		return AudioDevice;
-	}
+	ENGINE_API static FAudioDeviceHandle GetMainAudioDevice();
 
 	/** Returns the audio device manager */
-	static FAudioDeviceManager* GetAudioDeviceManager()
-	{
-		return GEngine->GetAudioDeviceManager();
-	}
+	ENGINE_API static FAudioDeviceManager* GetAudioDeviceManager();
 
 	/** Low pass filter OneOverQ value */
 	ENGINE_API float GetLowPassFilterResonance() const;
@@ -1373,14 +1375,7 @@ public:
 		return bOcclusionInterfaceEnabled;
 	}
 
-	static bool IsOcclusionPluginLoaded()
-	{
-		if (FAudioDeviceHandle MainAudioDevice = GEngine->GetMainAudioDevice())
-		{
-			return MainAudioDevice->bOcclusionInterfaceEnabled;
-		}
-		return false;
-	}
+	ENGINE_API static bool IsOcclusionPluginLoaded();
 
 	/** Whether or not there's a reverb plugin enabled. */
 	bool IsReverbPluginEnabled() const
@@ -1388,34 +1383,14 @@ public:
 		return bReverbInterfaceEnabled;
 	}
 
-	static bool IsReverbPluginLoaded()
-	{
-		if (FAudioDeviceHandle MainAudioDevice = GEngine->GetMainAudioDevice())
-		{
-			return MainAudioDevice->bReverbInterfaceEnabled;
-		}
-		return false;
-	}
+	ENGINE_API static bool IsReverbPluginLoaded();
 
 	bool IsSourceDataOverridePluginEnabled() const
 	{
 		return bSourceDataOverrideInterfaceEnabled;
 	}
 
-	static bool IsSourceDataOverridePluginLoaded()
-	{
-		if (FAudioDeviceHandle MainAudioDevice = GEngine->GetMainAudioDevice())
-		{
-			return MainAudioDevice->bSourceDataOverrideInterfaceEnabled;
-		}
-		return false;
-	}
-
-	/** Returns if this is the multi-platform audio mixer. */
-	bool IsAudioMixerEnabled() const
-	{
-		return bAudioMixerModuleLoaded;
-	}
+	ENGINE_API static bool IsSourceDataOverridePluginLoaded();
 
 	/** Returns if stopping voices is enabled. */
 	bool IsStoppingVoicesEnabled() const
@@ -1767,12 +1742,12 @@ public:
 
 	const TMap<USoundMix*, FSoundMixState>& GetSoundMixModifiers() const
 	{
-		return SoundMixModifiers;
+		return ObjectPtrDecay(SoundMixModifiers);
 	}
 
 	const TArray<USoundMix*>& GetPrevPassiveSoundMixModifiers() const
 	{
-		return PrevPassiveSoundMixModifiers;
+		return ObjectPtrDecay(PrevPassiveSoundMixModifiers);
 	}
 
 	USoundMix* GetDefaultBaseSoundMixModifier()
@@ -1782,8 +1757,8 @@ public:
 
 	void SetSoundMixModifiers(const TMap<USoundMix*, FSoundMixState>& InSoundMixModifiers, const TArray<USoundMix*>& InPrevPassiveSoundMixModifiers, USoundMix* InDefaultBaseSoundMix)
 	{
-		SoundMixModifiers = InSoundMixModifiers;
-		PrevPassiveSoundMixModifiers = InPrevPassiveSoundMixModifiers;
+		SoundMixModifiers = ObjectPtrWrap(InSoundMixModifiers);
+		PrevPassiveSoundMixModifiers = ObjectPtrWrap(InPrevPassiveSoundMixModifiers);
 		DefaultBaseSoundMix = InDefaultBaseSoundMix;
 	}
 
@@ -1904,6 +1879,12 @@ private:
 	/** Returns the number of frames to use per precache buffer. */
 	int32 GetNumPrecacheFrames() const;
 
+	/** Called by StartSources when sounds are not prepared to Init for whatever reason */
+	void UpdateUnpreparedSound(FWaveInstance* WaveInstance, bool bGameTicking) const;
+
+	/** Adjusts the active sound duration to make up for decode latency */
+	void UpdateSoundDuration(FWaveInstance* WaveInstance, bool bGameTicking) const;
+
 	bool RemoveVirtualLoop(FActiveSound& ActiveSound);
 public:
 
@@ -1942,7 +1923,7 @@ public:
 	ENGINE_API float ClampPitch(float InPitchScale) const;
 
 	/** Overrides the attenuation scale used on a sound class. */
-	void SetSoundClassDistanceScale(USoundClass* InSoundClass, float DistanceScale, float TimeSec);
+	ENGINE_API void SetSoundClassDistanceScale(USoundClass* InSoundClass, float DistanceScale, float TimeSec);
 
 	float GetPlatformAudioHeadroom() const { check(IsInAudioThread()); return PlatformAudioHeadroom; }
 	ENGINE_API void SetPlatformAudioHeadroom(float PlatformHeadRoom);
@@ -1959,11 +1940,7 @@ public:
 	/** Whether play when silent is enabled for all sounds associated with this audio device*/
 	bool PlayWhenSilentEnabled() const { return bAllowPlayWhenSilent; }
 
-	bool IsMainAudioDevice()
-	{
-		FAudioDeviceHandle MainAudioDevice = GEngine->GetMainAudioDevice();
-		return (!MainAudioDevice || MainAudioDevice.GetAudioDevice() == this);
-	}
+	ENGINE_API bool IsMainAudioDevice() const;
 
 	/** Set whether or not we force the use of attenuation for non-game worlds (as by default we only care about game worlds) */
 	void SetUseAttenuationForNonGameWorlds(bool bInUseAttenuationForNonGameWorlds)
@@ -2035,13 +2012,13 @@ public:
 	/** The handle for this audio device used in the audio device manager. */
 	Audio::FDeviceId DeviceID;
 
-	struct ENGINE_API FAudioSpatializationInterfaceInfo
+	struct FAudioSpatializationInterfaceInfo
 	{
 		// ctors
 		FAudioSpatializationInterfaceInfo() = default;
-		FAudioSpatializationInterfaceInfo(FName InPluginName, FAudioDevice* InAudioDevice, IAudioSpatializationFactory* InAudioSpatializationFactoryPtr);
+		ENGINE_API FAudioSpatializationInterfaceInfo(FName InPluginName, FAudioDevice* InAudioDevice, IAudioSpatializationFactory* InAudioSpatializationFactoryPtr);
 
-		bool IsValid() const;
+		ENGINE_API bool IsValid() const;
 
 		FName PluginName;
 		TAudioSpatializationPtr SpatializationPlugin = nullptr;
@@ -2146,16 +2123,16 @@ private:
 	USoundMix* BaseSoundMix;
 
 	/** The Base SoundMix that should be applied by default */
-	USoundMix* DefaultBaseSoundMix;
+	TObjectPtr<USoundMix> DefaultBaseSoundMix;
 
 	/** Map of sound mixes currently affecting audio properties */
-	TMap<USoundMix*, FSoundMixState> SoundMixModifiers;
+	TMap<TObjectPtr<USoundMix>, FSoundMixState> SoundMixModifiers;
 
 	/** Map of sound mix sound class overrides. Will override any sound class effects for any sound mixes */
 	TMap<USoundMix*, FSoundMixClassOverrideMap> SoundMixClassEffectOverrides;
 
 	/** Cached array of plugin settings objects currently loaded. This is stored so we can add it in AddReferencedObjects. */
-	TArray<UObject*> PluginSettingsObjects;
+	TArray<TObjectPtr<UObject>> PluginSettingsObjects;
 
 protected:
 	/** Interface to audio effects processing */
@@ -2272,7 +2249,7 @@ private:
 
 	TArray<FActiveSound*> ActiveSounds;
 	/** Array of sound waves to add references to avoid GC until guaranteed to be done with precache or decodes. */
-	TArray<USoundWave*> ReferencedSoundWaves;
+	TArray<TObjectPtr<USoundWave>> ReferencedSoundWaves;
 
 	void UpdateReferencedSoundWaves();
 	TArray<USoundWave*> ReferencedSoundWaves_AudioThread;
@@ -2312,7 +2289,7 @@ private:
 	TMap<uint32, TPair<FReverbSettings,FInteriorSettings>> WorldIDToDefaultAudioVolumeSettingsMap;
 
 	/** List of passive SoundMixes active last frame */
-	TArray<USoundMix*> PrevPassiveSoundMixModifiers;
+	TArray<TObjectPtr<USoundMix>> PrevPassiveSoundMixModifiers;
 
 	/** A generic mapping of FNames, used to store and retrieve tokens across the engine boundary. */
 	TMap<FName, FName> AudioStateProperties;

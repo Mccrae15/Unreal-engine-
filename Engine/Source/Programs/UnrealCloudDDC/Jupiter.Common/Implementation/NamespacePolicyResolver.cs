@@ -9,10 +9,12 @@ namespace Jupiter.Common
 {
     public interface INamespacePolicyResolver
     {
+        public IEnumerable<(NamespaceId, NamespacePolicy)> GetAllPolicies();
         public NamespacePolicy GetPoliciesForNs(NamespaceId ns);
 
         static NamespaceId JupiterInternalNamespace => new NamespaceId("jupiter-internal");
     }
+
     public class NamespacePolicyResolver : INamespacePolicyResolver
     {
         private readonly IOptionsMonitor<NamespaceSettings> _namespaceSettings;
@@ -23,13 +25,22 @@ namespace Jupiter.Common
             _namespaceSettings = namespaceSettings;
             _internalNamespacePolicy = new NamespacePolicy()
             {
-                StoragePool = "persistent"
+                StoragePool = "persistent",
+                GcMethod = NamespacePolicy.StoragePoolGCMethod.None
             };
 
             // if auth is disabled add a default namespace policy that allows access to everything unless something else exists to override it
             if (!authSettings.CurrentValue.Enabled)
             {
                 _namespaceSettings.CurrentValue.Policies.TryAdd("*", new NamespacePolicy() { Acls = new List<AclEntry> { new() { Claims = new List<string> {"*"} } } });
+            }
+        }
+
+        public IEnumerable<(NamespaceId, NamespacePolicy)> GetAllPolicies()
+        {
+            foreach (KeyValuePair<string, NamespacePolicy> pair in _namespaceSettings.CurrentValue.Policies)
+            {
+                yield return (new NamespaceId(pair.Key), pair.Value);
             }
         }
 
@@ -54,14 +65,22 @@ namespace Jupiter.Common
                 return _internalNamespacePolicy;
             }
 
-            throw new UnknownNamespaceException($"Unable to find a valid policy for namespace {ns}");
+            throw new NamespaceNotFoundException(ns, $"Unable to find a valid policy for namespace {ns}");
         }
     }
 
-    public class UnknownNamespaceException : Exception
+    public class NamespaceNotFoundException : Exception
     {
-        public UnknownNamespaceException(string message) : base(message)
+        public NamespaceId Namespace { get; }
+
+        public NamespaceNotFoundException(NamespaceId @namespace) : base($"Could not find namespace {@namespace}")
         {
+            Namespace = @namespace;
+        }
+
+        public NamespaceNotFoundException(NamespaceId @namespace, string message) : base(message)
+        {
+            Namespace = @namespace;
         }
     }
 }

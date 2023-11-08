@@ -240,7 +240,7 @@ void SMaterialEditor3DPreviewViewport::Construct(const FArguments& InArgs)
 	UWorld* PreviewWorld = AdvancedPreviewScene->GetWorld();
 	if (PreviewWorld != nullptr)
 	{
-		PreviewWorld->ChangeFeatureLevel(GWorld->FeatureLevel);
+		PreviewWorld->ChangeFeatureLevel(GWorld->GetFeatureLevel());
 	}	
 
 	UEditorEngine* Editor = CastChecked<UEditorEngine>(GEngine);
@@ -867,7 +867,7 @@ private:
 
 	TSharedPtr<FSlateMaterialBrush> PreviewBrush;
 	TSharedPtr<FSlateImageBrush> CheckerboardBrush;
-	UTexture2D* CheckerboardTexture;
+	TObjectPtr<UTexture2D> CheckerboardTexture;
 	TSharedPtr<SImage> ImageWidget;
 	FPreviewBackgroundSettings BackgroundSettings;
 };

@@ -21,10 +21,14 @@ namespace UE::Interchange
 		static const FAttributeKey& GetAnimatedAttributeCurveNamesKey();
 		static const FAttributeKey& GetAnimatedAttributeStepCurveNamesKey();
 		static const FAttributeKey& GetAnimatedMaterialCurveSuffixesKey();
-		static const FAttributeKey& GetSceneNodeAnimationPayloadKeyMapKey();
-		static const FAttributeKey& GetMorphTargetNodePayloadKeyMapKey();
+		static const FAttributeKey& GetSceneNodeAnimationPayloadKeyUidMapKey();
+		static const FAttributeKey& GetSceneNodeAnimationPayloadKeyTypeMapKey();
+		static const FAttributeKey& GetMorphTargetNodePayloadKeyUidMapKey();
+		static const FAttributeKey& GetMorphTargetNodePayloadKeyTypeMapKey();
 	};
 }//ns UE::Interchange
+
+struct FInterchangeAnimationPayLoadKey;
 
 UCLASS(BlueprintType)
 class INTERCHANGEFACTORYNODES_API UInterchangeAnimSequenceFactoryNode : public UInterchangeFactoryBaseNode
@@ -51,8 +55,11 @@ public:
 
 		if (Ar.IsLoading() && bIsInitialized)
 		{
-			SceneNodeAnimationPayloadKeyMap.RebuildCache();
-			MorphTargetNodePayloadKeyMap.RebuildCache();
+			SceneNodeAnimationPayLoadKeyUidMap.RebuildCache();
+			SceneNodeAnimationPayLoadKeyTypeMap.RebuildCache();
+
+			MorphTargetNodePayloadKeyUidMap.RebuildCache();
+			MorphTargetNodePayloadKeyTypeMap.RebuildCache();
 		}
 	}
 
@@ -158,6 +165,22 @@ public:
 	bool SetCustomDoNotImportCurveWithZero(const bool& AttributeValue);
 
 	/**
+	 * Get the custom attribute AddCurveMetadataToSkeleton, return false if the attribute is not set.
+	 * 
+	 * Note - If value is true, do not import if it doesn't have any value other than zero. This is to avoid dirtying the skeleton on import.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | AnimSequence")
+	bool GetCustomAddCurveMetadataToSkeleton(bool& AttributeValue) const;
+
+	/**
+	 * Set the custom attribute AddCurveMetadataToSkeleton. Return false if the attribute cannot be set.
+	 * 
+	 * Note - If value is true, do not import if it doesn't have any value other than zero. This is to avoid dirtying the skeleton on import.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | AnimSequence")
+	bool SetCustomAddCurveMetadataToSkeleton(const bool& AttributeValue);
+	
+	/**
 	 * Get the custom attribute RemoveCurveRedundantKeys, return false if the attribute is not set.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | AnimSequence")
@@ -193,26 +216,6 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | AnimSequence")
 	bool SetCustomDeleteExistingMorphTargetCurves(const bool& AttributeValue);
-
-	/** return how many animated moprh target (moprh target are translated into a mesh node and can be animated with a float curve) this anim sequence depends on. */
-	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | AnimSequence")
-	int32 GetAnimatedMorphTargetDependeciesCount() const;
-
-	/** Get all animated moprh target unique id (moprh target are translated into a mesh node and can be animated with a float curve) this anim sequence depends on. */
-	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | AnimSequence")
-	void GetAnimatedMorphTargetDependencies(TArray<FString>& OutDependencies) const;
-
-	/** Get an animated moprh target unique id (moprh target are translated into a mesh node and can be animated with a float curve) point by the specified index. */
-	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | AnimSequence")
-	void GetAnimatedMorphTargetDependency(const int32 Index, FString& OutDependency) const;
-
-	/** Add an animated moprh target unique id (moprh target are translated into a mesh node and can be animated with a float curve). */
-	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | AnimSequence")
-	bool SetAnimatedMorphTargetDependencyUid(const FString& DependencyUid);
-
-	/** Remove one animated moprh target unique id (moprh target are translated into a mesh node and can be animated with a float curve). Return false if we cannot remove the moprh target unique id. */
-	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | AnimSequence")
-	bool RemoveAnimatedMorphTargetDependencyUid(const FString& DependencyUid);
 
 	/**
 	 * Morph target curve API End
@@ -390,28 +393,16 @@ public:
 	bool SetCustomSkeletonSoftObjectPath(const FSoftObjectPath& AttributeValue);
 
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalAnimationTrack")
-	void GetSceneNodeAnimationPayloadKeys(TMap<FString, FString>& OutSceneNodeAnimationPayloads) const;
+	void GetSceneNodeAnimationPayloadKeys(TMap<FString, FInterchangeAnimationPayLoadKey>& OutSceneNodeAnimationPayloadKeys) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalAnimationTrack")
-	bool GetAnimationPayloadKeyFromSceneNodeUid(const FString& SceneNodeUid, FString& OutPayloadKey) const;
+	void SetAnimationPayloadKeysForSceneNodeUids(const TMap<FString, FString>& SceneNodeAnimationPayloadKeyUids, const TMap<FString, uint8>& SceneNodeAnimationPayloadKeyTypes);
 
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalAnimationTrack")
-	bool SetAnimationPayloadKeyForSceneNodeUid(const FString& SceneNodeUid, const FString& PayloadKey);
+	void GetMorphTargetNodeAnimationPayloadKeys(TMap<FString, FInterchangeAnimationPayLoadKey>& OutMorphTargetNodeAnimationPayloads) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalAnimationTrack")
-	bool RemoveAnimationPayloadKeyForSceneNodeUid(const FString& SceneNodeUid);
-
-	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalAnimationTrack")
-	void GetMorphTargetNodeAnimationPayloadKeys(TMap<FString, FString>& OutMorphTargetNodeAnimationPayloads) const;
-
-	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalAnimationTrack")
-	bool GetAnimationPayloadKeyFromMorphTargetNodeUid(const FString& MorphTargetNodeUid, FString& OutPayloadKey) const;
-
-	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalAnimationTrack")
-	bool SetAnimationPayloadKeyForMorphTargetNodeUid(const FString& MorphTargetNodeUid, const FString& PayloadKey);
-
-	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalAnimationTrack")
-	bool RemoveAnimationPayloadKeyForMorphTargetNodeUid(const FString& MorphTargetNodeUid);
+	void SetAnimationPayloadKeysForMorphTargetNodeUids(const TMap<FString, FString>& MorphTargetAnimationPayloadKeyUids, const TMap<FString, uint8>& MorphTargetAnimationPayloadKeyTypes);
 
 private:
 	const UE::Interchange::FAttributeKey Macro_CustomSkeletonFactoryNodeUidKey = UE::Interchange::FAttributeKey(TEXT("SkeletonFactoryNodeUid"));
@@ -423,6 +414,7 @@ private:
 
 	const UE::Interchange::FAttributeKey Macro_CustomImportAttributeCurvesKey = UE::Interchange::FAttributeKey(TEXT("ImportAttributeCurves"));
 	const UE::Interchange::FAttributeKey Macro_CustomDoNotImportCurveWithZeroKey = UE::Interchange::FAttributeKey(TEXT("DoNotImportCurveWithZero"));
+	const UE::Interchange::FAttributeKey Macro_CustomAddCurveMetadataToSkeletonKey = UE::Interchange::FAttributeKey(TEXT("AddCurveMetadataToSkeleton"));
 	const UE::Interchange::FAttributeKey Macro_CustomRemoveCurveRedundantKeysKey = UE::Interchange::FAttributeKey(TEXT("RemoveCurveRedundantKeys"));
 	const UE::Interchange::FAttributeKey Macro_CustomMaterialDriveParameterOnCustomAttributeKey = UE::Interchange::FAttributeKey(TEXT("MaterialDriveParameterOnCustomAttribute"));
 	const UE::Interchange::FAttributeKey Macro_CustomDeleteExistingMorphTargetCurvesKey = UE::Interchange::FAttributeKey(TEXT("DeleteExistingMorphTargetCurves"));
@@ -437,6 +429,9 @@ private:
 	UE::Interchange::TArrayAttributeHelper<FString> AnimatedAttributeStepCurveNames;
 	UE::Interchange::TArrayAttributeHelper<FString> AnimatedMaterialCurveSuffixes;
 
-	UE::Interchange::TMapAttributeHelper<FString, FString> SceneNodeAnimationPayloadKeyMap;
-	UE::Interchange::TMapAttributeHelper<FString, FString> MorphTargetNodePayloadKeyMap;
+	UE::Interchange::TMapAttributeHelper<FString, FString>	SceneNodeAnimationPayLoadKeyUidMap;
+	UE::Interchange::TMapAttributeHelper<FString, uint8>	SceneNodeAnimationPayLoadKeyTypeMap;
+
+	UE::Interchange::TMapAttributeHelper<FString, FString>	MorphTargetNodePayloadKeyUidMap;
+	UE::Interchange::TMapAttributeHelper<FString, uint8>	MorphTargetNodePayloadKeyTypeMap;
 };

@@ -19,23 +19,15 @@ namespace UnrealBuildTool.Rules
 					"Json",
 					"Cbor",
 					"Messaging",
+					"Projects",
 					"Serialization",
 					"TraceLog",
-					"Sockets",
+					"Sockets"
 				});
 
 			PrivateIncludePathModuleNames.AddRange(
 				new string[] {
 					"MessagingCommon",
-				});
-
-			PrivateIncludePaths.AddRange(
-				new string[] {
-					"UdpMessaging/Private",
-					"UdpMessaging/Private/Shared",
-					"UdpMessaging/Private/Transport",
-					"UdpMessaging/Private/Tunnel",
-					"UdpMessaging/Public/Shared",
 				});
 
 			if (Target.Type == TargetType.Editor)

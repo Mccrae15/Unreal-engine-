@@ -73,6 +73,12 @@ namespace UE::Tasks
 	const TCHAR* ToString(EExtendedTaskPriority ExtendedPriority);
 	bool ToExtendedTaskPriority(const TCHAR* ExtendedPriorityStr, EExtendedTaskPriority& OutExtendedPriority);
 
+	namespace Private
+	{
+		CORE_API void TranslatePriority(ENamedThreads::Type ThreadType, ETaskPriority& OutPriority, EExtendedTaskPriority& OutExtendedPriority);
+		CORE_API ENamedThreads::Type TranslatePriority(ETaskPriority Priority, EExtendedTaskPriority ExtendedPriority);
+	}
+
 	class FPipe;
 
 	namespace Private
@@ -120,7 +126,7 @@ namespace UE::Tasks
 				}
 			}
 
-			uint32 GetRefCount(std::memory_order MemoryOrder) const
+			uint32 GetRefCount(std::memory_order MemoryOrder = std::memory_order_relaxed) const
 			{
 				return RefCount.load(MemoryOrder);
 			}
@@ -162,9 +168,7 @@ namespace UE::Tasks
 				TaskTrace::Destroyed(GetTraceId());
 			}
 
-			// will be called to execute the task, must be implemented by a derived class that should call `FTaskBase::TryExecute` and pass the task body
-			// @see TExecutableTask::TryExecuteTaskVirtual
-			virtual bool TryExecuteTaskVirtual() = 0;
+			virtual void ExecuteTask() = 0;
 
 		public:
 			// returns true if it's valid to wait for the task completion.
@@ -180,6 +184,11 @@ namespace UE::Tasks
 				return ExtendedPriority >= EExtendedTaskPriority::GameThreadNormalPri;
 			}
 #endif
+
+			ETaskPriority GetPriority() const
+			{
+				return LowLevelTask.GetPriority();
+			}
 
 			EExtendedTaskPriority GetExtendedPriority() const
 			{
@@ -207,6 +216,8 @@ namespace UE::Tasks
 					return false;
 				}
 
+				LLM_SCOPE_BYNAME(TEXT("Tasks/FTaskBase/AddPrerequisites"));
+
 				Prerequisite.AddRef(); // keep it alive until this task's execution
 				Prerequisites.Push(&Prerequisite); // release memory order
 				return true;
@@ -218,7 +229,7 @@ namespace UE::Tasks
 			template<typename HigherLevelTaskType, decltype(std::declval<HigherLevelTaskType>().Pimpl)* = nullptr>
 			bool AddPrerequisites(const HigherLevelTaskType& Prerequisite)
 			{
-				return AddPrerequisites(*Prerequisite.Pimpl);
+				return Prerequisite.IsValid() ? AddPrerequisites(*Prerequisite.Pimpl) : false;
 			}
 
 			// The task will be executed only when all prerequisites are completed.
@@ -255,8 +266,15 @@ namespace UE::Tasks
 						Prerequisite = Prereq.Pimpl;
 					}
 
+					if (Prerequisite == nullptr)
+					{
+						++NumCompletedPrerequisites;
+						continue;
+					}
+
 					if (Prerequisite->AddSubsequent(*this)) // acq_rel memory order
 					{
+						LLM_SCOPE_BYNAME(TEXT("Tasks/FTaskBase/AddPrerequisites"));
 						Prerequisite->AddRef(); // keep it alive until this task's execution
 						Prerequisites.Push(Prerequisite); // release memory order
 					}
@@ -275,6 +293,7 @@ namespace UE::Tasks
 			// returns false if the task is already completed and the subsequent wasn't added
 			bool AddSubsequent(FTaskBase& Subsequent)
 			{
+				LLM_SCOPE_BYNAME(TEXT("Tasks/FTaskBase/AddSubsequent"));
 				TaskTrace::SubsequentAdded(GetTraceId(), Subsequent.GetTraceId()); // doesn't matter if we suceeded below, we need to record task dependency
 				return Subsequents.PushIfNotClosed(&Subsequent);
 			}
@@ -296,9 +315,9 @@ namespace UE::Tasks
 
 			// Tries to schedule task execution. Returns false if the task has incomplete dependencies (prerequisites or is blocked by a pipe). 
 			// In this case the task will be automatically scheduled when all dependencies are completed.
-			bool TryLaunch()
+			bool TryLaunch(uint64 TaskSize)
 			{
-				TaskTrace::Launched(GetTraceId(), LowLevelTask.GetDebugName(), true, (ENamedThreads::Type)0xff);
+				TaskTrace::Launched(GetTraceId(), LowLevelTask.GetDebugName(), true, TranslatePriority(LowLevelTask.GetPriority(), ExtendedPriority), TaskSize);
 				return TryUnlock();
 			}
 
@@ -308,10 +327,12 @@ namespace UE::Tasks
 				return Subsequents.IsClosed();
 			}
 
-			// Tries to pull out the task from the system and execute it. If the task is locked by either prerequisites or nested tasks, tries to retract and execute them recursively. 
-			// @return true if task is completed, not necessarily by retraction. If the task is being executed (or its dependency) in parallel, it doesn't wait for task completion and 
-			// returns false immediately.
-			CORE_API bool TryRetractAndExecute(uint32 RecursionDepth = 0);
+			// Tries to pull out the task from the system and execute it. If the task is locked by either prerequisites or nested tasks, tries to 
+			// retract and execute them recursively. 
+			// WARNING: the function can return `true` even if the task is not completed yet. The `true` means only that the task is already
+			// executed and has no other pending dependencies, but can be in the process of completion (concurrently). The caller still needs 
+			// to wait for completion explicitly.
+			CORE_API bool TryRetractAndExecute(FTimeout Timeout, uint32 RecursionDepth = 0);
 
 			// releases internal reference and maintains low-level task state. must be called iff the task was never launched, otherwise 
 			// the scheduler will do this in due course
@@ -330,6 +351,7 @@ namespace UE::Tasks
 
 				if (Nested.AddSubsequent(*this)) // "release" memory order
 				{
+					LLM_SCOPE_BYNAME(TEXT("Tasks/FTaskBase/AddNested"));
 					Nested.AddRef(); // keep it alive as we store it in `Prerequisites` and we can need it to try to retract it. it's released on closing the task
 					Prerequisites.Push(&Nested);
 				}
@@ -344,33 +366,16 @@ namespace UE::Tasks
 			// `Wait(FTimespan::Zero())` still tries to retract and execute the task, use `IsCompleted()` to check for completeness. 
 			// The version w/o timeout is slightly more efficient.
 			// @return true if the task is completed
-			CORE_API void Wait();
-			CORE_API bool Wait(FTimespan Timeout);
-
-			// waits until the task is completed while executing other tasks
-			void BusyWait()
-			{
-				TaskTrace::FWaitingScope WaitingScope(GetTraceId());
-				TRACE_CPUPROFILER_EVENT_SCOPE(Tasks::BusyWait);
-				
-				if (!TryRetractAndExecute())
-				{
-					LowLevelTasks::BusyWaitUntil([this] { return IsCompleted(); });
-				}
-			}
+			CORE_API bool Wait(FTimeout Timeout);
 
 			// waits until the task is completed or waiting timed out, while executing other tasks
-			bool BusyWait(FTimespan InTimeout)
+			bool BusyWait(FTimeout Timeout)
 			{
 				TaskTrace::FWaitingScope WaitingScope(GetTraceId());
 				TRACE_CPUPROFILER_EVENT_SCOPE(Tasks::BusyWait);
 
-				FTimeout Timeout{ InTimeout };
-				
-				if (TryRetractAndExecute())
-				{
-					return true;
-				}
+				// ignore the result as we still have to make sure the task is completed upon returning from this function call
+				TryRetractAndExecute(Timeout);
 
 				LowLevelTasks::BusyWaitUntil([this, Timeout] { return IsCompleted() || Timeout; });
 				return IsCompleted();
@@ -383,10 +388,8 @@ namespace UE::Tasks
 				TaskTrace::FWaitingScope WaitingScope(GetTraceId());
 				TRACE_CPUPROFILER_EVENT_SCOPE(Tasks::BusyWait);
 
-				if (TryRetractAndExecute())
-				{
-					return true;
-				}
+				// ignore the result as we still have to make sure the task is completed upon returning from this function call
+				TryRetractAndExecute(FTimeout::Never());
 
 				LowLevelTasks::BusyWaitUntil(
 					[this, Condition = Forward<ConditionType>(Condition)]{ return IsCompleted() || Condition(); }
@@ -404,12 +407,10 @@ namespace UE::Tasks
 			}
 
 		protected:
-			using FTaskBodyType = void(*)(FTaskBase&);
-
 			// tries to get execution permission and if successful, executes given task body and completes the task if there're no pending nested tasks. 
 			// does all required accounting before/after task execution. the task can be deleted as a result of this call.
 			// @returns true if the task was executed by the current thread
-			FORCENOINLINE bool TryExecute(FTaskBodyType TaskBody)
+			bool TryExecuteTask()
 			{
 				if (!TrySetExecutionFlag())
 				{
@@ -430,8 +431,9 @@ namespace UE::Tasks
 				}
 
 				{
+					UE::FInheritedContextScope InheritedContextScope = RestoreInheritedContext();
 					TaskTrace::FTaskTimingEventScope TaskEventScope(GetTraceId());
-					TaskBody(*this);
+					ExecuteTask();
 				}
 
 				if (GetPipe() != nullptr)
@@ -482,12 +484,6 @@ namespace UE::Tasks
 
 			CORE_API void ClearPipe();
 
-			bool TryExecuteTask()
-			{
-				UE::FInheritedContextScope InheritedContextScope = RestoreInheritedContext();
-				return TryExecuteTaskVirtual();
-			}
-
 		private:
 			// A task can be locked for execution (by prerequisites or if it's not launched yet) or for completion (by nested tasks).
 			// This method is called to unlock the task and so can result in its scheduling (and execution) or completion
@@ -525,8 +521,9 @@ namespace UE::Tasks
 							FTaskBase* PrevPipedTask = TryPushIntoPipe();
 							if (PrevPipedTask != nullptr) // the pipe is blocked
 							{
+								LLM_SCOPE_BYNAME(TEXT("Tasks/FTaskBase/AddPrerequisites"));
 								// the prev task in pipe's chain becomes this task's prerequisite, to enabled piped task retraction.
-								// no need to AddRef as it's already sorted in `FPipe::PushIntoPipe`
+								// its ref count already accounted for this ref. the ref will be released when the prereq is not needed anymore
 								Prerequisites.Push(PrevPipedTask);
 								return false;
 							}
@@ -540,7 +537,7 @@ namespace UE::Tasks
 						// "inline" tasks are not scheduled but executed straight away
 						TryExecuteTask(); // result doesn't matter, this can fail if task retraction jumped in and got execution
 						// permission between this thread unlocked the task and tried to execute it
-						verify(LowLevelTask.TryCancel());
+						ReleaseInternalReference();
 					}
 					else if (ExtendedPriority == EExtendedTaskPriority::TaskEvent)
 					{
@@ -551,7 +548,7 @@ namespace UE::Tasks
 							// task events are used as an empty prerequisites/subsequents
 							ReleasePrerequisites();
 							Close();
-							verify(LowLevelTask.TryCancel()); // releases the internal reference
+							ReleaseInternalReference();
 						}
 					}
 					else
@@ -663,32 +660,24 @@ namespace UE::Tasks
 		};
 
 		// Task implementation that can be executed, as it stores task body. Generic version (for tasks that return non-void results).
-		// In most cases it should be allocated on the heap and used with TRefCountPtr, e.g. @see FTaskHandle. With care, can be allocated on the stack, e.g. see 
-		// WaitingTask in FTaskBase::Wait().
-		// Implements memory allocation from a pooled fixed-size allocator tuned for the everage UE task size
+		// In most cases it should be allocated on the heap and used with TRefCountPtr, e.g. @see FTaskHandle. 
 		template<typename TaskBodyType, typename ResultType = TInvokeResult_T<TaskBodyType>, typename Enable = void>
 		class TExecutableTaskBase : public TTaskWithResult<ResultType>
 		{
 			UE_NONCOPYABLE(TExecutableTaskBase);
 
 		public:
-			virtual bool TryExecuteTaskVirtual() override
+			virtual void ExecuteTask() override final
 			{
-				return FTaskBase::TryExecute(
-					[](FTaskBase& Task)
-					{
-						TExecutableTaskBase& This = static_cast<TExecutableTaskBase&>(Task);
-						new(&This.ResultStorage) ResultType{ Invoke(*This.TaskBodyStorage.GetTypedPtr()) };
+				new(&this->ResultStorage) ResultType{ Invoke(*TaskBodyStorage.GetTypedPtr()) };
 
-						// destroy the task body as soon as we are done with it, as it can have captured data sensitive to destruction order
-						DestructItem(This.TaskBodyStorage.GetTypedPtr());
-					}
-				);
+				// destroy the task body as soon as we are done with it, as it can have captured data sensitive to destruction order
+				DestructItem(TaskBodyStorage.GetTypedPtr());
 			}
 
 		protected:
-			TExecutableTaskBase(const TCHAR* InDebugName, TaskBodyType&& TaskBody, ETaskPriority InPriority, EExtendedTaskPriority InExtendedPriority) :
-				TTaskWithResult<ResultType>(InDebugName, InPriority, InExtendedPriority, 2)
+			TExecutableTaskBase(const TCHAR* InDebugName, TaskBodyType&& TaskBody, ETaskPriority InPriority, EExtendedTaskPriority InExtendedPriority) 
+				: TTaskWithResult<ResultType>(InDebugName, InPriority, InExtendedPriority, 2)
 				// 2 init refs: one for the initial reference (we don't increment it on passing to `TRefCountPtr`), and one for the internal 
 				// reference that keeps the task alive while it's in the system. is released either on task completion or by the scheduler after
 				// trying to execute the task
@@ -707,18 +696,12 @@ namespace UE::Tasks
 			UE_NONCOPYABLE(TExecutableTaskBase);
 
 		public:
-			virtual bool TryExecuteTaskVirtual() override
+			virtual void ExecuteTask() override final
 			{
-				return TryExecute(
-					[](FTaskBase& Task)
-					{
-						TExecutableTaskBase& This = static_cast<TExecutableTaskBase&>(Task);
-						Invoke(*This.TaskBodyStorage.GetTypedPtr());
+				Invoke(*TaskBodyStorage.GetTypedPtr());
 
-						// destroy the task body as soon as we are done with it, as it can have captured data sensitive to destruction order
-						DestructItem(This.TaskBodyStorage.GetTypedPtr());
-					}
-				);
+				// destroy the task body as soon as we are done with it, as it can have captured data sensitive to destruction order
+				DestructItem(TaskBodyStorage.GetTypedPtr());
 			}
 
 		protected:
@@ -752,6 +735,7 @@ namespace UE::Tasks
 			// a helper that deduces the template argument
 			static TExecutableTask* Create(const TCHAR* InDebugName, TaskBodyType&& TaskBody, ETaskPriority InPriority, EExtendedTaskPriority InExtendedPriority)
 			{
+				LLM_SCOPE_BYNAME(TEXT("Tasks/TExecutableTask/Create"));
 				return new TExecutableTask(InDebugName, MoveTemp(TaskBody), InPriority, InExtendedPriority);
 			}
 
@@ -777,6 +761,7 @@ namespace UE::Tasks
 		public:
 			static FTaskEventBase* Create(const TCHAR* DebugName)
 			{
+				LLM_SCOPE_BYNAME(TEXT("Tasks/FTaskEventBase/Create"));
 				return new FTaskEventBase(DebugName);
 			}
 
@@ -787,13 +772,13 @@ namespace UE::Tasks
 			FTaskEventBase(const TCHAR* InDebugName)
 				: FTaskBase(/*InitRefCount=*/ 1) // for the initial reference (we don't increment it on passing to `TRefCountPtr`)
 			{
+				TaskTrace::Created(GetTraceId(), sizeof(*this));
 				Init(InDebugName, ETaskPriority::Normal, EExtendedTaskPriority::TaskEvent);
 			}
 
-			virtual bool TryExecuteTaskVirtual() override
+			virtual void ExecuteTask() override final
 			{
 				checkNoEntry(); // never executed because it doesn't have a task body
-				return true;
 			}
 		};
 
@@ -810,36 +795,19 @@ namespace UE::Tasks
 			TaskEventBaseAllocator.Free(Ptr);
 		}
 
-		// task retraction of multiple tasks. 
-		// @return true if all tasks are completed
+		// task retraction of multiple tasks, with timeout. The timeout is rounded up to any successful task execution, which means that it can 
+		// time out only in-between individual task retractions.
+		// WARNING: the function can return `true` even if some tasks are still not completed. The `true` means only that the tasks are executed
+		// and have no other pending dependencies, but can be still in the process of completion (concurrently). The caller still needs to wait 
+		// for completion.
 		template<typename TaskCollectionType>
-		bool TryRetractAndExecute(const TaskCollectionType& Tasks)
+		bool TryRetractAndExecute(const TaskCollectionType& Tasks, FTimeout Timeout)
 		{
 			bool bResult = true;
 
 			for (auto& Task : Tasks)
 			{
-				if (Task.IsValid() && !Task.Pimpl->TryRetractAndExecute())
-				{
-					bResult = false; // do not stop here to let this thread to help in executing tasks as much as possible, as it's waiting for their completion anyway
-				}
-			}
-
-			return bResult;
-		}
-
-		// task retraction of multiple tasks, with timeout. The timeout is rounded up to any successful task execution, which means that it can time out only in-between individual task
-		// retractions.
-		// @return true if all tasks are completed
-		template<typename TaskCollectionType>
-		bool TryRetractAndExecute(const TaskCollectionType& Tasks, FTimespan InTimeout)
-		{
-			FTimeout Timeout{ InTimeout };
-			bool bResult = true;
-
-			for (auto& Task : Tasks)
-			{
-				if (Task.IsValid() && !Task.Pimpl->TryRetractAndExecute())
+				if (Task.IsValid() && !Task.Pimpl->TryRetractAndExecute(Timeout))
 				{
 					bResult = false;  // do not stop here to let this thread to help in executing tasks as much as possible, as it's waiting for their completion anyway
 				}

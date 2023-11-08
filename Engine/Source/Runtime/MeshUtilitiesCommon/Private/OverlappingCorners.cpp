@@ -40,7 +40,7 @@ FOverlappingCorners::FOverlappingCorners(const FLayoutUV::IMeshView& MeshView, f
 	VertIndexAndZ.Reserve(NumWedges);
 	for (int32 WedgeIndex = 0; WedgeIndex < NumWedges; WedgeIndex++)
 	{
-		new(VertIndexAndZ)FIndexAndZ(WedgeIndex, MeshView.GetPosition(WedgeIndex));
+		VertIndexAndZ.Emplace(WedgeIndex, MeshView.GetPosition(WedgeIndex));
 	}
 
 	// Sort the vertices by z value
@@ -173,4 +173,3 @@ uint32 FOverlappingCorners::GetAllocatedSize(void) const
 
 	return BaseMemoryAllocated + ArraysMemory + SetsMemory;
 }
-

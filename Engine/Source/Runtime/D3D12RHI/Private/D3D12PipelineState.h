@@ -5,10 +5,8 @@
 #pragma once
 
 #include "Async/AsyncWork.h"
-
-#if PLATFORM_HOLOLENS
-	#include "d3d12.h"
-#endif
+#include "D3D12DiskCache.h"
+#include "D3D12Shader.h"
 
 class FD3D12VertexShader;
 class FD3D12MeshShader;
@@ -67,7 +65,7 @@ struct FD3D12_GRAPHICS_PIPELINE_STATE_DESC
 	D3D12_BLEND_DESC BlendState;
 #endif // #if !D3D12_USE_DERIVED_PSO || D3D12_USE_DERIVED_PSO_SHADER_EXPORTS
 #if !D3D12_USE_DERIVED_PSO
-	uint32 SampleMask;;
+	uint32 SampleMask;
 	D3D12_RASTERIZER_DESC RasterizerState;
 	D3D12_DEPTH_STENCIL_DESC1 DepthStencilState;
 #endif // #if !D3D12_USE_DERIVED_PSO
@@ -251,7 +249,7 @@ template <> struct equality_pipeline_state_desc<FD3D12ComputePipelineStateDesc>
 	bool operator()(const FD3D12ComputePipelineStateDesc& lhs, const FD3D12ComputePipelineStateDesc& rhs)
 	{
 		PSO_IF_NOT_EQUAL_RETURN_FALSE(Desc.CS.BytecodeLength)
-#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
+#if PLATFORM_WINDOWS
 		PSO_IF_NOT_EQUAL_RETURN_FALSE(Desc.Flags)
 #endif
 		PSO_IF_NOT_EQUAL_RETURN_FALSE(Desc.pRootSignature)

@@ -13,6 +13,7 @@
 #include "AdaptiveStreamingPlayerEvents.h"
 #include "AdaptiveStreamingPlayerSubtitles.h"
 #include "AdaptiveStreamingPlayerResourceRequest.h"
+#include "IElectraPlayerDataCache.h"
 
 class IOptionPointerValueContainer;
 
@@ -38,9 +39,12 @@ public:
 
 	//-------------------------------------------------------------------------
 	// Various resource providers/delegates
+	// These must be set prior to calling `Initialize()` and MUST NOT be changed
+	// until player destruction.
 	//
 	virtual void SetStaticResourceProviderCallback(const TSharedPtr<IAdaptiveStreamingPlayerResourceProvider, ESPMode::ThreadSafe>& InStaticResourceProvider) = 0;
 	virtual void SetVideoDecoderResourceDelegate(const TSharedPtr<IVideoDecoderResourceDelegate, ESPMode::ThreadSafe>& ResourceDelegate) = 0;
+	virtual void SetPlayerDataCache(const TSharedPtr<IElectraPlayerDataCache, ESPMode::ThreadSafe>& InPlayerDataCache) = 0;
 
 
 	//-------------------------------------------------------------------------
@@ -130,6 +134,8 @@ public:
 		TOptional<bool> bOptimizeForScrubbing;
 		// Allowed distance to last performed seek to save a redundant new seek.
 		TOptional<double> DistanceThreshold;
+		// Ignore the seek for sequence index updates
+		TOptional<bool> bIgnoreForSequenceIndex;
 	};
 	
 	/**
@@ -213,6 +219,43 @@ public:
 
 
 	//-------------------------------------------------------------------------
+	// "Trickplay" related functions
+	//
+	enum class EPlaybackRateType
+	{
+		// Smooth playback, not dropping any frames.
+		Unthinned,
+		// Dropping frames
+		Thinned
+	};
+	/**
+	 * Returns ranges the playback rate can be set to.
+	 * There are two types, one `Unthinned`, where (ideally) no frames will be dropped and
+	 * `Thinned`, where frames will be dropped to maintain the playback rate.
+	 * 
+	 * Either way, the player will not resample audio or generate interpolated frames of video.
+	 * Decoded samples will be delivered to the renderer as they are. It is also up to the
+	 * renderers to consume the data at a faster or slower rate to actually realize the desired
+	 * playback rate.
+	 * 
+	 * The range of supported rates depends on the type of media and the decoder capability to
+	 * decode faster than realtime. If the media allows for adaptive bitrate selection the player
+	 * will choose the stream to play back accordingly.
+	 * In thinned mode it will need to drop and not decode samples, so the renderer will not
+	 * receive all the possible data.
+	 * 
+	 * Live streams will only allow for rates of 0.0 (pause) and 1.0 (real time play forward).
+	 */
+	virtual TRangeSet<double> GetSupportedRates(EPlaybackRateType InForPlayRateType) = 0;
+
+	struct FTrickplayParams
+	{
+	};
+	virtual void SetPlayRate(double InDesiredPlayRate, const FTrickplayParams& InParameters) = 0;
+	virtual double GetPlayRate() const = 0;
+
+
+	//-------------------------------------------------------------------------
 	// Error related functions
 	//
 	//! Returns the error that has caused playback issues.
@@ -284,13 +327,10 @@ public:
 
 
 	//-------------------------------------------------------------------------
-	// Platform specific functions
+	// Special functions needed for application suspend & resume.
 	//
-#if PLATFORM_ANDROID
-	virtual void Android_UpdateSurface(const TSharedPtr<IOptionPointerValueContainer>& Surface) = 0;
-	virtual void Android_SuspendOrResumeDecoder(bool bSuspend) = 0;
-	static FParamDict& Android_Workarounds(FStreamCodecInformation::ECodec InForCodec);
-#endif
+	virtual void SuspendOrResumeDecoders(bool bSuspend, const FParamDict& InOptions) = 0;
+
 
 	//-------------------------------------------------------------------------
 	// Debug functions

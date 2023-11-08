@@ -5,6 +5,7 @@
 #include "LargeWorldCoordinates.ush"
 #include "OctahedralCommon.ush"
 #include "/Engine/Shared/LightSceneData.h"
+#include "/Engine/Shared/SceneDefinitions.h"
 
 #ifndef USE_GLOBAL_GPU_SCENE_DATA
 	#define USE_GLOBAL_GPU_SCENE_DATA 0
@@ -59,78 +60,27 @@
 	#endif
 #endif
 
-// Must match PrimitiveUniformShaderParameters.h
-#define PRIMITIVE_SCENE_DATA_FLAG_CAST_SHADOWS							0x1
-#define PRIMITIVE_SCENE_DATA_FLAG_USE_SINGLE_SAMPLE_SHADOW_SL			0x2
-#define PRIMITIVE_SCENE_DATA_FLAG_USE_VOLUMETRIC_LM_SHADOW_SL			0x4
-#define PRIMITIVE_SCENE_DATA_FLAG_DECAL_RECEIVER						0x8
-#define PRIMITIVE_SCENE_DATA_FLAG_CACHE_SHADOW_AS_STATIC				0x10
-#define PRIMITIVE_SCENE_DATA_FLAG_OUTPUT_VELOCITY						0x20
-#define PRIMITIVE_SCENE_DATA_FLAG_DETERMINANT_SIGN						0x40
-#define PRIMITIVE_SCENE_DATA_FLAG_HAS_DISTANCE_FIELD_REPRESENTATION		0x80
-#define PRIMITIVE_SCENE_DATA_FLAG_HAS_CAPSULE_REPRESENTATION			0x100
-#define PRIMITIVE_SCENE_DATA_FLAG_HAS_CAST_CONTACT_SHADOW				0x200
-#define PRIMITIVE_SCENE_DATA_FLAG_HAS_PRIMITIVE_CUSTOM_DATA				0x400
-#define PRIMITIVE_SCENE_DATA_FLAG_LIGHTING_CHANNEL_0					0x800
-#define PRIMITIVE_SCENE_DATA_FLAG_LIGHTING_CHANNEL_1					0x1000
-#define PRIMITIVE_SCENE_DATA_FLAG_LIGHTING_CHANNEL_2					0x2000
-#define PRIMITIVE_SCENE_DATA_FLAG_HAS_INSTANCE_LOCAL_BOUNDS				0x4000
-#define PRIMITIVE_SCENE_DATA_FLAG_EVALUATE_WORLD_POSITION_OFFSET		0x8000
-#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_GAME						0x10000
-#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_EDITOR						0x20000
-#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_REFLECTION_CAPTURES		0x40000
-#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_REAL_TIME_SKY_CAPTURES		0x80000
-#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_RAY_TRACING				0x100000
-#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_SCENE_CAPTURE_ONLY			0x200000
-#define PRIMITIVE_SCENE_DATA_FLAG_HIDDEN_IN_SCENE_CAPTURE				0x400000
-#define PRIMITIVE_SCENE_DATA_FLAG_FORCE_HIDDEN							0x800000 // Mobile allocates only 24 bits for primitive flags
-#define PRIMITIVE_SCENE_DATA_FLAG_CAST_HIDDEN_SHADOW					0x1000000
-#define PRIMITIVE_SCENE_DATA_FLAG_HAS_NANITE_IMPOSTER					0x2000000
-#define PRIMITIVE_SCENE_DATA_FLAG_INSTANCE_DRAW_DISTANCE_CULL			0x4000000
-#define PRIMITIVE_SCENE_DATA_FLAG_WPO_DISABLE_DISTANCE					0x8000000
-#define PRIMITIVE_SCENE_DATA_FLAG_WRITES_CUSTOM_DEPTH_STENCIL			0x10000000
-#define PRIMITIVE_SCENE_DATA_FLAG_REVERSE_CULLING						0x20000000
-#define PRIMITIVE_SCENE_DATA_FLAG_HOLDOUT								0x40000000
-#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_LUMEN_SCENE				0x80000000
-
 uint GetDefaultPrimitiveSceneDataFlags()
 {
 	// Should match FPrimitiveUniformShaderParametersBuilder::Default()
 	return
 		PRIMITIVE_SCENE_DATA_FLAG_CAST_SHADOWS |
 		PRIMITIVE_SCENE_DATA_FLAG_HAS_CAST_CONTACT_SHADOW |
-		PRIMITIVE_SCENE_DATA_FLAG_EVALUATE_WORLD_POSITION_OFFSET |
-		PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_GAME |
-		PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_EDITOR |
-		PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_REFLECTION_CAPTURES |
-		PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_REAL_TIME_SKY_CAPTURES |
-		PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_RAY_TRACING;
+		PRIMITIVE_SCENE_DATA_FLAG_EVALUATE_WORLD_POSITION_OFFSET;
 }
 
-// GPUCULL_TODO: Eventually we need to remove this workaround
-#define VF_TREAT_INSTANCE_ID_OFFSET_AS_PRIMITIVE_ID_FLAG (1U << 31U)
+uint GetDefaultPrimitiveVisibilityFlags()
+{
+	// Should match FPrimitiveUniformShaderParametersBuilder::Default()
+	return
+		PRIMITIVE_VISIBILITY_FLAG_VISIBLE_IN_GAME |
+		PRIMITIVE_VISIBILITY_FLAG_VISIBLE_IN_EDITOR |
+		PRIMITIVE_VISIBILITY_FLAG_VISIBLE_IN_REFLECTION_CAPTURES |
+		PRIMITIVE_VISIBILITY_FLAG_VISIBLE_IN_REAL_TIME_SKY_CAPTURES |
+		PRIMITIVE_VISIBILITY_FLAG_VISIBLE_IN_RAY_TRACING;
+}
 
-#define PRIMITIVE_ID_NUM_BITS				(20u) // Max of 1,048,576 primitives
-#define INSTANCE_SCENE_DATA_FLAGS_NUM_BITS	(12u) // Max of 12 flags
-#define INSTANCE_RELATIVE_ID_NUM_BITS		(24u) // Max of 16,777,216 instances per primitive
-#define INSTANCE_CUSTOM_DATA_COUNT_NUM_BITS	 (8u) // Max of 255 custom data floats per instance
-
-#define PRIMITIVE_ID_MASK			((1u << PRIMITIVE_ID_NUM_BITS) - 1u)
-#define INSTANCE_RELATIVE_ID_MASK	((1u << INSTANCE_RELATIVE_ID_NUM_BITS) - 1u)
-
-#define INVALID_PRIMITIVE_ID PRIMITIVE_ID_MASK
 #define INVALID_INSTANCE_PAYLOAD_OFFSET (0xFFFFFFFFu)
-
-// Must match InstanceUniformShaderParameters.h
-#define INSTANCE_SCENE_DATA_FLAG_DETERMINANT_SIGN			0x1
-#define INSTANCE_SCENE_DATA_FLAG_HAS_RANDOM					0x2
-#define INSTANCE_SCENE_DATA_FLAG_HAS_CUSTOM_DATA			0x4
-#define INSTANCE_SCENE_DATA_FLAG_HAS_DYNAMIC_DATA			0x8
-#define INSTANCE_SCENE_DATA_FLAG_HAS_LIGHTSHADOW_UV_BIAS	0x10
-#define INSTANCE_SCENE_DATA_FLAG_HAS_HIERARCHY_OFFSET		0x20
-#define INSTANCE_SCENE_DATA_FLAG_HAS_LOCAL_BOUNDS			0x40
-#define INSTANCE_SCENE_DATA_FLAG_HAS_EDITOR_DATA			0x80 // Mobile allocates only 8 bits for instance flags
-#define INSTANCE_SCENE_DATA_FLAG_IS_RAYTRACING_FAR_FIELD	0x100
 
 #if PLATFORM_ALLOW_SCENE_DATA_COMPRESSED_TRANSFORMS
 	static const uint InstanceTransformSizeFloat4Count = 2u; // compressed transform
@@ -142,7 +92,8 @@ uint GetDefaultPrimitiveSceneDataFlags()
 
 struct FPrimitiveSceneData
 {
-	uint		Flags; // TODO: Use 16 bits?
+	uint		Flags;
+	uint		VisibilityFlags;
 	int			InstanceSceneDataOffset; // Link to the range of instances that belong to this primitive
 	int			NumInstanceSceneDataEntries;
 	int			PersistentPrimitiveIndex;
@@ -172,7 +123,8 @@ struct FPrimitiveSceneData
 	float3		LocalObjectBoundsMax;
 	float		ObjectBoundsZ;
 	uint		InstancePayloadDataOffset;
-	uint		InstancePayloadDataStride; // TODO: Use 16 bits? 8 bits?
+	uint		InstancePayloadDataStride;
+	uint		InstancePayloadExtensionSize;
 	float3		InstanceLocalBoundsCenter;
 	float3		InstanceLocalBoundsExtent;
 	float3		WireframeColor; // TODO: Should refactor out all editor data into a separate buffer
@@ -181,7 +133,9 @@ struct FPrimitiveSceneData
 	float2 		InstanceDrawDistanceMinMaxSquared;
 	float		InstanceWPODisableDistanceSquared;
 	uint		NaniteRayTracingDataOffset;
-	float		MaxWPODisplacement;
+	float		MaxWPOExtent;
+	float		MinMaterialDisplacement;
+	float		MaxMaterialDisplacement;
 	uint		CustomStencilValueAndMask;
 	float4		CustomPrimitiveData[NUM_CUSTOM_PRIMITIVE_DATA]; // TODO: Move to associated array to shrink primitive data and pack cachelines more effectively
 };
@@ -192,6 +146,7 @@ FPrimitiveSceneData GetPrimitiveDataFromUniformBuffer()
 	FPrimitiveSceneData PrimitiveData;
 
 	PrimitiveData.Flags								= Primitive.Flags;
+	PrimitiveData.VisibilityFlags					= Primitive.VisibilityFlags;
 	PrimitiveData.InstanceSceneDataOffset			= Primitive.InstanceSceneDataOffset;
 	PrimitiveData.NumInstanceSceneDataEntries		= Primitive.NumInstanceSceneDataEntries;
 	PrimitiveData.SingleCaptureIndex				= Primitive.SingleCaptureIndex;
@@ -221,6 +176,7 @@ FPrimitiveSceneData GetPrimitiveDataFromUniformBuffer()
 	PrimitiveData.ObjectBoundsZ						= Primitive.ObjectBoundsZ;
 	PrimitiveData.InstancePayloadDataOffset			= Primitive.InstancePayloadDataOffset;
 	PrimitiveData.InstancePayloadDataStride			= Primitive.InstancePayloadDataStride;
+	PrimitiveData.InstancePayloadExtensionSize		= Primitive.InstancePayloadExtensionSize;
 	PrimitiveData.InstanceLocalBoundsCenter			= Primitive.InstanceLocalBoundsCenter;
 	PrimitiveData.InstanceLocalBoundsExtent			= Primitive.InstanceLocalBoundsExtent;
 	PrimitiveData.WireframeColor					= Primitive.WireframeColor;
@@ -230,7 +186,9 @@ FPrimitiveSceneData GetPrimitiveDataFromUniformBuffer()
 	PrimitiveData.InstanceWPODisableDistanceSquared	= Primitive.InstanceWPODisableDistanceSquared;
 	PrimitiveData.PersistentPrimitiveIndex			= Primitive.PersistentPrimitiveIndex;
 	PrimitiveData.NaniteRayTracingDataOffset		= Primitive.NaniteRayTracingDataOffset;
-	PrimitiveData.MaxWPODisplacement				= Primitive.MaxWPODisplacement;
+	PrimitiveData.MaxWPOExtent						= Primitive.MaxWPOExtent;
+	PrimitiveData.MinMaterialDisplacement			= Primitive.MinMaterialDisplacement;
+	PrimitiveData.MaxMaterialDisplacement			= Primitive.MaxMaterialDisplacement;
 	PrimitiveData.CustomStencilValueAndMask			= Primitive.CustomStencilValueAndMask;
 	
 	UNROLL
@@ -250,9 +208,6 @@ StructuredBuffer<float4> GPUScenePrimitiveSceneData;
 RWStructuredBuffer<float4> GPUScenePrimitiveSceneDataRW;
 #endif
 
-// Stride of a single primitive's data in float4's, must match C++ (FPrimitiveSceneShaderData::DataStrideInFloat4s and FScatterUploadBuffer::PrimitiveDataStrideInFloat4s)
-#define PRIMITIVE_SCENE_DATA_STRIDE 41
-
 float4 LoadPrimitivePrimitiveSceneDataElement(uint PrimitiveIndex, uint ItemIndex)
 {
 	uint TargetIdx = PrimitiveIndex + ItemIndex;
@@ -264,8 +219,8 @@ float4 LoadPrimitivePrimitiveSceneDataElement(uint PrimitiveIndex, uint ItemInde
 	checkStructuredBufferAccessSlow(GPUScenePrimitiveSceneDataRW, TargetIdx);
 	return GPUScenePrimitiveSceneDataRW[TargetIdx];
 #else
-	checkStructuredBufferAccessSlow(View.PrimitiveSceneData, TargetIdx);
-	return View.PrimitiveSceneData[TargetIdx];
+	checkStructuredBufferAccessSlow(Scene.GPUScene.GPUScenePrimitiveSceneData, TargetIdx);
+	return Scene.GPUScene.GPUScenePrimitiveSceneData[TargetIdx];
 #endif
 }
 
@@ -324,7 +279,8 @@ FPrimitiveSceneData GetPrimitiveData(uint PrimitiveId)
 	PrimitiveData.Flags									= asuint(LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 0).x);
 	PrimitiveData.InstanceSceneDataOffset				= asuint(LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 0).y);
 	PrimitiveData.NumInstanceSceneDataEntries			= asuint(LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 0).z);
-	PrimitiveData.SingleCaptureIndex					= asuint(LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 0).w);
+	PrimitiveData.SingleCaptureIndex					= asuint(LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 0).w) & 0xFFFFu;
+	PrimitiveData.VisibilityFlags						= asuint(LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 0).w) >> 16u;
 	PrimitiveData.TilePosition							= TilePosition; // 1.xyz
 	PrimitiveData.PrimitiveComponentId					= asuint(LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 1).w);
 	PrimitiveData.LocalToWorld							= MakeLWCMatrix4x3(TilePosition, LocalToWorld);
@@ -352,7 +308,8 @@ FPrimitiveSceneData GetPrimitiveData(uint PrimitiveId)
 	PrimitiveData.InstanceLocalBoundsCenter				= LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 26).xyz;
 	PrimitiveData.InstancePayloadDataOffset				= asuint(LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 26).w);
 	PrimitiveData.InstanceLocalBoundsExtent				= LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 27).xyz;
-	PrimitiveData.InstancePayloadDataStride				= asuint(LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 27).w);
+	PrimitiveData.InstancePayloadDataStride				= asuint(LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 27).w) & 0x00FFFFFFu;
+	PrimitiveData.InstancePayloadExtensionSize			= asuint(LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 27).w) >> 24;
 	PrimitiveData.WireframeColor						= LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 28).xyz;
 	PrimitiveData.PackedNaniteFlags						= asuint(LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 28).w);
 	PrimitiveData.LevelColor							= LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 29).xyz;
@@ -360,9 +317,10 @@ FPrimitiveSceneData GetPrimitiveData(uint PrimitiveId)
 	PrimitiveData.InstanceDrawDistanceMinMaxSquared		= LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 30).xy;
 	PrimitiveData.InstanceWPODisableDistanceSquared		= LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 30).z;
 	PrimitiveData.NaniteRayTracingDataOffset			= asuint(LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 30).w);
-	PrimitiveData.MaxWPODisplacement					= LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 31).x;
-	PrimitiveData.CustomStencilValueAndMask				= asuint(LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 31).y);
-	// .zw Unused
+	PrimitiveData.MaxWPOExtent							= LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 31).x;
+	PrimitiveData.MinMaterialDisplacement				= LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 31).y;
+	PrimitiveData.MaxMaterialDisplacement				= LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 31).z;
+	PrimitiveData.CustomStencilValueAndMask				= asuint(LoadPrimitivePrimitiveSceneDataElement(PrimitiveIndex, 31).w);
 
 	// NOTE: Please make sure GetPrimitiveDataFromUniformBuffer() gets updated as well when adding new members here
 
@@ -469,6 +427,7 @@ struct FInstancePayloadDataOffsets
 	uint LocalBounds;
 	uint DynamicData;
 	uint LightShadowUVBias;
+	uint PayloadExtension;
 	uint CustomData;
 };
 
@@ -484,6 +443,8 @@ struct FInstanceSceneData
 	uint     PrimitiveId;
 	uint     RelativeId;
 	uint     PayloadDataOffset;
+	uint     PayloadExtensionOffset;
+	uint     PayloadExtensionSize;
 	float3   LocalBoundsExtent;
 	uint     LastUpdateSceneFrameNumber;
 	uint     NaniteRuntimeResourceID;
@@ -521,7 +482,7 @@ uint GetGPUSceneFrameNumber()
 #if USE_GLOBAL_GPU_SCENE_DATA
 	return GPUSceneFrameNumber;
 #else
-	return View.FrameNumber;
+	return Scene.GPUScene.GPUSceneFrameNumber;
 #endif
 }
 
@@ -532,7 +493,7 @@ float4 LoadInstanceSceneDataElement(uint Index)
 #elif USE_GLOBAL_GPU_SCENE_DATA_RW
 	return GPUSceneInstanceSceneDataRW[Index];
 #else
-	return View.InstanceSceneData[Index];
+	return Scene.GPUScene.GPUSceneInstanceSceneData[Index];
 #endif
 }
 
@@ -543,8 +504,18 @@ float4 LoadInstancePayloadDataElement(uint Index)
 #elif USE_GLOBAL_GPU_SCENE_DATA_RW
 	return GPUSceneInstancePayloadDataRW[Index];
 #else
-	return View.InstancePayloadData[Index];
+	return Scene.GPUScene.GPUSceneInstancePayloadData[Index];
 #endif
+}
+
+float4 LoadInstancePayloadExtensionElement(FInstanceSceneData InstanceData, uint Index)
+{
+	if (InstanceData.PayloadExtensionOffset != INVALID_INSTANCE_PAYLOAD_OFFSET)
+	{
+		return LoadInstancePayloadDataElement(InstanceData.PayloadExtensionOffset + Index);
+	}
+
+	return (float4)0;
 }
 
 float4 LoadInstanceCustomDataElement(FInstanceSceneData SceneData, uint Float4Index)
@@ -825,6 +796,7 @@ FInstancePayloadDataOffsets GetInstancePayloadDataOffsets(uint PrimitiveId, uint
 	const bool bHasDynamicData				= (Flags & INSTANCE_SCENE_DATA_FLAG_HAS_DYNAMIC_DATA) != 0u;
 	const bool bHasLightShadowUVBias		= (Flags & INSTANCE_SCENE_DATA_FLAG_HAS_LIGHTSHADOW_UV_BIAS) != 0u;
 	const bool bHasCustomData				= (Flags & INSTANCE_SCENE_DATA_FLAG_HAS_CUSTOM_DATA) != 0u;
+	const bool bHasPayloadExtension			= (Flags & INSTANCE_SCENE_DATA_FLAG_HAS_PAYLOAD_EXTENSION) != 0u;
 #if USE_EDITOR_SHADERS
 	const bool bHasEditorData				= (Flags & INSTANCE_SCENE_DATA_FLAG_HAS_EDITOR_DATA) != 0u;
 #else
@@ -840,7 +812,8 @@ FInstancePayloadDataOffsets GetInstancePayloadDataOffsets(uint PrimitiveId, uint
 	Offsets.LocalBounds 		= INVALID_INSTANCE_PAYLOAD_OFFSET;
 	Offsets.DynamicData 		= INVALID_INSTANCE_PAYLOAD_OFFSET;
 	Offsets.LightShadowUVBias 	= INVALID_INSTANCE_PAYLOAD_OFFSET;
-	Offsets.CustomData 			= INVALID_INSTANCE_PAYLOAD_OFFSET;
+	Offsets.PayloadExtension	= INVALID_INSTANCE_PAYLOAD_OFFSET;
+	Offsets.CustomData			= INVALID_INSTANCE_PAYLOAD_OFFSET;
 	
 	// Hierarchy Offset -> float0.x
 	if (bHasHierarchyOffset)
@@ -869,6 +842,12 @@ FInstancePayloadDataOffsets GetInstancePayloadDataOffsets(uint PrimitiveId, uint
 	{
 		Offsets.LightShadowUVBias = CurOffset;
 		++CurOffset;
+	}
+
+	if (bHasPayloadExtension)
+	{
+		Offsets.PayloadExtension = CurOffset;
+		CurOffset += PrimitiveData.InstancePayloadExtensionSize;
 	}
 
 	if (bHasCustomData)
@@ -1053,9 +1032,37 @@ FInstanceSceneData GetInstanceSceneData(uint InstanceId, uint SOAStride, bool bC
 			InstanceData.LightMapAndShadowMapUVBias = LoadInstancePayloadDataElement(Offsets.LightShadowUVBias);
 		}
 	#endif
+
+		InstanceData.PayloadExtensionOffset = Offsets.PayloadExtension;
+		InstanceData.PayloadExtensionSize = PrimitiveData.InstancePayloadExtensionSize;
 	}
 
 	return InstanceData;
+}
+
+// Instance culling flags
+#define INSTANCE_CULLING_FLAG_EVALUATE_WPO (1u << 0u)
+
+#define INSTANCE_CULLING_FLAGS_DEFAULT (INSTANCE_CULLING_FLAG_EVALUATE_WPO)
+
+// NOTE: Currently limited to 4 bits to fit into instance culling data DWORD
+#define INSTANCE_CULLING_FLAGS_NUM_BITS (4u)
+#define INSTANCE_CULLING_FLAGS_MASK ((1u << INSTANCE_CULLING_FLAGS_NUM_BITS) - 1u)
+
+uint PackInstanceCullingOutput(uint InstanceId, uint ViewIndex, uint CullingFlags)
+{
+	// We store the view index (which can be used for instanced stereo or other multi-view in the top four bits)
+	// Note: this is an index of views for this render pass, not the view ID in the culling manager.
+	return (InstanceId & INSTANCE_ID_MASK) |
+		((CullingFlags & INSTANCE_CULLING_FLAGS_MASK) << INSTANCE_ID_NUM_BITS) | 
+		(ViewIndex << (INSTANCE_ID_NUM_BITS + INSTANCE_CULLING_FLAGS_NUM_BITS));
+}
+
+void UnpackInstanceCullingOutput(uint PackedId, inout uint InstanceId, inout uint ViewIndex, inout uint CullingFlags)
+{
+	InstanceId = PackedId & INSTANCE_ID_MASK;
+	ViewIndex = PackedId >> (INSTANCE_ID_NUM_BITS + INSTANCE_CULLING_FLAGS_NUM_BITS);
+	CullingFlags = (PackedId >> INSTANCE_ID_NUM_BITS) & INSTANCE_CULLING_FLAGS_MASK;
 }
 
 struct FSceneDataIntermediates
@@ -1063,6 +1070,7 @@ struct FSceneDataIntermediates
 	uint PrimitiveId;
 	uint InstanceId;
 	uint ViewIndex;
+	uint CullingFlags;
 	// Index from which we load the instance info, needed for the 
 	uint InstanceIdLoadIndex;
 	FInstanceSceneData InstanceData;
@@ -1089,22 +1097,22 @@ FSceneDataIntermediates GetSceneDataIntermediates(uint InstanceIdOffset, uint Dr
 	{
 		// mask off the flag
 		uint PrimitiveID = InstanceIdOffset & (VF_TREAT_INSTANCE_ID_OFFSET_AS_PRIMITIVE_ID_FLAG - 1U);
-		Intermediates.InstanceId = GetPrimitiveData(PrimitiveID).InstanceSceneDataOffset + DrawInstanceId;
+		FPrimitiveSceneData PrimitiveData = GetPrimitiveData(PrimitiveID);
+		Intermediates.InstanceId = PrimitiveData.InstanceSceneDataOffset + DrawInstanceId;
 		Intermediates.ViewIndex = 0;
+		Intermediates.CullingFlags = INSTANCE_CULLING_FLAGS_DEFAULT;
 	}
 // Workaround for Vulkan SPIRV issue when "else" branch is not removed when it should, which leads to higher level code expecting InstanceCulling buffer to be bound.
 // See: https://github.com/KhronosGroup/SPIRV-Tools/issues/4902
 #if USE_INSTANCE_CULLING_DATA
 	else
 	{
-		Intermediates.InstanceId = InstanceCulling.InstanceIdsBuffer[InstanceIdOffset + DrawInstanceId] & ((1U << 28U) - 1);
-		// We store the view index (which can be used for instanced stereo or other multi-view in the top four bits of the instance ID)
-		// Note: this is an index of views for this render pass, not the view ID in the culling manager.
-		Intermediates.ViewIndex = InstanceCulling.InstanceIdsBuffer[InstanceIdOffset + DrawInstanceId] >> 28U;
+		const uint PackedId = InstanceCulling.InstanceIdsBuffer[InstanceIdOffset + DrawInstanceId];
+		UnpackInstanceCullingOutput(PackedId, Intermediates.InstanceId, Intermediates.ViewIndex, Intermediates.CullingFlags);
 	}
 #endif
 
-	Intermediates.InstanceData = GetInstanceSceneData(Intermediates.InstanceId, View.InstanceSceneDataSOAStride);
+	Intermediates.InstanceData = GetInstanceSceneData(Intermediates.InstanceId, Scene.GPUScene.InstanceDataSOAStride);
 	Intermediates.PrimitiveId = Intermediates.InstanceData.PrimitiveId;
 	Intermediates.Primitive = GetPrimitiveData(Intermediates.PrimitiveId);
 
@@ -1153,6 +1161,11 @@ FSceneDataIntermediates GetSceneDataIntermediates(uint DrawInstanceId, float4 In
 	const uint PackedPrimitiveFlags = asuint(InstanceTransform1.w);
 	const uint PrimitiveFlags = (PackedPrimitiveFlags & 0x00FFFFFF);
 	const uint InstanceFlags = (PackedPrimitiveFlags >> 24u);
+	
+	// See WritePackedInstanceData
+	uint PrimitiveIdAndCullingFlags = asuint(InstanceOrigin.w) >> 4;
+	const uint PrimitiveId = PrimitiveIdAndCullingFlags & PRIMITIVE_ID_MASK;
+	const uint CullingFlags = PrimitiveIdAndCullingFlags >> PRIMITIVE_ID_NUM_BITS;
 
 	// Reconstruct InstanceData from a packed data
 	FInstanceSceneData InstanceData = (FInstanceSceneData)0;
@@ -1177,18 +1190,15 @@ FSceneDataIntermediates GetSceneDataIntermediates(uint DrawInstanceId, float4 In
 	InstanceData.LocalToWorld = MakeLWCMatrix(TilePosition, LocalToRelativeWorld);
 
 	InstanceData.Flags = InstanceFlags;
-	InstanceData.PrimitiveId = asuint(InstanceOrigin.w);
-	
-#if USES_PER_INSTANCE_RANDOM || USE_DITHERED_LOD_TRANSITION
-	InstanceData.RandomID = InstanceTransform3.w;
-#endif
+	InstanceData.PrimitiveId = PrimitiveId;
 
 	ComputeInstanceDerivedData(InstanceData, TilePosition, LocalToRelativeWorld);
 
 	//
 	FSceneDataIntermediates Intermediates = (FSceneDataIntermediates)0;
 	Intermediates.InstanceData = InstanceData;
-	Intermediates.PrimitiveId = InstanceData.PrimitiveId;
+	Intermediates.PrimitiveId = PrimitiveId;
+	Intermediates.CullingFlags = CullingFlags;
 	Intermediates.InstanceId = 0;
 	Intermediates.ViewIndex = 0;
 	Intermediates.InstanceIdLoadIndex = 0;
@@ -1215,6 +1225,15 @@ FSceneDataIntermediates GetSceneDataIntermediates(uint DrawInstanceId, float4 In
 	float3 ObjectRelativeWorldPosition = mul(float4(Intermediates.InstanceData.LocalBoundsCenter.xyz, 0.0f), LocalToRelativeWorld).xyz;
 	Intermediates.Primitive.ObjectWorldPosition = MakeLWCVector3(TilePosition, ObjectRelativeWorldPosition);
 	Intermediates.Primitive.ObjectRadius = length(Intermediates.InstanceData.LocalBoundsExtent * Intermediates.InstanceData.NonUniformScale.xyz);
+#if USES_PER_INSTANCE_RANDOM || USE_DITHERED_LOD_TRANSITION
+	Intermediates.InstanceData.RandomID = InstanceTransform2.w;
+#endif
+#endif
+
+#if ENABLE_PER_INSTANCE_CUSTOM_DATA
+	uint PackedCustomDataCountAndOffset = asuint(InstanceTransform3.w);
+	Intermediates.InstanceData.CustomDataCount = uint(PackedCustomDataCountAndOffset & ((1 << INSTANCE_CUSTOM_DATA_COUNT_NUM_BITS) - 1));
+	Intermediates.InstanceData.CustomDataOffset = uint(PackedCustomDataCountAndOffset >> INSTANCE_CUSTOM_DATA_COUNT_NUM_BITS);
 #endif
 	
 	return Intermediates; 
@@ -1239,6 +1258,8 @@ FSceneDataIntermediates GetSceneDataIntermediates()
 	Intermediates.InstanceData.LocalBoundsExtent	= (Intermediates.Primitive.LocalObjectBoundsMax - Intermediates.Primitive.LocalObjectBoundsMin) * 0.5f;
 	Intermediates.InstanceData.ValidInstance		= true;
 	
+	Intermediates.CullingFlags = INSTANCE_CULLING_FLAGS_DEFAULT;
+
 	return Intermediates;
 }
 #endif //VF_USE_PRIMITIVE_SCENE_DATA
@@ -1260,6 +1281,6 @@ FLightSceneData GetLightSceneData(int LightId)
 #elif USE_GLOBAL_GPU_SCENE_DATA_RW
 	return GPUSceneLightsRW[LightId];
 #else
-	return (FLightSceneData)0; //TODO
+	return Scene.GPUScene.GPUSceneLightData[LightId];
 #endif
 }

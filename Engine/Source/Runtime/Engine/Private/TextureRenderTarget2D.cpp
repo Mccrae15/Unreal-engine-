@@ -14,9 +14,11 @@
 #include "DeviceProfiles/DeviceProfileManager.h"
 #include "GenerateMips.h"
 #include "RenderGraphUtils.h"
+#include "UObject/Package.h"
 #include "UObject/UnrealType.h"
 #if WITH_EDITOR
 #include "Components/SceneCaptureComponent2D.h"
+#include "TextureCompiler.h"
 #include "UObject/UObjectIterator.h"
 #endif
 
@@ -369,7 +371,11 @@ UTexture2D* UTextureRenderTarget2D::ConstructTexture2D(UObject* Outer, const FSt
 		Result->CompressionNone = true;
 		Result->DeferCompression = false;
 	}
-	Result->PostEditChange();
+
+	if ((Flags & CTF_SkipPostEdit) != 0)
+	{
+		Result->PostEditChange();
+	}
 #endif
 
 	return Result;
@@ -539,6 +545,9 @@ void UTextureRenderTarget2D::UpdateTexture2D(UTexture2D* InTexture2D, ETextureSo
 	{
 		TextureChangingDelegate.ExecuteIfBound(InTexture2D);
 
+		// Ensure the texture is not being compiled
+		FTextureCompilingManager::Get().FinishCompilation({InTexture2D});
+
 		// init to the same size as the 2d texture
 		InTexture2D->Source.Init(SizeX, SizeY, NbSlices, NbMips, InTextureFormat, NewData);
 		InTexture2D->CompressionSettings = CompressionSettingsForTexture;
@@ -581,7 +590,7 @@ void FTextureRenderTarget2DResource::ClampSize(int32 MaxSizeX,int32 MaxSizeY)
 		TargetSizeY = NewSizeY;
 		// reinit the resource with new TargetSizeX,TargetSizeY
 		check(TargetSizeX >= 0 && TargetSizeY >= 0);
-		UpdateRHI();
+		UpdateRHI(FRHICommandListImmediate::Get());
 	}	
 }
 
@@ -613,12 +622,14 @@ ETextureCreateFlags FTextureRenderTarget2DResource::GetCreateFlags()
  * Called when the resource is initialized, or when reseting all RHI resources.
  * This is only called by the rendering thread.
  */
-void FTextureRenderTarget2DResource::InitDynamicRHI()
+void FTextureRenderTarget2DResource::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	LLM_SCOPED_TAG_WITH_OBJECT_IN_SET(Owner->GetOutermost(), ELLMTagSet::Assets);
 
 	if( TargetSizeX > 0 && TargetSizeY > 0 )
 	{
+		const static FLazyName ClassName(TEXT("FTextureRenderTarget2DResource"));
+
 		FString ResourceName = Owner->GetName();
 		ETextureCreateFlags TexCreateFlags = GetCreateFlags();
 
@@ -629,7 +640,9 @@ void FTextureRenderTarget2DResource::InitDynamicRHI()
 			.SetNumMips(Owner->GetNumMips())
 			.SetFlags(TexCreateFlags)
 			.SetInitialState(ERHIAccess::SRVMask)
-			.SetClearValue(FClearValueBinding(ClearColor));
+			.SetClearValue(FClearValueBinding(ClearColor))
+			.SetClassName(ClassName)
+			.SetOwnerName(GetOwnerName());
 
 		TextureRHI = RenderTargetTextureRHI = RHICreateTexture(Desc);
 
@@ -642,22 +655,27 @@ void FTextureRenderTarget2DResource::InitDynamicRHI()
 
 		if (EnumHasAnyFlags(TexCreateFlags, ETextureCreateFlags::UAV))
 		{
-			UnorderedAccessViewRHI = RHICreateUnorderedAccessView(RenderTargetTextureRHI);
+			UnorderedAccessViewRHI = RHICmdList.CreateUnorderedAccessView(RenderTargetTextureRHI);
 		}
 
 		SetGPUMask(FRHIGPUMask::All());
 		RHIUpdateTextureReference(Owner->TextureReference.TextureReferenceRHI, TextureRHI);
 
+		TextureRHI->SetOwnerName(GetOwnerName());
+
 		AddToDeferredUpdateList(true);
 	}
 
 	// Create the sampler state RHI resource.
+	const UTextureLODSettings* TextureLODSettings = UDeviceProfileManager::Get().GetActiveProfile()->GetTextureLODSettings();
 	FSamplerStateInitializerRHI SamplerStateInitializer
 	(
-		(ESamplerFilter)UDeviceProfileManager::Get().GetActiveProfile()->GetTextureLODSettings()->GetSamplerFilter( Owner ),
+		(ESamplerFilter)TextureLODSettings->GetSamplerFilter( Owner ),
 		Owner->AddressX == TA_Wrap ? AM_Wrap : (Owner->AddressX == TA_Clamp ? AM_Clamp : AM_Mirror),
 		Owner->AddressY == TA_Wrap ? AM_Wrap : (Owner->AddressY == TA_Clamp ? AM_Clamp : AM_Mirror),
-		AM_Wrap
+		AM_Wrap,
+		0,
+		TextureLODSettings->GetTextureLODGroup(Owner->LODGroup).MaxAniso
 	);
 	SamplerStateRHI = GetOrCreateSamplerState( SamplerStateInitializer );
 }
@@ -667,10 +685,10 @@ void FTextureRenderTarget2DResource::InitDynamicRHI()
  * Called when the resource is released, or when reseting all RHI resources.
  * This is only called by the rendering thread.
  */
-void FTextureRenderTarget2DResource::ReleaseDynamicRHI()
+void FTextureRenderTarget2DResource::ReleaseRHI()
 {
 	// release the FTexture RHI resources here as well
-	ReleaseRHI();
+	FTexture::ReleaseRHI();
 
 	RHIUpdateTextureReference(Owner->TextureReference.TextureReferenceRHI, nullptr);
 	RenderTargetTextureRHI.SafeRelease();
@@ -735,7 +753,7 @@ void FTextureRenderTarget2DResource::Resize(int32 NewSizeX, int32 NewSizeY)
 	{
 		TargetSizeX = NewSizeX;
 		TargetSizeY = NewSizeY;
-		UpdateRHI();
+		UpdateRHI(FRHICommandListImmediate::Get());
 	}
 }
 

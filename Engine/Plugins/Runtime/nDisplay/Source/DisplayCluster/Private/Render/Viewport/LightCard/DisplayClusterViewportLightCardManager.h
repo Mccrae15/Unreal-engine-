@@ -73,11 +73,16 @@ private:
 	/** Release UVLightCard data game thread*/
 	void ReleaseUVLightCardData();
 
-private:
-	/** A reference to the owning viewport manager */
-	FDisplayClusterViewportManager& ViewportManager;
+	/** Get a pointer to the DC ViewportManager if it still exists. */
+	FDisplayClusterViewportManager* GetViewportManager() const
+	{
+		return ViewportManagerWeakPtr.IsValid() ? ViewportManagerWeakPtr.Pin().Get() : nullptr;
+	}
 
 private:
+	/** A reference to the owning viewport manager */
+	const TWeakPtr<FDisplayClusterViewportManager, ESPMode::ThreadSafe> ViewportManagerWeakPtr;
+
 	/** A list of primitive components that have been added to the preview scene for rendering in the current frame */
 	TArray<UPrimitiveComponent*> UVLightCardPrimitiveComponents;
 

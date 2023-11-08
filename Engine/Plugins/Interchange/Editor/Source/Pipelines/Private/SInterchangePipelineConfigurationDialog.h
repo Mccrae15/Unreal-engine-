@@ -14,20 +14,28 @@ struct FSlateBrush;
 class IDetailsView;
 class SCheckBox;
 
-class SInterchangePipelineItem : public STableRow<TObjectPtr<UInterchangePipelineBase>>
+struct FInterchangePipelineItemType
+{
+public:
+	FString DisplayName;
+
+	UInterchangePipelineBase* Pipeline;
+};
+
+class SInterchangePipelineItem : public STableRow<TSharedPtr<FInterchangePipelineItemType>>
 {
 public:
 	void Construct(
 		const FArguments& InArgs,
 		const TSharedRef<STableViewBase>& OwnerTable,
-		TObjectPtr<UInterchangePipelineBase> InPipelineElement);
+		TSharedPtr<FInterchangePipelineItemType> InPipelineElement);
 private:
 	const FSlateBrush* GetImageItemIcon() const;
 
-	TObjectPtr<UInterchangePipelineBase> PipelineElement;
+	TSharedPtr<FInterchangePipelineItemType> PipelineElement;
 };
 
-typedef SListView< TObjectPtr<UInterchangePipelineBase> > SPipelineListViewType;
+typedef SListView< TSharedPtr<FInterchangePipelineItemType> > SPipelineListViewType;
 
 enum class ECloseEventType : uint8
 {
@@ -90,6 +98,9 @@ private:
 
 	void SaveAllPipelineSettings() const;
 
+	/** Internal utility function to properly display pipeline's name */
+	static FString GetPipelineDisplayName(const UInterchangePipelineBase* Pipeline);
+
 private:
 	TWeakPtr< SWindow > OwnerWindow;
 	TWeakObjectPtr<UInterchangeSourceData> SourceData;
@@ -104,12 +115,12 @@ private:
 	// the pipelines list view
 	
 	TSharedPtr<SPipelineListViewType> PipelinesListView;
-	TArray< TObjectPtr<UInterchangePipelineBase> > PipelineListViewItems;
+	TArray< TSharedPtr< FInterchangePipelineItemType > > PipelineListViewItems;
 
 	/** list view generate row callback */
-	TSharedRef<ITableRow> MakePipelineListRowWidget(TObjectPtr<UInterchangePipelineBase> InElement, const TSharedRef<STableViewBase>& OwnerTable);
+	TSharedRef<ITableRow> MakePipelineListRowWidget(TSharedPtr<FInterchangePipelineItemType> InElement, const TSharedRef<STableViewBase>& OwnerTable);
 
-	void OnPipelineSelectionChanged(TObjectPtr<UInterchangePipelineBase> InItem, ESelectInfo::Type SelectInfo);
+	void OnPipelineSelectionChanged(TSharedPtr<FInterchangePipelineItemType> InItem, ESelectInfo::Type SelectInfo);
 
 	//
 	//////////////////////////////////////////////////////////////////////////
@@ -125,4 +136,3 @@ private:
 	FName CurrentStackName = NAME_None;
 	TObjectPtr<UInterchangePipelineBase> CurrentSelectedPipeline = nullptr;
 };
-

@@ -10,6 +10,8 @@
 #include "DynamicMesh/DynamicMesh3.h"
 #include "PropertySets/PolygroupLayersProperties.h"
 #include "Polygroups/PolygroupSet.h"
+#include "Selection/ToolSelectionUtil.h"
+#include "Selections/GeometrySelection.h"
 #include "EditNormalsTool.generated.h"
 
 
@@ -17,6 +19,8 @@
 struct FMeshDescription;
 class UDynamicMeshComponent;
 class UEditNormalsTool;
+class UPreviewGeometry;
+class UGeometrySelectionVisualizationProperties;
 
 /**
  *
@@ -28,6 +32,8 @@ class MESHMODELINGTOOLSEXP_API UEditNormalsToolBuilder : public UMultiSelectionM
 
 public:
 	virtual UMultiSelectionMeshEditingTool* CreateNewTool(const FToolBuilderState& SceneState) const override;
+	virtual void InitializeNewTool(UMultiSelectionMeshEditingTool* NewTool, const FToolBuilderState& SceneState) const override;
+	virtual bool CanBuildTool(const FToolBuilderState& SceneState) const override;
 };
 
 
@@ -51,7 +57,8 @@ public:
 	}
 
 	/** Recompute all mesh normals */
-	UPROPERTY(EditAnywhere, Category = NormalsCalculation, meta = (EditCondition = "SplitNormalMethod == ESplitNormalMethod::UseExistingTopology"))
+	UPROPERTY(EditAnywhere, Category = NormalsCalculation,
+		meta = (EditCondition = "SplitNormalMethod == ESplitNormalMethod::UseExistingTopology && !bToolHasSelection", HideEditConditionToggle))
 	bool bRecomputeNormals;
 
 	/** Choose the method for computing vertex normals */
@@ -59,7 +66,8 @@ public:
 	ENormalCalculationMethod NormalCalculationMethod;
 
 	/** For meshes with inconsistent triangle orientations/normals, flip as needed to make the normals consistent */
-	UPROPERTY(EditAnywhere, Category = NormalsCalculation)
+	UPROPERTY(EditAnywhere, Category = NormalsCalculation,
+		meta = (EditCondition = "!bToolHasSelection", HideEditConditionToggle))
 	bool bFixInconsistentNormals;
 
 	/** Invert (flip) all mesh normals and associated triangle orientations */
@@ -77,22 +85,18 @@ public:
 	/** Assign separate normals at 'sharp' vertices, for example, at the tip of a cone */
 	UPROPERTY(EditAnywhere, Category = NormalsTopology, meta = (EditCondition = "SplitNormalMethod == ESplitNormalMethod::FaceNormalThreshold"))
 	bool bAllowSharpVertices;
+
+	//
+	// The following are not user visible
+	//
+
+	UPROPERTY(meta = (TransientToolProperty))
+	bool bToolHasSelection;
 };
 
 
 
 
-/**
- * Advanced properties
- */
-UCLASS()
-class MESHMODELINGTOOLSEXP_API UEditNormalsAdvancedProperties : public UInteractiveToolPropertySet
-{
-	GENERATED_BODY()
-
-public:
-	UEditNormalsAdvancedProperties();
-};
 
 
 /**
@@ -133,7 +137,6 @@ public:
 	virtual void OnShutdown(EToolShutdownType ShutdownType) override;
 
 	virtual void OnTick(float DeltaTime) override;
-	virtual void Render(IToolsContextRenderAPI* RenderAPI) override;
 
 	virtual bool HasCancel() const override { return true; }
 	virtual bool HasAccept() const override;
@@ -145,13 +148,13 @@ public:
 
 	virtual void OnPropertyModified(UObject* PropertySet, FProperty* Property) override;
 
+	// input selection support
+	void SetGeometrySelection(UE::Geometry::FGeometrySelection&& SelectionIn);
+
 protected:
 
 	UPROPERTY()
 	TObjectPtr<UEditNormalsToolProperties> BasicProperties = nullptr;
-
-	UPROPERTY()
-	TObjectPtr<UEditNormalsAdvancedProperties> AdvancedProperties = nullptr;
 
 	UPROPERTY()
 	TObjectPtr<UPolygroupLayersProperties> PolygroupLayerProperties = nullptr;
@@ -173,4 +176,26 @@ protected:
 	TSharedPtr<UE::Geometry::FPolygroupSet, ESPMode::ThreadSafe> ActiveGroupSet;
 	void OnSelectedGroupLayerChanged();
 	void UpdateActiveGroupLayer();
+
+	//
+	// Selection
+	//
+
+	UPROPERTY()
+	TObjectPtr<UGeometrySelectionVisualizationProperties> GeometrySelectionVizProperties = nullptr;
+
+	UPROPERTY()
+	TObjectPtr<UPreviewGeometry> GeometrySelectionViz = nullptr;
+
+	// The geometry selection that the user started the tool with. If the selection is empty we operate on the whole
+	// mesh, if its not empty we only edit the overlay elements implied by the selection.
+	UE::Geometry::FGeometrySelection InputGeometrySelection;
+
+	// If the user starts the tool with an edge selection we convert it to a vertex selection with triangle topology
+	// and store it here, we do this since we expect users to want vertex and edge selections to behave similarly.
+	UE::Geometry::FGeometrySelection TriangleVertexGeometrySelection;
+
+	// Cache the input polygroup set which was used to start the tool. We do this because users can change the
+	// polygroup referenced by the operator while using the tool.
+	TSharedPtr<UE::Geometry::FPolygroupSet, ESPMode::ThreadSafe> InputGeometrySelectionPolygroupSet;
 };

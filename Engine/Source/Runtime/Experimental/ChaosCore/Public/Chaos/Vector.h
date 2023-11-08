@@ -44,6 +44,9 @@ namespace Chaos
 		static const int NumElements = d;
 		using FTraits = TVectorTraits<T, d>;
 
+		TVector(const TVector&) = default;
+		TVector& operator=(const TVector&) = default;
+
 		TVector() {}
 		explicit TVector(const FElement& Element)
 		{
@@ -113,7 +116,8 @@ namespace Chaos
 			}
 		}
 
-		TVector<T, d>& operator=(const TVector<T, d>& Other)
+		template<class T2>
+		TVector<T, d>& operator=(const TVector<T2, d>& Other)
 		{
 			for (int32 i = 0; i < NumElements; ++i)
 			{
@@ -525,10 +529,7 @@ namespace Chaos
 		}
 		FRealSingle Mid() const
 		{
-			FRealSingle XmY = X - Y;
-			FRealSingle YmZ = Y - Z;
-			FRealSingle XmZ = X - Z;
-			return (XmY * YmZ > -1 ? Y : XmY * XmZ < 1 ? X : Z);
+			return (X == Y || !((Y < X) ^ (X < Z))) ? X : !((X < Y) ^ (Y < Z)) ? Y : Z;
 		}
 		TVector<FRealSingle, 3> ComponentwiseMin(const TVector<FRealSingle, 3>& Other) const { return {FMath::Min(X,Other.X), FMath::Min(Y,Other.Y), FMath::Min(Z,Other.Z)}; }
 		TVector<FRealSingle, 3> ComponentwiseMax(const TVector<FRealSingle, 3>& Other) const { return {FMath::Max(X,Other.X), FMath::Max(Y,Other.Y), FMath::Max(Z,Other.Z)}; }
@@ -728,10 +729,7 @@ namespace Chaos
 		}
 		FRealDouble Mid() const
 		{
-			FRealDouble XmY = X - Y;
-			FRealDouble YmZ = Y - Z;
-			FRealDouble XmZ = X - Z;
-			return (XmY * YmZ > -1 ? Y : XmY * XmZ < 1 ? X : Z);
+			return (X == Y || !((Y < X) ^ (X < Z))) ? X : !((X < Y) ^ (Y < Z)) ? Y : Z;
 		}
 		TVector<FRealDouble, 3> ComponentwiseMin(const TVector<FRealDouble, 3>& Other) const { return { FMath::Min(X,Other.X), FMath::Min(Y,Other.Y), FMath::Min(Z,Other.Z) }; }
 		TVector<FRealDouble, 3> ComponentwiseMax(const TVector<FRealDouble, 3>& Other) const { return { FMath::Max(X,Other.X), FMath::Max(Y,Other.Y), FMath::Max(Z,Other.Z) }; }
@@ -990,6 +988,11 @@ namespace Chaos
 	public:
 		using FElement = T;
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		TVector(const TVector&) = default;
+		TVector& operator=(const TVector&) = default;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 		FORCEINLINE TVector() {}
 		FORCEINLINE explicit TVector(T InX)
 		    : X(InX), Y(InX), Z(InX) {}
@@ -1027,7 +1030,8 @@ namespace Chaos
 			Stream.write(reinterpret_cast<const char*>(&Z), sizeof(T));
 		}
 #endif
-		FORCEINLINE TVector<T, 3>& operator=(const TVector<T, 3>& Other)
+		template<class T2>
+		FORCEINLINE TVector<T, 3>& operator=(const TVector<T2, 3>& Other)
 		{
 			X = Other.X;
 			Y = Other.Y;
@@ -1052,10 +1056,7 @@ namespace Chaos
 		FORCEINLINE T Max() const { return FMath::Max3(X, Y, Z); }
 		T Mid() const
 		{
-			T XmY = X - Y;
-			T YmZ = Y - Z;
-			T XmZ = X - Z;
-			return (XmY * YmZ > -1 ? Y : XmY * XmZ < 1 ? X : Z);
+			return (X == Y || !((Y < X) ^ (X < Z))) ? X : !((X < Y) ^ (Y < Z)) ? Y : Z;
 		}
 
 		FORCEINLINE TVector<T, 3> ComponentwiseMin(const TVector<T, 3>& Other) const { return {FMath::Min(X,Other.X), FMath::Min(Y,Other.Y), FMath::Min(Z,Other.Z)}; }
@@ -1176,6 +1177,11 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	public:
 		using FElement = int32;
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		TVector(const TVector&) = default;
+		TVector& operator=(const TVector&) = default;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 		FORCEINLINE TVector()
 		{}
 		FORCEINLINE explicit TVector(const FElement InX)
@@ -1218,7 +1224,8 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 #endif
 
-		FORCEINLINE TVector<FElement, 2>& operator=(const TVector<FElement, 2>& Other)
+		template<typename OtherT>
+		FORCEINLINE TVector<int32, 2>& operator=(const TVector<OtherT, 2>& Other)
 		{
 			X = Other.X;
 			Y = Other.Y;

@@ -427,13 +427,16 @@ namespace Metasound
 			TSharedPtr<STextBlock> PlayTimeWidget;
 			double PlayTime = 0.0;
 
+			/** Widget showing render speed that overlays the graph when previewing */
+			TSharedPtr<STextBlock> CPUCoreUtilizationWidget;
+
 			TUniquePtr<FGraphConnectionManager> GraphConnectionManager;
 
 			/** Command list for this editor */
 			TSharedPtr<FUICommandList> GraphEditorCommands;
 
 			/** The Metasound asset being edited */
-			UObject* Metasound = nullptr;
+			TObjectPtr<UObject> Metasound = nullptr;
 
 			/** Whether or not metasound being edited is valid */
 			bool bPassedValidation = true;

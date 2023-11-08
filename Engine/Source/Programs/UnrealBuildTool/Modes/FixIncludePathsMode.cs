@@ -2,11 +2,13 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using EpicGames.Core;
-using UnrealBuildBase;
 using Microsoft.Extensions.Logging;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -46,7 +48,7 @@ namespace UnrealBuildTool
 		/// <param name="Arguments">Command line arguments</param>
 		/// <returns>Exit code</returns>
 		/// <param name="Logger"></param>
-		public override int Execute(CommandLineArguments Arguments, ILogger Logger)
+		public override Task<int> ExecuteAsync(CommandLineArguments Arguments, ILogger Logger)
 		{
 			Arguments.ApplyTo(this);
 
@@ -81,7 +83,7 @@ namespace UnrealBuildTool
 			UEBuildModuleCPP.bForceAddGeneratedCodeIncludePath = true;
 
 			// Parse all the target descriptors
-			List<TargetDescriptor> TargetDescriptors = TargetDescriptor.ParseCommandLine(Arguments, BuildConfiguration.bUsePrecompiled, BuildConfiguration.bSkipRulesCompile, BuildConfiguration.bForceRulesCompile, Logger);
+			List<TargetDescriptor> TargetDescriptors = TargetDescriptor.ParseCommandLine(Arguments, BuildConfiguration, Logger);
 
 			// Generate the compile DB for each target
 			using (ISourceFileWorkingSet WorkingSet = new EmptySourceFileWorkingSet())
@@ -93,7 +95,7 @@ namespace UnrealBuildTool
 				foreach (TargetDescriptor TargetDescriptor in TargetDescriptors)
 				{
 					// Create a makefile for the target
-					UEBuildTarget Target = UEBuildTarget.Create(TargetDescriptor, BuildConfiguration.bSkipRulesCompile, BuildConfiguration.bForceRulesCompile, BuildConfiguration.bUsePrecompiled, Logger);
+					UEBuildTarget Target = UEBuildTarget.Create(TargetDescriptor, BuildConfiguration, Logger);
 
 					// Get InputLists and build Include Filter if necessary
 					HashSet<FileReference> IncludeFileList = new HashSet<FileReference>();
@@ -102,19 +104,19 @@ namespace UnrealBuildTool
 					{
 						foreach (UEBuildModuleCPP Module in Binary.Modules.OfType<UEBuildModuleCPP>())
 						{
-							UEBuildModuleCPP.InputFileCollection InputFileCollection = Module.FindInputFiles(Target.Platform, new Dictionary<DirectoryItem, FileItem[]>());
+							UEBuildModuleCPP.InputFileCollection InputFileCollection = Module.FindInputFiles(Target.Platform, new Dictionary<DirectoryItem, FileItem[]>(), Logger);
 							List<FileItem> InputFiles = new List<FileItem>();
 							InputFiles.AddRange(InputFileCollection.HeaderFiles);
 							InputFiles.AddRange(InputFileCollection.CPPFiles);
 							InputFiles.AddRange(InputFileCollection.CCFiles);
 							InputFiles.AddRange(InputFileCollection.CFiles);
 
-							var FileList = new List<FileReference>();
+							List<FileReference> FileList = new List<FileReference>();
 							foreach (FileItem InputFile in InputFiles)
 							{
 								if (FileFilter == null || FileFilter.Matches(InputFile.Location.MakeRelativeTo(Unreal.RootDirectory)))
 								{
-									var fileRef = new FileReference(InputFile.AbsolutePath);
+									FileReference fileRef = new FileReference(InputFile.AbsolutePath);
 									FileList.Add(fileRef);
 								}
 							}
@@ -124,7 +126,7 @@ namespace UnrealBuildTool
 							{
 								if (IncludeFilter == null || IncludeFilter.Matches(InputFile.Location.MakeRelativeTo(Unreal.RootDirectory)))
 								{
-									var fileRef = new FileReference(InputFile.AbsolutePath);
+									FileReference fileRef = new FileReference(InputFile.AbsolutePath);
 									IncludeFileList.Add(fileRef);
 								}
 							}
@@ -153,7 +155,7 @@ namespace UnrealBuildTool
 							Dictionary<string, string?> PreferredPathCache = new();
 							CppCompileEnvironment env = Module.CreateCompileEnvironmentForIntellisense(Target.Rules, BinaryCompileEnvironment, Logger);
 
-							foreach (var InputFile in FileList)
+							foreach (FileReference InputFile in FileList)
 							{
 								List<int> LinesUpdated = new();
 								string[] Text = FileReference.ReadAllLines(InputFile);
@@ -161,7 +163,7 @@ namespace UnrealBuildTool
 
 								for (int i = 0; i < Text.Length; i++)
 								{
-									var Line = Text[i];
+									string Line = Text[i];
 									int LineNumber = i + 1;
 									Match IncludeMatch = IncludeRegex.Match(Line);
 									if (IncludeMatch.Success)
@@ -180,6 +182,8 @@ namespace UnrealBuildTool
 											continue;
 										}
 
+										//Debugger.Launch();
+
 										string? PreferredInclude = null;
 										if (!PreferredPathCache.TryGetValue(Include, out PreferredInclude))
 										{
@@ -191,7 +195,7 @@ namespace UnrealBuildTool
 											// search include paths
 											FileReference? FoundIncludeFile = null;
 											DirectoryReference? FoundIncludePath = null;
-											foreach (var IncludePath in IncludePaths)
+											foreach (DirectoryReference IncludePath in IncludePaths)
 											{
 												string Path = System.IO.Path.GetFullPath(System.IO.Path.Combine(IncludePath.FullName, Include));
 												if (System.IO.File.Exists(Path))
@@ -204,7 +208,7 @@ namespace UnrealBuildTool
 
 											if (FoundIncludeFile != null && !IncludeFileList.Contains(FoundIncludeFile))
 											{
-												Logger.LogDebug("{FileName}({LineNumber}): Skipping '{Include}' because it is filtered out.", InputFile.FullName, LineNumber, Include);
+												Logger.LogInformation("{FileName}({LineNumber}): Skipping '{Include}' because it is filtered out.", InputFile.FullName, LineNumber, Include);
 												PreferredInclude = Include;
 												PreferredPathCache[Include] = PreferredInclude;
 												continue;
@@ -215,24 +219,24 @@ namespace UnrealBuildTool
 												string FullPath = FoundIncludeFile.FullName.Replace('\\', '/');
 												if (FullPath.Contains("ThirdParty"))
 												{
-													Logger.LogDebug("{FileName}({LineNumber}): Skipping '{Include}' because it is a third party header.", InputFile.FullName, LineNumber, Include);
+													Logger.LogInformation("{FileName}({LineNumber}): Skipping '{Include}' because it is a third party header.", InputFile.FullName, LineNumber, Include);
 													PreferredInclude = Include;
 													PreferredPathCache[Include] = PreferredInclude;
 													continue;
 												}
 
 												// if the include and the source file live in the same directory then it is OK to be relative
-												if (string.Equals(System.IO.Directory.GetParent(FullPath)?.FullName, System.IO.Directory.GetParent(InputFile.FullName)?.FullName, StringComparison.CurrentCultureIgnoreCase) &&
-													string.Equals(Include, System.IO.Path.GetFileName(FullPath), StringComparison.CurrentCultureIgnoreCase))
+												if (String.Equals(System.IO.Directory.GetParent(FullPath)?.FullName, System.IO.Directory.GetParent(InputFile.FullName)?.FullName, StringComparison.CurrentCultureIgnoreCase) &&
+													String.Equals(Include, System.IO.Path.GetFileName(FullPath), StringComparison.CurrentCultureIgnoreCase))
 												{
-													Logger.LogDebug("{FileName}({LineNumber}): Using '{Include}' because it is in the same directory.", InputFile.FullName, LineNumber, Include);
+													Logger.LogInformation("{FileName}({LineNumber}): Using '{Include}' because it is in the same directory.", InputFile.FullName, LineNumber, Include);
 													PreferredInclude = Include;
 												}
 												else
 												{
 													if (!FullPath.Contains(UnrealRootDirectory))
 													{
-														Logger.LogDebug("{FileName}({LineNumber}): Skipping '{Include}' because it isn't under the Unreal root directory.", InputFile.FullName, LineNumber, Include);
+														Logger.LogInformation("{FileName}({LineNumber}): Skipping '{Include}' because it isn't under the Unreal root directory.", InputFile.FullName, LineNumber, Include);
 													}
 													else
 													{
@@ -245,7 +249,7 @@ namespace UnrealBuildTool
 															// Is the current include a shortened version of the preferred include path?
 															if (PreferredInclude != Include && PreferredInclude.Contains(Include))
 															{
-																Logger.LogDebug("{FileName}({LineNumber}): Using '{Include}' because it is shorter than '{PreferredInclude}'.", InputFile.FullName, LineNumber, Include, PreferredInclude);
+																Logger.LogInformation("{FileName}({LineNumber}): Using '{Include}' because it is shorter than '{PreferredInclude}'.", InputFile.FullName, LineNumber, Include, PreferredInclude);
 																PreferredInclude = Include;
 															}
 														}
@@ -279,10 +283,10 @@ namespace UnrealBuildTool
 													PreferredPathCache[Include] = PreferredInclude;
 												}
 											}
-												
+
 											if (PreferredInclude == null)
 											{
-												Logger.LogDebug("{FileName}({LineNumber}): Could not find path to '{IncludePath}'", InputFile.FullName, LineNumber, Include);
+												Logger.LogInformation("{FileName}({LineNumber}): Could not find path to '{IncludePath}'", InputFile.FullName, LineNumber, Include);
 											}
 										}
 
@@ -336,7 +340,7 @@ namespace UnrealBuildTool
 				}
 			}
 
-			return 0;
+			return Task.FromResult(0);
 		}
 
 		class HeaderSortComparison : IComparer<string>
@@ -395,16 +399,16 @@ namespace UnrealBuildTool
 					return -1;
 				}
 
-				return string.Compare(x, y);
+				return String.Compare(x, y);
 			}
 		}
 
 		private void SortIncludes(FileReference File, List<int> LinesUpdated, string[] Text)
 		{
-			var HeaderSort = new HeaderSortComparison(File.GetFileNameWithoutExtension() + ".h");
-			foreach (var LineIndex in LinesUpdated)
+			HeaderSortComparison HeaderSort = new HeaderSortComparison(File.GetFileNameWithoutExtension() + ".h");
+			foreach (int LineIndex in LinesUpdated)
 			{
-				var FirstIncludeIndex = LineIndex;
+				int FirstIncludeIndex = LineIndex;
 				for (int i = LineIndex - 1; i >= 0; i--)
 				{
 					Match IncludeMatch = IncludeRegex.Match(Text[i]);
@@ -418,7 +422,7 @@ namespace UnrealBuildTool
 					}
 				}
 
-				var LastIncludeIndex = LineIndex;
+				int LastIncludeIndex = LineIndex;
 				for (int i = LineIndex + 1; i < Text.Length; i++)
 				{
 					Match IncludeMatch = IncludeRegex.Match(Text[i]);

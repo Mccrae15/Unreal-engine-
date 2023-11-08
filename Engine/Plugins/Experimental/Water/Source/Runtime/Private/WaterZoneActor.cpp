@@ -45,7 +45,7 @@ AWaterZone::AWaterZone(const FObjectInitializer& Initializer)
 	WaterMesh = CreateDefaultSubobject<UWaterMeshComponent>(TEXT("WaterMesh"));
 	SetRootComponent(WaterMesh);
 	ZoneExtent = FVector2D(51200., 51200.);
-	TessellatedWaterMeshExtent = FVector(35000., 35000., 10000.);
+	LocalTessellationExtent = FVector(35000., 35000., 10000.);
 	
 #if	WITH_EDITOR
 	// Setup bounds component
@@ -70,6 +70,8 @@ AWaterZone::AWaterZone(const FObjectInitializer& Initializer)
 #endif // WITH_EDITOR
 
 #if WITH_EDITORONLY_DATA
+	TessellatedWaterMeshExtent_DEPRECATED = FVector(35000., 35000., 10000.);
+
 	bIsSpatiallyLoaded = false;
 #endif
 }
@@ -134,6 +136,12 @@ void AWaterZone::PostLoad()
 	Super::PostLoad();
 
 #if WITH_EDITORONLY_DATA
+	if (GetLinkerCustomVersion(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::WaterBodyStaticMeshComponents)
+	{
+		LocalTessellationExtent = TessellatedWaterMeshExtent_DEPRECATED;
+		bEnableLocalOnlyTessellation = bEnableNonTesselatedLODMesh_DEPRECATED;
+	}
+
 	// WaterMesh ExtentInTiles returns the half extent.
 	const FVector2D ExtentInTiles = 2.0 * FVector2D(WaterMesh->GetExtentInTiles());
 	ZoneExtent = FVector2D(ExtentInTiles * WaterMesh->GetTileSize());
@@ -149,17 +157,6 @@ void AWaterZone::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstruc
 }
 #endif
 
-void AWaterZone::PostRegisterAllComponents()
-{
-	Super::PostRegisterAllComponents();
-
-	if (UpdateOverlappingWaterBodies())
-	{
-		MarkForRebuild(EWaterZoneRebuildFlags::UpdateWaterBodyLODSections);
-	}
-
-}
-
 void AWaterZone::MarkForRebuild(EWaterZoneRebuildFlags Flags)
 {
 	if (EnumHasAnyFlags(Flags, EWaterZoneRebuildFlags::UpdateWaterMesh))
@@ -171,11 +168,6 @@ void AWaterZone::MarkForRebuild(EWaterZoneRebuildFlags Flags)
 	{
 		UE_LOG(LogWater, Verbose, TEXT("AWaterZone::MarkForRebuild (UpdateWaterInfoTexture)"));
 		bNeedsWaterInfoRebuild = true;
-	}
-	if (EnumHasAnyFlags(Flags, EWaterZoneRebuildFlags::UpdateWaterBodyLODSections) && bEnableNonTessellatedLODMesh)
-	{
-		UE_LOG(LogWater, Verbose, TEXT("AWaterZone::MarkForRebuild (UpdateWaterBodyLODSections)"));
-		bNeedsNonTessellatedMeshRebuild = true;
 	}
 }
 
@@ -241,16 +233,6 @@ void AWaterZone::Update()
 			bNeedsWaterInfoRebuild = false;
 		}
 	}
-	if (bNeedsNonTessellatedMeshRebuild)
-	{
-		ForEachWaterBodyComponent([](UWaterBodyComponent* WaterBodyComponent)
-		{
-			WaterBodyComponent->UpdateNonTessellatedMeshSections();
-			return true;
-		});
-
-		bNeedsNonTessellatedMeshRebuild = false;
-	}
 	
 	if (WaterMesh)
 	{
@@ -270,10 +252,6 @@ void AWaterZone::PostEditMove(bool bFinished)
 
 	// Ensure that the water mesh is rebuilt if it moves
 	EWaterZoneRebuildFlags RebuildFlags = EWaterZoneRebuildFlags::UpdateWaterInfoTexture | EWaterZoneRebuildFlags::UpdateWaterMesh;
-	if (bFinished)
-	{
-		RebuildFlags |= EWaterZoneRebuildFlags::UpdateWaterBodyLODSections;
-	}
 
 	UpdateOverlappingWaterBodies();
 
@@ -321,15 +299,11 @@ void AWaterZone::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEv
 	{
 		MarkForRebuild(EWaterZoneRebuildFlags::UpdateWaterInfoTexture);
 	}
-	else if (PropertyName == GET_MEMBER_NAME_CHECKED(AWaterZone, TessellatedWaterMeshExtent))
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(AWaterZone, LocalTessellationExtent))
 	{
 		MarkForRebuild(EWaterZoneRebuildFlags::All);
 	}
-	else if (PropertyName == GET_MEMBER_NAME_CHECKED(AWaterZone, bEnableNonTessellatedLODMesh))
-	{
-		MarkForRebuild(EWaterZoneRebuildFlags::All);
-	}
-	else if (PropertyName == GET_MEMBER_NAME_CHECKED(AWaterZone, NonTessellatedLODSectionScale))
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(AWaterZone, bEnableLocalOnlyTessellation))
 	{
 		MarkForRebuild(EWaterZoneRebuildFlags::All);
 	}
@@ -459,7 +433,8 @@ bool AWaterZone::UpdateWaterInfoTexture()
 		GroundZMin = TNumericLimits<float>::Max();
 		float GroundZMax = TNumericLimits<float>::Lowest();
 
-		TArray<TWeakObjectPtr<AActor>> GroundActors;
+		TArray<TWeakObjectPtr<UPrimitiveComponent>> GroundPrimitiveComponents;
+
 		const FBox WaterZoneBounds = GetZoneBounds();
 		for (ALandscapeProxy* LandscapeProxy : TActorRange<ALandscapeProxy>(World))
 		{
@@ -469,31 +444,27 @@ bool AWaterZone::UpdateWaterInfoTexture()
 			{
 				GroundZMin = FMath::Min(GroundZMin, LandscapeBox.Min.Z);
 				GroundZMax = FMath::Max(GroundZMax, LandscapeBox.Max.Z);
-				GroundActors.Add(LandscapeProxy);
+				TInlineComponentArray<ULandscapeComponent*> LandscapeComponents(LandscapeProxy);
+				GroundPrimitiveComponents.Append(LandscapeComponents);
 			}
 		}
 
-		// If we have no ground actors we need to set GroundZMin to be something sensible because it won't have been set above.
-		if (GroundActors.Num() == 0)
+		// If we have no ground components we need to set GroundZMin to be something sensible because it won't have been set above.
+		if (GroundPrimitiveComponents.Num() == 0)
 		{
 			GroundZMax = WaterZMax;
-			GroundZMin = GroundZMax - CVarWaterFallbackDepth.GetValueOnGameThread();
+			GroundZMin = WaterZMin - CVarWaterFallbackDepth.GetValueOnGameThread();
 		}
 
 #if WITH_EDITOR
-		// Check all the ground actors have complete shader maps before we try to render them into the water info texture
-		for (TWeakObjectPtr<AActor> GroundActorPtr : GroundActors)
+		// Check all the ground components have complete shader maps before we try to render them into the water info texture
+		for (TWeakObjectPtr<UPrimitiveComponent> GroundPrimCompPtr : GroundPrimitiveComponents)
 		{
-			if (AActor* GroundActor = GroundActorPtr.Get())
+			if (UPrimitiveComponent* GroundPrimComp = GroundPrimCompPtr.Get())
 			{
-				TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents(GroundActor);
-
-				for (UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
-				{
 					TArray<UMaterialInterface*> TmpUsedMaterials;
-					PrimitiveComponent->GetUsedMaterials(TmpUsedMaterials, false);
+					GroundPrimComp->GetUsedMaterials(TmpUsedMaterials, false);
 					UsedMaterials.Append(TmpUsedMaterials);
-				}
 			}
 		}
 
@@ -509,7 +480,7 @@ bool AWaterZone::UpdateWaterInfoTexture()
 					if (!MaterialResource->IsGameThreadShaderMapComplete())
 					{
 #if WITH_EDITOR
-						MaterialResource->SubmitCompileJobs_GameThread(EShaderCompileJobPriority::ForceLocal);
+						MaterialResource->SubmitCompileJobs_GameThread(EShaderCompileJobPriority::High);
 #endif
 						bHasIncompleteShaderMaps = true;
 					}
@@ -529,7 +500,7 @@ bool AWaterZone::UpdateWaterInfoTexture()
 		UE::WaterInfo::FRenderingContext Context;
 		Context.ZoneToRender = this;
 		Context.WaterBodies = WaterBodiesToRender;
-		Context.GroundActors = MoveTemp(GroundActors);
+		Context.GroundPrimitiveComponents = MoveTemp(GroundPrimitiveComponents);
 		Context.CaptureZ = FMath::Max(WaterZMax, GroundZMax) + CaptureZOffset;
 		Context.TextureRenderTarget = WaterInfoTexture;
 
@@ -538,22 +509,17 @@ bool AWaterZone::UpdateWaterInfoTexture()
 			WaterViewExtension.Pin()->MarkWaterInfoTextureForRebuild(Context);
 		}
 
-		for (UWaterBodyComponent* Component : WaterBodiesToRender)
-		{
-			Component->UpdateMaterialInstances();
-		}
-
 		UE_LOG(LogWater, Verbose, TEXT("Queued Water Info texture update"));
 	}
 
 	return true;
 }
 
-FVector AWaterZone::GetTessellatedWaterMeshCenter() const
+FVector AWaterZone::GetDynamicWaterMeshCenter() const
 {
-	if (IsNonTessellatedLODMeshEnabled())
+	if (IsLocalOnlyTessellationEnabled())
 	{
-		return TessellatedWaterMeshCenter;
+		return LocalTessellationCenter;
 	}
 	else
 	{
@@ -561,23 +527,17 @@ FVector AWaterZone::GetTessellatedWaterMeshCenter() const
 	}
 }
 
-FVector AWaterZone::GetTessellatedWaterMeshExtent() const
+FVector AWaterZone::GetDynamicWaterMeshExtent() const
 {
-	if (IsNonTessellatedLODMeshEnabled())
+	if (IsLocalOnlyTessellationEnabled())
 	{
-		return TessellatedWaterMeshExtent.GridSnap(GetNonTessellatedLODSectionSize());
+		return LocalTessellationExtent;
 	}
 	else
 	{
 		// #todo_water [roey]: better implementation for 3D extent
 		return FVector(GetZoneExtent(), 0.0);
 	}
-}
-
-float AWaterZone::GetNonTessellatedLODSectionSize() const
-{
-	check(WaterMesh)
-	return WaterMesh->GetTileSize() * NonTessellatedLODSectionScale;
 }
 
 void AWaterZone::OnLevelAddedToWorld(ULevel* InLevel, UWorld* InWorld)
@@ -598,12 +558,12 @@ void AWaterZone::OnLevelChanged(ULevel* InLevel, UWorld* InWorld)
 	}
 
 	const FBox WaterZoneBounds = GetZoneBounds();
-	const bool bContainsGroundActors = Algo::AnyOf(InLevel->Actors, [this, &WaterZoneBounds](const AActor* Actor)
+	const bool bContainsActorsAffectingWaterZone = Algo::AnyOf(InLevel->Actors, [this, &WaterZoneBounds](const AActor* Actor)
 	{
 		return IsAffectingWaterZone(WaterZoneBounds, Actor);
 	});
 
-	if (bContainsGroundActors)
+	if (bContainsActorsAffectingWaterZone)
 	{
 		MarkForRebuild(EWaterZoneRebuildFlags::UpdateWaterInfoTexture);
 	}
@@ -616,7 +576,17 @@ bool AWaterZone::IsAffectingWaterZone(const FBox& InWaterZoneBounds, const AActo
 		return false;
 	}
 
-	if (const ALandscapeProxy* LandscapeProxy = Cast<const ALandscapeProxy>(InActor))
+	if (const AWaterBody* WaterBodyActor = Cast<const AWaterBody>(InActor))
+	{
+		if (const UWaterBodyComponent* WaterBodyComponent = WaterBodyActor->GetWaterBodyComponent())
+		{
+			if (WaterBodyComponent->GetWaterZone() == this)
+			{
+				return WaterBodyComponent->AffectsWaterInfo();
+			}
+		}
+	}
+	else if (const ALandscapeProxy* LandscapeProxy = Cast<const ALandscapeProxy>(InActor))
 	{
 		bool bIntersectsWaterZone = false;
 

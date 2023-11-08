@@ -163,18 +163,7 @@ namespace
 		IPlatformFile* PlatformFile = &FPlatformFileManager::Get().GetPlatformFile();
 		const TCHAR* EngineFolders[] = {TEXT("Engine"), TEXT("Plugins")};
 		FString Result;
-
-		// If this file name has been renamed try mapping it to known
-		if (FilePath.Compare(TEXT("eboot.bin")) == 0)
-		{
-			Result = FPaths::Combine(SearchPath, Project, TEXT("Binaries"), Platform, Project, TEXT(".self"));
-			if (PlatformFile->FileExists(*Result))
-			{
-				return Result;
-			}
-		}
-
-		const FString File = FPaths::GetCleanFilename(FilePath);
+		FString File = FPaths::GetCleanFilename(FilePath);
 
 		// Look in some well known directories
 		for (const TCHAR* Folder : EngineFolders)
@@ -230,16 +219,22 @@ namespace
 		return FString();
 	}
 
-	static bool LoadBinary(const TCHAR* Path, SYMS_Arena* Arena, SYMS_ParseBundle& Bundle, TArray<FAutoMappedFile>& Files, const FString& SearchPath, const FString& Platform, const FString& Project)
+	static bool LoadBinary(const TCHAR* Path, SYMS_Arena* Arena, SYMS_ParseBundle& Bundle, TArray<FAutoMappedFile>& Files, const FString& SearchPath, const FString& Platform, const FString& AppName)
 	{
-		const FString FilePath = Path;
+		FString FilePath = Path;
 		bool bFileFound = false;
+
+		// Remap known renamed binaries
+		if (FilePath.EndsWith(TEXT("eboot.bin")) && !Platform.IsEmpty() && !AppName.IsEmpty())
+		{
+			FilePath = FPaths::Combine(FPaths::GetPath(FilePath), FString::Printf(TEXT("%s.self"), *AppName));
+		}
 
 		// First lookup file in symbol path
 		FString BinaryPath = FindBinaryFileInPath(FilePath, SearchPath);
 		if (BinaryPath.IsEmpty() && !Platform.IsEmpty())
 		{
-			BinaryPath = FindFileInEngineFolder(FilePath, SearchPath, Platform, Project);
+			BinaryPath = FindFileInEngineFolder(FilePath, SearchPath, Platform, AppName);
 		}
 		bFileFound = !BinaryPath.IsEmpty();
 
@@ -530,18 +525,16 @@ FSymslibResolver::FSymslibResolver(IAnalysisSession& InSession, IResolvedSymbolF
 #endif
 
 	// Try to get session information
-	// todo: Sadly this will not be available in the constructor or when the first modules are traced, since the
-	//		 session info is traced later in the process startup sequence.
-#if 0
+	// Depending on how module tracing and session info tracing is implemented on different platforms this may not
+	// be available at this point.
 	FAnalysisSessionReadScope _(Session);
 	const IDiagnosticsProvider* DiagnosticsProvider = ReadDiagnosticsProvider(Session);
 	if (DiagnosticsProvider && DiagnosticsProvider->IsSessionInfoAvailable())
 	{
 		const FSessionInfo Info = DiagnosticsProvider->GetSessionInfo();
 		Platform = Info.Platform;
-		Project = Info.AppName;
+		AppName = Info.AppName;
 	}
-#endif
 }
 
 FSymslibResolver::~FSymslibResolver()
@@ -889,7 +882,7 @@ EModuleStatus FSymslibResolver::LoadModule(FModuleEntry* Entry, FStringView Sear
 	// contents of binary & debug file
 	SYMS_ParseBundle Bundle;
 
-	if (!LoadBinary(Entry->Module->FullName, Group->arena, Bundle, Files, SearchPath, Platform, Project))
+	if (!LoadBinary(Entry->Module->FullName, Group->arena, Bundle, Files, SearchPath, Platform, AppName))
 	{
 		syms_group_release(Group);
 		OutStatusMessage.Appendf(TEXT("Failed to load image for '%s' in '%s'."), Entry->Module->Name, *SearchPath);

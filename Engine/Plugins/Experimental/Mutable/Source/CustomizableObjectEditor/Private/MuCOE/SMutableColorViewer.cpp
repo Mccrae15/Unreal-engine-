@@ -2,8 +2,8 @@
 
 #include "MuCOE/SMutableColorViewer.h"
 
-#include "MuCOE/SMutableColorPreviewBox.h"
 #include "Widgets/SBoxPanel.h"
+#include "Widgets/Colors/SColorBlock.h"
 #include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "CustomizableObjectEditor"
@@ -18,9 +18,9 @@ void SMutableColorViewer::Construct(const FArguments& InArgs)
 	const FText BlueColorValueTitle = LOCTEXT("BlueColorValueTitle", "Blue : ");
 	const FText AlphaColorValueTitle = LOCTEXT("AlphaColorValueTitle", "Alpha : ");
 
-	const int32 IndentationSpace = 16;	
-	const int32 AfterTitleSpacing = 4;
-	const int32 ColorPreviewHorizontalPadding = 18;
+	constexpr int32 IndentationSpace = 16;
+	constexpr int32 AfterTitleSpacing = 4;
+	constexpr int32 ColorPreviewHorizontalPadding = 18;
 
 	ChildSlot
 	[
@@ -141,48 +141,46 @@ void SMutableColorViewer::Construct(const FArguments& InArgs)
 			.Padding(ColorPreviewHorizontalPadding,0)
 			.MaxWidth(120)
 			[
-				SAssignNew(this->ColorPreview, SMutableColorPreviewBox)
-				// .BoxColor(this, &SMutableColorViewer::GetPreviewColor)
+				SAssignNew(ColorPreview, SColorBlock)
+				.UseSRGB(false)
+				.Color(this, &SMutableColorViewer::GetColor)
 			]
 			// -----------------------------------------------------
 		]
 	];
 }
 
-void SMutableColorViewer::SetColor(float InRed, float InGreen, float InBlue, float InAlpha)
+void SMutableColorViewer::SetColor(FVector4f InColor)
 {
-	this->RedValue = InRed;
-	this->GreenValue = InGreen;
-	this->BlueValue = InBlue;
-	this->AlphaValue = InAlpha;
-
-	this->ColorPreview->SetColor( this->GetPreviewColor() );
+	Color = InColor;
 }
 
 
-FSlateColor SMutableColorViewer::GetPreviewColor() const
+FLinearColor SMutableColorViewer::GetColor() const
 {
-	return FSlateColor { FLinearColor{this->RedValue, this->GreenValue, this->BlueValue, this->AlphaValue} };
+	FLinearColor BoxColor(Color);
+	
+	return BoxColor;
 }
 
 FText SMutableColorViewer::GetRedValue() const
 {
-	return FText::AsNumber(this->RedValue);
+	return FText::AsNumber(Color[0]);
 }
 
 FText SMutableColorViewer::GetGreenValue() const
 {
-	return FText::AsNumber(this->GreenValue);
+	return FText::AsNumber(Color[1]);
 }
 
 FText SMutableColorViewer::GetBlueValue() const
 {
-	return FText::AsNumber(this->BlueValue);
+	return FText::AsNumber(Color[2]);
 }
 
 FText SMutableColorViewer::GetAlphaValue() const
 {
-	return FText::AsNumber(this->AlphaValue);
+	return FText::AsNumber(Color[3]);
 }
 
 #undef LOCTEXT_NAMESPACE

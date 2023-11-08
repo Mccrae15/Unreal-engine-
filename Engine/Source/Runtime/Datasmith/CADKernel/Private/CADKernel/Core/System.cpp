@@ -3,7 +3,6 @@
 
 #include "CADKernel/Core/Database.h"
 #include "CADKernel/Core/Entity.h"
-#include "CADKernel/Core/KernelParameters.h"
 #include "CADKernel/UI/Visu.h"
 #include "CADKernel/Utils/Util.h"
 
@@ -11,6 +10,7 @@
 #include "Misc/Paths.h"
 
 #ifdef CADKERNEL_DEV
+#include "CADKernel/Core/KernelParameters.h"
 #include "CADKernel/Core/Version.h"
 
 #include <stdlib.h>
@@ -23,12 +23,13 @@ namespace UE::CADKernel
 TUniquePtr<FSystem> FSystem::Instance = nullptr;
 
 FSystem::FSystem()
-	: Parameters(MakeShared<FKernelParameters>())
-	, DefaultVisu()
+	: DefaultVisu()
 	, Viewer(&DefaultVisu)
 	, Console(&DefaultConsole)
 	, ProgressManager(&DefaultProgressManager)
-
+#ifdef CADKERNEL_DEV
+	, Parameters(MakeShared<FKernelParameters>())
+#endif
 {
 	LogLevel = Log;
 	VerboseLevel = Log;
@@ -128,7 +129,10 @@ void FSystem::DefineReportFile(const FString& InReportFilePath)
 	ReportFile = MakeShareable<FArchive>(IFileManager::Get().CreateFileWriter(*InReportFilePath, IO_WRITE));
 
 	ReportHeaderPath = FPaths::ConvertRelativePathToFull(FPaths::Combine(ReportHeaderPath, TEXT("ReportHeader.csv")));
-	ReportHeaderFile = MakeShareable<FArchive>(IFileManager::Get().CreateFileWriter(*ReportHeaderPath, IO_WRITE));
+	if(!FPaths::FileExists(ReportHeaderPath))
+	{
+		ReportHeaderFile = MakeShareable<FArchive>(IFileManager::Get().CreateFileWriter(*ReportHeaderPath, IO_WRITE));
+	}
 }
 #endif
 

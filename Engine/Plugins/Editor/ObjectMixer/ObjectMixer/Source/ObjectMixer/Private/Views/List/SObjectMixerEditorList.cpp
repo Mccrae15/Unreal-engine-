@@ -14,24 +14,23 @@
 #include "Views/Widgets/SCollectionSelectionButton.h"
 #include "Views/Widgets/SObjectMixerPlacementAssetMenuEntry.h"
 
-// View Filters
 #include "ActorDescTreeItem.h"
 #include "ActorFolderTreeItem.h"
 #include "ComponentTreeItem.h"
 #include "Editor.h"
 #include "EditorActorFolders.h"
 #include "IPlacementModeModule.h"
+#include "LevelEditorSequencerIntegration.h"
+#include "LevelSequence.h"
 #include "SceneOutlinerModule.h"
 #include "SceneOutlinerTextInfoColumn.h"
 #include "SPositiveActionButton.h"
 #include "Algo/Find.h"
-#include "Engine/Level.h"
+#include "Algo/RemoveIf.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Framework/Views/TableViewMetadata.h"
 #include "LevelInstance/LevelInstanceInterface.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
-#include "ToolMenus.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Layout/SWrapBox.h"
 #include "Widgets/Views/STreeView.h"
@@ -39,13 +38,21 @@
 #include "WorldPartition/WorldPartitionActorDesc.h"
 #include "WorldPartition/ContentBundle/ContentBundleDescriptor.h"
 #include "WorldPartition/ContentBundle/ContentBundleEngineSubsystem.h"
-#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
+#include "WorldPartition/DataLayer/DataLayerManager.h"
 
 #define LOCTEXT_NAMESPACE "SObjectMixerEditorList"
 
 const FName SObjectMixerEditorList::ItemNameColumnName(TEXT("Builtin_Name"));
 const FName SObjectMixerEditorList::EditorVisibilityColumnName(TEXT("Builtin_EditorVisibility"));
 const FName SObjectMixerEditorList::EditorVisibilitySoloColumnName(TEXT("Builtin_EditorVisibilitySolo"));
+
+const FName SequencerSpawnableColumnName("Spawnable");
+const FName SequencerInfoColumnName("Sequence");
+
+void CloseAllMenus()
+{
+	FSlateApplication::Get().DismissAllMenus();
+}
 
 void SObjectMixerEditorList::Construct(const FArguments& InArgs, TSharedRef<FObjectMixerEditorList> ListModel)
 {
@@ -56,6 +63,7 @@ void SObjectMixerEditorList::Construct(const FArguments& InArgs, TSharedRef<FObj
 	InitOptions.bFocusSearchBoxWhenOpened = true;
 	InitOptions.bShowCreateNewFolder = true;
 	InitOptions.bShowParentTree = true;
+	InitOptions.bShowTransient = ListModel->ShouldShowTransientObjects();
 	InitOptions.OutlinerIdentifier = ListModel->GetModuleName();
 	
 	// Mode
@@ -73,15 +81,15 @@ void SObjectMixerEditorList::Construct(const FArguments& InArgs, TSharedRef<FObj
 	// Header Row
 	InitOptions.bShowHeaderRow = true;
 	InitOptions.bCanSelectGeneratedColumns = false;
-	SetupColumns(InitOptions);
 	 
+	SetupColumns(InitOptions);
 	SSceneOutliner::Construct(InArgs, InitOptions);
 
 	InsertCollectionSelector();
 
 	if (UObjectMixerEditorSerializedData* SerializedData = GetMutableDefault<UObjectMixerEditorSerializedData>())
 	{
-		SerializedData->OnObjectMixerCollectionMapChanged.AddRaw(this, &SObjectMixerEditorList::RebuildCollectionSelector);
+		SerializedData->OnObjectMixerCollectionMapChanged.AddSP(this, &SObjectMixerEditorList::RebuildCollectionSelector);
 	}
 	
 	RebuildCollectionSelector();
@@ -89,6 +97,11 @@ void SObjectMixerEditorList::Construct(const FArguments& InArgs, TSharedRef<FObj
 	SetSingleCollectionSelection();
 }
 
+SObjectMixerEditorList::~SObjectMixerEditorList()
+{	
+	FLevelEditorSequencerIntegration::Get().GetOnSequencersChanged().RemoveAll(this);
+	HeaderRowContextMenuWidget.Reset();
+}
 
 FReply SObjectMixerEditorList::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
 {
@@ -439,9 +452,9 @@ TSet<TSharedPtr<ISceneOutlinerTreeItem>> SObjectMixerEditorList::GetSoloRows() c
 
 TSet<TSharedPtr<ISceneOutlinerTreeItem>> SObjectMixerEditorList::GetTreeRootItems() const
 {
-	if (GetTree().GetItems().Num())
+	if (GetTree().GetRootItems().Num())
 	{
-		return {GetTree().GetItems()[0]};
+		return {GetTree().GetRootItems()[0]};
 	}
 
 	return {};
@@ -449,9 +462,9 @@ TSet<TSharedPtr<ISceneOutlinerTreeItem>> SObjectMixerEditorList::GetTreeRootItem
 
 TSet<TWeakPtr<ISceneOutlinerTreeItem>> SObjectMixerEditorList::GetWeakTreeRootItems() const
 {
-	if (GetTree().GetItems().Num())
+	if (GetTree().GetRootItems().Num())
 	{
-		return {GetTree().GetItems()[0]};
+		return {GetTree().GetRootItems()[0]};
 	}
 
 	return {};
@@ -582,6 +595,14 @@ FObjectMixerSceneOutlinerColumnInfo* SObjectMixerEditorList::GetColumnInfoByProp
 		});
 }
 
+void SObjectMixerEditorList::RestoreDefaultPropertyColumns()
+{
+	for (const FObjectMixerSceneOutlinerColumnInfo& ColumnInfo : HeaderColumnInfos)
+	{
+		SetColumnVisibility(ColumnInfo.ColumnID, ColumnInfo.bIsDesiredToBeShownByDefault);
+	}
+}
+
 void SObjectMixerEditorList::CustomAddToToolbar(TSharedPtr<SHorizontalBox> Toolbar)
 {
 	ToolbarPtr = Toolbar;
@@ -653,71 +674,84 @@ void SObjectMixerEditorList::Tick(const FGeometry& AllottedGeometry, const doubl
 	}
 }
 
-TSharedRef<SWidget> SObjectMixerEditorList::GenerateHeaderRowContextMenu() const
+TSharedRef<SWidget> SObjectMixerEditorList::GenerateHeaderRowContextMenu()
 {
-	FMenuBuilder MenuBuilder(false, nullptr);
-	
-	MenuBuilder.AddSearchWidget();
-
-	FName LastPropertyCategoryName = NAME_None;
-
-	for (const FObjectMixerSceneOutlinerColumnInfo& ColumnInfo : HeaderColumnInfos)
+	if (!HeaderRowContextMenuWidget)
 	{
-		const FName& PropertyCategoryName = ColumnInfo.PropertyCategoryName;
+		FMenuBuilder MenuBuilder(false, nullptr);
+	
+		MenuBuilder.AddSearchWidget();
 
-		if (!PropertyCategoryName.IsEqual(LastPropertyCategoryName))
+		MenuBuilder.BeginSection(TEXT("Actions"), LOCTEXT("ContextMenuActions", "Actions"));
 		{
-			LastPropertyCategoryName = PropertyCategoryName;
-			
-			MenuBuilder.EndSection();
-            MenuBuilder.BeginSection(LastPropertyCategoryName, FText::FromName(LastPropertyCategoryName));
-		}
-		
-		const FName& ColumnID = ColumnInfo.ColumnID;
-		
-		const FText Tooltip = ColumnInfo.PropertyRef ?
-			ColumnInfo.PropertyRef->GetToolTipText() : ColumnInfo.PropertyDisplayText;
-
-		const bool bCanSelectColumn = ColumnInfo.bCanBeHidden;
-
-		const FName Hook = ColumnInfo.PropertyType == EListViewColumnType::BuiltIn ? "Builtin" : "GeneratedProperties";
-		
-		MenuBuilder.AddMenuEntry(
-			ColumnInfo.PropertyDisplayText,
-			Tooltip,
-			FSlateIcon(),
-			FUIAction(
-				FExecuteAction::CreateLambda([this, ColumnID]()
-				{
-					TSharedPtr<FObjectMixerEditorList> PinnedListModel = ListModelPtr.Pin();
-					TSharedPtr<SHeaderRow> PinnedHeaderRow = GetTree().GetHeaderRow();
-					check(PinnedHeaderRow);
-
-					const bool bNewColumnEnabled = !PinnedHeaderRow->IsColumnVisible(ColumnID);
-					
-					PinnedHeaderRow->SetShowGeneratedColumn(ColumnID, bNewColumnEnabled);
-
-					if (UObjectMixerEditorSerializedData* SerializedData = GetMutableDefault<UObjectMixerEditorSerializedData>())
+			MenuBuilder.AddMenuEntry(
+				LOCTEXT("RestoreDefaultPropertyColumns", "Restore Default Columns"),
+				LOCTEXT("RestoreDefaultPropertyColumnsTooltip", "Restore property columns to built-in columns and those as defined in GetColumnsToShowByDefault() in your object filters."),
+				FSlateIcon(),
+				FUIAction(
+					FExecuteAction::CreateLambda([this]()
 					{
-						for (const TSubclassOf<UObjectMixerObjectFilter>& FilterClass : PinnedListModel->GetObjectFilterClasses())
-						{
-							const FName FilterName = FilterClass->GetFName();
-							SerializedData->SetShouldShowColumn(FilterName, ColumnID, bNewColumnEnabled);
-						}
-					}
-				}),
-				FCanExecuteAction::CreateLambda([bCanSelectColumn](){return bCanSelectColumn;}),
-				FIsActionChecked::CreateLambda([this, ColumnID]()
-				{
-					return GetTree().GetHeaderRow()->IsColumnVisible(ColumnID);
-				})
-			),
-			Hook,
-			EUserInterfaceActionType::ToggleButton
-		);
+						CloseAllMenus();
+						RestoreDefaultPropertyColumns();
+					})
+				)
+			);
+		}
+		MenuBuilder.EndSection();
+
+		FName LastPropertyCategoryName = NAME_None;
+
+		for (const FObjectMixerSceneOutlinerColumnInfo& ColumnInfo : HeaderColumnInfos)
+		{
+			const FName& PropertyCategoryName = ColumnInfo.PropertyCategoryName;
+
+			if (!PropertyCategoryName.IsEqual(LastPropertyCategoryName))
+			{
+				LastPropertyCategoryName = PropertyCategoryName;
+			
+				MenuBuilder.EndSection();
+				MenuBuilder.BeginSection(LastPropertyCategoryName, FText::FromName(LastPropertyCategoryName));
+			}
+		
+			const FName& ColumnID = ColumnInfo.ColumnID;
+		
+			const FText Tooltip = ColumnInfo.PropertyRef ?
+				ColumnInfo.PropertyRef->GetToolTipText() : ColumnInfo.PropertyDisplayText;
+
+			const bool bCanSelectColumn = ColumnInfo.bCanBeHidden;
+
+			const FName Hook = ColumnInfo.PropertyType == EListViewColumnType::BuiltIn ? "Builtin" : "GeneratedProperties";
+		
+			MenuBuilder.AddMenuEntry(
+				ColumnInfo.PropertyDisplayText,
+				Tooltip,
+				FSlateIcon(),
+				FUIAction(
+					FExecuteAction::CreateLambda([this, ColumnID]()
+					{
+						TSharedPtr<FObjectMixerEditorList> PinnedListModel = ListModelPtr.Pin();
+						TSharedPtr<SHeaderRow> PinnedHeaderRow = GetTree().GetHeaderRow();
+						check(PinnedHeaderRow);
+
+						const bool bNewColumnEnabled = !PinnedHeaderRow->IsColumnVisible(ColumnID);
+					
+						PinnedHeaderRow->SetShowGeneratedColumn(ColumnID, bNewColumnEnabled);
+					}),
+					FCanExecuteAction::CreateLambda([bCanSelectColumn](){return bCanSelectColumn;}),
+					FIsActionChecked::CreateLambda([this, ColumnID]()
+					{
+						return GetTree().GetHeaderRow()->IsColumnVisible(ColumnID);
+					})
+				),
+				Hook,
+				EUserInterfaceActionType::ToggleButton
+			);
+		}
+
+		HeaderRowContextMenuWidget = MenuBuilder.MakeWidget();
 	}
 
-	return MenuBuilder.MakeWidget();
+	return HeaderRowContextMenuWidget.ToSharedRef();
 }
 
 bool SObjectMixerEditorList::AddUniquePropertyColumnInfo(
@@ -778,7 +812,8 @@ bool SObjectMixerEditorList::AddUniquePropertyColumnInfo(
 					Property->GetDisplayNameText(),
 					EListViewColumnType::PropertyGenerated,
 					*PropertyCategoryName,
-					true, true, false, false
+					true,
+					bForceIncludeProperty ? true : GetListModelPtr().Pin()->ColumnsToShowByDefaultCache.Contains(PropertyName)
 				}
 			);
 
@@ -871,12 +906,12 @@ void SObjectMixerEditorList::CreateActorTextInfoColumns(FSceneOutlinerInitializa
 				{
 					if (const UActorDescContainer* ActorDescContainer = ActorDescItem->ActorDescHandle.Container.Get())
 					{
-						const UWorld* World = ActorDescContainer->GetWorld();
-						if (const UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(World))
+						const UWorld* OwningWorld = ActorDescContainer->GetWorldPartition()->GetWorld();
+						if (const UDataLayerManager* DataLayerManager = UDataLayerManager::GetDataLayerManager(OwningWorld))
 						{
 							TSet<const UDataLayerInstance*> DataLayerInstances;
-							DataLayerInstances.Append(DataLayerSubsystem->GetDataLayerInstances(ActorDesc->GetDataLayerInstanceNames()));
-							if (ULevelInstanceSubsystem* LevelInstanceSubsystem = UWorld::GetSubsystem<ULevelInstanceSubsystem>(World))
+							DataLayerInstances.Append(DataLayerManager->GetDataLayerInstances(ActorDesc->GetDataLayerInstanceNames()));
+							if (ULevelInstanceSubsystem* LevelInstanceSubsystem = UWorld::GetSubsystem<ULevelInstanceSubsystem>(OwningWorld))
 							{
 								UWorld* OuterWorld = ActorDescContainer->GetTypedOuter<UWorld>();
 								// Add parent container Data Layer Instances
@@ -944,9 +979,9 @@ void SObjectMixerEditorList::CreateActorTextInfoColumns(FSceneOutlinerInitializa
 		{
 			if (const FWorldPartitionActorDesc* ActorDesc = ActorDescItem->ActorDescHandle.Get())
 			{
-				if (FName LevelPackage = ActorDesc->GetLevelPackage(); !LevelPackage.IsNone())
+				if (FName LevelPackage = ActorDesc->GetContainerPackage(); !LevelPackage.IsNone())
 				{
-					return ActorDesc->GetLevelPackage().ToString();
+					return ActorDesc->GetContainerPackage().ToString();
 				}
 			}
 		}
@@ -1048,20 +1083,6 @@ void SObjectMixerEditorList::CreateActorTextInfoColumns(FSceneOutlinerInitializa
 	auto AddTextInfoColumn = [this, PinnedListModel, &OutInitOptions](FName ColumnID, TAttribute<FText> ColumnName, FGetTextForItem ColumnInfo)
 	{
 		bool bShouldShowColumn = false;
-		// Load visible columns from SerializedData
-		if (UObjectMixerEditorSerializedData* SerializedData = GetMutableDefault<UObjectMixerEditorSerializedData>())
-		{
-			for (const TSubclassOf<UObjectMixerObjectFilter>& Filter : PinnedListModel->GetObjectFilterClasses())
-			{
-				const FName FilterName = Filter->GetFName();
-				if (SerializedData->IsColumnDataSerialized(FilterName, ColumnID))
-				{
-					// If any filter's serialized data says we should show a column, show it and stomp other filters' saved setting.
-					bShouldShowColumn = SerializedData->ShouldShowColumn(FilterName, ColumnID);
-					break;
-				}
-			}
-		}
 		
 		OutInitOptions.ColumnMap.Add(
 			ColumnID,
@@ -1088,7 +1109,7 @@ void SObjectMixerEditorList::CreateActorTextInfoColumns(FSceneOutlinerInitializa
 				ColumnName.Get(FText::GetEmpty()),
 				EListViewColumnType::BuiltIn,
 				TEXT("Built-In"),
-				false, true, true, false
+				true, bShouldShowColumn
 			}
 		);
 	};
@@ -1116,26 +1137,9 @@ void SObjectMixerEditorList::SetupColumns(FSceneOutlinerInitializationOptions& O
 			ESceneOutlinerColumnVisibility InDefaultVisibility, int32 InPriorityIndex, const FName ColumnID,
 			const FText DisplayText, const bool bCanBeHidden, FCreateSceneOutlinerColumn CreationDelegate = FCreateSceneOutlinerColumn(),
 			TOptional<float> FillSize = TOptional<float>())
-		{
-			bool bShouldShowColumn = InDefaultVisibility == ESceneOutlinerColumnVisibility::Visible ? true : false;
-			
-			// Load visible columns from SerializedData
-			if (UObjectMixerEditorSerializedData* SerializedData = GetMutableDefault<UObjectMixerEditorSerializedData>())
-			{
-				for (const TSubclassOf<UObjectMixerObjectFilter>& Filter : PinnedListModel->GetObjectFilterClasses())
-				{
-					const FName FilterName = Filter->GetFName();
-					if (SerializedData->IsColumnDataSerialized(FilterName, ColumnID))
-					{
-						// If any filter's serialized data says we should show a column, show it and stomp other filters' saved setting.
-						bShouldShowColumn = SerializedData->ShouldShowColumn(FilterName, ColumnID);
-						break;
-					}
-				}
-			}
-			
+		{			
 			OutInitOptions.ColumnMap.Add(ColumnID, FSceneOutlinerColumnInfo(
-				bShouldShowColumn ? ESceneOutlinerColumnVisibility::Visible : ESceneOutlinerColumnVisibility::Invisible,
+				InDefaultVisibility,
 				InPriorityIndex, CreationDelegate, bCanBeHidden,
 				FillSize, DisplayText, EHeaderComboVisibility::Never,
 				FOnGetContent::CreateRaw(this, &SObjectMixerEditorList::GenerateHeaderRowContextMenu)));
@@ -1146,7 +1150,8 @@ void SObjectMixerEditorList::SetupColumns(FSceneOutlinerInitializationOptions& O
 					DisplayText,
 					EListViewColumnType::BuiltIn,
 					TEXT("Built-In"),
-					bShouldShowColumn, bCanBeHidden, true, false
+					bCanBeHidden,
+					InDefaultVisibility == ESceneOutlinerColumnVisibility::Visible ? true : false
 				}
 			);
 		};
@@ -1180,11 +1185,25 @@ void SObjectMixerEditorList::SetupColumns(FSceneOutlinerInitializationOptions& O
 			ESceneOutlinerColumnVisibility::Visible, 11, FSceneOutlinerBuiltInColumnTypes::ActorInfo(),
 			FSceneOutlinerBuiltInColumnTypes::ActorInfo_Localized(), true			
 		);
+		
+		// Sequencer Columns
+		if (FLevelEditorSequencerIntegration::Get().GetSequencers().Num() > 0)
+		{
+			const FText SpawnableDisplayText = LOCTEXT("SpawnableColumnName", "Spawnable");
+			const FText SequencerInfoDisplayText = LOCTEXT("SequencerColumnName", "Sequencer");
 
-		AddBuiltInColumn(
-			ESceneOutlinerColumnVisibility::Invisible, 12, FSceneOutlinerBuiltInColumnTypes::SourceControl(),
-			FSceneOutlinerBuiltInColumnTypes::SourceControl_Localized(), true			
-		);
+			AddBuiltInColumn(
+				ESceneOutlinerColumnVisibility::Visible, 12, SequencerSpawnableColumnName,
+				SpawnableDisplayText, true,
+				FCreateSceneOutlinerColumn::CreateRaw( &FLevelEditorSequencerIntegration::Get(), &FLevelEditorSequencerIntegration::CreateSequencerSpawnableColumn)
+			);
+
+			AddBuiltInColumn(
+				ESceneOutlinerColumnVisibility::Visible, 13, SequencerInfoColumnName,
+				SequencerInfoDisplayText, true,
+				FCreateSceneOutlinerColumn::CreateRaw( &FLevelEditorSequencerIntegration::Get(), &FLevelEditorSequencerIntegration::CreateSequencerInfoColumn)
+			);
+		}
 
 		ESceneOutlinerColumnVisibility UnsavedColumnVisibility = ESceneOutlinerColumnVisibility::Invisible;
 
@@ -1244,23 +1263,7 @@ void SObjectMixerEditorList::SetupColumns(FSceneOutlinerInitializationOptions& O
 		}
 	}
 
-	// Alphabetical sort by Property Name
-	HeaderColumnInfos.StableSort([](const FObjectMixerSceneOutlinerColumnInfo& A, const FObjectMixerSceneOutlinerColumnInfo& B)
-	{
-		return A.PropertyDisplayText.ToString() < B.PropertyDisplayText.ToString();
-	});
-
-	// Alphabetical sort by Property Category Name
-	HeaderColumnInfos.StableSort([](const FObjectMixerSceneOutlinerColumnInfo& A, const FObjectMixerSceneOutlinerColumnInfo& B)
-	{
-		return A.PropertyCategoryName.LexicalLess(B.PropertyCategoryName);
-	});
-
-	// sort by type
-	HeaderColumnInfos.StableSort([](const FObjectMixerSceneOutlinerColumnInfo& A, const FObjectMixerSceneOutlinerColumnInfo& B)
-	{
-		return A.PropertyType < B.PropertyType;
-	});
+	SortColumnsForHeaderContextMenu();
 
 	// Add Property Columns to Header
 	{
@@ -1278,39 +1281,17 @@ void SObjectMixerEditorList::SetupColumns(FSceneOutlinerInitializationOptions& O
 			{
 				continue;
 			}
-
-			// Figure out if we should show a certain column
-			// First check filter rules
-			bool bShouldShowColumn = PinnedListModel->ColumnsToShowByDefaultCache.Contains(ColumnInfo.ColumnID);
-
-			// Then load visible columns from SerializedData
-			if (UObjectMixerEditorSerializedData* SerializedData = GetMutableDefault<UObjectMixerEditorSerializedData>())
-			{
-				for (const TSubclassOf<UObjectMixerObjectFilter>& Filter : PinnedListModel->GetObjectFilterClasses())
-				{
-					const FName FilterName = Filter->GetFName();
-					if (SerializedData->IsColumnDataSerialized(FilterName, ColumnInfo.ColumnID))
-					{
-						if (SerializedData->ShouldShowColumn(FilterName, ColumnInfo.ColumnID))
-						{
-							// If any filter's serialized data says we should show a column, show it and stomp other filters' saved setting.
-							bShouldShowColumn = true;
-							break;
-						}
-					}
-				}
-			}
 			
 			OutInitOptions.ColumnMap.Add(
 				ColumnInfo.ColumnID,
 				FSceneOutlinerColumnInfo(
-					bShouldShowColumn ? ESceneOutlinerColumnVisibility::Visible : ESceneOutlinerColumnVisibility::Invisible, 30,
+					ColumnInfo.bIsDesiredToBeShownByDefault ? ESceneOutlinerColumnVisibility::Visible : ESceneOutlinerColumnVisibility::Invisible, 30,
 					FCreateSceneOutlinerColumn::CreateLambda([Property = ColumnInfo.PropertyRef](ISceneOutliner& InSceneOutliner)
 					{
 						return MakeShared<FObjectMixerOutlinerPropertyColumn>(InSceneOutliner, Property);
 					}),
 					true,
-					ColumnInfo.FillWidth,
+					TOptional<float>(),
 					PropertyName,
 					EHeaderComboVisibility::Never,
 					FOnGetContent::CreateRaw(this, &SObjectMixerEditorList::GenerateHeaderRowContextMenu)
@@ -1318,6 +1299,27 @@ void SObjectMixerEditorList::SetupColumns(FSceneOutlinerInitializationOptions& O
 			);
 		}
 	}
+}
+
+void SObjectMixerEditorList::SortColumnsForHeaderContextMenu()
+{
+	// Alphabetical sort by Property Name
+	HeaderColumnInfos.StableSort([](const FObjectMixerSceneOutlinerColumnInfo& A, const FObjectMixerSceneOutlinerColumnInfo& B)
+	{
+		return A.PropertyDisplayText.ToString() < B.PropertyDisplayText.ToString();
+	});
+
+	// Alphabetical sort by Property Category Name
+	HeaderColumnInfos.StableSort([](const FObjectMixerSceneOutlinerColumnInfo& A, const FObjectMixerSceneOutlinerColumnInfo& B)
+	{
+		return A.PropertyCategoryName.LexicalLess(B.PropertyCategoryName);
+	});
+
+	// Sort by type
+	HeaderColumnInfos.StableSort([](const FObjectMixerSceneOutlinerColumnInfo& A, const FObjectMixerSceneOutlinerColumnInfo& B)
+	{
+		return A.PropertyType < B.PropertyType;
+	});
 }
 
 void SObjectMixerEditorList::PropagatePropertyChangesToSelectedRows()

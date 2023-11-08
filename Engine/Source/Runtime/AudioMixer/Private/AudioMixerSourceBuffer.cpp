@@ -60,6 +60,13 @@ namespace Audio
 	{
 		LLM_SCOPE(ELLMTag::AudioMixer);
 
+		// Fail if the Wave has been flagged to contain an error
+		if (InArgs.SoundWave && InArgs.SoundWave->HasError())
+		{
+			UE_LOG(LogAudioMixer, VeryVerbose, TEXT("FMixerSourceBuffer::Create failed as '%s' is flagged as containing errors"), *InArgs.SoundWave->GetName());
+			return {};
+		}
+
 		TSharedPtr<FMixerSourceBuffer, ESPMode::ThreadSafe> NewSourceBuffer = MakeShareable(new FMixerSourceBuffer(InArgs, MoveTemp(InDefaultParams)));
 
 		return NewSourceBuffer;
@@ -76,6 +83,10 @@ namespace Audio
 		, BufferType(InArgs.Buffer->GetType())
 		, NumPrecacheFrames(InArgs.SoundWave->NumPrecacheFrames)
 		, AuioDeviceID(InArgs.AudioDeviceID)
+		, WaveName(InArgs.SoundWave->GetFName())
+#if ENABLE_AUDIO_DEBUG
+		, SampleRate(InArgs.SampleRate)
+#endif // ENABLE_AUDIO_DEBUG
 		, bInitialized(false)
 		, bBufferFinished(false)
 		, bPlayedCachedBuffer(false)
@@ -94,6 +105,7 @@ namespace Audio
 		{
 			FSoundGeneratorInitParams InitParams;
 			InitParams.AudioDeviceID = InArgs.AudioDeviceID;
+			InitParams.AudioComponentId = InArgs.AudioComponentID;
 			InitParams.SampleRate = InArgs.SampleRate;
 			InitParams.AudioMixerNumOutputFrames = InArgs.AudioMixerNumOutputFrames;
 			InitParams.NumChannels = NumChannels;
@@ -354,6 +366,7 @@ namespace Audio
 				NewTaskData.AudioData = SourceVoiceBuffers[BufferIndex]->AudioData.GetData();
 				NewTaskData.NumSamples = MaxSamples;
 				NewTaskData.NumChannels = NumChannels;
+				AsyncTaskStartTimeInCycles = FPlatformTime::Cycles64();
 				check(!AsyncRealtimeAudioTask);
 				AsyncRealtimeAudioTask = CreateAudioTask(AuioDeviceID, NewTaskData);
 			}
@@ -370,9 +383,13 @@ namespace Audio
 
 		// Handle the case that the decoder has an error and can't continue.
 		if (InDecoder && InDecoder->HasError())
-		{			
-			UE_LOG(LogAudioMixer, Warning, TEXT("Decoder Error, stopping source [%s]"), 
-				*InDecoder->GetStreamingSoundWave()->GetFName().ToString());
+		{
+			FScopeTryLock Lock(&SoundWaveCritSec);
+			if (Lock.IsLocked() && SoundWave)
+			{
+				SoundWave->SetError(TEXT("ICompressedAudioInfo::HasError() flagged on the Decoder"));
+			}
+
 			bHasError = true;
 			bBufferFinished = true;
 			return false;	
@@ -391,7 +408,8 @@ namespace Audio
 		NewTaskData.NumPrecacheFrames = NumPrecacheFrames;
 		NewTaskData.bForceSyncDecode = bForceSyncDecode;
 
-		FScopeLock Lock(&DecodeTaskCritSec);
+		AsyncTaskStartTimeInCycles = FPlatformTime::Cycles64();
+		FScopeLock Lock(&DecodeTaskCritSec);		
 		check(!AsyncRealtimeAudioTask);
 		AsyncRealtimeAudioTask = CreateAudioTask(AuioDeviceID, NewTaskData);
 
@@ -444,6 +462,10 @@ namespace Audio
 					FDecodeAudioTaskResults TaskResult;
 					AsyncRealtimeAudioTask->GetResult(TaskResult);
 					bIsFinishedOrLooped = TaskResult.bIsFinishedOrLooped;
+#if ENABLE_AUDIO_DEBUG
+					double AudioDuration = static_cast<double>(MONO_PCM_BUFFER_SAMPLES) / FMath::Max(1., static_cast<double>(SampleRate));
+					UpdateCPUCoreUtilization(TaskResult.CPUDuration, AudioDuration);
+#endif // ENABLE_AUDIO_DEBUG
 				}
 				break;
 
@@ -454,12 +476,17 @@ namespace Audio
 
 					SourceVoiceBuffers[CurrentBuffer]->AudioData.SetNum(TaskResult.NumSamplesWritten);
 					bIsFinishedOrLooped = TaskResult.bIsFinished;
+#if ENABLE_AUDIO_DEBUG
+					double AudioDuration = static_cast<double>(TaskResult.NumSamplesWritten) / static_cast<double>(FMath::Max(1, NumChannels * SampleRate));
+					UpdateCPUCoreUtilization(TaskResult.CPUDuration, AudioDuration);
+#endif // ENABLE_AUDIO_DEBUG
 				}
 				break;
 			}
 
 			delete AsyncRealtimeAudioTask;
 			AsyncRealtimeAudioTask = nullptr;
+			AsyncTaskStartTimeInCycles = 0;
 
 			SubmitRealTimeSourceData(bIsFinishedOrLooped);
 		}
@@ -567,6 +594,47 @@ namespace Audio
 	bool FMixerSourceBuffer::IsGeneratorFinished() const
 	{
 		return bProcedural && SoundGenerator.IsValid() && SoundGenerator->IsFinished();
+	}
+
+#if ENABLE_AUDIO_DEBUG
+	double FMixerSourceBuffer::GetCPUCoreUtilization() const
+	{
+		return CPUCoreUtilization.load(std::memory_order_relaxed);
+	}
+
+	void FMixerSourceBuffer::UpdateCPUCoreUtilization(double InCPUTime, double InAudioTime) 
+	{
+		constexpr double AnalysisTime = 1.0;
+
+		if (InAudioTime > 0.0)
+		{
+			double NewUtilization = InCPUTime / InAudioTime;
+			
+			// Determine smoothing coefficients based upon duration of audio being rendered.
+			const double DigitalCutoff = 1.0 / FMath::Max(1., AnalysisTime / InAudioTime);
+			const double SmoothingBeta = FMath::Clamp(FMath::Exp(-UE_PI * DigitalCutoff), 0.0, 1.0 - UE_DOUBLE_SMALL_NUMBER);
+
+			double PriorUtilization = CPUCoreUtilization.load(std::memory_order_relaxed);
+			
+			// Smooth value if utilization has been initialized.
+			if (PriorUtilization > 0.0)
+			{
+				NewUtilization = (1.0 - SmoothingBeta) * NewUtilization + SmoothingBeta * PriorUtilization;
+			}
+			CPUCoreUtilization.store(NewUtilization, std::memory_order_relaxed);
+		}
+	}
+#endif // ENABLE_AUDIO_DEBUG
+
+	void FMixerSourceBuffer::GetDiagnosticState(FDiagnosticState& OutState)
+	{
+		// Query without a lock!
+		OutState.bInFlight = AsyncRealtimeAudioTask != nullptr;
+		OutState.WaveName = WaveName;
+		OutState.bProcedural = bProcedural;
+		OutState.RunTimeInSecs = OutState.bInFlight ?
+			FPlatformTime::ToSeconds(FPlatformTime::Cycles64() - this->AsyncTaskStartTimeInCycles) :
+			0.f;
 	}
 
 	void FMixerSourceBuffer::EnsureAsyncTaskFinishes()

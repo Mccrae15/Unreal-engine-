@@ -2,8 +2,10 @@
 
 #include "SSequencerGroupManager.h"
 
+#include "MVVM/ViewModels/SequencerEditorViewModel.h"
 #include "MVVM/Extensions/IOutlinerExtension.h"
 #include "MVVM/Extensions/IGroupableExtension.h"
+#include "MVVM/Selection/Selection.h"
 #include "Sequencer.h"
 #include "MovieSceneSequence.h"
 #include "MovieScene.h"
@@ -283,12 +285,7 @@ private:
 				if (SequencerGroupTreeNode->GetType() == FSequencerNodeGroupTreeNode::Type::GroupNode)
 				{
 					TSharedPtr<FSequencerNodeGroupNode> NodeGroupNode = StaticCastSharedPtr<FSequencerNodeGroupNode>(SequencerGroupTreeNode);
-					TArray<TWeakPtr<FViewModel>> DraggedNodes;
-					for (const TWeakViewModelPtr<IOutlinerExtension>& DraggedNode : DragDropOp->GetDraggedViewModels())
-					{
-						DraggedNodes.Add(DraggedNode);
-					}
-					Sequencer->AddNodesToExistingNodeGroup(DraggedNodes, NodeGroupNode->Group);
+					Sequencer->AddNodesToExistingNodeGroup(DragDropOp->GetDraggedViewModels(), NodeGroupNode->Group);
 
 					return FReply::Handled();
 				}
@@ -432,6 +429,8 @@ void SSequencerGroupManager::UpdateTree()
 		}
 	}
 
+	TreeView->RequestTreeRefresh();
+
 	bNodeGroupsDirty = false;
 }
 
@@ -493,7 +492,17 @@ const FSlateBrush* SSequencerGroupManager::GetIconBrush(TSharedPtr<FSequencerNod
 	return nullptr;
 }
 
-void SSequencerGroupManager::RequestDeleteNodeGroup(FSequencerNodeGroupNode* NodeGroupNode)
+void SSequencerGroupManager::SelectItemsInGroup(FSequencerNodeGroupNode* Node)
+{
+	TreeView->ClearSelection();
+
+	for (TSharedPtr<FSequencerNodeGroupTreeNode> ChildNode : Node->Children)
+	{
+		TreeView->SetItemSelection(ChildNode, true);
+	}
+}
+
+void SSequencerGroupManager::RequestDeleteNodeGroup(FSequencerNodeGroupNode * NodeGroupNode)
 {
 	UMovieScene* MovieScene = GetMovieScene();
 	if (!ensure(MovieScene) || !ensure(NodeGroupNode))
@@ -548,6 +557,7 @@ void SSequencerGroupManager::RemoveSelectedItemsFromNodeGroup()
 		Item.Key->RemoveNode(Item.Value);
 	}
 	
+	RefreshNodeGroups();
 }
 
 void SSequencerGroupManager::CreateNodeGroup()
@@ -571,6 +581,8 @@ void SSequencerGroupManager::CreateNodeGroup()
 	}
 
 	const FScopedTransaction Transaction(LOCTEXT("CreateNewGroupTransaction", "Create New Group"));
+
+	MovieScene->Modify();
 
 	UMovieSceneNodeGroup* NewNodeGroup = NewObject<UMovieSceneNodeGroup>(&MovieScene->GetNodeGroups(), NAME_None, RF_Transactional);
 	NewNodeGroup->SetName(FSequencerUtilities::GetUniqueName(FName("Group"), ExistingGroupNames));
@@ -598,18 +610,6 @@ void SSequencerGroupManager::GetSelectedItemsNodePaths(TSet<FString>& OutSelecte
 			TSharedPtr<FSequencerGroupItemNode> ItemNode = StaticCastSharedPtr<FSequencerGroupItemNode>(Node);
 			OutSelectedNodePaths.Add(ItemNode->Path);
 		}
-		else if (Node->GetType() == FSequencerNodeGroupTreeNode::Type::GroupNode)
-		{
-			for (TSharedPtr<FSequencerNodeGroupTreeNode> ChildNode : Node->Children)
-			{
-				// Note: Currently, children of a set can only be item nodes, but that may change in the future.
-				if (ChildNode->GetType() == FSequencerNodeGroupTreeNode::Type::ItemNode)
-				{
-					TSharedPtr<FSequencerGroupItemNode> ItemNode = StaticCastSharedPtr<FSequencerGroupItemNode>(ChildNode);
-					OutSelectedNodePaths.Add(ItemNode->Path);
-				}
-			}
-		}
 	}
 }
 
@@ -620,23 +620,21 @@ void SSequencerGroupManager::SelectSelectedItemsInSequencer()
 		return;
 	}
 
-	TGuardValue<bool> Guard(bSynchronizingSelection, true);
-
-	TSharedPtr<FSequencer> Sequencer = WeakSequencer.Pin();
-	if (!ensure(Sequencer))
+	// When selection changes in the group manager tree, select the corresponding Sequencer items first
 	{
-		return;
-	}
-	
-	TSet<FString> SelectedNodePaths;
-	GetSelectedItemsNodePaths(SelectedNodePaths);
-	
-	if (SelectedNodePaths.Num() < 1)
-	{
-		return;
-	}
+		TGuardValue<bool> Guard(bSynchronizingSelection, true);
 
-	Sequencer->SelectNodesByPath(SelectedNodePaths);
+		TSharedPtr<FSequencer> Sequencer = WeakSequencer.Pin();
+		if (!ensure(Sequencer))
+		{
+			return;
+		}
+	
+		TSet<FString> SelectedNodePaths;
+		GetSelectedItemsNodePaths(SelectedNodePaths);
+	
+		Sequencer->SelectNodesByPath(SelectedNodePaths);
+	}
 }
 
 void SSequencerGroupManager::SelectItemsSelectedInSequencer()
@@ -656,29 +654,26 @@ void SSequencerGroupManager::SelectItemsSelectedInSequencer()
 		return;
 	}
 
-	const TSet<TWeakPtr<FViewModel>>& SelectedModels = Sequencer->GetSelection().GetSelectedOutlinerItems();
-
 	TStringBuilder<128> TempString;
 
 	// Build a list of the nodepaths that we want to consider for selection
 	TSet<FString> NodesPathsToSelect;
-	for (TWeakPtr<FViewModel> WeakModel : SelectedModels)
+	for (FViewModelPtr Model : Sequencer->GetViewModel()->GetSelection()->Outliner)
 	{
-		TSharedPtr<FViewModel> Model = WeakModel.Pin();
-		if (!Model)
-		{
-			continue;
-		}
-
 		TViewModelPtr<IGroupableExtension> Groupable = Model->FindAncestorOfType<IGroupableExtension>(true);
 		if (Groupable)
 		{
 			TempString.Reset();
 			Groupable->GetIdentifierForGrouping(TempString);
 
-			if (AllNodeGroupItems.Contains(TempString.ToString()))
+			for (const FString& NodeGroupPath : AllNodeGroupItems)
 			{
-				NodesPathsToSelect.Add(TempString.ToString());
+				// AllNodeGroupItems path is the full path (including folder) 
+				if (NodeGroupPath.Contains(TempString.ToString()))
+				{
+					NodesPathsToSelect.Add(NodeGroupPath);
+					break;
+				}
 			}
 		}
 	}
@@ -686,7 +681,6 @@ void SSequencerGroupManager::SelectItemsSelectedInSequencer()
 	TreeView->ClearSelection();
 
 	// Build a list of the treenodes which match a nodepath we want to select
-	TArray<TSharedPtr<FSequencerGroupItemNode>> TreeNodesToSelect;
 	for (const TSharedPtr<FSequencerNodeGroupTreeNode>& Node : NodeGroupsTree)
 	{
 		if (Node->GetType() == FSequencerNodeGroupTreeNode::Type::ItemNode)
@@ -747,6 +741,12 @@ TSharedPtr<SWidget> SSequencerGroupManager::OnContextMenuOpening()
 				NAME_None,
 				EUserInterfaceActionType::ToggleButton
 			);
+
+			MenuBuilder.AddMenuEntry(
+				LOCTEXT("SelectItemsInGroup", "Select Items in Group"),
+				LOCTEXT("SelectItemsInGroupTooltip", "Select items in group"),
+				FSlateIcon(),
+				FUIAction(FExecuteAction::CreateSP(this, &SSequencerGroupManager::SelectItemsInGroup, NodeGroupNode.Get())));
 
 			MenuBuilder.AddMenuEntry(
 				FText::Format(LOCTEXT("RenameNodeGroupFormat", "Rename {0}"), NodeGroupNode->DisplayText),

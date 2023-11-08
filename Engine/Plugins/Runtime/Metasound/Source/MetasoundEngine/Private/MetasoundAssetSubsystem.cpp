@@ -8,6 +8,7 @@
 #include "Engine/AssetManager.h"
 #include "Metasound.h"
 #include "MetasoundAssetBase.h"
+#include "MetasoundBuilderSubsystem.h"
 #include "MetasoundFrontendDocument.h"
 #include "MetasoundFrontendRegistries.h"
 #include "MetasoundFrontendTransform.h"
@@ -17,6 +18,7 @@
 #include "MetasoundUObjectRegistry.h"
 #include "Misc/CoreDelegates.h"
 #include "UObject/NoExportTypes.h"
+
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MetasoundAssetSubsystem)
 
@@ -112,15 +114,10 @@ void UMetaSoundAssetSubsystem::Initialize(FSubsystemCollectionBase& InCollection
 
 void UMetaSoundAssetSubsystem::PostEngineInit()
 {
-	if (UAssetManager* AssetManager = UAssetManager::GetIfValid())
-	{
-		AssetManager->CallOrRegister_OnCompletedInitialScan(FSimpleMulticastDelegate::FDelegate::CreateUObject(this, &UMetaSoundAssetSubsystem::PostInitAssetScan));
-		RebuildDenyListCache(*AssetManager);
-	}
-	else
-	{
-		UE_LOG(LogMetaSound, Error, TEXT("Cannot initialize MetaSoundAssetSubsystem: Enable AssetManager or disable MetaSound plugin"));
-	}
+	check(UAssetManager::IsInitialized());
+	UAssetManager& AssetManager = UAssetManager::Get();
+	AssetManager.CallOrRegister_OnCompletedInitialScan(FSimpleMulticastDelegate::FDelegate::CreateUObject(this, &UMetaSoundAssetSubsystem::PostInitAssetScan));
+	RebuildDenyListCache(AssetManager);
 }
 
 void UMetaSoundAssetSubsystem::PostInitAssetScan()
@@ -308,19 +305,18 @@ void UMetaSoundAssetSubsystem::RebuildDenyListCache(const UAssetManager& InAsset
 		AutoUpdateDenyListCache.Add(ClassName.GetFullName());
 	}
 
+	check(UAssetManager::IsInitialized());
+	UAssetManager& AssetManager = UAssetManager::Get();
 	for (const FDefaultMetaSoundAssetAutoUpdateSettings& UpdateSettings : Settings->AutoUpdateAssetDenylist)
 	{
-		if (UAssetManager* AssetManager = UAssetManager::GetIfValid())
+		FAssetData AssetData;
+		if (AssetManager.GetAssetDataForPath(UpdateSettings.MetaSound, AssetData))
 		{
-			FAssetData AssetData;
-			if (AssetManager->GetAssetDataForPath(UpdateSettings.MetaSound, AssetData))
+			FString AssetClassID;
+			if (AssetData.GetTagValue(AssetTags::AssetClassID, AssetClassID))
 			{
-				FString AssetClassID;
-				if (AssetData.GetTagValue(AssetTags::AssetClassID, AssetClassID))
-				{
-					const FMetasoundFrontendClassName ClassName = { FName(), *AssetClassID, FName() };
-					AutoUpdateDenyListCache.Add(ClassName.GetFullName());
-				}
+				const FMetasoundFrontendClassName ClassName = { FName(), *AssetClassID, FName() };
+				AutoUpdateDenyListCache.Add(ClassName.GetFullName());
 			}
 		}
 	}
@@ -334,11 +330,6 @@ TSet<UMetaSoundAssetSubsystem::FAssetInfo> UMetaSoundAssetSubsystem::GetReferenc
 	METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(UMetaSoundAssetSubsystem::GetReferencedAssetClasses);
 	using namespace Metasound::Frontend;
 
-	if (!bIsInitialAssetScanComplete)
-	{
-		UE_LOG(LogMetaSound, Warning, TEXT("Attempt to get registered dependent assets for %s before asset scan is complete may result in missed dependencies"), *InAssetBase.GetOwningAssetName());
-	}
-
 	TSet<FAssetInfo> OutAssetInfos;
 	const FMetasoundFrontendDocument& Document = InAssetBase.GetDocumentChecked();
 	for (const FMetasoundFrontendClass& Class : Document.Dependencies)
@@ -348,6 +339,37 @@ TSet<UMetaSoundAssetSubsystem::FAssetInfo> UMetaSoundAssetSubsystem::GetReferenc
 		{
 			OutAssetInfos.Add(FAssetInfo{Key, *ObjectPath});
 		}
+		else
+		{
+			const FMetasoundFrontendRegistryContainer* Registry = FMetasoundFrontendRegistryContainer::Get();
+			check(Registry);
+			const bool bIsRegistered = Registry->IsNodeRegistered(Key);
+
+			bool bReportFail = false;
+			if (bIsRegistered)
+			{
+				if (!Registry->IsNodeNative(Key))
+				{
+					bReportFail = true;
+				}
+			}
+			else
+			{
+				bReportFail = true;
+			}
+
+			if (bReportFail)
+			{
+				if (bIsInitialAssetScanComplete)
+				{
+					UE_LOG(LogMetaSound, Warning, TEXT("MetaSound Node Class with registry key '%s' not registered when gathering referenced asset classes from '%s': Retrieving all asset classes may not be comprehensive."), *Key, *InAssetBase.GetOwningAssetName());
+				}
+				else
+				{
+					UE_LOG(LogMetaSound, Warning, TEXT("Attempt to get registered dependent asset with key '%s' from MetaSound asset '%s' before asset scan has completed: Asset class cannot be provided"), *Key, *InAssetBase.GetOwningAssetName());
+				}
+			}
+		}
 	}
 	return MoveTemp(OutAssetInfos);
 }
@@ -355,10 +377,8 @@ TSet<UMetaSoundAssetSubsystem::FAssetInfo> UMetaSoundAssetSubsystem::GetReferenc
 
 void UMetaSoundAssetSubsystem::RescanAutoUpdateDenyList()
 {
-	if (const UAssetManager* AssetManager = UAssetManager::GetIfValid())
-	{
-		RebuildDenyListCache(*AssetManager);
-	}
+	check(UAssetManager::IsInitialized());
+	RebuildDenyListCache(UAssetManager::Get());
 }
 
 FMetasoundAssetBase* UMetaSoundAssetSubsystem::TryLoadAssetFromKey(const Metasound::Frontend::FNodeRegistryKey& RegistryKey) const
@@ -580,7 +600,11 @@ void UMetaSoundAssetSubsystem::RemoveAsset(const UObject& InObject)
 	{
 		const FNodeClassInfo ClassInfo = MetaSoundAsset->GetAssetClassInfo();
 		FNodeRegistryKey RegistryKey = FMetasoundFrontendRegistryContainer::Get()->GetRegistryKey(ClassInfo);
-		AssetSubsystemPrivate::RemoveIfExactMatch(PathMap, RegistryKey, FSoftObjectPath(&InObject));
+		const FSoftObjectPath ObjectPath(&InObject);
+		if (AssetSubsystemPrivate::RemoveIfExactMatch(PathMap, RegistryKey, ObjectPath))
+		{
+			UMetaSoundBuilderSubsystem::GetChecked().DetachBuilderFromAsset(ClassInfo.ClassName);
+		}
 	}
 }
 
@@ -593,7 +617,11 @@ void UMetaSoundAssetSubsystem::RemoveAsset(const FAssetData& InAssetData)
 	if (ensureAlways(AssetSubsystemPrivate::GetAssetClassInfo(InAssetData, ClassInfo)))
 	{
 		FNodeRegistryKey RegistryKey = FMetasoundFrontendRegistryContainer::Get()->GetRegistryKey(ClassInfo);
-		AssetSubsystemPrivate::RemoveIfExactMatch(PathMap, RegistryKey, InAssetData.GetSoftObjectPath());
+		const FSoftObjectPath ObjectPath = InAssetData.GetSoftObjectPath();
+		if (AssetSubsystemPrivate::RemoveIfExactMatch(PathMap, RegistryKey, ObjectPath))
+		{
+			UMetaSoundBuilderSubsystem::GetChecked().DetachBuilderFromAsset(ClassInfo.ClassName);
+		}
 	}
 }
 

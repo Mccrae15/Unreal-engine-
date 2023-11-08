@@ -15,12 +15,12 @@ public class CurveEditor : ModuleRules
 				"EditorFramework",
 				"Engine",
                 "InputCore",
+				"PropertyEditor",
 				"Slate",
 				"SlateCore",
 				"TimeManagement",
 				"UMG",
 				"UnrealEd",
-				"SequencerWidgets",
 				"ToolMenus",
 			}
 		);

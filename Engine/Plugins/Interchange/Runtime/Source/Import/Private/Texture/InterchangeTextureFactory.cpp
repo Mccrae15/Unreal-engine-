@@ -35,6 +35,7 @@
 #include "InterchangeVolumeTextureNode.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/CoreStats.h"
+#include "Misc/Paths.h"
 #include "Nodes/InterchangeBaseNode.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Serialization/EditorBulkData.h"
@@ -77,7 +78,11 @@ namespace UE::Interchange::Private::InterchangeTextureFactory
 					NewObject<UInterchangeTranslatorBase>(TransientPackage, TranslatorClass, NAME_None)
 					, NewObject<UInterchangeSourceData>(TransientPackage, UInterchangeSourceData::StaticClass(), NAME_None)
 				);
+			}
 
+			for (TPair<UInterchangeTranslatorBase*, UInterchangeSourceData*>& TranslatorAndSourceData : TranslatorsAndSourcesData)
+			{
+				TranslatorAndSourceData.Key->SetResultsContainer(BaseTranslator.Results);
 			}
 		};
 
@@ -497,8 +502,9 @@ namespace UE::Interchange::Private::InterchangeTextureFactory
 				TOptional<UE::Interchange::FImportImage> Payload;
 				if (Translator->CanImportSourceData(SourceDataForBlock))
 				{
+					TOptional<FString> DummyAlternateTexturePath;
 					Translator->SourceData = SourceDataForBlock;
-					Payload = TextureTranslator->GetTexturePayloadData(SourceDataForBlock, SourceDataForBlock->GetFilename());
+					Payload = TextureTranslator->GetTexturePayloadData(FString(), DummyAlternateTexturePath);
 				}
 
 				if (Payload.IsSet())
@@ -517,6 +523,26 @@ namespace UE::Interchange::Private::InterchangeTextureFactory
 			}
 			, EParallelForFlags::Unbalanced | EParallelForFlags::BackgroundPriority);
 
+		
+		// remove any that failed to import:
+		for (int32 Index = Images.Num()-1; Index >= 0; --Index)
+		{
+			// we will crash later if an image has Format == TSF_Invalid
+			if ( ! Images[Index].IsValid() )
+			{
+				Images.RemoveAt(Index);
+				UDIMsAndSourcesFileArray.RemoveAt(Index);
+			}
+		}
+
+		if ( Images.Num() == 0 )
+		{
+			return {};
+		}
+
+		// InitDataSharedAmongBlocks will not work unless Images[0] is valid :
+		check( Images[0].IsValid() );
+		check( Images.Num() == UDIMsAndSourcesFileArray.Num() );
 
 		UE::Interchange::FImportBlockedImage BlockedImage;
 		// If the image that triggered the import is not valid. We shouldn't import the rest of the images into the UDIM.
@@ -542,6 +568,12 @@ namespace UE::Interchange::Private::InterchangeTextureFactory
 				}
 			}
 
+			if ( BlockedImage.bSRGB && ! ERawImageFormat::GetFormatNeedsGammaSpace( FImageCoreUtils::ConvertToRawImageFormat(BlockedImage.Format) ) )
+			{
+				BlockedImage.bSRGB = false;
+				bMismatchedGammaSpace = true;
+			}
+
 			if (bMismatchedGammaSpace || bMismatchedFormats)
 			{
 				UE_LOG(LogInterchangeImport, Warning, TEXT("Mismatched UDIM image %s, converting all to %s/%s ..."), bMismatchedGammaSpace ? TEXT("gamma spaces") : TEXT("pixel formats"),
@@ -551,34 +583,74 @@ namespace UE::Interchange::Private::InterchangeTextureFactory
 				{
 					if (Image.bSRGB != BlockedImage.bSRGB || Image.Format != BlockedImage.Format)
 					{
+						check(Image.IsValid());
+
 						ERawImageFormat::Type ImageRawFormat = FImageCoreUtils::ConvertToRawImageFormat(Image.Format);
 						FImageView SourceImage(Image.RawData.GetData(), Image.SizeX, Image.SizeY, 1, ImageRawFormat, Image.bSRGB ? EGammaSpace::sRGB : EGammaSpace::Linear);
-						FImage DestImage(Image.SizeX, Image.SizeY, FImageCoreUtils::ConvertToRawImageFormat(BlockedImage.Format), BlockedImage.bSRGB ? EGammaSpace::sRGB : EGammaSpace::Linear);
+						check( SourceImage.GetImageSizeBytes() <= (int64)Image.RawData.GetSize() );
+						
+						ERawImageFormat::Type BlockedImageRawFormat = FImageCoreUtils::ConvertToRawImageFormat(BlockedImage.Format);
+						FImage DestImage(Image.SizeX, Image.SizeY, BlockedImageRawFormat, BlockedImage.bSRGB ? EGammaSpace::sRGB : EGammaSpace::Linear);
 						FImageCore::CopyImage(SourceImage, DestImage);
 
 						Image.RawData = MakeUniqueBufferFromArray(MoveTemp(DestImage.RawData));
 						Image.Format = BlockedImage.Format;
 						Image.bSRGB = BlockedImage.bSRGB;
+
+						if ( Image.NumMips != 1 )
+						{
+							UE_LOG(LogInterchangeImport, Warning, TEXT("UDIM Image had existing mips; they were discarded in format change") );
+							Image.NumMips = 1; // discard imported mips, they won't be used in UDIM VT anyway
+							Image.MipGenSettings.Reset();
+						}
+
+						check(Image.IsValid());
 					}
 				}
 			}
 
+			bool bAllImagesSameNumMips = true;
 			for (int32 Index = 0; Index < Images.Num(); ++Index)
 			{
 				int32 UDIMIndex = UDIMsAndSourcesFileArray[Index]->Key;
 				int32 BlockX;
 				int32 BlockY;
 				UE::TextureUtilitiesCommon::ExtractUDIMCoordinates(UDIMIndex, BlockX, BlockY);
-				BlockedImage.InitBlockFromImage(BlockX, BlockY, Images[Index]);
+
+				if ( ! BlockedImage.InitBlockFromImage(BlockX, BlockY, Images[Index]) )
+				{
+					UE_LOG(LogInterchangeImport, Warning, TEXT("UDIM InitBlockFromImage failed") );
+					return { };
+				}
+
+				if ( Images[Index].NumMips != Images[0].NumMips )
+				{
+					bAllImagesSameNumMips = false;
+				}
 			}
 
-			BlockedImage.MigrateDataFromImagesToRawData(Images);
-		}
+			if (! BlockedImage.MigrateDataFromImagesToRawData(Images) )
+			{
+				UE_LOG(LogInterchangeImport, Warning, TEXT("UDIM MigrateDataFromImagesToRawData failed") );
+				return { };
+			}
+			
+			// BlockedImage.MipGenSettings is note set from Images[].MipGenSettings
+			//	instead see if all UDIM blocks have existing mips, and if so set LeaveExisting
+			if ( Images[0].NumMips != 1 && bAllImagesSameNumMips )
+			{
+				BlockedImage.MipGenSettings = TextureMipGenSettings::TMGS_LeaveExistingMips;
+			}
 
-		return BlockedImage;
+			return BlockedImage;
+		}
+		else
+		{
+			return { };
+		}
 	}
 
-	FTexturePayloadVariant GetTexturePayload(const UInterchangeSourceData* SourceData, const FString& PayloadKey, const FTextureNodeVariant& TextureNodeVariant, const FTextureFactoryNodeVariant& FactoryNodeVariant, const UInterchangeTranslatorBase* Translator)
+	FTexturePayloadVariant GetTexturePayload(const UInterchangeSourceData* SourceData, const FString& PayloadKey, const FTextureNodeVariant& TextureNodeVariant, const FTextureFactoryNodeVariant& FactoryNodeVariant, const UInterchangeTranslatorBase* Translator, TOptional<FString>& AlternateTexturePath)
 	{
 		static_assert(TVariantSize<FTextureFactoryNodeVariant>::Value == 7, "Please update the code below and this assert to reflect the change to the variant type.");
 
@@ -618,11 +690,11 @@ namespace UE::Interchange::Private::InterchangeTextureFactory
 
 					if (bShoudImportCompressedImage && TextureTranslator->SupportCompressedTexturePayloadData())
 					{
-						return FTexturePayloadVariant(TInPlaceType<TOptional<FImportImage>>(), TextureTranslator->GetCompressedTexturePayloadData(SourceData, PayloadKey));
+						return FTexturePayloadVariant(TInPlaceType<TOptional<FImportImage>>(), TextureTranslator->GetCompressedTexturePayloadData(PayloadKey, AlternateTexturePath));
 					}
 					else
 					{
-						return FTexturePayloadVariant(TInPlaceType<TOptional<FImportImage>>(), TextureTranslator->GetTexturePayloadData(SourceData, PayloadKey));
+						return FTexturePayloadVariant(TInPlaceType<TOptional<FImportImage>>(), TextureTranslator->GetTexturePayloadData(PayloadKey, AlternateTexturePath));
 					}
 				}
 				else
@@ -632,7 +704,7 @@ namespace UE::Interchange::Private::InterchangeTextureFactory
 			}
 			else if (const IInterchangeBlockedTexturePayloadInterface* BlockedTextureTranslator = Cast<IInterchangeBlockedTexturePayloadInterface>(Translator))
 			{
-				return FTexturePayloadVariant(TInPlaceType<TOptional<FImportBlockedImage>>(), BlockedTextureTranslator->GetBlockedTexturePayloadData(SourceData, PayloadKey));
+				return FTexturePayloadVariant(TInPlaceType<TOptional<FImportBlockedImage>>(), BlockedTextureTranslator->GetBlockedTexturePayloadData(PayloadKey, AlternateTexturePath));
 			}
 		}
 
@@ -642,7 +714,7 @@ namespace UE::Interchange::Private::InterchangeTextureFactory
 		{
 			if (const IInterchangeSlicedTexturePayloadInterface* SlicedTextureTranslator = Cast<IInterchangeSlicedTexturePayloadInterface>(Translator))
 			{
-				return FTexturePayloadVariant(TInPlaceType<TOptional<FImportSlicedImage>>(), SlicedTextureTranslator->GetSlicedTexturePayloadData(SourceData, PayloadKey));
+				return FTexturePayloadVariant(TInPlaceType<TOptional<FImportSlicedImage>>(), SlicedTextureTranslator->GetSlicedTexturePayloadData(PayloadKey, AlternateTexturePath));
 			}
 		}
 
@@ -651,7 +723,7 @@ namespace UE::Interchange::Private::InterchangeTextureFactory
 		{
 			if (const IInterchangeTextureLightProfilePayloadInterface* LightProfileTranslator = Cast<IInterchangeTextureLightProfilePayloadInterface>(Translator))
 			{
-				return FTexturePayloadVariant(TInPlaceType<TOptional<FImportLightProfile>>(), LightProfileTranslator->GetLightProfilePayloadData(SourceData, PayloadKey));
+				return FTexturePayloadVariant(TInPlaceType<TOptional<FImportLightProfile>>(), LightProfileTranslator->GetLightProfilePayloadData(PayloadKey, AlternateTexturePath));
 			}
 		}
 
@@ -1150,10 +1222,8 @@ namespace UE::Interchange::Private::InterchangeTextureFactory
 			// Allocate first mipmap.
 			int32 NumBlocksX = ImportImage.SizeX / GPixelFormats[PixelFormat].BlockSizeX;
 			int32 NumBlocksY = ImportImage.SizeY / GPixelFormats[PixelFormat].BlockSizeY;
-			FTexture2DMipMap* Mip = new FTexture2DMipMap();
+			FTexture2DMipMap* Mip = new FTexture2DMipMap(ImportImage.SizeX, ImportImage.SizeY);
 			Texture2D->GetPlatformData()->Mips.Add(Mip);
-			Mip->SizeX = ImportImage.SizeX;
-			Mip->SizeY = ImportImage.SizeY;
 			Mip->BulkData.Lock(LOCK_READ_WRITE);
 			Mip->BulkData.Realloc(NumBlocksX * NumBlocksY * GPixelFormats[PixelFormat].BlockBytes);
 			Mip->BulkData.Unlock();
@@ -1370,15 +1440,15 @@ namespace UE::Interchange::Private::InterchangeTextureFactory
 
 		if (CVarVirtualTexturesEnabled->GetValueOnGameThread() && CVarVirtualTexturesAutoImportEnabled->GetValueOnGameThread())
 		{
-			const int VirtualTextureAutoEnableThreshold = GetDefault<UTextureImportSettings>()->AutoVTSize;
-			const int VirtualTextureAutoEnableThresholdPixels = VirtualTextureAutoEnableThreshold * VirtualTextureAutoEnableThreshold;
+			const int64 VirtualTextureAutoEnableThreshold = GetDefault<UTextureImportSettings>()->AutoVTSize;
+			const int64 VirtualTextureAutoEnableThresholdPixels = VirtualTextureAutoEnableThreshold * VirtualTextureAutoEnableThreshold;
 
 			// We do this in pixels so a 8192 x 128 texture won't get VT enabled 
 			// We use the Source size instead of simple Texture2D->GetSizeX() as this uses the size of the platform data
 			// however for a new texture platform data may not be generated yet, and for an reimport of a texture this is the size of the
 			// old texture. 
 			// Using source size gives one small caveat. It looks at the size before mipmap power of two padding adjustment.
-			if (Texture2D->Source.GetSizeX() * Texture2D->Source.GetSizeY() >= VirtualTextureAutoEnableThresholdPixels ||
+			if ( (int64) Texture2D->Source.GetSizeX() * Texture2D->Source.GetSizeY() >= VirtualTextureAutoEnableThresholdPixels ||
 				Texture2D->Source.GetSizeX() > UTexture::GetMaximumDimensionOfNonVT() ||
 				Texture2D->Source.GetSizeY() > UTexture::GetMaximumDimensionOfNonVT())
 			{
@@ -1457,39 +1527,41 @@ UClass* UInterchangeTextureFactory::GetFactoryClass() const
 	return UTexture::StaticClass();
 }
 
-UObject* UInterchangeTextureFactory::ImportAssetObject_GameThread(const FImportAssetObjectParams& Arguments)
+UInterchangeFactoryBase::FImportAssetResult UInterchangeTextureFactory::BeginImportAsset_GameThread(const FImportAssetObjectParams& Arguments)
 {
 	using namespace  UE::Interchange::Private::InterchangeTextureFactory;
+	FImportAssetResult ImportAssetResult;
+	UTexture* Texture = nullptr;
 
-	UObject* Texture = nullptr;
-
-	auto CouldNotCreateTextureLog = [this, &Arguments](const FText& Info)
+	auto CouldNotCreateTextureLog = [this, &Arguments, &ImportAssetResult](const FText& Info)
 	{
 		UInterchangeResultError_Generic* Message = AddMessage<UInterchangeResultError_Generic>();
 		Message->SourceAssetName = Arguments.SourceData->GetFilename();
 		Message->DestinationAssetName = Arguments.AssetName;
 		Message->AssetType = GetFactoryClass();
 		Message->Text = FText::Format(LOCTEXT("TexFact_CouldNotCreateMat", "UInterchangeTextureFactory: Could not create texture asset %s. Reason: %s"), FText::FromString(Arguments.AssetName), Info);
+		bSkipImport = true;
+		ImportAssetResult.bIsFactorySkipAsset = true;
 	};
 
 	if (!Arguments.AssetNode)
 	{
 		CouldNotCreateTextureLog(LOCTEXT("TextureFactory_AssetNodeNull", "Asset node parameter is null."));
-		return nullptr;
+		return ImportAssetResult;
 	}
 
 	const UClass* TextureClass = Arguments.AssetNode->GetObjectClass();
 	if (!TextureClass || !TextureClass->IsChildOf(UTexture::StaticClass()))
 	{
 		CouldNotCreateTextureLog(LOCTEXT("TextureFactory_NodeClassMissmatch", "Asset node parameter class doesnt derive from UTexture."));
-		return nullptr;
+		return ImportAssetResult;
 	}
 
 	UClass* SupportedFactoryNodeClass = GetSupportedFactoryNodeClass(Arguments.AssetNode);
 	if (SupportedFactoryNodeClass == nullptr)
 	{
 		CouldNotCreateTextureLog(LOCTEXT("TextureFactory_NodeClassWrong", "Asset node parameter is not a UInterchangeTextureFactoryNode or UInterchangeTextureCubeFactoryNode."));
-		return nullptr;
+		return ImportAssetResult;
 	}
 
 
@@ -1499,25 +1571,33 @@ UObject* UInterchangeTextureFactory::ImportAssetObject_GameThread(const FImportA
 		FText Info = FText::Format(LOCTEXT("TextureFactory_InvalidTextureTranslated", "Asset factory node (%s) do not reference a valid texture translated node.")
 			, FText::FromString(SupportedFactoryNodeClass->GetAuthoredName()));
 		CouldNotCreateTextureLog(Info);
-		return nullptr;
+		return ImportAssetResult;
 	}
 
 	if (!HasPayloadKey(TextureNodeVariant))
 	{
 		CouldNotCreateTextureLog(LOCTEXT("TextureFactory_InvalidPayloadKey", "Texture translated node doesnt have a payload key."));
-		return nullptr;
+		return ImportAssetResult;
 	}
 
-	// create an asset if it doesn't exist
-	UObject* ExistingAsset = StaticFindObject(nullptr, Arguments.Parent, *Arguments.AssetName);
+	const bool bIsReimport = Arguments.ReimportObject != nullptr;
+
+	UObject* ExistingAsset = Arguments.ReimportObject;
+	if (!ExistingAsset)
+	{
+		FSoftObjectPath ReferenceObject;
+		if (Arguments.AssetNode->GetCustomReferenceObject(ReferenceObject))
+		{
+			ExistingAsset = ReferenceObject.TryLoad();
+		}
+	}
 
 	// create a new texture or overwrite existing asset, if possible
 	if (!ExistingAsset)
 	{
-		UTexture* NewTexture = NewObject<UTexture>(Arguments.Parent, TextureClass, *Arguments.AssetName, RF_Public | RF_Standalone);
-		Texture = NewTexture;
+		Texture = NewObject<UTexture>(Arguments.Parent, TextureClass, *Arguments.AssetName, RF_Public | RF_Standalone);
 
-		if (UTextureLightProfile* LightProfile = Cast<UTextureLightProfile>(NewTexture))
+		if (UTextureLightProfile* LightProfile = Cast<UTextureLightProfile>(Texture))
 		{
 			LightProfile->AddressX = TA_Clamp;
 			LightProfile->AddressY = TA_Clamp;
@@ -1527,27 +1607,36 @@ UObject* UInterchangeTextureFactory::ImportAssetObject_GameThread(const FImportA
 			LightProfile->LODGroup = TEXTUREGROUP_IESLightProfile;
 		}
 	}
-	else if (ExistingAsset->GetClass()->IsChildOf(TextureClass))
+	else
 	{
-		//This is a reimport, we are just re-updating the source data
-		Texture = ExistingAsset;
+		Texture = Cast<UTexture>(ExistingAsset);
+		//We allow override of existing Textures only if the translator is a pure texture translator or the user directly ask to re-import this object
+		if (!bIsReimport && Arguments.Translator->GetSupportedAssetTypes() != EInterchangeTranslatorAssetType::Textures)
+		{
+			//Do not override the material asset
+			ImportAssetResult.bIsFactorySkipAsset = true;
+			bSkipImport = true;
+		}
 	}
 
 	if (!Texture)
 	{
 		CouldNotCreateTextureLog(LOCTEXT("TextureFactory_TextureCreateFail", "Texture creation fail."));
-		return nullptr;
+		return ImportAssetResult;
 	}
 
-	return Texture;
+	ImportAssetResult.ImportedObject = Texture;
+	return ImportAssetResult;
 }
 
 // The payload fetching and the heavy operations are done here
-UObject* UInterchangeTextureFactory::ImportAssetObject_Async(const FImportAssetObjectParams& Arguments)
+UInterchangeFactoryBase::FImportAssetResult UInterchangeTextureFactory::ImportAsset_Async(const FImportAssetObjectParams& Arguments)
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(UInterchangeTextureFactory::CreateAsset);
+	TRACE_CPUPROFILER_EVENT_SCOPE(UInterchangeTextureFactory::ImportAsset_Async);
 
 	using namespace UE::Interchange::Private::InterchangeTextureFactory;
+	FImportAssetResult ImportAssetResult;
+	ImportAssetResult.bIsFactorySkipAsset = bSkipImport;
 
 	auto ImportTextureErrorLog = [this, &Arguments](const FText& Info)
 	{
@@ -1561,21 +1650,35 @@ UObject* UInterchangeTextureFactory::ImportAssetObject_Async(const FImportAssetO
 	if (!Arguments.AssetNode)
 	{
 		ImportTextureErrorLog(LOCTEXT("TextureFactory_Async_AssetNodeNull", "UInterchangeTextureFactory: Asset node parameter is null."));
-		return nullptr;
+		return ImportAssetResult;
 	}
 
 	const UClass* TextureClass = Arguments.AssetNode->GetObjectClass();
 	if (!TextureClass || !TextureClass->IsChildOf(UTexture::StaticClass()))
 	{
 		ImportTextureErrorLog(LOCTEXT("TextureFactory_Async_MissMatchClass", "UInterchangeTextureFactory: Asset node parameter class doesnt derive from UTexture."));
-		return nullptr;
+		return ImportAssetResult;
 	}
 
 	UClass* SupportedFactoryNodeClass = GetSupportedFactoryNodeClass(Arguments.AssetNode);
 	if (SupportedFactoryNodeClass == nullptr)
 	{
 		ImportTextureErrorLog(LOCTEXT("TextureFactory_Async_NodeWrongClass", "UInterchangeTextureFactory: Asset node parameter is not a child of UInterchangeTextureFactoryNode."));
-		return nullptr;
+		return ImportAssetResult;
+	}
+
+	UObject* ExistingAsset = nullptr;
+	FSoftObjectPath ReferenceObject;
+	if (Arguments.AssetNode->GetCustomReferenceObject(ReferenceObject))
+	{
+		ExistingAsset = ReferenceObject.TryLoad();
+	}
+
+	//Do not override an asset we skip
+	if (bSkipImport)
+	{
+		ImportAssetResult.ImportedObject = ExistingAsset;
+		return ImportAssetResult;
 	}
 
 	FTextureFactoryNodeVariant TextureFactoryNodeVariant = GetAsTextureFactoryNodeVariant(Arguments.AssetNode, SupportedFactoryNodeClass);
@@ -1585,55 +1688,41 @@ UObject* UInterchangeTextureFactory::ImportAssetObject_Async(const FImportAssetO
 		FText Info = FText::Format(LOCTEXT("TextureFactory_Async_InvalidTextureTranslated", "UInterchangeTextureFactory: Asset factory node (%s) do not reference a valid texture translated node.")
 			, FText::FromString(SupportedFactoryNodeClass->GetAuthoredName()));
 		ImportTextureErrorLog(Info);
-		return nullptr;
+		return ImportAssetResult;
 	}
 
 	const TOptional<FString>& PayLoadKey = GetPayloadKey(TextureNodeVariant);
 	if (!PayLoadKey.IsSet())
 	{
 		ImportTextureErrorLog(LOCTEXT("TextureFactory_Async_InvalidPayloadKey", "UInterchangeTextureFactory: Texture translated node (UInterchangeTexture2DNode) doesnt have a payload key."));
-		return nullptr;
+		return ImportAssetResult;
 	}
 
-	FTexturePayloadVariant TexturePayload = GetTexturePayload(Arguments.SourceData, PayLoadKey.GetValue(), TextureNodeVariant, TextureFactoryNodeVariant, Arguments.Translator);
+	AlternateTexturePath.Reset();
+	FTexturePayloadVariant TexturePayload = GetTexturePayload(Arguments.SourceData, PayLoadKey.GetValue(), TextureNodeVariant, TextureFactoryNodeVariant, Arguments.Translator, AlternateTexturePath);
 
 	if(TexturePayload.IsType<FEmptyVariantState>())
 	{
 		ImportTextureErrorLog(LOCTEXT("TextureFactory_Async_CannotRetrievePayload", "UInterchangeTextureFactory: Invalid translator couldn't retrive a payload."));
-		return nullptr;
+		return ImportAssetResult;
 	}
-
-	// create an asset if it doesn't exist
-	// typically ExistingAsset should already exist, made by CreateEmptyAsset on the main thread
-	UObject* ExistingAsset = StaticFindObject(nullptr, Arguments.Parent, *Arguments.AssetName);
 
 	UTexture* Texture = nullptr;
 	// create a new texture or overwrite existing asset, if possible
 	if (!ExistingAsset)
 	{
-		//NewObject is not thread safe, the asset registry directory watcher tick on the main thread can trig before we finish initializing the UObject and will crash
-		//The UObject should have been create by calling CreateEmptyAsset on the main thread.
-		if (IsInGameThread())
-		{
-			Texture = NewObject<UTexture>(Arguments.Parent, TextureClass, *Arguments.AssetName, RF_Public | RF_Standalone);
-		}
-		else
-		{
-			ImportTextureErrorLog(LOCTEXT("TextureFactory_Async_CannotCreateAsync", "UInterchangeTextureFactory: Could not create Texture asset outside of the game thread."));
-			return nullptr;
-		}
+		ImportTextureErrorLog(LOCTEXT("TextureFactory_Async_CannotCreateAsync", "UInterchangeTextureFactory: Could not create Texture asset outside of the game thread."));
+		return ImportAssetResult;
 	}
-	else if(ExistingAsset->GetClass()->IsChildOf(TextureClass))
+	else
 	{
-		//This is a reimport, we are just re-updating the source data  
-		// <- pretty sure this comment is wrong, this is hit in regular imports, because ExistingAsset was previously made by CreateNewAsset
-		Texture = static_cast<UTexture*>(ExistingAsset);
+		Texture = Cast<UTexture>(ExistingAsset);
 	}
 
 	if (!Texture)
 	{
 		ImportTextureErrorLog(LOCTEXT("TextureFactory_Async_FailCreatingAsset", "UInterchangeTextureFactory: Could not create texture asset."));
-		return nullptr;
+		return ImportAssetResult;
 	}
 
 	// Check if the imported texture(s) has a valid resolution
@@ -1667,7 +1756,8 @@ UObject* UInterchangeTextureFactory::ImportAssetObject_Async(const FImportAssetO
 	if (!bCanSetup)
 	{
 		LogErrorInvalidPayload(*this, Texture->GetClass(), Arguments.SourceData->GetFilename(), Texture->GetName());
-		return Texture;
+		ImportAssetResult.ImportedObject = Texture;
+		return ImportAssetResult;
 	}
 
 	FGraphEventArray TasksToDo;
@@ -1686,8 +1776,8 @@ UObject* UInterchangeTextureFactory::ImportAssetObject_Async(const FImportAssetO
 	FTaskGraphInterface::Get().WaitUntilTasksComplete(TasksToDo, NamedThread);
 
 	//The interchange completion task (call in the GameThread after the factories pass), will call PostEditChange which will trig another asynchronous system that will build all texture in parallel
-
-	return Texture;
+	ImportAssetResult.ImportedObject = Texture;
+	return ImportAssetResult;
 }
 
 /* This function is call in the completion task on the main thread, use it to call main thread post creation step for your assets*/
@@ -1696,6 +1786,11 @@ void UInterchangeTextureFactory::SetupObject_GameThread(const FSetupObjectParams
 	TRACE_CPUPROFILER_EVENT_SCOPE(UInterchangeTextureFactory::BeginPreCompletedCallback);
 
 	check(IsInGameThread());
+
+	if (bSkipImport)
+	{
+		return;
+	}
 
 	UTexture* Texture = Cast<UTexture>(Arguments.ImportedObject);
 
@@ -1726,7 +1821,7 @@ void UInterchangeTextureFactory::SetupObject_GameThread(const FSetupObjectParams
 			UInterchangeFactoryBaseNode* PreviousNode = nullptr;
 			if (InterchangeAssetImportData)
 			{
-				PreviousNode = InterchangeAssetImportData->NodeContainer->GetFactoryNode(InterchangeAssetImportData->NodeUniqueID);
+				PreviousNode = InterchangeAssetImportData->GetStoredFactoryNode(InterchangeAssetImportData->NodeUniqueID);
 			}
 
 			UInterchangeFactoryBaseNode* CurrentNode = NewObject<UInterchangeFactoryBaseNode>(GetTransientPackage(), GetSupportedFactoryNodeClass(TextureFactoryNode));
@@ -1771,6 +1866,13 @@ void UInterchangeTextureFactory::SetupObject_GameThread(const FSetupObjectParams
 		SetImportAssetDataParameters.SourceFiles = MoveTemp(SourceFiles);
 
 		Texture->AssetImportData = UE::Interchange::FFactoryCommon::SetImportAssetData(SetImportAssetDataParameters);
+		
+		if (AlternateTexturePath.IsSet())
+		{
+			// A file different from the source data has been used to create the texture.
+			// Set this file's path as the first file name
+			Texture->AssetImportData->AddFileName(AlternateTexturePath.GetValue(), 0);
+		}
 	}
 #endif
 }

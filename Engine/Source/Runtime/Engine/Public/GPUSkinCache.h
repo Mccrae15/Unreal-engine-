@@ -35,6 +35,7 @@
 #include "Stats/Stats.h"
 #include "HAL/IConsoleManager.h"
 #include "RHI.h"
+#include "RHIUtilities.h"
 #include "RenderGraphDefinitions.h"
 #include "RenderResource.h"
 #include "ShaderParameters.h"
@@ -121,6 +122,12 @@ public:
 		uint32 Section = 0;	
 	};
 
+	struct FSortedDispatchEntry
+	{
+		int32 ShaderIndex;
+		int32 BatchIndex;
+	};
+
 	FGPUSkinCache() = delete;
 	ENGINE_API FGPUSkinCache(ERHIFeatureLevel::Type InFeatureLevel, bool bInRequiresMemoryLimit, UWorld* InWorld);
 	ENGINE_API ~FGPUSkinCache();
@@ -173,6 +180,8 @@ public:
 	{
 		FRWBuffer	Buffer;
 		ERHIAccess	AccessState = ERHIAccess::Unknown;	// Keep track of current access state
+		// See note in FGPUSkinCache::GetBufferUAVs()
+		mutable uint32	UniqueOpToken = 0;
 
 		void Release()
 		{
@@ -196,9 +205,16 @@ public:
 		FRWBuffersAllocation(uint32 InNumVertices, bool InWithTangents, bool InUseIntermediateTangents, uint32 InIntermediateAccumulatedTangentsSize, FRHICommandListImmediate& RHICmdList, const FName& OwnerName)
 			: NumVertices(InNumVertices), WithTangents(InWithTangents), UseIntermediateTangents(InUseIntermediateTangents), IntermediateAccumulatedTangentsSize(InIntermediateAccumulatedTangentsSize)
 		{
+			const static FLazyName PositionsName(TEXT("SkinCachePositions"));
+			const static FLazyName TangentsName(TEXT("SkinCacheTangents"));
+			const static FLazyName IntermediateTangentsName(TEXT("SkinCacheIntermediateTangents"));
+			const static FLazyName IntermediateAccumulatedTangentsName(TEXT("SkinCacheIntermediateAccumulatedTangents"));
+
 			for (int32 Index = 0; Index < NUM_BUFFERS; ++Index)
 			{
-				PositionBuffers[Index].Buffer.Initialize(TEXT("SkinCachePositions"), PosBufferBytesPerElement, NumVertices * 3, PF_R32_FLOAT, BUF_Static);
+				PositionBuffers[Index].Buffer.ClassName = PositionsName;
+				PositionBuffers[Index].Buffer.OwnerName = OwnerName;
+				PositionBuffers[Index].Buffer.Initialize(RHICmdList, TEXT("SkinCachePositions"), PosBufferBytesPerElement, NumVertices * 3, PF_R32_FLOAT, BUF_Static);
 				PositionBuffers[Index].Buffer.Buffer->SetOwnerName(OwnerName);
 				PositionBuffers[Index].AccessState = ERHIAccess::Unknown;
 			}
@@ -207,19 +223,25 @@ public:
 				// OpenGL ES does not support writing to RGBA16_SNORM images, instead pack data into SINT in the shader
 				const EPixelFormat TangentsFormat = IsOpenGLPlatform(GMaxRHIShaderPlatform) ? PF_R16G16B16A16_SINT : PF_R16G16B16A16_SNORM;
 				
-				Tangents.Buffer.Initialize(TEXT("SkinCacheTangents"), TangentBufferBytesPerElement, NumVertices * 2, TangentsFormat, BUF_Static);
+				Tangents.Buffer.ClassName = TangentsName;
+				Tangents.Buffer.OwnerName = OwnerName;
+				Tangents.Buffer.Initialize(RHICmdList, TEXT("SkinCacheTangents"), TangentBufferBytesPerElement, NumVertices * 2, TangentsFormat, BUF_Static);
 				Tangents.Buffer.Buffer->SetOwnerName(OwnerName);
 				Tangents.AccessState = ERHIAccess::Unknown;
 				if (UseIntermediateTangents)
 				{
-					IntermediateTangents.Buffer.Initialize(TEXT("SkinCacheIntermediateTangents"), TangentBufferBytesPerElement, NumVertices * 2, TangentsFormat, BUF_Static);
+					IntermediateTangents.Buffer.ClassName = IntermediateTangentsName;
+					IntermediateTangents.Buffer.OwnerName = OwnerName;
+					IntermediateTangents.Buffer.Initialize(RHICmdList, TEXT("SkinCacheIntermediateTangents"), TangentBufferBytesPerElement, NumVertices * 2, TangentsFormat, BUF_Static);
 					IntermediateTangents.Buffer.Buffer->SetOwnerName(OwnerName);
 					IntermediateTangents.AccessState = ERHIAccess::Unknown;
 				}
 			}
 			if (IntermediateAccumulatedTangentsSize > 0)
 			{
-				IntermediateAccumulatedTangents.Buffer.Initialize(TEXT("SkinCacheIntermediateAccumulatedTangents"), sizeof(int32), IntermediateAccumulatedTangentsSize * FGPUSkinCache::IntermediateAccumBufferNumInts, PF_R32_SINT, BUF_UnorderedAccess);
+				IntermediateAccumulatedTangents.Buffer.ClassName = IntermediateAccumulatedTangentsName;
+				IntermediateAccumulatedTangents.Buffer.OwnerName = OwnerName;
+				IntermediateAccumulatedTangents.Buffer.Initialize(RHICmdList, TEXT("SkinCacheIntermediateAccumulatedTangents"), sizeof(int32), IntermediateAccumulatedTangentsSize * FGPUSkinCache::IntermediateAccumBufferNumInts, PF_R32_SINT, BUF_UnorderedAccess);
 				IntermediateAccumulatedTangents.Buffer.Buffer->SetOwnerName(OwnerName);
 				IntermediateAccumulatedTangents.AccessState = ERHIAccess::Unknown;
 				// The UAV must be zero-filled. We leave it zeroed after each round (see RecomputeTangentsPerVertexPass.usf), so this is only needed on when the buffer is first created.
@@ -348,8 +370,9 @@ public:
 			return Allocation ? Allocation->GetIntermediateAccumulatedTangentBuffer() : nullptr;
 		}
 
-		void Advance(const FVertexBufferAndSRV& BoneBuffer1, uint32 Revision1, const FVertexBufferAndSRV& BoneBuffer2, uint32 Revision2)
+		FSkinCacheRWBuffer* Advance(const FVertexBufferAndSRV& BoneBuffer1, uint32 Revision1, const FVertexBufferAndSRV& BoneBuffer2, uint32 Revision2)
 		{
+			FSkinCacheRWBuffer* Result = nullptr;
 			const FVertexBufferAndSRV* InBoneBuffers[2] = { &BoneBuffer1 , &BoneBuffer2 };
 			uint32 InRevisions[2] = { Revision1 , Revision2 };
 
@@ -360,6 +383,10 @@ public:
 				{
 					if (Revisions[Index] == InRevisions[i] && BoneBuffers[Index] == InBoneBuffers[i])
 					{
+						if (i == 0)
+						{
+							Result = &Allocation->PositionBuffers[Index];
+						}
 						Needed = true;
 					}
 				}
@@ -368,9 +395,11 @@ public:
 				{
 					Revisions[Index] = Revision1;
 					BoneBuffers[Index] = &BoneBuffer1;
+					Result = &Allocation->PositionBuffers[Index];
 					break;
 				}
 			}
+			return Result;
 		}
 
 	private:
@@ -422,11 +451,11 @@ protected:
 		FGPUSkinCacheEntry* Entry, 
 		int32 Section, 
 		uint32 RevisionNumber,
-		TSet<FSkinCacheRWBuffer*>& BuffersToTransitionToRead
+		TArray<FSkinCacheRWBuffer*>& BuffersToTransitionToRead
 		);
 
 	void Cleanup();
-	static void TransitionAllToReadable(FRHICommandList& RHICmdList, const TSet<FSkinCacheRWBuffer*>& BuffersToTransitionToRead);
+	static void TransitionAllToReadable(FRHICommandList& RHICmdList, const TArray<FSkinCacheRWBuffer*>& BuffersToTransitionToRead);
 	static void ReleaseSkinCacheEntry(FGPUSkinCacheEntry* SkinCacheEntry);
 	void InvalidateAllEntries();
 	uint64 UsedMemoryInBytes;

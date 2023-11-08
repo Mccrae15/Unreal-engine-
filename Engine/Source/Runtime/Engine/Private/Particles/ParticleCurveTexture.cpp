@@ -73,15 +73,14 @@ public:
 	/**
 	* Sets parameters for particle injection.
 	*/
-	void SetParameters(FRHICommandList& RHICmdList, const FVector2D& CurveOffset)
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FVector2D& CurveOffset)
 	{
 		FParticleCurveInjectionParameters Parameters;
 		Parameters.PixelScale.X = 1.0f / GParticleCurveTextureSizeX;
 		Parameters.PixelScale.Y = 1.0f / GParticleCurveTextureSizeY;
 		Parameters.CurveOffset = FVector2f(CurveOffset);
 		FParticleCurveInjectionBufferRef UniformBuffer = FParticleCurveInjectionBufferRef::CreateUniformBufferImmediate(Parameters, UniformBuffer_SingleDraw);
-		FRHIVertexShader* VertexShader = RHICmdList.GetBoundVertexShader();
-		SetUniformBufferParameter(RHICmdList, VertexShader, GetUniformBufferParameter<FParticleCurveInjectionParameters>(), UniformBuffer);
+		SetUniformBufferParameter(BatchedParameters, GetUniformBufferParameter<FParticleCurveInjectionParameters>(), UniformBuffer);
 	}
 };
 
@@ -125,7 +124,7 @@ public:
 	/** The vertex declaration. */
 	FVertexDeclarationRHIRef VertexDeclarationRHI;
 
-	virtual void InitRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		FVertexDeclarationElementList Elements;
 
@@ -223,8 +222,8 @@ static void InjectCurves(
 		// get a buffer for all curve textures at once, and copy curve data over
 		//
 		FRHIResourceCreateInfo CreateInfo(TEXT("ScratchVertexBuffer"));
-		FBufferRHIRef ScratchVertexBufferRHI = RHICreateBuffer(TotalSamples * sizeof(FColor), BUF_Volatile | BUF_VertexBuffer, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
-		FColor* RESTRICT DestSamples = (FColor*)RHILockBuffer(ScratchVertexBufferRHI, 0, TotalSamples * sizeof(FColor), RLM_WriteOnly);
+		FBufferRHIRef ScratchVertexBufferRHI = RHICmdList.CreateBuffer(TotalSamples * sizeof(FColor), BUF_Volatile | BUF_VertexBuffer, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+		FColor* RESTRICT DestSamples = (FColor*)RHICmdList.LockBuffer(ScratchVertexBufferRHI, 0, TotalSamples * sizeof(FColor), RLM_WriteOnly);
 
 		int32 CurrOffset = 0;
 
@@ -261,7 +260,7 @@ static void InjectCurves(
 			// Stream 0: TexCoord.
 			RHICmdList.SetStreamSource(1, GParticleTexCoordVertexBuffer.VertexBufferRHI, 0);
 
-			VertexShader->SetParameters(RHICmdList, CurveOffset);
+			SetShaderParametersLegacyVS(RHICmdList, VertexShader, CurveOffset);
 
 			// Inject particles.
 			RHICmdList.DrawIndexedPrimitive(
@@ -506,8 +505,10 @@ FParticleCurveTexture::FParticleCurveTexture()
 /**
 * Initialize RHI resources for the curve texture.
 */
-void FParticleCurveTexture::InitRHI()
+void FParticleCurveTexture::InitRHI(FRHICommandListBase&)
 {
+	const static FLazyName ClassName(TEXT("FParticleCurveTexture"));
+
 	// 8-bit per channel RGBA texture for curves.
 	const FRHITextureCreateDesc Desc =
 		FRHITextureCreateDesc::Create2D(TEXT("ParticleCurveTexture"))
@@ -515,7 +516,8 @@ void FParticleCurveTexture::InitRHI()
 		.SetFlags(ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource | ETextureCreateFlags::NoFastClear)
 		.SetFormat(PF_B8G8R8A8)
 		.SetClearValue(FClearValueBinding(FLinearColor::Blue))
-		.SetInitialState(ERHIAccess::SRVMask);
+		.SetInitialState(ERHIAccess::SRVMask)
+		.SetClassName(ClassName);
 
 	CurveTextureRHI = RHICreateTexture(Desc);
 }

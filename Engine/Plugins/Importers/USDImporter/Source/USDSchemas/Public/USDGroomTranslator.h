@@ -4,13 +4,14 @@
 
 #if USE_USD_SDK && WITH_EDITOR
 
+#include "USDGeometryCacheTranslator.h"
 #include "USDGeomXformableTranslator.h"
 
-class USDSCHEMAS_API FUsdGroomTranslator : public FUsdGeomXformableTranslator
+class USDSCHEMAS_API FUsdGroomTranslator : public FUsdGeometryCacheTranslator
 {
 public:
-	using Super = FUsdGeomXformableTranslator;
-	using FUsdGeomXformableTranslator::FUsdGeomXformableTranslator;
+	using Super = FUsdGeometryCacheTranslator;
+	using FUsdGeometryCacheTranslator::FUsdGeometryCacheTranslator;
 
 	virtual void CreateAssets() override;
 
@@ -19,6 +20,8 @@ public:
 
 	virtual bool CollapsesChildren(ECollapsingType CollapsingType) const override;
 	virtual bool CanBeCollapsed(ECollapsingType CollapsingType) const override;
+
+	virtual TSet<UE::FSdfPath> CollectAuxiliaryPrims() const override;
 
 private:
 	bool IsGroomPrim() const;

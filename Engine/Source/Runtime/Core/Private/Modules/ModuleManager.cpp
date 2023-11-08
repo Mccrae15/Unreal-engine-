@@ -832,7 +832,7 @@ void FModuleManager::UnloadModulesAtShutdown()
 			// Only if the module supports shutting down in this phase
 			if( ModuleInfo->Module->SupportsAutomaticShutdown() )
 			{
-				new (ModulesToUnload)FModulePair(ModuleIt.Key, ModuleIt.Value->LoadOrder, ModuleInfo->Module.Get());
+				ModulesToUnload.Emplace(ModuleIt.Key, ModuleIt.Value->LoadOrder, ModuleInfo->Module.Get());
 			}
 		}
 	}
@@ -1434,6 +1434,18 @@ void FModuleManager::AddBinariesDirectory(const TCHAR *InDirectory, bool bIsGame
 	}
 }
 
+void FModuleManager::LoadModuleBinaryOnly(FName ModuleName)
+{
+#if !IS_MONOLITHIC
+	TMap<FName, FString> ModulePaths;
+	FindModulePaths(*ModuleName.ToString(), ModulePaths);
+	if (ModulePaths.Num() == 1)
+	{
+		FString ModuleFilename = MoveTemp(TMap<FName, FString>::TIterator(ModulePaths).Value());
+		FPlatformProcess::GetDllHandle(*ModuleFilename);
+	}
+#endif
+}
 
 void FModuleManager::SetGameBinariesDirectory(const TCHAR* InDirectory)
 {

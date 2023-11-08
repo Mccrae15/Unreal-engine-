@@ -27,34 +27,14 @@ FScreenPassTexture AddVisualizeTemporalUpscalerPass(FRDGBuilder& GraphBuilder, c
 		Output = FScreenPassRenderTarget::CreateFromInput(GraphBuilder, Inputs.SceneColor, View.GetOverwriteLoadAction(), TEXT("MotionVectors.Visualize"));
 	}
 
-	// Early return if not using a temporal upscaler.
-	if (!Inputs.UpscalerUsed)
-	{
-		check(Inputs.TAAConfig == EMainTAAPassConfig::Disabled);
-		FRHICopyTextureInfo CopyInfo;
-		AddCopyTexturePass(
-			GraphBuilder,
-			Inputs.SceneColor.Texture,
-			Output.Texture,
-			CopyInfo);
-
-		AddDrawCanvasPass(GraphBuilder, RDG_EVENT_NAME("VisualizeTemporalUpscaler Text"), View, FScreenPassRenderTarget(Output, ERenderTargetLoadAction::ELoad),
-			[&ViewRect = Output.ViewRect](FCanvas& Canvas)
-		{
-			const float DPIScale = Canvas.GetDPIScale();
-			Canvas.SetBaseTransform(FMatrix(FScaleMatrix(DPIScale) * Canvas.CalcBaseTransform2D(Canvas.GetViewRect().Width(), Canvas.GetViewRect().Height())));
-
-			FIntPoint LabelLocation(60, 60);
-			Canvas.DrawShadowedString(LabelLocation.X / DPIScale, LabelLocation.Y / DPIScale, TEXT("No temporal upscaler used"), GetStatsFont(), FLinearColor::Red);
-		});
-
-		return MoveTemp(Output);
-	}
-
 	// Populate all the tiles
 	TArray<FVisualizeBufferTile> Tiles;
 	Tiles.SetNum(16);
+
+	if (Inputs.TAAConfig != EMainTAAPassConfig::Disabled)
 	{
+		FScreenPassTexture OutputTexture = FScreenPassTexture::CopyFromSlice(GraphBuilder, Inputs.Outputs.FullRes);
+
 		auto VisualizeTextureLabel = [](FRDGTextureRef Texture, const TCHAR* Suffix = TEXT(""))
 		{
 			return FString::Printf(TEXT("vis %s%s"), Texture->Name, Suffix);
@@ -68,16 +48,16 @@ FScreenPassTexture AddVisualizeTemporalUpscalerPass(FRDGBuilder& GraphBuilder, c
 		// Depth buffer
 		{
 			FVisualizeBufferTile& Tile = Tiles[4 * 0 + 0];
-			Tile.Input.Texture = FVisualizeTexture::AddVisualizeTexturePass(GraphBuilder, View.ShaderMap, Inputs.Inputs.SceneDepthTexture);
+			Tile.Input.Texture = FVisualizeTexture::AddVisualizeTexturePass(GraphBuilder, View.ShaderMap, Inputs.Inputs.SceneDepth.Texture);
 			Tile.Input.ViewRect = CropViewRectToCenter(View.ViewRect);
-			Tile.Label = VisualizeTextureLabel(Inputs.Inputs.SceneDepthTexture);
+			Tile.Label = VisualizeTextureLabel(Inputs.Inputs.SceneDepth.Texture);
 		}
 
 		// Scene Color
 		{
 			FVisualizeBufferTile& Tile = Tiles[4 * 0 + 1];
-			Tile.Input = FScreenPassTexture(Inputs.Inputs.SceneColorTexture, CropViewRectToCenter(View.ViewRect));
-			Tile.Label = VisualizeTextureLabel(Inputs.Inputs.SceneColorTexture);
+			Tile.Input = FScreenPassTexture(Inputs.Inputs.SceneColor.Texture, CropViewRectToCenter(View.ViewRect));
+			Tile.Label = VisualizeTextureLabel(Inputs.Inputs.SceneColor.Texture);
 		}
 
 		// Scene Color alpha
@@ -85,9 +65,9 @@ FScreenPassTexture AddVisualizeTemporalUpscalerPass(FRDGBuilder& GraphBuilder, c
 		{
 			FVisualizeBufferTile& Tile = Tiles[4 * 3 + 1];
 			//Tile.Input = FScreenPassTexture(Inputs.Inputs.SceneColorTexture, CropViewRectToCenter(View.ViewRect));
-			Tile.Input.Texture = FVisualizeTexture::AddVisualizeTextureAlphaPass(GraphBuilder, View.ShaderMap, Inputs.Inputs.SceneColorTexture);
+			Tile.Input.Texture = FVisualizeTexture::AddVisualizeTextureAlphaPass(GraphBuilder, View.ShaderMap, Inputs.Inputs.SceneColor.Texture);
 			Tile.Input.ViewRect = CropViewRectToCenter(View.ViewRect);
-			Tile.Label = VisualizeTextureLabel(Inputs.Inputs.SceneColorTexture, TEXT(" A"));
+			Tile.Label = VisualizeTextureLabel(Inputs.Inputs.SceneColor.Texture, TEXT(" A"));
 		}
 
 		// Translucency
@@ -126,11 +106,11 @@ FScreenPassTexture AddVisualizeTemporalUpscalerPass(FRDGBuilder& GraphBuilder, c
 		{
 			FMotionBlurInputs PassInputs;
 			PassInputs.SceneColor = Inputs.Outputs.FullRes;
-			PassInputs.SceneDepth = FScreenPassTexture(Inputs.Inputs.SceneDepthTexture, View.ViewRect);
-			PassInputs.SceneVelocity = FScreenPassTexture(Inputs.Inputs.SceneVelocityTexture, View.ViewRect);
+			PassInputs.SceneDepth = Inputs.Inputs.SceneDepth;
+			PassInputs.SceneVelocity = Inputs.Inputs.SceneVelocity;
 
 			FVisualizeBufferTile& Tile = Tiles[4 * 1 + 0];
-			Tile.Input = AddVisualizeMotionBlurPass(GraphBuilder, View, PassInputs);
+			Tile.Input = FScreenPassTexture(AddVisualizeMotionBlurPass(GraphBuilder, View, PassInputs));
 			Tile.Input.ViewRect = CropViewRectToCenter(Tile.Input.ViewRect);
 			Tile.Label = TEXT("show VisualizeMotionBlur");
 		}
@@ -139,8 +119,8 @@ FScreenPassTexture AddVisualizeTemporalUpscalerPass(FRDGBuilder& GraphBuilder, c
 		{
 			FVisualizeMotionVectorsInputs PassInputs;
 			PassInputs.SceneColor = Inputs.SceneColor;
-			PassInputs.SceneDepth = FScreenPassTexture(Inputs.Inputs.SceneDepthTexture, View.ViewRect);
-			PassInputs.SceneVelocity = FScreenPassTexture(Inputs.Inputs.SceneVelocityTexture, View.ViewRect);
+			PassInputs.SceneDepth = Inputs.Inputs.SceneDepth;
+			PassInputs.SceneVelocity = Inputs.Inputs.SceneVelocity;
 
 			FVisualizeBufferTile& Tile = Tiles[4 * 2 + 0];
 			Tile.Input = AddVisualizeMotionVectorsPass(GraphBuilder, View, PassInputs);
@@ -160,18 +140,18 @@ FScreenPassTexture AddVisualizeTemporalUpscalerPass(FRDGBuilder& GraphBuilder, c
 		// Output
 		{
 			FVisualizeBufferTile& Tile = Tiles[4 * 3 + 3];
-			Tile.Input = Inputs.Outputs.FullRes;
-			Tile.Input.ViewRect = CropViewRectToCenter(Tile.Input.ViewRect);
-			Tile.Label = VisualizeTextureLabel(Inputs.Outputs.FullRes.Texture);
+			Tile.Input.Texture = OutputTexture.Texture;
+			Tile.Input.ViewRect = CropViewRectToCenter(OutputTexture.ViewRect);
+			Tile.Label = VisualizeTextureLabel(OutputTexture.Texture);
 		}
 
 		// Output alpha
 		if (bSupportsAlpha)
 		{
 			FVisualizeBufferTile& Tile = Tiles[4 * 3 + 2];
-			Tile.Input.Texture = FVisualizeTexture::AddVisualizeTextureAlphaPass(GraphBuilder, View.ShaderMap, Inputs.Outputs.FullRes.Texture);
-			Tile.Input.ViewRect = CropViewRectToCenter(Inputs.Outputs.FullRes.ViewRect);
-			Tile.Label = VisualizeTextureLabel(Inputs.Outputs.FullRes.Texture, TEXT(" A"));
+			Tile.Input.Texture = FVisualizeTexture::AddVisualizeTextureAlphaPass(GraphBuilder, View.ShaderMap, OutputTexture.Texture);
+			Tile.Input.ViewRect = CropViewRectToCenter(OutputTexture.ViewRect);
+			Tile.Label = VisualizeTextureLabel(OutputTexture.Texture, TEXT(" A"));
 		}
 
 		// Black bottom left corner
@@ -193,6 +173,8 @@ FScreenPassTexture AddVisualizeTemporalUpscalerPass(FRDGBuilder& GraphBuilder, c
 	}
 
 	// Draw additional text
+	// Early return if not using a temporal upscaler.
+	if (Inputs.TAAConfig != EMainTAAPassConfig::Disabled)
 	{
 		AddDrawCanvasPass(GraphBuilder, RDG_EVENT_NAME("VisualizeTemporalUpscaler Text"), View, FScreenPassRenderTarget(Output, ERenderTargetLoadAction::ELoad),
 			[&View, &ViewRect = Output.ViewRect, &Inputs, bSupportsAlpha](FCanvas& Canvas)
@@ -229,8 +211,8 @@ FScreenPassTexture AddVisualizeTemporalUpscalerPass(FRDGBuilder& GraphBuilder, c
 
 			// Display the input/output resolutions
 			{
-				QuickDrawSummary(/* Location = */ 1, FString::Printf(TEXT("Input: %dx%d %s"), View.ViewRect.Width(), View.ViewRect.Height(), GPixelFormats[Inputs.Inputs.SceneColorTexture->Desc.Format].Name));
-				QuickDrawSummary(/* Location = */ 2, FString::Printf(TEXT("Output: %dx%d %s"), Inputs.Outputs.FullRes.ViewRect.Width(), Inputs.Outputs.FullRes.ViewRect.Height(), GPixelFormats[Inputs.Outputs.FullRes.Texture->Desc.Format].Name));
+				QuickDrawSummary(/* Location = */ 1, FString::Printf(TEXT("Input: %dx%d %s"), View.ViewRect.Width(), View.ViewRect.Height(), GPixelFormats[Inputs.Inputs.SceneColor.Texture->Desc.Format].Name));
+				QuickDrawSummary(/* Location = */ 2, FString::Printf(TEXT("Output: %dx%d %s"), Inputs.Outputs.FullRes.ViewRect.Width(), Inputs.Outputs.FullRes.ViewRect.Height(), GPixelFormats[Inputs.Outputs.FullRes.TextureSRV->Desc.Texture->Desc.Format].Name));
 			}
 
 			// Display the pre-exposure being used
@@ -256,8 +238,31 @@ FScreenPassTexture AddVisualizeTemporalUpscalerPass(FRDGBuilder& GraphBuilder, c
 				}
 				QuickDrawSummary(/* Location = */ 4, TEXT("Support Alpha: ") + Text);
 			}
+
+			// Display if any additional sharpening is happening
+			{
+				static auto CVarSharpen = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Tonemapper.Sharpen"));
+				check(CVarSharpen);
+				float Sharpen = CVarSharpen->GetFloat();
+				Sharpen = (Sharpen < 0) ? View.FinalPostProcessSettings.Sharpen : Sharpen;
+				QuickDrawSummary(/* Location = */ 5, Sharpen > 0 ? FString::Printf(TEXT("Tonemapper Sharpen: %f"), Sharpen) : TEXT("Tonemapper Sharpen: Off"));
+			}
+
 		});
 
+	}
+	else
+	{
+		check(Inputs.TAAConfig == EMainTAAPassConfig::Disabled);
+		AddDrawCanvasPass(GraphBuilder, RDG_EVENT_NAME("VisualizeTemporalUpscaler Text"), View, FScreenPassRenderTarget(Output, ERenderTargetLoadAction::ELoad),
+			[&ViewRect = Output.ViewRect](FCanvas& Canvas)
+			{
+				const float DPIScale = Canvas.GetDPIScale();
+				Canvas.SetBaseTransform(FMatrix(FScaleMatrix(DPIScale) * Canvas.CalcBaseTransform2D(Canvas.GetViewRect().Width(), Canvas.GetViewRect().Height())));
+
+				FIntPoint LabelLocation(60, 60);
+				Canvas.DrawShadowedString(LabelLocation.X / DPIScale, LabelLocation.Y / DPIScale, TEXT("No temporal upscaler used"), GetStatsFont(), FLinearColor::Red);
+			});
 	}
 
 	return MoveTemp(Output);

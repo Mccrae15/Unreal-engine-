@@ -2,27 +2,32 @@
 
 #include "SDMXControlConsoleEditorMatrixCell.h"
 
-#include "DMXControlConsoleEditorManager.h"
+#include "Algo/Find.h"
 #include "DMXControlConsoleEditorSelection.h"
 #include "DMXControlConsoleFaderGroup.h"
 #include "DMXControlConsoleFaderBase.h"
 #include "DMXControlConsoleFixturePatchCellAttributeFader.h"
 #include "DMXControlConsoleFixturePatchMatrixCell.h"
-#include "Style/DMXControlConsoleEditorStyle.h"
-#include "Widgets/SDMXControlConsoleEditorFader.h"
-#include "Widgets/SDMXControlConsoleEditorSpinBoxVertical.h"
-#include "Widgets/SDMXControlConsoleEditorExpandArrowButton.h"
-
-#include "ScopedTransaction.h"
-#include "Algo/Find.h"
 #include "Misc/Optional.h"
+#include "Models/DMXControlConsoleEditorModel.h"
+#include "ScopedTransaction.h"
+#include "Style/DMXControlConsoleEditorStyle.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SScaleBox.h"
 #include "Widgets/Layout/SSeparator.h"
+#include "Widgets/SDMXControlConsoleEditorFader.h"
+#include "Widgets/SDMXControlConsoleEditorSpinBoxVertical.h"
+#include "Widgets/SDMXControlConsoleEditorExpandArrowButton.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
 
 
 #define LOCTEXT_NAMESPACE "SDMXControlConsoleEditorMatrixCell"
+
+namespace UE::DMXControlConsoleEditor::DMXControlConsoleEditorMatrixCell::Private
+{
+	static float CollapsedViewModeHeight = 200.f;
+	static float ExpandedViewModeHeight = 280.f;
+};
 
 void SDMXControlConsoleEditorMatrixCell::Construct(const FArguments& InArgs, const TObjectPtr<UDMXControlConsoleFixturePatchMatrixCell>& InMatrixCell)
 {
@@ -31,7 +36,6 @@ void SDMXControlConsoleEditorMatrixCell::Construct(const FArguments& InArgs, con
 	ChildSlot
 		[
 			SNew(SHorizontalBox)
-
 			// Matrix Cell section
 			+ SHorizontalBox::Slot()
 			.Padding(2.f, 0.f)
@@ -39,55 +43,50 @@ void SDMXControlConsoleEditorMatrixCell::Construct(const FArguments& InArgs, con
 			[
 				SNew(SBox)
 				.WidthOverride(20.f)
-				.HeightOverride(270.f)
+				.HeightOverride(TAttribute<FOptionalSize>::CreateSP(this, &SDMXControlConsoleEditorMatrixCell::GetMatrixCellHeightByFadersViewMode))
 				[
 					SNew(SBorder)
-					.BorderBackgroundColor(FLinearColor::White)
+					.BorderImage(this, &SDMXControlConsoleEditorMatrixCell::GetBorderImage)
 					[
-						SNew(SBorder)
-						.BorderImage(this, &SDMXControlConsoleEditorMatrixCell::GetBorderImage)
+						SNew(SVerticalBox)
+						// Matrix Cell Label
+						+ SVerticalBox::Slot()
+						.Padding(0.f, 1.f, 0.f, 0.f)
+						.AutoHeight()
 						[
-							SNew(SVerticalBox)
-
-							// Matrix Cell Label
-							+ SVerticalBox::Slot()
-							.AutoHeight()
+							SNew(SBox)
+							.HeightOverride(8.f)
+							.Padding(1.f)
 							[
-								SNew(SBox)
-								.HeightOverride(5.f)
-								[
-									SNew(SImage)
-									.Image(FDMXControlConsoleEditorStyle::Get().GetBrush("DMXControlConsole.WhiteBrush"))
-									.ColorAndOpacity(this, &SDMXControlConsoleEditorMatrixCell::GetLabelBorderColor)
-								]
+								SNew(SImage)
+								.Image(FDMXControlConsoleEditorStyle::Get().GetBrush("DMXControlConsole.Rounded.FaderGroupTag"))
+								.ColorAndOpacity(this, &SDMXControlConsoleEditorMatrixCell::GetLabelBorderColor)
 							]
+						]
 
-							// Matrix Cell Text Label
-							+ SVerticalBox::Slot()
-							.AutoHeight()
-							[
-								SNew(SBorder)
-								.BorderImage(FDMXControlConsoleEditorStyle::Get().GetBrush("DMXControlConsole.BlackBrush"))
-								[
-									SNew(STextBlock)
-									.ColorAndOpacity(FLinearColor::White)
-									.Text(this, &SDMXControlConsoleEditorMatrixCell::GetMatrixCellLabelText)
-									.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
-									.Justification(ETextJustify::Center)
-								]
-							]
+						// Matrix Cell Expand button
+						+ SVerticalBox::Slot()
+						.Padding(0.f, 4.f, 0.f, 0.f)
+						.AutoHeight()
+						[
+							SNew(STextBlock)
+							.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+							.Text(this, &SDMXControlConsoleEditorMatrixCell::GetMatrixCellLabelText)
+							.Justification(ETextJustify::Center)
+						]
 
-							// Matrix Cell Expand button
-							+ SVerticalBox::Slot()
-							.AutoHeight()
-							[
-								SAssignNew(ExpandArrowButton, SDMXControlConsoleEditorExpandArrowButton)
-							]
+						// Matrix Cell Text Label
+						+ SVerticalBox::Slot()
+						.Padding(0.f, 2.f, 0.f, 0.f)
+						.AutoHeight()
+						[
+							SAssignNew(ExpandArrowButton, SDMXControlConsoleEditorExpandArrowButton)
+							.ToolTipText(LOCTEXT("MatrixCellExpandArrowButton_Tooltip", "Switch expansion state of the cell"))
 						]
 					]
 				]
 			]
-			
+
 			// Matrix Cell Faders section
 			+ SHorizontalBox::Slot()
 			.Padding(2.f, 0.f)
@@ -97,26 +96,6 @@ void SDMXControlConsoleEditorMatrixCell::Construct(const FArguments& InArgs, con
 				.Visibility(TAttribute<EVisibility>::CreateSP(this, &SDMXControlConsoleEditorMatrixCell::GetCellAttributeFadersHorizontalBoxVisibility))
 			]
 		];
-}
-
-void SDMXControlConsoleEditorMatrixCell::ApplyGlobalFilter(const FString& InSearchString)
-{
-	bool bHasVisibleChildren = false;
-
-	for (TWeakPtr<SDMXControlConsoleEditorFader> WeakCellAttributeFaderWidget : CellAttributeFaderWidgets)
-	{
-		if (const TSharedPtr<SDMXControlConsoleEditorFader> CellAttributeFaderWidget = WeakCellAttributeFaderWidget.Pin())
-		{
-			CellAttributeFaderWidget->ApplyGlobalFilter(InSearchString);
-			if (CellAttributeFaderWidget->GetVisibility() == EVisibility::Visible)
-			{
-				bHasVisibleChildren = true;
-			}
-		}
-	}
-
-	const EVisibility NewVisibility = bHasVisibleChildren ? EVisibility::Visible : EVisibility::Collapsed;
-	SetVisibility(NewVisibility);
 }
 
 FReply SDMXControlConsoleEditorMatrixCell::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
@@ -135,7 +114,7 @@ FReply SDMXControlConsoleEditorMatrixCell::OnMouseButtonDown(const FGeometry& My
 
 		return FReply::Handled();
 	}
-	
+
 	return FReply::Unhandled();
 }
 
@@ -198,7 +177,8 @@ void SDMXControlConsoleEditorMatrixCell::AddCellAttributeFader(UDMXControlConsol
 
 	TSharedRef<SDMXControlConsoleEditorFader> CellAttributeFaderWidget =
 		SNew(SDMXControlConsoleEditorFader, CellAttributeFader)
-		.Padding(FMargin(2.f, 0.f));
+		.Padding(FMargin(2.f, 0.f))
+		.Visibility(TAttribute<EVisibility>::CreateSP(this, &SDMXControlConsoleEditorMatrixCell::GetFaderWidgetVisibility, CellAttributeFader));
 
 	CellAttributeFaderWidgets.Insert(CellAttributeFaderWidget, Index);
 
@@ -239,20 +219,20 @@ void SDMXControlConsoleEditorMatrixCell::OnCellAttributeFaderRemoved()
 bool SDMXControlConsoleEditorMatrixCell::ContainsCellAttributeFader(UDMXControlConsoleFaderBase* CellAttributeFader)
 {
 	auto IsCellAttributeFaderInUseLambda = [CellAttributeFader](const TWeakPtr<SDMXControlConsoleEditorFader> CellAttributeFaderWidget)
-	{
-		if (!CellAttributeFaderWidget.IsValid())
 		{
-			return false;
-		}
+			if (!CellAttributeFaderWidget.IsValid())
+			{
+				return false;
+			}
 
-		const TWeakObjectPtr<UDMXControlConsoleFaderBase> Other = CellAttributeFaderWidget.Pin()->GetFader();
-		if (!Other.IsValid())
-		{
-			return false;
-		}
+			const TWeakObjectPtr<UDMXControlConsoleFaderBase> Other = CellAttributeFaderWidget.Pin()->GetFader();
+			if (!Other.IsValid())
+			{
+				return false;
+			}
 
-		return Other == CellAttributeFader;
-	};
+			return Other == CellAttributeFader;
+		};
 
 	return CellAttributeFaderWidgets.ContainsByPredicate(IsCellAttributeFaderInUseLambda);
 }
@@ -269,8 +249,9 @@ bool SDMXControlConsoleEditorMatrixCell::IsAnyCellAttributeFaderSelected() const
 		return false;
 	}
 
+	UDMXControlConsoleEditorModel* EditorConsoleModel = GetMutableDefault<UDMXControlConsoleEditorModel>();
+	const TSharedRef<FDMXControlConsoleEditorSelection> SelectionHandler = EditorConsoleModel->GetSelectionHandler();
 	const TArray<UDMXControlConsoleFaderBase*>& Faders = MatrixCell->GetFaders();
-	const TSharedRef<FDMXControlConsoleEditorSelection> SelectionHandler = FDMXControlConsoleEditorManager::Get().GetSelectionHandler();
 
 	auto IsCellAttributeFaderSelectedLambda = [SelectionHandler](UDMXControlConsoleFaderBase* Fader)
 		{
@@ -278,6 +259,15 @@ bool SDMXControlConsoleEditorMatrixCell::IsAnyCellAttributeFaderSelected() const
 		};
 
 	return Algo::FindByPredicate(Faders, IsCellAttributeFaderSelectedLambda) ? true : false;
+}
+
+FOptionalSize SDMXControlConsoleEditorMatrixCell::GetMatrixCellHeightByFadersViewMode() const
+{
+	using namespace UE::DMXControlConsoleEditor::DMXControlConsoleEditorMatrixCell::Private;
+
+	const UDMXControlConsoleEditorModel* EditorConsoleModel = GetDefault<UDMXControlConsoleEditorModel>();
+	const EDMXControlConsoleEditorViewMode ViewMode = EditorConsoleModel->GetFadersViewMode();
+	return ViewMode == EDMXControlConsoleEditorViewMode::Collapsed ? CollapsedViewModeHeight : ExpandedViewModeHeight;
 }
 
 FText SDMXControlConsoleEditorMatrixCell::GetMatrixCellLabelText() const
@@ -297,8 +287,14 @@ FSlateColor SDMXControlConsoleEditorMatrixCell::GetLabelBorderColor() const
 		const UDMXControlConsoleFaderGroup& FaderGroup = MatrixCell->GetOwnerFaderGroupChecked();
 		return FaderGroup.GetEditorColor();
 	}
-	
+
 	return FSlateColor(FLinearColor::White);
+}
+
+EVisibility SDMXControlConsoleEditorMatrixCell::GetFaderWidgetVisibility(const UDMXControlConsoleFaderBase* Fader) const
+{
+	const bool bIsVisible = Fader && Fader->IsMatchingFilter();
+	return bIsVisible ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 EVisibility SDMXControlConsoleEditorMatrixCell::GetCellAttributeFadersHorizontalBoxVisibility() const
@@ -318,24 +314,25 @@ const FSlateBrush* SDMXControlConsoleEditorMatrixCell::GetBorderImage() const
 	{
 		if (IsSelected())
 		{
-			return FDMXControlConsoleEditorStyle::Get().GetBrush("DMXControlConsole.FaderGroup_Highlighted");;
+			return FDMXControlConsoleEditorStyle::Get().GetBrush("DMXControlConsole.Rounded.Fader_Highlighted");;
 		}
 		else
 		{
-			return FDMXControlConsoleEditorStyle::Get().GetBrush("DMXControlConsole.FaderGroup_Hovered");;
+			return FDMXControlConsoleEditorStyle::Get().GetBrush("DMXControlConsole.Rounded.Fader_Hovered");;
 		}
 	}
 	else
 	{
 		if (IsSelected())
 		{
-			return FDMXControlConsoleEditorStyle::Get().GetBrush("DMXControlConsole.FaderGroup_Selected");;
+			return FDMXControlConsoleEditorStyle::Get().GetBrush("DMXControlConsole.Rounded.Fader_Selected");;
 		}
 		else
 		{
-			return FDMXControlConsoleEditorStyle::Get().GetBrush("DMXControlConsole.BlackBrush");
+			return FDMXControlConsoleEditorStyle::Get().GetBrush("DMXControlConsole.Rounded.Fader");
 		}
 	}
 }
 
 #undef LOCTEXT_NAMESPACE
+

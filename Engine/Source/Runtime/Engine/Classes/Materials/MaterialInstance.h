@@ -527,7 +527,7 @@ class UMaterialInstance : public UMaterialInterface
 	GENERATED_UCLASS_BODY()
 
 #if WITH_EDITORONLY_DATA
-	ENGINE_API virtual const UClass* GetEditorOnlyDataClass() const override { return UMaterialInstanceEditorOnlyData::StaticClass(); }
+	virtual const UClass* GetEditorOnlyDataClass() const override { return UMaterialInstanceEditorOnlyData::StaticClass(); }
 
 	virtual UMaterialInstanceEditorOnlyData* GetEditorOnlyData() override { return CastChecked<UMaterialInstanceEditorOnlyData>(Super::GetEditorOnlyData(), ECastCheckedType::NullAllowed); }
 	virtual const UMaterialInstanceEditorOnlyData* GetEditorOnlyData() const override { return CastChecked<UMaterialInstanceEditorOnlyData>(Super::GetEditorOnlyData(), ECastCheckedType::NullAllowed); }
@@ -545,7 +545,7 @@ class UMaterialInstance : public UMaterialInterface
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=MaterialInstance, AssetRegistrySearchable)
 	TObjectPtr<class UMaterialInterface> Parent;
 
-	/** An override material which will be used instead of this one when rendering with nanite. */
+	/** An override material which will be used instead of this one when rendering with Nanite. */
 	UPROPERTY(EditAnywhere, Category = MaterialInstance)
 	FMaterialOverrideNanite NaniteOverrideMaterial;
 
@@ -591,6 +591,8 @@ public:
 
 	//Cached copies of the base property overrides or the value from the parent to avoid traversing the parent chain for each access.
 	float OpacityMaskClipValue;
+
+	FDisplacementScaling DisplacementScaling;
 
 	float MaxWorldPositionOffsetDisplacement;
 
@@ -654,6 +656,9 @@ public:
 #if WITH_EDITOR
 	/** Flag to detect cycles in the material instance graph, this is only used at content creation time where the hierarchy can be changed. */
 	bool ReentrantFlag[2];
+
+	/** Whether static parameter permutations should be disabled (e.g. due to having a restricted parent material) */
+	bool bDisallowStaticParameterPermutations;
 #endif
 
 	/** 
@@ -669,6 +674,10 @@ public:
 	ENGINE_API virtual float GetTextureDensity(FName TextureName, const struct FMeshUVChannelInfo& UVChannelData) const override;
 
 	ENGINE_API bool Equivalent(const UMaterialInstance* CompareTo) const;
+
+	// Returns true if using this material instance would be equivalent to using its parent. 
+	// i.e. no parameters/etc of any kind have been set.
+	ENGINE_API virtual bool IsRedundant() const;
 
 private:
 
@@ -708,7 +717,26 @@ private:
 #endif
 	/** Thread-safe flags used to track whether this instance is still in use by the render thread (EMaterialInstanceUsedByRTFlag) */
 	mutable std::atomic<uint32> UsedByRT;
+	
+#if WITH_EDITOR
+	struct FTextureParameterOverride
+	{
+		FTextureParameterOverride(UTexture* InPreviousTexture, UTexture* InOverrideTexture)
+			: PreviousTexture(InPreviousTexture)
+			, OverrideTexture(InOverrideTexture)
+		{}
 
+		TObjectPtr<UTexture> PreviousTexture;
+		TObjectPtr<UTexture> OverrideTexture;
+	};
+
+	TArray<FTextureParameterOverride> TransientTextureParameterOverrides;
+
+	// Helper for setting an override texture
+	void OverrideTextureParameterValue(const UTexture* InTextureToOverride, UTexture* OverrideTexture);
+	TObjectPtr<UTexture> OverrideTextureParameterValueInternal(const UTexture* InTextureToOverride, UTexture* OverrideTexture);
+	void ResetAllTextureParameterOverrides();
+#endif // WITH_EDITOR
 public:
 	virtual ENGINE_API ~UMaterialInstance();
 
@@ -730,6 +758,7 @@ public:
 
 	virtual ENGINE_API void GetUsedTextures(TArray<UTexture*>& OutTextures, EMaterialQualityLevel::Type QualityLevel, bool bAllQualityLevels, ERHIFeatureLevel::Type FeatureLevel, bool bAllFeatureLevels) const override;
 	virtual ENGINE_API void GetUsedTexturesAndIndices(TArray<UTexture*>& OutTextures, TArray< TArray<int32> >& OutIndices, EMaterialQualityLevel::Type QualityLevel, ERHIFeatureLevel::Type FeatureLevel) const;
+	virtual ENGINE_API bool GetTextureParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, class UTexture*& OutValue, bool bOveriddenOnly = false) const;
 	virtual ENGINE_API void OverrideTexture(const UTexture* InTextureToOverride, UTexture* OverrideTexture, ERHIFeatureLevel::Type InFeatureLevel) override;
 	virtual ENGINE_API void OverrideNumericParameterDefault(EMaterialParameterType Type, const FHashedMaterialParameterInfo& ParameterInfo, const UE::Shader::FValue& Value, bool bOverride, ERHIFeatureLevel::Type FeatureLevel) override;
 	virtual ENGINE_API bool CheckMaterialUsage(const EMaterialUsage Usage) override;
@@ -742,7 +771,7 @@ public:
 	virtual ENGINE_API UPhysicalMaterial* GetPhysicalMaterial() const override;
 	virtual ENGINE_API UPhysicalMaterialMask* GetPhysicalMaterialMask() const override;
 	virtual ENGINE_API UPhysicalMaterial* GetPhysicalMaterialFromMap(int32 Index) const override;
-	virtual ENGINE_API UMaterialInterface* GetNaniteOverride(TMicRecursionGuard RecursionGuard = TMicRecursionGuard()) override;
+	virtual ENGINE_API UMaterialInterface* GetNaniteOverride(TMicRecursionGuard RecursionGuard = TMicRecursionGuard()) const override;
 	virtual ENGINE_API bool UpdateLightmassTextureTracking() override;
 	virtual ENGINE_API bool GetCastShadowAsMasked() const override;
 	virtual ENGINE_API float GetEmissiveBoost() const override;
@@ -774,8 +803,10 @@ public:
 	ENGINE_API virtual bool IsTranslucencyWritingVelocity() const override;
 	ENGINE_API virtual bool IsDitheredLODTransition() const override;
 	ENGINE_API virtual bool IsMasked() const override;
+	ENGINE_API virtual bool WritesToRuntimeVirtualTexture() const override;
+	ENGINE_API virtual FDisplacementScaling GetDisplacementScaling() const override;
 	ENGINE_API virtual float GetMaxWorldPositionOffsetDisplacement() const override;
-	
+	ENGINE_API virtual bool ShouldAlwaysEvaluateWorldPositionOffset() const override;
 	ENGINE_API virtual USubsurfaceProfile* GetSubsurfaceProfile_Internal() const override;
 	ENGINE_API virtual bool CastsRayTracedShadows() const override;
 
@@ -825,6 +856,16 @@ public:
 
 	ENGINE_API void SwapLayerParameterIndices(int32 OriginalIndex, int32 NewIndex);
 	ENGINE_API void RemoveLayerParameterIndex(int32 Index);
+	
+	/**
+	 * Returns this material instance is allowed to override static parameters and introduce a new shader permutation when it derives from `CandidateParent`.
+	 */
+	ENGINE_API bool IsStaticPermutationAllowedForCandidateParent(UMaterialInterface* CandidateParent) const;
+
+	/**
+	 * Ensures that current parent is a valid for this material instance and if not, it resets the parent to null.
+	 */
+	ENGINE_API void ValidateStaticPermutationAllowed();
 
 #endif // WITH_EDITOR
 
@@ -844,7 +885,13 @@ public:
 	 * The results will be applied to this FMaterial in the renderer when they are finished compiling.
 	 * Note: This modifies material variables used for rendering and is assumed to be called within a FMaterialUpdateContext!
 	 */
-	void CacheResourceShadersForCooking(EShaderPlatform ShaderPlatform, TArray<FMaterialResource*>& OutCachedMaterialResources, EMaterialShaderPrecompileMode PrecompileMode = EMaterialShaderPrecompileMode::Default, const ITargetPlatform* TargetPlatform = nullptr);
+	void CacheResourceShadersForCooking(
+		EShaderPlatform ShaderPlatform,
+		TArray<FMaterialResource*>& OutCachedMaterialResources,
+		EMaterialShaderPrecompileMode PrecompileMode = EMaterialShaderPrecompileMode::Default,
+		const ITargetPlatform* TargetPlatform = nullptr,
+		bool bBlocking = false
+	);
 
 	/** 
 	 * Gathers actively used shader maps from all material resources used by this material instance

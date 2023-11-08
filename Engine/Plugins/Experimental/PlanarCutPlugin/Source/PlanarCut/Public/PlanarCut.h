@@ -323,12 +323,14 @@ int32 PLANARCUT_API CutMultipleWithMultiplePlanes(
  * @param TransformIndices		The transform indices to process, or empty if all should be processed
  * @param OutVolumes			Output array, to be filled w/ volumes of geometry; 1:1 w/ TransformIndices array
  * @param ScalePerDimension		Scale to apply per dimension (e.g. 1/100 converts volume from centimeters^3 to meters^3)
+ * @param bIncludeClusters		Whether to set the volumes for clusters as a sum of the child volumes. Otherwise, cluster volumes are set to zero.
  */
 void PLANARCUT_API FindBoneVolumes(
 	FGeometryCollection& Collection,
 	const TArrayView<const int32>& TransformIndices,
 	TArray<double>& OutVolumes,
-	double ScalePerDimension = .01
+	double ScalePerDimension = .01,
+	bool bIncludeClusters = false
 );
 
 /**
@@ -339,13 +341,15 @@ void PLANARCUT_API FindBoneVolumes(
  * @param Volumes				Volumes of geometry; 1:1 w/ TransformIndices array
  * @param MinVolume				Geometry smaller than this quantity will be chosen
  * @param OutSmallBones			Output array, to be filled with transform indices for small pieces of geometry
+ * @param bIncludeClusters		Whether to include clusters in the search
  */
 void PLANARCUT_API FindSmallBones(
-	FGeometryCollection& Collection,
+	const FGeometryCollection& Collection,
 	const TArrayView<const int32>& TransformIndices,
 	const TArrayView<const double>& Volumes,
 	double MinVolume,
-	TArray<int32>& OutSmallBones
+	TArray<int32>& OutSmallBones,
+	bool bIncludeClusters = false
 );
 
 /**
@@ -356,13 +360,15 @@ void PLANARCUT_API FindSmallBones(
  * @param Volumes				Volumes of geometry; 1:1 w/ TransformIndices array
  * @param Filter				Geometry for which the volume filter returns true will be chosen
  * @param OutSmallBones			Output array, to be filled with transform indices for small pieces of geometry
+ * @param bIncludeClusters		Whether to allow clusters in the filter
  */
 void PLANARCUT_API FilterBonesByVolume(
-	FGeometryCollection& Collection,
+	const FGeometryCollection& Collection,
 	const TArrayView<const int32>& TransformIndices,
 	const TArrayView<const double>& Volumes,
 	TFunctionRef<bool(double Volume, int32 BoneIdx)> Filter,
-	TArray<int32>& OutSmallBones
+	TArray<int32>& OutSmallBones,
+	bool bIncludeClusters = false
 );
 
 namespace UE
@@ -400,6 +406,27 @@ int32 PLANARCUT_API MergeBones(
 );
 
 /**
+ * Merge chosen bones into neighboring clusters.
+ *
+ * @param Collection				The collection to be processed
+ * @param Volumes					Volumes of geometry; 1:1 w/ TransformIndices array
+ * @param MinVolume					If merged small geometry is larger than this, it will not require further merging
+ * @param SmallTransformIndices		Transform indices of pieces that we want to merge
+ * @param NeighborSelectionMethod	How to choose which neighbor to merge to
+ * @param bOnlyMergeInProximity		Whether to only follow proximity graph, or to fall back to nearest center when for when no proximity links are found
+ * @param bOnlySameParent			Whether to only merge nodes that have the same parent in the hierarchy
+ */
+void PLANARCUT_API MergeClusters(
+	FGeometryCollection& Collection,
+	const TArrayView<const double>& Volumes,
+	double MinVolume,
+	const TArrayView<const int32>& SmallTransformIndices,
+	UE::PlanarCut::ENeighborSelectionMethod NeighborSelectionMethod,
+	bool bOnlyMergeInProximity,
+	bool bOnlySameParent
+);
+
+/**
  * Merge all chosen nodes into a single node.  Unlike MergeBones(), does not account for proximity and will always only merge the selected bones.
  *
  * @param Collection				The collection to be processed
@@ -424,7 +451,7 @@ void PLANARCUT_API MergeAllSelectedBones(
  * @param WhichMaterials	If non-empty, restrict recomputation to only the listed material IDs
  */
 void PLANARCUT_API RecomputeNormalsAndTangents(bool bOnlyTangents, bool bMakeSharpEdges, float SharpAngleDegrees, FGeometryCollection& Collection, const TArrayView<const int32>& TransformIndices = TArrayView<const int32>(),
-	bool bOnlyOddMaterials = true, const TArrayView<const int32>& WhichMaterials = TArrayView<const int32>());
+	bool bOnlyInternalSurfaces = true);
 /**
  * Scatter additional vertices (w/ no associated triangle) as needed to satisfy minimum point spacing
  * 
@@ -498,6 +525,7 @@ inline int32 CutWithMesh(
  * @param bCenterPivot				Whether to center the geometry at the origin
  * @param Collection				The collection to be converted
  * @param TransformIndices			Which transform groups inside the collection to convert
+ * @param RemapMaterialIDs			Optional function to remap (MaterialID, bIsInternal) -> NewMaterialID
  */
 void PLANARCUT_API ConvertToMeshDescription(
 	FMeshDescription& OutputMesh,
@@ -505,7 +533,8 @@ void PLANARCUT_API ConvertToMeshDescription(
 	bool bCenterPivot,
 	FGeometryCollection& Collection,
 	const TManagedArray<FTransform>& BoneTransforms,
-	const TArrayView<const int32>& TransformIndices
+	const TArrayView<const int32>& TransformIndices,
+	TFunction<int32(int32, bool)> RemapMaterialIDs = nullptr
 );
 
 

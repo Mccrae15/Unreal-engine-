@@ -126,13 +126,10 @@ FObjectMixerOutlinerHierarchy::~FObjectMixerOutlinerHierarchy()
 	FWorldDelegates::LevelRemovedFromWorld.RemoveAll(this);
 
 
-	if (FActorFolders::IsAvailable())
-	{
-		auto& Folders = FActorFolders::Get();
-		Folders.OnFolderCreated.RemoveAll(this);
-		Folders.OnFolderMoved.RemoveAll(this);
-		Folders.OnFolderDeleted.RemoveAll(this);
-	}
+	auto& Folders = FActorFolders::Get();
+	Folders.OnFolderCreated.RemoveAll(this);
+	Folders.OnFolderMoved.RemoveAll(this);
+	Folders.OnFolderDeleted.RemoveAll(this);
 }
 
 FSceneOutlinerTreeItemPtr FObjectMixerOutlinerHierarchy::FindOrCreateParentItem(
@@ -365,7 +362,7 @@ FSceneOutlinerTreeItemPtr FObjectMixerOutlinerHierarchy::FindOrCreateParentItem(
 						}
 
 						// Find unloaded parent actor node (from the guid)
-						if (const FSceneOutlinerTreeItemPtr* ParentItem = Items.Find(ParentActorGuid))
+						if (const FSceneOutlinerTreeItemPtr* ParentItem = Items.Find(FActorDescTreeItem::ComputeTreeItemID(ParentActorGuid, ActorDescContainer)))
 						{
 							return *ParentItem;
 						}
@@ -676,7 +673,10 @@ void FObjectMixerOutlinerHierarchy::CreateChildren(const FSceneOutlinerTreeItemP
 	else if (const FActorTreeItem* ParentActorItem = Item->CastTo<FActorTreeItem>())
 	{
 		AActor* ParentActor = ParentActorItem->Actor.Get();
-		check(ParentActor->GetWorld() == RepresentingWorld);
+		if (ParentActor->GetWorld() != RepresentingWorld)
+		{
+			return;
+		}
 
 		CreateComponentItems(ParentActor, OutChildren);
 
@@ -809,10 +809,18 @@ void FObjectMixerOutlinerHierarchy::OnLoadedActorAdded(AActor& InActor)
 {
 	OnLevelActorAdded(&InActor);
 
-	FSceneOutlinerHierarchyChangedData EventData;
-	EventData.Type = FSceneOutlinerHierarchyChangedData::Removed;
-	EventData.ItemIDs.Add(InActor.GetActorGuid());
-	HierarchyChangedEvent.Broadcast(EventData);
+	// Loaded actors can be in sub-world partitions so we use the outer world
+	if (UWorldPartition* WorldPartition = FWorldPartitionHelpers::GetWorldPartition(&InActor))
+	{
+		const FGuid& ActorGuid = InActor.GetActorGuid();
+		if (FWorldPartitionActorDesc* ActorDesc = WorldPartition->GetActorDesc(ActorGuid))
+		{
+			FSceneOutlinerHierarchyChangedData EventData;
+			EventData.Type = FSceneOutlinerHierarchyChangedData::Removed;
+			EventData.ItemIDs.Add(FActorDescTreeItem::ComputeTreeItemID(ActorDesc->GetGuid(), ActorDesc->GetContainer()));
+			HierarchyChangedEvent.Broadcast(EventData);
+		}
+	}
 }
 
 void FObjectMixerOutlinerHierarchy::OnLoadedActorRemoved(AActor& InActor)
@@ -826,7 +834,7 @@ void FObjectMixerOutlinerHierarchy::OnActorDescRemoved(FWorldPartitionActorDesc*
 	{
 		FSceneOutlinerHierarchyChangedData EventData;
 		EventData.Type = FSceneOutlinerHierarchyChangedData::Removed;
-		EventData.ItemIDs.Add(ActorDesc->GetGuid());
+		EventData.ItemIDs.Add(FActorDescTreeItem::ComputeTreeItemID(ActorDesc->GetGuid(), ActorDesc->GetContainer()));
 		HierarchyChangedEvent.Broadcast(EventData);
 	}
 }

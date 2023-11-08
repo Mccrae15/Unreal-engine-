@@ -20,6 +20,9 @@ namespace Metasound
 	{
 		using IParameterAssignmentFunction = TUniqueFunction<void(const void*,void*)>;
 
+		// Function signature for assigning a FLiteral to a FAnyDataReference 
+		using FLiteralAssignmentFunction = void(*)(const FOperatorSettings& InOperatorSettings, const FLiteral& InLiteral, const FAnyDataReference& OutDataRef);
+
 		/** FDataTypeRegsitryInfo contains runtime inspectable behavior of a registered
 		 * MetaSound data type.
 		 */
@@ -53,6 +56,9 @@ namespace Metasound
 			// Is a TEnum wrapped enum
 			bool bIsEnum = false;
 
+			// Whether exact types are required
+			bool bIsExplicit = false;
+
 			// Determines whether the type can be used with send/receive transmitters
 			bool bIsTransmittable = false;
 
@@ -71,12 +77,10 @@ namespace Metasound
 			// If provided in registration call, UClass this datatype was registered with.
 			UClass* ProxyGeneratorClass = nullptr;
 
-
-			// Returns if DataType supports array parsing.
-			UE_DEPRECATED(5.1, "Use bIsArrayType or bIsArrayParseable members instead")
-			FORCEINLINE bool IsArrayType() const
+			// Whether the data type can be created from a UObject proxy. 
+			const bool IsDataTypeProxyParsable() const
 			{
-				return bIsArrayType;
+				return bIsProxyParsable || bIsProxyArrayParsable;
 			}
 		};
 
@@ -189,6 +193,9 @@ namespace Metasound
 			/* Get function that should be used when a parameter pack contains a setting this data type. */ 
 			virtual const IParameterAssignmentFunction& GetRawAssignmentFunction() const = 0;
 
+			/* Get a function that can be used to assign a FLiteral to a FAnyDataReference. */
+			virtual FLiteralAssignmentFunction GetLiteralAssignmentFunction() const = 0;
+
 			/** Create a init variable node for this data type. 
 			 *
 			 *  @param InInitParams - Contains a literal used to create the variable.
@@ -237,6 +244,8 @@ namespace Metasound
 			/** Provides all names of registered DataTypes. */
 			virtual void GetRegisteredDataTypeNames(TArray<FName>& OutNames) const = 0;
 
+			virtual const IDataTypeRegistryEntry* FindDataTypeRegistryEntry(const FName& InDataTypeName) const = 0;
+
 			/** Returns DataType info associated with the provided object. */
 			virtual bool GetDataTypeInfo(const UObject* InObject, FDataTypeRegistryInfo& OutInfo) const = 0;
 
@@ -257,6 +266,7 @@ namespace Metasound
 			virtual bool IsLiteralTypeSupported(const FName& InDataType, ELiteralType InLiteralType) const = 0;
 			virtual bool IsLiteralTypeSupported(const FName& InDataType, EMetasoundFrontendLiteralType InLiteralType) const = 0;
 			virtual bool IsUObjectProxyFactory(UObject* InObject) const = 0;
+			virtual bool IsValidUObjectForDataType(const FName& InDataTypeName, const UObject* InUObject) const = 0;
 
 			virtual UClass* GetUClassForDataType(const FName& InDataType) const = 0;
 
@@ -273,6 +283,9 @@ namespace Metasound
 
 			/* Get function that should be used when a parameter pack contains a setting for the specified data type. */ 
 			virtual const IParameterAssignmentFunction& GetRawAssignmentFunction(const FName& InDataType) const = 0;
+
+			/* Get a function that can be used to assign a FLiteral to a FAnyDataReference. */
+			virtual FLiteralAssignmentFunction GetLiteralAssignmentFunction(const FName& InDataType) const = 0;
 
 			/** Return an FMetasoundFrontendClass representing an input node of the data type. */
 			virtual bool GetFrontendInputClass(const FName& InDataType, FMetasoundFrontendClass& OutClass) const = 0;
@@ -313,5 +326,13 @@ namespace Metasound
 			virtual TUniquePtr<INode> CreateVariableAccessorNode(const FName& InDataType, const FNodeInitData& InParams) const = 0;
 			virtual TUniquePtr<INode> CreateVariableDeferredAccessorNode(const FName& InDataType, const FNodeInitData& InParams) const = 0;
 		};
+
+		/** Create data references for all inputs on the FInputVertexInterfaceData 
+		 * using the default literals which live on the FInputDataVertexes.
+		 *
+		 * If the vertex has access type EVertexAccessType::Reference, a writable
+		 * data reference will be set, otherwise a value data reference will be set.
+		 */
+		METASOUNDFRONTEND_API void CreateDefaults(const FOperatorSettings& InOperatorSettings, FInputVertexInterfaceData& OutVertexData);
 	}
 }

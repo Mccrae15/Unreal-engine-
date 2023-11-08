@@ -2,6 +2,9 @@
 
 #include "Elements/Metadata/PCGMetadataMakeTransform.h"
 
+#include "PCGParamData.h"
+#include "Elements/Metadata/PCGMetadataElementCommon.h"
+#include "Metadata/PCGMetadata.h"
 #include "Metadata/PCGMetadataAttributeTpl.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PCGMetadataMakeTransform)
@@ -82,11 +85,11 @@ bool UPCGMetadataMakeTransformSettings::IsSupportedInputType(uint16 TypeId, uint
 	else
 	{
 		bHasSpecialRequirement = false;
-		return PCG::Private::IsOfTypes<FVector2D, FVector, FVector4>(TypeId);
+		return PCG::Private::IsOfTypes<FVector2D, FVector, FVector4, int32, int64, float , double>(TypeId);
 	}
 }
 
-FPCGAttributePropertySelector UPCGMetadataMakeTransformSettings::GetInputSource(uint32 Index) const
+FPCGAttributePropertyInputSelector UPCGMetadataMakeTransformSettings::GetInputSource(uint32 Index) const
 {
 	switch (Index)
 	{
@@ -97,7 +100,7 @@ FPCGAttributePropertySelector UPCGMetadataMakeTransformSettings::GetInputSource(
 	case 2:
 		return InputSource3;
 	default:
-		return FPCGAttributePropertySelector();
+		return FPCGAttributePropertyInputSelector();
 	}
 }
 
@@ -118,6 +121,67 @@ FText UPCGMetadataMakeTransformSettings::GetDefaultNodeTitle() const
 }
 #endif // WITH_EDITOR
 
+bool UPCGMetadataMakeTransformSettings::DoesInputSupportDefaultValue(uint32 Index) const
+{
+	return true;
+}
+
+UPCGParamData* UPCGMetadataMakeTransformSettings::CreateDefaultValueParam(uint32 Index) const
+{
+	switch (Index)
+	{
+	case 0:
+	{
+		// Location -> Default is Zero vector
+		UPCGParamData* NewParamData = NewObject<UPCGParamData>();
+		NewParamData->Metadata->CreateAttribute<FVector>(NAME_None, FVector::ZeroVector, /*bAllowsInterpolation=*/ true, /*bOverrideParent=*/ false);
+		return NewParamData;
+	}
+	case 1:
+	{
+		// Rotation -> Default is Zero rotator
+		UPCGParamData* NewParamData = NewObject<UPCGParamData>();
+		NewParamData->Metadata->CreateAttribute<FRotator>(NAME_None, FRotator::ZeroRotator, /*bAllowsInterpolation=*/ true, /*bOverrideParent=*/ false);
+		return NewParamData;
+	}
+	case 2:
+	{
+		// Scale -> Default is Vector (1, 1, 1)
+		UPCGParamData* NewParamData = NewObject<UPCGParamData>();
+		NewParamData->Metadata->CreateAttribute<FVector>(NAME_None, FVector::OneVector, /*bAllowsInterpolation=*/ true, /*bOverrideParent=*/ false);
+		return NewParamData;
+	}
+	default:
+		return nullptr;
+	}
+}
+
+#if WITH_EDITOR
+FString UPCGMetadataMakeTransformSettings::GetDefaultValueString(uint32 Index) const
+{
+	switch (Index)
+	{
+	case 0:
+	{
+		// Location -> Default is Zero vector
+		return FVector::ZeroVector.ToString();
+	}
+	case 1:
+	{
+		// Rotation -> Default is Zero rotator
+		return FRotator::ZeroRotator.ToString();
+	}
+	case 2:
+	{
+		// Scale -> Default is Vector (1, 1, 1)
+		return FVector::OneVector.ToString();
+	}
+	default:
+		return FString();
+	}
+}
+#endif // WITH_EDITOR
+
 FPCGElementPtr UPCGMetadataMakeTransformSettings::CreateElement() const
 {
 	return MakeShared<FPCGMetadataMakeTransformElement>();
@@ -133,13 +197,17 @@ bool FPCGMetadataMakeTransformElement::DoOperation(FOperationData& OperationData
 	{
 		using AttributeType = decltype(DummyValue);
 
-		if constexpr (!PCG::Private::IsOfTypes<AttributeType, FVector2D, FVector, FVector4>())
+		if constexpr (PCG::Private::IsOfTypes<AttributeType, FVector2D, FVector, FVector4>())
 		{
-			return false;
+			return DoTernaryOp<AttributeType, FQuat, AttributeType>(OperationData, PCGMetadataMakeTransformSettings::MakeTransform<AttributeType>);
+		}
+		else if constexpr (PCG::Private::IsOfTypes<AttributeType, int32, int64, float, double>())
+		{
+			return DoTernaryOp<FVector, FQuat, FVector>(OperationData, PCGMetadataMakeTransformSettings::MakeTransform<FVector>);
 		}
 		else
 		{
-			return DoTernaryOp<AttributeType, FQuat, AttributeType>(OperationData, PCGMetadataMakeTransformSettings::MakeTransform<AttributeType>);
+			return false;
 		}
 	};
 

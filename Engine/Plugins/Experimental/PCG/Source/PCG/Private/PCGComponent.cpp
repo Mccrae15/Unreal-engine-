@@ -8,6 +8,7 @@
 #include "PCGInputOutputSettings.h"
 #include "PCGManagedResource.h"
 #include "PCGParamData.h"
+#include "PCGPin.h"
 #include "PCGSubsystem.h"
 #include "Data/PCGCollisionShapeData.h"
 #include "Data/PCGDifferenceData.h"
@@ -21,6 +22,7 @@
 #include "Data/PCGSplineData.h"
 #include "Data/PCGUnionData.h"
 #include "Data/PCGVolumeData.h"
+#include "Graph/PCGStackContext.h"
 #include "Grid/PCGPartitionActor.h"
 #include "Helpers/PCGActorHelpers.h"
 #include "Helpers/PCGHelpers.h"
@@ -28,6 +30,7 @@
 
 #include "LandscapeComponent.h"
 #include "LandscapeProxy.h"
+#include "Algo/AnyOf.h"
 #include "Algo/Transform.h"
 #include "Components/BillboardComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
@@ -42,6 +45,7 @@
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PCGComponent)
 
 #if WITH_EDITOR
+#include "EditorActorFolders.h"
 #include "ScopedTransaction.h"
 #endif
 
@@ -62,6 +66,18 @@ UPCGComponent::UPCGComponent(const FObjectInitializer& InObjectInitializer)
 	if (!PCGHelpers::IsRuntimeOrPIE() && !GetOwner() && !HasAnyFlags(RF_ClassDefaultObject))
 	{
 		bForceGenerateOnBPAddedToWorld = true;
+	}
+#endif // WITH_EDITOR
+}
+
+UPCGComponent::~UPCGComponent()
+{
+#if WITH_EDITOR
+	// For the special case where a component is part of a reconstruction script (from a BP),
+	// but gets destroyed immediately, we need to force the unregistering. 
+	if (UPCGSubsystem* PCGSubsystem = UPCGSubsystem::GetSubsystemForCurrentWorld())
+	{
+		PCGSubsystem->UnregisterPCGComponent(this, /*bForce=*/true);
 	}
 #endif // WITH_EDITOR
 }
@@ -199,11 +215,12 @@ void UPCGComponent::SetPropertiesFromOriginal(const UPCGComponent* Original)
 #if WITH_EDITOR
 	const bool bHasDirtyInput = InputType != NewInputType;
 
-	TSet<FName> TrackedTags;
-	TSet<FName> OriginalTrackedTags;
-	CachedTrackedTagsToSettings.GetKeys(TrackedTags);
-	Original->CachedTrackedTagsToSettings.GetKeys(OriginalTrackedTags);
-	const bool bHasDirtyTracking = !(TrackedTags.Num() == OriginalTrackedTags.Num() && TrackedTags.Includes(OriginalTrackedTags));
+	TSet<FPCGActorSelectionKey> TrackedKeys;
+	TSet<FPCGActorSelectionKey> OriginalTrackedKeys;
+	CachedTrackedKeysToSettings.GetKeys(TrackedKeys);
+	Original->CachedTrackedKeysToSettings.GetKeys(OriginalTrackedKeys);
+
+	const bool bHasDirtyTracking = !(TrackedKeys.Num() == OriginalTrackedKeys.Num() && TrackedKeys.Includes(OriginalTrackedKeys));
 
 	const bool bIsDirty = bHasDirtyInput || bHasDirtyTracking || bGraphInstanceIsDifferent;
 #endif // WITH_EDITOR
@@ -226,9 +243,7 @@ void UPCGComponent::SetPropertiesFromOriginal(const UPCGComponent* Original)
 #if WITH_EDITOR
 	if (bHasDirtyTracking)
 	{
-		TeardownTrackingCallbacks();
-		SetupTrackingCallbacks();
-		RefreshTrackingData();
+		UpdateTrackingCache();
 	}
 
 	// Note that while we dirty here, we won't trigger a refresh since we don't have the required context
@@ -262,6 +277,11 @@ void UPCGComponent::Generate_Implementation(bool bForce)
 void UPCGComponent::GenerateLocal(bool bForce)
 {
 	GenerateInternal(bForce, EPCGComponentGenerationTrigger::GenerateOnDemand, {});
+}
+
+FPCGTaskId UPCGComponent::GenerateLocalGetTaskId(bool bForce)
+{
+	return GenerateInternal(bForce, EPCGComponentGenerationTrigger::GenerateOnDemand, {});
 }
 
 FPCGTaskId UPCGComponent::GenerateInternal(bool bForce, EPCGComponentGenerationTrigger RequestedGenerationTrigger, const TArray<FPCGTaskId>& Dependencies)
@@ -317,48 +337,6 @@ FPCGTaskId UPCGComponent::CreateGenerateTask(bool bForce, const TArray<FPCGTaskI
 	}
 
 	return GetSubsystem()->ScheduleGraph(this, *AllDependencies);
-}
-
-bool UPCGComponent::GetActorsFromTags(const TMap<FName, bool>& InTagsAndCulling, TSet<TWeakObjectPtr<AActor>>& OutActors)
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(UPCGComponent::GetActorsFromTags::Tracked);
-	UWorld* World = GetWorld();
-
-	if (!World)
-	{
-		return false;
-	}
-
-	const FBox LocalBounds = GetGridBounds();
-
-	TArray<AActor*> PerTagActors;
-
-	OutActors.Reset();
-
-	bool bHasValidTag = false;
-	for (const TPair<FName, bool>& TagAndCulling : InTagsAndCulling)
-	{
-		const FName& Tag = TagAndCulling.Key;
-		const bool bCullAgainstLocalBounds = TagAndCulling.Value;
-
-		if (Tag != NAME_None)
-		{
-			bHasValidTag = true;
-			UGameplayStatics::GetAllActorsWithTag(World, Tag, PerTagActors);
-
-			for (AActor* Actor : PerTagActors)
-			{
-				if (!bCullAgainstLocalBounds || LocalBounds.Intersect(GetGridBounds(Actor)))
-				{
-					OutActors.Emplace(Actor);
-				}
-			}
-
-			PerTagActors.Reset();
-		}
-	}
-
-	return bHasValidTag;
 }
 
 void UPCGComponent::PostProcessGraph(const FBox& InNewBounds, bool bInGenerated, FPCGContext* Context)
@@ -440,6 +418,8 @@ void UPCGComponent::PostProcessGraph(const FBox& InNewBounds, bool bInGenerated,
 		FPropertyChangedEvent GeneratedOutputChangedEvent(GeneratedOutputProperty, EPropertyChangeType::ValueSet);
 		FCoreUObjectDelegates::OnObjectPropertyChanged.Broadcast(this, GeneratedOutputChangedEvent);
 	}
+
+	StopGenerationInProgress();
 #endif
 }
 
@@ -532,7 +512,10 @@ void UPCGComponent::OnProcessGraphAborted(bool bQuiet)
 
 #if WITH_EDITOR
 	CurrentRefreshTask = InvalidPCGTaskId;
-	bDirtyGenerated = false;
+	// Implementation note: while it may seem logical to clear the bDirtyGenerated flag here, 
+	// the component is still considered dirty if we aborted processing, hence it should stay this way.
+
+	StopGenerationInProgress();
 #endif
 }
 
@@ -640,7 +623,69 @@ AActor* UPCGComponent::ClearPCGLink(UClass* TemplateActor)
 		}
 	}
 
+#if WITH_EDITOR
+	// If there is an associated generated folder from this actor, rename it according to the stamp name
+	if (World && NewActor)
+	{
+		FString GeneratedFolderPath;
+		PCGHelpers::GetGeneratedActorsFolderPath(GetOwner(), GeneratedFolderPath);
+		
+		FString GeneratedStampFolder;
+		PCGHelpers::GetGeneratedActorsFolderPath(NewActor, GeneratedStampFolder);
+
+		if (!GeneratedFolderPath.IsEmpty() && !GeneratedStampFolder.IsEmpty())
+		{
+			FFolder GeneratedFolder(FFolder::GetWorldRootFolder(World).GetRootObject(), *GeneratedFolderPath);
+			FFolder StampFolder(FFolder::GetWorldRootFolder(World).GetRootObject(), *GeneratedStampFolder);
+
+			const bool bGeneratedFolderExists = GeneratedFolder.IsValid() && FActorFolders::Get().ContainsFolder(*World, GeneratedFolder);
+			const bool bStampFolderExists = FActorFolders::Get().ContainsFolder(*World, StampFolder);
+
+			// TODO: improve behavior when target stamp folder would exist
+			if (bGeneratedFolderExists && !bStampFolderExists)
+			{
+				FActorFolders::Get().RenameFolderInWorld(*World, GeneratedFolder, StampFolder);
+			}
+		}
+	}
+#endif
+
 	return NewActor;
+}
+
+EPCGHiGenGrid UPCGComponent::GetGenerationGrid() const
+{
+	const uint32 GridSize = GetGenerationGridSize();
+	if (PCGHiGenGrid::IsValidGridSize(GridSize))
+	{
+		return PCGHiGenGrid::GridSizeToGrid(GridSize);
+	}
+	else if (GridSize == PCGHiGenGrid::UnboundedGridSize())
+	{
+		return EPCGHiGenGrid::Unbounded;
+	}
+	else
+	{
+		return PCGHiGenGrid::GridSizeToGrid(GetGraph()->GetDefaultGridSize());
+	}
+}
+
+void UPCGComponent::StoreOutputDataForPin(const FString& InResourceKey, const FPCGDataCollection& InData)
+{
+	FReadScopeLock ScopedWriteLock(PerPinGeneratedOutputLock);
+	PerPinGeneratedOutput.FindOrAdd(InResourceKey) = InData;
+}
+
+const FPCGDataCollection* UPCGComponent::RetrieveOutputDataForPin(const FString& InResourceKey)
+{
+	FReadScopeLock ScopedReadLock(PerPinGeneratedOutputLock);
+	return PerPinGeneratedOutput.Find(InResourceKey);
+}
+
+void UPCGComponent::ClearPerPinGeneratedOutput()
+{
+	FReadScopeLock ScopedWriteLock(PerPinGeneratedOutputLock);
+	PerPinGeneratedOutput.Reset();
 }
 
 bool UPCGComponent::MoveResourcesToNewActor(AActor* InNewActor, bool bCreateChild)
@@ -680,7 +725,7 @@ bool UPCGComponent::MoveResourcesToNewActor(AActor* InNewActor, bool bCreateChil
 		{
 			if (GeneratedResource)
 			{
-				GeneratedResource->MoveResourceToNewActor(NewActor);
+				GeneratedResource->MoveResourceToNewActor(NewActor, Owner);
 				TSet<TSoftObjectPtr<AActor>> Dummy;
 				GeneratedResource->ReleaseIfUnused(Dummy);
 				bHasMovedResources = true;
@@ -727,6 +772,11 @@ void UPCGComponent::CleanupLocalImmediate(bool bRemoveComponents)
 
 			if (!Resource || Resource->Release(bRemoveComponents, ActorsToDelete))
 			{
+				if (Resource)
+				{
+					Resource->Rename(nullptr, nullptr, REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors | REN_NonTransactional);
+				}
+
 				GeneratedResources.RemoveAtSwap(ResourceIndex);
 			}
 		}
@@ -746,7 +796,12 @@ void UPCGComponent::CleanupLocalImmediate(bool bRemoveComponents)
 
 FPCGTaskId UPCGComponent::CreateCleanupTask(bool bRemoveComponents, const TArray<FPCGTaskId>& Dependencies)
 {
-	if ((!bGenerated && !IsGenerating()) || IsPartitioned() || IsCleaningUp())
+	if (GetSubsystem() && GetSubsystem()->IsGraphCacheDebuggingEnabled())
+	{
+		UE_LOG(LogPCG, Log, TEXT("[%s] --- CLEANUP COMPONENT ---"), GetOwner() ? *GetOwner()->GetName() : TEXT("MissingComponent"));
+	}
+
+	if ((!bGenerated && GeneratedResources.IsEmpty() && !IsGenerating()) || IsCleaningUp())
 	{
 		return InvalidPCGTaskId;
 	}
@@ -810,6 +865,11 @@ FPCGTaskId UPCGComponent::CreateCleanupTask(bool bRemoveComponents, const TArray
 
 				if (!Resource || Resource->Release(bRemoveComponents, Context->ActorsToDelete))
 				{
+					if (Resource)
+					{
+						Resource->Rename(nullptr, nullptr, REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors | REN_NonTransactional);
+					}
+
 					ThisComponent->GeneratedResources.RemoveAtSwap(Context->ResourceIndex);
 				}
 
@@ -829,8 +889,65 @@ FPCGTaskId UPCGComponent::CreateCleanupTask(bool bRemoveComponents, const TArray
 			UPCGActorHelpers::DeleteActors(World, Context->ActorsToDelete.Array());
 		}
 
-		if (ThisComponentWeakPtr.Get())
+		if (UPCGComponent* ThisComponent = ThisComponentWeakPtr.Get())
 		{
+#if WITH_EDITOR
+			if (UWorld* ThisWorld = ThisComponent->GetWorld())
+			{
+				// Look for a nested generated results subfolder and remove it if it exists
+				FString FolderPath;
+				PCGHelpers::GetGeneratedActorsFolderPath(ThisComponent->GetOwner(), FolderPath);
+
+				if (!FolderPath.IsEmpty())
+				{
+					FFolder GeneratedFolder(FFolder::GetWorldRootFolder(ThisWorld).GetRootObject(), *FolderPath);
+
+					const bool bFolderExists = GeneratedFolder.IsValid() && FActorFolders::Get().ContainsFolder(*ThisWorld, GeneratedFolder);
+					bool bFoundActors = false;
+
+					if (bFolderExists)
+					{
+						TArray<FName> Paths = { *FolderPath };
+						FActorFolders::ForEachActorInFolders(*ThisWorld, Paths, [&bFoundActors](AActor* InActor)
+						{
+							if (InActor)
+							{
+								bFoundActors = true;
+								return false;
+							}
+							else
+							{
+								return true;
+							}
+						});
+					}
+
+					if (bFolderExists && !bFoundActors)
+					{
+						// Delete all subfolders
+						TArray<FFolder> SubfoldersToDelete;
+						FActorFolders::Get().ForEachFolder(*ThisWorld, [&GeneratedFolder, &SubfoldersToDelete](const FFolder& InFolder)
+						{
+							if (InFolder.IsChildOf(GeneratedFolder))
+							{
+								SubfoldersToDelete.Add(InFolder);
+							}
+
+							return true;
+						});
+
+						for (const FFolder& FolderToDelete : SubfoldersToDelete)
+						{
+							FActorFolders::Get().DeleteFolder(*ThisWorld, FolderToDelete);
+						}
+
+						// Finally, delete folder
+						FActorFolders::Get().DeleteFolder(*ThisWorld, GeneratedFolder);
+					}
+				}
+			}
+#endif
+
 			PCGGeneratedResourcesLogging::LogCreateCleanupTaskFinished(ThisComponentWeakPtr->GeneratedResources);
 		}
 
@@ -851,7 +968,7 @@ void UPCGComponent::CleanupUnusedManagedResources()
 		check(!GeneratedResourcesInaccessible);
 		for (int32 ResourceIndex = GeneratedResources.Num() - 1; ResourceIndex >= 0; --ResourceIndex)
 		{
-			UPCGManagedResource* Resource = GeneratedResources[ResourceIndex];
+			UPCGManagedResource* Resource = GetValid(GeneratedResources[ResourceIndex]);
 
 			PCGGeneratedResourcesLogging::LogCleanupUnusedManagedResourcesResource(Resource);
 
@@ -862,6 +979,11 @@ void UPCGComponent::CleanupUnusedManagedResources()
 
 			if (!Resource || Resource->ReleaseIfUnused(ActorsToDelete))
 			{
+				if (Resource)
+				{
+					Resource->Rename(nullptr, nullptr, REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors | REN_NonTransactional);
+				}
+
 				GeneratedResources.RemoveAtSwap(ResourceIndex);
 			}
 		}
@@ -925,20 +1047,9 @@ void UPCGComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	Super::EndPlay(EndPlayReason);
 }
 
-void UPCGComponent::OnComponentCreated()
-{
-	Super::OnComponentCreated();
-
-#if WITH_EDITOR
-	SetupActorCallbacks();
-#endif
-}
-
-void UPCGComponent::OnComponentDestroyed(bool bDestroyingHierarchy)
+void UPCGComponent::OnUnregister()
 {
 #if WITH_EDITOR
-	// This is inspired by UChildActorComponent::DestroyChildActor()
-	// In the case of level change or exit, the subsystem will be null
 	if (UPCGSubsystem* Subsystem = GetSubsystem())
 	{
 		if (!PCGHelpers::IsRuntimeOrPIE())
@@ -946,6 +1057,22 @@ void UPCGComponent::OnComponentDestroyed(bool bDestroyingHierarchy)
 			Subsystem->CancelGeneration(this);
 			Subsystem->UnregisterPCGComponent(this);
 		}
+	}
+#endif // WITH_EDITOR
+
+	Super::OnUnregister();
+}
+
+void UPCGComponent::OnComponentDestroyed(bool bDestroyingHierarchy)
+{
+#if WITH_EDITOR
+	// BeginDestroy is not called immediately when a component is destroyed. Therefore callbacks are not cleaned
+	// until GC is ran, and can stack up with BP reconstruction scripts. Force the removal of callbacks here. If the component
+	// is dead, we don't want to react to callbacks anyway.
+	if (GraphInstance)
+	{
+		GraphInstance->OnGraphChangedDelegate.RemoveAll(this);
+		GraphInstance->TeardownCallbacks();
 	}
 #endif
 
@@ -1014,17 +1141,7 @@ void UPCGComponent::PostLoad()
 #if WITH_EDITOR
 void UPCGComponent::SetupCallbacksOnCreation()
 {
-	SetupActorCallbacks();
-	SetupTrackingCallbacks();
-
-	if(!TrackedLandscapes.IsEmpty())
-	{
-		SetupLandscapeTracking();
-	}
-	else
-	{
-		UpdateTrackedLandscape(/*bBoundsCheck=*/false);
-	}
+	UpdateTrackingCache();
 
 	if (GraphInstance)
 	{
@@ -1049,13 +1166,6 @@ void UPCGComponent::BeginDestroy()
 	{
 		GraphInstance->OnGraphChangedDelegate.RemoveAll(this);
 	}
-
-	if (!IsEngineExitRequested())
-	{
-		TeardownLandscapeTracking();
-		TeardownTrackingCallbacks();
-		TeardownActorCallbacks();
-	}
 #endif
 
 	Super::BeginDestroy();
@@ -1067,21 +1177,9 @@ void UPCGComponent::PostInitProperties()
 	GraphInstance->OnGraphChangedDelegate.AddUObject(this, &UPCGComponent::OnGraphChanged);
 #endif // WITH_EDITOR
 
-	// Note that if the component is a default sub object, we find the first outer that is not a sub object.
-	UObject* CurrentInspectedObject = this;
-	while (CurrentInspectedObject && CurrentInspectedObject->HasAnyFlags(RF_DefaultSubObject))
-	{
-		CurrentInspectedObject = CurrentInspectedObject->GetOuter();
-	}
-
-	// We detect new object if they are not a default object/archetype and/or they do not need load.
-	// In some cases, were the component is a default sub object (like APCGVolume), it has no loading flags
-	// even if it is loading, so we use the outer found above.
-	const bool bIsNewObject = CurrentInspectedObject && !CurrentInspectedObject->HasAnyFlags(RF_ClassDefaultObject | RF_NeedLoad | RF_NeedPostLoad);
-
 #if WITH_EDITOR
 	// Force bIsPartitioned at false for new objects
-	if (bIsNewObject)
+	if (PCGHelpers::IsNewObjectAndNotDefault(this, /*bCheckHierarchy=*/true))
 	{
 		bIsPartitioned = false;
 	}
@@ -1146,20 +1244,16 @@ void UPCGComponent::RefreshAfterGraphChanged(UPCGGraphInterface* InGraph, bool b
 	// In editor, since we've changed the graph, we might have changed the tracked actor tags as well
 	if (!PCGHelpers::IsRuntimeOrPIE())
 	{
-		TeardownTrackingCallbacks();
-		SetupTrackingCallbacks();
-		RefreshTrackingData();
-		DirtyCacheForAllTrackedTags();
-
-		if (bIsStructural)
+		UpdateTrackingCache();
+		if (UPCGSubsystem* Subsystem = GetSubsystem())
 		{
-			UpdateTrackedLandscape();
+			Subsystem->UpdateComponentTracking(this, /*bInShouldDirtyActors=*/ true);
 		}
 
 		DirtyGenerated(bDirtyInputs ? (EPCGComponentDirtyFlag::Actor | EPCGComponentDirtyFlag::Landscape) : EPCGComponentDirtyFlag::None);
 		if (bHasGraph)
 		{
-			Refresh();
+			Refresh(bIsStructural);
 		}
 		else
 		{
@@ -1184,91 +1278,6 @@ void UPCGComponent::RefreshAfterGraphChanged(UPCGGraphInterface* InGraph, bool b
 }
 
 #if WITH_EDITOR
-/**
-* Temporary workaround, while we are waiting for UE-182059
-* On the UI side of StructUtils, property widgets are referencing a temporary structure, not the one that is owned by the Graph/GraphInstance.
-* After the value is modified and the callback is propagated, the temporary structure is modified, but the one owned by the Graph is not.
-* If we keep it like this, PostEditChangeChainProperty will call for a reconstruction of the component if it is on a Blueprint
-* and we will go through the process of copying and transfering data between the 2 components (old and new).
-* Because of that, we copy the old structure, not modified. And when the structure is actually modified, the callback is called on the old component,
-* already marked trash, and we lose the change.
-* The workaround is to detect when a value from our parameters is changed, and just discard the call to the super method, avoiding a reconstruction script.
-* Note that it should be OK to do so in the current situation, because there is another callback fired just after the copy of the temp 
-* structure to the real one, and on this callback we are calling the super method and go through construction script.
-* We do this workaround for pre and post edit, since we can run into trouble if a pre edit was processed, but post was not.
-*/
-bool UPCGComponent::IsChangingGraphInstanceParameterValue(FEditPropertyChain& InEditPropertyChain) const
-{
-	if (!GraphInstance)
-	{
-		return false;
-	}
-
-	FEditPropertyChain::TDoubleLinkedListNode* PropertyNode = InEditPropertyChain.GetActiveNode();
-
-	if (!PropertyNode)
-	{
-		return false;
-	}
-
-	constexpr int32 PropertyPathSize = 4;
-	static const FName PropertyPath[PropertyPathSize] = {
-		GET_MEMBER_NAME_CHECKED(UPCGComponent, GraphInstance),
-		GET_MEMBER_NAME_CHECKED(UPCGGraphInstance, ParametersOverrides),
-		GET_MEMBER_NAME_CHECKED(FPCGOverrideInstancedPropertyBag, Parameters),
-		FName(TEXT("Value"))
-	};
-
-	int32 Index = 0;
-
-	while (Index < PropertyPathSize && PropertyNode)
-	{
-		FProperty* Property = PropertyNode->GetValue();
-		if (Property && Property->GetFName() == PropertyPath[Index])
-		{
-			PropertyNode = PropertyNode->GetNextNode();
-			++Index;
-		}
-		else
-		{
-			PropertyNode = nullptr;
-		}
-	}
-
-	if (Index == PropertyPathSize && PropertyNode)
-	{
-		FProperty* Property = PropertyNode->GetValue();
-		if (Property && Property->GetOwnerStruct() == GraphInstance->ParametersOverrides.Parameters.GetPropertyBagStruct())
-		{
-			return true;
-		}
-	}
-
-	return false;
-}
-
-void UPCGComponent::PreEditChange(FEditPropertyChain& PropertyAboutToChange)
-{
-	if (IsChangingGraphInstanceParameterValue(PropertyAboutToChange))
-	{
-		// Skip pre edit, cf IsChangingGraphInstanceParameterValue comment
-		return;
-	}
-
-	UObject::PreEditChange(PropertyAboutToChange);
-}
-
-void UPCGComponent::PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent)
-{
-	if (IsChangingGraphInstanceParameterValue(PropertyChangedEvent.PropertyChain))
-	{
-		// Skip post edit, cf IsChangingGraphInstanceParameterValue comment
-		return;
-	}
-
-	Super::PostEditChangeChainProperty(PropertyChangedEvent);
-}
-
 void UPCGComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
@@ -1309,7 +1318,11 @@ void UPCGComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChange
 	}
 	else if (PropName == GET_MEMBER_NAME_CHECKED(UPCGComponent, InputType))
 	{
-		UpdateTrackedLandscape();
+		if (UPCGSubsystem* Subsystem = GetSubsystem())
+		{
+			Subsystem->UpdateComponentTracking(this);
+		}
+
 		DirtyGenerated(EPCGComponentDirtyFlag::Input);
 		Refresh();
 	}
@@ -1344,28 +1357,28 @@ void UPCGComponent::PreEditUndo()
 		CleanupLocalImmediate(/*bRemoveComponents=*/true);
 		// Put back generated flag to its original value so it is captured properly
 		bGenerated = true;
-	}	
-	
-	TeardownTrackingCallbacks();
+	}
 }
 
 void UPCGComponent::PostEditUndo()
 {
 	LastGeneratedBounds = LastGeneratedBoundsPriorToUndo;
 
-	SetupTrackingCallbacks();
-	RefreshTrackingData();
-	UpdateTrackedLandscape();
+	UpdateTrackingCache();
 	DirtyGenerated(EPCGComponentDirtyFlag::All);
-	DirtyCacheForAllTrackedTags();
+
+	if (UPCGSubsystem* Subsystem = GetSubsystem())
+	{
+		Subsystem->UpdateComponentTracking(this, /*bInShouldDirtyActors=*/ true);
+	}
 
 	if (bGenerated)
 	{
-		Refresh();
+		Refresh(/*bIsStructural=*/true);
 	}
 }
 
-void UPCGComponent::SetupActorCallbacks()
+void UPCGComponent::UpdateTrackingCache()
 {
 	// Without an owner, it probably means we are in a BP template, so no need to setup callbacks
 	if (!GetOwner())
@@ -1373,37 +1386,20 @@ void UPCGComponent::SetupActorCallbacks()
 		return;
 	}
 
-	GEngine->OnActorMoved().AddUObject(this, &UPCGComponent::OnActorMoved);
-	FCoreUObjectDelegates::OnObjectPropertyChanged.AddUObject(this, &UPCGComponent::OnObjectPropertyChanged);
-}
+	CachedTrackedKeysToSettings.Reset();
+	CachedTrackedKeysToCulling.Reset();
 
-void UPCGComponent::TeardownActorCallbacks()
-{
-	FCoreUObjectDelegates::OnObjectPropertyChanged.RemoveAll(this);
-	GEngine->OnActorMoved().RemoveAll(this);
-}
-
-void UPCGComponent::SetupTrackingCallbacks()
-{
-	// Without an owner, it probably means we are in a BP template, so no need to setup callbacks
-	if (!GetOwner())
-	{
-		return;
-	}
-
-	CachedTrackedTagsToSettings.Reset();
-	CachedTrackedTagsToCulling.Reset();
 	if (UPCGGraph* PCGGraph = GetGraph())
 	{
-		CachedTrackedTagsToSettings = PCGGraph->GetTrackedTagsToSettings();
+		CachedTrackedKeysToSettings = PCGGraph->GetTrackedActorKeysToSettings();
 
 		// A tag should be culled, if only all the settings that track this tag should cull.
 		// Note that is only impact the fact that we track (or not) this tag.
 		// If a setting is marked as "should cull", it will only be dirtied (at least by default), if the actor with the
 		// given tag intersect with the component.
-		for (const TPair<FName, TSet<FPCGSettingsAndCulling>>& It : CachedTrackedTagsToSettings)
+		for (const TPair<FPCGActorSelectionKey, TArray<FPCGSettingsAndCulling>>& It : CachedTrackedKeysToSettings)
 		{
-			const FName& Tag = It.Key;
+			const FPCGActorSelectionKey& Key = It.Key;
 
 			bool bShouldCull = true;
 			for (const FPCGSettingsAndCulling& SettingsAndCulling : It.Value)
@@ -1415,286 +1411,7 @@ void UPCGComponent::SetupTrackingCallbacks()
 				}
 			}
 
-			CachedTrackedTagsToCulling.Emplace(Tag, bShouldCull);
-		}
-	}
-
-	if(!CachedTrackedTagsToSettings.IsEmpty())
-	{
-		GEngine->OnLevelActorAdded().AddUObject(this, &UPCGComponent::OnActorAdded);
-		GEngine->OnLevelActorDeleted().AddUObject(this, &UPCGComponent::OnActorDeleted);
-	}
-}
-
-void UPCGComponent::RefreshTrackingData()
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(UPCGComponent::RefreshTrackingData);
-
-	// Without an owner, it probably means we are in a BP template, so no need to setup callbacks
-	if (!GetOwner())
-	{
-		return;
-	}
-
-	GetActorsFromTags(CachedTrackedTagsToCulling, CachedTrackedActors);
-	PopulateTrackedActorToTagsMap(/*bForce=*/true);
-}
-
-void UPCGComponent::TeardownTrackingCallbacks()
-{
-	GEngine->OnLevelActorAdded().RemoveAll(this);
-	GEngine->OnLevelActorDeleted().RemoveAll(this);
-}
-
-bool UPCGComponent::ActorIsTracked(AActor* InActor) const
-{
-	if (!InActor || !GetGraph())
-	{
-		return false;
-	}
-
-	bool bIsTracked = false;
-	for (const FName& Tag : InActor->Tags)
-	{
-		if (CachedTrackedTagsToSettings.Contains(Tag))
-		{
-			bIsTracked = true;
-			break;
-		}
-	}
-
-	return bIsTracked;
-}
-
-void UPCGComponent::OnActorAdded(AActor* InActor)
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(UPCGComponent::OnActorAdded);
-	if (!InActor || InActor->bIsEditorPreviewActor)
-	{
-		return;
-	}
-
-	const bool bIsTracked = AddTrackedActor(InActor);
-	if (bIsTracked)
-	{
-		DirtyGenerated(EPCGComponentDirtyFlag::None, /*bDispatchToLocalComponents=*/ false);
-		Refresh();
-	}
-}
-
-void UPCGComponent::OnActorDeleted(AActor* InActor)
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(UPCGComponent::OnActorDeleted);
-	if (!InActor || InActor->bIsEditorPreviewActor)
-	{
-		return;
-	}
-
-	const bool bWasTracked = RemoveTrackedActor(InActor);
-	if (bWasTracked)
-	{
-		DirtyGenerated(EPCGComponentDirtyFlag::None, /*bDispatchToLocalComponents=*/ false);
-		Refresh();
-	}
-}
-
-void UPCGComponent::OnActorMoved(AActor* InActor)
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(UPCGComponent::OnActorMoved);
-	if (!InActor || InActor->bIsEditorPreviewActor)
-	{
-		return;
-	}
-
-	const bool bOwnerMoved = (InActor == GetOwner());
-	const bool bLandscapeMoved = (InActor && TrackedLandscapes.Contains(InActor));
-
-	if (bOwnerMoved || bLandscapeMoved)
-	{
-		// TODO: find better metrics to dirty the inputs. 
-		// TODO: this should dirty only the actor pcg data.
-		{
-			UpdateTrackedLandscape();
-			DirtyGenerated((bOwnerMoved ? EPCGComponentDirtyFlag::Actor : EPCGComponentDirtyFlag::None) | (bLandscapeMoved ? EPCGComponentDirtyFlag::Landscape : EPCGComponentDirtyFlag::None));
-			Refresh();
-		}
-	}
-	else
-	{
-		if (DirtyTrackedActor(InActor))
-		{
-			DirtyGenerated(EPCGComponentDirtyFlag::None, /*bDispatchToLocalComponents=*/false);
-			Refresh();
-		}
-	}
-}
-
-void UPCGComponent::UpdateTrackedLandscape(bool bBoundsCheck)
-{
-	TeardownLandscapeTracking();
-	TrackedLandscapes.Reset();
-
-	// Without an owner, it probably means we are in a BP template, so no need to setup callbacks
-	if (!GetOwner())
-	{
-		return;
-	}
-
-	if (ALandscapeProxy* Landscape = Cast<ALandscapeProxy>(GetOwner()))
-	{
-		TrackedLandscapes.Add(Landscape);
-	}
-	else if (InputType == EPCGComponentInput::Landscape || GraphUsesLandscapePin())
-	{
-		if (UWorld* World = GetOwner() ? GetOwner()->GetWorld() : nullptr)
-		{
-			if (bBoundsCheck)
-			{
-				UPCGData* ActorData = GetActorPCGData();
-				if (const UPCGSpatialData* ActorSpatialData = Cast<const UPCGSpatialData>(ActorData))
-				{
-					Algo::Transform(PCGHelpers::GetLandscapeProxies(World, ActorSpatialData->GetBounds()), TrackedLandscapes, [](TWeakObjectPtr<ALandscapeProxy> Landscape) { return TSoftObjectPtr<ALandscapeProxy>(Landscape.Get()); });
-				}
-			}
-			else
-			{
-				Algo::Transform(PCGHelpers::GetAllLandscapeProxies(World), TrackedLandscapes, [](TWeakObjectPtr<ALandscapeProxy> Landscape) { return TSoftObjectPtr<ALandscapeProxy>(Landscape.Get()); });
-			}
-		}
-	}
-
-	SetupLandscapeTracking();
-}
-
-void UPCGComponent::SetupLandscapeTracking()
-{
-	for (TSoftObjectPtr<ALandscapeProxy> LandscapeProxy : TrackedLandscapes)
-	{
-		if (LandscapeProxy.IsValid())
-		{
-			LandscapeProxy->OnComponentDataChanged.AddUObject(this, &UPCGComponent::OnLandscapeChanged);
-		}
-	}
-}
-
-void UPCGComponent::TeardownLandscapeTracking()
-{
-	for (TSoftObjectPtr<ALandscapeProxy> LandscapeProxy : TrackedLandscapes)
-	{
-		if (LandscapeProxy.IsValid())
-		{
-			LandscapeProxy->OnComponentDataChanged.RemoveAll(this);
-		}
-	}
-}
-
-void UPCGComponent::OnLandscapeChanged(ALandscapeProxy* Landscape, const FLandscapeProxyComponentDataChangedParams& ChangeParams)
-{
-	if(TrackedLandscapes.Contains(Landscape))
-	{
-		// Check if there is an overlap in the changed components vs. the current actor data
-		EPCGComponentDirtyFlag DirtyFlag = EPCGComponentDirtyFlag::None;
-
-		if (GetOwner() == Landscape)
-		{
-			DirtyFlag = EPCGComponentDirtyFlag::Actor;
-		}
-		// Note: this means that graphs that are interacting with the landscape outside their bounds might not be updated properly
-		else if (InputType == EPCGComponentInput::Landscape || GraphUsesLandscapePin())
-		{
-			UPCGData* ActorData = GetActorPCGData();
-			if (const UPCGSpatialData* ActorSpatialData = Cast<const UPCGSpatialData>(ActorData))
-			{
-				const FBox ActorBounds = ActorSpatialData->GetBounds();
-				bool bDirtyLandscape = false;
-
-				ChangeParams.ForEachComponent([&bDirtyLandscape, &ActorBounds](const ULandscapeComponent* LandscapeComponent)
-				{
-					if(LandscapeComponent && ActorBounds.Intersect(LandscapeComponent->Bounds.GetBox()))
-					{
-						bDirtyLandscape = true;
-					}
-				});
-
-				if (bDirtyLandscape)
-				{
-					DirtyFlag = EPCGComponentDirtyFlag::Landscape;
-				}
-			}
-		}
-
-		if (DirtyFlag != EPCGComponentDirtyFlag::None)
-		{
-			DirtyGenerated(DirtyFlag, /*bDispatchToLocalComponents=*/ false);
-			Refresh();
-		}
-	}
-}
-
-void UPCGComponent::OnObjectPropertyChanged(UObject* InObject, FPropertyChangedEvent& InEvent)
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(UPCGComponent::OnObjectPropertyChanged);
-	bool bValueNotInteractive = (InEvent.ChangeType != EPropertyChangeType::Interactive);
-	// Special exception for actor tags, as we can't track otherwise an actor "losing" a tag
-	bool bActorTagChange = (InEvent.Property && InEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(AActor, Tags));
-	if (!bValueNotInteractive && !bActorTagChange)
-	{
-		return;
-	}
-
-	// If the object changed is this PCGComponent, dirty ourselves and exit. It will be picked up by PostEditChangeProperty
-	if (InObject == this)
-	{
-		DirtyGenerated();
-		return;
-	}
-
-	// First, check if it's an actor
-	AActor* Actor = Cast<AActor>(InObject);
-
-	// Otherwise, if it's an actor component, track it as well
-	if (!Actor)
-	{
-		if (UActorComponent* ActorComponent = Cast<UActorComponent>(InObject))
-		{
-			Actor = ActorComponent->GetOwner();
-		}
-	}
-
-	// Finally, if it's neither an actor or an actor component, it might be a dependency of a tracked actor
-	if (!Actor)
-	{
-		for(const TPair<TWeakObjectPtr<AActor>, TSet<TObjectPtr<UObject>>>& TrackedActor : CachedTrackedActorToDependencies)
-		{
-			if (TrackedActor.Value.Contains(InObject))
-			{
-				OnActorChanged(TrackedActor.Key.Get(), InObject, bActorTagChange);
-			}
-		}
-	}
-	else
-	{
-		OnActorChanged(Actor, InObject, bActorTagChange);
-	}
-}
-
-void UPCGComponent::OnActorChanged(AActor* Actor, UObject* InObject, bool bActorTagChange)
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(UPCGComponent::OnActorChanged);
-	if (Actor == GetOwner())
-	{
-		// Something has changed on the owner (including properties of this component)
-		// In the case of splines, this is where we'd get notified if some component properties (incl. spline vertices) have changed
-		// TODO: this should dirty only the actor pcg data.
-		DirtyGenerated(EPCGComponentDirtyFlag::Actor);
-		Refresh();
-	}
-	else if(Actor && !Actor->bIsEditorPreviewActor)
-	{
-		if ((bActorTagChange && Actor == InObject && UpdateTrackedActor(Actor)) || DirtyTrackedActor(Actor))
-		{
-			DirtyGenerated(EPCGComponentDirtyFlag::None, /*bDispatchToLocalComponents=*/ false);
-			Refresh();
+			CachedTrackedKeysToCulling.Emplace(Key, bShouldCull);
 		}
 	}
 }
@@ -1708,17 +1425,15 @@ void UPCGComponent::DirtyGenerated(EPCGComponentDirtyFlag DirtyFlag, const bool 
 
 	bDirtyGenerated = true;
 
+	ClearPerPinGeneratedOutput();
+
 	// Dirty data as a waterfall from basic values
 	if (!!(DirtyFlag & EPCGComponentDirtyFlag::Actor))
 	{
 		CachedActorData = nullptr;
-		
-		if (Cast<ALandscapeProxy>(GetOwner()))
-		{
-			CachedLandscapeData = nullptr;
-			CachedLandscapeHeightData = nullptr;
-		}
-
+		// Since landscape data is related on the bounds of the current actor, when we dirty the actor data, we need to dirty the landscape data as well
+		CachedLandscapeData = nullptr;
+		CachedLandscapeHeightData = nullptr;
 		CachedInputData = nullptr;
 		CachedPCGData = nullptr;
 	}
@@ -1760,33 +1475,81 @@ void UPCGComponent::ResetLastGeneratedBounds()
 {
 	LastGeneratedBounds = FBox(EForceInit::ForceInit);
 }
+
+bool UPCGComponent::IsInspecting() const
+{
+	return InspectionCounter > 0;
+}
+
+void UPCGComponent::EnableInspection()
+{
+	if (!ensure(InspectionCounter >= 0))
+	{
+		InspectionCounter = 0;
+	}
+	
+	InspectionCounter++;
+}
+
 void UPCGComponent::DisableInspection()
 {
-	bIsInspecting = false;
-	InspectionCache.Empty();
+	if (ensure(InspectionCounter > 0))
+	{
+		InspectionCounter--;
+	}
+	
+	if (InspectionCounter == 0)
+	{
+		InspectionCache.Empty();
+	}
 };
 
-void UPCGComponent::StoreInspectionData(const UPCGNode* InNode, const FPCGDataCollection& InInspectionData)
+void UPCGComponent::StoreInspectionData(const FPCGStack* InStack, const UPCGNode* InNode, const FPCGDataCollection& InInputData, const FPCGDataCollection& InOutputData)
 {
-	if (!InNode)
+	if (!IsInspecting() || !InNode || !ensure(InStack))
 	{
 		return;
 	}
 
-	if (GetGraph() != InNode->GetGraph())
+	auto StorePinInspectionData = [InStack, InNode](const TArray<TObjectPtr<UPCGPin>>& InPins, const FPCGDataCollection& InData, TMap<FPCGStack, FPCGDataCollection>& InOutInspectionCache)
 	{
-		return;
-	}
+		for (const UPCGPin* Pin : InPins)
+		{
+			FPCGStack Stack = *InStack;
 
-	InspectionCache.Add(InNode, InInspectionData);
+			// Append the Node and Pin to the current Stack to uniquely identify each DataCollection
+			TArray<FPCGStackFrame>& StackFrames = Stack.GetStackFramesMutable();
+			StackFrames.Reserve(StackFrames.Num() + 2);
+			StackFrames.Emplace(InNode);
+			StackFrames.Emplace(Pin);
+
+			FPCGDataCollection PinDataCollection;
+			PinDataCollection.TaggedData = InData.GetInputsByPin(Pin->Properties.Label);
+			// The data collection for each pin is given the Crc from the data collection. This is to enable inspecting the normal node output Crc
+			// when cache debugging is enabled.
+			PinDataCollection.Crc = InData.Crc;
+
+			if (!PinDataCollection.TaggedData.IsEmpty())
+			{
+				InOutInspectionCache.Add(Stack, PinDataCollection);
+			}
+			else
+			{
+				InOutInspectionCache.Remove(Stack);
+			}
+		}
+	};
+
+	StorePinInspectionData(InNode->GetInputPins(), InInputData, InspectionCache);
+	StorePinInspectionData(InNode->GetOutputPins(), InOutputData, InspectionCache);
 }
 
-const FPCGDataCollection* UPCGComponent::GetInspectionData(const UPCGNode* InNode) const
+const FPCGDataCollection* UPCGComponent::GetInspectionData(const FPCGStack& InStack) const
 {
-	return InspectionCache.Find(InNode);
+	return InspectionCache.Find(InStack);
 }
 
-void UPCGComponent::Refresh()
+void UPCGComponent::Refresh(bool bStructural)
 {
 	// Disable auto-refreshing on preview actors until we have something more robust on the execution side.
 	if (GetOwner() && GetOwner()->bIsEditorPreviewActor)
@@ -1794,14 +1557,66 @@ void UPCGComponent::Refresh()
 		return;
 	}
 
+	// If the component is tagged as not to regenerate in the editor, only exceptional cases should trigger a refresh
+	// namely: the component is deactivated.
+	// Note that the component changing its IsPartitioned state is already covered in the PostEditChangeProperty
+	// Note that even if this is force refresh/structural change, we will NOT refresh
+	if (!bRegenerateInEditor && bActivated)
+	{
+		// We still need to trigger component registration event otherwise further generations will fail if this is moved.
+		// Note that we pass in false here to remove everything when moving a partitioned graph because we would otherwise need to do a reversible stamp to support this
+		if (UPCGSubsystem* Subsystem = GetSubsystem())
+		{
+			Subsystem->RegisterOrUpdatePCGComponent(this, bGenerated);
+		}
+
+		return;
+	}
+
 	// Discard any refresh if have already one scheduled.
 	if (UPCGSubsystem* Subsystem = GetSubsystem())
 	{
-		if (CurrentRefreshTask == InvalidPCGTaskId)
+		// Cancel an already existing generation if either the change is structural in nature (which requires a recompilation, so a full-rescheduling)
+		// or if the generation is already started
+		const bool bGenerationWasInProgress = IsGenerationInProgress();
+		if (CurrentGenerationTask != InvalidPCGTaskId && (bStructural || bGenerationWasInProgress))
 		{
-			CurrentRefreshTask = Subsystem->ScheduleRefresh(this);
+			CancelGeneration();
+		}
+
+		// Calling a new refresh here might not be sufficient; if the current component was generating but was not previously generated,
+		// then the bGenerated flag will be false, which will prevent a subsequent update here
+		if (CurrentRefreshTask == InvalidPCGTaskId && CurrentCleanupTask == InvalidPCGTaskId)
+		{
+			CurrentRefreshTask = Subsystem->ScheduleRefresh(this, bGenerationWasInProgress);
 		}
 	}
+}
+
+void UPCGComponent::StartGenerationInProgress()
+{
+	// Implementation detail:
+	// Since the original component is not guaranteed to run the FetchInput element, local components are "allowed" to mark generation in progress on their original component.
+	// However, the PostProcessGraph on the original component will be guaranteed to be called at the end of the execution so we do not need this mechanism in that case.
+	bGenerationInProgress = true;
+
+	if (IsLocalComponent())
+	{
+		if (UPCGComponent* OriginalComponent = CastChecked<APCGPartitionActor>(GetOwner())->GetOriginalComponent(this))
+		{
+			OriginalComponent->bGenerationInProgress = true;
+		}
+	}
+}
+
+void UPCGComponent::StopGenerationInProgress()
+{
+	bGenerationInProgress = false;
+}
+
+bool UPCGComponent::IsGenerationInProgress()
+{
+	return bGenerationInProgress;
 }
 
 bool UPCGComponent::ShouldGenerateBPPCGAddedToWorld() const
@@ -1818,7 +1633,52 @@ bool UPCGComponent::ShouldGenerateBPPCGAddedToWorld() const
 	}
 }
 
-void UPCGComponent::OnRefresh()
+bool UPCGComponent::IsActorTracked(AActor* InActor, bool& bOutIsCulled) const
+{
+	check(InActor);
+
+	if (!GetOwner())
+	{
+		return false;
+	}
+
+	// We should always track the owner of the component, without culling
+	if (GetOwner() == InActor)
+	{
+		bOutIsCulled = false;
+		return true;
+	}
+
+	// If we track the landscape using legacy methods and it is a landscape, it should be tracked as culled
+	if (InActor->IsA<ALandscapeProxy>() && ShouldTrackLandscape())
+	{
+		bOutIsCulled = true;
+		return true;
+	}
+
+	bool bFound = false;
+
+	for (const TPair<FPCGActorSelectionKey, bool>& It : CachedTrackedKeysToCulling)
+	{
+		if (It.Key.IsMatching(InActor, this))
+		{
+			bOutIsCulled = It.Value;
+			bFound = true;
+
+			// Check for other tags that might not be culled
+			if (bOutIsCulled)
+			{
+				continue;
+			}
+
+			return true;
+		}
+	}
+
+	return bFound;
+}
+
+void UPCGComponent::OnRefresh(bool bForceRefresh)
 {
 	// Mark the refresh task invalid to allow re-triggering refreshes
 	CurrentRefreshTask = InvalidPCGTaskId;
@@ -1826,7 +1686,8 @@ void UPCGComponent::OnRefresh()
 	// Before doing a refresh, update the component to the subsystem if we are partitioned
 	// Only redo the mapping if we are generated
 	UPCGSubsystem* Subsystem = GetSubsystem();
-	bool bWasGenerated = bGenerated;
+	const bool bWasGenerated = bGenerated;
+	const bool bWasGeneratedOrGenerating = bWasGenerated || bForceRefresh;
 
 	if (IsPartitioned())
 	{
@@ -1839,7 +1700,7 @@ void UPCGComponent::OnRefresh()
 
 	if (Subsystem)
 	{
-		Subsystem->RegisterOrUpdatePCGComponent(this, /*bDoActorMapping=*/ bWasGenerated);
+		Subsystem->RegisterOrUpdatePCGComponent(this, /*bDoActorMapping=*/ bWasGeneratedOrGenerating);
 	}
 
 	// Following a change in some properties or in some spatial information related to this component,
@@ -1851,9 +1712,9 @@ void UPCGComponent::OnRefresh()
 	}
 	else
 	{
-		// If we just cleaned up resources, call back generate
-		// Also, for BPs, we ask if we should generate, to support generate on added to world.
-		if ((bWasGenerated || ShouldGenerateBPPCGAddedToWorld()) && (!bGenerated || bRegenerateInEditor))
+		// If we just cleaned up resources, call back generate. Only do this for original component, which will then trigger
+		// generation of local components. Also, for BPs, we ask if we should generate, to support generate on added to world.
+		if ((bWasGeneratedOrGenerating || ShouldGenerateBPPCGAddedToWorld()) && !IsLocalComponent() && (!bGenerated || bRegenerateInEditor))
 		{
 			GenerateLocal(/*bForce=*/false);
 		}
@@ -1954,6 +1815,17 @@ UPCGData* UPCGComponent::GetOriginalActorPCGData()
 	return nullptr;
 }
 
+UPCGComponent* UPCGComponent::GetOriginalComponent()
+{
+	if (!IsLocalComponent())
+	{
+		return this;
+	}
+
+	APCGPartitionActor* PartitionActor = Cast<APCGPartitionActor>(GetOwner());
+	return ensure(PartitionActor) ? PartitionActor->GetOriginalComponent(this) : this;
+}
+
 UPCGData* UPCGComponent::CreateActorPCGData()
 {
 	return CreateActorPCGData(GetOwner(), bParseActorComponents);
@@ -1966,8 +1838,7 @@ UPCGData* UPCGComponent::CreateActorPCGData(AActor* Actor, bool bParseActor)
 
 UPCGData* UPCGComponent::CreateActorPCGData(AActor* Actor, const UPCGComponent* Component, bool bParseActor)
 {
-	auto AcceptAllData = [](EPCGDataType InDataType) { return true; };
-	FPCGDataCollection Collection = CreateActorPCGDataCollection(Actor, Component, AcceptAllData, bParseActor);
+	FPCGDataCollection Collection = CreateActorPCGDataCollection(Actor, Component, EPCGDataType::Any, bParseActor);
 	if (Collection.TaggedData.Num() > 1)
 	{
 		UPCGUnionData* Union = NewObject<UPCGUnionData>();
@@ -1988,7 +1859,7 @@ UPCGData* UPCGComponent::CreateActorPCGData(AActor* Actor, const UPCGComponent* 
 	}
 }
 
-FPCGDataCollection UPCGComponent::CreateActorPCGDataCollection(AActor* Actor, const UPCGComponent* Component, const TFunction<bool(EPCGDataType)>& InDataFilter, bool bParseActor)
+FPCGDataCollection UPCGComponent::CreateActorPCGDataCollection(AActor* Actor, const UPCGComponent* Component, EPCGDataType InDataFilter, bool bParseActor)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UPCGComponent::CreateActorPCGData);
 	FPCGDataCollection Collection;
@@ -2006,22 +1877,44 @@ FPCGDataCollection UPCGComponent::CreateActorPCGDataCollection(AActor* Actor, co
 	// Some actor types we will forego full parsing to build strictly on the actor existence, such as partition actors, volumes and landscape
 	// TODO: add factory for extensibility
 	// TODO: review the !bParseActor cases - it might make sense to have just a point for a partition actor, even if we preintersect it.
-	APCGPartitionActor* PartitionActor = InDataFilter(EPCGDataType::Spatial) ? Cast<APCGPartitionActor>(Actor) : nullptr;
-	ALandscapeProxy* LandscapeActor = InDataFilter(EPCGDataType::Landscape) ? Cast<ALandscapeProxy>(Actor) : nullptr;
-	AVolume* VolumeActor = InDataFilter(EPCGDataType::Volume) ? Cast<AVolume>(Actor) : nullptr;
-	if (PartitionActor)
+	APCGPartitionActor* PartitionActor = (!!(InDataFilter & EPCGDataType::Spatial) || !!(InDataFilter & EPCGDataType::Volume)) ? Cast<APCGPartitionActor>(Actor) : nullptr;
+	ALandscapeProxy* LandscapeActor = !!(InDataFilter & EPCGDataType::Landscape) ? Cast<ALandscapeProxy>(Actor) : nullptr;
+	AVolume* VolumeActor = !!(InDataFilter & EPCGDataType::Volume) ? Cast<AVolume>(Actor) : nullptr;
+	if (!bParseActor && !!(InDataFilter & EPCGDataType::Point))
+	{
+		UPCGPointData* Data = NewObject<UPCGPointData>();
+		Data->InitializeFromActor(Actor);
+
+		FPCGTaggedData& TaggedData = Collection.TaggedData.Emplace_GetRef();
+		TaggedData.Data = Data;
+		TaggedData.Tags = ActorTags;
+	}
+	else if (PartitionActor)
 	{
 		check(!Component || Component->GetOwner() == Actor); // Invalid processing otherwise because of the this usage
 
-		UPCGVolumeData* Data = NewObject<UPCGVolumeData>();
-		Data->Initialize(PartitionActor->GetFixedBounds(), PartitionActor);
+		UPCGVolumeData* VolumeData = NewObject<UPCGVolumeData>();
+		UPCGSpatialData* Result = VolumeData;
+		if (InDataFilter == EPCGDataType::Volume)
+		{
+			VolumeData->Initialize(PCGHelpers::GetGridBounds(Actor, Component));
+		}
+		else
+		{
+			VolumeData->Initialize(PartitionActor->GetFixedBounds());
 
-		UPCGComponent* OriginalComponent = Component ? PartitionActor->GetOriginalComponent(Component) : nullptr;
-		// Important note: we do NOT call the collection version here, as we want to have a union if that's the case
-		const UPCGSpatialData* OriginalComponentSpatialData = OriginalComponent ? Cast<const UPCGSpatialData>(OriginalComponent->GetActorPCGData()) : nullptr;
+			UPCGComponent* OriginalComponent = Component ? PartitionActor->GetOriginalComponent(Component) : nullptr;
+			// Important note: we do NOT call the collection version here, as we want to have a union if that's the case
+			const UPCGSpatialData* OriginalComponentSpatialData = OriginalComponent ? Cast<const UPCGSpatialData>(OriginalComponent->GetActorPCGData()) : nullptr;
+
+			if (OriginalComponentSpatialData)
+			{
+				Result = Result->IntersectWith(OriginalComponentSpatialData);
+			}
+		}
 
 		FPCGTaggedData& TaggedData = Collection.TaggedData.Emplace_GetRef();
-		TaggedData.Data = OriginalComponentSpatialData ? Cast<UPCGData>(Data->IntersectWith(OriginalComponentSpatialData)) : Cast<UPCGData>(Data);
+		TaggedData.Data = Result;
 		// No need to keep partition actor tags, though we might want to push PCG grid GUID at some point
 	}
 	else if (LandscapeActor)
@@ -2031,15 +1924,6 @@ FPCGDataCollection UPCGComponent::CreateActorPCGDataCollection(AActor* Actor, co
 		const bool bUseLandscapeMetadata = (!PCGGraph || PCGGraph->bLandscapeUsesMetadata);
 
 		Data->Initialize({ LandscapeActor }, PCGHelpers::GetGridBounds(Actor, Component), /*bHeightOnly=*/false, bUseLandscapeMetadata);
-
-		FPCGTaggedData& TaggedData = Collection.TaggedData.Emplace_GetRef();
-		TaggedData.Data = Data;
-		TaggedData.Tags = ActorTags;
-	}
-	else if (!bParseActor && InDataFilter(EPCGDataType::Point))
-	{
-		UPCGPointData* Data = NewObject<UPCGPointData>();
-		Data->InitializeFromActor(Actor);
 
 		FPCGTaggedData& TaggedData = Collection.TaggedData.Emplace_GetRef();
 		TaggedData.Data = Data;
@@ -2113,7 +1997,7 @@ FPCGDataCollection UPCGComponent::CreateActorPCGDataCollection(AActor* Actor, co
 		RemovePCGGeneratedEntries(Shapes);
 		RemoveDuplicatesFromPrimitives(Shapes);
 
-		if (InDataFilter(EPCGDataType::Spline))
+		if (!!(InDataFilter & EPCGDataType::Spline))
 		{
 			for (ULandscapeSplinesComponent* SplineComponent : LandscapeSplines)
 			{
@@ -2138,7 +2022,7 @@ FPCGDataCollection UPCGComponent::CreateActorPCGDataCollection(AActor* Actor, co
 			}
 		}
 
-		if (InDataFilter(EPCGDataType::Primitive))
+		if (!!(InDataFilter & EPCGDataType::Primitive))
 		{
 			for (UShapeComponent* ShapeComponent : Shapes)
 			{
@@ -2184,7 +2068,7 @@ FPCGDataCollection UPCGComponent::CreateActorPCGDataCollection(AActor* Actor, co
 	}
 
 	// Finally, if it's not a special actor and there are not parsed components, then return a single point at the actor position
-	if (Collection.TaggedData.IsEmpty() && InDataFilter(EPCGDataType::Point))
+	if (Collection.TaggedData.IsEmpty() && !!(InDataFilter & EPCGDataType::Point))
 	{
 		UPCGPointData* Data = NewObject<UPCGPointData>();
 		Data->InitializeFromActor(Actor);
@@ -2258,8 +2142,6 @@ UPCGData* UPCGComponent::CreateLandscapePCGData(bool bHeightOnly)
 	UPCGLandscapeData* LandscapeData = NewObject<UPCGLandscapeData>();
 	const UPCGGraph* PCGGraph = GetGraph();
 	LandscapeData->Initialize(Landscapes, LandscapeBounds, bHeightOnly, /*bUseMetadata=*/PCGGraph && PCGGraph->bLandscapeUsesMetadata);
-	// Need to override target actor for this one, not the landscape
-	LandscapeData->TargetActor = Actor;
 
 	return LandscapeData;
 }
@@ -2349,281 +2231,73 @@ UPCGSubsystem* UPCGComponent::GetSubsystem() const
 }
 
 #if WITH_EDITOR
-bool UPCGComponent::PopulateTrackedActorToTagsMap(bool bForce)
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(UPCGComponent::PopulateTrackedActorToTagsMap);
-	if (bActorToTagsMapPopulated && !bForce)
-	{
-		return false;
-	}
-
-	CachedTrackedActorToTags.Reset();
-	CachedTrackedActorToDependencies.Reset();
-	for (TWeakObjectPtr<AActor> Actor : CachedTrackedActors)
-	{
-		if (Actor.IsValid())
-		{
-			AddTrackedActor(Actor.Get(), /*bForce=*/true);
-		}
-	}
-
-	bActorToTagsMapPopulated = true;
-	return true;
-}
-
-bool UPCGComponent::AddTrackedActor(AActor* InActor, bool bForce)
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(UPCGComponent::AddTrackedActor);
-	if (!bForce)
-	{
-		PopulateTrackedActorToTagsMap();
-	}
-
-	if (!GetOwner())
-	{
-		// Without an owner, we can't get our bounds, so we won't be able to track.
-		// If we don't have an owner, we are probably in a BP, not instanciated, so no need to track anything.
-		return false;
-	}
-
-	check(InActor);
-	bool bAppliedChange = false;
-
-	bool bIntersectionComputed = false;
-	bool bIntersect = false;
-
-	for (const FName& Tag : InActor->Tags)
-	{
-		const bool* ShouldCullPtr = CachedTrackedTagsToCulling.Find(Tag);
-
-		if (!ShouldCullPtr)
-		{
-			continue;
-		}
-
-		if (*ShouldCullPtr)
-		{
-			if (!bIntersectionComputed)
-			{
-				bIntersect = GetGridBounds().Intersect(GetGridBounds(InActor));
-				bIntersectionComputed = true;
-			}
-
-			if (!bIntersect)
-			{
-				continue;
-			}
-		}
-
-		bAppliedChange = true;
-		CachedTrackedActorToTags.FindOrAdd(InActor).Add(Tag);
-		PCGHelpers::GatherDependencies(InActor, CachedTrackedActorToDependencies.FindOrAdd(InActor), 1);
-
-		if (!bForce)
-		{
-			// Since we arrived here, we already verified culling, so we can ignore it.
-			DirtyCacheFromTag(Tag, InActor, /*bIgnoreCull=*/true);
-		}
-	}
-
-	return bAppliedChange;
-}
-
-bool UPCGComponent::RemoveTrackedActor(AActor* InActor)
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(UPCGComponent::RemoveTrackedActor);
-	PopulateTrackedActorToTagsMap();
-
-	check(InActor);
-	bool bAppliedChange = false;
-
-	if(CachedTrackedActorToTags.Contains(InActor))
-	{
-		for (const FName& Tag : CachedTrackedActorToTags[InActor])
-		{
-			bAppliedChange |= DirtyCacheFromTag(Tag, InActor);
-		}
-
-		CachedTrackedActorToTags.Remove(InActor);
-		CachedTrackedActorToDependencies.Remove(InActor);
-	}
-
-	return bAppliedChange;
-}
-
-bool UPCGComponent::UpdateTrackedActor(AActor* InActor)
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(UPCGComponent::UpdateTrackedActor);
-	check(InActor);
-	// If the tracked data wasn't initialized before, then it is not possible to know if we need to update or not - take no chances
-	bool bAppliedChange = PopulateTrackedActorToTagsMap();
-
-	// Update the contents of the tracked actor vs. its current tags, and dirty accordingly
-	if (CachedTrackedActorToTags.Contains(InActor))
-	{
-		// Any tags that aren't on the actor and were in the cached actor to tags -> remove & dirty
-		TSet<FName> CachedTags = CachedTrackedActorToTags[InActor];
-		for (const FName& CachedTag : CachedTags)
-		{
-			if (!InActor->Tags.Contains(CachedTag))
-			{
-				bAppliedChange |= DirtyCacheFromTag(CachedTag, InActor);
-				CachedTrackedActorToTags[InActor].Remove(CachedTag);
-			}
-		}
-	}
-		
-	// Any tags that are new on the actor and not in the cached actor to tags -> add & dirty
-	for (const FName& Tag : InActor->Tags)
-	{
-		if (!CachedTrackedTagsToSettings.Contains(Tag))
-		{
-			continue;
-		}
-
-		if (!CachedTrackedActorToTags.FindOrAdd(InActor).Find(Tag))
-		{
-			CachedTrackedActorToTags[InActor].Add(Tag);
-			PCGHelpers::GatherDependencies(InActor, CachedTrackedActorToDependencies.FindOrAdd(InActor), 1);
-			bAppliedChange |= DirtyCacheFromTag(Tag, InActor);
-		}
-	}
-
-	// Finally, if the current has no tag anymore, we can remove it from the map
-	if (CachedTrackedActorToTags.Contains(InActor) && CachedTrackedActorToTags[InActor].IsEmpty())
-	{
-		CachedTrackedActorToTags.Remove(InActor);
-		CachedTrackedActorToDependencies.Remove(InActor);
-	}
-
-	return bAppliedChange;
-}
-
-bool UPCGComponent::DirtyTrackedActor(AActor* InActor)
+bool UPCGComponent::DirtyTrackedActor(AActor* InActor, bool bIntersect, const TSet<FName>& InRemovedTags, const UObject* InOriginatingChangeObject)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UPCGComponent::DirtyTrackedActor);
-	PopulateTrackedActorToTagsMap();
 
-	check(InActor);
-	bool bAppliedChange = false;
-
-	bool bIntersectionComputed = false;
-	bool bIntersect = false;
-
-	if (CachedTrackedActorToTags.Contains(InActor))
+	if (!InActor)
 	{
-		TSet<FName> CachedTags = CachedTrackedActorToTags[InActor];
-		for (const FName& CachedTag : CachedTags)
-		{
-			const bool* ShouldCullPtr = CachedTrackedTagsToCulling.Find(CachedTag);
+		return false;
+	}
 
-			if (!ShouldCullPtr)
+	bool bWasDirtied = false;
+
+	for (const auto& It : CachedTrackedKeysToSettings)
+	{
+		const FPCGActorSelectionKey& Key = It.Key;
+
+		const bool bRemovedTagIsTracked = (Key.Selection == EPCGActorSelection::ByTag) && InRemovedTags.Contains(Key.Tag);
+
+		if (It.Key.IsMatching(InActor, this) || bRemovedTagIsTracked)
+		{
+			// Extra care if the change originates from a PCGComponent. Only dirty if we are tracking a PCG component.
+			if (InOriginatingChangeObject && InOriginatingChangeObject->IsA<UPCGComponent>() 
+				&& (!It.Key.OptionalExtraDependency || !It.Key.OptionalExtraDependency->IsChildOf(UPCGComponent::StaticClass())))
 			{
 				continue;
 			}
 
-			if (*ShouldCullPtr)
+			for (const FPCGSettingsAndCulling& SettingsAndCulling : It.Value)
 			{
-				if (!bIntersectionComputed)
+				if (SettingsAndCulling.Value && !bIntersect)
 				{
-					bIntersect = GetGridBounds().Intersect(GetGridBounds(InActor));
-					bIntersectionComputed = true;
-				}
-
-				if (!bIntersect)
-				{
-					// We were tracking the tag, but it is now culled. We'll need to dirty the settings
-					// even if it is culled (that's why we ignore cull here).
-					bAppliedChange |= DirtyCacheFromTag(CachedTag, InActor, /*bIgnoreCull=*/ true);
-					CachedTrackedActorToTags[InActor].Remove(CachedTag);
 					continue;
 				}
-			}
 
-			bAppliedChange |= DirtyCacheFromTag(CachedTag, InActor);
-		}
-	}
-	else if (AddTrackedActor(InActor))
-	{
-		bAppliedChange = true;
-	}
-
-	// Since we might have remove some tags, do some cleaning there
-	if (CachedTrackedActorToTags.Contains(InActor) && CachedTrackedActorToTags[InActor].IsEmpty())
-	{
-		CachedTrackedActorToTags.Remove(InActor);
-		CachedTrackedActorToDependencies.Remove(InActor);
-	}
-
-	return bAppliedChange;
-}
-
-bool UPCGComponent::DirtyCacheFromTag(const FName& InTag, const AActor* InActor, bool bIgnoreCull)
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(UPCGComponent::DirtyCacheFromTag);
-	bool bWasDirtied = false;
-
-	const TSet<FPCGSettingsAndCulling>* SettingsAndCullingPtr = CachedTrackedTagsToSettings.Find(InTag);
-
-	if (SettingsAndCullingPtr)
-	{
-		// Don't compute the bounds if we never cull.
-		bool bIntersectionComputed = false;
-		bool bIntersect = false;
-
-		for (const FPCGSettingsAndCulling& SettingsAndCulling : *SettingsAndCullingPtr)
-		{
-			const TWeakObjectPtr<const UPCGSettings>& Settings = SettingsAndCulling.Key;
-			const bool bShouldCull = SettingsAndCulling.Value && !bIgnoreCull;
-
-			if (Settings.IsValid() && GetSubsystem())
-			{
-				// If we cull and no intersection, continue
-				if (bShouldCull)
+				const TWeakObjectPtr<const UPCGSettings>& Settings = SettingsAndCulling.Key;
+				if (ensure(Settings.IsValid()))
 				{
-					if (!bIntersectionComputed)
-					{
-						bIntersect = GetGridBounds().Intersect(GetGridBounds(InActor));
-						bIntersectionComputed = true;
-					}
-
-					if (!bIntersect)
-					{
-						continue;
-					}
+					GetSubsystem()->CleanFromCache(Settings->GetElement().Get(), Settings.Get());
 				}
 
-				GetSubsystem()->CleanFromCache(Settings->GetElement().Get(), Settings.Get());
 				bWasDirtied = true;
 			}
 		}
 	}
 
+	// Special case for landscape, we should dirty.
+	if (ShouldTrackLandscape() && InActor->IsA<ALandscapeProxy>())
+	{
+		bWasDirtied = true;
+	}
+
 	return bWasDirtied;
 }
 
-void UPCGComponent::DirtyCacheForAllTrackedTags()
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(UPCGComponent::DirtyCacheForAllTrackedTags);
-	for (const auto& TagToSettings : CachedTrackedTagsToSettings)
-	{
-		for (const FPCGSettingsAndCulling& SettingsAndCulling : TagToSettings.Value)
-		{
-			const TWeakObjectPtr<const UPCGSettings>& Settings = SettingsAndCulling.Key;
-			if (Settings.IsValid() && GetSubsystem())
-			{
-				GetSubsystem()->CleanFromCache(Settings->GetElement().Get(), Settings.Get());
-			}
-		}
-	}
-}
-
-bool UPCGComponent::GraphUsesLandscapePin() const
+bool UPCGComponent::ShouldTrackLandscape() const
 {
 	const UPCGGraph* PCGGraph = GetGraph();
-	return PCGGraph &&
+	
+	// We should track the landscape if the landscape pins are connected, or if the input type is Landscape and we are using the Input pin.
+	const bool bUseLandscapePin = PCGGraph &&
 		(PCGGraph->GetInputNode()->IsOutputPinConnected(PCGInputOutputConstants::DefaultLandscapeLabel) ||
 		PCGGraph->GetInputNode()->IsOutputPinConnected(PCGInputOutputConstants::DefaultLandscapeHeightLabel));
+
+
+	const bool bHasLandscapeHasInput = PCGGraph && InputType == EPCGComponentInput::Landscape 
+		&& Algo::AnyOf(PCGGraph->GetInputNode()->GetOutputPins(), [](const UPCGPin* InPin) { return InPin && InPin->IsConnected(); });
+
+	return bUseLandscapePin || bHasLandscapeHasInput;
 }
 
 #endif // WITH_EDITOR
@@ -2719,7 +2393,12 @@ void FPCGComponentInstanceData::ApplyToComponent(UActorComponent* Component, con
 
 #if WITH_EDITOR
 		// Reconnect callbacks
-		PCGComponent->GraphInstance->FixCallbacks();
+		if (PCGComponent->GraphInstance)
+		{
+			PCGComponent->GraphInstance->SetupCallbacks();
+			PCGComponent->GraphInstance->OnGraphChangedDelegate.RemoveAll(PCGComponent);
+			PCGComponent->GraphInstance->OnGraphChangedDelegate.AddUObject(PCGComponent, &UPCGComponent::OnGraphChanged);
+		}
 #endif // WITH_EDITOR
 
 		bool bDoActorMapping = PCGComponent->bGenerated || PCGHelpers::IsRuntimeOrPIE();

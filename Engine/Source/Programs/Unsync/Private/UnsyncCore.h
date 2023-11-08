@@ -20,6 +20,8 @@ extern bool GDryRun;
 
 class FProxy;
 class FProxyPool;
+class FBlockCache;
+class FScavengeDatabase;
 struct FRemoteDesc;
 struct FIOReader;
 struct FIOWriter;
@@ -58,6 +60,11 @@ struct FCopyCommand
 	uint64 Size			= 0;
 	uint64 SourceOffset = 0;
 	uint64 TargetOffset = 0;
+
+	struct FCompareBySourceOffset
+	{
+		bool operator()(const FCopyCommand& A, const FCopyCommand& B) const { return A.SourceOffset < B.SourceOffset; }
+	};
 };
 
 struct FNeedBlock : FCopyCommand
@@ -173,6 +180,7 @@ struct FDirectoryManifest
 struct FDirectoryManifestInfo
 {
 	uint64	 TotalSize		= 0;
+	uint64	 UniqueSize		= 0;
 	uint64	 NumBlocks		= 0;
 	uint64	 NumMacroBlocks = 0;
 	uint64	 NumFiles		= 0;
@@ -243,26 +251,33 @@ FNeedList DiffManifestBlocks(const FGenericBlockArray& SourceBlocks, const FGene
 
 std::vector<FCopyCommand> OptimizeNeedList(const std::vector<FNeedBlock>& Input, uint64 MaxMergedBlockSize = 8_MB);
 
-void BuildTarget(FIOWriter&				Result,
+struct FBuildTargetResult
+{
+	bool   bSuccess	   = false;
+	uint64 SourceBytes = 0;
+	uint64 BaseBytes   = 0;
+};
+
+FBuildTargetResult BuildTarget(FIOWriter&			  Result,
 				 FIOReader&				Source,
 				 FIOReader&				Base,
 				 const FNeedList&		NeedList,
 				 EStrongHashAlgorithmID StrongHasher,
-				 FProxyPool*			ProxyPool = nullptr);
+				 FProxyPool*			ProxyPool = nullptr,
+				 FBlockCache*			BlockCache = nullptr,
+				 FScavengeDatabase*		ScavengeDatabase = nullptr);
 
 FBuffer BuildTargetBuffer(FIOReader&			 SourceProvider,
 						  FIOReader&			 BaseProvider,
 						  const FNeedList&		 NeedList,
-						  EStrongHashAlgorithmID StrongHasher,
-						  FProxyPool*			 ProxyPool = nullptr);
+						  EStrongHashAlgorithmID StrongHasher);
 
 FBuffer BuildTargetBuffer(const uint8*			 SourceData,
 						  uint64				 SourceSize,
 						  const uint8*			 BaseData,
 						  uint64				 BaseSize,
 						  const FNeedList&		 NeedList,
-						  EStrongHashAlgorithmID StrongHasher,
-						  FProxyPool*			 ProxyPool = nullptr);
+						  EStrongHashAlgorithmID StrongHasher);
 
 FBuffer BuildTargetWithPatch(const uint8* PatchData, uint64 PatchSize, const uint8* BaseData, uint64 BaseSize);
 
@@ -289,6 +304,24 @@ enum class EFileSyncStatus
 
 const wchar_t* ToString(EFileSyncStatus Status);
 
+struct FFileSyncTask
+{
+	const FFileManifest* SourceManifest = nullptr;
+	const FFileManifest* BaseManifest	= nullptr;
+	FPath				 OriginalSourceFilePath;
+	FPath				 ResolvedSourceFilePath;
+	FPath				 BaseFilePath;
+	FPath				 TargetFilePath;
+	FPath				 RelativeFilePath;
+	FNeedList			 NeedList;
+
+	uint64 NeedBytesFromSource = 0;
+	uint64 NeedBytesFromBase   = 0;
+	uint64 TotalSizeBytes	   = 0;
+
+	bool IsBaseValid() const { return !BaseFilePath.empty(); }
+};
+
 struct FFileSyncResult
 {
 	EFileSyncStatus Status			= EFileSyncStatus::ErrorUnknown;
@@ -306,6 +339,8 @@ struct FSyncFileOptions
 	uint32			  BlockSize = uint32(64_KB);
 
 	FProxyPool* ProxyPool = nullptr;
+	FBlockCache* BlockCache = nullptr;
+	FScavengeDatabase* ScavengeDatabase = nullptr;
 
 	bool bValidateTargetFiles = true;  // WARNING: turning this off is intended only for testing/profiling
 };
@@ -358,6 +393,8 @@ struct FSyncDirectoryOptions
 	FPath			   Source;	  // remote data location
 	FPath			   Target;	  // output target location
 	FPath			   Base;	  // base data location, which typically is the same as sync target
+	FPath			   ScavengeRoot; // base directory where we may want to find reusable blocks
+	uint32			   ScavengeDepth = 5; // how deep to look for unsync manifests
 	std::vector<FPath> Overlays;  // extra source directories to overlay over primary (add extra files, replace existing files)
 	FPath			   SourceManifestOverride;	// force the manifest to be read from a specified file instead of source directory
 	FSyncFilter*	   SyncFilter = nullptr;	// filter callback for partial sync support
@@ -390,6 +427,13 @@ FHash160 ComputeSerializedManifestHash160(const FDirectoryManifest& Manifest);
 FBlock128			   ToBlock128(const FGenericBlock& GenericBlock);
 std::vector<FBlock128> ToBlock128(FGenericBlockArray& GenericBlocks);
 
-int32 CmdInfo(const FPath& InputA, const FPath& InputB, bool bListFiles);
+struct FCmdInfoOptions
+{
+	FPath InputA;
+	FPath InputB;
+	bool bListFiles = false;
+	const FSyncFilter* SyncFilter = nullptr;
+};
+int32 CmdInfo(const FCmdInfoOptions& Options);
 
 }  // namespace unsync

@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Algo/AllOf.h"
+#include "Async/ParallelFor.h"
+#include "Compression/OodleDataCompression.h"
 #include "Memory/SharedBuffer.h"
 #include "Serialization/BulkDataRegistry.h"
 #include "Serialization/EditorBulkData.h"
@@ -10,6 +12,7 @@
 #include "Serialization/LargeMemoryWriter.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
+#include "Tasks/Task.h"
 #include "Templates/UniquePtr.h"
 
 #include "Misc/AutomationTest.h"
@@ -41,6 +44,46 @@ TUniquePtr<uint8[]> CreateRandomData(int64 BufferSize)
 	}
 
 	return Buffer;
+}
+
+/** Creates a FSharedBuffer full of random data to make it easy to have something to test against. */
+FSharedBuffer CreateRandomPayload(int64 BufferSize)
+{
+	TUniquePtr<uint8[]> Data = CreateRandomData(BufferSize);
+
+	return FSharedBuffer::TakeOwnership(Data.Release(), BufferSize, [](void* Ptr, uint64) { delete[](uint8*)Ptr; });
+}
+
+/** Creates a FSharedBuffer with semi random data. */
+FSharedBuffer CreatePayload(int64 BufferSize, int64 Stride)
+{
+	TUniquePtr<uint8[]> Data = CreateRandomData(BufferSize);
+
+	uint8 Value = (uint8)(FMath::Rand() % 255);
+	int64 SpanCount = 0;
+
+	for (int64 Index = 0; Index < BufferSize; ++Index)
+	{
+		Data[Index] = Value;
+
+		if (++SpanCount >= Stride)
+		{
+			Value = (uint8)(FMath::Rand() % 255);
+			SpanCount = 0;
+		}
+	}
+
+	return FSharedBuffer::TakeOwnership(Data.Release(), BufferSize, [](void* Ptr, uint64) { delete[](uint8*)Ptr; });
+}
+
+bool CompareSharedBufferContents(const FSharedBuffer& LHS, const FSharedBuffer& RHS)
+{
+	if (LHS.GetSize() != RHS.GetSize())
+	{
+		return false;
+	}
+
+	return FMemory::Memcmp(LHS.GetData(), RHS.GetData(), LHS.GetSize()) == 0;
 }
 
 /**
@@ -127,10 +170,10 @@ bool FEditorBulkDataTestEmpty::RunTest(const FString& Parameters)
 }
 
 /**
- * Test the various methods for updating the payload that a FEditorBulkData owns
+ * Test the various methods for updating the payload that a FEditorBulkData owns via FSharedBuffer
  */
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEditorBulkDataTestUpdatePayload, TEXT("System.CoreUObject.Serialization.EditorBulkData.UpdatePayload"), TestFlags)
-bool FEditorBulkDataTestUpdatePayload::RunTest(const FString& Parameters)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEditorBulkDataTestUpdatePayloadSharedBuffer, TEXT("System.CoreUObject.Serialization.EditorBulkData.UpdatePayloadSharedBuffer"), TestFlags)
+bool FEditorBulkDataTestUpdatePayloadSharedBuffer::RunTest(const FString& Parameters)
 {
 	// Create a memory buffer of all zeros
 	const int64 BufferSize = 1024;
@@ -195,6 +238,51 @@ bool FEditorBulkDataTestUpdatePayload::RunTest(const FString& Parameters)
 			});
 
 		TestTrue(TEXT("All payload elements correctly updated"), bAllElementsCorrect);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEditorBulkDataTestUpdatePayloadCompressedBuffer, TEXT("System.CoreUObject.Serialization.EditorBulkData.UpdatePayloadCompressedBuffer"), TestFlags)
+bool FEditorBulkDataTestUpdatePayloadCompressedBuffer::RunTest(const FString& Parameters)
+{
+	// Create a memory buffer
+	const int64 BufferSize = 1024;
+	const int64 BufferStride = 32;
+
+//	FSharedBuffer InitialPayload = CreateRandomPayload(BufferSize);
+	FSharedBuffer InitialPayload = CreatePayload(BufferSize, BufferStride);
+	
+	{
+		FCompressedBuffer UncompressedPayload = FCompressedBuffer::Compress(InitialPayload, ECompressedBufferCompressor::NotSet, ECompressedBufferCompressionLevel::None);
+
+		FEditorBulkData BulkData;
+		BulkData.UpdatePayload(UncompressedPayload, nullptr);
+
+		FSharedBuffer BulkDataPayload = BulkData.GetPayload().Get();
+
+		TestEqual(TEXT("Hash of the payload in FCompressedBuffer and FEditorBulkData"), UncompressedPayload.GetRawHash(), BulkData.GetPayloadId());
+		TestTrue(TEXT("The bulkdata payload has the same data as the original payload"), CompareSharedBufferContents(BulkDataPayload, BulkDataPayload));
+
+		// Since the data was never compressed there is no reason that the data needed to be copied at any point
+		// so the returned payload should be a reference to the original FSharedBuffer
+		TestEqual(TEXT("The bulkdata and the original payload should have the same memory addresses"), BulkDataPayload.GetData(), InitialPayload.GetData());
+	}
+
+	{
+		FCompressedBuffer CompressedPayload = FCompressedBuffer::Compress(InitialPayload, ECompressedBufferCompressor::Kraken, ECompressedBufferCompressionLevel::Fast);
+
+		FEditorBulkData BulkData;
+		BulkData.UpdatePayload(CompressedPayload, nullptr);
+
+		FSharedBuffer BulkDataPayload = BulkData.GetPayload().Get();
+
+		TestEqual(TEXT("Hash of the payload in FCompressedBuffer and FEditorBulkData"), CompressedPayload.GetRawHash(), BulkData.GetPayloadId());
+		TestTrue(TEXT("The bulkdata payload has the same data as the original payload"), CompareSharedBufferContents(BulkDataPayload, BulkDataPayload));
+
+		// Since the data was compressed we will not have a reference to the original FSharedBuffer and should
+		// expect different memory addresses.
+		TestNotEqual(TEXT("The bulkdata and the original payload should have different memory addresses"), BulkDataPayload.GetData(), InitialPayload.GetData());
 	}
 
 	return true;
@@ -672,6 +760,110 @@ bool FEditorBulkDataSharedBufferWithID::RunTest(const FString& Parameters)
 	return true;
 }
 
+/** Test a number of threads all updating a FEditorBulkData object at the same time */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEditorBulkDataThreadingBasic, TEXT("System.CoreUObject.Serialization.EditorBulkData.Threading.Basic"), TestFlags)
+bool FEditorBulkDataThreadingBasic::RunTest(const FString& Parameters)
+{
+	// Before thread safety was added the following number of tests/payload tended to result in broken data.
+	// Although trying to induce threading issues is not an exact science.
+	const int32 NumTests = 128;
+	const int32 NumPayloadsToTest = 16;
+
+	for (int32 TestIndex = 0; TestIndex < NumTests; ++TestIndex)
+	{
+		// Create a number of randomly sized payloads
+		TArray<FSharedBuffer> Payloads;
+		Payloads.Reserve(NumPayloadsToTest);
+
+		for (int32 Index = 0; Index < NumPayloadsToTest; ++Index)
+		{
+			const int64 BufferSize = FMath::RandRange(512, 12 * 1024);
+			Payloads.Add(CreateRandomPayload(BufferSize));
+		}
+
+		FEditorBulkData BulkData;
+
+		ParallelFor(NumPayloadsToTest, [&Payloads, &BulkData](int32 Index)
+			{
+				BulkData.UpdatePayload(Payloads[Index]);
+			});
+
+		const FIoHash FinalId = BulkData.GetPayloadId();
+		const uint64 FinalSize = BulkData.GetPayloadSize();
+
+		const FSharedBuffer FinalPayload = BulkData.GetPayload().Get();
+
+		// Make sure that the size of the payload matches the value stored in the object
+		if (!TestEqual(TEXT("Testing the payload size vs the FEditorBulkData size"), FinalPayload.GetSize(), FinalSize))
+		{
+			return false;
+		}
+
+		// Make sure that the hash of the payload matches the value stored in the object
+		if (!TestEqual(TEXT("Testing payload hash vs the FEditorBulkData hash"), FIoHash::HashBuffer(FinalPayload), FinalId))
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEditorBulkDataThreadingAssignment, TEXT("System.CoreUObject.Serialization.EditorBulkData.Threading.Assignment"), TestFlags)
+bool FEditorBulkDataThreadingAssignment::RunTest(const FString& Parameters)
+{
+	const int32 NumThreads = 8;
+	const int32 NumBulkDataToTest = 128;
+	const int32 NumAssignments = 16 * 1024;
+
+	// Create a FEditorBulkData of randomly sized payloads
+	TArray<FEditorBulkData> BulkDatas;
+	BulkDatas.SetNum(NumBulkDataToTest);
+
+	for (int32 Index = 0; Index < NumBulkDataToTest; ++Index)
+	{
+		const int32 PayloadSize = FMath::RandRange(512, 1024);
+		BulkDatas[Index].UpdatePayload(CreateRandomPayload(PayloadSize));
+	}
+
+	TArray<UE::Tasks::FTask> CompletionEvents;
+	CompletionEvents.Reserve(NumThreads);
+
+	for (int Index = 0; Index < NumThreads; ++Index)
+	{
+		UE::Tasks::FTask Task = UE::Tasks::Launch(UE_SOURCE_LOCATION, [&BulkDatas, NumAssignments]()
+			{
+				for (int32 Index = 0; Index < NumAssignments; ++Index)
+				{
+					const int32 DstIndex = FMath::RandRange(0, BulkDatas.Num() - 1);
+					const int32 SrcIndex = FMath::RandRange(0, BulkDatas.Num() - 1);
+
+					BulkDatas[DstIndex] = BulkDatas[SrcIndex];
+				}
+			});
+
+		CompletionEvents.Emplace(MoveTemp(Task));
+	}
+
+	UE::Tasks::Wait(CompletionEvents);
+
+	for (const FEditorBulkData& BulkData : BulkDatas)
+	{
+		FSharedBuffer Payload = BulkData.GetPayload().Get();
+
+		if (!TestEqual(TEXT("PayloadSize"), BulkData.GetPayloadSize(), (int64)Payload.GetSize()))
+		{
+			return false;
+		}
+
+		if (!TestEqual(TEXT("PayloadId"), BulkData.GetPayloadId(), FIoHash::HashBuffer(Payload)))
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
 
 } // namespace UE::Serialization
 

@@ -115,7 +115,10 @@ bool FSkyPassMeshProcessor::Process(
 
 		if (!MobileBasePass::GetShaders(
 			LMP_NO_LIGHTMAP,
-			0,
+			EMobileLocalLightSetting::LOCAL_LIGHTS_DISABLED,
+			// BEGIN META SECTION - XR Soft Occlusions
+			false,
+			// END META SECTION - XR Soft Occlusions
 			MaterialResource,
 			VertexFactory->GetType(),
 			false,

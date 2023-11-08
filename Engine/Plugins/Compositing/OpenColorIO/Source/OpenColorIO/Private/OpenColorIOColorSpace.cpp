@@ -3,6 +3,8 @@
 #include "OpenColorIOColorSpace.h"
 
 #include "OpenColorIOConfiguration.h"
+#include "OpenColorIOSettings.h"
+#include "UObject/UE5ReleaseStreamObjectVersion.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(OpenColorIOColorSpace)
 
@@ -28,7 +30,7 @@ FString FOpenColorIOColorSpace::ToString() const
 	{
 		return ColorSpaceName;
 	}
-	return TEXT("<Invalid>");
+	return {};
 }
 
 bool FOpenColorIOColorSpace::IsValid() const
@@ -88,7 +90,7 @@ FString FOpenColorIODisplayView::ToString() const
 		return Display + TEXT(" - ") + View;
 	}
 
-	return TEXT("<Invalid>");
+	return {};
 }
 
 bool FOpenColorIODisplayView::IsValid() const
@@ -108,13 +110,31 @@ void FOpenColorIODisplayView::Reset()
 
 FOpenColorIOColorConversionSettings::FOpenColorIOColorConversionSettings()
 	: ConfigurationSource(nullptr)
+	, SourceColorSpace()
+	, DestinationColorSpace()
+	, DestinationDisplayView()
+	, DisplayViewDirection(EOpenColorIOViewTransformDirection::Forward)
 {
 
 }
 
+void FOpenColorIOColorConversionSettings::PostSerialize(const FArchive& Ar)
+{
+#if WITH_EDITORONLY_DATA
+	if (Ar.IsLoading())
+	{
+		if (!GetDefault<UOpenColorIOSettings>()->bSupportInverseViewTransforms)
+		{
+			// Enforce forward direction only
+			DisplayViewDirection = EOpenColorIOViewTransformDirection::Forward;
+		}
+	}
+#endif
+}
+
 FString FOpenColorIOColorConversionSettings::ToString() const
 {
-	if (ConfigurationSource)
+	if (::IsValid(ConfigurationSource))
 	{
 		if (IsDisplayView())
 		{
@@ -139,22 +159,13 @@ FString FOpenColorIOColorConversionSettings::ToString() const
 
 bool FOpenColorIOColorConversionSettings::IsValid() const
 {
-	if (ConfigurationSource)
+	if (::IsValid(ConfigurationSource))
 	{
 		if (IsDisplayView())
 		{
 			if (SourceColorSpace.IsValid() && DestinationDisplayView.IsValid())
 			{
-				switch (DisplayViewDirection)
-				{
-				case EOpenColorIOViewTransformDirection::Forward:
-					return ConfigurationSource->HasTransform(SourceColorSpace.ColorSpaceName, DestinationDisplayView.Display, DestinationDisplayView.View, EOpenColorIOViewTransformDirection::Forward);
-				case EOpenColorIOViewTransformDirection::Inverse:
-					return ConfigurationSource->HasTransform(SourceColorSpace.ColorSpaceName, DestinationDisplayView.Display, DestinationDisplayView.View, EOpenColorIOViewTransformDirection::Inverse);
-				default:
-					checkNoEntry();
-					return false;
-				}
+				return ConfigurationSource->HasTransform(SourceColorSpace.ColorSpaceName, DestinationDisplayView.Display, DestinationDisplayView.View, DisplayViewDirection);
 			}
 		}
 		else
@@ -169,9 +180,46 @@ bool FOpenColorIOColorConversionSettings::IsValid() const
 	return false;
 }
 
+FString FOpenColorIOColorConversionSettings::GetSourceString() const
+{
+	if (SourceColorSpace.IsValid())
+	{
+		return SourceColorSpace.ToString();
+	}
+
+	return {};
+}
+
+FString FOpenColorIOColorConversionSettings::GetDestinationString() const
+{
+	if (IsDisplayView() && DestinationDisplayView.IsValid())
+	{
+		return DestinationDisplayView.ToString();
+	}
+	else if (DestinationColorSpace.IsValid())
+	{
+		return DestinationColorSpace.ToString();
+	}
+
+	return {};
+}
+
+void FOpenColorIOColorConversionSettings::Reset(bool bResetConfigurationSource)
+{
+	if (bResetConfigurationSource)
+	{
+		ConfigurationSource = nullptr;
+	}
+	
+	SourceColorSpace.Reset();
+	DestinationColorSpace.Reset();
+	DestinationDisplayView.Reset();
+	DisplayViewDirection = EOpenColorIOViewTransformDirection::Forward;
+}
+
 void FOpenColorIOColorConversionSettings::ValidateColorSpaces()
 {
-	if (ConfigurationSource)
+	if (::IsValid(ConfigurationSource))
 	{
 		if (!ConfigurationSource->HasDesiredColorSpace(SourceColorSpace))
 		{
@@ -188,13 +236,34 @@ void FOpenColorIOColorConversionSettings::ValidateColorSpaces()
 	}
 	else
 	{
-		SourceColorSpace.Reset();
-		DestinationColorSpace.Reset();
-		DestinationDisplayView.Reset();
+		Reset();
 	}
 }
 
 bool FOpenColorIOColorConversionSettings::IsDisplayView() const
 {
 	return DestinationDisplayView.IsValid();
+}
+
+bool FOpenColorIODisplayConfiguration::Serialize(FArchive& Ar)
+{
+	Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
+	
+	// Don't actually serialize, just write the custom version for PostSerialize
+	return false;
+}
+
+void FOpenColorIODisplayConfiguration::PostSerialize(const FArchive& Ar)
+{
+	if (Ar.IsLoading())
+	{
+		if (Ar.CustomVer(FUE5ReleaseStreamObjectVersion::GUID) < FUE5ReleaseStreamObjectVersion::OpenColorIODisabledDisplayConfigurationDefault)
+		{
+			// Retain previous behavior: enabled only when the settings were valid
+			if (ColorConfiguration.IsValid())
+			{
+				bIsEnabled = true;
+			}
+		}
+	}
 }

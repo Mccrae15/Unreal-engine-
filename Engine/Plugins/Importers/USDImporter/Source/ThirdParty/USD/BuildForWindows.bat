@@ -1,25 +1,22 @@
 @echo off
 setlocal
 
-set USD_VERSION=22.08
+set USD_VERSION=23.02
 
 rem This path may be adjusted to point to wherever the USD source is located.
 rem It is typically obtained by either downloading a zip/tarball of the source
 rem code, or more commonly by cloning the GitHub repository, e.g. for the
 rem current engine USD version:
-rem     git clone --branch v22.08 https://github.com/PixarAnimationStudios/USD.git USD_src
-rem Note that a small patch to the USD CMake build is currently necessary for
-rem the usdAbc plugin to require and link against Imath instead of OpenEXR:
-rem     git apply USD_v2208_usdAbc_Imath.patch
-rem We also apply a patch for the usdMtlx plugin to ensure that we do not
+rem     git clone --branch v23.02 https://github.com/PixarAnimationStudios/USD.git USD_src
+rem We apply a patch for the usdMtlx plugin to ensure that we do not
 rem bake a hard-coded path to the MaterialX standard data libraries into the
 rem built plugin:
-rem     git apply USD_v2208_usdMtlx_undef_stdlib_dir.patch
+rem     git apply USD_v2302_usdMtlx_undef_stdlib_dir.patch
 rem Note also that this path may be emitted as part of USD error messages, so
 rem it is suggested that it not reveal any sensitive information.
 set USD_SOURCE_LOCATION=C:\USD_src
 
-rem Set as VS2015 for backwards compatibility even though VS2019 is used
+rem Set as VS2015 for backwards compatibility even though VS2022 is used
 rem when building.
 set COMPILER_VERSION_NAME=VS2015
 set TOOLCHAIN_NAME=vc14
@@ -37,6 +34,9 @@ set BOOST_LIB_LOCATION=%BOOST_LOCATION%\lib\Win64
 set IMATH_LOCATION=%UE_THIRD_PARTY_LOCATION%\Imath\Deploy\Imath-3.1.3
 set IMATH_LIB_LOCATION=%IMATH_LOCATION%\%COMPILER_VERSION_NAME%\%ARCH_NAME%
 set IMATH_CMAKE_LOCATION=%IMATH_LIB_LOCATION%\lib\cmake\Imath
+set OPENSUBDIV_LOCATION=%UE_THIRD_PARTY_LOCATION%\OpenSubdiv\Deploy\OpenSubdiv-3.4.4
+set OPENSUBDIV_INCLUDE_DIR=%OPENSUBDIV_LOCATION%\include
+set OPENSUBDIV_LIB_LOCATION=%OPENSUBDIV_LOCATION%\%COMPILER_VERSION_NAME%\%ARCH_NAME%\lib
 set ALEMBIC_LOCATION=%UE_THIRD_PARTY_LOCATION%\Alembic\Deploy\alembic-1.8.2
 set ALEMBIC_INCLUDE_LOCATION=%ALEMBIC_LOCATION%\include
 set ALEMBIC_LIB_LOCATION=%ALEMBIC_LOCATION%\%COMPILER_VERSION_NAME%\%ARCH_NAME%
@@ -66,7 +66,7 @@ mkdir %BUILD_LOCATION%
 pushd %BUILD_LOCATION%
 
 echo Configuring build for USD version %USD_VERSION%...
-cmake -G "Visual Studio 16 2019" %USD_SOURCE_LOCATION%^
+cmake -G "Visual Studio 17 2022" %USD_SOURCE_LOCATION%^
     -DCMAKE_INSTALL_PREFIX="%INSTALL_LOCATION%"^
     -DCMAKE_PREFIX_PATH="%IMATH_CMAKE_LOCATION%;%MATERIALX_CMAKE_LOCATION%"^
     -DTBB_INCLUDE_DIR="%TBB_INCLUDE_LOCATION%"^
@@ -76,11 +76,13 @@ cmake -G "Visual Studio 16 2019" %USD_SOURCE_LOCATION%^
     -DBOOST_INCLUDEDIR="%BOOST_INCLUDE_LOCATION%"^
     -DBOOST_LIBRARYDIR="%BOOST_LIB_LOCATION%"^
     -DPXR_USE_PYTHON_3=ON^
-    -DPYTHON_EXECUTABLE="%PYTHON_EXECUTABLE_LOCATION%"^
-    -DPYTHON_INCLUDE_DIR="%PYTHON_INCLUDE_LOCATION%"^
-    -DPYTHON_LIBRARY="%PYTHON_LIBRARY_LOCATION%"^
+    -DPython3_EXECUTABLE="%PYTHON_EXECUTABLE_LOCATION%"^
+    -DPython3_INCLUDE_DIR="%PYTHON_INCLUDE_LOCATION%"^
+    -DPython3_LIBRARY="%PYTHON_LIBRARY_LOCATION%"^
     -DPXR_BUILD_ALEMBIC_PLUGIN=ON^
     -DPXR_ENABLE_HDF5_SUPPORT=OFF^
+    -DOPENSUBDIV_INCLUDE_DIR="%OPENSUBDIV_INCLUDE_DIR%"^
+    -DOPENSUBDIV_ROOT_DIR="%OPENSUBDIV_LIB_LOCATION%"^
     -DALEMBIC_INCLUDE_DIR="%ALEMBIC_INCLUDE_LOCATION%"^
     -DALEMBIC_DIR="%ALEMBIC_LIB_LOCATION%"^
     -DPXR_ENABLE_MATERIALX_SUPPORT=ON^
@@ -89,8 +91,8 @@ cmake -G "Visual Studio 16 2019" %USD_SOURCE_LOCATION%^
     -DPXR_BUILD_EXAMPLES=OFF^
     -DPXR_BUILD_TUTORIALS=OFF^
     -DPXR_BUILD_USD_TOOLS=OFF^
-    -DPXR_BUILD_IMAGING=OFF^
-    -DPXR_BUILD_USD_IMAGING=OFF^
+    -DPXR_BUILD_IMAGING=ON^
+    -DPXR_BUILD_USD_IMAGING=ON^
     -DPXR_BUILD_USDVIEW=OFF^
     -DCMAKE_CXX_FLAGS="/Zm150 /DBOOST_ALL_NO_LIB"
 if %errorlevel% neq 0 exit /B %errorlevel%
@@ -105,9 +107,13 @@ if %errorlevel% neq 0 exit /B %errorlevel%
 
 popd
 
-echo Moving shared libraries to bin directory...
 set INSTALL_BIN_LOCATION=%INSTALL_LOCATION%\bin
 set INSTALL_LIB_LOCATION=%INSTALL_LOCATION%\lib
+
+echo Removing command-line tools...
+rmdir /S /Q "%INSTALL_BIN_LOCATION%"
+
+echo Moving shared libraries to bin directory...
 mkdir %INSTALL_BIN_LOCATION%
 move "%INSTALL_LIB_LOCATION%\*.dll" "%INSTALL_BIN_LOCATION%"
 
@@ -128,8 +134,11 @@ move "%INSTALL_PLUGIN_USD_LOCATION%\*.lib" "%INSTALL_LIB_LOCATION%"
 echo Removing top-level USD plugins plugInfo.json file...
 del "%INSTALL_PLUGIN_USD_LOCATION%\plugInfo.json"
 
-echo Moving UsdAbc plugin directory to UsdResources plugins directory
+echo Moving USD plugin resource directories to UsdResources plugins directory
+move "%INSTALL_PLUGIN_USD_LOCATION%\hdStorm" "%INSTALL_RESOURCES_PLUGINS_LOCATION%"
+move "%INSTALL_PLUGIN_USD_LOCATION%\sdrGlslfx" "%INSTALL_RESOURCES_PLUGINS_LOCATION%"
 move "%INSTALL_PLUGIN_USD_LOCATION%\usdAbc" "%INSTALL_RESOURCES_PLUGINS_LOCATION%"
+move "%INSTALL_PLUGIN_USD_LOCATION%\usdShaders" "%INSTALL_RESOURCES_PLUGINS_LOCATION%"
 
 rmdir "%INSTALL_PLUGIN_USD_LOCATION%"
 rmdir "%INSTALL_PLUGIN_LOCATION%"
@@ -149,6 +158,9 @@ set INSTALL_CONTENT_LOCATION=%INSTALL_LOCATION%\Content\Python\Lib\Win64\site-pa
 mkdir %INSTALL_CONTENT_LOCATION%
 move "%INSTALL_LOCATION%\lib\python\pxr" "%INSTALL_CONTENT_LOCATION%"
 rmdir "%INSTALL_LOCATION%\lib\python"
+
+echo Removing share directory...
+rmdir /S /Q "%INSTALL_LOCATION%\share"
 
 echo Done.
 

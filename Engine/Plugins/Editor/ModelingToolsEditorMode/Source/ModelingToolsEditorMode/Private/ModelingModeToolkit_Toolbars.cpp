@@ -9,6 +9,7 @@
 #include "ModelingToolsEditorModeStyle.h"
 
 #include "ModelingSelectionInteraction.h"
+#include "Selection/GeometrySelectionManager.h"
 
 #include "ModelingComponentsSettings.h"
 #include "PropertySets/CreateMeshObjectTypeProperties.h"
@@ -18,9 +19,18 @@
 
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "STransformGizmoNumericalUIOverlay.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/Input/SComboButton.h"
 
+// for showing toast notifications
+#include "Widgets/Notifications/SNotificationList.h"
+#include "Framework/Notifications/NotificationManager.h"
+
+#include "ToolMenus.h"
 // to toggle component instance selection
 
 #define LOCTEXT_NAMESPACE "FModelingToolsEditorModeToolkit"
@@ -120,8 +130,35 @@ void MakeSubMenu_GizmoVisibilityMode(FModelingToolsEditorModeToolkit* Toolkit, F
 }
 
 
+
+void MakeSubMenu_SelectionSupport(FModelingToolsEditorModeToolkit* Toolkit, FMenuBuilder& MenuBuilder)
+{
+	UModelingToolsEditorModeSettings* Settings = GetMutableDefault<UModelingToolsEditorModeSettings>();
+
+	// toggle for Combined/Separate Gizmo Mode
+	const FUIAction EnableSelectionsToggle(
+		FExecuteAction::CreateLambda([Toolkit, Settings]
+		{
+			Settings->bEnablePersistentSelections = ! Settings->bEnablePersistentSelections;
+			Settings->SaveConfig();
+			Toolkit->NotifySelectionSystemEnabledStateModified();
+		}),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateLambda([Settings]()
+		{
+			return Settings->bEnablePersistentSelections;
+		}));
+	MenuBuilder.AddMenuEntry(LOCTEXT("MeshElementSelectionToggle", "Mesh Element Selection"), 
+		LOCTEXT("MeshElementSelectionToggle_Tooltip", "Enable support for in-viewport Mesh Element Selection in Modeling Mode"),
+		FSlateIcon(), EnableSelectionsToggle, NAME_None, EUserInterfaceActionType::ToggleButton);
+}
+
+
+
+
 void MakeSubMenu_ModeToggles(FMenuBuilder& MenuBuilder)
 {
+	// add toggle for Instance Selection cvar
 	const FUIAction ToggleInstancesEverywhereAction(
 		FExecuteAction::CreateLambda([]
 		{
@@ -137,9 +174,30 @@ void MakeSubMenu_ModeToggles(FMenuBuilder& MenuBuilder)
 		}));
 
 	MenuBuilder.AddMenuEntry(
-		LOCTEXT("ToggleInstancesSelection", "Select Instances"), 
+		LOCTEXT("ToggleInstancesSelection", "Instance Selection"), 
 		LOCTEXT("ToggleInstancesSelection_Tooltip", "Enable/Disable support for direct selection of InstancedStaticMeshComponent Instances (via TypedElements.EnableViewportInstanceSelection cvar)"),
 		FSlateIcon(), ToggleInstancesEverywhereAction, NAME_None, EUserInterfaceActionType::ToggleButton);
+
+	// add toggle for Volume Snapping cvar
+	const FUIAction ToggleVolumeSnappingAction(
+		FExecuteAction::CreateLambda([]
+		{
+			IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("modeling.EnableVolumeSnapping")); 
+			bool CurValue = CVar->GetBool();
+			CVar->Set(CurValue ? false : true);
+		}),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateLambda([]()
+		{
+			IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("modeling.EnableVolumeSnapping"));
+			return (CVar->GetBool());
+		}));
+
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("ToggleVolumeSnapping", "Volume Snapping"), 
+		LOCTEXT("ToggleVolumeSnapping_Tooltip", "Enable Vertex/Face Snapping and Ray-hits against Volumes in the Level. Note that if your level contains many overlapping large volumes, some Modeling functionality may not work correctly"),
+		FSlateIcon(), ToggleVolumeSnappingAction, NAME_None, EUserInterfaceActionType::ToggleButton);
+
 
 }
 
@@ -201,16 +259,26 @@ void MakeSubMenu_DefaultMeshObjectType(FMenuBuilder& MenuBuilder)
 
 	MenuBuilder.BeginSection("DefaultObjecTypeSection", LOCTEXT("DefaultObjecTypeSection", "Default Object Type"));
 
+	auto ShowMeshObjectDefaultChangeToast = []()
+	{
+		FNotificationInfo Info(LOCTEXT("ChangeDefaultMeshObjectTypeToast", 
+			"Changing the Default Mesh Object Type will take effect the next time the Editor is started"));
+		Info.ExpireDuration = 5.0f;
+		FSlateNotificationManager::Get().AddNotification(Info);
+	};
+
+
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("DefaultMeshObjectType_StaticMesh", "Static Mesh"), 
 		TAttribute<FText>(), 
 		FSlateIcon(), 
 		FUIAction(
-			FExecuteAction::CreateLambda([Settings]
+			FExecuteAction::CreateLambda([Settings, ShowMeshObjectDefaultChangeToast]
 			{
 				Settings->DefaultMeshObjectType = EModelingModeDefaultMeshObjectType::StaticMeshAsset;
 				UCreateMeshObjectTypeProperties::DefaultObjectTypeIdentifier = UCreateMeshObjectTypeProperties::StaticMeshIdentifier;
 				Settings->SaveConfig();
+				ShowMeshObjectDefaultChangeToast();
 			}),
 			FCanExecuteAction(),
 			FIsActionChecked::CreateLambda([Settings]()
@@ -224,11 +292,12 @@ void MakeSubMenu_DefaultMeshObjectType(FMenuBuilder& MenuBuilder)
 		TAttribute<FText>(), 
 		FSlateIcon(), 
 		FUIAction(
-			FExecuteAction::CreateLambda([Settings]
+			FExecuteAction::CreateLambda([Settings, ShowMeshObjectDefaultChangeToast]
 			{
 				Settings->DefaultMeshObjectType = EModelingModeDefaultMeshObjectType::DynamicMeshActor;
 				UCreateMeshObjectTypeProperties::DefaultObjectTypeIdentifier = UCreateMeshObjectTypeProperties::DynamicMeshActorIdentifier;
 				Settings->SaveConfig();
+				ShowMeshObjectDefaultChangeToast();
 			}),
 			FCanExecuteAction(),
 			FIsActionChecked::CreateLambda([Settings]()
@@ -242,11 +311,12 @@ void MakeSubMenu_DefaultMeshObjectType(FMenuBuilder& MenuBuilder)
 		TAttribute<FText>(), 
 		FSlateIcon(), 
 		FUIAction(
-			FExecuteAction::CreateLambda([Settings]
+			FExecuteAction::CreateLambda([Settings, ShowMeshObjectDefaultChangeToast]
 			{
 				Settings->DefaultMeshObjectType = EModelingModeDefaultMeshObjectType::VolumeActor;
 				UCreateMeshObjectTypeProperties::DefaultObjectTypeIdentifier = UCreateMeshObjectTypeProperties::VolumeIdentifier;
 				Settings->SaveConfig();
+				ShowMeshObjectDefaultChangeToast();
 			}),
 			FCanExecuteAction(),
 			FIsActionChecked::CreateLambda([Settings]()
@@ -262,8 +332,6 @@ void MakeSubMenu_DefaultMeshObjectType(FMenuBuilder& MenuBuilder)
 
 	MakeSubMenu_DefaultMeshObjectPhysicsSettings(MenuBuilder);
 }
-
-
 
 void MakeSubMenu_Selection_DragMode(FModelingToolsEditorModeToolkit* Toolkit, FMenuBuilder& MenuBuilder)
 {
@@ -348,8 +416,6 @@ void MakeSubMenu_Selection_MeshType(FModelingToolsEditorModeToolkit* Toolkit, FM
 
 }
 
-
-
 TSharedRef<SWidget> MakeMenu_SelectionConfigSettings(FModelingToolsEditorModeToolkit* Toolkit)
 {
 	FMenuBuilder MenuBuilder(true, TSharedPtr<FUICommandList>());
@@ -367,10 +433,9 @@ TSharedRef<SWidget> MakeMenu_SelectionConfigSettings(FModelingToolsEditorModeToo
 }
 
 
-
 TSharedRef<SWidget> MakeMenu_SelectionEdits(FModelingToolsEditorModeToolkit* Toolkit)
 {
-	FMenuBuilder MenuBuilder(true, Toolkit->GetToolkitCommands() );
+	FMenuBuilder MenuBuilder(true, Toolkit->GetToolkitCommands());
 
 	MenuBuilder.BeginSection("Section_SelectionEdits", LOCTEXT("Section_SelectionEdits", "Selection Edits"));
 
@@ -397,12 +462,12 @@ TSharedRef<SWidget> FModelingToolsEditorModeToolkit::MakeMenu_ModelingModeConfig
 
 	FMenuBuilder MenuBuilder(true, TSharedPtr<FUICommandList>());
 
-	MenuBuilder.BeginSection("Section_Selection", LOCTEXT("Section_Selection", "Instances"));
-	MakeSubMenu_ModeToggles(MenuBuilder);
-	MenuBuilder.EndSection();
-
 	MenuBuilder.BeginSection("Section_Gizmo", LOCTEXT("Section_Gizmo", "Gizmo"));
 	MakeSubMenu_GizmoVisibilityMode(this, MenuBuilder);
+	MenuBuilder.EndSection();
+
+	MenuBuilder.BeginSection("Section_SelectionSupport", LOCTEXT("Section_SelectionSupport", "Mesh Element Selection"));
+	MakeSubMenu_SelectionSupport(this, MenuBuilder);
 	MenuBuilder.EndSection();
 
 	MenuBuilder.BeginSection("Section_MeshObjects", LOCTEXT("Section_MeshObjects", "New Mesh Objects"));
@@ -410,60 +475,120 @@ TSharedRef<SWidget> FModelingToolsEditorModeToolkit::MakeMenu_ModelingModeConfig
 		LOCTEXT("MeshObjectTypeSubMenu", "New Mesh Settings"), LOCTEXT("MeshObjectTypeSubMenu_ToolTip", "Configure default settings for new Mesh Object Types"),
 		FNewMenuDelegate::CreateLambda([=](FMenuBuilder& SubMenuBuilder) {
 			MakeSubMenu_DefaultMeshObjectType(SubMenuBuilder);
-			}));
+		}));
 	MenuBuilder.EndSection();
 
-	MenuBuilder.BeginSection("Section_Settings", LOCTEXT("Section_Settings", "Quick Settings"));
-	MenuBuilder.AddSubMenu(
-		LOCTEXT("QuickSettingsSubMenu", "Jump To Settings"), LOCTEXT("QuickSettingsSubMenu_ToolTip", "Jump to sections of the Settings dialogs relevant to Modeling Mode"),
-		FNewMenuDelegate::CreateLambda([=](FMenuBuilder& SubMenuBuilder) {
-			MakeSubMenu_QuickSettings(SubMenuBuilder);
-			}));
+	MenuBuilder.BeginSection("Section_ModeToggles", LOCTEXT("Section_ModeToggles", "Mode Settings"));
+	MakeSubMenu_ModeToggles(MenuBuilder);
 	MenuBuilder.EndSection();
+
+	// only show settings UI quick access in non-Restrictive mode
+	const UModelingToolsEditorModeSettings* Settings = GetDefault<UModelingToolsEditorModeSettings>();
+	if (!Settings->InRestrictiveMode())
+	{
+		MenuBuilder.BeginSection("Section_Settings", LOCTEXT("Section_Settings", "Quick Settings"));
+		MenuBuilder.AddSubMenu(
+			LOCTEXT("QuickSettingsSubMenu", "Jump To Settings"), LOCTEXT("QuickSettingsSubMenu_ToolTip", "Jump to sections of the Settings dialogs relevant to Modeling Mode"),
+			FNewMenuDelegate::CreateLambda([=](FMenuBuilder& SubMenuBuilder) {
+				MakeSubMenu_QuickSettings(SubMenuBuilder);
+				}));
+		MenuBuilder.EndSection();
+	}
 
 	TSharedRef<SWidget> MenuWidget = MenuBuilder.MakeWidget();
 	return MenuWidget;
 }
 
-void FModelingToolsEditorModeToolkit::MakeSelectionPaletteOverlayWidget()
+void FModelingToolsEditorModeToolkit::ExtendSecondaryModeToolbar(UToolMenu *InModeToolbarMenu)
 {
-	FVerticalToolBarBuilder ToolbarBuilder( 
-		GetToolkitCommands(), 
-		FMultiBoxCustomization::None, 
-		TSharedPtr<FExtender>(), /*InForceSmallIcons=*/ true);
-	ToolbarBuilder.SetLabelVisibility(EVisibility::Collapsed);
-	ToolbarBuilder.SetStyle(&FAppStyle::Get(), "EditorViewportToolBar");
+	return;		// disable for now
 
+	/*
+	 * Sanity check because the toolbar extension should happen after the ModeUILayer setup which is currently manual
+	 * for standalone asset editors
+	 */
+	if( !ModeUILayer.IsValid() )
+	{
+		return;
+	}
+
+	UModelingToolsEditorModeSettings* ModelingModeSettings = GetMutableDefault<UModelingToolsEditorModeSettings>();
+	const bool bEnableSelectionUI = ModelingModeSettings && ModelingModeSettings->GetMeshSelectionsEnabled();
+	if ( !bEnableSelectionUI )
+	{
+		return;
+	}
+	
+	FToolMenuSection& Section = InModeToolbarMenu->FindOrAddSection("SelectionPalette");
+
+	/*
+	 * NOTE: Any commands used in the SecondaryModeToolbar need to be present in the command list that lives in the
+	 * ModeUILayer. Currently this is done automatically by parenting said command list to the toolkit's command list
+	 */
 	const FModelingToolsManagerCommands& Commands = FModelingToolsManagerCommands::Get();
 
-	ToolbarBuilder.AddToolBarButton(Commands.MeshSelectionModeAction_NoSelection);
-	ToolbarBuilder.AddWidget( SNew(SSpacer).Size(FVector2D(1,4)) );
-	ToolbarBuilder.AddToolBarButton(Commands.MeshSelectionModeAction_MeshTriangles);
-	ToolbarBuilder.AddToolBarButton(Commands.MeshSelectionModeAction_MeshEdges);
-	ToolbarBuilder.AddToolBarButton(Commands.MeshSelectionModeAction_MeshVertices);
-	ToolbarBuilder.AddWidget( SNew(SSpacer).Size(FVector2D(1,4)) );
-	ToolbarBuilder.AddToolBarButton(Commands.MeshSelectionModeAction_GroupFaces);
-	ToolbarBuilder.AddToolBarButton(Commands.MeshSelectionModeAction_GroupEdges);
-	ToolbarBuilder.AddToolBarButton(Commands.MeshSelectionModeAction_GroupCorners);
+	Section.AddEntry(FToolMenuEntry::InitToolBarButton(Commands.MeshSelectionModeAction_NoSelection));
 
-	ToolbarBuilder.AddWidget(
-		SNew(SComboButton)
-		.HasDownArrow(false)
-		.MenuPlacement(EMenuPlacement::MenuPlacement_MenuRight)
-		.ComboButtonStyle(FAppStyle::Get(), "SimpleComboButton")
-		.OnGetMenuContent(FOnGetContent::CreateLambda([this]()
-		{
-			return UELocal::MakeMenu_SelectionEdits(this);
-		}))
-		.ContentPadding(FMargin(1.0f, 1.0f))
-		.ButtonContent()
+	Section.AddSeparator(NAME_None);
+
+	TSharedRef<SWidget> TrianglesTextWidget = SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.Padding(8.0f, 0.0f, 8.0f, 0.0f)
+		.VAlign(VAlign_Center)
 		[
-			SNew(SImage)
-			.Image(FModelingToolsEditorModeStyle::Get()->GetBrush("ModelingModeSelection.Edits_Right"))
-		] );
+			SNew(STextBlock)
+			.Text(LOCTEXT("TriangleSelectionText", "Triangles"))
+		];
 
-	ToolbarBuilder.AddWidget(
-		SNew(SComboButton)
+	Section.AddEntry(FToolMenuEntry::InitWidget("TrianglesTextWidget", TrianglesTextWidget, FText()));
+	
+	Section.AddEntry(FToolMenuEntry::InitToolBarButton(Commands.MeshSelectionModeAction_MeshTriangles));
+	Section.AddEntry(FToolMenuEntry::InitToolBarButton(Commands.MeshSelectionModeAction_MeshEdges));
+	Section.AddEntry(FToolMenuEntry::InitToolBarButton(Commands.MeshSelectionModeAction_MeshVertices));
+
+	Section.AddSeparator(NAME_None);
+
+	TSharedRef<SWidget> PolyGroupsTextWidget = SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.Padding(8.0f, 0.0f, 8.0f, 0.0f)
+		.VAlign(VAlign_Center)
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("PolyGroupsSelectionText", "PolyGroups"))
+		];
+
+	Section.AddEntry(FToolMenuEntry::InitWidget("PolyGroupsTextWidget", PolyGroupsTextWidget, FText()));
+	
+	Section.AddEntry(FToolMenuEntry::InitToolBarButton(Commands.MeshSelectionModeAction_GroupFaces));
+	Section.AddEntry(FToolMenuEntry::InitToolBarButton(Commands.MeshSelectionModeAction_GroupEdges));
+	Section.AddEntry(FToolMenuEntry::InitToolBarButton(Commands.MeshSelectionModeAction_GroupCorners));
+
+	Section.AddSeparator(NAME_None);
+
+	TSharedRef<SWidget> SelectionEditTextWidget = SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.Padding(8.0f, 0.0f, 8.0f, 0.0f)
+		.VAlign(VAlign_Center)
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("SelectionEditText", "Selection Edit"))
+		];
+
+	Section.AddEntry(FToolMenuEntry::InitWidget("SelectionEditTextWidget", SelectionEditTextWidget, FText()));
+
+	Section.AddEntry(FToolMenuEntry::InitToolBarButton(Commands.BeginSelectionAction_SelectAll));
+	Section.AddEntry(FToolMenuEntry::InitToolBarButton(Commands.BeginSelectionAction_Invert));
+	Section.AddEntry(FToolMenuEntry::InitToolBarButton(Commands.BeginSelectionAction_ExpandToConnected));
+	Section.AddEntry(FToolMenuEntry::InitToolBarButton(Commands.BeginSelectionAction_InvertConnected));
+	Section.AddEntry(FToolMenuEntry::InitToolBarButton(Commands.BeginSelectionAction_Expand));
+	Section.AddEntry(FToolMenuEntry::InitToolBarButton(Commands.BeginSelectionAction_Contract));
+	
+	Section.AddSeparator(NAME_None);
+
+	TSharedRef<SWidget> DefaultSettingsWidget = SNew(SComboButton)
 		.HasDownArrow(false)
 		.MenuPlacement(EMenuPlacement::MenuPlacement_MenuRight)
 		.ComboButtonStyle(FAppStyle::Get(), "SimpleComboButton")
@@ -471,39 +596,171 @@ void FModelingToolsEditorModeToolkit::MakeSelectionPaletteOverlayWidget()
 		{
 			return UELocal::MakeMenu_SelectionConfigSettings(this);
 		}))
-		.ContentPadding(FMargin(1.0f, 1.0f))
+		.ContentPadding(FMargin(3.0f, 1.0f))
 		.ButtonContent()
 		[
 			SNew(SImage)
-			.Image(FModelingToolsEditorModeStyle::Get()->GetBrush("ModelingModeSelection.More_Right"))
-		] );
+			.Image(FModelingToolsEditorModeStyle::Get()->GetBrush("ModelingMode.DefaultSettings"))
+			.ColorAndOpacity(FSlateColor::UseForeground())
+		];
+
+	Section.AddEntry(FToolMenuEntry::InitWidget("DefaultSettings", DefaultSettingsWidget, FText()));
+	
+	Section.AddSeparator(NAME_None);
+
+}
+
+
+
+
+void FModelingToolsEditorModeToolkit::MakeSelectionPaletteOverlayWidget()
+{
+	FVerticalToolBarBuilder ToolbarBuilder(
+		GetToolkitCommands(),
+		FMultiBoxCustomization::None,
+		TSharedPtr<FExtender>(), /*InForceSmallIcons=*/ true);
+	ToolbarBuilder.SetLabelVisibility(EVisibility::Collapsed);
+	ToolbarBuilder.SetStyle(FModelingToolsEditorModeStyle::Get().Get(), "SelectionToolBar");
+
+	const FModelingToolsManagerCommands& Commands = FModelingToolsManagerCommands::Get();
+
+	ToolbarBuilder.AddToolBarButton(Commands.MeshSelectionModeAction_NoSelection);
+	ToolbarBuilder.AddWidget(SNew(SSpacer).Size(FVector2D(1, 1)));
+	ToolbarBuilder.AddToolBarButton(Commands.MeshSelectionModeAction_MeshTriangles);
+	ToolbarBuilder.AddToolBarButton(Commands.MeshSelectionModeAction_MeshEdges);
+	ToolbarBuilder.AddToolBarButton(Commands.MeshSelectionModeAction_MeshVertices);
+	ToolbarBuilder.AddWidget(SNew(SSpacer).Size(FVector2D(1, 1)));
+	ToolbarBuilder.AddToolBarButton(Commands.MeshSelectionModeAction_GroupFaces);
+	ToolbarBuilder.AddToolBarButton(Commands.MeshSelectionModeAction_GroupEdges);
+	ToolbarBuilder.AddToolBarButton(Commands.MeshSelectionModeAction_GroupCorners);
+	ToolbarBuilder.AddWidget(SNew(SSpacer).Size(FVector2D(1, 8)));
+
+
+	ToolbarBuilder.AddWidget(
+		SNew(SComboButton)
+		.HasDownArrow(false)
+		.MenuPlacement(EMenuPlacement::MenuPlacement_MenuRight)
+		.ComboButtonStyle(FAppStyle::Get(), "SimpleComboButton")
+		.IsEnabled_Lambda([this]() { return IsInActiveTool() == false; })
+		.OnGetMenuContent(FOnGetContent::CreateLambda([this]()
+			{
+				return UELocal::MakeMenu_SelectionEdits(this);
+			}))
+		.ContentPadding(FMargin(1.0f, 1.0f))
+				.ButtonContent()
+				[
+					SNew(SImage)
+					.Image(FModelingToolsEditorModeStyle::Get()->GetBrush("ModelingModeSelection.Edits_Right"))
+				]);
+
+	ToolbarBuilder.AddWidget(
+		SNew(SComboButton)
+		.HasDownArrow(false)
+		.MenuPlacement(EMenuPlacement::MenuPlacement_MenuRight)
+		.ComboButtonStyle(FAppStyle::Get(), "SimpleComboButton")
+		.IsEnabled_Lambda([this]() { return IsInActiveTool() == false; })
+		.OnGetMenuContent(FOnGetContent::CreateLambda([this]()
+			{
+				return UELocal::MakeMenu_SelectionConfigSettings(this);
+			}))
+		.ContentPadding(FMargin(1.0f, 1.0f))
+				.ButtonContent()
+				[
+					SNew(SImage)
+					.Image(FModelingToolsEditorModeStyle::Get()->GetBrush("ModelingMode.DefaultSettings"))
+					.ColorAndOpacity(FSlateColor::UseForeground())
+				]);
+
+	ToolbarBuilder.AddWidget(SNew(SSpacer).Size(FVector2D(1, 16)));
+
+	//
+	// locking toggle button is implemented using 3 separate buttons because we cannot 
+	// control enabled/disabled or background color for a toolbar button
+	//
+
+	FUIAction UnlockTargetAction(
+		FExecuteAction::CreateLambda([this] { GetMeshSelectionManager()->SetCurrentTargetsLockState(false); }),
+		FCanExecuteAction::CreateLambda([this] { return GetMeshSelectionManager()->GetAnyCurrentTargetsLocked() && IsInActiveTool() == false; }),
+		FIsActionChecked::CreateLambda([] { return false; }),
+		FIsActionButtonVisible::CreateLambda([this] {
+			return GetMeshSelectionManager()->GetMeshTopologyMode() != UGeometrySelectionManager::EMeshTopologyMode::None
+			&& GetMeshSelectionManager()->GetAnyCurrentTargetsLockable()
+			&& GetMeshSelectionManager()->GetAnyCurrentTargetsLocked();
+			})
+	);
+	FUIAction LockTargetAction(
+		FExecuteAction::CreateLambda([this] { GetMeshSelectionManager()->SetCurrentTargetsLockState(true); }),
+		FCanExecuteAction::CreateLambda([this] { return !GetMeshSelectionManager()->GetAnyCurrentTargetsLocked() && IsInActiveTool() == false; }),
+		FIsActionChecked::CreateLambda([]() { return false; }),
+		FIsActionButtonVisible::CreateLambda([this] {
+			return GetMeshSelectionManager()->GetMeshTopologyMode() != UGeometrySelectionManager::EMeshTopologyMode::None
+			&& GetMeshSelectionManager()->GetAnyCurrentTargetsLockable()
+			&& (GetMeshSelectionManager()->GetAnyCurrentTargetsLocked() == false);
+			})
+	);
+	FUIAction DisabledLockTargetAction(
+		FExecuteAction::CreateLambda([] {}),
+		FCanExecuteAction::CreateLambda([] { return false; }),
+		FIsActionChecked::CreateLambda([]() { return false; }),
+		FIsActionButtonVisible::CreateLambda([this] {
+			return GetMeshSelectionManager()->GetMeshTopologyMode() == UGeometrySelectionManager::EMeshTopologyMode::None
+			|| GetMeshSelectionManager()->GetAnyCurrentTargetsLockable() == false;
+			})
+	);
+
+	ToolbarBuilder.BeginStyleOverride(FName("SelectionToolBar.RedButton"));
+	ToolbarBuilder.AddToolBarButton(UnlockTargetAction, NAME_None,
+		LOCTEXT("Selection_UnlockTarget", "Unlock"),
+		LOCTEXT("Selection_UnlockTarget_Tooltip", "Click to Unlock the Selected Object and allow Mesh Selections"),
+		FSlateIcon(FModelingToolsEditorModeStyle::GetStyleSetName(), "SelectionToolBarIcons.LockedTarget"));
+	ToolbarBuilder.EndStyleOverride();
+	ToolbarBuilder.BeginStyleOverride(FName("SelectionToolBar.GreenButton"));
+	ToolbarBuilder.AddToolBarButton(LockTargetAction, NAME_None,
+		LOCTEXT("Selection_LockTarget", "Lock"),
+		LOCTEXT("Selection_LockTarget_Tooltip", "Click to Lock the Selected Object"),
+		FSlateIcon(FModelingToolsEditorModeStyle::GetStyleSetName(), "SelectionToolBarIcons.UnlockedTarget"));
+	ToolbarBuilder.EndStyleOverride();
+	ToolbarBuilder.AddToolBarButton(DisabledLockTargetAction, NAME_None,
+		LOCTEXT("Selection_LockTargetDisabled", "(No Locking)"),
+		LOCTEXT("Selection_LockTargetDisabled_Tooltip", "No Active Selection Targets are Lockable"),
+		FSlateIcon(FModelingToolsEditorModeStyle::GetStyleSetName(), "SelectionToolBarIcons.UnlockedTarget"));
 
 
 	TSharedRef<SWidget> Toolbar = ToolbarBuilder.MakeWidget();
 
-
 	SAssignNew(SelectionPaletteOverlayWidget, SVerticalBox)
-	+SVerticalBox::Slot()
-	.HAlign(HAlign_Left)
-	.VAlign(VAlign_Center)
-	.Padding(FMargin(2.0f, 0.0f, 0.f, 0.f))
-	[
-		SNew(SBorder)
-		.BorderImage(FAppStyle::Get().GetBrush("EditorViewport.OverlayBrush"))
-		.Padding(FMargin(3.0f, 6.0f, 3.f, 6.f))
+		+ SVerticalBox::Slot()
+		.HAlign(HAlign_Left)
+		.VAlign(VAlign_Center)
+		.Padding(FMargin(2.0f, 0.0f, 0.f, 0.f))
 		[
-			SNew(SVerticalBox)
-
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding(FMargin(0.0, 0.f, 0.f, 0.f))
+			SNew(SBorder)
+			.BorderImage(FAppStyle::Get().GetBrush("EditorViewport.OverlayBrush"))
+			.Padding(FMargin(3.0f, 6.0f, 3.f, 6.f))
 			[
-				Toolbar
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(FMargin(0.0, 0.f, 0.f, 0.f))
+				[
+					Toolbar
+				]
 			]
-		]
-	];
+		];
+
+	SelectionPaletteOverlayWidget->SetVisibility( TAttribute<EVisibility>::CreateLambda([this]()
+	{
+		if ( UModelingToolsEditorMode* ModelingMode = Cast<UModelingToolsEditorMode>(GetScriptableEditorMode()) )
+		{
+			return ModelingMode->GetMeshElementSelectionSystemEnabled() ? EVisibility::SelfHitTestInvisible : EVisibility::Collapsed;
+		}
+		return EVisibility::Collapsed;
+	}) );
+
 
 }
+
+
 
 
 #undef LOCTEXT_NAMESPACE

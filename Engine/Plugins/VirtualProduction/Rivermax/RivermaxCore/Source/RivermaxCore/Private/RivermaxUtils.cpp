@@ -2,6 +2,8 @@
 
 #include "RivermaxUtils.h"
 
+#include "HAL/IConsoleManager.h"
+#include "RivermaxLog.h"
 #include "RivermaxTypes.h"
 
 
@@ -85,21 +87,36 @@ namespace UE::RivermaxCore::Private::Utils
 		}
 	}
 
-	void StreamOptionsToSDPDescription(const UE::RivermaxCore::FRivermaxOutputStreamOptions& Options, FAnsiStringBuilderBase& OutSDPDescription)
+	void StreamOptionsToSDPDescription(const UE::RivermaxCore::FRivermaxOutputStreamOptions& Options, float RateMultiplier, FAnsiStringBuilderBase& OutSDPDescription)
 	{
 		// Basic SDP string creation from a set of options. At some point, having a proper SDP loader / creator would be useful.
 		// Refer to https://datatracker.ietf.org/doc/html/rfc4570
 
-		FString FrameRateDescription;
-		if (FMath::IsNearlyZero(FMath::Frac(Options.FrameRate.AsDecimal())) == false)
+		// Apply desired multiplier and convert fractional frame rate to be represented over 1001 for sdp compliance.
+		FFrameRate DesiredRate = Options.FrameRate;
+		const double DecimalDesiredRate = Options.FrameRate.AsDecimal();
+		const bool bIsNonStandardFractionalFrameRate = (DesiredRate.Denominator != 1001 && !FMath::IsNearlyZero(FMath::Frac(DecimalDesiredRate)));
+		if (bIsNonStandardFractionalFrameRate)
 		{
-			FrameRateDescription = FString::Printf(TEXT("%d/%d"), Options.FrameRate.Numerator, Options.FrameRate.Denominator);
+			UE_LOG(LogRivermax, Warning, TEXT("Fractional frame rates must be described using a denominator of 1001. Converting it for stream creation."));
+		}
+
+		FString FrameRateDescription;
+		if (!FMath::IsNearlyEqual(RateMultiplier, 1.0f) || bIsNonStandardFractionalFrameRate)
+		{
+			const double NewRateDecimal = DecimalDesiredRate * RateMultiplier * 1001;
+			DesiredRate.Numerator = FMath::RoundToInt32(NewRateDecimal);
+			DesiredRate.Denominator = 1001;
+		}
+		
+		if(DesiredRate.Denominator == 1001)
+		{
+			FrameRateDescription = FString::Printf(TEXT("%u/%u"), DesiredRate.Numerator, DesiredRate.Denominator);
 		}
 		else
 		{
-			FrameRateDescription = FString::Printf(TEXT("%d"), (uint32)Options.FrameRate.AsDecimal());
+			FrameRateDescription = FString::Printf(TEXT("%u"), FMath::RoundToInt32(DesiredRate.AsDecimal()));
 		}
-
 
 		constexpr int32 MulticastTTL = 64;
 		OutSDPDescription.Appendf("v=0\n");
@@ -115,5 +132,13 @@ namespace UE::RivermaxCore::Private::Utils
 			, Options.AlignedResolution.Y
 			, *FrameRateDescription
 			, *PixelFormatToBitDepth(Options.PixelFormat));
+	}
+
+	uint32 TimestampToFrameNumber(uint32 Timestamp, const FFrameRate& FrameRate)
+	{
+		using namespace UE::RivermaxCore::Private::Utils;
+		const double MediaFrameTime = Timestamp / MediaClockSampleRate;
+		const uint32 FrameNumber = FMath::Floor(MediaFrameTime * FrameRate.AsDecimal());
+		return FrameNumber;
 	}
 }

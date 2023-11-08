@@ -6,6 +6,12 @@ using System.Linq;
 using System.Text;
 using UnrealBuildTool;
 using EpicGames.Core;
+using EpicGames.Perforce;
+using System.Threading.Tasks;
+using System.Diagnostics;
+using Microsoft.Extensions.Logging;
+
+using static AutomationTool.CommandUtils;
 
 namespace AutomationTool
 {
@@ -107,6 +113,8 @@ namespace AutomationTool
 		/// </summary>
 		private int CodeChangelistInternal = -1;
 
+		static ILogger Logger => Log.Logger;
+
 		/// <summary>
 		/// Constructor. Derives the Perforce environment settings.
 		/// </summary>
@@ -154,7 +162,7 @@ namespace AutomationTool
 				{
 					string HostName = System.Net.Dns.GetHostName();
 					ThisClient = DetectClient(DefaultConnection, User, HostName, CmdEnv.AutomationToolDll);
-					Log.TraceInformation("Using user {0} clientspec {1} {2}", User, ThisClient.Name, ThisClient.RootPath);
+					Logger.LogInformation("Using user {User} clientspec {ClientName} {ClientPath}", User, ThisClient.Name, ThisClient.RootPath);
 					Client = ThisClient.Name;
 					CommandUtils.SetEnvVar(EnvVarNames.Client, Client);
 				}
@@ -210,9 +218,11 @@ namespace AutomationTool
 			string CodeChangelistString = CommandUtils.GetEnvVar(EnvVarNames.CodeChangelist);
 			if(String.IsNullOrEmpty(CodeChangelistString) && CommandUtils.P4CLRequired)
 			{
-				P4Connection Connection = new P4Connection(User, Client, ServerAndPort);
-				CodeChangelistString = DetectCurrentCodeCL(Connection, ClientRoot, Changelist);
+				Stopwatch Timer = Stopwatch.StartNew();
+				using PerforceConnection Connection = new PerforceConnection(new PerforceSettings(ServerAndPort, User) { ClientName = Client }, Log.Logger);
+				CodeChangelistString = DetectCurrentCodeCL(Connection, Changelist).Result.ToString();
 				CommandUtils.SetEnvVar(EnvVarNames.CodeChangelist, CodeChangelistString);
+				Logger.LogDebug("Took {ElapsedMs}ms to query last code change", Timer.ElapsedMilliseconds);
 			}
 			if(!String.IsNullOrEmpty(CodeChangelistString))
 			{
@@ -227,34 +237,34 @@ namespace AutomationTool
 			// Write a summary of the settings to the output window
 			if (!CommandUtils.CmdEnv.IsChildInstance)
 			{
-				Log.TraceInformation("Detected Perforce Settings:");
-				Log.TraceInformation("  Server: {0}", ServerAndPort);
-				Log.TraceInformation("  User: {0}", User);
-				Log.TraceInformation("  Client: {0}", Client);
-				Log.TraceInformation("  Branch: {0}", Branch);
+				Logger.LogInformation("Detected Perforce Settings:");
+				Logger.LogInformation("  Server: {ServerAndPort}", ServerAndPort);
+				Logger.LogInformation("  User: {User}", User);
+				Logger.LogInformation("  Client: {Client}", Client);
+				Logger.LogInformation("  Branch: {Branch}", Branch);
 				if (ChangelistInternal != -1)
 				{
-					Log.TraceInformation("  Last Change: {0}", Changelist);
+					Logger.LogInformation("  Last Change: {Changelist}", Changelist);
 				}
 				if (CodeChangelistInternal != -1)
 				{
-					Log.TraceInformation("  Last Code Change: {0}", CodeChangelist);
+					Logger.LogInformation("  Last Code Change: {CodeChangelist}", CodeChangelist);
 				}
 			}
 
 			// Write all the environment variables to the log
-			Log.TraceLog("Perforce Environment Variables:");
-			Log.TraceLog("  {0}={1}", EnvVarNames.P4Port, InternalUtils.GetEnvironmentVariable(EnvVarNames.P4Port, "", true));
-			Log.TraceLog("  {0}={1}", EnvVarNames.User, InternalUtils.GetEnvironmentVariable(EnvVarNames.User, "", true));
-			Log.TraceLog("  {0}={1}", EnvVarNames.Client, InternalUtils.GetEnvironmentVariable(EnvVarNames.Client, "", true));
-			Log.TraceLog("  {0}={1}", EnvVarNames.BuildRootP4, InternalUtils.GetEnvironmentVariable(EnvVarNames.BuildRootP4, "", true));
-			Log.TraceLog("  {0}={1}", EnvVarNames.BuildRootEscaped, InternalUtils.GetEnvironmentVariable(EnvVarNames.BuildRootEscaped, "", true));
-			Log.TraceLog("  {0}={1}", EnvVarNames.ClientRoot, InternalUtils.GetEnvironmentVariable(EnvVarNames.ClientRoot, "", true));
-			Log.TraceLog("  {0}={1}", EnvVarNames.Changelist, InternalUtils.GetEnvironmentVariable(EnvVarNames.Changelist, "", true));
-			Log.TraceLog("  {0}={1}", EnvVarNames.CodeChangelist, InternalUtils.GetEnvironmentVariable(EnvVarNames.CodeChangelist, "", true));
-			Log.TraceLog("  {0}={1}", "P4PORT", InternalUtils.GetEnvironmentVariable("P4PORT", "", true));
-			Log.TraceLog("  {0}={1}", "P4USER", InternalUtils.GetEnvironmentVariable("P4USER", "", true));
-			Log.TraceLog("  {0}={1}", "P4CLIENT", InternalUtils.GetEnvironmentVariable("P4CLIENT", "", true));
+			Logger.LogDebug("Perforce Environment Variables:");
+			Logger.LogDebug("  {Arg0}={Arg1}", EnvVarNames.P4Port, InternalUtils.GetEnvironmentVariable(EnvVarNames.P4Port, "", true));
+			Logger.LogDebug("  {Arg0}={Arg1}", EnvVarNames.User, InternalUtils.GetEnvironmentVariable(EnvVarNames.User, "", true));
+			Logger.LogDebug("  {Arg0}={Arg1}", EnvVarNames.Client, InternalUtils.GetEnvironmentVariable(EnvVarNames.Client, "", true));
+			Logger.LogDebug("  {Arg0}={Arg1}", EnvVarNames.BuildRootP4, InternalUtils.GetEnvironmentVariable(EnvVarNames.BuildRootP4, "", true));
+			Logger.LogDebug("  {Arg0}={Arg1}", EnvVarNames.BuildRootEscaped, InternalUtils.GetEnvironmentVariable(EnvVarNames.BuildRootEscaped, "", true));
+			Logger.LogDebug("  {Arg0}={Arg1}", EnvVarNames.ClientRoot, InternalUtils.GetEnvironmentVariable(EnvVarNames.ClientRoot, "", true));
+			Logger.LogDebug("  {Arg0}={Arg1}", EnvVarNames.Changelist, InternalUtils.GetEnvironmentVariable(EnvVarNames.Changelist, "", true));
+			Logger.LogDebug("  {Arg0}={Arg1}", EnvVarNames.CodeChangelist, InternalUtils.GetEnvironmentVariable(EnvVarNames.CodeChangelist, "", true));
+			Logger.LogDebug("  {Arg0}={Arg1}", "P4PORT", InternalUtils.GetEnvironmentVariable("P4PORT", "", true));
+			Logger.LogDebug("  {Arg0}={Arg1}", "P4USER", InternalUtils.GetEnvironmentVariable("P4USER", "", true));
+			Logger.LogDebug("  {Arg0}={Arg1}", "P4CLIENT", InternalUtils.GetEnvironmentVariable("P4CLIENT", "", true));
 		}
 
 		/// <summary>
@@ -284,7 +294,7 @@ namespace AutomationTool
 			// Otherwise fallback to the uebp variables, or the default
 			if(String.IsNullOrEmpty(P4Port))
 			{
-				Log.TraceWarning("P4PORT is not set. Using perforce:1666");
+				Logger.LogWarning("P4PORT is not set. Using perforce:1666");
 				P4Port = "perforce:1666";
 			}
 
@@ -310,7 +320,7 @@ namespace AutomationTool
 			{
 				if (!String.IsNullOrEmpty(UserName))
 				{
-					Log.TraceWarning("Unable to retrieve perforce user name. Trying to fall back to {0} which is set to {1}.", EnvVarNames.User, UserName);
+					Logger.LogWarning("Unable to retrieve perforce user name. Trying to fall back to {UserNameEnvVar} which is set to {UserName}.", EnvVarNames.User, UserName);
 				}
 				else
 				{
@@ -330,7 +340,7 @@ namespace AutomationTool
 		/// <returns>Client to use.</returns>
 		private static P4ClientInfo DetectClient(P4Connection Connection, string UserName, string HostName, string AutomationToolDll)
 		{
-			CommandUtils.LogVerbose("uebp_CLIENT not set, detecting current client...");
+			Logger.LogDebug("uebp_CLIENT not set, detecting current client...");
 
 			// Check the default client. If it matches we can save any guess work.
 			IProcessResult Result = CommandUtils.Run(HostPlatform.Current.P4Exe, "set -q P4CLIENT", null, CommandUtils.ERunOptions.NoLoggingOfRunCommand);
@@ -355,7 +365,7 @@ namespace AutomationTool
 			{
 				if (!String.IsNullOrEmpty(Client.Host) && String.Compare(Client.Host, HostName, true) != 0)
 				{
-					Log.TraceInformation("Rejecting client because of different Host {0} \"{1}\" != \"{2}\"", Client.Name, Client.Host, HostName);
+					Logger.LogInformation("Rejecting client because of different Host {ClientName} \"{ClientHost}\" != \"{HostName}\"", Client.Name, Client.Host, HostName);
 					continue;
 				}
 				
@@ -384,7 +394,7 @@ namespace AutomationTool
 				}
 				if (ClientToUse == null)
 				{
-					Log.TraceWarning("{0} clients found that match the current host and root path. The most recently accessed client will be used.", MatchingClients.Count);
+					Logger.LogWarning("{NumClients} clients found that match the current host and root path. The most recently accessed client will be used.", MatchingClients.Count);
 					ClientToUse = GetMostRecentClient(MatchingClients);
 				}
 			}
@@ -399,7 +409,7 @@ namespace AutomationTool
 		/// <returns>The most recent client from the list.</returns>
 		private static P4ClientInfo GetMostRecentClient(List<P4ClientInfo> Clients)
 		{
-			Log.TraceVerbose("Detecting the most recent client.");
+			Logger.LogDebug("Detecting the most recent client.");
 			P4ClientInfo MostRecentClient = null;
 			var MostRecentAccessTime = DateTime.MinValue;
 			foreach (var ClientInfo in Clients)
@@ -424,7 +434,7 @@ namespace AutomationTool
 		/// <returns>Changelist number as a string.</returns>
 		private static string DetectCurrentCL(P4Connection Connection, string ClientRootPath)
 		{
-			CommandUtils.LogVerbose("uebp_CL not set, detecting 'have' CL...");
+			Logger.LogDebug("uebp_CL not set, detecting 'have' CL...");
 
 			// Retrieve the current changelist 
 			IProcessResult P4Result = Connection.P4("changes -m 1 " + CommandUtils.CombinePaths(PathSeparator.Depot, ClientRootPath, "/...#have"), AllowSpew: false);
@@ -449,34 +459,50 @@ namespace AutomationTool
 		/// <summary>
 		/// Detects the current code changelist the workspace is synced to.
 		/// </summary>
-		/// <param name="ClientRootPath">Workspace path.</param>
 		/// <returns>Changelist number as a string.</returns>
-		private static string DetectCurrentCodeCL(P4Connection Connection, string ClientRootPath, int Changelist)
+		private static async Task<int> DetectCurrentCodeCL(PerforceConnection Connection, int Changelist)
 		{
-			CommandUtils.LogVerbose("uebp_CodeCL not set, detecting last code CL...");
+			Logger.LogDebug("uebp_CodeCL not set, detecting last code CL...");
 
-			// Retrieve the current changelist
-			StringBuilder P4Cmd = new StringBuilder("changes -m 1");
-
-			foreach (string CodeExtension in EpicGames.Perforce.PerforceUtils.CodeExtensions)
+			// Start by just testing whether the current change is a code change, so we can early out without any expensive p4 calls.
+			int[] Changes = new[] { Changelist };
+			while (Changes.Length > 0)
 			{
-				P4Cmd.AppendFormat(" \"{0}/...{1}@<={2}\"", CommandUtils.CombinePaths(PathSeparator.Depot, ClientRootPath), CodeExtension, Changelist);
-			}
-
-			IProcessResult P4Result = Connection.P4(P4Cmd.ToString(), AllowSpew: false);
-
-			// Loop through all the lines of the output. Even though we requested one result, we'll get one for each search pattern.
-			int CL = 0;
-			foreach(string Line in P4Result.Output.Split('\n'))
-			{
-				string[] Tokens = Line.Trim().Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-				if(Tokens.Length >= 2)
+				const int NumChangesPerDescribeCall = 10;
+				foreach (IReadOnlyList<int> ChangeBatch in Changes.Batch(NumChangesPerDescribeCall))
 				{
-					int LineCL = Int32.Parse(Tokens[1]);
-					CL = Math.Max(CL, LineCL);
+					const int InitialMaxFiles = 50;
+
+					List<DescribeRecord> Descriptions = await Connection.DescribeAsync(DescribeOptions.None, InitialMaxFiles, ChangeBatch.ToArray());
+					foreach (DescribeRecord Description in Descriptions)
+					{
+						DescribeRecord CurrentDescription = Description;
+
+						// The initial p4 describe call only queries up to InitialMaxFiles in the response. Fetching all files for large merge changelists can be prohibitively slow,
+						// so we query an increasing number of files with the goal of earlying out as soon as we hit a code change.
+						for (int MaxFiles = InitialMaxFiles; ;)
+						{
+							if (CurrentDescription.Files.Any(x => x.DepotFile != null && PerforceUtils.IsCodeFile(x.DepotFile)))
+							{
+								return CurrentDescription.Number;
+							}
+							if (CurrentDescription.Files.Count < MaxFiles)
+							{
+								break;
+							}
+
+							MaxFiles *= 10;
+							CurrentDescription = await Connection.DescribeAsync(DescribeOptions.None, MaxFiles, CurrentDescription.Number);
+						}
+					}
 				}
+
+				// Query the last NumChanges, then split it into batches for calling p4 describe
+				const int NumChanges = 30;
+				List<ChangesRecord> NextChanges = await Connection.GetChangesAsync(ChangesOptions.None, NumChanges, ChangeStatus.Submitted, $"//{Connection.ClientName}/...@<{Changes.Min()}");
+				Changes = NextChanges.Select(x => x.Number).ToArray();
 			}
-			return CL.ToString();
+			return 0;
 		}
 
 		/// <summary>
@@ -504,7 +530,7 @@ namespace AutomationTool
 				string KnownFileDepotMapping = P4Result.Output;
 
 				// Get the build root
-				Log.TraceVerbose("Looking for {0} in {1}", KnownFilePathFromRoot, KnownFileDepotMapping);
+				Logger.LogDebug("Looking for {KnownFilePathFromRoot} in {KnownFileDepotMapping}", KnownFilePathFromRoot, KnownFileDepotMapping);
 				int EndIdx = KnownFileDepotMapping.IndexOf(KnownFilePathFromRoot, StringComparison.CurrentCultureIgnoreCase);
 				if (EndIdx < 0)
 				{

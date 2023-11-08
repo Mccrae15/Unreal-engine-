@@ -10,6 +10,7 @@
 #include "Binding/DynamicPropertyPath.h"
 #include "Blueprint/WidgetBlueprintGeneratedClass.h"
 #include "Animation/WidgetAnimationBinding.h"
+#include "Templates/ValueOrError.h"
 
 #include "WidgetBlueprint.generated.h"
 
@@ -24,6 +25,7 @@ class FKismetCompilerContext;
 class UWidgetBlueprint;
 enum class EWidgetTickFrequency : uint8;
 enum class EWidgetCompileTimeTickPrediction : uint8;
+class UWidgetEditingProjectSettings;
 
 
 /** Widget Delegates */
@@ -280,8 +282,8 @@ public:
 #if WITH_EDITOR
 	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
 	virtual void NotifyGraphRenamed(class UEdGraph* Graph, FName OldName, FName NewName) override;
-	virtual EDataValidationResult IsDataValid(TArray<FText>& ValidationErrors) override;
-	bool DetectSlateWidgetLeaks(TArray<FText>& ValidationErrors);
+	virtual EDataValidationResult IsDataValid(class FDataValidationContext& Context) const override;
+	bool DetectSlateWidgetLeaks(class FDataValidationContext& Context) const;
 	virtual bool FindDiffs(const UBlueprint* OtherBlueprint, FDiffResults& Results) const override;
 #endif
 
@@ -313,6 +315,9 @@ public:
 
 	/** Returns true if the supplied user widget will not create a circular reference when added to this blueprint */
 	bool IsWidgetFreeFromCircularReferences(UUserWidget* UserWidget) const;
+	
+	/**  */
+	TValueOrError<void, UWidget*> HasCircularReferences() const;
 
 	static bool ValidateGeneratedClass(const UClass* InClass);
 	
@@ -324,6 +329,9 @@ public:
 
 	/** Gets any named slots exposed by the parent generated class that can be slotted into by the subclass. */
 	TArray<FName> GetInheritedAvailableNamedSlots() const;
+
+	virtual UWidgetEditingProjectSettings* GetRelevantSettings();
+	virtual const UWidgetEditingProjectSettings* GetRelevantSettings() const;
 
 protected:
 	virtual void LoadModulesRequiredForCompilation() override;

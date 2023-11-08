@@ -13,20 +13,12 @@ namespace UnrealBuildTool.Rules
 
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
-					"Core",
-					"CoreUObject",
 					"MediaAssets",
 				});
 
 			PrivateIncludePathModuleNames.AddRange(
 				new string[] {
 					"Media",
-					"WmfMedia",
-				});
-
-			PrivateIncludePaths.AddRange(
-				new string[] {
-					"WmfMediaFactory/Private",
 				});
 
 			PublicDependencyModuleNames.AddRange(

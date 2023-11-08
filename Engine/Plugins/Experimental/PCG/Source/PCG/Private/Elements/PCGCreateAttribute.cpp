@@ -3,10 +3,12 @@
 #include "Elements/PCGCreateAttribute.h"
 
 #include "PCGContext.h"
+#include "PCGCustomVersion.h"
 #include "PCGParamData.h"
 #include "PCGPin.h"
 #include "Data/PCGSpatialData.h"
 #include "Elements/Metadata/PCGMetadataElementCommon.h"
+#include "Metadata/Accessors/PCGAttributeAccessorHelpers.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PCGCreateAttribute)
 
@@ -19,9 +21,10 @@ namespace PCGCreateAttributeConstants
 	const FName NodeNameCreateAttribute = TEXT("CreateAttribute");
 	const FText NodeTitleCreateAttribute = LOCTEXT("NodeTitleCreateAttribute", "Create Attribute");
 	const FName AttributesLabel = TEXT("Attributes");
+	const FText AttributesTooltip = LOCTEXT("AttributesTooltip", "Optional Attribute Set to create from. Not used if not connected.");
 }
 
-void UPCGCreateAttributeSettings::PostLoad()
+void UPCGCreateAttributeBaseSettings::PostLoad()
 {
 	Super::PostLoad();
 
@@ -46,70 +49,76 @@ void UPCGCreateAttributeSettings::PostLoad()
 		Type_DEPRECATED = EPCGMetadataTypes::Double;
 		DoubleValue_DEPRECATED = 0.0;
 	}
+
+	if (SourceParamAttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource.SetAttributeName(SourceParamAttributeName_DEPRECATED);
+		SourceParamAttributeName_DEPRECATED = NAME_None;
+	}
 #endif // WITH_EDITOR
 }
 
-FName UPCGCreateAttributeSettings::AdditionalTaskName() const
+EPCGDataType UPCGCreateAttributeBaseSettings::GetCurrentPinTypes(const UPCGPin* InPin) const
 {
-	return AdditionalTaskNameInternal(PCGCreateAttributeConstants::NodeNameAddAttribute);
+	check(InPin);
+	if (!HasDynamicPins() || !InPin->IsOutputPin())
+	{
+		return Super::GetCurrentPinTypes(InPin);
+	}
+
+	// Output pin narrows to union of inputs on first pin
+	const EPCGDataType PrimaryInputType = GetTypeUnionOfIncidentEdges(PCGPinConstants::DefaultInputLabel);
+	return (PrimaryInputType != EPCGDataType::None) ? PrimaryInputType : EPCGDataType::Param; // No input (None) means param.
 }
 
 #if WITH_EDITOR
-FName UPCGCreateAttributeSettings::GetDefaultNodeName() const
+bool UPCGCreateAttributeBaseSettings::IsPinUsedByNodeExecution(const UPCGPin* InPin) const
 {
-	return PCGCreateAttributeConstants::NodeNameAddAttribute;
+	return !InPin || (InPin->Properties.Label != PCGCreateAttributeConstants::AttributesLabel) || InPin->IsConnected();
 }
 
-FText UPCGCreateAttributeSettings::GetDefaultNodeTitle() const
+bool UPCGCreateAttributeBaseSettings::CanEditChange(const FProperty* InProperty) const
 {
-	return PCGCreateAttributeConstants::NodeTitleAddAttribute;
+	if (!InProperty || !Super::CanEditChange(InProperty))
+	{
+		return false;
+	}
+
+	const UPCGNode* Node = Cast<UPCGNode>(GetOuter());
+	const bool AttributesPinIsConnected = Node ? Node->IsInputPinConnected(PCGCreateAttributeConstants::AttributesLabel) : false;
+
+	if (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UPCGCreateAttributeBaseSettings, InputSource))
+	{
+		return AttributesPinIsConnected;
+	}
+	else if (InProperty->GetOwnerStruct() == FPCGMetadataTypesConstantStruct::StaticStruct())
+	{
+		return !AttributesPinIsConnected;
+	}
+
+	return true;
 }
 #endif // WITH_EDITOR
 
-TArray<FPCGPinProperties> UPCGCreateAttributeSettings::InputPinProperties() const
-{
-	TArray<FPCGPinProperties> PinProperties;
-
-	EPCGDataType PrimaryInputType = GetTypeUnionOfIncidentEdges(PCGPinConstants::DefaultInputLabel);
-	if (PrimaryInputType == EPCGDataType::None)
-	{
-		// Fall back to Any if no edges, or no overlap in types (which should not normally occur).
-		PrimaryInputType = EPCGDataType::Any;
-	}
-
-	PinProperties.Emplace(PCGPinConstants::DefaultInputLabel, PrimaryInputType);
-
-	if (bFromSourceParam)
-	{
-		PinProperties.Emplace(PCGCreateAttributeConstants::AttributesLabel, EPCGDataType::Param);
-	}
-
-	return PinProperties;
-}
-
-TArray<FPCGPinProperties> UPCGCreateAttributeSettings::OutputPinProperties() const
-{
-	FPCGPinProperties PinProperties;
-	PinProperties.Label = PCGPinConstants::DefaultOutputLabel;
-
-	PinProperties.AllowedTypes = GetTypeUnionOfIncidentEdges(PCGPinConstants::DefaultInputLabel);
-	if (PinProperties.AllowedTypes == EPCGDataType::None)
-	{
-		// Nothing connected or incompatible types - output Param.
-		PinProperties.AllowedTypes = EPCGDataType::Param;
-	}
-
-	return { PinProperties };
-}
-
-FPCGElementPtr UPCGCreateAttributeSettings::CreateElement() const
+FPCGElementPtr UPCGCreateAttributeBaseSettings::CreateElement() const
 {
 	return MakeShared<FPCGCreateAttributeElement>();
 }
 
-FName UPCGCreateAttributeSettings::AdditionalTaskNameInternal(FName NodeName) const
+FName UPCGCreateAttributeBaseSettings::AdditionalTaskNameInternal(FName NodeName) const
 {
-	if (bFromSourceParam)
+	if (HasAnyFlags(RF_ClassDefaultObject))
+	{
+		return NodeName;
+	}
+
+	const UPCGNode* Node = Cast<UPCGNode>(GetOuter());
+	const bool AttributesPinIsConnected = Node ? Node->IsInputPinConnected(PCGCreateAttributeConstants::AttributesLabel) : false;
+
+	const FName OutputAttributeName = GetOutputAttributeName(AttributesPinIsConnected ? &InputSource : nullptr, nullptr);
+	const FName SourceParamAttributeName = InputSource.GetName();
+
+	if (ShouldAddAttributesPin() && AttributesPinIsConnected)
 	{
 		if ((OutputAttributeName == NAME_None) && (SourceParamAttributeName == NAME_None))
 		{
@@ -127,10 +136,93 @@ FName UPCGCreateAttributeSettings::AdditionalTaskNameInternal(FName NodeName) co
 	}
 }
 
+UPCGAddAttributeSettings::UPCGAddAttributeSettings()
+{
+	OutputTarget.SetAttributeName(NAME_None);
+}
+
+FName UPCGAddAttributeSettings::AdditionalTaskName() const
+{
+	return AdditionalTaskNameInternal(PCGCreateAttributeConstants::NodeNameAddAttribute);
+}
+
+void UPCGAddAttributeSettings::PostLoad()
+{
+	Super::PostLoad();
+
+#if WITH_EDITOR
+	if (OutputAttributeName_DEPRECATED != NAME_None)
+	{
+		OutputTarget.SetAttributeName(OutputAttributeName_DEPRECATED);
+		OutputAttributeName_DEPRECATED = NAME_None;
+	}
+#endif // WITH_EDITOR
+}
+
+#if WITH_EDITOR
+FName UPCGAddAttributeSettings::GetDefaultNodeName() const
+{
+	return PCGCreateAttributeConstants::NodeNameAddAttribute;
+}
+
+FText UPCGAddAttributeSettings::GetDefaultNodeTitle() const
+{
+	return PCGCreateAttributeConstants::NodeTitleAddAttribute;
+}
+
+void UPCGAddAttributeSettings::ApplyDeprecation(UPCGNode* InOutNode)
+{
+	const bool AttributesPinIsConnected = InOutNode ? InOutNode->IsInputPinConnected(PCGCreateAttributeConstants::AttributesLabel) : false;
+
+	if (DataVersion < FPCGCustomVersion::UpdateAddAttributeWithSelectors
+		&& OutputTarget.GetSelection() == EPCGAttributePropertySelection::Attribute
+		&& OutputTarget.GetAttributeName() == NAME_None
+		&& AttributesPinIsConnected)
+	{
+		// Previous behavior of the output target for this node was:
+		// None => Source if Attributes pin is connected
+		OutputTarget.SetAttributeName(PCGMetadataAttributeConstants::SourceAttributeName);
+	}
+
+	Super::ApplyDeprecation(InOutNode);
+}
+#endif // WITH_EDITOR
+
+TArray<FPCGPinProperties> UPCGAddAttributeSettings::InputPinProperties() const
+{
+	TArray<FPCGPinProperties> PinProperties;
+	PinProperties.Emplace(PCGPinConstants::DefaultInputLabel, EPCGDataType::Any);
+	PinProperties.Emplace(PCGCreateAttributeConstants::AttributesLabel, EPCGDataType::Param, /*bInAllowMultipleConnections=*/true, /*bAllowMultipleData=*/true, PCGCreateAttributeConstants::AttributesTooltip);
+
+	return PinProperties;
+}
+
+TArray<FPCGPinProperties> UPCGAddAttributeSettings::OutputPinProperties() const
+{
+	FPCGPinProperties PinProperties;
+	PinProperties.Label = PCGPinConstants::DefaultOutputLabel;
+	PinProperties.AllowedTypes = EPCGDataType::Any;
+
+	return { PinProperties };
+}
+
 UPCGCreateAttributeSetSettings::UPCGCreateAttributeSetSettings()
 {
 	// No input pin to grab source param from
 	bDisplayFromSourceParamSetting = false;
+}
+
+void UPCGCreateAttributeSetSettings::PostLoad()
+{
+	Super::PostLoad();
+
+#if WITH_EDITOR
+	if (OutputAttributeName_DEPRECATED != NAME_None)
+	{
+		OutputTarget.SetAttributeName(OutputAttributeName_DEPRECATED);
+		OutputAttributeName_DEPRECATED = NAME_None;
+	}
+#endif // WITH_EDITOR
 }
 
 #if WITH_EDITOR
@@ -145,13 +237,17 @@ FText UPCGCreateAttributeSetSettings::GetDefaultNodeTitle() const
 }
 #endif // WITH_EDITOR
 
+TArray<FPCGPinProperties> UPCGCreateAttributeSetSettings::InputPinProperties() const
+{
+	return TArray<FPCGPinProperties>();
+}
+
 TArray<FPCGPinProperties> UPCGCreateAttributeSetSettings::OutputPinProperties() const
 {
-	FPCGPinProperties PinProperties;
-	PinProperties.Label = PCGPinConstants::DefaultOutputLabel;
-	PinProperties.AllowedTypes = EPCGDataType::Param;
+	TArray<FPCGPinProperties> PinProperties;
+	PinProperties.Emplace(PCGPinConstants::DefaultOutputLabel, EPCGDataType::Param);
 
-	return { PinProperties };
+	return PinProperties;
 }
 
 FName UPCGCreateAttributeSetSettings::AdditionalTaskName() const
@@ -165,21 +261,16 @@ bool FPCGCreateAttributeElement::ExecuteInternal(FPCGContext* Context) const
 
 	check(Context);
 
-	const UPCGCreateAttributeSettings* Settings = Context->GetInputSettings<UPCGCreateAttributeSettings>();
+	const UPCGCreateAttributeBaseSettings* Settings = Context->GetInputSettings<UPCGCreateAttributeBaseSettings>();
 	check(Settings);
 
 	TArray<FPCGTaggedData> SourceParams = Context->InputData.GetInputsByPin(PCGCreateAttributeConstants::AttributesLabel);
 	UPCGParamData* SourceParamData = nullptr;
 	FName SourceParamAttributeName = NAME_None;
+	FName OutputAttributeName = NAME_None;
 
-	if (Settings->bFromSourceParam)
+	if (!SourceParams.IsEmpty())
 	{
-		if (SourceParams.IsEmpty())
-		{
-			PCGE_LOG(Error, GraphAndLog, LOCTEXT("ParamNotProvided", "Source attribute was not provided"));
-			return true;
-		}
-
 		SourceParamData = CastChecked<UPCGParamData>(SourceParams[0].Data);
 
 		if (!SourceParamData->Metadata)
@@ -188,13 +279,20 @@ bool FPCGCreateAttributeElement::ExecuteInternal(FPCGContext* Context) const
 			return true;
 		}
 
-		SourceParamAttributeName = (Settings->SourceParamAttributeName == NAME_None) ? SourceParamData->Metadata->GetLatestAttributeNameOrNone() : Settings->SourceParamAttributeName;
+		FPCGAttributePropertyInputSelector InputSource = Settings->InputSource.CopyAndFixLast(SourceParamData);
+
+		SourceParamAttributeName = InputSource.GetName();
+		OutputAttributeName = Settings->GetOutputAttributeName(&InputSource, SourceParamData);
 
 		if (!SourceParamData->Metadata->HasAttribute(SourceParamAttributeName))
 		{
 			PCGE_LOG(Error, GraphAndLog, FText::Format(LOCTEXT("ParamMissingAttribute", "Source Attribute Set data does not have an attribute '{0}'"), FText::FromName(SourceParamAttributeName)));
 			return true;
 		}
+	}
+	else
+	{
+		OutputAttributeName = Settings->GetOutputAttributeName(nullptr, nullptr);
 	}
 
 	TArray<FPCGTaggedData> Inputs = Context->InputData.GetInputsByPin(PCGPinConstants::DefaultInputLabel);
@@ -251,18 +349,42 @@ bool FPCGCreateAttributeElement::ExecuteInternal(FPCGContext* Context) const
 			continue;
 		}
 
-		const FName OutputAttributeName = (Settings->bFromSourceParam && Settings->OutputAttributeName == NAME_None) ? SourceParamAttributeName : Settings->OutputAttributeName;
-
 		FPCGMetadataAttributeBase* Attribute = nullptr;
 
-		if (Settings->bFromSourceParam)
+		if (SourceParamData)
 		{
-			const FPCGMetadataAttributeBase* SourceAttribute = SourceParamData->Metadata->GetConstAttribute(SourceParamAttributeName);
-			Attribute = Metadata->CopyAttribute(SourceAttribute, OutputAttributeName, /*bKeepParent=*/false, /*bCopyEntries=*/bShouldAddNewEntry, /*bCopyValues=*/bShouldAddNewEntry);
+			const FPCGAttributePropertyInputSelector InputSource = Settings->InputSource.CopyAndFixLast(SourceParamData);
+
+			// If no field accessor, copy over the attribute
+			if (InputSource.GetExtraNames().IsEmpty())
+			{
+				const FPCGMetadataAttributeBase* SourceAttribute = SourceParamData->Metadata->GetConstAttribute(SourceParamAttributeName);
+				Attribute = Metadata->CopyAttribute(SourceAttribute, OutputAttributeName, /*bKeepParent=*/false, /*bCopyEntries=*/bShouldAddNewEntry, /*bCopyValues=*/bShouldAddNewEntry);
+			}
+			else // Create a new attribute of the accessed field's type manually
+			{
+				TUniquePtr<const IPCGAttributeAccessor> InputAccessor = PCGAttributeAccessorHelpers::CreateConstAccessor(SourceParamData, InputSource);
+				TUniquePtr<const IPCGAttributeAccessorKeys> InputKeys = PCGAttributeAccessorHelpers::CreateConstKeys(SourceParamData, InputSource);
+				if (!InputAccessor.IsValid() || !InputKeys.IsValid())
+				{
+					PCGE_LOG(Error, GraphAndLog, LOCTEXT("FailedToCreateInputAccessor", "Failed to create input accessor"));
+					return true;
+				}
+
+				auto CreateOutputAttribute = [Metadata, OutputAttributeName, &InputAccessor, &InputKeys]<typename Type>(Type Dummy) -> FPCGMetadataAttributeBase*
+				{
+					// Get the value from the input accessor and pass that as the default value
+					Type Value{};
+					InputAccessor->Get<Type>(Value, *InputKeys);
+					return PCGMetadataElementCommon::ClearOrCreateAttribute<Type>(Metadata, OutputAttributeName, Value);
+				};
+
+				Attribute = PCGMetadataAttribute::CallbackWithRightType(InputAccessor->GetUnderlyingType(), CreateOutputAttribute);
+			}
 		}
 		else
 		{
-			Attribute = ClearOrCreateAttribute(Settings, Metadata, &OutputAttributeName);
+			Attribute = ClearOrCreateAttribute(Settings, Metadata, OutputAttributeName);
 		}
 
 		if (!Attribute)
@@ -276,7 +398,7 @@ bool FPCGCreateAttributeElement::ExecuteInternal(FPCGContext* Context) const
 		Output.Data = OutputData;
 
 		// Add a new entry if it is a param data and not from source (because entries are already copied)
-		if (bShouldAddNewEntry && !Settings->bFromSourceParam)
+		if (bShouldAddNewEntry && !SourceParamData)
 		{
 			// If the metadata is empty, we need to add a new entry, so set it to PCGInvalidEntryKey.
 			// Otherwise, use the entry key 0.
@@ -288,19 +410,19 @@ bool FPCGCreateAttributeElement::ExecuteInternal(FPCGContext* Context) const
 	return true;
 }
 
-FPCGMetadataAttributeBase* FPCGCreateAttributeElement::ClearOrCreateAttribute(const UPCGCreateAttributeSettings* Settings, UPCGMetadata* Metadata, const FName* OutputAttributeNameOverride) const
+FPCGMetadataAttributeBase* FPCGCreateAttributeElement::ClearOrCreateAttribute(const UPCGCreateAttributeBaseSettings* Settings, UPCGMetadata* Metadata, const FName OutputAttributeName) const
 {
 	check(Metadata);
 
-	auto CreateAttribute = [Settings, Metadata, OutputAttributeNameOverride](auto&& Value) -> FPCGMetadataAttributeBase*
+	auto CreateAttribute = [Settings, Metadata, OutputAttributeName](auto&& Value) -> FPCGMetadataAttributeBase*
 	{
-		return PCGMetadataElementCommon::ClearOrCreateAttribute(Metadata, OutputAttributeNameOverride ? *OutputAttributeNameOverride : Settings->OutputAttributeName, std::forward<decltype(Value)>(Value));
+		return PCGMetadataElementCommon::ClearOrCreateAttribute(Metadata, OutputAttributeName, std::forward<decltype(Value)>(Value));
 	};
 
 	return Settings->AttributeTypes.Dispatcher(CreateAttribute);
 }
 
-PCGMetadataEntryKey FPCGCreateAttributeElement::SetAttribute(const UPCGCreateAttributeSettings* Settings, FPCGMetadataAttributeBase* Attribute, UPCGMetadata* Metadata, PCGMetadataEntryKey EntryKey) const
+PCGMetadataEntryKey FPCGCreateAttributeElement::SetAttribute(const UPCGCreateAttributeBaseSettings* Settings, FPCGMetadataAttributeBase* Attribute, UPCGMetadata* Metadata, PCGMetadataEntryKey EntryKey) const
 {
 	check(Attribute && Metadata);
 

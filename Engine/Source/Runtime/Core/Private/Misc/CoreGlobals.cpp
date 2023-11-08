@@ -10,6 +10,7 @@
 #include "Misc/TrackedActivity.h"
 #include "Misc/Compression.h"
 #include "Misc/LazySingleton.h"
+#include "Misc/PlayInEditorLoadingScope.h"
 #include "Misc/CommandLine.h"
 #include "ProfilingDebugging/MiscTrace.h"
 #include "GenericPlatform/GenericPlatformCrashContext.h"
@@ -17,6 +18,14 @@
 #ifndef FAST_PATH_UNIQUE_NAME_GENERATION
 #define FAST_PATH_UNIQUE_NAME_GENERATION (!WITH_EDITORONLY_DATA)
 #endif
+
+#ifndef UE_PROJECT_NAME
+#define UE_PROJECT_NAME None
+#define UE_IS_GAME_AGNOSTIC true
+#else
+#define UE_IS_GAME_AGNOSTIC false
+#endif
+
 
 #define LOCTEXT_NAMESPACE "Core"
 
@@ -106,7 +115,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #if UE_GAME || UE_SERVER
 	// In monolithic builds, implemented by the IMPLEMENT_GAME_MODULE macro or by UnrealGame module.
 	#if !IS_MONOLITHIC
-		bool GIsGameAgnosticExe = true;
+		bool GIsGameAgnosticExe = UE_IS_GAME_AGNOSTIC;
 	#endif
 #else
 	// In monolithic Editor builds, implemented by the IMPLEMENT_GAME_MODULE macro or by UnrealGame module.
@@ -115,7 +124,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		#if IS_PROGRAM || IS_MONOLITHIC
 			bool GIsGameAgnosticExe = false;
 		#else
-			bool GIsGameAgnosticExe = true;
+			bool GIsGameAgnosticExe = UE_IS_GAME_AGNOSTIC;
 		#endif
 	#endif //!IS_MONOLITHIC || !UE_EDITOR
 #endif
@@ -178,14 +187,12 @@ bool					PRIVATE_GAllowCommandletAudio 		= false;				/** If true, allow audio ev
 #if WITH_EDITORONLY_DATA
 bool					GIsEditor						= false;					/* Whether engine was launched for editing */
 bool					GIsImportingT3D					= false;					/* Whether editor is importing T3D */
-bool					GIsUCCMakeStandaloneHeaderGenerator = false;				/* Are we rebuilding script via the standalone header generator? */
 bool					GIsTransacting					= false;					/* true if there is an undo/redo operation in progress. */
 bool					GIntraFrameDebuggingGameThread	= false;					/* Indicates that the game thread is currently paused deep in a call stack; do not process any game thread tasks */
 bool					GFirstFrameIntraFrameDebugging	= false;					/* Indicates that we're currently processing the first frame of intra-frame debugging */
 #elif USING_CODE_ANALYSIS
 // These are always false during 'non-editor code analysis', just like they would be when #defined.
 bool					GIsEditor						= false;
-bool					GIsUCCMakeStandaloneHeaderGenerator = false;
 bool					GIntraFrameDebuggingGameThread	= false;
 bool					GFirstFrameIntraFrameDebugging	= false;
 #endif // !WITH_EDITORONLY_DATA
@@ -236,7 +243,8 @@ FString				GInstallBundleIni;											/* Install Bundle ini filename*/
 FString				GDeviceProfilesIni;											/* Runtime DeviceProfiles ini filename - use LoadLocalIni for other platforms' DPs */
 FString				GGameplayTagsIni;											/* Gameplay tags for the GameplayTagManager */
 
-float					GNearClippingPlane				= 10.0f;				/* Near clipping plane */
+float				GNearClippingPlane					= 10.0f;				/* Near clipping plane */
+float				GNearClippingPlane_RenderThread		= 10.0f;				/* Near clipping plane (Render Thread accessible) */
 
 bool					GExitPurge						= false;
 
@@ -244,22 +252,22 @@ FChunkedFixedUObjectArray* GCoreObjectArrayForDebugVisualizers = nullptr;
 
 namespace UE::CoreUObject::Private
 {
-	struct FStoredObjectPath;
+	struct FStoredObjectPathDebug;
 	struct FObjectHandlePackageDebugData;
 }
-UE::CoreUObject::Private::FStoredObjectPath* GCoreComplexObjectPathDebug = nullptr;
+UE::CoreUObject::Private::FStoredObjectPathDebug* GCoreComplexObjectPathDebug = nullptr;
 UE::CoreUObject::Private::FObjectHandlePackageDebugData* GCoreObjectHandlePackageDebug = nullptr;
 #if PLATFORM_UNIX
 uint8** CORE_API GNameBlocksDebug = FNameDebugVisualizer::GetBlocks();
 FChunkedFixedUObjectArray*& CORE_API GObjectArrayForDebugVisualizers = GCoreObjectArrayForDebugVisualizers;
-UE::CoreUObject::Private::FStoredObjectPath*& GComplexObjectPathDebug = GCoreComplexObjectPathDebug;
+UE::CoreUObject::Private::FStoredObjectPathDebug*& GComplexObjectPathDebug = GCoreComplexObjectPathDebug;
 UE::CoreUObject::Private::FObjectHandlePackageDebugData*& CORE_API GObjectHandlePackageDebug = GCoreObjectHandlePackageDebug;
 #endif
 
 /** Game name, used for base game directory and ini among other things										*/
 #if (!IS_MONOLITHIC && !IS_PROGRAM)
 // In modular game builds, the game name will be set when the application launches
-TCHAR					GInternalProjectName[64]					= TEXT("None");
+TCHAR					GInternalProjectName[64]					= TEXT(PREPROCESSOR_TO_STRING(UE_PROJECT_NAME));
 #elif !IS_MONOLITHIC && IS_PROGRAM
 // In non-monolithic programs builds, the game name will be set by the module, but not just yet, so we need to NOT initialize it!
 TCHAR					GInternalProjectName[64];
@@ -338,7 +346,7 @@ bool					GIsCookerLoadingPackage = false;
 /** Whether GWorld points to the play in editor world														*/
 bool					GIsPlayInEditorWorld			= false;
 /** Unique ID for multiple PIE instances running in one process */
-int32					GPlayInEditorID					= -1;
+FPlayInEditorID			GPlayInEditorID;
 /** Whether or not PIE was attempting to play from PlayerStart							*/
 bool					GIsPIEUsingPlayerStart			= false;
 /** true if the runtime needs textures to be powers of two													*/
@@ -741,6 +749,88 @@ FIsDuplicatingClassForReinstancing::operator bool() const
 	return PRIVATE_GIsDuplicatingClassForReinstancing;
 }
 
+namespace PlayInEditorIDImpl
+{
+	int32 PRIVATE_GPlayInEditorID_GameThread = -1;
+	// We need to differentiate between the game-thread being identified as the loading thread during postload 
+	// and the actual loading thread to avoid scopes to overlap and race between both threads.
+	int32 PRIVATE_GPlayInEditorID_GameThreadAsLoadingThread = -2;
+	int32 PRIVATE_GPlayInEditorID_ActualLoadingThread = -2;
+
+	static int32* GetPointer()
+	{
+		if (IsInAsyncLoadingThread())
+		{
+			if (IsInGameThread())
+			{
+				return &PRIVATE_GPlayInEditorID_GameThreadAsLoadingThread;
+			}
+			else
+			{
+				return &PRIVATE_GPlayInEditorID_ActualLoadingThread;
+			}
+		}
+		else if (IsInGameThread())
+		{
+			return &PRIVATE_GPlayInEditorID_GameThread;
+		}
+
+		return nullptr;
+	}
+};
+
+int32 PRIVATE_GetGPlayInEditorID()
+{
+	if (int32* Pointer = PlayInEditorIDImpl::GetPointer())
+	{
+		return *Pointer;
+	}
+	else
+	{
+		// GPlayInEditorID doesn't have a value on worker threads. If it's needed, it should be captured in the task context.
+		return -1;
+	}
+}
+
+void PRIVATE_SetGPlayInEditorID(int32 InValue)
+{
+	if (int32* Pointer = PlayInEditorIDImpl::GetPointer())
+	{
+		*Pointer = InValue;
+	}
+	else
+	{
+		// There is no value on worker thread... so just do nothing here. -1 is always returned anyway.
+	}
+}
+
+namespace UE::Core::Private
+{
+	FPlayInEditorLoadingScope::FPlayInEditorLoadingScope(int32 PlayInEditorID)
+		: OldValue(PRIVATE_GetGPlayInEditorID())
+	{
+		PRIVATE_SetGPlayInEditorID(PlayInEditorID);
+	}
+
+	FPlayInEditorLoadingScope::~FPlayInEditorLoadingScope()
+	{
+		PRIVATE_SetGPlayInEditorID(OldValue);
+	}
+}
+
+FPlayInEditorID& FPlayInEditorID::operator= (int32 InOther)
+{
+	PRIVATE_SetGPlayInEditorID(InOther);
+	return *this;
+}
+
+FPlayInEditorID::operator int32() const
+{
+	int32 Value = PRIVATE_GetGPlayInEditorID();
+	checkf(Value != -2, TEXT("GPlayInEditorID has not been properly forwarded by the loading-thread."));
+	return Value;
+}
+
 #undef LOCTEXT_NAMESPACE
 
 bool IsRunningCookOnTheFly()
@@ -752,11 +842,7 @@ bool IsRunningCookOnTheFly()
 		FCookOnTheFlyCommandline(const TCHAR* CmdLine)
 		{
 			FString Host;
-			bParsed = FParse::Param(CmdLine, TEXT("CookOnTheFly")) && FParse::Value(CmdLine, TEXT("-ZenStoreHost="), Host);
-			if (!bParsed)	
-			{
-				bParsed = FParse::Value(CmdLine, TEXT("-FileHostIP="), Host);
-			}
+			bParsed = FParse::Value(CmdLine, TEXT("-FileHostIP="), Host);
 		}
 	} CookOnTheFlyCommandline(FCommandLine::Get());
 	

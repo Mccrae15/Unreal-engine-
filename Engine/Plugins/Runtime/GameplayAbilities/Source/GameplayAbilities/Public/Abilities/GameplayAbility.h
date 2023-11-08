@@ -291,7 +291,7 @@ public:
 	/** Returns the time in seconds remaining on the currently active cooldown and the original duration for this cooldown. */
 	virtual void GetCooldownTimeRemainingAndDuration(FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, float& TimeRemaining, float& CooldownDuration) const;
 
-	/** Returns all tags that are currently on cooldown */
+	/** Returns all tags that can put this ability into cooldown */
 	virtual const FGameplayTagContainer* GetCooldownTags() const;
 	
 	/** Returns true if none of the ability's tags are blocked and if it doesn't have a "Blocking" tag and has all "Required" tags. */
@@ -404,6 +404,7 @@ public:
 	virtual void SetCurrentMontage(class UAnimMontage* InCurrentMontage);
 
 	/** Movement Sync */
+	UE_DEPRECATED(5.3, "This serves no purpose and will be removed in future engine versions")
 	virtual void SetMovementSyncPoint(FName SyncName);
 
 	// ----------------------------------------------------------------------------------------------------------------

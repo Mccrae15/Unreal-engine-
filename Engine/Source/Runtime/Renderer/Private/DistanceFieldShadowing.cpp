@@ -592,14 +592,15 @@ void CullDistanceFieldObjectsForLight(
 		FCullObjectsForShadowCS::FPermutationDomain PermutationVector;
 		PermutationVector.Set< FCullObjectsForShadowCS::FPrimitiveType >(PrimitiveType);
 		auto ComputeShader = View.ShaderMap->GetShader<FCullObjectsForShadowCS>(PermutationVector);
-		const int32 GroupSize = FMath::DivideAndRoundUp<uint32>(NumObjectsInBuffer, UpdateObjectsGroupSize);
+
+		const FIntVector GroupCount = FComputeShaderUtils::GetGroupCountWrapped(NumObjectsInBuffer, UpdateObjectsGroupSize);
 
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
 			RDG_EVENT_NAME("CullMeshSDFObjectsToFrustum"),
 			ComputeShader,
 			PassParameters,
-			FIntVector(GroupSize, 1, 1));
+			GroupCount);
 	}
 
 	// Allocate tile resolution based on world space size
@@ -700,33 +701,12 @@ bool SupportsHeightFieldShadows(ERHIFeatureLevel::Type FeatureLevel, EShaderPlat
 
 bool FSceneRenderer::ShouldPrepareForDistanceFieldShadows() const
 {
-	bool bSceneHasRayTracedDFShadows = false;
-
-	for (auto LightIt = Scene->Lights.CreateConstIterator(); LightIt; ++LightIt)
+	if (!ViewFamily.EngineShowFlags.DynamicShadows || !SupportsDistanceFieldShadows(Scene->GetFeatureLevel(), Scene->GetShaderPlatform()))
 	{
-		const FLightSceneInfoCompact& LightSceneInfoCompact = *LightIt;
-		const FLightSceneInfo* const LightSceneInfo = LightSceneInfoCompact.LightSceneInfo;
-
-		if (LightSceneInfo->ShouldRenderLightViewIndependent())
-		{
-			const FVisibleLightInfo& VisibleLightInfo = VisibleLightInfos[LightSceneInfo->Id];
-
-			for (int32 ShadowIndex = 0; ShadowIndex < VisibleLightInfo.AllProjectedShadows.Num(); ShadowIndex++)
-			{
-				const FProjectedShadowInfo* ProjectedShadowInfo = VisibleLightInfo.AllProjectedShadows[ShadowIndex];
-
-				if (ProjectedShadowInfo->bRayTracedDistanceField)
-				{
-					bSceneHasRayTracedDFShadows = true;
-					break;
-				}
-			}
-		}
+		return false;
 	}
 
-	return ViewFamily.EngineShowFlags.DynamicShadows 
-		&& bSceneHasRayTracedDFShadows
-		&& SupportsDistanceFieldShadows(Scene->GetFeatureLevel(), Scene->GetShaderPlatform());
+	return true;
 }
 
 bool FSceneRenderer::ShouldPrepareHeightFieldScene() const
@@ -881,7 +861,7 @@ FRDGTextureRef FProjectedShadowInfo::RenderRayTracedDistanceFieldProjection(
 
 		if (Scene->DistanceFieldSceneData.NumObjectsInBuffer > 0)
 		{
-			check(!Scene->DistanceFieldSceneData.HasPendingOperations());
+			ensure(!Scene->DistanceFieldSceneData.HasPendingOperations());
 
 			FDistanceFieldObjectBufferParameters ObjectBufferParameters = DistanceField::SetupObjectBufferParameters(GraphBuilder, Scene->DistanceFieldSceneData);
 

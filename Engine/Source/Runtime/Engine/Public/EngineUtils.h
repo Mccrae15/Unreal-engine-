@@ -35,8 +35,8 @@ class UPrimitiveComponent;
 struct HActor : public HHitProxy
 {
 	DECLARE_HIT_PROXY( ENGINE_API )
-	AActor* Actor;
-	const UPrimitiveComponent* PrimComponent;
+	TObjectPtr<AActor> Actor;
+	TObjectPtr<const UPrimitiveComponent> PrimComponent;
 	int32 SectionIndex;
 	int32 MaterialIndex;
 
@@ -106,7 +106,7 @@ struct HBSPBrushVert : public HHitProxy
 struct HStaticMeshVert : public HHitProxy
 {
 	DECLARE_HIT_PROXY( ENGINE_API );
-	AActor*	Actor;
+	TObjectPtr<AActor>	Actor;
 	FVector Vertex;
 	HStaticMeshVert(AActor* InActor,FVector InVertex):
 		HHitProxy(HPP_UI),
@@ -659,7 +659,7 @@ private:
 /**
  * An output device that forwards output to both the log and the console.
  */
-class ENGINE_API FConsoleOutputDevice : public FStringOutputDevice
+class FConsoleOutputDevice : public FStringOutputDevice
 {
 	typedef FStringOutputDevice Super;
 
@@ -673,7 +673,7 @@ public:
 		Console(InConsole)
 	{}
 
-	virtual void Serialize(const TCHAR* Text, ELogVerbosity::Type Verbosity, const class FName& Category) override;
+	ENGINE_API virtual void Serialize(const TCHAR* Text, ELogVerbosity::Type Verbosity, const class FName& Category) override;
 
 private:
 
@@ -712,6 +712,7 @@ struct FSubLevelActorDetails
 struct FSubLevelStatus
 {
 	FName				PackageName;
+	FString				LevelLabel;
 	EStreamingStatus	StreamingStatus;
 	int32				LODIndex;
 	bool				bInConsiderList;
@@ -750,14 +751,6 @@ struct FContentComparisonAssetInfo
 			(AssetName == Other.AssetName) &&
 			(ResourceSize == Other.ResourceSize)
 			);
-	}
-
-	/** operator = */
-	FContentComparisonAssetInfo& operator=(const FContentComparisonAssetInfo& Other)
-	{
-		AssetName = Other.AssetName;
-		ResourceSize = Other.ResourceSize;
-		return *this;
 	}
 };
 
@@ -817,7 +810,7 @@ namespace EngineUtils
 }
 
 /** Helper class for serializing flags describing which data have been stripped (if any). */
-class ENGINE_API FStripDataFlags
+class FStripDataFlags
 {
 	/** Serialized engine strip flags (up to 8 flags). */
 	uint8 GlobalStripFlags;
@@ -851,7 +844,7 @@ public:
 	 * @param InClassFlags - User defined per class flags .
 	 * @param InVersion - Minimal strip version required to serialize strip flags
 	 */
-	explicit FStripDataFlags(FArchive& Ar, uint8 InClassFlags = 0, const FPackageFileVersion& InVersion = GOldestLoadablePackageFileUEVersion);
+	ENGINE_API explicit FStripDataFlags(FArchive& Ar, uint8 InClassFlags = 0, const FPackageFileVersion& InVersion = GOldestLoadablePackageFileUEVersion);
 	UE_DEPRECATED(5.0, "Use the other overload that takes InVersion as a FPackageFileVersion. See the @FPackageFileVersion documentation for further details")
 	inline FStripDataFlags(FArchive& Ar, uint8 InClassFlags, int32 InVersion)
 		: FStripDataFlags(Ar, InClassFlags, FPackageFileVersion::CreateUE4Version(InVersion))
@@ -869,7 +862,7 @@ public:
 	 * @param InClassFlags - User defined per class flags.
 	 * @param InVersion - Minimal version required to serialize strip flags
 	 */
-	FStripDataFlags( FArchive& Ar, uint8 InGlobalFlags, uint8 InClassFlags, const FPackageFileVersion& InVersion = GOldestLoadablePackageFileUEVersion);
+	ENGINE_API FStripDataFlags( FArchive& Ar, uint8 InGlobalFlags, uint8 InClassFlags, const FPackageFileVersion& InVersion = GOldestLoadablePackageFileUEVersion);
 	UE_DEPRECATED(5.0, "Use the other overload that takes InVersion as a FPackageFileVersion. See the @FPackageFileVersion documentation for further details")
 	inline FStripDataFlags(FArchive& Ar, uint8 InGlobalFlags, uint8 InClassFlags, int32 InVersion)
 		: FStripDataFlags(Ar, InGlobalFlags, InClassFlags, FPackageFileVersion::CreateUE4Version(InVersion))
@@ -886,7 +879,7 @@ public:
 	* @param InClassFlags - User defined per class flags .
 	* @param InVersion - Minimal strip version required to serialize strip flags
 	*/
-	explicit FStripDataFlags(FStructuredArchive::FSlot Slot, uint8 InClassFlags = 0, const FPackageFileVersion& InVersion = GOldestLoadablePackageFileUEVersion);
+	ENGINE_API explicit FStripDataFlags(FStructuredArchive::FSlot Slot, uint8 InClassFlags = 0, const FPackageFileVersion& InVersion = GOldestLoadablePackageFileUEVersion);
 	UE_DEPRECATED(5.0, "Use the other overload that takes InVersion as a FPackageFileVersion. See the @FPackageFileVersion documentation for further details")
 	inline FStripDataFlags(FStructuredArchive::FSlot Slot, uint8 InClassFlags, int32 InVersion)
 		: FStripDataFlags(Slot, InClassFlags, FPackageFileVersion::CreateUE4Version(InVersion))
@@ -904,7 +897,7 @@ public:
 	* @param InClassFlags - User defined per class flags.
 	* @param InVersion - Minimal version required to serialize strip flags
 	*/
-	FStripDataFlags(FStructuredArchive::FSlot Slot, uint8 InGlobalFlags, uint8 InClassFlags, const FPackageFileVersion& InVersion = GOldestLoadablePackageFileUEVersion);
+	ENGINE_API FStripDataFlags(FStructuredArchive::FSlot Slot, uint8 InGlobalFlags, uint8 InClassFlags, const FPackageFileVersion& InVersion = GOldestLoadablePackageFileUEVersion);
 	UE_DEPRECATED(5.0, "Use the other overload that takes InVersion as a FPackageFileVersion. See the @FPackageFileVersion documentation for further details")
 	inline FStripDataFlags(FStructuredArchive::FSlot Slot, uint8 InGlobalFlags, uint8 InClassFlags, int32 InVersion)
 		: FStripDataFlags(Slot, InGlobalFlags, InClassFlags, FPackageFileVersion::CreateUE4Version(InVersion))

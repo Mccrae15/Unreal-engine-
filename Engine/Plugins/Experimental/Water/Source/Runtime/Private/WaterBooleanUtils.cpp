@@ -1029,7 +1029,7 @@ void FWaterBooleanUtils::GenerateSubtractSweepConvexDecomposition(const FDynamic
 	if (MaxBinIndex == 1 && ZHistogram[1] == 0)
 	{
 		BaseZ = Bounds.Center().Z;		// if we did not find a bin to cut at, this might be a through-hole, so cut at the middle ? failure case really..
-		UE_LOG(LogWater, Warning, TEXT("UE::Water::GenerateSubtractSweepConvexDecomposition : Invalid Configuration - either no cut, or through-hole"));
+		UE_LOG(LogWater, Display, TEXT("UE::Water::GenerateSubtractSweepConvexDecomposition : Invalid Configuration - either no cut, or through-hole"));
 	}
 
 	// set up the "bottom" box

@@ -21,6 +21,9 @@ using System.Threading.Tasks;
 using EpicGames.BuildGraph.Expressions;
 using AutomationTool.Tasks;
 
+using static AutomationTool.CommandUtils;
+using System.Runtime.InteropServices;
+
 namespace AutomationTool
 {
 	/// <summary>
@@ -136,12 +139,14 @@ namespace AutomationTool
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="P4Env"></param>
-		internal BgEnvironment(P4Environment P4Env)
+		/// <param name="Branch">The current branch</param>
+		/// <param name="Change">Changelist being built</param>
+		/// <param name="CodeChange">Code changelist being built</param>
+		internal BgEnvironment(string Branch, int? Change, int? CodeChange)
 		{
-			this.Stream = P4Env?.Branch ?? "Unknown";
-			this.Change = P4Env?.Changelist ?? 0;
-			this.CodeChange = P4Env?.CodeChangelist ?? 0;
+			this.Stream = Branch ?? "Unknown";
+			this.Change = Change ?? 0;
+			this.CodeChange = CodeChange ?? 0;
 			this.IsBuildMachine = CommandUtils.IsBuildMachine;
 
 			ReadOnlyBuildVersion Version = ReadOnlyBuildVersion.Current;
@@ -262,13 +267,18 @@ namespace AutomationTool
 				}
 			}
 
+			// Get the standard P4 properties, defaulting to the environment variables if not set. This allows setting p4-like properties without having a P4 connection.
+			string Branch = P4Enabled ? P4Env.Branch : GetEnvVarOrNull(EnvVarNames.BuildRootP4);
+			int? Change = P4Enabled ? P4Env.Changelist : GetEnvVarIntOrNull(EnvVarNames.Changelist);
+			int? CodeChange = P4Enabled ? P4Env.CodeChangelist : GetEnvVarIntOrNull(EnvVarNames.CodeChangelist);
+
 			// Set up the standard properties which build scripts might need
 			Dictionary<string, string> DefaultProperties = new Dictionary<string,string>(StringComparer.InvariantCultureIgnoreCase);
-			DefaultProperties["Branch"] = P4Enabled ? P4Env.Branch : "Unknown";
-			DefaultProperties["Depot"] = P4Enabled ? DefaultProperties["Branch"].Substring(2).Split('/').First() : "Unknown";
-			DefaultProperties["EscapedBranch"] = P4Enabled ? CommandUtils.EscapePath(P4Env.Branch) : "Unknown";
-			DefaultProperties["Change"] = P4Enabled ? P4Env.Changelist.ToString() : "0";
-			DefaultProperties["CodeChange"] = P4Enabled ? P4Env.CodeChangelist.ToString() : "0";
+			DefaultProperties["Branch"] = Branch ?? "Unknown";
+			DefaultProperties["Depot"] = (Branch != null && Branch.StartsWith("//", StringComparison.Ordinal))? Branch.Substring(2).Split('/').First() : "Unknown";
+			DefaultProperties["EscapedBranch"] = String.IsNullOrEmpty(Branch) ? "Unknown" : CommandUtils.EscapePath(Branch);
+			DefaultProperties["Change"] = (Change ?? 0).ToString();
+			DefaultProperties["CodeChange"] = (CodeChange ?? 0).ToString();
 			DefaultProperties["IsBuildMachine"] = IsBuildMachine ? "true" : "false";
 			DefaultProperties["HostPlatform"] = HostPlatform.Current.HostEditorPlatform.ToString();
 			DefaultProperties["RestrictedFolderNames"] = String.Join(";", RestrictedFolder.GetNames());
@@ -278,7 +288,7 @@ namespace AutomationTool
 			// Look for overrides
 			if (!string.IsNullOrEmpty(BranchOverride))
 			{
-				LogInformation("Overriding default branch '{0}' with '{1}'", DefaultProperties["Branch"], BranchOverride);
+				Logger.LogInformation("Overriding default branch '{Branch}' with '{BranchOverride}'", DefaultProperties["Branch"], BranchOverride);
 				DefaultProperties["Branch"] = BranchOverride;
 				DefaultProperties["EscapedBranch"] = CommandUtils.EscapePath(DefaultProperties["Branch"]);
 			}
@@ -303,6 +313,15 @@ namespace AutomationTool
 				DefaultProperties["EngineCompatibleChange"] = Version.CompatibleChangelist.ToString();
 			}
 
+			// If the -project flag is given, pass useful information into the graph
+			FileReference ProjectFile = ParseProjectParam();
+			if (ProjectFile != null)
+			{
+				DefaultProperties["ProjectName"] = ProjectFile.GetFileNameWithoutExtension();
+				DefaultProperties["ProjectFile"] = ProjectFile.FullName;
+				DefaultProperties["ProjectDir"] = ProjectFile.Directory.FullName;
+			}
+
 			// Add any additional custom arguments from the command line (of the form -Set:X=Y)
 			Dictionary<string, string> Arguments = new Dictionary<string, string>(StringComparer.InvariantCultureIgnoreCase);
 			foreach (string Param in Params)
@@ -317,7 +336,7 @@ namespace AutomationTool
 					}
 					else
 					{
-						LogWarning("Missing value for '{0}'", Param.Substring(SetPrefix.Length));
+						Logger.LogWarning("Missing value for '{Arg0}'", Param.Substring(SetPrefix.Length));
 					}
 				}
 
@@ -340,7 +359,7 @@ namespace AutomationTool
 					}
 					else
 					{
-						LogWarning("Missing value for '{0}'", Param.Substring(AppendPrefix.Length));
+						Logger.LogWarning("Missing value for '{Arg0}'", Param.Substring(AppendPrefix.Length));
 					}
 				}
 			}
@@ -381,7 +400,7 @@ namespace AutomationTool
 				}
 
 				BgGraphBuilder Builder = (BgGraphBuilder)Activator.CreateInstance(BuilderType);
-				BgGraph GraphSpec = Builder.CreateGraph(new BgEnvironment(P4Enabled ? P4Env : null));
+				BgGraph GraphSpec = Builder.CreateGraph(new BgEnvironment(Branch, Change, CodeChange));
 
 				(byte[] Data, BgThunkDef[] Methods) = BgCompiler.Compile(GraphSpec);
 
@@ -411,7 +430,7 @@ namespace AutomationTool
 					if (SchemaFileName != null)
 					{
 						FileReference FullSchemaFileName = new FileReference(SchemaFileName);
-						LogInformation("Writing schema to {0}...", FullSchemaFileName.FullName);
+						Logger.LogInformation("Writing schema to {Arg0}...", FullSchemaFileName.FullName);
 						Schema.Export(FullSchemaFileName);
 						if (ScriptFileName == null)
 						{
@@ -423,7 +442,7 @@ namespace AutomationTool
 				// Check there was a script specified
 				if (ScriptFileName == null)
 				{
-					LogError("Missing -Script= parameter for BuildGraph");
+					Logger.LogError("Missing -Script= parameter for BuildGraph");
 					return ExitCode.Error_Unknown;
 				}
 
@@ -462,7 +481,7 @@ namespace AutomationTool
 			{
 				if (!bListOnly && SingleNodeName == null)
 				{
-					LogError("Missing -Target= parameter for BuildGraph");
+					Logger.LogError("Missing -Target= parameter for BuildGraph");
 					return ExitCode.Error_Unknown;
 				}
 				TargetNodes.UnionWith(Graph.Agents.SelectMany(x => x.Nodes));
@@ -487,7 +506,7 @@ namespace AutomationTool
 					BgNodeDef[] Nodes;
 					if(!Graph.TryResolveReference(TargetName, out Nodes))
 					{
-						LogError("Target '{0}' is not in graph", TargetName);
+						Logger.LogError("Target '{TargetName}' is not in graph", TargetName);
 						return ExitCode.Error_Unknown;
 					}
 					TargetNodes.UnionWith(Nodes);
@@ -503,12 +522,12 @@ namespace AutomationTool
 				// List out all the required tokens
 				if (SingleNodeName == null)
 				{
-					CommandUtils.LogInformation("Required tokens:");
+					Logger.LogInformation("Required tokens:");
 					foreach(BgNodeDef Node in TargetNodes)
 					{
 						foreach(FileReference RequiredToken in Node.RequiredTokens)
 						{
-							CommandUtils.LogInformation("  '{0}' requires {1}", Node, RequiredToken);
+							Logger.LogInformation("  '{Node}' requires {RequiredToken}", Node, RequiredToken);
 						}
 					}
 				}
@@ -540,12 +559,12 @@ namespace AutomationTool
 						HashSet<BgNodeDef> SkipNodes = new HashSet<BgNodeDef>();
 						foreach(IGrouping<string, FileReference> MissingTokensForBuild in MissingTokens.GroupBy(x => x.Value, x => x.Key))
 						{
-							LogInformation("Skipping the following nodes due to {0}:", MissingTokensForBuild.Key);
+							Logger.LogInformation("Skipping the following nodes due to {Arg0}:", MissingTokensForBuild.Key);
 							foreach(FileReference MissingToken in MissingTokensForBuild)
 							{
 								foreach(BgNodeDef SkipNode in TargetNodes.Where(x => x.RequiredTokens.Contains(MissingToken) && SkipNodes.Add(x)))
 								{
-									LogInformation("    {0}", SkipNode);
+									Logger.LogInformation("    {SkipNode}", SkipNode);
 								}
 							}
 						}
@@ -554,14 +573,14 @@ namespace AutomationTool
 						if(SkipNodes.Count > 0)
 						{
 							TargetNodes.ExceptWith(SkipNodes);
-							LogInformation("Remaining target nodes:");
+							Logger.LogInformation("Remaining target nodes:");
 							foreach(BgNodeDef TargetNode in TargetNodes)
 							{
-								LogInformation("    {0}", TargetNode);
+								Logger.LogInformation("    {TargetNode}", TargetNode);
 							}
 							if(TargetNodes.Count == 0)
 							{
-								LogInformation("    None.");
+								Logger.LogInformation("    None.");
 							}
 						}
 					}
@@ -570,7 +589,7 @@ namespace AutomationTool
 						foreach(KeyValuePair<FileReference, string> Pair in MissingTokens)
 						{
 							List<BgNodeDef> SkipNodes = TargetNodes.Where(x => x.RequiredTokens.Contains(Pair.Key)).ToList();
-							LogError("Cannot run {0} due to previous build: {1}", String.Join(", ", SkipNodes), Pair.Value);
+							Logger.LogError("Cannot run {Arg0} due to previous build: {Arg1}", String.Join(", ", SkipNodes), Pair.Value);
 						}
 						foreach(FileReference CreatedToken in CreatedTokens)
 						{
@@ -596,7 +615,7 @@ namespace AutomationTool
 			if (PreprocessedFileName != null)
 			{
 				FileReference PreprocessedFileLocation = new FileReference(PreprocessedFileName);
-				LogInformation("Writing {0}...", PreprocessedFileLocation);
+				Logger.LogInformation("Writing {PreprocessedFileLocation}...", PreprocessedFileLocation);
 				Graph.Write(PreprocessedFileLocation, (SchemaFileName != null)? new FileReference(SchemaFileName) : null);
 				bListOnly = true;
 			}
@@ -605,7 +624,7 @@ namespace AutomationTool
 			BgNodeDef SingleNode = null;
 			if(SingleNodeName != null && !Graph.NameToNode.TryGetValue(SingleNodeName, out SingleNode))
 			{
-				LogError("Node '{0}' is not in the trimmed graph", SingleNodeName);
+				Logger.LogError("Node '{SingleNodeName}' is not in the trimmed graph", SingleNodeName);
 				return ExitCode.Error_Unknown;
 			}
 
@@ -624,15 +643,15 @@ namespace AutomationTool
 				{
 					if(Diagnostic.Level == LogLevel.Information)
 					{
-						CommandUtils.LogInformation("{0}({1}): {2}", Diagnostic.File, Diagnostic.Line, Diagnostic.Message);
+						Logger.LogInformation("{Arg0}({Arg1}): {Arg2}", Diagnostic.File, Diagnostic.Line, Diagnostic.Message);
 					}
 					else if(Diagnostic.Level == LogLevel.Warning)
 					{
-						CommandUtils.LogWarning("{0}({1}): warning: {2}", Diagnostic.File, Diagnostic.Line, Diagnostic.Message);
+						Logger.LogWarning("{Arg0}({Arg1}): warning: {Arg2}", Diagnostic.File, Diagnostic.Line, Diagnostic.Message);
 					}
 					else
 					{
-						CommandUtils.LogError("{0}({1}): error: {2}", Diagnostic.File, Diagnostic.Line, Diagnostic.Message);
+						Logger.LogError("{Arg0}({Arg1}): error: {Arg2}", Diagnostic.File, Diagnostic.Line, Diagnostic.Message);
 					}
 				}
 				if (Diagnostics.Any(x => x.Level == LogLevel.Error))
@@ -732,7 +751,7 @@ namespace AutomationTool
 				}
 				catch (ReflectionTypeLoadException ex)
 				{
-					LogWarning("Exception {0} while trying to get types from assembly {1}. LoaderExceptions: {2}", ex, LoadedAssembly, string.Join("\n", ex.LoaderExceptions.Select(x => x.Message)));
+					Logger.LogWarning("Exception {ex} while trying to get types from assembly {LoadedAssembly}. LoaderExceptions: {Arg2}", ex, LoadedAssembly, string.Join("\n", ex.LoaderExceptions.Select(x => x.Message)));
 					continue;
 				}
 
@@ -768,7 +787,7 @@ namespace AutomationTool
 				}
 				catch (ReflectionTypeLoadException ex)
 				{
-					LogWarning("Exception {0} while trying to get types from assembly {1}. LoaderExceptions: {2}", ex, LoadedAssembly, string.Join("\n", ex.LoaderExceptions.Select(x => x.Message)));
+					Logger.LogWarning("Exception {ex} while trying to get types from assembly {LoadedAssembly}. LoaderExceptions: {Arg2}", ex, LoadedAssembly, string.Join("\n", ex.LoaderExceptions.Select(x => x.Message)));
 					continue;
 				}
 
@@ -778,12 +797,12 @@ namespace AutomationTool
 					{
 						if(!Type.IsSubclassOf(typeof(BgTaskImpl)))
 						{
-							CommandUtils.LogError("Class '{0}' has TaskElementAttribute, but is not derived from 'BgTaskImpl'", Type.Name);
+							Logger.LogError("Class '{Arg0}' has TaskElementAttribute, but is not derived from 'BgTaskImpl'", Type.Name);
 							return false;
 						}
 						if(NameToTask.ContainsKey(ElementAttribute.Name))
 						{
-							CommandUtils.LogError("Found multiple handlers for task elements called '{0}'", ElementAttribute.Name);
+							Logger.LogError("Found multiple handlers for task elements called '{Arg0}'", ElementAttribute.Name);
 							return false;
 						}
 						NameToTask.Add(ElementAttribute.Name, new ScriptTaskBinding(ElementAttribute.Name, Type, ElementAttribute.ParametersType));
@@ -929,18 +948,61 @@ namespace AutomationTool
 			int NodeIdx = 0;
 			foreach(BgNodeDef NodeToExecute in NodesToExecute)
 			{
-				LogInformation("****** [{0}/{1}] {2}", ++NodeIdx, NodesToExecute.Length, NodeToExecute.Name);
+				Logger.LogInformation("****** [{Arg0}/{Arg1}] {Arg2}", ++NodeIdx, NodesToExecute.Length, NodeToExecute.Name);
 				if(!Storage.IsComplete(NodeToExecute.Name))
 				{
-					LogInformation("");
+					Logger.LogInformation("");
 					if(!await BuildNodeAsync(Job, Graph, NodeToExecute, NodeToExecutor, Storage, bWithBanner: false))
 					{
 						return false;
 					} 
-					LogInformation("");
+					Logger.LogInformation("");
 				}
 			}
 			return true;
+		}
+
+		/// <summary>
+		/// Helper class to execute a cleanup script on termination
+		/// </summary>
+		class CleanupScriptRunner : IDisposable
+		{
+			readonly ILogger _logger;
+			readonly FileReference _scriptFile;
+
+			public CleanupScriptRunner(ILogger logger)
+			{
+				_logger = logger;
+
+				string CleanupScriptEnvVar = Environment.GetEnvironmentVariable(CustomTask.CleanupScriptEnvVarName);
+				if (String.IsNullOrEmpty(CleanupScriptEnvVar))
+				{
+					string extension = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "bat" : "sh";
+					_scriptFile = FileReference.Combine(Unreal.EngineDirectory, "Intermediate", $"OnExit.{extension}");
+					FileReference.Delete(_scriptFile);
+					Environment.SetEnvironmentVariable(CustomTask.CleanupScriptEnvVarName, _scriptFile.FullName);
+				}
+			}
+
+			public void Dispose()
+			{
+				if (_scriptFile != null)
+				{
+					if (FileReference.Exists(_scriptFile))
+					{
+						_logger.LogInformation("Executing cleanup commands from {ScriptFile}", _scriptFile);
+						if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+						{
+							CommandUtils.Run(BuildHostPlatform.Current.Shell.FullName, $"/C {CommandLineArguments.Quote(_scriptFile.FullName)}");
+						}
+						else
+						{
+							CommandUtils.Run(BuildHostPlatform.Current.Shell.FullName, CommandLineArguments.Quote(_scriptFile.FullName));
+						}
+					}
+					Environment.SetEnvironmentVariable(CustomTask.CleanupScriptEnvVarName, null);
+				}
+			}
 		}
 
 		/// <summary>
@@ -957,6 +1019,9 @@ namespace AutomationTool
 		{
 			DirectoryReference RootDir = new DirectoryReference(CommandUtils.CmdEnv.LocalRoot);
 
+			// Register something to execute cleanup commands
+			using CleanupScriptRunner CleanupRunner = new CleanupScriptRunner(Logger);
+
 			// Create the mapping of tag names to file sets
 			Dictionary<string, HashSet<FileReference>> TagNameToFileSet = new Dictionary<string,HashSet<FileReference>>();
 
@@ -964,7 +1029,7 @@ namespace AutomationTool
 			HashSet<TempStorageBlock> InputStorageBlocks = new HashSet<TempStorageBlock>();
 			foreach(BgNodeOutput Input in Node.Inputs)
 			{
-				TempStorageFileList FileList = Storage.ReadFileList(Input.ProducingNode.Name, Input.TagName);
+				TempStorageTagManifest FileList = Storage.ReadFileList(Input.ProducingNode.Name, Input.TagName);
 				TagNameToFileSet[Input.TagName] = FileList.ToFileSet(RootDir);
 				InputStorageBlocks.UnionWith(FileList.Blocks);
 			}
@@ -992,7 +1057,7 @@ namespace AutomationTool
 					TempStorageBlock CurrentStorageBlock;
 					if(FileToStorageBlock.TryGetValue(File, out CurrentStorageBlock) && !TempStorage.IsDuplicateBuildProduct(File))
 					{
-						LogError("File '{0}' was produced by {1} and {2}", File, InputStorageBlock, CurrentStorageBlock);
+						Logger.LogError("File '{File}' was produced by {InputStorageBlock} and {CurrentStorageBlock}", File, InputStorageBlock, CurrentStorageBlock);
 					}
 					FileToStorageBlock[File] = InputStorageBlock;
 				}
@@ -1008,7 +1073,7 @@ namespace AutomationTool
 			if(bWithBanner)
 			{
 				Console.WriteLine();
-				CommandUtils.LogInformation("========== Starting: {0} ==========", Node.Name);
+				Logger.LogInformation("========== Starting: {Arg0} ==========", Node.Name);
 			}
 			if(!await NodeToExecutor[Node].ExecuteAsync(Job, TagNameToFileSet))
 			{
@@ -1016,7 +1081,7 @@ namespace AutomationTool
 			}
 			if(bWithBanner)
 			{
-				CommandUtils.LogInformation("========== Finished: {0} ==========", Node.Name);
+				Logger.LogInformation("========== Finished: {Arg0} ==========", Node.Name);
 				Console.WriteLine();
 			}
 
@@ -1129,6 +1194,9 @@ namespace AutomationTool
 					Storage.Archive(Node.Name, Pair.Key, Pair.Value.ToArray(), Pair.Value.Any(x => ReferencedOutputFiles.Contains(x)));
 				}
 
+				// Find all the output tags that are published artifacts
+				Dictionary<string, BgArtifactDef> outputNameToArtifact = Graph.Artifacts.ToDictionary(x => x.Tag, x => x);
+
 				// Publish all the output tags
 				foreach (BgNodeOutput Output in Node.Outputs)
 				{
@@ -1143,14 +1211,42 @@ namespace AutomationTool
 							StorageBlocks.Add(StorageBlock);
 						}
 					}
+					
+					IEnumerable<string> Keys = Enumerable.Empty<string>();
+					if (outputNameToArtifact.TryGetValue(Output.TagName, out BgArtifactDef artifact))
+					{
+						Keys = artifact.Keys;
+					}
 
-					Storage.WriteFileList(Node.Name, Output.TagName, Files, StorageBlocks.ToArray());
+					Storage.WriteFileList(Node.Name, Output.TagName, Files, StorageBlocks.ToArray(), Keys);
 				}
 			}
 
 			// Mark the node as succeeded
 			Storage.MarkAsComplete(Node.Name);
 			return true;
+		}
+
+		/// <summary>
+		/// Gets an environment variable, returning null if it's not set or empty.
+		/// </summary>
+		static string GetEnvVarOrNull(string Name)
+		{
+			string EnvVar = Environment.GetEnvironmentVariable(Name);
+			return String.IsNullOrEmpty(EnvVar) ? null : EnvVar;
+		}
+
+		/// <summary>
+		/// Gets an environment variable as an integer, returning null if it's not set or empty.
+		/// </summary>
+		static int? GetEnvVarIntOrNull(string Name)
+		{
+			string EnvVar = GetEnvVarOrNull(Name);
+			if (EnvVar != null && Int32.TryParse(EnvVar, out int Value))
+			{
+				return Value;
+			}
+			return null;
 		}
 
 		/// <summary>
@@ -1323,7 +1419,7 @@ namespace AutomationTool
 		/// <param name="OutputFile">The output file to write to</param>
 		static void WriteDocumentationHTML(Dictionary<string, ScriptTaskBinding> NameToTask, Dictionary<string, XmlElement> MemberNameToElement, FileReference OutputFile)
 		{
-			LogInformation("Writing {0}...", OutputFile);
+			Logger.LogInformation("Writing {OutputFile}...", OutputFile);
 			using (StreamWriter Writer = new StreamWriter(OutputFile.FullName))
 			{
 				Writer.WriteLine("<html>");

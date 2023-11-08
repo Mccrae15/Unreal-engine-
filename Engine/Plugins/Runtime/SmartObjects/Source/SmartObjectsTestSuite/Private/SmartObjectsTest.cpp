@@ -1,9 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AITestsCommon.h"
+#include "Engine/World.h"
 #include "GameplayTagsManager.h"
-#include "MassExecutor.h"
-#include "MassEntityManager.h"
 #include "SmartObjectComponent.h"
 #include "SmartObjectTestTypes.h"
 #include "WorldConditions/SmartObjectWorldConditionObjectTagQuery.h"
@@ -41,18 +40,12 @@ FNativeGameplayTags FNativeGameplayTags::StaticInstance;
 
 struct FSmartObjectTestBase : FAITestBase
 {
+	FSmartObjectActorUserData TestContextData;
 	FSmartObjectRequestFilter TestFilter;
 	USmartObjectDefinition* Definition = nullptr;
 	USmartObjectTestSubsystem* Subsystem = nullptr;
 	TArray<USmartObjectComponent*> SOList;
-	TSharedPtr<FMassEntityManager> EntityManager;
 	int32 NumCreatedSlots = 0;
-
-	FMassEntityManager& GetEntityManagerRef()
-	{
-		check(EntityManager);
-		return *EntityManager.Get();
-	}
 
 	/** Callback that derived classes can override to tweak the SmartObjectDefinition before the runtime gets initialized */
 	virtual bool SetupDefinition() { return true; }
@@ -60,10 +53,6 @@ struct FSmartObjectTestBase : FAITestBase
 	virtual bool SetUp() override
 	{
 		UWorld* World = FAITestHelpers::GetWorld();
-
-		EntityManager = MakeShareable(new FMassEntityManager);
-		EntityManager->SetDebugName(TEXT("MassEntityTestSuite"));
-		EntityManager->Initialize();
 
 		Subsystem = NewAutoDestroyObject<USmartObjectTestSubsystem>(World);
 		if (Subsystem == nullptr)
@@ -121,10 +110,7 @@ struct FSmartObjectTestBase : FAITestBase
 			}
 		}
 
-		Subsystem->RebuildAndInitializeForTesting(EntityManager);
-
-		FMassProcessingContext ProcessingContext(GetEntityManagerRef(), /* DeltaSeconds */ 0.f);
-		UE::Mass::Executor::RunProcessorsView(TArrayView<UMassProcessor*>(), ProcessingContext);
+		Subsystem->RebuildAndInitializeForTesting();
 
 		return true;
 	}
@@ -198,7 +184,7 @@ struct FClaimAndReleaseSmartObject : FSmartObjectTestBase
 		Subsystem->FindSlots(FirstFindResult.SmartObjectHandle, TestFilter, ResultsBeforeClaim);
 
 		// Claim candidate
-		const FSmartObjectClaimHandle ClaimHandle = Subsystem->Claim(FirstFindResult);
+		const FSmartObjectClaimHandle ClaimHandle = Subsystem->MarkSlotAsClaimed(FirstFindResult.SlotHandle);
 		AITEST_TRUE("ClaimHandle.IsValid()", ClaimHandle.IsValid());
 
 		// Gather remaining available candidates
@@ -207,7 +193,7 @@ struct FClaimAndReleaseSmartObject : FSmartObjectTestBase
 		AITEST_NOT_EQUAL("Number of available slots before and after a claim", ResultsBeforeClaim.Num(), ResultsAfterClaim.Num());
 
 		// Release claimed candidate
-		const bool bSuccess = Subsystem->Release(ClaimHandle);
+		const bool bSuccess = Subsystem->MarkSlotAsFree(ClaimHandle);
 		AITEST_TRUE("Release() return status", bSuccess);
 
 		// Gather all available candidates after releasing
@@ -232,7 +218,7 @@ struct FFindAfterClaimSmartObject : FSmartObjectTestBase
 		AITEST_TRUE("Result.SmartObjectHandle.IsValid()", FirstFindResult.SmartObjectHandle.IsValid());
 
 		// Claim first candidate
-		const FSmartObjectClaimHandle FirstClaimHandle = Subsystem->Claim(FirstFindResult);
+		const FSmartObjectClaimHandle FirstClaimHandle = Subsystem->MarkSlotAsClaimed(FirstFindResult.SlotHandle);
 		AITEST_TRUE("ClaimHandle.IsValid() after first find result", FirstClaimHandle.IsValid());
 
 		// Find second candidate
@@ -259,11 +245,11 @@ struct FDoubleClaimSmartObject : FSmartObjectTestBase
 		AITEST_TRUE("Result.SmartObjectHandle.IsValid()", PreClaimResult.SmartObjectHandle.IsValid());
 
 		// Claim first candidate
-		const FSmartObjectClaimHandle FirstHdl = Subsystem->Claim(PreClaimResult);
+		const FSmartObjectClaimHandle FirstHdl = Subsystem->MarkSlotAsClaimed(PreClaimResult.SlotHandle);
 		AITEST_TRUE("ClaimHandle.IsValid() after first claim", FirstHdl.IsValid());
 
 		// Claim first candidate again
-		const FSmartObjectClaimHandle SecondHdl = Subsystem->Claim(PreClaimResult);
+		const FSmartObjectClaimHandle SecondHdl = Subsystem->MarkSlotAsClaimed(PreClaimResult.SlotHandle);
 		AITEST_FALSE("ClaimHandle.IsValid() after second claim", SecondHdl.IsValid());
 
 		return true;
@@ -283,15 +269,15 @@ struct FUseAndReleaseSmartObject : FSmartObjectTestBase
 		AITEST_TRUE("Result.SmartObjectHandle.IsValid()", PreClaimResult.SmartObjectHandle.IsValid());
 
 		// Claim & Use candidate
-		const FSmartObjectClaimHandle Hdl = Subsystem->Claim(PreClaimResult);
+		const FSmartObjectClaimHandle Hdl = Subsystem->MarkSlotAsClaimed(PreClaimResult.SlotHandle);
 		AITEST_TRUE("ClaimHandle.IsValid()", Hdl.IsValid());
 
 		// Use specific behavior
-		const USmartObjectBehaviorDefinition* BehaviorDefinition = Subsystem->Use<USmartObjectBehaviorDefinition>(Hdl);
+		const USmartObjectBehaviorDefinition* BehaviorDefinition = Subsystem->MarkSlotAsOccupied<USmartObjectBehaviorDefinition>(Hdl);
 		AITEST_NOT_NULL("Behavior definition pointer", BehaviorDefinition);
 
 		// Release candidate
-		const bool bSuccess = Subsystem->Release(Hdl);
+		const bool bSuccess = Subsystem->MarkSlotAsFree(Hdl);
 		AITEST_TRUE("Release() return status", bSuccess);
 
 		return true;
@@ -314,9 +300,9 @@ struct FFindAfterUseSmartObject : FSmartObjectTestBase
 		AITEST_TRUE("Result.SmartObjectHandle.IsValid()", FirstFindResult.SmartObjectHandle.IsValid());
 
 		// Claim & Use first candidate
-		const FSmartObjectClaimHandle FirstClaimHandle = Subsystem->Claim(FirstFindResult);
+		const FSmartObjectClaimHandle FirstClaimHandle = Subsystem->MarkSlotAsClaimed(FirstFindResult.SlotHandle);
 		AITEST_TRUE("ClaimHandle.IsValid() after first claim", FirstClaimHandle.IsValid());
-		const USmartObjectBehaviorDefinition* FirstDefinition = Subsystem->Use<USmartObjectBehaviorDefinition>(FirstClaimHandle);
+		const USmartObjectBehaviorDefinition* FirstDefinition = Subsystem->MarkSlotAsOccupied<USmartObjectBehaviorDefinition>(FirstClaimHandle);
 		AITEST_NOT_NULL("Behavior definition pointer", FirstDefinition);
 
 		// Find second candidate
@@ -327,9 +313,9 @@ struct FFindAfterUseSmartObject : FSmartObjectTestBase
 		AITEST_NOT_EQUAL("Result is expected to point to a different slot since first slot was claimed", FirstFindResult.SlotHandle, SecondFindResult.SlotHandle);
 
 		// Claim & use second candidate
-		const FSmartObjectClaimHandle SecondClaimHandle = Subsystem->Claim(SecondFindResult);
+		const FSmartObjectClaimHandle SecondClaimHandle = Subsystem->MarkSlotAsClaimed(SecondFindResult.SlotHandle);
 		AITEST_TRUE("ClaimHandle.IsValid() after second claim", SecondClaimHandle.IsValid());
-		const USmartObjectBehaviorDefinition* SecondDefinition = Subsystem->Use<USmartObjectBehaviorDefinition>(SecondClaimHandle);
+		const USmartObjectBehaviorDefinition* SecondDefinition = Subsystem->MarkSlotAsOccupied<USmartObjectBehaviorDefinition>(SecondClaimHandle);
 		AITEST_NOT_NULL("Behavior definition pointer", SecondDefinition);
 
 		return true;
@@ -360,18 +346,14 @@ struct FSlotCustomData : FSmartObjectTestBase
 		AITEST_NULL("Runtime data pointer", RuntimeData);
 
 		// Claim
-		const FSmartObjectClaimHandle ClaimHandle = Subsystem->Claim(FindResult);
+		const FSmartObjectClaimHandle ClaimHandle = Subsystem->MarkSlotAsClaimed(FindResult.SlotHandle);
 		AITEST_TRUE("ClaimHandle.IsValid() after first claim", ClaimHandle.IsValid());
 
 		// Add new data, note that this will invalidate the view...
 		FSmartObjectSlotTestRuntimeData NewRuntimeData;
 		constexpr float SomeFloatConstant = 654.321f;
 		NewRuntimeData.SomePerInstanceSharedFloat = SomeFloatConstant;
-		Subsystem->AddSlotDataDeferred(ClaimHandle, FConstStructView::Make(NewRuntimeData));
-
-		// We need to run Mass to flush deferred commands
-		FMassProcessingContext ProcessingContext(GetEntityManagerRef(), /* DeltaSeconds */ 0.f);
-		UE::Mass::Executor::RunProcessorsView(TArrayView<UMassProcessor*>(), ProcessingContext);
+		Subsystem->AddSlotData(ClaimHandle, FConstStructView::Make(NewRuntimeData));
 
 		// Fetch a fresh slot view
 		const FSmartObjectSlotView SlotViewAfter = Subsystem->GetSlotView(ClaimHandle.SlotHandle);
@@ -383,6 +365,63 @@ struct FSlotCustomData : FSmartObjectTestBase
 	}
 };
 IMPLEMENT_AI_INSTANT_TEST(FSlotCustomData, "System.AI.SmartObjects.Slot custom data");
+
+struct FDebugUnregister : FSmartObjectTestBase
+{
+	virtual bool InstantTest() override
+	{
+		for (const USmartObjectComponent* SmartObjectComponent : SOList)
+		{
+			AITEST_TRUE("SmartObjectComponent is initially bound to simulation", SmartObjectComponent->IsBoundToSimulation());
+		}
+
+#if WITH_SMARTOBJECT_DEBUG
+		Subsystem->DebugUnregisterAllSmartObjects();
+		for (const USmartObjectComponent* SmartObjectComponent : SOList)
+		{
+			AITEST_FALSE("SmartObjectComponent is not bound to simulation after calling RemoveComponentFromSimulation", SmartObjectComponent->IsBoundToSimulation());
+		}
+#endif // WITH_SMARTOBJECT_DEBUG
+
+		// Simulate a call to EndPlay by calling UnregisterSmartObject after using DebugUnregisterAllSmartObjects
+		for (USmartObjectComponent* SmartObjectComponent : SOList)
+		{
+			Subsystem->UnregisterSmartObject(*SmartObjectComponent);
+			AITEST_FALSE("SmartObjectComponent is not bound to simulation after calling UnregisterSmartObject", SmartObjectComponent->IsBoundToSimulation());
+		}
+
+		return true;
+	}
+};
+IMPLEMENT_AI_INSTANT_TEST(FDebugUnregister, "System.AI.SmartObjects.Debug Unregister");
+
+struct FBoundToSimulation : FSmartObjectTestBase
+{
+	virtual bool InstantTest() override
+	{
+		for (const USmartObjectComponent* SmartObjectComponent : SOList)
+		{
+			AITEST_TRUE("SmartObjectComponent is initially bound to simulation", SmartObjectComponent->IsBoundToSimulation());
+		}
+
+#if WITH_SMARTOBJECT_DEBUG
+		Subsystem->DebugUnregisterAllSmartObjects();
+		for (const USmartObjectComponent* SmartObjectComponent : SOList)
+		{
+			AITEST_FALSE("SmartObjectComponent is not bound to simulation after calling RemoveComponentFromSimulation", SmartObjectComponent->IsBoundToSimulation());
+		}
+
+		Subsystem->DebugRegisterAllSmartObjects();
+		for (const USmartObjectComponent* SmartObjectComponent : SOList)
+		{
+			AITEST_TRUE("SmartObjectComponent is bound to simulation after calling AddComponentToSimulation", SmartObjectComponent->IsBoundToSimulation());
+		}
+#endif // WITH_SMARTOBJECT_DEBUG
+		
+		return true;
+	}
+};
+IMPLEMENT_AI_INSTANT_TEST(FBoundToSimulation, "System.AI.SmartObjects.Add to/Remove from simulation");
 
 struct FActivityTagsMergingPolicy : FSmartObjectTestBase
 {
@@ -736,15 +775,18 @@ struct FInstanceTagsFilter : FSmartObjectTestBase
 			FGameplayTagQueryExpression()
 			.NoTagsMatch()
 			.AddTag(FNativeGameplayTags::Get().TestTag1));
-		ConditionQueryDefinition.EditableConditions.Emplace(0, EWorldConditionOperator::And, FConstStructView::Make(NewCondition));
-		ConditionQueryDefinition.SchemaClass = Definition->GetWorldConditionSchemaClass();
-		ConditionQueryDefinition.Initialize(*Definition);
+		ConditionQueryDefinition.Initialize(Definition, Definition->GetWorldConditionSchemaClass(),
+			{
+				FWorldConditionEditable(0, EWorldConditionOperator::And, FConstStructView::Make(NewCondition))
+			});
 
 		return true;
 	}
 
 	virtual bool InstantTest() override
 	{
+		const FConstStructView ConditionsUserData = FConstStructView::Make(TestContextData);
+		
 		const FSmartObjectRequest DefaultRequest(FSmartObjectTest::QueryBounds, TestFilter);
 
 		FSmartObjectRequestResult SingleResult = Subsystem->FindSmartObject(DefaultRequest);
@@ -755,58 +797,47 @@ struct FInstanceTagsFilter : FSmartObjectTestBase
 		AITEST_EQUAL("Results.Num() for objects without instance tags", Results.Num(), NumCreatedSlots);
 
 		AITEST_NOT_EQUAL("Num results", Results.Num(), 0);
-		const FSmartObjectHandle ObjectToDeactivate = Results.Top().SmartObjectHandle;
+		const FSmartObjectHandle ObjectToDisableByTag = Results.Top().SmartObjectHandle;
 
 		// Find candidate slots
 		TArray<FSmartObjectSlotHandle> SlotHandles;
-		Subsystem->FindSlots(ObjectToDeactivate, TestFilter, SlotHandles);
+		Subsystem->FindSlots(ObjectToDisableByTag, TestFilter, SlotHandles, ConditionsUserData);
 		AITEST_TRUE("Num slot handles", SlotHandles.Num() >= 3);
 
 		// Claim first slot
-		const FSmartObjectClaimHandle FirstClaimHandle = Subsystem->Claim(ObjectToDeactivate, SlotHandles[0]);
+		const FSmartObjectClaimHandle FirstClaimHandle = Subsystem->MarkSlotAsClaimed(SlotHandles[0]);
 		AITEST_TRUE("FirstClaimHandle.IsValid()", FirstClaimHandle.IsValid());
 
 		// Use First slot
-		const USmartObjectBehaviorDefinition* BehaviorDefinition = Subsystem->Use<USmartObjectBehaviorDefinition>(FirstClaimHandle);
+		const USmartObjectBehaviorDefinition* BehaviorDefinition = Subsystem->MarkSlotAsOccupied<USmartObjectBehaviorDefinition>(FirstClaimHandle);
 		AITEST_NOT_NULL("Behavior definition pointer for first slot before activation", BehaviorDefinition);
 
-		// Claim second slot
-		const FSmartObjectClaimHandle SecondClaimHandle = Subsystem->Claim(ObjectToDeactivate, SlotHandles[1]);
-		AITEST_TRUE("SecondClaimHandle.IsValid()", SecondClaimHandle.IsValid());
+		// Apply tag that will cause preconditions to fail for some results
+		AITEST_TRUE("Result should pass selection conditions", Subsystem->EvaluateSelectionConditions(SingleResult.SlotHandle, ConditionsUserData));
+		Subsystem->AddTagToInstance(ObjectToDisableByTag, FNativeGameplayTags::Get().TestTag1);
+		AITEST_FALSE("Result should fail selection conditions", Subsystem->EvaluateSelectionConditions(SingleResult.SlotHandle, ConditionsUserData));
 
-		// Apply tag that will invalid our results
-		Subsystem->AddTagToInstance(ObjectToDeactivate, FNativeGameplayTags::Get().TestTag1);
-
-		FSmartObjectRequestResult SingleResultAfter = Subsystem->FindSmartObject(DefaultRequest);
-		AITEST_FALSE("SingleResult == SingleResultAfter", SingleResult == SingleResultAfter);
-
+		// Find new list of candidates that should exclude all slots from 'ObjectToDisableByTag'
 		TArray<FSmartObjectRequestResult> ResultsAfter;
 		Subsystem->FindSmartObjects(DefaultRequest, ResultsAfter);
 		// (Slot 1 & 2 & 3) = 3 matching slots / object
-		AITEST_EQUAL("Results.Num() for 1 objects with instance tags (InstanceTags=TestTag1)", ResultsAfter.Num(), (SOList.Num()-1) * 3);
+		AITEST_EQUAL("Results.Num() for 1 object with instance tags (InstanceTags=TestTag1)", ResultsAfter.Num(), (SOList.Num()-1) * 3);
 
 		// Find candidate slots from deactivated object
 		TArray<FSmartObjectSlotHandle> SlotHandlesAfter;
-		Subsystem->FindSlots(ObjectToDeactivate, TestFilter, SlotHandlesAfter);
+		Subsystem->FindSlots(ObjectToDisableByTag, TestFilter, SlotHandlesAfter, ConditionsUserData);
 		AITEST_EQUAL("Num slot handles from deactivated object", SlotHandlesAfter.Num(), 0);
 
-		// @todo SO: enable back the following two tests once Claim & Use methods get updated to allow precondition evaluation. 
-		// // Try to claim 3rd slot with previously valid stored results
-		// const FSmartObjectClaimHandle ThirdClaimHandle = Subsystem->Claim(ObjectToDeactivate, SlotHandles[2]);
-		// AITEST_FALSE("ThirdClaimHandle.IsValid()", ThirdClaimHandle.IsValid());
-		//
-		// // Try to use previously claimed 1st slot with previously valid claim handle
-		// const USmartObjectBehaviorDefinition* BehaviorDefinitionAfter = Subsystem->Use<USmartObjectBehaviorDefinition>(SecondClaimHandle);
-		// AITEST_NULL("Behavior definition pointer for second slot after deactivation", BehaviorDefinitionAfter);
+		// Validate that 3rd slot with previously valid stored results can not be claimed or used
+		const bool bThirdClaimPossible = Subsystem->EvaluateSelectionConditions(SlotHandles[2], ConditionsUserData);
+		AITEST_FALSE("bThirdClaimPossible", bThirdClaimPossible);
 
 		// Release all valid claim handles
-		const bool bFirstSlotReleaseSuccess = Subsystem->Release(FirstClaimHandle);
+		const bool bFirstSlotReleaseSuccess = Subsystem->MarkSlotAsFree(FirstClaimHandle);
 		AITEST_TRUE("bFirstSlotReleaseSuccess", bFirstSlotReleaseSuccess);
-		const bool bSecondSlotReleaseSuccess = Subsystem->Release(SecondClaimHandle);
-		AITEST_TRUE("bSecondSlotReleaseSuccess", bSecondSlotReleaseSuccess);
 
 		// Remove tag
-		Subsystem->RemoveTagFromInstance(ObjectToDeactivate, FNativeGameplayTags::Get().TestTag1);
+		Subsystem->RemoveTagFromInstance(ObjectToDisableByTag, FNativeGameplayTags::Get().TestTag1);
 
 		return true;
 	}

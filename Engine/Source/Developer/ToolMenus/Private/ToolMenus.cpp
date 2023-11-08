@@ -219,7 +219,10 @@ public:
 			}
 			else
 			{
-				UE_LOG(LogToolMenus, Error, TEXT("UI command not found for menu entry: %s, menu: %s"), *BlockNameOverride.ToString(), *MenuData->MenuName.ToString());
+				UE_LOG(LogToolMenus, Error, TEXT("UI command not found for menu entry: %s[%s], menu: %s"),
+					*BlockNameOverride.ToString(), 
+					**FTextInspector::GetSourceString(LabelToDisplay.Get()),
+					*MenuData->MenuName.ToString());
 			}
 
 			MenuBuilder.AddMenuEntry(Block.Command, BlockNameOverride, LabelToDisplay, Block.ToolTip, Block.Icon.Get());
@@ -312,7 +315,7 @@ public:
 		}
 		else
 		{
-			UE_LOG(LogToolMenus, Warning, TEXT("Menu '%s', item '%s', type not currently supported: %d"), *MenuData->MenuName.ToString(), *BlockNameOverride.ToString(), Block.Type);
+			UE_LOG(LogToolMenus, Warning, TEXT("Menu '%s', item '%s', type not currently supported: %d"), *MenuData->MenuName.ToString(), *BlockNameOverride.ToString(), int(Block.Type));
 		}
 	};
 
@@ -897,6 +900,11 @@ void UToolMenus::ApplyCustomization(UToolMenu* GeneratedMenu)
 		return;
 	}
 	FCustomizedToolMenu CustomizedMenu = CustomizationHierarchy.GenerateFlattened();
+
+	if (CustomizedMenu.IsSuppressExtenders())
+	{
+		GeneratedMenu->SetExtendersEnabled(false);
+	}
 
 	TArray<FToolMenuSection> NewSections;
 	NewSections.Reserve(GeneratedMenu->Sections.Num());
@@ -1749,7 +1757,7 @@ void UToolMenus::AddReferencedContextObjects(const TSharedRef<FMultiBox>& InMult
 {
 	if (InMenu)
 	{
-		TArray<const UObject*>& References = WidgetObjectReferences.FindOrAdd(InMultiBox);
+		auto& References = WidgetObjectReferences.FindOrAdd(InMultiBox);
 		References.AddUnique(InMenu);
 		for (const TWeakObjectPtr<UObject> WeakObject : InMenu->Context.ContextObjects)
 		{
@@ -2347,49 +2355,79 @@ void UToolMenus::RemoveEntry(const FName MenuName, const FName InSection, const 
 
 void UToolMenus::UnregisterOwnerInternal(FToolMenuOwner InOwner)
 {
-	if (InOwner != FToolMenuOwner())
+	if (InOwner == FToolMenuOwner())
 	{
-		for (auto It = Menus.CreateIterator(); It; ++It)
-		{
-			bool bNeedsRefresh = false;
+		return;
+	}
 
-			UToolMenu* Menu = It->Value;
-			for (int32 SectionIndex = Menu->Sections.Num() - 1; SectionIndex >=0; --SectionIndex)
+	bool bNeedsRefresh = false;
+
+	for (const TPair<FName, TObjectPtr<UToolMenu>>& Pair : Menus)
+	{
+		UToolMenu* Menu = Pair.Value;
+		for (int32 SectionIndex = Menu->Sections.Num() - 1; SectionIndex >= 0; --SectionIndex)
+		{
+			FToolMenuSection& Section = Menu->Sections[SectionIndex];
+			if (Section.RemoveEntriesByOwner(InOwner) > 0)
 			{
-				FToolMenuSection& Section = Menu->Sections[SectionIndex];
-				if (Section.RemoveEntriesByOwner(InOwner) > 0)
+				bNeedsRefresh = true;
+			}
+
+			if (Section.Owner == InOwner)
+			{
+				if (Section.Construct.IsBound())
 				{
+					Section.Construct = FNewSectionConstructChoice();
 					bNeedsRefresh = true;
 				}
 
-				if (Section.Owner == InOwner)
+				if (Section.ToolMenuSectionDynamic)
 				{
-					if (Section.Construct.IsBound())
-					{
-						Section.Construct = FNewSectionConstructChoice();
-						bNeedsRefresh = true;
-					}
+					Section.ToolMenuSectionDynamic = nullptr;
+					bNeedsRefresh = true;
+				}
 
-					if (Section.ToolMenuSectionDynamic)
-					{
-						Section.ToolMenuSectionDynamic = nullptr;
-						bNeedsRefresh = true;
-					}
-
-					if (Section.Blocks.Num() == 0)
-					{
-						Menu->Sections.RemoveAt(SectionIndex, 1, false);
-						bNeedsRefresh = true;
-					}
+				if (Section.Blocks.Num() == 0)
+				{
+					Menu->Sections.RemoveAt(SectionIndex, 1, false);
+					bNeedsRefresh = true;
 				}
 			}
-
-			// Refresh any widgets that are currently displayed to the user
-			if (bNeedsRefresh)
-			{
-				RefreshAllWidgets();
-			}
 		}
+	}
+
+	// Refresh any widgets that are currently displayed to the user
+	if (bNeedsRefresh)
+	{
+		RefreshAllWidgets();
+	}
+}
+
+void UToolMenus::UnregisterRuntimeMenuCustomizationOwner(FName InOwnerName)
+{
+	if (InOwnerName.IsNone())
+	{
+		return;
+	}
+
+	bool bNeedsRefresh = false;
+	for (FCustomizedToolMenu& CustomizedToolMenu : RuntimeCustomizedMenus)
+	{
+		if (CustomizedToolMenu.MenuPermissions.UnregisterOwner(InOwnerName))
+		{
+			bNeedsRefresh = true;
+		}
+
+		if (CustomizedToolMenu.SuppressExtenders.Remove(InOwnerName) > 0)
+		{
+			bNeedsRefresh = true;
+		}
+	}
+
+	// Refresh any widgets that are currently displayed to the user
+	if (bNeedsRefresh)
+	{
+		RefreshAllWidgets();
 	}
 }
 

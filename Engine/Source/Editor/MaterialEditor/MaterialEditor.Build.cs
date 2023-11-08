@@ -8,14 +8,12 @@ public class MaterialEditor : ModuleRules
 	{
 		PrivateIncludePaths.AddRange(
 			new string[] {
-				System.IO.Path.Combine(GetModuleDirectory("GraphEditor"), "Private"),
 			}
 		);
 
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] 
 			{
-				"AssetRegistry", 
 				"AssetTools",
 				"Kismet",
 				"EditorWidgets",

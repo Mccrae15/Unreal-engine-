@@ -25,19 +25,19 @@ namespace UnrealBuildTool.Rules
 				"ApplicationCore",
 				"Core",
 				"CoreUObject",
+				"DecoupledOutputProvider",
 				"Engine",
-				"Projects",
-				"UMG",
-				"RHI",
-				"CinematicCamera",
+				"InputCore",
 				"LiveLinkInterface",
+				"RHI",
 				"PixelCapture",
 				"PixelStreamingEditor",
+				"Projects",
 				"PixelStreamingInput",
-				"SlateCore",
 				"Slate",
+				"SlateCore",
+				"UMG",
 				"VPUtilities",
-				"InputCore"
 			});
 
 			// Can't package non-editor targets (e.g. games) with UnrealEd, so this dependency should only be added in editor.

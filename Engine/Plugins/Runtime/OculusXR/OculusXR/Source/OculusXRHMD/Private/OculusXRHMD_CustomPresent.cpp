@@ -431,14 +431,26 @@ namespace OculusXRHMD
 						TShaderMapRef<FScreenPSMipLevel> PixelShader(ShaderMap);
 						GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 						SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
+#if UE_VERSION_OLDER_THAN(5, 3, 0)
 						PixelShader->SetParameters(RHICmdList, SamplerState, SrcTextureRHI, MipIndex);
+#else
+						FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+						PixelShader->SetParameters(BatchedParameters, SamplerState, SrcTextureRHI, MipIndex);
+						RHICmdList.SetBatchedShaderParameters(RHICmdList.GetBoundPixelShader(), BatchedParameters);
+#endif
 					}
 					else
 					{
 						TShaderMapRef<FScreenPSsRGBSourceMipLevel> PixelShader(ShaderMap);
 						GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 						SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
+#if UE_VERSION_OLDER_THAN(5, 3, 0)
 						PixelShader->SetParameters(RHICmdList, SamplerState, SrcTextureRHI, MipIndex);
+#else
+						FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+						PixelShader->SetParameters(BatchedParameters, SamplerState, SrcTextureRHI, MipIndex);
+						RHICmdList.SetBatchedShaderParameters(RHICmdList.GetBoundPixelShader(), BatchedParameters);
+#endif
 					}
 
 					RHICmdList.SetViewport(DstRect.Min.X, DstRect.Min.Y, 0.0f, DstRect.Min.X + MipViewportWidth, DstRect.Min.Y + MipViewportHeight, 1.0f);
@@ -493,7 +505,13 @@ namespace OculusXRHMD
 					GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 					FRHISamplerState* SamplerState = DstRect.Size() == SrcRect.Size() ? TStaticSamplerState<SF_Point>::GetRHI() : TStaticSamplerState<SF_Bilinear>::GetRHI();
+#if UE_VERSION_OLDER_THAN(5, 3, 0)
 					PixelShader->SetParameters(RHICmdList, SamplerState, SrcTextureRHI, FaceIndex);
+#else
+					FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+					PixelShader->SetParameters(BatchedParameters, SamplerState, SrcTextureRHI, FaceIndex);
+					RHICmdList.SetBatchedShaderParameters(RHICmdList.GetBoundPixelShader(), BatchedParameters);
+#endif
 
 					RHICmdList.SetViewport(DstRect.Min.X, DstRect.Min.Y, 0.0f, DstRect.Max.X, DstRect.Max.Y, 1.0f);
 

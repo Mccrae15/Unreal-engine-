@@ -21,6 +21,13 @@ protected:
 	};
 	TArray<FStartToolCommand> RegisteredTools;		// Tool start-commands listed below are stored in this list
 
+	struct FDynamicExtensionCommand
+	{
+		FName RegistrationName;
+		TSharedPtr<FUICommandInfo> Command;
+	};
+	TArray<FDynamicExtensionCommand> ExtensionPaletteCommands;
+
 public:
 	/**
 	 * Find Tool start-command below by registered name (tool icon name in Mode palette)
@@ -46,7 +53,10 @@ public:
 	TSharedPtr<FUICommandInfo> BeginDrawPolygonTool;
 	TSharedPtr<FUICommandInfo> BeginDrawPolyPathTool;
 	TSharedPtr<FUICommandInfo> BeginDrawAndRevolveTool;
+	TSharedPtr<FUICommandInfo> BeginRevolveSplineTool;
 	TSharedPtr<FUICommandInfo> BeginShapeSprayTool;
+	TSharedPtr<FUICommandInfo> BeginDrawSplineTool;
+	TSharedPtr<FUICommandInfo> BeginTriangulateSplinesTool;
 
 	TSharedPtr<FUICommandInfo> BeginSculptMeshTool;
 	TSharedPtr<FUICommandInfo> BeginCubeGridTool;
@@ -103,8 +113,10 @@ public:
 	TSharedPtr<FUICommandInfo> BeginMeshToVolumeTool;
 	TSharedPtr<FUICommandInfo> BeginVolumeToMeshTool;
 	TSharedPtr<FUICommandInfo> BeginMeshGroupPaintTool;
+	TSharedPtr<FUICommandInfo> BeginMeshVertexPaintTool;
 
 	TSharedPtr<FUICommandInfo> BeginPhysicsInspectorTool;
+	TSharedPtr<FUICommandInfo> BeginSimpleCollisionEditorTool;
 	TSharedPtr<FUICommandInfo> BeginSetCollisionGeometryTool;
 	TSharedPtr<FUICommandInfo> BeginEditCollisionGeometryTool;
 	TSharedPtr<FUICommandInfo> BeginExtractCollisionGeometryTool;
@@ -126,6 +138,8 @@ public:
 
 	TSharedPtr<FUICommandInfo> BeginSkinWeightsPaintTool;
 	TSharedPtr<FUICommandInfo> BeginSkinWeightsBindingTool;
+
+	TSharedPtr<FUICommandInfo> BeginSkeletonEditingTool;
 	
 	TSharedPtr<FUICommandInfo> BeginLODManagerTool;
 	TSharedPtr<FUICommandInfo> BeginGenerateStaticMeshLODAssetTool;
@@ -166,8 +180,28 @@ public:
 	TSharedPtr<FUICommandInfo> BeginSelectionAction_Extrude;
 	TSharedPtr<FUICommandInfo> BeginSelectionAction_Offset;
 
+	TSharedPtr<FUICommandInfo> AddToFavorites;
+	TSharedPtr<FUICommandInfo> RemoveFromFavorites;
+	TSharedPtr<FUICommandInfo> LoadFavoritesTools;
+	TSharedPtr<FUICommandInfo> LoadSelectionTools;
+	TSharedPtr<FUICommandInfo> LoadShapesTools;
+	TSharedPtr<FUICommandInfo> LoadCreateTools;
+	TSharedPtr<FUICommandInfo> LoadPolyTools;
+	TSharedPtr<FUICommandInfo> LoadTriTools;
+	TSharedPtr<FUICommandInfo> LoadDeformTools;
+	TSharedPtr<FUICommandInfo> LoadTransformTools;
+	TSharedPtr<FUICommandInfo> LoadMeshOpsTools;
+	TSharedPtr<FUICommandInfo> LoadVoxOpsTools;
+	TSharedPtr<FUICommandInfo> LoadAttributesTools;
+	TSharedPtr<FUICommandInfo> LoadUVsTools;
+	TSharedPtr<FUICommandInfo> LoadBakingTools;
+	TSharedPtr<FUICommandInfo> LoadVolumeTools;
+	TSharedPtr<FUICommandInfo> LoadLodsTools;
 	// For connecting ModelingMode with UVEditor plugin
 	TSharedPtr<FUICommandInfo> LaunchUVEditor;
+	// skeletal mesh editing tools
+	TSharedPtr<FUICommandInfo> LoadSkinTools;
+	TSharedPtr<FUICommandInfo> LoadSkeletonTools;
 
 	//
 	// Accept/Cancel/Complete commands are used to end the active Tool via ToolManager
@@ -184,6 +218,19 @@ public:
 	 * Initialize above commands
 	 */
 	virtual void RegisterCommands() override;
+
+
+	/**
+	 * Dynamically register a new UI Command based on the given Name/Label/Tooltip/Icon.
+	 * This is intended to be used outside of RegisterCommands(), eg by Modeling Mode extensions
+	 * loaded when the Toolkit is created.
+	 */
+	static TSharedPtr<FUICommandInfo> RegisterExtensionPaletteCommand(
+		FName Name,
+		const FText& Label,
+		const FText& Tooltip,
+		const FSlateIcon& Icon);
+
 };
 
 

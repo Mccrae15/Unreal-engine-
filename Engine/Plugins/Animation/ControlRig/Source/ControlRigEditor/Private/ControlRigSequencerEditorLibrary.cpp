@@ -47,6 +47,7 @@
 #include "Constraints/ControlRigTransformableHandle.h"
 #include "Constraints/MovieSceneConstraintChannelHelper.h"
 #include "Sections/MovieSceneConstrainedSection.h"
+#include "BakingAnimationKeySettings.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigSequencerEditorLibrary)
 
@@ -765,6 +766,8 @@ bool UControlRigSequencerEditorLibrary::BakeConstraint(UWorld* World, UTickableC
 		UE_LOG(LogControlRig, Error, TEXT("BakeConstraint: Need Valid World"));
 		return false;
 	}
+	TOptional< FBakingAnimationKeySettings> Settings;
+
 	if (UTickableTransformConstraint* TransformConstraint = Cast<UTickableTransformConstraint>(Constraint))
 	{
 		TSharedPtr<ISequencer> Sequencer = GetSequencerFromAsset();
@@ -797,11 +800,53 @@ bool UControlRigSequencerEditorLibrary::BakeConstraint(UWorld* World, UTickableC
 		{
 			FramesToBake = RealFramesToBake;
 		}
-		FConstraintBaker::Bake(World, TransformConstraint, Sequencer, FramesToBake);
+		FConstraintBaker::Bake(World, TransformConstraint, Sequencer, Settings, FramesToBake);
 	}
 	else
 	{
 		UE_LOG(LogControlRig, Error, TEXT("BakeConstraint: Need Valid Constraint"));
+		return false;
+	}
+	return true;
+}
+
+bool UControlRigSequencerEditorLibrary::BakeConstraints(UWorld* World, TArray<UTickableConstraint*>& InConstraints, const FBakingAnimationKeySettings& InSettings)
+{
+	if (!World)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("BakeConstraint: Need Valid World"));
+		return false;
+	}
+
+	TSharedPtr<ISequencer> Sequencer = GetSequencerFromAsset();
+	if (!Sequencer || !Sequencer->GetFocusedMovieSceneSequence())
+	{
+		UE_LOG(LogControlRig, Error, TEXT("BakeConstraint: Need loaded level Sequence"));
+		return false;
+	}
+	const UMovieScene* MovieScene = Sequencer->GetFocusedMovieSceneSequence()->GetMovieScene();
+	if (!MovieScene)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("BakeConstraint: Need valid Movie Scene"));
+		return false;
+	}
+	TArray<UTickableTransformConstraint*> TransformConstraints;
+	for (UTickableConstraint* Constraint : InConstraints)
+	{
+		if (UTickableTransformConstraint* TransformConstraint = Cast<UTickableTransformConstraint>(Constraint))
+		{
+			TransformConstraints.Add(TransformConstraint);
+		}
+		else
+		{
+			UE_LOG(LogControlRig, Error, TEXT("BakeConstraint: Need Valid Constraint"));
+			return false;
+		}
+	}
+
+	if(FConstraintBaker::BakeMultiple(World, TransformConstraints, Sequencer, InSettings) == false)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("BakeMultiple: Failed"));
 		return false;
 	}
 	return true;
@@ -993,7 +1038,7 @@ static void LocalSetControlRigWorldTransforms(ULevelSequence* LevelSequence,UCon
 						const FFrameNumber& FrameNumber = Frames[Index];
 						Context.LocalTime = TickResolution.AsSeconds(FFrameTime(FrameNumber));
 						FTransform GlobalTransform = WorldTransforms[Index].GetRelativeTransform(ControlRigParentWorldTransforms[Index]);
-						ControlRig->SetControlGlobalTransform(ControlName, GlobalTransform, true, Context);
+						ControlRig->SetControlGlobalTransform(ControlName, GlobalTransform, true, Context, false /*undo*/, false /*bPrintPython*/, true/* bFixEulerFlips*/);
 					}
 				}
 			}
@@ -2231,6 +2276,11 @@ void UControlRigSequencerEditorLibrary::SetLocalControlRigEulerTransform(ULevelS
 		FRigControlModifiedContext Context;
 		Context.SetKey = bSetKey ? EControlRigSetKey::Always : EControlRigSetKey::DoNotCare;
 		Context.LocalTime = TickResolution.AsSeconds(FFrameTime(Frame));
+		if (FRigControlElement* ControlElement = ControlRig->FindControl(ControlName))
+		{
+			FVector EulerAngle(Value.Rotation.Roll, Value.Rotation.Pitch, Value.Rotation.Yaw);
+			ControlRig->GetHierarchy()->SetControlSpecifiedEulerAngle(ControlElement, EulerAngle);
+		}
 		ControlRig->SetControlValue<FRigControlValue::FEulerTransform_Float>(ControlName, Value, true, Context);
 	}
 }
@@ -2264,6 +2314,12 @@ void UControlRigSequencerEditorLibrary::SetLocalControlRigEulerTransforms(ULevel
 			}
 			FEulerTransform Value = Values[Index];
 			Context.LocalTime = TickResolution.AsSeconds(FFrameTime(Frame));
+
+			if (FRigControlElement* ControlElement = ControlRig->FindControl(ControlName))
+			{
+				FVector EulerAngle(Value.Rotation.Roll, Value.Rotation.Pitch, Value.Rotation.Yaw);
+				ControlRig->GetHierarchy()->SetControlSpecifiedEulerAngle(ControlElement, EulerAngle);
+			}
 			ControlRig->SetControlValue<FRigControlValue::FEulerTransform_Float>(ControlName, Value, true, Context);
 		}
 	}
@@ -2524,7 +2580,7 @@ bool UControlRigSequencerEditorLibrary::ImportFBXToControlRigTrack(UWorld* World
 	INodeAndChannelMappings* ChannelMapping = Cast<INodeAndChannelMappings>(InTrack);
 	if (ChannelMapping)
 	{
-		TArray<FFBXNodeAndChannels>* NodeAndChannels = ChannelMapping->GetNodeAndChannelMappings(InSection);
+		TArray<FRigControlFBXNodeAndChannels>* NodeAndChannels = ChannelMapping->GetNodeAndChannelMappings(InSection);
 		TArray<FName> SelectedControls;
 		for (const FString& StringName : ControlRigNames)
 		{
@@ -2542,6 +2598,49 @@ bool UControlRigSequencerEditorLibrary::ImportFBXToControlRigTrack(UWorld* World
 	return bValid;
 }
 
+bool UControlRigSequencerEditorLibrary::ExportFBXFromControlRigSection(ULevelSequence* Sequence, const UMovieSceneControlRigParameterSection* Section, const UMovieSceneUserExportFBXControlRigSettings* ExportFBXControlRigSettings)
+{
+	if (!Sequence || !ExportFBXControlRigSettings ||
+		!Section || !Section->GetControlRig() ||
+		!Sequence->GetMovieScene() || Sequence->GetMovieScene()->IsReadOnly())
+	{
+		return false;
+	}
+
+	TArray<FName> SelectedControls;
+	if (UMovieSceneControlRigParameterTrack* Track = Section->GetTypedOuter<UMovieSceneControlRigParameterTrack>())
+	{
+		Track->GetSelectedNodes(SelectedControls);
+	}
+
+	FMovieSceneSequenceTransform RootToLocalTransform;
+	if (IAssetEditorInstance* AssetEditor = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(Sequence, false))
+	{
+		if (const ILevelSequenceEditorToolkit* LevelSequenceEditor = static_cast<ILevelSequenceEditorToolkit*>(AssetEditor))
+		{
+			if (const TSharedPtr<ISequencer> Sequencer = LevelSequenceEditor->GetSequencer())
+			{
+				RootToLocalTransform = Sequencer->GetFocusedMovieSceneSequenceTransform();
+			}
+		}
+	}
+	
+	return  MovieSceneToolHelpers::ExportFBXFromControlRigChannels(Section, ExportFBXControlRigSettings, SelectedControls, RootToLocalTransform);
+}
+
+bool UControlRigSequencerEditorLibrary::CollapseControlRigAnimLayersWithSettings(ULevelSequence* InSequence, UMovieSceneControlRigParameterTrack* InTrack, const FBakingAnimationKeySettings& InSettings)
+{
+	TWeakPtr<ISequencer> WeakSequencer = GetSequencerFromAsset();
+	bool bValid = false;
+	if (WeakSequencer.IsValid() && InTrack)
+	{
+		TSharedPtr<ISequencer>  SequencerPtr = WeakSequencer.Pin();
+		bValid = FControlRigParameterTrackEditor::CollapseAllLayers(SequencerPtr, InTrack, InSettings);
+		
+	}
+	return bValid;
+}
+
 bool UControlRigSequencerEditorLibrary::CollapseControlRigAnimLayers(ULevelSequence* LevelSequence, UMovieSceneControlRigParameterTrack* InTrack, bool bKeyReduce, float Tolerance)
 {
 	TWeakPtr<ISequencer> WeakSequencer = GetSequencerFromAsset();
@@ -2549,13 +2648,17 @@ bool UControlRigSequencerEditorLibrary::CollapseControlRigAnimLayers(ULevelSeque
 
 	if (WeakSequencer.IsValid() && InTrack)
 	{
-		TArray<UMovieSceneSection*> Sections = InTrack->GetAllSections();
-		if (Sections.Num() > 0)
-		{
-			TSharedPtr<ISequencer>  SequencerPtr = WeakSequencer.Pin();
-			UMovieSceneControlRigParameterSection* ParameterSection = Cast<UMovieSceneControlRigParameterSection>(Sections[0]);
-			bValid = FControlRigParameterTrackEditor::CollapseAllLayers(SequencerPtr,InTrack, ParameterSection, bKeyReduce, Tolerance);
-		}
+		TSharedPtr<ISequencer>  SequencerPtr = WeakSequencer.Pin();
+		FBakingAnimationKeySettings CollapseControlsSettings;
+		const FFrameRate TickResolution = SequencerPtr->GetFocusedTickResolution();
+		const FFrameTime FrameTime = SequencerPtr->GetLocalTime().ConvertTo(TickResolution);
+		FFrameNumber CurrentTime = FrameTime.GetFrame();
+
+		TRange<FFrameNumber> Range = SequencerPtr->GetFocusedMovieSceneSequence()->GetMovieScene()->GetPlaybackRange();
+
+		CollapseControlsSettings.StartFrame = Range.GetLowerBoundValue();
+		CollapseControlsSettings.EndFrame = Range.GetUpperBoundValue();
+		bValid = FControlRigParameterTrackEditor::CollapseAllLayers(SequencerPtr,InTrack, CollapseControlsSettings);	
 	}
 	return bValid;
 }
@@ -2605,17 +2708,12 @@ bool UControlRigSequencerEditorLibrary::BakeControlRigSpace(ULevelSequence* InSe
 	{
 		TSharedPtr<ISequencer>  Sequencer = WeakSequencer.Pin();
 		const FFrameRate TickResolution = Sequencer->GetFocusedTickResolution();
-		TArray<FFrameNumber> Frames;
 		const FFrameRate& FrameRate = Sequencer->GetFocusedDisplayRate();
 		FFrameNumber FrameRateInFrameNumber = TickResolution.AsFrameNumber(FrameRate.AsInterval());
 		if (TimeUnit == ESequenceTimeUnit::DisplayRate)
 		{
-			InSettings.StartFrame = FFrameRate::TransformTime(FFrameTime(InSettings.StartFrame, 0), FrameRate, TickResolution).RoundToFrame();
-			InSettings.EndFrame = FFrameRate::TransformTime(FFrameTime(InSettings.EndFrame, 0), FrameRate, TickResolution).RoundToFrame();
-		}
-		for (FFrameNumber& Frame = InSettings.StartFrame; Frame <= InSettings.EndFrame; Frame += FrameRateInFrameNumber)
-		{
-			Frames.Add(Frame);
+			InSettings.Settings.StartFrame = FFrameRate::TransformTime(FFrameTime(InSettings.Settings.StartFrame, 0), FrameRate, TickResolution).RoundToFrame();
+			InSettings.Settings.EndFrame = FFrameRate::TransformTime(FFrameTime(InSettings.Settings.EndFrame, 0), FrameRate, TickResolution).RoundToFrame();
 		}
 
 		FScopedTransaction Transaction(LOCTEXT("BakeControlToSpace", "Bake Control In Space"));
@@ -2627,7 +2725,7 @@ bool UControlRigSequencerEditorLibrary::BakeControlRigSpace(ULevelSequence* InSe
 				if (SpaceChannelAndSection.SpaceChannel)
 				{
 					FControlRigSpaceChannelHelpers::SequencerBakeControlInSpace(InControlRig, Sequencer.Get(), SpaceChannelAndSection.SpaceChannel, SpaceChannelAndSection.SectionToKey,
-						Frames, InControlRig->GetHierarchy(), Element->GetKey(), InSettings);
+						InControlRig->GetHierarchy(), Element->GetKey(), InSettings);
 				}
 			}
 		}
@@ -2713,7 +2811,6 @@ bool UControlRigSequencerEditorLibrary::MoveControlRigSpace(ULevelSequence* Leve
 					InNewTime = FFrameRate::TransformTime(FFrameTime(InNewTime, 0), LevelSequence->GetMovieScene()->GetDisplayRate(), LevelSequence->GetMovieScene()->GetTickResolution()).RoundToFrame();
 				}
 				UMovieSceneControlRigParameterSection* ParamSection = Cast<UMovieSceneControlRigParameterSection>(SpaceChannelAndSection.SectionToKey);
-
 
 				TArray<FFrameNumber> OurKeyTimes;
 				TArray<FKeyHandle> OurKeyHandles;

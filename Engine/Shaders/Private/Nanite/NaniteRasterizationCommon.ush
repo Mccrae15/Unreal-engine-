@@ -4,6 +4,7 @@
 
 #include "../Common.ush"
 #include "../SceneData.ush"
+#include "../WaveOpUtil.ush"
 #include "NaniteRasterizer.ush"
 #include "NaniteAttributeDecode.ush"
 #include "../VirtualShadowMaps/VirtualShadowMapPageAccessCommon.ush"
@@ -71,6 +72,203 @@ FBarycentrics CalculateBarycentrics( FRasterTri Tri, float3 C )
 	return Barycentrics;
 }
 
+int FindNthSetBit( uint Mask, int Index )
+{
+	int Last = countbits( Mask ) - Index - 1;
+
+	uint p = 16;
+	p += countbits( Mask >> p ) <= Last ? -8 : 8;
+	p += countbits( Mask >> p ) <= Last ? -4 : 4;
+	p += countbits( Mask >> p ) <= Last ? -2 : 2;
+	p += countbits( Mask >> p ) <= Last ? -1 : 1;
+	p  = countbits( Mask >> p ) == Last ? (p - 1) : p;
+	return p;
+}
+
+int FindNthSetBit( uint2 Mask, int Index )
+{
+	int LowPop = countbits( Mask.x );
+	return FindNthSetBit( Index < LowPop ? Mask.x : Mask.y, Index < LowPop ? Index : Index - LowPop ) + ( Index < LowPop ? 0 : 32 );
+}
+
+/*int FindNthSetBit_Scalar( uint Mask, int Index )
+{
+	return firstbitlow( WaveBallot( WavePrefixCountBits(x) == Index ) ) - 1;
+	return firstbitlow( WaveBallot( MaskedBitCount( Mask ) == Index ) ) - 1;
+}*/
+
+uint MaskedBitCount2( uint2 Bits, uint Index )
+{
+	uint Mask = 1u << ( Index & 31 );
+	Mask -= 1;
+
+	uint A = Index < 32 ? Bits.x : Bits.y;
+	uint B = Index < 32 ? 0 : countbits( Bits.x );
+
+	return countbits( A & Mask ) + B;
+}
+
+groupshared uint GroupBaseVertIndex;
+groupshared uint2 GroupUsedVertMask;
+//groupshared uint GroupUniqueVertIndex[32];
+
+void DeduplicateVertIndexes( uint3 VertIndexes, uint GroupThreadIndex, bool bTriValid, out uint OutNumUniqueVerts, out uint OutLaneVertIndex, out uint3 OutCornerLaneIndexes )
+{
+	const uint LaneCount = WaveGetLaneCount();
+
+	// Calculate smallest active vertex
+	uint BaseVertIndex;
+	BRANCH
+	if( LaneCount < 32 )
+	{
+		if (GroupThreadIndex == 0)
+		{
+			GroupBaseVertIndex = 0xFFFFFFFFu;
+			GroupUsedVertMask = 0;
+		}
+		GroupMemoryBarrierWithGroupSync();
+		if (bTriValid) WaveInterlockedMin(GroupBaseVertIndex, VertIndexes.x);	// VertIndexes.x is always smallest
+		GroupMemoryBarrierWithGroupSync();
+		BaseVertIndex = GroupBaseVertIndex;
+	}
+	else
+	{
+		BaseVertIndex = WaveActiveMin(bTriValid ? VertIndexes.x : 0xFFFFFFFFu);	// VertIndexes.x is always smallest
+	}
+	
+	uint2 TriangleVertMask = 0;
+	if( bTriValid )
+	{
+		VertIndexes -= BaseVertIndex;
+	
+		UNROLL
+		for (uint i = 0; i < 3; i++)
+		{
+			bool bDstLow = VertIndexes[i] < 32;
+			uint DstMask = 1u << ( VertIndexes[i] & 31 );
+
+			if( bDstLow )
+				TriangleVertMask.x |= DstMask;
+			else
+				TriangleVertMask.y |= DstMask;
+		}
+	}
+
+	uint2 UsedVertMask;
+	BRANCH
+	if( LaneCount < 32 )
+	{
+		WaveInterlockedOr(GroupUsedVertMask.x, UsedVertMask.x);
+		WaveInterlockedOr(GroupUsedVertMask.y, UsedVertMask.y);
+		GroupMemoryBarrierWithGroupSync();
+		UsedVertMask = GroupUsedVertMask;
+	}
+	else
+	{
+		UsedVertMask.x = WaveActiveBitOr(TriangleVertMask.x);
+		UsedVertMask.y = WaveActiveBitOr(TriangleVertMask.y);
+	}
+
+	OutCornerLaneIndexes.x = MaskedBitCount(UsedVertMask, VertIndexes.x);
+	OutCornerLaneIndexes.y = MaskedBitCount(UsedVertMask, VertIndexes.y);
+	OutCornerLaneIndexes.z = MaskedBitCount(UsedVertMask, VertIndexes.z);
+
+#if 0
+	bool2 bIsUsed = ( UsedVertMask & (1u << GroupThreadIndex) ) != 0u;
+	uint2 UsedPrefixSum =
+	{
+		MaskedBitCount( uint2( UsedVertMask.x, 0 ) ),
+		MaskedBitCount( uint2( UsedVertMask.y, 0 ) ) + countbits( UsedVertMask.x )
+	};
+
+	if( bIsUsed.x )
+		GroupUniqueVertIndex[ UsedPrefixSum.x ] = GroupThreadIndex;
+	if( bIsUsed.y && UsedPrefixSum.y < 32 )
+		GroupUniqueVertIndex[ UsedPrefixSum.y ] = GroupThreadIndex + 32;
+
+	OutLaneVertIndex = GroupUniqueVertIndex[ GroupThreadIndex ] + BaseVertIndex;
+#else
+	OutLaneVertIndex = FindNthSetBit(UsedVertMask, GroupThreadIndex) + BaseVertIndex;
+#endif
+	OutNumUniqueVerts = CountBits(UsedVertMask);
+}
+
+
+// Only works for WaveSize >= 32 and only efficient for == 32.
+// A sliding window approach like this relies on the index buffer being constrained such that a triangle
+// can't referance a vertex >= window size back from the largest seen index so far in the index buffer.
+// In addition the WaveSize must be at least as large as the window so that vertices referenced by triangles
+// in this wave must either be present in the cache from the previous iteration (Lane0 - Window) or  in this iteration.
+// Since we constrain to 32 when building the clusters the WaveSize that makes sense is the matching 32.
+// Larger WaveSize could also work but the code would need to be changed.
+template< typename FVertex >
+struct TSlidingWindowVertexCache
+{
+	FVertex	CachedVert;
+	uint	NumCached;
+	bool	bFirstPass;
+
+	FVertex	TriangleVerts[3];
+	bool	TriangleVertsRead[3];
+
+	void Init()
+	{
+		NumCached = 0;
+		bFirstPass = true;
+	}
+
+	// Grab what's there for this triangle before updating cache. Otherwise cache would need to be double size.
+	uint PullExisting( uint3 VertIndexes )
+	{
+		BRANCH
+		if( !bFirstPass )
+		{
+			UNROLL
+			for( uint k = 0; k < 3; k++ )
+			{
+				TriangleVerts[k] = WaveReadLaneAt( CachedVert, VertIndexes[k] & 31 );
+				TriangleVertsRead[k] = VertIndexes[k] < NumCached;
+			}
+		}
+
+		uint MaxVertIndex = max( VertIndexes.y, VertIndexes.z );
+		uint WaveMaxVertIndex = WaveActiveMax( MaxVertIndex );
+		uint NewNumCached = min( WaveMaxVertIndex + 1, NumCached + 32 );
+	
+		uint FirstUncachedLane = NumCached & 31;
+		uint LaneVertIndex = ( WaveGetLaneIndex() - FirstUncachedLane ) & 31;
+		LaneVertIndex += NumCached;
+		NumCached = NewNumCached;
+
+		return LaneVertIndex;
+	}
+
+	uint PullRemaining( uint3 VertIndexes )
+	{
+		UNROLL
+		for( uint k = 0; k < 3; k++ )
+		{
+			BRANCH
+			if( bFirstPass )
+			{
+				TriangleVerts[k] = WaveReadLaneAt( CachedVert, VertIndexes[k] & 31 );
+			}
+			else
+			{
+				FVertex TempVert = WaveReadLaneAt( CachedVert, VertIndexes[k] & 31 );
+				if( !TriangleVertsRead[k] )
+					TriangleVerts[k] = TempVert;
+			}
+		}
+		bFirstPass = false;
+
+		uint MaxVertIndex = max( VertIndexes.y, VertIndexes.z );
+		uint InvalidMask = WaveBallot( MaxVertIndex >= NumCached ).x;
+		uint NumTrisCached = InvalidMask ? firstbitlow( InvalidMask ) : 32;
+		return NumTrisCached;
+	}
+};
+
 
 struct FNullTranslation
 {
@@ -108,6 +306,8 @@ struct TNaniteWritePixel
 			return;
 		}
 	#endif
+
+		Pixel.WriteOverdraw();
 
 	#if ENABLE_EARLY_Z_TEST
 		BRANCH
@@ -149,7 +349,7 @@ struct FMaterialShader
 	FNaniteTransformedTri		TransformedTri;
 #endif
 
-	float3 EvaluateWorldPositionOffset( uint VertIndex, float3 PointLocal )
+	float3 EvaluateWorldPositionOffset( FNanitePostDeformVertex InputVert )
 	{
 		float3 WorldPositionOffset = 0.0f;
 	#if NANITE_VERTEX_PROGRAMMABLE
@@ -157,8 +357,6 @@ struct FMaterialShader
 		BRANCH
 		if ((PrimitiveData.Flags & PRIMITIVE_SCENE_DATA_FLAG_EVALUATE_WORLD_POSITION_OFFSET) != 0u)
 		{
-			const FNaniteRawAttributeData RawAttributeData = GetRawAttributeData(Cluster, VertIndex, NANITE_NUM_TEXCOORDS_TO_DECODE);
-
 			// Should be Pow2(InvScale) but that requires renormalization
 			float3x3 LocalToWorld = LWCToFloat3x3(InstanceData.LocalToWorld);
 			float3 InvScale = InstanceData.InvNonUniformScale;
@@ -166,9 +364,9 @@ struct FMaterialShader
 			LocalToWorld[1] *= InvScale.y;
 			LocalToWorld[2] *= InvScale.z;
 
-			FMaterialVertexParameters VertexParameters = (FMaterialVertexParameters)0;
+			FMaterialVertexParameters VertexParameters = MakeInitializedMaterialVertexParameters();
 			SetVertexParameterInstanceData(VertexParameters, InstanceData, PrimitiveData, true /* WPO */);
-			SetVertexParameterAttributeData(VertexParameters, RawAttributeData, InstanceDynamicData.LocalToTranslatedWorld, LocalToWorld, PointLocal);
+			SetVertexParameterAttributeData(VertexParameters, InputVert, InstanceDynamicData.LocalToTranslatedWorld, LocalToWorld);
 
 			WorldPositionOffset = GetMaterialWorldPositionOffset(VertexParameters);
 		}
@@ -177,46 +375,47 @@ struct FMaterialShader
 	}
 
 #if NANITE_VERTEX_PROGRAMMABLE || NANITE_PIXEL_PROGRAMMABLE
-	float4 EvaluateDomain( float3 UVW )
+	float4 EvaluateDomain( FBarycentrics Barycentrics )
 	{
 		float3 PointLocal;
-		PointLocal  = TransformedTri.Verts[0].PointLocal * UVW[0];
-		PointLocal += TransformedTri.Verts[1].PointLocal * UVW[1];
-		PointLocal += TransformedTri.Verts[2].PointLocal * UVW[2];
+		PointLocal  = TransformedTri.Verts[0].PointLocal * Barycentrics.UVW[0];
+		PointLocal += TransformedTri.Verts[1].PointLocal * Barycentrics.UVW[1];
+		PointLocal += TransformedTri.Verts[2].PointLocal * Barycentrics.UVW[2];
 
-	#if NANITE_PIXEL_PROGRAMMABLE && MATERIALBLENDING_MASKED
+	#if NANITE_TESSELLATION && USES_DISPLACEMENT
 		float3 Normal;
-		Normal  = TransformedTri.Verts[0].RawAttributeData.TangentZ * UVW[0];
-		Normal += TransformedTri.Verts[1].RawAttributeData.TangentZ * UVW[1];
-		Normal += TransformedTri.Verts[2].RawAttributeData.TangentZ * UVW[2];
+		Normal  = TransformedTri.Verts[0].RawAttributeData.TangentZ * Barycentrics.UVW[0];
+		Normal += TransformedTri.Verts[1].RawAttributeData.TangentZ * Barycentrics.UVW[1];
+		Normal += TransformedTri.Verts[2].RawAttributeData.TangentZ * Barycentrics.UVW[2];
 		Normal = normalize( Normal );
 
-		float4 SvPosition = 0;
+		// Hopefully never used and will be dead code eliminated. TODO VT feedback needs this right now :(
+		float4 SvPosition;
+		SvPosition  = TransformedTri.Verts[0].PointClip * Barycentrics.UVW[0];
+		SvPosition += TransformedTri.Verts[1].PointClip * Barycentrics.UVW[1];
+		SvPosition += TransformedTri.Verts[2].PointClip * Barycentrics.UVW[2];
+		SvPosition.xyz /= SvPosition.w;
+		SvPosition.xy = ( float2(0.5, -0.5) * SvPosition.xy + 0.5 ) * NaniteView.ViewSizeAndInvSize.xy + NaniteView.ViewRect.xy;
+		SvPosition.w = 1;
 
-		FBarycentrics Barycentrics;
-		Barycentrics.UVW 	= UVW;
-		Barycentrics.UVW_dx	= 0;
-		Barycentrics.UVW_dy	= 0;
-					
+		FPrimitiveSceneData PrimitiveData = GetPrimitiveData(InstanceData.PrimitiveId);
+
 		FVertexFactoryInterpolantsVSToPS Interpolants = (FVertexFactoryInterpolantsVSToPS)0;
-		FMaterialPixelParameters MaterialParameters = FetchNaniteMaterialPixelParameters( InstanceData, InstanceDynamicData, NaniteView, TransformedTri, Cluster, Barycentrics, Interpolants, SvPosition );
+		FMaterialPixelParameters MaterialParameters = FetchNaniteMaterialPixelParameters( PrimitiveData, InstanceData, InstanceDynamicData, NaniteView, TransformedTri, Cluster, Barycentrics, Interpolants, SvPosition );
 
 		FPixelMaterialInputs PixelMaterialInputs;
-		CalcMaterialParameters( MaterialParameters, PixelMaterialInputs, SvPosition, true /*bIsFrontFace*/ );
+		CalcMaterialParametersEx(
+			MaterialParameters,
+			PixelMaterialInputs,
+			SvPosition,
+			MaterialParameters.ScreenPosition,
+			true, // bIsFrontFace
+			MaterialParameters.WorldPosition_CamRelative,
+			MaterialParameters.WorldPosition_NoOffsets_CamRelative );
 
-		float Displacement = GetMaterialMaskInputRaw( PixelMaterialInputs );
-
-		const float DisplacementBase = 0.8;
-		const float DisplacementScale = 5.0;
-
-		Displacement -= DisplacementBase;
-		Displacement *= DisplacementScale;
-
+		const float Displacement = GetMaterialDisplacementScaled(PixelMaterialInputs);
 		PointLocal += Normal * Displacement;
 	#endif
-
-		// Transform from view space
-		//float4 PointClip = mul( float4( PointView, 1 ), NaniteView.ViewToClip );
 
 		float3 PointWorld = mul( float4( PointLocal, 1 ), InstanceDynamicData.LocalToTranslatedWorld ).xyz;
 		float4 PointClip = mul( float4( PointWorld, 1 ), NaniteView.TranslatedWorldToClip );
@@ -227,14 +426,17 @@ struct FMaterialShader
 	bool EvaluatePixel( FBarycentrics Barycentrics, float4 SvPosition, inout FVisBufferPixel Pixel )
 	{
 	#if NANITE_PIXEL_PROGRAMMABLE
+		FPrimitiveSceneData PrimitiveData = GetPrimitiveData(InstanceData.PrimitiveId);
+
 		FVertexFactoryInterpolantsVSToPS Interpolants = (FVertexFactoryInterpolantsVSToPS)0;
 	
-		FMaterialPixelParameters MaterialParameters = FetchNaniteMaterialPixelParameters( InstanceData, InstanceDynamicData, NaniteView, TransformedTri, Cluster, Barycentrics, Interpolants, SvPosition );
+		FMaterialPixelParameters MaterialParameters = FetchNaniteMaterialPixelParameters( PrimitiveData, InstanceData, InstanceDynamicData, NaniteView, TransformedTri, Cluster, Barycentrics, Interpolants, SvPosition );
 
 		FPixelMaterialInputs PixelMaterialInputs;
 		CalcMaterialParameters(MaterialParameters, PixelMaterialInputs, SvPosition, true /*bIsFrontFace*/);
 
-		#if WANT_PIXEL_DEPTH_OFFSET
+		// NOTE: Disable PDO in shadow passes (it does undesirable things and has always been disabled in these passes in Unreal)
+		#if WANT_PIXEL_DEPTH_OFFSET && DEPTH_ONLY == 0
 		ApplyPixelDepthOffsetToMaterialParameters(MaterialParameters, PixelMaterialInputs, Pixel.Depth);
 		#endif
 
@@ -299,3 +501,21 @@ struct FCachedPageTable
 };
 
 #endif // VIRTUAL_TEXTURE_TARGET &&  NANITE_LATE_VSM_PAGE_TRANSLATION
+
+struct FFetchPageTable
+{
+	uint	MipLevel;
+	uint	LevelOffset;
+
+	bool operator()( inout FVisBufferPixel Pixel )
+	{
+	#if VIRTUAL_TEXTURE_TARGET
+		if( !VirtualToPhysicalTexel_PageTableLevelOffset( InitVirtualMLevelOffset(LevelOffset), MipLevel, Pixel.Position, Pixel.PhysicalPosition.xy ) )
+		{
+			// mapped to non-commited space.
+			return false;
+		}
+	#endif
+		return true;
+	}
+};

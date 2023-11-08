@@ -7,6 +7,7 @@
 #include "UObject/ObjectMacros.h"
 #include "GroomAsset.h"
 #include "GroomBindingAsset.h"
+#include "GroomDesc.h"
 #include "HairStrandsInterface.h"
 #include "HairStrandsDefinitions.h"
 #include "PrimitiveSceneInfo.h"
@@ -46,34 +47,11 @@ END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 typedef TUniformBufferRef<FHairCardsVertexFactoryUniformShaderParameters> FHairCardsUniformBuffer;
 
-
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FHairStrandsVertexFactoryUniformShaderParameters, HAIRSTRANDSCORE_API)
-	SHADER_PARAMETER(float, Radius)
-	SHADER_PARAMETER(float, RootScale)
-	SHADER_PARAMETER(float, TipScale)
-	SHADER_PARAMETER(float, Length)
-	SHADER_PARAMETER(float, Density)
-	SHADER_PARAMETER(float, RaytracingRadiusScale)
-	SHADER_PARAMETER(uint32, CullingEnable)
-	SHADER_PARAMETER(uint32, HasMaterial)
-	SHADER_PARAMETER(uint32, StableRasterization)
-	SHADER_PARAMETER(uint32, ScatterSceneLighing)
-	SHADER_PARAMETER(uint32, RaytracingProceduralSplits)
-	SHADER_PARAMETER(float, GroupIndex)
-	SHADER_PARAMETER_ARRAY(FUintVector4, AttributeOffsets, [HAIR_ATTRIBUTE_OFFSET_COUNT])
-
-	SHADER_PARAMETER_SRV(Buffer<float4>, PositionOffsetBuffer)
-	SHADER_PARAMETER_SRV(Buffer<float4>, PreviousPositionOffsetBuffer)
-
-	SHADER_PARAMETER_SRV(Buffer<uint4>, PositionBuffer)
-	SHADER_PARAMETER_SRV(Buffer<uint4>, PreviousPositionBuffer)
-
-	SHADER_PARAMETER_SRV(ByteAddressBuffer, AttributeBuffer)
-	SHADER_PARAMETER_SRV(Buffer<uint>, VertexToCurveBuffer)
-	SHADER_PARAMETER_SRV(Buffer<float4>, TangentBuffer)
-
-	SHADER_PARAMETER_SRV(Buffer<uint>, CulledVertexIdsBuffer)
-	SHADER_PARAMETER_SRV(Buffer<float>, CulledVertexRadiusScaleBuffer)
+	SHADER_PARAMETER_STRUCT_INCLUDE(FHairStrandsInstanceCommonParameters, Common)
+	SHADER_PARAMETER_STRUCT_INCLUDE(FHairStrandsInstanceResourceRawParameters, Resources)
+	SHADER_PARAMETER_STRUCT_INCLUDE(FHairStrandsInstancePrevResourceRawParameters, PrevResources)
+	SHADER_PARAMETER_STRUCT_INCLUDE(FHairStrandsInstanceCullingRawParameters, Culling)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 typedef TUniformBufferRef<FHairStrandsVertexFactoryUniformShaderParameters> FHairStrandsUniformBuffer;
@@ -127,7 +105,7 @@ struct HAIRSTRANDSCORE_API FHairGroupInstance : public FHairStrandsInstance
 		EHairInterpolationType HairInterpolationType = EHairInterpolationType::NoneSkinning;
 
 		// Indicates if culling is enabled for this hair strands data.
-		bool bIsCullingEnabled = false;
+		bool bCullingEnable = false;
 	};
 
 	//////////////////////////////////////////////////////////////////////////////////////////
@@ -137,6 +115,7 @@ struct HAIRSTRANDSCORE_API FHairGroupInstance : public FHairStrandsInstance
 		bool bIsSimulationEnable = false;
 		bool bIsDeformationEnable = false;
 		bool bHasGlobalInterpolation = false;
+		bool bIsSimulationCacheEnable = false;
 	} Guides;
 
 	//////////////////////////////////////////////////////////////////////////////////////////
@@ -144,7 +123,8 @@ struct HAIRSTRANDSCORE_API FHairGroupInstance : public FHairStrandsInstance
 	struct FStrands : FStrandsBaseWithInterpolation
 	{
 		// Resources - Strands cluster data for culling/voxelization purpose
-		FHairStrandsClusterCullingResource* ClusterCullingResource = nullptr;
+		FHairStrandsClusterResource* ClusterResource = nullptr;
+		FHairStrandsCullingResource* CullingResource = nullptr;
 
 		// Resources - Raytracing data when enabling (expensive) raytracing method
 		#if RHI_RAYTRACING
@@ -157,7 +137,7 @@ struct HAIRSTRANDSCORE_API FHairGroupInstance : public FHairStrandsInstance
 		int   CachedProceduralSplits = 0;
 		#endif
 
-		FRDGExternalBuffer DebugAttributeBuffer;
+		FRDGExternalBuffer DebugCurveAttributeBuffer;
 		FHairGroupInstanceModifer Modifier;
 
 		FHairStrandsUniformBuffer UniformBuffer;
@@ -239,7 +219,6 @@ struct HAIRSTRANDSCORE_API FHairGroupInstance : public FHairStrandsInstance
 	struct FDebug
 	{
 		// Data
-		uint32					ComponentId = ~0;
 		uint32					GroupIndex = ~0;
 		uint32					GroupCount = 0;
 		FString					GroomAssetName;
@@ -253,10 +232,10 @@ struct HAIRSTRANDSCORE_API FHairGroupInstance : public FHairStrandsInstance
 		EGroomBindingMeshType	GroomBindingType;
 		EGroomCacheType			GroomCacheType;
 		FPrimitiveSceneProxy*	Proxy = nullptr;
-		UMeshComponent*			MeshComponent = nullptr;
 		FString					MeshComponentName;
 		FPrimitiveComponentId	MeshComponentId;
 		FPersistentPrimitiveIndex CachedMeshPersistentPrimitiveIndex;
+		const UMeshComponent*	MeshComponentForDebug = nullptr;
 		const UGroomComponent*	GroomComponentForDebug = nullptr; // For debug only, shouldn't be deferred on the rendering thread
 		FTransform				RigidCurrentLocalToWorld = FTransform::Identity;
 		FTransform				SkinningCurrentLocalToWorld = FTransform::Identity;
@@ -281,6 +260,7 @@ struct HAIRSTRANDSCORE_API FHairGroupInstance : public FHairStrandsInstance
 	bool					bForceCards = false;
 	bool					bUpdatePositionOffset = false;
 	bool					bCastShadow = true;
+	bool 					bSupportStreaming = true;
 	
 	// Deformed component to extract the bone buffer 
 	UMeshComponent*	 DeformedComponent = nullptr;

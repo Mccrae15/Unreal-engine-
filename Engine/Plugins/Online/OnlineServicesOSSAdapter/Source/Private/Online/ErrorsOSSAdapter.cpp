@@ -57,7 +57,7 @@ inline FOnlineError Internal_OssWrapInner(FOnlineError Error, const FOnlineError
 	return Internal_OssGetCommonError(Error, Result.GetErrorResult());
 }
 
-inline FOnlineError FromOssError(const FOnlineErrorOss& Result)
+FOnlineError FromOssError(const FOnlineErrorOss& Result)
 {
 	FString ErrorCode;
 	FText ErrorMessage = Result.GetErrorMessage();
@@ -70,8 +70,10 @@ inline FOnlineError FromOssError(const FOnlineErrorOss& Result)
 	{
 		ErrorCode = Result.GetErrorCode();
 	}
+	
+	FString FriendlyErrorCode = Result.GetErrorCode();
 
-	return Internal_OssWrapInner(FOnlineError(ErrorCode::Create(ErrorCode::Category::Oss_System, ErrorCode::Category::Oss, (uint32)Result.GetErrorResult()), MakeShared<FOnlineErrorDetails, ESPMode::ThreadSafe>(MoveTemp(ErrorCode), MoveTemp(ErrorMessage)), nullptr), Result);
+	return Internal_OssWrapInner(FOnlineError(ErrorCode::Create(ErrorCode::Category::Oss_System, ErrorCode::Category::Oss, (uint32)Result.GetErrorResult()), MakeShared<FOnlineErrorDetails, ESPMode::ThreadSafe>(MoveTemp(FriendlyErrorCode), MoveTemp(ErrorCode), MoveTemp(ErrorMessage)), nullptr), Result);
 }
 
 FOnlineError FromOssErrorCode(const FString& ErrorCode)
@@ -149,7 +151,8 @@ FOnlineError FromOssErrorCode(const FString& ErrorCode)
 	// construct an OSS FOnlineError from the result
 	::FOnlineError Result = ::FOnlineError::CreateError(FString(), ErrorResult, ErrorCode);
 
-	return Internal_OssWrapInner(FOnlineError(ErrorCode::Create(ErrorCode::Category::Oss_System, ErrorCode::Category::Oss, (uint32)Result.GetErrorResult()), MakeShared<FOnlineErrorDetails, ESPMode::ThreadSafe>(CopyTemp(ErrorCode), CopyTemp(Result.GetErrorMessage())), nullptr), Result);
+	return Internal_OssWrapInner(FOnlineError(ErrorCode::Create(ErrorCode::Category::Oss_System, ErrorCode::Category::Oss, (uint32)Result.GetErrorResult()), 
+		MakeShared<FOnlineErrorDetails, ESPMode::ThreadSafe>(CopyTemp(ErrorCode), CopyTemp(ErrorCode), CopyTemp(Result.GetErrorMessage())), nullptr), Result);
 }
 
 } //namespace UE::Online::Errors

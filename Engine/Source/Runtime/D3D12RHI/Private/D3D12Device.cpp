@@ -1,15 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "D3D12RHIPrivate.h"
+#include "D3D12IntelExtensions.h"
 #include "D3D12RayTracing.h"
-
-#if INTEL_EXTENSIONS
-	#define INTC_IGDEXT_D3D12 1
-
-	THIRD_PARTY_INCLUDES_START
-	#include "igdext.h"
-	THIRD_PARTY_INCLUDES_END
-#endif
 
 static TAutoConsoleVariable<int32> CVarD3D12GPUTimeout(
 	TEXT("r.D3D12.GPUTimeout"),
@@ -27,6 +20,7 @@ static uint32 GetQueryHeapPoolIndex(D3D12_QUERY_HEAP_TYPE HeapType)
 	case D3D12_QUERY_HEAP_TYPE_OCCLUSION:            return 0;
 	case D3D12_QUERY_HEAP_TYPE_TIMESTAMP:            return 1;
 	case D3D12_QUERY_HEAP_TYPE_COPY_QUEUE_TIMESTAMP: return 2;
+	case D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS:  return 3;
 	}
 }
 
@@ -67,15 +61,13 @@ void FD3D12Queue::SetupAfterDeviceCreation()
 		HRESULT hr = Device->GetDevice()->QueryInterface(IID_PPV_ARGS(D3D12Device3.GetInitReference()));
 		if (SUCCEEDED(hr))
 		{
-			// find out how many entries we can much push in a single event (limit to MAX_GPU_BREADCRUMB_DEPTH)
-			int32 GPUCrashDataDepth = Device->GetGPUProfiler().GPUCrashDataDepth;
-			int32 MaxEventCount = GPUCrashDataDepth > 0 ? FMath::Min(GPUCrashDataDepth, MAX_GPU_BREADCRUMB_DEPTH) : MAX_GPU_BREADCRUMB_DEPTH;
-
 			const uint32 ShaderDiagnosticBufferSize = sizeof(FD3D12DiagnosticBufferData);
 
 			// Allocate persistent CPU readable memory which will still be valid after a device lost and wrap this data in a placed resource
 			// so the GPU command list can write to it
-			const uint32 EventBufferSize = MaxEventCount * sizeof(uint32);
+			int32 MaxBreadcrumbsContexts = MAX_GPU_BREADCRUMB_CONTEXTS;
+			int32 MaxBreadcrumbsSize = MAX_GPU_BREADCRUMB_SIZE;
+			const uint32 EventBufferSize = MaxBreadcrumbsSize * MaxBreadcrumbsContexts * sizeof(uint32);
 			const uint32 TotalBufferSize = EventBufferSize + ShaderDiagnosticBufferSize;
 
 			// Create the platform-specific diagnostic buffer
@@ -90,6 +82,13 @@ void FD3D12Queue::SetupAfterDeviceCreation()
 				DiagnosticBuffer->BreadCrumbsOffset = 0;
 				DiagnosticBuffer->BreadCrumbsSize = EventBufferSize;
 
+				DiagnosticBuffer->BreadCrumbsContextSize = EventBufferSize / MaxBreadcrumbsContexts;
+
+				for (uint16 Idx = 0; Idx < MaxBreadcrumbsContexts; ++Idx)
+				{
+					DiagnosticBuffer->FreeContextIds.Add(MaxBreadcrumbsContexts - Idx);
+				}
+
 				DiagnosticBuffer->DiagnosticsOffset = DiagnosticBuffer->BreadCrumbsOffset + DiagnosticBuffer->BreadCrumbsSize;
 				DiagnosticBuffer->DiagnosticsSize = ShaderDiagnosticBufferSize;
 			}
@@ -99,6 +98,10 @@ void FD3D12Queue::SetupAfterDeviceCreation()
 
 FD3D12Queue::~FD3D12Queue()
 {
+	// The diagnostic buffer would be implicitly destroyed before the context pool, which can lead to a situation where there
+	// are still some FBreadcrumbStack objects owned by a context, and their destructor tries to use the diagnostic buffer
+	// after it's been freed. Explicitly freeing the buffer now and setting it to null works around this problem.
+	DiagnosticBuffer = nullptr;
 	check(PendingSubmission.IsEmpty());
 	check(PendingInterrupt.IsEmpty());
 }
@@ -109,7 +112,9 @@ FD3D12Device::FD3D12Device(FRHIGPUMask InGPUMask, FD3D12Adapter* InAdapter)
 	, GPUProfilingData         (this)
 	, ResidencyManager         (*this)
 	, DescriptorHeapManager    (this)
+#if PLATFORM_SUPPORTS_BINDLESS_RENDERING
 	, BindlessDescriptorManager(this)
+#endif
 	, GlobalSamplerHeap        (this)
 	, OnlineDescriptorManager  (this)
 	, DefaultBufferAllocator   (this, FRHIGPUMask::All()) //Note: Cross node buffers are possible 
@@ -183,7 +188,7 @@ ID3D12Device7* FD3D12Device::GetDevice7()
 }
 #endif // D3D12_RHI_RAYTRACING
 
-#if (PLATFORM_WINDOWS || PLATFORM_HOLOLENS)
+#if D3D12_SUPPORTS_DXGI_DEBUG
 typedef HRESULT(WINAPI *FDXGIGetDebugInterface1)(UINT, REFIID, void **);
 #endif
 
@@ -216,10 +221,10 @@ void FD3D12Device::SetupAfterDeviceCreation()
 		if (PlatformFormat != DXGI_FORMAT_UNKNOWN)
 		{
 			const D3D12_FEATURE_DATA_FORMAT_SUPPORT FormatSupport    = GetFormatSupport(Direct3DDevice, PlatformFormat);
-			const D3D12_FEATURE_DATA_FORMAT_SUPPORT SRVFormatSupport = GetFormatSupport(Direct3DDevice, FindShaderResourceDXGIFormat(PlatformFormat, false));
-			const D3D12_FEATURE_DATA_FORMAT_SUPPORT UAVFormatSupport = GetFormatSupport(Direct3DDevice, FindUnorderedAccessDXGIFormat(PlatformFormat));
-			const D3D12_FEATURE_DATA_FORMAT_SUPPORT RTVFormatSupport = GetFormatSupport(Direct3DDevice, FindShaderResourceDXGIFormat(PlatformFormat, false));
-			const D3D12_FEATURE_DATA_FORMAT_SUPPORT DSVFormatSupport = GetFormatSupport(Direct3DDevice, FindDepthStencilDXGIFormat(PlatformFormat));
+			const D3D12_FEATURE_DATA_FORMAT_SUPPORT SRVFormatSupport = GetFormatSupport(Direct3DDevice, UE::DXGIUtilities::FindShaderResourceFormat(PlatformFormat, false));
+			const D3D12_FEATURE_DATA_FORMAT_SUPPORT UAVFormatSupport = GetFormatSupport(Direct3DDevice, UE::DXGIUtilities::FindUnorderedAccessFormat(PlatformFormat));
+			const D3D12_FEATURE_DATA_FORMAT_SUPPORT RTVFormatSupport = GetFormatSupport(Direct3DDevice, UE::DXGIUtilities::FindShaderResourceFormat(PlatformFormat, false));
+			const D3D12_FEATURE_DATA_FORMAT_SUPPORT DSVFormatSupport = GetFormatSupport(Direct3DDevice, UE::DXGIUtilities::FindDepthStencilFormat(PlatformFormat));
 
 			auto ConvertCap1 = [&Capabilities](const D3D12_FEATURE_DATA_FORMAT_SUPPORT& InSupport, EPixelFormatCapabilities UnrealCap, D3D12_FORMAT_SUPPORT1 InFlags)
 			{
@@ -275,7 +280,7 @@ void FD3D12Device::SetupAfterDeviceCreation()
 	GRHISupportsArrayIndexFromAnyShader = true;
 	GRHISupportsStencilRefFromPixelShader = false; // TODO: Sort out DXC shader database SM6.0 usage. DX12 supports this feature, but need to improve DXC support.
 
-#if (PLATFORM_WINDOWS || PLATFORM_HOLOLENS)
+#if PLATFORM_WINDOWS
 	// Check if we're running under GPU capture
 	bool bUnderGPUCapture = false;
 
@@ -304,19 +309,13 @@ void FD3D12Device::SetupAfterDeviceCreation()
 		// Running on AMD with RGP profiling enabled, so enable capturing mode
 		bUnderGPUCapture = true;
 	}
-#if USE_PIX
 
-	// Only check windows version on PLATFORM_WINDOWS - Hololens can assume windows > 10.0 so the condition would always be true.
-#if PLATFORM_WINDOWS
+#if USE_PIX
 	// PIX (note that DXGIGetDebugInterface1 requires Windows 8.1 and up)
 	if (FPlatformMisc::VerifyWindowsVersion(6, 3))
-#endif
 	{
 		FDXGIGetDebugInterface1 DXGIGetDebugInterface1FnPtr = nullptr;
 
-#if PLATFORM_HOLOLENS
-		DXGIGetDebugInterface1FnPtr = DXGIGetDebugInterface1;
-#else
 		// CreateDXGIFactory2 is only available on Win8.1+, find it if it exists
 		HMODULE DxgiDLL = LoadLibraryA("dxgi.dll");
 		if (DxgiDLL)
@@ -327,7 +326,6 @@ void FD3D12Device::SetupAfterDeviceCreation()
 #pragma warning(pop)
 			FreeLibrary(DxgiDLL);
 		}
-#endif
 		
 		if (DXGIGetDebugInterface1FnPtr)
 		{
@@ -349,7 +347,7 @@ void FD3D12Device::SetupAfterDeviceCreation()
 	{
 		GDynamicRHI->EnableIdealGPUCaptureOptions(true);
 	}
-#endif // (PLATFORM_WINDOWS || PLATFORM_HOLOLENS)
+#endif // PLATFORM_WINDOWS
 
 
 	const int32 MaximumResourceHeapSize = GetParentAdapter()->GetMaxDescriptorsForHeapType(ERHIDescriptorHeapType::Standard);
@@ -363,23 +361,28 @@ void FD3D12Device::SetupAfterDeviceCreation()
 	check(GGlobalSamplerHeapSize <= MaximumSamplerHeapSize);
 
 	check(GOnlineDescriptorHeapSize <= GGlobalResourceDescriptorHeapSize);
-	check(GBindlessResourceDescriptorHeapSize <= GGlobalResourceDescriptorHeapSize);
-	check(GBindlessSamplerDescriptorHeapSize <= GGlobalSamplerDescriptorHeapSize);
 
-	DescriptorHeapManager.Init(GGlobalResourceDescriptorHeapSize, GGlobalSamplerDescriptorHeapSize);
+	bool bFullyBindlessResources = false;
+	bool bFullyBindlessSamplers = false;
 
 #if PLATFORM_SUPPORTS_BINDLESS_RENDERING
-	const bool bBindlessResources = RHIGetBindlessResourcesConfiguration(GMaxRHIShaderPlatform) != ERHIBindlessConfiguration::Disabled;
-	const bool bBindlessSamplers = RHIGetBindlessSamplersConfiguration(GMaxRHIShaderPlatform) != ERHIBindlessConfiguration::Disabled;
-	if (bBindlessResources || bBindlessSamplers)
-	{
-		BindlessDescriptorManager.Init(bBindlessResources ? GBindlessResourceDescriptorHeapSize : 0, bBindlessSamplers ? GBindlessSamplerDescriptorHeapSize : 0);
-	}
+	BindlessDescriptorManager.Init();
+
+	bFullyBindlessResources = BindlessDescriptorManager.AreResourcesFullyBindless();
+	bFullyBindlessSamplers = BindlessDescriptorManager.AreSamplersFullyBindless();
 #endif
 
-	GlobalSamplerHeap.Init(GGlobalSamplerHeapSize);
+	DescriptorHeapManager.Init(bFullyBindlessResources ? 0 : GGlobalResourceDescriptorHeapSize, bFullyBindlessSamplers ? 0 : GGlobalSamplerDescriptorHeapSize);
 
-	OnlineDescriptorManager.Init(GOnlineDescriptorHeapSize, GOnlineDescriptorHeapBlockSize);
+	if (!bFullyBindlessSamplers)
+	{
+		GlobalSamplerHeap.Init(GGlobalSamplerHeapSize);
+	}
+
+	if (!bFullyBindlessResources)
+	{
+		OnlineDescriptorManager.Init(GOnlineDescriptorHeapSize, GOnlineDescriptorHeapBlockSize);
+	}
 
 	// Make sure we create the default views before the first command context
 	CreateDefaultViews();
@@ -396,7 +399,7 @@ void FD3D12Device::SetupAfterDeviceCreation()
 	D3D12_RESOURCE_DESC DispatchRaysDescBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(D3D12_DISPATCH_RAYS_DESC), D3D12RHI_RESOURCE_FLAG_ALLOW_INDIRECT_BUFFER);
 	RayTracingDispatchRaysDescBuffer = GetParentAdapter()->CreateRHIBuffer(
 		DispatchRaysDescBufferDesc, 256,
-		0, DispatchRaysDescBufferDesc.Width, BUF_DrawIndirect,
+		FRHIBufferDesc(DispatchRaysDescBufferDesc.Width, 0, BUF_DrawIndirect),
 		ED3D12ResourceStateMode::MultiState, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, false /*bInitialData*/,
 		GetGPUMask(), nullptr /*ResourceAllocator*/, TEXT("DispatchRaysDescBuffer"));
 #endif // D3D12_RHI_RAYTRACING
@@ -416,8 +419,8 @@ void FD3D12Device::CreateDefaultViews()
 		SRVDesc.Texture2D.MostDetailedMip = 0;
 		SRVDesc.Texture2D.ResourceMinLODClamp = 0.0f;
 
-		DefaultViews.NullSRV = new FD3D12ViewDescriptorHandle(this, ERHIDescriptorHeapType::Standard);
-		DefaultViews.NullSRV->CreateView(SRVDesc, nullptr, ED3D12DescriptorCreateReason::InitialCreate);
+		DefaultViews.NullSRV = GetOfflineDescriptorManager(ERHIDescriptorHeapType::Standard).AllocateHeapSlot();
+		GetDevice()->CreateShaderResourceView(nullptr, &SRVDesc, DefaultViews.NullSRV);
 	}
 
 	{
@@ -426,8 +429,8 @@ void FD3D12Device::CreateDefaultViews()
 		RTVDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
 		RTVDesc.Texture2D.MipSlice = 0;
 
-		DefaultViews.NullRTV = new FD3D12ViewDescriptorHandle(this, ERHIDescriptorHeapType::RenderTarget);
-		DefaultViews.NullRTV->CreateView(RTVDesc, nullptr);
+		DefaultViews.NullRTV = GetOfflineDescriptorManager(ERHIDescriptorHeapType::RenderTarget).AllocateHeapSlot();
+		GetDevice()->CreateRenderTargetView(nullptr, &RTVDesc, DefaultViews.NullRTV);
 	}
 
 	{
@@ -436,13 +439,26 @@ void FD3D12Device::CreateDefaultViews()
 		UAVDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
 		UAVDesc.Texture2D.MipSlice = 0;
 
-		DefaultViews.NullUAV = new FD3D12ViewDescriptorHandle(this, ERHIDescriptorHeapType::Standard);
-		DefaultViews.NullUAV->CreateView(UAVDesc, nullptr, nullptr, ED3D12DescriptorCreateReason::InitialCreate);
+		DefaultViews.NullUAV = GetOfflineDescriptorManager(ERHIDescriptorHeapType::Standard).AllocateHeapSlot();
+		GetDevice()->CreateUnorderedAccessView(nullptr, nullptr, &UAVDesc, DefaultViews.NullUAV);
 	}
 
-#if USE_STATIC_ROOT_SIGNATURE
-	DefaultViews.NullCBV = new FD3D12ConstantBufferView(this);
-#endif
+	{
+		D3D12_DEPTH_STENCIL_VIEW_DESC DSVDesc{};
+		DSVDesc.Format = DXGI_FORMAT_D32_FLOAT;
+		DSVDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+		DSVDesc.Texture2D.MipSlice = 0;
+
+		DefaultViews.NullDSV = GetOfflineDescriptorManager(ERHIDescriptorHeapType::DepthStencil).AllocateHeapSlot();
+		GetDevice()->CreateDepthStencilView(nullptr, &DSVDesc, DefaultViews.NullDSV);
+	}
+
+	{
+		D3D12_CONSTANT_BUFFER_VIEW_DESC CBVDesc{};
+
+		DefaultViews.NullCBV = GetOfflineDescriptorManager(ERHIDescriptorHeapType::Standard).AllocateHeapSlot();
+		GetDevice()->CreateConstantBufferView(&CBVDesc, DefaultViews.NullCBV);
+	}
 
 	{
 		const FSamplerStateInitializerRHI SamplerDesc(SF_Trilinear, AM_Clamp, AM_Clamp, AM_Clamp);
@@ -525,9 +541,55 @@ void FD3D12Device::BlockUntilIdle()
 	}
 }
 
+D3D12_RESOURCE_ALLOCATION_INFO FD3D12Device::GetResourceAllocationInfoUncached(const FD3D12ResourceDesc& InDesc)
+{
+	D3D12_RESOURCE_ALLOCATION_INFO Result;
+
+#if INTEL_EXTENSIONS
+	if (InDesc.bRequires64BitAtomicSupport && IsRHIDeviceIntel() && GDX12INTCAtomicUInt64Emulation)
+	{
+		FD3D12ResourceDesc LocalDesc = InDesc;
+
+		INTC_D3D12_RESOURCE_DESC_0001 IntelLocalDesc{};
+		IntelLocalDesc.pD3D12Desc = &LocalDesc;
+		IntelLocalDesc.EmulatedTyped64bitAtomics = true;
+
+		Result = INTC_D3D12_GetResourceAllocationInfo(FD3D12DynamicRHI::GetD3DRHI()->GetIntelExtensionContext(), 0, 1, &IntelLocalDesc);
+	}
+	else
+#endif
+#if D3D12RHI_SUPPORTS_UNCOMPRESSED_UAV
+	if (InDesc.SupportsUncompressedUAV())
+	{
+		// Convert the desc to the version required by GetResourceAllocationInfo3
+		const CD3DX12_RESOURCE_DESC1 LocalDesc(InDesc);
+
+		const TArray<DXGI_FORMAT, TInlineAllocator<4>> CastableFormats = InDesc.GetCastableFormats();
+
+		const UINT32 NumCastableFormats = CastableFormats.Num();
+		D3D12_RESOURCE_ALLOCATION_INFO1* NoExtraAllocationInfo = nullptr;
+
+		const DXGI_FORMAT* const Formats[] = { CastableFormats.GetData() };
+
+		Result = GetParentAdapter()->GetD3DDevice12()->GetResourceAllocationInfo3(0, 1, &LocalDesc, &NumCastableFormats, Formats, NoExtraAllocationInfo);
+	}
+	else
+#endif
+	{
+		Result = GetDevice()->GetResourceAllocationInfo(0, 1, &InDesc);
+		if (Result.SizeInBytes == UINT64_MAX)
+		{
+			// The description provided caused an error per the docs. This will almost certainly crash outside this fn.
+			UE_LOG(LogD3D12RHI, Error, TEXT("D3D12 GetResourceAllocationInfo failed - likely a resource was requested that has invalid allocation info (e.g. is an invalid texture size)"));
+			UE_LOG(LogD3D12RHI, Error, TEXT("     W %llu H %d depth %d mips %d pf %d"), InDesc.Width, InDesc.Height, InDesc.DepthOrArraySize, InDesc.MipLevels, InDesc.PixelFormat);
+		}
+	}
+	return Result;
+}
+
 D3D12_RESOURCE_ALLOCATION_INFO FD3D12Device::GetResourceAllocationInfo(const FD3D12ResourceDesc& InDesc)
 {
-	uint64 Hash = CityHash64((const char*)&InDesc, sizeof(FD3D12ResourceDesc));
+	const uint64 Hash = CityHash64((const char*)&InDesc, sizeof(FD3D12ResourceDesc));
 
 	// By default there'll be more threads trying to read this than to write it.
 	ResourceAllocationInfoMapMutex.ReadLock();
@@ -540,29 +602,7 @@ D3D12_RESOURCE_ALLOCATION_INFO FD3D12Device::GetResourceAllocationInfo(const FD3
 	}
 	else
 	{
-		D3D12_RESOURCE_ALLOCATION_INFO Result;
-#if INTEL_EXTENSIONS
-		if (InDesc.bRequires64BitAtomicSupport && IsRHIDeviceIntel() && GDX12INTCAtomicUInt64Emulation)
-		{
-			FD3D12ResourceDesc LocalDesc = InDesc;
-
-			INTC_D3D12_RESOURCE_DESC_0001 IntelLocalDesc{};
-			IntelLocalDesc.pD3D12Desc = &LocalDesc;
-			IntelLocalDesc.EmulatedTyped64bitAtomics = true;
-
-			Result = INTC_D3D12_GetResourceAllocationInfo(FD3D12DynamicRHI::GetD3DRHI()->GetIntelExtensionContext(), 0, 1, &IntelLocalDesc);
-		}
-		else
-#endif
-		{
-			Result = GetDevice()->GetResourceAllocationInfo(0, 1, &InDesc);
-		    if (Result.SizeInBytes == UINT64_MAX)
-		    {
-			    // The description provided caused an error per the docs. This will almost certainly crash outside this fn.
-			    UE_LOG(LogD3D12RHI, Error, TEXT("D3D12 GetResourceAllocationInfo failed - likely a resource was requested that has invalid allocation info (e.g. is an invalid texture size)"));
-			    UE_LOG(LogD3D12RHI, Error, TEXT("     W %llu H %d depth %d mips %d pf %d"), InDesc.Width, InDesc.Height, InDesc.DepthOrArraySize, InDesc.MipLevels, InDesc.PixelFormat);
-			}
-		}
+		const D3D12_RESOURCE_ALLOCATION_INFO Result = GetResourceAllocationInfoUncached(InDesc);
 
 		ResourceAllocationInfoMapMutex.WriteLock();
 		// Try search again with write lock because could have been added already
@@ -620,18 +660,18 @@ void FD3D12Device::ReleaseCommandAllocator(FD3D12CommandAllocator* Allocator)
 	Queues[(uint32)Allocator->QueueType].ObjectPool.Allocators.Push(Allocator);
 }
 
-FD3D12CommandList* FD3D12Device::ObtainCommandList(FD3D12CommandAllocator* CommandAllocator, FD3D12QueryAllocator* TimestampAllocator)
+FD3D12CommandList* FD3D12Device::ObtainCommandList(FD3D12CommandAllocator* CommandAllocator, FD3D12QueryAllocator* TimestampAllocator, FD3D12QueryAllocator* PipelineStatsAllocator)
 {
 	check(CommandAllocator->Device == this);
 
 	FD3D12CommandList* List = Queues[(uint32)CommandAllocator->QueueType].ObjectPool.Lists.Pop();
 	if (!List)
 	{
-		List = new FD3D12CommandList(CommandAllocator, TimestampAllocator);
+		List = new FD3D12CommandList(CommandAllocator, TimestampAllocator, PipelineStatsAllocator);
 	}
 	else
 	{
-		List->Reset(CommandAllocator, TimestampAllocator);
+		List->Reset(CommandAllocator, TimestampAllocator, PipelineStatsAllocator);
 	}
 	
 	check(List);
@@ -671,13 +711,25 @@ TRefCountPtr<FD3D12QueryHeap> FD3D12Device::ObtainQueryHeap(ED3D12QueueType Queu
 				HeapType = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
 			}
 			break;
+
+		case D3D12_QUERY_TYPE_PIPELINE_STATISTICS:
+#if D3D12RHI_ENABLE_PIPELINE_STATISTICS
+			if (QueueType != ED3D12QueueType::Direct)
+			{
+				// Only graphics/direct queues support pipeline statistics
+				return nullptr;
+			}
+			HeapType = D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS;
+			break;
+#else
+			return nullptr;
+#endif
 	}
 
 	FD3D12QueryHeap* QueryHeap = QueryHeapPool[GetQueryHeapPoolIndex(HeapType)].Pop();
 	if (!QueryHeap)
 	{
-		// Size the query heap to fill a 64KB page
-		QueryHeap = new FD3D12QueryHeap(this, QueryType, HeapType, 65536 / FD3D12QueryHeap::ResultSize);
+		QueryHeap = new FD3D12QueryHeap(this, QueryType, HeapType);
 	}
 
 	check(QueryHeap->QueryType == QueryType);

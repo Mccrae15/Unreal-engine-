@@ -2,15 +2,13 @@
 
 #include "VCamPixelStreamingSubsystem.h"
 
+#include "BuiltinProviders/VCamPixelStreamingSession.h"
+#include "VCamPixelStreamingLiveLink.h"
+
 #include "Engine/Engine.h"
 #include "Features/IModularFeatures.h"
-
-#include "IPixelStreamingEditorModule.h"
-#include "VCamPixelStreamingLiveLink.h"
-#include "VCamPixelStreamingSession.h"
-
-#include "Features/IModularFeatures.h"
 #include "ILiveLinkClient.h"
+#include "IPixelStreamingEditorModule.h"
 
 void UVCamPixelStreamingSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {

@@ -1,7 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -206,6 +205,58 @@ namespace EpicGames.Core
 		}
 
 		/// <summary>
+		/// Backup an existing log file if it already exists at the outputpath
+		/// </summary>
+		/// <param name="outputFile">The file to back up</param>
+		public static void BackupLogFile(FileReference outputFile)
+		{
+			if (!Log.BackupLogFiles || !FileReference.Exists(outputFile))
+			{
+				return;
+			}
+
+			// before creating a new backup, cap the number of existing files
+			string filenameWithoutExtension = outputFile.GetFileNameWithoutExtension();
+			string extension = outputFile.GetExtension();
+
+			Regex backupForm =
+				new Regex(filenameWithoutExtension + @"-backup-\d\d\d\d\.\d\d\.\d\d-\d\d\.\d\d\.\d\d" + extension);
+
+			foreach (FileReference oldBackup in DirectoryReference
+				.EnumerateFiles(outputFile.Directory)
+				// find files that match the way that we name backup files
+				.Where(x => backupForm.IsMatch(x.GetFileName()))
+				// sort them from newest to oldest
+				.OrderByDescending(x => x.GetFileName())
+				// skip the newest ones that are to be kept; -1 because we're about to create another backup.
+				.Skip(Log.LogFileBackupCount - 1))
+			{
+				Logger.LogDebug("Deleting old log file: {File}", oldBackup);
+				FileReference.Delete(oldBackup);
+			}
+
+			// Ensure that the backup gets a unique name, in the extremely unlikely case that UBT was run twice during
+			// the same second.
+			DateTime fileTime = File.GetCreationTimeUtc(outputFile.FullName);
+
+			FileReference backupFile;
+			for (; ; )
+			{
+				string timestamp = $"{fileTime:yyyy.MM.dd-HH.mm.ss}";
+				backupFile = FileReference.Combine(outputFile.Directory,
+					$"{filenameWithoutExtension}-backup-{timestamp}{extension}");
+				if (!FileReference.Exists(backupFile))
+				{
+					break;
+				}
+
+				fileTime = fileTime.AddSeconds(1);
+			}
+
+			FileReference.Move(outputFile, backupFile);
+		}
+
+		/// <summary>
 		/// Adds a trace listener that writes to a log file.
 		/// If a StartupTraceListener was in use, this function will copy its captured data to the log file(s)
 		/// and remove the startup listener from the list of registered listeners.
@@ -215,51 +266,9 @@ namespace EpicGames.Core
 		/// <returns>The created trace listener</returns>
 		public static void AddFileWriter(string name, FileReference outputFile)
 		{
-			Log.TraceInformation($"Log file: {outputFile}");
+			Logger.LogInformation("Log file: {OutputFile}", outputFile);
 
-			if (Log.BackupLogFiles && FileReference.Exists(outputFile))
-			{
-				// before creating a new backup, cap the number of existing files
-				string filenameWithoutExtension = outputFile.GetFileNameWithoutExtension();
-				string extension = outputFile.GetExtension();
-
-				Regex backupForm =
-					new Regex(filenameWithoutExtension + @"-backup-\d\d\d\d\.\d\d\.\d\d-\d\d\.\d\d\.\d\d" + extension);
-
-				foreach (FileReference oldBackup in DirectoryReference
-					.EnumerateFiles(outputFile.Directory)
-					// find files that match the way that we name backup files
-					.Where(x => backupForm.IsMatch(x.GetFileName()))
-					// sort them from newest to oldest
-					.OrderByDescending(x => x.GetFileName())
-					// skip the newest ones that are to be kept; -1 because we're about to create another backup.
-					.Skip(Log.LogFileBackupCount - 1))
-				{
-					Log.TraceLog($"Deleting old log file: {oldBackup}");
-					FileReference.Delete(oldBackup);
-				}
-
-				// Ensure that the backup gets a unique name, in the extremely unlikely case that UBT was run twice during
-				// the same second.
-				DateTime fileTime = File.GetCreationTimeUtc(outputFile.FullName);
-
-				FileReference backupFile;
-				for (; ; )
-				{
-					string timestamp = $"{fileTime:yyyy.MM.dd-HH.mm.ss}";
-					backupFile = FileReference.Combine(outputFile.Directory,
-						$"{filenameWithoutExtension}-backup-{timestamp}{extension}");
-					if (!FileReference.Exists(backupFile))
-					{
-						break;
-					}
-
-					fileTime = fileTime.AddSeconds(1);
-				}
-
-				FileReference.Move(outputFile, backupFile);
-			}
-
+			BackupLogFile(outputFile);
 			AddFileWriterWithoutBackup(name, outputFile);
 		}
 
@@ -479,10 +488,11 @@ namespace EpicGames.Core
 		public static void WriteException(Exception ex, FileReference? logFileName)
 		{
 			string logSuffix = (logFileName == null) ? "" : String.Format("\n(see {0} for full exception trace)", logFileName);
-			TraceLog("==============================================================================");
-			TraceError("{0}{1}", ExceptionUtils.FormatException(ex), logSuffix);
-			TraceLog("\n{0}", ExceptionUtils.FormatExceptionDetails(ex));
-			TraceLog("==============================================================================");
+			Logger.LogDebug("==============================================================================");
+			Logger.LogError(ex, "{Message}{Suffix}", ExceptionUtils.FormatException(ex), logSuffix);
+			Logger.LogDebug("");
+			Logger.LogDebug("{Details}", ExceptionUtils.FormatExceptionDetails(ex));
+			Logger.LogDebug("==============================================================================");
 		}
 
 		/// <summary>
@@ -491,6 +501,7 @@ namespace EpicGames.Core
 		/// <param name="format">Message format string</param>
 		/// <param name="args">Optional arguments</param>
 		[StringFormatMethod("Format")]
+		[Obsolete("Use Logger.LogError with a message template instead; see https://tinyurl.com/bp96bk2r.", false)]
 		public static void TraceError(string format, params object?[] args)
 		{
 			WriteLinePrivate(false, LogEventType.Error, LogFormatOptions.None, format, args);
@@ -528,6 +539,7 @@ namespace EpicGames.Core
 		/// <param name="args">Optional arguments</param>
 		[Conditional("TRACE")]
 		[StringFormatMethod("Format")]
+		[Obsolete("Use Logger.LogDebug with a message template instead; see https://tinyurl.com/bp96bk2r.", false)]
 		public static void TraceVerbose(string format, params object?[] args)
 		{
 			WriteLinePrivate(false, LogEventType.Verbose, LogFormatOptions.None, format, args);
@@ -539,6 +551,7 @@ namespace EpicGames.Core
 		/// <param name="format">Message format string</param>
 		/// <param name="args">Optional arguments</param>
 		[StringFormatMethod("Format")]
+		[Obsolete("Use Logger.LogInformation with a message template instead; see https://tinyurl.com/bp96bk2r.", false)]
 		public static void TraceInformation(string format, params object?[] args)
 		{
 			WriteLinePrivate(false, LogEventType.Console, LogFormatOptions.None, format, args);
@@ -550,6 +563,7 @@ namespace EpicGames.Core
 		/// <param name="format">Message format string</param>
 		/// <param name="args">Optional arguments</param>
 		[StringFormatMethod("Format")]
+		[Obsolete("Use Logger.LogWarning with a message template instead; see https://tinyurl.com/bp96bk2r.", false)]
 		public static void TraceWarning(string format, params object?[] args)
 		{
 			WriteLinePrivate(false, LogEventType.Warning, LogFormatOptions.None, format, args);
@@ -599,6 +613,7 @@ namespace EpicGames.Core
 		/// <param name="args">Optional arguments</param>
 		[Conditional("TRACE")]
 		[StringFormatMethod("Format")]
+		[Obsolete("Use Logger.LogTrace with a message template instead; see https://tinyurl.com/bp96bk2r.", false)]
 		public static void TraceVeryVerbose(string format, params object?[] args)
 		{
 			WriteLinePrivate(false, LogEventType.VeryVerbose, LogFormatOptions.None, format, args);
@@ -611,6 +626,7 @@ namespace EpicGames.Core
 		/// <param name="args">Optional arguments</param>
 		[Conditional("TRACE")]
 		[StringFormatMethod("Format")]
+		[Obsolete("Use Logger.LogDebug with a message template instead; see https://tinyurl.com/bp96bk2r.", false)]
 		public static void TraceLog(string format, params object?[] args)
 		{
 			WriteLinePrivate(false, LogEventType.Log, LogFormatOptions.None, format, args);
@@ -1165,6 +1181,11 @@ namespace EpicGames.Core
 
 		public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
 		{
+			if (!IsEnabled(logLevel))
+			{
+				return;
+			}
+
 			string[] lines = formatter(state, exception).Split('\n');
 			lock (_syncObject)
 			{
@@ -1174,6 +1195,11 @@ namespace EpicGames.Core
 				{
 					if (listener != null)
 					{
+						if (listener is DefaultTraceListener && logLevel < LogLevel.Information)
+						{
+							continue;
+						}
+
 						string timePrefixActual =
 							IncludeTimestamps &&
 							!(listener is DefaultTraceListener) // no timestamps when writing to the Visual Studio debug window

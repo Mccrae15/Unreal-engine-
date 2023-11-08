@@ -51,6 +51,12 @@ UEdGraphNode* FPCGEditorGraphSchemaAction_NewNativeElement::PerformAction(UEdGra
 		return nullptr;
 	}
 
+	if (DefaultNodeSettings)
+	{
+		DefaultNodeSettings->ApplyPreconfiguredSettings(PreconfiguredInfo);
+		NewPCGNode->UpdateAfterSettingsChangeDuringCreation();
+	}
+
 	PostCreation(NewPCGNode);
 
 	FGraphNodeCreator<UPCGEditorGraphNode> NodeCreator(*EditorGraph);
@@ -279,6 +285,7 @@ UEdGraphNode* FPCGEditorGraphSchemaAction_NewBlueprintElement::PerformAction(UEd
 	UPCGBlueprintElement* ElementInstance = nullptr;
 	TSubclassOf<UPCGBlueprintElement> BlueprintClass = BlueprintClassPath.TryLoadClass<UPCGBlueprintElement>();
 	DefaultBlueprintSettings->SetElementType(BlueprintClass, ElementInstance);
+	DefaultBlueprintSettings->ApplyPreconfiguredSettings(PreconfiguredInfo);
 
 	NewPCGNode->UpdateAfterSettingsChangeDuringCreation();
 

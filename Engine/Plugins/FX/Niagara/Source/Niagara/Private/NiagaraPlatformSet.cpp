@@ -3,19 +3,17 @@
 #include "NiagaraPlatformSet.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
+#include "NiagaraEmitter.h"
 #include "Scalability.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/ConfigUtilities.h"
-#include "Interfaces/ITargetPlatform.h"
 #include "NiagaraSystemImpl.h"
 #include "NiagaraSettings.h"
-#include "SystemSettings.h"
 #include "UObject/UObjectIterator.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraPlatformSet)
 
 #if WITH_EDITOR
-#include "PlatformInfo.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "NiagaraPlatformSet"
@@ -579,7 +577,7 @@ FNiagaraPlatformSetEnabledState FNiagaraPlatformSet::IsEnabled(const UDeviceProf
 	{
 		if (bQLIsEnabled)//Is the whole quality level disabled?
 		{
-			if (bProfileActiveQL)//The quality level is enabled but this profile is not active for this QL
+			if (bProfileActiveQL || bCheckCurrentStateOnly)//The quality level is enabled but this profile is not active for this QL
 			{
 				Ret.bIsActive = true;
 				Ret.bCanBeActive = true;
@@ -1201,7 +1199,7 @@ void FNiagaraPlatformSet::OnChanged()
 	InvalidateCachedData();
 }
 
-bool FNiagaraPlatformSet::GatherConflicts(const TArray<const FNiagaraPlatformSet*>& PlatformSets, TArray<FNiagaraPlatformSetConflictInfo>& OutConflicts)
+bool FNiagaraPlatformSet::GatherConflicts(TConstArrayView<const FNiagaraPlatformSet*> PlatformSets, TArray<FNiagaraPlatformSetConflictInfo>& OutConflicts)
 {
 	const UNiagaraSettings* Settings = GetDefault<UNiagaraSettings>();
 	check(Settings);

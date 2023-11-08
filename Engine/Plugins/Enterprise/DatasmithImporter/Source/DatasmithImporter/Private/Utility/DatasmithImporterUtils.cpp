@@ -197,6 +197,23 @@ ADatasmithSceneActor* FDatasmithImporterUtils::CreateImportSceneActor( FDatasmit
 		RootComponent->RegisterComponent();
 	}
 
+	FVector Geolocation = ImportContext.Scene->GetGeolocation();
+
+	if (Geolocation.X != TNumericLimits<double>::Max())
+	{
+		UDatasmithAssetUserData::SetDatasmithUserDataValueForKey(SceneActor, TEXT("Geolocation_Latitude"),  FString::SanitizeFloat(Geolocation.X));
+	}
+
+	if (Geolocation.Y != TNumericLimits<double>::Max())
+	{
+		UDatasmithAssetUserData::SetDatasmithUserDataValueForKey(SceneActor, TEXT("Geolocation_Longitude"),  FString::SanitizeFloat(Geolocation.Y));
+	}
+
+	if (Geolocation.Z != TNumericLimits<double>::Max())
+	{
+		UDatasmithAssetUserData::SetDatasmithUserDataValueForKey(SceneActor, TEXT("Geolocation_Elevation"),  FString::SanitizeFloat(Geolocation.Z));
+	}
+
 	ImportContext.ActorsContext.ImportSceneActor = SceneActor;
 
 	return SceneActor;
@@ -669,6 +686,9 @@ namespace FDatasmithImporterUtilsHelper
 		case ELightUnits::Lumens:
 			PointLightElement->SetIntensityUnits( EDatasmithLightUnits::Lumens );
 			break;
+		case ELightUnits::EV:
+			PointLightElement->SetIntensityUnits( EDatasmithLightUnits::EV );
+			break;
 		default:
 			PointLightElement->SetIntensityUnits( EDatasmithLightUnits::Unitless );
 			break;
@@ -1125,7 +1145,7 @@ void FDatasmithImporterUtils::FillSceneElement(TSharedPtr<IDatasmithScene>& Scen
 TArray<FDatasmithImporterUtils::FFunctionAndMaterialsThatUseIt> FDatasmithImporterUtils::GetOrderedListOfMaterialsReferencedByMaterials(TSharedPtr< IDatasmithScene >& SceneElement)
 {
 	//This map is used to keep track of which materials are referencing which
-	TMap<FString, TSet<FString>> MaterialToFunctionNameMap;
+	TMap<FString, TSet<FString, TStringPointerSetKeyFuncs_DEPRECATED<FString>>> MaterialToFunctionNameMap;
 	//Mapping materials to their names for easy access.
 	TMap<FString, TSharedPtr<IDatasmithUEPbrMaterialElement>> MaterialNameMap;
 
@@ -1155,7 +1175,7 @@ TArray<FDatasmithImporterUtils::FFunctionAndMaterialsThatUseIt> FDatasmithImport
 				if (FPaths::IsRelative(FunctionPathName))
 				{
 					uint32 FunctionPathNameHash = GetTypeHash(FunctionPathName);
-					if (TSet<FString>* Values = MaterialToFunctionNameMap.FindByHash(FunctionPathNameHash, FunctionPathName))
+					if (TSet<FString, TStringPointerSetKeyFuncs_DEPRECATED<FString>>* Values = MaterialToFunctionNameMap.FindByHash(FunctionPathNameHash, FunctionPathName))
 					{
 						check(!Values->ContainsByHash(BaseMaterialHash, BaseMaterialElement->GetName())); //Can't have inter-dependencies
 					}
@@ -1173,9 +1193,9 @@ TArray<FDatasmithImporterUtils::FFunctionAndMaterialsThatUseIt> FDatasmithImport
 	VisitedAndInsertionIndex.Reserve(MaterialToFunctionNameMap.Num());
 
 	// Topological sort while also noting who was the direct dependents of a node also. Base on a DFS
-	TFunction<void (const TSharedPtr<IDatasmithUEPbrMaterialElement>&, const TSet<FString>&, const TSharedPtr<IDatasmithUEPbrMaterialElement>&)> DepthFirstSearch;
+	TFunction<void (const TSharedPtr<IDatasmithUEPbrMaterialElement>&, const TSet<FString, TStringPointerSetKeyFuncs_DEPRECATED<FString>>&, const TSharedPtr<IDatasmithUEPbrMaterialElement>&)> DepthFirstSearch;
 
-	DepthFirstSearch = [&MaterialToFunctionNameMap, &MaterialNameMap, &ReferencedMaterialAndTheirReferencer, &VisitedAndInsertionIndex, &DepthFirstSearch] (const TSharedPtr<IDatasmithUEPbrMaterialElement>& CurrentElement, const TSet<FString>& Dependencies, const TSharedPtr<IDatasmithUEPbrMaterialElement>& Parent)
+	DepthFirstSearch = [&MaterialToFunctionNameMap, &MaterialNameMap, &ReferencedMaterialAndTheirReferencer, &VisitedAndInsertionIndex, &DepthFirstSearch] (const TSharedPtr<IDatasmithUEPbrMaterialElement>& CurrentElement, const TSet<FString, TStringPointerSetKeyFuncs_DEPRECATED<FString>>& Dependencies, const TSharedPtr<IDatasmithUEPbrMaterialElement>& Parent)
 		{
 			uint32 CurrentHash = GetTypeHash(CurrentElement);
 			// Check if visited
@@ -1193,13 +1213,13 @@ TArray<FDatasmithImporterUtils::FFunctionAndMaterialsThatUseIt> FDatasmithImport
 				const TSharedPtr<IDatasmithUEPbrMaterialElement>* NextElement = MaterialNameMap.FindByHash(DependencyHash, Dependency);
 				if (NextElement)
 				{
-					if (const TSet<FString>* NextElementDependencies = MaterialToFunctionNameMap.FindByHash(DependencyHash, Dependency))
+					if (const TSet<FString, TStringPointerSetKeyFuncs_DEPRECATED<FString>>* NextElementDependencies = MaterialToFunctionNameMap.FindByHash(DependencyHash, Dependency))
 					{
 						DepthFirstSearch(*NextElement, *NextElementDependencies, CurrentElement);
 					}
 					else
 					{
-						DepthFirstSearch(*NextElement, TSet<FString>(), CurrentElement);
+						DepthFirstSearch(*NextElement, TSet<FString, TStringPointerSetKeyFuncs_DEPRECATED<FString>>(), CurrentElement);
 					}
 				}
 			}
@@ -1212,7 +1232,7 @@ TArray<FDatasmithImporterUtils::FFunctionAndMaterialsThatUseIt> FDatasmithImport
 			ReferencedMaterialAndTheirReferencer.Emplace(CurrentElement, MoveTemp(Parents));
 		};
 
-	for (const TPair<FString, TSet<FString>>& Pair : MaterialToFunctionNameMap)
+	for (const TPair<FString, TSet<FString, TStringPointerSetKeyFuncs_DEPRECATED<FString>>>& Pair : MaterialToFunctionNameMap)
 	{
 		const TSharedPtr<IDatasmithUEPbrMaterialElement>& CurrentElement = MaterialNameMap.FindChecked(Pair.Key);
 		// Only if not yet visited
@@ -1225,13 +1245,13 @@ TArray<FDatasmithImporterUtils::FFunctionAndMaterialsThatUseIt> FDatasmithImport
 				const TSharedPtr<IDatasmithUEPbrMaterialElement>* CurrentDependency = MaterialNameMap.FindByHash(DependencyHash, Dependency);
 				if (CurrentDependency)
 				{
-					if (const TSet<FString>* DependenciesOfDependency = MaterialToFunctionNameMap.FindByHash(DependencyHash, Dependency))
+					if (const TSet<FString, TStringPointerSetKeyFuncs_DEPRECATED<FString>>* DependenciesOfDependency = MaterialToFunctionNameMap.FindByHash(DependencyHash, Dependency))
 					{
 						DepthFirstSearch(*CurrentDependency, *DependenciesOfDependency, CurrentElement);
 					}
 					else
 					{
-						DepthFirstSearch(*CurrentDependency, TSet<FString>(), CurrentElement);
+						DepthFirstSearch(*CurrentDependency, TSet<FString, TStringPointerSetKeyFuncs_DEPRECATED<FString>>(), CurrentElement);
 					}
 				}
 			}

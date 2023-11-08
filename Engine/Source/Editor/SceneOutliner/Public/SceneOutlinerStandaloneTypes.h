@@ -72,7 +72,7 @@ public:
 		CachedHash = CalculateTypeHash();
 	}
 
-	FSceneOutlinerTreeItemID(const FGuid& InGuid) : Type(EType::Guid)
+	explicit FSceneOutlinerTreeItemID(const FGuid& InGuid) : Type(EType::Guid)
 	{
 		new (Data) FGuid(InGuid);
 		CachedHash = CalculateTypeHash();
@@ -106,7 +106,7 @@ public:
 	}
 	FSceneOutlinerTreeItemID& operator=(FSceneOutlinerTreeItemID&& Other)
 	{
-		FMemory::Memswap(this, &Other, sizeof(FSceneOutlinerTreeItemID));
+		Swap(*this, Other);
 		return *this;
 	}
 
@@ -183,7 +183,6 @@ struct SCENEOUTLINER_API FSceneOutlinerTreeItemType
 {
 public:
 	explicit FSceneOutlinerTreeItemType(const FSceneOutlinerTreeItemType* Parent = nullptr) : ID(++NextUniqueID), ParentType(Parent) {}
-	FSceneOutlinerTreeItemType(const FSceneOutlinerTreeItemType& Src) : ID(Src.ID), ParentType(Src.ParentType) {}
 
 	bool operator==(const FSceneOutlinerTreeItemType& Other) const
 	{

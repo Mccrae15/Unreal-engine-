@@ -2,16 +2,19 @@
 
 #include "USDShadeMaterialTranslator.h"
 
-#include "Engine/Level.h"
 #include "MeshTranslationImpl.h"
 #include "USDAssetCache.h"
-#include "USDAssetImportData.h"
+#include "USDAssetUserData.h"
+#include "USDClassesModule.h"
+#include "USDClassesModule.h"
 #include "USDLog.h"
 #include "USDShadeConversion.h"
 #include "USDTypesConversion.h"
 
 #include "UsdWrappers/SdfPath.h"
 
+#include "EditorFramework/AssetImportData.h"
+#include "Engine/Level.h"
 #include "Engine/Texture.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceConstant.h"
@@ -131,15 +134,20 @@ namespace UE::UsdShadeTranslator::Private
 						{
 							if ( Context->AssetCache && Context->InfoCache )
 							{
-								// This is super slow as it will essentially linear search the asset cache, but
-								// not much we can do at runtime without asset import data
-								const UE::FSdfPath PrimPath = Context->InfoCache->GetPrimForAsset( MID );
+								UE::FSdfPath PrimPath;
+								for (const UE::FSdfPath& Path : Context->InfoCache->GetPrimsForAsset(MID))
+								{
+									PrimPath = Path;
+									break;
+								}
 								const FString Hash = Context->AssetCache->GetHashForAsset( MID );
 
 								const FName NewInstanceName = MakeUniqueObjectName(
 									GetTransientPackage(),
 									UMaterialInstance::StaticClass(),
-									PrimPath.IsEmpty() ? TEXT("MaterialInstance") : *FPaths::GetBaseFilename(PrimPath.GetString())
+									PrimPath.IsEmpty()
+										? TEXT("MaterialInstance")
+										: *IUsdClassesModule::SanitizeObjectName(FPaths::GetBaseFilename(PrimPath.GetString()))
 								);
 
 								// For MID we can't swap the reference material, so we need to create a brand new one and copy
@@ -153,9 +161,17 @@ namespace UE::UsdShadeTranslator::Private
 								{
 									continue;
 								}
+
 								NewMID->CopyParameterOverrides( MID );
 
-								if (Context->AssetCache->RemoveAsset(Hash))
+								UUsdMaterialAssetUserData* OldUserData = UserMaterial->GetAssetUserData<UUsdMaterialAssetUserData>();
+								if(OldUserData)
+								{
+									UUsdMaterialAssetUserData* NewUserData = DuplicateObject(OldUserData, NewMID);
+									NewMID->AddAssetUserData(NewUserData);
+								}
+
+								if (Context->AssetCache->CanRemoveAsset(Hash) && Context->AssetCache->RemoveAsset(Hash))
 								{
 									Context->AssetCache->CacheAsset(Hash, NewMID);
 									if (!PrimPath.IsEmpty())
@@ -216,6 +232,8 @@ namespace UE::UsdShadeTranslator::Private
 
 void FUsdShadeMaterialTranslator::CreateAssets()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE( FUsdShadeMaterialTranslator::CreateAssets );
+
 	pxr::UsdShadeMaterial ShadeMaterial( GetPrim() );
 
 	if ( !ShadeMaterial )
@@ -232,12 +250,23 @@ void FUsdShadeMaterialTranslator::CreateAssets()
 		}
 	}
 
-	TRACE_CPUPROFILER_EVENT_SCOPE( FUsdShadeMaterialTranslator::CreateAssets );
-
 	const pxr::TfToken RenderContextToken =
 		Context->RenderContext.IsNone() ?
 			pxr::UsdShadeTokens->universalRenderContext :
 			UnrealToUsd::ConvertToken( *Context->RenderContext.ToString() ).Get();
+
+	// If this material has a valid surface output for the 'unreal' render context and we're using it, don't bother
+	// generating any new UMaterialInterface asset because when resolving material assignments for this material
+	// all consumers will just use the referenced UAsset anyway
+	if (RenderContextToken == UnrealIdentifiers::Unreal)
+	{
+		TOptional<FString> UnrealMaterial = UsdUtils::GetUnrealSurfaceOutput(ShadeMaterial.GetPrim());
+		if (UnrealMaterial.IsSet())
+		{
+			return;
+		}
+	}
+
 	FString MaterialHashString = UsdUtils::HashShadeMaterial( ShadeMaterial, RenderContextToken ).ToString();
 
 	UMaterialInterface* ConvertedMaterial = nullptr;
@@ -254,34 +283,22 @@ void FUsdShadeMaterialTranslator::CreateAssets()
 		const FName InstanceName = MakeUniqueObjectName(
 			GetTransientPackage(),
 			UMaterialInstance::StaticClass(),
-			*FPaths::GetBaseFilename(PrimPathString)
+			*IUsdClassesModule::SanitizeObjectName(FPaths::GetBaseFilename(PrimPathString))
 		);
-
-		// TODO: There is an issue here: Note how we're only ever going to write the material prim's primvars into
-		// this PrimvarToUVIndex map when first creating the material, and not if we find it in the asset cache.
-		// This because finding the primvars to use essentially involves parsing the entire material again, so we
-		// likely shouldn't do it every time.
-		// This means that a mesh with float2 UV sets and materials that use them will likely end up with no UVs once
-		// the stage reloads...
-		TMap<FString, int32> Unused;
-		TMap<FString, int32>& PrimvarToUVIndex = Context->MaterialToPrimvarToUVIndex
-			? Context->MaterialToPrimvarToUVIndex->FindOrAdd(PrimPathString)
-			: Unused;
 
 #if WITH_EDITOR
 		if ( GIsEditor ) // Also have to prevent Standalone game from going with MaterialInstanceConstants
 		{
 			if ( UMaterialInstanceConstant* NewMaterial = NewObject<UMaterialInstanceConstant>( GetTransientPackage(), InstanceName, Context->ObjectFlags | EObjectFlags::RF_Transient ) )
 			{
-				UUsdAssetImportData* ImportData = NewObject< UUsdAssetImportData >( NewMaterial, TEXT( "USDAssetImportData" ) );
-				ImportData->PrimPath = PrimPath.GetString();
-				NewMaterial->AssetImportData = ImportData;
+				UUsdMaterialAssetUserData* UserData = NewObject<UUsdMaterialAssetUserData>(NewMaterial, TEXT("USDAssetUserData"));
+				UserData->PrimPaths = {PrimPath.GetString()};
+				NewMaterial->AddAssetUserData(UserData);
 
 				const bool bSuccess = UsdToUnreal::ConvertMaterial(
 					ShadeMaterial,
 					*NewMaterial,
 					Context->AssetCache.Get(),
-					PrimvarToUVIndex,
 					*Context->RenderContext.ToString()
 				);
 				if ( !bSuccess )
@@ -372,9 +389,13 @@ void FUsdShadeMaterialTranslator::CreateAssets()
 			{
 				if ( UMaterialInstanceDynamic* NewMaterial = UMaterialInstanceDynamic::Create( ReferenceMaterial, GetTransientPackage(), InstanceName ) )
 				{
+					UUsdMaterialAssetUserData* UserData = NewObject<UUsdMaterialAssetUserData>(NewMaterial, TEXT("USDAssetUserData"));
+					UserData->PrimPaths = {PrimPath.GetString()};
+					NewMaterial->AddAssetUserData(UserData);
+
 					NewMaterial->SetFlags(RF_Transient);
 
-					if ( UsdToUnreal::ConvertMaterial( ShadeMaterial, *NewMaterial, Context->AssetCache.Get(), PrimvarToUVIndex, *Context->RenderContext.ToString() ) )
+					if (UsdToUnreal::ConvertMaterial(ShadeMaterial, *NewMaterial, Context->AssetCache.Get(), *Context->RenderContext.ToString()))
 					{
 						TSet<UTexture*> VTTextures;
 						TSet<UTexture*> NonVTTextures;
@@ -422,47 +443,8 @@ void FUsdShadeMaterialTranslator::CreateAssets()
 			}
 		}
 	}
-	else if ( Context->MaterialToPrimvarToUVIndex && Context->InfoCache )
-	{
-		const UE::FSdfPath FoundPrimPath = Context->InfoCache->GetPrimForAsset(ConvertedMaterial);
-		if (!FoundPrimPath.IsEmpty())
-		{
-			if (TMap<FString, int32>* PrimvarToUVIndex = Context->MaterialToPrimvarToUVIndex->Find(FoundPrimPath.GetString()))
-			{
-				// Copy the Material -> Primvar -> UV index mapping from the cached material prim path to this prim path
-				Context->MaterialToPrimvarToUVIndex->FindOrAdd(PrimPath.GetString()) = *PrimvarToUVIndex;
-			}
-		}
-	}
 
-	// Note that this needs to run even if we do find the material from the asset cache, otherwise we won't
-	// re-register the prim asset links when we reload a stage
-	if (ConvertedMaterial)
-	{
-		if (Context->InfoCache)
-		{
-			Context->InfoCache->LinkAssetToPrim(PrimPath, ConvertedMaterial);
-
-			// Also link the textures to the same material prim.
-			// This is important because it lets the stage actor drop its references to old unused textures in the
-			// asset cache if they aren't being used by any other material
-			if (UMaterialInstance* MaterialInstance = Cast<UMaterialInstance>(ConvertedMaterial))
-			{
-				for (const FTextureParameterValue& TextureValue : MaterialInstance->TextureParameterValues)
-				{
-					if (UTexture* Texture = TextureValue.ParameterValue)
-					{
-						Context->InfoCache->LinkAssetToPrim(PrimPath, Texture);
-					}
-				}
-			}
-		}
-
-		if (Context->AssetCache)
-		{
-			Context->AssetCache->CacheAsset(MaterialHashString, ConvertedMaterial);
-		}
-	}
+	PostImportMaterial(MaterialHashString, ConvertedMaterial);
 }
 
 bool FUsdShadeMaterialTranslator::CollapsesChildren( ECollapsingType CollapsingType ) const
@@ -473,6 +455,176 @@ bool FUsdShadeMaterialTranslator::CollapsesChildren( ECollapsingType CollapsingT
 bool FUsdShadeMaterialTranslator::CanBeCollapsed( ECollapsingType CollapsingType ) const
 {
 	return false;
+}
+
+void FUsdShadeMaterialTranslator::PostImportMaterial(const FString& MaterialHash, UMaterialInterface* ImportedMaterial)
+{
+	if (!ImportedMaterial || !Context->InfoCache || !Context->AssetCache)
+	{
+		return;
+	}
+
+	UUsdMaterialAssetUserData* UserData = ImportedMaterial->GetAssetUserData<UUsdMaterialAssetUserData>();
+	if (!UserData)
+	{
+		UserData = NewObject<UUsdMaterialAssetUserData>(ImportedMaterial, TEXT("USDAssetUserData"));
+		ImportedMaterial->AddAssetUserData(UserData);
+	}
+	UserData->PrimPaths.AddUnique(PrimPath.GetString());
+
+	// Note that this needs to run even if we found this material in the asset cache already, otherwise we won't
+	// re-register the prim asset links when we reload a stage
+	Context->AssetCache->CacheAsset(MaterialHash, ImportedMaterial);
+	Context->InfoCache->LinkAssetToPrim(PrimPath, ImportedMaterial);
+
+	// Also link the textures to the same material prim.
+	// This is important because it lets the stage actor drop its references to old unused textures in the
+	// asset cache if they aren't being used by any other material
+	TSet<UObject*> Dependencies = IUsdClassesModule::GetAssetDependencies(ImportedMaterial);
+	for (UObject* Object : Dependencies)
+	{
+		if (UTexture* Texture = Cast<UTexture>(Object))
+		{
+			// We don't use "GetOutermost()" here because it's also possible to be owned by an asset cache that
+			// itself lives in the transient package... bIsOwnedByTransientPackage should be true just for new textures
+			// dumped on the transient package
+			const bool bIsOwnedByTransientPackage = Texture->GetOuter()->GetPackage() == GetTransientPackage();
+			const bool bIsOwnedByCache = Context->AssetCache->IsAssetOwnedByCache(Texture->GetPathName());
+
+			// Texture is already owned by the cache: Just touch it without recomputing its hash as that's expensive
+			if (bIsOwnedByCache)
+			{
+				Context->AssetCache->TouchAsset(Texture);
+			}
+			// Texture is owned by the transient package, but not cached yet: Let's take it
+			else if (bIsOwnedByTransientPackage)
+			{
+				FString FilePath;
+#if WITH_EDITOR
+				if(UAssetImportData* TextureImportData = Texture->AssetImportData.Get())
+				{
+					FilePath = TextureImportData->GetFirstFilename();
+				}
+				else
+#endif // WITH_EDITOR
+				{
+					FilePath = Texture->GetName();
+				}
+
+				const FString TextureHash = UsdUtils::GetTextureHash(
+					FilePath,
+					Texture->SRGB,
+					Texture->CompressionSettings,
+					Texture->GetTextureAddressX(),
+					Texture->GetTextureAddressY()
+				);
+
+				// Some translators like FMaterialXUsdShadeMaterialTranslator will import many materials and textures
+				// at once and preload them all in the cache. In some complex scenarios when some materials are updated
+				// it is possible to arrive at a situation where the we need to reparse the source file again and
+				// regenerate a bunch of materials and textures without access to the asset cache. In those cases we'll
+				// unfortunately recreate identical textures, and if we try to store them in here we'll run into a hash
+				// collision. These should be rare, however, and require repeatedly e.g. updating the Material prims
+				// generated by MaterialX or updating the MaterialX import options
+				UTexture* ExistingTexture = Cast<UTexture>(Context->AssetCache->GetCachedAsset(TextureHash));
+				if (!ExistingTexture)
+				{
+					Texture->SetFlags(RF_Transient);
+					Context->AssetCache->CacheAsset(TextureHash, Texture);
+				}
+			}
+
+			if (bIsOwnedByCache || bIsOwnedByTransientPackage)
+			{
+				UUsdAssetUserData* TextureUserData = Texture->GetAssetUserData<UUsdAssetUserData>();
+				if (!TextureUserData)
+				{
+					TextureUserData = NewObject<UUsdAssetUserData>(ImportedMaterial, TEXT("USDAssetUserData"));
+					Texture->AddAssetUserData(TextureUserData);
+				}
+				TextureUserData->PrimPaths.AddUnique(PrimPath.GetString());
+
+				Context->InfoCache->LinkAssetToPrim(PrimPath, Texture);
+			}
+		}
+		else if (UMaterialInterface* ReferenceMaterial = Cast<UMaterialInterface>(Object))
+		{
+			// Some scenarios can generate reference/instance material pairs, and reference materials are dependencies.
+			// We won't handle these dependencies recursively though, the caller is responsible for calling this for
+			// all individual materials as they need to also provide the hash to use for each
+			UMaterialInstance* Instance = Cast<UMaterialInstance>(ImportedMaterial);
+			ensure(Instance && Instance->Parent.Get() == ReferenceMaterial);
+		}
+		else
+		{
+			ensureMsgf(false, TEXT("Asset type unsupported!"));
+		}
+	}
+}
+
+TSet<UE::FSdfPath> FUsdShadeMaterialTranslator::CollectAuxiliaryPrims() const
+{
+	if (!Context->bIsBuildingInfoCache)
+	{
+		return Context->InfoCache->GetAuxiliaryPrims(PrimPath);
+	}
+
+	TSet<UE::FSdfPath> Result;
+	{
+		TFunction<void(const pxr::UsdShadeInput&)> TraverseShadeInput;
+		TraverseShadeInput = [&TraverseShadeInput, &Result](const pxr::UsdShadeInput& ShadeInput)
+		{
+			if (!ShadeInput)
+			{
+				return;
+			}
+
+			pxr::UsdShadeConnectableAPI Source;
+			pxr::TfToken SourceName;
+			pxr::UsdShadeAttributeType AttributeType;
+			if (pxr::UsdShadeConnectableAPI::GetConnectedSource(ShadeInput.GetAttr(), &Source, &SourceName, &AttributeType))
+			{
+				pxr::UsdPrim ConnectedPrim = Source.GetPrim();
+				UE::FSdfPath ConnectedPrimPath = UE::FSdfPath{ConnectedPrim.GetPrimPath()};
+
+				if (!Result.Contains(ConnectedPrimPath))
+				{
+					Result.Add(ConnectedPrimPath);
+
+					for (const pxr::UsdShadeInput& ChildInput : Source.GetInputs())
+					{
+						TraverseShadeInput(ChildInput);
+					}
+				}
+			}
+		};
+
+		FScopedUsdAllocs UsdAllocs;
+
+		pxr::UsdPrim Prim = GetPrim();
+		pxr::UsdShadeMaterial UsdShadeMaterial{Prim};
+		if (!UsdShadeMaterial)
+		{
+			return {};
+		}
+
+		const pxr::TfToken RenderContextToken = Context->RenderContext.IsNone()
+			? pxr::UsdShadeTokens->universalRenderContext
+			: UnrealToUsd::ConvertToken(*Context->RenderContext.ToString()).Get();
+		pxr::UsdShadeShader SurfaceShader = UsdShadeMaterial.ComputeSurfaceSource({RenderContextToken});
+		if (!SurfaceShader)
+		{
+			return {};
+		}
+
+		Result.Add(UE::FSdfPath{SurfaceShader.GetPrim().GetPrimPath()});
+
+		for (const pxr::UsdShadeInput& ShadeInput : SurfaceShader.GetInputs())
+		{
+			TraverseShadeInput(ShadeInput);
+		}
+	}
+	return Result;
 }
 
 #endif // #if USE_USD_SDK

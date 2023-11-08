@@ -34,15 +34,7 @@
 #include "GPUMessaging.h"
 #include "HairStrands/HairStrandsData.h"
 #include "SimpleMeshDrawCommandPass.h"
-
-static int32 GNaniteProgrammableRasterHitProxy = 1;
-static FAutoConsoleVariableRef CNaniteProgrammableRasterHitProxy(
-	TEXT("r.Nanite.ProgrammableRaster.HitProxy"),
-	GNaniteProgrammableRasterHitProxy,
-	TEXT("A toggle that allows Nanite programmable raster in hit proxy passes.\n")
-	TEXT(" 0: Programmable raster is disabled\n")
-	TEXT(" 1: Programmable raster is enabled (default)"),
-	ECVF_RenderThreadSafe);
+#include "StaticMeshSceneProxy.h"
 
 class FHitProxyShaderElementData : public FMeshMaterialShaderElementData
 {
@@ -128,7 +120,8 @@ public:
 			&& (Parameters.MaterialParameters.bIsSpecialEngineMaterial ||
 				!Parameters.MaterialParameters.bWritesEveryPixel ||
 				Parameters.MaterialParameters.bMaterialMayModifyMeshPosition ||
-				Parameters.MaterialParameters.bIsTwoSided);
+				Parameters.MaterialParameters.bIsTwoSided) &&
+				!Parameters.VertexFactoryType->SupportsNaniteRendering();
 	}
 
 	FHitProxyPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer):
@@ -565,34 +558,31 @@ static void DoRenderHitProxies(
 
 void FMobileSceneRenderer::RenderHitProxies(FRDGBuilder& GraphBuilder)
 {
-	Scene->UpdateAllPrimitiveSceneInfos(GraphBuilder);
+	IVisibilityTaskData* VisibilityTaskData = UpdateScene(GraphBuilder, FGlobalDynamicBuffers(DynamicIndexBuffer, DynamicVertexBuffer, DynamicReadBuffer));
 
 	GPU_MESSAGE_SCOPE(GraphBuilder);
 
 	FGPUSceneScopeBeginEndHelper GPUSceneScopeBeginEndHelper(Scene->GPUScene, GPUSceneDynamicContext, Scene);
 
-	PrepareViewRectsForRendering(GraphBuilder.RHICmdList);
-
 #if WITH_EDITOR
-	InitializeSceneTexturesConfig(ViewFamily.SceneTexturesConfig, ViewFamily);
 	FSceneTexturesConfig& SceneTexturesConfig = GetActiveSceneTexturesConfig();
-	FSceneTexturesConfig::Set(SceneTexturesConfig);
-
 	FRDGTextureRef HitProxyTexture = nullptr;
 	FRDGTextureRef HitProxyDepthTexture = nullptr;
 	InitHitProxyRender(GraphBuilder, this, HitProxyTexture, HitProxyDepthTexture);
 
-	FInstanceCullingManager& InstanceCullingManager = *GraphBuilder.AllocObject<FInstanceCullingManager>(Scene->GPUScene.IsEnabled(), GraphBuilder);
+	FInstanceCullingManager& InstanceCullingManager = *GraphBuilder.AllocObject<FInstanceCullingManager>(GetSceneUniforms(), Scene->GPUScene.IsEnabled(), GraphBuilder);
+
+	FInitViewTaskDatas InitViewTaskDatas(VisibilityTaskData);
 
 	// Find the visible primitives.
-	InitViews(GraphBuilder, SceneTexturesConfig, InstanceCullingManager);
+	InitViews(GraphBuilder, SceneTexturesConfig, InstanceCullingManager, nullptr, InitViewTaskDatas);
 
 	GEngine->GetPreRenderDelegateEx().Broadcast(GraphBuilder);
 
 	// Global dynamic buffers need to be committed before rendering.
 	DynamicIndexBuffer.Commit();
 	DynamicVertexBuffer.Commit();
-	DynamicReadBuffer.Commit();
+	DynamicReadBuffer.Commit(GraphBuilder.RHICmdList);
 
 	InstanceCullingManager.FlushRegisteredViews(GraphBuilder);
 
@@ -607,19 +597,17 @@ void FDeferredShadingSceneRenderer::RenderHitProxies(FRDGBuilder& GraphBuilder)
 {
 	const bool bNaniteEnabled = UseNanite(ShaderPlatform);
 
-	Scene->UpdateAllPrimitiveSceneInfos(GraphBuilder);
+	CommitFinalPipelineState();
+
+	IVisibilityTaskData* VisibilityTaskData = UpdateScene(GraphBuilder, FGlobalDynamicBuffers(DynamicIndexBufferForInitViews, DynamicVertexBufferForInitViews, DynamicReadBufferForInitViews));
 
 	GPU_MESSAGE_SCOPE(GraphBuilder);
 
 	FGPUSceneScopeBeginEndHelper GPUSceneScopeBeginEndHelper(Scene->GPUScene, GPUSceneDynamicContext, Scene);
 
-	PrepareViewRectsForRendering(GraphBuilder.RHICmdList);
 
 #if WITH_EDITOR
-	InitializeSceneTexturesConfig(ViewFamily.SceneTexturesConfig, ViewFamily);
 	FSceneTexturesConfig& SceneTexturesConfig = GetActiveSceneTexturesConfig();
-	FSceneTexturesConfig::Set(SceneTexturesConfig);
-
 	FRDGTextureRef HitProxyTexture = nullptr;
 	FRDGTextureRef HitProxyDepthTexture = nullptr;
 
@@ -627,13 +615,13 @@ void FDeferredShadingSceneRenderer::RenderHitProxies(FRDGBuilder& GraphBuilder)
 
 	const FIntPoint HitProxyTextureSize = HitProxyDepthTexture->Desc.Extent;
 
-	FInstanceCullingManager& InstanceCullingManager = *GraphBuilder.AllocObject<FInstanceCullingManager>(Scene->GPUScene.IsEnabled(), GraphBuilder);
+	FInstanceCullingManager& InstanceCullingManager = *GraphBuilder.AllocObject<FInstanceCullingManager>(GetSceneUniforms(), Scene->GPUScene.IsEnabled(), GraphBuilder);
 
 	// Find the visible primitives.
 	FLumenSceneFrameTemporaries LumenFrameTemporaries;
-	FILCUpdatePrimTaskData ILCTaskData;
+	FInitViewTaskDatas InitViewTaskDatas(VisibilityTaskData);
 	FRDGExternalAccessQueue ExternalAccessQueue;
-	BeginInitViews(GraphBuilder, SceneTexturesConfig, FExclusiveDepthStencil::DepthWrite_StencilWrite, ILCTaskData, InstanceCullingManager);
+	BeginInitViews(GraphBuilder, SceneTexturesConfig, FExclusiveDepthStencil::DepthWrite_StencilWrite, InstanceCullingManager, nullptr, InitViewTaskDatas);
 
 	extern TSet<IPersistentViewUniformBufferExtension*> PersistentViewUniformBufferExtensions;
 
@@ -650,14 +638,14 @@ void FDeferredShadingSceneRenderer::RenderHitProxies(FRDGBuilder& GraphBuilder)
 
 	ShaderPrint::BeginViews(GraphBuilder, Views);
 
-	Scene->GPUScene.Update(GraphBuilder, *Scene, ExternalAccessQueue);
+	Scene->GPUScene.Update(GraphBuilder, GetSceneUniforms(), *Scene, ExternalAccessQueue);
 
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 	{
 		Scene->GPUScene.UploadDynamicPrimitiveShaderDataForView(GraphBuilder, *Scene, Views[ViewIndex], ExternalAccessQueue);
 	}
 
-	EndInitViews(GraphBuilder, LumenFrameTemporaries, ILCTaskData, InstanceCullingManager, ExternalAccessQueue);
+	EndInitViews(GraphBuilder, LumenFrameTemporaries, InstanceCullingManager, ExternalAccessQueue, InitViewTaskDatas);
 
 	ExternalAccessQueue.Submit(GraphBuilder);
 
@@ -675,20 +663,20 @@ void FDeferredShadingSceneRenderer::RenderHitProxies(FRDGBuilder& GraphBuilder)
 	// Global dynamic buffers need to be committed before rendering.
 	DynamicIndexBufferForInitViews.Commit();
 	DynamicVertexBufferForInitViews.Commit();
-	DynamicReadBufferForInitViews.Commit();
+	DynamicReadBufferForInitViews.Commit(GraphBuilder.RHICmdList);
 
 	// Notify the FX system that the scene is about to be rendered.
 	if (FXSystem && Views.IsValidIndex(0))
 	{
 		FGPUSortManager* GPUSortManager = FXSystem->GetGPUSortManager();
-		FXSystem->PreRender(GraphBuilder, Views, false);
+		FXSystem->PreRender(GraphBuilder, GetSceneViews(), GetSceneUniforms(), false);
 		if (GPUSortManager)
 		{
 			GPUSortManager->OnPreRender(GraphBuilder);
 		}
 		// Call PostRenderOpaque now as this is irrelevant for when rendering hit proxies.
 		// because we don't tick the particles in the render loop (see last param being "false").
-		FXSystem->PostRenderOpaque(GraphBuilder, Views, false /*bAllowGPUParticleUpdate*/);
+		FXSystem->PostRenderOpaque(GraphBuilder, GetSceneViews(), GetSceneUniforms(), false /*bAllowGPUParticleUpdate*/);
 		if (GPUSortManager)
 		{
 			GPUSortManager->OnPostRenderOpaque(GraphBuilder);
@@ -709,43 +697,41 @@ void FDeferredShadingSceneRenderer::RenderHitProxies(FRDGBuilder& GraphBuilder)
 
 		Nanite::FRasterContext RasterContext = Nanite::InitRasterContext(GraphBuilder, SharedContext, ViewFamily, HitProxyTextureSize, HitProxyTextureRect, false);
 
-		Nanite::FCullingContext::FConfiguration CullingConfig = {0};
-		CullingConfig.bForceHWRaster = RasterContext.RasterScheduling == Nanite::ERasterScheduling::HardwareOnly;
-		CullingConfig.bProgrammableRaster = GNaniteProgrammableRasterHitProxy != 0;
-
-		FNaniteVisibilityResults VisibilityResults; // No material visibility culling for hit proxies at this time
+		Nanite::FConfiguration CullingConfig = {0};
 
 		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 		{
 			const FViewInfo& View = Views[ViewIndex];
 			CullingConfig.SetViewFlags(View);
 
-			Nanite::FCullingContext CullingContext = Nanite::InitCullingContext(
+			auto NaniteRenderer = Nanite::IRenderer::Create(
 				GraphBuilder,
-				SharedContext,
 				*Scene,
-				nullptr,
+				View,
+				GetSceneUniforms(),
+				SharedContext,
+				RasterContext,
+				CullingConfig,
 				FIntRect(),
-				CullingConfig
+				nullptr
 			);
 
 			Nanite::FPackedView PackedView = Nanite::CreatePackedViewFromViewInfo(View, HitProxyTextureSize, NANITE_VIEW_FLAG_HZBTEST | NANITE_VIEW_FLAG_NEAR_CLIP);
-			Nanite::CullRasterize(
-				GraphBuilder,
+			NaniteRenderer->DrawGeometry(
 				Scene->NaniteRasterPipelines[ENaniteMeshPass::BasePass],
-				VisibilityResults,
-				*Scene,
-				View,
-				{ PackedView },
-				SharedContext,
-				CullingContext,
-				RasterContext
+				NaniteRasterResults[ViewIndex].VisibilityResults,
+				*Nanite::FPackedViewArray::Create(GraphBuilder, PackedView)
 			);
-			Nanite::ExtractResults(GraphBuilder, CullingContext, RasterContext, NaniteRasterResults[ViewIndex]);
+			NaniteRenderer->ExtractResults( NaniteRasterResults[ViewIndex] );
 		}
 	}
 
 	::DoRenderHitProxies(GraphBuilder, this, HitProxyTexture, HitProxyDepthTexture, NaniteRasterResults, InstanceCullingManager);
+
+	if (NaniteBasePassVisibility.Visibility)
+	{
+		NaniteBasePassVisibility.Visibility->FinishVisibilityFrame();
+	}
 
 	ShaderPrint::EndViews(Views);
 
@@ -1031,11 +1017,45 @@ int32 FEditorSelectionMeshProcessor::GetStencilValue(const FSceneView* View, con
 
 	const int32* ExistingStencilValue = PrimitiveSceneProxy->IsIndividuallySelected() ? ProxyToStencilIndex.Find(PrimitiveSceneProxy) : ActorNameToStencilIndex.Find(PrimitiveSceneProxy->GetOwnerName());
 
-	int32 StencilValue = 0;
+	// Reserved values for the stencil buffer that carry specific meaning
+	enum ESelectionStencilValues : int32
+	{
+		NotSelected = 0,
+		BSP = 1, // The outlines of all BSPs should be merged
+
+		COUNT,
+	};
+
+	static constexpr int BitsAvailable = 8; // Stencil buffer is 8-bit
+	static constexpr int ColorBits = 3; // Can be changed
+	static constexpr int UniqueIdBits = BitsAvailable - ColorBits;
+	static constexpr int MaxColor = (1 << ColorBits);
+	static constexpr int MaxUniqueId = (1 << UniqueIdBits);
+	
+	auto EncodeSelectionStencilValue = [](int32 ColorIndex, int32 UniqueId) -> int32
+	{
+		uint8 Bits = 0;
+		const int ColorShiftDistance = BitsAvailable - ColorBits;
+		const uint8 ColorMask = (0xFFu >> ColorShiftDistance) << ColorShiftDistance;
+		const uint8 UniqueIdMask = 0xFF >> (BitsAvailable - UniqueIdBits);
+		Bits |= ((ColorIndex % MaxColor) << ColorShiftDistance) & ColorMask;
+		// Allow all colors except one to use the full range of unreserved values
+		if (ColorIndex == 0)
+		{
+			Bits |= (UniqueId % (MaxUniqueId - ESelectionStencilValues::COUNT) + ESelectionStencilValues::COUNT) & UniqueIdMask;
+		}
+		else
+		{
+			Bits |= (UniqueId % MaxUniqueId) & UniqueIdMask;
+		}
+		return Bits;
+	};
+	
+	int32 StencilValue = ESelectionStencilValues::NotSelected;
 
 	if (PrimitiveSceneProxy->GetOwnerName() == NAME_BSP)
 	{
-		StencilValue = 1;
+		StencilValue = ESelectionStencilValues::BSP;
 	}
 	else if (ExistingStencilValue != nullptr)
 	{
@@ -1043,14 +1063,21 @@ int32 FEditorSelectionMeshProcessor::GetStencilValue(const FSceneView* View, con
 	}
 	else if (PrimitiveSceneProxy->IsIndividuallySelected())
 	{
-		// Any component that is individually selected should have a stencil value of < 128 so that it can have a unique color.  We offset the value by 2 because 0 means no selection and 1 is for bsp
-		StencilValue = ProxyToStencilIndex.Num() % 126 + 2;
+		const int Color = 0;
+		const int UniqueId = ProxyToStencilIndex.Num();
+		StencilValue = EncodeSelectionStencilValue(Color, UniqueId);
 		ProxyToStencilIndex.Add(PrimitiveSceneProxy, StencilValue);
 	}
 	else
 	{
-		// If we are subduing actor color highlight then use the top level bits to indicate that to the shader.  
-		StencilValue = bActorSelectionColorIsSubdued ? ActorNameToStencilIndex.Num() % 128 + 128 : ActorNameToStencilIndex.Num() % 126 + 2;
+		int Color = PrimitiveSceneProxy->GetSelectionOutlineColorIndex();
+		if (bActorSelectionColorIsSubdued && (Color == 0))
+		{
+			Color = 1;
+		}
+		const int UniqueId = ActorNameToStencilIndex.Num();
+
+		StencilValue = EncodeSelectionStencilValue(Color, UniqueId);
 		ActorNameToStencilIndex.Add(PrimitiveSceneProxy->GetOwnerName(), StencilValue);
 	}
 

@@ -13,73 +13,40 @@
 #include "HitProxies.h"
 #include "EngineUtils.h"
 #include "NaniteSceneProxy.h"
-
-#if GEOMETRYCOLLECTION_EDITOR_SELECTION
+#include "GeometryCollection/GeometryCollectionObject.h"
+#include "GeometryCollection/GeometryCollectionRenderData.h"
 #include "GeometryCollection/GeometryCollectionHitProxy.h"
-#endif
 
 class UGeometryCollection;
 class UGeometryCollectionComponent;
 struct FGeometryCollectionSection;
-struct HGeometryCollection;
 
 namespace Nanite
 {
 	struct FResources;
 }
 
-/** Index Buffer */
-class FGeometryCollectionIndexBuffer : public FIndexBuffer
-{
-public:
-	virtual void InitRHI() override
-	{
-		FRHIResourceCreateInfo CreateInfo(TEXT("FGeometryCollectionIndexBuffer"));
-		IndexBufferRHI = RHICreateIndexBuffer(sizeof(int32), NumIndices * sizeof(int32), BUF_Dynamic, CreateInfo);
-	}
-
-	int32 NumIndices;
-};
-
-/** Vertex Buffer for Bone Map*/
-class FGeometryCollectionBoneMapBuffer : public FVertexBuffer
-{
-public:
-	virtual void InitRHI() override
-	{
-		FRHIResourceCreateInfo CreateInfo(TEXT("FGeometryCollectionBoneMapBuffer"));
-
-		// #note: Bone Map is stored in uint16, but shaders only support uint32
-		VertexBufferRHI = RHICreateVertexBuffer(NumVertices * sizeof(uint32), BUF_Static | BUF_ShaderResource, CreateInfo);		
-		VertexBufferSRV = RHICreateShaderResourceView(VertexBufferRHI, sizeof(uint32), PF_R32_UINT);		
-	}
-
-	int32 NumVertices;
-
-	FShaderResourceViewRHIRef VertexBufferSRV;
-};
 
 /** Vertex Buffer for transform data */
 class FGeometryCollectionTransformBuffer : public FVertexBuffer
 {
 public:
-	virtual void InitRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		FRHIResourceCreateInfo CreateInfo(TEXT("FGeometryCollectionTransformBuffer"));
 
 		// #note: This differs from instanced static mesh in that we are storing the entire transform in the buffer rather than
 		// splitting out the translation.  This is to simplify transferring data at runtime as a memcopy
-		VertexBufferRHI = RHICreateVertexBuffer(NumTransforms * sizeof(FVector4f) * 4, BUF_Dynamic | BUF_ShaderResource, CreateInfo);		
-		VertexBufferSRV = RHICreateShaderResourceView(VertexBufferRHI, 16, PF_A32B32G32R32F);
+		VertexBufferRHI = RHICmdList.CreateVertexBuffer(NumTransforms * sizeof(FVector4f) * 4, BUF_Dynamic | BUF_ShaderResource, CreateInfo);		
+		VertexBufferSRV = RHICmdList.CreateShaderResourceView(VertexBufferRHI, 16, PF_A32B32G32R32F);
 	}
 
-	void UpdateDynamicData(const TArray<FMatrix44f>& Transforms, EResourceLockMode LockMode);
+	void UpdateDynamicData(FRHICommandListBase& RHICmdList, const TArray<FMatrix44f>& Transforms, EResourceLockMode LockMode);
 
 	int32 NumTransforms;
 
 	FShaderResourceViewRHIRef VertexBufferSRV;
 };
-
 
 inline void CopyTransformsWithConversionWhenNeeded(TArray<FMatrix44f>& DstTransforms, const TArray<FMatrix>& SrcTransforms)
 {
@@ -91,37 +58,15 @@ inline void CopyTransformsWithConversionWhenNeeded(TArray<FMatrix44f>& DstTransf
 	}
 }
 
-/** Immutable rendering data (kind of) */
-struct FGeometryCollectionConstantData
+inline void CopyTransformsWithConversionWhenNeeded(TArray<FMatrix44f>& DstTransforms, const TArray<FTransform>& SrcTransforms)
 {
-	using FUVChannel = TArray<FVector2f>;
-
-	TArray<FVector3f> Vertices;
-	TArray<FIntVector> Indices;
-	TArray<FVector3f> Normals;
-	TArray<FVector3f> TangentU;
-	TArray<FVector3f> TangentV;
-	TArray<FUVChannel> UVChannels;
-	TArray<FLinearColor> Colors;
-	TArray<int32> BoneMap;
-	TArray<FLinearColor> BoneColors;
-	TArray<FGeometryCollectionSection> Sections;
-
-	uint32 NumTransforms;
-
-	FBox LocalBounds;
-	
-	TArray<FIntVector> OriginalMeshIndices;
-	TArray<FGeometryCollectionSection> OriginalMeshSections;
-
-	TArray<FMatrix44f> RestTransforms;
-
-	void SetRestTransforms(const TArray<FMatrix>& InTransforms)
+	// LWC_TODO : we have no choice but to convert each element at this point to avoid changing GeometryCollectionAlgo::GlobalMatrices that is used all over the place
+	DstTransforms.SetNumUninitialized(SrcTransforms.Num());
+	for (int TransformIndex = 0; TransformIndex < SrcTransforms.Num(); ++TransformIndex)
 	{
-		// use for LWC as FMatrix and FMatrix44f are different when LWC is on 
-		CopyTransformsWithConversionWhenNeeded(RestTransforms, InTransforms);
+		DstTransforms[TransformIndex] = FTransform3f(SrcTransforms[TransformIndex]).ToMatrixWithScale(); // LWC_TODO: Perf pessimization
 	}
-};
+}
 
 /** Mutable rendering data */
 struct FGeometryCollectionDynamicData
@@ -145,19 +90,43 @@ struct FGeometryCollectionDynamicData
 		IsLoading = false;
 	}
 
+	UE_DEPRECATED(5.3, "Use FTransform version of SetTransforms instead")
 	void SetTransforms(const TArray<FMatrix>& InTransforms)
 	{
 		// use for LWC as FMatrix and FMatrix44f are different when LWC is on 
 		CopyTransformsWithConversionWhenNeeded(Transforms, InTransforms);
 	}
 
+	void SetTransforms(const TArray<FTransform>& InTransforms)
+	{
+		// use for LWC as FMatrix and FMatrix44f are different when LWC is on 
+		CopyTransformsWithConversionWhenNeeded(Transforms, InTransforms);
+	}
+
+	UE_DEPRECATED(5.3, "Use FTransform version of SetPrevTransforms instead")
 	void SetPrevTransforms(const TArray<FMatrix>& InTransforms)
 	{
 		// use for LWC as FMatrix and FMatrix44f are different when LWC is on 
 		CopyTransformsWithConversionWhenNeeded(PrevTransforms, InTransforms);
 	}
 
+	void SetPrevTransforms(const TArray<FTransform>& InTransforms)
+	{
+		// use for LWC as FMatrix and FMatrix44f are different when LWC is on 
+		CopyTransformsWithConversionWhenNeeded(PrevTransforms, InTransforms);
+	}
+
+	UE_DEPRECATED(5.3, "Use FTransform version of SetAllTransforms instead")
 	void SetAllTransforms(const TArray<FMatrix>& InTransforms)
+	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		SetTransforms(InTransforms);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		PrevTransforms = Transforms;
+		ChangedCount = Transforms.Num();
+	}
+
+	void SetAllTransforms(const TArray<FTransform>& InTransforms)
 	{
 		SetTransforms(InTransforms);
 		PrevTransforms = Transforms;
@@ -188,6 +157,7 @@ struct FGeometryCollectionDynamicData
 	}
 };
 
+
 class FGeometryCollectionDynamicDataPool
 {
 public:
@@ -205,7 +175,6 @@ private:
 };
 
 
-
 /***
 *   FGeometryCollectionSceneProxy
 *    
@@ -216,7 +185,6 @@ private:
 *   thoughts are appreciated though. The remaining items to address involve:
 *   - @todo double buffer - The double buffering of the FGeometryCollectionDynamicData.
 *   - @todo previous state - Saving the previous FGeometryCollectionDynamicData for rendering motion blur.
-*   - @todo shared memory model - The Asset(or Actor?) should hold the Vertex buffer, and pass the reference to the SceneProxy
 *   - @todo GPU skin : Make the skinning use the GpuVertexShader
 */
 class FGeometryCollectionSceneProxy final : public FPrimitiveSceneProxy
@@ -225,135 +193,95 @@ class FGeometryCollectionSceneProxy final : public FPrimitiveSceneProxy
 
 	FMaterialRelevance MaterialRelevance;
 
-	int32 NumVertices;
-	int32 NumIndices;
+	FGeometryCollectionMeshResources const& MeshResource;
+	FGeometryCollectionMeshDescription MeshDescription;
+
+	int32 NumTransforms = 0;
+	TArray<FMatrix44f> RestTransforms;
+
+	FBoxSphereBounds PreSkinnedBounds;
 
 	FGeometryCollectionVertexFactory VertexFactory;
 	
 	bool bSupportsManualVertexFetch;
-	const bool bSupportsTripleBufferVertexUpload;
-	
-	FStaticMeshVertexBuffers VertexBuffers;
-	FGeometryCollectionIndexBuffer IndexBuffer;
-	FGeometryCollectionIndexBuffer OriginalMeshIndexBuffer;
-	FGeometryCollectionBoneMapBuffer BoneMapBuffer;
+	FPositionVertexBuffer SkinnedPositionVertexBuffer;
+
+	int32 CurrentTransformBufferIndex = 0;
+	bool TransformVertexBuffersContainsRestTransforms = true;
+	bool bSupportsTripleBufferVertexUpload = false;
 	TArray<FGeometryCollectionTransformBuffer, TInlineAllocator<3>> TransformBuffers;
 	TArray<FGeometryCollectionTransformBuffer, TInlineAllocator<3>> PrevTransformBuffers;
 
-	int32 CurrentTransformBufferIndex = 0;
-	FBoxSphereBounds PreSkinnedBounds;
+	FGeometryCollectionDynamicData* DynamicData = nullptr;
 
-	TArray<FGeometryCollectionSection> Sections;
-#if GEOMETRYCOLLECTION_EDITOR_SELECTION
-	FColorVertexBuffer HitProxyIdBuffer;
-	TArray<FGeometryCollectionSection> SubSections;
-	TArray<TRefCountPtr<HGeometryCollection>> SubSectionHitProxies;
-	TMap<int32, int32> SubSectionHitProxyIndexMap;
-	// @todo FractureTools - Reconcile with SubSectionHitProxies.  Currently subsection hit proxies dont work for per-vertex submission
-	TArray<TRefCountPtr<HGeometryCollectionBone>> PerBoneHitProxies;
-	FColor WholeObjectHitProxyColor = FColor(EForceInit::ForceInit);
-	bool bUsesSubSections;
+#if WITH_EDITOR
+	bool bShowBoneColors = false;
+	bool bSuppressSelectionMaterial = false;
+	TArray<FColor> BoneColors;
+	FColorVertexBuffer ColorVertexBuffer;
+	FGeometryCollectionVertexFactory VertexFactoryDebugColor;
+	UMaterialInterface* BoneSelectedMaterial = nullptr;
+	TArray<bool> HiddenTransforms;
 #endif
 
-	FGeometryCollectionDynamicData* DynamicData;
-	FGeometryCollectionConstantData* ConstantData;
+#if GEOMETRYCOLLECTION_EDITOR_SELECTION
+	bool bUsesSubSections = false;
+	bool bEnableBoneSelection = false;
+	TArray<TRefCountPtr<HHitProxy>> HitProxies;
+	FColorVertexBuffer HitProxyIdBuffer;
+#endif
 
-	bool bShowBoneColors;
-	bool bEnableBoneSelection;
-	bool bSuppressSelectionMaterial;
-	int BoneSelectionMaterialID;
-
-	bool bUseFullPrecisionUVs = false;
-
-	bool TransformVertexBuffersContainsOriginalMesh;
+#if RHI_RAYTRACING
+	bool bGeometryResourceUpdated = false;
+	FRayTracingGeometry RayTracingGeometry;
+	FRWBuffer RayTracingDynamicVertexBuffer;
+#endif
 
 public:
-	SIZE_T GetTypeHash() const override
-	{
-		static size_t UniquePointer;
-		return reinterpret_cast<size_t>(&UniquePointer);
-	}
-
 	FGeometryCollectionSceneProxy(UGeometryCollectionComponent* Component);
-
-	/** virtual destructor */
 	virtual ~FGeometryCollectionSceneProxy();
-
-	void DestroyRenderThreadResources()override;
-
-	/** Current number of vertices to render */
-	int32 GetRequiredVertexCount() const { return NumVertices; }
-
-	/** Current number of indices to connect */
-	int32 GetRequiredIndexCount() const { return NumIndices; }
-
-	/** Called on render thread to setup static geometry for rendering */
-	void SetConstantData_RenderThread(FGeometryCollectionConstantData* NewConstantData, bool ForceInit = false);
 
 	/** Called on render thread to setup dynamic geometry for rendering */
 	void SetDynamicData_RenderThread(FGeometryCollectionDynamicData* NewDynamicData);
 
-	/** Called on render thread to construct the vertex definitions */
-	void BuildGeometry(const FGeometryCollectionConstantData* ConstantDataIn, TArray<FDynamicMeshVertex>& OutVertices, TArray<int32>& OutIndices, TArray<int32> &OutOriginalMeshIndices);
+	uint32 GetMemoryFootprint() const override { return sizeof(*this) + GetAllocatedSize(); }
+	uint32 GetAllocatedSize() const;
 
-	/** Called on render thread to setup dynamic geometry for rendering */
-	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override;
-
-#if RHI_RAYTRACING
-	virtual bool					IsRayTracingRelevant() const { return true; }
-	virtual bool					IsRayTracingStaticRelevant() const { return false; }
-	virtual void					GetDynamicRayTracingInstances(FRayTracingMaterialGatheringContext& Context, TArray<struct FRayTracingInstance>& OutRayTracingInstances) override;
-
-	void UpdatingRayTracingGeometry_RenderingThread(FGeometryCollectionIndexBuffer* IndexBuffer);
-#endif
-
-	/** Manage the view assignment */
-	virtual FPrimitiveViewRelevance GetViewRelevance(const FSceneView* View) const override;
-
-	// @todo allocated size : make this reflect internally allocated memory. 
-	virtual uint32 GetMemoryFootprint(void) const override { return(sizeof(*this) + GetAllocatedSize()); }
-
-	/** Size of the base class */
-	uint32 GetAllocatedSize(void) const { return(FPrimitiveSceneProxy::GetAllocatedSize()); }
-
-	// FPrimitiveSceneProxy interface.
-#if WITH_EDITOR
-	virtual HHitProxy* CreateHitProxies(UPrimitiveComponent* Component, TArray<TRefCountPtr<HHitProxy> >& OutHitProxies) override;
-	virtual const FColorVertexBuffer* GetCustomHitProxyIdBuffer() const override
-	{
-		// Note: Could return nullptr when bEnableBoneSelection is false if the hitproxy shader was made to not require per-vertex hit proxy IDs in that case
-		return &HitProxyIdBuffer;
-	}
-#endif // WITH_EDITOR
+	SIZE_T GetTypeHash() const override;
+	void CreateRenderThreadResources() override;
+	void DestroyRenderThreadResources() override;
+	void GetPreSkinnedLocalBounds(FBoxSphereBounds& OutBounds) const override;
+	FPrimitiveViewRelevance GetViewRelevance(const FSceneView* View) const override;
+	void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override;
 
 #if GEOMETRYCOLLECTION_EDITOR_SELECTION
-	/** Enable/disable the per transform selection mode. 
-	 *  This forces more sections/mesh batches to be sent to the renderer while also allowing the editor
-	 *  to return a special HitProxy containing the transform index of the section that has been clicked on.
-	 */
-	void UseSubSections(bool bInUsesSubSections, bool bForceInit);
+	virtual HHitProxy* CreateHitProxies(UPrimitiveComponent* Component, TArray<TRefCountPtr<HHitProxy> >& OutHitProxies) override;
+ 	virtual const FColorVertexBuffer* GetCustomHitProxyIdBuffer() const override
+ 	{
+		return (bEnableBoneSelection || bUsesSubSections) ? &HitProxyIdBuffer : nullptr;
+ 	}
 #endif
 
-	void GetPreSkinnedLocalBounds(FBoxSphereBounds& OutBounds) const override;
-
-	void SetupVertexFactory(FGeometryCollectionVertexFactory& GeometryCollectionVertexFactory) const;
+#if RHI_RAYTRACING
+	bool IsRayTracingRelevant() const override { return true; }
+	bool IsRayTracingStaticRelevant() const override { return false; }
+	void GetDynamicRayTracingInstances(FRayTracingMaterialGatheringContext& Context, TArray<struct FRayTracingInstance>& OutRayTracingInstances) override;
+#endif
 
 protected:
-
-	/** Create the rendering buffer resources */
-	void InitResources();
-
-	/** Return the rendering buffer resources */
-	void ReleaseResources();
-
+	/** Setup a geometry collection vertex factory. */
+	void SetupVertexFactory(FRHICommandListBase& RHICmdList, FGeometryCollectionVertexFactory& GeometryCollectionVertexFactory, FColorVertexBuffer* ColorOverride = nullptr) const;
+	/** Update skinned position buffer used by mobile CPU skinning path. */
+	void UpdateSkinnedPositions(FRHICommandListBase& RHICmdList, TArray<FMatrix44f> const& Transforms);
 	/** Get material proxy from material ID */
 	FMaterialRenderProxy* GetMaterial(FMeshElementCollector& Collector, int32 MaterialIndex) const;
+	/** Get the standard or debug vertex factory dependent on current state. */
+	FVertexFactory const* GetVertexFactory() const;
 
 	FGeometryCollectionTransformBuffer& GetCurrentTransformBuffer()
 	{
 		return TransformBuffers[CurrentTransformBufferIndex];
 	}
-
 	FGeometryCollectionTransformBuffer& GetCurrentPrevTransformBuffer()
 	{
 		return PrevTransformBuffers[CurrentTransformBufferIndex];
@@ -367,21 +295,11 @@ protected:
 		}
 	}
 
-private:
-#if GEOMETRYCOLLECTION_EDITOR_SELECTION
-	/** Create transform index based subsections for all current sections. */
-	void InitializeSubSections_RenderThread();
-
-	/** Release subsections by emptying the associated arrays. */
-	void ReleaseSubSections_RenderThread();
-#endif
-
 #if RHI_RAYTRACING
-	bool bGeometryResourceUpdated = false;
-	FRayTracingGeometry RayTracingGeometry;
-	FRWBuffer RayTracingDynamicVertexBuffer;
+	void UpdatingRayTracingGeometry_RenderingThread(TArray<FGeometryCollectionMeshElement> const& InSectionArray);
 #endif
 };
+
 
 class FNaniteGeometryCollectionSceneProxy : public Nanite::FSceneProxyBase
 {
@@ -389,7 +307,6 @@ public:
 	using Super = Nanite::FSceneProxyBase;
 	
 	FNaniteGeometryCollectionSceneProxy(UGeometryCollectionComponent* Component);
-
 	virtual ~FNaniteGeometryCollectionSceneProxy() = default;
 
 public:
@@ -410,9 +327,6 @@ public:
 	virtual void GetNaniteMaterialMask(FUint32Vector2& OutMaterialMask) const override;
 
 	virtual Nanite::FResourceMeshInfo GetResourceMeshInfo() const override;
-
-	/** Called on render thread to setup static geometry for rendering */
-	void SetConstantData_RenderThread(FGeometryCollectionConstantData* NewConstantData, bool ForceInit = false);
 
 	/** Called on render thread to setup dynamic geometry for rendering */
 	void SetDynamicData_RenderThread(FGeometryCollectionDynamicData* NewDynamicData);
@@ -435,6 +349,7 @@ public:
 	void OnMotionEnd();
 
 protected:
+	// TODO : Copy required data from UObject instead of using unsafe object pointer.
 	const UGeometryCollection* GeometryCollection = nullptr;
 
 	struct FGeometryNaniteData

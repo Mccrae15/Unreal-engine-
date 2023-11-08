@@ -6,9 +6,9 @@
 #	define NANITE_HIERARCHY_TRAVERSAL 0
 #endif
 
-#if NANITE_HIERARCHY_TRAVERSAL
+#define DEFINE_ITERATE_CLUSTER_SEGMENTS (1)
 
-#	define DEFINE_ITERATE_CLUSTER_SEGMENTS (1)
+#if NANITE_HIERARCHY_TRAVERSAL
 
 #	define NANITE_HIERARCHY_TRAVERSAL_TYPE (NANITE_CULLING_TYPE_PERSISTENT_NODES_AND_CLUSTERS)
 #	define GROUP_NODE_SIZE 3
@@ -58,20 +58,54 @@ StructuredBuffer<uint> SegmentMappingBuffer;
 float StreamOutCutError;
 
 // MeshDataBuffer layout
-// 0 - vertex buffer offset
-// 1 - index buffer offset
-// 2 - vertex count
-// 3 - segment 0 tri count
-// 4 - segment 0 tri offset
-// 5 - segment ... tri count
-// 6 - segment ... tri offset
-// 7 - segment N tri count
-// 8 - segment N tri offset
+// 0 - num clusters
+// 1 - vertex buffer offset
+// 2 - index buffer offset
+// 3 - vertex count
+// 4 - segment 0 index count
+// 5 - segment 0 index buffer offset
+//   - segment ... index count
+//   - segment ... index buffer offset
+//   - segment N index count
+//   - segment N index buffer offset
+
+uint GetMeshClusterCountIndex(uint MeshDataOffset)
+{
+	return MeshDataOffset + 0;
+}
+
+uint GetMeshVertexBufferOffsetIndex(uint MeshDataOffset)
+{
+	return MeshDataOffset + 1;
+}
+
+uint GetMeshIndexBufferOffsetIndex(uint MeshDataOffset)
+{
+	return MeshDataOffset + 2;
+}
+
+uint GetMeshVertexCountIndex(uint MeshDataOffset)
+{
+	return MeshDataOffset + 3;
+}
+
+uint GetMeshSegmentIndexCountIndex(uint MeshDataOffset, uint SegmentIndex)
+{
+	return MeshDataOffset + 4 + SegmentIndex * 2 + 0;
+}
+
+uint GetMeshSegmentIndexBufferOffsetIndex(uint MeshDataOffset, uint SegmentIndex)
+{
+	return MeshDataOffset + 4 + SegmentIndex * 2 + 1;
+}
 
 RWStructuredBuffer<uint>	MeshDataBuffer;
 RWStructuredBuffer<float>	VertexBuffer; // can't use RWStructuredBuffer<float3> because of bDisableScalarBlockLayout
 RWStructuredBuffer<uint>	IndexBuffer;
 RWStructuredBuffer<uint>	AuxiliaryDataBufferRW;
+
+RWByteAddressBuffer			OutputClustersRW;
+RWStructuredBuffer<uint>	OutputClustersStateRW;
 
 // | current vertex marker | current index marker |
 RWStructuredBuffer<uint>	VertexAndIndexAllocator;
@@ -95,6 +129,7 @@ bool AllocateVertexAndIndexRanges(uint VertexSize, uint IndexSize, out uint OutV
 	// allocate vertex range
 	if (!Allocate(VertexSize, VertexBufferSize, 0, OutVertexOffset))
 	{
+		OutIndexOffset = 0;
 		return false;
 	}
 
@@ -174,11 +209,15 @@ uint GetCandidateClusterSizeRT() { return 12u; }
 uint GetClusterBatchesOffsetRT() { return 0u; }
 uint GetCandidateNodesOffsetRT() { return GetMaxClusterBatches() * 4u; }
 
-FCandidateCluster LoadCandidateClusterCoherentRT(RWCoherentByteAddressBuffer CandidateClusters, uint ClusterIndex)
+FCandidateCluster LoadCandidateClusterRT(ByteAddressBuffer CandidateClusters, uint ClusterIndex)
 {
-	checkSlow(ClusterIndex < MaxCandidateClusters);
 	uint4 RawData = uint4(CandidateClusters.Load3(ClusterIndex * GetCandidateClusterSizeRT()), 0u);
 	return UnpackCandidateClusterRT(RawData);
+}
+
+void StorePackedCandidateClusterRT(RWByteAddressBuffer CandidateClusters, uint ClusterIndex, uint4 PackedCluster)
+{
+	CandidateClusters.Store3(ClusterIndex * GetCandidateClusterSizeRT(), PackedCluster.xyz);
 }
 
 // CandidateClusters must be globallycoherent here, otherwise DXC will make buffer access non-globallycoherent when targeting SM6.6.
@@ -261,7 +300,7 @@ void WriteTriangles(FCluster Cluster, FCandidateCluster CandidateCluster, uint S
 {
 	for (uint TriIndex = 0; TriIndex < NumTriangles; ++TriIndex)
 	{
-		const uint3 TriIndices = DecodeTriangleIndices(Cluster, StartTriangle + TriIndex, false);
+		const uint3 TriIndices = DecodeTriangleIndices(Cluster, StartTriangle + TriIndex);
 		IndexBuffer[IndexBufferOffset + TriIndex * 3 + 0] = BaseIndex + TriIndices.x;
 		IndexBuffer[IndexBufferOffset + TriIndex * 3 + 1] = BaseIndex + TriIndices.y;
 		IndexBuffer[IndexBufferOffset + TriIndex * 3 + 2] = BaseIndex + TriIndices.z;
@@ -275,11 +314,13 @@ void WriteSegment(uint MaterialIndex, uint TriStart, uint TriLength, uint Cluste
 	checkSlow(MaterialIndex < RequestData.NumMaterials);
 	const uint SegmentIndex = SegmentMappingBuffer[RequestData.SegmentMappingOffset + MaterialIndex];
 
-	const uint SegmentDataOffset = MeshDataOffset + 3 + SegmentIndex * 2;
+	const uint MeshSegmentIndexCountIndex = GetMeshSegmentIndexCountIndex(MeshDataOffset, SegmentIndex);
+	const uint MeshSegmentIndexBufferOffsetIndex = GetMeshSegmentIndexBufferOffsetIndex(MeshDataOffset, SegmentIndex);
 
-	const uint SegmentBaseIndexBufferOffset = MeshDataBuffer[SegmentDataOffset + 1];
+	const uint SegmentBaseIndexBufferOffset = MeshDataBuffer[MeshSegmentIndexBufferOffsetIndex];
+
 	uint ClusterIndexBufferOffset;
-	InterlockedAdd(MeshDataBuffer[SegmentDataOffset + 0], TriLength * 3, ClusterIndexBufferOffset);
+	InterlockedAdd(MeshDataBuffer[MeshSegmentIndexCountIndex], TriLength * 3, ClusterIndexBufferOffset);
 
 	const uint SegmentStartTriangle = TriStart;
 	const uint SegmentNumTriangles = TriLength;
@@ -289,25 +330,7 @@ void WriteSegment(uint MaterialIndex, uint TriStart, uint TriLength, uint Cluste
 	WriteTriangles(Cluster, CandidateCluster, SegmentStartTriangle, SegmentNumTriangles, SegmentBaseIndex, SegmentIndexBufferOffset, SegmentAuxiliaryDataBufferOffset);
 }
 
-#if NANITE_HIERARCHY_TRAVERSAL
-
-RWCoherentByteAddressBuffer NodesAndClusterBatches;
-RWCoherentByteAddressBuffer CandididateClusters;
-
-struct CountTrianglesClusterSegmentProcessor
-{
-	uint MeshDataOffset;
-	FNaniteStreamOutRequest RequestData;
-
-	void Process(uint TriStart, uint TriLength, uint MaterialIndex)
-	{
-		checkSlow(MaterialIndex < RequestData.NumMaterials);
-		const uint SegmentIndex = SegmentMappingBuffer[RequestData.SegmentMappingOffset + MaterialIndex];
-		InterlockedAdd(MeshDataBuffer[MeshDataOffset + 3 + (SegmentIndex * 2)], TriLength * 3);
-	}
-};
-
-struct StreamOutClusterSegmentProcessor
+struct FStreamOutClusterSegmentProcessor
 {
 	uint ClusterVertexOffset;
 	uint MeshDataOffset;
@@ -320,6 +343,69 @@ struct StreamOutClusterSegmentProcessor
 	void Process(uint TriStart, uint TriLength, uint MaterialIndex)
 	{
 		WriteSegment(MaterialIndex, TriStart, TriLength, ClusterVertexOffset, MeshDataOffset, IndexBufferOffset, AuxiliaryDataOffset, Cluster, CandidateCluster, RequestData);
+	}
+};
+
+void StreamOutClusterCommon(FCluster Cluster, FCandidateCluster CandidateCluster, FNaniteStreamOutRequest RequestData)
+{
+	// TODO experiments:
+	// - Output using one group per cluster
+
+	const uint MeshDataOffset = RequestData.MeshDataOffset;
+
+	const uint MeshVertexBufferOffsetIndex = GetMeshVertexBufferOffsetIndex(MeshDataOffset);
+	const uint MeshIndexBufferOffsetIndex = GetMeshIndexBufferOffsetIndex(MeshDataOffset);
+	const uint MeshVertexCountIndex = GetMeshVertexCountIndex(MeshDataOffset);
+
+	const uint VertexBufferOffset = MeshDataBuffer[MeshVertexBufferOffsetIndex];
+	const uint IndexBufferOffset = MeshDataBuffer[MeshIndexBufferOffsetIndex];
+
+	if (VertexBufferOffset == 0xFFFFFFFFu || IndexBufferOffset == 0xFFFFFFFFu)
+	{
+		return;
+	}
+
+	uint ClusterVertexOffset;
+	InterlockedAdd(MeshDataBuffer[MeshVertexCountIndex], Cluster.NumVerts, ClusterVertexOffset);
+
+	for (uint VertexIndex = 0; VertexIndex < Cluster.NumVerts; ++VertexIndex)
+	{
+		const float3 Pos = DecodePosition(VertexIndex, Cluster);
+
+		const uint IndexInVertexBuffer = (VertexBufferOffset + ClusterVertexOffset + VertexIndex) * 3;
+		VertexBuffer[IndexInVertexBuffer + 0] = Pos.x;
+		VertexBuffer[IndexInVertexBuffer + 1] = Pos.y;
+		VertexBuffer[IndexInVertexBuffer + 2] = Pos.z;
+	}
+
+	FStreamOutClusterSegmentProcessor Processor;
+	Processor.ClusterVertexOffset = ClusterVertexOffset;
+	Processor.MeshDataOffset = MeshDataOffset;
+	Processor.IndexBufferOffset = IndexBufferOffset;
+	Processor.AuxiliaryDataOffset = RequestData.AuxiliaryDataOffset;
+	Processor.Cluster = Cluster;
+	Processor.CandidateCluster = CandidateCluster;
+	Processor.RequestData = RequestData;
+
+	IterateClusterSegments(Cluster, ClusterPageData, Processor);
+}
+
+#if NANITE_HIERARCHY_TRAVERSAL
+
+RWCoherentByteAddressBuffer NodesAndClusterBatches;
+RWCoherentByteAddressBuffer CandididateClusters;
+
+struct FCountTrianglesClusterSegmentProcessor
+{
+	uint MeshDataOffset;
+	FNaniteStreamOutRequest RequestData;
+
+	void Process(uint TriStart, uint TriLength, uint MaterialIndex)
+	{
+		checkSlow(MaterialIndex < RequestData.NumMaterials);
+		const uint SegmentIndex = SegmentMappingBuffer[RequestData.SegmentMappingOffset + MaterialIndex];
+		const uint MeshSegmentIndexCountIndex = GetMeshSegmentIndexCountIndex(MeshDataOffset, SegmentIndex);
+		InterlockedAdd(MeshDataBuffer[MeshSegmentIndexCountIndex], TriLength * 3);
 	}
 };
 
@@ -445,63 +531,46 @@ struct FNaniteTraversalStreamOutCallback
 		FCluster Cluster = GetCluster(CandidateCluster.PageIndex, CandidateCluster.ClusterIndex);
 
 		bool bSmallEnoughToDraw = StreamOutCutError > Cluster.LODError;
-		bool bVisible = bSmallEnoughToDraw || (Cluster.Flags & NANITE_CLUSTER_FLAG_LEAF);
+		bool bVisible = bSmallEnoughToDraw || (Cluster.Flags & NANITE_CLUSTER_FLAG_STREAMING_LEAF);
 
 		BRANCH
 		if (bVisible)
 		{
 			const FNaniteStreamOutRequest RequestData = StreamOutRequests[CandidateCluster.RequestIndex];
 
-			// TODO experiments:
-			// - Use extra queue to store visible clusters, avoiding inactive threads here
-			// - Output using one group per cluster
-
 			const uint MeshDataOffset = RequestData.MeshDataOffset;
+			const uint MeshVertexCountIndex = GetMeshVertexCountIndex(MeshDataOffset);
+
+#if NANITE_STREAM_OUT_CACHE_CLUSTERS
+			uint OutputClusterIndex = 0;
+			WaveInterlockedAddScalar_(OutputClustersStateRW[0], 1, OutputClusterIndex);
+			StorePackedCandidateClusterRT(OutputClustersRW, OutputClusterIndex, PackedCluster);
+
+			const uint MeshClusterCountIndex = GetMeshClusterCountIndex(MeshDataOffset);
+			InterlockedAdd(MeshDataBuffer[MeshClusterCountIndex], 1);
+#endif
 
 #if NANITE_STREAM_OUT_COUNT_VERTICES_AND_TRIANGLES
 
-			InterlockedAdd(MeshDataBuffer[MeshDataOffset + 2], Cluster.NumVerts);
+			InterlockedAdd(MeshDataBuffer[MeshVertexCountIndex], Cluster.NumVerts);
 
-			CountTrianglesClusterSegmentProcessor Processor;
+			FCountTrianglesClusterSegmentProcessor Processor;
 			Processor.MeshDataOffset = MeshDataOffset;
 			Processor.RequestData = RequestData;
+
+			IterateClusterSegments(Cluster, ClusterPageData, Processor);
 
 #else // !NANITE_STREAM_OUT_COUNT_VERTICES_AND_TRIANGLES
 
-			const uint VertexBufferOffset = MeshDataBuffer[MeshDataOffset + 0];
-			const uint IndexBufferOffset = MeshDataBuffer[MeshDataOffset + 1];
-
-			uint ClusterVertexOffset = 0;
-			InterlockedAdd(MeshDataBuffer[MeshDataOffset + 2], Cluster.NumVerts, ClusterVertexOffset);
-
-			for (uint VertexIndex = 0; VertexIndex < Cluster.NumVerts; ++VertexIndex)
-			{
-				const float3 Pos = DecodePosition(VertexIndex, Cluster);
-
-				const uint IndexInVertexBuffer = (VertexBufferOffset + ClusterVertexOffset + VertexIndex) * 3;
-				VertexBuffer[IndexInVertexBuffer + 0] = Pos.x;
-				VertexBuffer[IndexInVertexBuffer + 1] = Pos.y;
-				VertexBuffer[IndexInVertexBuffer + 2] = Pos.z;
-			}
-
-			StreamOutClusterSegmentProcessor Processor;
-			Processor.ClusterVertexOffset = ClusterVertexOffset;
-			Processor.MeshDataOffset = MeshDataOffset;
-			Processor.IndexBufferOffset = IndexBufferOffset;
-			Processor.AuxiliaryDataOffset = RequestData.AuxiliaryDataOffset;
-			Processor.Cluster = Cluster;
-			Processor.CandidateCluster = CandidateCluster;
-			Processor.RequestData = RequestData;
+			StreamOutClusterCommon(Cluster, CandidateCluster, RequestData);
 
 #endif // !NANITE_STREAM_OUT_COUNT_VERTICES_AND_TRIANGLES
-
-			IterateClusterSegments(Cluster, ClusterPageData, Processor);
 		}
 	}
 };
 
 [numthreads(NANITE_PERSISTENT_CLUSTER_CULLING_GROUP_SIZE, 1, 1)]
-void NaniteStreamOutCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint GroupIndex : SV_GroupIndex)
+void NaniteStreamOutTraversalCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint GroupIndex : SV_GroupIndex)
 {
 	PersistentNodeAndClusterCull<FNaniteTraversalStreamOutCallback>(GroupIndex, 0);
 }
@@ -509,10 +578,51 @@ void NaniteStreamOutCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint GroupI
 #endif
 
 #if !NANITE_HIERARCHY_TRAVERSAL
+
+bool AllocateRangesCommon(FNaniteStreamOutRequest RequestData)
+{
+	const uint MeshDataOffset = RequestData.MeshDataOffset;
+
+	const uint MeshVertexBufferOffsetIndex = GetMeshVertexBufferOffsetIndex(MeshDataOffset);
+	const uint MeshIndexBufferOffsetIndex = GetMeshIndexBufferOffsetIndex(MeshDataOffset);
+	const uint MeshVertexCountIndex = GetMeshVertexCountIndex(MeshDataOffset);
+
+	uint NumVertices = MeshDataBuffer[MeshVertexCountIndex];
+	uint NumIndices = 0;
+	for (uint SegmentIndex = 0; SegmentIndex < RequestData.NumSegments; ++SegmentIndex)
+	{
+		const uint MeshSegmentIndexCountIndex = GetMeshSegmentIndexCountIndex(MeshDataOffset, SegmentIndex);
+		const uint MeshSegmentIndexBufferOffsetIndex = GetMeshSegmentIndexBufferOffsetIndex(MeshDataOffset, SegmentIndex);
+
+		const uint SegmentNumIndices = MeshDataBuffer[MeshSegmentIndexCountIndex];
+
+		MeshDataBuffer[MeshSegmentIndexCountIndex] = 0; // reset counter back to zero so that each cluster can determine it's offset during stream out pass
+		MeshDataBuffer[MeshSegmentIndexBufferOffsetIndex] = NumIndices; // segment first index
+
+		NumIndices += SegmentNumIndices;
+	}
+
+	MeshDataBuffer[MeshVertexCountIndex] = 0; // reset counter back to zero so that each cluster can determine it's offset during stream out pass
+
+	uint BaseVertexOffset = 0u;
+	uint BaseIndexOffset = 0u;
+	if (AllocateVertexAndIndexRanges(NumVertices, NumIndices, BaseVertexOffset, BaseIndexOffset))
+	{
+		MeshDataBuffer[MeshVertexBufferOffsetIndex] = BaseVertexOffset;
+		MeshDataBuffer[MeshIndexBufferOffsetIndex] = BaseIndexOffset;
+		return true;
+	}
+	else
+	{
+		MeshDataBuffer[MeshVertexBufferOffsetIndex] = 0xFFFFFFFFu;
+		MeshDataBuffer[MeshIndexBufferOffsetIndex] = 0xFFFFFFFFu;
+		return false;
+	}
+}
+
 RWCoherentStructuredBuffer(FQueueState) QueueState;
 
 RWByteAddressBuffer NodesAndClusterBatches;
-RWByteAddressBuffer CandididateClusters;
 
 [numthreads(64, 1, 1)]
 void InitQueue(uint GroupIndex : SV_GroupIndex, uint3 GroupId : SV_GroupID)
@@ -524,32 +634,9 @@ void InitQueue(uint GroupIndex : SV_GroupIndex, uint3 GroupId : SV_GroupID)
 		const FNaniteStreamOutRequest RequestData = StreamOutRequests[Index];
 
 #if ALLOCATE_VERTICES_AND_TRIANGLES_RANGES
-		const uint MeshDataOffset = RequestData.MeshDataOffset;
-
-		uint NumVertices = MeshDataBuffer[MeshDataOffset + 2];
-		uint NumIndices = 0;
-		for (uint SegmentIndex = 0; SegmentIndex < RequestData.NumSegments; ++SegmentIndex)
+		if (!AllocateRangesCommon(RequestData))
 		{
-			const uint SegmentDataOffset = MeshDataOffset + 3 + SegmentIndex * 2;
-			MeshDataBuffer[SegmentDataOffset + 1] = NumIndices; // segment first index
-			NumIndices += MeshDataBuffer[SegmentDataOffset];
-
-			MeshDataBuffer[SegmentDataOffset] = 0; // reset counter back to zero so that each cluster can determine it's offset during stream out pass
-		}
-
-		MeshDataBuffer[MeshDataOffset + 2] = 0; // reset counter back to zero so that each cluster can determine it's offset during stream out pass
-
-		uint BaseVertexOffset;		
-		uint BaseIndexOffset;
-		if (AllocateVertexAndIndexRanges(NumVertices, NumIndices, BaseVertexOffset, BaseIndexOffset))
-		{
-			MeshDataBuffer[MeshDataOffset + 0] = BaseVertexOffset;
-			MeshDataBuffer[MeshDataOffset + 1] = BaseIndexOffset;
-		}
-		else
-		{
-			MeshDataBuffer[MeshDataOffset + 0] = 0xFFFFFFFFu;
-			MeshDataBuffer[MeshDataOffset + 1] = 0xFFFFFFFFu;
+			// don't add request to the queue if allocation failed
 			return;
 		}
 #endif
@@ -585,6 +672,58 @@ void InitCandidateNodes(uint GroupIndex : SV_GroupIndex, uint3 GroupId : SV_Grou
 	if (Index < MaxNodes)
 	{
 		ClearCandidateNodeRT(NodesAndClusterBatches, Index);
+	}
+}
+
+#define STREAM_OUT_GROUP_SIZE				(64)
+#define STREAM_OUT_NUM_CLUSTER_PER_THREAD	(8)
+#define STREAM_OUT_NUM_GROUPS_DIVISOR		(STREAM_OUT_GROUP_SIZE * STREAM_OUT_NUM_CLUSTER_PER_THREAD)
+
+RWBuffer<uint> StreamOutDispatchIndirectArgsRW;
+
+[numthreads(64, 1, 1)]
+void AllocateRangesCS(uint GroupIndex : SV_GroupIndex, uint3 GroupId : SV_GroupID)
+{
+	const uint Index = GetUnWrappedDispatchThreadId(GroupId, GroupIndex, 64);
+
+	if (Index == 0)
+	{
+		const uint NumClusters = OutputClustersStateRW[0];
+
+		WriteDispatchIndirectArgs(StreamOutDispatchIndirectArgsRW, 0, (NumClusters + STREAM_OUT_NUM_GROUPS_DIVISOR - 1) / STREAM_OUT_NUM_GROUPS_DIVISOR, 1, 1);
+	}
+
+	if (Index < NumRequests)
+	{
+		const FNaniteStreamOutRequest RequestData = StreamOutRequests[Index];
+
+		AllocateRangesCommon(RequestData);
+	}
+}
+
+ByteAddressBuffer OutputClusters;
+
+[numthreads(STREAM_OUT_GROUP_SIZE, 1, 1)]
+void NaniteStreamOutCS(uint GroupIndex : SV_GroupIndex, uint3 GroupId : SV_GroupID, uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const uint NumClusters = OutputClustersStateRW[0];
+
+	while (true)
+	{
+		uint ClusterIndex;
+		WaveInterlockedAddScalar_(OutputClustersStateRW[1], 1, ClusterIndex);
+
+		if (ClusterIndex >= NumClusters)
+		{
+			break;
+		}
+
+		const FCandidateCluster CandidateCluster = LoadCandidateClusterRT(OutputClusters, ClusterIndex);
+
+		const FCluster Cluster = GetCluster(CandidateCluster.PageIndex, CandidateCluster.ClusterIndex);
+		const FNaniteStreamOutRequest RequestData = StreamOutRequests[CandidateCluster.RequestIndex];
+
+		StreamOutClusterCommon(Cluster, CandidateCluster, RequestData);
 	}
 }
 

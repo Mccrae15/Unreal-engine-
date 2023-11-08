@@ -42,7 +42,7 @@ public:
 	void		AddLocalityLinks( FGraphData* Graph, uint32 Index, idx_t Cost );
 
 	template< typename FGetCenter >
-	void		BuildLocalityLinks( FDisjointSet& DisjointSet, const FBounds3f& Bounds, TArrayView< const int32 > GroupIndexes, FGetCenter& GetCenter );
+	void		BuildLocalityLinks( FDisjointSet& DisjointSet, const FBounds3f& Bounds, TConstArrayView< const int32 > GroupIndexes, FGetCenter& GetCenter );
 
 	void		Partition( FGraphData* Graph, int32 InMinPartitionSize, int32 InMaxPartitionSize );
 	void		PartitionStrict( FGraphData* Graph, int32 InMinPartitionSize, int32 InMaxPartitionSize, bool bThreaded );
@@ -80,7 +80,7 @@ FORCEINLINE void FGraphPartitioner::AddLocalityLinks( FGraphData* Graph, uint32 
 }
 
 template< typename FGetCenter >
-void FGraphPartitioner::BuildLocalityLinks( FDisjointSet& DisjointSet, const FBounds3f& Bounds, TArrayView< const int32 > GroupIndexes, FGetCenter& GetCenter )
+void FGraphPartitioner::BuildLocalityLinks( FDisjointSet& DisjointSet, const FBounds3f& Bounds, TConstArrayView< const int32 > GroupIndexes, FGetCenter& GetCenter )
 {
 	TArray< uint32 > SortKeys;
 	SortKeys.AddUninitialized( NumElements );
@@ -95,9 +95,9 @@ void FGraphPartitioner::BuildLocalityLinks( FDisjointSet& DisjointSet, const FBo
 			FVector3f CenterLocal = ( Center - Bounds.Min ) / FVector3f( Bounds.Max - Bounds.Min ).GetMax();
 
 			uint32 Morton;
-			Morton  = FMath::MortonCode3( CenterLocal.X * 1023 );
-			Morton |= FMath::MortonCode3( CenterLocal.Y * 1023 ) << 1;
-			Morton |= FMath::MortonCode3( CenterLocal.Z * 1023 ) << 2;
+			Morton  = FMath::MortonCode3( uint32( CenterLocal.X * 1023 ) );
+			Morton |= FMath::MortonCode3( uint32( CenterLocal.Y * 1023 ) ) << 1;
+			Morton |= FMath::MortonCode3( uint32( CenterLocal.Z * 1023 ) ) << 2;
 			SortKeys[ Index ] = Morton;
 		});
 

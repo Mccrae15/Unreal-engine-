@@ -19,7 +19,7 @@
 #include "MuCO/CustomizableObjectInstance.h"
 #include "MuCO/CustomizableObjectSystem.h"
 #include "MuCO/CustomizableSkeletalComponent.h"
-#include "MuCOE/CustomizableObjectBakeHelpers.h"
+#include "MuCO/UnrealPortabilityHelpers.h"
 #include "MuCOE/CustomizableObjectCustomSettings.h"
 #include "MuCOE/CustomizableObjectEditorActions.h"
 #include "MuCOE/CustomizableObjectEditorLogger.h"
@@ -43,6 +43,7 @@
 #include "MuCOE/Nodes/CustomizableObjectNodeProjectorConstant.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeSkeletalMesh.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeStaticMesh.h"
+#include "MuCOE/Nodes/CustomizableObjectNodeTable.h"
 #include "MuCOE/SCustomizableObjectEditorAdvancedPreviewSettings.h"
 #include "MuCOE/SCustomizableObjectEditorPerformanceReport.h"
 #include "MuCOE/SCustomizableObjectEditorTagExplorer.h"
@@ -435,7 +436,7 @@ void FCustomizableObjectEditor::CreatePreviewInstance()
 				// Asset loading works in the Main Thread, there's a risk the sync loading could put to sleep the thread while
 				// waiting for the asset registry to load the content (that never gets executed)
 				Viewport->SetAssetRegistryLoaded(true);
-				PreviewInstance->SetBuildParameterDecorations(true);
+				PreviewInstance->SetBuildParameterRelevancy(true);
 				PreviewInstance->UpdateSkeletalMeshAsync(true, true);
 			}
 			else
@@ -564,7 +565,7 @@ TSharedRef<SDockTab> FCustomizableObjectEditor::SpawnTab_InstanceProperties( con
 
 
 /** Create new tab for the supplied graph - don't call this directly, call SExplorer->FindTabForGraph.*/
-TSharedRef<SGraphEditor> FCustomizableObjectEditor::CreateGraphEditorWidget(UEdGraph* InGraph)
+void FCustomizableObjectEditor::CreateGraphEditorWidget(UEdGraph* InGraph)
 {
 	check(InGraph != NULL);
 
@@ -591,42 +592,7 @@ TSharedRef<SGraphEditor> FCustomizableObjectEditor::CreateGraphEditorWidget(UEdG
 		Action.FCustomizableObjectSchemaAction_NewNode::PerformAction(InGraph, nullptr, FVector2D::ZeroVector, false);
 	}
 	
-	GraphEditorCommands = MakeShareable( new FUICommandList );
-	{
-		// Editing commands
-		GraphEditorCommands->MapAction( FGenericCommands::Get().Delete,
-			FExecuteAction::CreateSP( this, &FCustomizableObjectEditor::DeleteSelectedNodes ),
-			FCanExecuteAction::CreateSP( this, &FCustomizableObjectEditor::CanDeleteNodes )
-			);
-
-		GraphEditorCommands->MapAction( FGenericCommands::Get().Copy,
-			FExecuteAction::CreateSP( this, &FCustomizableObjectEditor::CopySelectedNodes ),
-			FCanExecuteAction::CreateSP( this, &FCustomizableObjectEditor::CanCopyNodes )
-			);
-
-		GraphEditorCommands->MapAction( FGenericCommands::Get().Paste,
-			FExecuteAction::CreateSP( this, &FCustomizableObjectEditor::PasteNodes ),
-			FCanExecuteAction::CreateSP( this, &FCustomizableObjectEditor::CanPasteNodes )
-			);
-
-		GraphEditorCommands->MapAction( FGenericCommands::Get().Cut,
-			FExecuteAction::CreateSP( this, &FCustomizableObjectEditor::CutSelectedNodes ),
-			FCanExecuteAction::CreateSP( this, &FCustomizableObjectEditor::CanCutNodes )
-			);
-
-		GraphEditorCommands->MapAction(FGenericCommands::Get().Duplicate,
-			FExecuteAction::CreateSP(this, &FCustomizableObjectEditor::DuplicateSelectedNodes),
-			FCanExecuteAction::CreateSP(this, &FCustomizableObjectEditor::CanDuplicateSelectedNodes)
-			);
-
-		GraphEditorCommands->MapAction(FCustomizableObjectEditorNodeContextCommands::Get().RefreshMaterialNodesInAllChildren,
-			FExecuteAction::CreateSP(this, &FCustomizableObjectEditor::RefreshMaterialNodesInAllChildrenCallback)
-			);
-
-		GraphEditorCommands->MapAction(FCustomizableObjectEditorNodeContextCommands::Get().CreateComment,
-			FExecuteAction::CreateSP(this, &FCustomizableObjectEditor::CreateCommentBoxFromKey)
-		);
-	}
+	GraphEditorCommands = MakeShareable(new FUICommandList);
 
 	TSharedRef<SWidget> TitleBarWidget =
 		SNew(SHorizontalBox)
@@ -651,13 +617,66 @@ TSharedRef<SGraphEditor> FCustomizableObjectEditor::CreateGraphEditorWidget(UEdG
 	InEvents.OnTextCommitted = FOnNodeTextCommitted::CreateSP(this, &FCustomizableObjectEditor::OnNodeTitleCommitted);
 
 	// Make full graph editor
-	return SNew(SGraphEditor)
+	GraphEditor = SNew(SGraphEditor)
 		.AdditionalCommands(GraphEditorCommands)
 		.Appearance(AppearanceInfo)
 		.GraphToEdit(InGraph)
 		.GraphEvents(InEvents)
 		.TitleBar(TitleBarWidget)
 		.ShowGraphStateOverlay(false); // Removes graph state overlays (border and text) such as "SIMULATING" and "READ-ONLY"
+
+	// Editing commands
+	GraphEditorCommands->MapAction(FGenericCommands::Get().Delete,
+		FExecuteAction::CreateSP(this, &FCustomizableObjectEditor::DeleteSelectedNodes),
+		FCanExecuteAction::CreateSP(this, &FCustomizableObjectEditor::CanDeleteNodes));
+
+	GraphEditorCommands->MapAction( FGenericCommands::Get().Copy,
+		FExecuteAction::CreateSP(this, &FCustomizableObjectEditor::CopySelectedNodes),
+		FCanExecuteAction::CreateSP(this, &FCustomizableObjectEditor::CanCopyNodes));
+
+	GraphEditorCommands->MapAction(FGenericCommands::Get().Paste,
+		FExecuteAction::CreateSP(this, &FCustomizableObjectEditor::PasteNodes),
+		FCanExecuteAction::CreateSP(this, &FCustomizableObjectEditor::CanPasteNodes));
+
+	GraphEditorCommands->MapAction(FGenericCommands::Get().Cut,
+		FExecuteAction::CreateSP(this, &FCustomizableObjectEditor::CutSelectedNodes),
+		FCanExecuteAction::CreateSP(this, &FCustomizableObjectEditor::CanCutNodes));
+
+	GraphEditorCommands->MapAction(FGenericCommands::Get().Duplicate,
+		FExecuteAction::CreateSP(this, &FCustomizableObjectEditor::DuplicateSelectedNodes),
+		FCanExecuteAction::CreateSP(this, &FCustomizableObjectEditor::CanDuplicateSelectedNodes));
+
+	GraphEditorCommands->MapAction(FCustomizableObjectEditorNodeContextCommands::Get().CreateComment,
+		FExecuteAction::CreateSP(this, &FCustomizableObjectEditor::CreateCommentBoxFromKey));
+
+	// Alignment Commands
+	GraphEditorCommands->MapAction(FGraphEditorCommands::Get().AlignNodesTop,
+		FExecuteAction::CreateSP(GraphEditor.Get(), &SGraphEditor::OnAlignTop));
+
+	GraphEditorCommands->MapAction(FGraphEditorCommands::Get().AlignNodesMiddle,
+		FExecuteAction::CreateSP(GraphEditor.Get(), &SGraphEditor::OnAlignMiddle));
+
+	GraphEditorCommands->MapAction(FGraphEditorCommands::Get().AlignNodesBottom,
+		FExecuteAction::CreateSP(GraphEditor.Get(), &SGraphEditor::OnAlignBottom));
+
+	GraphEditorCommands->MapAction(FGraphEditorCommands::Get().AlignNodesLeft,
+		FExecuteAction::CreateSP(GraphEditor.Get(), &SGraphEditor::OnAlignLeft));
+
+	GraphEditorCommands->MapAction(FGraphEditorCommands::Get().AlignNodesCenter,
+		FExecuteAction::CreateSP(GraphEditor.Get(), &SGraphEditor::OnAlignCenter));
+
+	GraphEditorCommands->MapAction(FGraphEditorCommands::Get().AlignNodesRight,
+		FExecuteAction::CreateSP(GraphEditor.Get(), &SGraphEditor::OnAlignRight));
+
+	GraphEditorCommands->MapAction(FGraphEditorCommands::Get().StraightenConnections,
+		FExecuteAction::CreateSP(GraphEditor.Get(), &SGraphEditor::OnStraightenConnections));
+
+	// Distribution Commands
+	GraphEditorCommands->MapAction(FGraphEditorCommands::Get().DistributeNodesHorizontally,
+		FExecuteAction::CreateSP(GraphEditor.Get(), &SGraphEditor::OnDistributeNodesH));
+	
+	GraphEditorCommands->MapAction(FGraphEditorCommands::Get().DistributeNodesVertically,
+		FExecuteAction::CreateSP(GraphEditor.Get(), &SGraphEditor::OnDistributeNodesV));
 }
 
 
@@ -665,7 +684,7 @@ TSharedRef<SDockTab> FCustomizableObjectEditor::SpawnTab_Graph( const FSpawnTabA
 {
 	check( Args.GetTabId().TabType == GraphTabId );
 
-	GraphEditor = CreateGraphEditorWidget(CustomizableObject->Source);
+	CreateGraphEditorWidget(CustomizableObject->Source);
 
 	TSharedRef<SDockTab> DockTab = SNew(SDockTab)
 		.Label( FText::FromString( GetTabPrefix() + LOCTEXT( "SourceGraph", "Source Graph" ).ToString() ) )
@@ -796,12 +815,6 @@ void FCustomizableObjectEditor::BindCommands()
 		FIsActionChecked::CreateSP(this, &FCustomizableObjectEditor::CompileOptions_TextureCompression_IsChecked));
 
 	ToolkitCommands->MapAction(
-		Commands.CompileOptions_UseParallelCompilation,
-		FExecuteAction::CreateSP(this, &FCustomizableObjectEditor::CompileOptions_UseParallelCompilation_Toggled),
-		FCanExecuteAction(),
-		FIsActionChecked::CreateSP(this, &FCustomizableObjectEditor::CompileOptions_UseParallelCompilation_IsChecked));
-
-	ToolkitCommands->MapAction(
 		Commands.CompileOptions_UseDiskCompilation,
 		FExecuteAction::CreateSP(this, &FCustomizableObjectEditor::CompileOptions_UseDiskCompilation_Toggled),
 		FCanExecuteAction(),
@@ -871,177 +884,47 @@ bool FCustomizableObjectEditor::GroupNodeIsLinkedToParentByName(UCustomizableObj
 }
 
 
-// Deprecated! Remove on MTBL-283
-void StoreNodeLinkedPins(UCustomizableObjectNode* Node, TMap<FString, int32>& MapLinkedPin)
+// TODO FutureGMT, use graph traversal abstraction instead of a hardcoded implementation.
+void FCustomizableObjectEditor::ReconstructAllChildNodes(UCustomizableObjectNode& StartNode, const UClass& NodeType)
 {
-	TArray<UEdGraphPin*> ArrayPins = Node->GetAllNonOrphanPins();
-	const int32 MaxIndex = ArrayPins.Num();
-
-	for (int32 i = 0; i < MaxIndex; ++i)
+	UCustomizableObject* Object = CastChecked<UCustomizableObject>(StartNode.GetCustomizableObjectGraph()->GetOuter());
+	const TMultiMap<FGuid, UCustomizableObjectNodeObject*> Mapping = GetNodeGroupObjectNodeMapping(Object);
+	
+	TArray<UCustomizableObjectNode*> NodesToVisit;
+	NodesToVisit.Add(&StartNode);
+	
+	while (!NodesToVisit.IsEmpty())
 	{
-		if (ArrayPins[i]->LinkedTo.Num() > 0)
+		UCustomizableObjectNode* Node = NodesToVisit.Pop();
+
+		if (&NodeType == Node->GetClass())
 		{
-			MapLinkedPin.Emplace(ArrayPins[i]->GetDisplayName().ToString(), ArrayPins[i]->LinkedTo.Num());
-		}
-	}
-}
-
-
-// Deprecated! Remove on MTBL-283
-bool CompareLinkedPinMaps(const TMap<FString, int32>& Map0, const TMap<FString, int32>& Map1, const UEdGraphNode* Node)
-{
-	// Compare if there are connected pins in Map0 not present in Map1, viceversa, and also if the number of connections is different for Map0 and Map1
-	bool PinIn0NotIn1 = false;
-	bool PinIn1NotIn0 = false;
-	bool DifferentLinkNumber = false;
-
-	for (const TPair<FString, int32>& Element : Map0)
-	{
-		const int32* NumElement1 = Map1.Find(Element.Key);
-		if (NumElement1 == nullptr)
-		{
-			PinIn0NotIn1 = true;
-			continue;
+			Node->UCustomizableObjectNode::ReconstructNode();							
 		}
 
-		int32 NumElement0 = Element.Value;
-		if (NumElement0 != (*NumElement1))
+		if (const UCustomizableObjectNodeObjectGroup* GroupNode = Cast<UCustomizableObjectNodeObjectGroup>(Node))
 		{
-			DifferentLinkNumber = true;
-		}
-	}
-
-	for (const TPair<FString, int32>& Element : Map1)
-	{
-		const int32* NumElement0 = Map0.Find(Element.Key);
-		if (NumElement0 == nullptr)
-		{
-			PinIn1NotIn0 = true;
-		}
-	}
-
-	if (PinIn0NotIn1 || PinIn1NotIn0 || DifferentLinkNumber)
-	{
-		FString ErrorLog = "ERROR: Updated UCustomizableObjectNodeMaterial";
-
-		if (PinIn0NotIn1)
-		{
-			ErrorLog += ", has lost at least one connected pin ";
-		}
-
-		if (PinIn1NotIn0)
-		{
-			ErrorLog += ", has at least one connected pin with name not present before update";
-		}
-
-		if (DifferentLinkNumber)
-		{
-			ErrorLog += ", has at least one pin with different number connection after update";
-		}
-
-		ErrorLog += ". Please verify the node works correctly";
-
-		FCustomizableObjectEditorLogger::CreateLog(FText::FromString(ErrorLog))
-		.Severity(EMessageSeverity::Warning)
-		.Node(*CastChecked<UCustomizableObjectNode>(Node))
-		.Log();
-	}
-
-	return (!PinIn0NotIn1 && !PinIn1NotIn0 && !DifferentLinkNumber);
-}
-
-
-void FCustomizableObjectEditor::RefreshMaterialNodesInAllChildrenCallback()
-{
-	FNotificationInfo Info(NSLOCTEXT("CustomizableObject", "RefreshingMaterialNodesInAllChildren", "Refreshing material nodes in all children"));
-	Info.bFireAndForget = true;
-	Info.bUseThrobber = true;
-	Info.FadeOutDuration = 1.0f;
-	Info.ExpireDuration = 1.0f;
-	FSlateNotificationManager::Get().AddNotification(Info);
-
-	LaunchRefreshMaterialInAllChildren = true;
-}
-
-
-// Deprecated! Remove on MTBL-283
-void FCustomizableObjectEditor::RefreshMaterialNodesInAllChildren()
-{
-	// Verify only one UCustomizableObjectNodeObjectGroup node is selected
-	const FGraphPanelSelectionSet SelectedNodes = GraphEditor->GetSelectedNodes();
-
-	if (SelectedNodes.Num() != 1)
-	{
-		return;
-	}
-
-	FString ParentGroupName = "";
-	for (FGraphPanelSelectionSet::TConstIterator SelectedIter(SelectedNodes); SelectedIter; ++SelectedIter)
-	{
-		if (UCustomizableObjectNodeObjectGroup* Node = Cast<UCustomizableObjectNodeObjectGroup>(*SelectedIter))
-		{
-			ParentGroupName = Node->GroupName;
-		}
-	}
-
-	// Loop through all COs and find if a CO has a UCustomizableObjectNodeObject node linked to the CO being analyzed,
-	// and adding the group name for filtering only for those COs of the selected group
-	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
-	TArray<FAssetData> OutAssetData;
-	AssetRegistryModule.Get().GetAssetsByClass(FTopLevelAssetPath(TEXT("/Script/CustomizableObject"), TEXT("CustomizableObject")), OutAssetData);
-
-	for (auto Itr = OutAssetData.CreateIterator(); Itr; ++Itr)
-	{
-		UCustomizableObject* CustomizableObjectTemp = Cast<UCustomizableObject>(Itr->GetAsset());
-
-		if (CustomizableObjectTemp == nullptr)
-		{
-			continue;
+			TArray<UCustomizableObjectNodeObject*> ObjectNodes;
+			Mapping.MultiFind(GroupNode->NodeGuid, ObjectNodes);
+			
+			for (UCustomizableObjectNodeObject* ObjectNode : ObjectNodes)
+			{
+				NodesToVisit.Add(ObjectNode);	
+			}
 		}
 		
-		bool MultipleBaseObjectsFound;
-		UCustomizableObjectNodeObject* TempParentNodeObject = GetRootNode(CustomizableObjectTemp, MultipleBaseObjectsFound);
-
-		if (MultipleBaseObjectsFound)
+		for (const UEdGraphPin* Pin : Node->GetAllPins()) // Not using GetAllNonOrphanPins on purpose since we want want to be able to reconstruct nodes that have non-orphan pins.
 		{
-			continue;
-		}
-
-		bool IsChild = HasCandidateAsParent(TempParentNodeObject, CustomizableObject);
-
-		if (IsChild)
-		{
-			bool IsLinkedTo = GroupNodeIsLinkedToParentByName(TempParentNodeObject, CustomizableObject, ParentGroupName);
-
-			if (IsLinkedTo)
+			if (Pin->Direction != EGPD_Input)
 			{
-				UEdGraph* Graph = CustomizableObjectTemp->Source;
+				continue;
+			}
 
-				if (Graph != nullptr)
+			for (const UEdGraphPin* ConnectedPin : FollowInputPinArray(*Pin))
+			{
+				if (UCustomizableObjectNode* TypedNode = Cast<UCustomizableObjectNode>(ConnectedPin->GetOwningNode()))
 				{
-					TArray<UCustomizableObjectNodeMaterial*> ArrayNode;
-					Graph->GetNodesOfClass<UCustomizableObjectNodeMaterial>(ArrayNode);
-
-					int32 MaxIndex = ArrayNode.Num();
-					int32 NumNodeReconstructed = 0;
-					TMap<FString, int32> MapLinkedPinsBeforeUpdate;
-					TMap<FString, int32> MapLinkedPinsAfterUpdate;
-
-					for (int32 i = 0; i < MaxIndex; ++i)
-					{
-						StoreNodeLinkedPins(ArrayNode[i], MapLinkedPinsBeforeUpdate);
-						ArrayNode[i]->UCustomizableObjectNode::ReconstructNode();
-						StoreNodeLinkedPins(ArrayNode[i], MapLinkedPinsAfterUpdate);
-						NumNodeReconstructed++;
-							
-						CompareLinkedPinMaps(MapLinkedPinsBeforeUpdate, MapLinkedPinsAfterUpdate, ArrayNode[i]);
-					}
-
-					if (NumNodeReconstructed > 0)
-					{
-						Graph->NotifyGraphChanged();
-						Graph->MarkPackageDirty();
-					}
+					NodesToVisit.Add(TypedNode);						
 				}
 			}
 		}
@@ -1128,6 +1011,11 @@ TSharedRef<SWidget> FCustomizableObjectEditor::GenerateCompileOptionsMenuContent
 	}
 	MenuBuilder.EndSection();
 
+	if (!CustomizableObject)
+	{
+		return MenuBuilder.MakeWidget();
+	}
+
 	MenuBuilder.BeginSection("Optimization", LOCTEXT("MutableCompileOptimizationHeading", "Optimization"));
 	{
 		// Level
@@ -1137,16 +1025,44 @@ TSharedRef<SWidget> FCustomizableObjectEditor::GenerateCompileOptionsMenuContent
 		CompileOptimizationStrings.Add(MakeShareable(new FString(NSLOCTEXT("UnrealEd", "OptimizationMed", "Medium").ToString())));
 		CompileOptimizationStrings.Add(MakeShareable(new FString(NSLOCTEXT("UnrealEd", "OptimizationMax", "Maximum").ToString())));
 
-		CompileOptimizationCombo =
-			SNew(STextComboBox)
-			.OptionsSource(&CompileOptimizationStrings)
-			.InitiallySelectedItem(CompileOptimizationStrings[CustomizableObject ? CustomizableObject->CompileOptions.OptimizationLevel : 0])
-			.OnSelectionChanged(this, &FCustomizableObjectEditor::OnChangeCompileOptimizationLevel)
-			;
+		if (CustomizableObject)
+		{
+			int32 SelectedOptimization = FMath::Clamp(CustomizableObject->CompileOptions.OptimizationLevel, 0, CompileOptimizationStrings.Num() - 1);
+			CompileOptimizationCombo =
+				SNew(STextComboBox)
+				.OptionsSource(&CompileOptimizationStrings)
+				.InitiallySelectedItem(CompileOptimizationStrings[SelectedOptimization])
+				.OnSelectionChanged(this, &FCustomizableObjectEditor::OnChangeCompileOptimizationLevel)
+				;
 
-		MenuBuilder.AddWidget(CompileOptimizationCombo.ToSharedRef(), LOCTEXT("MutableCompileOptimizationLevel", "Optimization Level"));
+			MenuBuilder.AddWidget(CompileOptimizationCombo.ToSharedRef(), LOCTEXT("MutableCompileOptimizationLevel", "Optimization Level"));
+		}
 
-		MenuBuilder.AddMenuEntry(FCustomizableObjectEditorCommands::Get().CompileOptions_UseParallelCompilation);
+		// Image tiling
+		// Unfortunately SNumericDropDown doesn't work with integers at the time of writing.
+		TArray<SNumericDropDown<float>::FNamedValue> TilingOptions;
+		TilingOptions.Add(SNumericDropDown<float>::FNamedValue(0, FText::FromString(TEXT("0")), FText::FromString(TEXT("Disabled"))));
+		TilingOptions.Add(SNumericDropDown<float>::FNamedValue(64, FText::FromString(TEXT("64")), FText::FromString(TEXT("64"))));
+		TilingOptions.Add(SNumericDropDown<float>::FNamedValue(128, FText::FromString(TEXT("128")), FText::FromString(TEXT("128"))));
+		TilingOptions.Add(SNumericDropDown<float>::FNamedValue(256, FText::FromString(TEXT("256")), FText::FromString(TEXT("256"))));
+		TilingOptions.Add(SNumericDropDown<float>::FNamedValue(512, FText::FromString(TEXT("512")), FText::FromString(TEXT("512"))));
+
+		CompileTilingCombo = SNew(SNumericDropDown<float>)
+			.DropDownValues(TilingOptions)
+			.Value_Lambda([this]() 
+				{ 
+					return CustomizableObject ? float(CustomizableObject->CompileOptions.ImageTiling) : 0.0f;
+				})
+			.OnValueChanged_Lambda([this](float Value) 
+				{ 
+					if (CustomizableObject)
+					{
+						CustomizableObject->CompileOptions.ImageTiling = int32(Value);
+						CustomizableObject->Modify();
+					}
+				});
+		MenuBuilder.AddWidget(CompileTilingCombo.ToSharedRef(), LOCTEXT("MutableCompileImageTiling", "Image Tiling"));
+
 		MenuBuilder.AddMenuEntry(FCustomizableObjectEditorCommands::Get().CompileOptions_UseDiskCompilation);
 		MenuBuilder.AddMenuEntry(FCustomizableObjectEditorCommands::Get().CompileOptions_EnableTextureCompression);
 	}
@@ -1366,8 +1282,9 @@ void FCustomizableObjectEditor::CompileObject()
 	// If any projector selected, unselect it in case the projector node is removed with this CO compile
 	ResetProjectorVisibilityNoUpdate();
 
-	// Unselect NodeMeshClipMorph if selected
+	// Resetting viewport parameters
 	Viewport->SetClipMorphPlaneVisibility(false, nullptr);
+	Viewport->SetDrawDefaultUVMaterial(true);
 
 	UE_LOG(LogMutable, Verbose, TEXT("PROFILE: -----------------------------------------------------------"));
 	UE_LOG(LogMutable, Verbose, TEXT("PROFILE: [ %16.8f ] FCustomizableObjectEditor::CompileObject start."), FPlatformTime::Seconds());
@@ -1392,7 +1309,7 @@ void FCustomizableObjectEditor::CompileObject()
 		Compiler.Compile(*CustomizableObject, Options, true);
 	}
 
-	UE_LOG(LogMutable, Log, TEXT("PROFILE: [ %16.8f ] FCustomizableObjectEditor::CompileObject end."), FPlatformTime::Seconds());
+	UE_LOG(LogMutable, Verbose, TEXT("PROFILE: [ %16.8f ] FCustomizableObjectEditor::CompileObject end."), FPlatformTime::Seconds());
 }
 
 
@@ -1423,20 +1340,6 @@ void FCustomizableObjectEditor::OnChangeCompileOptimizationLevel(TSharedPtr<FStr
 	const FScopedTransaction Transaction(LOCTEXT("ChangedOptimizationLevelTransaction", "Changed Optimization Level"));
 	CustomizableObject->Modify();
 	CustomizableObject->CompileOptions.OptimizationLevel = CompileOptimizationStrings.Find(NewSelection);
-}
-
-
-void FCustomizableObjectEditor::CompileOptions_UseParallelCompilation_Toggled()
-{
-	const FScopedTransaction Transaction(LOCTEXT("ChangedEnableCompilingInMultipleThreadsTransaction", "Changed Enable compiling in multiple threads"));
-	CustomizableObject->Modify();
-	CustomizableObject->CompileOptions.bUseParallelCompilation = !CustomizableObject->CompileOptions.bUseParallelCompilation;
-}
-
-
-bool FCustomizableObjectEditor::CompileOptions_UseParallelCompilation_IsChecked()
-{
-	return CustomizableObject ? CustomizableObject->CompileOptions.bUseParallelCompilation : false;
 }
 
 
@@ -1633,7 +1536,7 @@ void FCustomizableObjectEditor::NotifyPostChange( const FPropertyChangedEvent& P
 }
 
 
-bool FCustomizableObjectEditor::IsTickable(void) const
+bool FCustomizableObjectEditor::IsTickable() const
 {
 	return true;
 }
@@ -1674,6 +1577,10 @@ void FCustomizableObjectEditor::Tick( float InDeltaTime )
 				if (const UCustomizableObjectNodeStaticMesh* TypedNode = Cast<UCustomizableObjectNodeStaticMesh>(Node))
 				{
 					ClipMesh = TypedNode->StaticMesh;
+				}
+				else if (const UCustomizableObjectNodeTable* TableNode = Cast<UCustomizableObjectNodeTable>(Node))
+				{
+					ClipMesh = TableNode->GetColumnDefaultAssetByType<UStaticMesh>(ConnectedPin);
 				}
 			}
 		}
@@ -1788,32 +1695,6 @@ void FCustomizableObjectEditor::Tick( float InDeltaTime )
 			PreviewInstance->SetProjectorState(PreviewInstance->TempProjectorParameterName, PreviewInstance->TempProjectorParameterRangeIndex, EProjectorState::Selected);
             FCoreUObjectDelegates::BroadcastOnObjectModified(PreviewInstance);
         }
-	}
-
-	if (LaunchRefreshMaterialInAllChildren)
-	{
-		PendingTimeRefreshMaterialInAllChildren -= InDeltaTime;
-
-		if (PendingTimeRefreshMaterialInAllChildren < 0.0f)
-		{
-			PendingTimeRefreshMaterialInAllChildren = 2.0f;
-			LaunchRefreshMaterialInAllChildren = false;
-			RefreshMaterialNodesInAllChildren();
-		}
-	}
-
-	// Reconstruct marked nodes 
-	if (GraphEditor.IsValid())
-	{
-		for (UEdGraphNode* Node: ReconstructNodes)
-		{
-			GraphEditor->GetCurrentGraph()->Schema.GetDefaultObject()->ReconstructNode(*Node);
-		}
-		if (ReconstructNodes.Num()) 
-		{
-			GraphEditor->NotifyGraphChanged();
-			ReconstructNodes.Empty();
-		}
 	}
 }
 
@@ -2515,39 +2396,6 @@ void FCustomizableObjectEditor::OnEnterText(const FText & NewText, ETextCommit::
 							}
 						}
 					}
-					else if (ArrayType == "FCustomizableObjectNodeSkeletalMeshLOD")
-					{
-						TArray<FCustomizableObjectNodeSkeletalMeshLOD>  Array =
-							*ArrayProperty->ContainerPtrToValuePtr<TArray<FCustomizableObjectNodeSkeletalMeshLOD>>(Node);
-						
-						FString LODs = "LODs";
-
-						for (int a = 0; a < Array.Num(); ++a)
-						{
-							if (LODs.Contains(VariableName))
-							{
-								LogSearchResult(CustomizableObjectNode, "Variable", found, LODs);
-								found = true;
-							}
-
-							for (int s = 0; s < Array[a].Materials.Num(); ++s)
-							{
-								FString Name = "Name";
-
-								if (Name.Contains(VariableName))
-								{
-									LogSearchResult(CustomizableObjectNode, "Variable", found, Name);
-									found = true;
-								}
-
-								if (Array[a].Materials[s].Name.Contains(NewText.ToString()))
-								{
-									LogSearchResult(CustomizableObjectNode, "Value", found, Array[a].Materials[s].Name);
-									found = true;
-								}
-							}
-						}
-					}
 					else if (ArrayType == "FCustomizableObjectNodeStaticMeshLOD")
 					{
 						TArray<FCustomizableObjectNodeStaticMeshLOD>  Array =
@@ -2645,7 +2493,7 @@ void FCustomizableObjectEditor::OnUpdatePreviewInstance()
 	}
 	
 	Viewport->SetPreviewComponents(PreviewSkeletalMeshComponents);
-	Viewport->SetDrawDefaultUVMaterial();
+	Viewport->SetDrawDefaultUVMaterial(false);
 	ViewportClient->Invalidate();
 	ViewportClient->ReSetAnimation();
 	ViewportClient->SetReferenceMeshMissingWarningMessage(false);
@@ -2682,11 +2530,6 @@ void FCustomizableObjectEditor::OnUpdatePreviewInstance()
 	if (TextureAnalyzer.IsValid())
 	{
 		TextureAnalyzer->RefreshTextureAnalyzerTable(PreviewInstance);
-	}
-
-	for (int32 ComponentIndex = 0; ComponentIndex < PreviewInstance->SkeletalMeshes.Num(); ++ComponentIndex)
-	{
-		BakeHelper_RegenerateImportedModel(PreviewInstance->SkeletalMeshes[ComponentIndex]);
 	}
 
 	// Do postponed work.
@@ -2906,12 +2749,6 @@ void FCustomizableObjectEditor::GetExternalChildObjects(const UCustomizableObjec
 			}
 		}
 	}
-}
-
-
-void FCustomizableObjectEditor::MarkForReconstruct(UEdGraphNode* Node)
-{
-	ReconstructNodes.Add(Node);
 }
 
 

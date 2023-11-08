@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MovieScene/MovieSceneNiagaraSystemSpawnSection.h"
+#include "NiagaraCommon.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneNiagaraSystemSpawnSection)
 
@@ -32,6 +33,11 @@ ENiagaraSystemSpawnSectionEndBehavior UMovieSceneNiagaraSystemSpawnSection::GetS
 ENiagaraAgeUpdateMode UMovieSceneNiagaraSystemSpawnSection::GetAgeUpdateMode() const
 {
 	return AgeUpdateMode;
+}
+
+void UMovieSceneNiagaraSystemSpawnSection::SetAgeUpdateMode(ENiagaraAgeUpdateMode NewMode)
+{
+	AgeUpdateMode = NewMode;
 }
 
 bool UMovieSceneNiagaraSystemSpawnSection::GetAllowScalability()const

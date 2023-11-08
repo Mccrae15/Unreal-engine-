@@ -14,7 +14,41 @@ class UPlayerMappableKeySettings;
 
 enum class ETriggerEventInternal : uint8;
 
-// Input action definition. These are instanced per player (via FInputActionInstance)
+/** 
+* This is an advanced setting that allows you to change how the value of an Input Action is calculated when there are 
+* multiple mappings to the same Input Action. The default behavior is to accept highest absolute value.
+*/
+UENUM()
+enum class EInputActionAccumulationBehavior : uint8
+{
+	/** 
+	* Take the value from the mapping with the highest Absolute Value.
+	* 
+	* For example, given a value of -0.3 and 0.5, the input action's value would be 0.5. 
+	*/
+	TakeHighestAbsoluteValue,
+
+	/** 
+	* Cumulatively adds the key values for each mapping.
+	* 
+	* For example, a value of -0.7 and +0.75 on the same input action would result in a value of 0.05.
+	* 
+	* A practical example of when to use this would be for something like WASD movement, if you want pressing W and S to cancel each other out.
+	*/
+	Cumulative,
+};
+
+/**
+* An Input Action is a logical representation of something the user can do, such as "Jump" or "Crouch".
+* These are what your gameplay code binds to in order to listen for input state changes. For most scenarios 
+* your gameplay code should be listening for the "Triggered" event on an input action. This will allow
+* for the most scalable and customizable input configuration because you can add different triggers 
+* for each key mapping in the Input Mapping Context. 
+* 
+* They are the conceptual equivalent to "Action" and "Axis" mapping names from the Legacy Input System.
+* 
+* Note: These are instanced per player (via FInputActionInstance)
+*/
 UCLASS(BlueprintType)
 class ENHANCEDINPUT_API UInputAction : public UDataAsset
 {
@@ -25,8 +59,8 @@ public:
 #if WITH_EDITOR
 	// Track actions that have had their ValueType changed to update blueprints referencing them.
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
-	virtual EDataValidationResult IsDataValid(TArray<FText>& ValidationErrors) override;
-	
+	virtual EDataValidationResult IsDataValid(class FDataValidationContext& Context) const override;
+
 	static TSet<const UInputAction*> ActionsWithModifiedValueTypes;
 	static TSet<const UInputAction*> ActionsWithModifiedTriggers;
 	
@@ -51,21 +85,44 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Description")
 	FText ActionDescription = FText::GetEmpty();
 
+	// Should this action be able to trigger whilst the game is paused - Replaces bExecuteWhenPaused
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Action)
+    bool bTriggerWhenPaused = false;
+	
 	// Should this action swallow any inputs bound to it or allow them to pass through to affect lower priority bound actions?
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Action)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input Consumption", meta=(DisplayName="Consume Lower Priority Enhanced Input Mappings"))
 	bool bConsumeInput = true;
 
-	// Should this action be able to trigger whilst the game is paused - Replaces bExecuteWhenPaused
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Action)
-	bool bTriggerWhenPaused = false;
+	/**
+	 * Should this Input Action consume any legacy Action and Axis key mappings?
+	 * If true, then any key mapping to this input action will consume(aka block) the legacy key
+	 * mapping from firing delegates.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input Consumption")
+	bool bConsumesActionAndAxisMappings = false;
 
 	// This action's mappings are not intended to be automatically overridden by higher priority context mappings. Users must explicitly remove the mapping first. NOTE: It is the responsibility of the author of the mapping code to enforce this!
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Action)
 	bool bReserveAllMappings = false;	// TODO: Need something more complex than this?
 
+	/** A bitmask of trigger events that, when reached, will consume any FKeys mapped to this input action. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input Consumption", meta=(EditCondition = "bConsumesActionAndAxisMappings", Bitmask, BitmaskEnum="/Script/EnhancedInput.ETriggerEvent"))
+	int32 TriggerEventsThatConsumeLegacyKeys;
+	
 	// The type that this action returns from a GetActionValue query or action event
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Action, AssetRegistrySearchable)
 	EInputActionValueType ValueType = EInputActionValueType::Boolean;
+
+	/**
+	* This defines how the value of this input action will be calcuated in the case that there are multiple key mappings to the same input action.
+	* 
+	* When TakeHighestAbsoluteValue is selected, then the key mapping with the highest absolutle value will be utilized. (Default)
+	* When Cumulative is selected, then each key mapping will be added together to get the key value. 
+	* 
+	* @see UEnhancedPlayerInput::ProcessActionMappingEvent, where this property is read from. 
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Action, AdvancedDisplay)
+	EInputActionAccumulationBehavior AccumulationBehavior = EInputActionAccumulationBehavior::TakeHighestAbsoluteValue;
 	
 	/**
 	* Trigger qualifiers. If any trigger qualifiers exist the action will not trigger unless:
@@ -79,16 +136,18 @@ public:
 	* Modifiers are applied to the final action value.
 	* These are applied sequentially in array order.
 	* They are applied on top of any FEnhancedActionKeyMapping modifiers that drove the initial input
+	* 
+	* Note: Modifiers defined in the Input Action asset will be applied AFTER any modifiers defined in individual key mappings in the Input Mapping Context asset.
 	*/
 	UPROPERTY(EditAnywhere, Instanced, BlueprintReadWrite, Category = Action, meta=(DisplayAfter="Triggers"))
 	TArray<TObjectPtr<UInputModifier>> Modifiers;
 
-private:
+protected:
 
 	/**
 	* Holds setting information about this Action Input for setting screen and save purposes.
 	*/
-	UPROPERTY(EditAnywhere, Instanced, BlueprintReadWrite, Category = "Input|Settings", meta=(AllowPrivateAccess))
+	UPROPERTY(EditAnywhere, Instanced, BlueprintReadWrite, Category = "User Settings", meta=(AllowPrivateAccess))
 	TObjectPtr<UPlayerMappableKeySettings> PlayerMappableKeySettings;
 };
 

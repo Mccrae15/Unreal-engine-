@@ -72,10 +72,7 @@ void FRigidBody::Initialize(const FBone* SolverRoot)
 
 void FRigidBody::UpdateFromInputs(const FPBIKSolverSettings& Settings)
 {
-	if (Settings.bStartSolveFromInputPose)
-	{
-		UpdateTransformAndMassFromBones();
-	}
+	UpdateTransformAndMassFromBones();
 
 	// update InvMass based on global mass multiplier
 	constexpr float MinMass = 0.5f; // prevent mass ever hitting zero
@@ -99,7 +96,7 @@ void FRigidBody::UpdateTransformAndMassFromBones()
 	Rotation = InitialRotation = Bone->Rotation;
 	BoneLocalPosition = Bone->Rotation.Inverse() * (Bone->Position - Centroid);
 
-	ChildLocalPositions.Reserve(Bone->Children.Num());
+	ChildLocalPositions.Empty(Bone->Children.Num());
 	for (const FBone* Child : Bone->Children)
 	{
 		FVector ChildLocalPos = Rotation.Inverse() * (Child->Position - Centroid);

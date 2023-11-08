@@ -362,16 +362,6 @@ public:
 	static EUpdateClockSource GetClockSource(UMovieSceneSequence* InSequence);
 
 	/**
-	 * Get the timecode source of this sequence
-	 *
-	 * @param Sequence        The sequence within which to get the timecode source
-	 * @return Timecode source of this sequence
-	 */
-	UE_DEPRECATED(5.0, "GetTimecodeSource() is no longer supported for movie scene sequences. Please use GetEarliestTimecodeSource() instead.")
-	UFUNCTION(BlueprintCallable, Category = "Sequencer|Sequence", meta = (ScriptMethod, DeprecatedFunction, DeprecationMessage = "GetTimecodeSource() is no longer supported for movie scene sequences. Please use GetEarliestTimecodeSource() instead."))
-	static FTimecode GetTimecodeSource(UMovieSceneSequence* Sequence);
-
-	/**
 	 * Attempt to locate a binding in this sequence by its name
 	 *
 	 * @param Sequence        The sequence within which to find the binding
@@ -461,19 +451,6 @@ public:
 
 
 	/**
-	 * Make a binding id for the given binding in this sequence
-	 *
-	 * @param Sequence  The sequence that contains the sequence
-	 * @param Binding The binding proxy to generate the binding id from
-	 * @param Space The object binding space to resolve from (Root or Local)
-	 * @return The new object binding id
-	 */
-	UE_DEPRECATED(5.0, "Please migrate to GetBindingID or GetPortableBindingID depending on use-case.")
-	UFUNCTION(BlueprintCallable, Category = "Sequencer|Sequence", meta = (ScriptMethod, DeprecatedFunction, DeprecationMessage="Please migrate to GetBindingID or GetPortableBindingID depending on use-case."))
-	static FMovieSceneObjectBindingID MakeBindingID(UMovieSceneSequence* Sequence, const FMovieSceneBindingProxy& InBinding, EMovieSceneObjectBindingSpace Space = EMovieSceneObjectBindingSpace::Root);
-
-
-	/**
 	 * Get the binding ID for a binding within a sequence.
 	 * @note: The resulting binding is only valid when applied to properties within the same sequence as this binding. Use GetPortableBindingID for bindings which live in different sub-sequences.
 	 *
@@ -481,7 +458,7 @@ public:
 	 * @return The binding's id
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Sequencer|Sequence", meta = (ScriptMethod))
-	static FMovieSceneObjectBindingID GetBindingID(const FMovieSceneBindingProxy& InBinding);
+	static FMovieSceneObjectBindingID GetBindingID(UMovieSceneSequence* Sequence, const FMovieSceneBindingProxy& InBinding);
 
 
 	/**
@@ -635,6 +612,38 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Sequencer|Sequence", meta = (ScriptMethod))
 	static bool IsReadOnly(UMovieSceneSequence* Sequence);
+
+	/*
+	 * Set playback range locked
+	 *
+	 * @bInLocked Whether the movie scene playback range should be locked
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Sequencer|Sequence", meta = (ScriptMethod))
+	static void SetPlaybackRangeLocked(UMovieSceneSequence* Sequence, bool bInLocked);
+
+	/*
+	 * Is playback ranged locked
+	 *
+	 * @return Whether the movie scene playback range is locked
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Sequencer|Sequence", meta = (ScriptMethod))
+	static bool IsPlaybackRangeLocked(UMovieSceneSequence* Sequence);
+
+	/*
+	 * Set marked frames locked
+	 *
+	 * @bInLocked Whether the movie scene marked frames should be locked
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Sequencer|Sequence", meta = (ScriptMethod))
+	static void SetMarkedFramesLocked(UMovieSceneSequence* Sequence, bool bInLocked);
+
+	/*
+	 * Are marked frames locked
+	 *
+	 * @return Whether the movie scene marked frames are locked
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Sequencer|Sequence", meta = (ScriptMethod))
+	static bool AreMarkedFramesLocked(UMovieSceneSequence* Sequence);
 };
 
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2

@@ -13,56 +13,6 @@
 #include "RHIDefinitions.h"
 #include "RHICommandList.h"
 
-static inline bool IsDepthOrStencilFormat(EPixelFormat Format)
-{
-	switch (Format)
-	{
-	case PF_D24:
-	case PF_DepthStencil:
-	case PF_X24_G8:
-	case PF_ShadowDepth:
-	case PF_R32_FLOAT:
-		return true;
-
-	default:
-		break;
-	}
-
-	return false;
-}
-
-static inline bool IsStencilFormat(EPixelFormat Format)
-{
-	switch (Format)
-	{
-	case PF_DepthStencil:
-	case PF_X24_G8:
-		return true;
-
-	default:
-		break;
-	}
-
-	return false;
-}
-
-static inline bool IsBlockCompressedFormat(EPixelFormat Format)
-{
-	switch (Format)
-	{
-	case PF_DXT1:
-	case PF_DXT3:
-	case PF_DXT5:
-	case PF_BC4:
-	case PF_BC5:
-	case PF_BC6H:
-	case PF_BC7:
-		return true;
-	}
-
-	return false;
-}
-
 static inline EPixelFormat GetBlockCompressedFormatUAVAliasFormat(EPixelFormat Format)
 {
 	switch (Format)
@@ -80,28 +30,6 @@ static inline EPixelFormat GetBlockCompressedFormatUAVAliasFormat(EPixelFormat F
 	}
 
 	return Format;
-}
-
-static bool IsFloatFormat(EPixelFormat Format)
-{
-	switch (Format)
-	{
-	case PF_A32B32G32R32F:
-	case PF_FloatRGB:
-	case PF_FloatRGBA:
-	case PF_R32_FLOAT:
-	case PF_G16R16F:
-	case PF_G16R16F_FILTER:
-	case PF_G32R32F:
-	case PF_R16F:
-	case PF_R16F_FILTER:
-	case PF_FloatR11G11B10:
-		return true;
-
-	default:
-		break;
-	}
-	return false;
 }
 
 static bool IsUnormFormat(EPixelFormat Format)
@@ -200,9 +128,11 @@ struct FTextureRWBuffer
 			FRHITextureCreateDesc::Create2D(InDebugName, SizeX, SizeY, Format)
 			.SetFlags(Flags);
 
+		FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
+
 		Buffer = RHICreateTexture(Desc);
-		UAV = RHICreateUnorderedAccessView(Buffer, 0);
-		SRV = RHICreateShaderResourceView(Buffer, 0);
+		UAV = RHICmdList.CreateUnorderedAccessView(Buffer, 0);
+		SRV = RHICmdList.CreateShaderResourceView(Buffer, 0);
 	}
 
 	void Initialize3D(const TCHAR* InDebugName, uint32 BytesPerElement, uint32 SizeX, uint32 SizeY, uint32 SizeZ, EPixelFormat Format, ETextureCreateFlags Flags = DefaultTextureInitFlag)
@@ -213,9 +143,11 @@ struct FTextureRWBuffer
 			FRHITextureCreateDesc::Create3D(InDebugName, SizeX, SizeY, SizeZ, Format)
 			.SetFlags(Flags);
 
+		FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
+
 		Buffer = RHICreateTexture(Desc);
-		UAV = RHICreateUnorderedAccessView(Buffer, 0);
-		SRV = RHICreateShaderResourceView(Buffer, 0);
+		UAV = RHICmdList.CreateUnorderedAccessView(Buffer, 0);
+		SRV = RHICmdList.CreateShaderResourceView(Buffer, 0);
 	}
 
 	void Release()
@@ -227,26 +159,6 @@ struct FTextureRWBuffer
 	}
 };
 
-struct UE_DEPRECATED(5.1, "FTextureRWBuffer should be used instead of FTextureRWBuffer2D.") FTextureRWBuffer2D;
-struct FTextureRWBuffer2D : public FTextureRWBuffer
-{
-	UE_DEPRECATED(5.1, "FTextureRWBuffer::Initialize2D should be used instead of FTextureRWBuffer2D::Initialize.")
-	void Initialize(const TCHAR* InDebugName, uint32 BytesPerElement, uint32 SizeX, uint32 SizeY, EPixelFormat Format, ETextureCreateFlags Flags = DefaultTextureInitFlag)
-	{
-		Initialize2D(InDebugName, BytesPerElement, SizeX, SizeY, Format, Flags);
-	}
-};
-
-struct UE_DEPRECATED(5.1, "FTextureRWBuffer should be used instead of FTextureRWBuffer3D.") FTextureRWBuffer3D;
-struct FTextureRWBuffer3D : public FTextureRWBuffer
-{
-	UE_DEPRECATED(5.1, "FTextureRWBuffer::Initialize3D should be used instead of FTextureRWBuffer3D::Initialize.")
-	void Initialize(const TCHAR* InDebugName, uint32 BytesPerElement, uint32 SizeX, uint32 SizeY, uint32 SizeZ, EPixelFormat Format, ETextureCreateFlags Flags = DefaultTextureInitFlag)
-	{
-		Initialize3D(InDebugName, BytesPerElement, SizeX, SizeY, SizeZ, Format, Flags);
-	}
-};
-
 /** Encapsulates a GPU read/write buffer with its UAV and SRV. */
 struct FRWBuffer
 {
@@ -254,6 +166,8 @@ struct FRWBuffer
 	FUnorderedAccessViewRHIRef UAV;
 	FShaderResourceViewRHIRef SRV;
 	uint32 NumBytes;
+	FName ClassName = NAME_None;	// The owner class of Buffer used for Insight asset metadata tracing, set it before calling Initialize()
+	FName OwnerName = NAME_None;	// The owner name used for Insight asset metadata tracing, set it before calling Initialize()
 
 	FRWBuffer()
 		: NumBytes(0)
@@ -303,21 +217,37 @@ struct FRWBuffer
 	}
 
 	// @param AdditionalUsage passed down to RHICreateVertexBuffer(), get combined with "BUF_UnorderedAccess | BUF_ShaderResource" e.g. BUF_Static
-	void Initialize(const TCHAR* InDebugName, uint32 BytesPerElement, uint32 NumElements, EPixelFormat Format, ERHIAccess InResourceState, EBufferUsageFlags AdditionalUsage = BUF_None, FResourceArrayInterface *InResourceArray = nullptr)
+	void Initialize(FRHICommandListBase& RHICmdList, const TCHAR* InDebugName, uint32 BytesPerElement, uint32 NumElements, EPixelFormat Format, ERHIAccess InResourceState, EBufferUsageFlags AdditionalUsage = BUF_None, FResourceArrayInterface *InResourceArray = nullptr)
 	{
 		// Provide a debug name if using Fast VRAM so the allocators diagnostics will work
 		ensure(!(EnumHasAnyFlags(AdditionalUsage, BUF_FastVRAM) && !InDebugName));
 		NumBytes = BytesPerElement * NumElements;
 		FRHIResourceCreateInfo CreateInfo(InDebugName);
+		CreateInfo.ClassName = ClassName;
+		CreateInfo.OwnerName = OwnerName;
 		CreateInfo.ResourceArray = InResourceArray;
-		Buffer = RHICreateVertexBuffer(NumBytes, BUF_UnorderedAccess | BUF_ShaderResource | AdditionalUsage, InResourceState, CreateInfo);
-		UAV = RHICreateUnorderedAccessView(Buffer, UE_PIXELFORMAT_TO_UINT8(Format));
-		SRV = RHICreateShaderResourceView(Buffer, BytesPerElement, UE_PIXELFORMAT_TO_UINT8(Format));
+		Buffer = RHICmdList.CreateBuffer(NumBytes, BUF_VertexBuffer | BUF_UnorderedAccess | BUF_ShaderResource | AdditionalUsage, 0, InResourceState, CreateInfo);
+		UAV = RHICmdList.CreateUnorderedAccessView(Buffer, UE_PIXELFORMAT_TO_UINT8(Format));
+		SRV = RHICmdList.CreateShaderResourceView(Buffer, BytesPerElement, UE_PIXELFORMAT_TO_UINT8(Format));
 	}
 
+	void Initialize(FRHICommandListBase& RHICmdList, const TCHAR* InDebugName, uint32 BytesPerElement, uint32 NumElements, EPixelFormat Format, EBufferUsageFlags AdditionalUsage = BUF_None, FResourceArrayInterface* InResourceArray = nullptr)
+	{
+		Initialize(RHICmdList, InDebugName, BytesPerElement, NumElements, Format, ERHIAccess::UAVCompute, AdditionalUsage, InResourceArray);
+	}
+
+	UE_DEPRECATED(5.3, "Initialize now requires a command list.")
 	void Initialize(const TCHAR* InDebugName, uint32 BytesPerElement, uint32 NumElements, EPixelFormat Format, EBufferUsageFlags AdditionalUsage = BUF_None, FResourceArrayInterface* InResourceArray = nullptr)
 	{
-		Initialize(InDebugName, BytesPerElement, NumElements, Format, ERHIAccess::UAVCompute, AdditionalUsage, InResourceArray);
+		check(IsInRenderingThread());
+		Initialize(FRHICommandListExecutor::GetImmediateCommandList(), InDebugName, BytesPerElement, NumElements, Format, ERHIAccess::UAVCompute, AdditionalUsage, InResourceArray);
+	}
+
+	UE_DEPRECATED(5.3, "Initialize now requires a command list.")
+	void Initialize(const TCHAR* InDebugName, uint32 BytesPerElement, uint32 NumElements, EPixelFormat Format, ERHIAccess InResourceState, EBufferUsageFlags AdditionalUsage = BUF_None, FResourceArrayInterface* InResourceArray = nullptr)
+	{
+		check(IsInRenderingThread());
+		Initialize(FRHICommandListExecutor::GetImmediateCommandList(), InDebugName, BytesPerElement, NumElements, Format, InResourceState, AdditionalUsage, InResourceArray);
 	}
 
 	void Release()
@@ -348,6 +278,8 @@ struct FTextureReadBuffer2D
 	const static ETextureCreateFlags DefaultTextureInitFlag = ETextureCreateFlags::ShaderResource;
 	void Initialize(const TCHAR* InDebugName, const uint32 BytesPerElement, const uint32 SizeX, const uint32 SizeY, const EPixelFormat Format, ETextureCreateFlags Flags = DefaultTextureInitFlag, FResourceBulkDataInterface* InBulkData = nullptr)
 	{
+		FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
+
 		NumBytes = SizeX * SizeY * BytesPerElement;
 
 		const FRHITextureCreateDesc Desc =
@@ -357,7 +289,7 @@ struct FTextureReadBuffer2D
 
 		Buffer = RHICreateTexture(Desc);
 		
-		SRV = RHICreateShaderResourceView(Buffer, 0);
+		SRV = RHICmdList.CreateShaderResourceView(Buffer, 0);
 	}
 
 	void Release()
@@ -377,13 +309,19 @@ struct FReadBuffer
 
 	FReadBuffer(): NumBytes(0) {}
 
-	void Initialize(const TCHAR* InDebugName, uint32 BytesPerElement, uint32 NumElements, EPixelFormat Format, EBufferUsageFlags AdditionalUsage = BUF_None, FResourceArrayInterface* InResourceArray = nullptr)
+	void Initialize(FRHICommandListBase& RHICmdList, const TCHAR* InDebugName, uint32 BytesPerElement, uint32 NumElements, EPixelFormat Format, EBufferUsageFlags AdditionalUsage = BUF_None, FResourceArrayInterface* InResourceArray = nullptr)
 	{
 		NumBytes = BytesPerElement * NumElements;
 		FRHIResourceCreateInfo CreateInfo(InDebugName);
 		CreateInfo.ResourceArray = InResourceArray;
-		Buffer = RHICreateVertexBuffer(NumBytes, BUF_ShaderResource | AdditionalUsage, ERHIAccess::SRVMask, CreateInfo);
-		SRV = RHICreateShaderResourceView(Buffer, BytesPerElement, UE_PIXELFORMAT_TO_UINT8(Format));
+		Buffer = RHICmdList.CreateVertexBuffer(NumBytes, BUF_ShaderResource | AdditionalUsage, ERHIAccess::SRVMask, CreateInfo);
+		SRV = RHICmdList.CreateShaderResourceView(Buffer, BytesPerElement, UE_PIXELFORMAT_TO_UINT8(Format));
+	}
+
+	UE_DEPRECATED(5.3, "Initialize now requires a command list.")
+	void Initialize(const TCHAR* InDebugName, uint32 BytesPerElement, uint32 NumElements, EPixelFormat Format, EBufferUsageFlags AdditionalUsage = BUF_None, FResourceArrayInterface* InResourceArray = nullptr)
+	{
+		Initialize(FRHICommandListImmediate::Get(), InDebugName, BytesPerElement, NumElements, Format, AdditionalUsage, InResourceArray);
 	}
 
 	void Release()
@@ -409,16 +347,22 @@ struct FRWBufferStructured
 		Release();
 	}
 
-	void Initialize(const TCHAR* InDebugName, uint32 BytesPerElement, uint32 NumElements, EBufferUsageFlags AdditionalUsage = BUF_None, bool bUseUavCounter = false, bool bAppendBuffer = false, ERHIAccess InitialState = ERHIAccess::UAVMask)
+	void Initialize(FRHICommandListBase& RHICmdList, const TCHAR* InDebugName, uint32 BytesPerElement, uint32 NumElements, EBufferUsageFlags AdditionalUsage = BUF_None, bool bUseUavCounter = false, bool bAppendBuffer = false, ERHIAccess InitialState = ERHIAccess::UAVMask)
 	{
 		// Provide a debug name if using Fast VRAM so the allocators diagnostics will work
 		ensure(!(EnumHasAnyFlags(AdditionalUsage, BUF_FastVRAM) && !InDebugName));
 
 		NumBytes = BytesPerElement * NumElements;
 		FRHIResourceCreateInfo CreateInfo(InDebugName);
-		Buffer = RHICreateStructuredBuffer(BytesPerElement, NumBytes, BUF_UnorderedAccess | BUF_ShaderResource | AdditionalUsage, InitialState, CreateInfo);
-		UAV = RHICreateUnorderedAccessView(Buffer, bUseUavCounter, bAppendBuffer);
-		SRV = RHICreateShaderResourceView(Buffer);
+		Buffer = RHICmdList.CreateStructuredBuffer(BytesPerElement, NumBytes, BUF_UnorderedAccess | BUF_ShaderResource | AdditionalUsage, InitialState, CreateInfo);
+		UAV = RHICmdList.CreateUnorderedAccessView(Buffer, bUseUavCounter, bAppendBuffer);
+		SRV = RHICmdList.CreateShaderResourceView(Buffer);
+	}
+
+	UE_DEPRECATED(5.3, "Initialize now requires a command list.")
+	void Initialize(const TCHAR* InDebugName, uint32 BytesPerElement, uint32 NumElements, EBufferUsageFlags AdditionalUsage = BUF_None, bool bUseUavCounter = false, bool bAppendBuffer = false, ERHIAccess InitialState = ERHIAccess::UAVMask)
+	{
+		Initialize(FRHICommandListImmediate::Get(), InDebugName, BytesPerElement, NumElements, AdditionalUsage, bUseUavCounter, bAppendBuffer, InitialState);
 	}
 
 	void Release()
@@ -438,13 +382,19 @@ struct FByteAddressBuffer
 
 	FByteAddressBuffer(): NumBytes(0) {}
 
-	void Initialize(const TCHAR* InDebugName, uint32 InNumBytes, EBufferUsageFlags AdditionalUsage = BUF_None)
+	void Initialize(FRHICommandListBase& RHICmdList, const TCHAR* InDebugName, uint32 InNumBytes, EBufferUsageFlags AdditionalUsage = BUF_None)
 	{
 		NumBytes = InNumBytes;
 		check( NumBytes % 4 == 0 );
 		FRHIResourceCreateInfo CreateInfo(InDebugName);
-		Buffer = RHICreateStructuredBuffer(4, NumBytes, BUF_ShaderResource | BUF_ByteAddressBuffer | AdditionalUsage, ERHIAccess::SRVMask, CreateInfo);
-		SRV = RHICreateShaderResourceView(Buffer);
+		Buffer = RHICmdList.CreateStructuredBuffer(4, NumBytes, BUF_ShaderResource | BUF_ByteAddressBuffer | AdditionalUsage, ERHIAccess::SRVMask, CreateInfo);
+		SRV = RHICmdList.CreateShaderResourceView(Buffer);
+	}
+
+	UE_DEPRECATED(5.3, "Initialize now requires a command list.")
+	void Initialize(const TCHAR* InDebugName, uint32 InNumBytes, EBufferUsageFlags AdditionalUsage = BUF_None)
+	{
+		Initialize(FRHICommandListImmediate::Get(), InDebugName, InNumBytes, AdditionalUsage);
 	}
 
 	void Release()
@@ -460,10 +410,16 @@ struct FRWByteAddressBuffer : public FByteAddressBuffer
 {
 	FUnorderedAccessViewRHIRef UAV;
 
+	void Initialize(FRHICommandListBase& RHICmdList, const TCHAR* DebugName, uint32 InNumBytes, EBufferUsageFlags AdditionalUsage = BUF_None)
+	{
+		FByteAddressBuffer::Initialize(RHICmdList, DebugName, InNumBytes, BUF_UnorderedAccess | AdditionalUsage);
+		UAV = RHICmdList.CreateUnorderedAccessView(Buffer, false, false);
+	}
+
+	UE_DEPRECATED(5.3, "Initialize now requires a command list.")
 	void Initialize(const TCHAR* DebugName, uint32 InNumBytes, EBufferUsageFlags AdditionalUsage = BUF_None)
 	{
-		FByteAddressBuffer::Initialize(DebugName, InNumBytes, BUF_UnorderedAccess | AdditionalUsage);
-		UAV = RHICreateUnorderedAccessView(Buffer, false, false);
+		Initialize(FRHICommandListImmediate::Get(), DebugName, InNumBytes, AdditionalUsage);
 	}
 
 	void Release()
@@ -489,35 +445,53 @@ struct FDynamicReadBuffer : public FReadBuffer
 		Release();
 	}
 
-	virtual void Initialize(const TCHAR* DebugName, uint32 BytesPerElement, uint32 NumElements, EPixelFormat Format, EBufferUsageFlags AdditionalUsage = BUF_None)
+	void Initialize(FRHICommandListBase& RHICmdList, const TCHAR* DebugName, uint32 BytesPerElement, uint32 NumElements, EPixelFormat Format, EBufferUsageFlags AdditionalUsage = BUF_None)
 	{
 		ensure(
 			EnumHasAnyFlags(AdditionalUsage, BUF_Dynamic | BUF_Volatile | BUF_Static) &&					// buffer should be Dynamic or Volatile or Static
 			EnumHasAnyFlags(AdditionalUsage, BUF_Dynamic) != EnumHasAnyFlags(AdditionalUsage, BUF_Volatile) // buffer should not be both
 			);
 
-		FReadBuffer::Initialize(DebugName, BytesPerElement, NumElements, Format, AdditionalUsage);
+		FReadBuffer::Initialize(RHICmdList, DebugName, BytesPerElement, NumElements, Format, AdditionalUsage);
+	}
+
+	UE_DEPRECATED(5.3, "Initialize now requires a command list.")
+	void Initialize(const TCHAR* DebugName, uint32 BytesPerElement, uint32 NumElements, EPixelFormat Format, EBufferUsageFlags AdditionalUsage = BUF_None)
+	{
+		Initialize(FRHICommandListImmediate::Get(), DebugName, BytesPerElement, NumElements, Format, AdditionalUsage);
 	}
 
 	/**
 	* Locks the vertex buffer so it may be written to.
 	*/
-	void Lock()
+	void Lock(FRHICommandListBase& RHICmdList)
 	{
 		check(MappedBuffer == nullptr);
 		check(IsValidRef(Buffer));
-		MappedBuffer = (uint8*)RHILockBuffer(Buffer, 0, NumBytes, RLM_WriteOnly);
+		MappedBuffer = (uint8*)RHICmdList.LockBuffer(Buffer, 0, NumBytes, RLM_WriteOnly);
+	}
+
+	UE_DEPRECATED(5.3, "Lock now requires a command list.")
+	void Lock()
+	{
+		Lock(FRHICommandListImmediate::Get());
 	}
 
 	/**
 	* Unocks the buffer so the GPU may read from it.
 	*/
-	void Unlock()
+	void Unlock(FRHICommandListBase& RHICmdList)
 	{
 		check(MappedBuffer);
 		check(IsValidRef(Buffer));
-		RHIUnlockBuffer(Buffer);
+		RHICmdList.UnlockBuffer(Buffer);
 		MappedBuffer = nullptr;
+	}
+
+	UE_DEPRECATED(5.3, "Unlock now requires a command list.")
+	void Unlock()
+	{
+		Unlock(FRHICommandListImmediate::Get());
 	}
 };
 
@@ -550,136 +524,6 @@ inline void TransitionRenderPassTargets(FRHICommandList& RHICmdList, const FRHIR
 
 	RHICmdList.Transition(MakeArrayView(Transitions, TransitionIndex));
 }
-
-/**
- * Creates 1 or 2 textures with the same dimensions/format.
- * If the RHI supports textures that can be used as both shader resources and render targets,
- * and bForceSeparateTargetAndShaderResource=false, then a single texture is created.
- * Otherwise two textures are created, one of them usable as a shader resource and resolve target, and one of them usable as a render target.
- * Two texture references are always returned, but they may reference the same texture.
- * If two different textures are returned, the render-target texture must be manually copied to the shader-resource texture.
- */
-UE_DEPRECATED(5.1, "RHICreateTargetableShaderResource2D is deprecated. RHICreateTexture should be used instead.")
-RHI_API void RHICreateTargetableShaderResource2D(
-	uint32 SizeX,
-	uint32 SizeY,
-	uint8 Format,
-	uint32 NumMips,
-	ETextureCreateFlags Flags,
-	ETextureCreateFlags TargetableTextureFlags,
-	bool bForceSeparateTargetAndShaderResource,
-	bool bForceSharedTargetAndShaderResource,
-	const FRHIResourceCreateInfo& CreateInfo,
-	FTextureRHIRef& OutTargetableTexture,
-	FTextureRHIRef& OutShaderResourceTexture,
-	uint32 NumSamples = 1);
-
-UE_DEPRECATED(5.1, "RHICreateTargetableShaderResource2D is deprecated. RHICreateTexture should be used instead.")
-RHI_API void RHICreateTargetableShaderResource2D(
-	uint32 SizeX,
-	uint32 SizeY,
-	uint8 Format,
-	uint32 NumMips,
-	ETextureCreateFlags Flags,
-	ETextureCreateFlags TargetableTextureFlags,
-	bool bForceSeparateTargetAndShaderResource,
-	const FRHIResourceCreateInfo& CreateInfo,
-	FTextureRHIRef& OutTargetableTexture,
-	FTextureRHIRef& OutShaderResourceTexture,
-	uint32 NumSamples = 1);
-
-UE_DEPRECATED(5.1, "RHICreateTargetableShaderResource2DArray is deprecated. RHICreateTexture should be used instead.")
-RHI_API void RHICreateTargetableShaderResource2DArray(
-	uint32 SizeX,
-	uint32 SizeY,
-	uint32 SizeZ,
-	uint8 Format,
-	uint32 NumMips,
-	ETextureCreateFlags Flags,
-	ETextureCreateFlags TargetableTextureFlags,
-	bool bForceSeparateTargetAndShaderResource,
-	bool bForceSharedTargetAndShaderResource,
-	const FRHIResourceCreateInfo& CreateInfo,
-	FTextureRHIRef& OutTargetableTexture,
-	FTextureRHIRef& OutShaderResourceTexture,
-	uint32 NumSamples = 1);
-
-UE_DEPRECATED(5.1, "RHICreateTargetableShaderResource2DArray is deprecated. RHICreateTexture should be used instead.")
-RHI_API void RHICreateTargetableShaderResource2DArray(
-	uint32 SizeX,
-	uint32 SizeY,
-	uint32 SizeZ,
-	uint8 Format,
-	uint32 NumMips,
-	ETextureCreateFlags Flags,
-	ETextureCreateFlags TargetableTextureFlags,
-	const FRHIResourceCreateInfo& CreateInfo,
-	FTextureRHIRef& OutTargetableTexture,
-	FTextureRHIRef& OutShaderResourceTexture,
-	uint32 NumSamples = 1);
-
-/**
- * Creates 1 or 2 textures with the same dimensions/format.
- * If the RHI supports textures that can be used as both shader resources and render targets,
- * and bForceSeparateTargetAndShaderResource=false, then a single texture is created.
- * Otherwise two textures are created, one of them usable as a shader resource and resolve target, and one of them usable as a render target.
- * Two texture references are always returned, but they may reference the same texture.
- * If two different textures are returned, the render-target texture must be manually copied to the shader-resource texture.
- */
-UE_DEPRECATED(5.1, "RHICreateTargetableShaderResourceCube is deprecated. RHICreateTexture should be used instead.")
-RHI_API void RHICreateTargetableShaderResourceCube(
-	uint32 LinearSize,
-	uint8 Format,
-	uint32 NumMips,
-	ETextureCreateFlags Flags,
-	ETextureCreateFlags TargetableTextureFlags,
-	bool bForceSeparateTargetAndShaderResource,
-	const FRHIResourceCreateInfo& CreateInfo,
-	FTextureRHIRef& OutTargetableTexture,
-	FTextureRHIRef& OutShaderResourceTexture);
-
-/**
- * Creates 1 or 2 textures with the same dimensions/format.
- * If the RHI supports textures that can be used as both shader resources and render targets,
- * and bForceSeparateTargetAndShaderResource=false, then a single texture is created.
- * Otherwise two textures are created, one of them usable as a shader resource and resolve target, and one of them usable as a render target.
- * Two texture references are always returned, but they may reference the same texture.
- * If two different textures are returned, the render-target texture must be manually copied to the shader-resource texture.
- */
-UE_DEPRECATED(5.1, "RHICreateTargetableShaderResourceCubeArray is deprecated. RHICreateTexture should be used instead.")
-RHI_API void RHICreateTargetableShaderResourceCubeArray(
-	uint32 LinearSize,
-	uint32 ArraySize,
-	uint8 Format,
-	uint32 NumMips,
-	ETextureCreateFlags Flags,
-	ETextureCreateFlags TargetableTextureFlags,
-	bool bForceSeparateTargetAndShaderResource,
-	const FRHIResourceCreateInfo& CreateInfo,
-	FTextureRHIRef& OutTargetableTexture,
-	FTextureRHIRef& OutShaderResourceTexture);
-
-/**
- * Creates 1 or 2 textures with the same dimensions/format.
- * If the RHI supports textures that can be used as both shader resources and render targets,
- * and bForceSeparateTargetAndShaderResource=false, then a single texture is created.
- * Otherwise two textures are created, one of them usable as a shader resource and resolve target, and one of them usable as a render target.
- * Two texture references are always returned, but they may reference the same texture.
- * If two different textures are returned, the render-target texture must be manually copied to the shader-resource texture.
- */
-UE_DEPRECATED(5.1, "RHICreateTargetableShaderResource3D is deprecated. RHICreateTexture should be used instead.")
-RHI_API void RHICreateTargetableShaderResource3D(
-	uint32 SizeX,
-	uint32 SizeY,
-	uint32 SizeZ,
-	uint8 Format,
-	uint32 NumMips,
-	ETextureCreateFlags Flags,
-	ETextureCreateFlags TargetableTextureFlags,
-	bool bForceSeparateTargetAndShaderResource,
-	const FRHIResourceCreateInfo& CreateInfo,
-	FTextureRHIRef& OutTargetableTexture,
-	FTextureRHIRef& OutShaderResourceTexture);
 
 /** Performs a clear render pass on an RHI texture. The texture is expected to be in the RTV state. */
 inline void ClearRenderTarget(FRHICommandList& RHICmdList, FRHITexture* Texture, uint32 MipIndex = 0, uint32 ArraySlice = 0)
@@ -749,10 +593,10 @@ inline uint32 ComputeAnisotropyRT(int32 InitializerMaxAnisotropy)
 #define ENABLE_TRANSITION_DUMP 1
 #endif
 
-class RHI_API FDumpTransitionsHelper
+class FDumpTransitionsHelper
 {
 public:
-	static void DumpResourceTransition(const FName& ResourceName, const ERHIAccess TransitionType);
+	RHI_API static void DumpResourceTransition(const FName& ResourceName, const ERHIAccess TransitionType);
 	
 private:
 	static void DumpTransitionForResourceHandler();
@@ -796,114 +640,10 @@ extern RHI_API float RHIGetFrameTime();
 
 extern RHI_API void RHICalculateFrameTime();
 
-struct FRHILockTracker
-{
-	struct FLockParams
-	{
-		void* RHIBuffer;
-		void* Buffer;
-		uint32 BufferSize;
-		uint32 Offset;
-		EResourceLockMode LockMode;
-		bool bDirectLock; //did we call the normal flushing/updating lock?
-		bool bCreateLock; //did we lock to immediately initialize a newly created buffer?
-		
-		FORCEINLINE_DEBUGGABLE FLockParams(void* InRHIBuffer, void* InBuffer, uint32 InOffset, uint32 InBufferSize, EResourceLockMode InLockMode, bool bInbDirectLock, bool bInCreateLock)
-		: RHIBuffer(InRHIBuffer)
-		, Buffer(InBuffer)
-		, BufferSize(InBufferSize)
-		, Offset(InOffset)
-		, LockMode(InLockMode)
-		, bDirectLock(bInbDirectLock)
-		, bCreateLock(bInCreateLock)
-		{
-		}
-	};
-	
-	struct FUnlockFenceParams
-	{
-		FUnlockFenceParams(void* InRHIBuffer, FGraphEventRef InUnlockEvent)
-		: RHIBuffer(InRHIBuffer)
-		, UnlockEvent(InUnlockEvent)
-		{
-			
-		}
-		void* RHIBuffer;
-		FGraphEventRef UnlockEvent;
-	};
-	
-	TArray<FLockParams, TInlineAllocator<16> > OutstandingLocks;
-	uint32 TotalMemoryOutstanding;
-	TArray<FUnlockFenceParams, TInlineAllocator<16> > OutstandingUnlocks;
-	
-	FRHILockTracker()
-	{
-		TotalMemoryOutstanding = 0;
-	}
-	
-	FORCEINLINE_DEBUGGABLE void Lock(void* RHIBuffer, void* Buffer, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode, bool bInDirectBufferWrite = false, bool bInCreateLock = false)
-	{
-#if DO_CHECK
-		for (auto& Parms : OutstandingLocks)
-		{
-			check((Parms.RHIBuffer != RHIBuffer) || (Parms.bDirectLock && bInDirectBufferWrite) || Parms.Offset != Offset);
-		}
+/** Returns the VendorID of the preferred vendor or -1 if none were specified. */
+extern RHI_API EGpuVendorId RHIGetPreferredAdapterVendor();
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_3
+#include "RHILockTracker.h"
+#include "PixelFormat.h"
 #endif
-		OutstandingLocks.Add(FLockParams(RHIBuffer, Buffer, Offset, SizeRHI, LockMode, bInDirectBufferWrite, bInCreateLock));
-		TotalMemoryOutstanding += SizeRHI;
-	}
-	FORCEINLINE_DEBUGGABLE FLockParams Unlock(void* RHIBuffer, uint32 Offset=0)
-	{
-		for (int32 Index = 0; Index < OutstandingLocks.Num(); Index++)
-		{
-			if (OutstandingLocks[Index].RHIBuffer == RHIBuffer && OutstandingLocks[Index].Offset == Offset)
-			{
-				FLockParams Result = OutstandingLocks[Index];
-				OutstandingLocks.RemoveAtSwap(Index, 1, false);
-				return Result;
-			}
-		}
-		RaiseMismatchError();
-		return FLockParams(nullptr, nullptr, 0, 0, RLM_WriteOnly, false, false);
-	}
-	
-	template<class TIndexOrVertexBufferPointer>
-	FORCEINLINE_DEBUGGABLE void AddUnlockFence(TIndexOrVertexBufferPointer* Buffer, FRHICommandListImmediate& RHICmdList, const FLockParams& LockParms)
-	{
-		if (LockParms.LockMode != RLM_WriteOnly || !(Buffer->GetUsage() & BUF_Volatile))
-		{
-			OutstandingUnlocks.Emplace(Buffer, RHICmdList.RHIThreadFence(true));
-		}
-	}
-	
-	FORCEINLINE_DEBUGGABLE void WaitForUnlock(void* RHIBuffer)
-	{
-		for (int32 Index = 0; Index < OutstandingUnlocks.Num(); Index++)
-		{
-			if (OutstandingUnlocks[Index].RHIBuffer == RHIBuffer)
-			{
-				FRHICommandListExecutor::WaitOnRHIThreadFence(OutstandingUnlocks[Index].UnlockEvent);
-				OutstandingUnlocks.RemoveAtSwap(Index, 1, false);
-				return;
-			}
-		}
-	}
-	
-	FORCEINLINE_DEBUGGABLE void FlushCompleteUnlocks()
-	{
-		uint32 Count = OutstandingUnlocks.Num();
-		for (uint32 Index = 0; Index < Count; Index++)
-		{
-			if (OutstandingUnlocks[Index].UnlockEvent->IsComplete())
-			{
-				OutstandingUnlocks.RemoveAt(Index, 1);
-				--Count;
-				--Index;
-			}
-		}
-	}
-
-	RHI_API void RaiseMismatchError();
-};
-
-extern RHI_API FRHILockTracker GRHILockTracker;

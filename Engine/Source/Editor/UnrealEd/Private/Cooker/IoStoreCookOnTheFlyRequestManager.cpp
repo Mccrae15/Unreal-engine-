@@ -24,7 +24,9 @@
 #include "Sockets.h"
 #include "SocketSubsystem.h"
 #include "Templates/Function.h"
+#include "UObject/ReferenceChainSearch.h"
 #include "UObject/SavePackage.h"
+#include "ZenStoreWriter.h"
 
 class FPackageRegistry
 {
@@ -344,7 +346,7 @@ private:
 				if (Package)
 				{
 					UE_LOG(LogCookOnTheFly, Warning, TEXT("Can't recook package '%s'"), *PackageName.ToString());
-					UEngine::FindAndPrintStaleReferencesToObject(Package, EPrintStaleReferencesOptions::Display);
+					FReferenceChainSearch::FindAndPrintStaleReferencesToObject(Package, EPrintStaleReferencesOptions::Display);
 				}
 				else
 				{
@@ -392,7 +394,12 @@ private:
 		{
 			IPackageStoreWriter* PackageWriter = CookOnTheFlyServer.GetPackageWriter(TargetPlatform).AsPackageStoreWriter();
 			check(PackageWriter); // This class should not be used except when COTFS is using an IPackageStoreWriter
-
+			FZenStoreWriter* ZenStoreWriter = PackageWriter->AsZenStoreWriter();
+			if (ZenStoreWriter != nullptr)
+			{
+				FZenStoreWriter::ZenHostInfo HostInfo = ZenStoreWriter->GetHostInfo();
+				Connection.SetZenInfo(HostInfo.ProjectId, HostInfo.OplogId, HostInfo.HostName, HostInfo.HostPort);
+			}
 			FName PlatformName = Connection.GetPlatformName();
 			FScopeLock _(&ContextsCriticalSection);
 			if (!PlatformContexts.Contains(PlatformName))

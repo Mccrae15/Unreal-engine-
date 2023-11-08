@@ -2597,6 +2597,18 @@ SWIGEXPORT wchar_t * SWIGSTDCALL CSharp_FDatasmithFacadeMesh_GetName(void * jarg
 }
 
 
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMesh_InternalCalculateHash(void * jarg1, void * jarg2, unsigned long jarg3) {
+  FDatasmithFacadeMesh *arg1 = (FDatasmithFacadeMesh *) 0 ;
+  TCHAR *arg2 ;
+  size_t arg3 ;
+  
+  arg1 = (FDatasmithFacadeMesh *)jarg1; 
+  arg2 = (TCHAR *)jarg2; 
+  arg3 = (size_t)jarg3; 
+  ((FDatasmithFacadeMesh const *)arg1)->CalculateHash(arg2,arg3);
+}
+
+
 SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMesh_SetFacesCount(void * jarg1, int jarg2) {
   FDatasmithFacadeMesh *arg1 = (FDatasmithFacadeMesh *) 0 ;
   int32 arg2 ;
@@ -6025,6 +6037,50 @@ SWIGEXPORT wchar_t * SWIGSTDCALL CSharp_FDatasmithFacadeScene_GetAssetsOutputPat
   result = (TCHAR *)((FDatasmithFacadeScene const *)arg1)->GetAssetsOutputPath();
   jresult = (wchar_t *)result; 
   return jresult;
+}
+
+
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeScene_GetGeolocation(void * jarg1, double * jarg2, double * jarg3, double * jarg4) {
+  FDatasmithFacadeScene *arg1 = (FDatasmithFacadeScene *) 0 ;
+  double *arg2 = 0 ;
+  double *arg3 = 0 ;
+  double *arg4 = 0 ;
+  
+  arg1 = (FDatasmithFacadeScene *)jarg1; 
+  arg2 = (double *)jarg2; 
+  arg3 = (double *)jarg3; 
+  arg4 = (double *)jarg4; 
+  ((FDatasmithFacadeScene const *)arg1)->GetGeolocation(*arg2,*arg3,*arg4);
+}
+
+
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeScene_SetGeolocationLatitude(void * jarg1, double jarg2) {
+  FDatasmithFacadeScene *arg1 = (FDatasmithFacadeScene *) 0 ;
+  double arg2 ;
+  
+  arg1 = (FDatasmithFacadeScene *)jarg1; 
+  arg2 = (double)jarg2; 
+  (arg1)->SetGeolocationLatitude(arg2);
+}
+
+
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeScene_SetGeolocationLongitude(void * jarg1, double jarg2) {
+  FDatasmithFacadeScene *arg1 = (FDatasmithFacadeScene *) 0 ;
+  double arg2 ;
+  
+  arg1 = (FDatasmithFacadeScene *)jarg1; 
+  arg2 = (double)jarg2; 
+  (arg1)->SetGeolocationLongitude(arg2);
+}
+
+
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeScene_SetGeolocationElevation(void * jarg1, double jarg2) {
+  FDatasmithFacadeScene *arg1 = (FDatasmithFacadeScene *) 0 ;
+  double arg2 ;
+  
+  arg1 = (FDatasmithFacadeScene *)jarg1; 
+  arg2 = (double)jarg2; 
+  (arg1)->SetGeolocationElevation(arg2);
 }
 
 

@@ -11,9 +11,63 @@ namespace UE::RivermaxCore
 {
 	enum class ERivermaxAlignmentMode
 	{
+		/** Aligns scheduling with ST2059 frame boundary formula */
 		AlignmentPoint,
+
+		/** Aligns scheduling with frame creation */
 		FrameCreation,
 	};
+
+	inline const TCHAR* LexToString(ERivermaxAlignmentMode InValue)
+	{
+		switch (InValue)
+		{
+			case ERivermaxAlignmentMode::AlignmentPoint:
+			{
+				return TEXT("Alignment point");
+			}
+			case ERivermaxAlignmentMode::FrameCreation:
+			{
+				return TEXT("Frame creation");
+			}
+			default:
+			{
+				checkNoEntry();
+			}
+		}
+
+		return TEXT("<Unknown ERivermaxAlignmentMode>");
+	}
+
+	enum class EFrameLockingMode : uint8
+	{
+		/** If no frame available, continue */
+		FreeRun,
+
+		/** Blocks when reserving a frame slot. */
+		BlockOnReservation,
+	};
+
+	inline const TCHAR* LexToString(EFrameLockingMode InValue)
+	{
+		switch (InValue)
+		{
+			case EFrameLockingMode::FreeRun:
+			{
+				return TEXT("Freerun");
+			}
+			case EFrameLockingMode::BlockOnReservation:
+			{
+				return TEXT("Blocking");
+			}
+			default:
+			{
+				checkNoEntry();
+			}
+		}
+
+		return TEXT("<Unknown EFrameLockingMode>");
+	}
 
 	struct RIVERMAXCORE_API FRivermaxInputStreamOptions
 	{
@@ -76,6 +130,9 @@ namespace UE::RivermaxCore
 
 		/** Method used to align output stream */
 		ERivermaxAlignmentMode AlignmentMode = ERivermaxAlignmentMode::AlignmentPoint;
+
+		/** Defines how frame requests are handled. Whether they can block or not. */
+		EFrameLockingMode FrameLockingMode = EFrameLockingMode::FreeRun;
 
 		/** Whether the stream will output a frame at every frame interval, repeating last frame if no new one provided */
 		bool bDoContinuousOutput = true;

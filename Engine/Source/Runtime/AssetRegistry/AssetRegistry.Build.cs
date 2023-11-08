@@ -10,8 +10,10 @@ public class AssetRegistry : ModuleRules
 			new string[] {
 				"Core",
 				"CoreUObject",
+				"TraceLog",
 				"ApplicationCore",
 				"Projects",
+				"TelemetryUtils"
 			}
 			);
 

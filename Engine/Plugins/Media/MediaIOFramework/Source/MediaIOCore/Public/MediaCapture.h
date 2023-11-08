@@ -5,12 +5,13 @@
 #include "CoreTypes.h"
 #include "UObject/Object.h"
 
-#include <atomic>
 #include "AudioDeviceHandle.h"
 #include "Containers/SpscQueue.h"
 #include "HAL/CriticalSection.h"
 #include "MediaOutput.h"
 #include "Misc/Timecode.h"
+#include "OpenColorIOColorSpace.h"
+#include "OpenColorIORendering.h"
 #include "OrderedAsyncGate.h"
 #include "PixelFormat.h"
 #include "RenderGraphResources.h"
@@ -19,6 +20,7 @@
 #include "Tasks/Task.h"
 #include "Templates/PimplPtr.h"
 
+#include <atomic>
 
 #include "MediaCapture.generated.h"
 
@@ -37,11 +39,21 @@ namespace UE::MediaCaptureData
 	class FCaptureFrame;
 	class FMediaCaptureHelper;
 	struct FCaptureFrameArgs;
+	class FTextureCaptureFrame;
+	class FBufferCaptureFrame;
+	class FSyncPointWatcher;
+	struct FPendingCaptureData;
 }
 
 namespace UE::MediaCapture::Private
 {
 	class FCaptureSource;
+}
+
+namespace UE::MediaCapture
+{
+	struct FRenderPass;
+	class FRenderPipeline;
 }
 
 /**
@@ -120,6 +132,7 @@ enum class EMediaCaptureOverrunAction : uint8
 struct MEDIAIOCORE_API FRHICaptureResourceDescription
 {
 	FIntPoint ResourceSize = FIntPoint::ZeroValue;
+	EPixelFormat PixelFormat = EPixelFormat::PF_Unknown;
 };
 
 UENUM(BlueprintType)
@@ -132,6 +145,18 @@ enum class EMediaCapturePhase : uint8
 	EndFrame
 };
 
+UENUM(BlueprintType)
+enum class EMediaCaptureResizeMethod : uint8
+{
+	/** Leaves the source texture as is, which might be incompatible with the output size, causing an error. */
+	None,
+	/** Resize the source that is being captured. This will resize the viewport when doing a viewport capture and will resize the render target when capturing a render target. Not valid for immediate capture of RHI resource */
+	ResizeSource,
+	/** Leaves the source as is, but will add a render pass where we resize the captured texture, leaving the source intact. This is useful when the output size is smaller than the captured source. */
+	ResizeInRenderPass
+};
+
+
 /**
  * Base class of additional data that can be stored for each requested capture.
  */
@@ -143,6 +168,7 @@ struct MEDIAIOCORE_API FMediaCaptureOptions
 	FMediaCaptureOptions();
 
 public:
+	void PostSerialize(const FArchive& Ar);
 
 	/** If source texture's size change, auto restart capture to follow source resolution if implementation supports it. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "MediaCapture")
@@ -156,22 +182,23 @@ public:
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category="MediaCapture")
 	EMediaCaptureCroppingType Crop;
 
+	/** Color conversion settings used by the OCIO conversion pass. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "MediaCapture")
+	FOpenColorIOColorConversionSettings ColorConversionSettings;
+
 	/**
 	 * Crop the captured SceneViewport or TextureRenderTarget2D to the desired size.
 	 * @note Only valid when Crop is set to Custom.
 	 */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category="MediaCapture")
 	FIntPoint CustomCapturePoint;
-
+	
 	/**
-	 * When the capture start, resize the source buffer to the desired size.
+	 * When the capture start, control if and how the source buffer should be resized to the desired size.
 	 * @note Only valid when a size is specified by the MediaOutput.
-	 * @note For viewport, the window size will not change. Only the viewport will be resized.
-	 * @note For RenderTarget, the asset will be modified and resized to the desired size.
-	 * @note Not valid for immediate capture of RHI resource
 	 */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category="MediaCapture")
-	bool bResizeSourceBuffer;
+	EMediaCaptureResizeMethod ResizeMethod = EMediaCaptureResizeMethod::None;
 
 	/**
 	 * When the application enters responsive mode, skip the frame capture.
@@ -210,12 +237,19 @@ public:
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "MediaCapture")
 	EMediaCapturePhase CapturePhase = EMediaCapturePhase::EndFrame;
+
+private:
+#if WITH_EDITORONLY_DATA
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage="bResizeSourceBuffer, please use ResizeMethod instead."))
+    bool bResizeSourceBuffer_DEPRECATED = false;
+#endif
 };
 
 
 /** Delegate signatures */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FMediaCaptureStateChangedSignature);
 DECLARE_MULTICAST_DELEGATE(FMediaCaptureStateChangedSignatureNative);
+DECLARE_DELEGATE(FMediaCaptureOutputSynchronization)
 
 /**
  * Abstract base class for media capture.
@@ -323,6 +357,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Media|Output")
 	EPixelFormat GetDesiredPixelFormat() const { return DesiredPixelFormat; }
 
+	/** Get the capture options specified by the user.  */
+	const FMediaCaptureOptions& GetDesiredCaptureOptions() const { return DesiredCaptureOptions; }
+
 	/** Check whether this capture has any processing left to do. */
 	virtual bool HasFinishedProcessing() const;
 
@@ -338,6 +375,20 @@ public:
 	 * The callback is called on the game thread. Note that the change may occur on the rendering thread.
 	 */
 	FMediaCaptureStateChangedSignatureNative OnStateChangedNative;
+
+	/**
+	 * Returns true if media capture implementation supports synchronization logic. If so,
+	 * OnOutputSynchronization delegate below must be called before each captured frame is exported.
+	 */
+	virtual bool IsOutputSynchronizationSupported() const { return false; }
+
+	/**
+	 * Called when output data is ready to be sent out. This blocking call allows to
+	 * postpone data export based on the synchronization logic.
+	 *
+	 * This delegate must be called if IsOutputSynchronizationSupported() returns true.
+	 */
+	FMediaCaptureOutputSynchronization OnOutputSynchronization;
 
 	void SetFixedViewportSize(TSharedPtr<FSceneViewport> InSceneViewport, FIntPoint InSize);
 	void ResetFixedViewportSize(TSharedPtr<FSceneViewport> InViewport, bool bInFlushRenderingCommands);
@@ -355,7 +406,19 @@ public:
 	virtual bool UpdateRenderTargetImpl(UTextureRenderTarget2D* InRenderTarget) { return true; }
 	virtual bool UpdateAudioDeviceImpl(const FAudioDeviceHandle& InAudioDeviceHandle) { return true; }
 
+	/**
+	 * Get the RGB to YUV Conversion Matrix, should be overriden for media outputs that support different color gamuts (ie. BT 2020).
+	 * Will default to returning the RGBToYUV Rec709 matrix.
+	 */
+	virtual const FMatrix& GetRGBToYUVConversionMatrix() const;
+
 	static const TSet<EPixelFormat>& GetSupportedRgbaSwizzleFormats();
+
+	/** Get the name of the media output that created this capture. */
+	FString GetMediaOutputName() const
+	{
+		return MediaOutputName;
+	}
 
 public:
 	//~ UObject interface
@@ -395,6 +458,7 @@ protected:
 
 	friend class UE::MediaCaptureData::FCaptureFrame;
 	friend class UE::MediaCaptureData::FMediaCaptureHelper;
+	friend class UE::MediaCaptureData::FSyncPointWatcher;
 	struct FCaptureBaseData
 	{
 		FTimecode SourceFrameTimecode;
@@ -402,6 +466,8 @@ protected:
 		uint32 SourceFrameNumberRenderThread = 0;
 		uint32 SourceFrameNumber = 0;
 	};
+
+	
 
 	/**
 	 * Capture the data that will pass along to the callback.
@@ -463,12 +529,6 @@ protected:
 	 */
 	virtual void OnRHIResourceCaptured_AnyThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, FTextureRHIRef InTexture) { }
 	virtual void OnRHIResourceCaptured_AnyThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, FBufferRHIRef InBuffer) { }
-	
-
-	UE_DEPRECATED(5.1, "OnCustomCapture_RenderingThread has been deprecated while moving to a RDG based pipeline. Please use the RDG version instead.")
-	virtual void OnCustomCapture_RenderingThread(FRHICommandListImmediate& RHICmdList, const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, FTextureRHIRef InSourceTexture, FTextureRHIRef TargetableTexture, FResolveParams& ResolveParams, FVector2D CropU, FVector2D CropV)
-	{
-	}
 
 	/**
 	 * Callback when the source texture is ready to be copied on the GPU. You need to copy yourself. You may use the callback to add passes to the graph builder.
@@ -516,15 +576,13 @@ protected:
 		return DesiredOutputBufferDescription;
 	}
 
-
-
 protected:
 	UTextureRenderTarget2D* GetTextureRenderTarget() const;
 	TSharedPtr<FSceneViewport> GetCapturingSceneViewport() const;
-	EMediaCaptureConversionOperation GetConversionOperation() const { return ConversionOperation; }
 	FString GetCaptureSourceType() const;
 	void SetState(EMediaCaptureState InNewState);
 	void RestartCapture();
+	EMediaCaptureConversionOperation GetConversionOperation() const { return ConversionOperation; }
 
 private:
 	void InitializeOutputResources(int32 InNumberOfBuffers);
@@ -534,36 +592,39 @@ private:
 	void OnEndFrame_GameThread();
 	void CacheMediaOutput(EMediaCaptureSourceType InSourceType);
 	void CacheOutputOptions();
-	FIntPoint GetOutputSize(const FIntPoint& InSize, const EMediaCaptureConversionOperation & InConversionOperation) const;
-	EPixelFormat GetOutputPixelFormat(const EPixelFormat& InPixelFormat, const EMediaCaptureConversionOperation & InConversionOperation) const;
-	EMediaCaptureResourceType GetOutputResourceType(const EMediaCaptureConversionOperation & InConversionOperation) const;
-	FRDGBufferDesc GetOutputBufferDescription(EMediaCaptureConversionOperation InConversionOperation) const;
+	FIntPoint GetOutputSize() const;
+	EPixelFormat GetOutputPixelFormat() const;
+	EMediaCaptureResourceType GetOutputResourceType() const;
+	FRDGBufferDesc GetOutputBufferDescription() const;
+	FRDGTextureDesc GetOutputTextureDescription() const;
 	void BroadcastStateChanged();
 	void WaitForPendingTasks();
 	
 	void WaitForSingleExperimentalSchedulingTaskToComplete();
 	void WaitForAllExperimentalSchedulingTasksToComplete();
-	void CleanupCompletedExperimentalSchedulingTasks();
 	
 	void CaptureImmediate_RenderThread(const UE::MediaCaptureData::FCaptureFrameArgs& Args);
-
-
 	// Capture pipeline stuff
 	void ProcessCapture_GameThread();
 	void PrepareAndDispatchCapture_GameThread(const TSharedPtr<UE::MediaCaptureData::FCaptureFrame>& CapturingFrame);
 	
-	bool ProcessCapture_RenderThread(const TSharedPtr<UE::MediaCaptureData::FCaptureFrame>& CapturingFrame, const UE::MediaCaptureData::FCaptureFrameArgs& Args);
+	bool ProcessCapture_RenderThread(const TSharedPtr<UE::MediaCaptureData::FCaptureFrame>& CapturingFrame, UE::MediaCaptureData::FCaptureFrameArgs Args);
 	bool ProcessReadyFrame_RenderThread(FRHICommandListImmediate& RHICmdList, UMediaCapture* InMediaCapture, const TSharedPtr<UE::MediaCaptureData::FCaptureFrame>& ReadyFrame);
 	
 	void InitializeSyncHandlers_RenderThread();
 	void InitializeCaptureFrame(const TSharedPtr<UE::MediaCaptureData::FCaptureFrame>& CaptureFrame);
 
 	struct FMediaCaptureSyncData;
+	/** Return a sync handler if there is a free one available. */
 	TSharedPtr<FMediaCaptureSyncData> GetAvailableSyncHandler() const;
 
+	/** Print the state (Ready/Capturing) of all capture frames. */
 	void PrintFrameState();
 
+	/** Common path used by the different capture methods (Scene viewport, render target) to start doing a media capture. */
 	bool StartSourceCapture(TSharedPtr<UE::MediaCapture::Private::FCaptureSource> InSource);
+
+	/** Common path used by the different capture methods (Scene viewport, render target) to update the capture source. */
 	bool UpdateSource(TSharedPtr<UE::MediaCapture::Private::FCaptureSource> InCaptureSource);
 
 	/** 
@@ -577,6 +638,9 @@ private:
 	 * When not using it, the capture callback will be called on the render thread which can introduce a delay.
 	 */
 	bool UseAnyThreadCapture() const;
+
+	/** Returns bytes per pixel based on pixel format */
+	static int32 GetBytesPerPixel(EPixelFormat InPixelFormat);
 
 protected:
 
@@ -600,13 +664,16 @@ private:
 	TPimplPtr<UE::MediaCaptureData::FFrameManager> FrameManager;
 	int32 NumberOfCaptureFrame = 2;
 	int32 CaptureRequestCount = 0;
-	EMediaCaptureState MediaState = EMediaCaptureState::Stopped;
+	std::atomic<EMediaCaptureState> MediaState = EMediaCaptureState::Stopped;
 
 	FCriticalSection AccessingCapturingSource;
 
 	FIntPoint DesiredSize = FIntPoint(1920, 1080);
 	EPixelFormat DesiredPixelFormat = EPixelFormat::PF_A2B10G10R10;
 	EPixelFormat DesiredOutputPixelFormat = EPixelFormat::PF_A2B10G10R10;
+	/** The TextureDesc used to create the final output texture that will be readback to the output. */
+	FRDGTextureDesc DesiredOutputTextureDescription;
+	/** The BufferDesc used to create the final output buffer that will be readback to the output. */
 	FRDGBufferDesc DesiredOutputBufferDescription;
 	FMediaCaptureOptions DesiredCaptureOptions;
 	EMediaCaptureConversionOperation ConversionOperation = EMediaCaptureConversionOperation::NONE;
@@ -635,6 +702,7 @@ private:
 	static constexpr int32 MaxCaptureDataAgeInFrames = 20;
 
 	/** Structure holding data used for synchronization of buffer output */
+	friend struct UE::MediaCaptureData::FPendingCaptureData;
 	struct FMediaCaptureSyncData
 	{
 		/**
@@ -651,17 +719,27 @@ private:
 	/** Array of sync handlers (fence) to sync when captured buffer is completed */
 	TArray<TSharedPtr<FMediaCaptureSyncData>> SyncHandlers;
 
-	FCriticalSection PendingReadbackTasksCriticalSection;
-
-	/** List of pending readback tasks, when CVarMediaIOEnableExperimentalScheduling and CVarMediaIOScheduleOnAnyThread are set to true. */
-	TArray<UE::Tasks::FTask> PendingReadbackTasks;
+	/** Watcher thread looking after end of capturing frames */
+	TPimplPtr<UE::MediaCaptureData::FSyncPointWatcher> SyncPointWatcher;
 
 	TSharedPtr<UE::MediaCapture::Private::FCaptureSource> CaptureSource;
 
 	/** Holds a view extension that callbacks  */
 	TSharedPtr<class FMediaCaptureSceneViewExtension> ViewExtension;
 
-	/** Helper to ensure that the async processing of frames happens in the expected order */
-	UE::MediaIO::FOrderedAsyncGate OrderedAsyncGateCaptureReady;
+	/** Holds the render passes that a texture will go through during media capture. */
+	TPimplPtr<UE::MediaCapture::FRenderPipeline> CaptureRenderPipeline;
+
+	friend struct UE::MediaCapture::FRenderPass;
+	friend class UE::MediaCaptureData::FTextureCaptureFrame;
+	friend class UE::MediaCaptureData::FBufferCaptureFrame;
 };
- 
+
+
+template<> struct TStructOpsTypeTraits<FMediaCaptureOptions> : public TStructOpsTypeTraitsBase2<FMediaCaptureOptions>
+{
+	enum
+	{
+		WithPostSerialize = true
+	};
+};

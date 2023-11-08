@@ -18,7 +18,7 @@
 #include "SystemTextures.h"
 #include "DBufferTextures.h"
 
-//UE_DISABLE_OPTIMIZATION
+
 
 // The project setting for Strata
 static TAutoConsoleVariable<int32> CVarUseCmaskClear(
@@ -63,22 +63,28 @@ static TAutoConsoleVariable<int32> CVarSubstrateDBufferPassDedicatedTiles(
 	TEXT("Use dedicated tile for DBuffer application when DBuffer pass is enabled."),
 	ECVF_RenderThreadSafe);
 
+static TAutoConsoleVariable<int32> CVarSubstrateBytePerPixelMode(
+	TEXT("r.Substrate.BytesPerPixel.Mode"),
+	1,
+	TEXT("Substrate material allocation mode. \n 0: Allocate material buffer based on view requirement, \n 1: Allocate material buffer based on view requirement, but can only grow over frame to minimize buffer reallocation and hitches, \n 2: Allocate material buffer based on platform settings."),
+	ECVF_RenderThreadSafe);
+
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FStrataGlobalUniformParameters, "Strata");
 
 void FStrataViewData::Reset()
 {
 	// Preserve old max BSDF count which is set prior to the reset operation
 	const uint32 OldMaxBSDFCount = MaxBSDFCount;
-	const uint32 OldMaxBytePerPixel = MaxBytePerPixel;
+	const uint32 OldMaxBytesPerPixel = MaxBytesPerPixel;
+	const bool   OldUsesComplexSpecialRenderPath = bUsesComplexSpecialRenderPath;
 	*this = FStrataViewData();
 	MaxBSDFCount = OldMaxBSDFCount;
-	MaxBytePerPixel = OldMaxBytePerPixel;
-	for (uint32 i = 0; i < EStrataTileType::ECount; ++i)
-	{
-		ClassificationTileListBuffer[i] = nullptr;
-		ClassificationTileListBufferUAV[i] = nullptr;
-		ClassificationTileListBufferSRV[i] = nullptr;
-	}
+	MaxBytesPerPixel = OldMaxBytesPerPixel;
+	bUsesComplexSpecialRenderPath = OldUsesComplexSpecialRenderPath;
+
+	ClassificationTileListBuffer = nullptr;
+	ClassificationTileListBufferUAV = nullptr;
+	ClassificationTileListBufferSRV = nullptr;
 }
 
 const TCHAR* ToString(EStrataTileType Type)
@@ -88,6 +94,7 @@ const TCHAR* ToString(EStrataTileType Type)
 	case EStrataTileType::ESimple:							return TEXT("Simple");
 	case EStrataTileType::ESingle:							return TEXT("Single");
 	case EStrataTileType::EComplex:							return TEXT("Complex");
+	case EStrataTileType::EComplexSpecial:					return TEXT("ComplexSpecial");
 	case EStrataTileType::EOpaqueRoughRefraction:			return TEXT("Opaque/RoughRefraction");
 	case EStrataTileType::EOpaqueRoughRefractionSSSWithout:	return TEXT("Opaque/RoughRefraction/SSSWithout");
 	case EStrataTileType::EDecalSimple:						return TEXT("Decal/Simple");
@@ -101,6 +108,11 @@ const TCHAR* ToString(EStrataTileType Type)
 
 namespace Strata
 {
+
+uint32 GetMaterialBufferAllocationMode()
+{
+	return FMath::Clamp(CVarSubstrateBytePerPixelMode.GetValueOnAnyThread(), 0, 2);
+}
 
 enum EStrataTileSpace
 {
@@ -154,6 +166,15 @@ FIntPoint GetStrataTextureResolution(const FViewInfo& View, const FIntPoint& InR
 	}
 }
 
+bool GetStrataUsesComplexSpecialPath(const FViewInfo& View)
+{
+	if (Strata::IsStrataEnabled())
+	{
+		return View.StrataViewData.bUsesComplexSpecialRenderPath;
+	}
+	return false;
+}
+
 static void BindStrataGlobalUniformParameters(FRDGBuilder& GraphBuilder, FStrataViewData* StrataViewData, FStrataGlobalUniformParameters& OutStrataUniformParameters);
 
 bool SupportsCMask(const FStaticShaderPlatform InPlatform)
@@ -186,22 +207,11 @@ static void InitialiseStrataViewData(FRDGBuilder& GraphBuilder, FViewInfo& View,
 	Out.Reset();
 	Out.SceneData = &SceneData;
 
-	const FIntPoint ViewResolution(View.ViewRect.Width(), View.ViewRect.Height());
+	// Allocate texture using scene render targets size so we do not reallocate every frame when dynamic resolution is used in order to avoid resources allocation hitches.
+	const FIntPoint DynResIndependentViewSize = SceneTexturesConfig.Extent;
 	if (IsStrataEnabled())
 	{
-		const FIntPoint TileResolution(FMath::DivideAndRoundUp(ViewResolution.X, STRATA_TILE_SIZE), FMath::DivideAndRoundUp(ViewResolution.Y, STRATA_TILE_SIZE));
-
-		const TCHAR* StrataTileListBufferNames[EStrataTileType::ECount] =
-		{
-			TEXT("Substrate.StrataTileListBuffer(Simple)"),
-			TEXT("Substrate.StrataTileListBuffer(Single)"),
-			TEXT("Substrate.StrataTileListBuffer(Complex)"),
-			TEXT("Substrate.StrataTileListBuffer(OpaqueRoughRefraction)"),
-			TEXT("Substrate.StrataTileListBuffer(OpaqueRoughRefractionSSSWithout)"),
-			TEXT("Substrate.StrataTileListBuffer(DecalSimple)"),
-			TEXT("Substrate.StrataTileListBuffer(DecalSingle)"),
-			TEXT("Substrate.StrataTileListBuffer(DecalComplex)"),
-		};
+		const FIntPoint TileResolution(FMath::DivideAndRoundUp(DynResIndependentViewSize.X, STRATA_TILE_SIZE), FMath::DivideAndRoundUp(DynResIndependentViewSize.Y, STRATA_TILE_SIZE));
 
 		// Tile classification buffers
 		{
@@ -220,47 +230,40 @@ static void InitialiseStrataViewData(FRDGBuilder& GraphBuilder, FViewInfo& View,
 			const uint32 DecalTileCount = IsDBufferPassEnabled(View.GetShaderPlatform()) ? TileResolution.X * TileResolution.Y : 4;
 			const uint32 RegularTileCount = TileResolution.X * TileResolution.Y;
 
-			const EPixelFormat ClassificationTileFormat = GetClassificationTileFormat(ViewResolution);
-			for (uint32 i = 0; i < EStrataTileType::ECount; ++i)
-			{
-				const EStrataTileType TileType = EStrataTileType(i);
-				const uint32 FormatBytes = ClassificationTileFormat == PF_R16_UINT ? sizeof(uint16) : sizeof(uint32);
+			bool bUsesComplexSpecialRenderPath = SceneData.bUsesComplexSpecialRenderPath; // Use the Scene temporally stable bUsesComplexSpecialRenderPath to reduce buffer reallocation.
 
-				uint32 TileCount = 0;
-				switch (TileType)
-				{
-				case EStrataTileType::ESimple:
-				case EStrataTileType::ESingle:
-				case EStrataTileType::EComplex:
-					TileCount = RegularTileCount; break;
-				case EStrataTileType::EOpaqueRoughRefraction:
-				case EStrataTileType::EOpaqueRoughRefractionSSSWithout:
-					TileCount = RoughTileCount; break;
-				case EStrataTileType::EDecalSimple:
-				case EStrataTileType::EDecalSingle:
-				case EStrataTileType::EDecalComplex:
-					TileCount = DecalTileCount; break;
-				}
-				check(TileCount > 0);
+			Out.ClassificationTileListBufferOffset[EStrataTileType::ESimple]							= 0;
+			Out.ClassificationTileListBufferOffset[EStrataTileType::ESingle]							= Out.ClassificationTileListBufferOffset[EStrataTileType::ESimple]							+ RegularTileCount;
+			Out.ClassificationTileListBufferOffset[EStrataTileType::EComplex]							= Out.ClassificationTileListBufferOffset[EStrataTileType::ESingle]							+ RegularTileCount;
+			Out.ClassificationTileListBufferOffset[EStrataTileType::EComplexSpecial]					= Out.ClassificationTileListBufferOffset[EStrataTileType::EComplex]							+ RegularTileCount;
+			Out.ClassificationTileListBufferOffset[EStrataTileType::EOpaqueRoughRefraction]				= Out.ClassificationTileListBufferOffset[EStrataTileType::EComplexSpecial]					+ (bUsesComplexSpecialRenderPath ? RegularTileCount : 4);
+			Out.ClassificationTileListBufferOffset[EStrataTileType::EOpaqueRoughRefractionSSSWithout]	= Out.ClassificationTileListBufferOffset[EStrataTileType::EOpaqueRoughRefraction]			+ RoughTileCount;
+			Out.ClassificationTileListBufferOffset[EStrataTileType::EDecalSimple]						= Out.ClassificationTileListBufferOffset[EStrataTileType::EOpaqueRoughRefractionSSSWithout]	+ RoughTileCount;
+			Out.ClassificationTileListBufferOffset[EStrataTileType::EDecalSingle]						= Out.ClassificationTileListBufferOffset[EStrataTileType::EDecalSimple]						+ DecalTileCount;
+			Out.ClassificationTileListBufferOffset[EStrataTileType::EDecalComplex]						= Out.ClassificationTileListBufferOffset[EStrataTileType::EDecalSingle]						+ DecalTileCount;
+			uint32 TotalTileCount										 								= Out.ClassificationTileListBufferOffset[EStrataTileType::EDecalComplex]					+ DecalTileCount;
 
-				Out.ClassificationTileListBuffer[i] = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(FormatBytes, TileCount), StrataTileListBufferNames[i]);
-				Out.ClassificationTileListBufferSRV[i] = GraphBuilder.CreateSRV(Out.ClassificationTileListBuffer[i], ClassificationTileFormat);
-				Out.ClassificationTileListBufferUAV[i] = GraphBuilder.CreateUAV(Out.ClassificationTileListBuffer[i], ClassificationTileFormat);
-			}
+			check(TotalTileCount > 0);
+
+			const EPixelFormat ClassificationTileFormat = GetClassificationTileFormat(DynResIndependentViewSize);
+			const uint32 FormatBytes = ClassificationTileFormat == PF_R16_UINT ? sizeof(uint16) : sizeof(uint32);
+
+			Out.ClassificationTileListBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(FormatBytes, TotalTileCount), TEXT("Substrate.StrataTileListBuffer"));
+			Out.ClassificationTileListBufferSRV = GraphBuilder.CreateSRV(Out.ClassificationTileListBuffer, ClassificationTileFormat);
+			Out.ClassificationTileListBufferUAV = GraphBuilder.CreateUAV(Out.ClassificationTileListBuffer, ClassificationTileFormat);
 		}
 
 		// BSDF tiles
 		if (bNeedBSDFOffets)
-		{			
-			const FIntPoint BufferSize = SceneTexturesConfig.Extent;
-			const FIntPoint BufferSize_Extended = GetStrataTextureTileResolution(View, SceneTexturesConfig.Extent, EStrataTileSpace::StrataTileSpace_Primary | EStrataTileSpace::StrataTileSpace_Overflow);
+		{
+			const FIntPoint BufferSize_Extended = GetStrataTextureTileResolution(View, DynResIndependentViewSize, EStrataTileSpace::StrataTileSpace_Primary | EStrataTileSpace::StrataTileSpace_Overflow);
 
-			const FIntPoint BaseOverflowTileOffset = FIntPoint(0, FMath::DivideAndRoundUp(BufferSize.Y, STRATA_TILE_SIZE));
+			const FIntPoint BaseOverflowTileOffset = FIntPoint(0, FMath::DivideAndRoundUp(DynResIndependentViewSize.Y, STRATA_TILE_SIZE));
 
-			Out.TileCount	= GetStrataTextureTileResolution(View, ViewResolution, EStrataTileSpace::StrataTileSpace_Primary);
+			Out.TileCount	= GetStrataTextureTileResolution(View, DynResIndependentViewSize, EStrataTileSpace::StrataTileSpace_Primary);
 			Out.TileOffset  = FIntPoint(FMath::DivideAndRoundUp(View.ViewRect.Min.X, STRATA_TILE_SIZE), FMath::DivideAndRoundUp(View.ViewRect.Min.Y, STRATA_TILE_SIZE));
 
-			Out.OverflowTileCount = GetStrataTextureTileResolution(View, ViewResolution, EStrataTileSpace::StrataTileSpace_Overflow);
+			Out.OverflowTileCount = GetStrataTextureTileResolution(View, DynResIndependentViewSize, EStrataTileSpace::StrataTileSpace_Overflow);
 			Out.OverflowTileOffset = GetStrataTextureTileResolution(View, Out.TileOffset * STRATA_TILE_SIZE, EStrataTileSpace::StrataTileSpace_Overflow) + BaseOverflowTileOffset;
 
 			Out.BSDFTileTexture = GraphBuilder.CreateTexture(FRDGTextureDesc::Create2D(BufferSize_Extended, PF_R32_UINT, FClearValueBinding::None, TexCreate_UAV | TexCreate_ShaderResource), TEXT("Substrate.BSDFTiles"));
@@ -272,7 +275,7 @@ static void InitialiseStrataViewData(FRDGBuilder& GraphBuilder, FViewInfo& View,
 		}
 		else
 		{
-			Out.TileCount = GetStrataTextureTileResolution(View, ViewResolution, EStrataTileSpace::StrataTileSpace_Primary);
+			Out.TileCount = GetStrataTextureTileResolution(View, DynResIndependentViewSize, EStrataTileSpace::StrataTileSpace_Primary);
 			Out.TileOffset = FIntPoint(0,0);
 			Out.OverflowTileCount = FIntPoint(0, 0);
 			Out.OverflowTileOffset = FIntPoint(0, 0);
@@ -281,14 +284,13 @@ static void InitialiseStrataViewData(FRDGBuilder& GraphBuilder, FViewInfo& View,
 			Out.BSDFTileDispatchIndirectBuffer = nullptr;
 			Out.BSDFTileCountBuffer = nullptr;
 		}
-	}
 
-	// Create the readable uniform buffers
-	if (IsStrataEnabled())
-	{
-		FStrataGlobalUniformParameters* StrataUniformParameters = GraphBuilder.AllocParameters<FStrataGlobalUniformParameters>();
-		BindStrataGlobalUniformParameters(GraphBuilder, &Out, *StrataUniformParameters);
-		Out.StrataGlobalUniformParameters = GraphBuilder.CreateUniformBuffer(StrataUniformParameters);
+		// Create the readable uniform buffers
+		{
+			FStrataGlobalUniformParameters* StrataUniformParameters = GraphBuilder.AllocParameters<FStrataGlobalUniformParameters>();
+			BindStrataGlobalUniformParameters(GraphBuilder, &Out, *StrataUniformParameters);
+			Out.StrataGlobalUniformParameters = GraphBuilder.CreateUniformBuffer(StrataUniformParameters);
+		}
 	}
 }
 
@@ -328,7 +330,15 @@ static EPixelFormat GetTopLayerTextureFormat(bool bUseDBufferPass)
 void InitialiseStrataFrameSceneData(FRDGBuilder& GraphBuilder, FSceneRenderer& SceneRenderer)
 {
 	FStrataSceneData& Out = SceneRenderer.Scene->StrataSceneData;
-	Out = FStrataSceneData();
+
+	// Reset Substrate scene data
+	{
+		const uint32 MinBytesPerPixel = Out.MinBytesPerPixel;
+		const bool bUsesComplexSpecialRenderPath = Out.bUsesComplexSpecialRenderPath;
+		Out = FStrataSceneData();
+		Out.MinBytesPerPixel = MinBytesPerPixel;
+		Out.bUsesComplexSpecialRenderPath = bUsesComplexSpecialRenderPath;
+	}
 
 	auto UpdateMaterialBufferToTiledResolution = [](FIntPoint InBufferSizeXY, FIntPoint& OutMaterialBufferSizeXY)
 	{
@@ -337,18 +347,10 @@ void InitialiseStrataFrameSceneData(FRDGBuilder& GraphBuilder, FSceneRenderer& S
 		OutMaterialBufferSizeXY.Y = FMath::DivideAndRoundUp(InBufferSizeXY.Y, STRATA_TILE_SIZE) * STRATA_TILE_SIZE;
 	};
 
+	// Compute the max byte per pixels required by the views
 	bool bNeedBSDFOffsets = false;
 	bool bNeedUAV = false;
-	uint32 MaxBytePerPixel = 0;
 	bool bUseDBufferPass = false;
-	for (const FViewInfo& View : SceneRenderer.Views)
-	{
-		bNeedBSDFOffsets = bNeedBSDFOffsets || NeedBSDFOffsets(SceneRenderer.Scene, View);
-		bNeedUAV = bNeedUAV || IsDBufferPassEnabled(View.GetShaderPlatform());
-		MaxBytePerPixel = FMath::Max(MaxBytePerPixel, View.StrataViewData.MaxBytePerPixel);
-		bUseDBufferPass = bUseDBufferPass || IsDBufferPassEnabled(View.GetShaderPlatform());
-	}
-	MaxBytePerPixel = FMath::Clamp(MaxBytePerPixel, 4u * STRATA_BASE_PASS_MRT_OUTPUT_COUNT, GetBytePerPixel(SceneRenderer.ShaderPlatform));
 
 	FIntPoint MaterialBufferSizeXY;
 	UpdateMaterialBufferToTiledResolution(FIntPoint(1, 1), MaterialBufferSizeXY);
@@ -362,13 +364,47 @@ void InitialiseStrataFrameSceneData(FRDGBuilder& GraphBuilder, FSceneRenderer& S
 			bAnalyticsInitialized = true;
 		}
 
+		// Gather views' requirements
+		Out.ViewsMaxBytesPerPixel = 0;
+		for (const FViewInfo& View : SceneRenderer.Views)
+		{
+			bNeedBSDFOffsets = bNeedBSDFOffsets || NeedBSDFOffsets(SceneRenderer.Scene, View);
+			bNeedUAV = bNeedUAV || IsDBufferPassEnabled(View.GetShaderPlatform()) || NaniteComputeMaterialsSupported();
+			Out.ViewsMaxBytesPerPixel = FMath::Max(Out.ViewsMaxBytesPerPixel, View.StrataViewData.MaxBytesPerPixel);
+			bUseDBufferPass = bUseDBufferPass || IsDBufferPassEnabled(View.GetShaderPlatform());
+
+			// Only use primary views max. byte per pixel as reflection/capture views can bias allocation requirement when using growing-only mode
+			if (!View.bIsPlanarReflection && !View.bIsReflectionCapture && !View.bIsSceneCapture)
+			{
+				Out.MinBytesPerPixel = FMath::Max(Out.MinBytesPerPixel, View.StrataViewData.MaxBytesPerPixel);
+				Out.bUsesComplexSpecialRenderPath |= View.StrataViewData.bUsesComplexSpecialRenderPath;
+			}
+		}
+
+		// Material buffer allocation can use different modes:
+		// * 0: Allocate material buffer based on view requirement,
+		// * 1: Allocate material buffer based on view requirement, but can only grow over frame to minimize buffer reallocation and hitches,
+		// * 2: Allocate material buffer based on platform settings.
+		const uint32 PlatformSettingsBytesPerPixel = GetBytePerPixel(SceneRenderer.ShaderPlatform);
+		uint32 MaxBytesPerPixel = 0;
+		switch (GetMaterialBufferAllocationMode())
+		{
+			case 0: MaxBytesPerPixel = Out.ViewsMaxBytesPerPixel; break;
+			case 1: MaxBytesPerPixel = FMath::Max(Out.ViewsMaxBytesPerPixel, Out.MinBytesPerPixel); break;
+			case 2: MaxBytesPerPixel = PlatformSettingsBytesPerPixel; break;
+		}
+
+		// If this happens, it means there is probably a shader compilation mismatch issue (the compiler has not correctly accounted for the byte per pixel limitation for the platform).
+		check(MaxBytesPerPixel <= PlatformSettingsBytesPerPixel);
+
+		const uint32 RoundToValue = 4u;
+		MaxBytesPerPixel = FMath::Clamp(MaxBytesPerPixel, 4u * STRATA_BASE_PASS_MRT_OUTPUT_COUNT, PlatformSettingsBytesPerPixel);
+		Out.MaxBytesPerPixel = FMath::DivideAndRoundUp(MaxBytesPerPixel, RoundToValue) * RoundToValue;
+
 		FIntPoint SceneTextureExtent = SceneRenderer.GetActiveSceneTexturesConfig().Extent;
 		
 		// We need to allocate enough for the tiled memory addressing of material data to always work
 		UpdateMaterialBufferToTiledResolution(SceneTextureExtent, MaterialBufferSizeXY);
-
-		const uint32 RoundToValue = 4u;
-		Out.MaxBytesPerPixel = FMath::DivideAndRoundUp(MaxBytePerPixel, RoundToValue) * RoundToValue;
 
 		// Top layer texture
 		{
@@ -452,15 +488,31 @@ void InitialiseStrataFrameSceneData(FRDGBuilder& GraphBuilder, FSceneRenderer& S
 	}
 }
 
+static FStrataCommonParameters GetStrataCommonParameter()
+{
+	FStrataCommonParameters Out;
+	Out.bRoughDiffuse 		= 0u;
+	Out.MaxBytesPerPixel 	= 0u;
+	Out.PeelLayersAboveDepth= 0u;
+	Out.bRoughnessTracking 	= 0u;
+	return Out;
+}
+static FStrataCommonParameters GetStrataCommonParameter(const FStrataSceneData& In)
+{
+	FStrataCommonParameters Out;
+	Out.bRoughDiffuse 		= In.bRoughDiffuse ? 1u : 0u;
+	Out.MaxBytesPerPixel 	= In.MaxBytesPerPixel;
+	Out.PeelLayersAboveDepth= In.PeelLayersAboveDepth;
+	Out.bRoughnessTracking 	= In.bRoughnessTracking ? 1u : 0u;
+	return Out;
+}
+
 void BindStrataBasePassUniformParameters(FRDGBuilder& GraphBuilder, const FViewInfo& View, FStrataBasePassUniformParameters& OutStrataUniformParameters)
 {
 	const FStrataSceneData* StrataSceneData = View.StrataViewData.SceneData;
 	if (IsStrataEnabled() && StrataSceneData)
 	{
-		OutStrataUniformParameters.bRoughDiffuse = StrataSceneData->bRoughDiffuse ? 1u : 0u;
-		OutStrataUniformParameters.MaxBytesPerPixel = StrataSceneData->MaxBytesPerPixel;
-		OutStrataUniformParameters.PeelLayersAboveDepth = StrataSceneData->PeelLayersAboveDepth;
-		OutStrataUniformParameters.bRoughnessTracking = StrataSceneData->bRoughnessTracking ? 1u : 0u;
+		OutStrataUniformParameters.Common = GetStrataCommonParameter(*StrataSceneData);
 		OutStrataUniformParameters.SliceStoringDebugStrataTreeDataWithoutMRT = StrataSceneData->SliceStoringDebugStrataTreeDataWithoutMRT;
 		OutStrataUniformParameters.FirstSliceStoringStrataSSSDataWithoutMRT = StrataSceneData->FirstSliceStoringStrataSSSDataWithoutMRT;
 		OutStrataUniformParameters.MaterialTextureArrayUAVWithoutRTs = StrataSceneData->MaterialTextureArrayUAVWithoutRTs;
@@ -475,10 +527,7 @@ void BindStrataBasePassUniformParameters(FRDGBuilder& GraphBuilder, const FViewI
 		FRDGTextureUAVRef DummyWritableTextureArrayUAV = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(DummyWritableTextureArray));
 
 		const FRDGSystemTextures& SystemTextures = FRDGSystemTextures::Get(GraphBuilder);
-		OutStrataUniformParameters.bRoughDiffuse = 0u;
-		OutStrataUniformParameters.MaxBytesPerPixel = 0;
-		OutStrataUniformParameters.PeelLayersAboveDepth = 0;
-		OutStrataUniformParameters.bRoughnessTracking = 0;
+		OutStrataUniformParameters.Common = GetStrataCommonParameter();
 		OutStrataUniformParameters.SliceStoringDebugStrataTreeDataWithoutMRT = -1;
 		OutStrataUniformParameters.FirstSliceStoringStrataSSSDataWithoutMRT = -1;
 		OutStrataUniformParameters.MaterialTextureArrayUAVWithoutRTs = DummyWritableTextureArrayUAV;
@@ -491,10 +540,7 @@ static void BindStrataGlobalUniformParameters(FRDGBuilder& GraphBuilder, FStrata
 	FStrataSceneData* StrataSceneData = StrataViewData->SceneData;
 	if (IsStrataEnabled() && StrataSceneData)
 	{
-		OutStrataUniformParameters.bRoughDiffuse = StrataSceneData->bRoughDiffuse ? 1u : 0u;
-		OutStrataUniformParameters.MaxBytesPerPixel = StrataSceneData->MaxBytesPerPixel;
-		OutStrataUniformParameters.PeelLayersAboveDepth = StrataSceneData->PeelLayersAboveDepth;
-		OutStrataUniformParameters.bRoughnessTracking = StrataSceneData->bRoughnessTracking ? 1u : 0u;
+		OutStrataUniformParameters.Common = GetStrataCommonParameter(*StrataSceneData);
 		OutStrataUniformParameters.SliceStoringDebugStrataTreeData = StrataSceneData->SliceStoringDebugStrataTreeData;
 		OutStrataUniformParameters.FirstSliceStoringStrataSSSData = StrataSceneData->FirstSliceStoringStrataSSSData;
 		OutStrataUniformParameters.TileSize = STRATA_TILE_SIZE;
@@ -524,10 +570,7 @@ static void BindStrataGlobalUniformParameters(FRDGBuilder& GraphBuilder, FStrata
 		const FRDGSystemTextures& SystemTextures = FRDGSystemTextures::Get(GraphBuilder);
 		FRDGTextureRef DefaultTextureArray = GSystemTextures.GetDefaultTexture(GraphBuilder, ETextureDimension::Texture2DArray, EPixelFormat::PF_R32_UINT, FClearValueBinding::Transparent);
 		FRDGBufferSRVRef DefaultBuffer = GraphBuilder.CreateSRV(GSystemTextures.GetDefaultBuffer(GraphBuilder, 4, 0u), PF_R32_UINT);
-		OutStrataUniformParameters.bRoughDiffuse = 0;
-		OutStrataUniformParameters.MaxBytesPerPixel = 0;
-		OutStrataUniformParameters.PeelLayersAboveDepth = 0;
-		OutStrataUniformParameters.bRoughnessTracking = 0;
+		OutStrataUniformParameters.Common = GetStrataCommonParameter();
 		OutStrataUniformParameters.SliceStoringDebugStrataTreeData = -1;
 		OutStrataUniformParameters.FirstSliceStoringStrataSSSData = -1;
 		OutStrataUniformParameters.TileSize = 0;
@@ -550,10 +593,7 @@ void BindStrataForwardPasslUniformParameters(FRDGBuilder& GraphBuilder, const FV
 	FStrataSceneData* StrataSceneData = View.StrataViewData.SceneData;
 	if (IsStrataEnabled() && StrataSceneData)
 	{
-		OutStrataUniformParameters.MaxBytesPerPixel = StrataSceneData->MaxBytesPerPixel;
-		OutStrataUniformParameters.bRoughDiffuse = StrataSceneData->bRoughDiffuse ? 1u : 0u;
-		OutStrataUniformParameters.PeelLayersAboveDepth = StrataSceneData->PeelLayersAboveDepth;
-		OutStrataUniformParameters.bRoughnessTracking = StrataSceneData->bRoughnessTracking ? 1u : 0u;
+		OutStrataUniformParameters.Common = GetStrataCommonParameter(*StrataSceneData);
 		OutStrataUniformParameters.FirstSliceStoringStrataSSSData = StrataSceneData->FirstSliceStoringStrataSSSData;
 		OutStrataUniformParameters.MaterialTextureArray = StrataSceneData->MaterialTextureArray;
 		OutStrataUniformParameters.TopLayerTexture = StrataSceneData->TopLayerTexture;
@@ -562,10 +602,7 @@ void BindStrataForwardPasslUniformParameters(FRDGBuilder& GraphBuilder, const FV
 	{
 		const FRDGSystemTextures& SystemTextures = FRDGSystemTextures::Get(GraphBuilder);
 		FRDGTextureRef DefaultTextureArray = GSystemTextures.GetDefaultTexture(GraphBuilder, ETextureDimension::Texture2DArray, EPixelFormat::PF_R32_UINT, FClearValueBinding::Transparent);
-		OutStrataUniformParameters.MaxBytesPerPixel = 0;
-		OutStrataUniformParameters.bRoughDiffuse = 0;
-		OutStrataUniformParameters.PeelLayersAboveDepth = 0;
-		OutStrataUniformParameters.bRoughnessTracking = 0;
+		OutStrataUniformParameters.Common = GetStrataCommonParameter();
 		OutStrataUniformParameters.FirstSliceStoringStrataSSSData = -1;
 		OutStrataUniformParameters.MaterialTextureArray = DefaultTextureArray;
 		OutStrataUniformParameters.TopLayerTexture = SystemTextures.DefaultNormal8Bit;
@@ -577,17 +614,11 @@ void BindStrataMobileForwardPasslUniformParameters(FRDGBuilder& GraphBuilder, co
 	FStrataSceneData* StrataSceneData = View.StrataViewData.SceneData;
 	if (IsStrataEnabled() && StrataSceneData)
 	{
-		OutStrataUniformParameters.MaxBytesPerPixel = StrataSceneData->MaxBytesPerPixel;
-		OutStrataUniformParameters.bRoughDiffuse = StrataSceneData->bRoughDiffuse ? 1u : 0u;
-		OutStrataUniformParameters.PeelLayersAboveDepth = StrataSceneData->PeelLayersAboveDepth;
-		OutStrataUniformParameters.bRoughnessTracking = StrataSceneData->bRoughnessTracking ? 1u : 0u;
+		OutStrataUniformParameters.Common = GetStrataCommonParameter(*StrataSceneData);
 	}
 	else
 	{
-		OutStrataUniformParameters.MaxBytesPerPixel = 0;
-		OutStrataUniformParameters.bRoughDiffuse = 0;
-		OutStrataUniformParameters.PeelLayersAboveDepth = 0;
-		OutStrataUniformParameters.bRoughnessTracking = 0;
+		OutStrataUniformParameters.Common = GetStrataCommonParameter();
 	}
 }
 
@@ -610,6 +641,17 @@ static void BindStrataPublicGlobalUniformParameters(FRDGBuilder& GraphBuilder, F
 	}
 
 	//TODO: Other Strata scene textures or other globals.
+}
+
+static ERHIFeatureSupport SubstrateSupportsWaveOps(EShaderPlatform Platform)
+{
+	// D3D11 / SM5 do not support wave-ops by default, that fixes classification and black/wrong tiling.
+	if (Platform == SP_PCD3D_SM5)
+	{
+		return ERHIFeatureSupport::Unsupported;
+	}
+
+	return FDataDrivenShaderPlatformInfo::GetSupportsWaveOperations(Platform);
 }
 
 TRDGUniformBufferRef<FStrataPublicGlobalUniformParameters> CreatePublicGlobalUniformBuffer(FRDGBuilder& GraphBuilder, FStrataSceneData* StrataScene)
@@ -648,12 +690,13 @@ class FStrataBSDFTilePassCS : public FGlobalShader
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<uint>, RWBSDFTileCountBuffer)
 
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, TileListBuffer)
+		SHADER_PARAMETER(uint32, TileListBufferOffset)
 		RDG_BUFFER_ACCESS(TileIndirectBuffer, ERHIAccess::IndirectArgs)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		const bool bUseWaveIntrinsics = FDataDrivenShaderPlatformInfo::GetSupportsWaveOperations(Parameters.Platform) != ERHIFeatureSupport::Unsupported;
+		const bool bUseWaveIntrinsics = SubstrateSupportsWaveOps(Parameters.Platform) != ERHIFeatureSupport::Unsupported;
 		FPermutationDomain PermutationVector(Parameters.PermutationId);
 		if (PermutationVector.Get<FWaveOps>() && !bUseWaveIntrinsics)
 		{
@@ -694,17 +737,11 @@ class FStrataMaterialTileClassificationPassCS : public FGlobalShader
 		SHADER_PARAMETER(int32, bRectPrimitive)
 		SHADER_PARAMETER(FIntPoint, ViewResolution)
 		SHADER_PARAMETER(uint32, MaxBytesPerPixel)
+		SHADER_PARAMETER_ARRAY(FUintVector4, TileListBufferOffsets, [STRATA_TILE_TYPE_COUNT])
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, TopLayerTexture)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, TopLayerCmaskTexture)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, TileDrawIndirectDataBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, SimpleTileListDataBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, SingleTileListDataBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, ComplexTileListDataBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, OpaqueRoughRefractionTileListDataBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, OpaqueRoughRefractionSSSWithoutTileListDataBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, DecalSimpleTileListDataBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, DecalSingleTileListDataBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, DecalComplexTileListDataBuffer)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, TileDrawIndirectDataBufferUAV)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, TileListBufferUAV)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2DArray<uint>, MaterialTextureArrayUAV)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float3>, OpaqueRoughRefractionTexture)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FDBufferParameters, DBuffer)
@@ -713,7 +750,7 @@ class FStrataMaterialTileClassificationPassCS : public FGlobalShader
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		const bool bUseWaveIntrinsics = FDataDrivenShaderPlatformInfo::GetSupportsWaveOperations(Parameters.Platform) != ERHIFeatureSupport::Unsupported;
+		const bool bUseWaveIntrinsics = SubstrateSupportsWaveOps(Parameters.Platform) != ERHIFeatureSupport::Unsupported;
 		FPermutationDomain PermutationVector(Parameters.PermutationId);
 		if (PermutationVector.Get<FWaveOps>() && !bUseWaveIntrinsics)
 		{
@@ -759,6 +796,7 @@ class FStrataDBufferPassCS : public FGlobalShader
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<uint>, TopLayerTexture)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2DArray<uint>, MaterialTextureArrayUAV)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, TileListBuffer)
+		SHADER_PARAMETER(uint32, TileListBufferOffset)
 		SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D<float>, SceneStencilTexture)
 		RDG_BUFFER_ACCESS(TileIndirectBuffer, ERHIAccess::IndirectArgs)
 	END_SHADER_PARAMETER_STRUCT()
@@ -894,7 +932,8 @@ static FStrataTileParameter InternalSetTileParameters(FRDGBuilder* GraphBuilder,
 	FStrataTileParameter Out;
 	if (TileType != EStrataTileType::ECount)
 	{
-		Out.TileListBuffer = View.StrataViewData.ClassificationTileListBufferSRV[TileType];
+		Out.TileListBuffer = View.StrataViewData.ClassificationTileListBufferSRV;
+		Out.TileListBufferOffset = View.StrataViewData.ClassificationTileListBufferOffset[TileType];
 		Out.TileIndirectBuffer = View.StrataViewData.ClassificationTileDrawIndirectBuffer;
 	}
 	else if (GraphBuilder)
@@ -902,6 +941,7 @@ static FStrataTileParameter InternalSetTileParameters(FRDGBuilder* GraphBuilder,
 		FRDGBufferRef BufferDummy = GSystemTextures.GetDefaultBuffer(*GraphBuilder, 4, 0u);
 		FRDGBufferSRVRef BufferDummySRV = GraphBuilder->CreateSRV(BufferDummy, PF_R32_UINT);
 		Out.TileListBuffer = BufferDummySRV;
+		Out.TileListBufferOffset = 0;
 		Out.TileIndirectBuffer = BufferDummy;
 	}
 	return Out;
@@ -921,6 +961,7 @@ FStrataTilePassVS::FParameters SetTileParameters(
 	Out.OutputBufferSizeAndInvSize = View.CachedViewUniformShaderParameters->BufferSizeAndInvSize;
 	Out.ViewScreenToTranslatedWorld = View.CachedViewUniformShaderParameters->ScreenToTranslatedWorld;
 	Out.TileListBuffer = Temp.TileListBuffer;
+	Out.TileListBufferOffset = Temp.TileListBufferOffset;
 	Out.TileIndirectBuffer = Temp.TileIndirectBuffer;
 	return Out;
 }
@@ -940,6 +981,7 @@ FStrataTilePassVS::FParameters SetTileParameters(
 	Out.OutputBufferSizeAndInvSize = View.CachedViewUniformShaderParameters->BufferSizeAndInvSize;
 	Out.ViewScreenToTranslatedWorld = View.CachedViewUniformShaderParameters->ScreenToTranslatedWorld;
 	Out.TileListBuffer = Temp.TileListBuffer;
+	Out.TileListBufferOffset = Temp.TileListBufferOffset;
 	Out.TileIndirectBuffer = Temp.TileIndirectBuffer;
 	return Out;
 }
@@ -966,6 +1008,7 @@ uint32 TileTypeDispatchIndirectArgOffset(const EStrataTileType Type)
 constexpr uint32 StencilBit_Fast_1	  = StencilBit_Fast;
 constexpr uint32 StencilBit_Single_1  = StencilBit_Single;
 constexpr uint32 StencilBit_Complex_1 = StencilBit_Complex; 
+constexpr uint32 StencilBit_ComplexSpecial_1 = StencilBit_ComplexSpecial; 
 
 void AddStrataInternalClassificationTilePass(
 	FRDGBuilder& GraphBuilder,
@@ -1005,6 +1048,7 @@ void AddStrataInternalClassificationTilePass(
 		case EStrataTileType::ESimple:							ParametersPS->DebugTileColor = FVector4f(0.0f, 1.0f, 0.0f, 1.0); break;
 		case EStrataTileType::ESingle:							ParametersPS->DebugTileColor = FVector4f(1.0f, 1.0f, 0.0f, 1.0); break;
 		case EStrataTileType::EComplex:							ParametersPS->DebugTileColor = FVector4f(1.0f, 0.0f, 0.0f, 1.0); break;
+		case EStrataTileType::EComplexSpecial:					ParametersPS->DebugTileColor = FVector4f(0.3f, 0.0f, 0.0f, 1.0); break;
 
 		case EStrataTileType::EOpaqueRoughRefraction:			ParametersPS->DebugTileColor = FVector4f(0.0f, 1.0f, 1.0f, 1.0); break;
 		case EStrataTileType::EOpaqueRoughRefractionSSSWithout:	ParametersPS->DebugTileColor = FVector4f(0.0f, 0.0f, 1.0f, 1.0); break;
@@ -1082,6 +1126,16 @@ void AddStrataInternalClassificationTilePass(
 					StencilRef = StencilBit_Complex_1;
 				}
 				break;
+				case EStrataTileType::EComplexSpecial:
+				{
+					GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<
+						false, CF_Always,
+						true, CF_Always, SO_Keep, SO_Keep, SO_Replace,
+						false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
+						0xFF, StencilBit_ComplexSpecial_1>::GetRHI();
+					StencilRef = StencilBit_ComplexSpecial_1;
+				}
+				break;
 				}
 			}
 			GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
@@ -1114,6 +1168,10 @@ void AddStrataStencilPass(
 		RDG_EVENT_SCOPE_CONDITIONAL(GraphBuilder, Views.Num() > 1, "View%d", i);
 
 		const FViewInfo& View = Views[i];
+		if (GetStrataUsesComplexSpecialPath(View))
+		{
+			AddStrataInternalClassificationTilePass(GraphBuilder, View, &SceneTextures.Depth.Target, nullptr, EStrataTileType::EComplexSpecial);
+		}
 		AddStrataInternalClassificationTilePass(GraphBuilder, View, &SceneTextures.Depth.Target, nullptr, EStrataTileType::EComplex);
 		AddStrataInternalClassificationTilePass(GraphBuilder, View, &SceneTextures.Depth.Target, nullptr, EStrataTileType::ESingle);
 		AddStrataInternalClassificationTilePass(GraphBuilder, View, &SceneTextures.Depth.Target, nullptr, EStrataTileType::ESimple);
@@ -1122,7 +1180,7 @@ void AddStrataStencilPass(
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void AppendStrataMRTs(const FSceneRenderer& SceneRenderer, uint32& RenderTargetCount, TStaticArray<FTextureRenderTargetBinding, MaxSimultaneousRenderTargets>& RenderTargets)
+void AppendStrataMRTs(const FSceneRenderer& SceneRenderer, uint32& RenderTargetCount, TArrayView<FTextureRenderTargetBinding> RenderTargets)
 {
 	if (Strata::IsStrataEnabled() && SceneRenderer.Scene)
 	{
@@ -1195,7 +1253,9 @@ void AddStrataMaterialClassificationPass(FRDGBuilder& GraphBuilder, const FMinim
 		RDG_EVENT_SCOPE_CONDITIONAL(GraphBuilder, Views.Num() > 1, "View%d", i);
 
 		const FViewInfo& View = Views[i];
-		bool bWaveOps = GRHISupportsWaveOperations && GRHIMaximumWaveSize >= 64 && FDataDrivenShaderPlatformInfo::GetSupportsWaveOperations(View.GetShaderPlatform()) != ERHIFeatureSupport::Unsupported;
+		EShaderPlatform Platform = View.GetShaderPlatform();
+
+		const bool bWaveOps = GRHISupportsWaveOperations&& GRHIMaximumWaveSize >= 64 && SubstrateSupportsWaveOps(Platform) != ERHIFeatureSupport::Unsupported;
 		
 		const FStrataViewData* StrataViewData = &View.StrataViewData;
 		const FStrataSceneData* StrataSceneData = View.StrataViewData.SceneData;
@@ -1204,7 +1264,7 @@ void AddStrataMaterialClassificationPass(FRDGBuilder& GraphBuilder, const FMinim
 		{
 			// When the platform support explicit CMask texture, we disable material data bufferclear. Material buffer buffer clear (the header part) is done during the classification pass.  
 			// To reduce the reading bandwidth, we rely on TopLayerData CMask to 'drive' the clearing process. This allows to clear quickly empty tiles.
-			const bool bSupportCMask = SupportsCMask(View.GetShaderPlatform());
+			const bool bSupportCMask = SupportsCMask(Platform);
 			FRDGTextureRef TopLayerCmaskTexture = StrataSceneData->TopLayerTexture;			
 			if (bSupportCMask)
 			{
@@ -1214,7 +1274,7 @@ void AddStrataMaterialClassificationPass(FRDGBuilder& GraphBuilder, const FMinim
 			}
 
 			// If Dbuffer pass (i.e. apply DBuffer data after the base-pass) is enabled, run special classification for outputing tile with/without tiles
-			const bool bDBufferTiles = IsDBufferPassEnabled(View.GetShaderPlatform()) && CVarSubstrateDBufferPassDedicatedTiles.GetValueOnRenderThread() > 0 && DBufferTextures.IsValid() && IsConsolePlatform(View.GetShaderPlatform());
+			const bool bDBufferTiles = IsDBufferPassEnabled(Platform) && CVarSubstrateDBufferPassDedicatedTiles.GetValueOnRenderThread() > 0 && DBufferTextures.IsValid() && IsConsolePlatform(View.GetShaderPlatform());
 
 			FStrataMaterialTileClassificationPassCS::FPermutationDomain PermutationVector;
 			PermutationVector.Set< FStrataMaterialTileClassificationPassCS::FCmask >(bSupportCMask);
@@ -1231,20 +1291,14 @@ void AddStrataMaterialClassificationPass(FRDGBuilder& GraphBuilder, const FMinim
 			PassParameters->TopLayerCmaskTexture = TopLayerCmaskTexture;
 			PassParameters->MaterialTextureArrayUAV = StrataSceneData->MaterialTextureArrayUAV;
 			PassParameters->OpaqueRoughRefractionTexture = StrataSceneData->OpaqueRoughRefractionTexture;
-			PassParameters->TileDrawIndirectDataBuffer = StrataViewData->ClassificationTileDrawIndirectBufferUAV;
-			PassParameters->DBuffer = GetDBufferParameters(GraphBuilder, DBufferTextures, View.GetShaderPlatform());
+			PassParameters->TileDrawIndirectDataBufferUAV = StrataViewData->ClassificationTileDrawIndirectBufferUAV;
+			PassParameters->DBuffer = GetDBufferParameters(GraphBuilder, DBufferTextures, Platform);
 			PassParameters->SceneStencilTexture = SceneTextures.Stencil;
-			// Regular tiles
-			PassParameters->SimpleTileListDataBuffer = StrataViewData->ClassificationTileListBufferUAV[EStrataTileType::ESimple];
-			PassParameters->SingleTileListDataBuffer = StrataViewData->ClassificationTileListBufferUAV[EStrataTileType::ESingle];
-			PassParameters->ComplexTileListDataBuffer = StrataViewData->ClassificationTileListBufferUAV[EStrataTileType::EComplex];
-			// Decal tiles
-			PassParameters->DecalSimpleTileListDataBuffer = StrataViewData->ClassificationTileListBufferUAV[EStrataTileType::EDecalSimple];
-			PassParameters->DecalSingleTileListDataBuffer = StrataViewData->ClassificationTileListBufferUAV[EStrataTileType::EDecalSingle];
-			PassParameters->DecalComplexTileListDataBuffer = StrataViewData->ClassificationTileListBufferUAV[EStrataTileType::EDecalComplex];
-			// Rough refraction tiles
-			PassParameters->OpaqueRoughRefractionTileListDataBuffer = StrataViewData->ClassificationTileListBufferUAV[EStrataTileType::EOpaqueRoughRefraction];
-			PassParameters->OpaqueRoughRefractionSSSWithoutTileListDataBuffer = StrataViewData->ClassificationTileListBufferUAV[EStrataTileType::EOpaqueRoughRefractionSSSWithout];
+			PassParameters->TileListBufferUAV = StrataViewData->ClassificationTileListBufferUAV;
+			for (uint32 TileType = 0; TileType < STRATA_TILE_TYPE_COUNT; ++TileType)
+			{
+				PassParameters->TileListBufferOffsets[TileType] = FUintVector4(StrataViewData->ClassificationTileListBufferOffset[TileType], 0, 0, 0);
+			}
 
 			const uint32 GroupSize = 8;
 			FComputeShaderUtils::AddPass(
@@ -1278,35 +1332,44 @@ void AddStrataMaterialClassificationPass(FRDGBuilder& GraphBuilder, const FMinim
 			FRDGBufferUAVRef RWBSDFTileCountBuffer = GraphBuilder.CreateUAV(StrataViewData->BSDFTileCountBuffer, PF_R32_UINT);
 			AddClearUAVPass(GraphBuilder, RWBSDFTileCountBuffer, 0u);
 
-			FStrataBSDFTilePassCS::FPermutationDomain PermutationVector;
-			PermutationVector.Set< FStrataBSDFTilePassCS::FWaveOps >(bWaveOps);
-			TShaderMapRef<FStrataBSDFTilePassCS> ComputeShader(View.ShaderMap, PermutationVector);
-			FStrataBSDFTilePassCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FStrataBSDFTilePassCS::FParameters>();
-			PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
-			PassParameters->TileSizeLog2 = STRATA_TILE_SIZE_DIV_AS_SHIFT;
-			PassParameters->TileCount_Primary = StrataViewData->TileCount;
-			PassParameters->TileOffset_Primary = StrataViewData->TileOffset;
-			PassParameters->OverflowTileCount = StrataViewData->OverflowTileCount;
-			PassParameters->OverflowTileOffset = StrataViewData->OverflowTileOffset;
-			PassParameters->ViewResolution = View.ViewRect.Size();
-			PassParameters->MaxBytesPerPixel = StrataSceneData->MaxBytesPerPixel;
-			PassParameters->TopLayerTexture = StrataSceneData->TopLayerTexture;
-			PassParameters->MaterialTextureArray = StrataSceneData->MaterialTextureArraySRV;
-			PassParameters->TileListBuffer = StrataViewData->ClassificationTileListBufferSRV[EStrataTileType::EComplex];
-			PassParameters->TileIndirectBuffer = StrataViewData->ClassificationTileDispatchIndirectBuffer;
+			auto MarkBSDFTilePass = [&](EStrataTileType TileType)
+			{
+				FStrataBSDFTilePassCS::FPermutationDomain PermutationVector;
+				PermutationVector.Set< FStrataBSDFTilePassCS::FWaveOps >(bWaveOps);
+				TShaderMapRef<FStrataBSDFTilePassCS> ComputeShader(View.ShaderMap, PermutationVector);
+				FStrataBSDFTilePassCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FStrataBSDFTilePassCS::FParameters>();
+				PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
+				PassParameters->TileSizeLog2 = STRATA_TILE_SIZE_DIV_AS_SHIFT;
+				PassParameters->TileCount_Primary = StrataViewData->TileCount;
+				PassParameters->TileOffset_Primary = StrataViewData->TileOffset;
+				PassParameters->OverflowTileCount = StrataViewData->OverflowTileCount;
+				PassParameters->OverflowTileOffset = StrataViewData->OverflowTileOffset;
+				PassParameters->ViewResolution = View.ViewRect.Size();
+				PassParameters->MaxBytesPerPixel = StrataSceneData->MaxBytesPerPixel;
+				PassParameters->TopLayerTexture = StrataSceneData->TopLayerTexture;
+				PassParameters->MaterialTextureArray = StrataSceneData->MaterialTextureArraySRV;
+				PassParameters->TileListBuffer = StrataViewData->ClassificationTileListBufferSRV;
+				PassParameters->TileListBufferOffset = StrataViewData->ClassificationTileListBufferOffset[TileType];
+				PassParameters->TileIndirectBuffer = StrataViewData->ClassificationTileDispatchIndirectBuffer;
 
-			PassParameters->RWBSDFOffsetTexture = GraphBuilder.CreateUAV(StrataSceneData->BSDFOffsetTexture);
-			PassParameters->RWBSDFTileTexture = GraphBuilder.CreateUAV(StrataViewData->BSDFTileTexture);
-			PassParameters->RWBSDFTileCountBuffer = RWBSDFTileCountBuffer;
+				PassParameters->RWBSDFOffsetTexture = GraphBuilder.CreateUAV(StrataSceneData->BSDFOffsetTexture);
+				PassParameters->RWBSDFTileTexture = GraphBuilder.CreateUAV(StrataViewData->BSDFTileTexture);
+				PassParameters->RWBSDFTileCountBuffer = RWBSDFTileCountBuffer;
 
-			FComputeShaderUtils::AddPass(
-				GraphBuilder,
-				RDG_EVENT_NAME("Substrate::BSDFTileAndOffsets(%s)", bWaveOps ? TEXT("Wave") : TEXT("SharedMemory")),
-				PassFlags,
-				ComputeShader,
-				PassParameters,
-				PassParameters->TileIndirectBuffer,
-				TileTypeDispatchIndirectArgOffset(EStrataTileType::EComplex));
+				FComputeShaderUtils::AddPass(
+					GraphBuilder,
+					RDG_EVENT_NAME("Substrate::BSDFTileAndOffsets(%s - %s)", ToString(TileType), bWaveOps ? TEXT("Wave") : TEXT("SharedMemory")),
+					PassFlags,
+					ComputeShader,
+					PassParameters,
+					PassParameters->TileIndirectBuffer,
+					TileTypeDispatchIndirectArgOffset(TileType));
+			};
+			if (GetStrataUsesComplexSpecialPath(View))
+			{
+				MarkBSDFTilePass(EStrataTileType::EComplexSpecial);
+			}
+			MarkBSDFTilePass(EStrataTileType::EComplex);
 		}
 
 		// Tile indirect dispatch args conversion
@@ -1395,7 +1458,8 @@ void AddStrataDBufferPass(FRDGBuilder& GraphBuilder, const FMinimalSceneTextures
 			PassParameters->FirstSliceStoringStrataSSSData = StrataSceneData->FirstSliceStoringStrataSSSData;
 			PassParameters->SceneStencilTexture = SceneTextures.Stencil;
 
-			PassParameters->TileListBuffer = StrataViewData->ClassificationTileListBufferSRV[TileType];
+			PassParameters->TileListBuffer = StrataViewData->ClassificationTileListBufferSRV;
+			PassParameters->TileListBufferOffset = StrataViewData->ClassificationTileListBufferOffset[TileType];
 			PassParameters->TileIndirectBuffer = StrataViewData->ClassificationTileDispatchIndirectBuffer;
 
 			// Dispatch with tile data

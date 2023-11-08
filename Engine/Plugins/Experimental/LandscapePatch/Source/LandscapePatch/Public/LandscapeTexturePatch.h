@@ -126,8 +126,8 @@ struct LANDSCAPEPATCH_API FLandscapeTexturePatchEncodingSettings
 	GENERATED_BODY()
 public:
 	/**
-	 * The value in the patch data that corresponds to 0 landscape height (which is in line with patch Z when
-	 * "Use Patch Z As Reference" is true, and at landscape zero/mid value when false).
+	 * The value in the patch data that corresponds to 0 height relative to the starting point
+	 * specified by Zero Height Meaning.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Settings)
 	double ZeroInEncoding = 0;
@@ -161,6 +161,10 @@ public:
 protected:
 	UPROPERTY(EditAnywhere, Category = WeightPatch)
 	FName WeightmapLayerName;
+
+	/** Specifies if this patch edits the visibility layer. */
+	UPROPERTY(EditAnywhere, Category = WeightPatch)
+	bool bEditVisibilityLayer = false;
 	
 	/** Texture to use when source mode is set to texture asset. */
 	UPROPERTY(EditAnywhere, Category = WeightPatch, meta = (EditConditionHides,
@@ -216,12 +220,13 @@ class LANDSCAPEPATCH_API ULandscapeTexturePatch : public ULandscapePatchComponen
 public:
 
 #if WITH_EDITOR
-	virtual UTextureRenderTarget2D* Render_Native(bool InIsHeightmap,
-		UTextureRenderTarget2D* InCombinedResult,
-		const FName& InWeightmapLayerName) override;
+	UTextureRenderTarget2D* RenderLayer_Native(const FLandscapeBrushParameters& InParameters);
 
 	// ULandscapePatchComponent
+	UE_DEPRECATED(5.3, "Use AffectsWeightmapLayer")
 	virtual bool IsAffectingWeightmapLayer(const FName& InLayerName) const override;
+	virtual bool AffectsWeightmapLayer(const FName& InLayerName) const override;
+	virtual bool AffectsVisibilityLayer() const override;
 	virtual bool IsEnabled() const override;
 
 	// UObject
@@ -293,6 +298,9 @@ public:
 		Falloff = FalloffIn; 
 	}
 
+	/**
+	 * Determines how the height patch is blended into the existing terrain.
+	 */
 	UFUNCTION(BlueprintCallable, Category = LandscapePatch)
 	void SetBlendMode(ELandscapeTexturePatchBlendMode BlendModeIn) 
 	{ 
@@ -320,15 +328,36 @@ public:
 	UFUNCTION(BlueprintCallable, Category = LandscapePatch)
 	void SetHeightTextureAsset(UTexture* TextureIn);
 
+	/**
+	 * Gets the internal height render target, if source mode is set to Texture Backed Render Target.
+	 * 
+	 * Things that should be set up if using the internal render target:
+	 * - SetHeightSourceMode should have been called with TextureBackedRenderTarget.
+	 * - An appropriate texture size should have been set with SetResolution. If the patch extent has already
+	 *  been set, you can base your resolution on the extent and the resolution of the landscape by using
+	 *  GetInitResolutionFromLandscape().
+	 * - SetHeightRenderTargetFormat should have been called with a desired format. In particular, if using
+	 *  an alpha channel, the format should have an alpha channel (and SetUseAlphaChannelForHeight should have
+	 *  been called with "true").
+	 * 
+	 * In addition, you may need to call SetHeightEncodingMode, SetHeightEncodingSettings, and SetZeroHeightMeaning
+	 * based on how you want the data you write to be interpreted. This part is not specific to using an internal render
+	 * target, since you are likely to need to do that with a TextureAsset source mode as well.
+	 * 
+	 * @param bMarkDirty If true, marks the containing package as dirty, since the render target is presumably
+	 *  being written to. Can be set to false if the render target is not being written to.
+	 */
 	UFUNCTION(BlueprintCallable, Category = LandscapePatch)
-	virtual UTextureRenderTarget2D* GetHeightRenderTarget() 
-	{ 
-		return HeightInternalData ? HeightInternalData->GetRenderTarget() : nullptr; 
-	}
+	virtual UTextureRenderTarget2D* GetHeightRenderTarget(bool bMarkDirty = true);
 
 	UFUNCTION(BlueprintCallable, Category = LandscapePatch, meta = (ETextureRenderTargetFormat = "ETextureRenderTargetFormat::RTF_R32f"))
 	void SetHeightRenderTargetFormat(ETextureRenderTargetFormat Format);
 
+	/**
+	 * Determines whether the height patch alpha channel is used for blending into the existing values.
+	 * Note that the source data needs to have an alpha channel in this case. How the alpha channel is
+	 * used depends on the patch blend mode (see SetBlendMode).
+	 */
 	UFUNCTION(BlueprintCallable, Category = "LandscapePatch")
 	void SetUseAlphaChannelForHeight(bool bUse)
 	{ 
@@ -348,7 +377,8 @@ public:
 	}
 
 	/**
-	 * Just like SetSourceEncodingMode, but resets ZeroInEncoding and WorldSpaceEncodingScale to mode-specific defaults.
+	 * Just like SetSourceEncodingMode, but resets ZeroInEncoding, WorldSpaceEncodingScale, and height
+	 * render target format to mode-specific defaults.
 	 */
 	UFUNCTION(BlueprintCallable, Category = LandscapePatch)
 	void ResetHeightEncodingMode(ELandscapeTextureHeightPatchEncoding EncodingMode);
@@ -359,11 +389,7 @@ public:
 	 * in the same space as the landscape heightmap.
 	 */
 	UFUNCTION(BlueprintCallable, Category = LandscapePatch)
-	void SetHeightEncodingSettings(const FLandscapeTexturePatchEncodingSettings& Settings)
-	{
-		Modify();
-		HeightEncodingSettings = Settings;
-	}
+	void SetHeightEncodingSettings(const FLandscapeTexturePatchEncodingSettings& Settings);
 
 	/**
 	 * Set how zero height is interpreted, see comments in ELandscapeTextureHeightPatchZeroHeightMeaning.
@@ -418,6 +444,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = LandscapePatch)
 	virtual void ClearWeightPatchBlendModeOverride(const FName& InWeightmapLayerName);
 
+	UFUNCTION(BlueprintCallable, Category = LandscapePatch)
+	virtual void SetEditVisibilityLayer(const FName& InWeightmapLayerName, const bool bEditVisibilityLayer);
 
 	// These need to be public so that we can take the internal textures and write them to external ones,
 	// but unclear whether we want to expose them to blueprints, since this is a fairly internal thing.
@@ -482,14 +510,17 @@ protected:
 	TObjectPtr<UTexture> HeightTextureAsset = nullptr;
 
 	
-	/** When true, texture alpha channel will be used when applying the patch. */
+	/** 
+	 * When true, texture alpha channel will be used when applying the patch. Note that the source data needs to
+	 * have an alpha channel for this to have an effect.
+	 */
 	UPROPERTY(EditAnywhere, Category = HeightPatch)
 	bool bUseTextureAlphaForHeight = false;
 
 	/** How the values stored in the patch represent the height. Not customizable for Internal Texture source mode, which always uses native packed height. */
 	UPROPERTY(EditAnywhere, Category = HeightPatch, meta = (
 		EditCondition = "HeightSourceMode != ELandscapeTexturePatchSourceMode::InternalTexture"))
-	ELandscapeTextureHeightPatchEncoding HeightEncoding = ELandscapeTextureHeightPatchEncoding::ZeroToOne;
+	ELandscapeTextureHeightPatchEncoding HeightEncoding = ELandscapeTextureHeightPatchEncoding::WorldUnits;
 
 	/** Encoding settings. Not relevant when using native packed height as the encoding. */
 	UPROPERTY(EditAnywhere, Category = HeightPatch, meta = (UIMin = "0", UIMax = "1",
@@ -575,8 +606,9 @@ protected:
 	int32 InitTextureSizeY = 33;
 
 private:
+	void UpdateHeightConvertToNativeParamsIfNeeded();
 #if WITH_EDITOR
-	FLandscapeHeightPatchConvertToNativeParams GetHeightConversionParams() const;
+	FLandscapeHeightPatchConvertToNativeParams GetHeightConvertToNativeParams() const;
 	UTextureRenderTarget2D* ApplyToHeightmap(UTextureRenderTarget2D* InCombinedResult);
 	UTextureRenderTarget2D* ApplyToWeightmap(ULandscapeWeightPatchTextureInfo* PatchInfo, UTextureRenderTarget2D* InCombinedResult);
 

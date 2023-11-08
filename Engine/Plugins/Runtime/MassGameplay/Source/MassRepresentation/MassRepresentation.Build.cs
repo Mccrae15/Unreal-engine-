@@ -8,13 +8,6 @@ namespace UnrealBuildTool.Rules
 		{
 			PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
-			PublicIncludePaths.AddRange(
-				new string[] {
-					"Runtime/AIModule/Public",
-					ModuleDirectory + "/Public",
-				}
-			);
-
 			PublicDependencyModuleNames.AddRange(
 				new string[] {
 					"Core",
@@ -32,6 +25,7 @@ namespace UnrealBuildTool.Rules
 					"RenderCore",
 					"RHI",
 					"MassMovement",
+					"MassSignals",
 				}
 			);
 

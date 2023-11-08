@@ -1,16 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using EpicGames.Core;
-using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
-using System.Reflection;
 using System.Text.Json;
 using System.Threading.Tasks;
+using EpicGames.Core;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -71,27 +70,27 @@ namespace UnrealBuildTool
 			public TraceData(FileReference inputFile, ClangTrace? trace)
 			{
 				SourceFile = inputFile;
-				
-				TotalExecuteCompiler = trace?.traceEvents?.FindLast(x => string.Equals(x.name, "Total ExecuteCompiler"))?.dur ?? 0;
+
+				TotalExecuteCompiler = trace?.traceEvents?.FindLast(x => String.Equals(x.name, "Total ExecuteCompiler"))?.dur ?? 0;
 
 				// Subset of execute compiler
-				TotalFrontend = trace?.traceEvents?.FindLast(x => string.Equals(x.name, "Total Frontend"))?.dur ?? 0;
-				TotalBackend = trace?.traceEvents?.FindLast(x => string.Equals(x.name, "Total Backend"))?.dur ?? 0;
+				TotalFrontend = trace?.traceEvents?.FindLast(x => String.Equals(x.name, "Total Frontend"))?.dur ?? 0;
+				TotalBackend = trace?.traceEvents?.FindLast(x => String.Equals(x.name, "Total Backend"))?.dur ?? 0;
 
 				// Subset of frontend
-				TotalSource = trace?.traceEvents?.FindLast(x => string.Equals(x.name, "Total Source"))?.dur ?? 0;
-				TotalInstantiateFunction = trace?.traceEvents?.FindLast(x => string.Equals(x.name, "Total InstantiateFunction"))?.dur ?? 0;
-				TotalCodeGenFunction = trace?.traceEvents?.FindLast(x => string.Equals(x.name, "Total CodeGen Function"))?.dur ?? 0;
+				TotalSource = trace?.traceEvents?.FindLast(x => String.Equals(x.name, "Total Source"))?.dur ?? 0;
+				TotalInstantiateFunction = trace?.traceEvents?.FindLast(x => String.Equals(x.name, "Total InstantiateFunction"))?.dur ?? 0;
+				TotalCodeGenFunction = trace?.traceEvents?.FindLast(x => String.Equals(x.name, "Total CodeGen Function"))?.dur ?? 0;
 
 				// Subset of backend
-				TotalModuleToFunctionPassAdaptor = trace?.traceEvents?.FindLast(x => string.Equals(x.name, "Total ModuleToFunctionPassAdaptor"))?.dur ?? 0;
-				TotalModuleInlinerWrapperPass = trace?.traceEvents?.FindLast(x => string.Equals(x.name, "Total ModuleInlinerWrapperPass"))?.dur ?? 0;
-				TotalOptModule = trace?.traceEvents?.FindLast(x => string.Equals(x.name, "Total OptModule"))?.dur ?? 0;
+				TotalModuleToFunctionPassAdaptor = trace?.traceEvents?.FindLast(x => String.Equals(x.name, "Total ModuleToFunctionPassAdaptor"))?.dur ?? 0;
+				TotalModuleInlinerWrapperPass = trace?.traceEvents?.FindLast(x => String.Equals(x.name, "Total ModuleInlinerWrapperPass"))?.dur ?? 0;
+				TotalOptModule = trace?.traceEvents?.FindLast(x => String.Equals(x.name, "Total OptModule"))?.dur ?? 0;
 
 				// Frontend entry counts
-				SourceEntries = trace?.traceEvents?.Where(x => string.Equals(x.name, "Source")).LongCount() ?? 0;
-				InstantiateFunctionEntries = trace?.traceEvents?.Where(x => string.Equals(x.name, "InstantiateFunction")).LongCount() ?? 0;
-				CodeGenFunctionEntries = trace?.traceEvents?.Where(x => string.Equals(x.name, "CodeGen Function")).LongCount() ?? 0;
+				SourceEntries = trace?.traceEvents?.Where(x => String.Equals(x.name, "Source")).LongCount() ?? 0;
+				InstantiateFunctionEntries = trace?.traceEvents?.Where(x => String.Equals(x.name, "InstantiateFunction")).LongCount() ?? 0;
+				CodeGenFunctionEntries = trace?.traceEvents?.Where(x => String.Equals(x.name, "CodeGen Function")).LongCount() ?? 0;
 
 				// Other
 				ObjectBytes = GetObjectSize();
@@ -136,8 +135,8 @@ namespace UnrealBuildTool
 				".pch",
 			};
 
-			public static string CsvHeader => string.Join(',', CsvColumns);
-			public string CsvLine => string.Join(',', CsvColumns.Select(x => GetType().GetProperty(x)!.GetValue(this)!.ToString()));
+			public static string CsvHeader => String.Join(',', CsvColumns);
+			public string CsvLine => String.Join(',', CsvColumns.Select(x => GetType().GetProperty(x)!.GetValue(this)!.ToString()));
 
 			private long GetObjectSize()
 			{
@@ -170,7 +169,7 @@ namespace UnrealBuildTool
 
 		private ConcurrentDictionary<FileReference, ClangTrace> ClangTraceCache = new();
 
-		public override int Execute(CommandLineArguments Arguments, ILogger Logger)
+		public override Task<int> ExecuteAsync(CommandLineArguments Arguments, ILogger Logger)
 		{
 			FileReference ManifestFile = Arguments.GetFileReference("-ManifestFile=");
 			IEnumerable<FileReference> SourceFiles = FileReference.ReadAllLines(ManifestFile).Select(x => new FileReference(x));
@@ -181,7 +180,7 @@ namespace UnrealBuildTool
 
 			if (AggregateFile != null)
 			{
-				var Tasks = Task.WhenAll(SourceFiles.Select(x => GetTraceData(x, Logger)));
+				Task<TraceData[]> Tasks = Task.WhenAll(SourceFiles.Select(x => GetTraceData(x, Logger)));
 				Tasks.Wait();
 				List<TraceData> TraceDatas = Tasks.Result.OrderBy(x => x.Module).ThenBy(x => x.Name).ToList();
 
@@ -199,14 +198,14 @@ namespace UnrealBuildTool
 
 			if (HeadersFile != null)
 			{
-				var Tasks = Task.WhenAll(SourceFiles.Select(x => ParseTimingDataFile(x, Logger)));
+				Task<ClangTrace[]> Tasks = Task.WhenAll(SourceFiles.Select(x => ParseTimingDataFile(x, Logger)));
 				Tasks.Wait();
 				List<ClangTrace> ClangTraces = Tasks.Result.ToList();
 
 				Dictionary<FileReference, List<long>> Sources = new Dictionary<FileReference, List<long>>();
 				foreach (ClangTrace ClangTrace in ClangTraces.Where(x => x.traceEvents != null))
 				{
-					foreach (ClangTrace.TraceEvent Event in ClangTrace.traceEvents!.Where(x => string.Equals(x.name, "Source") && x.args?.ContainsKey("detail") == true))
+					foreach (ClangTrace.TraceEvent Event in ClangTrace.traceEvents!.Where(x => String.Equals(x.name, "Source") && x.args?.ContainsKey("detail") == true))
 					{
 						FileReference SourceFile = new FileReference(Event.args!["detail"].ToString()!);
 						if (!Sources.ContainsKey(SourceFile))
@@ -222,7 +221,7 @@ namespace UnrealBuildTool
 				using (StreamWriter Writer = new StreamWriter(TempFilePath))
 				{
 					Writer.WriteLine("Source,Count,Total,Min,Max,Average");
-					foreach (var Data in Sources.OrderBy(x => x.Key.FullName).Where(x => x.Key.HasExtension(".h") || x.Key.HasExtension(".inl")))
+					foreach (KeyValuePair<FileReference, List<long>> Data in Sources.OrderBy(x => x.Key.FullName).Where(x => x.Key.HasExtension(".h") || x.Key.HasExtension(".inl")))
 					{
 						Writer.WriteLine($"{Data.Key.FullName},{Data.Value.Count},{Data.Value.Sum()},{Data.Value.Min()},{Data.Value.Max()},{Data.Value.Average()}");
 					}
@@ -256,9 +255,8 @@ namespace UnrealBuildTool
 				File.Move(TempFilePath, ArchiveFile.FullName, true);
 			}
 
-			return 0;
+			return Task.FromResult(0);
 		}
-
 
 		private async Task<ClangTrace> ParseTimingDataFile(FileReference SourceFile, ILogger Logger)
 		{

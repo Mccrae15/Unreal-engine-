@@ -10,6 +10,7 @@
 #include "CADKernel/Mesh/Structure/FaceMesh.h"
 #include "CADKernel/Mesh/Structure/VertexMesh.h"
 #include "CADKernel/Topo/TopologicalEntity.h"
+#include "CADKernel/UI/Display.h"
 
 #include "Templates/UnrealTemplate.h"
 
@@ -21,7 +22,7 @@ void FModelMeshAnalyzer::BuildMesh()
 	ModelMesh.GetNodeCoordinates(NodeCoordinates);
 
 	int32 TriangleCount = 0;
-	for (const TSharedPtr<FFaceMesh>& FaceMesh : ModelMesh.GetFaceMeshes())
+	for (const FFaceMesh* FaceMesh : ModelMesh.GetFaceMeshes())
 	{
 		TriangleCount += FaceMesh->TrianglesVerticesIndex.Num() / 3;
 	}
@@ -49,11 +50,11 @@ void FModelMeshAnalyzer::BuildMesh()
 		return &Edge;
 	};
 
-	for (const TSharedPtr<FFaceMesh>& FaceMesh : ModelMesh.GetFaceMeshes())
+	for (const FFaceMesh* FaceMesh : ModelMesh.GetFaceMeshes())
 	{
-		TArray<int32>& TrianglesVerticesIndex = FaceMesh->TrianglesVerticesIndex;
-		TArray<int32>& VerticesGlobalIndex = FaceMesh->VerticesGlobalIndex;
-		TArray<FVector3f>& FaceNormals = FaceMesh->Normals;
+		const TArray<int32>& TrianglesVerticesIndex = FaceMesh->TrianglesVerticesIndex;
+		const TArray<int32>& VerticesGlobalIndex = FaceMesh->VerticesGlobalIndex;
+		const TArray<FVector3f>& FaceNormals = FaceMesh->Normals;
 
 		for (int32 Index = 0; Index < FaceMesh->TrianglesVerticesIndex.Num(); Index += 3)
 		{
@@ -73,7 +74,7 @@ void FModelMeshAnalyzer::BuildMesh()
 				Normals[NormalI] = FaceNormals[TrianglesVerticesIndex[Index + NormalI]];
 			}
 
-			Analyzer::FTriangle& Triangle = Triangles.Emplace_GetRef(Vertices, TriangleEdges, Normals, FaceMesh.Get());
+			Analyzer::FTriangle& Triangle = Triangles.Emplace_GetRef(Vertices, TriangleEdges, Normals, FaceMesh);
 
 			for (uint32 EdgeI = 0; EdgeI < 3; ++EdgeI)
 			{
@@ -208,6 +209,55 @@ double FModelMeshAnalyzer::ComputeMaxAngle() const
 bool FModelMeshAnalyzer::CheckOrientation() const
 {
 	return true;
+}
+
+void FModelMeshAnalyzer::Display()
+{
+	F3DDebugSession A(FString::Printf(TEXT("ModelMesh %d"), ModelMesh.GetId()));
+	{
+		F3DDebugSegment B(0);
+		for (const Analyzer::FTriangle& Triangle : Triangles)
+		{
+			DisplayTriangle(Triangle);
+		}
+	}
+
+	{
+		F3DDebugSegment B(ModelMesh.GetId());
+		for (const Analyzer::FEdge& Edge : Edges)
+		{
+			switch (Edge.TriangleCount)
+			{
+			case 1:
+				DisplayEdge(Edge, EVisuProperty::BorderEdge);
+				break;
+
+			case 2:
+				DisplayEdge(Edge, EVisuProperty::EdgeMesh);
+				break;
+
+			default:
+				DisplayEdge(Edge, EVisuProperty::NonManifoldEdge);
+				break;
+			}
+		}
+	}
+
+}
+
+void FModelMeshAnalyzer::DisplayTriangle(const Analyzer::FTriangle& Triangle)
+{
+	TArray<FPoint> Vertices;
+	Vertices.Reserve(3);
+	Vertices.Add(NodeCoordinates[Triangle.Vertices[0]]);
+	Vertices.Add(NodeCoordinates[Triangle.Vertices[1]]);
+	Vertices.Add(NodeCoordinates[Triangle.Vertices[2]]);
+	DrawElement(2, Vertices);
+}
+
+void FModelMeshAnalyzer::DisplayEdge(const Analyzer::FEdge& Edge, EVisuProperty Property)
+{
+	DrawSegment( NodeCoordinates[Edge.VertexIndices[0]], NodeCoordinates[Edge.VertexIndices[1]], Property);
 }
 
 FPoint Analyzer::FTriangle::ComputeNormal(const TArray<FPoint>& NodeCoordinates) const

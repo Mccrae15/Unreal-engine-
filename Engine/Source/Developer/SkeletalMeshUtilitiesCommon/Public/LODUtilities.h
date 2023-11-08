@@ -211,6 +211,10 @@ public:
 		bool bUseMikkTSpace,
 		bool bComputeWeightedNormals);
 
+	
+	/** Build the vertex attributes */
+	static bool UpdateLODInfoVertexAttributes(USkeletalMesh *InSkeletalMesh, int32 InSourceLODIndex, int32 InTargetLODIndex, bool bInCopyAttributeValues);
+	
 	/**
 	 * Re-generate all (editor-only) skin weight profile, used whenever we rebuild the skeletal mesh data which could change the chunking and bone indices
 	 * 
@@ -232,6 +236,37 @@ public:
 	 * @param LODIndex - We can adjust only the base LOD (LODIndex 0), the function will not do anything if LODIndex is not 0
 	 */
 	static void AdjustImportDataFaceMaterialIndex(const TArray<FSkeletalMaterial>& Materials, TArray<SkeletalMeshImportData::FMaterial>& RawMeshMaterials, TArray<SkeletalMeshImportData::FMeshFace>& LODFaces, int32 LODIndex);
+
+	/**
+	 * Structure to pass all the needed parameters to do match the material when importing a skeletal mesh LOD.
+	 * @param SkeletalMesh - The skeletalmesh that get a LOD re/import
+	 * @param LodIndex - The skeletalmesh LOD index that get re/import
+	 * @param bIsReImport - whether its a skeletal mesh LOD re-import
+	 * @param ImportedMaterials - The imported material list
+	 * @param ExistingOriginalPerSectionMaterialImportName - The previously LOD imported material list (cannot be null if bIsReImport is true)
+	 * @param CustomImportedLODModel - When importing custom LOD we want to pass the LODModel to synchronize the sections
+	 */
+	struct FSkeletalMeshMatchImportedMaterialsParameters
+	{
+		USkeletalMesh* SkeletalMesh = nullptr;
+		int32 LodIndex = 0;
+		bool bIsReImport = false;
+		const TArray<SkeletalMeshImportData::FMaterial>* ImportedMaterials = nullptr;
+		const TArray<FName>* ExistingOriginalPerSectionMaterialImportName = nullptr;
+		FSkeletalMeshLODModel* CustomImportedLODModel = nullptr;
+	};
+
+	/**
+	 * When any skeletalmesh LOD get imported or re-imported, we want to have common code to set all materials data.
+	 * In case we re-import a LOD this code will match the sections using imported material name to be able to keep any section data.
+	 * The material slot array is not re-order even if we re-import the base LOD.
+	 */
+	static void MatchImportedMaterials(FSkeletalMeshMatchImportedMaterialsParameters& Parameters);
+
+	/**
+	 * Reorder the material slot array to follow the base LOD section order. It will readjust all LOD section material index and LODMaterialMap.
+	 */
+	static void ReorderMaterialSlotToBaseLod(USkeletalMesh* SkeletalMesh);
 
 	/**
 	 * This function will strip all triangle in the specified LOD that don't have any UV area pointing on a black pixel in the TextureMask.

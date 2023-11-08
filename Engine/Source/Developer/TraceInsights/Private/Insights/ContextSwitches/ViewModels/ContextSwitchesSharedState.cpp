@@ -108,7 +108,7 @@ UE_ENABLE_OPTIMIZATION_SHIP
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 FContextSwitchesSharedState::FContextSwitchesSharedState(STimingView* InTimingView)
-	: TimingView(InTimingView)
+	: TimingViewSession(InTimingView)
 	, ThreadsSerial(0)
 	, CpuCoresSerial(0)
 	, bAreCoreTracksVisible(true)
@@ -123,21 +123,11 @@ FContextSwitchesSharedState::FContextSwitchesSharedState(STimingView* InTimingVi
 
 void FContextSwitchesSharedState::OnBeginSession(Insights::ITimingViewSession& InSession)
 {
-	if (&InSession != TimingView)
+	if (&InSession != TimingViewSession)
 	{
-		TSharedPtr<STimingProfilerWindow> Window = FTimingProfilerManager::Get()->GetProfilerWindow();
-		if (Window.IsValid())
+		if (InSession.GetName() == FInsightsManagerTabs::TimingProfilerTabId)
 		{
-			TSharedPtr<STimingView> WindowTimingView = Window->GetTimingView();
-			if (WindowTimingView.IsValid() && WindowTimingView.Get() == &InSession)
-			{
-				TimingView = WindowTimingView.Get();
-				AddCommands();
-			}
-		}
-		else if (TimingView == nullptr && FTimingProfilerManager::Get()->IsTimingViewVisible())
-		{
-			TimingView = (STimingView*)&InSession;
+			TimingViewSession = &InSession;
 			AddCommands();
 		}
 		else
@@ -166,7 +156,7 @@ void FContextSwitchesSharedState::OnBeginSession(Insights::ITimingViewSession& I
 
 void FContextSwitchesSharedState::OnEndSession(Insights::ITimingViewSession& InSession)
 {
-	if (&InSession != TimingView)
+	if (&InSession != TimingViewSession)
 	{
 		return;
 	}
@@ -185,15 +175,14 @@ void FContextSwitchesSharedState::OnEndSession(Insights::ITimingViewSession& InS
 	bSyncWithProviders = false;
 
 	TargetTimingEvent = nullptr;
-
-	TimingView = nullptr;
+	TimingViewSession = nullptr;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void FContextSwitchesSharedState::Tick(Insights::ITimingViewSession& InSession, const TraceServices::IAnalysisSession& InAnalysisSession)
 {
-	if (&InSession != TimingView)
+	if (&InSession != TimingViewSession)
 	{
 		return;
 	}
@@ -222,7 +211,7 @@ void FContextSwitchesSharedState::Tick(Insights::ITimingViewSession& InSession, 
 
 void FContextSwitchesSharedState::ExtendCpuTracksFilterMenu(Insights::ITimingViewSession& InSession, FMenuBuilder& InMenuBuilder)
 {
-	if (&InSession != TimingView)
+	if (&InSession != TimingViewSession)
 	{
 		return;
 	}
@@ -258,22 +247,25 @@ void FContextSwitchesSharedState::BuildSubMenu(FMenuBuilder& InMenuBuilder)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void FContextSwitchesSharedState::AddQuickFindFilters(TSharedPtr<class FFilterConfigurator> FilterConfigurator)
+void FContextSwitchesSharedState::AddQuickFindFilters(TSharedPtr<FFilterConfigurator> FilterConfigurator)
 {
-	TSharedPtr<TArray<TSharedPtr<struct FFilter>>>& AvailableFilters = FilterConfigurator->GetAvailableFilters();
-
 	TSharedPtr<TArray<TSharedPtr<IFilterOperator>>> CoreEventNameFilterOperators = MakeShared<TArray<TSharedPtr<IFilterOperator>>>();
 	CoreEventNameFilterOperators->Add(StaticCastSharedRef<IFilterOperator>(MakeShared<FFilterOperator<int64>>(EFilterOperator::Eq, TEXT("Is"), [](int64 lhs, int64 rhs) { return lhs == rhs; })));
 
-	TSharedPtr<FFilterWithSuggestions> TimerNameFilter = MakeShared<FFilterWithSuggestions>(static_cast<int32>(EFilterField::CoreEventName), LOCTEXT("CoreEventName", "Core Event Name"), LOCTEXT("CoreEventName", "Core Event Name"), EFilterDataType::StringInt64Pair, CoreEventNameFilterOperators);
-	TimerNameFilter->Callback = [this](const FString& Text, TArray<FString>& OutSuggestions)
+	TSharedRef<FFilterWithSuggestions> TimerNameFilter = MakeShared<FFilterWithSuggestions>(
+		static_cast<int32>(EFilterField::CoreEventName),
+		LOCTEXT("CoreEventName", "Core Event Name"),
+		LOCTEXT("CoreEventName", "Core Event Name"),
+		EFilterDataType::StringInt64Pair,
+		MakeShared<FCoreEventNameFilterValueConverter>(),
+		CoreEventNameFilterOperators);
+
+	TimerNameFilter->SetCallback([this](const FString& Text, TArray<FString>& OutSuggestions)
 	{
 		this->PopulateCoreEventNameSuggestionList(Text, OutSuggestions);
-	};
+	});
 
-	TimerNameFilter->Converter = MakeShared<FCoreEventNameFilterValueConverter>();
-
-	AvailableFilters->Add(TimerNameFilter);
+	FilterConfigurator->Add(TimerNameFilter);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -301,6 +293,12 @@ void FContextSwitchesSharedState::AddCommands()
 {
 	FContextSwitchesStateCommands::Register();
 
+	TSharedPtr<STimingView> TimingView = GetTimingView();
+	
+	if (!TimingView.IsValid())
+	{
+		return;
+	}
 	TSharedPtr<FUICommandList> CommandList = TimingView->GetCommandList();
 	ensure(CommandList.IsValid());
 
@@ -360,7 +358,9 @@ bool FContextSwitchesSharedState::AreContextSwitchesAvailable() const
 
 void FContextSwitchesSharedState::AddCoreTracks()
 {
-	if (!TimingView)
+	TSharedPtr<STimingView> TimingView = GetTimingView();
+
+	if (!TimingView.IsValid())
 	{
 		return;
 	}
@@ -387,7 +387,7 @@ void FContextSwitchesSharedState::AddCoreTracks()
 
 	CpuCoresSerial = NewCpuCoresSerial;
 
-	ContextSwitchesProvider->EnumerateCpuCores([this](const TraceServices::FCpuCoreInfo& CpuCoreInfo)
+	ContextSwitchesProvider->EnumerateCpuCores([this, TimingView](const TraceServices::FCpuCoreInfo& CpuCoreInfo)
 		{
 			TSharedPtr<FCpuCoreTimingTrack>* TrackPtrPtr = CpuCoreTimingTracks.Find(CpuCoreInfo.CoreNumber);
 			if (TrackPtrPtr == nullptr)
@@ -408,6 +408,7 @@ void FContextSwitchesSharedState::AddCoreTracks()
 
 void FContextSwitchesSharedState::RemoveCoreTracks()
 {
+	TSharedPtr<STimingView> TimingView = GetTimingView();
 	CpuCoresSerial = 0;
 
 	if (TimingView)
@@ -452,6 +453,12 @@ void FContextSwitchesSharedState::AddContextSwitchesChildTracks()
 	//TODO: Create "Cpu Thread" timing tracks also for threads without cpu timing events (i.e. only with context switch events).
 #endif
 
+	TSharedPtr<STimingView> TimingView = GetTimingView();
+	if (!TimingView.IsValid())
+	{
+		return;
+	}
+
 	TSharedPtr<FThreadTimingSharedState> TimingSharedState = TimingView->GetThreadTimingSharedState();
 
 	if (!TimingSharedState.IsValid())
@@ -478,7 +485,12 @@ void FContextSwitchesSharedState::AddContextSwitchesChildTracks()
 void FContextSwitchesSharedState::RemoveContextSwitchesChildTracks()
 {
 	ThreadsSerial = 0;
-
+	
+	TSharedPtr<STimingView> TimingView = GetTimingView();
+	if (!TimingView.IsValid())
+	{
+		return;
+	}
 	TSharedPtr<FThreadTimingSharedState> TimingSharedState = TimingView->GetThreadTimingSharedState();
 
 	if (!TimingSharedState.IsValid())
@@ -554,6 +566,7 @@ void FContextSwitchesSharedState::SetExtendedLinesVisible(bool bOnOff)
 
 bool FContextSwitchesSharedState::IsValidCpuCoreEventSelected() const
 {
+	TSharedPtr<STimingView> TimingView = GetTimingView();
 	if (TimingView == nullptr)
 	{
 		return false;
@@ -569,6 +582,7 @@ bool FContextSwitchesSharedState::IsValidCpuCoreEventSelected() const
 
 bool FContextSwitchesSharedState::IsValidContextSwitchEventSelected() const
 {
+	TSharedPtr<STimingView> TimingView = GetTimingView();
 	if (TimingView == nullptr)
 	{
 		return false;
@@ -584,6 +598,8 @@ bool FContextSwitchesSharedState::IsValidContextSwitchEventSelected() const
 
 void FContextSwitchesSharedState::Command_NavigateToCpuThreadEvent_Execute()
 {
+	TSharedPtr<STimingView> TimingView = GetTimingView();
+
 	if (TimingView && ensure(IsValidCpuCoreEventSelected()))
 	{
 		if (!TargetTimingEvent.IsValid())
@@ -615,6 +631,8 @@ void FContextSwitchesSharedState::Command_NavigateToCpuThreadEvent_Execute()
 
 void FContextSwitchesSharedState::Command_DockCpuThreadTrackToBottom_Execute()
 {
+	TSharedPtr<STimingView> TimingView = GetTimingView();
+
 	if (TimingView && ensure(IsValidCpuCoreEventSelected()))
 	{
 		if (!TargetTimingEvent.IsValid())
@@ -638,7 +656,7 @@ void FContextSwitchesSharedState::Command_DockCpuThreadTrackToBottom_Execute()
 					if (!ThreadTimingTrack->IsVisible())
 					{
 						ThreadTimingTrack->Show();
-						TimingView->OnTrackVisibilityChanged();
+						TimingView->HandleTrackVisibilityChanged();
 					}
 				}
 			}
@@ -650,6 +668,8 @@ void FContextSwitchesSharedState::Command_DockCpuThreadTrackToBottom_Execute()
 
 void FContextSwitchesSharedState::Command_NavigateToCpuCoreEvent_Execute()
 {
+	TSharedPtr<STimingView> TimingView = GetTimingView();
+
 	if (TimingView && ensure(IsValidContextSwitchEventSelected()))
 	{
 		if (!TargetTimingEvent.IsValid())
@@ -678,6 +698,8 @@ void FContextSwitchesSharedState::Command_NavigateToCpuCoreEvent_Execute()
 
 void FContextSwitchesSharedState::Command_DockCpuCoreTrackToTop_Execute()
 {
+	TSharedPtr<STimingView> TimingView = GetTimingView();
+
 	if (TimingView && ensure(IsValidContextSwitchEventSelected()))
 	{
 		if (!TargetTimingEvent.IsValid())
@@ -701,7 +723,7 @@ void FContextSwitchesSharedState::Command_DockCpuCoreTrackToTop_Execute()
 					if (!CpuCoreTimingTrack->IsVisible())
 					{
 						CpuCoreTimingTrack->Show();
-						TimingView->OnTrackVisibilityChanged();
+						TimingView->HandleTrackVisibilityChanged();
 					}
 				}
 			}
@@ -737,6 +759,7 @@ void FContextSwitchesSharedState::GetThreadInfo(uint32 InSystemThreadId, uint32&
 TSharedPtr<FThreadTimingTrack> FContextSwitchesSharedState::GetThreadTimingTrack(uint32 ThreadId) const
 {
 	TSharedPtr<FThreadTimingTrack> FoundTrack;
+	TSharedPtr<STimingView> TimingView = GetTimingView();
 
 	if (TimingView)
 	{
@@ -760,6 +783,7 @@ TSharedPtr<FThreadTimingTrack> FContextSwitchesSharedState::GetThreadTimingTrack
 TSharedPtr<Insights::FCpuCoreTimingTrack> FContextSwitchesSharedState::GetCpuCoreTimingTrack(uint32 CoreNumber) const
 {
 	TSharedPtr<FCpuCoreTimingTrack> FoundTrack;
+	TSharedPtr<STimingView> TimingView = GetTimingView();
 
 	if (TimingView)
 	{
@@ -776,6 +800,20 @@ TSharedPtr<Insights::FCpuCoreTimingTrack> FContextSwitchesSharedState::GetCpuCor
 	}
 
 	return FoundTrack;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TSharedPtr<STimingView> FContextSwitchesSharedState::GetTimingView()
+{
+	TSharedPtr<STimingView> TimingView;
+	TSharedPtr<STimingProfilerWindow> Window = FTimingProfilerManager::Get()->GetProfilerWindow();
+	if (Window.IsValid())
+	{
+		TimingView = Window->GetTimingView();
+	}
+
+	return TimingView;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

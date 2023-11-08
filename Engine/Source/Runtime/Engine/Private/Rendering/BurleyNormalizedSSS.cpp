@@ -7,6 +7,15 @@ BurleyNormalizedSSS.cpp: Compute the transmition profile for Burley normalized S
 
 #include "Rendering/BurleyNormalizedSSS.h"
 #include "Math/Vector.h"
+#include "HAL/IConsoleManager.h"
+
+static TAutoConsoleVariable<int32> CVarSSProfilesTransmissionUseLegacy(
+	TEXT("r.SSProfiles.Transmission.UseLegacy"),
+	1,
+	TEXT("0. Use more physically correct transmission profile.\n")
+	TEXT("1. Use legacy transmission profile (default)."),
+	ECVF_RenderThreadSafe
+);
 
 // estimated from the sampling interval, 1/TargetBufferSize(1/32) and MaxTransmissionProfileDistance. If any is changed, this parameter should be re-estimated.
 const float ProfileRadiusOffset = 0.06;
@@ -239,12 +248,12 @@ void ComputeMirroredBSSSKernel(FLinearColor* TargetBuffer, uint32 TargetBufferSi
 void ComputeTransmissionProfileBurley(FLinearColor* TargetBuffer, uint32 TargetBufferSize, 
 									FLinearColor FalloffColor, float ExtinctionScale,
 									FLinearColor SurfaceAlbedo, FLinearColor DiffuseMeanFreePathInMm,
-									float InUnitToMm, FLinearColor TransmissionTintColor)
+									float WorldUnitScale, FLinearColor TransmissionTintColor)
 {
 	check(TargetBuffer);
 	check(TargetBufferSize > 0);
 
-
+	// Unit scale should be independent to the base unit.
 	// Example of scaling
 	// ----------------------------------------
 	// DistanceCm * UnitScale * CmToMm = Value (mm)
@@ -253,12 +262,17 @@ void ComputeTransmissionProfileBurley(FLinearColor* TargetBuffer, uint32 TargetB
 	//   1          1.0         10     =  10mm
 	//   1         10.0         10     = 100mm
 
-	// It seems there is an inconsistency here: either InUnitToMm should in fact be MmToUnit or the division need to be converted to a multiply
-	// This should be corrected as this makes the transmission scaling incorrect
-	const float UnitToMm = 1.f / InUnitToMm;
+	const float SubsurfaceScatteringUnitInCm = 0.1f;
+	const float UnitScale = WorldUnitScale / SubsurfaceScatteringUnitInCm;
+	float InvUnitScale = 1.0 / UnitScale; // Scaling the unit is equivalent to inverse scaling of the profile.
+
+	if (CVarSSProfilesTransmissionUseLegacy.GetValueOnAnyThread() == 1)
+	{
+		InvUnitScale *= 0.1f; // Backward compatibility
+	}
 
 	static float MaxTransmissionProfileDistance = 5.0f; // See SSSS_MAX_TRANSMISSION_PROFILE_DISTANCE in TransmissionCommon.ush
-
+	static float CmToMm = 10.0f;
 	//assuming that the volume albedo is the same to the surface albedo for transmission.
 	FVector ScalingFactor = GetSearchLightDiffuseScalingFactor(SurfaceAlbedo);
 
@@ -266,8 +280,8 @@ void ComputeTransmissionProfileBurley(FLinearColor* TargetBuffer, uint32 TargetB
 
 	for (uint32 i = 0; i < TargetBufferSize; ++i)
 	{
-		const float DistanceInMm = i * InvSize * MaxTransmissionProfileDistance * UnitToMm;
-		const float OffsetInMm = ProfileRadiusOffset * UnitToMm;
+		const float DistanceInMm = i * InvSize * (MaxTransmissionProfileDistance * CmToMm) * InvUnitScale;
+		const float OffsetInMm = (ProfileRadiusOffset * CmToMm) * InvUnitScale;
 
 
 		FLinearColor TransmissionProfile = Burley_TransmissionProfile(DistanceInMm + OffsetInMm, SurfaceAlbedo, ScalingFactor, DiffuseMeanFreePathInMm);

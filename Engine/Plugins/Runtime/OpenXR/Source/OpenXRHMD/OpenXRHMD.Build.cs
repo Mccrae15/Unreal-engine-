@@ -1,28 +1,25 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using System.IO;
-using System.Linq;
-using EpicGames.Core;
-
 namespace UnrealBuildTool.Rules
 {
 	public class OpenXRHMD : ModuleRules
 	{
 		public OpenXRHMD(ReadOnlyTargetRules Target) : base(Target)
         {
-            var EngineDir = Path.GetFullPath(Target.RelativeEnginePath);
-            PrivateIncludePaths.AddRange(
-				new string[] {
-					"OpenXRHMD/Private",
-                    EngineDir + "/Source/ThirdParty/OpenXR/include",
-					System.IO.Path.Combine(GetModuleDirectory("Renderer"), "Private"),
-					// ... add other private include paths required here ...
+			PublicIncludePathModuleNames.AddRange(
+				new string[]
+				{
+					"OpenXR"
 				}
 				);
 
-			PublicIncludePathModuleNames.Add("OpenXR");
-
-            PublicDependencyModuleNames.Add("HeadMountedDisplay");
+			PublicDependencyModuleNames.AddRange(
+				new string[]
+				{
+					"HeadMountedDisplay",
+					"XRBase",
+				}
+				);
 
 			PrivateDependencyModuleNames.AddRange(
 				new string[]

@@ -23,6 +23,7 @@ namespace UE
 				 */
 				static FTransform ConvertTransform(const FbxAMatrix& Matrix);
 				static FMatrix ConvertMatrix(const FbxAMatrix& Matrix);
+				static FbxAMatrix ConvertMatrix(const FMatrix& UEMatrix);
 				static FQuat ConvertRotToQuat(FbxQuaternion Quaternion);
 				static FRotator ConvertEuler(FbxDouble3 Euler);
 				static FVector ConvertScale(FbxVector4 Vector);
@@ -54,12 +55,6 @@ namespace UE
 				/** String Conversion API Begin */
 
 				/**
-				 * Replace all special characters with '_', then remove all namespace
-				 * Special characters are . , / ` %
-				 */
-				static FString MakeName(const ANSICHAR* Name);
-
-				/**
 				 * Convert ANSI char to a FString using ANSI_TO_TCHAR macro
 				 */
 				static FString MakeString(const ANSICHAR* Name);
@@ -77,7 +72,6 @@ namespace UE
 				 * rotation curves from the nodes property. This can become time consuming but we have no choice.
 				 */
 				static void ApplyUnroll(FbxNode* pNode, FbxAnimLayer* pLayer, FbxAnimCurveFilterUnroll* pUnrollFilter);
-				static void MergeAllLayerAnimation(FbxScene* SDKScene, FbxAnimStack* AnimStack, float ResampleRate);
 
 				/** Scene Conversion Private Implementation End */
 				//////////////////////////////////////////////////////////////////////////

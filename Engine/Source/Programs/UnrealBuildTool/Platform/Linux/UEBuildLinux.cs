@@ -2,19 +2,16 @@
 
 using System;
 using System.Collections.Generic;
-using System.Text;
-using System.Diagnostics;
 using System.IO;
 using EpicGames.Core;
-using System.Text.RegularExpressions;
-using UnrealBuildBase;
 using Microsoft.Extensions.Logging;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
 	partial struct UnrealArch
 	{
-		private static Dictionary<UnrealArch, string> LinuxToolchainArchitectures = new()
+		private static IReadOnlyDictionary<UnrealArch, string> LinuxToolchainArchitectures = new Dictionary<UnrealArch, string>()
 		{
 			{ UnrealArch.Arm64,         "aarch64-unknown-linux-gnueabi" },
 			{ UnrealArch.X64,           "x86_64-unknown-linux-gnu" },
@@ -27,7 +24,10 @@ namespace UnrealBuildTool
 		{
 			get
 			{
-				if (AppleToolchainArchitectures.ContainsKey(this)) return LinuxToolchainArchitectures[this];
+				if (AppleToolchainArchitectures.ContainsKey(this))
+				{
+					return LinuxToolchainArchitectures[this];
+				}
 
 				throw new BuildException($"Unknown architecture {ToString()} passed to UnrealArch.LinuxName");
 			}
@@ -53,6 +53,13 @@ namespace UnrealBuildTool
 		[CommandLine("-EnableASan")]
 		[XmlConfigFile(Category = "BuildConfiguration", Name = "bEnableAddressSanitizer")]
 		public bool bEnableAddressSanitizer = false;
+
+		/// <summary>
+		/// Enables LibFuzzer
+		/// </summary>
+		[CommandLine("-EnableLibFuzzer")]
+		[XmlConfigFile(Category = "BuildConfiguration", Name = "bEnableLibFuzzer")]
+		public bool bEnableLibFuzzer = false;
 
 		/// <summary>
 		/// Enables thread sanitizer (TSan)
@@ -89,6 +96,13 @@ namespace UnrealBuildTool
 		public bool bTuneDebugInfoForLLDB = false;
 
 		/// <summary>
+		/// Whether to globally disable calling dump_syms
+		/// </summary>
+		[CommandLine("-NoDumpSyms")]
+		[XmlConfigFile(Category = "BuildConfiguration", Name = "bDisableDumpSyms")]
+		public bool bDisableDumpSyms = false;
+
+		/// <summary>
 		/// Enables runtime ray tracing support.
 		/// </summary>
 		[ConfigFile(ConfigHierarchyType.Engine, "/Script/LinuxTargetPlatform.LinuxTargetSettings")]
@@ -115,44 +129,27 @@ namespace UnrealBuildTool
 		/// Accessors for fields on the inner TargetRules instance
 		/// </summary>
 		#region Read-only accessor properties 
-		#pragma warning disable CS1591
+#pragma warning disable CS1591
 
-		public bool bPreservePSYM
-		{
-			get { return Inner.bPreservePSYM; }
-		}
+		public bool bPreservePSYM => Inner.bPreservePSYM;
 
-		public bool bEnableAddressSanitizer
-		{
-			get { return Inner.bEnableAddressSanitizer; }
-		}
+		public bool bEnableAddressSanitizer => Inner.bEnableAddressSanitizer;
 
-		public bool bEnableThreadSanitizer
-		{
-			get { return Inner.bEnableThreadSanitizer; }
-		}
+		public bool bEnableLibFuzzer => Inner.bEnableLibFuzzer;
 
-		public bool bEnableUndefinedBehaviorSanitizer
-		{
-			get { return Inner.bEnableUndefinedBehaviorSanitizer; }
-		}
+		public bool bEnableThreadSanitizer => Inner.bEnableThreadSanitizer;
 
-		public bool bEnableMemorySanitizer
-		{
-			get { return Inner.bEnableMemorySanitizer; }
-		}
+		public bool bEnableUndefinedBehaviorSanitizer => Inner.bEnableUndefinedBehaviorSanitizer;
 
-		public bool bTuneDebugInfoForLLDB
-		{
-			get { return Inner.bTuneDebugInfoForLLDB; }
-		}
+		public bool bEnableMemorySanitizer => Inner.bEnableMemorySanitizer;
 
-		public bool bEnableRayTracing
-		{
-			get { return Inner.bEnableRayTracing; }
-		}
+		public bool bTuneDebugInfoForLLDB => Inner.bTuneDebugInfoForLLDB;
 
-		#pragma warning restore CS1591
+		public bool bDisableDumpSyms => Inner.bDisableDumpSyms;
+
+		public bool bEnableRayTracing => Inner.bEnableRayTracing;
+
+#pragma warning restore CS1591
 		#endregion
 	}
 
@@ -160,7 +157,7 @@ namespace UnrealBuildTool
 	class LinuxArchitectureConfig : UnrealArchitectureConfig
 	{
 		public LinuxArchitectureConfig(UnrealTargetPlatform Platform)
-			:  base(Platform == UnrealTargetPlatform.Linux ? UnrealArch.X64 : UnrealArch.Arm64)
+			: base(Platform == UnrealTargetPlatform.Linux ? UnrealArch.X64 : UnrealArch.Arm64)
 		{
 		}
 	}
@@ -181,7 +178,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		public LinuxPlatform(LinuxPlatformSDK InSDK, ILogger Logger) 
+		public LinuxPlatform(LinuxPlatformSDK InSDK, ILogger Logger)
 			: this(UnrealTargetPlatform.Linux, InSDK, Logger)
 		{
 			SDK = InSDK;
@@ -198,13 +195,24 @@ namespace UnrealBuildTool
 			ValidateTarget(Target);
 		}
 
+		public bool IsLTOEnabled(ReadOnlyTargetRules Target)
+		{
+			// Force LTO on if using PGO, or if specified in the target rules.
+			if (Target.bAllowLTCG || Target.bPGOOptimize || Target.bPGOProfile)
+			{
+				return true;
+			}
+
+			return false;
+		}
+
 		public override void ValidateTarget(TargetRules Target)
 		{
-			if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CLANG_STATIC_ANALYZER_MODE")))
+			if (!String.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CLANG_STATIC_ANALYZER_MODE")))
 			{
 				Target.StaticAnalyzer = StaticAnalyzer.Default;
 				Target.StaticAnalyzerOutputType = (Environment.GetEnvironmentVariable("CLANG_ANALYZER_OUTPUT")?.Contains("html", StringComparison.OrdinalIgnoreCase) == true) ? StaticAnalyzerOutputType.Html : StaticAnalyzerOutputType.Text;
-				Target.StaticAnalyzerMode = string.Equals(Environment.GetEnvironmentVariable("CLANG_STATIC_ANALYZER_MODE"), "shallow") ? StaticAnalyzerMode.Shallow : StaticAnalyzerMode.Deep;
+				Target.StaticAnalyzerMode = String.Equals(Environment.GetEnvironmentVariable("CLANG_STATIC_ANALYZER_MODE"), "shallow") ? StaticAnalyzerMode.Shallow : StaticAnalyzerMode.Deep;
 			}
 			else if (Target.StaticAnalyzer == StaticAnalyzer.Clang)
 			{
@@ -227,6 +235,11 @@ namespace UnrealBuildTool
 			{
 				string? SanitizerSuffix = null;
 
+				if (Target.bUseAutoRTFMCompiler)
+				{
+					SanitizerSuffix = "AutoRTFM";
+				}
+
 				if (Target.LinuxPlatform.bEnableAddressSanitizer)
 				{
 					SanitizerSuffix = "ASan";
@@ -243,6 +256,10 @@ namespace UnrealBuildTool
 				{
 					SanitizerSuffix = "MSan";
 				}
+				if (Target.LinuxPlatform.bEnableLibFuzzer)
+				{
+					SanitizerSuffix += "LibFuzzer";
+				}
 
 				if (!String.IsNullOrEmpty(SanitizerSuffix))
 				{
@@ -256,7 +273,7 @@ namespace UnrealBuildTool
 			}
 
 			if (Target.GlobalDefinitions.Contains("USE_NULL_RHI=1"))
-			{				
+			{
 				Target.bCompileCEF3 = false;
 			}
 
@@ -269,6 +286,9 @@ namespace UnrealBuildTool
 			{
 				IWYUToolChain.ValidateTarget(Target);
 			}
+
+			// Disable chaining PCHs for the moment because it is crashing clang
+			Target.bChainPCHs = false;
 		}
 
 		public override bool CanUseXGE()
@@ -280,12 +300,6 @@ namespace UnrealBuildTool
 			// [bschaefer] 2018-12-17: disable XGE again, as the same issue before seems to still be happening but intermittently
 			// [bschaefer] 2019-6-13: enable XGE, as the bug from before is now fixed
 			return BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64;
-		}
-
-		public override bool CanUseParallelExecutor()
-		{
-			// No known problems with parallel executor, always use for build machines
-			return true;
 		}
 
 		/// <summary>
@@ -347,14 +361,14 @@ namespace UnrealBuildTool
 				case UEBuildBinaryType.Executable:
 					if (InTarget.LinuxPlatform.bPreservePSYM)
 					{
-						return new string[] {".psym", ".sym", ".debug"};
+						return new string[] { ".psym", ".sym", ".debug" };
 					}
 					else
 					{
-						return new string[] {".sym", ".debug"};
+						return new string[] { ".sym", ".debug" };
 					}
 			}
-			return new string [] {};
+			return new string[] { };
 		}
 
 		/// <summary>
@@ -481,13 +495,45 @@ namespace UnrealBuildTool
 				if (Target.ProjectFile != null)
 				{
 					BaseDir = DirectoryReference.FromFile(Target.ProjectFile);
+					// projects put PGO data in Platform/Linux/Build/PGO, even if Linux platform isn't a Platform Extension
+					CompileEnvironment.PGODirectory = Path.Combine(BaseDir.FullName, "Platforms", Target.Platform.ToString(), "Build", "PGO");
 				}
-				CompileEnvironment.PGODirectory = Path.Combine(BaseDir.FullName, "Build", Target.Platform.ToString(), "PGO").Replace('\\', '/') + "/";
-				CompileEnvironment.PGOFilenamePrefix = "profile.profdata";
+				else
+				{
+					// project-less build put PGO data in Engine/Build/Linux/PGO, because Linux platform isn't a Platform Extension
+					CompileEnvironment.PGODirectory = Path.Combine(BaseDir.FullName, "Build", Target.Platform.ToString(), "PGO");
+				}
+				CompileEnvironment.PGODirectory = CompileEnvironment.PGODirectory.Replace('\\', '/') + "/";
+				CompileEnvironment.PGOFilenamePrefix = string.Format("{0}-{1}-{2}.profdata", Target.Name, Target.Platform, Target.Configuration);
 
-				LinkEnvironment.PGODirectory = CompileEnvironment.PGODirectory;
-				LinkEnvironment.PGOFilenamePrefix = CompileEnvironment.PGOFilenamePrefix;
+				// Check if the profdata file exists and disable if not.
+				// If the file exists but has zero length, this is a "soft" disabling. E.g. PGO data has become stale and we want to temporarily compile without PGO - do not complain about it.
+				String PGOFilePath = Path.Combine(CompileEnvironment.PGODirectory, CompileEnvironment.PGOFilenamePrefix);
+				FileInfo Info = new FileInfo(PGOFilePath);
+				if (!Info.Exists || Info.Length == 0)
+				{
+					if (!Info.Exists)
+					{
+						Logger.LogWarning("Warning: PGO file '{0}' does not exist, disabling optimization", PGOFilePath);
+					}
+					else
+					{
+						Logger.LogInformation("PGO file '{0}' exists but has 0 length. Assuming that PGO data is temporarily missing, disabling optimization without a warning.", PGOFilePath);
+					}
+					CompileEnvironment.bPGOOptimize = false;
+					LinkEnvironment.bPGOOptimize = false;
+
+					CompileEnvironment.PGODirectory = "";
+					CompileEnvironment.PGOFilenamePrefix = "";
+				}
+				else
+				{
+					LinkEnvironment.PGODirectory = CompileEnvironment.PGODirectory;
+					LinkEnvironment.PGOFilenamePrefix = CompileEnvironment.PGOFilenamePrefix;
+				}
 			}
+
+			LinkEnvironment.bCodeCoverage = CompileEnvironment.bCodeCoverage;
 
 			// For consistency with other platforms, also enable LTO whenever doing profile-guided optimizations.
 			// Obviously both PGI (instrumented) and PGO (optimized) binaries need to have that
@@ -507,7 +553,7 @@ namespace UnrealBuildTool
 
 			CompileEnvironment.Definitions.Add("INT64_T_TYPES_NOT_LONG_LONG=1");
 
-			if (Target.LinuxPlatform.bEnableRayTracing)
+			if (Target.LinuxPlatform.bEnableRayTracing && Target.Type != TargetType.Server)
 			{
 				CompileEnvironment.Definitions.Add("RHI_RAYTRACING=1");
 			}
@@ -587,19 +633,38 @@ namespace UnrealBuildTool
 					throw new BuildException("Memory Sanitizer (MSan) unsupported for non-monolithic builds");
 				}
 			}
-			if (Target.bAllowLTCG && Target.bPreferThinLTO)
+			if (Target.LinuxPlatform.bDisableDumpSyms)
 			{
-				Options |= ClangToolChainOptions.EnableThinLTO;
+				Options |= ClangToolChainOptions.DisableDumpSyms;
+			}
+			if (Target.LinuxPlatform.bEnableLibFuzzer)
+			{
+				Options |= ClangToolChainOptions.EnableLibFuzzer;
+
+				if (Target.LinkType != TargetLinkType.Monolithic)
+				{
+					throw new BuildException("LibFuzzer is unsupported for non-monolithic builds.");
+				}
 			}
 
-			// When building a monolithic editor we have to avoid using objcopy.exe as it cannot handle files
-			// larger then 4GB. This is only an issue with our binutils objcopy.exe.
-			// llvm-objcopy.exe does not have this issue and once we switch over to using that in clang 10.0.1 we can remove this!
-			if ((BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64) &&
-				(Target.LinkType == TargetLinkType.Monolithic) &&
-				(Target.Type == TargetType.Editor))
+			if (IsLTOEnabled(Target))
 			{
-				Options |= ClangToolChainOptions.DisableSplitDebugInfoWithObjCopy;
+				Options |= ClangToolChainOptions.EnableLinkTimeOptimization;
+
+				if (Target.bPreferThinLTO)
+				{
+					Options |= ClangToolChainOptions.EnableThinLTO;
+				}
+			}
+			else if (Target.bPreferThinLTO)
+			{
+				// warn about ThinLTO not being useful on its own
+				Logger.LogWarning("Warning: bPreferThinLTO is set, but LTO is disabled. Flag will have no effect");
+			}
+
+			if (Target.bUseAutoRTFMCompiler)
+			{
+				Options |= ClangToolChainOptions.UseAutoRTFMCompiler;
 			}
 
 			if (Target.LinuxPlatform.bTuneDebugInfoForLLDB)
@@ -628,7 +693,7 @@ namespace UnrealBuildTool
 		}
 	}
 
-	class UEDeployLinux: UEBuildDeploy
+	class UEDeployLinux : UEBuildDeploy
 	{
 		public UEDeployLinux(ILogger InLogger)
 			: base(InLogger)
@@ -643,10 +708,7 @@ namespace UnrealBuildTool
 
 	class LinuxPlatformFactory : UEBuildPlatformFactory
 	{
-		public override UnrealTargetPlatform TargetPlatform
-		{
-			get { return UnrealTargetPlatform.Linux; }
-		}
+		public override UnrealTargetPlatform TargetPlatform => UnrealTargetPlatform.Linux;
 
 		/// <summary>
 		/// Register the platform with the UEBuildPlatform class

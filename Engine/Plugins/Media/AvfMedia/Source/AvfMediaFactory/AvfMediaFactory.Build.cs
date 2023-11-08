@@ -18,13 +18,7 @@ namespace UnrealBuildTool.Rules
 
 			PrivateIncludePathModuleNames.AddRange(
 				new string[] {
-					"AvfMedia",
 					"Media",
-				});
-
-			PrivateIncludePaths.AddRange(
-				new string[] {
-					"AvfMediaFactory/Private",
 				});
 
 			PublicDependencyModuleNames.AddRange(

@@ -5,6 +5,7 @@
 #include "ShaderCompilerCommon.h"
 #include "ShaderMinifier.h"
 #include "ShaderParameterParser.h"
+#include "ShaderPreprocessTypes.h"
 #include "D3D12RHI.h"
 #include "Misc/Paths.h"
 #include "Misc/FileHelper.h"
@@ -144,13 +145,13 @@ static const TCHAR* GetShaderProfileName(ELanguage Language, uint32 Frequency, b
 		switch(Frequency)
 		{
 		case SF_Pixel:
-			return TEXT("ps_5_0");
+			return bForceSM6 ? TEXT("ps_6_0") : TEXT("ps_5_0");
 		case SF_Vertex:
-			return TEXT("vs_5_0");
+			return bForceSM6 ? TEXT("vs_6_0") : TEXT("vs_5_0");
 		case SF_Geometry:
-			return TEXT("gs_5_0");
+			return bForceSM6 ? TEXT("gs_6_0") : TEXT("gs_5_0");
 		case SF_Compute:
-			return TEXT("cs_5_0");
+			return bForceSM6 ? TEXT("cs_6_0") : TEXT("cs_5_0");
 		}
 	}
 
@@ -170,7 +171,7 @@ static FString D3D11CreateShaderCompileCommandLine(
 	)
 {
 	// fxc is our command line compiler
-	FString FXCCommandline = FString(TEXT("%FXC% ")) + ShaderPath;
+	FString FXCCommandline = FString(TEXT("\"%FXC%\" ")) + ShaderPath;
 
 	// add the entry point reference
 	FXCCommandline += FString(TEXT(" /E ")) + EntryFunction;
@@ -286,13 +287,13 @@ static FString D3D11CreateShaderCompileCommandLine(
 	*/
 	const FString BatchFileHeader = TEXT(
 		"@ECHO OFF\n"\
-		"IF \"%FXC%\" == \"\" SET FXC=\"C:\\Program Files (x86)\\Windows Kits\\10\\bin\\x64\\fxc.exe\"\n"\
-		"IF NOT EXIST %FXC% (\n"\
-		"\tECHO Couldn't find Windows 10 SDK, falling back to DXSDK...\n"\
-		"\tSET FXC=\"%DXSDK_DIR%\\Utilities\\bin\\x86\\fxc.exe\"\n"\
-		"\tIF NOT EXIST % FXC % (\n"\
-		"\t\tECHO Couldn't find DXSDK! Exiting...\n"\
-		"\t\tGOTO END\n"\
+		"IF \"%FXC%\" == \"\" SET \"FXC=C:\\Program Files (x86)\\Windows Kits\\10\\bin\\x64\\fxc.exe\"\n"\
+		"IF NOT EXIST \"%FXC%\" (\n"\
+		"\t" "ECHO Couldn't find Windows 10 SDK, falling back to DXSDK...\n"\
+		"\t" "SET \"FXC=%DXSDK_DIR%\\Utilities\\bin\\x86\\fxc.exe\"\n"\
+		"\t" "IF NOT EXIST \"%FXC%\" (\n"\
+		"\t" "\t" "ECHO Couldn't find DXSDK! Exiting...\n"\
+		"\t" "\t" "GOTO END\n"\
 		"\t)\n"\
 		")\n"
 	);
@@ -378,67 +379,43 @@ typedef HRESULT(WINAPI *pD3DStripShader)
 // look for IID_ID3D11ShaderReflection in d3d11shader.h for the SDK matching the compiler DLL.
 DEFINE_GUID_FOR_CURRENT_COMPILER(IID_ID3D11ShaderReflectionForCurrentCompiler, 0x8d536ca1, 0x0cca, 0x4956, 0xa8, 0x37, 0x78, 0x69, 0x63, 0x75, 0x55, 0x84);
 
-/**
- * GetD3DCompilerFuncs - gets function pointers from the dll at NewCompilerPath
- * @param OutD3DCompile - function pointer for D3DCompile (0 if not found)
- * @param OutD3DReflect - function pointer for D3DReflect (0 if not found)
- * @param OutD3DDisassemble - function pointer for D3DDisassemble (0 if not found)
- * @param OutD3DStripShader - function pointer for D3DStripShader (0 if not found)
- * @return bool - true if functions were retrieved from NewCompilerPath
- */
-static bool GetD3DCompilerFuncs(const FString& NewCompilerPath, pD3DCompile* OutD3DCompile,
-	pD3DReflect* OutD3DReflect, pD3DDisassemble* OutD3DDisassemble, pD3DStripShader* OutD3DStripShader)
+// Helper class to load the engine-packaged FXC DLL and retrieve function pointers for the various FXC functions from it.
+class FxcCompilerFunctions
 {
-	static FString CurrentCompiler;
-	static HMODULE CompilerDLL = 0;
+public:
 
-	if(CurrentCompiler != *NewCompilerPath)
+	static pD3DCompile GetCompile() { return Instance().Compile; }
+	static pD3DReflect GetReflect() { return Instance().Reflect; }
+	static pD3DDisassemble GetDisassemble() { return Instance().Disassemble; }
+	static pD3DStripShader GetStripShader() { return Instance().StripShader; }
+
+private:
+	FxcCompilerFunctions()
 	{
-		CurrentCompiler = *NewCompilerPath;
-
-		if(CompilerDLL)
+		FString CompilerPath = FPaths::EngineDir() / TEXT("Binaries/ThirdParty/Windows/DirectX/x64/d3dcompiler_47.dll");
+		CompilerDLL = LoadLibrary(*CompilerPath);
+		if (!CompilerDLL)
 		{
-			FreeLibrary(CompilerDLL);
-			CompilerDLL = 0;
+			UE_LOG(LogD3D11ShaderCompiler, Fatal, TEXT("Cannot find the compiler DLL '%s'"), *CompilerPath);
 		}
-
-		if(CurrentCompiler.Len())
-		{
-			CompilerDLL = LoadLibrary(*CurrentCompiler);
-		}
-
-		if(!CompilerDLL && NewCompilerPath.Len())
-		{
-			// Couldn't find HLSL compiler in specified path. We fail the first compile.
-			*OutD3DCompile = 0;
-			*OutD3DReflect = 0;
-			*OutD3DDisassemble = 0;
-			*OutD3DStripShader = 0;
-			return false;
-		}
+		Compile = (pD3DCompile)(void*)GetProcAddress(CompilerDLL, "D3DCompile");
+		Reflect = (pD3DReflect)(void*)GetProcAddress(CompilerDLL, "D3DReflect");
+		Disassemble = (pD3DDisassemble)(void*)GetProcAddress(CompilerDLL, "D3DDisassemble");
+		StripShader = (pD3DStripShader)(void*)GetProcAddress(CompilerDLL, "D3DStripShader");
 	}
 
-	if(CompilerDLL)
+	static FxcCompilerFunctions& Instance()
 	{
-		// from custom folder e.g. "C:/DXWin8/D3DCompiler_44.dll"
-		*OutD3DCompile = (pD3DCompile)(void*)GetProcAddress(CompilerDLL, "D3DCompile");
-		*OutD3DReflect = (pD3DReflect)(void*)GetProcAddress(CompilerDLL, "D3DReflect");
-		*OutD3DDisassemble = (pD3DDisassemble)(void*)GetProcAddress(CompilerDLL, "D3DDisassemble");
-		*OutD3DStripShader = (pD3DStripShader)(void*)GetProcAddress(CompilerDLL, "D3DStripShader");
-		return true;
+		static FxcCompilerFunctions Instance;
+		return Instance;
 	}
 
-    // if we cannot find the bundled DLL, this is a fatal error. We _do_not_ want to use a system-specific library as it can make the shaders (and DDC) system-specific
-	UE_LOG(LogD3D11ShaderCompiler, Fatal, TEXT("Cannot find the compiler DLL '%s'"), *CurrentCompiler);
-#if 0
-	// D3D SDK we compiled with (usually D3DCompiler_43.dll from windows folder)
-	*OutD3DCompile = &D3DCompile;
-	*OutD3DReflect = &D3DReflect;
-	*OutD3DDisassemble = &D3DDisassemble;
-	*OutD3DStripShader = &D3DStripShader;
-#endif
-	return false;
-}
+	HMODULE CompilerDLL = 0;
+	pD3DCompile Compile = nullptr;
+	pD3DReflect Reflect = nullptr;
+	pD3DDisassemble Disassemble = nullptr;
+	pD3DStripShader StripShader = nullptr;
+};
 
 static int D3DExceptionFilter(bool bCatchException)
 {
@@ -572,22 +549,20 @@ static bool CompileErrorsContainInternalError(ID3DBlob* Errors)
 
 // Generate the dumped usf file; call the D3D compiler, gather reflection information and generate the output data
 static bool CompileAndProcessD3DShaderFXCExt(
-	FString& PreprocessedShaderSource, const FString& CompilerPath,
+	const FShaderPreprocessOutput& PreprocessOutput,
 	uint32 CompileFlags,
 	const FShaderCompilerInput& Input,
 	const FShaderParameterParser& ShaderParameterParser,
-	FString& EntryPointName,
 	const TCHAR* ShaderProfile, bool bSecondPassAferUnusedInputRemoval,
 	TArray<FString>& FilteredErrors, FShaderCompilerOutput& Output)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(CompileAndProcessD3DShaderFXCExt);
 
+	const FString& PreprocessedShaderSource = Output.ModifiedShaderSource.IsEmpty() ? PreprocessOutput.GetSource() : Output.ModifiedShaderSource;
+	const FString& EntryPointName = Output.ModifiedEntryPointName.IsEmpty() ? Input.EntryPointName : Output.ModifiedEntryPointName;
 	auto AnsiSourceFile = StringCast<ANSICHAR>(*PreprocessedShaderSource);
 
-	// Write out the preprocessed file and a batch file to compile it if requested (DumpDebugInfoPath is valid)
-	UE::ShaderCompilerCommon::DumpDebugShaderData(Input, PreprocessedShaderSource);
 	bool bDumpDebugInfo = Input.DumpDebugInfoEnabled();
-	FString DisasmFilename;
 	if (bDumpDebugInfo)
 	{
 		FString BatchFileContents;
@@ -601,18 +576,16 @@ static bool CompileAndProcessD3DShaderFXCExt(
 		}
 
 		FFileHelper::SaveStringToFile(BatchFileContents, *(Input.DumpDebugInfoPath / TEXT("CompileFXC.bat")));
-
-		DisasmFilename = *(Input.DumpDebugInfoPath / TEXT("Output.d3dasm"));
 	}
 
 	TRefCountPtr<ID3DBlob> Shader;
 
 	HRESULT Result = S_OK;
-	pD3DCompile D3DCompileFunc = nullptr;
-	pD3DReflect D3DReflectFunc = nullptr;
-	pD3DDisassemble D3DDisassembleFunc = nullptr;
-	pD3DStripShader D3DStripShaderFunc = nullptr;
-	bool bCompilerPathFunctionsUsed = GetD3DCompilerFuncs(CompilerPath, &D3DCompileFunc, &D3DReflectFunc, &D3DDisassembleFunc, &D3DStripShaderFunc);
+	pD3DCompile D3DCompileFunc = FxcCompilerFunctions::GetCompile();
+	pD3DReflect D3DReflectFunc = FxcCompilerFunctions::GetReflect();
+	pD3DDisassemble D3DDisassembleFunc = FxcCompilerFunctions::GetDisassemble();
+	pD3DStripShader D3DStripShaderFunc = FxcCompilerFunctions::GetStripShader();
+
 	TRefCountPtr<ID3DBlob> Errors;
 
 	if (D3DCompileFunc)
@@ -644,6 +617,13 @@ static bool CompileAndProcessD3DShaderFXCExt(
 		// Some materials give FXC a hard time to optimize and the compiler fails with an internal error.
 		if (bPrecompileWithDXC || Result == HRESULT_FROM_WIN32(ERROR_ARITHMETIC_OVERFLOW) || Result == E_OUTOFMEMORY || Result == E_FAIL || (Result != S_OK && CompileErrorsContainInternalError(Errors.GetReference())))
 		{
+			// If we ran out of memory, it's likely the next attempt will crash, too.
+			// Report the error now in case CompileHlslToSpirv throws an exception.
+			if (Result == E_OUTOFMEMORY)
+			{
+				FSCWErrorCode::Report(FSCWErrorCode::OutOfMemory);
+			}
+
 			CrossCompiler::FShaderConductorContext CompilerContext;
 
 			// Load shader source into compiler context
@@ -652,6 +632,8 @@ static bool CompileAndProcessD3DShaderFXCExt(
 
 			// Compile HLSL source to SPIR-V binary
 			CrossCompiler::FShaderConductorOptions Options;
+
+			Options.bPreserveStorageInput = true; // Input/output stage variables must match
 			if (bHlslVersion2021)
 			{
 				Options.HlslVersion = 2021;
@@ -673,6 +655,8 @@ static bool CompileAndProcessD3DShaderFXCExt(
 			TargetDesc.CompileFlags.SetDefine(TEXT("reconstruct_cbuffer_names"), 1);
 			TargetDesc.CompileFlags.SetDefine(TEXT("reconstruct_semantics"), 1);
 			TargetDesc.CompileFlags.SetDefine(TEXT("force_zero_initialized_variables"), 1);
+			TargetDesc.CompileFlags.SetDefine(TEXT("relax_nan_checks"), 1);
+			TargetDesc.CompileFlags.SetDefine(TEXT("preserve_structured_buffers"), 1);
 
 			// Patch SPIR-V for workarounds to prevent potential additional FXC failures
 			PatchSpirvForPrecompilation(Spirv);
@@ -713,6 +697,9 @@ static bool CompileAndProcessD3DShaderFXCExt(
 
 			if (!bPrecompileWithDXC && SUCCEEDED(Result))
 			{
+				// Reset our previously set error code
+				FSCWErrorCode::Reset();
+
 				// Let the user know this shader had to be cross-compiled due to a crash in FXC. Only shows up if CVar 'r.ShaderDevelopmentMode' is enabled.
 				Output.Errors.Add(FShaderCompilerError(FString::Printf(TEXT("Cross-compiled shader to intermediate HLSL after first attempt crashed FXC: %s"), *Input.GenerateShaderName())));
 			}
@@ -720,7 +707,7 @@ static bool CompileAndProcessD3DShaderFXCExt(
 	}
 	else
 	{
-		FilteredErrors.Add(FString::Printf(TEXT("Couldn't find shader compiler: %s"), *CompilerPath));
+		FilteredErrors.Add(TEXT("Couldn't find D3D shader compiler DLL"));
 		Result = E_FAIL;
 	}
 
@@ -800,12 +787,9 @@ static bool CompileAndProcessD3DShaderFXCExt(
 		if (D3DReflectFunc)
 		{
 			Output.bSucceeded = true;
-			ID3D11ShaderReflection* Reflector = NULL;
-
-			// IID_ID3D11ShaderReflectionForCurrentCompiler is defined in this file and needs to match the IID from the dll in CompilerPath
-			// if the function pointers from that dll are being used
-			const IID ShaderReflectionInterfaceID = bCompilerPathFunctionsUsed ? IID_ID3D11ShaderReflectionForCurrentCompiler : IID_ID3D11ShaderReflection;
-			Result = D3DReflectFunc(Shader->GetBufferPointer(), Shader->GetBufferSize(), ShaderReflectionInterfaceID, (void**)&Reflector);
+			TRefCountPtr<ID3D11ShaderReflection> Reflector;
+			
+			Result = D3DReflectFunc(Shader->GetBufferPointer(), Shader->GetBufferSize(), IID_ID3D11ShaderReflectionForCurrentCompiler, (void**)Reflector.GetInitReference());
 			if (FAILED(Result))
 			{
 				UE_LOG(LogD3D11ShaderCompiler, Fatal, TEXT("D3DReflect failed: Result=%08x"), Result);
@@ -865,19 +849,19 @@ static bool CompileAndProcessD3DShaderFXCExt(
 					// Since unused inputs are passed to the next stage, that will cause us to generate a vertex shader that does not output B, but our pixel shader will still be expecting B on input,
 					// as it was rewritten based on the pass1 results.
 
-					FString OriginalPreprocSource = PreprocessedShaderSource;
-					FString OriginalEntryPointName = EntryPointName;
 					FShaderCompilerOutput OriginalOutput = Output;
 					const int kMaxReasonableAttempts = 64;
 					for (int32 Attempt = 0; Attempt < kMaxReasonableAttempts; ++Attempt)
 					{
 						TArray<FString> RemoveErrors;
-						PreprocessedShaderSource = OriginalPreprocSource;
-						EntryPointName = OriginalEntryPointName;
-						if (RemoveUnusedInputs(PreprocessedShaderSource, ShaderInputs, EntryPointName, RemoveErrors))
+						FString ModifiedShaderSource = PreprocessOutput.GetSource();
+						FString ModifiedEntryPointName = Input.EntryPointName;
+						if (RemoveUnusedInputs(ModifiedShaderSource, ShaderInputs, ModifiedEntryPointName, RemoveErrors))
 						{
 							Output = OriginalOutput;
-							if (!CompileAndProcessD3DShaderFXCExt(PreprocessedShaderSource, CompilerPath, CompileFlags, Input, ShaderParameterParser, EntryPointName, ShaderProfile, true, FilteredErrors, Output))
+							Output.ModifiedShaderSource = MoveTemp(ModifiedShaderSource);
+							Output.ModifiedEntryPointName = MoveTemp(ModifiedEntryPointName);
+							if (!CompileAndProcessD3DShaderFXCExt(PreprocessOutput, CompileFlags, Input, ShaderParameterParser, ShaderProfile, true, FilteredErrors, Output))
 							{
 								// if we failed to compile the shader, propagate the error up
 								return false;
@@ -897,7 +881,6 @@ static bool CompileAndProcessD3DShaderFXCExt(
 								NewError.StrippedErrorMessage = FString::Printf(TEXT("Second pass had more used attributes (%d) than first pass (%d)"), Output.UsedAttributes.Num(), ShaderInputs.Num());
 								Output = OriginalOutput;
 								Output.Errors.Add(NewError);
-								Output.bFailedRemovingUnused = true;
 								break;
 							}
 
@@ -917,7 +900,6 @@ static bool CompileAndProcessD3DShaderFXCExt(
 									);
 								Output = OriginalOutput;
 								Output.Errors.Add(NewError);
-								Output.bFailedRemovingUnused = true;
 								break;
 							}
 
@@ -935,7 +917,6 @@ static bool CompileAndProcessD3DShaderFXCExt(
 								NewError.StrippedErrorMessage = ErrorMessage;
 								Output.Errors.Add(NewError);
 							}
-							Output.bFailedRemovingUnused = true;
 							break;
 						}
 					}
@@ -954,13 +935,10 @@ static bool CompileAndProcessD3DShaderFXCExt(
 					Output, UniformBufferNames, UsedUniformBufferSlots, VendorExtensions);
 
 			NumInstructions = ShaderDesc.InstructionCount;
-
-			// Reflector is a com interface, so it needs to be released.
-			Reflector->Release();
 		}
 		else
 		{
-			FilteredErrors.Add(FString::Printf(TEXT("Couldn't find shader reflection function in %s"), *CompilerPath));
+			FilteredErrors.Add(TEXT("Couldn't find shader reflection function in D3D Compiler DLL"));
 			Result = E_FAIL;
 			Output.bSucceeded = false;
 		}
@@ -1052,20 +1030,46 @@ static bool CompileAndProcessD3DShaderFXCExt(
 	return SUCCEEDED(Result);
 }
 
-bool CompileAndProcessD3DShaderFXC(FString& PreprocessedShaderSource,
-	uint32 CompileFlags,
+bool CompileAndProcessD3DShaderFXC(const FShaderPreprocessOutput& PreprocessOutput,
 	const FShaderCompilerInput& Input,
 	const FShaderParameterParser& ShaderParameterParser,
-	FString& EntryPointName,
-	const TCHAR* ShaderProfile, bool bSecondPassAferUnusedInputRemoval,
+	const TCHAR* ShaderProfile,
+	bool bSecondPassAferUnusedInputRemoval,
 	FShaderCompilerOutput& Output)
 {
-	// Override default compiler path to newer dll
-	FString CompilerPath = FPaths::EngineDir();
-	CompilerPath.Append(TEXT("Binaries/ThirdParty/Windows/DirectX/x64/d3dcompiler_47.dll"));
+	// @TODO - implement different material path to allow us to remove backwards compat flag on sm5 shaders
+	uint32 CompileFlags = D3DCOMPILE_ENABLE_BACKWARDS_COMPATIBILITY
+		// Unpack uniform matrices as row-major to match the CPU layout.
+		| D3DCOMPILE_PACK_MATRIX_ROW_MAJOR;
+
+	if (Input.Environment.CompilerFlags.Contains(CFLAG_GenerateSymbols))
+	{
+		CompileFlags |= D3DCOMPILE_DEBUG;
+	}
+
+	if (Input.Environment.CompilerFlags.Contains(CFLAG_Debug))
+	{
+		CompileFlags |= D3DCOMPILE_SKIP_OPTIMIZATION;
+	}
+	else
+	{
+		if (Input.Environment.CompilerFlags.Contains(CFLAG_StandardOptimization))
+		{
+			CompileFlags |= D3DCOMPILE_OPTIMIZATION_LEVEL1;
+		}
+		else
+		{
+			CompileFlags |= D3DCOMPILE_OPTIMIZATION_LEVEL3;
+		}
+	}
+
+	Input.Environment.CompilerFlags.Iterate([&CompileFlags](uint32 Flag)
+		{
+			CompileFlags |= TranslateCompilerFlagD3D11((ECompilerFlags)Flag);
+		});
 
 	TArray<FString> FilteredErrors;
-	const bool bSuccess = CompileAndProcessD3DShaderFXCExt(PreprocessedShaderSource, CompilerPath, CompileFlags, Input, ShaderParameterParser, EntryPointName, ShaderProfile, false, FilteredErrors, Output);
+	const bool bSuccess = CompileAndProcessD3DShaderFXCExt(PreprocessOutput, CompileFlags, Input, ShaderParameterParser, ShaderProfile, false, FilteredErrors, Output);
 
 	// Process errors
 	for (int32 ErrorIndex = 0; ErrorIndex < FilteredErrors.Num(); ErrorIndex++)
@@ -1096,24 +1100,38 @@ bool CompileAndProcessD3DShaderFXC(FString& PreprocessedShaderSource,
 	return bSuccess;
 }
 
-void CompileD3DShader(const FShaderCompilerInput& Input, FShaderCompilerOutput& Output, FShaderCompilerDefinitions& AdditionalDefines, const FString& WorkingDirectory, ELanguage Language)
+inline bool ShouldUseDXC(const FShaderCompilerInput& Input, ELanguage Language)
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(CompileD3DShader);
-	FString PreprocessedShaderSource;
-	const bool bIsRayTracingShader = Input.IsRayTracingShader();
-	const bool bUseDXC =
-		Language == ELanguage::SM6
-		|| bIsRayTracingShader
+	return Language == ELanguage::SM6
+		|| Input.IsRayTracingShader()
 		|| Input.Environment.CompilerFlags.Contains(CFLAG_WaveOperations)
 		|| Input.Environment.CompilerFlags.Contains(CFLAG_ForceDXC)
 		|| Input.Environment.CompilerFlags.Contains(CFLAG_InlineRayTracing);
-	const TCHAR* ShaderProfile = GetShaderProfileName(Language, Input.Target.Frequency, bUseDXC);
+}
 
-	if(!ShaderProfile)
+bool PreprocessD3DShader(
+	const FShaderCompilerInput& Input,
+	const FShaderCompilerEnvironment& Environment,
+	FShaderPreprocessOutput& Output,
+	ELanguage Language)
+{
+	FShaderCompilerDefinitions AdditionalDefines;
+	if (Language == ELanguage::SM6)
 	{
-		Output.Errors.Add(FShaderCompilerError(*FString::Printf(TEXT("Unrecognized shader frequency %s"), GetShaderFrequencyString((EShaderFrequency)Input.Target.Frequency))));
-		return;
+		AdditionalDefines.SetDefine(TEXT("SM6_PROFILE"), 1);
 	}
+	else if (Language == ELanguage::SM5)
+	{
+		AdditionalDefines.SetDefine(TEXT("SM5_PROFILE"), 1);
+	}
+	else if (Language == ELanguage::ES3_1)
+	{
+		AdditionalDefines.SetDefine(TEXT("ES3_1_PROFILE"), 1);
+	}
+
+	FString& PreprocessedSource = Output.EditSource();
+	const bool bUseDXC = ShouldUseDXC(Input, Language);
+
 
 	// Set additional defines.
 	AdditionalDefines.SetDefine(TEXT("COMPILER_HLSL"), 1);
@@ -1123,45 +1141,88 @@ void CompileD3DShader(const FShaderCompilerInput& Input, FShaderCompilerOutput& 
 	{
 		AdditionalDefines.SetDefine(TEXT("PLATFORM_SUPPORTS_CALLABLE_SHADERS"), 1);
 		AdditionalDefines.SetDefine(TEXT("PLATFORM_SUPPORTS_SM6_0_WAVE_OPERATIONS"), 1);
-		AdditionalDefines.SetDefine(TEXT("PLATFORM_SUPPORTS_STATIC_SAMPLERS"), 1);
+		if (Language == ELanguage::SM6 || Input.IsRayTracingShader())
+		{
+			AdditionalDefines.SetDefine(TEXT("PLATFORM_SUPPORTS_STATIC_SAMPLERS"), 1);
+		}
 		AdditionalDefines.SetDefine(TEXT("PLATFORM_SUPPORTS_DIAGNOSTIC_BUFFER"), 1);
 		AdditionalDefines.SetDefine(TEXT("COMPILER_SUPPORTS_NOINLINE"), 1);
 
-		if (Input.Environment.CompilerFlags.Contains(CFLAG_InlineRayTracing))
+		if (Environment.CompilerFlags.Contains(CFLAG_InlineRayTracing))
 		{
 			AdditionalDefines.SetDefine(TEXT("PLATFORM_SUPPORTS_INLINE_RAY_TRACING"), 1);
 		}
 
-		if (Language == ELanguage::SM6 && Input.Environment.CompilerFlags.Contains(CFLAG_AllowRealTypes))
+		if (Language == ELanguage::SM6 && Environment.CompilerFlags.Contains(CFLAG_AllowRealTypes))
 		{
 			AdditionalDefines.SetDefine(TEXT("PLATFORM_SUPPORTS_REAL_TYPES"), 1);
 		}
 	}
+	else
+	{
+		AdditionalDefines.SetDefine(TEXT("COMPILER_FXC"), 1);
+	}
 
-	const double StartPreprocessTime = FPlatformTime::Seconds();
 	
 	if (Input.bSkipPreprocessedCache)
 	{
-		if (!FFileHelper::LoadFileToString(PreprocessedShaderSource, *Input.VirtualSourceFilePath))
+		if (!FFileHelper::LoadFileToString(PreprocessedSource, *Input.VirtualSourceFilePath))
 		{
-			return;
+			return false;
 		}
 
 		// Remove const as we are on debug-only mode
-		CrossCompiler::CreateEnvironmentFromResourceTable(PreprocessedShaderSource, (FShaderCompilerEnvironment&)Input.Environment);
+		CrossCompiler::CreateEnvironmentFromResourceTable(PreprocessedSource, const_cast<FShaderCompilerEnvironment&>(Environment));
 	}
 	else
 	{
-		if (!PreprocessShader(PreprocessedShaderSource, Output, Input, AdditionalDefines))
+		if (!PreprocessShader(Output, Input, Environment, AdditionalDefines))
 		{
 			// The preprocessing stage will add any relevant errors.
-			return;
+			return false;
 		}
 	}
 
-	FString EntryPointName = Input.EntryPointName;
+	if (!Output.ParseAndModify(Input, Environment, TEXT("cbuffer")))
+	{
+		// The FShaderParameterParser will add any relevant errors.
+		return false;
+	}
 
-	Output.bFailedRemovingUnused = false;
+	// Only use UniformBuffer structs on SM6 until we can fully vet SM5
+	if (Language != ELanguage::SM6)
+	{
+		RemoveUniformBuffersFromSource(Environment, PreprocessedSource);
+	}
+
+	// Process TEXT macro.
+	TransformStringIntoCharacterArray(PreprocessedSource);
+
+	TArray<FString> FilteredErrors;
+	// Run the shader minifier
+	#if UE_D3D_SHADER_COMPILER_ALLOW_DEAD_CODE_REMOVAL
+	if (Environment.CompilerFlags.Contains(CFLAG_RemoveDeadCode))
+	{
+		UE::ShaderCompilerCommon::RemoveDeadCode(PreprocessedSource, Input.EntryPointName, Output.EditErrors());
+	}
+	#endif // UE_D3D_SHADER_COMPILER_ALLOW_DEAD_CODE_REMOVAL
+	return true;
+}
+
+
+void CompileD3DShader(const FShaderCompilerInput& Input, const FShaderPreprocessOutput& PreprocessOutput, FShaderCompilerOutput& Output, const FString& WorkingDirectory, ELanguage Language)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(CompileD3DShader);
+
+	const bool bUseDXC = ShouldUseDXC(Input, Language);
+	const TCHAR* ShaderProfile = GetShaderProfileName(Language, Input.Target.Frequency, bUseDXC);
+
+	if(!ShaderProfile)
+	{
+		Output.Errors.Add(FShaderCompilerError(*FString::Printf(TEXT("Unrecognized shader frequency %s"), GetShaderFrequencyString((EShaderFrequency)Input.Target.Frequency))));
+		return;
+	}
+
 	if (Input.Environment.CompilerFlags.Contains(CFLAG_ForceRemoveUnusedInterpolators) && Input.Target.Frequency == SF_Vertex && Input.bCompilingForShaderPipeline)
 	{
 		// Always add SV_Position
@@ -1191,12 +1252,12 @@ void CompileD3DShader(const FShaderCompilerInput& Input, FShaderCompilerOutput& 
 		Exceptions.AddUnique(TEXT("SV_CullDistance5"));
 		Exceptions.AddUnique(TEXT("SV_CullDistance6"));
 		Exceptions.AddUnique(TEXT("SV_CullDistance7"));
-		
-		// Write the preprocessed file out in case so we can debug issues on HlslParser
-		UE::ShaderCompilerCommon::DumpDebugShaderData(Input, PreprocessedShaderSource);
+
+		Output.ModifiedShaderSource = PreprocessOutput.GetSource();
+		Output.ModifiedEntryPointName = Input.EntryPointName;
 
 		TArray<FString> Errors;
-		if (!RemoveUnusedOutputs(PreprocessedShaderSource, UsedOutputs, Exceptions, EntryPointName, Errors))
+		if (!RemoveUnusedOutputs(Output.ModifiedShaderSource, UsedOutputs, Exceptions, Output.ModifiedEntryPointName, Errors))
 		{
 			UE_LOG(LogD3D11ShaderCompiler, Warning, TEXT("Failed to remove unused outputs from shader: %s"), *Input.GenerateShaderName());
 			for (const FString& ErrorReport : Errors)
@@ -1207,114 +1268,28 @@ void CompileD3DShader(const FShaderCompilerInput& Input, FShaderCompilerOutput& 
 				NewError.StrippedErrorMessage = ErrorReport;
 				Output.Errors.Add(NewError);
 			}
-			Output.bFailedRemovingUnused = true;
 		}
 	}
 
-	FShaderParameterParser ShaderParameterParser(TEXT("cbuffer"));
-	if (!ShaderParameterParser.ParseAndModify(Input, Output, PreprocessedShaderSource))
-	{
-		// The FShaderParameterParser will add any relevant errors.
-		return;
-	}
-
-	// Only use UniformBuffer structs on SM6 until we can fully vet SM5
-	if (Language != ELanguage::SM6)
-	{
-		RemoveUniformBuffersFromSource(Input.Environment, PreprocessedShaderSource);
-	}
-
-	// Process TEXT macro.
-	TransformStringIntoCharacterArray(PreprocessedShaderSource);
-
-	Output.PreprocessTime = FPlatformTime::Seconds() - StartPreprocessTime;
-
-	TArray<FString> FilteredErrors;
-
-	// Run the experimental shader minifier
-	#if UE_D3D_SHADER_COMPILER_ALLOW_DEAD_CODE_REMOVAL
-	if (Input.Environment.CompilerFlags.Contains(CFLAG_RemoveDeadCode))
-	{
-		UE::ShaderCompilerCommon::RemoveDeadCode(PreprocessedShaderSource, EntryPointName, Output.Errors);
-	}
-	#endif // UE_D3D_SHADER_COMPILER_ALLOW_DEAD_CODE_REMOVAL
-
-	// @TODO - implement different material path to allow us to remove backwards compat flag on sm5 shaders
-	uint32 CompileFlags = D3DCOMPILE_ENABLE_BACKWARDS_COMPATIBILITY
-		// Unpack uniform matrices as row-major to match the CPU layout.
-		| D3DCOMPILE_PACK_MATRIX_ROW_MAJOR;
-
-	if (Input.Environment.CompilerFlags.Contains(CFLAG_GenerateSymbols))
-	{
-		CompileFlags |= D3DCOMPILE_DEBUG;
-	}
-
-	if (Input.Environment.CompilerFlags.Contains(CFLAG_Debug)) 
-	{
-		CompileFlags |= D3DCOMPILE_SKIP_OPTIMIZATION;
-	}
-	else
-	{
-		if (Input.Environment.CompilerFlags.Contains(CFLAG_StandardOptimization))
-		{
-			CompileFlags |= D3DCOMPILE_OPTIMIZATION_LEVEL1;
-		}
-		else
-		{
-			CompileFlags |= D3DCOMPILE_OPTIMIZATION_LEVEL3;
-		}
-	}
-
-	Input.Environment.CompilerFlags.Iterate([&CompileFlags](uint32 Flag)
-		{
-			CompileFlags |= TranslateCompilerFlagD3D11((ECompilerFlags)Flag);
-		});
+	const FShaderParameterParser& ShaderParameterParser = PreprocessOutput.GetParameterParser();
 
 	const bool bSuccess = bUseDXC
-		? CompileAndProcessD3DShaderDXC(PreprocessedShaderSource, CompileFlags, Input, ShaderParameterParser, EntryPointName, ShaderProfile, Language, false, Output)
-		: CompileAndProcessD3DShaderFXC(PreprocessedShaderSource, CompileFlags, Input, ShaderParameterParser, EntryPointName, ShaderProfile, false, Output);
+		? CompileAndProcessD3DShaderDXC(PreprocessOutput, Input, ShaderParameterParser, ShaderProfile, Language, false, Output)
+		: CompileAndProcessD3DShaderFXC(PreprocessOutput, Input, ShaderParameterParser, ShaderProfile, false, Output);
 
 	if (!bSuccess && !Output.Errors.Num())
 	{
 		Output.Errors.Add(TEXT("Compile failed without errors!"));
 	}
 
+	ShaderParameterParser.ValidateShaderParameterTypes(Input, Output);
+
 	const bool bDirectCompile = FParse::Param(FCommandLine::Get(), TEXT("directcompile"));
 	if (bDirectCompile)
 	{
-		for (const auto& Error : Output.Errors)
+		for (const FShaderCompilerError& Error : Output.Errors)
 		{
 			FPlatformMisc::LowLevelOutputDebugStringf(TEXT("%s\n"), *Error.GetErrorStringWithLineMarker());
 		}
 	}
-
-	ShaderParameterParser.ValidateShaderParameterTypes(Input, Output);
-
-	if (Input.ExtraSettings.bExtractShaderSource)
-	{
-		Output.OptionalFinalShaderSource = PreprocessedShaderSource;
-	}
-}
-
-void CompileShader_Windows(const FShaderCompilerInput& Input,FShaderCompilerOutput& Output,const FString& WorkingDirectory, ELanguage Language)
-{
-	FShaderCompilerDefinitions AdditionalDefines;
-	if (Language == ELanguage::SM6)
-	{
-		AdditionalDefines.SetDefine(TEXT("SM6_PROFILE"), 1);
-	}
-	else if (Language == ELanguage::SM5)
-	{
-		AdditionalDefines.SetDefine(TEXT("SM5_PROFILE"), 1);
-	}
-	else if (Language == ELanguage::ES3_1)
-	{
-		AdditionalDefines.SetDefine(TEXT("ES3_1_PROFILE"), 1);
-	}
-	else
-	{
-		checkf(0, TEXT("Unknown ELanguage %d"), (int32)Language);
-	}
-
-	CompileD3DShader(Input, Output, AdditionalDefines, WorkingDirectory, Language);
 }

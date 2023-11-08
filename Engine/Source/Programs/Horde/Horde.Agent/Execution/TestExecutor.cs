@@ -8,11 +8,14 @@ using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using EpicGames.Core;
+using EpicGames.Horde.Storage;
 using Horde.Agent.Parser;
 using Horde.Agent.Services;
 using Horde.Agent.Utility;
+using Horde.Common.Rpc;
 using HordeCommon;
 using HordeCommon.Rpc;
+using HordeCommon.Rpc.Messages;
 using HordeCommon.Rpc.Tasks;
 using Microsoft.Extensions.Logging;
 
@@ -22,8 +25,8 @@ namespace Horde.Agent.Execution
 	{
 		public const string Name = "Test";
 
-		public TestExecutor(ISession session, string jobId, string batchId, string agentTypeName, IHttpClientFactory httpClientFactory, ILogger logger)
-			: base(session, jobId, batchId, agentTypeName, httpClientFactory, logger)
+		public TestExecutor(JobExecutorOptions options, ILogger logger)
+			: base(options, logger)
 		{
 		}
 
@@ -73,7 +76,7 @@ namespace Horde.Agent.Execution
 			updateGraph.Labels.Add(CreateLabel("Editors", "Fortnite", new string[] { "Compile FortniteEditor Win64" }, Array.Empty<string>(), dependencyMap));
 			updateGraph.Labels.Add(CreateLabel("Clients", "Fortnite", new string[] { "Cook FortniteClient Win64" }, new string[] { "Publish FortniteClient Win64" }, dependencyMap));
 
-			await RpcConnection.InvokeAsync((HordeRpc.HordeRpcClient x) => x.UpdateGraphAsync(updateGraph, null, null, cancellationToken), cancellationToken);
+			await RpcConnection.InvokeAsync((JobRpc.JobRpcClient x) => x.UpdateGraphAsync(updateGraph, null, null, cancellationToken), cancellationToken);
 
 			logger.LogInformation("**** FINISH JOB SETUP ****");
 			return true;
@@ -190,22 +193,20 @@ namespace Horde.Agent.Execution
 		}
 	}
 
-	class TestExecutorFactory : JobExecutorFactory
+	class TestExecutorFactory : IJobExecutorFactory
 	{
-		readonly IHttpClientFactory _httpClientFactory;
 		readonly ILogger<TestExecutor> _logger;
 
-		public override string Name => TestExecutor.Name;
+		public string Name => TestExecutor.Name;
 
-		public TestExecutorFactory(IHttpClientFactory httpClientFactory, ILogger<TestExecutor> logger)
+		public TestExecutorFactory(ILogger<TestExecutor> logger)
 		{
-			_httpClientFactory = httpClientFactory;
 			_logger = logger;
 		}
 
-		public override JobExecutor CreateExecutor(ISession session, ExecuteJobTask executeJobTask, BeginBatchResponse beginBatchResponse)
+		public IJobExecutor CreateExecutor(AgentWorkspace workspaceInfo, AgentWorkspace? autoSdkWorkspaceInfo, JobExecutorOptions options)
 		{
-			return new TestExecutor(session, executeJobTask.JobId, executeJobTask.BatchId, beginBatchResponse.AgentType, _httpClientFactory, _logger);
+			return new TestExecutor(options, _logger);
 		}
 	}
 }

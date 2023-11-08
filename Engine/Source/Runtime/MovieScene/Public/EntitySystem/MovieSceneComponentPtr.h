@@ -84,6 +84,11 @@ struct TComponentPtr
 		return ComponentPtr[Index];
 	}
 
+	ValueType ComponentAtIndex(int32 Index) const
+	{
+		return (*this)[Index];
+	}
+
 	FORCEINLINE operator T*() const
 	{
 		return ComponentPtr;
@@ -169,37 +174,29 @@ struct FReadErasedOptional : FReadErased
 			ComponentPtr = InHeader->Components + ComponentOffset*InHeader->Sizeof;
 			Sizeof = InHeader->Sizeof;
 		}
+		else
+		{
+			ComponentPtr = nullptr;
+			Sizeof = 0;
+		}
+	}
+
+	const void* ComponentAtIndex(int32 Index) const
+	{
+		return this->ComponentPtr ? FReadErased::ComponentAtIndex(Index) : nullptr;
 	}
 };
 
 template<typename T>
 struct TRead : TComponentPtr<const T>
 {
-	using ValueType = typename TCallTraits<T>::ParamType;
-
 	TRead() = default;
-	explicit TRead(const T* ComponentPtr)
-		: TComponentPtr<const T>(ComponentPtr)
+	explicit TRead(const T* ComponentPtr, int32 ComponentOffset = 0)
+		: TComponentPtr<const T>(ComponentPtr + ComponentOffset)
 	{}
 	explicit TRead(const FComponentHeader* InHeader, int32 ComponentOffset = 0)
 		: TComponentPtr<const T>(reinterpret_cast<const T*>(InHeader->Components) + ComponentOffset)
 	{}
-	ValueType ComponentAtIndex(int32 Index) const
-	{
-		return (*this)[Index];
-	}
-
-	UE_DEPRECATED(4.27, "It is no longer necessary to call Resolve - please change to using the TComponentPtr API.")
-	const T* Resolve(const FEntityAllocation* Allocation) const
-	{
-		return this->AsPtr();
-	}
-
-	UE_DEPRECATED(4.27, "It is no longer necessary to call ResolveAsArray - please change to TComponentPtr::AsArray.")
-	TArrayView<const T> ResolveAsArray(const FEntityAllocation* Allocation) const
-	{
-		return MakeArrayView(this->AsPtr(), Allocation->Num());
-	}
 };
 using FReadEntityIDs = TRead<FMovieSceneEntityID>;
 
@@ -207,6 +204,13 @@ template<typename T>
 struct TReadOptional : TComponentPtr<const T>
 {
 	TReadOptional() = default;
+	explicit TReadOptional(const T* InData, int32 ComponentOffset = 0)
+	{
+		if (InData)
+		{
+			this->ComponentPtr = InData + ComponentOffset;
+		}
+	}
 	explicit TReadOptional(const FComponentHeader* InHeader, int32 ComponentOffset = 0)
 	{
 		if (InHeader)
@@ -215,17 +219,9 @@ struct TReadOptional : TComponentPtr<const T>
 		}
 	}
 
-	UE_DEPRECATED(4.27, "It is no longer necessary to call Resolve - please change to using the TComponentPtr API.")
-	const T* Resolve(const FEntityAllocation* Allocation) const
+	const T* ComponentAtIndex(int32 Index) const
 	{
-		return this->AsPtr();
-	}
-
-	UE_DEPRECATED(4.27, "It is no longer necessary to call ResolveAsArray - please change to TComponentPtr::AsArray.")
-	TArrayView<const T> ResolveAsArray(const FEntityAllocation* Allocation) const
-	{
-		const T* Ptr = this->AsPtr();
-		return MakeArrayView(Ptr, Ptr ? Allocation->Num() : 0);
+		return this->ComponentPtr ? &this->ComponentPtr[Index] : nullptr;
 	}
 };
 
@@ -252,6 +248,10 @@ struct FWriteErased
 	{
 		return ComponentPtr != nullptr;
 	}
+	void* ComponentAtIndex(int32 Index) const
+	{
+		return (*this)[Index];
+	}
 
 protected:
 	uint8* ComponentPtr;
@@ -268,6 +268,15 @@ struct FWriteErasedOptional : FWriteErased
 			ComponentPtr = InHeader->Components + ComponentOffset*InHeader->Sizeof;
 			Sizeof = InHeader->Sizeof;
 		}
+		else
+		{
+			ComponentPtr = nullptr;
+			Sizeof = 0;
+		}
+	}
+	void* ComponentAtIndex(int32 Index) const
+	{
+		return ComponentPtr ? (*this)[Index] : nullptr;
 	}
 };
 
@@ -275,27 +284,25 @@ template<typename T>
 struct TWrite : TComponentPtr<T>
 {
 	TWrite() = default;
+	explicit TWrite(T* InData, int32 ComponentOffset = 0)
+		: TComponentPtr<T>(InData + ComponentOffset)
+	{}
 	explicit TWrite(const FComponentHeader* InHeader, int32 ComponentOffset = 0)
 		: TComponentPtr<T>(reinterpret_cast<T*>(InHeader->Components) + ComponentOffset)
 	{}
-
-	UE_DEPRECATED(4.27, "It is no longer necessary to call Resolve - please change to using the TComponentPtr API.")
-	T* Resolve(const FEntityAllocation* Allocation) const
-	{
-		return this->AsPtr();
-	}
-
-	UE_DEPRECATED(4.27, "It is no longer necessary to call ResolveAsArray - please change to TComponentPtr::AsArray.")
-	TArrayView<T> ResolveAsArray(const FEntityAllocation* Allocation) const
-	{
-		return MakeArrayView(this->AsPtr(), Allocation->Num());
-	}
 };
 
 template<typename T>
 struct TWriteOptional : TComponentPtr<T>
 {
 	TWriteOptional() = default;
+	explicit TWriteOptional(T* InData, int32 ComponentOffset = 0)
+	{
+		if (InData)
+		{
+			this->ComponentPtr = InData + ComponentOffset;
+		}
+	}
 	explicit TWriteOptional(const FComponentHeader* InHeader, int32 ComponentOffset = 0)
 	{
 		if (InHeader)
@@ -304,17 +311,9 @@ struct TWriteOptional : TComponentPtr<T>
 		}
 	}
 
-	UE_DEPRECATED(4.27, "It is no longer necessary to call Resolve - please change to using the TComponentPtr API.")
-	T* Resolve(const FEntityAllocation* Allocation) const
+	T* ComponentAtIndex(int32 Index) const
 	{
-		return this->AsPtr();
-	}
-
-	UE_DEPRECATED(4.27, "It is no longer necessary to call ResolveAsArray - please change to TComponentPtr::AsArray.")
-	TArrayView<T> ResolveAsArray(const FEntityAllocation* Allocation) const
-	{
-		T* Ptr = this->AsPtr();
-		return MakeArrayView(Ptr, Ptr ? Allocation->Num() : 0);
+		return this->ComponentPtr ? &this->ComponentPtr[Index] : nullptr;
 	}
 };
 
@@ -352,11 +351,6 @@ struct TComponentLock<FReadErasedOptional> : TComponentLockMixin<FScopedHeaderRe
 	{
 		return this->ComponentPtr != nullptr;
 	}
-
-	const void* ComponentAtIndex(int32 Index) const
-	{
-		return this->ComponentPtr != nullptr ? (*this)[Index] : nullptr;
-	}
 };
 template<>
 struct TComponentLock<FWriteErased> : TComponentLockMixin<FScopedHeaderWriteLock>, FWriteErased
@@ -365,11 +359,6 @@ struct TComponentLock<FWriteErased> : TComponentLockMixin<FScopedHeaderWriteLock
 		: TComponentLockMixin<FScopedHeaderWriteLock>(InHeader, InLockMode, InWriteContext)
 		, FWriteErased(InHeader, ComponentOffset)
 	{}
-
-	void* ComponentAtIndex(int32 Index) const
-	{
-		return (*this)[Index];
-	}
 };
 template<>
 struct TComponentLock<FWriteErasedOptional> : TComponentLockMixin<FScopedHeaderWriteLock>, FWriteErasedOptional
@@ -382,16 +371,6 @@ struct TComponentLock<FWriteErasedOptional> : TComponentLockMixin<FScopedHeaderW
 			*static_cast<TComponentLockMixin<FScopedHeaderWriteLock>*>(this) = TComponentLockMixin<FScopedHeaderWriteLock>(InHeader, InLockMode, InWriteContext);
 			*static_cast<FWriteErasedOptional*>(this) = FWriteErasedOptional(InHeader, ComponentOffset);
 		}
-	}
-
-	explicit operator bool() const
-	{
-		return this->ComponentPtr != nullptr;
-	}
-
-	void* ComponentAtIndex(int32 Index) const
-	{
-		return this->ComponentPtr != nullptr ? (*this)[Index] : nullptr;
 	}
 };
 template<typename T>
@@ -415,16 +394,6 @@ struct TComponentLock<TReadOptional<T>> : TComponentLockMixin<FScopedHeaderReadL
 			*static_cast<TReadOptional<T>*>(this) = TReadOptional<T>(InHeader, ComponentOffset);
 		}
 	}
-
-	explicit operator bool() const
-	{
-		return this->ComponentPtr != nullptr;
-	}
-
-	const T* ComponentAtIndex(int32 Index) const
-	{
-		return this->ComponentPtr != nullptr ? this->AsPtr() + Index : nullptr;
-	}
 };
 template<typename T>
 struct TComponentLock<TWrite<T>> : TComponentLockMixin<FScopedHeaderWriteLock>, TWrite<T>
@@ -433,11 +402,6 @@ struct TComponentLock<TWrite<T>> : TComponentLockMixin<FScopedHeaderWriteLock>, 
 		: TComponentLockMixin<FScopedHeaderWriteLock>(InHeader, InLockMode, InWriteContext)
 		, TWrite<T>(InHeader, ComponentOffset)
 	{}
-
-	T& ComponentAtIndex(int32 Index) const
-	{
-		return (*this)[Index];
-	}
 };
 
 template<typename T>
@@ -451,16 +415,6 @@ struct TComponentLock<TWriteOptional<T>> : TComponentLockMixin<FScopedHeaderWrit
 			*static_cast<TComponentLockMixin<FScopedHeaderWriteLock>*>(this) = TComponentLockMixin<FScopedHeaderWriteLock>(InHeader, InLockMode, InWriteContext);
 			*static_cast<TWriteOptional<T>*>(this) = TWriteOptional<T>(InHeader, ComponentOffset);
 		}
-	}
-
-	explicit operator bool() const
-	{
-		return this->ComponentPtr != nullptr;
-	}
-
-	T* ComponentAtIndex(int32 Index) const
-	{
-		return this->ComponentPtr != nullptr ? this->AsPtr() + Index : nullptr;
 	}
 };
 
@@ -480,6 +434,10 @@ template<typename... T> using TMultiComponentLock = TTuple<TComponentLock<T>...>
 template<typename... T>
 struct TMultiComponentData
 {
+	TMultiComponentData(T... InData)
+		: Data(InData...)
+	{}
+
 	TMultiComponentData(const TMultiComponentLock<T...>& InAggregateLock)
 	{
 		auto Init = [](const auto& InLock, auto& OutData)

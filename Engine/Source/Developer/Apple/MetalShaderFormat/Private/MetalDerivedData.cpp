@@ -29,18 +29,15 @@ extern void BuildMetalShaderOutput(
 	uint32 Version,
 	TCHAR const* Standard,
 	TCHAR const* MinOSVersion,
-	EMetalTypeBufferMode TypeMode,
 	TArray<FShaderCompilerError>& OutErrors,
 	uint32 TypedBuffers,
 	uint32 InvariantBuffers,
 	uint32 TypedUAVs,
 	uint32 ConstantBuffers,
-	TArray<uint8> const& TypedBufferFormats,
 	bool bAllowFastIntriniscs
 );
 struct FMetalShaderOutputMetaData
 {
-	TArray<uint8> TypedBufferFormats;
 	uint32 InvariantBuffers = 0;
 	uint32 TypedBuffers = 0;
 	uint32 TypedUAVs = 0;
@@ -203,20 +200,13 @@ bool DoCompileMetalShader(
 	uint32 VersionEnum,
 	uint32 CCFlags,
 	EMetalGPUSemantics Semantics,
-	EMetalTypeBufferMode TypeMode,
 	uint32 MaxUnrollLoops,
 	EShaderFrequency Frequency,
 	bool bDumpDebugInfo,
 	const FString& Standard,
 	const FString& MinOSVersion)
 {
-	int32 IABTier = 0;
-
-	FString const* IABVersion = Input.Environment.GetDefinitions().Find(TEXT("METAL_INDIRECT_ARGUMENT_BUFFERS"));
-	if (VersionEnum >= 4 && IABVersion && IABVersion->IsNumeric())
-	{
-		LexFromString(IABTier, *(*IABVersion));
-	}
+	int32 IABTier = VersionEnum >= 4 ? Input.Environment.GetCompileArgument(TEXT("METAL_INDIRECT_ARGUMENT_BUFFERS"), 0) : 0;
 
 	Output.bSucceeded = false;
 
@@ -226,34 +216,11 @@ bool DoCompileMetalShader(
 	bool const bZeroInitialise = Input.Environment.CompilerFlags.Contains(CFLAG_ZeroInitialise);
 	bool const bBoundsChecks = Input.Environment.CompilerFlags.Contains(CFLAG_BoundsChecking);
 
-    bool bSupportAppleA8 = false;
-    FString const* SupportAppleA8 = Input.Environment.GetDefinitions().Find(TEXT("SUPPORT_APPLE_A8"));
-    if (SupportAppleA8)
-    {
-        LexFromString(bSupportAppleA8, *(*SupportAppleA8));
-    }
-    
-	bool bSwizzleSample = false;
-	FString const* Swizzle = Input.Environment.GetDefinitions().Find(TEXT("METAL_SWIZZLE_SAMPLES"));
-	if (Swizzle)
-	{
-		LexFromString(bSwizzleSample, *(*Swizzle));
-	}
+	bool bSupportAppleA8 = Input.Environment.GetCompileArgument(TEXT("SUPPORT_APPLE_A8"), false);
+	bool bAllowFastIntrinsics = Input.Environment.GetCompileArgument(TEXT("METAL_USE_FAST_INTRINSICS"), false);
 
-	bool bAllowFastIntriniscs = false;
-	FString const* FastIntrinsics = Input.Environment.GetDefinitions().Find(TEXT("METAL_USE_FAST_INTRINSICS"));
-	if (FastIntrinsics)
-	{
-		LexFromString(bAllowFastIntriniscs, *(*FastIntrinsics));
-	}
-
-	bool bForceInvariance = false;
-	FString const* UsingWPO = Input.Environment.GetDefinitions().Find(TEXT("USES_WORLD_POSITION_OFFSET"));
-	if (UsingWPO && FString("1") == *UsingWPO)
-	{
-		// WPO requires that we make all multiply/sincos instructions invariant :(
-		bForceInvariance = true;
-	}
+	// WPO requires that we make all multiply/sincos instructions invariant :(
+	bool bForceInvariance = Input.Environment.GetCompileArgument(TEXT("USES_WORLD_POSITION_OFFSET"), false);
 	
 	FMetalShaderOutputMetaData OutputData;
 	
@@ -262,7 +229,7 @@ bool DoCompileMetalShader(
 	uint32 SourceLen = 0;
 	int32 Result = 0;
 	
-	struct FMetalResourceTableEntry : FResourceTableEntry
+	struct FMetalResourceTableEntry : FUniformResourceEntry
 	{
 		FString Name;
 		uint32 Size;
@@ -385,7 +352,7 @@ bool DoCompileMetalShader(
 			TArray<SpvReflectBlockVariable*> ConstantBindings;
 			TArray<SpvReflectExecutionMode*> ExecutionModes;
 			
-			uint8 UAVIndices = 0xff;
+            uint32 UAVIndices = 0xffffffff;
 			uint64 TextureIndices = 0xffffffffffffffff;
 			uint64 SamplerIndices = 0xffffffffffffffff;
 			
@@ -398,19 +365,19 @@ bool DoCompileMetalShader(
 					TableNames.Add(*Pair.Key);
 				}
 				
-				for (auto Pair : Input.Environment.ResourceTableMap)
+				for (const FUniformResourceEntry& Entry : Input.Environment.ResourceTableMap.Resources)
 				{
-					const FResourceTableEntry& Entry = Pair.Value;
-					TArray<FMetalResourceTableEntry>& Resources = IABs.FindOrAdd(Entry.UniformBufferName);
+					TArray<FMetalResourceTableEntry>& Resources = IABs.FindOrAdd(FString(Entry.GetUniformBufferName()));
 					if ((uint32)Resources.Num() <= Entry.ResourceIndex)
 					{
 						Resources.SetNum(Entry.ResourceIndex + 1);
 					}
 					FMetalResourceTableEntry NewEntry;
-					NewEntry.UniformBufferName = Entry.UniformBufferName;
+					NewEntry.UniformBufferMemberName = Entry.UniformBufferMemberName;
+					NewEntry.UniformBufferNameLength = Entry.UniformBufferNameLength;
 					NewEntry.Type = Entry.Type;
 					NewEntry.ResourceIndex = Entry.ResourceIndex;
-					NewEntry.Name = Pair.Key;
+					NewEntry.Name = Entry.UniformBufferMemberName;
 					NewEntry.Size = 1;
 					NewEntry.bUsed = false;
 					Resources[Entry.ResourceIndex] = NewEntry;
@@ -450,7 +417,7 @@ bool DoCompileMetalShader(
 						}
 						for (uint32 j = 0; j < (uint32)TableNames.Num(); j++)
 						{
-							if (Entry.UniformBufferName == TableNames[j])
+							if (Entry.GetUniformBufferName() == TableNames[j])
 							{
 								Entry.SetIndex = j;
 								break;
@@ -507,7 +474,7 @@ bool DoCompileMetalShader(
 						ResourceBindings.Add(Binding);
 						
 						FMetalResourceTableEntry Entry = ResourceTable.FindRef(UTF8_TO_TCHAR(Binding->name));
-						UsedSets.Add(Entry.UniformBufferName);
+						UsedSets.Add(FString(Entry.GetUniformBufferName()));
 						
 						continue;
 					}
@@ -557,7 +524,8 @@ bool DoCompileMetalShader(
 						}
 						
 						FMetalResourceTableEntry Entry;
-						Entry.UniformBufferName = LastResource.UniformBufferName;
+						Entry.UniformBufferMemberName = LastResource.UniformBufferMemberName;
+						Entry.UniformBufferNameLength = LastResource.UniformBufferNameLength;
 						Entry.Name = Name;
 						Entry.ResourceIndex = ResIndex;
 						Entry.SetIndex = SetIndex;
@@ -641,10 +609,11 @@ bool DoCompileMetalShader(
 					for (auto const& Binding : ResourceBindings)
 					{
 						FMetalResourceTableEntry* Entry = ResourceTable.Find(UTF8_TO_TCHAR(Binding->name));
-						auto* ResourceArray = IABs.Find(Entry->UniformBufferName);
-						if (!IABTier1Index.Contains(Entry->UniformBufferName))
+						FString EntryUniformBufferName(Entry->GetUniformBufferName());
+						auto* ResourceArray = IABs.Find(EntryUniformBufferName);
+						if (!IABTier1Index.Contains(EntryUniformBufferName))
 						{
-							IABTier1Index.Add(Entry->UniformBufferName, 0);
+							IABTier1Index.Add(EntryUniformBufferName, 0);
 						}
 						if (Binding->descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_BUFFER)
 						{
@@ -660,7 +629,8 @@ bool DoCompileMetalShader(
 							if (!bFoundBufferSizes)
 							{
 								FMetalResourceTableEntry BufferSizes;
-								BufferSizes.UniformBufferName = Entry->UniformBufferName;
+								BufferSizes.UniformBufferMemberName = Entry->UniformBufferMemberName;
+								BufferSizes.UniformBufferNameLength = Entry->UniformBufferNameLength;
 								BufferSizes.Name = TEXT("BufferSizes");
 								BufferSizes.Type = UBMT_SRV;
 								BufferSizes.ResourceIndex = 65535;
@@ -668,7 +638,7 @@ bool DoCompileMetalShader(
 								BufferSizes.Size = 1;
 								BufferSizes.bUsed = true;
 								ResourceArray->Insert(BufferSizes, 0);
-								IABTier1Index[Entry->UniformBufferName] = 1;
+								IABTier1Index[EntryUniformBufferName] = 1;
 							}
 						}
 					}
@@ -677,10 +647,11 @@ bool DoCompileMetalShader(
 				for (auto const& Binding : ResourceBindings)
 				{
 					FMetalResourceTableEntry* Entry = ResourceTable.Find(UTF8_TO_TCHAR(Binding->name));
+					FString EntryUniformBufferName(Entry->GetUniformBufferName());
 					
 					for (uint32 j = 0; j < (uint32)TableNames.Num(); j++)
 					{
-						if (Entry->UniformBufferName == TableNames[j])
+						if (EntryUniformBufferName == TableNames[j])
 						{
 							Entry->SetIndex = j;
 							BufferIndices &= ~(1ull << ((uint64)j + IABOffsetIndex));
@@ -690,7 +661,7 @@ bool DoCompileMetalShader(
 					}
 					Entry->bUsed = true;
 					
-					auto* ResourceArray = IABs.Find(Entry->UniformBufferName);
+					auto* ResourceArray = IABs.Find(EntryUniformBufferName);
 					uint32 ResourceIndex = Entry->ResourceIndex;
 					if (IABTier == 1)
 					{
@@ -699,7 +670,7 @@ bool DoCompileMetalShader(
 							Resource.SetIndex = Entry->SetIndex;
 							if (Resource.ResourceIndex == Entry->ResourceIndex)
 							{
-								uint32& Tier1Index = IABTier1Index.FindChecked(Entry->UniformBufferName);
+								uint32& Tier1Index = IABTier1Index.FindChecked(EntryUniformBufferName);
 								ResourceIndex = Tier1Index++;
 								Resource.bUsed = true;
 								break;
@@ -1011,29 +982,28 @@ bool DoCompileMetalShader(
 			TargetDesc.CompileFlags.SetDefine(TEXT("invariant_float_math"), Options.bEnableFMAPass ? 1 : 0);
 			TargetDesc.CompileFlags.SetDefine(TEXT("enable_decoration_binding"), 1);
 
-			#if PLATFORM_MAC_ENABLE_EXPERIMENTAL_NANITE_SUPPORT
-			 // Detect if we need to patch VSM shaders (flatten 2D array as regular 2D texture).
-			 // Must be done as VSM uses 2DArray and requires atomics support. And Metal does not
-			 // support atomics on 2Darray...
-			 const auto& DefinesMap = Input.Environment.GetDefinitions();
-			 bool bShouldFlatten2DArray = DefinesMap.Find("VIRTUAL_SHADOW_MAP") != nullptr
-			                           || DefinesMap.Find("VIRTUAL_TEXTURE_TARGET") != nullptr
-			                           || Input.ShaderName.Find("PhysicalPage") != INDEX_NONE
-			                           || Input.ShaderName.Find("Virtual") != INDEX_NONE
-			                           || Input.ShaderName.Find("ClassifyMaterial") != INDEX_NONE;
-
-			 // Need to patch Clear/Memset CS too.
-			 if (!bShouldFlatten2DArray)
-			 {
-			     auto* IsTexArrayClearShader = DefinesMap.Find("RESOURCE_TYPE");
-			     if (IsTexArrayClearShader != nullptr)
-			     {
-			         bShouldFlatten2DArray = (*IsTexArrayClearShader).Find("2") != INDEX_NONE;
-			     }
-			 }
-
-			 TargetDesc.CompileFlags.SetDefine(TEXT("flatten_2d_array"), bShouldFlatten2DArray ? 1 : 0);
-			 #endif
+            if(Input.Target.Platform == SP_METAL_SM6)
+            {
+                // Detect if we need to patch VSM shaders (flatten 2D array as regular 2D texture).
+                // Must be done as VSM uses 2DArray and requires atomics support. And Metal does not
+                // support atomics on 2Darray...
+                bool bShouldFlatten2DArray = InPreprocessedShader.Find("VIRTUAL_SHADOW_MAP 1") > 0
+                    || InPreprocessedShader.Find("VIRTUAL_TEXTURE_TARGET 1") > 0
+                    || Input.ShaderName.Find("PhysicalPage") != INDEX_NONE
+                    || Input.ShaderName.Find("Virtual") != INDEX_NONE
+                    || Input.ShaderName.Find("ClassifyMaterial") != INDEX_NONE;
+                
+                // Need to patch Clear/Memset CS too.
+                if (!bShouldFlatten2DArray)
+                {
+                    if (Input.Environment.GetCompileArgument(TEXT("RESOURCE_TYPE"), 0) == 2)
+                    {
+                        bShouldFlatten2DArray = true;
+                    }
+                }
+                
+                TargetDesc.CompileFlags.SetDefine(TEXT("flatten_2d_array"), bShouldFlatten2DArray ? 1 : 0);
+            }
 
 			switch (Semantics)
 			{
@@ -1115,14 +1085,19 @@ bool DoCompileMetalShader(
 					break;
 				}
 #else
+                case 7:
+                {
+                    TargetDesc.Version = 20400;
+                    break;
+                }
                 case 8:
                 {
                     TargetDesc.Version = 30000;
                     break;
                 }
-                case 7:
+                case 9:
                 {
-                    TargetDesc.Version = 20400;
+                    TargetDesc.Version = 30100;
                     break;
                 }
                 default:
@@ -1162,7 +1137,7 @@ bool DoCompileMetalShader(
 				CCHeaderWriter.WriteSideTable(TEXT("spvBufferSizeConstants"), SideTableIndex);
 			}
 
-			CCHeaderWriter.WriteSourceInfo(*Input.GetSourceFilename(), *Input.EntryPointName, *Input.DebugGroupName);
+			CCHeaderWriter.WriteSourceInfo(*Input.VirtualSourceFilePath, *Input.EntryPointName);
 			CCHeaderWriter.WriteCompilerInfo();
 
 			FString MetaData = CCHeaderWriter.ToString();
@@ -1432,7 +1407,7 @@ bool DoCompileMetalShader(
 	if (Result != 0)
 	{
 		Output.Target = Input.Target;
-		BuildMetalShaderOutput(Output, Input, GUIDHash, CCFlags, MetalSource.c_str(), MetalSource.length(), CRCLen, CRC, VersionEnum, *Standard, *MinOSVersion, TypeMode, Output.Errors, OutputData.TypedBuffers, OutputData.InvariantBuffers, OutputData.TypedUAVs, OutputData.ConstantBuffers, OutputData.TypedBufferFormats, bAllowFastIntriniscs);
+		BuildMetalShaderOutput(Output, Input, GUIDHash, CCFlags, MetalSource.c_str(), MetalSource.length(), CRCLen, CRC, VersionEnum, *Standard, *MinOSVersion, Output.Errors, OutputData.TypedBuffers, OutputData.InvariantBuffers, OutputData.TypedUAVs, OutputData.ConstantBuffers, bAllowFastIntrinsics);
 		return Output.bSucceeded;
 	}
 	else

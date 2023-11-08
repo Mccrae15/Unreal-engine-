@@ -9,6 +9,7 @@
 #include "EditorUndoClient.h"
 #include "Toolkits/IToolkitHost.h"
 #include "ISkeletalMeshEditor.h"
+#include "SkeletalMeshNotifier.h"
 #include "Containers/ArrayView.h"
 
 class IDetailLayoutBuilder;
@@ -25,7 +26,7 @@ struct FSkeletalMeshClothBuildParams;
 struct FToolMenuContext;
 class UToolMenu;
 class SSkeletalMeshEditorToolbox;
-
+class FSkeletalMeshEditorBinding;
 
 namespace SkeletalMeshEditorModes
 {
@@ -45,6 +46,8 @@ namespace SkeletalMeshEditorTabs
 	extern const FName MeshDetailsTab;
 	extern const FName AnimationMappingTab;
 	extern const FName ToolboxDetailsTab;
+	extern const FName CurveMetadataTab;
+	extern const FName FindReplaceTab;
 }
 
 class FSkeletalMeshEditor : public ISkeletalMeshEditor, public FGCObject, public FEditorUndoClient, public FTickableEditorObject
@@ -79,7 +82,7 @@ public:
 	virtual bool ProcessCommandBindings(const FKeyEvent& InKeyEvent) const override;
 	
 	//~ Begin FAssetEditorToolkit Interface.
-	virtual bool OnRequestClose() override;
+	virtual bool OnRequestClose(EAssetEditorCloseReason InCloseReason) override;
 	//~ End FAssetEditorToolkit Interface.
 
 	/** FEditorUndoClient interface */
@@ -115,14 +118,16 @@ public:
 
 	UObject* HandleGetAsset();
 
-	// Returns the currently hosted toolkit. Can be invalid if no toolkit is being hosted.
-	TSharedPtr<IToolkit> GetHostedToolkit() const { return HostedToolkit; }
-
-private:
 	void HandleObjectsSelected(const TArray<UObject*>& InObjects);
 
-	void HandleObjectSelected(UObject* InObject);
+	// Returns the currently hosted toolkit. Can be invalid if no toolkit is being hosted.
+	TSharedPtr<IToolkit> GetHostedToolkit() const { return HostedToolkit; }
+	
+	virtual TSharedPtr<ISkeletalMeshEditorBinding> GetBinding() override;
 
+private:
+	void HandleObjectSelected(UObject* InObject);
+	
 	void HandleSelectionChanged(const TArrayView<TSharedPtr<ISkeletonTreeItem>>& InSelectedItems, ESelectInfo::Type InSelectInfo);
 
 	void HandleReimportMesh(int32 SourceFileIndex = INDEX_NONE);
@@ -133,9 +138,6 @@ private:
 	void HandleReimportAllMeshWithNewFile(int32 SourceFileIndex = INDEX_NONE);
 
 	void HandleOnPreviewSceneSettingsCustomized(IDetailLayoutBuilder& DetailBuilder);
-
-	/** Callback for toggling UV drawing in the viewport */
-	void ToggleMeshSectionSelection();
 
 	/** Callback for checking whether the UV drawing is switched on. */
 	bool IsMeshSectionSelectionChecked() const;
@@ -190,7 +192,7 @@ public:
 
 private:
 	/** The skeleton we are editing */
-	USkeletalMesh* SkeletalMesh;
+	TObjectPtr<USkeletalMesh> SkeletalMesh;
 
 	/** Toolbar extender */
 	TSharedPtr<FExtender> ToolbarExtender;
@@ -215,4 +217,39 @@ private:
 
 	// The toolbox widget
 	TSharedPtr<SSkeletalMeshEditorToolbox> ToolboxWidget;
+
+	// Binding to send/receive skeletal mesh modifications
+	TSharedPtr<FSkeletalMeshEditorBinding> Binding;
+};
+
+/**
+ * FSkeletalMeshEditorNotifier
+ */
+
+class FSkeletalMeshEditorNotifier: public ISkeletalMeshNotifier
+{
+public:
+	FSkeletalMeshEditorNotifier(TSharedRef<FSkeletalMeshEditor> InEditor);
+	virtual void HandleNotification(const TArray<FName>& BoneNames, const ESkeletalMeshNotifyType InNotifyType) override;
+	
+private:
+	TWeakPtr<FSkeletalMeshEditor> Editor;
+};
+
+/**
+ * FSkeletalMeshEditorBinding
+ */
+
+class FSkeletalMeshEditorBinding: public ISkeletalMeshEditorBinding
+{
+public:
+	FSkeletalMeshEditorBinding(TSharedRef<FSkeletalMeshEditor> InEditor);
+
+	virtual ISkeletalMeshNotifier& GetNotifier() override;
+	virtual NameFunction GetNameFunction() override;
+	virtual TArray<FName> GetSelectedBones() const override;
+	
+private:
+	TWeakPtr<FSkeletalMeshEditor> Editor;
+	FSkeletalMeshEditorNotifier Notifier;
 };

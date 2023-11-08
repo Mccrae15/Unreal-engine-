@@ -61,37 +61,27 @@ bool UOculusXRRoomLayoutManagerComponent::LaunchCaptureFlow()
 
 bool UOculusXRRoomLayoutManagerComponent::GetRoomLayout(FOculusXRUInt64 Space, FOculusXRRoomLayout& RoomLayoutOut, int32 MaxWallsCapacity)
 {
-	if (MaxWallsCapacity <= 0)
+	return UOculusXRAnchorBPFunctionLibrary::GetRoomLayout(Space, RoomLayoutOut, MaxWallsCapacity);
+}
+
+bool UOculusXRRoomLayoutManagerComponent::LoadTriangleMesh(FOculusXRUInt64 Space, UProceduralMeshComponent* Mesh, bool CreateCollision) const
+{
+	ensure(Mesh);
+	TArray<FVector> Vertices;
+	TArray<int32> Triangles;
+
+	bool Success = OculusXRAnchors::FOculusXRRoomLayoutManager::GetSpaceTriangleMesh(Space, Vertices, Triangles);
+	if (!Success)
 	{
 		return false;
 	}
 
-	FOculusXRUUID OutCeilingUuid;
-	FOculusXRUUID OutFloorUuid;
-	TArray<FOculusXRUUID> OutWallsUuid;
+	// Mesh->bUseAsyncCooking = true;
+	TArray<FVector> EmptyNormals;
+	TArray<FVector2D> EmptyUV;
+	TArray<FColor> EmptyVertexColors;
+	TArray<FProcMeshTangent> EmptyTangents;
+	Mesh->CreateMeshSection(0, Vertices, Triangles, EmptyNormals, EmptyUV, EmptyVertexColors, EmptyTangents, CreateCollision);
 
-	const bool bSuccess = OculusXRAnchors::FOculusXRRoomLayoutManager::GetSpaceRoomLayout(Space.Value, static_cast<uint32>(MaxWallsCapacity), OutCeilingUuid, OutFloorUuid, OutWallsUuid);
-
-	if (bSuccess)
-	{
-		RoomLayoutOut.CeilingUuid = OutCeilingUuid;
-		RoomLayoutOut.FloorUuid = OutFloorUuid;
-		RoomLayoutOut.WallsUuid.InsertZeroed(0, OutWallsUuid.Num());
-
-		for (int32 i = 0; i < OutWallsUuid.Num(); ++i)
-		{
-			RoomLayoutOut.WallsUuid[i] = OutWallsUuid[i];
-		}
-
-		TArray<FOculusXRUUID> spaceUUIDs;
-		EOculusXRAnchorResult::Type result = OculusXRAnchors::FOculusXRAnchorManager::GetSpaceContainerUUIDs(Space, spaceUUIDs);
-
-		if (UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(result))
-		{
-			RoomLayoutOut.RoomObjectUUIDs = spaceUUIDs;
-		}
-	}
-
-	return bSuccess;
+	return true;
 }
-

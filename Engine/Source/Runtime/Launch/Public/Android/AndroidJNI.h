@@ -45,6 +45,7 @@ public:
 	static jmethodID AndroidThunkJava_ShowProgressDialog;
 	static jmethodID AndroidThunkJava_UpdateProgressDialog;
 	static jmethodID AndroidThunkJava_GetInputDeviceInfo;
+	static jmethodID AndroidThunkJava_SetInputDeviceVibrators;
 	static jmethodID AndroidThunkJava_IsGamepadAttached;
 	static jmethodID AndroidThunkJava_HasMetaDataKey;
 	static jmethodID AndroidThunkJava_GetMetaDataBoolean;
@@ -72,13 +73,16 @@ public:
 	static jmethodID AndroidThunkJava_SetSustainedPerformanceMode;
 	static jmethodID AndroidThunkJava_PushSensorEvents;
 	static jmethodID AndroidThunkJava_SetOrientation;
+	static jmethodID AndroidThunkJava_SetCellularPreference;
+	static jmethodID AndroidThunkJava_GetCellularPreference;
+
 
 	// Screen capture/recording permission
 	static jmethodID AndroidThunkJava_IsScreenCaptureDisabled;
 	static jmethodID AndroidThunkJava_DisableScreenCapture;
 
 	static jmethodID AndroidThunkCpp_VirtualInputIgnoreClick;
-	static jmethodID AndroidThunkCpp_IsVirtuaKeyboardShown;
+	static jmethodID AndroidThunkCpp_IsVirtualKeyboardShown;
 	static jmethodID AndroidThunkCpp_IsWebViewShown;
 
 	// InputDeviceInfo member field ids
@@ -88,6 +92,7 @@ public:
 	static jfieldID InputDeviceInfo_ControllerId;
 	static jfieldID InputDeviceInfo_Name;
 	static jfieldID InputDeviceInfo_Descriptor;
+	static jfieldID InputDeviceInfo_FeedbackMotorCount;
 
 	// IDs related to google play services
 	static jclass GoogleServicesClassID;
@@ -116,6 +121,7 @@ public:
 	static jmethodID AndroidThunkJava_IapBeginPurchase;
 	static jmethodID AndroidThunkJava_IapIsAllowedToMakePurchases;
 	static jmethodID AndroidThunkJava_IapQueryExistingPurchases;
+	static jmethodID AndroidThunkJava_IapAcknowledgePurchase;
 	static jmethodID AndroidThunkJava_IapConsumePurchase;
 
 	// SurfaceView functionality for view scaling on some devices
@@ -131,6 +137,10 @@ public:
 
 	// Motion controls
 	static jmethodID AndroidThunkJava_EnableMotion;
+
+	// Network Connection Listener
+	static jmethodID AndroidThunkJava_AddNetworkListener;
+	static jmethodID AndroidThunkJava_RemoveNetworkListener;
 
 	// member fields for getting the launch notification
 	static jclass LaunchNotificationClass;

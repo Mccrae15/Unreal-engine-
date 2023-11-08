@@ -22,6 +22,8 @@
 #include "AnimGraphNode_BlendSpaceGraph.h"
 #include "PersonaBlendSpaceAnalysis.h"
 
+#include "DetailBuilderTypes.h"
+
 #define LOCTEXT_NAMESPACE "BlendSpaceDetails"
 
 FBlendSpaceDetails::FBlendSpaceDetails()
@@ -299,7 +301,7 @@ void FBlendSpaceDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailBuil
 			}
 
 			FText AxisTexts[2] = 
-			{ 
+			{
 				LOCTEXT("HorizontalAxisFunction", "Horizontal Axis Function"), 
 				LOCTEXT("VerticalAxisFunction", "Vertical Axis Function") 
 			};
@@ -348,7 +350,9 @@ void FBlendSpaceDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailBuil
 						AnalysisProperties->Function != TEXT("None") && 
 						AnalysisFunctions.Contains(AnalysisProperties->Function))
 					{
-						AnalysisPropertiesRow = DetailCategoryBuilder.AddExternalObjects( {AnalysisProperties} );
+						FAddPropertyParams Params;
+						Params.UniqueId(FName(TEXT("AnalysisPropertiesCombo")));
+						AnalysisPropertiesRow = DetailCategoryBuilder.AddExternalObjects( {AnalysisProperties}, EPropertyLocation::Default, Params);
 					}
 
 					FDetailWidgetRow *FunctionWidgetRow = nullptr;
@@ -361,7 +365,8 @@ void FBlendSpaceDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailBuil
 					}
 					else
 					{
-						FunctionWidgetRow = &DetailCategoryBuilder.AddCustomRow(LOCTEXT("AnalysisProperties", "Analysis Properties"));
+						IDetailPropertyRow& SourceAnimationRow = DetailCategoryBuilder.AddProperty(AnalysisProperty);
+						FunctionWidgetRow = &SourceAnimationRow.CustomWidget();
 					}
 
 					FunctionWidgetRow->NameContent()
@@ -439,7 +444,6 @@ void FBlendSpaceDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailBuil
 			for (uint32 SampleIndex = 0; SampleIndex < NumBlendSampleEntries; ++SampleIndex)
 			{
 				TSharedPtr<IPropertyHandle> BlendSampleProperty = BlendSamplesArrayProperty->GetElement(SampleIndex);
-				BlendSampleProperty->SetOnChildPropertyValueChanged(RefreshDelegate);
 				TSharedPtr<IPropertyHandle> AnimationProperty = BlendSampleProperty->GetChildHandle(GET_MEMBER_NAME_CHECKED(FBlendSample, Animation));
 				TSharedPtr<IPropertyHandle> SampleValueProperty = BlendSampleProperty->GetChildHandle(GET_MEMBER_NAME_CHECKED(FBlendSample, SampleValue));
 				TSharedPtr<IPropertyHandle> RateScaleProperty = BlendSampleProperty->GetChildHandle(GET_MEMBER_NAME_CHECKED(FBlendSample, RateScale));

@@ -8,9 +8,10 @@
 #include "MoviePipelineOutputSetting.h"
 #include "MoviePipelinePrimaryConfig.h"
 #include "MovieScene.h"
+#include "Dom/JsonObject.h"
 #include "RenderGrid/RenderGridManager.h"
 #include "RenderGrid/RenderGridQueue.h"
-#include "RenderGridUtils.h"
+#include "Utils/RenderGridUtils.h"
 #include "UObject/ObjectSaveContext.h"
 
 
@@ -48,6 +49,75 @@ URenderGridJob::URenderGridJob()
 	, RenderPreset(nullptr)
 {
 	SetFlags(RF_Public | RF_Transactional);
+}
+
+FString URenderGridJob::ToDebugString() const
+{
+	return UE::RenderGrid::Private::FRenderGridUtils::ToJsonString(ToDebugJson(), true);
+}
+
+TSharedPtr<FJsonValue> URenderGridJob::ToDebugJson() const
+{
+	TSharedPtr<FJsonObject> Root = MakeShareable(new FJsonObject());
+	{
+		Root->SetStringField(TEXT("Class"), GetParentNativeClass(GetClass())->GetName());
+		Root->SetStringField(TEXT("Object"), GetName());
+		Root->SetStringField(TEXT("Guid"), GetGuid().ToString());
+		Root->SetStringField(TEXT("JobId"), GetJobId());
+		Root->SetStringField(TEXT("JobName"), GetJobName());
+		Root->SetBoolField(TEXT("IsEnabled"), GetIsEnabled());
+		Root->SetStringField(TEXT("RenderPreset"), GetPathNameSafe(GetRenderPreset()));
+		Root->SetStringField(TEXT("OutputDirectory"), GetOutputDirectory());
+
+		{
+			const FIntPoint Value = GetOutputResolution();
+			TSharedPtr<FJsonObject> Object = MakeShareable(new FJsonObject());
+			Object->SetNumberField(TEXT("X"), Value.X);
+			Object->SetNumberField(TEXT("Y"), Value.Y);
+			Root->SetObjectField(TEXT("OutputResolution"), Object);
+		}
+
+		if (const TOptional<int32> Value = GetStartFrame(); Value.IsSet())
+		{
+			Root->SetNumberField(TEXT("StartFrame"), Value.Get(0));
+		}
+		if (const TOptional<int32> Value = GetEndFrame(); Value.IsSet())
+		{
+			Root->SetNumberField(TEXT("EndFrame"), Value.Get(0));
+		}
+		if (const TOptional<double> Value = GetStartTime(); Value.IsSet())
+		{
+			Root->SetNumberField(TEXT("StartTime"), Value.Get(0));
+		}
+		if (const TOptional<double> Value = GetEndTime(); Value.IsSet())
+		{
+			Root->SetNumberField(TEXT("EndTime"), Value.Get(0));
+		}
+		if (const TOptional<double> Value = GetDuration(); Value.IsSet())
+		{
+			Root->SetNumberField(TEXT("Duration"), Value.Get(0));
+		}
+
+		Root->SetNumberField(TEXT("WaitFramesBeforeRendering"), GetWaitFramesBeforeRendering());
+		Root->SetStringField(TEXT("LevelSequence"), GetPathNameSafe(GetLevelSequence()));
+
+		{
+			TArray<TSharedPtr<FJsonValue>> Array;
+			for (const TTuple<FGuid, FString>& Entry : GetRemoteControlValues())
+			{
+				TSharedPtr<FJsonObject> Object = MakeShareable(new FJsonObject());
+				Object->SetStringField(TEXT("Guid"), Entry.Key.ToString());
+				if (FString Label; GetRemoteControlLabelFromFieldId(Entry.Key, Label))
+				{
+					Object->SetStringField(TEXT("Label"), Label);
+				}
+				Object->SetField(TEXT("Value"), UE::RenderGrid::Private::FRenderGridUtils::ParseJson(Entry.Value));
+				Array.Add(MakeShareable(new FJsonValueObject(Object)));
+			}
+			Root->SetArrayField(TEXT("RemoteControlValues"), Array);
+		}
+	}
+	return MakeShareable(new FJsonValueObject(Root));
 }
 
 TOptional<int32> URenderGridJob::GetSequenceStartFrame() const
@@ -268,7 +338,7 @@ TOptional<double> URenderGridJob::GetEndTime() const
 	return EndFrame.Get(0) / DisplayRate.AsDecimal();
 }
 
-TOptional<double> URenderGridJob::GetDurationInSeconds() const
+TOptional<double> URenderGridJob::GetDuration() const
 {
 	if (!IsValid(LevelSequence))
 	{
@@ -291,6 +361,41 @@ TOptional<double> URenderGridJob::GetDurationInSeconds() const
 		DisplayRate = MovieOutputSettings->OutputFrameRate;
 	}
 	return (EndFrame.Get(0) - StartFrame.Get(0)) / DisplayRate.AsDecimal();
+}
+
+void URenderGridJob::GetStartFrame(bool& bSuccess, int32& StartFrame) const
+{
+	TOptional<int32> Result = GetStartFrame();
+	bSuccess = Result.IsSet();
+	StartFrame = Result.Get(0);
+}
+
+void URenderGridJob::GetEndFrame(bool& bSuccess, int32& EndFrame) const
+{
+	TOptional<int32> Result = GetEndFrame();
+	bSuccess = Result.IsSet();
+	EndFrame = Result.Get(0);
+}
+
+void URenderGridJob::GetStartTime(bool& bSuccess, double& StartTime) const
+{
+	TOptional<double> Result = GetStartTime();
+	bSuccess = Result.IsSet();
+	StartTime = Result.Get(0);
+}
+
+void URenderGridJob::GetEndTime(bool& bSuccess, double& EndTime) const
+{
+	TOptional<double> Result = GetEndTime();
+	bSuccess = Result.IsSet();
+	EndTime = Result.Get(0);
+}
+
+void URenderGridJob::GetDuration(bool& bSuccess, double& Duration) const
+{
+	TOptional<double> Result = GetDuration();
+	bSuccess = Result.IsSet();
+	Duration = Result.Get(0);
 }
 
 FIntPoint URenderGridJob::GetOutputResolution() const
@@ -385,7 +490,7 @@ UMoviePipelineOutputSetting* URenderGridJob::GetRenderPresetOutputSettings() con
 	return nullptr;
 }
 
-TArray<URemoteControlPreset*> URenderGridJob::GetRemoteControlPresets()
+TArray<URemoteControlPreset*> URenderGridJob::GetRemoteControlPresets() const
 {
 	TArray<URemoteControlPreset*> Presets;
 	if (URenderGrid* Grid = GetTypedOuter<URenderGrid>(); IsValid(Grid))
@@ -413,28 +518,17 @@ TArray<URemoteControlPreset*> URenderGridJob::GetRemoteControlPresets()
 	return Presets;
 }
 
-bool URenderGridJob::HasRemoteControlValueBytes(const TSharedPtr<FRemoteControlEntity>& RemoteControlEntity) const
+bool URenderGridJob::HasStoredRemoteControlValueBytes(const TSharedPtr<FRemoteControlEntity>& RemoteControlEntity) const
 {
 	if (!RemoteControlEntity.IsValid())
 	{
 		return false;
 	}
 
-	return HasRemoteControlValueBytes(RemoteControlEntity->GetId());
+	return HasStoredRemoteControlValueBytes(RemoteControlEntity->GetId());
 }
 
-bool URenderGridJob::ConstGetRemoteControlValueBytes(const TSharedPtr<FRemoteControlEntity>& RemoteControlEntity, TArray<uint8>& OutBytes) const
-{
-	if (!RemoteControlEntity.IsValid())
-	{
-		OutBytes.Empty();
-		return false;
-	}
-
-	return ConstGetRemoteControlValueBytes(RemoteControlEntity->GetId(), OutBytes);
-}
-
-bool URenderGridJob::GetRemoteControlValueBytes(const TSharedPtr<FRemoteControlEntity>& RemoteControlEntity, TArray<uint8>& OutBytes)
+bool URenderGridJob::GetRemoteControlValueBytes(const TSharedPtr<FRemoteControlEntity>& RemoteControlEntity, TArray<uint8>& OutBytes) const
 {
 	OutBytes.Empty();
 	if (!RemoteControlEntity.IsValid())
@@ -466,7 +560,7 @@ bool URenderGridJob::SetRemoteControlValueBytes(const TSharedPtr<FRemoteControlE
 	return SetRemoteControlValueBytes(RemoteControlEntity->GetId(), Bytes);
 }
 
-bool URenderGridJob::HasRemoteControlValueBytes(const FGuid& FieldId) const
+bool URenderGridJob::HasStoredRemoteControlValueBytes(const FGuid& FieldId) const
 {
 	if (!FieldId.IsValid())
 	{
@@ -476,23 +570,7 @@ bool URenderGridJob::HasRemoteControlValueBytes(const FGuid& FieldId) const
 	return !!RemoteControlValues.Find(FieldId);
 }
 
-bool URenderGridJob::ConstGetRemoteControlValueBytes(const FGuid& FieldId, TArray<uint8>& OutBytes) const
-{
-	OutBytes.Empty();
-	if (!FieldId.IsValid())
-	{
-		return false;
-	}
-
-	if (const FRenderGridRemoteControlPropertyData* DataPtr = RemoteControlValues.Find(FieldId))
-	{
-		OutBytes.Append((*DataPtr).Bytes);
-		return true;
-	}
-	return false;
-}
-
-bool URenderGridJob::GetRemoteControlValueBytes(const FGuid& FieldId, TArray<uint8>& OutBytes)
+bool URenderGridJob::GetRemoteControlValueBytes(const FGuid& FieldId, TArray<uint8>& OutBytes) const
 {
 	OutBytes.Empty();
 	if (!FieldId.IsValid())
@@ -541,32 +619,15 @@ bool URenderGridJob::SetRemoteControlValueBytes(const FGuid& FieldId, const TArr
 	return true;
 }
 
-bool URenderGridJob::HasRemoteControlValue(const FGuid& FieldId) const
+bool URenderGridJob::GetRemoteControlValue(const FGuid& FieldId, FString& Json) const
 {
-	return HasRemoteControlValueBytes(FieldId);
-}
-
-bool URenderGridJob::ConstGetRemoteControlValue(const FGuid& FieldId, FString& OutJson) const
-{
-	OutJson.Empty();
-	TArray<uint8> Bytes;
-	if (!ConstGetRemoteControlValueBytes(FieldId, Bytes))
-	{
-		return false;
-	}
-	OutJson.Append(UE::RenderGrid::Private::FRenderGridUtils::GetRemoteControlValueJsonFromBytes(Bytes));
-	return true;
-}
-
-bool URenderGridJob::GetRemoteControlValue(const FGuid& FieldId, FString& OutJson)
-{
-	OutJson.Empty();
+	Json.Empty();
 	TArray<uint8> Bytes;
 	if (!GetRemoteControlValueBytes(FieldId, Bytes))
 	{
 		return false;
 	}
-	OutJson.Append(UE::RenderGrid::Private::FRenderGridUtils::GetRemoteControlValueJsonFromBytes(Bytes));
+	Json.Append(UE::RenderGrid::Private::FRenderGridUtils::GetRemoteControlValueJsonFromBytes(Bytes));
 	return true;
 }
 
@@ -580,24 +641,24 @@ bool URenderGridJob::SetRemoteControlValue(const FGuid& FieldId, const FString& 
 	return SetRemoteControlValueBytes(FieldId, UE::RenderGrid::Private::FRenderGridUtils::GetRemoteControlValueBytesFromJson(Bytes, Json));
 }
 
-bool URenderGridJob::GetRemoteControlFieldIdFromLabel(const FString& Label, FGuid& OutFieldId)
+bool URenderGridJob::GetRemoteControlFieldIdFromLabel(const FString& Label, FGuid& FieldId) const
 {
-	OutFieldId.Invalidate();
+	FieldId.Invalidate();
 	const FName LabelName = FName(Label);
 	for (URemoteControlPreset* RemoteControlPreset : GetRemoteControlPresets())
 	{
-		if (const FGuid FieldId = RemoteControlPreset->GetExposedEntityId(LabelName); FieldId.IsValid())
+		if (const FGuid RemoteControlFieldId = RemoteControlPreset->GetExposedEntityId(LabelName); RemoteControlFieldId.IsValid())
 		{
-			OutFieldId = FieldId;
+			FieldId = RemoteControlFieldId;
 			return true;
 		}
 	}
 	return false;
 }
 
-bool URenderGridJob::GetRemoteControlLabelFromFieldId(const FGuid& FieldId, FString& OutLabel)
+bool URenderGridJob::GetRemoteControlLabelFromFieldId(const FGuid& FieldId, FString& Label) const
 {
-	OutLabel.Empty();
+	Label.Empty();
 	for (URemoteControlPreset* RemoteControlPreset : GetRemoteControlPresets())
 	{
 		for (const TWeakPtr<FRemoteControlEntity>& PropWeakPtr : RemoteControlPreset->GetExposedEntities<FRemoteControlEntity>())
@@ -606,7 +667,7 @@ bool URenderGridJob::GetRemoteControlLabelFromFieldId(const FGuid& FieldId, FStr
 			{
 				if (Prop->GetId() == FieldId)
 				{
-					OutLabel = Prop->GetLabel().ToString();
+					Label = Prop->GetLabel().ToString();
 					return true;
 				}
 			}
@@ -615,15 +676,20 @@ bool URenderGridJob::GetRemoteControlLabelFromFieldId(const FGuid& FieldId, FStr
 	return false;
 }
 
-TMap<FGuid, FString> URenderGridJob::GetRemoteControlValues()
+TMap<FGuid, FString> URenderGridJob::GetRemoteControlValues() const
 {
 	TMap<FGuid, FString> Result;
-	for (TTuple<FGuid, FRenderGridRemoteControlPropertyData> Entry : RemoteControlValues)
+	for (URemoteControlPreset* RemoteControlPreset : GetRemoteControlPresets())
 	{
-		FString Json;
-		if (GetRemoteControlValue(Entry.Key, Json))
+		for (const TWeakPtr<FRemoteControlEntity>& PropWeakPtr : RemoteControlPreset->GetExposedEntities<FRemoteControlEntity>())
 		{
-			Result.Add(Entry.Key, Json);
+			if (const TSharedPtr<FRemoteControlEntity> Prop = PropWeakPtr.Pin())
+			{
+				if (FString Json; GetRemoteControlValue(Prop->GetId(), Json))
+				{
+					Result.Add(Prop->GetId(), Json);
+				}
+			}
 		}
 	}
 	return Result;
@@ -641,6 +707,62 @@ URenderGrid::URenderGrid()
 	{
 		ClearFlags(RF_Transactional);
 	}
+}
+
+FString URenderGrid::ToDebugString() const
+{
+	return UE::RenderGrid::Private::FRenderGridUtils::ToJsonString(ToDebugJson(), true);
+}
+
+TSharedPtr<FJsonValue> URenderGrid::ToDebugJson() const
+{
+	TSharedPtr<FJsonObject> Root = MakeShareable(new FJsonObject());
+	{
+		Root->SetStringField(TEXT("Class"), GetParentNativeClass(GetClass())->GetName());
+		Root->SetStringField(TEXT("Object"), GetName());
+
+		{
+			FString Path = GetPathNameSafe(HasAnyFlags(RF_ClassDefaultObject) ? this : GetClass()->GetDefaultObject(true));
+			if (FString PathLeft, PathRight; Path.Split(TEXT("."), &PathLeft, &PathRight, ESearchCase::Type::IgnoreCase, ESearchDir::Type::FromEnd))
+			{
+				FString Name = PathLeft;
+				if (FString NameLeft, NameRight; Name.Split(TEXT("/"), &NameLeft, &NameRight, ESearchCase::Type::IgnoreCase, ESearchDir::Type::FromEnd))
+				{
+					Name = NameRight;
+				}
+				Path = PathLeft + TEXT(".") + Name;
+			}
+			Root->SetStringField(TEXT("Path"), Path);
+		}
+
+		Root->SetStringField(TEXT("Guid"), GetGuid().ToString());
+
+		{
+			TSharedPtr<FJsonObject> Object = MakeShareable(new FJsonObject());
+			Object->SetStringField(TEXT("PropsSourceType"), UEnum::GetDisplayValueAsText(GetPropsSourceType()).ToString());
+			Object->SetStringField(TEXT("PropsSourceOrigin"), GetPathNameSafe(GetPropsSourceOrigin()));
+			Root->SetObjectField(TEXT("Settings"), Object);
+		}
+
+		{
+			TSharedPtr<FJsonObject> Object = MakeShareable(new FJsonObject());
+			Object->SetStringField(TEXT("LevelSequence"), GetPathNameSafe(GetDefaultLevelSequence()));
+			Object->SetStringField(TEXT("RenderPreset"), GetPathNameSafe(GetDefaultRenderPreset()));
+			Object->SetStringField(TEXT("OutputDirectory"), GetDefaultOutputDirectory());
+			Object->SetStringField(TEXT("OutputDirectory"), GetDefaultOutputDirectory());
+			Root->SetObjectField(TEXT("Defaults"), Object);
+		}
+
+		{
+			TArray<TSharedPtr<FJsonValue>> Array;
+			for (URenderGridJob* Job : GetRenderGridJobs())
+			{
+				Array.Add(Job->ToDebugJson());
+			}
+			Root->SetArrayField(TEXT("Jobs"), Array);
+		}
+	}
+	return MakeShareable(new FJsonValueObject(Root));
 }
 
 UWorld* URenderGrid::GetWorld() const
@@ -737,11 +859,13 @@ void URenderGrid::CopyAllPropertiesExceptJobs(URenderGrid* From)
 	}
 	for (FProperty* Property = StaticClass()->PropertyLink; Property; Property = Property->PropertyLinkNext)
 	{
-		if (!Property->HasAnyPropertyFlags(CPF_Transient | CPF_DuplicateTransient) && Property->GetName().Compare("RenderGridJobs"))// if not [Transient] and not "RenderGridJobs"
+		if (!Property->HasAnyPropertyFlags(CPF_Transient | CPF_DuplicateTransient) && !Property->GetName().Equals("RenderGridJobs") && !Property->GetName().Equals("Defaults") && !Property->GetName().Equals("Settings"))// if not [Transient] and not "RenderGridJobs"/"Defaults"/"Settings"
 		{
 			Property->CopyCompleteValue(Property->ContainerPtrToValuePtr<void>(this), Property->ContainerPtrToValuePtr<void>(From));
 		}
 	}
+	Defaults->CopyValuesFrom(From->GetDefaultsObject());
+	Settings->CopyValuesFrom(From->GetSettingsObject());
 }
 
 void URenderGrid::CopyAllProperties(URenderGrid* From)
@@ -752,6 +876,24 @@ void URenderGrid::CopyAllProperties(URenderGrid* From)
 	}
 	CopyJobs(From);
 	CopyAllPropertiesExceptJobs(From);
+}
+
+void URenderGrid::CopyAllUserVariables(URenderGrid* From)
+{
+	if (!IsValid(From))
+	{
+		return;
+	}
+	if (From->GetClass()->IsChildOf(GetClass()))
+	{
+		for (FProperty* Property = GetClass()->PropertyLink; Property; Property = Property->PropertyLinkNext)
+		{
+			if (!StaticClass()->HasProperty(Property))// if is [Blueprint Graph Variable]
+			{
+				Property->CopyCompleteValue(Property->ContainerPtrToValuePtr<void>(this), Property->ContainerPtrToValuePtr<void>(From));
+			}
+		}
+	}
 }
 
 void URenderGrid::BeginEditor()
@@ -817,19 +959,18 @@ void URenderGrid::EndViewportRender(URenderGridJob* Job)
 	bExecutingBlueprintEvent = false;
 }
 
-URenderGridQueue* URenderGrid::Render()
-{
-	return RenderJobs(GetEnabledRenderGridJobs());
-}
-
-URenderGridQueue* URenderGrid::RenderJobs(const TArray<URenderGridJob*>& Jobs)
+URenderGridQueue* URenderGrid::RunRenderJobs(const TArray<URenderGridJob*>& Jobs, const FRenderGridRunRenderJobsDefaultObjectCallback& DefaultObjectCallback, const FRenderGridRunRenderJobsCallback& Callback)
 {
 	if (!HasAnyFlags(RF_ClassDefaultObject))
 	{
 		if (URenderGrid* DefaultObject = Cast<URenderGrid>(GetClass()->GetDefaultObject(true)); IsValid(DefaultObject))
 		{
 			CopyAllProperties(DefaultObject);
-			return DefaultObject->RenderJobs(Jobs);
+			CopyAllUserVariables(DefaultObject);
+			if (DefaultObjectCallback.IsBound())
+			{
+				return DefaultObjectCallback.Execute(DefaultObject, Jobs);
+			}
 		}
 		return nullptr;
 	}
@@ -842,17 +983,89 @@ URenderGridQueue* URenderGrid::RenderJobs(const TArray<URenderGridJob*>& Jobs)
 			JobsToRender.Add(Job);
 		}
 	}
-	if (URenderGridQueue* RenderQueue = UE::RenderGrid::IRenderGridModule::Get().GetManager().CreateBatchRenderQueue(this, Jobs); IsValid(RenderQueue))
+	if (Callback.IsBound())
 	{
-		RenderQueue->Execute();
-		return RenderQueue;
+		if (URenderGridQueue* RenderQueue = Callback.Execute(this, Jobs); IsValid(RenderQueue))
+		{
+			RenderQueue->Execute();
+			return RenderQueue;
+		}
 	}
 	return nullptr;
+}
+
+URenderGridQueue* URenderGrid::Render()
+{
+	return RenderJobs(GetEnabledRenderGridJobs());
 }
 
 URenderGridQueue* URenderGrid::RenderJob(URenderGridJob* Job)
 {
 	return RenderJobs({Job});
+}
+
+URenderGridQueue* URenderGrid::RenderJobs(const TArray<URenderGridJob*>& Jobs)
+{
+	return RunRenderJobs(
+		Jobs,
+		FRenderGridRunRenderJobsDefaultObjectCallback::CreateLambda([](URenderGrid* InDefaultObject, const TArray<URenderGridJob*>& InJobs) -> URenderGridQueue* {
+			return InDefaultObject->RenderJobs(InJobs);
+		}),
+		FRenderGridRunRenderJobsCallback::CreateLambda([](URenderGrid* InThis, const TArray<URenderGridJob*>& InJobs) -> URenderGridQueue* {
+			return UE::RenderGrid::IRenderGridModule::Get().GetManager().CreateBatchRenderQueue(InThis, InJobs);
+		})
+	);
+}
+
+URenderGridQueue* URenderGrid::RenderSingleFrame(const int32 Frame)
+{
+	return RenderJobsSingleFrame(GetEnabledRenderGridJobs(), Frame);
+}
+
+URenderGridQueue* URenderGrid::RenderJobSingleFrame(URenderGridJob* Job, const int32 Frame)
+{
+	return RenderJobsSingleFrame({Job}, Frame);
+}
+
+URenderGridQueue* URenderGrid::RenderJobsSingleFrame(const TArray<URenderGridJob*>& Jobs, const int32 Frame)
+{
+	return RunRenderJobs(
+		Jobs,
+		FRenderGridRunRenderJobsDefaultObjectCallback::CreateLambda([Frame](URenderGrid* InDefaultObject, const TArray<URenderGridJob*>& InJobs) -> URenderGridQueue* {
+			return InDefaultObject->RenderJobsSingleFrame(InJobs, Frame);
+		}),
+		FRenderGridRunRenderJobsCallback::CreateLambda([Frame](URenderGrid* InThis, const TArray<URenderGridJob*>& InJobs) -> URenderGridQueue* {
+			return UE::RenderGrid::IRenderGridModule::Get().GetManager().CreateBatchRenderQueueSingleFrame(InThis, InJobs, Frame);
+		})
+	);
+}
+
+URenderGridQueue* URenderGrid::RenderSingleFramePosition(const double FramePosition)
+{
+	return RenderJobsSingleFramePosition(GetEnabledRenderGridJobs(), FramePosition);
+}
+
+URenderGridQueue* URenderGrid::RenderJobSingleFramePosition(URenderGridJob* Job, const double FramePosition)
+{
+	return RenderJobsSingleFramePosition({Job}, FramePosition);
+}
+
+URenderGridQueue* URenderGrid::RenderJobsSingleFramePosition(const TArray<URenderGridJob*>& Jobs, const double FramePosition)
+{
+	return RunRenderJobs(
+		Jobs,
+		FRenderGridRunRenderJobsDefaultObjectCallback::CreateLambda([FramePosition](URenderGrid* InDefaultObject, const TArray<URenderGridJob*>& InJobs) -> URenderGridQueue* {
+			return InDefaultObject->RenderJobsSingleFramePosition(InJobs, FramePosition);
+		}),
+		FRenderGridRunRenderJobsCallback::CreateLambda([FramePosition](URenderGrid* InThis, const TArray<URenderGridJob*>& InJobs) -> URenderGridQueue* {
+			return UE::RenderGrid::IRenderGridModule::Get().GetManager().CreateBatchRenderQueueSingleFramePosition(InThis, InJobs, FramePosition);
+		})
+	);
+}
+
+TSoftObjectPtr<UWorld> URenderGrid::GetLevel() const
+{
+	return Settings->Level;
 }
 
 void URenderGrid::SetPropsSource(ERenderGridPropsSourceType InPropsSourceType, UObject* InPropsSourceOrigin)
@@ -874,7 +1087,7 @@ URenderGridPropsSourceBase* URenderGrid::GetPropsSource() const
 	{
 		Settings->CachedPropsSourceType = Settings->PropsSourceType;
 		Settings->CachedPropsSourceOriginWeakPtr = PropsSourceOrigin;
-		Settings->CachedPropsSource = UE::RenderGrid::IRenderGridModule::Get().CreatePropsSource(const_cast<URenderGrid*>(this), Settings->PropsSourceType, PropsSourceOrigin);
+		Settings->CachedPropsSource = UE::RenderGrid::IRenderGridModule::Get().CreatePropsSource(Settings->PropsSourceType, PropsSourceOrigin);
 	}
 	return Settings->CachedPropsSource;
 }

@@ -7,6 +7,8 @@
 #include "SceneInterface.h"
 #include "UnrealEngine.h"
 #include "DataDrivenShaderPlatformInfo.h"
+#include "PrimitiveUniformShaderParametersBuilder.h"
+#include "PrimitiveSceneShaderData.h"
 
 FPrimitiveUniformShaderParametersBuilder& FPrimitiveUniformShaderParametersBuilder::InstanceDrawDistance(FVector2f DistanceMinMax)
 {
@@ -26,209 +28,115 @@ FPrimitiveUniformShaderParametersBuilder& FPrimitiveUniformShaderParametersBuild
 	return *this;
 }
 
-void FSinglePrimitiveStructured::InitRHI() 
+void FSinglePrimitiveStructured::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	SCOPED_LOADTIMER(FSinglePrimitiveStructuredBuffer_InitRHI);
 
 	FRHIResourceCreateInfo CreateInfo(TEXT("PrimitiveSceneDataBuffer"));
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 	{	
-		PrimitiveSceneDataBufferRHI = RHICreateStructuredBuffer(sizeof(FVector4f), FPrimitiveSceneShaderData::DataStrideInFloat4s * sizeof(FVector4f), BUF_Static | BUF_ShaderResource, CreateInfo);
-		PrimitiveSceneDataBufferSRV = RHICreateShaderResourceView(PrimitiveSceneDataBufferRHI);
+		PrimitiveSceneDataBufferRHI = RHICmdList.CreateStructuredBuffer(sizeof(FVector4f), FPrimitiveSceneShaderData::DataStrideInFloat4s * sizeof(FVector4f), BUF_Static | BUF_ShaderResource, CreateInfo);
+		PrimitiveSceneDataBufferSRV = RHICmdList.CreateShaderResourceView(PrimitiveSceneDataBufferRHI);
 	}
 
 	{
+		const static FLazyName ClassName(TEXT("FSinglePrimitiveStructured"));
 		const FRHITextureCreateDesc Desc =
 			FRHITextureCreateDesc::Create2D(TEXT("PrimitiveSceneDataTexture"), FPrimitiveSceneShaderData::DataStrideInFloat4s, 1, PF_A32B32G32R32F)
-			.SetFlags(ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV);
+			.SetFlags(ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV)
+			.SetClassName(ClassName);
 
 		PrimitiveSceneDataTextureRHI = RHICreateTexture(Desc);
-		PrimitiveSceneDataTextureSRV = RHICreateShaderResourceView(PrimitiveSceneDataTextureRHI, 0);
+		PrimitiveSceneDataTextureSRV = RHICmdList.CreateShaderResourceView(PrimitiveSceneDataTextureRHI, 0);
 	}
 
 	CreateInfo.DebugName = TEXT("LightmapSceneDataBuffer");
-	LightmapSceneDataBufferRHI = RHICreateStructuredBuffer(sizeof(FVector4f), FLightmapSceneShaderData::DataStrideInFloat4s * sizeof(FVector4f), BUF_Static | BUF_ShaderResource, CreateInfo);
-	LightmapSceneDataBufferSRV = RHICreateShaderResourceView(LightmapSceneDataBufferRHI);
+	LightmapSceneDataBufferRHI = RHICmdList.CreateStructuredBuffer(sizeof(FVector4f), FLightmapSceneShaderData::DataStrideInFloat4s * sizeof(FVector4f), BUF_Static | BUF_ShaderResource, CreateInfo);
+	LightmapSceneDataBufferSRV = RHICmdList.CreateShaderResourceView(LightmapSceneDataBufferRHI);
 
 	CreateInfo.DebugName = TEXT("InstanceSceneDataBuffer");
-	InstanceSceneDataBufferRHI = RHICreateStructuredBuffer(sizeof(FVector4f), FInstanceSceneShaderData::GetDataStrideInFloat4s() * sizeof(FVector4f), BUF_Static | BUF_ShaderResource, CreateInfo);
-	InstanceSceneDataBufferSRV = RHICreateShaderResourceView(InstanceSceneDataBufferRHI);
+	InstanceSceneDataBufferRHI = RHICmdList.CreateStructuredBuffer(sizeof(FVector4f), FInstanceSceneShaderData::GetDataStrideInFloat4s() * sizeof(FVector4f), BUF_Static | BUF_ShaderResource, CreateInfo);
+	InstanceSceneDataBufferSRV = RHICmdList.CreateShaderResourceView(InstanceSceneDataBufferRHI);
 
 	CreateInfo.DebugName = TEXT("InstancePayloadDataBuffer");
-	InstancePayloadDataBufferRHI = RHICreateStructuredBuffer(sizeof(FVector4f), 1 /* unused dummy */ * sizeof(FVector4f), BUF_Static | BUF_ShaderResource, CreateInfo);
-	InstancePayloadDataBufferSRV = RHICreateShaderResourceView(InstancePayloadDataBufferRHI);
+	InstancePayloadDataBufferRHI = RHICmdList.CreateStructuredBuffer(sizeof(FVector4f), 1 /* unused dummy */ * sizeof(FVector4f), BUF_Static | BUF_ShaderResource, CreateInfo);
+	InstancePayloadDataBufferSRV = RHICmdList.CreateShaderResourceView(InstancePayloadDataBufferRHI);
+
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	CreateInfo.DebugName = TEXT("SkyIrradianceEnvironmentMap");
-	SkyIrradianceEnvironmentMapRHI = RHICreateStructuredBuffer(sizeof(FVector4f), sizeof(FVector4f) * 8, BUF_Static | BUF_ShaderResource, CreateInfo);
-	SkyIrradianceEnvironmentMapSRV = RHICreateShaderResourceView(SkyIrradianceEnvironmentMapRHI);
+	SkyIrradianceEnvironmentMapRHI = RHICmdList.CreateStructuredBuffer(sizeof(FVector4f), sizeof(FVector4f) * 8, BUF_Static | BUF_ShaderResource, CreateInfo);
+	SkyIrradianceEnvironmentMapSRV = RHICmdList.CreateShaderResourceView(SkyIrradianceEnvironmentMapRHI);
 
-	UploadToGPU();
+	UploadToGPU(RHICmdList);
 }
 
-void FSinglePrimitiveStructured::UploadToGPU()
+void FSinglePrimitiveStructured::UploadToGPU(FRHICommandListBase& RHICmdList)
 {
 	void* LockedData = nullptr;
 
-	LockedData = RHILockBuffer(PrimitiveSceneDataBufferRHI, 0, FPrimitiveSceneShaderData::DataStrideInFloat4s * sizeof(FVector4f), RLM_WriteOnly);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
+	LockedData = RHICmdList.LockBuffer(PrimitiveSceneDataBufferRHI, 0, FPrimitiveSceneShaderData::DataStrideInFloat4s * sizeof(FVector4f), RLM_WriteOnly);
 	FPlatformMemory::Memcpy(LockedData, PrimitiveSceneData.Data.GetData(), FPrimitiveSceneShaderData::DataStrideInFloat4s * sizeof(FVector4f));
-	RHIUnlockBuffer(PrimitiveSceneDataBufferRHI);
+	RHICmdList.UnlockBuffer(PrimitiveSceneDataBufferRHI);
 
-	LockedData = RHILockBuffer(LightmapSceneDataBufferRHI, 0, FLightmapSceneShaderData::DataStrideInFloat4s * sizeof(FVector4f), RLM_WriteOnly);
+	LockedData = RHICmdList.LockBuffer(LightmapSceneDataBufferRHI, 0, FLightmapSceneShaderData::DataStrideInFloat4s * sizeof(FVector4f), RLM_WriteOnly);
 	FPlatformMemory::Memcpy(LockedData, LightmapSceneData.Data.GetData(), FLightmapSceneShaderData::DataStrideInFloat4s * sizeof(FVector4f));
-	RHIUnlockBuffer(LightmapSceneDataBufferRHI);
+	RHICmdList.UnlockBuffer(LightmapSceneDataBufferRHI);
 
-	LockedData = RHILockBuffer(InstanceSceneDataBufferRHI, 0, FInstanceSceneShaderData::GetDataStrideInFloat4s() * sizeof(FVector4f), RLM_WriteOnly);
+	LockedData = RHICmdList.LockBuffer(InstanceSceneDataBufferRHI, 0, FInstanceSceneShaderData::GetDataStrideInFloat4s() * sizeof(FVector4f), RLM_WriteOnly);
 	FPlatformMemory::Memcpy(LockedData, InstanceSceneData.Data.GetData(), FInstanceSceneShaderData::GetDataStrideInFloat4s() * sizeof(FVector4f));
-	RHIUnlockBuffer(InstanceSceneDataBufferRHI);
+	RHICmdList.UnlockBuffer(InstanceSceneDataBufferRHI);
 
-	LockedData = RHILockBuffer(InstancePayloadDataBufferRHI, 0, 1 /* unused dummy */ * sizeof(FVector4f), RLM_WriteOnly);
+	LockedData = RHICmdList.LockBuffer(InstancePayloadDataBufferRHI, 0, 1 /* unused dummy */ * sizeof(FVector4f), RLM_WriteOnly);
 	FPlatformMemory::Memset(LockedData, 0x00, sizeof(FVector4f));
-	RHIUnlockBuffer(InstancePayloadDataBufferRHI);
+	RHICmdList.UnlockBuffer(InstancePayloadDataBufferRHI);
 
 //#if WITH_EDITOR
 	if (IsFeatureLevelSupported(GMaxRHIShaderPlatform, ERHIFeatureLevel::SM5))
 	{
 		// Create level instance SRV
 		FRHIResourceCreateInfo LevelInstanceBufferCreateInfo(TEXT("EditorVisualizeLevelInstanceDataBuffer"));
-		EditorVisualizeLevelInstanceDataBufferRHI = RHICreateVertexBuffer(sizeof(uint32), BUF_Static | BUF_ShaderResource, LevelInstanceBufferCreateInfo);
+		EditorVisualizeLevelInstanceDataBufferRHI = RHICmdList.CreateVertexBuffer(sizeof(uint32), BUF_Static | BUF_ShaderResource, LevelInstanceBufferCreateInfo);
 
-		LockedData = RHILockBuffer(EditorVisualizeLevelInstanceDataBufferRHI, 0, sizeof(uint32), RLM_WriteOnly);
+		LockedData = RHICmdList.LockBuffer(EditorVisualizeLevelInstanceDataBufferRHI, 0, sizeof(uint32), RLM_WriteOnly);
 
 		*reinterpret_cast<uint32*>(LockedData) = 0;
 
-		RHIUnlockBuffer(EditorVisualizeLevelInstanceDataBufferRHI);
+		RHICmdList.UnlockBuffer(EditorVisualizeLevelInstanceDataBufferRHI);
 
-		EditorVisualizeLevelInstanceDataBufferSRV = RHICreateShaderResourceView(EditorVisualizeLevelInstanceDataBufferRHI, sizeof(uint32), PF_R32_UINT);
+		EditorVisualizeLevelInstanceDataBufferSRV = RHICmdList.CreateShaderResourceView(EditorVisualizeLevelInstanceDataBufferRHI, sizeof(uint32), PF_R32_UINT);
 
 		// Create selection outline SRV
 		FRHIResourceCreateInfo SelectionBufferCreateInfo(TEXT("EditorSelectedDataBuffer"));
-		EditorSelectedDataBufferRHI = RHICreateVertexBuffer(sizeof(uint32), BUF_Static | BUF_ShaderResource, SelectionBufferCreateInfo);
+		EditorSelectedDataBufferRHI = RHICmdList.CreateVertexBuffer(sizeof(uint32), BUF_Static | BUF_ShaderResource, SelectionBufferCreateInfo);
 
-		LockedData = RHILockBuffer(EditorSelectedDataBufferRHI, 0, sizeof(uint32), RLM_WriteOnly);
+		LockedData = RHICmdList.LockBuffer(EditorSelectedDataBufferRHI, 0, sizeof(uint32), RLM_WriteOnly);
 
 		*reinterpret_cast<uint32*>(LockedData) = 0;
 
-		RHIUnlockBuffer(EditorSelectedDataBufferRHI);
+		RHICmdList.UnlockBuffer(EditorSelectedDataBufferRHI);
 
-		EditorSelectedDataBufferSRV = RHICreateShaderResourceView(EditorSelectedDataBufferRHI, sizeof(uint32), PF_R32_UINT);
+		EditorSelectedDataBufferSRV = RHICmdList.CreateShaderResourceView(EditorSelectedDataBufferRHI, sizeof(uint32), PF_R32_UINT);
 	}
 //#endif
+
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 TGlobalResource<FSinglePrimitiveStructured> GIdentityPrimitiveBuffer;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 TGlobalResource<FSinglePrimitiveStructured> GTilePrimitiveBuffer;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 FPrimitiveSceneShaderData::FPrimitiveSceneShaderData(const FPrimitiveSceneProxy* RESTRICT Proxy)
 	: Data(InPlace, NoInit)
 {
-	bool bHasPrecomputedVolumetricLightmap;
-	FMatrix PreviousLocalToWorld;
-	int32 SingleCaptureIndex;
-	bool bOutputVelocity;
-
-	Proxy->GetScene().GetPrimitiveUniformShaderParameters_RenderThread(
-		Proxy->GetPrimitiveSceneInfo(),
-		bHasPrecomputedVolumetricLightmap,
-		PreviousLocalToWorld,
-		SingleCaptureIndex,
-		bOutputVelocity
-	);
-
-	bOutputVelocity |= Proxy->AlwaysHasVelocity();
-
-	FBoxSphereBounds PreSkinnedLocalBounds;
-	Proxy->GetPreSkinnedLocalBounds(PreSkinnedLocalBounds);
-
-	FPrimitiveSceneInfo* PrimitiveSceneInfo = Proxy->GetPrimitiveSceneInfo();
-
-	uint32 NaniteResourceID = INDEX_NONE;
-	uint32 NaniteHierarchyOffset = INDEX_NONE;
-	uint32 NaniteImposterIndex = INDEX_NONE;
-	uint32 NaniteFilterFlags = 0u;
-	uint32 NaniteRayTracingDataOffset = INDEX_NONE;
-	bool bReverseCulling = false;
-
-	if (Proxy->IsNaniteMesh())
-	{
-		auto NaniteProxy = static_cast<const Nanite::FSceneProxyBase*>(Proxy);
-		NaniteProxy->GetNaniteResourceInfo(NaniteResourceID, NaniteHierarchyOffset, NaniteImposterIndex);
-		NaniteFilterFlags = uint32(NaniteProxy->GetFilterFlags());
-		NaniteRayTracingDataOffset = NaniteProxy->GetRayTracingDataOffset();
-		bReverseCulling = NaniteProxy->IsCullingReversedByComponent(); // needed because Nanite doesn't use raster state
-	}
-
-	FPrimitiveUniformShaderParametersBuilder Builder = FPrimitiveUniformShaderParametersBuilder{}
-		.Defaults()
-		.LocalToWorld(Proxy->GetLocalToWorld())
-		.PreviousLocalToWorld(PreviousLocalToWorld)
-		.ActorWorldPosition(Proxy->GetActorPosition())
-		.WorldBounds(Proxy->GetBounds())
-		.LocalBounds(Proxy->GetLocalBounds())
-		.PreSkinnedLocalBounds(PreSkinnedLocalBounds)
-		.CustomPrimitiveData(Proxy->GetCustomPrimitiveData())
-		.LightingChannelMask(Proxy->GetLightingChannelMask())
-		.LightmapDataIndex(Proxy->GetPrimitiveSceneInfo()->GetLightmapDataOffset())
-		.LightmapUVIndex(Proxy->GetLightMapCoordinateIndex())
-		.SingleCaptureIndex(SingleCaptureIndex)
-		.PersistentPrimitiveIndex(Proxy->GetPrimitiveSceneInfo()->GetPersistentIndex().Index)
-		.InstanceSceneDataOffset(Proxy->GetPrimitiveSceneInfo()->GetInstanceSceneDataOffset())
-		.NumInstanceSceneDataEntries(Proxy->GetPrimitiveSceneInfo()->GetNumInstanceSceneDataEntries())
-		.InstancePayloadDataOffset(Proxy->GetPrimitiveSceneInfo()->GetInstancePayloadDataOffset())
-		.InstancePayloadDataStride(Proxy->GetPrimitiveSceneInfo()->GetInstancePayloadDataStride())
-		.HasDistanceFieldRepresentation(Proxy->HasDistanceFieldRepresentation())
-		.HasCapsuleRepresentation(Proxy->HasDynamicIndirectShadowCasterRepresentation())
-		.UseSingleSampleShadowFromStationaryLights(Proxy->UseSingleSampleShadowFromStationaryLights())
-		.ReceivesDecals(Proxy->ReceivesDecals())
-		.CacheShadowAsStatic(PrimitiveSceneInfo->ShouldCacheShadowAsStatic())
-		.OutputVelocity(bOutputVelocity)
-		.EvaluateWorldPositionOffset(Proxy->EvaluateWorldPositionOffset() && Proxy->AnyMaterialHasWorldPositionOffset())
-		.MaxWorldPositionOffsetDisplacement(Proxy->GetMaxWorldPositionOffsetDisplacement())
-		.CastContactShadow(Proxy->CastsContactShadow())
-		.CastShadow(Proxy->CastsDynamicShadow())
-		.CastHiddenShadow(Proxy->CastsHiddenShadow())
-		.VisibleInGame(Proxy->IsDrawnInGame())
-		.VisibleInEditor(Proxy->IsDrawnInEditor())
-		.VisibleInReflectionCaptures(Proxy->IsVisibleInReflectionCaptures())
-		.VisibleInRealTimeSkyCaptures(Proxy->IsVisibleInRealTimeSkyCaptures())
-		.VisibleInRayTracing(Proxy->IsVisibleInRayTracing())
-		.VisibleInLumenScene(Proxy->IsVisibleInLumenScene())
-		.VisibleInSceneCaptureOnly(Proxy->IsVisibleInSceneCaptureOnly())
-		.HiddenInSceneCapture(Proxy->IsHiddenInSceneCapture())
-		.ForceHidden(Proxy->IsForceHidden())
-		.Holdout(Proxy->Holdout())
-		.UseVolumetricLightmap(bHasPrecomputedVolumetricLightmap)
-		.NaniteResourceID(NaniteResourceID)
-		.NaniteHierarchyOffset(NaniteHierarchyOffset)
-		.NaniteImposterIndex(NaniteImposterIndex)
-		.NaniteFilterFlags(NaniteFilterFlags)
-		.NaniteRayTracingDataOffset(NaniteRayTracingDataOffset)
-		.PrimitiveComponentId(Proxy->GetPrimitiveComponentId().PrimIDValue)
-		.EditorColors(Proxy->GetWireframeColor(), Proxy->GetLevelColor())
-		.ReverseCulling(bReverseCulling);
-
-	FVector2f InstanceDrawDistanceMinMax;
-	if (Proxy->GetInstanceDrawDistanceMinMax(InstanceDrawDistanceMinMax))
-	{
-		Builder.InstanceDrawDistance(InstanceDrawDistanceMinMax);
-	}
-
-	float WPODisableDistance;
-	if (Proxy->GetInstanceWorldPositionOffsetDisableDistance(WPODisableDistance))
-	{
-		Builder.InstanceWorldPositionOffsetDisableDistance(WPODisableDistance);
-	}
-
-	const TConstArrayView<FRenderBounds> InstanceBounds = Proxy->GetInstanceLocalBounds();
-	if (InstanceBounds.Num() > 0)
-	{
-		Builder.InstanceLocalBounds(InstanceBounds[0]);
-	}
-
-	if (Proxy->ShouldRenderCustomDepth())
-	{
-		Builder.CustomDepthStencil(Proxy->GetCustomDepthStencilValue(), Proxy->GetStencilWriteMask());
-	}
-
+	FPrimitiveUniformShaderParametersBuilder Builder = FPrimitiveUniformShaderParametersBuilder{};
+	Proxy->BuildUniformShaderParameters(Builder);
 	Setup(Builder.Build());
 }
 
@@ -243,7 +151,8 @@ void FPrimitiveSceneShaderData::Setup(const FPrimitiveUniformShaderParameters& P
 	Data[0].X	= FMath::AsFloat(PrimitiveUniformShaderParameters.Flags);
 	Data[0].Y	= FMath::AsFloat(PrimitiveUniformShaderParameters.InstanceSceneDataOffset);
 	Data[0].Z	= FMath::AsFloat(PrimitiveUniformShaderParameters.NumInstanceSceneDataEntries);
-	Data[0].W	= FMath::AsFloat((uint32)PrimitiveUniformShaderParameters.SingleCaptureIndex);
+	Data[0].W	= FMath::AsFloat((uint32)PrimitiveUniformShaderParameters.SingleCaptureIndex |
+								 ((PrimitiveUniformShaderParameters.VisibilityFlags & 0xFFFFu) << 16u));
 
 	Data[1].X	= PrimitiveUniformShaderParameters.TilePosition.X;
 	Data[1].Y	= PrimitiveUniformShaderParameters.TilePosition.Y;
@@ -305,7 +214,8 @@ void FPrimitiveSceneShaderData::Setup(const FPrimitiveUniformShaderParameters& P
 	Data[27].X = PrimitiveUniformShaderParameters.InstanceLocalBoundsExtent.X;
 	Data[27].Y = PrimitiveUniformShaderParameters.InstanceLocalBoundsExtent.Y;
 	Data[27].Z = PrimitiveUniformShaderParameters.InstanceLocalBoundsExtent.Z;
-	Data[27].W = FMath::AsFloat(PrimitiveUniformShaderParameters.InstancePayloadDataStride);
+	Data[27].W = FMath::AsFloat((PrimitiveUniformShaderParameters.InstancePayloadDataStride & 0x00FFFFFFu) |
+								(PrimitiveUniformShaderParameters.InstancePayloadExtensionSize << 24u));
 	
 	Data[28].X = PrimitiveUniformShaderParameters.WireframeColor.X;
 	Data[28].Y = PrimitiveUniformShaderParameters.WireframeColor.Y;
@@ -322,9 +232,10 @@ void FPrimitiveSceneShaderData::Setup(const FPrimitiveUniformShaderParameters& P
 	Data[30].Z = PrimitiveUniformShaderParameters.InstanceWPODisableDistanceSquared;
 	Data[30].W = FMath::AsFloat(PrimitiveUniformShaderParameters.NaniteRayTracingDataOffset);
 
-	Data[31].X = PrimitiveUniformShaderParameters.MaxWPODisplacement;
-	Data[31].Y = FMath::AsFloat(PrimitiveUniformShaderParameters.CustomStencilValueAndMask);
-	// .ZW Unused
+	Data[31].X = PrimitiveUniformShaderParameters.MaxWPOExtent;
+	Data[31].Y = PrimitiveUniformShaderParameters.MinMaterialDisplacement;
+	Data[31].Z = PrimitiveUniformShaderParameters.MaxMaterialDisplacement;
+	Data[31].W = FMath::AsFloat(PrimitiveUniformShaderParameters.CustomStencilValueAndMask);
 
 	// Set all the custom primitive data float4. This matches the loop in SceneData.ush
 	const int32 CustomPrimitiveDataStartIndex = 32;
@@ -332,4 +243,42 @@ void FPrimitiveSceneShaderData::Setup(const FPrimitiveUniformShaderParameters& P
 	{
 		Data[CustomPrimitiveDataStartIndex + DataIndex] = PrimitiveUniformShaderParameters.CustomPrimitiveData[DataIndex];
 	}
+}
+
+TUniformBufferRef<FPrimitiveUniformShaderParameters> CreatePrimitiveUniformBufferImmediate(
+	const FMatrix& LocalToWorld,
+	const FBoxSphereBounds& WorldBounds,
+	const FBoxSphereBounds& LocalBounds,
+	const FBoxSphereBounds& PreSkinnedLocalBounds,
+	bool bReceivesDecals,
+	bool bOutputVelocity
+)
+{
+	check(IsInRenderingThread());
+	return TUniformBufferRef<FPrimitiveUniformShaderParameters>::CreateUniformBufferImmediate(
+		FPrimitiveUniformShaderParametersBuilder{}
+		.Defaults()
+			.LocalToWorld(LocalToWorld)
+			.ActorWorldPosition(WorldBounds.Origin)
+			.WorldBounds(WorldBounds)
+			.LocalBounds(LocalBounds)
+			.PreSkinnedLocalBounds(PreSkinnedLocalBounds)
+			.ReceivesDecals(bReceivesDecals)
+			.OutputVelocity(bOutputVelocity)
+		.Build(),
+		UniformBuffer_MultiFrame
+	);
+}
+
+FPrimitiveUniformShaderParameters GetIdentityPrimitiveParameters()
+{
+	// Don't use FMatrix44f::Identity here as GetIdentityPrimitiveParameters is used by TGlobalResource<FIdentityPrimitiveUniformBuffer> and because
+	// static initialization order is undefined, FMatrix44f::Identity might be all 0's or random data the first time this is called.
+	return FPrimitiveUniformShaderParametersBuilder{}
+		.Defaults()
+			.LocalToWorld(FMatrix(FPlane(1, 0, 0, 0), FPlane(0, 1, 0, 0), FPlane(0, 0, 1, 0), FPlane(0, 0, 0, 1)))
+			.ActorWorldPosition(FVector(0.0, 0.0, 0.0))
+			.WorldBounds(FBoxSphereBounds(EForceInit::ForceInit))
+			.LocalBounds(FBoxSphereBounds(EForceInit::ForceInit))
+		.Build();
 }

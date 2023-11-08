@@ -1,7 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "USDGroomTranslator.h"
-#include "UObject/Package.h"
 
 #if USE_USD_SDK && WITH_EDITOR
 
@@ -15,10 +14,12 @@
 #include "HairStrandsImporter.h"
 #include "Misc/ArchiveMD5.h"
 #include "Templates/UniquePtr.h"
+#include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 
 #include "UnrealUSDWrapper.h"
-#include "USDAssetImportData.h"
+#include "USDAssetUserData.h"
+#include "USDClassesModule.h"
 #include "USDGroomConversion.h"
 #include "USDGroomTranslatorUtils.h"
 #include "USDIntegrationUtils.h"
@@ -26,10 +27,12 @@
 #include "USDTypesConversion.h"
 
 #include "USDIncludesStart.h"
-#include "pxr/base/tf/type.h"
-#include "pxr/usd/usd/prim.h"
-#include "pxr/usd/usd/timeCode.h"
-#include "pxr/usd/usdGeom/curves.h"
+	#include "pxr/base/tf/type.h"
+	#include "pxr/usd/usd/prim.h"
+	#include "pxr/usd/usd/timeCode.h"
+	#include "pxr/usd/usdGeom/basisCurves.h"
+	#include "pxr/usd/usdGeom/curves.h"
+	#include "pxr/usd/usdGeom/imageable.h"
 #include "USDIncludesEnd.h"
 
 namespace UE::UsdGroomTranslator::Private
@@ -174,21 +177,29 @@ protected:
 				UGroomAsset* GroomAsset = Cast<UGroomAsset>(Context->AssetCache->GetCachedAsset(SHAHash.ToString()));
 				if (!GroomAsset)
 				{
-					FName AssetName = MakeUniqueObjectName(GetTransientPackage(), UGroomAsset::StaticClass(), *FPaths::GetBaseFilename(PrimPathString));
+					FName AssetName = MakeUniqueObjectName(
+						GetTransientPackage(),
+						UGroomAsset::StaticClass(),
+						*IUsdClassesModule::SanitizeObjectName(FPaths::GetBaseFilename(PrimPathString))
+					);
 
-					FHairImportContext HairImportContext(ImportOptions.Get(), GetTransientPackage(), UGroomAsset::StaticClass(), AssetName, Context->ObjectFlags | EObjectFlags::RF_Public);
+					FHairImportContext HairImportContext(
+						ImportOptions.Get(),
+						GetTransientPackage(),
+						UGroomAsset::StaticClass(),
+						AssetName,
+						Context->ObjectFlags | RF_Public | RF_Transient
+					);
 					UGroomAsset* ExistingAsset = nullptr;
 					GroomAsset = FHairStrandsImporter::ImportHair(HairImportContext, HairDescription, ExistingAsset);
 					if (GroomAsset)
 					{
 						Context->AssetCache->CacheAsset(SHAHash.ToString(), GroomAsset);
-#if WITH_EDITOR
-						UUsdAssetImportData* ImportData = NewObject<UUsdAssetImportData>(GroomAsset, TEXT("UUSDAssetImportData"));
-						ImportData->PrimPath = PrimPathString;
-						ImportData->ImportOptions = ImportOptions.Get();
 
-						GroomAsset->AssetImportData = ImportData;
-#endif // WITH_EDITOR
+						UUsdAssetUserData* UserData = NewObject<UUsdAssetUserData>(GroomAsset, TEXT("UUSDAssetUserData"));
+						UserData->PrimPaths = {PrimPathString};
+
+						GroomAsset->AddAssetUserData(UserData);
 					}
 				}
 
@@ -236,7 +247,7 @@ protected:
 					GroomCacheProcessor = MakeUnique<FGroomCacheProcessor>(EGroomCacheType::Strands, AnimInfo.Attributes);
 
 					// ref. FGroomCacheImporter::ImportGroomCache
-					const TArray<FHairGroupData>& GroomHairGroupsData = GroomAsset->HairGroupsData;
+					const TArray<FHairGroupPlatformData>& GroomHairGroupsData = GroomAsset->GetHairGroupsPlatformData();
 
 					// Each frame is translated into a HairDescription and processed into HairGroupData
 					// Sample one extra frame so that we can interpolate between EndFrame - 1 and EndFrame
@@ -259,14 +270,14 @@ protected:
 
 						const uint32 GroupCount = HairDescriptionGroups.HairGroups.Num();
 
-						TArray<FHairGroupInfoWithVisibility> HairGroupsInfo = GroomAsset->HairGroupsInfo;
+						TArray<FHairGroupInfoWithVisibility> HairGroupsInfo = GroomAsset->GetHairGroupsInfo();
 						TArray<FHairDescriptionGroup> HairGroupsData;
 						HairGroupsData.SetNum(GroupCount);
 						for (uint32 GroupIndex = 0; GroupIndex < GroupCount; ++GroupIndex)
 						{
 							const FHairDescriptionGroup& HairGroup = HairDescriptionGroups.HairGroups[GroupIndex];
 							FHairDescriptionGroup& HairGroupData = HairGroupsData[GroupIndex];
-							FGroomBuilder::BuildData(HairGroup, GroomAsset->HairGroupsInterpolation[GroupIndex], HairGroupsInfo[GroupIndex], HairGroupData.Strands, HairGroupData.Guides);
+							FGroomBuilder::BuildData(HairGroup, GroomAsset->GetHairGroupsInterpolation()[GroupIndex], HairGroupsInfo[GroupIndex], HairGroupData.Strands, HairGroupData.Guides);
 						}
 
 						// Validate that the GroomCache has the same topology as the static groom
@@ -301,10 +312,7 @@ protected:
 				}
 				else if (Context->InfoCache)
 				{
-					Context->InfoCache->LinkAssetToPrim(
-						UE::FSdfPath{*UsdGroomTranslatorUtils::GetStrandsGroomCachePrimPath(PrimPath)},
-						GroomCache
-					);
+					Context->InfoCache->LinkAssetToPrim(PrimPath, GroomCache);
 				}
 
 				if (!bSuccess)
@@ -320,26 +328,24 @@ protected:
 			[this]() -> bool
 			{
 				const FString StrandsGroomCachePrimPath = UsdGroomTranslatorUtils::GetStrandsGroomCachePrimPath(PrimPath);
-				FHairImportContext HairImportContext(nullptr, GetTransientPackage(), nullptr, FName(), Context->ObjectFlags | EObjectFlags::RF_Public);
-				FName UniqueName = MakeUniqueObjectName(GetTransientPackage(), UGroomCache::StaticClass(), *FPaths::GetBaseFilename(StrandsGroomCachePrimPath));
+				FHairImportContext HairImportContext(nullptr, GetTransientPackage(), nullptr, FName(), Context->ObjectFlags | RF_Public | RF_Transient);
+				FName UniqueName = MakeUniqueObjectName(
+					GetTransientPackage(),
+					UGroomCache::StaticClass(),
+					*IUsdClassesModule::SanitizeObjectName(FPaths::GetBaseFilename(StrandsGroomCachePrimPath))
+				);
 
 				// Once the processing has completed successfully, the data is transferred to the GroomCache
 				UGroomCache* GroomCache = FGroomCacheImporter::ProcessToGroomCache(*GroomCacheProcessor, AnimInfo, HairImportContext, UniqueName.ToString());
 				if (GroomCache)
 				{
-#if WITH_EDITOR
-					UUsdAssetImportData* ImportData = NewObject<UUsdAssetImportData>(GroomCache, TEXT("UUSDAssetImportData"));
-					ImportData->PrimPath = UsdGroomTranslatorUtils::GetStrandsGroomCachePrimPath(PrimPath);
-					ImportData->ImportOptions = ImportOptions.Get();
+					UUsdAssetUserData* UserData = NewObject<UUsdAssetUserData>(GroomCache, TEXT("UUSDAssetUserData"));
+					UserData->PrimPaths = {PrimPath.GetString()};
 
-					GroomCache->AssetImportData = ImportData;
-#endif // WITH_EDITOR
+					GroomCache->AddAssetUserData(UserData);
 
 					Context->AssetCache->CacheAsset(GroomCacheHash.ToString(), GroomCache);
-					Context->InfoCache->LinkAssetToPrim(
-						UE::FSdfPath{*StrandsGroomCachePrimPath},
-						GroomCache
-					);
+					Context->InfoCache->LinkAssetToPrim(PrimPath, GroomCache);
 				}
 
 				return GroomCache != nullptr;
@@ -354,7 +360,7 @@ bool FUsdGroomTranslator::IsGroomPrim() const
 
 void FUsdGroomTranslator::CreateAssets()
 {
-	if (!IsGroomPrim())
+	if (!Context->bAllowParsingGroomAssets || !IsGroomPrim())
 	{
 		return Super::CreateAssets();
 	}
@@ -364,7 +370,7 @@ void FUsdGroomTranslator::CreateAssets()
 
 USceneComponent* FUsdGroomTranslator::CreateComponents()
 {
-	if (!IsGroomPrim())
+	if (!Context->bAllowParsingGroomAssets || !IsGroomPrim())
 	{
 		return Super::CreateComponents();
 	}
@@ -385,7 +391,7 @@ USceneComponent* FUsdGroomTranslator::CreateComponents()
 
 void FUsdGroomTranslator::UpdateComponents(USceneComponent* SceneComponent)
 {
-	if (!IsGroomPrim())
+	if (!Context->bAllowParsingGroomAssets || !IsGroomPrim())
 	{
 		Super::UpdateComponents(SceneComponent);
 	}
@@ -416,9 +422,7 @@ void FUsdGroomTranslator::UpdateComponents(USceneComponent* SceneComponent)
 
 			if (Groom)
 			{
-				UGroomCache* GroomCache = Context->InfoCache->GetSingleAssetForPrim<UGroomCache>(
-					UE::FSdfPath{*UsdGroomTranslatorUtils::GetStrandsGroomCachePrimPath(PrimPath)}
-				);
+				UGroomCache* GroomCache = Context->InfoCache->GetSingleAssetForPrim<UGroomCache>(PrimPath);
 				if (GroomCache != GroomComponent->GroomCache.Get())
 				{
 					GroomComponent->SetGroomCache(GroomCache);
@@ -440,7 +444,7 @@ void FUsdGroomTranslator::UpdateComponents(USceneComponent* SceneComponent)
 
 bool FUsdGroomTranslator::CollapsesChildren(ECollapsingType CollapsingType) const
 {
-	if (!IsGroomPrim())
+	if (!Context->bAllowParsingGroomAssets || !IsGroomPrim())
 	{
 		return Super::CollapsesChildren(CollapsingType);
 	}
@@ -450,12 +454,57 @@ bool FUsdGroomTranslator::CollapsesChildren(ECollapsingType CollapsingType) cons
 
 bool FUsdGroomTranslator::CanBeCollapsed(ECollapsingType CollapsingType) const
 {
-	if (!IsGroomPrim())
+	if (!Context->bAllowParsingGroomAssets || !IsGroomPrim())
 	{
 		return Super::CanBeCollapsed(CollapsingType);
 	}
 
 	return true;
+}
+
+TSet<UE::FSdfPath> FUsdGroomTranslator::CollectAuxiliaryPrims() const
+{
+	if (!Context->bAllowParsingGroomAssets || !IsGroomPrim())
+	{
+		return Super::CollectAuxiliaryPrims();
+	}
+
+	if (!Context->bIsBuildingInfoCache)
+	{
+		return Context->InfoCache->GetAuxiliaryPrims(PrimPath);
+	}
+
+	if (!Context->InfoCache->DoesPathCollapseChildren(PrimPath, ECollapsingType::Assets))
+	{
+		return {};
+	}
+
+	TSet<UE::FSdfPath> Result;
+	{
+		FScopedUsdAllocs UsdAllocs;
+
+		TFunction<void(const pxr::UsdPrim&)> RecursivelyRegisterPrims;
+		RecursivelyRegisterPrims = [&](const pxr::UsdPrim& UsdPrim)
+		{
+			if (pxr::UsdGeomBasisCurves Curves = pxr::UsdGeomBasisCurves(UsdPrim))
+			{
+				Result.Add(UE::FSdfPath{UsdPrim.GetPrimPath()});
+			}
+			else if (pxr::UsdGeomImageable(UsdPrim))
+			{
+				Result.Add(UE::FSdfPath{UsdPrim.GetPrimPath()});
+
+				for (const pxr::UsdPrim& Child : UsdPrim.GetChildren())
+				{
+					RecursivelyRegisterPrims(Child);
+				}
+			}
+		};
+
+		pxr::UsdPrim Prim = GetPrim();
+		RecursivelyRegisterPrims(Prim);
+	}
+	return Result;
 }
 
 #endif // #if USE_USD_SDK

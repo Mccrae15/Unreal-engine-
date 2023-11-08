@@ -58,6 +58,9 @@ struct SpirvCodeGenOptions {
   bool disableScalarBlockLayout;
   // UE Change End: Allow to disable scalar block layout
   // qualifier for older versions of Metal.
+  // UE Change Begin: Added new flag for forceStorageImageFormat
+  bool forceStorageImageFormat;
+  // UE Change End: Added new flag for forceStorageImageFormat
   bool invertY; // Additive inverse
   bool invertW; // Multiplicative inverse
   bool noWarnEmulatedFeatures;
@@ -75,6 +78,9 @@ struct SpirvCodeGenOptions {
   // UE Change Begin: Allow preserving unused inputs in shaders, used for OpenGL to match input/outputs
   bool preserveStorageInput;
   // UE Change End: Allow preserving unused inputs in shaders, used for OpenGL to match input/outputs
+  // UE Change Begin: Allow SV_Position to be implicit invariant
+  bool svPositionimplicitInvariant;
+  // UE Change End: Allow SV_Position to be implicit invariant
   bool flattenResourceArrays;
   bool reduceLoadSize;
   bool autoShiftBindings;

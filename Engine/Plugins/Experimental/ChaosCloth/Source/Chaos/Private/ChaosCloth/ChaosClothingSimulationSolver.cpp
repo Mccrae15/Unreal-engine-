@@ -3,9 +3,13 @@
 #include "ChaosCloth/ChaosClothingSimulationCloth.h"
 #include "ChaosCloth/ChaosClothingSimulationCollider.h"
 #include "ChaosCloth/ChaosClothingSimulationMesh.h"
+#include "ChaosCloth/ChaosClothingSimulationConfig.h"
 #include "ChaosCloth/ChaosClothingSimulation.h"
 #include "ChaosCloth/ChaosClothPrivate.h"
 #include "Chaos/PBDEvolution.h"
+#include "Chaos/WeightedLatticeImplicitObject.h"
+#include "Chaos/Levelset.h"
+#include "GeometryCollection/ManagedArrayCollection.h"
 #if INTEL_ISPC
 #include "ChaosClothingSimulationSolver.ispc.generated.h"
 #endif
@@ -72,8 +76,11 @@ namespace ClothingSimulationSolverDefault
 	static const Softs::FSolverVec3 Gravity((Softs::FSolverReal)0., (Softs::FSolverReal)0., (Softs::FSolverReal)-980.665);  // cm/s^2
 	static const Softs::FSolverVec3 WindVelocity((Softs::FSolverReal)0.);
 	static const int32 NumIterations = 1;
+	static const int32 MinNumIterations = 1;
 	static const int32 MaxNumIterations = 10;
 	static const int32 NumSubsteps = 1;
+	static const int32 MinNumSubsteps = 1;
+	static const FRealSingle SolverFrequency = 60.f;
 	static const FRealSingle SelfCollisionThickness = 2.f;
 	static const FRealSingle CollisionThickness = 1.2f;
 	static const FRealSingle FrictionCoefficient = 0.2f;
@@ -94,9 +101,6 @@ FClothingSimulationSolver::FClothingSimulationSolver()
 	, VelocityScale(1.)
 	, Time(0.)
 	, DeltaTime(ClothingSimulationSolverConstant::StartDeltaTime)
-	, NumIterations(ClothingSimulationSolverDefault::NumIterations)
-	, MaxNumIterations(ClothingSimulationSolverDefault::MaxNumIterations)
-	, NumSubsteps(ClothingSimulationSolverDefault::NumSubsteps)
 	, CollisionParticlesOffset(0)
 	, CollisionParticlesSize(0)
 	, Gravity(ClothingSimulationSolverDefault::Gravity)
@@ -105,6 +109,8 @@ FClothingSimulationSolver::FClothingSimulationSolver()
 	, bIsClothGravityOverrideEnabled(false)
 	, bEnableSolver(true)
 {
+	SetConfig(nullptr); // This will generate a local default config so we have something to use if there are no cloth assets..
+
 	Softs::FSolverParticles LocalParticles;
 	Softs::FSolverRigidParticles RigidParticles;
 	Evolution.Reset(
@@ -159,11 +165,32 @@ FClothingSimulationSolver::FClothingSimulationSolver()
 			const Softs::FSolverVec3 Axis = Delta.GetRotationAxis();
 			ParticlesInput.W(Index) = (Softs::FSolverVec3)Axis * Angle / Dt;
 			ParticlesInput.R(Index) = NewR;
+
+			if (TWeightedLatticeImplicitObject<FLevelSet>* SkinnedLevelSet = 
+				const_cast<FImplicitObject*>(ParticlesInput.Geometry(Index).Get())->GetObject<TWeightedLatticeImplicitObject<FLevelSet>>())
+			{
+				const TArray<int32>& SubBoneIndices = SkinnedLevelSet->GetSolverBoneIndices();
+				const FTransform RootTransformInv = TRigidTransform<FReal, 3>(ParticlesInput.X(Index), ParticlesInput.R(Index)).Inverse();
+				TArray<FTransform> SubBoneTransforms;
+				SubBoneTransforms.SetNum(SubBoneIndices.Num());
+				for (int32 SubBoneIdx = 0; SubBoneIdx < SubBoneIndices.Num(); ++SubBoneIdx)
+				{
+					checkSlow(SubBoneIndices[SubBoneIdx] < Index);
+					SubBoneTransforms[SubBoneIdx] = TRigidTransform<FReal,3>(ParticlesInput.X(SubBoneIndices[SubBoneIdx]), ParticlesInput.R(SubBoneIndices[SubBoneIdx])) * RootTransformInv;
+				}
+				SkinnedLevelSet->DeformPoints(SubBoneTransforms);
+				SkinnedLevelSet->UpdateSpatialHierarchy();
+			}
 		});
 }
 
 FClothingSimulationSolver::~FClothingSimulationSolver()
 {
+	// If the PropertyCollection is owned by this object, so does the current config object
+	if (PropertyCollection.IsValid())
+	{
+		delete Config;
+	}
 }
 
 void FClothingSimulationSolver::SetLocalSpaceLocation(const FVec3& InLocalSpaceLocation, bool bReset)
@@ -315,6 +342,29 @@ void FClothingSimulationSolver::RefreshCloths()
 
 	// Update solver collider's offset
 	CollisionParticlesOffset = Evolution->CollisionParticles().Size();
+}
+
+void FClothingSimulationSolver::SetConfig(FClothingSimulationConfig* InConfig)
+{
+	// If the PropertyCollection is owned by this object, so does the current config object
+	if (PropertyCollection.IsValid())
+	{
+		delete Config;
+		PropertyCollection.Reset();
+	}
+
+	if (InConfig)
+	{
+		Config = InConfig;
+	}
+	else
+	{
+		// Create a default empty config object for coherence
+		PropertyCollection = MakeShared<FManagedArrayCollection>();
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		Config = new FClothingSimulationConfig(PropertyCollection);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
 }
 
 void FClothingSimulationSolver::ResetParticles()
@@ -521,6 +571,11 @@ const TArray<Softs::FSolverVec3>& FClothingSimulationSolver::GetCollisionContact
 	return Evolution->GetCollisionContacts();
 }
 
+const TArray<Softs::FSolverReal>& FClothingSimulationSolver::GetCollisionPhis() const
+{
+	return Evolution->GetCollisionPhis();
+}
+
 const TArray<Softs::FSolverVec3>& FClothingSimulationSolver::GetCollisionNormals() const
 {
 	return Evolution->GetCollisionNormals();
@@ -696,25 +751,101 @@ void FClothingSimulationSolver::SetWindVelocity(const TVec3<FRealSingle>& InWind
 	LegacyWindAdaption = InLegacyWindAdaption;
 }
 
+void FClothingSimulationSolver::SetNumIterations(int32 InNumIterations)
+{
+	if (ensure(Config))
+	{
+		Config->GetProperties(SolverLOD).SetValue(TEXT("NumIterations"), InNumIterations);
+	}
+}
+
+int32 FClothingSimulationSolver::GetNumIterations() const
+{
+	return Config ?
+		Config->GetProperties(SolverLOD).GetValue<int32>(TEXT("NumIterations"), ClothingSimulationSolverDefault::NumIterations) :
+		ClothingSimulationSolverDefault::NumIterations;
+}
+
+void FClothingSimulationSolver::SetMaxNumIterations(int32 InMaxNumIterations)
+{
+	if (ensure(Config))
+	{
+		Config->GetProperties(SolverLOD).SetValue(TEXT("MaxNumIterations"), InMaxNumIterations);
+	}
+}
+
+int32 FClothingSimulationSolver::GetMaxNumIterations() const
+{
+	return Config ?
+		Config->GetProperties(SolverLOD).GetValue<int32>(TEXT("MaxNumIterations"), ClothingSimulationSolverDefault::MaxNumIterations) :
+		ClothingSimulationSolverDefault::MaxNumIterations;
+}
+
+void FClothingSimulationSolver::SetNumSubsteps(int32 InNumSubsteps)
+{
+	if (ensure(Config))
+	{
+		Config->GetProperties(SolverLOD).SetValue(TEXT("NumSubsteps"), InNumSubsteps);
+	}
+}
+
+int32 FClothingSimulationSolver::GetNumSubsteps() const
+{
+	return Config ?
+		Config->GetProperties(SolverLOD).GetValue<int32>(TEXT("NumSubsteps"), ClothingSimulationSolverDefault::NumSubsteps) :
+		ClothingSimulationSolverDefault::NumSubsteps;
+}
+
 void FClothingSimulationSolver::SetWindVelocity(uint32 GroupId, const TVec3<FRealSingle>& InWindVelocity)
 {
-	Softs::FVelocityAndPressureField& VelocityField = Evolution->GetVelocityAndPressureField(GroupId);
-	VelocityField.SetVelocity(Softs::FSolverVec3(InWindVelocity));
+	Softs::FVelocityAndPressureField& VelocityAndPressureField = Evolution->GetVelocityAndPressureField(GroupId);
+	VelocityAndPressureField.SetVelocity(Softs::FSolverVec3(InWindVelocity));
 }
 
-void FClothingSimulationSolver::SetWindAndPressureGeometry(uint32 GroupId, const FTriangleMesh& TriangleMesh, const TConstArrayView<FRealSingle>& DragMultipliers, const TConstArrayView<FRealSingle>& LiftMultipliers,
+void FClothingSimulationSolver::SetWindAndPressureGeometry(
+	uint32 GroupId,
+	const FTriangleMesh& TriangleMesh,
+	const Softs::FCollectionPropertyConstFacade& InPropertyCollection,
+	const TMap<FString, TConstArrayView<FRealSingle>>& WeightMaps)
+{
+	Softs::FVelocityAndPressureField& VelocityAndPressureField = Evolution->GetVelocityAndPressureField(GroupId);
+	VelocityAndPressureField.SetGeometry(&TriangleMesh, InPropertyCollection, WeightMaps, ClothingSimulationSolverConstant::WorldScale);
+}
+
+void FClothingSimulationSolver::SetWindAndPressureGeometry(
+	uint32 GroupId,
+	const FTriangleMesh& TriangleMesh,
+	const TConstArrayView<FRealSingle>& DragMultipliers,
+	const TConstArrayView<FRealSingle>& LiftMultipliers,
 	const TConstArrayView<FRealSingle>& PressureMultipliers)
 {
-	Softs::FVelocityAndPressureField& VelocityField = Evolution->GetVelocityAndPressureField(GroupId);
-	VelocityField.SetGeometry(&TriangleMesh, DragMultipliers, LiftMultipliers, PressureMultipliers);
+	Softs::FVelocityAndPressureField& VelocityAndPressureField = Evolution->GetVelocityAndPressureField(GroupId);
+	VelocityAndPressureField.SetGeometry(&TriangleMesh, DragMultipliers, LiftMultipliers, PressureMultipliers);
 }
 
-void FClothingSimulationSolver::SetWindAndPressureProperties(uint32 GroupId, const TVec2<FRealSingle>& Drag, const TVec2<FRealSingle>& Lift, FRealSingle AirDensity, const TVec2<FRealSingle>& Pressure)
+void FClothingSimulationSolver::SetWindAndPressureProperties(
+	uint32 GroupId,
+	const Softs::FCollectionPropertyConstFacade& InPropertyCollection,
+	const TMap<FString, TConstArrayView<FRealSingle>>& WeightMaps,
+	bool bEnableAerodynamics)
 {
-	Softs::FVelocityAndPressureField& VelocityField = Evolution->GetVelocityAndPressureField(GroupId);
+	Softs::FVelocityAndPressureField& VelocityAndPressureField = Evolution->GetVelocityAndPressureField(GroupId);
+	VelocityAndPressureField.SetProperties(InPropertyCollection, WeightMaps, ClothingSimulationSolverConstant::WorldScale, bEnableAerodynamics);
+}
 
-	// UI Pressure is in kg/m s^2. Need to convert to kg/cm s^2 for solver.
-	VelocityField.SetProperties(Drag, Lift, AirDensity, Pressure / ClothingSimulationSolverConstant::WorldScale);
+void FClothingSimulationSolver::SetWindAndPressureProperties(
+	uint32 GroupId,
+	const TVec2<FRealSingle>& Drag,
+	const TVec2<FRealSingle>& Lift,
+	FRealSingle FluidDensity,
+	const TVec2<FRealSingle>& Pressure)
+{
+	Softs::FVelocityAndPressureField& VelocityAndPressureField = Evolution->GetVelocityAndPressureField(GroupId);
+	VelocityAndPressureField.SetProperties(
+		Drag,
+		Lift,
+		FluidDensity / FMath::Cube(ClothingSimulationSolverConstant::WorldScale),  // Fluid density is given in kg/m^3. Need to convert to kg/cm^3 for solver.
+		Pressure / ClothingSimulationSolverConstant::WorldScale);  // UI Pressure is in kg/m s^2. Need to convert to kg/cm s^2 for solver.
 }
 
 const Softs::FVelocityAndPressureField& FClothingSimulationSolver::GetWindVelocityAndPressureField(uint32 GroupId) const
@@ -1028,21 +1159,37 @@ void FClothingSimulationSolver::Update(Softs::FSolverReal InDeltaTime)
 			SCOPE_CYCLE_COUNTER(STAT_ChaosClothSolverUpdateSolverStep);
 			SCOPE_CYCLE_COUNTER(STAT_ClothInternalSolve);
 
+			check(Config);
+			const Softs::FCollectionPropertyFacade& Properties = Config->GetProperties(SolverLOD);
+
+			const int32 ConfigMaxNumIterations = FMath::Max(
+				Properties.GetValue<int32>(TEXT("MaxNumIterations"), ClothingSimulationSolverDefault::MaxNumIterations),
+				ClothingSimulationSolverDefault::MinNumIterations);
+
+			const int32 ConfigNumIterations = FMath::Clamp(
+				Properties.GetValue<int32>(TEXT("NumIterations"), ClothingSimulationSolverDefault::NumIterations),
+				ClothingSimulationSolverDefault::MinNumIterations,
+				ConfigMaxNumIterations);
+
+			const int32 ConfigNumSubsteps = FMath::Max(
+				Properties.GetValue<int32>(TEXT("NumSubsteps"), ClothingSimulationSolverDefault::NumSubsteps),
+				ClothingSimulationSolverDefault::MinNumSubsteps);
+
 			// Update solver time dependent parameters
-			constexpr Softs::FSolverReal SolverFrequency = 60.f;  // TODO: This could become a solver property
+			const Softs::FSolverReal SolverFrequency = (Softs::FSolverReal)ClothingSimulationSolverDefault::SolverFrequency;  // 60Hz default TODO: Should this become a solver property?
 
 			const int32 TimeDependentNumIterations = bClothSolverDisableTimeDependentNumIterations ?
-				NumIterations :
-				FMath::RoundToInt32(SolverFrequency * DeltaTime * (Softs::FSolverReal)NumIterations);
+				ConfigNumIterations :
+				FMath::RoundToInt32(SolverFrequency * DeltaTime * (Softs::FSolverReal)ConfigNumIterations);
 
-			Evolution->SetIterations(FMath::Clamp(TimeDependentNumIterations, 1, MaxNumIterations));
+			Evolution->SetIterations(FMath::Clamp(TimeDependentNumIterations, 1, ConfigMaxNumIterations));
 
 			// Advance substeps
-			const Softs::FSolverReal SubstepDeltaTime = DeltaTime / (Softs::FSolverReal)NumSubsteps;
+			const Softs::FSolverReal SubstepDeltaTime = DeltaTime / (Softs::FSolverReal)ConfigNumSubsteps;
 	
-			for (int32 i = 0; i < NumSubsteps; ++i)
+			for (int32 i = 0; i < ConfigNumSubsteps; ++i)
 			{
-				PreSubstep(FMath::Clamp((Softs::FSolverReal)(i + 1) / (Softs::FSolverReal)NumSubsteps, (Softs::FSolverReal)0., (Softs::FSolverReal)1.));
+				PreSubstep(FMath::Clamp((Softs::FSolverReal)(i + 1) / (Softs::FSolverReal)ConfigNumSubsteps, (Softs::FSolverReal)0., (Softs::FSolverReal)1.));
 				Evolution->AdvanceOneTimeStep(SubstepDeltaTime);
 			}
 
@@ -1070,16 +1217,42 @@ void FClothingSimulationSolver::Update(Softs::FSolverReal InDeltaTime)
 	OldLocalSpaceLocation = LocalSpaceLocation;
 }
 
+
+void FClothingSimulationSolver::UpdateFromCache(const FClothingSimulationCacheData& CacheData)
+{
+	Chaos::Softs::FSolverParticles& SolverParticles = Evolution->Particles();
+	const int32 NumParticles = GetNumParticles();
+	const int32 NumCachedParticles = CacheData.CacheIndices.Num();	
+	const bool bHasVelocity = CacheData.CachedVelocities.Num() > 0;
+	for (int32 CacheIndex = 0; CacheIndex < NumCachedParticles; ++CacheIndex)
+	{
+		const int32 ParticleIndex = CacheData.CacheIndices[CacheIndex];
+		if (ensure(ParticleIndex < NumParticles))
+		{
+			SolverParticles.X(ParticleIndex) = CacheData.CachedPositions[CacheIndex];
+			SolverParticles.V(ParticleIndex) = bHasVelocity ? (FSolverVec3)CacheData.CachedVelocities[CacheIndex] : FSolverVec3::ZeroVector;
+		}
+	}
+	PhysicsParallelFor(Cloths.Num(), [this, &CacheData](int32 ClothIndex)
+	{
+		FClothingSimulationCloth* const Cloth = Cloths[ClothIndex];
+		Cloth->UpdateFromCache(CacheData);
+		Cloth->PostUpdate(this);
+	}, /*bForceSingleThreaded =*/ !bClothSolverParallelClothPostUpdate);
+
+}
+
 void FClothingSimulationSolver::UpdateFromCache(const TArray<FVector>& CachedPositions, const TArray<FVector>& CachedVelocities) 
 {
 	Chaos::Softs::FSolverParticles& SolverParticles = Evolution->Particles();
 	const int32 NumParticles = GetNumParticles();
+	const bool bHasVelocity = CachedVelocities.Num() > 0;
 	if(CachedPositions.Num() == NumParticles)
 	{
 		for(int32 ParticleIndex = 0; ParticleIndex < NumParticles; ++ParticleIndex)
 		{
 			SolverParticles.X(ParticleIndex) = CachedPositions[ParticleIndex];
-			SolverParticles.V(ParticleIndex) = CachedVelocities[ParticleIndex];
+			SolverParticles.V(ParticleIndex) = bHasVelocity ? CachedVelocities[ParticleIndex] : FVector::ZeroVector;
 		}
 	}
 	PhysicsParallelFor(Cloths.Num(), [this](int32 ClothIndex)

@@ -14,7 +14,6 @@ public class UnrealVirtualizationToolTarget : TargetRules
 		LaunchModuleName = "UnrealVirtualizationTool";
 
 		bBuildDeveloperTools = false;
-		bUseMallocProfiler = false;
 
 		bCompileAgainstEditor = false;
 		bBuildWithEditorOnlyData = true;
@@ -31,10 +30,7 @@ public class UnrealVirtualizationToolTarget : TargetRules
 		// Enable Developer plugins
 		bCompileWithPluginSupport = true;
 
-		AdditionalPlugins.Add("PerforceSourceControl");
-
 		GlobalDefinitions.Add("UE_TRACE_ENABLED=1");
 		GlobalDefinitions.Add("UE_SUPPORT_FULL_PACKAGEPATH=1");
-		GlobalDefinitions.Add("UE_DISABLE_PLUGIN_DISCOVERY=1");
 	}
 }

@@ -65,16 +65,7 @@ bool FSourceControlWindows::ChoosePackagesToCheckIn(const FSourceControlWindowsO
 	// Start selection process...
 
 	// make sure we update the SCC status of all packages (this could take a long time, so we will run it as a background task)
-	TArray<FString> Filenames;
-	if (ISourceControlModule::Get().UsesCustomProjectDir())
-	{
-		FString SourceControlProjectDir = ISourceControlModule::Get().GetSourceControlProjectDir();
-		Filenames.Add(SourceControlProjectDir);
-	}
-	else
-	{
-		Filenames = SourceControlHelpers::GetSourceControlLocations();
-	}
+	TArray<FString> Filenames = SourceControlHelpers::GetSourceControlLocations();
 	
 	// make sure the SourceControlProvider state cache is populated as well
 	ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
@@ -138,7 +129,7 @@ bool FSourceControlWindows::CanChoosePackagesToCheckIn()
 
 bool FSourceControlWindows::ShouldChoosePackagesToCheckBeVisible()
 {
-	return GetDefault<USourceControlSettings>()->bEnableSubmitContentMenuAction;
+	return GetDefault<USourceControlSettings>()->bEnableSubmitContentMenuAction && !ISourceControlModule::Get().GetProvider().UsesSnapshots();
 }
 
 
@@ -170,7 +161,7 @@ static bool SaveDirtyPackages()
 		FText DialogText = NSLOCTEXT("SourceControlCommands", "UnsavedWarningText", "Warning: There are modified assets which are not being saved. If you sync to latest you may lose your unsaved changes. Do you want to continue?");
 		FText DialogTitle = NSLOCTEXT("SourceControlCommands", "UnsavedWarningTitle", "Unsaved changes");
 
-		EAppReturnType::Type DialogResult = FMessageDialog::Open(EAppMsgType::YesNo, DialogText, &DialogTitle);
+		EAppReturnType::Type DialogResult = FMessageDialog::Open(EAppMsgType::YesNo, DialogText, DialogTitle);
 
 		bSaved = (DialogResult == EAppReturnType::Yes);
 	}
@@ -185,7 +176,13 @@ bool FSourceControlWindows::SyncLatest()
 	// if properly saved or confirmation given, find all packages and use source control to update them.
 	if (bSaved)
 	{
-		AssetViewUtils::SyncLatestFromSourceControl();
+		bool bSuccess = AssetViewUtils::SyncLatestFromSourceControl();
+		if (!bSuccess)
+		{
+			FText Message(LOCTEXT("SCC_Sync_Failed", "Failed to sync files!"));
+			FMessageLog("SourceControl").Notify(Message);
+		}
+		return bSuccess;
 	}
 
 	return false;
@@ -500,19 +497,8 @@ void FSourceControlWindows::ChoosePackagesToCheckInCompleted(const TArray<UPacka
 		return;
 	}
 
-	TArray<FString> PendingDeletePaths;
-
 	bool bUseSourceControlStateCache = true;
-	if (ISourceControlModule::Get().UsesCustomProjectDir())
-	{
-		FString SourceControlProjectDir = ISourceControlModule::Get().GetSourceControlProjectDir();
-		PendingDeletePaths.Add(SourceControlProjectDir);
-		bUseSourceControlStateCache = false;
-	}
-	else
-	{
-		PendingDeletePaths = SourceControlHelpers::GetSourceControlLocations();
-	}
+	TArray<FString> PendingDeletePaths = SourceControlHelpers::GetSourceControlLocations();
 
 	PromptForCheckin(OutResultInfo, PackageNames, PendingDeletePaths, ConfigFiles, bUseSourceControlStateCache);
 }

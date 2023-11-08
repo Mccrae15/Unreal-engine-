@@ -1,10 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreMinimal.h"
 #include "EdGraph/EdGraph.h"
 #include "HAL/CriticalSection.h"
 #include "IAudioParameterTransmitter.h"
+#include "Interfaces/MetasoundOutputFormatInterfaces.h"
 #include "Metasound.h"
 #include "MetasoundAssetBase.h"
 #include "MetasoundFrontend.h"
@@ -18,38 +18,42 @@
 
 #include "MetasoundSource.generated.h"
 
+
+// Forward Declarations
 namespace Metasound
 {
-	// Forward declare
 	struct FMetaSoundEngineAssetHelper;
 	class FMetasoundGenerator;
+	namespace SourcePrivate
+	{
+		class FParameterRouter;
+	}
+
+	namespace DynamicGraph
+	{
+		class FDynamicOperatorTransactor;
+	}
+} // namespace Metasound
+
+namespace Audio
+{
+	using DeviceID = uint32;
 }
 
-/** Declares the output audio format of the UMetaSoundSource */
-UENUM()
-enum class EMetasoundSourceAudioFormat : uint8
-{
-	Mono,
-	Stereo,
-	Quad,
-	FiveDotOne UMETA(DisplayName="5.1"),
-	SevenDotOne UMETA(DisplayName="7.1"),
-
-	COUNT UMETA(Hidden)
-};
-
-DECLARE_MULTICAST_DELEGATE_TwoParams(FOnGeneratorInstanceCreated, uint64, TSharedPtr<Metasound::FMetasoundGenerator>);
-DECLARE_MULTICAST_DELEGATE_TwoParams(FOnGeneratorInstanceDestroyed, uint64, TSharedPtr<Metasound::FMetasoundGenerator>);
+DECLARE_TS_MULTICAST_DELEGATE_TwoParams(FOnGeneratorInstanceCreated, uint64, TSharedPtr<Metasound::FMetasoundGenerator>);
+DECLARE_TS_MULTICAST_DELEGATE_TwoParams(FOnGeneratorInstanceDestroyed, uint64, TSharedPtr<Metasound::FMetasoundGenerator>);
 
 /**
  * This Metasound type can be played as an audio source.
  */
 UCLASS(hidecategories = object, BlueprintType)
-class METASOUNDENGINE_API UMetaSoundSource : public USoundWaveProcedural, public FMetasoundAssetBase
+class METASOUNDENGINE_API UMetaSoundSource : public USoundWaveProcedural, public FMetasoundAssetBase, public IMetaSoundDocumentInterface
 {
 	GENERATED_BODY()
 
 	friend struct Metasound::FMetaSoundEngineAssetHelper;
+	friend class UMetaSoundSourceBuilder;
+
 protected:
 	UPROPERTY(EditAnywhere, Category = CustomView)
 	FMetasoundFrontendDocument RootMetasoundDocument;
@@ -73,7 +77,7 @@ public:
 
 	// The output audio format of the metasound source.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Metasound)
-	EMetasoundSourceAudioFormat OutputFormat;
+	EMetaSoundOutputAudioFormat OutputFormat;
 
 	UPROPERTY(AssetRegistrySearchable)
 	FGuid AssetClassID;
@@ -180,8 +184,8 @@ public:
 	{
 		return this;
 	}
-
 	virtual void InitParameters(TArray<FAudioParameter>& ParametersToInit, FName InFeatureName) override;
+
 	virtual void InitResources() override;
 
 	virtual bool IsPlayable() const override;
@@ -201,8 +205,7 @@ public:
 	FOnGeneratorInstanceDestroyed OnGeneratorInstanceDestroyed;
 
 protected:
-
-	Metasound::Frontend::FDocumentAccessPtr GetDocument() override
+	Metasound::Frontend::FDocumentAccessPtr GetDocumentAccessPtr() override
 	{
 		using namespace Metasound::Frontend;
 		// Return document using FAccessPoint to inform the TAccessPtr when the 
@@ -210,13 +213,16 @@ protected:
 		return MakeAccessPtr<FDocumentAccessPtr>(RootMetasoundDocument.AccessPoint, RootMetasoundDocument);
 	}
 
-	Metasound::Frontend::FConstDocumentAccessPtr GetDocument() const override
+	Metasound::Frontend::FConstDocumentAccessPtr GetDocumentConstAccessPtr() const override
 	{
 		using namespace Metasound::Frontend;
 		// Return document using FAccessPoint to inform the TAccessPtr when the 
 		// object is no longer valid.
 		return MakeAccessPtr<FConstDocumentAccessPtr>(RootMetasoundDocument.AccessPoint, RootMetasoundDocument);
 	}
+
+	virtual const UClass& GetBaseMetaSoundUClass() const final override;
+	virtual const FMetasoundFrontendDocument& GetDocument() const override;
 
 	/** Gets all the default parameters for this Asset.  */
 	virtual bool GetAllDefaultParameters(TArray<FAudioParameter>& OutParameters) const override;
@@ -226,8 +232,15 @@ protected:
 #endif // #if WITH_EDITOR
 
 private:
+	virtual FMetasoundFrontendDocument& GetDocument() override
+	{
+		return RootMetasoundDocument;
+	}
 
-	bool IsParameterValid(const FAudioParameter& InParameter, const TMap<FName, FMetasoundFrontendVertex>& InInputNameVertexMap) const;
+
+	bool IsParameterValid(const FAudioParameter& InParameter, const FMetasoundFrontendVertex* InVertex) const;
+
+	static Metasound::SourcePrivate::FParameterRouter& GetParameterRouter();
 
 	Metasound::FOperatorSettings GetOperatorSettings(Metasound::FSampleRate InSampleRate) const;
 	Metasound::FMetasoundEnvironment CreateEnvironment() const;
@@ -239,4 +252,23 @@ private:
 	TSortedMap<uint64, TWeakPtr<Metasound::FMetasoundGenerator>> Generators;
 	void TrackGenerator(uint64 Id, TSharedPtr<Metasound::FMetasoundGenerator> Generator);
 	void ForgetGenerator(ISoundGeneratorPtr Generator);
+
+	/** Enable/disable dynamic generator.
+	 *
+	 * Once a dynamic generator is enabled, all changes to the MetaSound should be applied to the
+	 * FDynamicOperatorTransactor in order to keep parity between the document and active graph.
+	 *
+	 * Note: Disabling the dynamic generator will sever the communication between any active generators
+	 * even if the dynamic generator is re-enabled during the lifetime of the active generators
+	 */
+	TSharedPtr<Metasound::DynamicGraph::FDynamicOperatorTransactor> SetDynamicGeneratorEnabled(bool bInIsEnabled);
+
+	/** Get dynamic transactor
+	 *
+	 * If dynamic generators are enabled, this will return a valid pointer to a dynamic transactor.
+	 * Changes to this transactor will be forwarded to any active Dynamic MetaSound Generators.
+	 */
+	TSharedPtr<Metasound::DynamicGraph::FDynamicOperatorTransactor> GetDynamicGeneratorTransactor() const;
+
+	TSharedPtr<Metasound::DynamicGraph::FDynamicOperatorTransactor> DynamicTransactor;
 };

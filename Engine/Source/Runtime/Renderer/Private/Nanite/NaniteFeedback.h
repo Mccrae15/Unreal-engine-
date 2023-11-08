@@ -39,12 +39,15 @@ class FFeedbackManager
 public:
 	FFeedbackManager();
 	~FFeedbackManager();
-	
-	void Update(class FRDGBuilder& GraphBuilder, const struct FSharedContext& SharedContext, struct FCullingContext& CullingContext);
+
+	uint32 GetStatusMessageId() const { return StatusFeedbackSocket.GetMessageId().GetIndex(); }
 
 	void ReportMaterialPerformanceWarning(const FString& MaterialName);
 
 };
+
+extern bool ShouldReportFeedbackMaterialPerformanceWarning();
+
 #endif
 
 } // namespace Nanite

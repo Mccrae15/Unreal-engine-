@@ -55,11 +55,27 @@ private:
 	bool bResult;
 };
 
+/**
+ * Helper struct for the FOnLoadMap delegate
+ */
+struct FCanLoadMap
+{
+public:
+	FCanLoadMap() : bResult(true) {}
+	FCanLoadMap(const FCanLoadMap&) = delete;
+	FCanLoadMap(FCanLoadMap&&) = delete;
+
+	void SetFalse() { bResult = false; }
+	bool Get() const { return bResult; }
+private:
+	bool bResult;
+};
+
 /** 
  * FEditorDelegates
  * Delegates used by the editor.
  **/
-struct UNREALED_API FEditorDelegates
+struct FEditorDelegates
 {
 	/** delegate type for map change events ( Params: uint32 MapChangeFlags (MapChangeEventFlags) ) */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnMapChanged, uint32);
@@ -69,12 +85,8 @@ struct UNREALED_API FEditorDelegates
 	DECLARE_MULTICAST_DELEGATE_FourParams(FOnEditorCameraMoved, const FVector&, const FRotator&, ELevelViewportType, int32 );
 	/** delegate type for dollying/zooming editor camera movement */
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnDollyPerspectiveCamera, const FVector&, int32 );
-	/** delegate type for pre save world events ( uint32 SaveFlags, UWorld* World ) */
-	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPreSaveWorld, uint32, class UWorld*);
 	/** delegate type for pre save world events ( UWorld* World, FObjectPreSaveContext ObjectSaveContext ) */
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPreSaveWorldWithContext, class UWorld*, FObjectPreSaveContext);
-	/** delegate type for post save world events ( uint32 SaveFlags, UWorld* World, bool bSuccess ) */
-	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnPostSaveWorld, uint32, class UWorld*, bool);
 	/** delegate type for post save world events ( UWorld* World, FObjectPostSaveContext ObjectSaveContext ) */
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPostSaveWorldWithContext, class UWorld*, FObjectPostSaveContext);
 	/** delegate type for pre save external actors event, called by editor save codepaths and auto saves ( UWorld* World )*/
@@ -107,6 +119,8 @@ struct UNREALED_API FEditorDelegates
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnGridSnappingChanged, bool, float);
 	/** delegate type for triggering when focusing on a set of actors */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnFocusViewportOnActors, const TArray<AActor*>&);
+	/** delegate type for triggering when a map starts loading */
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnMapLoad, const FString& /* Filename */, FCanLoadMap& /*OutCanLoadMap*/);
 	/** delegate type for triggering when a map is opened */
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnMapOpened, const FString& /* Filename */, bool /*bAsTemplate*/);
 	/** Delegate used for entering or exiting an editor mode */
@@ -153,186 +167,196 @@ struct UNREALED_API FEditorDelegates
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnViewAssetIdentifiers, TArray<FAssetIdentifier>);
 	/** delegate type to handle viewing/editing a set of asset identifiers (which are packages or ids) in the reference viewer */
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnOpenReferenceViewer, const TArray<FAssetIdentifier>, const FReferenceViewerParams);
+	/** delegate type for when the editor requests a restart, enables overriding how a restart is performed */
+	DECLARE_DELEGATE_RetVal_OneParam(bool /*bSuccess*/, FOnRestartRequested, const FString& /*ProjectName*/);
+	/** delegate for when the editor has booted */
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnEditorBoot, double Duration);
+	/** delegate for when the editor has fully initialized */
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnEditorInitialized, double Duration);
 
 	/** Called when the CurrentLevel is switched to a new level.  Note that this event won't be fired for temporary
 		changes to the current level, such as when copying/pasting actors. */
-	static FSimpleMulticastDelegate NewCurrentLevel;
+	static UNREALED_API FSimpleMulticastDelegate NewCurrentLevel;
 	/** Called when the map has changed */
-	static FOnMapChanged MapChange;
+	static UNREALED_API FOnMapChanged MapChange;
 	/** Called when an actor is added to a layer */
-	static FSimpleMulticastDelegate LayerChange;
+	static UNREALED_API FSimpleMulticastDelegate LayerChange;
 	/** Called after an undo/redo */
-	static FSimpleMulticastDelegate PostUndoRedo;
+	static UNREALED_API FSimpleMulticastDelegate PostUndoRedo;
 	/** surfprops changed */
-	static FSimpleMulticastDelegate SurfProps;
+	static UNREALED_API FSimpleMulticastDelegate SurfProps;
 	/** Sent when requesting to display the properties of selected actors or BSP surfaces */
-	static FSimpleMulticastDelegate SelectedProps;
+	static UNREALED_API FSimpleMulticastDelegate SelectedProps;
 	/** Fits the currently assigned texture to the selected surfaces */
-	static FOnFitTextureToSurface FitTextureToSurface;
+	static UNREALED_API FOnFitTextureToSurface FitTextureToSurface;
 	/** Called when the editor mode is changed */
-	static FOnModeChanged ChangeEditorMode;
+	static UNREALED_API FOnModeChanged ChangeEditorMode;
 	/** Called when properties of an actor have changed */
-	static FSimpleMulticastDelegate ActorPropertiesChange;
+	static UNREALED_API FSimpleMulticastDelegate ActorPropertiesChange;
 	/** Called when the editor needs to be refreshed */
-	static FSimpleMulticastDelegate RefreshEditor;
+	static UNREALED_API FSimpleMulticastDelegate RefreshEditor;
 	/** called when all browsers need to be refreshed */
-	static FSimpleMulticastDelegate RefreshAllBrowsers;
+	static UNREALED_API FSimpleMulticastDelegate RefreshAllBrowsers;
 	/** called when the level browser need to be refreshed */
-	static FSimpleMulticastDelegate RefreshLevelBrowser;
+	static UNREALED_API FSimpleMulticastDelegate RefreshLevelBrowser;
 	/** called when the layer browser need to be refreshed */
-	static FSimpleMulticastDelegate RefreshLayerBrowser;
+	static UNREALED_API FSimpleMulticastDelegate RefreshLayerBrowser;
 	/** called when the primitive stats browser need to be refreshed */
-	static FSimpleMulticastDelegate RefreshPrimitiveStatsBrowser;
+	static UNREALED_API FSimpleMulticastDelegate RefreshPrimitiveStatsBrowser;
 	/** Called when an action is performed which interacts with the content browser; 
 	 *  load any selected assets which aren't already loaded */
-	static FSimpleMulticastDelegate LoadSelectedAssetsIfNeeded;
+	static UNREALED_API FSimpleMulticastDelegate LoadSelectedAssetsIfNeeded;
 	/** Called when load errors are about to be displayed */
-	static FSimpleMulticastDelegate DisplayLoadErrors;
+	static UNREALED_API FSimpleMulticastDelegate DisplayLoadErrors;
 	/** Called when an editor mode is being entered */
 	UE_DEPRECATED(4.24, "Use EditorModeIDEnter instead")
-	static FOnEditorModeTransitioned EditorModeEnter;
+	static UNREALED_API FOnEditorModeTransitioned EditorModeEnter;
 	/** Called when an editor mode is being exited */
 	UE_DEPRECATED(4.24, "Use EditorModeIDExit instead")
-	static FOnEditorModeTransitioned EditorModeExit;
+	static UNREALED_API FOnEditorModeTransitioned EditorModeExit;
 	/** Called when an editor mode ID is being entered */
 	UE_DEPRECATED(5.0, "Use the asset editor's mode manager to scope mode enter notifications.")
-	static FOnEditorModeIDTransitioned EditorModeIDEnter;
+	static UNREALED_API FOnEditorModeIDTransitioned EditorModeIDEnter;
 	/** Called when an editor mode ID is being exited */
 	UE_DEPRECATED(5.0, "Use the asset editor's mode manager to scope mode exit notifications.")
-	static FOnEditorModeIDTransitioned EditorModeIDExit;
+	static UNREALED_API FOnEditorModeIDTransitioned EditorModeIDExit;
 	/** Sent when a PIE session is beginning (before we decide if PIE can run - allows clients to avoid blocking PIE) */
-	static FOnPIEEvent PreBeginPIE;
+	static UNREALED_API FOnPIEEvent PreBeginPIE;
 	/** Sent when a PIE session is beginning (but hasn't actually started yet) */
-	static FOnPIEEvent BeginPIE;
+	static UNREALED_API FOnPIEEvent BeginPIE;
 	/** Sent when a PIE session has fully started and after BeginPlay() has been called */
-	static FOnPIEEvent PostPIEStarted;
+	static UNREALED_API FOnPIEEvent PostPIEStarted;
 	/** Sent when a PIE session is ending, before anything else happens */
-	static FOnPIEEvent PrePIEEnded;
+	static UNREALED_API FOnPIEEvent PrePIEEnded;
 	/** Sent when a PIE session is ending */
-	static FOnPIEEvent EndPIE;
+	static UNREALED_API FOnPIEEvent EndPIE;
 	/** Sent when a PIE session is paused */
-	static FOnPIEEvent PausePIE;
+	static UNREALED_API FOnPIEEvent PausePIE;
 	/** Sent when a PIE session is resumed */
-	static FOnPIEEvent ResumePIE;
+	static UNREALED_API FOnPIEEvent ResumePIE;
 	/** Sent when a PIE session is single-stepped */
-	static FOnPIEEvent SingleStepPIE;
+	static UNREALED_API FOnPIEEvent SingleStepPIE;
 	/** Sent just before the user switches between from PIE to SIE, or vice-versa.  Passes in whether we are currently in SIE */
-	static FOnPIEEvent OnPreSwitchBeginPIEAndSIE;
+	static UNREALED_API FOnPIEEvent OnPreSwitchBeginPIEAndSIE;
 	/** Sent after the user switches between from PIE to SIE, or vice-versa.  Passes in whether we are currently in SIE */
-	static FOnPIEEvent OnSwitchBeginPIEAndSIE;
+	static UNREALED_API FOnPIEEvent OnSwitchBeginPIEAndSIE;
 	/** Sent when a PIE session is cancelled */
-	static FSimpleMulticastDelegate CancelPIE;
+	static UNREALED_API FSimpleMulticastDelegate CancelPIE;
 	/** Sent when PC local play session is starting */
-	static FOnStandaloneLocalPlayEvent BeginStandaloneLocalPlay;
+	static UNREALED_API FOnStandaloneLocalPlayEvent BeginStandaloneLocalPlay;
 	/** Within a property window, the currently selected item was changed.*/
-	static FSimpleMulticastDelegate PropertySelectionChange;
+	static UNREALED_API FSimpleMulticastDelegate PropertySelectionChange;
 	/** Called after Landscape layer infomap update have completed */
-	static FSimpleMulticastDelegate PostLandscapeLayerUpdated;
-	UE_DEPRECATED(5.0, "Use PreSaveWorldWithContext instead.")
-	static FOnPreSaveWorld PreSaveWorld;
+	static UNREALED_API FSimpleMulticastDelegate PostLandscapeLayerUpdated;
 	/** Called before SaveWorld is processed */
-	static FOnPreSaveWorldWithContext PreSaveWorldWithContext;
-	UE_DEPRECATED(5.0, "Use PostSaveWorldWithContext instead.")
-	static FOnPostSaveWorld PostSaveWorld;
+	static UNREALED_API FOnPreSaveWorldWithContext PreSaveWorldWithContext;
 	/** Called after SaveWorld is processed */
-	static FOnPostSaveWorldWithContext PostSaveWorldWithContext;
+	static UNREALED_API FOnPostSaveWorldWithContext PostSaveWorldWithContext;
 	/** Called before any number of external actors will be saved */
-	static FOnPreSaveExternalActors PreSaveExternalActors;
+	static UNREALED_API FOnPreSaveExternalActors PreSaveExternalActors;
 	/** Called after any number of external actors has been saved */
-	static FOnPostSaveExternalActors PostSaveExternalActors;
+	static UNREALED_API FOnPostSaveExternalActors PostSaveExternalActors;
 	/** Called before any asset validation happens via the Asset Validation subsystem. */
-	static FSimpleMulticastDelegate OnPreAssetValidation;
+	static UNREALED_API FSimpleMulticastDelegate OnPreAssetValidation;
 	/** Called after asset validation happens by the Asset Validation subsystem. */
-	static FSimpleMulticastDelegate OnPostAssetValidation;
+	static UNREALED_API FSimpleMulticastDelegate OnPostAssetValidation;
 	/** Called when finishing picking a new blueprint class during construction */
-	static FOnFinishPickingBlueprintClass OnFinishPickingBlueprintClass;
+	static UNREALED_API FOnFinishPickingBlueprintClass OnFinishPickingBlueprintClass;
 	/** Called when beginning configuration of a new asset */
-	static FOnNewAssetCreation OnConfigureNewAssetProperties;
+	static UNREALED_API FOnNewAssetCreation OnConfigureNewAssetProperties;
 	/** Called when an asset is about to undergo a destructive action caused by the Editor UI (Delete, Move, Rename, Privatize, etc.) */
-	static FOnPreDestructiveAssetAction OnPreDestructiveAssetAction;
+	static UNREALED_API FOnPreDestructiveAssetAction OnPreDestructiveAssetAction;
 	/** Called when finishing configuration of a new asset */
-	static FOnNewAssetCreation OnNewAssetCreated;
+	static UNREALED_API FOnNewAssetCreation OnNewAssetCreated;
 	/** Called when new assets are being (re-)imported. */
 	UE_DEPRECATED(4.22, "Use the ImportSubsystem instead. GEditor->GetEditorSubsystem<UImportSubsystem>()")
-	static FOnAssetPreImport OnAssetPreImport;
+	static UNREALED_API FOnAssetPreImport OnAssetPreImport;
 	/** Called when new assets have been (re-)imported. */
 	UE_DEPRECATED(4.22, "Use the ImportSubsystem instead. GEditor->GetEditorSubsystem<UImportSubsystem>()")
-	static FOnAssetPostImport OnAssetPostImport;
+	static UNREALED_API FOnAssetPostImport OnAssetPostImport;
 	/** Called after an asset has been reimported */
 	UE_DEPRECATED(4.22, "Use the ImportSubsystem instead. GEditor->GetEditorSubsystem<UImportSubsystem>()")
-	static FOnAssetReimport OnAssetReimport;
+	static UNREALED_API FOnAssetReimport OnAssetReimport;
 	/** Called when new actors are dropped on to the viewport */
-	static FOnNewActorsDropped OnNewActorsDropped;
+	static UNREALED_API FOnNewActorsDropped OnNewActorsDropped;
 	/** Called when new actors are placed in the viewport */
-	static FOnNewActorsPlaced OnNewActorsPlaced;
+	static UNREALED_API FOnNewActorsPlaced OnNewActorsPlaced;
 	/** Called when grid snapping is changed */
-	static FOnGridSnappingChanged OnGridSnappingChanged;
+	static UNREALED_API FOnGridSnappingChanged OnGridSnappingChanged;
 	/** Called when a lighting build has started */
-	static FSimpleMulticastDelegate OnLightingBuildStarted;
+	static UNREALED_API FSimpleMulticastDelegate OnLightingBuildStarted;
 	/** Called when a lighting build has been kept */
-	static FSimpleMulticastDelegate OnLightingBuildKept;
+	static UNREALED_API FSimpleMulticastDelegate OnLightingBuildKept;
 	/** Called when a lighting build has failed (maybe called twice if cancelled) */
-	static FSimpleMulticastDelegate OnLightingBuildFailed;
+	static UNREALED_API FSimpleMulticastDelegate OnLightingBuildFailed;
 	/** Called when a lighting build has succeeded */
-	static FSimpleMulticastDelegate OnLightingBuildSucceeded;
+	static UNREALED_API FSimpleMulticastDelegate OnLightingBuildSucceeded;
 	/** Called when when attempting to apply an object to an actor (via drag drop) */
-	static FOnApplyObjectToActor OnApplyObjectToActor;
+	static UNREALED_API FOnApplyObjectToActor OnApplyObjectToActor;
 	/** Called when focusing viewport on a set of actors */
-	static FOnFocusViewportOnActors OnFocusViewportOnActors;
+	static UNREALED_API FOnFocusViewportOnActors OnFocusViewportOnActors;
+	/** Called before LoadMap is processed */
+	static UNREALED_API FOnMapLoad OnMapLoad;
 	/** Called when a map is opened, giving map name, and whether it was a template */
-	static FOnMapOpened OnMapOpened;
+	static UNREALED_API FOnMapOpened OnMapOpened;
 	/** Called when the editor camera is moved */
-	static FOnEditorCameraMoved OnEditorCameraMoved;
+	static UNREALED_API FOnEditorCameraMoved OnEditorCameraMoved;
 	/** Called when the editor camera is moved */
-	static FOnDollyPerspectiveCamera OnDollyPerspectiveCamera;
+	static UNREALED_API FOnDollyPerspectiveCamera OnDollyPerspectiveCamera;
 	/** Called on editor shutdown after packages have been successfully saved */
-	static FSimpleMulticastDelegate OnShutdownPostPackagesSaved;
+	static UNREALED_API FSimpleMulticastDelegate OnShutdownPostPackagesSaved;
 	/** Called when one or more packages have been deleted through save */
-	static FOnPackageDeleted OnPackageDeleted;
+	static UNREALED_API FOnPackageDeleted OnPackageDeleted;
 	/** Called when the user requests assets to be deleted to determine if the operation is available.  */
-	static FOnAssetsCanDelete OnAssetsCanDelete;
+	static UNREALED_API FOnAssetsCanDelete OnAssetsCanDelete;
 	/** Called when the user requests certain assets be deletedand  allows the addition of secondary assets that should also be deleted */
-	static FOnAssetsAddExtraObjectsToDelete OnAssetsAddExtraObjectsToDelete;
+	static UNREALED_API FOnAssetsAddExtraObjectsToDelete OnAssetsAddExtraObjectsToDelete;
 	/** Called when the user requests certain assets be deleted (DOES NOT imply that the asset will be deleted... the user could cancel) */
-	static FOnAssetsPreDelete OnAssetsPreDelete;
+	static UNREALED_API FOnAssetsPreDelete OnAssetsPreDelete;
 	/** Called when one or more assets have been deleted */
-	static FOnAssetsDeleted OnAssetsDeleted;
+	static UNREALED_API FOnAssetsDeleted OnAssetsDeleted;
 	/** Called when a user starts dragging something out of content browser (can be multiple assets) */
-	static FOnAssetDragStarted OnAssetDragStarted;
+	static UNREALED_API FOnAssetDragStarted OnAssetDragStarted;
 	/** Called when a user changes the UInputSettings::bEnableGestureRecognizer setting to refresh the available actions. */
-	static FSimpleMulticastDelegate OnEnableGestureRecognizerChanged;
+	static UNREALED_API FSimpleMulticastDelegate OnEnableGestureRecognizerChanged;
 	/** Called when Action or Axis mappings have been changed */
-	static FSimpleMulticastDelegate OnActionAxisMappingsChanged;
+	static UNREALED_API FSimpleMulticastDelegate OnActionAxisMappingsChanged;
 	/** Called from FEditorUtils::AddLevelToWorld after the level is added successfully to the world. */
-	static FOnAddLevelToWorld OnAddLevelToWorld;
+	static UNREALED_API FOnAddLevelToWorld OnAddLevelToWorld;
 	/** Sent before edit cut is handled */
-	static FOnEditCutActorsBegin OnEditCutActorsBegin;
+	static UNREALED_API FOnEditCutActorsBegin OnEditCutActorsBegin;
 	/** Sent after edit cut is handled */
-	static FOnEditCutActorsEnd OnEditCutActorsEnd;
+	static UNREALED_API FOnEditCutActorsEnd OnEditCutActorsEnd;
 	/** Sent before edit copy is handled */
-	static FOnEditCopyActorsBegin OnEditCopyActorsBegin;
+	static UNREALED_API FOnEditCopyActorsBegin OnEditCopyActorsBegin;
 	/** Sent after edit copy is handled */
-	static FOnEditCopyActorsEnd OnEditCopyActorsEnd;
+	static UNREALED_API FOnEditCopyActorsEnd OnEditCopyActorsEnd;
 	/** Sent before edit paste is handled */
-	static FOnEditPasteActorsBegin OnEditPasteActorsBegin;
+	static UNREALED_API FOnEditPasteActorsBegin OnEditPasteActorsBegin;
 	/** Sent after edit paste is handled */
-	static FOnEditPasteActorsEnd OnEditPasteActorsEnd;
+	static UNREALED_API FOnEditPasteActorsEnd OnEditPasteActorsEnd;
 	/** Sent before duplicate is handled */
-	static FOnDuplicateActorsBegin OnDuplicateActorsBegin;
+	static UNREALED_API FOnDuplicateActorsBegin OnDuplicateActorsBegin;
 	/** Sent after duplicate is handled */
-	static FOnDuplicateActorsEnd OnDuplicateActorsEnd;
+	static UNREALED_API FOnDuplicateActorsEnd OnDuplicateActorsEnd;
 	/** Sent when delete begin called */
-	static FOnDeleteActorsBegin OnDeleteActorsBegin;
+	static UNREALED_API FOnDeleteActorsBegin OnDeleteActorsBegin;
 	/** Sent when delete end called */
-	static FOnDeleteActorsEnd OnDeleteActorsEnd;
+	static UNREALED_API FOnDeleteActorsEnd OnDeleteActorsEnd;
 	/** Called when you want to view things in the reference viewer, these are bound to by asset manager editor plugins */
-	static FOnOpenReferenceViewer OnOpenReferenceViewer;
+	static UNREALED_API FOnOpenReferenceViewer OnOpenReferenceViewer;
 	/** Called when you want to view things in the size map */
-	static FOnViewAssetIdentifiers OnOpenSizeMap;
+	static UNREALED_API FOnViewAssetIdentifiers OnOpenSizeMap;
 	/** Called when you want to view things in the asset audit window */
-	static FOnViewAssetIdentifiers OnOpenAssetAudit;
+	static UNREALED_API FOnViewAssetIdentifiers OnOpenAssetAudit;
 	/** Called to try and edit an asset identifier, which could be a package or searchable name */
-	static FOnViewAssetIdentifiers OnEditAssetIdentifiers;
+	static UNREALED_API FOnViewAssetIdentifiers OnEditAssetIdentifiers;
+	/** Called when the editor requests a restart */
+	static UNREALED_API FOnRestartRequested OnRestartRequested;
+	/** Called when the editor has booted */
+	static UNREALED_API FOnEditorBoot OnEditorBoot;
+	/** Called when the editor has initialized */
+	static UNREALED_API FOnEditorInitialized OnEditorInitialized;
 };
 
 /**
@@ -440,58 +464,41 @@ private:
 struct FImportObjectParams
 {
 	/** the location to import the property values to */
-	uint8*				DestData;
+	uint8*				DestData = nullptr;
 
 	/** pointer to a buffer containing the values that should be parsed and imported */
-	const TCHAR*		SourceText;
+	const TCHAR*		SourceText = nullptr;
 
 	/** the struct for the data we're importing */
-	UStruct*			ObjectStruct;
+	UStruct*			ObjectStruct = nullptr;
 
 	/** the original object that ImportObjectProperties was called for.
 		if SubobjectOuter is a subobject, corresponds to the first object in SubobjectOuter's Outer chain that is not a subobject itself.
 		if SubobjectOuter is not a subobject, should normally be the same value as SubobjectOuter */
-	UObject*			SubobjectRoot;
+	UObject*			SubobjectRoot = nullptr;
 
 	/** the object corresponding to DestData; this is the object that will used as the outer when creating subobjects from definitions contained in SourceText */
-	UObject*			SubobjectOuter;
+	UObject*			SubobjectOuter = nullptr;
 
 	/** output device to use for log messages */
-	FFeedbackContext*	Warn;
+	FFeedbackContext*	Warn = nullptr;
 
 	/** current nesting level */
-	int32					Depth;
+	int32					Depth = 0;
 
 	/** used when importing defaults during script compilation for tracking which line we're currently for the purposes of printing compile errors */
-	int32					LineNumber;
+	int32					LineNumber = INDEX_NONE;
 
 	/** contains the mappings of instanced objects and components to their templates; used when recursively calling ImportObjectProperties; generally
 		not necessary to specify a value when calling this function from other code */
-	FObjectInstancingGraph* InInstanceGraph;
+	FObjectInstancingGraph* InInstanceGraph = nullptr;
 
-	/** provides a mapping from an existing actor to a new instance to which it should be remapped */
-	const TMap<AActor*, AActor*>* ActorRemapper;
+	/** provides a mapping from an existing object, typically an actor, (which may no longer be loaded) to a new instance to which it should be remapped */
+	const TMap<FSoftObjectPath, UObject*>* ObjectRemapper = nullptr;
 
 	/** True if we should call PreEditChange/PostEditChange on the object as it's imported.  Pass false here
 		if you're going to do that on your own. */
-	bool				bShouldCallEditChange;
-
-
-	/** Constructor */
-	FImportObjectParams()
-		: DestData( NULL ),
-		  SourceText( NULL ),
-		  ObjectStruct( NULL ),
-		  SubobjectRoot( NULL ),
-		  SubobjectOuter( NULL ),
-		  Warn( NULL ),
-		  Depth( 0 ),
-		  LineNumber( INDEX_NONE ),
-		  InInstanceGraph( NULL ),
-		  ActorRemapper( NULL ),
-		  bShouldCallEditChange( true )
-	{
-	}
+	bool				bShouldCallEditChange = true;
 };
 
 
@@ -519,7 +526,7 @@ UNREALED_API const TCHAR* ImportObjectProperties( FImportObjectParams& InParams 
  * @param	LineNumber			used when importing defaults during script compilation for tracking which line the defaultproperties block begins on
  * @param	InstanceGraph		contains the mappings of instanced objects and components to their templates; used when recursively calling ImportObjectProperties; generally
  *								not necessary to specify a value when calling this function from other code
- * @param	ActorRemapper		used when duplicating actors to remap references from a source actor to the duplicated actor
+ * @param	ObjectRemapper		used when duplicating objects, typically actors, to remap references from a source object to the duplicated object
  *
  * @return	NULL if the default values couldn't be imported
  */
@@ -532,8 +539,8 @@ const TCHAR* ImportObjectProperties(
 	FFeedbackContext*	Warn,
 	int32					Depth,
 	int32					LineNumber = INDEX_NONE,
-	FObjectInstancingGraph* InstanceGraph = NULL,
-	const TMap<AActor*, AActor*>* ActorRemapper = NULL
+	FObjectInstancingGraph* InstanceGraph = nullptr,
+	const TMap<FSoftObjectPath, UObject*>* ObjectRemapper = nullptr
 	);
 
 //
@@ -823,7 +830,7 @@ namespace EditorUtilities
 		 * Provides a mapping from an exported path to a new instance to which it should be remapped 
 		 * Imported object will be added to this map when possible during the create objects step.
 		 */
-		TMap<FString, UObject*>* ObjectRemapper = nullptr;
+		TMap<FSoftObjectPath, UObject*>* ObjectRemapper = nullptr;
 
 		/** 
 		 * Tell what properties shouldn't be imported when importing the properties

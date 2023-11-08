@@ -6,14 +6,14 @@ namespace UnrealBuildTool
 {
 	partial class AndroidPlatformSDK : UEBuildPlatformSDK
 	{
-		public override string GetMainVersion()
+		protected override string GetMainVersionInternal()
 		{
 			return "r25b";
 		}
-		
+
 		public override string GetAutoSDKDirectoryForMainVersion()
 		{
-			return "-25";
+			return "-26";
 		}
 
 		protected override void GetValidVersionRange(out string MinVersion, out string MaxVersion)
@@ -31,8 +31,8 @@ namespace UnrealBuildTool
 		{
 			switch (VersionType.ToLower())
 			{
-				case "platforms": return "android-32";
-				case "build-tools": return "30.0.3";
+				case "platforms": return "android-33";
+				case "build-tools": return "33.0.1";
 				case "cmake": return "3.10.2.4988404";
 				case "ndk": return "25.1.8937393";
 			}

@@ -8,6 +8,7 @@
 #include "MuCOE/CustomizableObjectCompiler.h"
 #include "MuCOE/ICustomizableObjectEditor.h"
 #include "TickableEditorObject.h"
+#include "Widgets/Input/SNumericDropDown.h"
 
 #include "CustomizableObjectEditor.generated.h"
 
@@ -188,7 +189,8 @@ public:
 	virtual bool CanPasteNodes() const override;
 	virtual void PasteNodesHere(const FVector2D& Location) override;
 	virtual void SelectNode(const UCustomizableObjectNode* Node) override;
-	
+	virtual void ReconstructAllChildNodes(UCustomizableObjectNode& StartNode, const UClass& NodeType) override;
+
 	/** Called to undo the last action */
 	void UndoGraphAction();
 
@@ -199,22 +201,15 @@ public:
 	* in the Test CO given as parameter */
 	static bool GroupNodeIsLinkedToParentByName(UCustomizableObjectNodeObject* Node, UCustomizableObject* Test, const FString& ParentGroupName);
 
-	/** Callback to flag LaunchRefreshMaterialInAllChildren and start the timing for the Editor notification before actually calling
-	* the method that does the task, RefreshMaterialNodesInAllChildren */
-	void RefreshMaterialNodesInAllChildrenCallback();
-
-	/** Called to refresh all the Customizable Object Material Node nodes children of a Customizalbe Object Node Object Group */
-	void RefreshMaterialNodesInAllChildren();
-
 	// FEditorUndoClient Interface
 	virtual void PostUndo(bool bSuccess) override;
 	virtual void PostRedo(bool bSuccess) override { PostUndo(bSuccess); }
 
-	/** FNotifyHook interface */
+	// FNotifyHook interface
 	virtual void NotifyPostChange( const FPropertyChangedEvent& PropertyChangedEvent, FProperty* PropertyThatChanged ) override;
 
-	/** FTickableGameObject interface */
-	virtual bool IsTickable(void) const override;
+	// FTickableGameObject interface
+	virtual bool IsTickable() const override;
 	virtual void Tick( float InDeltaTime ) override;
 	virtual TStatId GetStatId() const override;
 
@@ -224,6 +219,7 @@ public:
 	void DuplicateSelectedNodes();
 	bool CanDuplicateSelectedNodes() const;
 	void OnSelectedGraphNodesChanged(const FGraphPanelSelectionSet& NewSelection);
+
 	/**
 	 * Called when a node's title is committed for a rename
 	 *
@@ -246,9 +242,6 @@ public:
 
 	/** Getter of CustomizableObjectEditorAdvancedPreviewSettings */
 	TSharedPtr<class SCustomizableObjectEditorAdvancedPreviewSettings> GetCustomizableObjectEditorAdvancedPreviewSettings();
-
-	/** Add a node to be reconstructed at the end of the tick. */
-	void MarkForReconstruct(UEdGraphNode* Node);
 
 	TSharedPtr<class SCustomizableObjectNodeLayoutBlocksEditor> GetLayoutBlocksEditor() { return LayoutBlocksEditor; }
 
@@ -289,8 +282,8 @@ private:
 	void ResetCompileOptions();
 	TSharedPtr<STextComboBox> CompileOptimizationCombo;
 	TArray< TSharedPtr<FString> > CompileOptimizationStrings;
-	void CompileOptions_UseParallelCompilation_Toggled();
-	bool CompileOptions_UseParallelCompilation_IsChecked();
+	TSharedPtr<SNumericDropDown<float>> CompileTilingCombo;
+
 	void CompileOptions_UseDiskCompilation_Toggled();
 	bool CompileOptions_UseDiskCompilation_IsChecked();
 	void CompileOptions_TextureCompression_Toggled();
@@ -312,8 +305,7 @@ private:
 	/** */
 	void OnPreviewInstanceUpdated();
 	
-	/** */
-	TSharedRef<SGraphEditor> CreateGraphEditorWidget(UEdGraph* InGraph);
+	void CreateGraphEditorWidget(UEdGraph* InGraph);
 
 	/** Copy the currently selected nodes */
 	void CopySelectedNodes();
@@ -386,11 +378,11 @@ public:
 
 private:
 	/** The currently viewed object. */
-	UCustomizableObject* CustomizableObject;
-	UCustomizableObjectInstance* PreviewInstance = nullptr;
-	TArray<UCustomizableSkeletalComponent*> PreviewCustomizableSkeletalComponents;
-	UStaticMeshComponent* PreviewStaticMeshComponent = nullptr;
-	TArray<UDebugSkelMeshComponent*> PreviewSkeletalMeshComponents;
+	TObjectPtr<UCustomizableObject> CustomizableObject;
+	TObjectPtr<UCustomizableObjectInstance> PreviewInstance = nullptr;
+	TArray<TObjectPtr<UCustomizableSkeletalComponent>> PreviewCustomizableSkeletalComponents;
+	TObjectPtr<UStaticMeshComponent> PreviewStaticMeshComponent = nullptr;
+	TArray<TObjectPtr<UDebugSkelMeshComponent>> PreviewSkeletalMeshComponents;
 
 	/** Object compiler */
 	FCustomizableObjectCompiler Compiler;
@@ -456,7 +448,7 @@ private:
 	bool UpdateSkeletalMeshAfterAssetLoaded = false;
 	
 	/** UObject class to be able to use the update callback */
-	UUpdateClassWrapper* HelperCallback;
+	TObjectPtr<UUpdateClassWrapper> HelperCallback;
 	
 	/** Scene preview settings widget, upcast of CustomizableObjectEditorAdvancedPreviewSettings */
 	TSharedPtr<SWidget> AdvancedPreviewSettingsWidget;
@@ -465,16 +457,8 @@ private:
 	TSharedPtr<class SCustomizableObjectEditorAdvancedPreviewSettings> CustomizableObjectEditorAdvancedPreviewSettings;
 
 	/** Advanced scene preview settings */
-	class UCustomizableObjectEmptyClassForSettings* AdditionalSettings;
+	TObjectPtr<class UCustomizableObjectEmptyClassForSettings> AdditionalSettings;
 	
-	/** When launching the refresh material in all children command from Customizable Object Node Object Group, if the COs are not loaded, the
-	* Editor will remaing stuck since the command is executed on the game thread. Use this flag to launch the Editor notification */
-	bool LaunchRefreshMaterialInAllChildren = false;
-
-	/** Used together with LaunchRefreshMaterialInAllChildren as a timer to launch the RefreshMaterialNodesInAllChildren method
-	* which will perform the task */
-	float PendingTimeRefreshMaterialInAllChildren = 2.0;
-
 	/** Texture Analyzer table widget which shows the information of the transient textures used in the customizable object instance */
 	TSharedPtr<class SCustomizableObjecEditorTextureAnalyzer> TextureAnalyzer;
 
@@ -486,9 +470,6 @@ private:
 
 	/** Adds the customizable Object Editor commands to the default toolbar */
 	void ExtendToolbar();
-
-	/** List of ndes to be reconstructed at the end of the tick. */
-	TArray<UEdGraphNode*> ReconstructNodes;
 
 	/** URL to open when pressing the documentation button generated by UE */
 	const FString DocumentationURL{ TEXT("https://work.anticto.com/w/mutable/unreal-engine-4/") };

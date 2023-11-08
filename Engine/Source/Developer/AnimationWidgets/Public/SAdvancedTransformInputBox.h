@@ -60,6 +60,12 @@ public:
 	/** Notification for numerictype value committed */
 	DECLARE_DELEGATE_FiveParams(FOnNumericValueCommitted, ESlateTransformComponent::Type, ESlateRotationRepresentation::Type, ESlateTransformSubComponent::Type, NumericType, ETextCommit::Type);
 
+	/** Notification for begin slider movement */
+	DECLARE_DELEGATE_ThreeParams(FOnBeginSliderMovement, ESlateTransformComponent::Type, ESlateRotationRepresentation::Type, ESlateTransformSubComponent::Type);
+
+	/** Notification for end slider movement */
+	DECLARE_DELEGATE_FourParams(FOnEndSliderMovement, ESlateTransformComponent::Type, ESlateRotationRepresentation::Type, ESlateTransformSubComponent::Type, NumericType);
+
 	/** Delegate to retrieve relative / world state */
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FOnGetIsComponentRelative, ESlateTransformComponent::Type);
 
@@ -149,6 +155,12 @@ public:
 
 		/** Delegate to notify a committed value */
 		SLATE_EVENT( FOnNumericValueCommitted, OnNumericValueCommitted )
+
+		/** Delegate to notify a begin slider movement */
+		SLATE_EVENT(FOnBeginSliderMovement, OnBeginSliderMovement)
+
+		/** Delegate to notify a end slider movement */
+		SLATE_EVENT(FOnEndSliderMovement, OnEndSliderMovement)
 
 		/** Should the axis labels be colored */
 		SLATE_ARGUMENT( bool, bColorAxisLabels )		
@@ -292,8 +304,11 @@ public:
 		FOnGetNumericValue OnGetNumericValue = InArgs._OnGetNumericValue;
 		FOnNumericValueChanged OnNumericValueChanged = InArgs._OnNumericValueChanged;
 		FOnNumericValueCommitted OnNumericValueCommitted = InArgs._OnNumericValueCommitted;
+		FOnBeginSliderMovement OnBeginSliderMovement = InArgs._OnBeginSliderMovement;
+		FOnEndSliderMovement OnEndSliderMovement = InArgs._OnEndSliderMovement;
 		FOnGetToggleChecked OnGetToggleChecked = InArgs._OnGetToggleChecked;
 		FOnToggleChanged OnToggleChanged = InArgs._OnToggleChanged;
+		FOnRotationRepresentationChanged OnRotationRepresentationChanged = InArgs._OnRotationRepresentationChanged;
 		const bool UseQuaternionForRotation = InArgs._UseQuaternionForRotation;
 
 		auto OnGetLocation = [Transform, OnGetNumericValue]() -> TOptional<FVector>
@@ -464,6 +479,52 @@ public:
 					); 
 				}
 
+				FSimpleDelegate XBeginSlide, YBeginSlide, ZBeginSlide;
+				if(OnBeginSliderMovement.IsBound())
+				{
+					XBeginSlide = FSimpleDelegate::CreateLambda(
+						[OnBeginSliderMovement, InComponent]()
+						{
+							OnBeginSliderMovement.Execute(InComponent, ESlateRotationRepresentation::EulerXYZ, ESlateTransformSubComponent::X);
+						}
+					); 
+					YBeginSlide = FSimpleDelegate::CreateLambda(
+						[OnBeginSliderMovement, InComponent]()
+						{
+							OnBeginSliderMovement.Execute(InComponent, ESlateRotationRepresentation::EulerXYZ, ESlateTransformSubComponent::Y);
+						}
+					); 
+					ZBeginSlide = FSimpleDelegate::CreateLambda(
+						[OnBeginSliderMovement, InComponent]()
+						{
+							OnBeginSliderMovement.Execute(InComponent, ESlateRotationRepresentation::EulerXYZ, ESlateTransformSubComponent::Z);
+						}
+					); 
+				}
+
+				typename SNumericVectorInputBox3::FOnNumericValueChanged XEndSlide, YEndSlide, ZEndSlide;
+				if(OnEndSliderMovement.IsBound())
+				{
+					XEndSlide = SNumericVectorInputBox3::FOnNumericValueChanged::CreateLambda(
+						[OnEndSliderMovement, InComponent](NumericType InValue)
+						{
+							OnEndSliderMovement.Execute(InComponent, ESlateRotationRepresentation::EulerXYZ, ESlateTransformSubComponent::X, InValue);
+						}
+					); 
+					YEndSlide = SNumericVectorInputBox3::FOnNumericValueChanged::CreateLambda(
+						[OnEndSliderMovement, InComponent](NumericType InValue)
+						{
+							OnEndSliderMovement.Execute(InComponent, ESlateRotationRepresentation::EulerXYZ, ESlateTransformSubComponent::Y, InValue);
+						}
+					); 
+					ZEndSlide = SNumericVectorInputBox3::FOnNumericValueChanged::CreateLambda(
+						[OnEndSliderMovement, InComponent](NumericType InValue)
+						{
+							OnEndSliderMovement.Execute(InComponent, ESlateRotationRepresentation::EulerXYZ, ESlateTransformSubComponent::Z, InValue);
+						}
+					); 
+				}
+
 				typename SNumericVectorInputBox3::FOnVectorValueChanged VectorChanged;
 				if(OnTransformChanged.IsBound())
 				{
@@ -569,6 +630,12 @@ public:
 					.ConstrainVector(ConstrainComponents)
 					.DisplayToggle(InArgs._DisplayToggle)
 					.TogglePadding(InArgs._TogglePadding)
+					.OnXBeginSliderMovement(XBeginSlide)
+					.OnYBeginSliderMovement(YBeginSlide)
+					.OnZBeginSliderMovement(ZBeginSlide)
+					.OnXEndSliderMovement(XEndSlide)
+					.OnYEndSliderMovement(YEndSlide)
+					.OnZEndSliderMovement(ZEndSlide)
 					.ToggleXChecked_Lambda([OnGetToggleChecked, InComponent]() -> ECheckBoxState
 					{
 						if(OnGetToggleChecked.IsBound())
@@ -646,6 +713,26 @@ public:
 						[OnNumericValueCommitted, InComponent](ESlateRotationRepresentation::Type InRepr, ESlateTransformSubComponent::Type InSubComponent, NumericType InValue, ETextCommit::Type InCommitType)
 					{
 						OnNumericValueCommitted.Execute(InComponent, InRepr, InSubComponent, InValue, InCommitType);
+					});
+				}
+
+				typename SAdvancedRotationInputBox<NumericType>::FOnBeginSliderMovement RotationBeginSliderMovement;
+				if(OnBeginSliderMovement.IsBound())
+				{
+					RotationBeginSliderMovement = SAdvancedRotationInputBox<NumericType>::FOnBeginSliderMovement::CreateLambda(
+						[OnBeginSliderMovement, InComponent](ESlateRotationRepresentation::Type InRepr, ESlateTransformSubComponent::Type InSubComponent)
+					{
+						OnBeginSliderMovement.Execute(InComponent, InRepr, InSubComponent);
+					});
+				}
+
+				typename SAdvancedRotationInputBox<NumericType>::FOnEndSliderMovement RotationEndSliderMovement;
+				if(OnEndSliderMovement.IsBound())
+				{
+					RotationEndSliderMovement = SAdvancedRotationInputBox<NumericType>::FOnEndSliderMovement::CreateLambda(
+						[OnEndSliderMovement, InComponent](ESlateRotationRepresentation::Type InRepr, ESlateTransformSubComponent::Type InSubComponent, NumericType InValue)
+					{
+						OnEndSliderMovement.Execute(InComponent, InRepr, InSubComponent, InValue);
 					});
 				}
 
@@ -775,6 +862,8 @@ public:
 					.OnQuaternionCommitted(QuaternionCommitted)
 					.DisplayToggle(InArgs._DisplayToggle)
 					.TogglePadding(InArgs._TogglePadding)
+					.OnBeginSliderMovement(RotationBeginSliderMovement)
+					.OnEndSliderMovement(RotationEndSliderMovement)
 					.OnGetToggleChecked(SAdvancedRotationInputBox<NumericType>::FOnGetToggleChecked::CreateLambda(
 						[OnGetToggleChecked, InComponent](ESlateRotationRepresentation::Type InRepr, ESlateTransformSubComponent::Type InSubComponent) -> ECheckBoxState
 					{
@@ -1292,7 +1381,7 @@ public:
 					case ESlateRotationRepresentation::EulerZYX:
 					{
 						const int32 RotationOrder = int32(Representation) - int32(ESlateRotationRepresentation::EulerXYZ);
-						const FVector Euler = AnimationCore::EulerFromQuat(Transform.GetRotation(), EEulerRotationOrder(RotationOrder));
+						const FVector Euler = AnimationCore::EulerFromQuat(Transform.GetRotation(), EEulerRotationOrder(RotationOrder), true);
 						switch(SubComponent)
 						{
 							case ESlateTransformSubComponent::X:
@@ -1441,7 +1530,7 @@ public:
 								break;
 							}
 						}
-						Transform.SetRotation(AnimationCore::QuatFromEuler(Euler, EEulerRotationOrder(RotationOrder)));
+						Transform.SetRotation(AnimationCore::QuatFromEuler(Euler, EEulerRotationOrder(RotationOrder), true));
 						break;
 					}
 					case ESlateRotationRepresentation::Rotator:

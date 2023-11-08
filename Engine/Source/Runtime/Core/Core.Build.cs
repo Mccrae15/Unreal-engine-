@@ -15,32 +15,26 @@ public class Core : ModuleRules
 		SharedPCHHeaderFile = "Public/CoreSharedPCH.h";
 
 		PrivateDependencyModuleNames.Add("BuildSettings");
-		if (Target.Platform == UnrealTargetPlatform.Android && Target.Configuration != UnrealTargetConfiguration.Shipping)
+		if (Target.Platform == UnrealTargetPlatform.Android)
 		{
-			PrivateDependencyModuleNames.Add("HWCPipe");		// Performance counters for ARM CPUs and ARM Mali GPUs
-			PrivateDependencyModuleNames.Add("heapprofd");		// Exposes custom allocators to Google's Memory Profiler
+			PrivateDependencyModuleNames.Add("GoogleGameSDK");
+
+			if (Target.Configuration != UnrealTargetConfiguration.Shipping)
+			{
+				PrivateDependencyModuleNames.Add("HWCPipe");        // Performance counters for ARM CPUs and ARM Mali GPUs
+				PrivateDependencyModuleNames.Add("heapprofd");      // Exposes custom allocators to Google's Memory Profiler
+			}
 		}
 
 		PrivateDependencyModuleNames.Add("BLAKE3");
 		PrivateDependencyModuleNames.Add("OodleDataCompression");
 
 		PublicDependencyModuleNames.Add("TraceLog");
-		PublicIncludePaths.Add("Runtime/TraceLog/Public");
-
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"Runtime/SynthBenchmark/Public",
-				"Runtime/Engine/Public",
-			}
-			);
 
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
-				"TargetPlatform",
 				"DerivedDataCache",
-				"InputDevice",
-				"Analytics",
-				"RHI"
+				"TargetPlatform",
 			}
 			);
 
@@ -55,13 +49,13 @@ public class Core : ModuleRules
 		if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
 		{
 			AddEngineThirdPartyPrivateStaticDependencies(Target,
-				"IntelTBB",
 				"zlib"
 				);
 
-			if (Target.Architecture.bIsX64)
+			if (Target.WindowsPlatform.Architecture != UnrealArch.Arm64)
 			{
 				AddEngineThirdPartyPrivateStaticDependencies(Target,
+					"IntelTBB",
 					"IntelVTune"
 					);
 			}
@@ -159,6 +153,13 @@ public class Core : ModuleRules
 
 			PublicSystemIncludePaths.Add(Path.Combine(Target.UEThirdPartySourceDirectory, "mimalloc/include"));
 			PrivateDefinitions.Add("PLATFORM_BUILDS_MIMALLOC=1");
+
+			if (Target.Configuration != UnrealTargetConfiguration.Shipping && Target.Type != TargetType.Program)
+			{
+				PublicDefinitions.Add("UE_MEMORY_TRACE_AVAILABLE=1");
+				PublicDefinitions.Add("UE_MEMORY_TAGS_TRACE_ENABLED=1");
+				PublicDefinitions.Add("UE_CALLSTACK_TRACE_ENABLED=1");
+			}
 		}
 
 		if (Target.bCompileICU == true)
@@ -322,6 +323,8 @@ public class Core : ModuleRules
 		UnsafeTypeCastWarningLevel = WarningLevel.Error;
 
 		IWYUSupport = IWYUSupport.KeepAsIs;
+
+		bAllowAutoRTFMInstrumentation = true;
 	}
 
 	protected virtual bool SupportsBinaryConfig(ReadOnlyTargetRules Target)

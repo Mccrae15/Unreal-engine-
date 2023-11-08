@@ -10,10 +10,13 @@ namespace UnrealBuildTool.Rules
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{
+					"AssetDefinition",
+					"ContentBrowser",
 					"Core",
 					"CoreUObject",
 					"EditorFramework",
 					"Engine",
+					"ToolMenus",
 					"UnrealEd",
 				}
 			);
@@ -24,7 +27,6 @@ namespace UnrealBuildTool.Rules
 					"InputCore", // For ListView keyboard control
 					"Slate",
 					"SlateCore",
-					"ToolMenus",
 					"VariantManagerContent",
 					"WorkspaceMenuStructure",
 				}

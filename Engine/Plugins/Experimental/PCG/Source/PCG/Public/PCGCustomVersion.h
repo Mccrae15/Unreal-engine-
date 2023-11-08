@@ -35,6 +35,27 @@ struct PCG_API FPCGCustomVersion
 		// Renamed spline input and added bounding shape input.
 		SplineSamplerUpdatedNodeInputs = 8,
 
+		// Renamed params to override.
+		RenameDefaultParamsToOverride = 9,
+
+		// Behavior change for SplineSampler which now defaults to being bounded
+		SplineSamplerBoundedByDefault = 10,
+
+		// StaticMeshSpawner now defaults to modify point bounds based on StaticMesh bounds
+		StaticMeshSpawnerApplyMeshBoundsToPointsByDefault = 11,
+
+		// Update of Input Selectors. Previous versions should default on @LastCreated
+		UpdateAttributePropertyInputSelector = 12,
+
+		// Difference node now iterates on the source pin and unions the differences pin
+		DifferenceNodeIterateOnSourceAndUnionDifferences = 13,
+
+		// Update AddAttribute with selectors
+		UpdateAddAttributeWithSelectors = 14,
+
+		// Update TransferAttribute with selectors
+		UpdateTransferAttributeWithSelectors = 15,
+
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,
 		LatestVersion = VersionPlusOne - 1

@@ -20,6 +20,7 @@
 
 #define SceneTexturesStruct_SceneColorTextureSampler SceneTexturesStruct.PointClampSampler
 #define SceneTexturesStruct_SceneDepthTextureSampler SceneTexturesStruct.PointClampSampler
+#define SceneTexturesStruct_ScenePartialDepthTextureSampler SceneTexturesStruct.PointClampSampler
 #define SceneTexturesStruct_CustomDepthTextureSampler SceneTexturesStruct.PointClampSampler
 #define SceneTexturesStruct_GBufferATextureSampler SceneTexturesStruct.PointClampSampler
 #define SceneTexturesStruct_GBufferBTextureSampler SceneTexturesStruct.PointClampSampler
@@ -57,6 +58,14 @@ float CalcSceneDepth(float2 ScreenUV)
 	return ConvertFromDeviceZ(Texture2DSampleLevel(SceneTexturesStruct.SceneDepthTexture, SceneTexturesStruct_SceneDepthTextureSampler, ScreenUV, 0).r);
 #endif
 }
+
+// BEGIN META SECTION - XR Soft Occlusions
+/** Returns the mixed reality environment depth */
+float CalcEnvironmentDepth(float2 ScreenUV, uint ViewId)
+{
+	return SCENE_TEXTURES_DISABLED_SCENE_DEPTH_VALUE;
+}
+// END META SECTION - XR Soft Occlusions
 
 /** Returns scene color in rgb, depth in alpha. */
 float4 CalcSceneColorAndDepth( float2 ScreenUV )
@@ -191,7 +200,7 @@ float LookupDeviceZ( float2 ScreenUV )
 {
 #if	SCENE_TEXTURES_DISABLED
 	return FarDepthValue;
-#elif FORCE_DEPTH_TEXTURE_READS || COMPILER_SWITCH
+#elif FORCE_DEPTH_TEXTURE_READS || PLATFORM_NEEDS_DEPTH_TEXTURE_READS
 	// native Depth buffer lookup
 	return Texture2DSampleLevel(MobileSceneTextures.SceneDepthTexture, MobileSceneTextures.SceneDepthTextureSampler, ScreenUV, 0).r;
 #elif MOBILE_DEPTHFECTH && COMPILER_GLSL_ES3_1
@@ -219,5 +228,17 @@ float CalcSceneDepth(float2 ScreenUV)
 	return ConvertFromDeviceZ(LookupDeviceZ(ScreenUV));
 #endif
 }
+
+// BEGIN META SECTION - XR Soft Occlusions
+/** Returns the mixed reality environment depth */
+float CalcEnvironmentDepth(float2 ScreenUV, uint ViewId)
+{
+	float4 TexCoordH = mul(MobileBasePass.EnvironmentDepthParameters.ScreenToDepthMatrices[ViewId], float4(ScreenUV.x, 1.0f - ScreenUV.y, 0.0, 1.0));
+	float3 TexCoord = float3(TexCoordH.x / TexCoordH.w, TexCoordH.y / TexCoordH.w, ViewId);
+	float RawDepth = Texture2DArraySample(MobileBasePass.EnvironmentDepthParameters.EnvironmentDepthTexture, MobileBasePass.EnvironmentDepthParameters.EnvironmentDepthSampler, TexCoord).r;
+	float ConvertedDepth = RawDepth * MobileBasePass.EnvironmentDepthParameters.DepthFactors.x + MobileBasePass.EnvironmentDepthParameters.DepthFactors.y;
+	return ConvertFromDeviceZ(ConvertedDepth);
+}
+// END META SECTION - XR Soft Occlusions
 
 #endif // SHADING_PATH_MOBILE

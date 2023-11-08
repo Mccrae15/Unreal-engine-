@@ -657,35 +657,27 @@ namespace MovementBaseUtility
 	{
 		if (MovementBase)
 		{
+			bool bGotTransformOfIntendedBone = true;
+
 			if (BoneName != NAME_None)
 			{
-				bool bFoundBone = false;
-				if (MovementBase)
+				// Check if this socket or bone exists (DoesSocketExist checks for either, as does requesting the transform).
+				if (MovementBase->DoesSocketExist(BoneName))
 				{
-					// Check if this socket or bone exists (DoesSocketExist checks for either, as does requesting the transform).
-					if (MovementBase->DoesSocketExist(BoneName))
-					{
-						MovementBase->GetSocketWorldLocationAndRotation(BoneName, OutLocation, OutQuat);
-						bFoundBone = true;
-					}
-					else
-					{
-						UE_LOG(LogCharacter, Warning, TEXT("GetMovementBaseTransform(): Invalid bone or socket '%s' for PrimitiveComponent base %s"), *BoneName.ToString(), *GetPathNameSafe(MovementBase));
-					}
+					MovementBase->GetSocketWorldLocationAndRotation(BoneName, OutLocation, OutQuat);
+					return true;
 				}
-
-				if (!bFoundBone)
+				else
 				{
-					OutLocation = MovementBase->GetComponentLocation();
-					OutQuat = MovementBase->GetComponentQuat();
+					UE_LOG(LogCharacter, Warning, TEXT("GetMovementBaseTransform(): Invalid bone or socket '%s' for PrimitiveComponent base %s. Falling back to base's root transform."), *BoneName.ToString(), *GetPathNameSafe(MovementBase));
+					bGotTransformOfIntendedBone = false;
 				}
-				return bFoundBone;
 			}
 
-			// No bone supplied
+			// No bone supplied (or it was invalid)
 			OutLocation = MovementBase->GetComponentLocation();
 			OutQuat = MovementBase->GetComponentQuat();
-			return true;
+			return bGotTransformOfIntendedBone;
 		}
 
 		// nullptr MovementBase
@@ -836,6 +828,35 @@ void ACharacter::SaveRelativeBasedMovement(const FVector& NewRelativeLocation, c
 	BasedMovement.Location = NewRelativeLocation;
 	BasedMovement.Rotation = NewRotation;
 	BasedMovement.bRelativeRotation = bRelativeRotation;
+}
+
+FVector ACharacter::GetGravityDirection() const
+{
+	FVector GravityDirection = UCharacterMovementComponent::DefaultGravityDirection;
+	const UCharacterMovementComponent* const MovementComponent = GetCharacterMovement();
+	if (MovementComponent)
+	{
+		GravityDirection = MovementComponent->GetGravityDirection();
+	}
+
+	return GravityDirection;
+}
+
+FQuat ACharacter::GetGravityTransform() const
+{
+	FQuat GravityTransform = FQuat::Identity;
+	const UCharacterMovementComponent* const MovementComponent = GetCharacterMovement();
+	if (MovementComponent)
+	{
+		GravityTransform = MovementComponent->GetWorldToGravityTransform();
+	}
+
+	return GravityTransform;
+}
+
+FVector ACharacter::GetReplicatedGravityDirection() const
+{
+	return ReplicatedGravityDirection;
 }
 
 FVector ACharacter::GetNavAgentLocation() const
@@ -1148,6 +1169,7 @@ static uint8 SavedMovementMode;
 void ACharacter::PreNetReceive()
 {
 	SavedMovementMode = ReplicatedMovementMode;
+	PreNetReceivedGravityDirection = ReplicatedGravityDirection;
 	Super::PreNetReceive();
 }
 
@@ -1155,8 +1177,9 @@ void ACharacter::PostNetReceive()
 {
 	if (GetLocalRole() == ROLE_SimulatedProxy)
 	{
+		CharacterMovement->bNetworkGravityDirectionChanged = !PreNetReceivedGravityDirection.Equals(ReplicatedGravityDirection);
 		CharacterMovement->bNetworkMovementModeChanged |= ((SavedMovementMode != ReplicatedMovementMode) || (CharacterMovement->PackNetworkMovementMode() != ReplicatedMovementMode));
-		CharacterMovement->bNetworkUpdateReceived |= CharacterMovement->bNetworkMovementModeChanged || CharacterMovement->bJustTeleported;
+		CharacterMovement->bNetworkUpdateReceived |= CharacterMovement->bNetworkMovementModeChanged || CharacterMovement->bJustTeleported || CharacterMovement->bNetworkGravityDirectionChanged;
 	}
 
 	Super::PostNetReceive();
@@ -1528,7 +1551,8 @@ void ACharacter::PreReplication( IRepChangedPropertyTracker & ChangedPropertyTra
 	}
 
 	bProxyIsJumpForceApplied = (JumpForceTimeRemaining > 0.0f);
-	ReplicatedMovementMode = CharacterMovement->PackNetworkMovementMode();	
+	ReplicatedMovementMode = CharacterMovement->PackNetworkMovementMode();
+	ReplicatedGravityDirection = CharacterMovement->GetGravityDirection();
 
 	if(IsReplicatingMovement())
 	{
@@ -1600,6 +1624,7 @@ void ACharacter::GetLifetimeReplicatedProps( TArray< FLifetimeProperty > & OutLi
 	DOREPLIFETIME_CONDITION( ACharacter, bIsCrouched,						COND_SimulatedOnly );
 	DOREPLIFETIME_CONDITION( ACharacter, bProxyIsJumpForceApplied,			COND_SimulatedOnly );
 	DOREPLIFETIME_CONDITION( ACharacter, AnimRootMotionTranslationScale,	COND_SimulatedOnly );
+	DOREPLIFETIME_CONDITION( ACharacter, ReplicatedGravityDirection,		COND_SimulatedOnly );
 	DOREPLIFETIME_CONDITION( ACharacter, ReplayLastTransformUpdateTimeStamp, COND_ReplayOnly );
 }
 

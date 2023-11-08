@@ -35,6 +35,7 @@ namespace UnrealGameSync
 			this.tableLayoutPanel1 = new System.Windows.Forms.TableLayoutPanel();
 			this.TabControl = new UnrealGameSync.TabControl();
 			this.UpdateAlertPositionsTimer = new System.Windows.Forms.Timer(this.components);
+			this.CheckLauncherVersionTimer = new System.Windows.Forms.Timer(this.components);
 			this.TabPanel.SuspendLayout();
 			this.TabMenu.SuspendLayout();
 			this.tableLayoutPanel1.SuspendLayout();
@@ -59,7 +60,6 @@ namespace UnrealGameSync
             | System.Windows.Forms.AnchorStyles.Right)));
 			this.DefaultControl.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(250)))), ((int)(((byte)(250)))), ((int)(((byte)(250)))));
 			this.DefaultControl.BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle;
-			this.DefaultControl.Font = new System.Drawing.Font("Segoe UI", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
 			this.DefaultControl.Location = new System.Drawing.Point(0, 0);
 			this.DefaultControl.Margin = new System.Windows.Forms.Padding(0);
 			this.DefaultControl.Name = "DefaultControl";
@@ -184,13 +184,18 @@ namespace UnrealGameSync
 			this.UpdateAlertPositionsTimer.Interval = 1000;
 			this.UpdateAlertPositionsTimer.Tick += new System.EventHandler(this.UpdateAlertPositionsTimer_Tick);
 			// 
+			// CheckLauncherVersionTimer
+			// 
+			this.CheckLauncherVersionTimer.Enabled = true;
+			this.CheckLauncherVersionTimer.Interval = 1800000;
+			this.CheckLauncherVersionTimer.Tick += new System.EventHandler(this.CheckLauncherVersionTimer_Tick);
+			// 
 			// MainWindow
 			// 
 			this.AutoScaleDimensions = new System.Drawing.SizeF(96F, 96F);
 			this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Dpi;
 			this.ClientSize = new System.Drawing.Size(1367, 808);
 			this.Controls.Add(this.tableLayoutPanel1);
-			this.Font = new System.Drawing.Font("Tahoma", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
 			this.Icon = ((System.Drawing.Icon)(resources.GetObject("$this.Icon")));
 			this.MinimumSize = new System.Drawing.Size(800, 350);
 			this.Name = "MainWindow";
@@ -225,5 +230,6 @@ namespace UnrealGameSync
 		private System.Windows.Forms.ToolStripSeparator toolStripSeparator2;
 		private System.Windows.Forms.TableLayoutPanel tableLayoutPanel1;
 		private System.Windows.Forms.Timer UpdateAlertPositionsTimer;
+		private System.Windows.Forms.Timer CheckLauncherVersionTimer;
 	}
 }

@@ -13,6 +13,7 @@
 #include "PCGInputOutputSettings.h"
 #include "PCGPin.h"
 #include "PCGSubsystem.h"
+#include "Helpers/PCGSubgraphHelpers.h"
 #include "Rendering/SlateRenderer.h"
 #include "Tests/Determinism/PCGDeterminismNativeTests.h"
 #include "Tests/Determinism/PCGDeterminismTestBlueprintBase.h"
@@ -28,18 +29,20 @@
 #include "PCGEditorSettings.h"
 #include "PCGEditorUtils.h"
 #include "SPCGEditorGraphAttributeListView.h"
+#include "SPCGEditorGraphDebugObjectTree.h"
 #include "SPCGEditorGraphDebugObjectWidget.h"
 #include "SPCGEditorGraphDeterminism.h"
 #include "SPCGEditorGraphFind.h"
+#include "SPCGEditorGraphLogView.h"
 #include "SPCGEditorGraphNodePalette.h"
 #include "SPCGEditorGraphProfilingView.h"
-#include "SPCGEditorGraphLogView.h"
 
 #include "AssetToolsModule.h"
 #include "EdGraphUtilities.h"
 #include "EditorAssetLibrary.h"
 #include "GraphEditorActions.h"
 #include "IDetailsView.h"
+#include "LevelEditor.h"
 #include "PropertyEditorModule.h"
 #include "SNodePanel.h"
 #include "ScopedTransaction.h"
@@ -49,6 +52,7 @@
 #include "ToolMenuSection.h"
 #include "ToolMenus.h"
 #include "UnrealEdGlobals.h"
+#include "Algo/AnyOf.h"
 #include "Editor/UnrealEdEngine.h"
 #include "Fonts/FontMeasure.h"
 #include "Framework/Application/SlateApplication.h"
@@ -68,6 +72,7 @@ namespace FPCGEditor_private
 	const FName GraphEditorID = FName(TEXT("GraphEditor"));
 	const FName PropertyDetailsID = FName(TEXT("PropertyDetails"));
 	const FName PaletteID = FName(TEXT("Palette"));
+	const FName DebugObjectID = FName(TEXT("DebugObject"));
 	const FName AttributesID = FName(TEXT("Attributes"));
 	const FName FindID = FName(TEXT("Find"));
 	const FName DeterminismID = FName(TEXT("Determinism"));
@@ -78,6 +83,12 @@ namespace FPCGEditor_private
 void FPCGEditor::Initialize(const EToolkitMode::Type InMode, const TSharedPtr<class IToolkitHost>& InToolkitHost, UPCGGraph* InPCGGraph)
 {
 	PCGGraphBeingEdited = InPCGGraph;
+
+	if (PCGGraphBeingEdited)
+	{
+		PCGGraphBeingEdited->OnGraphGridSizesChangedDelegate.AddRaw(this, &FPCGEditor::OnGraphGridSizesChanged);
+		PCGGraphBeingEdited->OnGraphDynamicallyExecutedDelegate.AddRaw(this, &FPCGEditor::OnGraphDynamicallyExecuted);
+	}
 
 	PCGEditorGraph = NewObject<UPCGEditorGraph>(PCGGraphBeingEdited, UPCGEditorGraph::StaticClass(), NAME_None, RF_Transactional | RF_Transient);
 	PCGEditorGraph->Schema = UPCGEditorGraphSchema::StaticClass();
@@ -99,6 +110,8 @@ void FPCGEditor::Initialize(const EToolkitMode::Type InMode, const TSharedPtr<cl
 
 	GraphEditorWidget = CreateGraphEditorWidget();
 	PaletteWidget = CreatePaletteWidget();
+	DebugObjectWidget = CreateDebugObjectWidget();
+	DebugObjectTreeWidget = CreateDebugObjectTreeWidget();
 	FindWidget = CreateFindWidget();
 	AttributesWidget = CreateAttributesWidget();
 	DeterminismWidget = CreateDeterminismWidget();
@@ -108,50 +121,70 @@ void FPCGEditor::Initialize(const EToolkitMode::Type InMode, const TSharedPtr<cl
 	BindCommands();
 	RegisterToolbar();
 
-	const TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_PCGGraphEditor_Layout_v0.5")
+	const TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_PCGGraphEditor_Layout_v0.6")
 		->AddArea
 		(
-			FTabManager::NewPrimaryArea()->SetOrientation(Orient_Horizontal)
-			->Split
-			(				
-				FTabManager::NewStack()
-				->SetSizeCoefficient(0.10f)
-				->SetHideTabWell(true)
-				->AddTab(FPCGEditor_private::PaletteID, ETabState::OpenedTab)
-			)
+			FTabManager::NewPrimaryArea()->SetOrientation(Orient_Vertical)
 			->Split
 			(
-				FTabManager::NewSplitter()->SetOrientation(Orient_Vertical)
-				->SetSizeCoefficient(0.70f)
+				FTabManager::NewSplitter()->SetOrientation(Orient_Horizontal)
+				->SetSizeCoefficient(0.72)
 				->Split
 				(
 					FTabManager::NewStack()
-					->SetSizeCoefficient(0.72)
+					->SetSizeCoefficient(0.10f)
+					->SetHideTabWell(true)
+					->AddTab(FPCGEditor_private::PaletteID, ETabState::OpenedTab)
+				)
+				->Split
+				(
+					FTabManager::NewStack()
+					->SetSizeCoefficient(0.70)
 					->SetHideTabWell(true)
 					->AddTab(FPCGEditor_private::GraphEditorID, ETabState::OpenedTab)
 				)
 				->Split
 				(
 					FTabManager::NewStack()
-					->SetSizeCoefficient(0.28)
+					->SetSizeCoefficient(0.20f)
+					->SetHideTabWell(true)
+					->AddTab(FPCGEditor_private::PropertyDetailsID, ETabState::OpenedTab)
+				)
+			)
+			->Split
+			(
+				FTabManager::NewSplitter()->SetOrientation(Orient_Horizontal)
+				->SetSizeCoefficient(0.28)
+				->Split
+				(
+					FTabManager::NewStack()
+					->SetSizeCoefficient(0.2)
+					->SetHideTabWell(true)
+					->AddTab(FPCGEditor_private::DebugObjectID, ETabState::OpenedTab)
+				)
+				->Split
+				(
+					FTabManager::NewStack()
+					->SetSizeCoefficient(0.8)
 					->SetHideTabWell(true)
 					->AddTab(FPCGEditor_private::AttributesID, ETabState::OpenedTab)
 					->AddTab(FPCGEditor_private::DeterminismID, ETabState::ClosedTab)
 					->AddTab(FPCGEditor_private::FindID, ETabState::ClosedTab)
 				)
 			)
-			->Split
-			(
-				FTabManager::NewStack()
-				->SetSizeCoefficient(0.20f)
-				->SetHideTabWell(true)
-				->AddTab(FPCGEditor_private::PropertyDetailsID, ETabState::OpenedTab)
-			)
 		);
 
 	const FName PCGGraphEditorAppName = FName(TEXT("PCGEditorApp"));
 
 	InitAssetEditor(InMode, InToolkitHost, PCGGraphEditorAppName, StandaloneDefaultLayout, /*bCreateDefaultStandaloneMenu=*/ true, /*bCreateDefaultToolbar=*/ true, InPCGGraph);
+
+	// Hook to map change / delete actor to refresh debug object selection list, to help prevent it going stale.
+	FLevelEditorModule& LevelEditor = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
+	LevelEditor.OnMapChanged().AddRaw(this, &FPCGEditor::OnMapChanged);
+	if (GEngine)
+	{
+		GEngine->OnLevelActorDeleted().AddRaw(this, &FPCGEditor::OnLevelActorDeleted);
+	}
 }
 
 UPCGEditorGraph* FPCGEditor::GetPCGEditorGraph()
@@ -159,27 +192,109 @@ UPCGEditorGraph* FPCGEditor::GetPCGEditorGraph()
 	return PCGEditorGraph;
 }
 
-void FPCGEditor::SetPCGComponentBeingDebugged(UPCGComponent* InPCGComponent)
+void FPCGEditor::SetComponentAndStackBeingInspected(UPCGComponent* InPCGComponent, const FPCGStack& InPCGStack)
 {
-	if (PCGComponentBeingDebugged != InPCGComponent)
+	UPCGComponent* OldComponent = PCGComponentBeingInspected.Get();
+	UPCGComponent* NewComponent = InPCGComponent;
+
+	if (OldComponent != NewComponent)
 	{
-		PCGComponentBeingDebugged = InPCGComponent;
-
-		OnDebugObjectChangedDelegate.Broadcast(PCGComponentBeingDebugged.Get());
-
-		if (PCGComponentBeingDebugged.IsValid())
+		if (OldComponent)
 		{
-			// We need to force generation so that we create debug data
-			PCGComponentBeingDebugged->GenerateLocal(/*bForce=*/true);
+			OldComponent->DisableInspection();
+			if (PCGGraphBeingEdited)
+			{
+				PCGGraphBeingEdited->DisableInspection();
+			}
 		}
 
+		const bool bNewComponentStartedInspecting = NewComponent && !NewComponent->IsInspecting();
+
+		PCGComponentBeingInspected = NewComponent;
+		OnInspectedComponentChangedDelegate.Broadcast(NewComponent);
+
+		if (NewComponent)
+		{
+			PCGComponentBeingInspected->EnableInspection();
+			if (PCGGraphBeingEdited)
+			{
+				PCGGraphBeingEdited->EnableInspection();
+			}
+		}
+
+		UpdateDebugAfterComponentSelection(OldComponent, NewComponent, bNewComponentStartedInspecting);
+
+		check(PCGEditorGraph);
 		for (UEdGraphNode* Node : PCGEditorGraph->Nodes)
 		{
 			if (UPCGEditorGraphNodeBase* PCGNode = Cast<UPCGEditorGraphNodeBase>(Node))
 			{
 				// Update now that component has changed. Will fire OnNodeChanged if necessary.
-				PCGNode->UpdateErrorsAndWarnings();
+				EPCGChangeType ChangeType = PCGNode->UpdateErrorsAndWarnings();
+				ChangeType |= PCGNode->UpdateGridSizeVisualization(InPCGComponent);
+
+				if (ChangeType != EPCGChangeType::None)
+				{
+					PCGNode->ReconstructNode();
+				}
 			}
+		}
+	}
+
+	if (InPCGStack != StackBeingInspected)
+	{
+		StackBeingInspected = InPCGStack;
+		OnInspectedStackChangedDelegate.Broadcast(StackBeingInspected);
+	}
+}
+
+void FPCGEditor::UpdateDebugAfterComponentSelection(UPCGComponent* InOldComponent, UPCGComponent* InNewComponent, bool bInNewComponentStartedInspecting)
+{
+	if (!ensure(PCGGraphBeingEdited))
+	{
+		return;
+	}
+
+	// If individual component debugging is disabled, just generate the new component if required.
+	if (!PCGGraphBeingEdited->DebugFlagAppliesToIndividualComponents())
+	{
+		if (InNewComponent && bInNewComponentStartedInspecting)
+		{
+			InNewComponent->GenerateLocal(/*bForce=*/true);
+		}
+
+		return;
+	}
+
+	// Trigger necessary generation(s) for per-component debugging.
+	if (!InOldComponent)
+	{
+		if (InNewComponent && bInNewComponentStartedInspecting)
+		{
+			// Transition from 'null' to 'any component not already inspecting' - generate to create debug/inspection info.
+			// If we have null selected, all components are displaying debug. Go to Original component so that all refresh.
+			InNewComponent->GetOriginalComponent()->GenerateLocal(/*bForce=*/true);
+		}
+	}
+	else
+	{
+		const bool bDebugFlagSetOnAnyNode = Algo::AnyOf(PCGGraphBeingEdited->GetNodes(), [](const UPCGNode* InNode)
+		{
+			return InNode && InNode->GetSettings() && InNode->GetSettings()->bDebug;
+		});
+
+		// Regenerate to clear debug info if switching components, or if changing from a component to null.
+		if (InNewComponent || bDebugFlagSetOnAnyNode)
+		{
+			// Use original component - debug can be displayed both by the local component and parent local components.
+			InOldComponent->GetOriginalComponent()->GenerateLocal(/*bForce=*/true);
+		}
+
+		// Debug new component if it wasn't already
+		if (InNewComponent && bInNewComponentStartedInspecting)
+		{
+			// Use original component - debug can be displayed both by the local component and parent local components.
+			InNewComponent->GetOriginalComponent()->GenerateLocal(/*bForce=*/true);
 		}
 	}
 }
@@ -211,6 +326,10 @@ void FPCGEditor::RegisterTabSpawners(const TSharedRef<FTabManager>& InTabManager
 	InTabManager->RegisterTabSpawner(FPCGEditor_private::PaletteID, FOnSpawnTab::CreateSP(this, &FPCGEditor::SpawnTab_Palette))
 		.SetDisplayName(LOCTEXT("PaletteTab", "Palette"))
 		.SetGroup(WorkspaceMenuCategoryRef);
+	
+	InTabManager->RegisterTabSpawner(FPCGEditor_private::DebugObjectID, FOnSpawnTab::CreateSP(this, &FPCGEditor::SpawnTab_DebugObject))
+		.SetDisplayName(LOCTEXT("DebugTab", "Debug Object Tree"))
+		.SetGroup(WorkspaceMenuCategoryRef);
 
 	InTabManager->RegisterTabSpawner(FPCGEditor_private::AttributesID, FOnSpawnTab::CreateSP(this, &FPCGEditor::SpawnTab_Attributes))
 		.SetDisplayName(LOCTEXT("AttributesTab", "Attributes"))
@@ -238,6 +357,7 @@ void FPCGEditor::UnregisterTabSpawners(const TSharedRef<class FTabManager>& InTa
 	InTabManager->UnregisterTabSpawner(FPCGEditor_private::GraphEditorID);
 	InTabManager->UnregisterTabSpawner(FPCGEditor_private::PropertyDetailsID);
 	InTabManager->UnregisterTabSpawner(FPCGEditor_private::PaletteID);
+	InTabManager->UnregisterTabSpawner(FPCGEditor_private::DebugObjectID);
 	InTabManager->UnregisterTabSpawner(FPCGEditor_private::AttributesID);
 	InTabManager->UnregisterTabSpawner(FPCGEditor_private::FindID);
 	InTabManager->UnregisterTabSpawner(FPCGEditor_private::DeterminismID);
@@ -316,10 +436,17 @@ FString FPCGEditor::GetWorldCentricTabPrefix() const
 void FPCGEditor::RegisterToolbar() const
 {
 	UToolMenus* ToolMenus = UToolMenus::Get();
+	UToolMenu* ToolBar;
 	FName ParentName;
 	const FName MenuName = GetToolMenuToolbarName(ParentName);
-
-	UToolMenu* ToolBar = ToolMenus->RegisterMenu(MenuName, ParentName, EMultiBoxType::ToolBar);
+	if (ToolMenus->IsMenuRegistered(MenuName))
+	{
+		ToolBar = ToolMenus->ExtendMenu(MenuName);
+	}
+	else
+	{
+		ToolBar = ToolMenus->RegisterMenu(MenuName, ParentName, EMultiBoxType::ToolBar);
+	}
 
 	const FPCGEditorCommands& PCGEditorCommands = FPCGEditorCommands::Get();
 	const FToolMenuInsert InsertAfterAssetSection("Asset", EToolMenuInsertType::After);
@@ -355,7 +482,10 @@ void FPCGEditor::RegisterToolbar() const
 			const UPCGEditorMenuContext* Context = InSection.FindContext<UPCGEditorMenuContext>();
 			if (Context && Context->PCGEditor.IsValid())
 			{
-				InSection.AddEntry(FToolMenuEntry::InitWidget("SelectedDebugObjectWidget", SNew(SPCGEditorGraphDebugObjectWidget, Context->PCGEditor.Pin()), FText::GetEmpty()));	
+				InSection.AddEntry(FToolMenuEntry::InitWidget(
+					"SelectedDebugObjectWidget",
+					Context->PCGEditor.Pin()->DebugObjectWidget.ToSharedRef(),
+					FText::GetEmpty()));
 			}
 		}));
 
@@ -454,6 +584,11 @@ void FPCGEditor::BindCommands()
 	GraphEditorCommands->MapAction(
 		PCGEditorCommands.DisableDebugOnAllNodes,
 		FExecuteAction::CreateSP(this, &FPCGEditor::OnDisableDebugOnAllNodes));
+
+	GraphEditorCommands->MapAction(
+		PCGEditorCommands.AddSourcePin,
+		FExecuteAction::CreateSP(this, &FPCGEditor::OnAddDynamicInputPin),
+		FCanExecuteAction::CreateSP(this, &FPCGEditor::CanAddDynamicInputPin));
 }
 
 void FPCGEditor::OnFind()
@@ -632,19 +767,19 @@ void FPCGEditor::OnDeterminismNodeTest()
 
 bool FPCGEditor::CanRunDeterminismGraphTest() const
 {
-	return PCGEditorGraph && PCGComponentBeingDebugged.IsValid();
+	return PCGEditorGraph && PCGComponentBeingInspected.IsValid();
 }
 
 void FPCGEditor::OnDeterminismGraphTest()
 {
 	check(GraphEditorWidget.IsValid());
 
-	if (!DeterminismWidget.IsValid() || !DeterminismWidget->WidgetIsConstructed() || !PCGGraphBeingEdited || !PCGComponentBeingDebugged.IsValid())
+	if (!DeterminismWidget.IsValid() || !DeterminismWidget->WidgetIsConstructed() || !PCGGraphBeingEdited || !PCGComponentBeingInspected.IsValid())
 	{
 		return;
 	}
 
-	if (PCGComponentBeingDebugged->GetGraph() != PCGGraphBeingEdited)
+	if (PCGComponentBeingInspected->GetGraph() != PCGGraphBeingEdited)
 	{
 		// TODO: Should we alert the user more directly or disable this altogether?
 		UE_LOG(LogPCGEditor, Warning, TEXT("Running Determinism on a PCG Component with different/no attached PCG Graph"));
@@ -659,9 +794,9 @@ void FPCGEditor::OnDeterminismGraphTest()
 	TSharedPtr<FDeterminismTestResult> TestResult = MakeShared<FDeterminismTestResult>();
 	TestResult->TestResultTitle = TEXT("Full Graph Test");
 	TestResult->TestResultName = PCGGraphBeingEdited->GetName();
-	TestResult->Seed = PCGComponentBeingDebugged->Seed;
+	TestResult->Seed = PCGComponentBeingInspected->Seed;
 
-	PCGDeterminismTests::RunDeterminismTest(PCGGraphBeingEdited, PCGComponentBeingDebugged.Get(), *TestResult);
+	PCGDeterminismTests::RunDeterminismTest(PCGGraphBeingEdited, PCGComponentBeingInspected.Get(), *TestResult);
 
 	DeterminismWidget->AddItem(TestResult);
 	DeterminismWidget->AddDetailsColumn();
@@ -682,7 +817,7 @@ void FPCGEditor::OnEditGraphSettings() const
 bool FPCGEditor::IsEditGraphSettingsToggled() const
 {
 	const TArray<TWeakObjectPtr<UObject>>& SelectedObjects = PropertyDetailsWidget->GetSelectedObjects();
-	return SelectedObjects.Num() == 1 && SelectedObjects[0] == PCGGraphBeingEdited;
+	return SelectedObjects.Num() == 1 && SelectedObjects[0] == PCGGraphBeingEdited.Get();
 }
 
 bool FPCGEditor::CanCollapseNodesInSubgraph() const
@@ -713,6 +848,36 @@ bool FPCGEditor::CanCollapseNodesInSubgraph() const
 	return false;
 }
 
+void FPCGEditor::OnAddDynamicInputPin()
+{
+	check(GraphEditorWidget.IsValid());
+
+	const FGraphPanelSelectionSet SelectedNodes = GraphEditorWidget->GetSelectedNodes();
+	
+	if (!ensure(SelectedNodes.Num() == 1))
+	{
+		UE_LOG(LogPCGEditor, Warning, TEXT("Attempting to add new input pin to multiple nodes."));
+		return;
+	}
+
+	UPCGEditorGraphNodeBase* Node = CastChecked<UPCGEditorGraphNodeBase>(*SelectedNodes.CreateConstIterator());
+	Node->OnUserAddDynamicInputPin();
+}
+
+bool FPCGEditor::CanAddDynamicInputPin() const
+{
+	check(GraphEditorWidget.IsValid());
+
+	const FGraphPanelSelectionSet SelectedNodes = GraphEditorWidget->GetSelectedNodes();
+	if (SelectedNodes.Num() != 1)
+	{
+		return false;
+	}
+
+	const UPCGEditorGraphNodeBase* Node = Cast<const UPCGEditorGraphNodeBase>(*SelectedNodes.CreateConstIterator());
+	return (Node && Node->CanUserAddRemoveDynamicInputPins());
+}
+
 void FPCGEditor::OnCollapseNodesInSubgraph()
 {
 	if (!GraphEditorWidget.IsValid() || PCGEditorGraph == nullptr)
@@ -728,27 +893,9 @@ void FPCGEditor::OnCollapseNodesInSubgraph()
 		return;
 	}
 
-	// 1. Gather all nodes that will be included in the subgraph, and the extra nodes
-	// Also keep track of all node positions to know where to spawn our subgraph node
-	FVector2D AveragePosition = FVector2D::ZeroVector;
-	int32 MinX = std::numeric_limits<int32>::max();
-	int32 MaxX = std::numeric_limits<int32>::min();
-
-	// We keep track of all the PCG nodes that will go into the subgraph
-	TArray<TObjectPtr<UPCGEditorGraphNodeBase>> PCGEditorGraphNodes;
-	// Also move the extra nodes (like comments)
-	TArray<TObjectPtr<UEdGraphNode>> ExtraGraphNodes;
-
-	// Those 3 sets are used to keep track of the subgraph pins
-	// and will be used to extract pins that will be outside the subgraph
-	// and will need special treatment.
-	TSet<TObjectPtr<UPCGPin>> InputFromSubgraphPins;
-	TSet<TObjectPtr<UPCGPin>> OutputToSubgraphPins;
-	TSet<TObjectPtr<UPCGPin>> AllSubgraphPins;
-
-	// Also keep track of all the edges in the subgraph. Use a set to be able to add the
-	// same edge twice without duplicates.
-	TSet<TObjectPtr<UPCGEdge>> PCGGraphEdges;
+	// Gather all nodes that will be included in the subgraph, and the extra nodes
+	TArray<UPCGNode*> NodesToCollapse;
+	TArray<UObject*> ExtraNodesToCollapse;
 
 	for (UObject* Object : GraphEditorWidget->GetSelectedNodes())
 	{
@@ -764,309 +911,60 @@ void FPCGEditor::OnCollapseNodesInSubgraph()
 		{
 			UPCGNode* PCGNode = PCGEditorGraphNode->GetPCGNode();
 			check(PCGNode);
-
-			// For each pin of the subgraph, gather all its edges in a set and store the other pin of
-			// the edge as an input from or output to the subgraph. It will be useful for tracking pins
-			// that are outside the subgraph.
-			for (UPCGPin* InputPin : PCGNode->GetInputPins())
-			{
-				check(InputPin);
-
-				for (UPCGEdge* Edge : InputPin->Edges)
-				{
-					check(Edge);
-					PCGGraphEdges.Add(Edge);
-					OutputToSubgraphPins.Add(Edge->InputPin);
-				}
-
-				AllSubgraphPins.Add(InputPin);
-			}
-
-			for (UPCGPin* OutputPin : PCGNode->GetOutputPins())
-			{
-				check(OutputPin);
-
-				for (UPCGEdge* Edge : OutputPin->Edges)
-				{
-					check(Edge);
-					PCGGraphEdges.Add(Edge);
-					InputFromSubgraphPins.Add(Edge->OutputPin);
-				}
-
-				AllSubgraphPins.Add(OutputPin);
-			}
-
-			PCGEditorGraphNodes.Add(PCGEditorGraphNode);
-
-			// And do all the computation to get the min, max and mean position.
-			AveragePosition.X += PCGEditorGraphNode->NodePosX;
-			AveragePosition.Y += PCGEditorGraphNode->NodePosY;
-			MinX = FMath::Min(MinX, PCGEditorGraphNode->NodePosX);
-			MaxX = FMath::Max(MaxX, PCGEditorGraphNode->NodePosX);
+			NodesToCollapse.Add(PCGNode);
 		}
 		else if (UEdGraphNode* GraphNode = Cast<UEdGraphNode>(Object))
 		{
-			ExtraGraphNodes.Add(GraphNode);
+			ExtraNodesToCollapse.Add(GraphNode);
 		}
 	}
 
 	// If we have at most 1 node to collapse, just exit
-	if (PCGEditorGraphNodes.Num() <= 1)
+	if (NodesToCollapse.Num() <= 1)
 	{
 		UE_LOG(LogPCGEditor, Warning, TEXT("There were less than 2 PCG nodes selected, abort"));
 		return;
 	}
 
-	// Compute the average position
-	AveragePosition /= PCGEditorGraphNodes.Num();
-
-	// 2. Create a new subgraph, by creating a new PCGGraph asset.
-	IAssetTools& AssetTools = FModuleManager::Get().LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-
-	TObjectPtr<UPCGGraphFactory> Factory = NewObject<UPCGGraphFactory>();
-
-	FString NewPackageName;
-	FString NewAssetName;
-	PCGEditorUtils::GetParentPackagePathAndUniqueName(PCGGraph, LOCTEXT("NewPCGSubgraphAsset", "NewPCGSubgraph").ToString(), NewPackageName, NewAssetName);
-
-	TObjectPtr<UPCGGraph> NewPCGGraph = Cast<UPCGGraph>(AssetTools.CreateAssetWithDialog(NewAssetName, NewPackageName, PCGGraph->GetClass(), Factory, "PCGEditor_CollapseInSubgraph"));
-
-	if (NewPCGGraph == nullptr)
+	// Create a new subgraph, by creating a new PCGGraph asset.
+	TObjectPtr<UPCGGraph> NewPCGGraph = nullptr;
 	{
-		UE_LOG(LogPCGEditor, Warning, TEXT("Subgraph asset creation was aborted or failed, abort."));
-		return;
+		FScopedTransaction Transaction(LOCTEXT("PCGCollapseInSubgraphMessage", "[PCG] Collapse into Subgraph"));
+
+		IAssetTools& AssetTools = FModuleManager::Get().LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+
+		TObjectPtr<UPCGGraphFactory> Factory = NewObject<UPCGGraphFactory>();
+
+		FString NewPackageName;
+		FString NewAssetName;
+		PCGEditorUtils::GetParentPackagePathAndUniqueName(PCGGraph, LOCTEXT("NewPCGSubgraphAsset", "NewPCGSubgraph").ToString(), NewPackageName, NewAssetName);
+
+		NewPCGGraph = Cast<UPCGGraph>(AssetTools.CreateAssetWithDialog(NewAssetName, NewPackageName, PCGGraph->GetClass(), Factory, "PCGEditor_CollapseInSubgraph"));
+
+		if (NewPCGGraph == nullptr)
+		{
+			UE_LOG(LogPCGEditor, Warning, TEXT("Subgraph asset creation was aborted or failed, abort."));
+			Transaction.Cancel();
+			return;
+		}
+
+		NewPCGGraph = FPCGSubgraphHelpers::CollapseIntoSubgraph(PCGGraph, NodesToCollapse, ExtraNodesToCollapse, NewPCGGraph);
+
+		if (NewPCGGraph == nullptr)
+		{
+			UE_LOG(LogPCGEditor, Warning, TEXT("Subgraph collapse failed, abort."));
+			return;
+		}
+
+		// Force a refresh
+		PCGEditorGraph->ReconstructGraph();
 	}
-
-	// Do some clean-up on input/output nodes
-	constexpr int32 Padding = 200;
-	NewPCGGraph->GetInputNode()->PositionX = MinX - Padding;
-	NewPCGGraph->GetInputNode()->PositionY = AveragePosition.Y;
-	NewPCGGraph->GetOutputNode()->PositionX = MaxX + Padding;
-	NewPCGGraph->GetOutputNode()->PositionY = AveragePosition.Y;
-
-	// 3. Define some lambdas to create/adapt pins on the new subgraph.
-
-	// Gather the pins that are outside the subgraph
-	InputFromSubgraphPins = InputFromSubgraphPins.Difference(AllSubgraphPins);
-	OutputToSubgraphPins = OutputToSubgraphPins.Difference(AllSubgraphPins);
-
-	// Function that will create a new pin in the input/output node of the subgraph, with a unique name that will
-	// be the related to the pin passed as argument. It will be formatted like this:
-	// "{NodeName} {PinName} {OptionalIndex}"
-	TMap<FString, int> NameCollisionMapping;
-	auto CreateNewCustomPin = [&NewPCGGraph, &NameCollisionMapping](UPCGPin* Pin, bool bIsInput)
-	{
-		TObjectPtr<UPCGNode> NewInputOutputNode = bIsInput ? NewPCGGraph->GetInputNode() : NewPCGGraph->GetOutputNode();
-		TObjectPtr<UPCGGraphInputOutputSettings> NewInputOutputSettings = CastChecked<UPCGGraphInputOutputSettings>(NewInputOutputNode->GetSettings());
-		FString NewName = Pin->Node->GetNodeTitle().ToString() + " " + Pin->Properties.Label.ToString();
-		if (NameCollisionMapping.Contains(NewName))
-		{
-			NewName += " " + FString::FormatAsNumber(++NameCollisionMapping[NewName]);
-		}
-		else
-		{
-			NameCollisionMapping.Emplace(NewName, 1);
-		}
-
-		FPCGPinProperties NewProperties = Pin->Properties;
-		NewProperties.Label = FName(NewName);
-		NewProperties = NewInputOutputSettings->AddCustomPin(NewProperties);
-		NewInputOutputNode->UpdateAfterSettingsChangeDuringCreation();
-		return NewProperties.Label;
-	};
-
-	// 4. Duplicate all the nodes, and keep a mapping between the old pins and new pins
-	TMap<TObjectPtr<UPCGPin>, TObjectPtr<UPCGPin>> PinMapping;
-	for (UPCGEditorGraphNodeBase* PCGEditorGraphNode : PCGEditorGraphNodes)
-	{
-		const UPCGNode* PCGNode = PCGEditorGraphNode->GetPCGNode();
-		check(PCGNode);
-
-		// Reconstruct a new node, same as PCGNode, but without any edges in the new graph 
-		TObjectPtr<UPCGNode> NewNode = NewPCGGraph->ReconstructNewNode(PCGNode);
-
-		// Safeguard: We should have a 1 for 1 matching between pins labels between the original node
-		// and the copied node. If for some reason we don't (perhaps the node was not updated correctly after pins were added/removed)
-		// we will log an error and try to connect as best as we can (probably breaking some edges on the process).
-
-		auto Mapping = [&PinMapping, PCGNode](const TArray<UPCGPin*>& OriginalPins, const TArray<UPCGPin*>& NewPins)
-		{
-			TSet<FName> UnmatchedOriginal;
-			TMap<FName, UPCGPin*> NewMapping;
-
-			for (UPCGPin* NewPin : NewPins)
-			{
-				NewMapping.Emplace(NewPin->Properties.Label, NewPin);
-			}
-
-			for (UPCGPin* OriginalPin : OriginalPins)
-			{
-				FName PinLabel = OriginalPin->Properties.Label;
-				if (UPCGPin** NewPinPtr = NewMapping.Find(PinLabel))
-				{
-					PinMapping.Emplace(OriginalPin, *NewPinPtr);
-				}
-				else if (OriginalPin->IsConnected())
-				{
-					// It is only problematic if the pin was connected
-					UE_LOG(LogPCG, Error, TEXT("[CollapseInSubgraph - %s] %s pin %s does not exist anymore. Edges will be broken."),
-						*PCGNode->GetNodeTitle().ToString(), (OriginalPin->IsOutputPin() ? TEXT("Output") : TEXT("Input")), *PinLabel.ToString());
-				}
-			}
-		};
-		
-		Mapping(PCGNode->GetInputPins(), NewNode->GetInputPins());
-		Mapping(PCGNode->GetOutputPins(), NewNode->GetOutputPins());
-	}
-
-	// Also duplicate the extra nodes and assign them to the new graph
-	TArray<TObjectPtr<const UObject>> NewExtraGraphNodes;
-	for (const UEdGraphNode* ExtraNode : ExtraGraphNodes)
-	{
-		NewExtraGraphNodes.Add(DuplicateObject(ExtraNode, NewPCGGraph));
-	}
-
-	NewPCGGraph->SetExtraEditorNodes(NewExtraGraphNodes);
-
-	// 5. Iterate over all the edges and create edges "placeholders"
-	// Most of them will already be complete, but for those that needs to be connected to the new
-	// subgraph nodes, the pins don't exist yet. Therefore we identify them with their pin labels.
-	//
-	// The logic behind the new pins is this:
-	// -> If the pin is connected to the simple pin of the input/output node, let it like this
-	// -> If the pin is part of the original input/output advanced pins, we will trigger the advanced pins flag on the input/output node in the subgraph
-	// -> Otherwise, we add a new custom pin, with the name of the node, the name of the pin and a number if there is name collision
-	struct EdgePlaceholder
-	{
-		TObjectPtr<UPCGPin> InputPin = nullptr;
-		TObjectPtr<UPCGPin> OutputPin = nullptr;
-		FName InputPinLabel;
-		FName OutputPinLabel;
-	};
-
-	TArray<EdgePlaceholder> EdgePlaceholders;
-	for (UPCGEdge* Edge : PCGGraphEdges)
-	{
-		const TObjectPtr<UPCGPin>* InPin = PinMapping.Find(Edge->InputPin);
-		const TObjectPtr<UPCGPin>* OutPin = PinMapping.Find(Edge->OutputPin);
-
-		check(InPin || OutPin)
-
-		if (InPin == nullptr)
-		{
-			// The edge comes from outside the graph.
-			// If it is from the input node, we have a special behavior
-			EdgePlaceholder OutsideSubgraphEdge;
-			EdgePlaceholder InsideSubgraphEdge;
-			bool bProcessed = false;
-
-			OutsideSubgraphEdge.InputPin = Edge->InputPin;
-			InsideSubgraphEdge.OutputPin = *OutPin;
-
-			if (Edge->InputPin->Node == PCGGraph->GetInputNode())
-			{
-				const UPCGGraphInputOutputSettings* Settings = Cast<const UPCGGraphInputOutputSettings>(Edge->InputPin->Node->GetSettings());
-
-				if (Settings && !Settings->IsCustomPin(Edge->InputPin))
-				{
-					OutsideSubgraphEdge.OutputPinLabel = Edge->InputPin->Properties.Label;
-					InsideSubgraphEdge.InputPin = NewPCGGraph->GetInputNode()->GetOutputPin(Edge->InputPin->Properties.Label);
-					bProcessed = true;
-				}
-			}
-
-			if (!bProcessed)
-			{
-				FName NewPinName = CreateNewCustomPin(Edge->OutputPin, true);
-				OutsideSubgraphEdge.OutputPinLabel = NewPinName;
-				InsideSubgraphEdge.InputPin = NewPCGGraph->GetInputNode()->GetOutputPin(NewPinName);
-			}
-
-			EdgePlaceholders.Add(OutsideSubgraphEdge);
-			EdgePlaceholders.Add(InsideSubgraphEdge);
-		}
-		else if (OutPin == nullptr)
-		{
-			// The edge comes from outside the graph.
-			// If it is from the output node, we have a special behavior
-			EdgePlaceholder OutsideSubgraphEdge;
-			EdgePlaceholder InsideSubgraphEdge;
-			bool bProcessed = false;
-
-			OutsideSubgraphEdge.OutputPin = Edge->OutputPin;
-			InsideSubgraphEdge.InputPin = *InPin;
-
-			if (Edge->OutputPin->Node == PCGGraph->GetOutputNode())
-			{
-				const UPCGGraphInputOutputSettings* Settings = Cast<const UPCGGraphInputOutputSettings>(Edge->OutputPin->Node->GetSettings());
-
-				if (Settings && !Settings->IsCustomPin(Edge->OutputPin))
-				{
-					OutsideSubgraphEdge.InputPinLabel = Edge->OutputPin->Properties.Label;
-					InsideSubgraphEdge.OutputPin = NewPCGGraph->GetOutputNode()->GetInputPin(Edge->OutputPin->Properties.Label);
-					bProcessed = true;
-				}
-			}
-
-			if (!bProcessed)
-			{
-				FName NewPinName = CreateNewCustomPin(Edge->InputPin, false);
-				OutsideSubgraphEdge.InputPinLabel = NewPinName;
-				InsideSubgraphEdge.OutputPin = NewPCGGraph->GetOutputNode()->GetInputPin(NewPinName);
-			}
-
-			EdgePlaceholders.Add(OutsideSubgraphEdge);
-			EdgePlaceholders.Add(InsideSubgraphEdge);
-		}
-		else
-		{
-			// Both nodes are inside
-			EdgePlaceholders.Add(EdgePlaceholder{*InPin, *OutPin});
-		}
-	}
-
-	// 6. Create subgraph and delete old nodes
-	// Done within a transaction to be undoable (subgraph will stay though)
-	TObjectPtr<UPCGEditorGraphNodeBase> SubgraphEditorNode;
-	TObjectPtr<UPCGNode> SubgraphNode;
-	{
-		const FScopedTransaction Transaction(*FPCGEditorCommon::ContextIdentifier, LOCTEXT("PCGEditorCollapseInSubgraphMessage", "PCG Editor: Collapse into Subgraph"), nullptr);
-
-		DeleteSelectedNodes();
-
-		FPCGEditorGraphSchemaAction_NewSubgraphElement SubgraphAddAction;
-		SubgraphAddAction.SubgraphObjectPath = NewPCGGraph->GetPathName();
-		SubgraphEditorNode = Cast<UPCGEditorGraphNodeBase>(SubgraphAddAction.PerformAction(PCGEditorGraph, nullptr, AveragePosition, true));
-		SubgraphNode = SubgraphEditorNode->GetPCGNode();
-	}
-
-	// 7. Connect all the edges
-	for (EdgePlaceholder& Edge : EdgePlaceholders)
-	{
-		if (Edge.InputPin == nullptr)
-		{
-			SubgraphNode->GetOutputPin(Edge.InputPinLabel)->AddEdgeTo(Edge.OutputPin);
-		}
-		else if (Edge.OutputPin == nullptr)
-		{
-			Edge.InputPin->AddEdgeTo(SubgraphNode->GetInputPin(Edge.OutputPinLabel));
-		}
-		else
-		{
-			Edge.InputPin->AddEdgeTo(Edge.OutputPin);
-		}
-	}
-
-	// 8. Finalize the operation
-	SubgraphEditorNode->ReconstructNode();
 
 	// Save the new asset
 	UEditorAssetLibrary::SaveLoadedAsset(NewPCGGraph);
 
-	// And notify everyone
+	// Notify the widget
 	GraphEditorWidget->NotifyGraphChanged();
-	PCGGraph->NotifyGraphChanged(EPCGChangeType::Structural);
-	NewPCGGraph->NotifyGraphChanged(EPCGChangeType::Structural);
 }
 
 bool FPCGEditor::CanExportNodes() const
@@ -1770,13 +1668,32 @@ void FPCGEditor::PasteNodesHere(const FVector2D& Location)
 
 		PastedNode->CreateNewGuid();
 
-		if (UPCGEditorGraphNodeBase* PastedPCGGraphNode = Cast<UPCGEditorGraphNodeBase>(PastedNode))
+		UPCGEditorGraphNodeBase* PastedPCGGraphNode = Cast<UPCGEditorGraphNodeBase>(PastedNode);
+		if (UPCGNode* PastedPCGNode = PastedPCGGraphNode ? PastedPCGGraphNode->GetPCGNode() : nullptr)
 		{
-			if (UPCGNode* PastedPCGNode = PastedPCGGraphNode->GetPCGNode())
-			{
-				PCGGraphBeingEdited->AddNode(PastedPCGNode);
+			PCGGraphBeingEdited->AddNode(PastedPCGNode);
+		}
+	}
 
-				PastedPCGGraphNode->PostPaste();
+	for (UEdGraphNode* PastedNode : PastedNodes)
+	{
+		UPCGEditorGraphNodeBase* PastedPCGGraphNode = Cast<UPCGEditorGraphNodeBase>(PastedNode);
+		if (UPCGNode* PastedPCGNode = PastedPCGGraphNode ? PastedPCGGraphNode->GetPCGNode() : nullptr)
+		{
+			PastedPCGGraphNode->RebuildAfterPaste();
+		}
+	}
+
+	for (UEdGraphNode* PastedNode : PastedNodes)
+	{
+		UPCGEditorGraphNodeBase* PastedPCGGraphNode = Cast<UPCGEditorGraphNodeBase>(PastedNode);
+		if (UPCGNode* PastedPCGNode = PastedPCGGraphNode ? PastedPCGGraphNode->GetPCGNode() : nullptr)
+		{
+			PastedPCGGraphNode->PostPaste();
+
+			if (UPCGSettings* Settings = PastedPCGNode->GetSettings())
+			{
+				Settings->PostPaste();
 			}
 		}
 	}
@@ -2017,14 +1934,39 @@ void FPCGEditor::OnClose()
 		PCGEditorGraph->OnClose();
 	}
 
+	if (FLevelEditorModule* LevelEditor = FModuleManager::GetModulePtr<FLevelEditorModule>(TEXT("LevelEditor")))
+	{
+		LevelEditor->OnMapChanged().RemoveAll(this);
+	}
+	if (GEngine)
+	{
+		GEngine->OnLevelActorDeleted().RemoveAll(this);
+	}
+
 	// Extra nodes are replicated on editor close, to be saved in the underlying PCGGraph
 	ReplicateExtraNodes();
 
 	FAssetEditorToolkit::OnClose();
 
-	if (PCGGraphBeingEdited && PCGGraphBeingEdited->NotificationsForEditorArePausedByUser())
+	if (PCGComponentBeingInspected.IsValid())
 	{
-		PCGGraphBeingEdited->ToggleUserPausedNotificationsForEditor();
+		PCGComponentBeingInspected->DisableInspection();
+
+		if (PCGGraphBeingEdited)
+		{
+			PCGGraphBeingEdited->DisableInspection();
+		}
+	}
+
+	if (PCGGraphBeingEdited)
+	{
+		if (PCGGraphBeingEdited->NotificationsForEditorArePausedByUser())
+		{
+			PCGGraphBeingEdited->ToggleUserPausedNotificationsForEditor();
+		}
+
+		PCGGraphBeingEdited->OnGraphGridSizesChangedDelegate.RemoveAll(this);
+		PCGGraphBeingEdited->OnGraphDynamicallyExecutedDelegate.RemoveAll(this);
 	}
 }
 
@@ -2040,6 +1982,16 @@ void FPCGEditor::InitToolMenuContext(FToolMenuContext& MenuContext)
 TSharedRef<SPCGEditorGraphNodePalette> FPCGEditor::CreatePaletteWidget()
 {
 	return SNew(SPCGEditorGraphNodePalette);
+}
+
+TSharedRef<SPCGEditorGraphDebugObjectWidget> FPCGEditor::CreateDebugObjectWidget()
+{
+	return SNew(SPCGEditorGraphDebugObjectWidget, SharedThis(this));
+}
+
+TSharedRef<SPCGEditorGraphDebugObjectTree> FPCGEditor::CreateDebugObjectTreeWidget()
+{
+	return SNew(SPCGEditorGraphDebugObjectTree, SharedThis(this));
 }
 
 TSharedRef<SPCGEditorGraphFind> FPCGEditor::CreateFindWidget()
@@ -2226,10 +2178,63 @@ bool FPCGEditor::IsVisibleProperty(const FPropertyAndParent& InPropertyAndParent
 	return true;
 }
 
+void FPCGEditor::OnGraphGridSizesChanged(UPCGGraphInterface* InGraph)
+{
+	check(PCGEditorGraph);
+	if (UPCGComponent* PCGComponent = GetPCGComponentBeingInspected())
+	{
+		PCGEditorGraph->UpdateGridSizeVisualization(PCGComponent);
+	}
+}
+
+void FPCGEditor::OnGraphDynamicallyExecuted(UPCGGraphInterface* InGraphInterface, const TWeakObjectPtr<UPCGComponent> InSourceComponent, FPCGStack InvocationStack)
+{
+	InvocationStack.GetStackFramesMutable().Emplace(InGraphInterface);
+
+	if (DebugObjectWidget.IsValid())
+	{
+		DebugObjectWidget->AddDynamicStack(InSourceComponent, InvocationStack);
+	}
+
+	if (DebugObjectTreeWidget.IsValid())
+	{
+		DebugObjectTreeWidget->AddDynamicStack(InSourceComponent, InvocationStack);
+	}
+}
+
 UPCGSubsystem* FPCGEditor::GetSubsystem()
 {
 	UWorld* World = (GEditor ? (GEditor->PlayWorld ? GEditor->PlayWorld.Get() : GEditor->GetEditorWorldContext().World()) : nullptr);
 	return UPCGSubsystem::GetInstance(World);
+}
+
+void FPCGEditor::OnMapChanged(UWorld* InWorld, EMapChangeType InMapChangedType)
+{
+	if (InMapChangedType != EMapChangeType::SaveMap)
+	{
+		if (DebugObjectTreeWidget.IsValid())
+		{
+			DebugObjectTreeWidget->RequestRefresh();
+		}
+		if (DebugObjectWidget.IsValid())
+		{
+			DebugObjectWidget->RefreshDebugObjects();
+		}
+	}
+}
+
+void FPCGEditor::OnLevelActorDeleted(AActor* InActor)
+{
+	if (DebugObjectTreeWidget.IsValid())
+	{
+		DebugObjectTreeWidget->RequestRefresh();
+	}
+
+	// Forward call as this makes an effort to retain the selection if the selected component has not been deleted.
+	if (DebugObjectWidget.IsValid())
+	{
+		DebugObjectWidget->OnLevelActorDeleted(InActor);
+	}
 }
 
 TSharedRef<SDockTab> FPCGEditor::SpawnTab_GraphEditor(const FSpawnTabArgs& Args)
@@ -2259,6 +2264,16 @@ TSharedRef<SDockTab> FPCGEditor::SpawnTab_Palette(const FSpawnTabArgs& Args)
 		.TabColorScale(GetTabColorScale())
 		[
 			PaletteWidget.ToSharedRef()
+		];
+}
+
+TSharedRef<SDockTab> FPCGEditor::SpawnTab_DebugObject(const FSpawnTabArgs& Args)
+{
+	return SNew(SDockTab)
+		.Label(LOCTEXT("PCGDebugObjectTitle", "Debug Object"))
+		.TabColorScale(GetTabColorScale())
+		[
+			DebugObjectTreeWidget.ToSharedRef()
 		];
 }
 

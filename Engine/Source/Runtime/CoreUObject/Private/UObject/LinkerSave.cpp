@@ -238,7 +238,7 @@ int32 FLinkerSave::MapSoftObjectPath(const FSoftObjectPath& SoftObjectPath) cons
 }
 
 
-FPackageIndex FLinkerSave::MapObject( const UObject* Object ) const
+FPackageIndex FLinkerSave::MapObject(TObjectPtr<const UObject> Object) const
 {
 	if (Object)
 	{
@@ -246,7 +246,7 @@ FPackageIndex FLinkerSave::MapObject( const UObject* Object ) const
 		if (Found)
 		{
 			if (IsCooking() && CurrentlySavingExport.IsExport() &&
-				Object->GetOutermost()->GetFName() != GLongCoreUObjectPackageName && // We assume nothing in coreuobject ever loads assets in a constructor
+				Object.GetPackage().GetFName() != GLongCoreUObjectPackageName && // We assume nothing in coreuobject ever loads assets in a constructor
 				*Found != CurrentlySavingExport) // would be weird, but I can't be a dependency on myself
 			{
 				const FObjectExport& SavingExport = Exp(CurrentlySavingExport);
@@ -259,6 +259,7 @@ FPackageIndex FLinkerSave::MapObject( const UObject* Object ) const
 						if (DepListForErrorChecking[DepIndex] == *Found)
 						{
 							bFoundDep = true;
+							break;
 						}
 					}
 				}
@@ -432,6 +433,20 @@ FArchive& FLinkerSave::operator<<(FLazyObjectPtr& LazyObjectPtr)
 	ID = LazyObjectPtr.GetUniqueID();
 	return *this << ID;
 }
+
+bool FLinkerSave::ShouldSkipProperty(const FProperty* InProperty) const
+{
+	if (TransientPropertyOverrides && !TransientPropertyOverrides->IsEmpty())
+	{
+		const TSet<FProperty*>* Props = TransientPropertyOverrides->Find(CurrentlySavingExportObject);
+		if (Props && Props->Contains(InProperty))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 void FLinkerSave::SetSerializeContext(FUObjectSerializeContext* InLoadContext)
 {
 	SaveContext = InLoadContext;
@@ -605,7 +620,7 @@ bool FLinkerSave::SerializeBulkData(FBulkData& BulkData, const FBulkDataSerializ
 	SerializedMeta.ElementCount = PayloadSize / Params.ElementSize;
 	SerializedMeta.SizeOnDisk = PayloadSize; 
 
-	EBulkDataFlags FlagsToClear = static_cast<EBulkDataFlags>(BULKDATA_PayloadAtEndOfFile | BULKDATA_PayloadInSeperateFile | BULKDATA_WorkspaceDomainPayload | BULKDATA_ForceSingleElementSerialization);
+	EBulkDataFlags FlagsToClear = static_cast<EBulkDataFlags>(BULKDATA_PayloadAtEndOfFile | BULKDATA_PayloadInSeperateFile | BULKDATA_WorkspaceDomainPayload | BULKDATA_ForceSingleElementSerialization | BULKDATA_NoOffsetFixUp);
 	if (IsCooking())
 	{
 		FBulkData::SetBulkDataFlagsOn(FlagsToClear, static_cast<EBulkDataFlags>(BULKDATA_SerializeCompressed));

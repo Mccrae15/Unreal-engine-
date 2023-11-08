@@ -201,6 +201,9 @@ namespace Chaos
 			if (!RigidHandle->Disabled())
 			{
 				RigidSolver->GetEvolution()->GetIslandManager().AddParticle(RigidHandle);
+
+				// This is mainly just to refresh the views. Note that we do not want to enable disabled particles.
+				RigidSolver->GetEvolution()->GetParticles().EnableParticle(RigidHandle);
 			}
 		}
 	}
@@ -259,9 +262,6 @@ namespace Chaos
 	{
 		if (UpdatedParticleIndices.Num() > 0)
 		{
-			// chaos(todo) : do we really need this ? 
-			RigidSolver->GetParticles().UpdateGeometryCollectionViews(true);
-
 			TSet<FPBDRigidClusteredParticleHandle*> TopParentClusters;
 			for (const FFieldContextIndex& ParticleIndex: UpdatedParticleIndices)
 			{
@@ -503,7 +503,7 @@ namespace Chaos
 					{
 						if (Chaos::FPBDRigidClusteredParticleHandle* ClusteredParticle = ParticleHandles[Index.Sample]->CastToClustered())
 						{
-							const FReal CurrentExternalStrains = ClusteredParticle->GetExternalStrain();
+							const FRealSingle CurrentExternalStrains = ClusteredParticle->GetExternalStrain();
 							RigidClustering.SetExternalStrain(ClusteredParticle, FMath::Max(CurrentExternalStrains, ExternalStrainValue));
 						}
 					}

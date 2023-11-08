@@ -77,7 +77,7 @@ void FCurveEditorIntegrationExtension::UpdateCurveEditor()
 	{
 		bool bIsRelevant = false;
 		const FCurveEditorTreeItemID ItemID(It.Value());
-		TViewModelPtr<ICurveEditorTreeItemExtension> ViewModel(It.Key().Pin());
+		TViewModelPtr<ICurveEditorTreeItemExtension> ViewModel = CastViewModel<ICurveEditorTreeItemExtension>(It.Key().Pin());
 		if (ViewModel)
 		{
 			TViewModelPtr<IOutlinerExtension> OutlinerModel = ViewModel.ImplicitCast();
@@ -116,6 +116,7 @@ void FCurveEditorIntegrationExtension::UpdateCurveEditor()
 
 	// Iterate all non-filtered out outliners and check for curve editor tree extensions
 	const bool bIncludeRootNode = false;
+	bool bItemsAdded = false;
 	for (TParentFirstChildIterator<IOutlinerExtension> It(OwnerModel, bIncludeRootNode); It; ++It)
 	{
 		if (It->IsFilteredOut())
@@ -129,9 +130,16 @@ void FCurveEditorIntegrationExtension::UpdateCurveEditor()
 			const FCurveEditorTreeItemID ItemID = ViewModelToTreeItemIDMap.FindRef(ChildViewModel.AsModel());
 			if (!ItemID.IsValid())
 			{
-				AddToCurveEditor(ChildViewModel.AsModel(), CurveEditor);
+				bItemsAdded = true;
+				AddToCurveEditor(ChildViewModel, CurveEditor);
 			}
 		}
+	}
+
+	// If new items have been added, synchronize selection after the view models have been added to the curve editor. Synchronization depends on curve model tree item IDs
+	if (bItemsAdded)
+	{
+		CurveEditorExtension->RequestSyncSelection();
 	}
 }
 
@@ -156,9 +164,9 @@ FCurveEditorTreeItemID FCurveEditorIntegrationExtension::AddToCurveEditor(TViewM
 	}
 
 	// Recursively create any needed parent curve editor items
-	TSharedPtr<FViewModel> Parent = InViewModel.AsModel()->GetParent();
+	TViewModelPtr<ICurveEditorTreeItemExtension> Parent = InViewModel.AsModel()->CastParent<ICurveEditorTreeItemExtension>();
 
-	FCurveEditorTreeItemID ParentID = Parent.IsValid() ?
+	FCurveEditorTreeItemID ParentID = Parent ?
 		AddToCurveEditor(Parent, InCurveEditor) :
 		FCurveEditorTreeItemID::Invalid();
 
@@ -188,10 +196,10 @@ void FCurveEditorIntegrationExtension::ResetCurveEditor()
 		return;
 	}
 
-	for (auto Pair : ViewModelToTreeItemIDMap)
+	for (TPair<TWeakPtr<FViewModel>, FCurveEditorTreeItemID> Pair : ViewModelToTreeItemIDMap)
 	{
 		FCurveEditorTreeItemID ItemID(Pair.Value);
-		TViewModelPtr<ICurveEditorTreeItemExtension> ViewModel(Pair.Key.Pin());
+		TViewModelPtr<ICurveEditorTreeItemExtension> ViewModel = CastViewModel<ICurveEditorTreeItemExtension>(Pair.Key.Pin());
 		if (ViewModel)
 		{
 			ViewModel->OnRemovedFromCurveEditor(CurveEditor);

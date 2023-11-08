@@ -2,12 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
-#include "RHIDefinitions.h"
-#endif
 #include "NiagaraCore.h"
-
 #include "NiagaraScriptBase.generated.h"
 
 enum EShaderPlatform : uint16;
@@ -61,11 +56,11 @@ enum class ENiagaraSimStageExecuteBehavior : uint8
 };
 
 USTRUCT()
-struct NIAGARASHADER_API FSimulationStageMetaData
+struct FSimulationStageMetaData
 {
 	GENERATED_USTRUCT_BODY()
 public:
-	FSimulationStageMetaData();
+	NIAGARASHADER_API FSimulationStageMetaData();
 
 	/** User simulation stage name. */
 	UPROPERTY()
@@ -73,6 +68,10 @@ public:
 
 	UPROPERTY()
 	FName EnabledBinding;
+
+	/** Optional binding to manually specify the element count. */
+	UPROPERTY()
+	FIntVector ElementCount = FIntVector::ZeroValue;
 
 	/** Optional binding to manually specify the element count. */
 	UPROPERTY()
@@ -171,3 +170,11 @@ class UNiagaraScriptBase : public UObject
 	virtual bool ShouldCompile(EShaderPlatform Platform) const PURE_VIRTUAL(UNiagaraScriptBase::ShouldCompile, return true; );
 	virtual TConstArrayView<FSimulationStageMetaData> GetSimulationStageMetaData() const PURE_VIRTUAL(UNiagaraScriptBase::GetSimulationStageMetaData(), return MakeArrayView<FSimulationStageMetaData>(nullptr, 0); )
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "RHIDefinitions.h"
+#endif
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_3
+#include "CoreMinimal.h"
+#endif

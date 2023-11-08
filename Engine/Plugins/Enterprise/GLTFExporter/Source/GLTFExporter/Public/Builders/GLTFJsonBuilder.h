@@ -2,8 +2,8 @@
 
 #pragma once
 
-#include "Json/GLTFJsonRoot.h"
 #include "Builders/GLTFFileBuilder.h"
+#include "Json/GLTFJsonRoot.h"
 
 class GLTFEXPORTER_API FGLTFJsonBuilder : public FGLTFFileBuilder
 {
@@ -35,11 +35,12 @@ public:
 
 protected:
 
-	void WriteJsonArchive(FArchive& Archive);
+	bool WriteJsonArchive(FArchive& Archive);
 
 private:
 
-	static const TCHAR* GetGeneratorString();
+	static FString GetGeneratorString();
+	static FString GetCopyrightString();
 
 	FGLTFJsonRoot JsonRoot;
 };

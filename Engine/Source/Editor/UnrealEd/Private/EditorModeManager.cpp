@@ -51,6 +51,7 @@
 
 #include "Elements/Interfaces/TypedElementWorldInterface.h"
 #include "TextureResource.h"
+#include "Toolkits/ToolkitManager.h"
 
 /*------------------------------------------------------------------------------
 	FEditorModeTools.
@@ -526,6 +527,11 @@ bool FEditorModeTools::IsOnlyVisibleActiveMode(FEditorModeID InMode) const
 	return !bFoundAnotherVisibleMode;
 }
 
+bool FEditorModeTools::IsOnlyActiveMode(FEditorModeID InMode) const
+{
+	return ActiveScriptableModes.Num() == 1 && ActiveScriptableModes[0]->GetID() == InMode;
+}
+
 void FEditorModeTools::OnEditorSelectionChanged(UObject* NewSelection)
 {
 	if (NewSelection == GetSelectedActors())
@@ -607,7 +613,7 @@ void FEditorModeTools::DrawBrackets(FEditorViewportClient* ViewportClient, FView
 void FEditorModeTools::ForEachEdMode(TFunctionRef<bool(UEdMode*)> InCalllback) const
 {
 	// Copy Array in case callback deactivates a mode
-	TArray<UEdMode*> ActiveModes(ActiveScriptableModes);
+	auto ActiveModes = ActiveScriptableModes;
 	for (UEdMode* Mode : ActiveModes)
 	{
 		if (Mode)
@@ -641,7 +647,7 @@ void FEditorModeTools::ExitAllModesPendingDeactivate()
 	bIsExitingModesDuringTick = true;
 
 	// Make a copy so we can modify the pending deactivate modes map during ExitMode
-	TMap<FEditorModeID, UEdMode*> PendingDeactivateModesCopy(PendingDeactivateModes);
+	TMap<FEditorModeID, UEdMode*> PendingDeactivateModesCopy(ObjectPtrDecay(PendingDeactivateModes));
 	for (auto& Pair : PendingDeactivateModesCopy)
 	{
 		ExitMode(Pair.Value);
@@ -756,6 +762,22 @@ void FEditorModeTools::RemoveAllDelegateHandlers()
 	OnCoordSystemChanged().Clear();
 }
 
+void FEditorModeTools::DeactivateModeAtIndex(int32 Index)
+{
+	UEdMode* Mode = ActiveScriptableModes[Index];
+	const FEditorModeID ModeID = Mode->GetID();
+	PendingDeactivateModes.Emplace(ModeID, Mode);
+	ActiveScriptableModes.RemoveAt(Index);
+		
+	if (const TSharedPtr<FModeToolkit> Toolkit = Mode->GetToolkit().Pin())
+	{
+		FToolkitManager::Get().CloseToolkit(Toolkit.ToSharedRef());
+	}
+
+	constexpr bool bIsEnteringMode = false;
+	BroadcastEditorModeIDChanged(ModeID, bIsEnteringMode);
+}
+
 void FEditorModeTools::DeactivateMode( FEditorModeID InID )
 {
 	// Find the mode from the ID and exit it.
@@ -764,11 +786,7 @@ void FEditorModeTools::DeactivateMode( FEditorModeID InID )
 		UEdMode* Mode = ActiveScriptableModes[Index];
 		if (Mode->GetID() == InID)
 		{
-			PendingDeactivateModes.Emplace(InID, Mode);
-			ActiveScriptableModes.RemoveAt(Index);
-
-			constexpr bool bIsEnteringMode = false;
-			BroadcastEditorModeIDChanged(InID, bIsEnteringMode);
+			DeactivateModeAtIndex(Index);
 			break;
 		}
 	};
@@ -778,12 +796,7 @@ void FEditorModeTools::DeactivateAllModes()
 {
 	for (int32 Index = ActiveScriptableModes.Num() - 1; Index >= 0; --Index)
 	{
-		FEditorModeID ModeID = ActiveScriptableModes[Index]->GetID();
-		PendingDeactivateModes.Emplace(ModeID, ActiveScriptableModes[Index]);
-		ActiveScriptableModes.RemoveAt(Index);
-		
-		constexpr bool bIsEnteringMode = false;
-		BroadcastEditorModeIDChanged(ModeID, bIsEnteringMode);
+		DeactivateModeAtIndex(Index);
 	};
 }
 
@@ -947,9 +960,9 @@ bool FEditorModeTools::EnsureNotInMode(FEditorModeID ModeID, const FText& ErrorM
 
 UEdMode* FEditorModeTools::GetActiveScriptableMode(FEditorModeID InID) const
 {
-	if (UEdMode* const* FoundMode = ActiveScriptableModes.FindByPredicate([InID](UEdMode* Mode) { return (Mode->GetID() == InID); }))
+	if (auto* FoundMode = ActiveScriptableModes.FindByPredicate([InID](UEdMode* Mode) { return (Mode->GetID() == InID); }))
 	{
-		return const_cast<UEdMode*>(*FoundMode);
+		return *FoundMode;
 	}
 
 	return nullptr;

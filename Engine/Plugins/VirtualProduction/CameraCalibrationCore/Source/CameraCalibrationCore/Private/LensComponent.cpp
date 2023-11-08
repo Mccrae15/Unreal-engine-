@@ -47,7 +47,10 @@ void ULensComponent::OnRegister()
 
 	// Look for any LiveLinkComponents that were previously added to this component's parent actor
 	TInlineComponentArray<ULiveLinkComponentController*> LiveLinkComponents;
-	GetOwner()->GetComponents(LiveLinkComponents);
+	if (AActor* Owner = GetOwner())
+	{
+		Owner->GetComponents(LiveLinkComponents);
+	}
 
 	for (ULiveLinkComponentController* LiveLinkComponent : LiveLinkComponents)
 	{	
@@ -68,7 +71,10 @@ void ULensComponent::OnUnregister()
 	LiveLinkComponentsModule.OnLiveLinkComponentRegistered().RemoveAll(this);
 
 	TInlineComponentArray<ULiveLinkComponentController*> LiveLinkComponents;
-	GetOwner()->GetComponents(LiveLinkComponents);
+	if (AActor* Owner = GetOwner())
+	{
+		Owner->GetComponents(LiveLinkComponents);
+	}
 
 	for (ULiveLinkComponentController* LiveLinkComponent : LiveLinkComponents)
 	{
@@ -186,7 +192,7 @@ void ULensComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorC
 
 				// Get the overscan factor and use it to modify the target camera's FOV
 				const float OverscanFactor = LensDistortionHandler->GetOverscanFactor();
-				const float OverscanSensorWidth = CineCameraComponent->Filmback.SensorWidth * OverscanFactor;
+				const float OverscanSensorWidth = GetDesqueezedSensorWidth(CineCameraComponent) * OverscanFactor;
 				const float OverscanFOV = FMath::RadiansToDegrees(2.0f * FMath::Atan(OverscanSensorWidth / (2.0f * OriginalFocalLength)));
 				CineCameraComponent->SetFieldOfView(OverscanFOV);
 
@@ -330,16 +336,14 @@ void ULensComponent::PostEditChangeProperty(struct FPropertyChangedEvent& Proper
 }
 #endif //WITH_EDITOR
 
-void ULensComponent::OnPostActorTick(UWorld* World, ELevelTick TickType, float DeltaSeconds)
-{
-	// The use of this callback by this class has been deprecated
-}
-
 void ULensComponent::ReapplyNodalOffset()
 {
 	// Find the TrackedComponent based on the serialized name
 	TInlineComponentArray<USceneComponent*> SceneComponents;
-	GetOwner()->GetComponents(SceneComponents);
+	if (AActor* Owner = GetOwner())
+	{
+		Owner->GetComponents(SceneComponents);
+	}
 
 	for (USceneComponent* SceneComponent : SceneComponents)
 	{
@@ -456,7 +460,7 @@ void ULensComponent::EvaluateFocalLength(UCineCameraComponent* CineCameraCompone
 			// => FilmbackY = FocalLength / Fy
 
 			// Adjust FocalLength and Filmback to match FxFy (which has already been divided by resolution in pixels)
-			const float NewFocalLength = FocalLengthInfo.FxFy.X * EvalInputs.Filmback.SensorWidth;
+			const float NewFocalLength = FocalLengthInfo.FxFy.X * EvalInputs.Filmback.SensorWidth * LensFile->LensInfo.SqueezeFactor;
 
 			// TODO: Consider adding an advanced setting to control whether or not sensor height should be modified (if Fx/Fy don't have a fixed aspect ratio)
 
@@ -692,13 +696,27 @@ void ULensComponent::InitDefaultCamera()
 	{
 		// Find all CineCameraComponents on the same actor as this component and set the first one to be the target
 		TInlineComponentArray<UCineCameraComponent*> CineCameraComponents;
-		GetOwner()->GetComponents(CineCameraComponents);
+		if (AActor* Owner = GetOwner())
+		{
+			Owner->GetComponents(CineCameraComponents);
+		}
+
 		if (CineCameraComponents.Num() > 0)
 		{
 			TargetCameraComponent.ComponentProperty = CineCameraComponents[0]->GetFName();
 			LastCameraComponent = CineCameraComponents[0];
 		}
 	}
+}
+
+float ULensComponent::GetDesqueezedSensorWidth(UCineCameraComponent* const CineCameraComponent) const
+{
+	if (CineCameraComponent)
+	{
+		return CineCameraComponent->Filmback.SensorWidth * CineCameraComponent->LensSettings.SqueezeFactor;
+	}
+
+	return 1.0f;
 }
 
 void ULensComponent::CleanupDistortion(UCineCameraComponent* const CineCameraComponent)
@@ -713,7 +731,7 @@ void ULensComponent::CleanupDistortion(UCineCameraComponent* const CineCameraCom
 		}
 
 		// Restore the original FOV of the target camera
-		const float UndistortedFOV = FMath::RadiansToDegrees(2.0f * FMath::Atan(CineCameraComponent->Filmback.SensorWidth / (2.0f * OriginalFocalLength)));
+		const float UndistortedFOV = FMath::RadiansToDegrees(2.0f * FMath::Atan(GetDesqueezedSensorWidth(CineCameraComponent) / (2.0f * OriginalFocalLength)));
 		CineCameraComponent->SetFieldOfView(UndistortedFOV);
 
 		// Update the minimum and maximum focal length of the camera (if needed)
@@ -880,12 +898,18 @@ void ULensComponent::UpdateCameraFilmback(UCineCameraComponent* CineCameraCompon
 			{
 				CineCameraComponent->Filmback.SensorWidth = LensFile->LensInfo.SensorDimensions.X;
 				CineCameraComponent->Filmback.SensorHeight = LensFile->LensInfo.SensorDimensions.Y;
+				CineCameraComponent->LensSettings.SqueezeFactor = LensFile->LensInfo.SqueezeFactor;
 			}
 			break;
 		}
 		case EFilmbackOverrideSource::CroppedFilmbackSetting:
 		{
 			CineCameraComponent->Filmback = CroppedFilmback;
+
+			if (ULensFile* LensFile = LensFilePicker.GetLensFile())
+			{
+				CineCameraComponent->LensSettings.SqueezeFactor = LensFile->LensInfo.SqueezeFactor;
+			}
 			break;
 		}
 		case EFilmbackOverrideSource::DoNotOverride:

@@ -116,7 +116,11 @@ const void* FOculusXROpenXRHMD::OnEndProjectionLayer(XrSession InSession, int32 
 	return InNext;
 }
 
+#if UE_VERSION_OLDER_THAN(5, 3, 0)
 const void* FOculusXROpenXRHMD::OnEndFrame(XrSession InSession, XrTime DisplayTime, const TArray<XrSwapchainSubImage> InColorImages, const TArray<XrSwapchainSubImage> InDepthImages, const void* InNext)
+#else
+const void* FOculusXROpenXRHMD::OnEndFrame(XrSession InSession, XrTime DisplayTime, const void* InNext)
+#endif
 {
 	//UE_LOG(LogOculusOpenXRPlugin, Log, TEXT("Oculus OpenXR OnEndFrame"));
 	return InNext;

@@ -11,12 +11,17 @@ using EpicGames.Core;
 using OpenTracing.Util;
 using UnrealBuildBase;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
+
+using static AutomationTool.CommandUtils;
 
 namespace AutomationTool
 {
 
     public static class Automation
 	{
+		static ILogger Logger => Log.Logger;
+
 		/// <summary>
 		/// Keep a persistent reference to the delegate for handling Ctrl-C events. Since it's passed to non-managed code, we have to prevent it from being garbage collected.
 		/// </summary>
@@ -69,7 +74,7 @@ namespace AutomationTool
 					}
 				}
 
-				Log.TraceVerbose("IsBuildMachine={0}", IsBuildMachine);
+				Logger.LogDebug("IsBuildMachine={IsBuildMachine}", IsBuildMachine);
 				Environment.SetEnvironmentVariable("IsBuildMachine", IsBuildMachine ? "1" : "0");
 
 				// Register all the log event matchers
@@ -85,7 +90,7 @@ namespace AutomationTool
 
 				// should we kill processes on exit
 				ShouldKillProcesses = !GlobalCommandLine.NoKill;
-				Log.TraceVerbose("ShouldKillProcesses={0}", ShouldKillProcesses);
+				Logger.LogDebug("ShouldKillProcesses={ShouldKillProcesses}", ShouldKillProcesses);
 
 				if (AutomationToolCommandLine.CommandsToExecute.Count == 0 && GlobalCommandLine.Help)
 				{
@@ -100,20 +105,20 @@ namespace AutomationTool
 				}
 
 				// Setup environment
-				Log.TraceLog("Setting up command environment.");
+				Logger.LogDebug("Setting up command environment.");
 				CommandUtils.InitCommandEnvironment();
 
 				// Create the log file, and flush the startup listener to it
 				LogUtils.AddLogFileListener(new DirectoryReference(CommandUtils.CmdEnv.LogFolder), new DirectoryReference(CommandUtils.CmdEnv.FinalLogFolder));
 				if (LogUtils.FinalLogFileName != LogUtils.LogFileName)
 				{
-					Log.TraceInformation($"Final log location: {LogUtils.FinalLogFileName}");	
+					Logger.LogInformation("Final log location: {Location}", LogUtils.FinalLogFileName);
 				}
 				
 				// Initialize UBT
-				if (!UnrealBuildTool.PlatformExports.Initialize(Log.Logger))
+				if (!UnrealBuildTool.PlatformExports.Initialize(Environment.GetCommandLineArgs(), Log.Logger))
 				{
-					Log.TraceInformation("Failed to initialize UBT");
+					Logger.LogInformation("Failed to initialize UBT");
 					return ExitCode.Error_Unknown;
 				}
 				
@@ -126,7 +131,7 @@ namespace AutomationTool
 				// Compile scripts.
 				using (GlobalTracer.Instance.BuildSpan("ScriptLoad").StartActive())
 				{
-					ScriptManager.LoadScriptAssemblies(ScriptModuleAssemblies);
+					ScriptManager.LoadScriptAssemblies(ScriptModuleAssemblies, Logger);
 				}
 
 				if (GlobalCommandLine.List)
@@ -145,9 +150,12 @@ namespace AutomationTool
 				CommandUtils.InitP4Support(AutomationToolCommandLine.CommandsToExecute, ScriptManager.Commands);
 				if (CommandUtils.P4Enabled)
 				{
-					Log.TraceLog("Setting up Perforce environment.");
-					CommandUtils.InitP4Environment();
-					CommandUtils.InitDefaultP4Connection();
+					Logger.LogDebug("Setting up Perforce environment.");
+					using (GlobalTracer.Instance.BuildSpan("InitP4").StartActive())
+					{
+						CommandUtils.InitP4Environment();
+						CommandUtils.InitDefaultP4Connection();
+					}
 				}
 
 				try
@@ -178,12 +186,12 @@ namespace AutomationTool
 				// Output the message in the desired format
 				if (Ex.OutputFormat == AutomationExceptionOutputFormat.Silent)
 				{
-					Log.TraceLog("{0}", ExceptionUtils.FormatExceptionDetails(Ex));
+					Logger.LogDebug("{Arg0}", ExceptionUtils.FormatExceptionDetails(Ex));
 				}
 				else if (Ex.OutputFormat == AutomationExceptionOutputFormat.Minimal)
 				{
-					Log.TraceInformation("{0}", Ex.ToString().Replace("\n", "\n  "));
-					Log.TraceLog("{0}", ExceptionUtils.FormatExceptionDetails(Ex));
+					Logger.LogInformation(Ex, "{Message}", Ex.ToString().Replace("\n", "\n  "));
+					Logger.LogDebug(Ex, "{Details}", ExceptionUtils.FormatExceptionDetails(Ex));
 				}
 				else
 				{
@@ -228,7 +236,7 @@ namespace AutomationTool
             }
             catch (Exception Ex)
             {
-                Log.TraceError("Exception performing nothrow action \"{0}\": {1}", ActionDesc, ExceptionUtils.FormatException(Ex));
+                Logger.LogError(Ex, "Exception performing nothrow action \"{ActionDesc}\": {Exception}", ActionDesc, ExceptionUtils.FormatException(Ex));
             }
         }
 
@@ -239,11 +247,11 @@ namespace AutomationTool
 		/// <param name="Commands"></param>
 		public static async Task<ExitCode> ExecuteAsync(List<CommandInfo> CommandsToExecute, Dictionary<string, Type> Commands)
 		{
-			CommandUtils.LogInformation("Executing commands...");
+			Logger.LogInformation("Executing commands...");
 			for (int CommandIndex = 0; CommandIndex < CommandsToExecute.Count; ++CommandIndex)
 			{
 				var CommandInfo = CommandsToExecute[CommandIndex];
-				Log.TraceVerbose("Attempting to execute {0}", CommandInfo.ToString());
+				Logger.LogDebug("Attempting to execute {CommandInfo}", CommandInfo.ToString());
 				Type CommandType;
 				if (!Commands.TryGetValue(CommandInfo.CommandName, out CommandType))
 				{
@@ -259,7 +267,7 @@ namespace AutomationTool
 					{
 						return Result;
 					}
-					CommandUtils.LogInformation("BUILD SUCCESSFUL");
+					Logger.LogInformation("BUILD SUCCESSFUL");
 				}
 				finally
 				{
@@ -290,7 +298,7 @@ namespace AutomationTool
 				Type CommandType;
 				if (Commands.TryGetValue(CommandInfo.CommandName, out CommandType) == false)
 				{
-					Log.TraceError("Help: Failed to find command {0}", CommandInfo.CommandName);
+					Logger.LogError("Help: Failed to find command {CommandName}", CommandInfo.CommandName);
 				}
 				else
 				{
@@ -333,7 +341,7 @@ AutomationTool.exe [-verbose] [-compileonly] [-p4] Command0 [-Arg0 -Arg1 -Arg2 .
 				Message += String.Format($"    {AvailableCommand.Key}\n");
 			}
 			
-			CommandUtils.LogInformation(Message);
+			Logger.LogInformation("{Text}", Message);
 		}
 
 		/// <summary>

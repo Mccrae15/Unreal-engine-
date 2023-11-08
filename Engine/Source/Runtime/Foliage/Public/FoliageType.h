@@ -331,6 +331,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=InstanceSettings, meta=(InlineEditConditionToggle))
 	uint32 bOverrideLightMapRes:1;
 
+	/** Control shadow invalidation behavior, in particular with respect to Virtual Shadow Maps and material effects like World Position Offset. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=InstanceSettings, meta=(EditCondition="CastShadow"))
+	EShadowCacheInvalidationBehavior ShadowCacheInvalidationBehavior;
+
 	/** Overrides the lightmap resolution defined in the static mesh */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=InstanceSettings, meta=(DisplayName="Light Map Resolution", EditCondition="bOverrideLightMapRes"))
 	int32 OverriddenLightMapRes;
@@ -403,11 +407,11 @@ public:
 	uint32 IsSelected:1;
 #endif
 public:
-	FOLIAGE_API float GetRadius(bool bInSingleInstanceMode) const { return bInSingleInstanceMode && bSingleInstanceModeOverrideRadius ? SingleInstanceModeRadius : Radius; }
+	float GetRadius(bool bInSingleInstanceMode) const { return bInSingleInstanceMode && bSingleInstanceModeOverrideRadius ? SingleInstanceModeRadius : Radius; }
 
 	// PROCEDURAL
 
-	FOLIAGE_API float GetSeedDensitySquared() const { return InitialSeedDensity * InitialSeedDensity; }
+	float GetSeedDensitySquared() const { return InitialSeedDensity * InitialSeedDensity; }
 	FOLIAGE_API float GetMaxRadius() const;
 	FOLIAGE_API float GetScaleForAge(const float Age) const;
 	FOLIAGE_API float GetInitAge(FRandomStream& RandomStream) const;

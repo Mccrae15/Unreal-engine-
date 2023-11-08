@@ -10,11 +10,20 @@
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "Animation/AnimSequenceBase.h"
+#include "HAL/IConsoleManager.h"
 #include "AnimCompositeBase.generated.h"
 
 class UAnimCompositeBase;
 class UAnimSequence;
 struct FCompactPose;
+
+#if WITH_EDITOR
+namespace UE { namespace Anim
+{
+	extern TAutoConsoleVariable<bool> CVarOutputMontageFrameRateWarning;
+}}
+
+#endif // WITH_EDITOR
 
 /** Struct defining a RootMotionExtractionStep.
  * When extracting RootMotion we can encounter looping animations (wrap around), or different animations.
@@ -267,7 +276,7 @@ struct FAnimTrack
 	void ValidateSegmentTimes();
 
 	/** return true if valid to add */
-	ENGINE_API bool IsValidToAdd(const UAnimSequenceBase* SequenceBase) const;
+	ENGINE_API bool IsValidToAdd(const UAnimSequenceBase* SequenceBase, FText* OutReason = nullptr) const;
 
 	/** Gets the index of the segment at the given absolute montage time. */	
 	ENGINE_API int32 GetSegmentIndexAtTime(float InTime) const;
@@ -338,6 +347,8 @@ struct FAnimTrack
 
 	/** return true if anim notify is available */
 	bool IsNotifyAvailable() const;
+
+	ENGINE_API int32 GetTotalBytesUsed() const;
 };
 
 UCLASS(abstract, MinimalAPI)
@@ -369,6 +380,13 @@ class UAnimCompositeBase : public UAnimSequenceBase
 
 #if WITH_EDITOR
 	virtual void PopulateWithExistingModel(TScriptInterface<IAnimationDataModel> ExistingDataModel) override;
+
+	virtual void UpdateCommonTargetFrameRate() PURE_VIRTUAL(UAnimCompositeBase::UpdateCommonTargetFrameRate, );	
 #endif // WITH_EDITOR
+	FFrameRate GetCommonTargetFrameRate() const { return CommonTargetFrameRate; }
+protected:
+	/** Frame-rate used to represent this Animation Montage (best fitting for placed Animation Sequences)*/
+	UPROPERTY(VisibleAnywhere, Category = AnimationComposite)
+	FFrameRate CommonTargetFrameRate;
 };
 

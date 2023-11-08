@@ -74,18 +74,6 @@ namespace UE::PoseSearch
 				EFeaturesDrawMode::Detailed));
 
 		CommandList->MapAction(
-			Commands.ShowAnimationNone,
-			FExecuteAction::CreateSP(
-				ViewModelRef,
-				&FDatabaseViewModel::OnSetAnimationPreviewMode,
-				EAnimationPreviewMode::None),
-			FCanExecuteAction(),
-			FIsActionChecked::CreateSP(
-				ViewModelRef,
-				&FDatabaseViewModel::IsAnimationPreviewMode,
-				EAnimationPreviewMode::None));
-
-		CommandList->MapAction(
 			Commands.ShowAnimationOriginalOnly,
 			FExecuteAction::CreateSP(
 				ViewModelRef,
@@ -114,6 +102,19 @@ namespace UE::PoseSearch
 			FExecuteAction::CreateSP(ViewModelRef, &FDatabaseViewModel::OnToggleDisplayRootMotionSpeed),
 			FCanExecuteAction(),
 			FIsActionChecked::CreateSP(ViewModelRef, &FDatabaseViewModel::IsDisplayRootMotionSpeedChecked));
+
+		CommandList->MapAction(
+			Commands.ShowQuantizeAnimationToPoseData,
+			FExecuteAction::CreateSP(ViewModelRef, &FDatabaseViewModel::OnToggleQuantizeAnimationToPoseData),
+			FCanExecuteAction(),
+			FIsActionChecked::CreateSP(ViewModelRef, &FDatabaseViewModel::IsQuantizeAnimationToPoseDataChecked));
+
+		CommandList->MapAction(
+			Commands.ShowBones,
+			FExecuteAction::CreateSP(ViewModelRef, &FDatabaseViewModel::OnToggleShowBones),
+			FCanExecuteAction(),
+			FIsActionChecked::CreateSP(ViewModelRef, &FDatabaseViewModel::IsShowBones));
+		
 	}
 
 	TSharedRef<FEditorViewportClient> SDatabaseViewport::MakeEditorViewportClient()
@@ -153,7 +154,8 @@ namespace UE::PoseSearch
 
 	void SDatabasePreview::Construct(const FArguments& InArgs, const FDatabasePreviewRequiredArgs& InRequiredArgs)
 	{
-		SliderScrubTimeAttribute = InArgs._SliderScrubTime;
+		SliderColor = InArgs._SliderColor;
+		SliderScrubTime = InArgs._SliderScrubTime;
 		SliderViewRange = InArgs._SliderViewRange;
 		OnSliderScrubPositionChanged = InArgs._OnSliderScrubPositionChanged;
 
@@ -220,18 +222,29 @@ namespace UE::PoseSearch
 				[
 					SNew(SSimpleTimeSlider)
 					.ClampRangeHighlightSize(0.15f)
-					.ClampRangeHighlightColor(FLinearColor::Red.CopyWithNewOpacity(0.5f))
-					.ScrubPosition_Lambda([this]() { return SliderScrubTimeAttribute.Get(); })
-					.ViewRange_Lambda([this]() { return SliderViewRange.Get(); })
-					.ClampRange_Lambda([this]() { return SliderViewRange.Get(); })
-					.OnScrubPositionChanged_Lambda(
-						[this](double NewScrubTime, bool bIsScrubbing)
-					{
-						if (bIsScrubbing)
+					.ClampRangeHighlightColor_Lambda([this]()
 						{
-							OnSliderScrubPositionChanged.ExecuteIfBound(NewScrubTime, bIsScrubbing);
-						}
-					})
+							return SliderColor.Get();
+						})
+					.ScrubPosition_Lambda([this]()
+						{
+							return SliderScrubTime.Get();
+						})
+					.ViewRange_Lambda([this]()
+						{
+							return SliderViewRange.Get();
+						})
+					.ClampRange_Lambda([this]()
+						{
+							return SliderViewRange.Get();
+						})
+					.OnScrubPositionChanged_Lambda([this](double NewScrubTime, bool bIsScrubbing)
+						{
+							if (bIsScrubbing)
+							{
+								OnSliderScrubPositionChanged.ExecuteIfBound(NewScrubTime, bIsScrubbing);
+							}
+						})
 				]
 			]
 		];

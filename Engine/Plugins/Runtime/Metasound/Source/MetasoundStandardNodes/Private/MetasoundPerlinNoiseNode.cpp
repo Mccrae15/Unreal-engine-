@@ -35,6 +35,12 @@ namespace Metasound
 		METASOUND_PARAM(OutputNormalizedPin, "Normalized", "Normalized output from Perlin function (-1...1)")
 	}
 
+	// For sanitizing inputs against so we can still sum them in range.
+	static float SanitizeFloatInput(const float In, const float InMaxMultiple)
+	{
+		return FMath::Clamp(In, FLT_MIN / InMaxMultiple, FLT_MAX / InMaxMultiple);
+	}
+
 	template<typename TDataClass, typename TThisType>
 	class TBasePerlinNoiseOperator : public TExecutableOperator<TThisType>
 	{
@@ -52,7 +58,7 @@ namespace Metasound
 			{
 				FInputVertexInterface
 				{
-					TInputDataVertex<TDataClass>(METASOUND_GET_PARAM_NAME_AND_METADATA(XPin), 0),
+					TInputDataVertex<TDataClass>(METASOUND_GET_PARAM_NAME_AND_METADATA(XPin)),
 					TInputDataVertex<int32>(METASOUND_GET_PARAM_NAME_AND_METADATA(OctavesPin), 1),
 					TInputConstructorVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(OffsetPin), -1.0f),
 					TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(MinValuePin), -1.0f),
@@ -104,15 +110,6 @@ namespace Metasound
 			const FInputVertexInterfaceData& InputData = InParams.InputData;
 
 			using namespace PerlinNoiseVertexNames;
-
-			// Constructor pin.
-			// If Offset is -1, use system rand as a "seed"
-			float Offset = InputData.GetOrCreateDefaultValue<float>(METASOUND_GET_PARAM_NAME(OffsetPin), InParams.OperatorSettings); 
-			if (FMath::IsNearlyEqual(Offset, -1.f))
-			{
-				Offset = FMath::FRand();
-			}
-
 			FPinReadRefs Pins
 			{
 				  InputData.GetOrCreateDefaultDataReadReference<TDataClass>(METASOUND_GET_PARAM_NAME(XPin), Settings)
@@ -120,37 +117,75 @@ namespace Metasound
 				, InputData.GetOrCreateDefaultDataReadReference<float>(METASOUND_GET_PARAM_NAME(MinValuePin), Settings)
 				, InputData.GetOrCreateDefaultDataReadReference<float>(METASOUND_GET_PARAM_NAME(MaxValuePin), Settings)
 				, InputData.IsVertexBound(METASOUND_GET_PARAM_NAME(XPin))
-				, Offset
+				, InputData.GetOrCreateDefaultValue<float>(METASOUND_GET_PARAM_NAME(OffsetPin), Settings)
 			};
 
-			return MakeUnique<TThisType>(Settings, MoveTemp(Pins));
+			return MakeUnique<TThisType>(InParams, MoveTemp(Pins));
 		}
 
-		TBasePerlinNoiseOperator(const FOperatorSettings& InSettings, FPinReadRefs&& InPins)
-			: SampleRate{ InSettings.GetSampleRate() }
-			, NumFramesPerBlock{ InSettings.GetNumFramesPerBlock() }
-			, Pins{ MoveTemp(InPins) }
-			, OutputScaled{ TThisType::CreateOutputWriteRef(InSettings) }
-			, OutputNormalized{ TThisType::CreateOutputWriteRef(InSettings) }
+		TBasePerlinNoiseOperator(const FBuildOperatorParams& InParams, FPinReadRefs&& InPins)
+			: Pins{ MoveTemp(InPins) }
+			, OutputScaled{ TThisType::CreateOutputWriteRef(InParams.OperatorSettings) }
+			, OutputNormalized{ TThisType::CreateOutputWriteRef(InParams.OperatorSettings) }
 		{
+			Reset(InParams);
+		}
+
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			// If Offset is -1, use system rand as a "seed"
+			if (FMath::IsNearlyEqual(Pins.Offset, -1.f))
+			{
+				Pins.Offset = FMath::FRand();
+			}
+
+			SampleRate = InParams.OperatorSettings.GetSampleRate();
+			NumFramesPerBlock = InParams.OperatorSettings.GetNumFramesPerBlock();
+
 			check(SampleRate > 0);
 			check(NumFramesPerBlock > 0);
-		}
 
-		FDataReferenceCollection GetInputs() const override { return {}; }
-		FDataReferenceCollection GetOutputs() const override { return {}; }
+			TThisType::ResetOutputWriteRef(OutputScaled);
+			TThisType::ResetOutputWriteRef(OutputNormalized);
+		}
 		
 		void Bind(FVertexInterfaceData& InVertexData) const override
 		{
-			using namespace PerlinNoiseVertexNames;
-			FInputVertexInterfaceData& Inputs = InVertexData.GetInputs();
-			Inputs.BindReadVertex(METASOUND_GET_PARAM_NAME(XPin), Pins.X);
-			Inputs.SetValue(METASOUND_GET_PARAM_NAME(OffsetPin), Pins.Offset);
-			Inputs.BindReadVertex(METASOUND_GET_PARAM_NAME(OctavesPin), Pins.Octaves);
-			
+
 			FOutputVertexInterfaceData& Outputs = InVertexData.GetOutputs();
-			Outputs.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputScaledPin), OutputScaled);
-			Outputs.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputNormalizedPin), OutputNormalized);
+		}
+
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
+		{
+			using namespace PerlinNoiseVertexNames;
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(XPin), Pins.X);
+			InOutVertexData.SetValue(METASOUND_GET_PARAM_NAME(OffsetPin), Pins.Offset);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OctavesPin), Pins.Octaves);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(MinValuePin), Pins.MinValue);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(MaxValuePin), Pins.MaxValue);
+		}
+
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+		{
+			using namespace PerlinNoiseVertexNames;
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputScaledPin), OutputScaled);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputNormalizedPin), OutputNormalized);
+		}
+
+		virtual FDataReferenceCollection GetInputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
+		}
+
+		virtual FDataReferenceCollection GetOutputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		void AccumulateTime()
@@ -179,6 +214,8 @@ namespace Metasound
 		using BaseClass::CreateOperator;
 
 		static FFloatWriteRef CreateOutputWriteRef(const FOperatorSettings& InSettings) { return FFloatWriteRef::CreateNew(0.f); }
+		static void ResetOutputWriteRef(FFloatWriteRef& WriteRef) { *WriteRef = 0; };
+
 		static FNodeClassMetadata CreateNodeInfo()
 		{
 			FNodeClassMetadata Info;
@@ -188,6 +225,11 @@ namespace Metasound
 			return Info;
 		}
 
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			BaseClass::Reset(InParams);
+		}
+
 		void Execute()
 		{
 			// Use input pin if its connected, otherwise use elapsed time in seconds.
@@ -195,10 +237,20 @@ namespace Metasound
 				*Pins.X :
 				GetElapsedTimeInSeconds();
 
+			// Sanitize input. 
 			int32 OctavesClamped = FMath::Clamp(*Pins.Octaves, 1, MaxOctaves);
-
+			
+			// Make sure we can sum safely the X+Offset without overflow. So limit to FLT_Max/2
+			float OffsetClamped = SanitizeFloatInput(Pins.Offset, 2.f);
+			float XClamped = SanitizeFloatInput(X, 2.f);
+			
+			// Value noise will scale up this value to 2^Octaves frequency, so clamp to that range.
+			float MaxFreq = (float)(1UL << OctavesClamped);
+			float Sum = OffsetClamped + XClamped;
+			float SumClamped = SanitizeFloatInput(Sum, MaxFreq);
+			
 			// Generate noise (this is multiple layers of Perlin noise at different frequencies).
-			const float ValueNoise = Audio::PerlinValueNoise1D(X + Pins.Offset, OctavesClamped);
+			const float ValueNoise = Audio::PerlinValueNoise1D(SumClamped, OctavesClamped);
 
 			// Output the scaled version.
 			const float ScaledValue = FMath::GetMappedRangeValueClamped(
@@ -210,7 +262,7 @@ namespace Metasound
 			*OutputNormalized = ValueNoise;
 
 			AccumulateTime();
-		}		
+		}
 	};
 
 	class FPerlinAudioRate : public TBasePerlinNoiseOperator<FAudioBuffer, FPerlinAudioRate>
@@ -220,6 +272,7 @@ namespace Metasound
 		using BaseClass::CreateOperator;
 
 		static FAudioBufferWriteRef CreateOutputWriteRef(const FOperatorSettings& InSettings) { return FAudioBufferWriteRef::CreateNew(InSettings); }
+		static void ResetOutputWriteRef(FAudioBufferWriteRef& WriteRef) { WriteRef->Zero(); };
 
 		static FNodeClassMetadata CreateNodeInfo()
 		{
@@ -230,9 +283,9 @@ namespace Metasound
 			return Info;
 		}
 
-		FPerlinAudioRate(const FOperatorSettings& InSettings, FPinReadRefs&& InPins)
-			: BaseClass{ InSettings, MoveTemp(InPins) }
-			, TimeBuffer{ InPins.bXConnected ? 0 : InSettings.GetNumFramesPerBlock() }	// Create a scratch buffer if X is not connected.
+		FPerlinAudioRate(const FBuildOperatorParams& InParams, FPinReadRefs&& InPins)
+			: BaseClass{ InParams, MoveTemp(InPins) }
+			, TimeBuffer{ InPins.bXConnected ? 0 : InParams.OperatorSettings.GetNumFramesPerBlock() }	// Create a scratch buffer if X is not connected.
 		{
 		}
 
@@ -260,6 +313,11 @@ namespace Metasound
 				// Output the scaled version.
 				*ScaledPtr++ = FMath::GetMappedRangeValueClamped(NormRange, MinMax, *NormalizedPtr++);
 			}
+		}
+
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			BaseClass::Reset(InParams);
 		}
 
 		void Execute()

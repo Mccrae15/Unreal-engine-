@@ -16,14 +16,28 @@ class FScene;
 class FSceneTextureParameters;
 class FSceneView;
 class FSceneViewFamily;
+class FViewFamilyInfo;
 class FViewInfo;
 
 struct FLumenSceneFrameTemporaries;
 struct FSceneTextures;
 
-namespace LumenRadianceCache { class FRadianceCacheInterpolationParameters; }
+namespace LumenRadianceCache
+{ 
+	class FRadianceCacheInterpolationParameters; 
+}
 
-const static int32 ReflectionThreadGroupSize2D = 8;
+namespace LumenReflections
+{
+	BEGIN_SHADER_PARAMETER_STRUCT(FCompositeParameters, )
+		SHADER_PARAMETER(float, MaxRoughnessToTrace)
+		SHADER_PARAMETER(float, MaxRoughnessToTraceForFoliage)
+		SHADER_PARAMETER(float, InvRoughnessFadeLength)
+	END_SHADER_PARAMETER_STRUCT()
+
+	void SetupCompositeParameters(LumenReflections::FCompositeParameters& OutParameters);
+	bool UseAsyncCompute(const FViewFamilyInfo& ViewFamily);
+}
 
 BEGIN_SHADER_PARAMETER_STRUCT(FLumenReflectionsVisualizeTracesParameters, )
 	SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<float4>, RWVisualizeTracesData)
@@ -40,6 +54,16 @@ BEGIN_SHADER_PARAMETER_STRUCT(FLumenReflectionTracingParameters, )
 	SHADER_PARAMETER(uint32, ReflectionPass)
 	SHADER_PARAMETER(uint32, UseJitter)
 	SHADER_PARAMETER(uint32, UseHighResSurface)
+	SHADER_PARAMETER(uint32, MaxReflectionBounces)
+
+	SHADER_PARAMETER(float, NearFieldMaxTraceDistance)
+	SHADER_PARAMETER(float, NearFieldMaxTraceDistanceDitherScale)
+	SHADER_PARAMETER(float, NearFieldSceneRadius)
+	SHADER_PARAMETER(float, FarFieldMaxTraceDistance)
+
+	SHADER_PARAMETER_STRUCT_INCLUDE(LumenReflections::FCompositeParameters, ReflectionsCompositeParameters)
+	SHADER_PARAMETER_TEXTURE(Texture2D, PreIntegratedGF)
+	SHADER_PARAMETER_SAMPLER(SamplerState, PreIntegratedGFSampler)
 
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, RayBuffer)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<uint>, RayTraceDistance)
@@ -47,9 +71,13 @@ BEGIN_SHADER_PARAMETER_STRUCT(FLumenReflectionTracingParameters, )
 
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, TraceHit)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, TraceRadiance)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, TraceMaterialId)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, TraceBookmark)
 
 	SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float3>, RWTraceRadiance)
 	SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float>, RWTraceHit)
+	SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<uint>, RWTraceMaterialId)
+	SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<uint2>, RWTraceBookmark)
 
 	SHADER_PARAMETER_STRUCT_REF(FBlueNoise, BlueNoise)
 END_SHADER_PARAMETER_STRUCT()
@@ -64,7 +92,7 @@ END_SHADER_PARAMETER_STRUCT()
 
 BEGIN_SHADER_PARAMETER_STRUCT(FCompactedReflectionTraceParameters, )
 	SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, CompactedTraceTexelAllocator)
-	SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint2>, CompactedTraceTexelData)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, CompactedTraceTexelData)
 	RDG_BUFFER_ACCESS(IndirectArgs, ERHIAccess::IndirectArgs)
 	RDG_BUFFER_ACCESS(RayTraceDispatchIndirectArgs, ERHIAccess::IndirectArgs | ERHIAccess::SRVCompute)
 END_SHADER_PARAMETER_STRUCT()
@@ -72,10 +100,33 @@ END_SHADER_PARAMETER_STRUCT()
 namespace LumenReflections
 {
 	bool UseFarField(const FSceneViewFamily& ViewFamily);
-	bool UseHitLighting(const FViewInfo& View);
-	bool IsHitLightingForceEnabled(const FViewInfo& View);
+	bool UseHitLighting(const FViewInfo& View, bool bLumenGIEnabled);
+	bool IsHitLightingForceEnabled(const FViewInfo& View, bool bLumenGIEnabled);
 	bool UseSurfaceCacheFeedback();
 	float GetSampleSceneColorNormalTreshold();
+	uint32 GetMaxReflectionBounces(const FViewInfo& View);
+
+	enum ETraceCompactionMode
+	{
+		Default,
+		FarField,
+		HitLighting,
+
+		MAX
+	};
+
+	FCompactedReflectionTraceParameters CompactTraces(
+		FRDGBuilder& GraphBuilder,
+		const FViewInfo& View,
+		const FLumenCardTracingParameters& TracingParameters,
+		const FLumenReflectionTracingParameters& ReflectionTracingParameters,
+		const FLumenReflectionTileParameters& ReflectionTileParameters,
+		bool bCullByDistanceFromCamera,
+		float CompactionTracingEndDistanceFromCamera,
+		float CompactionMaxTraceDistance,
+		ERDGPassFlags ComputePassFlags,
+		ETraceCompactionMode TraceCompactionMode = ETraceCompactionMode::Default,
+		bool bSortByMaterial = false);
 };
 
 extern void TraceReflections(
@@ -89,6 +140,7 @@ extern void TraceReflections(
 	const FLumenReflectionTileParameters& ReflectionTileParameters,
 	const FLumenMeshSDFGridParameters& InMeshSDFGridParameters,
 	bool bUseRadianceCache,
+	bool bLumenGIEnabled,
 	const LumenRadianceCache::FRadianceCacheInterpolationParameters& RadianceCacheParameters,
 	ERDGPassFlags ComputePassFlags);
 
@@ -103,9 +155,9 @@ extern void RenderLumenHardwareRayTracingReflections(
 	const FLumenCardTracingParameters& TracingParameters,
 	const FLumenReflectionTracingParameters& ReflectionTracingParameters,
 	const FLumenReflectionTileParameters& ReflectionTileParameters,
-	const FCompactedReflectionTraceParameters& CompactedTraceParameters,
 	float MaxTraceDistance,
 	bool bUseRadianceCache,
 	const LumenRadianceCache::FRadianceCacheInterpolationParameters& RadianceCacheParameters,
 	bool bSampleSceneColorAtHit,
+	bool bLumenGIEnabled,
 	ERDGPassFlags ComputePassFlags);

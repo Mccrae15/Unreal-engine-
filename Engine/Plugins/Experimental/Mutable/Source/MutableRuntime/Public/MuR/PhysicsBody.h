@@ -2,7 +2,9 @@
 
 #pragma once
 
-#include "MuR/SerialisationPrivate.h"
+#include <string>
+
+#include "MuR/Serialisation.h"
 #include "MuR/Ptr.h"
 #include "MuR/RefCounted.h"
 #include "MuR/Serialisation.h"
@@ -17,6 +19,8 @@
 
 namespace mu
 {
+	typedef std::string string;
+
 	struct FBodyShape
 	{
 		string Name;
@@ -28,25 +32,10 @@ namespace mu
 		}
 	
 		//!
-		inline void Serialise( OutputArchive& arch ) const
-		{
-			const uint32 ver = 0;
-			arch << ver;
-
-			arch << Name;
-			arch << Flags;
-		}
+		inline void Serialise( OutputArchive& arch ) const;
 
 		//!
-		inline void Unserialise( InputArchive& arch )
-		{
-			uint32 ver;
-			arch >> ver;
-			check(ver == 0);
-
-			arch >> Name;
-			arch >> Flags;
-		}
+		inline void Unserialise( InputArchive& arch );
 	};
 
 	struct FSphereBody : FBodyShape
@@ -60,29 +49,10 @@ namespace mu
 		}
 		 
 		//!
-		inline void Serialise( OutputArchive& arch ) const
-		{
-			FBodyShape::Serialise(arch);
-
-			const uint32 ver = 0;
-			arch << ver;
-
-			arch << Position;
-			arch << Radius;
-		}
+		inline void Serialise( OutputArchive& arch ) const;
 
 		//!
-		inline void Unserialise( InputArchive& arch )
-		{
-			FBodyShape::Unserialise(arch);
-
-			uint32 ver;
-			arch >> ver;
-			check(ver == 0);
-
-			arch >> Position;
-			arch >> Radius;
-		} 
+		inline void Unserialise( InputArchive& arch );
 	};
 	
 	struct FBoxBody : FBodyShape
@@ -97,31 +67,10 @@ namespace mu
 		}
 
 		//!
-		inline void Serialise( OutputArchive& arch ) const
-		{
-			FBodyShape::Serialise( arch );
+		inline void Serialise( OutputArchive& arch ) const;
 
-			const uint32 ver = 0;
-			arch << ver;
-
-			arch << Position;
-			arch << Orientation;
-			arch << Size;
-		}
-
-		  //!
-		inline void Unserialise( InputArchive& arch )
-		{
-			FBodyShape::Unserialise( arch );
-
-			uint32 ver;
-			arch >> ver;
-			check(ver == 0);
-
-			arch >> Position;
-			arch >> Orientation;
-			arch >> Size;
-		} 
+		//!
+		inline void Unserialise( InputArchive& arch );
 	};
 
 	struct FSphylBody : FBodyShape
@@ -141,33 +90,10 @@ namespace mu
 		}
 		 
 		//!
-		inline void Serialise( OutputArchive& arch ) const
-		{
-			FBodyShape::Serialise( arch );
-
-			const uint32 ver = 0;
-			arch << ver;
-
-			arch << Position;
-			arch << Orientation;
-			arch << Radius;
-			arch << Length;
-		}
+		inline void Serialise( OutputArchive& arch ) const;
 
 		//!
-		inline void Unserialise( InputArchive& arch )
-		{
-			FBodyShape::Unserialise( arch );
-
-			uint32 ver;
-			arch >> ver;
-			check(ver == 0);
-
-			arch >> Position;
-			arch >> Orientation;
-			arch >> Radius;
-			arch >> Length;
-		}
+		inline void Unserialise( InputArchive& arch );
 	};
 	
 	struct FTaperedCapsuleBody : FBodyShape
@@ -189,35 +115,10 @@ namespace mu
 		}
 		 
 		//!
-		inline void Serialise( OutputArchive& arch ) const
-		{
-			FBodyShape::Serialise( arch );
+		inline void Serialise( OutputArchive& arch ) const;
 
-			const uint32 ver = 0;
-			arch << ver;
-
-			arch << Position;
-			arch << Orientation;
-			arch << Radius0;
-			arch << Radius1;
-			arch << Length;
-		}
-
-		 //!
-		inline void Unserialise( InputArchive& arch )
-		{
-			FBodyShape::Unserialise( arch );
-			
-			uint32 ver;
-			arch >> ver;
-			check(ver == 0);
-
-			arch >> Position;
-			arch >> Orientation;
-			arch >> Radius0;
-			arch >> Radius1;
-			arch >> Length;
-		 }
+		//!
+		inline void Unserialise( InputArchive& arch );
 	};
 	
 	struct FConvexBody : FBodyShape
@@ -236,29 +137,10 @@ namespace mu
 		}
 
 		//!
-		inline void Serialise( OutputArchive& arch ) const
-		{
-			FBodyShape::Serialise( arch );
-	
-		 	uint32 ver = 0;
-		 	arch << ver;
+		inline void Serialise( OutputArchive& arch ) const;
 
-		 	arch << Vertices;
-		 	arch << Indices;
-		 	arch << Transform;
-		}
-
-		  //!
-		inline void Unserialise( InputArchive& arch )
-		{
-		 	uint32 ver;
-		 	arch >> ver;
-		 	check(ver == 0);
-
-		 	arch >> Vertices;
-		 	arch >> Indices;
-		 	arch >> Transform;
-		}
+		//!
+		inline void Unserialise( InputArchive& arch );
 	};
 	
 	struct FPhysicsBodyAggregate
@@ -279,31 +161,10 @@ namespace mu
 		}
 
 		 //!
-		inline void Serialise( OutputArchive& arch ) const
-		{
-		 	uint32 ver = 0;
-		 	arch << ver;
-		
-		 	arch << Spheres;
-		 	arch << Boxes;
-		 	arch << Convex;
-		 	arch << Sphyls;
-		 	arch << TaperedCapsules;
-		}
+		inline void Serialise( OutputArchive& arch ) const;
 
-		 //!
-		inline void Unserialise( InputArchive& arch )
-		{
-		 	uint32 ver;
-		 	arch >> ver;
-		 	check(ver == 0);
-		
-		 	arch >> Spheres;
-		 	arch >> Boxes;
-		 	arch >> Convex;
-		 	arch >> Sphyls;
-		 	arch >> TaperedCapsules;
-		}
+		//!
+		inline void Unserialise( InputArchive& arch );
 	};
 
 	class MUTABLERUNTIME_API PhysicsBody : public RefCounted
@@ -322,34 +183,37 @@ namespace mu
 
         //bool operator==( const PhysicsBody& Other ) const;
 
-		void SetBodyCount( int32 B );
-		int32 GetBodyCount( ) const;
+		void SetCustomId(int32 Id);
+		int32 GetCustomId() const;
 
-		void SetBodyBoneName( int32 B, const char* BoneName );
-		const char* GetBodyBoneName( int32 B ) const;
+		void SetBodyCount(int32 B);
+		int32 GetBodyCount() const;
 	
-		void SetBodyCustomId( int32 B, int32 CustomId );
-		int32 GetBodyCustomId( int32 B ) const;
+		void SetBodyBoneId(int32 B, uint16 BoneId);
+		uint16 GetBodyBoneId(int32 B) const;
 		
-		int32 GetSphereCount( int32 B ) const;
-		int32 GetBoxCount( int32 B) const;
-		int32 GetConvexCount( int32 B) const;
-		int32 GetSphylCount( int32 B ) const;
-		int32 GetTaperedCapsuleCount(int32 B ) const;
+		void SetBodyCustomId(int32 B, int32 BodyCustomId);
+		int32 GetBodyCustomId(int32 B) const;
+		
+		int32 GetSphereCount(int32 B) const;
+		int32 GetBoxCount(int32 B) const;
+		int32 GetConvexCount(int32 B) const;
+		int32 GetSphylCount(int32 B) const;
+		int32 GetTaperedCapsuleCount(int32 B) const;
 		
 		void SetSphereCount(int32 B, int32 Count);
 		void SetBoxCount(int32 B, int32 Count);
 		void SetConvexCount(int32 B, int32 Count);
 		void SetSphylCount(int32 B, int32 Count);
-		void SetTaperedCapsuleCount( int32 B, int32 Count);
+		void SetTaperedCapsuleCount(int32 B, int32 Count);
 		
 		void SetSphere( 
 				int32 B, int32 I, 
-				FVector3f Position, float Radius );
+				FVector3f Position, float Radius);
 
 		void SetBox( 
 				int32 B, int32 I, 
-				FVector3f Position, FQuat4f Orientation, FVector3f Size );
+				FVector3f Position, FQuat4f Orientation, FVector3f Size);
 
 		void SetConvexMesh( 
 				int32 B, int32 I,
@@ -357,29 +221,29 @@ namespace mu
 
 		void SetConvexTransform( 
 				int32 B, int32 I, 
-				const FTransform3f& Transform );
+				const FTransform3f& Transform);
 
 		void SetSphyl( 
 				int32 B, int32 I, 
 				FVector3f Position, FQuat4f Orientation, 
-				float Radius, float Length );
+				float Radius, float Length);
 
 		void SetTaperedCapsule( 
 				int32 B, int32 I, 
 				FVector3f Position, FQuat4f Orientation, 
-				float Radius0, float Radius1, float Length );
+				float Radius0, float Radius1, float Length);
 
-		void SetSphereFlags( int32 B, int32 I, uint32 Flags );
-		void SetBoxFlags( int32 B, int32 I, uint32 Flags );
-		void SetConvexFlags( int32 B, int32 I, uint32 Flags );
-		void SetSphylFlags( int32 B, int32 I, uint32 Flags );
-		void SetTaperedCapsuleFlags( int32 B, int32 I, uint32 Flags );
+		void SetSphereFlags(int32 B, int32 I, uint32 Flags);
+		void SetBoxFlags(int32 B, int32 I, uint32 Flags);
+		void SetConvexFlags(int32 B, int32 I, uint32 Flags);
+		void SetSphylFlags(int32 B, int32 I, uint32 Flags);
+		void SetTaperedCapsuleFlags(int32 B, int32 I, uint32 Flags);
 
-		void SetSphereName( int32 B, int32 I, const char* Name );
-		void SetBoxName( int32 B, int32 I, const char* Name );
-		void SetConvexName( int32 B, int32 I, const char* Name );
-		void SetSphylName( int32 B, int32 I, const char* Name );
-		void SetTaperedCapsuleName( int32 B, int32 I, const char* Name );
+		void SetSphereName(int32 B, int32 I, const char* Name);
+		void SetBoxName(int32 B, int32 I, const char* Name);
+		void SetConvexName(int32 B, int32 I, const char* Name);
+		void SetSphylName(int32 B, int32 I, const char* Name);
+		void SetTaperedCapsuleName(int32 B, int32 I, const char* Name);
 	
 		void GetSphere( 
 				int32 B, int32 I, 
@@ -387,11 +251,11 @@ namespace mu
 
 		void GetBox( 
 				int32 B, int32 I, 
-				FVector3f& OutPosition, FQuat4f& OutOrientation, FVector3f& OutSize ) const;
+				FVector3f& OutPosition, FQuat4f& OutOrientation, FVector3f& OutSize) const;
 
 		void GetConvex( 
 				int32 B, int32 I, 
-				TArrayView<const FVector3f>& OutVertices, TArrayView<const int32>& OutIndices, FTransform3f& OutTransform ) const;
+				TArrayView<const FVector3f>& OutVertices, TArrayView<const int32>& OutIndices, FTransform3f& OutTransform) const;
 
 		void GetConvexMeshView(
 				int32 B, int32 I, 
@@ -411,17 +275,17 @@ namespace mu
 				FVector3f& OutPosition, FQuat4f& OutOrientation, 
 				float& OutRadius0, float& OutRadius1, float& OutLength) const;
 		
-		uint32 GetSphereFlags( int32 B, int32 I ) const;
-		uint32 GetBoxFlags( int32 B, int32 I ) const;
-		uint32 GetConvexFlags( int32 B, int32 I ) const;
-		uint32 GetSphylFlags( int32 B, int32 I ) const;
-		uint32 GetTaperedCapsuleFlags( int32 B, int32 I ) const;
+		uint32 GetSphereFlags(int32 B, int32 I) const;
+		uint32 GetBoxFlags(int32 B, int32 I) const;
+		uint32 GetConvexFlags(int32 B, int32 I) const;
+		uint32 GetSphylFlags(int32 B, int32 I) const;
+		uint32 GetTaperedCapsuleFlags(int32 B, int32 I) const;
 
-		const char* GetSphereName( int32 B, int32 I ) const;
-		const char* GetBoxName( int32 B, int32 I ) const;
-		const char* GetConvexName( int32 B, int32 I ) const;
-		const char* GetSphylName( int32 B, int32 I ) const;
-		const char* GetTaperedCapsuleName( int32 B, int32 I ) const;
+		const char* GetSphereName(int32 B, int32 I) const;
+		const char* GetBoxName(int32 B, int32 I) const;
+		const char* GetConvexName(int32 B, int32 I) const;
+		const char* GetSphylName(int32 B, int32 I) const;
+		const char* GetTaperedCapsuleName(int32 B, int32 I) const;
 
 	protected:
 		//! Forbidden. Manage with the Ptr<> template.
@@ -430,49 +294,30 @@ namespace mu
 		}
 
 	public:
+		int32 CustomId = -1;
+
 		// Bone name the physics volume aggregate is bound to. 
-		TArray<string> Bones;
+		TArray<uint16> BoneIds;
 		TArray<FPhysicsBodyAggregate> Bodies;
-		TArray<int32> CustomIds;
+		TArray<int32> BodiesCustomIds;
+
 
 		bool bBodiesModified = false;
 
         //!
-        inline void Serialise( OutputArchive& arch ) const
-		{
-            uint32 ver = 1;
-			arch << ver;
-        	
-        	arch << Bodies;
-        	arch << Bones;
-        	arch << CustomIds;
-			arch << bBodiesModified;
-        }
+        inline void Serialise( OutputArchive& arch ) const;
 
-        //!
-        inline void Unserialise( InputArchive& arch )
-		{
-            uint32 ver;
-			arch >> ver;
-            check(ver <= 1);
-        	
-        	arch >> Bodies;
-        	arch >> Bones;
-        	arch >> CustomIds;
+		//!
+        inline void Unserialise( InputArchive& arch );
 
-			if (ver >= 1)
-			{
-				arch >> bBodiesModified;
-			}
-		}
-		
-        //!
-		inline bool operator==( const PhysicsBody& o ) const
+		//!
+		inline bool operator==(const PhysicsBody& Other) const
         {
-        	return Bones == o.Bones &&
-        		   Bodies == o.Bodies &&
-        	       CustomIds == o.CustomIds &&
-				   bBodiesModified == o.bBodiesModified;
+        	return CustomId        == Other.CustomId        &&
+				   BoneIds == Other.BoneIds					&&
+        		   Bodies          == Other.Bodies          &&
+        	       BodiesCustomIds == Other.BodiesCustomIds &&
+				   bBodiesModified == Other.bBodiesModified;
         }
 	};
 }

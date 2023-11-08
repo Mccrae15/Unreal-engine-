@@ -47,6 +47,7 @@ void UMassEntityEQSSpawnPointsGenerator::OnEQSQueryFinished(TSharedPtr<FEnvQuery
 	{
 		UE_VLOG_UELOG(this, LogMassSpawner, Error, TEXT("EQS query failed or result is invalid"));
 		// Return empty result.
+		Results.Reset();
 		FinishedGeneratingSpawnPointsDelegate.Execute(Results);
 		return;
 	}
@@ -55,7 +56,7 @@ void UMassEntityEQSSpawnPointsGenerator::OnEQSQueryFinished(TSharedPtr<FEnvQuery
 	EQSResult->GetAllAsLocations(Locations);
 
 	// Randomize them
-	FRandomStream RandomStream(GFrameNumber);
+	FRandomStream RandomStream(GetRandomSelectionSeed());
 	for (int32 I = 0; I < Locations.Num(); ++I)
 	{
 		const int32 J = RandomStream.RandHelper(Locations.Num());
@@ -108,3 +109,17 @@ void UMassEntityEQSSpawnPointsGenerator::OnEQSQueryFinished(TSharedPtr<FEnvQuery
 
 	FinishedGeneratingSpawnPointsDelegate.Execute(Results);
 }
+
+#if WITH_EDITOR
+void UMassEntityEQSSpawnPointsGenerator::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	static const FName EQSRequestName = GET_MEMBER_NAME_CHECKED(UMassEntityEQSSpawnPointsGenerator, EQSRequest);
+
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	if (PropertyChangedEvent.MemberProperty && PropertyChangedEvent.MemberProperty->GetFName() == EQSRequestName)
+	{
+		EQSRequest.PostEditChangeProperty(*this, PropertyChangedEvent);
+	}
+}
+#endif

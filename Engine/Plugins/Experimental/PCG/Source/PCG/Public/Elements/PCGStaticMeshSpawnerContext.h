@@ -4,7 +4,7 @@
 
 #include "PCGContext.h"
 #include "MeshSelectors/PCGMeshSelectorBase.h"
-#include "InstancePackers/PCGInstancePackerBase.h"
+#include "InstanceDataPackers/PCGInstanceDataPackerBase.h"
 
 #include "PCGStaticMeshSpawnerContext.generated.h"
 
@@ -50,6 +50,9 @@ struct FPCGStaticMeshSpawnerContext : public FPCGContext
 	UPCGPointData* CurrentOutputPointData = nullptr;
 	FPCGMeshMaterialOverrideHelper MaterialOverrideHelper;
 	int32 CurrentPointIndex = 0;
+
+	// Used in all selectors
+	TMap<TSoftObjectPtr<UStaticMesh>, FBox> MeshToBoundingBox;
 
 	// Used in by-attribute selector
 	TMap<PCGMetadataValueKey, TSoftObjectPtr<UStaticMesh>> ValueKeyToMesh;

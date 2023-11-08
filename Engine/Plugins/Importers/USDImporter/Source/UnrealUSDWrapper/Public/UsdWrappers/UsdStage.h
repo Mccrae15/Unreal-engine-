@@ -18,13 +18,6 @@ namespace UE
 		template< typename PtrType > class FUsdStageImpl;
 	}
 
-	/** Corresponds to pxr::UsdLoadPolicy, refer to the USD SDK documentation */
-	enum class EUsdLoadPolicy
-	{
-		UsdLoadWithDescendants,    // Load a prim plus all its descendants.
-		UsdLoadWithoutDescendants  // Load a prim by itself with no descendants.
-	};
-
 	/**
 	 * Minimal pxr::UsdStage pointer wrapper for Unreal that can be used from no-rtti modules.
 	 * Use the aliases FUsdStage and FUsdStageWeak instead (defined on ForwardDeclarations.h)
@@ -117,6 +110,7 @@ namespace UE
 
 		FUsdPrim OverridePrim( const FSdfPath& Path );
 		FUsdPrim DefinePrim( const FSdfPath& Path, const TCHAR* TypeName = TEXT("") );
+		FUsdPrim CreateClassPrim(const FSdfPath& RootPrimPath);
 		bool RemovePrim( const FSdfPath& Path );
 
 	private:

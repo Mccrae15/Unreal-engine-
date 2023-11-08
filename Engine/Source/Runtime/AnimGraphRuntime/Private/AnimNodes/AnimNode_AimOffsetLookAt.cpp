@@ -2,6 +2,7 @@
 
 #include "AnimNodes/AnimNode_AimOffsetLookAt.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "Animation/AnimStats.h"
 #include "AnimationRuntime.h"
 #include "Animation/BlendSpace.h"
 #include "Animation/BlendSpace1D.h"
@@ -87,6 +88,8 @@ void FAnimNode_AimOffsetLookAt::CacheBones_AnyThread(const FAnimationCacheBonesC
 
 void FAnimNode_AimOffsetLookAt::Evaluate_AnyThread(FPoseContext& Context)
 {
+	ANIM_MT_SCOPE_CYCLE_COUNTER_VERBOSE(AimOffsetLookAt, !IsInGameThread());
+
 	// Evaluate base pose
 	BasePose.Evaluate(Context);
 
@@ -169,11 +172,15 @@ void FAnimNode_AimOffsetLookAt::UpdateFromLookAtTarget(FPoseContext& LocalPoseCo
 #endif // ENABLE_DRAW_DEBUG
 	}
 
-	// Update Blend Space and put the result into BlendSampleDataCache.
+	// Update Blend Space, including the smoothing/filtering, and put the result into BlendSampleDataCache.
 	if (CurrentBlendSpace)
 	{
+		const FVector BlendSpacePosition(CurrentBlendInput.X, CurrentBlendInput.Y, 0.f);
+		const FVector FilteredBlendInput = CurrentBlendSpace->FilterInput(
+			&BlendFilter, BlendSpacePosition, DeltaTimeRecord.Delta);
+
 		CurrentBlendSpace->UpdateBlendSamples(
-			CurrentBlendInput, DeltaTimeRecord.Delta, BlendSampleDataCache, CachedTriangulationIndex);
+			FilteredBlendInput, DeltaTimeRecord.Delta, BlendSampleDataCache, CachedTriangulationIndex);
 	}
 }
 

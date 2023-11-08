@@ -2,6 +2,7 @@
 
 #include "Elements/Metadata/PCGMetadataBooleanOpElement.h"
 
+#include "Elements/Metadata/PCGMetadataElementCommon.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PCGMetadataBooleanOpElement)
 
@@ -72,7 +73,7 @@ bool UPCGMetadataBooleanSettings::IsSupportedInputType(uint16 TypeId, uint32 Inp
 	return PCG::Private::IsOfTypes<bool>(TypeId);
 }
 
-FPCGAttributePropertySelector UPCGMetadataBooleanSettings::GetInputSource(uint32 Index) const
+FPCGAttributePropertyInputSelector UPCGMetadataBooleanSettings::GetInputSource(uint32 Index) const
 {
 	switch (Index)
 	{
@@ -81,7 +82,7 @@ FPCGAttributePropertySelector UPCGMetadataBooleanSettings::GetInputSource(uint32
 	case 1:
 		return InputSource2;
 	default:
-		return FPCGAttributePropertySelector();
+		return FPCGAttributePropertyInputSelector();
 	}
 }
 
@@ -92,7 +93,7 @@ uint16 UPCGMetadataBooleanSettings::GetOutputType(uint16 InputTypeId) const
 
 FName UPCGMetadataBooleanSettings::AdditionalTaskName() const
 {
-	if (const UEnum* EnumPtr = FindObject<UEnum>(nullptr, TEXT("/Script/PCG.EPCGMedadataBooleanOperation"), true))
+	if (const UEnum* EnumPtr = StaticEnum<EPCGMedadataBooleanOperation>())
 	{
 		return FName(FString("Boolean: ") + EnumPtr->GetNameStringByValue(static_cast<int>(Operation)));
 	}
@@ -112,7 +113,23 @@ FText UPCGMetadataBooleanSettings::GetDefaultNodeTitle() const
 {
 	return NSLOCTEXT("PCGMetadataBooleanSettings", "NodeTitle", "Attribute Boolean Op");
 }
+
+TArray<FPCGPreConfiguredSettingsInfo> UPCGMetadataBooleanSettings::GetPreconfiguredInfo() const
+{
+	return PCGMetadataElementCommon::FillPreconfiguredSettingsInfoFromEnum<EPCGMedadataBooleanOperation>();
+}
 #endif // WITH_EDITOR
+
+void UPCGMetadataBooleanSettings::ApplyPreconfiguredSettings(const FPCGPreConfiguredSettingsInfo& PreconfiguredInfo)
+{
+	if (const UEnum* EnumPtr = StaticEnum<EPCGMedadataBooleanOperation>())
+	{
+		if (EnumPtr->IsValidEnumValue(PreconfiguredInfo.PreconfiguredIndex))
+		{
+			Operation = EPCGMedadataBooleanOperation(PreconfiguredInfo.PreconfiguredIndex);
+		}
+	}
+}
 
 FPCGElementPtr UPCGMetadataBooleanSettings::CreateElement() const
 {

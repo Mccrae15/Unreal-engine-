@@ -33,6 +33,18 @@ public:
 		TSubclassOf<UObjectMixerObjectFilter> InDefaultFilterClass = nullptr);
 
 	/**
+	 * Tries to find the nomad tab assigned to this instance of Object Mixer.
+	 * If DockTab is not set, will try to find the tab using GetTabSpawnerId().
+	 */
+	virtual TSharedPtr<SDockTab> FindNomadTab();
+	
+	/**
+	 * Build the List widget from scratch. If DockTab is not set, will try to find the tab using GetTabSpawnerId().
+	 * @return True if the widget was regenerated. False if the DockTab was invalid and could not be found.
+	 */
+	bool RegenerateListWidget();
+
+	/**
 	 * Regenerate the list items and refresh the list. Call when adding or removing variables.
 	 */
 	virtual void RequestRebuildList() const;
@@ -73,6 +85,12 @@ public:
 	const TSubclassOf<UObjectMixerObjectFilter>& GetDefaultFilterClass() const;
 
 	const static FName BaseObjectMixerModuleName;
+	
+	DECLARE_MULTICAST_DELEGATE(FOnBlueprintFilterCompiled);
+	FOnBlueprintFilterCompiled& OnBlueprintFilterCompiled()
+	{
+		return OnBlueprintFilterCompiledDelegate;
+	}
 
 protected:
 
@@ -87,6 +105,9 @@ protected:
 	/** The text that appears on the spawned nomad tab */
 	FText TabLabel;
 
+	/** The actual spawned nomad tab */
+	TWeakPtr<SDockTab> DockTab;
+
 	/** Menu Item variables */
 	FText MenuItemName;
 	FSlateIcon MenuItemIcon;
@@ -100,6 +121,8 @@ protected:
 	TSubclassOf<UObjectMixerObjectFilter> DefaultFilterClass;
 	
 	TSet<FDelegateHandle> DelegateHandles;
+
+	FOnBlueprintFilterCompiled OnBlueprintFilterCompiledDelegate;
 
 private:
 

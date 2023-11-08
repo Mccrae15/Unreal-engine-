@@ -72,11 +72,7 @@ void UEdGraph_ReferenceViewer::SetGraphRoot(const TArray<FAssetIdentifier>& Grap
 		}
 		else if (AssetId.GetPrimaryAssetId().IsValid())
 		{
-			if (UAssetManager::IsValid())
-			{
-				UAssetManager::Get().UpdateManagementDatabase();
-			}
-			
+			UAssetManager::Get().UpdateManagementDatabase();
 			Settings->SetShowManagementReferencesEnabled(true);
 		}
 	}
@@ -207,7 +203,7 @@ UEdGraphNode_Reference* UEdGraph_ReferenceViewer::ConstructNodes(const TArray<FA
 		TMap<FAssetIdentifier, FReferenceNodeInfo> NewReferenceNodeInfos;
 		for (const FAssetIdentifier& RootIdentifier : GraphRootIdentifiers)
 		{
-			FReferenceNodeInfo& RootNodeInfo = NewReferenceNodeInfos.FindOrAdd(RootIdentifier, FReferenceNodeInfo(RootIdentifier, true));
+			FReferenceNodeInfo& RootNodeInfo = NewReferenceNodeInfos.FindOrAdd( RootIdentifier, FReferenceNodeInfo(RootIdentifier, true));
 			RootNodeInfo.Parents.Emplace(FAssetIdentifier(NAME_None));
 		}
 		if (!Settings->GetFindPathEnabled())
@@ -380,6 +376,12 @@ UEdGraphNode_Reference* UEdGraph_ReferenceViewer::RefilterGraph()
 			bRootIsDuplicated |= (Settings->IsShowDependencies() && DependencyNodeInfos.Contains(RootID) && DependencyNodeInfos[RootID].IsADuplicate()) ||
 				(Settings->IsShowReferencers() && ReferencerNodeInfos.Contains(RootID) && ReferencerNodeInfos[RootID].IsADuplicate());
 		}
+		for ( const FAssetIdentifier& RootID : CurrentGraphRootIdentifiers )
+		{
+			bRootIsDuplicated |= (Settings->IsShowDependencies() && DependencyNodeInfos.Contains(RootID) && DependencyNodeInfos[RootID].IsADuplicate()) ||
+				(Settings->IsShowReferencers() && ReferencerNodeInfos.Contains(RootID) && ReferencerNodeInfos[RootID].IsADuplicate());
+		}	
+
 		const FReferenceNodeInfo& NodeInfo = Settings->IsShowReferencers() ? ReferencerNodeInfos[FirstGraphRootIdentifier] : DependencyNodeInfos[FirstGraphRootIdentifier];
 		RootNode = CreateReferenceNode();
 		RootNode->SetupReferenceNode(CurrentGraphRootOrigin, CurrentGraphRootIdentifiers, NodeInfo.AssetData, /*bInAllowThumbnail = */ !Settings->IsCompactMode(), /*bIsDuplicate*/ bRootIsDuplicated);
@@ -798,13 +800,14 @@ const TSharedPtr<FAssetThumbnailPool>& UEdGraph_ReferenceViewer::GetAssetThumbna
 
 bool UEdGraph_ReferenceViewer::ExceedsMaxSearchDepth(int32 Depth, int32 MaxDepth) const
 {
+
+	const bool bIsWithinDepthLimits = (MaxDepth > 0 && Depth < MaxDepth);
 	// the FindPath feature is not depth limited
  	if (Settings->GetFindPathEnabled())
  	{
  		return false;
  	}
-
- 	else if (Settings->IsSearchDepthLimited() && (Depth > MaxDepth || MaxDepth < 1))
+ 	else if (Settings->IsSearchDepthLimited() && !bIsWithinDepthLimits)
  	{
  		return true;
  	}

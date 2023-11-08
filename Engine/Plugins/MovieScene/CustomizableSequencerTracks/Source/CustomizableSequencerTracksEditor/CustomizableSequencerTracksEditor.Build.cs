@@ -8,12 +8,6 @@ public class CustomizableSequencerTracksEditor : ModuleRules
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"CustomizableSequencerTracksEditor/Private",
-			}
-		);
-
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
@@ -29,5 +23,7 @@ public class CustomizableSequencerTracksEditor : ModuleRules
 				"UnrealEd",
 			}
 		);
+
+		ShortName = "CustomSeqTrEd";
 	}
 }

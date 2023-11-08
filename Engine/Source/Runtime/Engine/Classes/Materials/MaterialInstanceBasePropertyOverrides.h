@@ -9,7 +9,7 @@
 
 /** Properties from the base material that can be overridden in material instances. */
 USTRUCT()
-struct ENGINE_API FMaterialInstanceBasePropertyOverrides
+struct FMaterialInstanceBasePropertyOverrides
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -44,6 +44,10 @@ struct ENGINE_API FMaterialInstanceBasePropertyOverrides
 	/** Enables override of the output velocity property. */
 	UPROPERTY(EditAnywhere, Category = Material)
 	uint8 bOverride_OutputTranslucentVelocity : 1;
+
+	/** Enables override of the displacement magnitude and center property. */
+	UPROPERTY(EditAnywhere, Category = Material)
+	uint8 bOverride_DisplacementScaling : 1;
 
 	/** Enables override of the max world position offset property. */
 	UPROPERTY(EditAnywhere, Category = Material)
@@ -81,12 +85,15 @@ struct ENGINE_API FMaterialInstanceBasePropertyOverrides
 	UPROPERTY(EditAnywhere, Category = Material, meta = (editcondition = "bOverride_OpacityMaskClipValue", NoSpinbox = true))
 	float OpacityMaskClipValue;
 
+	UPROPERTY(EditAnywhere, Category = Material, meta = (editcondition = "bOverride_DisplacementScaling"))
+	FDisplacementScaling DisplacementScaling;
+
 	/** The maximum World Position Offset distance. Zero means no maximum. */
 	UPROPERTY(EditAnywhere, Category = Material, meta = (editcondition = "bOverride_MaxWorldPositionOffsetDisplacement", ClampMin=0.0f, NoSpinbox = true))
 	float MaxWorldPositionOffsetDisplacement;
 
-	FMaterialInstanceBasePropertyOverrides();
+	ENGINE_API FMaterialInstanceBasePropertyOverrides();
 
-	bool operator==(const FMaterialInstanceBasePropertyOverrides& Other)const;
-	bool operator!=(const FMaterialInstanceBasePropertyOverrides& Other)const;
+	ENGINE_API bool operator==(const FMaterialInstanceBasePropertyOverrides& Other)const;
+	ENGINE_API bool operator!=(const FMaterialInstanceBasePropertyOverrides& Other)const;
 };

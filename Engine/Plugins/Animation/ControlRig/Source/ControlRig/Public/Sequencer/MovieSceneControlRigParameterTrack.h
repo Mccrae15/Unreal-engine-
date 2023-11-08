@@ -10,9 +10,27 @@
 #include "Compilation/IMovieSceneTrackTemplateProducer.h"
 #include "INodeAndChannelMappings.h"
 #include "MovieSceneControlRigParameterSection.h"
+#include "EulerTransform.h"
 #include "MovieSceneControlRigParameterTrack.generated.h"
 
 struct FEndLoadPackageContext;
+struct FRigControlElement;
+
+USTRUCT()
+struct CONTROLRIG_API FControlRotationOrder
+{
+	GENERATED_BODY()
+
+	FControlRotationOrder();
+
+	/* Rotation Order*/
+	UPROPERTY()
+	EEulerRotationOrder RotationOrder;
+
+	/** Override the default control setting*/
+	UPROPERTY()
+	bool bOverrideSetting;
+};
 
 /**
  * Handles animation of skeletal mesh actors using animation ControlRigs
@@ -51,16 +69,20 @@ public:
 #endif
 
 	//INodeAndMappingsInterface
-	virtual TArray<FFBXNodeAndChannels>* GetNodeAndChannelMappings(UMovieSceneSection* InSection)  override;
+	virtual TArray<FRigControlFBXNodeAndChannels>* GetNodeAndChannelMappings(UMovieSceneSection* InSection)  override;
 	virtual void GetSelectedNodes(TArray<FName>& OutSelectedNodes) override;
+#if WITH_EDITOR
+	virtual bool GetFbxCurveDataFromChannelMetadata(const FMovieSceneChannelMetaData& MetaData, FControlRigFbxCurveData& OutCurveData) override;
+#endif // WITH_EDITOR
 
 	//UControlRig Delegates
+	void HandleOnInitialized_GameThread();
 	void HandleOnInitialized(URigVMHost* Subject, const FName& InEventName);
 
 #if WITH_EDITOR
 	void HandlePackageDone(const FEndLoadPackageContext& Context);
 	// control Rigs are ready only after its package is fully end-loaded
-	void HandleControlRigPackageDone(UControlRig* InControlRig);
+	void HandleControlRigPackageDone(URigVMHost* InControlRig);
 #endif
 
 public:
@@ -127,6 +149,17 @@ public:
 	UMovieSceneControlRigParameterSection::FSpaceChannelAddedEvent& SpaceChannelAdded() { return OnSpaceChannelAdded; }
 	IMovieSceneConstrainedSection::FConstraintChannelAddedEvent& ConstraintChannelAdded() { return OnConstraintChannelAdded; }
 
+public:
+	CONTROLRIG_API TArray<FName> GetControlsWithDifferentRotationOrders() const;
+	CONTROLRIG_API void ResetControlsToSettingsRotationOrder(const TArray<FName>& Names,
+		EMovieSceneKeyInterpolation Interpolation = EMovieSceneKeyInterpolation::SmartAuto);
+	// if order is not set then it uses the default FRotator conversions
+	CONTROLRIG_API void ChangeControlRotationOrder(const FName& InControlName, const TOptional<EEulerRotationOrder>& NewOrder,
+		EMovieSceneKeyInterpolation Interpolation = EMovieSceneKeyInterpolation::SmartAuto);
+private:
+	//get the rotation orderm will not be set if it's default FRotator order. If bCurrent is true, it uses what's set
+	//if false it uses the default setting from the current control rig.
+	TOptional<EEulerRotationOrder> GetControlRotationOrder(const FRigControlElement* ControlElement, bool bCurrent) const;
 private:
 
 	//we register this with sections.
@@ -161,6 +194,11 @@ private:
 	/** Unique Name*/
 	UPROPERTY()
 	FName TrackName;
+
+	/** Uses Rotation Order*/
+	UPROPERTY()
+	TMap<FName,FControlRotationOrder> ControlsRotationOrder;
+
 };
 
 

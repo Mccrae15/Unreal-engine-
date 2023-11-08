@@ -22,7 +22,7 @@
 static TAutoConsoleVariable<int32> CVarOIT_SortedTriangles_Enable(
 	TEXT("r.OIT.SortedTriangles"), 
 	1, 
-	TEXT("Enable per-instance triangle sorting to avoid invalid triangle ordering (experimental)."),
+	TEXT("Enable per-instance triangle sorting to avoid invalid triangle ordering."),
 	ECVF_ReadOnly | ECVF_RenderThreadSafe);
 
 static TAutoConsoleVariable<int32> CVarOIT_SortedTriangles_Debug(
@@ -256,7 +256,7 @@ static void AddInternalOITComposePass(
 class FSortedIndexBuffer : public FIndexBuffer
 {
 public:
-	static const uint32 SliceCount = 32;
+	static const uint32 SliceCount = 256u;
 
 	FSortedIndexBuffer(uint32 InId, const FBufferRHIRef& InSourceIndexBuffer, uint32 InNumIndices, const TCHAR* InDebugName)
 	: SourceIndexBuffer(InSourceIndexBuffer)
@@ -264,7 +264,7 @@ public:
 	, Id(InId)
 	, DebugName(InDebugName) { }
 
-	virtual void InitRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		check(SourceIndexBuffer);
 		const uint32 BytesPerElement = SourceIndexBuffer->GetStride();
@@ -272,9 +272,9 @@ public:
 		const EPixelFormat Format = BytesPerElement == 2 ? PF_R16_UINT : PF_R32_UINT;
 
 		FRHIResourceCreateInfo CreateInfo(DebugName);
-		IndexBufferRHI = RHICreateIndexBuffer(BytesPerElement /*Stride*/, NumIndices * BytesPerElement, BUF_UnorderedAccess | BUF_ShaderResource, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
-		SortedIndexUAV = RHICreateUnorderedAccessView(IndexBufferRHI, Format);
-		SourceIndexSRV = RHICreateShaderResourceView(SourceIndexBuffer, BytesPerElement, Format);
+		IndexBufferRHI = RHICmdList.CreateBuffer(NumIndices * BytesPerElement, BUF_UnorderedAccess | BUF_ShaderResource | BUF_IndexBuffer, BytesPerElement /*Stride*/, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+		SortedIndexUAV = RHICmdList.CreateUnorderedAccessView(IndexBufferRHI, Format);
+		SourceIndexSRV = RHICmdList.CreateShaderResourceView(SourceIndexBuffer, BytesPerElement, Format);
 	}
 
 	virtual void ReleaseRHI() override
@@ -295,11 +295,6 @@ public:
 	FShaderResourceViewRHIRef  SourceIndexSRV = nullptr;
 	FUnorderedAccessViewRHIRef SortedIndexUAV = nullptr;
 };
-
-static bool IsOITSupported(EShaderPlatform InShaderPlatform)
-{
-	return !IsMobilePlatform(InShaderPlatform) && !FDataDrivenShaderPlatformInfo::GetIsHlslcc(InShaderPlatform);
-}
 
 static void RemoveAllocation(FSortedIndexBuffer* InBuffer)
 {
@@ -332,9 +327,8 @@ static void TrimSortedIndexBuffers(TArray<FSortedIndexBuffer*>& FreeBuffers, uin
 	}
 }
 
-FSortedTriangleData FOITSceneData::Allocate(const FIndexBuffer* InSource, EPrimitiveType PrimitiveType, uint32 InFirstIndex, uint32 InNumPrimitives)
+FSortedTriangleData FOITSceneData::Allocate(FRHICommandListBase& RHICmdList, const FIndexBuffer* InSource, EPrimitiveType PrimitiveType, uint32 InFirstIndex, uint32 InNumPrimitives)
 {
-	check(IsInRenderingThread());
 	check(InSource && InSource->IndexBufferRHI);
 	check(PrimitiveType == PT_TriangleList || PrimitiveType == PT_TriangleStrip);
 
@@ -375,7 +369,7 @@ FSortedTriangleData FOITSceneData::Allocate(const FIndexBuffer* InSource, EPrimi
 	if (OITIndexBuffer == nullptr)
 	{
 		OITIndexBuffer = new FSortedIndexBuffer(FreeSlot, InSource->IndexBufferRHI, NumIndices, TEXT("OIT::SortedIndexBuffer"));
-		OITIndexBuffer->InitResource();	
+		OITIndexBuffer->InitResource(RHICmdList);	
 	}
 	Out->NumPrimitives = InNumPrimitives;
 	Out->NumIndices = NumIndices;
@@ -421,18 +415,6 @@ void FOITSceneData::Deallocate(FIndexBuffer* InIndexBuffer)
 	}
 }
 
-static uint32 GetGroupSize()
-{
-	if (IsRHIDeviceNVIDIA())
-	{
-		return 32u;
-	}
-	else  // IsRHIDeviceAMD() and others
-	{
-		return 64u;
-	}
-}
-
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Sort triangle indices to order them front-to-back or back-to-front
 
@@ -441,9 +423,8 @@ class FOITSortTriangleIndex_ScanCS : public FGlobalShader
 	DECLARE_GLOBAL_SHADER(FOITSortTriangleIndex_ScanCS);
 	SHADER_USE_PARAMETER_STRUCT(FOITSortTriangleIndex_ScanCS, FGlobalShader);
 
-	class FGroupSize : SHADER_PERMUTATION_SPARSE_INT("PERMUTATION_GROUP_SIZE", 32, 64); 
 	class FDebug : SHADER_PERMUTATION_BOOL("PERMUTATION_DEBUG");
-	using FPermutationDomain = TShaderPermutationDomain<FGroupSize, FDebug>;
+	using FPermutationDomain = TShaderPermutationDomain<FDebug>;
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 
@@ -457,6 +438,7 @@ class FOITSortTriangleIndex_ScanCS : public FGlobalShader
 
 		SHADER_PARAMETER(FMatrix44f, LocalToWorld)
 		SHADER_PARAMETER(FMatrix44f, WorldToView)
+		SHADER_PARAMETER(FMatrix44f, LocalToView)
 
 		SHADER_PARAMETER(uint32, SourcePrimitiveType)
 		SHADER_PARAMETER(uint32, NumPrimitives)
@@ -668,8 +650,7 @@ static void AddOITSortTriangleIndexPass(
 		const float ViewBoundMaxZ = ViewBounds.GetBox().Max.Z;
 
 		FOITSortTriangleIndex_ScanCS::FParameters* Parameters = GraphBuilder.AllocParameters<FOITSortTriangleIndex_ScanCS::FParameters>();
-		Parameters->LocalToWorld			= FMatrix44f(MeshBatch.Proxy->GetLocalToWorld());	// LWC_TODO: Precision loss?
-		Parameters->WorldToView				= FMatrix44f(View.ViewMatrices.GetViewMatrix());
+		Parameters->LocalToView				= FMatrix44f(MeshBatch.Proxy->GetLocalToWorld() * View.ViewMatrices.GetViewMatrix());
 		Parameters->SourcePrimitiveType		= Allocation.SourcePrimitiveType == PT_TriangleStrip ? 1u : 0u;
 		Parameters->NumPrimitives			= Allocation.NumPrimitives;
 		Parameters->NumIndices				= Allocation.NumIndices;
@@ -706,14 +687,12 @@ static void AddOITSortTriangleIndexPass(
 			Parameters->OutDebugData = GraphBuilder.CreateUAV(DebugData.Buffer, PF_R32_UINT);
 		}
 
-		const uint32 GroupSize = GetGroupSize();
-
 		FOITSortTriangleIndex_ScanCS::FPermutationDomain PermutationVector;
-		PermutationVector.Set<FOITSortTriangleIndex_ScanCS::FGroupSize>(GroupSize);
 		PermutationVector.Set<FOITSortTriangleIndex_ScanCS::FDebug>(bDebugEnable ? 1 : 0);
 		TShaderMapRef<FOITSortTriangleIndex_ScanCS> ComputeShader(View.ShaderMap, PermutationVector);
 		
-		const FIntVector DispatchCount = FIntVector(FMath::CeilToInt(float(Parameters->NumPrimitives) / float(GroupSize)), 1u, 1u);
+		const uint32 GroupSize = FSortedIndexBuffer::SliceCount;
+		const FIntVector DispatchCount = FIntVector(FMath::DivideAndRoundUp(Parameters->NumPrimitives, GroupSize), 1u, 1u);
 		check(DispatchCount.X < GRHIMaxDispatchThreadGroupsPerDimension.X);
 		ClearUnusedGraphResources(ComputeShader, Parameters);
 		GraphBuilder.AddPass(
@@ -759,7 +738,7 @@ static void AddOITSortTriangleIndexPass(
 		TShaderMapRef<FOITSortTriangleIndex_WriteOutCS> ComputeShader(View.ShaderMap);
 
 		const uint32 GroupSize = 256;
-		const FIntVector DispatchCount = FIntVector(GroupSize, 1u, 1u);
+		const FIntVector DispatchCount = FIntVector(FMath::DivideAndRoundUp(Parameters->NumPrimitives, GroupSize), 1u, 1u);
 		ClearUnusedGraphResources(ComputeShader, Parameters);
 		GraphBuilder.AddPass(
 			RDG_EVENT_NAME("OIT::SortTriangleIndices(Write)"),

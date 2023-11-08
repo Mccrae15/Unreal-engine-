@@ -77,7 +77,7 @@ void UniformBufferBeginFrame()
 				DEC_DWORD_STAT(STAT_D3D11NumFreeUniformBuffers);
 				DEC_MEMORY_STAT_BY(STAT_D3D11FreeUniformBufferMemory, PoolEntry.CreatedSize);
 				NumCleaned++;
-				UpdateBufferStats(PoolEntry.Buffer, false);
+				D3D11BufferStats::UpdateUniformBufferStats(PoolEntry.Buffer, PoolEntry.CreatedSize, false);
 				PoolEntry.Buffer.SafeRelease();
 				UniformBufferPool[BucketIndex].RemoveAtSwap(EntryIndex);
 			}
@@ -106,7 +106,7 @@ void UniformBufferBeginFrame()
 static bool IsPoolingEnabled()
 {
 	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.UniformBufferPooling"));
-	int32 CVarValue = CVar->GetValueOnRenderThread();
+	int32 CVarValue = CVar->GetValueOnAnyThread();
 	return CVarValue != 0;
 };
 
@@ -149,7 +149,7 @@ static TRefCountPtr<ID3D11Buffer> CreateAndUpdatePooledUniformBuffer(
 
 		VERIFYD3D11RESULT_EX(Device->CreateBuffer(&Desc, NULL, UniformBufferResource.GetInitReference()), Device);
 
-		UpdateBufferStats(UniformBufferResource, true);
+		D3D11BufferStats::UpdateUniformBufferStats(UniformBufferResource, Desc.ByteWidth, true);
 	}
 
 	check(IsValidRef(UniformBufferResource));
@@ -186,7 +186,9 @@ FUniformBufferRHIRef FD3D11DynamicRHI::RHICreateUniformBuffer(const void* Conten
 
 		SCOPE_CYCLE_COUNTER(STAT_D3D11UpdateUniformBufferTime);
 
-		if (IsPoolingEnabled() && (IsInRenderingThread() || IsInRHIThread()))
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		if (IsPoolingEnabled() && (IsInRenderingThread() || IsInRHIThread()) && !UE::Tasks::Private::IsThreadRetractingTask())
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		{
 			const bool bAllocatedFromPool = true;
 
@@ -240,7 +242,7 @@ FUniformBufferRHIRef FD3D11DynamicRHI::RHICreateUniformBuffer(const void* Conten
 			ImmutableData.SysMemPitch = ImmutableData.SysMemSlicePitch = 0;
 
 			TRefCountPtr<ID3D11Buffer> UniformBufferResource;
-			VERIFYD3D11RESULT_EX(Direct3DDevice->CreateBuffer(&Desc,&ImmutableData,UniformBufferResource.GetInitReference()), Direct3DDevice);
+			VERIFYD3D11RESULT_EX(Direct3DDevice->CreateBuffer(&Desc, Contents ? &ImmutableData : nullptr,UniformBufferResource.GetInitReference()), Direct3DDevice);
 
 			const bool bAllocatedFromPool = false;
 			NewUniformBuffer = new FD3D11UniformBuffer(this, Layout, UniformBufferResource, FRingAllocation(), bAllocatedFromPool);

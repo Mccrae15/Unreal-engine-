@@ -2,12 +2,13 @@
 
 #pragma once
 
+#include "DMXControlConsoleFaderGroup.h"
 #include "UObject/Interface.h"
 
 #include "IDMXControlConsoleFaderGroupElement.generated.h"
 
 class UDMXControlConsoleFaderBase;
-class UDMXControlConsoleFaderGroup;
+
 
 /** 
  * Interface used by elmeents that can be placed inside a Fixture Group.
@@ -44,6 +45,23 @@ public:
 	/** Returns the last Channel of this Element */
 	virtual int32 GetEndingAddress() const = 0;
 
+#if WITH_EDITOR
+	/** Gets the activity state of the Element */
+	virtual bool IsActive() const { return GetOwnerFaderGroupChecked().IsActive(); }
+
+	/** True if Element matches Control Console filtering system */
+	virtual bool IsMatchingFilter() const { return bIsMatchingFilter; }
+
+	/** Sets wheter Element matches Control Console filtering system */
+	virtual void SetIsMatchingFilter(bool bMatches) { bIsMatchingFilter = bMatches; }
+#endif // WITH_EDITOR
+
 	/** Destroys the Element */
 	virtual void Destroy() = 0;
+
+protected:
+#if WITH_EDITOR
+	/** True if Element matches Control Console filtering system */
+	bool bIsMatchingFilter = true;
+#endif // WITH_EDITOR
 };

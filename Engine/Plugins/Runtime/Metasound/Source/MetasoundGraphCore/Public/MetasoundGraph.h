@@ -17,23 +17,25 @@ namespace Metasound
 	class METASOUNDGRAPHCORE_API FGraph : public IGraph
 	{
 		public:
+
 			FGraph(const FString& InInstanceName, const FGuid& InInstanceID);
+
 			virtual ~FGraph() = default;
 
 			/** Return the name of this specific instance of the node class. */
-			const FVertexName& GetInstanceName() const override;
+			virtual const FVertexName& GetInstanceName() const override;
 
 			/** Return the ID of this specific instance of the node class. */
-			const FGuid& GetInstanceID() const override;
+			virtual const FGuid& GetInstanceID() const override;
 
 			/** Return metadata about this graph. */
-			const FNodeClassMetadata& GetMetadata() const override;
+			virtual const FNodeClassMetadata& GetMetadata() const override;
 
 			/** Retrieve all the edges associated with a graph. */
-			const TArray<FDataEdge>& GetDataEdges() const override;
+			virtual const TArray<FDataEdge>& GetDataEdges() const override;
 
 			/** Return the current vertex interface. */
-			const FVertexInterface& GetVertexInterface() const override;
+			virtual const FVertexInterface& GetVertexInterface() const override;
 
 			/** Set the vertex interface. If the vertex was successfully changed, returns true. 
 			 *
@@ -41,7 +43,7 @@ namespace Metasound
 			 *
 			 * @return True on success, false otherwise.
 			 */
-			bool SetVertexInterface(const FVertexInterface& InInterface) override;
+			virtual bool SetVertexInterface(const FVertexInterface& InInterface) override;
 
 			/** Expresses whether a specific vertex interface is supported.
 			 *
@@ -49,13 +51,13 @@ namespace Metasound
 			 *
 			 * @return True if the interface is supported, false otherwise. 
 			 */
-			bool IsVertexInterfaceSupported(const FVertexInterface& InInterface) const override;
+			virtual bool IsVertexInterfaceSupported(const FVertexInterface& InInterface) const override;
 
 			/** Get vertices which contain input parameters. */
-			const FInputDataDestinationCollection& GetInputDataDestinations() const override;
+			virtual const FInputDataDestinationCollection& GetInputDataDestinations() const override;
 
 			/** Get vertices which contain output parameters. */
-			const FOutputDataSourceCollection& GetOutputDataSources() const override;
+			virtual const FOutputDataSourceCollection& GetOutputDataSources() const override;
 
 			/** Add an edge to the graph. */
 			void AddDataEdge(const FDataEdge& InEdge);
@@ -84,10 +86,46 @@ namespace Metasound
 			 *                    the edge should be removed.
 			 */
 			template<typename PredicateType>
+			UE_DEPRECATED(5.3, "Removing data edges by predicate is no longer supported")
 			void RemoveDataEdgeByPredicate(const PredicateType& Predicate)
 			{
 				Edges.RemoveAllSwap(Predicate);
 			}
+
+			/** Removes all edges with connected to the node. */
+			void RemoveDataEdgesWithNode(const INode& InNode);
+
+			/** Store a node on this graph. 
+			 *
+			 * @param InNodeID - The NodeID related to the parent FMetasoundFrontendClass.
+			 * @param InNode - A shared pointer to a node. 
+			 */
+			void AddNode(const FGuid& InNodeID, TSharedPtr<const INode> InNode);
+
+			/** Retrieve node by node ID.
+			 *
+			 * @param InNodeID - The NodeID of the requested Node.
+			 *
+			 * @return Pointer to the Node if it is stored on this graph. nullptr otherwise. 
+			 */
+			const INode* FindNode(const FGuid& InNodeID) const;
+
+			/** Populates an array with all nodes which exist in the graph but do not have
+			 * any connections.
+			 * 
+			 * @param OutUnconnectedNodes - Array to populate.
+			 * @return Number of unconnected nodes found.
+			 */
+			int32 FindUnconnectedNodes(TArray<TPair<FGuid, const INode*>>& OutUnconnectedNodes) const;
+
+			/** Removes node from graph.
+			 *
+			 * @param InNodeID - ID of node to remove.
+			 * @param bInRemoveDataEdgesWithNode - If true, will also call RemoveDataEdgesWithNode(...)
+			 *
+			 * @return true if node exists and is removed, false otherwise. 
+			 */
+			bool RemoveNode(const FGuid& InNodeID, bool bInRemoveDataEdgesWithNode = true);
 
 			/** Add an input data destination to describe how data provided 
 			 * outside this graph should be routed internally.
@@ -106,6 +144,14 @@ namespace Metasound
 			 */
 			void AddInputDataDestination(const FInputDataDestination& InDestination);
 
+			/** Remove an input data destination by vertex name
+			 * 
+			 * @param InVertexName - Name of vertex to remove.
+			 *
+			 * @return True if destination existed and was successfully removed. False otherwise.
+			 */
+			bool RemoveInputDataDestination(const FVertexName& InVertexName);
+
 			/** Add an output data source which describes routing of data which is 
 			 * owned this graph and exposed externally.
 			 *
@@ -122,12 +168,19 @@ namespace Metasound
 			 */
 			void AddOutputDataSource(const FOutputDataSource& InSource);
 
-			// TODO: Add ability to remove things.
+			/** Remove an output data source by vertex name
+			 * 
+			 * @param InVertexName - Name of vertex to remove.
+			 *
+			 * @return True if source existed and was successfully removed. False otherwise.
+			 */
+			bool RemoveOutputDataSource(const FVertexName& InVertexName);
 
 			/** Return a reference to the default operator factory. */
 			virtual FOperatorFactorySharedRef GetDefaultOperatorFactory() const override;
 
 		private:
+
 			class FFactory : public IOperatorFactory
 			{
 			public:
@@ -142,6 +195,7 @@ namespace Metasound
 			FNodeClassMetadata Metadata;
 
 			TArray<FDataEdge> Edges;
+			TSortedMap<FGuid, TSharedPtr<const INode>> Nodes;
 
 			FInputDataDestinationCollection InputDestinations;
 			FOutputDataSourceCollection OutputSources;
